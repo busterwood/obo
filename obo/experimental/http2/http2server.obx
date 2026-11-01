@@ -1,0 +1,1455 @@
+// Experimental HTTP/2 server loop (H2b/H2c).
+//
+// Status: experimental, unstable, hosted-only. This module owns a nonblocking
+// listener, a level-triggered reactor and a fixed table of connection slots.
+// Each connection owns a bounded table of live HTTP/2 streams. The application
+// supplies a pure handler function value; this module invokes it through
+// `http2::runAction`, exactly as the H2a application sketch and H1b do. There
+// is no C callback, no hidden thread and no interface dispatch.
+//
+// The loop accepts both transports:
+//
+//   * make():     cleartext HTTP/2 with prior knowledge (h2c); no Upgrade.
+//   * makeTls():  server TLS with ALPN h2 required. The caller configures the
+//                 owned systls context with certificates and `Require(["h2"])`.
+//
+// Admission uses the H2 per-connection reservation (`http2::reservation`) and
+// both `maxConnections` and `maxTotalConnectionBytes`. TLS sessions and
+// transport staging are outside that number; choose limits with headroom.
+//
+// The listener, reactor, optional TLS context and per-slot watches are owned
+// fields. As in http1server, each native call moves the owned value out of the
+// borrowed record and restores it, because obo's conservative native-effect
+// rule rejects borrowing a field for a native callee.
+module http2server
+
+import "http2.obx" as h2
+import "httpapi.obx" as http
+import "httptransport.obx" as transport
+import "sysaddress.obx" as address
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+import "sysnet.obx" as net
+import "sysplatform.obx" as platform
+import "sysreactor.obx" as reactor
+import "sysstream.obx" as streammod
+import "systls.obx" as tls
+
+pub type Handler = http::Handler
+
+pub type Metrics = ref record {
+    pub accepted: int
+    pub rejected: int
+    pub closedConnections: int
+    pub requests: int
+    pub streamsOpened: int
+    pub streamsClosed: int
+    pub protocolErrors: int
+    pub timeouts: int
+    pub acceptPressure: int
+    pub acceptErrors: int
+    pub handlerErrors: int
+    pub watchErrors: int
+    pub handshakeFailures: int
+    pub drains: int
+    pub peakActive: int
+    pub active: int
+    pub reservedBytes: int
+}
+
+type StreamSlot = ref record {
+    id: int
+    stream: h2::Stream
+    req: http::RequestMeta
+    state: h2::ActionState
+    live: bool
+    workPending: bool
+}
+
+type Slot = ref record {
+    conn: ?h2::Connection
+    tlsSession: ?tls::TlsSession
+    watch: ?reactor::Watch
+    tag: int
+    gen: int
+    live: bool
+    handshaking: bool
+    draining: bool
+    peer: string
+    handshakeDeadline: clock::Deadline
+    streams: []StreamSlot
+    pendingWork: bool
+}
+
+pub type Server = ref record {
+    listener: ?net::Listener
+    reactor: ?reactor::Reactor
+    tlsContext: ?tls::TlsContext
+    limits: h2::Limits
+    options: h2::Options
+    admission: h2::Admission
+    perConnectionBytes: int
+    slots: []Slot
+    listenerWatch: ?reactor::Watch
+    listenerClosed: bool
+    nextGen: int
+    active: int
+    reserved: int
+    stopping: bool
+    stopRequested: bool
+    acceptPausedUntil: clock::Deadline
+    drainDeadline: clock::Deadline
+    metrics: Metrics
+}
+
+type ConnOutcome = ref record {
+    progress: bool
+    failure: int
+    closeNow: bool
+    stop: bool
+    more: bool
+}
+
+fn connOutcome(): ConnOutcome {
+    return new ConnOutcome{progress: false, failure: 0, closeNow: false,
+                           stop: false, more: false}
+}
+
+const LISTENER_TAG = 7
+const MAX_SLOTS = 65536
+const MAX_ACCEPT_BATCH = 32
+const MAX_EVENTS = 64
+const MAX_CONN_WORK = 32
+const MAX_STREAM_WORK = 32
+const ACCEPT_BACKOFF_MS = 100
+
+fn forever(): clock::Deadline {
+    return clock::forever()
+}
+
+fn deadlineAt(now: &http::Now, ms: int): clock::Deadline {
+    let add = ms * 1000000
+    var at = now.mono.nanos + add
+    if at < now.mono.nanos { at = 9223372036854775807 }
+    return new clock::Deadline{finite: true, nanos: at}
+}
+
+fn copyDeadline(d: &clock::Deadline): clock::Deadline {
+    return new clock::Deadline{finite: d.finite, nanos: d.nanos}
+}
+
+fn earlier(a: &clock::Deadline, b: &clock::Deadline): clock::Deadline {
+    if !a.finite { return copyDeadline(b) }
+    if !b.finite { return copyDeadline(a) }
+    if a.nanos <= b.nanos { return copyDeadline(a) }
+    return copyDeadline(b)
+}
+
+fn beginShutdown(mut s: &Server, now: &http::Now): Result[bool]
+fn removeListenerWatch(mut s: &Server)
+fn connPending(cn: &h2::Connection): int
+
+fn currentNow(): Result[http::Now] {
+    let mono = try clock::monotonic()
+    let wall = try clock::realtime()
+    return ok(new http::Now{mono: mono, wall: wall})
+}
+
+pub fn now(): Result[http::Now] {
+    return currentNow()
+}
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn resourceLimitCode(): int { return libCode(new errors::ResourceLimit{}) }
+
+pub fn isAcceptPressure(code: int): bool {
+    return code == resourceLimitCode()
+}
+
+fn tagFor(gen: int, index: int): int {
+    return gen * MAX_SLOTS + index
+}
+
+fn tagIndex(tag: int): int {
+    if tag < 0 { return -1 }
+    return tag % MAX_SLOTS
+}
+
+fn tagGen(tag: int): int {
+    if tag < 0 { return -1 }
+    return tag / MAX_SLOTS
+}
+
+fn copyOptions(o: &h2::Options, mode: h2::Mode): h2::Options {
+    return new h2::Options{mode: mode, serverName: o.serverName,
+                           requireAuthority: o.requireAuthority}
+}
+
+fn closeContextOpt(held: ?tls::TlsContext): Result[bool] {
+    if held == nil { return ok(false) }
+    let ctx: tls::TlsContext = held
+    return tls::closeContext(&ctx)
+}
+
+fn makeWith(listener: net::Listener, r: reactor::Reactor,
+            limits: &h2::Limits, options: &h2::Options,
+            ctx: ?tls::TlsContext, mode: int): Result[Server] {
+    let checkedR = h2::validateLimits(limits)
+    match checkedR {
+        ok(checked) {
+            if !checked {
+                let cl = closeContextOpt(ctx)
+                let lc = net::closeListener(&listener)
+                let rc = reactor::close(&r)
+                return err("HTTP/2 limits are invalid", http::code(http::FAIL_INVALID_ARGUMENT, 0))
+            }
+        }
+        err(m, code) {
+            let cl = closeContextOpt(ctx)
+            let lc = net::closeListener(&listener)
+            let rc = reactor::close(&r)
+            return err(m, code)
+        }
+    }
+    if limits.maxConnections > MAX_SLOTS {
+        let cl = closeContextOpt(ctx)
+        let lc = net::closeListener(&listener)
+        let rc = reactor::close(&r)
+        return err("maxConnections exceeds the server slot table", http::code(http::FAIL_RESOURCE_LIMIT, 0))
+    }
+    if limits.maxConnections < 1 {
+        let cl = closeContextOpt(ctx)
+        let lc = net::closeListener(&listener)
+        let rc = reactor::close(&r)
+        return err("maxConnections must be positive", http::code(http::FAIL_INVALID_ARGUMENT, 0))
+    }
+    var per = 0
+    let perR = h2::reservation(limits)
+    match perR {
+        ok(v) { per = v }
+        err(m, code) {
+            let cl = closeContextOpt(ctx)
+            let lc = net::closeListener(&listener)
+            let rc = reactor::close(&r)
+            return err(m, code)
+        }
+    }
+    if per > limits.maxTotalConnectionBytes {
+        let cl = closeContextOpt(ctx)
+        let lc = net::closeListener(&listener)
+        let rc = reactor::close(&r)
+        return err("maxTotalConnectionBytes is below one H2 reservation", http::code(http::FAIL_RESOURCE_LIMIT, 0))
+    }
+    let madeWatch = net::watchListener(&r, &listener, LISTENER_TAG)
+    var watch: reactor::Watch = new reactor::Watch{res: new platform::Resource{reserved: 0}}
+    match madeWatch {
+        ok(w) { watch = w }
+        err(m, code) {
+            let lc = net::closeListener(&listener)
+            let rc = reactor::close(&r)
+            let cl = closeContextOpt(ctx)
+            return err("listener watch registration failed", code)
+        }
+    }
+    var modeValue: h2::Mode = new h2::ModeTls{}
+    if mode == 1 { modeValue = new h2::ModePriorKnowledge{} }
+    return ok(new Server{
+        listener: listener
+        reactor: r
+        tlsContext: ctx
+        limits: h2::copyLimits(limits)
+        options: copyOptions(options, modeValue)
+        admission: h2::makeAdmission()
+        perConnectionBytes: per
+        slots: new []Slot(0)
+        listenerWatch: watch
+        listenerClosed: false
+        nextGen: 1
+        active: 0
+        reserved: 0
+        stopping: false
+        stopRequested: false
+        acceptPausedUntil: forever()
+        drainDeadline: forever()
+        metrics: new Metrics{
+            accepted: 0
+            rejected: 0
+            closedConnections: 0
+            requests: 0
+            streamsOpened: 0
+            streamsClosed: 0
+            protocolErrors: 0
+            timeouts: 0
+            acceptPressure: 0
+            acceptErrors: 0
+            handlerErrors: 0
+            watchErrors: 0
+            handshakeFailures: 0
+            drains: 0
+            peakActive: 0
+            active: 0
+            reservedBytes: 0
+        }
+    })
+}
+
+// Cleartext h2c with prior knowledge. The listener must be a clear TCP
+// listener; the per-connection `http2::make` checks that the transport is not
+// secure and validates the 24-byte preface before any frame.
+pub fn make(listener: net::Listener, r: reactor::Reactor,
+            limits: &h2::Limits, options: &h2::Options): Result[Server] {
+    return makeWith(listener, r, limits, options, nil, 1)
+}
+
+// TLS listener with ALPN h2. The server takes ownership of `ctx` and closes it
+// after the last session. The caller must configure `Require(["h2"])`; the
+// loop additionally rejects any established session whose negotiated ALPN is
+// not exactly `h2` before constructing a connection.
+pub fn makeTls(listener: net::Listener, r: reactor::Reactor,
+               limits: &h2::Limits, options: &h2::Options,
+               ctx: tls::TlsContext): Result[Server] {
+    let held: ?tls::TlsContext = ctx
+    return makeWith(listener, r, limits, options, held, 0)
+}
+
+pub fn metrics(s: &Server): Metrics {
+    let m = s.metrics
+    return new Metrics{
+        accepted: m.accepted
+        rejected: m.rejected
+        closedConnections: m.closedConnections
+        requests: m.requests
+        streamsOpened: m.streamsOpened
+        streamsClosed: m.streamsClosed
+        protocolErrors: m.protocolErrors
+        timeouts: m.timeouts
+        acceptPressure: m.acceptPressure
+        acceptErrors: m.acceptErrors
+        handlerErrors: m.handlerErrors
+        watchErrors: m.watchErrors
+        handshakeFailures: m.handshakeFailures
+        drains: m.drains
+        peakActive: m.peakActive
+        active: m.active
+        reservedBytes: m.reservedBytes
+    }
+}
+
+pub fn active(s: &Server): int { return s.active }
+pub fn reservedBytes(s: &Server): int { return s.reserved }
+pub fn isStopping(s: &Server): bool { return s.stopping }
+pub fn stopRequested(s: &Server): bool { return s.stopRequested }
+
+fn noteActive(mut s: &Server) {
+    s.metrics.active = s.active
+    s.metrics.reservedBytes = s.reserved
+    if s.active > s.metrics.peakActive { s.metrics.peakActive = s.active }
+}
+
+fn freeSlotIndex(s: &Server): int {
+    for i in 0..len(s.slots) {
+        if !s.slots[i].live { return i }
+    }
+    return len(s.slots)
+}
+
+fn freeStreamIndex(slot: &Slot): int {
+    for i in 0..len(slot.streams) {
+        if !slot.streams[i].live { return i }
+    }
+    return len(slot.streams)
+}
+
+fn reserveAdmission(mut s: &Server): Result[bool] {
+    let a = replace(s.admission, h2::makeAdmission())
+    let lim = h2::copyLimits(&s.limits)
+    let r = h2::admit(&a, &lim)
+    s.admission = a
+    return r
+}
+
+fn releaseAdmission(mut s: &Server) {
+    let a = replace(s.admission, h2::makeAdmission())
+    let okRelease = h2::release(&a, s.perConnectionBytes)
+    s.admission = a
+    if s.active > 0 { s.active -= 1 }
+    s.reserved -= s.perConnectionBytes
+    if s.reserved < 0 { s.reserved = 0 }
+    s.metrics.closedConnections += 1
+    noteActive(s)
+}
+
+fn admissionFits(s: &Server): bool {
+    if s.active >= s.limits.maxConnections { return false }
+    if s.perConnectionBytes > s.limits.maxTotalConnectionBytes - s.reserved {
+        return false
+    }
+    return true
+}
+
+fn addSlot(mut s: &Server, index: int, gen: int,
+           conn: ?h2::Connection, sess: ?tls::TlsSession,
+           watch: reactor::Watch, peer: string, handshaking: bool,
+           deadline: clock::Deadline) {
+    let tag = tagFor(gen, index)
+    let fresh = new Slot{
+        conn: nil
+        tlsSession: nil
+        watch: nil
+        tag: tag
+        gen: gen
+        live: false
+        handshaking: handshaking
+        draining: false
+        peer: peer
+        handshakeDeadline: deadline
+        streams: new []StreamSlot(0)
+        pendingWork: false
+    }
+    if index == len(s.slots) {
+        append(s.slots, fresh)
+    } else {
+        let old = replace(s.slots[index], fresh)
+    }
+    let slot = s.slots[index]
+    let priorConn = replace(slot.conn, conn)
+    drop(priorConn)
+    let priorSess = replace(slot.tlsSession, sess)
+    drop(priorSess)
+    let priorWatch = replace(slot.watch, watch)
+    drop(priorWatch)
+    slot.live = true
+    slot.handshaking = handshaking
+    slot.draining = false
+    slot.pendingWork = false
+    s.active += 1
+    s.reserved += s.perConnectionBytes
+    s.metrics.accepted += 1
+    noteActive(s)
+}
+
+fn openPlain(mut s: &Server, r: &reactor::Reactor,
+             st: streammod::Stream, peer: string,
+             now: &http::Now): bool {
+    let tr = transport::plain(st)
+    let lim = h2::copyLimits(&s.limits)
+    let opts = copyOptions(&s.options, new h2::ModePriorKnowledge{})
+    let made = h2::make(tr, &lim, &opts)
+    match made {
+        ok(cn) {
+            let gen = s.nextGen
+            s.nextGen += 1
+            let index = freeSlotIndex(s)
+            let tag = tagFor(gen, index)
+            let watch = h2::watch(&cn, r, true, false, tag)
+            match watch {
+                ok(w) {
+                    addSlot(s, index, gen, cn, nil, w, peer, false, forever())
+                    return true
+                }
+                err(m, code) {
+                    s.metrics.watchErrors += 1
+                    let cl = h2::close(&cn)
+                    match cl { ok(v) { } err(m2, c2) { } }
+                    releaseAdmission(s)
+                    return false
+                }
+            }
+        }
+        err(m, code) {
+            s.metrics.acceptErrors += 1
+            releaseAdmission(s)
+            return false
+        }
+    }
+}
+
+fn openTls(mut s: &Server, r: &reactor::Reactor,
+           st: streammod::Stream, peer: string,
+           now: &http::Now): bool {
+    let held = take(s.tlsContext)
+    if held == nil {
+        drop(st)
+        s.tlsContext = held
+        s.metrics.acceptErrors += 1
+        releaseAdmission(s)
+        return false
+    }
+    let ctx: tls::TlsContext = held
+    let made = tls::accept(&ctx, st)
+    s.tlsContext = ctx
+    match made {
+        ok(sess) {
+            let gen = s.nextGen
+            s.nextGen += 1
+            let index = freeSlotIndex(s)
+            let tag = tagFor(gen, index)
+            let watch = tls::watch(&sess, r, true, false, tag)
+            match watch {
+                ok(w) {
+                    let deadline = deadlineAt(now, s.limits.prefaceTimeoutMs)
+                    addSlot(s, index, gen, nil, sess, w, peer, true, deadline)
+                    return true
+                }
+                err(m, code) {
+                    s.metrics.watchErrors += 1
+                    let cl = tls::close(&sess)
+                    match cl { ok(v) { } err(m2, c2) { } }
+                    releaseAdmission(s)
+                    return false
+                }
+            }
+        }
+        err(m, code) {
+            // systls::accept closes the stream on every failure.
+            s.metrics.acceptErrors += 1
+            releaseAdmission(s)
+            return false
+        }
+    }
+}
+
+fn acceptBatch(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
+               now: &http::Now): Result[int] {
+    if s.stopping || s.listenerClosed { return ok(0) }
+    if s.acceptPausedUntil.finite && now.mono.nanos < s.acceptPausedUntil.nanos {
+        return ok(0)
+    }
+    var accepted = 0
+    for i in 0..MAX_ACCEPT_BATCH {
+        if !admissionFits(s) {
+            s.metrics.rejected += 1
+            break
+        }
+        let got = net::accept(l)
+        match got {
+            ok(connection) {
+                let nd = net::setNoDelay(&connection, true)
+                match nd { ok(v) { } err(m, c) { } }
+                var peer = ""
+                let pa = net::peerAddress(&connection)
+                match pa {
+                    ok(a) {
+                        let formatted = address::format(&a)
+                        match formatted { ok(text) { peer = text } err(m, c) { } }
+                    }
+                    err(m, c) { }
+                }
+                let admitted = reserveAdmission(s)
+                var fits = false
+                match admitted {
+                    ok(v) { fits = v }
+                    err(m, c) { fits = false }
+                }
+                if !fits {
+                    s.metrics.rejected += 1
+                    let cc = net::closeConnection(&connection)
+                    match cc { ok(v) { } err(m, c) { } }
+                    break
+                }
+                let made = net::intoStream(&connection)
+                match made {
+                    ok(st) {
+                        var started = false
+                        if s.tlsContext != nil {
+                            started = openTls(s, r, st, peer, now)
+                        } else {
+                            started = openPlain(s, r, st, peer, now)
+                        }
+                        if started { accepted += 1 }
+                    }
+                    err(m, code) {
+                        s.metrics.acceptErrors += 1
+                        let cc = net::closeConnection(&connection)
+                        match cc { ok(v) { } err(m2, c2) { } }
+                        releaseAdmission(s)
+                    }
+                }
+            }
+            err(m, code) {
+                if errors::isWouldBlock(code) { break }
+                if isAcceptPressure(code) {
+                    s.metrics.acceptPressure += 1
+                    s.acceptPausedUntil = deadlineAt(now, ACCEPT_BACKOFF_MS)
+                    break
+                }
+                s.metrics.acceptErrors += 1
+                break
+            }
+        }
+    }
+    return ok(accepted)
+}
+
+fn removeSlotWatch(mut s: &Server, index: int) {
+    if index < 0 || index >= len(s.slots) { return }
+    let slot = s.slots[index]
+    let heldWatch = take(slot.watch)
+    if heldWatch != nil {
+        let w: reactor::Watch = heldWatch
+        let removed = reactor::remove(&w)
+        match removed { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldWatch)
+    }
+}
+
+fn closeStreamAt(mut s: &Server, ci: int, si: int) {
+    if ci < 0 || ci >= len(s.slots) { return }
+    let slot = s.slots[ci]
+    if si < 0 || si >= len(slot.streams) { return }
+    if !slot.streams[si].live { return }
+    let stream = replace(s.slots[ci].streams[si].stream, h2::_emptyStream())
+    let cl = h2::closeStream(&stream)
+    match cl { ok(v) { } err(m, c) { } }
+    let slot2 = s.slots[ci]
+    let again = slot2.streams[si]
+    again.live = false
+    again.workPending = false
+    s.metrics.streamsClosed += 1
+}
+
+fn closeAllStreams(mut s: &Server, ci: int) {
+    if ci < 0 || ci >= len(s.slots) { return }
+    var i = 0
+    while i < len(s.slots[ci].streams) {
+        if s.slots[ci].streams[i].live { closeStreamAt(s, ci, i) }
+        i += 1
+    }
+    let again = s.slots[ci]
+    again.pendingWork = false
+}
+
+fn closeConnSlot(mut s: &Server, index: int, mut cn: &h2::Connection,
+                 now: &http::Now) {
+    if index < 0 || index >= len(s.slots) { return }
+    let slot = s.slots[index]
+    if !slot.live { return }
+    removeSlotWatch(s, index)
+    closeAllStreams(s, index)
+    // Best-effort close_notify/flush, bounded; close is abortive and exactly
+    // once. The GOAWAY drain is driven before this point by drainPoll.
+    var guard = 0
+    while guard < 4 {
+        guard += 1
+        let sd = h2::shutdownStep(cn, now)
+        match sd {
+            ok(out) {
+                match out {
+                    ShutdownDone { break }
+                    ShutdownPeerClosed { break }
+                    ShutdownSent {
+                        var flushes = 0
+                        while flushes < 8 {
+                            flushes += 1
+                            let more = connPending(cn) > 0
+                            if !more { break }
+                            let ev = h2::next(cn, now)
+                            match ev { ok(v) { } err(m, c) { break } }
+                        }
+                        break
+                    }
+                    ShutdownWantRead { break }
+                    ShutdownWantWrite { }
+                }
+            }
+            err(m, c) { break }
+        }
+    }
+    let cl = h2::close(cn)
+    match cl { ok(v) { } err(m, c) { } }
+    let again = s.slots[index]
+    let prior = replace(again.conn, nil)
+    drop(prior)
+    again.live = false
+    again.handshaking = false
+    again.draining = false
+    again.pendingWork = false
+    releaseAdmission(s)
+}
+
+fn closeHandshakeSlot(mut s: &Server, index: int) {
+    if index < 0 || index >= len(s.slots) { return }
+    let slot = s.slots[index]
+    if !slot.live { return }
+    removeSlotWatch(s, index)
+    let held = replace(s.slots[index].tlsSession, nil)
+    if held != nil {
+        let sess: tls::TlsSession = held
+        let cl = tls::close(&sess)
+        match cl { ok(v) { } err(m, c) { } }
+    } else {
+        drop(held)
+    }
+    let again = s.slots[index]
+    again.live = false
+    again.handshaking = false
+    let prior = replace(again.conn, nil)
+    drop(prior)
+    releaseAdmission(s)
+}
+
+fn setWatchInterest(mut s: &Server, index: int,
+                    readable: bool, writable: bool): Result[bool] {
+    let slot = s.slots[index]
+    let heldWatch = take(slot.watch)
+    if heldWatch == nil { return ok(false) }
+    let w: reactor::Watch = heldWatch
+    let modified = reactor::modify(&w, readable, writable)
+    let again = s.slots[index]
+    again.watch = w
+    match modified {
+        ok(v) { return ok(true) }
+        err(m, code) {
+            s.metrics.watchErrors += 1
+            return err("connection watch update failed", code)
+        }
+    }
+}
+
+fn connPending(cn: &h2::Connection): int {
+    let p = h2::pending(cn)
+    match p {
+        ok(v) { return v }
+        err(m, c) { return -1 }
+    }
+}
+
+fn refreshSlotInterest(mut s: &Server, index: int,
+                       cn: &h2::Connection): Result[bool] {
+    let pending = connPending(cn)
+    if pending < 0 { return ok(false) }
+    let hasWork = s.slots[index].pendingWork
+    var readWant = false
+    if pending == 0 { readWant = true }
+    var writeWant = false
+    if pending > 0 { writeWant = true }
+    if !readWant && !writeWant && !hasWork {
+        return ok(false)
+    }
+    if hasWork && !readWant && !writeWant {
+        // Staged action work with no socket interest: keep the watch alive and
+        // make computeUntil return an immediate turn. This cannot spin because
+        // the action either makes progress or blocks on a real read/write.
+        readWant = true
+    }
+    return setWatchInterest(s, index, readWant, writeWant)
+}
+
+// ---------------------------------------------------------------------------
+// Stream dispatch
+// ---------------------------------------------------------------------------
+
+fn resetCodeFor(code: int): int {
+    let k = http::kind(code)
+    if k == http::FAIL_PROTOCOL || k == http::FAIL_HEADER_LIST ||
+       k == http::FAIL_CONTINUATION || k == http::FAIL_COMPRESSION {
+        return 1
+    }
+    return 8
+}
+
+fn driveStreamAt(mut s: &Server, ci: int, si: int, h: Handler,
+                 now: &http::Now): bool {
+    if ci < 0 || ci >= len(s.slots) { return false }
+    if si < 0 || si >= len(s.slots[ci].streams) { return false }
+    if !s.slots[ci].streams[si].live { return false }
+    let state = replace(s.slots[ci].streams[si].state, h2::makeActionState())
+    let req = replace(s.slots[ci].streams[si].req, http::emptyRequestMeta())
+    let stream = replace(s.slots[ci].streams[si].stream, h2::_emptyStream())
+    let run = h2::runAction(&state, h, &req, &stream, now)
+    var progress = false
+    var failed = false
+    match run {
+        ok(v) { progress = v }
+        err(m, code) { failed = true }
+    }
+    let stop = h2::actionStopRequested(&state)
+    let closeConn = h2::actionCloseRequested(&state)
+    let done = h2::actionDone(&state)
+    if failed {
+        let rr = h2::reset(&stream, 8)
+        match rr { ok(v) { } err(m, c) { } }
+        let cl = h2::closeStream(&stream)
+        match cl { ok(v) { } err(m, c) { } }
+        let ss = s.slots[ci].streams[si]
+        ss.live = false
+        ss.workPending = false
+        ss.stream = h2::_emptyStream()
+        drop(stream)
+        s.metrics.handlerErrors += 1
+        s.metrics.streamsClosed += 1
+    } else {
+        let ss = s.slots[ci].streams[si]
+        ss.stream = stream
+        if done {
+            ss.workPending = false
+        } else {
+            ss.workPending = progress
+        }
+    }
+    let ss2 = s.slots[ci].streams[si]
+    ss2.state = state
+    ss2.req = req
+    if stop { s.stopRequested = true }
+    if closeConn {
+        // driveConn submits the shutdown notice on its next turn.
+        let cslot = s.slots[ci]
+        if !cslot.draining { s.metrics.drains += 1 }
+        cslot.draining = true
+    }
+    return progress
+}
+
+fn findStream(slot: &Slot, id: int): int {
+    for i in 0..len(slot.streams) {
+        if slot.streams[i].live && slot.streams[i].id == id { return i }
+    }
+    return -1
+}
+
+fn runById(mut s: &Server, ci: int, id: int, h: Handler,
+           now: &http::Now): bool {
+    if ci < 0 || ci >= len(s.slots) { return false }
+    let si = findStream(s.slots[ci], id)
+    if si < 0 { return false }
+    return driveStreamAt(s, ci, si, h, now)
+}
+
+fn runPending(mut s: &Server, ci: int, h: Handler,
+              now: &http::Now): bool {
+    if ci < 0 || ci >= len(s.slots) { return false }
+    var progress = false
+    var count = 0
+    while count < MAX_STREAM_WORK {
+        var found = -1
+        for i in 0..len(s.slots[ci].streams) {
+            if s.slots[ci].streams[i].live &&
+               s.slots[ci].streams[i].workPending {
+                found = i
+                break
+            }
+        }
+        if found < 0 { break }
+        count += 1
+        let made = driveStreamAt(s, ci, found, h, now)
+        if made { progress = true }
+        // Clear the flag first so a non-progress action does not spin; a
+        // later body/write event will re-arm it.
+        if !made {
+            let again = s.slots[ci].streams[found]
+            if again.live { again.workPending = false }
+        }
+    }
+    return progress
+}
+
+fn openAndRun(mut s: &Server, ci: int, mut cn: &h2::Connection, id: int,
+              h: Handler, now: &http::Now): bool {
+    if ci < 0 || ci >= len(s.slots) { return false }
+    let opened = h2::openStream(cn, id)
+    var progress = false
+    match opened {
+        ok(stream) {
+            s.metrics.streamsOpened += 1
+            let reqr = h2::requestInfo(&stream)
+            match reqr {
+                ok(req) {
+                    s.metrics.requests += 1
+                    let state = h2::makeActionState()
+                    let si = freeStreamIndex(s.slots[ci])
+                    let fresh = new StreamSlot{
+                        id: id
+                        stream: stream
+                        req: req
+                        state: state
+                        live: true
+                        workPending: false
+                    }
+                    if si == len(s.slots[ci].streams) {
+                        append(s.slots[ci].streams, fresh)
+                    } else {
+                        let old = replace(s.slots[ci].streams[si], fresh)
+                    }
+                    let made = driveStreamAt(s, ci, si, h, now)
+                    if made { progress = true }
+                }
+                err(m, code) {
+                    s.metrics.handlerErrors += 1
+                    let rr = h2::reset(&stream, resetCodeFor(code))
+                    match rr { ok(v) { } err(m2, c2) { } }
+                    let cl = h2::closeStream(&stream)
+                    match cl { ok(v) { } err(m2, c2) { } }
+                    drop(stream)
+                    s.metrics.streamsClosed += 1
+                }
+            }
+        }
+        err(m, code) {
+            // A refused/unknown stream has no shell to close. C already
+            // submitted REFUSED_STREAM when its own concurrent cap applied.
+            s.metrics.rejected += 1
+        }
+    }
+    return progress
+}
+
+// ---------------------------------------------------------------------------
+// Connection drive
+// ---------------------------------------------------------------------------
+
+fn driveConn(mut s: &Server, ci: int, mut cn: &h2::Connection, h: Handler,
+             now: &http::Now): ConnOutcome {
+    var out = connOutcome()
+    let cslot = s.slots[ci]
+    if cslot.draining || s.stopping {
+        let dp = h2::drainPoll(cn, now)
+        match dp { ok(v) { } err(m, code) { if !s.stopping { out.failure = code; return out } } }
+    }
+    var guard = 0
+    while guard < MAX_CONN_WORK {
+        guard += 1
+        if h2::drainComplete(cn) {
+            out.closeNow = true
+            return out
+        }
+        let evr = h2::next(cn, now)
+        match evr {
+            err(m, code) { out.failure = code; return out }
+            ok(ev) {
+                match ev {
+                    EventStreamStarted {
+                        let made = openAndRun(s, ci, cn, ev.id, h, now)
+                        if made { out.progress = true }
+                        if s.stopRequested { out.stop = true }
+                    }
+                    EventStreamData {
+                        let made = runById(s, ci, ev.id, h, now)
+                        if made { out.progress = true }
+                        if s.stopRequested { out.stop = true }
+                    }
+                    EventStreamEnd {
+                        let made = runById(s, ci, ev.id, h, now)
+                        if made { out.progress = true }
+                        if s.stopRequested { out.stop = true }
+                    }
+                    EventTrailers {
+                        let made = runById(s, ci, ev.id, h, now)
+                        if made { out.progress = true }
+                        if s.stopRequested { out.stop = true }
+                    }
+                    EventStreamClosed {
+                        let slot = s.slots[ci]
+                        let si = findStream(slot, ev.id)
+                        if si >= 0 { closeStreamAt(s, ci, si) }
+                        out.progress = true
+                    }
+                    EventSettingsAcked {
+                        out.progress = true
+                    }
+                    EventGoaway {
+                        s.metrics.drains += 1
+                        if !s.slots[ci].draining {
+                            let dr = h2::drain(cn, now)
+                            match dr { ok(v) { s.slots[ci].draining = true } err(m, c) { } }
+                        }
+                        out.progress = true
+                    }
+                    EventTimedOut {
+                        s.metrics.timeouts += 1
+                        if ev.id > 0 {
+                            let slot = s.slots[ci]
+                            let si = findStream(slot, ev.id)
+                            if si >= 0 { closeStreamAt(s, ci, si) }
+                            out.progress = true
+                        } else {
+                            out.closeNow = true
+                            return out
+                        }
+                    }
+                    EventProtocolError {
+                        s.metrics.protocolErrors += 1
+                        out.failure = ev.code
+                        out.closeNow = true
+                        return out
+                    }
+                    EventDrainComplete {
+                        out.closeNow = true
+                        return out
+                    }
+                    EventConnectionClosed {
+                        out.closeNow = true
+                        return out
+                    }
+                    EventNeedRead {
+                        let made = runPending(s, ci, h, now)
+                        if made { out.progress = true; continue }
+                        return out
+                    }
+                    EventNeedWrite {
+                        let made = runPending(s, ci, h, now)
+                        if made { out.progress = true; continue }
+                        return out
+                    }
+                }
+            }
+        }
+    }
+    out.more = true
+    return out
+}
+
+fn completeHandshake(mut s: &Server, ci: int, r: &reactor::Reactor,
+                     sess: tls::TlsSession, now: &http::Now): bool {
+    var alpnOk = false
+    let alpnr = tls::alpn(&sess)
+    match alpnr {
+        ok(name) {
+            if len(name) == 2 && name[0] == byte('h') && name[1] == byte('2') {
+                alpnOk = true
+            }
+        }
+        err(m, c) { alpnOk = false }
+    }
+    if !alpnOk {
+        s.metrics.handshakeFailures += 1
+        s.metrics.rejected += 1
+        let cl = tls::close(&sess)
+        match cl { ok(v) { } err(m, c) { } }
+        let again = s.slots[ci]
+        let prior = replace(again.tlsSession, nil)
+        drop(prior)
+        closeHandshakeSlot(s, ci)
+        return true
+    }
+    let tr = transport::tlsSession(sess)
+    let lim = h2::copyLimits(&s.limits)
+    let opts = copyOptions(&s.options, new h2::ModeTls{})
+    let tag = s.slots[ci].tag
+    let made = h2::make(tr, &lim, &opts)
+    match made {
+        ok(cn) {
+            removeSlotWatch(s, ci)
+            let watch = h2::watch(&cn, r, true, false, tag)
+            match watch {
+                ok(w) {
+                    let again = s.slots[ci]
+                    let p0 = replace(again.tlsSession, nil)
+                    drop(p0)
+                    let p1 = replace(again.conn, cn)
+                    drop(p1)
+                    let p2 = replace(again.watch, w)
+                    drop(p2)
+                    again.handshaking = false
+                    again.handshakeDeadline = forever()
+                    return true
+                }
+                err(m, code) {
+                    s.metrics.watchErrors += 1
+                    let cl = h2::close(&cn)
+                    match cl { ok(v) { } err(m2, c2) { } }
+                    let again = s.slots[ci]
+                    let prior = replace(again.tlsSession, nil)
+                    drop(prior)
+                    closeHandshakeSlot(s, ci)
+                    return true
+                }
+            }
+        }
+        err(m, code) {
+            // h2::make consumed and closed the TLS transport on failure.
+            s.metrics.acceptErrors += 1
+            let again = s.slots[ci]
+            let prior = replace(again.tlsSession, nil)
+            drop(prior)
+            closeHandshakeSlot(s, ci)
+            return true
+        }
+    }
+}
+
+fn driveHandshake(mut s: &Server, ci: int, r: &reactor::Reactor,
+                  now: &http::Now): bool {
+    if ci < 0 || ci >= len(s.slots) { return false }
+    if !s.slots[ci].live || !s.slots[ci].handshaking { return false }
+    if s.slots[ci].handshakeDeadline.finite &&
+       now.mono.nanos >= s.slots[ci].handshakeDeadline.nanos {
+        s.metrics.handshakeFailures += 1
+        s.metrics.timeouts += 1
+        closeHandshakeSlot(s, ci)
+        return true
+    }
+    let held = take(s.slots[ci].tlsSession)
+    if held == nil {
+        let again = s.slots[ci]
+        let prior = replace(again.tlsSession, held)
+        drop(prior)
+        closeHandshakeSlot(s, ci)
+        return true
+    }
+    let sess: tls::TlsSession = held
+    let stepr = tls::handshakeStep(&sess)
+    match stepr {
+        ok(step) {
+            match step {
+                StepDone {
+                    return completeHandshake(s, ci, r, sess, now)
+                }
+                StepWantRead {
+                    let again = s.slots[ci]
+                    let prior = replace(again.tlsSession, sess)
+                    drop(prior)
+                    let mod = setWatchInterest(s, ci, true, false)
+                    match mod { ok(v) { } err(m, c) { } }
+                    return false
+                }
+                StepWantWrite {
+                    let again = s.slots[ci]
+                    let prior = replace(again.tlsSession, sess)
+                    drop(prior)
+                    let mod = setWatchInterest(s, ci, false, true)
+                    match mod { ok(v) { } err(m, c) { } }
+                    return false
+                }
+            }
+        }
+        err(m, code) {
+            s.metrics.handshakeFailures += 1
+            let cl = tls::close(&sess)
+            match cl { ok(v) { } err(m2, c2) { } }
+            let again = s.slots[ci]
+            let prior = replace(again.tlsSession, nil)
+            drop(prior)
+            closeHandshakeSlot(s, ci)
+            return true
+        }
+    }
+}
+
+fn driveSlot(mut s: &Server, index: int, handler: Handler,
+             r: &reactor::Reactor, now: &http::Now): bool {
+    if index < 0 || index >= len(s.slots) { return false }
+    let slot = s.slots[index]
+    if !slot.live { return false }
+    if slot.handshaking {
+        let changed = driveHandshake(s, index, r, now)
+        // Handshake completion may have read the client preface into the TLS
+        // plaintext buffer before the H2 connection existed. Drive the new
+        // connection once so buffered preface/frames are not stranded until a
+        // socket-readiness event that may never arrive.
+        if changed && index >= 0 && index < len(s.slots) &&
+           s.slots[index].live && !s.slots[index].handshaking {
+            return driveSlot(s, index, handler, r, now)
+        }
+        return changed
+    }
+    let held = take(slot.conn)
+    if held == nil { return false }
+    let cn: h2::Connection = held
+    let driven = driveConn(s, index, &cn, handler, now)
+    if driven.failure != 0 || driven.closeNow {
+        closeConnSlot(s, index, &cn, now)
+        return true
+    }
+    let again = s.slots[index]
+    var pending = driven.more
+    for i in 0..len(again.streams) {
+        if again.streams[i].live && again.streams[i].workPending {
+            pending = true
+            break
+        }
+    }
+    again.pendingWork = pending
+    let refreshed = refreshSlotInterest(s, index, &cn)
+    match refreshed {
+        ok(alive) {
+            if !alive {
+                closeConnSlot(s, index, &cn, now)
+                return true
+            }
+            let store = s.slots[index]
+            let prior = replace(store.conn, cn)
+            drop(prior)
+            return driven.progress || driven.stop
+        }
+        err(m, code) {
+            s.metrics.watchErrors += 1
+            closeConnSlot(s, index, &cn, now)
+            return true
+        }
+    }
+}
+
+fn computeUntil(mut s: &Server): clock::Deadline {
+    var until = forever()
+    if s.stopping {
+        until = earlier(&until, &s.drainDeadline)
+    }
+    if s.acceptPausedUntil.finite {
+        until = earlier(&until, &s.acceptPausedUntil)
+    }
+    for i in 0..len(s.slots) {
+        let slot = s.slots[i]
+        if !slot.live { continue }
+        if slot.pendingWork && !s.stopping {
+            return new clock::Deadline{finite: true, nanos: 0}
+        }
+        if slot.handshaking {
+            until = earlier(&until, &slot.handshakeDeadline)
+            continue
+        }
+        let held = take(s.slots[i].conn)
+        if held == nil { continue }
+        let cn: h2::Connection = held
+        let d = h2::deadline(&cn)
+        match d {
+            ok(v) { until = earlier(&until, &v) }
+            err(m, c) { }
+        }
+        let again = s.slots[i]
+        let prior = replace(again.conn, cn)
+        drop(prior)
+    }
+    return until
+}
+
+fn slotDeadlineReached(mut s: &Server, i: int, now: &http::Now): bool {
+    if i < 0 || i >= len(s.slots) { return false }
+    if s.slots[i].handshaking {
+        return s.slots[i].handshakeDeadline.finite &&
+               now.mono.nanos >= s.slots[i].handshakeDeadline.nanos
+    }
+    let held = take(s.slots[i].conn)
+    if held == nil { return false }
+    let cn: h2::Connection = held
+    var due = false
+    let d = h2::deadline(&cn)
+    match d {
+        ok(v) { due = v.finite && now.mono.nanos >= v.nanos }
+        err(m, c) { due = false }
+    }
+    let again = s.slots[i]
+    let prior = replace(again.conn, cn)
+    drop(prior)
+    return due
+}
+
+fn runOnceOn(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
+             handler: Handler, maxEvents: int): Result[bool] {
+    let now = try currentNow()
+    var progress = false
+    let paused = s.acceptPausedUntil.finite &&
+                 now.mono.nanos < s.acceptPausedUntil.nanos
+    if !paused && !s.stopping && !s.listenerClosed {
+        let n = try acceptBatch(s, l, r, &now)
+        if n > 0 { progress = true }
+    }
+    let until = computeUntil(s)
+    let events = try reactor::wait(r, &until, maxEvents)
+    let after = try currentNow()
+    for i in 0..len(events) {
+        if events[i].timer || events[i].wake { continue }
+        let tag = events[i].tag
+        let readable = events[i].readable
+        if tag == LISTENER_TAG {
+            if readable && !s.stopping && !s.listenerClosed {
+                let n = try acceptBatch(s, l, r, &after)
+                if n > 0 { progress = true }
+            }
+            continue
+        }
+        let index = tagIndex(tag)
+        let gen = tagGen(tag)
+        if index < 0 || index >= len(s.slots) { continue }
+        let slot = s.slots[index]
+        if !slot.live || slot.gen != gen { continue }
+        let driven = driveSlot(s, index, handler, r, &after)
+        if driven { progress = true }
+    }
+    // Deadlines are checked every turn, even when socket events dominated.
+    for i in 0..len(s.slots) {
+        let slot = s.slots[i]
+        if !slot.live { continue }
+        if slotDeadlineReached(s, i, &after) {
+            let driven = driveSlot(s, i, handler, r, &after)
+            if driven { progress = true }
+        }
+    }
+    // Resumable action work with no socket interest gets an immediate turn.
+    for i in 0..len(s.slots) {
+        let slot = s.slots[i]
+        if !slot.live || !slot.pendingWork { continue }
+        let driven = driveSlot(s, i, handler, r, &after)
+        if driven { progress = true }
+    }
+    if s.stopRequested && !s.stopping {
+        let began = try beginShutdown(s, &after)
+        if began { progress = true }
+    }
+    return ok(progress)
+}
+
+fn runWithReactor(mut s: &Server, r: &reactor::Reactor, handler: Handler,
+                  maxEvents: int): Result[bool] {
+    let heldL = take(s.listener)
+    if heldL == nil {
+        return ok(false)
+    }
+    let l: net::Listener = heldL
+    let made = runOnceOn(s, &l, r, handler, maxEvents)
+    s.listener = l
+    return made
+}
+
+pub fn runOnce(mut s: &Server, handler: Handler,
+               maxEvents: int): Result[bool] {
+    if s.stopping && s.active == 0 { return ok(false) }
+    let heldR = take(s.reactor)
+    if heldR == nil {
+        return err("server reactor is closed", http::code(http::FAIL_INVALID_STATE, 0))
+    }
+    let r: reactor::Reactor = heldR
+    let result = runWithReactor(s, &r, handler, maxEvents)
+    s.reactor = r
+    return result
+}
+
+pub fn run(mut s: &Server, handler: Handler, maxTurns: int): Result[bool] {
+    var turns = 0
+    while turns < maxTurns {
+        turns += 1
+        if s.stopping && s.active == 0 { return ok(true) }
+        let p = try runOnce(s, handler, MAX_EVENTS)
+        if !p && s.stopping && s.active == 0 { return ok(true) }
+    }
+    if s.stopping && s.active == 0 { return ok(true) }
+    return ok(false)
+}
+
+pub fn beginShutdown(mut s: &Server, now: &http::Now): Result[bool] {
+    if s.stopping { return ok(true) }
+    s.stopping = true
+    s.drainDeadline = deadlineAt(now, s.limits.drainTimeoutMs)
+    if !s.listenerClosed {
+        removeListenerWatch(s)
+        s.listenerClosed = true
+    }
+    for i in 0..len(s.slots) {
+        if !s.slots[i].live { continue }
+        if s.slots[i].handshaking {
+            // A handshake that has not completed has no clean H2 drain.
+            closeHandshakeSlot(s, i)
+            continue
+        }
+        let held = take(s.slots[i].conn)
+        if held == nil { continue }
+        let cn: h2::Connection = held
+        if !s.slots[i].draining {
+            let dr = h2::drain(&cn, now)
+            match dr {
+                ok(v) {
+                    let again = s.slots[i]
+                    again.draining = true
+                    s.metrics.drains += 1
+                }
+                err(m, c) { }
+            }
+        }
+        let again = s.slots[i]
+        let prior = replace(again.conn, cn)
+        drop(prior)
+    }
+    return ok(true)
+}
+
+pub fn drain(mut s: &Server, handler: Handler, maxTurns: int): Result[bool] {
+    let now = try currentNow()
+    let began = try beginShutdown(s, &now)
+    var turns = 0
+    while turns < maxTurns && s.active > 0 {
+        turns += 1
+        let p = try runOnce(s, handler, MAX_EVENTS)
+        let after = try currentNow()
+        if s.drainDeadline.finite &&
+           after.mono.nanos >= s.drainDeadline.nanos {
+            return ok(false)
+        }
+    }
+    if s.active == 0 { return ok(true) }
+    return ok(false)
+}
+
+fn removeListenerWatch(mut s: &Server) {
+    let heldW = take(s.listenerWatch)
+    if heldW != nil {
+        let w: reactor::Watch = heldW
+        let removed = reactor::remove(&w)
+        match removed { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldW)
+    }
+}
+
+fn closeListenerOwned(mut s: &Server) {
+    let heldL = take(s.listener)
+    if heldL != nil {
+        let l: net::Listener = heldL
+        let lc = net::closeListener(&l)
+        match lc { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldL)
+    }
+}
+
+fn closeTlsContextOwned(mut s: &Server) {
+    let heldC = take(s.tlsContext)
+    if heldC != nil {
+        let ctx: tls::TlsContext = heldC
+        let cc = tls::closeContext(&ctx)
+        match cc { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldC)
+    }
+}
+
+fn closeReactorOwned(mut s: &Server) {
+    let heldR = take(s.reactor)
+    if heldR != nil {
+        let r: reactor::Reactor = heldR
+        let rc = reactor::close(&r)
+        match rc { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldR)
+    }
+}
+
+// Close every live slot and the listener/reactor/context. beginShutdown is
+// idempotent; call it first so in-flight requests get the GOAWAY drain path.
+pub fn shutdown(mut s: &Server, now: &http::Now): Result[bool] {
+    let began = try beginShutdown(s, now)
+    for i in 0..len(s.slots) {
+        if !s.slots[i].live { continue }
+        if s.slots[i].handshaking {
+            closeHandshakeSlot(s, i)
+            continue
+        }
+        let held = take(s.slots[i].conn)
+        if held == nil {
+            removeSlotWatch(s, i)
+            let again = s.slots[i]
+            again.live = false
+            releaseAdmission(s)
+            continue
+        }
+        let cn: h2::Connection = held
+        closeConnSlot(s, i, &cn, now)
+    }
+    closeTlsContextOwned(s)
+    closeListenerOwned(s)
+    closeReactorOwned(s)
+    noteActive(s)
+    return ok(true)
+}
