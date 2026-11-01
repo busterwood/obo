@@ -1,0 +1,113 @@
+// H2a cleartext prior-knowledge test server.
+//
+// Serves a bounded number of loopback connections with the pure action
+// executor. This is a test driver, not a production listener: it accepts one
+// connection at a time and sleeps briefly on WouldBlock rather than owning a
+// reactor watch. The reactor-backed server loop is H2c work.
+module app
+
+import "http2.obx" as http2
+import "httpapi.obx" as http
+import "httptransport.obx" as transport
+import "sysaddress.obx" as address
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+import "sysnet.obx" as net
+import "sysplatform.obx" as platform
+import "sysstream.obx" as stream
+import "h2_serve.obx" as share
+
+fn mk(s: string): []byte {
+    let b = new []byte(len(s))
+    for i in 0..len(s) { b[i] = s[i] }
+    return b
+}
+
+fn emit(s: string) {
+    let b = mk(s)
+    let w = writeFd(stdout(), b)
+}
+
+fn toInt(s: string): int {
+    if len(s) == 0 { return 0 }
+    var i = 0
+    var sign = 1
+    if s[0] == '-' { sign = -1; i = 1 }
+    var v = 0
+    while i < len(s) {
+        if s[i] < '0' || s[i] > '9' { return 0 }
+        v = v * 10 + int(s[i]) - int('0')
+        i += 1
+    }
+    return sign * v
+}
+
+fn main() {
+    let args = args()
+    if len(args) < 3 {
+        emit("H2ERR usage\n")
+        return
+    }
+    let port = toInt(args[1])
+    let maxConn = toInt(args[2])
+    let po = platform::defaultOptions()
+    let init = platform::initialize(&po)
+    match init {
+        ok(v) { }
+        err(m, c) { emit("H2ERR platform init\n"); return }
+    }
+    let addr = address::parseNumeric("127.0.0.1", port)
+    match addr {
+        err(m, c) { emit("H2ERR address\n"); return }
+        ok(a) {
+            let lo = net::listenOptions()
+            let made = net::listen(&a, &lo)
+            match made {
+                err(m, c) { emit("H2ERR listen\n"); return }
+                ok(listener) {
+                    emit("H2LISTEN " + string(port) + "\n")
+                    var served = 0
+                    var guard = 0
+                    while served < maxConn && guard < 60000 {
+                        guard += 1
+                        let acc = net::accept(&listener)
+                        match acc {
+                            ok(conn) {
+                                let streamMade = net::intoStream(&conn)
+                                match streamMade {
+                                    ok(s) {
+                                        let t = transport::plain(s)
+                                        let limits = http2::defaultLimits()
+                                        let mode = new http2::ModePriorKnowledge{}
+                                        let opts = new http2::Options{mode: mode,
+                                                                      serverName: "",
+                                                                      requireAuthority: true}
+                                        let hc = http2::make(t, &limits, &opts)
+                                        match hc {
+                                            ok(c) {
+                                                let r = share::serve(c)
+                                                served += 1
+                                                emit("H2SERVED " + string(served) + "\n")
+                                            }
+                                            err(m, code) { served += 1 }
+                                        }
+                                    }
+                                    err(m, c) { }
+                                }
+                            }
+                            err(m, code) {
+                                if errors::isWouldBlock(code) {
+                                    sleepMs(1)
+                                } else {
+                                    sleepMs(1)
+                                }
+                            }
+                        }
+                    }
+                    let cl = net::closeListener(&listener)
+                    emit("H2DONE\n")
+                }
+            }
+        }
+    }
+}

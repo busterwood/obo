@@ -1,0 +1,267 @@
+// Shared deterministic server loop for the H2a test applications.
+//
+// One in-flight request per connection; the C harness covers concurrent
+// streams. The reactor-backed multiplexed loop is H2c work.
+module h2_serve
+
+import "http2.obx" as http2
+import "httpapi.obx" as http
+import "sysclock.obx" as clock
+
+type Slot = ref record {
+    stream: http2::Stream
+    req: http::RequestMeta
+    state: http2::ActionState
+    live: bool
+}
+
+fn nowValue(): http::Now {
+    let mono = clock::monotonic()
+    let wall = clock::realtime()
+    var m = new clock::Instant{nanos: 0}
+    var w = new clock::Timestamp{seconds: 0, nanos: 0}
+    match mono { ok(v) { m = v } err(m2, c) { } }
+    match wall { ok(v) { w = v } err(m2, c) { } }
+    return new http::Now{mono: m, wall: w}
+}
+
+fn sleepMs(ms: int) {
+    let n = nowValue()
+    let at = new clock::Deadline{finite: true, nanos: n.mono.nanos + ms * 1000000}
+    let r = clock::sleepUntil(&at)
+    match r { ok(v) { } err(m, c) { } }
+}
+
+fn handler(req: &http::RequestMeta, now: &http::Now): http::Action {
+    let path = req.path
+    if path == "/echo" { let a: http::Action = new http::Echo{}; return a }
+    if path == "/big" { let a: http::Action = new http::Big{}; return a }
+    if path == "/head" { let a: http::Action = new http::Head{}; return a }
+    if path == "/204" { let a: http::Action = new http::NoContent{}; return a }
+    if path == "/304" { let a: http::Action = new http::NotModified{}; return a }
+    if path == "/slow" { let a: http::Action = new http::Slow{}; return a }
+    if path == "/close" { let a: http::Action = new http::Close{}; return a }
+    if path == "/stop" { let a: http::Action = new http::Stop{}; return a }
+    let hello: http::Action = new http::Hello{}
+    return hello
+}
+
+fn findSlot(slots: &[]Slot, id: int): int {
+    for i in 0..len(slots) {
+        if slots[i].live {
+            if slots[i].req.streamID == id { return i }
+        }
+    }
+    return -1
+}
+
+fn closeSlot(held: ?Slot) {
+    if held != nil {
+        let slot: Slot = held
+        let s = replace(slot.stream, http2::_emptyStream())
+        let r = http2::closeStream(&s)
+        match r { ok(v) { } err(m, c) { } }
+    } else {
+        drop(held)
+    }
+}
+
+// One in-flight request per connection keeps this test driver small. The C
+// harness covers concurrent streams; the reactor-backed multiplexed server
+// loop is H2c work.
+pub fn serve(c: http2::Connection): int {
+    let owned = c
+    let h = fn (req: &http::RequestMeta, at: &http::Now): http::Action {
+        return handler(req, at)
+    }
+    var active: ?Slot = nil
+    var turns = 0
+    while turns < 400000 {
+        turns += 1
+        let n = nowValue()
+        let evr = http2::next(&owned, &n)
+        match evr {
+            err(m, code) {
+                {
+                    let held = replace(active, nil)
+                    closeSlot(held)
+                }
+                let cl = http2::close(&owned)
+                return 1
+            }
+            ok(ev) {
+                match ev {
+                    EventStreamStarted {
+                        {
+                    let held = replace(active, nil)
+                    closeSlot(held)
+                }
+                        let opened = http2::openStream(&owned, ev.id)
+                        match opened {
+                            ok(s) {
+                                let reqr = http2::requestInfo(&s)
+                                match reqr {
+                                    ok(req) {
+                                        let st = http2::makeActionState()
+                                        let run = http2::runAction(&st, h,
+                                                                   &req, &s, &n)
+                                        var live = true
+                                        match run {
+                                            ok(v) { }
+                                            err(m, code) {
+                                                let rr = http2::reset(&s, 8)
+                                                match rr { ok(v) { } err(m2, c2) { } }
+                                                live = false
+                                            }
+                                        }
+                                        active = new Slot{stream: s, req: req,
+                                                          state: st, live: live}
+                                    }
+                                    err(m, code) {
+                                        let rr = http2::reset(&s, 1)
+                                        match rr { ok(v) { } err(m2, c2) { } }
+                                        let cl = http2::closeStream(&s)
+                                        match cl { ok(v) { } err(m2, c2) { } }
+                                        drop(s)
+                                    }
+                                }
+                            }
+                            err(m, code) { }
+                        }
+                    }
+                    EventStreamData {
+                        let held = replace(active, nil)
+                        if held != nil {
+                            let slot: Slot = held
+                            let st = replace(slot.state, http2::makeActionState())
+                            let req = replace(slot.req, http::emptyRequestMeta())
+                            let s = replace(slot.stream, http2::_emptyStream())
+                            let run = http2::runAction(&st, h, &req, &s, &n)
+                            match run {
+                                ok(v) { }
+                                err(m, code) {
+                                    let rr = http2::reset(&s, 8)
+                                    match rr { ok(v) { } err(m2, c2) { } }
+                                    slot.live = false
+                                }
+                            }
+                            let p1 = replace(slot.state, st)
+                            let p2 = replace(slot.req, req)
+                            let p3 = replace(slot.stream, s)
+                            drop(p1)
+                            drop(p2)
+                            drop(p3)
+                            let prior = replace(active, slot)
+                            drop(prior)
+                        } else {
+                            drop(held)
+                        }
+                    }
+                    EventStreamEnd {
+                        let held = replace(active, nil)
+                        if held != nil {
+                            let slot: Slot = held
+                            let st = replace(slot.state, http2::makeActionState())
+                            let req = replace(slot.req, http::emptyRequestMeta())
+                            let s = replace(slot.stream, http2::_emptyStream())
+                            let run = http2::runAction(&st, h, &req, &s, &n)
+                            match run { ok(v) { } err(m, code) { } }
+                            let p1 = replace(slot.state, st)
+                            let p2 = replace(slot.req, req)
+                            let p3 = replace(slot.stream, s)
+                            drop(p1)
+                            drop(p2)
+                            drop(p3)
+                            let prior = replace(active, slot)
+                            drop(prior)
+                        } else {
+                            drop(held)
+                        }
+                    }
+                    EventStreamClosed {
+                        let held = replace(active, nil)
+                        if held != nil {
+                            let slot: Slot = held
+                            let s = replace(slot.stream, http2::_emptyStream())
+                            let cl = http2::closeStream(&s)
+                            match cl { ok(v) { } err(m, code) { } }
+                        } else {
+                            drop(held)
+                        }
+                    }
+                    EventTrailers { }
+                    EventSettingsAcked { }
+                    EventNeedRead { sleepMs(1) }
+                    EventNeedWrite { sleepMs(1) }
+                    EventGoaway {
+                        {
+                    let held = replace(active, nil)
+                    closeSlot(held)
+                }
+                        let cl = http2::close(&owned)
+                        return 0
+                    }
+                    EventDrainComplete {
+                        {
+                    let held = replace(active, nil)
+                    closeSlot(held)
+                }
+                        let cl = http2::close(&owned)
+                        return 0
+                    }
+                    EventTimedOut {
+                        {
+                    let held = replace(active, nil)
+                    closeSlot(held)
+                }
+                        let cl = http2::close(&owned)
+                        return 1
+                    }
+                    EventProtocolError {
+                        {
+                    let held = replace(active, nil)
+                    closeSlot(held)
+                }
+                        let cl = http2::close(&owned)
+                        return 1
+                    }
+                    EventConnectionClosed {
+                        {
+                    let held = replace(active, nil)
+                    closeSlot(held)
+                }
+                        let cl = http2::close(&owned)
+                        return 0
+                    }
+                }
+                let held = replace(active, nil)
+                if held != nil {
+                    let slot: Slot = held
+                    let st = replace(slot.state, http2::makeActionState())
+                    let stop = http2::actionStopRequested(&st)
+                    let closeNow = http2::actionCloseRequested(&st)
+                    let p0 = replace(slot.state, st)
+                    drop(p0)
+                    if stop || closeNow {
+                        let s = replace(slot.stream, http2::_emptyStream())
+                        let cs = http2::closeStream(&s)
+                        match cs { ok(v) { } err(m, c) { } }
+                        let cl = http2::close(&owned)
+                        return 0
+                    }
+                    let prior = replace(active, slot)
+                    drop(prior)
+                } else {
+                    drop(held)
+                }
+            }
+        }
+    }
+    {
+                    let held = replace(active, nil)
+                    closeSlot(held)
+                }
+    let cl = http2::close(&owned)
+    return 1
+}
+

@@ -1,0 +1,401 @@
+// Deterministic H2a memory-transport driver.
+//
+// Feeds a fixed client preface + SETTINGS + GET /hello (a valid HPACK block
+// generated once by nghttp2) through the full obo connection/stream API and
+// writes the server's wire bytes to stdout. The Python test feeds those bytes
+// to the C harness verifier (a real nghttp2 client session).
+module app
+
+import "http2.obx" as http2
+import "httpapi.obx" as http
+import "httptransport.obx" as transport
+import "sysclock.obx" as clock
+import "sysbytes.obx" as bytesbuf
+import "sysplatform.obx" as platform
+
+fn requestBytes(): []byte {
+    let b = new []byte(65)
+    let magic = new []byte(24)
+    let text = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    for i in 0..24 { b[i] = text[i] }
+    // Client SETTINGS (empty).
+    b[24] = 0; b[25] = 0; b[26] = 0; b[27] = 4
+    b[28] = 0; b[29] = 0; b[30] = 0; b[31] = 0; b[32] = 0
+    // HEADERS, END_STREAM|END_HEADERS, stream 1, :method GET :scheme http
+    // :path /hello :authority example.test.
+    let h = new []byte(32)
+    h[0] = 0; h[1] = 0; h[2] = 0x17; h[3] = 1; h[4] = 5
+    h[5] = 0; h[6] = 0; h[7] = 0; h[8] = 1
+    h[9] = 0x3f; h[10] = 0xe1; h[11] = 0x1f; h[12] = 0x83
+    h[13] = 0x86; h[14] = 0x04; h[15] = 0x85; h[16] = 0x62
+    h[17] = 0x72; h[18] = 0xd1; h[19] = 0x41; h[20] = 0xff
+    h[21] = 0x41; h[22] = 0x89; h[23] = 0x2f; h[24] = 0x91
+    h[25] = 0xd3; h[26] = 0x5d; h[27] = 0x05; h[28] = 0x5d
+    h[29] = 0x25; h[30] = 0x42; h[31] = 0x7f
+    for i in 0..32 { b[33 + i] = h[i] }
+    return b
+}
+
+fn requestWith(block: &[]byte, flags: int): []byte {
+    let n = 42 + len(block)
+    let b = new []byte(n)
+    let text = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    for i in 0..24 { b[i] = text[i] }
+    b[24] = 0; b[25] = 0; b[26] = 0; b[27] = 4
+    b[28] = 0; b[29] = 0; b[30] = 0; b[31] = 0; b[32] = 0
+    b[33] = 0; b[34] = 0; b[35] = byte(len(block))
+    b[36] = 1; b[37] = byte(flags)
+    b[38] = 0; b[39] = 0; b[40] = 0; b[41] = 1
+    for i in 0..len(block) { b[42 + i] = block[i] }
+    return b
+}
+
+fn badRequestBlock(mode: string): []byte {
+    var b = new []byte(0)
+    append(b, 0x82) // :method GET
+    append(b, 0x86) // :scheme http
+    append(b, 0x84) // :path /
+    append(b, 0x41) // :authority literal
+    append(b, 1); append(b, byte('a'))
+    if mode == "badhost" {
+        append(b, 0x40); append(b, 4)
+        append(b, byte('h')); append(b, byte('o')); append(b, byte('s')); append(b, byte('t'))
+        append(b, 1); append(b, byte('b'))
+    } else {
+        let name = "content-length"
+        append(b, 0x40); append(b, 14)
+        for i in 0..14 { append(b, name[i]) }
+        let value = "9999999"
+        append(b, 7)
+        for i in 0..7 { append(b, value[i]) }
+    }
+    return b
+}
+
+fn nowAt(nanos: int): http::Now {
+    let m = new clock::Instant{nanos: nanos}
+    let w = new clock::Timestamp{seconds: 0, nanos: 0}
+    return new http::Now{mono: m, wall: w}
+}
+
+fn nowValue(): http::Now {
+    let mono = clock::monotonic()
+    let wall = clock::realtime()
+    var m = new clock::Instant{nanos: 0}
+    var w = new clock::Timestamp{seconds: 0, nanos: 0}
+    match mono { ok(v) { m = v } err(m2, c) { } }
+    match wall { ok(v) { w = v } err(m2, c) { } }
+    return new http::Now{mono: m, wall: w}
+}
+
+fn textBytes(s: string): []byte {
+    let b = new []byte(len(s))
+    for i in 0..len(s) { b[i] = s[i] }
+    return b
+}
+
+fn main() {
+    let args = args()
+    var mode = "hello"
+    if len(args) > 1 { mode = args[1] }
+    let po = platform::defaultOptions()
+    if mode == "adoptfail" { po.maxShells = 3 }
+    let init = platform::initialize(&po)
+    match init {
+        ok(v) { }
+        err(m, c) { print("H2ERR init\n"); return }
+    }
+    let input = requestBytes()
+    if mode == "unit" {
+        let l = http2::defaultLimits()
+        let v = http2::validateLimits(&l)
+        match v { ok(b) { if b { print("UNIT limits-ok\n") } } err(m, c) { print("UNIT limits-err\n") } }
+        let r = http2::reservation(&l)
+        match r { ok(n) { print("UNIT reservation ", n, "\n") } err(m, c) { print("UNIT reservation-err\n") } }
+        let bad = http2::copyLimits(&l)
+        bad.maxConcurrentStreams = 0
+        let bv = http2::validateLimits(&bad)
+        match bv { ok(b) { if !b { print("UNIT bad-rejected\n") } } err(m, c) { print("UNIT bad-rejected\n") } }
+        let a = http2::makeAdmission()
+        var admitted = 0
+        var i = 0
+        while i < 15 {
+            let ad = http2::admit(&a, &l)
+            match ad { ok(b) { if b { admitted += 1 } } err(m, c) { } }
+            i += 1
+        }
+        print("UNIT admitted ", admitted, " active ", http2::activeCount(&a), "\n")
+        var j = 0
+        while j < 14 {
+            let rel = http2::release(&a, 4009984)
+            j += 1
+        }
+        print("UNIT released ", http2::activeCount(&a), " remaining ", http2::admissionReservedBytes(&a), "\n")
+        // TLS mode must reject a cleartext transport.
+        let clr = transport::memory(&input)
+        let mo = new http2::Options{mode: new http2::ModeTls{}, serverName: "", requireAuthority: true}
+        let badMake = http2::make(clr, &l, &mo)
+        match badMake { ok(c2) { print("UNIT cleartext-accepted\n") } err(m, c) { print("UNIT cleartext-rejected ", c, "\n") } }
+        // A secure memory transport with ALPN h2 is accepted.
+        let sec = transport::memory(&input)
+        let ss = transport::memorySetSecure(&sec, true)
+        let aa = new transport::AlpnH2{}
+        let sa = transport::memorySetAlpn(&sec, &aa)
+        let wr = transport::memorySetWriteLimit(&sec, 65536)
+        let good = http2::make(sec, &l, &mo)
+        match good { ok(c2) { print("UNIT alpn-accepted\n"); let cl = http2::close(&c2); match cl { ok(v) { } err(m, c) { } } } err(m, c) { print("UNIT alpn-rejected ", c, "\n") } }
+        return
+    }
+    if mode == "adoptfail" {
+        let t = transport::memory(&input)
+        let wr = transport::memorySetWriteLimit(&t, 65536)
+        match wr { ok(v) { } err(m, c) { } }
+        let l = http2::defaultLimits()
+        let mo = new http2::Options{mode: new http2::ModePriorKnowledge{}, serverName: "", requireAuthority: true}
+        let made = http2::make(t, &l, &mo)
+        match made {
+            err(m, c) { print("ADOPT make-err ", c, "\n") }
+            ok(c) {
+                let blocker = bytesbuf::create(1)
+                var guard = 0
+                var started = false
+                while guard < 20 && !started {
+                    guard += 1
+                    let n = nowValue()
+                    let ev = http2::next(&c, &n)
+                    match ev {
+                        ok(e) { match e { EventStreamStarted { started = true } EventNeedRead { } EventNeedWrite { } EventSettingsAcked { } EventStreamClosed { } EventStreamData { } EventStreamEnd { } EventTrailers { } EventGoaway { } EventDrainComplete { } EventTimedOut { } EventProtocolError { } EventConnectionClosed { } } }
+                        err(m, code) { guard = 20 }
+                    }
+                }
+                if started {
+                    let blocker2 = bytesbuf::create(1)
+                    let opened = http2::openStream(&c, 1)
+                    match opened { ok(s) { print("ADOPT unexpectedly-adopted\n") } err(m, code) { print("ADOPT rejected ", code, "\n") } }
+                    match blocker2 { ok(b) { let bc = bytesbuf::close(&b); match bc { ok(v) { } err(m, code) { } } } err(m, code) { } }
+                } else {
+                    print("ADOPT no-stream\n")
+                }
+                let cl = http2::close(&c)
+                match cl { ok(v) { } err(m, code) { } }
+                match blocker { ok(b) { let bc = bytesbuf::close(&b); match bc { ok(v) { } err(m, code) { } } } err(m, code) { } }
+            }
+        }
+        return
+    }
+    if mode == "prefacetimeout" {
+        let empty = new []byte(0)
+        let pt = transport::memory(&empty)
+        let pl = http2::defaultLimits()
+        let po2 = new http2::Options{mode: new http2::ModePriorKnowledge{}, serverName: "", requireAuthority: true}
+        let pm = http2::make(pt, &pl, &po2)
+        match pm {
+            err(m, c) { print("PREFACE make ", c, "\n") }
+            ok(c) {
+                let n0 = nowAt(0)
+                let e0 = http2::next(&c, &n0)
+                match e0 { ok(v) { } err(m, code) { } }
+                let n1 = nowAt(11000000000)
+                let e1 = http2::next(&c, &n1)
+                match e1 {
+                    ok(v) {
+                        match v {
+                            EventTimedOut { print("PREFACE timeout\n") }
+                            EventProtocolError { print("PREFACE protocol ", v.code, "\n") }
+                            EventNeedRead { print("PREFACE need-read\n") }
+                            EventNeedWrite { print("PREFACE need-write\n") }
+                            EventConnectionClosed { print("PREFACE closed\n") }
+                            EventGoaway { print("PREFACE goaway\n") }
+                            EventDrainComplete { print("PREFACE drain\n") }
+                            EventSettingsAcked { print("PREFACE ack\n") }
+                            EventStreamStarted { print("PREFACE started\n") }
+                            EventStreamData { print("PREFACE data\n") }
+                            EventStreamEnd { print("PREFACE end\n") }
+                            EventStreamClosed { print("PREFACE stream-closed\n") }
+                            EventTrailers { print("PREFACE trailers\n") }
+                        }
+                    }
+                    err(m, code) { print("PREFACE error ", code, "\n") }
+                }
+                let cl = http2::close(&c)
+                match cl { ok(v) { } err(m, code) { } }
+            }
+        }
+        return
+    }
+    if mode == "badbody" || mode == "badhost" {
+        let block = badRequestBlock(mode)
+        var flags = 5
+        if mode == "badbody" { flags = 4 }
+        let bad = requestWith(&block, flags)
+        let bt = transport::memory(&bad)
+        let bwr = transport::memorySetWriteLimit(&bt, 65536)
+        let bl = http2::defaultLimits()
+        let bo = new http2::Options{mode: new http2::ModePriorKnowledge{}, serverName: "", requireAuthority: true}
+        let bm = http2::make(bt, &bl, &bo)
+        match bm {
+            err(m, c) { print("BADREQ make ", c, "\n") }
+            ok(c) {
+                var guard = 0
+                var started = false
+                while guard < 20 && !started {
+                    guard += 1
+                    let n = nowValue()
+                    let ev = http2::next(&c, &n)
+                    match ev {
+                        ok(e) { match e { EventStreamStarted { started = true } EventNeedRead { } EventNeedWrite { } EventSettingsAcked { } EventStreamClosed { } EventStreamData { } EventStreamEnd { } EventTrailers { } EventGoaway { } EventDrainComplete { } EventTimedOut { } EventProtocolError { } EventConnectionClosed { } } }
+                        err(m, code) { guard = 20 }
+                    }
+                }
+                if started {
+                    let opened = http2::openStream(&c, 1)
+                    match opened {
+                        ok(s) {
+                            let ri = http2::requestInfo(&s)
+                            match ri {
+                                ok(req) { print("BADREQ accepted\n") }
+                                err(m, code) { print("BADREQ ", code, "\n") }
+                            }
+                            let cl = http2::closeStream(&s)
+                            match cl { ok(v) { } err(m, code) { } }
+                        }
+                        err(m, code) { print("BADREQ open ", code, "\n") }
+                    }
+                } else {
+                    print("BADREQ nostream\n")
+                }
+                let cl = http2::close(&c)
+                match cl { ok(v) { } err(m, code) { } }
+            }
+        }
+        return
+    }
+    let t = transport::memory(&input)
+    let sr = transport::memorySetSecure(&t, true)
+    match sr { ok(v) { } err(m, c) { print("H2ERR secure\n"); return } }
+    let wl = transport::memorySetWriteLimit(&t, 65536)
+    match wl { ok(v) { } err(m, c) { print("H2ERR wl\n"); return } }
+    let alpn = new transport::AlpnH2{}
+    let ar = transport::memorySetAlpn(&t, &alpn)
+    match ar { ok(v) { } err(m, c) { print("H2ERR alpn\n"); return } }
+    let limits = http2::defaultLimits()
+    let modeValue: http2::Mode = new http2::ModeTls{}
+    let opts = new http2::Options{mode: modeValue, serverName: "", requireAuthority: true}
+    let made = http2::make(t, &limits, &opts)
+    match made {
+        err(m, c) { print("H2ERR make\n"); return }
+        ok(c) {
+            var stream: ?http2::Stream = nil
+            var done = false
+            var turns = 0
+            while turns < 200 && !done {
+                turns += 1
+                let n = nowValue()
+                let evr = http2::next(&c, &n)
+                match evr {
+                    err(m, code) { done = true }
+                    ok(ev) {
+                        match ev {
+                            EventStreamStarted {
+                                let opened = http2::openStream(&c, ev.id)
+                                match opened {
+                                    ok(s) {
+                                        let reqr = http2::requestInfo(&s)
+                                        match reqr {
+                                            ok(req) {
+                                                let b = http2::beginResponse(&s, 200)
+                                                match b {
+                                                    ok(v) { }
+                                                    err(m, code) { done = true }
+                                                }
+                                                let h = http2::setHeader(&s, "content-type", "text/plain")
+                                                match h { ok(v) { } err(m, code) { } }
+                                                let l = http2::setLength(&s, 6)
+                                                match l { ok(v) { } err(m, code) { } }
+                                                if mode == "reset" {
+                                                    let rr = http2::reset(&s, 8)
+                                                    match rr { ok(v) { } err(m, code) { } }
+                                                    stream = s
+                                                    done = true
+                                                } else {
+                                                    let body = textBytes("hello\n")
+                                                    let w = http2::writeBody(&s, &body, 0, 6)
+                                                    match w { ok(v) { } err(m, code) { done = true } }
+                                                    if mode == "trailers" {
+                                                        let tr = http2::addTrailer(&s, "x-test", "ok")
+                                                        match tr { ok(v) { } err(m, code) { done = true } }
+                                                    }
+                                                    let e = http2::endResponse(&s)
+                                                    match e { ok(v) { } err(m, code) { done = true } }
+                                                    stream = s
+                                                }
+                                            }
+                                            err(m, code) { drop(s); done = true }
+                                        }
+                                    }
+                                    err(m, code) { done = true }
+                                }
+                            }
+                            EventNeedRead { }
+                            EventNeedWrite { }
+                            EventSettingsAcked { }
+                            EventStreamData { }
+                            EventStreamEnd { }
+                            EventStreamClosed { }
+                            EventTrailers { }
+                            EventGoaway { done = true }
+                            EventDrainComplete { done = true }
+                            EventTimedOut { done = true }
+                            EventProtocolError { done = true }
+                            EventConnectionClosed { done = true }
+                        }
+                    }
+                }
+            }
+            // Pump output through the transport.
+            var extra = 0
+            while extra < 20 {
+                extra += 1
+                let n = nowValue()
+                let evr = http2::next(&c, &n)
+                match evr {
+                    err(m, code) { extra = 20 }
+                    ok(ev) {
+                        match ev {
+                            EventNeedRead { }
+                            EventNeedWrite { }
+                            EventSettingsAcked { }
+                            EventStreamStarted { }
+                            EventStreamData { }
+                            EventStreamEnd { }
+                            EventStreamClosed { }
+                            EventTrailers { }
+                            EventGoaway { }
+                            EventDrainComplete { }
+                            EventTimedOut { }
+                            EventProtocolError { }
+                            EventConnectionClosed { }
+                        }
+                    }
+                }
+            }
+            let held = replace(stream, nil)
+            if held != nil {
+                let s: http2::Stream = held
+                let cl = http2::closeStream(&s)
+                match cl { ok(v) { } err(m, code) { } }
+            } else {
+                drop(held)
+            }
+            let out = http2::memoryOutput(&c)
+            match out {
+                ok(bytes) {
+                    let w = writeFd(stdout(), bytes)
+                }
+                err(m, code) { print("H2ERR output\n") }
+            }
+            let cl = http2::close(&c)
+            match cl { ok(v) { } err(m, code) { } }
+        }
+    }
+}

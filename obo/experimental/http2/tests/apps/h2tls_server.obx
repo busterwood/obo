@@ -1,0 +1,169 @@
+// H2a TLS test server: systls ALPN h2 plus the shared test loop.
+module app
+
+import "http2.obx" as http2
+import "httptransport.obx" as transport
+import "systls.obx" as tls
+import "h2_serve.obx" as share
+import "sysaddress.obx" as address
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+import "sysnet.obx" as net
+import "sysplatform.obx" as platform
+
+fn mk(s: string): []byte {
+    let b = new []byte(len(s))
+    for i in 0..len(s) { b[i] = s[i] }
+    return b
+}
+
+fn emit(s: string) {
+    let b = mk(s)
+    let w = writeFd(stdout(), b)
+}
+
+fn toInt(s: string): int {
+    if len(s) == 0 { return 0 }
+    var i = 0
+    var sign = 1
+    if s[0] == '-' { sign = -1; i = 1 }
+    var v = 0
+    while i < len(s) {
+        if s[i] < '0' || s[i] > '9' { return 0 }
+        v = v * 10 + int(s[i]) - int('0')
+        i += 1
+    }
+    return sign * v
+}
+
+fn sleepMs(ms: int) {
+    let mono = clock::monotonic()
+    match mono {
+        ok(v) {
+            let at = new clock::Deadline{finite: true, nanos: v.nanos + ms * 1000000}
+            let r = clock::sleepUntil(&at)
+            match r { ok(x) { } err(m, c) { } }
+        }
+        err(m, c) { }
+    }
+}
+
+fn handshake(s: &tls::TlsSession): bool {
+    var guard = 0
+    while guard < 20000 {
+        guard += 1
+        let step = tls::handshakeStep(&s)
+        match step {
+            ok(v) {
+                match v {
+                    StepDone { return true }
+                    StepWantRead { sleepMs(1) }
+                    StepWantWrite { sleepMs(1) }
+                }
+            }
+            err(m, code) { return false }
+        }
+    }
+    return false
+}
+
+fn main() {
+    let args = args()
+    if len(args) < 5 {
+        emit("H2ERR usage: port maxConnections cert key\n")
+        return
+    }
+    let port = toInt(args[1])
+    let maxConn = toInt(args[2])
+    let cert = readFile(args[3])
+    if cert == nil { emit("H2ERR cert read\n"); return }
+    let certBytes: []byte = cert
+    let key = readFile(args[4])
+    if key == nil { emit("H2ERR key read\n"); return }
+    let keyBytes: []byte = key
+    let po = platform::defaultOptions()
+    let init = platform::initialize(&po)
+    match init {
+        ok(v) { }
+        err(m, c) { emit("H2ERR platform init\n"); return }
+    }
+    let opts = tls::serverOptions()
+    let ctxMade = tls::createContext(&opts)
+    match ctxMade {
+        err(m, c) { emit("H2ERR context\n"); return }
+        ok(ctx) {
+            let lc = tls::loadCertificateChain(&ctx, &certBytes)
+            match lc { ok(v) { } err(m, c) { emit("H2ERR cert\n"); return } }
+            let lk = tls::loadPrivateKey(&ctx, &keyBytes)
+            match lk { ok(v) { } err(m, c) { emit("H2ERR key\n"); return } }
+            let protos = new []string(0)
+            append(protos, "h2")
+            let policy: tls::AlpnPolicy = new tls::Require{protocols: protos}
+            let sa = tls::setAlpn(&ctx, &policy)
+            match sa { ok(v) { } err(m, c) { emit("H2ERR alpn\n"); return } }
+            let addr = address::parseNumeric("127.0.0.1", port)
+            match addr {
+                err(m, c) { emit("H2ERR address\n") }
+                ok(a) {
+                    let lo = net::listenOptions()
+                    let made = net::listen(&a, &lo)
+                    match made {
+                        err(m, c) { emit("H2ERR listen\n") }
+                        ok(listener) {
+                            emit("H2LISTEN " + string(port) + "\n")
+                            var served = 0
+                            var guard = 0
+                            while served < maxConn && guard < 60000 {
+                                guard += 1
+                                let acc = net::accept(&listener)
+                                match acc {
+                                    ok(conn) {
+                                        let sm = net::intoStream(&conn)
+                                        match sm {
+                                            ok(st) {
+                                                let ts = tls::accept(&ctx, st)
+                                                match ts {
+                                                    ok(sess) {
+                                                        if handshake(&sess) {
+                                                            let t = transport::tlsSession(sess)
+                                                            let limits = http2::defaultLimits()
+                                                            let mode = new http2::ModeTls{}
+                                                            let o = new http2::Options{mode: mode,
+                                                                                       serverName: "",
+                                                                                       requireAuthority: true}
+                                                            let hc = http2::make(t, &limits, &o)
+                                                            match hc {
+                                                                ok(c) {
+                                                                    let r = share::serve(c)
+                                                                    served += 1
+                                                                    emit("H2SERVED " + string(served) + "\n")
+                                                                }
+                                                                err(m, code) { served += 1 }
+                                                            }
+                                                        } else {
+                                                            let cl = tls::close(&sess)
+                                                            drop(sess)
+                                                            served += 1
+                                                        }
+                                                    }
+                                                    err(m, c) { served += 1 }
+                                                }
+                                            }
+                                            err(m, c) { }
+                                        }
+                                    }
+                                    err(m, code) {
+                                        sleepMs(1)
+                                    }
+                                }
+                            }
+                            let cl = net::closeListener(&listener)
+                            let cc = tls::closeContext(&ctx)
+                            emit("H2DONE\n")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
