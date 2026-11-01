@@ -17,6 +17,7 @@ import os
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -382,6 +383,42 @@ def tls_raw_client(port, authority):
     return h2client.H2Client(authority=authority, sock=sock)
 
 
+# h2client does not expose PRIORITY; the wire type is 0x2 and the payload is a
+# 31-bit dependency plus an 8-bit weight.
+H2_PRIORITY = 2
+
+
+def priority_frame(sid, dep, weight=255):
+    return h2client.frame(H2_PRIORITY, 0, sid,
+                          struct.pack('!I', dep & 0x7fffffff) + bytes([weight]))
+
+
+def wait_ping_ack_or_close(c, nonce, timeout=3.0):
+    """Read until PING ACK(nonce) or peer close; h2spec accepts either."""
+    deadline = time.time() + timeout
+    c._deadline = deadline
+    while time.time() < deadline:
+        try:
+            fr = c._recv_frame()
+        except socket.timeout:
+            continue
+        if fr is None:
+            return True
+        c._handle(fr)
+        if (fr[0] == h2client.PING and (fr[1] & h2client.FLAG_ACK) and
+                fr[3][:8] == nonce):
+            return True
+        if c.closed:
+            return True
+    return False
+
+
+def wait_frame_error(c, timeout=3.0):
+    """Drain frames and return (goaway_code or None, reset map)."""
+    c.drain_for(timeout)
+    return c.goaway, dict(c.reset)
+
+
 def main():
     if not os.path.exists(OBO):
         raise Fail('no compiler at %s; run make -C obo obo' % OBO)
@@ -627,6 +664,64 @@ def main():
         need(c.body(1) == b'hello\n', 'server did not survive header flood')
         c.close()
         print('H2c header/HPACK caps: ok')
+
+        # RFC 9113 5.1: frames after END_STREAM or RST_STREAM are STREAM_CLOSED.
+        # The shim must retain closed-stream state rather than silently ignoring
+        # them (h2spec 5.1.8/5.1.9/5.1.11/5.1.12).
+        c = h2client.H2Client(port)
+        c.request(1, '/hello')
+        c.collect({1}, timeout=5)
+        need(c.body(1) == b'hello\n', 'closed-stream setup request failed')
+        c.send(h2client.frame(h2client.DATA, h2client.FLAG_END_STREAM, 1,
+                              b'after-end'))
+        goaway, resets = wait_frame_error(c, timeout=3)
+        need((goaway is not None and goaway[1] == 5) or resets.get(1) == 5,
+             'DATA after END_STREAM was not STREAM_CLOSED: goaway=%r reset=%r'
+             % (goaway, resets))
+        c.close()
+
+        c = h2client.H2Client(port)
+        need(c.headers_without_end(3, '/echo'), 'reset-stream setup failed')
+        c.reset_stream(3, 8)
+        c.send(h2client.frame(h2client.DATA, 0, 3, b'after-rst'))
+        goaway, resets = wait_frame_error(c, timeout=3)
+        need((goaway is not None and goaway[1] == 5) or resets.get(3) == 5,
+             'DATA after RST_STREAM was not STREAM_CLOSED: goaway=%r reset=%r'
+             % (goaway, resets))
+        c.close()
+        print('H2c closed-stream STREAM_CLOSED: ok')
+
+        # PRIORITY is still validated even though the server does not schedule
+        # on the RFC 7540 tree: stream 0 and self-dependency are PROTOCOL_ERROR
+        # (h2spec 5.3.1/2 and 6.3/1).
+        c = h2client.H2Client(port)
+        c.send(priority_frame(0, 0))
+        goaway, resets = wait_frame_error(c, timeout=3)
+        need(goaway is not None and goaway[1] == 1,
+             'PRIORITY on stream 0 was not PROTOCOL_ERROR: %r' % (goaway,))
+        c.close()
+
+        c = h2client.H2Client(port)
+        c.send(priority_frame(1, 1))
+        goaway, resets = wait_frame_error(c, timeout=3)
+        need((goaway is not None and goaway[1] == 1) or resets.get(1) == 1,
+             'self-dependent PRIORITY was not PROTOCOL_ERROR: goaway=%r reset=%r'
+             % (goaway, resets))
+        c.close()
+        print('H2c PRIORITY validation: ok')
+
+        # A peer GOAWAY followed by PING must not stall the drain: the server
+        # acknowledges with a PING or closes promptly (h2spec generic 3.8/1 and
+        # http2 7/1).
+        c = h2client.H2Client(port)
+        nonce = b'h2spec\x00\x00'
+        c.send(h2client.frame(h2client.GOAWAY, 0, 0,
+                              struct.pack('!II', 0, 0) + b'h2spec'))
+        c.send(h2client.frame(h2client.PING, 0, 0, nonce))
+        need(wait_ping_ack_or_close(c, nonce, timeout=3),
+             'peer GOAWAY followed by PING stalled')
+        c.close()
+        print('H2c peer GOAWAY drain progress: ok')
 
         # Zero-length DATA flood trips the zero-DATA budget.
         c = h2client.H2Client(port)
@@ -1052,6 +1147,21 @@ def main():
         c.collect(ids, timeout=10)
         need(all(c.body(sid) == b'hello\n' for sid in ids),
              'TLS multiplexed bodies mismatch')
+
+        # TLS output must flush control frames even when no application work is
+        # pending. A PING ACK sitting in the TLS session would otherwise wait
+        # forever for a write-readiness edge (h2spec TLS control-frame cases).
+        nonce = b'ctlflus1'
+        c.send(h2client.frame(h2client.PING, 0, 0, nonce))
+        need(wait_ping_ack_or_close(c, nonce, timeout=3),
+             'TLS PING ACK stalled')
+        c.request(9, '/hello')
+        c.collect({9}, timeout=5)
+        need(c.body(9) == b'hello\n', 'TLS request after PING failed')
+        nonce2 = b'ctlflus2'
+        c.send(h2client.frame(h2client.PING, 0, 0, nonce2))
+        need(wait_ping_ack_or_close(c, nonce2, timeout=3),
+             'TLS PING ACK stalled after a response')
         c.close()
 
         need(curl('-k', '--http2',

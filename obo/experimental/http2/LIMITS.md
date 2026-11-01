@@ -120,7 +120,14 @@ budget.
   connection failure, not silent loss.
 - A closed stream record is freed only by the post-feed/post-send sweep after
   nghttp2 reports the close or the RST is sent. A live `KIND_H2_STREAM` token
-  never resolves to freed memory.
+  never resolves to freed memory. nghttp2 retains up to
+  `maxConcurrentStreams` closed peer streams so RFC 9113 5.1 STREAM_CLOSED
+  detection still works; that internal state is outside the H2 reservation,
+  like the rest of nghttp2's heap. The shim does not advertise
+  `SETTINGS_NO_RFC7540_PRIORITIES`, because doing so makes nghttp2 discard the
+  closed-stream state. The application/shim implements no priority policy;
+  RFC 7540 priority frames are validated, and nghttp2 1.59 may use the
+  retained dependency tree for internal scheduling.
 - Connection close frees the session, rings and arenas once, and orphans live
   registered stream entries (their shells still close and free them).
   Unregistered streams are freed with the connection. A never-closed stream

@@ -1373,7 +1373,11 @@ long h2_conn_new(long option_token, long option_len) {
     if (nghttp2_option_new(&option) != 0) goto nomem;
     nghttp2_option_set_no_recv_client_magic(option, 1);
     nghttp2_option_set_no_auto_window_update(option, 1);
-    nghttp2_option_set_no_closed_streams(option, 1);
+    /* Retain closed streams up to the advertised max concurrent streams.
+     * RFC 9113 5.1 requires STREAM_CLOSED (or a connection error) for frames
+     * that arrive after RST_STREAM or END_STREAM; no_closed_streams discards
+     * that state, so nghttp2 silently ignores those frames. nghttp2 bounds
+     * the retained set by max_concurrent_streams, so this stays bounded. */
     nghttp2_option_set_max_settings(option, (size_t)c->max_settings_entries);
     nghttp2_option_set_max_outbound_ack(option, (size_t)c->max_ping_acks);
     nghttp2_option_set_max_continuations(option, (size_t)c->max_continuations);
@@ -1402,8 +1406,13 @@ long h2_conn_new(long option_token, long option_len) {
      * turning an oversized list into a connection error. */
     iv[niv++].value = (uint32_t)(c->max_header_list > 0x3fffffffu / 4 ?
                                  c->max_header_list : c->max_header_list * 4);
-    iv[niv].settings_id = NGHTTP2_SETTINGS_NO_RFC7540_PRIORITIES;
-    iv[niv++].value = 1;
+    /* Do not advertise SETTINGS_NO_RFC7540_PRIORITIES. RFC 9218 would let us
+     * ignore PRIORITY frames, but nghttp2 then destroys closed streams and
+     * loses the RFC 9113 5.1 STREAM_CLOSED detection required for frames that
+     * arrive after RST_STREAM or END_STREAM. The application/shim implements
+     * no priority policy; nghttp2 may use the retained RFC 7540 dependency
+     * tree for internal scheduling and bounds closed streams by the advertised
+     * MAX_CONCURRENT_STREAMS. */
     r = nghttp2_submit_settings(c->session, NGHTTP2_FLAG_NONE, iv, niv);
     if (r != 0) goto nomem;
     c->settings_sent = 1;
@@ -1548,6 +1557,13 @@ long h2_conn_wire_pending(long conn_token) {
     h2_conn *c = peek_conn(conn_token);
     if (c == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
     return (long)c->wire_count;
+}
+
+long h2_conn_want_write(long conn_token) {
+    h2_conn *c = peek_conn(conn_token);
+    if (c == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
+    if (c->closed || c->session == NULL) return 0;
+    return nghttp2_session_want_write(c->session) ? 1 : 0;
 }
 
 long h2_conn_wire_read(long conn_token, long out_token, long max) {
@@ -1744,11 +1760,23 @@ long h2_conn_drain(long conn_token) {
     if (c == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
     if (c->failed || c->closed) return h2_err(H2_FAIL_CLOSED, 0);
     if (c->drain_state != 0) return 1;
+    c->drain_cutoff = nghttp2_session_get_last_proc_stream_id(c->session);
+    c->state = H2_STATE_DRAINING;
+    if (c->goaways_received > 0) {
+        /* The peer already sent GOAWAY. nghttp2_submit_shutdown_notice() is a
+         * no-op once goaway_flags is set, so the usual wait for its send
+         * callback would never advance. Send our final GOAWAY directly and
+         * let drain_complete close after the remaining streams retire. */
+        r = nghttp2_submit_goaway(c->session, NGHTTP2_FLAG_NONE,
+                                  c->drain_cutoff, NGHTTP2_NO_ERROR, NULL, 0);
+        if (r != 0) return h2_err(H2_FAIL_GOAWAY, 0);
+        c->drain_state = 4;
+        c->state = H2_STATE_CLOSING;
+        return 1;
+    }
     r = nghttp2_submit_shutdown_notice(c->session);
     if (r != 0) return h2_err(H2_FAIL_GOAWAY, 0);
     c->drain_state = 1;
-    c->drain_cutoff = nghttp2_session_get_last_proc_stream_id(c->session);
-    c->state = H2_STATE_DRAINING;
     return 1;
 }
 
