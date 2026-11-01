@@ -6391,7 +6391,7 @@ empty-array savings oracle is **51,488 bytes** above baseline (minimum 30,000).
 The fixed point is stage 2 == stage 3, and the promoted 0.15 seed reproduces
 the compiler; the seed and compiler build byte-identical `hello`.
 
-## Decimal record fields (0.16 release candidate, format 9, ABI 1), stage D1
+## Decimal record fields (0.16 release, format 9, ABI 1), stage D1
 
 Stage D1 of `design/decimal-storage-plan.md` makes `decimal` a storable record
 and closed-variant field. `OBO_VERSION` is `0.16` and `SYM_FORMAT` is `9`;
@@ -6533,18 +6533,20 @@ and a global-rooted left operand; the int binop; the decimal field `+` with a fi
 write; and the compound result. Expected values were computed by hand before the
 run; for example `2.5 * 3.0 = 7.50` where the bad result was `301.50`.
 
-The record-field change is not promoted: the compiler still needs one
-`make promote` after the merge, and that is the orchestrator's step.
+The record-field change landed with the rest of the 0.16 line, merged as
+`fc76c5c` and promoted as the `seed/obo` at `50cca0a` (757,761 bytes, sha256
+`5700668d…`).
 
-## Decimal arrays (0.16 release candidate, format 9, ABI 1), stage D2
+## Decimal arrays (0.16 release, format 9, ABI 1), stage D2
 
 Stage D2 of `design/decimal-storage-plan.md` makes `[]decimal` an array of 24-byte
 decimals. `OBO_VERSION` stays `0.16` and `SYM_FORMAT` stays `9`, `SYM_ABI` stays `1`:
 a decimal array was refused in source and in `.sym` before, so accepting it changes no
 existing layout. The runtime gains one fixed slot (94) and one block kind (7); that is
-an additive runtime extension inside the unreleased 0.16 candidate. The policy comment
+an additive runtime extension inside what was then the unreleased 0.16 candidate. The policy comment
 in `obo.obo` suggests a patch release for additive runtime extensions; this stage
-does not take one, because 0.16 is not released yet (for the orchestrator to decide).
+did not take one while 0.16 was still an unreleased candidate; 0.16 shipped as
+one release, so the additive slot and kind are part of the 0.16 version bump.
 
 **Runtime (`obo/runtime/runtime.c`, `entry.S`, `host_abi.h`).**
 - Block kind 7 is a `[]decimal` block: pointer-free, 24-byte elements. It is the next
@@ -6643,7 +6645,7 @@ the new text and the mutant still removes the guard.
   against the budget of 2,750,000 (headroom 220,896). The budget is unchanged.
 - `cinterop` `test_cinterop.py`: ok (the libpq smoke test is skipped without `CINTEROP_TEST_DSN`).
 
-## Decimal globals and constants (0.16 release candidate, format 9, ABI 1), stage D3
+## Decimal globals and constants (0.16 release, format 9, ABI 1), stage D3
 
 Stage D3 of `design/decimal-storage-plan.md` makes a decimal storable as a global and a
 constant. `OBO_VERSION` stays `0.16`, `SYM_FORMAT` stays `9` and `SYM_ABI` stays `1`: both
@@ -6769,6 +6771,12 @@ merged `main` `6fc3584` (cinterop v2 stage h); that merge is the landing image b
 - Fixed point: `stage2 == stage3` (`cmp`), the seed-built `obo` equals stage 2 byte for byte
   (757,761 bytes).
 - The decimal run tests pass under `OBO_CHECK=1`, which `run_fork` always sets.
+
+**Release.** The 0.16 storage tier is merged as `fc76c5c` and its compiler is
+the promoted `seed/obo` at `50cca0a` (757,761 bytes, sha256 `5700668d…`), which
+reproduces itself byte for byte. The release is one version/format/ABI step,
+`0.16`/9/1; D4–D6 remain the later stages listed in
+`design/decimal-storage-plan.md`.
 
 **Review nits closed.** N1: `tests/run/decimal_global_init.obx` now hands each
 `div`/`quantize`/`toInt`/`check`/`parse`/`format` temporary to a function that consumes and

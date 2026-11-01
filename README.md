@@ -28,15 +28,16 @@ runtime. The experimental cinterop v2 line adds `foreign` handles, generated
 `_out` records and a leak census in its own packages (libpq, SQLite and
 PostgreSQL); it is a trusted-build probe with no threads and no stable API. The
 runtime cleanup removed the disabled collector and `gc` builtins. `seed/obo` is
-the promoted **0.16** image (same size and hash). The 696,321-byte 0.15 image
-(sha256 `4213f9a3…`) built the 0.16 line once, and earlier seeds build the 0.15
-line. The 0.16 image reaches a fixed point.
+the promoted **0.16** image (same size and hash). The immediate pre-0.16 seed was
+the 745,473-byte 0.15-line image (sha256 `e5298729…`, promoted at `f74b532`);
+the earlier 696,321-byte 0.15 image (`4213f9a3…`) also builds this 0.16 image,
+and earlier seeds build the 0.15 line. The 0.16 image reaches a fixed point.
 Floats were released at `0.10`/format 6; Stage B is `0.11`/format 6; decimal is
 `0.12`/format 6; private-by-default fields are `0.13`/format 7; the decimal
 text API is `0.14`/format 7; templates are `0.15`/format 8; decimal storage
-(fields, arrays, globals and constants) is `0.16`/format 9. Formats 6, 7 and 8
-are not accepted by the 0.16 compiler, which reads format 9 only: rebuild old
-`.sym` files.
+(fields, arrays, globals and constants) is released at `0.16`/format 9. Formats
+6, 7 and 8 are not accepted by the 0.16 compiler, which reads format 9 only:
+rebuild old `.sym` files.
 Version policy: additive builtin/runtime extensions use patch releases such as
 the historical 0.8.1; floats are 0.10, Stage B is 0.11, decimal is 0.12,
 field visibility is 0.13, decimal text is 0.14, templates are 0.15 and decimal
@@ -86,8 +87,10 @@ storage is 0.16.
   `priv24` `.sym` marker, the `hex` constant payload and format 9. The
   experimental cinterop v2 work adds the `foreign` record kind, body-less
   `native fn` declarations and generated out records without changing the
-  baseline symbol format or ABI. The 696,321-byte 0.15 image (sha256
-  `4213f9a3…`) built the 757,761-byte 0.16 fixed point once.
+  baseline symbol format or ABI. Both the immediate pre-0.16 seed, the
+  745,473-byte 0.15-line image (sha256 `e5298729…`, promoted at `f74b532`), and
+  the earlier 696,321-byte 0.15 image (`4213f9a3…`) build the 757,761-byte 0.16
+  fixed point.
 - **Tools.** `cat`, `wc`, `sort`, `head`, `tail` and the partial `eza`
   reimplementation are written in obo and built by `make tools` / `make eza`.
   Differential gates compare them with GNU coreutils 9.4 (`obo/tests/tools.py`)
@@ -110,13 +113,13 @@ storage is 0.16.
 |---|---:|
 | Compiler source | 17,114 lines, 653,656 bytes |
 | Compiler (`--version`) | 757,761 bytes, sha256 `5700668d…`, `obo 0.16`, sym-format 9, abi 1 |
-| Seed (`--version`) | promoted obo 0.16: 757,761 bytes, sha256 `5700668d…`, sym-format 9, abi 1; the 696,321-byte 0.15 image (`4213f9a3…`) built the 0.16 line once; earlier seeds build the 0.15 line |
+| Seed (`--version`) | promoted obo 0.16: 757,761 bytes, sha256 `5700668d…`, sym-format 9, abi 1; the immediate pre-0.16 seed was the 745,473-byte 0.15-line image (`e5298729…`, `f74b532`), and the earlier 696,321-byte 0.15 image (`4213f9a3…`) also builds this image; earlier seeds build the 0.15 line |
 | Self-host fixed point | stage 2 == stage 3 == compiler, 757,761 bytes, `5700668d…`; the promoted 0.16 seed reproduces it |
 | Self-compile wall time | 0.252 s one stage (5 runs, median; range 0.2473-0.2549 s) and 0.500 s for the two-stage seed → stage 2 → stage 3 build; host-dependent, measured 1 November 2026 |
 | Self-compile live peak | 2,583,104 bytes direct (`heap_test`); 2,583,120 bytes port comparison (budget 2,750,000) |
 | Total allocated | 57,739,904 bytes direct; 57,741,232 bytes port comparison |
 | Maximum resident set | 5,092 KB (measured 1 November 2026) |
-| Live-memory budget | 2,750,000 bytes: 166,896 spare direct / 166,880 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 51,488) |
+| Live-memory budget | 2,750,000 bytes: 166,896 spare direct / 166,880 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 53,984) |
 | obo suite | 1,855 `run_fork` tests; 147 `module_test`; `sym_test.py` 55/55; `sym_fuzz.py` 200/200; `port_test` 628/628 with 10 encoder groups; `port_compare` 1,834/1,834 default; seed comparisons 1,634/1,634 against the promoted 0.16 seed; 74 doc examples; 30/30 import checks; 17/17 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
 | Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.16) is 1,634/1,634; that flat count omits the separate module-tree, CLI and re-emit checks (200 on this tree) that the default comparison adds, so the default (self) comparison is 1,834/1,834 |
@@ -132,10 +135,10 @@ The compiler budget is 2,750,000 bytes live (raised from 2,500,000 on 1 November
 empty-array oracle unchanged. The 0.16 line peaks at 2,583,104 bytes in direct self-compiles and
 2,583,120 in the port comparison: 166,896 and 166,880 bytes spare. Total
 allocation is 57,739,904 bytes direct and 57,741,232 bytes in the port
-comparison. No check was weakened. The live peak varies by a few hundred bytes
-with the source path and total allocation by about 1.3 KB. The historical lambda
-release budget remains 2,000,000 in its own record. The 0.15 line peaked at
-2,519,296 bytes direct (historical); the decimal storage tier raised the peak
+comparison. No memory check was weakened. The live peak varies by a few hundred
+bytes with the source path and total allocation by about 1.3 KB. The historical
+lambda release budget remains 2,000,000 in its own record. The 0.15 line peaked
+at 2,519,296 bytes direct (historical); the decimal storage tier raised the peak
 without raising the cap again. The 0.15 runtime cleanup is also historical (main
 `b61f189`); `seed/obo` is now the matching 0.16 image promoted at `50cca0a`.
 
@@ -158,7 +161,7 @@ now renders PostgreSQL `$n`, SQLite `?`, SQL Server TDS `@pN`, SQL Server ODBC
 `execute_sql` and `prepare_sql`/`bind_sql`. SQL Server/Oracle adapters,
 `SqlArg.Float` binding and identifier/`ORDER BY` allow-lists remain later work.
 
-### Decimal storage 0.16 (D1–D3)
+### Decimal storage 0.16 (released, D1–D3)
 
 The storage tier makes `decimal` storable without changing the ABI number. It is
 one release, `0.16`/format 9/ABI 1: `.sym` gains decimal field types with
@@ -298,14 +301,17 @@ sample is historical and lives in [HISTORY.md](HISTORY.md).
 | `eza`, 10,000 names | 32.0 ms | Python 17.7 ms and GNU `ls` 6.93 ms are faster; pinned eza row skipped |
 
 The compiler is the 757,761-byte 0.16 fixed point (sha256 `5700668d…`), and
-`seed/obo` is the promoted 0.16 image (same size and hash); the 696,321-byte
-0.15 image (`4213f9a3…`) built the 0.16 line once. The tools are cat 94,209, wc
-98,305, sort 122,881, head 94,209 and tail 106,497 bytes; eza is 270,337 bytes.
-Every obo binary is freestanding and static, with the runtime included; the 0.16
-runtime text adds one 4,096-byte page to every produced binary compared with
-0.15 (whose runtime cleanup had removed 4,096 bytes from each). The benchmark
-rows above are the current 0.16 line. The honest shape of these numbers is
-unchanged: pure compute is far ahead of CPython, while `wc -l` is close to
+`seed/obo` is the promoted 0.16 image (same size and hash); its immediate
+predecessor, the 745,473-byte 0.15-line seed (`e5298729…`), and the earlier
+696,321-byte 0.15 image (`4213f9a3…`) both build this image. The tools are cat
+94,209, wc 98,305, sort 122,881, head 94,209 and tail 106,497 bytes; eza is
+270,337 bytes. Every obo binary is freestanding and static, with the runtime
+included; the 0.16 runtime text adds one 4,096-byte page to each produced tool,
+eza and minimal binary compared with 0.15 (whose runtime cleanup had removed
+4,096 bytes from each), while the compiler itself grew by 61,440 bytes with the
+new storage code. The benchmark rows above are the current 0.16 line. The
+honest shape of these numbers is unchanged: pure compute is far ahead of CPython,
+while `wc -l` is close to
 Python and behind GNU, eza is slower than Python and `ls` on names (its case is
 size and memory), and the sort rows are fixture-specific and host-load
 sensitive.
