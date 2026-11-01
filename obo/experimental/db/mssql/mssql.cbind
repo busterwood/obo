@@ -1,0 +1,385 @@
+{
+  "format": "cinterop-proto/2",
+  "module": "mssql",
+  "platform": "x86_64-linux-gnu",
+  "abi": "sysv-amd64",
+  "signature_check": "declarations-only",
+  "wrapper": "mssql.obx",
+  "sources": [
+    "ms_utf16.c",
+    "ms_diag.c",
+    "ms_open.c",
+    "ms_stmt.c"
+  ],
+  "headers": [],
+  "declaration_files": [
+    "mssql_decls.h",
+    "ms_internal.h"
+  ],
+  "declarations": [
+    "#include \"mssql_decls.h\""
+  ],
+  "libs": [
+    "-l:libodbc.so.2"
+  ],
+  "cflags": [],
+  "types": [
+    {
+      "name": "ms_conn",
+      "obo": "Connection",
+      "release": "ms_close_conn",
+      "release_result": "void"
+    },
+    {
+      "name": "ms_stmt",
+      "obo": "Stmt",
+      "release": "ms_close_stmt",
+      "release_result": "void"
+    }
+  ],
+  "functions": [
+    {
+      "name": "open_native",
+      "symbol": "ms_open",
+      "args": [
+        "borrow_bytes@0"
+      ],
+      "ret": "own_opt<ms_conn>",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "open_error",
+      "symbol": "ms_open_error",
+      "args": [],
+      "ret": "cstr_out",
+      "ret_ctype": "const char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "open_sqlstate",
+      "symbol": "ms_open_sqlstate",
+      "args": [],
+      "ret": "cstr_out",
+      "ret_ctype": "const char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "open_error_code",
+      "symbol": "ms_open_error_code",
+      "args": [],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "conn_diag",
+      "symbol": "ms_conn_diag",
+      "args": [
+        "borrow<ms_conn>@0"
+      ],
+      "ret": "cstr_out",
+      "ret_ctype": "const char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "conn_sqlstate",
+      "symbol": "ms_conn_sqlstate",
+      "args": [
+        "borrow<ms_conn>@0"
+      ],
+      "ret": "cstr_out",
+      "ret_ctype": "const char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "conn_error_code",
+      "symbol": "ms_conn_error_code",
+      "args": [
+        "borrow<ms_conn>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "exec_direct",
+      "symbol": "ms_exec_direct",
+      "args": [
+        "borrow_mut<ms_conn>@0",
+        "borrow_bytes@1",
+        "out_own<ms_stmt>"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "prepare_native",
+      "symbol": "ms_prepare",
+      "args": [
+        "borrow_mut<ms_conn>@0",
+        "borrow_bytes@1",
+        "out_own<ms_stmt>"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "execute_native",
+      "symbol": "ms_execute",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "fetch_native",
+      "symbol": "ms_fetch",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "num_cols",
+      "symbol": "ms_num_cols",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "num_params",
+      "symbol": "ms_num_params",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "row_count",
+      "symbol": "ms_row_count",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "col_name",
+      "symbol": "ms_col_name",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1"
+      ],
+      "ret": "cstr_out",
+      "ret_ctype": "const char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "col_type",
+      "symbol": "ms_col_type",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "col_size",
+      "symbol": "ms_col_size",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "col_digits",
+      "symbol": "ms_col_digits",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "col_nullable",
+      "symbol": "ms_col_nullable",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "read_cell",
+      "symbol": "ms_read_cell",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1",
+        "i32@2"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "cell_value",
+      "symbol": "ms_cell_value",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1",
+        "i32@2"
+      ],
+      "ret": "cbytes",
+      "length": "ms_cell_len",
+      "cap": 16777216,
+      "ret_ctype": "const void *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "stmt_diag",
+      "symbol": "ms_stmt_diag",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "cstr_out",
+      "ret_ctype": "const char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "stmt_sqlstate",
+      "symbol": "ms_stmt_sqlstate",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "cstr_out",
+      "ret_ctype": "const char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "stmt_error_code",
+      "symbol": "ms_stmt_error_code",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "bind_null_native",
+      "symbol": "ms_bind_null",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "bind_int_native",
+      "symbol": "ms_bind_int",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1",
+        "i64@2"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "bind_text_native",
+      "symbol": "ms_bind_text",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1",
+        "borrow_bytes@2"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "bind_binary_native",
+      "symbol": "ms_bind_binary",
+      "args": [
+        "borrow_mut<ms_stmt>@0",
+        "i32@1",
+        "borrow_bytes@2"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "bind_clear_native",
+      "symbol": "ms_bind_clear",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    }
+  ]
+}
