@@ -1,0 +1,48 @@
+module app
+
+import "postgres.obx"
+
+// Fake libpq only. Each specific adapter message is produced by a real path:
+// PQexecParams NULL with no libpq error text (pg_exec_typed 0), exec on a closed
+// connection (pg_exec_typed -1), and PQconnectdb NULL at open.
+fn main() {
+    let made = postgres::open("fake-ok")
+    match made {
+        ok(c) {
+            let alloc = postgres::query(&c, "FAKE_ALLOC")
+            match alloc {
+                ok(rows) {
+                    println("alloc=unexpected_ok")
+                    rows.close()
+                    exit(2)
+                }
+                err(m, n) { println("alloc_error=", n, " ", m) }
+            }
+            println("conn_closed=", c.close())
+            let stale = postgres::query(&c, "SELECT 1")
+            match stale {
+                ok(rows) {
+                    println("stale=unexpected_ok")
+                    rows.close()
+                    exit(3)
+                }
+                err(m, n) { println("stale_error=", n, " ", m) }
+            }
+        }
+        err(m, n) {
+            println("open_error=", n, " ", m)
+            exit(4)
+        }
+    }
+    let nullc = postgres::open("fake-null")
+    match nullc {
+        ok(c) {
+            println("null_open=unexpected_ok")
+            c.close()
+            exit(5)
+        }
+        err(m, n) { println("null_open_error=", n, " ", m) }
+    }
+    println("live=", postgres::live_resources())
+    println("conns=", postgres::live_connections())
+}

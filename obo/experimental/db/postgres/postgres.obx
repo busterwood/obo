@@ -427,6 +427,14 @@ pub fn (c: &Connection) close(): bool {
 
 // ------------------------------------------------------------------ execution
 
+// Messages for the adapter's negative pg_exec_typed codes (see postgres_adapter.c).
+fn exec_failure_message(t: int): string {
+    if t == -1 { return "connection is closed or invalid" }
+    if t == -2 { return "query packet rejected by the adapter (malformed or over a limit)" }
+    if t == -3 { return "adapter could not allocate or register the result" }
+    return "query adapter failed"
+}
+
 fn execute_fmt(c: &Connection, sql: string, params: []Param,
                result_binary: bool): Result[Rows] {
     let ctok = c.tok
@@ -435,11 +443,15 @@ fn execute_fmt(c: &Connection, sql: string, params: []Param,
     if b <= 0 { return err("query packet could not be allocated", 2) }
     let t = __cinterop("pg_exec_typed", ctok, b)
     __cinterop("cres_buf_free", b)
-    if t <= 0 {
+    // Only 0 means PQexecParams ran and failed, so the connection's error is the
+    // one libpq just set. Negative codes are adapter-side and never touch it.
+    if t == 0 {
         let eb = __cinterop("pq_error_buf", ctok)
-        let msg = take_buf(eb)
-        return err(error_text(msg), 2)
+        let msg = error_text(take_buf(eb))
+        if len(msg) == 0 { return err("libpq returned no result and no error message", 2) }
+        return err(msg, 2)
     }
+    if t < 0 { return err(exec_failure_message(t), 2) }
     var fmt = 0
     if result_binary { fmt = 1 }
     return ok(new Rows{tok: t, fmt: fmt})

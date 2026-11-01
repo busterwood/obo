@@ -30,11 +30,11 @@ SECTIONS
   .init : { *(.init) }
   .fini : { *(.fini) }
   . = ALIGN(0x1000);
-  /* The H2 image is at the old 64 KiB cap (about 247 bytes of slack before
-   * P2q); P2q adds a shim/wrapper surface to every image and pushes H2 over.
-   * The small P2q/TLS images keep substantial headroom. This bound still
-   * leaves the rodata/data/bss assertion below in charge of the rest of the
-   * slot. */
+  /* Host .text has a fixed 128 KiB slot (0x03000000..0x03020000). The bound is
+   * a checked ceiling, not a measured budget: the link fails if host code
+   * outgrows it. The largest current example (the libpq limits and error apps)
+   * uses about 12 KiB here (.text 0x2d8f; objdump -h shows .text); raise the
+   * bound only with a measured reason. */
   ASSERT(. <= 0x03020000, "host .text exceeds its 128 KiB slot")
   .rodata : { *(.rodata) *(.rodata.*) }
   . = ALIGN(0x1000);
@@ -61,9 +61,9 @@ SECTIONS
   .data : { *(.data) *(.data.*) }
   .bss : { *(.bss) *(.bss.*) *(COMMON) }
   . = ALIGN(0x1000);
-  /* The synthetic 1 MiB stack dominates this slot; the adapter's small static
-     tables and generated native code sit above it. Keep a real bound, but do
-     not pretend the original 12 KiB headroom was enough for a library adapter. */
+  /* Static host data (C runtime and adapter tables, host bss). The obo entry
+     stack is not in this layout: host_stack.c maps it with mmap as a guarded
+     stack (PROT_NONE pages below and above), so it does not consume this slot. */
   ASSERT(. <= 0x03180000, "host .rodata/.data/.bss overlap the dynamic tables")
   .interp : { *(.interp) }
   .dynsym : { *(.dynsym) }

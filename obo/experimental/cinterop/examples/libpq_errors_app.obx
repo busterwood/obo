@@ -1,0 +1,55 @@
+module app
+
+import "libpq.obx"
+
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+// Fake ABI only. Each specific adapter message is produced by a real code path:
+// pq_connect 0 (PQconnectdb returned NULL), PQexecParams NULL with no libpq
+// error text, and an exec on a closed connection (pq_exec_packet -1).
+fn main() {
+    let nullc = libpq::connect(bytes_of("fake-null"))
+    match nullc {
+        ok(conn) {
+            println("null_connect=unexpected_ok")
+            conn.close()
+            exit(1)
+        }
+        err(m, c) { println("null_connect_error=", c, " ", m) }
+    }
+
+    let made = libpq::connect(bytes_of("fake-ok"))
+    match made {
+        ok(conn) {
+            let alloc = libpq::query(&conn, bytes_of("FAKE_ALLOC"))
+            match alloc {
+                ok(rows) {
+                    println("alloc=unexpected_ok")
+                    rows.close()
+                    exit(2)
+                }
+                err(m, c) { println("alloc_error=", c, " ", m) }
+            }
+            println("conn_closed=", conn.close())
+            let stale = libpq::query(&conn, bytes_of("FAKE_OK"))
+            match stale {
+                ok(rows) {
+                    println("stale=unexpected_ok")
+                    rows.close()
+                    exit(3)
+                }
+                err(m, c) { println("stale_error=", c, " ", m) }
+            }
+        }
+        err(m, c) {
+            println("connect_error=", m, " (", c, ")")
+            exit(4)
+        }
+    }
+    println("live=", libpq::live_resources())
+    println("conns=", libpq::live_connections())
+}

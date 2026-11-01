@@ -43,6 +43,11 @@ int main(void) {
     check(strstr(captured, "connect_timeout=5") == NULL,
           "default timeout not appended");
 
+    try_dsn("dbname=postgres connect_timeout=0");
+    check(strstr(captured, "connect_timeout=0") != NULL &&
+          strstr(captured, "connect_timeout=5") == NULL,
+          "explicit connect_timeout=0 disables the timeout and gets no default");
+
     try_dsn("dbname=postgres application_name='connect_timeout='");
     check(strstr(captured, "connect_timeout=5") != NULL,
           "quoted application value is not a timeout keyword");
