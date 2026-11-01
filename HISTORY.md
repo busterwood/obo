@@ -9,8 +9,8 @@ The language reference and design records remain current, not historical:
 obo grew out of **obx**, the original garbage-collected Oberon-derived dialect
 and compiler. obo began as an ownership fork of obx — originally
 `obo-on-obx.obx`, a copy of `obx/src/obxc.obx` built by `obx/obxc` — proved the
-ownership model, became self-hosting, and is now a 0.19 compiler on the D4b
-branch (0.18 is the promoted seed) with modules,
+ownership model, became self-hosting, and is now a released 0.19 compiler (the
+0.19 seed is promoted) with modules,
 methods and first-class interfaces. obx remains in `obx/` as the historical
 reference; it is not the current compiler.
 
@@ -306,9 +306,9 @@ replacing that seed.
   `Result[decimal]`, plus the interface vtable-offset and `recordParamFree`
   fixes. `OBO_VERSION` 0.18, symbol format 11, ABI 1.
 - **0.19.** Decimal function values, lambda parameters/returns and 24-byte
-  decimal capture snapshots. `OBO_VERSION` 0.19, symbol format 12, ABI 1. It is
-  implemented on the `decimal-d4b` branch pending merge; the seed remains 0.18
-  and is promoted by the coordinator.
+  decimal capture snapshots. `OBO_VERSION` 0.19, symbol format 12, ABI 1. Merged
+  as `147f7fc` and released; the 757,761-byte seed (sha256 `8327ca50…`) is
+  promoted at `ba02031` and is the fixed point.
 
 D5 (`lib/decimals.obx`) and D6 (the exact database read bridge,
 `DecimalOrNull`/`getDecimal`, merged as `4a32742`) are library-only additions;

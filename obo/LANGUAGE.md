@@ -1434,9 +1434,11 @@ fn main() {
 
 Stored function values, owned or mutable captures, string/interface captures and impure
 callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
-interface handles `^I` remain later. The compiler on this branch is
-`0.19`/format 12/ABI 1 (decimal function values and captures); the promoted `0.18` seed
-built it once, and the historical `0.15` seed built the 0.16 image. The released `0.11`
+interface handles `^I` remain later. `obo 0.19` is released as format 12/ABI 1
+(decimal function values and captures); the promoted seed at `ba02031` and the
+compiler are both 757,761 bytes (sha256 `8327ca50…`), and the image is the
+self-host fixed point. The pre-promotion `0.18` seed built it once, and the
+historical `0.15` seed built the 0.16 image. The released `0.11`
 seed (`01fa9ed3…`) also builds the older line. The historical `0.9` seed
 (`540,673` bytes, sha256 `3d369273…`) built the 0.10 compiler, and the historical `0.8` seed
 (`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
@@ -2876,8 +2878,10 @@ type-enforced provenance check; direct `new Html{...}` is private to module
 renders `$n`/`?`/`@pN`/`:n`; the experimental PostgreSQL and SQLite packages
 provide the binding bridge, while SQL Server and Oracle adapters and
 `SqlArg.Float` binding (`SQL_ARG_FLOAT_UNSUPPORTED`, 1014) are later work.
-`DecimalText` is the lossless decimal transport. The compiler on this branch is
-`0.19`/format 12/ABI 1; `seed/obo` remains the promoted 0.18 image.
+`DecimalText` is the lossless decimal transport. `obo 0.19` is released as
+format 12/ABI 1; the seed is promoted at `ba02031`, and `seed/obo` and the
+compiler are both 757,761 bytes (sha256 `8327ca50…`) at the self-host fixed
+point.
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target

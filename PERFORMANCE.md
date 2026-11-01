@@ -265,8 +265,9 @@ workloads, with comparable times; it is faster on tokens and trees.
   self-compile, the eza and sort memory measurements and `obo/tests/doc_check.py`
   were rerun for this page. This page records the 0.15 line and remains the
   0.15/0.16 record; the README metric table now holds the 0.16-measured
-  numbers carried into 0.18 (0.17 and 0.18 changed compiler checks and decimal
-  dispatch, not non-decimal codegen or the runtime), and the
+  numbers carried into 0.19 (0.17-0.19 changed compiler checks, lambda frames
+  and decimal dispatch, not any benchmarked non-decimal path or the runtime),
+  and the
   suite, symbol, port, module, import
   and stdlib counts shown here are the promoted 0.15 release runs, not
   remeasured here.
