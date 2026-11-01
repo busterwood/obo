@@ -1,14 +1,17 @@
-# Experimental systems library P0/P1a/P2 (`obo/experimental/sys`)
+# Experimental systems library P0/P1a/P2q (`obo/experimental/sys`)
 
-Status: **experimental internal P2 slice. Not a stable API, not P1b, and not
+Status: **experimental internal P2q slice. Not a stable API, not P1b, and not
 authorized for merge/promotion by itself.** P0 proved the resource/error/byte
 boundary; P1a adds owned `File`, anchored `Directory`, metadata snapshots,
 clocks, `getrandom`, concrete streams, bounded buffers and a single-path copy
 example. P2 adds numeric addresses, TCP/UDP/Unix sockets, an epoll readiness
 reactor with timers/wake/stop, cancellation/deadline helpers and blocking
-numeric/name resolution on the same seam. Processes, signals, mappings, atomic
-replacement, terminal/logging and all thread/synchronization kinds are later
-phases.
+numeric/name resolution on the same seam. P2q adds the bounded UDP batch
+extension HTTP/3 needs: `receiveBatch`, `sendBatch` with Linux `UDP_SEGMENT`
+GSO, `UDP_GRO` segment reporting, an explicit one-datagram fallback,
+`watchDatagram`, socket option profiles and the QUIC concrete-bind policy.
+Processes, signals, mappings, atomic replacement, terminal/logging and all
+thread/synchronization kinds are later phases.
 
 P0 proved the boundary that P1a builds on:
 
@@ -44,7 +47,7 @@ obo/experimental/sys/
   sysfile.obx                   P1a owned File and explicit OpenOptions
   sysbuffer.obx                 P1a fixed-capacity Buffer/Reader/Writer/Cursor
   sysaddress.obx                P2 numeric IPv4/IPv6/Unix addresses
-  sysnet.obx                    P2 Listener/Connection/Datagram
+  sysnet.obx                    P2/P2q Listener/Connection/Datagram, UDP batch
   sysreactor.obx                P2 epoll, watches, timers, wake/stop
   syswaitio.obx                 P2 cancellation + absolute-deadline helpers
   sysresolve.obx                P2 blocking numeric/name resolution
@@ -64,10 +67,11 @@ obo/experimental/sys/
   tests/
     sysfakectl.obx              test-only fake controls (fake_ctl build only)
     apps/*.obx                  obo roots for real, fake, buffer and fault runs
-    c/{native_test,fake_test,bench_copy,p1a_test,p2_test}.c
+    c/{native_test,fake_test,bench_copy,p1a_test,p2_test,p2q_test}.c
     test_sys_p0.py              one-command P0 suite
     test_sys_p1a.py             one-command P1a suite
     test_sys_p2.py              one-command P2 suite
+    test_sys_p2q.py             one-command P2q UDP batch suite
 ```
 
 `sysregistry.*` is intentionally separate from
@@ -241,6 +245,18 @@ crosses the application boundary.
   peer and truncation;
   empty datagrams are data. Port 0 is discoverable through the listener/
   datagram local address.
+- `sysnet` P2q UDP batch: `bindDatagramOptions` validates the explicit
+  receive/send buffer, reusePort, GRO, GSO and DF profile; `bindDatagram` keeps
+  its old signature and uses those defaults. `receiveBatch` returns a bounded
+  `[]Packet` with a **total** `maxBytes` budget and at most 64 datagrams;
+  `Packet.segmentSize` is a GRO segment size (0 for an ordinary datagram) and a
+  GRO segment is one UDP datagram, not one QUIC packet. `sendBatch` with a
+  non-zero segment size asks for one `UDP_SEGMENT` send and returns
+  `Unsupported` rather than looping; `sendBatchFallback` is the explicit
+  one-datagram fallback. `watchDatagram` is the only readiness helper and
+  exposes no descriptor. `datagramCapabilities` reports the features the
+  socket actually enabled. `bindQuicDatagram` rejects SO_REUSEPORT, a wildcard
+  local address and Unix datagrams for the one-socket QUIC profile.
 - `sysreactor`: level-triggered epoll only in v1. `watchResource` accepts a
   checked source, `modify`/`remove` update the subscription, timers use the
   fake/real monotonic clock, and `wait` returns at most 64 `Event` records per
@@ -259,9 +275,10 @@ crosses the application boundary.
   documented as unbounded: it is a startup/client convenience, not a reactor
   operation. EAI categories and EAI_SYSTEM errno stay distinct.
 - `sysnet` also exposes checked datagram receive/send buffer sizes and
-  broadcast enablement. Multicast membership, ancillary data, connected UDP,
-  `sendmmsg`/`recvmmsg`, edge-triggered readiness and a poll reference backend
-  remain deferred.
+  broadcast enablement. Multicast membership, ancillary data beyond the
+  internal UDP GSO/GRO control messages, `IP_PKTINFO`/per-datagram local
+  addresses, connected UDP, `sendmmsg`/`recvmmsg`, edge-triggered readiness and
+  a poll reference backend remain deferred.
 
 ## Error namespace
 
@@ -366,6 +383,18 @@ The P2 suite additionally runs:
   accepted-connection pressure, watch/timer quota pressure and retained
   deadline/progress assertions.
 
+The P2q suite additionally runs:
+
+- a C batch harness on both adapters (normal and ASAN/UBSAN/LSan) covering
+  `UDP_SEGMENT` send, GRO/ordinary receive acceptance, segment accounting,
+  the total `maxBytes` budget and Range, single-datagram truncation metadata,
+  peer addresses, capability bits and SO_REUSEPORT;
+- identical real/fake roots for batch send/receive, explicit GSO fallback,
+  GRO-off segment splitting, `watchDatagram`, socket option profiles,
+  reusePort, the QUIC concrete-bind policy and argument validation;
+- scripted fake batch listen/write/read faults and the explicit one-datagram
+  fallback path.
+
 Sample result on the P0 development host (Linux x86-64, gcc `-O2`; only a
 record of this run, not a portable promise):
 
@@ -396,5 +425,6 @@ context, single-threaded, no finalizers, no raw fd/token exposure, no process/
 signal/mapping API, no atomic replace, no path-containment claim, no production
 stability, and no version or ABI reservation. P3 owns process supervision,
 signals and resolver policy; P4 owns threads/synchronization. Reactive DNS
-(`beginResolve`/`watchResolve`), multicast, ancillary data, edge-triggered
-readiness and a poll reference backend remain deferred.
+(`beginResolve`/`watchResolve`), multicast, general ancillary data beyond UDP
+GSO/GRO, per-datagram `IP_PKTINFO`, edge-triggered readiness and a poll
+reference backend remain deferred.

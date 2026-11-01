@@ -1,6 +1,6 @@
 # HTTP/3 server over QUIC
 
-Status: **design for short re-check; no implementation authorized.**
+Status: **design for short re-check; no H3 implementation authorized.**
 Revision 3 (2026-11-01): closes the focused re-review
 `/tmp/opencode/http3-design-rereview-1793509913` (R1–R4) after revision 2's
 response to `/tmp/opencode/http3-design-review-1793508586` (F1–F11, F29 and
@@ -12,6 +12,16 @@ ABI, symbol-format, package, protocol or release version. It designs a
 server-side HTTP/3 origin server above the existing HTTP/1.1/2 server, systems
 and TLS layers; it does not redesign HTTP/1.1 or HTTP/2, does not add a new
 crypto library to `systls`, and does not authorize implementation.
+
+Implementation status (2026-11-01): the systems P2q prerequisite
+(`DatagramOptions`, `receiveBatch`, `sendBatch`/fallback, `Packet.segmentSize`,
+GSO/GRO reporting, `watchDatagram`, concrete QUIC bind) is implemented in
+`obo/experimental/sys` on its own branch and is awaiting independent review.
+P2q's real backend uses one bounded `recvmsg` loop over a single `maxBytes`
+buffer instead of `recvmmsg` per-message iovecs, so the total-budget bound is
+exact and a 64-packet batch never allocates 4 MiB (see the package `LIMITS.md`).
+No H3/QUIC code exists yet; the QUIC transport, shim, HTTP/3 mapping and server
+shells remain unimplemented design.
 
 Related notes and code:
 [http2-server-design.md](http2-server-design.md),
@@ -113,7 +123,7 @@ Summary of decisions:
 | Module / artifact | Contract used here | Status at baseline |
 |---|---|---|
 | `sysplatform` | `Resource`, `requireKind`, `_tokenHandle`, `_adoptToken`, `_closeHandle`, kinds, counts, bounded byte buffers | experimental P2, present |
-| `sysnet` | `Datagram`, `bindDatagram`, `receive`, `send`, `closeDatagram`, `datagramLocalAddress` | experimental P2, present; **batch/GSO/GRO/watch are missing** |
+| `sysnet` | `Datagram`, `bindDatagram`, `receive`, `send`, `closeDatagram`, `datagramLocalAddress`; P2q `DatagramOptions`, `receiveBatch`, `sendBatch`/fallback, `Packet.segmentSize`, `watchDatagram`, `bindQuicDatagram` | P2 present; P2q implemented on its own branch, **awaiting independent review** |
 | `sysaddress` | checked IPv4/IPv6 `Address`, numeric parse/format | experimental P2, present |
 | `sysclock` | `Instant`, `Duration`, `Deadline`, `after`, `remaining`, `forever` | experimental P1, present |
 | `sysreactor` | level-triggered `watchResource`, `modify`, `remove`, `timer`, `wait` | experimental P2, present |
@@ -2522,7 +2532,7 @@ H3c:
 
 | Phase | Scope | Depends on | Exit | Rough effort |
 |---|---|---|---|---|
-| **P2q: sysnet UDP batch** | `DatagramOptions`, `receiveBatch`, `sendBatch`, `watchDatagram`, `Packet.segmentSize`, GSO/GRO fallback, concrete local bind | systems P2 | C/obo tests with GSO on/off; no protocol | 1-2 engineer-weeks |
+| **P2q: sysnet UDP batch** | `DatagramOptions`, `receiveBatch`, `sendBatch`, `watchDatagram`, `Packet.segmentSize`, GSO/GRO fallback, concrete local bind | systems P2 | implemented and under independent review; C/obo tests with GSO on/off; no protocol | 1-2 engineer-weeks |
 | **H3a: QUIC transport** | `quictls`, C shim, ngtcp2, context/server/connection shells, Retry/CID/VN/stateless reset, event/wire batch, timers, close/drain skeleton, pre-adoption bound | P2q, cinterop P2T-a, pinned headers, GnuTLS | in-tree client handshake, Retry, CID, timers; no HTTP/3 | 4-5 engineer-weeks |
 | **H3b: HTTP/3 mapping** | nghttp3, control/QPACK streams, SETTINGS, headers-after-complete event, request/response, body/trailers, `deferred_consume`, flow control, stream limits, GOAWAY, `runAction`, shared `httpapi` | H3a | deterministic H3 + in-tree client; h3spec conditional | 5-6 engineer-weeks |
 | **H3c: security/interop** | 0-RTT off policy, migration, QPACK/header caps, reset/datagram budgets, stateless reset, malformed/fuzz, aioquic/gtlsclient/curl/h3spec when acquired, combined TCP+UDP listener and Alt-Svc helper | H3b, H1c/H2c for combined listener | full h3spec if available, interop, ASAN/leaks, security matrix | 4-5 engineer-weeks |

@@ -1,26 +1,31 @@
-# Experimental sys P0/P1a/P2 limits
+# Experimental sys P0/P1a/P2q limits
 
 These limits are part of the P0/P1a/P2 boundary proof. They are deliberately
 explicit rather than hidden behind a stable-looking API.
 
 ## Scope
 
-- **P0, P1a and P2.** P0 provided the identity/error/byte seam; P1a adds owned
-  `File`, anchored `Directory`/`Iterator`, metadata snapshots, clocks,
+- **P0, P1a, P2 and P2q.** P0 provided the identity/error/byte seam; P1a adds
+  owned `File`, anchored `Directory`/`Iterator`, metadata snapshots, clocks,
   `getrandom`, concrete streams and bounded buffers; P2 adds numeric addresses,
   TCP/UDP/Unix sockets, an epoll reactor, cancellation/deadline helpers and
-  blocking resolution. There is still no mapping, calendar, process, signal,
-  environment mutation, terminal or logging API, no atomic replacement, no
-  reactive DNS and no full path-containment helper.
+  blocking resolution. P2q adds the bounded UDP batch, GSO/GRO reporting, an
+  explicit one-datagram fallback, datagram watch and the concrete QUIC bind
+  profile. There is still no mapping, calendar, process, signal, environment
+  mutation, terminal or logging API, no atomic replacement, no reactive DNS and
+  no full path-containment helper.
 - **One process context, single thread.** The managed table and C registry are
   process globals. There is no worker context selection, lock, atomic or TSAN
   claim.
 - **Linux x86-64 real backend.** The real adapter uses openat/read/write/lseek/
   ftruncate/fstat/statx/getdents64/clock_gettime/getrandom, socket/bind/listen/
-  accept4/connect/recv/send/sendto/recvmsg/shutdown, epoll/eventfd, poll for
+  accept4/connect/recv/send/sendto/recvmsg/sendmsg/shutdown, setsockopt and
+  `UDP_SEGMENT`/`UDP_GRO` ancillary control, epoll/eventfd, poll for
   nonblocking connect completion, and getaddrinfo. Other platforms would need a
-  different adapter and are not claimed. The v1 reactor is level-triggered only;
-  there is no poll-reference backend or edge-triggered mode.
+  different adapter and are not claimed. P2q targets Linux 4.18+ for GSO/GRO;
+  an older kernel clears those features rather than failing the bind. The v1
+  reactor is level-triggered only; there is no poll-reference backend or
+  edge-triggered mode.
 - **Hosted cinterop only.** The package uses the experimental hosted
   cinterop link (non-PIE fixed layout). The freestanding compiler/runtime is
   unchanged and does not link this package.
@@ -88,6 +93,9 @@ explicit rather than hidden behind a stable-looking API.
 | Unix path / abstract name | 107 bytes | 107 bytes |
 | One TCP/Unix stream transfer | 1 MiB | 1 MiB (`MAX_CHUNK`) |
 | One datagram message | 65507 bytes | 65507 bytes (`MAX_DATAGRAM`) |
+| One datagram batch | 16 (QUIC plan) | 64 datagrams / 65536 total bytes |
+| One GSO send | 16 (QUIC plan) | 64 segments / 65536 total bytes |
+| Datagram socket buffer | 4 MiB | 1 GiB per direction |
 | One reactor batch | 64 events | 4096 requested, 64 returned (`MAX_BATCH`) |
 | Reactor watches / timers | configured at create | 65536 each |
 | Resolver results | 64 | 64 (`MAX_RESULTS`) |
@@ -181,6 +189,43 @@ allocate past the stated capacity.
   call is capped at 1 MiB. Fake deterministic entropy exists only in the
   test-only fake link and is never an application-selected production mode.
 
+## P2q UDP batch limits
+
+- `receiveBatch` accepts `1..64` datagrams and a **total** byte budget of
+  `1..65536` bytes. It allocates one data buffer of `maxBytes`, one metadata
+  packet of `maxPackets * 40` bytes and one peer packet of
+  `maxPackets * 160` bytes; it never allocates `maxPackets * maxBytes`.
+  The real adapter uses a bounded `recvmsg` loop against that one buffer rather
+  than `recvmmsg`'s per-message iovecs, so the total budget is exact and a
+  64-packet batch cannot reserve 4 MiB. A datagram that does not fit the
+  remaining budget is consumed and the call returns `Range`; earlier datagrams
+  in that partial batch are not returned. Size the budget for the largest
+  expected datagram (QUIC uses 1200-byte payloads) and retry after a `Range`.
+- `sendBatch` accepts at most 64 segments, `65535` bytes per segment and
+  `65536` total bytes. `segmentSize == 0` is one ordinary datagram (at most
+  `65507` bytes). Every segment but the last must be exactly `segmentSize`;
+  a call is all-or-error. GSO unavailability is `Unsupported`, and
+  `sendBatchFallback` is the explicit, bounded one-datagram loop (it stops at
+  the first error and does not retry).
+- A GRO segment is one UDP datagram, not one QUIC packet. `Packet.bytes` may
+  contain several coalesced QUIC packets; the shim/consumer must not infer
+  packet boundaries from `segmentSize`. `segmentSize == 0` means one ordinary
+  datagram. The final GRO segment may be shorter.
+- Socket buffers default to 4 MiB each and are capped at 1 GiB by validation;
+  the kernel may clamp the effective size. A full receive buffer drops
+  datagrams; there is no unbounded kernel queue or hidden retry.
+- `UDP_GRO` and `UDP_SEGMENT` are best-effort. `datagramCapabilities` reports
+  what the socket enabled; a failed `sendBatch` clears GSO for that socket.
+  `dontFragment` requests `IP_PMTUDISC_DO`/`IPV6_PMTUDISC_DO` and is likewise
+  best-effort on kernels that reject the option.
+- `bindQuicDatagram` rejects `reusePort`, wildcard local addresses and Unix
+  datagrams. `receiveBatch` does not return `IP_PKTINFO`, so one concrete
+  local address is reported once through `datagramLocalAddress`; multi-homed
+  wildcard listeners are deferred.
+- `watchDatagram` is level-triggered through the existing reactor. GRO may
+  delay readiness/flush by a short kernel timer; callers use the reactor
+  deadline and a bounded WouldBlock retry rather than a busy loop.
+
 ## P3/P4 and P2 deferrals
 
 P1b owns `chmod`, `sync`, rename/link/symlink, `replaceAtomic`, `openBeneath`,
@@ -190,11 +235,13 @@ the resolver policy/helper decision. P4 owns threads and synchronization; no
 worker, atomic, channel, sender or receiver kind is created here.
 
 P2 deliberately defers mappings (despite the older phase note), multicast
-membership, ancillary data/fd passing, peer credentials, connected UDP,
-`sendmmsg`/`recvmmsg`, scatter/gather native syscalls (the obo `writeVector`
-composes one bounded contiguous transfer), edge-triggered readiness, a poll
-reference backend, reactive DNS (`beginResolve`/`watchResolve`), a resolver
-cache/TTL and any hidden helper process. `resolveBlocking` has **no finite
+membership, general ancillary data/fd passing beyond the internal UDP GSO/GRO
+control messages, `IP_PKTINFO`/per-datagram local addresses, peer credentials,
+connected UDP, `sendmmsg`/`recvmmsg`, scatter/gather native syscalls (the obo
+`writeVector` composes one bounded contiguous transfer), edge-triggered
+readiness, a poll reference backend, reactive DNS
+(`beginResolve`/`watchResolve`), a resolver cache/TTL and any hidden helper
+process. `resolveBlocking` has **no finite
 deadline**; it can block indefinitely in NSS/DNS and must not run inside a
 reactor loop. `syswaitio` helpers require a dedicated reactor because they
 consume readiness batches.
@@ -215,9 +262,11 @@ consume readiness batches.
   contract/fault fixture, not a filesystem implementation: its directory child
   namespace (`sub`) and metadata policy are intentionally shallow.
 - The fake P2 backend uses in-memory paired connections, queued datagrams,
-  scripted readiness/errors and a fake monotonic clock. It has no kernel socket,
-  epoll or DNS; its resolver is the fixed table documented in `API.md`, not a
-  name service: blocked readiness is represented by explicit scripts/queues,
+  scripted readiness/errors and a fake monotonic clock. Its P2q path models
+  GSO splitting and GRO coalescing deterministically and honours the same
+  batch/segment limits as the real adapter. It has no kernel socket, epoll or
+  DNS; its resolver is the fixed table documented in `API.md`, not a name
+  service: blocked readiness is represented by explicit scripts/queues,
   and an infinite `wait` with nothing ready returns an empty batch instead of
   hanging the single-threaded test process. Timers are a bounded insertion-order
   list scanned per turn; due timers and fresh/coalesced wakes are prioritized
