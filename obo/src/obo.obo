@@ -7250,7 +7250,7 @@ fn builtin(name: string): Item {
         // ok(v): Result[T] where T is v's type. v is moved into the cell, so a reference or an
         // error value (which has no payload type) cannot be its value.
         expect(T_LPAREN, "")
-        let v = nestedExpr()
+        var v = nestedExpr()
         expect(T_RPAREN, "")
         if v.typ == tVoid { error("ok needs a value, not a void expression") }
         if v.typ.kind == "nil" { error("ok(nil) has no type: give the payload a name first, as in 'let n: ?Node = nil; ok(n)'") }
@@ -7258,6 +7258,10 @@ fn builtin(name: string): Item {
         rejectFn(v.typ, "Result cannot hold a function value")
         if v.borrowed { error("ok takes ownership of its value: it cannot hold a borrowed reference") }
         consume(v)
+        // A comparison is held as condition flags until it is loaded. The record allocation is a
+        // runtime call, so load it before that call: otherwise the flags (and any pending true/false
+        // jumps) would be clobbered and ok(x == n) would store the allocator's leftover flags.
+        if v.mode == "cond" { v = load(v) }
         let rt = derived("result", v.typ)
         let okv = rt.variants[0]
         let p = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, okv.desc), rt)

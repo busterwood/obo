@@ -1,0 +1,264 @@
+// Result[bool] from a comparison: ok(comparison) must load the condition before
+// it allocates the Result cell. The allocator call clobbers the flags that held
+// the comparison, so the direct form used to store the allocator's leftovers.
+// Every operator, both outcomes, the local-then-ok form and the other contexts
+// (method, nested Result, bool parameter/return, record/array, if/match) must
+// agree.
+type B = ref record { n: int }
+type Flag = ref record { b: bool }
+
+fn (b: &B) isOne(): Result[bool] { return ok(b.n == 1) }
+fn (b: &B) localIsOne(): Result[bool] { let yes = b.n == 1; return ok(yes) }
+
+fn eq(x: int, n: int): Result[bool] { return ok(x == n) }
+fn ne(x: int, n: int): Result[bool] { return ok(x != n) }
+fn lt(x: int, n: int): Result[bool] { return ok(x < n) }
+fn le(x: int, n: int): Result[bool] { return ok(x <= n) }
+fn gt(x: int, n: int): Result[bool] { return ok(x > n) }
+fn ge(x: int, n: int): Result[bool] { return ok(x >= n) }
+
+fn eqLocal(x: int, n: int): Result[bool] { let b = x == n; return ok(b) }
+fn neLocal(x: int, n: int): Result[bool] { let b = x != n; return ok(b) }
+fn ltLocal(x: int, n: int): Result[bool] { let b = x < n; return ok(b) }
+fn leLocal(x: int, n: int): Result[bool] { let b = x <= n; return ok(b) }
+fn gtLocal(x: int, n: int): Result[bool] { let b = x > n; return ok(b) }
+fn geLocal(x: int, n: int): Result[bool] { let b = x >= n; return ok(b) }
+
+fn byteEq(a: byte, b: byte): Result[bool] { return ok(a == b) }
+fn byteNe(a: byte, b: byte): Result[bool] { return ok(a != b) }
+fn byteLt(a: byte, b: byte): Result[bool] { return ok(a < b) }
+fn byteLe(a: byte, b: byte): Result[bool] { return ok(a <= b) }
+fn byteGt(a: byte, b: byte): Result[bool] { return ok(a > b) }
+fn byteGe(a: byte, b: byte): Result[bool] { return ok(a >= b) }
+
+fn conj(x: int): Result[bool] { return ok(x > 0 && x < 10) }
+fn disj(x: int): Result[bool] { return ok(x < 0 || x > 10) }
+fn neg(x: int): Result[bool] { return ok(!(x == 1)) }
+fn paren(x: int): Result[bool] { return ok((x == 1)) }
+
+fn inIf(x: int): Result[bool] {
+    if x > 0 { return ok(x == 1) }
+    return ok(false)
+}
+
+fn inMatch(x: int): Result[bool] {
+    let r = ok(1)
+    match r {
+        ok(v) { return ok(x == v) }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+fn pack(b: bool): Result[bool] { return ok(b) }
+fn packNot(b: bool): Result[bool] { return ok(!b) }
+fn packConj(a: bool, b: bool): Result[bool] { return ok(a && b) }
+
+fn through(r: Result[bool], x: int): Result[bool] {
+    match r {
+        ok(v) { return ok(x == 1 || v) }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+fn nestedDirect(x: int): Result[Result[bool]] { return ok(ok(x == 1)) }
+fn nestedLocal(x: int): Result[Result[bool]] {
+    let b = x == 1
+    let inner = ok(b)
+    return ok(inner)
+}
+
+fn assignForm(x: int): Result[bool] {
+    var b = false
+    b = x == 1
+    return ok(b)
+}
+
+fn bare(x: int): bool { return x == 1 }
+fn recField(x: int): bool {
+    let f = new Flag{b: x == 1}
+    return f.b
+}
+fn arrElem(x: int): bool {
+    var xs = new []bool(0)
+    append(xs, x == 1)
+    return xs[0]
+}
+
+fn show(tag: string, r: Result[bool]) {
+    match r {
+        ok(v) { println(tag, " ", v) }
+        err(m, c) { println(tag, " err ", m, " ", c) }
+    }
+}
+
+fn main() {
+    // int comparisons, direct ok(comparison)
+    show("eq t ", eq(1, 1))
+    show("eq f ", eq(2, 1))
+    show("ne t ", ne(2, 1))
+    show("ne f ", ne(1, 1))
+    show("lt t ", lt(1, 2))
+    show("lt f ", lt(2, 1))
+    show("le t ", le(2, 2))
+    show("le f ", le(3, 2))
+    show("gt t ", gt(2, 1))
+    show("gt f ", gt(1, 2))
+    show("ge t ", ge(2, 2))
+    show("ge f ", ge(1, 2))
+
+    // the same comparisons through a local, which must agree
+    show("eql t ", eqLocal(1, 1))
+    show("eql f ", eqLocal(2, 1))
+    show("nel t ", neLocal(2, 1))
+    show("nel f ", neLocal(1, 1))
+    show("ltl t ", ltLocal(1, 2))
+    show("ltl f ", ltLocal(2, 1))
+    show("lel t ", leLocal(2, 2))
+    show("lel f ", leLocal(3, 2))
+    show("gtl t ", gtLocal(2, 1))
+    show("gtl f ", gtLocal(1, 2))
+    show("gel t ", geLocal(2, 2))
+    show("gel f ", geLocal(1, 2))
+
+    // byte comparisons
+    show("beq t ", byteEq('A', 'A'))
+    show("beq f ", byteEq('A', 'B'))
+    show("bne t ", byteNe('A', 'B'))
+    show("bne f ", byteNe('A', 'A'))
+    show("blt t ", byteLt('A', 'B'))
+    show("blt f ", byteLt('B', 'A'))
+    show("ble t ", byteLe('A', 'A'))
+    show("ble f ", byteLe('B', 'A'))
+    show("bgt t ", byteGt('B', 'A'))
+    show("bgt f ", byteGt('A', 'B'))
+    show("bge t ", byteGe('A', 'A'))
+    show("bge f ", byteGe('A', 'B'))
+
+    // boolean structure and parentheses
+    show("and t ", conj(5))
+    show("and f ", conj(15))
+    show("or t ", disj(15))
+    show("or f ", disj(5))
+    show("not t ", neg(2))
+    show("not f ", neg(1))
+    show("par t ", paren(1))
+    show("par f ", paren(2))
+
+    // the comparison inside other statement contexts
+    show("if t ", inIf(1))
+    show("if f ", inIf(2))
+    show("match t ", inMatch(1))
+    show("match f ", inMatch(2))
+
+    // bool parameters and returns, with the comparison supplied at each layer
+    show("pack t ", pack(1 == 1))
+    show("pack f ", pack(1 == 2))
+    show("pnot t ", packNot(1 != 1))
+    show("pnot f ", packNot(1 == 1))
+    show("pand t ", packConj(1 == 1, 2 == 2))
+    show("pand f ", packConj(1 == 1, 2 == 3))
+    show("thru t ", through(ok(false), 1))
+    show("thru f ", through(ok(false), 2))
+
+    // nested Result[bool]
+    let nd = nestedDirect(1)
+    match nd { ok(v) { match v { ok(b) { println("nd t ", b) } err(m, c) { println("bad") } } } err(m, c) { println("bad") } }
+    let nf = nestedDirect(2)
+    match nf { ok(v) { match v { ok(b) { println("nd f ", b) } err(m, c) { println("bad") } } } err(m, c) { println("bad") } }
+    let nl = nestedLocal(1)
+    match nl { ok(v) { match v { ok(b) { println("nl t ", b) } err(m, c) { println("bad") } } } err(m, c) { println("bad") } }
+    let nlf = nestedLocal(2)
+    match nlf { ok(v) { match v { ok(b) { println("nl f ", b) } err(m, c) { println("bad") } } } err(m, c) { println("bad") } }
+
+    // assignment, bare bool return, record field, and arrays
+    show("assign t ", assignForm(1))
+    show("assign f ", assignForm(2))
+    println("bare t ", bare(1))
+    println("bare f ", bare(2))
+    println("rec t ", recField(1))
+    println("rec f ", recField(2))
+    println("arr t ", arrElem(1))
+    println("arr f ", arrElem(2))
+
+    // methods: direct ok(comparison) and local-then-ok
+    let one = new B{n: 1}
+    let two = new B{n: 2}
+    show("meth t ", one.isOne())
+    show("meth f ", two.isOne())
+    show("methl t ", one.localIsOne())
+    show("methl f ", two.localIsOne())
+}
+
+// The output, in order:
+// expect: eq t  true
+// expect: eq f  false
+// expect: ne t  true
+// expect: ne f  false
+// expect: lt t  true
+// expect: lt f  false
+// expect: le t  true
+// expect: le f  false
+// expect: gt t  true
+// expect: gt f  false
+// expect: ge t  true
+// expect: ge f  false
+// expect: eql t  true
+// expect: eql f  false
+// expect: nel t  true
+// expect: nel f  false
+// expect: ltl t  true
+// expect: ltl f  false
+// expect: lel t  true
+// expect: lel f  false
+// expect: gtl t  true
+// expect: gtl f  false
+// expect: gel t  true
+// expect: gel f  false
+// expect: beq t  true
+// expect: beq f  false
+// expect: bne t  true
+// expect: bne f  false
+// expect: blt t  true
+// expect: blt f  false
+// expect: ble t  true
+// expect: ble f  false
+// expect: bgt t  true
+// expect: bgt f  false
+// expect: bge t  true
+// expect: bge f  false
+// expect: and t  true
+// expect: and f  false
+// expect: or t  true
+// expect: or f  false
+// expect: not t  true
+// expect: not f  false
+// expect: par t  true
+// expect: par f  false
+// expect: if t  true
+// expect: if f  false
+// expect: match t  true
+// expect: match f  false
+// expect: pack t  true
+// expect: pack f  false
+// expect: pnot t  true
+// expect: pnot f  false
+// expect: pand t  true
+// expect: pand f  false
+// expect: thru t  true
+// expect: thru f  false
+// expect: nd t true
+// expect: nd f false
+// expect: nl t true
+// expect: nl f false
+// expect: assign t  true
+// expect: assign f  false
+// expect: bare t true
+// expect: bare f false
+// expect: rec t true
+// expect: rec f false
+// expect: arr t true
+// expect: arr f false
+// expect: meth t  true
+// expect: meth f  false
+// expect: methl t  true
+// expect: methl f  false
