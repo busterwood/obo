@@ -40,9 +40,28 @@ ABI = 'sysv-amd64'
 FORMAT = 'cinterop-proto/1'
 RELOC_HEADER = 'cinterop-relocs 1'
 MAX_ARGS = 8
+MAX_KIND_ARGS = 12        # kinds bindings: C-parameter descriptors per function (stage (a))
+MAX_KIND_INDEX = 16       # obo argument indexes: @k must be below this (the compiler checks the same bound)
 ARG_REGS = ('%rdi', '%rsi', '%rdx', '%rcx', '%r8', '%r9')
 EFFECTS = ('freesall', 'writeshandles')
 SIG_MODES = ('header', 'declarations-only')
+# Argument kinds (stage (a), design section 3.1). A binding whose args are all bare i64 is the int form,
+# and its calls carry no descriptor. Any other binding uses kinds: each entry names the obo argument it
+# reads as kind@k, and the call site passes the same list as a descriptor string (see nativeKindCall in
+# obo/src/obo.obo). The sidecar records the list, and the tool compares it with the spec.
+BYTES_KINDS = ('borrow_bytes', 'borrow_cstr')
+# A const:<n> magnitude is at most 17 digits (99999999999999999); the compiler checks the same bound.
+CONST_LIMIT = 99999999999999999
+# The C parameters each kind expands to (the sigcheck types and the thunk's arguments). The null and const
+# entries are only a count: their sigcheck type is the spec's ctypes annotation (see sig_params), because a
+# null or a const:<n> may be passed for any pointer or integer parameter.
+KIND_CTYPES = {
+    'i64': ['long'], 'i32': ['int'], 'u32': ['unsigned int'],
+    'null': ['void *'], 'const': ['void *'],
+    'borrow_bytes': ['const void *', 'int'], 'borrow_cstr': ['const char *'],
+    'ints:i32': ['const int *'], 'ints:u32': ['const unsigned int *'], 'ints:len': ['int'],
+    'nil_bytes_list': ['const char *const *', 'const int *'],
+}
 # Hosted cinterop links get full RELRO and immediate binding by default. A
 # missing or incompatible shared-library symbol then fails at load time instead
 # of during a request. The separate freestanding runtime/seed build is not
@@ -214,13 +233,33 @@ def load_spec(path):
         seen_symbols.add(f['symbol'])
         if f['ret'] not in ('i32', 'i64'):
             raise ToolError("%s: ret must be i32 or i64" % f['name'])
-        if not isinstance(f['args'], list) or len(f['args']) > MAX_ARGS:
+        if not isinstance(f['args'], list) or len(f['args']) > MAX_KIND_ARGS:
             raise ToolError("%s: args must be a list of at most %d entries" % (f['name'], MAX_ARGS))
-        for a in f['args']:
-            if a == 'i32':
-                raise ToolError("%s: i32 arguments are not supported in this prototype; use i64" % f['name'])
-            if a != 'i64':
-                raise ToolError("%s: args must be i64" % f['name'])
+        if all(a == 'i64' for a in f['args']):
+            if len(f['args']) > MAX_ARGS:
+                raise ToolError("%s: args must be a list of at most %d entries" % (f['name'], MAX_ARGS))
+            if 'ctypes' in f:
+                raise ToolError("%s: ctypes is for argument kinds; an int-form binding (all i64) has no "
+                                "null or const slot, so drop it" % f['name'])
+        else:
+            if any(a == 'i32' for a in f['args']):
+                raise ToolError("%s: i32 arguments need an argument index: write i32@k, with a kinds descriptor "
+                                "at the call" % f['name'])
+            if not all(isinstance(a, str) for a in f['args']):
+                raise ToolError("%s: args must be i64, or a kind such as i64@0" % f['name'])
+            check_kinds(f['name'], f['args'])
+            ct = f.get('ctypes')
+            if ct is not None:
+                if not isinstance(ct, list) or len(ct) != len(f['args']):
+                    raise ToolError("%s: ctypes must be a list with one entry per argument" % f['name'])
+                if not all(x is None or isinstance(x, str) for x in ct):
+                    raise ToolError("%s: ctypes entries must be strings or null" % f['name'])
+                check_ctypes(f['name'], f['args'], ct)
+            else:
+                check_ctypes(f['name'], f['args'], [None] * len(f['args']))
+            if 'wrapper' not in spec:
+                raise ToolError("%s: a binding with argument kinds needs a maintained wrapper "
+                                "(the \"wrapper\" key)" % f['name'])
         effects = f.get('effects', ['impure'])
         if not isinstance(effects, list) or any(e != 'impure' for e in effects):
             raise ToolError("%s: only the conservative 'impure' effect is supported" % f['name'])
@@ -250,6 +289,255 @@ def load_spec(path):
     return spec
 
 
+def parse_kind(tok):
+    """One argument kind: name, arg (obo argument index or None), flag, val (const only)."""
+    if tok == 'null':
+        return {'name': 'null', 'arg': None, 'flag': None, 'val': None}
+    m = re.fullmatch(r'const:(-?[0-9]+)', tok)
+    if m:
+        val = int(m.group(1))
+        if abs(val) > CONST_LIMIT:
+            raise ToolError("const value %s is too large (at most 17 digits)" % m.group(1))
+        return {'name': 'const', 'arg': None, 'flag': None, 'val': val}
+    m = re.fullmatch(r'(i64|i32|u32|borrow_bytes|borrow_cstr|ints|nil_bytes_list)@([0-9]+)(?::([a-z0-9]+))?', tok)
+    if not m:
+        raise ToolError("unknown argument kind %r (args must be i64, or a kind such as i64@0)" % tok)
+    name, arg, flag = m.group(1), int(m.group(2)), m.group(3)
+    if name == 'ints':
+        if flag not in ('i32', 'u32', 'len'):
+            raise ToolError("ints needs a flag: ints@%d:i32, ints@%d:u32 or ints@%d:len" % (arg, arg, arg))
+    elif flag is not None:
+        raise ToolError("%s takes no flag: %r" % (name, tok))
+    return {'name': name, 'arg': arg, 'flag': flag, 'val': None}
+
+
+def kind_key(k):
+    return k['name'] + (':' + k['flag'] if k['flag'] else '')
+
+
+def check_kinds(fname, args):
+    """A kinds binding: every obo argument has exactly one data kind, and ints:len counts a list."""
+    if len(args) > MAX_KIND_ARGS:
+        raise ToolError("%s: at most %d argument kinds" % (fname, MAX_KIND_ARGS))
+    kinds = [parse_kind(a) for a in args]
+    for k in kinds:
+        if k['arg'] is not None and k['arg'] >= MAX_KIND_INDEX:
+            raise ToolError("%s: argument index @%d is out of range (indexes run from 0 to %d)"
+                            % (fname, k['arg'], MAX_KIND_INDEX - 1))
+    data = {}
+    for k in kinds:
+        if k['arg'] is None or (k['name'] == 'ints' and k['flag'] == 'len'):
+            continue
+        if k['arg'] in data:
+            raise ToolError("%s: argument %d has two kinds" % (fname, k['arg']))
+        data[k['arg']] = k
+    for k in kinds:
+        if k['name'] == 'ints' and k['flag'] == 'len':
+            if k['arg'] not in data or data[k['arg']]['name'] not in ('ints', 'nil_bytes_list'):
+                raise ToolError("%s: ints:len counts a list, and argument %d is not one" % (fname, k['arg']))
+    if not data and not any(k['name'] in ('null', 'const') for k in kinds):
+        raise ToolError("%s: no argument kind" % fname)
+    for i in range(max(data) + 1 if data else 0):
+        if i not in data:
+            raise ToolError("%s: argument %d has no kind" % (fname, i))
+    return kinds
+
+
+# Integer types a null or const slot may be annotated with, besides pointers. A struct by value would pass
+# the sigcheck and then the register-passing thunk would be wrong, so it is not on this list.
+# Integer C types a null or const slot may take, with their width and signedness (x86_64 Linux). A const
+# value must fit the type: unsigned types take no negative value.
+C_INT_RANGE = {
+    'char': (8, True), 'signed char': (8, True), 'unsigned char': (8, False),
+    'short': (16, True), 'unsigned short': (16, False),
+    'int': (32, True), 'unsigned int': (32, False),
+    'long': (64, True), 'unsigned long': (64, False),
+    'long long': (64, True), 'unsigned long long': (64, False),
+    'size_t': (64, False), 'ssize_t': (64, True),
+    'int32_t': (32, True), 'uint32_t': (32, False), 'int64_t': (64, True), 'uint64_t': (64, False),
+}
+C_INT_WORDS = ('unsigned', 'signed', 'int', 'long', 'short', 'char')
+C_KEYWORDS = ('const', 'struct', 'void') + C_INT_WORDS + (
+    'float', 'double', 'volatile', 'restrict', 'static', 'extern', 'inline', 'typedef', 'enum', 'union',
+    'return', 'sizeof', 'bool', '_Bool')
+
+
+def _c_tokens(t):
+    """Tokens of a C type name, or None if the text has anything but identifiers, '*', '(', ')', ',' and
+    spaces. The text goes into the sigcheck source, so nothing else may reach it."""
+    if not isinstance(t, str) or len(t) > 120:
+        return None
+    toks = re.findall(r'[A-Za-z_][A-Za-z0-9_]*|[*(),]', t)
+    if ''.join(toks) != re.sub(r'\s+', '', t):
+        return None
+    return toks
+
+
+def _c_base(toks, i):
+    """A base type at toks[i] (a leading const is allowed): (name, next index), or None."""
+    n = len(toks)
+    if i < n and toks[i] == 'const':
+        i += 1
+    if i >= n:
+        return None
+    if toks[i] == 'struct':
+        if i + 1 < n and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', toks[i + 1]) and toks[i + 1] not in C_KEYWORDS:
+            return 'struct ' + toks[i + 1], i + 2
+        return None
+    if toks[i] == 'void':
+        return 'void', i + 1
+    words = []
+    while i < n and toks[i] in C_INT_WORDS:
+        words.append(toks[i])
+        i += 1
+    if words:
+        return ' '.join(words), i
+    if i >= n:
+        return None
+    if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', toks[i]) and toks[i] not in C_KEYWORDS:
+        return toks[i], i + 1
+    return None
+
+
+def _c_plain(toks, i):
+    """One object type at toks[i]: (base, stars, next index), or None. A const may follow the base
+    and each star. A name after the type (a declarator) is not part of it, so the caller sees it."""
+    b = _c_base(toks, i)
+    if b is None:
+        return None
+    base, j = b
+    while j < len(toks) and toks[j] == 'const':
+        j += 1
+    stars = 0
+    while j < len(toks) and toks[j] == '*':
+        stars += 1
+        j += 1
+        while j < len(toks) and toks[j] == 'const':
+            j += 1
+    return base, stars, j
+
+
+def _c_value_type(base, stars):
+    """Classify one plain type that is a parameter, a return value or a whole slot type: ('int', name) or
+    ('ptr',). A bare void is no value type; a bare integer must be in the table, so a struct by value is
+    refused (the thunk passes every slot in a register)."""
+    if stars > 0:
+        return ('ptr',)
+    if base == 'void':
+        return None
+    if base in C_INT_RANGE:
+        return ('int', base)
+    return None
+
+
+def parse_ctype(t):
+    """Parse one slot C type: exactly one of an integer type from C_INT_RANGE, a pointer type
+    `[const] T *...` (T a struct tag or a type name, or an integer or void base), or a function-pointer
+    type `R (*)(P1, P2, ...)` with plain parameter types or `(void)`. Returns ('int', name, bits, signed)
+    or ('ptr',). Raises ToolError with the reason otherwise: a comma outside a parameter list, a name
+    after the type, unbalanced parentheses, or two types all fail to parse to the end."""
+    toks = _c_tokens(t)
+    if toks is None:
+        raise ToolError("%r has characters that are not part of a C type" % t)
+    if not toks:
+        raise ToolError("the C type is empty")
+    plain = _c_plain(toks, 0)
+    if plain is not None and plain[2] == len(toks):
+        base, stars, _ = plain
+        vt = _c_value_type(base, stars)
+        if vt is None:
+            raise ToolError("%r is not a pointer or an integer type (a struct by value is refused)" % t)
+        if vt[0] == 'ptr':
+            return ('ptr',)
+        bits, signed = C_INT_RANGE[base]
+        return ('int', base, bits, signed)
+    # function pointer: return type, then "(*)", then the parameter list, and nothing after it
+    ret = plain
+    if ret is None:
+        raise ToolError("%r is not one C type" % t)
+    rbase, rstars, j = ret
+    if not (rbase == 'void' and rstars == 0) and _c_value_type(rbase, rstars) is None:
+        raise ToolError("%r has a return type that is not void, an integer or a pointer" % t)
+    if toks[j:j + 4] != ['(', '*', ')', '(']:
+        if j < len(toks) and toks[j] == ',':
+            raise ToolError("%r has a comma outside a function parameter list: one C type only" % t)
+        if j < len(toks) and toks[j] in C_KEYWORDS:
+            raise ToolError("%r has two C types: one C type only" % t)
+        if j < len(toks) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', toks[j]):
+            raise ToolError("%r has a name after the type: a declarator is not allowed" % t)
+        raise ToolError("%r is not one C type: a pointer, an integer, or R (*)(P...)" % t)
+    k = j + 4
+    if toks[k:k + 2] == ['void', ')']:
+        k += 2
+    else:
+        while True:
+            p = _c_plain(toks, k)
+            if p is None:
+                raise ToolError("%r has a parameter that is not a plain C type" % t)
+            pbase, pstars, k = p
+            if _c_value_type(pbase, pstars) is None:
+                raise ToolError("%r has a parameter that is not a pointer or an integer type" % t)
+            if k < len(toks) and toks[k] == ',':
+                k += 1
+                continue
+            if k < len(toks) and toks[k] == ')':
+                k += 1
+                break
+            raise ToolError("%r has unbalanced parentheses or a name after a parameter" % t)
+    if k != len(toks):
+        raise ToolError("%r has text after the function pointer type" % t)
+    return ('ptr',)
+
+
+def check_ctypes(fname, args, ct):
+    """The ctypes list: one entry per argument, a C type for each null and const, and nothing else.
+    A const value must fit an integer type by its width and sign."""
+    kinds = [parse_kind(a) for a in args]
+    for i, k in enumerate(kinds):
+        if k['name'] in ('null', 'const'):
+            if not ct[i]:
+                raise ToolError("%s: %s needs its C parameter type: add a \"ctypes\" entry, e.g. "
+                                "\"const char *\"" % (fname, args[i]))
+            try:
+                info = parse_ctype(ct[i])
+            except ToolError as e:
+                raise ToolError("%s: ctypes entry: %s" % (fname, e))
+            if k['name'] == 'const' and info[0] == 'int':
+                _, name, bits, signed = info
+                lo = -(1 << (bits - 1)) if signed else 0
+                hi = (1 << (bits - 1)) - 1 if signed else (1 << bits) - 1
+                if not lo <= k['val'] <= hi:
+                    raise ToolError("%s: %s does not fit %s (%d..%d)"
+                                    % (fname, args[i], name, lo, hi))
+        elif ct[i] is not None:
+            raise ToolError("%s: ctypes may only annotate null and const, not %r" % (fname, args[i]))
+
+
+def sig_params(f):
+    """The sigcheck parameter types: the spec's annotation for a null or const slot, the fixed type
+    for every other kind. The C compiler then checks each against the header exactly."""
+    if all(a == 'i64' for a in f['args']):
+        return [c_arg(a) for a in f['args']]
+    out = []
+    for i, a in enumerate(f['args']):
+        k = parse_kind(a)
+        if k['name'] in ('null', 'const'):
+            out.append(' '.join(f['ctypes'][i].split()))
+        else:
+            out += KIND_CTYPES[kind_key(k)]
+    return out
+
+
+def c_params(f):
+    """The C parameter types of one function, in order."""
+    out = []
+    if all(a == 'i64' for a in f['args']):
+        return [c_arg(a) for a in f['args']]
+    for a in f['args']:
+        out += KIND_CTYPES[kind_key(parse_kind(a))]
+    return out
+
+
 def c_arg(typ):
     return 'long' if typ == 'i64' else 'int'
 
@@ -272,13 +560,133 @@ def generate_wrapper(spec):
     return '\n'.join(out)
 
 
+def kinds_thunk(f):
+    """Thunk body for a binding with argument kinds (stage (a), design 3.2).
+
+    The call site pushed one word per data kind word, in argument order, so the
+    first word is at the highest address. The thunk reads those words only now,
+    after every argument expression ran and right before the C call. Pointers and
+    lengths are made by the obo_ci_* helpers (host.c) into rbp-relative slots;
+    the scratch among them is freed after the call on the normal return path.
+    A contract violation exits 11 inside a helper, before the call.
+    """
+    kinds = check_kinds(f['name'], f['args'])
+    data = {}
+    for k in kinds:
+        if k['arg'] is None or (k['name'] == 'ints' and k['flag'] == 'len'):
+            continue
+        data[k['arg']] = k
+    m = max(data) + 1 if data else 0
+    base = {}
+    W = 0
+    for a in range(m):
+        base[a] = W
+        W += 2 if data[a]['name'] in BYTES_KINDS else 1
+
+    def word(w):
+        return '%d(%%rbp)' % (16 + 8 * (W - 1 - w))
+
+    slots = []
+    body = []
+    scratch = []
+
+    def slot():
+        slots.append(None)
+        return '%d(%%rbp)' % (-8 * len(slots))
+
+    def call(name, args):
+        for reg, a in zip(('%rdi', '%rsi'), args):
+            body.append('    %s %s, %s' % ('movabs' if a.startswith('$') else 'movq', a, reg))
+        body.append('    call %s@PLT' % name)
+        s_ = slot()
+        body.append('    movq %%rax, %s' % s_)
+        return s_
+
+    def keep(s_):
+        scratch.append(s_)
+        return s_
+
+    srcs = []
+    for k in kinds:
+        nm = k['name']
+        if nm == 'null':
+            srcs.append('$0')
+        elif nm == 'const':
+            srcs.append('$%d' % k['val'])
+        elif nm == 'i64':
+            srcs.append(word(base[k['arg']]))
+        elif nm == 'i32':
+            srcs.append(call('obo_ci_i32', [word(base[k['arg']])]))
+        elif nm == 'u32':
+            srcs.append(call('obo_ci_u32', [word(base[k['arg']])]))
+        elif nm == 'borrow_bytes':
+            v, fl = word(base[k['arg']]), word(base[k['arg']] + 1)
+            srcs.append(call('obo_ci_bytes_ptr', [v, fl]))
+            srcs.append(call('obo_ci_bytes_len', [v, fl]))
+        elif nm == 'borrow_cstr':
+            v, fl = word(base[k['arg']]), word(base[k['arg']] + 1)
+            p = call('obo_ci_bytes_ptr', [v, fl])
+            n = call('obo_ci_bytes_len', [v, fl])
+            srcs.append(keep(call('obo_ci_cstr', [p, n])))
+        elif nm == 'ints' and k['flag'] == 'len':
+            srcs.append(call('obo_ci_count', [word(base[k['arg']])]))
+        elif nm == 'ints':
+            srcs.append(keep(call('obo_ci_ints', [word(base[k['arg']]),
+                                                  '$%d' % (1 if k['flag'] == 'u32' else 0)])))
+        elif nm == 'nil_bytes_list':
+            srcs.append(keep(call('obo_ci_list_ptrs', [word(base[k['arg']])])))
+            srcs.append(keep(call('obo_ci_list_lens', [word(base[k['arg']])])))
+        else:
+            raise ToolError("%s: no thunk for kind %r" % (f['name'], nm))
+    if len(srcs) != len(c_params(f)):
+        raise ToolError("%s: kinds expand to %d C parameters, not %d"
+                        % (f['name'], len(srcs), len(c_params(f))))
+
+    def load(src, reg):
+        if src.startswith('$'):
+            return '    movabs %s, %s' % (src, reg)
+        return '    movq %s, %s' % (src, reg)
+
+    n = len(srcs)
+    tail = []
+    stack = srcs[6:]
+    if stack and len(stack) % 2 == 1:
+        tail.append('    sub $8, %rsp')
+    for src in reversed(stack):
+        if src.startswith('$'):
+            tail.append('    movabs %s, %%rax' % src)
+            tail.append('    pushq %rax')
+        else:
+            tail.append('    pushq %s' % src)
+    for i, src in enumerate(srcs[:6]):
+        tail.append(load(src, ARG_REGS[i]))
+    tail.append('    call %s@PLT' % f['symbol'])
+    if f['ret'] == 'i32':
+        tail.append('    movslq %eax, %rax')
+    ret = slot()
+    tail.append('    movq %%rax, %s' % ret)
+    frame = (8 * len(slots) + 15) // 16 * 16
+    tail.append('    lea -%d(%%rbp), %%rsp' % frame)
+    for s_ in scratch:
+        tail.append('    movq %s, %%rdi' % s_)
+        tail.append('    call obo_ci_free@PLT')
+    tail.append('    movq %s, %%rax' % ret)
+    lines = ['    push %rbp', '    mov %rsp, %rbp']
+    if frame:
+        lines.append('    sub $%d, %%rsp' % frame)
+    return lines + body + tail + ['    leave', '    ret']
+
+
 def generate_shim(spec):
     out = ['    .text']
     for f in spec['functions']:
         n = len(f['args'])
         sym = 'obo_native_' + f['symbol']
-        out += ['', '    .globl %s' % sym, '    .type %s,@function' % sym, '%s:' % sym,
-                '    push %rbp', '    mov %rsp, %rbp']
+        out += ['', '    .globl %s' % sym, '    .type %s,@function' % sym, '%s:' % sym]
+        if not all(a == 'i64' for a in f['args']):
+            out += kinds_thunk(f)
+            continue
+        out += ['    push %rbp', '    mov %rsp, %rbp']
         stack = list(range(6, n))
         if stack and len(stack) % 2 == 1:
             out.append('    sub $8, %rsp')
@@ -310,7 +718,7 @@ def generate_sigcheck(spec):
         out.append(d)
     for i, f in enumerate(spec['functions']):
         ret = c_arg(f['ret'])
-        args = ', '.join(c_arg(a) for a in f['args']) or 'void'
+        args = ', '.join(sig_params(f)) or 'void'
         out.append('static %s (*obo_sig_%d)(%s) __attribute__((unused)) = %s;'
                    % (ret, i, args, f['symbol']))
     out.append('')
@@ -522,11 +930,14 @@ def read_relocs(path):
         sym, types, ret, effects = parts[1], parts[3], parts[4], parts[5]
         if off < 1 or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', sym):
             raise ToolError("bad native relocation %r" % line)
-        if nargs < 0 or nargs > MAX_ARGS:
+        if nargs < 0 or nargs > MAX_KIND_ARGS:
             raise ToolError("native relocation arity %d out of range" % nargs)
         argtypes = [] if types == '-' else types.split(',')
-        if len(argtypes) != nargs or any(t != 'i64' for t in argtypes):
+        if len(argtypes) != nargs:
             raise ToolError("native relocation argument types do not match arity: %r" % line)
+        for t in argtypes:
+            if t != 'i64':
+                parse_kind(t)
         if ret != 'i64' or effects != 'freesall,writeshandles':
             raise ToolError("native relocation has an unexpected result/effect contract: %r" % line)
         out.append({'off': off, 'sym': sym, 'nargs': nargs,
@@ -548,8 +959,9 @@ def validate_calls(relocs, spec):
         if r['nargs'] != len(f['args']):
             raise ToolError("native call to %r has %d argument(s), spec says %d"
                             % (r['sym'], r['nargs'], len(f['args'])))
-        if r['argtypes'] != ['i64'] * len(f['args']):
-            raise ToolError("native call to %r has non-i64 argument types" % r['sym'])
+        if r['argtypes'] != list(f['args']):
+            raise ToolError("native call to %r has argument kinds %s, the spec says %s"
+                            % (r['sym'], ','.join(r['argtypes']) or '-', ','.join(f['args']) or '-'))
         seen.add(r['sym'])
     missing = set(by_sym) - seen
     if missing:
@@ -835,8 +1247,10 @@ def verify_doc(doc, base, full):
             raise ToolError("manifest symbol name is malformed")
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', str(sym['symbol'])):
             raise ToolError("manifest C symbol is malformed")
-        if not isinstance(sym['args'], list) or any(a != 'i64' for a in sym['args']):
-            raise ToolError("manifest symbol arguments are not i64")
+        if not isinstance(sym['args'], list) or not all(isinstance(a, str) for a in sym['args']):
+            raise ToolError("manifest symbol arguments are malformed")
+        if any(a != 'i64' for a in sym['args']):
+            check_kinds(str(sym['name']), sym['args'])
         if sym['ret'] not in ('i32', 'i64'):
             raise ToolError("manifest symbol result is not i32/i64")
     if sorted(doc['expected_thunks']) != sorted('obo_native_' + s['symbol'] for s in doc['symbols']):

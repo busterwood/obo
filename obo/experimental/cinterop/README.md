@@ -15,8 +15,9 @@ package version; the separate experimental P2T-b server adapter under
 Design:
 [`../../design/native-c-interop-design.md`](../../design/native-c-interop-design.md).
 
-The compiler boundary still supports **scalar `i64` arguments and `i32`/`i64`
-results only**. The toolkit now also has a small trusted **C resource registry**
+The compiler boundary supports **`i64` arguments, and argument kinds** (borrowed
+bytes and strings, NUL-checked C strings, `i32`/`u32` scalars, int arrays and
+nil-able byte-array lists; see *Argument kinds* below), with `i32`/`i64` results. The toolkit now also has a small trusted **C resource registry**
 and an explicit-close libpq adapter: obo receives generation/kind-checked
 integer tokens, never a raw `PGconn*`/`PGresult*`. Connection/Rows/Buffer close
 is explicit and normally written with obo `defer`; dropping an ordinary record
@@ -65,9 +66,9 @@ the one-time generic seam and does not require compiler changes per library.
   `.cbind` spec before the link. A direct call with missing/extra arguments or
   an incompatible symbol is rejected; a same-signature sidecar edit remains a
   trusted-input substitution, not a cryptographic authorization.
-- `i32` arguments are rejected in this prototype. `i32` returns remain
-  supported and sign-extended; boundary tests cover `INT32_MIN`, `INT32_MAX`
-  and `INT64_MIN/MAX`.
+- A bare `i32` argument is rejected in this prototype; `i32@k` (a kinds binding)
+  range-checks an obo int at the call instead. `i32` returns remain supported and
+  sign-extended; boundary tests cover `INT32_MIN`, `INT32_MAX` and `INT64_MIN/MAX`.
 - Native calls get a conservative compiler summary: `freesall` and
   `writeshandles`, with deep/handle invalidation. Wrapper `.sym` files assert
   that contract. No spec `pure` claim is accepted.
@@ -358,6 +359,85 @@ does not create roles/databases/schema, edit server configuration, start
 services, expose ports, install packages or read credential files. Without
 `CINTEROP_TEST_DSN`, the live section is skipped.
 
+## Argument kinds (stage (a))
+
+A binding whose `args` are all `i64` is the int form, as before. Any other binding
+is a **kinds binding**: its spec `args` names each C parameter as a kind, and its
+wrapper passes the same list as the `__cinterop` descriptor, with the obo arguments
+after it:
+
+```
+pub fn hash(b: &[]byte): int {
+    return __cinterop("bytes_hash", "borrow_bytes@0", b)
+}
+```
+
+`@k` names the obo argument, counted from 0. Each obo argument has exactly one data
+kind:
+
+| kind | obo argument | C parameters |
+| --- | --- | --- |
+| `i64@k` | int | `long` |
+| `i32@k` | int, range-checked (exit 11) | `int` |
+| `u32@k` | int, range-checked (exit 11); values above 2^31 are fine | `unsigned int` |
+| `borrow_bytes@k` | `[]byte` or `string` | `const void *, int` (data, length) |
+| `borrow_cstr@k` | `[]byte` or `string`, NUL-checked (exit 11) | `const char *`, a copy freed after the call |
+| `ints@k:i32`, `ints@k:u32` | `[]int`, each element range-checked (exit 11) | `const int *`, `const unsigned int *` |
+| `ints@k:len` | the element count of list `k`; reads no argument | `int` |
+| `nil_bytes_list@k` | `[]?[]byte` | `const char *const *` (NULL for nil), `const int *` (lengths) |
+| `null` | none | the spec's `ctypes` type, passed as NULL |
+| `const:<n>` | none | the spec's `ctypes` type, passed as the value `n` (e.g. `const:-1`) |
+
+Rules:
+
+- `null` and `const:<n>` have no obo argument, so their C type is not implied by
+  the kind. The spec gives it in `ctypes`, one entry per argument (a C type for each
+  `null`/`const`, `null` elsewhere), for example `"ctypes": ["const char *"]` for a
+  NULL `const char *`, `"void (*)(void *)"` for `const:-1` as a destructor, and
+  `"int"` for `const:5`. The signature check then compares that type with the
+  header exactly, like every other slot.
+- A `ctypes` entry is exactly one C type: an integer type from the fixed list, a
+  pointer `[const] T *...`, or a function pointer `R (*)(P, ...)` whose parameters
+  are pointer or integer types. A comma is allowed only inside the parameter list, so
+  `"void *, void *"` is refused, as are unbalanced parentheses, a declarator name
+  (`"void *p"`), two types, and a struct by value (the thunk passes every slot in a
+  register). A `ctypes` key on an int-form binding (all `i64`) is refused.
+- A `const:<n>` value must fit its integer type by width and sign: `unsigned int`
+  takes 0 to 4294967295, `int` takes -2147483648 to 2147483647, and a negative value
+  is refused for an unsigned type. A pointer or function-pointer type takes any 64-bit
+  value, such as `const:-1` for `SQLITE_TRANSIENT`. The magnitude is at most 17 digits.
+- Other slots keep their fixed types. A mismatched pointer slot is refused by the C
+  compiler's signature check, not by the obx compiler: the generated sigcheck
+  assignment is an incompatible-pointer error, and the build fails before link.
+- `ints@k:len` must name a list kind (`ints` or `nil_bytes_list`).
+- Element counts are capped only at `INT_MAX`, which is what the C length parameter
+  can hold. A per-library cap, such as libpq's 32 parameters, belongs to the wrapper
+  (design R10): the wrapper checks it and returns an error before the call.
+- A `borrow_*`, `ints` or `nil_bytes_list` argument is an array or string. Arrays are
+  passed as `&a`, under the existing `&T` argument rules (a temporary array is
+  refused by `&`). A string is passed by value. A string temporary, such as a call
+  result or a concatenation, lives until the end of its statement, so it is accepted.
+- The nil string and an empty array pass a non-NULL pointer with length 0.
+- Codegen (design 3.2): every argument expression runs first. The data pointers and
+  lengths are then read immediately before the call, so `f(&a, grow(&a))` passes the
+  grown array where the checker accepts the call. The checker adds no new rule.
+- Scratch copies (`borrow_cstr`, `ints`, `nil_bytes_list`) are freed after the call on
+  the normal return path. A contract violation exits 11 before the C call. The
+  hosted counter `obo_ci_scratch_live()` is 0 after each call; the test checks it.
+  On an exit-11 path the process ends without freeing scratch: the OS reclaims it.
+- The sidecar records the descriptor in its argtypes field, and the tool checks it
+  against the spec (arity and each kind) before the link. A kinds binding needs a
+  maintained `wrapper`; generated wrappers stay int-only.
+- Limits: at most 12 kinds per binding and 8 for the int form; an argument index
+  `@k` is below 16 (the compiler and the tool both refuse more); a kind takes one
+  `@k` argument (`null` and `const:<n>` take none); results are still `i32`/`i64`.
+
+The helpers the thunks call are in `host.c` (`obo_ci_*`), hosted builds only. They
+have hidden visibility, so they stay out of the dynamic symbol table and a shared
+library cannot bind to them. That prevents dynamic-symbol clashes only: a second
+static object in the same executable that defines an `obo_ci_*` name is a
+duplicate-symbol link error.
+
 ## Tests
 
 ```sh
@@ -375,7 +455,16 @@ calls, the freestanding ABI probe, argv/environment parity, `OBO_CHECK`/
 calls, incompatible substitutions, `i32` input rejection, header/declaration
 requirements, variadic rejection, missing definitions, `--check` policy,
 manifest metadata/file tampering, header changes, deleted/tampered relocations,
-missing wrapper `.sym`, and the libpq version probe. A libpq build failure is a
+missing wrapper `.sym`, the libpq version probe, and the argument kinds (`kinds()`:
+a `bytes` fixture with empty, 1 MiB, nil-string and embedded-NUL inputs, the NUL
+rejected by `borrow_cstr`, the `const:-1` recorder, the `f(&a, grow(&a))` timing,
+`u32` above `2^31`, `i32`/`u32`/element range exits 11, nil and empty list elements,
+the scratch counter, and refused spec and descriptor mismatches before link), the
+`null`/`const:<n>` slots typed by `ctypes` (a NULL `const char *`, a NULL struct
+pointer, a `const:-1` function-pointer destructor, `const:5` for an `int`, and
+refusals for a struct swap, a pointer mismatch, a missing or by-value type), and
+seven to eleven C parameters with odd and even stack-argument counts, each checked
+for a 16-byte aligned callee frame and for its values). A libpq build failure is a
 test failure when `libpq.so.5` is present; the test skips only when the library
 is absent.
 
@@ -432,6 +521,10 @@ The experimental database packages that build on this toolkit are in
 declarations-only SQLite adapter, both explicit-close and tested.
 
 ## Known limits
+
+- Argument kinds: no ASan run over the obo image itself. The scratch check is the
+  counter above, not a sanitizer. Contract exits (11) end the process without
+  freeing scratch, which the OS reclaims.
 
 - The compiler still emits a fixed `ET_EXEC`; the tool extracts its load regions
   into a relocatable object. Production should emit a real object with

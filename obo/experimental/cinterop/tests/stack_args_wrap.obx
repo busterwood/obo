@@ -1,0 +1,21 @@
+module stackargs
+
+pub fn f7(a: int, s: string, iv: &[]int, l: &[]?[]byte): int {
+    return __cinterop("f7", "i64@0,borrow_cstr@1,ints@2:i32,ints@2:len,nil_bytes_list@3,ints@3:len", a, s, iv, l)
+}
+
+pub fn f8(a: int, s: string, iv: &[]int, l: &[]?[]byte, x: int): int {
+    return __cinterop("f8", "i64@0,borrow_cstr@1,ints@2:i32,ints@2:len,nil_bytes_list@3,ints@3:len,i32@4", a, s, iv, l, x)
+}
+
+pub fn f9(a: int, s: string, iv: &[]int, l: &[]?[]byte, b: string): int {
+    return __cinterop("f9", "i64@0,borrow_cstr@1,ints@2:i32,ints@2:len,nil_bytes_list@3,ints@3:len,borrow_bytes@4", a, s, iv, l, b)
+}
+
+pub fn f10(a: int, s: string, iv: &[]int, l: &[]?[]byte, b: &[]byte, x: int): int {
+    return __cinterop("f10", "i64@0,borrow_cstr@1,ints@2:i32,ints@2:len,nil_bytes_list@3,ints@3:len,borrow_bytes@4,i32@5", a, s, iv, l, b, x)
+}
+
+pub fn f11(a: int, s: string, iv: &[]int, l: &[]?[]byte, b: &[]byte, x: int, u: int): int {
+    return __cinterop("f11", "i64@0,borrow_cstr@1,ints@2:i32,ints@2:len,nil_bytes_list@3,ints@3:len,borrow_bytes@4,i32@5,u32@6", a, s, iv, l, b, x, u)
+}

@@ -1374,6 +1374,521 @@ def openssl_qualification(tmp):
     print('hosted OpenSSL qualification: ok (TLS 1.3 memory BIO, ALPN, provider, '
           'RAND, pthread_once, TLS errno/error queue, atexit/cleanup; ASAN/UBSAN)')
 
+def fnv1a_mask(data):
+    h = 1469598103934665603
+    for b in data:
+        h = ((h ^ b) * 1099511628211) & ((1 << 64) - 1)
+    return h & 0x7fffffffffffffff
+
+
+# (obo name, args (descriptors), C symbol)
+KIND_FUNCS = [
+    ('bytes_hash', ['borrow_bytes@0'], 'bytes_hash'),
+    ('str_hash', ['borrow_bytes@0'], 'str_hash'),
+    ('bytes_probe', ['borrow_bytes@0'], 'bytes_probe'),
+    ('str_probe', ['borrow_bytes@0'], 'str_probe'),
+    ('cstr_len', ['borrow_cstr@0'], 'cstr_len'),
+    ('rec_const', ['const:-1'], 'rec_const'),
+    ('ui_echo', ['u32@0'], 'ui_echo'),
+    ('i_echo', ['i32@0'], 'i_echo'),
+    ('ints_sum', ['ints@0:i32', 'ints@0:len'], 'ints_sum'),
+    ('ints_u_last', ['ints@0:u32', 'ints@0:len'], 'ints_u_last'),
+    ('list_probe', ['nil_bytes_list@0', 'ints@0:len'], 'list_probe'),
+    ('timing_probe', ['borrow_bytes@0', 'i64@1'], 'timing_probe'),
+    ('scratch_live', [], 'scratch_live'),
+]
+
+KIND_WRAPPER = """module bytesfix
+
+pub fn bytes_hash(b: &[]byte): int {
+    return __cinterop("bytes_hash", "borrow_bytes@0", b)
+}
+
+pub fn str_hash(s: string): int {
+    return __cinterop("str_hash", "borrow_bytes@0", s)
+}
+
+pub fn bytes_probe(b: &[]byte): int {
+    return __cinterop("bytes_probe", "borrow_bytes@0", b)
+}
+
+pub fn str_probe(s: string): int {
+    return __cinterop("str_probe", "borrow_bytes@0", s)
+}
+
+pub fn cstr_len(s: string): int {
+    return __cinterop("cstr_len", "borrow_cstr@0", s)
+}
+
+pub fn rec_const(): int {
+    return __cinterop("rec_const", "const:-1")
+}
+
+pub fn ui_echo(v: int): int {
+    return __cinterop("ui_echo", "u32@0", v)
+}
+
+pub fn i_echo(v: int): int {
+    return __cinterop("i_echo", "i32@0", v)
+}
+
+pub fn ints_sum(v: &[]int): int {
+    return __cinterop("ints_sum", "ints@0:i32,ints@0:len", v)
+}
+
+pub fn ints_u_last(v: &[]int): int {
+    return __cinterop("ints_u_last", "ints@0:u32,ints@0:len", v)
+}
+
+pub fn list_probe(v: &[]?[]byte): int {
+    return __cinterop("list_probe", "nil_bytes_list@0,ints@0:len", v)
+}
+
+pub fn timing_probe(b: &[]byte, g: int): int {
+    return __cinterop("timing_probe", "borrow_bytes@0,i64@1", b, g)
+}
+
+pub fn scratch_live(): int {
+    return __cinterop("scratch_live")
+}
+"""
+
+KIND_MAIN = """fn bytesN(n: int): []byte {
+    var out = new []byte(0)
+    for i in 0..n {
+        append(out, byte(i % 251))
+    }
+    return out
+}
+
+fn main() {
+    let empty = new []byte(0)
+    println("empty ", bytesfix::bytes_hash(&empty))
+    let mib = bytesN(1048576)
+    println("mib ", bytesfix::bytes_hash(&mib))
+    var one = new []byte(0)
+    append(one, byte(9))
+    println("one ", bytesfix::bytes_probe(&one))
+    var z: string
+    println("nil ", bytesfix::str_probe(z))
+    println("empty_str ", bytesfix::str_probe(""))
+    let e = "a\\0b"
+    var eb = new []byte(0)
+    append(eb, byte(97))
+    append(eb, byte(0))
+    append(eb, byte(98))
+    println("emb ", bytesfix::bytes_hash(&eb))
+    println("embs ", bytesfix::str_hash(e))
+    println("embp ", bytesfix::bytes_probe(&eb))
+    println("cstr ", bytesfix::cstr_len("hello"))
+    println("utf8 ", bytesfix::cstr_len("héllo"))
+    println("const ", bytesfix::rec_const())
+    println("u32 ", bytesfix::ui_echo(3000000000))
+    println("i32 ", bytesfix::i_echo(-5))
+    var iv = new []int(0)
+    append(iv, 1)
+    append(iv, -2)
+    append(iv, 3)
+    println("sum ", bytesfix::ints_sum(&iv))
+    var uv = new []int(0)
+    append(uv, 1)
+    append(uv, 3000000000)
+    println("ulast ", bytesfix::ints_u_last(&uv))
+    var l = new []?[]byte(0)
+    append(l, nil)
+    append(l, new []byte(0))
+    var ab = new []byte(0)
+    append(ab, byte(97))
+    append(ab, byte(98))
+    append(l, ab)
+    println("list ", bytesfix::list_probe(&l))
+    println("live ", bytesfix::scratch_live())
+}
+"""
+
+KIND_TIMING = """fn grow(mut a: &[]byte): int {
+    append(a, byte(2))
+    return 7
+}
+
+fn main() {
+    var a = new []byte(0)
+    append(a, byte(1))
+    println("timing ", bytesfix::timing_probe(&a, grow(&a)))
+}
+"""
+
+
+def kinds_spec(module, funcs, wrapper='bytesfix_wrap.obx'):
+    return {'format': 'cinterop-proto/1', 'module': module, 'platform': 'x86_64-linux-gnu',
+            'abi': 'sysv-amd64', 'sources': ['bytes_fixture.c'], 'headers': ['bytes_fixture.h'],
+            'libs': [], 'cflags': [], 'wrapper': wrapper,
+            'functions': [kinds_entry(sym, args) for _, args, sym in funcs]}
+
+
+def kinds_entry(sym, args):
+    entry = {'name': sym, 'symbol': sym, 'args': args, 'ret': 'i64', 'effects': ['impure']}
+    ct = ['void *' if (a == 'null' or a.startswith('const:')) else None for a in args]
+    if any(ct):
+        entry['ctypes'] = ct
+    return entry
+
+
+def kinds(tmp):
+    """Stage (a) argument kinds: borrow_bytes, borrow_cstr, null/const, i32, u32, ints, nil_bytes_list,
+    scratch freed, the borrow-timing rule, and negative spec tests (design section 9)."""
+    d = os.path.join(tmp, 'kinds_src')
+    os.makedirs(d)
+    for name in ('bytes_fixture.c', 'bytes_fixture.h'):
+        shutil.copy(os.path.join(HERE, name), os.path.join(d, name))
+    open(os.path.join(d, 'bytesfix_wrap.obx'), 'w').write(KIND_WRAPPER)
+    spec_path = os.path.join(d, 'bytesfix.cbind')
+    json.dump(kinds_spec('bytesfix', KIND_FUNCS), open(spec_path, 'w'), indent=2)
+
+    def app(name, body):
+        ad = os.path.join(tmp, 'kapp_' + name)
+        os.makedirs(ad)
+        path = os.path.join(ad, 'app.obx')
+        open(path, 'w').write('module app\n\nimport "bytesfix.obx"\n\n' + body)
+        out = os.path.join(ad, 'out')
+        return build(spec_path, path, out), out
+
+    # Happy path: one app covering the positive cases.
+    p, out = app('main', KIND_MAIN)
+    need(p, 'kinds main build')
+    p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')), 'kinds main run')
+    want = [
+        'empty %d' % fnv1a_mask(b''),
+        'mib %d' % fnv1a_mask(bytes(i % 251 for i in range(1 << 20))),
+        'one 3',
+        'nil 1',
+        'empty_str 1',
+        'emb %d' % fnv1a_mask(b'a\x00b'),
+        'embs %d' % fnv1a_mask(b'a\x00b'),
+        'embp 7',
+        'cstr 5',
+        'utf8 6',
+        'const 1',
+        'u32 3000000000',
+        'i32 -5',
+        'sum 2',
+        'ulast 3000000000',
+        'list 292',
+        'live 0',
+    ]
+    got = p.stdout.splitlines()
+    if got != want:
+        raise Fail("kinds main output mismatch:\n got  %r\n want %r" % (got, want))
+    relocs = open(os.path.join(out, 'native.relocs')).read().splitlines()
+    if not any(' ints_sum 2 ints@0:i32,ints@0:len ' in ln for ln in relocs):
+        raise Fail("kinds sidecar does not carry the ints_sum descriptor: %r" % relocs)
+
+    # Exit 11 contracts (design D4): each trap happens before the C call.
+    traps = [
+        ('cstr_nul', 'fn main() {\n    let s = "a\\0b"\n    println(bytesfix::cstr_len(s))\n}\n', 'NUL'),
+        ('u32_neg', 'fn main() {\n    println(bytesfix::ui_echo(-1))\n}\n', 'out of range'),
+        ('u32_big', 'fn main() {\n    println(bytesfix::ui_echo(4294967296))\n}\n', 'out of range'),
+        ('i32_big', 'fn main() {\n    println(bytesfix::i_echo(2147483648))\n}\n', 'out of range'),
+        ('i32_elem', 'fn main() {\n    var v = new []int(0)\n    append(v, 2147483648)\n'
+                     '    println(bytesfix::ints_sum(&v))\n}\n', 'out of range'),
+        ('u32_elem', 'fn main() {\n    var v = new []int(0)\n    append(v, 4294967296)\n'
+                     '    println(bytesfix::ints_u_last(&v))\n}\n', 'out of range'),
+    ]
+    for name, body, text in traps:
+        p, out = app(name, body)
+        need(p, 'kinds %s build' % name)
+        r = run([os.path.join(out, 'app')])
+        if r.returncode != 11 or text not in r.stderr:
+            raise Fail("kinds %s: want exit 11 with %r, got %d: %s"
+                       % (name, text, r.returncode, (r.stderr or r.stdout).strip()))
+
+    # Borrow timing (design 3.2, section 9): f(&a, grow(&a)).
+    p, out = app('timing', KIND_TIMING)
+    if p.returncode == 0:
+        r = need(run([os.path.join(out, 'app')]), 'kinds timing run')
+        # The native sees the grown array: length 2, g 7.
+        if r.stdout.strip() != 'timing 2007':
+            raise Fail("kinds timing: the native did not see the grown array: %r" % r.stdout.strip())
+    elif 'point' not in (p.stderr + p.stdout):
+        raise Fail("kinds timing: refused, but not by the overlap rule:\n%s" % (p.stderr + p.stdout).strip())
+
+    # Negative spec tests: refused before link, so no executable is produced.
+    def refused(name, spec, wrapper_text, want_text):
+        nd = os.path.join(tmp, 'kneg_' + name)
+        os.makedirs(nd)
+        for n in ('bytes_fixture.c', 'bytes_fixture.h'):
+            shutil.copy(os.path.join(d, n), os.path.join(nd, n))
+        if wrapper_text is not None:
+            open(os.path.join(nd, 'bytesfix_wrap.obx'), 'w').write(wrapper_text)
+        sp = os.path.join(nd, 'bytesfix.cbind')
+        json.dump(spec, open(sp, 'w'), indent=2)
+        ad = os.path.join(nd, 'app.obx')
+        open(ad, 'w').write('module app\n\nimport "bytesfix.obx"\n\n' + KIND_MAIN)
+        out = os.path.join(nd, 'out')
+        q = build(sp, ad, out)
+        if q.returncode == 0 or want_text not in (q.stderr + q.stdout):
+            raise Fail("kinds negative %s: want refusal with %r, got rc %d: %s"
+                       % (name, want_text, q.returncode, (q.stderr + q.stdout).strip()))
+        if os.path.exists(os.path.join(out, 'app')):
+            raise Fail("kinds negative %s linked an executable" % name)
+
+    def edited(fn_name, key, value):
+        sp = kinds_spec('bytesfix', KIND_FUNCS)
+        for f in sp['functions']:
+            if f['name'] == fn_name:
+                f[key] = value
+        return sp
+
+    # The spec says two arguments; the C header says one. The signature check refuses it.
+    bad = edited('i_echo', 'args', ['i32@0', 'i64@1'])
+    refused('arity_spec', bad, KIND_WRAPPER, 'incompatible')
+    # The descriptor names two arguments; the call passes one.
+    wrong_arity = KIND_WRAPPER.replace('"i32@0", v)', '"i32@0,i64@1", v)')
+    refused('arity_call', kinds_spec('bytesfix', KIND_FUNCS), wrong_arity, 'takes 2 argument(s)')
+    # A spec that says i32 where the wrapper passes u32: the sidecar kinds disagree.
+    wrong = KIND_WRAPPER.replace('"i32@0", v)', '"u32@0", v)')
+    refused('kind_mismatch', kinds_spec('bytesfix', KIND_FUNCS), wrong, 'argument kinds')
+    refused('bare_i32', edited('i_echo', 'args', ['i32', 'i64@1']), KIND_WRAPPER,
+            'i32 arguments need an argument index')
+    refused('len_without_list', edited('ints_sum', 'args', ['ints@0:len']), KIND_WRAPPER,
+            'counts a list')
+    nowrap = kinds_spec('bytesfix', KIND_FUNCS)
+    del nowrap['wrapper']
+    refused('no_wrapper', nowrap, None, 'needs a maintained wrapper')
+    refused('flag_on_cstr', edited('cstr_len', 'args', ['borrow_cstr@0:x']), KIND_WRAPPER,
+            'takes no flag')
+    print('kinds tests: ok')
+
+
+
+# Null and const slots take the C type from the spec's ctypes annotation (sig_params), so they are checked
+# against the header exactly. These are the cases the design needs: a NULL for a const char *, a NULL for a
+# struct pointer, const:-1 as a function-pointer destructor, and const:5 for an int.
+NC_POS = [
+    {'name': 'nc_cstr_null', 'symbol': 'nc_cstr_null', 'args': ['null'], 'ctypes': ['const char *']},
+    {'name': 'nc_struct_null', 'symbol': 'nc_struct_null', 'args': ['null'], 'ctypes': ['struct foo *']},
+    {'name': 'nc_destructor', 'symbol': 'nc_destructor', 'args': ['borrow_cstr@0', 'const:-1'],
+     'ctypes': [None, 'void (*)(void *)']},
+    {'name': 'nc_int_const', 'symbol': 'nc_int_const', 'args': ['const:5'], 'ctypes': ['int']},
+    {'name': 'nc_uint', 'symbol': 'nc_uint', 'args': ['const:4294967295'], 'ctypes': ['unsigned int']},
+]
+
+NC_POS_WRAP = """module nullconst
+
+pub fn cstr_null(): int {
+    return __cinterop("nc_cstr_null", "null")
+}
+
+pub fn struct_null(): int {
+    return __cinterop("nc_struct_null", "null")
+}
+
+pub fn destructor(s: string): int {
+    return __cinterop("nc_destructor", "borrow_cstr@0,const:-1", s)
+}
+
+pub fn int_const(): int {
+    return __cinterop("nc_int_const", "const:5")
+}
+
+pub fn uint_max(): int {
+    return __cinterop("nc_uint", "const:4294967295")
+}
+"""
+
+NC_APP = """fn main() {
+    println("cstr_null ", nullconst::cstr_null())
+    println("struct_null ", nullconst::struct_null())
+    println("destructor ", nullconst::destructor("hello"))
+    println("int_const ", nullconst::int_const())
+    println("uint_max ", nullconst::uint_max())
+}
+"""
+
+NC_BAD = [
+    ('ptr_mismatch', [{'name': 'nc_bytes_wrong', 'symbol': 'nc_bytes_wrong', 'args': ['borrow_bytes@0'],
+                       'ctypes': [None]}],
+     'pub fn bytes_wrong(b: &[]byte): int {\n    return __cinterop("nc_bytes_wrong", "borrow_bytes@0", b)\n}\n',
+     'incompatible'),
+    ('struct_swap', [{'name': 'nc_struct_null_bad', 'symbol': 'nc_struct_null_bad', 'args': ['null'],
+                      'ctypes': ['struct bar *']}],
+     'pub fn struct_null_bad(): int {\n    return __cinterop("nc_struct_null_bad", "null")\n}\n',
+     'incompatible'),
+    ('null_no_ctype', [{'name': 'nc_struct_null', 'symbol': 'nc_struct_null', 'args': ['null']}],
+     'pub fn struct_null(): int {\n    return __cinterop("nc_struct_null", "null")\n}\n',
+     'needs its C parameter type'),
+    ('struct_by_value', [{'name': 'nc_struct_null', 'symbol': 'nc_struct_null', 'args': ['null'],
+                          'ctypes': ['struct foo']}],
+     'pub fn struct_null(): int {\n    return __cinterop("nc_struct_null", "null")\n}\n',
+     'not a pointer or an integer type'),
+    # One C type only: a comma, unbalanced parentheses, a trailing declarator name, two types.
+    ('comma_injection', [{'name': 'nc_two', 'symbol': 'nc_two', 'args': ['null'],
+                          'ctypes': ['void *, void *']}],
+     'pub fn two(): int {\n    return __cinterop("nc_two", "null")\n}\n',
+     'comma outside a function parameter list'),
+    ('unbalanced_parens', [{'name': 'nc_destructor', 'symbol': 'nc_destructor',
+                            'args': ['borrow_cstr@0', 'const:-1'], 'ctypes': [None, 'void (*)(void *']}],
+     'pub fn destructor(s: string): int {\n    return __cinterop("nc_destructor", "borrow_cstr@0,const:-1", s)\n}\n',
+     'unbalanced parentheses'),
+    ('trailing_declarator', [{'name': 'nc_struct_null', 'symbol': 'nc_struct_null', 'args': ['null'],
+                              'ctypes': ['struct foo *p']}],
+     'pub fn struct_null(): int {\n    return __cinterop("nc_struct_null", "null")\n}\n',
+     'declarator is not allowed'),
+    ('two_types', [{'name': 'nc_struct_null', 'symbol': 'nc_struct_null', 'args': ['null'],
+                    'ctypes': ['void int']}],
+     'pub fn struct_null(): int {\n    return __cinterop("nc_struct_null", "null")\n}\n',
+     'two C types'),
+    ('int_for_long', [{'name': 'nc_int_long', 'symbol': 'nc_int_long', 'args': ['null'],
+                       'ctypes': ['int']}],
+     'pub fn int_long(): int {\n    return __cinterop("nc_int_long", "null")\n}\n',
+     'incompatible'),
+    # Const values must fit the ctype by width and sign; a pointer ctype takes any 64-bit value.
+    ('int_const_overflow', [{'name': 'nc_int_const', 'symbol': 'nc_int_const', 'args': ['const:4294967296'],
+                             'ctypes': ['int']}],
+     'pub fn int_const(): int {\n    return __cinterop("nc_int_const", "const:4294967296")\n}\n',
+     'does not fit int'),
+    ('uint_const_overflow', [{'name': 'nc_uint', 'symbol': 'nc_uint', 'args': ['const:4294967296'],
+                              'ctypes': ['unsigned int']}],
+     'pub fn uint_max(): int {\n    return __cinterop("nc_uint", "const:4294967296")\n}\n',
+     'does not fit unsigned int'),
+    ('uint_const_negative', [{'name': 'nc_uint', 'symbol': 'nc_uint', 'args': ['const:-1'],
+                              'ctypes': ['unsigned int']}],
+     'pub fn uint_max(): int {\n    return __cinterop("nc_uint", "const:-1")\n}\n',
+     'does not fit unsigned int'),
+    ('const_too_many_digits', [{'name': 'nc_int_const', 'symbol': 'nc_int_const',
+                                'args': ['const:100000000000000000'], 'ctypes': ['int']}],
+     'pub fn int_const(): int {\n    return __cinterop("nc_int_const", "const:100000000000000000")\n}\n',
+     'at most 17 digits'),
+    # ctypes is for argument kinds; an int-form binding has no null or const slot.
+    ('int_form_ctypes', [{'name': 'nc_int_long', 'symbol': 'nc_int_long', 'args': ['i64'],
+                          'ctypes': ['long']}],
+     'pub fn int_long(v: int): int {\n    return __cinterop("nc_int_long", v)\n}\n',
+     'int-form binding'),
+]
+
+STACK_FUNCS = [
+    ('f7', ['i64@0', 'borrow_cstr@1', 'ints@2:i32', 'ints@2:len', 'nil_bytes_list@3', 'ints@3:len']),
+    ('f8', ['i64@0', 'borrow_cstr@1', 'ints@2:i32', 'ints@2:len', 'nil_bytes_list@3', 'ints@3:len', 'i32@4']),
+    ('f9', ['i64@0', 'borrow_cstr@1', 'ints@2:i32', 'ints@2:len', 'nil_bytes_list@3', 'ints@3:len',
+            'borrow_bytes@4']),
+    ('f10', ['i64@0', 'borrow_cstr@1', 'ints@2:i32', 'ints@2:len', 'nil_bytes_list@3', 'ints@3:len',
+             'borrow_bytes@4', 'i32@5']),
+    ('f11', ['i64@0', 'borrow_cstr@1', 'ints@2:i32', 'ints@2:len', 'nil_bytes_list@3', 'ints@3:len',
+             'borrow_bytes@4', 'i32@5', 'u32@6']),
+]
+
+STACK_APP = """module app
+
+import "stackargs.obx"
+
+fn main() {
+    var iv = new []int(0)
+    append(iv, 10)
+    append(iv, -20)
+    append(iv, 2147483647)
+    var l = new []?[]byte(0)
+    append(l, nil)
+    append(l, new []byte(0))
+    var ab2 = new []byte(0)
+    append(ab2, byte(97))
+    append(ab2, byte(0))
+    append(ab2, byte(98))
+    append(l, ab2)
+    var ab = new []byte(0)
+    append(ab, byte(97))
+    append(ab, byte(0))
+    append(ab, byte(98))
+    println("r7 ", stackargs::f7(42, "hello", &iv, &l))
+    println("r8 ", stackargs::f8(42, "hello", &iv, &l, -7))
+    println("r9 ", stackargs::f9(42, "hello", &iv, &l, "xyz"))
+    println("r10 ", stackargs::f10(42, "hello", &iv, &l, &ab, -2147483648))
+    println("r11 ", stackargs::f11(42, "hello", &iv, &l, &ab, 2147483647, 4294967295))
+}
+"""
+
+# The callees flush their own lines as they run; obo's println output is buffered to exit.
+STACK_WANT = [
+    'f7 al=1 a=42 s=hello iv=[10,-20,2147483647] m=3 l=[nil,0:,3:610062]',
+    'f8 al=1 a=42 s=hello iv=[10,-20,2147483647] m=3 l=[nil,0:,3:610062] x=-7',
+    'f9 al=1 a=42 s=hello iv=[10,-20,2147483647] m=3 l=[nil,0:,3:610062] b=3:78797a',
+    'f10 al=1 a=42 s=hello iv=[10,-20,2147483647] m=3 l=[nil,0:,3:610062] b=3:610062 x=-2147483648',
+    'f11 al=1 a=42 s=hello iv=[10,-20,2147483647] m=3 l=[nil,0:,3:610062] b=3:610062 x=2147483647 u=4294967295',
+    'r7 7', 'r8 8', 'r9 9', 'r10 10', 'r11 11',
+]
+
+
+def fixture_spec(module, funcs, sources, headers, wrapper, cflags=()):
+    return {'format': 'cinterop-proto/1', 'module': module, 'platform': 'x86_64-linux-gnu',
+            'abi': 'sysv-amd64', 'sources': sources, 'headers': headers, 'libs': [],
+            'cflags': list(cflags), 'wrapper': wrapper,
+            'functions': [dict({'ret': 'i64', 'effects': ['impure']}, **f) for f in funcs]}
+
+
+def stack_args_funcs():
+    return [{'name': n, 'symbol': n, 'args': a} for n, a in STACK_FUNCS]
+
+
+def null_const_slots(tmp):
+    """Null and const slots type from ctypes, checked against the header exactly; a genuine
+    mismatch on a normal pointer slot or a struct swap is still refused before link."""
+    d = os.path.join(tmp, 'nullconst_src')
+    os.makedirs(d)
+    for name in ('nullconst_fixture.c', 'nullconst_fixture.h'):
+        shutil.copy(os.path.join(HERE, name), os.path.join(d, name))
+    open(os.path.join(d, 'nullconst_wrap.obx'), 'w').write(NC_POS_WRAP)
+    sp = os.path.join(d, 'nullconst.cbind')
+    json.dump(fixture_spec('nullconst', NC_POS, ['nullconst_fixture.c'], ['nullconst_fixture.h'],
+                           'nullconst_wrap.obx'), open(sp, 'w'), indent=2)
+    ad = os.path.join(d, 'app.obx')
+    open(ad, 'w').write('module app\n\nimport "nullconst.obx"\n\n' + NC_APP)
+    out = os.path.join(d, 'out')
+    need(build(sp, ad, out), 'null/const slot build')
+    p = need(run([os.path.join(out, 'app')]), 'null/const slot run')
+    want = ['cstr_null 1', 'struct_null 1', 'destructor 105', 'int_const 5', 'uint_max 4294967295']
+    if p.stdout.splitlines() != want:
+        raise Fail("null/const slot output %r, want %r" % (p.stdout.splitlines(), want))
+
+    for name, funcs, wrap, want_text in NC_BAD:
+        nd = os.path.join(tmp, 'ncneg_' + name)
+        os.makedirs(nd)
+        for n in ('nullconst_fixture.c', 'nullconst_fixture.h'):
+            shutil.copy(os.path.join(HERE, n), os.path.join(nd, n))
+        open(os.path.join(nd, 'nullconst_wrap.obx'), 'w').write('module nullconst\n\n' + wrap)
+        nsp = os.path.join(nd, 'nullconst.cbind')
+        json.dump(fixture_spec('nullconst', funcs, ['nullconst_fixture.c'], ['nullconst_fixture.h'],
+                               'nullconst_wrap.obx'), open(nsp, 'w'), indent=2)
+        nad = os.path.join(nd, 'app.obx')
+        open(nad, 'w').write('module app\n\nimport "nullconst.obx"\n\nfn main() {}\n')
+        nout = os.path.join(nd, 'out')
+        q = build(nsp, nad, nout)
+        if q.returncode == 0 or want_text not in (q.stderr + q.stdout):
+            raise Fail("null/const negative %s: want refusal with %r, got rc %d: %s"
+                       % (name, want_text, q.returncode, (q.stderr + q.stdout).strip()[-400:]))
+        if os.path.exists(os.path.join(nout, 'app')):
+            raise Fail("null/const negative %s linked an executable" % name)
+    print('null/const slot tests: ok')
+
+
+def stack_args(tmp):
+    """Seven to eleven C parameters: stack-passed arguments with odd and even counts. Each callee
+    checks it is entered with a 16-byte aligned frame, and every value arrives unchanged."""
+    d = os.path.join(tmp, 'stack_args_src')
+    os.makedirs(d)
+    for name in ('stack_args_fixture.c', 'stack_args_fixture.h', 'stack_args_wrap.obx'):
+        shutil.copy(os.path.join(HERE, name), os.path.join(d, name))
+    sp = os.path.join(d, 'stackargs.cbind')
+    json.dump(fixture_spec('stackargs', stack_args_funcs(), ['stack_args_fixture.c'],
+                           ['stack_args_fixture.h'], 'stack_args_wrap.obx',
+                           cflags=['-fno-omit-frame-pointer']), open(sp, 'w'), indent=2)
+    ad = os.path.join(d, 'app.obx')
+    open(ad, 'w').write(STACK_APP)
+    out = os.path.join(d, 'out')
+    need(build(sp, ad, out), 'stack args build')
+    p = need(run([os.path.join(out, 'app')]), 'stack args run')
+    if p.stdout.splitlines() != STACK_WANT:
+        raise Fail("stack args output:\n got  %r\n want %r" % (p.stdout.splitlines(), STACK_WANT))
+    print('stack-argument tests: ok')
+
 
 def main():
     # The guard/deep-recursion tests deliberately fault. A host core-dump pipe
@@ -1401,6 +1916,9 @@ def main():
         cache_manifest_self_test(tmp)
         openssl_qualification(tmp)
         sanitizer_adapters(tmp)
+        kinds(tmp)
+        null_const_slots(tmp)
+        stack_args(tmp)
         libpq_live(tmp)
         print('cinterop tests ok')
         return 0
