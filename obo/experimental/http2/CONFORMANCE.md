@@ -93,9 +93,13 @@ process; long-running production profiles should raise
 
 ## Triage of the initial failures, and fixes
 
-Initial baseline before the fixes below: h2c 137/146 (9 failures), TLS
-103/146 (43 failures). The extra TLS failures were all control frames that
-stalled with no application work pending.
+Initial baseline before the fixes below was observed approximately in single
+runs: h2c about 137/146 (9 failures), TLS about 103/146 (43 failures). Repeated
+baseline runs varied (for example h2c 136/137 and TLS 100/98) because the
+stalls and timeouts interact with the tool's per-connection sequencing; treat
+those baseline counts as approximate observations. The final 145/146 default
+and 146/147 strict results are stable. The extra TLS failures were control
+frames that stalled with no application work pending.
 
 Fixed real server/protocol defects:
 
@@ -105,9 +109,10 @@ Fixed real server/protocol defects:
    closed streams, so frames after RST_STREAM/END_STREAM were not rejected.
    RFC 9113 5.1 requires STREAM_CLOSED handling. Both are removed; nghttp2 now
    retains at most `maxConcurrentStreams` closed streams, which is bounded.
-   This fixes h2spec 5.1.8, 5.1.9, 5.1.11, 5.1.12 and the PRIORITY tests
-   5.3.1/2 and 6.3/1. The server never schedules on the retained RFC 7540
-   priority tree.
+   This fixes h2spec 5.1/5, 5.1.8, 5.1.9, 5.1.11, 5.1.12 and the PRIORITY
+   tests 5.3.1/2 and 6.3/1. The application/shim implements no priority policy;
+   nghttp2 1.59 may use the retained RFC 7540 dependency tree for internal
+   scheduling.
 2. **Peer GOAWAY stalled the drain.** `nghttp2_submit_shutdown_notice` is a
    no-op once the peer has sent GOAWAY, so waiting for its send callback never
    advanced. `h2_conn_drain` now submits the final GOAWAY directly when a peer
@@ -123,16 +128,15 @@ Fixed real server/protocol defects:
    `h2_conn_want_write`/`http2::canWrite` now keeps the server driving send, and
    the drain-complete check is repeated after a final GOAWAY flush. The
    response-flow-control regression test now also exercises this path.
-5. **Closed stream shells are dropped explicitly** in the server's
-   `closeStreamAt` after `closeStream`, matching the other stream-close paths.
 
 Not server defects / unsupported optional features:
 
 - 5.1.1/2 above: upstream nghttp2 conservative stream-id handling; also fails
   on nghttpd 1.59.0.
-- RFC 7540 priority scheduling is not implemented (priority state is retained
-  only for validation and is never used to schedule). RFC 9218 priority signals
-  are not advertised.
+- The application/shim implements no RFC 7540 priority policy. Priority state
+  is retained only for validation, and nghttp2 1.59 may use the retained
+  dependency tree for internal scheduling. RFC 9218 priority signals are not
+  advertised.
 - Server push, `CONNECT`, extended CONNECT, 1xx interim responses, combined
   H1/H2 ALPN dispatch and automatic `Date` remain non-goals as documented in
   `README.md`.

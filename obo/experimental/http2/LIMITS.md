@@ -125,8 +125,9 @@ budget.
   detection still works; that internal state is outside the H2 reservation,
   like the rest of nghttp2's heap. The shim does not advertise
   `SETTINGS_NO_RFC7540_PRIORITIES`, because doing so makes nghttp2 discard the
-  closed-stream state. RFC 7540 priority frames are validated but never used
-  to schedule.
+  closed-stream state. The application/shim implements no priority policy;
+  RFC 7540 priority frames are validated, and nghttp2 1.59 may use the
+  retained dependency tree for internal scheduling.
 - Connection close frees the session, rings and arenas once, and orphans live
   registered stream entries (their shells still close and free them).
   Unregistered streams are freed with the connection. A never-closed stream

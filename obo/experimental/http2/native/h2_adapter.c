@@ -1409,8 +1409,9 @@ long h2_conn_new(long option_token, long option_len) {
     /* Do not advertise SETTINGS_NO_RFC7540_PRIORITIES. RFC 9218 would let us
      * ignore PRIORITY frames, but nghttp2 then destroys closed streams and
      * loses the RFC 9113 5.1 STREAM_CLOSED detection required for frames that
-     * arrive after RST_STREAM or END_STREAM. We never schedule on the retained
-     * RFC 7540 priority tree; nghttp2 bounds closed streams by the advertised
+     * arrive after RST_STREAM or END_STREAM. The application/shim implements
+     * no priority policy; nghttp2 may use the retained RFC 7540 dependency
+     * tree for internal scheduling and bounds closed streams by the advertised
      * MAX_CONCURRENT_STREAMS. */
     r = nghttp2_submit_settings(c->session, NGHTTP2_FLAG_NONE, iv, niv);
     if (r != 0) goto nomem;
