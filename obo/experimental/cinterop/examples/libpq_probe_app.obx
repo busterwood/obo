@@ -12,12 +12,12 @@ fn main() {
             println("empty_status=", r.status())
             println("empty_rows=", r.ntuples())
             println("empty_fields=", r.nfields())
-            println("empty_closed=", r.close())
+            r.close()
+            println("empty_closed=", !r.is_open())
         }
         err(m, c) {
             println("empty_error=", m, " (", c, ")")
             exit(1)
         }
     }
-    println("live=", libpq::live_resources())
 }

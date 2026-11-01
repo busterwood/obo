@@ -19,7 +19,11 @@ fn main() {
                 ok(rows) {
                     defer rows.close()
                     if rows.status() != libpq::PGRES_TUPLES_OK { exit(1) }
-                    if !conn.close() { exit(2) }
+                    let cr = conn.close()
+                    match cr {
+                        ok(v) { if !v { exit(2) } }
+                        err(m, c) { println("close error ", m, " ", c); exit(2) }
+                    }
                     if !rows.is_open() { exit(3) }
                     let v = rows.text(0, 3)
                     match v {
@@ -35,8 +39,5 @@ fn main() {
         }
         err(m, c) { println("connect error ", m, " ", c); exit(7) }
     }
-    println("live=", libpq::live_resources())
-    println("conns=", libpq::live_connections())
-    println("results=", libpq::live_results())
     println("live_result_outlives_conn=ok")
 }

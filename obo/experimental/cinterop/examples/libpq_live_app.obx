@@ -146,11 +146,5 @@ fn main() {
         err(m, c) { println("connect error code=", c); exit(38) }
     }
 
-    let live = libpq::live_resources()
-    println("live=", live)
-    check(live == 0, "resource leak", 39)
-    check(libpq::live_buffers() == 0, "buffer leak", 40)
-    check(libpq::live_connections() == 0, "connection leak", 41)
-    check(libpq::live_results() == 0, "result leak", 42)
     println("live_db_smoke=ok")
 }

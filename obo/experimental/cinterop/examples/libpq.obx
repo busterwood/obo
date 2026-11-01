@@ -1,20 +1,11 @@
-// Experimental in-process libpq wrapper.
+// Experimental libpq binding on the cinterop v2 boundary.
 //
 // This is an explicit-close package, not a production driver. Connection and
-// Rows are ordinary obo records whose only field is an integer registry token;
-// obo never sees a PGconn* or PGresult*. The trusted C adapter validates the
-// token's kind and generation on every call and poisons it on close.
-//
-// The token fields are private to this module: an importer cannot write
-// `new Connection{tok: 123}` accidentally and must use connect(). A copied
-// integer can still be smuggled back in (same-module code or a deliberate
-// raw-token API); the C registry rejects an unknown, stale, or wrong-kind token
-// before dereferencing it. The token is not a capability and this is not a
-// security boundary against trusted C.
-//
-// Dropping a Connection or Rows does NOT call PQfinish or PQclear. Close
-// explicitly (or use a scoped helper in the application) and call
-// live_resources() when checking for leaks.
+// Res are foreign handles: obo holds the real PGconn*/PGresult* in a private
+// word and never copies it. Rows owns one Res and records the result format.
+// Close explicitly (defer conn.close()/rows.close()); dropping an open handle
+// leaks it and the OBO_CHECK=1 census reports it. There is no live_resources()
+// counter any more: the census replaces it.
 module libpq
 
 pub const CONNECTION_OK = 0
@@ -22,81 +13,75 @@ pub const PGRES_EMPTY_QUERY = 0
 pub const PGRES_COMMAND_OK = 1
 pub const PGRES_TUPLES_OK = 2
 pub const PGRES_FATAL_ERROR = 7
+pub const PGRES_PIPELINE_ABORTED = 11
 
-// Packet limits enforced here before any C call. They must match PQ_MAX_PARAMS
-// and PQ_MAX_SQL in toolkit/libpq_adapter.c; the adapter re-checks them as a
-// backstop, but its failure would otherwise be reported without a clear cause.
+// Wrapper limits, checked before any C call (C15 in the design).
 pub const PQ_MAX_PARAMS = 32
 pub const PQ_MAX_SQL = 1048576
-// Largest C buffer and largest packet. Must match CRES_MAX_BUFFER in
-// toolkit/cres.h.
-pub const PQ_MAX_BUFFER = 16777216
+pub const PQ_MAX_DSN = 16777216
+pub const PQ_MAX_VALUE = 16777216
 
-pub type Connection = ref record { tok: int }
-pub type Rows = ref record { tok: int }
+// ------------------------------------------------------------- foreign types
 
-// ------------------------------------------------------------------ buffers
+pub type Connection = foreign "PGconn"
+pub type Res = foreign "PGresult"
 
-// Copy obo bytes into a C-owned, length-bounded buffer one byte at a time.
-// This is deliberately simple and slow: it is the first bounded proof, not a
-// general string bridge. The raw pointer never leaves C.
-fn put_bytes(b: &[]byte): int {
-    let n = len(b)
-    if n < 0 || n > PQ_MAX_BUFFER { return 0 }
-    let t = __cinterop("cres_buf_new", n)
-    if t <= 0 { return 0 }
-    for i in 0..n {
-        let ok = __cinterop("cres_buf_set", t, i, int(b[i]))
-        if ok != 1 {
-            __cinterop("cres_buf_free", t)
-            return 0
-        }
-    }
-    return t
-}
+pub type Rows = ref record { h: Res; pub fmt: int }
 
-fn put_cstr(b: &[]byte): int {
+
+// ------------------------------------------------------------ native surface
+
+native fn connectdb(dsn: &[]byte): ?Connection
+native fn conn_status(c: &Connection): int
+native fn conn_error(c: &Connection): []byte
+native fn exec_params_raw(c: &Connection, sql: &[]byte, values: &[]?[]byte,
+                          oids: &[]int, formats: &[]int, result_format: int): ?Res
+native fn res_status(r: &Res): int
+native fn res_ntuples(r: &Res): int
+native fn res_nfields(r: &Res): int
+native fn res_is_null(r: &Res, row: int, col: int): int
+native fn res_length(r: &Res, row: int, col: int): int
+native fn res_value(r: &Res, row: int, col: int): ?[]byte
+native fn res_fname(r: &Res, col: int): []byte
+native fn res_ftype(r: &Res, col: int): int
+native fn res_fmod(r: &Res, col: int): int
+native fn res_error(r: &Res): []byte
+native fn make_empty_result(status: int): Res
+native fn lib_version_native(): int
+native fn conninfo_has_timeout(s: &[]byte): int
+native fn conninfo_error(): []byte
+
+pub fn (mut c: &Connection) close(): Result[bool] { return __foreignClose(c) }
+pub fn (c: &Connection) is_open(): bool { return __foreignIsOpen(c) }
+pub fn (c: &Connection) status(): int { return conn_status(c) }
+pub fn (c: &Connection) error_message(): []byte { return conn_error(c) }
+pub fn (mut r: &Res) close(): Result[bool] { return __foreignClose(r) }
+pub fn (r: &Res) is_open(): bool { return __foreignIsOpen(r) }
+
+// ------------------------------------------------------------------ helpers
+
+fn has_nul(b: &[]byte): bool {
     for i in 0..len(b) {
-        if b[i] == byte(0) { return 0 }
+        if b[i] == byte(0) { return true }
     }
-    return put_bytes(b)
+    return false
 }
 
-fn take_buf(t: int): []byte {
-    var out = new []byte(0)
-    if t <= 0 { return out }
-    let n = __cinterop("cres_buf_len", t)
-    if n < 0 {
-        __cinterop("cres_buf_free", t)
-        return out
-    }
-    for i in 0..n {
-        let v = __cinterop("cres_buf_get", t, i)
-        if v < 0 { break }
-        append(out, byte(v))
-    }
-    __cinterop("cres_buf_free", t)
-    return out
-}
-
-// Text conversion rejects an embedded NUL so a binary value cannot silently
-// truncate at the obo string boundary.
-fn text_of(b: []byte): Result[string] {
+fn has_byte(b: &[]byte, c: byte): bool {
     for i in 0..len(b) {
-        if b[i] == byte(0) { return err("bytes contain an embedded NUL", 1) }
+        if b[i] == c { return true }
     }
-    return ok(string(b))
+    return false
 }
 
-fn text_or_empty(b: []byte): string {
-    for i in 0..len(b) {
-        if b[i] == byte(0) { return "bytes contain an embedded NUL" }
+fn starts_with_bytes(b: &[]byte, s: string): bool {
+    if len(b) < len(s) { return false }
+    for i in 0..len(s) {
+        if b[i] != s[i] { return false }
     }
-    return string(b)
+    return true
 }
 
-// libpq's conninfo diagnostic ends with a newline; drop trailing line breaks so
-// the error text prints as one line.
 fn trim_newlines(b: []byte): []byte {
     var n = len(b)
     while n > 0 && (b[n - 1] == byte(10) || b[n - 1] == byte(13)) { n = n - 1 }
@@ -105,118 +90,101 @@ fn trim_newlines(b: []byte): []byte {
     return out
 }
 
-// Messages for the adapter's negative return codes (see toolkit/libpq_adapter.h).
-fn connect_failure_message(t: int): string {
-    if t == -1 { return "connection string buffer token is invalid" }
-    if t == -2 { return "connection string exceeds the adapter's buffer bound" }
-    if t == -3 { return "adapter could not allocate or register the connection" }
-    return "connection adapter failed"
-}
-
-fn exec_failure_message(t: int): string {
-    if t == -1 { return "connection is closed or invalid" }
-    if t == -2 { return "query packet rejected by the adapter (malformed or over a limit)" }
-    if t == -3 { return "adapter could not allocate or register the result" }
-    return "query adapter failed"
-}
-
-fn append_u32(mut out: &[]byte, v: int) {
-    var x = v
-    for i in 0..4 {
-        append(out, byte(x % 256))
-        x = x / 256
-    }
-}
-
-// Packet for pq_exec_packet. Building it is pure obo; only the finished buffer
-// crosses into C.
-fn build_packet(sql: &[]byte, mut values: &[]?[]byte, binary: &[]bool, result_binary: bool): Result[[]byte] {
-    let np = len(values)
-    if len(binary) != np { return err("values and binary flags differ in length", 2) }
-    if np > PQ_MAX_PARAMS { return err("too many query parameters: the limit is 32 (PQ_MAX_PARAMS)", 2) }
-    if len(sql) > PQ_MAX_SQL { return err("SQL text is larger than the 1 MiB limit (PQ_MAX_SQL)", 2) }
-    for i in 0..len(sql) {
-        if sql[i] == byte(0) { return err("SQL text contains an embedded NUL", 2) }
-    }
+// Append ` connect_timeout=5` (or the URI separator form) when the keyword is
+// absent. libpq's own parser decides presence in conninfo_has_timeout.
+fn with_default_timeout(dsn: []byte): []byte {
     var out = new []byte(0)
-    append_u32(&out, len(sql))
-    for i in 0..len(sql) { append(out, sql[i]) }
-    if result_binary { append(out, byte(1)) } else { append(out, byte(0)) }
-    append_u32(&out, np)
-    for i in 0..np {
-        let v = take(values[i])
-        if v == nil {
-            append(out, byte(0))     // SQL NULL, distinct from empty
-            append_u32(&out, 0)
-        } else {
-            let is_binary = binary[i]
-            if is_binary {
-                append(out, byte(2))
-            } else {
-                for j in 0..len(v) {
-                    if v[j] == byte(0) { return err("text parameter contains an embedded NUL", 2) }
-                }
-                append(out, byte(1))
-            }
-            append_u32(&out, len(v))
-            for j in 0..len(v) { append(out, v[j]) }
-        }
+    for i in 0..len(dsn) { append(out, dsn[i]) }
+    var sep = byte(32)
+    if starts_with_bytes(&dsn, "postgres://") || starts_with_bytes(&dsn, "postgresql://") {
+        if has_byte(&dsn, byte(63)) { sep = byte(38) } else { sep = byte(63) }
     }
-    if len(out) > PQ_MAX_BUFFER { return err("query packet exceeds the 16 MiB buffer bound", 2) }
-    return ok(out)
+    append(out, sep)
+    let suffix = "connect_timeout=5"
+    for i in 0..len(suffix) { append(out, suffix[i]) }
+    return out
+}
+
+fn text_of(b: []byte): Result[string] {
+    if has_nul(&b) { return err("bytes contain an embedded NUL", 1) }
+    return ok(string(b))
 }
 
 // -------------------------------------------------------------- connections
 
 pub fn connect(dsn: []byte): Result[Connection] {
-    let b = put_cstr(&dsn)
-    if b <= 0 { return err("invalid connection string (NUL byte or too long)", 2) }
-    let t = __cinterop("pq_connect", b)
-    if t == -4 {
-        // Invalid conninfo syntax. Copy libpq's diagnostic before any other
-        // adapter call; the adapter keeps it only until the next pq_connect.
-        let eb = __cinterop("pq_conninfo_error_buf")
-        let diag = text_or_empty(trim_newlines(take_buf(eb)))
-        __cinterop("cres_buf_free", b)
-        if len(diag) == 0 { return err("invalid connection string", 2) }
-        return err(diag, 2)
+    if len(dsn) > PQ_MAX_DSN { return err("connection string is too large", 2) }
+    if has_nul(&dsn) { return err("connection string contains a NUL byte", 2) }
+    let has = conninfo_has_timeout(&dsn)
+    if has < 0 {
+        let e = trim_newlines(conninfo_error())
+        let msg = string(e)
+        if len(msg) == 0 { return err("invalid connection string", 2) }
+        return err(msg, 2)
     }
-    __cinterop("cres_buf_free", b)
-    if t == 0 { return err("libpq returned no connection object (PQconnectdb returned NULL)", 2) }
-    if t < 0 { return err(connect_failure_message(t), 2) }
-    let st = __cinterop("pq_conn_status", t)
+    var bounded = new []byte(0)
+    if has == 0 {
+        bounded = with_default_timeout(dsn)
+    } else {
+        bounded = dsn
+    }
+    let c = connectdb(&bounded)
+    if c == nil {
+        return err("libpq returned no connection object (PQconnectdb returned NULL)", 2)
+    }
+    var conn = c
+    let st = conn_status(&conn)
     if st != CONNECTION_OK {
-        let eb = __cinterop("pq_error_buf", t)
-        let msg = take_buf(eb)
-        __cinterop("pq_conn_close", t)
-        return err(text_or_empty(msg), st)
+        let mb = conn_error(&conn)
+        let msg = string(mb)
+        conn.close()
+        return err(msg, st)
     }
-    return ok(new Connection{tok: t})
-}
-
-pub fn (c: &Connection) status(): int {
-    return __cinterop("pq_conn_status", c.tok)
-}
-
-pub fn (c: &Connection) is_open(): bool {
-    return __cinterop("pq_conn_live", c.tok) == 1
-}
-
-pub fn (c: &Connection) error_message(): []byte {
-    return take_buf(__cinterop("pq_error_buf", c.tok))
-}
-
-// Borrows the Connection so `defer conn.close()` is allowed. Closing poisons the
-// registry token; a second close is a safe false, never a second PQfinish. The
-// record drop still does not free the foreign resource.
-pub fn (c: &Connection) close(): bool {
-    return __cinterop("pq_conn_close", c.tok) == 1
+    return ok(conn)
 }
 
 // -------------------------------------------------------------- query / rows
 
-fn exec_params_fmt(c: &Connection, sql: []byte,
-                   values: []?[]byte, binary: []bool, result_binary: bool): Result[Rows]
+fn exec_params_fmt(c: &Connection, sql: []byte, values: []?[]byte,
+                   binary: []bool, result_binary: bool): Result[Rows] {
+    if len(binary) != len(values) { return err("values and binary flags differ in length", 2) }
+    if len(values) > PQ_MAX_PARAMS {
+        return err("too many query parameters: the limit is 32 (PQ_MAX_PARAMS)", 2)
+    }
+    if len(sql) > PQ_MAX_SQL {
+        return err("SQL text is larger than the 1 MiB limit (PQ_MAX_SQL)", 2)
+    }
+    if has_nul(&sql) { return err("SQL text contains an embedded NUL", 2) }
+    var oids = new []int(0)
+    var formats = new []int(0)
+    var i = 0
+    for v in values {
+        append(oids, 0)                     // untyped parameter; libpq infers
+        var fmt = 0
+        if binary[i] { fmt = 1 }
+        append(formats, fmt)
+        if v != nil {
+            if len(v) > PQ_MAX_VALUE {
+                return err("query parameter is larger than the 16 MiB limit", 2)
+            }
+            if !binary[i] && has_nul(&v) {
+                return err("text parameter contains an embedded NUL", 2)
+            }
+        }
+        i += 1
+    }
+    var rf = 0
+    if result_binary { rf = 1 }
+    let r = exec_params_raw(c, &sql, &values, &oids, &formats, rf)
+    if r == nil {
+        let mb = conn_error(c)
+        let msg = string(mb)
+        if len(msg) == 0 { return err("libpq returned no result and no error message", 2) }
+        return err(msg, 2)
+    }
+    let res = r
+    return ok(new Rows{h: res, fmt: rf})
+}
 
 pub fn exec_params(c: &Connection, sql: []byte,
                    values: []?[]byte, binary: []bool): Result[Rows] {
@@ -228,65 +196,58 @@ pub fn exec_params_binary(c: &Connection, sql: []byte,
     return exec_params_fmt(c, sql, values, binary, true)
 }
 
-fn exec_params_fmt(c: &Connection, sql: []byte,
-                   values: []?[]byte, binary: []bool, result_binary: bool): Result[Rows] {
-    let ctok = c.tok
-    let packet = try build_packet(&sql, &values, &binary, result_binary)
-    let b = put_bytes(&packet)
-    if b <= 0 { return err("query packet could not be allocated", 2) }
-    let t = __cinterop("pq_exec_packet", ctok, b)
-    __cinterop("cres_buf_free", b)
-    // Only 0 means PQexecParams ran and failed, so the connection's error is
-    // current. Negative codes are adapter-side rejections and never touch it.
-    if t == 0 {
-        let eb = __cinterop("pq_error_buf", ctok)
-        let msg = text_or_empty(take_buf(eb))
-        if len(msg) == 0 { return err("libpq returned no result and no error message", 2) }
-        return err(msg, 2)
-    }
-    if t < 0 { return err(exec_failure_message(t), 2) }
-    return ok(new Rows{tok: t})
-}
-
 pub fn query(c: &Connection, sql: []byte): Result[Rows] {
     return exec_params(c, sql, new []?[]byte(0), new []bool(0))
 }
 
-pub fn (r: &Rows) status(): int {
-    return __cinterop("pq_result_status", r.tok)
+pub fn (r: &Rows) is_open(): bool {
+    return __foreignIsOpen(&r.h)
 }
 
-pub fn (r: &Rows) is_open(): bool {
-    return __cinterop("pq_result_live", r.tok) == 1
+pub fn (r: &Rows) status(): int {
+    if !r.is_open() { return -1 }
+    return res_status(&r.h)
 }
 
 pub fn (r: &Rows) ntuples(): int {
-    return __cinterop("pq_ntuples", r.tok)
+    if !r.is_open() { return -1 }
+    return res_ntuples(&r.h)
 }
 
 pub fn (r: &Rows) nfields(): int {
-    return __cinterop("pq_nfields", r.tok)
+    if !r.is_open() { return -1 }
+    return res_nfields(&r.h)
+}
+
+fn (r: &Rows) bounds_ok(row: int, col: int): bool {
+    if !r.is_open() { return false }
+    if row < 0 || col < 0 { return false }
+    if row >= r.ntuples() || col >= r.nfields() { return false }
+    return true
 }
 
 pub fn (r: &Rows) is_null(row: int, col: int): bool {
-    return __cinterop("pq_getisnull", r.tok, row, col) == 1
+    if !r.bounds_ok(row, col) { return false }
+    return res_is_null(&r.h, row, col) == 1
 }
 
 // Length in bytes as libpq reports it; NULL and empty both report 0. Use
 // is_null to tell them apart.
 pub fn (r: &Rows) length(row: int, col: int): int {
-    return __cinterop("pq_getlength", r.tok, row, col)
+    if !r.bounds_ok(row, col) { return -1 }
+    return res_length(&r.h, row, col)
 }
 
-// Exact bytes, including an embedded NUL. NULL is an error here; check
-// is_null first when NULL and empty must be distinguished.
+// Exact bytes, including an embedded NUL. SQL NULL is err("SQL NULL", 1); a
+// value over the copy-out cap is a different error, so the two nil cases stay
+// distinguishable. Check is_null first when NULL and empty must differ.
 pub fn (r: &Rows) value(row: int, col: int): Result[[]byte] {
-    let null = __cinterop("pq_getisnull", r.tok, row, col)
-    if null == 1 { return err("SQL NULL", 1) }
-    if null < 0 { return err("row or column out of range", 2) }
-    let t = __cinterop("pq_value_buf", r.tok, row, col)
-    if t <= 0 { return err("value could not be copied", 2) }
-    return ok(take_buf(t))
+    if !r.is_open() { return err("rows are closed", 2) }
+    if !r.bounds_ok(row, col) { return err("row or column is out of range", 2) }
+    if r.is_null(row, col) { return err("SQL NULL", 1) }
+    let v = res_value(&r.h, row, col)
+    if v == nil { return err("value is larger than the 16 MiB limit", 2) }
+    return ok(v)
 }
 
 pub fn (r: &Rows) text(row: int, col: int): Result[string] {
@@ -295,57 +256,45 @@ pub fn (r: &Rows) text(row: int, col: int): Result[string] {
 }
 
 pub fn (r: &Rows) fname(col: int): Result[string] {
-    let t = __cinterop("pq_fname_buf", r.tok, col)
-    if t <= 0 { return err("column out of range", 2) }
-    let b = take_buf(t)
-    return text_of(b)
+    if !r.is_open() { return err("rows are closed", 2) }
+    if col < 0 || col >= r.nfields() { return err("column is out of range", 2) }
+    let b = res_fname(&r.h, col)
+    return ok(string(b))
 }
 
 pub fn (r: &Rows) ftype(col: int): int {
-    return __cinterop("pq_ftype", r.tok, col)
+    if !r.is_open() || col < 0 || col >= r.nfields() { return 0 }
+    return res_ftype(&r.h, col)
 }
 
 pub fn (r: &Rows) fmod(col: int): int {
-    return __cinterop("pq_fmod", r.tok, col)
+    if !r.is_open() || col < 0 || col >= r.nfields() { return -1 }
+    return res_fmod(&r.h, col)
 }
 
 pub fn (r: &Rows) error_message(): []byte {
-    return take_buf(__cinterop("pq_result_error_buf", r.tok))
+    if !r.is_open() { return new []byte(0) }
+    return res_error(&r.h)
 }
 
-// Borrows the Rows so `defer rows.close()` is allowed. Closing poisons the token;
-// a PGresult outlives its PGconn in this adapter, so close the connection first
-// if you need to exercise that lifetime. The record drop never calls PQclear.
-pub fn (r: &Rows) close(): bool {
-    return __cinterop("pq_result_clear", r.tok) == 1
+// Rows.close is unit: the Rows owns one Res and closing it is enough. A
+// discarded Result[bool] from the Res close is freed at once.
+pub fn (mut r: &Rows) close() {
+    r.h.close()
 }
 
-// ------------------------------------------------------- library/resource info
+// ------------------------------------------------------- library/result info
 
 pub fn lib_version(): int {
-    return __cinterop("pq_lib_version")
+    return lib_version_native()
 }
 
-// PQmakeEmptyPGresult(NULL, status) + PQclear: real libpq result ownership
-// without a database connection.
+// PQmakeEmptyPGresult(NULL, status) + PQclear. A NULL result from libpq is a
+// contract violation and the own result traps with exit 11 (design 5.1).
 pub fn make_empty_rows(status: int): Result[Rows] {
-    let t = __cinterop("pq_make_empty_result", status)
-    if t <= 0 { return err("empty result could not be created", 2) }
-    return ok(new Rows{tok: t})
-}
-
-pub fn live_resources(): int {
-    return __cinterop("cres_live_count")
-}
-
-pub fn live_buffers(): int {
-    return __cinterop("cres_live_kind", 1)
-}
-
-pub fn live_connections(): int {
-    return __cinterop("cres_live_kind", 2)
-}
-
-pub fn live_results(): int {
-    return __cinterop("cres_live_kind", 3)
+    if status < 0 || status > PGRES_PIPELINE_ABORTED {
+        return err("invalid result status", 2)
+    }
+    let res = make_empty_result(status)
+    return ok(new Rows{h: res, fmt: 0})
 }

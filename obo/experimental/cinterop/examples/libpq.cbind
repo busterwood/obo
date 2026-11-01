@@ -1,369 +1,257 @@
 {
-  "format": "cinterop-proto/1",
+  "format": "cinterop-proto/2",
   "module": "libpq",
   "platform": "x86_64-linux-gnu",
   "abi": "sysv-amd64",
+  "signature_check": "header",
   "wrapper": "libpq.obx",
   "sources": [
-    "../toolkit/cres.c",
-    "../toolkit/libpq_adapter.c"
+    "../toolkit/libpq_conninfo.c"
   ],
   "headers": [
-    "../toolkit/cres.h",
-    "../toolkit/libpq_adapter.h"
+    "../toolkit/libpq_decls.h",
+    "../toolkit/libpq_conninfo.h"
   ],
-  "declarations": [
-    "extern long cres_buf_new(long len);",
-    "extern long cres_buf_set(long token, long index, long value);",
-    "extern long cres_buf_get(long token, long index);",
-    "extern long cres_buf_len(long token);",
-    "extern long cres_buf_free(long token);",
-    "extern long cres_live_count(void);",
-    "extern long cres_live_kind(long kind);",
-    "extern long pq_lib_version(void);",
-    "extern long pq_make_empty_result(long status);",
-    "extern long pq_connect(long dsn_buf);",
-    "extern long pq_conninfo_error_buf(void);",
-    "extern long pq_conn_status(long conn_token);",
-    "extern long pq_conn_live(long conn_token);",
-    "extern long pq_conn_close(long conn_token);",
-    "extern long pq_exec_packet(long conn_token, long packet_token);",
-    "extern long pq_result_status(long res_token);",
-    "extern long pq_result_live(long res_token);",
-    "extern long pq_result_clear(long res_token);",
-    "extern long pq_ntuples(long res_token);",
-    "extern long pq_nfields(long res_token);",
-    "extern long pq_getisnull(long res_token, long row, long col);",
-    "extern long pq_getlength(long res_token, long row, long col);",
-    "extern long pq_value_buf(long res_token, long row, long col);",
-    "extern long pq_fname_buf(long res_token, long col);",
-    "extern long pq_ftype(long res_token, long col);",
-    "extern long pq_fmod(long res_token, long col);",
-    "extern long pq_error_buf(long token);",
-    "extern long pq_result_error_buf(long res_token);"
-  ],
+  "declarations": [],
   "libs": [
     "-l:libpq.so.5"
   ],
   "cflags": [],
+  "types": [
+    {
+      "name": "PGconn",
+      "obo": "Connection",
+      "release": "PQfinish",
+      "release_result": "void"
+    },
+    {
+      "name": "PGresult",
+      "obo": "Res",
+      "release": "PQclear",
+      "release_result": "void"
+    }
+  ],
   "functions": [
     {
-      "name": "cres_buf_new",
-      "symbol": "cres_buf_new",
+      "name": "connectdb",
+      "symbol": "PQconnectdb",
       "args": [
-        "i64"
+        "borrow_cstr@0"
       ],
-      "ret": "i64",
+      "ret": "own_opt<PGconn>",
       "effects": [
         "impure"
       ]
     },
     {
-      "name": "cres_buf_set",
-      "symbol": "cres_buf_set",
+      "name": "conn_status",
+      "symbol": "PQstatus",
       "args": [
-        "i64",
-        "i64",
-        "i64"
+        "borrow<PGconn>@0"
       ],
-      "ret": "i64",
+      "ret": "i32",
       "effects": [
         "impure"
       ]
     },
     {
-      "name": "cres_buf_get",
-      "symbol": "cres_buf_get",
+      "name": "conn_error",
+      "symbol": "PQerrorMessage",
       "args": [
-        "i64",
-        "i64"
+        "borrow<PGconn>@0"
       ],
-      "ret": "i64",
+      "ret": "cstr_out",
+      "ret_ctype": "char *",
       "effects": [
         "impure"
       ]
     },
     {
-      "name": "cres_buf_len",
-      "symbol": "cres_buf_len",
+      "name": "exec_params_raw",
+      "symbol": "PQexecParams",
       "args": [
-        "i64"
+        "borrow_mut<PGconn>@0",
+        "borrow_cstr@1",
+        "ints@2:len",
+        "ints@3:u32",
+        "nil_bytes_list@2",
+        "ints@4:i32",
+        "i32@5"
       ],
-      "ret": "i64",
+      "ret": "own_opt<PGresult>",
       "effects": [
         "impure"
       ]
     },
     {
-      "name": "cres_buf_free",
-      "symbol": "cres_buf_free",
+      "name": "res_status",
+      "symbol": "PQresultStatus",
       "args": [
-        "i64"
+        "borrow<PGresult>@0"
       ],
-      "ret": "i64",
+      "ret": "i32",
       "effects": [
         "impure"
       ]
     },
     {
-      "name": "cres_live_count",
-      "symbol": "cres_live_count",
+      "name": "res_ntuples",
+      "symbol": "PQntuples",
+      "args": [
+        "borrow<PGresult>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "res_nfields",
+      "symbol": "PQnfields",
+      "args": [
+        "borrow<PGresult>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "res_is_null",
+      "symbol": "PQgetisnull",
+      "args": [
+        "borrow<PGresult>@0",
+        "i32@1",
+        "i32@2"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "res_length",
+      "symbol": "PQgetlength",
+      "args": [
+        "borrow<PGresult>@0",
+        "i32@1",
+        "i32@2"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "res_value",
+      "symbol": "PQgetvalue",
+      "args": [
+        "borrow<PGresult>@0",
+        "i32@1",
+        "i32@2"
+      ],
+      "ret": "cbytes",
+      "length": "PQgetlength",
+      "cap": 16777216,
+      "ret_ctype": "char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "res_fname",
+      "symbol": "PQfname",
+      "args": [
+        "borrow<PGresult>@0",
+        "i32@1"
+      ],
+      "ret": "cstr_out",
+      "ret_ctype": "char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "res_ftype",
+      "symbol": "PQftype",
+      "args": [
+        "borrow<PGresult>@0",
+        "i32@1"
+      ],
+      "ret": "u32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "res_fmod",
+      "symbol": "PQfmod",
+      "args": [
+        "borrow<PGresult>@0",
+        "i32@1"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "res_error",
+      "symbol": "PQresultErrorMessage",
+      "args": [
+        "borrow<PGresult>@0"
+      ],
+      "ret": "cstr_out",
+      "ret_ctype": "char *",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "make_empty_result",
+      "symbol": "PQmakeEmptyPGresult",
+      "args": [
+        "null",
+        "i32@0"
+      ],
+      "ctypes": [
+        "PGconn *",
+        null
+      ],
+      "ret": "own<PGresult>",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "lib_version_native",
+      "symbol": "PQlibVersion",
       "args": [],
-      "ret": "i64",
+      "ret": "i32",
       "effects": [
         "impure"
       ]
     },
     {
-      "name": "cres_live_kind",
-      "symbol": "cres_live_kind",
+      "name": "conninfo_has_timeout",
+      "symbol": "pq_conninfo_has_timeout",
       "args": [
-        "i64"
+        "borrow_cstr@0"
       ],
-      "ret": "i64",
+      "ret": "i32",
       "effects": [
         "impure"
       ]
     },
     {
-      "name": "pq_lib_version",
-      "symbol": "pq_lib_version",
+      "name": "conninfo_error",
+      "symbol": "pq_conninfo_error",
       "args": [],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_make_empty_result",
-      "symbol": "pq_make_empty_result",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_connect",
-      "symbol": "pq_connect",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_conninfo_error_buf",
-      "symbol": "pq_conninfo_error_buf",
-      "args": [],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_conn_status",
-      "symbol": "pq_conn_status",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_conn_live",
-      "symbol": "pq_conn_live",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_conn_close",
-      "symbol": "pq_conn_close",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_exec_packet",
-      "symbol": "pq_exec_packet",
-      "args": [
-        "i64",
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_result_status",
-      "symbol": "pq_result_status",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_result_live",
-      "symbol": "pq_result_live",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_result_clear",
-      "symbol": "pq_result_clear",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_ntuples",
-      "symbol": "pq_ntuples",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_nfields",
-      "symbol": "pq_nfields",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_getisnull",
-      "symbol": "pq_getisnull",
-      "args": [
-        "i64",
-        "i64",
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_getlength",
-      "symbol": "pq_getlength",
-      "args": [
-        "i64",
-        "i64",
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_value_buf",
-      "symbol": "pq_value_buf",
-      "args": [
-        "i64",
-        "i64",
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_fname_buf",
-      "symbol": "pq_fname_buf",
-      "args": [
-        "i64",
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_ftype",
-      "symbol": "pq_ftype",
-      "args": [
-        "i64",
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_fmod",
-      "symbol": "pq_fmod",
-      "args": [
-        "i64",
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_error_buf",
-      "symbol": "pq_error_buf",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "pq_result_error_buf",
-      "symbol": "pq_result_error_buf",
-      "args": [
-        "i64"
-      ],
-      "ret": "i64",
+      "ret": "cstr_out",
+      "ret_ctype": "const char *",
       "effects": [
         "impure"
       ]
     }
-  ],
-  "wrapper_sources": [
-    "buffer.obx"
   ]
 }

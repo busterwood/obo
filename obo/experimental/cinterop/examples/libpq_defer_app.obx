@@ -1,10 +1,9 @@
 module app
 
 import "libpq.obx"
-import "buffer.obx"
 
-// Canonical explicit cleanup with obo defer. close() borrows the wrapper, so it
-// is legal in a defer and the record drop still never frees the foreign object.
+// Canonical explicit cleanup with obo defer. close() borrows the handle, so it
+// is legal in a defer; the record drop still never releases the foreign object.
 // `exit(...)` deliberately does not run defers; return from the block instead.
 fn bytes_of(s: string): []byte {
     var b = new []byte(0)
@@ -77,20 +76,6 @@ fn use_loops(n: int): int {
     return count
 }
 
-fn use_buffer(): Result[bool] {
-    let made = buffer::from_bytes(bytes_of("binary"))
-    match made {
-        ok(b) {
-            defer b.close()
-            let blen = b.len()
-            let data = b.to_bytes()
-            let all = blen == 6 && len(data) == 6 && int(data[0]) == 98
-            return ok(all)
-        }
-        err(m, c) { return err(m, c) }
-    }
-}
-
 fn main() {
     let q = use_query()
     match q {
@@ -109,13 +94,4 @@ fn main() {
     }
     let looped = use_loops(3)
     println("loop_closes=", looped)
-    let bb = use_buffer()
-    match bb {
-        ok(v) { println("buffer_ok=", v) }
-        err(m, c) { println("buffer_error=", m, " (", c, ")"); exit(4) }
-    }
-    println("live=", libpq::live_resources())
-    println("conns=", libpq::live_connections())
-    println("results=", libpq::live_results())
-    println("buffers=", libpq::live_buffers())
 }
