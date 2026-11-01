@@ -64,8 +64,9 @@ SQL and HTML are two instances of one semantic pattern, a **template domain**.
 A domain is the compiler-known policy for one output language. It defines:
 
 1. the nominal **fragment type** (`Sql`, `Html`) and its documented
-   constructors (the tag and the literal-only raw tag); it is an ordinary
-   standard-library record with public fields, so trust is convention-level;
+   constructors (the tag and the literal-only raw tag); these are ordinary
+   standard-library records, with `Sql`/`SqlArg` fields public and `Html.text`
+   private to module `html`, so trust is convention-level;
 2. the **value policy** for an ordinary hole: SQL binds a parameter, HTML
    performs the context-specific escape;
 3. **splice** rules for a fragment: SQL merges text/parameters, HTML appends
@@ -317,9 +318,11 @@ then user code can use the builder API but cannot register a tag.
 
 ## 9. Types and representation
 
-These are ordinary standard-library records with **public fields**, not opaque
-builtins. The compiler knows their type IDs/field layout so the tags can lower to
-them; that is not a private constructor.
+These are ordinary standard-library records, not opaque builtins: `Sql` and
+`SqlArg` fields are public, while `Html.text` is private to module `html` with
+`html::raw`/`html::copy` as its builders. The compiler knows their type
+IDs/field layout so the tags can lower to them; that is not a private
+constructor.
 
 ```obo
 type Sql = ref record { text: []string; params: []SqlArg }
@@ -397,9 +400,10 @@ There is no SQL parser, HTML sanitizer or AST, so the work is bounded.
 - **No accidental raw.** A `string` hole is always a bind or escape; only
   `sqlRaw`/`htmlRaw` literals are documented raw constructors. V1 rejects `$`
   followed by digits in `sqlRaw` because the renderer reserves `$n`; `$tag$`
-  quoting remains. Because the records have public fields, direct construction
-  is legal and equivalent to raw; tags/raw are a convention backed by docs/lint,
-  not type enforcement.
+  quoting remains. `Sql`/`SqlArg` fields are public, so direct construction is
+  legal and equivalent to raw; `Html.text` is private to module `html`, so
+  `Html` is built through `html::raw`/the tag. Tags/raw are a convention backed
+  by docs/lint, not type enforcement.
 - **No double escape.** Strings are escaped once; `Html` is claimed-safe and
   inserted once. `Html` in an attribute or `HtmlAttrs` in data is a compile
   error. These are type-level checks, not provenance checks.
@@ -494,9 +498,8 @@ HTML sanitizer as default escaping; and full cross-template context propagation
 **Migration:** none for existing programs. The syntax is additive: a backtick is
 currently unexpected, and `sql` followed by a backtick is invalid today. Existing
 programs do not change meaning. The fragment types are ordinary standard-library
-records with public fields, so no new ABI is required; `.sym` exposure and format
-details will be settled during syntax review. No seed promotion, format or ABI
-change is proposed, and no version number is reserved.
+records (`Sql`/`SqlArg` public, `Html.text` private), so no new ABI is required;
+`.sym` exposure and format details are settled as `0.15`/format 8.
 
 **Approved schedule:** implement only after Stage B `0.11` ships, as the next
 compiler feature. This pass authorizes no implementation.

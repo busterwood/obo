@@ -6317,13 +6317,14 @@ The seed was rebuilt and promoted as the same 0.14 identity
 (`d7b0c755…`); the temporary `SEED_BUG_SKIP` was removed once the seed carried
 the fix. Gates after promotion: `run_fork` 1,757; `port_compare` 1,745/1,745;
 seed 1,550/1,550; `port_test` 605/605; fixed point and hello byte-identical.
-## Template literals (0.15 implementation branch)
+## Template literals (0.15 release)
 
 **Identity.** `OBO_VERSION = "0.15"`, `SYM_FORMAT = 8`, `SYM_ABI = 1`. The
 grammar adds backtick template tags and the universe gains `Sql`, `SqlArg`,
 `Html`, `HtmlAttr` and `HtmlAttrs`; old format-7 symbol files are refused with
-`has format 7; this compiler reads 8; rebuild it`. No seed promotion is made:
-`seed/obo` remains the 0.14 image, and the 0.14 seed builds this compiler once.
+`has format 7; this compiler reads 8; rebuild it`. The reviewed branch is
+merged and promoted: `seed/obo` is the 0.15 image (700,417 bytes, sha256
+`8ca8e59e…`), and the 0.14 seed built this compiler once.
 
 **Language.** Compiler-known `sql`/`sqlRaw`/`html`/`htmlRaw` backtick tags lower
 to ordinary values. `Sql` is a public-field record `{text: []string; params:
@@ -6335,8 +6336,8 @@ SQL syntax, `Sql` fragments splice, `sql.copy`/`sqlJoin`/`sqlWhere`/`sqlNull`/
 `sqlBytes` are the explicit helpers, `[]Sql` is never expanded implicitly, and a
 literal `$` followed by a digit is rejected because `$n` is reserved.
 `sqlWhere` parenthesizes every predicate (`WHERE (p1) AND (p2)`) and `sqlJoin`
-holds its parts array across the separator expression (moving, freeing,
-replacing, appending to or truncating it is rejected). HTML literal chunks are
+holds its parts array across the separator expression (moving, freeing or
+replacing it is rejected; appending to or truncating it is safe and observed). HTML literal chunks are
 trusted; holes are context-escaped for text, quoted attributes and allow-listed
 URLs; `Html` splices only as text, `[]Html` concatenates, and script/style/
 comment/doctype/unquoted-attribute/tag-name/attribute-name/`srcdoc`/`style`/
@@ -6362,17 +6363,17 @@ database driver, dialect placeholder rendering, identifier/`ORDER BY`
 allow-lists, array expansion and user-defined tags remain later work.
 `DecimalText` is the lossless decimal transport.
 
-**Gates (this worktree, re-review revision).** `run_fork` **1,809 passed**;
+**Gates (post-promotion).** `run_fork` **1,809 passed**;
 default `port_compare` **1,796/1,796**; `OBO_REF=obo/seed/obo`
-**1,550/1,550** (the template run/error files are skipped at `(0,15)`);
+**1,600/1,600** against the promoted 0.15 seed;
 `port_test` **612/612**; `module_test` **143**; `sym_test` **52/52**;
 `float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **29/29**;
 `stdlib` **16/16**; `tools` **509 passed**; cinterop, DB-adapter and systems
 P0/P1a/P2 suites pass; the decimal evidence runner reports **32,719 C checks**.
 `mutate_fork` **718 caught + 31 equivalent of 749** (including 24 template
 compiler mutants), `mutate_decimal` **71/71** (including the sqlWhere runtime
-mutant), and `mutate_port` **540/540**. Self-compile peaks at **2,385,776
+mutant), and `mutate_port` **540/540**. Self-compile peaks at **2,385,536
 bytes** in the port comparison (budget 2,500,000, about 4.6% headroom); the
 empty-array savings oracle is **51,488 bytes** above baseline (minimum 30,000).
-The fixed point is stage 2 == stage 3 and `hello` is byte-identical between the
-0.14 seed and this compiler.
+The fixed point is stage 2 == stage 3, and the promoted 0.15 seed reproduces
+the compiler; `hello` is byte-identical between the 0.14 seed and this compiler.

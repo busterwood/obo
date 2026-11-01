@@ -17,25 +17,22 @@ is `obo/src/obo.obo`. See [HISTORY.md](HISTORY.md) for the obx language,
 architecture and tests, the ownership fork, milestone chronology and earlier
 measurements.
 
-## Current state (31 October 2026)
+## Current state (1 November 2026)
 
-The released compiler is **obo 0.14, symbol format 7, ABI 1** (655,361 bytes,
-sha256 `d7b0c755…`), with the decimal text API, private-by-default record
-fields, exact 24-byte decimals, Stage B capture lists, the HTML escaping
-library and the configurable heap runtime. `seed/obo` is the promoted **0.14**
-image (same size and hash). The 0.13 seed (647,169 bytes, `4ec4e0d6…`) built
-the 0.14 image once; the 0.12 seed (643,073 bytes, `d98d6b5f…`) and the 0.11
-seed (585,729 bytes, sha256 `01fa9ed3…`) also build it; the 0.14 image reaches
-a fixed point.
+The released compiler is **obo 0.15, symbol format 8, ABI 1** (700,417 bytes,
+sha256 `8ca8e59e…`), with compiler-known `sql`/`html` template literals, the
+decimal text API, private-by-default record fields, exact 24-byte decimals,
+Stage B capture lists, the HTML escaping library and the configurable heap
+runtime. `seed/obo` is the promoted **0.15** image (same size and hash). The
+0.14 seed (655,361 bytes, `d7b0c755…`) built the 0.15 image once; earlier seeds
+build the 0.14 line, and the 0.15 image reaches a fixed point.
 Floats were released at `0.10`/format 6; Stage B is `0.11`/format 6; decimal is
 `0.12`/format 6; private-by-default fields are `0.13`/format 7; the decimal
-text API is `0.14`/format 7. Format 6 is not accepted by the 0.14 compiler:
-rebuild old `.sym` files.
+text API is `0.14`/format 7; templates are `0.15`/format 8. Formats 6 and 7 are
+not accepted by the 0.15 compiler: rebuild old `.sym` files.
 Version policy: additive builtin/runtime extensions use patch releases such as
 the historical 0.8.1; floats are 0.10, Stage B is 0.11, decimal is 0.12,
-field visibility is 0.13 and decimal text is 0.14. The template-literal source
-on this branch is **0.15, symbol format 8, ABI 1**; it is not promoted, so
-`seed/obo` remains the 0.14 image until an independent review and promotion.
+field visibility is 0.13, decimal text is 0.14 and templates are 0.15.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
@@ -54,7 +51,7 @@ on this branch is **0.15, symbol format 8, ABI 1**; it is not promoted, so
   fragment composition and contextual HTML escaping. The HTML escaping library
   is in `obo/lib/html.obx`. Interface handles `^I` are later. The full
   reference is [obo/LANGUAGE.md](obo/LANGUAGE.md).
-- **Compiler.** 15,799 lines / 596,620 bytes of obo source on this branch (the rebased 0.14 patch line was 15,777 / 595,855; the released 0.14 line was 14,706 / 555,862). Numeric floats add
+- **Compiler.** 15,799 lines / 596,620 bytes of obo source (the released 0.14 line was 14,813 / 559,468; the 0.13 line was 14,706 / 555,862). Numeric floats add
   the `float` type, exact literal/constant conversion, arithmetic, formatting,
   `parseFloat` and format-6 symbol support to the 0.9/format-5 lambda line;
   Stage B adds capture-list parsing, recursive incomplete/interface
@@ -62,9 +59,10 @@ on this branch is **0.15, symbol format 8, ABI 1**; it is not promoted, so
   0.12 adds the exact decimal type, literal parser, 24-byte ABI, operators,
   explicit request validation and `Result` APIs; 0.13 adds the `Field` visibility
   flags, source `pub` fields, the designator/construction rules, the relaxed
-  private-field closure, `priv`/`priviface` writer/reader and format 7. The 0.11
-  seed (585,729 bytes, sha256 `01fa9ed3…`) built the 0.13 image once; the 0.12
-  seed builds the identical image and the fixed point holds.
+  private-field closure, `priv`/`priviface` writer/reader and format 7; 0.14
+  adds the exact decimal text API; 0.15 adds the compiler-known `sql`/`html`
+  backtick templates and format 8. The 0.14 seed (655,361 bytes, sha256
+  `d7b0c755…`) built the 0.15 image once, and the fixed point holds.
 - **Tools.** `cat`, `wc`, `sort`, `head`, `tail` and the partial `eza`
   reimplementation are written in obo and built by `make tools` / `make eza`.
   Differential gates compare them with GNU coreutils 9.4 (`obo/tests/tools.py`)
@@ -84,19 +82,19 @@ on this branch is **0.15, symbol format 8, ABI 1**; it is not promoted, so
 
 | Current metric | Value |
 |---|---:|
-| Compiler source | 14,813 lines, 559,468 bytes |
-| Compiler (`--version`) | 655,361 bytes, sha256 `d7b0c755…`, `obo 0.14`, sym-format 7, abi 1 |
-| Seed (`--version`) | promoted obo 0.14: 655,361 bytes, sha256 `d7b0c755…`, sym-format 7, abi 1; the 0.13 seed (647,169 bytes, `4ec4e0d6…`) built this image once; the 0.12 seed (643,073 bytes, `d98d6b5f…`) and the 0.11 seed (585,729 bytes, `01fa9ed3…`) also build it |
-| Self-host fixed point | stage 2 == stage 3 == compiler, 655,361 bytes, `d7b0c755…`; the 0.11, 0.12 and 0.13 seeds build this image from source, and the promoted 0.14 seed reproduces it |
-| Self-compile wall time | 0.195 s (5 runs, median; range 0.194-0.203 s; host-dependent, measured 31 October 2026) |
-| Self-compile live peak | 2,239,264 bytes direct; 2,239,392 bytes port comparison (budget 2,500,000) |
-| Total allocated | 49,859,376 bytes direct; 49,860,704 bytes port comparison |
-| Maximum resident set | 4,352 KB (measured 31 October 2026) |
-| Live-memory budget | 2,500,000 bytes: 260,736 spare direct / 260,608 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 48,192) |
-| obo suite | 1,757 `run_fork` tests; 142 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 605/605 with 10 encoder groups; `port_compare` 1,745/1,745 default; seed comparisons 1,550/1,550 against the promoted 0.14 seed, 1,535/1,535 against 0.13 and 0.12, and 1,477/1,477 against 0.11; 71 doc examples; 29/29 import checks; 16/16 stdlib roots |
+| Compiler source | 15,799 lines, 596,620 bytes |
+| Compiler (`--version`) | 700,417 bytes, sha256 `8ca8e59e…`, `obo 0.15`, sym-format 8, abi 1 |
+| Seed (`--version`) | promoted obo 0.15: 700,417 bytes, sha256 `8ca8e59e…`, sym-format 8, abi 1; the 0.14 seed (655,361 bytes, `d7b0c755…`) built this image once; earlier seeds build the 0.14 line |
+| Self-host fixed point | stage 2 == stage 3 == compiler, 700,417 bytes, `8ca8e59e…`; the 0.14 seed builds this image from source, and the promoted 0.15 seed reproduces it |
+| Self-compile wall time | 0.24 s (5 runs, median; range 0.23-0.38 s; host-dependent, measured 1 November 2026) |
+| Self-compile live peak | 2,385,408 bytes direct; 2,385,536 bytes port comparison (budget 2,500,000) |
+| Total allocated | 52,986,480 bytes direct; 52,987,808 bytes port comparison |
+| Maximum resident set | 4,652 KB (measured 1 November 2026) |
+| Live-memory budget | 2,500,000 bytes: 114,592 spare direct / 114,464 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 51,488) |
+| obo suite | 1,809 `run_fork` tests; 143 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 612/612 with 10 encoder groups; `port_compare` 1,796/1,796 default; seed comparisons 1,600/1,600 against the promoted 0.15 seed; 71 doc examples; 29/29 import checks; 16/16 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
-| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.14) is 1,550/1,550; the 0.13 and 0.12 seeds are 1,535/1,535 and the released 0.11 seed is 1,477/1,477; the default (self) comparison is 1,745/1,745 |
-| Mutation gates | `mutate_fork` 694/725 caught + 31 equivalent, 0 missed/stale/broken; `mutate_port` 540/540 (5 reader/writer mutants exercised only by `sym_test` are judged by `mutate_fork`); `mutate_meta` 71/82 caught + 11 equivalent; `mutate_decimal` 64/64 with an explicit baseline; `mutate_io` 36/36 (including the self-host memory oracle) |
+| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.15) is 1,600/1,600; the older 0.13/0.12/0.11 comparisons skip the template files; the default (self) comparison is 1,796/1,796 |
+| Mutation gates | `mutate_fork` 718/749 caught + 31 equivalent, 0 missed/stale/broken (including 24 template compiler mutants); `mutate_port` 540/540; `mutate_meta` 71/82 caught + 11 equivalent; `mutate_decimal` 71/71 with an explicit baseline; `mutate_io` 36/36 (including the self-host memory oracle) |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 86,017; wc 90,113; sort 114,689; head 86,017; tail 98,305 bytes (static, runtime included) |
 | eza E2 differential gate | own-binary gate: 482 passed, 0 failed, 72 live-only skips; pinned reference eza is not on the host `PATH` |
@@ -105,18 +103,18 @@ on this branch is **0.15, symbol format 8, ABI 1**; it is not promoted, so
 | Minimal static executable | 32,769 bytes (runtime included) |
 
 The compiler budget is 2,500,000 bytes live, with the separate 30,000-byte
-empty-array oracle unchanged. The 0.14 line peaks at 2,239,264 bytes in direct self-compiles and
-2,239,392 in the port comparison: 260,736 and 260,608 bytes spare. Total
-allocation is 49,859,376 bytes direct and 49,860,704 bytes in the port comparison. No check was
+empty-array oracle unchanged. The 0.15 line peaks at 2,385,408 bytes in direct self-compiles and
+2,385,536 in the port comparison: 114,592 and 114,464 bytes spare. Total
+allocation is 52,986,480 bytes direct and 52,987,808 bytes in the port comparison. No check was
 weakened. The live peak varies by a few hundred bytes with the source path and
-total allocation by about 2.8 KB. The historical lambda release budget remains
-2,000,000 in its own record. The 0.14 release is merged and promoted on main;
-`seed/obo` is the matching 0.14 image.
+total allocation by about 1.3 KB. The historical lambda release budget remains
+2,000,000 in its own record. The 0.15 release is merged and promoted on main;
+`seed/obo` is the matching 0.15 image.
 
-### Template literals 0.15 (implementation branch)
+### Template literals 0.15 (released)
 
-Compiler-known `sql`/`sqlRaw` and `html`/`htmlRaw` backtick tags are implemented
-in the source tree but are not promoted to `seed/obo`. SQL holes become ordered
+Compiler-known `sql`/`sqlRaw` and `html`/`htmlRaw` backtick tags are released in
+0.15 and carried by the promoted seed. SQL holes become ordered
 bind parameters in public `Sql`/`SqlArg` records; literal chunks stay raw text,
 `Sql` fragments splice, `sql.copy`, `sqlJoin`, `sqlWhere`, `sqlNull` and
 `sqlBytes` compose explicitly, and `[]Sql` never expands implicitly. Decimal
@@ -409,7 +407,7 @@ cd obo && python3 tests/tools.py --memory              # the four pinned tool me
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # source: obo 0.15 sym-format 8 abi 1 (the 0.14 seed builds it; seed remains 0.14 until promotion)
+cd obo && ./obo --version                # obo 0.15 sym-format 8 abi 1 (the promoted 0.15 seed is the same image)
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 

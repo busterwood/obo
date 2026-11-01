@@ -1308,8 +1308,8 @@ fn main() {
 
 Stored function values, owned or mutable captures, string/interface captures and impure
 callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
-interface handles `^I` remain later. The source compiler on this branch is
-`0.15`/format 8/ABI 1 (template literals); the promoted `0.14` seed builds it
+interface handles `^I` remain later. The released compiler is
+`0.15`/format 8/ABI 1 (template literals); the promoted `0.14` seed built it
 once, and the historical `0.13` seed built the 0.14 image. The released `0.11`
 seed (`01fa9ed3…`) also builds the older line. The historical `0.9` seed
 (`540,673` bytes, sha256 `3d369273…`) built the 0.10 compiler, and the historical `0.8` seed
@@ -1551,8 +1551,9 @@ still denote one object and one descriptor.
 
 ### Reserved type names and constants
 
-A type may not be named `int`, `byte`, `bool`, `string`, `void`, `nil` or
-`Result` (`cannot declare a type named '<name>'`), and `const` of `nil` is
+A type may not be named `int`, `byte`, `bool`, `string`, `void`, `nil`,
+`Result`, `decimal`, `Sql`, `SqlArg`, `Html`, `HtmlAttr` or `HtmlAttrs`
+(`cannot declare a type named '<name>'`), and `const` of `nil` is
 refused (`a constant cannot be nil; use a typed optional var or let`). A module
 alias may not use a built-in name.
 
@@ -2247,7 +2248,8 @@ control and URL policies.
 ### Template literals (sql/html)
 
 Compiler-known backtick tags are values, not a user-extensible tag protocol.
-A tag name is immediately followed by a backtick in source:
+A tag name is followed by a backtick in source (whitespace between them is
+accepted):
 
 ```text
 tag   := "sql" | "sqlRaw" | "html" | "htmlRaw"
@@ -2294,7 +2296,11 @@ URL values are validated as assembled attribute values: a scheme may not be
 split across holes, a URL attribute may contain only one hole, and a literal
 `&` next to a hole is rejected because it could be an HTML character reference
 (for example `&#58;`) that the browser decodes before URL parsing. Build and
-validate the whole string first if a dynamic URL is needed. HTML whitespace is
+validate the whole string first if a dynamic URL is needed. `srcset` (a URL
+list) and `content` (for example a meta refresh target) are not URL-classified
+in v1: a hole there gets ordinary quoted-attribute escaping, not the URL scheme
+check, so treat those attributes as trusted literal markup or pre-validate the
+value. HTML whitespace is
 space, tab, LF, form feed (U+000C) and CR; form feed separates names and values
 exactly like the other whitespace bytes. An `Html` hole is inserted raw and is allowed only in text
 content; `[]Html` concatenates there. `Html` in an attribute is a compile error,
@@ -2685,8 +2691,7 @@ shared lexer; that is a pre-existing lexer-wide gap, not decimal-specific.
 `float` remains a separate pre-existing reserved-type-name gap; `decimal` is
 now reserved.
 
-Template literals are implemented in the source compiler on this branch but are
-not promoted to `seed/obo`. The v1 scope has no SQL driver or dialect renderer,
+Template literals are released in `0.15`. The v1 scope has no SQL driver or dialect renderer,
 no SQL parser or identifier/`ORDER BY` allow-list API, no array expansion, no
 user-defined template tags or public domain registry, no generic `escape`, and
 no `string -> Sql`/`Html` conversion. HTML has no script/style/comment/unquoted
@@ -2695,8 +2700,8 @@ nominal types but have no v1 hole. `Html` is a claimed-safe convention, not a
 type-enforced provenance check; direct `new Html{...}` is private to module
 `html`, while `Sql`/`SqlArg` fields are public. The SQL driver binding layer,
 dialect `$n`/`?` rendering and the DB adapters are later work; `DecimalText` is
-the lossless decimal transport. The source compiler is `0.15`/format 8/ABI 1;
-the seed remains 0.14 until promotion.
+the lossless decimal transport. The released compiler is `0.15`/format 8/ABI 1;
+`seed/obo` is the matching 0.15 image.
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target
