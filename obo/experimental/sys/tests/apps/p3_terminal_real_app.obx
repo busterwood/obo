@@ -141,6 +141,12 @@ fn main() {
                     err(m,c) { println("resize_event=err") }
                 }
 
+                let szAfter = terminal::size(&t)
+                match szAfter {
+                    ok(v) { println("size_after=" + intText(v.rows) + "," + intText(v.columns)) }
+                    err(m,c) { println("size_after=" + kindText(c)) }
+                }
+
                 let raw1 = terminal::enterRaw(&t)
                 match raw1 { ok(v) { if v { println("raw=true") } else { println("raw=false") } } err(m,c) { println("raw=" + kindText(c)) } }
                 println("raw_marker")

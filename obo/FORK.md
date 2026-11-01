@@ -7249,10 +7249,11 @@ retires resize watches. No arbitrary ioctl or UI framework is exposed.
   from an externally reused pid after the child is reaped; the reaper and
   terminate never signal an arbitrary negative pid.
 
-**P3 review fixes (B1-B5).** Prepared child descriptors are forced to >=3, a
-redirect target is never closed or left CLOEXEC, and both spawn paths close all
-unintended parent descriptors (`closefrom`/`close_range`, inventory fallback)
-while preserving the CLOEXEC error pipe. A `FromStream` source with
+**P3 review fixes (B1-B5).** Prepared child descriptors and the fork error-pipe
+write end are forced to >=3, a redirect target is never closed or left CLOEXEC,
+and both spawn paths close all unintended parent descriptors
+(`closefrom`/`close_range`, inventory fallback) while preserving 0/1/2 and the
+CLOEXEC error pipe. A `FromStream` source with
 `O_NONBLOCK` is rejected with `Unsupported` rather than handed to the child as a
 broken standard fd; pipe chaining needs a future relay. The fake backend takes
 an inode reference for a `FromStream` source so closing that source cannot free

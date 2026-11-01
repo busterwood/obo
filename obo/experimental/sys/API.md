@@ -905,8 +905,9 @@ duplicated and never consumed) and `MergeError` for `error` only. A
 no independent duplicate with separate status flags, so handing a taken pipe to
 a child would break the blocking-standard-end contract. Parent pipe ends are
 nonblocking, child ends blocking, and each take succeeds at most once. Every
-prepared child fd is forced to >=3, the redirect target is never closed, and
-unintended parent descriptors are closed before exec.
+prepared child fd and the fork error-pipe write end are forced to >=3, the
+redirect target is never closed, and unintended parent descriptors are closed
+before exec without closing 0/1/2.
 
 `spawn` uses posix_spawn when it can express the request and a trusted
 fork/execve path for an anchored directory. The fork child runs only

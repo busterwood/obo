@@ -1,0 +1,150 @@
+// P3 descriptor census: a legacy `openFile` descriptor (not CLOEXEC) must not
+// reach the child, repeated spawns must not leak registry entries, and explicit
+// shutdown reports a transferred running child as a cleanup failure.
+module app
+
+import "sysplatform.obx" as platform
+import "sysprocess.obx" as process
+import "sysstream.obx" as stream
+import "syserrors.obx" as errors
+
+fn intText(v: int): string {
+    if v == 0 { return "0" }
+    var n = v
+    var digits = ""
+    while n > 0 {
+        let d = n % 10
+        if d == 0 { digits = "0" + digits }
+        if d == 1 { digits = "1" + digits }
+        if d == 2 { digits = "2" + digits }
+        if d == 3 { digits = "3" + digits }
+        if d == 4 { digits = "4" + digits }
+        if d == 5 { digits = "5" + digits }
+        if d == 6 { digits = "6" + digits }
+        if d == 7 { digits = "7" + digits }
+        if d == 8 { digits = "8" + digits }
+        if d == 9 { digits = "9" + digits }
+        n = n / 10
+    }
+    return digits
+}
+
+fn drain(s: &stream::Stream): string {
+    var out = ""
+    var guard = 0
+    while guard < 4000 {
+        let p = stream::readSome(s, 64)
+        match p {
+            ok(v) { if v == nil { return out } else { out = out + string(v) } }
+            err(m,c) { if c == 10015 { sleepMs(1) } else { return out } }
+        }
+        guard += 1
+    }
+    return out
+}
+
+fn trueCommand(): process::Command {
+    var args = new []string(0)
+    append(args, "/bin/true")
+    return new process::Command{
+        executable: "/bin/true"
+        arguments: args
+        environment: new process::EnvInherit{}
+        directory: nil
+        input: new process::Inherit{}
+        output: new process::Inherit{}
+        error: new process::Inherit{}
+        newGroup: false
+    }
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let inited = platform::initialize(&o)
+    match inited { ok(v) { println("init=true") } err(m,c) { println("init-failed"); return } }
+
+    let opened = openFile("/dev/null", "r")
+    match opened {
+        ok(fd) {
+            var args = new []string(0)
+            append(args, "/bin/sh")
+            append(args, "-c")
+            append(args, "if [ -e /proc/self/fd/" + intText(fd) + " ]; then printf leaked; else printf clean; fi")
+            let cmd = new process::Command{
+                executable: "/bin/sh"
+                arguments: args
+                environment: new process::EnvInherit{}
+                directory: nil
+                input: new process::Inherit{}
+                output: new process::Pipe{}
+                error: new process::Inherit{}
+                newGroup: false
+            }
+            let made = process::spawn(&cmd)
+            match made {
+                ok(child) {
+                    let out = process::takeOutput(&child)
+                    match out {
+                        ok(s) { println("openfile_marker=" + drain(&s)); let c = stream::close(&s) }
+                        err(m,c) { println("openfile_marker=take_err") }
+                    }
+                    let st = process::wait(&child)
+                    let cl = process::close(&child)
+                }
+                err(m,c) { println("openfile_marker=spawn_err") }
+            }
+            let cc = process::closeCommand(&cmd)
+            closeFile(fd)
+        }
+        err(m,c) { println("openfile_marker=open_err") }
+    }
+
+    let trueCmd = trueCommand()
+    var i = 0
+    while i < 24 {
+        let r = process::spawn(&trueCmd)
+        match r {
+            ok(child) {
+                let st = process::wait(&child)
+                let cl = process::close(&child)
+            }
+            err(m,c) { }
+        }
+        i += 1
+    }
+    let tcc = process::closeCommand(&trueCmd)
+    let census = platform::counts()
+    match census {
+        ok(c) { println("census=" + intText(c.resources) + "," + intText(c.shells)) }
+        err(m,c) { println("census=err") }
+    }
+
+    // Transfer a still-running child and shut down without waiting.
+    var sargs = new []string(0)
+    append(sargs, "/bin/sh")
+    append(sargs, "-c")
+    append(sargs, "sleep 1")
+    let sleeper = new process::Command{
+        executable: "/bin/sh"
+        arguments: sargs
+        environment: new process::EnvInherit{}
+        directory: nil
+        input: new process::Inherit{}
+        output: new process::Inherit{}
+        error: new process::Inherit{}
+        newGroup: false
+    }
+    let sr = process::spawn(&sleeper)
+    match sr {
+        ok(child) {
+            let cl = process::close(&child)
+        }
+        err(m,c) { }
+    }
+    let scc = process::closeCommand(&sleeper)
+    let shut = platform::shutdown()
+    match shut {
+        ok(c) { if c.cleanupFailures > 0 { println("shutdown_cleanup=true") } else { println("shutdown_cleanup=false") } }
+        err(m,c) { println("shutdown=err") }
+    }
+}

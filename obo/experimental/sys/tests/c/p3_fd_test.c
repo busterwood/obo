@@ -119,22 +119,60 @@ static long open_blocking_source(const char *path) {
     return f;
 }
 
+static int stderr_read = -1;
+
+static int read_stream_text(long token, char *out, size_t cap) {
+    size_t at = 0;
+    int guard = 0;
+    while (at + 1 < cap && guard < 4000) {
+        long b = sys_reg_new_buffer(128);
+        long n;
+        unsigned char *p = NULL;
+        size_t l = 0;
+        if (b < 0) return -1;
+        n = sys_io_read(token, SYS_KIND_STREAM, b, 0, 128, -1);
+        if (n == -EAGAIN) {
+            (void)sys_res_close(b, SYS_KIND_BYTE_BUFFER);
+            usleep(1000);
+            guard++;
+            continue;
+        }
+        if (n <= 0) {
+            (void)sys_res_close(b, SYS_KIND_BYTE_BUFFER);
+            out[at] = '\0';
+            return 0;
+        }
+        if (sys_reg_buffer_data(b, &p, &l) < 0 || (size_t)n > l) {
+            (void)sys_res_close(b, SYS_KIND_BYTE_BUFFER);
+            return -1;
+        }
+        if ((size_t)n > cap - 1 - at) n = (long)(cap - 1 - at);
+        memcpy(out + at, p, (size_t)n);
+        at += (size_t)n;
+        (void)sys_res_close(b, SYS_KIND_BYTE_BUFFER);
+    }
+    out[at] = '\0';
+    return 0;
+}
+
 static int run_case(const char *label, long dir_token, int in_kind,
-                    int out_kind, long src_token, int marker_fd,
-                    const char *report_path) {
+                    int out_kind, int err_kind, long src_token, int marker_fd,
+                    const char *report_path, int write_err) {
     char script[2048];
     const char *args[3];
-    long plan, child, b;
+    long plan, child;
     char *got;
     int ok = 0;
 
     snprintf(script, sizeof(script),
+             "%s"
              "if [ -e /proc/self/fd/0 ]; then a=open; else a=closed; fi; "
              "if [ -e /proc/self/fd/1 ]; then c=open; else c=closed; fi; "
              "if [ -e /proc/self/fd/2 ]; then d=open; else d=closed; fi; "
              "if [ -e /proc/self/fd/%d ]; then m=leaked; else m=clean; fi; "
-             "printf 'stdin=%%s stdout=%%s stderr=%%s marker=%%s\\n' "
+             "printf 'stdin=%%s stdout=%%s stderr=%%s marker=%%s\n' "
              "\"$a\" \"$c\" \"$d\" \"$m\" > %s",
+             write_err ? "printf 'childerr\\n' >&2; " : "",
              marker_fd, report_path);
     args[0] = "/bin/sh";
     args[1] = "-c";
@@ -145,7 +183,7 @@ static int run_case(const char *label, long dir_token, int in_kind,
     if (sys_proc_plan_set(plan, SYS_OP_PLAN_INPUT, in_kind,
                           in_kind == SYS_REDIRECT_STREAM ? src_token : 0) < 0 ||
         sys_proc_plan_set(plan, SYS_OP_PLAN_OUTPUT, out_kind, 0) < 0 ||
-        sys_proc_plan_set(plan, SYS_OP_PLAN_ERROR, SYS_REDIRECT_INHERIT, 0) < 0) {
+        sys_proc_plan_set(plan, SYS_OP_PLAN_ERROR, err_kind, 0) < 0) {
         report("%s=set_err\n", label);
         (void)sys_res_close(plan, SYS_KIND_SPAWN_PLAN);
         return -1;
@@ -164,6 +202,28 @@ static int run_case(const char *label, long dir_token, int in_kind,
         return -1;
     }
     if (wait_child(child) != 0) report("%s=wait_err\n", label);
+    if (err_kind == SYS_REDIRECT_PIPE) {
+        long es = sys_proc_take(child, 2, SYS_KIND_STREAM);
+        char edata[256];
+        if (es >= 0) {
+            edata[0] = '\0';
+            (void)read_stream_text(es, edata, sizeof(edata));
+            report("%s_err=%s", label, edata);
+            (void)sys_res_close(es, SYS_KIND_STREAM);
+        } else {
+            report("%s_err=take:%ld\n", label, es);
+        }
+    } else if (err_kind == SYS_REDIRECT_INHERIT && write_err) {
+        char edata[256];
+        ssize_t n;
+        edata[0] = '\0';
+        if (stderr_read >= 0) {
+            n = read(stderr_read, edata, sizeof(edata) - 1);
+            if (n < 0) n = 0;
+            edata[n] = '\0';
+        }
+        report("%s_err=%s", label, edata);
+    }
     (void)sys_res_close(child, SYS_KIND_CHILD);
     got = read_file(report_path);
     if (got == NULL) {
@@ -174,8 +234,21 @@ static int run_case(const char *label, long dir_token, int in_kind,
         free(got);
     }
     (void)unlink(report_path);
-    (void)b;
     return ok;
+}
+
+static void run_missing(const char *label, long dir_token) {
+    const char *bad[] = {"/no/such/p3-executable"};
+    long plan = plan_new("/no/such/p3-executable", 1, bad);
+    long child;
+    if (plan < 0) { report("%s=plan_err\n", label); return; }
+    if (dir_token != 0) {
+        (void)sys_proc_plan_set(plan, SYS_OP_PLAN_DIRECTORY, dir_token, 0);
+    }
+    child = sys_proc_spawn(plan);
+    (void)sys_res_close(plan, SYS_KIND_SPAWN_PLAN);
+    report("%s=%ld\n", label, child);
+    if (child >= 0) (void)sys_res_close(child, SYS_KIND_CHILD);
 }
 
 int main(void) {
@@ -187,10 +260,10 @@ int main(void) {
     long marker;
     int marker_fd;
     long pb_token;
+    int stderr_pipe[2];
 
     report_fd = dup(1);
     if (report_fd < 3) {
-        /* Keep a reporting descriptor even if std fds were already sparse. */
         int moved = fcntl(report_fd, F_DUPFD, 3);
         if (moved >= 0) { (void)close(report_fd); report_fd = moved; }
     }
@@ -202,7 +275,11 @@ int main(void) {
     snprintf(input_path, sizeof(input_path), "%s/p3-fd-input-%ld", "/tmp",
              (long)getpid());
 
-    /* A non-CLOEXEC marker above the standard descriptors. */
+    if (pipe(stderr_pipe) != 0) return 2;
+    if (dup2(stderr_pipe[1], 2) < 0) return 2;
+    (void)close(stderr_pipe[1]);
+    stderr_read = stderr_pipe[0];
+
     marker = open("/dev/null", O_RDONLY);
     if (marker >= 0 && marker <= 2) {
         int moved = fcntl(marker, F_DUPFD, 3);
@@ -218,32 +295,56 @@ int main(void) {
     if (pb_token >= 0) dir_token = sys_dir_open(0, pb_token, 1);
     if (pb_token >= 0) (void)sys_res_close(pb_token, SYS_KIND_BYTE_BUFFER);
 
-    /* Close the standard descriptors only after the marker/report/file setup. */
     (void)close(0);
     (void)close(1);
-    (void)close(2);
 
-    /* B1: NULL and STREAM input must survive closed fd 0; PIPE output closed fd 1. */
     run_case("posix_null_pipe", 0, SYS_REDIRECT_NULL, SYS_REDIRECT_PIPE,
-             src, marker_fd, report_path);
+             SYS_REDIRECT_INHERIT, src, marker_fd, report_path, 0);
     run_case("fork_null_pipe", dir_token, SYS_REDIRECT_NULL, SYS_REDIRECT_PIPE,
-             src, marker_fd, report_path);
+             SYS_REDIRECT_INHERIT, src, marker_fd, report_path, 0);
     run_case("posix_stream_pipe", 0, SYS_REDIRECT_STREAM, SYS_REDIRECT_PIPE,
-             src, marker_fd, report_path);
+             SYS_REDIRECT_INHERIT, src, marker_fd, report_path, 0);
     run_case("fork_stream_pipe", dir_token, SYS_REDIRECT_STREAM,
-             SYS_REDIRECT_PIPE, src, marker_fd, report_path);
+             SYS_REDIRECT_PIPE, SYS_REDIRECT_INHERIT, src, marker_fd,
+             report_path, 0);
     run_case("posix_inherit_pipe", 0, SYS_REDIRECT_INHERIT, SYS_REDIRECT_PIPE,
-             src, marker_fd, report_path);
+             SYS_REDIRECT_INHERIT, src, marker_fd, report_path, 0);
     run_case("fork_inherit_pipe", dir_token, SYS_REDIRECT_INHERIT,
-             SYS_REDIRECT_PIPE, src, marker_fd, report_path);
+             SYS_REDIRECT_PIPE, SYS_REDIRECT_INHERIT, src, marker_fd,
+             report_path, 0);
     run_case("posix_pipe_inherit", 0, SYS_REDIRECT_PIPE, SYS_REDIRECT_INHERIT,
-             src, marker_fd, report_path);
+             SYS_REDIRECT_INHERIT, src, marker_fd, report_path, 0);
     run_case("fork_pipe_inherit", dir_token, SYS_REDIRECT_PIPE,
-             SYS_REDIRECT_INHERIT, src, marker_fd, report_path);
+             SYS_REDIRECT_INHERIT, SYS_REDIRECT_INHERIT, src, marker_fd,
+             report_path, 0);
+    run_case("posix_out_null", 0, SYS_REDIRECT_INHERIT, SYS_REDIRECT_NULL,
+             SYS_REDIRECT_INHERIT, src, marker_fd, report_path, 0);
+    run_case("fork_out_null", dir_token, SYS_REDIRECT_INHERIT,
+             SYS_REDIRECT_NULL, SYS_REDIRECT_INHERIT, src, marker_fd,
+             report_path, 0);
+    run_case("posix_err_pipe", 0, SYS_REDIRECT_NULL, SYS_REDIRECT_INHERIT,
+             SYS_REDIRECT_PIPE, src, marker_fd, report_path, 1);
+    run_case("fork_err_pipe", dir_token, SYS_REDIRECT_NULL,
+             SYS_REDIRECT_INHERIT, SYS_REDIRECT_PIPE, src, marker_fd,
+             report_path, 1);
+    run_case("posix_err_null", 0, SYS_REDIRECT_NULL, SYS_REDIRECT_INHERIT,
+             SYS_REDIRECT_NULL, src, marker_fd, report_path, 1);
+    run_case("fork_err_null", dir_token, SYS_REDIRECT_NULL,
+             SYS_REDIRECT_INHERIT, SYS_REDIRECT_NULL, src, marker_fd,
+             report_path, 1);
+    run_case("posix_err_inherit", 0, SYS_REDIRECT_NULL, SYS_REDIRECT_INHERIT,
+             SYS_REDIRECT_INHERIT, src, marker_fd, report_path, 1);
+    run_case("fork_err_inherit", dir_token, SYS_REDIRECT_NULL,
+             SYS_REDIRECT_INHERIT, SYS_REDIRECT_INHERIT, src, marker_fd,
+             report_path, 1);
+
+    run_missing("posix_missing", 0);
+    run_missing("fork_missing", dir_token);
 
     (void)sys_res_close(src, SYS_KIND_STREAM);
     if (dir_token > 0) (void)sys_res_close(dir_token, SYS_KIND_DIRECTORY);
     (void)close(marker_fd);
+    (void)close(stderr_read);
     (void)unlink(input_path);
     report("fd_shutdown=%ld\n", sys_adapter_shutdown());
     (void)close(report_fd);

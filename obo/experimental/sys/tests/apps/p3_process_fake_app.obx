@@ -241,6 +241,36 @@ fn main() {
     }
     let ccnb = process::closeCommand(&cmdNb)
 
+    // A taken pipe remains a nonblocking source after the producer exits.
+    let cmdAfter = simple(oneArg(), new process::Pipe{}, new process::Inherit{},
+                          new process::Inherit{}, false)
+    let rAfter = process::spawn(&cmdAfter)
+    match rAfter {
+        ok(prod) {
+            let ord = fake::lastOrdinal()
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&prod)
+            let taken = process::takeOutput(&prod)
+            match taken {
+                ok(nbs) {
+                    let cmdAfter2 = simple(oneArg(), new process::Inherit{},
+                                           new process::Inherit{},
+                                           new process::FromStream{source: nbs}, false)
+                    let r2 = process::spawn(&cmdAfter2)
+                    match r2 {
+                        ok(child) { println("nonblocking_after_exit=ok"); let cl = process::close(&child) }
+                        err(m,c) { println("nonblocking_after_exit=" + kindText(c)) }
+                    }
+                    let cc2 = process::closeCommand(&cmdAfter2)
+                }
+                err(m,c) { println("nonblocking_after_exit=take_err") }
+            }
+            let cl = process::close(&prod)
+        }
+        err(m,c) { println("nonblocking_after_exit=spawn_err") }
+    }
+    let ccAfter = process::closeCommand(&cmdAfter)
+
     // A blocking regular-file FromStream outlives closing its source.
     let uafOpts = new file::OpenOptions{read:true, write:true, create:true,
         exclusive:false, truncate:true, append:false, noFollow:false,

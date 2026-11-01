@@ -115,6 +115,7 @@ REAL_C_TRACE = [
     'real_cwd_len_ok=1',
     'real_sigchld_init=-16',
     'real_sigchld_spawn=-16',
+    'real_nocldwait_init=-16',
     'real_shutdown=0',
 ]
 
@@ -191,6 +192,7 @@ FAKE_PROCESS_TRACE = [
     '2',
     'take_input=in',
     'nonblocking_fromstream=Unsupported',
+    'nonblocking_after_exit=Unsupported',
     'uaf_input=uafdata',
     'fromstream_output=',
     '3',
@@ -291,6 +293,13 @@ SUPERVISOR_TRACE = [
     'cleanup=0,0',
 ]
 
+CENSUS_TRACE = [
+    'init=true',
+    'openfile_marker=clean',
+    'census=0,0',
+    'shutdown_cleanup=true',
+]
+
 NITS_TRACE = [
     'init=true',
     'dot_excl=AlreadyExists',
@@ -306,17 +315,30 @@ NITS_TRACE = [
 
 
 FD_TRACE = [
-    'posix_null_pipe=stdin=open stdout=open stderr=closed marker=clean',
-    'fork_null_pipe=stdin=open stdout=open stderr=closed marker=clean',
-    'posix_stream_pipe=stdin=open stdout=open stderr=closed marker=clean',
-    'fork_stream_pipe=stdin=open stdout=open stderr=closed marker=clean',
-    'posix_inherit_pipe=stdin=closed stdout=open stderr=closed marker=clean',
-    'fork_inherit_pipe=stdin=closed stdout=open stderr=closed marker=clean',
-    'posix_pipe_inherit=stdin=open stdout=closed stderr=closed marker=clean',
-    'fork_pipe_inherit=stdin=open stdout=closed stderr=closed marker=clean',
+    'posix_null_pipe=stdin=open stdout=open stderr=open marker=clean',
+    'fork_null_pipe=stdin=open stdout=open stderr=open marker=clean',
+    'posix_stream_pipe=stdin=open stdout=open stderr=open marker=clean',
+    'fork_stream_pipe=stdin=open stdout=open stderr=open marker=clean',
+    'posix_inherit_pipe=stdin=closed stdout=open stderr=open marker=clean',
+    'fork_inherit_pipe=stdin=closed stdout=open stderr=open marker=clean',
+    'posix_pipe_inherit=stdin=open stdout=closed stderr=open marker=clean',
+    'fork_pipe_inherit=stdin=open stdout=closed stderr=open marker=clean',
+    'posix_out_null=stdin=closed stdout=open stderr=open marker=clean',
+    'fork_out_null=stdin=closed stdout=open stderr=open marker=clean',
+    'posix_err_pipe_err=childerr',
+    'posix_err_pipe=stdin=open stdout=closed stderr=open marker=clean',
+    'fork_err_pipe_err=childerr',
+    'fork_err_pipe=stdin=open stdout=closed stderr=open marker=clean',
+    'posix_err_null=stdin=open stdout=closed stderr=open marker=clean',
+    'fork_err_null=stdin=open stdout=closed stderr=open marker=clean',
+    'posix_err_inherit_err=childerr',
+    'posix_err_inherit=stdin=open stdout=closed stderr=open marker=clean',
+    'fork_err_inherit_err=childerr',
+    'fork_err_inherit=stdin=open stdout=closed stderr=open marker=clean',
+    'posix_missing=-2',
+    'fork_missing=-2',
     'fd_shutdown=0',
 ]
-
 
 def run_pty_terminal(app, label):
     pid, master = pty.fork()
@@ -368,7 +390,8 @@ def run_pty_terminal(app, label):
         raise Fail('%s: termios was not restored before close' % label)
     text = buf.decode('utf-8', 'replace')
     want = [
-        'init=true', 'size=24,80', 'resize_event=true', 'raw=true',
+        'init=true', 'size=24,80', 'resize_event=true', 'size_after=40,100',
+        'raw=true',
         'raw_marker', 'restore=true', 'restore2=false', 'dup_ok=true',
         'term_close=true', 'late_size=Closed', 'out_close=true',
         'err_close=true', 'counts=0,0',
@@ -480,6 +503,12 @@ def main():
     exact('supervisor', out, SUPERVISOR_TRACE)
     if os.listdir(sup_dir):
         raise Fail('supervisor wrote unexpected files: %r' % os.listdir(sup_dir))
+
+    # Legacy openFile descriptor, repeated-spawn census and shutdown cleanup.
+    census = build(REAL, os.path.join(APPS, 'p3_fd_census_app.obx'),
+                   os.path.join(tmp, 'fd-census'), 'fd census')
+    p, out = run_app(census, 'fd census', [])
+    exact('fd census', out, CENSUS_TRACE)
 
     # P1b fake-only nits.
     nits = build(FAKE, os.path.join(APPS, 'p3_p1b_nits_app.obx'),

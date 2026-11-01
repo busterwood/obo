@@ -84,7 +84,8 @@ fn validText(text: string): bool {
 }
 
 fn validPath(text: string): bool {
-    if len(text) == 0 || len(text) > MAX_PATH_BYTES { return false }
+    // The native plan stores at most 4095 bytes plus its NUL terminator.
+    if len(text) == 0 || len(text) > MAX_PATH_BYTES - 1 { return false }
     return validText(text)
 }
 
@@ -183,6 +184,10 @@ fn buildEnvironment(entries: &[]env::Pair): Result[[]byte] {
     for i in 0..len(entries) {
         let n = len(entries[i].name)
         let v = len(entries[i].value)
+        if n + v + 2 > MAX_ARGUMENT_BYTES {
+            return err("one environment entry exceeds MAX_ARG_STRLEN",
+                       rangeCode())
+        }
         if total > MAX_SPAWN_BYTES - (n + v + 2) {
             return err("environment exceeds the spawn byte cap", rangeCode())
         }

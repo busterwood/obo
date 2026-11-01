@@ -365,9 +365,10 @@ struct, signal number or registry token crosses the boundary.
   with `Unsupported`: a pipe has no independent duplicate with separate status
   flags, so pipe chaining needs a future relay/blocking-source mechanism. Parent
   pipe ends are nonblocking; child ends are blocking. Every prepared child
-  descriptor is forced to >=3, the redirect target is never closed, and the
-  child closes unintended parent descriptors with `closefrom`/`close_range`
-  (inventory fallback) before exec. `takeInput`/`takeOutput`/`takeError`
+  descriptor and the fork error-pipe write end are forced to >=3, the redirect
+  target is never closed, and the child closes unintended parent descriptors
+  with `closefrom`/`close_range` (inventory fallback) before exec. The close
+  range never starts below 3. `takeInput`/`takeOutput`/`takeError`
   transfer each parent pipe end at most once. `closeCommand` closes only the command-owned directory and
   FromStream sources, tries every cleanup and is idempotent.
 - `sysprocess` wait: `pollExit` is one `WNOHANG` observation, `wait` is one
@@ -537,7 +538,8 @@ The P3 suite additionally runs:
   process groups, signalfd delivery/mask restoration, chdir/cwd and terminal
   basics, under ASan/UBSan/LSan;
 - a real process contract covering input Null/Inherit/Pipe/FromStream,
-  output/error Pipe/FromStream/MergeError, Inherit/Explicit/empty policy, pipes
+  output/error Pipe/MergeError (fake roots additionally cover FromStream
+  output/error), Inherit/Explicit/empty policy, pipes
   and takes, wait/poll/repeat/status decoding, detached and close-on-running
   transfer, the reactor reaper, watchChild, process groups, chdir freeze and
   FromStream duplication/cleanup;
@@ -549,11 +551,15 @@ The P3 suite additionally runs:
 - real signal delivery through a child fixture and the default-action
   restoration check (the die mode must exit by SIGTERM), and a real pty run
   that changes `TIOCSWINSZ` (kernel SIGWINCH) after a direct READY marker and
-  verifies window size, raw-mode termios, restoration, duplicate and EOF
-  handling, with a visible skip when `/dev/pts` is unavailable;
-- B1/B2 descriptor regressions with 0/1/2 closed (Null/Inherit/Pipe/FromStream
-  input, Pipe/Inherit output, both spawn paths) and a non-CLOEXEC marker fd
-  absent from the child, under ASan/UBSan/LSan;
+  verifies the initial 24x80 and post-resize 40x100 sizes, raw-mode termios,
+  restoration, duplicate and EOF handling, with a visible skip when `/dev/pts`
+  is unavailable;
+- B1/B2 descriptor regressions with closed standard fds (Null/Inherit/Pipe/
+  FromStream input, Pipe/Null/Inherit output, Null/Pipe/Inherit error, both
+  spawn paths), a fork-path missing executable returning `NotFound`, stderr
+  data, and a non-CLOEXEC marker absent from the child, under ASan/UBSan/LSan;
+- a legacy `openFile` non-CLOEXEC marker, a 24-spawn registry census and a
+  shutdown-with-running-child `cleanupFailures` report;
 - the deterministic supervisor example in a test temp directory and the P1b
   fake-only nit checks (`.` identity, `O_CREAT|O_EXCL` on a directory).
 

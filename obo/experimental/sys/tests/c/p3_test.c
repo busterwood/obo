@@ -374,6 +374,11 @@ static int real_mode(void) {
                 plan = plan_for("/bin/true", 1, bad, 0);
                 printf("real_sigchld_spawn=%ld\n", sys_proc_spawn(plan));
                 (void)sys_res_close(plan, SYS_KIND_SPAWN_PLAN);
+                memset(&ign, 0, sizeof(ign));
+                ign.sa_handler = SIG_DFL;
+                ign.sa_flags = SA_NOCLDWAIT;
+                (void)sigaction(SIGCHLD, &ign, NULL);
+                printf("real_nocldwait_init=%ld\n", sys_signal_init(1));
                 (void)sigaction(SIGCHLD, &oldsa, NULL);
             }
         }

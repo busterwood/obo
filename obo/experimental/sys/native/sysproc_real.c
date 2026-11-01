@@ -82,10 +82,10 @@ static int release_fdobj_p3(void *p) {
     return e;
 }
 
-static int sigchld_ignored(void) {
+static int sigchld_incompatible(void) {
     struct sigaction sa;
     if (sigaction(SIGCHLD, NULL, &sa) != 0) return 0;
-    return sa.sa_handler == SIG_IGN;
+    return sa.sa_handler == SIG_IGN || (sa.sa_flags & SA_NOCLDWAIT) != 0;
 }
 
 static int lib_signal(int sig) {
@@ -536,13 +536,14 @@ static void close_inventory_except(long max_fd, int keep) {
 static void child_close_unintended(int keep, long max_fd) {
 #ifdef SYS_close_range
     int failed = 0;
+    unsigned int after = (keep >= 2) ? (unsigned int)(keep + 1) : 3U;
     if (keep > 3) {
         if (syscall(SYS_close_range, 3U, (unsigned int)(keep - 1), 0U) != 0) {
             failed = 1;
         }
     }
-    if (syscall(SYS_close_range, (unsigned int)(keep + 1), ~0U, 0U) != 0) {
-        failed = 1;
+    if (after <= ~0U) {
+        if (syscall(SYS_close_range, after, ~0U, 0U) != 0) failed = 1;
     }
     if (!failed) return;
 #endif
@@ -563,6 +564,15 @@ static long spawn_fork(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
 
     if (max_fd < 4 || max_fd > 1048576) max_fd = 1048576;
     if (pipe2(errpipe, O_CLOEXEC) != 0) return err(errno);
+    {
+        long moved = fd_at_least_3(&errpipe[0]);
+        if (moved == 0) moved = fd_at_least_3(&errpipe[1]);
+        if (moved != 0) {
+            (void)close(errpipe[0]);
+            (void)close(errpipe[1]);
+            return moved;
+        }
+    }
     pid = fork();
     if (pid < 0) {
         e = errno;
@@ -591,6 +601,7 @@ static long spawn_fork(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
         }
         for (i = 0; i < 3; i++) {
             if (child_fd[i] >= 0 && child_fd[i] != i) (void)close(child_fd[i]);
+            child_fd[i] = -1;
         }
         if (child_err == 0) {
             /* Keep the error pipe so exec failure is still reported. */
@@ -675,17 +686,13 @@ static long spawn_posix(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
             rc = posix_spawn_file_actions_addopen(&fa, i, "/dev/null",
                                                   O_RDWR, 0);
         } else {
-            if (child_fd[i] < 0) {
+            if (child_fd[i] < 3) {
+                /* Prepared fds are forced >=3; a lower one is an internal bug. */
                 rc = EINVAL;
             } else {
-                if (child_fd[i] == i) {
-                    /* Defensive: clear CLOEXEC rather than dup2(fd,fd). */
-                    rc = posix_spawn_file_actions_adddup2(&fa, child_fd[i], i);
-                } else {
-                    rc = posix_spawn_file_actions_adddup2(&fa, child_fd[i], i);
-                    if (rc == 0) {
-                        rc = posix_spawn_file_actions_addclose(&fa, child_fd[i]);
-                    }
+                rc = posix_spawn_file_actions_adddup2(&fa, child_fd[i], i);
+                if (rc == 0) {
+                    rc = posix_spawn_file_actions_addclose(&fa, child_fd[i]);
                 }
             }
         }
@@ -743,7 +750,7 @@ long sys_proc_spawn(long plan_token) {
     long token;
     sys_reg_bump_call(SYS_CALL_PROC_SPAWN);
     if (plan == NULL) return err(EINVAL);
-    if (sigchld_ignored()) return err(EBUSY);
+    if (sigchld_incompatible()) return err(EBUSY);
     if (plan->exec == NULL || plan->argc < 1 || plan->argv == NULL) return err(EINVAL);
     if (plan->env_mode == 1 && plan->envp == NULL && plan->envc != 0) return err(EINVAL);
 
@@ -1006,7 +1013,7 @@ long sys_signal_init(long ignore_pipe) {
     if (ignore_pipe != 0 && ignore_pipe != 1) return err(EINVAL);
     /* An ignored SIGCHLD is not queued and waitpid reports ECHILD; spawning
      * would silently lose every exit status. */
-    if (sigchld_ignored()) return err(EBUSY);
+    if (sigchld_incompatible()) return err(EBUSY);
     if (ignore_pipe) {
         if (sigaction(SIGPIPE, NULL, &sa) == 0 && sa.sa_handler != SIG_IGN) {
             struct sigaction ign;

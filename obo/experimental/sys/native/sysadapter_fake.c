@@ -40,6 +40,7 @@ struct fake_desc {
     size_t pos;
     int append;
     int pipe;            /* parent end of a scripted child pipe */
+    int nonblocking;     /* taken-pipe contract; survives producer exit */
     long pipe_ordinal;
     long refs;
 };
@@ -1631,7 +1632,7 @@ long sys_proc_plan_set(long plan_token, long field, long a, long b) {
         if (a == SYS_REDIRECT_STREAM) {
             fake_file *sf = file_of(b, SYS_KIND_STREAM);
             if (sf == NULL) return err(EBADF);
-            if (sf->d != NULL && sf->d->pipe) {
+            if (sf->d != NULL && sf->d->nonblocking) {
                 /* Nonblocking pipe source: the child would inherit EAGAIN
                  * semantics, so reject it like the real adapter. */
                 return err(EOPNOTSUPP);
@@ -1704,6 +1705,7 @@ static fake_file *fake_pipe_file(fake_inode *ino, long ordinal) {
     }
     d->ino = ino;
     d->pipe = 1;
+    d->nonblocking = 1;
     d->pipe_ordinal = ordinal;
     d->refs = 1;
     ino->refs++;

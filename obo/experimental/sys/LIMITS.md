@@ -395,9 +395,12 @@ consume readiness batches.
   pid, pipe fd or kernel signal. Pipe data is supplied by
   `sysfake_proc_write`/`sysfake_proc_read`, exits by `sysfake_proc_exit`, and a
   blocking `wait` on a still-Running scripted child returns `WouldBlock`
-  instead of sleeping. This proves state/error/cleanup behavior, not kernel
-  scheduling. Real pty tests use only the local test process and a child
-  fixture; no network is involved.
+  instead of sleeping. Taken pipes retain their scripted nonblocking contract
+  after the producer exits. The fake does not model `O_NONBLOCK` on regular
+  files or sockets; those sources are accepted as blocking scripted streams.
+  This proves state/error/cleanup behavior, not kernel scheduling. Real pty
+  tests use only the local test process and a child fixture; no network is
+  involved.
 - **Signals are queued notifications.** Linux blocks the selected signals and
   uses one signalfd; there is no obo handler and no C-to-obo callback. Signals
   coalesce, `Event.count` is an observation and never an exact delivery count,
@@ -438,9 +441,10 @@ consume readiness batches.
   duplicated into the child and never consumes the command's source; a source
   with `O_NONBLOCK` is rejected with `Unsupported` because a pipe has no
   independent blocking duplicate, so pipe chaining needs a future relay. Every
-  prepared child fd is forced to >=3, the redirect target is never closed, and
-  unintended parent fds are closed before exec (`closefrom`/`close_range` with
-  an inventory fallback). A failed spawn closes both pipe ends and reaps any
+  prepared child fd and the fork error-pipe write end are forced to >=3, the
+  redirect target is never closed, and unintended parent fds are closed before
+  exec (`closefrom`/`close_range` with an inventory fallback) while preserving
+  0/1/2. A failed spawn closes both pipe ends and reaps any
   failed child; the error pipe distinguishes exec failure from a genuine exit
   127. `posix_spawn` is used when
   the request has no anchored directory; the fork/execve path is trusted C only.
