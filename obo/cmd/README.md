@@ -29,12 +29,12 @@ runtime included:
 
 | Tool | Size |
 |---|---:|
-| `cat` | 94,209 bytes |
-| `wc` | 98,305 bytes |
-| `sort` | 122,881 bytes |
-| `head` | 94,209 bytes |
-| `tail` | 106,497 bytes |
-| `eza` | 270,337 bytes |
+| `cat` | 90,113 bytes |
+| `wc` | 94,209 bytes |
+| `sort` | 118,785 bytes |
+| `head` | 90,113 bytes |
+| `tail` | 102,401 bytes |
+| `eza` | 266,241 bytes |
 
 The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered functions,
 `writeByte` and `isTty`), `lib/strings.obx` (byte classification, `cmp`, the
@@ -199,11 +199,11 @@ command line asks for: `-c` sums chunk lengths without looking at a byte, `-l`
 runs a newline-only loop unrolled 32 bytes with four accumulators, and a single
 word state machine counts words and, when `-l` is also selected, lines in one
 pass, so `-lw`/`-lwc` cost about what `-w` alone costs. On the CLI benchmark's
-110,000,000-byte text file (warm cache, one core), `-l` measures 90.0 ms,
-slightly behind Python's C `bytes.count` (85.9 ms) and behind GNU `wc -l`
-(15.4 ms, whose `memchr` loop is SIMD); `-lwc` measures 146.0 ms against
-Python's chunked counter (595.5 ms) and GNU `wc -lwc` (1,144 ms), beating both
-by 4.08x and 7.84x. Absolute times are fixture-dependent; see
+110,000,000-byte text file (warm cache, one core), `-l` measures 80.4 ms,
+slightly behind Python's C `bytes.count` (77.3 ms) and behind GNU `wc -l`
+(12.2 ms, whose `memchr` loop is SIMD); `-lwc` measures 133.4 ms against
+Python's chunked counter (480.6 ms) and GNU `wc -lwc` (1,049 ms), beating both
+by 3.60x and 7.86x. Absolute times are fixture-dependent; see
 [`PERFORMANCE.md`](../../PERFORMANCE.md) for the current table and caveats.
 
 ## sort
@@ -272,16 +272,17 @@ fraction stage whose terminator sorts below `0`; a numerically equal range
 continues with the whole-line byte radix unless `-u`, which is the last-resort
 tie-break. Output is assembled in 64 KiB blocks and written with `writeFd`. On
 the CLI benchmark's 1,000,000 fixed 8-digit lines (warm cache, one core) obo
-`sort` measures 319.3 ms against GNU `sort` 9.4's 352.1 ms and Python's
-848.8 ms. Absolute times are fixture-dependent: a comparison sort with `memcmp`
+`sort` measures 170.9 ms against GNU `sort` 9.4's 264.2 ms and Python's
+598.1 ms. Absolute times are fixture-dependent: a comparison sort with `memcmp`
 can win on long shared-prefix inputs, and duplicate-heavy variable-length
 inputs can favor GNU, while fixed-width and small-key inputs favor the radix.
 Peak RSS on the 9 MB/1,000,000-line file is 40,832 KiB (GNU `sort` 9.4 pinned
-to one core uses about 58,892 KiB there, and 136,972 KiB unpinned with its
+to one core uses about 58,892 KiB there, and 136,844 KiB unpinned with its
 default threads); `-n` uses 79,872 KiB on the 9 MB fixture. On the CLI
-benchmark's fixed 8-digit fixture `-n` measures 378.1 ms against GNU
-`sort -n`'s 697.7 ms.
-Absolute times move about 10-15% with host load and depend on the fixture; see
+benchmark's fixed 8-digit fixture `-n` measures 216.6 ms against GNU
+`sort -n`'s 447.2 ms.
+Absolute times move with host load (the two default runs differed by about 20%
+on the sort rows) and depend on the fixture; see
 [`PERFORMANCE.md`](../../PERFORMANCE.md) for the current table and caveats.
 
 ## tail
@@ -649,11 +650,11 @@ and `-?=` is `Unknown argument -=`. Values of rejected
 eza-valid flags are still consumed with eza's value mode before the unsupported
 error (`-I=`, `-L x`).
 
-**Measured (0.15 run, 1 November 2026).** eza binary 270,337 bytes (static,
-runtime included; sha256 `53bf3a06…`). On 10,000 entries under
+**Measured (0.15 run, 1 November 2026).** eza binary 266,241 bytes (static,
+runtime included; sha256 `7a4e85f5…`). On 10,000 entries under
 `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,184,368
 live heap bytes, the name-only listing at 2,183,712, the tree at 2,184,496,
-the coloured listing at 2,183,968 and the E2 grid at 2,184,144 (2,696 KiB max
+the coloured listing at 2,183,968 and the E2 grid at 2,184,144 (2,692 KiB max
 RSS in the recorded run; the UTF-8 width table is code, not per-entry heap).
 `tests/eza.py --memory` keeps the P4 `EZA_PEAK_MAX = 2,752,512` bytes and
 gates on no leak/double-close line. The pinned eza 0.23.3 reference was not
