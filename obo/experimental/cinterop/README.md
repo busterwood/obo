@@ -170,9 +170,16 @@ match made {
   `connect_timeout=0` counts as present, so it disables libpq's timeout and gets
   no default; negative values are passed unchanged. An invalid conninfo returns
   the helper's copied diagnostic as `err`.
-- Values and error messages are copied by length; `PQgetlength` is used, never
-  `strlen`. Exact numeric text, OID and typmod are preserved; no numeric value is
-  routed through a float.
+- Result values and error messages are copied by length; `PQgetlength` is used,
+  never `strlen`. Parameter values are different: libpq reads a text-format
+  `paramValues[]` entry as a C string, so the wrapper passes a `len+1` copy
+  truncated back to `len` (the terminator stays one byte past the data) for
+  text, while binary values keep their explicit length and may contain NUL.
+  Exact numeric text, OID and typmod are preserved; no numeric value is routed
+  through a float. `Rows.fmt` is 0 for a text result and 1 for
+  `exec_params_binary`.
+- A dropped `Rows` leaves its owned `Res` in the census (exit 8 under
+  `OBO_CHECK=1`, with no `PQclear`), even after the `Connection` closes.
 - `examples/libpq_defer_app.obx` no longer imports `buffer.obx`: the buffer
   package has its own adapter and is not part of the libpq spec.
 - **Temporary retention:** `toolkit/libpq_adapter.c` and `.h` (and the `cres`
@@ -765,19 +772,26 @@ It also builds and runs:
 - limits with the fake ABI: 33 parameters, 1 MiB + 1 bytes of SQL, a 16 MiB + 1
   value and a 16 MiB + 1 DSN are rejected with specific messages, and 32
   parameters, exactly 1 MiB of SQL and a 16 MiB value are accepted;
-- adapter error messages with the fake ABI: `PQconnectdb` returning NULL (code 0),
-  an empty `PQexecParams` failure, and exec on a closed connection (code -1) each
-  give their own message;
-- the wrapper limit constants (`PQ_MAX_PARAMS`, `PQ_MAX_SQL`, `PQ_MAX_BUFFER`)
-  equal the C defines (`PQ_MAX_PARAMS`, `PQ_MAX_SQL` in `toolkit/libpq_adapter.c`,
-  `CRES_MAX_BUFFER` in `toolkit/cres.h`), checked by reading the sources;
-- a libpq spec declaration that disagrees with `libpq_adapter.h` (an
-  internally consistent `int` against the header's `long`) fails the signature
-  check before link;
-- explicit-defer success/early-return/nested/loop/buffer paths and a
+- the v2 wrapper's own messages: `PQconnectdb` returning NULL and an empty
+  `PQexecParams` failure each return a specific `err`, and exec on a closed
+  connection is the stage (d) exit 7 (not the old adapter's code -1);
+- the wrapper limit constants (`PQ_MAX_PARAMS`, `PQ_MAX_SQL`, `PQ_MAX_DSN`,
+  `PQ_MAX_VALUE`) are read from `libpq.obx` and checked against the reviewed
+  values; there are no adapter C mirrors any more;
+- a libpq spec declaration that disagrees with `libpq_decls.h` (an internally
+  consistent `long` for `PQlibVersion`, whose header return is `int`) fails the
+  signature check before link;
+- explicit-defer success/early-return/nested/loop paths and a
   result-outlives-connection app;
-- real libpq's conninfo parser for timeout detection (quoted values are not
-  mistaken for keywords), with `PQconnectdb` wrapped and never called;
+- a dropped `Rows` leaves its owned `Res` in the census (exit 8, `clear=0`);
+- NULL versus empty, a SQL-NULL `value` error, an over-cap `cbytes` result,
+  `Rows.fmt` 0/1, bounds sentinels/errors on every accessor, and closed-Rows
+  accessors;
+- NUL rejection for the DSN, SQL and text values (binary NUL is preserved), an
+  explicit `connect_timeout=3` is not duplicated, and the default
+  `connect_timeout=5` is appended;
+- the conninfo helper against real libpq (`PQconninfoParse`/`PQconninfoFree`,
+  quoted values are not keywords) and the compile-time behaviour;
 - guarded-stack fixtures: invalid size, low/high guard SIGSEGV, and a real obo
   deep-recursion guard fault;
 - hosted shutdown fixtures: constructor, atexit, C stdio flush, normal exit,
@@ -793,7 +807,8 @@ It also builds and runs:
   `libcrypto.so.3` link, TLS 1.3 memory-BIO/ALPN handshake, provider/RAND,
   thread-local state, constructor/atexit/stdio/`OPENSSL_cleanup`, and a separate
   ASAN/UBSAN run;
-- ASAN/UBSAN runs of the fake adapter, zlib adapter and guarded-stack fixture;
+- ASAN/UBSAN runs of the fake adapter, zlib adapter, guarded-stack fixture and
+  the `libpq_conninfo.c` helper;
 - the opt-in live local PostgreSQL smoke test when `CINTEROP_TEST_DSN` is set.
 
 The project skill and buildable templates are in [`skill/`](skill/SKILL.md).
@@ -823,16 +838,17 @@ declarations-only SQLite adapter, both explicit-close and tested.
 - The final layout is non-PIE and fixed-address; ASLR/PIE is unsupported.
 - C is trusted and unchecked. A malicious `.cbind`, header/declaration or
   same-signature sidecar is within the trusted build input, not sandboxed.
-- There is no automatic foreign finalizer. `PGconn`/`PGresult` and bounded
-  borrowed bytes are supported only through the explicit-close adapter; dropping
-  a `Connection`/`Rows` never calls `PQfinish`/`PQclear`. The adapter is not a
-  full database driver or a stable public API.
-- The token registry protects against accidental stale/wrong-kind/forged integer
+- There is no automatic foreign finalizer. `PGconn`/`PGresult` are owned foreign
+  handles; dropping a `Connection`/`Rows` never calls `PQfinish`/`PQclear` and
+  is reported by the `OBO_CHECK=1` census. The binding is not a full database
+  driver or a stable public API.
+- The retained `cres` token registry (zlib, buffer, templates, and db/postgres
+  until stage (g)) protects against accidental stale/wrong-kind/forged integer
   use, not against trusted C or an adversarial caller. Its generation is 31
   bits. Obo token fields are private to their wrapper modules; that reduces
   accidental construction, not deliberate forgery.
 - Source floats/decimals are not part of the native contract. The libpq
-  adapter preserves exact numeric text/OID/typmod and never converts a database
+  binding preserves exact numeric text/OID/typmod and never converts a database
   numeric through a float.
 - The hosted OpenSSL qualification is distro-aware only to the extent of its
   package probe: it accepts `/usr/include` headers only when the installed

@@ -1,13 +1,13 @@
 /* Minimal manual declarations for the libpq 16 public C API used by the
- * experimental adapter.
+ * experimental libpq binding.
  *
  * Provenance: written for this project from the PostgreSQL 16 libpq manual
  * (https://www.postgresql.org/docs/16/libpq.html). This is NOT a copy of the
  * PostgreSQL header, which is not installed on the probe host. It declares only
- * the opaque types, status values, and functions this adapter calls. The
- * development header is absent, so the cbind records signature mode
- * "declarations-only"; the declarations are trusted build input, not a
- * substitute for a real header check.
+ * the opaque types, status values, and functions the libpq binding calls. This
+ * is the project's manual declaration header, not the vendor header; the cbind
+ * uses signature_check "header" against this file. The declarations are trusted
+ * build input, not a substitute for a vendor header check.
  *
  * Copyright and licence: the declarations below are an independently authored
  * ABI description using the public C types and function names documented by
