@@ -7477,6 +7477,8 @@ fn kindNumber(desc: string, from: int, to: int, signed: bool): int {
     while i < to {
         let c = int(desc[i])
         if c < 48 || c > 57 { error("__cinterop argument kind needs a number: '" + substr(desc, from, to) + "'") }
+        // 17 digits at most: the value stays inside int, so a long descriptor cannot overflow
+        if v > 99999999999999999 { error("__cinterop argument kind number is too large: '" + substr(desc, from, to) + "'") }
         v = v * 10 + c - 48
         i += 1
     }
@@ -7504,6 +7506,7 @@ fn parseKind(desc: string, from: int, to: int): NativeKind {
     var f = e + 1
     while f < to && desc[f] != ':' { f += 1 }
     let arg = kindNumber(desc, e + 1, f, false)
+    if arg >= 16 { error("__cinterop argument index out of range: @" + string(arg) + " (indexes run from 0 to 15)") }
     var flag = ""
     if f < to { flag = substr(desc, f + 1, to) }
     if name == "ints" {
