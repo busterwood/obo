@@ -19,29 +19,29 @@ measurements.
 
 ## Current state (1 November 2026)
 
-The released compiler is **obo 0.16, symbol format 9, ABI 1** (757,761 bytes,
-sha256 `5700668d…`), with decimal record fields, `[]decimal` arrays, decimal
-globals and literal constants, compiler-known `sql`/`html` template literals,
-the decimal text API, private-by-default record fields, exact 24-byte decimals,
-Stage B capture lists, the HTML escaping library and the configurable heap
-runtime. The experimental cinterop v2 line adds `foreign` handles, generated
-`_out` records and a leak census in its own packages (libpq, SQLite and
-PostgreSQL); it is a trusted-build probe with no threads and no stable API. The
-runtime cleanup removed the disabled collector and `gc` builtins. `seed/obo` is
-the promoted **0.16** image (same size and hash). The immediate pre-0.16 seed was
-the 745,473-byte 0.15-line image (sha256 `e5298729…`, promoted at `f74b532`);
-the earlier 696,321-byte 0.15 image (`4213f9a3…`) also builds this 0.16 image,
-and earlier seeds build the 0.15 line. The 0.16 image reaches a fixed point.
-Floats were released at `0.10`/format 6; Stage B is `0.11`/format 6; decimal is
-`0.12`/format 6; private-by-default fields are `0.13`/format 7; the decimal
-text API is `0.14`/format 7; templates are `0.15`/format 8; decimal storage
-(fields, arrays, globals and constants) is released at `0.16`/format 9. Formats
-6, 7 and 8 are not accepted by the 0.16 compiler, which reads format 9 only:
-rebuild old `.sym` files.
+The released compiler is **obo 0.17, symbol format 10, ABI 1** (757,761 bytes,
+sha256 `29ffadc8…`), with impure interface members, decimal record fields,
+`[]decimal` arrays, decimal globals and literal constants, compiler-known
+`sql`/`html` template literals, the decimal text API, private-by-default record
+fields, exact 24-byte decimals, Stage B capture lists, the HTML escaping library
+and the configurable heap runtime. The experimental cinterop v2 line adds
+`foreign` handles, generated `_out` records and a leak census in its own packages
+(libpq, SQLite and PostgreSQL); it is a trusted-build probe with no threads and
+no stable API. The runtime cleanup removed the disabled collector and `gc`
+builtins. `seed/obo` is the promoted **0.17** image (same size and hash). The
+immediate pre-0.17 seed was the 757,761-byte 0.16 image (sha256 `5700668d…`,
+promoted at `50cca0a`); it built this 0.17 image once, and the 0.17 image reaches
+a fixed point. The 0.15 seeds built the 0.16 line. Floats were released at
+`0.10`/format 6; Stage B is `0.11`/format 6; decimal is `0.12`/format 6;
+private-by-default fields are `0.13`/format 7; the decimal text API is
+`0.14`/format 7; templates are `0.15`/format 8; decimal storage (fields, arrays,
+globals and constants) is `0.16`/format 9; impure interface members are
+`0.17`/format 10. The 0.17 compiler reads format 10 only: formats 6, 7, 8 and 9
+are rejected, so rebuild old `.sym` files.
 Version policy: additive builtin/runtime extensions use patch releases such as
 the historical 0.8.1; floats are 0.10, Stage B is 0.11, decimal is 0.12,
-field visibility is 0.13, decimal text is 0.14, templates are 0.15 and decimal
-storage is 0.16.
+field visibility is 0.13, decimal text is 0.14, templates are 0.15, decimal
+storage is 0.16 and impure interface members are 0.17.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
@@ -61,14 +61,18 @@ storage is 0.16.
   24-byte inline record and closed-variant fields (`priv24` in `.sym`),
   `[]decimal` arrays at a 24-byte stride, decimal globals in zero-initialised
   data, and literal or unary-minus decimal constants whose public `.sym` form
-  is an exact 48-hex-digit payload. The HTML escaping library is in
+  is an exact 48-hex-digit payload. The 0.17 impure interface-member tier adds
+  `impure fn`/`impure mut fn`: an impure member has the maximum call summary, so
+  a call through it invalidates every live reference and handle and makes the
+  caller impure; any signature-matching method may implement it, and the pure
+  and plain tiers are unchanged. The HTML escaping library is in
   `obo/lib/html.obx`. Interface handles `^I` and decimal methods, captures and
   function values are later. An experimental cinterop v2 boundary adds
   `foreign` handles, owned and borrowed C pointers, body-less `native fn`
   declarations, generated `_out` records and a leak census for its own libpq,
   SQLite and PostgreSQL packages; it has no threads and no stable API. The full
   reference is [obo/LANGUAGE.md](obo/LANGUAGE.md).
-- **Compiler.** 17,114 lines / 653,656 bytes of obo source (the released
+- **Compiler.** 17,159 lines / 656,261 bytes of obo source (the released
   0.15 line was 15,787 / 596,288; the 0.14 line was 14,813 / 559,468).
   Numeric floats add
   the `float` type, exact literal/constant conversion, arithmetic, formatting,
@@ -84,13 +88,14 @@ storage is 0.16.
   the disabled collector and `gc` builtins (16 source lines); 0.16 adds
   `sizeOf`-based 24-byte decimal field layout, the `[]decimal` array kind,
   24-byte decimal globals, literal-only decimal constants, the private
-  `priv24` `.sym` marker, the `hex` constant payload and format 9. The
-  experimental cinterop v2 work adds the `foreign` record kind, body-less
+  `priv24` `.sym` marker, the `hex` constant payload and format 9; 0.17 adds
+  the `impure` member marker, the maximum `freesAll`/`writesHandles` member
+  summary, the impl-tier exemption, the canonical `.sym` marker and format 10.
+  The experimental cinterop v2 work adds the `foreign` record kind, body-less
   `native fn` declarations and generated out records without changing the
-  baseline symbol format or ABI. Both the immediate pre-0.16 seed, the
-  745,473-byte 0.15-line image (sha256 `e5298729…`, promoted at `f74b532`), and
-  the earlier 696,321-byte 0.15 image (`4213f9a3…`) build the 757,761-byte 0.16
-  fixed point.
+  baseline symbol format or ABI. The immediate pre-0.17 seed, the 757,761-byte
+  0.16 image (sha256 `5700668d…`, promoted at `50cca0a`), built this 0.17 image
+  once; the 0.17 image reaches its own fixed point.
 - **Tools.** `cat`, `wc`, `sort`, `head`, `tail` and the partial `eza`
   reimplementation are written in obo and built by `make tools` / `make eza`.
   Differential gates compare them with GNU coreutils 9.4 (`obo/tests/tools.py`)
@@ -111,19 +116,19 @@ storage is 0.16.
 
 | Current metric | Value |
 |---|---:|
-| Compiler source | 17,114 lines, 653,656 bytes |
-| Compiler (`--version`) | 757,761 bytes, sha256 `5700668d…`, `obo 0.16`, sym-format 9, abi 1 |
-| Seed (`--version`) | promoted obo 0.16: 757,761 bytes, sha256 `5700668d…`, sym-format 9, abi 1; the immediate pre-0.16 seed was the 745,473-byte 0.15-line image (`e5298729…`, `f74b532`), and the earlier 696,321-byte 0.15 image (`4213f9a3…`) also builds this image; earlier seeds build the 0.15 line |
-| Self-host fixed point | stage 2 == stage 3 == compiler, 757,761 bytes, `5700668d…`; the promoted 0.16 seed reproduces it |
-| Self-compile wall time | 0.252 s one stage (5 runs, median; range 0.2473-0.2549 s) and 0.500 s for the two-stage seed → stage 2 → stage 3 build; host-dependent, measured 1 November 2026 |
-| Self-compile live peak | 2,583,104 bytes direct (`heap_test`); 2,583,120 bytes port comparison (budget 2,750,000) |
-| Total allocated | 57,739,904 bytes direct; 57,741,232 bytes port comparison |
+| Compiler source | 17,159 lines, 656,261 bytes |
+| Compiler (`--version`) | 757,761 bytes, sha256 `29ffadc8…`, `obo 0.17`, sym-format 10, abi 1 |
+| Seed (`--version`) | promoted obo 0.17: 757,761 bytes, sha256 `29ffadc8…`, sym-format 10, abi 1; the immediate pre-0.17 seed is the 757,761-byte 0.16 image (`5700668d…`, `50cca0a`), which built this image once; earlier seeds build the 0.16 line |
+| Self-host fixed point | stage 2 == stage 3 == compiler, 757,761 bytes, `29ffadc8…`; the promoted 0.17 seed reproduces it |
+| Self-compile wall time | 0.252 s one stage (5 runs, median; range 0.2473-0.2549 s) and 0.500 s for the two-stage seed → stage 2 → stage 3 build; host-dependent, measured on the 0.16 line on 1 November 2026, and unchanged in 0.17 (only interface checking changed) |
+| Self-compile live peak | 2,586,256 bytes direct (`heap_test`); 2,586,272 bytes port comparison (budget 2,750,000) |
+| Total allocated | 57,876,000 bytes direct; 57,877,328 bytes port comparison |
 | Maximum resident set | 5,092 KB (measured 1 November 2026) |
-| Live-memory budget | 2,750,000 bytes: 166,896 spare direct / 166,880 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 53,984) |
-| obo suite | 1,855 `run_fork` tests; 147 `module_test`; `sym_test.py` 55/55; `sym_fuzz.py` 200/200; `port_test` 628/628 with 10 encoder groups; `port_compare` 1,834/1,834 default; seed comparisons 1,634/1,634 against the promoted 0.16 seed; 74 doc examples; 30/30 import checks; 17/17 stdlib roots |
+| Live-memory budget | 2,750,000 bytes: 163,744 spare direct / 163,728 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 53,984 on 0.17) |
+| obo suite | 1,869 `run_fork` tests; 149 `module_test`; `sym_test.py` 56/56; `sym_fuzz.py` 200/200; `port_test` 630/630 with 10 encoder groups; `port_compare` 1,847/1,847 default; seed comparisons 1,645/1,645 against the promoted 0.17 seed; 74 doc examples; 30/30 import checks; 17/17 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
-| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.16) is 1,634/1,634; that flat count omits the separate module-tree, CLI and re-emit checks (200 on this tree) that the default comparison adds, so the default (self) comparison is 1,834/1,834 |
-| Mutation gates | `mutate_fork` 717/749 caught + 31 equivalent, 1 unjudged stale pattern (`modules: token names lack ::`); `mutate_port` 537/540 caught, 3 unjudged stale patterns (`modules: token names lack ::`; `retry: scanner not rewound` and `retry: token not restored`, whose patterns now occur twice); `mutate_meta` 68/82 caught + 11 equivalent, 3 broken stale patterns (`universe omits isatty`/`getenv`/`terminalWidth`: the builtin-universe line changed, pattern found 0 times); `mutate_decimal` 105/105 with an explicit baseline; `mutate_io` 36/36 (including the self-host memory oracle). The stale or broken patterns are gate drift against the 0.16 source, not weakened checks; the `modules` one is already recorded in `FORK.md` at D2 |
+| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.17) is 1,645/1,645; that flat count omits the separate module-tree, CLI and re-emit checks (202 on this tree, including the two 0.17 `iface_impure` trees) that the default comparison adds, so the default (self) comparison is 1,847/1,847 |
+| Mutation gates | `mutate_fork` 724/755 caught + 31 equivalent, 0 missed/stale/broken (including the six impure mutants); `mutate_port` 540/540 caught, 0 missed/stale/broken; `mutate_meta` 71/82 caught + 11 equivalent, 0 missed/stale/broken (runtime/entry.S 50/52 + 2 equivalent; compiler 21/30 + 9 equivalent); `mutate_decimal` 105/105 with an explicit baseline; `mutate_io` 36/36, 0 missed/stale/broken (including the self-host memory oracle, empty-array delta 53,984 bytes). The 0.17 catalog is green: the 31 + 11 equivalents are the same as before, and no pattern is stale or broken |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 94,209; wc 98,305; sort 122,881; head 94,209; tail 106,497 bytes (static, runtime included) |
 | eza E2 differential gate | own-binary gate: 482 passed, 0 failed, 72 live-only skips; pinned reference eza is not on the host `PATH` |
@@ -132,20 +137,21 @@ storage is 0.16.
 | Minimal static executable | 81,921 bytes (runtime included; a page-rounded `module mini; fn main() {}` binary) |
 
 The compiler budget is 2,750,000 bytes live (raised from 2,500,000 on 1 November 2026), with the separate 30,000-byte
-empty-array oracle unchanged. The 0.16 line peaks at 2,583,104 bytes in direct self-compiles and
-2,583,120 in the port comparison: 166,896 and 166,880 bytes spare. Total
-allocation is 57,739,904 bytes direct and 57,741,232 bytes in the port
+empty-array oracle unchanged. The 0.17 line peaks at 2,586,256 bytes in direct self-compiles and
+2,586,272 in the port comparison: 163,744 and 163,728 bytes spare. Total
+allocation is 57,876,000 bytes direct and 57,877,328 bytes in the port
 comparison. No memory check was weakened. The live peak varies by a few hundred
 bytes with the source path and total allocation by about 1.3 KB. The historical
 lambda release budget remains 2,000,000 in its own record. The 0.15 line peaked
 at 2,519,296 bytes direct (historical); the decimal storage tier raised the peak
-without raising the cap again. The 0.15 runtime cleanup is also historical (main
-`b61f189`); `seed/obo` is now the matching 0.16 image promoted at `50cca0a`.
+without raising the cap again, and 0.17 interface-member checking added 3,152
+bytes. The 0.15 runtime cleanup is also historical (main
+`b61f189`); `seed/obo` is now the matching 0.17 image promoted at `e0b9686`.
 
 ### Template literals 0.15 (released)
 
 Compiler-known `sql`/`sqlRaw` and `html`/`htmlRaw` backtick tags are released in
-0.15 and still carried by the promoted 0.16 seed. SQL holes become ordered
+0.15 and still carried by the promoted 0.17 seed. SQL holes become ordered
 bind parameters in public `Sql`/`SqlArg` records; literal chunks stay raw text,
 `Sql` fragments splice, `sql.copy`, `sqlJoin`, `sqlWhere`, `sqlNull` and
 `sqlBytes` compose explicitly, and `[]Sql` never expands implicitly. Decimal
@@ -161,15 +167,19 @@ now renders PostgreSQL `$n`, SQLite `?`, SQL Server TDS `@pN`, SQL Server ODBC
 `execute_sql` and `prepare_sql`/`bind_sql`. SQL Server/Oracle adapters,
 `SqlArg.Float` binding and identifier/`ORDER BY` allow-lists remain later work.
 
-### Decimal storage 0.16 (released, D1–D3)
+### Decimal storage 0.16 (released, D1–D3; previous release)
+
+**Released 0.16; previous release.** This section records the 0.16 release; the
+0.17 line carries the storage tier unchanged and bumps the symbol format for the
+impure member marker.
 
 The storage tier makes `decimal` storable without changing the ABI number. It is
 one release, `0.16`/format 9/ABI 1: `.sym` gains decimal field types with
 24-byte offsets, `priv24`, decimal array signatures, decimal globals and the
 `hex` constant payload, so a format-8 reader must reject those files and format 9
-is the only accepted input. ABI 1 is unchanged because no existing layout or
-calling convention moves; the runtime additions are appended (the `[]decimal`
-slot 94 and array kind 7).
+was the only accepted input at 0.16. ABI 1 is unchanged because no existing
+layout or calling convention moves; the runtime additions are appended (the
+`[]decimal` slot 94 and array kind 7).
 
 **Record fields (D1).** A `decimal` field takes 24 bytes inline in its record or
 closed-variant payload, in declaration order, 8-byte aligned, with no padding or
@@ -229,6 +239,54 @@ travel losslessly as `DecimalText`, and there is no `SqlArg.Decimal` or
 `decimal(p,s)` in this tier. `string(decimal)` stays a compile error; use
 `decimal::format`.
 
+### Impure interface members 0.17 (released)
+
+The third interface-member tier is one release, `0.17`/format 10/ABI 1. A member
+is `[pure | impure] [mut] fn name(params)[: T]`; both `impure fn` and
+`impure mut fn` are accepted, the marker comes before `mut` and `fn`, and
+`pure` and `impure` are mutually exclusive. `impure` is contextual, so a method
+may still be named `impure`; using it anywhere but on an interface member is a
+declaration error.
+
+**The maximum summary.** An impure member's synthetic summary is
+`freesAll = true`, `writesHandles = true`, `pfree = 0`, with no named freed
+globals: the maximum a function summary can express. No per-member or
+per-implementation summary is serialized; the source parser and the `.sym`
+reader rebuild it from the markers through the same `setMemberSummary`, so they
+cannot diverge. A call through an impure member therefore invalidates every live
+reference and handle, refuses a deep argument, a deep capturing closure, a
+reference borrowed through a handle and a handle receiver, and sets the caller's
+own `freesAll` and `writesHandles`, so the calling function is itself impure for
+every later tier check and caller. Because the summary is the maximum, a forged
+`impure` marker can only over-invalidate, which is the safe direction.
+
+**Implementation and dispatch.** An impure member may be implemented by any
+method that matches the signature, including a pure or plain one: the
+declaration is an upper bound and every caller pays for it. A `pure` member still
+requires a pure method, and a plain member keeps its local-tier checks and
+messages; the pure and plain tiers are unchanged. There is no vtable or
+code-generation change: the member's metadata drives the caller, and the vtable
+still has one code address per member. `SYM_ABI` stays 1.
+
+**`.sym` and format.** The interface line carries the canonical marker
+(`impure fn ...`, `impure mut fn ...`); duplicate or conflicting markers are
+structural errors, and the writer never emits the summary itself. This is a
+grammar change, so `SYM_FORMAT` is 10 and `OBO_VERSION` is 0.17; the format check
+runs before the body, so a 0.16 reader reports `has format 10; this compiler
+reads 9; rebuild it` rather than reading the marker. The 0.17 compiler rejects
+formats 6, 7, 8 and 9.
+
+**Still to come: the handler goal (I2).** `http1server` can now accept an
+interface handler: the application implements `Handler` with
+`impure handle(req: &Request): Response`, a data-carrying response record, while
+the server owns the listener and connection and the implementation owns its state
+and teardown. One constraint: an impure member cannot be called through an
+interface stored in a record or a global, so the server must keep the handler in
+a local or pass it as an `&I` parameter, not in a `Server` field or a global; I2
+changes `experimental/http1server` and its design note, not the compiler. Async
+libpq and a deferred response follow after I2. D4a/D4b/D5/D6 decimal work and
+`^I` remain later.
+
 ### Field visibility 0.13
 
 Record fields are private to the defining module unless declared `pub`. The
@@ -275,10 +333,13 @@ statuses (1, 3, 4, 5, 6), as documented in `obo/LANGUAGE.md` section 9.
 
 These are one host's measurements, not portable constants: an AMD Ryzen 7
 8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4 and **obo 0.16 sym-format
-9 abi 1**, `50cca0a`, measured on 1 November 2026. The table is the last of
-three default runs; the runs differed most on `sort` (168.6–237.5 ms),
-`sort -n` (216.4–237.3 ms), `sieve` and `wc -l`, and Python/GNU reference rows
-moved by up to about 20%. The benchmark uses warm page cache, one pinned core,
+9 abi 1**, `50cca0a`, measured on 1 November 2026. The 0.17 line changes only
+the compiler's interface-member checking, not code generation or the runtime (the
+compiler stays 757,761 bytes), so this table stands as measured on the 0.16 line.
+The table is the last of three default runs; the runs differed most on `sort`
+(168.6–237.5 ms), `sort -n` (216.4–237.3 ms), `sieve` and `wc -l`, and
+Python/GNU reference rows moved by up to about 20%. The benchmark uses warm page
+cache, one pinned core,
 medians of repeated runs, timed output to `/dev/null`, `LC_ALL=C` and `TZ=UTC`;
 the command is `python3 obo/bench/cli/run.py` (add `--eza PATH`, or have a
 matching eza on `PATH`, for the optional pinned-eza row). The pinned eza 0.23.3
@@ -300,21 +361,20 @@ sample is historical and lives in [HISTORY.md](HISTORY.md).
 | `sort -n`, 1,000,000 lines | 216.4 ms | GNU 469.4 ms (2.17x slower); Python 550.2 ms (2.54x slower) |
 | `eza`, 10,000 names | 32.0 ms | Python 17.7 ms and GNU `ls` 6.93 ms are faster; pinned eza row skipped |
 
-The compiler is the 757,761-byte 0.16 fixed point (sha256 `5700668d…`), and
-`seed/obo` is the promoted 0.16 image (same size and hash); its immediate
-predecessor, the 745,473-byte 0.15-line seed (`e5298729…`), and the earlier
-696,321-byte 0.15 image (`4213f9a3…`) both build this image. The tools are cat
-94,209, wc 98,305, sort 122,881, head 94,209 and tail 106,497 bytes; eza is
-270,337 bytes. Every obo binary is freestanding and static, with the runtime
-included; the 0.16 runtime text adds one 4,096-byte page to each produced tool,
-eza and minimal binary compared with 0.15 (whose runtime cleanup had removed
-4,096 bytes from each), while the compiler itself grew by 61,440 bytes with the
-new storage code. The benchmark rows above are the current 0.16 line. The
-honest shape of these numbers is unchanged: pure compute is far ahead of CPython,
-while `wc -l` is close to
-Python and behind GNU, eza is slower than Python and `ls` on names (its case is
-size and memory), and the sort rows are fixture-specific and host-load
-sensitive.
+The compiler is the 757,761-byte 0.17 fixed point (sha256 `29ffadc8…`), and
+`seed/obo` is the promoted 0.17 image (same size and hash); its immediate
+predecessor, the 757,761-byte 0.16 image (`5700668d…`, `50cca0a`), built this
+image once. The tools are cat 94,209, wc 98,305, sort 122,881, head 94,209 and
+tail 106,497 bytes; eza is 270,337 bytes. Every obo binary is freestanding and
+static, with the runtime included; the 0.16 runtime text added one 4,096-byte
+page to each produced tool, eza and minimal binary compared with 0.15 (whose
+runtime cleanup had removed 4,096 bytes from each), while the compiler itself
+grew by 61,440 bytes with the new storage code (historical). The benchmark rows
+above were measured on the 0.16 line; 0.17 adds only interface-member checking,
+so it does not move them. The honest shape of these numbers is unchanged: pure
+compute is far ahead of CPython, while `wc -l` is close to Python and behind
+GNU, eza is slower than Python and `ls` on names (its case is size and memory),
+and the sort rows are fixture-specific and host-load sensitive.
 
 ### Heap limit and address space
 
@@ -380,8 +440,9 @@ index, including hosted exit slot 59, changes.
 indirect calls) was `0.9`/format 5. Numeric floats are released as
 `0.10`/format 6 (floats first, before Stage B). Stage B capture lists are
 released as `0.11`/format 6, including one-word float snapshots. The decimal
-scalar tier is `0.12`/format 6, and the decimal storage tier (fields, arrays,
-globals and constants) is `0.16`/format 9/ABI 1, with the seed at 0.16. `^I`
+scalar tier is `0.12`/format 6, the decimal storage tier (fields, arrays,
+globals and constants) is `0.16`/format 9/ABI 1, and impure interface members
+are `0.17`/format 10/ABI 1, with the seed at 0.17. `^I`
 remains later work; its phase 2a design is in
 [obo/design/interface-handles-design.md](obo/design/interface-handles-design.md). The
 lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md).
@@ -392,7 +453,8 @@ lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md)
 | Numeric floats | released at 0.10/format 6/ABI 1 |
 | Lambdas Stage B | merged, promoted and pushed at 0.11/format 6/ABI 1; `^I` follows Stage B |
 | Decimal scalar tier | released at 0.12/format 6/ABI 1 |
-| Decimal storage: fields, arrays, globals, constants | released at 0.16/format 9/ABI 1; methods and interface members (D4a), function values/lambdas/captures (D4b), `lib/decimals.obx` (D5) and the database read bridge (D6) later |
+| Decimal storage: fields, arrays, globals, constants | released at 0.16/format 9/ABI 1; methods and interface members (D4a), function values/lambdas/captures (D4b), `lib/decimals.obx` (D5) and the database read bridge (D6) still later |
+| Impure interface members | released at 0.17/format 10/ABI 1; next is I2: an `http1server` interface handler and data-carrying response, with the handler in a local or `&I` parameter, not a `Server` field or global; async libpq and a deferred response after that |
 | cinterop v2 | experimental stages (a)–(h) merged: `foreign` handles, out records, leak census and the libpq/SQLite/PostgreSQL packages; not a stable API, no threads |
 | Peephole/optimizer audit | evidence-gated |
 | More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
@@ -503,7 +565,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `obo/tools/` | the patch scripts behind each change |
 | `HISTORY.md` | the obx predecessor, the ownership fork, milestones and earlier measurements |
 | `obx/` | the historical GC compiler, suite and stage tests (see `HISTORY.md`) |
-| `PERFORMANCE.md` | the 0.15 benchmark record: full tables, methodology and caveats (the README holds the 0.16 table) |
+| `PERFORMANCE.md` | the 0.15 benchmark record: full tables, methodology and caveats (the README holds the 0.17 table) |
 
 ```
 cd obo && make                           # obo: build from the committed seed
@@ -530,7 +592,7 @@ cd obo && python3 tests/tools.py --memory              # the four pinned tool me
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.16 sym-format 9 abi 1 (the promoted 0.16 seed is the same image)
+cd obo && ./obo --version                # obo 0.17 sym-format 10 abi 1 (the promoted 0.17 seed is the same image)
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 

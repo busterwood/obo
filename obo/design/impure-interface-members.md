@@ -1,7 +1,8 @@
 # Impure interface members (0.17, format 10, ABI 1)
 
-**Status:** implemented, stage I1 (compiler only), branch `impure-handler`; gate
-results are recorded in `FORK.md`.
+**Status:** implemented and released as `0.17`/format 10/ABI 1, stage I1
+(compiler only); merged as `06a0fe1`, seed `e0b9686`. Gate results are recorded
+in `FORK.md`.
 **Version:** `OBO_VERSION = "0.17"`, `SYM_FORMAT = 10`, `SYM_ABI = 1`.
 **Follow-up:** stage I2 changes `http1server`'s handler contract (not this stage).
 
