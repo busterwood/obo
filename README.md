@@ -235,8 +235,8 @@ returns (including the interface vtable offset and the `pfree` mask fixes); D4b 
 decimal function values, lambdas and 24-byte capture snapshots. D5, the
 `lib/decimals.obx` module (`floor`/`ceil`/`trunc`/`round`/`roundAway`, `abs`/
 `neg`/`sign`/`isZero`/`cmp`/`min`/`max`, `sum`, largest-remainder `allocate` and
-`allocateWeighted`, and `formatGrouped`), is implemented on the `decimal-d5`
-branch and is not merged. D6 is the database read bridge: a
+`allocateWeighted`, and `formatGrouped`), is released with the 0.17 line as a
+library-only addition; it changes no compiler, runtime, format or seed. D6 is the database read bridge: a
 `DecimalOrNull` closed type and `getDecimal` in each adapter; writes already
 travel losslessly as `DecimalText`, and there is no `SqlArg.Decimal` or
 `decimal(p,s)` in this tier. `string(decimal)` stays a compile error; use
@@ -289,8 +289,8 @@ interface. One constraint: an impure member cannot be called through an
 interface stored in a record or a global, so the server must keep the handler in
 a local or pass it as an `&I` parameter, not in a `Server` field or a global; I2
 changes `experimental/http1server` and its design note, not the compiler. Async
-libpq and a deferred response follow after I2. D4a/D4b/D5/D6 decimal work and
-`^I` remain later.
+libpq and a deferred response follow after I2. D4a/D4b/D6 decimal work and
+`^I` remain later (D5 is released as the library-only `lib/decimals.obx`).
 
 ### Field visibility 0.13
 
@@ -458,7 +458,7 @@ lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md)
 | Numeric floats | released at 0.10/format 6/ABI 1 |
 | Lambdas Stage B | merged, promoted and pushed at 0.11/format 6/ABI 1; `^I` follows Stage B |
 | Decimal scalar tier | released at 0.12/format 6/ABI 1 |
-| Decimal storage: fields, arrays, globals, constants | released at 0.16/format 9/ABI 1; methods and interface members (D4a), function values/lambdas/captures (D4b) and the database read bridge (D6) still later; `lib/decimals.obx` (D5) is implemented on the `decimal-d5` branch and is not merged |
+| Decimal storage: fields, arrays, globals, constants | released at 0.16/format 9/ABI 1; methods and interface members (D4a), function values/lambdas/captures (D4b) and the database read bridge (D6) still later; `lib/decimals.obx` (D5) is released on the 0.17 line (library only, no version or format change) |
 | Impure interface members | released at 0.17/format 10/ABI 1; next is I2: an `http1server` interface handler and data-carrying response, with the handler in a local or `&I` parameter, not a `Server` field or global; async libpq and a deferred response after that |
 | cinterop v2 | experimental stages (a)–(h) merged: `foreign` handles, out records, leak census and the libpq/SQLite/PostgreSQL packages, plus a SQL Server ODBC adapter in `db/mssql`; not a stable API, no threads |
 | Peephole/optimizer audit | evidence-gated |
