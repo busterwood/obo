@@ -50,7 +50,8 @@ SIG_MODES = ('header', 'declarations-only')
 # reads as kind@k, and the call site passes the same list as a descriptor string (see nativeKindCall in
 # obo/src/obo.obo). The sidecar records the list, and the tool compares it with the spec.
 BYTES_KINDS = ('borrow_bytes', 'borrow_cstr')
-INT_LIMIT = (1 << 63) - 1
+# A const:<n> magnitude is at most 17 digits (99999999999999999); the compiler checks the same bound.
+CONST_LIMIT = 99999999999999999
 # The C parameters each kind expands to (the sigcheck types and the thunk's arguments). The null and const
 # entries are only a count: their sigcheck type is the spec's ctypes annotation (see sig_params), because a
 # null or a const:<n> may be passed for any pointer or integer parameter.
@@ -237,6 +238,9 @@ def load_spec(path):
         if all(a == 'i64' for a in f['args']):
             if len(f['args']) > MAX_ARGS:
                 raise ToolError("%s: args must be a list of at most %d entries" % (f['name'], MAX_ARGS))
+            if 'ctypes' in f:
+                raise ToolError("%s: ctypes is for argument kinds; an int-form binding (all i64) has no "
+                                "null or const slot, so drop it" % f['name'])
         else:
             if any(a == 'i32' for a in f['args']):
                 raise ToolError("%s: i32 arguments need an argument index: write i32@k, with a kinds descriptor "
@@ -292,8 +296,8 @@ def parse_kind(tok):
     m = re.fullmatch(r'const:(-?[0-9]+)', tok)
     if m:
         val = int(m.group(1))
-        if not -INT_LIMIT - 1 <= val <= INT_LIMIT:
-            raise ToolError("const value %s does not fit 64 bits" % m.group(1))
+        if abs(val) > CONST_LIMIT:
+            raise ToolError("const value %s is too large (at most 17 digits)" % m.group(1))
         return {'name': 'const', 'arg': None, 'flag': None, 'val': val}
     m = re.fullmatch(r'(i64|i32|u32|borrow_bytes|borrow_cstr|ints|nil_bytes_list)@([0-9]+)(?::([a-z0-9]+))?', tok)
     if not m:
@@ -341,31 +345,170 @@ def check_kinds(fname, args):
 
 # Integer types a null or const slot may be annotated with, besides pointers. A struct by value would pass
 # the sigcheck and then the register-passing thunk would be wrong, so it is not on this list.
-INT_CTYPES = ('int', 'unsigned int', 'long', 'unsigned long', 'long long', 'unsigned long long',
-              'short', 'unsigned short', 'char', 'unsigned char', 'size_t', 'ssize_t', 'int32_t',
-              'uint32_t', 'int64_t', 'uint64_t')
+# Integer C types a null or const slot may take, with their width and signedness (x86_64 Linux). A const
+# value must fit the type: unsigned types take no negative value.
+C_INT_RANGE = {
+    'char': (8, True), 'signed char': (8, True), 'unsigned char': (8, False),
+    'short': (16, True), 'unsigned short': (16, False),
+    'int': (32, True), 'unsigned int': (32, False),
+    'long': (64, True), 'unsigned long': (64, False),
+    'long long': (64, True), 'unsigned long long': (64, False),
+    'size_t': (64, False), 'ssize_t': (64, True),
+    'int32_t': (32, True), 'uint32_t': (32, False), 'int64_t': (64, True), 'uint64_t': (64, False),
+}
+C_INT_WORDS = ('unsigned', 'signed', 'int', 'long', 'short', 'char')
+C_KEYWORDS = ('const', 'struct', 'void') + C_INT_WORDS + (
+    'float', 'double', 'volatile', 'restrict', 'static', 'extern', 'inline', 'typedef', 'enum', 'union',
+    'return', 'sizeof', 'bool', '_Bool')
 
 
-def ctype_ok(t):
-    """A C type name a null or const slot may be annotated with: a pointer or function pointer, or an
-    integer type. Only type-name characters are allowed, since the text goes into the sigcheck source."""
-    if not isinstance(t, str) or len(t) > 120 or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_ *(),]*', t):
-        return False
-    base = re.sub(r'\s+', ' ', t.strip())
-    return base.endswith('*') or '(*)' in base or base in INT_CTYPES
+def _c_tokens(t):
+    """Tokens of a C type name, or None if the text has anything but identifiers, '*', '(', ')', ',' and
+    spaces. The text goes into the sigcheck source, so nothing else may reach it."""
+    if not isinstance(t, str) or len(t) > 120:
+        return None
+    toks = re.findall(r'[A-Za-z_][A-Za-z0-9_]*|[*(),]', t)
+    if ''.join(toks) != re.sub(r'\s+', '', t):
+        return None
+    return toks
+
+
+def _c_base(toks, i):
+    """A base type at toks[i] (a leading const is allowed): (name, next index), or None."""
+    n = len(toks)
+    if i < n and toks[i] == 'const':
+        i += 1
+    if i >= n:
+        return None
+    if toks[i] == 'struct':
+        if i + 1 < n and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', toks[i + 1]) and toks[i + 1] not in C_KEYWORDS:
+            return 'struct ' + toks[i + 1], i + 2
+        return None
+    if toks[i] == 'void':
+        return 'void', i + 1
+    words = []
+    while i < n and toks[i] in C_INT_WORDS:
+        words.append(toks[i])
+        i += 1
+    if words:
+        return ' '.join(words), i
+    if i >= n:
+        return None
+    if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', toks[i]) and toks[i] not in C_KEYWORDS:
+        return toks[i], i + 1
+    return None
+
+
+def _c_plain(toks, i):
+    """One object type at toks[i]: (base, stars, next index), or None. A const may follow the base
+    and each star. A name after the type (a declarator) is not part of it, so the caller sees it."""
+    b = _c_base(toks, i)
+    if b is None:
+        return None
+    base, j = b
+    while j < len(toks) and toks[j] == 'const':
+        j += 1
+    stars = 0
+    while j < len(toks) and toks[j] == '*':
+        stars += 1
+        j += 1
+        while j < len(toks) and toks[j] == 'const':
+            j += 1
+    return base, stars, j
+
+
+def _c_value_type(base, stars):
+    """Classify one plain type that is a parameter, a return value or a whole slot type: ('int', name) or
+    ('ptr',). A bare void is no value type; a bare integer must be in the table, so a struct by value is
+    refused (the thunk passes every slot in a register)."""
+    if stars > 0:
+        return ('ptr',)
+    if base == 'void':
+        return None
+    if base in C_INT_RANGE:
+        return ('int', base)
+    return None
+
+
+def parse_ctype(t):
+    """Parse one slot C type: exactly one of an integer type from C_INT_RANGE, a pointer type
+    `[const] T *...` (T a struct tag or a type name, or an integer or void base), or a function-pointer
+    type `R (*)(P1, P2, ...)` with plain parameter types or `(void)`. Returns ('int', name, bits, signed)
+    or ('ptr',). Raises ToolError with the reason otherwise: a comma outside a parameter list, a name
+    after the type, unbalanced parentheses, or two types all fail to parse to the end."""
+    toks = _c_tokens(t)
+    if toks is None:
+        raise ToolError("%r has characters that are not part of a C type" % t)
+    if not toks:
+        raise ToolError("the C type is empty")
+    plain = _c_plain(toks, 0)
+    if plain is not None and plain[2] == len(toks):
+        base, stars, _ = plain
+        vt = _c_value_type(base, stars)
+        if vt is None:
+            raise ToolError("%r is not a pointer or an integer type (a struct by value is refused)" % t)
+        if vt[0] == 'ptr':
+            return ('ptr',)
+        bits, signed = C_INT_RANGE[base]
+        return ('int', base, bits, signed)
+    # function pointer: return type, then "(*)", then the parameter list, and nothing after it
+    ret = plain
+    if ret is None:
+        raise ToolError("%r is not one C type" % t)
+    rbase, rstars, j = ret
+    if not (rbase == 'void' and rstars == 0) and _c_value_type(rbase, rstars) is None:
+        raise ToolError("%r has a return type that is not void, an integer or a pointer" % t)
+    if toks[j:j + 4] != ['(', '*', ')', '(']:
+        if j < len(toks) and toks[j] == ',':
+            raise ToolError("%r has a comma outside a function parameter list: one C type only" % t)
+        if j < len(toks) and toks[j] in C_KEYWORDS:
+            raise ToolError("%r has two C types: one C type only" % t)
+        if j < len(toks) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', toks[j]):
+            raise ToolError("%r has a name after the type: a declarator is not allowed" % t)
+        raise ToolError("%r is not one C type: a pointer, an integer, or R (*)(P...)" % t)
+    k = j + 4
+    if toks[k:k + 2] == ['void', ')']:
+        k += 2
+    else:
+        while True:
+            p = _c_plain(toks, k)
+            if p is None:
+                raise ToolError("%r has a parameter that is not a plain C type" % t)
+            pbase, pstars, k = p
+            if _c_value_type(pbase, pstars) is None:
+                raise ToolError("%r has a parameter that is not a pointer or an integer type" % t)
+            if k < len(toks) and toks[k] == ',':
+                k += 1
+                continue
+            if k < len(toks) and toks[k] == ')':
+                k += 1
+                break
+            raise ToolError("%r has unbalanced parentheses or a name after a parameter" % t)
+    if k != len(toks):
+        raise ToolError("%r has text after the function pointer type" % t)
+    return ('ptr',)
 
 
 def check_ctypes(fname, args, ct):
-    """The ctypes list: one entry per argument, a C type for each null and const, and nothing else."""
+    """The ctypes list: one entry per argument, a C type for each null and const, and nothing else.
+    A const value must fit an integer type by its width and sign."""
     kinds = [parse_kind(a) for a in args]
     for i, k in enumerate(kinds):
         if k['name'] in ('null', 'const'):
             if not ct[i]:
                 raise ToolError("%s: %s needs its C parameter type: add a \"ctypes\" entry, e.g. "
                                 "\"const char *\"" % (fname, args[i]))
-            if not ctype_ok(ct[i]):
-                raise ToolError("%s: ctypes entry %r is not a pointer or an integer type"
-                                % (fname, ct[i]))
+            try:
+                info = parse_ctype(ct[i])
+            except ToolError as e:
+                raise ToolError("%s: ctypes entry: %s" % (fname, e))
+            if k['name'] == 'const' and info[0] == 'int':
+                _, name, bits, signed = info
+                lo = -(1 << (bits - 1)) if signed else 0
+                hi = (1 << (bits - 1)) - 1 if signed else (1 << bits) - 1
+                if not lo <= k['val'] <= hi:
+                    raise ToolError("%s: %s does not fit %s (%d..%d)"
+                                    % (fname, args[i], name, lo, hi))
         elif ct[i] is not None:
             raise ToolError("%s: ctypes may only annotate null and const, not %r" % (fname, args[i]))
 

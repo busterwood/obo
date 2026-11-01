@@ -27,3 +27,15 @@ long nc_struct_null_bad(struct foo *f) {
     (void)f;
     return 0;
 }
+
+long nc_two(void *a, void *b) {
+    return (a == NULL) * 10 + (b != NULL);
+}
+
+long nc_int_long(long x) {
+    return x;
+}
+
+long nc_uint(unsigned int x) {
+    return (long)x;
+}

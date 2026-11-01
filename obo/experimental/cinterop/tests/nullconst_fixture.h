@@ -10,3 +10,6 @@ long nc_destructor(const char *s, void (*d)(void *));
 long nc_int_const(int v);
 long nc_bytes_wrong(struct foo *p, int n);
 long nc_struct_null_bad(struct foo *f);
+long nc_two(void *a, void *b);
+long nc_int_long(long x);
+long nc_uint(unsigned int x);

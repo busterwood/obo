@@ -1670,6 +1670,7 @@ NC_POS = [
     {'name': 'nc_destructor', 'symbol': 'nc_destructor', 'args': ['borrow_cstr@0', 'const:-1'],
      'ctypes': [None, 'void (*)(void *)']},
     {'name': 'nc_int_const', 'symbol': 'nc_int_const', 'args': ['const:5'], 'ctypes': ['int']},
+    {'name': 'nc_uint', 'symbol': 'nc_uint', 'args': ['const:4294967295'], 'ctypes': ['unsigned int']},
 ]
 
 NC_POS_WRAP = """module nullconst
@@ -1689,6 +1690,10 @@ pub fn destructor(s: string): int {
 pub fn int_const(): int {
     return __cinterop("nc_int_const", "const:5")
 }
+
+pub fn uint_max(): int {
+    return __cinterop("nc_uint", "const:4294967295")
+}
 """
 
 NC_APP = """fn main() {
@@ -1696,6 +1701,7 @@ NC_APP = """fn main() {
     println("struct_null ", nullconst::struct_null())
     println("destructor ", nullconst::destructor("hello"))
     println("int_const ", nullconst::int_const())
+    println("uint_max ", nullconst::uint_max())
 }
 """
 
@@ -1715,6 +1721,49 @@ NC_BAD = [
                           'ctypes': ['struct foo']}],
      'pub fn struct_null(): int {\n    return __cinterop("nc_struct_null", "null")\n}\n',
      'not a pointer or an integer type'),
+    # One C type only: a comma, unbalanced parentheses, a trailing declarator name, two types.
+    ('comma_injection', [{'name': 'nc_two', 'symbol': 'nc_two', 'args': ['null'],
+                          'ctypes': ['void *, void *']}],
+     'pub fn two(): int {\n    return __cinterop("nc_two", "null")\n}\n',
+     'comma outside a function parameter list'),
+    ('unbalanced_parens', [{'name': 'nc_destructor', 'symbol': 'nc_destructor',
+                            'args': ['borrow_cstr@0', 'const:-1'], 'ctypes': [None, 'void (*)(void *']}],
+     'pub fn destructor(s: string): int {\n    return __cinterop("nc_destructor", "borrow_cstr@0,const:-1", s)\n}\n',
+     'unbalanced parentheses'),
+    ('trailing_declarator', [{'name': 'nc_struct_null', 'symbol': 'nc_struct_null', 'args': ['null'],
+                              'ctypes': ['struct foo *p']}],
+     'pub fn struct_null(): int {\n    return __cinterop("nc_struct_null", "null")\n}\n',
+     'declarator is not allowed'),
+    ('two_types', [{'name': 'nc_struct_null', 'symbol': 'nc_struct_null', 'args': ['null'],
+                    'ctypes': ['void int']}],
+     'pub fn struct_null(): int {\n    return __cinterop("nc_struct_null", "null")\n}\n',
+     'two C types'),
+    ('int_for_long', [{'name': 'nc_int_long', 'symbol': 'nc_int_long', 'args': ['null'],
+                       'ctypes': ['int']}],
+     'pub fn int_long(): int {\n    return __cinterop("nc_int_long", "null")\n}\n',
+     'incompatible'),
+    # Const values must fit the ctype by width and sign; a pointer ctype takes any 64-bit value.
+    ('int_const_overflow', [{'name': 'nc_int_const', 'symbol': 'nc_int_const', 'args': ['const:4294967296'],
+                             'ctypes': ['int']}],
+     'pub fn int_const(): int {\n    return __cinterop("nc_int_const", "const:4294967296")\n}\n',
+     'does not fit int'),
+    ('uint_const_overflow', [{'name': 'nc_uint', 'symbol': 'nc_uint', 'args': ['const:4294967296'],
+                              'ctypes': ['unsigned int']}],
+     'pub fn uint_max(): int {\n    return __cinterop("nc_uint", "const:4294967296")\n}\n',
+     'does not fit unsigned int'),
+    ('uint_const_negative', [{'name': 'nc_uint', 'symbol': 'nc_uint', 'args': ['const:-1'],
+                              'ctypes': ['unsigned int']}],
+     'pub fn uint_max(): int {\n    return __cinterop("nc_uint", "const:-1")\n}\n',
+     'does not fit unsigned int'),
+    ('const_too_many_digits', [{'name': 'nc_int_const', 'symbol': 'nc_int_const',
+                                'args': ['const:100000000000000000'], 'ctypes': ['int']}],
+     'pub fn int_const(): int {\n    return __cinterop("nc_int_const", "const:100000000000000000")\n}\n',
+     'at most 17 digits'),
+    # ctypes is for argument kinds; an int-form binding has no null or const slot.
+    ('int_form_ctypes', [{'name': 'nc_int_long', 'symbol': 'nc_int_long', 'args': ['i64'],
+                          'ctypes': ['long']}],
+     'pub fn int_long(v: int): int {\n    return __cinterop("nc_int_long", v)\n}\n',
+     'int-form binding'),
 ]
 
 STACK_FUNCS = [
@@ -1795,7 +1844,7 @@ def null_const_slots(tmp):
     out = os.path.join(d, 'out')
     need(build(sp, ad, out), 'null/const slot build')
     p = need(run([os.path.join(out, 'app')]), 'null/const slot run')
-    want = ['cstr_null 1', 'struct_null 1', 'destructor 105', 'int_const 5']
+    want = ['cstr_null 1', 'struct_null 1', 'destructor 105', 'int_const 5', 'uint_max 4294967295']
     if p.stdout.splitlines() != want:
         raise Fail("null/const slot output %r, want %r" % (p.stdout.splitlines(), want))
 
