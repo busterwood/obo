@@ -6324,7 +6324,7 @@ grammar adds backtick template tags and the universe gains `Sql`, `SqlArg`,
 `Html`, `HtmlAttr` and `HtmlAttrs`; old format-7 symbol files are refused with
 `has format 7; this compiler reads 8; rebuild it`. The reviewed branch is
 merged and promoted: `seed/obo` is the 0.15 image (696,321 bytes, sha256
-`4213f9a3…`), and the 0.14 seed built this compiler once.
+`4213f9a3…`); the previous 700,417-byte 0.15 image (`8ca8e59e…`) built it once.
 
 **Language.** Compiler-known `sql`/`sqlRaw`/`html`/`htmlRaw` backtick tags lower
 to ordinary values. `Sql` is a public-field record `{text: []string; params:
@@ -6383,4 +6383,4 @@ mutant), and `mutate_port` **540/540**. Self-compile peaks at **2,383,264
 bytes** in the port comparison (budget 2,500,000, about 4.7% headroom); the
 empty-array savings oracle is **51,488 bytes** above baseline (minimum 30,000).
 The fixed point is stage 2 == stage 3, and the promoted 0.15 seed reproduces
-the compiler; `hello` is byte-identical between the 0.14 seed and this compiler.
+the compiler; the seed and compiler build byte-identical `hello`.
