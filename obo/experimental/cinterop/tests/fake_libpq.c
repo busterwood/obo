@@ -338,12 +338,19 @@ PQconninfoOption *PQconninfoParse(const char *conninfo, char **errmsg) {
         if (!quoted && strncmp(p, "connect_timeout", 15) == 0) {
             const char *q = p + 15;
             while (*q == ' ' || *q == '\t') q++;
-            if (*q == '=') {
-                found = 1;
-                break;
-            }
+            if (*q == '=') found = 1;
         }
         p++;
+    }
+    if (quoted) {
+        /* Same diagnostic text as real libpq for an unbalanced quote, so the
+         * wrapper's copied message is checked identically with either ABI. */
+        const char *m = "unterminated quoted string in connection info string";
+        if (errmsg != NULL) {
+            *errmsg = (char *)malloc(strlen(m) + 1);
+            if (*errmsg != NULL) strcpy(*errmsg, m);
+        }
+        return NULL;
     }
     opts = (PQconninfoOption *)calloc(2, sizeof(*opts));
     if (opts == NULL) return NULL;

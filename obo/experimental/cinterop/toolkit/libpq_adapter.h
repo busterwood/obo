@@ -9,6 +9,15 @@
  *   -2  DSN contains NUL or exceeds the buffer bound
  *   -3  adapter allocation/registration failure
  *   -4  invalid conninfo syntax; copy pq_conninfo_error_buf() immediately
+ *
+ * pq_exec_packet returns:
+ *   >0  result token
+ *    0  PQexecParams returned NULL; pq_error_buf(conn) holds libpq's message
+ *   -1  invalid or closed connection token
+ *   -2  malformed packet, or more than PQ_MAX_PARAMS parameters or PQ_MAX_SQL
+ *       bytes of SQL (defined in libpq_adapter.c; the obo wrapper enforces the
+ *       same limits first, so this is a backstop)
+ *   -3  adapter allocation/registration failure
  */
 #ifndef OBO_CINTEROP_LIBPQ_ADAPTER_H
 #define OBO_CINTEROP_LIBPQ_ADAPTER_H

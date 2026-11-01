@@ -85,7 +85,12 @@ static char *copy_cstr(const unsigned char *p, size_t n) {
 
 /* Ask libpq's own conninfo parser whether a bounded timeout is already named.
  * Returns 1 present, 0 absent, -1 invalid conninfo. This avoids mistaking a
- * quoted value such as application_name='connect_timeout=' for a keyword. */
+ * quoted value such as application_name='connect_timeout=' for a keyword.
+ *
+ * Any present connect_timeout counts as user-supplied, whatever its value: an
+ * explicit connect_timeout=0 disables libpq's timeout (it does not receive the
+ * 5-second default), and a negative value is passed to libpq unchanged. Only an
+ * absent keyword gets connect_timeout=5 appended. */
 static int conninfo_has_timeout(const char *cs) {
     PQconninfoOption *opts;
     char *err = NULL;

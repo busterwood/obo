@@ -1,0 +1,29 @@
+module app
+
+import "libpq.obx"
+
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+// Invalid conninfo syntax must come back as the copied libpq diagnostic
+// (adapter code -4), not a generic allocation error. libpq only parses the
+// string here; no server is contacted and no connection is registered.
+fn main() {
+    let made = libpq::connect(bytes_of("host='unterminated"))
+    match made {
+        ok(conn) {
+            println("unexpected_connect_ok")
+            conn.close()
+            exit(1)
+        }
+        err(m, c) {
+            println("conninfo_error_code=", c)
+            println("conninfo_error=", m)
+        }
+    }
+    println("live=", libpq::live_resources())
+    println("conns=", libpq::live_connections())
+}

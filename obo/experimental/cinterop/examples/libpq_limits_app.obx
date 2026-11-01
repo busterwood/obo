@@ -1,0 +1,72 @@
+module app
+
+import "libpq.obx"
+
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn values_of(n: int): []?[]byte {
+    var v = new []?[]byte(0)
+    for i in 0..n { append(v, bytes_of("1")) }
+    return v
+}
+
+fn flags_of(n: int): []bool {
+    var f = new []bool(0)
+    for i in 0..n { append(f, false) }
+    return f
+}
+
+// Runs against the fake libpq only. The wrapper rejects an over-limit query
+// before any C call, so the message is specific and never a stale connection
+// error. The 32-parameter query at the limit is accepted.
+fn main() {
+    let made = libpq::connect(bytes_of("fake-ok"))
+    match made {
+        ok(conn) {
+            let q33 = libpq::exec_params(&conn, bytes_of("FAKE_OK"), values_of(33), flags_of(33))
+            match q33 {
+                ok(rows) {
+                    println("params33=unexpected_ok")
+                    rows.close()
+                    exit(2)
+                }
+                err(m, c) { println("params33_error=", m, " (", c, ")") }
+            }
+
+            let q32 = libpq::exec_params(&conn, bytes_of("FAKE_OK"), values_of(32), flags_of(32))
+            match q32 {
+                ok(rows) {
+                    println("params32_status=", rows.status())
+                    println("params32_closed=", rows.close())
+                }
+                err(m, c) {
+                    println("params32_error=", m, " (", c, ")")
+                    exit(3)
+                }
+            }
+
+            let big = new []byte(1048577)
+            let qbig = libpq::exec_params(&conn, big, new []?[]byte(0), new []bool(0))
+            match qbig {
+                ok(rows) {
+                    println("sql_over_limit=unexpected_ok")
+                    rows.close()
+                    exit(4)
+                }
+                err(m, c) { println("sql_error=", m, " (", c, ")") }
+            }
+            println("conn_closed=", conn.close())
+        }
+        err(m, c) {
+            println("connect_error=", m, " (", c, ")")
+            exit(5)
+        }
+    }
+    println("live=", libpq::live_resources())
+    println("conns=", libpq::live_connections())
+    println("results=", libpq::live_results())
+}

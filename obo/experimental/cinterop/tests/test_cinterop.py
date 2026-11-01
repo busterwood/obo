@@ -27,7 +27,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(TOOL)))   # repository ro
 EX = os.path.join(TOOL, 'examples')
 OBO = os.path.abspath(os.environ.get('OBO', os.path.join(REPO, 'obo', 'obo')))
 TOOLPY = os.path.join(TOOL, 'cinterop.py')
-TMPROOT = '/tmp/opencode'
+# Scratch root for private build trees and the OpenSSL header cache. Honour the
+# environment (TMPROOT, then TMPDIR through tempfile) instead of a fixed /tmp path.
+TMPROOT = os.environ.get('TMPROOT') or tempfile.gettempdir()
 LIBPQ_PROBE_PATHS = [
     '/lib/x86_64-linux-gnu/libpq.so.5',
     '/usr/lib/x86_64-linux-gnu/libpq.so.5',
@@ -35,6 +37,10 @@ LIBPQ_PROBE_PATHS = [
 
 
 class Fail(Exception):
+    pass
+
+
+class Skip(Exception):
     pass
 
 
@@ -226,10 +232,16 @@ def openssl_include_dirs():
         return [include, arch_include]
     work = tempfile.mkdtemp(prefix='openssl-dev-', dir=TMPROOT)
     try:
-        p = run(['apt-get', 'download', 'libssl-dev=' + version], cwd=work, timeout=300)
+        try:
+            p = run(['apt-get', 'download', 'libssl-dev=' + version], cwd=work, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise Skip("cannot run apt-get download libssl-dev=%s: %s" % (version, e))
         if p.returncode != 0:
-            raise Fail("cannot download libssl-dev=%s for the installed libssl %s:\n%s"
-                       % (version, version, (p.stderr or p.stdout).strip()))
+            # The download needs the network; without it the qualification is
+            # skipped (printed by the caller), never silently passed.
+            first = (p.stderr or p.stdout).strip().splitlines()
+            raise Skip("cannot download libssl-dev=%s: %s"
+                       % (version, first[-1] if first else 'apt-get failed'))
         debs = glob.glob(os.path.join(work, 'libssl-dev_*.deb'))
         if len(debs) != 1:
             raise Fail("apt-get download produced %d libssl-dev archives" % len(debs))
@@ -792,8 +804,8 @@ def libpq_result(tmp):
         raise Fail("libpq result probe does not depend on libpq.so.5")
     need(verify(out), 'libpq result manifest verify')
     m = json.load(open(os.path.join(out, 'manifest.json')))
-    if m.get('signature_check') != 'declarations-only':
-        raise Fail("libpq signature_check is %r" % m.get('signature_check'))
+    if m.get('signature_check') != 'header':
+        raise Fail("libpq signature_check is %r, expected header" % m.get('signature_check'))
     print('libpq result ownership: ok')
 
 
@@ -856,6 +868,97 @@ def libpq_fake(tmp):
         if line not in p.stdout:
             raise Fail("fake libpq outlives output missing %r:\n%s" % (line, p.stdout))
     print('fake libpq result-outlives-connection: ok')
+
+
+def libpq_conninfo(tmp):
+    """Invalid conninfo (pq_connect -4) returns libpq's copied diagnostic.
+
+    No server is contacted: libpq only parses the string. The fake ABI always
+    runs; the real libpq parser runs too when libpq.so.5 is present.
+    """
+    variants = [('fake', 'libpq_fake.cbind')]
+    if libpq_present():
+        variants.append(('real', 'libpq.cbind'))
+    else:
+        libpq_skip('libpq conninfo diagnostic (real parser)')
+    for label, cbind in variants:
+        out = os.path.join(tmp, 'conninfo_' + label)
+        p = build(os.path.join(EX, cbind), os.path.join(EX, 'libpq_conninfo_app.obx'), out)
+        if p.returncode != 0:
+            raise Fail("%s conninfo app build failed:\n%s" % (label, p.stderr or p.stdout))
+        p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+                 '%s conninfo app run' % label)
+        for line in ('conninfo_error_code=2',
+                     'conninfo_error=unterminated quoted string in connection info string',
+                     'live=0', 'conns=0'):
+            if line not in p.stdout:
+                raise Fail("%s conninfo output missing %r:\n%s" % (label, line, p.stdout))
+    print('libpq conninfo diagnostic: ok (%s)' % ' and '.join(v[0] for v in variants))
+
+
+def libpq_limits(tmp):
+    """Packet limits are enforced in the wrapper with specific messages.
+
+    Uses the fake ABI only, so no server is needed. 33 parameters and 1 MiB + 1
+    bytes of SQL are rejected before any C call; 32 parameters is accepted.
+    """
+    out = os.path.join(tmp, 'libpq_limits')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_limits_app.obx'), out)
+    if p.returncode != 0:
+        raise Fail("libpq limits app build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    if p.returncode != 0:
+        raise Fail("libpq limits app failed: %d\n%s%s" % (p.returncode, p.stdout, p.stderr))
+    for line in ('params33_error=too many query parameters: the limit is 32 (PQ_MAX_PARAMS) (2)',
+                 'params32_status=2', 'params32_closed=true',
+                 'sql_error=SQL text is larger than the 1 MiB limit (PQ_MAX_SQL) (2)',
+                 'conn_closed=true', 'live=0', 'conns=0', 'results=0'):
+        if line not in p.stdout:
+            raise Fail("libpq limits output missing %r:\n%s" % (line, p.stdout))
+    print('libpq packet limits: ok (33 parameters and oversized SQL rejected in the wrapper)')
+
+
+def libpq_header_mismatch(tmp):
+    """A spec declaration that disagrees with the adapter header fails the
+    signature check before any link. A control copy of the same spec builds, so
+    the rejection is the mismatch and not a path or copy error."""
+    spec = json.load(open(os.path.join(EX, 'libpq_fake.cbind')))
+    # The committed spec is relative to examples/; the copy uses absolute paths.
+    for key in ('sources', 'headers', 'wrapper_sources'):
+        spec[key] = [os.path.normpath(os.path.join(EX, p)) for p in spec.get(key, [])]
+    spec['wrapper'] = os.path.join(EX, spec['wrapper'])
+    app = os.path.join(EX, 'libpq_limits_app.obx')
+
+    control = os.path.join(tmp, 'libpq_header_control.cbind')
+    json.dump(spec, open(control, 'w'))
+    out = os.path.join(tmp, 'libpq_header_control')
+    p = build(control, app, out)
+    if p.returncode != 0:
+        raise Fail("control copy of the libpq spec did not build:\n%s" % (p.stderr + p.stdout))
+
+    # Internally consistent but wrong against the header: the declaration and the
+    # functions entry both say int/i32, while libpq_adapter.h says long/i64. A
+    # declarations-only check would accept this; the header tie must not.
+    before = 'extern long pq_lib_version(void);'
+    if not any(d == before for d in spec['declarations']):
+        raise Fail("libpq spec no longer declares %r; update this test" % before)
+    bad = json.loads(json.dumps(spec))
+    bad['declarations'] = [d.replace(before, 'extern int pq_lib_version(void);')
+                           for d in spec['declarations']]
+    for f in bad['functions']:
+        if f['name'] == 'pq_lib_version':
+            f['ret'] = 'i32'
+    mismatch = os.path.join(tmp, 'libpq_header_mismatch.cbind')
+    json.dump(bad, open(mismatch, 'w'))
+    out = os.path.join(tmp, 'libpq_header_mismatch')
+    p = build(mismatch, app, out)
+    text = p.stderr + p.stdout
+    if p.returncode == 0 or 'conflicting' not in text:
+        raise Fail("a spec declaration that disagrees with the header was not rejected:\n%s"
+                   % text)
+    if os.path.exists(os.path.join(out, 'app')):
+        raise Fail("a mismatched declaration reached the link")
+    print('libpq header mismatch: ok (declaration disagreeing with libpq_adapter.h rejected before link)')
 
 
 def zlib_second(tmp):
@@ -1092,7 +1195,11 @@ def openssl_qualification(tmp):
         print('hosted OpenSSL qualification: skipped (libssl.so.3/libcrypto.so.3 absent, '
               'or CINTEROP_TEST_NO_OPENSSL=1)')
         return
-    include_dirs = openssl_include_dirs()
+    try:
+        include_dirs = openssl_include_dirs()
+    except Skip as e:
+        print('skipped: openssl (no network): %s' % e)
+        return
     test_dir = HERE
     # Keep the generated spec and C sources in the private build directory so
     # the uncommitted spec has no absolute repository source paths. The private
@@ -1209,6 +1316,9 @@ def main():
         template(tmp)
         timeout_parse(tmp)
         libpq_result(tmp)
+        libpq_header_mismatch(tmp)
+        libpq_conninfo(tmp)
+        libpq_limits(tmp)
         fake_adapter(tmp)
         libpq_fake(tmp)
         zlib_second(tmp)

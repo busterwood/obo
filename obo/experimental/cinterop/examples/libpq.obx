@@ -23,6 +23,12 @@ pub const PGRES_COMMAND_OK = 1
 pub const PGRES_TUPLES_OK = 2
 pub const PGRES_FATAL_ERROR = 7
 
+// Packet limits enforced here before any C call. They must match PQ_MAX_PARAMS
+// and PQ_MAX_SQL in toolkit/libpq_adapter.c; the adapter re-checks them as a
+// backstop, but its failure would otherwise be reported without a clear cause.
+pub const PQ_MAX_PARAMS = 32
+pub const PQ_MAX_SQL = 1048576
+
 pub type Connection = ref record { tok: int }
 pub type Rows = ref record { tok: int }
 
@@ -86,6 +92,31 @@ fn text_or_empty(b: []byte): string {
     return string(b)
 }
 
+// libpq's conninfo diagnostic ends with a newline; drop trailing line breaks so
+// the error text prints as one line.
+fn trim_newlines(b: []byte): []byte {
+    var n = len(b)
+    while n > 0 && (b[n - 1] == byte(10) || b[n - 1] == byte(13)) { n = n - 1 }
+    var out = new []byte(0)
+    for i in 0..n { append(out, b[i]) }
+    return out
+}
+
+// Messages for the adapter's negative return codes (see toolkit/libpq_adapter.h).
+fn connect_failure_message(t: int): string {
+    if t == -1 { return "connection string buffer token is invalid" }
+    if t == -2 { return "connection string exceeds the adapter's buffer bound" }
+    if t == -3 { return "adapter could not allocate or register the connection" }
+    return "connection adapter failed"
+}
+
+fn exec_failure_message(t: int): string {
+    if t == -1 { return "connection is closed or invalid" }
+    if t == -2 { return "query packet rejected by the adapter (malformed or over a limit)" }
+    if t == -3 { return "adapter could not allocate or register the result" }
+    return "query adapter failed"
+}
+
 fn append_u32(mut out: &[]byte, v: int) {
     var x = v
     for i in 0..4 {
@@ -99,6 +130,8 @@ fn append_u32(mut out: &[]byte, v: int) {
 fn build_packet(sql: &[]byte, mut values: &[]?[]byte, binary: &[]bool, result_binary: bool): Result[[]byte] {
     let np = len(values)
     if len(binary) != np { return err("values and binary flags differ in length", 2) }
+    if np > PQ_MAX_PARAMS { return err("too many query parameters: the limit is 32 (PQ_MAX_PARAMS)", 2) }
+    if len(sql) > PQ_MAX_SQL { return err("SQL text is larger than the 1 MiB limit (PQ_MAX_SQL)", 2) }
     for i in 0..len(sql) {
         if sql[i] == byte(0) { return err("SQL text contains an embedded NUL", 2) }
     }
@@ -126,6 +159,7 @@ fn build_packet(sql: &[]byte, mut values: &[]?[]byte, binary: &[]bool, result_bi
             for j in 0..len(v) { append(out, v[j]) }
         }
     }
+    if len(out) > 16777216 { return err("query packet exceeds the 16 MiB buffer bound", 2) }
     return ok(out)
 }
 
@@ -135,8 +169,18 @@ pub fn connect(dsn: []byte): Result[Connection] {
     let b = put_cstr(&dsn)
     if b <= 0 { return err("invalid connection string (NUL byte or too long)", 2) }
     let t = __cinterop("pq_connect", b)
+    if t == -4 {
+        // Invalid conninfo syntax. Copy libpq's diagnostic before any other
+        // adapter call; the adapter keeps it only until the next pq_connect.
+        let eb = __cinterop("pq_conninfo_error_buf")
+        let diag = text_or_empty(trim_newlines(take_buf(eb)))
+        __cinterop("cres_buf_free", b)
+        if len(diag) == 0 { return err("invalid connection string", 2) }
+        return err(diag, 2)
+    }
     __cinterop("cres_buf_free", b)
-    if t <= 0 { return err("connection could not be allocated", 2) }
+    if t == 0 { return err("libpq returned no connection object (PQconnectdb returned NULL)", 2) }
+    if t < 0 { return err(connect_failure_message(t), 2) }
     let st = __cinterop("pq_conn_status", t)
     if st != CONNECTION_OK {
         let eb = __cinterop("pq_error_buf", t)
@@ -189,11 +233,15 @@ fn exec_params_fmt(c: &Connection, sql: []byte,
     if b <= 0 { return err("query packet could not be allocated", 2) }
     let t = __cinterop("pq_exec_packet", ctok, b)
     __cinterop("cres_buf_free", b)
-    if t <= 0 {
+    // Only 0 means PQexecParams ran and failed, so the connection's error is
+    // current. Negative codes are adapter-side rejections and never touch it.
+    if t == 0 {
         let eb = __cinterop("pq_error_buf", ctok)
-        let msg = take_buf(eb)
-        return err(text_or_empty(msg), 2)
+        let msg = text_or_empty(take_buf(eb))
+        if len(msg) == 0 { return err("libpq returned no result and no error message", 2) }
+        return err(msg, 2)
     }
+    if t < 0 { return err(exec_failure_message(t), 2) }
     return ok(new Rows{tok: t})
 }
 

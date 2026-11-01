@@ -30,7 +30,8 @@ fn main() {
     match made {
         ok(conn) {
             defer conn.close()
-            println("server_version=", libpq::lib_version())
+            // PQlibVersion: the client libpq library version, not the server version.
+            println("libpq_version=", libpq::lib_version())
 
             // 1. Parameterized text, NULL vs empty, exact numeric text/OID/typmod.
             let attack = "x'); DROP TABLE nope; --"
