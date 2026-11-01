@@ -6477,9 +6477,9 @@ and a private decimal written as `priv`). Each one is caught.
   running-offset line, and it is caught.
 - Fixed point: `stage2 == stage3` (`cmp`), and the seed-built compiler equals
   stage 2 byte for byte (733,185 bytes).
-- Self-compile peak: `OBO_STATS=1` reports **2,527,040 bytes** live (55,981,376
-  allocated); `heap_test` reports 2,527,104 and `port_compare` 2,527,072 (budget
-  2,750,000, headroom about 223 KB). The budget is unchanged.
+- Self-compile peak: `OBO_STATS=1` reports **2,527,104 bytes** live (55,979,008
+  allocated); `heap_test` reports 2,527,168 (budget 2,750,000, headroom about
+  223 KB). The budget is unchanged.
 - The decimal run tests pass under `OBO_CHECK=1` (87 of 87 with `-k decimal`).
 
 **Review fix: decimal operand evaluation order.** The review found that a decimal
@@ -6508,6 +6508,19 @@ parsed; `println` prints each argument as it is parsed.
 - The reviewer's `mut &` case: the 0.15 seed accepts `bump(&s)` for a `mut &R`
   parameter, and so does this compiler, with the same output as `bump(s)`. It is
   pre-existing and unrelated to decimal, so it is reported only and not changed here.
+
+**Re-review fixes.** The `check` case in `decimal_operand_order.obx` now uses
+`r.inr.a = 12.5`, which needs three digits, so a late read of `r.n` (3 after
+`ownScale`) fails it. Under the int-argument mutant the line changes from
+`check ok 12.5` to `check err 7`. Each of the six capture mutants was then run alone
+against that one file (a scratch driver; `mutate_decimal.py` has no name filter).
+Each fails it at its own line: `mul` (the left-operand and term mutants), `add`
+(sum), `lt yes` (comparison), `div err 4` (decimal argument) and `check err 7` (int
+argument). `captureDecimal` no longer releases the source's base registers twice:
+`copyDecimal` releases the registers of its source, so the item is consumed there.
+Pre-existing, unchanged: `decimalNeg`, `decimalCompare` and `decimalCall2` do not
+release their operands explicitly. `decPtr` releases each operand's base register
+through its copy, so the ownership is implicit rather than missing.
 
 **Tests.** `tests/run/decimal_operand_order.obx` (run under `OBO_CHECK=1`) covers
 the reviewer's reproducers and the operators `*`, `%`, `+`, `-`, `<` and `==`, each

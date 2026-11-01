@@ -120,10 +120,12 @@ fn main() {
         ok(v) { println("quantize ", v) } // expect: quantize 2.50
         err(m, c) { println("quantize err ", c) }
     }
+    // 12.5 needs 3 digits at scale 1, so precision 3 at scale 2 (a late read of n) fails it
     var r13 = mkR()
+    r13.inr.a = 12.5
     let ck = decimal::check(r13.inr.a, r13.n, ownScale(r13))
     match ck {
-        ok(v) { println("check ok ", v) } // expect: check ok 2.5
+        ok(v) { println("check ok ", v) } // expect: check ok 12.5
         err(m, c) { println("check err ", c) }
     }
     var r14 = mkR()

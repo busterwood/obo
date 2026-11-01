@@ -77,8 +77,8 @@ MUTANTS = [
     # a decimal left operand is captured before a later operand runs (the review's
     # use-after-free and wrong-value defect): each operator branch, relation and the builtins
     ("decimal left operand is not captured",
-     "    let t = decimalTemp()\n    copyDecimal(t, x)\n    releaseItem(x)\n    return t\n}",
-     "    return x\n}"),
+     "    let t = decimalTemp()\n    copyDecimal(t, x)",
+     "    let t = x"),
     ("decimal term left operand is not captured",
      "            if o != T_STAR && o != T_PERCENT { error(\"'\" + tokName(o) + \"' is not supported for decimal; use + - * %\") }\n            x = captureDecimal(x)",
      "            if o != T_STAR && o != T_PERCENT { error(\"'\" + tokName(o) + \"' is not supported for decimal; use + - * %\") }\n            x = materialise(x)"),

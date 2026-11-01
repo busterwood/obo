@@ -3526,8 +3526,7 @@ fn captureDecimal(x: Item): Item {
     if x.typ.kind != "decimal" { return x }
     if x.mode == "mem" && x.base == RBP && x.index < 0 { return x }
     let t = decimalTemp()
-    copyDecimal(t, x)
-    releaseItem(x)
+    copyDecimal(t, x)   // copyDecimal releases the base registers of its source, so x is consumed here
     return t
 }
 
