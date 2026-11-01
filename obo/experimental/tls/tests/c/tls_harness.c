@@ -120,6 +120,24 @@ static long set_alpn(long ctx, long policy, const char *const *protos, long coun
     return at;
 }
 
+static long set_list(long ctx, long which, const char *text) {
+    size_t n = strlen(text);
+    long token = sys_reg_new_buffer((long)n);
+    unsigned char *p = NULL;
+    size_t cap = 0;
+    long r;
+    if (token <= 0) return token;
+    if (sys_reg_buffer_data(token, &p, &cap) < 0 || cap < n) {
+        sys_res_close(token, 92);
+        return -EIO;
+    }
+    memcpy(p, text, n);
+    r = which == 2 ? tls_context_set_groups(ctx, token)
+                   : tls_context_set_ciphers(ctx, which, token);
+    sys_res_close(token, 92);
+    return r;
+}
+
 static long load_chain(long ctx, const char *path) {
     long token = read_file_buffer(path, NULL);
     long r;
@@ -412,6 +430,8 @@ static int mode_echo(const char *dir, int minver, int maxver) {
     n = adapter_read(st, got, sizeof(got));
     CHECK(n == 0, "adapter EOF after close_notify");
     CHECK(tls_session_shutdown(st) >= 0, "server shutdown");
+    CHECK(tls_session_info_scalar(st, TLS_INFO_SECURE) == 0,
+          "isSecure is false after both directions close");
     CHECK(drain_server_output(st, &p), "drain close_notify");
     CHECK(SSL_shutdown(p.ssl) >= 0, "client consumes server close_notify");
     peer_free(&p);
@@ -435,9 +455,10 @@ static int info_text(long st, long field, char *out, size_t cap) {
     if (token <= 0) return 0;
     if (sys_reg_buffer_data(token, &dst, &len) < 0) { sys_res_close(token, 92); return 0; }
     n = tls_session_info_copy(st, field, token, (long)cap);
-    if (n > 0 && (size_t)n < cap) {
-        memcpy(out, dst, (size_t)n);
-        out[n] = 0;
+    if (n > 0) {
+        size_t copy = (size_t)n < cap ? (size_t)n : cap - 1;
+        memcpy(out, dst, copy);
+        out[copy] = 0;
     } else if (n == 0) {
         out[0] = 0;
     }
@@ -653,7 +674,7 @@ static int mode_truncate_mid(const char *dir) {
     CHECK(tls_session_feed(st, token, 0, half) == half, "mid-truncate feed half");
     sys_res_close(token, 92);
     n = adapter_read(st, got, sizeof(got));
-    CHECK(n == TLS_STEP_WANT_READ || n == TLS_STEP_WANT_WRITE, "partial record is not data");
+    CHECK(n == TLS_IO_WANT_READ || n == TLS_IO_WANT_WRITE, "partial record is not data");
     CHECK(tls_session_eof(st) == 1, "mid-truncate mark EOF");
     n = adapter_read(st, got, sizeof(got));
     CHECK(n < 0 && failure_kind(n) == TLS_FAIL_TRUNCATED, "mid-record EOF is Truncated");
@@ -694,11 +715,11 @@ static int adapter_write_all(long st, struct peer *p, const unsigned char *data,
         int r = adapter_write(st, data + at, len - at);
         guard++;
         if (r > 0) { at += (size_t)r; continue; }
-        if (r == TLS_STEP_WANT_WRITE) {
+        if (r == TLS_IO_WANT_WRITE) {
             if (!drain_server_output(st, p)) return 0;
             continue;
         }
-        if (r == TLS_STEP_WANT_READ) {
+        if (r == TLS_IO_WANT_READ) {
             if (!drain_server_output(st, p)) return 0;
             continue;
         }
@@ -854,19 +875,246 @@ static int mode_fragment(const char *dir) {
     return 1;
 }
 
-static int apply_identity(long ctx, const char *dir) {
+static int apply_identity_named(long ctx, const char *dir, const char *chain_name,
+                                const char *key_name) {
     char path[4096];
     long token;
-    snprintf(path, sizeof(path), "%s/server.pem", dir);
+    snprintf(path, sizeof(path), "%s/%s", dir, chain_name);
     token = read_file_buffer(path, NULL);
     if (token <= 0) return 0;
     if (tls_context_load_chain(ctx, token) != 1) { sys_res_close(token, 92); return 0; }
     sys_res_close(token, 92);
-    snprintf(path, sizeof(path), "%s/server.key", dir);
+    snprintf(path, sizeof(path), "%s/%s", dir, key_name);
     token = read_file_buffer(path, NULL);
     if (token <= 0) return 0;
     if (tls_context_load_key(ctx, token) != 1) { sys_res_close(token, 92); return 0; }
     sys_res_close(token, 92);
+    return 1;
+}
+
+static int apply_identity(long ctx, const char *dir) {
+    return apply_identity_named(ctx, dir, "server.pem", "server.key");
+}
+
+static long context_bytes(long ctx) {
+    long token = sys_reg_new_buffer(TLS_CONTEXT_COUNT_BYTES);
+    unsigned char *p = NULL;
+    size_t cap = 0;
+    long v;
+    if (token <= 0) return -1;
+    if (sys_reg_buffer_data(token, &p, &cap) < 0) { sys_res_close(token, 92); return -1; }
+    if (tls_context_counts(ctx, token) != 1) { sys_res_close(token, 92); return -1; }
+    /* field 5 is bytesCharged. */
+    {
+        unsigned long long u = 0;
+        int i;
+        for (i = 0; i < 8; i++) u |= ((unsigned long long)p[5 * 8 + i]) << (8 * i);
+        v = (long)u;
+    }
+    sys_res_close(token, 92);
+    return v;
+}
+
+static int mode_early(const char *dir) {
+    long ctx = open_context(dir, 0, 0, 0, 1, "prefer",
+                            (const char *const[]){ "http/1.1" }, 1);
+    if (ctx <= 0) return 0;
+    CHECK(tls_context_max_early_data(ctx) == 0, "0-RTT early data is disabled");
+    CHECK(tls_context_ticket_count(ctx) == 0, "session tickets are disabled");
+    sys_res_close(ctx, TLS_KIND_CONTEXT);
+    return 1;
+}
+
+static int mode_reneg(const char *dir) {
+    long ctx = open_context(dir, 0, 0, 0, 0, "prefer",
+                            (const char *const[]){ "http/1.1" }, 1);
+    long st;
+    struct peer p;
+    int r;
+    int cr;
+    unsigned char got[8];
+    if (ctx <= 0) return 0;
+    st = tls_session_new(ctx);
+    CHECK(st > 0, "reneg session");
+    CHECK(peer_new(&p, NULL, NULL, NULL, TLS1_2_VERSION, TLS1_2_VERSION, 0, "http/1.1"),
+          "reneg client");
+    CHECK(handshake(st, &p, 65536, NULL), "reneg handshake");
+    r = SSL_renegotiate(p.ssl);
+    CHECK(r == 1, "client requests renegotiation");
+    cr = SSL_do_handshake(p.ssl);
+    CHECK(feed_client_output(st, &p, 65536), "feed reneg attempt");
+    CHECK(drain_server_output(st, &p), "drain reneg attempt");
+    /* Renegotiation is disabled on the server. The client either fails or
+     * remains established; a second application-data read must not expose a
+     * renegotiated handshake as data. */
+    if (cr == 1) {
+        int n = adapter_read(st, got, sizeof(got));
+        CHECK(n <= 0, "renegotiation does not become application data");
+    }
+    CHECK(tls_session_output_pending(st) >= 0, "reneg output accounted");
+    peer_free(&p);
+    sys_res_close(st, TLS_KIND_SESSION);
+    sys_res_close(ctx, TLS_KIND_CONTEXT);
+    return 1;
+}
+
+static int mode_charge(const char *dir) {
+    long ctx = open_context(dir, 0, 0, 0, 1, "prefer",
+                            (const char *const[]){ "http/1.1" }, 1);
+    long st;
+    struct peer p;
+    unsigned char big[65536];
+    long before;
+    long after;
+    if (ctx <= 0) return 0;
+    memset(big, 0x42, sizeof(big));
+    st = tls_session_new(ctx);
+    CHECK(st > 0, "charge session");
+    CHECK(peer_new(&p, NULL, NULL, NULL, TLS1_3_VERSION, TLS1_3_VERSION, 0, "http/1.1"),
+          "charge client");
+    CHECK(handshake(st, &p, 65536, NULL), "charge handshake");
+    before = context_bytes(ctx);
+    CHECK(before > 0, "charge before write");
+    {
+        long token = make_buffer(big, sizeof(big));
+        long n;
+        CHECK(token > 0, "charge write buffer");
+        n = tls_session_write(st, token, 0, (long)sizeof(big));
+        sys_res_close(token, 92);
+        CHECK(n > 0, "charge wrote plaintext");
+    }
+    before = context_bytes(ctx);
+    CHECK(before > 0, "charge high-water");
+    CHECK(drain_server_output(st, &p), "charge final drain");
+    after = context_bytes(ctx);
+    CHECK(after > 0 && after < before, "commit lowers session charge");
+    peer_free(&p);
+    sys_res_close(st, TLS_KIND_SESSION);
+    sys_res_close(ctx, TLS_KIND_CONTEXT);
+    return 1;
+}
+
+static int mode_bypass(const char *dir) {
+    long ctx = new_raw_context(0, 0, 0, 1);
+    long st;
+    struct peer p;
+    if (ctx <= 0) return 0;
+    CHECK(apply_identity(ctx, dir), "bypass identity");
+    st = tls_session_new(ctx);
+    CHECK(st > 0, "bypass session");
+    CHECK(peer_new(&p, NULL, NULL, NULL, TLS1_3_VERSION, TLS1_3_VERSION, 0, "http/1.1"),
+          "bypass client");
+    CHECK(sys_res_close(ctx, TLS_KIND_CONTEXT) == 1,
+          "context release does not fail with live sessions");
+    CHECK(sys_res_close(st, TLS_KIND_SESSION) == 1, "bypass session still closes");
+    peer_free(&p);
+    return 1;
+}
+
+static int mode_chain(const char *dir) {
+    char capath[4096];
+    long ctx = new_raw_context(0, 0, 0, 1);
+    long st;
+    struct peer p;
+    if (ctx <= 0) return 0;
+    CHECK(apply_identity_named(ctx, dir, "server-int.pem", "server-int.key"),
+          "intermediate chain loads");
+    st = tls_session_new(ctx);
+    CHECK(st > 0, "chain session");
+    snprintf(capath, sizeof(capath), "%s/ca.pem", dir);
+    CHECK(peer_new(&p, capath, NULL, NULL, TLS1_3_VERSION, TLS1_3_VERSION, 1, "http/1.1"),
+          "chain client");
+    CHECK(handshake(st, &p, 65536, NULL), "chain handshake");
+    CHECK(SSL_get_verify_result(p.ssl) == X509_V_OK, "intermediate chain verifies");
+    peer_free(&p);
+    sys_res_close(st, TLS_KIND_SESSION);
+    sys_res_close(ctx, TLS_KIND_CONTEXT);
+
+    ctx = new_raw_context(0, 0, 0, 1);
+    CHECK(ctx > 0, "missing-intermediate context");
+    CHECK(apply_identity_named(ctx, dir, "server-int-leaf.pem", "server-int.key"),
+          "leaf-only chain loads");
+    st = tls_session_new(ctx);
+    CHECK(st > 0, "missing-intermediate session");
+    CHECK(peer_new(&p, capath, NULL, NULL, TLS1_3_VERSION, TLS1_3_VERSION, 1, "http/1.1"),
+          "missing-intermediate client");
+    CHECK(!handshake(st, &p, 65536, NULL), "missing intermediate fails verification");
+    CHECK(failure_kind(g_last_sr) == TLS_FAIL_VERIFY_FAILED ||
+          (g_last_cr < 0 && SSL_get_verify_result(p.ssl) != X509_V_OK),
+          "missing intermediate is a verification failure");
+    peer_free(&p);
+    sys_res_close(st, TLS_KIND_SESSION);
+    sys_res_close(ctx, TLS_KIND_CONTEXT);
+    return 1;
+}
+
+static int mode_trust_atomic(const char *dir) {
+    char capath[4096];
+    char malformed[4096];
+    long ctx = new_raw_context(2, 0, 0, 1);
+    long st;
+    long token;
+    long r;
+    struct peer p;
+    if (ctx <= 0) return 0;
+    CHECK(apply_identity(ctx, dir), "trust-atomic identity");
+    snprintf(capath, sizeof(capath), "%s/ca.pem", dir);
+    token = read_file_buffer(capath, NULL);
+    CHECK(tls_context_set_trust(ctx, token) == 1, "initial trust bundle");
+    sys_res_close(token, 92);
+    snprintf(malformed, sizeof(malformed), "%s/malformed.pem", dir);
+    token = read_file_buffer(malformed, NULL);
+    r = tls_context_set_trust(ctx, token);
+    CHECK(r == -TLS_FAIL(TLS_FAIL_CERTIFICATE_REJECTED, 0), "malformed trust fails");
+    sys_res_close(token, 92);
+    CHECK(tls_context_ready(ctx) == 1, "failed trust replacement leaves context ready");
+    st = tls_session_new(ctx);
+    CHECK(st > 0, "trust-atomic session");
+    {
+        char certpath[4096];
+        char keypath[4096];
+        snprintf(certpath, sizeof(certpath), "%s/client.pem", dir);
+        snprintf(keypath, sizeof(keypath), "%s/client.key", dir);
+        CHECK(peer_new(&p, capath, certpath, keypath, TLS1_3_VERSION, TLS1_3_VERSION,
+                       1, "http/1.1"), "trust-atomic client");
+    }
+    CHECK(handshake(st, &p, 65536, NULL), "previous trust store remains intact");
+    peer_free(&p);
+    sys_res_close(st, TLS_KIND_SESSION);
+    sys_res_close(ctx, TLS_KIND_CONTEXT);
+    return 1;
+}
+
+static int mode_truncate_handshake(const char *dir) {
+    long ctx = new_raw_context(0, 0, 0, 1);
+    long st;
+    struct peer p;
+    unsigned char wire[8192];
+    int n;
+    int half;
+    long token;
+    long r;
+    if (ctx <= 0) return 0;
+    CHECK(apply_identity(ctx, dir), "handshake-truncate identity");
+    st = tls_session_new(ctx);
+    CHECK(st > 0, "handshake-truncate session");
+    CHECK(peer_new(&p, NULL, NULL, NULL, TLS1_3_VERSION, TLS1_3_VERSION, 0, "http/1.1"),
+          "handshake-truncate client");
+    (void)client_handshake(&p);
+    n = BIO_read(p.wbio, wire, (int)sizeof(wire));
+    CHECK(n > 8, "ClientHello available");
+    half = n / 2;
+    token = make_buffer(wire, (size_t)half);
+    CHECK(token > 0, "handshake-truncate buffer");
+    CHECK(tls_session_feed(st, token, 0, half) == half, "feed partial ClientHello");
+    sys_res_close(token, 92);
+    CHECK(tls_session_eof(st) == 1, "mark handshake EOF");
+    r = tls_session_handshake(st);
+    CHECK(r < 0 && failure_kind(r) == TLS_FAIL_TRUNCATED,
+          "truncated handshake is Truncated");
+    peer_free(&p);
+    sys_res_close(st, TLS_KIND_SESSION);
+    sys_res_close(ctx, TLS_KIND_CONTEXT);
     return 1;
 }
 
@@ -903,6 +1151,21 @@ static int mode_limits(const char *dir) {
     CHECK(token > 0, "handshake cap buffer");
     CHECK(tls_session_feed(st1, token, 0, 16385) == -TLS_FAIL(TLS_FAIL_RESOURCE_LIMIT, 0),
           "handshake ciphertext cap is ResourceLimit");
+    sys_res_close(token, 92);
+    sys_res_close(st1, TLS_KIND_SESSION);
+    sys_res_close(ctx, TLS_KIND_CONTEXT);
+
+    opt = make_options(0, 0, 1, 0, 0, 8, 16, 8388608, 67108864);
+    ctx = tls_context_new(opt);
+    sys_res_close(opt, 92);
+    CHECK(ctx > 0, "BIO cap context");
+    CHECK(apply_identity(ctx, dir), "BIO cap identity");
+    st1 = tls_session_new(ctx);
+    CHECK(st1 > 0, "BIO cap session");
+    token = sys_reg_new_buffer(TLS_MAX_BIO + 1);
+    CHECK(token > 0, "BIO cap buffer");
+    CHECK(tls_session_feed(st1, token, 0, TLS_MAX_BIO + 1) == -TLS_FAIL(TLS_FAIL_RESOURCE_LIMIT, 0),
+          "read BIO cap is ResourceLimit");
     sys_res_close(token, 92);
     sys_res_close(st1, TLS_KIND_SESSION);
     sys_res_close(ctx, TLS_KIND_CONTEXT);
@@ -972,6 +1235,36 @@ static int mode_validate(const char *dir) {
     CHECK(tls_context_ready(ctx) == 1, "context ready after chain/key");
     CHECK(set_alpn(ctx, TLS_ALPN_PREFER, (const char *const[]){ "h2", "h2" }, 2)
           == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0), "duplicate ALPN is InvalidArgument");
+    CHECK(set_list(ctx, 1, "@SECLEVEL=0") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "cipher expression is rejected");
+    CHECK(set_list(ctx, 1, "eNULL") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "NULL cipher keyword is rejected");
+    CHECK(set_list(ctx, 0, "ALL") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "broad cipher keyword is rejected");
+    CHECK(set_list(ctx, 2, "X25519:@SECLEVEL=0") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "group expression is rejected");
+    {
+        char p255[4][256];
+        char p204[5][205];
+        const char *four[4];
+        const char *five[5];
+        int k;
+        for (k = 0; k < 4; k++) {
+            memset(p255[k], 'a' + k, 255);
+            p255[k][255] = 0;
+            four[k] = p255[k];
+        }
+        for (k = 0; k < 5; k++) {
+            memset(p204[k], 'a' + k, 204);
+            p204[k][204] = 0;
+            five[k] = p204[k];
+        }
+        CHECK(set_alpn(ctx, TLS_ALPN_PREFER, four, 4) == 1,
+              "ALPN at the wire cap is accepted");
+        CHECK(set_alpn(ctx, TLS_ALPN_PREFER, five, 5) == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0) ||
+              set_alpn(ctx, TLS_ALPN_PREFER, five, 5) == -TLS_FAIL(TLS_FAIL_RESOURCE_LIMIT, 0),
+              "ALPN over the wire cap is rejected");
+    }
     {
         long v12 = 0;
         long v13 = 1;
@@ -1109,6 +1402,13 @@ int main(int argc, char **argv) {
     else if (strcmp(mode, "cert-errors") == 0) rc = mode_cert_errors(dir);
     else if (strcmp(mode, "validate") == 0) rc = mode_validate(dir);
     else if (strcmp(mode, "limits") == 0) rc = mode_limits(dir);
+    else if (strcmp(mode, "early") == 0) rc = mode_early(dir);
+    else if (strcmp(mode, "reneg") == 0) rc = mode_reneg(dir);
+    else if (strcmp(mode, "bypass") == 0) rc = mode_bypass(dir);
+    else if (strcmp(mode, "charge") == 0) rc = mode_charge(dir);
+    else if (strcmp(mode, "chain") == 0) rc = mode_chain(dir);
+    else if (strcmp(mode, "trust-atomic") == 0) rc = mode_trust_atomic(dir);
+    else if (strcmp(mode, "truncate-handshake") == 0) rc = mode_truncate_handshake(dir);
     else { fprintf(stderr, "unknown mode %s\n", mode); rc = 0; }
     if (rc) rc = failures == 0 ? 0 : 1;
     else rc = 1;

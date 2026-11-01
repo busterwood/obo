@@ -14,6 +14,12 @@ import "sysclock.obx" as clock
 import "sysstream.obx" as stream
 import "syserrors.obx" as errors
 
+fn bytesOf(s: string): []byte {
+    let out = new []byte(len(s))
+    for i in 0..len(s) { out[i] = s[i] }
+    return out
+}
+
 fn parsePort(s: string): int {
     var v = 0
     for i in 0..len(s) {
@@ -206,9 +212,43 @@ fn run(): Result[bool] {
     let init = platform::initialize(&po)
     let started = try init
 
+    if mode == "forged" {
+        let fake = new tls::TlsContext{res: new platform::Resource{reserved: 123456789}}
+        let certFake = readFile(certPath)
+        if certFake == nil { return err("forged cert read", 3) }
+        let cf: []byte = certFake
+        let fr = tls::loadCertificateChain(&fake, &cf)
+        match fr {
+            ok(v) { println("forged=accepted") }
+            err(m, c) { println("forged=", tls::text(c)) }
+        }
+        return ok(true)
+    }
     let opts = makeOptions(mode)
     let ctx = try tls::createContext(&opts)
     defer tls::closeContext(&ctx)
+    if mode == "weak-policy" {
+        let bad = new []string(0)
+        append(bad, "eNULL")
+        append(bad, "@SECLEVEL=0")
+        let wr = tls::setCipherList(&ctx, bad)
+        match wr {
+            ok(v) { println("weak-policy=accepted") }
+            err(m, c) { println("weak-policy=", tls::text(c)) }
+        }
+        let badg = new []string(0)
+        append(badg, "@SECLEVEL=0")
+        let gr = tls::setGroups(&ctx, badg)
+        match gr {
+            ok(v) { println("weak-groups=accepted") }
+            err(m, c) { println("weak-groups=", tls::text(c)) }
+        }
+    }
+    if mode == "min13" {
+        let v13only = new tls::Tls13{}
+        let mn = try tls::setMinVersion(&ctx, &v13only)
+        let mx = try tls::setMaxVersion(&ctx, &v13only)
+    }
     if mode == "policy" {
         let v12 = new tls::Tls12{}
         let mn = try tls::setMinVersion(&ctx, &v12)
@@ -310,6 +350,24 @@ fn run(): Result[bool] {
         match busyr {
             ok(v) { println("busy-close=", v) }
             err(m, c) { println("busy=", tls::text(c)) }
+        }
+    }
+    if mode == "offset" {
+        let payload = bytesOf("0123456789")
+        let ow = tls::writeSome(&sess, &payload, 3, 5)
+        match ow {
+            ok(out) {
+                match out {
+                    WriteWrote {
+                        let count = out.count
+                        let flushed = try flushAll(&sess, &r, &w, &dl)
+                        println("offset-wrote=", string(count))
+                    }
+                    WriteWantRead { return err("offset write wanted read", 5) }
+                    WriteWantWrite { return err("offset write wanted write", 5) }
+                }
+            }
+            err(m, c) { return err("offset write failed", c) }
         }
     }
     let pemt = try tls::pending(&sess)

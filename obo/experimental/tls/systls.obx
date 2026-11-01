@@ -46,6 +46,7 @@ const INFO_PEER_PRESENT = 10
 const INFO_VERIFICATION = 11
 const INFO_VERIFY_CODE = 12
 const INFO_STATE = 13
+const INFO_SECURE = 14
 
 const STATE_NEW = 0
 const STATE_HANDSHAKING = 1
@@ -82,6 +83,8 @@ const FAIL_INTERNAL = 23
 
 const STEP_DONE = 1
 const STEP_WANT_READ = 2
+const IOS_WANT_READ = -1001
+const IOS_WANT_WRITE = -1002
 const STEP_WANT_WRITE = 3
 const SHUTDOWN_SENT = 2
 const SHUTDOWN_PEER_CLOSED = 3
@@ -269,6 +272,18 @@ fn bytesToken(b: &bytesbuf::Bytes): Result[int] {
 
 fn copyInto(b: &bytesbuf::Bytes, src: &[]byte, count: int): Result[bool] {
     let copied = bytesbuf::copyIn(b, src, 0, 0, count)
+    match copied {
+        ok(n) {
+            if n != count { return err("short copy into the TLS native buffer", tlsCode(FAIL_INTERNAL, 0)) }
+            return ok(true)
+        }
+        err(m, c) { return err("could not copy bytes into the TLS native buffer", mapSystem(c)) }
+    }
+}
+
+fn copyRangeInto(b: &bytesbuf::Bytes, src: &[]byte, sourceOffset: int,
+                 count: int): Result[bool] {
+    let copied = bytesbuf::copyIn(b, src, sourceOffset, 0, count)
     match copied {
         ok(n) {
             if n != count { return err("short copy into the TLS native buffer", tlsCode(FAIL_INTERNAL, 0)) }
@@ -502,7 +517,7 @@ fn validateAlpn(p: &AlpnPolicy): int {
                 }
                 total += len(s)
             }
-            if total > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
+            if total + len(p.protocols) > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
             return tlsCode(0, 0)
         }
         Require {
@@ -517,7 +532,7 @@ fn validateAlpn(p: &AlpnPolicy): int {
                 }
                 total += len(s)
             }
-            if total > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
+            if total + len(p.protocols) > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
             return tlsCode(0, 0)
         }
     }
@@ -685,11 +700,18 @@ pub fn createContext(options: &ContextOptions): Result[TlsContext] {
     }
 }
 
+fn zeroKeyBuffer(b: &bytesbuf::Bytes, which: int) {
+    if which == 1 {
+        let _ = bytesbuf::fill(b, 0)
+    }
+}
+
 fn loadPem(ctx: &TlsContext, pem: &[]byte, max: int, which: int): Result[bool] {
     if len(pem) > max { return err("TLS PEM input exceeds the configured limit", tlsCode(FAIL_RANGE, 0)) }
     let tok = try contextToken(ctx)
     let b = try makeBytes(len(pem))
     defer bytesbuf::close(&b)
+    defer zeroKeyBuffer(&b, which)
     let copied = try copyInto(&b, pem, len(pem))
     let bt = try bytesToken(&b)
     var raw = 0
@@ -740,6 +762,59 @@ pub fn setMaxVersion(ctx: &TlsContext, version: &Version): Result[bool] {
     return setVersion(ctx, version, 1)
 }
 
+fn lowerAscii(c: int): int {
+    if c >= 65 && c <= 90 { return c + 32 }
+    return c
+}
+
+fn containsIgnoreCase(s: string, needle: string): bool {
+    if len(needle) == 0 || len(needle) > len(s) { return false }
+    for i in 0..(len(s) - len(needle) + 1) {
+        var same = true
+        for j in 0..len(needle) {
+            if lowerAscii(int(s[i + j])) != lowerAscii(int(needle[j])) {
+                same = false
+            }
+        }
+        if same { return true }
+    }
+    return false
+}
+
+fn endsWithIgnoreCase(s: string, needle: string): bool {
+    if len(needle) == 0 || len(needle) > len(s) { return false }
+    let at = len(s) - len(needle)
+    for i in 0..len(needle) {
+        if lowerAscii(int(s[at + i])) != lowerAscii(int(needle[i])) { return false }
+    }
+    return true
+}
+
+fn weakListName(s: string): bool {
+    if endsWithIgnoreCase(s, "-SHA") { return true }
+    if endsWithIgnoreCase(s, "-SHA1") { return true }
+    if containsIgnoreCase(s, "NULL") { return true }
+    if containsIgnoreCase(s, "ANON") { return true }
+    if containsIgnoreCase(s, "ADH") { return true }
+    if containsIgnoreCase(s, "AECDH") { return true }
+    if containsIgnoreCase(s, "EXPORT") { return true }
+    if containsIgnoreCase(s, "RC4") { return true }
+    if containsIgnoreCase(s, "3DES") { return true }
+    if containsIgnoreCase(s, "DES") { return true }
+    if containsIgnoreCase(s, "MD5") { return true }
+    if containsIgnoreCase(s, "RC2") { return true }
+    if containsIgnoreCase(s, "IDEA") { return true }
+    if containsIgnoreCase(s, "SEED") { return true }
+    if containsIgnoreCase(s, "LOW") { return true }
+    if containsIgnoreCase(s, "COMPLEMENTOFALL") { return true }
+    if containsIgnoreCase(s, "COMPLEMENTOFDEFAULT") { return true }
+    if containsIgnoreCase(s, "DEFAULT") { return true }
+    if containsIgnoreCase(s, "ALL") { return true }
+    if containsIgnoreCase(s, "HIGH") { return true }
+    if containsIgnoreCase(s, "MEDIUM") { return true }
+    return false
+}
+
 fn validateList(items: &[]string): int {
     if len(items) < 1 || len(items) > 64 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
     var total = 0
@@ -748,12 +823,15 @@ fn validateList(items: &[]string): int {
         if len(s) < 1 || len(s) > 255 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
         for j in 0..len(s) {
             let c = int(s[j])
-            if c < 0x21 || c > 0x7e { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
-            if c == 58 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+            let alpha = (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+            let digit = c >= 48 && c <= 57
+            let safe = c == 95 || c == 45
+            if !alpha && !digit && !safe { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
         }
+        if weakListName(s) { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
         total += len(s)
     }
-    if total > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
+    if total + len(items) - 1 > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
     return 0
 }
 
@@ -950,6 +1028,7 @@ pub fn handshakeStep(s: &TlsSession): Result[Step] {
     let raw = __cinterop("tls_session_handshake", tok)
     if raw < 0 {
         let code = 0 - raw
+        let _ = flushOne(s, tok)
         return err(sessionError(tok, code), code)
     }
     let left = try pendingOutput(tok)
@@ -1000,8 +1079,15 @@ pub fn readSome(s: &TlsSession, max: int): Result[ReadOutcome] {
     defer bytesbuf::close(&b)
     let bt = try bytesToken(&b)
     let raw = __cinterop("tls_session_read", tok, bt, max)
+    if raw == IOS_WANT_READ {
+        let left = try pendingOutput(tok)
+        if left > 0 { return ok(readWantWrite()) }
+        return ok(readWantRead())
+    }
+    if raw == IOS_WANT_WRITE { return ok(readWantWrite()) }
     if raw < 0 {
         let code = 0 - raw
+        let _ = flushOne(s, tok)
         return err(sessionError(tok, code), code)
     }
     let left = try pendingOutput(tok)
@@ -1012,11 +1098,6 @@ pub fn readSome(s: &TlsSession, max: int): Result[ReadOutcome] {
     if raw == 0 {
         return ok(readEof(wantForPending(left)))
     }
-    if raw == STEP_WANT_READ {
-        if left > 0 { return ok(readWantWrite()) }
-        return ok(readWantRead())
-    }
-    if raw == STEP_WANT_WRITE { return ok(readWantWrite()) }
     return err("TLS read returned an unknown status", tlsCode(FAIL_INTERNAL, 0))
 }
 
@@ -1045,22 +1126,24 @@ pub fn writeSome(s: &TlsSession, bytes: &[]byte, offset: int, count: int): Resul
     }
     let b = try makeBytes(count)
     defer bytesbuf::close(&b)
-    let copied = try copyInto(&b, bytes, count)
+    let copied = try copyRangeInto(&b, bytes, offset, count)
     let bt = try bytesToken(&b)
-    let raw = __cinterop("tls_session_write", tok, bt, offset, count)
+    let raw = __cinterop("tls_session_write", tok, bt, 0, count)
+    if raw == IOS_WANT_READ {
+        let left = try pendingOutput(tok)
+        if left > 0 { return ok(writeWantWrite()) }
+        return ok(writeWantRead())
+    }
+    if raw == IOS_WANT_WRITE { return ok(writeWantWrite()) }
     if raw < 0 {
         let code = 0 - raw
+        let _ = flushOne(s, tok)
         return err(sessionError(tok, code), code)
     }
     let left = try pendingOutput(tok)
     if raw > 0 {
         return ok(writeWrote(raw, wantForPending(left)))
     }
-    if raw == STEP_WANT_READ {
-        if left > 0 { return ok(writeWantWrite()) }
-        return ok(writeWantRead())
-    }
-    if raw == STEP_WANT_WRITE { return ok(writeWantWrite()) }
     return err("TLS write returned an unknown status", tlsCode(FAIL_INTERNAL, 0))
 }
 
@@ -1100,6 +1183,7 @@ pub fn shutdownStep(s: &TlsSession): Result[ShutdownOutcome] {
     let raw = __cinterop("tls_session_shutdown", tok)
     if raw < 0 {
         let code = 0 - raw
+        let _ = flushOne(s, tok)
         return err(sessionError(tok, code), code)
     }
     let left = try pendingOutput(tok)
@@ -1138,9 +1222,14 @@ pub fn want(s: &TlsSession): Result[Want] {
     if st == STATE_FAILED || st == STATE_CLOSED { return err("TLS session is closed", tlsCode(FAIL_CLOSED, 0)) }
     let pending = try pendingOutput(tok)
     if pending > 0 { return ok(wantWrite()) }
-    if st == STATE_ESTABLISHED || st == STATE_SEND_CLOSED || st == STATE_RECV_CLOSED {
-        return ok(wantRead())
+    if st == STATE_RECV_CLOSED || st == STATE_BOTH_CLOSED { return ok(wantNone()) }
+    let plain = __cinterop("tls_session_plaintext_pending", tok)
+    if plain < 0 {
+        let code = 0 - plain
+        return err(sessionError(tok, code), code)
     }
+    if plain > 0 { return ok(wantNone()) }
+    if st == STATE_ESTABLISHED || st == STATE_SEND_CLOSED { return ok(wantRead()) }
     return ok(wantNone())
 }
 
@@ -1304,9 +1393,9 @@ pub fn isSecure(s: &TlsSession): bool {
     let tok = sessionToken(s)
     match tok {
         ok(t) {
-            let st = __cinterop("tls_session_info_scalar", t, INFO_STATE)
-            if st < 0 { return false }
-            return readyState(st)
+            let secure = __cinterop("tls_session_info_scalar", t, INFO_SECURE)
+            if secure < 0 { return false }
+            return secure == 1
         }
         err(m, c) { return false }
     }

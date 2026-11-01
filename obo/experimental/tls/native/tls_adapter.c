@@ -74,6 +74,8 @@ struct tls_context {
     int poisoned;
     int live_sessions;
     long long bytes_charged;
+    long long extra_charge;
+    long long trust_charge;
     long long started;
     long long completed;
     long long failures;
@@ -297,6 +299,27 @@ static long session_output_bytes(tls_session *s) {
     if (pending < 0) pending = 0;
     pending += (long)(s->stage_len - s->stage_off);
     return pending;
+}
+
+static long context_charge(tls_context *c, long long n) {
+    if (c == NULL || n < 0) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+    if (c->bytes_charged > c->max_context_bytes - n) {
+        return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
+    }
+    if (g_bytes_charged > 0x7fffffffffffffffLL - n) {
+        return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
+    }
+    c->extra_charge += n;
+    c->bytes_charged += n;
+    g_bytes_charged += n;
+    return 1;
+}
+
+static void context_uncharge(tls_context *c, long long n) {
+    if (c == NULL || n <= 0) return;
+    if (c->extra_charge >= n) c->extra_charge -= n; else c->extra_charge = 0;
+    if (c->bytes_charged >= n) c->bytes_charged -= n; else c->bytes_charged = 0;
+    if (g_bytes_charged >= n) g_bytes_charged -= n; else g_bytes_charged = 0;
 }
 
 static long context_set_ready(tls_context *c) {
@@ -536,6 +559,97 @@ static long parse_pem_certs(const unsigned char *data, size_t len, long max_coun
     return 1;
 }
 
+static int ascii_lower(int c) {
+    return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+}
+
+static int contains_ci(const char *s, size_t len, const char *needle) {
+    size_t nlen = strlen(needle);
+    size_t i;
+    size_t j;
+    if (nlen == 0 || nlen > len) return 0;
+    for (i = 0; i + nlen <= len; i++) {
+        int same = 1;
+        for (j = 0; j < nlen; j++) {
+            if (ascii_lower((unsigned char)s[i + j]) !=
+                ascii_lower((unsigned char)needle[j])) {
+                same = 0;
+                break;
+            }
+        }
+        if (same) return 1;
+    }
+    return 0;
+}
+
+static int ends_with_ci(const char *s, size_t len, const char *needle) {
+    size_t nlen = strlen(needle);
+    size_t i;
+    if (nlen == 0 || nlen > len) return 0;
+    for (i = 0; i < nlen; i++) {
+        if (ascii_lower((unsigned char)s[len - nlen + i]) !=
+            ascii_lower((unsigned char)needle[i])) return 0;
+    }
+    return 1;
+}
+
+static int weak_list_name(const char *s, size_t len) {
+    static const char *const weak[] = {
+        "NULL", "ANON", "ADH", "AECDH", "EXPORT", "RC4", "3DES", "DES",
+        "MD5", "RC2", "IDEA", "SEED", "LOW", "COMPLEMENTOFALL",
+        "COMPLEMENTOFDEFAULT", "DEFAULT", "ALL", "HIGH", "MEDIUM"
+    };
+    size_t i;
+    if (ends_with_ci(s, len, "-SHA") || ends_with_ci(s, len, "-SHA1")) return 1;
+    for (i = 0; i < sizeof(weak) / sizeof(weak[0]); i++) {
+        if (contains_ci(s, len, weak[i])) return 1;
+    }
+    return 0;
+}
+
+/* Validate a colon-joined cipher/group list. OpenSSL accepts control
+ * expressions such as @SECLEVEL=0, eNULL, ALL and !; the public API must not.
+ * Copy into an explicit NUL-terminated buffer for the OpenSSL call. */
+static long validate_list_string(const unsigned char *data, size_t len,
+                                 char *out, size_t cap) {
+    size_t at = 0;
+    size_t token_start = 0;
+    if (data == NULL || out == NULL || cap == 0) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+    if (len == 0 || len > 1024) return fail_plain(TLS_FAIL_RANGE);
+    if (len + 1 > cap) return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
+    for (at = 0; at <= len; at++) {
+        if (at == len || data[at] == ':') {
+            size_t n = at - token_start;
+            size_t i;
+            if (n == 0 || n > 255) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+            for (i = 0; i < n; i++) {
+                unsigned char c = data[token_start + i];
+                int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+                int digit = c >= '0' && c <= '9';
+                if (!alpha && !digit && c != '_' && c != '-') {
+                    return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+                }
+            }
+            if (weak_list_name((const char *)data + token_start, n)) {
+                return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+            }
+            token_start = at + 1;
+        }
+    }
+    memcpy(out, data, len);
+    out[len] = '\0';
+    return 1;
+}
+
+static long enforce_security_level(tls_context *c) {
+    SSL_CTX_set_security_level(c->ssl_ctx, 2);
+    if (SSL_CTX_get_security_level(c->ssl_ctx) != 2) {
+        c->poisoned = 1;
+        return fail_plain(TLS_FAIL_CONFIGURATION);
+    }
+    return 1;
+}
+
 static int key_acceptable(EVP_PKEY *key) {
     int type;
     int bits;
@@ -577,8 +691,19 @@ static int context_release(void *p) {
     tls_context *c = (tls_context *)p;
     long long charge;
     if (c == NULL) return EINVAL;
-    if (c->live_sessions != 0) return EBUSY;
-    charge = (long long)sizeof(tls_context);
+    /* A public res can bypass closeContext's Busy check. Registry retirement
+     * happens before release, so release must never fail and strand the
+     * context. Detach any live sessions; their SSL objects hold their own
+     * SSL_CTX reference and remain valid, and their release will not touch the
+     * freed owner. */
+    if (c->live_sessions != 0) {
+        tls_session *s;
+        for (s = g_sessions; s != NULL; s = s->next) {
+            if (s->owner == c) s->owner = NULL;
+        }
+        c->live_sessions = 0;
+    }
+    charge = (long long)sizeof(tls_context) + c->extra_charge;
     if (c->ssl_ctx != NULL) SSL_CTX_free(c->ssl_ctx);
     if (c->next != NULL) c->next->prev = c->prev;
     if (c->prev != NULL) c->prev->next = c->next;
@@ -682,6 +807,7 @@ long tls_context_new(long option_token) {
     if (max_sessions < 1 || max_sessions > 4096) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
     if (max_handshake < 16384 || max_handshake > 8388608) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
     if (max_context < 1048576 || max_context > 1073741824) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+    if ((long long)sizeof(tls_context) > max_context) return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
 
     c = (tls_context *)calloc(1, sizeof(*c));
     if (c == NULL) return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
@@ -718,6 +844,10 @@ long tls_context_new(long option_token) {
         goto config_fail;
     }
     SSL_CTX_set_security_level(c->ssl_ctx, 2);
+    if (SSL_CTX_get_security_level(c->ssl_ctx) != 2) {
+        context_fail_text(c, "could not establish security level 2");
+        goto config_fail;
+    }
     SSL_CTX_set_options(c->ssl_ctx,
                         SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 |
                         SSL_OP_NO_RENEGOTIATION | SSL_OP_NO_COMPRESSION |
@@ -757,6 +887,7 @@ long tls_context_new(long option_token) {
     if (g_contexts != NULL) g_contexts->prev = c;
     g_contexts = c;
     g_live_contexts += 1;
+    c->bytes_charged = (long long)sizeof(*c);
     g_bytes_charged += (long long)sizeof(*c);
     if (g_bytes_charged > g_max_context_bytes) g_max_context_bytes = max_context;
     (void)context_set_ready(c);
@@ -785,9 +916,12 @@ long tls_context_load_chain(long context_token, long pem_token) {
     r = buffer_span(pem_token, &data, &len);
     if (r < 0) return r;
     if (len == 0 || len > (size_t)TLS_MAX_CHAIN_PEM) return fail_plain(TLS_FAIL_RANGE);
+    r = context_charge(c, (long long)len);
+    if (r < 0) return r;
     ERR_clear_error();
     r = parse_pem_certs(data, len, TLS_MAX_CHAIN_CERTS, &certs, &count);
     if (r < 0) {
+        context_uncharge(c, (long long)len);
         context_fail_text(c, "certificate chain PEM did not parse");
         return r;
     }
@@ -796,6 +930,7 @@ long tls_context_load_chain(long context_token, long pem_token) {
             context_fail_text(c, "certificate public key is below security level 2");
             for (long j = 0; j < count; j++) X509_free(certs[j]);
             free(certs);
+            context_uncharge(c, (long long)len);
             return fail_plain(TLS_FAIL_CERTIFICATE_REJECTED);
         }
     }
@@ -805,6 +940,7 @@ long tls_context_load_chain(long context_token, long pem_token) {
         c->poisoned = 1;
         for (i = 0; i < count; i++) X509_free(certs[i]);
         free(certs);
+        context_uncharge(c, (long long)len);
         drain_errors(c->last_error, sizeof(c->last_error));
         return fail_plain(TLS_FAIL_CERTIFICATE_REJECTED);
     }
@@ -816,6 +952,7 @@ long tls_context_load_chain(long context_token, long pem_token) {
             c->poisoned = 1;
             for (long j = i; j < count; j++) X509_free(certs[j]);
             free(certs);
+            context_uncharge(c, (long long)len);
             return fail_plain(TLS_FAIL_CERTIFICATE_REJECTED);
         }
         certs[i] = NULL;
@@ -846,16 +983,23 @@ long tls_context_load_key(long context_token, long pem_token) {
         OPENSSL_cleanse(data, len);
         return fail_plain(TLS_FAIL_RANGE);
     }
+    r = context_charge(c, (long long)len);
+    if (r < 0) {
+        OPENSSL_cleanse(data, len);
+        return r;
+    }
     ERR_clear_error();
     bio = BIO_new_mem_buf(data, (int)len);
     if (bio == NULL) {
         OPENSSL_cleanse(data, len);
+        context_uncharge(c, (long long)len);
         return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
     }
     key = PEM_read_bio_PrivateKey(bio, NULL, no_password_cb, NULL);
     BIO_free(bio);
     if (key == NULL) {
         OPENSSL_cleanse(data, len);
+        context_uncharge(c, (long long)len);
         context_fail_text(c, "private key PEM did not parse (encrypted keys are unsupported)");
         drain_errors(c->last_error, sizeof(c->last_error));
         return fail_plain(TLS_FAIL_KEY_REJECTED);
@@ -863,6 +1007,7 @@ long tls_context_load_key(long context_token, long pem_token) {
     if (!key_acceptable(key)) {
         EVP_PKEY_free(key);
         OPENSSL_cleanse(data, len);
+        context_uncharge(c, (long long)len);
         context_fail_text(c, "private key is below security level 2");
         return fail_plain(TLS_FAIL_KEY_REJECTED);
     }
@@ -870,6 +1015,7 @@ long tls_context_load_key(long context_token, long pem_token) {
     if (SSL_CTX_use_PrivateKey(c->ssl_ctx, key) != 1) {
         EVP_PKEY_free(key);
         OPENSSL_cleanse(data, len);
+        context_uncharge(c, (long long)len);
         c->poisoned = 1;
         drain_errors(c->last_error, sizeof(c->last_error));
         return fail_plain(TLS_FAIL_KEY_REJECTED);
@@ -880,6 +1026,7 @@ long tls_context_load_key(long context_token, long pem_token) {
     if (SSL_CTX_check_private_key(c->ssl_ctx) != 1) {
         context_fail_text(c, "private key does not match the loaded certificate");
         c->poisoned = 1;
+        context_uncharge(c, (long long)len);
         drain_errors(c->last_error, sizeof(c->last_error));
         return fail_plain(TLS_FAIL_KEY_REJECTED);
     }
@@ -905,9 +1052,12 @@ long tls_context_set_trust(long context_token, long pem_token) {
     r = buffer_span(pem_token, &data, &len);
     if (r < 0) return r;
     if (len == 0 || len > (size_t)TLS_MAX_TRUST_PEM) return fail_plain(TLS_FAIL_RANGE);
+    r = context_charge(c, (long long)len);
+    if (r < 0) return r;
     ERR_clear_error();
     r = parse_pem_certs(data, len, TLS_MAX_TRUST_CERTS, &certs, &count);
     if (r < 0) {
+        context_uncharge(c, (long long)len);
         context_fail_text(c, "trust bundle PEM did not parse");
         return r;
     }
@@ -915,6 +1065,7 @@ long tls_context_set_trust(long context_token, long pem_token) {
     if (store == NULL) {
         for (i = 0; i < count; i++) X509_free(certs[i]);
         free(certs);
+        context_uncharge(c, (long long)len);
         return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
     }
     for (i = 0; i < count; i++) {
@@ -927,6 +1078,7 @@ long tls_context_set_trust(long context_token, long pem_token) {
                 X509_STORE_free(store);
                 for (long j = 0; j < count; j++) X509_free(certs[j]);
                 free(certs);
+                context_uncharge(c, (long long)len);
                 drain_errors(c->last_error, sizeof(c->last_error));
                 context_fail_text(c, "trust bundle certificate could not be added");
                 return fail_plain(TLS_FAIL_CERTIFICATE_REJECTED);
@@ -937,6 +1089,11 @@ long tls_context_set_trust(long context_token, long pem_token) {
     free(certs);
     ERR_clear_error();
     SSL_CTX_set_cert_store(c->ssl_ctx, store);
+    {
+        long long old_trust = c->trust_charge;
+        c->trust_charge = (long long)len;
+        context_uncharge(c, old_trust);
+    }
     c->trust_set = 1;
     context_set_ready(c);
     return 1;
@@ -1077,7 +1234,7 @@ long tls_context_set_ciphers(long context_token, long which, long list_token) {
     unsigned char *data = NULL;
     size_t len = 0;
     long r;
-    size_t i;
+    char list[1025];
     if (c == NULL) return fail_plain(TLS_FAIL_INVALID_RESOURCE);
     context_clear_error(c);
     r = context_mutating_check(c);
@@ -1085,19 +1242,18 @@ long tls_context_set_ciphers(long context_token, long which, long list_token) {
     if (which != 0 && which != 1) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
     r = buffer_span(list_token, &data, &len);
     if (r < 0) return r;
-    if (len == 0 || len > 1024) return fail_plain(TLS_FAIL_RANGE);
-    for (i = 0; i < len; i++) {
-        if (data[i] < 0x20 || data[i] > 0x7e) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
-    }
-    if (data[len] != 0) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+    r = validate_list_string(data, len, list, sizeof(list));
+    if (r < 0) return r;
     ERR_clear_error();
-    r = which == 0 ? SSL_CTX_set_ciphersuites(c->ssl_ctx, (const char *)data)
-                   : SSL_CTX_set_cipher_list(c->ssl_ctx, (const char *)data);
+    r = which == 0 ? SSL_CTX_set_ciphersuites(c->ssl_ctx, list)
+                   : SSL_CTX_set_cipher_list(c->ssl_ctx, list);
     if (r != 1) {
         c->poisoned = 1;
         drain_errors(c->last_error, sizeof(c->last_error));
         return fail_plain(TLS_FAIL_CONFIGURATION);
     }
+    if (enforce_security_level(c) < 0) return fail_plain(TLS_FAIL_CONFIGURATION);
+    ERR_clear_error();
     return 1;
 }
 
@@ -1106,24 +1262,23 @@ long tls_context_set_groups(long context_token, long list_token) {
     unsigned char *data = NULL;
     size_t len = 0;
     long r;
-    size_t i;
+    char list[1025];
     if (c == NULL) return fail_plain(TLS_FAIL_INVALID_RESOURCE);
     context_clear_error(c);
     r = context_mutating_check(c);
     if (r < 0) return r;
     r = buffer_span(list_token, &data, &len);
     if (r < 0) return r;
-    if (len == 0 || len > 1024) return fail_plain(TLS_FAIL_RANGE);
-    for (i = 0; i < len; i++) {
-        if (data[i] < 0x20 || data[i] > 0x7e) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
-    }
-    if (data[len] != 0) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+    r = validate_list_string(data, len, list, sizeof(list));
+    if (r < 0) return r;
     ERR_clear_error();
-    if (SSL_CTX_set1_groups_list(c->ssl_ctx, (const char *)data) != 1) {
+    if (SSL_CTX_set1_groups_list(c->ssl_ctx, list) != 1) {
         c->poisoned = 1;
         drain_errors(c->last_error, sizeof(c->last_error));
         return fail_plain(TLS_FAIL_CONFIGURATION);
     }
+    if (enforce_security_level(c) < 0) return fail_plain(TLS_FAIL_CONFIGURATION);
+    ERR_clear_error();
     return 1;
 }
 
@@ -1137,6 +1292,18 @@ long tls_context_role(long context_token) {
     tls_context *c = context_of(context_token);
     if (c == NULL) return fail_plain(TLS_FAIL_INVALID_RESOURCE);
     return (long)c->role;
+}
+
+long tls_context_max_early_data(long context_token) {
+    tls_context *c = context_of(context_token);
+    if (c == NULL) return fail_plain(TLS_FAIL_INVALID_RESOURCE);
+    return (long)SSL_CTX_get_max_early_data(c->ssl_ctx);
+}
+
+long tls_context_ticket_count(long context_token) {
+    tls_context *c = context_of(context_token);
+    if (c == NULL) return fail_plain(TLS_FAIL_INVALID_RESOURCE);
+    return (long)SSL_CTX_get_num_tickets(c->ssl_ctx);
 }
 
 long tls_context_live_sessions(long context_token) {
@@ -1325,6 +1492,7 @@ long tls_session_read(long session_token, long out_token, long max) {
     if (r == TLS_STEP_WANT_READ || r == TLS_STEP_WANT_WRITE) {
         long q = session_charge_update(s);
         if (q < 0) return q;
+        return r == TLS_STEP_WANT_READ ? TLS_IO_WANT_READ : TLS_IO_WANT_WRITE;
     }
     return r;
 }
@@ -1364,6 +1532,7 @@ long tls_session_write(long session_token, long in_token, long offset, long coun
     if (r == TLS_STEP_WANT_READ || r == TLS_STEP_WANT_WRITE) {
         long q = session_charge_update(s);
         if (q < 0) return q;
+        return r == TLS_STEP_WANT_READ ? TLS_IO_WANT_READ : TLS_IO_WANT_WRITE;
     }
     return r;
 }
@@ -1412,6 +1581,10 @@ long tls_session_commit(long session_token, long written) {
     if (s->stage_off == s->stage_len) {
         s->stage_off = 0;
         s->stage_len = 0;
+    }
+    {
+        long r = session_charge_update(s);
+        if (r < 0) return r;
     }
     return 1;
 }
@@ -1602,6 +1775,18 @@ long tls_session_info_scalar(long session_token, long field) {
         return vr == X509_V_OK ? 1 : 2;
     }
     if (field == TLS_INFO_STATE) return (long)s->state;
+    if (field == TLS_INFO_SECURE) {
+        const SSL_CIPHER *cipher;
+        const char *name;
+        if (s->state != TLS_STATE_ESTABLISHED && s->state != TLS_STATE_SEND_CLOSED &&
+            s->state != TLS_STATE_RECV_CLOSED) return 0;
+        if (SSL_is_init_finished(s->ssl) != 1) return 0;
+        cipher = SSL_get_current_cipher(s->ssl);
+        if (cipher == NULL) return 0;
+        name = SSL_CIPHER_get_name(cipher);
+        if (name == NULL || strstr(name, "NULL") != NULL) return 0;
+        return 1;
+    }
     return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
 }
 

@@ -53,6 +53,11 @@
 #define TLS_STEP_DONE 1L
 #define TLS_STEP_WANT_READ 2L
 #define TLS_STEP_WANT_WRITE 3L
+
+/* read/write use distinct negative control statuses so a positive result is
+ * always an accepted data length. */
+#define TLS_IO_WANT_READ (-1001L)
+#define TLS_IO_WANT_WRITE (-1002L)
 #define TLS_SHUTDOWN_SENT 2L
 #define TLS_SHUTDOWN_PEER_CLOSED 3L
 #define TLS_SHUTDOWN_WANT_READ 4L
@@ -93,7 +98,8 @@
 #define TLS_INFO_PEER_PRESENT 10L
 #define TLS_INFO_VERIFICATION 11L
 #define TLS_INFO_VERIFY_CODE 12L
-#define TLS_INFO_STATE 13L
+#define TLS_INFO_STATE 13
+#define TLS_INFO_SECURE 14L
 
 /* Peer item selectors. */
 #define TLS_PEER_DNS 1L
@@ -133,12 +139,16 @@ long tls_context_set_ciphers(long context_token, long which, long list_token);
 long tls_context_set_groups(long context_token, long list_token);
 long tls_context_ready(long context_token);
 long tls_context_role(long context_token);
+long tls_context_max_early_data(long context_token);
+long tls_context_ticket_count(long context_token);
 long tls_context_live_sessions(long context_token);
 long tls_context_counts(long context_token, long out_token);
 long tls_context_error_copy(long context_token, long out_token, long max);
 
 long tls_session_new(long context_token);
 long tls_session_handshake(long session_token);
+/* Positive results are byte counts. Control statuses are TLS_IO_WANT_*;
+ * negative values outside that pair are encoded failures. */
 long tls_session_read(long session_token, long out_token, long max);
 long tls_session_write(long session_token, long in_token, long offset, long count);
 long tls_session_drain(long session_token, long out_token, long max);

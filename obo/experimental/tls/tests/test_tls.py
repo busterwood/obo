@@ -124,6 +124,38 @@ def gen_certs(d):
        os.path.join(d, 'untrusted-ca.key'), '-CAcreateserial', '-out',
        os.path.join(d, 'untrusted-client.pem'), '-days', '3650',
        '-extfile', ucnf, '-extensions', 'ext')
+    # A root -> intermediate -> leaf server chain.
+    sh('req', '-newkey', 'rsa:2048', '-nodes', '-keyout',
+       os.path.join(d, 'intermediate.key'), '-out',
+       os.path.join(d, 'intermediate.csr'), '-subj', '/CN=obo intermediate CA')
+    int_cnf = os.path.join(d, 'intermediate.cnf')
+    with open(int_cnf, 'w') as f:
+        f.write('[v3_ca]\nbasicConstraints=critical,CA:TRUE\n'
+                'keyUsage=critical,keyCertSign,cRLSign\n'
+                'subjectKeyIdentifier=hash\n')
+    sh('x509', '-req', '-in', os.path.join(d, 'intermediate.csr'), '-CA',
+       os.path.join(d, 'ca.pem'), '-CAkey', os.path.join(d, 'ca.key'),
+       '-CAcreateserial', '-out', os.path.join(d, 'intermediate.pem'),
+       '-days', '3650', '-extfile', int_cnf, '-extensions', 'v3_ca')
+    int_san = os.path.join(d, 'int-san.cnf')
+    with open(int_san, 'w') as f:
+        f.write('[req]\ndistinguished_name=dn\nreq_extensions=ext\nprompt=no\n'
+                '[dn]\nCN=localhost\n[ext]\n'
+                'subjectAltName=DNS:localhost,IP:127.0.0.1\n'
+                'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\n'
+                'extendedKeyUsage=serverAuth\n')
+    sh('req', '-newkey', 'rsa:2048', '-nodes', '-keyout',
+       os.path.join(d, 'server-int.key'), '-out',
+       os.path.join(d, 'server-int.csr'), '-config', int_san)
+    sh('x509', '-req', '-in', os.path.join(d, 'server-int.csr'), '-CA',
+       os.path.join(d, 'intermediate.pem'), '-CAkey',
+       os.path.join(d, 'intermediate.key'), '-CAcreateserial', '-out',
+       os.path.join(d, 'server-int-leaf.pem'), '-days', '3650',
+       '-extfile', int_san, '-extensions', 'ext')
+    with open(os.path.join(d, 'server-int.pem'), 'wb') as out:
+        out.write(open(os.path.join(d, 'server-int-leaf.pem'), 'rb').read())
+        out.write(open(os.path.join(d, 'intermediate.pem'), 'rb').read())
+
     # An expired client cert signed by the test CA.
     ca_dir = os.path.join(d, 'demoCA')
     os.makedirs(os.path.join(ca_dir, 'newcerts'), exist_ok=True)
@@ -345,6 +377,152 @@ def scenario(exe, fixtures, mode, expect, version='1.3', alpn=None,
     return out
 
 
+def offset_scenario(exe, fixtures):
+    app = App(exe, fixtures, 'offset')
+    ctx = ssl_context(fixtures, '1.3', ['http/1.1'])
+    ss = ctx.wrap_socket(socket.create_connection(('127.0.0.1', app.port), timeout=8),
+                         server_hostname='localhost')
+    greeting = b''
+    while len(greeting) < 5:
+        part = ss.recv(16)
+        if not part:
+            break
+        greeting += part
+    if greeting != b'34567':
+        raise Fail('offset write greeting %r' % greeting)
+    ss.sendall(b'hello over tls')
+    got = b''
+    while len(got) < 14:
+        part = ss.recv(64)
+        if not part:
+            break
+        got += part
+    if got != b'hello over tls':
+        raise Fail('offset echo %r' % got)
+    ss.close()
+    out, err = app.finish()
+    for marker in ('offset-wrote=5', 'counts=0,0'):
+        if marker not in out:
+            raise Fail('offset scenario missing %r:\n%s\n%s' % (marker, out, err))
+
+
+def alert_check(exe, fixtures, mode, alpn, needle):
+    app = App(exe, fixtures, mode)
+    ctx = ssl_context(fixtures, '1.3', alpn)
+    failed = None
+    try:
+        ss = ctx.wrap_socket(socket.create_connection(('127.0.0.1', app.port), timeout=8),
+                             server_hostname='localhost')
+        ss.close()
+    except ssl.SSLError as e:
+        failed = e
+    except Exception as e:
+        failed = e
+    out, err = app.finish()
+    if failed is None:
+        raise Fail('%s alert check unexpectedly succeeded' % mode)
+    if isinstance(failed, ssl.SSLEOFError):
+        raise Fail('%s got SSLEOFError, not a TLS alert: %r\n%s\n%s'
+                   % (mode, failed, out, err))
+    text = str(failed) + ' ' + repr(failed)
+    if needle not in text.upper() and needle not in out.upper():
+        raise Fail('%s missing alert %r: %r\n%s\n%s' % (mode, needle, failed, out, err))
+
+
+def large_echo_scenario(exe, fixtures):
+    app = App(exe, fixtures, 'echo')
+    ctx = ssl_context(fixtures, '1.3', ['http/1.1'])
+    ss = ctx.wrap_socket(socket.create_connection(('127.0.0.1', app.port), timeout=8),
+                         server_hostname='localhost')
+    payload = bytes((i * 31) & 0xff for i in range(65536))
+    ss.sendall(payload)
+    got = b''
+    while len(got) < len(payload):
+        part = ss.recv(65536)
+        if not part:
+            break
+        got += part
+    if got != payload:
+        raise Fail('large echo mismatch (%d/%d bytes)' % (len(got), len(payload)))
+    ss.close()
+    out, err = app.finish()
+    if 'counts=0,0' not in out:
+        raise Fail('large echo did not finish cleanly:\n%s\n%s' % (out, err))
+
+
+def weak_policy_scenario(exe, fixtures):
+    app = App(exe, fixtures, 'weak-policy')
+    ctx = ssl_context(fixtures, '1.3', ['http/1.1'])
+    ss = ctx.wrap_socket(socket.create_connection(('127.0.0.1', app.port), timeout=8),
+                         server_hostname='localhost')
+    ss.sendall(b'hello over tls')
+    got = b''
+    while len(got) < 14:
+        part = ss.recv(64)
+        if not part:
+            break
+        got += part
+    if got != b'hello over tls':
+        raise Fail('weak-policy normal echo %r' % got)
+    ss.close()
+    out, err = app.finish()
+    for marker in ('weak-policy=InvalidArgument', 'weak-groups=InvalidArgument',
+                   'counts=0,0'):
+        if marker not in out:
+            raise Fail('weak-policy missing %r:\n%s\n%s' % (marker, out, err))
+
+
+def weak_policy_null_rejected(exe, fixtures):
+    app = App(exe, fixtures, 'weak-policy')
+    cmd = ['timeout', '6', 'openssl', 's_client', '-connect',
+           '127.0.0.1:%d' % app.port, '-servername', 'localhost',
+           '-tls1_2', '-cipher', 'eNULL:@SECLEVEL=0', '-brief']
+    p = run(cmd, timeout=15)
+    text = (p.stdout or '') + (p.stderr or '')
+    if 'Ciphersuite:' in text and 'NULL' in text.split('Ciphersuite:', 1)[1].splitlines()[0]:
+        raise Fail('NULL cipher was negotiated:\n%s' % text[:3000])
+    app.finish()
+
+
+def min_version_check(exe, fixtures):
+    app = App(exe, fixtures, 'min13')
+    try:
+        ctx = ssl_context(fixtures, '1.2', ['http/1.1'])
+        raw = socket.create_connection(('127.0.0.1', app.port), timeout=8)
+        ctx.wrap_socket(raw, server_hostname='localhost')
+        raise Fail('TLS 1.2 client unexpectedly succeeded against min TLS 1.3')
+    except ssl.SSLError:
+        pass
+    out, err = app.finish()
+    if 'handshake-error' not in out and 'error=' not in out:
+        raise Fail('min-version rejection had no error:\n%s\n%s' % (out, err))
+    app2 = App(exe, fixtures, 'min13')
+    ctx = ssl_context(fixtures, '1.3', ['http/1.1'])
+    ss = ctx.wrap_socket(socket.create_connection(('127.0.0.1', app2.port), timeout=8),
+                         server_hostname='localhost')
+    ss.sendall(b'hello over tls')
+    got = b''
+    while len(got) < 14:
+        part = ss.recv(64)
+        if not part:
+            break
+        got += part
+    if got != b'hello over tls':
+        raise Fail('min TLS 1.3 echo %r' % got)
+    ss.close()
+    out, err = app2.finish()
+    if 'counts=0,0' not in out:
+        raise Fail('min-version TLS 1.3 did not finish cleanly:\n%s\n%s' % (out, err))
+
+
+def forged_check(exe, fixtures):
+    p = run([exe, str(free_port()), 'forged', os.path.join(fixtures, 'server.pem'),
+             os.path.join(fixtures, 'server.key')], timeout=15)
+    text = (p.stdout or '') + (p.stderr or '')
+    if 'forged=InvalidResource' not in text:
+        raise Fail('forged TlsContext was not rejected:\n%s' % text)
+
+
 def s_client(exe, fixtures, mode, alpn, tlsver, want_version, want_alpn):
     app = App(exe, fixtures, mode)
     cmd = ['timeout', '8', 'openssl', 's_client', '-connect',
@@ -425,14 +603,16 @@ def main():
     modes = ['tls13', 'tls12', 'alpn-h2', 'alpn-none', 'echo13', 'echo12',
              'require-missing', 'require-overlap', 'prefer-none', 'sni',
              'clientcert', 'truncate', 'truncate-mid', 'keyupdate', 'large', 'fragment', 'prefix',
-             'cert-errors', 'validate', 'limits']
+             'cert-errors', 'validate', 'limits', 'early', 'reneg', 'bypass', 'charge', 'chain', 'trust-atomic',
+             'truncate-handshake']
     run_harness(harness, modes, fixtures)
     print('C harness: ok (%d modes)' % len(modes))
 
     asan = build_harness(tmp, include_dirs, sanitize=True)
     asan_modes = ['tls13', 'tls12', 'echo13', 'echo12', 'require-missing',
                   'clientcert', 'truncate', 'truncate-mid', 'keyupdate', 'large', 'fragment',
-                  'prefix', 'cert-errors', 'validate', 'limits']
+                  'prefix', 'cert-errors', 'validate', 'limits', 'early', 'reneg', 'bypass', 'charge', 'chain', 'trust-atomic',
+             'truncate-handshake']
     run_harness(asan, asan_modes, fixtures, sanitize=True)
     print('ASAN/UBSAN harness: ok (%d modes)' % len(asan_modes))
 
@@ -444,7 +624,9 @@ def main():
     scenario(app, fixtures, 'h2', None, '1.3', ['h2'])
     scenario(app, fixtures, 'echo', None, '1.3', None)
     out = scenario(app, fixtures, 'require', ['AlpnRequired'], '1.3', None)
+    alert_check(app, fixtures, 'require', None, 'ALERT')
     out = scenario(app, fixtures, 'require', ['NoApplicationProtocol'], '1.3', ['h2'])
+    alert_check(app, fixtures, 'require', ['h2'], 'NOAPPLICATIONPROTOCOL')
     out = scenario(app, fixtures, 'busy', None, '1.3', ['http/1.1'])
     if 'busy=Busy' not in out:
         raise Fail('closeContext while live did not report Busy:\n%s' % out)
@@ -468,6 +650,14 @@ def main():
              os.path.join(fixtures, 'expired-client.pem'),
              os.path.join(fixtures, 'client.key'))
     print('obo client-certificate scenarios: ok')
+
+    offset_scenario(app, fixtures)
+    large_echo_scenario(app, fixtures)
+    weak_policy_scenario(app, fixtures)
+    weak_policy_null_rejected(app, fixtures)
+    min_version_check(app, fixtures)
+    forged_check(app, fixtures)
+    print('obo offset/weak-policy/min-version/forged scenarios: ok')
 
     s_client(app, fixtures, 'h2', 'h2', '1.3', 'TLSv1.3', 'h2')
     s_client(app, fixtures, 'echo', 'http/1.1', '1.2', 'TLSv1.2', 'http/1.1')
