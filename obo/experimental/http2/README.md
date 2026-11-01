@@ -106,8 +106,14 @@ client: eight concurrent streams on one connection, 160 KiB of flow-controlled
 `/big` responses, a 30 KiB echoed request, the 32-stream cap, rapid reset,
 CONTINUATION flood, header-list flood, zero-DATA flood, bad h2c preface and an
 HTTP/1.1 `Upgrade` attempt. Each abuse case must leave the server serving a
-fresh connection. A fast-timeout limits profile checks idle, stalled-header and
-body-idle deadlines without stopping the loop. TLS tests enforce the wrong-ALPN failure, multiplex over TLS,
+fresh connection. A fast-timeout limits profile checks 14 zero-byte h2c
+prefaces, idle, stalled-header and body-idle deadlines without stopping the
+loop. A saturation test fills `maxConnections`, leaves a 15th connection
+pending, and asserts the paused listener does not spin. A small-buffer profile
+checks 8 KiB `maxStreamSendBuffer` progress, 4 KiB `maxReadChunk` echo and
+`maxRequestsPerConnection` refusal with `RST_STREAM(REFUSED_STREAM)`. The drain
+test keeps an active stream open and asserts the notice GOAWAY, barrier PING,
+and final `min(last_proc, cutoff)` GOAWAY reach the wire before close. TLS tests enforce the wrong-ALPN failure, multiplex over TLS,
 graceful GOAWAY drain and balanced connection/stream/platform counts.
 h2spec and h2load are explicit integration dependencies. They are skipped when
 not installed, with the missing-tool reason printed; no default test downloads a
@@ -159,7 +165,11 @@ let _ = try server::shutdown(&srv, &at)
 
 Admission is the H2 per-connection reservation plus `maxConnections` and
 `maxTotalConnectionBytes`. Connection slots use `(generation, index)` tags, so a
-stale reactor event cannot reach a reused slot. One connection failure never
-stops the loop. A `Stop` action triggers `beginShutdown`; `Close` drains one
-connection. `drain` uses the H2 GOAWAY/PING barrier and final GOAWAY before
-closing, bounded by `drainTimeoutMs`.
+stale reactor event cannot reach a reused slot. When admission is full the
+listener watch is removed and restored when capacity returns; a permanently
+readable backlog does not spin. One connection failure never stops the loop.
+A `Stop` action triggers `beginShutdown`; `Close` drains one connection. `drain`
+uses the H2 GOAWAY/PING barrier, requires the final GOAWAY to reach the wire,
+flushes pending output, and is bounded by `drainTimeoutMs`. The shim preface
+deadline is armed at accept, so h2c zero-byte clients are bounded by
+`prefaceTimeoutMs`.

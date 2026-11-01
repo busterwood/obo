@@ -360,6 +360,11 @@ def parse_platform(text):
                      'cleanupFailures'], values))
 
 
+def server_cpu(proc):
+    parts = open('/proc/%d/stat' % proc.pid).read().split()
+    return (int(parts[13]) + int(parts[14])) / os.sysconf('SC_CLK_TCK')
+
+
 def tls_raw_client(port, authority):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
@@ -682,6 +687,23 @@ def main():
     port = free_port(1746)
     srv = Server(h2srv, ['h2c', port, 'fast'])
     try:
+        silent = [socket.create_connection(('127.0.0.1', port), timeout=3)
+                  for _ in range(14)]
+        time.sleep(1.4)
+        closed = 0
+        for raw in silent:
+            raw.settimeout(1)
+            try:
+                if raw.recv(16) == b'':
+                    closed += 1
+            except OSError:
+                pass
+        for raw in silent:
+            raw.close()
+        need(closed == 14,
+             'silent h2c prefaces held slots past the armed deadline: %d' %
+             closed)
+
         c = h2client.H2Client(port)
         c.drain_for(1.6)
         need(c.goaway is not None or c.closed, 'idle timeout did not close')
@@ -719,6 +741,156 @@ def main():
         need(m['active'] == 0 and c['liveStreams'] == 0,
              'timeout profile left live resources: %r %r' % (m, c))
         print('H2b idle/header/body timeout isolation: ok')
+    finally:
+        srv.stop()
+
+    # Graceful drain of an active stream: the notice GOAWAY, barrier PING and
+    # final GOAWAY with min(last_proc, cutoff) must reach the wire before close.
+    port = free_port(1747)
+    srv = Server(h2srv, ['h2c', port])
+    try:
+        a = h2client.H2Client(port)
+        a.request(1, '/echo', method='POST', body=b'p', end_stream=False)
+        time.sleep(0.15)
+        b = h2client.H2Client(port)
+        b.request(1, '/stop')
+        b.collect({1}, timeout=5)
+        need(b.body(1) == b'hello\n', 'drain stop body')
+        deadline = time.time() + 5
+        a._deadline = deadline
+        sent_tail = False
+        while time.time() < deadline:
+            if not sent_tail and (h2client.GOAWAY in a.frames or
+                                  time.time() > deadline - 4.5):
+                a.send(h2client.frame(h2client.DATA,
+                                      h2client.FLAG_END_STREAM, 1, b'tail'))
+                sent_tail = True
+            try:
+                fr = a._recv_frame()
+            except socket.timeout:
+                continue
+            if fr is None:
+                break
+            a._handle(fr)
+            if 1 in a.ended and len(a.goaways) >= 2:
+                break
+        need(a.body(1) == b'ptail', 'active stream drain lost the echo body')
+        need(1 in a.ended, 'active stream did not finish during drain')
+        need(len(a.goaways) >= 2,
+             'drain did not send a notice and final GOAWAY: %r' % a.goaways)
+        need(a.goaways[0][0] == 2147483647,
+             'first GOAWAY was not the shutdown notice: %r' % a.goaways)
+        final = a.goaways[-1]
+        need(final[0] == 1 and final[1] == 0,
+             'final GOAWAY was not min(last_proc, cutoff)=1/NO_ERROR: %r' %
+             a.goaways)
+        pings = [i for i, t in enumerate(a.frames) if t == h2client.PING]
+        goaways = [i for i, t in enumerate(a.frames) if t == h2client.GOAWAY]
+        need(pings and goaways and goaways[-1] > pings[-1],
+             'final GOAWAY did not follow the drain barrier PING')
+        a.close()
+        b.close()
+        text = srv.finish()
+        need('H2DRAINED' in text and 'H2DONE' in text,
+             'active-stream drain did not complete:\n%s' % text)
+        m = parse_metrics(text)
+        c = parse_counts(text)
+        need(m['active'] == 0 and c['liveStreams'] == 0,
+             'active-stream drain left live resources: %r %r' % (m, c))
+        print('H2c final GOAWAY order/active-stream drain: ok')
+    finally:
+        srv.stop()
+
+    # Admission saturation: with maxConnections reached, the listener watch is
+    # paused instead of waking on a permanently readable backlog.
+    port = free_port(1748)
+    srv = Server(h2srv, ['h2c', port])
+    pending = None
+    clients = []
+    try:
+        clients = [h2client.H2Client(port) for _ in range(14)]
+        time.sleep(0.2)
+        base = server_cpu(srv.proc)
+        time.sleep(0.8)
+        need(server_cpu(srv.proc) - base < 0.2,
+             'saturated admission spins before a pending accept')
+        pending = socket.create_connection(('127.0.0.1', port), timeout=3)
+        pending.sendall(h2client.PREFACE + h2client.frame(h2client.SETTINGS, 0, 0))
+        base = server_cpu(srv.proc)
+        time.sleep(1.5)
+        used = server_cpu(srv.proc) - base
+        need(used < 0.25,
+             'saturated admission spins with a pending accept: %.2fs' % used)
+        clients[0].request(1, '/hello')
+        clients[0].collect({1}, timeout=5)
+        need(clients[0].body(1) == b'hello\n',
+             'existing connection failed while admission was full')
+        clients[1].request(1, '/stop')
+        clients[1].collect({1}, timeout=8)
+        need(clients[1].body(1) == b'hello\n', 'saturated stop body')
+        for c in clients:
+            c.close()
+        clients = []
+        pending.close()
+        pending = None
+        text = srv.finish()
+        need('H2DRAINED' in text and 'H2DONE' in text,
+             'saturated server did not drain:\n%s' % text)
+        m = parse_metrics(text)
+        need(m['accepted'] == 14, 'saturation accepted count: %r' % m)
+        need(m['rejected'] <= 4, 'saturation rejected count exploded: %r' % m)
+        need(m['active'] == 0 and m['reservedBytes'] == 0,
+             'saturation admission did not unwind: %r' % m)
+        print('H2c admission saturation/watch pause: ok')
+    finally:
+        if pending is not None:
+            pending.close()
+        for c in clients:
+            c.close()
+        srv.stop()
+
+    # Non-default buffers/read chunk/request cap: progress must follow a
+    # zero-count writeBody, and a maxRequests refusal must emit RST_STREAM.
+    port = free_port(1749)
+    srv = Server(h2srv, ['h2c', port, 'small'])
+    try:
+        c = h2client.H2Client(port)
+        c.request(1, '/big')
+        c.collect({1}, timeout=10)
+        need(c.body(1) == b'x' * 20480,
+             'small send buffer stalled /big at %d bytes' % len(c.body(1)))
+        c.close()
+
+        c = h2client.H2Client(port)
+        payload = b'z' * 10000
+        c.request(1, '/echo', method='POST', body=payload)
+        c.collect({1}, timeout=10)
+        need(c.body(1) == payload, 'small maxReadChunk echo failed')
+        c.close()
+
+        c = h2client.H2Client(port)
+        for sid in (1, 3):
+            c.request(sid, '/hello')
+            c.collect({sid}, timeout=5)
+            need(c.body(sid) == b'hello\n', 'small request cap first two')
+        c.request(5, '/hello')
+        c.collect({5}, timeout=5)
+        need(c.reset.get(5) == 7,
+             'maxRequests refusal did not send REFUSED_STREAM: %r' % c.reset)
+        c.close()
+
+        d = h2client.H2Client(port)
+        d.request(1, '/stop')
+        d.collect({1}, timeout=8)
+        d.close()
+        text = srv.finish()
+        need('H2DRAINED' in text and 'H2DONE' in text,
+             'small-profile drain did not complete:\n%s' % text)
+        m = parse_metrics(text)
+        c = parse_counts(text)
+        need(m['active'] == 0 and c['liveStreams'] == 0,
+             'small profile left live resources: %r %r' % (m, c))
+        print('H2b small buffers/maxRequests: ok')
     finally:
         srv.stop()
 

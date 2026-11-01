@@ -28,7 +28,10 @@ Baseline used by the H2a tests:
 `NGHTTP2_VERSION_NUM >= 0x013b00` is a compile-time gate. Compile/link
 references to `nghttp2_option_set_max_continuations` and
 `nghttp2_option_set_stream_reset_rate_limit` make a missing security option a
-build failure. The runtime check requires age 1, a compatible version number and
+build failure. H2b/H2c add two scalar shim calls on the same boundary:
+`h2_conn_arm_preface` (start the preface deadline at accept) and
+`h2_conn_refuse` (submit RST_STREAM for an unadopted policy-refused stream).
+The runtime check requires age 1, a compatible version number and
 `proto_str == "h2"`. The Ubuntu `1.59.0-1ubuntu0.4` package is required for
 `nghttp2_option_set_max_continuations`; an unpatched upstream 1.59.0 header
 does not contain it.

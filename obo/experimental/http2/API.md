@@ -89,6 +89,9 @@ pub fn wantsWrite(c: &Connection): Result[bool]
 pub fn reservedBytes(c: &Connection): int
 pub fn state(c: &Connection): Result[int]
 pub fn settingsAcked(c: &Connection): Result[bool]
+pub fn armPrefaceDeadline(c: &Connection, now: &http::Now): Result[bool]
+pub fn refuse(c: &Connection, id: int, code: int): Result[bool]
+pub fn flush(mut c: &Connection, now: &http::Now): Result[bool]
 pub fn shutdownStep(mut c: &Connection,
                     now: &http::Now): Result[transport::ShutdownOutcome]
 pub fn watch(mut c: &Connection, r: &reactor::Reactor, readable: bool,
@@ -100,8 +103,15 @@ pub fn memoryAppendInput(mut c: &Connection, bytes: &[]byte): Result[bool]
 `make` moves the transport. On any validation/mode/ALPN failure it closes the
 transport exactly once and returns no connection token. `next` performs one
 transport write/flush and at most one read per call, returns at most one event,
-and never loops on readiness. `deadline` returns the earliest active finite
-monotonic deadline (nanoseconds) or `clock::forever()`. `memoryOutput` and
+and never loops on readiness. `armPrefaceDeadline(c, now)` initializes the
+shim's preface deadline at accept time; a server must call it before waiting on
+the reactor so a zero-byte h2c client cannot hold a slot indefinitely.
+`flush(c, now)` flushes already-queued shim wire, obo output and TLS ciphertext
+without pulling events; it returns true only when all output is drained.
+`refuse(c, id, code)` submits RST_STREAM for a stream the shim knows but obo has
+not adopted, used for policy refusal such as `maxRequestsPerConnection`.
+`deadline` returns the earliest active finite monotonic deadline (nanoseconds)
+or `clock::forever()`. `memoryOutput` and
 `memoryAppendInput` are deterministic test helpers; they are `Unsupported` on
 non-memory transports. `close` is abortive and idempotent (`ok(false)` on the
 second close); `drain` is the graceful path.
@@ -261,6 +271,7 @@ pub fn runAction(mut st: &ActionState, h: http::Handler,
 pub fn actionStopRequested(st: &ActionState): bool
 pub fn actionCloseRequested(st: &ActionState): bool
 pub fn actionDone(st: &ActionState): bool
+pub fn actionWriteBlocked(st: &ActionState): bool
 ```
 
 `runAction` latches the first action returned by the pure handler, executes the
@@ -269,7 +280,10 @@ closed action set (`Hello`, `Echo`, `Chunked`, `Head`, `NoContent`,
 (write buffer full, body not ready, or end not yet accepted). It never spins and
 never calls a handler twice to change a decision. `actionDone` is true only
 after the response is ended and the request body is consumed; the server loop
-uses it to distinguish a completed action from a yielded one. Non-echo actions discard any
+uses it to distinguish a completed action from a yielded one.
+`actionWriteBlocked` is true when the last yield was a zero-count `writeBody`
+(the send buffer is full), so the server can resume the action after flushing
+instead of treating the zero count as a body wait. Non-echo actions discard any
 remaining request body in bounded pieces; an oversized body or timeout resets
 with `CANCEL`. The function is ordinary impure module code, not a callback or
 interface.
@@ -324,7 +338,8 @@ pub fn shutdown(mut s: &Server, now: &httpapi::Now): Result[bool]
 `make` is the cleartext prior-knowledge (h2c) listener. Every accepted
 transport is passed to `http2::make` with `ModePriorKnowledge`; the 24-byte
 preface is validated before any frame and an HTTP/1.1 `Upgrade` is never
-accepted. `makeTls` takes ownership of a `systls` context. The caller must
+accepted. The shim preface deadline is armed at accept, so a client that sends
+no bytes is closed at `prefaceTimeoutMs` even before its first frame. `makeTls` takes ownership of a `systls` context. The caller must
 configure `Require(["h2"])`; the loop additionally requires the negotiated
 ALPN to be exactly `h2` after the handshake and closes the session otherwise.
 The context is closed by `shutdown` after the last session.
@@ -333,7 +348,10 @@ Admission uses `http2::reservation(limits)` plus both `maxConnections` and
 `maxTotalConnectionBytes`. TLS sessions, transport staging and other native
 users are outside that H2 reservation. Accept batches are capped at 32, and
 `ResourceLimit`/`EMFILE` pauses acceptance with a short backoff instead of
-spinning.
+spinning. When admission is full the listener watch is removed; it is restored
+when a slot becomes available. A permanently readable backlog therefore does
+not wake or burn CPU. A reserved-but-never-slotted connection rolls its
+admission back without changing the live connection counters.
 
 Connection slots are tagged by `(generation, index)` so a stale reactor event
 cannot drive a reused slot. A connection failure, handler failure, protocol
@@ -352,7 +370,10 @@ buffered inside the TLS layer is not stranded.
 steps, deadline checks and bounded resumable work. It automatically calls
 `beginShutdown` after an action reports `Stop`. `run` loops `runOnce` up to
 `maxTurns`; `drain` drives live connections after `beginShutdown` until they
-finish or `drainTimeoutMs` elapses. `shutdown` is the final close: it removes
+finish or `drainTimeoutMs` elapses. The C drain barrier now requires the final
+GOAWAY frame to have been handed to the wire; the server flushes pending shim,
+plain and TLS output before closing. The final GOAWAY carries
+`min(last_proc, cutoff)`. `shutdown` is the final close: it removes
 watches, closes every stream shell, runs a bounded close-notify/shutdown step,
 closes each H2 connection once, releases admission, and closes the TLS context,
 listener and reactor.

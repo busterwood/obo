@@ -30,7 +30,7 @@ adds no protocol constants of its own.
 | `maxResponseTrailerBytes` | 4096 | staged response trailers |
 | `maxResponseTrailerCount` | 32 | staged response trailer fields |
 | `maxReadChunk` | 16384 | per `read`/`write` call |
-| `maxRequestsPerConnection` | 1000 | completed requests (admission policy) |
+| `maxRequestsPerConnection` | 1000 | later streams are reset with `REFUSED_STREAM` |
 | `maxConnections` | 14 | server admission |
 | `maxTotalConnectionBytes` | 67108864 | 64 MiB aggregate reservation |
 | `maxResetBurst` / `maxResetRate` | 100 / 20 | nghttp2 reset token bucket |
@@ -38,7 +38,7 @@ adds no protocol constants of its own.
 | `maxSettingsEntries` | 32 | SETTINGS entries per peer frame |
 | `frameBurst` / `frameRate` | 4000 / 2000 | inbound frame token bucket |
 | `zeroDataBurst` / `zeroDataRate` | 200 / 100 | zero-length DATA bucket |
-| `prefaceTimeoutMs` | 10000 | h2c preface / first frame |
+| `prefaceTimeoutMs` | 10000 | h2c preface; armed at accept before any frame |
 | `settingsTimeoutMs` | 10000 | our SETTINGS ACK |
 | `headerTimeoutMs` | 10000 | HEADERS..END_HEADERS |
 | `bodyIdleTimeoutMs` | 30000 | after the first body read |
@@ -169,10 +169,10 @@ test script records the extracted header version and rejects a mismatched
 | per-connection streams | `maxConcurrentStreams` live shells; the shim also enforces the same advertised cap |
 | accept batch | 32 sockets per turn; `ResourceLimit`/EMFILE pauses 100 ms |
 | per-turn connection work | 32 `http2::next` steps; exhaust marks the slot resumable for an immediate turn |
-| per-turn stream resumption | 32 action steps across live streams |
+| per-turn stream resumption | 32 action steps across live streams, rotating a fair cursor |
 | handshake deadline | `prefaceTimeoutMs` from accept, before any H2 session exists |
 | server drain | `drainTimeoutMs` from `beginShutdown`; each connection uses the H2 GOAWAY/PING barrier and `drainBarrierMs` |
-| admission | `http2::reservation(limits)` x live connections, bounded by `maxConnections` and `maxTotalConnectionBytes` |
+| admission | `http2::reservation(limits)` x live connections, bounded by `maxConnections` and `maxTotalConnectionBytes`; full admission removes the listener watch |
 | reactor batch | 64 events per wait (systems `MAX_BATCH`) |
 
 TLS session memory, transport staging and the platforms' connection objects are
@@ -190,6 +190,29 @@ When the client preface is already buffered inside TLS at handshake completion,
 the loop drives the new H2 connection once immediately. This avoids waiting for
 a socket-readability edge that will never arrive. A wrong/no ALPN closes the
 session; there is no h2 fallback. h2c has no Upgrade path.
+
+For h2c, `h2_conn_arm_preface` initializes the C preface deadline at accept
+time. Without it, a zero-byte client would not reach `check_deadlines` because
+the shim only arms the deadline on the first `next_event`; all
+`maxConnections` slots could be held forever. `prefaceTimeoutMs` is therefore a
+strict bound from accept, not from the first byte.
+
+When admission is full, the listener watch is removed instead of leaving a
+level-triggered readable backlog. `rejected` increments once per transition.
+The watch is restored when a slot closes and capacity exists. Reservation
+rollback for a pre-slot failure releases the H2 admission charge without
+decrementing the live connection/reserved counters.
+
+A response action that accepted zero bytes from `writeBody` sets
+`actionWriteBlocked`; the server keeps the stream resumable and retries after
+flushing. This is required for non-default `maxStreamSendBuffer` values.
+`maxRequestsPerConnection` refusal submits `RST_STREAM(REFUSED_STREAM)` for the
+unadopted stream instead of leaving it open.
+
+Graceful drain now requires the final GOAWAY frame to be handed to the shim
+wire (`drain_final_sent`) and the server flushes shim wire, obo output and TLS
+ciphertext before closing. The final GOAWAY is `min(last_proc, cutoff)` and
+follows the barrier PING.
 
 `make`/`makeTls` consume the listener, reactor and optional TLS context. On a
 validation failure they close what they own. `shutdown` closes every stream

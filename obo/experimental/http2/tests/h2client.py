@@ -86,6 +86,8 @@ class H2Client:
         self.reset = {}
         self.header_seen = set()
         self.goaway = None
+        self.goaways = []
+        self.frames = []
         self.closed = False
         self._deadline = None
         self.sock.sendall(PREFACE + frame(SETTINGS, 0, 0))
@@ -125,6 +127,7 @@ class H2Client:
 
     def _handle(self, fr):
         ftype, flags, sid, payload = fr
+        self.frames.append(ftype)
         if ftype == SETTINGS and not (flags & FLAG_ACK):
             self.send(frame(SETTINGS, FLAG_ACK, 0))
             return
@@ -156,6 +159,7 @@ class H2Client:
             code = struct.unpack('!I', payload[4:8])[0] if len(payload) >= 8 else 0
             last = struct.unpack('!I', payload[0:4])[0] & 0x7fffffff if len(payload) >= 4 else 0
             self.goaway = (last, code)
+            self.goaways.append((last, code))
             return
 
     def _wait_server_settings(self, timeout):
