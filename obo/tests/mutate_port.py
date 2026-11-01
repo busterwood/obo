@@ -380,8 +380,9 @@ MUTANTS.update({
     "retry: waiting calls of the first pass kept": [("                let fr = g.fnRec\n                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }\n", "                let fr = g.fnRec\n")],
     "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
     "retry: free list left as the first pass had it": [("    homeBits = 0\n    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them\n", "    homeBits = 0\n")],
-    "retry: scanner not rewound": [("        pos = sPos\n", "")],
-    "retry: token not restored": [("        sym = sSym\n", "")],
+    "retry: scanner not rewound": [("        argTempsUsed = sTemps\n        pos = sPos\n", "        argTempsUsed = sTemps\n")],
+    "retry: token not restored": [("        sym = sSym\n        sval = sSval\n        ival = sIval\n        tline = sTline\n",
+                                   "        sval = sSval\n        ival = sIval\n        tline = sTline\n")],
 })
 SHAPES = {"align: loops not padded", "align: wrong padding", "align: while loops not padded", "align: while true not padded",
           "align: for ranges not padded", "align: for arrays not padded", "align: not padded when compiled again",
