@@ -491,6 +491,5 @@ fn main() {
         }
         err(m, c) { println("open_err=", m, " ", c); exit(79) }
     }
-    check(postgres::live_resources() == 0, "live", 80)
     println("postgres_decimal_fake=ok")
 }

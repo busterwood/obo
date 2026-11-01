@@ -1,0 +1,410 @@
+module app
+
+import "postgres.obx"
+import "postgres_fake_probe.obx" as probe
+
+// Deterministic coverage of the v2 postgres wrapper over the fake libpq:
+// typed OIDs, formats, exact bytes, NULL, result format, empty vs NULL, the
+// 32-parameter bound, SQL/text NUL rejection, the obo decimal validation, the
+// allocation-failure path, a result outliving its connection and
+// make_empty_rows. No server and no real libpq.
+
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn nul_string(): string {
+    var b = new []byte(0)
+    append(b, 'S')
+    append(b, byte(0))
+    append(b, 'Q')
+    return string(b)
+}
+
+fn blob3(): []byte {
+    var b = new []byte(0)
+    append(b, byte(0))
+    append(b, byte(255))
+    append(b, byte(65))
+    return b
+}
+
+fn one(p: postgres::Param): []postgres::Param {
+    var ps = new []postgres::Param(0)
+    append(ps, p)
+    return ps
+}
+
+fn empty_params(): []postgres::Param {
+    return new []postgres::Param(0)
+}
+
+fn expect_err(name: string, r: Result[postgres::Rows],
+              want_code: int, want_msg: string, exit_code: int) {
+    match r {
+        ok(rows) {
+            rows.close()
+            println("FAIL ", name, " unexpectedly ok")
+            exit(exit_code)
+        }
+        err(m, c) {
+            check(c == want_code, name + " code", exit_code)
+            check(m == want_msg, name + " message", exit_code)
+        }
+    }
+}
+
+fn expect_param_err(name: string, r: Result[postgres::Param],
+                    want_code: int, exit_code: int) {
+    match r {
+        ok(p) {
+            println("FAIL ", name, " unexpectedly ok")
+            exit(exit_code)
+        }
+        err(m, c) { check(c == want_code, name + " code", exit_code) }
+    }
+}
+
+fn expect_exec_err(c: &postgres::Connection, name: string, p: postgres::Param,
+                   want_code: int, exit_code: int) {
+    let q = postgres::execute(c, "SELECT $1", one(p))
+    match q {
+        ok(rows) {
+            rows.close()
+            println("FAIL ", name, " unexpectedly ok")
+            exit(exit_code)
+        }
+        err(m, n) { check(n == want_code, name + " code", exit_code) }
+    }
+}
+
+fn last_bytes(i: int): string {
+    var out = ""
+    let n = probe::last_param_len(i)
+    for j in 0..n {
+        if j > 0 { out = out + "," }
+        out = out + string(probe::last_param_byte(i, j))
+    }
+    return out
+}
+
+fn main() {
+    let made = postgres::open("fake-ok")
+    match made {
+        ok(conn) {
+            defer conn.close()
+
+            // Typed OIDs, formats, lengths, NULL flags and exact bytes.
+            var ps = new []postgres::Param(0)
+            append(ps, postgres::param_text("hello"))
+            append(ps, postgres::param_int(-9223372036854775807))
+            append(ps, postgres::param_bool(true))
+            append(ps, postgres::param_blob(blob3()))
+            append(ps, postgres::param_null())
+            let dp = postgres::param_decimal_text(bytes_of("1.2300"))
+            match dp {
+                ok(v) { append(ps, v) }
+                err(m, c) { println("FAIL decimal param ", m, " ", c); exit(98) }
+            }
+            append(ps, postgres::param_decimal_null())
+            let q = postgres::execute(&conn,
+                "SELECT $1::text, $2::int8, $3::bool, $4::bytea, $5::text, $6::numeric, $7::numeric",
+                ps)
+            match q {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK, "typed status", 1)
+                    check(rows.row_count() == 1, "typed rows", 2)
+                    check(rows.column_count() == 4, "typed cols", 3)
+                    check(rows.fmt == 0, "typed fmt", 4)
+                    check(probe::last_result_format() == 0, "typed result format", 5)
+                    check(probe::last_param_count() == 7, "typed nparams", 6)
+                    check(probe::last_param_type(0) == 25, "text oid", 7)
+                    check(probe::last_param_type(1) == 20, "int8 oid", 8)
+                    check(probe::last_param_type(2) == 16, "bool oid", 9)
+                    check(probe::last_param_type(3) == 17, "bytea oid", 10)
+                    check(probe::last_param_type(4) == 0, "null oid", 11)
+                    check(probe::last_param_type(5) == 1700, "decimal oid", 12)
+                    check(probe::last_param_type(6) == 1700, "decimal null oid", 13)
+                    check(probe::last_param_format(0) == 0, "text format", 14)
+                    check(probe::last_param_format(2) == 0, "bool format", 15)
+                    check(probe::last_param_format(3) == 1, "bytea format", 16)
+                    check(probe::last_param_isnull(4) == 1, "plain null", 17)
+                    check(probe::last_param_isnull(5) == 0, "decimal not null", 18)
+                    check(probe::last_param_isnull(6) == 1, "decimal null", 19)
+                    check(probe::last_param_len(0) == 5, "text len", 20)
+                    check(last_bytes(0) == "104,101,108,108,111", "text bytes", 21)
+                    check(probe::last_param_len(1) == 20, "int8 len", 22)
+                    check(last_bytes(1) == "45,57,50,50,51,51,55,50,48,51,54,56,53,52,55,55,53,56,48,55", "int8 bytes", 23)
+                    check(probe::last_param_len(2) == 1, "bool len", 24)
+                    check(last_bytes(2) == "116", "bool bytes", 25)
+                    check(probe::last_param_len(3) == 3, "blob len", 26)
+                    check(last_bytes(3) == "0,255,65", "blob bytes", 27)
+                    check(probe::last_param_len(4) == 0, "null len", 28)
+                    check(probe::last_param_len(5) == 6, "decimal len", 29)
+                    check(last_bytes(5) == "49,46,50,51,48,48", "decimal bytes", 30)
+                    check(probe::last_param_len(6) == 0, "decimal null len", 31)
+                    let t = rows.text(0, 0)
+                    match t {
+                        ok(v) { check(v == "hello", "result text", 32) }
+                        err(m, c) { println("FAIL result text ", m, " ", c); exit(33) }
+                    }
+                    let nv = rows.value(0, 2)
+                    match nv {
+                        ok(v) {
+                            check(v != nil, "result bool not null", 34)
+                            if v != nil {
+                                check(len(v) == 1, "result bool len", 35)
+                                check(v[0] == byte(116), "result bool value", 99)
+                            }
+                        }
+                        err(m, c) { println("FAIL result blob ", m, " ", c); exit(36) }
+                    }
+                }
+                err(m, c) { println("FAIL typed exec ", m, " ", c); exit(37) }
+            }
+
+            // Binary result format reaches PQexecParams as format 1.
+            let bq = postgres::execute_binary(&conn, "SELECT decode('00ff41','hex')",
+                                              empty_params())
+            match bq {
+                ok(rows) {
+                    check(rows.fmt == 1, "binary fmt", 38)
+                    check(probe::last_result_format() == 1, "binary result format", 39)
+                    rows.close()
+                }
+                err(m, c) { println("FAIL binary exec ", m, " ", c); exit(40) }
+            }
+
+            // Empty text and empty blob stay non-NULL with zero length.
+            var ep = new []postgres::Param(0)
+            append(ep, postgres::param_text(""))
+            append(ep, postgres::param_blob(new []byte(0)))
+            append(ep, postgres::param_null())
+            let eq = postgres::execute(&conn, "SELECT $1::text, $2::bytea, $3::text", ep)
+            match eq {
+                ok(rows) {
+                    defer rows.close()
+                    check(probe::last_param_count() == 3, "empty nparams", 41)
+                    check(probe::last_param_isnull(0) == 0, "empty text not null", 42)
+                    check(probe::last_param_isnull(1) == 0, "empty blob not null", 43)
+                    check(probe::last_param_isnull(2) == 1, "null is null", 44)
+                    check(probe::last_param_type(0) == 25, "empty text oid", 45)
+                    check(probe::last_param_type(1) == 17, "empty blob oid", 46)
+                    check(probe::last_param_len(0) == 0, "empty text len", 47)
+                    check(probe::last_param_len(1) == 0, "empty blob len", 48)
+                }
+                err(m, c) { println("FAIL empty exec ", m, " ", c); exit(49) }
+            }
+
+            // SQL and text NUL are rejected before PQexecParams.
+            let sq = postgres::query(&conn, nul_string())
+            expect_err("SQL NUL", sq, 2, "SQL text contains an embedded NUL", 50)
+            let tq = postgres::execute(&conn, "SELECT $1",
+                                       one(postgres::param_text(nul_string())))
+            expect_err("text NUL", tq, 2,
+                       "text parameter contains an embedded NUL", 51)
+
+            // 33 parameters are rejected before the call; the fake exec count
+            // does not change.
+            let before = probe::exec_count()
+            var many = new []postgres::Param(0)
+            for i in 0..33 { append(many, postgres::param_int(i)) }
+            let mq = postgres::execute(&conn, "SELECT $1", many)
+            expect_err("33 params", mq, 2, "too many parameters (maximum 32)", 52)
+            check(probe::exec_count() == before, "33 params no call", 53)
+
+            // Exactly 32 is accepted and reaches the fake.
+            var exact = new []postgres::Param(0)
+            for i in 0..32 { append(exact, postgres::param_int(i)) }
+            let xq = postgres::execute(&conn, "SELECT $1", exact)
+            match xq {
+                ok(rows) {
+                    check(probe::last_param_count() == 32, "32 params", 54)
+                    rows.close()
+                }
+                err(m, c) { println("FAIL 32 params ", m, " ", c); exit(55) }
+            }
+
+            // PQexecParams returning NULL with no libpq error.
+            let aq = postgres::query(&conn, "FAKE_ALLOC")
+            expect_err("FAKE_ALLOC", aq, 2,
+                       "libpq returned no result and no error message", 56)
+
+            // The obo decimal validation is the only one now: empty and NUL are
+            // rejected by the Param constructor, grammar/precision/range by the
+            // encoder.
+            expect_param_err("decimal empty", postgres::param_decimal_text(new []byte(0)),
+                             postgres::DEC_DB_TEXT_INVALID, 57)
+            var dn = new []byte(0)
+            append(dn, '1')
+            append(dn, byte(0))
+            expect_param_err("decimal NUL", postgres::param_decimal_text(dn),
+                             postgres::DEC_DB_TEXT_INVALID, 58)
+            let grammar = new []string(0)
+            append(grammar, ".5")
+            append(grammar, "1.")
+            append(grammar, "1..2")
+            append(grammar, "1e")
+            append(grammar, "1_000")
+            append(grammar, "0x10")
+            append(grammar, "NaN")
+            append(grammar, "Infinity")
+            append(grammar, " 1")
+            append(grammar, "+")
+            append(grammar, "-")
+            append(grammar, ".")
+            for i in 0..len(grammar) {
+                let p = postgres::param_decimal_text(bytes_of(grammar[i]))
+                match p {
+                    ok(pp) {
+                        let qq = postgres::execute(&conn, "SELECT $1", one(pp))
+                        match qq {
+                            ok(rows) {
+                                rows.close()
+                                println("FAIL decimal grammar accepted ", grammar[i])
+                                exit(59)
+                            }
+                            err(m, c) {
+                                check(c == postgres::DEC_DB_TEXT_INVALID,
+                                      "decimal grammar code " + grammar[i], 60)
+                            }
+                        }
+                    }
+                    err(m, c) { println("FAIL decimal grammar param ", m, " ", c); exit(61) }
+                }
+            }
+            let signed = new []string(0)
+            append(signed, "1")
+            append(signed, "+1")
+            append(signed, "-1")
+            append(signed, "0001")
+            append(signed, "-0")
+            for i in 0..len(signed) {
+                let p = postgres::param_decimal_text(bytes_of(signed[i]))
+                match p {
+                    ok(pp) {
+                        let qq = postgres::execute(&conn, "SELECT $1", one(pp))
+                        match qq {
+                            ok(rows) {
+                                check(probe::last_param_type(0) == 1700,
+                                      "signed oid " + signed[i], 62)
+                                check(probe::last_param_format(0) == 0,
+                                      "signed format " + signed[i], 63)
+                                check(probe::last_param_len(0) == len(signed[i]),
+                                      "signed len " + signed[i], 64)
+                                rows.close()
+                            }
+                            err(m, c) {
+                                println("FAIL signed decimal ", signed[i], " ", m, " ", c)
+                                exit(65)
+                            }
+                        }
+                    }
+                    err(m, c) { println("FAIL signed param ", m, " ", c); exit(66) }
+                }
+            }
+
+            // 98,342 bytes with one significant digit is accepted; 98,343 is
+            // over the cap.
+            var big = new []byte(0)
+            for i in 0..98341 { append(big, '0') }
+            append(big, '1')
+            check(len(big) == 98342, "big size", 67)
+            let bp = postgres::param_decimal_text(big)
+            match bp {
+                ok(pp) {
+                    let bq2 = postgres::execute(&conn, "SELECT $1", one(pp))
+                    match bq2 {
+                        ok(rows) {
+                            check(probe::last_param_type(0) == 1700, "big oid", 68)
+                            check(probe::last_param_len(0) == 98342, "big len", 69)
+                            rows.close()
+                        }
+                        err(m, c) { println("FAIL big exec ", m, " ", c); exit(70) }
+                    }
+                }
+                err(m, c) { println("FAIL big param ", m, " ", c); exit(71) }
+            }
+            var over = new []byte(0)
+            for i in 0..98342 { append(over, '0') }
+            append(over, '1')
+            let op = postgres::param_decimal_text(over)
+            match op {
+                ok(pp) {
+                    let oq = postgres::execute(&conn, "SELECT $1", one(pp))
+                    expect_err("98343", oq, 2, "decimal parameter is too large", 72)
+                }
+                err(m, c) { println("FAIL over param ", m, " ", c); exit(73) }
+            }
+        }
+        err(m, c) { println("FAIL open ", m, " ", c); exit(74) }
+    }
+
+    // PGresult outlives PGconn.
+    let made2 = postgres::open("fake-ok")
+    match made2 {
+        ok(conn) {
+            let q = postgres::execute(&conn, "SELECT $1",
+                                      one(postgres::param_text("hello")))
+            match q {
+                ok(rows) {
+                    check(conn.close(), "outlives conn close", 75)
+                    check(!conn.is_open(), "outlives conn closed", 76)
+                    check(rows.is_open(), "outlives rows open", 77)
+                    let v = rows.text(0, 0)
+                    match v {
+                        ok(s) { check(s == "hello", "outlives value", 78) }
+                        err(m, c) { println("FAIL outlives value ", m, " ", c); exit(79) }
+                    }
+                    check(rows.close(), "outlives rows close", 80)
+                    check(!rows.close(), "outlives rows double close", 81)
+                }
+                err(m, c) { println("FAIL outlives query ", m, " ", c); exit(82) }
+            }
+        }
+        err(m, c) { println("FAIL outlives open ", m, " ", c); exit(83) }
+    }
+
+    // A failed connect owns nothing after open returns the error.
+    let failed = postgres::open("fake-fail")
+    match failed {
+        ok(conn) { conn.close(); println("FAIL fake-fail accepted"); exit(84) }
+        err(m, c) {
+            check(c == postgres::CONNECTION_BAD, "failed connect code", 85)
+            check(m == "fake connection failure", "failed connect message", 86)
+        }
+    }
+    check(probe::conn_live() == 0, "failed connect no handle", 87)
+
+    // make_empty_rows validates the status and owns a real PGresult.
+    let bad = postgres::make_empty_rows(12)
+    match bad {
+        ok(rows) { rows.close(); println("FAIL empty status accepted"); exit(88) }
+        err(m, c) { check(c == 2, "empty status code", 89) }
+    }
+    let good = postgres::make_empty_rows(11)
+    match good {
+        ok(rows) {
+            check(rows.status() == 11, "empty status", 90)
+            check(rows.row_count() == 0, "empty rows", 91)
+            check(rows.column_count() == 0, "empty cols", 92)
+            check(rows.close(), "empty close", 93)
+            check(!rows.close(), "empty double close", 94)
+        }
+        err(m, c) { println("FAIL empty rows ", m, " ", c); exit(95) }
+    }
+
+    check(probe::conn_live() == 0, "no live conns", 96)
+    check(probe::result_live() == 0, "no live results", 97)
+    println("postgres_fake_v2=ok")
+}

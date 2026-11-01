@@ -24,9 +24,11 @@ typed native declarations* below), and the stage (d) foreign handles with
 `own`/`own_opt`/`borrow<C>`, explicit `close`/`is_open`, use-after-close exit 7
 and the leak census (see *Foreign handles* below). The libpq package is now on
 these foreign handles (`Connection`/`Res` hold the real `PGconn*`/`PGresult*` in
-a private word; there is no integer token or `cres` registry). The old trusted
-**C resource registry** and `libpq_adapter.c/.h` are retained only because
-`db/postgres` still uses them until stage (g). Connection/Rows close is explicit
+a private word; there is no integer token or `cres` registry). `db/postgres` is
+also ported to these handles: its `Connection`/`Rows` hold a libpq handle and
+its former C adapter, packet builder and `live_*` counters are gone. The trusted
+**C resource registry** (`cres.c/.h`) remains for sys/tls/http2/zlib/buffer, but
+neither database adapter uses it. Connection/Rows close is explicit
 and normally written with obo `defer`; dropping an ordinary record does **not**
 call `PQfinish`/`PQclear`/`free`. There are still no callbacks, C variadics,
 structs by value, source floats/decimals in the native contract, TLS or IFUNC
@@ -158,7 +160,10 @@ match made {
   `is_null` false, `length` -1, `ftype` 0 and `fmod` -1 on a closed/invalid
   result; the `Result`-returning accessors return an explicit error.
 - `exec_params`/`exec_params_binary`/`query` send the obo arrays directly to
-  `PQexecParams`. SQL/text values reject embedded NUL; binary values preserve
+  `PQexecParams`. `exec_params_typed`/`exec_params_typed_binary` take an
+  explicit OID per value; both check that the lengths match and that each OID
+  is in `0..0xffffffff`. `exec_params`/`exec_params_binary` pass all-zero OIDs.
+  SQL/text values reject embedded NUL; binary values preserve
   their length including NUL; `nil` is SQL NULL and an empty array is an empty
   value. There is no SQL interpolation. Limits are enforced in the wrapper:
   more than 32 parameters (`PQ_MAX_PARAMS`), more than 1 MiB of SQL
@@ -182,10 +187,12 @@ match made {
   `OBO_CHECK=1`, with no `PQclear`), even after the `Connection` closes.
 - `examples/libpq_defer_app.obx` no longer imports `buffer.obx`: the buffer
   package has its own adapter and is not part of the libpq spec.
-- **Temporary retention:** `toolkit/libpq_adapter.c` and `.h` (and the `cres`
-  toolkit) are still in the tree because `db/postgres` uses them until stage
-  (g). The libpq binding no longer lists them in its spec or wrapper sources;
-  stage (g) deletes the adapter after porting postgres.
+- **Stage (g) cleanup:** the old libpq token adapter and the postgres C adapter
+  are deleted. `toolkit/cres.c/.h` remain because sys/tls/http2/zlib/buffer
+  still use the registry; no database binding lists them in a spec or wrapper
+  source. `db/postgres` adds typed `exec_params_typed`/
+  `exec_params_typed_binary` entry points to `libpq.obx` and keeps the same
+  libpq native surface (a spec-drift guard checks it).
 
 ## Explicit defer cleanup
 
@@ -804,10 +811,8 @@ when `libpq.so.5` is present; the test skips only when the library is absent.
 It also builds and runs:
 
 - the real `libpq` `PQlibVersion` + `PQmakeEmptyPGresult`/`PQclear` probe;
-- the deterministic fake-libpq C suite (`fake_adapter_test.c`) for the retained
-  adapter: token poisoning, double close, `PQfinish`/`PQclear` counts, NULL vs
-  empty, binary NUL, allocation failure, malformed packets,
-  result-outlives-connection, and injection-as-data;
+- the registry suite (`cres_test.c`) for the retained `cres` toolkit:
+  allocation, bounds, token poisoning, double close and `cres_live_count()`;
 - the v2 libpq wrapper through the fake ABI: foreign release counts via
   `FAKE_REPORT=1`, NULL vs empty, binary NUL, double close `ok(false)`,
   use-after-close exit 7, result-outlives-connection, and a deliberate
@@ -888,11 +893,11 @@ declarations-only SQLite adapter, both explicit-close and tested.
   handles; dropping a `Connection`/`Rows` never calls `PQfinish`/`PQclear` and
   is reported by the `OBO_CHECK=1` census. The binding is not a full database
   driver or a stable public API.
-- The retained `cres` token registry (zlib, buffer, templates, and db/postgres
-  until stage (g)) protects against accidental stale/wrong-kind/forged integer
-  use, not against trusted C or an adversarial caller. Its generation is 31
-  bits. Obo token fields are private to their wrapper modules; that reduces
-  accidental construction, not deliberate forgery.
+- The retained `cres` token registry (sys/tls/http2/zlib/buffer) protects
+  against accidental stale/wrong-kind/forged integer use, not against trusted C
+  or an adversarial caller. Its generation is 31 bits. Neither database
+  adapter uses it any more. Obo token fields are private to their wrapper
+  modules; that reduces accidental construction, not deliberate forgery.
 - Source floats/decimals are not part of the native contract. The libpq
   binding preserves exact numeric text/OID/typmod and never converts a database
   numeric through a float.

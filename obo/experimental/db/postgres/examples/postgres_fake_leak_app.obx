@@ -1,0 +1,59 @@
+module app
+
+import "postgres.obx"
+import "postgres_fake_probe.obx" as probe
+
+// Deliberate leaks for the nested-handle census. "conn" drops a postgres
+// Connection without close; "rows" drops a Rows without close and then closes
+// the Connection. In both cases the outer obo record is freed normally, but the
+// inner libpq foreign handle is not released, so OBO_CHECK=1 reports it at
+// normal end (exit 8) with no PQfinish/PQclear.
+
+fn drop_conn() {
+    let made = postgres::open("fake-ok")
+    match made {
+        ok(conn) {
+            println("conn_open=", conn.is_open())
+        }
+        err(m, c) { println("open error ", m, " ", c); exit(1) }
+    }
+}
+
+fn drop_rows() {
+    let made = postgres::open("fake-ok")
+    match made {
+        ok(conn) {
+            var ps = new []postgres::Param(0)
+            append(ps, postgres::param_text("hello"))
+            let q = postgres::execute(&conn, "SELECT $1", ps)
+            match q {
+                ok(rows) {
+                    println("rows_open=", rows.is_open())
+                }
+                err(m, c) { println("query error ", m, " ", c); exit(2) }
+            }
+            println("conn_closed=", conn.close())
+        }
+        err(m, c) { println("open error ", m, " ", c); exit(3) }
+    }
+}
+
+fn main() {
+    let a = args()
+    if len(a) != 2 {
+        println("usage: app conn|rows")
+        exit(64)
+    }
+    if a[1] == "conn" {
+        drop_conn()
+    } else if a[1] == "rows" {
+        drop_rows()
+    } else {
+        println("usage: app conn|rows")
+        exit(64)
+    }
+    println("finish=", probe::finish_count())
+    println("clear=", probe::clear_count())
+    println("conns=", probe::conn_live())
+    println("results=", probe::result_live())
+}

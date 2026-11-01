@@ -8,13 +8,14 @@ runtime changes and no per-library compiler branch.
 
 The packages deliberately stay small:
 
-- `postgres/` — a PostgreSQL adapter over libpq. It reuses the reviewed
-  `toolkit/libpq_adapter.c` connection/result functions and adds only the typed
-  `PQexecParams` packet for `execute`.
-- `sqlite/` — a parallel adapter over `libsqlite3.so.0`, with the same
-  `cres` registry, length-delimited byte buffers, explicit close and live
-  counters. The host has no SQLite development header, so the C ABI is a
-  read-only-verified **declarations-only** subset; see below.
+- `postgres/` — a PostgreSQL adapter on the cinterop v2 libpq wrapper. It holds
+  `libpq::Connection`/`libpq::Res` foreign handles in ordinary wrapper records,
+  passes typed OIDs to `PQexecParams`, and has no local C adapter or packet
+  builder. It is header-checked against the project's `libpq_decls.h`.
+- `sqlite/` — a parallel adapter over `libsqlite3.so.0` on v2 foreign handles,
+  with explicit close and the foreign-handle census. The host has no SQLite
+  development header, so the C ABI is a read-only-verified
+  **declarations-only** subset; see below.
 
 Both packages accept scalars and return exact bytes/text, with explicit NULL
 flags rather than length inference. PostgreSQL columns expose type OID and
@@ -79,14 +80,14 @@ text are preserved; they are not rewritten. The explicit helpers are
 
 `SqlArg` byte payloads are borrowed from the `Sql`; the PostgreSQL and SQLite
 bridges deep-copy `Bytes`, and `DecimalText` keeps its exact bytes without
-reformatting (the packet path parses it only to validate grammar/precision).
-`postgres::param_decimal_text(b)` copies bytes and
-keeps `PARAM_DECIMAL`; the existing packet validation still rejects empty, NUL,
-malformed or over-precision decimal text. The bridge does not silently truncate,
-round or interpolate any value.
+reformatting (the PostgreSQL encoder parses it only to validate
+grammar/precision). `postgres::param_decimal_text(b)` copies bytes and
+keeps `PARAM_DECIMAL`; the obo encoder rejects empty, NUL, malformed or
+over-precision decimal text. The bridge does not silently truncate, round or
+interpolate any value.
 
 `Float` has no adapter parameter kind in this pass. Both bridges return
-`SQL_ARG_FLOAT_UNSUPPORTED` (`1014`) before a packet or binding is sent;
+`SQL_ARG_FLOAT_UNSUPPORTED` (`1014`) before a value is encoded or bound;
 `decimal` text is the exact transport, and binary64 remains available in the
 language but is not routed through these adapters. PostgreSQL OID 701 and a
 SQLite `sqlite3_bind_double` path would be separate reviewed additions.
@@ -109,14 +110,15 @@ Known type/placeholder gaps for the renderer-only dialects:
 
 ## Ownership and cleanup
 
-In the PostgreSQL package (until stage (g)), `Connection`, `Rows` and `Stmt` are
-ordinary obo records holding an integer registry token. In SQLite v2,
-`Connection` and `Stmt` are foreign handles: an ordinary record with one private
-C word, no token and no generation. No raw `PGconn*`, `PGresult*`, `sqlite3*`,
-`sqlite3_stmt*` or `char*` reaches obo in either package.
+Both packages now use v2 foreign handles. `postgres::Connection` and
+`postgres::Rows` are ordinary wrapper records holding a `libpq::Connection` and
+a `libpq::Res`; `sqlite::Connection` and `sqlite::Stmt` are foreign handles
+with one private C word. No raw `PGconn*`, `PGresult*`, `sqlite3*`,
+`sqlite3_stmt*` or `char*` reaches obo.
 
-Dropping a record **does not** free the foreign object. Cleanup is explicit,
-normally with `defer`:
+Dropping a wrapper record **does not** free the foreign object. The outer obo
+record is freed normally, but the inner handle is not released; cleanup is
+explicit, normally with `defer`:
 
 ```obo
 defer conn.close()
@@ -124,17 +126,16 @@ defer rows.close()
 defer stmt.close()
 ```
 
-- PostgreSQL `close` borrows the wrapper, poisons the token, and returns
-  `true` once. SQLite `close` is `Result[bool]`: it zeroes the handle word
-  before the release and returns `ok(true)`, or `ok(false)` on a second close.
 - A second close is a safe `false`/`ok(false)`, not a second `PQfinish`/
   `PQclear`/`sqlite3_close_v2`/`sqlite3_finalize`.
-- A stale token (PostgreSQL) or a zero handle word (SQLite, exit 7) is
-  rejected before C uses a pointer.
+- A zero handle word (SQLite, and a closed libpq handle when a raw native is
+  borrowed directly) is exit 7; the postgres wrapper pre-checks `is_open` so a
+  stale `Connection`/`Rows` accessor keeps its sentinel or `Result` error
+  instead of reaching C.
 - Obo `exit(...)` runs no defers; return from the block when cleanup must run.
-- The PostgreSQL adapter still has `live_*` counters until stage (g). SQLite v2
-  has none: under `OBO_CHECK=1` the foreign handle census reports an omitted
-  `close` at normal end (exit 8).
+- There are no `live_*` counters. Under `OBO_CHECK=1` the foreign-handle census
+  reports an omitted `close` at normal end (exit 8), including a postgres
+  wrapper dropped without closing its inner libpq handle.
 - There is no automatic foreign finalizer. Adding one needs a separate,
   reviewed language/runtime design.
 
@@ -175,25 +176,31 @@ fn main() {
 }
 ```
 
-- `open(conninfo)` calls `PQconnectdb`; the reviewed toolkit's bounded
+- `open(conninfo)` calls the libpq v2 `connect` wrapper; the bounded
   `connect_timeout` check is reused. A syntactically invalid conninfo returns
-  `err("invalid connection string: <libpq parser message>", 2)` before any
-  connection attempt. A syntactically valid conninfo that libpq cannot connect
-  (bad socket path, invalid `connect_timeout` value, refused authentication)
-  returns `err(<libpq message>, 1)` / `CONNECTION_BAD`, not the input-error code
-  and not "could not be allocated". A failed connection copies the error text
-  before `PQfinish`.
+  `err(<libpq parser message>, 2)` before any connection attempt (the old
+  `"invalid connection string: "` prefix is gone). A syntactically valid
+  conninfo that libpq cannot connect (bad socket path, invalid
+  `connect_timeout` value, refused authentication) returns `err(<libpq message>,
+  1)` / `CONNECTION_BAD`, not the input-error code. A `PQconnectdb` NULL is
+  input/plumbing code 2; it was 3 when the old adapter classified it as an
+  allocation failure. A failed connection copies the error text before
+  `PQfinish`.
 - `execute(sql, params)` and `query(sql)` use `PQexecParams` with the fixed
   eight-argument descriptor and explicit parameter OIDs: text 25, bytea 17,
-  int8 20, bool 16, and 0 for an untyped NULL. `execute_binary` asks for binary
-  result columns.
+  int8 20, bool 16, numeric 1700, and 0 for an untyped NULL. `execute_binary`
+  asks for binary result columns. The `libpq` wrapper has
+  `exec_params_typed`/`exec_params_typed_binary` for this; the postgres encoder
+  builds the value, format and OID arrays and validates each OID.
 - SQL and text parameters reject embedded NUL. Bytea parameters preserve their
   exact length, including an empty bytea (non-NULL, zero length). SQL is never
   interpolated; `$1..$n` are placeholders.
 - A SQL execution failure is still a successful adapter call: `execute()`
   returns `ok(Rows)` with `rows.status() == PGRES_FATAL_ERROR` and the copied
-  `error_message()`. This matches the reviewed libpq toolkit; only packet,
-  transport, allocation and input errors are `err(...)`.
+  `error_message()`. This matches the libpq wrapper; only transport,
+  allocation and input errors are `err(...)`. A `PQexecParams` NULL with no
+  libpq message is `err("libpq returned no result and no error message", 2)`;
+  use on a closed `Connection` is `err("connection is closed or invalid", 2)`.
 - `value(row,col)` is `Result[?[]byte]` because obo optional values must be
   reference types; `text(row,col)` is the string convenience and rejects NULL
   and embedded NUL. `bytes(row,col)` returns exact value bytes, with NULL as an
@@ -204,9 +211,12 @@ fn main() {
   that lifetime. Rows/columns are bounds checked; typmod `-1` is a valid value,
   so column index checks happen before reading it.
 - The package links `-l:libpq.so.5` and therefore inherits libpq's system
-  dependencies (OpenSSL, GSSAPI, etc. as installed). The header is absent on the
-  probe host, so the cbind is explicitly `declarations-only`; hashes are
-  provenance checks, not header proof.
+  dependencies (OpenSSL, GSSAPI, etc. as installed). The vendor header is absent
+  on the probe host, so the cbind is header-checked against the project's
+  `toolkit/libpq_decls.h` (and `libpq_conninfo.h`), not against PostgreSQL's
+  installed header. The fake cbind also checks `tests/fake_libpq_probe.h`. A
+  drift guard in `test_db_adapters.py` keeps the postgres spec's `PGconn`/
+  `PGresult` types and libpq native surface identical to `libpq.cbind`.
 
 ### PostgreSQL decimal boundary
 
@@ -238,19 +248,27 @@ let d = rows.decimal(row, col)            // Result[decimal]
   and rejects out-of-range metadata rather than returning an unconstrained
   record. The text keeps its own dscale; a negative column scale is metadata
   only.
-- The C packet reader re-validates the strict public grammar and caps decimal
-  text at 98,342 bytes. Empty text, `.5`, `1.`, `1..2`, `1e`, underscores,
-  `0x`, whitespace, `NaN`/`Infinity`, NUL and non-ASCII are rejected. There is
-  no float path and no interpolation.
+- The obo encoder is the single validator: it parses the strict public grammar,
+  caps decimal text at 98,342 bytes and maps `decimal::parse` failures to
+  `1006`/`1007`/`1008`/`1009` or plumbing 2. Empty text, `.5`, `1.`, `1..2`,
+  `1e`, underscores, `0x`, whitespace, `NaN`/`Infinity`, NUL and non-ASCII are
+  rejected before any value reaches libpq. The old C duplicate validation was
+  deleted with the postgres C adapter. There is no float path and no
+  interpolation.
 
 Runnable apps: `postgres/examples/postgres_probe_app.obx` (real libpq link and
 `PQmakeEmptyPGresult` ownership without a connection), `postgres_live_app.obx`
 (opt-in SELECT-only smoke test), `postgres_outlives_app.obx`,
 `postgres_sql_live_app.obx` (opt-in `execute_sql` vectors),
-`postgres_fake_app.obx` with `postgres_fake.cbind` (obo-level typed packet
-encoder over the deterministic fake libpq), and `postgres_sql_app.obx` with
-`postgres_fake_sql.cbind` plus the test-only `postgres_fake_probe.obx`
-(rendered text, ordered OIDs and exact values of an `execute_sql` packet).
+`postgres_decimal_live_app.obx` (opt-in decimal vectors),
+`postgres_fake_app.obx` with `postgres_fake.cbind` (obo-level typed encoder over
+the deterministic fake libpq), `postgres_fake_v2_app.obx` (OIDs/formats/bytes/
+NULL/result format and the ported adapter cases), `postgres_sql_app.obx`
+(rendered text, ordered OIDs and exact values), `postgres_fake_leak_app.obx`
+(the nested-handle census), and `postgres_fake_empty_null_app.obx`
+(`PQmakeEmptyPGresult` NULL exit 11). The fake apps that read the last
+`PQexecParams` call import the test-only `postgres_fake_probe.obx`; the probe
+functions are declared in `cinterop/tests/fake_libpq_probe.h`.
 
 ## SQLite
 
@@ -300,8 +318,8 @@ fn main() {
 - `column_value` is `Result[?[]byte]` (nil is SQL NULL); `column_text` is the
   string convenience; `column_bytes` preserves TEXT/BLOB bytes; `column_type`
   returns the SQLite datatype. A non-NULL value whose copy exceeds the 16 MiB
-  registry/buffer bound (or fails allocation/registry registration) is an
-  error, never an empty success; zero-length values remain valid. `column_int`
+  copy-out bound (or fails allocation) is an error, never an empty success;
+  zero-length values remain valid. `column_int`
   is an exact i64 only for an INTEGER column; TEXT is converted by SQLite.
   REAL is rejected by `column_value`, `column_text` and `column_int` because it
   is not exact decimal/integer data. SQLite's documented integer-to-text
@@ -333,8 +351,10 @@ Linking is `-l:libsqlite3.so.0`. The declaration file is listed under
 `declaration_files` and hashed into the manifest as provenance, without being
 promoted to a compiled header check; `tests/real_sqlite_abi_test.c` resolves
 every SQLite symbol from the real library with independent prototypes. The
-trusted helpers are `sq_stmt_errcode.c` and `sq_prepare_at.c`. The PostgreSQL cbind does the same for `libpq_decls.h`,
-`postgres_adapter.h` and `cres.h`.
+trusted helpers are `sq_stmt_errcode.c` and `sq_prepare_at.c`. The PostgreSQL
+cbind is different: it is header-checked against the project's
+`toolkit/libpq_decls.h` and `toolkit/libpq_conninfo.h`, with the fake headers
+added for the deterministic build.
 
 A private evidence-only cross-check compiled the real 3.45.1 header first and
 these declarations together with static assertions for every used constant,
@@ -367,7 +387,7 @@ let d = st.decimal(col)                       // Result[decimal]
   and is rejected.
 - `bind_text` still rejects embedded NUL before SQLite. A TEXT cell written by
   SQL can contain NUL and reads as `1006`; a BLOB is `1002` first. A copy failure
-  above the 16 MiB registry bound is the size/plumbing code `2`, never empty
+  above the 16 MiB copy-out bound is the size/plumbing code `2`, never empty
   text. Read-side text is not capped at 98,342 bytes: a 100,001-byte
   leading-zero cell parses as `1`.
 - SQLite TEXT has no numeric ordering; sort after parsing in obo.
@@ -384,13 +404,18 @@ python3 obo/experimental/db/tests/test_db_adapters.py
 
 The suite covers:
 
-- deterministic fake-libpq C tests: typed packet/OIDs, empty text/bytea, NULL,
-  binary NUL, decimal kind 5/6 and its strict grammar/invalid/oversize vectors,
-  33-parameter rejection, malformed packets, SQL/text NUL, bounds, allocation
-  failure, invalid conninfo diagnostic, double close, result-outlives-connection
-  and live counters;
-- an obo-level fake-libpq packet encoder test: typed text/int/blob/NULL params,
-  binary NUL, exact numeric text and OID/typmod, no real libpq dependency;
+- deterministic fake-libpq obo tests: typed OIDs 25/20/16/17/0/1700, text vs
+  binary formats, exact bytes/NULL, empty text/bytea, binary result format,
+  result-outlives-connection, the 32-parameter bound, SQL/text NUL, SQL
+  allocation failure, `PQmakeEmptyPGresult` NULL exit 11, and the obo decimal
+  grammar/precision/98,342-byte vectors;
+- the nested-handle census: a dropped postgres `Connection` reports
+  `Connection 1` and a dropped `Rows` reports `Res 1`, with no `PQfinish`/
+  `PQclear`; `OBO_CHECK=1` exits 8 in both cases;
+- a spec-drift guard that compares the postgres spec's `PGconn`/`PGresult`
+  types and libpq native surface with `libpq.cbind`;
+- an obo-level fake-libpq encoder test: typed text/int/blob/NULL params, binary
+  NUL, exact numeric text and OID/typmod, no real libpq dependency;
 - the `Sql` renderer across PostgreSQL, SQLite, both SQL Server forms and
   Oracle, including parameter order, preserved literal `$`/`?`, empty chunks,
   malformed fragments and unknown dialects;
@@ -404,7 +429,7 @@ The suite covers:
   input-error reporting;
 - real SQLite in-memory create/insert/select/param roundtrip/NULL/blob-NUL/
   constraint error/reset-after-error/cross-statement error isolation/bounds/
-  close-order/double-close/stale-token/live counters; >16 MiB BLOB/TEXT copy
+  close-order/double-close/closed-handle handling; >16 MiB BLOB/TEXT copy
   failures are errors (zero-length values remain valid), REAL is rejected, and
   a same-block defer-order regression checks statement-before-connection close;
 - real SQLite tempfile under `/tmp`, compared with Python's `sqlite3` module as
@@ -418,9 +443,13 @@ The suite covers:
   large read-side text, copy-failure code `2`, and checked binder errors;
 - the public decimal text oracle's typmod decode/validation and PostgreSQL
   display-scale boundary vectors; a no-float source scan and `nm -u` check;
-- manifest checks that the declarations-only header is hashed as a provenance
-  input (without claiming a compiled header check);
-- ASAN/UBSAN builds of both C adapter suites.
+- manifest checks that the postgres header inputs (`libpq_decls.h`,
+  `libpq_conninfo.h`, and the fake probe header) are hashed and that the
+  signature check is `header`; the SQLite declaration file stays a
+  declarations-only provenance input;
+- the SQLite ASan UAF fixture (old shape fails, new shape passes) and the real
+  SQLite ABI test. Stage (g) deleted the postgres C adapter suite, so there is
+  no postgres C sanitizer half.
 
 The PostgreSQL live section is opt-in and SELECT-only, including the
 `execute_sql` bridge vectors:
@@ -454,20 +483,21 @@ is not a skip because the committed adapter is declarations-only.
   binding (`SQL_ARG_FLOAT_UNSUPPORTED`, 1014). SQLite REAL columns are exposed
   through SQLite's text conversion only; do not use this adapter for a
   floating-point protocol.
-- Obo token fields are private to their wrapper modules (0.13+). The token
-  protects against accidental stale/wrong-kind/forged integer use, not against
-  trusted C or an adversarial caller. The generation is finite (31 bits).
-- PostgreSQL's cbind is declarations-only on this host; libpq dynamic
-  dependencies can still resolve differently at run time.
+- A postgres wrapper's handle is private to its module; `Connection`/`Rows`
+  protect against accidental construction, not against trusted C or an
+  adversarial caller.
+- PostgreSQL's cbind is header-checked against the project's manual
+  `libpq_decls.h` on this host; libpq dynamic dependencies can still resolve
+  differently at run time.
 - SQLite's declarations-only ABI is verified against the 3.45.1 header in
   private evidence, not by a committed header check. A future SQLite ABI change
   needs a new review.
-- The resource registry has 64 slots total and bounds buffers to 16 MiB.
-- The C registry kinds (`CONN`, `RESULT`, `STMT`) are shared by the two
-  packages. A compiler build links one cbind/package, so a token from the other
-  adapter is not reachable in a normal application; do not link both native
-  packages into one custom image. A cross-adapter token would still be
-  same-kind and is not rejected by kind alone.
+- The resource registry (`toolkit/cres.*`) is still used by sys/tls/http2/zlib/
+  buffer, but not by either database adapter. It has 64 slots total and bounds
+  buffers to 16 MiB.
+- The C registry kinds (`CONN`, `RESULT`, `STMT`) are retained only for the
+  toolkit packages that still use `cres`; neither database adapter registers a
+  token any more.
 - SQLite `prepare()` rejects trailing text/comments after the first statement
   rather than implementing a SQL lexer.
 - No automatic foreign finalizer; a dropped record leaks until explicit close.

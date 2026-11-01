@@ -145,9 +145,16 @@ pub fn connect(dsn: []byte): Result[Connection] {
 
 // -------------------------------------------------------------- query / rows
 
-fn exec_params_fmt(c: &Connection, sql: []byte, values: []?[]byte,
-                   binary: []bool, result_binary: bool): Result[Rows] {
+// The one typed entry point. oids[i] is the PostgreSQL type OID for values[i];
+// 0 lets libpq infer the type from the statement. A text-format value needs a
+// NUL one byte past its data because libpq reads text paramValues[] with
+// strlen and ignores paramLengths; a binary value keeps its exact length and
+// may contain NUL.
+fn exec_params_full(c: &Connection, sql: []byte, values: []?[]byte,
+                    binary: []bool, oids: []int,
+                    result_binary: bool): Result[Rows] {
     if len(binary) != len(values) { return err("values and binary flags differ in length", 2) }
+    if len(oids) != len(values) { return err("values and OIDs differ in length", 2) }
     if len(values) > PQ_MAX_PARAMS {
         return err("too many query parameters: the limit is 32 (PQ_MAX_PARAMS)", 2)
     }
@@ -155,15 +162,15 @@ fn exec_params_fmt(c: &Connection, sql: []byte, values: []?[]byte,
         return err("SQL text is larger than the 1 MiB limit (PQ_MAX_SQL)", 2)
     }
     if has_nul(&sql) { return err("SQL text contains an embedded NUL", 2) }
-    var oids = new []int(0)
+    var types = new []int(0)
     var formats = new []int(0)
-    // libpq treats a text paramValues[] entry as a C string and ignores
-    // paramLengths, so every text value needs a NUL one byte past its data.
-    // Build len+1, then truncate to len: the array keeps the terminator in its
-    // capacity while its length (and the thunk's paramLengths) stays exact.
     var wire = new []?[]byte(0)
     for i in 0..len(values) {
-        append(oids, 0)                     // untyped parameter; libpq infers
+        let oid = oids[i]
+        if oid < 0 || oid > 0xffffffff {
+            return err("parameter OID is out of range", 2)
+        }
+        append(types, oid)
         var fmt = 0
         if binary[i] { fmt = 1 }
         append(formats, fmt)
@@ -191,7 +198,7 @@ fn exec_params_fmt(c: &Connection, sql: []byte, values: []?[]byte,
     }
     var rf = 0
     if result_binary { rf = 1 }
-    let r = exec_params_raw(c, &sql, &wire, &oids, &formats, rf)
+    let r = exec_params_raw(c, &sql, &wire, &types, &formats, rf)
     if r == nil {
         let mb = conn_error(c)
         let msg = string(mb)
@@ -202,14 +209,35 @@ fn exec_params_fmt(c: &Connection, sql: []byte, values: []?[]byte,
     return ok(new Rows{h: res, fmt: rf})
 }
 
+fn untyped_oids(n: int): []int {
+    var oids = new []int(0)
+    for i in 0..n { append(oids, 0) }
+    return oids
+}
+
 pub fn exec_params(c: &Connection, sql: []byte,
                    values: []?[]byte, binary: []bool): Result[Rows] {
-    return exec_params_fmt(c, sql, values, binary, false)
+    let oids = untyped_oids(len(values))
+    return exec_params_full(c, sql, values, binary, oids, false)
 }
 
 pub fn exec_params_binary(c: &Connection, sql: []byte,
                           values: []?[]byte, binary: []bool): Result[Rows] {
-    return exec_params_fmt(c, sql, values, binary, true)
+    let oids = untyped_oids(len(values))
+    return exec_params_full(c, sql, values, binary, oids, true)
+}
+
+// Typed parameters: oids[i] is the OID for values[i] (0 = unspecified).
+pub fn exec_params_typed(c: &Connection, sql: []byte,
+                         values: []?[]byte, binary: []bool,
+                         oids: []int): Result[Rows] {
+    return exec_params_full(c, sql, values, binary, oids, false)
+}
+
+pub fn exec_params_typed_binary(c: &Connection, sql: []byte,
+                                values: []?[]byte, binary: []bool,
+                                oids: []int): Result[Rows] {
+    return exec_params_full(c, sql, values, binary, oids, true)
 }
 
 pub fn query(c: &Connection, sql: []byte): Result[Rows] {

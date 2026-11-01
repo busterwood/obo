@@ -43,6 +43,4 @@ fn main() {
         }
         err(m, n) { println("null_open_error=", n, " ", m) }
     }
-    println("live=", postgres::live_resources())
-    println("conns=", postgres::live_connections())
 }

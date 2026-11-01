@@ -904,6 +904,8 @@ def libpq_fake(tmp):
                  'fmt=0', 'bin_fmt=1', 'null_value=1 SQL NULL',
                  'overcap_error=2 value is larger than the 16 MiB limit',
                  'num_name=num', 'error_len=17',
+                 'typed_status=2', 'typed_len=2 values and OIDs differ in length',
+                 'typed_oid=2 parameter OID is out of range', 'typed_max_fmt=1',
                  'closed_null=false', 'closed_len=-1', 'closed_ftype=0',
                  'closed_fmod=-1', 'closed_fname=2 rows are closed',
                  'bounds_null=false', 'bounds_len=-1',
@@ -917,7 +919,7 @@ def libpq_fake(tmp):
                  'connect_failed_msg=fake connection failure'):
         if line not in p.stdout:
             raise Fail("fake libpq output missing %r:\n%s" % (line, p.stdout))
-    for line in ('conns=0', 'results=0', 'finish=2', 'clear=6', 'exec=5', 'empty=1',
+    for line in ('conns=0', 'results=0', 'finish=2', 'clear=8', 'exec=7', 'empty=1',
                  'misaligned=0', 'binary_fmt=1', 'text_overrun=0', 'oob=0',
                  'conninfo=fake-fail connect_timeout=5'):
         if line not in p.stderr:
@@ -1140,15 +1142,13 @@ def sanitizer_adapters(tmp):
               '-fno-sanitize-recover=all', '-fno-omit-frame-pointer',
               '-I', os.path.join(TOOL, 'toolkit'),
               '-I', os.path.join(TOOL, 'examples')]
-    fake = os.path.join(tmp, 'fake_adapter_asan')
+    fake = os.path.join(tmp, 'cres_asan')
     need(run([cc, *common, '-o', fake,
-              os.path.join(HERE, 'fake_adapter_test.c'),
-              os.path.join(TOOL, 'toolkit', 'cres.c'),
-              os.path.join(TOOL, 'toolkit', 'libpq_adapter.c'),
-              os.path.join(HERE, 'fake_libpq.c')]), 'fake adapter ASAN/UBSAN build')
-    p = need(run([fake]), 'fake adapter ASAN/UBSAN run')
-    if 'fake adapter tests ok' not in p.stdout:
-        raise Fail("fake adapter ASAN/UBSAN failed:\n%s" % p.stdout)
+              os.path.join(HERE, 'cres_test.c'),
+              os.path.join(TOOL, 'toolkit', 'cres.c')]), 'cres ASAN/UBSAN build')
+    p = need(run([fake]), 'cres ASAN/UBSAN run')
+    if 'cres tests ok' not in p.stdout:
+        raise Fail("cres ASAN/UBSAN failed:\n%s" % p.stdout)
     g = os.path.join(tmp, 'guard_stack_asan')
     need(run([cc, *common, '-o', g,
               os.path.join(HERE, 'guard_stack_test.c'),

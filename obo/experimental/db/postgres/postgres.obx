@@ -1,18 +1,11 @@
-// Experimental PostgreSQL package for obo.
+// Experimental PostgreSQL package for obo, on the cinterop v2 libpq wrapper.
 //
-// This is an explicit-close adapter over the reviewed cinterop libpq toolkit.
-// It is not a stable driver. Connection and Rows hold only an integer registry
-// token; obo never sees a PGconn*, PGresult* or char*. The trusted C adapter
-// validates the token's kind and generation on every call and poisons it on
-// close. The wrapper record's token field is private to this module, so an
-// importer cannot accidentally construct one; a copied or stale integer is
-// still rejected by the C registry before dereference, which remains the
-// boundary (private fields are not a capability system).
-//
-// Dropping a Connection or Rows never calls PQfinish or PQclear. Use
-// `defer conn.close()` and `defer rows.close()`. A PGresult stays usable after
-// its PGconn closes in this adapter; close the connection first if that
-// lifetime is needed.
+// This is an explicit-close adapter. Connection holds a libpq::Connection
+// foreign handle and Rows holds a libpq::Res; obo never sees a raw PGconn*,
+// PGresult* or char*. Both outer records are ordinary obo records, so
+// dropping one frees the outer record but does not release the inner libpq
+// handle: use `defer conn.close()` and `defer rows.close()`. A dropped handle
+// is reported by the OBO_CHECK=1 foreign census.
 //
 // Values cross as exact bytes. Numeric columns are never converted through a
 // float. Rows exposes the PostgreSQL type OID and typmod and the exact text.
@@ -23,6 +16,7 @@
 module postgres
 
 import "sqldialect.obx" as sqldialect
+import "libpq.obx" as libpq
 
 pub const CONNECTION_OK = 0
 pub const CONNECTION_BAD = 1
@@ -37,10 +31,31 @@ pub const OID_INT8 = 20
 pub const OID_TEXT = 25
 pub const OID_NUMERIC = 1700
 
-pub type Connection = ref record { tok: int }
-// fmt is 0 for execute() text rows and 1 for execute_binary() rows. The token
-// stays private; external code may read the format but cannot construct Rows.
-pub type Rows = ref record { tok: int; pub fmt: int }
+pub type Connection = ref record { h: libpq::Connection }
+// fmt is 0 for execute() text rows and 1 for execute_binary() rows. h owns the
+// one libpq Res; it is private and never moves out of the record.
+pub type Rows = ref record { h: libpq::Res; pub fmt: int }
+
+// The wrapper records hold their libpq handle in a field. The deep-reference
+// rule lets a field reach a native borrow, but not another obo function, so
+// these are declared here as well as in libpq.obx. They use the same spec
+// symbols; libpq.obx supplies the type names and the connection helpers.
+native fn conn_status(c: &libpq::Connection): int
+native fn conn_error(c: &libpq::Connection): []byte
+native fn exec_params_raw(c: &libpq::Connection, sql: &[]byte,
+                          values: &[]?[]byte, oids: &[]int,
+                          formats: &[]int, result_format: int): ?libpq::Res
+native fn res_status(r: &libpq::Res): int
+native fn res_ntuples(r: &libpq::Res): int
+native fn res_nfields(r: &libpq::Res): int
+native fn res_is_null(r: &libpq::Res, row: int, col: int): int
+native fn res_length(r: &libpq::Res, row: int, col: int): int
+native fn res_value(r: &libpq::Res, row: int, col: int): ?[]byte
+native fn res_fname(r: &libpq::Res, col: int): []byte
+native fn res_ftype(r: &libpq::Res, col: int): int
+native fn res_fmod(r: &libpq::Res, col: int): int
+native fn res_error(r: &libpq::Res): []byte
+native fn make_empty_result(status: int): libpq::Res
 
 // A typed bind parameter. kind is PARAM_*; i carries int/bool and data carries
 // text/blob bytes. Null is an explicit kind, never an empty byte string.
@@ -94,7 +109,8 @@ fn encode_string(s: string): []byte {
 }
 
 // Copy a borrowed byte array. SqlArg payloads are borrowed from the Sql
-// fragment, so a bridge must not move them into a Param.
+// fragment, and obo forbids moving out of a field, so a bridge or encoder must
+// copy the payload into a local array before appending it.
 fn copy_bytes(b: &[]byte): []byte {
     var out = new []byte(0)
     for i in 0..len(b) { append(out, b[i]) }
@@ -108,43 +124,14 @@ fn has_nul(b: &[]byte): bool {
     return false
 }
 
-// Copy obo bytes into a C-owned, length-bounded buffer one byte at a time.
-// The raw pointer stays in C; this is the same bounded proof used by toolkit.
-fn put_bytes(b: &[]byte): int {
-    let n = len(b)
-    if n < 0 || n > 16777216 { return 0 }
-    let t = __cinterop("cres_buf_new", n)
-    if t <= 0 { return 0 }
-    for i in 0..n {
-        let ok = __cinterop("cres_buf_set", t, i, int(b[i]))
-        if ok != 1 {
-            __cinterop("cres_buf_free", t)
-            return 0
-        }
-    }
-    return t
-}
-
-fn take_buf(t: int): []byte {
-    var out = new []byte(0)
-    if t <= 0 { return out }
-    let n = __cinterop("cres_buf_len", t)
-    if n < 0 {
-        __cinterop("cres_buf_free", t)
-        return out
-    }
-    for i in 0..n {
-        let v = __cinterop("cres_buf_get", t, i)
-        if v < 0 { break }
-        append(out, byte(v))
-    }
-    __cinterop("cres_buf_free", t)
+// libpq reads a text-format paramValues[] entry as a C string and ignores
+// paramLengths, so the copy needs a NUL one byte past its data. Build len+1 and
+// truncate to len: the capacity keeps the terminator, the length stays exact.
+fn wire_text(b: &[]byte): []byte {
+    var out = new []byte(len(b) + 1)
+    for i in 0..len(b) { out[i] = b[i] }
+    truncate(out, len(b))
     return out
-}
-
-fn error_text(b: []byte): string {
-    if has_nul(&b) { return "error text contains an embedded NUL" }
-    return string(b)
 }
 
 // ------------------------------------------------------- decimal text helpers
@@ -276,9 +263,9 @@ pub fn param_bytes(b: []byte): Param {
 }
 
 // A decimal parameter from exact text bytes. The bytes are copied, never
-// reformatted; PARAM_DECIMAL keeps OID 1700 and the existing append_param
-// grammar/size validation. Empty text and embedded NUL are rejected here as
-// well, so a malformed SqlArg.DecimalText fails before a packet is built.
+// reformatted; PARAM_DECIMAL keeps OID 1700 and the encoder's grammar/size
+// validation. Empty text and embedded NUL are rejected here as well, so a
+// malformed SqlArg.DecimalText fails before any value is encoded.
 fn param_decimal_copy(b: &[]byte): Result[Param] {
     if len(b) == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
     if has_nul(b) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
@@ -289,117 +276,100 @@ pub fn param_decimal_text(b: []byte): Result[Param] {
     return param_decimal_copy(&b)
 }
 
-fn append_u32(mut out: &[]byte, v: int) {
-    var x = v
-    for i in 0..4 {
-        append(out, byte(x % 256))
-        x = x / 256
-    }
-}
-
-fn append_param(mut out: &[]byte, p: &Param): Result[bool] {
-    if p.kind == PARAM_DECIMAL_NULL {
-        if len(p.data) != 0 { return err("invalid decimal NULL parameter", 2) }
-        append(out, byte(PARAM_DECIMAL_NULL))
-        append_u32(out, 0)
-        return ok(true)
-    }
-    if p.kind == PARAM_DECIMAL {
-        let n = len(p.data)
-        if n == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
-        if n > 98342 { return err("decimal parameter is too large", 2) }
-        if has_nul(&p.data) {
-            return err("invalid decimal text", DEC_DB_TEXT_INVALID)
-        }
-        let d = decimal::parse(string(p.data))
-        match d {
-            ok(v) {
-                append(out, byte(PARAM_DECIMAL))
-                append_u32(out, n)
-                for i in 0..n { append(out, p.data[i]) }
-                return ok(true)
+// Map each typed Param to the libpq parameter arrays: value bytes, binary
+// flags and explicit PostgreSQL OIDs. The kinds and wire types are the old
+// adapter's: NULL 0/text, TEXT 25/text, BLOB 17/binary, INT 20/text,
+// BOOL 16/text "t"/"f", DECIMAL and DECIMAL_NULL 1700/text.
+//
+// Each payload is copied because obo forbids moving out of a field. The
+// out-parameters are mutable arrays, not a returned record, for the same
+// reason. Text is checked for NUL here; the libpq wrapper adds the len+1
+// terminator that libpq's text paramValues[] requires.
+fn encode_params(params: &[]Param, mut values: &[]?[]byte,
+                 mut binary: &[]bool, mut oids: &[]int): Result[bool] {
+    for i in 0..len(params) {
+        let p = &params[i]
+        if p.kind == PARAM_NULL {
+            append(values, nil)
+            append(binary, false)
+            append(oids, 0)
+        } else if p.kind == PARAM_TEXT {
+            if has_nul(&p.data) {
+                return err("text parameter contains an embedded NUL", 2)
             }
-            err(m, c) {
-                if c == 10 { return err("decimal text could not be allocated", 3) }
-                if c == 4 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
-                if c == 7 {
-                    return err("decimal text has more than 38 significant digits",
-                               DEC_DB_PRECISION)
-                }
-                if c == 8 {
-                    return err("decimal exponent is outside int16", DEC_DB_EXPONENT)
-                }
-                if c == 9 {
-                    return err("decimal display scale is outside uint16",
-                               DEC_DB_DISPLAY_RANGE)
-                }
-                return err("invalid decimal value", 2)
+            if len(p.data) > 16777216 {
+                return err("text parameter is too large", 2)
             }
-        }
-    }
-    if p.kind == PARAM_NULL {
-        append(out, byte(PARAM_NULL))
-        append_u32(out, 0)
-        return ok(true)
-    }
-    if p.kind == PARAM_TEXT {
-        if has_nul(&p.data) {
-            return err("text parameter contains an embedded NUL", 2)
-        }
-        append(out, byte(PARAM_TEXT))
-        append_u32(out, len(p.data))
-        for i in 0..len(p.data) { append(out, p.data[i]) }
-        return ok(true)
-    }
-    if p.kind == PARAM_BLOB {
-        if len(p.data) > 16777216 {
-            return err("blob parameter is too large", 2)
-        }
-        append(out, byte(PARAM_BLOB))
-        append_u32(out, len(p.data))
-        for i in 0..len(p.data) { append(out, p.data[i]) }
-        return ok(true)
-    }
-    if p.kind == PARAM_INT {
-        let digits = string(p.i)
-        append(out, byte(PARAM_INT))
-        append_u32(out, len(digits))
-        for i in 0..len(digits) { append(out, digits[i]) }
-        return ok(true)
-    }
-    if p.kind == PARAM_BOOL {
-        append(out, byte(PARAM_BOOL))
-        append_u32(out, 1)
-        if p.i != 0 {
-            append(out, 't')
+            append(values, wire_text(&p.data))
+            append(binary, false)
+            append(oids, 25)
+        } else if p.kind == PARAM_BLOB {
+            if len(p.data) > 16777216 {
+                return err("blob parameter is too large", 2)
+            }
+            append(values, copy_bytes(&p.data))
+            append(binary, true)
+            append(oids, 17)
+        } else if p.kind == PARAM_INT {
+            let digits = string(p.i)
+            let raw = encode_string(digits)
+            append(values, wire_text(&raw))
+            append(binary, false)
+            append(oids, 20)
+        } else if p.kind == PARAM_BOOL {
+            var raw = new []byte(0)
+            if p.i != 0 {
+                append(raw, 't')
+            } else {
+                append(raw, 'f')
+            }
+            append(values, wire_text(&raw))
+            append(binary, false)
+            append(oids, 16)
+        } else if p.kind == PARAM_DECIMAL {
+            let n = len(p.data)
+            if n == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+            if n > 98342 { return err("decimal parameter is too large", 2) }
+            if has_nul(&p.data) {
+                return err("invalid decimal text", DEC_DB_TEXT_INVALID)
+            }
+            let d = decimal::parse(string(p.data))
+            match d {
+                ok(v) {
+                    append(values, wire_text(&p.data))
+                    append(binary, false)
+                    append(oids, 1700)
+                }
+                err(m, c) {
+                    if c == 10 { return err("decimal text could not be allocated", 3) }
+                    if c == 4 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+                    if c == 7 {
+                        return err("decimal text has more than 38 significant digits",
+                                   DEC_DB_PRECISION)
+                    }
+                    if c == 8 {
+                        return err("decimal exponent is outside int16",
+                                   DEC_DB_EXPONENT)
+                    }
+                    if c == 9 {
+                        return err("decimal display scale is outside uint16",
+                                   DEC_DB_DISPLAY_RANGE)
+                    }
+                    return err("invalid decimal value", 2)
+                }
+            }
+        } else if p.kind == PARAM_DECIMAL_NULL {
+            if len(p.data) != 0 {
+                return err("invalid decimal NULL parameter", 2)
+            }
+            append(values, nil)
+            append(binary, false)
+            append(oids, 1700)
         } else {
-            append(out, 'f')
+            return err("unknown parameter kind", 2)
         }
-        return ok(true)
     }
-    return err("unknown parameter kind", 2)
-}
-
-// Packet for pg_exec_typed. It is built in obo; only the finished length-
-// delimited buffer crosses into C.
-fn build_packet(sql: string, params: &[]Param, result_binary: bool): Result[[]byte] {
-    let np = len(params)
-    if np > 32 { return err("too many parameters (maximum 32)", 2) }
-    if len(sql) > 1048576 { return err("SQL text is too large", 2) }
-    let sb = encode_string(sql)
-    if has_nul(&sb) {
-        return err("SQL text contains an embedded NUL", 2)
-    }
-    var out = new []byte(0)
-    append_u32(&out, len(sb))
-    for i in 0..len(sb) { append(out, sb[i]) }
-    if result_binary { append(out, byte(1)) } else { append(out, byte(0)) }
-    append_u32(&out, np)
-    for i in 0..np {
-        let one = try append_param(&out, params[i])
-        if !one { return err("parameter could not be encoded", 2) }
-    }
-    return ok(out)
+    return ok(true)
 }
 
 // ------------------------------------------------------------------ connection
@@ -409,84 +379,76 @@ pub fn open(conninfo: string): Result[Connection] {
     if has_nul(&raw) {
         return err("invalid connection string (embedded NUL)", 2)
     }
-    let b = put_bytes(&raw)
-    if b <= 0 { return err("invalid connection string (too long)", 2) }
-    let t = __cinterop("pg_open", b)
-    __cinterop("cres_buf_free", b)
-    if t == -4 {
-        let eb = __cinterop("pq_conninfo_error_buf")
-        let msg = take_buf(eb)
-        let detail = error_text(msg)
-        if len(detail) == 0 {
-            return err("invalid connection string", 2)
-        }
-        return err("invalid connection string: " + detail, 2)
+    if len(raw) > 16777216 {
+        return err("invalid connection string (too long)", 2)
     }
-    if t == -1 {
-        return err("invalid connection buffer", 2)
+    let made = libpq::connect(raw)
+    match made {
+        ok(h) { return ok(new Connection{h: h}) }
+        err(m, c) { return err(m, c) }
     }
-    if t == -2 {
-        return err("invalid connection string (embedded NUL or too long)", 2)
-    }
-    if t <= 0 { return err("connection could not be allocated", 3) }
-    let st = __cinterop("pq_conn_status", t)
-    if st != CONNECTION_OK {
-        let eb = __cinterop("pq_error_buf", t)
-        let msg = take_buf(eb)
-        __cinterop("pq_conn_close", t)
-        return err(error_text(msg), st)
-    }
-    return ok(new Connection{tok: t})
 }
 
 pub fn (c: &Connection) status(): int {
-    return __cinterop("pq_conn_status", c.tok)
+    if !c.h.is_open() { return -1 }
+    return conn_status(&c.h)
 }
 
 pub fn (c: &Connection) is_open(): bool {
-    return __cinterop("pq_conn_live", c.tok) == 1
+    return c.h.is_open()
 }
 
 pub fn (c: &Connection) error_message(): []byte {
-    return take_buf(__cinterop("pq_error_buf", c.tok))
+    if !c.h.is_open() { return new []byte(0) }
+    return conn_error(&c.h)
 }
 
-// Borrows the Connection. Closing poisons the token; a second close is a safe
-// false, never a second PQfinish. Record drop does not free the foreign object.
-pub fn (c: &Connection) close(): bool {
-    return __cinterop("pq_conn_close", c.tok) == 1
+// Borrows the Connection. Closing zeroes the inner foreign word; a second
+// close is a safe false, never a second PQfinish. Record drop does not free
+// the foreign object.
+pub fn (mut c: &Connection) close(): bool {
+    let r = c.h.close()
+    match r {
+        ok(v) { return v }
+        err(m, n) { return false }
+    }
 }
 
 // ------------------------------------------------------------------ execution
 
-// Messages for the adapter's negative pg_exec_typed codes (see postgres_adapter.c).
-fn exec_failure_message(t: int): string {
-    if t == -1 { return "connection is closed or invalid" }
-    if t == -2 { return "query packet rejected by the adapter (malformed or over a limit)" }
-    if t == -3 { return "adapter could not allocate or register the result" }
-    return "query adapter failed"
-}
-
 fn execute_fmt(c: &Connection, sql: string, params: []Param,
                result_binary: bool): Result[Rows] {
-    let ctok = c.tok
-    let packet = try build_packet(sql, &params, result_binary)
-    let b = put_bytes(&packet)
-    if b <= 0 { return err("query packet could not be allocated", 2) }
-    let t = __cinterop("pg_exec_typed", ctok, b)
-    __cinterop("cres_buf_free", b)
-    // Only 0 means PQexecParams ran and failed, so the connection's error is the
-    // one libpq just set. Negative codes are adapter-side and never touch it.
-    if t == 0 {
-        let eb = __cinterop("pq_error_buf", ctok)
-        let msg = error_text(take_buf(eb))
-        if len(msg) == 0 { return err("libpq returned no result and no error message", 2) }
+    if !c.h.is_open() { return err("connection is closed or invalid", 2) }
+    if len(params) > 32 { return err("too many parameters (maximum 32)", 2) }
+    if len(sql) > 1048576 { return err("SQL text is too large", 2) }
+    let sb = encode_string(sql)
+    if has_nul(&sb) { return err("SQL text contains an embedded NUL", 2) }
+    var values = new []?[]byte(0)
+    var binary = new []bool(0)
+    var oids = new []int(0)
+    let one = try encode_params(&params, &values, &binary, &oids)
+    if !one { return err("parameter could not be encoded", 2) }
+    var formats = new []int(0)
+    for i in 0..len(binary) {
+        if binary[i] {
+            append(formats, 1)
+        } else {
+            append(formats, 0)
+        }
+    }
+    var rf = 0
+    if result_binary { rf = 1 }
+    let made = exec_params_raw(&c.h, &sb, &values, &oids, &formats, rf)
+    if made == nil {
+        let mb = conn_error(&c.h)
+        let msg = string(mb)
+        if len(msg) == 0 {
+            return err("libpq returned no result and no error message", 2)
+        }
         return err(msg, 2)
     }
-    if t < 0 { return err(exec_failure_message(t), 2) }
-    var fmt = 0
-    if result_binary { fmt = 1 }
-    return ok(new Rows{tok: t, fmt: fmt})
+    let res = made
+    return ok(new Rows{h: res, fmt: rf})
 }
 
 // Text result format: every column is returned as PostgreSQL's exact text.
@@ -526,7 +488,7 @@ fn param_from_sql_arg(a: &SqlArg): Result[Param] {
 // Execute a dialect-neutral Sql fragment with PostgreSQL $1..$n placeholders.
 // The fragment is borrowed: its text and parameters remain owned by the caller.
 // Literal chunks are trusted SQL; values are never interpolated. Rendering and
-// parameter conversion happen before the packet is built, so a malformed
+// parameter conversion happen before any values are encoded, so a malformed
 // fragment or an unsupported value sends nothing.
 pub fn execute_sql(c: &Connection, s: &Sql): Result[Rows] {
     let text = try sqldialect::renderPostgres(s)
@@ -541,37 +503,53 @@ pub fn execute_sql(c: &Connection, s: &Sql): Result[Rows] {
 // ---------------------------------------------------------------------- rows
 
 pub fn (r: &Rows) status(): int {
-    return __cinterop("pq_result_status", r.tok)
+    if !r.h.is_open() { return -1 }
+    return res_status(&r.h)
 }
 
 pub fn (r: &Rows) is_open(): bool {
-    return __cinterop("pq_result_live", r.tok) == 1
+    return r.h.is_open()
 }
 
 pub fn (r: &Rows) row_count(): int {
-    return __cinterop("pq_ntuples", r.tok)
+    if !r.h.is_open() { return -1 }
+    return res_ntuples(&r.h)
 }
 
 pub fn (r: &Rows) column_count(): int {
-    return __cinterop("pq_nfields", r.tok)
+    if !r.h.is_open() { return -1 }
+    return res_nfields(&r.h)
+}
+
+fn cell_ok(r: &Rows, row: int, col: int): bool {
+    if !r.h.is_open() { return false }
+    if row < 0 || col < 0 { return false }
+    return row < res_ntuples(&r.h) && col < res_nfields(&r.h)
 }
 
 fn col_ok(r: &Rows, col: int): bool {
-    let n = __cinterop("pq_nfields", r.tok)
-    return n >= 0 && col >= 0 && col < n
+    if !r.h.is_open() { return false }
+    return col >= 0 && col < res_nfields(&r.h)
 }
 
 pub fn (r: &Rows) is_null(row: int, col: int): Result[bool] {
-    let n = __cinterop("pq_getisnull", r.tok, row, col)
-    if n < 0 { return err("row or column out of range", 2) }
-    let is_null = n == 1
+    if !cell_ok(r, row, col) { return err("row or column out of range", 2) }
+    let is_null = res_is_null(&r.h, row, col) == 1
     return ok(is_null)
 }
 
 // Length in bytes as libpq reports it; NULL and empty both report 0. Use
 // is_null to tell them apart. A negative result means out of range/stale.
 pub fn (r: &Rows) length(row: int, col: int): int {
-    return __cinterop("pq_getlength", r.tok, row, col)
+    if !cell_ok(r, row, col) { return -1 }
+    return res_length(&r.h, row, col)
+}
+
+fn cell_value(r: &Rows, row: int, col: int): Result[[]byte] {
+    let v = res_value(&r.h, row, col)
+    if v == nil { return err("value could not be copied", 2) }
+    let b = v
+    return ok(b)
 }
 
 // Exact bytes for a cell with SQL NULL distinct: nil means NULL, an empty
@@ -579,15 +557,12 @@ pub fn (r: &Rows) length(row: int, col: int): int {
 // values are reference types only, so the exact text form is ?[]byte. Use
 // text() when a string is wanted.)
 pub fn (r: &Rows) value(row: int, col: int): Result[?[]byte] {
-    let null = __cinterop("pq_getisnull", r.tok, row, col)
-    if null == 1 {
+    if !cell_ok(r, row, col) { return err("row or column out of range", 2) }
+    if res_is_null(&r.h, row, col) == 1 {
         let none: ?[]byte = nil
         return ok(none)
     }
-    if null < 0 { return err("row or column out of range", 2) }
-    let t = __cinterop("pq_value_buf", r.tok, row, col)
-    if t <= 0 { return err("value could not be copied", 2) }
-    let b = take_buf(t)
+    let b = try cell_value(r, row, col)
     let out: ?[]byte = b
     return ok(out)
 }
@@ -596,12 +571,9 @@ pub fn (r: &Rows) value(row: int, col: int): Result[?[]byte] {
 // value() or is_null() when NULL must be distinguished. Embedded NUL is
 // rejected because a string cannot represent it losslessly here.
 pub fn (r: &Rows) text(row: int, col: int): Result[string] {
-    let null = __cinterop("pq_getisnull", r.tok, row, col)
-    if null == 1 { return err("SQL NULL", 1) }
-    if null < 0 { return err("row or column out of range", 2) }
-    let t = __cinterop("pq_value_buf", r.tok, row, col)
-    if t <= 0 { return err("value could not be copied", 2) }
-    let b = take_buf(t)
+    if !cell_ok(r, row, col) { return err("row or column out of range", 2) }
+    if res_is_null(&r.h, row, col) == 1 { return err("SQL NULL", 1) }
+    let b = try cell_value(r, row, col)
     if has_nul(&b) { return err("value contains an embedded NUL; use bytes", 1) }
     return ok(string(b))
 }
@@ -609,33 +581,29 @@ pub fn (r: &Rows) text(row: int, col: int): Result[string] {
 // Exact bytes for a cell, including embedded NUL. SQL NULL is an error here;
 // check is_null or use value() when NULL must be distinct.
 pub fn (r: &Rows) bytes(row: int, col: int): Result[[]byte] {
-    let null = __cinterop("pq_getisnull", r.tok, row, col)
-    if null == 1 { return err("SQL NULL", 1) }
-    if null < 0 { return err("row or column out of range", 2) }
-    let t = __cinterop("pq_value_buf", r.tok, row, col)
-    if t <= 0 { return err("value could not be copied", 2) }
-    return ok(take_buf(t))
+    if !cell_ok(r, row, col) { return err("row or column out of range", 2) }
+    if res_is_null(&r.h, row, col) == 1 { return err("SQL NULL", 1) }
+    return cell_value(r, row, col)
 }
 
 pub fn (r: &Rows) column_name(col: int): Result[string] {
     if !col_ok(r, col) { return err("column out of range", 2) }
-    let t = __cinterop("pq_fname_buf", r.tok, col)
-    if t <= 0 { return err("column name could not be copied", 2) }
-    let b = take_buf(t)
+    let b = res_fname(&r.h, col)
+    if len(b) == 0 { return err("column name could not be copied", 2) }
     if has_nul(&b) { return err("column name contains an embedded NUL", 1) }
     return ok(string(b))
 }
 
 pub fn (r: &Rows) column_type_oid(col: int): Result[int] {
     if !col_ok(r, col) { return err("column out of range", 2) }
-    return ok(__cinterop("pq_ftype", r.tok, col))
+    return ok(res_ftype(&r.h, col))
 }
 
 // PostgreSQL typmod; -1 is a valid "no modifier" value, so bounds are checked
 // before this call rather than inferred from the result.
 pub fn (r: &Rows) column_type_modifier(col: int): Result[int] {
     if !col_ok(r, col) { return err("column out of range", 2) }
-    return ok(__cinterop("pq_fmod", r.tok, col))
+    return ok(res_fmod(&r.h, col))
 }
 
 // Decode a numeric column's typmod into an all-int record. OID 1700 is the only
@@ -721,7 +689,8 @@ pub fn (r: &Rows) decimal(row: int, col: int): Result[decimal] {
                            DEC_DB_PRECISION)
             }
             if c == 8 {
-                return err("decimal exponent is outside int16", DEC_DB_EXPONENT)
+                return err("decimal exponent is outside int16",
+                           DEC_DB_EXPONENT)
             }
             if c == 9 {
                 return err("decimal display scale is outside uint16",
@@ -733,39 +702,30 @@ pub fn (r: &Rows) decimal(row: int, col: int): Result[decimal] {
 }
 
 pub fn (r: &Rows) error_message(): []byte {
-    return take_buf(__cinterop("pq_result_error_buf", r.tok))
+    if !r.h.is_open() { return new []byte(0) }
+    return res_error(&r.h)
 }
 
 // Borrows Rows. A second close is a safe false; drop never calls PQclear.
-pub fn (r: &Rows) close(): bool {
-    return __cinterop("pq_result_clear", r.tok) == 1
+pub fn (mut r: &Rows) close(): bool {
+    if !r.h.is_open() { return false }
+    r.h.close()
+    return true
 }
 
 // ------------------------------------------------------- library/resource info
 
 pub fn lib_version(): int {
-    return __cinterop("pq_lib_version")
+    return libpq::lib_version()
 }
 
 // Real PGresult ownership with no connection, for link/ownership probes.
+// PostgreSQL 16 ExecStatusType ends at 11; a NULL from libpq is an own
+// contract violation and exits 11.
 pub fn make_empty_rows(status: int): Result[Rows] {
-    let t = __cinterop("pq_make_empty_result", status)
-    if t <= 0 { return err("empty result could not be created", 2) }
-    return ok(new Rows{tok: t, fmt: 0})
-}
-
-pub fn live_resources(): int {
-    return __cinterop("cres_live_count")
-}
-
-pub fn live_buffers(): int {
-    return __cinterop("cres_live_kind", 1)
-}
-
-pub fn live_connections(): int {
-    return __cinterop("cres_live_kind", 2)
-}
-
-pub fn live_results(): int {
-    return __cinterop("cres_live_kind", 3)
+    if status < 0 || status > 11 {
+        return err("empty result could not be created", 2)
+    }
+    let h = make_empty_result(status)
+    return ok(new Rows{h: h, fmt: 0})
 }

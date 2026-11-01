@@ -257,24 +257,25 @@ pub const PARAM_DECIMAL = 5
 pub const PARAM_DECIMAL_NULL = 6
 ```
 
-- `PARAM_DECIMAL`: `data` holds the exact UTF-8/ASCII text from §2.2; the
-  packet builder validates the grammar, rejects NUL/empty/oversize, and writes
-  it as kind 5. The C adapter maps kind 5 to `paramTypes[i] = 1700`,
-  `paramFormats[i] = 0`, `paramLengths[i] = len`, `paramValues[i] = text`.
+- `PARAM_DECIMAL`: `data` holds the exact UTF-8/ASCII text from §2.2; the obo
+  encoder validates the grammar, rejects NUL/empty/oversize, and emits
+  `paramTypes[i] = 1700`, `paramFormats[i] = 0`, `paramLengths[i] = len`,
+  `paramValues[i] = text`. Since stage (g) there is no C packet and no C
+  duplicate validation: `postgres.obx` builds the arrays for `PQexecParams`
+  directly.
 - `PARAM_DECIMAL_NULL`: a typed SQL NULL with `types[i] = 1700`,
   `paramValues[i] = NULL`. This matters for `SELECT $1` where the server has
   no target type to infer; plain `param_null()` keeps OID 0 and is still
   correct for `INSERT ... VALUES ($1)` and for `$1::numeric`.
 - Never interpolate. The SQL string contains only `$1..$n`; the decimal text
-  is always a separate length-delimited parameter (`postgres_adapter.c:3-17`,
-  `:197-198`).
-- The C adapter re-validates the decimal grammar before `PQexecParams`
-  (defence in depth; the obo builder already emits valid text). It accepts the
-  public grammar, including a leading `+`/`-` and integer-only text, and
-  rejects `NaN`, `Infinity`, `1_000`, whitespace, quotes, `0x`, a bare sign,
-  `.5`, `1.`, empty text, embedded NUL, more than one point and non-ASCII
-  bytes. Its kind bound (`postgres_adapter.c:149`) grows from `PG_PARAM_BOOL`
-  to `PG_PARAM_DECIMAL_NULL`; text length is capped at 98,342 bytes.
+  is always a separate length-delimited parameter.
+- The obo encoder is the single validator (`postgres.obx` `encode_params`):
+  it accepts the public grammar, including a leading `+`/`-` and integer-only
+  text, and rejects `NaN`, `Infinity`, `1_000`, whitespace, quotes, `0x`, a
+  bare sign, `.5`, `1.`, empty text, embedded NUL, more than one point and
+  non-ASCII bytes. Text length is capped at 98,342 bytes; a valid `decimal`
+  value is then parsed by `decimal::parse` for precision/exponent/display
+  bounds. The C duplicate was deleted in stage (g).
 - NULL, zero and empty text are three different things: NULL is a NULL
   parameter, zero is the text `0`/`0.0000`, and empty text is always rejected.
 
@@ -774,9 +775,9 @@ type SqlArg = closed {
 - It is lossless for the value and preserves display scale when the display
   form was exact. If canonical fallback was used, the value is exact and the
   display scale follows the exponent, as in every other path.
-- The renderer first checks `len(bytes)` is `1..98,342`; empty is `1006`, and
-  an oversize payload is the size/plumbing code `2` (the same bound the C
-  packet builder enforces). It then validates the bytes with
+- The renderer/encoder first checks `len(bytes)` is `1..98,342`; empty is
+  `1006`, and an oversize payload is the size/plumbing code `2` (the same bound
+  the obo `encode_params` enforces). It then validates the bytes with
   **`decimal::parse`**, not merely the grammar: NUL/empty/non-ASCII/syntax →
   `1006`, more than 38 significant digits → `1007`, exponent outside `int16`
   → `1008`, display scale outside `uint16` → `1009`, parse `10` (allocation)
@@ -1136,18 +1137,21 @@ Wire-form cases (independent of input spelling):
 
 ### 7.2 PostgreSQL tests
 
-Deterministic fake-libpq C tests (`obo/experimental/db/tests/postgres_adapter_test.c`):
+Deterministic fake-libpq obo tests (`obo/experimental/db/postgres/examples/
+postgres_fake_v2_app.obx` and `postgres_decimal_fake_app.obx`, through the
+`postgres_fake.cbind` / `postgres_fake_probe.obx` pair):
 
 - decimal parameter kind 5: bytes `1.2300`, `paramTypes == 1700`,
   `paramFormats == 0`, `paramLengths == 6`, exact bytes;
 - decimal NULL kind 6: `paramTypes == 1700`, `paramValues == NULL`,
   `isnull == 1`;
-- valid integer-only packet: `+1` / `-1` / `1`, OID 1700, text format, exact
+- valid integer-only text: `+1` / `-1` / `1`, OID 1700, text format, exact
   bytes (dscale 0);
-- invalid decimal packets: empty, `.5`, `1.`, `1..2`, `1e`, `1_000`, `0x10`,
-  `NaN`, `Infinity`, `1\x00`, 98,343-byte text → `pg_exec_typed` returns `-2`
-  and leaks no buffers;
-- kind 7 and 33 parameters → `-2`;
+- invalid decimal text: empty, `.5`, `1.`, `1..2`, `1e`, `1_000`, `0x10`,
+  `NaN`, `Infinity`, `1\x00`, 98,343-byte text → the obo encoder returns the
+  decimal error code and sends nothing; 98,342 bytes with one significant
+  digit is accepted;
+- 33 parameters → `err` before the call; 32 are accepted;
 - existing text/int/bool/bytea/NULL OIDs unchanged.
 
 Live SELECT-only tests (opt-in `CINTEROP_TEST_DSN`; no DDL):
@@ -1264,9 +1268,12 @@ independent `typeof`/`quote` oracle (existing pattern,
 
 ### 7.4 Sanitizers and ownership
 
-Run the existing ASAN/UBSAN C suites with the new packet kinds and invalid
-vectors; assert no buffer leaks (`cres_live_count() == 0`) and no double free
-on every rejection path. Statement/connection live counters must return to 0.
+Run the fake tests under `OBO_CHECK=1`; the foreign-handle census must return
+to 0 after every rejection path (no `PQfinish`/`PQclear` on a dropped wrapper).
+The SQLite ASAN/UBSAN UAF fixture and ABI test still run; stage (g) deleted the
+postgres C adapter suite, so there is no postgres C sanitizer half. The registry
+test (`cres_test.c`) still asserts `cres_live_count() == 0` for the packages
+that use `cres`.
 
 ## 8. Phasing and dependencies
 

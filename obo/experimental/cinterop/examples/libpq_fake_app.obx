@@ -155,6 +155,70 @@ fn main() {
                 err(m, c) { println("bin_query_error=", m, " (", c, ")"); exit(15) }
             }
 
+            // Typed OIDs: a matching count is accepted, a count mismatch and
+            // an out-of-range OID are rejected before PQexecParams.
+            var tv = new []?[]byte(0)
+            append(tv, bytes_of("hi"))
+            var tb = new []bool(0)
+            append(tb, false)
+            var to = new []int(0)
+            append(to, 25)
+            let tq = libpq::exec_params_typed(&conn, bytes_of("FAKE_OK"), tv, tb, to)
+            match tq {
+                ok(rows) {
+                    println("typed_status=", rows.status())
+                    rows.close()
+                }
+                err(m, c) { println("typed_error=", m, " (", c, ")"); exit(17) }
+            }
+
+            var mv = new []?[]byte(0)
+            append(mv, bytes_of("hi"))
+            var mb = new []bool(0)
+            append(mb, false)
+            let mq = libpq::exec_params_typed(&conn, bytes_of("FAKE_OK"), mv, mb,
+                                              new []int(0))
+            match mq {
+                ok(rows) {
+                    rows.close()
+                    println("typed_len=unexpected_ok")
+                    exit(18)
+                }
+                err(m, c) { println("typed_len=", c, " ", m) }
+            }
+
+            var ov = new []?[]byte(0)
+            append(ov, bytes_of("hi"))
+            var ob = new []bool(0)
+            append(ob, false)
+            var oo = new []int(0)
+            append(oo, -1)
+            let oq = libpq::exec_params_typed(&conn, bytes_of("FAKE_OK"), ov, ob, oo)
+            match oq {
+                ok(rows) {
+                    rows.close()
+                    println("typed_oid=unexpected_ok")
+                    exit(19)
+                }
+                err(m, c) { println("typed_oid=", c, " ", m) }
+            }
+
+            var xv = new []?[]byte(0)
+            append(xv, bytes_of("hi"))
+            var xb = new []bool(0)
+            append(xb, true)
+            var xo = new []int(0)
+            append(xo, 0xffffffff)
+            let xq = libpq::exec_params_typed_binary(&conn, bytes_of("FAKE_OK"),
+                                                     xv, xb, xo)
+            match xq {
+                ok(rows) {
+                    println("typed_max_fmt=", rows.fmt)
+                    rows.close()
+                }
+                err(m, c) { println("typed_max_error=", m, " (", c, ")"); exit(20) }
+            }
+
             // A result over the cbytes cap is a distinct error from SQL NULL.
             let over = libpq::query(&conn, bytes_of("FAKE_OVERCAP"))
             match over {
