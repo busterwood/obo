@@ -382,7 +382,7 @@ def sqlite_exec_many(tmp):
     if p.returncode != 0 or p.stderr.strip():
         raise Fail('sqlite exec many exited %d: %s' % (p.returncode, p.stderr))
     expect_lines(p.stdout, ['exec_many=ok bytes=1048500'], 'sqlite exec many')
-    if elapsed > 10.0:
+    if elapsed > 2.5:
         raise Fail('sqlite exec many took %.1fs; the quadratic copy regressed' % elapsed)
     print('sqlite exec many: 116,500 statements in %.2fs (linear): ok' % elapsed)
 

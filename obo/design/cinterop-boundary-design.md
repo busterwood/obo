@@ -601,9 +601,9 @@ declaration hash is provenance only (R11).
 declares the v2 C parameter shapes directly: `const void *` for every `borrow_bytes` pointer and
 `long` for `sqlite3_int64` (64-bit on x86_64-linux-gnu). These are ABI-identical to the installed
 library's `const char *`/`long long` spellings, and the declaration check cannot prove that against a
-header it does not have. `tests/real_sqlite_abi_test.c` resolves every declared symbol from the real
-library with independent public-API prototypes and calls a representative path, which is the ABI gate
-for this compromise. The declaration hash remains provenance only (R11).
+header it does not have. `tests/real_sqlite_abi_test.c` resolves every SQLite symbol from the real library with independent
+public-API prototypes and calls a representative path, which is the ABI gate for this compromise. The
+two trusted helpers are project code, covered by the binding tests rather than that ABI test. The declaration hash remains provenance only (R11).
 
 **Limits kept (review 13).** SQL text 1 MiB; values 16 MiB (`sqlite_adapter.c:21-23`); path 4 KiB; text rejects an embedded NUL;
 BLOBs keep NUL; empty SQL is `err`; `len >= INT_MAX` is refused (`sqlite_adapter.c:313`).

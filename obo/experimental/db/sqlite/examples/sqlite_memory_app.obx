@@ -274,7 +274,7 @@ fn memory_test(): Result[bool] {
             let big = try large_values(&conn)
             if !big { return err("large value check failed", 89) }
 
-            // Constraint failure: the adapter copies the message/code.
+            // Constraint failure: the v2 wrapper returns the message/code.
             let dup = conn.exec("INSERT INTO t(id,name) VALUES(7,'duplicate')")
             match dup {
                 ok(v) { return err("duplicate insert accepted", 30) }

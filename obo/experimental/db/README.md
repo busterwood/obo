@@ -332,7 +332,7 @@ bytes and `long` for `sqlite3_int64`. `sqlite.cbind` records
 Linking is `-l:libsqlite3.so.0`. The declaration file is listed under
 `declaration_files` and hashed into the manifest as provenance, without being
 promoted to a compiled header check; `tests/real_sqlite_abi_test.c` resolves
-every declared symbol from the real library with independent prototypes. The
+every SQLite symbol from the real library with independent prototypes. The
 trusted helpers are `sq_stmt_errcode.c` and `sq_prepare_at.c`. The PostgreSQL cbind does the same for `libpq_decls.h`,
 `postgres_adapter.h` and `cres.h`.
 

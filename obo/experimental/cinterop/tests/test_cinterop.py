@@ -3261,11 +3261,13 @@ OUT_WANT = [
 
 def out_params(tmp):
     """Stage (f): out_own/out_offset, the generated out record, and its sidecar."""
-    def app(name, body, wrapper=None):
+    def app(name, body, wrapper=None, extra=None):
         ad = os.path.join(tmp, 'outapp_' + name)
         os.makedirs(ad)
         for n in ('out_fixture.c', 'out_fixture.h'):
             shutil.copy(os.path.join(HERE, n), os.path.join(ad, n))
+        for n, text in (extra or {}).items():
+            open(os.path.join(ad, n), 'w').write(text)
         sp = out_spec()
         sp['sources'] = ['out_fixture.c']
         sp['headers'] = ['out_fixture.h']
@@ -3371,11 +3373,27 @@ def out_params(tmp):
              'already declared'),
             ('collide_after',
              base_wrap + '\ntype of_new_out = ref record { x: int }\n',
+             'reserved by the generated out record'),
+            ('collide_after_fn',
+             base_wrap + '\nfn of_new_out(): int { return 0 }\n',
              'reserved by the generated out record')):
         p, _, _ = app('neg_' + name, 'fn main() {}\n', wrapper=wrap)
         if p.returncode == 0 or want not in (p.stderr + p.stdout):
             raise Fail("out name collision %s: want %r, got rc %d: %s"
                        % (name, want, p.returncode, (p.stderr + p.stdout).strip()[-400:]))
+
+    # Another module may use the same top-level name: the reservation is per
+    # module, not compilation-global.
+    cross = ('import "other.obx"\n\n'
+             'fn main() {\n    let x = new other::of_new_out{n: 7}\n'
+             '    println("cross ", x.n)\n}\n')
+    p, out, _ = app('cross_module', cross, extra={
+        'other.obx': 'module other\n\npub type of_new_out = ref record { pub n: int }\n'})
+    need(p, 'cross-module out name build')
+    r = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'cross-module out name run')
+    if r.stdout.strip() != 'cross 7':
+        raise Fail("cross-module out name output was %r" % r.stdout)
 
     # --check parses an out declaration but refuses a native call.
     ckdir = os.path.join(tmp, 'out_check')
