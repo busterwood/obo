@@ -199,14 +199,15 @@ The `SYM_FORMAT` 8 → 9 and `OBO_VERSION` 0.16 bump lands here, with the first
 
 ### D4b — function values, lambdas and captures
 
-**Status: layout proposed, awaiting review.** The frame layout, capture layout,
-`.sym` decision, refusals, tests/mutants and implementation order are in
+**Status: layout approved with nits (2026-11-01); revision 2, ready for
+implementation.** The frame layout, capture layout, `.sym` decision, refusals,
+tests/mutants and implementation order are in
 [decimal-d4b-layout.md](decimal-d4b-layout.md). No compiler, runtime, test or
 seed change is in that branch.
 
 The blocker is recorded here for the review history. Function values push the
 cell at `callFnWith` (`obo.obo:7199-7213`), after the hidden destination pointer
-(`obo.obo:7183-7197`), and a decimal-returning callee reads that pointer at
+(`obo.obo:7182-7196`), and a decimal-returning callee reads that pointer at
 `16 + visibleTypeParamsBytes(params)` (`obo.obo:12626`), so the cell sits where
 the callee reads its destination pointer. "Identical to direct calls" cannot
 hold with that order. **Decision:** push the cell *before* the destination, so
