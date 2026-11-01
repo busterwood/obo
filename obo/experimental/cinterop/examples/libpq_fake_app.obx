@@ -48,6 +48,7 @@ fn main() {
             match q {
                 ok(rows) {
                     println("status=", rows.status())
+                    println("fmt=", rows.fmt)
                     println("ntuples=", rows.ntuples())
                     println("nfields=", rows.nfields())
                     let t = rows.text(0, 0)
@@ -57,6 +58,11 @@ fn main() {
                     }
                     println("n_null=", rows.is_null(0, 1))
                     println("n_len=", rows.length(0, 1))
+                    let nv = rows.value(0, 1)
+                    match nv {
+                        ok(v) { println("null_value=unexpected_ok") }
+                        err(m, c) { println("null_value=", c, " ", m) }
+                    }
                     let b = rows.value(0, 2)
                     match b {
                         ok(v) {
@@ -98,8 +104,69 @@ fn main() {
                         ok(v) { println("closed_value=unexpected_ok") }
                         err(m, c) { println("closed_value=", c, " ", m) }
                     }
+                    println("closed_null=", rows.is_null(0, 0))
+                    println("closed_len=", rows.length(0, 0))
+                    println("closed_ftype=", rows.ftype(0))
+                    println("closed_fmod=", rows.fmod(0))
+                    let cf = rows.fname(0)
+                    match cf {
+                        ok(s) { println("closed_fname=unexpected_ok") }
+                        err(m, c) { println("closed_fname=", c, " ", m) }
+                    }
                 }
                 err(m, c) { println("query_error=", m, " (", c, ")"); exit(8) }
+            }
+
+            // A text value whose length equals its capacity must still reach
+            // libpq NUL-terminated; the fake uses strlen for text, like libpq.
+            var exact = new []byte(8)
+            for k in 0..8 { exact[k] = byte(65) }
+            var evals = new []?[]byte(0)
+            append(evals, exact)
+            var eflags = new []bool(0)
+            append(eflags, false)
+            let eq = libpq::exec_params(&conn, bytes_of("FAKE_OK"), evals, eflags)
+            match eq {
+                ok(rows) {
+                    let et = rows.text(0, 0)
+                    match et {
+                        ok(t) {
+                            var same = len(t) == 8
+                            for k in 0..len(t) {
+                                if t[k] != byte(65) { same = false }
+                            }
+                            println("exact_ok=", same, " exact_len=", len(t))
+                        }
+                        err(m, c) { println("exact_error=", m, " (", c, ")"); exit(13) }
+                    }
+                    rows.close()
+                }
+                err(m, c) { println("exact_query_error=", m, " (", c, ")"); exit(14) }
+            }
+
+            // A binary result marks Rows.fmt 1.
+            let bq = libpq::exec_params_binary(&conn, bytes_of("FAKE_OK"),
+                                               new []?[]byte(0), new []bool(0))
+            match bq {
+                ok(rows) {
+                    println("bin_fmt=", rows.fmt)
+                    rows.close()
+                }
+                err(m, c) { println("bin_query_error=", m, " (", c, ")"); exit(15) }
+            }
+
+            // A result over the cbytes cap is a distinct error from SQL NULL.
+            let over = libpq::query(&conn, bytes_of("FAKE_OVERCAP"))
+            match over {
+                ok(rows) {
+                    let ov = rows.value(0, 0)
+                    match ov {
+                        ok(v) { println("overcap=unexpected_ok len=", len(v)) }
+                        err(m, c) { println("overcap_error=", c, " ", m) }
+                    }
+                    rows.close()
+                }
+                err(m, c) { println("overcap_query_error=", m, " (", c, ")"); exit(16) }
             }
 
             let bad = libpq::query(&conn, bytes_of("FAKE_ERROR"))

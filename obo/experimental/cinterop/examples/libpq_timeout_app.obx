@@ -1,0 +1,26 @@
+module app
+
+import "libpq.obx"
+
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+// An explicit connect_timeout is not given a second default. FAKE_REPORT=1
+// makes the fake print the exact conninfo it received.
+fn main() {
+    let made = libpq::connect(bytes_of("fake-ok connect_timeout=3"))
+    match made {
+        ok(conn) {
+            println("timeout_open=", conn.is_open())
+            let cr = conn.close()
+            match cr {
+                ok(v) { println("conn_closed=", v) }
+                err(m, c) { println("close error ", m, " ", c); exit(1) }
+            }
+        }
+        err(m, c) { println("connect error ", m, " ", c); exit(2) }
+    }
+}
