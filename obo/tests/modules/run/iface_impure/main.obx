@@ -1,0 +1,11 @@
+module main
+import "lib.obx"
+fn main() {
+    let c = new lib::Counter{n: 3}
+    println(c.handle(2))                       // expect: 5
+    var h: lib::Handler = new lib::Counter{n: 4}
+    println(h.handle(1))                       // expect: 5
+    println(h.reset(9))                        // expect: 9
+    let hb: &lib::Handler = &h
+    println(lib::run(hb, 2))                   // expect: 11
+}

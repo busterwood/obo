@@ -1,0 +1,11 @@
+module main
+import "lib.obx"
+// A deep reference into a local object is live across a call through the imported impure member.
+type Box = ref record { sq: lib::Local }
+fn main() {
+    var h = new Box{sq: new lib::Local{s: 4}}
+    let inner: &lib::Local = h.sq
+    let d: lib::Runner = new lib::Local{s: 1}
+    let x = d.run()
+    println(inner.s)
+}

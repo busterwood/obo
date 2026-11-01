@@ -6785,3 +6785,117 @@ address fails rather than only crashing; the plain `q1..q4` globals keep the
 construction/free check. N4: `LANGUAGE.md` no longer calls a record literal a decimal
 expression. N3 is noted above. N2 (the unused 8-byte inferred placeholder) and N5 (a decimal
 suite timeout counted as a caught mutant) are accepted as documented.
+
+## Impure interface members (0.17 release candidate, format 10, ABI 1), stage I1
+
+Stage I1 of `design/impure-interface-members.md` adds the third interface-member
+tier. `OBO_VERSION` is `0.17`, `SYM_FORMAT` is `10`, `SYM_ABI` stays `1` (the
+vtable shape, call layout and descriptors are unchanged). The format bump is a
+grammar change: a 0.16 reader does not know `impure` and must reject the file
+before its body is read.
+
+**Syntax.** A member is `[pure | impure] [mut] fn name(params)[: T]`. `pure` and
+`impure` are mutually exclusive; the marker comes before `mut` and `fn`. Both
+`impure fn` and `impure mut fn` are accepted, and `impure` is contextual (a
+method may still be named `impure`). `impure` at top level, on a method
+declaration rather than a member, is refused with
+`'impure' is only allowed on an interface member: write impure fn m(...) inside an interface`.
+
+**Summary and effects.** `setMemberSummary(m, pure, impure)` now sets the
+maximum for an impure member: `freesAll = true`, `writesHandles = true`,
+`pfree = 0`, no `freed` globals. No per-member summary is serialized; the source
+parser and the `.sym` reader rebuild it from the markers identically. At a call
+site the existing `afterCall`/`pureFn`/`mutFrees` machinery applies it with no
+special case, so an impure member call invalidates every live reference and
+handle and poisons the calling function's own summary (`freesAll` and
+`writesHandles`), exactly as a call to an uncompiled function does. A deep
+argument, a deep capturing closure, a handle receiver and a reference borrowed
+through a handle are all refused with the existing texts.
+
+**Impl rule.** An impure member may be implemented by any method that matches the
+signature, including a pure or plain one; the declaration is an upper bound. A
+`pure` member still requires `pureFn(c) && !c.writesHandles`, and a plain member
+keeps the existing local-tier checks and messages. Dispatch is unchanged: the
+member metadata drives the caller, the vtable still has one code address per
+member.
+
+**`.sym`.** The writer emits the marker canonically (`impure fn ...`,
+`impure mut fn ...`); the reader parses it, rebuilds the summary and compares the
+marker in mode 0. Duplicate/conflicting markers are structural errors. The writer
+never emits the summary itself.
+
+**Tests.**
+- `tests/run/ifaces_impure.obx`: `impure fn` and `impure mut fn`, implemented by
+  a method that frees a global, one that calls an impure helper, one that is
+  pure and one that is plain; direct calls and calls through `I` and `&I`; two
+  implementations.
+- `tests/modules/run/iface_impure/`: a library interface with both impure forms
+  and an implementation; the importer calls through `lib::Handler`.
+- `tests/errors/ifaces_impure.obx`: a handle-borrowed reference and a deep
+  reference into a local object, each read after an impure member call; a deep
+  reference argument; a reference read after a call through a wrapper that
+  calls an impure member (the wrapper inherits the maximum summary); an impure
+  member that fails the signature check; a pure member with an impure method
+  (still refused); `pure`+`impure`, repeated `impure`, `impure` after `mut`, and
+  `impure` on a method declaration.
+- `tests/modules/errors/iface_impure/`: a root that keeps a deep reference into
+  a local object across a call through an imported impure member. It is in
+  `sym_test`'s full-build/`--check` parity list, so a reader that rebuilds the
+  member as plain accepts the source-less check and fails the gate.
+- `tests/sym_test.py` `sym/iface_impure_roundtrip`: canonical markers in
+  `lib.sym`, byte-identical `--reemit-sym`, a source-less `--check` whose
+  `main.sym` equals the full build's, a format-9 file refused by the format
+  check, the three malformed marker forms refused by the reader, and the
+  imported-impure parity case above.
+- `tests/run/ifaces_effects.obx` and `tests/errors/ifaces_tiers.obx` are
+  unchanged and pass, so the plain and pure tiers did not move.
+- `tests/mutate_fork.py`: X23 is repointed at the new `setMemberSummary`
+  signature. Six impure mutants are added, each with a real catcher: a summary
+  that is not the maximum; an impl check that applies the plain rules to an
+  impure member; a reader that rebuilds the member as plain; a writer that
+  emits plain for an impure member; a summary that frees all but does not write
+  through handles (caught by the local-deep-reference case); and a pure-member
+  check that applies the plain tier (the method is still refused, only the
+  diagnostic changes). X16 and X17 are repointed at the new
+  `} else if m.pureMember {` branch. No mutant was added without a catcher.
+
+**Fixtures.** All committed `.sym` files and the harness constants are updated
+mechanically: `obosym 9` → `obosym 10`, `compiler "0.16"` → `compiler "0.17"`,
+`this compiler reads 9` → `this compiler reads 10`, and the `--version` string.
+The deliberate older-format fixtures stay older (`tests/modules/sym/format` is
+format 8; the `sym_test` stale-format cases use 1, 3, 4, 5 and 6), so they still
+exercise the format check. The only non-version changes in fixtures are the new
+impure test files; the golden bodies are unchanged, and `sym_test` compares the
+writer output byte for byte without `--update`.
+
+**Gates (after the last source change).**
+- `make obo`: `obo 0.17 sym-format 10 abi 1`; fixed point `stage2 == stage3`
+  (`cmp`), and both differ from the 0.16 seed as expected.
+- `run_fork` **1,869 passed, 0 failed**; `module_test` **149 passed, 0 failed**;
+  `sym_test` **56 passed, 0 failed**.
+- `sym_fuzz` **200/200 clean** (seed 20261028, digest `896ee2b42dbe8a5c`).
+- `doc_check` **74 examples, 0 problems**.
+- `heap_test` passes; self-compile peak **2,586,448 bytes** live (budget
+  2,750,000, headroom 163,552).
+- `port_compare` **1,847 of 1,847** Stage B; the port's self-compile peak is
+  2,586,432 bytes.
+- `mutate_fork` filtered: `interfaces impure` **6/6 caught**, `X23` **2/2
+  caught**.
+
+**Stage I2 (follow-up, not this stage).** `http1server` can then accept an
+interface handler: the application implements a `Handler` with
+`impure handle(req: &Request): Response` (a data-carrying response record), while
+the server owns the listener and connection and the implementation owns its
+state. The server loop calls `handler.handle(req)` through the interface; the
+impure member conservatively invalidates the loop's references and handles, so
+the compiler refuses to keep a borrow across the blocking call. One constraint
+I2 must respect: an impure member cannot be called through an interface stored
+in a record or a global (`h.d.run()`/`G.d.run()` is refused as a deep receiver
+that writes through a handle), so the server must keep the handler in a local or
+pass it as an `&I` parameter, not in a `Server` field or a global, or I2 needs a
+compiler change this stage excludes. I2 changes `experimental/http1server` and
+its design note, not the compiler.
+
+**Pre-existing follow-up (not changed here).** The `.sym` interface reader does
+not reject a forged `decimal` member parameter or return that the source parser
+refuses. This is present on `50cca0a` and is a separate reader-consistency fix.
