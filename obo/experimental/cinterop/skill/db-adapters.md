@@ -1,10 +1,11 @@
 # Skill note: worked database adapters
 
 This note supplements `SKILL.md` for database-shaped C APIs. The worked
-packages are `obo/experimental/db/postgres` and `obo/experimental/db/sqlite`;
-both use cinterop v2 foreign handles and explicit close. `db/postgres` wraps
-`libpq::Connection`/`libpq::Res`; `db/sqlite` owns `sqlite3*`/`sqlite3_stmt*`
-directly.
+packages are `obo/experimental/db/postgres`, `obo/experimental/db/sqlite` and
+`obo/experimental/db/mssql`; all use cinterop v2 foreign handles and explicit
+close. `db/postgres` wraps `libpq::Connection`/`libpq::Res`; `db/sqlite` owns
+`sqlite3*`/`sqlite3_stmt*` directly; `db/mssql` owns ODBC `SQLHDBC`/`SQLHSTMT`
+through project shim types.
 
 ## What transfers from libpq
 
@@ -110,6 +111,16 @@ the value. Use `"int"` only when a non-zero release really is an error, and
   live, the `Connection` census drops, and the statements keep working until
   finalized. Register `defer conn.close()` before `defer stmt.close()` as the
   tidy order; the statement census catches a forgotten finalize.
+- **SQL Server / ODBC.** The narrow (ANSI) ODBC entry points are not UTF-8 for
+  SQL text, column names or diagnostics: the driver converts them through the
+  process locale. The `db/mssql` binding converts those itself and calls the W
+  entry points; result values and `SQL_C_CHAR` parameter values are UTF-8 and
+  were measured correct under the C locale. `SQLGetData` reports
+  `SQL_NO_TOTAL` for a truncated `SQL_C_CHAR` chunk (the chunk length is
+  recovered with a `0xFF` sentinel) but the remaining length for
+  `SQL_C_BINARY`. ODBC has no one-argument statement free, so the release is a
+  shim (`ms_close_stmt`) and the foreign type is a project opaque type whose
+  value is the driver handle. See `db/mssql/README.md` for the probe table.
 - SQLite's `sqlite3_exec` and `sqlite3_prepare_v2` have different statement
   counts: exec accepts multiple statements, prepare accepts exactly one. State
   that in the wrapper rather than silently truncating SQL.
