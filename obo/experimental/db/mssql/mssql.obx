@@ -38,6 +38,7 @@ pub const SQL_FLOAT = 6
 pub const SQL_REAL = 7
 pub const SQL_DOUBLE = 8
 pub const SQL_VARCHAR = 12
+pub const SQL_TYPE_DATE = 91
 pub const SQL_TYPE_TIMESTAMP = 93
 pub const SQL_LONGVARCHAR = -1
 pub const SQL_BINARY = -2
@@ -50,6 +51,10 @@ pub const SQL_WCHAR = -8
 pub const SQL_WVARCHAR = -9
 pub const SQL_WLONGVARCHAR = -10
 pub const SQL_GUID = -11
+// Microsoft SQL Server driver-specific SQLDescribeCol codes.
+pub const SQL_XML = -152
+pub const SQL_SS_TIME2 = -154
+pub const SQL_SS_TIMESTAMPOFFSET = -155
 
 // Typed parameter kinds.
 pub const PARAM_NULL = 0
@@ -83,7 +88,6 @@ const MAX_SQL = 1048576
 const MAX_VALUE = 16777216
 const MAX_PARAMS = 32
 const MAX_COLUMNS = 4096
-const MAX_DECIMAL_TEXT = 98342
 
 pub type Connection = foreign "ms_conn"
 pub type Stmt = foreign "ms_stmt"
@@ -130,6 +134,7 @@ native fn cell_value(s: &Stmt, col: int, binary: int): ?[]byte
 native fn stmt_diag(s: &Stmt): []byte
 native fn stmt_sqlstate(s: &Stmt): []byte
 native fn stmt_error_code(s: &Stmt): int
+native fn stmt_live(s: &Stmt): int
 
 native fn bind_null_native(s: &Stmt, index: int): int
 native fn bind_int_native(s: &Stmt, index: int, value: int): int
@@ -174,6 +179,14 @@ fn check_sql(sql: string): Result[bool] {
 
 fn is_binary_type(t: int): bool {
     return t == SQL_BINARY || t == SQL_VARBINARY || t == SQL_LONGVARBINARY
+}
+
+fn rows_live(r: &Rows): Result[bool] {
+    if !r.h.is_open() { return err("rows are closed", 2) }
+    if stmt_live(&r.h) == 0 {
+        return err("statement's connection is closed", 2)
+    }
+    return ok(true)
 }
 
 // binary64 storage has no exact decimal text. It is refused rather than parsed
@@ -361,7 +374,6 @@ pub fn param_blob(b: []byte): Param {
 // target column's type; no binary decimal format and no float is involved.
 pub fn param_decimal_text(b: []byte): Result[Param] {
     if len(b) == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
-    if len(b) > MAX_DECIMAL_TEXT { return err("decimal parameter is too large", 2) }
     if has_nul(&b) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
     let copy = copy_bytes(&b)
     let txt = string(copy)
@@ -420,29 +432,35 @@ pub fn param_decimal(value: decimal, p: int, s: int): Result[Param] {
 // ----------------------------------------------------------------------- rows
 
 pub fn (mut r: &Rows) close(): Result[bool] { return r.h.close() }
-pub fn (r: &Rows) is_open(): bool { return r.h.is_open() }
+
+// False after the owner connection closes, even though the obo Stmt word is
+// still nonzero (the C state stays allocated until Rows.close()).
+pub fn (r: &Rows) is_open(): bool {
+    if !r.h.is_open() { return false }
+    return stmt_live(&r.h) != 0
+}
 
 // The most recent SQLRETURN (0 success, 1 success with info, 100 no data,
 // negative error).
 pub fn (r: &Rows) status(): int { return r.last_status }
 
 pub fn (r: &Rows) row_count(): int {
-    if !r.h.is_open() { return -1 }
+    if !r.is_open() { return -1 }
     return row_count(&r.h)
 }
 
 pub fn (r: &Rows) column_count(): int {
-    if !r.h.is_open() { return -1 }
+    if !r.is_open() { return -1 }
     return num_cols(&r.h)
 }
 
 pub fn (r: &Rows) param_count(): int {
-    if !r.h.is_open() { return -1 }
+    if !r.is_open() { return -1 }
     return num_params(&r.h)
 }
 
 fn check_col(r: &Rows, col: int): Result[bool] {
-    if !r.h.is_open() { return err("rows are closed", 2) }
+    let _ = try rows_live(r)
     let n = num_cols(&r.h)
     if col < 0 || col >= n { return err("column out of range", 2) }
     return ok(true)
@@ -483,7 +501,7 @@ pub fn (r: &Rows) is_binary(col: int): Result[bool] {
 // Advance to the next row. true means a row is available, false means
 // SQL_NO_DATA, and a driver failure is an err.
 pub fn (mut r: &Rows) fetch(): Result[bool] {
-    if !r.h.is_open() { return err("rows are closed", 2) }
+    let _ = try rows_live(r)
     let rc = fetch_native(&r.h)
     r.last_status = rc
     if rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO { return ok(true) }
@@ -499,7 +517,7 @@ pub fn (mut r: &Rows) fetch(): Result[bool] {
 // Execute a prepared statement that has no result columns, or a prepared query
 // whose rows are then fetched. Binding must already have happened.
 pub fn (mut r: &Rows) execute(): Result[bool] {
-    if !r.h.is_open() { return err("rows are closed", 2) }
+    let _ = try rows_live(r)
     let rc = execute_native(&r.h)
     r.last_status = rc
     if rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO { return ok(true) }
@@ -514,7 +532,7 @@ pub fn (mut r: &Rows) execute(): Result[bool] {
 // Bind every eager parameter in order. The SQL must have been prepared with the
 // same number of `?` placeholders; a count mismatch is refused before binding.
 pub fn (mut r: &Rows) bind_all(params: &[]Param): Result[bool] {
-    if !r.h.is_open() { return err("rows are closed", 2) }
+    let _ = try rows_live(r)
     let n = num_params(&r.h)
     if n < 0 { return err("statement is not prepared", 2) }
     if n != len(params) {
@@ -546,9 +564,6 @@ pub fn (mut r: &Rows) bind_all(params: &[]Param): Result[bool] {
             if p.kind == PARAM_TEXT && has_nul(&p.data) {
                 return err("text value contains an embedded NUL", 2)
             }
-            if p.kind == PARAM_DECIMAL && len(p.data) > MAX_DECIMAL_TEXT {
-                return err("decimal parameter is too large", 2)
-            }
             let data = copy_bytes(&p.data)
             rc = bind_text_native(&r.h, index, &data)
         } else if p.kind == PARAM_BINARY {
@@ -572,7 +587,7 @@ pub fn (mut r: &Rows) bind_all(params: &[]Param): Result[bool] {
 
 // Free the bound parameter slots and reset the parameter state.
 pub fn (mut r: &Rows) clear_params(): Result[bool] {
-    if !r.h.is_open() { return err("rows are closed", 2) }
+    let _ = try rows_live(r)
     let rc = bind_clear_native(&r.h)
     if rc < 0 {
         var mb = stmt_diag(&r.h)

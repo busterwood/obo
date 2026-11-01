@@ -97,10 +97,8 @@ typedef struct ms_stmt ms_stmt;
 #define SQL_DECIMAL        3
 #define SQL_INTEGER        4
 #define SQL_SMALLINT       5
-#define SQL_DATE           9
-#define SQL_TIME           10
-#define SQL_TIMESTAMP      11
 #define SQL_VARCHAR        12
+#define SQL_TYPE_DATE      91
 #define SQL_TYPE_TIMESTAMP 93
 
 /* SQL data type codes above 0x7fff are negative. */
@@ -115,6 +113,10 @@ typedef struct ms_stmt ms_stmt;
 #define SQL_WVARCHAR       (-9)
 #define SQL_WLONGVARCHAR   (-10)
 #define SQL_GUID           (-11)
+/* Microsoft SQL Server driver-specific type codes (SQLDescribeCol). */
+#define SQL_XML            (-152)
+#define SQL_SS_TIME2       (-154)
+#define SQL_SS_TIMESTAMPOFFSET (-155)
 
 /* C data type codes. */
 #define SQL_C_CHAR    SQL_CHAR
@@ -197,7 +199,7 @@ extern ms_conn *ms_open(const void *dsn, int n);
 extern const char *ms_open_error(void);
 extern const char *ms_open_sqlstate(void);
 extern int ms_open_error_code(void);
-extern void ms_close_conn(ms_conn *c);
+extern int ms_close_conn(ms_conn *c);
 extern const char *ms_conn_diag(const ms_conn *c);
 extern const char *ms_conn_sqlstate(const ms_conn *c);
 extern int ms_conn_error_code(const ms_conn *c);
@@ -220,6 +222,7 @@ extern void ms_close_stmt(ms_stmt *s);
 extern const char *ms_stmt_diag(ms_stmt *s);
 extern const char *ms_stmt_sqlstate(ms_stmt *s);
 extern int ms_stmt_error_code(ms_stmt *s);
+extern int ms_stmt_live(ms_stmt *s);
 
 /* Cell reads. read_cell returns 0 for a value, 1 for SQL NULL, -1 for a driver
  * error and -2 for a value over MS_MAX_VALUE. The cell_value/cell_len pair is

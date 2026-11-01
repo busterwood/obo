@@ -99,6 +99,7 @@ static int diag_record(SQLSMALLINT type, SQLHANDLE h, SQLSMALLINT n,
     int i;
 
     *msg_out = NULL;
+    memset(state_w, 0, sizeof state_w);
     state_w[0] = 0;
     rc = SQLGetDiagRecW(type, h, n, state_w, &native, stack,
                         (SQLSMALLINT)(sizeof(stack) / sizeof(stack[0])), &len);

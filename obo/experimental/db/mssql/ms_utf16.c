@@ -49,20 +49,34 @@ static int utf8_next(const unsigned char *p, int avail, unsigned *cp) {
     return 0;
 }
 
+int ms_utf8_check(const void *src, int n) {
+    const unsigned char *p = (const unsigned char *)src;
+    int i = 0;
+    if (n < 0 || (n > 0 && !src)) return 0;
+    while (i < n) {
+        unsigned cp;
+        int used = utf8_next(p + i, n - i, &cp);
+        if (used == 0) return 0;
+        i += used;
+    }
+    return 1;
+}
+
 int ms_utf8_to_utf16(const void *src, int n, SQLWCHAR **out, int *units) {
     const unsigned char *p = (const unsigned char *)src;
     int i = 0;
-    int cap;
+    size_t cap;
     SQLWCHAR *w;
     int j = 0;
 
     if (!out || !units || n < 0 || (n > 0 && !src)) return -1;
     *out = NULL;
     *units = 0;
-    /* One UTF-16 unit per input byte, plus room for surrogate pairs and NUL. */
+    /* One UTF-16 unit per input byte is enough (a 4-byte sequence becomes two
+     * units); the checked size_t guard keeps the two additions safe. */
     if ((size_t)n > (((size_t)-1) / sizeof(SQLWCHAR)) - 2) return -2;
-    cap = n + 2;
-    w = (SQLWCHAR *)malloc((size_t)cap * sizeof(SQLWCHAR));
+    cap = (size_t)n + 2;
+    w = (SQLWCHAR *)malloc(cap * sizeof(SQLWCHAR));
     if (!w) return -2;
     while (i < n) {
         unsigned cp;
@@ -74,11 +88,16 @@ int ms_utf8_to_utf16(const void *src, int n, SQLWCHAR **out, int *units) {
         i += used;
         if (cp >= 0x10000) {
             unsigned v = cp - 0x10000;
-            if (j + 2 >= cap) {
+            if ((size_t)j + 2 >= cap) {
                 /* A 4-byte sequence consumes 4 input bytes but 2 units, so this
                  * cannot normally happen; keep the bound safe regardless. */
-                SQLWCHAR *bigger = (SQLWCHAR *)realloc(w,
-                                    (size_t)(cap + 4) * sizeof(SQLWCHAR));
+                SQLWCHAR *bigger;
+                if (cap > (((size_t)-1) / sizeof(SQLWCHAR)) - 4) {
+                    free(w);
+                    return -2;
+                }
+                bigger = (SQLWCHAR *)realloc(w,
+                             (cap + 4) * sizeof(SQLWCHAR));
                 if (!bigger) { free(w); return -2; }
                 w = bigger;
                 cap += 4;

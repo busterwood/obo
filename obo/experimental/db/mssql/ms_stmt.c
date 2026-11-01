@@ -1,10 +1,10 @@
 /* Statement shims for the mssql binding.
  *
- * ODBC statements are opaque SQLHSTMT handles, so this file keeps a small
- * process-wide side table keyed by the handle. The table holds the per-column
- * cell cache (one row at a time, reused across fetches) and the parameter
- * slots that must stay alive between SQLBindParameter and SQLExecute. The
- * binding is single-threaded (cinterop design C10), so no locking is used.
+ * The foreign word points at the ms_stmt state (see ms_internal.h), so the
+ * owner connection and the closed flag are always available. The connection
+ * close marks children dead and frees their HSTMTs before disconnecting the
+ * DBC; every stmt shim checks the flag and returns a clean diagnostic instead
+ * of touching a freed driver handle.
  *
  * Cell reads use SQLGetData. The Phase 1 probe measured that:
  *  - SQL_C_BINARY reports the remaining byte count in the indicator;
@@ -12,48 +12,19 @@
  *    is recovered by pre-filling the buffer with 0xFF (never valid UTF-8) and
  *    finding the driver's NUL terminator. This also keeps embedded NULs exact;
  *  - a C_CHAR buffer of one byte makes no progress, so the buffer is always at
- *    least two bytes and grows by doubling up to MS_MAX_VALUE.
+ *    least two bytes and grows by doubling to MS_MAX_VALUE + 4.
+ *
+ * Columns are consumed in ascending order by SQLGetData. ms_read_cell reads and
+ * caches any skipped columns first, so text(1) before text(0) is well defined
+ * and a later text(0) is served from the cache.
  */
 #include <stdlib.h>
 #include <string.h>
 #include "ms_internal.h"
 
-typedef struct ms_bind_slot {
-    void *ptr;
-    SQLLEN *ind;
-    struct ms_bind_slot *next;
-} ms_bind_slot;
+/* ---------------------------------------------------------------- state basics */
 
-typedef struct ms_cell {
-    unsigned char *buf;
-    int cap;
-    int len;
-    int status;   /* 0 value, 1 SQL NULL, -1 driver error, -2 too large */
-    int mode;     /* 0 text (UTF-8), 1 binary (raw bytes) */
-    int loaded;   /* valid for the current row and column */
-} ms_cell;
-
-typedef struct ms_state {
-    SQLHSTMT h;
-    ms_cell *cells;
-    int ncells;
-    ms_bind_slot *binds;
-    char *synthetic;
-    int synthetic_code;
-    struct ms_state *next;
-} ms_state;
-
-static ms_state *g_states;
-
-static ms_state *state_get(SQLHSTMT h) {
-    ms_state *s;
-    for (s = g_states; s; s = s->next) {
-        if (s->h == h) return s;
-    }
-    return NULL;
-}
-
-static void state_set_error(ms_state *s, const char *msg, int code) {
+static void state_set_error(ms_stmt *s, const char *msg, int code) {
     char *p;
     if (!s) return;
     free(s->synthetic);
@@ -66,14 +37,27 @@ static void state_set_error(ms_state *s, const char *msg, int code) {
     s->synthetic_code = code;
 }
 
-static ms_state *state_new(SQLHSTMT h) {
-    ms_state *s = (ms_state *)calloc(1, sizeof *s);
-    if (!s) return NULL;
-    s->h = h;
-    s->next = g_states;
-    g_states = s;
-    return s;
+static void state_clear_error(ms_stmt *s) {
+    if (!s) return;
+    free(s->synthetic);
+    s->synthetic = NULL;
+    s->synthetic_code = 0;
 }
+
+static int stmt_ok(ms_stmt *s) {
+    if (!s) return 0;
+    if (s->closed || s->h == SQL_NULL_HSTMT) {
+        state_set_error(s, "statement's connection is closed", 2);
+        return 0;
+    }
+    return 1;
+}
+
+int ms_stmt_live(ms_stmt *s) {
+    return (s && !s->closed && s->h != SQL_NULL_HSTMT) ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------ cell state */
 
 static void cell_free(ms_cell *c) {
     free(c->buf);
@@ -84,35 +68,24 @@ static void cell_free(ms_cell *c) {
     c->loaded = 0;
 }
 
-static void state_free(ms_state *s) {
-    ms_state **pp;
-    int i;
-    if (!s) return;
-    for (i = 0; i < s->ncells; i++) cell_free(&s->cells[i]);
-    free(s->cells);
-    while (s->binds) {
-        ms_bind_slot *b = s->binds;
-        s->binds = b->next;
-        free(b->ptr);
-        free(b->ind);
-        free(b);
-    }
-    free(s->synthetic);
-    for (pp = &g_states; *pp; pp = &(*pp)->next) {
-        if (*pp == s) {
-            *pp = s->next;
-            break;
-        }
-    }
-    free(s);
-}
-
-static int cells_reset(ms_state *s, int n) {
+static void cells_free_all(ms_stmt *s) {
     int i;
     for (i = 0; i < s->ncells; i++) cell_free(&s->cells[i]);
     free(s->cells);
     s->cells = NULL;
     s->ncells = 0;
+    s->row_valid = 0;
+    s->read_next = 0;
+}
+
+static int cells_reset(ms_stmt *s, int n) {
+    int i;
+    for (i = 0; i < s->ncells; i++) cell_free(&s->cells[i]);
+    free(s->cells);
+    s->cells = NULL;
+    s->ncells = 0;
+    s->row_valid = 0;
+    s->read_next = 0;
     if (n <= 0) return 0;
     s->cells = (ms_cell *)calloc((size_t)n, sizeof(ms_cell));
     if (!s->cells) {
@@ -123,7 +96,7 @@ static int cells_reset(ms_state *s, int n) {
     return 0;
 }
 
-static int cells_init(ms_state *s) {
+static int cells_init(ms_stmt *s) {
     SQLSMALLINT n = 0;
     SQLRETURN rc = SQLNumResultCols(s->h, &n);
     if (!SQL_SUCCEEDED(rc)) {
@@ -137,37 +110,107 @@ static int cells_init(ms_state *s) {
     return cells_reset(s, (int)n);
 }
 
-static void cells_clear_row(ms_state *s) {
+static void cells_clear_row(ms_stmt *s) {
     int i;
     for (i = 0; i < s->ncells; i++) {
         s->cells[i].loaded = 0;
         s->cells[i].len = 0;
         s->cells[i].status = 0;
     }
+    s->row_valid = 0;
+    s->read_next = 0;
+}
+
+/* ------------------------------------------------------------- statement life */
+
+static ms_stmt *stmt_new(SQLHSTMT h, ms_conn *owner) {
+    ms_stmt *s = (ms_stmt *)calloc(1, sizeof *s);
+    if (!s) return NULL;
+    s->h = h;
+    s->owner = owner;
+    if (owner) {
+        s->next_sibling = owner->children;
+        owner->children = s;
+    }
+    return s;
+}
+
+static void stmt_detach(ms_stmt *s) {
+    ms_conn *c = s->owner;
+    ms_stmt **pp;
+    if (!c) return;
+    pp = &c->children;
+    while (*pp) {
+        if (*pp == s) {
+            *pp = s->next_sibling;
+            break;
+        }
+        pp = &(*pp)->next_sibling;
+    }
+    s->owner = NULL;
+    s->next_sibling = NULL;
+}
+
+static void binds_free(ms_stmt *s) {
+    while (s->binds) {
+        ms_bind_slot *b = s->binds;
+        s->binds = b->next;
+        free(b->ptr);
+        free(b->ind);
+        free(b);
+    }
+}
+
+int ms_stmt_mark_closed(ms_stmt *s) {
+    int rc = 0;
+    if (!s) return 0;
+    if (s->h) {
+        /* The connection is still alive here; close the cursor and free the
+         * HSTMT before the parent DBC is disconnected. */
+        SQLRETURN fr;
+        SQLFreeStmt(s->h, SQL_CLOSE);
+        fr = SQLFreeHandle(SQL_HANDLE_STMT, s->h);
+        if (!SQL_SUCCEEDED(fr)) rc = (int)fr;
+        s->h = SQL_NULL_HSTMT;
+    }
+    s->closed = 1;
+    s->owner = NULL;
+    s->next_sibling = NULL;
+    s->row_valid = 0;
+    cells_free_all(s);
+    binds_free(s);
+    state_set_error(s, "statement's connection is closed", 2);
+    return rc;
+}
+
+void ms_close_stmt(ms_stmt *s) {
+    if (!s) return;
+    if (!s->closed) {
+        if (s->owner) stmt_detach(s);
+        if (s->h) {
+            SQLFreeStmt(s->h, SQL_CLOSE);
+            SQLFreeHandle(SQL_HANDLE_STMT, s->h);
+            s->h = SQL_NULL_HSTMT;
+        }
+        s->closed = 1;
+    }
+    cells_free_all(s);
+    binds_free(s);
+    free(s->synthetic);
+    free(s);
 }
 
 /* ------------------------------------------------------------------ execution */
-
-static int alloc_stmt(SQLHSTMT h, ms_stmt **out) {
-    ms_state *s = state_new(h);
-    if (!s) {
-        ms_set_last_error("out of memory allocating statement state", "", 3);
-        SQLFreeHandle(SQL_HANDLE_STMT, h);
-        return SQL_ERROR;
-    }
-    *out = (ms_stmt *)h;
-    return SQL_SUCCESS;
-}
 
 int ms_exec_direct(ms_conn *c, const void *sql, int n, ms_stmt **out) {
     SQLHSTMT h = SQL_NULL_HSTMT;
     SQLRETURN rc;
     SQLWCHAR *w = NULL;
     int units = 0;
-    ms_state *s;
+    ms_stmt *s;
     if (!out) return SQL_ERROR;
     *out = NULL;
-    if (!c) {
+    if (!c || c->closed || !c->dbc) {
         ms_set_last_error("connection is closed", "", 0);
         return SQL_ERROR;
     }
@@ -175,20 +218,28 @@ int ms_exec_direct(ms_conn *c, const void *sql, int n, ms_stmt **out) {
         ms_set_last_error("SQL text is empty or too large", "", 2);
         return SQL_ERROR;
     }
-    rc = SQLAllocHandle(SQL_HANDLE_STMT, (SQLHDBC)c, (SQLHANDLE *)&h);
+    rc = SQLAllocHandle(SQL_HANDLE_STMT, c->dbc, (SQLHANDLE *)&h);
     if (!SQL_SUCCEEDED(rc) || !h) {
         ms_set_last_error("statement allocation failed", "", 0);
         return SQL_ERROR;
     }
-    if (alloc_stmt(h, out) != SQL_SUCCESS) return SQL_ERROR;
-    s = state_get(h);
+    s = stmt_new(h, c);
+    if (!s) {
+        SQLFreeHandle(SQL_HANDLE_STMT, h);
+        ms_set_last_error("out of memory allocating statement state", "", 3);
+        return SQL_ERROR;
+    }
+    *out = s;
     if (ms_utf8_to_utf16(sql, n, &w, &units) != 0) {
         state_set_error(s, "SQL text is not valid UTF-8", 2);
         return SQL_ERROR;
     }
     rc = SQLExecDirectW(h, w, units);
     free(w);
-    if (SQL_SUCCEEDED(rc) && cells_init(s) != 0) return SQL_ERROR;
+    if (SQL_SUCCEEDED(rc)) {
+        if (cells_init(s) != 0) return SQL_ERROR;
+        s->row_valid = 0;
+    }
     return (int)rc;
 }
 
@@ -197,10 +248,10 @@ int ms_prepare(ms_conn *c, const void *sql, int n, ms_stmt **out) {
     SQLRETURN rc;
     SQLWCHAR *w = NULL;
     int units = 0;
-    ms_state *s;
+    ms_stmt *s;
     if (!out) return SQL_ERROR;
     *out = NULL;
-    if (!c) {
+    if (!c || c->closed || !c->dbc) {
         ms_set_last_error("connection is closed", "", 0);
         return SQL_ERROR;
     }
@@ -208,13 +259,18 @@ int ms_prepare(ms_conn *c, const void *sql, int n, ms_stmt **out) {
         ms_set_last_error("SQL text is empty or too large", "", 2);
         return SQL_ERROR;
     }
-    rc = SQLAllocHandle(SQL_HANDLE_STMT, (SQLHDBC)c, (SQLHANDLE *)&h);
+    rc = SQLAllocHandle(SQL_HANDLE_STMT, c->dbc, (SQLHANDLE *)&h);
     if (!SQL_SUCCEEDED(rc) || !h) {
         ms_set_last_error("statement allocation failed", "", 0);
         return SQL_ERROR;
     }
-    if (alloc_stmt(h, out) != SQL_SUCCESS) return SQL_ERROR;
-    s = state_get(h);
+    s = stmt_new(h, c);
+    if (!s) {
+        SQLFreeHandle(SQL_HANDLE_STMT, h);
+        ms_set_last_error("out of memory allocating statement state", "", 3);
+        return SQL_ERROR;
+    }
+    *out = s;
     if (ms_utf8_to_utf16(sql, n, &w, &units) != 0) {
         state_set_error(s, "SQL text is not valid UTF-8", 2);
         return SQL_ERROR;
@@ -224,51 +280,62 @@ int ms_prepare(ms_conn *c, const void *sql, int n, ms_stmt **out) {
     return (int)rc;
 }
 
-int ms_execute(ms_stmt *ss) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_execute(ms_stmt *s) {
     SQLRETURN rc;
-    if (!s) return SQL_ERROR;
+    if (!stmt_ok(s)) return SQL_ERROR;
+    state_clear_error(s);
+    /* A prepared statement can be executed again only after its previous
+     * cursor is closed; otherwise the driver returns 24000. */
+    SQLFreeStmt(s->h, SQL_CLOSE);
     rc = SQLExecute(s->h);
     if (SQL_SUCCEEDED(rc)) {
         if (cells_init(s) != 0) return SQL_ERROR;
+        s->row_valid = 0;
+        state_clear_error(s);
+    } else {
+        cells_clear_row(s);
     }
     return (int)rc;
 }
 
-int ms_fetch(ms_stmt *ss) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_fetch(ms_stmt *s) {
     SQLRETURN rc;
-    if (!s) return SQL_ERROR;
+    if (!stmt_ok(s)) return SQL_ERROR;
+    state_clear_error(s);
     rc = SQLFetch(s->h);
-    if (SQL_SUCCEEDED(rc)) cells_clear_row(s);
+    if (SQL_SUCCEEDED(rc)) {
+        cells_clear_row(s);
+        s->row_valid = 1;
+        s->read_next = 0;
+        state_clear_error(s);
+    } else {
+        cells_clear_row(s);
+    }
     return (int)rc;
 }
 
-int ms_num_cols(ms_stmt *ss) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_num_cols(ms_stmt *s) {
     SQLSMALLINT n = 0;
     SQLRETURN rc;
-    if (!s) return -1;
+    if (!stmt_ok(s)) return -1;
     rc = SQLNumResultCols(s->h, &n);
     if (!SQL_SUCCEEDED(rc)) return -1;
     return (int)n;
 }
 
-int ms_num_params(ms_stmt *ss) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_num_params(ms_stmt *s) {
     SQLSMALLINT n = 0;
     SQLRETURN rc;
-    if (!s) return -1;
+    if (!stmt_ok(s)) return -1;
     rc = SQLNumParams(s->h, &n);
     if (!SQL_SUCCEEDED(rc)) return -1;
     return (int)n;
 }
 
-long ms_row_count(ms_stmt *ss) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+long ms_row_count(ms_stmt *s) {
     SQLLEN n = 0;
     SQLRETURN rc;
-    if (!s) return -1;
+    if (!stmt_ok(s)) return -1;
     rc = SQLRowCount(s->h, &n);
     if (!SQL_SUCCEEDED(rc)) return -1;
     return (long)n;
@@ -276,7 +343,7 @@ long ms_row_count(ms_stmt *ss) {
 
 /* --------------------------------------------------------------- column metadata */
 
-static int describe(ms_state *s, int col, SQLWCHAR *name, SQLSMALLINT ncap,
+static int describe(ms_stmt *s, int col, SQLWCHAR *name, SQLSMALLINT ncap,
                     SQLSMALLINT *nlen, SQLSMALLINT *type, SQLULEN *size,
                     SQLSMALLINT *digits, SQLSMALLINT *nullable) {
     SQLSMALLINT t = 0, d = 0, nl = 0, nu = 0;
@@ -299,8 +366,7 @@ static int describe(ms_state *s, int col, SQLWCHAR *name, SQLSMALLINT ncap,
     return 0;
 }
 
-const char *ms_col_name(ms_stmt *ss, int col) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+const char *ms_col_name(ms_stmt *s, int col) {
     SQLWCHAR stack[256];
     SQLWCHAR *w = stack;
     SQLWCHAR *heap = NULL;
@@ -308,7 +374,7 @@ const char *ms_col_name(ms_stmt *ss, int col) {
     char *utf8 = NULL;
     int bytes = 0;
     char *out;
-    if (!s) return "";
+    if (!stmt_ok(s)) return "";
     if (describe(s, col, stack, (SQLSMALLINT)(sizeof(stack) / sizeof(stack[0])),
                  &nl, NULL, NULL, NULL, NULL) != 0) {
         return "";
@@ -338,42 +404,49 @@ const char *ms_col_name(ms_stmt *ss, int col) {
     return out;
 }
 
-int ms_col_type(ms_stmt *ss, int col) {
+int ms_col_type(ms_stmt *s, int col) {
     SQLSMALLINT t = -1;
-    if (describe(state_get((SQLHSTMT)ss), col, NULL, 0, NULL, &t, NULL, NULL,
-                 NULL) != 0) return -1;
+    if (!stmt_ok(s)) return -1;
+    if (describe(s, col, NULL, 0, NULL, &t, NULL, NULL, NULL) != 0) return -1;
     return (int)t;
 }
 
-long ms_col_size(ms_stmt *ss, int col) {
+long ms_col_size(ms_stmt *s, int col) {
     SQLULEN sz = 0;
-    if (describe(state_get((SQLHSTMT)ss), col, NULL, 0, NULL, NULL, &sz, NULL,
-                 NULL) != 0) return -1;
+    if (!stmt_ok(s)) return -1;
+    if (describe(s, col, NULL, 0, NULL, NULL, &sz, NULL, NULL) != 0) return -1;
     return (long)sz;
 }
 
-int ms_col_digits(ms_stmt *ss, int col) {
+int ms_col_digits(ms_stmt *s, int col) {
     SQLSMALLINT d = -1;
-    if (describe(state_get((SQLHSTMT)ss), col, NULL, 0, NULL, NULL, NULL, &d,
-                 NULL) != 0) return -1;
+    if (!stmt_ok(s)) return -1;
+    if (describe(s, col, NULL, 0, NULL, NULL, NULL, &d, NULL) != 0) return -1;
     return (int)d;
 }
 
-int ms_col_nullable(ms_stmt *ss, int col) {
+int ms_col_nullable(ms_stmt *s, int col) {
     SQLSMALLINT n = 0;
-    if (describe(state_get((SQLHSTMT)ss), col, NULL, 0, NULL, NULL, NULL, NULL,
-                 &n) != 0) return -1;
+    if (!stmt_ok(s)) return -1;
+    if (describe(s, col, NULL, 0, NULL, NULL, NULL, NULL, &n) != 0) return -1;
     return (int)n;
 }
 
-/* ---------------------------------------------------------------- cell reads */
+/* ------------------------------------------------------------------ cell reads */
+
+static int column_binary_mode(ms_stmt *s, int col) {
+    SQLSMALLINT t = 0;
+    if (describe(s, col, NULL, 0, NULL, &t, NULL, NULL, NULL) != 0) return 0;
+    return (t == SQL_BINARY || t == SQL_VARBINARY || t == SQL_LONGVARBINARY)
+               ? 1 : 0;
+}
 
 static int cell_grow(ms_cell *c) {
     unsigned char *p;
     int cap;
-    if (c->cap >= MS_MAX_VALUE + 1) return -1;
+    if (c->cap >= MS_MAX_VALUE + 4) return -1;
     cap = c->cap ? c->cap * 2 : 4096;
-    if (cap > MS_MAX_VALUE + 1) cap = MS_MAX_VALUE + 1;
+    if (cap > MS_MAX_VALUE + 4) cap = MS_MAX_VALUE + 4;
     p = (unsigned char *)realloc(c->buf, (size_t)cap);
     if (!p) return -1;
     c->buf = p;
@@ -381,18 +454,17 @@ static int cell_grow(ms_cell *c) {
     return 0;
 }
 
-int ms_read_cell(ms_stmt *ss, int col, int binary) {
-    ms_state *s = state_get((SQLHSTMT)ss);
-    ms_cell *c;
-    int mode = binary ? 1 : 0;
-    if (!s || col < 0 || col >= s->ncells) return -1;
-    c = &s->cells[col];
+/* Read one column into its cell. The caller has checked stmt_ok, row_valid and
+ * the column bounds. */
+static int read_cell_at(ms_stmt *s, int col, int mode) {
+    ms_cell *c = &s->cells[col];
     if (c->loaded && c->mode == mode) return c->status;
     c->loaded = 0;
     c->len = 0;
     c->status = 0;
     c->mode = mode;
     if (!c->buf && cell_grow(c) != 0) {
+        state_set_error(s, "out of memory reading the column", 3);
         c->status = -1;
         c->loaded = 1;
         return -1;
@@ -404,6 +476,7 @@ int ms_read_cell(ms_stmt *ss, int col, int binary) {
         int chunk;
         if (remain < 2) {
             if (cell_grow(c) != 0) {
+                state_set_error(s, "value exceeds the 16 MiB cap", 2);
                 c->status = -2;
                 break;
             }
@@ -438,6 +511,11 @@ int ms_read_cell(ms_stmt *ss, int col, int binary) {
                 chunk = (int)ind;
             }
             c->len += chunk;
+            if (c->len > MS_MAX_VALUE) {
+                state_set_error(s, "value exceeds the 16 MiB cap", 2);
+                c->status = -2;
+                break;
+            }
             c->status = 0;
             break;
         }
@@ -457,38 +535,71 @@ int ms_read_cell(ms_stmt *ss, int col, int binary) {
             /* Some drivers refuse to split a multi-byte character at a small
              * buffer boundary. Grow and retry; at the cap this is an error. */
             if (cell_grow(c) != 0) {
+                state_set_error(s, "value exceeds the 16 MiB cap", 2);
                 c->status = -2;
                 break;
             }
             continue;
         }
         c->len += chunk;
-        if (c->len >= MS_MAX_VALUE) {
+        if (c->len > MS_MAX_VALUE) {
+            state_set_error(s, "value exceeds the 16 MiB cap", 2);
             c->status = -2;
             break;
         }
         if (c->len + 2 > c->cap && cell_grow(c) != 0) {
-            c->status = -1;
+            state_set_error(s, "value exceeds the 16 MiB cap", 2);
+            c->status = -2;
             break;
         }
     }
     c->loaded = 1;
+    if (c->status == 0) state_clear_error(s);
     return c->status;
 }
 
-const void *ms_cell_value(ms_stmt *ss, int col, int binary) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_read_cell(ms_stmt *s, int col, int binary) {
+    int mode = binary ? 1 : 0;
+    int k;
+    int r;
+    if (!stmt_ok(s)) return -1;
+    if (!s->row_valid) {
+        state_set_error(s, "no current row", 2);
+        return -1;
+    }
+    if (col < 0 || col >= s->ncells) {
+        state_set_error(s, "column out of range", 2);
+        return -1;
+    }
+    if (col < s->read_next) {
+        ms_cell *c = &s->cells[col];
+        if (c->loaded && c->mode == mode) return c->status;
+        state_set_error(s, "columns must be read in ascending order", 2);
+        return -1;
+    }
+    /* SQLGetData consumes columns in ascending order. Read and cache the
+     * skipped ones so a later read of an earlier column is served from the
+     * cache rather than failing with 07009. */
+    for (k = s->read_next; k < col; k++) {
+        r = read_cell_at(s, k, column_binary_mode(s, k));
+        if (r < 0) return r;
+    }
+    r = read_cell_at(s, col, mode);
+    if (r >= 0) s->read_next = col + 1;
+    return r;
+}
+
+const void *ms_cell_value(ms_stmt *s, int col, int binary) {
     ms_cell *c;
-    if (!s || col < 0 || col >= s->ncells) return NULL;
+    if (!s || !s->row_valid || col < 0 || col >= s->ncells) return NULL;
     c = &s->cells[col];
     if (!c->loaded || c->mode != (binary ? 1 : 0) || c->status != 0) return NULL;
     return c->buf;
 }
 
-int ms_cell_len(ms_stmt *ss, int col, int binary) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_cell_len(ms_stmt *s, int col, int binary) {
     ms_cell *c;
-    if (!s || col < 0 || col >= s->ncells) return 0;
+    if (!s || !s->row_valid || col < 0 || col >= s->ncells) return 0;
     c = &s->cells[col];
     if (!c->loaded || c->mode != (binary ? 1 : 0) || c->status != 0) return 0;
     return c->len;
@@ -496,30 +607,33 @@ int ms_cell_len(ms_stmt *ss, int col, int binary) {
 
 /* ------------------------------------------------------------------ diagnostics */
 
-const char *ms_stmt_diag(ms_stmt *ss) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+const char *ms_stmt_diag(ms_stmt *s) {
     if (!s) return "";
     if (s->synthetic) return s->synthetic;
+    if (s->closed || s->h == SQL_NULL_HSTMT) {
+        state_set_error(s, "statement's connection is closed", 2);
+        return s->synthetic ? s->synthetic : "";
+    }
     return ms_handle_diag(s->h, SQL_HANDLE_STMT);
 }
 
-const char *ms_stmt_sqlstate(ms_stmt *ss) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+const char *ms_stmt_sqlstate(ms_stmt *s) {
     if (!s) return "";
+    if (s->closed || s->h == SQL_NULL_HSTMT) return "08003";
     if (s->synthetic) return "HY000";
     return ms_handle_sqlstate(s->h, SQL_HANDLE_STMT);
 }
 
-int ms_stmt_error_code(ms_stmt *ss) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_stmt_error_code(ms_stmt *s) {
     if (!s) return 0;
+    if (s->closed || s->h == SQL_NULL_HSTMT) return 2;
     if (s->synthetic) return s->synthetic_code;
     return ms_handle_error_code(s->h, SQL_HANDLE_STMT);
 }
 
 /* ---------------------------------------------------------------- parameters */
 
-static int bind_push(ms_state *s, void *ptr, SQLLEN *ind) {
+static int bind_push(ms_stmt *s, void *ptr, SQLLEN *ind) {
     ms_bind_slot *b = (ms_bind_slot *)malloc(sizeof *b);
     if (!b) return -1;
     b->ptr = ptr;
@@ -529,16 +643,16 @@ static int bind_push(ms_state *s, void *ptr, SQLLEN *ind) {
     return 0;
 }
 
-static int bind_error(ms_state *s, const char *msg, int code) {
+static int bind_error(ms_stmt *s, const char *msg, int code) {
     state_set_error(s, msg, code);
     return SQL_ERROR;
 }
 
-int ms_bind_null(ms_stmt *ss, int index) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_bind_null(ms_stmt *s, int index) {
     SQLLEN *ind;
     SQLRETURN rc;
-    if (!s) return SQL_ERROR;
+    if (!stmt_ok(s)) return SQL_ERROR;
+    state_clear_error(s);
     if (index < 1 || index > MS_MAX_PARAMS) {
         return bind_error(s, "parameter index out of range", 2);
     }
@@ -554,12 +668,12 @@ int ms_bind_null(ms_stmt *ss, int index) {
     return SQL_SUCCEEDED(rc) ? 0 : (int)rc;
 }
 
-int ms_bind_int(ms_stmt *ss, int index, long value) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_bind_int(ms_stmt *s, int index, long value) {
     long *v;
     SQLLEN *ind;
     SQLRETURN rc;
-    if (!s) return SQL_ERROR;
+    if (!stmt_ok(s)) return SQL_ERROR;
+    state_clear_error(s);
     if (index < 1 || index > MS_MAX_PARAMS) {
         return bind_error(s, "parameter index out of range", 2);
     }
@@ -582,17 +696,21 @@ int ms_bind_int(ms_stmt *ss, int index, long value) {
     return SQL_SUCCEEDED(rc) ? 0 : (int)rc;
 }
 
-int ms_bind_text(ms_stmt *ss, int index, const void *utf8, int n) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_bind_text(ms_stmt *s, int index, const void *utf8, int n) {
     char *copy;
     SQLLEN *ind;
     SQLRETURN rc;
-    if (!s) return SQL_ERROR;
+    SQLULEN colsize;
+    if (!stmt_ok(s)) return SQL_ERROR;
+    state_clear_error(s);
     if (index < 1 || index > MS_MAX_PARAMS) {
         return bind_error(s, "parameter index out of range", 2);
     }
     if (n < 0 || n > MS_MAX_VALUE || (n > 0 && !utf8)) {
         return bind_error(s, "text parameter is too large", 2);
+    }
+    if (!ms_utf8_check(utf8, n)) {
+        return bind_error(s, "text parameter is not valid UTF-8", 2);
     }
     copy = (char *)malloc((size_t)n + 1);
     ind = (SQLLEN *)malloc(sizeof *ind);
@@ -609,18 +727,21 @@ int ms_bind_text(ms_stmt *ss, int index, const void *utf8, int n) {
         free(ind);
         return bind_error(s, "out of memory binding a parameter", 3);
     }
+    /* The driver rejects a declared precision above 4000 for a wide varchar
+     * parameter; 0 means "unspecified" and is required for the 16 MiB range. */
+    colsize = (n > 4000) ? 0 : (SQLULEN)(n > 0 ? n : 1);
     rc = SQLBindParameter(s->h, (SQLUSMALLINT)index, SQL_PARAM_INPUT, SQL_C_CHAR,
-                          SQL_WVARCHAR, (SQLULEN)(n > 0 ? n : 1), 0, copy,
-                          (SQLLEN)(n + 1), ind);
+                          SQL_WVARCHAR, colsize, 0, copy, (SQLLEN)(n + 1), ind);
     return SQL_SUCCEEDED(rc) ? 0 : (int)rc;
 }
 
-int ms_bind_binary(ms_stmt *ss, int index, const void *data, int n) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_bind_binary(ms_stmt *s, int index, const void *data, int n) {
     unsigned char *copy;
     SQLLEN *ind;
     SQLRETURN rc;
-    if (!s) return SQL_ERROR;
+    SQLULEN colsize;
+    if (!stmt_ok(s)) return SQL_ERROR;
+    state_clear_error(s);
     if (index < 1 || index > MS_MAX_PARAMS) {
         return bind_error(s, "parameter index out of range", 2);
     }
@@ -641,35 +762,19 @@ int ms_bind_binary(ms_stmt *ss, int index, const void *data, int n) {
         free(ind);
         return bind_error(s, "out of memory binding a parameter", 3);
     }
+    /* Same precision rule for binary: above 8000 bytes use "unspecified". */
+    colsize = (n > 8000) ? 0 : (SQLULEN)(n > 0 ? n : 1);
     rc = SQLBindParameter(s->h, (SQLUSMALLINT)index, SQL_PARAM_INPUT, SQL_C_BINARY,
-                          SQL_VARBINARY, (SQLULEN)(n > 0 ? n : 1), 0, copy,
-                          (SQLLEN)n, ind);
+                          SQL_VARBINARY, colsize, 0, copy, (SQLLEN)n, ind);
     return SQL_SUCCEEDED(rc) ? 0 : (int)rc;
 }
 
-int ms_bind_clear(ms_stmt *ss) {
-    ms_state *s = state_get((SQLHSTMT)ss);
+int ms_bind_clear(ms_stmt *s) {
     SQLRETURN rc;
-    if (!s) return SQL_ERROR;
+    if (!stmt_ok(s)) return SQL_ERROR;
+    state_clear_error(s);
     rc = SQLFreeStmt(s->h, SQL_RESET_PARAMS);
-    while (s->binds) {
-        ms_bind_slot *b = s->binds;
-        s->binds = b->next;
-        free(b->ptr);
-        free(b->ind);
-        free(b);
-    }
+    binds_free(s);
+    if (SQL_SUCCEEDED(rc)) state_clear_error(s);
     return SQL_SUCCEEDED(rc) ? 0 : (int)rc;
-}
-
-void ms_close_stmt(ms_stmt *ss) {
-    SQLHSTMT h = (SQLHSTMT)ss;
-    ms_state *s;
-    if (!h) return;
-    s = state_get(h);
-    if (s) state_free(s);
-    /* Free the cursor first: some drivers refuse SQLFreeHandle while a cursor
-     * is open. The close is explicit; a failure here is not reported. */
-    SQLFreeStmt(h, SQL_CLOSE);
-    SQLFreeHandle(SQL_HANDLE_STMT, h);
 }

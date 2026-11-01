@@ -5,6 +5,11 @@
  * process-wide state behind it, and the binding has no shutdown hook that could
  * safely order a free after every connection. This matches the one-process,
  * single-threaded contract of the cinterop seam (design C10).
+ *
+ * The foreign word points at the ms_conn state, not at the raw SQLHDBC. That
+ * lets close mark every child statement dead and free its HSTMT before the DBC
+ * is disconnected, so a Rows that outlives its Connection cannot reach a stale
+ * driver handle.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +39,7 @@ static int ensure_env(void) {
 ms_conn *ms_open(const void *dsn, int n) {
     SQLWCHAR *wdsn = NULL;
     int units = 0;
-    SQLHDBC dbc = SQL_NULL_HANDLE;
+    SQLHDBC dbc = SQL_NULL_HDBC;
     SQLRETURN rc;
 
     if (!dsn || n <= 0 || n > MS_MAX_VALUE) {
@@ -60,7 +65,15 @@ ms_conn *ms_open(const void *dsn, int n) {
          * "Changed database context"; the connection is usable. They are not
          * an error and are not drained (reading a diagnostic does not clear
          * it); conn_diag exposes them if a caller asks. */
-        return (ms_conn *)dbc;
+        ms_conn *c = (ms_conn *)calloc(1, sizeof *c);
+        if (!c) {
+            SQLDisconnect(dbc);
+            SQLFreeHandle(SQL_HANDLE_DBC, dbc);
+            ms_set_last_error("out of memory allocating connection state", "", 3);
+            return NULL;
+        }
+        c->dbc = dbc;
+        return c;
     }
     {
         char *buf = ms_text_reserve(1024);
@@ -69,11 +82,13 @@ ms_conn *ms_open(const void *dsn, int n) {
         if (buf) {
             int cap = 1024;
             for (;;) {
-                int used = ms_diag(dbc, SQL_HANDLE_DBC, buf, cap);
-                if (used < cap - 1 || cap >= MS_MAX_VALUE + 1) break;
-                cap *= 2;
+                int used;
+                if (cap > MS_MAX_VALUE + 1) cap = MS_MAX_VALUE + 1;
                 buf = ms_text_reserve((size_t)cap);
                 if (!buf) break;
+                used = ms_diag(dbc, SQL_HANDLE_DBC, buf, cap);
+                if (used < cap - 1 || cap == MS_MAX_VALUE + 1) break;
+                cap *= 2;
             }
         }
         strcpy(state, ms_handle_sqlstate(dbc, SQL_HANDLE_DBC));
@@ -101,24 +116,50 @@ int ms_open_error_code(void) {
     return ms_last_error_code();
 }
 
-void ms_close_conn(ms_conn *c) {
-    SQLHDBC dbc = (SQLHDBC)c;
-    if (!dbc) return;
-    SQLDisconnect(dbc);
-    SQLFreeHandle(SQL_HANDLE_DBC, dbc);
+int ms_close_conn(ms_conn *c) {
+    int rc = 0;
+    if (!c) return 0;
+    if (c->closed) return 0;
+    c->closed = 1;
+    {
+        ms_stmt *s = c->children;
+        c->children = NULL;
+        while (s) {
+            ms_stmt *next = s->next_sibling;
+            s->next_sibling = NULL;
+            /* Frees the HSTMT, marks the state closed and leaves the clean
+             * diagnostic that a later stmt shim returns. A driver failure is
+             * reported by Connection.close() through the release code. */
+            {
+                int cr = ms_stmt_mark_closed(s);
+                if (cr != 0 && rc == 0) rc = cr;
+            }
+            s = next;
+        }
+    }
+    if (c->dbc) {
+        SQLRETURN dr = SQLDisconnect(c->dbc);
+        SQLRETURN fr;
+        if (!SQL_SUCCEEDED(dr) && rc == 0) rc = (int)dr;
+        fr = SQLFreeHandle(SQL_HANDLE_DBC, c->dbc);
+        if (!SQL_SUCCEEDED(fr) && rc == 0) rc = (int)fr;
+        c->dbc = SQL_NULL_HDBC;
+    }
+    free(c);
+    return rc;
 }
 
 const char *ms_conn_diag(const ms_conn *c) {
-    if (!c) return "";
-    return ms_handle_diag((SQLHDBC)(void *)c, SQL_HANDLE_DBC);
+    if (!c || c->closed || !c->dbc) return "";
+    return ms_handle_diag((SQLHDBC)(void *)c->dbc, SQL_HANDLE_DBC);
 }
 
 const char *ms_conn_sqlstate(const ms_conn *c) {
-    if (!c) return "";
-    return ms_handle_sqlstate((SQLHDBC)(void *)c, SQL_HANDLE_DBC);
+    if (!c || c->closed || !c->dbc) return "";
+    return ms_handle_sqlstate((SQLHDBC)(void *)c->dbc, SQL_HANDLE_DBC);
 }
 
 int ms_conn_error_code(const ms_conn *c) {
-    if (!c) return 0;
-    return ms_handle_error_code((SQLHDBC)(void *)c, SQL_HANDLE_DBC);
+    if (!c || c->closed || !c->dbc) return 0;
+    return ms_handle_error_code((SQLHDBC)(void *)c->dbc, SQL_HANDLE_DBC);
 }

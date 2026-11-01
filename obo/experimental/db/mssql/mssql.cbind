@@ -28,7 +28,7 @@
       "name": "ms_conn",
       "obo": "Connection",
       "release": "ms_close_conn",
-      "release_result": "void"
+      "release_result": "int"
     },
     {
       "name": "ms_stmt",
@@ -311,6 +311,17 @@
     {
       "name": "stmt_error_code",
       "symbol": "ms_stmt_error_code",
+      "args": [
+        "borrow_mut<ms_stmt>@0"
+      ],
+      "ret": "i32",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "stmt_live",
+      "symbol": "ms_stmt_live",
       "args": [
         "borrow_mut<ms_stmt>@0"
       ],
