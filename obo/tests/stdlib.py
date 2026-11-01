@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""P1 stdlib tests: every pub API of strings, paths, sort, time, cli, errors,
-fmt, sqldialect and decimals.
+"""P1 stdlib tests for the stdlib modules: strings, paths, sort, time, cli,
+errors, fmt, sqldialect and decimals.
 
     python3 obo/tests/stdlib.py
 
@@ -49,7 +49,9 @@ atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 EXPECTED_ROOTS = [
     'cli_errors.obx', 'cli_helpers.obx', 'cli_parse.obx',
     'decimals_allocate.obx', 'decimals_format.obx',
-    'decimals_rounding.obx', 'decimals_values.obx',
+    'decimals_high_scale.obx', 'decimals_rounding.obx',
+    'decimals_trap_sum.obx', 'decimals_trap_weight.obx',
+    'decimals_values.obx',
     'errors_basic.obx', 'fmt_basic.obx',
     'paths_absent_base.obx', 'paths_absent_clean.obx',
     'paths_absent_dir.obx', 'paths_absent_stem.obx', 'paths_table.obx',

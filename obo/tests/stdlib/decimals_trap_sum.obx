@@ -1,0 +1,15 @@
+// decimals_trap_sum: sum adds at full precision and traps on overflow exactly
+// like `+`; it does not return a Result. Each element is representable alone,
+// and the addition exceeds the 38-digit coefficient.
+// expect: before sum
+// expect-exit: 10
+import "decimals.obx" as decimals
+
+fn main() {
+    var xs = new []decimal(0)
+    append(xs, 99999999999999999999999999999999999999.0)
+    append(xs, 99999999999999999999999999999999999999.0)
+    println("before sum")
+    println(decimals::sum(xs))
+    println("unreachable")
+}

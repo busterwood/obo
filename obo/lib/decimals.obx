@@ -32,41 +32,37 @@
 // 33.34, 33.33, 33.33, and -100.00 into 3 is -33.34, -33.33, -33.33.
 // A zero weight always receives zero.
 //
-// These functions never trap on bad arguments: a negative part count, zero
-// parts with a nonzero total, an empty weight list, a negative weight or a
-// weight sum of zero return code 22 (EINVAL, the errno convention obo/lib
-// uses), and a scale outside 0..32768 returns code 6. Decimal failures from
-// quantize/div/toInt keep their core code (1, 3, 4, 5 or 6). The arithmetic
-// inside is exact and has the same 38-digit trap as `*` and `+`; in particular
-// allocateWeighted multiplies the total by each weight and sums the weights.
+// These functions never trap on bad arguments. Validation runs scale first
+// (code 6), then the shape checks in a fixed order: for allocate a negative
+// part count, then zero parts with a nonzero total; for allocateWeighted an
+// empty list, then a negative weight, then a zero weight sum. Shape failures
+// are code 22 (EINVAL, the errno convention obo/lib uses), and the output
+// array is allocated only after the total has passed quantize. Decimal
+// failures from quantize/div/toInt keep their core code (1, 3, 4, 5 or 6).
+// The arithmetic inside is exact and has the same 38-digit trap as `*` and
+// `+`; in particular allocateWeighted multiplies the total by each weight and
+// sums the weights.
 //
 // formatGrouped(d, sep) is decimal::format's fixed display text with sep
 // inserted every three digits of the integer part, preserving the sign and the
-// fraction. It is byte-wise and locale-free: sep is inserted verbatim, so a
-// non-ASCII byte stays one byte. A format failure (usually code 3, a display
-// scale that would drop a nonzero digit) is returned unchanged.
+// fraction. It is byte-wise and locale-free: sep is inserted verbatim, so any
+// byte is a separator, including a non-ASCII byte (which stays one byte). A
+// format failure (usually code 3, a display scale that would drop a nonzero
+// digit) is returned unchanged.
 module decimals
 
 // Argument error for a malformed request, matching the errno convention of the
 // other obo/lib modules (EINVAL 22). Decimal value failures use their own codes.
 pub const EINVAL = 22
 
-// 10^-scale as an exact decimal: 0.1 divided by ten scale-1 times. It is only
-// used to count a split's leftover units, so the dividend is a small multiple
-// of it and that final division is exact. The caller has validated scale.
+// 10^-scale as an exact decimal through the builtin text parser, which covers
+// the whole 0..32768 range (repeated division overflows once the coefficient
+// would need more than 38 digits). It is only used to count a split's leftover
+// units, so the dividend is a small multiple of it and the final division is
+// exact. The caller has validated scale.
 fn unitAt(scale: int): Result[decimal] {
     if scale == 0 { return ok(decimal::fromInt(1)) }
-    var u = 0.1
-    var i = 1
-    while i < scale {
-        let r = decimal::div(u, decimal::fromInt(10), scale, UNNECESSARY)
-        match r {
-            ok(v) { u = v }
-            err(m, c) { return err(m, c) }
-        }
-        i += 1
-    }
-    return ok(u)
+    return decimal::parse("1e-" + string(scale))
 }
 
 // round down at scale (toward negative infinity)
@@ -178,31 +174,36 @@ pub fn formatGrouped(d: decimal, sep: byte): Result[string] {
 
 // Split total into `parts` equal shares at `scale` (largest remainder).
 // total is rounded to scale HALF_EVEN first; the shares sum exactly to that
-// rounded total. Zero parts needs a zero total.
+// rounded total. Zero parts needs a zero total and returns an empty array.
 pub fn allocate(total: decimal, parts: int, scale: int): Result[[]decimal] {
-    if parts < 0 { return err("part count must be non-negative", EINVAL) }
     if scale < 0 || scale > 32768 {
         return err("decimal scale must be 0..32768", 6)
     }
-    var out = new []decimal(parts)
+    if parts < 0 { return err("part count must be non-negative", EINVAL) }
     if parts == 0 {
         if total != 0.0 {
             return err("cannot allocate a nonzero total to zero parts", EINVAL)
         }
-        return ok(out)
+        return ok(new []decimal(0))
     }
 
     let q = try decimal::quantize(total, scale, HALF_EVEN)
     let base = try decimal::div(q, decimal::fromInt(parts), scale, TOWARD_ZERO)
-    let unit = try unitAt(scale)
     let leftover = q - base * decimal::fromInt(parts)
-    let unitCount = try decimal::div(leftover, unit, 0, UNNECESSARY)
-    let units = try decimal::toInt(unitCount, UNNECESSARY)
 
-    var step = unit
-    if q < 0.0 { step = -unit }
-    var n = units
-    if n < 0 { n = -n }
+    var step = decimal::fromInt(0)
+    var n = 0
+    if leftover != 0.0 {
+        let unit = try unitAt(scale)
+        let unitCount = try decimal::div(leftover, unit, 0, UNNECESSARY)
+        let units = try decimal::toInt(unitCount, UNNECESSARY)
+        step = unit
+        if q < 0.0 { step = -unit }
+        n = units
+        if n < 0 { n = -n }
+    }
+
+    var out = new []decimal(parts)
     var i = 0
     while i < n {
         out[i] = base + step
@@ -221,10 +222,10 @@ pub fn allocate(total: decimal, parts: int, scale: int): Result[[]decimal] {
 pub fn allocateWeighted(total: decimal, weights: &[]decimal,
                         scale: int): Result[[]decimal] {
     let n = len(weights)
-    if n == 0 { return err("weights must not be empty", EINVAL) }
     if scale < 0 || scale > 32768 {
         return err("decimal scale must be 0..32768", 6)
     }
+    if n == 0 { return err("weights must not be empty", EINVAL) }
     var totalWeight = decimal::fromInt(0)
     for i in 0..n {
         if weights[i] < 0.0 {
@@ -248,14 +249,18 @@ pub fn allocateWeighted(total: decimal, weights: &[]decimal,
         sumBase = sumBase + b
     }
 
-    let unit = try unitAt(scale)
     let leftover = q - sumBase
-    let unitCount = try decimal::div(leftover, unit, 0, UNNECESSARY)
-    let units = try decimal::toInt(unitCount, UNNECESSARY)
-    var step = unit
-    if leftover < 0.0 { step = -unit }
-    var count = units
-    if count < 0 { count = -count }
+    var step = decimal::fromInt(0)
+    var count = 0
+    if leftover != 0.0 {
+        let unit = try unitAt(scale)
+        let unitCount = try decimal::div(leftover, unit, 0, UNNECESSARY)
+        let units = try decimal::toInt(unitCount, UNNECESSARY)
+        step = unit
+        if leftover < 0.0 { step = -unit }
+        count = units
+        if count < 0 { count = -count }
+    }
 
     // Give one unit to the largest remainders; a strict > keeps the earlier
     // index on a tie, and the used mask keeps a part from taking two units.
