@@ -26,8 +26,8 @@ RT = FORK
 GOLD = os.path.join(HERE, 'modules', 'golden')
 UPDATE = '--update' in sys.argv
 
-OBO_VERSION = '0.15'
-SYM_FORMAT = 8
+OBO_VERSION = '0.16'
+SYM_FORMAT = 9
 SYM_ABI = 1
 
 
@@ -444,9 +444,9 @@ def stale_missing_corrupt_versions():
         open(p, 'wb').write(base)
         # format / ABI / compiler, each its own exact message
         cases = [
-            (b'obosym 8', b'obosym 9', 'has format 9; this compiler reads 8'),
+            (b'obosym 9', b'obosym 8', 'has format 8; this compiler reads 9'),
             (b'\nabi 1\n', b'\nabi 9\n', 'has ABI 9; this compiler uses 1'),
-            (b'compiler "0.15"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.15'"),
+            (b'compiler "0.16"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.16'"),
         ]
         for old, new, msg in cases:
             data = base
@@ -719,9 +719,9 @@ def handwritten_interface():
     parameter names, summary items in any order, and a pf row at index >= 62."""
     params = ', '.join(f'q{i}: int' for i in range(63))
     uid = fnv(b'many::T')
-    sym = f'''obosym 8
+    sym = f'''obosym 9
 abi 1
-compiler "0.15"
+compiler "0.16"
 source 0x{0:016x}
 interface 0x0
 module many
@@ -1109,7 +1109,7 @@ def b6_stub_completion():
     try:
         ok(build(d, s), 'x build')
         m = os.path.join(s, 'm.sym')
-        open(m, 'w').write('obosym 8\nabi 1\ncompiler "0.15"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        open(m, 'w').write('obosym 9\nabi 1\ncompiler "0.16"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
         rehash(m, lambda b: b)
         for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
                               ('order2', 'import "x.obx"\nimport "m.obx"')):
@@ -1351,9 +1351,9 @@ fn main() {
         if 'fn (p0: &Local) lget(): int' not in main_text:
             raise Fail(f"the checked module's .sym lacks its method: {main_text!r}")
         base = sym_text(libsym)
-        open(libsym, 'wb').write(base.replace(b'obosym 8', b'obosym 1', 1))
+        open(libsym, 'wb').write(base.replace(b'obosym 9', b'obosym 1', 1))
         q = build(d, s, check=True)
-        if q.returncode != 2 or 'has format 1; this compiler reads 8' not in q.stderr:
+        if q.returncode != 2 or 'has format 1; this compiler reads 9' not in q.stderr:
             raise Fail(f"format 1: exit {q.returncode}: {q.stderr.strip()}")
         open(libsym, 'wb').write(base)
         os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
@@ -1709,7 +1709,7 @@ def stale_format3_interface():
         f.write('obosym 3\nabi 1\ncompiler "0.7"\nsource 0x0000000000000001\ninterface 0x0\nmodule lib\n'
                 'type I = interface { fn m(p0: I): int }\nfn f(p0: I): int\n')
     q = build(d, symdir, check=True)
-    if q.returncode != 2 or 'has format 3; this compiler reads 8; rebuild it' not in q.stderr:
+    if q.returncode != 2 or 'has format 3; this compiler reads 9; rebuild it' not in q.stderr:
         raise Fail(f"stale format-3 interface file: exit {q.returncode}: {q.stderr.strip()}")
     shutil.rmtree(d, ignore_errors=True)
 
@@ -1744,7 +1744,7 @@ def fn_sym_roundtrip():
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'function-type module build')
         libpath = os.path.join(symdir, 'lib.sym')
         lib = sym_text(libpath).decode()
-        for line in ('obosym 8\n', 'abi 1\n', 'compiler "0.15"\n',
+        for line in ('obosym 9\n', 'abi 1\n', 'compiler "0.16"\n',
                      'type Cmp = fn(&Item, &Item): int\n',
                      'fn apply(p0: fn(int): int, p1: int): int\n',
                      'fn useCmp(p0: fn(&Item, &Item): int): int\n',
@@ -1780,9 +1780,9 @@ def stale_format4_fn_rejected():
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'honest format-5 build')
         libpath = os.path.join(symdir, 'lib.sym')
         os.unlink(os.path.join(d, 'lib.obx'))
-        mutate(libpath, b'obosym 8', b'obosym 4', recompute=False)
+        mutate(libpath, b'obosym 9', b'obosym 4', recompute=False)
         q = build(d, symdir, check=True)
-        if q.returncode != 2 or 'has format 4; this compiler reads 8; rebuild it' not in q.stderr:
+        if q.returncode != 2 or 'has format 4; this compiler reads 9; rebuild it' not in q.stderr:
             raise Fail(f"stale format-4 function type: exit {q.returncode}: {q.stderr.strip()}")
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -1959,7 +1959,7 @@ def forged_fn_positions():
         if q.returncode != 2 or want not in q.stderr:
             raise Fail(f"forward shell through a bare alias: exit {q.returncode}: {q.stderr.strip()}")
         # an incomplete forward shell as a function-type parameter
-        manual = ('obosym 8\nabi 1\ncompiler "0.15"\nsource 0x0000000000000001\n'
+        manual = ('obosym 9\nabi 1\ncompiler "0.16"\nsource 0x0000000000000001\n'
                   'interface 0x0\nmodule lib\ntype Later uid 0x%016x\n'
                   'fn apply(p0: fn(Later): int): int\n' % fnv(b'lib::Later'))
         open(libpath, 'w').write(manual)
@@ -2203,7 +2203,7 @@ fn main() {
         ok(build(d, s, out=os.path.join(d, 'p')), 'build')
         lib = os.path.join(s, 'lib.sym')
         text = sym_text(lib)
-        if b'obosym 8\n' not in text or b'compiler "0.15"' not in text:
+        if b'obosym 9\n' not in text or b'compiler "0.16"' not in text:
             raise Fail(f"format/compiler header is wrong: {text[:80]!r}")
         if b'type Mixed = ref record { pub a: int; priv; pub c: string; priv }' not in text:
             raise Fail(f"mixed field list is not canonical: {text!r}")
@@ -2519,15 +2519,206 @@ def field_visibility_old_format():
         ok(build(d, s, out=os.path.join(d, 'p')), 'build')
         p = os.path.join(s, 'lib.sym')
         text = sym_text(p)
-        open(p, 'wb').write(text.replace(b'obosym 8', b'obosym 6', 1))
+        open(p, 'wb').write(text.replace(b'obosym 9', b'obosym 6', 1))
         q = build(d, s, check=True)
-        want = f"obxc: symbol file '{p}' has format 6; this compiler reads 8; rebuild it"
+        want = f"obxc: symbol file '{p}' has format 6; this compiler reads 9; rebuild it"
         if q.returncode != 2 or want not in q.stderr:
             raise Fail(f"format 6: exit {q.returncode}: {q.stderr.strip()}")
         q = subprocess.run([OBO, '--version'], capture_output=True, text=True)
         want = f'obo {OBO_VERSION} sym-format {SYM_FORMAT} abi {SYM_ABI}\n'
         if q.stdout != want:
             raise Fail(f"--version: {q.stdout!r}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def decimal_fields_sym():
+    '''D1: decimal record fields in a .sym. A public decimal field is written with its type; a private
+    one is the 24-byte marker priv24, so the offsets of the fields after it survive. The file re-emits
+    byte-identically, a source-less check of main writes the same main.sym as the full build, and a
+    malformed priv24 is a symbol-file error.'''
+    src = os.path.join(HERE, 'modules', 'run', 'decimal_fields')
+    files = {}
+    for name in ('main.obx', 'lib.obx'):
+        with open(os.path.join(src, name)) as f:
+            files[name] = f.read()
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'prog')), 'full build of the decimal-field tree')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        for want in (b'type Ledger = ref record { pub name: string; pub total: decimal; priv24; priv; pub fee: decimal; priv24 }',
+                     b'type Shape = closed { Circle { pub r: decimal } Blank { } }'):
+            if want not in text:
+                raise Fail(f"decimal field line is wrong, wanted {want!r}: {text!r}")
+        r = reemit(lib)
+        if r.returncode != 0 or r.stdout != text:
+            raise Fail('the decimal-field lib.sym does not re-emit unchanged')
+        full_main = sym_text(os.path.join(s, 'main.sym'))
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(s, chk)
+        ok(build(d, chk, check=True), 'source-less check of the decimal-field tree')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+        os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
+        cases = [
+            ('priv24 with a name', b'priv24; priv; pub fee', b'priv24 x; priv; pub fee',
+             'a private field has no name or type', True),
+            ('priv24 with a type', b'priv24; priv; pub fee', b'priv24: decimal; priv; pub fee',
+             'a private field has no name or type', True),
+            ('misspelled marker', b'priv24; priv; pub fee', b'priv25; priv; pub fee',
+             "expected 'pub', 'priv' or 'priviface' in a record field list", True),
+            ('priv24 in a closed variant', b'Circle { pub r: decimal }', b'Circle { priv24 }',
+             'private fields are not allowed in a closed variant', True),
+            ('unrehashed priv24 change', b'priv24; priv; pub fee', b'priv; priv; pub fee',
+             'is corrupt (interface hash)', False),
+        ]
+        base = sym_text(lib)
+        for name, old, new, want, rehash in cases:
+            if base.count(old) != 1:
+                raise Fail(f"{name}: {old!r} occurs {base.count(old)} times")
+            open(lib, 'wb').write(base)
+            mutate(lib, old, new, recompute=rehash)
+            q = build(d, s, check=True)
+            if q.returncode != 2 or want not in q.stderr:
+                raise Fail(f"{name}: exit {q.returncode}: {q.stderr.strip()}")
+            if 'symbol file' not in q.stderr:
+                raise Fail(f"{name}: not a symbol-file error: {q.stderr.strip()}")
+        open(lib, 'wb').write(base)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def decimal_arrays_sym():
+    '''D2: []decimal in a .sym. A function signature, a public record field, a private owned array and a
+    public global carry the array type; the file re-emits byte-identically, a source-less check of main
+    writes the same main.sym as the full build, and a signature that names the wrong element type is
+    refused by the check (the interface hash is recomputed, so the change reaches the importer).'''
+    src = os.path.join(HERE, 'modules', 'run', 'decimal_arrays')
+    files = {}
+    for name in ('main.obx', 'lib.obx'):
+        with open(os.path.join(src, name)) as f:
+            files[name] = f.read()
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'prog')), 'full build of the decimal-array tree')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        for want in (b'type Book = ref record { pub lines: []decimal; pub name: string; priv }',
+                     b'var shared: []decimal',
+                     b'fn make(p0: int): []decimal',
+                     b'fn total(p0: &[]decimal): decimal',
+                     b'fn push(mut p0: &[]decimal, p1: decimal)'):
+            if want not in text:
+                raise Fail(f"decimal array line is wrong, wanted {want!r}: {text!r}")
+        r = reemit(lib)
+        if r.returncode != 0 or r.stdout != text:
+            raise Fail('the decimal-array lib.sym does not re-emit unchanged')
+        full_main = sym_text(os.path.join(s, 'main.sym'))
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(s, chk)
+        ok(build(d, chk, check=True), 'source-less check of the decimal-array tree')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+        os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
+        base = sym_text(lib)
+        open(lib, 'wb').write(base)
+        mutate(lib, b'fn total(p0: &[]decimal): decimal', b'fn total(p0: &[]int): decimal', recompute=True)
+        q = build(d, s, check=True)
+        if q.returncode == 0 or 'cannot use []decimal as []int' not in q.stderr:
+            raise Fail(f"a signature with the wrong element type was not refused: {q.returncode} {q.stderr.strip()}")
+        open(lib, 'wb').write(base)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def dec_hex(lo, hi, packed):
+    """The 48 lowercase hex digits of a decimal constant: its 24 value bytes in memory order, each word
+    little-endian (the same bytes the compiler writes, computed here from the words alone)."""
+    return ''.join('%02x' % ((w & 0xFFFFFFFFFFFFFFFF) >> (8 * i) & 255)
+                   for w in (lo, hi, packed) for i in range(8))
+
+
+def decimal_globals_sym():
+    '''D3: decimal globals and constants in a .sym. A public constant is `const NAME: decimal = hex "<48>"`
+    (the 24 value bytes in memory order, from the three words) and a public global is `var NAME: decimal`.
+    The file re-emits byte-identically, a source-less check of main writes the same main.sym as the full
+    build, and each malformed constant is a symbol-file error.'''
+    src = os.path.join(HERE, 'modules', 'run', 'decimal_globals')
+    files = {}
+    for name in ('main.obx', 'lib.obx'):
+        with open(os.path.join(src, name)) as f:
+            files[name] = f.read()
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'prog')), 'full build of the decimal-global tree')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        rate = dec_hex(825, 0, 0xfffc | (4 << 16))            # 0.0825: coefficient 825, exponent -4, dscale 4
+        neg = dec_hex(15, 0, 0xffff | (1 << 16) | (1 << 32))  # -1.5: coefficient 15, exponent -1, dscale 1, sign 1
+        neg0 = dec_hex(0, 0, 2 << 16)                         # -0.00 is 0.00: dscale 2, sign 0
+        for want in (b'const RATE: decimal = hex "' + rate.encode() + b'"',
+                     b'const NEG: decimal = hex "' + neg.encode() + b'"',
+                     b'const NEG0: decimal = hex "' + neg0.encode() + b'"',
+                     b'var total: decimal', b'var base: decimal', b'var start: decimal'):
+            if want not in text:
+                raise Fail(f"decimal global or constant line is wrong, wanted {want!r}: {text!r}")
+        if b'HIDDEN' in text:
+            raise Fail('a private constant is in the .sym')
+        r = reemit(lib)
+        if r.returncode != 0 or r.stdout != text:
+            raise Fail('the decimal-global lib.sym does not re-emit unchanged')
+        full_main = sym_text(os.path.join(s, 'main.sym'))
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(s, chk)
+        ok(build(d, chk, check=True), 'source-less check of the decimal-global tree')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+        os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
+        base = sym_text(lib)
+        # the reader's list: each malformed constant is refused with its own message
+        bad = [
+            ('uppercase hex', rate, rate.upper(), 'a decimal constant\'s hex must be lowercase'),
+            ('47 digits', rate, rate[:-1], 'a decimal constant needs 48 lowercase hexadecimal digits'),
+            ('49 digits', rate, rate + '0', 'a decimal constant needs 48 lowercase hexadecimal digits'),
+            ('a non-hex digit', rate, rate[:47] + 'g', 'a decimal constant\'s hex has a character that is not hexadecimal'),
+            ('coefficient above 10^38-1', rate, dec_hex(825, 0x7FFFFFFFFFFFFFFF, 0xfffc | (4 << 16)),
+             'a decimal constant has more than 38 significant digits'),
+            ('coefficient 10^38', rate, dec_hex(0x098A224000000000, 0x4B3B4CA85A86C47A, 0),
+             'a decimal constant has more than 38 significant digits'),
+            ('a negative coefficient word', rate, dec_hex(825, -1, 0xfffc | (4 << 16)),
+             'a decimal constant has more than 38 significant digits'),
+            ('reserved bit 40', neg, dec_hex(15, 0, 0xffff | (1 << 16) | (1 << 32) | (1 << 40)),
+             'a decimal constant\'s reserved bits (40 to 63 of its last word) must be zero'),
+            ('reserved bit 63', neg, dec_hex(15, 0, 0xffff | (1 << 16) | (1 << 32) | (1 << 63)),
+             'a decimal constant\'s reserved bits (40 to 63 of its last word) must be zero'),
+            ('sign 2', neg, dec_hex(15, 0, 0xffff | (1 << 16) | (2 << 32)),
+             'a decimal constant\'s sign must be 0 or 1'),
+            ('zero with sign 1', neg0, dec_hex(0, 0, (2 << 16) | (1 << 32)),
+             'a decimal constant zero must have sign 0'),
+            ('zero with exponent 1', neg0, dec_hex(0, 0, (2 << 16) | 1),
+             'a decimal constant zero must have exponent 0'),
+        ]
+        for name, old, new, want in bad:
+            old_b = old.encode() if isinstance(old, str) else old
+            if base.count(old_b) != 1:
+                raise Fail(f"{name}: {old!r} occurs {base.count(old_b)} times")
+            open(lib, 'wb').write(base)
+            mutate(lib, old_b, new.encode(), recompute=True)
+            q = build(d, s, check=True)
+            if q.returncode != 2 or want not in q.stderr:
+                raise Fail(f"{name}: exit {q.returncode}: {q.stderr.strip()}")
+            if 'symbol file' not in q.stderr:
+                raise Fail(f"{name}: not a symbol-file error: {q.stderr.strip()}")
+        # the boundary: 10^38-1 is a valid coefficient, and the check build accepts it
+        open(lib, 'wb').write(base)
+        mutate(lib, rate.encode(), dec_hex(0x098A223FFFFFFFFF, 0x4B3B4CA85A86C47A, 0xfffc | (4 << 16)).encode(),
+               recompute=True)
+        ok(build(d, s, check=True), 'a 38-digit coefficient of 10^38-1 in a constant')
+        open(lib, 'wb').write(base)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -2586,6 +2777,9 @@ def tests():
         ('sym/field_visibility_carrier_multi', field_visibility_carrier_multi),
         ('sym/field_visibility_library_summaries', field_visibility_library_summaries),
         ('sym/field_visibility_old_format', field_visibility_old_format),
+        ('sym/decimal_fields', decimal_fields_sym),
+        ('sym/decimal_arrays', decimal_arrays_sym),
+        ('sym/decimal_globals', decimal_globals_sym),
     ]
 
 

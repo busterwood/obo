@@ -1,0 +1,32 @@
+// Decimal arrays (0.16): the constructs a []decimal cannot take. The positive
+// coverage is in tests/run/decimal_array_*.obx.
+
+// === take needs an owned place, and a decimal element is not owned
+fn main() { var xs = new []decimal(2); let d = take(xs[0]) }  // error: take needs an optional variable, field or element holding an owned value
+
+// === replace needs an owned place, and a decimal element is not owned
+fn main() { var xs = new []decimal(2); let r = replace(xs[0], 1.0) }  // error: replace needs a variable, field or element holding an owned value
+
+// === a []decimal cannot be printed
+fn main() { var xs = new []decimal(2); println(xs) }  // error: cannot print []decimal
+
+// === string of a []decimal is not a conversion
+fn main() { var xs = new []decimal(2); let s = string(xs) }  // error: string() needs an int or a []byte, not []decimal
+
+// === an int cannot be stored in a []decimal element
+fn main() { var xs = new []decimal(2); xs[0] = 1 }  // error: assignment: cannot use int as decimal
+
+// === an int array cannot take a decimal
+fn main() { var ys = new []int(0); append(ys, 1.5) }  // error: appended value: cannot use decimal as int
+
+// === a []decimal is not a []int
+fn main() { var xs = new []decimal(2); let r: []int = xs }  // error: initialising 'r': cannot use []decimal as []int
+
+// === a []decimal cannot be appended to itself
+fn main() { var xs = new []decimal(2); append(xs, xs) }  // error: appended value: cannot use []decimal as decimal
+
+// === a []decimal does not mix with a decimal in arithmetic
+fn main() { var xs = new []decimal(2); let d = xs[0] + xs }  // error: cannot mix decimal with []decimal; convert explicitly with decimal(n)
+
+// === a decimal element cannot be borrowed
+fn main() { var xs = new []decimal(2); let r = &xs[0] }  // error: & needs a variable, field or element holding a record, closed type or array

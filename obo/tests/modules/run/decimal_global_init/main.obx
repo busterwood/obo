@@ -1,0 +1,11 @@
+module main
+
+import "lib.obx"
+
+// the library's initializers run first, so lv and lt are already set here
+var mv = lib::lv * lib::scale(0.5) + lib::lt.d
+var mw = lib::lt.d - lib::lv
+
+fn main() {
+    println(lib::lv, " ", lib::lt.d, " ", mv, " ", mw)   // expect: 6.0000 7.2500 14.750000 1.2500
+}

@@ -29,7 +29,7 @@ as they do for a compiled program.  It covers:
 The program section compiles a normal hello with the current compiler and the
 seed and requires byte-identical images, then runs it under the default and the
 64 KiB limit.  It also checks the compiler's self-compile live peak against the
-2,500,000-byte numeric budget.
+2,750,000-byte budget (tests/peak_budget.py).
 """
 import atexit
 import os
@@ -240,6 +240,9 @@ def rt_section():
     check_case(exe, 'tiny heap metadata scales down', 'limit', clean_env('64KiB'),
                address_space=32 << 20, args=('64KiB',))
 
+    # decimal arrays (kind 7): the empty block, self-append, clone, free and truncate
+    for case in ('dec_kind', 'dec_self', 'dec_clone', 'dec_free', 'dec_truncate'):
+        check_case(exe, f'decimal array {case}', case, clean_env())
 
 def text_section():
     exe = build_text_harness()

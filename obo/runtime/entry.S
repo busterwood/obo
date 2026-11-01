@@ -123,8 +123,10 @@ _entry:
     slot rt_tpl_html_splice
     slot rt_tpl_html_join
     slot rt_tpl_html_copy
+    /* decimal arrays (0.16): slot 94 appends after the template builders that end at 93. */
+    slot rt_append_dec
 #ifdef OBO_HOSTED_EXIT
-    /* Appended only in the hosted build: the baseline table ends at 93 and gains no reserved slot. */
+    /* Appended only in the hosted build: the baseline table ends at 94 and gains no reserved slot. */
     slot rt_set_foreign_census
 #endif
 
@@ -233,6 +235,7 @@ check_\f:
     check rt_tpl_html_splice
     check rt_tpl_html_join
     check rt_tpl_html_copy
+    check rt_append_dec
 #ifdef OBO_HOSTED_EXIT
     check rt_set_foreign_census
 #endif

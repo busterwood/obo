@@ -1,0 +1,58 @@
+// Decimal constants (0.16): a decimal literal or a unary-minus literal, nothing folded. Each use is a
+// 24-byte temporary built from the constant's three words, so a use can be passed, stored, returned
+// and copied like any decimal. A negative zero is positive: -0.00 is 0.00 with its written scale.
+
+const RATE = 0.0825
+const NEG = -1.5
+const NEG0 = -0.00
+const BIG = 1_000.5
+const SMALL = 1.5e2
+const PLUS = 2.50
+const KEEP = 12.340
+
+type Line = ref record { amount: decimal; rate: decimal }
+
+fn scaled(d: decimal, k: int): decimal { return d * decimal(k) }
+fn rateOk(): Result[decimal] { return ok(RATE) }
+
+// constants in global initializers
+var taxed = RATE * 100.0                      // 8.25000
+var neg = NEG + 0.5                           // -1.0
+var gl = new Line{amount: NEG, rate: NEG0}     // -1.5 0.00
+
+fn main() {
+    println(RATE, " ", NEG, " ", NEG0, " ", -RATE)           // expect: 0.0825 -1.5 0.00 -0.0825
+    println(BIG, " ", SMALL, " ", PLUS, " ", KEEP)            // expect: 1000.5 150 2.50 12.340
+    println(-0.00, " ", -NEG0, " ", 0.00)                     // expect: 0.00 0.00 0.00
+    println(taxed, " ", neg, " ", gl.amount, " ", gl.rate)    // expect: 8.25000 -1.0 -1.5 0.00
+
+    // arithmetic, comparison and a call with a constant argument
+    println(RATE * 2.0 + PLUS, " ", scaled(RATE, 4))          // expect: 2.66500 0.3300
+    println(RATE < PLUS, " ", NEG == -1.5, " ", KEEP == 12.34, " ", NEG0 == 0.0)   // expect: true true true true
+
+    // a record literal, an array element, a Result and decimal::quantize
+    let l = new Line{amount: PLUS, rate: RATE}
+    println(l.amount, " ", l.rate)                            // expect: 2.50 0.0825
+    let xs = new []decimal(0)
+    append(xs, PLUS)
+    append(xs, NEG)
+    println(len(xs), " ", xs[0], " ", xs[1])                  // expect: 2 2.50 -1.5
+    let rk = rateOk()
+    match rk {
+        ok(v) { println("ok ", v) }                          // expect: ok 0.0825
+        err(m, c) { println("err ", c) }
+    }
+    let qz = decimal::quantize(RATE, 3, HALF_EVEN)            // 0.0825 at scale 3, a tie: to even
+    match qz {
+        ok(v) { println(v) }                                  // expect: 0.082
+        err(m, c) { println("err ", c) }
+    }
+
+    // a use is a fresh temporary: changing a copy leaves the constant alone
+    var v = RATE
+    v += 1.0
+    println(v, " ", RATE)                                     // expect: 1.0825 0.0825
+    var w = NEG0
+    w -= 1.0
+    println(w, " ", NEG0)                                     // expect: -1.00 0.00
+}

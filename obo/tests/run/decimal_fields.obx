@@ -1,0 +1,149 @@
+// Decimal record fields (0.16, format 9): a 24-byte inline slot in a record, a
+// closed variant payload and a handle. Reads, writes, compound assignment,
+// record literals, nested records, borrows, handles and narrowed variant reads.
+
+type Inner = ref record {
+    a: decimal
+    b: int
+    c: decimal
+}
+
+type Outer = ref record {
+    head: int
+    inner: Inner
+    tag: string
+    amt: decimal
+}
+
+type Box = ref record { v: decimal; w: int }
+type Link = ref record { to: ^Box; keep: decimal }
+
+type Zin = ref record { a: decimal }
+type Zrec = ref record { zin: Zin; d: decimal; n: int }
+
+type Shape = closed { Circle { r: decimal; name: string } Empty { } }
+
+fn readBorrow(o: &Outer): decimal {
+    return o.amt + o.inner.c
+}
+
+fn setBorrow(mut o: &Outer, d: decimal) {
+    o.inner.a = d
+    o.amt += d
+}
+
+fn sumInner(i: &Inner): decimal {
+    return i.a * 2.0 - i.c
+}
+
+fn area(s: &Shape): decimal {
+    match s {
+        Circle { return s.r * s.r }
+        Empty { return 0.0 }
+    }
+}
+
+fn id(d: decimal): decimal { return d }
+fn pick(o: &Outer): decimal { return o.amt }
+fn toRes(o: &Outer): Result[decimal] { return ok(o.inner.c) }
+fn maybeErr(o: &Outer): Result[decimal] {
+    if o.inner.b > 100 { return err("big", 3) }
+    return ok(o.amt)
+}
+
+fn touch(mut o: &Outer, v: decimal) {
+    o.inner.a = v * 3.0
+}
+
+fn main() {
+    // a field of every decimal position: read, plain write, compound write
+    let in1 = new Inner{a: 1.25, b: 2, c: 0.5}
+    let o = new Outer{head: 9, inner: in1, tag: "tg", amt: 10.00}
+    println(o.head, " ", o.tag, " ", o.amt, " ", o.inner.a, " ", o.inner.b, " ", o.inner.c) // expect: 9 tg 10.00 1.25 2 0.5
+    o.inner.c = 3.75
+    o.inner.a += 0.25
+    println(readBorrow(o), " ", sumInner(o.inner)) // expect: 13.75 -0.750
+    setBorrow(o, 4.5)
+    println(o.inner.a, " ", o.amt, " ", o.tag) // expect: 4.5 14.50 tg
+
+    // the same operators on a field as on a local
+    var t = 1.50
+    o.amt = 1.50
+    o.amt = o.amt + 2.25
+    o.amt += 1.00
+    o.amt -= 0.50
+    o.amt *= 2.0
+    o.amt %= 7.0
+    t = t + 2.25
+    t += 1.00
+    t -= 0.50
+    t *= 2.0
+    t %= 7.0
+    println(o.amt, " ", t) // expect: 1.500 1.500
+    o.inner.a = 0.5
+    println(o.inner.a * 4.0) // expect: 2.00
+
+    // a record literal with nested records and decimals computed from fields
+    let o2 = new Outer{head: o.head + 1, inner: new Inner{a: o.amt, b: 5, c: o.inner.c * 2.0}, tag: o.tag + "!", amt: o.amt - 1.0}
+    println(o2.head, " ", o2.inner.a, " ", o2.inner.c, " ", o2.amt, " ", o2.tag) // expect: 10 1.500 7.500 0.500 tg!
+    o.inner.a = o.inner.c
+    o.amt = o.amt * o.inner.a + o.amt
+    println(o.inner.a, " ", o.amt, " ", o.amt < o.inner.c, " ", o.amt > o.inner.a) // expect: 3.75 7.12500 false true
+    o.inner.a = o.inner.a
+    touch(o, 2.5)
+    println(o.inner.a) // expect: 7.50
+
+    // functions returning and taking fields, and Result over a field
+    println(id(o.amt), " ", pick(&o), " ", id(o.inner.c) + o.amt) // expect: 7.12500 7.12500 10.87500
+    let tr = toRes(o)
+    match tr {
+        ok(v) { println("res ", v) }   // expect: res 3.75
+        err(m, c) { println("err ", c) }
+    }
+    let me = maybeErr(o)
+    match me {
+        ok(v) { println("me ", v) }    // expect: me 7.12500
+        err(m, c) { println("me err ", m, " ", c) }
+    }
+    o.inner.b = 500
+    let me2 = maybeErr(o)
+    match me2 {
+        ok(v) { println("me ", v) }
+        err(m, c) { println("me err ", m, " ", c) } // expect: me err big 3
+    }
+
+    // a handle to a record with decimal fields, and a link to a box
+    var b = new Box{v: 1.10, w: 4}
+    let l = new Link{to: handle(b), keep: 2.20}
+    println(l.to.v, " ", l.to.w, " ", l.keep) // expect: 1.10 4 2.20
+    l.to.v = 5.5
+    l.to.v += 0.5
+    println(b.v, " ", l.to.v) // expect: 6.0 6.0
+    let h = handle(o)
+    h.amt = 1.0
+    h.amt -= 0.25
+    println(o.amt, " ", h.inner.a) // expect: 0.75 7.50
+
+    // a closed variant with a decimal field, read by narrowing in its arm
+    let s: Shape = new Circle{r: 1.5, name: "c"}
+    println(area(s)) // expect: 2.25
+    let e: Shape = new Empty{}
+    println(area(e)) // expect: 0.0
+
+    // a decimal field copied to a local, then compared
+    let cp = o2.inner.a
+    println(cp == o2.amt + 1.0, " ", o2.tag) // expect: true tg!
+    var local = o.inner.c
+    local = local + o.inner.a
+    println(local, " ", o.inner.c) // expect: 11.25 3.75
+    print(o.amt)
+    println() // expect: 0.75
+    o.tag = "changed"
+    println(o.tag, " ", o.inner.b) // expect: changed 500
+
+    // an omitted decimal field is zero, as an omitted int field is
+    let z = new Zrec{zin: new Zin{a: 1.0}, n: 4}
+    println(z.d, " ", z.n, " ", z.zin.a) // expect: 0 4 1.0
+    z.d = 0.50
+    println(z.d) // expect: 0.50
+}

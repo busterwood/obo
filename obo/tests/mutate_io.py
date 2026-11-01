@@ -146,8 +146,8 @@ RUNTIME_MUTANTS = {
         '    if (!leak_check) { io_fault_eintr = 0; io_fault_short = 0; meta_fault_eintr = 0; }\n',
         '    if (0) { io_fault_eintr = 0; io_fault_short = 0; meta_fault_eintr = 0; }\n'),
     'empty append frees the static block': (
-        '        if (!is_empty_data(a->data)) free_block(a->data - GRAN);\n',
-        '        free_block(a->data - GRAN);\n'),
+        '    if (!is_empty_data(a->data)) free_block(a->data - GRAN);\n',
+        '    free_block(a->data - GRAN);\n'),
     'empty array free pushes the static block': (
         '            if (body[2] && !is_empty_data(body[2])) free_push(body[2]);\n',
         '            if (body[2]) free_push(body[2]);\n'),
@@ -192,7 +192,7 @@ LIB_MUTANTS = {
 }
 
 # Runtime mutants with no program-observable semantic difference are judged by the actual
-# compiler self-host memory oracle.  The absolute numeric-branch budget is 2,500,000 bytes;
+# compiler self-host memory oracle.  The absolute budget is PEAK_BUDGET (tests/peak_budget.py);
 # the zero-array mutant is additionally judged by its delta from the unmutated baseline because
 # the baseline is itself above the historical 2,000,000 lambda budget.  The normal program suite
 # is still run first for every mutant.

@@ -1,0 +1,21 @@
+module main
+import "lib.obx"
+
+fn main() {
+    let xs = lib::make(4)
+    println(len(xs), " ", lib::total(xs))              // expect: 4 3.0
+    var ys = lib::make(0)
+    lib::push(ys, 2.50)
+    println(len(ys), " ", ys[0])                       // expect: 1 2.50
+    let b = lib::open("acct")
+    lib::fill(b, 3)
+    println(b.name, " ", len(b.lines), " ", lib::total(b.lines))   // expect: acct 3 3.75
+    println(lib::heldLen(b), " ", b.lines[2])          // expect: 1 2.25
+    lib::push(lib::shared, 0.125)
+    lib::push(lib::shared, -0.5)
+    println(len(lib::shared), " ", lib::total(lib::shared))   // expect: 2 -0.375
+    var zs = lib::make(9)
+    truncate(zs, 2)
+    lib::push(zs, 7.0)
+    println(len(zs), " ", zs[1], " ", zs[2])           // expect: 3 0.5 7.0
+}

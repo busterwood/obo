@@ -1,0 +1,51 @@
+// Decimal record fields (0.16): the assignment-across-call rule. A decimal field is
+// written like an int field, so a call that might free the record may not run
+// between the target and the store. Each case has one error.
+
+type In = ref record { a: decimal }
+type Rec = ref record { inner: In; d: decimal; n: int }
+
+// the mutable argument's record is replaced, freeing its old inner record
+fn redo(mut r: &Rec): decimal {
+    r.inner = new In{a: 3.0}
+    return 1.0
+}
+
+fn redoInt(mut r: &Rec): int {
+    r.inner = new In{a: 3.0}
+    return 1
+}
+
+// === a decimal field assigned from a call that may free the record
+fn main() {
+    var r = new Rec{inner: new In{a: 1.0}, d: 2.0, n: 0}
+    r.d = redo(r)  // error: cannot assign to a field or element across a call
+}
+
+// === a decimal field compound-assigned from a call that may free the record
+fn main() {
+    var r = new Rec{inner: new In{a: 1.0}, d: 2.0, n: 0}
+    r.d += redo(r)  // error: cannot assign to a field or element across a call
+}
+
+// === a decimal field of a nested record assigned across a call
+fn main() {
+    var r = new Rec{inner: new In{a: 1.0}, d: 2.0, n: 0}
+    r.inner.a = redo(r)  // error: cannot assign to a field or element across a call
+}
+
+// === an int field is refused the same way (the reference diagnostic)
+fn main() {
+    var r = new Rec{inner: new In{a: 1.0}, d: 2.0, n: 0}
+    r.n = redoInt(r)  // error: cannot assign to a field or element across a call
+}
+
+// === a decimal field given twice in a literal
+fn main() {
+    let r = new In{a: 1.0, a: 2.0}  // error: field 'a' given twice
+}
+
+// === a decimal field of the wrong type in a literal
+fn main() {
+    let r = new In{a: 1}  // error: cannot use int as decimal
+}

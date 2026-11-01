@@ -1,0 +1,73 @@
+// []decimal (0.16, kind 7): 24-byte elements. Lengths 0, 1, 8 and 9 (the empty
+// block, the first block, a full block and the first growth), values with
+// different display scales and signs round-trip exactly, and append after truncate
+// reuses the block. A wrong stride or a short copy shows in the printed values.
+
+fn build(n: int): []decimal {
+    var xs = new []decimal(0)
+    for i in 0..n { append(xs, decimal(i)) }
+    return xs
+}
+
+fn main() {
+    let a = build(0)
+    println(len(a), " ", len(a))                // expect: 0 0
+    let b = build(1)
+    println(len(b), " ", b[0])                  // expect: 1 0
+    let c = build(8)
+    println(len(c), " ", c[7])                  // expect: 8 7
+    let d = build(9)
+    println(len(d), " ", d[8])                  // expect: 9 8
+
+    // display scales and signs, across the first growth
+    var e = new []decimal(0)
+    append(e, 1.50)
+    append(e, -2.25)
+    append(e, 0.0)
+    append(e, -0.100)
+    append(e, 123456.7890)
+    append(e, decimal(-7))
+    append(e, 3.5)
+    append(e, -0.5)
+    append(e, 1.0)
+    append(e, 2.25)
+    println(len(e), " ", e[0], " ", e[1], " ", e[2], " ", e[3], " ", e[4])   // expect: 10 1.50 -2.25 0.0 -0.100 123456.7890
+    println(e[5], " ", e[6], " ", e[7], " ", e[8], " ", e[9])               // expect: -7 3.5 -0.5 1.0 2.25
+
+    // the zero-filled array of length 9 reads as zeros; a growth keeps the old values
+    var z = new []decimal(9)
+    println(len(z), " ", z[0], " ", z[8])       // expect: 9 0 0
+    z[8] = -1.5
+    z[0] = 2.0
+    println(z[0], " ", z[8])                    // expect: 2.0 -1.5
+
+    // a sum loop over the 9 values of d: 0 + 1 + ... + 8
+    var total = 0.0
+    var i = 0
+    while i < len(d) {
+        total += d[i]
+        i += 1
+    }
+    println(total)                              // expect: 36.0
+    var again = 0.0
+    for k in 0..len(d) { again = again + d[k] }
+    println(again, " ", len(d))                 // expect: 36.0 9
+
+    // values that differ only in their display scale, after a growth
+    var half = new []decimal(0)
+    for n in 0..9 { append(half, decimal(n) * 0.5) }
+    println(half[1], " ", half[8], " ", half[3])  // expect: 0.5 4.0 1.5
+
+    // truncate and append: the slots past the new length are reused
+    var f = build(9)
+    truncate(f, 2)
+    append(f, 5.5)
+    println(len(f), " ", f[0], " ", f[1], " ", f[2])   // expect: 3 0 1 5.5
+    truncate(f, 0)
+    println(len(f))                             // expect: 0
+    append(f, -0.5)
+    println(len(f), " ", f[0])                  // expect: 1 -0.5
+    truncate(f, 1)
+    truncate(f, 1)
+    println(len(f), " ", f[0])                  // expect: 1 -0.5
+}

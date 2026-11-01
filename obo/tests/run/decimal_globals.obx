@@ -1,0 +1,115 @@
+// Decimal globals (0.16, format 9): a 24-byte zero-initialised slot in the global data. Reads,
+// writes, compound assignment, every use of a decimal value, initializers with calls and temporaries
+// (a record literal, a call with a decimal argument, a decimal product), and the operand order of a
+// global read against a call that writes that global, which matches an int global.
+
+type R = ref record { d: decimal; n: int }
+type G = ref record { d: decimal; n: int }
+
+var zero: decimal
+var half = 0.50
+var scale: decimal = 2.5
+var total: decimal
+var prices = new []decimal(0)
+var rec = new R{d: 1.5, n: 2}
+let fixed = 3.25
+
+fn scaled(d: decimal, k: int): decimal { return d * decimal(k) }
+fn twice(d: decimal): decimal { return d + d }
+fn sumOf(xs: &[]decimal): decimal {
+    var s = 0.0
+    for d in xs { s += d }
+    return s
+}
+
+// initializers with calls and temporaries: each one ran in an earlier line of the source
+var base = scaled(1.25, 4)                    // a call with a decimal argument: 5.00
+var copy = new R{d: base - 0.5, n: 1}         // a record literal read from a global: 4.50
+var first = twice(0.25) + scaled(0.5, 2)      // 0.50 + 1.0 = 1.50
+var chained = half * 3.0                      // 0.50 * 3.0 = 1.500
+var sumAll = sumOf(prices)                    // an empty array: 0.0
+var pair = first + base                       // 6.50
+var negHalf = -half                           // -0.50
+var gr = new G{d: 1.5, n: 0}                  // a record literal with a decimal field in a global initializer
+var early = 1.5
+var late = early * 2.0                        // a global read by a later initializer: 3.00
+
+fn bump(): decimal {
+    total = 100.0                             // the call writes the global that its caller reads
+    return 1.0
+}
+
+fn readRec(r: &R): decimal { return r.d + 1.0 }
+
+fn okOf(): Result[decimal] { return ok(total) }
+
+fn main() {
+    // zero-initialised: all-zero bits are 0, with display scale 0
+    println(zero, " ", half, " ", scale, " ", fixed)          // expect: 0 0.50 2.5 3.25
+    println(total, " ", sumAll, " ", zero + 1.5)              // expect: 0 0.0 1.5
+    println(base, " ", copy.d, " ", first, " ", chained, " ", pair)   // expect: 5.00 4.50 1.50 1.500 6.50
+    println(negHalf, " ", late, " ", copy.n)                  // expect: -0.50 3.00 1
+    println(gr.d, " ", gr.n)                                  // expect: 1.5 0
+
+    // writes and compound assignment on the global
+    total = 7.25
+    total += 0.75
+    total -= 0.50
+    println(total)                                            // expect: 7.50
+    total *= 2.0
+    println(total)                                            // expect: 15.000
+    total = total - 0.5
+    println(total)                                            // expect: 14.500
+    total %= 4.0
+    println(total)                                            // expect: 2.500
+
+    // a global as a call argument, a return, a record literal field, an array element and append
+    total = 14.5
+    println(readRec(rec), " ", twice(total), " ", scaled(total, 2))   // expect: 2.5 29.0 29.0
+    rec.d = total
+    rec.d += 1.0
+    println(rec.d, " ", readRec(rec))                         // expect: 15.5 16.5
+    let r2 = new R{d: total, n: 3}
+    println(r2.d, " ", r2.n)                                  // expect: 14.5 3
+    append(prices, base)
+    append(prices, total)
+    println(len(prices), " ", prices[0], " ", prices[1], " ", sumOf(prices))   // expect: 2 5.00 14.5 19.50
+    prices[1] = total * 2.0
+    println(prices[1], " ", sumOf(prices))                    // expect: 29.00 34.00
+
+    // comparisons and Result
+    println(total > base, " ", total == 14.5, " ", zero == 0.0, " ", total < 0.0)   // expect: true true true false
+    let res = okOf()
+    match res {
+        ok(v) { println("ok ", v) }                           // expect: ok 14.5
+        err(m, c) { println("err ", c) }
+    }
+    let q = decimal::quantize(total, 1, HALF_AWAY)            // 14.5
+    match q {
+        ok(v) { println(v) }                                  // expect: 14.5
+        err(m, c) { println("err ", c) }
+    }
+    let d3 = decimal::div(total, 3.0, 2, HALF_AWAY)           // 4.83
+    match d3 {
+        ok(v) { println(v) }                                  // expect: 4.83
+        err(m, c) { println("err ", c) }
+    }
+
+    // the global read before a call that writes it: the value is the one read first
+    total = 5.0
+    println(total * bump(), " ", total)                       // expect: 5.00 100.0
+    total = 5.0
+    println(total + bump(), " ", total)                       // expect: 6.0 100.0
+    total = 5.0
+    total += bump()                                           // the target is read after the call, as an int is
+    println(total)                                            // expect: 101.0
+    total = 5.0
+    let q2 = decimal::div(total, bump(), 4, HALF_AWAY)
+    match q2 {
+        ok(v) { println("div ", v) }                          // expect: div 5.0000
+        err(m, c) { println("err ", c) }
+    }
+    total = 5.0
+    println(total == bump() * 5.0, " ", total)                // expect: true 100.0
+    println(total)                                            // expect: 100.0
+}

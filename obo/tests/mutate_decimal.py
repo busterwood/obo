@@ -53,6 +53,47 @@ MUTANTS = [
      "16 + 8 * len(f.fnRec.params)"),
     ("decimal argument words are pushed low first",
      "let off = 16 - 8 * k", "let off = 8 * k"),
+    # record fields (0.16, format 9): a decimal field is 24 bytes, three words, in the
+    # record and in the symbol file
+    ("decimal record field is one word (sizeOf 8)",
+     'fn sizeOf(t: ^Type): int {\n    if t.kind == "decimal" { return 24 }',
+     'fn sizeOf(t: ^Type): int {\n    if t.kind == "decimal" { return 8 }'),
+    ("decimal record field copy writes two words",
+     "fn copyDecimalToBase(src0: &Item, p: int, disp: int) {\n    var src = copyItem(src0)\n    resolve(src)\n    for off in 0..3 {",
+     "fn copyDecimalToBase(src0: &Item, p: int, disp: int) {\n    var src = copyItem(src0)\n    resolve(src)\n    for off in 0..2 {"),
+    ("decimal record literal field is not copied",
+     "        if fty.kind == \"decimal\" {\n            copyDecimalToBase(v, p.r, foff)\n            drop(v)",
+     "        if fty.kind == \"decimal\" {\n            drop(v)"),
+    ("decimal compound field result is not stored",
+     "                rtCall(slot, dargs, tVoid)\n                store(x, res)",
+     "                rtCall(slot, dargs, tVoid)\n                drop(x)"),
+    ("sym: private decimal slot read as one word",
+     'if marker == "priv24" { pt = tDecimal }', 'if marker == "priv24" { pt = tInt }'),
+    ("sym: reader advances every slot by one word",
+     "            offset += sizeOf(pt)", "            offset += 8"),
+    ("sym: private decimal slot written as priv",
+     '            } else if rec.fields[i].typ.kind == "decimal" {\n                appStr(b, "priv24")',
+     '            } else if rec.fields[i].typ.kind == "decimal" {\n                appStr(b, "priv")'),
+    # a decimal left operand is captured before a later operand runs (the review's
+    # use-after-free and wrong-value defect): each operator branch, relation and the builtins
+    ("decimal left operand is not captured",
+     "    let t = decimalTemp()\n    copyDecimal(t, x)",
+     "    let t = x"),
+    ("decimal term left operand is not captured",
+     "            if o != T_STAR && o != T_PERCENT { error(\"'\" + tokName(o) + \"' is not supported for decimal; use + - * %\") }\n            x = captureDecimal(x)",
+     "            if o != T_STAR && o != T_PERCENT { error(\"'\" + tokName(o) + \"' is not supported for decimal; use + - * %\") }\n            x = materialise(x)"),
+    ("decimal sum left operand is not captured",
+     "            if o != T_PLUS && o != T_MINUS { error(\"'\" + tokName(o) + \"' is not supported for decimal; use + - * %\") }\n            x = captureDecimal(x)",
+     "            if o != T_PLUS && o != T_MINUS { error(\"'\" + tokName(o) + \"' is not supported for decimal; use + - * %\") }\n            x = materialise(x)"),
+    ("decimal comparison left operand is not captured",
+     "    x = captureDecimal(x)\n    noTemp(x)",
+     "    noTemp(x)"),
+    ("decimal builtin earlier decimal argument is not captured",
+     "    if x.typ.kind == \"decimal\" { return captureDecimal(x) }\n    if isInt(x.typ) { return materialise(x) }",
+     "    if isInt(x.typ) { return materialise(x) }"),
+    ("decimal builtin earlier int argument is not loaded",
+     "    if isInt(x.typ) { return materialise(x) }\n    return x\n}",
+     "    if isInt(x.typ) { return x }\n    return x\n}"),
     ("decimal request stores scale over mode",
      "    sd.disp = at\n", "    sd.disp = at + 8\n"),
     ("decimal comparison always tests equality",
@@ -64,8 +105,8 @@ MUTANTS = [
      "for off in 0..3 {\n        let r = alloc()\n        opMem(0x8B, r, mem(src.base, src.index, src.disp + 8 * off, 8), true, false)\n        opMem(0x89, r, mem(dst.base, dst.index, dst.disp + 8 * off, 8), true, false)\n        release(r)\n    }",
      "for off in 0..2 {\n        let r = alloc()\n        opMem(0x8B, r, mem(src.base, src.index, src.disp + 8 * off, 8), true, false)\n        opMem(0x89, r, mem(dst.base, dst.index, dst.disp + 8 * off, 8), true, false)\n        release(r)\n    }"),
     ("try moves only one word of a Result[decimal] payload",
-     "        for off in 0..3 {\n            let dr = alloc()\n            opMem(0x8B, dr, mem(cellR, -1, 8 * off, 8), true, false)\n            opMem(0x89, dr, mem(RBP, -1, decimalDisp + 8 * off, 8), true, false)\n            release(dr)\n        }",
-     "        for off in 0..1 {\n            let dr = alloc()\n            opMem(0x8B, dr, mem(cellR, -1, 8 * off, 8), true, false)\n            opMem(0x89, dr, mem(RBP, -1, decimalDisp + 8 * off, 8), true, false)\n            release(dr)\n        }"),
+     "        for off in 0..3 {\n            let dr = alloc()\n            opMem(0x8B, dr, mem(cellR, -1, 8 * off, 8), true, false)\n            opMem(0x89, dr, mem(decimalBase, -1, decimalDisp + 8 * off, 8), true, false)\n            release(dr)\n        }",
+     "        for off in 0..1 {\n            let dr = alloc()\n            opMem(0x8B, dr, mem(cellR, -1, 8 * off, 8), true, false)\n            opMem(0x89, dr, mem(decimalBase, -1, decimalDisp + 8 * off, 8), true, false)\n            release(dr)\n        }"),
     ("decimal multiply calls the add helper",
      "if o == T_STAR { x = decimalCall2(RT_DEC_MUL, x, y) } else { x = decimalCall2(RT_DEC_REM, x, y) }",
      "if o == T_STAR { x = decimalCall2(RT_DEC_ADD, x, y) } else { x = decimalCall2(RT_DEC_REM, x, y) }"),
@@ -102,11 +143,11 @@ MUTANTS = [
      "    return rtCall1(RT_DEC_DSCALE, decPtr(a), tInt)",
      "    return rtCall1(RT_DEC_EXPONENT, decPtr(a), tInt)"),
     ("check request writes precision over scale",
-     "    let pd = newItem(\"mem\", tInt)\n    pd.base = RBP\n    pd.disp = at\n    store(pd, pv)",
-     "    let pd = newItem(\"mem\", tInt)\n    pd.base = RBP\n    pd.disp = at + 8\n    store(pd, pv)"),
+     "    let pd = newItem(\"mem\", tInt)\n    pd.base = scratchBase()\n    pd.disp = at\n    store(pd, pv)",
+     "    let pd = newItem(\"mem\", tInt)\n    pd.base = scratchBase()\n    pd.disp = at + 8\n    store(pd, pv)"),
     ("check request writes scale over precision",
-     "    let sd = newItem(\"mem\", tInt)\n    sd.base = RBP\n    sd.disp = at + 8\n    store(sd, sv)",
-     "    let sd = newItem(\"mem\", tInt)\n    sd.base = RBP\n    sd.disp = at\n    store(sd, sv)"),
+     "    let sd = newItem(\"mem\", tInt)\n    sd.base = scratchBase()\n    sd.disp = at + 8\n    store(sd, sv)",
+     "    let sd = newItem(\"mem\", tInt)\n    sd.base = scratchBase()\n    sd.disp = at\n    store(sd, sv)"),
 ]
 
 # Runtime, core-include and entry-table mutants are built in a private runtime
@@ -266,6 +307,99 @@ RUNTIME_MUTANTS = [
      '    if (payload > MAX_PAYLOAD) die("obx: object too large\\n");'),
 ]
 
+# Decimal globals and constants (0.16, stage D3). Each compiler mutant is caught by the named
+# run test (built alone through run_suite); SYM_MUTANTS are caught by sym_test's decimal_globals.
+DGLOBAL_MUTANTS = [
+    # caught by tests/run/decimal_globals.obx: the second global overlaps the first
+    ("global decimal storage is 8 bytes, not 24",
+     "            gsize += 24\n            return\n", "            gsize += 8\n            return\n"),
+    # caught by tests/run/decimal_globals.obx: a global read is taken from the frame, before the call
+    ("global operand takes the frame-local shortcut (not captured)",
+     '    if x.mode == "mem" && x.base == RBP && x.index < 0 { return x }\n',
+     '    if x.mode == "mem" && (x.base == RBP || x.base < 0) && x.index < 0 { return x }\n'),
+    # caught by tests/run/decimal_globals.obx: every temporary of a global initializer shares one hidden slot
+    ("global initializer temporaries share one slot",
+     "    gsize += 24\n    return x\n", "    gsize += 0\n    return x\n"),
+    # caught by tests/modules/run/decimal_globals and sym/decimal_globals: the .sym writer reverses the words
+    ("const hex writer reads the words in reverse order",
+     "            let w = decConsts[s.value + k]\n", "            let w = decConsts[s.value + (2 - k)]\n"),
+    # caught by tests/run/decimal_consts.obx: NEG = -1.5 loses its sign
+    ("const negative sign is dropped",
+     "    if neg && (d.lo != 0 || d.hi != 0) { packed = packed | (1 << 32) }\n", ""),
+    # caught by tests/run/decimal_consts.obx: NEG0 = -0.00 becomes negative zero
+    ("const negative zero takes the sign",
+     "    if neg && (d.lo != 0 || d.hi != 0) { packed = packed | (1 << 32) }\n",
+     "    if neg { packed = packed | (1 << 32) }\n"),
+    # caught by tests/run/decimal_globals.obx: the next global overlaps an inferred decimal's last words
+    ("an inferred decimal global takes 8 bytes, not 24",
+     "                s.offset = GLOBAL_BASE + gsize   // an inferred decimal's type is known only now: 24 bytes of its own\n                gsize += 24\n",
+     "                s.offset = GLOBAL_BASE + gsize\n                gsize += 8\n"),
+    # caught by tests/run/decimal_global_init.obx: a builtin's status word is a frame slot in a global initializer
+    ("builtin status words are frame slots, not hidden globals",
+     "fn decimalStatusSlot(status: Item): Item {\n    let at = scratchAt(8)\n",
+     "fn decimalStatusSlot(status: Item): Item {\n    let at = newFrameBytes(8)\n"),
+    # caught by tests/run/decimal_global_init.obx: toInt's int result is a frame slot in a global initializer
+    ("builtin int results are frame slots, not hidden globals",
+     "    x.base = scratchBase()\n    x.disp = scratchAt(8)\n",
+     "    x.base = scratchBase()\n    x.disp = newFrameBytes(8)\n"),
+]
+
+# Caught only by sym_test -k decimal_globals: the reader takes uppercase hex.
+SYM_MUTANTS = [
+    ("const reader accepts uppercase hex",
+     "        if h[i] >= 'A' && h[i] <= 'F' { error(\"a decimal constant's hex must be lowercase\") }\n", ""),
+]
+
+# Decimal arrays (0.16, kind 7 and rt_append_dec). Each compiler mutant is caught by a
+# run test named in its comment; each runtime mutant by a run test or by a C array case in
+# tests/rt_heap_test.c, run by run_array_suite below.
+ARRAY_MUTANTS = [
+    # decimal_array_sizes and decimal_array_elements index every element through the stride
+    ("decimal array stride is 16 bytes",
+     "            opMem(0x8D, r, mem(old, old, 0, 2), true, false)   // lea r, [old + old*2]",
+     "            opMem(0x8D, r, mem(old, old, 0, 1), true, false)   // lea r, [old + old*2]"),
+    # decimal_array_elements: `for i in 0..len(ys) { ys[i] = ... }` keeps i in a register
+    ("decimal array index is scaled in place",
+     "            let r = alloc()\n            opMem(0x8D, r, mem(old, old, 0, 2), true, false)   // lea r, [old + old*2]",
+     "            let r = old\n            opMem(0x8D, r, mem(old, old, 0, 2), true, false)   // lea r, [old + old*2]"),
+    # decimal_array_elements: `for d in ys` copies all three words
+    ("decimal for-in copies one word",
+     "            for off in 0..3 {\n                let tw = alloc()",
+     "            for off in 0..1 {\n                let tw = alloc()"),
+]
+
+# runtime mutants (name, file, old, new); each is caught by the named test
+RUNTIME_ARRAY_MUTANTS = [
+    # decimal_array_sizes: the third word of an appended decimal is lost
+    ("rt_append_dec copies only two words", "runtime.c",
+     "    slot[0] = w0; slot[1] = w1; slot[2] = w2;",
+     "    slot[0] = w0; slot[1] = w1;"),
+    # decimal_array_calls: `append(xs, xs[0])` at a full block reads the source after the old block is freed
+    ("rt_append_dec reads its source after growth", "runtime.c",
+     "    u64 w0 = src[0], w1 = src[1], w2 = src[2];\n    if (a->len == a->cap) grow_array(a);",
+     "    if (a->len == a->cap) grow_array(a);\n    u64 w0 = src[0], w1 = src[1], w2 = src[2];"),
+    # every new []decimal(0) and the C case dec_kind: the shared empty block must exist for kind 7
+    ("decimal empty array block is missing", "runtime.c",
+     "    if (kind == 7) return (u64)&empty_blocks[4][2];\n",
+     ""),
+    # C case dec_kind: the shared empty block is kind 1, so the first growth is a kind-1 block
+    ("decimal empty array block is treated as kind 1", "runtime.c",
+     "{6, 32, 0, 0}, {7, 32, 0, 0}",
+     "{6, 32, 0, 0}, {1, 32, 0, 0}"),
+    # decimal_array_* run tests free every decimal array: the kind is not walked as a descriptor
+    ("rt_free walks the decimal kind as a descriptor", "runtime.c",
+     "} else if (kind != 1 && kind != 4 && kind != 7) {",
+     "} else if (kind != 1 && kind != 4) {"),
+    # decimal_array_sizes: the element size of the decimal kind is 8
+    ("decimal array elements are 8 bytes", "runtime.c",
+     "u64 esize = kind == 4 ? 1 : kind == 7 ? 24 : 8;",
+     "u64 esize = kind == 4 ? 1 : 8;"),
+    # C case dec_clone: a clone of a decimal array maps the kind to 1 with 8-byte elements
+    ("tpl_clone maps the decimal kind to 1 with esize 8", "runtime.c",
+     "u64 kind = dk == 2 ? 2 : dk == 6 ? 6 : dk == 4 ? 4 : dk == 7 ? 7 : 1;",
+     "u64 kind = dk == 2 ? 2 : dk == 6 ? 6 : dk == 4 ? 4 : 1;"),
+]
+
 ENTRY_MUTANTS = [
     ("entry slot 73 targets format", "    slot rt_dec_parse_text", "    slot rt_dec_format_text"),
     ("entry slot 74 targets canonical", "    slot rt_dec_format_text", "    slot rt_dec_canonical_text"),
@@ -273,6 +407,8 @@ ENTRY_MUTANTS = [
     ("entry slot 76 targets parse", "    slot rt_dec_check", "    slot rt_dec_parse_text"),
     ("entry slot 77 targets dscale", "    slot rt_dec_exponent", "    slot rt_dec_dscale"),
     ("entry slot 78 targets exponent", "    slot rt_dec_dscale", "    slot rt_dec_exponent"),
+    # decimal_array_*: rt_append_dec is slot 94; another builder there breaks every append
+    ("entry slot 94 targets html copy", "    slot rt_append_dec", "    slot rt_tpl_html_copy"),
 ]
 
 
@@ -367,17 +503,63 @@ def run_text_suite(rt, work, verbose):
     return True
 
 
+# The C array cases of tests/rt_heap_test.c (decimal arrays, kind 7): the empty block's
+# kind, the append's source read, the clone's element size, the free walk and truncation.
+ARRAY_CASES = ('dec_kind', 'dec_self', 'dec_clone', 'dec_free', 'dec_truncate')
+
+
+def run_array_suite(rt, work, verbose):
+    src = os.path.join(HERE, 'rt_heap_test.c')
+    text = open(src).read()
+    text = text.replace('#include "../runtime/runtime.c"',
+                        '#include "%s/runtime.c"' % rt)
+    mut = os.path.join(work, 'rt_heap_test.c')
+    open(mut, 'w').write(text)
+    obj = os.path.join(work, 'rt_heap_test.o')
+    exe = os.path.join(work, 'rt_heap_test')
+    p = subprocess.run(['gcc', *CFLAGS, '-c', mut, '-o', obj],
+                       capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        if verbose: print('        array harness did not compile:', p.stderr.strip()[:160])
+        return False
+    p = subprocess.run(['ld', '-T', os.path.join(rt, 'rt.ld'), '-o', exe, obj],
+                       capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        if verbose: print('        array harness did not link:', p.stderr.strip()[:160])
+        return False
+    for case in ARRAY_CASES:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('OBO_HEAP_LIMIT', 'OBO_CHECK', 'OBO_STATS', 'OBX_GC')}
+        env['OBO_CHECK'] = '1'
+        env['OBX_GC'] = 'poison'
+        r = subprocess.run([exe, case], capture_output=True, text=True,
+                           timeout=120, env=env)
+        if r.returncode != 0:
+            if verbose:
+                print(f'        array case {case}: exit {r.returncode}; '
+                      f'stderr {r.stderr.strip()[:120]!r}')
+            return False
+    return True
+
+
 def run_suite(exe, rt, work, verbose, runtime_dir=None, patterns=('decimal',)):
     env = dict(os.environ, OBO=exe, OBO_RT=rt)
     for pattern in patterns:
-        r = subprocess.run([sys.executable, RUNNER, '-k', pattern],
-                           capture_output=True, text=True, timeout=300, env=env)
+        try:
+            r = subprocess.run([sys.executable, RUNNER, '-k', pattern],
+                               capture_output=True, text=True, timeout=300, env=env)
+        except subprocess.TimeoutExpired:
+            # a mutant that hangs the decimal suite fails it: a hang is a detected change, not a crash of the gate
+            if verbose:
+                print('        the decimal suite timed out (counted as caught)')
+            return False
         if r.returncode != 0:
             if verbose:
                 for line in (r.stdout + r.stderr).splitlines()[:8]:
                     print('        ' + line)
             return False
-    return run_text_suite(runtime_dir or rt, work, verbose)
+    rdir = runtime_dir or rt
+    return run_text_suite(rdir, work, verbose) and run_array_suite(rdir, work, verbose)
 
 
 def main():
@@ -393,7 +575,7 @@ def main():
             print("BROKEN  baseline: the unmutated decimal suite or text cases failed")
             return 1
         print("baseline ok")
-        for item in MUTANTS:
+        for item in MUTANTS + DGLOBAL_MUTANTS + ARRAY_MUTANTS:
             name, old, new = item[0], item[1], item[2]
             want = item[3] if len(item) > 3 else 1
             n = text.count(old)
@@ -410,13 +592,13 @@ def main():
                 print(f"BROKEN  {name}: mutant did not compile: {p.stderr.strip()[:140]}")
                 broken += 1
                 continue
-            if not run_suite(exe, FORK, tmp, verbose):
+            if not run_suite(exe, FORK, tmp, verbose, runtime_dir=os.path.join(FORK, 'runtime')):
                 caught += 1
                 print(f"caught  {name}")
             else:
                 missed += 1
                 print(f"MISSED  {name}")
-        for name, filename, old, new in RUNTIME_MUTANTS:
+        for name, filename, old, new in RUNTIME_MUTANTS + RUNTIME_ARRAY_MUTANTS:
             rt, err = build_runtime_mutant(tmp, filename, old, new)
             if rt is None:
                 print(f"BROKEN  {name}: {err}")
@@ -433,6 +615,29 @@ def main():
                 continue
             pats = ('template_sql', 'template_html') if name.startswith('template:') else ('decimal',)
             if not run_suite(exe, rt, tmp, verbose, patterns=pats):
+                caught += 1
+                print(f"caught  {name}")
+            else:
+                missed += 1
+                print(f"MISSED  {name}")
+        for name, old, new in SYM_MUTANTS:
+            if text.count(old) != 1:
+                print(f"BROKEN  {name}: pattern occurs {text.count(old)} times, want 1")
+                broken += 1
+                continue
+            src = os.path.join(tmp, 'src.obo')
+            exe = os.path.join(tmp, 'obo-sym')
+            open(src, 'w').write(text.replace(old, new))
+            p = subprocess.run([SEED, src, '-o', exe, '--rt', FORK],
+                               capture_output=True, text=True, timeout=180)
+            if p.returncode != 0:
+                print(f"BROKEN  {name}: compiler did not build: {p.stderr.strip()[:140]}")
+                broken += 1
+                continue
+            r = subprocess.run([sys.executable, os.path.join(HERE, 'sym_test.py'), '-k', 'decimal_globals'],
+                               capture_output=True, text=True, timeout=600,
+                               env=dict(os.environ, OBO=exe))
+            if r.returncode != 0:
                 caught += 1
                 print(f"caught  {name}")
             else:
@@ -461,7 +666,8 @@ def main():
                 print(f"MISSED  {name}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    total = len(MUTANTS) + len(RUNTIME_MUTANTS) + len(ENTRY_MUTANTS)
+    total = (len(MUTANTS) + len(DGLOBAL_MUTANTS) + len(ARRAY_MUTANTS) + len(RUNTIME_MUTANTS) + len(RUNTIME_ARRAY_MUTANTS)
+             + len(ENTRY_MUTANTS) + len(SYM_MUTANTS))
     print(f"\n{caught} caught, {missed} missed, {broken} broken (of {total})")
     return 1 if missed or broken else 0
 

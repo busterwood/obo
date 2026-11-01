@@ -1,0 +1,41 @@
+module lib
+
+// []decimal across a module boundary (0.16): a function that returns one, a borrowed and
+// a mut-borrowed parameter, a public record with an owned decimal array (and a private
+// one), and a public global array. The importer sees each as a .sym signature.
+
+pub type Book = ref record {
+    pub lines: []decimal
+    pub name: string
+    hold: []decimal
+}
+
+pub var shared = new []decimal(0)
+
+pub fn make(n: int): []decimal {
+    var xs = new []decimal(0)
+    for i in 0..n { append(xs, decimal(i) * 0.5) }
+    return xs
+}
+
+pub fn total(xs: &[]decimal): decimal {
+    var s = 0.0
+    for d in xs { s += d }
+    return s
+}
+
+pub fn push(mut xs: &[]decimal, d: decimal) {
+    append(xs, d)
+}
+
+pub fn open(n: string): Book {
+    return new Book{lines: new []decimal(0), name: n, hold: new []decimal(1)}
+}
+
+pub fn fill(mut b: &Book, n: int) {
+    for i in 0..n { append(b.lines, decimal(i) + 0.25) }
+}
+
+pub fn heldLen(b: &Book): int {
+    return len(b.hold)
+}

@@ -1,0 +1,64 @@
+// Decimal globals and constants (0.16): what a constant may be, and what a global may not do. The
+// positive coverage is in tests/run/decimal_globals.obx and decimal_consts.obx.
+
+// === a decimal constant is a literal: arithmetic is not folded
+const C = 1.0 + 2.0  // error: decimal constants must be a literal; arithmetic is not folded
+fn main() {}
+
+// === a decimal constant is a literal: a call is not folded
+const C = decimal::div(1.0, 3.0, 2, HALF_AWAY)  // error: decimal constants must be a literal; arithmetic is not folded
+fn main() {}
+
+// === a decimal constant is a literal: another constant is not folded
+const A = 1.0
+const C = A  // error: decimal constants must be a literal; arithmetic is not folded
+fn main() {}
+
+// === a decimal constant is a literal: a parenthesised literal is not one
+const C = -(1.5)  // error: decimal constants must be a literal; arithmetic is not folded
+fn main() {}
+
+// === a decimal constant is a literal: a double minus is not one
+const C = --1.5  // error: decimal constants must be a literal; arithmetic is not folded
+fn main() {}
+
+// === a decimal constant is a literal: a global variable is not one
+var v = 1.0
+const C = v  // error: decimal constants must be a literal; arithmetic is not folded
+fn main() {}
+
+// === a decimal constant is a literal: a literal and then a call is not one
+const C = 1.5 + 0  // error: decimal constants must be a literal; arithmetic is not folded
+fn main() {}
+
+// === a decimal constant cannot be assigned
+const C = 1.0
+fn main() { C = 2.0 }  // error: cannot assign to constant 'C'
+
+// === a decimal constant cannot be compound-assigned
+const C = 1.0
+fn main() { C += 2.0 }  // error: cannot assign to constant 'C'
+
+// === a decimal constant literal's exponent is still checked
+const C = 1e32805  // error: decimal literal exponent is out of range
+fn main() {}
+
+// === a decimal constant literal's precision is still checked
+const C = 1234567890123456789012345678901234567890.0  // error: decimal literal has more than 38 significant digits
+fn main() {}
+
+// === a global decimal takes a decimal, not an int
+var g: decimal = 1  // error: initialising 'g': cannot use int as decimal
+fn main() {}
+
+// === a global decimal assigned an int
+var g: decimal
+fn main() { g = 1 }  // error: assignment: cannot use int as decimal
+
+// === a global decimal does not mix with an int in an initializer
+var g = 1.0 + 1  // error: cannot mix decimal with int; convert explicitly with decimal(n)
+fn main() {}
+
+// === a let decimal global is read-only
+let L = 1.5
+fn main() { L = 2.0 }  // error: 'L' is immutable (declared with let)

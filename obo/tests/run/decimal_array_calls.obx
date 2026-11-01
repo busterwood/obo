@@ -1,0 +1,55 @@
+// Decimal array elements across calls (0.16). A decimal operand taken from an element is
+// read before a later operand runs, so a call that truncates, appends or reallocates the
+// array cannot change it. An element assignment or compound assignment whose value calls
+// a function stores into the array's current block. The same holds for an index that
+// calls a function on a whole local array, as it does for int arrays.
+
+fn shrinkTo1(mut xs: &[]decimal): decimal {
+    truncate(xs, 1)
+    append(xs, 50.5)
+    return 2.0
+}
+
+fn grow(mut xs: &[]decimal, n: int): decimal {
+    for i in 0..n { append(xs, decimal(i + 100)) }
+    return 0.25
+}
+
+fn count(xs: &[]decimal): int { return len(xs) }
+
+fn main() {
+    var xs = new []decimal(0)
+    for i in 0..8 { append(xs, decimal(i) + 0.5) }      // 0.5 .. 7.5, full at 8
+
+    // the left operand is read first: 0.5 * 2.0, not the element after the truncation
+    let p = xs[0] * shrinkTo1(xs)
+    println(p, " ", len(xs), " ", xs[1])        // expect: 1.00 2 50.5
+
+    // the left operand is read first, then the appends reallocate the block
+    let q = xs[1] + grow(xs, 30)
+    println(q, " ", len(xs), " ", xs[0])        // expect: 50.75 32 0.5
+
+    // an element assignment whose value reallocates: the store goes to the new block
+    xs[0] = grow(xs, 20)
+    println(xs[0], " ", len(xs))                // expect: 0.25 52
+
+    // an element compound assignment whose value reallocates
+    xs[1] += grow(xs, 3)
+    println(xs[1], " ", len(xs))                // expect: 50.75 55
+
+    // an index that calls a function on a whole local array
+    println(xs[count(xs) - 1])                  // expect: 102
+
+    // a comparison whose right operand truncates the array
+    let c = xs[0] == shrinkTo1(xs)
+    println(c, " ", len(xs), " ", xs[0])        // expect: false 2 0.25
+
+    // a value appended from an element of a full block: read before the block is replaced
+    var full = new []decimal(0)
+    for i in 0..8 { append(full, decimal(i) * 0.5) }
+    append(full, full[7])
+    println(len(full), " ", full[8], " ", full[7])   // expect: 9 3.5 3.5
+
+    // a left operand read from a borrowed array, before a call appends to that array
+    println(full[1] + grow(full, 1), " ", len(full))   // expect: 0.75 10
+}

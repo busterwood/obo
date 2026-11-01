@@ -1,0 +1,39 @@
+module lib
+
+// A record with public and private decimal fields. The private ones are 24-byte
+// slots in the symbol file (priv24), and an importer never sees their type.
+pub type Ledger = ref record {
+    pub name: string
+    pub total: decimal
+    rate: decimal
+    count: int
+    pub fee: decimal
+    hold: decimal
+}
+
+pub fn open(n: string, r: decimal): Ledger {
+    return new Ledger{name: n, total: 0.0, rate: r, count: 0, fee: 0.50, hold: 1.25}
+}
+
+pub fn accrue(mut l: &Ledger) {
+    l.total += l.total * l.rate
+    l.count += 1
+}
+
+pub fn rate(l: &Ledger): decimal { return l.rate }
+
+pub fn held(l: &Ledger): decimal { return l.hold + l.fee }
+
+pub fn setHold(mut l: &Ledger, h: decimal) {
+    l.hold = h
+}
+
+// a closed type whose variant has a decimal field: a public, 24-byte payload in the .sym
+pub type Shape = closed { Circle { r: decimal } Blank { } }
+
+pub fn area(s: &Shape): decimal {
+    match s {
+        Circle { return s.r * s.r }
+        Blank { return 0.0 }
+    }
+}

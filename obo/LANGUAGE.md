@@ -214,12 +214,95 @@ fn main() {
 fn main() { let x = 1.0 / 2.0 }
 ```
 
-In this v1 tier decimals work as locals, parameters and returns (three-word
-by-value slots and a hidden destination pointer for returns) and in
-`Result[decimal]`. Decimal globals, constants, record fields, arrays, captures,
-methods, interfaces and function values are not implemented and are refused
-with a clear diagnostic. `?decimal` is not representable; there is no raw-bits
+In this tier decimals work as locals, parameters and returns (three-word
+by-value slots and a hidden destination pointer for returns), in
+`Result[decimal]`, and as record fields (0.16). A decimal field takes 24 bytes
+inline in its record or closed-variant payload, in declaration order and on an
+8-byte boundary; an omitted decimal field is zero. Reads, `=`, `+=`, `-=`, `*=`,
+`%=` and record literals work through a handle (`^T`) and through a `&T` or
+`mut &T` borrow. A compound assignment computes into a temporary and then copies
+it into the field. A decimal operand is read before the operand after it runs, as an
+int operand is: in `r.inr.a * f(r)` the left value is the one `r.inr.a` had before `f`
+ran, even if `f` replaces the record or writes the field. The same holds for each
+decimal or int argument of `decimal::div`, `quantize`, `toInt` and `check` that a later
+argument follows. Like an int field, a field may not be assigned from a call
+that might free its record (`cannot assign to a field or element across a
+call`). A decimal global works (0.16): it takes 24 bytes of the zero-initialised
+global data, so `var g: decimal` starts at zero, and
+`var g = expr` takes any decimal expression, including a call or a product, and a
+record global may be built from a record literal with decimal fields: a global
+initializer may build values as a local may. Module
+initializers run in import order: a dependency's before its importer's, and
+declarations in source order. A decimal
+constant is a literal or a unary-minus literal (`const RATE = 0.0825`,
+`const NEG = -1.5`): arithmetic is not folded, so `const C = 1.0 + 2.0` is refused
+with `decimal constants must be a literal; arithmetic is not folded`. A constant
+takes no storage of its own; each use materialises its three words into a
+temporary. `-0.00` is positive zero and keeps its written display scale. Decimal
+captures, methods, interfaces and function values are not implemented yet and are
+refused with a clear diagnostic. `?decimal` is not representable; there is no raw-bits
 access and no owned or mutable decimal.
+
+```obo
+// example: runs
+// prints 3.750 3.000
+type Line = ref record { qty: int; price: decimal; total: decimal }
+
+fn main() {
+    let l = new Line{qty: 3, price: 1.25, total: 0.00}
+    l.total = l.price * 3.0
+    l.price += 0.25
+    println(l.total, " ", l.price * 2.0)
+}
+```
+
+A global and a constant (0.16):
+
+```obo
+// example: runs
+// prints 0.0825 0 1.0825 0.00
+const RATE = 0.0825
+const NEG0 = -0.00
+var total: decimal
+
+fn main() {
+    println(RATE, " ", total, " ", RATE + 1.0, " ", NEG0)
+}
+```
+
+`[]decimal` (0.16) is an array of decimals, stored inline at a 24-byte stride. It
+is created with `new []decimal(n)` (zero-filled) or `new []decimal(0)` and then
+`append`ed, and it works where other arrays do: locals, fields, elements of
+`[][]decimal`, parameters (`&[]decimal`, `mut &[]decimal`), returns, `Result` and
+optional payloads. An element reads and writes like a decimal local (`xs[i]`,
+`xs[i] = v`, `xs[i] += v`), and `for d in xs` copies each element. `len`,
+`truncate` and `append` work as for other arrays. An index outside the array traps
+with `index out of range` and exit code 3, read or write, and a negative index traps
+the same way. An `append` takes a decimal value; there is no implicit conversion from
+`int`. A `[]decimal` cannot be printed, converted with `string`, taken or replaced
+element by element, or borrowed element by element; a decimal element is not an owned
+value. The ordering rule for record fields applies to elements too: a decimal element
+or value is read before the operand after it runs. The call-ordering rules of section 12
+(`xs[f(xs)]`, `append(xs, f(xs))`) apply to `[]decimal` exactly as to `[]int`.
+
+An array of decimals is limited by the runtime's object size (under 4 GiB, 24 bytes
+an element). `new []decimal(n)` with n above 178,956,969 traps with
+`obx: allocation size overflow` and exit code 2, before any memory is taken. An
+`append` that must double an array already holding 134,217,728 decimals (2^27)
+traps the same way, so the append limit is lower than the `new` limit.
+
+```obo
+// example: runs
+// prints 3.75 2 0
+fn main() {
+    var xs = new []decimal(0)
+    append(xs, 1.5)
+    append(xs, 2.25)
+    xs[0] += xs[1]
+    let z = new []decimal(1)
+    println(xs[0], " ", len(xs), " ", z[0])
+}
+```
 
 ## 2. Ownership
 
@@ -1611,9 +1694,10 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.15 sym-format 8 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.16 sym-format 9 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
-when a `.sym` is read. The historical `0.14` release printed
+when a `.sym` is read. The historical `0.15` release printed
+`obo 0.15 sym-format 8 abi 1`, and the `0.14` release printed
 `obo 0.14 sym-format 7 abi 1`, `0.12` printed `obo 0.12 sym-format 6 abi 1`,
 and `0.8.1` printed
 `obo 0.8.1 sym-format 4 abi 1`. A format-6 file is rejected by the exact check;
@@ -1626,9 +1710,9 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 8
+obosym 9
 abi 1
-compiler "0.15"
+compiler "0.16"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -1669,16 +1753,20 @@ fn split(p0: string, p1: string): []string
   declarations are skipped without reordering the exported ones. No address,
   offset, descriptor, pointer, timestamp or absolute path appears.
 - A record definition lists its fields in declaration order (offsets are
-  recomputed: one 8-byte word each). Every public field is written explicitly as
-  `pub name: Type`; a bare `name: Type` is malformed in format 8, so a writer bug
-  cannot silently publish a field. A private field is the single token `priv`, or
-  `priviface` when its hidden type contains an interface (directly or through
-  `[]`, `?`, `^`, `Result`, records or variants). The slot is one word at the next
-  offset; the private name and type are not written. `pub priv: int` and
+  recomputed: a field takes one 8-byte word, or 24 bytes for `decimal`, and each
+  field starts where the previous one ends). Every public field is written
+  explicitly as `pub name: Type`; a bare `name: Type` is malformed in format 9, so
+  a writer bug cannot silently publish a field. A private field is the single
+  token `priv`, or `priviface` when its hidden type contains an interface
+  (directly or through `[]`, `?`, `^`, `Result`, records or variants), or `priv24`
+  when its type is `decimal`. The slot is one word (`priv`, `priviface`) or 24
+  bytes (`priv24`) at the next offset; the private name and type are not written,
+  so the marker is the only thing that gives the slot its width. `pub priv: int` and
   `pub priviface: int` are ordinary public fields named `priv`/`priviface` and
   round-trip unchanged. A closed definition lists its variants in declaration
-  order; every variant field is written with `pub`, and `priv`/`priviface` inside
-  a variant is a malformed-symbol error. Every exported record/closed type has a
+  order; every variant field is written with `pub`, and `priv`/`priviface`/`priv24`
+  inside a variant is a malformed-symbol error. A public `decimal` field is written
+  `pub name: decimal`, and its width comes from its type. Every exported record/closed type has a
   shell line first, so recursive and mutually recursive types resolve. Variants
   are registered by the reader under `Module::Variant` and exported with their
   closed type.
@@ -1700,10 +1788,18 @@ fn split(p0: string, p1: string): []string
   re-declares it. Field and signature types are emitted as the underlying type, so
   layout never depends on an alias.
 - Constants are primitive: `int`/`byte` as 16 hexadecimal digits (negative values
-  wrap), `bool` as `true`/`false`, `string` as `hex "<bytes>"` (including `hex ""`).
+  wrap), `bool` as `true`/`false`, `string` as `hex "<bytes>"` (including `hex ""`),
+  and `decimal` as `hex "<48 digits>"`: the 24 value bytes in memory order, each of
+  the three words little-endian, lowercase only. The reader refuses a text that is
+  not 48 digits, has an uppercase or non-hex character, a coefficient above 10^38-1,
+  a zero with sign 1 or a nonzero exponent, a sign other than 0 or 1, or bits 40 to 63
+  of the last word set.
   The reader interns string bytes instead of carrying a rodata address.
 - Globals are `var Name: T` or `let Name: T`, with no initializer; a `let` is
-  read-only to importers and the defining module owns initialization.
+  read-only to importers and the defining module owns initialization. A `decimal`
+  global takes 24 bytes of zero-initialised global data; every other type takes one
+  word. In `--check` an imported global gets a unique dummy offset, also stepping by
+  the type's size, so two imported decimal globals never overlap.
 - Function headings reuse the source syntax for parameters, `&` and `mut`, but the
   writer **always** emits the canonical names `p0`, `p1`, ...; parameter names are
   syntax only, so renaming a source parameter changes the source hash but not the
@@ -2589,7 +2685,7 @@ depend on the program.
 | `'pub' is not allowed on a variant field; variant fields are always public` | a source `pub` in a closed variant's field list. |
 | `obxc: <p>:<line>:<col>: symbol file: expected 'pub', 'priv' or 'priviface' in a record field list` | a format-7 record field without a visibility marker, or an unknown marker. |
 | `obxc: <p>:<line>:<col>: symbol file: a private field has no name or type` | `priv`/`priviface` followed by a name or `:`. |
-| `obxc: <p>:<line>:<col>: symbol file: private fields are not allowed in a closed variant` | `priv`/`priviface` inside a closed definition. |
+| `obxc: <p>:<line>:<col>: symbol file: private fields are not allowed in a closed variant` | `priv`/`priviface`/`priv24` inside a closed definition. |
 | `exported '<T>' uses private type '<S>'; mark '<S>' pub too` | a **public** field of an exported record names a private type; private fields are skipped by the closure check and may use private types freely. |
 | `method '<T>::<m>' cannot be used as a value: call it with '(' after its name` | `x.m` without a call. |
 | `the receiver of method '<T>::<m>' needs a mut reference, but this one is read-only` | a `mut` receiver through a read-only binding. |
@@ -2690,8 +2786,9 @@ depend on the program.
 
 ## 12. Known holes and planned changes
 
-Decimal is the released minimum scalar tier at 0.12: no decimal globals,
-constants, record fields, arrays, methods, lambdas/captures or interfaces; no
+Decimal is the released minimum scalar tier at 0.12; record fields, `[]decimal`,
+globals and constants follow in 0.16: no decimal methods, lambdas/captures or
+interfaces; no
 `format`/`parse` stdlib, database adapter, `decimal(p,s)` syntax, float interop
 or owned/mut decimal. Display scale is independent metadata, and a multiply
 caps the propagated display scale at the 38-digit rule without changing the

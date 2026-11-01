@@ -302,6 +302,97 @@ static void case_top_exhaust(void) {
     for (;;) alloc_raw(1, 32);
 }
 
+/* ---- decimal arrays (kind 7, 24-byte pointer-free elements, 0.16) ---- */
+/* The empty block, the first append and every growth keep kind 7, the element
+ * size is 24, and three words round-trip exactly across the growth boundaries. */
+static void case_dec_kind(void) {
+    Array *a = (Array *)rt_alloc_array(0, 7);
+    CHECK(a->esize == 24 && a->len == 0 && a->cap == 0);
+    CHECK(KIND(a->data - GRAN) == 7);             /* the shared empty block is kind 7, not 1 */
+    for (u64 i = 0; i < 20; i++) {
+        u64 v[3] = {i + 1, i * 3, (i << 16) | 3};
+        rt_append_dec(a, v);
+        CHECK(KIND(a->data - GRAN) == 7);
+    }
+    CHECK(a->len == 20 && a->cap == 32);
+    for (u64 i = 0; i < 20; i++) {
+        u64 *e = (u64 *)((char *)a->data + 8 + 24 * i);
+        CHECK(e[0] == i + 1 && e[1] == i * 3 && e[2] == ((i << 16) | 3));
+    }
+    Array *z = (Array *)rt_alloc_array(9, 7);      /* zero-filled: all-zero bits are decimal 0 */
+    CHECK(z->len == 9 && KIND(z->data - GRAN) == 7);
+    for (u64 i = 0; i < 27; i++) CHECK(((u64 *)((char *)z->data + 8))[i] == 0);
+    rt_free((u64)z);
+    rt_free((u64)a);
+    rt_finish();
+}
+
+/* The value is an element of the array itself, appended to a full block. The
+ * growth frees that block, so the three words must be read before it. */
+static void case_dec_self(void) {
+    Array *a = (Array *)rt_alloc_array(0, 7);
+    u64 v[3] = {7, 8, 9};
+    rt_append_dec(a, v);
+    for (u64 i = 1; i < 8; i++) rt_append_dec(a, v);
+    CHECK(a->len == 8 && a->cap == 8);
+    rt_append_dec(a, (u64 *)((char *)a->data + 8));
+    CHECK(a->len == 9 && a->cap == 16);
+    u64 *e = (u64 *)((char *)a->data + 8 + 24 * 8);
+    CHECK(e[0] == 7 && e[1] == 8 && e[2] == 9);
+    rt_free((u64)a);
+    rt_finish();
+}
+
+/* tpl_clone copies a kind-7 array as 24-byte elements: a deep copy with the same words. */
+static void case_dec_clone(void) {
+    Array *a = (Array *)rt_alloc_array(0, 7);
+    for (u64 i = 0; i < 5; i++) {
+        u64 v[3] = {i, ~i, i * 0x100 + 5};
+        rt_append_dec(a, v);
+    }
+    u64 c = tpl_clone((u64)a);
+    Array *d = (Array *)c;
+    CHECK(c != (u64)a && d->len == 5 && d->esize == 24 && KIND(d->data - GRAN) == 7);
+    for (u64 i = 0; i < 5; i++) {
+        u64 *e = (u64 *)((char *)d->data + 8 + 24 * i);
+        CHECK(e[0] == i && e[1] == ~i && e[2] == i * 0x100 + 5);
+    }
+    ((u64 *)((char *)a->data + 8))[0] = 99;        /* the copy owns its block */
+    CHECK(((u64 *)((char *)d->data + 8))[0] == 0);
+    rt_free(c);
+    rt_free((u64)a);
+    rt_finish();
+}
+
+/* Freeing a kind-7 block frees its storage only: no element is walked as a pointer. */
+static void case_dec_free(void) {
+    Array *a = (Array *)rt_alloc_array(3, 7);
+    rt_free((u64)a);
+    Array *b = (Array *)rt_alloc_array(0, 7);
+    u64 v[3] = {1, 2, 3};
+    rt_append_dec(b, v);
+    rt_free((u64)b);
+    rt_finish();
+}
+
+/* Truncation clears the words past the new length, and a later append reuses the slot. */
+static void case_dec_truncate(void) {
+    Array *a = (Array *)rt_alloc_array(0, 7);
+    for (u64 i = 0; i < 4; i++) {
+        u64 v[3] = {i + 10, i + 20, i + 30};
+        rt_append_dec(a, v);
+    }
+    rt_truncate(a, 1, 0);
+    CHECK(a->len == 1);
+    for (u64 i = 3; i < 24; i++) CHECK(((u64 *)((char *)a->data + 8))[i] == 0);
+    u64 v[3] = {5, 6, 7};
+    rt_append_dec(a, v);
+    u64 *e = (u64 *)((char *)a->data + 8 + 24);
+    CHECK(a->len == 2 && e[0] == 5 && e[1] == 6 && e[2] == 7);
+    rt_free((u64)a);
+    rt_finish();
+}
+
 void test_main(u64 *sp);
 __asm__(".globl _entry\n"
         ".section .text\n"
@@ -342,5 +433,10 @@ void test_main(u64 *sp) {
     else if (c_eq(c, "append_overflow")) case_append_overflow();
     else if (c_eq(c, "free_depth")) case_free_depth();
     else if (c_eq(c, "top_exhaust")) case_top_exhaust();
+    else if (c_eq(c, "dec_kind")) case_dec_kind();
+    else if (c_eq(c, "dec_self")) case_dec_self();
+    else if (c_eq(c, "dec_clone")) case_dec_clone();
+    else if (c_eq(c, "dec_free")) case_dec_free();
+    else if (c_eq(c, "dec_truncate")) case_dec_truncate();
     fail(3);
 }

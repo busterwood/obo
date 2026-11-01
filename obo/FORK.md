@@ -2051,6 +2051,8 @@ so sharing them changes no result. Only the basic types are compared by identity
 
 **Budget raised, 983,000 to 2,000,000** (measured live peak about 0.95 MB), on 2026-10-26, by the user's decision. A budget about 3% above the peak left new checker work only about 28 KB of headroom (983,000 less 954,912 bytes). Leaks are still caught separately, by the leak check in `tests/port_test.py`, so the budget no longer has to guard them. `mutate_port` now checks memory mutants against the baseline peak plus 3%.
 
+**Budget raised, 2,500,000 to 2,750,000** (*decimal bytes*), on 2026-11-01, by the user's explicit decision ("Raise to 2,750,000"), before the decimal storage tier. The review of `design/decimal-storage-plan.md` found main `6f83880` already over the old cap: the self-compile peak (`OBO_STATS=1 ./obo $PWD/src/obo.obo -o ... --rt $PWD`, as `tests/heap_test.py` measures it) is **2,519,264 bytes**, against 2,383,264 recorded for the 0.15 release. Cinterop v2 stages a-d added about 134 KB and no release note recorded it. The new cap is an authorization, not an optimization claim, and leaves about 230 KB for the decimal storage tier. Every stage still measures and stops at the cap.
+
 **Budget raised, 2,000,000 to 2,500,000** (2,500,000 *decimal bytes*), on 2026-10-31, by the user's explicit decision: "yes, increase budget to 2.5MB for ALL work". This is the shared compiler live-peak cap for all workstreams, including Stage B and the future float branch; the historical 2,000,000 Stage B cap is superseded. The original Stage B breach remains historical: the first complete Stage B build measured 2,001,872 bytes (port self) and 2,001,664 (seed-on-source), and the process note (comment trimming instead of stopping) is preserved in the private checkpoint logs. The corrected Stage B checkpoint measures about 2,001,856 bytes, so the new cap is an authorization, not an optimization claim, and leaves roughly half a MB of headroom.
 
 **Budget raised, 2,500,000 to 2,750,000** (2,750,000 *decimal bytes*), on 2026-11-01, by the user's explicit decision: "allow memory to go up to 2.75MB self-compile peak". The measured self-compile peak after cinterop stage (e) and the 64 GiB heap merge is 2,519,312 bytes, so the new cap leaves 230,688 bytes of headroom. This raises the shared cap only; it does not relax the empty-array savings oracle (`EMPTY_ARRAY_MIN_DELTA = 30_000`), the leak checks, or the separate EZA/tool memory budgets.
@@ -6388,3 +6390,390 @@ bytes** in the port comparison (budget 2,500,000, about 4.7% headroom); the
 empty-array savings oracle is **51,488 bytes** above baseline (minimum 30,000).
 The fixed point is stage 2 == stage 3, and the promoted 0.15 seed reproduces
 the compiler; the seed and compiler build byte-identical `hello`.
+
+## Decimal record fields (0.16 release candidate, format 9, ABI 1), stage D1
+
+Stage D1 of `design/decimal-storage-plan.md` makes `decimal` a storable record
+and closed-variant field. `OBO_VERSION` is `0.16` and `SYM_FORMAT` is `9`;
+`SYM_ABI` stays `1`, because a record's layout changes only for records that
+contain a decimal field, and those records were refused before. The format
+bump is the first `.sym` change in this tier.
+
+**Changes (`obo/src/obo.obo`).**
+- `sizeOf(t)` gives 24 for `decimal` and 8 otherwise. `fieldList` (record and
+  variant offsets) and the `.sym` field-list reader `symFieldList` now use a
+  running offset built from `sizeOf`, so source and symbol file agree on every
+  offset. Alignment is still 8, and fields keep declaration order with no padding.
+- Field read goes through the existing selector path, which already yields a
+  `mem` item. The consumers (arithmetic, compare, print, argument push, `ok`,
+  return) accept a register base other than RBP; the checks are in the run
+  tests listed below.
+- Field writes: `copyDecimalToBase(src, p, disp)` writes the 24 bytes at
+  `disp + 8*off`. The record literal's decimal branch uses it and then drops the
+  value. A compound assignment `x.f op= y` computes the field's address with
+  `lea` into a register that stays held, calls the runtime helper with the
+  temporary and `y`, and stores the result into `x` last. This keeps the target
+  base valid across the helper call, and an assignment to a field across a call
+  is refused exactly as for an int field (`cannot assign to a field or element
+  across a call`), including through handles.
+- `.sym` writer (`appFields`): a private decimal field is written as
+  `priv24`, a 24-byte opaque slot that does not reveal the type. `priv` and
+  `priviface` stay one word. `symCompareFields` compares the decimal-ness of a
+  private slot against the live field, so a writer that emits `priv` for a
+  decimal slot is refused by a full build (`lib.sym` disagrees with the compiled
+  interface for type 'Ledger'; checked by hand).
+- `decimalFrameCheck()` refuses a decimal value in a global initializer
+  (`var g = new R{d: 1.5}`) with `a decimal value in a global initializer is not
+  supported yet; build the value in a function`, and a decimal constant with
+  its own text. The reason is that a global initializer has no frame (`rbp` is
+  0), and the literal's temporary needed one. Before this guard the compiler
+  segfaulted on such a program. Lifting it needs a global scratch area, which is
+  part of stage D3.
+- A `.sym` of the wrong format is refused with the format named (`has format 8;
+  this compiler reads 9`). Versions are pinned in about 100 test fixtures,
+  mechanically (`obosym 9`, `compiler "0.16"`); the format negative fixture uses
+  `obosym 8` in its library so that it still exercises a mismatch.
+
+**Decisions.**
+- Decimal globals, constants, arrays, methods and function values stay refused
+  (D2-D4). A decimal field's `.sym` form is `priv24` for private and
+  `pub name: decimal` for public, and its width comes from the type, not from the
+  marker's text.
+- A closed-variant decimal field is read by narrowing (`s.r` inside the arm), as
+  for other variant fields; `Circle { r, name }` bindings are not allowed.
+
+**Tests.** New: `tests/run/decimal_fields.obx` (read, write, compound, nested
+records, literals, borrows, handles, `Result` over a field, a narrowed variant
+read, a zero-filled omitted field); `tests/modules/run/decimal_fields/` (a
+cross-module record with public and private decimal fields, and a closed type,
+built from `.sym` on the importer side); `tests/errors/decimal_fields.obx` (the
+assign-across-call refusal for `=`, `+=`, nested and handle targets; a field
+given twice; a wrong-type literal; a decimal in a global initializer);
+`tests/sym_test.py` `sym/decimal_fields` (`priv24` lines, reemit byte identity,
+source-less `--check`, and negatives); `tests/sym_fuzz.py` gains a decimal seed
+and a `priv_marker` mutator (300/300 clean). `tests/errors/decimal.obx` no
+longer refuses record fields, and its global, constant and array refusals stay.
+`tests/mutate_fork.py` repoints one stale placeholder mutant (see the gates).
+`tests/mutate_decimal.py` gains seven mutants: a decimal field sized 8, a two-word
+field copy, a literal field not copied, a compound result not stored, and three
+`.sym` mutants (`priv24` read as one word, a reader that advances by one word,
+and a private decimal written as `priv`). Each one is caught.
+
+**Gates (after the review fix, the last source change).**
+- `run_fork` **1,819 passed, 0 failed** (includes `run/decimal_operand_order.obx`).
+- `module_test` **144 passed, 0 failed**; `sym_test` **53 passed, 0 failed**.
+- `sym_fuzz` **300/300 clean** (seed 20261028, digest `a5f83c5822041582`).
+- `doc_check` **72 examples, 0 problems** (the new LANGUAGE.md example is one).
+- `imports` **30/30**; `stdlib` **17/17**; `homes_check` passes;
+  `float_f1 --reader-only` passes.
+- `port_test` **616 of 616**; `port_compare` **1,800 of 1,800** (Stage B).
+- `mutate_decimal` **84 caught, 0 missed, 0 broken**: 71 before D1, 7 record-field mutants, and 6 operand
+  capture mutants (the left operand of `*`/`%`, `+`/`-`, and the comparison; the
+  unconditional capture; and the earlier decimal and int builtin arguments). Each
+  one is caught by the new run test or an existing one.
+- `mutate_fork` (restricted by pattern, not the full 749-mutant run): `sym`
+  **78 caught + 1 equivalent of 79**; `decimal` **4/4**; `X36` **2/2**; `field`
+  **33 caught + 1 equivalent of 34**. The equivalent entry is the pre-existing
+  `field visibility: symCompareFields ignores visibility`. One stale `field`
+  mutant (`private placeholder offset is zero`) was repointed earlier to the
+  running-offset line, and it is caught.
+- Fixed point: `stage2 == stage3` (`cmp`), and the seed-built compiler equals
+  stage 2 byte for byte (733,185 bytes).
+- Self-compile peak: `OBO_STATS=1` reports **2,527,104 bytes** live (55,979,008
+  allocated); `heap_test` reports 2,527,168 (budget 2,750,000, headroom about
+  223 KB). The budget is unchanged.
+- The decimal run tests pass under `OBO_CHECK=1` (87 of 87 with `-k decimal`).
+
+**Review fix: decimal operand evaluation order.** The review found that a decimal
+left operand stayed a live address while the right operand ran. `materialise`
+returned a decimal item unchanged, and `term`, `simpleExpr` and `relation` parsed
+the right operand before reading the left. So a right operand that replaced the
+record (a use-after-free: `decimal invalid value`) or wrote the field in place (a
+wrong value) changed the left operand. The builtins (`decimal::div`, `quantize`,
+`toInt`, `check`) parsed their arguments in turn and used them afterwards, with the
+same hazard. Two reads were already right and are unchanged: a user-call argument
+is copied when it is parsed, and a record literal field is stored when it is
+parsed; `println` prints each argument as it is parsed.
+
+- `captureDecimal(x)` copies a decimal operand into a `decimalTemp` and releases the
+  original, before the right operand is parsed. A frame-local decimal (base RBP, no
+  index) is not copied: a decimal cannot be borrowed and a decimal global is
+  refused, so no call can change it. This is the rule for a frame local.
+- `term` (`*`, `%`), `simpleExpr` (`+`, `-`) and `relation` call it on the left.
+  `earlyArg` is the builtin rule: an argument followed by a comma is captured if it
+  is decimal and loaded if it is an int, so the later arguments cannot change it.
+  The last argument is parsed with `nestedExpr` as before.
+- A decimal compound assignment `x.f op= y` still reads its target after `y`, as an
+  int compound does (`r.n += f(r)` gives 11). It is not changed. The owner-freeing
+  form is refused at compile time (`cannot assign to a field or element across a
+  call`).
+- The reviewer's `mut &` case: the 0.15 seed accepts `bump(&s)` for a `mut &R`
+  parameter, and so does this compiler, with the same output as `bump(s)`. It is
+  pre-existing and unrelated to decimal, so it is reported only and not changed here.
+
+**Re-review fixes.** The `check` case in `decimal_operand_order.obx` now uses
+`r.inr.a = 12.5`, which needs three digits, so a late read of `r.n` (3 after
+`ownScale`) fails it. Under the int-argument mutant the line changes from
+`check ok 12.5` to `check err 7`. Each of the six capture mutants was then run alone
+against that one file (a scratch driver; `mutate_decimal.py` has no name filter).
+Each fails it at its own line: `mul` (the left-operand and term mutants), `add`
+(sum), `lt yes` (comparison), `div err 4` (decimal argument) and `check err 7` (int
+argument). `captureDecimal` no longer releases the source's base registers twice:
+`copyDecimal` releases the registers of its source, so the item is consumed there.
+Pre-existing, unchanged: `decimalNeg`, `decimalCompare` and `decimalCall2` do not
+release their operands explicitly. `decPtr` releases each operand's base register
+through its copy, so the ownership is implicit rather than missing.
+
+**Tests.** `tests/run/decimal_operand_order.obx` (run under `OBO_CHECK=1`) covers
+the reviewer's reproducers and the operators `*`, `%`, `+`, `-`, `<` and `==`, each
+with the owner replaced by the call and with an in-place write; a record literal
+and a two-field literal; a user-call argument; `println`; the builtins `div`,
+`quantize`, `check` (with an int argument after a call) and `toInt`; a handle-rooted
+and a global-rooted left operand; the int binop; the decimal field `+` with a field
+write; and the compound result. Expected values were computed by hand before the
+run; for example `2.5 * 3.0 = 7.50` where the bad result was `301.50`.
+
+The record-field change is not promoted: the compiler still needs one
+`make promote` after the merge, and that is the orchestrator's step.
+
+## Decimal arrays (0.16 release candidate, format 9, ABI 1), stage D2
+
+Stage D2 of `design/decimal-storage-plan.md` makes `[]decimal` an array of 24-byte
+decimals. `OBO_VERSION` stays `0.16` and `SYM_FORMAT` stays `9`, `SYM_ABI` stays `1`:
+a decimal array was refused in source and in `.sym` before, so accepting it changes no
+existing layout. The runtime gains one fixed slot (94) and one block kind (7); that is
+an additive runtime extension inside the unreleased 0.16 candidate. The policy comment
+in `obo.obo` suggests a patch release for additive runtime extensions; this stage
+does not take one, because 0.16 is not released yet (for the orchestrator to decide).
+
+**Runtime (`obo/runtime/runtime.c`, `entry.S`, `host_abi.h`).**
+- Block kind 7 is a `[]decimal` block: pointer-free, 24-byte elements. It is the next
+  free small number after 1-6. The dispatch is explicit: `rt_free` skips the descriptor
+  walk for kinds 1, 4 and 7, so a kind 7 block is never read as a descriptor pointer.
+- `empty_blocks[4] = {7,32,0,0}` is the shared zero-capacity block; `empty_data(7)` and
+  `is_empty_data` know it, so `new []decimal(0)` and the first append never free rodata.
+- `rt_alloc_array` takes kind 7 with `esize = 24`. `tpl_clone` maps kind 7 to 7; before,
+  an unknown kind became kind 1 with esize 8, which would overflow a 24-byte element.
+- The growth code is factored into `grow_array(Array*)`, used by `rt_append` and the new
+  `rt_append_dec(Array*, const u64 *src)`. `rt_append_dec` reads the three source words
+  before it grows, because `src` may point into the array's own block, which growth frees.
+- `rt_append_dec` is slot 94 (`slot rt_append_dec` and a `check_` stub in `entry.S`,
+  `RT_APPEND_DEC = 94` in `obo.obo`). **Deviation:** the hosted (`OBO_HOSTED_EXIT`)
+  build's foreign-census slot moved from 94 to 95 (`RT_FOREIGN_CENSUS_SLOT` in
+  `host_abi.h` and `cinterop.py`), because the new slot is present in both builds. The
+  baseline build still has no slot 95, so the move changes nothing there. **Correction
+  (D3):** the baseline bytes did change at D2. Slot 94 is in the freestanding jump table
+  itself, so the baseline build changed when `rt_append_dec` was added; only the hosted
+  census slot number is hosted-only.
+
+**Compiler (`obo/src/obo.obo`).**
+- `newExpr` gives a `[]decimal` literal kind 7 (after the string branch).
+- `resolve()` scales a decimal element index after the bounds check, into a fresh
+  register (`lea r, [i+i*2]`, then scale 8). It never scales in place: `asReg` can return
+  a local's home register.
+- `append(xs, d)` on a decimal array calls `RT_APPEND_DEC` with the address of `d`.
+- `for d in xs` copies all three words (the decimal branch of the for-in loop).
+- The two `arrays of decimal ... not supported in v1` refusals are removed (the source
+  `parseType` and the `.sym` `symParseType`). `.sym` lines for decimal arrays now read
+  `[]decimal` in signatures, record fields and globals.
+
+**Decisions.**
+- A `[]decimal` global is accepted. The plan asked for it to be refused, but it is a
+  pointer-valued global with a normal owned lifecycle, the same as `[]int`, so it is
+  sound and checked in check mode. Decimal globals (`var g: decimal`) are still refused
+  (D3). **Deviation from the plan, reported.**
+- `take` and `replace` on a decimal element are refused with the diagnostics for a
+  non-owned element (`take needs an optional variable, field or element holding an
+  owned value`), the same shape as for an int element. `println`, `string` and borrowing
+  a decimal element are refused too.
+- Call ordering follows section 12 unchanged: `xs[f(xs)]` and `append(xs, f(xs))` compile
+  for int and decimal arrays alike, since only calls that might free are refused.
+
+**Tests.** New: `tests/run/decimal_array_sizes.obx` (lengths 0, 1, 8 and 9 across the growth
+boundaries, display and sign, zero fill, sums, truncate and append);
+`decimal_array_elements.obx` (compound operators, element copy, compare, for-in,
+range-loop writes); `decimal_array_calls.obx` (calls that grow, shrink or read the array
+inside an index or value expression, and a self-append at a full block);
+`decimal_array_shapes.obx` (record field, borrowed and `mut` parameters, return,
+`Result`, optional, `[][]decimal`); `decimal_array_trap_read.obx`,
+`decimal_array_trap_write.obx` and `decimal_array_trap_negative.obx` (exit 3, `index out
+of range`); `tests/errors/decimal_arrays.obx` (the refusals above). `tests/errors/decimal.obx`
+no longer refuses arrays; its global and constant refusals stay. `tests/modules/run/decimal_arrays/`
+(a cross-module library with `[]decimal` through a public function, a `mut` parameter, a
+public record with public and private arrays, and a public global). `tests/sym_test.py`
+`sym/decimal_arrays`: the `.sym` lines, byte-identical re-emit, the source-less `--check`
+matching the full build, and a wrong element type in a signature refused by the importer
+(`cannot use []decimal as []int`). `tests/rt_heap_test.c` gains five C cases (`dec_kind`,
+`dec_self`, `dec_clone`, `dec_free`, `dec_truncate`), run from `tests/heap_test.py`'s
+`rt_section`.
+
+**Mutants (`tests/mutate_decimal.py`).** Three compiler mutants (a 16-byte stride, an index
+scaled in place, a one-word for-in copy), seven runtime mutants (`rt_append_dec` copies two
+words, reads its source after growth, a missing or kind-1 empty block, `rt_free` walking
+kind 7, an 8-byte element size, a clone that maps kind 7 to kind 1), and slot 94 pointed at
+`rt_tpl_html_copy`. The judge gained `run_array_suite`, which builds `rt_heap_test.c`
+against the mutant runtime and runs the five C cases. The compiler-mutant judge now
+passes the runtime directory (the repository root has no `runtime.c`, so before this
+fix every compiler mutant would have been "caught" by a compile failure).
+
+**Tooling fixes found along the way.** `tests/mutate_io.py` had a stale runtime pattern
+after `grow_array` re-indented the empty-block guard (STALE); its pattern is updated to
+the new text and the mutant still removes the guard.
+
+**Gates.**
+- `run_fork` **1,837 passed, 0 failed**.
+- `module_test` **145 passed, 0 failed**; `sym_test` **54 passed, 0 failed**.
+- `sym_fuzz` **200/200 clean** (seed 20261028, digest `10de5ef0c1be7359`).
+- `doc_check` **73 examples, 0 problems** (the new LANGUAGE.md array example is one).
+- `heap_test` passes (the five `dec_*` cases included); `elf_test` ok; `io_test` 0 failures;
+  `meta_test` 34 of 34; `port_test` **624 of 624**; `port_compare` **1,817 of 1,817**;
+  `homes_check` and `homes_edge` (1,028 statements, 119 refused by both, 0 differ) pass;
+  `imports` **30/30**; `stdlib` **17/17**.
+- `mutate_decimal` **95 caught, 0 missed, 0 broken** (84 before D2, plus the 11 array mutants).
+- `mutate_io` **36/36 caught** after the pattern fix.
+- `mutate_port` **539 of 540**. The one unjudged mutant, `modules: token names lack ::`, is
+  a pre-existing stale pattern in `mutate_fork.py` and `mutant_catchers.tsv`: the source
+  no longer contains `try :: float decimal /= %= \`"` (unchanged at HEAD). Not fixed here.
+- `mutate_fork` filtered runs, each all caught: `sym` 78/79 (1 equivalent), `decimal` 4/4,
+  `X36` 2/2, `field` 33/34 (1 equivalent), `array` 10/10, `append` 4/4, `index` 13/13,
+  `resolve` 1/1.
+- Fixed point: `stage2 == stage3` (`cmp`), and the seed-built compiler equals stage 2 byte
+  for byte (737,281 bytes).
+- Self-compile peak: `OBO_STATS=1` reports **2,529,104 bytes** live (56,085,456 allocated),
+  against the budget of 2,750,000 (headroom 220,896). The budget is unchanged.
+- `cinterop` `test_cinterop.py`: ok (the libpq smoke test is skipped without `CINTEROP_TEST_DSN`).
+
+## Decimal globals and constants (0.16 release candidate, format 9, ABI 1), stage D3
+
+Stage D3 of `design/decimal-storage-plan.md` makes a decimal storable as a global and a
+constant. `OBO_VERSION` stays `0.16`, `SYM_FORMAT` stays `9` and `SYM_ABI` stays `1`: both
+forms were refused before, so accepting them changes no existing layout. `.sym` gains one
+constant spelling (`hex "<48 lowercase digits>"`) and decimal globals use the existing
+`var NAME: decimal` line.
+
+**Globals (`obo/src/obo.obo`).**
+- `allocGlobal` gives a declared decimal 24 bytes of the zero-initialised global data
+  (`sizeOf(t)`, one word otherwise). All-zero bits are decimal zero, so `var g: decimal`
+  needs no initialiser and no runtime code.
+- An inferred global (`var g = 1.50`) has no type when its declaration is seen. Its
+  declaration-time word stays allocated and its 24-byte slot is taken after the initializer,
+  where the type is known: the placeholder is dead, nothing overlaps, and no offset moves
+  once a global has been named.
+- A global initializer runs in the entry code with no frame (`rbp` is unset). `decimalTemp`
+  is now `decimalMem`: a frame slot in a function, and a hidden global slot of its own in an
+  initializer (`base -1`, `disp GLOBAL_BASE + gsize`), so nested literals and calls never
+  share one 24-byte temporary. `decimalRequest`, `decimalCheckRequest` and the new
+  `scratchInt`/`scratchBase`/`scratchAt` give the request blocks and the Result status/int
+  words the same two homes. `callFnWith`'s hidden decimal-return destination and the `try`
+  payload copy use the same item (`retBase`/`decimalBase`), so a decimal-returning call also
+  works in an initializer.
+- Reads, whole writes, `+=`/`-=`/`*=`/`%=` and every argument/field/element/return/`Result`
+  use go through `copyDecimal` (the existing 24-byte item path); a decimal global is never a
+  one-word load. `captureDecimal` still skips only a frame local (`base RBP`), because a call
+  cannot reach the caller's frame; a global is captured before a later operand runs, exactly
+  as an int global is loaded. `total * bump()` sees the value read before `bump()` writes
+  `total`; `total += bump()` reads its target after the call, as an int compound does.
+- Module initializers keep the existing chain (`initLink`): imports are compiled first, so a
+  dependency's initializers run before its importer's, and declarations run in source order.
+- `.sym`: a public decimal global is `var NAME: decimal` (or `let`), read and written by the
+  existing global path. In `--check`, imported globals get dummy offsets with a running byte
+  stride (`symDummyBytes += sizeOf(t)`), so two imported decimal globals never overlap.
+
+**Constants.**
+- `constDecl` looks ahead one token: a decimal literal, or `-` and then one, is the whole
+  value. The token text is parsed with `decimalLiteralValue` and the three words are kept in
+  `decConsts` (indexed by `Sym.value`), with **no code emitted at the declaration**. A use
+  (`decimalConstItem`) materialises the three words into a frame/hidden-global temporary with
+  the same immediate stores as a literal, so a decimal item is never mode `"const"`.
+- Anything else is `decimal constants must be a literal; arithmetic is not folded`: `1.0 +
+  2.0`, a call, another constant, `-(1.5)`, `--1.5`, a global, `1.5 + 0`. A `Result[decimal]`
+  value is refused with the same message. The literal's own exponent/precision errors still
+  fire. A minus sets sign 1 only when the coefficient is nonzero, so `-0.00` is positive zero
+  with dscale 2.
+- `.sym` writes `const NAME: decimal = hex "<48 lowercase digits>"`: the 24 value bytes in
+  memory order (w0 bytes 0-7 little-endian, then w1, then w2), written byte by byte rather
+  than through the numeric `appHex16`. A public constant is visible to importers from the
+  `.sym` alone; a private one is not written.
+- The reader `symDecimalConst` rejects uppercase hex, a length other than 48, a non-hex
+  character, reserved bits 40..63 of w2, a sign other than 0/1, a zero with sign 1 or a
+  nonzero exponent, and a coefficient above `10^38-1` (with `10^38-1` accepted). A source-less
+  `--check` builds a public constant from the file; with the source present the reader also
+  compares its three words with the compiled constant and reports a disagreement.
+
+**Tests.**
+- `tests/run/decimal_globals.obx`: zero initialisation, inferred and explicit globals,
+  initializers with record literals, calls, products, empty-array calls and a later
+  initializer reading an earlier global; every read/write/compound form; a global as an
+  argument, return, record-literal field, array element and `append` value; comparisons,
+  `Result`, `quantize`, `div`; and the operand order against a call that writes the global.
+- `tests/run/decimal_global_init.obx`: nested initializers that need several live temporaries
+  and calls whose bodies need their own, plus `Result`-returning `div`/`quantize`/`toInt`/
+  `check` in initializers (their status and result words are hidden globals, not frame slots).
+- `tests/run/decimal_consts.obx`: sign, display scale, exponent, underscore and duplicate-zero
+  forms; negative zero; uses as arithmetic, comparison, call argument, record literal, array
+  element, `Result` payload and `quantize` argument; a use is a fresh copy.
+- `tests/errors/decimal_globals.obx`: the literal-only refusals, assignment to a constant, the
+  literal's own exponent/precision errors, a global of the wrong type, and a `let` global.
+- `tests/modules/run/decimal_globals/` (public and private constants and globals, import-order
+  initializers, a private constant through a function) and `decimal_global_init/`
+  (initializers across a module boundary).
+- `tests/sym_test.py` `sym/decimal_globals`: the exact `const`/`var` lines, byte-identical
+  re-emit, source-less `--check` matching the full build, and twelve malformed constants
+  (case, length, non-hex, coefficient, reserved bits, sign, zero), plus the `10^38-1`
+  boundary. `tests/sym_fuzz.py` gains a `decimal_const` mutator over a seed with a public
+  constant and a public decimal global.
+- `tests/errors/decimal.obx` and `tests/errors/decimal_fields.obx` drop their global and
+  constant refusals; `LANGUAGE.md` gains the two runnable examples and the `.sym` rules.
+- **port_compare seed entries:** the 0.16 `[]decimal` run files were added to
+  `SEED_FILE_MIN` in the D3 tests commit (D2 had left them out). They are preparatory: the
+  0.15 seed cannot compile them, and they stop being skipped once the promoted seed reaches
+  0.16.
+
+**Mutants (`tests/mutate_decimal.py`).** Ten new: a global slot of 8 bytes; an inferred
+global of 8; a global operand that skips the capture; initializer temporaries sharing one
+slot; builtin status and int-result words as frame slots (two); the `.sym` writer reading the
+words in reverse; a dropped negative sign; a negative zero that takes the sign; and the reader
+accepting uppercase hex. Three stale patterns from earlier stages (a `try` payload move, and
+the two `check` request stores) are repointed at the `decimalBase`/`scratchBase()` code they
+now describe; the mutations are unchanged. `tests/mutate_fork.py`'s global-slot pattern is
+repointed at `allocGlobal`'s `s.offset = GLOBAL_BASE + gsize`.
+
+**Bug found while finishing D3.** `decimal::div`, `quantize`, `toInt` and `check` outside a
+function used `newLocal` for their status word (and `toInt` for its int result), which is a
+frame slot: a global initializer has no frame, so `var r: Result[decimal] =
+decimal::div(...)` died on its first instruction. Before D3 those initializers were refused,
+so the path was unreachable. `decimalStatusSlot` and `decimalToInt` now use `scratchInt`/
+`scratchAt`, and `decimal_global_init.obx` covers all four builtins. This was caught by a
+direct probe, not by a gate; the two new mutants above hold it.
+
+**Gates (after the last source change, re-run on the merged tree).** The branch then
+merged `main` `6fc3584` (cinterop v2 stage h); that merge is the landing image below.
+- `run_fork` **1,855 passed, 0 failed**; `module_test` **147 passed, 0 failed**;
+  `sym_test` **55 passed, 0 failed**.
+- `sym_fuzz` **200/200 clean** (seed 20261028, digest `f3ddd18c8db2b6b1`).
+- `doc_check` **74 examples, 0 problems** (the new LANGUAGE.md global/constant example is one).
+- `heap_test` passes; the self-compile peak is **2,583,344 bytes** live (budget 2,750,000,
+  headroom 166,656). `OBO_STATS=1` on the same source reports 2,583,264 live and 57,743,168
+  allocated; the few hundred bytes between runs are the temporary output path in rodata.
+- `port_test` **628 of 628** identical, no leaks; `port_compare` **1,834 of 1,834** Stage B,
+  the port's peak 2,583,312 bytes.
+- `elf_test` ok; `io_test` 0 failures; `meta_test` **34** checks; `homes_check` and
+  `homes_edge` (1,028 statements, 119 refused by both, 0 differ); `imports` **30/30**;
+  `stdlib` **17/17**; `own_fuzz` **0 failures in 200 programs**.
+- `test_cinterop.py` and `test_db_adapters.py` pass on the merged tree (the live libpq,
+  postgres and sqlite-DSN cases are skipped without `CINTEROP_TEST_DSN`/a live server).
+- `mutate_decimal` **105 caught, 0 missed, 0 broken** (95 before D3, plus the ten above).
+- `mutate_fork` filtered runs: `module globals share one slot` **1/1**; `decimal` **4/4**;
+  `sym` **78 caught + 1 equivalent of 79** (the pre-existing `field visibility:
+  symCompareFields ignores visibility` equivalent).
+- Fixed point: `stage2 == stage3` (`cmp`), the seed-built `obo` equals stage 2 byte for byte
+  (757,761 bytes).
+- The decimal run tests pass under `OBO_CHECK=1`, which `run_fork` always sets.
+
+**Review nits closed.** N1: `tests/run/decimal_global_init.obx` now hands each
+`div`/`quantize`/`toInt`/`check`/`parse`/`format` temporary to a function that consumes and
+prints it, with an error path for `check`, `parse` and `format`, so a wrong status or result
+address fails rather than only crashing; the plain `q1..q4` globals keep the
+construction/free check. N4: `LANGUAGE.md` no longer calls a record literal a decimal
+expression. N3 is noted above. N2 (the unused 8-byte inferred placeholder) and N5 (a decimal
+suite timeout counted as a caught mutant) are accepted as documented.

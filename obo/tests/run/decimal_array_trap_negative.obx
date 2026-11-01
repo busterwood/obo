@@ -1,0 +1,14 @@
+// A negative index into a []decimal traps with exit 3: the unsigned bounds compare
+// rejects it, and the scaled index is never used.
+fn at(xs: &[]decimal, i: int): decimal { return xs[i] }
+
+fn main() {
+    var xs = new []decimal(0)
+    append(xs, 0.75)
+    println(at(xs, 0))                          // expect: 0.75
+    println(at(xs, -1))
+    println("unreachable")
+}
+
+// expect-exit: 3
+// expect-stderr: index out of range

@@ -1,7 +1,8 @@
 # Decimal language integration design
 
 **Date:** 2026-10-31
-**Status:** APPROVED 2026-10-31, RELEASED as `0.12`/format 6/ABI 1, merged and promoted on main after rebasing on released `0.11` HTML main `34b798b`; the independent review returned REVISE, the fixes were approved and the review is closed. The promoted `seed/obo` is the same 0.12 image (643,073 bytes, sha256 `d98d6b5f…`), built once by the 0.11 seed `01fa9ed3…`. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
+**Status:** APPROVED 2026-10-31, RELEASED as `0.12`/format 6/ABI 1, merged and promoted on main after rebasing on released `0.11` HTML main `34b798b`; the independent review returned REVISE, the fixes were approved and the review is closed. The promoted `seed/obo` is the same 0.12 image (643,073 bytes, sha256 `d98d6b5f…`), built once by the 0.11 seed `01fa9ed3…`. Text/format stdlib, database adapters, containers and captures are later work.
+**0.16 candidate (branch `decimal-storage`, format 9/ABI 1):** the M2 "usable tier" stages land there, reviewed one at a time per `decimal-storage-plan.md`. Done: D1 record and closed-variant fields, D2 `[]decimal` (runtime kind 7 and `rt_append_dec`, slot 94), D3 decimal globals (24-byte zero-initialised slots, module initializers) and constants (literal or unary-minus literal only, `hex "<48>"` in `.sym`). Remaining: D4 methods/interfaces/function values/lambdas and captures, then D5 `lib/decimals.obx` and D6 the database read side. §1.2's "Global / constant / `.sym`: later tier" row is the D3 detail.
 **Baseline:** approved on `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec`; integration rebased on the released `0.11` HTML-escaping main `34b798bc4c76cf41362d3b374c13b80e7b43f73b` (and earlier on heap-limit main `316963c`). Branch/worktree: `decimal-language`.
 **Target:** released as `0.12`/`SYM_FORMAT=6`/`SYM_ABI=1`, merged and promoted on main after rebasing on the released 0.11 HTML main `34b798b`; the promoted seed is the same image.
 
@@ -35,7 +36,7 @@ Baseline: `0.10`, `SYM_FORMAT=6`, `SYM_ABI=1`, one-word values, raw binary64 flo
 | Return | hidden caller destination pointer; callee copies 24 bytes |
 | Record field | 24-byte inline field; offsets use a size/alignment function |
 | Array | pointer-free kind with alignment 8 and stride 24; append/truncate/for copy 24 bytes |
-| Global / constant / `.sym` | later tier: 24-byte zero-initialised storage or rodata; `Sym.value` would address a constant; `.sym` is `hex "<48 lowercase hex digits>"` |
+| Global / constant / `.sym` | 24-byte zero-initialised global slot (0.16, D3) or, for a constant, no storage: three words materialised at each use; `.sym` is `hex "<48 lowercase hex digits>"` |
 | `Result[decimal]` | owned cell; `ok` payload at offset 0, descriptor size 24 |
 | Interface / lambda | parameter/return allowed, not receiver; Stage B capture copies 24 bytes |
 

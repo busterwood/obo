@@ -118,8 +118,8 @@ const T_FOREIGN = 73            // type X = foreign "C": a D2 reserved word
 // Bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect
 // change.
-const OBO_VERSION = "0.15"
-const SYM_FORMAT = 8
+const OBO_VERSION = "0.16"
+const SYM_FORMAT = 9
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -2198,6 +2198,8 @@ const RT_TPL_HTML_VALUE = 90
 const RT_TPL_HTML_SPLICE = 91
 const RT_TPL_HTML_JOIN = 92
 const RT_TPL_HTML_COPY = 93
+// decimal arrays (0.16): append a 24-byte decimal, by pointer, to a []decimal
+const RT_APPEND_DEC = 94
 
 const RAX = 0
 const RCX = 1
@@ -2483,6 +2485,7 @@ var inDefer = false
 var inWhileCond = false           // a lambda literal is not allowed in a while condition
 var noreturn = false
 var initLink = 0
+var decConsts = new []int(0)      // decimal constants: three words each (lo, hi, packed), at the index Sym.value names
 
 fn containsInt(a: &[]int, v: int): bool {
     for x in a {
@@ -2662,7 +2665,7 @@ var checking = false            // --check: read dependency .sym files, write th
 var emitRootSym = false          // --emit-sym: a single-file build writes the root's .sym
 var symLoadNames = new []string(0)   // the modules whose interfaces are being read (cycle check)
 var symSrcFound = false              // validateDepSource found and read a source (its hash may be any 64-bit value)
-var symDummyGlobals = 0              // imported global dummy offsets in --check (never overlap real globals)
+var symDummyBytes = 0                // imported global dummy offsets in --check: each takes its type's size (never overlap)
 const SYM_DUMMY_BASE = GLOBAL_BASE + 0x01000000
 
 // a module used before one is current: --tokens and --encode, and the compiler's own start
@@ -3329,6 +3332,9 @@ fn boundsCheck(idx: int, length: Mem, line: int) {
     trapBounds(line)
 }
 
+// A decimal element is 24 bytes: the index is scaled by 3 into a fresh register, after the bounds
+// check, and the address scale is 8. The index is never scaled in place: it may be a local's home
+// register (asReg returns it), which must keep its value.
 fn resolve(mut x: &Item) {
     if x.mode == "elem" {
         boundsCheck(x.index, mem(x.base, -1, 0, 8), x.line)
@@ -3336,6 +3342,14 @@ fn resolve(mut x: &Item) {
         x.mode = "mem"
         x.disp = 8
         x.scale = x.width
+        if x.typ.kind == "decimal" {
+            let old = x.index
+            let r = alloc()
+            opMem(0x8D, r, mem(old, old, 0, 2), true, false)   // lea r, [old + old*2]
+            release(old)                                         // a no-op for a home register
+            x.index = r
+            x.scale = 8
+        }
     }
 }
 
@@ -3510,16 +3524,54 @@ fn rtCall1(slot: int, a: Item, ret: ^Type): Item
 fn resultCall3(slot: int, a: Item, payload: ^Type): Item
 fn resultCall4(slot: int, a: Item, b: Item, payload: ^Type): Item
 
+// A 24-byte decimal temporary. In a function it is a frame slot. A global initializer has no frame (the entry
+// runs it with rbp unset), so its temporary is a hidden global of its own: each initializer runs once, and no
+// two temporaries share a slot.
+fn decimalMem(): Item {
+    if curFn != nil {
+        let s = newLocal("", tDecimal, "var")
+        return localItem(s, tDecimal)
+    }
+    let x = newItem("mem", tDecimal)
+    x.base = -1
+    x.disp = GLOBAL_BASE + gsize
+    gsize += 24
+    return x
+}
+
 fn decimalTemp(): Item {
-    let s = newLocal("", tDecimal, "var")
-    return localItem(s, tDecimal)
+    return decimalMem()
+}
+
+// The base and displacement of an n-byte scratch block: an rbp offset in a function, and an absolute hidden
+// global in a global initializer (base -1, which mem(base, -1, disp) addresses absolutely).
+fn scratchBase(): int {
+    if curFn != nil { return RBP }
+    return -1
 }
 
 // A raw frame temporary of n bytes (n a multiple of 8), returning its rbp
-// offset.  Used for the explicit decimal request block.
+// offset.  Used for the explicit decimal request block in a function (scratchAt).
 fn newFrameBytes(n: int): int {
     frame += n
     return -frame
+}
+
+fn scratchAt(n: int): int {
+    if curFn != nil { return newFrameBytes(n) }
+    let at = GLOBAL_BASE + gsize
+    gsize += n
+    return at
+}
+
+// An 8-byte scratch word with the same two homes: a frame slot in a function, a hidden global word in a
+// global initializer. A decimal builtin's status word and int result are kept here, so a Result-returning
+// builtin works in a global initializer as it does in a function.
+fn scratchInt(): Item {
+    let x = newItem("mem", tInt)
+    x.base = scratchBase()
+    x.disp = scratchAt(8)
+    return x
 }
 
 fn decPtr(x: &Item): Item {
@@ -3529,6 +3581,20 @@ fn decPtr(x: &Item): Item {
     opMem(0x8D, r, memOf(c), true, false)
     releaseItem(c)
     return makeReg(tInt, r)
+}
+
+// A decimal operand is captured into a temporary before a later operand is evaluated. That
+// later operand may call a function that changes or frees the record the value is read from,
+// so the value is taken now, as the int path loads its left operand into a register. A
+// frame-local decimal needs no copy: a decimal cannot be borrowed, and a call cannot reach
+// the caller's frame, so no call can change a decimal that lives there (base RBP, no index).
+// A global is copied, as an int global's value is loaded now: a call may write it.
+fn captureDecimal(x: Item): Item {
+    if x.typ.kind != "decimal" { return x }
+    if x.mode == "mem" && x.base == RBP && x.index < 0 { return x }
+    let t = decimalTemp()
+    copyDecimal(t, x)   // copyDecimal releases the base registers of its source, so x is consumed here
+    return t
 }
 
 fn copyDecimal(dst0: &Item, src0: &Item) {
@@ -3546,13 +3612,14 @@ fn copyDecimal(dst0: &Item, src0: &Item) {
     releaseItem(src)
 }
 
-fn copyDecimalToBase(src0: &Item, p: int) {
+// copies a decimal to p+disp (p is a register that stays held: it is not released here)
+fn copyDecimalToBase(src0: &Item, p: int, disp: int) {
     var src = copyItem(src0)
     resolve(src)
     for off in 0..3 {
         let r = alloc()
         opMem(0x8B, r, mem(src.base, src.index, src.disp + 8 * off, 8), true, false)
-        opMem(0x89, r, mem(p, -1, 8 * off, 8), true, false)
+        opMem(0x89, r, mem(p, -1, disp + 8 * off, 8), true, false)
         release(r)
     }
     releaseItem(src)
@@ -3643,17 +3710,17 @@ fn decimalRequest(scale: Item, mode: Item): Item {
     }
     let sv = load(scale)
     let mv = load(mode)
-    let at = newFrameBytes(16)
+    let at = scratchAt(16)
     let sd = newItem("mem", tInt)
-    sd.base = RBP
+    sd.base = scratchBase()
     sd.disp = at
     store(sd, sv)
     let md = newItem("mem", tInt)
-    md.base = RBP
+    md.base = scratchBase()
     md.disp = at + 8
     store(md, mv)
     let req = newItem("mem", tInt)
-    req.base = RBP
+    req.base = scratchBase()
     req.disp = at
     return decPtr(req)
 }
@@ -3692,17 +3759,17 @@ fn decimalCheckRequest(p: Item, s: Item): Item {
     if !isInt(s.typ) { error("decimal::check scale must be an int") }
     let pv = load(p)
     let sv = load(s)
-    let at = newFrameBytes(16)
+    let at = scratchAt(16)
     let pd = newItem("mem", tInt)
-    pd.base = RBP
+    pd.base = scratchBase()
     pd.disp = at
     store(pd, pv)
     let sd = newItem("mem", tInt)
-    sd.base = RBP
+    sd.base = scratchBase()
     sd.disp = at + 8
     store(sd, sv)
     let req = newItem("mem", tInt)
-    req.base = RBP
+    req.base = scratchBase()
     req.disp = at
     return decPtr(req)
 }
@@ -3713,11 +3780,16 @@ fn decimalCheck(a: Item, p: Item, s: Item): Item {
     return resultCall4(RT_DEC_CHECK, decPtr(a), req, tDecimal)
 }
 
-fn decimalStatusSlot(status: Item): ^Sym {
-    let s = newLocal("", tInt, "var")
-    let d = localItem(s, tInt)
+fn decimalStatusSlot(status: Item): Item {
+    let at = scratchAt(8)
+    let d = newItem("mem", tInt)
+    d.base = scratchBase()
+    d.disp = at
     store(d, status)
-    return s
+    let out = newItem("mem", tInt)
+    out.base = scratchBase()
+    out.disp = at
+    return out
 }
 
 fn decimalResultDecimal(dst: Item, status: Item): Item {
@@ -3753,8 +3825,7 @@ fn decimalDiv(a: Item, b: Item, scale: Item, mode: Item): Item {
     let pb = decPtr(b)
     let req = decimalRequest(scale, mode)
     let st = rtCall4(RT_DEC_DIV_INTO, dp, pa, pb, req, tInt)
-    let ss = decimalStatusSlot(st)
-    let si = localItem(ss, tInt)
+    let si = decimalStatusSlot(st)
     return decimalResultDecimal(dst, si)
 }
 
@@ -3765,8 +3836,7 @@ fn decimalQuantize(a: Item, scale: Item, mode: Item): Item {
     let pa = decPtr(a)
     let req = decimalRequest(scale, mode)
     let st = rtCall3(RT_DEC_QUANTIZE_INTO, dp, pa, req, tInt)
-    let ss = decimalStatusSlot(st)
-    let si = localItem(ss, tInt)
+    let si = decimalStatusSlot(st)
     return decimalResultDecimal(dst, si)
 }
 
@@ -3776,18 +3846,25 @@ fn decimalToInt(a: Item, mode: Item): Item {
     if mode.mode == "const" && (mode.val < 0 || mode.val > 7) {
         error("decimal rounding mode must be 0..7")
     }
-    let os = newLocal("", tInt, "var")
-    let out = localItem(os, tInt)
+    let out = scratchInt()
     let op = decPtr(out)
     let pa = decPtr(a)
     let mv = load(mode)
     let st = rtCall3(RT_DEC_TO_INT, op, pa, mv, tInt)
-    let ss = decimalStatusSlot(st)
-    let si = localItem(ss, tInt)
+    let si = decimalStatusSlot(st)
     return decimalResultInt(out, si)
 }
 
 fn nestedExpr(): Item
+
+// A builtin argument that a later argument follows: a decimal is captured and an int is
+// loaded now, so a call in a later argument cannot change it before the builtin reads it.
+fn earlyArg(): Item {
+    let x = nestedExpr()
+    if x.typ.kind == "decimal" { return captureDecimal(x) }
+    if isInt(x.typ) { return materialise(x) }
+    return x
+}
 
 fn decimalBuiltin(member: string): Item {
     if member == "fromInt" {
@@ -3798,11 +3875,11 @@ fn decimalBuiltin(member: string): Item {
     }
     if member == "div" {
         expect(T_LPAREN, "")
-        let a = nestedExpr()
+        let a = earlyArg()
         expect(T_COMMA, "")
-        let b = nestedExpr()
+        let b = earlyArg()
         expect(T_COMMA, "")
-        let scale = nestedExpr()
+        let scale = earlyArg()
         expect(T_COMMA, "")
         let mode = nestedExpr()
         expect(T_RPAREN, "")
@@ -3810,9 +3887,9 @@ fn decimalBuiltin(member: string): Item {
     }
     if member == "quantize" {
         expect(T_LPAREN, "")
-        let a = nestedExpr()
+        let a = earlyArg()
         expect(T_COMMA, "")
-        let scale = nestedExpr()
+        let scale = earlyArg()
         expect(T_COMMA, "")
         let mode = nestedExpr()
         expect(T_RPAREN, "")
@@ -3820,7 +3897,7 @@ fn decimalBuiltin(member: string): Item {
     }
     if member == "toInt" {
         expect(T_LPAREN, "")
-        let a = nestedExpr()
+        let a = earlyArg()
         expect(T_COMMA, "")
         let mode = nestedExpr()
         expect(T_RPAREN, "")
@@ -3846,9 +3923,9 @@ fn decimalBuiltin(member: string): Item {
     }
     if member == "check" {
         expect(T_LPAREN, "")
-        let a = nestedExpr()
+        let a = earlyArg()
         expect(T_COMMA, "")
-        let p = nestedExpr()
+        let p = earlyArg()
         expect(T_COMMA, "")
         let s = nestedExpr()
         expect(T_RPAREN, "")
@@ -5625,11 +5702,23 @@ fn emitDecWords(dst: &Item, lo: int, hi: int, packed: int) {
     release(r)
 }
 
+// A decimal constant's value, in a frame temporary of its own: the same three immediate stores as a literal.
+// It is never mode "const", since a decimal item is always a 24-byte address (mode "mem").
+fn decimalConstItem(at: int): Item {
+    let x = decimalMem()
+    emitDecWords(x, decConsts[at], decConsts[at + 1], decConsts[at + 2])
+    return x
+}
+
+// The packed word of a literal: its exponent in bits 0..15 and its display scale in 16..31.
+fn decimalPacked(d: &DecLit): int {
+    return (d.exp & 0xffff) | ((d.dscale & 0xffff) << 16)
+}
+
 fn decimalLiteral(s: string): Item {
     let d = decimalLiteralValue(s)
-    let slot = newLocal("", tDecimal, "var")
-    let x = localItem(slot, tDecimal)
-    let packed = (d.exp & 0xffff) | ((d.dscale & 0xffff) << 16)
+    let x = decimalMem()
+    let packed = decimalPacked(d)
     emitDecWords(x, d.lo, d.hi, packed)
     return x
 }
@@ -5712,7 +5801,6 @@ fn parseType(): ^Type {
         expect(T_RBRACK, "")
         let b = parseType()
         rejectFn(b, "an array cannot hold function values")
-        if b.kind == "decimal" { error("arrays of decimal (24-byte stride) are not supported in v1") }
         return derived("array", b)
     }
     if sym == T_CARET {
@@ -5764,6 +5852,14 @@ fn refuseOptionalIfaceLocal(t: ^Type) {
     }
 }
 
+// The bytes a field of type t takes inline in its record (or variant payload). A decimal is three
+// words (24 bytes, all-zero bits = 0); every other field type takes one word. Fields keep declaration
+// order and 8-byte alignment, with no padding and no reordering.
+fn sizeOf(t: ^Type): int {
+    if t.kind == "decimal" { return 24 }
+    return 8
+}
+
 fn fieldList(rec: ^Type, variant: bool) {
     expect(T_LBRACE, "")
     skipSemis()
@@ -5784,11 +5880,10 @@ fn fieldList(rec: ^Type, variant: bool) {
         expect(T_COLON, "")
         let t = parseType()
         rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")
-        if t.kind == "decimal" { error("decimal record fields are not supported in v1") }
         for n in names {
             if fieldIndex(rec, n) >= 0 { error("duplicate field '" + n + "'") }
             append(rec.fields, new Field{name: n, offset: offset, typ: t, private: !variant && !isPub})
-            offset += 8
+            offset += sizeOf(t)
         }
         if sym != T_RBRACE { expect(T_SEMI, "';' or newline") }
         skipSemis()
@@ -7057,12 +7152,14 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
         aluRI(5, RSP, 8)
         depth += 8
     }
+    var retBase = RBP
     var retDisp = 0
     if decRet {
-        let ds = newLocal("", tDecimal, "var")
-        retDisp = ds.offset
+        let ds = decimalMem()
+        retBase = ds.base
+        retDisp = ds.disp
         let dr = alloc()
-        opMem(0x8D, dr, mem(RBP, -1, retDisp, 8), true, false)
+        opMem(0x8D, dr, memOf(ds), true, false)
         pushR(dr)
         release(dr)
     }
@@ -7329,7 +7426,7 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     if f.ret == tVoid { return voidItem() }
     if decRet {
         let res = newItem("mem", tDecimal)
-        res.base = RBP
+        res.base = retBase
         res.disp = retDisp
         return res
     }
@@ -8920,7 +9017,7 @@ fn builtin(name: string): Item {
         let okv = rt.variants[0]
         let p = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, okv.desc), rt)
         if v.typ.kind == "decimal" {
-            copyDecimalToBase(v, p.r)
+            copyDecimalToBase(v, p.r, 0)
         } else {
             storeCellField(p.r, 0, copyItem(v))
         }
@@ -9417,6 +9514,12 @@ fn builtin(name: string): Item {
             checkAssign(baseOf(a.typ), b, "appended value")
             consume(b)
             expect(T_RPAREN, "")
+            if b.typ.kind == "decimal" {
+                // a decimal is passed by address: the runtime copies its 24 bytes before it grows the array
+                let pb = decPtr(b)
+                rtCall2(RT_APPEND_DEC, a, pb, tVoid)
+                return voidItem()
+            }
             rtCall2(RT_APPEND, a, b, tVoid)
             return voidItem()
         }
@@ -9508,7 +9611,13 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
         if sym != T_LPAREN { error("functions can only be called") }
         return callFn(s)
     }
-    if s.kind == "const" { return makeConst(symType(s), s.value) }
+    if s.kind == "const" {
+        if symType(s).kind == "decimal" {
+            if target { error("cannot assign to constant '" + name + "'") }
+            return decimalConstItem(s.value)
+        }
+        return makeConst(symType(s), s.value)
+    }
     if s.kind == "var" || s.kind == "let" {
         var x = newItem("mem", symType(s))
         if s.home >= 0 {
@@ -9860,6 +9969,8 @@ fn newExpr(): Item {
             kind = 4
         } else if b.kind == "string" {
             kind = 6                                  // reference-counted strings
+        } else if b.kind == "decimal" {
+            kind = 7                                  // 24-byte pointer-free decimals (all-zero bits are 0)
         } else if isOwned(b) {
             kind = 2                                  // owned objects, freed with the array (not handles)
         }
@@ -9906,15 +10017,20 @@ fn newExpr(): Item {
         var v = nestedExpr()
         checkAssign(fty, v, "field '" + fname + "'")
         consume(v)
-        let dst = mem(p.r, -1, foff, 8)
-        if v.mode == "const" && fits32(v.val) {
-            opMem(0xC7, 0, dst, true, false)
-            emit32(v.val)
+        if fty.kind == "decimal" {
+            copyDecimalToBase(v, p.r, foff)
             drop(v)
         } else {
-            let r = asReg(v)
-            opMem(0x89, r.r, dst, true, false)
-            release(r.r)
+            let dst = mem(p.r, -1, foff, 8)
+            if v.mode == "const" && fits32(v.val) {
+                opMem(0xC7, 0, dst, true, false)
+                emit32(v.val)
+                drop(v)
+            } else {
+                let r = asReg(v)
+                opMem(0x89, r.r, dst, true, false)
+                release(r.r)
+            }
         }
         if sym == T_COMMA || sym == T_SEMI {
             next()
@@ -10562,17 +10678,18 @@ fn tryExpr(): Item {
     release(tr)
     let toErr = jcc(CC_E)
     var decimalPayload = false
+    var decimalBase = RBP
     var decimalDisp = 0
     var payload = -1
     if ut.kind == "decimal" {
         // The whole 24-byte payload moves out before the shell is freed.
-        let dl = newLocal("", tDecimal, "var")
-        decimalDisp = dl.offset
-        let dd = localItem(dl, tDecimal)
+        let dd = decimalMem()
+        decimalBase = dd.base
+        decimalDisp = dd.disp
         for off in 0..3 {
             let dr = alloc()
             opMem(0x8B, dr, mem(cellR, -1, 8 * off, 8), true, false)
-            opMem(0x89, dr, mem(RBP, -1, decimalDisp + 8 * off, 8), true, false)
+            opMem(0x89, dr, mem(decimalBase, -1, decimalDisp + 8 * off, 8), true, false)
             release(dr)
         }
         decimalPayload = true
@@ -10604,7 +10721,7 @@ fn tryExpr(): Item {
     deadSet(dm)
     if decimalPayload {
         let res = newItem("mem", tDecimal)
-        res.base = RBP
+        res.base = decimalBase
         res.disp = decimalDisp
         return res
     }
@@ -10779,7 +10896,7 @@ fn term(): Item {
         } else if x.typ.kind == "decimal" {
             if o == T_SLASH { error("decimal division needs an explicit scale and mode; use decimal::div(a, b, scale, mode)") }
             if o != T_STAR && o != T_PERCENT { error("'" + tokName(o) + "' is not supported for decimal; use + - * %") }
-            x = materialise(x)
+            x = captureDecimal(x)
             tryNest += 1
             let y = factor()
             tryNest -= 1
@@ -10830,7 +10947,7 @@ fn simpleExpr(): Item {
         }
         if x.typ.kind == "decimal" {
             if o != T_PLUS && o != T_MINUS { error("'" + tokName(o) + "' is not supported for decimal; use + - * %") }
-            x = materialise(x)
+            x = captureDecimal(x)
             tryNest += 1
             let y = term()
             tryNest -= 1
@@ -10857,6 +10974,7 @@ fn relation(): Item {
     next()
     var xsym: ?^Sym = nil
     if x.mode == "mem" { xsym = x.sym }
+    x = captureDecimal(x)
     noTemp(x)
     x = pinStr(x)
     tryNest += 1
@@ -11046,6 +11164,22 @@ fn expression(): Item {
 fn block(): bool
 fn statement(): bool
 
+// A global's slot in the zero-initialised global data: 24 bytes for a decimal, one word otherwise.
+// A global's slot is allocated when it is declared, as it always was: one word, or 24 bytes for a decimal
+// whose type is declared. An inferred global's type is known only after its initializer, so an inferred
+// decimal takes its 24 bytes there instead (see varDecl); its declaration-time word is then unused.
+fn allocGlobal(s: ^Sym, t: ?^Type) {
+    s.offset = GLOBAL_BASE + gsize
+    if t != nil {
+        let dt = t
+        if dt.kind == "decimal" {
+            gsize += 24
+            return
+        }
+    }
+    gsize += 8
+}
+
 fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
     let nameLine = tline
     let name = ident()
@@ -11065,8 +11199,7 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
     gsym.line = nameLine
     if isGlobal {
         gsym.storage = "global"
-        gsym.offset = GLOBAL_BASE + gsize
-        gsize += 8
+        allocGlobal(gsym, t)
     }
     if sym == T_ASSIGN {
         next()
@@ -11116,15 +11249,16 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
         } else if x.typ.kind == "nil" || x.typ.kind == "void" {
             error("cannot infer a type for '" + name + "' from this value")
         }
-        if isGlobal && tt.kind == "decimal" {
-            error("decimal globals are not supported in v1; keep the value in a local")
-        }
         checkAssign(tt, x, "initialising '" + name + "'")
         consume(x)
         var s = gsym
         var dst = newItem("mem", tt)
         if isGlobal {
             s.typ = tt
+            if t == nil && tt.kind == "decimal" {
+                s.offset = GLOBAL_BASE + gsize   // an inferred decimal's type is known only now: 24 bytes of its own
+                gsize += 24
+            }
             dst.disp = s.offset
         } else {
             s = newLocal("", tt, kind)
@@ -11176,7 +11310,6 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
         }
         if nonNull(t) { error("'" + name + "' of type " + tname(t) + " needs an initial value (it cannot be nil)") }
         if kind == "let" { error("'" + name + "' is immutable and needs a value") }
-        if isGlobal && t.kind == "decimal" { error("decimal globals are not supported in v1; keep the value in a local") }
         if isGlobal {
             gsym.typ = t
             declare(gsym)
@@ -11396,7 +11529,20 @@ fn assignmentOrCall(): bool {
                 }
                 var slot = RT_DEC_ADD
                 if o == T_MINUSEQ { slot = RT_DEC_SUB } else if o == T_STAREQ { slot = RT_DEC_MUL } else if o == T_PERCENTEQ { slot = RT_DEC_REM }
-                let res = decimalCall2(slot, copyItem(x), y)
+                // The result goes to a temporary, then into the target. The target's own address is taken
+                // with lea and not with decPtr, which would release x's base register: x stays held across the
+                // helper call (so the call saves it) and is stored to last.
+                resolve(x)
+                let res = decimalTemp()
+                let da = decPtr(res)
+                let pa = alloc()
+                opMem(0x8D, pa, memOf(x), true, false)
+                let pb = decPtr(y)
+                let dargs = new []?Item(0)
+                append(dargs, da)
+                append(dargs, makeReg(tInt, pa))
+                append(dargs, pb)
+                rtCall(slot, dargs, tVoid)
                 store(x, res)
                 return false
             }
@@ -12013,12 +12159,25 @@ fn forStat() {
         opMem(0x8B, ra, mem(RBP, -1, arr.offset, 8), true, false)
         if strs { rtCall1(RT_STR_DEC, dupItem(vi), tVoid) }  // drop the previous element
         opMem(0x8B, ra, mem(ra, -1, 16, 8), true, false)
-        if baseOf(xt).kind == "byte" {
-            opMem(0x0FB6, ri, mem(ra, ri, 8, 1), true, false)
+        if baseOf(xt).kind == "decimal" {
+            // a decimal element is 24 bytes: the index times 3 is a fresh register, then three words are copied
+            let rt = alloc()
+            opMem(0x8D, rt, mem(ri, ri, 0, 2), true, false)   // lea rt, [ri + ri*2]
+            for off in 0..3 {
+                let tw = alloc()
+                opMem(0x8B, tw, mem(ra, rt, 8 + 8 * off, 8), true, false)
+                opMem(0x89, tw, mem(RBP, -1, v.offset + 8 * off, 8), true, false)
+                release(tw)
+            }
+            release(rt)
         } else {
-            opMem(0x8B, ri, mem(ra, ri, 8, 8), true, false)
+            if baseOf(xt).kind == "byte" {
+                opMem(0x0FB6, ri, mem(ra, ri, 8, 1), true, false)
+            } else {
+                opMem(0x8B, ri, mem(ra, ri, 8, 8), true, false)
+            }
+            opMem(0x89, ri, mem(RBP, -1, v.offset, 8), true, false)
         }
-        opMem(0x89, ri, mem(RBP, -1, v.offset, 8), true, false)
         release(ri)
         release(ra)
         if strs {
@@ -13772,16 +13931,60 @@ fn implDecl(isPub: bool) {
     append(impls, handle(implArena[len(implArena) - 1]))
 }
 
+const DEC_CONST_LITERAL = "decimal constants must be a literal; arithmetic is not folded"
+
+// True if a constant's value starts with a decimal literal, or with '-' and then one. Only the token is
+// looked at: the scanner state is restored, so nothing is consumed.
+fn decimalConstAhead(): bool {
+    if sym == T_DECIMAL { return true }
+    if sym != T_MINUS { return false }
+    let ss = saveScan()
+    next()
+    let lit = sym == T_DECIMAL
+    restoreScan(ss)
+    return lit
+}
+
+// The value of a decimal constant, which is a decimal literal or a unary-minus literal and nothing else:
+// its three words are kept in decConsts (no code is emitted), and a use materialises them (decimalConstItem).
+// The coefficient and display scale are those of the literal; a minus on a nonzero value sets sign 1, and
+// zero is always positive (-0.00 is 0.00 with its written dscale).
+fn decimalConstDecl(name: string, line: int, isPub: bool) {
+    var neg = false
+    if sym == T_MINUS {
+        neg = true
+        next()
+    }
+    if sym != T_DECIMAL { error(DEC_CONST_LITERAL) }
+    let d = decimalLiteralValue(dtext)
+    next()
+    if sym != T_SEMI && sym != T_EOF { error(DEC_CONST_LITERAL) }
+    var packed = decimalPacked(d)
+    if neg && (d.lo != 0 || d.hi != 0) { packed = packed | (1 << 32) }
+    let at = len(decConsts)
+    append(decConsts, d.lo)
+    append(decConsts, d.hi)
+    append(decConsts, packed)
+    let s = newSym("const", name, tDecimal)
+    s.value = at
+    s.line = line
+    declare(s)
+    if isPub { s.exported = true }
+}
+
 fn constDecl(isPub: bool) {
     let line = tline
     let name = ident()
     expect(T_ASSIGN, "")
+    if decimalConstAhead() {
+        decimalConstDecl(name, line, isPub)
+        return
+    }
     let x = expression()
-    if x.typ.kind == "decimal" { error("decimal constants are not supported in v1; construct the value where it is used") }
+    if x.typ.kind == "decimal" || x.typ.kind == "result" && baseOf(x.typ).kind == "decimal" { error(DEC_CONST_LITERAL) }
     if x.mode != "const" { error("constant value must be known at compile time") }
     rejectFn(x.typ, "a constant cannot hold a function value")
     if x.typ.kind == "nil" { error("a constant cannot be nil; use a typed optional var or let") }
-    if x.typ.kind == "decimal" { error("decimal constants are not supported in v1; construct the value where it is used") }
     let s = newSym("const", name, x.typ)
     s.value = x.val
     s.line = line
@@ -14598,9 +14801,12 @@ fn appFields(mut b: &[]byte, rec: ^Type, modName: string, variant: bool) {
             appStr(b, ": ")
             appTypeExpr(b, rec.fields[i].typ, modName)
         } else if rec.fields[i].private {
-            // opaque one-word slot: no name, no type; the carrier bit is the only metadata
+            // opaque slot: no name, no type; the carrier bit is the only metadata. A decimal slot is
+            // 24 bytes, so it is priv24 (a one-word priv would misplace every later field)
             if rec.fields[i].privateIface || containsIface(rec.fields[i].typ) {
                 appStr(b, "priviface")
+            } else if rec.fields[i].typ.kind == "decimal" {
+                appStr(b, "priv24")
             } else {
                 appStr(b, "priv")
             }
@@ -14730,6 +14936,18 @@ fn appConst(mut b: &[]byte, s: ^Sym) {
         for i in 0..len(data) {
             append(b, hexDigit(data[i] >> 4))
             append(b, hexDigit(data[i] & 15))
+        }
+        append(b, '"')
+    } else if t.kind == "decimal" {
+        // the 24 value bytes in memory order: word 0, word 1, word 2, each little-endian (see symDecimalConst)
+        appStr(b, "hex \"")
+        for k in 0..3 {
+            let w = decConsts[s.value + k]
+            for i in 0..8 {
+                let v = (w >> (8 * i)) & 255
+                append(b, hexDigit(v >> 4))
+                append(b, hexDigit(v & 15))
+            }
         }
         append(b, '"')
     } else {
@@ -15248,7 +15466,6 @@ fn symParseType(): ^Type {
         expect(T_RBRACK, "")
         let b = symParseType()
         rejectFn(b, "an array cannot hold function values")
-        if b.kind == "decimal" { error("arrays of decimal (24-byte stride) are not supported in v1") }
         return derived("array", b)
     }
     if sym == T_CARET {
@@ -15267,18 +15484,21 @@ fn symParseType(): ^Type {
     return symFinishTypeName(name, nline, ncol)
 }
 
-// parses { pub field: type; priv; priviface } into rec's (empty) field list, in declaration order.
-// A private slot is a one-word placeholder with no name; `pub priv: int` is an ordinary public field.
+// parses { pub field: type; priv; priviface; priv24 } into rec's (empty) field list, in declaration order.
+// A private slot is a placeholder with no name: priv and priviface are one word (tInt), priv24 is a
+// 24-byte decimal (tDecimal). Offsets are running byte offsets, so each slot advances by its sizeOf.
+// `pub priv: int` is an ordinary public field.
 fn symFieldList(rec: ^Type, variant: bool) {
     expect(T_LBRACE, "")
     skipSemis()
+    var offset = 0
     while sym != T_RBRACE {
         var isPub = false
         if sym == T_PUB {
             next()
             isPub = true
         }
-        if !isPub && sym == T_IDENT && (sval == "priv" || sval == "priviface") {
+        if !isPub && sym == T_IDENT && (sval == "priv" || sval == "priviface" || sval == "priv24") {
             let marker = sval
             let mline = tline
             let mcol = tcol
@@ -15291,8 +15511,11 @@ fn symFieldList(rec: ^Type, variant: bool) {
             }
             var carrier = false
             if marker == "priviface" { carrier = true }
-            append(rec.fields, new Field{name: "", offset: 8 * len(rec.fields), typ: tInt,
+            var pt = tInt
+            if marker == "priv24" { pt = tDecimal }
+            append(rec.fields, new Field{name: "", offset: offset, typ: pt,
                                          private: true, privateIface: carrier})
+            offset += sizeOf(pt)
         } else {
             if !isPub {
                 errorAt("expected 'pub', 'priv' or 'priviface' in a record field list", 0, 0)
@@ -15307,7 +15530,8 @@ fn symFieldList(rec: ^Type, variant: bool) {
             for i in 0..len(rec.fields) {
                 if rec.fields[i].name == fname { error("duplicate field '" + fname + "'") }
             }
-            append(rec.fields, new Field{name: fname, offset: 8 * len(rec.fields), typ: t})
+            append(rec.fields, new Field{name: fname, offset: offset, typ: t})
+            offset += sizeOf(t)
         }
         if sym == T_SEMI { next() } else if sym != T_RBRACE { error("expected ';' or '}'") }
         skipSemis()
@@ -15322,8 +15546,10 @@ fn symCompareFields(live: ^Type, parsed: ^Type, what: string) {
         if live.fields[i].private != parsed.fields[i].private { symDisagree(what) }
         if live.fields[i].private {
             // the parsed side is a placeholder: only the carrier answer crosses the boundary, and
-            // the parsed flag (not a recomputation from the placeholder type) is authoritative
+            // the parsed flag (not a recomputation from the placeholder type) is authoritative.
+            // The one exception is the decimal width: a private decimal is priv24 and nothing else
             if containsIface(live.fields[i].typ) != parsed.fields[i].privateIface { symDisagree(what) }
+            if (live.fields[i].typ.kind == "decimal") != (parsed.fields[i].typ.kind == "decimal") { symDisagree(what) }
         } else {
             if live.fields[i].name != parsed.fields[i].name { symDisagree(what) }
             if !same(live.fields[i].typ, parsed.fields[i].typ) { symDisagree(what) }
@@ -15825,6 +16051,75 @@ fn symTypeDecl(mode: int) {
     symAlias(name, nline, mode, "", 0, 0)
 }
 
+// The 10^38-1 coefficient limit as two words: its high word, and its low word (unsigned)
+const DEC_COEFF_HI = 0x4b3b4ca85a86c47a
+const DEC_COEFF_LO = 0x098a223fffffffff
+
+// a and b compared as unsigned 64-bit words
+fn symU64Above(a: int, b: int): bool {
+    let ah = (a >> 32) & 0xffffffff
+    let bh = (b >> 32) & 0xffffffff
+    if ah != bh { return ah > bh }
+    return (a & 0xffffffff) > (b & 0xffffffff)
+}
+
+// a decimal constant: hex "<48 lowercase digits>", the 24 value bytes in memory order (word 0, word 1, word 2,
+// each little-endian), so the three words are the value's own bits. The checks are the reader's list: the hex
+// is lowercase and 48 digits, the reserved bits 40..63 of word 2 are zero, the sign is 0 or 1, the coefficient
+// is at most 10^38-1, and a zero is positive with exponent 0. A decimal constant is kept in decConsts.
+fn symDecimalConst(name: string, nline: int, mode: int) {
+    if !(sym == T_IDENT && sval == "hex") { error("expected a hex decimal constant") }
+    next()
+    if sym != T_STRING { error("expected a quoted hex byte string") }
+    let h = sval
+    next()
+    if len(h) != 48 { error("a decimal constant needs 48 lowercase hexadecimal digits (24 bytes)") }
+    for i in 0..48 {
+        if h[i] >= 'A' && h[i] <= 'F' { error("a decimal constant's hex must be lowercase") }
+        if !isHex(h[i]) { error("a decimal constant's hex has a character that is not hexadecimal") }
+    }
+    let words = new []int(3)
+    for k in 0..24 {
+        let v = hexVal(h[2 * k]) * 16 + hexVal(h[2 * k + 1])
+        words[k / 8] = words[k / 8] | (v << (8 * (k % 8)))
+    }
+    let lo = words[0]
+    let hi = words[1]
+    let packed = words[2]
+    if (packed >> 40) != 0 { error("a decimal constant's reserved bits (40 to 63 of its last word) must be zero") }
+    let sign = (packed >> 32) & 255
+    if sign > 1 { error("a decimal constant's sign must be 0 or 1") }
+    if lo == 0 && hi == 0 {
+        if sign == 1 { error("a decimal constant zero must have sign 0") }
+        if (packed & 0xffff) != 0 { error("a decimal constant zero must have exponent 0") }
+    } else if hi < 0 || hi > DEC_COEFF_HI || hi == DEC_COEFF_HI && symU64Above(lo, DEC_COEFF_LO) {
+        error("a decimal constant has more than 38 significant digits")
+    }
+    symClaim(name)
+    append(symConstOrder, name)
+    if mode == 1 {
+        let s = newSym("const", name, tDecimal)
+        s.owner = symCurMod.name
+        s.exported = true
+        s.line = nline
+        s.value = len(decConsts)
+        append(decConsts, lo)
+        append(decConsts, hi)
+        append(decConsts, packed)
+        append(symCurMod.globals, s)
+        return
+    }
+    let es = findExport(symCurMod, name)
+    if es == nil { symDisagree("const '" + name + "'") }
+    if es != nil {
+        let at = es.value
+        if es.kind != "const" || !same(symType(es), tDecimal) { symDisagree("const '" + name + "'") }
+        if es.kind == "const" && (decConsts[at] != lo || decConsts[at + 1] != hi || decConsts[at + 2] != packed) {
+            symDisagree("const '" + name + "'")
+        }
+    }
+}
+
 fn symConstDecl(mode: int) {
     if sym != T_IDENT { error("expected a constant name") }
     let nline = tline
@@ -15835,6 +16130,10 @@ fn symConstDecl(mode: int) {
     rejectFn(t, "a constant cannot hold a function value")
     if sym != T_ASSIGN { error("expected '=' in a constant declaration") }
     next()
+    if t == tDecimal {
+        symDecimalConst(name, nline, mode)
+        return
+    }
     var kind = ""
     var v = 0
     var sv = ""
@@ -15908,8 +16207,8 @@ fn symGlobalDecl(mode: int, kind: string) {
         if g.typ != nil { error("duplicate global '" + name + "'") }
         g.kind = kind
         g.typ = t
-        g.offset = SYM_DUMMY_BASE + 8 * symDummyGlobals
-        symDummyGlobals += 1
+        g.offset = SYM_DUMMY_BASE + symDummyBytes
+        symDummyBytes += sizeOf(t)
         g.exported = true
         g.line = nline
         append(symCurMod.globals, g)

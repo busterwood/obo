@@ -1,0 +1,100 @@
+// []decimal in every place an array can be (0.16): a record field (owned), borrowed and
+// mut-borrowed parameters, a return value, Result[[]decimal], an optional array, and
+// nested [][]decimal. Each one is freed with its owner (OBO_CHECK=1 fails on a leak).
+
+type Invoice = ref record {
+    lines: []decimal
+    tag: string
+    grand: decimal
+}
+
+type Grid = ref record {
+    rows: [][]decimal
+    scale: decimal
+}
+
+fn make(n: int): []decimal {
+    var xs = new []decimal(0)
+    for i in 0..n { append(xs, decimal(i) * 0.25) }
+    return xs
+}
+
+fn total(xs: &[]decimal): decimal {
+    var s = 0.0
+    for d in xs { s += d }
+    return s
+}
+
+fn addLine(mut xs: &[]decimal, d: decimal) {
+    append(xs, d)
+}
+
+fn scaleAll(mut xs: &[]decimal, k: decimal) {
+    for i in 0..len(xs) { xs[i] *= k }
+}
+
+fn tryMake(n: int): Result[[]decimal] {
+    if n < 0 { return err("negative", 4) }
+    return ok(make(n))
+}
+
+fn maybe(n: int): ?[]decimal {
+    if n == 0 { return nil }
+    return make(n)
+}
+
+fn invoice(): Invoice {
+    return new Invoice{lines: make(3), tag: "inv", grand: 0.0}
+}
+
+fn main() {
+    // a record field: owned, filled through a mut borrow of the record's array
+    var inv = invoice()
+    addLine(inv.lines, 1.50)
+    inv.grand = total(inv.lines)
+    println(len(inv.lines), " ", inv.lines[3], " ", inv.grand)      // expect: 4 1.50 2.25
+    scaleAll(inv.lines, 2.0)
+    println(inv.lines[1], " ", total(inv.lines))                    // expect: 0.500 4.500
+
+    // a handle to the record, and a borrow of its array
+    let h = handle(inv)
+    h.grand = total(h.lines)
+    println(h.grand, " ", inv.tag)                                 // expect: 4.500 inv
+
+    // a return value, and a Result over the array
+    let r1 = tryMake(3)
+    match r1 {
+        ok(xs) { println(len(xs), " ", xs[2]) }                    // expect: 3 0.50
+        err(e, c) { println(e) }
+    }
+    let r2 = tryMake(-1)
+    match r2 {
+        ok(xs) { println(len(xs)) }
+        err(e, c) { println(e, " ", c) }                           // expect: negative 4
+    }
+
+    // an optional array: nil or an owned array, narrowed before use
+    let m0 = maybe(0)
+    if m0 != nil { println("some") } else { println("none") }       // expect: none
+    var m2 = maybe(2)
+    if m2 != nil { println(len(m2), " ", m2[1]) }                  // expect: 2 0.25
+
+    // nested [][]decimal: rows appended, a row replaced, and an element read through both indexes
+    var g = new Grid{rows: new [][]decimal(0), scale: 10.0}
+    append(g.rows, make(2))
+    append(g.rows, new []decimal(0))
+    append(g.rows[1], 7.75)
+    g.rows[0][1] = 9.0
+    println(len(g.rows), " ", g.rows[0][1], " ", g.rows[1][0])     // expect: 2 9.0 7.75
+    g.rows[0] = make(4)
+    println(len(g.rows[0]), " ", g.rows[0][3], " ", g.scale)       // expect: 4 0.75 10.0
+
+    // a nested array freed with its owner: the rows and their decimals
+    var outer = new [][]decimal(0)
+    for r in 0..3 {
+        var row = new []decimal(0)
+        for c in 0..r { append(row, decimal(c)) }
+        append(outer, row)
+    }
+    println(len(outer), " ", len(outer[2]), " ", outer[2][1])      // expect: 3 2 1
+}
