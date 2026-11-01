@@ -34,9 +34,10 @@ where the work stands, how to run it, and when to stop and ask the user.
   spec-drift guard, and the nested-handle census. The old postgres adapter, libpq token adapter,
   `postgres_adapter_test.c` and `postgres_fake_sql.cbind` are deleted; `cres.c/.h` remain for the
   zlib adapter and the buffer example.
-- **Stage (h)**, the skill/template rewrite and the docs status sweep: in progress on
-  `cinterop-v2-h`. It teaches the v2 surface (foreign handles, out records, `release_result`, the
-  kinds and the census) and moves the templates off `cres`.
+- **Stage (h)**, the skill/template rewrite and the docs status sweep: merged to `main` as
+  `04ec0ad`. It teaches the v2 surface (foreign handles, out records, `release_result`, the
+  kinds and the census), moves the templates off `cres`, and corrects the stale status and
+  citations. No production code was deleted.
 - **Cleanup audit:** complete. Its items are folded into stages (e)–(h); nothing else is scheduled
   for deletion, and `cres.c/.h`/`buffer.obx` stay because zlib uses them.
 
@@ -137,11 +138,12 @@ Agents leave `CINTEROP_TEST_DSN` unset.
 
 ## Remaining stages
 
-Stages (a)–(g) are merged. Stage (h) is the last one:
+Stages (a)–(h) are all merged. There is no remaining cinterop stage; the notes
+below are kept for history.
 
 | Stage | Scope | Checker exposure | Risk | Coordinator notes |
 |---|---|---|---|---|
-| (h) skill and templates | `skill/SKILL.md`, `db-adapters.md` and the project templates for explicit close, out records, `release_result`, the kinds and the `cres` policy; docs status sweep | none | low | In progress on `cinterop-v2-h`. zlib stays on its adapter; no production code is deleted. |
+| (h) skill and templates | `skill/SKILL.md`, `db-adapters.md` and the project templates for explicit close, out records, `release_result`, the kinds and the `cres` policy; docs status sweep | none | low | Merged in `04ec0ad`. zlib stays on its adapter; no production code was deleted. |
 
 The full scope and gates for the merged stages are in design §8; the test lists
 are in §9. Notes for historical reference:
@@ -179,7 +181,8 @@ These are known, safe, and documented. Fold them into a later stage.
 - No ASan run covers the obo image itself. Scratch use is checked by the `obo_ci_scratch_live()`
   counter.
 - Merged worktrees can be removed once the user agrees: `cinterop-boundary`, `cinterop-review-fixes`,
-  `cinterop-v2-a`, `cinterop-v2-d`, `cinterop-v2-e`, `cinterop-v2-f` and `cinterop-v2-g`.
+  `cinterop-v2-a`, `cinterop-v2-d`, `cinterop-v2-e`, `cinterop-v2-f`, `cinterop-v2-g` and
+  `cinterop-v2-h`.
 
 ## Key files
 

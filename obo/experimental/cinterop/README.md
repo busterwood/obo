@@ -1,7 +1,7 @@
 # Experimental C interop (`cinterop`)
 
-Status: **cinterop v2 stages (a)–(g) merged; stage (h) is the skill/template
-rewrite and docs cleanup.** The prototype was repaired after the
+Status: **cinterop v2 stages (a)–(h) merged; the skill, templates and docs teach
+the v2 boundary.** The prototype was repaired after the
 architecture/security review of `a29f35d`, merged with released `0.10` main, and
 now has an explicit-defer cleanup story, a guarded hosted entry stack with
 proper C exit/atexit/stdio shutdown, a second real library (zlib), validated
