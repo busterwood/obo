@@ -31,13 +31,35 @@ version, ABI or production-readiness claim.
   there is no stdin prompt and no passphrase API.
 - Trust bundle: <=4 MiB PEM, <=256 certs. Replacement is atomic; a failed
   parse leaves the previous store intact.
-- ALPN: <=16 protocols, each 1..255 bytes, total <=1024, no NUL/duplicates.
+- ALPN: <=16 protocols, each 1..255 bytes, total plus one length byte per
+  protocol <=1024, no NUL/duplicates. Cipher/group lists are <=64 items, each
+  1..255 bytes of `[A-Za-z0-9_-]`, joined length <=1024 including colons.
 - `maxSessions` 1..4096 (default 256 server); `maxContextBytes` 1 MiB..1 GiB
-  (default 64 MiB). `maxContextBytes` charges adapter-owned structures,
-  staging and BIO pending, **not** OpenSSL's internal heap or allocator
-  overhead. It is a DoS bound for adapter-owned memory, not an RSS limit.
+  (default 64 MiB). `maxContextBytes` charges the context structure, the
+  bounded PEM input lengths retained for certificate/key/trust policy,
+  per-session structures, staging and BIO pending, **not** OpenSSL's internal
+  heap or allocator overhead. It is a DoS bound for adapter-owned memory, not
+  an RSS limit. Committing drained ciphertext lowers the charge.
 - `tls_context_set_alpn`'s C-side duplicate validation is defense in depth;
   the obo wrapper validates the public list first.
+- Cipher/group setters reject OpenSSL expressions and directives (`@`, `=`,
+  `,`, `!`, `+`, spaces, `ALL`, `DEFAULT`, `eNULL`/`NULL`, export/anon/RC4/
+  3DES/DES/MD5 and similar weak names). Security level 2 is re-applied and
+  verified after every cipher/group setter; a failure poisons the context.
+- A fatal handshake/read/write/shutdown error makes one bounded best-effort
+  flush of queued alert output before the error is returned. A caller that
+  still has pending ciphertext should call `flush`/`handshakeStep` until the
+  transport closes. On this OpenSSL 3.0.13 build the ClientHello-presence
+  callback rejection is visible on the wire as `handshake_failure` (40),
+  while the obo result remains `AlpnRequired`; the no-overlap path sends
+  `no_application_protocol` (120).
+- `want` returns `WantNone` when plaintext is buffered or the receive side is
+  closed; the caller should call `readSome` rather than wait for readability.
+  `isSecure` is true only for an established, non-NULL session in
+  `Established`/`SendClosed`/`RecvClosed`, not after both directions close.
+- If a public `res` replacement bypasses `closeContext`, context release
+  detaches live sessions instead of leaking the context; those sessions remain
+  independently closable.
 - OpenSSL's per-process global state, provider and error queue are shared with
   every other OpenSSL user (for example libpq). The adapter clears the queue
   around its own calls; other components must read errors promptly.

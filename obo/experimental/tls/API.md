@@ -102,17 +102,30 @@ pub fn contextCounts(ctx: &TlsContext): Result[ContextCounts]
 - `readSome` flushes prior output before reading; it returns `ReadEof` only
   after a received `close_notify`. Transport EOF without close_notify is
   `Failure.Truncated`.
-- `writeSome` accepts at most 65,536 bytes, reports the accepted prefix
-  exactly once, and never replays it. It does not flush newly produced
-  ciphertext; call `flush`/handle `want=Write`.
+- `writeSome` accepts at most 65,536 bytes, copies the exact
+  `bytes[offset..offset+count]` range (the native call then uses offset 0),
+  reports the accepted prefix exactly once, and never replays it. It does not
+  flush newly produced ciphertext; call `flush`/handle `want=Write`.
 - `flush` performs at most one transport write and never returns
   `WantRead`. `Done` requires both staging and the write BIO to be empty.
 - `shutdownStep` drives `SSL_shutdown`; `Done`/`Sent`/`PeerClosed` carry
-  `want` when close_notify output remains.
+  `want` when close_notify output remains. On a fatal error the wrapper makes
+  one bounded best-effort flush of queued alert output before returning the
+  error.
 - `close` is abortive; it may discard unsent plaintext. Use `shutdownStep` for
   a clean close_notify exchange. `close` retires the session token even if the
   transport close reports an error; a second close returns `ok(false)`.
 - `closeContext` returns `Busy` while any session of that context is live.
+- `want(s)` returns `WantNone` when plaintext is already buffered or the
+  receive side is closed; call `readSome` rather than waiting for readability.
+- `isSecure(s)` is true only for an established, non-NULL session that is not
+  both-closed.
+
+`setCipherSuites`/`setCipherList`/`setGroups` accept only explicit names of
+`[A-Za-z0-9_-]`; OpenSSL expressions/directives (`@SECLEVEL=0`, `ALL`,
+`eNULL`, `!`, `+`, `,`, `=`) and known weak/NULL/export/anon names are
+`InvalidArgument`. Security level 2 is re-applied and checked after each
+setter.
 
 ## Errors
 
