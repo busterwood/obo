@@ -106,6 +106,7 @@ const T_DECIMAL = 69            // a bare fractional/exponent literal: exact dec
 const T_SLASHEQ = 70            // '/=' is refused for decimal with a decimal::div hint
 const T_PERCENTEQ = 71          // '%=' is decimal (and int) compound assignment
 const T_BACKTICK = 72           // starts and ends a template literal chunk
+const T_FOREIGN = 73            // type X = foreign "C": a D2 reserved word
 
 // Stage 2: the symbol-file format, the compiled-program ABI and the compiler version.
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
@@ -123,7 +124,7 @@ const SYM_ABI = 1
 
 fn makeTokNames(): []string {
     let k = new []string(0)
-    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try :: float decimal /= %= `"
+    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try :: float decimal /= %= ` foreign"
     var start = 0
     for i in 0..len(names) + 1 {
         if i == len(names) || names[i] == ' ' {
@@ -159,7 +160,7 @@ var tplHoleDepth = 0           // suppress semicolon insertion inside ${...}
 
 fn makeKeywords(): []string {
     let k = new []string(0)
-    let words = "module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false try"
+    let words = "module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false try foreign"
     var start = 0
     for i in 0..len(words) + 1 {
         if i == len(words) || words[i] == ' ' {
@@ -177,6 +178,7 @@ let keywords = makeKeywords()
 // punctuation, so it cannot be T_MODULE + its place in the keyword list (that is T_LPAREN's number)
 fn keywordTok(w: string): int {
     if w == "try" { return T_TRY }
+    if w == "foreign" { return T_FOREIGN }
     for i in 0..len(keywords) {
         if keywords[i] == w { return T_MODULE + i }
     }
@@ -1270,13 +1272,17 @@ type Type = ref record {
     desc: int                 // record: address of its type descriptor
     incomplete: bool          // declared by 'type Name', not yet defined
     line: int
+    isForeign: bool           // a foreign handle record: one private C word at offset 0
+    isForeignName: string     // foreign: the C type name from the declaration string
+    isForeignId: int          // foreign: its index in the sidecar's foreign table, or -1
     arrayOf, optOf, handleOf, resultOf: ?^Type   // the types made from this one (see derived)
 }
 
 var typeArena = new []Type(0)          // owns every type; the rest of the compiler holds handles
 
 fn newType(kind: string, name: string, base: ?^Type): ^Type {
-    append(typeArena, new Type{kind: kind, name: name, base: base, fields: new []Field(0), variants: new []^Type(0)})
+    append(typeArena, new Type{kind: kind, name: name, base: base, fields: new []Field(0),
+                               variants: new []^Type(0), isForeignId: -1})
     return handle(typeArena[len(typeArena) - 1])
 }
 
@@ -1796,6 +1802,11 @@ var nativeRelocPath = ""
 // set while the declaration just parsed was a `native fn`, so a body brace on the next line gets the
 // specific no-body message instead of the generic top-level one
 var declWasNative = false
+// Foreign handle types in first-declaration order: the sidecar's ids and the tool's table order.
+// These are plain values, not ^Type handles: the sidecar is written after releaseTables frees the
+// type arena, so a handle here would be stale.
+type ForeignDesc = ref record { id: int; obo: string; cname: string }
+var foreignDescs = new []ForeignDesc(0)
 
 fn isCNativeName(s: string): bool {
     if len(s) == 0 || len(s) > 200 { return false }
@@ -2481,7 +2492,7 @@ fn initCompiler() {
         m.value = i
         append(universe, m)
     }
-    let names = words("print println len exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")
+    let names = words("print println len exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop __foreignClose __foreignIsOpen")
     for n in names { append(universe, newSym("builtin", n, nil)) }
     append(universe, newSym("builtin", "ok", nil))
     append(universe, newSym("builtin", "err", nil))
@@ -5872,6 +5883,40 @@ fn typeDecl(isPub: bool) {
         }
         expect(T_RBRACE, "")
         if len(ct.variants) == 0 { error("a closed type needs at least one variant") }
+    } else if sym == T_FOREIGN {
+        // type X = foreign "PGconn": an owned record with one private C word at offset 0.
+        next()
+        if sym != T_STRING { error("a foreign type needs its C type name as a string: type X = foreign \"C\"") }
+        let cname = sval
+        if !isCNativeName(cname) {
+            error("a foreign type's C name must be an identifier, not '" + cname + "'")
+        }
+        next()
+        if fwd == nil && prior != nil { error("'" + name + "' is already declared in this scope") }
+        var ft = newType("record", name, nil)
+        if fwd != nil {
+            ft = fwd
+            truncate(ft.fields, 0)
+        } else {
+            nameType(ft, name)
+            let s = newSym("type", name, ft)
+            s.line = line
+            declare(s)
+        }
+        let cs = findSym(curModule.globals, name)
+        if cs != nil {
+            cs.exported = cs.exported || isPub
+            cs.line = line
+        }
+        append(ft.fields, new Field{name: "word", offset: 0, typ: tInt, private: true})
+        ft.isForeign = true
+        ft.isForeignName = cname
+        let noPtrs = new []int(0)
+        let noStrs = new []int(0)
+        ft.desc = descriptor(8, noPtrs, noStrs)
+        ft.incomplete = false
+        ft.isForeignId = len(foreignDescs)
+        append(foreignDescs, new ForeignDesc{id: ft.isForeignId, obo: ft.name, cname: cname})
     } else {
         // the contextual interface definition ('interface' then '{'); any other identifier starts an alias,
         // whose name tail is read as parseType reads it
@@ -6018,10 +6063,10 @@ fn heldAt(b: ^RefBind, i: int, raw: string, r: ^Sym): string {
 fn heldUnder(place: string, held: string): bool { return place == anyPlace || held == anyPlace || segsPrefix(place, held) }
 
 // adds one held entry; heldPush and heldPushStore are the only callers
-fn heldAdd(key: ?^Sym, foreign: bool, whole: bool, at: string) {
+fn heldAdd(key: ?^Sym, viaForeign: bool, whole: bool, at: string) {
     append(heldKey, key)
     append(heldPath, at)
-    append(heldForeign, foreign)
+    append(heldForeign, viaForeign)
     append(heldHit, false)
     append(heldStore, false)
     append(heldWhole, whole)
@@ -7315,6 +7360,7 @@ fn conversion(t: ^Type): Item {
     expect(T_LPAREN, "")
     let a = nestedExpr()
     expect(T_RPAREN, "")
+    if a.typ.isForeign { error("a foreign handle cannot be converted to " + tname(t)) }
     if t == tInt && a.typ.kind == "decimal" {
         error("int(decimal) is not a conversion; use decimal::toInt(d, mode) -> Result[int]")
     }
@@ -7366,6 +7412,11 @@ fn conversion(t: ^Type): Item {
 fn nativeKindCall(cname: string, desc: string): Item
 fn nativeIntCall(cname: string, first: bool): Item
 fn nativeFnCall(f: ^Sym): Item
+fn hostCall(cname: string, args: []?Item, ret: ^Type): Item
+fn foreignRetBase(t: ^Type): ?^Type
+fn foreignRawMem(): Mem
+fn foreignCloseItem(x: Item): Item
+fn foreignIsOpenItem(x: Item): Item
 
 fn nativeCall(): Item {
     if checking { error("__cinterop is not supported in --check: native calls need the typed sidecar and link step") }
@@ -7464,10 +7515,11 @@ fn nativeIntCall(cname: string, first: bool): Item {
 // and length after every argument expression has run and just before the C call (stage (a), design 3.2).
 
 type NativeKind = ref record {
-    name: string              // i64 i32 u32 null const borrow_bytes borrow_cstr ints nil_bytes_list
+    name: string              // i64 i32 u32 null const borrow_bytes borrow_cstr ints nil_bytes_list foreign
     arg: int                  // the obo argument it reads; -1 for null and const
     flag: string              // ints: i32, u32 or len; "" otherwise
     val: int                  // const: the value
+    ftype: ?^Type             // foreign: the handle type, for the call-site type check
 }
 
 // a decimal number in desc[from:to]; a leading minus only when signed
@@ -7622,10 +7674,20 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
             if !(isArr && baseOf(a.typ).kind == "opt" && baseOf(baseOf(a.typ)).kind == "array" && baseOf(baseOf(baseOf(a.typ))).kind == "byte") {
                 error(display + ": argument " + string(k + 1) + " needs a []?[]byte, not " + tname(a.typ))
             }
+        } else if kn == "foreign" {
+            let ft = ks[dataOf[k]].ftype
+            if ft == nil || a.typ != ft {
+                var want = "a foreign handle"
+                if ft != nil { want = "a &" + tname(ft) + " foreign handle" }
+                error(display + ": argument " + string(k + 1) + " needs " + want + ", not " + tname(a.typ))
+            }
+            if !a.borrowed {
+                error(display + ": argument " + string(k + 1) + " must borrow the foreign handle with '&'")
+            }
         } else if !isInt(a.typ) {
             error(display + ": argument " + string(k + 1) + " must be int, not " + tname(a.typ))
         }
-        if isArr {
+        if isArr || kn == "foreign" {
             let b = borrowBind(a)
             if anyDeep(b) && deepLine == 0 {
                 deepLine = argLine
@@ -7703,6 +7765,21 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
         aluRI(0, RSP, 8 * w + pad)
         depth -= 8 * w + pad
     }
+    // A foreign result is the raw C word in rax. Keep it in a stack slot across the register
+    // restore, then wrap it in a normal record through the host helper.
+    let fr = foreignRetBase(retType)
+    var rawBase = -1
+    var rawIndex = -1
+    var rawDisp = 0
+    var rawScale = 8
+    if fr != nil {
+        let rm = foreignRawMem()
+        rawBase = rm.base
+        rawIndex = rm.index
+        rawDisp = rm.disp
+        rawScale = rm.scale
+        opMem(0x89, RAX, rm, true, false)
+    }
     restoreRegs(saved)
     // the same conservative summary as the int form (see nativeIntCall)
     nativeEffectSym.addr = 0
@@ -7710,6 +7787,21 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
     nativeEffectSym.writesHandles = true
     afterCall(nativeEffectSym)
     userCalls += 1
+    if fr != nil {
+        var raw = newItem("mem", tInt)
+        raw.base = rawBase
+        raw.index = rawIndex
+        raw.disp = rawDisp
+        raw.scale = rawScale
+        let hargs = new []?Item(0)
+        append(hargs, makeConst(tInt, fr.isForeignId))
+        append(hargs, raw)
+        append(hargs, makeConst(tInt, fr.desc))
+        var optional = 0
+        if retType.kind == "opt" { optional = 1 }
+        append(hargs, makeConst(tInt, optional))
+        return hostCall("obo_ci_foreign_own", hargs, retType)
+    }
     if retType == tVoid { return voidItem() }
     let r = alloc()
     movRR(r, RAX)
@@ -7723,10 +7815,12 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
 // shape fixes the words pushed for the thunk, and the spec's kind fixes the C parameter and any
 // range check. The tool accepts a call only when each shape matches the spec kind.
 
-// The obo-side shape of one native parameter: int, bytes, ints or byteslist; "" if unsupported.
+// The obo-side shape of one native parameter: int, bytes, ints, byteslist or foreign:<Name>;
+// "" if unsupported. A foreign parameter must be borrowed (&X), never owned.
 fn nativeParamShape(t: ^Type, mode: int): string {
     if mode == 0 && t == tInt { return "int" }
     if mode == 0 && t == tString { return "bytes" }
+    if mode == 1 && t.isForeign { return "foreign:" + t.name }
     if mode == 1 && t.kind == "array" {
         let b = baseOf(t)
         if b == tByte { return "bytes" }
@@ -7736,10 +7830,13 @@ fn nativeParamShape(t: ^Type, mode: int): string {
     return ""
 }
 
-// The sidecar result shape of a declared native return: i64, void, bytes or optbytes; "" otherwise.
+// The sidecar result shape of a declared native return: i64, void, bytes, optbytes,
+// own:<Name> or own_opt:<Name>; "" otherwise.
 fn nativeRetShape(t: ^Type): string {
     if t == tVoid { return "void" }
     if t == tInt { return "i64" }
+    if t.isForeign { return "own:" + t.name }
+    if t.kind == "opt" && baseOf(t).isForeign { return "own_opt:" + baseOf(t).name }
     if t.kind == "array" && baseOf(t) == tByte { return "bytes" }
     if t.kind == "opt" && baseOf(t).kind == "array" && baseOf(baseOf(t)) == tByte { return "optbytes" }
     return ""
@@ -7748,37 +7845,158 @@ fn nativeRetShape(t: ^Type): string {
 fn nativeFnCall(f: ^Sym): Item {
     if checking { error("native fn '" + f.name + "' cannot be called in --check: native calls need the typed sidecar and link step") }
     expect(T_LPAREN, "")             // nameItem left the call's '(' unread
-    var desc = ""
     var shapes = ""
+    let ks = new []NativeKind(0)
     for i in 0..len(f.fnRec.params) {
-        let sh = nativeParamShape(f.fnRec.params[i], f.fnRec.pmodes[i])
+        let pt = f.fnRec.params[i]
+        let sh = nativeParamShape(pt, f.fnRec.pmodes[i])
         if len(sh) == 0 {
             error("native fn '" + f.name + "': parameter " + string(i + 1) +
-                  " has an unsupported type (use int, string, &[]byte, &[]int or &[]?[]byte)")
+                  " has an unsupported type (use int, string, &[]byte, &[]int, &[]?[]byte or &X for a foreign handle)")
         }
-        if i > 0 {
-            desc = desc + ","
-            shapes = shapes + ","
-        }
-        if sh == "int" {
-            desc = desc + "i64@" + string(i)
-        } else if sh == "bytes" {
-            desc = desc + "borrow_bytes@" + string(i)
-        } else if sh == "ints" {
-            desc = desc + "ints@" + string(i) + ":i32"
-        } else {
-            desc = desc + "nil_bytes_list@" + string(i)
-        }
+        if i > 0 { shapes = shapes + "," }
         shapes = shapes + sh
+        // The kinds are compiler-internal here: they drive the same word layout as __cinterop, while
+        // the sidecar records the shapes and the tool compares them with the spec.
+        if sh == "int" {
+            append(ks, new NativeKind{name: "i64", arg: i})
+        } else if sh == "bytes" {
+            append(ks, new NativeKind{name: "borrow_bytes", arg: i})
+        } else if sh == "ints" {
+            append(ks, new NativeKind{name: "ints", arg: i, flag: "i32"})
+        } else if sh == "byteslist" {
+            append(ks, new NativeKind{name: "nil_bytes_list", arg: i})
+        } else {
+            append(ks, new NativeKind{name: "foreign", arg: i, flag: pt.name, ftype: pt})
+        }
     }
     let retShape = nativeRetShape(f.ret)
     if len(retShape) == 0 { error("native fn '" + f.name + "': unsupported return type") }
-    // The descriptor here is compiler-internal only (it drives the same word layout as __cinterop);
-    // the sidecar records the shapes, and the tool compares them with the spec.
-    var ks = new []NativeKind(0)
-    if len(desc) > 0 { ks = parseKinds(desc) }
     return nativeCallCore(f.name, ks, "native fn '" + f.name + "'", "fn", shapes, retShape,
                           f.ret, len(f.fnRec.params), true)
+}
+
+// ================================================ foreign handles (stage (d), experimental)
+//
+// A foreign type is a normal owned record with one private word. The compiler reaches its runtime
+// through a few host helpers, recorded as `host` relocations so the tool generates their thunks
+// exactly like an int-form native call. A foreign result is the raw C word from a spec
+// own/own_opt return; obo_ci_foreign_own wraps it in a record and counts it.
+
+var foreignRawGlobal = -1
+
+fn foreignRetBase(t: ^Type): ?^Type {
+    if t.isForeign { return t }
+    if t.kind == "opt" && baseOf(t).isForeign { return baseOf(t) }
+    return nil
+}
+
+// The raw C word from a native call is held here across restoreRegs. A function uses a normal local
+// slot; a global initializer (which has no frame) uses one hidden global word.
+fn foreignRawMem(): Mem {
+    if curFn != nil {
+        let s = newLocal("", tInt, "let")
+        return mem(RBP, -1, s.offset, 8)
+    }
+    if foreignRawGlobal < 0 {
+        foreignRawGlobal = GLOBAL_BASE + gsize
+        gsize += 8
+    }
+    return mem(-1, -1, foreignRawGlobal, 8)
+}
+
+// A host-helper call with obo's ordinary right-to-left stack layout, resolved through a `host`
+// sidecar record. The tool supplies the thunk; the callee is an internal obo_ci_* helper.
+fn hostCall(cname: string, args: []?Item, ret: ^Type): Item {
+    let saved = usedRegs()
+    pushRegs(saved)
+    setFree(0)
+    let n = len(args)
+    let pad = (depth + 8 * n) % 16
+    if pad != 0 {
+        aluRI(5, RSP, 8)
+        depth += 8
+    }
+    for i in 0..n {
+        let a = take(args[i])
+        if a != nil {
+            if a.mode == "const" && fits32(a.val) {
+                pushI(a.val)
+                depth += 8
+                drop(a)
+            } else {
+                let r = asReg(a)
+                pushR(r.r)
+                release(r.r)
+            }
+        } else {
+            drop(a)
+        }
+    }
+    emit(0xE8)
+    let at = pc()
+    emit32(0)
+    var hshape = ""
+    for i in 0..n {
+        if i > 0 { hshape = hshape + "," }
+        hshape = hshape + "i64"
+    }
+    append(nativeRelocs, new NativeReloc{off: at, sym: cname, nargs: n, kinds: hshape,
+                                         mode: "host", retShape: "i64"})
+    if n > 0 || pad != 0 {
+        aluRI(0, RSP, 8 * n + pad)
+        depth -= 8 * n + pad
+    }
+    restoreRegs(saved)
+    if ret == tVoid { return voidItem() }
+    let r = alloc()
+    movRR(r, RAX)
+    return makeReg(ret, r)
+}
+
+// close needs a writable place: a var owns it, a mut &X may change through the reference, and a
+// change through a ^T handle is a change.
+fn foreignWritable(x: &Item): bool {
+    let r = x.root
+    // A reference parameter is a let local whose mutability is its binding, not its kind.
+    if r != nil && r.isRef {
+        if !r.bind.writable { return false }
+    } else if x.readonly {
+        return false
+    }
+    if x.deref && r != nil && r.isRef && !r.bind.writable { return false }
+    return true
+}
+
+fn foreignCloseItem(x: Item): Item {
+    if !x.typ.isForeign { error("__foreignClose needs a foreign handle, not " + tname(x.typ)) }
+    if !foreignWritable(x) { error("close needs a writable foreign handle, not a read-only reference or let") }
+    let ft = x.typ
+    let rt = derived("result", tBool)
+    let rec = asReg(x)
+    let args = new []?Item(0)
+    append(args, makeConst(tInt, ft.isForeignId))
+    append(args, rec)
+    append(args, makeConst(tInt, rt.variants[0].desc))
+    append(args, makeConst(tInt, errVariantType().desc))
+    append(args, makeConst(tString, stringLit("foreign release failed")))
+    let res = hostCall("obo_ci_foreign_close", args, rt)
+    // close is deliberately not given the conservative C summary. It only zeroes the handle's word
+    // and calls the trusted release, which must not free obo memory or call back (R7, R11), so
+    // references into the enclosing obo record stay valid and a field receiver is allowed. is_open
+    // is inline below for the same reason.
+    return res
+}
+
+// is_open reads the word directly: no call, so references are not invalidated.
+fn foreignIsOpenItem(x: Item): Item {
+    if !x.typ.isForeign { error("__foreignIsOpen needs a foreign handle, not " + tname(x.typ)) }
+    let rec = asReg(x)
+    aluMI(7, mem(rec.r, -1, 0, 8), 0)
+    release(rec.r)
+    let c = newItem("cond", tBool)
+    c.cc = CC_NE
+    return c
 }
 
 // ======================================================= template literals (0.15)
@@ -8532,6 +8750,18 @@ fn sqlBytesBuiltin(): Item {
 
 fn builtin(name: string): Item {
     if name == "__cinterop" { return nativeCall() }
+    if name == "__foreignClose" {
+        expect(T_LPAREN, "")
+        let x = nestedExpr()
+        expect(T_RPAREN, "")
+        return foreignCloseItem(x)
+    }
+    if name == "__foreignIsOpen" {
+        expect(T_LPAREN, "")
+        let x = nestedExpr()
+        expect(T_RPAREN, "")
+        return foreignIsOpenItem(x)
+    }
     if name == "sqlJoin" { return sqlJoinBuiltin() }
     if name == "sqlWhere" { return sqlWhereBuiltin() }
     if name == "sqlNull" { return sqlNullBuiltin() }
@@ -9288,6 +9518,9 @@ fn designatorT(target: bool): Item {
                 error(tname(rt0) + " has no field '" + fname + "'")
                 return x
             }
+            if rt0.isForeign {
+                errorAt("a foreign handle's word is private; use close/is_open", mline, mcol)
+            }
             if rt0.fields[fi].private && rt0.owner != "" && rt0.owner != curModuleName {
                 errorAt(privateFieldMsg(rt0, fname), mline, mcol)
             }
@@ -9428,6 +9661,9 @@ fn methodCall(recv: Item, name: string, dline: int, dcol: int, rline: int, rcol:
     if t.incomplete { errorAt(tname(t) + " is declared but not yet defined", dline, dcol) }
     if t.kind == "iface" { return ifaceMethodCall(recv, t, name, dline, dcol, rline, rcol) }
     if t.kind != "record" && t.kind != "closed" { errorAt(tname(t) + " has no methods", dline, dcol) }
+    if t.kind == "record" && t.isForeign && fieldIndex(t, name) >= 0 {
+        errorAt("a foreign handle's word is private; use close/is_open", dline, dcol)
+    }
     if t.kind == "record" && fieldIndex(t, name) >= 0 {
         let fi = fieldIndex(t, name)
         if t.owner != "" && t.owner != curModuleName && t.fields[fi].private {
@@ -9436,6 +9672,11 @@ fn methodCall(recv: Item, name: string, dline: int, dcol: int, rline: int, rcol:
         errorAt("type '" + tname(t) + "' has a field '" + name + "', not a method; a field cannot be called", dline, dcol)
     }
     let m = findMethod(t, name)
+    // Foreign sugar when the wrapper did not declare an explicit method: x.close()/x.is_open().
+    if m == nil && t.kind == "record" && t.isForeign {
+        if name == "close" { return foreignCloseItem(recv) }
+        if name == "is_open" { return foreignIsOpenItem(recv) }
+    }
     if t.owner != "" && t.owner != curModuleName && (m == nil || !m.exported) {
         // a foreign mixed record hides names: a private field or an absent member gets the same
         // no-public-field-or-method message, identical in a full build and in --check
@@ -9493,6 +9734,9 @@ fn newExpr(): Item {
     if s.kind == "type" && symType(s).incomplete { error("'" + qname + "' is declared but not yet defined") }
     if s.kind != "type" || symType(s).kind != "record" { error("'" + qname + "' is not a record type") }
     let t = symType(s)
+    if t.isForeign {
+        error("cannot construct a foreign handle: it is created only by a native own/own_opt result")
+    }
     if t == tSql || t == tHtml || t == tHtmlAttr || t == tHtmlAttrs {
         ensureTemplateDescs()
     }
@@ -12230,7 +12474,7 @@ fn dropFrame(at: int, f: ^Sym) {
 
 // ---- the pre-scan of a function
 
-let callExempt = words("if while for return match defer in else new print println eprint eprintln len exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte float string isNaN isInf signbit floatBits parseFloat ok err try __cinterop")
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte float string isNaN isInf signbit floatBits parseFloat ok err try __cinterop __foreignClose __foreignIsOpen")
 
 fn wordAt(a: int, b: int, w: string): bool {
     if len(w) != b - a { return false }
@@ -16081,6 +16325,17 @@ fn compileFile(path: string, out: string, rtDir: string) {
         // (__cinterop: an int form with shapes "-", or an explicit kinds descriptor) or "fn" (a typed
         // native fn call, one shape per obo argument). The tool still reads v1 sidecars.
         appStr(b, "cinterop-relocs 2\n")
+        // Foreign type table, in first-declaration order: id, obo name, C type name. The tool
+        // generates the runtime table in this order, so the ids are its indices.
+        for i in 0..len(foreignDescs) {
+            appStr(b, "foreign ")
+            appInt(b, foreignDescs[i].id)
+            append(b, ' ')
+            appStr(b, foreignDescs[i].obo)
+            append(b, ' ')
+            appStr(b, foreignDescs[i].cname)
+            append(b, '\n')
+        }
         for i in 0..len(nativeRelocs) {
             appInt(b, nativeRelocs[i].off)
             append(b, ' ')
