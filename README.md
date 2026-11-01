@@ -86,26 +86,26 @@ field visibility is 0.13, decimal text is 0.14 and templates are 0.15.
 | Compiler (`--version`) | 700,417 bytes, sha256 `8ca8e59e…`, `obo 0.15`, sym-format 8, abi 1 |
 | Seed (`--version`) | promoted obo 0.15: 700,417 bytes, sha256 `8ca8e59e…`, sym-format 8, abi 1; the 0.14 seed (655,361 bytes, `d7b0c755…`) built this image once; earlier seeds build the 0.14 line |
 | Self-host fixed point | stage 2 == stage 3 == compiler, 700,417 bytes, `8ca8e59e…`; the 0.14 seed builds this image from source, and the promoted 0.15 seed reproduces it |
-| Self-compile wall time | 0.24 s (5 runs, median; range 0.23-0.38 s; host-dependent, measured 1 November 2026) |
-| Self-compile live peak | 2,385,408 bytes direct; 2,385,536 bytes port comparison (budget 2,500,000) |
-| Total allocated | 52,986,480 bytes direct; 52,987,808 bytes port comparison |
+| Self-compile wall time | 0.278 s (5 runs, median; range 0.260-0.329 s; host-dependent, measured 1 November 2026) |
+| Self-compile live peak | 2,385,424 bytes direct; 2,385,776 bytes port comparison (budget 2,500,000) |
+| Total allocated | 52,986,496 bytes direct; 52,990,848 bytes port comparison |
 | Maximum resident set | 4,652 KB (measured 1 November 2026) |
-| Live-memory budget | 2,500,000 bytes: 114,592 spare direct / 114,464 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 51,488) |
+| Live-memory budget | 2,500,000 bytes: 114,576 spare direct / 114,224 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 51,488) |
 | obo suite | 1,809 `run_fork` tests; 143 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 612/612 with 10 encoder groups; `port_compare` 1,796/1,796 default; seed comparisons 1,600/1,600 against the promoted 0.15 seed; 71 doc examples; 29/29 import checks; 16/16 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
 | Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.15) is 1,600/1,600; the older 0.13/0.12/0.11 comparisons skip the template files; the default (self) comparison is 1,796/1,796 |
 | Mutation gates | `mutate_fork` 718/749 caught + 31 equivalent, 0 missed/stale/broken (including 24 template compiler mutants); `mutate_port` 540/540; `mutate_meta` 71/82 caught + 11 equivalent; `mutate_decimal` 71/71 with an explicit baseline; `mutate_io` 36/36 (including the self-host memory oracle) |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
-| Tool binaries | cat 86,017; wc 90,113; sort 114,689; head 86,017; tail 98,305 bytes (static, runtime included) |
+| Tool binaries | cat 94,209; wc 98,305; sort 122,881; head 94,209; tail 106,497 bytes (static, runtime included) |
 | eza E2 differential gate | own-binary gate: 482 passed, 0 failed, 72 live-only skips; pinned reference eza is not on the host `PATH` |
-| eza E2 binary | 262,145 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
+| eza E2 binary | 270,337 bytes (static, runtime included; sha256 `53bf3a06…`; reference eza 0.23.3 is 2,294,768) |
 | eza 10k-entry live peak | worst 2,184,496 bytes (Tree; Restricted long 2,184,368); `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
 | Minimal static executable | 32,769 bytes (runtime included) |
 
 The compiler budget is 2,500,000 bytes live, with the separate 30,000-byte
-empty-array oracle unchanged. The 0.15 line peaks at 2,385,408 bytes in direct self-compiles and
-2,385,536 in the port comparison: 114,592 and 114,464 bytes spare. Total
-allocation is 52,986,480 bytes direct and 52,987,808 bytes in the port comparison. No check was
+empty-array oracle unchanged. The 0.15 line peaks at 2,385,424 bytes in direct self-compiles and
+2,385,776 in the port comparison: 114,576 and 114,224 bytes spare. Total
+allocation is 52,986,496 bytes direct and 52,990,848 bytes in the port comparison. No check was
 weakened. The live peak varies by a few hundred bytes with the source path and
 total allocation by about 1.3 KB. The historical lambda release budget remains
 2,000,000 in its own record. The 0.15 release is merged and promoted on main;

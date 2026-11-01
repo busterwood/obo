@@ -6372,7 +6372,7 @@ default `port_compare` **1,796/1,796**; `OBO_REF=obo/seed/obo`
 P0/P1a/P2 suites pass; the decimal evidence runner reports **32,719 C checks**.
 `mutate_fork` **718 caught + 31 equivalent of 749** (including 24 template
 compiler mutants), `mutate_decimal` **71/71** (including the sqlWhere runtime
-mutant), and `mutate_port` **540/540**. Self-compile peaks at **2,385,536
+mutant), and `mutate_port` **540/540**. Self-compile peaks at **2,385,776
 bytes** in the port comparison (budget 2,500,000, about 4.6% headroom); the
 empty-array savings oracle is **51,488 bytes** above baseline (minimum 30,000).
 The fixed point is stage 2 == stage 3, and the promoted 0.15 seed reproduces
