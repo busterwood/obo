@@ -103,6 +103,8 @@ fn select_one(c: &mssql::Connection): Result[bool] {
     let _c2 = try eq_str("select1 name 0", n0, "one")
     let n1 = try rows.column_name(1)
     let _c3 = try eq_str("select1 name 1", n1, "txt")
+    let t0 = try rows.column_type(0)
+    let _c3b = try eq_int("select1 type 0", t0, mssql::SQL_INTEGER)
     let _c3a = try expect_clean(rows, "select1 metadata")
     let more = try rows.fetch()
     let _c4 = try eq_bool("select1 fetch", more, true)
@@ -869,6 +871,26 @@ fn skipped_overcap(c: &mssql::Connection): Result[bool] {
             let _c162 = try eq_int("skipped overcap code", code, 2)
             if !contains(m, "16 MiB cap") {
                 return err("skipped overcap message differs: " + m, 121)
+            }
+        }
+    }
+
+    // The same drain path for text and multibyte chunks: 8,388,609 x N'é' is
+    // 16,777,218 UTF-8 bytes, one byte over the cap.
+    var trows = try c.exec(
+        "SELECT REPLICATE(CAST(N'é' AS nvarchar(max)), 8388609) AS big, N'small' AS s")
+    defer trows.close()
+    let tm = try trows.fetch()
+    let _c163 = try eq_bool("skipped overcap text fetch", tm, true)
+    let ts = try trows.text(1)
+    let _c164 = try eq_str("skipped overcap text later column", ts, "small")
+    let tb = trows.text(0)
+    match tb {
+        ok(v) { return err("skipped over-cap text unexpectedly ok", 122) }
+        err(m, code) {
+            let _c165 = try eq_int("skipped overcap text code", code, 2)
+            if !contains(m, "16 MiB cap") {
+                return err("skipped overcap text message differs: " + m, 123)
             }
         }
     }

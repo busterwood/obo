@@ -469,11 +469,30 @@ static int discard_column(ms_stmt *s, int col, int mode) {
     unsigned char scratch[4096];
     for (;;) {
         SQLLEN ind = 0;
-        SQLRETURN rc = SQLGetData(s->h, (SQLUSMALLINT)(col + 1),
-                                  mode ? SQL_C_BINARY : SQL_C_CHAR,
-                                  scratch, (SQLLEN)sizeof scratch, &ind);
+        SQLRETURN rc;
+        if (!mode) memset(scratch, 0xFF, sizeof scratch);
+        rc = SQLGetData(s->h, (SQLUSMALLINT)(col + 1),
+                        mode ? SQL_C_BINARY : SQL_C_CHAR,
+                        scratch, (SQLLEN)sizeof scratch, &ind);
         if (rc == SQL_SUCCESS || rc == SQL_NO_DATA) return 0;
         if (!SQL_SUCCEEDED(rc)) return -1;
+        /* No-progress guard: a conforming driver writes data on a truncated
+         * chunk, but a nonconforming one could return WITH_INFO with zero
+         * bytes forever. For text the driver NUL-terminates the chunk, so the
+         * 0xFF prefill locates the terminator: pos 0 means nothing was written
+         * and pos 1 with a NUL first byte means only the terminator (a single
+         * embedded-NUL byte is pos 2 and still progress). For binary the 18
+         * driver reports the remaining length, so a zero indicator is no
+         * progress; SQL_NO_TOTAL is treated as a filled buffer. Return a clean
+         * error instead of spinning. */
+        if (mode) {
+            if (ind == 0) return -1;
+        } else {
+            int pos = 0;
+            while (pos < (int)sizeof scratch && scratch[pos] != 0xFF) pos++;
+            if (pos == 0) return -1;
+            if (pos == 1 && scratch[0] == 0) return -1;
+        }
     }
 }
 
