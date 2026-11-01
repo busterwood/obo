@@ -32,6 +32,12 @@ struct ms_conn {
     int closed;
     struct ms_stmt *children;
 };
+/* CONTRACT: ms_close_conn frees this state. ms_conn_diag/ms_conn_sqlstate/
+ * ms_conn_error_code must not be called after it. The obo wrapper is safe
+ * because the generated close zeroes the foreign word before the release, so
+ * Connection.error_message()/sqlstate()/error_code() never reach C afterwards.
+ * Do not introduce a per-connection tombstone just to tolerate a C-level call
+ * that the binding's contract forbids. */
 
 /* The statement state. The foreign word points here. owner is cleared when the
  * connection closes; h is SQL_NULL_HSTMT once the driver handle is gone. */

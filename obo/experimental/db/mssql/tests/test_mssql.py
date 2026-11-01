@@ -45,6 +45,7 @@ SECTIONS = [
     'large_values', 'oversize_value', 'datetimeoffset_text', 'decimal_errors',
     'statement_reuse', 'float_rejected', 'unicode_astral', 'big_params',
     'exact_cap_multibyte', 'ascending_columns', 'int64_range', 'stale_row',
+    'skipped_overcap', 'mars_busy',
 ]
 UAF_SOURCES = [
     os.path.join(PKG, 'ms_utf16.c'),
@@ -142,6 +143,7 @@ def check_manifest(out, what):
 def run_app(exe, what, env_extra=None, args=None, expect=0):
     env = dict(os.environ)
     env.pop('OBO_CHECK', None)
+    env.pop('OBO_CENSUS_FAULT', None)
     env['MSSQL_TEST_DSN'] = TEST_DSN
     if env_extra:
         env.update(env_extra)
@@ -239,6 +241,7 @@ def main():
                        % ((c.stdout or '').strip(), (c.stderr or '').strip()))
         env = dict(os.environ)
         env.pop('OBO_CHECK', None)
+        env.pop('OBO_CENSUS_FAULT', None)
         env['MSSQL_TEST_DSN'] = TEST_DSN
         env['ASAN_OPTIONS'] = 'detect_leaks=0'
         u = run([uaf_exe], env=env)
@@ -252,8 +255,9 @@ def main():
 
     print('mssql live tests: ok (%d sections: SELECT 1, dbo.items, typed/'
           'big params, chunked/oversize/exact-cap reads, i64 range, ascending '
-          'columns, stale-row and parent-close safety, SQLSTATE errors, '
-          'OBO_CHECK census; ASan UAF harness)' % len(SECTIONS))
+          'columns, stale-row/skipped-over-cap/parent-close safety, MARS busy '
+          'handling, SQLSTATE errors, OBO_CHECK census; ASan UAF harness)'
+          % len(SECTIONS))
     return 0
 
 

@@ -149,6 +149,9 @@ int ms_close_conn(ms_conn *c) {
     return rc;
 }
 
+/* CONTRACT: c must be live. ms_close_conn frees the state and the obo wrapper
+ * zeroes the foreign word before calling it, so these are unreachable after a
+ * close from obo. See ms_internal.h. */
 const char *ms_conn_diag(const ms_conn *c) {
     if (!c || c->closed || !c->dbc) return "";
     return ms_handle_diag((SQLHDBC)(void *)c->dbc, SQL_HANDLE_DBC);

@@ -80,6 +80,21 @@ fn payload0(): []byte {
     return b
 }
 
+fn expect_clean(rows: &mssql::Rows, name: string): Result[bool] {
+    let em = rows.error_message()
+    if len(em) != 0 {
+        return err(name + ": diagnostic is not empty: " + string(em), 60)
+    }
+    let es = rows.sqlstate()
+    if len(es) != 0 {
+        return err(name + ": SQLSTATE is not empty: " + string(es), 61)
+    }
+    if rows.error_code() != 0 {
+        return err(name + ": error code is not zero", 62)
+    }
+    return ok(true)
+}
+
 fn select_one(c: &mssql::Connection): Result[bool] {
     var rows = try c.exec("SELECT 1 AS one, N'café' AS txt")
     defer rows.close()
@@ -88,6 +103,7 @@ fn select_one(c: &mssql::Connection): Result[bool] {
     let _c2 = try eq_str("select1 name 0", n0, "one")
     let n1 = try rows.column_name(1)
     let _c3 = try eq_str("select1 name 1", n1, "txt")
+    let _c3a = try expect_clean(rows, "select1 metadata")
     let more = try rows.fetch()
     let _c4 = try eq_bool("select1 fetch", more, true)
     let v0 = try rows.text(0)
@@ -96,13 +112,13 @@ fn select_one(c: &mssql::Connection): Result[bool] {
     let _c6 = try eq_str("select1 value 1", v1, "café")
     let isn = try rows.is_null(1)
     let _c7 = try eq_bool("select1 not null", isn, false)
+    let _c7a = try expect_clean(rows, "select1 values")
     let done = try rows.fetch()
     let _c8 = try eq_bool("select1 done", done, false)
     let _c9 = try eq_int("select1 row_count", rows.row_count(), 1)
     let _c10 = try eq_int("select1 status", rows.status(), mssql::SQL_NO_DATA)
     let _c10a = try eq_int("select1 error_code", rows.error_code(), 0)
-    let em = rows.error_message()
-    let es = rows.sqlstate()
+    let _c10b = try expect_clean(rows, "select1 exhausted")
     return ok(true)
 }
 
@@ -835,6 +851,72 @@ fn stale_row(c: &mssql::Connection): Result[bool] {
     return ok(true)
 }
 
+fn skipped_overcap(c: &mssql::Connection): Result[bool] {
+    // Column 0 is over the 16 MiB cache cap. Reading column 1 first must drain
+    // and discard column 0, keep column 1 readable, and report the cap only
+    // when column 0 itself is requested.
+    var rows = try c.exec(
+        "SELECT CAST(REPLICATE(CAST('a' AS varchar(max)), 16777217) AS varbinary(max)) AS big, N'small' AS s")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c160 = try eq_bool("skipped overcap fetch", more, true)
+    let s = try rows.text(1)
+    let _c161 = try eq_str("skipped overcap later column", s, "small")
+    let big = rows.bytes(0)
+    match big {
+        ok(v) { return err("skipped over-cap column unexpectedly ok", 120) }
+        err(m, code) {
+            let _c162 = try eq_int("skipped overcap code", code, 2)
+            if !contains(m, "16 MiB cap") {
+                return err("skipped overcap message differs: " + m, 121)
+            }
+        }
+    }
+    return ok(true)
+}
+
+fn mars_busy(c: &mssql::Connection): Result[bool] {
+    // Without MARS one executed result set holds the connection. A second
+    // exec while it is open is a clean busy error; the first cursor still
+    // works, and two prepared (unexecuted) statements are fine.
+    var r1 = try c.exec("SELECT 1 AS v")
+    let f1 = try r1.fetch()
+    let _c163 = try eq_bool("mars first fetch", f1, true)
+    let q2 = c.exec("SELECT 2 AS v")
+    match q2 {
+        ok(r2) {
+            r2.close()
+            r1.close()
+            return err("second exec while busy unexpectedly ok", 130)
+        }
+        err(m, code) {
+            let _c164 = try eq_int("mars busy code", code, 2)
+            if !contains(m, "Connection is busy") {
+                r1.close()
+                return err("mars busy message differs: " + m, 131)
+            }
+        }
+    }
+    let v = try r1.text(0)
+    let _c165 = try eq_str("mars first value", v, "1")
+    let done = try r1.fetch()
+    let _c166 = try eq_bool("mars first done", done, false)
+    r1.close()
+
+    var p1 = try c.prepare("SELECT 1")
+    var p2 = try c.prepare("SELECT 2")
+    p1.close()
+    p2.close()
+
+    var r3 = try c.exec("SELECT 3 AS v")
+    let f3 = try r3.fetch()
+    let _c167 = try eq_bool("mars after close fetch", f3, true)
+    let v3 = try r3.text(0)
+    let _c168 = try eq_str("mars after close value", v3, "3")
+    r3.close()
+    return ok(true)
+}
+
 fn run_all(c: &mssql::Connection): Result[bool] {
     let _c1 = try select_one(c)
     println("mssql section select_one")
@@ -878,6 +960,10 @@ fn run_all(c: &mssql::Connection): Result[bool] {
     println("mssql section int64_range")
     let _c21 = try stale_row(c)
     println("mssql section stale_row")
+    let _c22 = try skipped_overcap(c)
+    println("mssql section skipped_overcap")
+    let _c23 = try mars_busy(c)
+    println("mssql section mars_busy")
 
     // A failed open reports its SQLSTATE and native code without a connection.
     let bad = mssql::open("DSN=no_such_dsn_obo;")

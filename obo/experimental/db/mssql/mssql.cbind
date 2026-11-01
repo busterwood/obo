@@ -34,7 +34,7 @@
       "name": "ms_stmt",
       "obo": "Stmt",
       "release": "ms_close_stmt",
-      "release_result": "void"
+      "release_result": "int"
     }
   ],
   "functions": [

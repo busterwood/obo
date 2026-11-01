@@ -527,12 +527,13 @@ The SQL Server suite is opt-in and SELECT-only. It reads the DSN from
 fixture; it never prints the DSN and reads no other credential file. The
 standard db-adapter gate invokes this suite, or prints a visible
 `mssql live: skipped` line when neither source exists (it does not report a
-silent green pass). The 21 live sections cover the measured W/narrow split,
+silent green pass). The 23 live sections cover the measured W/narrow split,
 `dbo.items` text/decimal/temporal/GUID/binary/NULL, typed and 1 MiB parameters,
 SQLSTATE errors, chunked/oversize/exact-cap reads, i64 min/max, ascending-column
-and stale-row behaviour, parent-close safety, statement reuse and the
-`OBO_CHECK=1` census; a standalone ASan harness repeats the parent-close
-sequence directly against the shims. See [`mssql/README.md`](mssql/README.md).
+and stale-row behaviour, skipped over-cap columns, parent-close safety,
+statement reuse, MARS-off busy handling and the `OBO_CHECK=1` census; a
+standalone ASan harness repeats the parent-close sequence directly against the
+shims. See [`mssql/README.md`](mssql/README.md).
 
 The PostgreSQL live section is opt-in and SELECT-only, including the
 `execute_sql` bridge vectors:

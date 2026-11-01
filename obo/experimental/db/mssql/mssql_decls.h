@@ -218,7 +218,7 @@ extern int ms_col_type(ms_stmt *s, int col);
 extern long ms_col_size(ms_stmt *s, int col);
 extern int ms_col_digits(ms_stmt *s, int col);
 extern int ms_col_nullable(ms_stmt *s, int col);
-extern void ms_close_stmt(ms_stmt *s);
+extern int ms_close_stmt(ms_stmt *s);
 extern const char *ms_stmt_diag(ms_stmt *s);
 extern const char *ms_stmt_sqlstate(ms_stmt *s);
 extern int ms_stmt_error_code(ms_stmt *s);

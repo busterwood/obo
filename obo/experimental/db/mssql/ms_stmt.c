@@ -183,13 +183,16 @@ int ms_stmt_mark_closed(ms_stmt *s) {
     return rc;
 }
 
-void ms_close_stmt(ms_stmt *s) {
-    if (!s) return;
+int ms_close_stmt(ms_stmt *s) {
+    int rc = 0;
+    if (!s) return 0;
     if (!s->closed) {
         if (s->owner) stmt_detach(s);
         if (s->h) {
-            SQLFreeStmt(s->h, SQL_CLOSE);
-            SQLFreeHandle(SQL_HANDLE_STMT, s->h);
+            SQLRETURN cr = SQLFreeStmt(s->h, SQL_CLOSE);
+            if (!SQL_SUCCEEDED(cr) && rc == 0) rc = (int)cr;
+            cr = SQLFreeHandle(SQL_HANDLE_STMT, s->h);
+            if (!SQL_SUCCEEDED(cr) && rc == 0) rc = (int)cr;
             s->h = SQL_NULL_HSTMT;
         }
         s->closed = 1;
@@ -198,6 +201,7 @@ void ms_close_stmt(ms_stmt *s) {
     binds_free(s);
     free(s->synthetic);
     free(s);
+    return rc;
 }
 
 /* ------------------------------------------------------------------ execution */
@@ -349,11 +353,15 @@ static int describe(ms_stmt *s, int col, SQLWCHAR *name, SQLSMALLINT ncap,
     SQLSMALLINT t = 0, d = 0, nl = 0, nu = 0;
     SQLULEN sz = 0;
     SQLRETURN rc;
-    SQLWCHAR dummy[1];
+    SQLWCHAR dummy[256];
     if (!s || col < 0) return -1;
     if (!name) {
+        /* SQL Server identifiers are at most 128 units. A one-unit buffer made
+         * SQLDescribeColW truncate the name and leave 01004 on the statement,
+         * which then leaked into error_message() after a successful metadata
+         * read. A 256-unit buffer avoids the truncation. */
         name = dummy;
-        ncap = 1;
+        ncap = (SQLSMALLINT)(sizeof(dummy) / sizeof(dummy[0]));
     }
     rc = SQLDescribeColW(s->h, (SQLUSMALLINT)(col + 1), name, ncap, &nl, &t,
                          &sz, &d, &nu);
@@ -452,6 +460,21 @@ static int cell_grow(ms_cell *c) {
     c->buf = p;
     c->cap = cap;
     return 0;
+}
+
+/* Consume the rest of a column with a scratch buffer. Used when a skipped
+ * column exceeded the 16 MiB cell cap: the requested later column must remain
+ * readable, so the over-cap value is drained and discarded. */
+static int discard_column(ms_stmt *s, int col, int mode) {
+    unsigned char scratch[4096];
+    for (;;) {
+        SQLLEN ind = 0;
+        SQLRETURN rc = SQLGetData(s->h, (SQLUSMALLINT)(col + 1),
+                                  mode ? SQL_C_BINARY : SQL_C_CHAR,
+                                  scratch, (SQLLEN)sizeof scratch, &ind);
+        if (rc == SQL_SUCCESS || rc == SQL_NO_DATA) return 0;
+        if (!SQL_SUCCEEDED(rc)) return -1;
+    }
 }
 
 /* Read one column into its cell. The caller has checked stmt_ok, row_valid and
@@ -573,7 +596,14 @@ int ms_read_cell(ms_stmt *s, int col, int binary) {
     }
     if (col < s->read_next) {
         ms_cell *c = &s->cells[col];
-        if (c->loaded && c->mode == mode) return c->status;
+        if (c->loaded && c->mode == mode) {
+            if (c->status == -2) {
+                state_set_error(s, "value exceeds the 16 MiB cap", 2);
+            } else if (c->status == -1) {
+                state_set_error(s, "column value could not be read", 2);
+            }
+            return c->status;
+        }
         state_set_error(s, "columns must be read in ascending order", 2);
         return -1;
     }
@@ -581,7 +611,24 @@ int ms_read_cell(ms_stmt *s, int col, int binary) {
      * skipped ones so a later read of an earlier column is served from the
      * cache rather than failing with 07009. */
     for (k = s->read_next; k < col; k++) {
-        r = read_cell_at(s, k, column_binary_mode(s, k));
+        int sk_mode = column_binary_mode(s, k);
+        ms_cell *sk;
+        r = read_cell_at(s, k, sk_mode);
+        if (r == -2) {
+            /* The skipped value was too large to cache. Drain it so the
+             * requested column is still readable, and remember that reading
+             * this column itself is the cap error. */
+            if (discard_column(s, k, sk_mode) != 0) {
+                state_set_error(s, "skipped column could not be consumed", 2);
+                return -1;
+            }
+            sk = &s->cells[k];
+            cell_free(sk);
+            sk->status = -2;
+            sk->mode = sk_mode;
+            sk->loaded = 1;
+            continue;
+        }
         if (r < 0) return r;
     }
     r = read_cell_at(s, col, mode);

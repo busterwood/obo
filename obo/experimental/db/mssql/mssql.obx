@@ -6,7 +6,10 @@
 // ordinary record that owns one Stmt and is the streaming row cursor: fetch()
 // advances one row, then the column accessors read that row. Close explicitly
 // and defer the close; under OBO_CHECK=1 the foreign census reports a dropped
-// handle at normal end (exit 8), and a use after close stops with exit 7.
+// handle at normal end (exit 8). Using a closed Connection or bare Stmt stops
+// with exit 7 in the native thunk; a closed Rows returns err("rows are
+// closed", 2), and after its Connection closes it returns
+// err("statement's connection is closed", 2).
 //
 // Text crosses as UTF-8. Phase 1 measured that the driver converts narrow SQL
 // text, column names and diagnostics through the process locale, so this

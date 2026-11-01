@@ -10,9 +10,13 @@ changes.
   `SQLHSTMT`.
 - `Rows` is an ordinary record that owns one `Stmt` and is the streaming cursor:
   `fetch()` advances one row and the column accessors read that row.
-- Close explicitly, normally with `defer`. A second close is `ok(false)`. A use
-  after close exits 7 in the native thunk. Under `OBO_CHECK=1` a dropped open
-  handle is reported at normal end with exit 8; a census underflow exits 4.
+- Close explicitly, normally with `defer`. A second close is `ok(false)`.
+  Using a closed `Connection` or a bare `Stmt` after close stops with exit 7 in
+  the native thunk (its foreign word is zeroed); a closed `Rows` returns
+  `err("rows are closed", 2)` instead, and after its Connection closes it
+  returns `err("statement's connection is closed", 2)`. Under `OBO_CHECK=1` a
+  dropped open handle is reported at normal end with exit 8; a census
+  underflow exits 4.
 - SQL text, parameter values, result values and diagnostics are UTF-8. Text is
   never formatted through a float. SQL is a fixed statement with `?`
   placeholders; there is no string interpolation.
@@ -170,14 +174,17 @@ fn main() {
 | `decimal_text(col): Result[?[]byte]` | SQL Server's exact decimal text; nil is NULL. |
 | `decimal(col): Result[decimal]` | Parses the exact text. NULL is `DEC_DB_NULL`; binary is `DEC_DB_NOT_DECIMAL`; `float`/`real` is `DEC_DB_INEXACT_STORAGE`. Inserts the leading zero SQL Server omits (`.5000` → `0.5000`) without changing value or display scale. |
 | `status(): int`, `error_message()`, `sqlstate()`, `error_code()` | Last `SQLRETURN` and the statement diagnostic. |
-| `close(): Result[bool]`, `is_open()` | Second close is `ok(false)`; accessors after the Rows closes are `err("rows are closed", 2)`. After the **Connection** closes, `is_open()` is false and accessors are `err("statement's connection is closed", 2)`; `close()` still frees the C state once. |
+| `close(): Result[bool]`, `is_open()` | Second close is `ok(false)`; a `SQLFreeStmt`/`SQLFreeHandle` failure during the release is an `err`. Accessors after the Rows closes are `err("rows are closed", 2)`. After the **Connection** closes, `is_open()` is false and accessors are `err("statement's connection is closed", 2)`; `close()` still frees the C state once. |
 
 The cell cache is per statement and per column/representation: `is_null(0)`
 then `text(0)` then `bytes(0)` reuse one `SQLGetData` read for the current row.
 `SQLGetData` consumes columns in ascending order, so reading `text(1)` first
 makes the shim read and cache column 0 as well; a later `text(0)` is served
-from that cache. The cache is cleared when a row is fetched or when the cursor
-reaches `SQL_NO_DATA`/a failed fetch, so `text(0)` after exhaustion is
+from that cache. If a skipped column exceeds the 16 MiB cell cap, the shim
+drains and discards the rest of it and remembers the cap error, so the
+requested later column is still readable; requesting the over-cap column
+itself reports the cap. The cache is cleared when a row is fetched or when the
+cursor reaches `SQL_NO_DATA`/a failed fetch, so `text(0)` after exhaustion is
 `err("no current row", 2)`, not the last row.
 
 ### Parameters
@@ -195,6 +202,15 @@ Every value is copied into a C-side slot at bind time, so the caller's array
 need not outlive `execute`. The slots are freed on `clear_params` or close.
 Decimal values travel as text and SQL Server converts to the target column's
 type; there is no binary decimal format.
+
+### Connection concurrency (no MARS)
+
+The binding does not enable Multiple Active Result Sets. One **executed**
+result set holds the connection until its `Rows.close()`: a second
+`Connection.exec` while the first `Rows` is open returns a clean
+`err(...Connection is busy with results for another command..., 2)`, and the
+first cursor remains usable. Two prepared but unexecuted statements are fine.
+Open and close one streaming cursor at a time; MARS is a documented follow-up.
 
 ## Limits and error model
 
@@ -244,9 +260,17 @@ is never printed or written into the manifest. Against the local
   `SQL_NO_DATA`, and the full i64 min/max parameter and result range;
 - `datetimeoffset` readable as exact text;
 - close/double-close and closed-`Rows` accessors;
+- diagnostics: after a successful metadata read, value read and exhausted
+  cursor, `error_message()`/`sqlstate()`/`error_code()` are empty/zero (this
+  catches a metadata `01004` leak);
 - the B1 parent-close fixture: `conn.close()` first, then `rows.is_open()` is
   false and `rows.text(0)` is a clean `statement's connection is closed` error
   (no signal), followed by a clean `rows.close()`;
+- a skipped over-cap column followed by a small column: the small column is
+  readable and only the over-cap column reports the cap;
+- MARS-off behaviour: a second `exec` while a cursor is open is a clean
+  `Connection is busy...` error, the first cursor still works, two prepared
+  statements are fine, and the connection is usable after the cursor closes;
 - a standalone ASan harness that links the shim sources directly and repeats
   the parent-close sequence, so a use-after-free is detected outside the obo
   image;
@@ -255,8 +279,11 @@ is never printed or written into the manifest. Against the local
   runs no census, use after close exits 7, and
   `OBO_CENSUS_FAULT=underflow` exits 4.
 
-The runner asserts all 21 section markers, so a section that is accidentally
-left out of `run_all` fails the suite instead of passing silently. It also
+The runner asserts all 23 section markers, so a section that is accidentally
+left out of `run_all` fails the suite instead of passing silently. It pops
+`OBO_CHECK` and `OBO_CENSUS_FAULT` for the clean runs and sets them explicitly
+for the census cases, so exporting either variable cannot change a passing
+run. It also
 checks `signature_check: declarations-only`, the two declaration-file hashes,
 the manifest verify, `libodbc.so.2` in `ldd`, and builds/runs the ASan harness.
 `obo/experimental/db/tests/test_db_adapters.py` invokes this suite too, or
@@ -268,8 +295,10 @@ These are deliberately outside the first slice and need separate review:
 
 - **Transactions.** Autocommit is on; there is no `begin`/`commit`/`rollback`
   helper, no savepoints and no isolation-level control.
-- **Multiple result sets.** `exec` uses the first result set. `SQLMoreResults`
-  is not exposed, and a batch with several statements is not drained.
+- **Multiple result sets / MARS.** `exec` uses the first result set.
+  `SQLMoreResults` is not exposed, a batch with several statements is not
+  drained, and MARS is not enabled: one executed result set per connection at a
+  time (see the concurrency note above).
 - **`datetimeoffset`/`date`/`time` typed accessors.** They read as exact text;
   there is no typed value type or timezone arithmetic.
 - **`money`/`smallmoney` typed accessor.** Exact text and `decimal()` work.
