@@ -22,24 +22,23 @@ where the work stands, how to run it, and when to stop and ask the user.
   Design §8 records what it actually does, including the documented deviation (internal
   `__foreignClose`/`__foreignIsOpen` builtins plus wrapper methods instead of compiler-generated
   bodies) and the deferral of `out_own`/`out_offset` to stage (f).
-- **Stage (e)**, the libpq v2 port: implemented on `cinterop-v2-e`, pending independent review and
-  merge. Design §8 records the implementation, the retained old adapter for `db/postgres`, and the
-  live SELECT-only checks.
-- **Stage (f)**, out parameters and the SQLite v2 port: implemented on `cinterop-v2-f`, pending
-  independent review and merge. Design §8 records the implementation, the one deviation (an
-  out_offset-only `var` is freed at scope end, so the sketched exit 5 is unreachable), and the gate
-  results. The trusted helpers live in `obo/experimental/db/sqlite/sq_stmt_errcode.c` and
-  `sq_prepare_at.c` (linear `exec`); the binding no longer has a C adapter.
-- **Stage (g)**, the `db/postgres` v2 port: implemented on `cinterop-v2-g`,
-  pending independent review and merge. Design §8 records the implementation,
-  the two accepted `open` error changes, the single obo decimal validation, the
-  spec-drift guard, and the nested-handle census. The old postgres adapter,
-  libpq token adapter, `postgres_adapter_test.c` and `postgres_fake_sql.cbind`
-  are deleted; `cres.c/.h` remain for the other toolkit packages.
-- **Stage (h):** not started.
-- **Cleanup audit:** in progress. A read-only audit of old interop code and docs is running. It sorts
-  items into three groups: wrong or dead now, removable at a named stage, and keep. Nothing will be
-  deleted until the user has seen its list.
+- **Stage (e)**, the libpq v2 port: merged to `main` as `ef11ed7`. Design §8 records the
+  implementation, the retained old adapter for `db/postgres`, and the live SELECT-only checks.
+- **Stage (f)**, out parameters and the SQLite v2 port: merged to `main` as `49ae601`. Design §8
+  records the implementation, the one deviation (an out_offset-only `var` is freed at scope end, so
+  the sketched exit 5 is unreachable), and the gate results. The trusted helpers live in
+  `obo/experimental/db/sqlite/sq_stmt_errcode.c` and `sq_prepare_at.c` (linear `exec`); the binding
+  no longer has a C adapter.
+- **Stage (g)**, the `db/postgres` v2 port: merged to `main` as `65492c0`. Design §8 records the
+  implementation, the two accepted `open` error changes, the single obo decimal validation, the
+  spec-drift guard, and the nested-handle census. The old postgres adapter, libpq token adapter,
+  `postgres_adapter_test.c` and `postgres_fake_sql.cbind` are deleted; `cres.c/.h` remain for the
+  zlib adapter and the buffer example.
+- **Stage (h)**, the skill/template rewrite and the docs status sweep: in progress on
+  `cinterop-v2-h`. It teaches the v2 surface (foreign handles, out records, `release_result`, the
+  kinds and the census) and moves the templates off `cres`.
+- **Cleanup audit:** complete. Its items are folded into stages (e)–(h); nothing else is scheduled
+  for deletion, and `cres.c/.h`/`buffer.obx` stay because zlib uses them.
 
 ## Decisions that are final
 
@@ -138,17 +137,22 @@ Agents leave `CINTEROP_TEST_DSN` unset.
 
 ## Remaining stages
 
-The full scope and gates for each stage are in design §8; the test lists are in §9. Notes:
+Stages (a)–(g) are merged. Stage (h) is the last one:
 
 | Stage | Scope | Checker exposure | Risk | Coordinator notes |
 |---|---|---|---|---|
-| (b) copy-out | `cbytes` returning `?[]byte` with caps, `cstr_out`, `void`, `nonzero` | none | medium | Done in `85923af` with (c). Fake `PQgetvalue`: empty, NUL-containing, NULL-with-length (exit 11), over cap. |
-| (c) `native fn` | body-less declarations, kind table, `cinterop-relocs 2`, `cinterop-proto/2`, `signature_check` | parse and type-check body-less natives | medium | Done in `85923af` with (b). Replaces the stage (a) kinds string at each call. Int-form natives stay byte-identical. |
-| (d) foreign handles | `foreign` record kind with one private word, `own`/`own_opt`/`borrow<T>`/`borrow_mut<T>`, `close`/`is_open`, exit 7 in the thunk, per-type census | `foreign` record kind, private-field checks; no new ownership rule | medium to high | Implemented on `cinterop-v2-d`, pending review/merge. `out_own`/`out_offset` deferred to (f); close/is_open are internal builtins plus wrapper methods (design §8). No ASan run over the obo image. |
-| (e) libpq | rewrite `libpq.obx`/`libpq.cbind` to v2 foreign handles and direct `PQexecParams` arrays; add `libpq_conninfo.c` | none | low to medium | Implemented on `cinterop-v2-e`, pending review/merge. `libpq_adapter.c/.h` are retained for `db/postgres` until stage (g); a `Rows` dropped without `close` is reported by the census. |
-| (f) SQLite | `sqlite3_close_v2`, the `nonzero` probe, `exec` loop, `out_own`/`out_offset` (deferred from (d)); delete `sqlite_adapter.c`/`.h` | none | medium | Implemented on `cinterop-v2-f`, pending review/merge. The UAF reproduction fails in the old shape and passes in the new; `sq_stmt_errcode` lives in `db/sqlite/sq_stmt_errcode.c`. |
-| (g) db/postgres | map the surface in §5.6; remove `live_*` counters and the packet builder; move decimal checks into obo | none | medium | Implemented on `cinterop-v2-g`, pending review/merge. The SQL template bridge (`912143d`, merged during stage (a)) keeps passing. |
-| (h) skill and templates | `skill/SKILL.md` and project templates for explicit close, the census, the kinds and the `cres` policy | none | low | Folds in the "later stage" items from the cleanup audit. zlib stays on its adapter. |
+| (h) skill and templates | `skill/SKILL.md`, `db-adapters.md` and the project templates for explicit close, out records, `release_result`, the kinds and the `cres` policy; docs status sweep | none | low | In progress on `cinterop-v2-h`. zlib stays on its adapter; no production code is deleted. |
+
+The full scope and gates for the merged stages are in design §8; the test lists
+are in §9. Notes for historical reference:
+
+- (b)/(c) landed together in `85923af`; (d) in `644d920`; (e) in `ef11ed7`;
+  (f) in `49ae601`; (g) in `65492c0`.
+- (d) deferred `out_own`/`out_offset` to (f), where SQLite needed them.
+- (e) retained the old adapter for `db/postgres` until (g) deleted it.
+- (f) recorded the one deviation: an out_offset-only `var` is freed at scope
+  end, so the sketched exit 5 is unreachable.
+- (g) moved the decimal validation into obo and added the spec-drift guard.
 
 ## Stop and ask the user when
 
@@ -174,9 +178,8 @@ These are known, safe, and documented. Fold them into a later stage.
 - The register-string guard in `nativeKindCall` isn't covered by any test.
 - No ASan run covers the obo image itself. Scratch use is checked by the `obo_ci_scratch_live()`
   counter.
-- `db/postgres` `open()` still turns every failure code ≤ 0 into one generic message. Not requested.
-- Merged worktrees can be removed once the user agrees: `cinterop-boundary`, `cinterop-review-fixes`
-  and `cinterop-v2-a`.
+- Merged worktrees can be removed once the user agrees: `cinterop-boundary`, `cinterop-review-fixes`,
+  `cinterop-v2-a`, `cinterop-v2-d`, `cinterop-v2-e`, `cinterop-v2-f` and `cinterop-v2-g`.
 
 ## Key files
 
@@ -198,5 +201,9 @@ These are known, safe, and documented. Fold them into a later stage.
   - `db/postgres/postgres_adapter.c/.h`, `db/tests/postgres_adapter_test.c`,
     `tests/fake_adapter_test.c` (registry part moved to `tests/cres_test.c`) and
     `postgres_fake_sql.cbind` (stage (g), deleted).
+- `cres` users after stage (h): the zlib adapter, `examples/buffer.obx` and
+  `tests/cres_test.c`. The skill templates moved to v2 foreign handles, and
+  `sys`/`tls`/`http2` use `sysregistry`. No production code was deleted in
+  stage (h).
 - Superseded design: `native-c-interop-design.md`. Its "Superseded direction" note points to the v2
   design.

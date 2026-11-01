@@ -65,8 +65,8 @@ Compared with today's prototype (one hand-written C adapter per library, integer
 - No linker in the compiler: library names stay in the spec's `libs` field, handled by the existing cinterop build.
 
 **Bugs fixed on the way**
-- SQLite `release_stmt` use-after-free when a connection is closed before its statements (`sqlite_adapter.c:136-143`,
-  C13). `sqlite3_close_v2` avoids it (6.2, point 1), and a test reproduces the old ordering (section 9).
+- SQLite `release_stmt` use-after-free when a connection is closed before its statements (pre-v2
+  `sqlite_adapter.c:136-143`, C13). `sqlite3_close_v2` avoids it (6.2, point 1), and a test reproduces the old ordering (section 9).
 - Already merged on `main` (commits 35c500b, 11a5962, cf9bbab, merged in 44e812a): libpq conninfo diagnostics, limit and
   header-mismatch errors, and the review fixes. The design keeps them and moves the limits into obo wrappers.
 
@@ -85,8 +85,9 @@ Compared with today's prototype (one hand-written C adapter per library, integer
 ## 1. Problem and goals
 
 Libpq and SQLite are bound through layers that exist only because the boundary is scalar. Integer-token
-registries keep `PGconn*`, `PGresult*`, `sqlite3*` and `sqlite3_stmt*` on the C side (`toolkit/libpq_adapter.c`
-417 lines, `cres.c` 205, `cres.h` 60, `libpq_adapter.h` 40; `db/sqlite/sqlite_adapter.c` 528). Bytes cross one
+registries keep `PGconn*`, `PGresult*`, `sqlite3*` and `sqlite3_stmt*` on the C side (the pre-v2
+`toolkit/libpq_adapter.c` 417 lines, `cres.c` 205, `cres.h` 60, `libpq_adapter.h` 40;
+`db/sqlite/sqlite_adapter.c` 528). Bytes cross one
 native call per byte (`put_bytes`, `examples/libpq.obx:34-47`), so a 1 MiB `bytea` costs about two million
 crossings. The libpq packet is built in obo and parsed again in C. `nativeCall` (`obo/src/obo.obo:7361-7378`)
 accepts only `int` arguments.
@@ -125,11 +126,16 @@ C11. **Other facts.** `rt_set_host_exit` is appended by the cinterop build witho
 
 C12. **Library non-retention is documented, not checked.** `PQconnectdb` and `PQexecParams` copy their inputs; `PQgetvalue` pointers last until `PQclear`. SQLite column text and blob pointers last until the next step, reset, finalize or conversion of that column (6.2, point 2).
 
-C13. **The SQLite adapter's lifetime rule is explicit close only.** `sq_conn_close` refuses while `stmt_live != 0` (`db/sqlite/sqlite_adapter.c:229-232`), and `release_stmt` decrements through `s->owner` (`sqlite_adapter.c:140`).
+C13. **The SQLite adapter's lifetime rule is explicit close only (historical).** `sq_conn_close` refuses while `stmt_live != 0` (`db/sqlite/sqlite_adapter.c:229-232`), and `release_stmt` decrements through `s->owner` (`sqlite_adapter.c:140`). The pre-v2 adapter was deleted in stage (f); the current rule is `sqlite3_close_v2` (6.2, point 1).
 
 C14. **The file model is the precedent.** `Dir.close(mut d: &Dir): Result[bool]` (`obo/lib/fs.obx:214`) and `sysfile.close(f: &File): Result[bool]` (`obo/experimental/sys/sysfile.obx:307`) return `ok(false)` for a closed handle (`sysfile.obx:274`). `closeFile(fd)` returns `Result[bool]` (`LANGUAGE.md:2116`). The fd census runs in `rt_finish` (3.4). The systems stdlib agrees: "explicit lifecycle", "no hidden finalizer" (`systems-stdlib-design.md` section 4.2, lines 399-427).
 
-C15. **Existing limits to keep.** SQL text 1 MiB (`libpq_adapter.c:25`, `postgres_adapter.c:32`, `sqlite_adapter.c:22`). Values 16 MiB (`sqlite_adapter.c:23`, `postgres_adapter.c:33`). Connection string 16 MiB, equal to `CRES_MAX_BUFFER` (`libpq_adapter.c:160`). Path 4 KiB (`sqlite_adapter.c:21`). Parameters 32 (`postgres_adapter.c:31`). Decimal text 98,342 bytes (`postgres_adapter.c:34`, `105`). Default `connect_timeout=5` (`libpq_adapter.c:110`).
+C15. **Existing limits to keep.** SQL text 1 MiB, values 16 MiB, connection string 16 MiB,
+path 4 KiB, parameters 32, decimal text 98,342 bytes, default `connect_timeout=5`. The v2 wrappers
+enforce them before any C call: `libpq.obx` (`PQ_MAX_SQL`, `PQ_MAX_VALUE`, `PQ_MAX_DSN`,
+`PQ_MAX_PARAMS`, `connect_timeout`), `sqlite.obx` (`MAX_PATH`, `MAX_SQL`, `MAX_VALUE`) and
+`postgres.obx`/`sqlite.obx` (the decimal grammar and 98,342-byte cap, one obo check). The old
+adapter paths in the first revision of this note are historical.
 
 C16. **Temporaries and results.** A temporary must be stored in a variable before use (`LANGUAGE.md:304`). A reference cannot borrow from a temporary (`LANGUAGE.md:2589`). `string(x)` refuses a temporary `[]byte` (`obo.obo:7336`, `noTemp`). A discarded owned call result is freed at once by the expression statement (`obo.obo:10473-10494`), so `conn.close()` needs no `let _ =`. A deferred cleanup's result is discarded (`LANGUAGE.md:2056`).
 ## 3. Proposed boundary types
@@ -442,11 +448,16 @@ every argument is used.
 
 ### 5.4 What is deleted and what remains
 
-**Kept:** `toolkit/cres.c` and `cres.h` (205 and 60 lines) stay for the packages in 7.2 (D7). v2 stops using them for libpq,
-SQLite and db/postgres only. **Deleted:** `libpq_adapter.c` and `.h` (417 and 40 lines), except the conninfo check. **Deleted
+The line counts and `*_adapter.c` file names in this subsection are the pre-v2
+snapshot; the adapters were deleted in stages (e)–(g).
+
+**Kept:** `toolkit/cres.c` and `cres.h` (205 and 60 lines, historical count) stay for the zlib
+adapter, `examples/buffer.obx` and `tests/cres_test.c` (D7). v2 stops using them for libpq,
+SQLite and db/postgres. **Deleted:** `libpq_adapter.c` and `.h` (417 and 40 lines, historical),
+except the conninfo check. **Deleted
 in stage (g):** `db/postgres/postgres_adapter.c/.h` and the old `db/tests/postgres_adapter_test.c`; the postgres wrapper now
-uses the libpq v2 types directly. `toolkit/cres.c/.h` remain for the zlib and buffer examples, the skill templates and the
-registry test (the db adapters no longer include them). **Kept:** `libpq_decls.h` (91 lines, the manual declaration header used in header mode) and `tests/fake_libpq.c` (363,
+uses the libpq v2 types directly. `toolkit/cres.c/.h` remain for the zlib adapter, the buffer example and the
+registry test (the skill templates moved to v2 in stage (h); the db adapters no longer include them). **Kept:** `libpq_decls.h` (91 lines, the manual declaration header used in header mode) and `tests/fake_libpq.c` (363,
 ABI kept; the counters become release and census checks). **Rewritten:** `examples/libpq.obx` (300) and `libpq.cbind` (356).
 The conninfo check (`conninfo_has_timeout`, `libpq_adapter.c:89`) is the one helper, about 30 lines in
 `toolkit/libpq_conninfo.c`. `PQconninfoParse` returns a struct array that must be walked and freed, so it stays in C. D13 may
@@ -490,9 +501,13 @@ Gaps the first libpq example missed:
 
 ## 6. Worked example 2: SQLite
 
+The `sqlite_adapter.c`/`sqlite_adapter.h` citations in this section are the pre-v2 adapter,
+deleted in stage (f); `sqlite.obx`/`sqlite.cbind` are the current implementation.
+
 ### 6.1 Functions and kinds
 
-Scope: the subset that `db/sqlite/sqlite_adapter.c` calls, declared in `sqlite_decls.h` (81 lines). New declarations:
+Scope: the subset that the pre-v2 `db/sqlite/sqlite_adapter.c` called, declared in `sqlite_decls.h`
+(81 lines). New declarations:
 `sqlite3_close_v2`, `sqlite3_next_stmt`, `sqlite3_errcode`.
 
 | SQLite function | Kinds | Obo wrapper |
@@ -701,8 +716,10 @@ Each item below was decided by the user with the recommended option. The chosen 
 
 - **D2.** `foreign` is a reserved word, with D1.
 - **D5.** Nothing is reported at exit beyond the census at normal end under `OBO_CHECK=1` (D4, code 8; 3.4).
-- **D7.** `cres.c` is kept for `sys`, `tls`, `http2`, `zlib`, the buffer example and the skill templates. v2 stops using it for libpq,
-  SQLite and db/postgres only (review 14).
+- **D7.** `cres.c` is kept for the zlib adapter, `examples/buffer.obx` and `tests/cres_test.c`; the
+  skill templates used it until stage (h) moved them to v2 foreign handles. `sys`/`tls`/`http2` use
+  the separate `sysregistry`, not `cres`. v2 stops using `cres` for libpq, SQLite and db/postgres
+  (review 14).
 - **D9.** Scratch copy for `borrow_cstr`; no reserved terminators.
 - **D10.** `Float` is rejected in v1. `Bytes` uses OID 17 with binary format, with no `::bytea` cast.
 - **D11.** `cstr_out` returns empty for NULL, per call.
@@ -748,6 +765,8 @@ Every stage keeps the gates in native design section 12. A compiler-changing sta
 *Stage (g) implemented* (branch `cinterop-v2-g`). `libpq.obx` gains `exec_params_full` and the public `exec_params_typed`/`exec_params_typed_binary`; the typed entry points check that the OID and value counts match and that each OID is in `0..0xffffffff`, and the untyped entry points build all-zero OIDs. No cbind or thunk changed. `db/postgres` is now two wrapper records over the libpq types: `Connection = ref record { h: libpq::Connection }` and `Rows = ref record { h: libpq::Res; pub fmt: int }`. Because the deep-reference rule allows a field to reach a native borrow but not another obo function, `postgres.obx` declares the libpq native handles it needs (same spec symbols and shapes) and calls them directly; `libpq.obx` still supplies the type names, connection setup and the shared native surface. The public API and behavior are kept: `close(): bool` (now a `mut` receiver, zero word), sentinels after close, `is_null(): Result[bool]`, `value(): Result[?[]byte]`, `bytes()` NULL error, `pub fmt`, exact bytes, and SQL errors as `ok(Rows)` with `PGRES_FATAL_ERROR`. The `encode_params` out-parameter encoder copies each payload with `copy_bytes` (obo forbids moving out of a field) and builds the value/binary/OID arrays directly; text values get libpq's `len+1` terminator and binary values keep exact bytes/NUL. The wire table is NULL 0/text/nil, TEXT 25/text, BLOB 17/binary, INT 20/text, BOOL 16/text `t`/`f`, DECIMAL 1700/text, DECIMAL_NULL 1700/text/nil. `open` now reports a `PQconnectdb` NULL as code 2 (was 3) and uses libpq's conninfo parser message without the old `"invalid connection string: "` prefix; `connect_timeout`, the DSN cap and the NUL check stay. The C decimal duplicate, `postgres_adapter.c/.h`, `db/tests/postgres_adapter_test.c`, `toolkit/libpq_adapter.c/.h`, `tests/fake_adapter_test.c` (registry part moved to `tests/cres_test.c`) and `postgres_fake_sql.cbind` are deleted. The spec is header mode against `libpq_decls.h`/`libpq_conninfo.h`; `postgres_fake.cbind` adds `tests/fake_libpq_probe.h` and is the one fake spec. cinterop requires every spec symbol to be called, so apps that do not read the last-call probe are built from a test-generated copy of that one spec with the `fake_*` functions removed; no second spec file is committed. A spec-drift guard compares the postgres `types` and libpq native subset with `libpq.cbind`. The fake tests now cover typed OIDs/formats/bytes/NULL, decimal vectors at 98,342/98,343, binary result format, 32/33 parameters, SQL/text NUL, `FAKE_ALLOC`, result-outlives-connection, `make_empty_rows` (status 12 error, status 11 ok, NULL exit 11), and the nested-handle census (`Connection 1`/`Res 1`, no `PQfinish`/`PQclear`). Gate: `test_cinterop.py`, `test_db_adapters.py` (real/fake/live), the fixed point, byte identity, `run_fork`, `port_compare.py`, `heap_test.py`, `doc_check.py`, and the opt-in live SELECT-only PostgreSQL smoke test under `OBO_CHECK=1`.
 
 **Stage (h): skill and templates.** Updates `skill/SKILL.md` and the project-skill templates for the explicit `close`, the census, the kinds and the `cres` policy (7.2). zlib stays on its current adapter, outside the v2 gates (review 7). Risk: low. Gate: a generated project builds; existing `cres` tests pass.
+
+*Stage (h) implemented* (branch `cinterop-v2-h`). The project templates are a buildable `cinterop-proto/2` example: a real `demo_item *` in a `foreign` handle, `signature_check: header` against the adapter's header, `own`/`borrow`, and an `out_own` record with an error-path close. They no longer include `cres`, tokens or a `live=` counter. `skill/SKILL.md` and `skill/db-adapters.md` teach the current v2 surface: the kind table, foreign handles, out parameters and generated `_out` records, `release_result` (`void`/`int`/`discard`), `signature_check`, typed OIDs, exact text NUL and binary lengths, the census (exit 8/4), error paths and the explicit-close contract. The docs status sweep marks (e)–(g) merged, keeps a clearly labelled legacy `cres` policy for zlib/buffer only, retargets C15 to the v2 wrappers, and marks the old adapter file citations historical. Nothing in production code was deleted; `cres.c/.h` and `buffer.obx` remain because zlib uses them. Gate: the template builds and runs (with the census clean under `OBO_CHECK=1`), `cinterop.py verify`, `test_cinterop.py`, `test_db_adapters.py`, the fixed point/`run_fork`, the tool and doc checks, and the grep gates for deleted adapters, `live_*`, v1 template remnants and stale status text.
 
 Exposure: (a) none beyond the existing `&T` argument rules; (b) none; (c) parse and type-check of body-less natives; (d) a `foreign` record kind, private-field checks and per-type runtime counters, with no ownership-checker rule; (e) to (h) none.
 ## 9. Test plan

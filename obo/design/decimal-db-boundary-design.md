@@ -280,7 +280,7 @@ pub const PARAM_DECIMAL_NULL = 6
   parameter, zero is the text `0`/`0.0000`, and empty text is always rejected.
 
 `param_decimal(value, p, s)` is the **default** binder. It calls
-`decimal::check` before building the packet and is the only way to guarantee
+`decimal::check` before building the parameter arrays and is the only way to guarantee
 that a `numeric(p,s)` target will not silently round: PostgreSQL itself rounds
 fractional excess and raises `numeric field overflow` for integer excess
 (`apply_typmod`/`round_var`). `param_decimal_unchecked(value)` is the explicit
@@ -1460,7 +1460,8 @@ Repository (line numbers at baseline `51ce9e7`):
   `exec_params_full` (typed OIDs and the text `len+1` copy).
 - `obo/experimental/db/sqlite/sqlite.obx:43-47` storage classes, `:217-247`
   binds, `:262-329` column reads.
-- `obo/experimental/db/sqlite/sqlite_adapter.c:410-446` text/blob bind,
+- Historical, pre-v2 (the C adapter was deleted in stage (f)):
+  `obo/experimental/db/sqlite/sqlite_adapter.c:410-446` text/blob bind,
   `:480-503` column text/blob, `:506-510` int64.
 - `obo/design/template-literals-design.md:118-142` SQL binds/fragments,
   `:318-328` `SqlArg`, `:425-439` database values.

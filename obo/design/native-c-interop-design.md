@@ -11,6 +11,8 @@ and not permission to merge, push or promote a seed.
 
 **Superseded direction (note added 2026-11-01):** the v2 boundary design in [cinterop-boundary-design.md](cinterop-boundary-design.md) supersedes the explicit-close token adapter direction of this note for libpq and SQLite. `cres` stays for integer-ID APIs and existing packages.
 
+**Historical file references (note added 2026-11-01):** the file names below refer to the pre-v2 tree. The libpq, postgres and SQLite C adapters were deleted in cinterop v2 stages (e)–(g); the current bindings are `examples/libpq.*` and `db/{postgres,sqlite}/*`. `cres.c/.h` remain only for the zlib adapter and the buffer example.
+
 The prototype lives outside the public compiler surface under
 `obo/experimental/cinterop/`. It is labelled experimental. Nothing in this note
 claims that the prototype is complete; section 14 records what was actually
