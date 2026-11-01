@@ -38,7 +38,8 @@ obo/experimental/sys/
   sysstat.obx                   P1a metadata snapshot and identity equality
   sysclock.obx                  P1a Instant/Duration/Deadline/Timestamp
   sysrandom.obx                 P1a getrandom fillSome/bytes
-  sysstream.obx                 P1a concrete Stream and standard streams
+  sysstream.obx                 P1a concrete Stream and standard streams; additive
+                                handle forms for record-owned fields
   sysdir.obx                    P1a anchored Directory and bounded Iterator
   sysfile.obx                   P1a owned File and explicit OpenOptions
   sysbuffer.obx                 P1a fixed-capacity Buffer/Reader/Writer/Cursor

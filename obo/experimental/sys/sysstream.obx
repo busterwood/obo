@@ -99,6 +99,28 @@ pub fn readSome(s: &Stream, max: int): Result[?[]byte] {
     return ok(result)
 }
 
+// Handle form for a caller that owns a whole record and cannot pass an
+// interior field reference across a conservative native-effect call.
+pub fn readSomeHandle(s: ^Stream, max: int): Result[?[]byte] {
+    if max <= 0 { return err("readSome needs a positive byte count", invalidArgument()) }
+    if max > MAX_CHUNK { return err("readSome is limited to 1 MiB", rangeCode()) }
+    let tmp = try bytesbuf::create(max)
+    defer bytesbuf::close(&tmp)
+    let tok = try platform::_tokenHandle(handle(s.res), platform::KIND_STREAM)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_ioReadToken(tok, platform::KIND_STREAM, bt, 0, max,
+                                       platform::_POSITION_CURRENT)
+    if n == 0 {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    let out = new []byte(n)
+    let copied = try bytesbuf::copyOut(&tmp, &out, 0, 0, n)
+    if copied != n { return err("short native read copy", systemFailure()) }
+    let result: ?[]byte = out
+    return ok(result)
+}
+
 pub fn readInto(s: &Stream, mut dst: &[]byte, offset: int, max: int): Result[int] {
     if max <= 0 { return err("readInto needs a positive byte count", invalidArgument()) }
     if max > MAX_CHUNK { return err("readInto is limited to 1 MiB", rangeCode()) }
@@ -125,6 +147,24 @@ pub fn writeSome(s: &Stream, bytes: &[]byte, offset: int, count: int): Result[in
     }
     if count > MAX_CHUNK { return err("writeSome is limited to 1 MiB", rangeCode()) }
     // Empty writes return 0, but only after the endpoint has been validated.
+    let checked = try platform::_requireKindHandle(handle(s.res), platform::KIND_STREAM)
+    if count == 0 { return ok(0) }
+    let tmp = try bytesbuf::create(count)
+    defer bytesbuf::close(&tmp)
+    let copiedIn = try bytesbuf::copyIn(&tmp, bytes, offset, 0, count)
+    if copiedIn != count { return err("short native write copy", systemFailure()) }
+    let tok = try platform::_tokenHandle(checked, platform::KIND_STREAM)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    return platform::_ioWriteToken(tok, platform::KIND_STREAM, bt, 0, count,
+                                   platform::_POSITION_CURRENT)
+}
+
+// Handle form for a record-owned stream field.
+pub fn writeSomeHandle(s: ^Stream, bytes: &[]byte, offset: int, count: int): Result[int] {
+    if !checkSource(bytes, offset, count) {
+        return err("writeSome source range is outside the array", invalidArgument())
+    }
+    if count > MAX_CHUNK { return err("writeSome is limited to 1 MiB", rangeCode()) }
     let checked = try platform::_requireKindHandle(handle(s.res), platform::KIND_STREAM)
     if count == 0 { return ok(0) }
     let tmp = try bytesbuf::create(count)
