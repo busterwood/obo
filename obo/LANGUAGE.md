@@ -227,12 +227,20 @@ ran, even if `f` replaces the record or writes the field. The same holds for eac
 decimal or int argument of `decimal::div`, `quantize`, `toInt` and `check` that a later
 argument follows. Like an int field, a field may not be assigned from a call
 that might free its record (`cannot assign to a field or element across a
-call`). Decimal globals, constants, captures, methods, interfaces and
-function values are not implemented yet and are refused with a clear diagnostic.
-A decimal value in a global initializer, such as `var g = new R{d: 1.5}`, is
-refused too, because a global initializer has no frame for the temporary it
-needs. `?decimal` is not representable; there is no raw-bits access and no owned
-or mutable decimal.
+call`). A decimal global works (0.16): it takes 24 bytes of the zero-initialised
+global data, so `var g: decimal` starts at zero, and
+`var g = expr` takes any decimal expression, including a call, a record literal
+or a product, so a global initializer may build decimals as a local may. Module
+initializers run in import order: a dependency's before its importer's, and
+declarations in source order. A decimal
+constant is a literal or a unary-minus literal (`const RATE = 0.0825`,
+`const NEG = -1.5`): arithmetic is not folded, so `const C = 1.0 + 2.0` is refused
+with `decimal constants must be a literal; arithmetic is not folded`. A constant
+takes no storage of its own; each use materialises its three words into a
+temporary. `-0.00` is positive zero and keeps its written display scale. Decimal
+captures, methods, interfaces and function values are not implemented yet and are
+refused with a clear diagnostic. `?decimal` is not representable; there is no raw-bits
+access and no owned or mutable decimal.
 
 ```obo
 // example: runs
@@ -244,6 +252,20 @@ fn main() {
     l.total = l.price * 3.0
     l.price += 0.25
     println(l.total, " ", l.price * 2.0)
+}
+```
+
+A global and a constant (0.16):
+
+```obo
+// example: runs
+// prints 0.0825 0 1.0825 0.00
+const RATE = 0.0825
+const NEG0 = -0.00
+var total: decimal
+
+fn main() {
+    println(RATE, " ", total, " ", RATE + 1.0, " ", NEG0)
 }
 ```
 
@@ -261,6 +283,12 @@ element by element, or borrowed element by element; a decimal element is not an 
 value. The ordering rule for record fields applies to elements too: a decimal element
 or value is read before the operand after it runs. The call-ordering rules of section 12
 (`xs[f(xs)]`, `append(xs, f(xs))`) apply to `[]decimal` exactly as to `[]int`.
+
+An array of decimals is limited by the runtime's object size (under 4 GiB, 24 bytes
+an element). `new []decimal(n)` with n above 178,956,969 traps with
+`obx: allocation size overflow` and exit code 2, before any memory is taken. An
+`append` that must double an array already holding 134,217,728 decimals (2^27)
+traps the same way, so the append limit is lower than the `new` limit.
 
 ```obo
 // example: runs
@@ -1665,9 +1693,10 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.15 sym-format 8 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.16 sym-format 9 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
-when a `.sym` is read. The historical `0.14` release printed
+when a `.sym` is read. The historical `0.15` release printed
+`obo 0.15 sym-format 8 abi 1`, and the `0.14` release printed
 `obo 0.14 sym-format 7 abi 1`, `0.12` printed `obo 0.12 sym-format 6 abi 1`,
 and `0.8.1` printed
 `obo 0.8.1 sym-format 4 abi 1`. A format-6 file is rejected by the exact check;
@@ -1758,10 +1787,18 @@ fn split(p0: string, p1: string): []string
   re-declares it. Field and signature types are emitted as the underlying type, so
   layout never depends on an alias.
 - Constants are primitive: `int`/`byte` as 16 hexadecimal digits (negative values
-  wrap), `bool` as `true`/`false`, `string` as `hex "<bytes>"` (including `hex ""`).
+  wrap), `bool` as `true`/`false`, `string` as `hex "<bytes>"` (including `hex ""`),
+  and `decimal` as `hex "<48 digits>"`: the 24 value bytes in memory order, each of
+  the three words little-endian, lowercase only. The reader refuses a text that is
+  not 48 digits, has an uppercase or non-hex character, a coefficient above 10^38-1,
+  a zero with sign 1 or a nonzero exponent, a sign other than 0 or 1, or bits 40 to 63
+  of the last word set.
   The reader interns string bytes instead of carrying a rodata address.
 - Globals are `var Name: T` or `let Name: T`, with no initializer; a `let` is
-  read-only to importers and the defining module owns initialization.
+  read-only to importers and the defining module owns initialization. A `decimal`
+  global takes 24 bytes of zero-initialised global data; every other type takes one
+  word. In `--check` an imported global gets a unique dummy offset, also stepping by
+  the type's size, so two imported decimal globals never overlap.
 - Function headings reuse the source syntax for parameters, `&` and `mut`, but the
   writer **always** emits the canonical names `p0`, `p1`, ...; parameter names are
   syntax only, so renaming a source parameter changes the source hash but not the
@@ -2747,8 +2784,8 @@ depend on the program.
 
 ## 12. Known holes and planned changes
 
-Decimal is the released minimum scalar tier at 0.12, and record fields follow
-in 0.16: no decimal globals, constants, arrays, methods, lambdas/captures or
+Decimal is the released minimum scalar tier at 0.12; record fields, `[]decimal`,
+globals and constants follow in 0.16: no decimal methods, lambdas/captures or
 interfaces; no
 `format`/`parse` stdlib, database adapter, `decimal(p,s)` syntax, float interop
 or owned/mut decimal. Display scale is independent metadata, and a multiply

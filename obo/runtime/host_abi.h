@@ -1,9 +1,10 @@
 /* Hosted-entry ABI for the experimental cinterop bridge.
  *
- * The baseline freestanding runtime is unchanged. The cinterop build compiles a
- * separate hosted runtime with -DOBO_HOSTED_EXIT; that variant appends one
- * jump-table slot after every existing slot. The compiler's RT_* constants and
- * the freestanding runtime blobs do not change.
+ * The baseline freestanding runtime gained one jump-table slot in 0.16 (slot 94,
+ * rt_append_dec), so its bytes changed once, at that release. The cinterop build
+ * compiles a separate hosted runtime with -DOBO_HOSTED_EXIT; that variant appends one
+ * jump-table slot after every existing slot. The compiler's RT_* constants gained
+ * RT_APPEND_DEC with the same change.
  *
  * The cinterop build validates that entry.S still has exactly this many slots
  * before the hosted exit slot (59 existing slots -> index 59). If a future
@@ -28,7 +29,8 @@
 #define RT_ALLOC_ARRAY_ADDR (RT_TEXT_BASE + 8ULL * RT_ALLOC_ARRAY_SLOT)
 
 /* The hosted runtime appends a foreign-census callback slot after the last existing slot (94), only
- * under OBO_HOSTED_EXIT. The baseline build has no slot 95 at all, so its bytes are unchanged. */
+ * under OBO_HOSTED_EXIT. The baseline build has no slot 95 at all, so the move changes nothing
+ * there. */
 #define RT_FOREIGN_CENSUS_SLOT 95
 #define RT_FOREIGN_CENSUS_ADDR (RT_TEXT_BASE + 8ULL * RT_FOREIGN_CENSUS_SLOT)
 

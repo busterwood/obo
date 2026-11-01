@@ -6559,7 +6559,10 @@ does not take one, because 0.16 is not released yet (for the orchestrator to dec
   `RT_APPEND_DEC = 94` in `obo.obo`). **Deviation:** the hosted (`OBO_HOSTED_EXIT`)
   build's foreign-census slot moved from 94 to 95 (`RT_FOREIGN_CENSUS_SLOT` in
   `host_abi.h` and `cinterop.py`), because the new slot is present in both builds. The
-  baseline build still has no slot 95, so its bytes do not change.
+  baseline build still has no slot 95, so the move changes nothing there. **Correction
+  (D3):** the baseline bytes did change at D2. Slot 94 is in the freestanding jump table
+  itself, so the baseline build changed when `rt_append_dec` was added; only the hosted
+  census slot number is hosted-only.
 
 **Compiler (`obo/src/obo.obo`).**
 - `newExpr` gives a `[]decimal` literal kind 7 (after the string branch).
@@ -6637,3 +6640,123 @@ the new text and the mutant still removes the guard.
 - Self-compile peak: `OBO_STATS=1` reports **2,529,104 bytes** live (56,085,456 allocated),
   against the budget of 2,750,000 (headroom 220,896). The budget is unchanged.
 - `cinterop` `test_cinterop.py`: ok (the libpq smoke test is skipped without `CINTEROP_TEST_DSN`).
+
+## Decimal globals and constants (0.16 release candidate, format 9, ABI 1), stage D3
+
+Stage D3 of `design/decimal-storage-plan.md` makes a decimal storable as a global and a
+constant. `OBO_VERSION` stays `0.16`, `SYM_FORMAT` stays `9` and `SYM_ABI` stays `1`: both
+forms were refused before, so accepting them changes no existing layout. `.sym` gains one
+constant spelling (`hex "<48 lowercase digits>"`) and decimal globals use the existing
+`var NAME: decimal` line.
+
+**Globals (`obo/src/obo.obo`).**
+- `allocGlobal` gives a declared decimal 24 bytes of the zero-initialised global data
+  (`sizeOf(t)`, one word otherwise). All-zero bits are decimal zero, so `var g: decimal`
+  needs no initialiser and no runtime code.
+- An inferred global (`var g = 1.50`) has no type when its declaration is seen. Its
+  declaration-time word stays allocated and its 24-byte slot is taken after the initializer,
+  where the type is known: the placeholder is dead, nothing overlaps, and no offset moves
+  once a global has been named.
+- A global initializer runs in the entry code with no frame (`rbp` is unset). `decimalTemp`
+  is now `decimalMem`: a frame slot in a function, and a hidden global slot of its own in an
+  initializer (`base -1`, `disp GLOBAL_BASE + gsize`), so nested literals and calls never
+  share one 24-byte temporary. `decimalRequest`, `decimalCheckRequest` and the new
+  `scratchInt`/`scratchBase`/`scratchAt` give the request blocks and the Result status/int
+  words the same two homes. `callFnWith`'s hidden decimal-return destination and the `try`
+  payload copy use the same item (`retBase`/`decimalBase`), so a decimal-returning call also
+  works in an initializer.
+- Reads, whole writes, `+=`/`-=`/`*=`/`%=` and every argument/field/element/return/`Result`
+  use go through `copyDecimal` (the existing 24-byte item path); a decimal global is never a
+  one-word load. `captureDecimal` still skips only a frame local (`base RBP`), because a call
+  cannot reach the caller's frame; a global is captured before a later operand runs, exactly
+  as an int global is loaded. `total * bump()` sees the value read before `bump()` writes
+  `total`; `total += bump()` reads its target after the call, as an int compound does.
+- Module initializers keep the existing chain (`initLink`): imports are compiled first, so a
+  dependency's initializers run before its importer's, and declarations run in source order.
+- `.sym`: a public decimal global is `var NAME: decimal` (or `let`), read and written by the
+  existing global path. In `--check`, imported globals get dummy offsets with a running byte
+  stride (`symDummyBytes += sizeOf(t)`), so two imported decimal globals never overlap.
+
+**Constants.**
+- `constDecl` looks ahead one token: a decimal literal, or `-` and then one, is the whole
+  value. The token text is parsed with `decimalLiteralValue` and the three words are kept in
+  `decConsts` (indexed by `Sym.value`), with **no code emitted at the declaration**. A use
+  (`decimalConstItem`) materialises the three words into a frame/hidden-global temporary with
+  the same immediate stores as a literal, so a decimal item is never mode `"const"`.
+- Anything else is `decimal constants must be a literal; arithmetic is not folded`: `1.0 +
+  2.0`, a call, another constant, `-(1.5)`, `--1.5`, a global, `1.5 + 0`. A `Result[decimal]`
+  value is refused with the same message. The literal's own exponent/precision errors still
+  fire. A minus sets sign 1 only when the coefficient is nonzero, so `-0.00` is positive zero
+  with dscale 2.
+- `.sym` writes `const NAME: decimal = hex "<48 lowercase digits>"`: the 24 value bytes in
+  memory order (w0 bytes 0-7 little-endian, then w1, then w2), written byte by byte rather
+  than through the numeric `appHex16`. A public constant is visible to importers from the
+  `.sym` alone; a private one is not written.
+- The reader `symDecimalConst` rejects uppercase hex, a length other than 48, a non-hex
+  character, reserved bits 40..63 of w2, a sign other than 0/1, a zero with sign 1 or a
+  nonzero exponent, and a coefficient above `10^38-1` (with `10^38-1` accepted). A source-less
+  `--check` builds a public constant from the file; with the source present the reader also
+  compares its three words with the compiled constant and reports a disagreement.
+
+**Tests.**
+- `tests/run/decimal_globals.obx`: zero initialisation, inferred and explicit globals,
+  initializers with record literals, calls, products, empty-array calls and a later
+  initializer reading an earlier global; every read/write/compound form; a global as an
+  argument, return, record-literal field, array element and `append` value; comparisons,
+  `Result`, `quantize`, `div`; and the operand order against a call that writes the global.
+- `tests/run/decimal_global_init.obx`: nested initializers that need several live temporaries
+  and calls whose bodies need their own, plus `Result`-returning `div`/`quantize`/`toInt`/
+  `check` in initializers (their status and result words are hidden globals, not frame slots).
+- `tests/run/decimal_consts.obx`: sign, display scale, exponent, underscore and duplicate-zero
+  forms; negative zero; uses as arithmetic, comparison, call argument, record literal, array
+  element, `Result` payload and `quantize` argument; a use is a fresh copy.
+- `tests/errors/decimal_globals.obx`: the literal-only refusals, assignment to a constant, the
+  literal's own exponent/precision errors, a global of the wrong type, and a `let` global.
+- `tests/modules/run/decimal_globals/` (public and private constants and globals, import-order
+  initializers, a private constant through a function) and `decimal_global_init/`
+  (initializers across a module boundary).
+- `tests/sym_test.py` `sym/decimal_globals`: the exact `const`/`var` lines, byte-identical
+  re-emit, source-less `--check` matching the full build, and twelve malformed constants
+  (case, length, non-hex, coefficient, reserved bits, sign, zero), plus the `10^38-1`
+  boundary. `tests/sym_fuzz.py` gains a `decimal_const` mutator over a seed with a public
+  constant and a public decimal global.
+- `tests/errors/decimal.obx` and `tests/errors/decimal_fields.obx` drop their global and
+  constant refusals; `LANGUAGE.md` gains the two runnable examples and the `.sym` rules.
+
+**Mutants (`tests/mutate_decimal.py`).** Ten new: a global slot of 8 bytes; an inferred
+global of 8; a global operand that skips the capture; initializer temporaries sharing one
+slot; builtin status and int-result words as frame slots (two); the `.sym` writer reading the
+words in reverse; a dropped negative sign; a negative zero that takes the sign; and the reader
+accepting uppercase hex. Three stale patterns from earlier stages (a `try` payload move, and
+the two `check` request stores) are repointed at the `decimalBase`/`scratchBase()` code they
+now describe; the mutations are unchanged. `tests/mutate_fork.py`'s global-slot pattern is
+repointed at `allocGlobal`'s `s.offset = GLOBAL_BASE + gsize`.
+
+**Bug found while finishing D3.** `decimal::div`, `quantize`, `toInt` and `check` outside a
+function used `newLocal` for their status word (and `toInt` for its int result), which is a
+frame slot: a global initializer has no frame, so `var r: Result[decimal] =
+decimal::div(...)` died on its first instruction. Before D3 those initializers were refused,
+so the path was unreachable. `decimalStatusSlot` and `decimalToInt` now use `scratchInt`/
+`scratchAt`, and `decimal_global_init.obx` covers all four builtins. This was caught by a
+direct probe, not by a gate; the two new mutants above hold it.
+
+**Gates (after the last source change).**
+- `run_fork` **1,855 passed, 0 failed**; `module_test` **147 passed, 0 failed**;
+  `sym_test` **55 passed, 0 failed**.
+- `sym_fuzz` **200/200 clean** (seed 20261028, digest `f3ddd18c8db2b6b1`).
+- `doc_check` **74 examples, 0 problems** (the new LANGUAGE.md global/constant example is one).
+- `heap_test` passes; the self-compile peak is **2,562,320 bytes** live (budget 2,750,000,
+  headroom 187,680). `OBO_STATS=1` on the same source reports 2,562,240 live and 56,527,312
+  allocated; the few hundred bytes between runs are the temporary output path in rodata.
+- `port_test` **628 of 628** identical, no leaks; `port_compare` **1,834 of 1,834** Stage B,
+  the port's peak 2,562,208 bytes.
+- `elf_test` ok; `io_test` 0 failures; `meta_test` **34** checks; `homes_check` and
+  `homes_edge` (1,028 statements, 119 refused by both, 0 differ); `imports` **30/30**;
+  `stdlib` **17/17**; `own_fuzz` **0 failures in 200 programs**.
+- `mutate_decimal` **105 caught, 0 missed, 0 broken** (95 before D3, plus the ten above).
+- `mutate_fork` filtered runs: `module globals share one slot` **1/1**; `decimal` **4/4**;
+  `sym` **78 caught + 1 equivalent of 79** (the pre-existing `field visibility:
+  symCompareFields ignores visibility` equivalent).
+- Fixed point: `stage2 == stage3` (`cmp`), the seed-built `obo` equals stage 2 byte for byte
+  (745,473 bytes).
+- The decimal run tests pass under `OBO_CHECK=1`, which `run_fork` always sets.
