@@ -912,10 +912,83 @@ def libpq_limits(tmp):
     for line in ('params33_error=too many query parameters: the limit is 32 (PQ_MAX_PARAMS) (2)',
                  'params32_status=2', 'params32_closed=true',
                  'sql_error=SQL text is larger than the 1 MiB limit (PQ_MAX_SQL) (2)',
+                 'packet_16mib=accepted status=2',
+                 'packet_16mib_plus1_error=query packet exceeds the 16 MiB buffer bound (2)',
                  'conn_closed=true', 'live=0', 'conns=0', 'results=0'):
         if line not in p.stdout:
             raise Fail("libpq limits output missing %r:\n%s" % (line, p.stdout))
-    print('libpq packet limits: ok (33 parameters and oversized SQL rejected in the wrapper)')
+    # Exactly 1 MiB of SQL is not the limit error. The fake cannot run a statement
+    # this long, so its own failure is expected; only the limit message is excluded.
+    at = [l for l in p.stdout.splitlines() if l.startswith('sql_at_limit=')]
+    if len(at) != 1 or 'PQ_MAX_SQL' in at[0] or 'larger than the 1 MiB' in at[0]:
+        raise Fail("exact 1 MiB SQL was treated as over the limit: %r" % at)
+    print('libpq packet limits: ok (33 parameters, oversized SQL and 16 MiB+1 rejected; '
+          'exact 1 MiB SQL and exact 16 MiB packet accepted)')
+
+
+def libpq_errors(tmp):
+    """Specific messages for the adapter codes that the wrapper now reports.
+
+    Fake ABI only. Covers pq_connect 0 (PQconnectdb returned NULL), PQexecParams
+    NULL with no libpq error text, and exec on a closed connection (-1).
+    """
+    out = os.path.join(tmp, 'libpq_errors')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_errors_app.obx'), out)
+    if p.returncode != 0:
+        raise Fail("libpq errors app build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    if p.returncode != 0:
+        raise Fail("libpq errors app failed: %d\n%s%s" % (p.returncode, p.stdout, p.stderr))
+    for line in ('null_connect_error=2 libpq returned no connection object (PQconnectdb returned NULL)',
+                 'alloc_error=2 libpq returned no result and no error message',
+                 'conn_closed=true',
+                 'stale_error=2 connection is closed or invalid',
+                 'live=0', 'conns=0'):
+        if line not in p.stdout:
+            raise Fail("libpq errors output missing %r:\n%s" % (line, p.stdout))
+    print('libpq adapter error messages: ok (connect NULL, empty PQexecParams error, closed connection)')
+
+
+def libpq_constants():
+    """The obo wrapper limits must equal the C defines they mirror.
+
+    Reads the C source and header as text (no build). A define's value is
+    evaluated only when it is a plain integer product such as (16L * 1024L).
+    """
+    def c_value(text, name, path):
+        m = re.search(r'^#define\s+%s\s+(.+)$' % name, text, re.M)
+        if not m:
+            raise Fail("%s does not define %s" % (path, name))
+        expr = re.sub(r'(\d+)L\b', r'\1', m.group(1).strip())
+        if not re.fullmatch(r'[\d\s\*\(\)]+', expr):
+            raise Fail("cannot evaluate %s from %s: %r" % (name, path, m.group(1)))
+        return eval(expr)
+
+    adapter = os.path.join(TOOL, 'toolkit', 'libpq_adapter.c')
+    cres = os.path.join(TOOL, 'toolkit', 'cres.h')
+    wrapper = os.path.join(EX, 'libpq.obx')
+    c_text = open(adapter).read()
+    h_text = open(cres).read()
+    obx = open(wrapper).read()
+
+    def obo_value(name):
+        m = re.search(r'^pub const %s = (\d+)$' % name, obx, re.M)
+        if not m:
+            raise Fail("libpq.obx does not define pub const %s" % name)
+        return int(m.group(1))
+
+    checks = [
+        ('PQ_MAX_PARAMS', c_value(c_text, 'PQ_MAX_PARAMS', adapter), obo_value('PQ_MAX_PARAMS')),
+        ('PQ_MAX_SQL', c_value(c_text, 'PQ_MAX_SQL', adapter), obo_value('PQ_MAX_SQL')),
+        ('PQ_MAX_BUFFER', c_value(h_text, 'CRES_MAX_BUFFER', cres), obo_value('PQ_MAX_BUFFER')),
+    ]
+    for name, want, got in checks:
+        if want != got:
+            raise Fail("libpq.obx %s is %d but the C define is %d" % (name, got, want))
+    # The 16 MiB literal must not drift back into the wrapper as a second copy.
+    if obx.count('16777216') != 1:
+        raise Fail("libpq.obx repeats the 16 MiB literal; use PQ_MAX_BUFFER")
+    print('libpq limit constants: ok (PQ_MAX_PARAMS, PQ_MAX_SQL, PQ_MAX_BUFFER match the C defines)')
 
 
 def libpq_header_mismatch(tmp):
@@ -1198,7 +1271,7 @@ def openssl_qualification(tmp):
     try:
         include_dirs = openssl_include_dirs()
     except Skip as e:
-        print('skipped: openssl (no network): %s' % e)
+        print('skipped: openssl (download failed): %s' % e)
         return
     test_dir = HERE
     # Keep the generated spec and C sources in the private build directory so
@@ -1319,6 +1392,8 @@ def main():
         libpq_header_mismatch(tmp)
         libpq_conninfo(tmp)
         libpq_limits(tmp)
+        libpq_errors(tmp)
+        libpq_constants()
         fake_adapter(tmp)
         libpq_fake(tmp)
         zlib_second(tmp)

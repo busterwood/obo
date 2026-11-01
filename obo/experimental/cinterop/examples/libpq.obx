@@ -28,6 +28,9 @@ pub const PGRES_FATAL_ERROR = 7
 // backstop, but its failure would otherwise be reported without a clear cause.
 pub const PQ_MAX_PARAMS = 32
 pub const PQ_MAX_SQL = 1048576
+// Largest C buffer and largest packet. Must match CRES_MAX_BUFFER in
+// toolkit/cres.h.
+pub const PQ_MAX_BUFFER = 16777216
 
 pub type Connection = ref record { tok: int }
 pub type Rows = ref record { tok: int }
@@ -39,7 +42,7 @@ pub type Rows = ref record { tok: int }
 // general string bridge. The raw pointer never leaves C.
 fn put_bytes(b: &[]byte): int {
     let n = len(b)
-    if n < 0 || n > 16777216 { return 0 }
+    if n < 0 || n > PQ_MAX_BUFFER { return 0 }
     let t = __cinterop("cres_buf_new", n)
     if t <= 0 { return 0 }
     for i in 0..n {
@@ -159,7 +162,7 @@ fn build_packet(sql: &[]byte, mut values: &[]?[]byte, binary: &[]bool, result_bi
             for j in 0..len(v) { append(out, v[j]) }
         }
     }
-    if len(out) > 16777216 { return err("query packet exceeds the 16 MiB buffer bound", 2) }
+    if len(out) > PQ_MAX_BUFFER { return err("query packet exceeds the 16 MiB buffer bound", 2) }
     return ok(out)
 }
 

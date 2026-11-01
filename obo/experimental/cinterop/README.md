@@ -333,7 +333,7 @@ The same C fixture also runs under ASAN/UBSAN as a separate harness. The test
 skips when `libssl.so.3`/`libcrypto.so.3` are absent (or
 `CINTEROP_TEST_NO_OPENSSL=1` is explicitly set). The header download needs the
 network. If `apt-get download` cannot run or fails, the qualification is
-**skipped** with the printed line `skipped: openssl (no network)` and the rest of
+**skipped** with the printed line `skipped: openssl (download failed)` and the rest of
 the suite continues. A skip is never a silent pass. With the library present and
 headers available, a build or qualification failure is still a test failure.
 Extracted headers are never committed.
@@ -392,7 +392,15 @@ It also builds and runs:
   code 2 and registers no connection; the fake parser reports the same text, and
   the real libpq parser runs too when `libpq.so.5` is present. No server is used;
 - packet limits with the fake ABI: 33 parameters and 1 MiB + 1 bytes of SQL are
-  rejected with specific messages, and 32 parameters is accepted;
+  rejected with specific messages, and 32 parameters is accepted; exactly 1 MiB
+  of SQL is not rejected by the limit check, and a packet of exactly 16 MiB is
+  accepted while one byte more is rejected by the buffer bound;
+- adapter error messages with the fake ABI: `PQconnectdb` returning NULL (code 0),
+  an empty `PQexecParams` failure, and exec on a closed connection (code -1) each
+  give their own message;
+- the wrapper limit constants (`PQ_MAX_PARAMS`, `PQ_MAX_SQL`, `PQ_MAX_BUFFER`)
+  equal the C defines (`PQ_MAX_PARAMS`, `PQ_MAX_SQL` in `toolkit/libpq_adapter.c`,
+  `CRES_MAX_BUFFER` in `toolkit/cres.h`), checked by reading the sources;
 - a libpq spec declaration that disagrees with `libpq_adapter.h` (an
   internally consistent `int` against the header's `long`) fails the signature
   check before link;
@@ -457,7 +465,7 @@ declarations-only SQLite adapter, both explicit-close and tested.
   `libssl-dev` package version matches `libssl3t64`, otherwise it fetches the
   matching package. Libraries are discovered with `ldconfig -p`; the test
   skips when `libssl.so.3`/`libcrypto.so.3` are genuinely absent (or the
-  explicit opt-out is set), and skips with `skipped: openssl (no network)` when
+  explicit opt-out is set), and skips with `skipped: openssl (download failed)` when
   the matching headers cannot be downloaded.
 - The private header cache is content-checked against a stored hash manifest.
   That catches accidental cache corruption; same-user tampering with both the

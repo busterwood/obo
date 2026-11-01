@@ -32,8 +32,9 @@ SECTIONS
   . = ALIGN(0x1000);
   /* Host .text has a fixed 128 KiB slot (0x03000000..0x03020000). The bound is
    * a checked ceiling, not a measured budget: the link fails if host code
-   * outgrows it. The current examples use only a few KiB here (readelf -S shows
-   * .text); raise the bound only with a measured reason. */
+   * outgrows it. The largest current example (the libpq limits and error apps)
+   * uses about 12 KiB here (.text 0x2d8f; objdump -h shows .text); raise the
+   * bound only with a measured reason. */
   ASSERT(. <= 0x03020000, "host .text exceeds its 128 KiB slot")
   .rodata : { *(.rodata) *(.rodata.*) }
   . = ALIGN(0x1000);

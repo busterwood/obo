@@ -841,7 +841,7 @@ application, spec, headers/declarations, sources, wrapper, wrapper `.sym`,
 shim source/object, signature check, sidecar, image, native object,
 host/start/link/tool/compiler and C compiler. Missing files fail. Signature
 checks are labelled `header` (scalar example) or `declarations-only` (libpq
-manual declaration); there is no silent "checked" mode. The shim's
+manual declaration) (at the time; libpq.cbind now uses header mode); there is no silent "checked" mode. The shim's
 `obo_native_*` export set is validated against the spec before link. Resolved
 dynamic library paths/hashes are recorded by `ldd`,
 with the documented limitation that run-time resolution can differ.
