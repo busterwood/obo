@@ -6457,29 +6457,66 @@ field copy, a literal field not copied, a compound result not stored, and three
 `.sym` mutants (`priv24` read as one word, a reader that advances by one word,
 and a private decimal written as `priv`). Each one is caught.
 
-**Gates (this checkout, after the last source change).**
-- `run_fork` **1,818 passed, 0 failed**.
+**Gates (after the review fix, the last source change).**
+- `run_fork` **1,819 passed, 0 failed** (includes `run/decimal_operand_order.obx`).
 - `module_test` **144 passed, 0 failed**; `sym_test` **53 passed, 0 failed**.
 - `sym_fuzz` **300/300 clean** (seed 20261028, digest `a5f83c5822041582`).
 - `doc_check` **72 examples, 0 problems** (the new LANGUAGE.md example is one).
 - `imports` **30/30**; `stdlib` **17/17**; `homes_check` passes;
   `float_f1 --reader-only` passes.
-- `port_test` **615 of 615**; `port_compare` **1,799 of 1,799** (Stage B).
-- `mutate_decimal` **78 caught, 0 missed, 0 broken** (71 before D1, plus 7).
-- `mutate_fork` (restricted; the full 749-mutant run was not done here), by
-  pattern: `sym` **78 caught + 1 equivalent of 79**; `decimal` **4/4**; `X36`
-  **2/2**; `field` **33 caught + 1 equivalent of 34**. One mutant in `field`,
-  `private placeholder offset is zero`, was stale: its pattern named the old
-  placeholder line (`8 * len(rec.fields)`, `typ: tInt`), which the running-offset
-  reader replaced. Its pattern now names the new line (`offset: offset, typ: pt`)
-  and forces the same zero offset; it is caught (`1/1`). The equivalent entry is
-  the pre-existing `field visibility: symCompareFields ignores visibility`.
-- Fixed point: `stage2 == stage3` (`cmp`), the seed-built compiler equals stage 2
-  byte for byte (733,185 bytes, sha256 prefix `3ba53b7c…`).
-- Self-compile peak: `OBO_STATS=1` reports **2,524,544 bytes** live, 55,888,704
-  allocated; `heap_test` reports 2,524,608 (budget 2,750,000, headroom 225,392).
-  The budget is unchanged.
-- The decimal run tests pass under `OBO_CHECK=1`.
+- `port_test` **616 of 616**; `port_compare` **1,800 of 1,800** (Stage B).
+- `mutate_decimal` **84 caught, 0 missed, 0 broken**: 71 before D1, 7 record-field mutants, and 6 operand
+  capture mutants (the left operand of `*`/`%`, `+`/`-`, and the comparison; the
+  unconditional capture; and the earlier decimal and int builtin arguments). Each
+  one is caught by the new run test or an existing one.
+- `mutate_fork` (restricted by pattern, not the full 749-mutant run): `sym`
+  **78 caught + 1 equivalent of 79**; `decimal` **4/4**; `X36` **2/2**; `field`
+  **33 caught + 1 equivalent of 34**. The equivalent entry is the pre-existing
+  `field visibility: symCompareFields ignores visibility`. One stale `field`
+  mutant (`private placeholder offset is zero`) was repointed earlier to the
+  running-offset line, and it is caught.
+- Fixed point: `stage2 == stage3` (`cmp`), and the seed-built compiler equals
+  stage 2 byte for byte (733,185 bytes).
+- Self-compile peak: `OBO_STATS=1` reports **2,527,040 bytes** live (55,981,376
+  allocated); `heap_test` reports 2,527,104 and `port_compare` 2,527,072 (budget
+  2,750,000, headroom about 223 KB). The budget is unchanged.
+- The decimal run tests pass under `OBO_CHECK=1` (87 of 87 with `-k decimal`).
+
+**Review fix: decimal operand evaluation order.** The review found that a decimal
+left operand stayed a live address while the right operand ran. `materialise`
+returned a decimal item unchanged, and `term`, `simpleExpr` and `relation` parsed
+the right operand before reading the left. So a right operand that replaced the
+record (a use-after-free: `decimal invalid value`) or wrote the field in place (a
+wrong value) changed the left operand. The builtins (`decimal::div`, `quantize`,
+`toInt`, `check`) parsed their arguments in turn and used them afterwards, with the
+same hazard. Two reads were already right and are unchanged: a user-call argument
+is copied when it is parsed, and a record literal field is stored when it is
+parsed; `println` prints each argument as it is parsed.
+
+- `captureDecimal(x)` copies a decimal operand into a `decimalTemp` and releases the
+  original, before the right operand is parsed. A frame-local decimal (base RBP, no
+  index) is not copied: a decimal cannot be borrowed and a decimal global is
+  refused, so no call can change it. This is the rule for a frame local.
+- `term` (`*`, `%`), `simpleExpr` (`+`, `-`) and `relation` call it on the left.
+  `earlyArg` is the builtin rule: an argument followed by a comma is captured if it
+  is decimal and loaded if it is an int, so the later arguments cannot change it.
+  The last argument is parsed with `nestedExpr` as before.
+- A decimal compound assignment `x.f op= y` still reads its target after `y`, as an
+  int compound does (`r.n += f(r)` gives 11). It is not changed. The owner-freeing
+  form is refused at compile time (`cannot assign to a field or element across a
+  call`).
+- The reviewer's `mut &` case: the 0.15 seed accepts `bump(&s)` for a `mut &R`
+  parameter, and so does this compiler, with the same output as `bump(s)`. It is
+  pre-existing and unrelated to decimal, so it is reported only and not changed here.
+
+**Tests.** `tests/run/decimal_operand_order.obx` (run under `OBO_CHECK=1`) covers
+the reviewer's reproducers and the operators `*`, `%`, `+`, `-`, `<` and `==`, each
+with the owner replaced by the call and with an in-place write; a record literal
+and a two-field literal; a user-call argument; `println`; the builtins `div`,
+`quantize`, `check` (with an int argument after a call) and `toInt`; a handle-rooted
+and a global-rooted left operand; the int binop; the decimal field `+` with a field
+write; and the compound result. Expected values were computed by hand before the
+run; for example `2.5 * 3.0 = 7.50` where the bad result was `301.50`.
 
 The record-field change is not promoted: the compiler still needs one
 `make promote` after the merge, and that is the orchestrator's step.

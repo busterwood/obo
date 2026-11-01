@@ -1,0 +1,185 @@
+// A decimal left operand is read before a later operand runs, as an int one is. A call in the
+// later operand may replace the record the value is read from (ownRet) or write the field in
+// place (inRet); the result must use the value the left operand had. Each form runs on a local,
+// a handle and a global record. Run under OBO_CHECK=1 so a read of the freed record is caught.
+
+type In = ref record { a: decimal; k: int }
+type R = ref record { inr: In; d: decimal; n: int }
+type Box = ref record { v: decimal }
+type Pair = ref record { x: decimal; y: decimal }
+type Cell = ref record { d: decimal; n: int }
+
+fn mkR(): R {
+    return new R{inr: new In{a: 2.5, k: 40}, d: 3.0, n: 5}
+}
+
+// the call frees the In the left operand reads from, then returns 3.0
+fn ownRet3(mut r: &R): decimal {
+    r.inr = new In{a: 100.5, k: 7}
+    return 3.0
+}
+
+// the call writes the field the left operand reads, then returns 3.0
+fn inRet3(mut r: &R): decimal {
+    r.inr.a = 100.5
+    return 3.0
+}
+
+// the same, returning 2.5 (the left operand's value) for equality
+fn ownRet2(mut r: &R): decimal {
+    r.inr = new In{a: 100.5, k: 7}
+    return 2.5
+}
+
+fn inRet2(mut r: &R): decimal {
+    r.inr.a = 100.5
+    return 2.5
+}
+
+// the call replaces the record and sets n to 3, then returns the mode 1 (HALF_AWAY)
+fn ownMode(mut r: &R): int {
+    r.inr = new In{a: 100.5, k: 7}
+    r.n = 3
+    return 1
+}
+
+// the call replaces the record and returns the scale 2 (its n is 3, so a late read is wrong)
+fn ownScale(mut r: &R): int {
+    r.inr = new In{a: 100.5, k: 7}
+    r.n = 3
+    return 2
+}
+
+fn sub(a: decimal, b: decimal): decimal {
+    return a - b
+}
+
+// a Cell whose d is set by the call: the left operand must keep its old value
+fn setD(mut c: &Cell): decimal {
+    c.d = 7.25
+    return 1.0
+}
+
+fn setN(mut c: &Cell): int {
+    c.n = 9
+    return 2
+}
+
+// the int left operand must keep its old value too
+var gr = mkR()
+
+fn gOwn(): decimal {
+    return gr.inr.a * ownRet3(gr)
+}
+
+fn main() {
+    // owner replaced by the call
+    var r = mkR()
+    let m = r.inr.a * ownRet3(r)
+    println("mul ", m) // expect: mul 7.50
+    var r2 = mkR()
+    let p = r2.inr.a + ownRet3(r2)
+    println("add ", p) // expect: add 5.5
+    var r3 = mkR()
+    let s = r3.inr.a - ownRet3(r3)
+    println("sub ", s) // expect: sub -0.5
+    var r4 = mkR()
+    let rem = r4.inr.a % ownRet3(r4)
+    println("rem ", rem) // expect: rem 2.5
+    var r5 = mkR()
+    if r5.inr.a < ownRet3(r5) {
+        println("lt yes") // expect: lt yes
+    } else {
+        println("lt no")
+    }
+    var r6 = mkR()
+    if r6.inr.a == ownRet2(r6) {
+        println("eq yes") // expect: eq yes
+    } else {
+        println("eq no")
+    }
+    var r7 = mkR()
+    let b = new Box{v: r7.inr.a + ownRet3(r7)}
+    println("lit ", b.v) // expect: lit 5.5
+    var r8 = mkR()
+    let pr = new Pair{x: r8.inr.a, y: ownRet3(r8)}
+    println("pair ", pr.x, " ", pr.y) // expect: pair 2.5 3.0
+    var r9 = mkR()
+    println("arg ", sub(r9.inr.a, ownRet3(r9))) // expect: arg -0.5
+    var r10 = mkR()
+    println(r10.inr.a, " ", ownRet3(r10)) // expect: 2.5 3.0
+    var r11 = mkR()
+    let q = decimal::div(r11.inr.a, ownRet3(r11), 4, HALF_AWAY)
+    match q {
+        ok(v) { println("div ", v) } // expect: div 0.8333
+        err(m, c) { println("div err ", c) }
+    }
+    var r12 = mkR()
+    let qu = decimal::quantize(r12.inr.a, ownScale(r12), HALF_AWAY)
+    match qu {
+        ok(v) { println("quantize ", v) } // expect: quantize 2.50
+        err(m, c) { println("quantize err ", c) }
+    }
+    var r13 = mkR()
+    let ck = decimal::check(r13.inr.a, r13.n, ownScale(r13))
+    match ck {
+        ok(v) { println("check ok ", v) } // expect: check ok 2.5
+        err(m, c) { println("check err ", c) }
+    }
+    var r14 = mkR()
+    let ti = decimal::toInt(r14.inr.a, ownMode(r14))
+    match ti {
+        ok(v) { println("toInt ", v) } // expect: toInt 3
+        err(m, c) { println("toInt err ", c) }
+    }
+
+    // in place: the call writes the field the left operand reads
+    var i1 = mkR()
+    println("in mul ", i1.inr.a * inRet3(i1)) // expect: in mul 7.50
+    var i2 = mkR()
+    println("in add ", i2.inr.a + inRet3(i2)) // expect: in add 5.5
+    var i3 = mkR()
+    if i3.inr.a < inRet3(i3) {
+        println("in lt yes") // expect: in lt yes
+    } else {
+        println("in lt no")
+    }
+    var i4 = mkR()
+    if i4.inr.a == inRet2(i4) {
+        println("in eq yes") // expect: in eq yes
+    } else {
+        println("in eq no")
+    }
+    var i5 = mkR()
+    let iq = decimal::div(i5.inr.a, inRet3(i5), 4, HALF_AWAY)
+    match iq {
+        ok(v) { println("in div ", v) } // expect: in div 0.8333
+        err(m, c) { println("in div err ", c) }
+    }
+
+    // a handle to the record: the left operand is read through the handle
+    var h1 = mkR()
+    let hd = handle(h1)
+    println("handle mul ", hd.inr.a * ownRet3(h1)) // expect: handle mul 7.50
+    var h2 = mkR()
+    let hh = handle(h2)
+    if hh.inr.a < ownRet3(h2) {
+        println("handle lt yes") // expect: handle lt yes
+    } else {
+        println("handle lt no")
+    }
+
+    // a global record: the left operand is read from the global
+    println("global mul ", gOwn()) // expect: global mul 7.50
+    var gr2 = mkR()
+    println("global add ", gr2.inr.a + ownRet3(gr2)) // expect: global add 5.5
+
+    // the left operand of a decimal compound-free expression with a decimal field
+    var c1 = new Cell{d: 2.5, n: 5}
+    println("field ", c1.d + setD(c1)) // expect: field 3.5
+    var c2 = new Cell{d: 2.5, n: 5}
+    println("int ", c2.n * setN(c2)) // expect: int 10
+    var c3 = new Cell{d: 3.0, n: 5}
+    c3.d -= setD(c3)
+    println("compound ", c3.d) // expect: compound 6.25
+}

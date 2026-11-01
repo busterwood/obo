@@ -3517,6 +3517,20 @@ fn decPtr(x: &Item): Item {
     return makeReg(tInt, r)
 }
 
+// A decimal operand is captured into a temporary before a later operand is evaluated. That
+// later operand may call a function that changes or frees the record the value is read from,
+// so the value is taken now, as the int path loads its left operand into a register. A
+// frame-local decimal needs no copy: a decimal cannot be borrowed, and a decimal global is
+// refused, so no call can change a decimal that lives in the frame (base RBP, no index).
+fn captureDecimal(x: Item): Item {
+    if x.typ.kind != "decimal" { return x }
+    if x.mode == "mem" && x.base == RBP && x.index < 0 { return x }
+    let t = decimalTemp()
+    copyDecimal(t, x)
+    releaseItem(x)
+    return t
+}
+
 fn copyDecimal(dst0: &Item, src0: &Item) {
     var dst = copyItem(dst0)
     var src = copyItem(src0)
@@ -3776,6 +3790,15 @@ fn decimalToInt(a: Item, mode: Item): Item {
 
 fn nestedExpr(): Item
 
+// A builtin argument that a later argument follows: a decimal is captured and an int is
+// loaded now, so a call in a later argument cannot change it before the builtin reads it.
+fn earlyArg(): Item {
+    let x = nestedExpr()
+    if x.typ.kind == "decimal" { return captureDecimal(x) }
+    if isInt(x.typ) { return materialise(x) }
+    return x
+}
+
 fn decimalBuiltin(member: string): Item {
     if member == "fromInt" {
         expect(T_LPAREN, "")
@@ -3785,11 +3808,11 @@ fn decimalBuiltin(member: string): Item {
     }
     if member == "div" {
         expect(T_LPAREN, "")
-        let a = nestedExpr()
+        let a = earlyArg()
         expect(T_COMMA, "")
-        let b = nestedExpr()
+        let b = earlyArg()
         expect(T_COMMA, "")
-        let scale = nestedExpr()
+        let scale = earlyArg()
         expect(T_COMMA, "")
         let mode = nestedExpr()
         expect(T_RPAREN, "")
@@ -3797,9 +3820,9 @@ fn decimalBuiltin(member: string): Item {
     }
     if member == "quantize" {
         expect(T_LPAREN, "")
-        let a = nestedExpr()
+        let a = earlyArg()
         expect(T_COMMA, "")
-        let scale = nestedExpr()
+        let scale = earlyArg()
         expect(T_COMMA, "")
         let mode = nestedExpr()
         expect(T_RPAREN, "")
@@ -3807,7 +3830,7 @@ fn decimalBuiltin(member: string): Item {
     }
     if member == "toInt" {
         expect(T_LPAREN, "")
-        let a = nestedExpr()
+        let a = earlyArg()
         expect(T_COMMA, "")
         let mode = nestedExpr()
         expect(T_RPAREN, "")
@@ -3833,9 +3856,9 @@ fn decimalBuiltin(member: string): Item {
     }
     if member == "check" {
         expect(T_LPAREN, "")
-        let a = nestedExpr()
+        let a = earlyArg()
         expect(T_COMMA, "")
-        let p = nestedExpr()
+        let p = earlyArg()
         expect(T_COMMA, "")
         let s = nestedExpr()
         expect(T_RPAREN, "")
@@ -10679,7 +10702,7 @@ fn term(): Item {
         } else if x.typ.kind == "decimal" {
             if o == T_SLASH { error("decimal division needs an explicit scale and mode; use decimal::div(a, b, scale, mode)") }
             if o != T_STAR && o != T_PERCENT { error("'" + tokName(o) + "' is not supported for decimal; use + - * %") }
-            x = materialise(x)
+            x = captureDecimal(x)
             tryNest += 1
             let y = factor()
             tryNest -= 1
@@ -10730,7 +10753,7 @@ fn simpleExpr(): Item {
         }
         if x.typ.kind == "decimal" {
             if o != T_PLUS && o != T_MINUS { error("'" + tokName(o) + "' is not supported for decimal; use + - * %") }
-            x = materialise(x)
+            x = captureDecimal(x)
             tryNest += 1
             let y = term()
             tryNest -= 1
@@ -10757,6 +10780,7 @@ fn relation(): Item {
     next()
     var xsym: ?^Sym = nil
     if x.mode == "mem" { xsym = x.sym }
+    x = captureDecimal(x)
     noTemp(x)
     x = pinStr(x)
     tryNest += 1

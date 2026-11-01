@@ -221,7 +221,11 @@ inline in its record or closed-variant payload, in declaration order and on an
 8-byte boundary; an omitted decimal field is zero. Reads, `=`, `+=`, `-=`, `*=`,
 `%=` and record literals work through a handle (`^T`) and through a `&T` or
 `mut &T` borrow. A compound assignment computes into a temporary and then copies
-it into the field. Like an int field, a field may not be assigned from a call
+it into the field. A decimal operand is read before the operand after it runs, as an
+int operand is: in `r.inr.a * f(r)` the left value is the one `r.inr.a` had before `f`
+ran, even if `f` replaces the record or writes the field. The same holds for each
+decimal or int argument of `decimal::div`, `quantize`, `toInt` and `check` that a later
+argument follows. Like an int field, a field may not be assigned from a call
 that might free its record (`cannot assign to a field or element across a
 call`). Decimal globals, constants, arrays, captures, methods, interfaces and
 function values are not implemented yet and are refused with a clear diagnostic.
