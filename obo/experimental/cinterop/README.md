@@ -17,7 +17,10 @@ Design:
 
 The compiler boundary supports **`i64` arguments, and argument kinds** (borrowed
 bytes and strings, NUL-checked C strings, `i32`/`u32` scalars, int arrays and
-nil-able byte-array lists; see *Argument kinds* below), with `i32`/`i64` results. The toolkit now also has a small trusted **C resource registry**
+nil-able byte-array lists; see *Argument kinds* below), with `i32`/`i64` results,
+and the stage (b)/(c) additions: copy-out `cbytes`, `cstr_out`, `void` and
+`nonzero` results, and body-less `native fn` declarations (see *Return kinds and
+typed native declarations* below). The toolkit now also has a small trusted **C resource registry**
 and an explicit-close libpq adapter: obo receives generation/kind-checked
 integer tokens, never a raw `PGconn*`/`PGresult*`. Connection/Rows/Buffer close
 is explicit and normally written with obo `defer`; dropping an ordinary record
@@ -87,7 +90,9 @@ the one-time generic seam and does not require compiler changes per library.
 - `--check` rejects native modules because it cannot carry the typed sidecar;
   it does not pretend to have checked them. `--deps` remains a header scan.
 - The builtin is named `__cinterop`, is internal to generated wrappers, and is
-  still experimental. The spec format is `cinterop-proto/1`.
+  still experimental. The spec format is `cinterop-proto/1` (unchanged) or
+  `cinterop-proto/2` for the return kinds and typed native declarations; the
+  relocation sidecar is `cinterop-relocs 2`, and a v1 sidecar is still read.
 - A cbind may list optional `declaration_files`: C declaration headers are
   resolved and hashed into the manifest as provenance inputs without being
   compiled or promoted to `signature_check: header`. Use this for honest
@@ -438,6 +443,138 @@ library cannot bind to them. That prevents dynamic-symbol clashes only: a second
 static object in the same executable that defines an `obo_ci_*` name is a
 duplicate-symbol link error.
 
+## Return kinds and typed native declarations (stages (b) and (c))
+
+### Spec format v2
+
+`cinterop-proto/2` adds the return kinds below and makes the signature claim
+explicit. A `/2` spec must carry `"signature_check": "header"` or
+`"signature_check": "declarations-only"`:
+
+- `header` requires `headers`, and the generated C function-pointer assignment
+  is checked against those headers;
+- `declarations-only` makes no header claim and requires explicit
+  `declarations`.
+
+`cinterop-proto/1` keeps today's behaviour exactly: its results are `i32`/`i64`
+and its mode is derived from whether `headers` is present. A `/1` spec cannot
+use the new result kinds.
+
+| Return kind | Obo result | Meaning |
+| --- | --- | --- |
+| `void` | none | unit |
+| `i32`, `i64` | `int` | sign-extended |
+| `u32` | `int` | zero-extended (`Oid`, status masks) |
+| `nonzero` | `int` | 1 when the pointer is non-NULL, 0 otherwise; the pointer is discarded |
+| `cbytes` | `?[]byte` | copy of `(value, length)`, value first; `nil` if over the cap |
+| `cstr_out` | `[]byte` | copy up to the first NUL, bounded at 16 MiB; NULL is empty |
+
+Pointer-returning kinds (`cbytes`, `cstr_out`, `nonzero`) require
+`"ret_ctype"`, and the signature check compares that exact C type with the
+header. `void`/`i32`/`u32`/`i64` use their fixed C types. A kind that is not
+implemented yet (`own`, `own_opt`, `borrow`) is refused as a stage (d) kind.
+
+### `cbytes`
+
+A `cbytes` function names its value function as `symbol` and its length function
+as `"length"`, and gives a positive `"cap"`:
+
+```json
+{"name": "getvalue", "symbol": "PQgetvalue", "ret": "cbytes",
+ "length": "PQgetlength", "cap": 16777216, "ret_ctype": "const char *",
+ "args": ["borrow_bytes@0", "i32@1", "i32@2"]}
+```
+
+The thunk calls the value function first and keeps the pointer in its frame,
+then calls the length function with the same expanded C argument words, then
+copies. No obo code runs between the two native calls. Both calls reset `rsp`
+to the same fixed frame, so 16-byte alignment and stack-passed arguments (more
+than six C parameters) are the same for both. The copy allocates a normal obo
+`[]byte` through the runtime jump table, so `OBO_CHECK=1` leak checking applies:
+
+- a negative length, or NULL with a positive length, exits 11;
+- a length above `cap` returns `nil`, and a wrapper returns `err`;
+- length 0 returns an empty array, even for NULL;
+- the length is authoritative: the helper never calls `strlen`, and NULs are
+  preserved.
+
+### `cstr_out`
+
+The value function returns a C string. NULL gives an empty array. Otherwise the
+helper copies up to the first NUL; a value with no NUL within 16 MiB exits 11
+rather than reading unbounded memory. No trailing bytes are copied.
+
+### `void` and `nonzero`
+
+`void` calls the function and returns no value (the thunk returns 0, which the
+call site ignores). `nonzero` turns the pointer into 1/0 for probes such as
+`sqlite3_next_stmt(db, NULL) != NULL`.
+
+### Body-less `native fn`
+
+```obo
+native fn getvalue(r: &Res, row: int, col: int): ?[]byte
+native fn status(c: &Conn): int
+native fn finish(c: &Conn)
+```
+
+`native` is contextual: only a top-level `native fn` is a declaration, so
+programs may still use `native` as an identifier. The declaration name is the
+spec `name`; the tool maps it to the spec `symbol` and rewrites the relocation
+before linking. Supported parameter types are `int`, `string`, `&[]byte`,
+`&[]int` and `&[]?[]byte`; supported returns are no return annotation (unit),
+`int`, `[]byte` and `?[]byte`. Anything else is a compile error. A typed
+binding needs a maintained `"wrapper"`; generated wrappers remain int-only.
+
+Rejected with a clear error: a body on a native declaration, a receiver
+(`native fn (r: &T) ...`), `pub native fn` (export a normal wrapper instead),
+`native` `main`, a duplicate native declaration, and a native declaration later
+defined as a normal function or vice versa.
+
+At a call the compiler emits the same machinery as `__cinterop`, but records an
+obo-side **shape** per argument rather than an exact kind:
+
+| Declared parameter | Shape | Words pushed |
+| --- | --- | --- |
+| `int` | `int` | 1 |
+| `string`, `&[]byte` | `bytes` | value, string flag |
+| `&[]int` | `ints` | 1 |
+| `&[]?[]byte` | `byteslist` | 1 |
+
+The spec decides the exact kind: `int` accepts `i64`/`i32`/`u32`; `bytes`
+accepts `borrow_bytes`/`borrow_cstr`; `ints` accepts `ints:i32`/`ints:u32`;
+`byteslist` accepts `nil_bytes_list`. C-only spec slots (`null`, `const:<n>`,
+and `ints@k:len` expanding a list argument) are added by the thunk; the compiler
+never sees them. The return shape is `i64` (for `i32`/`u32`/`i64`/`nonzero`),
+`void`, `bytes` (`cstr_out`) or `optbytes` (`cbytes`).
+
+`--check` parses and type-checks native declarations, but refuses a native call:
+`--check` has no typed sidecar and no link step, the same policy as
+`__cinterop`. Programs that contain no native call are byte-identical to the
+previous compiler.
+
+### Sidecar v2
+
+The compiler writes `cinterop-relocs 2`. Each line is:
+
+```
+<off> <name> <nargs> <mode> <shapes> <ret-shape> <effects>
+```
+
+- `name` is the C symbol for a `call`, or the obo declaration name for `fn`;
+- `nargs` is the descriptor-entry count for `call` (the int form counts its
+  arguments) and the number of obo arguments for `fn`;
+- `mode` is `call` (`__cinterop`) or `fn` (a typed native fn call);
+- `shapes` is `-` for the int form, an exact kind list (`i32@0`, `null`, ...)
+  for a kinds `call`, or a shape list (`int`, `bytes`, ...) for `fn`;
+- `ret-shape` is `i64`, `void`, `bytes` or `optbytes`;
+- effects stay `freesall,writeshandles`.
+
+The tool reads v1 sidecars too. It rejects a v2 line with an unknown mode,
+shape, or result shape, and checks shapes against the spec before the link.
+A spec function that no call reaches is still refused (`no native call for spec
+symbol(s)`), as before.
+
 ## Tests
 
 ```sh
@@ -464,9 +601,16 @@ the scratch counter, and refused spec and descriptor mismatches before link), th
 pointer, a `const:-1` function-pointer destructor, `const:5` for an `int`, and
 refusals for a struct swap, a pointer mismatch, a missing or by-value type), and
 seven to eleven C parameters with odd and even stack-argument counts, each checked
-for a 16-byte aligned callee frame and for its values). A libpq build failure is a
-test failure when `libpq.so.5` is present; the test skips only when the library
-is absent.
+for a 16-byte aligned callee frame and for its values). It also covers the
+stage (b)/(c) surface (`returns()`): `cbytes` empty/1-byte/NUL-containing/exact
+length/over-cap/`nil`-then-`err` and NULL-with-positive-length exit 11, both
+`cbytes` calls with two stack arguments, `cstr_out` normal/empty/NULL/no trailing
+text, `void`, `nonzero`, typed declarations with C-only `null`/`const`/`ints:len`
+slots, a v1 sidecar reader, sidecar shape/mode tampering, spec v2
+`signature_check` and `cbytes` key refusals, declaration/spec shape mismatches,
+the native declaration negatives, and the `--check` refusal. A libpq build
+failure is a test failure when `libpq.so.5` is present; the test skips only when
+the library is absent.
 
 It also builds and runs:
 
