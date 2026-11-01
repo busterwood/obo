@@ -137,6 +137,38 @@ pub fn makeResponse(limits: &core::Limits, method: string, http10: bool,
 
 pub fn beginResponseWithReason(mut r: &Response, status: int,
                                reason: string): Result[bool]
+// An inert Response used only as a placeholder while an owned Response is moved
+// into a local for one serialization call. It owns no output and is never sent.
+pub fn emptyResponse(): Response {
+    return new Response{
+        limits: core::defaultLimits(),
+        method: "GET",
+        http10: false,
+        close: false,
+        dateText: "",
+        status: 0,
+        reason: "",
+        began: false,
+        committed: false,
+        ended: false,
+        failed: false,
+        headers: new []core::Header(0),
+        hasLength: false,
+        length: 0,
+        trailerNames: new []string(0),
+        trailers: new []core::Header(0),
+        trailerBytes: 0,
+        out: new []byte(0),
+        cap: 0,
+        chunked: false,
+        bodyAllowed: false,
+        discardBody: false,
+        wroteBody: false,
+        bodyBytes: 0,
+        finalQueued: false
+    }
+}
+
 
 pub fn beginResponse(mut r: &Response, status: int): Result[bool] {
     return beginResponseWithReason(r, status, core::statusText(status))
@@ -534,6 +566,21 @@ pub fn pending(r: &Response): int {
 pub fn isCommitted(r: &Response): bool { return r.committed }
 pub fn isDone(r: &Response): bool { return r.ended && (!r.chunked || r.finalQueued) }
 pub fn hasFailed(r: &Response): bool { return r.failed }
+pub fn isBegan(r: &Response): bool { return r.began }
+pub fn closeRequested(r: &Response): bool { return r.close }
+
+// Set the close-after-response policy. Before the header block is committed the
+// writer adds Connection: close; afterwards the connection closes after the
+// already-written response without a second header block.
+pub fn requestClose(mut r: &Response): Result[bool] {
+    if r.failed {
+        return err("response is already failed", core::ERR_INVALID_STATE)
+    }
+    if !r.committed {
+        r.close = true
+    }
+    return ok(true)
+}
 
 pub fn continueBytes(): []byte {
     let text = "HTTP/1.1 100 Continue\r\n\r\n"

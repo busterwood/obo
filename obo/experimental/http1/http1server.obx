@@ -1,0 +1,1287 @@
+// Experimental HTTP/1.1 server loop (H1b).
+//
+// Status: experimental and unstable. The server owns a nonblocking listener, a
+// level-triggered reactor and a fixed table of connection slots. Application
+// code supplies an ordinary function value; the loop invokes it directly and no
+// C callback or hidden thread is involved.
+//
+// Admission enforces both maxConnections and maxTotalConnectionBytes (the
+// per-connection reservation from http1core::reservation). Accept batches are
+// capped at 32, each connection's work per turn is bounded, and EMFILE/ENFILE
+// (ResourceLimit) pauses acceptance with an explicit backoff instead of
+// spinning. See LIMITS.md for the exact limits and defaults.
+//
+// The listener, reactor and per-slot watches are optional owned fields because
+// obo's conservative native-effect rule rejects passing a reference to a field
+// of a borrowed record to a native callee. Each turn moves them into locals and
+// restores them; no second native object is created.
+module http1server
+
+import "http1core.obx" as core
+import "http1conn.obx" as conn
+import "http1transport.obx" as transport
+import "sysaddress.obx" as address
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+import "sysnet.obx" as net
+import "sysplatform.obx" as platform
+import "sysreactor.obx" as reactor
+
+// The handler is an ordinary pure function value: it inspects the request
+// metadata and returns an Action. obo 0.14 function values cannot be impure, so
+// a handler cannot itself perform connection I/O; the server performs the
+// bounded action steps below. This is the language-limited H1b adaptation of
+// the design's handler contract. There is still no C callback and no hidden
+// thread.
+pub type Action = closed {
+    Hello {}
+    Echo {}
+    Chunked {}
+    Head {}
+    NoContent {}
+    NotModified {}
+    Big {}
+    Slow {}
+    Stop {}
+    Close {}
+}
+
+pub type Handler = fn(core::RequestInfo, &conn::Now): Action
+
+// Internal pass-through result: the loop owns the Connection between steps.
+type Outcome = ref record {
+    conn: ?conn::Connection
+    progress: bool
+    failure: int
+}
+
+fn outcome(c: conn::Connection, progress: bool): Outcome {
+    return new Outcome{conn: c, progress: progress, failure: 0}
+}
+
+fn outcomeFailure(c: conn::Connection, code: int): Outcome {
+    return new Outcome{conn: c, progress: false, failure: code}
+}
+
+pub type Metrics = ref record {
+    pub accepted: int
+    pub rejected: int
+    pub closedConnections: int
+    pub requests: int
+    pub protocolErrors: int
+    pub timeouts: int
+    pub acceptPressure: int
+    pub acceptErrors: int
+    pub handlerErrors: int
+    pub watchErrors: int
+    pub peakActive: int
+    pub active: int
+    pub reservedBytes: int
+}
+
+const LISTENER_TAG = 7
+const A_NONE = 0
+const A_HELLO = 1
+const A_ECHO = 2
+const A_CHUNKED = 3
+const A_HEAD = 4
+const A_NOCONTENT = 5
+const A_NOTMODIFIED = 6
+const A_BIG = 7
+const A_SLOW = 8
+const A_STOP = 9
+const A_CLOSE = 10
+
+const MAX_ACCEPT_BATCH = 32
+const MAX_EVENTS = 64
+const MAX_SLOTS = 65536
+const ACCEPT_BACKOFF_MS = 100
+
+type Slot = ref record {
+    conn: ?conn::Connection
+    watch: ?reactor::Watch
+    tag: int
+    gen: int
+    live: bool
+    served: bool
+    action: int
+    respStarted: bool
+    respDone: bool
+    respPos: int
+    workPending: bool
+    finalPending: bool
+    echoPending: []byte
+    echoPos: int
+    peer: string
+}
+
+pub type Server = ref record {
+    listener: ?net::Listener
+    reactor: ?reactor::Reactor
+    limits: core::Limits
+    perConnectionBytes: int
+    slots: []Slot
+    listenerWatch: ?reactor::Watch
+    listenerClosed: bool
+    nextGen: int
+    active: int
+    reserved: int
+    stopping: bool
+    stopRequested: bool
+    acceptPausedUntil: clock::Deadline
+    drainDeadline: clock::Deadline
+    metrics: Metrics
+}
+
+fn forever(): clock::Deadline {
+    return clock::forever()
+}
+
+fn deadlineAt(now: &conn::Now, ms: int): clock::Deadline {
+    let add = ms * 1000000
+    var at = now.mono.nanos + add
+    if at < now.mono.nanos { at = 9223372036854775807 }
+    return new clock::Deadline{finite: true, nanos: at}
+}
+
+fn copyDeadline(d: &clock::Deadline): clock::Deadline {
+    return new clock::Deadline{finite: d.finite, nanos: d.nanos}
+}
+
+fn earlier(a: &clock::Deadline, b: &clock::Deadline): clock::Deadline {
+    if !a.finite { return copyDeadline(b) }
+    if !b.finite { return copyDeadline(a) }
+    if a.nanos <= b.nanos { return copyDeadline(a) }
+    return copyDeadline(b)
+}
+
+fn currentNow(): Result[conn::Now]
+
+pub fn now(): Result[conn::Now] {
+    return currentNow()
+}
+
+fn currentNow(): Result[conn::Now] {
+    let mono = try clock::monotonic()
+    let wall = try clock::realtime()
+    return ok(new conn::Now{mono: mono, wall: wall})
+}
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn resourceLimitCode(): int { return libCode(new errors::ResourceLimit{}) }
+
+pub fn isAcceptPressure(code: int): bool {
+    return code == resourceLimitCode()
+}
+
+// Pure admission policy: both the connection count and the aggregate fixed
+// reservation must fit before a socket is accepted.
+pub fn admissionFits(active: int, reserved: int, perConnection: int,
+                     limits: &core::Limits): bool {
+    if active >= limits.maxConnections { return false }
+    if perConnection > limits.maxTotalConnectionBytes - reserved { return false }
+    return true
+}
+
+fn tagFor(gen: int, index: int): int {
+    return gen * MAX_SLOTS + index
+}
+
+fn tagIndex(tag: int): int {
+    if tag < 0 { return -1 }
+    return tag % MAX_SLOTS
+}
+
+fn tagGen(tag: int): int {
+    if tag < 0 { return -1 }
+    return tag / MAX_SLOTS
+}
+
+pub fn make(listener: net::Listener, r: reactor::Reactor,
+            limits: &core::Limits): Result[Server] {
+    let checked = try core::validateLimits(limits)
+    if !checked { return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT) }
+    if limits.maxConnections > MAX_SLOTS {
+        return err("maxConnections exceeds the server slot table", core::ERR_LIMIT_EXCEEDED)
+    }
+    let per = try core::reservation(limits)
+    let madeWatch = net::watchListener(&r, &listener, LISTENER_TAG)
+    var watch: reactor::Watch = new reactor::Watch{res: new platform::Resource{reserved: 0}}
+    match madeWatch {
+        ok(w) { watch = w }
+        err(m, code) {
+            let lc = net::closeListener(&listener)
+            let rc = reactor::close(&r)
+            return err("listener watch registration failed", code)
+        }
+    }
+    return ok(new Server{
+        listener: listener,
+        reactor: r,
+        limits: core::copyLimits(limits),
+        perConnectionBytes: per,
+        slots: new []Slot(0),
+        listenerWatch: watch,
+        listenerClosed: false,
+        nextGen: 1,
+        active: 0,
+        reserved: 0,
+        stopping: false,
+        stopRequested: false,
+        acceptPausedUntil: forever(),
+        drainDeadline: forever(),
+        metrics: new Metrics{
+            accepted: 0,
+            rejected: 0,
+            closedConnections: 0,
+            requests: 0,
+            protocolErrors: 0,
+            timeouts: 0,
+            acceptPressure: 0,
+            acceptErrors: 0,
+            handlerErrors: 0,
+            watchErrors: 0,
+            peakActive: 0,
+            active: 0,
+            reservedBytes: 0
+        }
+    })
+}
+
+pub fn metrics(s: &Server): Metrics {
+    let m = s.metrics
+    return new Metrics{
+        accepted: m.accepted,
+        rejected: m.rejected,
+        closedConnections: m.closedConnections,
+        requests: m.requests,
+        protocolErrors: m.protocolErrors,
+        timeouts: m.timeouts,
+        acceptPressure: m.acceptPressure,
+        acceptErrors: m.acceptErrors,
+        handlerErrors: m.handlerErrors,
+        watchErrors: m.watchErrors,
+        peakActive: m.peakActive,
+        active: m.active,
+        reservedBytes: m.reservedBytes
+    }
+}
+
+pub fn active(s: &Server): int { return s.active }
+pub fn reservedBytes(s: &Server): int { return s.reserved }
+pub fn isStopping(s: &Server): bool { return s.stopping }
+pub fn stopRequested(s: &Server): bool { return s.stopRequested }
+
+fn noteActive(mut s: &Server) {
+    s.metrics.active = s.active
+    s.metrics.reservedBytes = s.reserved
+    if s.active > s.metrics.peakActive { s.metrics.peakActive = s.active }
+}
+
+fn freeSlotIndex(s: &Server): int {
+    for i in 0..len(s.slots) {
+        if !s.slots[i].live { return i }
+    }
+    return len(s.slots)
+}
+
+fn newSlot(mut s: &Server, cn: conn::Connection, peer: string, gen: int,
+           index: int, watch: reactor::Watch): Result[bool] {
+    let tag = tagFor(gen, index)
+    let fresh = new Slot{
+        conn: nil,
+        watch: watch,
+        tag: tag,
+        gen: gen,
+        live: false,
+        served: false,
+        action: A_NONE,
+        respStarted: false,
+        respDone: false,
+        respPos: 0,
+        workPending: false,
+        finalPending: false,
+        echoPending: new []byte(0),
+        echoPos: 0,
+        peer: peer
+    }
+    if index == len(s.slots) {
+        append(s.slots, fresh)
+    } else {
+        let old = replace(s.slots[index], fresh)
+    }
+    let slot = s.slots[index]
+    let stored = cn
+    let previous = replace(slot.conn, stored)
+    slot.live = true
+    slot.served = false
+    slot.action = A_NONE
+    slot.respStarted = false
+    slot.respDone = false
+    slot.respPos = 0
+    slot.workPending = false
+    slot.finalPending = false
+    slot.echoPending = new []byte(0)
+    slot.echoPos = 0
+    slot.peer = peer
+    s.active += 1
+    s.reserved += s.perConnectionBytes
+    s.metrics.accepted += 1
+    noteActive(s)
+    return ok(true)
+}
+
+fn acceptBatch(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
+               now: &conn::Now): Result[int] {
+    if s.stopping || s.listenerClosed { return ok(0) }
+    if s.acceptPausedUntil.finite && now.mono.nanos < s.acceptPausedUntil.nanos {
+        return ok(0)
+    }
+    var accepted = 0
+    for i in 0..MAX_ACCEPT_BATCH {
+        if !admissionFits(s.active, s.reserved, s.perConnectionBytes, &s.limits) {
+            s.metrics.rejected += 1
+            break
+        }
+        let got = net::accept(l)
+        match got {
+            ok(connection) {
+                let nd = net::setNoDelay(&connection, true)
+                match nd { ok(v) { } err(m, c) { } }
+                var peer = ""
+                let pa = net::peerAddress(&connection)
+                match pa {
+                    ok(a) {
+                        let formatted = address::format(&a)
+                        match formatted { ok(text) { peer = text } err(m, c) { } }
+                    }
+                    err(m, c) { }
+                }
+                let made = net::intoStream(&connection)
+                match made {
+                    ok(stream) {
+                        let tr = transport::plain(stream)
+                        let lim = core::copyLimits(&s.limits)
+                        let built = conn::makeAt(tr, &lim, now)
+                        match built {
+                            ok(cn) {
+                                let gen = s.nextGen
+                                s.nextGen += 1
+                                let index = freeSlotIndex(s)
+                                let tag = tagFor(gen, index)
+                                let watch = conn::watch(&cn, r, true, false, tag)
+                                match watch {
+                                    ok(w) {
+                                        let addedR = newSlot(s, cn, peer, gen, index, w)
+                                        match addedR {
+                                            ok(added) {
+                                                if !added { break }
+                                                accepted += 1
+                                            }
+                                            err(m, code) {
+                                                s.metrics.rejected += 1
+                                                break
+                                            }
+                                        }
+                                    }
+                                    err(m, code) {
+                                        s.metrics.watchErrors += 1
+                                        s.metrics.rejected += 1
+                                        let closing = conn::close(&cn)
+                                        match closing { ok(v) { } err(m2, c2) { } }
+                                        drop(cn)
+                                    }
+                                }
+                            }
+                            err(m, code) {
+                                s.metrics.acceptErrors += 1
+                            }
+                        }
+                    }
+                    err(m, code) {
+                        s.metrics.acceptErrors += 1
+                    }
+                }
+            }
+            err(m, code) {
+                if errors::isWouldBlock(code) { break }
+                if isAcceptPressure(code) {
+                    s.metrics.acceptPressure += 1
+                    s.acceptPausedUntil = deadlineAt(now, ACCEPT_BACKOFF_MS)
+                    break
+                }
+                s.metrics.acceptErrors += 1
+                break
+            }
+        }
+    }
+    return ok(accepted)
+}
+
+fn closeSlotWith(mut s: &Server, index: int, mut cn: &conn::Connection,
+                 now: &conn::Now) {
+    if index < 0 || index >= len(s.slots) { return }
+    let slot = s.slots[index]
+    if !slot.live { return }
+    let heldWatch = take(slot.watch)
+    if heldWatch != nil {
+        let w: reactor::Watch = heldWatch
+        let removed = reactor::remove(&w)
+        match removed { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldWatch)
+    }
+    // Best-effort clean shutdown; close is abortive and exactly once.
+    let sd = conn::shutdownStep(cn, now)
+    match sd { ok(v) { } err(m, c) { } }
+    let cl = conn::close(cn)
+    match cl { ok(v) { } err(m, c) { } }
+    let again = s.slots[index]
+    again.conn = nil
+    again.live = false
+    again.served = false
+    s.active -= 1
+    s.reserved -= s.perConnectionBytes
+    if s.reserved < 0 { s.reserved = 0 }
+    s.metrics.closedConnections += 1
+    noteActive(s)
+}
+
+fn refreshSlotInterest(mut s: &Server, index: int, mut cn: &conn::Connection,
+                       r: &reactor::Reactor): Result[bool] {
+    let rw = conn::wantsRead(cn)
+    let ww = conn::wantsWrite(cn)
+    let readWant = try rw
+    let writeWant = try ww
+    let slot = s.slots[index]
+    let hasWork = slot.workPending
+    if !readWant && !writeWant && !hasWork {
+        return ok(false)
+    }
+    let heldWatch = take(slot.watch)
+    if heldWatch == nil {
+        return ok(false)
+    }
+    let w: reactor::Watch = heldWatch
+    var rd = readWant
+    var wr = writeWant
+    if hasWork && !rd && !wr {
+        // A resumable action has staged work but no socket interest this turn.
+        // Keep the watch alive with read interest; computeUntil makes the next
+        // reactor turn immediate instead of blocking.
+        rd = true
+    }
+    let modified = reactor::modify(&w, rd, wr)
+    let again = s.slots[index]
+    again.watch = w
+    match modified {
+        ok(v) { return ok(true) }
+        err(m, code) {
+            s.metrics.watchErrors += 1
+            return err("connection watch update failed", code)
+        }
+    }
+}
+
+fn actionFrom(a: &Action): int {
+    match a {
+        Hello { return A_HELLO }
+        Echo { return A_ECHO }
+        Chunked { return A_CHUNKED }
+        Head { return A_HEAD }
+        NoContent { return A_NOCONTENT }
+        NotModified { return A_NOTMODIFIED }
+        Big { return A_BIG }
+        Slow { return A_SLOW }
+        Stop { return A_STOP }
+        Close { return A_CLOSE }
+    }
+}
+
+fn flushOk(mut c: &conn::Connection, now: &conn::Now): Result[bool] {
+    let f = try conn::flush(c, now)
+    match f {
+        Flushed { return ok(true) }
+        FlushWantRead { return ok(false) }
+        FlushWantWrite { return ok(false) }
+    }
+}
+
+fn repeatX(n: int): string {
+    let b = new []byte(n)
+    for i in 0..n { b[i] = 'x' }
+    return string(b)
+}
+
+fn serveText(mut s: &Server, index: int, mut c: &conn::Connection,
+             now: &conn::Now, text: string, status: int): Result[bool] {
+    if !s.slots[index].respStarted {
+        let ct = try conn::setHeader(c, "Content-Type", "text/plain")
+        let b = try conn::beginResponse(c, status, now)
+        let l = try conn::setLength(c, len(text))
+        s.slots[index].respStarted = true
+        s.slots[index].respPos = 0
+        s.slots[index].respDone = false
+    }
+    while s.slots[index].respPos < len(text) {
+        let pos = s.slots[index].respPos
+        let n = try conn::writeText(c, text, pos, len(text) - pos)
+        if n == 0 {
+            let flushed = try flushOk(c, now)
+            if !flushed { return ok(false) }
+        } else {
+            s.slots[index].respPos += n
+        }
+    }
+    if !s.slots[index].respDone {
+        let done = try conn::endResponse(c, now)
+        if !done {
+            let flushed = try flushOk(c, now)
+            if flushed {
+                s.slots[index].workPending = true
+                return ok(true)
+            }
+            return ok(false)
+        }
+        s.slots[index].respDone = true
+    }
+    s.slots[index].workPending = false
+    let flushed = try flushOk(c, now)
+    return ok(flushed)
+}
+
+fn echoStaged(s: &Server, index: int, c: &conn::Connection): bool {
+    let slot = s.slots[index]
+    if slot.finalPending { return true }
+    if slot.echoPos < len(slot.echoPending) { return true }
+    if conn::bufferedInput(c) > 0 { return true }
+    return false
+}
+
+fn serveAction(mut s: &Server, index: int, mut c: &conn::Connection,
+               now: &conn::Now): Result[bool] {
+    var act = s.slots[index].action
+    if act == A_STOP {
+        s.stopRequested = true
+        act = A_HELLO
+    }
+    if act == A_CLOSE {
+        let rc = try conn::requestClose(c)
+        act = A_HELLO
+    }
+    if act == A_HELLO {
+        return serveText(s, index, c, now, "hello\n", 200)
+    }
+    if act == A_ECHO {
+        if !s.slots[index].respStarted {
+            let cont = try conn::sendContinue(c)
+            let ct = try conn::setHeader(c, "Content-Type", "application/octet-stream")
+            let b = try conn::beginResponse(c, 200, now)
+            s.slots[index].respStarted = true
+            s.slots[index].respPos = 0
+            s.slots[index].respDone = false
+            s.slots[index].echoPending = new []byte(0)
+            s.slots[index].echoPos = 0
+        }
+        var guard = 0
+        // At most four 16 KiB body chunks per action call, keeping one
+        // connection under the 64 KiB per-turn work cap.
+        if s.slots[index].finalPending {
+            let done = try conn::endResponse(c, now)
+            if !done {
+                let flushed = try flushOk(c, now)
+                if flushed {
+                    s.slots[index].workPending = true
+                    return ok(true)
+                }
+                return ok(false)
+            }
+            s.slots[index].respDone = true
+            s.slots[index].finalPending = false
+            s.slots[index].workPending = false
+            let flushed = try flushOk(c, now)
+            return ok(flushed)
+        }
+        while guard < 4 && !s.slots[index].respDone {
+            guard += 1
+            if s.slots[index].finalPending {
+                let done = try conn::endResponse(c, now)
+                if !done {
+                    let flushed = try flushOk(c, now)
+                    if flushed {
+                        s.slots[index].workPending = true
+                        return ok(true)
+                    }
+                    return ok(false)
+                }
+                s.slots[index].respDone = true
+                s.slots[index].finalPending = false
+                s.slots[index].workPending = false
+                break
+            }
+            // Resume an accepted-prefix write before reading another body chunk.
+            var pending = s.slots[index].echoPending
+            if s.slots[index].echoPos < len(pending) {
+                let pos = s.slots[index].echoPos
+                let total = len(pending)
+                let chunk = new []byte(total - pos)
+                for i in 0..len(chunk) { chunk[i] = pending[pos + i] }
+                let n = try conn::writeBody(c, &chunk, 0, len(chunk))
+                if n == 0 {
+                    let flushed = try flushOk(c, now)
+                    if !flushed {
+                        s.slots[index].workPending = false
+                        return ok(false)
+                    }
+                    continue
+                }
+                s.slots[index].echoPos += n
+                if s.slots[index].echoPos < total {
+                    let flushed = try flushOk(c, now)
+                    if !flushed { return ok(false) }
+                } else {
+                    s.slots[index].echoPending = new []byte(0)
+                    s.slots[index].echoPos = 0
+                }
+                continue
+            }
+            let r = try conn::readBody(c, 16384, now)
+            match r {
+                BodyData {
+                    let copy = new []byte(len(r.bytes))
+                    for i in 0..len(r.bytes) { copy[i] = r.bytes[i] }
+                    s.slots[index].echoPending = copy
+                    s.slots[index].echoPos = 0
+                }
+                BodyNeedRead {
+                    s.slots[index].workPending = false
+                    let flushed = try flushOk(c, now)
+                    return ok(false)
+                }
+                BodyEnd {
+                    s.slots[index].finalPending = true
+                    let done = try conn::endResponse(c, now)
+                    if !done {
+                        let flushed = try flushOk(c, now)
+                        if flushed {
+                            s.slots[index].workPending = true
+                            return ok(true)
+                        }
+                        return ok(false)
+                    }
+                    s.slots[index].respDone = true
+                    s.slots[index].finalPending = false
+                }
+            }
+        }
+        if !s.slots[index].respDone {
+            // Even with no buffered bytes, one more readBody may observe
+            // BodyEnd for a body that ended exactly at the last data chunk.
+            // The next turn clears this on BodyNeedRead.
+            s.slots[index].workPending = true
+            return ok(true)
+        }
+        s.slots[index].workPending = false
+        let flushed = try flushOk(c, now)
+        return ok(flushed)
+    }
+    if act == A_CHUNKED {
+        if !s.slots[index].respStarted {
+            let ct = try conn::setHeader(c, "Content-Type", "text/plain")
+            let b = try conn::beginResponse(c, 200, now)
+            let w = try conn::writeText(c, "chunk-a", 0, 7)
+            s.slots[index].respStarted = true
+            s.slots[index].respPos = w
+            s.slots[index].respDone = false
+        }
+        let part = "chunk-a"
+        while s.slots[index].respPos < len(part) {
+            let pos = s.slots[index].respPos
+            let n = try conn::writeText(c, part, pos, len(part) - pos)
+            if n == 0 {
+                let flushed = try flushOk(c, now)
+                if !flushed { return ok(false) }
+                continue
+            }
+            s.slots[index].respPos += n
+        }
+        if !s.slots[index].respDone {
+            let e = try conn::endResponse(c, now)
+            if !e {
+                let flushed = try flushOk(c, now)
+                if flushed {
+                    s.slots[index].workPending = true
+                    return ok(true)
+                }
+                return ok(false)
+            }
+            s.slots[index].respDone = true
+        }
+        s.slots[index].workPending = false
+        let flushed = try flushOk(c, now)
+        return ok(flushed)
+    }
+    if act == A_HEAD {
+        if !s.slots[index].respStarted {
+            let ct = try conn::setHeader(c, "Content-Type", "text/plain")
+            let b = try conn::beginResponse(c, 200, now)
+            let l = try conn::setLength(c, 5)
+            s.slots[index].respStarted = true
+        }
+        if !s.slots[index].respDone {
+            let e = try conn::endResponse(c, now)
+            s.slots[index].respDone = e
+            if !e {
+                let flushed = try flushOk(c, now)
+                if flushed {
+                    s.slots[index].workPending = true
+                    return ok(true)
+                }
+                return ok(false)
+            }
+        }
+        s.slots[index].workPending = false
+        let flushed = try flushOk(c, now)
+        return ok(flushed)
+    }
+    if act == A_NOCONTENT || act == A_NOTMODIFIED {
+        if !s.slots[index].respStarted {
+            var status = 204
+            if act == A_NOTMODIFIED { status = 304 }
+            let b = try conn::beginResponse(c, status, now)
+            if status == 304 {
+                let l = try conn::setLength(c, 7)
+            }
+            s.slots[index].respStarted = true
+        }
+        if !s.slots[index].respDone {
+            let e = try conn::endResponse(c, now)
+            s.slots[index].respDone = e
+            if !e {
+                let flushed = try flushOk(c, now)
+                if flushed {
+                    s.slots[index].workPending = true
+                    return ok(true)
+                }
+                return ok(false)
+            }
+        }
+        s.slots[index].workPending = false
+        let flushed = try flushOk(c, now)
+        return ok(flushed)
+    }
+    if act == A_BIG {
+        if !s.slots[index].respStarted {
+            let ct = try conn::setHeader(c, "Content-Type", "text/plain")
+            let b = try conn::beginResponse(c, 200, now)
+            let l = try conn::setLength(c, 20000)
+            s.slots[index].respStarted = true
+            s.slots[index].respPos = 0
+            s.slots[index].respDone = false
+        }
+        let chunk = repeatX(1024)
+        while s.slots[index].respPos < 20000 {
+            let pos = s.slots[index].respPos
+            var left = 20000 - pos
+            var n = len(chunk)
+            if left < n { n = left }
+            let w = try conn::writeText(c, chunk, 0, n)
+            if w == 0 {
+                let flushed = try flushOk(c, now)
+                if !flushed { return ok(false) }
+            } else {
+                s.slots[index].respPos += w
+            }
+        }
+        if !s.slots[index].respDone {
+            let done = try conn::endResponse(c, now)
+            if !done {
+                let flushed = try flushOk(c, now)
+                if flushed {
+                    s.slots[index].workPending = true
+                    return ok(true)
+                }
+                return ok(false)
+            }
+            s.slots[index].respDone = true
+        }
+        s.slots[index].workPending = false
+        let flushed = try flushOk(c, now)
+        return ok(flushed)
+    }
+    if act == A_SLOW {
+        if !s.slots[index].respStarted {
+            let ct = try conn::setHeader(c, "Content-Type", "text/plain")
+            let b = try conn::beginResponse(c, 200, now)
+            let l = try conn::setLength(c, 1000)
+            s.slots[index].respStarted = true
+            s.slots[index].respPos = 0
+            s.slots[index].respDone = false
+        }
+        if s.slots[index].respPos < 1000 {
+            let part = "0123456789"
+            let n = try conn::writeText(c, part, 0, 10)
+            s.slots[index].respPos += n
+            let flushed = try flushOk(c, now)
+            if !flushed {
+                s.slots[index].workPending = false
+                return ok(false)
+            }
+            if s.slots[index].respPos < 1000 {
+                // More bounded work is staged with no socket interest; ask the
+                // loop for an immediate next turn.
+                s.slots[index].workPending = true
+                return ok(true)
+            }
+        }
+        s.slots[index].workPending = false
+        if !s.slots[index].respDone {
+            let done = try conn::endResponse(c, now)
+            if !done {
+                let flushed = try flushOk(c, now)
+                if flushed {
+                    s.slots[index].workPending = true
+                    return ok(true)
+                }
+                return ok(false)
+            }
+            s.slots[index].respDone = true
+        }
+        s.slots[index].workPending = false
+        let flushed = try flushOk(c, now)
+        return ok(flushed)
+    }
+    return err("unknown server action", core::ERR_INTERNAL)
+}
+
+fn driveConn(mut s: &Server, index: int, cn: conn::Connection,
+             handler: Handler, now: &conn::Now): Outcome {
+    var c = cn
+    var guard = 0
+    var progress = false
+    let baseRead = conn::bytesRead(&c)
+    let baseWrite = conn::bytesWritten(&c)
+    while guard < 32 {
+        guard += 1
+        // Fairness: at most 64 KiB of connection work per reactor turn. If an
+        // Echo action still has parser-buffered body or an unaccepted prefix,
+        // ask for an immediate turn so the fairness cap cannot strand it.
+        if conn::bytesRead(&c) - baseRead + conn::bytesWritten(&c) - baseWrite >= 65536 {
+            if s.slots[index].served && !s.slots[index].respDone &&
+               s.slots[index].action == A_ECHO {
+                // The action may need one more readBody call to observe
+                // BodyEnd after the last data chunk; do not wait for a socket
+                // read that will never arrive.
+                s.slots[index].workPending = true
+            }
+            return outcome(c, true)
+        }
+        if conn::isClosed(&c) { return outcome(c, true) }
+        let ev = conn::next(&c, now)
+        match ev {
+            ok(event) {
+                match event {
+                    HandshakeDone {
+                        let a = conn::acceptAlpn(&c)
+                        match a {
+                            ok(v) { }
+                            err(m, code) {
+                                s.metrics.handlerErrors += 1
+                                let cl = conn::close(&c)
+                                match cl { ok(v) { } err(m2, c2) { } }
+                                return outcomeFailure(c, code)
+                            }
+                        }
+                        progress = true
+                    }
+                    HeadReady {
+                        let infoR = conn::requestInfo(&c)
+                        match infoR {
+                            ok(info) {
+                                let act = handler(info, now)
+                                s.slots[index].served = true
+                                s.slots[index].action = actionFrom(&act)
+                                s.slots[index].respStarted = false
+                                s.slots[index].respDone = false
+                                s.slots[index].respPos = 0
+                                s.slots[index].workPending = false
+                                s.slots[index].finalPending = false
+                                s.slots[index].echoPending = new []byte(0)
+                                s.slots[index].echoPos = 0
+                                s.metrics.requests += 1
+                            }
+                            err(m, code) { return outcomeFailure(c, code) }
+                        }
+                        let served = serveAction(s, index, &c, now)
+                        match served {
+                            ok(made) {
+                                if !made { return outcome(c, false) }
+                                progress = true
+                            }
+                            err(m, code) { return outcomeFailure(c, code) }
+                        }
+                    }
+                    ResponseComplete {
+                        s.slots[index].served = false
+                        s.slots[index].workPending = false
+                        s.slots[index].finalPending = false
+                        progress = true
+                    }
+                    NeedRead {
+                        if s.slots[index].served {
+                            let served = serveAction(s, index, &c, now)
+                            match served {
+                                ok(made) {
+                                    if !made { return outcome(c, progress) }
+                                    progress = true
+                                }
+                                err(m, code) { return outcomeFailure(c, code) }
+                            }
+                        } else {
+                            return outcome(c, progress)
+                        }
+                    }
+                    NeedWrite {
+                        if s.slots[index].served {
+                            let served = serveAction(s, index, &c, now)
+                            match served {
+                                ok(made) {
+                                    if !made { return outcome(c, progress) }
+                                    progress = true
+                                }
+                                err(m, code) { return outcomeFailure(c, code) }
+                            }
+                        } else {
+                            return outcome(c, progress)
+                        }
+                    }
+                    ProtocolError {
+                        s.metrics.protocolErrors += 1
+                        progress = true
+                    }
+                    TimedOut {
+                        s.metrics.timeouts += 1
+                        progress = true
+                    }
+                    ConnectionClosed {
+                        return outcome(c, true)
+                    }
+                }
+            }
+            err(m, code) {
+                if s.slots[index].served {
+                    let served = serveAction(s, index, &c, now)
+                    match served {
+                        ok(made) {
+                            if !made { return outcome(c, progress) }
+                            progress = true
+                        }
+                        err(m2, code2) { return outcomeFailure(c, code2) }
+                    }
+                } else {
+                    return outcomeFailure(c, code)
+                }
+            }
+        }
+    }
+    return outcome(c, progress)
+}
+
+
+fn driveSlot(mut s: &Server, index: int, handler: Handler,
+             r: &reactor::Reactor, now: &conn::Now): bool {
+    if index < 0 || index >= len(s.slots) { return false }
+    let slot = s.slots[index]
+    if !slot.live { return false }
+    let held = take(slot.conn)
+    if held == nil { return false }
+    let cn: conn::Connection = held
+    let driven = driveConn(s, index, cn, handler, now)
+    let heldBack = take(driven.conn)
+    if heldBack == nil {
+        // The handler violated the owned-connection contract; close the slot
+        // without aborting the server loop.
+        if index >= 0 && index < len(s.slots) {
+            let again = s.slots[index]
+            again.live = false
+            again.served = false
+            again.workPending = false
+            s.active -= 1
+            s.reserved -= s.perConnectionBytes
+            if s.reserved < 0 { s.reserved = 0 }
+            s.metrics.closedConnections += 1
+            noteActive(s)
+        }
+        return true
+    }
+    let c: conn::Connection = heldBack
+    if driven.failure != 0 {
+        // A connection-local failure closes only that connection. The server
+        // keeps running and reports it in metrics.
+        s.metrics.handlerErrors += 1
+        closeSlotWith(s, index, &c, now)
+        return true
+    }
+    if conn::isClosed(&c) {
+        closeSlotWith(s, index, &c, now)
+        return true
+    }
+    let refreshed = refreshSlotInterest(s, index, &c, r)
+    match refreshed {
+        ok(alive) {
+            if !alive {
+                closeSlotWith(s, index, &c, now)
+                return true
+            }
+            let again = s.slots[index]
+            again.conn = c
+            return driven.progress
+        }
+        err(m, code) {
+            s.metrics.watchErrors += 1
+            closeSlotWith(s, index, &c, now)
+            return true
+        }
+    }
+}
+
+fn computeUntil(mut s: &Server): clock::Deadline {
+    var until = forever()
+    if s.stopping {
+        until = earlier(&until, &s.drainDeadline)
+    }
+    if s.acceptPausedUntil.finite {
+        until = earlier(&until, &s.acceptPausedUntil)
+    }
+    for i in 0..len(s.slots) {
+        let slot = s.slots[i]
+        if !slot.live { continue }
+        if slot.workPending {
+            // Staged action work: do not block in the reactor.
+            return new clock::Deadline{finite: true, nanos: 0}
+        }
+        let held = take(slot.conn)
+        if held == nil { continue }
+        let cn: conn::Connection = held
+        let d = conn::deadline(&cn)
+        until = earlier(&until, &d)
+        slot.conn = cn
+    }
+    return until
+}
+
+fn deadlineReached(cn: &conn::Connection, now: &conn::Now): bool {
+    let d = conn::deadline(cn)
+    if !d.finite { return false }
+    return now.mono.nanos >= d.nanos
+}
+
+fn runOnceOn(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
+             handler: Handler, maxEvents: int): Result[bool] {
+    let now = try currentNow()
+    var progress = false
+    let paused = s.acceptPausedUntil.finite &&
+                 now.mono.nanos < s.acceptPausedUntil.nanos
+    if !paused {
+        let n = try acceptBatch(s, l, r, &now)
+        if n > 0 { progress = true }
+    }
+    let until = computeUntil(s)
+    let events = try reactor::wait(r, &until, maxEvents)
+    let after = try currentNow()
+    for i in 0..len(events) {
+        if events[i].timer || events[i].wake { continue }
+        let tag = events[i].tag
+        let readable = events[i].readable
+        if tag == LISTENER_TAG {
+            if readable && !s.stopping && !s.listenerClosed {
+                let n = try acceptBatch(s, l, r, &after)
+                if n > 0 { progress = true }
+            }
+            continue
+        }
+        let index = tagIndex(tag)
+        let gen = tagGen(tag)
+        if index < 0 || index >= len(s.slots) { continue }
+        let slot = s.slots[index]
+        if !slot.live || slot.gen != gen { continue }
+        let driven = driveSlot(s, index, handler, r, &after)
+        if driven { progress = true }
+    }
+    // Timers are checked on every turn, even when socket events dominated.
+    for i in 0..len(s.slots) {
+        let slot = s.slots[i]
+        if !slot.live { continue }
+        let held = take(slot.conn)
+        if held == nil { continue }
+        let cn: conn::Connection = held
+        let due = deadlineReached(&cn, &after)
+        slot.conn = cn
+        if due {
+            let driven = driveSlot(s, i, handler, r, &after)
+            if driven { progress = true }
+        }
+    }
+    // Resumable actions with staged work but no socket interest run again on
+    // an immediate turn.
+    for i in 0..len(s.slots) {
+        let slot = s.slots[i]
+        if !slot.live || !slot.workPending { continue }
+        let driven = driveSlot(s, i, handler, r, &after)
+        if driven { progress = true }
+    }
+    return ok(progress)
+}
+
+fn runWithReactor(mut s: &Server, r: &reactor::Reactor, handler: Handler,
+                  maxEvents: int): Result[bool] {
+    let heldL = take(s.listener)
+    if heldL == nil {
+        return ok(false)
+    }
+    let l: net::Listener = heldL
+    let made = runOnceOn(s, &l, r, handler, maxEvents)
+    s.listener = l
+    return made
+}
+
+pub fn runOnce(mut s: &Server, handler: Handler,
+               maxEvents: int): Result[bool] {
+    if s.stopping && s.active == 0 { return ok(false) }
+    let heldR = take(s.reactor)
+    if heldR == nil { return err("server reactor is closed", core::ERR_INVALID_STATE) }
+    let r: reactor::Reactor = heldR
+    let result = runWithReactor(s, &r, handler, maxEvents)
+    s.reactor = r
+    return result
+}
+
+fn removeListenerWatch(mut s: &Server) {
+    let heldW = take(s.listenerWatch)
+    if heldW != nil {
+        let w: reactor::Watch = heldW
+        let removed = reactor::remove(&w)
+        match removed { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldW)
+    }
+}
+
+fn stopConnections(mut s: &Server, now: &conn::Now) {
+    for i in 0..len(s.slots) {
+        let slot = s.slots[i]
+        if !slot.live { continue }
+        let held = take(slot.conn)
+        if held == nil { continue }
+        let cn: conn::Connection = held
+        let p = conn::phase(&cn)
+        var idle = false
+        match p {
+            Handshaking { idle = true }
+            Idle { idle = true }
+            ReadingHead { }
+            ReadingBody { }
+            Responding { }
+            Draining { }
+            Closing { }
+            Closed { idle = true }
+        }
+        if idle {
+            closeSlotWith(s, i, &cn, now)
+            drop(cn)
+        } else {
+            let asked = conn::requestClose(&cn)
+            match asked { ok(v) { } err(m, c) { } }
+            let again = s.slots[i]
+            again.conn = cn
+        }
+    }
+}
+
+pub fn beginShutdown(mut s: &Server, now: &conn::Now): Result[bool] {
+    if s.stopping { return ok(true) }
+    s.stopping = true
+    s.drainDeadline = deadlineAt(now, s.limits.totalTimeoutMs)
+    if !s.listenerClosed {
+        removeListenerWatch(s)
+        s.listenerClosed = true
+    }
+    stopConnections(s, now)
+    return ok(true)
+}
+
+// Drive in-flight responses until the drain deadline. Returns true when every
+// slot is closed; false when the deadline elapsed with connections still live.
+pub fn drain(mut s: &Server, handler: Handler, maxTurns: int): Result[bool] {
+    var turns = 0
+    while turns < maxTurns && s.active > 0 {
+        turns += 1
+        let progressed = try runOnce(s, handler, MAX_EVENTS)
+        if !progressed && s.active > 0 {
+            let now = try currentNow()
+            if s.drainDeadline.finite && now.mono.nanos >= s.drainDeadline.nanos {
+                return ok(false)
+            }
+        }
+    }
+    return ok(s.active == 0)
+}
+
+fn closeListenerOwned(mut s: &Server) {
+    let heldL = take(s.listener)
+    if heldL != nil {
+        let l: net::Listener = heldL
+        let lc = net::closeListener(&l)
+        match lc { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldL)
+    }
+}
+
+fn closeReactorOwned(mut s: &Server) {
+    let heldR = take(s.reactor)
+    if heldR != nil {
+        let r: reactor::Reactor = heldR
+        let rc = reactor::close(&r)
+        match rc { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldR)
+    }
+}
+
+// Close every live slot and the reactor. beginShutdown is idempotent; this is
+// the final step after drain or on an immediate stop.
+pub fn shutdown(mut s: &Server, now: &conn::Now): Result[bool] {
+    let began = try beginShutdown(s, now)
+    for i in 0..len(s.slots) {
+        let slot = s.slots[i]
+        if !slot.live { continue }
+        let held = take(slot.conn)
+        if held == nil {
+            let heldWatch = take(slot.watch)
+            if heldWatch != nil {
+                let w: reactor::Watch = heldWatch
+                let removed = reactor::remove(&w)
+                match removed { ok(v) { } err(m, c) { } }
+            } else {
+                drop(heldWatch)
+            }
+            let again = s.slots[i]
+            again.live = false
+            s.active -= 1
+            s.reserved -= s.perConnectionBytes
+            if s.reserved < 0 { s.reserved = 0 }
+            s.metrics.closedConnections += 1
+            continue
+        }
+        let cn: conn::Connection = held
+        closeSlotWith(s, i, &cn, now)
+    }
+    closeListenerOwned(s)
+    closeReactorOwned(s)
+    noteActive(s)
+    return ok(true)
+}
