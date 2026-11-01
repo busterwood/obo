@@ -147,7 +147,8 @@ they consume as `kind@k`. Flags follow a colon.
 | `ints@k:len` | list `k` | 1 `int`, the element count of list `k`, checked to fit `int` |
 | `null` | none | pointer 0 |
 | `const:<n>` | none | fixed value `n`; `-1` only as a destructor (6.2, point 3) |
-| `borrow<T>@k` | `T`, live | `T *` from the word; a zero word exits 7 before the call (3.4) |
+| `borrow<T>@k` | `T`, live | `const T *` from the word (read-only); a zero word exits 7 before the call (3.4) |
+| `borrow_mut<T>@k` | `T`, live | `T *` from the word (mutable); a zero word exits 7 before the call (3.4) |
 | `borrow_bytes@k` | `[]byte` or `string` | `const void *p` (never NULL), `int n` (checked) |
 | `borrow_cstr@k` | as above | `const char *`, NUL-checked scratch copy |
 | `nil_bytes_list@k` | `[]?[]byte` | `const char *const *v`, `const int *len` (count from `ints@k:len`) |
@@ -234,7 +235,7 @@ foreign handle has no copies to go stale, so it needs no generation.
 **`alive` and `is_open`.** `alive(h)` on a foreign record is record liveness, as for any record: the object has not
 been freed (`rt_alive`, `runtime.c:503`). It is not an open/closed query. `is_open(&T)` is the open query.
 
-**Use after close.** Every native with a `borrow<T>` argument checks the word in its thunk before forming the C pointer.
+**Use after close.** Every native with a `borrow<T>` or `borrow_mut<T>` argument checks the word in its thunk before forming the C pointer.
 A zero word stops the program with exit 7 and the message "foreign handle used after close". This is the code checked
 `^T` handles already use (`runtime.c:500`). The check lives in the thunk, not in each wrapper, because a per-call check
 in every wrapper is easy to forget and a C call such as `PQstatus(NULL)` is unsafe. It is one compare and is not gated
@@ -346,7 +347,7 @@ so the wrapper must close it on the error path too, or the census reports it.
 | `PQstatus` | `borrow<PGconn>@0`; ret `i32` | `status` |
 | `PQerrorMessage` | `borrow<PGconn>@0`; ret `cstr_out` | `error_message` |
 | `PQfinish` | release of `Conn` (spec `"release"`) | generated `close` |
-| `PQexecParams` | `borrow<PGconn>@0`, `borrow_cstr@1`, `ints@2:len`, `ints@3:u32`, `nil_bytes_list@2`, `ints@4:i32`, `i32@5`; ret `own_opt<PGresult>` | `exec_params` |
+| `PQexecParams` | `borrow_mut<PGconn>@0`, `borrow_cstr@1`, `ints@2:len`, `ints@3:u32`, `nil_bytes_list@2`, `ints@4:i32`, `i32@5`; ret `own_opt<PGresult>` | `exec_params` |
 | `PQmakeEmptyPGresult` | `null` (NULL connection), `i32@0`; ret `own<PGresult>` | `make_empty` (empty `Rows`) |
 | `PQresultStatus`, `PQntuples`, `PQnfields` | `borrow<PGresult>@0`; ret `i32` | `result_status`, `ntuples`, `nfields` |
 | `PQgetisnull`, `PQgetlength` | `borrow<PGresult>@0`, `i32@1`, `i32@2`; ret `i32` | `is_null`, `length` |
@@ -355,6 +356,11 @@ so the wrapper must close it on the error path too, or the census reports it.
 | `PQftype`, `PQfmod` | `borrow<PGresult>@0`, `i32@1`; ret `u32` or `i32` | `ftype`, `fmod` |
 | `PQclear` | release of `Res` (spec `"release"`) | generated `close` |
 | `PQconninfoParse` | out-parameter and struct array | stays in C (5.4) |
+
+The read-only libpq prototypes take `const PGconn *`/`const PGresult *`, so those rows use
+`borrow<T>` (C parameter `const T *`). `PQexecParams` takes a mutable `PGconn *` and uses
+`borrow_mut<T>`. Stage (d) implements both forms; constness is only a C type check and both pass the
+same live-word check.
 
 ### 5.2 libpq wrapper (sketch, not compiled)
 
@@ -424,7 +430,7 @@ the row and column index before `is_null`, `length`, `value` or `ftype`: today's
            {"name": "PGresult", "obo": "Res", "release": "PQclear", "release_result": "void"}],
  "functions": [
    {"name": "exec_params", "symbol": "PQexecParams",
-    "args": ["borrow<PGconn>@0", "borrow_cstr@1", "ints@2:len", "ints@3:u32",
+    "args": ["borrow_mut<PGconn>@0", "borrow_cstr@1", "ints@2:len", "ints@3:u32",
              "nil_bytes_list@2", "ints@4:i32", "i32@5"],
     "ret": "own_opt<PGresult>", "retains": "none"}]}
 ```
@@ -486,21 +492,21 @@ Scope: the subset that `db/sqlite/sqlite_adapter.c` calls, declared in `sqlite_d
 |---|---|---|
 | `sqlite3_open_v2(path, &db, flags, NULL)` | `borrow_cstr@0`, `out_own<Db>`, `i32@1`, `null`; ret `i32` | `open` (6.3) |
 | `sqlite3_close_v2` | release of `Db` (spec `"release": "sqlite3_close_v2"`, `"void"`; rc discarded) | generated `close` |
-| `sqlite3_next_stmt(db, NULL)` | `borrow<Db>@0`, `null`; ret `nonzero` | `has_live_statements` (informational) |
-| `sqlite3_prepare_v2(db, sql, n, &stmt, &tail)` | `borrow<Db>@0`, `borrow_bytes@1`, `out_own<Stmt>`, `out_offset@1`; ret `i32` | `prepare` (6.3) |
+| `sqlite3_next_stmt(db, NULL)` | `borrow_mut<Db>@0`, `null`; ret `nonzero` | `has_live_statements` (informational) |
+| `sqlite3_prepare_v2(db, sql, n, &stmt, &tail)` | `borrow_mut<Db>@0`, `borrow_bytes@1`, `out_own<Stmt>`, `out_offset@1`; ret `i32` | `prepare` (6.3) |
 | `sqlite3_finalize` | release of `Stmt` (spec `"release": "sqlite3_finalize"`, `"void"`) | generated `close` |
-| `sqlite3_step`, `sqlite3_reset` | `borrow<Stmt>@0`; ret `i32` | `step`, `reset` |
-| `sqlite3_bind_null`, `sqlite3_bind_int64` | `borrow<Stmt>@0`, `i32@1`, `i64@2` for int | `bind_null`, `bind_int` |
-| `sqlite3_bind_text`, `sqlite3_bind_blob` | `borrow<Stmt>@0`, `i32@1`, `borrow_bytes@2`, `const:-1` | `bind_text`, `bind_blob` |
-| `sqlite3_bind_parameter_count`, `sqlite3_column_count` | `borrow<Stmt>@0`; ret `i32` | `param_count`, `column_count` |
-| `sqlite3_column_type` | `borrow<Stmt>@0`, `i32@1`; ret `i32` | `column_type` |
-| `sqlite3_column_int64` | `borrow<Stmt>@0`, `i32@1`; ret `i64` | `column_int` |
-| `sqlite3_column_text` with `_bytes` | `borrow<Stmt>@0`, `i32@1`; ret `cbytes`, length `sqlite3_column_bytes`, cap 16 MiB | `column_text` |
+| `sqlite3_step`, `sqlite3_reset` | `borrow_mut<Stmt>@0`; ret `i32` | `step`, `reset` |
+| `sqlite3_bind_null`, `sqlite3_bind_int64` | `borrow_mut<Stmt>@0`, `i32@1`, `i64@2` for int | `bind_null`, `bind_int` |
+| `sqlite3_bind_text`, `sqlite3_bind_blob` | `borrow_mut<Stmt>@0`, `i32@1`, `borrow_bytes@2`, `const:-1` | `bind_text`, `bind_blob` |
+| `sqlite3_bind_parameter_count`, `sqlite3_column_count` | `borrow_mut<Stmt>@0`; ret `i32` | `param_count`, `column_count` |
+| `sqlite3_column_type` | `borrow_mut<Stmt>@0`, `i32@1`; ret `i32` | `column_type` |
+| `sqlite3_column_int64` | `borrow_mut<Stmt>@0`, `i32@1`; ret `i64` | `column_int` |
+| `sqlite3_column_text` with `_bytes` | `borrow_mut<Stmt>@0`, `i32@1`; ret `cbytes`, length `sqlite3_column_bytes`, cap 16 MiB | `column_text` |
 | `sqlite3_column_blob` with `_bytes` | as above, value `sqlite3_column_blob` | `column_blob` |
-| `sqlite3_changes`, `sqlite3_errcode` | `borrow<Db>@0`; ret `i32` | `changes`, `error_code` |
-| `sqlite3_errmsg` | `borrow<Db>@0`; ret `cstr_out` | `error_message` |
+| `sqlite3_changes`, `sqlite3_errcode` | `borrow_mut<Db>@0`; ret `i32` | `changes`, `error_code` |
+| `sqlite3_errmsg` | `borrow_mut<Db>@0`; ret `cstr_out` | `error_message` |
 | `sqlite3_errstr` | `i32`; ret `cstr_out` | `error_string` |
-| `sq_stmt_errcode` (trusted C helper, 4 lines) | `borrow<Stmt>@0`; ret `i32` | `stmt_error_code` |
+| `sq_stmt_errcode` (trusted C helper, 4 lines) | `borrow_mut<Stmt>@0`; ret `i32` | `stmt_error_code` |
 
 `sq_stmt_errcode` calls `sqlite3_errcode(sqlite3_db_handle(stmt))` inside one native call. The pointer from
 `sqlite3_db_handle` never leaves C, so obo holds no pointer and needs no new kind. It is the only C helper added for
@@ -511,7 +517,7 @@ The `cbytes` entry names the value function as `symbol` and the length function 
 
 ```json
 {"name": "column_text", "symbol": "sqlite3_column_text",
- "args": ["borrow<Stmt>@0", "i32@1"], "ret": "cbytes",
+ "args": ["borrow_mut<Stmt>@0", "i32@1"], "ret": "cbytes",
  "length": "sqlite3_column_bytes", "cap": 16777216}
 ```
 
@@ -601,7 +607,7 @@ type Stmt = foreign "sqlite3_stmt"             // spec: release sqlite3_finalize
 // The result types open_v2_out {rc: int, db: ?Db} and prepare_v2_out {rc: int, st: ?Stmt, tail: int}
 // are generated from the out kinds (3.1); the names follow the `<native>_out` rule.
 native fn open_v2(path: &[]byte, flags: int): open_v2_out   // borrow_cstr@0, out_own<Db>, i32@1, null
-native fn prepare_v2(db: &Db, sql: &[]byte): prepare_v2_out   // borrow<Db>@0, borrow_bytes@1, out_own<Stmt>, out_offset@1
+native fn prepare_v2(db: &Db, sql: &[]byte): prepare_v2_out   // borrow_mut<Db>@0, borrow_bytes@1, out_own<Stmt>, out_offset@1
 native fn error_message(db: &Db): []byte
 native fn errstr(rc: int): []byte
 
@@ -709,7 +715,7 @@ Every stage keeps the gates in native design section 12. A compiler-changing sta
 
 **Stage (d): foreign handles, borrowing close and census.** Adds the `foreign` record kind with one private word (3.4), `own`, `own_opt`, `out_own`, `borrow<T>`, the generated `close` and `is_open`, the thunk use-after-close check (exit 7), and per-type runtime counters (exit 8 under `OBO_CHECK=1`, exit 4 on underflow, D4). The test hook `OBO_CENSUS_FAULT=underflow` is gated like `OBO_IO_FAULT` (cleared unless `OBO_CHECK=1`). Runtime: the foreign word is kept out of both offset lists (review 6); the counter report sits in `rt_finish` between the fd and object checks (3.4). Checker: a `foreign` record kind, private-field checks for the word, and the existing defer and move rules. No ownership-checker rule. Risk: medium to high (the census and thunk check are new). Gate: the foreign handle suite and the exit table (section 9); the SQLite UAF reproduction; ASan on the fixtures.
 
-*Stage (d) implemented* (branch `cinterop-v2-d`). `foreign` is a reserved word; `type X = foreign "C"` builds a normal record with one private `int` word at offset 0 and a descriptor with no owned or string offsets, so `rt_free` frees the record only. A foreign value comes only from `own`/`own_opt`; `new X`, field access to the word, and int/string conversions are refused. `own` and `own_opt` are spec return kinds (`own<C>`/`own_opt<C>`) and `borrow<C>@k` is the parameter kind; the compiler shapes are `own:X`, `own_opt:X`, `foreign:X` (the obo name, mapped through the spec `types` to the C name). The thunk calls `obo_ci_foreign_word` for a borrow (exit 7 for nil or a zero word) and returns the raw word for an own result; the compiler then calls `obo_ci_foreign_own(id, raw, desc, optional)` to allocate the record and count it. `close`/`is_open` are implemented pragmatically as internal builtins `__foreignClose`/`__foreignIsOpen`, with the wrapper declaring the exported methods (semantics and public API are unchanged; this avoids compiler-generated method bodies). `close` zeroes the word before the release, decrements the census and returns a fully built `Result[bool]` cell; a `release_result: "int"` error becomes `err("foreign release failed", code)` and the word stays zero. `close` is deliberately not conservatively summarized, so a field receiver is allowed (`is_open` is an inline word load either way). A `pub type X = foreign` exports as an ordinary opaque record with one `priv` placeholder field (the reader already supports this; no `.sym` format bump and no C name for importers). The sidecar starts with `foreign <id> <obo> <c>` lines; internal helpers are `host` relocations, and the tool generates their thunks and the per-binding `foreign_table.c`. The census lives in `host.c`; the runtime gets a hosted-only appended jump-table slot 94 (`rt_set_foreign_census`) after the last existing slot, and `rt_finish` calls it between the fd and object censuses under `OBO_CHECK=1` (exit 8, exit 4 on underflow; `OBO_CENSUS_FAULT=underflow` is inert without `OBO_CHECK=1`). The baseline runtime and entry table are unchanged. `out_own` and `out_offset` are **deferred to stage (f)**, where SQLite needs them. Gate: the foreign handle suite, the exit table, `OBO_CHECK=1` runs, the same fixed point and byte-identity checks, `test_cinterop.py` and `test_db_adapters.py`; not run: an ASan build over the obo image or the SQLite UAF reproduction (stage (f)).
+*Stage (d) implemented* (branch `cinterop-v2-d`). `foreign` is a reserved word; `type X = foreign "C"` builds a normal record with one private `int` word at offset 0 and a descriptor with no owned or string offsets, so `rt_free` frees the record only. A foreign value comes only from `own`/`own_opt`; `new X`, field access to the word, and int/string conversions are refused. `own` and `own_opt` are spec return kinds (`own<C>`/`own_opt<C>`); the parameter kinds are `borrow<C>@k` (`const C *`) and `borrow_mut<C>@k` (`C *`); the compiler shapes are `own:X`, `own_opt:X`, `foreign:X` (the obo name, mapped through the spec `types` to the C name). The thunk calls `obo_ci_foreign_word` for a borrow (exit 7 for nil or a zero word) and returns the raw word for an own result; the compiler then calls `obo_ci_foreign_own(id, raw, desc, optional)` to allocate the record and count it. `close`/`is_open` are implemented pragmatically as internal builtins `__foreignClose`/`__foreignIsOpen`, with the wrapper declaring the exported methods (semantics and public API are unchanged; this avoids compiler-generated method bodies). `close` zeroes the word before the release, decrements the census and returns a fully built `Result[bool]` cell; a `release_result: "int"` error becomes `err("foreign release failed", code)` and the word stays zero. `close` is deliberately not conservatively summarized, so a field receiver is allowed (`is_open` is an inline word load either way). A `pub type X = foreign` exports as an ordinary opaque record with one `priv` placeholder field (the reader already supports this; no `.sym` format bump and no C name for importers). The sidecar starts with `foreign <id> <obo> <c>` lines; internal helpers are `host` relocations, and the tool generates their thunks and the per-binding `foreign_table.c`. The census lives in `host.c`; the runtime gets a hosted-only appended jump-table slot 94 (`rt_set_foreign_census`) after the last existing slot, and `rt_finish` calls it between the fd and object censuses under `OBO_CHECK=1` (exit 8, exit 4 on underflow; `OBO_CENSUS_FAULT=underflow` is inert without `OBO_CHECK=1`). The baseline runtime and entry table are unchanged. `out_own` and `out_offset` are **deferred to stage (f)**, where SQLite needs them. Gate: the foreign handle suite (including borrow/borrow_mut constness), the exit table, `OBO_CHECK=1` runs, ASan/UBSan over the C fixture (`foreign_fixture_test.c`), the same fixed point and byte-identity checks, `test_cinterop.py` and `test_db_adapters.py`; not run: an ASan build over the obo image itself or the SQLite UAF reproduction (stage (f)).
 
 **Stage (e): port libpq.** Rewrites `libpq.obx` and `libpq.cbind` to 5.2 and 5.3, deletes `libpq_adapter.c` and `.h` except the conninfo helper, and keeps `cres.c`. Risk: low to medium. Gate: the cinterop suite with fake release counts; bounds tests (`PQgetisnull(res,9,0)`, `PQftype` out of range); the caps in C15; a `Rows` dropped without `close` reported by the census; a live smoke test on a user-supplied local DSN, opt-in.
 
@@ -727,7 +733,10 @@ Exposure: (a) none beyond the existing `&T` argument rules; (b) none; (c) parse 
 **Borrow timing (review 12).** `f(&a, grow(&a))`: where the checker accepts the call, the native sees the grown array; where the existing overlap rule refuses it, the test asserts the refusal.
 
 **Foreign handle suite (stage (d)).**
-- use after close: a `borrow<T>` native on a closed handle exits 7 with its message and makes no C call; `alive(h)` stays true (record liveness) while `is_open` is false;
+`out_own` and `out_offset` are deferred to stage (f), where SQLite needs them, so they have no stage (d)
+tests; stage (d) covers own/own_opt/borrow/borrow_mut.
+
+- use after close: a `borrow<T>`/`borrow_mut<T>` native on a closed handle exits 7 with its message and makes no C call; `alive(h)` stays true (record liveness) while `is_open` is false;
 - double close: `ok(false)` and exactly one C release call;
 - census underflow, forced by `OBO_CENSUS_FAULT=underflow` (inert unless `OBO_CHECK=1`): exit 4;
 - census under `OBO_CHECK=1`: a handle never closed exits 8 at normal end and names the type; the same for a handle dropped at scope end, overwritten, or dropped with its enclosing record, each with no C release call;

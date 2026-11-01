@@ -607,12 +607,18 @@ refused. A value exists only from a native `own`/`own_opt` result (or an own
 result of a typed native fn). `pub type X = foreign` exports as an ordinary
 opaque record with one `priv` placeholder field in the `.sym`; no format bump and
 no C name is needed by importers. The wrapper's exported `close`/`is_open`
-methods are ordinary methods.
+methods are ordinary methods. Limitation: an importer sees an opaque record, so
+it can only close/open it through the wrapper's exported methods; without them
+the type has no usable lifetime operation. `--check` can consume a wrapper's
+`.sym` alone; a full build still needs the wrapper source (the compiler resolves
+imports from source unless checking).
 
-**Native kinds.** A `&X` parameter is the shape `foreign:X` and the spec kind
-`borrow<C>@k`; the call site pushes the record pointer, and the thunk calls
-`obo_ci_foreign_word`, which exits 7 with `obo: foreign handle used after close`
-for a nil record or a zero word. A return `X` is `own:X` / spec `own<C>`; `?X` is
+**Native kinds.** A `&X` parameter is the shape `foreign:X` and one of two spec
+kinds: `borrow<C>@k` is read-only and has the C parameter `const C *`;
+`borrow_mut<C>@k` has `C *`. Both push the same record pointer and the thunk
+calls `obo_ci_foreign_word`, which exits 7 with
+`obo: foreign handle used after close` for a nil record or a zero word; constness
+is only the C type check. A return `X` is `own:X` / spec `own<C>`; `?X` is
 `own_opt:X` / `own_opt<C>`. The thunk returns the raw C word, then the compiler
 calls `obo_ci_foreign_own(id, raw, desc, optional)`: `own` with NULL exits 11,
 `own_opt` with NULL gives nil, otherwise it allocates a normal record of `desc`,
@@ -658,7 +664,10 @@ exits 4 (`obo: internal error: foreign handle census underflow`);
 `OBO_CHECK=1`.
 
 **Sidecar.** Sidecar v2 starts with `foreign <id> <obo-name> <c-name>` lines in
-first-declaration order, then the relocations. A typed foreign call records
+first-declaration order, then the relocations. Stage (d) adds these lines under
+the existing `cinterop-relocs 2` header without a version bump; a reader that
+expects only the 7-field relocation lines rejects them as malformed (the v2
+reader here is the updated one). A typed foreign call records
 shapes `foreign:X`, `own:X` or `own_opt:X`; the tool maps the shape's obo name
 through `types` to the C name. Internal helpers appear as mode `host` records
 with fixed arity (`obo_ci_foreign_own` 4, `obo_ci_foreign_close` 5,
@@ -705,15 +714,18 @@ a typed return, spec v2 `signature_check` (header and declarations-only), a
 function-pointer `ret_ctype`, and `cbytes` key/length-function refusals,
 declaration/spec shape mismatches, the native declaration negatives, the
 `native` identifier programs, and the `--check` refusal. The stage (d) surface
-(`foreigns()`) covers own/own_opt/borrow, close through a local, field, `mut`
-receiver, `^T` handle and array element, deferred close, double close, exactly one
+(`foreigns()`) covers own/own_opt/borrow/borrow_mut (including both constness
+directions), close through a local, field, `mut` receiver, `^T` handle and array
+element, deferred close, double close, exactly one
 release, `is_open` and `alive`, a `release_result: "int"` error, use-after-close
 exit 7 with no C call, the leak census (scope end, overwrite, enclosing record;
 exit 8 and no release; inert without `OBO_CHECK=1`), no census on `exit`/trap,
 census underflow exit 4 and `OBO_CENSUS_FAULT`, the compile negatives
 (`new`/field/conversion/owned parameter), a mismatched foreign borrow, sidecar
 foreign/host tampering, an app importing a wrapper with `pub type X = foreign`,
-and `--check` over that wrapper's `.sym`. A libpq build failure is a test failure
+`--check` over that wrapper's `.sym` alone, a wrapper with no explicit
+close/is_open (the sugar path), the temporary and `let` receiver rules, and an
+ASAN/UBSAN run over the C fixture. A libpq build failure is a test failure
 when `libpq.so.5` is present; the test skips only when the library is absent.
 
 It also builds and runs:
