@@ -54,7 +54,7 @@ on this branch is **0.15, symbol format 8, ABI 1**; it is not promoted, so
   fragment composition and contextual HTML escaping. The HTML escaping library
   is in `obo/lib/html.obx`. Interface handles `^I` are later. The full
   reference is [obo/LANGUAGE.md](obo/LANGUAGE.md).
-- **Compiler.** 15,611 lines / 589,373 bytes of obo source on this branch (the released 0.14 line was 14,706 / 555,862). Numeric floats add
+- **Compiler.** 15,799 lines / 596,620 bytes of obo source on this branch (the rebased 0.14 patch line was 15,777 / 595,855; the released 0.14 line was 14,706 / 555,862). Numeric floats add
   the `float` type, exact literal/constant conversion, arithmetic, formatting,
   `parseFloat` and format-6 symbol support to the 0.9/format-5 lambda line;
   Stage B adds capture-list parsing, recursive incomplete/interface

@@ -4007,7 +4007,9 @@ fn lookup(name: string): ^Sym {
 }
 
 // A non-erroring name probe used by contextual syntax (sql.copy/html.copy):
-// a local, parameter, global, type or imported module alias shadows the helper.
+// a local, parameter, global or type shadows the helper. Imported module aliases
+// are deliberately not consulted: Obo module members use '::', so an alias named
+// sql/html does not shadow the dot helper.
 fn lookupMaybe(name: string): ?^Sym {
     var i = len(blocks) - 1
     while i >= 0 {
@@ -7507,6 +7509,13 @@ fn hsLower(b: int): int {
     return b
 }
 
+// HTML whitespace: space, tab, LF, FF and CR. Form feed (0x0C) separates a
+// tag/attribute name from its value in a browser, so the local state machine
+// must treat it as whitespace everywhere.
+fn hsSpace(b: int): bool {
+    return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == 0x0C
+}
+
 fn hsBytesAre(a: &[]byte, name: string): bool {
     if len(a) != len(name) { return false }
     for i in 0..len(a) {
@@ -7577,6 +7586,16 @@ fn hsUrlPrefixOk(): bool {
         if b == ':' { return hsSchemeAllowed(&hsUrlLit, i) }
         if b == '/' || b == '?' || b == '#' { return true }
         i += 1
+    }
+    return false
+}
+
+// A literal ampersand next to a URL hole may start an HTML character
+// reference (for example &#58;), which the browser decodes before URL parsing.
+// Reject it instead of guessing: build and validate the whole URL string.
+fn hsUrlHasAmp(): bool {
+    for i in 0..len(hsUrlLit) {
+        if int(hsUrlLit[i]) == int('&') { return true }
     }
     return false
 }
@@ -7656,7 +7675,7 @@ fn htmlLiteral(chunk: &[]byte) {
             if isLetter(hsLower(b)) || isDigit(b) || b == '-' || b == ':' {
                 append(hsTag, byte(hsLower(b)))
                 i += 1
-            } else if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+            } else if hsSpace(b) {
                 hsState = HS_TAG_BODY
                 i += 1
             } else if b == '>' {
@@ -7674,7 +7693,7 @@ fn htmlLiteral(chunk: &[]byte) {
                 i += 1
             } else if b == '/' {
                 i += 1
-            } else if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+            } else if hsSpace(b) {
                 i += 1
             } else if isLetter(hsLower(b)) || b == ':' {
                 hsState = HS_ATTR_NAME
@@ -7692,7 +7711,7 @@ fn htmlLiteral(chunk: &[]byte) {
                 hsAttrDanger = hsIsDangerName()
                 hsState = HS_BEFORE_VALUE
                 i += 1
-            } else if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+            } else if hsSpace(b) {
                 hsState = HS_AFTER_ATTR
                 i += 1
             } else if b == '>' {
@@ -7711,7 +7730,7 @@ fn htmlLiteral(chunk: &[]byte) {
                 hsAttrDanger = hsIsDangerName()
                 hsState = HS_BEFORE_VALUE
                 i += 1
-            } else if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+            } else if hsSpace(b) {
                 i += 1
             } else if b == '>' {
                 hsEndTag()
@@ -7727,7 +7746,7 @@ fn htmlLiteral(chunk: &[]byte) {
                 i += 1
             }
         } else if hsState == HS_BEFORE_VALUE {
-            if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+            if hsSpace(b) {
                 i += 1
             } else if b == '"' {
                 hsState = HS_VALUE_DQ
@@ -7748,6 +7767,9 @@ fn htmlLiteral(chunk: &[]byte) {
             var quote = int('"')
             if hsState == HS_VALUE_SQ { quote = int('\'') }
             if b == quote {
+                if hsAttrUrl && hsUrlHoles > 0 && hsUrlHasAmp() {
+                    errorAt("a URL attribute with a hole cannot contain a literal '&'; build and validate the URL string first", hsUrlLine, hsUrlCol)
+                }
                 if hsAttrUrl && hsUrlHoles > 0 && hsUrlAtStart && hsUrlSuffixUnsafe() {
                     errorAt("a URL attribute's first hole must not be followed by a scheme colon; build and validate the URL string first", hsUrlLine, hsUrlCol)
                 }
@@ -7757,7 +7779,7 @@ fn htmlLiteral(chunk: &[]byte) {
             }
             i += 1
         } else if hsState == HS_VALUE_UNQ {
-            if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+            if hsSpace(b) {
                 hsState = HS_TAG_BODY
             } else if b == '>' {
                 hsEndTag()
@@ -7784,7 +7806,7 @@ fn htmlLiteral(chunk: &[]byte) {
                 }
                 if closeMatch {
                     let d = int(chunk[i + 2 + n])
-                    if !(d == ' ' || d == '\t' || d == '\n' || d == '\r' || d == '/' || d == '>') {
+                    if !(hsSpace(d) || d == '/' || d == '>') {
                         closeMatch = false
                     }
                 }

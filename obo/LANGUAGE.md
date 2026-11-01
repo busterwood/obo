@@ -2277,7 +2277,8 @@ copies it first. `sqlJoin(parts, sep)` joins a `[]Sql` with a separator and
 `sqlWhere(parts)` returns empty for an empty array, otherwise
 `WHERE (p1) AND (p2)`: each predicate is parenthesized so an inner `OR` cannot
 capture its neighbour. `sqlJoin` holds its parts array across the separator
-expression and rejects a separator that moves or frees it. A `[]Sql` is never
+expression and rejects a separator that moves, frees, replaces, appends to or
+truncates it; compute such a separator before the call. A `[]Sql` is never
 expanded implicitly.
 
 `html` and `Html` are the claimed-safe content type. Its `text` field is private
@@ -2290,8 +2291,12 @@ characters and tab/LF/CR; a hole in a URL attribute (`href`, `src`, `action`,
 `manifest`, `ping`, `profile`, `xlink:href`) also applies the scheme allow-list
 (relative references, `http`, `https`, `mailto`) and traps on any other scheme.
 URL values are validated as assembled attribute values: a scheme may not be
-split across holes, and a URL attribute may contain only one hole (build and
-validate the whole string first if a dynamic URL is needed). An `Html` hole is inserted raw and is allowed only in text
+split across holes, a URL attribute may contain only one hole, and a literal
+`&` next to a hole is rejected because it could be an HTML character reference
+(for example `&#58;`) that the browser decodes before URL parsing. Build and
+validate the whole string first if a dynamic URL is needed. HTML whitespace is
+space, tab, LF, form feed (U+000C) and CR; form feed separates names and values
+exactly like the other whitespace bytes. An `Html` hole is inserted raw and is allowed only in text
 content; `[]Html` concatenates there. `Html` in an attribute is a compile error,
 and `HtmlAttrs`/`HtmlAttr` have no v1 hole. Holes are rejected at compile time in
 script/style bodies, comments, doctypes, unquoted attribute values, tag names,

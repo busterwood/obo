@@ -30,6 +30,14 @@ fn main() {
     let u6 = html`<a href="${"//host/x"}">a</a>`
     show(u6)  // expect: <a href="//host/x">a</a>
 
+    // the extended URL attribute list is context-checked too
+    let obj = html`<object data="/x/${"1"}"></object>`
+    show(obj)  // expect: <object data="/x/1"></object>
+    let ping = html`<a ping="${"https://x/p"}">a</a>`
+    show(ping)  // expect: <a ping="https://x/p">a</a>
+    let xlink = html`<a xlink:href="${"https://x/x"}">a</a>`
+    show(xlink)  // expect: <a xlink:href="https://x/x">a</a>
+
     // UTF-8 passes through; literal entities stay exactly as written
     let utf = "é☃"
     let e = html`<p>${utf} &amp; &#39; &copy;</p>`
@@ -91,6 +99,13 @@ fn main() {
     show(styleLit)  // expect: <style>a{color:red}</style>
     let dangerLit = html`<div style="color: red" onclick="go()">x</div>`
     show(dangerLit)  // expect: <div style="color: red" onclick="go()">x</div>
+
+    // form feed is HTML whitespace, including as a raw-close delimiter
+    let ffClose = html`<script>x</script><p>${"<"}</p>`
+    let ft = html::toText(ffClose)
+    var fk = 0
+    while fk < len(ft) && ft[fk] != byte(0x0C) { fk += 1 }
+    println(substr(ft, fk + 1, len(ft)))  // expect: ><p>&lt;</p>
 
     // explicit trusted construction composes with the tag
     let trusted = html::raw("<em>trusted</em>")

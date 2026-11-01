@@ -2,7 +2,7 @@
 
 fn main() {
     let url = "javascript:alert(1)"
-    let h = html`<a href="${url}">x</a>`
+    let h = html`<a href="${url}">x</a>`
     println("unreachable")
 }
 // expect-exit: 10

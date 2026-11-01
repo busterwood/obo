@@ -238,12 +238,21 @@ MUTANTS.update({
                 '                if false {'),
     'template: dangerous attribute check dropped': ('                    if hsAttrDanger {',
                 '                    if false {'),
-    'template: script close delimiter check dropped': ("                    if !(d == ' ' || d == '\\t' || d == '\\n' || d == '\\r' || d == '/' || d == '>') {",
+    'template: script close delimiter check dropped': ("                    if !(hsSpace(d) || d == '/' || d == '>') {",
                 '                    if false {'),
     'template: Html layout check dropped': ('        if len(tHtml.fields) != 1 || tHtml.fields[0].name != "text" ||\n           tHtml.fields[0].typ != tString || !tHtml.fields[0].private || tHtml.fields[0].offset != 0 {\n            errorAt("module \'html\' must define Html as a ref record with exactly one private string field \'text\'", line, 1)\n        }',
                 '        if false {\n            errorAt("module \'html\' must define Html as a ref record with exactly one private string field \'text\'", line, 1)\n        }'),
     'template: shadow helper probe dropped': ('    if name == "sql" && sym == T_DOT && lookupMaybe(name) == nil { return sqlCopyExpr() }',
                 '    if name == "sql" && sym == T_DOT { return sqlCopyExpr() }'),
+})
+
+
+# template re-review: form-feed whitespace and URL character references
+MUTANTS.update({
+    'template: hsSpace omits form feed': ("    return b == ' ' || b == '\\t' || b == '\\n' || b == '\\r' || b == 0x0C",
+                "    return b == ' ' || b == '\\t' || b == '\\n' || b == '\\r'"),
+    'template: URL literal ampersand check dropped': ('                if hsAttrUrl && hsUrlHoles > 0 && hsUrlHasAmp() {',
+                '                if false {'),
 })
 
 

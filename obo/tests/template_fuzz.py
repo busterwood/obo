@@ -137,5 +137,57 @@ def run_case() -> None:
                                    (i, r.stdout[max(0, i - 20):i + 40],
                                     want[max(0, i - 20):i + 40]))
             raise run.Fail('template fuzz length %d != %d' % (len(r.stdout), len(want)))
+        ff_checks(case)
     finally:
         shutil.rmtree(case, ignore_errors=True)
+
+
+def ff_checks(case):
+    """Form-feed whitespace and URL character-reference adversarial cases."""
+    cases = [
+        ('ff-script', '<script\x0ctype="x">${"alert(1)"}</script>',
+         'a hole is not allowed in a <script> body'),
+        ('ff-style-tag', '<style\x0ctype="text/css">${"body{}"}</style>',
+         'a hole is not allowed in a <style> body'),
+        ('ff-style-attr', '<div style\x0c="${"background:url(//evil/x)"}">y</div>',
+         'a hole is not allowed in a style attribute'),
+        ('ff-srcdoc', '<iframe srcdoc\x0c="${"<script>x</script>"}"></iframe>',
+         'a hole is not allowed in a srcdoc attribute'),
+        ('ff-onclick', '<button onclick\x0c="${"alert(1)"}">x</button>',
+         'a hole is not allowed in a onclick attribute'),
+        ('url-entity', '<a href="${"javascript"}&#58;alert(1)">x</a>',
+         "a URL attribute with a hole cannot contain a literal '&'"),
+    ]
+    for name, body, want in cases:
+        src = os.path.join(case, name + '.obx')
+        with open(src, 'w') as f:
+            f.write('import "html.obx" as html\nfn main() { let h = html`' + body + '` }\n')
+        exe = os.path.join(case, name)
+        sym = os.path.join(case, name + '-sym')
+        os.makedirs(sym, exist_ok=True)
+        p = subprocess.run([run.OBXC, src, '-o', exe, '--rt', FORK,
+                            '-I', os.path.join(FORK, 'lib'), '--sym-dir', sym],
+                           capture_output=True, text=True, timeout=120)
+        if p.returncode == 0:
+            raise run.Fail('template fuzz accepted unsafe ' + name)
+        if want not in p.stderr:
+            raise run.Fail('template fuzz %s error differs: %s' %
+                           (name, p.stderr.strip()[:300]))
+    # FF before = must still select the URL context; the value traps at run time.
+    src = os.path.join(case, 'ff-href.obx')
+    with open(src, 'w') as f:
+        f.write('import "html.obx" as html\n'
+                'fn main() { let h = html`<a href\x0c="${"javascript:alert(1)"}">x</a>` }\n')
+    exe = os.path.join(case, 'ff-href')
+    sym = os.path.join(case, 'ff-href-sym')
+    os.makedirs(sym, exist_ok=True)
+    p = subprocess.run([run.OBXC, src, '-o', exe, '--rt', FORK,
+                        '-I', os.path.join(FORK, 'lib'), '--sym-dir', sym],
+                       capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        raise run.Fail('template fuzz ff-href did not compile: ' + p.stderr.strip()[:300])
+    r = subprocess.run([exe], capture_output=True, timeout=60,
+                       env=dict(os.environ, OBO_CHECK='1'))
+    if r.returncode != 10 or b'URL scheme is not allowed' not in r.stderr:
+        raise run.Fail('template fuzz ff-href did not trap: exit %d %r' %
+                       (r.returncode, r.stderr[:200]))
