@@ -2352,6 +2352,330 @@ def returns(tmp):
     print('returns tests: ok')
 
 
+FOREIGN_WRAPPER = """module handles
+
+pub type Conn = foreign "Fk"
+pub type Bad = foreign "FkBad"
+
+native fn ff_new(v: int): Conn
+native fn ff_new_opt(v: int): ?Conn
+native fn ff_get(c: &Conn): int
+native fn ff_mark(c: &Conn): int
+native fn ff_bad_new(): Bad
+native fn ff_frees(): int
+
+pub fn (mut c: &Conn) close(): Result[bool] { return __foreignClose(c) }
+pub fn (c: &Conn) is_open(): bool { return __foreignIsOpen(c) }
+pub fn (mut c: &Bad) close(): Result[bool] { return __foreignClose(c) }
+pub fn (c: &Bad) is_open(): bool { return __foreignIsOpen(c) }
+
+pub fn open(v: int): Conn { return ff_new(v) }
+pub fn open_opt(v: int): ?Conn { return ff_new_opt(v) }
+pub fn get(c: &Conn): int { return ff_get(c) }
+pub fn mark(c: &Conn): int { return ff_mark(c) }
+pub fn bad(): Bad { return ff_bad_new() }
+pub fn frees(): int { return ff_frees() }
+"""
+
+FOREIGN_APP = """type Box = ref record { h: handles::Conn }
+
+fn (mut b: &Box) closeh() { b.h.close() }
+
+fn use_defer() {
+    var a = handles::open(8)
+    defer a.close()
+    println("defer ", handles::get(&a))
+}
+
+fn main() {
+    var a = handles::open(11)
+    println("open ", a.is_open(), " ", handles::get(&a))
+    let hh = handle(a)
+    println("alive ", alive(hh), " open ", a.is_open())
+    let r = a.close()
+    match r {
+        ok(v) { println("close ", v) }
+        err(m, c) { println("err ", m, " ", c) }
+    }
+    println("closed ", a.is_open(), " alive ", alive(hh))
+    let r2 = a.close()
+    match r2 {
+        ok(v) { println("again ", v) }
+        err(m, c) { println("err ", m, " ", c) }
+    }
+    println("frees ", handles::frees())
+
+    var b = new Box{h: handles::open(3)}
+    println("field open ", b.h.is_open())
+    b.closeh()
+    println("field closed ", b.h.is_open())
+
+    var arr = new []handles::Conn(0)
+    append(arr, handles::open(4))
+    println("elem open ", arr[0].is_open())
+    arr[0].close()
+    println("elem closed ", arr[0].is_open())
+
+    var c = handles::open(9)
+    let ch = handle(c)
+    println("handle open ", ch.is_open())
+    ch.close()
+    println("handle closed ", c.is_open())
+
+    use_defer()
+    let o = handles::open_opt(-1)
+    if o == nil { println("opt nil") } else { println("opt bad") }
+    var o2 = handles::open_opt(12)
+    if o2 == nil {
+        println("opt2 nil")
+    } else {
+        println("opt2 ", handles::get(&o2), " ", o2.is_open())
+        o2.close()
+    }
+
+    var bad = handles::bad()
+    println("bad open ", bad.is_open())
+    let rb = bad.close()
+    match rb {
+        ok(v) { println("bad ok ", v) }
+        err(m, c) { println("bad err ", m, " ", c) }
+    }
+    println("bad closed ", bad.is_open())
+    println("final frees ", handles::frees())
+}
+"""
+
+FOREIGN_WANT = [
+    'open true 11', 'alive true open true', 'close true', 'closed false alive true',
+    'again false', 'frees 1',
+    'field open true', 'field closed false',
+    'elem open true', 'elem closed false',
+    'handle open true', 'handle closed false',
+    'defer 8', 'opt nil', 'opt2 12 true',
+    'bad open true', 'bad err foreign release failed 42', 'bad closed false',
+    'final frees 6',
+]
+
+
+def foreign_spec():
+    return {
+        'format': 'cinterop-proto/2', 'module': 'handles',
+        'platform': 'x86_64-linux-gnu', 'abi': 'sysv-amd64',
+        'signature_check': 'header',
+        'sources': ['foreign_fixture.c'], 'headers': ['foreign_fixture.h'],
+        'libs': [], 'cflags': [], 'wrapper': 'handles_wrap.obx',
+        'types': [
+            {'name': 'Fk', 'obo': 'Conn', 'release': 'ff_release', 'release_result': 'void'},
+            {'name': 'FkBad', 'obo': 'Bad', 'release': 'ff_bad_release', 'release_result': 'int'},
+        ],
+        'functions': [
+            {'name': 'ff_new', 'symbol': 'ff_new', 'args': ['i32@0'], 'ret': 'own<Fk>',
+             'effects': ['impure']},
+            {'name': 'ff_new_opt', 'symbol': 'ff_new_opt', 'args': ['i32@0'],
+             'ret': 'own_opt<Fk>', 'effects': ['impure']},
+            {'name': 'ff_get', 'symbol': 'ff_get', 'args': ['borrow<Fk>@0'], 'ret': 'i32',
+             'effects': ['impure']},
+            {'name': 'ff_mark', 'symbol': 'ff_mark', 'args': ['borrow<Fk>@0'], 'ret': 'i32',
+             'effects': ['impure']},
+            {'name': 'ff_bad_new', 'symbol': 'ff_bad_new', 'args': [], 'ret': 'own<FkBad>',
+             'effects': ['impure']},
+            {'name': 'ff_frees', 'symbol': 'ff_frees', 'args': [], 'ret': 'i32',
+             'effects': ['impure']},
+        ],
+    }
+
+
+def foreigns(tmp):
+    """Stage (d): foreign handles, own/own_opt/borrow, close/is_open and the census."""
+    d = os.path.join(tmp, 'foreign_src')
+    os.makedirs(d)
+    for name in ('foreign_fixture.c', 'foreign_fixture.h'):
+        shutil.copy(os.path.join(HERE, name), os.path.join(d, name))
+    open(os.path.join(d, 'handles_wrap.obx'), 'w').write(FOREIGN_WRAPPER)
+    spec_path = os.path.join(d, 'handles.cbind')
+    json.dump(foreign_spec(), open(spec_path, 'w'), indent=2)
+
+    def app(name, body, spec=None, wrapper=None):
+        ad = os.path.join(tmp, 'fapp_' + name)
+        os.makedirs(ad)
+        for n in ('foreign_fixture.c', 'foreign_fixture.h'):
+            shutil.copy(os.path.join(HERE, n), os.path.join(ad, n))
+        sp = spec or foreign_spec()
+        sp = dict(sp)
+        sp['sources'] = ['foreign_fixture.c']
+        sp['headers'] = ['foreign_fixture.h']
+        sp['wrapper'] = 'handles_wrap.obx'
+        open(os.path.join(ad, 'handles_wrap.obx'), 'w').write(wrapper or FOREIGN_WRAPPER)
+        spath = os.path.join(ad, 'handles.cbind')
+        json.dump(sp, open(spath, 'w'), indent=2)
+        ap = os.path.join(ad, 'app.obx')
+        open(ap, 'w').write('module app\n\nimport "handles.obx"\n\n' + body)
+        out = os.path.join(ad, 'out')
+        return build(spath, ap, out), out
+
+    p, out = app('main', FOREIGN_APP)
+    need(p, 'foreign main build')
+    env = dict(os.environ, OBO_CHECK='1')
+    r = need(run([os.path.join(out, 'app')], env=env), 'foreign main run')
+    if r.stdout.splitlines() != FOREIGN_WANT:
+        raise Fail("foreign output:\n got  %r\n want %r" % (r.stdout.splitlines(), FOREIGN_WANT))
+    relocs = open(os.path.join(out, 'native.relocs')).read().splitlines()
+    if not any(ln == 'foreign 0 Conn Fk' for ln in relocs):
+        raise Fail("foreign sidecar missing the Conn type: %r" % relocs[:4])
+    if not any(' ff_new 1 fn int own:Conn ' in ln for ln in relocs):
+        raise Fail("own return shape missing from the sidecar")
+    if not any(' ff_get 1 fn foreign:Conn i64 ' in ln for ln in relocs):
+        raise Fail("borrow shape missing from the sidecar")
+    if not any(' obo_ci_foreign_own 4 host i64,i64,i64,i64 i64 ' in ln for ln in relocs):
+        raise Fail("host own relocation missing from the sidecar")
+
+    # Use after close: exit 7 before the C call, traced by the fixture.
+    uac = ('fn main() {\n    var a = handles::open(5)\n    a.close()\n'
+           '    println(handles::mark(&a))\n}\n')
+    p, out = app('uac', uac)
+    need(p, 'foreign uac build')
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, FF_TRACE='1'))
+    if r.returncode != 7 or 'used after close' not in (r.stderr + r.stdout) or 'ff_mark' in r.stderr:
+        raise Fail("use after close: want exit 7 with no ff_mark, got %d: %r"
+                   % (r.returncode, (r.stderr, r.stdout)))
+
+    # A leaked handle at scope end: exit 8 under OBO_CHECK=1, no release, names the type.
+    leak = 'fn main() {\n    var a = handles::open(5)\n    println("leak")\n}\n'
+    p, out = app('leak', leak)
+    need(p, 'foreign leak build')
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1', FF_TRACE='1'))
+    if r.returncode != 8 or 'foreign handles leaked: Conn 1' not in r.stderr or 'ff_release' in r.stderr:
+        raise Fail("leak scope: want exit 8 Conn 1 and no release, got %d: %r"
+                   % (r.returncode, (r.stderr, r.stdout)))
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, FF_TRACE='1'))
+    if r.returncode != 0 or 'leaked' in r.stderr:
+        raise Fail("leak without OBO_CHECK: want exit 0 and no message, got %d: %r"
+                   % (r.returncode, r.stderr))
+
+    # Overwritten and dropped-with-record handles also leak without a release.
+    over = ('fn main() {\n    var a = handles::open(1)\n    a = handles::open(2)\n'
+            '    println("over")\n}\n')
+    p, out = app('over', over)
+    need(p, 'foreign overwrite build')
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1', FF_TRACE='1'))
+    if r.returncode != 8 or 'foreign handles leaked: Conn 2' not in r.stderr or 'ff_release' in r.stderr:
+        raise Fail("overwrite leak: want exit 8 Conn 2, got %d: %r" % (r.returncode, r.stderr))
+
+    rec = ('type Box = ref record { h: handles::Conn }\n\n'
+           'fn main() {\n    var b = new Box{h: handles::open(3)}\n    println("rec")\n}\n')
+    p, out = app('rec', rec)
+    need(p, 'foreign record leak build')
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1', FF_TRACE='1'))
+    if r.returncode != 8 or 'foreign handles leaked: Conn 1' not in r.stderr or 'ff_release' in r.stderr:
+        raise Fail("record leak: want exit 8 Conn 1, got %d: %r" % (r.returncode, r.stderr))
+
+    # exit(n) and a trap run no census.
+    ex = ('fn main() {\n    var a = handles::open(5)\n    exit(3)\n}\n')
+    p, out = app('exit', ex)
+    need(p, 'foreign exit build')
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    if r.returncode != 3 or 'leaked' in r.stderr:
+        raise Fail("exit with a live handle: want exit 3 and no census, got %d: %r"
+                   % (r.returncode, r.stderr))
+    p, out = app('trap', uac)
+    need(p, 'foreign trap build')
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    if r.returncode != 7 or 'leaked' in r.stderr:
+        raise Fail("trap with a live handle: want exit 7 and no census, got %d: %r"
+                   % (r.returncode, r.stderr))
+
+    # Forced census underflow: only under OBO_CHECK=1.
+    p, out = app('underflow', FOREIGN_APP)
+    need(p, 'foreign underflow build')
+    r = run([os.path.join(out, 'app')],
+            env=dict(os.environ, OBO_CHECK='1', OBO_CENSUS_FAULT='underflow'))
+    if r.returncode != 4 or 'census underflow' not in r.stderr:
+        raise Fail("census underflow: want exit 4, got %d: %r" % (r.returncode, r.stderr))
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CENSUS_FAULT='underflow'))
+    if r.returncode != 0:
+        raise Fail("census fault without OBO_CHECK must be inert, got %d" % r.returncode)
+
+    # Compile negatives through the wrapper.
+    compile_neg = [
+        ('new', 'fn main() {\n    let c = new handles::Conn{word: 1}\n}\n', 'cannot construct'),
+        ('field', 'fn main() {\n    var c = handles::open(1)\n    println(c.word)\n}\n',
+         'word is private'),
+        ('convert', 'fn main() {\n    var c = handles::open(1)\n    println(int(c))\n}\n',
+         'cannot be converted'),
+    ]
+    for name, body, want in compile_neg:
+        p, _ = app('neg_' + name, body)
+        if p.returncode == 0 or want not in (p.stderr + p.stdout):
+            raise Fail("foreign compile negative %s: want %r, got rc %d: %s"
+                       % (name, want, p.returncode, (p.stderr + p.stdout).strip()[-400:]))
+
+    # A native declaration that takes an owned handle is unsupported.
+    badwrap = FOREIGN_WRAPPER.replace('native fn ff_get(c: &Conn): int',
+                                      'native fn ff_get(c: Conn): int')
+    p, _ = app('neg_owned', 'fn main() {}\n', wrapper=badwrap)
+    if p.returncode == 0 or 'unsupported type' not in (p.stderr + p.stdout):
+        raise Fail("an owned foreign native parameter was not refused: %s"
+                   % (p.stderr + p.stdout).strip()[-300:])
+    # A &Bad declaration against a borrow<Fk> spec is refused before link.
+    badwrap = FOREIGN_WRAPPER.replace('native fn ff_get(c: &Conn): int',
+                                      'native fn ff_get(c: &Bad): int')
+    badwrap = badwrap.replace('pub fn get(c: &Conn): int { return ff_get(c) }',
+                              'pub fn get(c: &Bad): int { return ff_get(c) }')
+    p, _ = app('neg_shape', 'fn main() {}\n', wrapper=badwrap)
+    if p.returncode == 0 or 'foreign:Bad' not in (p.stderr + p.stdout):
+        raise Fail("a mismatched foreign borrow was not refused: %s"
+                   % (p.stderr + p.stdout).strip()[-300:])
+
+    # Tool negatives: a sidecar type mismatch, an unknown host helper and the host arity.
+    tool = _tool()
+    good = open(os.path.join(out, 'native.relocs')).read().splitlines()
+    spec = foreign_spec()
+    bad_rel = os.path.join(tmp, 'foreign_bad_type.relocs')
+    open(bad_rel, 'w').write('\n'.join(['cinterop-relocs 2', 'foreign 0 Conn NotFk'] + good[2:]) + '\n')
+    try:
+        tool.validate_calls(tool.read_relocs(bad_rel), spec)
+    except tool.ToolError as e:
+        if 'sidecar' not in str(e) and 'types' not in str(e):
+            raise Fail("foreign type tamper: unexpected error %s" % e)
+    else:
+        raise Fail("a foreign type tamper was accepted")
+    hb = os.path.join(tmp, 'foreign_bad_host.relocs')
+    lines = [ln for ln in good if ' host ' not in ln]
+    for ln in good:
+        if ' obo_ci_foreign_own ' in ln:
+            lines.append(ln.replace(' obo_ci_foreign_own 4 ', ' obo_ci_foreign_own 3 ', 1))
+            break
+    open(hb, 'w').write('\n'.join(lines) + '\n')
+    try:
+        tool.read_relocs(hb)
+    except tool.ToolError as e:
+        if 'needs 4 argument' not in str(e):
+            raise Fail("host arity tamper: unexpected error %s" % e)
+    else:
+        raise Fail("a host arity tamper was accepted")
+    hu = os.path.join(tmp, 'foreign_unknown_host.relocs')
+    open(hu, 'w').write('\n'.join([good[0], good[1], '50 obo_ci_nope 1 host - i64 freesall,writeshandles']) + '\n')
+    try:
+        tool.read_relocs(hu)
+    except tool.ToolError as e:
+        if 'unknown host helper' not in str(e):
+            raise Fail("unknown host helper: unexpected error %s" % e)
+    else:
+        raise Fail("an unknown host helper was accepted")
+
+    # App imports the wrapper and --check reads its exported opaque type and methods.
+    ck = os.path.join(tmp, 'foreign_check')
+    os.makedirs(ck)
+    shutil.copy(os.path.join(out, 'sym', 'handles.sym'), os.path.join(ck, 'handles.sym'))
+    ap = os.path.join(ck, 'app.obx')
+    open(ap, 'w').write('module app\n\nimport "handles.obx"\n\n' + FOREIGN_APP)
+    q = run([OBO, ap, '--check', '--sym-dir', ck])
+    if q.returncode != 0:
+        raise Fail("--check of an app importing a foreign wrapper failed: %s"
+                   % (q.stderr + q.stdout).strip()[-500:])
+    print('foreign tests: ok')
+
+
 # Null and const slots take the C type from the spec's ctypes annotation (sig_params), so they are checked
 # against the header exactly. These are the cases the design needs: a NULL for a const char *, a NULL for a
 # struct pointer, const:-1 as a function-pointer destructor, and const:5 for an int.
@@ -2609,6 +2933,7 @@ def main():
         sanitizer_adapters(tmp)
         kinds(tmp)
         returns(tmp)
+        foreigns(tmp)
         null_const_slots(tmp)
         stack_args(tmp)
         libpq_live(tmp)
