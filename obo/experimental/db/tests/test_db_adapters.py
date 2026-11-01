@@ -27,7 +27,9 @@ TOOL = os.path.join(os.path.dirname(DB), 'cinterop')
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(DB)))
 EXPOBO = os.path.abspath(os.environ.get('OBO', os.path.join(REPO, 'obo', 'obo')))
 TOOLPY = os.path.join(TOOL, 'cinterop.py')
-TMPROOT = '/tmp/opencode'
+# Scratch root for private build trees. Honour the environment (TMPROOT, then
+# TMPDIR through tempfile) instead of a fixed /tmp path.
+TMPROOT = os.environ.get('TMPROOT') or tempfile.gettempdir()
 LIBPQ_PATHS = [
     '/lib/x86_64-linux-gnu/libpq.so.5',
     '/usr/lib/x86_64-linux-gnu/libpq.so.5',
@@ -178,6 +180,30 @@ def postgres_fake_obo(tmp):
     verify(out)
     print('postgres fake-libpq obo packet encoder: ok')
     return app
+
+
+def postgres_errors_fake_obo(tmp):
+    """Specific messages for pg_exec_typed's negative codes and the NULL open.
+
+    Fake libpq only; no server. The empty-error PQexecParams path, a closed
+    connection and PQconnectdb NULL each give their own message.
+    """
+    out = os.path.join(tmp, 'pg_errors_fake_obo')
+    app = must_build(LIBPQ_FAKE, os.path.join(PG_EX, 'postgres_errors_fake_app.obx'),
+                     out, 'postgres errors fake obo')
+    p = run([app])
+    if p.returncode != 0:
+        raise Fail('postgres errors fake obo exited %d:\n%s%s'
+                   % (p.returncode, p.stdout, p.stderr))
+    expect_lines(p.stdout, [
+        'alloc_error=2 libpq returned no result and no error message',
+        'conn_closed=true',
+        'stale_error=2 connection is closed or invalid',
+        'null_open_error=3 connection could not be allocated',
+        'live=0', 'conns=0'], 'postgres errors fake obo')
+    verify(out)
+    print('postgres fake-libpq adapter error messages: ok (empty PQexecParams error, '
+          'closed connection, PQconnectdb NULL)')
 
 
 def postgres_decimal_fake_obo(tmp):
@@ -478,6 +504,7 @@ def main():
     try:
         postgres_fake_c(tmp)
         fake_app = postgres_fake_obo(tmp)
+        postgres_errors_fake_obo(tmp)
         decimal_fake_app = postgres_decimal_fake_obo(tmp)
         sqlite_c(tmp)
         sqlite_app = sqlite_memory(tmp)
