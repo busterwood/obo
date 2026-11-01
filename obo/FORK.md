@@ -6875,10 +6875,13 @@ writer output byte for byte without `--update`.
   `sym_test` **56 passed, 0 failed**.
 - `sym_fuzz` **200/200 clean** (seed 20261028, digest `896ee2b42dbe8a5c`).
 - `doc_check` **74 examples, 0 problems**.
-- `heap_test` passes; self-compile peak **2,586,448 bytes** live (budget
-  2,750,000, headroom 163,552).
+- `heap_test` passes; self-compile peak **2,586,256 bytes** live (budget
+  2,750,000, headroom 163,744).
 - `port_compare` **1,847 of 1,847** Stage B; the port's self-compile peak is
-  2,586,432 bytes.
+  2,586,272 bytes (headroom 163,728).
+- Earlier branch paths measured 2,586,448 and 2,586,432 bytes (headroom 163,552);
+  the live peak varies by a few hundred bytes with the source path. The final
+  merged-tree figures above are the ones the README records.
 - `mutate_fork` filtered: `interfaces impure` **6/6 caught**, `X23` **2/2
   caught**.
 

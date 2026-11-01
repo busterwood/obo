@@ -127,7 +127,7 @@ storage is 0.16 and impure interface members are 0.17.
 | Live-memory budget | 2,750,000 bytes: 163,744 spare direct / 163,728 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 53,984 on 0.17) |
 | obo suite | 1,869 `run_fork` tests; 149 `module_test`; `sym_test.py` 56/56; `sym_fuzz.py` 200/200; `port_test` 630/630 with 10 encoder groups; `port_compare` 1,847/1,847 default; seed comparisons 1,645/1,645 against the promoted 0.17 seed; 74 doc examples; 30/30 import checks; 17/17 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
-| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.17) is 1,645/1,645; that flat count omits the separate module-tree, CLI and re-emit checks (202 on this tree, including the two 0.17 `iface_impure` trees) that the default comparison adds, so the default (self) comparison is 1,847/1,847 |
+| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.17) is 1,645/1,645; that flat count omits the 202 non-flat checks the default comparison adds — 191 module-tree cases (including the two 0.17 `iface_impure` trees), 4 CLI, 5 special, 1 re-emit and 1 `modules/tokens` — so the default (self) comparison is 1,847/1,847 |
 | Mutation gates | `mutate_fork` 724/755 caught + 31 equivalent, 0 missed/stale/broken (including the six impure mutants); `mutate_port` 540/540 caught, 0 missed/stale/broken; `mutate_meta` 71/82 caught + 11 equivalent, 0 missed/stale/broken (runtime/entry.S 50/52 + 2 equivalent; compiler 21/30 + 9 equivalent); `mutate_decimal` 105/105 with an explicit baseline; `mutate_io` 36/36, 0 missed/stale/broken (including the self-host memory oracle, empty-array delta 53,984 bytes). The 0.17 catalog is green: the 31 + 11 equivalents are the same as before, and no pattern is stale or broken |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 94,209; wc 98,305; sort 122,881; head 94,209; tail 106,497 bytes (static, runtime included) |
@@ -276,11 +276,13 @@ runs before the body, so a 0.16 reader reports `has format 10; this compiler
 reads 9; rebuild it` rather than reading the marker. The 0.17 compiler rejects
 formats 6, 7, 8 and 9.
 
-**Still to come: the handler goal (I2).** `http1server` can now accept an
-interface handler: the application implements `Handler` with
+**Still to come: the handler goal (I2).** The language can now express an impure
+handler for `http1server`: the application implements `Handler` with
 `impure handle(req: &Request): Response`, a data-carrying response record, while
 the server owns the listener and connection and the implementation owns its state
-and teardown. One constraint: an impure member cannot be called through an
+and teardown. `http1server` will be able to accept that handler once I2 lands; it
+still declares its handler as a function value, and I2 changes it to this
+interface. One constraint: an impure member cannot be called through an
 interface stored in a record or a global, so the server must keep the handler in
 a local or pass it as an `&I` parameter, not in a `Server` field or a global; I2
 changes `experimental/http1server` and its design note, not the compiler. Async
@@ -565,7 +567,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `obo/tools/` | the patch scripts behind each change |
 | `HISTORY.md` | the obx predecessor, the ownership fork, milestones and earlier measurements |
 | `obx/` | the historical GC compiler, suite and stage tests (see `HISTORY.md`) |
-| `PERFORMANCE.md` | the 0.15 benchmark record: full tables, methodology and caveats (the README holds the 0.17 table) |
+| `PERFORMANCE.md` | the 0.15 benchmark record: full tables, methodology and caveats (the README holds the 0.16-measured table carried into 0.17) |
 
 ```
 cd obo && make                           # obo: build from the committed seed
