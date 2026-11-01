@@ -26,8 +26,8 @@ RT = FORK
 GOLD = os.path.join(HERE, 'modules', 'golden')
 UPDATE = '--update' in sys.argv
 
-OBO_VERSION = '0.18'
-SYM_FORMAT = 11
+OBO_VERSION = '0.19'
+SYM_FORMAT = 12
 SYM_ABI = 1
 
 
@@ -444,9 +444,9 @@ def stale_missing_corrupt_versions():
         open(p, 'wb').write(base)
         # format / ABI / compiler, each its own exact message
         cases = [
-            (b'obosym 11', b'obosym 8', 'has format 8; this compiler reads 11'),
+            (b'obosym 12', b'obosym 8', 'has format 8; this compiler reads 12'),
             (b'\nabi 1\n', b'\nabi 9\n', 'has ABI 9; this compiler uses 1'),
-            (b'compiler "0.18"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.18'"),
+            (b'compiler "0.19"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.19'"),
         ]
         for old, new, msg in cases:
             data = base
@@ -719,9 +719,9 @@ def handwritten_interface():
     parameter names, summary items in any order, and a pf row at index >= 62."""
     params = ', '.join(f'q{i}: int' for i in range(63))
     uid = fnv(b'many::T')
-    sym = f'''obosym 11
+    sym = f'''obosym 12
 abi 1
-compiler "0.18"
+compiler "0.19"
 source 0x{0:016x}
 interface 0x0
 module many
@@ -1109,7 +1109,7 @@ def b6_stub_completion():
     try:
         ok(build(d, s), 'x build')
         m = os.path.join(s, 'm.sym')
-        open(m, 'w').write('obosym 11\nabi 1\ncompiler "0.18"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        open(m, 'w').write('obosym 12\nabi 1\ncompiler "0.19"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
         rehash(m, lambda b: b)
         for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
                               ('order2', 'import "x.obx"\nimport "m.obx"')):
@@ -1351,9 +1351,9 @@ fn main() {
         if 'fn (p0: &Local) lget(): int' not in main_text:
             raise Fail(f"the checked module's .sym lacks its method: {main_text!r}")
         base = sym_text(libsym)
-        open(libsym, 'wb').write(base.replace(b'obosym 11', b'obosym 1', 1))
+        open(libsym, 'wb').write(base.replace(b'obosym 12', b'obosym 1', 1))
         q = build(d, s, check=True)
-        if q.returncode != 2 or 'has format 1; this compiler reads 11' not in q.stderr:
+        if q.returncode != 2 or 'has format 1; this compiler reads 12' not in q.stderr:
             raise Fail(f"format 1: exit {q.returncode}: {q.stderr.strip()}")
         open(libsym, 'wb').write(base)
         os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
@@ -1748,9 +1748,9 @@ def iface_impure_roundtrip():
         # a format-9 file that carries the marker is refused by the format check, before the body
         base = sym_text(chk_lib)
         with open(chk_lib, 'wb') as f:
-            f.write(base.replace(b'obosym 11', b'obosym 9', 1))
+            f.write(base.replace(b'obosym 12', b'obosym 9', 1))
         q = build(d, chk, check=True)
-        if q.returncode != 2 or 'has format 9; this compiler reads 11; rebuild it' not in q.stderr:
+        if q.returncode != 2 or 'has format 9; this compiler reads 12; rebuild it' not in q.stderr:
             raise Fail(f"format-9 impure interface: exit {q.returncode}: {q.stderr.strip()}")
         with open(chk_lib, 'wb') as f:
             f.write(base)
@@ -1780,7 +1780,7 @@ def stale_format3_interface():
         f.write('obosym 3\nabi 1\ncompiler "0.7"\nsource 0x0000000000000001\ninterface 0x0\nmodule lib\n'
                 'type I = interface { fn m(p0: I): int }\nfn f(p0: I): int\n')
     q = build(d, symdir, check=True)
-    if q.returncode != 2 or 'has format 3; this compiler reads 11; rebuild it' not in q.stderr:
+    if q.returncode != 2 or 'has format 3; this compiler reads 12; rebuild it' not in q.stderr:
         raise Fail(f"stale format-3 interface file: exit {q.returncode}: {q.stderr.strip()}")
     shutil.rmtree(d, ignore_errors=True)
 
@@ -1815,7 +1815,7 @@ def fn_sym_roundtrip():
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'function-type module build')
         libpath = os.path.join(symdir, 'lib.sym')
         lib = sym_text(libpath).decode()
-        for line in ('obosym 11\n', 'abi 1\n', 'compiler "0.18"\n',
+        for line in ('obosym 12\n', 'abi 1\n', 'compiler "0.19"\n',
                      'type Cmp = fn(&Item, &Item): int\n',
                      'fn apply(p0: fn(int): int, p1: int): int\n',
                      'fn useCmp(p0: fn(&Item, &Item): int): int\n',
@@ -1851,9 +1851,9 @@ def stale_format4_fn_rejected():
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'honest format-5 build')
         libpath = os.path.join(symdir, 'lib.sym')
         os.unlink(os.path.join(d, 'lib.obx'))
-        mutate(libpath, b'obosym 11', b'obosym 4', recompute=False)
+        mutate(libpath, b'obosym 12', b'obosym 4', recompute=False)
         q = build(d, symdir, check=True)
-        if q.returncode != 2 or 'has format 4; this compiler reads 11; rebuild it' not in q.stderr:
+        if q.returncode != 2 or 'has format 4; this compiler reads 12; rebuild it' not in q.stderr:
             raise Fail(f"stale format-4 function type: exit {q.returncode}: {q.stderr.strip()}")
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -2030,7 +2030,7 @@ def forged_fn_positions():
         if q.returncode != 2 or want not in q.stderr:
             raise Fail(f"forward shell through a bare alias: exit {q.returncode}: {q.stderr.strip()}")
         # an incomplete forward shell as a function-type parameter
-        manual = ('obosym 11\nabi 1\ncompiler "0.18"\nsource 0x0000000000000001\n'
+        manual = ('obosym 12\nabi 1\ncompiler "0.19"\nsource 0x0000000000000001\n'
                   'interface 0x0\nmodule lib\ntype Later uid 0x%016x\n'
                   'fn apply(p0: fn(Later): int): int\n' % fnv(b'lib::Later'))
         open(libpath, 'w').write(manual)
@@ -2274,7 +2274,7 @@ fn main() {
         ok(build(d, s, out=os.path.join(d, 'p')), 'build')
         lib = os.path.join(s, 'lib.sym')
         text = sym_text(lib)
-        if b'obosym 11\n' not in text or b'compiler "0.18"' not in text:
+        if b'obosym 12\n' not in text or b'compiler "0.19"' not in text:
             raise Fail(f"format/compiler header is wrong: {text[:80]!r}")
         if b'type Mixed = ref record { pub a: int; priv; pub c: string; priv }' not in text:
             raise Fail(f"mixed field list is not canonical: {text!r}")
@@ -2590,9 +2590,9 @@ def field_visibility_old_format():
         ok(build(d, s, out=os.path.join(d, 'p')), 'build')
         p = os.path.join(s, 'lib.sym')
         text = sym_text(p)
-        open(p, 'wb').write(text.replace(b'obosym 11', b'obosym 6', 1))
+        open(p, 'wb').write(text.replace(b'obosym 12', b'obosym 6', 1))
         q = build(d, s, check=True)
-        want = f"obxc: symbol file '{p}' has format 6; this compiler reads 11; rebuild it"
+        want = f"obxc: symbol file '{p}' has format 6; this compiler reads 12; rebuild it"
         if q.returncode != 2 or want not in q.stderr:
             raise Fail(f"format 6: exit {q.returncode}: {q.stderr.strip()}")
         q = subprocess.run([OBO, '--version'], capture_output=True, text=True)
@@ -2868,7 +2868,7 @@ def decimal_methods_ifaces_sym():
         ):
             if want not in text:
                 raise Fail(f"decimal method or interface line is wrong, wanted {want!r}: {text!r}")
-        if b'compiler "0.18"' not in text or b'obosym 11\n' not in text:
+        if b'compiler "0.19"' not in text or b'obosym 12\n' not in text:
             raise Fail(f"the format/compiler header is wrong: {text[:60]!r}")
         r = reemit(lib)
         if r.returncode != 0 or r.stdout != text:
@@ -2884,9 +2884,9 @@ def decimal_methods_ifaces_sym():
         chk_lib = os.path.join(chk, 'lib.sym')
         base = sym_text(chk_lib)
         with open(chk_lib, 'wb') as f:
-            f.write(base.replace(b'obosym 11', b'obosym 10', 1))
+            f.write(base.replace(b'obosym 12', b'obosym 10', 1))
         q = build(d, chk, check=True)
-        want = 'has format 10; this compiler reads 11; rebuild it'
+        want = 'has format 10; this compiler reads 12; rebuild it'
         if q.returncode != 2 or want not in q.stderr:
             raise Fail(f"format-10 decimal interface: exit {q.returncode}: {q.stderr.strip()}")
         with open(chk_lib, 'wb') as f:

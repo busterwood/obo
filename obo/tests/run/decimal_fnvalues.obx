@@ -1,0 +1,67 @@
+// Decimal function values (stage D4b): a non-capturing lambda and a named function with the
+// same decimal signature, called directly and through a value. The function-value cell is
+// pushed above the hidden decimal destination, so a callee's destination stays at
+// 16 + visibleParamBytes and its parameter offsets are identical either way.
+type Rec = ref record { v: int }
+type Acc = ref record { v: decimal }
+type Ledger = interface { pure fn add(x: decimal, y: decimal): decimal }
+
+fn (a: &Acc) plus(d: decimal): decimal { return a.v + d }
+fn (a: &Acc) add(x: decimal, y: decimal): decimal { return a.v + x + y }
+impl Ledger for Acc
+
+fn scale(d: decimal): decimal { return d * 2.0 }
+fn addp(a: decimal, b: decimal): decimal { return a + b }
+fn blend(d: decimal, n: int): decimal { return d * decimal(n) }
+fn zero(): decimal { return 1.25 }
+
+fn apply1(d: decimal, f: fn(decimal): decimal): decimal { return f(d) }
+fn apply0(f: fn(): decimal): decimal { return f() }
+fn apply2(a: decimal, b: decimal, f: fn(decimal, decimal): decimal): decimal { return f(a, b) }
+fn applyI(d: decimal, n: int, f: fn(decimal, int): decimal): decimal { return f(d, n) }
+fn applyR(d: decimal, f: fn(decimal): Result[decimal]): Result[decimal] { return f(d) }
+fn callR0(f: fn(): Result[decimal]): Result[decimal] { return f() }
+
+fn main() {
+    // a named function directly and a non-capturing lambda with the same signature through
+    // a literal argument and through a local
+    println(scale(1.25))                                      // expect: 2.500
+    println(apply1(1.25, fn (d: decimal): decimal { return d * 2.0 }))  // expect: 2.500
+    let f = fn (d: decimal): decimal { return d + 1.0 }
+    println(f(1.25))                                          // expect: 2.25
+    println(apply1(1.25, f))                                  // expect: 2.25
+    // zero, one and two decimal parameters
+    println(zero())                                           // expect: 1.25
+    println(apply0(fn (): decimal { return 9.75 }))           // expect: 9.75
+    println(addp(1.25, 2.5))                                  // expect: 3.75
+    println(apply2(1.25, 2.5, fn (a: decimal, b: decimal): decimal { return a + b }))  // expect: 3.75
+    // a decimal parameter followed by an int: A = 24 + 8
+    println(blend(1.25, 4))                                   // expect: 5.00
+    println(applyI(1.25, 4, fn (d: decimal, n: int): decimal { return d * decimal(n) }))  // expect: 5.00
+    // Result[decimal] is one word, not a hidden destination
+    let r = applyR(1.5, fn (d: decimal): Result[decimal] { return ok(d + 0.25) })
+    match r {
+        ok(v) { println(v) }                                  // expect: 1.75
+        err(m, c) { println(m, " ", c) }
+    }
+    let r0 = callR0(fn (): Result[decimal] { return ok(0.5) })
+    match r0 {
+        ok(v) { println(v) }                                  // expect: 0.5
+        err(m, c) { println(m, " ", c) }
+    }
+    // a method and an interface member next to a value call: the offsets do not collide
+    var a = new Acc{v: 10.0}
+    println(a.plus(1.5))                                      // expect: 11.5
+    let l: Ledger = a
+    println(l.add(1.0, 2.0))                                  // expect: 13.0
+    println(apply1(0.5, fn (d: decimal): decimal { return d }))  // expect: 0.5
+    // a &Record borrow and a ^Record handle read after a decimal-returning value call
+    var rec = new Rec{v: 5}
+    let br = &rec
+    println(apply1(2.5, fn (d: decimal): decimal { return d + 1.0 }))  // expect: 3.5
+    println(br.v)                                             // expect: 5
+    var owned = new Rec{v: 6}
+    let h = handle(owned)
+    println(apply1(3.5, fn (d: decimal): decimal { return d + 1.0 }))  // expect: 4.5
+    println(h.v)                                              // expect: 6
+}
