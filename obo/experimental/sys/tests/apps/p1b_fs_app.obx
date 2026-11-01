@@ -38,6 +38,19 @@ fn expectBytesError(label: string, r: Result[[]byte]) {
     }
 }
 
+fn probeBeneath(label: string, d: &dir::Directory, path: string,
+                opts: &file::OpenOptions) {
+    let made = file::openBeneath(d, path, opts)
+    match made {
+        ok(f) {
+            println(label, "=ok")
+            let c = file::close(&f)
+            match c { ok(v) { } err(m, cc) { show("beneath_close", cc) } }
+        }
+        err(m, c) { show(label, c) }
+    }
+}
+
 fn expectFileError(label: string, r: Result[file::File]) {
     match r {
         ok(v) { println(label, "=ok") }
@@ -112,6 +125,10 @@ fn main() {
             let lk = file::link(&d, "config2", &d, "configlink")
             match lk { ok(v) { println("link=", v) } err(m, c) { show("link", c) } }
             expectError("link_dup", file::link(&d, "config2", &d, "configlink"))
+            expectError("link_dir", file::link(&d, "sub1", &d, "sublink"))
+            expectError("rename_same_noreplace", file::rename(&d, "config2", &d, "config2", false))
+            let sameReplace = file::rename(&d, "config2", &d, "config2", true)
+            match sameReplace { ok(v) { println("rename_same=", v) } err(m, c) { show("rename_same", c) } }
 
             let sl = file::symlink("config2", &d, "conflink")
             match sl { ok(v) { println("symlink=", v) } err(m, c) { show("symlink", c) } }
@@ -137,18 +154,30 @@ fn main() {
             expectError("unlink_missing", dir::unlink(&d, "nope"))
             expectError("rmdir_file", dir::removeEmpty(&d, "config2"))
             expectError("rmdir_missing", dir::removeEmpty(&d, "nope"))
+
+            probeBeneath("beneath", &d, "config2", &ro)
+            probeBeneath("beneath_dot", &d, ".", &ro)
+            probeBeneath("beneath_internal_dot", &d, "./config2", &ro)
+            probeBeneath("beneath_dotdot", &d, "..", &ro)
+            probeBeneath("beneath_trailing", &d, "sub1/../..", &ro)
+            probeBeneath("beneath_internal_dotdot", &d, "sub1/../config2", &ro)
+            let createOpts = file::readOptions()
+            createOpts.write = true
+            createOpts.create = true
+            probeBeneath("beneath_create_dotdot", &d, "..", &createOpts)
+            probeBeneath("beneath_create_trailing", &d, "sub1/.", &createOpts)
+            probeBeneath("beneath_create_file", &d, "beneath-new", &createOpts)
+            expectFileError("beneath_empty", file::openBeneath(&d, "", &ro))
+            expectFileError("beneath_escape", file::openBeneath(&d, "../config2", &ro))
+            expectFileError("beneath_abs", file::openBeneath(&d, "/etc/passwd", &ro))
+            expectError("beneath_file", dir::unlink(&d, "beneath-new"))
+
             // A precommit rename failure must remove the temporary and leave
             // the directory target untouched.
             let dirReplace = file::replaceAtomic(&d, "sub1", &data, 420, true)
             match dirReplace { ok(r) { println("replace_dir=ok") } err(m, c) { show("replace_dir", c) } }
             let rm = dir::removeEmpty(&d, "sub1")
             match rm { ok(v) { println("rmdir=", v) } err(m, c) { show("rmdir", c) } }
-
-            let ob = file::openBeneath(&d, "config2", &ro)
-            match ob { ok(f) { println("beneath=ok"); let c = file::close(&f); match c { ok(v) { } err(m, c) { } } } err(m, c) { show("beneath", c) } }
-            expectFileError("beneath_empty", file::openBeneath(&d, "", &ro))
-            expectFileError("beneath_escape", file::openBeneath(&d, "../config2", &ro))
-            expectFileError("beneath_abs", file::openBeneath(&d, "/etc/passwd", &ro))
 
             let noBytes = new []byte(0)
             let cleared = file::replaceAtomic(&d, "empty", &noBytes, 420, false)

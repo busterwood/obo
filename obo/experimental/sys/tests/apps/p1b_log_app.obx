@@ -170,6 +170,33 @@ fn main() {
         err(m, c) { show("sink_open", c) }
     }
 
+    // Capacity and record-cap validation happen before a large allocation.
+    let tiny = log::openStandard(&out, 0, &rwb)
+    match tiny { ok(l) { println("cap_zero=ok") } err(m, c) { show("cap_zero", c) } }
+    let tooBig = log::openStandard(&out, log::MAX_QUEUE_BYTES + 1, &rwb)
+    match tooBig { ok(l) { println("cap_big=ok") } err(m, c) { show("cap_big", c) } }
+    let capped = log::openStandard(&out, 4096, &rwb)
+    match capped {
+        ok(l) {
+            let big = new []byte(4097)
+            for i in 0..4097 { big[i] = 65 }
+            let r = log::emit(&l, &info, &big)
+            match r { ok(v) { println("record_cap=ok") } err(m, c) { show("record_cap", c) } }
+            let exact = new []byte(4096)
+            for i in 0..4096 { exact[i] = 65 }
+            let r2 = log::emit(&l, &info, &exact)
+            match r2 { ok(v) { println("record_exact=ok") } err(m, c) { show("record_exact", c) } }
+            let msgSmall = bytesOf("x")
+            let forgedRes = new platform::Resource{reserved: l.res.reserved}
+            let forged = new log::Logger{res: forgedRes, policy: 7}
+            let fr = log::emit(&forged, &info, &msgSmall)
+            match fr { ok(v) { println("forged_policy=ok") } err(m, c) { show("forged_policy", c) } }
+            let c = log::close(&l)
+            match c { ok(v) { println("cap_close=", v) } err(m, cc) { show("cap_close", cc) } }
+        }
+        err(m, c) { show("cap_open", c) }
+    }
+
     // Deliberate omitted close: the census must report the logger leak.
     let leaked = log::openStandard(&out, 64, &rwb)
     match leaked {

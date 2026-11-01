@@ -6980,6 +6980,25 @@ deep-copy/validation, logger bound/drop/escape/short-drain/sink-error/leak, and
 the configuration-update example confined to its test directory. C harnesses run
 normally and under ASAN/UBSAN/LSan on both adapters.
 
+**P1b review fixes.** B1: the logger no longer sets `O_NONBLOCK` on the
+shared open file description at open. `drain`/`flush` save `F_GETFL`, request
+`O_NONBLOCK` only for their own write/poll attempt and restore the exact flags
+on every return path, including poll-EINTR. The C harness checks fds 1/2 before
+open, after open, after flush and after close; a paused-pipe 200,000-byte print
+root proves no truncation. B2: `sysenv::set` validates the prospective total
+before mutating, so an over-cap update returns `Range` with the old value intact
+and the snapshot usable; over-count/over-size records report `Range` whether
+crafted or captured. The review's other items are closed in
+`API.md`/`LIMITS.md`/the fake model: readLink is 4095-success/4096-NameTooLong,
+openBeneath fake parity covers dot/dotdot/trailing/create cases, same-name
+replace rename and directory-link EPERM match Linux, symlink allocation failure
+leaves no half entry, monotonic latency is documented as omitted, the record cap
+is pre-checked before escaping allocation, no-replace EINVAL mapping is
+documented, `openBeneath` rejects token 0, logger close-without-drain is
+documented, and the test suite adds cleanup-failure/old-target/16-MiB/collision/
+record-cap/capacity/forged-policy/fd-flag cases plus
+`-fno-sanitize-recover=all` and `UBSAN_OPTIONS=halt_on_error=1`.
+
 **Gates measured on this branch.** `test_sys_p0.py`, `test_sys_p1a.py`,
 `test_sys_p1b.py`, `test_sys_p2.py` and `test_sys_p2q.py` all pass;
 `run_fork.py` **1869 passed, 0 failed**; `module_test.py` **149 passed**;

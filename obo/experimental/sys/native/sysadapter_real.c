@@ -750,6 +750,7 @@ long sys_file_open_beneath(long dir_token, long path_token, long flags,
     long raw;
     long token;
     sys_reg_bump_call(SYS_CALL_OPEN_BENEATH);
+    if (dir_token == 0) return err(EINVAL);
     if (mode < 0 || mode > 07777) return err(EINVAL);
     if (flags < 0 || (flags & ~(SYS_OPEN_READ | SYS_OPEN_WRITE | SYS_OPEN_CREATE |
                                 SYS_OPEN_EXCLUSIVE | SYS_OPEN_TRUNCATE |
@@ -830,6 +831,10 @@ long sys_file_rename(long from_dir, long old_name, long to_dir, long new_name,
     flags = replace ? 0 : RENAME_NOREPLACE;
 #ifdef SYS_renameat2
     if (syscall(SYS_renameat2, fdf, oldp, tdf, newp, (unsigned)flags) == 0) return 1;
+    /* Linux filesystems disagree on the error for "RENAME_NOREPLACE
+     * unsupported". Component names are already validated, so EINVAL on the
+     * no-replace path is treated as absent primitive; all other errors are
+     * preserved. */
     if (errno != ENOSYS && !(errno == EINVAL && !replace)) return err(errno);
     if (!replace) return err(EOPNOTSUPP);
 #else
@@ -910,19 +915,16 @@ static long logger_now(void) {
 long sys_log_open(long which, long capacity) {
     sys_logger *l;
     int fd;
-    int fl;
     long token;
     sys_reg_bump_call(SYS_CALL_LOG_OPEN);
     if (which < 0 || which > 2) return err(EINVAL);
     if (capacity < 1 || capacity > (16L * 1024L * 1024L)) return err(ERANGE);
+    /* F_DUPFD shares the open file description with fd 0/1/2. Do not change
+     * its status flags here: O_NONBLOCK would leak to the process stream and
+     * survive logger close. log_drain_guarded toggles/restores only around
+     * each write/poll operation. */
     fd = fcntl((int)which, F_DUPFD_CLOEXEC, 0);
     if (fd < 0) return err(errno);
-    fl = fcntl(fd, F_GETFL);
-    if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0) {
-        int e = errno;
-        (void)close(fd);
-        return err(e);
-    }
     l = (sys_logger *)calloc(1, sizeof(*l));
     if (l == NULL) {
         (void)close(fd);
@@ -1015,7 +1017,13 @@ static long log_drain(sys_logger *l, int finite, long deadline) {
             pfd.events = POLLOUT;
             pfd.revents = 0;
             if (poll(&pfd, 1, timeout) < 0) {
-                if (errno == EINTR) continue;
+                if (errno == EINTR) {
+                    if (finite) {
+                        long again = logger_now();
+                        if (again < 0 || again >= deadline) return 0;
+                    }
+                    continue;
+                }
                 return err(errno);
             }
             continue;
@@ -1025,6 +1033,27 @@ static long log_drain(sys_logger *l, int finite, long deadline) {
     return 1;
 }
 
+/* The logger duplicate shares its open file description with the process
+ * standard stream. P1b is single-threaded, so temporarily request O_NONBLOCK
+ * for this one drain attempt and restore the exact prior flags before returning
+ * on every path. This keeps fd 0/1/2 flags untouched before open, during idle
+ * periods and after close. */
+static long log_drain_guarded(sys_logger *l, int finite, long deadline) {
+    int saved;
+    long rc;
+    int saved_errno;
+    saved = fcntl(l->fd, F_GETFL);
+    if (saved < 0) return err(errno);
+    if (fcntl(l->fd, F_SETFL, saved | O_NONBLOCK) != 0) return err(errno);
+    rc = log_drain(l, finite, deadline);
+    saved_errno = errno;
+    if (fcntl(l->fd, F_SETFL, saved) != 0 && rc >= 0) {
+        rc = err(errno);
+    }
+    errno = saved_errno;
+    return rc;
+}
+
 long sys_log_drain(long token, long finite, long deadline_ns) {
     sys_logger *l;
     sys_reg_bump_call(SYS_CALL_LOG_DRAIN);
@@ -1032,7 +1061,7 @@ long sys_log_drain(long token, long finite, long deadline_ns) {
     if (finite && deadline_ns < 0) return err(EINVAL);
     l = (sys_logger *)sys_reg_peek(token, SYS_KIND_LOGGER);
     if (l == NULL) return err(EBADF);
-    return log_drain(l, (int)finite, deadline_ns);
+    return log_drain_guarded(l, (int)finite, deadline_ns);
 }
 
 long sys_log_flush(long token) {
@@ -1041,7 +1070,7 @@ long sys_log_flush(long token) {
     l = (sys_logger *)sys_reg_peek(token, SYS_KIND_LOGGER);
     if (l == NULL) return err(EBADF);
     /* An immediate attempt: never wait for a writable sink. */
-    return log_drain(l, 1, 0);
+    return log_drain_guarded(l, 1, 0);
 }
 
 long sys_log_dropped(long token) {

@@ -8,12 +8,17 @@ No compiler, ABI, symbol-format or package version is reserved by this note.
 
 Progress on current `main` (0.17/format 10): **P0, P1a, P1b, P2 and P2q are
 implemented experimentally** under `obo/experimental/sys` and have their own
-real/fake suites; P1b completes the practical-filesystem slice in §5.1/§5.2/§5.3,
-§6.1, §8.3 and §8.4. P2T/P2C remain separately scoped adapters, P3 (processes,
-signals, cwd/environment mutation, resolver policy) and P4/P5 (threads and
-synchronization) are not implemented by this progress line. `sysmapping` and
-terminal raw mode remain optional later extensions. The source lives at
-`obo/experimental/sys/`, not yet at the `obo/lib/sys/` stable layout in §12.1.
+real/fake suites. P1b covers the anchored directory-mutation and `openBeneath`
+parts of §5.1, the file operations and atomic replacement transaction in §5.2
+(using the §5.3 metadata snapshots), the RFC3339 profile in §6.1, **environment
+snapshots only** in §8.3, and **bounded logging only** in §8.4. The rest of
+§8.3 (`sysprocess::cwd`/`chdir` and process environment mutation) and §8.4
+(terminal raw mode) are P3/later work, not P1b. P2T/P2C remain separately scoped
+adapters, P3 (processes, signals, cwd/environment mutation, resolver policy) and
+P4/P5 (threads and synchronization) are not implemented by this progress line.
+`sysmapping` and terminal raw mode remain optional later extensions. The source
+lives at `obo/experimental/sys/`, not yet at the `obo/lib/sys/` stable layout in
+§12.1.
 
 ## 1. Decision and scope
 
@@ -603,7 +608,8 @@ order or directory snapshot, and returns Unknown kind rather than hiding a faile
 stat. Metadata is a separate checked operation; names can disappear between calls.
 `readLink` returns the raw target bytes, not a NUL-terminated string, and inherits
 the existing contract: a dangling target succeeds, a non-symlink is InvalidArgument,
-and a target of 4095 bytes or more is NameTooLong (never a silent truncation).
+a 4095-byte target succeeds, and a target of 4096 bytes or more is NameTooLong
+(never a silent truncation).
 Kernel dirent corruption fails the iterator permanently with IoFailure, not a
 repeatable infinite loop. Enumeration buffer and maximum name length are bounded.
 

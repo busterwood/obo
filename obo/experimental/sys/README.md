@@ -231,8 +231,8 @@ single-attempt error rules. Anchored names remain one component (nonempty, no
 
 - `sysdir` adds `mkdir`, `unlink`, `removeEmpty`, `readLink` and `sync`.
   `readLink` returns raw target bytes: a dangling target succeeds, a non-symlink
-  is `InvalidArgument`, and a 4095-byte target is `NameTooLong` (never silent
-  truncation). `removeEmpty` is `rmdir`; a nonempty directory maps the kernel
+  is `InvalidArgument`, a 4095-byte target succeeds, and 4096 bytes or more is
+  `NameTooLong` (never silent truncation). `removeEmpty` is `rmdir`; a nonempty directory maps the kernel
   `ENOTEMPTY` to `Busy` because the error namespace has no `NotEmpty` kind.
 - `sysfile` adds `openBeneath`, `chmod`, `sync(dataOnly)`, anchored `rename`,
   `link`, `symlink` and `replaceAtomic`. `openBeneath` uses
@@ -436,10 +436,12 @@ The P1b suite additionally runs:
 - an openat2 fixture covering `..`, absolute paths, inside/outside symlinks and
   `/proc` magic links, plus a fake capability-off root that must return
   `Unsupported`;
-- RFC3339 table/round-trip cases and trimming, fake/real environment behavior,
-  bounded logger queue/drop/escaping/short-drain/sink-error/leak cases, a real
-  cross-device rename when `/dev/shm` is on another filesystem, and the
-  configuration-update example.
+- RFC3339 table/round-trip cases and trimming, fake/real environment behavior
+  (including pre-mutation over-cap rejection), bounded logger queue/drop/
+  escaping/short-drain/sink-error/record-cap/capacity/forged-policy/leak cases,
+  a paused-pipe large-print regression proving logger open/drain/close leaves
+  process fd flags untouched, a real cross-device rename when `/dev/shm` is on
+  another filesystem, and the configuration-update example.
 
 The P2 suite additionally runs:
 

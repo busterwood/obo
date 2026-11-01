@@ -211,9 +211,13 @@ allocate past the stated capacity.
   deliberately aliases live resources.
 - `rename` is atomic for name visibility within one filesystem. `replace=false`
   requires `RENAME_NOREPLACE`; absence is `Unsupported`, never an existence
-  check followed by overwrite. Cross-filesystem rename is `CrossDevice`; there
-  is no copy/delete fallback. `link` does not follow a source symlink. `symlink`
-  stores the target bytes verbatim and does not validate the target's existence.
+  check followed by overwrite. Because Linux filesystems are inconsistent about
+  reporting “flags unsupported”, an `EINVAL` from `renameat2` on the no-replace
+  path (with validated component names) is treated as that absence; every other
+  captured error is preserved. Cross-filesystem rename is `CrossDevice`; there
+  is no copy/delete fallback. `link` does not follow a source symlink and a
+  directory source is `Permission`. `symlink` stores the target bytes verbatim
+  and does not validate the target's existence.
 - `replaceAtomic` caps the payload at 16 MiB (the byte-bridge cap) and creates
   the temporary in the target directory. It owns a finite retry-free transaction:
   a short write advances the cursor, EINTR is not retried, and no partial target
@@ -230,15 +234,28 @@ allocate past the stated capacity.
   `InvalidArgument`.
 - Environment snapshots cover startup environment order and are Linux/getenv
   semantics. Duplicates are retained, lookup is first-match and `unset` removes
-  all matches. Process mutation is intentionally absent because libc `setenv`
-  and the runtime's initial `envp` cannot be kept coherent yet; child snapshots
-  do not require it.
+  all matches. A malformed name/value is `InvalidArgument`; an entry-count or
+  total-size cap is `Range`, whether the record was constructed directly or
+  captured from an over-cap process environment. `set` validates the
+  prospective total before assigning, so a rejected update leaves the old value
+  and the snapshot usable. Process mutation is intentionally absent because
+  libc `setenv` and the runtime's initial `envp` cannot be kept coherent yet;
+  child snapshots do not require it.
 - Logging is line-oriented and single-threaded. `openStandard` only selects
-  Input/Output/Error and never closes process fd 0/1/2. The queue is fixed at
-  open; `DropWithCounter` drops whole records, and `ReturnWouldBlock` rejects a
-  full queue. Escaping is `\n`, `\r`, `\t`, `\\` and `\xHH` for other control
-  bytes. There is no JSON encoder, global logger, background drain thread,
-  cross-process record atomicity for shared files, or payload redaction.
+  Input/Output/Error and never closes or changes the status flags of process fd
+  0/1/2. Because the duplicate shares the open file description, drain/flush
+  toggle `O_NONBLOCK` only around their own write/poll attempt and restore the
+  exact prior flags before returning. A large process `print` is therefore still
+  subject to ordinary blocking backpressure, not logger-induced truncation.
+  The temporary toggle is safe only in the v1 single-threaded model; a future
+  worker context needs a separately opened nonblocking description. The
+  queue is fixed at open; `DropWithCounter` drops whole records, and
+  `ReturnWouldBlock` rejects a full queue. `close` without a prior drain/flush
+  discards queued records. P1b emits a realtime timestamp but not the design's
+  monotonic record-latency field; adding it would need a caller-supplied start
+  instant and is deferred. Escaping is `\n`, `\r`, `\t`, `\\` and `\xHH` for
+  other control bytes. There is no JSON encoder, global logger, background drain
+  thread, cross-process record atomicity for shared files, or payload redaction.
 - Mappings remain out of P1b: the optional mmap extension was not needed for
   the practical-filesystem phase.
 

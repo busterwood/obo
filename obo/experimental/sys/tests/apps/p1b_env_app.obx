@@ -90,7 +90,57 @@ fn main() {
         err(m, c) { show("snapshot", c) }
     }
 
-    // A directly constructed record is untrusted at every entry.
+    // Over-cap updates are rejected before mutation and leave the record usable.
+    var bigBytes = new []byte(1000000)
+    for i in 0..1000000 { bigBytes[i] = 120 }
+    var smallBytes = new []byte(40000)
+    for i in 0..40000 { smallBytes[i] = 121 }
+    var capList = new []env::Pair(0)
+    append(capList, new env::Pair{name: "BIG", value: string(bigBytes)})
+    append(capList, new env::Pair{name: "SMALL", value: string(smallBytes)})
+    let capEnv = new env::Environment{entries: capList}
+    let beforeSmall = env::get(&capEnv, "SMALL")
+    match beforeSmall {
+        ok(v) { if v == nil { println("cap_before=nil") } else { println("cap_before=", len(v)) } }
+        err(m, c) { show("cap_before", c) }
+    }
+    var updateBytes = new []byte(200000)
+    for i in 0..200000 { updateBytes[i] = 121 }
+    let overUpdate = env::set(&capEnv, "SMALL", string(updateBytes))
+    match overUpdate { ok(v) { println("cap_update=ok") } err(m, c) { show("cap_update", c) } }
+    let afterSmall = env::get(&capEnv, "SMALL")
+    match afterSmall {
+        ok(v) { if v == nil { println("cap_after=nil") } else { println("cap_after=", len(v)) } }
+        err(m, c) { show("cap_after", c) }
+    }
+    let smallSet = env::set(&capEnv, "TINY", "ok")
+    match smallSet { ok(v) { println("cap_small=", v) } err(m, c) { show("cap_small", c) } }
+    let overNew = env::set(&capEnv, "NEW", string(updateBytes))
+    match overNew { ok(v) { println("cap_new=ok") } err(m, c) { show("cap_new", c) } }
+    let newMissing = env::get(&capEnv, "NEW")
+    match newMissing {
+        ok(v) { if v == nil { println("cap_new_missing=nil") } else { println("cap_new_missing=present") } }
+        err(m, c) { show("cap_new_missing", c) }
+    }
+    let capEntries = env::entries(&capEnv)
+    match capEntries { ok(v) { println("cap_entries=", len(v)) } err(m, c) { show("cap_entries", c) } }
+    let capUnset = env::unset(&capEnv, "SMALL")
+    match capUnset { ok(v) { println("cap_unset=", v) } err(m, c) { show("cap_unset", c) } }
+    let capReset = env::set(&capEnv, "SMALL", "ok")
+    match capReset { ok(v) { println("cap_reset=", v) } err(m, c) { show("cap_reset", c) } }
+
+    // A crafted over-cap record reports Range, matching a captured over-cap
+    // snapshot rather than turning into InvalidArgument.
+    var hugeBytes = new []byte(1100000)
+    for i in 0..1100000 { hugeBytes[i] = 122 }
+    var hugePair = new env::Pair{name: "HUGE", value: string(hugeBytes)}
+    var hugeList = new []env::Pair(0)
+    append(hugeList, hugePair)
+    let hugeEnv = new env::Environment{entries: hugeList}
+    let hugeGet = env::get(&hugeEnv, "HUGE")
+    match hugeGet { ok(v) { println("huge_get=ok") } err(m, c) { show("huge_get", c) } }
+
+    // A directly constructed malformed record is untrusted at every entry.
     var pair = new env::Pair{name: "A=B", value: "v"}
     var direct = new []env::Pair(0)
     append(direct, pair)

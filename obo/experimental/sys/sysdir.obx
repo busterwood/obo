@@ -156,8 +156,8 @@ pub fn metadata(base: &Directory, name: string, follow: bool): Result[stat::Meta
 }
 
 // readLink returns the raw target bytes. A dangling target succeeds; a
-// non-symlink is InvalidArgument; a target of 4095 bytes or more is
-// NameTooLong, never a silent truncation.
+// non-symlink is InvalidArgument; a target of 4096 bytes or more is
+// NameTooLong, never a silent truncation. A 4095-byte target succeeds.
 pub fn readLink(base: &Directory, name: string): Result[[]byte] {
     if !validName(name) {
         return err("readLink name must be one ordinary path component", invalidArgument())

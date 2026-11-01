@@ -52,6 +52,7 @@ int main(int argc, char **argv) {
     long raw;
     long readn;
     long envsize;
+    int flags1_before, flags2_before;
 
     if (fake) {
         snprintf(base, sizeof(base), "/p1b-c-dir");
@@ -62,6 +63,9 @@ int main(int argc, char **argv) {
 
     CHECK(sys_adapter_init(4096, 64L * 1024L * 1024L) == 0, "init");
     if (fake && sysfake_reset != NULL) sysfake_reset();
+    flags1_before = fcntl(1, F_GETFL);
+    flags2_before = fcntl(2, F_GETFL);
+    CHECK(flags1_before >= 0 && flags2_before >= 0, "standard flags before");
 
     bt = make_buf(base, strlen(base));
     CHECK(bt > 0, "dir path buffer");
@@ -103,6 +107,9 @@ int main(int argc, char **argv) {
             CHECK(sys_res_close(again, SYS_KIND_FILE) == 1, "replace target close");
         }
         CHECK(sys_file_rename(dt, n2, dt, ft, 1) == 1, "rename replace");
+        CHECK(sys_file_rename(dt, ft, dt, ft, 1) == 1, "rename same replace");
+        CHECK(sys_file_rename(dt, ft, dt, ft, 0) == -EEXIST,
+              "rename same no-replace");
         close_buf(n2);
         CHECK(sys_file_link(dt, ft, dt, n3 = make_buf("configlink", 10)) == 1,
               "link");
@@ -138,6 +145,8 @@ int main(int argc, char **argv) {
             CHECK(beneath > 0, "openBeneath relative");
             CHECK(sys_res_close(beneath, SYS_KIND_FILE) == 1, "beneath close");
             close_buf(n3);
+            CHECK(sys_file_open_beneath(0, ft, SYS_OPEN_READ, 0) == -EINVAL,
+                  "openBeneath rejects token 0");
             n3 = make_buf("../config", 9);
             CHECK(sys_file_open_beneath(dt, n3, SYS_OPEN_READ, 0) == -EXDEV,
                   "openBeneath parent escape");
@@ -174,16 +183,23 @@ int main(int argc, char **argv) {
     CHECK(sys_env_snapshot(lt, envsize) == envsize, "environment snapshot");
     CHECK(sys_res_close(lt, SYS_KIND_BYTE_BUFFER) == 1, "environment close");
 
+    CHECK(fcntl(1, F_GETFL) == flags1_before, "fd1 flags after dir/file ops");
     logt = sys_log_open(2, 256);
     CHECK(logt > 0, "log open");
+    CHECK(fcntl(1, F_GETFL) == flags1_before, "fd1 flags unchanged by log open");
+    CHECK(fcntl(2, F_GETFL) == flags2_before, "fd2 flags unchanged by log open");
     bt = make_buf("p1b-c-log\n", 10);
     CHECK(sys_log_emit(logt, bt, 0, 10, 0) == 1, "log emit");
     CHECK(sys_log_queued(logt) == 10, "log queued");
     CHECK(sys_log_flush(logt) == 1, "log flush");
     CHECK(sys_log_queued(logt) == 0, "log drained");
+    CHECK(fcntl(1, F_GETFL) == flags1_before, "fd1 flags unchanged by flush");
+    CHECK(fcntl(2, F_GETFL) == flags2_before, "fd2 flags unchanged by flush");
     CHECK(sys_log_dropped(logt) == 0, "log dropped zero");
     close_buf(bt);
     CHECK(sys_res_close(logt, SYS_KIND_LOGGER) == 1, "log close");
+    CHECK(fcntl(1, F_GETFL) == flags1_before, "fd1 flags unchanged by close");
+    CHECK(fcntl(2, F_GETFL) == flags2_before, "fd2 flags unchanged by close");
 
     CHECK(sys_res_live_count() == 0, "no live native resources");
     CHECK(sys_adapter_shutdown() == 0, "shutdown");

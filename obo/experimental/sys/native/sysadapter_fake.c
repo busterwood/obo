@@ -947,18 +947,63 @@ long sys_file_open_beneath_supported(void) {
     return fake_open_beneath_disabled ? 0 : 1;
 }
 
+/* Lexically normalize a beneath path the way RESOLVE_BENEATH permits: "."
+ * components disappear, ".." may pop a real component but never the base.
+ * The normalized text is "." when the path resolves to the base itself. */
+static long beneath_normalize(const char *path, size_t len, char *out,
+                              size_t *outlen) {
+    size_t starts[2048];
+    size_t depth = 0;
+    size_t i = 0;
+    size_t o = 0;
+    if (len == 0) return err(EINVAL);
+    if (path[0] == '/') return err(EXDEV);
+    while (i < len) {
+        size_t start;
+        size_t clen;
+        while (i < len && path[i] == '/') i++;
+        if (i >= len) break;
+        start = i;
+        while (i < len && path[i] != '/') i++;
+        clen = i - start;
+        if (clen == 1 && path[start] == '.') continue;
+        if (clen == 2 && path[start] == '.' && path[start + 1] == '.') {
+            if (depth == 0) return err(EXDEV);
+            depth--;
+            o = starts[depth];
+            continue;
+        }
+        if (depth >= sizeof(starts) / sizeof(starts[0])) return err(ENAMETOOLONG);
+        starts[depth] = o;
+        if (o > 0) out[o++] = '/';
+        if (clen > 4095 - o) return err(ENAMETOOLONG);
+        memcpy(out + o, path + start, clen);
+        o += clen;
+        depth++;
+    }
+    if (depth == 0) {
+        out[0] = '.';
+        o = 1;
+    }
+    *outlen = o;
+    return 0;
+}
+
 long sys_file_open_beneath(long dir_token, long path_token, long flags,
                            long mode) {
     const char *path = NULL;
     size_t len = 0;
-    size_t i;
+    char norm[4096];
+    size_t normlen = 0;
     long scripted = 0;
     int have_script;
     fake_file *f;
     fake_inode *ino;
     long idx;
     long token;
+    long nr;
     sys_reg_bump_call(SYS_CALL_OPEN_BENEATH);
+    if (dir_token == 0) return err(EINVAL);
     if (!fake_dir_ok(dir_token)) return err(EBADF);
     if (fake_open_beneath_disabled) return err(ENOSYS);
     if (mode < 0 || mode > 07777 || !valid_open_flags(flags)) return err(EINVAL);
@@ -966,30 +1011,33 @@ long sys_file_open_beneath(long dir_token, long path_token, long flags,
         long pr = path_of(path_token, &path, &len);
         if (pr < 0) return pr;
     }
-    if (len == 0) return err(EINVAL);
-    if (path[0] == '/') return err(EXDEV);
-    for (i = 0; i < len; i++) {
-        if (path[i] == '.') {
-            if ((i == 0 || path[i - 1] == '/') &&
-                (i + 1 == len || path[i + 1] == '/')) return err(EXDEV);
-            if (i + 2 < len && path[i + 1] == '.' &&
-                (path[i + 2] == '/' || i + 2 == len) &&
-                (i == 0 || path[i - 1] == '/')) return err(EXDEV);
-        }
-    }
+    nr = beneath_normalize(path, len, norm, &normlen);
+    if (nr < 0) return nr;
     have_script = pop_script(SYS_CALL_OPEN_BENEATH, &scripted);
     if (have_script && scripted < 0) return scripted;
-    idx = store_find(path, len);
-    if (idx < 0) {
-        if ((flags & SYS_OPEN_CREATE) == 0) return err(ENOENT);
-        ino = store_add(path, len, mode);
+    if (normlen == 1 && norm[0] == '.') {
+        if ((flags & SYS_OPEN_CREATE) != 0) return err(EISDIR);
+        ino = new_inode(0755);
         if (ino == NULL) return err(ENOMEM);
+        ino->ftype = 4;
+        ino->refs = 1;
     } else {
-        if ((flags & SYS_OPEN_CREATE) != 0 && (flags & SYS_OPEN_EXCLUSIVE) != 0) {
-            return err(EEXIST);
+        idx = store_find(norm, normlen);
+        if (idx < 0) {
+            if ((flags & SYS_OPEN_CREATE) == 0) return err(ENOENT);
+            ino = store_add(norm, normlen, mode);
+            if (ino == NULL) return err(ENOMEM);
+        } else {
+            ino = fake_store[idx].ino;
+            if ((flags & SYS_OPEN_CREATE) != 0 && ino->ftype == 4) {
+                return err(EISDIR);
+            }
+            if ((flags & SYS_OPEN_CREATE) != 0 &&
+                (flags & SYS_OPEN_EXCLUSIVE) != 0) {
+                return err(EEXIST);
+            }
+            if ((flags & SYS_OPEN_TRUNCATE) != 0) ino->len = 0;
         }
-        ino = fake_store[idx].ino;
-        if ((flags & SYS_OPEN_TRUNCATE) != 0) ino->len = 0;
     }
     f = (fake_file *)calloc(1, sizeof(*f));
     if (f == NULL) return err(ENOMEM);
@@ -1058,6 +1106,7 @@ long sys_file_rename(long from_dir, long old_name, long to_dir, long new_name,
     if (from < 0) return err(ENOENT);
     to = store_find(newp, newlen);
     if (to >= 0 && !replace) return err(EEXIST);
+    if (to == from && replace) return 1;
     if (to >= 0) {
         long from_type = fake_store[from].ino->ftype;
         long to_type = fake_store[to].ino->ftype;
@@ -1099,6 +1148,7 @@ long sys_file_link(long from_dir, long old_name, long to_dir, long new_name) {
     if (have_script && scripted < 0) return scripted;
     from = store_find(oldp, oldlen);
     if (from < 0) return err(ENOENT);
+    if (fake_store[from].ino->ftype == 4) return err(EPERM);
     if (store_find(newp, newlen) >= 0) return err(EEXIST);
     if (fake_store_used >= FAKE_STORE_MAX) return err(ENOSPC);
     {
@@ -1135,13 +1185,19 @@ long sys_file_symlink(long target_token, long to_dir, long name_token) {
     have_script = pop_script(SYS_CALL_SYMLINK, &scripted);
     if (have_script && scripted < 0) return scripted;
     if (store_find(name, namelen) >= 0) return err(EEXIST);
-    ino = store_add(name, namelen, 0777);
-    if (ino == NULL) return err(ENOMEM);
-    ino->ftype = 10;
-    ino->link_target = (char *)malloc(targetlen + 1);
-    if (ino->link_target == NULL) return err(ENOMEM);
-    memcpy(ino->link_target, target, targetlen);
-    ino->link_target[targetlen] = '\0';
+    {
+        char *copy = (char *)malloc(targetlen + 1);
+        if (copy == NULL) return err(ENOMEM);
+        memcpy(copy, target, targetlen);
+        copy[targetlen] = '\0';
+        ino = store_add(name, namelen, 0777);
+        if (ino == NULL) {
+            free(copy);
+            return err(ENOMEM);
+        }
+        ino->ftype = 10;
+        ino->link_target = copy;
+    }
     return 1;
 }
 

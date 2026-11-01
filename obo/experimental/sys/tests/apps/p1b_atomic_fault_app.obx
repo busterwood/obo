@@ -47,6 +47,13 @@ fn report(label: string, r: Result[file::ReplaceReport]) {
     }
 }
 
+fn reportDetail(label: string, r: Result[file::ReplaceReport]) {
+    match r {
+        ok(v) { println(label, "=ok") }
+        err(m, c) { show(label, c); println(label, "_message=", m) }
+    }
+}
+
 fn main() {
     let av = args()
     let base = av[1]
@@ -64,6 +71,27 @@ fn main() {
             println("success_count=", fake::storeCount() - baseCount, " content=", readFile(&dd, "ok"))
             report("nondur", file::replaceAtomic(&dd, "nondur", &target, 420, false))
             println("nondur_count=", fake::storeCount() - baseCount)
+
+            // A seeded old target must survive every precommit failure.
+            let seed = bytesOf("old")
+            report("seed_old", file::replaceAtomic(&dd, "existing", &seed, 420, false))
+            let beforeOld = fake::storeCount()
+            fake::push(fake::CLASS_WRITE, -28)
+            report("old_write", file::replaceAtomic(&dd, "existing", &target, 420, true))
+            println("old_write_content=", readFile(&dd, "existing"),
+                    " count=", fake::storeCount() - beforeOld)
+            fake::push(fake::CLASS_CHMOD, -13)
+            report("old_chmod", file::replaceAtomic(&dd, "existing", &target, 420, true))
+            println("old_chmod_content=", readFile(&dd, "existing"),
+                    " count=", fake::storeCount() - beforeOld)
+            fake::push(fake::CLASS_SYNC, -5)
+            report("old_fsync", file::replaceAtomic(&dd, "existing", &target, 420, true))
+            println("old_fsync_content=", readFile(&dd, "existing"),
+                    " count=", fake::storeCount() - beforeOld)
+            fake::push(fake::CLASS_RENAME, -18)
+            report("old_rename", file::replaceAtomic(&dd, "existing", &target, 420, true))
+            println("old_rename_content=", readFile(&dd, "existing"),
+                    " count=", fake::storeCount() - beforeOld)
 
             fake::push(fake::CLASS_FILE_OPEN, -28)
             report("temp_create", file::replaceAtomic(&dd, "fail1", &target, 420, true))
@@ -99,6 +127,34 @@ fn main() {
             fake::push(fake::CLASS_RENAME, -21)
             report("commit_isdir", file::replaceAtomic(&dd, "adir", &target, 420, true))
             println("commit_dir_count=", fake::storeCount() - beforeDir)
+
+            // Eight O_EXCL collisions exhaust the finite temporary attempts.
+            let beforeCollide = fake::storeCount()
+            var tries = 0
+            while tries < 8 {
+                fake::push(fake::CLASS_FILE_OPEN, -17)
+                tries += 1
+            }
+            report("temp_collide", file::replaceAtomic(&dd, "collide", &target, 420, true))
+            println("collide_count=", fake::storeCount() - beforeCollide)
+
+            // Exact 16 MiB succeeds; one past the cap is Range and leaves the
+            // seeded target untouched.
+            let huge = new []byte(file::MAX_REPLACE_BYTES)
+            let exact = file::replaceAtomic(&dd, "huge", &huge, 420, false)
+            match exact { ok(r) { println("huge_exact=", r.committed) } err(m, c) { show("huge_exact", c) } }
+            let hugeSeed = bytesOf("old")
+            report("huge_seed", file::replaceAtomic(&dd, "huge2", &hugeSeed, 420, false))
+            let beforeHuge = fake::storeCount()
+            let tooHuge = new []byte(file::MAX_REPLACE_BYTES + 1)
+            report("huge_over", file::replaceAtomic(&dd, "huge2", &tooHuge, 420, false))
+            println("huge_content=", readFile(&dd, "huge2"),
+                    " count=", fake::storeCount() - beforeHuge)
+
+            // Cleanup-unlink failure is visible in the returned message.
+            fake::push(fake::CLASS_WRITE, -28)
+            fake::push(fake::CLASS_DIR_UNLINK, -13)
+            reportDetail("cleanup_fail", file::replaceAtomic(&dd, "existing", &target, 420, true))
 
             let c = dir::close(&dd)
             match c { ok(v) { println("dir_close=", v) } err(m, cc) { show("dir_close", cc) } }

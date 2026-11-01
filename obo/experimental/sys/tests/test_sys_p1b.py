@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.dirname(HERE)
@@ -109,6 +110,9 @@ FS_TRACE = [
     'rename_missing=NotFound',
     'link=true',
     'link_dup=AlreadyExists',
+    'link_dir=Permission',
+    'rename_same_noreplace=AlreadyExists',
+    'rename_same=true',
     'symlink=true',
     'dangling=true',
     'readlink=config2',
@@ -122,12 +126,21 @@ FS_TRACE = [
     'unlink_missing=NotFound',
     'rmdir_file=NotDirectory',
     'rmdir_missing=NotFound',
-    'replace_dir=IsDirectory',
-    'rmdir=true',
     'beneath=ok',
+    'beneath_dot=ok',
+    'beneath_internal_dot=ok',
+    'beneath_dotdot=CrossDevice',
+    'beneath_trailing=CrossDevice',
+    'beneath_internal_dotdot=ok',
+    'beneath_create_dotdot=CrossDevice',
+    'beneath_create_trailing=IsDirectory',
+    'beneath_create_file=ok',
     'beneath_empty=InvalidArgument',
     'beneath_escape=CrossDevice',
     'beneath_abs=CrossDevice',
+    'beneath_file=ok',
+    'replace_dir=IsDirectory',
+    'rmdir=true',
     'empty_replace=true,false',
     'dir_close=true',
     'mkdir_closed=Closed',
@@ -145,21 +158,38 @@ ATOMIC_TRACE = [
     'success_count=1 content=payload',
     'nondur=ok,true,false,0',
     'nondur_count=2',
+    'seed_old=ok,true,false,0',
+    'old_write=NoSpace',
+    'old_write_content=old count=0',
+    'old_chmod=Permission',
+    'old_chmod_content=old count=0',
+    'old_fsync=IoFailure',
+    'old_fsync_content=old count=0',
+    'old_rename=CrossDevice',
+    'old_rename_content=old count=0',
     'temp_create=NoSpace',
-    'temp_create_count=2',
+    'temp_create_count=3',
     'write=NoSpace',
-    'write_count=2',
+    'write_count=3',
     'chmod=Permission',
-    'chmod_count=2',
+    'chmod_count=3',
     'fsync=IoFailure',
-    'fsync_count=2',
+    'fsync_count=3',
     'rename=CrossDevice',
-    'rename_count=2',
+    'rename_count=3',
     'seed=ok,true,false,0',
     'postcommit=ok,true,false,10039',
     'post_count=0 content=payload',
     'commit_isdir=IsDirectory',
     'commit_dir_count=0',
+    'temp_collide=Range',
+    'collide_count=0',
+    'huge_exact=true',
+    'huge_seed=ok,true,false,0',
+    'huge_over=Range',
+    'huge_content=old count=0',
+    'cleanup_fail=NoSpace',
+    'cleanup_fail_message=write failed; temporary cleanup failed',
     'dir_close=true',
     'counts=0,0',
     'shutdown=0,0,0',
@@ -210,6 +240,16 @@ ENV_TRACE = [
     'bad_name=InvalidArgument',
     'bad_set=InvalidArgument',
     'bad_unset=InvalidArgument',
+    'cap_before=40000',
+    'cap_update=Range',
+    'cap_after=40000',
+    'cap_small=true',
+    'cap_new=Range',
+    'cap_new_missing=nil',
+    'cap_entries=3',
+    'cap_unset=true',
+    'cap_reset=true',
+    'huge_get=Range',
     'forged=InvalidArgument',
     'forged_entries=InvalidArgument',
     'counts=0,0',
@@ -240,6 +280,12 @@ LOG_TRACE = [
     'sink_drain=IoFailure',
     'sink_flush=true',
     'sink_close=true',
+    'cap_zero=Range',
+    'cap_big=Range',
+    'record_cap=LimitExceeded',
+    'record_exact=LimitExceeded',
+    'forged_policy=InvalidArgument',
+    'cap_close=true',
     'leak_emit=true,0',
     'counts=1,1',
     'shutdown=1,1,0',
@@ -318,14 +364,17 @@ def main():
         p = must([exe, arg], label)
         if p.stdout.strip():
             print(label + ': ' + p.stdout.strip())
-    san_flags = ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer']
+    san_flags = ['-O1', '-g', '-fsanitize=address,undefined',
+                 '-fno-sanitize-recover=all', '-fno-omit-frame-pointer']
     native_san = cc_compile('p1b_c_real_san', 'p1b_test.c',
                             ['sysregistry.c', 'sysadapter_real.c', 'sysnet_real.c'], san_flags, tmp)
     fake_san = cc_compile('p1b_c_fake_san', 'p1b_test.c',
                           ['sysregistry.c', 'sysadapter_fake.c', 'sysnet_fake.c'], san_flags, tmp)
     for exe, label, arg in ((native_san, 'p1b_c_real_san', 'real'),
                             (fake_san, 'p1b_c_fake_san', 'fake')):
-        must([exe, arg], label, env=dict(os.environ, ASAN_OPTIONS='detect_leaks=1'))
+        must([exe, arg], label, env=dict(os.environ,
+                                          ASAN_OPTIONS='detect_leaks=1',
+                                          UBSAN_OPTIONS='halt_on_error=1:abort_on_error=1'))
         print(label + ': ok')
 
     # Real/fake filesystem contract trace.
@@ -401,6 +450,24 @@ def main():
     want_escaped = ' WARN a\\nb\\tc\\x01d\\\\e'
     if not lines[0].endswith(want_escaped):
         raise Fail('real log escaping mismatch: %r' % lines[0])
+
+    # B1: a logger over stdout must not leave O_NONBLOCK on the shared open
+    # file description. Hold the pipe reader paused so a leaked nonblocking flag
+    # truncates the 200,000-byte print instead of applying backpressure.
+    fd_app = build(REAL, os.path.join(APPS, 'p1b_log_fd_app.obx'),
+                   os.path.join(tmp, 'log-fd'), 'log fd')
+    fdproc = subprocess.Popen([fd_app], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,
+                              env=dict(os.environ, OBO_CHECK='1'))
+    time.sleep(0.25)
+    fd_out, fd_err = fdproc.communicate(timeout=60)
+    if fdproc.returncode != 0:
+        raise Fail('log fd app exited %d:\n%s\n%s'
+                   % (fdproc.returncode, fd_out.decode('utf-8', 'replace'),
+                      fd_err.decode('utf-8', 'replace')))
+    if fd_out.count(b'x') != 200000 or b'BEFORE' not in fd_out or b'AFTER' not in fd_out:
+        raise Fail('large print after logger open was truncated: %d x bytes'
+                   % fd_out.count(b'x'))
 
     # openat2 containment: parent, absolute, symlink escape and a magic link.
     root = make_beneath_fixture(tmp)

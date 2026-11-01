@@ -133,6 +133,13 @@ pub fn emit(l: &Logger, level: &Level, message: &[]byte): Result[EmitResult] {
         return err("logger policy field is invalid", invalidArgument())
     }
     let lt = try platform::_tokenHandle(handle(l.res), platform::KIND_LOGGER)
+    // Cheap pre-check before timestamp/escaping allocation. Escaping never
+    // shrinks a byte and expands a control byte to at most four bytes, so a
+    // message larger than the record cap cannot fit even before fixed prefix
+    // overhead is added.
+    if len(message) > MAX_RECORD_BYTES {
+        return err("log record exceeds the 4096-byte cap", limitCode())
+    }
     let stamp = try clock::realtime()
     let text = try calendar::formatRfc3339(&stamp)
     var line = new []byte(0)

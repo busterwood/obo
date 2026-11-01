@@ -54,18 +54,24 @@ fn validValue(value: string): bool {
     return true
 }
 
-// Validate every entry and the total serialized size at every entry point.
-fn validEnvironment(e: &Environment): bool {
-    if len(e.entries) > MAX_ENVIRONMENT_ENTRIES { return false }
+fn pairWidth(p: &Pair): int {
+    return len(p.name) + len(p.value) + 2
+}
+
+// 0 is valid; over-count/over-size is Range; a malformed name/value is
+// InvalidArgument. Every operation uses this same mapping so a crafted record
+// and a captured over-cap snapshot report the same category.
+fn environmentCode(e: &Environment): int {
+    if len(e.entries) > MAX_ENVIRONMENT_ENTRIES { return rangeCode() }
     var total = 0
     for i in 0..len(e.entries) {
         let p = e.entries[i]
-        if !validName(p.name) || !validValue(p.value) { return false }
-        let width = len(p.name) + len(p.value) + 2
-        if width > MAX_ENVIRONMENT_BYTES - total { return false }
+        if !validName(p.name) || !validValue(p.value) { return invalidArgument() }
+        let width = pairWidth(&p)
+        if width > MAX_ENVIRONMENT_BYTES - total { return rangeCode() }
         total += width
     }
-    return true
+    return 0
 }
 
 fn copyPair(p: &Pair): Pair {
@@ -128,8 +134,9 @@ pub fn snapshot(): Result[Environment] {
     if copied != got { return err("short environment capture copy", systemFailure()) }
     let pairs = try decode(&raw)
     let env = new Environment{entries: pairs}
-    if !validEnvironment(&env) {
-        return err("captured environment is malformed", invalidArgument())
+    let code = environmentCode(&env)
+    if code != 0 {
+        return err("captured environment is malformed or over the cap", code)
     }
     return ok(env)
 }
@@ -139,8 +146,9 @@ pub fn get(e: &Environment, name: string): Result[?[]byte] {
         return err("environment name is empty or contains '=' or NUL",
                    invalidArgument())
     }
-    if !validEnvironment(e) {
-        return err("environment record is malformed", invalidArgument())
+    let shape = environmentCode(e)
+    if shape != 0 {
+        return err("environment record is malformed or over the cap", shape)
     }
     for i in 0..len(e.entries) {
         if e.entries[i].name == name {
@@ -156,26 +164,28 @@ pub fn set(mut e: &Environment, name: string, value: string): Result[bool] {
     if !validName(name) || !validValue(value) {
         return err("environment name or value is invalid", invalidArgument())
     }
-    if !validEnvironment(e) {
-        return err("environment record is malformed", invalidArgument())
+    let shape = environmentCode(e)
+    if shape != 0 {
+        return err("environment record is malformed or over the cap", shape)
     }
+    var total = 0
+    for i in 0..len(e.entries) { total += pairWidth(&e.entries[i]) }
+    let incoming = len(name) + len(value) + 2
     for i in 0..len(e.entries) {
         if e.entries[i].name == name {
-            e.entries[i].value = value
-            if !validEnvironment(e) {
+            // Validate the prospective total before mutating the record.
+            let replaced = total - pairWidth(&e.entries[i])
+            if incoming > MAX_ENVIRONMENT_BYTES - replaced {
                 return err("environment total size is over the cap", rangeCode())
             }
+            e.entries[i].value = value
             return ok(true)
         }
     }
     if len(e.entries) >= MAX_ENVIRONMENT_ENTRIES {
         return err("environment has too many entries", rangeCode())
     }
-    var total = len(name) + len(value) + 2
-    for i in 0..len(e.entries) {
-        total += len(e.entries[i].name) + len(e.entries[i].value) + 2
-    }
-    if total > MAX_ENVIRONMENT_BYTES {
+    if incoming > MAX_ENVIRONMENT_BYTES - total {
         return err("environment total size is over the cap", rangeCode())
     }
     append(e.entries, new Pair{name: name, value: value})
@@ -187,8 +197,9 @@ pub fn unset(mut e: &Environment, name: string): Result[bool] {
         return err("environment name is empty or contains '=' or NUL",
                    invalidArgument())
     }
-    if !validEnvironment(e) {
-        return err("environment record is malformed", invalidArgument())
+    let shape = environmentCode(e)
+    if shape != 0 {
+        return err("environment record is malformed or over the cap", shape)
     }
     var kept = new []Pair(0)
     var removed = false
@@ -207,8 +218,9 @@ pub fn unset(mut e: &Environment, name: string): Result[bool] {
 // A deep copy: new array, new Pair records and value bytes. Strings are
 // immutable, so assigning the same string value does not expose the snapshot.
 pub fn entries(e: &Environment): Result[[]Pair] {
-    if !validEnvironment(e) {
-        return err("environment record is malformed", invalidArgument())
+    let shape = environmentCode(e)
+    if shape != 0 {
+        return err("environment record is malformed or over the cap", shape)
     }
     var out = new []Pair(0)
     for i in 0..len(e.entries) {

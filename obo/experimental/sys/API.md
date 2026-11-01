@@ -298,8 +298,12 @@ serialized size and entry count are capped. Every operation revalidates the
 whole record. Missing is nil, present-empty is an empty byte array. Startup order
 is preserved, duplicates are allowed, and lookup/update is first-match; unset
 removes every occurrence. `entries` returns new Pair records and value arrays.
-Local mutation has no process effect. `setProcess`/`unsetProcess` are
-intentionally absent (process mutation remains `Unsupported`).
+A malformed name/value is `InvalidArgument`; an entry-count or total-size cap is
+`Range`, for both a caller-constructed record and a captured over-cap snapshot.
+`set` validates the prospective total before assigning, so a rejected update
+leaves the old value and the snapshot usable. Local mutation has no process
+effect. `setProcess`/`unsetProcess` are intentionally absent (process mutation
+remains `Unsupported`).
 
 ## `syslog`
 
@@ -319,15 +323,24 @@ pub fn close(l: &Logger): Result[bool]
 ```
 
 `openStandard` duplicates Input/Output/Error with CLOEXEC and creates a fixed
-1..1 MiB queue. `policy` is the documented public-field limitation on `Logger`
-(`0` ReturnWouldBlock, `1` DropWithCounter) and is revalidated on emit. A record
-is timestamped with realtime RFC3339, carries the level, escapes newline/carriage
-return/tab/backslash/other control bytes and ends with one newline; a record over
-4096 bytes is `LimitExceeded`. `ReturnWouldBlock` rejects a full queue with
-`WouldBlock`; `DropWithCounter` drops the whole record and reports the cumulative
-`dropped` count. `drain` uses one absolute deadline (or an infinite one), makes
-short-write progress and reports sink errors; `flush` is one immediate drain.
-There is no global logger, background thread, unbounded queue or JSON encoder.
+1 byte..1 MiB queue. It never changes the status flags of process fds 0/1/2:
+because `F_DUPFD` shares the open file description, `drain`/`flush` request
+`O_NONBLOCK` only for the duration of that write/poll attempt and restore the
+exact prior flags before returning, including on every error path. `policy` is
+the documented public-field limitation on `Logger` (`0` ReturnWouldBlock, `1`
+DropWithCounter) and is revalidated on emit. A record is timestamped with
+realtime RFC3339, carries the level, escapes newline/carriage return/tab/
+backslash/other control bytes and ends with one newline; a message larger than
+4096 bytes (checked before escaping allocation) or a record over 4096 bytes is
+`LimitExceeded`. `ReturnWouldBlock` rejects a full queue with `WouldBlock`;
+`DropWithCounter` drops the whole record and reports the cumulative `dropped`
+count. `drain` uses one absolute deadline (or an infinite one), makes short-write
+progress and reports sink errors; `flush` is one immediate drain. `close` is
+explicit and **discards any queued records not yet drained/flushed**; callers
+that need delivery must drain or flush first and inspect the result. P1b emits a
+realtime timestamp only: monotonic record latency is not part of the line
+format in this slice. There is no global logger, background thread, unbounded
+queue or JSON encoder.
 
 ## `sysrandom`
 
@@ -399,9 +412,9 @@ open file description (offset and flags), matching `dup(2)`.
 
 ### P1b filesystem operations
 
-`openBeneath(base, path, options)` accepts a multi-component path and asks
-`openat2` for `RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS`. It is not a string-prefix
-check. A kernel without openat2 returns `Unsupported`; an escape (`..`, an
+`openBeneath(base, path, options)` requires a live anchored Directory (native
+token 0 is rejected) and accepts a multi-component path, asking `openat2` for
+`RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS`. It is not a string-prefix check. A kernel without openat2 returns `Unsupported`; an escape (`..`, an
 absolute path, or a symlink that leaves the base) is the kernel's `EXDEV`, which
 maps to `CrossDevice`; a magic link maps to `PathLoop`.
 `hasCapability("file.openBeneath")` reports the kernel capability.
@@ -410,7 +423,10 @@ maps to `CrossDevice`; a magic link maps to `PathLoop`.
 selects `fdatasync(true)` or `fsync(false)` and is one attempt. Anchored
 `rename` is atomic for name visibility; `replace=false` uses
 `RENAME_NOREPLACE` and returns `Unsupported` when no atomic no-replace primitive
-exists, never a check-then-overwrite. `link` does not follow a source symlink.
+exists, never a check-then-overwrite. On that path, `EINVAL` from `renameat2`
+with otherwise validated component names is interpreted as “this filesystem
+does not support `RENAME_NOREPLACE`” and maps to `Unsupported`; every other
+captured error is preserved. `link` does not follow a source symlink.
 `symlink` stores target bytes without resolving them (dangling targets are
 valid). Cross-device rename is `CrossDevice`, never copy/delete.
 
@@ -450,8 +466,8 @@ pub fn closeIterator(it: &Iterator): Result[bool]
 `open` follows host symlinks. `child`, `metadata`, `readLink`, `mkdir`,
 `unlink`, `removeEmpty` and `openAt` accept one component only (nonempty, no
 `/`, NUL, `.` or `..`); `child` opens NOFOLLOW. `readLink` returns raw target
-bytes (dangling succeeds, non-symlink is `InvalidArgument`, 4095+ bytes is
-`NameTooLong`). `removeEmpty` is rmdir; kernel `ENOTEMPTY` maps to `Busy`
+bytes (dangling succeeds, non-symlink is `InvalidArgument`, 4096+ bytes is
+`NameTooLong`; 4095 succeeds). `removeEmpty` is rmdir; kernel `ENOTEMPTY` maps to `Busy`
 because the error namespace has no `NotEmpty` kind. `sync` fsyncs the directory
 and is the replaceAtomic durability step.
 `next` skips `.`/`..`, returns owned names, reports Unknown kind rather than
