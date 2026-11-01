@@ -37,10 +37,10 @@ from peak_budget import PEAK_BUDGET  # noqa: E402
 REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 LIBDIR = os.path.join(FORK, 'lib')
-# Numeric-branch compiler live-peak budget, shared with mutate_io.  The user
-# explicitly approved 2,500,000 decimal bytes for numeric work; the historical
-# lambda release budget remains 2,000,000 in its own record.  The figure varies
-# by a few hundred bytes with the source path.  Leaks are caught separately by
+# Shared compiler live-peak budget, imported from peak_budget.  The user raised
+# it to 2,750,000 decimal bytes on 2026-11-01; the historical lambda release
+# budget remains 2,000,000 in its own record.  The figure varies by a few
+# hundred bytes with the source path.  Leaks are caught separately by
 # port_test's leak check.
 
 

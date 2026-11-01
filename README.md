@@ -93,10 +93,10 @@ field visibility is 0.13, decimal text is 0.14 and templates are 0.15.
 | Seed (`--version`) | promoted obo 0.15: 696,321 bytes, sha256 `4213f9a3…`, sym-format 8, abi 1; the previous 700,417-byte 0.15 image (`8ca8e59e…`) built this image once; the 0.14 seed (`d7b0c755…`) built that earlier image; earlier seeds build the 0.14 line |
 | Self-host fixed point | stage 2 == stage 3 == compiler, 696,321 bytes, `4213f9a3…`; the previous 700,417-byte 0.15 image builds this image from source, and the promoted 0.15 seed reproduces it |
 | Self-compile wall time | 0.221 s (5 runs, median; range 0.2199-0.2242 s; host-dependent, measured 1 November 2026) |
-| Self-compile live peak | 2,382,928 bytes direct; 2,383,280 bytes port comparison (budget 2,500,000) |
+| Self-compile live peak | 2,519,296 bytes direct; 2,519,312 bytes port comparison (budget 2,750,000) |
 | Total allocated | 52,932,208 bytes direct; 52,936,512 bytes port comparison |
 | Maximum resident set | 4,648 KB (measured 1 November 2026) |
-| Live-memory budget | 2,500,000 bytes: 117,072 spare direct / 116,720 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 51,488) |
+| Live-memory budget | 2,750,000 bytes: 230,704 spare direct / 230,688 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 51,488) |
 | obo suite | 1,809 `run_fork` tests; 143 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 613/613 with 10 encoder groups; `port_compare` 1,791/1,791 default; seed comparisons 1,595/1,595 against the promoted 0.15 seed; 71 doc examples; 30/30 import checks; 17/17 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
 | Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.15) is 1,595/1,595; the older 0.13/0.12/0.11 comparisons skip the template files; the default (self) comparison is 1,791/1,791 |
@@ -108,9 +108,9 @@ field visibility is 0.13, decimal text is 0.14 and templates are 0.15.
 | eza 10k-entry live peak | worst 2,184,496 bytes (Tree; Restricted long 2,184,368); `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
 | Minimal static executable | 77,825 bytes (runtime included; a page-rounded `module mini; fn main() {}` binary; the old 32,769 figure was stale, and this is 4,096 bytes smaller than the pre-cleanup 0.15 image) |
 
-The compiler budget is 2,500,000 bytes live, with the separate 30,000-byte
-empty-array oracle unchanged. The 0.15 line peaks at 2,382,928 bytes in direct self-compiles and
-2,383,280 in the port comparison: 117,072 and 116,720 bytes spare. Total
+The compiler budget is 2,750,000 bytes live (raised from 2,500,000 on 1 November 2026), with the separate 30,000-byte
+empty-array oracle unchanged. The 0.15 line peaks at 2,519,296 bytes in direct self-compiles and
+2,519,312 in the port comparison: 230,704 and 230,688 bytes spare. Total
 allocation is 52,932,208 bytes direct and 52,936,512 bytes in the port comparison. No check was
 weakened. The live peak varies by a few hundred bytes with the source path and
 total allocation by about 4.2 KB. The historical lambda release budget remains

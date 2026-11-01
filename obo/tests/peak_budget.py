@@ -1,7 +1,8 @@
-"""Authoritative compiler live-peak budget for this numeric branch.
+"""Authoritative compiler live-peak budget.
 
-The user explicitly approved 2,500,000 *decimal bytes* for numeric work.  This
-is a numeric-branch decision, not a change to the historical lambda release
+The user raised the shared cap from 2,500,000 to 2,750,000 *decimal bytes* on
+2026-11-01 ("allow memory to go up to 2.75MB self-compile peak").  This is the
+current shared compiler cap, not a change to the historical lambda release
 budget (which remains 2,000,000 in its own release record).
 
 The empty-array fault is a *savings regression*: the normal runtime shares
@@ -16,7 +17,7 @@ variance is only hundreds of bytes; 30,000 bytes is a deliberately conservative
 floor below both measured deltas and above that noise.
 """
 
-PEAK_BUDGET = 2_500_000
+PEAK_BUDGET = 2_750_000
 
 # Fresh exact-converter measurement is 45,728 bytes (latest run baseline
 # 2,030,784 -> mutant 2,076,512); the old 44,672 was the pre-float historical

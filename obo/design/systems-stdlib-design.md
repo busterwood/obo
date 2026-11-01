@@ -144,7 +144,8 @@ also write the global `rt_entry_sp` (entry.S:110).
   validation and configured capacity exhaustion, **not guarantee recoverable
   managed-heap exhaustion without separate runtime allocation work**. No normal
   I/O error or remote input should intentionally use a runtime panic.
-- The compiler live-memory budget is **2,500,000 bytes**, not the application
+- The compiler live-memory budget is **2,750,000 bytes** (raised from
+  2,500,000 on 2026-11-01), not the application
   heap limit; the released 0.12 line peaks at 2,194,160 bytes in the recorded
   README gate. All initial APIs are source plus trusted C shims using the
   existing experimental seam. Compiler features are separately gated.

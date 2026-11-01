@@ -699,7 +699,7 @@ Regression gates for the prototype commit:
   opt-in comparison;
 - compiler self-build and self-host fixed point still hold if the compiler is
   changed;
-- product self-measurement stays at or below the approved `2,500,000` peak
+- product self-measurement stays at or below the approved `2,750,000` peak
   budget; if the compiler change breaches it, stop and report rather than
   increasing the cap or weakening a check;
 - targeted ordinary module/ownership/ABI/no-libc tests and the actual PQ
