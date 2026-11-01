@@ -1,8 +1,9 @@
-# `http2` limits, memory and safety envelope (H2a)
+# `http2` limits, memory and safety envelope (H2a/H2b/H2c)
 
-Status: experimental. The defaults below are starting points, not protocol
-constants. Every value is revalidated with checked arithmetic before a native
-call or allocation.
+Status: experimental H2a/H2b/H2c. The defaults below are starting points, not
+protocol constants. Every value is revalidated with checked arithmetic before a
+native call or allocation. The reactor server uses the same `Limits` record and
+adds no protocol constants of its own.
 
 ## Default limits
 
@@ -29,7 +30,7 @@ call or allocation.
 | `maxResponseTrailerBytes` | 4096 | staged response trailers |
 | `maxResponseTrailerCount` | 32 | staged response trailer fields |
 | `maxReadChunk` | 16384 | per `read`/`write` call |
-| `maxRequestsPerConnection` | 1000 | completed requests (admission policy) |
+| `maxRequestsPerConnection` | 1000 | later streams are reset with `REFUSED_STREAM` |
 | `maxConnections` | 14 | server admission |
 | `maxTotalConnectionBytes` | 67108864 | 64 MiB aggregate reservation |
 | `maxResetBurst` / `maxResetRate` | 100 / 20 | nghttp2 reset token bucket |
@@ -37,7 +38,7 @@ call or allocation.
 | `maxSettingsEntries` | 32 | SETTINGS entries per peer frame |
 | `frameBurst` / `frameRate` | 4000 / 2000 | inbound frame token bucket |
 | `zeroDataBurst` / `zeroDataRate` | 200 / 100 | zero-length DATA bucket |
-| `prefaceTimeoutMs` | 10000 | h2c preface / first frame |
+| `prefaceTimeoutMs` | 10000 | h2c preface; armed at accept before any frame |
 | `settingsTimeoutMs` | 10000 | our SETTINGS ACK |
 | `headerTimeoutMs` | 10000 | HEADERS..END_HEADERS |
 | `bodyIdleTimeoutMs` | 30000 | after the first body read |
@@ -160,11 +161,85 @@ No nghttp2 header is committed and no absolute header path is committed. The
 test script records the extracted header version and rejects a mismatched
 `libnghttp2-dev` package.
 
-## H2a gaps (deliberate)
+## Reactor server envelope (H2b/H2c)
 
-- h2spec/h2load/Go differential and the full security/fuzz matrix are H2c.
-- The test server is one-in-flight-request; multiplexed streams are covered by
-  the C harness and the 32-stream cap, not by the obo test server.
+| Item | Bound |
+|---|---|
+| connection slots | `min(maxConnections, 65536)`; the fixed table never grows past the limit |
+| per-connection streams | `maxConcurrentStreams` live shells; the shim also enforces the same advertised cap |
+| accept batch | 32 sockets per turn; `ResourceLimit`/EMFILE pauses 100 ms |
+| per-turn connection work | 32 `http2::next` steps; exhaust marks the slot resumable for an immediate turn |
+| per-turn stream resumption | 32 action steps across live streams, rotating a fair cursor; blocked writes wait for readiness/deadline |
+| handshake deadline | `prefaceTimeoutMs` from accept, before any H2 session exists |
+| server drain | `drainTimeoutMs` from `beginShutdown`; each connection uses the H2 GOAWAY/PING barrier and `drainBarrierMs` |
+| admission | `http2::reservation(limits)` x live connections, bounded by `maxConnections` and `maxTotalConnectionBytes`; full admission removes the listener watch |
+| reactor batch | 64 events per wait (systems `MAX_BATCH`) |
+
+TLS session memory, transport staging and the platforms' connection objects are
+outside the H2 reservation. The server admits on the H2 reservation only, as
+the API documents; choose `maxConnections` and `maxTotalConnectionBytes` with
+headroom for TLS. An accepted TLS connection that fails handshake or ALPN is
+closed and its reservation released; it never becomes an H2 slot.
+
+A connection slot is tagged by `(generation, index)`. Stale events are ignored
+without dereferencing a connection. `runOnce` checks every live slot's H2
+deadline after the reactor wait even when socket events dominate, and a
+resumable slot forces a zero-timeout wait rather than blocking.
+
+When the client preface is already buffered inside TLS at handshake completion,
+the loop drives the new H2 connection once immediately. This avoids waiting for
+a socket-readability edge that will never arrive. A wrong/no ALPN closes the
+session; there is no h2 fallback. h2c has no Upgrade path.
+
+For h2c, `h2_conn_arm_preface` initializes the C preface deadline at accept
+time. Without it, a zero-byte client would not reach `check_deadlines` because
+the shim only arms the deadline on the first `next_event`; all
+`maxConnections` slots could be held forever. `prefaceTimeoutMs` is therefore a
+strict bound from accept, not from the first byte.
+
+When admission is full, the listener watch is removed instead of leaving a
+level-triggered readable backlog. `rejected` increments once per transition.
+The watch is restored when a slot closes and capacity exists. Reservation
+rollback for a pre-slot failure releases the H2 admission charge without
+decrementing the live connection/reserved counters.
+
+`ResourceLimit`/EMFILE accept pressure uses the same watch pause plus a 100 ms
+`acceptPausedUntil` backoff; the listener is not left readable during the
+backoff. `acceptPressure` is reported in `http2server::Metrics` and H2METRICS.
+
+A zero-count `writeBody` is a blocked write, not ready work. Such a stream
+keeps `workPending` for a later retry but does not force a zero-timeout reactor
+turn: `computeUntil` returns immediately only for event-backlog work or a
+resumable action that can progress without new readiness. A client withholding
+WINDOW_UPDATE therefore costs no CPU until a window update or deadline.
+
+A response action that accepted zero bytes from `writeBody` sets
+`actionWriteBlocked`; the server keeps the stream resumable and retries after
+flushing. This is required for non-default `maxStreamSendBuffer` values.
+`maxRequestsPerConnection` refusal submits `RST_STREAM(REFUSED_STREAM)` for the
+unadopted stream instead of leaving it open.
+
+Graceful drain now requires the final GOAWAY frame to be handed to the shim
+wire (`drain_final_sent`) and the server flushes shim wire, obo output and TLS
+ciphertext before closing. The final GOAWAY is `min(last_proc, cutoff)` and
+follows the barrier PING.
+
+`make`/`makeTls` consume the listener, reactor and optional TLS context. On a
+validation failure they close what they own. `shutdown` closes every stream
+shell before the connection so C never orphans a live `KIND_H2_STREAM`; it
+releases admission after `http2::close`. Post-shutdown `h2::counts()` has zero
+live/closing streams and `platform::counts().cleanupFailures` is zero.
+
+## H2b/H2c gaps (deliberate)
+
+- h2spec/h2load/Go are manual/optional integration tools; the default suite
+  detects their absence and prints the pinned commands. No protocol tool is
+  downloaded automatically and no peer outside loopback is contacted.
+- There is no committed libFuzzer corpus. The C harness remains the native
+  ASAN/UBSAN/LSAN gate; the obo server suite checks the abuse matrix and
+  post-shutdown counters.
+- The server is h2-only per listener. A combined H1/H2 ALPN dispatch is future
+  integration work; the caller can run separate listeners now.
 - `interim(1xx)` is `Unsupported`; `101` is invalid.
 - `Date` is not added automatically.
 - `setTrailerNames` validates names but does not reserve a trailer block; use

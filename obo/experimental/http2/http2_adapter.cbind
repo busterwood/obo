@@ -6,6 +6,7 @@
   "wrapper": "http2.obx",
   "wrapper_sources": [
     "http2.obx",
+    "http2server.obx",
     "../httpapi/httpapi.obx",
     "../httptransport/httptransport.obx",
     "../tls/systls.obx",
@@ -1711,6 +1712,31 @@
       "name": "h2_counts",
       "symbol": "h2_counts",
       "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "h2_conn_arm_preface",
+      "symbol": "h2_conn_arm_preface",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "h2_conn_refuse",
+      "symbol": "h2_conn_refuse",
+      "args": [
+        "i64",
+        "i64",
         "i64"
       ],
       "ret": "i64",

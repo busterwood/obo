@@ -597,7 +597,8 @@ fn bytesToken(b: &bytesbuf::Bytes): Result[int] {
 
 fn putI64(b: &bytesbuf::Bytes, field: int, value: int): Result[bool] {
     let r = try bytesbuf::writeInt64(b, field * 8, value)
-    return ok(r == 1)
+    if r == 1 { return ok(true) }
+    return ok(false)
 }
 
 fn getI64(b: &bytesbuf::Bytes, field: int): Result[int] {
@@ -1112,7 +1113,8 @@ pub fn wantsWrite(c: &Connection): Result[bool] {
     if len(c.outBytes) > c.outPos { return ok(true) }
     let ct = try connectionToken(c)
     let pending = __cinterop("h2_conn_wire_pending", ct)
-    return ok(pending > 0)
+    if pending > 0 { return ok(true) }
+    return ok(false)
 }
 
 pub fn memoryOutput(mut c: &Connection): Result[[]byte] {
@@ -1153,12 +1155,33 @@ pub fn state(c: &Connection): Result[int] {
     return ok(s)
 }
 
+// Arm the C preface deadline at accept time. Without this, a client that never
+// sends the 24-byte preface has no deadline until the first next_event call.
+pub fn armPrefaceDeadline(c: &Connection, now: &http::Now): Result[bool] {
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_conn_arm_preface", ct, now.mono.nanos)
+    if raw < 0 { return err("HTTP/2 preface deadline arm failed", nativeFailure(0 - raw)) }
+    return ok(true)
+}
+
+// Submit RST_STREAM for a stream the shim knows but obo has not adopted (or
+// refused before adoption). This is used for maxRequests and admission policy;
+// it never dereferences a shell token.
+pub fn refuse(c: &Connection, id: int, code: int): Result[bool] {
+    if id <= 0 || id % 2 == 0 { return err("server streams must be positive and odd", http::code(FAIL_INVALID_ARGUMENT, 0)) }
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_conn_refuse", ct, id, code)
+    if raw < 0 { return err("HTTP/2 stream refusal failed", nativeFailure(0 - raw)) }
+    return ok(true)
+}
+
 pub fn settingsAcked(c: &Connection): Result[bool] {
     let ct = try connectionToken(c)
     let sent = __cinterop("h2_conn_settings_sent", ct)
     if sent < 0 { return err("HTTP/2 settings query failed", nativeFailure(0 - sent)) }
     let v = __cinterop("h2_conn_settings_acked", ct)
-    return ok(v == 1)
+    if v == 1 { return ok(true) }
+    return ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,7 +1292,8 @@ pub fn reset(s: &Stream, code: int): Result[bool] {
     let tok = try ensureStreamToken(s)
     let raw = __cinterop("h2_stream_reset", tok, code)
     if raw < 0 { return err("HTTP/2 reset failed", nativeFailure(0 - raw)) }
-    return ok(raw == 1)
+    if raw == 1 { return ok(true) }
+    return ok(false)
 }
 
 fn headerAtNative(s: &Stream, index: int, which: int,
@@ -1593,12 +1617,36 @@ pub fn endResponse(s: &Stream): Result[bool] {
     }
     let raw = __cinterop("h2_stream_end", tok)
     if raw < 0 { return err("HTTP/2 response end failed", nativeFailure(0 - raw)) }
-    return ok(raw == 1)
+    if raw == 1 || raw == 0 { return ok(true) }
+    return ok(false)
 }
 
 // ---------------------------------------------------------------------------
 // Drain, close, stats
 // ---------------------------------------------------------------------------
+
+// Flush already-queued C wire and obo output, then TLS ciphertext, without
+// pulling events. Returns true only when no H2 or transport output remains.
+pub fn flush(mut c: &Connection, now: &http::Now): Result[bool] {
+    if c.ended { return ok(false) }
+    let ct = try connectionToken(c)
+    let filled = try fillOutput(c, ct)
+    let pumped = try pumpOut(c)
+    let t = takeTransport(c)
+    let fp = transport::flushPending(&t)
+    let tp = transport::outputPending(&t)
+    putTransport(c, t)
+    match fp {
+        ok(out) { }
+        err(m, code) { return err("HTTP/2 transport flush failed", mapSystem(code)) }
+    }
+    var transportEmpty = false
+    match tp { ok(n) { if n == 0 { transportEmpty = true } } err(m, code) { } }
+    if !filled || !pumped || !transportEmpty { return ok(false) }
+    let p = try pending(c)
+    if p == 0 { return ok(true) }
+    return ok(false)
+}
 
 pub fn drain(mut c: &Connection, now: &http::Now): Result[bool] {
     if c.ended { return err("HTTP/2 connection is closed", http::code(FAIL_CLOSED, 0)) }
@@ -1606,7 +1654,8 @@ pub fn drain(mut c: &Connection, now: &http::Now): Result[bool] {
     let raw = __cinterop("h2_conn_drain", ct)
     if raw < 0 { return err("HTTP/2 drain failed", nativeFailure(0 - raw)) }
     c.drained = true
-    return ok(raw == 1)
+    if raw == 1 { return ok(true) }
+    return ok(false)
 }
 
 pub fn drainPoll(c: &Connection, now: &http::Now): Result[bool] {
@@ -1614,7 +1663,8 @@ pub fn drainPoll(c: &Connection, now: &http::Now): Result[bool] {
     let ct = try connectionToken(c)
     let raw = __cinterop("h2_conn_drain_poll", ct, now.mono.nanos)
     if raw < 0 { return err("HTTP/2 drain poll failed", nativeFailure(0 - raw)) }
-    return ok(raw == 1)
+    if raw == 1 { return ok(true) }
+    return ok(false)
 }
 
 pub fn drainComplete(c: &Connection): bool {
@@ -1630,7 +1680,8 @@ pub fn goaway(c: &Connection, lastStreamID: int, code: int): Result[bool] {
     let ct = try connectionToken(c)
     let raw = __cinterop("h2_conn_goaway", ct, lastStreamID, code)
     if raw < 0 { return err("HTTP/2 GOAWAY failed", nativeFailure(0 - raw)) }
-    return ok(raw == 1)
+    if raw == 1 { return ok(true) }
+    return ok(false)
 }
 
 pub fn close(mut c: &Connection): Result[bool] {
@@ -1755,14 +1806,16 @@ pub fn consumeConnection(c: &Connection, bytes: int): Result[bool] {
     let ct = try connectionToken(c)
     let raw = __cinterop("h2_conn_consume", ct, bytes)
     if raw < 0 { return err("HTTP/2 connection consume failed", nativeFailure(0 - raw)) }
-    return ok(raw == 1)
+    if raw == 1 { return ok(true) }
+    return ok(false)
 }
 
 pub fn resetCounts(mut c: &Connection): Result[bool] {
     let ct = try connectionToken(c)
     let raw = __cinterop("h2_conn_reset_counts", ct)
     if raw < 0 { return err("HTTP/2 counter reset failed", nativeFailure(0 - raw)) }
-    return ok(raw == 1)
+    if raw == 1 { return ok(true) }
+    return ok(false)
 }
 
 pub type Windows = ref record {
@@ -1788,7 +1841,8 @@ pub fn commitResponse(s: &Stream, endStream: bool): Result[bool] {
     if endStream { end = 1 }
     let raw = __cinterop("h2_stream_commit", tok, end)
     if raw < 0 { return err("HTTP/2 response commit failed", nativeFailure(0 - raw)) }
-    return ok(raw == 1)
+    if raw == 1 { return ok(true) }
+    return ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -1819,6 +1873,7 @@ pub type ActionState = ref record {
     pendingPos: int
     echoed: int
     discarded: int
+    writeBlocked: bool
     stopRequested: bool
     closeRequested: bool
 }
@@ -1836,6 +1891,7 @@ pub fn makeActionState(): ActionState {
         pendingPos: 0
         echoed: 0
         discarded: 0
+        writeBlocked: false
         stopRequested: false
         closeRequested: false
     }
@@ -1843,6 +1899,11 @@ pub fn makeActionState(): ActionState {
 
 pub fn actionStopRequested(st: &ActionState): bool { return st.stopRequested }
 pub fn actionCloseRequested(st: &ActionState): bool { return st.closeRequested }
+pub fn actionWriteBlocked(st: &ActionState): bool { return st.writeBlocked }
+// True when runAction has finished the response and consumed the request body.
+// The server loop uses this to decide whether a yielded action needs another
+// immediate turn; it exposes no action internals.
+pub fn actionDone(st: &ActionState): bool { return st.done }
 
 fn actionCode(a: &http::Action): int {
     match a {
@@ -1930,7 +1991,8 @@ fn startSimple(mut st: &ActionState, mut s: &Stream): Result[bool] {
 
 fn peerEnded(s: &Stream): Result[bool] {
     let info = try streamInfo(s)
-    return ok(info[17] != 0)
+    if info[17] != 0 { return ok(true) }
+    return ok(false)
 }
 
 fn finishSimple(mut st: &ActionState, mut s: &Stream,
@@ -1974,6 +2036,7 @@ pub fn runAction(mut st: &ActionState, h: http::Handler,
                  now: &http::Now): Result[bool] {
     var sink = false
     if st.done { return ok(true) }
+    st.writeBlocked = false
     if !st.latched {
         let action = h(req, now)
         st.action = actionCode(&action)
@@ -1997,7 +2060,7 @@ pub fn runAction(mut st: &ActionState, h: http::Handler,
                 let chunk = new []byte(left)
                 for i in 0..left { chunk[i] = st.pending[st.pendingPos + i] }
                 let n = try writeBody(s, &chunk, 0, left)
-                if n == 0 { return ok(false) }
+                if n == 0 { st.writeBlocked = true; return ok(false) }
                 st.pendingPos += n
                 st.echoed += n
                 if st.echoed > s.maxBody {
@@ -2042,7 +2105,7 @@ pub fn runAction(mut st: &ActionState, h: http::Handler,
         let chunk = new []byte(take)
         for i in 0..take { chunk[i] = st.body[st.bodyPos + i] }
         let n = try writeBody(s, &chunk, 0, take)
-        if n == 0 { return ok(false) }
+        if n == 0 { st.writeBlocked = true; return ok(false) }
         st.bodyPos += n
         return ok(true)
     }

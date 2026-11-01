@@ -111,8 +111,9 @@ http1b: obo runtime_text.bin runtime_data.bin
 http1c: obo runtime_text.bin runtime_data.bin
 	python3 experimental/http1/tests/test_http1c.py
 
-# Experimental HTTP/2 H2a: nghttp2 C shim, obo connection/stream core, C
-# harness with ASAN/LSAN, memory transport and h2c/TLS curl interop. Matching
+# Experimental HTTP/2 H2a/H2b/H2c: nghttp2 C shim, obo connection/stream core,
+# reactor multiplexed h2c/TLS server, C harness with ASAN/LSAN, memory
+# transport, loopback curl integration and the abuse/isolation matrix. Matching
 # libnghttp2-dev headers are used when installed or fetched privately.
 http2: obo runtime_text.bin runtime_data.bin
 	python3 experimental/http2/tests/test_http2.py
