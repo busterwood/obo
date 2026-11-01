@@ -1785,6 +1785,7 @@ type NativeReloc = ref record {
     off: int                  // offset of the rel32 field from CODE_BASE
     sym: string               // C symbol before the generated obo_native_ prefix
     nargs: int                // call-site arguments; the tool checks this against the spec
+    kinds: string             // the argument-kind descriptor (stage (a)); "" for the int form
 }
 
 var nativeRelocs = new []NativeReloc(0)
@@ -7358,6 +7359,9 @@ fn conversion(t: ^Type): Item {
 // There is no name, arity or library special case: every function goes through the same path.
 // This builtin is internal to generated wrappers; the sidecar records the call-site arity so the
 // build tool can reject a direct or tampered call whose signature does not match the spec.
+fn nativeKindCall(cname: string, desc: string): Item
+fn nativeIntCall(cname: string, first: bool): Item
+
 fn nativeCall(): Item {
     if checking { error("__cinterop is not supported in --check: native calls need the typed sidecar and link step") }
     expect(T_LPAREN, "")
@@ -7365,14 +7369,31 @@ fn nativeCall(): Item {
     let cname = sval
     if !isCNativeName(cname) { error("__cinterop symbol name must be a C identifier") }
     next()
+    // a string after the symbol is the argument-kind descriptor (stage (a)); otherwise the call is the int form
+    if sym == T_COMMA {
+        next()
+        if sym == T_STRING {
+            let desc = sval
+            next()
+            return nativeKindCall(cname, desc)
+        }
+        return nativeIntCall(cname, true)
+    }
+    return nativeIntCall(cname, false)
+}
+
+// The int form: every argument is an int, passed as i64. first is true when the comma before the first
+// argument was read already (see nativeCall).
+fn nativeIntCall(cname: string, first: bool): Item {
     // Save the live registers before the argument expressions run, as an ordinary obo call does.
     // The pushed values stay visible to the collector and are restored after the call.
     let saved = usedRegs()
     pushRegs(saved)
     setFree(0)
     let args = new []?Item(0)
-    while sym == T_COMMA {
-        next()
+    var pending = first
+    while pending || sym == T_COMMA {
+        if pending { pending = false } else { next() }
         if len(args) >= 8 { error("__cinterop takes at most 8 arguments in this prototype") }
         let a = nestedExpr()
         if !isInt(a.typ) { error("__cinterop arguments must be int in this prototype") }
@@ -7415,6 +7436,244 @@ fn nativeCall(): Item {
     // Give the call the same conservative summary as a compiled function that frees anything and
     // writes through a handle. Do not use a spec "pure" claim to weaken this until a real checked
     // effect contract exists.
+    nativeEffectSym.addr = 0
+    nativeEffectSym.freesAll = true
+    nativeEffectSym.writesHandles = true
+    afterCall(nativeEffectSym)
+    userCalls += 1
+    let r = alloc()
+    movRR(r, RAX)
+    return makeReg(tInt, r)
+}
+
+// ================================================ native argument kinds (stage (a), experimental)
+//
+// __cinterop("sym", "kinds", a0, a1, ...): the descriptor is the binding's args list, comma-separated and
+// without spaces. A kind that reads an obo argument names it as kind@k (k counts the arguments from 0), and
+// each argument is read by exactly one data kind. Data kinds: i64@k, i32@k and u32@k (int; i32 and u32 are
+// range-checked by the thunk); borrow_bytes@k ([]byte or string) and borrow_cstr@k (the same, NUL-checked by
+// the thunk); ints@k:i32 and ints@k:u32 ([]int); nil_bytes_list@k ([]?[]byte). ints@k:len is the count of
+// list k and reads no argument. null and const:<n> read none. A borrowed value is pushed as its object
+// word, and a bytes kind adds a flag word (0 for an array, 1 for a string). The thunk reads the data pointer
+// and length after every argument expression has run and just before the C call (stage (a), design 3.2).
+
+type NativeKind = ref record {
+    name: string              // i64 i32 u32 null const borrow_bytes borrow_cstr ints nil_bytes_list
+    arg: int                  // the obo argument it reads; -1 for null and const
+    flag: string              // ints: i32, u32 or len; "" otherwise
+    val: int                  // const: the value
+}
+
+// a decimal number in desc[from:to]; a leading minus only when signed
+fn kindNumber(desc: string, from: int, to: int, signed: bool): int {
+    var i = from
+    var neg = false
+    if signed && i < to && desc[i] == '-' {
+        neg = true
+        i += 1
+    }
+    if i >= to { error("__cinterop argument kind needs a number: '" + substr(desc, from, to) + "'") }
+    var v = 0
+    while i < to {
+        let c = int(desc[i])
+        if c < 48 || c > 57 { error("__cinterop argument kind needs a number: '" + substr(desc, from, to) + "'") }
+        v = v * 10 + c - 48
+        i += 1
+    }
+    if neg { return -v }
+    return v
+}
+
+// one kind: desc[from:to]
+fn parseKind(desc: string, from: int, to: int): NativeKind {
+    var e = from
+    while e < to && desc[e] != '@' && desc[e] != ':' { e += 1 }
+    let name = substr(desc, from, e)
+    if name == "null" {
+        if e != to { error("__cinterop kind null takes no argument or flag") }
+        return new NativeKind{name: name, arg: -1, flag: "", val: 0}
+    }
+    if name == "const" {
+        if e >= to || desc[e] != ':' { error("__cinterop kind const needs a value: const:<n>") }
+        return new NativeKind{name: name, arg: -1, flag: "", val: kindNumber(desc, e + 1, to, true)}
+    }
+    if name != "i64" && name != "i32" && name != "u32" && name != "borrow_bytes" && name != "borrow_cstr" && name != "ints" && name != "nil_bytes_list" {
+        error("__cinterop has an unknown argument kind '" + substr(desc, from, to) + "'")
+    }
+    if e >= to || desc[e] != '@' { error("__cinterop kind " + name + " needs its argument as " + name + "@<n>") }
+    var f = e + 1
+    while f < to && desc[f] != ':' { f += 1 }
+    let arg = kindNumber(desc, e + 1, f, false)
+    var flag = ""
+    if f < to { flag = substr(desc, f + 1, to) }
+    if name == "ints" {
+        if flag != "i32" && flag != "u32" && flag != "len" { error("__cinterop kind ints needs a flag: ints@<n>:i32, ints@<n>:u32 or ints@<n>:len") }
+    } else if f < to {
+        error("__cinterop kind " + name + " takes no flag")
+    }
+    return new NativeKind{name: name, arg: arg, flag: flag, val: 0}
+}
+
+fn parseKinds(desc: string): []NativeKind {
+    var out = new []NativeKind(0)
+    if len(desc) == 0 { error("__cinterop needs at least one argument kind") }
+    var from = 0
+    while true {
+        var to = from
+        while to < len(desc) && desc[to] != ',' { to += 1 }
+        append(out, parseKind(desc, from, to))
+        if to >= len(desc) { break }
+        from = to + 1
+    }
+    return out
+}
+
+// the obo words a data kind pushes: a bytes kind pushes its value and its flag
+fn kindWords(kd: &NativeKind): int {
+    if kd.name == "borrow_bytes" || kd.name == "borrow_cstr" { return 2 }
+    return 1
+}
+
+fn nativeKindCall(cname: string, desc: string): Item {
+    let ks = parseKinds(desc)
+    var m = 0
+    for i in 0..len(ks) {
+        if ks[i].arg >= m { m = ks[i].arg + 1 }
+    }
+    let dataOf = new []int(m)
+    for k in 0..m { dataOf[k] = -1 }
+    for i in 0..len(ks) {
+        let kd = &ks[i]
+        if kd.arg >= 0 && !(kd.name == "ints" && kd.flag == "len") {
+            if dataOf[kd.arg] >= 0 { error("__cinterop " + cname + ": argument " + string(kd.arg) + " has two kinds") }
+            dataOf[kd.arg] = i
+        }
+    }
+    for k in 0..m {
+        if dataOf[k] < 0 { error("__cinterop " + cname + ": argument " + string(k) + " has no kind") }
+    }
+    for i in 0..len(ks) {
+        let kd = &ks[i]
+        if kd.name == "ints" && kd.flag == "len" {
+            let dn = ks[dataOf[kd.arg]].name
+            if dn != "ints" && dn != "nil_bytes_list" {
+                error("__cinterop " + cname + ": ints:len counts a list, and argument " + string(kd.arg) + " is not one")
+            }
+        }
+    }
+    // Phase 1: every argument expression runs before anything is pushed, as in the int form. The arguments
+    // are checked as a call's are: a borrowed array is bound and held, so a later argument that changes it
+    // is refused (argOrderCheck), and a reference inside something is refused, since a native writes
+    // through handles.
+    let saved = usedRegs()
+    pushRegs(saved)
+    setFree(0)
+    let tbase = argTempsUsed
+    let omark = len(ownedLocals)
+    let args = new []?Item(0)
+    var argBinds = new []^RefBind(0)
+    var deepLine = 0
+    var deepCol = 0
+    for k in 0..m {
+        if sym != T_COMMA { error("__cinterop " + cname + " takes " + string(m) + " argument(s), not " + string(k)) }
+        next()
+        let argLine = tline
+        let argCol = tcol
+        var a = nestedExpr()
+        let kn = ks[dataOf[k]].name
+        let isArr = a.typ.kind == "array"
+        if kn == "borrow_bytes" || kn == "borrow_cstr" {
+            if a.typ.kind == "string" {
+                if a.mode == "reg" { error("__cinterop " + cname + ": store this string in a variable first: a native call only borrows it") }
+            } else if !(isArr && baseOf(a.typ).kind == "byte") {
+                error("__cinterop " + cname + ": argument " + string(k + 1) + " needs a []byte or a string, not " + tname(a.typ))
+            }
+        } else if kn == "ints" {
+            if !(isArr && baseOf(a.typ).kind == "int") { error("__cinterop " + cname + ": argument " + string(k + 1) + " needs a []int, not " + tname(a.typ)) }
+        } else if kn == "nil_bytes_list" {
+            if !(isArr && baseOf(a.typ).kind == "opt" && baseOf(baseOf(a.typ)).kind == "array" && baseOf(baseOf(baseOf(a.typ))).kind == "byte") {
+                error("__cinterop " + cname + ": argument " + string(k + 1) + " needs a []?[]byte, not " + tname(a.typ))
+            }
+        } else if !isInt(a.typ) {
+            error("__cinterop " + cname + ": argument " + string(k + 1) + " must be int, not " + tname(a.typ))
+        }
+        if isArr {
+            let b = borrowBind(a)
+            if anyDeep(b) && deepLine == 0 {
+                deepLine = argLine
+                deepCol = argCol
+            }
+            argOrderCheck(tbase, cname, false, k, argLine, argCol)
+            append(argBinds, b)
+            holdArg(b, k, false)
+        }
+        append(args, a)
+    }
+    if sym != T_RPAREN { error("__cinterop " + cname + " takes " + string(m) + " argument(s), not more") }
+    expect(T_RPAREN, "")
+    releaseArgs(tbase, omark)
+    if deepLine > 0 {
+        errorAt("cannot pass a reference that points inside something to __cinterop " + cname + ": a native call writes through a handle, which could free it", deepLine, deepCol)
+    }
+    for i in 0..len(argBinds) {
+        let b = argBinds[i]
+        for p in 0..len(b.roots) {
+            let ar = b.roots[p]
+            if ar.storage == "global" {
+                error("cannot pass a reference into global '" + qualifiedSymName(ar) + "' to __cinterop " + cname + ": a native call might free it")
+            }
+            if ar == handleSym {
+                error("cannot pass a reference that borrows through a handle to __cinterop " + cname + ": a native call might free what the handle names")
+            }
+        }
+    }
+    // Phase 2: push one word per data-kind word, in argument order. No obo code runs from here to the call.
+    var w = 0
+    for k in 0..m { w += kindWords(ks[dataOf[k]]) }
+    let pad = (depth + 8 * w) % 16
+    if pad != 0 {
+        aluRI(5, RSP, 8)
+        depth += 8
+    }
+    for k in 0..m {
+        let kd = &ks[dataOf[k]]
+        let a = take(args[k])
+        if a != nil {
+            if kd.name == "borrow_bytes" || kd.name == "borrow_cstr" {
+                var flag = 0
+                if a.typ.kind == "string" { flag = 1 }
+                let r = asReg(a)
+                pushR(r.r)
+                release(r.r)
+                pushI(flag)
+                depth += 8
+            } else if kd.name == "ints" || kd.name == "nil_bytes_list" {
+                let r = asReg(a)
+                pushR(r.r)
+                release(r.r)
+            } else if a.mode == "const" && fits32(a.val) {
+                pushI(a.val)
+                depth += 8
+                drop(a)
+            } else {
+                let r = asReg(a)
+                pushR(r.r)
+                release(r.r)
+            }
+        } else {
+            drop(a)
+        }
+    }
+    emit(0xE8)
+    let at = pc()
+    emit32(0)
+    append(nativeRelocs, new NativeReloc{off: at, sym: cname, nargs: len(ks), kinds: desc})
+    if w > 0 || pad != 0 {
+        aluRI(0, RSP, 8 * w + pad)
+        depth -= 8 * w + pad
+    }
+    restoreRegs(saved)
+    // the same conservative summary as the int form (see nativeIntCall)
     nativeEffectSym.addr = 0
     nativeEffectSym.freesAll = true
     nativeEffectSym.writesHandles = true
@@ -15662,7 +15921,9 @@ fn compileFile(path: string, out: string, rtDir: string) {
             append(b, ' ')
             appInt(b, nativeRelocs[i].nargs)
             append(b, ' ')
-            if nativeRelocs[i].nargs == 0 {
+            if len(nativeRelocs[i].kinds) > 0 {
+                appStr(b, nativeRelocs[i].kinds)
+            } else if nativeRelocs[i].nargs == 0 {
                 append(b, '-')
             } else {
                 for j in 0..nativeRelocs[i].nargs {
