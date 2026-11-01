@@ -5121,7 +5121,9 @@ fn recordParamFree(g: ^Sym, ev: string) {
         if f.fnRec.params[j].kind == "decimal" { at += 24 } else { at += 8 }
         j -= 1
     }
-    if pi < 0 { return }
+    // A reference parameter's offset must be on the signature's byte layout. If it is not, the
+    // compiler's parameter bookkeeping is wrong; dropping the summary would be unsound, so fail.
+    if pi < 0 { error("internal error: a reference parameter's offset is not on the current function's signature") }
     if pi < 62 {
         f.fnRec.pfree = f.fnRec.pfree | (1 << pi)
         pfAdd(f, pi, ev)
