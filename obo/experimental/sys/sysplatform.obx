@@ -917,6 +917,33 @@ pub fn _netSendToken(token: int, addrTok: int, bufTok: int, offset: int,
                                  count), "datagram send failed")
 }
 
+pub fn _netBindDatagramOptionsToken(addrTok: int, rcvbuf: int, sndbuf: int,
+                                    flags: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_bind_datagram_options", addrTok,
+                                 rcvbuf, sndbuf, flags),
+                      "datagram bind failed")
+}
+
+pub fn _netDatagramCapsToken(token: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_datagram_caps", token),
+                      "datagram capability query failed")
+}
+
+pub fn _netReceiveBatchToken(token: int, dataTok: int, metaTok: int,
+                             peerTok: int, maxPackets: int,
+                             maxBytes: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_receive_batch", token, dataTok,
+                                 metaTok, peerTok, maxPackets, maxBytes),
+                      "datagram batch receive failed")
+}
+
+pub fn _netSendBatchToken(token: int, addrTok: int, bufTok: int, offset: int,
+                          count: int, segmentSize: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_send_batch", token, addrTok, bufTok,
+                                 offset, count, segmentSize),
+                      "datagram batch send failed")
+}
+
 pub fn _reactorWatchToken(reactorTok: int, sourceTok: int, sourceKind: int,
                           readable: int, writable: int, tag: int): Result[int] {
     return _rawResult(__cinterop("sys_net_watch", reactorTok, sourceTok,

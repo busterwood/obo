@@ -648,6 +648,63 @@
       ]
     },
     {
+      "name": "sys_net_bind_datagram_options",
+      "symbol": "sys_net_bind_datagram_options",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_datagram_caps",
+      "symbol": "sys_net_datagram_caps",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_receive_batch",
+      "symbol": "sys_net_receive_batch",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_send_batch",
+      "symbol": "sys_net_send_batch",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
       "name": "sys_net_state",
       "symbol": "sys_net_state",
       "args": [

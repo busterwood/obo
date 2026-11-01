@@ -30,7 +30,12 @@ SECTIONS
   .init : { *(.init) }
   .fini : { *(.fini) }
   . = ALIGN(0x1000);
-  ASSERT(. <= 0x03010000, "host .text exceeds its 64 KiB slot")
+  /* The H2 image is at the old 64 KiB cap (about 247 bytes of slack before
+   * P2q); P2q adds a shim/wrapper surface to every image and pushes H2 over.
+   * The small P2q/TLS images keep substantial headroom. This bound still
+   * leaves the rodata/data/bss assertion below in charge of the rest of the
+   * slot. */
+  ASSERT(. <= 0x03020000, "host .text exceeds its 128 KiB slot")
   .rodata : { *(.rodata) *(.rodata.*) }
   . = ALIGN(0x1000);
   /* Full RELRO: the dynamic linker makes these read-only after relocation.

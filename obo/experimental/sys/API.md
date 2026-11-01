@@ -2,8 +2,8 @@
 
 Status: **experimental, internal, unstable.** No numeric value below is a
 stable ABI. P2 adds addresses, sockets, the reactor, waitio and resolution;
-P1b/P3 and later phases may change or replace any of these modules before
-promotion.
+P2q adds the bounded UDP batch, GSO/GRO and datagram-watch surface. P1b/P3 and
+later phases may change or replace any of these modules before promotion.
 
 Common rules:
 
@@ -464,10 +464,21 @@ pub type ListenOptions = ref record {
 pub type Packet = ref record {
     pub bytes: []byte; pub peer: ?Address
     pub truncated: bool; pub originalSize: int
+    pub segmentSize: int       // 0 ordinary; >0 GRO segment size
 }
+pub type Datagrams = []Packet
+pub type DatagramOptions = ref record {
+    pub receiveBuffer: int; pub sendBuffer: int
+    pub reusePort: bool; pub gro: bool; pub gso: bool
+    pub dontFragment: bool
+}
+pub type DatagramCaps = ref record { pub gso: bool; pub gro: bool }
 pub const MAX_CHUNK = 1048576
 pub const MAX_BACKLOG = 65535
 pub const MAX_DATAGRAM = 65507
+pub const MAX_BATCH_DATAGRAMS = 64
+pub const MAX_BATCH_BYTES = 65507
+pub const MAX_BATCH_SEGMENT = 65507
 
 pub fn listenOptions(): ListenOptions
 pub fn listen(a: &Address, options: &ListenOptions): Result[Listener]
@@ -500,9 +511,25 @@ pub fn watchConnection(r: &reactor::Reactor, c: &Connection, readable: bool,
                        writable: bool, tag: int): Result[reactor::Watch]
 pub fn watchListener(r: &reactor::Reactor, l: &Listener,
                      tag: int): Result[reactor::Watch]
+pub fn datagramOptions(): DatagramOptions
 pub fn bindDatagram(a: &Address): Result[Datagram]
+pub fn bindDatagramOptions(a: &Address,
+                           o: &DatagramOptions): Result[Datagram]
+pub fn bindQuicDatagram(a: &Address,
+                        o: &DatagramOptions): Result[Datagram]
+pub fn datagramCapabilities(d: &Datagram): Result[DatagramCaps]
 pub fn receive(d: &Datagram, max: int): Result[Packet]
+pub fn receiveBatch(d: &Datagram, maxPackets: int,
+                    maxBytes: int): Result[Datagrams]
 pub fn send(d: &Datagram, to: &Address, bytes: &[]byte): Result[int]
+pub fn sendBatch(d: &Datagram, to: &Address, bytes: &[]byte,
+                 offset: int, count: int,
+                 segmentSize: int): Result[int]
+pub fn sendBatchFallback(d: &Datagram, to: &Address, bytes: &[]byte,
+                         offset: int, count: int,
+                         segmentSize: int): Result[int]
+pub fn watchDatagram(r: &reactor::Reactor, d: &Datagram,
+                     tag: int): Result[reactor::Watch]
 pub fn closeConnection(c: &Connection): Result[bool]
 pub fn closeListener(l: &Listener): Result[bool]
 pub fn closeDatagram(d: &Datagram): Result[bool]
@@ -527,6 +554,58 @@ receive preserves empty datagrams, peer and truncation (`originalSize` exact on
 Linux). Port 0 is discoverable before accepting/sending. `peer` is nil only for a
 kernel-unnamed sender; P2 has no unbound datagram constructor, so applications
 normally observe the sender's bound address.
+
+### P2q UDP batch and GSO/GRO
+
+`datagramOptions` returns 4 MiB receive/send buffers, `reusePort=false`,
+`gro=true`, `gso=true`, `dontFragment=true`. `bindDatagramOptions` revalidates
+every field, sets CLOEXEC/nonblocking, applies the options before bind, and
+closes on any post-bind failure. A kernel that rejects `UDP_GRO` clears only
+that feature; a rejected `UDP_SEGMENT` send returns `Unsupported` and clears the
+socket's GSO capability. `datagramCapabilities` reports the features actually
+enabled. `bindDatagram` keeps its old signature and uses the **legacy P2
+profile**: `gro=false`, `dontFragment=false` and the default 4 MiB buffers. A
+legacy `receive` therefore still returns exactly one UDP datagram per call and
+a legacy `send` may fragment. GRO, DF and the explicit buffer/reuse/GSO profile
+are opt-in through `bindDatagramOptions`.
+
+`receiveBatch(d, maxPackets, maxBytes)` requires `1..64` datagrams and a
+`1..65507` **total** byte budget (the kernel's UDP datagram cap). The sum of
+`Packet.bytes` never exceeds `maxBytes`; a datagram (or a coalesced GRO buffer)
+larger than the remaining budget returns `Range` after that whole message is
+consumed, never silent truncation. A coalesced GRO buffer counts as one
+datagram for the budget, so an over-budget coalesce loses all of its segments;
+that is one bounded loss, and the caller can retry with a larger budget. The
+real adapter uses one bounded `recvmsg` loop over that single `maxBytes`
+buffer, not `recvmmsg`'s per-message iovecs, so the native allocation stays
+proportional to `maxBytes` rather than `maxPackets * maxBytes`. Batch results
+always set `truncated=false`; an over-budget message is `Range`, not a
+truncated packet. `receive` (single datagram) still reports kernel truncation
+through `truncated`/`originalSize`, and both forms report `originalSize` as the
+returned datagram/coalesced length. The call fills at most one bounded batch
+and leaves extra datagrams queued. An empty queue returns `WouldBlock`.
+`Packet.segmentSize > 0` means the kernel coalesced GRO segments; `bytes` holds
+all of them, the final segment may be shorter, and a segment is **one UDP
+datagram**, not one QUIC packet. With GRO off or unavailable,
+`segmentSize == 0` and every datagram is separate.
+
+`sendBatch` with `segmentSize == 0` sends one ordinary datagram, all-or-error.
+With `segmentSize > 0` it makes one `sendmsg` with a `UDP_SEGMENT` control
+message; every segment except the last is exactly `segmentSize`, the final may
+be shorter, at most 64 segments, `segmentSize <= 65507` and 65507 total bytes
+are accepted, and it is all-or-error. GSO unavailability is `Unsupported`;
+`sendBatch` never hides a partial one-datagram loop. `sendBatchFallback` is the
+explicit fallback: it is capped at 65507 total bytes and 64 pieces, clamps each
+piece to the 65507-byte datagram limit, and stops at the first error.
+`watchDatagram` validates the checked Datagram
+resource and registers level-triggered read interest; it is the only
+datagram-readiness route and exposes no descriptor.
+
+`bindQuicDatagram` is the QUIC profile: `reusePort` must be false, the local
+address must be a concrete IPv4/IPv6 address (not `0.0.0.0`, `::` or Unix)
+because `receiveBatch` does not return `IP_PKTINFO`, and one socket owns all
+connection IDs on the listener. `bindDatagramOptions` still permits
+`reusePort` for non-QUIC users.
 
 ## `sysreactor`
 

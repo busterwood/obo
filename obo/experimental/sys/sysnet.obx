@@ -18,6 +18,12 @@
 // unchanged, and a Failed connection is retired exactly once. duplicateStream
 // creates an independent descriptor sharing the socket and half-close state.
 //
+// P2q adds a bounded UDP batch path for QUIC: an explicit datagram option
+// profile, receiveBatch/sendBatch with Linux UDP_SEGMENT GSO and UDP_GRO
+// segment reporting, an explicit one-datagram fallback, watchDatagram and a
+// concrete-bind/reusePort policy. A GSO/GRO segment is one UDP datagram, not
+// one QUIC packet. No raw descriptor or ancillary control is exposed.
+//
 // All address records are revalidated and encoded before native calls.
 module sysnet
 
@@ -44,14 +50,62 @@ pub type Packet = ref record {
     pub peer: ?address::Address
     pub truncated: bool
     pub originalSize: int
+    // 0 means one ordinary datagram. A positive value is the kernel GRO
+    // segment size for a coalesced receive: `bytes` may hold several UDP
+    // datagrams, and the final segment may be shorter. A segment is one UDP
+    // datagram, not one QUIC packet.
+    pub segmentSize: int
 }
+
+// A batch of received UDP datagrams. A type alias keeps the public spelling
+// explicit without adding a wrapper allocation.
+pub type Datagrams = []Packet
+
+// P2q bind profile. Defaults are 4 MiB socket buffers, GSO/GRO attempted,
+// no SO_REUSEPORT and IP DF enabled.
+pub type DatagramOptions = ref record {
+    pub receiveBuffer: int
+    pub sendBuffer: int
+    pub reusePort: bool
+    pub gro: bool
+    pub gso: bool
+    pub dontFragment: bool
+}
+
+// Kernel features actually enabled on this socket. `gso` becomes false after
+// the kernel rejects one UDP_SEGMENT send; `gro` is false when the option
+// could not be enabled at bind time.
+pub type DatagramCaps = ref record {
+    pub gso: bool
+    pub gro: bool
+}
+
+// Forward headings: bindDatagram/send are documented one-shot conveniences
+// built on the P2q batch path.
+fn bindDatagramOptions(a: &address::Address,
+                       o: &DatagramOptions): Result[Datagram]
+fn sendBatch(d: &Datagram, to: &address::Address, bytes: &[]byte,
+             offset: int, count: int, segmentSize: int): Result[int]
 
 pub const MAX_CHUNK = 1048576
 pub const MAX_BACKLOG = 65535
 pub const MAX_DATAGRAM = 65507
 pub const MAX_UNIX_PATH = 107
+pub const MAX_BATCH_DATAGRAMS = 64
+pub const MAX_BATCH_BYTES = 65507
+pub const MAX_BATCH_SEGMENT = 65507
+pub const MAX_DATAGRAM_OPTION_BUFFER = 1073741824
+
+// Must match sysadapter.h. Not a Linux flag word.
+const DGRAM_REUSE_PORT = 1
+const DGRAM_GRO = 2
+const DGRAM_GSO = 4
+const DGRAM_DONT_FRAGMENT = 8
+const DGRAM_CAP_GSO = 1
+const DGRAM_CAP_GRO = 2
 const ADDR_BYTES = 160
-const META_BYTES = 16
+const META_BYTES = 24
+const BATCH_META_BYTES = 40
 
 fn libCode(k: errors::Kind): int {
     return errors::code(&k)
@@ -74,6 +128,60 @@ pub fn listenOptions(): ListenOptions {
 
 fn validOptions(o: &ListenOptions): bool {
     return o.backlog >= 1 && o.backlog <= MAX_BACKLOG
+}
+
+pub fn datagramOptions(): DatagramOptions {
+    return new DatagramOptions{
+        receiveBuffer: 4194304
+        sendBuffer: 4194304
+        reusePort: false
+        gro: true
+        gso: true
+        dontFragment: true
+    }
+}
+
+fn validDatagramOptions(o: &DatagramOptions): bool {
+    if o.receiveBuffer < 1 || o.receiveBuffer > MAX_DATAGRAM_OPTION_BUFFER { return false }
+    if o.sendBuffer < 1 || o.sendBuffer > MAX_DATAGRAM_OPTION_BUFFER { return false }
+    return true
+}
+
+fn datagramOptionFlags(o: &DatagramOptions): int {
+    var flags = 0
+    if o.reusePort { flags = flags | DGRAM_REUSE_PORT }
+    if o.gro { flags = flags | DGRAM_GRO }
+    if o.gso { flags = flags | DGRAM_GSO }
+    if o.dontFragment { flags = flags | DGRAM_DONT_FRAGMENT }
+    return flags
+}
+
+fn unspecifiedAddress(a: &address::Address): bool {
+    match a {
+        IPv4 {
+            for i in 0..4 {
+                if int(a.octets[i]) != 0 { return false }
+            }
+            return true
+        }
+        IPv6 {
+            for i in 0..16 {
+                if int(a.octets[i]) != 0 { return false }
+            }
+            return true
+        }
+        UnixPath { return false }
+        UnixAbstract { return false }
+    }
+}
+
+fn unixAddress(a: &address::Address): bool {
+    match a {
+        IPv4 { return false }
+        IPv6 { return false }
+        UnixPath { return true }
+        UnixAbstract { return true }
+    }
 }
 
 fn optionFlags(o: &ListenOptions): int {
@@ -384,13 +492,80 @@ pub fn watchListener(r: &reactor::Reactor, l: &Listener,
     return reactor::watchResource(r, source, true, false, tag)
 }
 
+// Legacy P2 datagram profile: one receive is one datagram and DF is not
+// forced, so existing consumers keep their pre-P2q behavior. GRO, GSO and the
+// explicit option profile are opt-in through bindDatagramOptions.
+fn legacyDatagramOptions(): DatagramOptions {
+    let o = datagramOptions()
+    o.gro = false
+    o.dontFragment = false
+    return o
+}
+
 pub fn bindDatagram(a: &address::Address): Result[Datagram] {
+    let o = legacyDatagramOptions()
+    return bindDatagramOptions(a, &o)
+}
+
+// P2q bind path. Every field is revalidated before the native call; the
+// adapter sets CLOEXEC/nonblocking, closes on post-bind failure and clears
+// GRO/GSO when the kernel reports them unsupported.
+pub fn bindDatagramOptions(a: &address::Address,
+                           o: &DatagramOptions): Result[Datagram] {
+    if !validDatagramOptions(o) {
+        return err("datagram buffers must be in 1..1073741824",
+                   rangeCode())
+    }
     let ab = try addressPacket(a)
     defer bytesbuf::close(&ab)
     let at = try platform::_tokenHandle(handle(ab.res), platform::KIND_BYTE_BUFFER)
-    let token = try platform::_netBindDatagramToken(at)
+    let token = try platform::_netBindDatagramOptionsToken(at, o.receiveBuffer,
+                                                           o.sendBuffer,
+                                                           datagramOptionFlags(o))
     let r = try platform::_adoptToken(platform::KIND_DATAGRAM, token)
     return ok(new Datagram{res: r})
+}
+
+// QUIC listener profile: one concrete IPv4/IPv6 address, no SO_REUSEPORT and
+// no Unix datagram. A wildcard address is rejected because receiveBatch does
+// not return IP_PKTINFO, so the shim cannot report a per-datagram local path.
+pub fn bindQuicDatagram(a: &address::Address,
+                        o: &DatagramOptions): Result[Datagram] {
+    if !validDatagramOptions(o) {
+        return err("datagram buffers must be in 1..1073741824",
+                   rangeCode())
+    }
+    if o.reusePort {
+        return err("the QUIC profile forbids SO_REUSEPORT", invalidArgument())
+    }
+    try address::validate(a)
+    if unixAddress(a) {
+        return err("the QUIC profile needs an IPv4 or IPv6 address", unsupported())
+    }
+    if unspecifiedAddress(a) {
+        return err("the QUIC profile needs a concrete local address", invalidArgument())
+    }
+    return bindDatagramOptions(a, o)
+}
+
+pub fn datagramCapabilities(d: &Datagram): Result[DatagramCaps] {
+    let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
+    let bits = try platform::_netDatagramCapsToken(dt)
+    return ok(new DatagramCaps{
+        gso: (bits & DGRAM_CAP_GSO) != 0
+        gro: (bits & DGRAM_CAP_GRO) != 0
+    })
+}
+
+fn decodePeerAt(peer: &bytesbuf::Bytes, offset: int): Result[?address::Address] {
+    let decoded = try address::_decodeRecord(peer, offset)
+    if decoded == nil {
+        let none: ?address::Address = nil
+        return ok(none)
+    }
+    let value: address::Address = decoded
+    let result: ?address::Address = value
+    return ok(result)
 }
 
 pub fn receive(d: &Datagram, max: int): Result[Packet] {
@@ -409,32 +584,113 @@ pub fn receive(d: &Datagram, max: int): Result[Packet] {
     let n = try platform::_netReceiveToken(dt, bt, max, pt, mt)
     let original = try bytesbuf::readInt64(&meta, 0)
     let wasTruncated = try bytesbuf::readInt64(&meta, 8)
+    let segment = try bytesbuf::readInt64(&meta, 16)
     let out = new []byte(n)
     if n > 0 {
         let copied = try bytesbuf::copyOut(&data, &out, 0, 0, n)
         if copied != n { return err("short datagram copy", systemFailure()) }
     }
-    var peerValue: ?address::Address = nil
-    let decoded = try address::_decodeRecord(&peer, 0)
-    if decoded != nil {
-        let value: address::Address = decoded
-        peerValue = value
-    } else {
-        drop(decoded)
-        peerValue = nil
-    }
+    let peerValue = try decodePeerAt(&peer, 0)
     return ok(new Packet{
         bytes: out
         peer: peerValue
         truncated: wasTruncated != 0
         originalSize: original
+        segmentSize: segment
     })
 }
 
+// Bounded batch receive. maxBytes is the total byte budget of the returned
+// batch, not a per-packet bound, so a 64-packet batch never allocates
+// 64 * 65507 bytes. At most one datagram may be consumed but not returned: a
+// datagram larger than the remaining budget returns Range.
+pub fn receiveBatch(d: &Datagram, maxPackets: int,
+                    maxBytes: int): Result[Datagrams] {
+    if maxPackets < 1 || maxPackets > MAX_BATCH_DATAGRAMS {
+        return err("maxPackets is outside 1..64", rangeCode())
+    }
+    if maxBytes < 1 || maxBytes > MAX_BATCH_BYTES {
+        return err("maxBytes is outside 1..65507", rangeCode())
+    }
+    let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
+    let data = try bytesbuf::create(maxBytes)
+    defer bytesbuf::close(&data)
+    let meta = try bytesbuf::create(maxPackets * BATCH_META_BYTES)
+    defer bytesbuf::close(&meta)
+    let peer = try bytesbuf::create(maxPackets * ADDR_BYTES)
+    defer bytesbuf::close(&peer)
+    let bt = try platform::_tokenHandle(handle(data.res), platform::KIND_BYTE_BUFFER)
+    let mt = try platform::_tokenHandle(handle(meta.res), platform::KIND_BYTE_BUFFER)
+    let pt = try platform::_tokenHandle(handle(peer.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_netReceiveBatchToken(dt, bt, mt, pt, maxPackets,
+                                                maxBytes)
+    if n > maxPackets {
+        return err("adapter returned an impossible datagram count", systemFailure())
+    }
+    var packets = new []Packet(0)
+    for i in 0..n {
+        let base = i * BATCH_META_BYTES
+        let offset = try bytesbuf::readInt64(&meta, base)
+        let length = try bytesbuf::readInt64(&meta, base + 8)
+        let original = try bytesbuf::readInt64(&meta, base + 16)
+        let wasTruncated = try bytesbuf::readInt64(&meta, base + 24)
+        let segment = try bytesbuf::readInt64(&meta, base + 32)
+        if length < 0 || offset < 0 || length > maxBytes ||
+           offset > maxBytes - length {
+            return err("adapter returned an invalid datagram span", systemFailure())
+        }
+        let out = new []byte(length)
+        if length > 0 {
+            let copied = try bytesbuf::copyOut(&data, &out, offset, 0, length)
+            if copied != length {
+                return err("short datagram batch copy", systemFailure())
+            }
+        }
+        let peerValue = try decodePeerAt(&peer, i * ADDR_BYTES)
+        append(packets, new Packet{
+            bytes: out
+            peer: peerValue
+            truncated: wasTruncated != 0
+            originalSize: original
+            segmentSize: segment
+        })
+    }
+    return ok(packets)
+}
+
 pub fn send(d: &Datagram, to: &address::Address, bytes: &[]byte): Result[int] {
-    let count = len(bytes)
-    if count > MAX_DATAGRAM {
-        return err("datagram exceeds the 65507-byte limit", rangeCode())
+    return sendBatch(d, to, bytes, 0, len(bytes), 0)
+}
+
+// segmentSize == 0 sends exactly one ordinary datagram (all-or-error).
+// segmentSize > 0 asks the kernel for one UDP_SEGMENT send: every segment but
+// the last is exactly segmentSize bytes and the final segment may be shorter.
+// Unsupported means the caller should use sendBatchFallback; sendBatch never
+// loops a partial batch internally.
+pub fn sendBatch(d: &Datagram, to: &address::Address, bytes: &[]byte,
+                 offset: int, count: int, segmentSize: int): Result[int] {
+    if !checkSource(bytes, offset, count) {
+        return err("sendBatch source range is outside the array", invalidArgument())
+    }
+    if segmentSize < 0 || segmentSize > MAX_BATCH_SEGMENT {
+        return err("segmentSize is outside 0..65507", rangeCode())
+    }
+    if count > MAX_BATCH_BYTES {
+        return err("sendBatch is limited to 65507 total bytes", rangeCode())
+    }
+    if segmentSize == 0 {
+        if count > MAX_DATAGRAM {
+            return err("datagram exceeds the 65507-byte limit", rangeCode())
+        }
+    } else {
+        if count < segmentSize {
+            return err("a segmented batch needs at least one full segment",
+                       rangeCode())
+        }
+        let segments = (count + segmentSize - 1) / segmentSize
+        if segments > MAX_BATCH_DATAGRAMS {
+            return err("a batch is limited to 64 segments", rangeCode())
+        }
     }
     let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
     let ab = try addressPacket(to)
@@ -443,15 +699,59 @@ pub fn send(d: &Datagram, to: &address::Address, bytes: &[]byte): Result[int] {
     let tmp = try bytesbuf::create(count)
     defer bytesbuf::close(&tmp)
     if count > 0 {
-        let copiedIn = try bytesbuf::copyIn(&tmp, bytes, 0, 0, count)
-        if copiedIn != count { return err("short datagram write copy", systemFailure()) }
+        let copiedIn = try bytesbuf::copyIn(&tmp, bytes, offset, 0, count)
+        if copiedIn != count {
+            return err("short datagram batch write copy", systemFailure())
+        }
     }
     let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
-    let n = try platform::_netSendToken(dt, at, bt, 0, count)
+    let n = try platform::_netSendBatchToken(dt, at, bt, 0, count, segmentSize)
     if n != count {
-        return err("datagram send reported a short transfer", systemFailure())
+        return err("datagram batch send reported a short transfer",
+                   systemFailure())
     }
     return ok(n)
+}
+
+// Explicit one-datagram fallback for a GSO-capable caller. It is batch
+// bounded: at most 65507 total bytes and 64 pieces. Pieces are clamped to the
+// 65507-byte datagram limit. Returns the total bytes sent or the first error;
+// it never retries a failed piece.
+pub fn sendBatchFallback(d: &Datagram, to: &address::Address, bytes: &[]byte,
+                         offset: int, count: int,
+                         segmentSize: int): Result[int] {
+    if !checkSource(bytes, offset, count) {
+        return err("sendBatchFallback source range is outside the array",
+                   invalidArgument())
+    }
+    if segmentSize <= 0 || count <= 0 {
+        return sendBatch(d, to, bytes, offset, count, 0)
+    }
+    if count > MAX_BATCH_BYTES {
+        return err("sendBatchFallback is limited to 65507 total bytes",
+                   rangeCode())
+    }
+    var step = segmentSize
+    if step > MAX_DATAGRAM { step = MAX_DATAGRAM }
+    let pieces = (count + step - 1) / step
+    if pieces > MAX_BATCH_DATAGRAMS {
+        return err("sendBatchFallback is limited to 64 datagrams", rangeCode())
+    }
+    var sent = 0
+    while sent < count {
+        var piece = count - sent
+        if piece > step { piece = step }
+        let n = try sendBatch(d, to, bytes, offset + sent, piece, 0)
+        sent += n
+    }
+    return ok(sent)
+}
+
+pub fn watchDatagram(r: &reactor::Reactor, d: &Datagram,
+                     tag: int): Result[reactor::Watch] {
+    let source = try platform::_requireKindHandle(handle(d.res),
+                                                  platform::KIND_DATAGRAM)
+    return reactor::watchResource(r, source, true, false, tag)
 }
 
 pub fn closeConnection(c: &Connection): Result[bool] {

@@ -166,8 +166,26 @@ enum {
     SYS_LISTEN_IPV6_ONLY = 4
 };
 
-/* Datagram metadata packet: originalSize, truncated. */
-#define SYS_DGRAM_META_BYTES 16L
+/* Datagram metadata packet: originalSize, truncated, segmentSize (P2q adds the
+ * third field; the packet is 24 bytes and remains bounded). */
+#define SYS_DGRAM_META_BYTES 24L
+
+/* P2q datagram batch metadata: one 40-byte entry per received datagram:
+ * dataOffset, length, originalSize, truncated, segmentSize. */
+#define SYS_DGRAM_BATCH_ENTRY 40L
+#define SYS_DGRAM_MAX_BATCH 64L
+#define SYS_DGRAM_MAX_BATCH_BYTES 65507L
+
+/* Datagram bind option bits (library bits, not Linux flags). */
+enum {
+    SYS_DGRAM_REUSE_PORT = 1,
+    SYS_DGRAM_GRO = 2,
+    SYS_DGRAM_GSO = 4,
+    SYS_DGRAM_DONT_FRAGMENT = 8
+};
+
+/* sys_net_datagram_caps bit mask. */
+enum { SYS_DGRAM_CAP_GSO = 1, SYS_DGRAM_CAP_GRO = 2 };
 
 /* Resolver family/kind selectors. */
 enum {
@@ -206,10 +224,17 @@ long sys_net_set_keepalive(long token, long enabled, long idle, long interval,
 long sys_net_set_buffer(long token, long kind, long which, long size);
 long sys_net_set_broadcast(long token, long enabled);
 long sys_net_bind_datagram(long addr_token);
+long sys_net_bind_datagram_options(long addr_token, long rcvbuf, long sndbuf,
+                                   long flags);
+long sys_net_datagram_caps(long token);
 long sys_net_receive(long token, long buf_token, long max, long peer_token,
                      long meta_token);
+long sys_net_receive_batch(long token, long data_token, long meta_token,
+                           long peer_token, long max_packets, long max_bytes);
 long sys_net_send(long token, long addr_token, long buf_token, long offset,
                   long count);
+long sys_net_send_batch(long token, long addr_token, long buf_token,
+                        long offset, long count, long segment_size);
 long sys_net_state(long conn_token);
 
 long sys_net_reactor_new(long max_watches, long max_timers);
