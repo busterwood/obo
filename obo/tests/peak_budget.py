@@ -1,8 +1,8 @@
-"""Authoritative compiler live-peak budget for this numeric branch.
+"""Authoritative compiler live-peak budget.
 
-The user approved 2,500,000 *decimal bytes* (2026-10-31), then 2,750,000
-(2026-11-01, see FORK.md "Budget raised, 2,500,000 to 2,750,000").  This
-is a numeric-branch decision, not a change to the historical lambda release
+The user raised the shared cap from 2,500,000 to 2,750,000 *decimal bytes* on
+2026-11-01 ("allow memory to go up to 2.75MB self-compile peak").  This is the
+current shared compiler cap, not a change to the historical lambda release
 budget (which remains 2,000,000 in its own release record).
 
 The empty-array fault is a *savings regression*: the normal runtime shares

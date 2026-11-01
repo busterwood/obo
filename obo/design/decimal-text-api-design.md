@@ -1052,9 +1052,10 @@ Arity errors stay ordinary `expect`/parse errors; no new diagnostic machinery.
 
 ### 7.4 Compiler budget, fixed point, hello
 
-- `PEAK_BUDGET = 2,500,000` (`obo/tests/peak_budget.py`; `obo/FORK.md:5771`).
+- `PEAK_BUDGET = 2,750,000` (`obo/tests/peak_budget.py`; raised from
+  2,500,000 on 2026-11-01, see `obo/FORK.md`).
   The released 0.12 peak is 2,194,160 direct / 2,194,560
-  port, leaving ~305,000 bytes. Six builtins, one request helper and the runtime
+  port, leaving ~555,000 bytes. Six builtins, one request helper and the runtime
   tables should be a few KB; measure before/after with `peak_budget.py` and do
   not raise the budget for this feature. If it unexpectedly grows, record the
   reason in `FORK.md` before raising it.

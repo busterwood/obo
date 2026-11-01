@@ -1,0 +1,32 @@
+module app
+
+import "libpq.obx"
+
+// Drops a Rows (and its owned Res) without rows.close(), then closes the
+// Connection normally. Under OBO_CHECK=1 the Res census reports the leak.
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn main() {
+    let made = libpq::connect(bytes_of("fake-ok"))
+    match made {
+        ok(conn) {
+            let q = libpq::query(&conn, bytes_of("FAKE_OK"))
+            match q {
+                ok(rows) {
+                    println("dropped_rows=", rows.is_open())
+                }
+                err(m, c) { println("query error ", m, " ", c); exit(1) }
+            }
+            let cr = conn.close()
+            match cr {
+                ok(v) { println("conn_closed=", v) }
+                err(m, c) { println("close error ", m, " ", c); exit(2) }
+            }
+        }
+        err(m, c) { println("connect error ", m, " ", c); exit(3) }
+    }
+}

@@ -140,7 +140,7 @@ fn main() {
             }
 
             // Float has a placeholder in the text, but bind_sql rejects it.
-            let fq = sql`x = ${1.5f}`
+            let fq = sql`SELECT ${1.5f}`
             let fp = sqlite::prepare_sql(&conn, &fq)
             match fp {
                 ok(st) {
@@ -200,5 +200,4 @@ fn main() {
         }
         err(m, c) { println("FAIL open ", m, " ", c); exit(32) }
     }
-    println("live=", sqlite::live_resources())
 }

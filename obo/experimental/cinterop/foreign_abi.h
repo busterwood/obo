@@ -15,7 +15,8 @@ typedef long (*obo_ci_foreign_release_fn)(void *p);
 typedef struct {
     const char *name;                     /* the obo type name, for the census message */
     obo_ci_foreign_release_fn release;
-    int release_result;                   /* 0: void, 1: int (nonzero is an error) */
+    int release_result;                   /* 0: void or discard (result ignored),
+                                           * 1: int (nonzero is an error) */
 } obo_ci_foreign_type;
 
 extern const obo_ci_foreign_type obo_ci_foreign_types[];

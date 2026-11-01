@@ -1,8 +1,9 @@
 module app
 
-// Deterministic packet test for postgres::execute_sql over the fake libpq.
-// It checks the rendered $1..$n text, parameter order, OIDs/types, NULL,
-// exact decimal text, a borrowed fragment reused twice, and the explicit
+// Deterministic parameter-array test for postgres::execute_sql over the fake
+// libpq. postgres_fake_probe.obx reads the last PQexecParams call. It checks
+// the rendered $1..$n text, parameter order, OIDs/types, NULL, exact decimal
+// text, a borrowed fragment reused twice, and the explicit
 // Float/malformed-fragment errors. No server or real libpq is involved.
 
 import "postgres.obx"
@@ -79,8 +80,8 @@ fn main() {
             }
             println("again_sql=", last_sql())
 
-            // Float is rejected before a packet is built; the previous fake
-            // call is still the six-parameter one.
+            // Float is rejected before the parameter arrays are built; the
+            // previous fake call is still the six-parameter one.
             let fq = sql`x = ${1.5f}`
             let fr = postgres::execute_sql(&conn, &fq)
             match fr {
@@ -92,7 +93,8 @@ fn main() {
             }
             println("after_float_nparams=", probe::last_param_count())
 
-            // A malformed direct Sql fragment is rejected before the packet.
+            // A malformed direct Sql fragment is rejected before any parameter
+            // array reaches libpq.
             var ts = new []string(0)
             append(ts, "a")
             append(ts, "b")
@@ -137,5 +139,4 @@ fn main() {
         }
         err(m, c) { println("open_err=", c, " ", m) }
     }
-    println("live=", postgres::live_resources())
 }

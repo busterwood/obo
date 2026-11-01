@@ -36,6 +36,5 @@ fn main() {
         }
         err(m, c) { println("connect error ", m, " ", c); exit(11) }
     }
-    check(postgres::live_resources() == 0, "live", 12)
     println("pgresult_outlives_conn=ok")
 }

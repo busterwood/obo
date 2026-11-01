@@ -64,5 +64,4 @@ fn main() {
         }
         err(m, n) { println("open_err=", n, " ", m) }
     }
-    println("live=", postgres::live_resources())
 }

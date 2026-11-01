@@ -7,12 +7,20 @@ The rt section builds tests/rt_heap_test.c with runtime/runtime.c and runs each
 case in its own process, so OBO_HEAP_LIMIT and RLIMIT_AS reach rt_init exactly
 as they do for a compiled program.  It covers:
 
-  * the compiled 4 GiB default and the 16 GiB compiled ceiling;
-  * lower and raised limits, free-list reuse, and a sparse 16 GiB arena with
-    objects and strings just across 4 GiB and 8 GiB and in the last granule;
+  * the compiled 4 GiB default and the 64 GiB compiled ceiling;
+  * lower and raised limits, free-list reuse, and sparse 32 GiB and 48 GiB
+    arenas with objects and strings just across 4 GiB and 8 GiB, at 1/2 and
+    3/4 of the arena, and in the last granule (offset 0xffffffff at 64 GiB).
+    The mandatory suite reserves about 49 GiB of virtual address space for
+    48 GiB; the 64 GiB cases require about 66 GiB and skip cleanly when
+    RLIMIT_AS or overcommit cannot supply it;
+  * high-offset free/realloc generation checks, including a stale handle that
+    must trap after reuse;
   * the canonical OBO_HEAP_LIMIT grammar: integer bytes or KiB/MiB/GiB only,
-    no sign/space/fraction/exponent, multiple of 16, 64 KiB .. 16 GiB, and no
+    no sign/space/fraction/exponent, multiple of 16, 64 KiB .. 64 GiB, and no
     silent clamp above the ceiling;
+  * the handle-range guard: exactly 64 GiB (2^32 granules) is accepted and one
+    granule more is a clean exit 2;
   * the 4 GiB - 32-byte payload cap checked before zeroing, array/append/concat
     size overflow, the bounded free worklist (exit 6), and ordinary heap
     exhaustion ("obx: out of memory");
@@ -107,22 +115,75 @@ def check_case(exe, name, case, env, want=0, stderr_has=None, stderr_exact=None,
         print(f"ok   {name}")
 
 
+# A large arena reserves its size plus a starts bitmap and a worklist.  Below
+# the given floor the corresponding cases skip before running; a mapping
+# failure above it also skips, so a host with a tight overcommit policy cannot
+# turn an unavailable reservation into a test failure.
+LARGE_AS_48 = 49 << 30
+LARGE_AS_64 = 66 << 30
+
+
+def check_large_case(exe, name, case, value, env, want=0, stderr_has=None,
+                     timeout=180, as_floor=LARGE_AS_64):
+    """check_case for a large arena: skip (do not fail) if it cannot map."""
+    soft, _ = resource.getrlimit(resource.RLIMIT_AS)
+    if soft != resource.RLIM_INFINITY and soft < as_floor:
+        print(f"skip {name}: RLIMIT_AS {soft} < {as_floor} bytes")
+        return
+    p = subprocess.run([exe, case, value], capture_output=True, timeout=timeout, env=env)
+    stderr = p.stderr.decode('utf-8', 'replace')
+    if p.returncode == 2 and stderr == 'obx: cannot reserve heap\n':
+        print(f"skip {name}: {stderr.strip()}")
+    elif p.returncode != want:
+        failures.append(f"{name}: exit {p.returncode}, expected {want}; stderr {stderr.strip()[:200]!r}")
+    elif stderr_has is not None and stderr_has not in stderr:
+        failures.append(f"{name}: stderr {stderr.strip()[:200]!r} lacks {stderr_has!r}")
+    elif want == 0 and stderr:
+        failures.append(f"{name}: unexpected stderr {stderr.strip()[:200]!r}")
+    else:
+        print(f"ok   {name}")
+
+
 def rt_section():
     exe = build_harness()
 
-    # The compiled default and explicit limits inside [64 KiB, 16 GiB].
+    # The compiled default and explicit limits through 32 GiB are mandatory.
     check_case(exe, 'default 4 GiB', 'default', clean_env())
     check_case(exe, '64KiB lower limit + reuse', 'reuse', clean_env('64KiB'))
     for value in ('65536', '65552', '1MiB', '4GiB', '4294967296',
-                  '4294967312', '16GiB', '17179869184', '17179869168'):
+                  '4294967312', '16GiB', '17179869184', '17179869168',
+                  '17179869200', '32GiB', '34359738368'):
         check_case(exe, f'limit {value}', 'limit', clean_env(value), args=(value,))
+    # The larger limits reserve their arena plus metadata, so they skip cleanly
+    # on a host whose address-space cap is below the floor.
+    for value, floor in (('48GiB', LARGE_AS_48),
+                         ('64GiB', LARGE_AS_64),
+                         ('68719476736', LARGE_AS_64),
+                         ('68719476720', LARGE_AS_64)):
+        check_large_case(exe, f'limit {value}', 'limit', value, clean_env(value),
+                         as_floor=floor)
     # The final start bit for a non-128-aligned limit: control (no last header)
     # and bug case (last 32-byte header in the partial byte) at three sizes.
     for value in ('524304', '524320', '1048592', '1048608',
                   '2097168', '2097184'):
         check_case(exe, f'last-granule fill {value}', 'fill', clean_env(value),
                    args=(value,))
-    check_case(exe, 'sparse 16GiB arena', 'sparse', clean_env('16GiB'))
+
+    # 32 GiB and 48 GiB are mandatory; the 64 GiB ceiling cases may skip when
+    # the host cannot reserve their ~66 GiB of virtual address space.
+    for value in ('32GiB', '48GiB'):
+        check_case(exe, f'sparse {value} arena', 'sparse', clean_env(value),
+                   args=(value,))
+    check_large_case(exe, 'sparse 64GiB arena (last granule 0xffffffff)',
+                     'sparse', '64GiB', clean_env('64GiB'))
+    check_case(exe, 'stale high handle at 48GiB', 'stale', clean_env('48GiB'),
+               want=7, stderr_has='has been freed', args=('48GiB',))
+    check_large_case(exe, 'stale high handle at 64GiB', 'stale', '64GiB',
+                     clean_env('64GiB'), want=7, stderr_has='has been freed')
+    check_case(exe, 'handle-range guard accepts 64GiB', 'guard_ok', clean_env())
+    check_case(exe, 'handle-range guard rejects 64GiB+16', 'guard_bad',
+               clean_env(), want=2,
+               stderr_exact='obx: heap limit exceeds the 64 GiB handle range\n')
 
     # Bad grammar and out-of-range values: exit 2, the value named, no clamp.
     invalid = [
@@ -130,12 +191,15 @@ def rt_section():
         '65537',                    # not a multiple of 16
         '65544',                    # 64 KiB + 8, not a multiple of 16
         '4294967295',               # 4 GiB - 1
-        '17179869185',              # 16 GiB + 1
-        '17179869200',              # 16 GiB + 16 (above the compiled ceiling)
-        '17179869199',              # above the ceiling, not a multiple
-        '34359738368',              # 32 GiB
-        '4GiB+16',                  # not a canonical value
+        '17179869185',              # 16 GiB + 1, not a multiple of 16
+        '17179869199',              # 16 GiB + 15, not a multiple of 16
+        '68719476737',              # 64 GiB + 1
+        '68719476752',              # 64 GiB + 16 (above the compiled ceiling)
+        '137438953472',             # 128 GiB
+        '128GiB',                   # 128 GiB, above the compiled ceiling
         '16GiB+16',                 # no implicit clamp
+        '64GiB+16',                 # no implicit clamp
+        '4GiB+16',                  # not a canonical value
         '4GB', '4G', '4GiBB', '4Gi', '4GiB0',
         '64kib', '64KIB', '64Kib', '64KiBx',
         '4.0GiB', '4e3', '-1', '+4GiB', 'NaN', 'Infinity',

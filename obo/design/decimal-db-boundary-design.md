@@ -176,9 +176,9 @@ display text is presentation.
 | PostgreSQL numeric display scale | `0..16383` | `NUMERIC_DSCALE_MAX` 0x3FFF |
 | PostgreSQL numeric precision in DDL | `1..1000` | `NUMERIC_MAX_PRECISION` |
 | PostgreSQL numeric scale in DDL | `-1000..1000` | `NUMERIC_MIN/MAX_SCALE` |
-| adapter SQL text | 1 MiB | `postgres_adapter.c:29`, `sqlite_adapter.c:22` |
-| adapter value/parameter buffer | 16 MiB | `postgres_adapter.c:30`, `sqlite_adapter.c:23` |
-| parameters per statement | 32 | `postgres_adapter.c:28` |
+| adapter SQL text | 1 MiB | `postgres.obx` `execute_fmt` (`1048576`), `sqlite.obx` `MAX_SQL` |
+| adapter value/parameter buffer | 16 MiB | `postgres.obx` `encode_params` (`16777216`), `sqlite.obx` `MAX_VALUE` |
+| parameters per statement | 32 | `postgres.obx` `execute_fmt`, `libpq.obx` `PQ_MAX_PARAMS` |
 
 The core's 98,342-byte bound is exactly the worst case: 32,805 integer
 positions (exponent 32767 plus 38 significant digits) + 65,535 fractional
@@ -257,29 +257,30 @@ pub const PARAM_DECIMAL = 5
 pub const PARAM_DECIMAL_NULL = 6
 ```
 
-- `PARAM_DECIMAL`: `data` holds the exact UTF-8/ASCII text from §2.2; the
-  packet builder validates the grammar, rejects NUL/empty/oversize, and writes
-  it as kind 5. The C adapter maps kind 5 to `paramTypes[i] = 1700`,
-  `paramFormats[i] = 0`, `paramLengths[i] = len`, `paramValues[i] = text`.
+- `PARAM_DECIMAL`: `data` holds the exact UTF-8/ASCII text from §2.2; the obo
+  encoder validates the grammar, rejects NUL/empty/oversize, and emits
+  `paramTypes[i] = 1700`, `paramFormats[i] = 0`, `paramLengths[i] = len`,
+  `paramValues[i] = text`. Since stage (g) there is no C packet and no C
+  duplicate validation: `postgres.obx` builds the arrays for `PQexecParams`
+  directly.
 - `PARAM_DECIMAL_NULL`: a typed SQL NULL with `types[i] = 1700`,
   `paramValues[i] = NULL`. This matters for `SELECT $1` where the server has
   no target type to infer; plain `param_null()` keeps OID 0 and is still
   correct for `INSERT ... VALUES ($1)` and for `$1::numeric`.
 - Never interpolate. The SQL string contains only `$1..$n`; the decimal text
-  is always a separate length-delimited parameter (`postgres_adapter.c:3-17`,
-  `:197-198`).
-- The C adapter re-validates the decimal grammar before `PQexecParams`
-  (defence in depth; the obo builder already emits valid text). It accepts the
-  public grammar, including a leading `+`/`-` and integer-only text, and
-  rejects `NaN`, `Infinity`, `1_000`, whitespace, quotes, `0x`, a bare sign,
-  `.5`, `1.`, empty text, embedded NUL, more than one point and non-ASCII
-  bytes. Its kind bound (`postgres_adapter.c:149`) grows from `PG_PARAM_BOOL`
-  to `PG_PARAM_DECIMAL_NULL`; text length is capped at 98,342 bytes.
+  is always a separate length-delimited parameter.
+- The obo encoder is the single validator (`postgres.obx` `encode_params`):
+  it accepts the public grammar, including a leading `+`/`-` and integer-only
+  text, and rejects `NaN`, `Infinity`, `1_000`, whitespace, quotes, `0x`, a
+  bare sign, `.5`, `1.`, empty text, embedded NUL, more than one point and
+  non-ASCII bytes. Text length is capped at 98,342 bytes; a valid `decimal`
+  value is then parsed by `decimal::parse` for precision/exponent/display
+  bounds. The C duplicate was deleted in stage (g).
 - NULL, zero and empty text are three different things: NULL is a NULL
   parameter, zero is the text `0`/`0.0000`, and empty text is always rejected.
 
 `param_decimal(value, p, s)` is the **default** binder. It calls
-`decimal::check` before building the packet and is the only way to guarantee
+`decimal::check` before building the parameter arrays and is the only way to guarantee
 that a `numeric(p,s)` target will not silently round: PostgreSQL itself rounds
 fractional excess and raises `numeric field overflow` for integer excess
 (`apply_typmod`/`round_var`). `param_decimal_unchecked(value)` is the explicit
@@ -541,8 +542,11 @@ numeric key later; do not `CAST(... AS NUMERIC)`.
 
 ### 4.2 Binding
 
-`bind_text` already copies exact bytes and rejects embedded NUL
-(`sqlite.obx:229-238`, `sqlite_adapter.c:410-446`). Add free functions (not
+This subsection and 4.3 retarget the pre-v2 C adapter design to the current
+`db/sqlite/sqlite.obx`; the deleted `sqlite_adapter.c` citations are historical.
+
+`bind_text`/`bind_text_raw` already copy exact bytes and reject embedded NUL
+(`sqlite.obx:407-427`). Add free functions (not
 methods: decimal method parameters are rejected in v1,
 `obo/src/obo.obo:11483-11484`):
 
@@ -568,12 +572,12 @@ fn bind_decimal_unchecked(st: &Stmt, index: int, value: decimal): Result[bool]
 
 `Stmt.decimal(col)` performs:
 
-1. `column_type(col)` bounds-checked (`sqlite.obx:262-266`); `SQLITE_NULL` →
+1. `column_type(col)` bounds-checked (`sqlite.obx:574-579`); `SQLITE_NULL` →
    `1001`; `SQLITE_FLOAT` → `1005`; `SQLITE_BLOB` → `1002`;
-2. for TEXT/INTEGER, `column_value(col)` (which uses
-   `sqlite3_column_text` + `sqlite3_column_bytes`;
-   `sqlite_adapter.c:480-491`) or `column_bytes` for exact TEXT bytes. A copy
-   failure (buffer registry full, `> 16 MiB`, allocation failure) is a `2`
+2. for TEXT/INTEGER, `column_value(col)` (`sqlite.obx:595-616`, which uses
+   `sqlite3_column_text` + `sqlite3_column_bytes`) or `column_bytes` for exact
+   TEXT bytes (`sqlite.obx:686-704`). A copy failure (over the 16 MiB cap or an
+   allocation failure; the old buffer-registry-full case is historical) is a `2`
    size/plumbing error, **never an empty array** and never mistaken for empty
    text;
 3. reject empty/NUL/non-ASCII as `1006`;
@@ -582,8 +586,8 @@ fn bind_decimal_unchecked(st: &Stmt, index: int, value: decimal): Result[bool]
 6. no typmod check (SQLite has none).
 
 `column_value` returns `Result[?[]byte]` with nil for NULL and an empty array
-for empty text (`sqlite.obx:275-290`); `column_text` is the string convenience
-and rejects NUL (`sqlite.obx:295-302`). Decimal read uses the byte form so that
+for empty text (`sqlite.obx:595-616`); `column_text` is the string convenience
+and rejects NUL (`sqlite.obx:665-682`). Decimal read uses the byte form so that
 NUL/empty are classified consistently, and checks `column_type` **before**
 asking SQLite for text: `sqlite3_column_text` on a REAL formats it to about 15
 significant digits, which would silently lose exactness
@@ -774,9 +778,9 @@ type SqlArg = closed {
 - It is lossless for the value and preserves display scale when the display
   form was exact. If canonical fallback was used, the value is exact and the
   display scale follows the exponent, as in every other path.
-- The renderer first checks `len(bytes)` is `1..98,342`; empty is `1006`, and
-  an oversize payload is the size/plumbing code `2` (the same bound the C
-  packet builder enforces). It then validates the bytes with
+- The renderer/encoder first checks `len(bytes)` is `1..98,342`; empty is
+  `1006`, and an oversize payload is the size/plumbing code `2` (the same bound
+  the obo `encode_params` enforces). It then validates the bytes with
   **`decimal::parse`**, not merely the grammar: NUL/empty/non-ASCII/syntax →
   `1006`, more than 38 significant digits → `1007`, exponent outside `int16`
   → `1008`, display scale outside `uint16` → `1009`, parse `10` (allocation)
@@ -1136,18 +1140,21 @@ Wire-form cases (independent of input spelling):
 
 ### 7.2 PostgreSQL tests
 
-Deterministic fake-libpq C tests (`obo/experimental/db/tests/postgres_adapter_test.c`):
+Deterministic fake-libpq obo tests (`obo/experimental/db/postgres/examples/
+postgres_fake_v2_app.obx` and `postgres_decimal_fake_app.obx`, through the
+`postgres_fake.cbind` / `postgres_fake_probe.obx` pair):
 
 - decimal parameter kind 5: bytes `1.2300`, `paramTypes == 1700`,
   `paramFormats == 0`, `paramLengths == 6`, exact bytes;
 - decimal NULL kind 6: `paramTypes == 1700`, `paramValues == NULL`,
   `isnull == 1`;
-- valid integer-only packet: `+1` / `-1` / `1`, OID 1700, text format, exact
+- valid integer-only text: `+1` / `-1` / `1`, OID 1700, text format, exact
   bytes (dscale 0);
-- invalid decimal packets: empty, `.5`, `1.`, `1..2`, `1e`, `1_000`, `0x10`,
-  `NaN`, `Infinity`, `1\x00`, 98,343-byte text → `pg_exec_typed` returns `-2`
-  and leaks no buffers;
-- kind 7 and 33 parameters → `-2`;
+- invalid decimal text: empty, `.5`, `1.`, `1..2`, `1e`, `1_000`, `0x10`,
+  `NaN`, `Infinity`, `1\x00`, 98,343-byte text → the obo encoder returns the
+  decimal error code and sends nothing; 98,342 bytes with one significant
+  digit is accepted;
+- 33 parameters → `err` before the call; 32 are accepted;
 - existing text/int/bool/bytea/NULL OIDs unchanged.
 
 Live SELECT-only tests (opt-in `CINTEROP_TEST_DSN`; no DDL):
@@ -1264,9 +1271,12 @@ independent `typeof`/`quote` oracle (existing pattern,
 
 ### 7.4 Sanitizers and ownership
 
-Run the existing ASAN/UBSAN C suites with the new packet kinds and invalid
-vectors; assert no buffer leaks (`cres_live_count() == 0`) and no double free
-on every rejection path. Statement/connection live counters must return to 0.
+Run the fake tests under `OBO_CHECK=1`; the foreign-handle census must return
+to 0 after every rejection path (no `PQfinish`/`PQclear` on a dropped wrapper).
+The SQLite ASAN/UBSAN UAF fixture and ABI test still run; stage (g) deleted the
+postgres C adapter suite, so there is no postgres C sanitizer half. The registry
+test (`cres_test.c`) still asserts `cres_live_count() == 0` for the packages
+that use `cres`.
 
 ## 8. Phasing and dependencies
 
@@ -1445,12 +1455,16 @@ Repository (line numbers at baseline `51ce9e7`):
 - `obo/experimental/db/postgres/postgres.obx:32` OID 1700, `:39-49` Param,
   `:103-128` constructors, `:138-180` append_param, `:184-202` packet,
   `:278-285` execute, `:316-370` read, `:381-391` OID/typmod.
-- `obo/experimental/db/postgres/postgres_adapter.c:3-17` packet/OIDs,
-  `:78-89` integer text validation, `:146-195` switch, `:197-198`
-  `PQexecParams`.
+- Historical (the old C adapter was deleted in stage (g)):
+  `postgres_adapter.c:3-17` packet/OIDs, `:78-89` integer text validation,
+  `:146-195` switch, `:197-198` `PQexecParams`. Current:
+  `postgres.obx` `encode_params` (wire table and decimal validation) and
+  `execute_fmt` (parameter arrays to `exec_params_raw`); `libpq.obx`
+  `exec_params_full` (typed OIDs and the text `len+1` copy).
 - `obo/experimental/db/sqlite/sqlite.obx:43-47` storage classes, `:217-247`
   binds, `:262-329` column reads.
-- `obo/experimental/db/sqlite/sqlite_adapter.c:410-446` text/blob bind,
+- Historical, pre-v2 (the C adapter was deleted in stage (f)):
+  `obo/experimental/db/sqlite/sqlite_adapter.c:410-446` text/blob bind,
   `:480-503` column text/blob, `:506-510` int64.
 - `obo/design/template-literals-design.md:118-142` SQL binds/fragments,
   `:318-328` `SqlArg`, `:425-439` database values.

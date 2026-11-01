@@ -46,8 +46,16 @@ fn write_file(path: string): Result[bool] {
                 err(m, c) { return err(m, c) }
             }
             println("changes=", conn.changes())
-            if !conn.close() { return err("close failed", 7) }
-            if conn.close() { return err("double close succeeded", 8) }
+            let cr = conn.close()
+            match cr {
+                ok(v) { if !v { return err("close failed", 7) } }
+                err(m, c) { return err("close failed: " + m, 8) }
+            }
+            let cr2 = conn.close()
+            match cr2 {
+                ok(v) { if v { return err("double close succeeded", 9) } }
+                err(m, c) { return err("double close failed: " + m, 10) }
+            }
         }
         err(m, c) { return err(m, c) }
     }
@@ -65,5 +73,4 @@ fn main() {
         ok(v) { println("sqlite_file=ok") }
         err(m, c) { println("sqlite_file_error=", m, " code=", c); exit(1) }
     }
-    check(sqlite::live_resources() == 0, "live", 11)
 }

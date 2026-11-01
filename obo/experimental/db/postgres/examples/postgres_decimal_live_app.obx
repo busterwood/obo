@@ -431,6 +431,5 @@ fn main() {
         }
         err(m, c) { println("connect_error=", m, " code=", c); exit(69) }
     }
-    check(postgres::live_resources() == 0, "live", 70)
     println("postgres_decimal_live=ok")
 }

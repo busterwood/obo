@@ -762,9 +762,11 @@ def template(tmp):
     p = build(os.path.join(tdir, 'library.cbind'), os.path.join(tdir, 'app.obx'), out)
     if p.returncode != 0:
         raise Fail("template build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(out, 'app')]), 'template run')
-    if 'byte0=0' not in p.stdout or 'live=0' not in p.stdout:
-        raise Fail("template output mismatch:\n%s" % p.stdout)
+    p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'template run')
+    want = 'byte0=0\nopen=true\nclosed=true\nout_byte0=0\nout_error=7\n'
+    if p.stdout != want:
+        raise Fail("template output mismatch:\nwant %r\ngot  %r" % (want, p.stdout))
     need(verify(out), 'template manifest verify')
     print('template dry-run: ok')
 
@@ -777,9 +779,8 @@ def timeout_parse(tmp):
     cc = os.environ.get('CC', 'gcc')
     need(run([cc, '-O2', '-I', os.path.join(TOOL, 'toolkit'), '-o', exe,
               os.path.join(HERE, 'timeout_parse_test.c'),
-              os.path.join(TOOL, 'toolkit', 'cres.c'),
-              os.path.join(TOOL, 'toolkit', 'libpq_adapter.c'),
-              '-Wl,--wrap=PQconnectdb', '-l:libpq.so.5']), 'timeout parse C build')
+              os.path.join(TOOL, 'toolkit', 'libpq_conninfo.c'),
+              '-l:libpq.so.5']), 'timeout parse C build')
     p = need(run([exe]), 'timeout parse C run')
     if 'timeout parse tests ok' not in p.stdout:
         raise Fail("timeout parse C tests failed:\n%s" % p.stdout)
@@ -794,9 +795,10 @@ def libpq_result(tmp):
     p = build(os.path.join(EX, 'libpq.cbind'), os.path.join(EX, 'libpq_probe_app.obx'), out)
     if p.returncode != 0:
         raise Fail("libpq result probe build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(out, 'app')]), 'libpq result probe run')
+    p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'libpq result probe run')
     for line in ('PQlibVersion=', 'empty_status=2', 'empty_rows=0',
-                 'empty_fields=0', 'empty_closed=true', 'live=0'):
+                 'empty_fields=0', 'empty_closed=true'):
         if line not in p.stdout:
             raise Fail("libpq result probe output missing %r:\n%s" % (line, p.stdout))
     ldd = need(run(['ldd', os.path.join(out, 'app')]), 'libpq result ldd')
@@ -808,34 +810,122 @@ def libpq_result(tmp):
         raise Fail("libpq signature_check is %r, expected header" % m.get('signature_check'))
     print('libpq result ownership: ok')
 
+def libpq_fake_edges(tmp):
+    """Edge cases of the v2 libpq wrapper through the fake ABI: a dropped Rows,
+    a missing Connection close, use-after-close, NUL rejection, an explicit
+    connect_timeout, and a NULL PQmakeEmptyPGresult.
 
-def fake_adapter(tmp):
-    exe = os.path.join(tmp, 'fake_adapter_test')
-    cc = os.environ.get('CC', 'gcc')
-    need(run([cc, '-O2', '-I', os.path.join(TOOL, 'toolkit'), '-o', exe,
-              os.path.join(HERE, 'fake_adapter_test.c'),
-              os.path.join(TOOL, 'toolkit', 'cres.c'),
-              os.path.join(TOOL, 'toolkit', 'libpq_adapter.c'),
-              os.path.join(HERE, 'fake_libpq.c')]), 'fake adapter C build')
-    p = need(run([exe]), 'fake adapter C run')
-    if 'fake adapter tests ok' not in p.stdout:
-        raise Fail("fake adapter C tests failed:\n%s" % p.stdout)
-    print('fake adapter C: ok')
+    The full fake app and its counter report run in libpq_fake(); this function
+    avoids duplicating that build. OBO_CHECK=1 turns the leaks into the census.
+    """
+    # A dropped Rows leaves its owned Res counted; the Connection is closed.
+    rlout = os.path.join(tmp, 'fake_v2_rows_leak')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'),
+              os.path.join(EX, 'libpq_rows_leak_app.obx'), rlout)
+    if p.returncode != 0:
+        raise Fail("fake libpq Rows-leak build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(rlout, 'app')],
+            env=dict(os.environ, OBO_CHECK='1', FAKE_REPORT='1'))
+    if p.returncode != 8 or 'foreign handles leaked: Res 1' not in p.stderr:
+        raise Fail("dropped Rows census: want exit 8 Res 1, got %d:\n%s"
+                   % (p.returncode, p.stderr))
+    if 'clear=0' not in p.stderr or 'finish=1' not in p.stderr:
+        raise Fail("a dropped Rows was cleared or its Connection left open:\n%s" % p.stderr)
 
+    # A missing close leaves the Connection counted and releases nothing.
+    leakout = os.path.join(tmp, 'fake_v2_leak')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_leak_app.obx'), leakout)
+    if p.returncode != 0:
+        raise Fail("fake libpq v2 leak build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(leakout, 'app')],
+            env=dict(os.environ, OBO_CHECK='1', FAKE_REPORT='1'))
+    if p.returncode != 8 or 'foreign handles leaked: Connection 1' not in p.stderr:
+        raise Fail("fake libpq missing-close census: want exit 8 Connection 1, got %d:\n%s"
+                   % (p.returncode, p.stderr))
+    if 'finish=0' not in p.stderr:
+        raise Fail("a dropped Connection was released:\n%s" % p.stderr)
+
+    # A second close is ok(false), and a native borrow after close exits 7.
+    uacout = os.path.join(tmp, 'fake_v2_uac')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_uac_app.obx'), uacout)
+    if p.returncode != 0:
+        raise Fail("fake libpq v2 use-after-close build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(uacout, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    # NUL rejection for the DSN, SQL and text values; binary NUL is data.
+    nulout = os.path.join(tmp, 'fake_v2_nul')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'),
+              os.path.join(EX, 'libpq_nul_app.obx'), nulout)
+    if p.returncode != 0:
+        raise Fail("fake libpq NUL build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(nulout, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'fake libpq NUL run')
+    for line in ('dsn_nul=2 connection string contains a NUL byte',
+                 'sql_nul=2 SQL text contains an embedded NUL',
+                 'text_nul=2 text parameter contains an embedded NUL',
+                 'binary_nul_ok=true', 'conn_closed=true'):
+        if line not in p.stdout:
+            raise Fail("fake libpq NUL output missing %r:\n%s" % (line, p.stdout))
+
+    # An explicit connect_timeout is not given a second one.
+    tout = os.path.join(tmp, 'fake_v2_timeout')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'),
+              os.path.join(EX, 'libpq_timeout_app.obx'), tout)
+    if p.returncode != 0:
+        raise Fail("fake libpq timeout build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(tout, 'app')], env=dict(os.environ, FAKE_REPORT='1')),
+             'fake libpq timeout run')
+    if 'timeout_open=true' not in p.stdout:
+        raise Fail("fake libpq timeout app did not connect:\n%s" % p.stdout)
+    if 'conninfo=fake-ok connect_timeout=3' not in p.stderr:
+        raise Fail("explicit connect_timeout was not preserved:\n%s" % p.stderr)
+    if 'connect_timeout=3 connect_timeout=5' in p.stderr:
+        raise Fail("a second default timeout was appended:\n%s" % p.stderr)
+
+    # PQmakeEmptyPGresult returning NULL is an own contract violation: exit 11.
+    enout = os.path.join(tmp, 'fake_v2_empty_null')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'),
+              os.path.join(EX, 'libpq_empty_null_app.obx'), enout)
+    if p.returncode != 0:
+        raise Fail("fake libpq empty-NULL build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(enout, 'app')], env=dict(os.environ, FAKE_EMPTY_NULL='1'))
+    if p.returncode != 11 or 'own returned NULL' not in p.stderr:
+        raise Fail("NULL PQmakeEmptyPGresult: want exit 11, got %d:\n%s"
+                   % (p.returncode, p.stderr))
+    print('fake libpq edge cases: ok (Rows/Connection census, use-after-close, NUL, timeout, own NULL)')
 
 def libpq_fake(tmp):
     out = os.path.join(tmp, 'fake')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_fake_app.obx'), out)
     if p.returncode != 0:
         raise Fail("fake libpq app build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(out, 'app')]), 'fake libpq app run')
+    p = need(run([os.path.join(out, 'app')], env=dict(os.environ, FAKE_REPORT='1')),
+             'fake libpq app run')
     for line in ('status=2', 't=hello', 'n_null=true', 'n_len=0', 'b_len=3',
                  'b0=0 b1=255 b2=65', 'num=1.234567890123456789',
-                 'num_type=1700 num_mod=-1', 'error_status=7', 'error_closed=true',
-                 'conn_closed=true', 'connect_failed=1', 'live=0', 'conns=0',
-                 'results=0', 'buffers=0'):
+                 'num_type=1700 num_mod=-1', 'exact_ok=true exact_len=8',
+                 'fmt=0', 'bin_fmt=1', 'null_value=1 SQL NULL',
+                 'overcap_error=2 value is larger than the 16 MiB limit',
+                 'num_name=num', 'error_len=17',
+                 'typed_status=2', 'typed_len=2 values and OIDs differ in length',
+                 'typed_oid=2 parameter OID is out of range', 'typed_max_fmt=1',
+                 'closed_null=false', 'closed_len=-1', 'closed_ftype=0',
+                 'closed_fmod=-1', 'closed_fname=2 rows are closed',
+                 'bounds_null=false', 'bounds_len=-1',
+                 'bounds_ftype=0', 'bounds_fmod=-1',
+                 'bounds_value=2 row or column is out of range',
+                 'bounds_fname=2 column is out of range',
+                 'rows_closed=true', 'closed_status=-1',
+                 'closed_value=2 rows are closed',
+                 'error_status=7', 'error_closed=true',
+                 'conn_closed=true', 'conn_again=false', 'connect_failed=1',
+                 'connect_failed_msg=fake connection failure'):
         if line not in p.stdout:
             raise Fail("fake libpq output missing %r:\n%s" % (line, p.stdout))
+    for line in ('conns=0', 'results=0', 'finish=2', 'clear=8', 'exec=7', 'empty=1',
+                 'misaligned=0', 'binary_fmt=1', 'text_overrun=0', 'oob=0',
+                 'conninfo=fake-fail connect_timeout=5'):
+        if line not in p.stderr:
+            raise Fail("fake libpq counters missing %r:\n%s" % (line, p.stderr))
     need(verify(out), 'fake libpq manifest verify')
     ldd = need(run(['ldd', os.path.join(out, 'app')]), 'fake libpq ldd')
     if 'libpq.so.5' in ldd.stdout:
@@ -844,34 +934,40 @@ def libpq_fake(tmp):
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_leak_app.obx'), leakout)
     if p.returncode != 0:
         raise Fail("fake libpq leak app build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(leakout, 'app')]), 'fake libpq leak app run')
-    if 'live=1' not in p.stdout or 'conns=1' not in p.stdout:
-        raise Fail("fake libpq leak app did not expose the missing close:\n%s" % p.stdout)
+    p = run([os.path.join(leakout, 'app')],
+            env=dict(os.environ, OBO_CHECK='1', FAKE_REPORT='1'))
+    if p.returncode != 8 or 'foreign handles leaked: Connection 1' not in p.stderr:
+        raise Fail("fake libpq leak app did not expose the missing close:\n%s%s"
+                   % (p.stdout, p.stderr))
     deferout = os.path.join(tmp, 'fake_defer')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_defer_app.obx'), deferout)
     if p.returncode != 0:
         raise Fail("fake libpq defer app build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(deferout, 'app')]), 'fake libpq defer app run')
-    for line in ('query_ok=true', 'early_error=7', 'nested_ok=true',
-                 'loop_closes=3', 'buffer_ok=true', 'live=0', 'conns=0',
-                 'results=0', 'buffers=0'):
+    p = need(run([os.path.join(deferout, 'app')], env=dict(os.environ, FAKE_REPORT='1')),
+             'fake libpq defer app run')
+    for line in ('query_ok=true', 'early_error=7', 'nested_ok=true', 'loop_closes=3'):
         if line not in p.stdout:
             raise Fail("fake libpq defer output missing %r:\n%s" % (line, p.stdout))
-    print('fake libpq wrapper: ok (explicit defer cleanup and leak counter)')
+    for line in ('conns=0', 'results=0', 'finish=7', 'clear=1', 'misaligned=0', 'text_overrun=0'):
+        if line not in p.stderr:
+            raise Fail("fake libpq defer counters missing %r:\n%s" % (line, p.stderr))
+    print('fake libpq wrapper: ok (explicit defer cleanup and the foreign census)')
     outlives = os.path.join(tmp, 'fake_outlives')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_outlives_app.obx'), outlives)
     if p.returncode != 0:
         raise Fail("fake libpq outlives app build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(outlives, 'app')]), 'fake libpq outlives app run')
-    for line in ('result_after_conn_close=1.234567890123456789', 'live=0',
-                 'conns=0', 'results=0', 'live_result_outlives_conn=ok'):
+    p = need(run([os.path.join(outlives, 'app')], env=dict(os.environ, FAKE_REPORT='1')),
+             'fake libpq outlives app run')
+    for line in ('result_after_conn_close=1.234567890123456789', 'live_result_outlives_conn=ok'):
         if line not in p.stdout:
             raise Fail("fake libpq outlives output missing %r:\n%s" % (line, p.stdout))
+    for line in ('conns=0', 'results=0', 'finish=1', 'clear=1', 'misaligned=0', 'text_overrun=0'):
+        if line not in p.stderr:
+            raise Fail("fake libpq outlives counters missing %r:\n%s" % (line, p.stderr))
     print('fake libpq result-outlives-connection: ok')
 
-
 def libpq_conninfo(tmp):
-    """Invalid conninfo (pq_connect -4) returns libpq's copied diagnostic.
+    """Invalid conninfo returns libpq's copied diagnostic from the new helper.
 
     No server is contacted: libpq only parses the string. The fake ABI always
     runs; the real libpq parser runs too when libpq.so.5 is present.
@@ -889,18 +985,17 @@ def libpq_conninfo(tmp):
         p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
                  '%s conninfo app run' % label)
         for line in ('conninfo_error_code=2',
-                     'conninfo_error=unterminated quoted string in connection info string',
-                     'live=0', 'conns=0'):
+                     'conninfo_error=unterminated quoted string in connection info string'):
             if line not in p.stdout:
                 raise Fail("%s conninfo output missing %r:\n%s" % (label, line, p.stdout))
     print('libpq conninfo diagnostic: ok (%s)' % ' and '.join(v[0] for v in variants))
 
-
 def libpq_limits(tmp):
-    """Packet limits are enforced in the wrapper with specific messages.
+    """Wrapper limits are enforced before any C call, with specific messages.
 
-    Uses the fake ABI only, so no server is needed. 33 parameters and 1 MiB + 1
-    bytes of SQL are rejected before any C call; 32 parameters is accepted.
+    Uses the fake ABI only, so no server is needed. 33 parameters, 1 MiB + 1
+    bytes of SQL, a 16 MiB + 1 value and a 16 MiB + 1 DSN are rejected; 32
+    parameters, exact 1 MiB SQL and a 16 MiB value reach the C call.
     """
     out = os.path.join(tmp, 'libpq_limits')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_limits_app.obx'), out)
@@ -912,25 +1007,24 @@ def libpq_limits(tmp):
     for line in ('params33_error=too many query parameters: the limit is 32 (PQ_MAX_PARAMS) (2)',
                  'params32_status=2', 'params32_closed=true',
                  'sql_error=SQL text is larger than the 1 MiB limit (PQ_MAX_SQL) (2)',
-                 'packet_16mib=accepted status=2',
-                 'packet_16mib_plus1_error=query packet exceeds the 16 MiB buffer bound (2)',
-                 'conn_closed=true', 'live=0', 'conns=0', 'results=0'):
+                 'value_16mib=accepted status=2',
+                 'value_16mib_plus1_error=query parameter is larger than the 16 MiB limit (2)',
+                 'dsn_error=connection string is too large (2)',
+                 'conn_closed=true'):
         if line not in p.stdout:
             raise Fail("libpq limits output missing %r:\n%s" % (line, p.stdout))
-    # Exactly 1 MiB of SQL is not the limit error. The fake cannot run a statement
-    # this long, so its own failure is expected; only the limit message is excluded.
+    # Exactly 1 MiB of SQL is not the limit error. The fake cannot run a
+    # statement this long, so its own failure is expected; only the limit
+    # message is excluded.
     at = [l for l in p.stdout.splitlines() if l.startswith('sql_at_limit=')]
     if len(at) != 1 or 'PQ_MAX_SQL' in at[0] or 'larger than the 1 MiB' in at[0]:
         raise Fail("exact 1 MiB SQL was treated as over the limit: %r" % at)
-    print('libpq packet limits: ok (33 parameters, oversized SQL and 16 MiB+1 rejected; '
-          'exact 1 MiB SQL and exact 16 MiB packet accepted)')
-
+    print('libpq limits: ok (33 params, oversized SQL/value/DSN rejected; '
+          'exact 1 MiB SQL and 16 MiB value accepted)')
 
 def libpq_errors(tmp):
-    """Specific messages for the adapter codes that the wrapper now reports.
-
-    Fake ABI only. Covers pq_connect 0 (PQconnectdb returned NULL), PQexecParams
-    NULL with no libpq error text, and exec on a closed connection (-1).
+    """Specific messages for the wrapper's allocation failures, plus the closed
+    connection trap and the double-close result. Fake ABI only.
     """
     out = os.path.join(tmp, 'libpq_errors')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_errors_app.obx'), out)
@@ -941,34 +1035,22 @@ def libpq_errors(tmp):
         raise Fail("libpq errors app failed: %d\n%s%s" % (p.returncode, p.stdout, p.stderr))
     for line in ('null_connect_error=2 libpq returned no connection object (PQconnectdb returned NULL)',
                  'alloc_error=2 libpq returned no result and no error message',
-                 'conn_closed=true',
-                 'stale_error=2 connection is closed or invalid',
-                 'live=0', 'conns=0'):
+                 'conn_closed=true', 'conn_open=false'):
         if line not in p.stdout:
             raise Fail("libpq errors output missing %r:\n%s" % (line, p.stdout))
-    print('libpq adapter error messages: ok (connect NULL, empty PQexecParams error, closed connection)')
 
+    uac = os.path.join(tmp, 'libpq_uac')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_uac_app.obx'), uac)
+    if p.returncode != 0:
+        raise Fail("libpq use-after-close build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(uac, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    if p.returncode != 7 or 'foreign handle used after close' not in p.stderr:
+        raise Fail("libpq use-after-close: want exit 7, got %d:\n%s" % (p.returncode, p.stderr))
+    print('libpq errors: ok (connect/exec allocation failures, closed trap, double close)')
 
 def libpq_constants():
-    """The obo wrapper limits must equal the C defines they mirror.
-
-    Reads the C source and header as text (no build). A define's value is
-    evaluated only when it is a plain integer product such as (16L * 1024L).
-    """
-    def c_value(text, name, path):
-        m = re.search(r'^#define\s+%s\s+(.+)$' % name, text, re.M)
-        if not m:
-            raise Fail("%s does not define %s" % (path, name))
-        expr = re.sub(r'(\d+)L\b', r'\1', m.group(1).strip())
-        if not re.fullmatch(r'[\d\s\*\(\)]+', expr):
-            raise Fail("cannot evaluate %s from %s: %r" % (name, path, m.group(1)))
-        return eval(expr)
-
-    adapter = os.path.join(TOOL, 'toolkit', 'libpq_adapter.c')
-    cres = os.path.join(TOOL, 'toolkit', 'cres.h')
+    """The wrapper's limits are the reviewed v2 values, with no adapter mirror."""
     wrapper = os.path.join(EX, 'libpq.obx')
-    c_text = open(adapter).read()
-    h_text = open(cres).read()
     obx = open(wrapper).read()
 
     def obo_value(name):
@@ -977,27 +1059,21 @@ def libpq_constants():
             raise Fail("libpq.obx does not define pub const %s" % name)
         return int(m.group(1))
 
-    checks = [
-        ('PQ_MAX_PARAMS', c_value(c_text, 'PQ_MAX_PARAMS', adapter), obo_value('PQ_MAX_PARAMS')),
-        ('PQ_MAX_SQL', c_value(c_text, 'PQ_MAX_SQL', adapter), obo_value('PQ_MAX_SQL')),
-        ('PQ_MAX_BUFFER', c_value(h_text, 'CRES_MAX_BUFFER', cres), obo_value('PQ_MAX_BUFFER')),
-    ]
-    for name, want, got in checks:
-        if want != got:
-            raise Fail("libpq.obx %s is %d but the C define is %d" % (name, got, want))
-    # The 16 MiB literal must not drift back into the wrapper as a second copy.
-    if obx.count('16777216') != 1:
-        raise Fail("libpq.obx repeats the 16 MiB literal; use PQ_MAX_BUFFER")
-    print('libpq limit constants: ok (PQ_MAX_PARAMS, PQ_MAX_SQL, PQ_MAX_BUFFER match the C defines)')
-
+    checks = [('PQ_MAX_PARAMS', 32), ('PQ_MAX_SQL', 1048576),
+              ('PQ_MAX_DSN', 16777216), ('PQ_MAX_VALUE', 16777216)]
+    for name, want in checks:
+        got = obo_value(name)
+        if got != want:
+            raise Fail("libpq.obx %s is %d, expected %d" % (name, got, want))
+    if obx.count('16777216') != 2:
+        raise Fail("libpq.obx must spell 16 MiB exactly once for DSN and once for values")
+    print('libpq limit constants: ok (PQ_MAX_PARAMS, PQ_MAX_SQL, PQ_MAX_DSN, PQ_MAX_VALUE)')
 
 def libpq_header_mismatch(tmp):
-    """A spec declaration that disagrees with the adapter header fails the
-    signature check before any link. A control copy of the same spec builds, so
-    the rejection is the mismatch and not a path or copy error."""
+    """A spec declaration that disagrees with libpq_decls.h fails the signature
+    check before any link. A control copy of the same spec builds."""
     spec = json.load(open(os.path.join(EX, 'libpq_fake.cbind')))
-    # The committed spec is relative to examples/; the copy uses absolute paths.
-    for key in ('sources', 'headers', 'wrapper_sources'):
+    for key in ('sources', 'headers'):
         spec[key] = [os.path.normpath(os.path.join(EX, p)) for p in spec.get(key, [])]
     spec['wrapper'] = os.path.join(EX, spec['wrapper'])
     app = os.path.join(EX, 'libpq_limits_app.obx')
@@ -1009,30 +1085,23 @@ def libpq_header_mismatch(tmp):
     if p.returncode != 0:
         raise Fail("control copy of the libpq spec did not build:\n%s" % (p.stderr + p.stdout))
 
-    # Internally consistent but wrong against the header: the declaration and the
-    # functions entry both say int/i32, while libpq_adapter.h says long/i64. A
-    # declarations-only check would accept this; the header tie must not.
-    before = 'extern long pq_lib_version(void);'
-    if not any(d == before for d in spec['declarations']):
-        raise Fail("libpq spec no longer declares %r; update this test" % before)
+    # PQlibVersion returns int in libpq_decls.h; declaring long/i64 in the
+    # binding is internally consistent but incompatible with the header.
     bad = json.loads(json.dumps(spec))
-    bad['declarations'] = [d.replace(before, 'extern int pq_lib_version(void);')
-                           for d in spec['declarations']]
     for f in bad['functions']:
-        if f['name'] == 'pq_lib_version':
-            f['ret'] = 'i32'
+        if f['name'] == 'lib_version_native':
+            f['ret'] = 'i64'
     mismatch = os.path.join(tmp, 'libpq_header_mismatch.cbind')
     json.dump(bad, open(mismatch, 'w'))
     out = os.path.join(tmp, 'libpq_header_mismatch')
     p = build(mismatch, app, out)
     text = p.stderr + p.stdout
-    if p.returncode == 0 or 'conflicting' not in text:
-        raise Fail("a spec declaration that disagrees with the header was not rejected:\n%s"
+    if p.returncode == 0 or 'incompatible' not in text:
+        raise Fail("a spec declaration that disagrees with libpq_decls.h was not rejected:\n%s"
                    % text)
     if os.path.exists(os.path.join(out, 'app')):
         raise Fail("a mismatched declaration reached the link")
-    print('libpq header mismatch: ok (declaration disagreeing with libpq_adapter.h rejected before link)')
-
+    print('libpq header mismatch: ok (declaration disagreeing with libpq_decls.h rejected before link)')
 
 def zlib_second(tmp):
     if not zlib_present():
@@ -1075,15 +1144,13 @@ def sanitizer_adapters(tmp):
               '-fno-sanitize-recover=all', '-fno-omit-frame-pointer',
               '-I', os.path.join(TOOL, 'toolkit'),
               '-I', os.path.join(TOOL, 'examples')]
-    fake = os.path.join(tmp, 'fake_adapter_asan')
+    fake = os.path.join(tmp, 'cres_asan')
     need(run([cc, *common, '-o', fake,
-              os.path.join(HERE, 'fake_adapter_test.c'),
-              os.path.join(TOOL, 'toolkit', 'cres.c'),
-              os.path.join(TOOL, 'toolkit', 'libpq_adapter.c'),
-              os.path.join(HERE, 'fake_libpq.c')]), 'fake adapter ASAN/UBSAN build')
-    p = need(run([fake]), 'fake adapter ASAN/UBSAN run')
-    if 'fake adapter tests ok' not in p.stdout:
-        raise Fail("fake adapter ASAN/UBSAN failed:\n%s" % p.stdout)
+              os.path.join(HERE, 'cres_test.c'),
+              os.path.join(TOOL, 'toolkit', 'cres.c')]), 'cres ASAN/UBSAN build')
+    p = need(run([fake]), 'cres ASAN/UBSAN run')
+    if 'cres tests ok' not in p.stdout:
+        raise Fail("cres ASAN/UBSAN failed:\n%s" % p.stdout)
     g = os.path.join(tmp, 'guard_stack_asan')
     need(run([cc, *common, '-o', g,
               os.path.join(HERE, 'guard_stack_test.c'),
@@ -1098,6 +1165,15 @@ def sanitizer_adapters(tmp):
     p = need(run([ff]), 'foreign fixture ASAN/UBSAN run')
     if 'foreign fixture tests ok' not in p.stdout:
         raise Fail("foreign fixture ASAN/UBSAN failed:\n%s" % p.stdout)
+    if libpq_present():
+        cq = os.path.join(tmp, 'libpq_conninfo_asan')
+        need(run([cc, *common, '-I', os.path.join(TOOL, 'toolkit'), '-o', cq,
+                  os.path.join(HERE, 'timeout_parse_test.c'),
+                  os.path.join(TOOL, 'toolkit', 'libpq_conninfo.c'),
+                  '-l:libpq.so.5']), 'libpq conninfo helper ASAN/UBSAN build')
+        p = need(run([cq]), 'libpq conninfo helper ASAN/UBSAN run')
+        if 'timeout parse tests ok' not in p.stdout:
+            raise Fail("libpq conninfo helper ASAN/UBSAN failed:\n%s" % p.stdout)
     if zlib_present():
         z = os.path.join(tmp, 'zlib_adapter_asan')
         need(run([cc, *common, '-o', z,
@@ -1122,10 +1198,11 @@ def libpq_live(tmp):
     p = build(os.path.join(EX, 'libpq.cbind'), os.path.join(EX, 'libpq_live_app.obx'), out)
     if p.returncode != 0:
         raise Fail("live libpq app build failed:\n%s" % (p.stderr or p.stdout))
-    p = run([os.path.join(out, 'app'), dsn], timeout=30)
+    p = run([os.path.join(out, 'app'), dsn], timeout=30,
+            env=dict(os.environ, OBO_CHECK='1'))
     if p.returncode != 0:
         raise Fail("live libpq smoke failed (exit %d):\n%s" % (p.returncode, p.stdout + p.stderr))
-    for line in ('live_db_smoke=ok', 'live=0', 'null_and_empty=ok',
+    for line in ('live_db_smoke=ok', 'exact_text=AAAAAAAA', 'null_and_empty=ok',
                  'numeric_text=1.234567890123456789 oid=1700 typmod=-1',
                  'binary_bytes=00ff41 len=3', 'sql_error_length='):
         if line not in p.stdout:
@@ -2377,7 +2454,12 @@ pub fn (c: &Conn) is_open(): bool { return __foreignIsOpen(c) }
 pub fn (mut c: &Bad) close(): Result[bool] { return __foreignClose(c) }
 pub fn (c: &Bad) is_open(): bool { return __foreignIsOpen(c) }
 
+pub type Box = ref record { h: Conn }
+
 pub fn open(v: int): Conn { return ff_new(v) }
+pub fn (mut b: &Box) touch(): int { return ff_touch(&b.h) }
+pub fn (mut b: &Box) closebox() { b.h.close() }
+pub fn boxed(v: int): Box { return new Box{h: open(v)} }
 pub fn open_opt(v: int): ?Conn { return ff_new_opt(v) }
 pub fn get(c: &Conn): int { return ff_get(c) }
 pub fn mark(c: &Conn): int { return ff_mark(c) }
@@ -2414,6 +2496,10 @@ fn main() {
         err(m, c) { println("err ", m, " ", c) }
     }
     println("frees ", handles::frees())
+
+    var bx = handles::boxed(4)
+    println("fieldtouch ", bx.touch())
+    bx.closebox()
 
     var b = new Box{h: handles::open(3)}
     println("field open ", b.h.is_open())
@@ -2457,13 +2543,13 @@ fn main() {
 
 FOREIGN_WANT = [
     'open true 11', 'touch 12', 'alive true open true', 'close true', 'closed false alive true',
-    'again false', 'frees 1',
+    'again false', 'frees 1', 'fieldtouch 5',
     'field open true', 'field closed false',
     'elem open true', 'elem closed false',
     'handle open true', 'handle closed false',
     'defer 8', 'opt nil', 'opt2 12 true',
     'bad open true', 'bad err foreign release failed 42', 'bad closed false',
-    'final frees 6',
+    'final frees 7',
 ]
 
 
@@ -2678,6 +2764,20 @@ def foreigns(tmp):
                 'module handles\npub type Conn = foreign "Fk"\n'
                 'native fn ff_touch(c: &Conn): int\n'
                 'pub fn touch(c: &Conn): int { return ff_touch(c) }\n', 'incompatible')
+
+    # The foreign-borrow relaxation is narrow: a deep array borrow to a native
+    # still gets the conservative refusal.
+    deepdir = os.path.join(tmp, 'deep_array')
+    os.makedirs(deepdir)
+    deepp = os.path.join(deepdir, 'm.obx')
+    open(deepp, 'w').write(
+        'module m\ntype Box = ref record { a: []int }\n'
+        'native fn f(a: &[]int): int\n'
+        'fn main() { var b = new Box{a: new []int(0)}\n    println(f(&b.a)) }\n')
+    q = run([OBO, deepp, '-o', os.path.join(deepdir, 'out')])
+    if q.returncode == 0 or 'points inside something' not in (q.stderr + q.stdout):
+        raise Fail("a deep array borrow to a native was not refused: %s"
+                   % (q.stderr + q.stdout).strip()[-400:])
 
     # A wrapper with no close/is_open methods: the sugar consumes its empty argument list.
     nowrap = ('module handles\n\npub type Conn = foreign "Fk"\n\n'
@@ -3027,6 +3127,367 @@ def stack_args(tmp):
     print('stack-argument tests: ok')
 
 
+def out_spec():
+    return {
+        'format': 'cinterop-proto/2', 'module': 'outnat',
+        'platform': 'x86_64-linux-gnu', 'abi': 'sysv-amd64',
+        'signature_check': 'header',
+        'sources': ['out_fixture.c'], 'headers': ['out_fixture.h'],
+        'libs': [], 'cflags': [], 'wrapper': 'out_wrap.obx',
+        'types': [{'name': 'Of', 'obo': 'Obj', 'release': 'of_release',
+                   'release_result': 'void'}],
+        'functions': [
+            {'name': 'of_new', 'symbol': 'of_new', 'args': ['i32@0', 'out_own<Of>'],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_zero', 'symbol': 'of_zero', 'args': ['out_own<Of>'],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_new_fail', 'symbol': 'of_new_fail',
+             'args': ['i32@0', 'out_own<Of>'], 'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_new_null', 'symbol': 'of_new_null',
+             'args': ['i32@0', 'out_own<Of>'], 'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_wide', 'symbol': 'of_wide',
+             'args': ['i32@0', 'i32@1', 'i32@2', 'i32@3', 'i32@4', 'i32@5',
+                      'out_own<Of>'], 'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_open', 'symbol': 'of_open',
+             'args': ['borrow_cstr@0', 'out_own<Of>', 'i32@1', 'null'],
+             'ctypes': [None, None, None, 'const char *'],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_prepare', 'symbol': 'of_prepare',
+             'args': ['borrow_mut<Of>@0', 'borrow_bytes@1', 'out_own<Of>',
+                      'out_offset@1'], 'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_tail', 'symbol': 'of_tail',
+             'args': ['borrow_bytes@0', 'i32@1', 'out_offset@0'],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_bind', 'symbol': 'of_bind',
+             'args': ['borrow_bytes@0', 'const:-1', 'out_own<Of>'],
+             'ctypes': [None, 'void (*)(void *)', None],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_get', 'symbol': 'of_get', 'args': ['borrow<Of>@0'],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_reset', 'symbol': 'of_reset', 'args': [], 'ret': 'void',
+             'effects': ['impure']},
+            {'name': 'of_live', 'symbol': 'of_live', 'args': [], 'ret': 'i64',
+             'effects': ['impure']},
+            {'name': 'of_closed', 'symbol': 'of_closed', 'args': [], 'ret': 'i64',
+             'effects': ['impure']},
+            {'name': 'of_last_dtor', 'symbol': 'of_last_dtor', 'args': [], 'ret': 'i64',
+             'effects': ['impure']},
+            {'name': 'of_last_len', 'symbol': 'of_last_len', 'args': [], 'ret': 'i64',
+             'effects': ['impure']},
+        ],
+    }
+
+
+OUT_APP = '''fn main() {
+    outnat::reset()
+    var r = outnat::open(5)
+    match r {
+        ok(h) {
+            println("open ", outnat::get(&h), " ", h.is_open())
+            h.close()
+            println("closed ", h.is_open())
+        }
+        err(m, c) { println("open err ", m, " ", c) }
+    }
+    println("counts ", outnat::live(), " ", outnat::releases())
+    println("fail ", outnat::open_fail(7), " ", outnat::live(), " ", outnat::releases())
+    println("null ", outnat::open_null(9), " ", outnat::live(), " ", outnat::releases())
+    var w = outnat::wide(1, 2, 3, 4, 5, 6)
+    match w {
+        ok(h) { println("wide ", outnat::get(&h)); h.close() }
+        err(m, c) { println("wide err ", m, " ", c) }
+    }
+    var pb = new []byte(0)
+    append(pb, byte(97))
+    append(pb, byte(98))
+    append(pb, byte(99))
+    var o = outnat::open_shape(&pb, 7)
+    match o {
+        ok(h) {
+            println("shape ", outnat::get(&h))
+            var sql = new []byte(0)
+            append(sql, byte(97))
+            append(sql, byte(98))
+            append(sql, byte(99))
+            append(sql, byte(100))
+            append(sql, byte(101))
+            println("ptail ", outnat::prepare_tail(&h, &sql))
+            var one = new []byte(0)
+            append(one, byte(120))
+            println("ptail1 ", outnat::prepare_tail(&h, &one))
+            println("tail ", outnat::tail(&pb, 0), " ", outnat::tail(&pb, 1),
+                    " ", outnat::tail(&pb, 2), " ", outnat::tail(&pb, 3),
+                    " ", outnat::tail(&pb, 4), " ", outnat::tail(&pb, 5))
+            var empty = new []byte(0)
+            println("empty ", outnat::tail(&empty, 0), " ", outnat::tail(&empty, 1),
+                    " ", outnat::tail(&empty, 2))
+            h.close()
+        }
+        err(m, c) { println("shape err ", m, " ", c) }
+    }
+    var bnd = outnat::bind(&pb)
+    match bnd {
+        ok(h) { println("bind ", outnat::last_dtor(), " ", outnat::last_len(),
+                        " ", outnat::get(&h)); h.close() }
+        err(m, c) { println("bind err ", m, " ", c) }
+    }
+    var zr = outnat::open_zero()
+    match zr {
+        ok(h) { println("zero ", outnat::get(&h)); h.close() }
+        err(m, c) { println("zero err ", m, " ", c) }
+    }
+    outnat::close_drop(11)
+    println("flow ", outnat::flow(1, 3))
+    println("final ", outnat::live(), " ", outnat::releases())
+}
+'''
+
+OUT_WANT = [
+    'open 5 true',
+    'closed false',
+    'counts 0 1',
+    'fail 1 0 2',
+    'null 4 0 2',
+    'wide 21',
+    'shape 7',
+    'ptail 2',
+    'ptail1 1',
+    'tail 2 0 3 -1 -1 -1',
+    'empty -1 0 0',
+    'bind -1 3 3',
+    'zero 0',
+    'flow 6',
+    'final 0 12',
+]
+
+
+def out_params(tmp):
+    """Stage (f): out_own/out_offset, the generated out record, and its sidecar."""
+    def app(name, body, wrapper=None, extra=None):
+        ad = os.path.join(tmp, 'outapp_' + name)
+        os.makedirs(ad)
+        for n in ('out_fixture.c', 'out_fixture.h'):
+            shutil.copy(os.path.join(HERE, n), os.path.join(ad, n))
+        for n, text in (extra or {}).items():
+            open(os.path.join(ad, n), 'w').write(text)
+        sp = out_spec()
+        sp['sources'] = ['out_fixture.c']
+        sp['headers'] = ['out_fixture.h']
+        sp['wrapper'] = 'out_wrap.obx'
+        open(os.path.join(ad, 'out_wrap.obx'), 'w').write(wrapper or open(
+            os.path.join(HERE, 'out_wrap.obx')).read())
+        spath = os.path.join(ad, 'out.cbind')
+        json.dump(sp, open(spath, 'w'), indent=2)
+        ap = os.path.join(ad, 'app.obx')
+        open(ap, 'w').write('module app\n\nimport "outnat.obx"\n\n' + body)
+        out = os.path.join(ad, 'out')
+        return build(spath, ap, out), out, ad
+
+    p, out, _ = app('main', OUT_APP)
+    need(p, 'out main build')
+    r = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'out main run')
+    if r.stdout.splitlines() != OUT_WANT:
+        raise Fail("out main output:\n got  %r\n want %r" % (r.stdout.splitlines(), OUT_WANT))
+    if r.stderr.strip():
+        raise Fail("out main wrote to stderr: %r" % r.stderr)
+    relocs = open(os.path.join(out, 'native.relocs')).read().splitlines()
+    if 'outrec of_new of_new_out rc:int o:own:Obj' not in relocs:
+        raise Fail("out_own outrec line missing: %r" % relocs[:8])
+    if 'outrec of_zero of_zero_out rc:int o:own:Obj' not in relocs:
+        raise Fail("zero-input out_own outrec line missing: %r" % relocs[:12])
+    if 'outrec of_prepare of_prepare_out rc:int st:own:Obj tail:offset:1' not in relocs:
+        raise Fail("out_offset outrec line missing or out of order: %r" % relocs[:10])
+    if any(ln.startswith('outrec of_get ') for ln in relocs):
+        raise Fail("a native with no out parameters wrote an outrec line")
+    if not any(' of_new 1 fn int outrec:of_new_out ' in ln for ln in relocs):
+        raise Fail("out_own return shape missing from the sidecar")
+    if not any(' of_prepare 2 fn foreign:Obj,bytes outrec:of_prepare_out ' in ln for ln in relocs):
+        raise Fail("out_offset return shape missing from the sidecar")
+    if not any(' of_bind 1 fn bytes outrec:of_bind_out ' in ln for ln in relocs):
+        raise Fail("const:-1 out binding missing from the sidecar")
+    # Old tools reject the new sidecar: a v1 reader sees an unknown relocation line.
+    tool = _tool()
+    try:
+        tool._read_relocs_v1(relocs[1:])
+    except tool.ToolError:
+        pass
+    else:
+        raise Fail("the old sidecar reader accepted an outrec line")
+
+    # out_own dropped: the nested record is freed, the C object is not. Exit 8.
+    leak = ('fn main() {\n    outnat::reset()\n    outnat::leak(3)\n'
+            '    println("live ", outnat::live())\n}\n')
+    p, out, _ = app('leak', leak)
+    need(p, 'out leak build')
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    if r.returncode != 8 or 'foreign handles leaked: Obj 1' not in r.stderr:
+        raise Fail("out_own dropped: want exit 8 Obj 1, got %d: %r"
+                   % (r.returncode, (r.stderr, r.stdout)))
+    r = run([os.path.join(out, 'app')])
+    if r.returncode != 0 or 'leaked' in r.stderr:
+        raise Fail("out_own dropped without OBO_CHECK: want exit 0, got %d: %r"
+                   % (r.returncode, r.stderr))
+
+    # The wrapper closes the handle, then drops the record: no census.
+    closed = ('fn main() {\n    outnat::reset()\n    outnat::close_drop(4)\n'
+              '    println("c ", outnat::live(), " ", outnat::releases())\n}\n')
+    p, out, _ = app('closed', closed)
+    need(p, 'out closed build')
+    r = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'out closed run')
+    if r.stdout.strip() != 'c 0 1' or r.stderr.strip():
+        raise Fail("wrapper-closed record: want 'c 0 1', got %r %r"
+                   % (r.stdout, r.stderr))
+
+    # An out_offset-only var is an ordinary owned record, freed at scope end.
+    only = ('fn main() {\n    outnat::reset()\n    var pb = new []byte(0)\n'
+            '    append(pb, byte(97))\n    append(pb, byte(98))\n    append(pb, byte(99))\n'
+            '    println("t ", outnat::tail(&pb, 0))\n}\n')
+    p, out, _ = app('only', only)
+    need(p, 'out only build')
+    r = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'out only run')
+    if r.stdout.strip() != 't 2' or r.stderr.strip():
+        raise Fail("out_offset-only record: want 't 2' and no census, got %r %r"
+                   % (r.stdout, r.stderr))
+
+    # Compile negatives: a bare out-call statement, a global initializer, and defer.
+    base_wrap = open(os.path.join(HERE, 'out_wrap.obx')).read()
+    for name, extra, want in (
+            ('bare', '\npub fn bad() { of_new(1) }\n',
+             'store an out-native result'),
+            ('global', '\nvar g = of_new(1)\n',
+             'global initializer'),
+            ('defer', '\npub fn bad_defer(v: int) { defer of_new(v) }\n',
+             'out-native result')):
+        p, _, _ = app('neg_' + name, 'fn main() {}\n', wrapper=base_wrap + extra)
+        if p.returncode == 0 or want not in (p.stderr + p.stdout):
+            raise Fail("out compile negative %s: want %r, got rc %d: %s"
+                       % (name, want, p.returncode, (p.stderr + p.stdout).strip()[-500:]))
+
+    # The generated <native>_out name is reserved in both declaration orders.
+    for name, wrap, want in (
+            ('collide_before',
+             base_wrap.replace('module outnat\n',
+                               'module outnat\n\ntype of_new_out = ref record { x: int }\n',
+                               1),
+             'already declared'),
+            ('collide_after',
+             base_wrap + '\ntype of_new_out = ref record { x: int }\n',
+             'reserved by the generated out record'),
+            ('collide_after_fn',
+             base_wrap + '\nfn of_new_out(): int { return 0 }\n',
+             'reserved by the generated out record')):
+        p, _, _ = app('neg_' + name, 'fn main() {}\n', wrapper=wrap)
+        if p.returncode == 0 or want not in (p.stderr + p.stdout):
+            raise Fail("out name collision %s: want %r, got rc %d: %s"
+                       % (name, want, p.returncode, (p.stderr + p.stdout).strip()[-400:]))
+
+    # Another module may use the same top-level name: the reservation is per
+    # module, not compilation-global.
+    cross = ('import "other.obx"\n\n'
+             'fn main() {\n    let x = new other::of_new_out{n: 7}\n'
+             '    println("cross ", x.n)\n}\n')
+    p, out, _ = app('cross_module', cross, extra={
+        'other.obx': 'module other\n\npub type of_new_out = ref record { pub n: int }\n'})
+    need(p, 'cross-module out name build')
+    r = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'cross-module out name run')
+    if r.stdout.strip() != 'cross 7':
+        raise Fail("cross-module out name output was %r" % r.stdout)
+
+    # --check parses an out declaration but refuses a native call.
+    ckdir = os.path.join(tmp, 'out_check')
+    os.makedirs(ckdir)
+    open(os.path.join(ckdir, 'out_wrap.obx'), 'w').write(base_wrap)
+    q = run([OBO, os.path.join(ckdir, 'out_wrap.obx'), '--check', '--sym-dir', ckdir])
+    if q.returncode == 0 or 'cannot be called in --check' not in (q.stderr + q.stdout):
+        raise Fail("--check with an out native call: want a refusal, got rc %d: %s"
+                   % (q.returncode, (q.stderr + q.stdout).strip()[-300:]))
+
+    # Tool negatives and tampered sidecars.
+    tool = _tool()
+    spec = out_spec()
+    good = open(os.path.join(out, 'native.relocs')).read().splitlines()
+
+    def reject(lines, want):
+        path = os.path.join(tmp, 'out_tamper_%d.relocs' % len(os.listdir(tmp)))
+        open(path, 'w').write('\n'.join(lines) + '\n')
+        try:
+            tool.validate_calls(tool.read_relocs(path), spec)
+        except tool.ToolError as e:
+            if want is not None and want not in str(e):
+                raise Fail("out tamper %r: unexpected error %s" % (want, e))
+        else:
+            raise Fail("an out tamper was accepted: %r" % want)
+
+    drop_new = [ln for ln in good if not ln.startswith('outrec of_new ')]
+    reject(drop_new, 'outrec')
+    reject([ln.replace('outrec of_new of_new_out', 'outrec of_new other_out')
+            for ln in good], 'must be named')
+    reject([ln.replace('rc:int o:own:Obj', 'o:own:Obj rc:int')
+            for ln in good], 'rc:int')
+    reject([ln.replace('o:own:Obj', 'o:own:Obj o:own:Obj') for ln in good], 'duplicate')
+    reject(good + ['outrec of_new of_new_out rc:int o:own:Obj'], 'duplicate out record')
+    reject([ln.replace('o:own:Obj', 'o:own:Nope') for ln in good], 'not in the sidecar')
+    reject([ln.replace('rc:int st:own:Obj tail:offset:1',
+                       'rc:int tail:offset:1 st:own:Obj') for ln in good], 'spec needs')
+    reject([ln.replace('of_new 1 fn int outrec:of_new_out',
+                       'of_new 1 fn int i64') for ln in good], 'spec needs')
+    reject([ln.replace('of_new 1 fn int outrec:of_new_out',
+                       'of_new 1 call - i64') for ln in good], 'typed native fn')
+
+    # Spec-level refusals: out with a non-scalar result, out in __cinterop's shape, bad ordering.
+    for bad_ret in ('void', 'own<Of>'):
+        sp = out_spec()
+        sp['functions'] = [{'name': 'of_new', 'symbol': 'of_new',
+                            'args': ['i32@0', 'out_own<Of>'], 'ret': bad_ret,
+                            'effects': ['impure']}]
+        spath = os.path.join(tmp, 'out_bad_ret.cbind')
+        json.dump(sp, open(spath, 'w'), indent=2)
+        try:
+            tool.load_spec(spath)
+        except tool.ToolError as e:
+            if 'scalar C result' not in str(e):
+                raise Fail("out ret %r: unexpected error %s" % (bad_ret, e))
+        else:
+            raise Fail("out ret %r was accepted" % bad_ret)
+    for kinds, want in (
+            (['i32@0', 'out_own<Of>', 'out_own<Of>'], 'at most one out_own'),
+            (['i32@0', 'out_offset@0'], 'borrow_bytes')):
+        try:
+            tool.check_kinds('bad', kinds)
+        except tool.ToolError as e:
+            if want not in str(e):
+                raise Fail("out kinds %r: unexpected error %s" % (kinds, e))
+        else:
+            raise Fail("out kinds %r were accepted" % kinds)
+    # const:0 in a function-pointer slot is a use-after-free, and only -1 is accepted.
+    try:
+        tool.check_ctypes('dtor', ['const:0'], ['void (*)(void *)'])
+    except tool.ToolError as e:
+        if 'must be -1' not in str(e):
+            raise Fail("const:0 function pointer: unexpected error %s" % e)
+    else:
+        raise Fail("const:0 in a function-pointer slot was accepted")
+    tool.check_ctypes('dtor', ['const:-1'], ['void (*)(void *)'])
+    try:
+        tool.check_ctypes('dtor', ['const:7'], ['void (*)(void *)'])
+    except tool.ToolError as e:
+        if 'must be -1' not in str(e):
+            raise Fail("const:7 function pointer: unexpected error %s" % e)
+    else:
+        raise Fail("const:7 in a function-pointer slot was accepted")
+    try:
+        tool.check_kinds('bad', ['borrow_cstr@0', 'out_offset@0'])
+    except tool.ToolError as e:
+        if 'out_offset@0 must name a borrow_bytes argument' not in str(e):
+            raise Fail("out_offset on borrow_cstr: unexpected error %s" % e)
+    else:
+        raise Fail("out_offset targeting borrow_cstr was accepted")
+    print('out parameter tests: ok')
+
 def main():
     # The guard/deep-recursion tests deliberately fault. A host core-dump pipe
     # can take longer than the test timeout; the signal verdict is what matters.
@@ -3046,7 +3507,7 @@ def main():
         libpq_limits(tmp)
         libpq_errors(tmp)
         libpq_constants()
-        fake_adapter(tmp)
+        libpq_fake_edges(tmp)
         libpq_fake(tmp)
         zlib_second(tmp)
         include_and_cflags(tmp)
@@ -3056,6 +3517,7 @@ def main():
         kinds(tmp)
         returns(tmp)
         foreigns(tmp)
+        out_params(tmp)
         null_const_slots(tmp)
         stack_args(tmp)
         libpq_live(tmp)

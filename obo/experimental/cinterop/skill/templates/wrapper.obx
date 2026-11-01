@@ -1,26 +1,46 @@
+// Ordinary obo surface for the v2 template adapter.
+//
+// Demo is a foreign handle: obo holds the real demo_item * in its private word
+// and cannot construct, copy or convert it. open() gets an `own_opt` result
+// (NULL is nil, so an allocation failure becomes err rather than exit 11), and
+// open_out() gets the same pointer through an out record. Close explicitly,
+// normally with defer. Dropping Demo does NOT release the C object; under
+// OBO_CHECK=1 the foreign-handle census reports it (exit 8).
 module demo
 
-// Ordinary obo surface for the template adapter. The token is an integer and
-// the field is private to this module; importers use open(). The C registry,
-// not the field visibility, is what rejects a copied or stale token. Dropping
-// Demo does NOT release the C resource: call close(), normally through defer
-// (close borrows the wrapper).
-pub type Demo = ref record { tok: int }
+pub type Demo = foreign "demo_item"
+
+native fn demo_open(size: int): ?Demo              // own_opt: NULL is nil
+native fn demo_read_byte(item: &Demo, index: int): int
+native fn demo_make(size: int, out item: Demo): demo_make_out
+
+pub fn (mut d: &Demo) close(): Result[bool] { return __foreignClose(d) }
+pub fn (d: &Demo) is_open(): bool { return __foreignIsOpen(d) }
 
 pub fn open(size: int): Result[Demo] {
-    let t = __cinterop("demo_open", size)
-    if t <= 0 { return err("demo_open failed", 2) }
-    return ok(new Demo{tok: t})
+    if size < 0 || size > 1048576 { return err("size is out of range", 2) }
+    let c = demo_open(size)
+    if c == nil { return err("demo_item allocation failed", 3) }
+    var d = c
+    return ok(d)
+}
+
+// The out record is an ordinary value: `rc` first, then `item: ?Demo`. `take`
+// moves the handle out; close it exactly once on the error path too. A failing
+// open can write a non-NULL handle (like sqlite3_open_v2), so `rc != 0` does
+// not imply nil.
+pub fn open_out(size: int): Result[Demo] {
+    if size < 0 || size > 1048576 { return err("size is out of range", 2) }
+    var out = demo_make(size)
+    var d = take(out.item)
+    if d == nil { return err("demo_make returned no item", 3) }
+    if out.rc != 0 {
+        d.close()
+        return err("demo_make failed", out.rc)
+    }
+    return ok(d)
 }
 
 pub fn (d: &Demo) byte_at(index: int): int {
-    return __cinterop("demo_read_byte", d.tok, index)
-}
-
-pub fn (d: &Demo) close(): bool {
-    return __cinterop("demo_close", d.tok) == 1
-}
-
-pub fn live(): int {
-    return __cinterop("demo_live")
+    return demo_read_byte(d, index)
 }

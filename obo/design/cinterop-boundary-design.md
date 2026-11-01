@@ -65,8 +65,8 @@ Compared with today's prototype (one hand-written C adapter per library, integer
 - No linker in the compiler: library names stay in the spec's `libs` field, handled by the existing cinterop build.
 
 **Bugs fixed on the way**
-- SQLite `release_stmt` use-after-free when a connection is closed before its statements (`sqlite_adapter.c:136-143`,
-  C13). `sqlite3_close_v2` avoids it (6.2, point 1), and a test reproduces the old ordering (section 9).
+- SQLite `release_stmt` use-after-free when a connection is closed before its statements (pre-v2
+  `sqlite_adapter.c:136-143`, C13). `sqlite3_close_v2` avoids it (6.2, point 1), and a test reproduces the old ordering (section 9).
 - Already merged on `main` (commits 35c500b, 11a5962, cf9bbab, merged in 44e812a): libpq conninfo diagnostics, limit and
   header-mismatch errors, and the review fixes. The design keeps them and moves the limits into obo wrappers.
 
@@ -85,8 +85,9 @@ Compared with today's prototype (one hand-written C adapter per library, integer
 ## 1. Problem and goals
 
 Libpq and SQLite are bound through layers that exist only because the boundary is scalar. Integer-token
-registries keep `PGconn*`, `PGresult*`, `sqlite3*` and `sqlite3_stmt*` on the C side (`toolkit/libpq_adapter.c`
-417 lines, `cres.c` 205, `cres.h` 60, `libpq_adapter.h` 40; `db/sqlite/sqlite_adapter.c` 528). Bytes cross one
+registries keep `PGconn*`, `PGresult*`, `sqlite3*` and `sqlite3_stmt*` on the C side (the pre-v2
+`toolkit/libpq_adapter.c` 417 lines, `cres.c` 205, `cres.h` 60, `libpq_adapter.h` 40;
+`db/sqlite/sqlite_adapter.c` 528). Bytes cross one
 native call per byte (`put_bytes`, `examples/libpq.obx:34-47`), so a 1 MiB `bytea` costs about two million
 crossings. The libpq packet is built in obo and parsed again in C. `nativeCall` (`obo/src/obo.obo:7361-7378`)
 accepts only `int` arguments.
@@ -125,11 +126,16 @@ C11. **Other facts.** `rt_set_host_exit` is appended by the cinterop build witho
 
 C12. **Library non-retention is documented, not checked.** `PQconnectdb` and `PQexecParams` copy their inputs; `PQgetvalue` pointers last until `PQclear`. SQLite column text and blob pointers last until the next step, reset, finalize or conversion of that column (6.2, point 2).
 
-C13. **The SQLite adapter's lifetime rule is explicit close only.** `sq_conn_close` refuses while `stmt_live != 0` (`db/sqlite/sqlite_adapter.c:229-232`), and `release_stmt` decrements through `s->owner` (`sqlite_adapter.c:140`).
+C13. **The SQLite adapter's lifetime rule is explicit close only (historical).** `sq_conn_close` refuses while `stmt_live != 0` (`db/sqlite/sqlite_adapter.c:229-232`), and `release_stmt` decrements through `s->owner` (`sqlite_adapter.c:140`). The pre-v2 adapter was deleted in stage (f); the current rule is `sqlite3_close_v2` (6.2, point 1).
 
 C14. **The file model is the precedent.** `Dir.close(mut d: &Dir): Result[bool]` (`obo/lib/fs.obx:214`) and `sysfile.close(f: &File): Result[bool]` (`obo/experimental/sys/sysfile.obx:307`) return `ok(false)` for a closed handle (`sysfile.obx:274`). `closeFile(fd)` returns `Result[bool]` (`LANGUAGE.md:2116`). The fd census runs in `rt_finish` (3.4). The systems stdlib agrees: "explicit lifecycle", "no hidden finalizer" (`systems-stdlib-design.md` section 4.2, lines 399-427).
 
-C15. **Existing limits to keep.** SQL text 1 MiB (`libpq_adapter.c:25`, `postgres_adapter.c:32`, `sqlite_adapter.c:22`). Values 16 MiB (`sqlite_adapter.c:23`, `postgres_adapter.c:33`). Connection string 16 MiB, equal to `CRES_MAX_BUFFER` (`libpq_adapter.c:160`). Path 4 KiB (`sqlite_adapter.c:21`). Parameters 32 (`postgres_adapter.c:31`). Decimal text 98,342 bytes (`postgres_adapter.c:34`, `105`). Default `connect_timeout=5` (`libpq_adapter.c:110`).
+C15. **Existing limits to keep.** SQL text 1 MiB, values 16 MiB, connection string 16 MiB,
+path 4 KiB, parameters 32, decimal text 98,342 bytes, default `connect_timeout=5`. The v2 wrappers
+enforce them before any C call: `libpq.obx` (`PQ_MAX_SQL`, `PQ_MAX_VALUE`, `PQ_MAX_DSN`,
+`PQ_MAX_PARAMS`, `connect_timeout`), `sqlite.obx` (`MAX_PATH`, `MAX_SQL`, `MAX_VALUE`) and
+`postgres.obx`/`sqlite.obx` (the decimal grammar and 98,342-byte cap, one obo check). The old
+adapter paths in the first revision of this note are historical.
 
 C16. **Temporaries and results.** A temporary must be stored in a variable before use (`LANGUAGE.md:304`). A reference cannot borrow from a temporary (`LANGUAGE.md:2589`). `string(x)` refuses a temporary `[]byte` (`obo.obo:7336`, `noTemp`). A discarded owned call result is freed at once by the expression statement (`obo.obo:10473-10494`), so `conn.close()` needs no `let _ =`. A deferred cleanup's result is discarded (`LANGUAGE.md:2056`).
 ## 3. Proposed boundary types
@@ -164,9 +170,10 @@ they consume as `kind@k`. Flags follow a colon.
 | `cbytes` with `"length": sym`, `"cap": n` | `?[]byte` | copy of `(value, length)`, value first; nil if over cap (3.3) |
 | `cstr_out` | `[]byte` | copy up to NUL, bounded; NULL gives empty |
 
-A native with `out_*` kinds has no hand-written result type: the compiler generates a record named `<native>_out` from the spec, with `rc: int` plus one field per out kind, each
-`?T`. An `out_own` field counts from the write, so the wrapper closes it on every path (R12). The 6.3
-sketch names them in its native declarations.
+A native with `out_*` kinds has no hand-written result type: the compiler generates a record named `<native>_out` from the spec, with `rc: int` plus one field per out kind. An
+`out_own` field is `?T` and counts from the write, so the wrapper closes it on every path (R12); an
+`out_offset` field is a plain `int`, `-1` when C's tail pointer is NULL or outside the borrowed
+bytes. The 6.3 sketch names them in its native declarations.
 
 **No library-specific kinds.** Every kind is a C type shape: a scalar, a foreign pointer, a byte buffer, a list,
 or an out slot. No kind names a library function, a statement, a packet format or a SQL rule. Those belong in obo
@@ -204,7 +211,7 @@ type first (6.2, point 2). `cstr_out` copies up to NUL within 16 MiB.
 ### 3.4 Primitive 3: foreign handles, explicit close, census
 
 **Declaration** (D1): `type Conn = foreign "PGconn"`. The spec names the release symbol and its result shape:
-`"release": "PQfinish", "release_result": "void"` (or `"int"`). Obo code never names the release function.
+`"release": "PQfinish", "release_result": "void"` (or `"int"`; `"discard"` calls an int release and ignores its result). Obo code never names the release function.
 
 **Representation and creation.** A compiler-generated `ref record` with one private field, the C word, nonzero while
 the handle is live. The word is in neither the owned nor the string offset list, so `rt_free` never reads or frees it
@@ -215,7 +222,7 @@ record whose word has been zeroed.
 **Generated methods.** For each foreign type the compiler emits:
 - `close(mut t: &T): Result[bool]`. If the word is 0, it returns `ok(false)` and makes no C call (double close, review 9).
   Otherwise it copies the word, sets the field to 0, decrements the census counter, calls the release symbol with the copy,
-  and returns `ok(true)`. For `"release_result": "int"`, a nonzero C result is `err` with that code. The handle is gone
+  and returns `ok(true)`. For `"release_result": "int"`, a nonzero C result is `err` with that code. `"discard"` ignores the int a release such as `sqlite3_close_v2` returns. The handle is gone
   either way.
 - `is_open(&T): bool`. It returns true when the word is nonzero.
 
@@ -277,7 +284,7 @@ This is the file rule: dropping an open fd leaks it.
 array drops its handles, which then leak as any dropped handle does. A global handle is counted like any other live
 handle at normal end.
 
-**Close errors.** A release declared `"release_result": "int"` gives `err` from `close`; the handle is gone either way.
+**Close errors.** A release declared `"release_result": "int"` gives `err` from `close`; the handle is gone either way. `"discard"` calls the same int-returning release but always gives `ok(true)` (D14).
 
 ### 3.5 Typed native declarations and the sidecar (D1)
 
@@ -343,7 +350,7 @@ so the wrapper must close it on the error path too, or the census reports it.
 | libpq function | Kinds | Obo wrapper |
 |---|---|---|
 | `PQlibVersion` | `i32` | `lib_version` |
-| `PQconnectdb` | `borrow_bytes@0`; ret `own_opt<PGconn>` | `connectdb`, used by `connect` (5.2) |
+| `PQconnectdb` | `borrow_cstr@0`; ret `own_opt<PGconn>` | `connectdb`, used by `connect` (5.2) |
 | `PQstatus` | `borrow<PGconn>@0`; ret `i32` | `status` |
 | `PQerrorMessage` | `borrow<PGconn>@0`; ret `cstr_out` | `error_message` |
 | `PQfinish` | release of `Conn` (spec `"release"`) | generated `close` |
@@ -425,8 +432,8 @@ the row and column index before `is_null`, `length`, `value` or `ftype`: today's
 
 ```json
 {"format": "cinterop-proto/2", "module": "libpq", "platform": "x86_64-linux-gnu",
- "abi": "sysv-amd64", "libs": ["-l:libpq.so.5"], "signature_check": "declarations-only",
- "types": [{"name": "PGconn", "obo": "Conn", "release": "PQfinish", "release_result": "void"},
+ "abi": "sysv-amd64", "libs": ["-l:libpq.so.5"], "signature_check": "header",
+ "types": [{"name": "PGconn", "obo": "Connection", "release": "PQfinish", "release_result": "void"},
            {"name": "PGresult", "obo": "Res", "release": "PQclear", "release_result": "void"}],
  "functions": [
    {"name": "exec_params", "symbol": "PQexecParams",
@@ -441,12 +448,20 @@ every argument is used.
 
 ### 5.4 What is deleted and what remains
 
-**Kept:** `toolkit/cres.c` and `cres.h` (205 and 60 lines) stay for the packages in 7.2 (D7). v2 stops using them for libpq,
-SQLite and db/postgres only. **Deleted:** `libpq_adapter.c` and `.h` (417 and 40 lines), except the conninfo check. **Kept:**
-`libpq_decls.h` (91 lines, declarations-only) and `tests/fake_libpq.c` (363, ABI kept; the counters become release and census
-checks). **Rewritten:** `examples/libpq.obx` (300) and `libpq.cbind` (356). The conninfo check (`conninfo_has_timeout`,
-`libpq_adapter.c:89`) is the one helper, about 30 lines in `toolkit/libpq_conninfo.c`. `PQconninfoParse` returns a struct array
-that must be walked and freed, so it stays in C. D13 may remove the helper.
+The line counts and `*_adapter.c` file names in this subsection are the pre-v2
+snapshot; the adapters were deleted in stages (e)–(g).
+
+**Kept:** `toolkit/cres.c` and `cres.h` (205 and 60 lines, historical count) stay for the zlib
+adapter and its test, `examples/buffer.obx` and `tests/cres_test.c` (D7). v2 stops using them for libpq,
+SQLite and db/postgres. **Deleted:** `libpq_adapter.c` and `.h` (417 and 40 lines, historical),
+except the conninfo check. **Deleted
+in stage (g):** `db/postgres/postgres_adapter.c/.h` and the old `db/tests/postgres_adapter_test.c`; the postgres wrapper now
+uses the libpq v2 types directly. `toolkit/cres.c/.h` remain for the zlib adapter, the buffer example and the
+registry test (the skill templates moved to v2 in stage (h); the db adapters no longer include them). **Kept:** `libpq_decls.h` (91 lines, the manual declaration header used in header mode) and `tests/fake_libpq.c` (363,
+ABI kept; the counters become release and census checks). **Rewritten:** `examples/libpq.obx` (300) and `libpq.cbind` (356).
+The conninfo check (`conninfo_has_timeout`, `libpq_adapter.c:89`) is the one helper, about 30 lines in
+`toolkit/libpq_conninfo.c`. `PQconninfoParse` returns a struct array that must be walked and freed, so it stays in C. D13 may
+remove the helper.
 
 ### 5.5 SQL template parameters
 
@@ -454,8 +469,8 @@ that must be walked and freed, so it stays in C. D13 may remove the helper.
 
 ### 5.6 db/postgres: public surface and gaps
 
-`postgres/postgres.obx` (694 lines), `postgres/postgres_adapter.c` (291) and the two `.cbind` files are the second libpq
-consumer, and the libpq example did not cover them. Their public surface maps as follows (stage (g)):
+`postgres/postgres.obx` and the two `.cbind` files are the second libpq consumer, and the libpq example did not cover them.
+The old `postgres/postgres_adapter.c` (291 lines) was deleted in stage (g). Their public surface maps as follows:
 
 | postgres.obx | v2 | Note |
 |---|---|---|
@@ -469,32 +484,39 @@ consumer, and the libpq example did not cover them. Their public surface maps as
 | `live_resources`, `live_buffers`, `live_connections`, `live_results` | **removed** | the census (3.4) replaces the counters |
 
 Gaps the first libpq example missed:
-1. **Typed parameters.** The packet sets a type per kind: 0 for untyped NULL, 25 text, 17 bytea with binary format
-   (`postgres_adapter.c:213-216`), 20, 16, and 1700 numeric, including the typed NULL of kind 6 (`postgres_adapter.c:236-246`).
-   The `oids` argument and `ints@3:u32` carry them. (A former note on passing `null` for `paramTypes` is withdrawn; review 17.)
+1. **Typed parameters.** `postgres.obx` `encode_params` sets a type per kind: 0 for untyped NULL, 25 text, 17 bytea with
+   binary format, 20, 16, and 1700 numeric, including the typed NULL of kind 6. The old packet builder was deleted. The
+   `oids` argument and `ints@3:u32` carry them. (A former note on passing `null` for `paramTypes` is withdrawn; review 17.)
 2. **`Bytes` and D10.** Typed OID 17 with binary format sends raw bytes with no `::bytea` cast.
-3. **Decimal checks move to obo.** The strict grammar (`valid_decimal_text`, `postgres_adapter.c:102`) and the 98,342-byte cap
-   (`postgres_adapter.c:34`, `105`) are C today. The obo port repeats them, and stage (g) runs one negative table against both
-   checks. This moves trust; it does not delete it.
-4. **Result wrapper.** `Rows` keeps its public `fmt` (`postgres.obx:39`, `445`, `595`). Its `h` is a non-optional `Res`, closed by
-   a zero word. A SQL error is `ok(Rows)` with `PGRES_FATAL_ERROR`, read before close.
+3. **Decimal checks move to obo.** The strict grammar and 98,342-byte cap were C in the old adapter (deleted in stage (g)
+   with `valid_decimal_text`). `postgres.obx` `encode_params` now holds the single obo validation (grammar, cap and
+   `decimal::parse`), and the negative table runs against that path. The wire grammar and parse failures map to
+   `1006`/`1007`/`1008`/`1009` or plumbing `2`; nothing re-validates in C.
+4. **Result wrapper.** `Rows` keeps its public `fmt` (`postgres.obx` `Rows`, `execute_fmt`, `decimal`). Its `h` is a non-optional `Res`, closed by
+   a zero word. A SQL error is `ok(Rows)` with `PGRES_FATAL_ERROR`, read before close. The postgres wrapper stores the libpq
+   handle in a field; that field reaches a native borrow directly, because the deep-reference rule refuses passing it to another
+   obo function.
 
 ---
 
 ## 6. Worked example 2: SQLite
 
+The `sqlite_adapter.c`/`sqlite_adapter.h` citations in this section are the pre-v2 adapter,
+deleted in stage (f); `sqlite.obx`/`sqlite.cbind` are the current implementation.
+
 ### 6.1 Functions and kinds
 
-Scope: the subset that `db/sqlite/sqlite_adapter.c` calls, declared in `sqlite_decls.h` (81 lines). New declarations:
+Scope: the subset that the pre-v2 `db/sqlite/sqlite_adapter.c` called, declared in `sqlite_decls.h`
+(81 lines). New declarations:
 `sqlite3_close_v2`, `sqlite3_next_stmt`, `sqlite3_errcode`.
 
 | SQLite function | Kinds | Obo wrapper |
 |---|---|---|
 | `sqlite3_open_v2(path, &db, flags, NULL)` | `borrow_cstr@0`, `out_own<Db>`, `i32@1`, `null`; ret `i32` | `open` (6.3) |
-| `sqlite3_close_v2` | release of `Db` (spec `"release": "sqlite3_close_v2"`, `"void"`; rc discarded) | generated `close` |
+| `sqlite3_close_v2` | release of `Db` (spec `"release": "sqlite3_close_v2"`, `"discard"`; rc ignored) | generated `close` |
 | `sqlite3_next_stmt(db, NULL)` | `borrow_mut<Db>@0`, `null`; ret `nonzero` | `has_live_statements` (informational) |
 | `sqlite3_prepare_v2(db, sql, n, &stmt, &tail)` | `borrow_mut<Db>@0`, `borrow_bytes@1`, `out_own<Stmt>`, `out_offset@1`; ret `i32` | `prepare` (6.3) |
-| `sqlite3_finalize` | release of `Stmt` (spec `"release": "sqlite3_finalize"`, `"void"`) | generated `close` |
+| `sqlite3_finalize` | release of `Stmt` (spec `"release": "sqlite3_finalize"`, `"discard"`) | generated `close` |
 | `sqlite3_step`, `sqlite3_reset` | `borrow_mut<Stmt>@0`; ret `i32` | `step`, `reset` |
 | `sqlite3_bind_null`, `sqlite3_bind_int64` | `borrow_mut<Stmt>@0`, `i32@1`, `i64@2` for int | `bind_null`, `bind_int` |
 | `sqlite3_bind_text`, `sqlite3_bind_blob` | `borrow_mut<Stmt>@0`, `i32@1`, `borrow_bytes@2`, `const:-1` | `bind_text`, `bind_blob` |
@@ -507,11 +529,14 @@ Scope: the subset that `db/sqlite/sqlite_adapter.c` calls, declared in `sqlite_d
 | `sqlite3_errmsg` | `borrow_mut<Db>@0`; ret `cstr_out` | `error_message` |
 | `sqlite3_errstr` | `i32`; ret `cstr_out` | `error_string` |
 | `sq_stmt_errcode` (trusted C helper, 4 lines) | `borrow_mut<Stmt>@0`; ret `i32` | `stmt_error_code` |
+| `sq_prepare_at` (trusted C helper) | `borrow_mut<Db>@0`, `borrow_bytes@1`, `i32@2`, `out_own<Stmt>`, `out_offset@1`; ret `i32` | `prepare_at` (used by `exec`) |
 
 `sq_stmt_errcode` calls `sqlite3_errcode(sqlite3_db_handle(stmt))` inside one native call. The pointer from
-`sqlite3_db_handle` never leaves C, so obo holds no pointer and needs no new kind. It is the only C helper added for
-SQLite, and it uses generic kinds only. It exists because `column_text` returns NULL both for SQL NULL and for
-out-of-memory (6.2, point 2).
+`sqlite3_db_handle` never leaves C, so obo holds no pointer and needs no new kind. It uses generic
+kinds only, and it exists because `column_text` returns NULL both for SQL NULL and for out-of-memory
+(6.2, point 2). A second tiny helper, `sq_prepare_at`, calls `sqlite3_prepare_v2(db, sql + off, n -
+off, ...)` and returns the tail as an absolute pointer, so the `exec` loop prepares from the remaining
+slice instead of copying it each iteration (6.2, point 5).
 
 The `cbytes` entry names the value function as `symbol` and the length function in `length`:
 
@@ -593,6 +618,14 @@ the header, and a mismatch is a compile error, `cinterop.py:299`) or `"declarati
 This host has no `sqlite3.h`, so the mode is declarations-only. The real `libsqlite3.so.0` 3.45.1 tests are the ABI gate. The
 declaration hash is provenance only (R11).
 
+**Declarations-only ABI spelling (stage (f)).** The host has no `sqlite3.h`, so `sqlite_decls.h`
+declares the v2 C parameter shapes directly: `const void *` for every `borrow_bytes` pointer and
+`long` for `sqlite3_int64` (64-bit on x86_64-linux-gnu). These are ABI-identical to the installed
+library's `const char *`/`long long` spellings, and the declaration check cannot prove that against a
+header it does not have. `tests/real_sqlite_abi_test.c` resolves every SQLite symbol from the real library with independent
+public-API prototypes and calls a representative path, which is the ABI gate for this compromise. The
+two trusted helpers are project code, covered by the binding tests rather than that ABI test. The declaration hash remains provenance only (R11).
+
 **Limits kept (review 13).** SQL text 1 MiB; values 16 MiB (`sqlite_adapter.c:21-23`); path 4 KiB; text rejects an embedded NUL;
 BLOBs keep NUL; empty SQL is `err`; `len >= INT_MAX` is refused (`sqlite_adapter.c:313`).
 
@@ -601,8 +634,8 @@ BLOBs keep NUL; empty SQL is `err`; `len >= INT_MAX` is refused (`sqlite_adapter
 ```obo
 module sqlite
 
-type Db = foreign "sqlite3"                    // spec: release sqlite3_close_v2, void
-type Stmt = foreign "sqlite3_stmt"             // spec: release sqlite3_finalize, void
+type Db = foreign "sqlite3"                    // spec: release sqlite3_close_v2, discard
+type Stmt = foreign "sqlite3_stmt"             // spec: release sqlite3_finalize, discard
 
 // The result types open_v2_out {rc: int, db: ?Db} and prepare_v2_out {rc: int, st: ?Stmt, tail: int}
 // are generated from the out kinds (3.1); the names follow the `<native>_out` rule.
@@ -683,12 +716,15 @@ Each item below was decided by the user with the recommended option. The chosen 
 
 - **D2.** `foreign` is a reserved word, with D1.
 - **D5.** Nothing is reported at exit beyond the census at normal end under `OBO_CHECK=1` (D4, code 8; 3.4).
-- **D7.** `cres.c` is kept for `sys`, `tls`, `http2`, `zlib`, the buffer example and the skill templates. v2 stops using it for libpq,
-  SQLite and db/postgres only (review 14).
+- **D7.** `cres.c` is kept for the zlib adapter and its test, `examples/buffer.obx` and
+  `tests/cres_test.c`; the
+  skill templates used it until stage (h) moved them to v2 foreign handles. `sys`/`tls`/`http2` use
+  the separate `sysregistry`, not `cres`. v2 stops using `cres` for libpq, SQLite and db/postgres
+  (review 14).
 - **D9.** Scratch copy for `borrow_cstr`; no reserved terminators.
 - **D10.** `Float` is rejected in v1. `Bytes` uses OID 17 with binary format, with no `::bytea` cast.
 - **D11.** `cstr_out` returns empty for NULL, per call.
-- **D15.** `close` returns `Result[bool]` as `Dir.close` does. A `"void"` release gives `ok(true)`; `ok(false)` marks a second close.
+- **D15.** `close` returns `Result[bool]` as `Dir.close` does. A `"void"` or `"discard"` release gives `ok(true)`; `ok(false)` marks a second close.
 
 ### 7.3 Future option (not in scope)
 
@@ -719,11 +755,19 @@ Every stage keeps the gates in native design section 12. A compiler-changing sta
 
 **Stage (e): port libpq.** Rewrites `libpq.obx` and `libpq.cbind` to 5.2 and 5.3, deletes `libpq_adapter.c` and `.h` except the conninfo helper, and keeps `cres.c`. Risk: low to medium. Gate: the cinterop suite with fake release counts; bounds tests (`PQgetisnull(res,9,0)`, `PQftype` out of range); the caps in C15; a `Rows` dropped without `close` reported by the census; a live smoke test on a user-supplied local DSN, opt-in.
 
+*Stage (e) implemented* (branch `cinterop-v2-e`). `libpq.obx` uses `pub type Connection = foreign "PGconn"` and `pub type Res = foreign "PGresult"` (the public `Connection` name is kept per D12), with exported `close`/`is_open` methods over the stage (d) builtins. `Rows = ref record { h: Res; pub fmt: int }` owns one `Res`. The native surface is `PQconnectdb`, `PQstatus`, `PQerrorMessage`, `PQexecParams`, `PQresultStatus`, `PQntuples`, `PQnfields`, `PQgetisnull`, `PQgetlength`, `PQgetvalue` (`cbytes`, length `PQgetlength`, cap 16 MiB), `PQfname`, `PQftype` (`u32`), `PQfmod` (`i32`), `PQresultErrorMessage`, `PQmakeEmptyPGresult` (`null`/`i32@0`/`own<PGresult>`), `PQlibVersion`, and the one `pq_conninfo_has_timeout` helper; releases are `PQfinish`/`PQclear` (void). `toolkit/libpq_conninfo.c`/`.h` implement the conninfo probe with `PQconninfoParse`/`PQconninfoFree` and keep the copied diagnostic; the wrapper appends `connect_timeout=5` when absent. Limits move into obo: DSN 16 MiB, SQL 1 MiB, 32 parameters, each value 16 MiB, and NUL checks for DSN/SQL/text values. A text-format parameter is passed as a `len+1` copy truncated back to `len`, because libpq reads text `paramValues[]` with `strlen` and ignores `paramLengths`; binary values keep their explicit length and may contain NUL. `toolkit/libpq_adapter.c`/`.h` and `cres` are retained because `db/postgres` still uses them until stage (g); libpq no longer lists them in its spec or wrapper sources, and `buffer.obx` is no longer a wrapper source. Two pragmatic deviations are recorded: `Rows.value` keeps `Result[[]byte]` and distinguishes SQL NULL (`err("SQL NULL", 1)`) from a copy-out over the cap (`err("value is larger than the 16 MiB limit", 2)`) rather than returning `Result[?[]byte]`, and a foreign borrow argument no longer triggers the conservative deep-reference refusal (it passes the C word, not the enclosing obo record), which is what lets `&r.h` reach the libpq accessors; array borrows still get the refusal. Closed/out-of-range integer accessors use sentinels (`status`/`ntuples`/`nfields` -1, `is_null` false, `length` -1, `ftype` 0, `fmod` -1); the `Result` accessors return an explicit error. `PQmakeEmptyPGresult` returning NULL is now an `own` exit 11 (visible change; the fake test forces it). The `live_*` counters are removed; the foreign-handle census replaces them. `Rows.fmt` is 0 for text and 1 for binary results. The tests also cover a dropped `Rows` (`Res` census exit 8 with no `PQclear`), a SQL-NULL `value` error, an over-cap copy-out, closed-Rows accessors, NUL rejection, an explicit `connect_timeout` not being duplicated, and an exactly-capacity text value on the live `SELECT $1::text` path. Gate: the cinterop suite (fake and real probes, release counts, census, bounds, use-after-close, limits), `test_db_adapters.py`, the fixed point and byte-identity checks, and the opt-in live PostgreSQL SELECT-only smoke test.
+
 **Stage (f): port SQLite.** Adopts `sqlite3_close_v2` (D14), the `nonzero` probe and `sq_stmt_errcode`. Rewrites `sqlite.obx` and `sqlite.cbind` to 6.1 and 6.3, implements `exec` as the loop in 6.2 point 5, and deletes `sqlite_adapter.c` and `.h`. Risk: medium. Gate: the real 3.45.1 tests, the new fake, the UAF reproduction (fails in the old shape, passes in the new), the BUSY, zombie and census tests, and the `sqlite_memory`, `sqlite_file` and `sqlite_decimal` cases in `test_db_adapters.py` unchanged except for the documented close change.
 
-**Stage (g): port db/postgres.** Maps the surface in 5.6 onto `connect`, `exec` and `Rows`, removes the `live_*` counters and the packet builder, and moves the decimal grammar and cap into obo. Risk: medium. Gate: the postgres cases in `test_db_adapters.py` (fake and decimal fake), the decimal negative table against both checks, the `postgres_adapter_test.c` cases ported, and the opt-in live smoke test (SELECT-only, `CINTEROP_TEST_DSN`).
+*Stage (f) implemented* (branch `cinterop-v2-f`). Declaration syntax adds `out name: T` for an `out_own<T>` and `out name: int from input` for `out_offset@k`. Out parameters consume no call argument; in the `.cbind` `args` array they appear in C order and may be interleaved with inputs (as `sqlite3_open_v2`'s `out_own` slot sits between the path and flags inputs), while in the `native fn` declaration inputs come first and the out parameters follow. At most one of each form is allowed. The return type is the generated `<native>_out` record (`rc: int` first, then the out fields in declaration order). The record is built directly, never registered in module globals or `.sym`; a hidden non-owned frame word holds it, the C result is stored in `rc` before any helper call, and every `out_own` write is wrapped in a counted foreign record before the call returns an `outResult` item. A bare out-call statement is refused. The sidecar keeps `cinterop-relocs 2` and adds optional `outrec` lines; old readers reject them and the new reader accepts sidecars without them. `release_result: "discard"` is implemented for `sqlite3_close_v2`/`sqlite3_finalize`, and a function-pointer `const` slot accepts only `-1`. SQLite is ported to v2: `sqlite.obx`/`sqlite.cbind` use `Connection`/`Stmt` foreign handles, `open_v2`/`prepare_v2` out records, `sq_stmt_errcode`/`sq_prepare_at` in `db/sqlite/`, a `nonzero` `has_live`, `cbytes` text/blob reads, and `exec` as the close-on-every-exit prepare/step/finalize loop that prepares at an absolute offset through `sq_prepare_at` (linear, not a copy per statement); `sqlite_adapter.c/.h` are deleted and the `live_*` counters are gone. `sqlite_decls.h` keeps ABI-identical declarations-only spellings (`const void *`, `long`) and a real-library ABI test covers every function. Gate: the out fixture (success, error non-NULL/NULL out_own closed once, interleaved/trailing slots, seven C parameters, every tail case, tamper/negative cases), byte identity (`125 identical / 9 standalone failures / 0 mismatch`), fixed point, `run_fork` 1809, `test_cinterop.py`, `test_db_adapters.py`, the real 3.45.1 suite, the fake suite, the ASan UAF fixture (old fails, new passes), the ABI test, and `OBO_CHECK=1` runs with zero census. One deviation: an out_offset-only record stored in a `var` is freed at scope end and exits 0, not the object-census exit 5 sketched earlier; the only discard paths are refused at compile time, so that expectation is unreachable and the test asserts the no-census result.
+
+**Stage (g): port db/postgres.** Maps the surface in 5.6 onto `connect`, `exec` and `Rows`, removes the `live_*` counters and the packet builder, and moves the decimal grammar and cap into obo. Risk: medium. Gate: the postgres cases in `test_db_adapters.py` (fake and decimal fake), the decimal negative table against the single obo check, the `postgres_adapter_test.c` cases ported, and the opt-in live smoke test (SELECT-only, `CINTEROP_TEST_DSN`).
+
+*Stage (g) implemented* (branch `cinterop-v2-g`). `libpq.obx` gains `exec_params_full` and the public `exec_params_typed`/`exec_params_typed_binary`; the typed entry points check that the OID and value counts match and that each OID is in `0..0xffffffff`, and the untyped entry points build all-zero OIDs. No cbind or thunk changed. `db/postgres` is now two wrapper records over the libpq types: `Connection = ref record { h: libpq::Connection }` and `Rows = ref record { h: libpq::Res; pub fmt: int }`. Because the deep-reference rule allows a field to reach a native borrow but not another obo function, `postgres.obx` declares the libpq native handles it needs (same spec symbols and shapes) and calls them directly; `libpq.obx` still supplies the type names, connection setup and the shared native surface. The public API and behavior are kept: `close(): bool` (now a `mut` receiver, zero word), sentinels after close, `is_null(): Result[bool]`, `value(): Result[?[]byte]`, `bytes()` NULL error, `pub fmt`, exact bytes, and SQL errors as `ok(Rows)` with `PGRES_FATAL_ERROR`. The `encode_params` out-parameter encoder copies each payload with `copy_bytes` (obo forbids moving out of a field) and builds the value/binary/OID arrays directly; text values get libpq's `len+1` terminator and binary values keep exact bytes/NUL. The wire table is NULL 0/text/nil, TEXT 25/text, BLOB 17/binary, INT 20/text, BOOL 16/text `t`/`f`, DECIMAL 1700/text, DECIMAL_NULL 1700/text/nil. `open` now reports a `PQconnectdb` NULL as code 2 (was 3) and uses libpq's conninfo parser message without the old `"invalid connection string: "` prefix; `connect_timeout`, the DSN cap and the NUL check stay. The C decimal duplicate, `postgres_adapter.c/.h`, `db/tests/postgres_adapter_test.c`, `toolkit/libpq_adapter.c/.h`, `tests/fake_adapter_test.c` (registry part moved to `tests/cres_test.c`) and `postgres_fake_sql.cbind` are deleted. The spec is header mode against `libpq_decls.h`/`libpq_conninfo.h`; `postgres_fake.cbind` adds `tests/fake_libpq_probe.h` and is the one fake spec. cinterop requires every spec symbol to be called, so apps that do not read the last-call probe are built from a test-generated copy of that one spec with the `fake_*` functions removed; no second spec file is committed. A spec-drift guard compares the postgres `types` and libpq native subset with `libpq.cbind`. The fake tests now cover typed OIDs/formats/bytes/NULL, decimal vectors at 98,342/98,343, binary result format, 32/33 parameters, SQL/text NUL, `FAKE_ALLOC`, result-outlives-connection, `make_empty_rows` (status 12 error, status 11 ok, NULL exit 11), and the nested-handle census (`Connection 1`/`Res 1`, no `PQfinish`/`PQclear`). Gate: `test_cinterop.py`, `test_db_adapters.py` (real/fake/live), the fixed point, byte identity, `run_fork`, `port_compare.py`, `heap_test.py`, `doc_check.py`, and the opt-in live SELECT-only PostgreSQL smoke test under `OBO_CHECK=1`.
 
 **Stage (h): skill and templates.** Updates `skill/SKILL.md` and the project-skill templates for the explicit `close`, the census, the kinds and the `cres` policy (7.2). zlib stays on its current adapter, outside the v2 gates (review 7). Risk: low. Gate: a generated project builds; existing `cres` tests pass.
+
+*Stage (h) implemented* (branch `cinterop-v2-h`). The project templates are a buildable `cinterop-proto/2` example: a real `demo_item *` in a `foreign` handle, `signature_check: header` against the adapter's header, `own_opt`/`borrow`, and an `out_own` record with a reachable non-NULL error-path close. They no longer include `cres`, tokens or a `live=` counter. `skill/SKILL.md` and `skill/db-adapters.md` teach the current v2 surface: the kind table, foreign handles, out parameters and generated `_out` records, `release_result` (`void`/`int`/`discard`), `signature_check`, typed OIDs, exact text NUL and binary lengths, the census (exit 8/4), error paths and the explicit-close contract. The docs status sweep marks (e)–(g) merged, keeps a clearly labelled legacy `cres` policy for zlib/buffer only, retargets C15 to the v2 wrappers, and marks the old adapter file citations historical. Nothing in production code was deleted; `cres.c/.h` and `buffer.obx` remain because zlib uses them. Gate: the template builds and runs (with the census clean under `OBO_CHECK=1`), `cinterop.py verify`, `test_cinterop.py`, `test_db_adapters.py`, the fixed point/`run_fork`, the tool and doc checks, and the grep gates for deleted adapters, `live_*`, v1 template remnants and stale status text.
 
 Exposure: (a) none beyond the existing `&T` argument rules; (b) none; (c) parse and type-check of body-less natives; (d) a `foreign` record kind, private-field checks and per-type runtime counters, with no ownership-checker rule; (e) to (h) none.
 ## 9. Test plan
@@ -733,15 +777,16 @@ Exposure: (a) none beyond the existing `&T` argument rules; (b) none; (c) parse 
 **Borrow timing (review 12).** `f(&a, grow(&a))`: where the checker accepts the call, the native sees the grown array; where the existing overlap rule refuses it, the test asserts the refusal.
 
 **Foreign handle suite (stage (d)).**
-`out_own` and `out_offset` are deferred to stage (f), where SQLite needs them, so they have no stage (d)
-tests; stage (d) covers own/own_opt/borrow/borrow_mut.
+`out_own` and `out_offset` are implemented in stage (f), where SQLite needs them; the stage (d) tests
+cover own/own_opt/borrow/borrow_mut.
 
 - use after close: a `borrow<T>`/`borrow_mut<T>` native on a closed handle exits 7 with its message and makes no C call; `alive(h)` stays true (record liveness) while `is_open` is false;
 - double close: `ok(false)` and exactly one C release call;
 - census underflow, forced by `OBO_CENSUS_FAULT=underflow` (inert unless `OBO_CHECK=1`): exit 4;
 - census under `OBO_CHECK=1`: a handle never closed exits 8 at normal end and names the type; the same for a handle dropped at scope end, overwritten, or dropped with its enclosing record, each with no C release call;
 - (stage (f), with `out_own`) an `out_own` written with an error return and not closed on the error
-  path: exit 8;
+  path: exit 8; an out record stored in a `var` is freed at scope end, and an out record with a live
+  `out_own` reports `foreign handles leaked: T 1` at normal end;
 - a release returning an error (`"release_result": "int"`): `err` with the code, and the handle is zero afterwards;
 - exit paths (3.4 table): `exit(n)` with a leaked fd and a live handle exits `n` with no message; a trap with a live handle exits with the trap code and no message; the hosted build matches;
 - without `OBO_CHECK=1`: no census output and no exit 8 for the same programs.
@@ -749,6 +794,8 @@ tests; stage (d) covers own/own_opt/borrow/borrow_mut.
 **Exec loop (review 5).** A script whose second statement fails at step, and a `break` out of the loop, each leave the `Stmt` census at zero at normal end.
 
 **Review regression.** The UAF reproduction of the old `release_stmt` shape (6.2, point 1) must fail under ASan; the `close_v2` shape must pass. The orphaned-statement BUSY, zombie and census tests (6.2, point 1) must pass.
+
+**Stage (f) implemented tests.** `tests/out_fixture.c/.h` and `out_wrap.obx` cover out_own success, a failure with a non-NULL handle closed exactly once, a NULL write, interleaved (`open_v2` shape) and trailing (`prepare_v2` shape) slots, seven C parameters (out slot on the stack), every `out_offset` case (exact, 0, len, NULL, before-base, past-end), and sidecar `outrec` assertions. The tool suite mutates the sidecar (missing/wrong/duplicate `outrec`, wrong record name, wrong order, `rc` not first, duplicate field, unknown own type, wrong offset target) and refuses out in `__cinterop`, non-scalar out results, two out_own/out_offset slots, `out_offset` on a non-`borrow_bytes` argument, and `const` values other than `-1` in a function-pointer slot. The compiler suite includes a zero-input out native and both `<native>_out` name-collision orders. SQLite adds `sqlite_v2_app.obx` (open/close, bind int/text/blob/NULL, zero-length BLOB, NUL rules, `changes`, multi-statement `exec`, empty SQL, caps, `close_v2` orphan + `SQLITE_BUSY` + finalize, `sq_stmt_errcode`, `has_live`, `const:-1` overwrite, `OBO_CHECK=1` zero census), `sqlite_fake_app.obx` with `fake_sqlite.c/.h` (failed open/prepare with non-NULL writes, reset after a failed step, `NOMEM`, destructor `-1`, zombies), `sqlite_exec_many_app.obx` (a 1 MiB/116,500-statement `exec` with a bounded wall time), `sqlite_uaf_fixture.c` under ASan (old shape fails, new passes), and `real_sqlite_abi_test.c` over every declared function.
 
 **SQLite, real library (3.45.1).** Open and close a file database. Prepare, bind int, text, blob and NULL. Step and reset with rebinding. `column_text` and `column_blob` with embedded NULs and a zero-length BLOB (BLOB type, not nil). A REAL column refused before conversion. `changes`. Multi-statement `exec`. Empty SQL refused. The `const:-1` overwrite test. The close-with-live-statement test (6.2, point 1).
 

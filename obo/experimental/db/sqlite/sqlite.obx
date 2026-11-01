@@ -1,19 +1,20 @@
-// Experimental SQLite package for obo.
+// Experimental SQLite package for obo, on cinterop v2 foreign handles.
 //
 // The host has libsqlite3.so.0 and the sqlite3 shell but no sqlite3.h, so the
-// C adapter uses the manual, declarations-only subset in sqlite_decls.h. This
-// is an explicit-close adapter, not a stable driver: Connection and Stmt hold
-// only integer registry tokens and obo never sees a sqlite3* or sqlite3_stmt*.
+// binding uses the manual, declarations-only subset in sqlite_decls.h. This is
+// an explicit-close package, not a stable driver: Connection and Stmt are
+// foreign handles, and obo never sees a sqlite3* or sqlite3_stmt*.
 //
-// Dropping a Connection or Stmt does not finalize or close anything. Use
-// `defer stmt.close()` and then `defer conn.close()`. A connection close is a
-// safe false while statements are live; finalize them first. A second close is
-// also a safe false. SQL and text bindings reject embedded NUL; BLOB bindings
-// preserve their exact length, including NUL. There is no SQL interpolation.
-// prepare_sql/bind_sql add the dialect-neutral Sql-template bridge: prepare_sql
-// renders `?` placeholders with lib/sqldialect and bind_sql binds the ordered
-// SqlArg values, while SqlArg.Float is an explicit SQL_ARG_FLOAT_UNSUPPORTED
-// error.
+// Close explicitly and defer the close. Dropping an open handle leaks it; under
+// OBO_CHECK=1 the foreign census reports it at normal end. A connection close
+// uses sqlite3_close_v2 (D14): it succeeds while statements are live, the
+// Connection census drops, and the statements keep working until finalized.
+// A second close is a safe ok(false). SQL and text bindings reject embedded
+// NUL; BLOB bindings preserve their exact length, including NUL. There is no
+// SQL interpolation. prepare_sql/bind_sql add the dialect-neutral Sql-template
+// bridge: prepare_sql renders `?` placeholders with lib/sqldialect and bind_sql
+// binds the ordered SqlArg values, while SqlArg.Float is an explicit
+// SQL_ARG_FLOAT_UNSUPPORTED error.
 module sqlite
 
 import "sqldialect.obx" as sqldialect
@@ -52,13 +53,22 @@ pub const SQLITE_TEXT = 3
 pub const SQLITE_BLOB = 4
 pub const SQLITE_NULL = 5
 
-// SqlArg.Float is a binary64 value. This adapter does not bind REAL through a
+pub const SQLITE_OPEN_READWRITE = 0x00000002
+pub const SQLITE_OPEN_CREATE = 0x00000004
+pub const SQLITE_OPEN_URI = 0x00000040
+
+// The limits kept from the old adapter (design C15).
+const MAX_PATH = 4096
+const MAX_SQL = 1048576
+const MAX_VALUE = 16777216
+
+// SqlArg.Float is a binary64 value. This package does not bind REAL through a
 // float path, so bind_sql rejects it explicitly instead of rounding or
 // interpolating it. Use decimal TEXT, or an explicit integer/text form.
 pub const SQL_ARG_FLOAT_UNSUPPORTED = 1014
 
 // Decimal boundary error codes. They start at 1000 so they do not collide with
-// SQLite's SQLITE_* values or the adapter's plumbing codes 2/3.
+// SQLite's SQLITE_* values or the binding's plumbing codes 2/3.
 pub const DEC_DB_NULL = 1001
 pub const DEC_DB_NOT_DECIMAL = 1002
 pub const DEC_DB_BINARY = 1003
@@ -73,8 +83,36 @@ pub const DEC_DB_RANGE = 1011
 pub const DEC_DB_METADATA = 1012
 pub const DEC_DB_PG_RANGE = 1013
 
-pub type Connection = ref record { tok: int }
-pub type Stmt = ref record { tok: int }
+pub type Connection = foreign "sqlite3"
+pub type Stmt = foreign "sqlite3_stmt"
+
+// ---------------------------------------------------------- native declarations
+
+native fn open_v2(path: &[]byte, flags: int, out db: Connection): open_v2_out
+native fn prepare_v2(db: &Connection, sql: &[]byte,
+                     out st: Stmt, out tail: int from sql): prepare_v2_out
+native fn prepare_at(db: &Connection, sql: &[]byte, off: int,
+                     out st: Stmt, out tail: int from sql): prepare_at_out
+native fn has_live(db: &Connection): int
+native fn step(s: &Stmt): int
+native fn stmt_reset(s: &Stmt): int
+native fn bind_null_native(s: &Stmt, index: int): int
+native fn bind_int_native(s: &Stmt, index: int, value: int): int
+native fn bind_text_native(s: &Stmt, index: int, value: &[]byte): int
+native fn bind_blob_native(s: &Stmt, index: int, value: &[]byte): int
+native fn parameter_count(s: &Stmt): int
+native fn column_count(s: &Stmt): int
+native fn column_type(s: &Stmt, col: int): int
+native fn column_int64(s: &Stmt, col: int): int
+native fn read_text(s: &Stmt, col: int): ?[]byte
+native fn read_blob(s: &Stmt, col: int): ?[]byte
+native fn changes(db: &Connection): int
+native fn error_code(db: &Connection): int
+native fn error_message(db: &Connection): []byte
+native fn errstr(code: int): []byte
+native fn stmt_error_code(s: &Stmt): int
+
+// ---------------------------------------------------------------- helpers
 
 fn encode_string(s: string): []byte {
     var out = new []byte(0)
@@ -104,41 +142,17 @@ fn string_has_nul(s: string): bool {
     return false
 }
 
-fn put_bytes(b: &[]byte): int {
-    let n = len(b)
-    if n < 0 || n > 16777216 { return 0 }
-    let t = __cinterop("cres_buf_new", n)
-    if t <= 0 { return 0 }
-    for i in 0..n {
-        let ok = __cinterop("cres_buf_set", t, i, int(b[i]))
-        if ok != 1 {
-            __cinterop("cres_buf_free", t)
-            return 0
-        }
-    }
-    return t
+fn blank_byte(c: byte): bool {
+    return c == byte(32) || c == byte(9) || c == byte(13) || c == byte(10) || c == byte(59)
 }
 
-fn take_buf(t: int): []byte {
-    var out = new []byte(0)
-    if t <= 0 { return out }
-    let n = __cinterop("cres_buf_len", t)
-    if n < 0 {
-        __cinterop("cres_buf_free", t)
-        return out
+// Only spaces, tabs, CR, LF and ';' may follow the one prepared statement.
+fn blank_tail(s: &[]byte, off: int): bool {
+    if off < 0 || off > len(s) { return false }
+    for i in off..len(s) {
+        if !blank_byte(s[i]) { return false }
     }
-    for i in 0..n {
-        let v = __cinterop("cres_buf_get", t, i)
-        if v < 0 { break }
-        append(out, byte(v))
-    }
-    __cinterop("cres_buf_free", t)
-    return out
-}
-
-fn error_text(b: []byte): string {
-    if has_nul(&b) { return "error text contains an embedded NUL" }
-    return string(b)
+    return true
 }
 
 // ------------------------------------------------------- decimal text helpers
@@ -196,83 +210,128 @@ fn encode_decimal(value: decimal, max_dscale: int): Result[string] {
     }
 }
 
-fn open_error(default_code: int): Result[Connection] {
-    let b = take_buf(__cinterop("sq_open_error_buf"))
-    var code = __cinterop("sq_open_error_code")
-    if code == 0 { code = default_code }
-    let msg = error_text(b)
-    if len(msg) == 0 { return err("SQLite open failed", code) }
-    return err(msg, code)
-}
-
 // ------------------------------------------------------------------ connection
 
-pub fn open(path: string): Result[Connection] {
-    let raw = encode_string(path)
-    if has_nul(&raw) { return err("database path contains an embedded NUL", 2) }
-    if len(raw) > 4096 { return err("database path is too long", 2) }
-    let b = put_bytes(&raw)
-    if b <= 0 { return err("database path could not be allocated", 3) }
-    let t = __cinterop("sq_open", b)
-    __cinterop("cres_buf_free", b)
-    if t <= 0 { return open_error(2) }
-    return ok(new Connection{tok: t})
+pub fn open_with(path: string, flags: int): Result[Connection] {
+    if len(path) > MAX_PATH { return err("database path is too long", 2) }
+    if string_has_nul(path) { return err("database path contains an embedded NUL", 2) }
+    var pb = encode_string(path)
+    var out = open_v2(&pb, flags)
+    if out.rc != SQLITE_OK {
+        // open_v2 writes a non-NULL sqlite3* even on most failures. Read the
+        // message before closing it, and close it exactly once.
+        var db = take(out.db)
+        if db == nil {
+            var es = errstr(out.rc)
+            return err(string(es), 1)
+        }
+        var mb = error_message(&db)
+        let msg = string(mb)
+        db.close()
+        var code = out.rc
+        if code <= 0 { code = 1 }
+        return err(msg, code)
+    }
+    var db = take(out.db)
+    if db == nil { return err("sqlite returned no handle", 1) }
+    return ok(db)
 }
 
-pub fn (c: &Connection) is_open(): bool {
-    return __cinterop("sq_conn_live", c.tok) == 1
+pub fn open(path: string): Result[Connection] {
+    return open_with(path, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI)
 }
+
+
+pub fn (mut c: &Connection) close(): Result[bool] { return __foreignClose(c) }
+pub fn (c: &Connection) is_open(): bool { return __foreignIsOpen(c) }
 
 pub fn (c: &Connection) error_message(): []byte {
-    return take_buf(__cinterop("sq_error_buf", c.tok))
+    return error_message(c)
 }
 
 pub fn (c: &Connection) error_code(): int {
-    return __cinterop("sq_error_code", c.tok)
+    return error_code(c)
 }
 
 pub fn (c: &Connection) changes(): int {
-    return __cinterop("sq_changes", c.tok)
+    return changes(c)
 }
 
-// Borrows the Connection. If statements are still live the close is a false
-// and error_code() reports SQLITE_BUSY; close the statements and retry. A
-// second close is a safe false; record drop never calls sqlite3_close.
-pub fn (c: &Connection) close(): bool {
-    return __cinterop("sq_conn_close", c.tok) == 1
+// True while the connection owns at least one statement that has not been
+// finalized. This is informational: sqlite3_close_v2 succeeds with live
+// statements and leaves a C-side zombie until the last finalize.
+pub fn (c: &Connection) has_live(): bool {
+    return has_live(c) != 0
 }
 
-// Executes a fixed SQL string. Multiple statements are allowed here (the
-// underlying sqlite3_exec semantics); prepare() accepts exactly one. There is
-// no string interpolation.
+pub fn (s: &Stmt) step(): Result[bool]
+
+// Executes a fixed SQL string as prepare/step/close for each statement. Every
+// exit from the loop closes the current statement first. There is no string
+// interpolation.
 pub fn (c: &Connection) exec(sql: string): Result[bool] {
-    let raw = encode_string(sql)
-    if has_nul(&raw) { return err("SQL text contains an embedded NUL", 2) }
-    let b = put_bytes(&raw)
-    if b <= 0 { return err("SQL text could not be allocated", 2) }
-    let rc = __cinterop("sq_exec", c.tok, b)
-    __cinterop("cres_buf_free", b)
-    if rc == SQLITE_OK { return ok(true) }
-    let msg = error_text(take_buf(__cinterop("sq_error_buf", c.tok)))
-    var code = __cinterop("sq_error_code", c.tok)
-    if code == 0 { code = int(rc) }
-    return err(msg, code)
+    if len(sql) > MAX_SQL { return err("SQL text is too large", 2) }
+    if string_has_nul(sql) { return err("SQL text contains an embedded NUL", 2) }
+    var all = encode_string(sql)
+    var off = 0
+    while true {
+        while off < len(all) && blank_byte(all[off]) { off += 1 }
+        if off >= len(all) { break }
+        var out = prepare_at(c, &all, off)
+        if out.rc != SQLITE_OK {
+            var mb = error_message(c)
+            let msg = string(mb)
+            var bad = take(out.st)
+            if bad != nil { bad.close() }
+            var code = out.rc
+            if code <= 0 { code = 1 }
+            return err(msg, code)
+        }
+        var st = take(out.st)
+        if st == nil { break }                  // only trailing whitespace remains
+        if out.tail < 0 || out.tail > len(all) {
+            st.close()
+            return err("SQL statement has an invalid tail", 2)
+        }
+        var more = true
+        while more {
+            let sr = st.step()
+            match sr {
+                ok(row) { more = row }
+                err(m, code) {
+                    st.close()
+                    return err(m, code)
+                }
+            }
+        }
+        st.close()
+        if out.tail <= off { return err("SQL statement did not advance", 2) }
+        off = out.tail
+    }
+    return ok(true)
 }
 
 pub fn (c: &Connection) prepare(sql: string): Result[Stmt] {
-    let raw = encode_string(sql)
-    if has_nul(&raw) { return err("SQL text contains an embedded NUL", 2) }
-    let b = put_bytes(&raw)
-    if b <= 0 { return err("SQL text could not be allocated", 2) }
-    let t = __cinterop("sq_prepare", c.tok, b)
-    __cinterop("cres_buf_free", b)
-    if t <= 0 {
-        let msg = error_text(take_buf(__cinterop("sq_error_buf", c.tok)))
-        var code = __cinterop("sq_error_code", c.tok)
-        if code == 0 { code = 2 }
+    if len(sql) > MAX_SQL { return err("SQL text is too large", 2) }
+    if string_has_nul(sql) { return err("SQL text contains an embedded NUL", 2) }
+    var sb = encode_string(sql)
+    var out = prepare_v2(c, &sb)
+    if out.rc != SQLITE_OK {
+        var mb = error_message(c)
+        let msg = string(mb)
+        var bad = take(out.st)
+        if bad != nil { bad.close() }
+        var code = out.rc
+        if code <= 0 { code = 1 }
         return err(msg, code)
     }
-    return ok(new Stmt{tok: t})
+    var st = take(out.st)
+    if st == nil { return err("SQL text is empty", 2) }
+    if !blank_tail(&sb, out.tail) {
+        st.close()
+        return err("prepare takes one statement; use exec for several", 2)
+    }
+    return ok(st)
 }
 
 // Prepare a dialect-neutral Sql fragment for SQLite with `?` placeholders.
@@ -285,70 +344,94 @@ pub fn prepare_sql(c: &Connection, s: &Sql): Result[Stmt] {
 
 // ---------------------------------------------------------------- statements
 
+pub fn (s: &Stmt) error_code(): int
+pub fn (s: &Stmt) error_message(): []byte
+
 fn stmt_error(s: &Stmt, fallback: int): Result[bool] {
-    let msg = error_text(take_buf(__cinterop("sq_stmt_error_buf", s.tok)))
-    var code = __cinterop("sq_stmt_error_code", s.tok)
+    var code = s.error_code()
     if code == 0 { code = fallback }
+    var mb = s.error_message()
+    let msg = string(mb)
     return err(msg, code)
 }
 
-pub fn (s: &Stmt) is_open(): bool {
-    return __cinterop("sq_stmt_live", s.tok) == 1
+pub fn (mut s: &Stmt) close(): Result[bool] { return __foreignClose(s) }
+pub fn (s: &Stmt) is_open(): bool { return __foreignIsOpen(s) }
+
+// The statement's connection error code, through sq_stmt_errcode. After a
+// successful step it is SQLITE_ROW (100): use the step return code for
+// statement errors. Meaningful only while the Db is open (design 6.2).
+pub fn (s: &Stmt) error_code(): int {
+    return stmt_error_code(s)
 }
 
 pub fn (s: &Stmt) error_message(): []byte {
-    return take_buf(__cinterop("sq_stmt_error_buf", s.tok))
+    var es = errstr(s.error_code())
+    return es
 }
 
-pub fn (s: &Stmt) error_code(): int {
-    return __cinterop("sq_stmt_error_code", s.tok)
-}
-
-// Finalizes the statement exactly once and poisons its token. A second close is
-// a safe false; dropping the record never finalizes it.
-pub fn (s: &Stmt) close(): bool {
-    return __cinterop("sq_stmt_close", s.tok) == 1
-}
-
-// Resets the statement for another step. Bound values remain bound, matching
-// sqlite3_reset's documented behaviour.
+// Resets the statement for another step. The C return is ignored: after a
+// failed step sqlite3_reset reports that prior error but has already reset the
+// statement, so reset is successful (review 1).
 pub fn (s: &Stmt) reset(): Result[bool] {
-    let rc = __cinterop("sq_stmt_reset", s.tok)
-    if rc == SQLITE_OK { return ok(true) }
-    return stmt_error(s, int(rc))
+    stmt_reset(s)
+    return ok(true)
+}
+
+pub fn (s: &Stmt) parameter_count(): int {
+    return parameter_count(s)
+}
+
+fn check_parameter(s: &Stmt, index: int): Result[bool] {
+    if index < 1 || index > s.parameter_count() {
+        return err("parameter index out of range", SQLITE_RANGE)
+    }
+    return ok(true)
 }
 
 // Binding indices are 1-based. Out-of-range indices are SQLITE_RANGE errors.
 pub fn (s: &Stmt) bind_null(index: int): Result[bool] {
-    let rc = __cinterop("sq_stmt_bind_null", s.tok, index)
+    let ok_index = try check_parameter(s, index)
+    let rc = bind_null_native(s, index)
     if rc == SQLITE_OK { return ok(true) }
-    return stmt_error(s, int(rc))
+    return stmt_error(s, rc)
 }
 
 pub fn (s: &Stmt) bind_int(index: int, value: int): Result[bool] {
-    let rc = __cinterop("sq_stmt_bind_int", s.tok, index, value)
+    let ok_index = try check_parameter(s, index)
+    let rc = bind_int_native(s, index, value)
     if rc == SQLITE_OK { return ok(true) }
-    return stmt_error(s, int(rc))
+    return stmt_error(s, rc)
 }
 
 pub fn (s: &Stmt) bind_text(index: int, value: string): Result[bool] {
-    let raw = encode_string(value)
-    if has_nul(&raw) { return err("text value contains an embedded NUL", 2) }
-    let b = put_bytes(&raw)
-    if b <= 0 { return err("text value could not be allocated", 2) }
-    let rc = __cinterop("sq_stmt_bind_text", s.tok, index, b)
-    __cinterop("cres_buf_free", b)
+    if len(value) > MAX_VALUE { return err("bound value is too large", 2) }
+    if string_has_nul(value) { return err("text value contains an embedded NUL", 2) }
+    let ok_index = try check_parameter(s, index)
+    var raw = encode_string(value)
+    let rc = bind_text_native(s, index, &raw)
     if rc == SQLITE_OK { return ok(true) }
-    return stmt_error(s, int(rc))
+    return stmt_error(s, rc)
+}
+
+// Bind TEXT from a borrowed byte array. SQLite copies the value because the
+// spec passes SQLITE_TRANSIENT (const:-1), so the caller may reuse or change the
+// array after this returns; the bound bytes do not alias it.
+pub fn (s: &Stmt) bind_text_raw(index: int, value: &[]byte): Result[bool] {
+    if len(value) > MAX_VALUE { return err("bound value is too large", 2) }
+    if has_nul(value) { return err("text value contains an embedded NUL", 2) }
+    let ok_index = try check_parameter(s, index)
+    let rc = bind_text_native(s, index, value)
+    if rc == SQLITE_OK { return ok(true) }
+    return stmt_error(s, rc)
 }
 
 pub fn (s: &Stmt) bind_blob(index: int, value: []byte): Result[bool] {
-    let b = put_bytes(&value)
-    if b <= 0 { return err("blob value could not be allocated", 2) }
-    let rc = __cinterop("sq_stmt_bind_blob", s.tok, index, b)
-    __cinterop("cres_buf_free", b)
+    if len(value) > MAX_VALUE { return err("bound value is too large", 2) }
+    let ok_index = try check_parameter(s, index)
+    let rc = bind_blob_native(s, index, &value)
     if rc == SQLITE_OK { return ok(true) }
-    return stmt_error(s, int(rc))
+    return stmt_error(s, rc)
 }
 
 // Bind every parameter of s to st at indices 1..n, in order. The SQL must have
@@ -367,9 +450,6 @@ pub fn bind_sql(st: &Stmt, s: &Sql): Result[bool] {
     if len(s.text) != len(s.params) + 1 {
         return err("malformed Sql fragment: text and parameters do not alternate", 2)
     }
-    // Validate the arguments that cannot be bound before touching the
-    // statement, so an unsupported Float or invalid DecimalText leaves no
-    // partially bound parameters behind.
     for i in 0..len(s.params) {
         let a = &s.params[i]
         match a {
@@ -380,12 +460,12 @@ pub fn bind_sql(st: &Stmt, s: &Sql): Result[bool] {
                 if string_has_nul(a.v) {
                     return err("text value contains an embedded NUL", 2)
                 }
-                if len(a.v) > 16777216 {
+                if len(a.v) > MAX_VALUE {
                     return err("bound value is too large", 2)
                 }
             }
             Bytes {
-                if len(a.v) > 16777216 {
+                if len(a.v) > MAX_VALUE {
                     return err("bound value is too large", 2)
                 }
             }
@@ -481,25 +561,25 @@ pub fn bind_decimal(st: &Stmt, index: int, value: decimal,
 // true means a row is available; false means SQLITE_DONE. An SQLite error is a
 // Result error, never a third boolean.
 pub fn (s: &Stmt) step(): Result[bool] {
-    let rc = __cinterop("sq_stmt_step", s.tok)
+    let rc = step(s)
     if rc == SQLITE_ROW { return ok(true) }
     if rc == SQLITE_DONE { return ok(false) }
-    return stmt_error(s, int(rc))
+    return stmt_error(s, rc)
 }
 
 pub fn (s: &Stmt) column_count(): int {
-    return __cinterop("sq_stmt_column_count", s.tok)
+    return column_count(s)
 }
 
 pub fn (s: &Stmt) column_type(col: int): Result[int] {
-    let t = __cinterop("sq_stmt_column_type", s.tok, col)
+    if col < 0 || col >= s.column_count() { return err("column out of range", 2) }
+    let t = column_type(s, col)
     if t < 0 { return err("column out of range", 2) }
     return ok(t)
 }
 
 pub fn (s: &Stmt) is_null(col: int): Result[bool] {
-    let t = __cinterop("sq_stmt_column_type", s.tok, col)
-    if t < 0 { return err("column out of range", 2) }
+    let t = try s.column_type(col)
     let is_null = t == SQLITE_NULL
     return ok(is_null)
 }
@@ -509,11 +589,11 @@ pub fn (s: &Stmt) is_null(col: int): Result[bool] {
 // types, so the exact text form is ?[]byte; use column_text for a string.)
 // SQLite's documented integer-to-text conversion is used for INTEGER columns,
 // so i64 values stay exact decimal text; no obo float path is involved. A
-// non-NULL value over the 16 MiB copy bound or a copy allocation failure is a
-// Result error, never an empty success. REAL is rejected as inexact.
+// non-NULL value over the 16 MiB copy bound is a Result error, never an empty
+// success. A NULL from sqlite3_column_text with SQLITE_NOMEM is also an error.
+// REAL is rejected as inexact.
 pub fn (s: &Stmt) column_value(col: int): Result[?[]byte] {
-    let t = __cinterop("sq_stmt_column_type", s.tok, col)
-    if t < 0 { return err("column out of range", 2) }
+    let t = try s.column_type(col)
     if t == SQLITE_NULL {
         let none: ?[]byte = nil
         return ok(none)
@@ -521,11 +601,14 @@ pub fn (s: &Stmt) column_value(col: int): Result[?[]byte] {
     if t == SQLITE_FLOAT {
         return err("REAL column is not exact decimal/data", 2)
     }
-    let tok = __cinterop("sq_stmt_column_text_buf", s.tok, col)
-    if tok <= 0 {
+    var v = read_text(s, col)
+    if v == nil {
         return err("column value is too large to copy or allocation failed", 2)
     }
-    let b = take_buf(tok)
+    if s.error_code() == SQLITE_NOMEM {
+        return err("SQLite ran out of memory reading the column", SQLITE_NOMEM)
+    }
+    let b = v
     let out: ?[]byte = b
     return ok(out)
 }
@@ -580,26 +663,28 @@ pub fn (s: &Stmt) decimal(col: int): Result[decimal] {
 // column_value or is_null when NULL must be distinguished. TEXT containing NUL
 // is rejected; use column_bytes for exact bytes.
 pub fn (s: &Stmt) column_text(col: int): Result[string] {
-    let t = __cinterop("sq_stmt_column_type", s.tok, col)
-    if t < 0 { return err("column out of range", 2) }
+    let t = try s.column_type(col)
     if t == SQLITE_NULL { return err("SQL NULL", 1) }
     if t == SQLITE_FLOAT {
         return err("REAL column is not exact decimal/data", 2)
     }
-    let tok = __cinterop("sq_stmt_column_text_buf", s.tok, col)
-    if tok <= 0 {
+    var v = read_text(s, col)
+    if v == nil {
         return err("column value is too large to copy or allocation failed", 2)
     }
-    let b = take_buf(tok)
+    if s.error_code() == SQLITE_NOMEM {
+        return err("SQLite ran out of memory reading the column", SQLITE_NOMEM)
+    }
+    let b = v
     if has_nul(&b) { return err("text column contains an embedded NUL; use column_bytes", 1) }
     return ok(string(b))
 }
 
 // Exact bytes for a TEXT or BLOB column. SQL NULL is ok(nil). Embedded NUL is
 // preserved for BLOB (and for TEXT bytes) because the length comes from SQLite.
+// A zero-length BLOB is an empty array, never nil.
 pub fn (s: &Stmt) column_bytes(col: int): Result[?[]byte] {
-    let t = __cinterop("sq_stmt_column_type", s.tok, col)
-    if t < 0 { return err("column out of range", 2) }
+    let t = try s.column_type(col)
     if t == SQLITE_NULL {
         let none: ?[]byte = nil
         return ok(none)
@@ -607,11 +692,14 @@ pub fn (s: &Stmt) column_bytes(col: int): Result[?[]byte] {
     if t != SQLITE_TEXT && t != SQLITE_BLOB {
         return err("column is not TEXT or BLOB", 2)
     }
-    let tok = __cinterop("sq_stmt_column_blob_buf", s.tok, col)
-    if tok <= 0 {
+    var v = read_blob(s, col)
+    if v == nil {
         return err("column value is too large to copy or allocation failed", 2)
     }
-    let b = take_buf(tok)
+    if s.error_code() == SQLITE_NOMEM {
+        return err("SQLite ran out of memory reading the column", SQLITE_NOMEM)
+    }
+    let b = v
     let out: ?[]byte = b
     return ok(out)
 }
@@ -621,34 +709,17 @@ pub fn (s: &Stmt) column_bytes(col: int): Result[?[]byte] {
 // not exact decimal/integer data. Use column_value/column_text for exact
 // integer-to-text values.
 pub fn (s: &Stmt) column_int(col: int): Result[int] {
-    let t = __cinterop("sq_stmt_column_type", s.tok, col)
-    if t < 0 { return err("column out of range", 2) }
+    let t = try s.column_type(col)
     if t == SQLITE_NULL { return err("SQL NULL", 1) }
     if t == SQLITE_FLOAT {
         return err("REAL column is not exact decimal/integer data", 2)
     }
-    return ok(__cinterop("sq_stmt_column_int", s.tok, col))
+    return ok(column_int64(s, col))
 }
 
 // ------------------------------------------------------- library/resource info
 
 pub fn error_string(code: int): Result[string] {
-    let b = take_buf(__cinterop("sq_errstr_buf", code))
-    return ok(error_text(b))
-}
-
-pub fn live_resources(): int {
-    return __cinterop("cres_live_count")
-}
-
-pub fn live_buffers(): int {
-    return __cinterop("cres_live_kind", 1)
-}
-
-pub fn live_connections(): int {
-    return __cinterop("cres_live_kind", 2)
-}
-
-pub fn live_statements(): int {
-    return __cinterop("cres_live_kind", 5)
+    var b = errstr(code)
+    return ok(string(b))
 }

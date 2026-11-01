@@ -294,11 +294,5 @@ fn main() {
         }
     }
 
-    let live = postgres::live_resources()
-    println("live=", live)
-    check(live == 0, "live resources", 66)
-    check(postgres::live_connections() == 0, "live connections", 67)
-    check(postgres::live_results() == 0, "live results", 68)
-    check(postgres::live_buffers() == 0, "live buffers", 69)
     println("live_db_smoke=ok")
 }

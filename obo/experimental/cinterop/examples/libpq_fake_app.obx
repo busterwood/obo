@@ -8,13 +8,22 @@ fn bytes_of(s: string): []byte {
     return b
 }
 
+fn close_conn(mut conn: &libpq::Connection): bool {
+    let r = conn.close()
+    match r {
+        ok(v) { return v }
+        err(m, c) { println("close_error=", m, " (", c, ")"); return false }
+    }
+}
+
 fn main() {
     let made = libpq::make_empty_rows(libpq::PGRES_TUPLES_OK)
     match made {
         ok(r) {
             if r.status() != libpq::PGRES_TUPLES_OK { exit(1) }
             if r.ntuples() != 0 || r.nfields() != 0 { exit(2) }
-            println("empty_closed=", r.close())
+            r.close()
+            println("empty_closed=", !r.is_open())
         }
         err(m, c) { println("empty_error=", m, " (", c, ")"); exit(3) }
     }
@@ -39,6 +48,7 @@ fn main() {
             match q {
                 ok(rows) {
                     println("status=", rows.status())
+                    println("fmt=", rows.fmt)
                     println("ntuples=", rows.ntuples())
                     println("nfields=", rows.nfields())
                     let t = rows.text(0, 0)
@@ -48,6 +58,11 @@ fn main() {
                     }
                     println("n_null=", rows.is_null(0, 1))
                     println("n_len=", rows.length(0, 1))
+                    let nv = rows.value(0, 1)
+                    match nv {
+                        ok(v) { println("null_value=unexpected_ok") }
+                        err(m, c) { println("null_value=", c, " ", m) }
+                    }
                     let b = rows.value(0, 2)
                     match b {
                         ok(v) {
@@ -67,9 +82,155 @@ fn main() {
                         ok(s) { println("num_name=", s) }
                         err(m, c) { println("name_error=", m, " (", c, ")"); exit(7) }
                     }
-                    println("rows_closed=", rows.close())
+                    println("bounds_null=", rows.is_null(9, 0))
+                    println("bounds_len=", rows.length(9, 0))
+                    println("bounds_ftype=", rows.ftype(9))
+                    println("bounds_fmod=", rows.fmod(9))
+                    let bv = rows.value(9, 0)
+                    match bv {
+                        ok(v) { println("bounds_value=unexpected_ok") }
+                        err(m, c) { println("bounds_value=", c, " ", m) }
+                    }
+                    let bn = rows.fname(9)
+                    match bn {
+                        ok(s) { println("bounds_fname=unexpected_ok") }
+                        err(m, c) { println("bounds_fname=", c, " ", m) }
+                    }
+                    rows.close()
+                    println("rows_closed=", !rows.is_open())
+                    println("closed_status=", rows.status())
+                    let cv = rows.value(0, 0)
+                    match cv {
+                        ok(v) { println("closed_value=unexpected_ok") }
+                        err(m, c) { println("closed_value=", c, " ", m) }
+                    }
+                    println("closed_null=", rows.is_null(0, 0))
+                    println("closed_len=", rows.length(0, 0))
+                    println("closed_ftype=", rows.ftype(0))
+                    println("closed_fmod=", rows.fmod(0))
+                    let cf = rows.fname(0)
+                    match cf {
+                        ok(s) { println("closed_fname=unexpected_ok") }
+                        err(m, c) { println("closed_fname=", c, " ", m) }
+                    }
                 }
                 err(m, c) { println("query_error=", m, " (", c, ")"); exit(8) }
+            }
+
+            // A text value whose length equals its capacity must still reach
+            // libpq NUL-terminated; the fake uses strlen for text, like libpq.
+            var exact = new []byte(8)
+            for k in 0..8 { exact[k] = byte(65) }
+            var evals = new []?[]byte(0)
+            append(evals, exact)
+            var eflags = new []bool(0)
+            append(eflags, false)
+            let eq = libpq::exec_params(&conn, bytes_of("FAKE_OK"), evals, eflags)
+            match eq {
+                ok(rows) {
+                    let et = rows.text(0, 0)
+                    match et {
+                        ok(t) {
+                            var same = len(t) == 8
+                            for k in 0..len(t) {
+                                if t[k] != byte(65) { same = false }
+                            }
+                            println("exact_ok=", same, " exact_len=", len(t))
+                        }
+                        err(m, c) { println("exact_error=", m, " (", c, ")"); exit(13) }
+                    }
+                    rows.close()
+                }
+                err(m, c) { println("exact_query_error=", m, " (", c, ")"); exit(14) }
+            }
+
+            // A binary result marks Rows.fmt 1.
+            let bq = libpq::exec_params_binary(&conn, bytes_of("FAKE_OK"),
+                                               new []?[]byte(0), new []bool(0))
+            match bq {
+                ok(rows) {
+                    println("bin_fmt=", rows.fmt)
+                    rows.close()
+                }
+                err(m, c) { println("bin_query_error=", m, " (", c, ")"); exit(15) }
+            }
+
+            // Typed OIDs: a matching count is accepted, a count mismatch and
+            // an out-of-range OID are rejected before PQexecParams.
+            var tv = new []?[]byte(0)
+            append(tv, bytes_of("hi"))
+            var tb = new []bool(0)
+            append(tb, false)
+            var to = new []int(0)
+            append(to, 25)
+            let tq = libpq::exec_params_typed(&conn, bytes_of("FAKE_OK"), tv, tb, to)
+            match tq {
+                ok(rows) {
+                    println("typed_status=", rows.status())
+                    rows.close()
+                }
+                err(m, c) { println("typed_error=", m, " (", c, ")"); exit(17) }
+            }
+
+            var mv = new []?[]byte(0)
+            append(mv, bytes_of("hi"))
+            var mb = new []bool(0)
+            append(mb, false)
+            let mq = libpq::exec_params_typed(&conn, bytes_of("FAKE_OK"), mv, mb,
+                                              new []int(0))
+            match mq {
+                ok(rows) {
+                    rows.close()
+                    println("typed_len=unexpected_ok")
+                    exit(18)
+                }
+                err(m, c) { println("typed_len=", c, " ", m) }
+            }
+
+            var ov = new []?[]byte(0)
+            append(ov, bytes_of("hi"))
+            var ob = new []bool(0)
+            append(ob, false)
+            var oo = new []int(0)
+            append(oo, -1)
+            let oq = libpq::exec_params_typed(&conn, bytes_of("FAKE_OK"), ov, ob, oo)
+            match oq {
+                ok(rows) {
+                    rows.close()
+                    println("typed_oid=unexpected_ok")
+                    exit(19)
+                }
+                err(m, c) { println("typed_oid=", c, " ", m) }
+            }
+
+            var xv = new []?[]byte(0)
+            append(xv, bytes_of("hi"))
+            var xb = new []bool(0)
+            append(xb, true)
+            var xo = new []int(0)
+            append(xo, 0xffffffff)
+            let xq = libpq::exec_params_typed_binary(&conn, bytes_of("FAKE_OK"),
+                                                     xv, xb, xo)
+            match xq {
+                ok(rows) {
+                    println("typed_max_fmt=", rows.fmt)
+                    rows.close()
+                }
+                err(m, c) { println("typed_max_error=", m, " (", c, ")"); exit(20) }
+            }
+
+            // A result over the cbytes cap is a distinct error from SQL NULL.
+            let over = libpq::query(&conn, bytes_of("FAKE_OVERCAP"))
+            match over {
+                ok(rows) {
+                    let ov = rows.value(0, 0)
+                    match ov {
+                        ok(v) { println("overcap=unexpected_ok len=", len(v)) }
+                        err(m, c) { println("overcap_error=", c, " ", m) }
+                    }
+                    rows.close()
+                }
+                err(m, c) { println("overcap_query_error=", m, " (", c, ")"); exit(16) }
             }
 
             let bad = libpq::query(&conn, bytes_of("FAKE_ERROR"))
@@ -78,23 +239,31 @@ fn main() {
                     println("error_status=", rows.status())
                     let em = rows.error_message()
                     println("error_len=", len(em))
-                    println("error_closed=", rows.close())
+                    rows.close()
+                    println("error_closed=", !rows.is_open())
                 }
                 err(m, c) { println("unexpected_error_result=", m, " (", c, ")"); exit(9) }
             }
-            println("conn_closed=", conn.close())
+            println("conn_closed=", close_conn(&conn))
+            let again = conn.close()
+            match again {
+                ok(v) { println("conn_again=", v) }
+                err(m, c) { println("again_error=", m, " (", c, ")"); exit(12) }
+            }
         }
         err(m, c) { println("connect_error=", m, " (", c, ")"); exit(10) }
     }
 
     let failed = libpq::connect(bytes_of("fake-fail"))
     match failed {
-        ok(conn) { println("unexpected_connect_ok"); conn.close(); exit(11) }
-        err(m, c) { println("connect_failed=", c) }
+        ok(conn) {
+            println("unexpected_connect_ok")
+            close_conn(&conn)
+            exit(11)
+        }
+        err(m, c) {
+            println("connect_failed=", c)
+            println("connect_failed_msg=", m)
+        }
     }
-
-    println("live=", libpq::live_resources())
-    println("conns=", libpq::live_connections())
-    println("results=", libpq::live_results())
-    println("buffers=", libpq::live_buffers())
 }

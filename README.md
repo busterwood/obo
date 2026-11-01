@@ -93,10 +93,10 @@ field visibility is 0.13, decimal text is 0.14 and templates are 0.15.
 | Seed (`--version`) | promoted obo 0.15: 696,321 bytes, sha256 `4213f9a3…`, sym-format 8, abi 1; the previous 700,417-byte 0.15 image (`8ca8e59e…`) built this image once; the 0.14 seed (`d7b0c755…`) built that earlier image; earlier seeds build the 0.14 line |
 | Self-host fixed point | stage 2 == stage 3 == compiler, 696,321 bytes, `4213f9a3…`; the previous 700,417-byte 0.15 image builds this image from source, and the promoted 0.15 seed reproduces it |
 | Self-compile wall time | 0.221 s (5 runs, median; range 0.2199-0.2242 s; host-dependent, measured 1 November 2026) |
-| Self-compile live peak | 2,382,928 bytes direct; 2,383,280 bytes port comparison (budget 2,500,000) |
+| Self-compile live peak | 2,519,296 bytes direct; 2,519,312 bytes port comparison (budget 2,750,000) |
 | Total allocated | 52,932,208 bytes direct; 52,936,512 bytes port comparison |
 | Maximum resident set | 4,648 KB (measured 1 November 2026) |
-| Live-memory budget | 2,500,000 bytes: 117,072 spare direct / 116,720 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 51,488) |
+| Live-memory budget | 2,750,000 bytes: 230,704 spare direct / 230,688 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 51,488) |
 | obo suite | 1,809 `run_fork` tests; 143 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 613/613 with 10 encoder groups; `port_compare` 1,791/1,791 default; seed comparisons 1,595/1,595 against the promoted 0.15 seed; 71 doc examples; 30/30 import checks; 17/17 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
 | Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.15) is 1,595/1,595; the older 0.13/0.12/0.11 comparisons skip the template files; the default (self) comparison is 1,791/1,791 |
@@ -108,9 +108,9 @@ field visibility is 0.13, decimal text is 0.14 and templates are 0.15.
 | eza 10k-entry live peak | worst 2,184,496 bytes (Tree; Restricted long 2,184,368); `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
 | Minimal static executable | 77,825 bytes (runtime included; a page-rounded `module mini; fn main() {}` binary; the old 32,769 figure was stale, and this is 4,096 bytes smaller than the pre-cleanup 0.15 image) |
 
-The compiler budget is 2,500,000 bytes live, with the separate 30,000-byte
-empty-array oracle unchanged. The 0.15 line peaks at 2,382,928 bytes in direct self-compiles and
-2,383,280 in the port comparison: 117,072 and 116,720 bytes spare. Total
+The compiler budget is 2,750,000 bytes live (raised from 2,500,000 on 1 November 2026), with the separate 30,000-byte
+empty-array oracle unchanged. The 0.15 line peaks at 2,519,296 bytes in direct self-compiles and
+2,519,312 in the port comparison: 230,704 and 230,688 bytes spare. Total
 allocation is 52,932,208 bytes direct and 52,936,512 bytes in the port comparison. No check was
 weakened. The live peak varies by a few hundred bytes with the source path and
 total allocation by about 4.2 KB. The historical lambda release budget remains
@@ -221,29 +221,35 @@ and host-load sensitive.
 
 The freestanding runtime reserves the heap with `mmap(MAP_PRIVATE |
 MAP_ANONYMOUS | MAP_NORESERVE)`. The compiled default is **4 GiB**
-(4,294,967,296 bytes) and the compiled ceiling is **16 GiB**
-(17,179,869,184 bytes). `OBO_HEAP_LIMIT` may lower or raise the arena inside that
+(4,294,967,296 bytes) and the compiled ceiling is **64 GiB**
+(68,719,476,736 bytes). `OBO_HEAP_LIMIT` may lower or raise the arena inside that
 range:
 
 - the value is a canonical unsigned whole number of bytes (`4294967296`) or the
   same with an exact binary suffix `KiB`, `MiB` or `GiB` (`4GiB`);
-- it must be at least 64 KiB, a multiple of 16 bytes, and at most 16 GiB;
+- it must be at least 64 KiB, a multiple of 16 bytes, and at most 64 GiB;
 - signs, whitespace, leading zeros, fractions, exponents, unknown suffixes,
   empty values and overflow are rejected. There is **no silent clamp**: an
   invalid or above-ceiling value prints `obo: invalid OBO_HEAP_LIMIT: <value>`
   to stderr and exits 2 before any mapping is made.
 
 For example, `OBO_HEAP_LIMIT=64KiB` gives a small bounded arena and
-`OBO_HEAP_LIMIT=16GiB` raises it to the compiled ceiling. The one-object cap is
-independent of the arena: an object's rounded size may not exceed 0xFFFFFFF0
-bytes, so its payload is at most 4 GiB - 32 bytes even in a 16 GiB heap. This is
-what keeps the size word's low 32 bits unambiguous while a string's reference
-count uses the high half.
+`OBO_HEAP_LIMIT=64GiB` raises it to the compiled ceiling. The 64 GiB figure is
+the handle limit, not an arbitrary policy: a handle's low 32 bits are a
+heap-relative granule offset, so 2^32 granules of 16 bytes address exactly
+64 GiB. At that ceiling the final granule offset is 0xffffffff and the high
+32-bit generation field is untouched; a future compiled ceiling that needs a
+granule at offset 2^32 fails a build-time assertion and the runtime guard,
+instead of silently truncating handles. The
+one-object cap is independent of the arena: an object's rounded size may not
+exceed 0xFFFFFFF0 bytes, so its payload is at most 4 GiB - 32 bytes even in a
+64 GiB heap. This is what keeps the size word's low 32 bits unambiguous while a
+string's reference count uses the high half.
 
 `MAP_NORESERVE` reserves address space, not RAM: only touched pages become
-resident, so a sparse 16 GiB heap with a few small objects has a small RSS. The
+resident, so a sparse 64 GiB heap with a few small objects has a small RSS. The
 heap cap excludes runtime metadata and native libraries. The starts bitmap is
-one bit per 16-byte granule (32 MiB at 4 GiB, 128 MiB at 16 GiB), and the
+one bit per 16-byte granule (32 MiB at 4 GiB, 512 MiB at 64 GiB), and the
 free/mark worklist scales with the arena from 128 KiB to 512 MiB of virtual
 address space. Linux overcommit policy, `RLIMIT_AS`, cgroups and any host memory
 limit still apply; a failed mapping exits cleanly with
@@ -254,18 +260,20 @@ fragmentation and the high-water mark remain part of a process's footprint;
 address-space cap in `port_compare.py` is a harness safety limit, not a runtime
 default.
 
-Regression note from the runtime-only heap update: the 4 GiB default maps a
-32 MiB starts bitmap and a 512 MiB worklist; the 16 GiB ceiling maps a 128 MiB
-starts bitmap and the same capped 512 MiB worklist. The recorded 16 GiB
-`heap_test` run peaks at about 16.625 GiB of virtual address space and 264 KiB of
-maximum RSS while touching only a few pages. The change adds no runtime
+Regression note from the 64 GiB ceiling update: the 4 GiB default maps a 32 MiB
+starts bitmap and a 512 MiB worklist; the 64 GiB ceiling maps a 512 MiB
+starts bitmap and the same capped 512 MiB worklist, about 65 GiB of virtual
+address space in all. `heap_test` needs about 49 GiB of virtual address space
+for its mandatory sparse 48 GiB case; the 64 GiB cases need about 66 GiB and
+skip cleanly below that. The recorded sparse 64 GiB case runs in 0.00 s with
+264 KiB maximum RSS while touching only a few pages. The change adds no runtime
 jump-table slot, so every existing index, including the hosted exit slot 59, is
 unchanged and decimal's future appended slots do not collide. Compiler source,
 version, symbol format and ABI are unchanged; the compiler image differs from
 the earlier 0.11 image (`198f3268…`) because the runtime text is embedded in
 every executable. The decimal release adds only appended runtime slots, so this
-index, including hosted exit slot 59, is unchanged; the promoted seed is the
-matching 0.12 `d98d6b5f…` image.
+index, including hosted exit slot 59, is unchanged; the promoted seed recorded
+for that release is the matching 0.12 `d98d6b5f…` image.
 
 ## Roadmap
 
@@ -402,7 +410,7 @@ cd obo && python3 tests/doc_check.py     # LANGUAGE.md examples
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
 cd obo && python3 tests/elf_test.py      # the image: trimmed runtime-data segment
 cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
-cd obo && python3 tests/heap_test.py     # heap limits, allocation bounds, sparse 16 GiB
+cd obo && python3 tests/heap_test.py     # heap limits, allocation bounds, sparse 64 GiB
 cd obo && python3 tests/mutate_fork.py   # obo's mutants
 cd obo && python3 tests/mutate_io.py     # runtime/library mutants
 cd obo && python3 tests/mutate_harness_test.py  # the mutation harness's own tests (fake builders)

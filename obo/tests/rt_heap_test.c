@@ -11,6 +11,7 @@
  *
  *     python3 obo/tests/heap_test.py
  */
+#define OBO_RUNTIME_GUARD_TEST
 #include "../runtime/runtime.c"
 
 static void fail(i64 code) { sys3(60, code, 0, 0); for (;;); }
@@ -125,40 +126,111 @@ static void case_fill(const char *want) {
     for (;;);
 }
 
-/* A 16 GiB arena is sparse: only touched pages become resident. Objects and
- * strings are placed just across the 4 GiB and 8 GiB offsets and in the last
- * granule, so checked handles must carry granule offsets beyond 32 bits' worth
- * of 4 GiB but still inside the low 32-bit handle field. */
-static void case_sparse(void) {
-    check_mapped(HEAP_CEILING);
-    u64 kept[10];
+/* A large arena is sparse: only touched pages become resident. Objects and
+ * strings are placed just across the 4 GiB and 8 GiB offsets, at 1/2 and 3/4 of
+ * the arena, and in its final 64 bytes. At the 64 GiB ceiling the last payload
+ * sits in granule 0xffffffff, so checked handles use the whole low 32-bit field
+ * without touching the generation half. */
+static void case_sparse(const char *want) {
     u64 n = 0;
+    CHECK(heap_parse_size(want, &n));
+    check_mapped(n);
+    u64 kept[16];
+    u64 nk = 0;
 
     heap_top = heap_start + (4UL << 30) - 64;
-    for (int i = 0; i < 4; i++) kept[n++] = alloc_raw(1, 16);
+    for (int i = 0; i < 4; i++) kept[nk++] = alloc_raw(1, 16);
     u64 s = rt_concat(mkstr("a"), mkstr("bc"));
     CHECK((s - heap_start) >= (4UL << 30));
 
     heap_top = heap_start + (8UL << 30) - 64;
-    for (int i = 0; i < 4; i++) kept[n++] = alloc_raw(1, 16);
+    for (int i = 0; i < 4; i++) kept[nk++] = alloc_raw(1, 16);
+
+    heap_top = heap_start + ((n / 2) & ~(GRAN - 1)) - 64;
+    for (int i = 0; i < 2; i++) kept[nk++] = alloc_raw(1, 16);
+
+    heap_top = heap_start + ((n / 4 * 3) & ~(GRAN - 1)) - 64;
+    for (int i = 0; i < 2; i++) kept[nk++] = alloc_raw(1, 16);
 
     heap_top = heap_end - 64;
-    for (int i = 0; i < 2; i++) kept[n++] = alloc_raw(1, 16);
+    for (int i = 0; i < 2; i++) kept[nk++] = alloc_raw(1, 16);
     CHECK(heap_top == heap_end);
 
-    for (u64 i = 0; i < n; i++) {
+    for (u64 i = 0; i < nk; i++) {
         u64 h = rt_handle(kept[i]);
         CHECK(h != 0);
         CHECK((h & 0xFFFFFFFFUL) == (kept[i] - heap_start) / GRAN);
         CHECK(rt_deref(h) == kept[i]);
     }
-    CHECK((kept[n - 2] - heap_start) >= (16UL << 30) - 64);
+    /* The final two payloads are the last granule and the one below it. */
+    CHECK(kept[nk - 2] - heap_start == n - 48);
+    CHECK(kept[nk - 1] - heap_start == n - 16);
+    CHECK((kept[nk - 1] - heap_start) / GRAN == n / GRAN - 1);
+    if (n == HEAP_CEILING) {
+        CHECK(kept[nk - 2] - heap_start >= HEAP_CEILING - 64);
+        CHECK((kept[nk - 1] - heap_start) / GRAN == 0xFFFFFFFFUL);
+        CHECK((rt_handle(kept[nk - 1]) & 0xFFFFFFFFUL) == 0xFFFFFFFFUL);
+    }
+
+    /* Reuse the highest block: the old handle must be dead and the new one live
+     * under a fresh generation, even with the full offset field in use. */
+    u64 last = kept[nk - 1], h_old = rt_handle(last);
+    u64 gen = h_old >> 32;
+    rt_free(last);
+    CHECK(rt_alive(h_old) == 0);
+    u64 again = alloc_raw(1, 16);
+    CHECK(again == last);
+    u64 h_new = rt_handle(again);
+    CHECK((h_new & 0xFFFFFFFFUL) == (h_old & 0xFFFFFFFFUL));
+    CHECK((h_new >> 32) == gen + 1);
+    CHECK(rt_alive(h_new) == 1);
+    CHECK(rt_deref(h_new) == again);
+    kept[nk - 1] = again;
 
     u64 h0 = rt_handle(kept[0]);
-    for (u64 i = 0; i < n; i++) rt_free(kept[i]);
+    for (u64 i = 0; i < nk; i++) rt_free(kept[i]);
     rt_str_dec(s);
     CHECK(rt_alive(h0) == 0);
     rt_finish();
+}
+
+/* The same high-offset reuse, but dereferencing the stale handle instead: it
+ * must trap exit 7 through the generation check while the block is live. */
+static void case_stale(const char *want) {
+    u64 n = 0;
+    CHECK(heap_parse_size(want, &n));
+    check_mapped(n);
+    heap_top = heap_end - 64;
+    u64 p = alloc_raw(1, 16);
+    u64 h_old = rt_handle(p);
+    rt_free(p);
+    u64 q = alloc_raw(1, 16);
+    CHECK(q == p);
+    u64 h_new = rt_handle(q);
+    CHECK(h_new != h_old);
+    CHECK(rt_alive(h_old) == 0);
+    CHECK(rt_alive(h_new) == 1);
+    rt_deref(h_old);                              /* the block is live, the handle is stale */
+    fail(1);
+}
+
+/* The handle-range guard accepts exactly 64 GiB (2^32 granules, last offset
+ * 0xffffffff) and the safe partial-granule tail up to 64 GiB+15, then rejects
+ * one full extra granule with a clean exit 2. */
+static void case_guard_ok(void) {
+    check_mapped(HEAP_DEFAULT);
+    rt_test_heap_range(HEAP_MIN);
+    rt_test_heap_range(HEAP_CEILING);
+    rt_test_heap_range(HEAP_CEILING + 1);
+    rt_test_heap_range(HEAP_CEILING + 8);
+    rt_test_heap_range(HEAP_CEILING + 15);
+    rt_finish();
+}
+
+static void case_guard_bad(void) {
+    check_mapped(HEAP_DEFAULT);
+    rt_test_heap_range(HEAP_CEILING + 16);
+    fail(1);
 }
 
 /* The rounded object is exactly 4 GiB. The cap is checked before zeroing; the
@@ -344,7 +416,16 @@ void test_main(u64 *sp) {
         if (argc < 3) fail(2);
         case_fill(argv[2]);
     }
-    else if (c_eq(c, "sparse")) case_sparse();
+    else if (c_eq(c, "sparse")) {
+        if (argc < 3) fail(2);
+        case_sparse(argv[2]);
+    }
+    else if (c_eq(c, "stale")) {
+        if (argc < 3) fail(2);
+        case_stale(argv[2]);
+    }
+    else if (c_eq(c, "guard_ok")) case_guard_ok();
+    else if (c_eq(c, "guard_bad")) case_guard_bad();
     else if (c_eq(c, "object_too_large")) case_object_too_large();
     else if (c_eq(c, "at_cap")) case_at_cap();
     else if (c_eq(c, "array_overflow")) case_array_overflow();

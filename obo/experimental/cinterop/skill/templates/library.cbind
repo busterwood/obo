@@ -1,23 +1,27 @@
 {
-  "format": "cinterop-proto/1",
+  "format": "cinterop-proto/2",
   "module": "demo",
   "platform": "x86_64-linux-gnu",
   "abi": "sysv-amd64",
+  "signature_check": "header",
   "wrapper": "wrapper.obx",
-  "sources": ["adapter.c", "../../toolkit/cres.c"],
-  "headers": [],
-  "declarations": [
-    "extern long demo_open(long size);",
-    "extern long demo_read_byte(long token, long index);",
-    "extern long demo_close(long token);",
-    "extern long demo_live(void);"
-  ],
+  "sources": ["adapter.c"],
+  "headers": ["adapter.h"],
+  "declarations": [],
   "libs": [],
   "cflags": [],
+  "types": [
+    {"name": "demo_item", "obo": "Demo", "release": "demo_close",
+     "release_result": "void"}
+  ],
   "functions": [
-    {"name": "demo_open", "symbol": "demo_open", "args": ["i64"], "ret": "i64", "effects": ["impure"]},
-    {"name": "demo_read_byte", "symbol": "demo_read_byte", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
-    {"name": "demo_close", "symbol": "demo_close", "args": ["i64"], "ret": "i64", "effects": ["impure"]},
-    {"name": "demo_live", "symbol": "demo_live", "args": [], "ret": "i64", "effects": ["impure"]}
+    {"name": "demo_open", "symbol": "demo_open",
+     "args": ["i64@0"], "ret": "own_opt<demo_item>", "effects": ["impure"]},
+    {"name": "demo_read_byte", "symbol": "demo_read_byte",
+     "args": ["borrow<demo_item>@0", "i64@1"], "ret": "i64",
+     "effects": ["impure"]},
+    {"name": "demo_make", "symbol": "demo_make",
+     "args": ["i64@0", "out_own<demo_item>"], "ret": "i32",
+     "effects": ["impure"]}
   ]
 }

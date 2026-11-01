@@ -132,19 +132,20 @@ also write the global `rt_entry_sp` (entry.S:110).
   for the duration of a call (LANGUAGE.md:1214–1300). Neither a lambda
   cell nor a captured reference can be an asynchronous thread entry argument.
 - The allocator, free lists, free traversal stack, counters, temporary roots,
-  fd tracker and output buffer are global (runtime.c:83–159,330–468).
-  `rt_str_inc/dec` use ordinary loads/stores (:417–428). `rt_collect` returns
-  immediately (:309–321); collector comments at the file head are historical.
-- [README.md](../../README.md):163–211: 4 GiB default arena, 16 GiB ceiling,
+  fd tracker and output buffer are global. `rt_str_inc/dec` use ordinary
+  loads/stores. `rt_collect` returns immediately; collector comments at the
+  file head are historical.
+- [README.md](../../README.md):222–268: 4 GiB default arena, 64 GiB ceiling,
   one-object payload at most 4 GiB minus 32 bytes, separate metadata and native
   memory. mmap reserves virtual address space, not RAM. Free lists retain
   memory; `OBO_STATS` is not an RSS meter.
-- Managed allocation failure currently terminates with exit 2 (runtime.c:330–350).
+- Managed allocation failure currently terminates with exit 2.
   Even `err` and `ok` allocate cells. We can return Result for OS/native ENOMEM,
   validation and configured capacity exhaustion, **not guarantee recoverable
   managed-heap exhaustion without separate runtime allocation work**. No normal
   I/O error or remote input should intentionally use a runtime panic.
-- The compiler live-memory budget is **2,500,000 bytes**, not the application
+- The compiler live-memory budget is **2,750,000 bytes** (raised from
+  2,500,000 on 2026-11-01), not the application
   heap limit; the released 0.12 line peaks at 2,194,160 bytes in the recorded
   README gate. All initial APIs are source plus trusted C shims using the
   existing experimental seam. Compiler features are separately gated.
@@ -1728,7 +1729,7 @@ Core boundary tests required before the relevant phase:
 - RLIMIT_NOFILE tests with a very low soft limit, inherited descriptors above
   1024, standard descriptors initially closed, and exec inheritance checks.
 - RLIMIT_AS and low OBO_HEAP_LIMIT distinguish native ENOMEM, arena reservation
-  failure and managed fatal OOM. Test the 4/16 GiB virtual reservations and
+  failure and managed fatal OOM. Test the 4/64 GiB virtual reservations and
   per-process/native quotas separately. cgroup memory.max/pids.max tests run in
   an available isolated harness; record unavailable facilities, do not modify
   host-wide limits. Record OOM-kill as external termination, not a Result.

@@ -1,19 +1,24 @@
 # Experimental C interop (`cinterop`)
 
-Status: **P2T-a cinterop prerequisites implemented; hardening checkpoint
-pending independent rereview.** The prototype was repaired after the
+Status: **cinterop v2 stages (a)–(h) merged; the skill, templates and docs teach
+the v2 boundary.** The prototype was repaired after the
 architecture/security review of `a29f35d`, merged with released `0.10` main, and
 now has an explicit-defer cleanup story, a guarded hosted entry stack with
 proper C exit/atexit/stdio shutdown, a second real library (zlib), validated
 private include roots/cflags and full RELRO/immediate binding on hosted links.
 A hosted OpenSSL 3.0 memory-BIO/TLS 1.3 qualification also passes. This is still
-an experimental, trusted-build probe, not a production API, not a stable format,
-and not approved for merge, push, promotion or seed copy. It does **not** add a
+an experimental, trusted-build probe: not a production API, not a stable format,
+and not a stable public surface. It does **not** add a
 TLS adapter API to the toolkit or change the compiler, symbol format, ABI or
 package version; the separate experimental P2T-b server adapter under
 `../tls/` consumes this seam.
-Design:
-[`../../design/native-c-interop-design.md`](../../design/native-c-interop-design.md).
+Design: [`../../design/cinterop-boundary-design.md`](../../design/cinterop-boundary-design.md)
+(the approved v2 boundary) and
+[`../../design/cinterop-v2-handoff.md`](../../design/cinterop-v2-handoff.md)
+(status, gates and the decisions that are final). The older
+[`../../design/native-c-interop-design.md`](../../design/native-c-interop-design.md)
+is historical: its pre-v2 scalar/token adapter is superseded for libpq and
+SQLite.
 
 The compiler boundary supports **`i64` arguments, and argument kinds** (borrowed
 bytes and strings, NUL-checked C strings, `i32`/`u32` scalars, int arrays and
@@ -22,14 +27,22 @@ the stage (b)/(c) additions: copy-out `cbytes`, `cstr_out`, `void` and
 `nonzero` results, and body-less `native fn` declarations (see *Return kinds and
 typed native declarations* below), and the stage (d) foreign handles with
 `own`/`own_opt`/`borrow<C>`, explicit `close`/`is_open`, use-after-close exit 7
-and the leak census (see *Foreign handles* below). The toolkit now also has a small trusted **C resource registry**
-and an explicit-close libpq adapter: obo receives generation/kind-checked
-integer tokens, never a raw `PGconn*`/`PGresult*`. Connection/Rows/Buffer close
-is explicit and normally written with obo `defer`; dropping an ordinary record
-does **not** call `PQfinish`/`PQclear`/`free`. There are still no callbacks, C
-variadics, structs by value, source floats/decimals in the native contract, TLS
-or IFUNC guarantees, automatic foreign finalizers or a full database driver. C is trusted and unchecked; hashes are provenance/corruption
-checks, not a signature authority or a memory-safety proof.
+and the leak census (see *Foreign handles* below). Stage (f) adds out parameters
+and the generated `_out` records; `db/sqlite` uses them for
+`open_v2`/`prepare_v2`/`prepare_at`. The libpq package is now on
+these foreign handles (`Connection`/`Res` hold the real `PGconn*`/`PGresult*` in
+a private word; there is no integer token or `cres` registry). `db/postgres` is
+also ported to these handles: its `Connection`/`Rows` hold a libpq handle and
+its former C adapter, packet builder and `live_*` counters are gone. The trusted
+**C resource registry** (`cres.c/.h`) remains for the zlib adapter and its test,
+the buffer example and the registry test; the skill templates moved to v2
+foreign handles in stage (h), and no database binding uses `cres`. Connection/Rows close is explicit
+and normally written with obo `defer`; dropping an ordinary record does **not**
+call `PQfinish`/`PQclear`/`free`. There are still no callbacks, C variadics,
+structs by value, source floats/decimals in the native contract, TLS or IFUNC
+guarantees, automatic foreign finalizers or a full database driver. C is trusted
+and unchecked; hashes are provenance/corruption checks, not a signature
+authority or a memory-safety proof.
 
 ## Approved steering decision (2026-10-31)
 
@@ -107,21 +120,22 @@ the one-time generic seam and does not require compiler changes per library.
   `unterminated quoted string in connection info string`) and gives each other
   negative code its own message.
 
-## Explicit-close libpq adapter
+## libpq on cinterop v2 (stage (e))
 
-`examples/libpq.cbind` + `examples/libpq.obx` + `toolkit/libpq_adapter.c` are a
-real second package using the same generic toolkit. The public surface is
-ordinary obo:
+`examples/libpq.cbind` + `examples/libpq.obx` are the libpq binding on the v2
+boundary. `Connection` and `Res` are `pub type ... = foreign` handles (the real
+`PGconn*`/`PGresult*` live in the private word); `Rows` owns one `Res` and
+records the result format. The public surface is ordinary obo:
 
 ```obo
 let made = libpq::connect(dsn_bytes)
 match made {
     ok(conn) {
-        defer conn.close()
+        defer conn.close()                 // Result[bool], discarded by defer
         let rows = libpq::exec_params(&conn, sql_bytes, values, binary_flags)
         match rows {
             ok(r) {
-                defer r.close()
+                defer r.close()            // Rows.close is unit
                 // read values/errors
             }
             err(m, c) { ... }
@@ -131,35 +145,63 @@ match made {
 }
 ```
 
-- `Connection` and `Rows` contain only an integer token, private to the wrapper
-  module (0.13+). Importers use `connect`/`query`; the C registry rejects
-  stale/wrong-kind/unknown tokens before dereference. The token is not an
-  unforgeable capability, and a deliberate same-module raw-token escape (such as
-  `buffer::wrap`) remains possible.
-- `close` is explicit and borrows the wrapper, so `defer conn.close()` and
-  `defer rows.close()` are the canonical cleanup. A `PGresult` remains usable
-  after its connection closes. `PQfinish`/`PQclear` happen exactly once; the
-  record drop never frees the foreign object.
-- `live_resources()`/`live_connections()`/`live_results()`/`live_buffers()`
-  expose the registry counters; the tests fail if a close is omitted.
-- `exec_params` sends a fixed SQL statement plus `$n` parameters through
-  `PQexecParams`. SQL/text values reject embedded NUL; binary values preserve
+- `close` is the foreign-handle close: `Connection.close` returns
+  `Result[bool]` (`ok(false)` on a second close), `Rows.close` is unit and closes
+  its `Res`. A `PGresult` remains usable after its `PGconn` closes. There is no
+  integer token and no `cres` registry in this binding.
+- The live counters (`live_resources`, `live_connections`, `live_results`,
+  `live_buffers`) are removed. Under `OBO_CHECK=1` the foreign-handle census
+  reports a dropped open `Connection`/`Res` (exit 8); the tests use that.
+- Native kinds: `PQconnectdb` uses `borrow_cstr@0`/`own_opt<PGconn>`;
+  read-only calls use `borrow<...>`, `PQexecParams` uses `borrow_mut<PGconn>@0`;
+  `PQgetvalue` is `cbytes` with length `PQgetlength` and a 16 MiB cap;
+  `PQerrorMessage`/`PQresultErrorMessage`/`PQfname` are `cstr_out`;
+  `PQftype` is `u32`, `PQfmod` is `i32`; `PQmakeEmptyPGresult` takes
+  `null`/`i32@0` and returns `own<PGresult>`. A NULL empty result is a contract
+  violation and the `own` result exits 11 (visible change from the old adapter,
+  which returned an error); the fake test forces this with `FAKE_EMPTY_NULL=1`.
+- `Rows` accessors check `is_open(&r.h)` and then the row/column against
+  `ntuples`/`nfields` before any `is_null`/`length`/`value`/`ftype` call.
+  `value` returns `err("SQL NULL", 1)` for SQL NULL and
+  `err("value is larger than the 16 MiB limit", 2)` for a copy-out over the cap,
+  so the two nil cases stay distinct. `status`/`ntuples`/`nfields` return -1,
+  `is_null` false, `length` -1, `ftype` 0 and `fmod` -1 on a closed/invalid
+  result; the `Result`-returning accessors return an explicit error.
+- `exec_params`/`exec_params_binary`/`query` send the obo arrays directly to
+  `PQexecParams`. `exec_params_typed`/`exec_params_typed_binary` take an
+  explicit OID per value; both check that the lengths match and that each OID
+  is in `0..0xffffffff`. `exec_params`/`exec_params_binary` pass all-zero OIDs.
+  SQL/text values reject embedded NUL; binary values preserve
   their length including NUL; `nil` is SQL NULL and an empty array is an empty
-  value. There is no SQL interpolation.
-- Packet limits are enforced in the wrapper before any C call: more than 32
-  parameters (`PQ_MAX_PARAMS`) or more than 1 MiB of SQL (`PQ_MAX_SQL`) returns
-  a specific `err`. The constants in `libpq.obx` must match the C defines in
-  `toolkit/libpq_adapter.c`. An adapter-side rejection is reported by its code,
-  never as a possibly stale connection error.
-- `connect_timeout`: when the conninfo has no `connect_timeout` keyword, the
-  adapter appends `connect_timeout=5`. Any explicit `connect_timeout` is used as
-  given, so an explicit `connect_timeout=0` disables libpq's timeout and gets no
-  default; negative values are passed to libpq unchanged.
-- Values and error messages are copied by length; `PQgetlength` is used, never
-  `strlen`. Exact numeric text, OID and typmod are preserved; no numeric value
-  is routed through a float.
-- The byte-copy bridge is a bounded one-byte-at-a-time loop for this first
-  proof. It is deliberately slow and honest, not a general string ABI.
+  value. There is no SQL interpolation. Limits are enforced in the wrapper:
+  more than 32 parameters (`PQ_MAX_PARAMS`), more than 1 MiB of SQL
+  (`PQ_MAX_SQL`), a DSN over 16 MiB (`PQ_MAX_DSN`) or a value over 16 MiB
+  (`PQ_MAX_VALUE`) returns a specific `err` before any C call.
+- `connect_timeout`: `toolkit/libpq_conninfo.c` asks libpq's own
+  `PQconninfoParse` whether the keyword is present, and the wrapper appends
+  `connect_timeout=5` when it is absent (URI and keyword forms). An explicit
+  `connect_timeout=0` counts as present, so it disables libpq's timeout and gets
+  no default; negative values are passed unchanged. An invalid conninfo returns
+  the helper's copied diagnostic as `err`.
+- Result values and error messages are copied by length; `PQgetlength` is used,
+  never `strlen`. Parameter values are different: libpq reads a text-format
+  `paramValues[]` entry as a C string, so the wrapper passes a `len+1` copy
+  truncated back to `len` (the terminator stays one byte past the data) for
+  text, while binary values keep their explicit length and may contain NUL.
+  Exact numeric text, OID and typmod are preserved; no numeric value is routed
+  through a float. `Rows.fmt` is 0 for a text result and 1 for
+  `exec_params_binary`.
+- A dropped `Rows` leaves its owned `Res` in the census (exit 8 under
+  `OBO_CHECK=1`, with no `PQclear`), even after the `Connection` closes.
+- `examples/libpq_defer_app.obx` no longer imports `buffer.obx`: the buffer
+  package has its own adapter and is not part of the libpq spec.
+- **Stage (g) cleanup:** the old libpq token adapter and the postgres C adapter
+  are deleted. `toolkit/cres.c/.h` remain because the zlib adapter and its C
+  test, the buffer example and the registry test still use them; the stage (h)
+  templates no longer do. No database binding lists them in a spec or wrapper source.
+  `db/postgres` adds typed `exec_params_typed`/
+  `exec_params_typed_binary` entry points to `libpq.obx` and keeps the same
+  libpq native surface (a spec-drift guard checks it).
 
 ## Explicit defer cleanup
 
@@ -252,18 +294,18 @@ python3 experimental/cinterop/cinterop.py build \
 ```
 
 The probe output is `PQlibVersion=160015`, an empty `PGRES_TUPLES_OK` result
-with status 2, successful close, and `live=0`. It does not connect to a
-database, send SQL, start a server, open a socket or use a service.
+with status 2 and `empty_closed=true`. It does not connect to a database, send
+SQL, start a server, open a socket or use a service.
 
 ### Signature checks for the libpq binding
 
-`libpq.cbind` and `libpq_fake.cbind` list `toolkit/cres.h` and
-`toolkit/libpq_adapter.h` as headers, so their declarations are checked against
-the real adapter prototypes (`signature_check: header`). A declaration that
-disagrees with a header fails the build before link. libpq's own prototypes
-still come from the hand-written `toolkit/libpq_decls.h`, because the libpq
-development header is not installed on the probe host. The header check
-therefore covers the obo-facing adapter API, not libpq's API itself.
+`libpq.cbind` and `libpq_fake.cbind` list `toolkit/libpq_decls.h` and
+`toolkit/libpq_conninfo.h` as headers and use `signature_check: header`. Every
+binding declaration and the release prototypes are checked against those
+headers (`PQfinish`/`PQclear` as `void (*)(CType *)`), and the generated foreign
+table compiles with `-Werror`. libpq's own prototypes come from the hand-written
+`toolkit/libpq_decls.h`, because the libpq development header is not installed on
+the probe host; the check is only as strong as that trusted declarations file.
 
 ### Private include roots, cflags and link hardening
 
@@ -411,8 +453,10 @@ Rules:
   register). A `ctypes` key on an int-form binding (all `i64`) is refused.
 - A `const:<n>` value must fit its integer type by width and sign: `unsigned int`
   takes 0 to 4294967295, `int` takes -2147483648 to 2147483647, and a negative value
-  is refused for an unsigned type. A pointer or function-pointer type takes any 64-bit
-  value, such as `const:-1` for `SQLITE_TRANSIENT`. The magnitude is at most 17 digits.
+  is refused for an unsigned type. An object-pointer type takes any 64-bit value. A
+  **function-pointer** slot takes exactly `-1`, the one no-callback destructor
+  (`SQLITE_TRANSIENT`); `const:0` (`SQLITE_STATIC`) is refused as a use-after-free.
+  The magnitude is at most 17 digits.
 - Other slots keep their fixed types. A mismatched pointer slot is refused by the C
   compiler's signature check, not by the obx compiler: the generated sigcheck
   assignment is an incompatible-pointer error, and the build fails before link.
@@ -629,9 +673,54 @@ the C type name and the release:
 "types": [{"name": "PGconn", "obo": "Conn", "release": "PQfinish", "release_result": "void"}]
 ```
 
-`release_result` is `"void"` or `"int"`. The release is signature-checked against
-its `CType *` prototype. `out_own` and `out_offset` are **deferred to stage (f)**
-(SQLite); stage (d) needs only own/own_opt/borrow/close for libpq.
+`release_result` is `"void"`, `"int"` or `"discard"`. A `"void"` release gives
+`ok(true)`; an `"int"` release returns `err("foreign release failed", code)` for a
+non-zero result; `"discard"` calls a release that returns int and ignores that int,
+as `sqlite3_close_v2` and `sqlite3_finalize` require (D14/D15). The release is
+signature-checked against its `CType *` prototype (`int` for `int`/`discard`,
+`void` for `void`).
+
+
+**Out parameters (stage (f)).** In the `.cbind` `args` array the out slots
+appear in C order and may be interleaved with inputs (for example
+`sqlite3_open_v2`'s `out_own` slot sits between the path and flags inputs). In
+the `native fn` declaration, inputs come first and the out parameters follow:
+
+```obo
+native fn open_v2(path: &[]byte, flags: int, out db: Connection): open_v2_out
+native fn prepare_v2(db: &Connection, sql: &[]byte,
+                     out st: Stmt, out tail: int from sql): prepare_v2_out
+```
+
+`out name: X` for a `foreign` type is the spec kind `out_own<C>` (C parameter
+`C **`); at most one is allowed. `out name: int from input` is `out_offset@k`
+(C parameter `const char **`); `input` must be an `&[]byte` input parameter,
+at most one is allowed, and the offset is relative to that argument's borrowed
+bytes. At most one of each form is allowed, and the return type is the literal
+`<native>_out`. The compiler builds that record directly (never in module globals
+or `.sym`): `rc: int` first, then one field per out parameter in declaration
+order, an `out_own` field being `?X`. The C return code is stored in `rc` before
+any helper call. Each non-NULL `out_own` write is wrapped in a counted foreign
+record, so a wrapper must `take` and close it on the error path too. The generated
+record is an ordinary owned value: store it in a `var` (a bare out-call statement
+is refused, because it would silently drop a live `out_own`). The record's
+descriptor owns the nested foreign records, so dropping it frees them but never
+the C objects; the census then reports the C handles. `out_offset` yields `-1`
+for a NULL or out-of-range tail pointer; the wrapper turns `-1` into an error.
+
+The sidecar adds, only for out natives actually called, a line after the `foreign`
+lines:
+
+```
+outrec <native> <native>_out rc:int <field>:own:<Obo> <field>:offset:<k>
+```
+
+Old sidecar readers reject the unknown line; this tool still accepts a sidecar
+with no `outrec` lines (every pre-(f) sidecar). `outrec` is checked against the
+spec: the record name, `rc` first, unique fields, one field per out kind in order,
+an `own` type in the sidecar foreign table, and an in-range offset target. An out
+native must use a typed native fn call, not `__cinterop`, and its C result must be
+`i32`/`i64`/`u32`. See `tests/out_fixture.*` and `tests/out_wrap.obx`.
 
 **close and is_open.** `close` is `close(mut &X): Result[bool]`:
 
@@ -664,7 +753,8 @@ exits 4 (`obo: internal error: foreign handle census underflow`);
 `OBO_CHECK=1`.
 
 **Sidecar.** Sidecar v2 starts with `foreign <id> <obo-name> <c-name>` lines in
-first-declaration order, then the relocations. Stage (d) adds these lines under
+first-declaration order, then optional `outrec` lines (stage (f)), then the
+relocations. Stage (d) adds these lines under
 the existing `cinterop-relocs 2` header without a version bump; a reader that
 expects only the 7-field relocation lines rejects them as malformed (the v2
 reader here is the updated one). A typed foreign call records
@@ -732,32 +822,38 @@ when `libpq.so.5` is present; the test skips only when the library is absent.
 It also builds and runs:
 
 - the real `libpq` `PQlibVersion` + `PQmakeEmptyPGresult`/`PQclear` probe;
-- the deterministic fake-libpq C suite (`fake_adapter_test.c`): token poisoning,
-  double close, `PQfinish`/`PQclear` counts, NULL vs empty, binary NUL,
-  allocation failure, malformed packets, result-outlives-connection, and
-  injection-as-data;
-- the fake-libpq obo wrapper app and a deliberate missing-close app whose
-  `live=1` proves the leak counter detects the omission;
+- the registry suite (`cres_test.c`) for the retained `cres` toolkit:
+  allocation, bounds, token poisoning, double close and `cres_live_count()`;
+- the v2 libpq wrapper through the fake ABI: foreign release counts via
+  `FAKE_REPORT=1`, NULL vs empty, binary NUL, double close `ok(false)`,
+  use-after-close exit 7, result-outlives-connection, and a deliberate
+  missing-close app whose `Connection` census exits 8;
 - invalid conninfo (`host='unterminated`) returns libpq's copied diagnostic with
   code 2 and registers no connection; the fake parser reports the same text, and
   the real libpq parser runs too when `libpq.so.5` is present. No server is used;
-- packet limits with the fake ABI: 33 parameters and 1 MiB + 1 bytes of SQL are
-  rejected with specific messages, and 32 parameters is accepted; exactly 1 MiB
-  of SQL is not rejected by the limit check, and a packet of exactly 16 MiB is
-  accepted while one byte more is rejected by the buffer bound;
-- adapter error messages with the fake ABI: `PQconnectdb` returning NULL (code 0),
-  an empty `PQexecParams` failure, and exec on a closed connection (code -1) each
-  give their own message;
-- the wrapper limit constants (`PQ_MAX_PARAMS`, `PQ_MAX_SQL`, `PQ_MAX_BUFFER`)
-  equal the C defines (`PQ_MAX_PARAMS`, `PQ_MAX_SQL` in `toolkit/libpq_adapter.c`,
-  `CRES_MAX_BUFFER` in `toolkit/cres.h`), checked by reading the sources;
-- a libpq spec declaration that disagrees with `libpq_adapter.h` (an
-  internally consistent `int` against the header's `long`) fails the signature
-  check before link;
-- explicit-defer success/early-return/nested/loop/buffer paths and a
+- limits with the fake ABI: 33 parameters, 1 MiB + 1 bytes of SQL, a 16 MiB + 1
+  value and a 16 MiB + 1 DSN are rejected with specific messages, and 32
+  parameters, exactly 1 MiB of SQL and a 16 MiB value are accepted;
+- the v2 wrapper's own messages: `PQconnectdb` returning NULL and an empty
+  `PQexecParams` failure each return a specific `err`, and exec on a closed
+  connection is the stage (d) exit 7 (not the old adapter's code -1);
+- the wrapper limit constants (`PQ_MAX_PARAMS`, `PQ_MAX_SQL`, `PQ_MAX_DSN`,
+  `PQ_MAX_VALUE`) are read from `libpq.obx` and checked against the reviewed
+  values; there are no adapter C mirrors any more;
+- a libpq spec declaration that disagrees with `libpq_decls.h` (an internally
+  consistent `long` for `PQlibVersion`, whose header return is `int`) fails the
+  signature check before link;
+- explicit-defer success/early-return/nested/loop paths and a
   result-outlives-connection app;
-- real libpq's conninfo parser for timeout detection (quoted values are not
-  mistaken for keywords), with `PQconnectdb` wrapped and never called;
+- a dropped `Rows` leaves its owned `Res` in the census (exit 8, `clear=0`);
+- NULL versus empty, a SQL-NULL `value` error, an over-cap `cbytes` result,
+  `Rows.fmt` 0/1, bounds sentinels/errors on every accessor, and closed-Rows
+  accessors;
+- NUL rejection for the DSN, SQL and text values (binary NUL is preserved), an
+  explicit `connect_timeout=3` is not duplicated, and the default
+  `connect_timeout=5` is appended;
+- the conninfo helper against real libpq (`PQconninfoParse`/`PQconninfoFree`,
+  quoted values are not keywords) and the compile-time behaviour;
 - guarded-stack fixtures: invalid size, low/high guard SIGSEGV, and a real obo
   deep-recursion guard fault;
 - hosted shutdown fixtures: constructor, atexit, C stdio flush, normal exit,
@@ -773,7 +869,8 @@ It also builds and runs:
   `libcrypto.so.3` link, TLS 1.3 memory-BIO/ALPN handshake, provider/RAND,
   thread-local state, constructor/atexit/stdio/`OPENSSL_cleanup`, and a separate
   ASAN/UBSAN run;
-- ASAN/UBSAN runs of the fake adapter, zlib adapter and guarded-stack fixture;
+- ASAN/UBSAN runs of the `cres_test.c` registry suite, the zlib adapter, the
+  guarded-stack fixture, the foreign fixture and the `libpq_conninfo.c` helper;
 - the opt-in live local PostgreSQL smoke test when `CINTEROP_TEST_DSN` is set.
 
 The project skill and buildable templates are in [`skill/`](skill/SKILL.md).
@@ -803,16 +900,18 @@ declarations-only SQLite adapter, both explicit-close and tested.
 - The final layout is non-PIE and fixed-address; ASLR/PIE is unsupported.
 - C is trusted and unchecked. A malicious `.cbind`, header/declaration or
   same-signature sidecar is within the trusted build input, not sandboxed.
-- There is no automatic foreign finalizer. `PGconn`/`PGresult` and bounded
-  borrowed bytes are supported only through the explicit-close adapter; dropping
-  a `Connection`/`Rows` never calls `PQfinish`/`PQclear`. The adapter is not a
-  full database driver or a stable public API.
-- The token registry protects against accidental stale/wrong-kind/forged integer
-  use, not against trusted C or an adversarial caller. Its generation is 31
-  bits. Obo token fields are private to their wrapper modules; that reduces
-  accidental construction, not deliberate forgery.
+- There is no automatic foreign finalizer. `PGconn`/`PGresult` are owned foreign
+  handles; dropping a `Connection`/`Rows` never calls `PQfinish`/`PQclear` and
+  is reported by the `OBO_CHECK=1` census. The binding is not a full database
+  driver or a stable public API.
+- The retained `cres` token registry (the zlib adapter and its test, the buffer
+  example and the registry test) protects
+  against accidental stale/wrong-kind/forged integer use, not against trusted C
+  or an adversarial caller. Its generation is 31 bits. No database binding or
+  skill template uses it any more. Obo token fields are private to their wrapper
+  modules; that reduces accidental construction, not deliberate forgery.
 - Source floats/decimals are not part of the native contract. The libpq
-  adapter preserves exact numeric text/OID/typmod and never converts a database
+  binding preserves exact numeric text/OID/typmod and never converts a database
   numeric through a float.
 - The hosted OpenSSL qualification is distro-aware only to the extent of its
   package probe: it accepts `/usr/include` headers only when the installed

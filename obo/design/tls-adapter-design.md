@@ -109,7 +109,7 @@ Summary of decisions:
 | States | systems design:399–447 defines open/closed/leak rules | Context/session follow the same lifecycle; no finalizer |
 | Hosted-only threads | `obo/design/systems-threads-design.md`:30–33, 260–278 | TLS is hosted-only; one context per process/worker; no cross-worker shell |
 | C boundary | `obo/design/native-c-interop-design.md` §6, §10, §14; `obo/experimental/cinterop/README.md` | Scalar `i64` args and `i32`/`i64` results; no pointers, structs by value, callbacks into obo, TLS or IFUNC guarantee |
-| Registry pattern | `obo/experimental/cinterop/toolkit/cres.h`; `obo/experimental/db/sqlite/sqlite_adapter.c` | Tokens with kind/generation; explicit close; buffers by length. The TLS adapter should use the systems platform registry, not a second public `tok` model |
+| Registry pattern | `obo/experimental/sys/native/sysregistry.h`; historical `obo/experimental/cinterop/toolkit/cres.h` | Tokens with kind/generation; explicit close; buffers by length. The TLS adapter should use the systems platform registry, not a second public `tok` model. (`cres.h` is the older cinterop registry, kept only for zlib/buffer.) |
 | Declarations-only precedent | `obo/experimental/db/sqlite/sqlite_decls.h`, `obo/experimental/db/README.md` | Declarations-only is acceptable for a stable scalar library ABI; it is not sufficient for OpenSSL macro policy |
 
 ### 2.2 Installed OpenSSL
@@ -468,7 +468,7 @@ same-kind replaced `res` can alias/steal another context or session (the
 documented public-field limit); a cross-kind replacement is rejected. The TLS
 module does not claim that public fields are opaque.
 
-The C adapter does not use the DB adapters' `cres` table as a second public
+The C adapter does not use the older cinterop `cres` registry as a second public
 resource model. It registers context/session state in the systems platform
 registry so there is one identity, kind, generation and leak census. If the
 platform registry is not yet available, P2T is blocked; a temporary `cres`
