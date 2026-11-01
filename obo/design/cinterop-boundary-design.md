@@ -445,8 +445,8 @@ every argument is used.
 **Kept:** `toolkit/cres.c` and `cres.h` (205 and 60 lines) stay for the packages in 7.2 (D7). v2 stops using them for libpq,
 SQLite and db/postgres only. **Deleted:** `libpq_adapter.c` and `.h` (417 and 40 lines), except the conninfo check. **Deleted
 in stage (g):** `db/postgres/postgres_adapter.c/.h` and the old `db/tests/postgres_adapter_test.c`; the postgres wrapper now
-uses the libpq v2 types directly. `toolkit/cres.c/.h` remain for sys/tls/http2/zlib/buffer (the db adapters no longer include
-them). **Kept:** `libpq_decls.h` (91 lines, the manual declaration header used in header mode) and `tests/fake_libpq.c` (363,
+uses the libpq v2 types directly. `toolkit/cres.c/.h` remain for the zlib and buffer examples, the skill templates and the
+registry test (the db adapters no longer include them). **Kept:** `libpq_decls.h` (91 lines, the manual declaration header used in header mode) and `tests/fake_libpq.c` (363,
 ABI kept; the counters become release and census checks). **Rewritten:** `examples/libpq.obx` (300) and `libpq.cbind` (356).
 The conninfo check (`conninfo_has_timeout`, `libpq_adapter.c:89`) is the one helper, about 30 lines in
 `toolkit/libpq_conninfo.c`. `PQconninfoParse` returns a struct array that must be walked and freed, so it stays in C. D13 may
@@ -458,8 +458,8 @@ remove the helper.
 
 ### 5.6 db/postgres: public surface and gaps
 
-`postgres/postgres.obx` (694 lines), `postgres/postgres_adapter.c` (291) and the two `.cbind` files are the second libpq
-consumer, and the libpq example did not cover them. Their public surface maps as follows (stage (g)):
+`postgres/postgres.obx` and the two `.cbind` files are the second libpq consumer, and the libpq example did not cover them.
+The old `postgres/postgres_adapter.c` (291 lines) was deleted in stage (g). Their public surface maps as follows:
 
 | postgres.obx | v2 | Note |
 |---|---|---|
@@ -473,15 +473,15 @@ consumer, and the libpq example did not cover them. Their public surface maps as
 | `live_resources`, `live_buffers`, `live_connections`, `live_results` | **removed** | the census (3.4) replaces the counters |
 
 Gaps the first libpq example missed:
-1. **Typed parameters.** The packet sets a type per kind: 0 for untyped NULL, 25 text, 17 bytea with binary format
-   (`postgres_adapter.c:213-216`), 20, 16, and 1700 numeric, including the typed NULL of kind 6 (`postgres_adapter.c:236-246`).
-   The `oids` argument and `ints@3:u32` carry them. (A former note on passing `null` for `paramTypes` is withdrawn; review 17.)
+1. **Typed parameters.** `postgres.obx` `encode_params` sets a type per kind: 0 for untyped NULL, 25 text, 17 bytea with
+   binary format, 20, 16, and 1700 numeric, including the typed NULL of kind 6. The old packet builder was deleted. The
+   `oids` argument and `ints@3:u32` carry them. (A former note on passing `null` for `paramTypes` is withdrawn; review 17.)
 2. **`Bytes` and D10.** Typed OID 17 with binary format sends raw bytes with no `::bytea` cast.
-3. **Decimal checks move to obo.** The strict grammar (`valid_decimal_text`, `postgres_adapter.c:102`) and the 98,342-byte cap
-   (`postgres_adapter.c:34`, `105`) were C. Stage (g) keeps the single obo validation (the old packet `append_param` grammar and
-   cap plus `decimal::parse`), deletes the C duplicate, and runs the negative table against the obo path. The wire grammar and
-   parse failures map to `1006`/`1007`/`1008`/`1009` or plumbing `2`; nothing re-validates in C.
-4. **Result wrapper.** `Rows` keeps its public `fmt` (`postgres.obx:39`, `445`, `595`). Its `h` is a non-optional `Res`, closed by
+3. **Decimal checks move to obo.** The strict grammar and 98,342-byte cap were C in the old adapter (deleted in stage (g)
+   with `valid_decimal_text`). `postgres.obx` `encode_params` now holds the single obo validation (grammar, cap and
+   `decimal::parse`), and the negative table runs against that path. The wire grammar and parse failures map to
+   `1006`/`1007`/`1008`/`1009` or plumbing `2`; nothing re-validates in C.
+4. **Result wrapper.** `Rows` keeps its public `fmt` (`postgres.obx` `Rows`, `execute_fmt`, `decimal`). Its `h` is a non-optional `Res`, closed by
    a zero word. A SQL error is `ok(Rows)` with `PGRES_FATAL_ERROR`, read before close. The postgres wrapper stores the libpq
    handle in a field; that field reaches a native borrow directly, because the deep-reference rule refuses passing it to another
    obo function.

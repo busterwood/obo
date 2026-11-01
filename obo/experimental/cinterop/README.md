@@ -27,8 +27,8 @@ these foreign handles (`Connection`/`Res` hold the real `PGconn*`/`PGresult*` in
 a private word; there is no integer token or `cres` registry). `db/postgres` is
 also ported to these handles: its `Connection`/`Rows` hold a libpq handle and
 its former C adapter, packet builder and `live_*` counters are gone. The trusted
-**C resource registry** (`cres.c/.h`) remains for sys/tls/http2/zlib/buffer, but
-neither database adapter uses it. Connection/Rows close is explicit
+**C resource registry** (`cres.c/.h`) remains for the zlib and buffer examples,
+the skill templates and the registry test, but neither database adapter uses it. Connection/Rows close is explicit
 and normally written with obo `defer`; dropping an ordinary record does **not**
 call `PQfinish`/`PQclear`/`free`. There are still no callbacks, C variadics,
 structs by value, source floats/decimals in the native contract, TLS or IFUNC
@@ -188,9 +188,9 @@ match made {
 - `examples/libpq_defer_app.obx` no longer imports `buffer.obx`: the buffer
   package has its own adapter and is not part of the libpq spec.
 - **Stage (g) cleanup:** the old libpq token adapter and the postgres C adapter
-  are deleted. `toolkit/cres.c/.h` remain because sys/tls/http2/zlib/buffer
-  still use the registry; no database binding lists them in a spec or wrapper
-  source. `db/postgres` adds typed `exec_params_typed`/
+  are deleted. `toolkit/cres.c/.h` remain because the zlib and buffer examples,
+  the skill templates and the registry test still use them; no database binding
+  lists them in a spec or wrapper source. `db/postgres` adds typed `exec_params_typed`/
   `exec_params_typed_binary` entry points to `libpq.obx` and keeps the same
   libpq native surface (a spec-drift guard checks it).
 
@@ -893,7 +893,8 @@ declarations-only SQLite adapter, both explicit-close and tested.
   handles; dropping a `Connection`/`Rows` never calls `PQfinish`/`PQclear` and
   is reported by the `OBO_CHECK=1` census. The binding is not a full database
   driver or a stable public API.
-- The retained `cres` token registry (sys/tls/http2/zlib/buffer) protects
+- The retained `cres` token registry (zlib/buffer examples, skill templates and
+  the registry test) protects
   against accidental stale/wrong-kind/forged integer use, not against trusted C
   or an adversarial caller. Its generation is 31 bits. Neither database
   adapter uses it any more. Obo token fields are private to their wrapper

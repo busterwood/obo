@@ -30,8 +30,8 @@ Read these before changing code:
 3. **Foreign handles are not tokens.** A v2 binding keeps the real pointer in a
    `foreign` record's private word; `own`/`own_opt`/`borrow` enforce ownership,
    `is_open` reads the word, and a raw borrow after close exits 7. The older
-   `toolkit/cres.h` token registry remains for sys/tls/http2/zlib/buffer, not
-   for the database adapters.
+   `toolkit/cres.h` token registry remains for the zlib and buffer examples,
+   the skill templates and the registry test, not for the database adapters.
 4. **Explicit close is the contract, normally through `defer`.** Ordinary obo
    record drop frees only the record; it does **not** call `PQfinish`,
    `PQclear`, `free` or any foreign destructor. A v2 wrapper's `close` zeroes
@@ -83,8 +83,8 @@ assumption down in the wrapper and tests.
 Prefer v2 foreign handles: the spec maps each C opaque type to an obo `foreign`
 type with a release, and `own`/`own_opt`/`borrow`/`borrow_mut` carry the real
 pointer. Start from `examples/libpq.*` and the worked `db/postgres` package.
-`toolkit/cres.h` is the older token registry for sys/tls/http2/zlib/buffer; it
-is not the default for a new binding.
+`toolkit/cres.h` is the older token registry for the zlib/buffer examples, the
+skill templates and the registry test; it is not the default for a new binding.
 
 If a token adapter is still the right shape, keep the exported ABI scalar:
 

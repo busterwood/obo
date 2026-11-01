@@ -37,7 +37,7 @@ For a complete real library example, read:
   `Rows` records, typed parameters and the explicit close contract);
 - `../../tests/fake_libpq.c` and `../../tests/fake_libpq_probe.h`
   (deterministic ownership/error tests), plus `../../tests/cres_test.c` for the
-  legacy token registry used by sys/tls/http2/zlib/buffer;
+  legacy token registry used by the zlib/buffer examples and these templates;
 - `../../examples/libpq_defer_app.obx` and `../../examples/zlib_app.obx`
   (explicit `defer` cleanup and a second real library).
 

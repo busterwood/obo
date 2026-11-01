@@ -176,9 +176,9 @@ display text is presentation.
 | PostgreSQL numeric display scale | `0..16383` | `NUMERIC_DSCALE_MAX` 0x3FFF |
 | PostgreSQL numeric precision in DDL | `1..1000` | `NUMERIC_MAX_PRECISION` |
 | PostgreSQL numeric scale in DDL | `-1000..1000` | `NUMERIC_MIN/MAX_SCALE` |
-| adapter SQL text | 1 MiB | `postgres_adapter.c:29`, `sqlite_adapter.c:22` |
-| adapter value/parameter buffer | 16 MiB | `postgres_adapter.c:30`, `sqlite_adapter.c:23` |
-| parameters per statement | 32 | `postgres_adapter.c:28` |
+| adapter SQL text | 1 MiB | `postgres.obx` `execute_fmt` (`1048576`), `sqlite.obx` `MAX_SQL` |
+| adapter value/parameter buffer | 16 MiB | `postgres.obx` `encode_params` (`16777216`), `sqlite.obx` `MAX_VALUE` |
+| parameters per statement | 32 | `postgres.obx` `execute_fmt`, `libpq.obx` `PQ_MAX_PARAMS` |
 
 The core's 98,342-byte bound is exactly the worst case: 32,805 integer
 positions (exponent 32767 plus 38 significant digits) + 65,535 fractional
@@ -1452,9 +1452,12 @@ Repository (line numbers at baseline `51ce9e7`):
 - `obo/experimental/db/postgres/postgres.obx:32` OID 1700, `:39-49` Param,
   `:103-128` constructors, `:138-180` append_param, `:184-202` packet,
   `:278-285` execute, `:316-370` read, `:381-391` OID/typmod.
-- `obo/experimental/db/postgres/postgres_adapter.c:3-17` packet/OIDs,
-  `:78-89` integer text validation, `:146-195` switch, `:197-198`
-  `PQexecParams`.
+- Historical (the old C adapter was deleted in stage (g)):
+  `postgres_adapter.c:3-17` packet/OIDs, `:78-89` integer text validation,
+  `:146-195` switch, `:197-198` `PQexecParams`. Current:
+  `postgres.obx` `encode_params` (wire table and decimal validation) and
+  `execute_fmt` (parameter arrays to `exec_params_raw`); `libpq.obx`
+  `exec_params_full` (typed OIDs and the text `len+1` copy).
 - `obo/experimental/db/sqlite/sqlite.obx:43-47` storage classes, `:217-247`
   binds, `:262-329` column reads.
 - `obo/experimental/db/sqlite/sqlite_adapter.c:410-446` text/blob bind,

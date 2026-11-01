@@ -10,8 +10,9 @@ directly.
 
 - Keep the real C pointer in a `foreign` record's private word. `own`/`own_opt`
   return it, `borrow`/`borrow_mut` pass it, `is_open` reads the word, and a
-  direct borrow after close exits 7. The older `cres` token registry is for
-  sys/tls/http2/zlib/buffer, not these packages.
+  direct borrow after close exits 7. The older `cres` token registry is for the
+  zlib/buffer examples, the skill templates and the registry test, not these
+  packages.
 - Release every connection/result/statement exactly once from an explicit
   close. A second close is a safe `false`/`ok(false)`.
 - Copy borrowed values and error strings with an explicit length. Use the

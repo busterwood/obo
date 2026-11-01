@@ -492,9 +492,9 @@ is not a skip because the committed adapter is declarations-only.
 - SQLite's declarations-only ABI is verified against the 3.45.1 header in
   private evidence, not by a committed header check. A future SQLite ABI change
   needs a new review.
-- The resource registry (`toolkit/cres.*`) is still used by sys/tls/http2/zlib/
-  buffer, but not by either database adapter. It has 64 slots total and bounds
-  buffers to 16 MiB.
+- The resource registry (`toolkit/cres.*`) is still used by the zlib/buffer
+  examples, the skill templates and the registry test, but not by either
+  database adapter. It has 64 slots total and bounds buffers to 16 MiB.
 - The C registry kinds (`CONN`, `RESULT`, `STMT`) are retained only for the
   toolkit packages that still use `cres`; neither database adapter registers a
   token any more.

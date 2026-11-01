@@ -414,7 +414,8 @@ def postgres_fake_v2(tmp):
         raise Fail('make_empty_rows did not return a closeable result:\n%s'
                    % p.stdout)
     print('postgres v2 fake: OIDs/formats/bytes/NULL/result format, decimal '
-          'vectors, 32 params, NULs, FAKE_ALLOC, outlives, make_empty_rows, census: ok')
+          'vectors, 32 params, NULs, DSN/text caps, closed-Rows sentinels, '
+          'FAKE_ALLOC, outlives, make_empty_rows, census: ok')
 
 
 def sqlite_sql(tmp):

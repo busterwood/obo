@@ -589,7 +589,6 @@ pub fn (r: &Rows) bytes(row: int, col: int): Result[[]byte] {
 pub fn (r: &Rows) column_name(col: int): Result[string] {
     if !col_ok(r, col) { return err("column out of range", 2) }
     let b = res_fname(&r.h, col)
-    if len(b) == 0 { return err("column name could not be copied", 2) }
     if has_nul(&b) { return err("column name contains an embedded NUL", 1) }
     return ok(string(b))
 }
@@ -709,8 +708,11 @@ pub fn (r: &Rows) error_message(): []byte {
 // Borrows Rows. A second close is a safe false; drop never calls PQclear.
 pub fn (mut r: &Rows) close(): bool {
     if !r.h.is_open() { return false }
-    r.h.close()
-    return true
+    let made = r.h.close()
+    match made {
+        ok(v) { return v }
+        err(m, n) { return false }
+    }
 }
 
 // ------------------------------------------------------- library/resource info

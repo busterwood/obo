@@ -1,8 +1,8 @@
 /* Deterministic C-side tests for the resource registry.
  *
  * Stage (g) removed the last libpq consumer of the old token adapter, so this
- * file keeps only the `cres` registry checks that the surrounding toolkit
- * packages (sys/tls/http2/zlib/buffer) still use. It links cres.c alone. */
+ * file keeps only the `cres` registry checks that the zlib/buffer examples and
+ * the skill templates still use. It links cres.c alone. */
 #include "../toolkit/cres.h"
 
 #include <stdio.h>

@@ -22,6 +22,12 @@ fn bytes_of(s: string): []byte {
     return b
 }
 
+fn filled(n: int, b: byte): []byte {
+    var out = new []byte(0)
+    for i in 0..n { append(out, b) }
+    return out
+}
+
 fn nul_string(): string {
     var b = new []byte(0)
     append(b, 'S')
@@ -53,6 +59,21 @@ fn expect_err(name: string, r: Result[postgres::Rows],
     match r {
         ok(rows) {
             rows.close()
+            println("FAIL ", name, " unexpectedly ok")
+            exit(exit_code)
+        }
+        err(m, c) {
+            check(c == want_code, name + " code", exit_code)
+            check(m == want_msg, name + " message", exit_code)
+        }
+    }
+}
+
+fn expect_conn_err(name: string, r: Result[postgres::Connection],
+                   want_code: int, want_msg: string, exit_code: int) {
+    match r {
+        ok(conn) {
+            conn.close()
             println("FAIL ", name, " unexpectedly ok")
             exit(exit_code)
         }
@@ -346,9 +367,30 @@ fn main() {
                 }
                 err(m, c) { println("FAIL over param ", m, " ", c); exit(73) }
             }
+
+            // The postgres text cap is checked before the value array is
+            // built, so no fake call happens for a 16 MiB + 1 text value.
+            let exec_before = probe::exec_count()
+            let bigarr = filled(16777217, byte(97))
+            let bigtxt = string(bigarr)
+            let captq = postgres::execute(&conn, "SELECT $1",
+                                          one(postgres::param_text(bigtxt)))
+            expect_err("text cap", captq, 2, "text parameter is too large", 100)
+            check(probe::exec_count() == exec_before, "text cap no call", 101)
         }
         err(m, c) { println("FAIL open ", m, " ", c); exit(74) }
     }
+
+    // The postgres DSN pre-checks stay before libpq: NUL first, then the
+    // 16 MiB cap. Neither reaches PQconnectdb.
+    let dn = postgres::open(nul_string())
+    expect_conn_err("DSN NUL", dn, 2,
+                    "invalid connection string (embedded NUL)", 102)
+    let bigdsnarr = filled(16777217, byte(97))
+    let bigdsn = string(bigdsnarr)
+    let dc = postgres::open(bigdsn)
+    expect_conn_err("DSN cap", dc, 2,
+                    "invalid connection string (too long)", 103)
 
     // PGresult outlives PGconn.
     let made2 = postgres::open("fake-ok")
@@ -368,6 +410,48 @@ fn main() {
                     }
                     check(rows.close(), "outlives rows close", 80)
                     check(!rows.close(), "outlives rows double close", 81)
+
+                    // Closed-Rows sentinels and explicit errors.
+                    check(rows.status() == -1, "closed status", 104)
+                    check(rows.row_count() == -1, "closed row count", 105)
+                    check(rows.column_count() == -1, "closed column count", 106)
+                    check(rows.length(0, 0) == -1, "closed length", 107)
+                    let em = rows.error_message()
+                    check(len(em) == 0, "closed error empty", 108)
+                    let cn = rows.column_name(0)
+                    match cn {
+                        ok(s) { println("FAIL closed column name accepted"); exit(109) }
+                        err(m, c) {
+                            check(c == 2, "closed column name code", 110)
+                            check(m == "column out of range", "closed column name message", 111)
+                        }
+                    }
+                    let ni = rows.is_null(0, 0)
+                    match ni {
+                        ok(v) { println("FAIL closed is_null accepted"); exit(112) }
+                        err(m, c) {
+                            check(c == 2, "closed is_null code", 113)
+                            check(m == "row or column out of range", "closed is_null message", 114)
+                        }
+                    }
+                    let tx = rows.text(0, 0)
+                    match tx {
+                        ok(s) { println("FAIL closed text accepted"); exit(115) }
+                        err(m, c) {
+                            check(c == 2, "closed text code", 116)
+                            check(m == "row or column out of range",
+                                  "closed text message", 117)
+                        }
+                    }
+                    let vl = rows.value(0, 0)
+                    match vl {
+                        ok(v) { println("FAIL closed value accepted"); exit(118) }
+                        err(m, c) {
+                            check(c == 2, "closed value code", 119)
+                            check(m == "row or column out of range",
+                                  "closed value message", 120)
+                        }
+                    }
                 }
                 err(m, c) { println("FAIL outlives query ", m, " ", c); exit(82) }
             }
