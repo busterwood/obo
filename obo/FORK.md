@@ -6786,6 +6786,36 @@ construction/free check. N4: `LANGUAGE.md` no longer calls a record literal a de
 expression. N3 is noted above. N2 (the unused 8-byte inferred placeholder) and N5 (a decimal
 suite timeout counted as a caught mutant) are accepted as documented.
 
+## Decimal library (`lib/decimals.obx`) released on the 0.17 line, stage D5
+
+Stage D5 of `design/decimal-storage-plan.md` adds `obo/lib/decimals.obx`
+(module `decimals`), ordinary source over the released decimal builtins and
+`[]decimal`:
+
+- `floor`, `ceil`, `trunc`, `round` (HALF_EVEN) and `roundAway` (HALF_AWAY),
+  each a `Result[decimal]` over `decimal::quantize`;
+- `abs`, `neg`, `sign`, `isZero`, `cmp`, `min`, `max`;
+- `sum(&[]decimal)` (traps on overflow like `+`);
+- `allocate` and `allocateWeighted`, largest-remainder splits whose parts sum
+  exactly to the quantized total at the requested scale, including scales up to
+  32768 and zero/tiny totals; and
+- `formatGrouped(d, sep)`, fixed display text with a caller-chosen separator
+  byte.
+
+Malformed arguments (invalid scale, negative part count, zero parts with a
+nonzero total, empty/negative/zero-sum weights) return `EINVAL` (22) or the
+decimal scale code (6); arithmetic overflow traps like `*`/`+`. `unitAt` builds
+`10^-scale` through `decimal::parse` so the documented `0..32768` range is
+exact.
+
+**Release.** Merged as `ed20a4c`; this is a library-only addition, so the
+compiler, runtime, symbol format and seed are unchanged (`0.17`/10/ABI 1). The
+import matrix now covers thirteen `lib/` modules (31/31 checks) and the stdlib
+suite has 24 roots. Independent review: REVISE on the stale import matrix and
+the high-scale `unitAt` bug, then APPROVE WITH NITS after both were fixed;
+integer-weight high-scale cases are exact, and fractional weights at the
+exponent floor trap consistently with `*`/`+`.
+
 ## Impure interface members (0.17 released, format 10, ABI 1), stage I1
 
 Stage I1 of `design/impure-interface-members.md` adds the third interface-member
