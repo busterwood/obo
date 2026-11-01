@@ -1,8 +1,11 @@
 # HTTP/3 server over QUIC
 
-Status: **design for independent review; no implementation authorized.**
-Baseline: current `main` `544dff836eb9f3f815d71f29875e2db9c9c175ae`
-(HTTP/2 H2a/H2b/H2c, HTTP/1.1 H1c and TLS P2T-b merged). Date: 2026-11-01.
+Status: **design for concentrated re-review; no implementation authorized.**
+Revision 2 (2026-11-01): response to independent review
+`/tmp/opencode/http3-design-review-1793508586` (F1–F11, F29 and the low
+findings). Baseline: current `main`
+`544dff836eb9f3f815d71f29875e2db9c9c175ae` (HTTP/2 H2a/H2b/H2c, HTTP/1.1
+H1c and TLS P2T-b merged). Date: 2026-11-01.
 Current obo is `0.14`, symbol format 7, ABI 1. This note reserves no compiler,
 ABI, symbol-format, package, protocol or release version. It designs a
 server-side HTTP/3 origin server above the existing HTTP/1.1/2 server, systems
@@ -121,7 +124,7 @@ Summary of decisions:
 | `http1` | H1.1 parser/serializer/transport | H1a0/H1b/H1c, present |
 | `ngtcp2` | QUIC v1 transport, loss recovery, congestion, CID, packet writer, Retry/VN/stateless-reset helpers | system package, **not installed**; available in apt |
 | `nghttp3` | HTTP/3 framing, QPACK, control/QPACK stream state | system package, **not installed**; available in apt |
-| `GnuTLS` | TLS 1.3 handshake and QUIC secret callbacks | installed runtime; development headers available |
+| `GnuTLS` | TLS 1.3 handshake and QUIC secret callbacks | installed runtime 3.8.3; **development headers not installed**, available in `libgnutls28-dev` |
 
 The systems note's constraints apply unchanged: owned records move, references
 are not stored in fields or returned, public fields are untrusted at every
@@ -236,10 +239,16 @@ Version and license facts:
 `bookworm-security` entry, 2026-04-19). A pristine upstream 0.12.1 tarball does
 not contain that patch. The build must pin the patched Ubuntu package (or a
 later package with the same `NGTCP2_VERSION_NUM` and a reviewed patch set),
-not an arbitrary upstream 0.12.1 build. `libnghttp3-3 0.8.0-2` has no Ubuntu
+not an arbitrary upstream 0.12.1 build. CVE-2026-40170 is a qlog stack
+overflow; the shim does not enable qlog (`ngtcp2_settings.qlog` stays zero and
+no `log_printf` is installed), and the provenance manifest records that qlog
+is disabled at build and runtime. `libnghttp3-3 0.8.0-2` has no Ubuntu
 security update in this archive; that is a recorded risk, not a claim of
-safety. Upgrading nghttp3 or ngtcp2 beyond these exact API versions is a
-reviewed port, because 0.x APIs are not ABI-stable.
+safety. **Risk acceptance is an H3a prerequisite:** the experimental phase may
+use nghttp3 0.8.0 only with a written risk acceptance and pinned upstream
+hash; production use requires a reviewed nghttp3/ngtcp2 upgrade. Upgrading
+either beyond these exact API versions is a reviewed port, because 0.x APIs
+are not ABI-stable.
 
 ### 2.4 Tooling
 
@@ -331,11 +340,13 @@ must set `gnutls_session_set_ptr(session, &conn_ref)` with a C-owned
   is never authorization in v1.
 - No client-certificate request in v1. If client auth is added, it needs a
   separate trust and authorization design.
-- No session tickets, no resumption, no 0-RTT. No ticket key is installed;
-  `gnutls_record_set_max_early_data_size(session, 0)`. The integration test
-  asserts no NewSessionTicket and no accepted early data; if the pinned GnuTLS
-  still issues a ticket without an explicit key, the adapter disables server
-  ticket issuance before accepting and the test records the mechanism.
+- No session tickets, no resumption, no 0-RTT. Initialize the session with
+  `gnutls_init(&session, GNUTLS_SERVER | GNUTLS_NO_TICKETS |
+  GNUTLS_NO_AUTO_SEND_TICKET)`, omit `GNUTLS_ENABLE_EARLY_DATA`, and call
+  `gnutls_record_set_max_early_data_size(session, 0)`. `GNUTLS_NO_TICKETS`
+  disables ticket resumption and `GNUTLS_NO_AUTO_SEND_TICKET` disables TLS 1.3
+  auto-sent tickets; max-early-data alone is not a ticket-off switch. The
+  integration test asserts no NewSessionTicket and no accepted early data.
 - No OCSP fetch, no CRL fetch, no blocking verification, no hidden thread.
 - `gnutls_global_init()` is process-global and called once before the first
   context. The design is hosted single-threaded; worker TLS is a later
@@ -348,7 +359,10 @@ The shim is trusted C, reviewed like the TLS and H2 adapters, at
 
 - `ngtcp2_conn*`, its callbacks, CID routing table and Retry/stateless-reset
   secrets;
-- `nghttp3_conn*` and its callbacks, per-stream request/response buffers;
+- `nghttp3_conn*` and its callbacks (`begin_headers`, `recv_header`,
+  `end_headers`, `recv_data`, `deferred_consume`, `end_stream`,
+  `stream_close`, `stop_sending`, `reset_stream`), per-stream
+  request/response buffers;
 - the GnuTLS session and `ngtcp2_crypto_conn_ref`;
 - the fixed server and per-connection event rings;
 - the bounded wire batch and per-stream receive/send rings;
@@ -370,13 +384,13 @@ Representative C surface (names are implementation details, not a public ABI):
 | `q3_init` | none | `1` compatible, negative failure |
 | `q3_context_new` | options packet token, length | context token, negative status |
 | `q3_context_free` | context token | `1`/`0` |
-| `q3_server_new` | context token, limits packet token, length | server token, negative status |
+| `q3_server_new` | context token, limits packet token, length, local address packet token, length | server token, negative status |
 | `q3_server_free` | server token | `1`/`0` |
-| `q3_server_feed` | server token, buffer token, offset, count, segment size, peer packet token, length, now ns | segments consumed, negative status |
+| `q3_server_feed` | server token, buffer token, offset, count, segment size, peer packet token, length, now ns | GRO datagrams consumed, negative status |
 | `q3_server_next` | server token, now ns | event type, `0` none, negative status |
 | `q3_server_event_conn` | server token | connection id |
 | `q3_server_event_stream` | server token | stream id |
-| `q3_server_event_flags` | server token | flags (new, fin, local, path) |
+| `q3_server_event_flags` | server token | flags (new, fin, local, path, trailers) |
 | `q3_server_event_error` | server token | QUIC/H3 error code |
 | `q3_server_event_aux` | server token | last-stream-id, byte count, deadline |
 | `q3_server_event_peer` | server token, out packet token | peer address packet length |
@@ -391,7 +405,7 @@ Representative C surface (names are implementation details, not a public ABI):
 | `q3_conn_deadline` | connection token | earliest absolute ns, or `-1` |
 | `q3_conn_drain` | connection token | submits first GOAWAY, `1`/negative |
 | `q3_conn_drain_poll` | connection token, now ns | `1`/`0`/negative |
-| `q3_conn_goaway` | connection token, last stream id, error code | submits final GOAWAY |
+| `q3_conn_goaway` | connection token, last stream id | submits final GOAWAY (GOAWAY has no error code) |
 | `q3_conn_close` | connection token, error code | `1`/negative |
 | `q3_conn_stats` | connection token, out packet token | packet length |
 | `q3_conn_info` | connection token, out packet token | SNI/ALPN/path/stats packet |
@@ -434,10 +448,10 @@ typedef struct {
 | `Q3_EV_NEED_WRITE` | `EventNeedWrite` | pending output |
 | `Q3_EV_CONNECTION_NEW` | `EventConnectionNew` | first Initial accepted |
 | `Q3_EV_HANDSHAKE_DONE` | `EventHandshakeDone` | TLS handshake complete |
-| `Q3_EV_STREAM_OPENED` | `EventStreamOpened` | remote stream opened |
+| `Q3_EV_STREAM_OPENED` | `EventStreamOpened` | raw stream allocated; not a request |
+| `Q3_EV_HEADERS` | `EventHeaders` | complete request/trailer header block |
 | `Q3_EV_STREAM_DATA` | `EventStreamData` | receive ring has bytes |
 | `Q3_EV_STREAM_END` | `EventStreamEnd` | peer FIN |
-| `Q3_EV_TRAILERS` | `EventTrailers` | trailer block complete |
 | `Q3_EV_STREAM_CLOSED` | `EventStreamClosed` | reset/close |
 | `Q3_EV_PATH_CHANGED` | `EventPathChanged` | validated path update |
 | `Q3_EV_GOAWAY` | `EventGoaway` | peer GOAWAY |
@@ -577,7 +591,7 @@ private socket in the QUIC shim:
 pub type DatagramOptions = ref record {
     pub receiveBuffer: int       // SO_RCVBUF, default 4 MiB
     pub sendBuffer: int          // SO_SNDBUF, default 4 MiB
-    pub reusePort: bool          // explicit, default false
+    pub reusePort: bool          // default false; must be false for QUIC
     pub gro: bool                // try UDP_GRO, default true
     pub gso: bool                // try UDP_SEGMENT, default true
     pub dontFragment: bool       // IP_MTU_DISCOVER, default true
@@ -594,7 +608,7 @@ pub type Packet = ref record {
 pub fn bindDatagramOptions(a: &address::Address,
                            o: &DatagramOptions): Result[Datagram]
 pub fn receiveBatch(d: &Datagram, maxPackets: int,
-                    maxBytes: int): Result[[]Packet]
+                    maxBytes: int): Result[[]Packet]  // maxBytes = batch total
 pub fn sendBatch(d: &Datagram, to: &address::Address, bytes: &[]byte,
                  offset: int, count: int, segmentSize: int): Result[int]
 pub fn watchDatagram(r: &reactor::Reactor, d: &Datagram,
@@ -607,13 +621,25 @@ Rules:
   `bindDatagramOptions` is the QUIC path; it revalidates every field, sets
   `CLOEXEC` and nonblocking, and closes the socket on any post-bind failure.
 - `receiveBatch` requires `1 <= maxPackets <= 64` and
-  `1 <= maxBytes <= 65536`; it returns up to that many packets and never
-  silently truncates. `truncated` and `originalSize` are preserved. A single
-  `recvmmsg` call fills the batch; extra datagrams remain in the socket.
+  `1 <= maxBytes <= 65536`. `maxBytes` is the **total** byte budget for the
+  returned batch, not a per-packet bound: the sum of `Packet.bytes` is at most
+  `maxBytes`, so a 64-packet batch cannot allocate 4 MiB. A datagram larger
+  than `maxBytes` returns `Range` rather than silent truncation; the caller
+  retries with a larger budget (the maximum UDP datagram is 65,535 bytes).
+  `truncated`/`originalSize` are still preserved for kernel truncation. A
+  single `recvmmsg` call fills the batch; extra datagrams remain in the
+  socket.
 - If `UDP_GRO` is enabled and the kernel returns a coalesced buffer,
   `segmentSize` is the GRO segment size and `bytes` contains all segments; the
   final segment may be shorter. If GRO is unavailable or disabled,
-  `segmentSize == 0`. The consumer must be able to handle both.
+  `segmentSize == 0`. The consumer must be able to handle both. A GSO/GRO
+  **segment is one UDP datagram**, not one QUIC packet.
+- One UDP datagram can contain multiple coalesced QUIC packets (for example
+  Initial+Handshake, or Handshake+1-RTT). `q3_server_feed` passes the entire
+  segment/datagram to `ngtcp2_conn_read_pkt`; ngtcp2 0.12.1's compound-packet
+  path consumes them in order, with the 1-RTT packet last. The C return value
+  counts GRO segments/datagrams consumed, never QUIC packets. The shim does
+  not split on QUIC packet boundaries for a successful read.
 - `sendBatch` with `segmentSize == 0` sends exactly one datagram, all-or-error,
   like `send`. With `segmentSize > 0` it uses one `sendmsg` with a
   `UDP_SEGMENT` control message; all segments but the last must be exactly
@@ -623,6 +649,12 @@ Rules:
 - `watchDatagram` is the only readiness route. The typed helper validates the
   datagram's platform resource and calls `watchResource`; it exposes no fd.
   Level-triggered only.
+- The QUIC profile requires `reusePort=false` and a concrete local bind.
+  Multiple sockets with `SO_REUSEPORT` break the one-socket CID routing and
+  migration model; a wildcard local address is rejected because
+  `receiveBatch` does not return `IP_PKTINFO`. P2q may keep `reusePort` for
+  non-QUIC users, but `makeServer` rejects a wildcard local address and the
+  QUIC bind profile must not set it.
 - Linux is the v1 target. `UDP_SEGMENT` requires Linux 4.18+;
   `UDP_GRO` requires Linux 4.18+. `ENOPROTOOPT`/`EINVAL` disables the feature,
   not correctness. IPv4 and IPv6 are supported; Unix datagrams are rejected
@@ -641,9 +673,21 @@ responses are split across turns; there is no hidden send loop.
 
 One UDP socket serves every QUIC connection on a listener. A QUIC connection
 is identified by a Destination Connection ID, not by a peer address or a file
-descriptor.
+descriptor. The QUIC listener binds a **concrete** IPv4 or IPv6 address; a
+wildcard bind is rejected in v1 because `ngtcp2_path` needs the local address
+and `sysnet::receiveBatch` does not return `IP_PKTINFO`. Multi-homed/wildcard
+binding with per-datagram local addresses is deferred. `makeServer` reads
+`sysnet::datagramLocalAddress(d)` and passes that address packet to
+`q3_server_new`; the first remote address packet comes from `q3_server_feed`.
+The C shim forms `ngtcp2_path` with both for `ngtcp2_conn_server_new` and path
+validation. `q3_conn_info` returns the current local/remote path.
 
-- On the first client Initial, the shim calls `ngtcp2_accept`. It validates
+- On the first client Initial, the shim uses
+  `ngtcp2_pkt_decode_version_cid` first. If it returns
+  `NGTCP2_ERR_VERSION_NEGOTIATION`, C writes Version Negotiation from the
+  decoded DCID/SCID and drops the packet; it does not rely on `ngtcp2_accept`
+  filling a destination header for an unsupported version. For v1, it then
+  calls `ngtcp2_accept`. It validates
   version, DCID length (>= 8 for the initial DCID), packet size (>= 1200 for
   Initial), and the token policy. Invalid packets are dropped before any
   connection state is allocated.
@@ -651,11 +695,13 @@ descriptor.
   peer address, port, time or a sequence number. The CID is a random routing
   key, not a capability.
 - The shim keeps a C-only hash table from CID bytes to connection record and
-  generation. It supports the initial SCID plus up to
-  `active_connection_id_limit=4` issued CIDs. `get_new_connection_id` fills a
-  random CID and a stateless-reset token derived with
-  `ngtcp2_crypto_generate_stateless_reset_token(token, secret, cid)`. Old CIDs
-  are retired on `remove_connection_id`.
+  generation. The server advertises `active_connection_id_limit=4`, which is
+  the number of **peer-issued** CIDs the server is willing to store, not the
+  number it issues. The server issues its own CIDs through
+  `get_new_connection_id`, which fills a random CID and a stateless-reset token
+  derived with `ngtcp2_crypto_generate_stateless_reset_token(token, secret,
+  cid)`. The routing table holds the initial SCID plus all live issued CIDs.
+  Old CIDs are retired on `remove_connection_id`.
 - `original_dcid` and `retry_scid` are set in `ngtcp2_transport_params`
   exactly as RFC 9000 requires, including after Retry; `initial_scid` is
   library-owned and must not be set by the application. The Retry token
@@ -710,6 +756,9 @@ descriptor.
   phase may raise the payload after GSO/GRO and black-hole tests.
 - `initial_rtt=100ms`, `ack_thresh=2`, default `max_ack_delay`; these are
   ngtcp2 defaults unless the limits packet overrides them for tests.
+- qlog is disabled: `ngtcp2_settings.qlog` is zero and no `log_printf` is
+  installed. This avoids the qlog path implicated by CVE-2026-40170; the
+  patched package pin is still required.
 - The shim calls `ngtcp2_conn_get_expiry(conn)`; the minimum over all
   connections is the server deadline. When `now >= expiry`, it calls
   `ngtcp2_conn_handle_expiry(conn, now)` and then writes packets. C never
@@ -730,7 +779,7 @@ C stores `int64` nanoseconds plus a finite flag. C never calls `clock_gettime`.
 |---|---|---|
 | QUIC handshake | ngtcp2 | `handshake_timeout=10s` from `initial_ts`; expiry -> close |
 | QUIC loss/PTO/idle | ngtcp2 | `get_expiry`/`handle_expiry`; obo arms a reactor timer |
-| HTTP/3 header | obo | 10s from first request byte |
+| HTTP/3 header | obo | 10s from stream record creation (first STREAM frame or `stream_open`), not first byte |
 | HTTP/3 body idle | obo | 30s, renewed only by decoded body progress |
 | HTTP/3 response idle | obo | 60s, renewed only by a positive datagram write |
 | HTTP/3 stream total | obo | 300s from request stream open |
@@ -749,10 +798,11 @@ and after I/O so a timeout is not delayed behind a busy batch.
 ### 4.7 0-RTT and early data
 
 **v1 decision: disabled.** There is no session ticket, no PSK, no early data,
-and no `Early-Data` header. The server does not call
-`gnutls_record_set_max_early_data_size` with a nonzero value and does not
-install a ticket key. If a client sends 0-RTT data without an accepted ticket,
-the TLS handshake rejects it; ngtcp2 discards the early packets. The shim still
+and no `Early-Data` header. `quictls` uses
+`GNUTLS_NO_TICKETS | GNUTLS_NO_AUTO_SEND_TICKET`, does not enable
+`GNUTLS_ENABLE_EARLY_DATA`, and sets `gnutls_record_set_max_early_data_size`
+to 0. If a client sends 0-RTT data without an accepted ticket, the TLS
+handshake rejects it; ngtcp2 discards the early packets. The shim still
 recognizes `NGTCP2_STREAM_DATA_FLAG_EARLY` and treats any early application
 bytes as a protocol error/drop, never as a request.
 
@@ -780,21 +830,27 @@ hidden H3b deliverable.
 
 ### 4.9 Stateless reset and version negotiation
 
-- Stateless reset is sent only for a packet with an unknown DCID whose length
-  is >= 21 bytes and for which a reset token is known. The response is a
-  short-header packet with a random length in `[21, 40]`, no larger than the
-  triggering packet, written by `ngtcp2_pkt_write_stateless_reset`.
+- Stateless reset is sent only for a **short-header** packet with an unknown
+  DCID whose length is >= 21 bytes and for which a reset token is known. A
+  long-header packet with an unknown DCID gets Version Negotiation, Retry or a
+  drop, never a stateless reset. The response is a short-header packet with a
+  random length in `[21, 40]`, no larger than the triggering packet, written by
+  `ngtcp2_pkt_write_stateless_reset`.
 - Rate limits: global `maxStatelessResetsPerSecond=100`, per-peer
   `maxStatelessResetsPerPeerPerSecond=4`, token table capped at 256. A reset
   is never a new connection and never allocates a `Connection` shell.
-- Version negotiation: `ngtcp2_accept` returns
-  `NGTCP2_ERR_VERSION_NEGOTIATION` for a long-header Initial with an
-  unsupported version. The shim writes a Version Negotiation packet with
-  `ngtcp2_pkt_write_version_negotiation` listing only
-  `NGTCP2_PROTO_VER_V1` and drops the packet. It does not create state and does
-  not echo the client's version as supported. A v2-only client fails and may
-  retry v1; there is no v2 support in this pin.
-- A Version Negotiation packet is not sent in response to a packet smaller than
+- Version negotiation: C first calls `ngtcp2_pkt_decode_version_cid` on a
+  long-header packet (`short_dcidlen=0`). If it returns
+  `NGTCP2_ERR_VERSION_NEGOTIATION`, C writes
+  a Version Negotiation packet with `ngtcp2_pkt_write_version_negotiation`
+  using the decoded DCID/SCID and listing only `NGTCP2_PROTO_VER_V1`; it never
+  relies on `ngtcp2_accept` to fill a header for an unsupported version. For a
+  supported v1 packet, C then calls `ngtcp2_accept` for the Initial checks.
+  It does not create state and does not echo the client's version as
+  supported. A v2-only client fails and may retry v1; there is no v2 support in
+  this pin.
+- `ngtcp2_accept` is called outside all ngtcp2/nghttp3/GnuTLS callbacks. A
+  Version Negotiation packet is not sent in response to a packet smaller than
   the minimum Initial size or to a non-Initial long-header packet.
 
 ### 4.10 Connection close and draining
@@ -886,10 +942,22 @@ Request pseudo-headers:
 |---|---|
 | `:method` | required; token; no control bytes |
 | `:scheme` | required; must be `https` in v1 |
-| `:authority` | required for origin-form; no userinfo; bounded 1024 bytes |
+| `:authority` | required for origin-form when `requireAuthority=true` (default); optional (empty) when false; no userinfo; bounded 1024 bytes |
 | `:path` | required except `CONNECT` (rejected); raw target, no decoding/normalization |
 | `:protocol` | forbidden; Extended CONNECT disabled |
 | `:status` | forbidden in requests |
+
+Request event timing: a client bidi stream exists as soon as its first STREAM
+frame arrives, and ngtcp2 may open it implicitly without calling
+`ngtcp2_stream_open`. The shim therefore allocates a lightweight header-wait
+stream record on `ngtcp2_stream_open` **or** the first STREAM/HEADERS callback,
+and emits `Q3_EV_HEADERS` (not `Q3_EV_STREAM_OPENED`) only after
+`nghttp3_end_headers` completes the request header block. `http3::EventRequest`
+is derived from that event. `requestInfo`/`runAction` return `NotReady` before
+it. A HEADERS+DATA+FIN packet produces `EventHeaders`, then data/end events, in
+that order. A stream opened with an empty STREAM frame and no HEADERS stays
+header-wait until `headerTimeoutMs` and is then reset, so 32 streams per
+connection cannot be held for 300 s with zero bytes.
 
 Rules:
 
@@ -923,7 +991,7 @@ pub type ProtocolKind = closed {
 }
 
 pub type Failure = closed {
-    /* existing variants */
+    /* existing 1..25 variants */
     Qpack {}
     TransportParameter {}
     VersionNegotiation {}
@@ -932,11 +1000,46 @@ pub type Failure = closed {
     Migration {}
     StatelessReset {}
 }
+
+pub const FAIL_QPACK = 26
+pub const FAIL_TRANSPORT_PARAM = 27
+pub const FAIL_VERSION_NEGOTIATION = 28
+pub const FAIL_CONNECTION_ID = 29
+pub const FAIL_EARLY_DATA = 30
+pub const FAIL_MIGRATION = 31
+pub const FAIL_STATELESS_RESET = 32
 ```
 
-`RequestMeta.versionMajor=3`, `versionMinor=0`; `streamID` is the QUIC stream
-ID; `secure=true`; `scheme="https"`; `target` is the raw `:path`; `authority`
-is `:authority`; `headers` excludes pseudo-headers. No `Host` is synthesized.
+The existing `httpapi` `FAIL_*` allocation ends at 25 and is shared with the H2
+C shim. These seven new codes are additive; H2's 1..25 values do not move.
+`httpapi::failure`/`text` gain the corresponding arms. The H2 C shim keeps its
+existing numeric mapping.
+
+`RequestMeta` mapping from HTTP/3:
+
+| `RequestMeta` field | Source |
+|---|---|
+| `protocol` | `ProtocolHttp3` |
+| `streamID` | QUIC client-initiated bidi stream ID |
+| `method` | `:method` |
+| `target` | raw `:path`, no decoding or normalization |
+| `path` | bytes before the first `?`; `*` for `OPTIONS *` |
+| `query` | bytes after the first `?`, without `?`; empty if absent |
+| `scheme` | `:scheme`; must be `https` in v1 |
+| `authority` | `:authority`; empty only when `Options.requireAuthority=false` |
+| `versionMajor` / `versionMinor` | `3` / `0` |
+| `headers` | regular fields in order; pseudo-headers excluded |
+| `secure` | `true` |
+| `hasBody` | HEADERS did not carry END_STREAM |
+| `hasContentLength` | exactly one valid `content-length` field |
+| `contentLength` | parsed nonnegative value, else `0` with `hasContentLength=false` |
+
+`Options.requireAuthority` defaults to true: an origin-form request with no
+`:authority` is rejected with `400`/stream reset. When false, an absent
+authority yields `authority=""` and the handler decides; `Host` is never
+synthesized. `:authority`/`Host` disagreement is always `400`/stream reset.
+Duplicate `:authority`, duplicate `:path`, invalid percent-like bytes and
+control bytes are rejected before `RequestMeta` is built.
 
 ### 5.4 DATA, trailers and body flow
 
@@ -980,8 +1083,10 @@ is `:authority`; `headers` excludes pseudo-headers. No `Host` is synthesized.
 - New request streams above the GOAWAY cutoff get `H3_REQUEST_REJECTED`
   (0x010b) or `H3_REQUEST_CANCELLED` (0x010c) as appropriate. Existing
   requests finish until `drainTimeoutMs`.
-- Concurrent request limit: `maxConcurrentRequests=32`
-  (`initial_max_streams_bidi=32`, `nghttp3_conn_set_max_concurrent_streams`).
+- Concurrent request limit: `maxConcurrentRequests=32`, enforced by QUIC
+  `initial_max_streams_bidi=32` and the C stream table. The
+  `nghttp3_conn_set_max_concurrent_streams(32)` call is only a QPACK/internal
+  resource hint; it is not the transport concurrency limit.
   Total requests per connection: `maxRequestsPerConnection=1000`
   (`nghttp3_conn_set_max_client_streams_bidi(1000)`). A 33rd concurrent stream
   is refused without allocating a new stream record.
@@ -997,9 +1102,10 @@ is `:authority`; `headers` excludes pseudo-headers. No `Host` is synthesized.
 ### 5.6 QPACK
 
 QPACK is RFC 9204. Dynamic table: decoder max capacity 4096, encoder max 4096,
-blocked streams
-  16. A dynamic-table capacity update above the advertised value is
-  `QPACK_DECOMPRESSION_FAILED` (0x0200).
+blocked streams 16. A dynamic-table capacity update above the advertised value
+is a QPACK **encoder-stream** error: `QPACK_ENCODER_STREAM_ERROR` (0x0201), per
+RFC 9204 §4.3.1. It is not a decoder decompression failure.
+
 - Header field section: `max_field_section_size=16384` decoded; header count
   100; field 8192; raw compressed block budget 65536. Exceeding the decoded
   list is a stream error (`H3_EXCESSIVE_LOAD`, 0x0107) after one reset;
@@ -1160,10 +1266,14 @@ pub type Stream = ref record { pub res: platform::Resource }
 Lifecycle:
 
 - `makeContext(options)` loads cert/key into C and registers
-  `KIND_QUIC_CONTEXT`. On failure no token remains.
+  `KIND_QUIC_CONTEXT`. On failure no token remains. `closeContext(ctx)` is the
+  explicit abandon path when the application never calls `makeServer`; it
+  retires the context token exactly once and returns false on a second close.
 - `makeServer(ctx, d, limits, options)` moves `ctx` and `d` into the server,
-  registers `KIND_QUIC_SERVER`, and adopts the token. On any validation
-  failure it closes `d` and `ctx` exactly once and returns no server.
+  reads `sysnet::datagramLocalAddress(d)`, rejects a wildcard/unspecified local
+  address with `InvalidArgument` (v1 requires a concrete bind), registers
+  `KIND_QUIC_SERVER`, and adopts the token. On any validation failure it closes
+  `d` and `ctx` exactly once and returns no server.
 - `drainServer(server)` stops accepting, starts GOAWAY on every established
   connection, and keeps the server open until `serverDrainComplete` or the
   application deadline. `closeServer(server)` is abortive: it closes remaining
@@ -1171,13 +1281,16 @@ Lifecycle:
   server token. A second close returns `ok(false)`. Graceful shutdown is
   `drainServer` -> pump `next` -> `closeServer`.
 - `openConnection(server, id)` adopts a C connection exactly once; a second
-  call returns `AlreadyExists`; an unknown/closed id returns `StreamClosed`.
+  call returns `AlreadyExists`; an unknown/closed id returns `Closed`; a
+  negative/zero id returns `InvalidArgument`.
   If `_adoptToken` fails, `q3_conn_abandon` is idempotent and performs exactly
   one native release. `openConnection` copies `reservation(s.limits)` into the
   shell's private `reserved` scalar. The caller calls `Admission.admit()`
   before `openConnection`; `reservedBytes(c)` returns the stored
   per-connection reservation after `closeConnection`, so the application can
-  release the admission without reading a stale token.
+  release the admission without reading a stale token. Before adoption C caps
+  all per-connection buffering at `pendingReservation` and closes an
+  unadopted handshake after `pendingAdoptTimeoutMs`; see §7.5.
 - `close(conn)` is abortive and idempotent; live streams are orphaned.
 - `http3::enable(conn, limits)` is called once after `EventHandshakeDone`; it
   opens the server control/QPACK streams and creates the nghttp3 connection.
@@ -1185,8 +1298,10 @@ Lifecycle:
   `ok(false)`. It is not a hidden side effect of `openConnection`. `H3Limits`
   must not exceed the server's `Limits` header/QPACK/body/stream caps; an
   inconsistent profile is `InvalidArgument`, not a second hidden budget.
-- `openStream(conn, id)` adopts a C request stream exactly once; a second call
-  returns `AlreadyExists`; a closed id returns `StreamClosed`.
+- `openStream(conn, id)` adopts a C request stream exactly once **after**
+  `EventRequest`/`EventHeaders`; before the request header block is complete it
+  returns `NotReady`. A second call returns `AlreadyExists`; a closed id
+  returns `StreamClosed`.
 - `closeStream(s)`/`reset(s, code)` mark closing, submit RESET_STREAM/
   STOP_SENDING or the response end, and retire the token. The C record is
   freed only by the post-feed/post-send sweep after nghttp3/ngtcp2 reports the
@@ -1271,6 +1386,10 @@ pub type Limits = ref record {
     pub maxStreamsPerConnection: int
     pub maxResetBurst: int
     pub maxResetRate: int
+    pub maxDatagramBurst: int
+    pub maxDatagramRate: int
+    pub maxTinyDatagramBurst: int
+    pub maxTinyDatagramRate: int
     pub maxPathChangesPerMinute: int
     pub maxStatelessResetsOutstanding: int
     pub maxStatelessResetsPerSecond: int
@@ -1311,9 +1430,9 @@ pub type Event = closed {
     EventConnectionNew { conn: int }
     EventHandshakeDone { conn: int }
     EventStreamOpened { conn: int; stream: int; bidi: bool }
+    EventHeaders { conn: int; stream: int; trailers: bool }
     EventStreamData { conn: int; stream: int }
     EventStreamEnd { conn: int; stream: int }
-    EventTrailers { conn: int; stream: int }
     EventStreamClosed { conn: int; stream: int; code: int }
     EventPathChanged { conn: int }
     EventGoaway { conn: int; lastStreamID: int }
@@ -1324,11 +1443,12 @@ pub type Event = closed {
 }
 
 pub fn makeContext(o: &ContextOptions): Result[Context]
+pub fn closeContext(c: Context): Result[bool]
 pub fn makeServer(ctx: Context, d: net::Datagram, l: &Limits,
                   o: &Options): Result[Server]
 pub fn serverID(s: &Server): Result[int]
 pub fn next(mut s: &Server, now: &http::Now): Result[Event]
-pub fn deadline(s: &Server): Result[clock::Deadline>
+pub fn deadline(s: &Server): Result[clock::Deadline]
 pub fn wantsRead(s: &Server): bool
 pub fn wantsWrite(s: &Server): bool
 pub fn watch(mut s: &Server, r: &reactor::Reactor,
@@ -1378,6 +1498,7 @@ pub type Counts = ref record {
     pub datagramsOut: int
     pub bytesIn: int
     pub bytesOut: int
+    pub deferredConsumed: int
     pub eventsHighWater: int
     pub wireHighWater: int
     pub timeouts: int
@@ -1401,6 +1522,7 @@ pub type Stats = ref record {
     pub datagramsOut: int
     pub bytesIn: int
     pub bytesOut: int
+    pub deferredConsumed: int
     pub eventsHighWater: int
     pub wireHighWater: int
     pub recvWindow: int
@@ -1422,12 +1544,14 @@ import "sys/sysclock.obx" as clock
 pub type H3Limits = ref record {
     pub maxConcurrentRequests: int
     pub maxRequestsPerConnection: int
+    pub maxUniStreams: int
     pub maxHeaderListBytes: int
     pub maxHeaderCount: int
     pub maxHeaderFieldBytes: int
     pub maxHeaderBlockBytes: int
     pub maxQpackTable: int
     pub maxQpackBlocked: int
+    pub maxQpackStreamBytes: int
     pub maxTrailerBytes: int
     pub maxTrailerCount: int
     pub maxBody: int
@@ -1527,11 +1651,11 @@ pub fn stats(c: &quic::Connection): Result[quic::Stats>
 | `EventNeedRead`/`EventNeedWrite` | same | pass through |
 | `EventConnectionNew` | `EventConnectionNew` | caller adopts and enables H3 |
 | `EventHandshakeDone` | `EventHandshakeDone` | caller calls `http3::enable` |
-| `EventStreamOpened { bidi=true }` | `EventRequest` | client bidi stream is a request |
-| `EventStreamOpened { bidi=false }` | ignored | control/QPACK/unknown uni |
-| `EventStreamData` | `EventRequestData` | only for an adopted request |
+| `EventStreamOpened` | ignored | raw stream allocated; not a request |
+| `EventHeaders { trailers=false }` | `EventRequest` | request HEADERS complete; `requestInfo` valid |
+| `EventHeaders { trailers=true }` | `EventTrailers` | request trailer block complete |
+| `EventStreamData` | `EventRequestData` | only after `EventRequest` |
 | `EventStreamEnd` | `EventRequestEnd` | request END_STREAM |
-| `EventTrailers` | `EventTrailers` | request trailer block complete |
 | `EventStreamClosed` | `EventStreamClosed` | response/reset close |
 | `EventPathChanged` | same | peer path updated |
 | `EventGoaway` | same | peer GOAWAY |
@@ -1675,7 +1799,10 @@ the handler function value, the slots and the `Admission`.
 
 `Draining` is entered by `drainServer` or an application policy (stop
 accepting). It is not automatically entered on one connection's GOAWAY.
-`closeServer` moves directly to `Closing`.
+`closeServer` moves directly to `Closing`. It poisons the server generation;
+live `Connection`/`Stream` shells then fail their own kind/generation checks
+and all operations return `Closed`/`InvalidResource`. It does not free those
+caller-owned shells.
 
 ### 7.2 Connection state
 
@@ -1752,7 +1879,7 @@ checked arithmetic; a reservation below the minimum is
 
 | Limit | Default | Rule |
 |---|---|---|
-| `maxConnections` | 14 | established/draining connections |
+| `maxConnections` | 8 | established/draining connections |
 | `maxPendingHandshakes` | 32 | unadopted handshakes without a validated address |
 | `maxTotalBytes` | 67108864 | 64 MiB aggregate reservation |
 | `maxConcurrentRequests` | 32 | 1..256; `initial_max_streams_bidi` |
@@ -1783,6 +1910,10 @@ checked arithmetic; a reservation below the minimum is
 | `maxStreamsPerConnection` | 1000 | total opened; then GOAWAY |
 | `maxResetBurst` | 100 | reset token bucket |
 | `maxResetRate` | 20 | resets/second |
+| `maxDatagramBurst` | 4000 | inbound datagram bucket |
+| `maxDatagramRate` | 2000 | inbound datagrams/second |
+| `maxTinyDatagramBurst` | 200 | ACK-only/short datagram bucket |
+| `maxTinyDatagramRate` | 100 | short datagrams/second |
 | `maxPathChangesPerMinute` | 4 | validated path changes |
 | `maxStatelessResetsOutstanding` | 256 | tombstone cap |
 | `maxStatelessResetsPerSecond` | 100 | global reset rate |
@@ -1815,11 +1946,13 @@ Validation checks (exact):
 - `maxWire >= maxUdpPayload * maxBatchDatagrams` and
   `maxWire >= 65536`; `maxBatchDatagrams <= 64`.
 - `maxEvents >= 5 * maxConcurrentRequests + 32`.
+- `maxTinyDatagramBurst <= maxDatagramBurst`;
+  `maxTinyDatagramRate <= maxDatagramRate`.
 - Timeouts fit checked millisecond-to-nanosecond conversion.
 - `maxPendingHandshakes <= 64`;
   `maxTotalBytes >= maxConnections * perConnectionReservation +
-  maxPendingHandshakes * pendingReservation`; otherwise `ResourceLimit`, not a
-  silent lower budget.
+  maxPendingHandshakes * pendingReservation + libraryReserve`; otherwise
+  `ResourceLimit`, not a silent lower budget.
 
 Per-connection reservation:
 
@@ -1827,27 +1960,37 @@ Per-connection reservation:
 perConnectionReservation =
     maxConcurrentRequests * (maxStreamRecvWindow + maxStreamSendBuffer)
   + maxHeaderArena
+  + maxQpackBlocked * maxHeaderBlockBytes
+  + maxQpackStreamBytes
+  + maxUniStreams * maxReadChunk
   + maxEvents * 32
   + maxWire
   + fixedOverhead(65536)
 ```
 
-Defaults: `32*(32768+32768) = 2,097,152`; `+ 1,572,864 + 8,192 + 65,536 +
-65,536 = 3,809,280` bytes (~3.63 MiB). `14 * 3,809,280 = 53,329,920` bytes
-(~50.9 MiB), plus `32 * 65,536 = 2,097,152` pending bytes (~2.0 MiB) =
-55,427,072 bytes (~52.9 MiB), under the 64 MiB platform default. TLS/GnuTLS,
-ngtcp2's internal
-loss/crypto heap and nghttp3's internal heap are **outside** this charge;
-choose `maxConnections` with headroom or raise the platform budget. The
-reservation is charged at `openConnection` adoption; pending handshakes get a
-small fixed pending charge (`pendingReservation=65536`) and are capped by
-`maxPendingHandshakes`.
+Defaults: `32*(32768+32768) = 2,097,152`; `+ 1,572,864` header arena
+`+ 1,048,576` blocked QPACK blocks `+ 262,144` QPACK streams `+ 131,072` uni
+windows `+ 8,192` events `+ 65,536` wire `+ 65,536` overhead =
+**5,251,072 bytes (~5.01 MiB)** per connection. `8 * 5,251,072 = 42,008,576`
+bytes (~40.1 MiB), plus `32 * 65,536 = 2,097,152` pending bytes (~2.0 MiB) and
+`libraryReserve=16,777,216` (~16.0 MiB) = **60,882,944 bytes (~58.1 MiB)**,
+under the 64 MiB platform default. This leaves ~5.9 MiB for allocator and
+measurement error. `libraryReserve` is the explicit allowance for the
+ngtcp2/nghttp3/GnuTLS base heaps and their internal queues; these heaps are
+not fully charged per connection, so the reserve is a validation floor, not a
+claim that they are counted exactly.
+
+The reservation is charged at `openConnection` adoption. Pending handshakes
+are charged `pendingReservation=65536` each and are capped by
+`maxPendingHandshakes`; see §7.5 for the pre-adoption buffering rule.
 
 Fixed constants that are not per-profile `Limits` fields:
 
 | Constant | Value | Use |
 |---|---|---|
 | `pendingReservation` | 65536 | charge per unadopted handshake |
+| `pendingAdoptTimeoutMs` | 1000 | close an unadopted handshake |
+| `libraryReserve` | 16777216 | ngtcp2/nghttp3/GnuTLS heap floor |
 | `maxDatagramsPerTurn` | 16 | receive fairness |
 | `maxSendDatagrams` | 16 | send fairness, one batch |
 | `maxStreamWorkPerTurn` | 16384 | per-stream body work |
@@ -1863,6 +2006,30 @@ Fixed constants that are not per-profile `Limits` fields:
 is loopback-test only.
 
 ### 7.5 Flow control and backpressure
+
+**Pre-adoption buffering invariant (F3).** A connection created on the first
+Initial is not adopted until the application calls `openConnection` and
+`platform::_adoptToken` succeeds. Until `q3_conn_markAdopted`:
+
+- C allocates only the fixed connection record, handshake state and at most
+  `pendingReservation=65536` bytes of C-owned handshake/stream staging; it does
+  **not** allocate the per-connection header arena, event/wire rings, body
+  rings or per-stream receive/send rings.
+- C does not parse or surface HTTP/3 request events. Application stream bytes
+  are not read past the pending staging cap; QUIC flow control is not extended
+  for them.
+- If the cap is reached, or `pendingAdoptTimeoutMs=1000` expires after
+  `EventConnectionNew`, the connection is closed with
+  `CONNECTION_CLOSE(H3_EXCESSIVE_LOAD)` and no stream shell exists.
+- The application should adopt on the same turn as `EventConnectionNew`; a
+  slow adopter stalls, it does not silently spend the full reservation.
+
+This makes `maxPendingHandshakes * pendingReservation` a real upper bound for
+C-owned staging (32 * 64 KiB = 2 MiB), not a bookkeeping fiction. ngtcp2/GnuTLS
+per-handshake state is not in that number; it is covered by `libraryReserve`,
+and `maxPendingHandshakes=32` is chosen so the base handshake state fits inside
+the 16 MiB reserve. The memory test in §9.6 measures the actual high-water
+mark.
 
 - Advertised QUIC transport parameters:
   `initial_max_data = maxConnectionWindow`,
@@ -1885,6 +2052,13 @@ is loopback-test only.
   DATA payload). For DATA, the `recv_data` callback supplies the byte count and
   the shim extends only after those bytes leave the ring. There is no
   double-extend path.
+- `nghttp3_callbacks.deferred_consume` is installed. For a stream blocked on
+  QPACK, nghttp3 later reports `consumed` bytes; the shim calls
+  `ngtcp2_conn_extend_max_stream_offset(stream_id, consumed)` and
+  `ngtcp2_conn_extend_max_offset(consumed)` exactly once, and increments
+  `Counts.deferredConsumed`. Those bytes must not also be counted from
+  `read_stream` or `recv_data`. Without this callback, 16 blocked streams
+  exhaust credit and the peer stalls.
 - A stalled stream can hold at most its stream window. The connection window
   is `maxConcurrentRequests * maxStreamRecvWindow`; all streams stalled is the
   fair worst case, not one stream starving the rest.
@@ -1912,7 +2086,7 @@ CONNECTION_CLOSE when possible; a handshake timeout closes silently.
 Fairness rules:
 
 - At most one `receiveBatch` and one send batch per `next`.
-- At most `maxDatagramsPerTurn=16` received and `maxSendDatagrams=32` sent.
+- At most `maxDatagramsPerTurn=16` received and `maxSendDatagrams=16` sent.
 - At most `maxStreamWorkPerTurn=16384` body bytes per stream per turn.
 - At most 32 events drained per application turn.
 - Timers are checked every turn even under continuous traffic.
@@ -1932,9 +2106,10 @@ Fairness rules:
 | NAT rebinding spoof | path validation; CID live; address parsed/validated | only validated path accepted |
 | QPACK bomb | 4 KiB table, 16 blocked, 16 KiB field section, 100 fields, 8 KiB field, 64 KiB block | stream `H3_EXCESSIVE_LOAD`/`QPACK_DECOMPRESSION_FAILED` |
 | Header list flood | header cap, arena cap, header deadline | one stream reset; connection survives |
-| Rapid reset | reset token bucket 100/20 per s, 1000 streams/conn, 32 concurrent | GOAWAY(`H3_EXCESSIVE_LOAD`) |
+| Rapid reset | reset token bucket 100/20 per s, 1000 streams/conn, 32 concurrent | GOAWAY(last stream ID), then CONNECTION_CLOSE(`H3_EXCESSIVE_LOAD`) |
 | Stream limit abuse | 32 concurrent, 8 uni, 1000 total | `STREAM_LIMIT_ERROR`/`H3_REQUEST_REJECTED` |
 | Zero/slow data | handshake/header/body/response/stream deadlines; idle timeout | reset/close; no timer reset by zero bytes |
+| ACK-only/short-datagram flood | per-connection datagram bucket 4000/2000 per s and tiny-datagram bucket 200/100 per s; 64-byte threshold | GOAWAY(last stream ID), then CONNECTION_CLOSE(`H3_EXCESSIVE_LOAD`) |
 | Ping/ACK/frame flood | ngtcp2 ACK/flow control; per-turn datagram/stream work caps | bounded CPU; close on persistent abuse |
 | Connection ID flood | `active_connection_id_limit=4`; CID table cap; retire | `CONNECTION_ID_LIMIT_ERROR` |
 | NEW_CONNECTION_ID flood | limit 4 active; routing table cap | protocol error/close |
@@ -1958,8 +2133,9 @@ address. ngtcp2 enforces the limit; the shim must not bypass it by writing
 application data early or by sending a large Retry packet. Retry validates the
 address before connection state is allocated. A public listener defaults to
 `RetryAlways`; a loopback test profile may disable it. The Retry token is the
-only state carried across the first round trip; it is authenticated, not
-encrypted for confidentiality (it contains a CID and timestamp, not secrets).
+only state carried across the first round trip; ngtcp2's generator
+AEAD-encrypts and authenticates it (ODCID, address, version and timestamp), so
+the client cannot read or forge the contents.
 
 ### 8.3 0-RTT replay policy
 
@@ -2000,9 +2176,12 @@ shape is the same: open a stream, send minimal data, reset it, repeat. Controls:
 
 - 32 concurrent request streams, 8 client uni streams, 1000 total streams per
   connection.
-- Reset token bucket: burst 100, rate 20/s. Exceeding it closes with
-  `H3_EXCESSIVE_LOAD`/`ENHANCE_YOUR_CALM`-equivalent policy; there is no
-  HTTP/2 `ENHANCE_YOUR_CALM` code in HTTP/3, so use `H3_EXCESSIVE_LOAD`.
+- Reset token bucket: burst 100, rate 20/s. HTTP/3 GOAWAY carries only a
+  stream ID, not an error code. Exceeding the bucket sends GOAWAY with the last
+  accepted request stream ID and then CONNECTION_CLOSE with the HTTP/3
+  application error `H3_EXCESSIVE_LOAD` (0x0107); a severe storm may skip
+  GOAWAY and close immediately. There is no HTTP/2 `ENHANCE_YOUR_CALM` code in
+  HTTP/3.
 - Every reset/close with unread DATA extends connection credit before the
   record is reaped.
 - A reset storm must not allocate a new stream record after the cap; the C
@@ -2013,7 +2192,11 @@ shape is the same: open a stream, send minimal data, reset it, repeat. Controls:
 ### 8.7 Slowloris and timers
 
 - Handshake timeout 10s; pending handshake cap 32.
-- Header timeout 10s from the first request byte.
+- Header timeout 10s from stream record creation (first STREAM frame or
+  `stream_open`), not from the first header byte. A zero-byte stream opened
+  with an empty STREAM frame is reset after 10s; it cannot sit for the 300s
+  stream-total bound. At 32 streams per connection and 8 connections, at most
+  256 such header-wait records exist.
 - Body idle 30s, renewed only by decoded body progress.
 - Response idle 60s, renewed only by a positive datagram write.
 - Stream total 300s; response total 300s.
@@ -2046,7 +2229,7 @@ shape is the same: open a stream, send minimal data, reset it, repeat. Controls:
 | `NGTCP2_ERR_DRAINING` | `Closed` | no new work |
 | `NGTCP2_ERR_VERSION_NEGOTIATION` | `VersionNegotiation` | send VN, drop |
 | `NGTCP2_ERR_HANDSHAKE_TIMEOUT` | `Timeout` | CONNECTION_CLOSE `NO_ERROR` |
-| `NGTCP2_ERR_CRYPTO` | `TlsFailure{gnutlsCode}` | CONNECTION_CLOSE `CRYPTO_ERROR` |
+| `NGTCP2_ERR_CRYPTO` | `TlsFailure{tlsCode: int}` | CONNECTION_CLOSE `CRYPTO_ERROR`; code is GnuTLS/alert |
 | `NGTCP2_ERR_PROTO` | `ProtocolFailure` | `PROTOCOL_VIOLATION` |
 | `NGTCP2_ERR_TRANSPORT_PARAM` | `TransportParameter` | `TRANSPORT_PARAMETER_ERROR` |
 | `NGTCP2_ERR_CONNECTION_ID_LIMIT` | `ConnectionID` | `CONNECTION_ID_LIMIT_ERROR` |
@@ -2061,7 +2244,9 @@ shape is the same: open a stream, send minimal data, reset it, repeat. Controls:
 | `NGTCP2_ERR_IDLE_CLOSE` | `Timeout` | close silently |
 | `NGTCP2_ERR_STREAM_DATA_BLOCKED`/`STREAM_SHUT_WR` | none | block, then resume |
 | `NGTCP2_ERR_INVALID_ARGUMENT` | `Internal` | close and report |
-| `NGHTTP3_ERR_QPACK_*` | `Qpack` | `QPACK_DECOMPRESSION_FAILED` |
+| `NGHTTP3_ERR_QPACK_DECOMPRESSION_FAILED` | `Qpack` | `QPACK_DECOMPRESSION_FAILED` (0x0200) |
+| `NGHTTP3_ERR_QPACK_ENCODER_STREAM_ERROR` | `Qpack` | `QPACK_ENCODER_STREAM_ERROR` (0x0201) |
+| `NGHTTP3_ERR_QPACK_DECODER_STREAM_ERROR` | `Qpack` | `QPACK_DECODER_STREAM_ERROR` (0x0202) |
 | `NGHTTP3_ERR_H3_FRAME_ERROR` | `BadFrame` | `H3_FRAME_ERROR` |
 | `NGHTTP3_ERR_H3_FRAME_UNEXPECTED` | `ProtocolFailure` | `H3_FRAME_UNEXPECTED` |
 | `NGHTTP3_ERR_H3_MISSING_SETTINGS` | `ProtocolFailure` | `H3_MISSING_SETTINGS` |
@@ -2070,7 +2255,7 @@ shape is the same: open a stream, send minimal data, reset it, repeat. Controls:
 | `NGHTTP3_ERR_H3_ID_ERROR` | `ProtocolFailure` | `H3_ID_ERROR` |
 | `NGHTTP3_ERR_H3_MESSAGE_ERROR` | `HeaderList` | stream `H3_MESSAGE_ERROR` |
 | `NGHTTP3_ERR_WOULDBLOCK` | none | data reader waits; no error |
-| GnuTLS fatal alert | `TlsFailure{alert}` | map alert; close |
+| GnuTLS fatal alert | `TlsFailure{tlsCode: alert}` | map alert; close |
 | transport/`sendmsg` error | `TransportFailure{sysCode}` | close server/connection |
 
 `httpapi::text` is diagnostic only. HTTP status mapping is separate: `400`
@@ -2085,25 +2270,50 @@ when the block completed, `421` authority mismatch, `500` handler/internal,
 - `q3_adapter_test.c` links the shim, ngtcp2, nghttp3 and GnuTLS and feeds
   synthetic datagrams through `q3_server_feed`; asserts event/wire sequences.
 - Retry: token generate/verify, wrong address, wrong version, expired token,
-  replay, malformed token, secret rotation.
+  replay, malformed token, secret rotation; Retry+tombstone+late short-header
+  reset.
 - CID: allocation, routing by DCID, retirement, unknown CID stateless reset,
-  tombstone cap/eviction, `active_connection_id_limit`.
-- Version negotiation: unsupported version -> VN listing v1; too-small packet
-  -> drop; no state allocation.
-- Stateless reset: minimum size, response <= input, rate limit, no reset for
-  small packets.
+  tombstone cap/eviction, `active_connection_id_limit` direction (peer CIDs).
+- Path: concrete local address packet is supplied to `ngtcp2_conn_server_new`;
+  a wildcard local bind is rejected; remote path and NAT rebinding validation
+  use the local+remote `ngtcp2_path`.
+- Version negotiation: v2/unsupported long header -> `ngtcp2_pkt_decode_version_cid`
+  -> VN listing v1; too-small packet -> drop; no state allocation; a supported
+  v1 packet still goes through `ngtcp2_accept`.
+- Stateless reset: only short-header unknown-DCID packets; minimum size,
+  response <= input, rate limit, no reset for small/long-header packets.
 - Event ring: coalescing, high-water, deliberate overflow -> connection
   failure; server ring overflow -> stop accepting.
 - Wire batch: max datagrams, exact `segmentSize`, last shorter segment,
   `WOULDBLOCK` when the buffer is full, no partial datagram.
 - H3: control/QPACK stream binding, SETTINGS first, missing/duplicate
   SETTINGS, unknown uni stream, stream type errors.
+- Request event timing: a bidi stream opened with an empty STREAM frame and no
+  HEADERS emits no `EventRequest`; `requestInfo` is `NotReady`; after
+  `headerTimeoutMs` the stream is reset. A HEADERS+DATA+FIN packet emits
+  `EventHeaders`, then data/end, in order; an implicitly opened stream (no
+  `ngtcp2_stream_open` callback) takes the same path.
+- Coalesced packets: one UDP datagram containing Initial+Handshake+1-RTT is
+  passed whole to `ngtcp2_conn_read_pkt`; a GSO/GRO segment is one UDP
+  datagram, not one QUIC packet. The short final GRO segment is handled.
 - Header caps: exactly at and one over count/field/list/block/arena; one reset,
   not a second.
 - QPACK: dynamic table cap, blocked stream cap, encoder/decoder stream errors,
-  decompression failure.
+  decompression failure. A capacity update above the advertised value is
+  `QPACK_ENCODER_STREAM_ERROR` (0x0201), not 0x0200.
 - Flow control: receive ring capacity, consume-after-copy, discard, reset with
   unread DATA, connection credit restoration, send ring full/blocked/resume.
+  Force 16 QPACK-blocked streams, unblock them, and assert `deferred_consume`
+  restores both stream and connection credit exactly once.
+- Pre-adoption: complete a handshake, send a header/body burst, never call
+  `q3_conn_markAdopted`; assert `pendingReservation` bound, no per-connection
+  rings, `pendingAdoptTimeoutMs` close, and no leak.
+- Key update: force a key update, ACK across the update, and a
+  `KEY_UPDATE_ERROR` path. Retry+tombstone: Retry, CID routing, close, late
+  short-header packet gets a bounded stateless reset.
+- Packet/ACK flood: ACK-only and short datagrams exceed the datagram/tiny
+  buckets; GOAWAY with the last stream ID, then CONNECTION_CLOSE
+  `H3_EXCESSIVE_LOAD`; the server keeps serving other connections.
 - Response path: staged headers, commit on write/end, empty body END_STREAM,
   trailers, deferred read callback, partial ngtcp2 acceptance and
   `nghttp3_conn_add_write_offset`.
@@ -2118,12 +2328,17 @@ scripted receive batches, writes, wants, peer addresses and segment sizes. No
 sockets, TLS or reactor.
 
 - Server/connection/stream adoption, orphan, close, stale token, double close.
-- `next` event order: NewConnection, HandshakeDone, Request, Data, End,
-  Trailers, Closed.
+- `next` event order: NewConnection, HandshakeDone, Request (after HEADERS),
+  Data, End, Trailers, Closed. `EventStreamOpened` is ignored by `http3`; no
+  request is surfaced before its header block is complete.
 - Multiplexed requests: two request streams interleaved; per-stream isolation;
   no response reordering requirement.
 - Body: known/unknown/zero length, body over `maxBody`, DATA after END_STREAM
   (reject), trailers after DATA, trailer after END_STREAM (reject).
+- Headers: `:authority`/`Host` disagreement -> 400; `requireAuthority=false`
+  allows empty authority but not `Host` synthesis; duplicate pseudo-header,
+  `:protocol`, `CONNECT` and `101` rejected; `path`/`query` split at the first
+  `?`; `hasBody`/`contentLength` mapping.
 - Response: known/unknown length, HEAD/204/205/304/1xx, trailers, `end` retry,
   zero-write backpressure, content-length mismatch, over-write.
 - Reset: peer RESET/STOP, local reset, close stream, stale shell, unread DATA
@@ -2137,33 +2352,54 @@ sockets, TLS or reactor.
 - ALPN/mode: missing/wrong ALPN, h3-only, transport-only profile, h2/h1 bytes
   on UDP, 0-RTT bytes rejected.
 - Coalescing: second authority -> 421; same authority continues.
+- `closeServer` with live `Connection`/`Stream` shells: all operations return
+  `Closed`/`InvalidResource`; stale tokens fail generation/kind checks; no
+  double free. `closeContext` after `makeContext` without `makeServer`
+  releases the context; `makeServer` failure closes both exactly once.
 
-### 9.3 h3spec and interop
+### 9.3 h3spec and interop (hermetic defaults, conditional external tools)
 
-Primary conformance oracle: **h3spec** (pin the exact release/commit and hash
-in the integration job; it is absent now). Run its full HTTP/3 suite against a
-loopback TLS listener with a self-signed certificate and ALPN h3; record the
-exact CLI and any skip with a written reason. h3spec tests frame ordering,
-control streams, SETTINGS, GOAWAY, malformed frames, stream IDs and QPACK
-behavior.
+The default H3a/H3b gates do **not** require h3spec, aioquic, gtlsclient or
+curl. They use:
 
-Additional interop:
+- the deterministic C harness and fake-datagram obo drivers above;
+- an in-tree test-only C client (`q3_test_client.c`) built against the same
+  pinned ngtcp2/nghttp3/GnuTLS headers and libraries. It is not a product
+  client API; it completes handshakes, sends requests, reads responses and can
+  drop/reorder packets through a UDP relay. This is the default H3a/H3b
+  handshake/interop gate.
+- a raw HTTP/3 frame driver that writes control/QPACK/request bytes directly,
+  so header-complete, QPACK and error paths do not depend on a tool.
 
-- `gtlsclient` from `ngtcp2-client 0.12.1` (and optionally `gtlsserver` as the
-  differential peer). The package is available; the integration job records
-  the exact binary hash and CLI.
-- `aioquic` Python client (pin the wheel/version and hash) with a scripted
-  client: request/response, trailers, multiplexing, flow control, GOAWAY,
-  Retry, 0-RTT rejection, migration and loss via a UDP relay.
+External tools are conditional:
+
+- `gtlsclient` from `ngtcp2-client 0.12.1`: the `.deb` is available and can be
+  extracted privately (`apt-get download`, no install). Use it as an
+  independent client when present; it is not required for H3a/H3b exit.
+- `h3spec`: pin the exact release/commit, tarball and SHA-256 in
+  `tests/tools/` or the CI cache. Run its full HTTP/3 suite against a loopback
+  TLS listener with a self-signed certificate and ALPN h3; record the exact CLI
+  and any skip with a written reason. **If h3spec is absent, H3b can exit on
+  the deterministic/in-tree client gates, but the full h3spec conformance claim
+  is withheld; H3c cannot claim "full h3spec" until the tool is acquired.**
+- `aioquic` Python client: pin the wheel/version and hash; use for migration,
+  loss, trailers and 0-RTT-rejection scripts when present; conditional.
 - curl built from a pinned source with `--with-ngtcp2 --with-nghttp3
-  --with-gnutls`; the system curl 8.5.0 has no HTTP3 and cannot be used.
-  Run `curl --http3-only -k https://127.0.0.1:<port>/`.
+  --with-gnutls`; the system curl 8.5.0 has no HTTP3. Run
+  `curl --http3-only -k https://127.0.0.1:<port>/` only in a job with that
+  build; otherwise skip with a reason.
 - Go `net/http` HTTP/3 client/server if a pinned Go QUIC stack is added;
   otherwise skip with a reason.
 - ALPN matrix: client offers h3, h3-29, h2, http/1.1, none; verify h3-only
-  selection/rejection and no h1/h2 parse on the UDP listener.
+  selection/rejection and no h1/h2 parse on the UDP listener. The in-tree
+  client covers the matrix.
 - `quic-interop-runner` (Docker, pinned commit) is optional; record whether
   the environment can run network namespaces. It is not a default gate.
+
+No default test downloads a tool or contacts a non-loopback peer. Explicit
+integration jobs may `apt-get download` the pinned `ngtcp2-client` package or
+use a pre-populated tool cache; a missing external tool is a recorded skip or a
+withheld conformance claim, never a silent pass.
 
 ### 9.4 Handshake, loss, 0-RTT, migration, Retry
 
@@ -2174,8 +2410,10 @@ Additional interop:
 - Loss: deterministic UDP relay drops/reorders/duplicates 1%, 5%, 20% of
   packets; PTO/loss recovery progresses; no unbounded memory; responses
   eventually complete or time out.
-- 0-RTT: client replays a ticket; server rejects early data, completes 1-RTT,
-  and does not process the early request; no duplicate side effect.
+- 0-RTT/tickets: assert no NewSessionTicket is sent
+  (`GNUTLS_NO_TICKETS` + `GNUTLS_NO_AUTO_SEND_TICKET`); a client replaying a
+  ticket is rejected, completes 1-RTT, and does not process the early request;
+  no duplicate side effect.
 - Migration: NAT rebinding accepted after validation; active migration refused
   by `disable_active_migration`; failed path validation closes
   `NO_VIABLE_PATH`; no request state loss.
@@ -2207,6 +2445,10 @@ Additional interop:
 - Deliberately omitted `close` fails the leak gate (positive control).
 - Allocation failure at context/server/connection/stream/header/wire/event
   creation returns `ResourceLimit`/`Busy`, closes cleanly, leaks nothing.
+- Aggregate memory: 8 connections each force 16 QPACK-blocked 64 KiB blocks,
+  full uni windows and pending handshakes; measure RSS/high-water against
+  `perConnectionReservation`, `pendingReservation` and `libraryReserve`.
+  The 64 MiB profile must not exceed the platform budget.
 - One native release per connection/stream; double close returns false; stale
   shells fail at their own kind check without dereference.
 - Adoption fault injection: `_adoptToken` failure after C registration ->
@@ -2214,8 +2456,9 @@ Additional interop:
   C table cleanup.
 - Fuzz: libFuzzer feeds random and mutated datagrams to `q3_server_feed`;
   no crash, no leak, bounded memory. A second harness fuzzes the response
-  header/trailer packet parser. A structured H3 corpus uses aioquic/h3spec
-  malformed frames.
+  header/trailer packet parser. A structured H3 corpus is generated by the
+  in-tree raw frame driver; aioquic/h3spec provide additional corpora when
+  those conditional tools are present.
 
 ### 9.7 Sidecar differential (only if deployed)
 
@@ -2231,40 +2474,49 @@ H3a:
 
 - C harness: Retry/token, CID routing, VN, stateless reset, event/wire batch,
   error mapping, no pointer in cbind, no callback into obo.
-- Real handshake with `gtlsclient` or aioquic over loopback with ALPN h3.
+- Real handshake with the in-tree `q3_test_client` over loopback with ALPN h3;
+  `gtlsclient`/aioquic optional independent clients.
 - ASAN/LSAN clean; no fd leak; `sysnet` batch fallback works with GSO/GRO
-  disabled.
+  disabled; coalesced Initial+Handshake+1-RTT and GRO short finals pass.
 
 H3b:
 
-- h3spec HTTP/3 sections for control streams, SETTINGS, request/response,
-  DATA, trailers, GOAWAY, stream limits, QPACK.
+- Deterministic HTTP/3 + in-tree client for control streams, SETTINGS,
+  request/response, DATA, trailers, GOAWAY, stream limits, QPACK,
+  `deferred_consume`, header-complete event timing and zero-byte streams.
+- h3spec HTTP/3 sections are required only when the pinned tool is available;
+  otherwise the full conformance claim is withheld (recorded, not a pass).
 - Multiplexing, flow-control/backpressure, max-streams, deadline, trailer and
   reset-with-unread-DATA tests.
 - ASAN/LSAN close with queued response body and pending nghttp3 data reader; no
   UAF.
-- Leak counters zero; aggregate memory measured against the reservation.
+- Leak counters zero; aggregate memory measured against the reservation,
+  including 16 blocked QPACK blocks and pending handshakes.
 
 H3c:
 
-- Full h3spec over TLS h3; aioquic/gtlsclient/curl (if built) differential.
-- Retry/token, 0-RTT rejection, migration/NAT rebinding, loss/PTO, rapid reset,
-  QPACK bomb, header flood, slowloris, malformed frames, ALPN matrix.
+- Full h3spec over TLS h3 when the pinned tool is acquired; aioquic/gtlsclient/
+  curl (if built) differential. If h3spec is absent, H3c is conditional and
+  must not claim full conformance.
+- Retry/token, 0-RTT rejection/ticket absence, migration/NAT rebinding,
+  loss/PTO, key update, rapid reset, QPACK bomb, header flood, slowloris,
+  ACK-only/short-datagram flood, malformed frames, ALPN matrix.
 - ASAN/UBSAN/LSAN; fuzz corpus; graceful drain; no request smuggling.
 
 ## 10. Phasing, dependencies and effort
 
 | Phase | Scope | Depends on | Exit | Rough effort |
 |---|---|---|---|---|
-| **P2q: sysnet UDP batch** | `DatagramOptions`, `receiveBatch`, `sendBatch`, `watchDatagram`, `Packet.segmentSize`, GSO/GRO fallback | systems P2 | C/obo tests with GSO on/off; no protocol | 1 engineer-week |
-| **H3a: QUIC transport** | `quictls`, C shim, ngtcp2, context/server/connection shells, Retry/CID/VN/stateless reset, event/wire batch, timers, close/drain skeleton | P2q, cinterop P2T-a, pinned headers, GnuTLS | handshake, Retry, CID, timers; no HTTP/3 | 3-4 engineer-weeks |
-| **H3b: HTTP/3 mapping** | nghttp3, control/QPACK streams, SETTINGS, request/response, body/trailers, flow control, stream limits, GOAWAY, `runAction`, shared `httpapi` | H3a | h3spec H3 sections, multiplex/flow/trailer tests | 4-5 engineer-weeks |
-| **H3c: security/interop** | 0-RTT off policy, migration, QPACK/header caps, reset budget, stateless reset, malformed/fuzz, aioquic/gtlsclient/curl/h3spec, combined TCP+UDP listener and Alt-Svc helper | H3b, H1c/H2c for combined listener | full h3spec, interop, ASAN/leaks, security matrix | 3-4 engineer-weeks |
-| **Sidecar option** | pinned terminator, loopback h1/h2 profile, certificate/key deployment, differential harness | existing H1/H2, ops | documented bridge only | 1-2 engineer-weeks |
+| **P2q: sysnet UDP batch** | `DatagramOptions`, `receiveBatch`, `sendBatch`, `watchDatagram`, `Packet.segmentSize`, GSO/GRO fallback, concrete local bind | systems P2 | C/obo tests with GSO on/off; no protocol | 1-2 engineer-weeks |
+| **H3a: QUIC transport** | `quictls`, C shim, ngtcp2, context/server/connection shells, Retry/CID/VN/stateless reset, event/wire batch, timers, close/drain skeleton, pre-adoption bound | P2q, cinterop P2T-a, pinned headers, GnuTLS | in-tree client handshake, Retry, CID, timers; no HTTP/3 | 4-5 engineer-weeks |
+| **H3b: HTTP/3 mapping** | nghttp3, control/QPACK streams, SETTINGS, headers-after-complete event, request/response, body/trailers, `deferred_consume`, flow control, stream limits, GOAWAY, `runAction`, shared `httpapi` | H3a | deterministic H3 + in-tree client; h3spec conditional | 5-6 engineer-weeks |
+| **H3c: security/interop** | 0-RTT off policy, migration, QPACK/header caps, reset/datagram budgets, stateless reset, malformed/fuzz, aioquic/gtlsclient/curl/h3spec when acquired, combined TCP+UDP listener and Alt-Svc helper | H3b, H1c/H2c for combined listener | full h3spec if available, interop, ASAN/leaks, security matrix | 4-5 engineer-weeks |
+| **Sidecar option** | pinned terminator, loopback h1/h2 profile, certificate/key deployment, differential harness | existing H1/H2, ops | documented bridge only | 2-3 engineer-weeks |
 
-Total native effort: **10-13 engineer-weeks** for one experienced engineer,
-including tests, not review/fuzzing/ops. Review, h3spec triage, fuzzing time and
-interop debugging are additional.
+Total native effort: **14-18 engineer-weeks as a lower bound** for one
+experienced engineer, including tests, not review/fuzzing/ops or tool
+acquisition. Review, h3spec triage, fuzzing time and interop debugging are
+additional.
 
 Prerequisites:
 
@@ -2274,8 +2526,11 @@ Prerequisites:
 - cinterop hosted P2T-a and the systems registry (already used by H2/TLS).
 - Development headers for `libngtcp2-dev`,
   `libngtcp2-crypto-gnutls-dev`, `libnghttp3-dev`, `libgnutls28-dev`; exact
-  package pins in the manifest.
+  package pins in the manifest. GnuTLS headers are not installed on the design
+  host; the build extracts them privately.
 - GnuTLS 3.8.2+ runtime; installed 3.8.3.
+- Written risk acceptance for nghttp3 0.8.0 (no Ubuntu security update) and
+  the old ngtcp2 0.12.1/QUIC-v1-only stack before H3a starts.
 - H1c/H2c for a combined TCP listener and Alt-Svc; H3 can be tested on a
   dedicated UDP port before that.
 - No compiler, runtime, symbol-format or ABI change is required. The design
@@ -2340,18 +2595,22 @@ Prerequisites:
 | HTTP/3 library | nghttp3 0.8.0 exact package | No security update in this archive; monitor and plan a reviewed port |
 | TLS | GnuTLS 3.8.3 `ngtcp2_crypto_gnutls`; separate `quictls` | OpenSSL 3.0 cannot do QUIC; sharing `systls` is impossible |
 | Retry | `Always` on public UDP; `Never` on loopback tests | Without Retry, spoofed sources can allocate state up to the 3x/limits budget |
-| 0-RTT | Off in v1; re-review later | Enabling without replay controls creates duplicate side effects |
+| 0-RTT / tickets | Off in v1; `GNUTLS_NO_TICKETS` + `GNUTLS_NO_AUTO_SEND_TICKET`, no `GNUTLS_ENABLE_EARLY_DATA`, max early data 0 | Max-early-data alone does not disable ticket issuance; a ticket can enable replay |
 | Migration | `disable_active_migration=1`; validated NAT rebinding only | Active migration needs path/address policy and more state |
 | Coalescing | One authority per connection; 421 otherwise | Cross-origin coalescing needs SAN/cert introspection and smuggling review |
 | Max streams | 32 concurrent bidi, 8 uni, 1000 total | Higher caps raise per-connection memory and reset/QPACK exposure |
-| Flow-control windows | 32 KiB stream, 1 MiB connection | Larger windows raise the 64 MiB reservation per connection |
+| Connection budget | **8** established connections, 5.01 MiB each, 2 MiB pending, 16 MiB library reserve, 64 MiB total | The earlier 14/64 MiB profile is not safe once QPACK/uni buffers and library heaps are counted |
+| Flow-control windows | 32 KiB stream, 1 MiB connection | Larger windows raise the per-connection reservation and can exceed the 64 MiB aggregate |
 | QPACK | 4 KiB table, 16 blocked, 16 KiB field section | Larger tables improve compression but increase bomb/blocked-state risk |
 | UDP batching | `receiveBatch`/`sendBatch`, GSO/GRO best-effort | One datagram at a time is correct but slower; shim must not own the socket |
 | PMTUD | Off; 1200-byte payload | Enabling PMTUD needs black-hole/GSO tests and a higher path budget |
-| Test oracle | h3spec + aioquic + gtlsclient; curl built if possible | System curl 8.5 has no HTTP3; h3spec/aioquic are absent now |
+| Test oracle | In-tree C QUIC/HTTP3 test client plus pinned `gtlsclient`; h3spec/aioquic are conditional H3c gates, curl only if built | H3a/H3b cannot require absent tools; full h3spec conformance is withheld until the tool is acquired |
+| Event vocabulary | `EventHeaders` after a complete header block; `EventRequest` only then; raw `EventStreamOpened` is not a request | A stream-open event has no headers and would make `requestInfo`/`runAction` invalid |
 | Versioning | No obo version; package pins; QUIC v1 only | QUIC v2/HTTP/3 extensions need a new pin and review |
+| Old stack | Accept ngtcp2 0.12.1/nghttp3 0.8.0 for experimental H3a with written risk acceptance; plan a reviewed upgrade before production | nghttp3 has no Ubuntu security update here; qlog CVE is patched but the stack is old |
 | Alt-Svc | Optional helper on TCP listeners, not core | Advertising h3 without a serving UDP port misleads clients |
-| Sidecar fallback | Pinned terminator + loopback h1/h2, explicitly labeled | Do not claim obo speaks HTTP/3 through a proxy |
+| Sidecar fallback | Pinned terminator + loopback h1/h2, explicitly labeled; 2-3 weeks | Do not claim obo speaks HTTP/3 through a proxy |
+| Effort | 14-18 engineer-weeks as a lower bound, plus review/fuzz/interop | The workload is security-sensitive; a smaller estimate is not credible |
 
 ## 13. Invariants and review questions
 
@@ -2429,8 +2688,8 @@ Prerequisites:
     impure handler tier and the transport differences?
 12. Are the test oracles and missing-tool policy sufficient, especially
     h3spec/aioquic/curl and the sidecar differential?
-13. Are the reservation formula and 64 MiB/14-connection default safe once
-    GnuTLS/ngtcp2/nghttp3 internal heaps are considered?
+13. Are the reservation formula and 64 MiB/8-connection default safe once
+    QPACK/uni buffers and GnuTLS/ngtcp2/nghttp3 internal heaps are considered?
 14. Is the phasing right: P2q and H3a before H3b, and H3c after a working
     h3spec/aioquic path?
 
