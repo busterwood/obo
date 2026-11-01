@@ -468,7 +468,7 @@ same-kind replaced `res` can alias/steal another context or session (the
 documented public-field limit); a cross-kind replacement is rejected. The TLS
 module does not claim that public fields are opaque.
 
-The C adapter does not use the DB adapters' `cres` table as a second public
+The C adapter does not use the older cinterop `cres` registry as a second public
 resource model. It registers context/session state in the systems platform
 registry so there is one identity, kind, generation and leak census. If the
 platform registry is not yet available, P2T is blocked; a temporary `cres`

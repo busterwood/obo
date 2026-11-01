@@ -542,8 +542,11 @@ numeric key later; do not `CAST(... AS NUMERIC)`.
 
 ### 4.2 Binding
 
-`bind_text` already copies exact bytes and rejects embedded NUL
-(`sqlite.obx:229-238`, `sqlite_adapter.c:410-446`). Add free functions (not
+This subsection and 4.3 retarget the pre-v2 C adapter design to the current
+`db/sqlite/sqlite.obx`; the deleted `sqlite_adapter.c` citations are historical.
+
+`bind_text`/`bind_text_raw` already copy exact bytes and reject embedded NUL
+(`sqlite.obx:407-425`). Add free functions (not
 methods: decimal method parameters are rejected in v1,
 `obo/src/obo.obo:11483-11484`):
 
@@ -571,10 +574,10 @@ fn bind_decimal_unchecked(st: &Stmt, index: int, value: decimal): Result[bool]
 
 1. `column_type(col)` bounds-checked (`sqlite.obx:262-266`); `SQLITE_NULL` →
    `1001`; `SQLITE_FLOAT` → `1005`; `SQLITE_BLOB` → `1002`;
-2. for TEXT/INTEGER, `column_value(col)` (which uses
-   `sqlite3_column_text` + `sqlite3_column_bytes`;
-   `sqlite_adapter.c:480-491`) or `column_bytes` for exact TEXT bytes. A copy
-   failure (buffer registry full, `> 16 MiB`, allocation failure) is a `2`
+2. for TEXT/INTEGER, `column_value(col)` (`sqlite.obx:595-616`, which uses
+   `sqlite3_column_text` + `sqlite3_column_bytes`) or `column_bytes` for exact
+   TEXT bytes (`sqlite.obx:686-704`). A copy failure (over the 16 MiB cap or an
+   allocation failure; the old buffer-registry-full case is historical) is a `2`
    size/plumbing error, **never an empty array** and never mistaken for empty
    text;
 3. reject empty/NUL/non-ASCII as `1006`;
@@ -583,8 +586,8 @@ fn bind_decimal_unchecked(st: &Stmt, index: int, value: decimal): Result[bool]
 6. no typmod check (SQLite has none).
 
 `column_value` returns `Result[?[]byte]` with nil for NULL and an empty array
-for empty text (`sqlite.obx:275-290`); `column_text` is the string convenience
-and rejects NUL (`sqlite.obx:295-302`). Decimal read uses the byte form so that
+for empty text (`sqlite.obx:595-616`); `column_text` is the string convenience
+and rejects NUL (`sqlite.obx:665-682`). Decimal read uses the byte form so that
 NUL/empty are classified consistently, and checks `column_type` **before**
 asking SQLite for text: `sqlite3_column_text` on a REAL formats it to about 15
 significant digits, which would silently lose exactness

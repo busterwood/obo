@@ -34,9 +34,9 @@ these foreign handles (`Connection`/`Res` hold the real `PGconn*`/`PGresult*` in
 a private word; there is no integer token or `cres` registry). `db/postgres` is
 also ported to these handles: its `Connection`/`Rows` hold a libpq handle and
 its former C adapter, packet builder and `live_*` counters are gone. The trusted
-**C resource registry** (`cres.c/.h`) remains for the zlib adapter, the buffer
-example and the registry test; the skill templates moved to v2 foreign handles in
-stage (h), and no database binding uses `cres`. Connection/Rows close is explicit
+**C resource registry** (`cres.c/.h`) remains for the zlib adapter and its test,
+the buffer example and the registry test; the skill templates moved to v2
+foreign handles in stage (h), and no database binding uses `cres`. Connection/Rows close is explicit
 and normally written with obo `defer`; dropping an ordinary record does **not**
 call `PQfinish`/`PQclear`/`free`. There are still no callbacks, C variadics,
 structs by value, source floats/decimals in the native contract, TLS or IFUNC
@@ -196,9 +196,9 @@ match made {
 - `examples/libpq_defer_app.obx` no longer imports `buffer.obx`: the buffer
   package has its own adapter and is not part of the libpq spec.
 - **Stage (g) cleanup:** the old libpq token adapter and the postgres C adapter
-  are deleted. `toolkit/cres.c/.h` remain because the zlib adapter, the buffer
-  example and the registry test still use them; the stage (h) templates no
-  longer do. No database binding lists them in a spec or wrapper source.
+  are deleted. `toolkit/cres.c/.h` remain because the zlib adapter and its C
+  test, the buffer example and the registry test still use them; the stage (h)
+  templates no longer do. No database binding lists them in a spec or wrapper source.
   `db/postgres` adds typed `exec_params_typed`/
   `exec_params_typed_binary` entry points to `libpq.obx` and keeps the same
   libpq native surface (a spec-drift guard checks it).
@@ -681,8 +681,9 @@ signature-checked against its `CType *` prototype (`int` for `int`/`discard`,
 `void` for `void`).
 
 
-**Out parameters (stage (f)).** A native declaration may end with out parameters,
-which consume no call argument:
+**Out parameters (stage (f)).** A native declaration may carry out parameters,
+which consume no call argument and appear in C order (interleaved with inputs
+when the C prototype does):
 
 ```obo
 native fn open_v2(path: &[]byte, flags: int, out db: Connection): open_v2_out
@@ -694,7 +695,7 @@ native fn prepare_v2(db: &Connection, sql: &[]byte,
 `C **`); at most one is allowed. `out name: int from input` is `out_offset@k`
 (C parameter `const char **`); `input` must be an `&[]byte` input parameter,
 at most one is allowed, and the offset is relative to that argument's borrowed
-bytes. Inputs come first in the declaration; the return type is the literal
+bytes. At most one of each form is allowed, and the return type is the literal
 `<native>_out`. The compiler builds that record directly (never in module globals
 or `.sym`): `rc: int` first, then one field per out parameter in declaration
 order, an `out_own` field being `?X`. The C return code is stored in `rc` before
@@ -902,8 +903,8 @@ declarations-only SQLite adapter, both explicit-close and tested.
   handles; dropping a `Connection`/`Rows` never calls `PQfinish`/`PQclear` and
   is reported by the `OBO_CHECK=1` census. The binding is not a full database
   driver or a stable public API.
-- The retained `cres` token registry (the zlib adapter, the buffer example and
-  the registry test) protects
+- The retained `cres` token registry (the zlib adapter and its test, the buffer
+  example and the registry test) protects
   against accidental stale/wrong-kind/forged integer use, not against trusted C
   or an adversarial caller. Its generation is 31 bits. No database binding or
   skill template uses it any more. Obo token fields are private to their wrapper

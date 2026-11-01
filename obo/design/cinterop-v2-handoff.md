@@ -201,9 +201,9 @@ These are known, safe, and documented. Fold them into a later stage.
   - `db/postgres/postgres_adapter.c/.h`, `db/tests/postgres_adapter_test.c`,
     `tests/fake_adapter_test.c` (registry part moved to `tests/cres_test.c`) and
     `postgres_fake_sql.cbind` (stage (g), deleted).
-- `cres` users after stage (h): the zlib adapter, `examples/buffer.obx` and
-  `tests/cres_test.c`. The skill templates moved to v2 foreign handles, and
-  `sys`/`tls`/`http2` use `sysregistry`. No production code was deleted in
-  stage (h).
+- `cres` users after stage (h): the zlib adapter and its C test,
+  `examples/buffer.obx` and `tests/cres_test.c`. The skill templates moved to
+  v2 foreign handles, and `sys`/`tls`/`http2` use `sysregistry`. No production
+  code was deleted in stage (h).
 - Superseded design: `native-c-interop-design.md`. Its "Superseded direction" note points to the v2
   design.
