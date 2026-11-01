@@ -1,0 +1,111 @@
+// P1b configuration-update example. It runs only inside the directory passed
+// by the test: read the old value, replaceAtomically, sync, then verify. The
+// same root also demonstrates RFC3339 text, an environment lookup and a bounded
+// log line on stderr. It writes no path outside argv[1].
+module app
+
+import "sysplatform.obx" as platform
+import "sysfile.obx" as file
+import "sysdir.obx" as dir
+import "syscalendar.obx" as calendar
+import "sysenv.obx" as env
+import "syslog.obx" as log
+import "sysstream.obx" as stream
+import "syserrors.obx" as errs
+
+fn show(label: string, code: int) {
+    let k = errs::kind(code)
+    println(label, "=", errs::text(&k))
+}
+
+fn bytesOf(s: string): []byte {
+    let b = new []byte(len(s))
+    for i in 0..len(s) { b[i] = s[i] }
+    return b
+}
+
+fn readText(d: &dir::Directory, name: string): string {
+    let o = file::readOptions()
+    let made = file::openAt(d, name, &o)
+    match made {
+        ok(f) {
+            let r = file::readSome(&f, 256)
+            let c = file::close(&f)
+            match r {
+                ok(v) { if v == nil { return "" } else { return string(v) } }
+                err(m, code) { return "" }
+            }
+        }
+        err(m, c) { return "" }
+    }
+}
+
+fn main() {
+    let av = args()
+    let base = av[1]
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+    let d = dir::open(base)
+    match d {
+        ok(dd) {
+            let old = readText(&dd, "config")
+            println("old=", old)
+            let fresh = bytesOf("enabled=true\n")
+            let replaced = file::replaceAtomic(&dd, "config", &fresh, 420, true)
+            match replaced {
+                ok(r) {
+                    println("committed=", r.committed, " durable=", r.durable, " code=", r.code)
+                }
+                err(m, c) { show("replace", c) }
+            }
+            let now = readText(&dd, "config")
+            println("new=", now)
+            println("verified=", now == "enabled=true\n")
+
+            let parsed = calendar::parseRfc3339("2024-02-29T12:00:00.120+01:00")
+            match parsed {
+                ok(t) {
+                    let text = calendar::formatRfc3339(&t)
+                    match text { ok(s) { println("timestamp=", s) } err(m, c) { show("format", c) } }
+                }
+                err(m, c) { show("parse", c) }
+            }
+
+            let es = env::snapshot()
+            match es {
+                ok(e) {
+                    let marker = env::get(&e, "OBO_P1B_DEMO")
+                    match marker {
+                        ok(v) { if v == nil { println("demo_env=nil") } else { println("demo_env=", string(v)) } }
+                        err(m, c) { show("demo_env", c) }
+                    }
+                }
+                err(m, c) { show("env", c) }
+            }
+
+            let errSel = new stream::Error{}
+            let policy = new log::ReturnWouldBlock{}
+            let level = new log::Info{}
+            let made = log::openStandard(&errSel, 4096, &policy)
+            match made {
+                ok(l) {
+                    let msg = bytesOf("configuration replaced")
+                    let r = log::emit(&l, &level, &msg)
+                    let f = log::flush(&l)
+                    let c = log::close(&l)
+                    match r { ok(v) { println("logged=", v.accepted) } err(m, cc) { show("logged", cc) } }
+                }
+                err(m, c) { show("log", c) }
+            }
+
+            let c = dir::close(&dd)
+            match c { ok(v) { println("dir_close=", v) } err(m, cc) { show("dir_close", cc) } }
+        }
+        err(m, c) { show("dir_open", c) }
+    }
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}

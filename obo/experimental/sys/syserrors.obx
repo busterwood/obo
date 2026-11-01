@@ -185,6 +185,7 @@ pub fn fromErrno(errno: int): Kind {
     if errno == 34 { return new Range{} }              // ERANGE
     if errno == 36 { return new NameTooLong{} }        // ENAMETOOLONG
     if errno == 38 { return new Unsupported{} }        // ENOSYS
+    if errno == 39 { return new Busy{} }               // ENOTEMPTY (no NotEmpty kind)
     if errno == 40 { return new PathLoop{} }           // ELOOP
     if errno == 75 { return new ResourceLimit{} }     // EOVERFLOW (generation retirement)
     if errno == 90 { return new MessageTooLarge{} }    // EMSGSIZE

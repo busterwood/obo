@@ -1,0 +1,230 @@
+// Experimental systems library: environment snapshots (P1b).
+//
+// Status: experimental P1b slice, unstable. A snapshot owns all name/value
+// text and has no native resource or close obligation. Mutating the snapshot
+// has no process effect. Process mutation is deliberately absent: setenv alone
+// cannot update the runtime's initial envp view, and P1b does not publish a
+// second, conflicting environment. Names are nonempty and contain no '=' or
+// NUL; values contain no NUL; the total serialized size is bounded.
+//
+// Every operation revalidates the whole public record (a caller can construct
+// Environment directly). Missing is nil; present-empty is an empty byte array.
+// Entries preserve startup order. Duplicate keys are permitted and lookup is
+// first-match, matching getenv. `entries` returns a deep copy of the array and
+// Pair records; the caller cannot mutate the snapshot through it.
+module sysenv
+
+import "sysplatform.obx" as platform
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub type Pair = ref record {
+    pub name: string
+    pub value: string
+}
+
+pub type Environment = ref record {
+    pub entries: []Pair
+}
+
+pub const MAX_ENVIRONMENT_BYTES = 1048576
+pub const MAX_ENVIRONMENT_ENTRIES = 65536
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+fn validName(name: string): bool {
+    if len(name) == 0 { return false }
+    for i in 0..len(name) {
+        let c = int(name[i])
+        if c == 0 || c == 61 { return false }
+    }
+    return true
+}
+
+fn validValue(value: string): bool {
+    for i in 0..len(value) {
+        if int(value[i]) == 0 { return false }
+    }
+    return true
+}
+
+fn pairWidth(p: &Pair): int {
+    return len(p.name) + len(p.value) + 2
+}
+
+// 0 is valid; over-count/over-size is Range; a malformed name/value is
+// InvalidArgument. Every operation uses this same mapping so a crafted record
+// and a captured over-cap snapshot report the same category.
+fn environmentCode(e: &Environment): int {
+    if len(e.entries) > MAX_ENVIRONMENT_ENTRIES { return rangeCode() }
+    var total = 0
+    for i in 0..len(e.entries) {
+        let p = e.entries[i]
+        if !validName(p.name) || !validValue(p.value) { return invalidArgument() }
+        let width = pairWidth(&p)
+        if width > MAX_ENVIRONMENT_BYTES - total { return rangeCode() }
+        total += width
+    }
+    return 0
+}
+
+fn copyPair(p: &Pair): Pair {
+    return new Pair{name: p.name, value: p.value}
+}
+
+fn pairBytes(value: string): []byte {
+    let out = new []byte(len(value))
+    for i in 0..len(value) { out[i] = value[i] }
+    return out
+}
+
+fn sliceText(raw: &[]byte, start: int, end: int): string {
+    let out = new []byte(end - start)
+    for i in start..end { out[i - start] = raw[i] }
+    return string(out)
+}
+
+fn decode(raw: &[]byte): Result[[]Pair] {
+    var out = new []Pair(0)
+    var start = 0
+    for i in 0..len(raw) {
+        if int(raw[i]) != 0 { continue }
+        if i == start { start = i + 1; continue }
+        var sep = -1
+        for j in start..i {
+            if int(raw[j]) == 61 { sep = j; break }
+        }
+        if sep <= start {
+            return err("environment entry has no name or no '=' separator",
+                       invalidArgument())
+        }
+        let name = sliceText(raw, start, sep)
+        let value = sliceText(raw, sep + 1, i)
+        append(out, new Pair{name: name, value: value})
+        start = i + 1
+    }
+    if len(out) > MAX_ENVIRONMENT_ENTRIES {
+        return err("environment snapshot has too many entries", rangeCode())
+    }
+    return ok(out)
+}
+
+pub fn snapshot(): Result[Environment] {
+    let size = try platform::_envSize()
+    if size < 0 { return err("environment size is negative", systemFailure()) }
+    if size > MAX_ENVIRONMENT_BYTES {
+        return err("process environment exceeds 1 MiB", rangeCode())
+    }
+    let buf = try bytesbuf::create(size)
+    defer bytesbuf::close(&buf)
+    let bt = try platform::_tokenHandle(handle(buf.res), platform::KIND_BYTE_BUFFER)
+    let got = try platform::_envSnapshotToken(bt, size)
+    if got != size {
+        return err("environment snapshot length changed during capture",
+                   systemFailure())
+    }
+    let raw = new []byte(got)
+    let copied = try bytesbuf::copyOut(&buf, &raw, 0, 0, got)
+    if copied != got { return err("short environment capture copy", systemFailure()) }
+    let pairs = try decode(&raw)
+    let env = new Environment{entries: pairs}
+    let code = environmentCode(&env)
+    if code != 0 {
+        return err("captured environment is malformed or over the cap", code)
+    }
+    return ok(env)
+}
+
+pub fn get(e: &Environment, name: string): Result[?[]byte] {
+    if !validName(name) {
+        return err("environment name is empty or contains '=' or NUL",
+                   invalidArgument())
+    }
+    let shape = environmentCode(e)
+    if shape != 0 {
+        return err("environment record is malformed or over the cap", shape)
+    }
+    for i in 0..len(e.entries) {
+        if e.entries[i].name == name {
+            let found: ?[]byte = pairBytes(e.entries[i].value)
+            return ok(found)
+        }
+    }
+    let none: ?[]byte = nil
+    return ok(none)
+}
+
+pub fn set(mut e: &Environment, name: string, value: string): Result[bool] {
+    if !validName(name) || !validValue(value) {
+        return err("environment name or value is invalid", invalidArgument())
+    }
+    let shape = environmentCode(e)
+    if shape != 0 {
+        return err("environment record is malformed or over the cap", shape)
+    }
+    var total = 0
+    for i in 0..len(e.entries) { total += pairWidth(&e.entries[i]) }
+    let incoming = len(name) + len(value) + 2
+    for i in 0..len(e.entries) {
+        if e.entries[i].name == name {
+            // Validate the prospective total before mutating the record.
+            let replaced = total - pairWidth(&e.entries[i])
+            if incoming > MAX_ENVIRONMENT_BYTES - replaced {
+                return err("environment total size is over the cap", rangeCode())
+            }
+            e.entries[i].value = value
+            return ok(true)
+        }
+    }
+    if len(e.entries) >= MAX_ENVIRONMENT_ENTRIES {
+        return err("environment has too many entries", rangeCode())
+    }
+    if incoming > MAX_ENVIRONMENT_BYTES - total {
+        return err("environment total size is over the cap", rangeCode())
+    }
+    append(e.entries, new Pair{name: name, value: value})
+    return ok(true)
+}
+
+pub fn unset(mut e: &Environment, name: string): Result[bool] {
+    if !validName(name) {
+        return err("environment name is empty or contains '=' or NUL",
+                   invalidArgument())
+    }
+    let shape = environmentCode(e)
+    if shape != 0 {
+        return err("environment record is malformed or over the cap", shape)
+    }
+    var kept = new []Pair(0)
+    var removed = false
+    for i in 0..len(e.entries) {
+        if e.entries[i].name == name {
+            removed = true
+        } else {
+            append(kept, copyPair(&e.entries[i]))
+        }
+    }
+    if !removed { return ok(false) }
+    e.entries = kept
+    return ok(true)
+}
+
+// A deep copy: new array, new Pair records and value bytes. Strings are
+// immutable, so assigning the same string value does not expose the snapshot.
+pub fn entries(e: &Environment): Result[[]Pair] {
+    let shape = environmentCode(e)
+    if shape != 0 {
+        return err("environment record is malformed or over the cap", shape)
+    }
+    var out = new []Pair(0)
+    for i in 0..len(e.entries) {
+        append(out, copyPair(&e.entries[i]))
+    }
+    return ok(out)
+}

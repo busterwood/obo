@@ -1,19 +1,20 @@
-# Experimental sys P0/P1a/P2q limits
+# Experimental sys P0/P1a/P1b/P2q limits
 
-These limits are part of the P0/P1a/P2 boundary proof. They are deliberately
+These limits are part of the P0/P1a/P1b/P2 boundary proof. They are deliberately
 explicit rather than hidden behind a stable-looking API.
 
 ## Scope
 
-- **P0, P1a, P2 and P2q.** P0 provided the identity/error/byte seam; P1a adds
-  owned `File`, anchored `Directory`/`Iterator`, metadata snapshots, clocks,
-  `getrandom`, concrete streams and bounded buffers; P2 adds numeric addresses,
-  TCP/UDP/Unix sockets, an epoll reactor, cancellation/deadline helpers and
-  blocking resolution. P2q adds the bounded UDP batch, GSO/GRO reporting, an
-  explicit one-datagram fallback, datagram watch and the concrete QUIC bind
-  profile. There is still no mapping, calendar, process, signal, environment
-  mutation, terminal or logging API, no atomic replacement, no reactive DNS and
-  no full path-containment helper.
+- **P0, P1a, P1b, P2 and P2q.** P0 provided the identity/error/byte seam; P1a
+  adds owned `File`, anchored `Directory`/`Iterator`, metadata snapshots, clocks,
+  `getrandom`, concrete streams and bounded buffers; P1b adds anchored directory
+  mutation, chmod/sync, rename/link/symlink, the atomic replacement transaction,
+  openat2 containment, RFC3339 text, environment snapshots and bounded logging.
+  P2 adds numeric addresses, TCP/UDP/Unix sockets, an epoll reactor,
+  cancellation/deadline helpers and blocking resolution. P2q adds the bounded
+  UDP batch, GSO/GRO reporting, an explicit one-datagram fallback, datagram
+  watch and the concrete QUIC bind profile. There is still no mapping, process,
+  signal, environment mutation, terminal raw mode or reactive DNS API.
 - **One process context, single thread.** The managed table and C registry are
   process globals. There is no worker context selection, lock, atomic or TSAN
   claim.
@@ -86,6 +87,11 @@ explicit rather than hidden behind a stable-looking API.
 | One bounded buffer | 64 KiB default | 16 MiB (`MAX_BUFFER_BYTES`) |
 | Path string | 4095 bytes | 4095 bytes |
 | One directory component name | 255 bytes | 255 bytes |
+| Symlink target | 4095 bytes | 4095 bytes (`NameTooLong` above) |
+| `replaceAtomic` payload | 16 MiB | 16 MiB |
+| One log record | 4096 bytes | 4096 bytes (`LimitExceeded`) |
+| One log queue | 1 byte..1 MiB at open | 1 MiB |
+| Environment snapshot | captured size | 1 MiB / 65536 entries |
 | Metadata packet | 16 fields | 128 bytes |
 | Address packet / resolver record | 160 bytes | 160 bytes |
 | IPv4 / IPv6 address | 4 / 16 octets | 4 / 16 octets |
@@ -189,6 +195,70 @@ allocate past the stated capacity.
   call is capped at 1 MiB. Fake deterministic entropy exists only in the
   test-only fake link and is never an application-selected production mode.
 
+## P1b practical-filesystem limits
+
+- Anchored `mkdir`, `unlink`, `removeEmpty`, `readLink`, `rename`, `link` and
+  `symlink` names are single components. They are anchored to the opened
+  directory and are not a path-containment claim against concurrent rename or
+  mount-namespace changes. `removeEmpty` maps kernel `ENOTEMPTY` to `Busy`; the
+  error namespace has no `NotEmpty` kind.
+- `openBeneath` needs Linux openat2 (5.6+). It requests
+  `RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS` and an explicit `noFollow` option. A
+  kernel without openat2 returns `Unsupported`, never a lexical path check.
+  Containment escape is the kernel's `EXDEV` → `CrossDevice`; an absolute path
+  is also `EXDEV` under `RESOLVE_BENEATH`; a magic link is `PathLoop`. This does
+  not promise protection against a privileged mount race or a caller that
+  deliberately aliases live resources.
+- `rename` is atomic for name visibility within one filesystem. `replace=false`
+  requires `RENAME_NOREPLACE`; absence is `Unsupported`, never an existence
+  check followed by overwrite. Because Linux filesystems are inconsistent about
+  reporting “flags unsupported”, an `EINVAL` from `renameat2` on the no-replace
+  path (with validated component names) is treated as that absence; every other
+  captured error is preserved. Cross-filesystem rename is `CrossDevice`; there
+  is no copy/delete fallback. `link` does not follow a source symlink and a
+  directory source is `Permission`. `symlink` stores the target bytes verbatim
+  and does not validate the target's existence.
+- `replaceAtomic` caps the payload at 16 MiB (the byte-bridge cap) and creates
+  the temporary in the target directory. It owns a finite retry-free transaction:
+  a short write advances the cursor, EINTR is not retried, and no partial target
+  is published. Precommit failures return `err` after closing and removing the
+  temporary; a cleanup unlink failure is not hidden but cannot roll back the
+  primary error. The rename is the commit point. Directory-fsync failure after
+  commit is `ok` with `committed=true, durable=false,
+  code=DurabilityUnknown`; it never reports rollback. It preserves no old inode,
+  hard links, ACLs, ownership, xattrs or watchers, and the replacement
+  permissions are explicit.
+- RFC3339 is one specified profile: no leap seconds, no timezone database, no
+  locale, no floats and no ISO forms outside the documented grammar. Formatting
+  a timestamp outside years 0001..9999 or with unnormalized nanos is `Range` or
+  `InvalidArgument`.
+- Environment snapshots cover startup environment order and are Linux/getenv
+  semantics. Duplicates are retained, lookup is first-match and `unset` removes
+  all matches. A malformed name/value is `InvalidArgument`; an entry-count or
+  total-size cap is `Range`, whether the record was constructed directly or
+  captured from an over-cap process environment. `set` validates the
+  prospective total before assigning, so a rejected update leaves the old value
+  and the snapshot usable. Process mutation is intentionally absent because
+  libc `setenv` and the runtime's initial `envp` cannot be kept coherent yet;
+  child snapshots do not require it.
+- Logging is line-oriented and single-threaded. `openStandard` only selects
+  Input/Output/Error and never closes or changes the status flags of process fd
+  0/1/2. Because the duplicate shares the open file description, drain/flush
+  toggle `O_NONBLOCK` only around their own write/poll attempt and restore the
+  exact prior flags before returning. A large process `print` is therefore still
+  subject to ordinary blocking backpressure, not logger-induced truncation.
+  The temporary toggle is safe only in the v1 single-threaded model; a future
+  worker context needs a separately opened nonblocking description. The
+  queue is fixed at open; `DropWithCounter` drops whole records, and
+  `ReturnWouldBlock` rejects a full queue. `close` without a prior drain/flush
+  discards queued records. P1b emits a realtime timestamp but not the design's
+  monotonic record-latency field; adding it would need a caller-supplied start
+  instant and is deferred. Escaping is `\n`, `\r`, `\t`, `\\` and `\xHH` for
+  other control bytes. There is no JSON encoder, global logger, background drain
+  thread, cross-process record atomicity for shared files, or payload redaction.
+- Mappings remain out of P1b: the optional mmap extension was not needed for
+  the practical-filesystem phase.
+
 ## P2q UDP batch limits
 
 - `receiveBatch` accepts `1..64` datagrams and a **total** byte budget of
@@ -239,11 +309,11 @@ allocate past the stated capacity.
 
 ## P3/P4 and P2 deferrals
 
-P1b owns `chmod`, `sync`, rename/link/symlink, `replaceAtomic`, `openBeneath`,
-directory mutation and durability reporting. P3 owns process spawn/reaping,
-pipes/redirection, process groups, signals, cwd policy, supervisor examples and
-the resolver policy/helper decision. P4 owns threads and synchronization; no
-worker, atomic, channel, sender or receiver kind is created here.
+P3 owns process spawn/reaping, pipes/redirection, process groups, signals, cwd
+policy, process environment mutation, supervisor examples and the resolver
+policy/helper decision. P4 owns threads and synchronization; no worker, atomic,
+channel, sender or receiver kind is created here. Mappings and terminal raw mode
+remain post-P1b extensions.
 
 P2 deliberately defers mappings (despite the older phase note), multicast
 membership, general ancillary data/fd passing beyond the internal UDP GSO/GRO
@@ -269,9 +339,18 @@ consume readiness batches.
   script and shared C buffers, not file descriptors. Separate opens have
   independent offsets, `dup` shares one description, O_APPEND writes at inode
   end, and path/fstat identity comes from the same inode. A scripted close error
-  still consumes the fake resource, modeling Linux close. It is a deterministic
+  still consumes the fake resource, modeling Linux close. P1b adds flat
+  in-memory names for mkdir/unlink/rename/link/symlink/readLink, a bounded fake
+  logger sink and the same replaceAtomic stage classes. It is a deterministic
   contract/fault fixture, not a filesystem implementation: its directory child
-  namespace (`sub`) and metadata policy are intentionally shallow.
+  namespace (`sub`), hierarchy and metadata policy are intentionally shallow,
+  and the fake environment is a fixed five-entry table.
+- P1b fault injection uses the fake operation classes for temporary create,
+  write, chmod, file sync, rename and directory sync. `sysfake_store_count()`
+  (ctl link only) proves a failed transaction left no temporary. The real
+  cross-device case is skipped visibly when no second filesystem is available
+  under `/dev/shm`; the openat2 suite skips visibly only if the kernel lacks the
+  syscall, and the fake capability-off root covers the `Unsupported` path.
 - The fake P2 backend uses in-memory paired connections, queued datagrams,
   scripted readiness/errors and a fake monotonic clock. Its P2q path models
   GSO splitting and GRO coalescing deterministically and honours the same
@@ -303,5 +382,6 @@ consume readiness batches.
 - The `.cbind` format is the existing experimental `cinterop-proto/1`. Hashes in
   the manifest are provenance/corruption checks, not signatures.
 - Experimental APIs may change with a migration note. Nothing here is stable;
-  P2 adds addresses, sockets, the reactor, waitio and blocking resolution on the
-  reviewed P0/P1a seam. P1b, P3 and P4 remain deferred.
+  P1b adds the practical filesystem/calendar/environment/log surface, and P2
+  adds addresses, sockets, the reactor, waitio and blocking resolution on the
+  reviewed P0/P1a seam. P3 and P4 remain deferred.

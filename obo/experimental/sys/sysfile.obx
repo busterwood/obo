@@ -1,16 +1,23 @@
-// Experimental systems library: owned files (P1a).
+// Experimental systems library: owned files (P1a) and practical filesystem
+// operations (P1b).
 //
-// Status: experimental P1a slice, unstable. A File hides a CLOEXEC native
+// Status: experimental P1a/P1b surface, unstable. A File hides a CLOEXEC native
 // handle behind a checked platform::Resource; no descriptor or registry token
 // is stored in the public record. Open options are explicit and copied at open.
 // Every read/write is one kernel attempt: a short transfer is success, EOF is
 // nil (readSome) or 0 (readAt/readInto), and EINTR/WouldBlock stay distinct.
 // close is explicit and never retried after EINTR.
 //
-// P1a deliberately omits chmod, sync, rename/link/symlink and atomic replace;
-// those remain P1b. A positional write on an append-open File is rejected even
-// with a zero count. intoStream logically consumes a File by re-tagging the live
-// resource to KIND_STREAM; a failed transfer retires the source exactly once.
+// P1b adds chmod, data-only/full sync, anchored rename/link/symlink,
+// openBeneath (openat2 RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS; Unsupported when
+// the kernel has no openat2), and the replaceAtomic transaction. rename is
+// atomic for name visibility; replace=false requires an atomic no-replace
+// primitive and is Unsupported otherwise. Cross-device rename is CrossDevice,
+// never a copy/delete fallback.
+//
+// A positional write on an append-open File is rejected even with a zero count.
+// intoStream logically consumes a File by re-tagging the live resource to
+// KIND_STREAM; a failed transfer retires the source exactly once.
 // duplicateStream returns an independent owner that shares the same open file
 // description (offset and status flags), matching dup(2).
 module sysfile
@@ -36,11 +43,25 @@ pub type OpenOptions = ref record {
     pub permissions: int
 }
 
+pub type ReplaceReport = ref record {
+    pub committed: bool
+    pub durable: bool
+    pub code: int
+    pub message: string
+}
+
 pub const SEEK_START = 0
 pub const SEEK_CURRENT = 1
 pub const SEEK_END = 2
 pub const MAX_CHUNK = 1048576
+pub const MAX_REPLACE_BYTES = 16777216
 const MAX_PATH_BYTES = 4095
+const TEMP_ATTEMPTS = 8
+
+var replaceCounter: int = 0
+
+// Forward headings so replaceAtomic can clean up through the public close.
+pub fn close(f: &File): Result[bool]
 
 fn libCode(k: errors::Kind): int {
     return errors::code(&k)
@@ -49,6 +70,8 @@ fn libCode(k: errors::Kind): int {
 fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
 fn rangeCode(): int { return libCode(new errors::Range{}) }
 fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+fn limitCode(): int { return libCode(new errors::LimitExceeded{}) }
+fn durabilityUnknown(): int { return libCode(new errors::DurabilityUnknown{}) }
 
 pub fn readOptions(): OpenOptions {
     return new OpenOptions{
@@ -100,6 +123,17 @@ fn validName(name: string): bool {
     for i in 0..len(name) {
         let c = int(name[i])
         if c == 0 || c == 47 { return false }
+    }
+    return true
+}
+
+// A symlink target is relative or absolute bytes; it is never resolved or
+// lexically joined by this module. Multi-component openBeneath paths are also
+// accepted here; containment is enforced by openat2 in the adapter.
+fn validTextPath(path: string): bool {
+    if len(path) == 0 || len(path) > MAX_PATH_BYTES { return false }
+    for i in 0..len(path) {
+        if int(path[i]) == 0 { return false }
     }
     return true
 }
@@ -157,6 +191,30 @@ pub fn openAt(base: &dir::Directory, name: string, options: &OpenOptions): Resul
     let pt = try platform::_tokenHandle(handle(pb.res), platform::KIND_BYTE_BUFFER)
     let token = try platform::_fileOpenToken(dt, pt, optionFlags(options),
                                              options.permissions)
+    let r = try platform::_adoptToken(platform::KIND_FILE, token)
+    return ok(new File{res: r})
+}
+
+// Multi-component path confined beneath an already-open base directory using
+// openat2 RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS. This is never a string-prefix
+// check. A kernel without openat2 returns Unsupported; absolute paths and `..`
+// escapes fail (EXDEV maps to CrossDevice, EINVAL to InvalidArgument, a magic
+// link to PathLoop).
+pub fn openBeneath(base: &dir::Directory, path: string,
+                   options: &OpenOptions): Result[File] {
+    if !validTextPath(path) {
+        return err("openBeneath path is empty, too long or contains NUL",
+                   invalidArgument())
+    }
+    if !validateOptions(options) {
+        return err("file open options are inconsistent", invalidArgument())
+    }
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let pb = try pathBytes(path)
+    defer bytesbuf::close(&pb)
+    let pt = try platform::_tokenHandle(handle(pb.res), platform::KIND_BYTE_BUFFER)
+    let token = try platform::_fileOpenBeneathToken(dt, pt, optionFlags(options),
+                                                    options.permissions)
     let r = try platform::_adoptToken(platform::KIND_FILE, token)
     return ok(new File{res: r})
 }
@@ -282,6 +340,282 @@ pub fn metadata(f: &File): Result[stat::Metadata] {
     let ignored = try platform::_statToken(ft, platform::KIND_FILE, 0, 0, 0, pt)
     if ignored < 0 { return err("metadata packet was not produced", systemFailure()) }
     return stat::_decode(handle(packet.res))
+}
+
+pub fn chmod(f: &File, permissions: int): Result[bool] {
+    if permissions < 0 || permissions > 4095 {
+        return err("chmod permissions are outside 0..0xFFF", rangeCode())
+    }
+    let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
+    let done = try platform::_fileChmodToken(ft, platform::KIND_FILE, permissions)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+// dataOnly selects fdatasync (true) or fsync (false). Both are one attempt.
+pub fn sync(f: &File, dataOnly: bool): Result[bool] {
+    let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
+    let done = try platform::_fileSyncToken(ft, platform::KIND_FILE, dataOnly)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+fn validComponentOrError(name: string): bool {
+    return validName(name)
+}
+
+// Atomic name visibility. replace=false uses an atomic no-replace primitive
+// (renameat2 RENAME_NOREPLACE); if the kernel/filesystem lacks it the call is
+// Unsupported, never a stat-then-rename overwrite. Cross-device is CrossDevice.
+pub fn rename(from: &dir::Directory, old: string, to: &dir::Directory,
+              name: string, replace: bool): Result[bool] {
+    if !validComponentOrError(old) {
+        return err("rename source name must be one ordinary path component",
+                   invalidArgument())
+    }
+    if !validComponentOrError(name) {
+        return err("rename target name must be one ordinary path component",
+                   invalidArgument())
+    }
+    let fd = try platform::_tokenHandle(handle(from.res), platform::KIND_DIRECTORY)
+    let td = try platform::_tokenHandle(handle(to.res), platform::KIND_DIRECTORY)
+    let ob = try pathBytes(old)
+    defer bytesbuf::close(&ob)
+    let ot = try platform::_tokenHandle(handle(ob.res), platform::KIND_BYTE_BUFFER)
+    let nb = try pathBytes(name)
+    defer bytesbuf::close(&nb)
+    let nt = try platform::_tokenHandle(handle(nb.res), platform::KIND_BYTE_BUFFER)
+    let done = try platform::_fileRenameToken(fd, ot, td, nt, replace)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+// Hard link of the source name itself; the source symlink is not followed.
+pub fn link(from: &dir::Directory, old: string, to: &dir::Directory,
+            name: string): Result[bool] {
+    if !validComponentOrError(old) {
+        return err("link source name must be one ordinary path component",
+                   invalidArgument())
+    }
+    if !validComponentOrError(name) {
+        return err("link target name must be one ordinary path component",
+                   invalidArgument())
+    }
+    let fd = try platform::_tokenHandle(handle(from.res), platform::KIND_DIRECTORY)
+    let td = try platform::_tokenHandle(handle(to.res), platform::KIND_DIRECTORY)
+    let ob = try pathBytes(old)
+    defer bytesbuf::close(&ob)
+    let ot = try platform::_tokenHandle(handle(ob.res), platform::KIND_BYTE_BUFFER)
+    let nb = try pathBytes(name)
+    defer bytesbuf::close(&nb)
+    let nt = try platform::_tokenHandle(handle(nb.res), platform::KIND_BYTE_BUFFER)
+    let done = try platform::_fileLinkToken(fd, ot, td, nt)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+// Create a symlink whose target bytes are stored verbatim. The target is not
+// resolved, so a dangling target is valid.
+pub fn symlink(target: string, to: &dir::Directory, name: string): Result[bool] {
+    if !validTextPath(target) {
+        return err("symlink target is empty, too long or contains NUL",
+                   invalidArgument())
+    }
+    if !validComponentOrError(name) {
+        return err("symlink name must be one ordinary path component",
+                   invalidArgument())
+    }
+    let td = try platform::_tokenHandle(handle(to.res), platform::KIND_DIRECTORY)
+    let tb = try pathBytes(target)
+    defer bytesbuf::close(&tb)
+    let tt = try platform::_tokenHandle(handle(tb.res), platform::KIND_BYTE_BUFFER)
+    let nb = try pathBytes(name)
+    defer bytesbuf::close(&nb)
+    let nt = try platform::_tokenHandle(handle(nb.res), platform::KIND_BYTE_BUFFER)
+    let done = try platform::_fileSymlinkToken(tt, td, nt)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+type TempFile = ref record {
+    file: ?File
+    name: string
+}
+
+fn tempNameBytes(attempt: int): string {
+    let stamp = platform::_clockMonotonicNs()
+    var t = 0
+    match stamp { ok(v) { t = v } err(m, c) { t = 0 } }
+    return ".obo-replace-" + string(replaceCounter) + "-" + string(t) + "-" +
+           string(attempt)
+}
+
+fn cleanupTemp(base: &dir::Directory, name: string): bool {
+    let removed = dir::unlink(base, name)
+    match removed {
+        ok(v) { return true }
+        err(m, c) {
+            if c == libCode(new errors::NotFound{}) { return true }
+            return false
+        }
+    }
+}
+
+fn openUniqueTemp(base: &dir::Directory,
+                  opts: &OpenOptions): Result[TempFile] {
+    var attempt = 0
+    while attempt < TEMP_ATTEMPTS {
+        replaceCounter += 1
+        let temp = tempNameBytes(attempt)
+        let made = openAt(base, temp, opts)
+        match made {
+            ok(f) {
+                return ok(new TempFile{file: f, name: temp})
+            }
+            err(m, c) {
+                if c == libCode(new errors::AlreadyExists{}) {
+                    attempt += 1
+                } else {
+                    return err(m, c)
+                }
+            }
+        }
+    }
+    return err("could not create a unique replacement temporary", rangeCode())
+}
+
+fn writeAllBounded(f: &File, data: &[]byte): Result[bool] {
+    var done = 0
+    let total = len(data)
+    while done < total {
+        var take = total - done
+        if take > MAX_CHUNK { take = MAX_CHUNK }
+        let n = try writeSome(f, data, done, take)
+        if n <= 0 || n > take {
+            return err("atomic replacement write made no valid progress",
+                       systemFailure())
+        }
+        done += n
+    }
+    return ok(true)
+}
+
+// Atomic replacement transaction. Precommit failures return err, leaving the
+// old target untouched and removing the O_EXCL temporary. A postcommit
+// directory-fsync failure returns ok(ReplaceReport{committed:true,
+// durable:false, code:DurabilityUnknown}) because the rename already committed;
+// the helper never rolls back a committed rename. replace=false requires the
+// atomic no-replace primitive.
+pub fn replaceAtomic(to: &dir::Directory, name: string, data: &[]byte,
+                     permissions: int, durable: bool): Result[ReplaceReport] {
+    if !validComponentOrError(name) {
+        return err("replaceAtomic name must be one ordinary path component",
+                   invalidArgument())
+    }
+    if len(data) > MAX_REPLACE_BYTES {
+        return err("replaceAtomic payload exceeds 16 MiB", rangeCode())
+    }
+    if permissions < 0 || permissions > 4095 {
+        return err("replaceAtomic permissions are outside 0..0xFFF", rangeCode())
+    }
+    let dt = try platform::_tokenHandle(handle(to.res), platform::KIND_DIRECTORY)
+
+    // Create one unique O_EXCL temporary in the target directory.
+    let opts = readOptions()
+    opts.read = false
+    opts.write = true
+    opts.create = true
+    opts.exclusive = true
+    opts.noFollow = true
+    opts.permissions = permissions
+    let made = try openUniqueTemp(to, &opts)
+    let held = take(made.file)
+    if held == nil {
+        return err("replacement temporary disappeared", systemFailure())
+    }
+    let f: File = held
+    let temp = made.name
+
+    // Write with explicit short-write progress.
+    let wrote = writeAllBounded(&f, data)
+    match wrote {
+        ok(v) { }
+        err(m, c) {
+            let retiredEarly = close(&f)
+            let cleansed = cleanupTemp(to, temp)
+            if !cleansed {
+                return err(m + "; temporary cleanup failed", c)
+            }
+            return err(m, c)
+        }
+    }
+    // Explicit requested permissions (creation is still umask-subject).
+    let ch = chmod(&f, permissions)
+    match ch {
+        ok(v) { }
+        err(m, c) {
+            let retiredEarly = close(&f)
+            let cleansed = cleanupTemp(to, temp)
+            if !cleansed {
+                return err(m + "; temporary cleanup failed", c)
+            }
+            return err(m, c)
+        }
+    }
+    if durable {
+        let synced = sync(&f, false)
+        match synced {
+            ok(v) { }
+            err(m, c) {
+                let retiredEarly = close(&f)
+                let cleansed = cleanupTemp(to, temp)
+                if !cleansed {
+                    return err(m + "; temporary cleanup failed", c)
+                }
+                return err(m, c)
+            }
+        }
+    }
+    let retired = close(&f)
+    match retired {
+        ok(v) { }
+        err(m, c) {
+            let cleansed = cleanupTemp(to, temp)
+            if !cleansed {
+                return err(m + "; temporary cleanup failed", c)
+            }
+            return err(m, c)
+        }
+    }
+    // Commit point: the rename either happens atomically or not at all.
+    let committed = rename(to, temp, to, name, true)
+    match committed {
+        ok(v) {
+            if !durable {
+                return ok(new ReplaceReport{committed: true, durable: false,
+                                            code: 0, message: ""})
+            }
+            let ds = dir::sync(to)
+            match ds {
+                ok(v2) {
+                    return ok(new ReplaceReport{committed: true, durable: true,
+                                                code: 0, message: ""})
+                }
+                err(m2, c2) {
+                    return ok(new ReplaceReport{committed: true, durable: false,
+                                                code: durabilityUnknown(),
+                                                message: "directory sync failed after commit"})
+                }
+            }
+        }
+        err(m, c) {
+            let cleansed = cleanupTemp(to, temp)
+            if !cleansed {
+                return err(m + "; temporary cleanup failed", c)
+            }
+            return err(m, c)
+        }
+    }
 }
 
 pub fn duplicateStream(f: &File): Result[stream::Stream] {

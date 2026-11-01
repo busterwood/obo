@@ -1,0 +1,39 @@
+// B1 regression root: opening/closing a logger on standard output must not
+// change the shared open file description. The test runs this with a paused
+// stdout pipe and requires the 200,000-byte print to complete untruncated.
+module app
+
+import "sysplatform.obx" as platform
+import "syslog.obx" as log
+import "sysstream.obx" as stream
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+    let out = new stream::Output{}
+    let policy = new log::ReturnWouldBlock{}
+    let made = log::openStandard(&out, 64, &policy)
+    match made {
+        ok(l) {
+            let f = log::flush(&l)
+            match f { ok(v) { println("flush=", v) } err(m, c) { show("flush", c) } }
+            let c = log::close(&l)
+            match c { ok(v) { println("close=", v) } err(m, cc) { show("close", cc) } }
+        }
+        err(m, c) { show("open", c) }
+    }
+    var big = new []byte(200000)
+    for i in 0..200000 { big[i] = 120 }
+    println("BEFORE")
+    println(string(big))
+    println("AFTER")
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}

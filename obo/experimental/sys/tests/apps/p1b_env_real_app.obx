@@ -1,0 +1,36 @@
+// P1b real-backend environment snapshot probe. The test passes a private
+// startup environment; mutation of the snapshot must not change the process.
+module app
+
+import "sysplatform.obx" as platform
+import "sysenv.obx" as env
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+    let made = env::snapshot()
+    match made {
+        ok(e) {
+            let a = env::get(&e, "OBO_P1B_A")
+            match a { ok(v) { if v == nil { println("a=nil") } else { println("a=", string(v)) } } err(m, c) { show("a", c) } }
+            let b = env::get(&e, "OBO_P1B_EMPTY")
+            match b { ok(v) { if v == nil { println("empty=nil") } else { println("empty=len", len(v)) } } err(m, c) { show("empty", c) } }
+            let c = env::get(&e, "OBO_P1B_MISSING")
+            match c { ok(v) { if v == nil { println("missing=nil") } else { println("missing=present") } } err(m, c) { show("missing", c) } }
+            let mutated = env::set(&e, "OBO_P1B_A", "local-only")
+            match mutated { ok(v) { println("mutated=", v) } err(m, c) { show("mutated", c) } }
+            let after = env::get(&e, "OBO_P1B_A")
+            match after { ok(v) { if v == nil { println("after=nil") } else { println("after=", string(v)) } } err(m, c) { show("after", c) } }
+        }
+        err(m, c) { show("snapshot", c) }
+    }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}

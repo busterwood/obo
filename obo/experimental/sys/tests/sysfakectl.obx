@@ -45,6 +45,21 @@ pub const CLASS_WAKE = 37
 pub const CLASS_STOP = 38
 pub const CLASS_RESOLVE = 39
 pub const CLASS_CANCEL = 40
+pub const CLASS_DIR_MKDIR = 41
+pub const CLASS_DIR_UNLINK = 42
+pub const CLASS_DIR_RMDIR = 43
+pub const CLASS_DIR_READLINK = 44
+pub const CLASS_DIR_SYNC = 45
+pub const CLASS_OPEN_BENEATH = 46
+pub const CLASS_CHMOD = 47
+pub const CLASS_SYNC = 48
+pub const CLASS_RENAME = 49
+pub const CLASS_LINK = 50
+pub const CLASS_SYMLINK = 51
+pub const CLASS_LOG_OPEN = 52
+pub const CLASS_LOG_EMIT = 53
+pub const CLASS_LOG_DRAIN = 54
+pub const CLASS_LOG_FLUSH = 55
 
 pub fn reset(): int {
     return __cinterop("sysfake_reset")
@@ -88,4 +103,18 @@ pub fn netPending(sourceToken: int, readable: bool, writable: bool): int {
     if readable { rd = 1 }
     if writable { wr = 1 }
     return __cinterop("sysfake_net_pending", sourceToken, rd, wr)
+}
+
+pub fn disableOpenBeneath(disabled: bool): int {
+    var flag = 0
+    if disabled { flag = 1 }
+    return __cinterop("sysfake_disable_open_beneath", flag)
+}
+
+pub fn setLogShort(bytes: int): int {
+    return __cinterop("sysfake_log_short", bytes)
+}
+
+pub fn storeCount(): int {
+    return __cinterop("sysfake_store_count")
 }

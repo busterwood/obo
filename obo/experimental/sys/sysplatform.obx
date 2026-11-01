@@ -1,7 +1,8 @@
-// Experimental systems library: platform support boundary (P0).
+// Experimental systems library: platform support boundary (P0, extended by
+// P1a/P1b/P2).
 //
-// Status: experimental P0 boundary proof. This is not the P1a File/Directory/
-// clock API and not a stable ABI.
+// Status: experimental support seam, not a stable ABI. This is not the typed
+// File/Directory/clock/network API.
 //
 // The public shell is exactly:
 //
@@ -314,6 +315,20 @@ pub fn hasCapability(name: string): bool {
     if name == "platform.counts" { return true }
     if name == "file.open" { return true }
     if name == "file.openAt" { return true }
+    if name == "file.openBeneath" {
+        return __cinterop("sys_file_open_beneath_supported") == 1
+    }
+    if name == "file.chmod" { return true }
+    if name == "file.sync" { return true }
+    if name == "file.rename" { return true }
+    if name == "file.link" { return true }
+    if name == "file.symlink" { return true }
+    if name == "file.replaceAtomic" { return true }
+    if name == "directory.mutate" { return true }
+    if name == "directory.readlink" { return true }
+    if name == "calendar.rfc3339" { return true }
+    if name == "environment.snapshot" { return true }
+    if name == "log.bounded" { return true }
     if name == "directory.iterate" { return true }
     if name == "metadata.stat" { return true }
     if name == "clock.monotonic" { return true }
@@ -649,6 +664,107 @@ pub fn _statToken(subjectTok: int, subjectKind: int, dirTok: int,
 pub fn _fileDupToken(token: int, kind: int, toKind: int): Result[int] {
     let raw = __cinterop("sys_file_dup", token, kind, toKind)
     return _rawResult(raw, "resource duplicate failed")
+}
+
+// P1b anchored directory mutation and links.
+pub fn _dirMkdirToken(dirTok: int, nameTok: int, mode: int): Result[int] {
+    return _rawResult(__cinterop("sys_dir_mkdir", dirTok, nameTok, mode),
+                      "directory create failed")
+}
+
+pub fn _dirUnlinkToken(dirTok: int, nameTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_dir_unlink", dirTok, nameTok),
+                      "unlink failed")
+}
+
+pub fn _dirRemoveEmptyToken(dirTok: int, nameTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_dir_remove_empty", dirTok, nameTok),
+                      "empty-directory removal failed")
+}
+
+pub fn _dirReadLinkToken(dirTok: int, nameTok: int, bufTok: int,
+                         cap: int): Result[int] {
+    return _rawResult(__cinterop("sys_dir_readlink", dirTok, nameTok, bufTok, cap),
+                      "readlink failed")
+}
+
+pub fn _dirSyncToken(dirTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_dir_sync", dirTok), "directory sync failed")
+}
+
+pub fn _fileOpenBeneathToken(dirTok: int, pathTok: int, flags: int,
+                             mode: int): Result[int] {
+    return _rawResult(__cinterop("sys_file_open_beneath", dirTok, pathTok, flags,
+                                 mode), "openBeneath failed")
+}
+
+pub fn _fileChmodToken(token: int, kind: int, mode: int): Result[int] {
+    return _rawResult(__cinterop("sys_file_chmod", token, kind, mode),
+                      "chmod failed")
+}
+
+pub fn _fileSyncToken(token: int, kind: int, dataOnly: bool): Result[int] {
+    var flag = 0
+    if dataOnly { flag = 1 }
+    return _rawResult(__cinterop("sys_file_sync", token, kind, flag), "sync failed")
+}
+
+pub fn _fileRenameToken(fromDir: int, oldName: int, toDir: int, newName: int,
+                        replace: bool): Result[int] {
+    var flag = 0
+    if replace { flag = 1 }
+    return _rawResult(__cinterop("sys_file_rename", fromDir, oldName, toDir,
+                                 newName, flag), "rename failed")
+}
+
+pub fn _fileLinkToken(fromDir: int, oldName: int, toDir: int,
+                      newName: int): Result[int] {
+    return _rawResult(__cinterop("sys_file_link", fromDir, oldName, toDir,
+                                 newName), "link creation failed")
+}
+
+pub fn _fileSymlinkToken(targetTok: int, toDir: int, nameTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_file_symlink", targetTok, toDir, nameTok),
+                      "symlink creation failed")
+}
+
+pub fn _logOpenToken(which: int, capacity: int): Result[int] {
+    return _rawResult(__cinterop("sys_log_open", which, capacity),
+                      "logger creation failed")
+}
+
+pub fn _logEmitToken(token: int, bufTok: int, offset: int, count: int,
+                     policy: int): Result[int] {
+    return _rawResult(__cinterop("sys_log_emit", token, bufTok, offset, count,
+                                 policy), "log emit failed")
+}
+
+pub fn _logDrainToken(token: int, finite: bool, deadline: int): Result[int] {
+    var flag = 0
+    if finite { flag = 1 }
+    return _rawResult(__cinterop("sys_log_drain", token, flag, deadline),
+                      "log drain failed")
+}
+
+pub fn _logFlushToken(token: int): Result[int] {
+    return _rawResult(__cinterop("sys_log_flush", token), "log flush failed")
+}
+
+pub fn _logDropped(token: int): Result[int] {
+    return _rawResult(__cinterop("sys_log_dropped", token), "log drop count failed")
+}
+
+pub fn _logQueued(token: int): Result[int] {
+    return _rawResult(__cinterop("sys_log_queued", token), "log queue census failed")
+}
+
+pub fn _envSize(): Result[int] {
+    return _rawResult(__cinterop("sys_env_size"), "environment size failed")
+}
+
+pub fn _envSnapshotToken(bufTok: int, cap: int): Result[int] {
+    return _rawResult(__cinterop("sys_env_snapshot", bufTok, cap),
+                      "environment snapshot failed")
 }
 
 pub fn _clockMonotonicNs(): Result[int] {

@@ -1,0 +1,212 @@
+// P1b bounded-logger fault trace (fake_ctl link). The fake backend owns the
+// queue and the sink; the test drives short drain progress and sink errors.
+module app
+
+import "sysplatform.obx" as platform
+import "syslog.obx" as log
+import "sysstream.obx" as stream
+import "sysclock.obx" as clock
+import "sysfakectl.obx" as fake
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn bytesOf(s: string): []byte {
+    let b = new []byte(len(s))
+    for i in 0..len(s) { b[i] = s[i] }
+    return b
+}
+
+fn emitOne(l: &log::Logger, level: &log::Level, text: string, label: string) {
+    let msg = bytesOf(text)
+    let r = log::emit(l, level, &msg)
+    match r {
+        ok(v) { println(label, "=", v.accepted, ",", v.dropped) }
+        err(m, c) { show(label, c) }
+    }
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+    println("fake_reset=", fake::reset())
+    fake::setRealtime(1700000000, 0)
+    let out = new stream::Output{}
+    let info = new log::Info{}
+    let warn = new log::Warn{}
+    let rwb = new log::ReturnWouldBlock{}
+
+    // Capacity 60: two 28-byte lines fit, the third is WouldBlock.
+    let made = log::openStandard(&out, 60, &rwb)
+    match made {
+        ok(l) {
+            emitOne(&l, &info, "a", "first")
+            emitOne(&l, &info, "b", "second")
+            emitOne(&l, &info, "c", "third")
+            let now = clock::monotonic()
+            match now {
+                ok(n) {
+                    let d = clock::durationNs(0)
+                    match d {
+                        ok(dur) {
+                            let dl = clock::after(&n, &dur)
+                            match dl {
+                                ok(deadline) {
+                                    let drained = log::drain(&l, &deadline)
+                                    match drained { ok(v) { println("drain=", v) } err(m, c) { show("drain", c) } }
+                                }
+                                err(m, c) { show("deadline", c) }
+                            }
+                        }
+                        err(m, c) { show("duration", c) }
+                    }
+                }
+                err(m, c) { show("monotonic", c) }
+            }
+            emitOne(&l, &info, "d", "after_drain")
+            let flushed = log::flush(&l)
+            match flushed { ok(v) { println("flush=", v) } err(m, c) { show("flush", c) } }
+            let retired = log::close(&l)
+            match retired { ok(v) { println("close=", v) } err(m, c) { show("close", c) } }
+            emitOne(&l, &info, "x", "closed_emit")
+            let cf = log::flush(&l)
+            match cf { ok(v) { println("closed_flush=ok") } err(m, c) { show("closed_flush", c) } }
+        }
+        err(m, c) { show("open", c) }
+    }
+
+    // Capacity 40: only the first line fits; DropWithCounter counts whole drops.
+    let dropPolicy = new log::DropWithCounter{}
+    let dropped = log::openStandard(&out, 40, &dropPolicy)
+    match dropped {
+        ok(l) {
+            emitOne(&l, &warn, "a", "drop_first")
+            emitOne(&l, &warn, "b", "drop_second")
+            emitOne(&l, &warn, "c", "drop_third")
+            let flushed = log::flush(&l)
+            match flushed { ok(v) { println("drop_flush=", v) } err(m, c) { show("drop_flush", c) } }
+            let retired = log::close(&l)
+            match retired { ok(v) { println("drop_close=", v) } err(m, c) { show("drop_close", c) } }
+        }
+        err(m, c) { show("drop_open", c) }
+    }
+
+    // Short-write drain: each call makes 5 bytes of progress, never losing data.
+    let short = log::openStandard(&out, 128, &rwb)
+    match short {
+        ok(l) {
+            emitOne(&l, &info, "short", "short_emit")
+            fake::setLogShort(5)
+            let now = clock::monotonic()
+            match now {
+                ok(n) {
+                    let d = clock::durationNs(0)
+                    match d {
+                        ok(dur) {
+                            let dl = clock::after(&n, &dur)
+                            match dl {
+                                ok(deadline) {
+                                    var calls = 0
+                                    var done = false
+                                    while !done && calls < 20 {
+                                        let r = log::drain(&l, &deadline)
+                                        match r {
+                                            ok(v) { calls += 1; if v { done = true } }
+                                            err(m, c) { show("short_drain", c); calls = 20 }
+                                        }
+                                    }
+                                    println("short_calls=", calls, ",", done)
+                                }
+                                err(m, c) { show("short_deadline", c) }
+                            }
+                        }
+                        err(m, c) { show("short_duration", c) }
+                    }
+                }
+                err(m, c) { show("short_monotonic", c) }
+            }
+            fake::setLogShort(0)
+            let retired = log::close(&l)
+            match retired { ok(v) { println("short_close=", v) } err(m, c) { show("short_close", c) } }
+        }
+        err(m, c) { show("short_open", c) }
+    }
+
+    // Sink error: a failed drain is Err(IoFailure); flush can still retry.
+    let failing = log::openStandard(&out, 128, &rwb)
+    match failing {
+        ok(l) {
+            emitOne(&l, &info, "sink", "sink_emit")
+            fake::push(fake::CLASS_LOG_DRAIN, -5)
+            let now = clock::monotonic()
+            match now {
+                ok(n) {
+                    let d = clock::durationNs(0)
+                    match d {
+                        ok(dur) {
+                            let dl = clock::after(&n, &dur)
+                            match dl {
+                                ok(deadline) {
+                                    let r = log::drain(&l, &deadline)
+                                    match r { ok(v) { println("sink_drain=ok") } err(m, c) { show("sink_drain", c) } }
+                                }
+                                err(m, c) { show("sink_deadline", c) }
+                            }
+                        }
+                        err(m, c) { show("sink_duration", c) }
+                    }
+                }
+                err(m, c) { show("sink_monotonic", c) }
+            }
+            let flushed = log::flush(&l)
+            match flushed { ok(v) { println("sink_flush=", v) } err(m, c) { show("sink_flush", c) } }
+            let retired = log::close(&l)
+            match retired { ok(v) { println("sink_close=", v) } err(m, c) { show("sink_close", c) } }
+        }
+        err(m, c) { show("sink_open", c) }
+    }
+
+    // Capacity and record-cap validation happen before a large allocation.
+    let tiny = log::openStandard(&out, 0, &rwb)
+    match tiny { ok(l) { println("cap_zero=ok") } err(m, c) { show("cap_zero", c) } }
+    let tooBig = log::openStandard(&out, log::MAX_QUEUE_BYTES + 1, &rwb)
+    match tooBig { ok(l) { println("cap_big=ok") } err(m, c) { show("cap_big", c) } }
+    let capped = log::openStandard(&out, 4096, &rwb)
+    match capped {
+        ok(l) {
+            let big = new []byte(4097)
+            for i in 0..4097 { big[i] = 65 }
+            let r = log::emit(&l, &info, &big)
+            match r { ok(v) { println("record_cap=ok") } err(m, c) { show("record_cap", c) } }
+            let exact = new []byte(4096)
+            for i in 0..4096 { exact[i] = 65 }
+            let r2 = log::emit(&l, &info, &exact)
+            match r2 { ok(v) { println("record_exact=ok") } err(m, c) { show("record_exact", c) } }
+            let msgSmall = bytesOf("x")
+            let forgedRes = new platform::Resource{reserved: l.res.reserved}
+            let forged = new log::Logger{res: forgedRes, policy: 7}
+            let fr = log::emit(&forged, &info, &msgSmall)
+            match fr { ok(v) { println("forged_policy=ok") } err(m, c) { show("forged_policy", c) } }
+            let c = log::close(&l)
+            match c { ok(v) { println("cap_close=", v) } err(m, cc) { show("cap_close", cc) } }
+        }
+        err(m, c) { show("cap_open", c) }
+    }
+
+    // Deliberate omitted close: the census must report the logger leak.
+    let leaked = log::openStandard(&out, 64, &rwb)
+    match leaked {
+        ok(l) {
+            emitOne(&l, &info, "leak", "leak_emit")
+        }
+        err(m, c) { show("leak_open", c) }
+    }
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}

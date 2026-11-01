@@ -25,6 +25,7 @@ enum {
     SYS_KIND_LISTENER = 9,
     SYS_KIND_CONNECTION = 10,
     SYS_KIND_DATAGRAM = 11,
+    SYS_KIND_LOGGER = 15,
     SYS_KIND_CANCELLATION = 17,
     SYS_KIND_TEST_RESOURCE = 90,
     SYS_KIND_TEST_RESOURCE_ALT = 91,
@@ -103,7 +104,22 @@ enum {
     SYS_CALL_WAKE = 37,
     SYS_CALL_STOP = 38,
     SYS_CALL_RESOLVE = 39,
-    SYS_CALL_CANCEL = 40
+    SYS_CALL_CANCEL = 40,
+    SYS_CALL_DIR_MKDIR = 41,
+    SYS_CALL_DIR_UNLINK = 42,
+    SYS_CALL_DIR_RMDIR = 43,
+    SYS_CALL_DIR_READLINK = 44,
+    SYS_CALL_DIR_SYNC = 45,
+    SYS_CALL_OPEN_BENEATH = 46,
+    SYS_CALL_CHMOD = 47,
+    SYS_CALL_SYNC = 48,
+    SYS_CALL_RENAME = 49,
+    SYS_CALL_LINK = 50,
+    SYS_CALL_SYMLINK = 51,
+    SYS_CALL_LOG_OPEN = 52,
+    SYS_CALL_LOG_EMIT = 53,
+    SYS_CALL_LOG_DRAIN = 54,
+    SYS_CALL_LOG_FLUSH = 55
 };
 
 /* Fixed C-owned metadata packet: 16 signed 64-bit fields (128 bytes). */
@@ -146,6 +162,36 @@ long sys_clock_realtime_nsec(void);
 long sys_sleep_until(long monotonic_ns);
 long sys_random(long buf_token, long offset, long count, long blocking);
 long sys_stream_standard(long which);
+
+/* P1b practical-filesystem operations. Names are anchored single components;
+ * sys_file_open_beneath accepts a multi-component path and uses openat2. */
+long sys_dir_mkdir(long dir_token, long name_token, long mode);
+long sys_dir_unlink(long dir_token, long name_token);
+long sys_dir_remove_empty(long dir_token, long name_token);
+long sys_dir_readlink(long dir_token, long name_token, long buf_token, long cap);
+long sys_dir_sync(long dir_token);
+long sys_file_open_beneath(long dir_token, long path_token, long flags, long mode);
+long sys_file_open_beneath_supported(void);
+long sys_file_chmod(long token, long kind, long mode);
+long sys_file_sync(long token, long kind, long data_only);
+long sys_file_rename(long from_dir, long old_name, long to_dir, long new_name,
+                     long replace);
+long sys_file_link(long from_dir, long old_name, long to_dir, long new_name);
+long sys_file_symlink(long target_token, long to_dir, long name_token);
+
+/* P1b bounded logger. The adapter owns a CLOEXEC standard-stream duplicate and
+ * a bounded queue. sys_log_emit returns 1 accepted, 0 dropped, or -errno. */
+long sys_log_open(long which, long capacity);
+long sys_log_emit(long token, long buf_token, long offset, long count,
+                  long policy);
+long sys_log_drain(long token, long finite, long deadline_ns);
+long sys_log_flush(long token);
+long sys_log_dropped(long token);
+long sys_log_queued(long token);
+
+/* P1b process-environment snapshot. Mutation has no exported adapter symbol. */
+long sys_env_size(void);
+long sys_env_snapshot(long buf_token, long cap);
 
 /* P2 address packet: four 64-bit fields then up to 108 address bytes. */
 #define SYS_ADDR_PACKET_BYTES 160L
@@ -271,5 +317,8 @@ long sysfake_set_time(long value);
 long sysfake_now(void);
 long sysfake_set_realtime(long seconds, long nanos);
 long sysfake_set_seed(long value);
+long sysfake_disable_open_beneath(long disabled);
+long sysfake_log_short(long bytes);
+long sysfake_store_count(void);
 
 #endif

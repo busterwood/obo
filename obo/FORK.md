@@ -7069,9 +7069,108 @@ D4a (methods/interfaces on this branch) and D5 (library-only, released on the
 0.17 line) are both recorded. No compiler, runtime or seed file from main
 conflicts with D4a, and `git diff main -- obo/seed` is empty.
 
-**Release.** Not merged into `main` or promoted: `decimal-d4a` is cut from
-`main` at `f45a729` (0.17/format 10/ABI 1), and the stage itself is three
-commits: `78c02c4` compiler, `3aaa8ce` tests, `ef5c86d` docs, followed by the
-review fixes above and the D5 merge. `seed/obo` is untouched. D4b (function
-values, non-capturing lambdas with decimal signatures, Stage B captures) is
-next.
+**Release.** Merged as `e47a8c8` and promoted as `seed/obo` at `769a359`
+(757,761 bytes, sha256 `ca513536…`); the promoted image reproduces itself and
+runs 1,878 tests. The stage is three commits: `78c02c4` compiler, `3aaa8ce`
+tests, `ef5c86d` docs, followed by the review fixes and the D5 merge. D4b
+(function values, non-capturing lambdas with decimal signatures, Stage B
+captures) is next.
+**Pre-existing follow-up (not changed here).** The `.sym` interface reader does
+not reject a forged `decimal` member parameter or return that the source parser
+refuses. This is present on `50cca0a` and is a separate reader-consistency fix.
+
+## Systems library P1b (practical filesystem, 0.17/format 10), on top of P0/P1a/P2/P2q
+
+**Scope.** P1b completes the practical-filesystem slice of
+`design/systems-stdlib-design.md` in `obo/experimental/sys`, without changing the
+compiler, runtime, ABI, symbol format, seed or package version. P3 processes/
+signals, P2C compression, terminal raw mode, mmap and all thread/
+synchronization kinds remain out of scope.
+
+**Public surface added.**
+- `sysdir::readLink`, `mkdir`, `unlink`, `removeEmpty`, `sync`; anchored names
+  remain one component (nonempty, no `/`, NUL, `.`, `..`).
+- `sysfile::openBeneath`, `chmod`, `sync(dataOnly)`, `rename`, `link`,
+  `symlink`, `replaceAtomic`, `ReplaceReport` and `MAX_REPLACE_BYTES`.
+- `syscalendar::parseRfc3339`/`formatRfc3339` (the §6.1 profile: years
+  0001..9999, Gregorian dates, `T`/`t`, `Z`/`z`, 1..9 fraction digits, signed
+  offsets normalized to UTC, `-00:00` accepted, leap seconds/excess digits/
+  trailing text rejected, UTC `Z` output with zero fractions omitted and
+  trailing zeros trimmed).
+- `sysenv::Environment` snapshot/get/set/unset/entries with startup order,
+  first-match duplicates, deep-copy entries and revalidation at every entry;
+  process mutation is deliberately absent and remains `Unsupported`.
+- `syslog::Logger` over a CLOEXEC standard-stream duplicate with a bounded C
+  queue, `ReturnWouldBlock`/`DropWithCounter`, atomic record copy, realtime
+  RFC3339 timestamps, `\n`/`\r`/`\t`/`\\`/`\xHH` escaping, `emit`/`drain`/
+  `flush`/`close` and no global logger or background thread.
+
+**Native seam.** New scalar adapter symbols cover directory mutation/readlink/
+sync, `openat2(RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS)`, fchmod, fdatasync/fsync,
+`renameat2`, linkat/symlinkat, a bounded logger with short-write drain and an
+environment snapshot. The fake backend implements the same classes with a flat
+in-memory namespace, a fixed environment table and a bounded fake sink. Fault
+injection is at the operation class, not a runtime toggle: temporary create,
+write, chmod, file sync, rename and directory sync each have a scripted-failure
+case.
+
+**Atomic replacement.** `replaceAtomic` creates a unique O_EXCL temporary in the
+target directory, writes with explicit short-write progress, applies the
+requested permissions, optionally fsyncs the temporary, closes it, then renames
+it over the target. The rename is the commit point. Precommit failures return
+`err` and remove the temporary, leaving the old target untouched. A
+directory-fsync failure after commit returns
+`ok(ReplaceReport{committed:true,durable:false,code:DurabilityUnknown})`; a
+committed rename is never rolled back. `replace=false` requires
+`RENAME_NOREPLACE` (otherwise `Unsupported`), and cross-device rename is
+`CrossDevice`, never copy/delete.
+
+**Decisions / deviations (justified).**
+- Kernel `ENOTEMPTY` maps to the existing `Busy` kind because the approved error
+  namespace has no `NotEmpty` variant. `openBeneath` containment escape is the
+  kernel's `EXDEV` → `CrossDevice` (including absolute paths under
+  `RESOLVE_BENEATH`); a magic link is `PathLoop`.
+- `syslog::Logger` exposes `policy: int` as a documented public-field
+  limitation because 0.17 records have no private cross-module accessor and the
+  queue itself stays C-owned. Every emit revalidates it.
+- `sysenv` has no `setProcess`/`unsetProcess`: libc `setenv` cannot update the
+  runtime's initial `envp`, and publishing a second environment would be worse
+  than the explicit `Unsupported` blocker.
+- mmap was not added; the practical-filesystem phase was complete without it.
+
+**Tests.** New `tests/test_sys_p1b.py` plus `tests/c/p1b_test.c` and eleven
+`tests/apps/p1b_*.obx` roots. Coverage: every new call, validation, closed
+handles, census/leak, real/fake filesystem trace, replace/no-replace rename,
+cross-device (real `/dev/shm` when it is a different device, skipped visibly
+otherwise), link/symlink/dangling/readLink, mkdir/unlink/removeEmpty errors,
+`replaceAtomic` commit/durability/cleanup and all six injected stages with the
+no-temporary store oracle, openat2 `..`/absolute/symlink/magic-link/capability
+fallback, RFC3339 table/round-trip/trim cases, environment order/duplicates/
+deep-copy/validation, logger bound/drop/escape/short-drain/sink-error/leak, and
+the configuration-update example confined to its test directory. C harnesses run
+normally and under ASAN/UBSAN/LSan on both adapters.
+
+**P1b review fixes.** B1: the logger no longer sets `O_NONBLOCK` on the
+shared open file description at open. `drain`/`flush` save `F_GETFL`, request
+`O_NONBLOCK` only for their own write/poll attempt and restore the exact flags
+on every return path, including poll-EINTR. The C harness checks fds 1/2 before
+open, after open, after flush and after close; a paused-pipe 200,000-byte print
+root proves no truncation. B2: `sysenv::set` validates the prospective total
+before mutating, so an over-cap update returns `Range` with the old value intact
+and the snapshot usable; over-count/over-size records report `Range` whether
+crafted or captured. The review's other items are closed in
+`API.md`/`LIMITS.md`/the fake model: readLink is 4095-success/4096-NameTooLong,
+openBeneath fake parity covers dot/dotdot/trailing/create cases, same-name
+replace rename and directory-link EPERM match Linux, symlink allocation failure
+leaves no half entry, monotonic latency is documented as omitted, the record cap
+is pre-checked before escaping allocation, no-replace EINVAL mapping is
+documented, `openBeneath` rejects token 0, logger close-without-drain is
+documented, and the test suite adds cleanup-failure/old-target/16-MiB/collision/
+record-cap/capacity/forged-policy/fd-flag cases plus
+`-fno-sanitize-recover=all` and `UBSAN_OPTIONS=halt_on_error=1`.
+
+**Gates measured on this branch.** `test_sys_p0.py`, `test_sys_p1a.py`,
+`test_sys_p1b.py`, `test_sys_p2.py` and `test_sys_p2q.py` all pass;
+`run_fork.py` **1869 passed, 0 failed**; `module_test.py` **149 passed**;
+`doc_check.py` **74 examples, 0 problems**; `git diff --check` clean. These are
+Linux x86-64 host measurements, not portable promises.

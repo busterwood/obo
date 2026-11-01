@@ -1,0 +1,260 @@
+// Experimental systems library: RFC 3339 profile text (P1b).
+//
+// Status: experimental P1b slice, unstable. This is one specified RFC 3339 /
+// ISO-8601 profile, not all ISO-8601 forms and not locale or timezone-database
+// support. Input accepts a four-digit year 0001..9999, a valid Gregorian date,
+// uppercase or lowercase `T`, seconds, an optional 1..9-digit fraction, and
+// `Z`/`z` or a signed HH:MM offset. `-00:00` is accepted (UTC with an unknown
+// local offset). Leap seconds, excess fractional digits, out-of-range offsets,
+// invalid dates and trailing text are rejected. Output is UTC `Z`, omits a zero
+// fraction and trims trailing fractional zeros.
+//
+// All arithmetic is checked signed integer seconds plus 0..999999999 nanos.
+// There are no floats, no process timezone and no TZ database. sysclock
+// realtime() is the single timestamp type used by metadata and this module.
+module syscalendar
+
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+
+const SECONDS_PER_DAY = 86400
+const NANOS_PER_SECOND = 1000000000
+const MIN_SECONDS = -62135596800   // 0001-01-01T00:00:00Z
+const MAX_SECONDS = 253402300799   // 9999-12-31T23:59:59Z
+
+type Civil = ref record {
+    year: int
+    month: int
+    day: int
+    hour: int
+    minute: int
+    second: int
+}
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+
+fn floorDiv(a: int, b: int): int {
+    var q = a / b
+    let r = a % b
+    if r < 0 { q -= 1 }
+    return q
+}
+
+fn floorMod(a: int, b: int): int {
+    return a - floorDiv(a, b) * b
+}
+
+fn leap(year: int): bool {
+    if floorMod(year, 4) != 0 { return false }
+    if floorMod(year, 100) != 0 { return true }
+    return floorMod(year, 400) == 0
+}
+
+fn daysInMonth(year: int, month: int): int {
+    if month == 1 || month == 3 || month == 5 || month == 7 ||
+       month == 8 || month == 10 || month == 12 {
+        return 31
+    }
+    if month == 4 || month == 6 || month == 9 || month == 11 { return 30 }
+    if month == 2 {
+        if leap(year) { return 29 }
+        return 28
+    }
+    return 0
+}
+
+// Days since 1970-01-01 for a proleptic Gregorian date. Year is validated by
+// the caller; the bounded range keeps every product inside signed 64 bits.
+fn daysFromCivil(year: int, month: int, day: int): int {
+    var y = year
+    if month <= 2 { y -= 1 }
+    let era = floorDiv(y, 400)
+    let yoe = y - era * 400
+    var mp = month - 3
+    if mp < 0 { mp += 12 }
+    let doy = floorDiv(153 * mp + 2, 5) + day - 1
+    let doe = yoe * 365 + floorDiv(yoe, 4) - floorDiv(yoe, 100) + doy
+    return era * 146097 + doe - 719468
+}
+
+fn civilFromDays(days: int): Civil {
+    let z = days + 719468
+    let era = floorDiv(z, 146097)
+    let doe = z - era * 146097
+    let yoe = floorDiv(doe - floorDiv(doe, 1460) + floorDiv(doe, 36524) -
+                       floorDiv(doe, 146096), 365)
+    var year = yoe + era * 400
+    let doy = doe - (365 * yoe + floorDiv(yoe, 4) - floorDiv(yoe, 100))
+    let mp = floorDiv(5 * doy + 2, 153)
+    let day = doy - floorDiv(153 * mp + 2, 5) + 1
+    var month = mp + 3
+    if month > 12 { month -= 12 }
+    if month <= 2 { year += 1 }
+    return new Civil{year: year, month: month, day: day, hour: 0, minute: 0,
+                     second: 0}
+}
+
+fn digitAt(text: string, index: int): int {
+    let c = int(text[index])
+    if c < 48 || c > 57 { return -1 }
+    return c - 48
+}
+
+fn twoDigits(text: string, index: int): int {
+    let a = digitAt(text, index)
+    let b = digitAt(text, index + 1)
+    if a < 0 || b < 0 { return -1 }
+    return a * 10 + b
+}
+
+fn pad2(n: int): string {
+    if n < 10 { return "0" + string(n) }
+    return string(n)
+}
+
+fn pad4(n: int): string {
+    var s = string(n)
+    while len(s) < 4 { s = "0" + s }
+    return s
+}
+
+pub fn parseRfc3339(text: string): Result[clock::Timestamp] {
+    if len(text) < 20 { return err("RFC3339 text is too short", invalidArgument()) }
+    let year = digitAt(text, 0) * 1000 + digitAt(text, 1) * 100 +
+               digitAt(text, 2) * 10 + digitAt(text, 3)
+    let month = twoDigits(text, 5)
+    let day = twoDigits(text, 8)
+    let hour = twoDigits(text, 11)
+    let minute = twoDigits(text, 14)
+    let second = twoDigits(text, 17)
+    if digitAt(text, 0) < 0 || digitAt(text, 1) < 0 ||
+       digitAt(text, 2) < 0 || digitAt(text, 3) < 0 {
+        return err("RFC3339 year is not four digits", invalidArgument())
+    }
+    if text[4] != '-' || text[7] != '-' {
+        return err("RFC3339 date separators are invalid", invalidArgument())
+    }
+    if text[10] != 'T' && text[10] != 't' {
+        return err("RFC3339 date/time separator must be T or t", invalidArgument())
+    }
+    if text[13] != ':' || text[16] != ':' {
+        return err("RFC3339 time separators are invalid", invalidArgument())
+    }
+    if year < 1 || year > 9999 {
+        return err("RFC3339 year is outside 0001..9999", rangeCode())
+    }
+    if month < 1 || month > 12 { return err("RFC3339 month is invalid", invalidArgument()) }
+    if day < 1 || day > daysInMonth(year, month) {
+        return err("RFC3339 day is invalid", invalidArgument())
+    }
+    if hour < 0 || hour > 23 { return err("RFC3339 hour is invalid", invalidArgument()) }
+    if minute < 0 || minute > 59 {
+        return err("RFC3339 minute is invalid", invalidArgument())
+    }
+    if second < 0 || second > 59 {
+        return err("RFC3339 leap seconds are not accepted", invalidArgument())
+    }
+
+    var pos = 19
+    var nanos = 0
+    if pos < len(text) && text[pos] == '.' {
+        pos += 1
+        var digits = 0
+        var value = 0
+        while pos < len(text) && digitAt(text, pos) >= 0 {
+            let d = digitAt(text, pos)
+            if digits >= 9 {
+                return err("RFC3339 fraction has more than nine digits",
+                           invalidArgument())
+            }
+            value = value * 10 + d
+            digits += 1
+            pos += 1
+        }
+        if digits == 0 {
+            return err("RFC3339 fraction has no digits", invalidArgument())
+        }
+        var scale = digits
+        while scale < 9 { value *= 10; scale += 1 }
+        nanos = value
+    }
+
+    var offset = 0
+    if pos >= len(text) {
+        return err("RFC3339 text has no zone designator", invalidArgument())
+    }
+    let zone = text[pos]
+    if zone == 'Z' || zone == 'z' {
+        pos += 1
+    } else if zone == '+' || zone == '-' {
+        if pos + 6 > len(text) {
+            return err("RFC3339 offset is truncated", invalidArgument())
+        }
+        if text[pos + 3] != ':' {
+            return err("RFC3339 offset separator is invalid", invalidArgument())
+        }
+        let oh = twoDigits(text, pos + 1)
+        let om = twoDigits(text, pos + 4)
+        if oh < 0 || om < 0 {
+            return err("RFC3339 offset is not numeric", invalidArgument())
+        }
+        if oh > 23 || om > 59 {
+            return err("RFC3339 offset is out of range", invalidArgument())
+        }
+        offset = oh * 3600 + om * 60
+        if zone == '-' { offset = 0 - offset }
+        pos += 6
+    } else {
+        return err("RFC3339 zone designator is invalid", invalidArgument())
+    }
+    if pos != len(text) {
+        return err("RFC3339 text has trailing characters", invalidArgument())
+    }
+
+    let days = daysFromCivil(year, month, day)
+    var local = days * SECONDS_PER_DAY + hour * 3600 + minute * 60 + second
+    local -= offset
+    // Reject a normalized value outside the documented year range.
+    if local < MIN_SECONDS || local > MAX_SECONDS {
+        return err("RFC3339 normalized instant is outside 0001..9999", rangeCode())
+    }
+    return ok(new clock::Timestamp{seconds: local, nanos: nanos})
+}
+
+pub fn formatRfc3339(t: &clock::Timestamp): Result[string] {
+    if t.nanos < 0 || t.nanos > 999999999 {
+        return err("timestamp nanoseconds are not normalized", invalidArgument())
+    }
+    if t.seconds < MIN_SECONDS || t.seconds > MAX_SECONDS {
+        return err("timestamp is outside the RFC3339 year range", rangeCode())
+    }
+    let days = floorDiv(t.seconds, SECONDS_PER_DAY)
+    let sod = floorMod(t.seconds, SECONDS_PER_DAY)
+    let civil = civilFromDays(days)
+    let hour = sod / 3600
+    let minute = (sod % 3600) / 60
+    let second = sod % 60
+    var out = pad4(civil.year) + "-" + pad2(civil.month) + "-" +
+              pad2(civil.day) + "T" + pad2(hour) + ":" + pad2(minute) + ":" +
+              pad2(second)
+    if t.nanos != 0 {
+        var fraction = ""
+        var scale = 100000000
+        var left = t.nanos
+        while scale > 0 {
+            fraction = fraction + string(left / scale)
+            left = left % scale
+            scale = scale / 10
+        }
+        while len(fraction) > 0 && fraction[len(fraction) - 1] == '0' {
+            fraction = substr(fraction, 0, len(fraction) - 1)
+        }
+        if len(fraction) > 0 { out = out + "." + fraction }
+    }
+    return ok(out + "Z")
+}

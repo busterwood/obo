@@ -1,0 +1,199 @@
+// P1b practical-filesystem contract trace. Built against both adapters; the
+// fixture is deliberately flat so the fake and real traces match line for line.
+module app
+
+import "sysplatform.obx" as platform
+import "sysfile.obx" as file
+import "sysdir.obx" as dir
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn bytesOf(s: string): []byte {
+    let b = new []byte(len(s))
+    for i in 0..len(s) { b[i] = s[i] }
+    return b
+}
+
+fn expectError(label: string, r: Result[bool]) {
+    match r {
+        ok(v) { println(label, "=ok") }
+        err(m, c) {
+            let k = errors::kind(c)
+            println(label, "=", errors::text(&k))
+        }
+    }
+}
+
+fn expectBytesError(label: string, r: Result[[]byte]) {
+    match r {
+        ok(v) { println(label, "=ok") }
+        err(m, c) {
+            let k = errors::kind(c)
+            println(label, "=", errors::text(&k))
+        }
+    }
+}
+
+fn probeBeneath(label: string, d: &dir::Directory, path: string,
+                opts: &file::OpenOptions) {
+    let made = file::openBeneath(d, path, opts)
+    match made {
+        ok(f) {
+            println(label, "=ok")
+            let c = file::close(&f)
+            match c { ok(v) { } err(m, cc) { show("beneath_close", cc) } }
+        }
+        err(m, c) { show(label, c) }
+    }
+}
+
+fn expectFileError(label: string, r: Result[file::File]) {
+    match r {
+        ok(v) { println(label, "=ok") }
+        err(m, c) {
+            let k = errors::kind(c)
+            println(label, "=", errors::text(&k))
+        }
+    }
+}
+
+fn main() {
+    let av = args()
+    let basePath = av[1]
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+    println("cap=", platform::hasCapability("file.replaceAtomic"), ",",
+            platform::hasCapability("directory.mutate"), ",",
+            platform::hasCapability("calendar.rfc3339"), ",",
+            platform::hasCapability("log.bounded"))
+
+    let made = dir::open(basePath)
+    match made {
+        ok(d) {
+            expectError("mkdir_empty", dir::mkdir(&d, "", 493))
+            expectError("mkdir_dot", dir::mkdir(&d, ".", 493))
+            expectError("mkdir_slash", dir::mkdir(&d, "a/b", 493))
+            expectError("mkdir_range", dir::mkdir(&d, "sub1", 4096))
+            expectError("mkdir", dir::mkdir(&d, "sub1", 493))
+            expectError("mkdir_dup", dir::mkdir(&d, "sub1", 493))
+
+            let data = bytesOf("new value\n")
+            let ra = file::replaceAtomic(&d, "config", &data, 420, true)
+            match ra { ok(r) { println("replace=", r.committed, ",", r.durable, ",", r.code) } err(m, c) { show("replace", c) } }
+            let ra2 = file::replaceAtomic(&d, "config", &data, 420, false)
+            match ra2 { ok(r) { println("replace2=", r.committed, ",", r.durable, ",", r.code) } err(m, c) { show("replace2", c) } }
+
+            let ro = file::readOptions()
+            let of = file::openAt(&d, "config", &ro)
+            match of {
+                ok(f) {
+                    let rd = file::readSome(&f, 32)
+                    match rd { ok(v) { if v == nil { println("read=nil") } else { println("read=", string(v)) } } err(m, c) { show("read", c) } }
+                    let ch = file::chmod(&f, 384)
+                    match ch { ok(v) { println("chmod=", v) } err(m, c) { show("chmod", c) } }
+                    expectError("chmod_range", file::chmod(&f, 4096))
+                    let sy = file::sync(&f, true)
+                    match sy { ok(v) { println("sync=", v) } err(m, c) { show("sync", c) } }
+                    let md = file::metadata(&f)
+                    match md { ok(m) { println("perm=", m.permissions) } err(m, c) { show("meta", c) } }
+                    let cl = file::close(&f)
+                    match cl { ok(v) { println("file_close=", v) } err(m, c) { show("file_close", c) } }
+                    expectError("sync_closed", file::sync(&f, false))
+                    expectError("chmod_closed", file::chmod(&f, 384))
+                }
+                err(m, c) { show("open", c) }
+            }
+
+            // rename no-replace, then replace over an existing target.
+            let c2opts = file::readOptions()
+            c2opts.write = true
+            c2opts.create = true
+            c2opts.exclusive = true
+            let mk2 = file::openAt(&d, "config2", &c2opts)
+            match mk2 { ok(f) { let x = file::close(&f); match x { ok(v) { println("touch2=", v) } err(m, c) { show("touch2", c) } } } err(m, c) { show("touch2", c) } }
+            expectError("rename_noreplace", file::rename(&d, "config", &d, "config2", false))
+            let rn = file::rename(&d, "config", &d, "config2", true)
+            match rn { ok(v) { println("rename=", v) } err(m, c) { show("rename", c) } }
+            let rn_again = file::rename(&d, "config", &d, "config2", false)
+            match rn_again { ok(v) { println("rename_missing=ok") } err(m, c) { show("rename_missing", c) } }
+
+            let lk = file::link(&d, "config2", &d, "configlink")
+            match lk { ok(v) { println("link=", v) } err(m, c) { show("link", c) } }
+            expectError("link_dup", file::link(&d, "config2", &d, "configlink"))
+            expectError("link_dir", file::link(&d, "sub1", &d, "sublink"))
+            expectError("rename_same_noreplace", file::rename(&d, "config2", &d, "config2", false))
+            let sameReplace = file::rename(&d, "config2", &d, "config2", true)
+            match sameReplace { ok(v) { println("rename_same=", v) } err(m, c) { show("rename_same", c) } }
+
+            let sl = file::symlink("config2", &d, "conflink")
+            match sl { ok(v) { println("symlink=", v) } err(m, c) { show("symlink", c) } }
+            let sl2 = file::symlink("missing-target", &d, "dangling")
+            match sl2 { ok(v) { println("dangling=", v) } err(m, c) { show("dangling", c) } }
+            let rl = dir::readLink(&d, "conflink")
+            match rl { ok(v) { println("readlink=", string(v)) } err(m, c) { show("readlink", c) } }
+            let rl2 = dir::readLink(&d, "dangling")
+            match rl2 { ok(v) { println("readlink_dangling=", string(v)) } err(m, c) { show("readlink_dangling", c) } }
+            let rl3 = dir::readLink(&d, "config2")
+            match rl3 { ok(v) { println("readlink_file=ok") } err(m, c) { show("readlink_file", c) } }
+            expectBytesError("readlink_missing", dir::readLink(&d, "nope"))
+            let longTarget = new []byte(4095)
+            for i in 0..4095 { longTarget[i] = 120 }
+            let lts = string(longTarget)
+            let sl3 = file::symlink(lts, &d, "longlink")
+            match sl3 { ok(v) { println("long_symlink=", v) } err(m, c) { show("long_symlink", c) } }
+            let rl4 = dir::readLink(&d, "longlink")
+            match rl4 { ok(v) { println("long_readlink=", len(v)) } err(m, c) { show("long_readlink", c) } }
+
+            expectError("unlink_dup", dir::unlink(&d, "configlink"))
+            expectError("unlink_dir", dir::unlink(&d, "sub1"))
+            expectError("unlink_missing", dir::unlink(&d, "nope"))
+            expectError("rmdir_file", dir::removeEmpty(&d, "config2"))
+            expectError("rmdir_missing", dir::removeEmpty(&d, "nope"))
+
+            probeBeneath("beneath", &d, "config2", &ro)
+            probeBeneath("beneath_dot", &d, ".", &ro)
+            probeBeneath("beneath_internal_dot", &d, "./config2", &ro)
+            probeBeneath("beneath_dotdot", &d, "..", &ro)
+            probeBeneath("beneath_trailing", &d, "sub1/../..", &ro)
+            probeBeneath("beneath_internal_dotdot", &d, "sub1/../config2", &ro)
+            let createOpts = file::readOptions()
+            createOpts.write = true
+            createOpts.create = true
+            probeBeneath("beneath_create_dotdot", &d, "..", &createOpts)
+            probeBeneath("beneath_create_trailing", &d, "sub1/.", &createOpts)
+            probeBeneath("beneath_create_file", &d, "beneath-new", &createOpts)
+            expectFileError("beneath_empty", file::openBeneath(&d, "", &ro))
+            expectFileError("beneath_escape", file::openBeneath(&d, "../config2", &ro))
+            expectFileError("beneath_abs", file::openBeneath(&d, "/etc/passwd", &ro))
+            expectError("beneath_file", dir::unlink(&d, "beneath-new"))
+
+            // A precommit rename failure must remove the temporary and leave
+            // the directory target untouched.
+            let dirReplace = file::replaceAtomic(&d, "sub1", &data, 420, true)
+            match dirReplace { ok(r) { println("replace_dir=ok") } err(m, c) { show("replace_dir", c) } }
+            let rm = dir::removeEmpty(&d, "sub1")
+            match rm { ok(v) { println("rmdir=", v) } err(m, c) { show("rmdir", c) } }
+
+            let noBytes = new []byte(0)
+            let cleared = file::replaceAtomic(&d, "empty", &noBytes, 420, false)
+            match cleared { ok(r) { println("empty_replace=", r.committed, ",", r.durable) } err(m, c) { show("empty_replace", c) } }
+
+            let dc = dir::close(&d)
+            match dc { ok(v) { println("dir_close=", v) } err(m, c) { show("dir_close", c) } }
+            expectError("mkdir_closed", dir::mkdir(&d, "x", 493))
+            expectError("rename_closed", file::rename(&d, "a", &d, "b", false))
+            expectError("sync_dir_closed", dir::sync(&d))
+        }
+        err(m, c) { show("dir_open", c) }
+    }
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}

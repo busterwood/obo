@@ -1,0 +1,157 @@
+// P1b environment-snapshot trace using the scripted fake table. Ordering,
+// present-empty vs missing, first-match duplicates, deep copy and local
+// mutation are all backend-independent contracts of sysenv.
+module app
+
+import "sysplatform.obx" as platform
+import "sysenv.obx" as env
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+
+    let made = env::snapshot()
+    match made {
+        ok(e) {
+            println("count=", len(e.entries))
+            var names = ""
+            for i in 0..len(e.entries) {
+                if i > 0 { names = names + "," }
+                names = names + e.entries[i].name
+            }
+            println("order=", names)
+
+            let empty = env::get(&e, "OBO_FAKE_EMPTY")
+            match empty {
+                ok(v) {
+                    if v == nil { println("empty=nil") } else { println("empty=len", len(v)) }
+                }
+                err(m, c) { show("empty", c) }
+            }
+            let missing = env::get(&e, "OBO_FAKE_MISSING")
+            match missing {
+                ok(v) { if v == nil { println("missing=nil") } else { println("missing=present") } }
+                err(m, c) { show("missing", c) }
+            }
+            let dup = env::get(&e, "OBO_FAKE_DUP")
+            match dup {
+                ok(v) { if v == nil { println("dup=nil") } else { println("dup=", string(v)) } }
+                err(m, c) { show("dup", c) }
+            }
+
+            let copied = env::entries(&e)
+            match copied {
+                ok(list) {
+                    list[0].name = "MUTATED"
+                    list[0].value = "changed"
+                    let again = env::get(&e, "OBO_FAKE_ENV")
+                    match again {
+                        ok(v) { if v == nil { println("deep_copy=nil") } else { println("deep_copy=", string(v)) } }
+                        err(m, c) { show("deep_copy", c) }
+                    }
+                }
+                err(m, c) { show("entries", c) }
+            }
+
+            let setExisting = env::set(&e, "OBO_FAKE_ENV", "updated")
+            match setExisting { ok(v) { println("set_existing=", v) } err(m, c) { show("set_existing", c) } }
+            let setNew = env::set(&e, "OBO_NEW", "value")
+            match setNew { ok(v) { println("set_new=", v) } err(m, c) { show("set_new", c) } }
+            let afterNew = env::get(&e, "OBO_NEW")
+            match afterNew {
+                ok(v) { if v == nil { println("new=nil") } else { println("new=", string(v)) } }
+                err(m, c) { show("new", c) }
+            }
+            let unsetDup = env::unset(&e, "OBO_FAKE_DUP")
+            match unsetDup { ok(v) { println("unset_dup=", v) } err(m, c) { show("unset_dup", c) } }
+            let dupGone = env::get(&e, "OBO_FAKE_DUP")
+            match dupGone {
+                ok(v) { if v == nil { println("dup_gone=nil") } else { println("dup_gone=present") } }
+                err(m, c) { show("dup_gone", c) }
+            }
+            let unsetMissing = env::unset(&e, "OBO_FAKE_MISSING")
+            match unsetMissing { ok(v) { println("unset_missing=", v) } err(m, c) { show("unset_missing", c) } }
+            println("count_after=", len(e.entries))
+
+            let badName = env::get(&e, "BAD=NAME")
+            match badName { ok(v) { println("bad_name=ok") } err(m, c) { show("bad_name", c) } }
+            let badSet = env::set(&e, "", "x")
+            match badSet { ok(v) { println("bad_set=ok") } err(m, c) { show("bad_set", c) } }
+            let badUnset = env::unset(&e, "A=B")
+            match badUnset { ok(v) { println("bad_unset=ok") } err(m, c) { show("bad_unset", c) } }
+        }
+        err(m, c) { show("snapshot", c) }
+    }
+
+    // Over-cap updates are rejected before mutation and leave the record usable.
+    var bigBytes = new []byte(1000000)
+    for i in 0..1000000 { bigBytes[i] = 120 }
+    var smallBytes = new []byte(40000)
+    for i in 0..40000 { smallBytes[i] = 121 }
+    var capList = new []env::Pair(0)
+    append(capList, new env::Pair{name: "BIG", value: string(bigBytes)})
+    append(capList, new env::Pair{name: "SMALL", value: string(smallBytes)})
+    let capEnv = new env::Environment{entries: capList}
+    let beforeSmall = env::get(&capEnv, "SMALL")
+    match beforeSmall {
+        ok(v) { if v == nil { println("cap_before=nil") } else { println("cap_before=", len(v)) } }
+        err(m, c) { show("cap_before", c) }
+    }
+    var updateBytes = new []byte(200000)
+    for i in 0..200000 { updateBytes[i] = 121 }
+    let overUpdate = env::set(&capEnv, "SMALL", string(updateBytes))
+    match overUpdate { ok(v) { println("cap_update=ok") } err(m, c) { show("cap_update", c) } }
+    let afterSmall = env::get(&capEnv, "SMALL")
+    match afterSmall {
+        ok(v) { if v == nil { println("cap_after=nil") } else { println("cap_after=", len(v)) } }
+        err(m, c) { show("cap_after", c) }
+    }
+    let smallSet = env::set(&capEnv, "TINY", "ok")
+    match smallSet { ok(v) { println("cap_small=", v) } err(m, c) { show("cap_small", c) } }
+    let overNew = env::set(&capEnv, "NEW", string(updateBytes))
+    match overNew { ok(v) { println("cap_new=ok") } err(m, c) { show("cap_new", c) } }
+    let newMissing = env::get(&capEnv, "NEW")
+    match newMissing {
+        ok(v) { if v == nil { println("cap_new_missing=nil") } else { println("cap_new_missing=present") } }
+        err(m, c) { show("cap_new_missing", c) }
+    }
+    let capEntries = env::entries(&capEnv)
+    match capEntries { ok(v) { println("cap_entries=", len(v)) } err(m, c) { show("cap_entries", c) } }
+    let capUnset = env::unset(&capEnv, "SMALL")
+    match capUnset { ok(v) { println("cap_unset=", v) } err(m, c) { show("cap_unset", c) } }
+    let capReset = env::set(&capEnv, "SMALL", "ok")
+    match capReset { ok(v) { println("cap_reset=", v) } err(m, c) { show("cap_reset", c) } }
+
+    // A crafted over-cap record reports Range, matching a captured over-cap
+    // snapshot rather than turning into InvalidArgument.
+    var hugeBytes = new []byte(1100000)
+    for i in 0..1100000 { hugeBytes[i] = 122 }
+    var hugePair = new env::Pair{name: "HUGE", value: string(hugeBytes)}
+    var hugeList = new []env::Pair(0)
+    append(hugeList, hugePair)
+    let hugeEnv = new env::Environment{entries: hugeList}
+    let hugeGet = env::get(&hugeEnv, "HUGE")
+    match hugeGet { ok(v) { println("huge_get=ok") } err(m, c) { show("huge_get", c) } }
+
+    // A directly constructed malformed record is untrusted at every entry.
+    var pair = new env::Pair{name: "A=B", value: "v"}
+    var direct = new []env::Pair(0)
+    append(direct, pair)
+    let forged = new env::Environment{entries: direct}
+    let fg = env::get(&forged, "A")
+    match fg { ok(v) { println("forged=ok") } err(m, c) { show("forged", c) } }
+    let fe = env::entries(&forged)
+    match fe { ok(v) { println("forged_entries=ok") } err(m, c) { show("forged_entries", c) } }
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}

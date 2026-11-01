@@ -1,0 +1,70 @@
+// P1b openat2 containment probe. The test builds the directory/symlink fixture;
+// this root only asks sysfile to resolve multi-component paths beneath it.
+module app
+
+import "sysplatform.obx" as platform
+import "sysfile.obx" as file
+import "sysdir.obx" as dir
+import "syserrors.obx" as errs
+
+fn show(label: string, code: int) {
+    let k = errs::kind(code)
+    println(label, "=", errs::text(&k))
+}
+
+fn probe(label: string, d: &dir::Directory, path: string) {
+    let o = file::readOptions()
+    let made = file::openBeneath(d, path, &o)
+    match made {
+        ok(f) {
+            let r = file::readSome(&f, 64)
+            let c = file::close(&f)
+            match r {
+                ok(v) {
+                    if v == nil { println(label, "=empty") } else {
+                        println(label, "=", string(v))
+                    }
+                }
+                err(m, cc) { show(label, cc) }
+            }
+        }
+        err(m, c) { show(label, c) }
+    }
+}
+
+fn main() {
+    let av = args()
+    let rootPath = av[1]
+    let procPath = av[2]
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+    println("cap=", platform::hasCapability("file.openBeneath"))
+    let d = dir::open(rootPath)
+    match d {
+        ok(dd) {
+            probe("nested", &dd, "sub/file")
+            probe("inside_link", &dd, "inlink")
+            probe("parent", &dd, "../outside")
+            probe("absolute", &dd, "/etc/passwd")
+            probe("outside_link", &dd, "outlink")
+            probe("missing", &dd, "sub/missing")
+            let c = dir::close(&dd)
+            match c { ok(v) { println("dir_close=", v) } err(m, cc) { show("dir_close", cc) } }
+        }
+        err(m, c) { show("dir_open", c) }
+    }
+    let p = dir::open(procPath)
+    match p {
+        ok(pd) {
+            probe("magic", &pd, "fd/1")
+            let c = dir::close(&pd)
+            match c { ok(v) { println("proc_close=", v) } err(m, cc) { show("proc_close", cc) } }
+        }
+        err(m, c) { show("proc_open", c) }
+    }
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}
