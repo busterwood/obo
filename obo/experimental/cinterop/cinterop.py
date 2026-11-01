@@ -40,9 +40,25 @@ ABI = 'sysv-amd64'
 FORMAT = 'cinterop-proto/1'
 RELOC_HEADER = 'cinterop-relocs 1'
 MAX_ARGS = 8
+MAX_KIND_ARGS = 12        # kinds bindings: C-parameter descriptors per function (stage (a))
 ARG_REGS = ('%rdi', '%rsi', '%rdx', '%rcx', '%r8', '%r9')
 EFFECTS = ('freesall', 'writeshandles')
 SIG_MODES = ('header', 'declarations-only')
+# Argument kinds (stage (a), design section 3.1). A binding whose args are all bare i64 is the int form,
+# and its calls carry no descriptor. Any other binding uses kinds: each entry names the obo argument it
+# reads as kind@k, and the call site passes the same list as a descriptor string (see nativeKindCall in
+# obo/src/obo.obo). The sidecar records the list, and the tool compares it with the spec.
+DATA_KIND_NAMES = ('i64', 'i32', 'u32', 'borrow_bytes', 'borrow_cstr', 'ints', 'nil_bytes_list')
+BYTES_KINDS = ('borrow_bytes', 'borrow_cstr')
+INT_LIMIT = (1 << 63) - 1
+# The C parameters each kind expands to (the sigcheck types and the thunk's arguments).
+KIND_CTYPES = {
+    'i64': ['long'], 'i32': ['int'], 'u32': ['unsigned int'],
+    'null': ['void *'], 'const': ['void *'],
+    'borrow_bytes': ['const void *', 'int'], 'borrow_cstr': ['const char *'],
+    'ints:i32': ['const int *'], 'ints:u32': ['const unsigned int *'], 'ints:len': ['int'],
+    'nil_bytes_list': ['const char *const *', 'const int *'],
+}
 # Hosted cinterop links get full RELRO and immediate binding by default. A
 # missing or incompatible shared-library symbol then fails at load time instead
 # of during a request. The separate freestanding runtime/seed build is not
@@ -214,13 +230,21 @@ def load_spec(path):
         seen_symbols.add(f['symbol'])
         if f['ret'] not in ('i32', 'i64'):
             raise ToolError("%s: ret must be i32 or i64" % f['name'])
-        if not isinstance(f['args'], list) or len(f['args']) > MAX_ARGS:
+        if not isinstance(f['args'], list) or len(f['args']) > MAX_KIND_ARGS:
             raise ToolError("%s: args must be a list of at most %d entries" % (f['name'], MAX_ARGS))
-        for a in f['args']:
-            if a == 'i32':
-                raise ToolError("%s: i32 arguments are not supported in this prototype; use i64" % f['name'])
-            if a != 'i64':
-                raise ToolError("%s: args must be i64" % f['name'])
+        if all(a == 'i64' for a in f['args']):
+            if len(f['args']) > MAX_ARGS:
+                raise ToolError("%s: args must be a list of at most %d entries" % (f['name'], MAX_ARGS))
+        else:
+            if any(a == 'i32' for a in f['args']):
+                raise ToolError("%s: i32 arguments need an argument index: write i32@k, with a kinds descriptor "
+                                "at the call" % f['name'])
+            if not all(isinstance(a, str) for a in f['args']):
+                raise ToolError("%s: args must be i64, or a kind such as i64@0" % f['name'])
+            check_kinds(f['name'], f['args'])
+            if 'wrapper' not in spec:
+                raise ToolError("%s: a binding with argument kinds needs a maintained wrapper "
+                                "(the \"wrapper\" key)" % f['name'])
         effects = f.get('effects', ['impure'])
         if not isinstance(effects, list) or any(e != 'impure' for e in effects):
             raise ToolError("%s: only the conservative 'impure' effect is supported" % f['name'])
@@ -250,6 +274,66 @@ def load_spec(path):
     return spec
 
 
+def parse_kind(tok):
+    """One argument kind: name, arg (obo argument index or None), flag, val (const only)."""
+    if tok == 'null':
+        return {'name': 'null', 'arg': None, 'flag': None, 'val': None}
+    m = re.fullmatch(r'const:(-?[0-9]+)', tok)
+    if m:
+        val = int(m.group(1))
+        if not -INT_LIMIT - 1 <= val <= INT_LIMIT:
+            raise ToolError("const value %s does not fit 64 bits" % m.group(1))
+        return {'name': 'const', 'arg': None, 'flag': None, 'val': val}
+    m = re.fullmatch(r'(i64|i32|u32|borrow_bytes|borrow_cstr|ints|nil_bytes_list)@([0-9]+)(?::([a-z0-9]+))?', tok)
+    if not m:
+        raise ToolError("unknown argument kind %r (args must be i64, or a kind such as i64@0)" % tok)
+    name, arg, flag = m.group(1), int(m.group(2)), m.group(3)
+    if name == 'ints':
+        if flag not in ('i32', 'u32', 'len'):
+            raise ToolError("ints needs a flag: ints@%d:i32, ints@%d:u32 or ints@%d:len" % (arg, arg, arg))
+    elif flag is not None:
+        raise ToolError("%s takes no flag: %r" % (name, tok))
+    return {'name': name, 'arg': arg, 'flag': flag, 'val': None}
+
+
+def kind_key(k):
+    return k['name'] + (':' + k['flag'] if k['flag'] else '')
+
+
+def check_kinds(fname, args):
+    """A kinds binding: every obo argument has exactly one data kind, and ints:len counts a list."""
+    if len(args) > MAX_KIND_ARGS:
+        raise ToolError("%s: at most %d argument kinds" % (fname, MAX_KIND_ARGS))
+    kinds = [parse_kind(a) for a in args]
+    data = {}
+    for k in kinds:
+        if k['arg'] is None or (k['name'] == 'ints' and k['flag'] == 'len'):
+            continue
+        if k['arg'] in data:
+            raise ToolError("%s: argument %d has two kinds" % (fname, k['arg']))
+        data[k['arg']] = k
+    for k in kinds:
+        if k['name'] == 'ints' and k['flag'] == 'len':
+            if k['arg'] not in data or data[k['arg']]['name'] not in ('ints', 'nil_bytes_list'):
+                raise ToolError("%s: ints:len counts a list, and argument %d is not one" % (fname, k['arg']))
+    if not data and not any(k['name'] in ('null', 'const') for k in kinds):
+        raise ToolError("%s: no argument kind" % fname)
+    for i in range(max(data) + 1 if data else 0):
+        if i not in data:
+            raise ToolError("%s: argument %d has no kind" % (fname, i))
+    return kinds
+
+
+def c_params(f):
+    """The C parameter types of one function, in order."""
+    out = []
+    if all(a == 'i64' for a in f['args']):
+        return [c_arg(a) for a in f['args']]
+    for a in f['args']:
+        out += KIND_CTYPES[kind_key(parse_kind(a))]
+    return out
+
+
 def c_arg(typ):
     return 'long' if typ == 'i64' else 'int'
 
@@ -272,13 +356,133 @@ def generate_wrapper(spec):
     return '\n'.join(out)
 
 
+def kinds_thunk(f):
+    """Thunk body for a binding with argument kinds (stage (a), design 3.2).
+
+    The call site pushed one word per data kind word, in argument order, so the
+    first word is at the highest address. The thunk reads those words only now,
+    after every argument expression ran and right before the C call. Pointers and
+    lengths are made by the obo_ci_* helpers (host.c) into rbp-relative slots;
+    the scratch among them is freed after the call on the normal return path.
+    A contract violation exits 11 inside a helper, before the call.
+    """
+    kinds = check_kinds(f['name'], f['args'])
+    data = {}
+    for k in kinds:
+        if k['arg'] is None or (k['name'] == 'ints' and k['flag'] == 'len'):
+            continue
+        data[k['arg']] = k
+    m = max(data) + 1 if data else 0
+    base = {}
+    W = 0
+    for a in range(m):
+        base[a] = W
+        W += 2 if data[a]['name'] in BYTES_KINDS else 1
+
+    def word(w):
+        return '%d(%%rbp)' % (16 + 8 * (W - 1 - w))
+
+    slots = []
+    body = []
+    scratch = []
+
+    def slot():
+        slots.append(None)
+        return '%d(%%rbp)' % (-8 * len(slots))
+
+    def call(name, args):
+        for reg, a in zip(('%rdi', '%rsi'), args):
+            body.append('    %s %s, %s' % ('movabs' if a.startswith('$') else 'movq', a, reg))
+        body.append('    call %s@PLT' % name)
+        s_ = slot()
+        body.append('    movq %%rax, %s' % s_)
+        return s_
+
+    def keep(s_):
+        scratch.append(s_)
+        return s_
+
+    srcs = []
+    for k in kinds:
+        nm = k['name']
+        if nm == 'null':
+            srcs.append('$0')
+        elif nm == 'const':
+            srcs.append('$%d' % k['val'])
+        elif nm == 'i64':
+            srcs.append(word(base[k['arg']]))
+        elif nm == 'i32':
+            srcs.append(call('obo_ci_i32', [word(base[k['arg']])]))
+        elif nm == 'u32':
+            srcs.append(call('obo_ci_u32', [word(base[k['arg']])]))
+        elif nm == 'borrow_bytes':
+            v, fl = word(base[k['arg']]), word(base[k['arg']] + 1)
+            srcs.append(call('obo_ci_bytes_ptr', [v, fl]))
+            srcs.append(call('obo_ci_bytes_len', [v, fl]))
+        elif nm == 'borrow_cstr':
+            v, fl = word(base[k['arg']]), word(base[k['arg']] + 1)
+            p = call('obo_ci_bytes_ptr', [v, fl])
+            n = call('obo_ci_bytes_len', [v, fl])
+            srcs.append(keep(call('obo_ci_cstr', [p, n])))
+        elif nm == 'ints' and k['flag'] == 'len':
+            srcs.append(call('obo_ci_count', [word(base[k['arg']])]))
+        elif nm == 'ints':
+            srcs.append(keep(call('obo_ci_ints', [word(base[k['arg']]),
+                                                  '$%d' % (1 if k['flag'] == 'u32' else 0)])))
+        elif nm == 'nil_bytes_list':
+            srcs.append(keep(call('obo_ci_list_ptrs', [word(base[k['arg']])])))
+            srcs.append(keep(call('obo_ci_list_lens', [word(base[k['arg']])])))
+        else:
+            raise ToolError("%s: no thunk for kind %r" % (f['name'], nm))
+    if len(srcs) != len(c_params(f)):
+        raise ToolError("%s: kinds expand to %d C parameters, not %d"
+                        % (f['name'], len(srcs), len(c_params(f))))
+
+    def load(src, reg):
+        if src.startswith('$'):
+            return '    movabs %s, %s' % (src, reg)
+        return '    movq %s, %s' % (src, reg)
+
+    n = len(srcs)
+    tail = []
+    stack = srcs[6:]
+    if stack and len(stack) % 2 == 1:
+        tail.append('    sub $8, %rsp')
+    for src in reversed(stack):
+        if src.startswith('$'):
+            tail.append('    movabs %s, %%rax' % src)
+            tail.append('    pushq %rax')
+        else:
+            tail.append('    pushq %s' % src)
+    for i, src in enumerate(srcs[:6]):
+        tail.append(load(src, ARG_REGS[i]))
+    tail.append('    call %s@PLT' % f['symbol'])
+    if f['ret'] == 'i32':
+        tail.append('    movslq %eax, %rax')
+    ret = slot()
+    tail.append('    movq %%rax, %s' % ret)
+    frame = (8 * len(slots) + 15) // 16 * 16
+    tail.append('    lea -%d(%%rbp), %%rsp' % frame)
+    for s_ in scratch:
+        tail.append('    movq %s, %%rdi' % s_)
+        tail.append('    call obo_ci_free@PLT')
+    tail.append('    movq %s, %%rax' % ret)
+    lines = ['    push %rbp', '    mov %rsp, %rbp']
+    if frame:
+        lines.append('    sub $%d, %%rsp' % frame)
+    return lines + body + tail + ['    leave', '    ret']
+
+
 def generate_shim(spec):
     out = ['    .text']
     for f in spec['functions']:
         n = len(f['args'])
         sym = 'obo_native_' + f['symbol']
-        out += ['', '    .globl %s' % sym, '    .type %s,@function' % sym, '%s:' % sym,
-                '    push %rbp', '    mov %rsp, %rbp']
+        out += ['', '    .globl %s' % sym, '    .type %s,@function' % sym, '%s:' % sym]
+        if not all(a == 'i64' for a in f['args']):
+            out += kinds_thunk(f)
+            continue
+        out += ['    push %rbp', '    mov %rsp, %rbp']
         stack = list(range(6, n))
         if stack and len(stack) % 2 == 1:
             out.append('    sub $8, %rsp')
@@ -310,7 +514,7 @@ def generate_sigcheck(spec):
         out.append(d)
     for i, f in enumerate(spec['functions']):
         ret = c_arg(f['ret'])
-        args = ', '.join(c_arg(a) for a in f['args']) or 'void'
+        args = ', '.join(c_params(f)) or 'void'
         out.append('static %s (*obo_sig_%d)(%s) __attribute__((unused)) = %s;'
                    % (ret, i, args, f['symbol']))
     out.append('')
@@ -522,11 +726,14 @@ def read_relocs(path):
         sym, types, ret, effects = parts[1], parts[3], parts[4], parts[5]
         if off < 1 or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', sym):
             raise ToolError("bad native relocation %r" % line)
-        if nargs < 0 or nargs > MAX_ARGS:
+        if nargs < 0 or nargs > MAX_KIND_ARGS:
             raise ToolError("native relocation arity %d out of range" % nargs)
         argtypes = [] if types == '-' else types.split(',')
-        if len(argtypes) != nargs or any(t != 'i64' for t in argtypes):
+        if len(argtypes) != nargs:
             raise ToolError("native relocation argument types do not match arity: %r" % line)
+        for t in argtypes:
+            if t != 'i64':
+                parse_kind(t)
         if ret != 'i64' or effects != 'freesall,writeshandles':
             raise ToolError("native relocation has an unexpected result/effect contract: %r" % line)
         out.append({'off': off, 'sym': sym, 'nargs': nargs,
@@ -548,8 +755,9 @@ def validate_calls(relocs, spec):
         if r['nargs'] != len(f['args']):
             raise ToolError("native call to %r has %d argument(s), spec says %d"
                             % (r['sym'], r['nargs'], len(f['args'])))
-        if r['argtypes'] != ['i64'] * len(f['args']):
-            raise ToolError("native call to %r has non-i64 argument types" % r['sym'])
+        if r['argtypes'] != list(f['args']):
+            raise ToolError("native call to %r has argument kinds %s, the spec says %s"
+                            % (r['sym'], ','.join(r['argtypes']) or '-', ','.join(f['args']) or '-'))
         seen.add(r['sym'])
     missing = set(by_sym) - seen
     if missing:
@@ -835,8 +1043,10 @@ def verify_doc(doc, base, full):
             raise ToolError("manifest symbol name is malformed")
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', str(sym['symbol'])):
             raise ToolError("manifest C symbol is malformed")
-        if not isinstance(sym['args'], list) or any(a != 'i64' for a in sym['args']):
-            raise ToolError("manifest symbol arguments are not i64")
+        if not isinstance(sym['args'], list) or not all(isinstance(a, str) for a in sym['args']):
+            raise ToolError("manifest symbol arguments are malformed")
+        if any(a != 'i64' for a in sym['args']):
+            check_kinds(str(sym['name']), sym['args'])
         if sym['ret'] not in ('i32', 'i64'):
             raise ToolError("manifest symbol result is not i32/i64")
     if sorted(doc['expected_thunks']) != sorted('obo_native_' + s['symbol'] for s in doc['symbols']):
