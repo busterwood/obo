@@ -1,8 +1,10 @@
-# H1a0 API
+# H1a0/H1b API
 
-Status: experimental, unstable. The declarations below are the H1a0 surface; H1a
-may wrap or rename them when it adds `Connection`, `Transport` and deadlines.
-No function here performs I/O.
+Status: experimental, unstable. The first part is the H1a0 pure grammar,
+serializer and date surface. The H1b section at the end adds the transport,
+connection state machine and server loop; it performs I/O, deadlines and socket
+accept. H1c (TLS/`http1tls`) is explicitly later. Nothing here is a stability,
+protocol-version or release claim.
 
 ## `http1core`
 
@@ -227,3 +229,214 @@ later rolls back one century; exactly 50 years does not. RFC 850 requires a full
 weekday name. Weekday names are checked as known names but are not required to
 match the calendar date. The later clock wrapper adapts `clock::Timestamp` to
 these explicit seconds/nanos functions.
+
+---
+
+# H1b API (experimental)
+
+Status: experimental, unstable. H1b adds the transport seam, connection state
+machine and server loop. It does **not** add TLS, `http1tls`, routing or a full
+mutable-connection handler; H1c is later.
+
+## `http1transport`
+
+`Transport` is an opaque record, not an interface: 0.14 has no impure
+interface-member tier, so an interface method could not call `sysstream`.
+
+```obo
+pub type Step = closed { StepDone {} StepWantRead {} StepWantWrite {} }
+pub type ReadOutcome = closed {
+    ReadData { bytes: []byte } ReadEof {} ReadWantRead {} ReadWantWrite {}
+}
+pub type WriteOutcome = closed {
+    WriteWrote { count: int } WriteWantRead {} WriteWantWrite {}
+}
+pub type ShutdownOutcome = closed {
+    ShutdownDone {} ShutdownSent {} ShutdownPeerClosed {}
+    ShutdownWantRead {} ShutdownWantWrite {}
+}
+pub type Want = closed { WantNone {} WantRead {} WantWrite {} WantReadWrite {} }
+pub type Alpn = closed { AlpnNone {} AlpnHttp11 {} AlpnH2 {} AlpnOther { name: string } }
+
+pub fn plain(s: sysstream::Stream): Transport
+pub fn memory(input: &[]byte): Transport
+pub fn empty(): Transport
+
+pub fn handshakeStep(mut t: &Transport): Result[Step]
+pub fn readSome(mut t: &Transport, max: int): Result[ReadOutcome]
+pub fn writeSome(mut t: &Transport, bytes: &[]byte, offset: int,
+                 count: int): Result[WriteOutcome]
+pub fn flushPending(mut t: &Transport): Result[WriteOutcome]
+pub fn shutdownStep(mut t: &Transport): Result[ShutdownOutcome]
+pub fn pending(t: &Transport): Result[int]
+pub fn want(t: &Transport): Result[Want]
+pub fn alpn(t: &Transport): Result[Alpn]
+pub fn isSecure(t: &Transport): bool
+pub fn maxTransfer(t: &Transport): int
+pub fn watch(t: &Transport, r: &sysreactor::Reactor, readable: bool,
+             writable: bool, tag: int): Result[sysreactor::Watch]
+pub fn close(mut t: &Transport): Result[bool]
+```
+
+Rules:
+
+- `readSome(max)` requires `1 <= max <= maxTransfer` (65536) and returns owned
+  bytes, a clean `ReadEof`, or a `Want*`. A short read is normal.
+- `writeSome` returns the accepted prefix. `WriteWrote{0}` for a positive count
+  is an adapter invariant violation; the connection closes instead of spinning.
+  `WouldBlock` maps to `WriteWantWrite`; `readSome` maps it to `ReadWantRead`.
+- `flushPending` drains ciphertext only (plain has none). `pending` reports
+  adapter ciphertext; `Flushed` requires the HTTP buffer empty and `pending == 0`.
+- `shutdownStep` is multi-step. `close` is abortive and exactly once.
+- `watch` passes a checked handle internally; no fd, native token or stream
+  identity is exposed. The memory transport has no watch and returns
+  `Unsupported`.
+- `memory*` helpers configure the deterministic test transport (read/write
+  limits, pending ciphertext, want flags, ALPN, secure flag, captured output).
+
+## `http1conn`
+
+```obo
+pub type Now = ref record { pub mono: sysclock::Instant; pub wall: sysclock::Timestamp }
+pub type Phase = closed {
+    Handshaking {} Idle {} ReadingHead {} ReadingBody {}
+    Responding {} Draining {} Closing {} Closed {}
+}
+pub type Event = closed {
+    HandshakeDone {} NeedRead {} NeedWrite {} HeadReady {} ResponseComplete {}
+    TimedOut {} ProtocolError { status: int } ConnectionClosed {}
+}
+pub type BodyRead = closed { BodyData { bytes: []byte } BodyEnd {} BodyNeedRead {} }
+pub type FlushOutcome = closed { Flushed {} FlushWantRead {} FlushWantWrite {} }
+
+pub fn make(t: http1transport::Transport, l: &Limits): Result[Connection]
+pub fn phase(c: &Connection): Phase
+pub fn deadline(c: &Connection): sysclock::Deadline
+pub fn next(mut c: &Connection, now: &Now): Result[Event]
+pub fn readBody(mut c: &Connection, max: int, now: &Now): Result[BodyRead]
+pub fn discardBody(mut c: &Connection, maxBytes: int, now: &Now): Result[bool]
+pub fn requestInfo(c: &Connection): Result<RequestInfo>
+pub fn headerCount(c: &Connection): int
+pub fn headerAt(c: &Connection, index: int): Result<Header>
+pub fn headerValue(c: &Connection, name: string): Result[?Header]
+pub fn trailerValue(c: &Connection, name: string): Result[?Header]
+pub fn beginResponse(mut c: &Connection, status: int, now: &Now): Result[bool]
+pub fn beginResponseWithReason(mut c: &Connection, status: int, reason: string,
+                               now: &Now): Result[bool]
+pub fn setHeader(mut c: &Connection, name: string, value: string): Result[bool]
+pub fn setLength(mut c: &Connection, length: int): Result[bool]
+pub fn setTrailerNames(mut c: &Connection, names: &[]string): Result[bool]
+pub fn addTrailer(mut c: &Connection, name: string, value: string): Result[bool]
+pub fn writeBody(mut c: &Connection, bytes: &[]byte, offset: int,
+                 count: int): Result[int]
+pub fn writeText(mut c: &Connection, text: string, offset: int,
+                 count: int): Result[int]
+pub fn endResponse(mut c: &Connection, now: &Now): Result[bool]
+pub fn flush(mut c: &Connection, now: &Now): Result[FlushOutcome]
+pub fn sendContinue(mut c: &Connection): Result[bool]
+pub fn requestClose(mut c: &Connection): Result[bool]
+pub fn closeAfterResponse(c: &Connection): bool
+pub fn acceptAlpn(mut c: &Connection): Result[bool]
+pub fn shutdownStep(mut c: &Connection, now: &Now): Result[ShutdownOutcome]
+pub fn close(mut c: &Connection): Result[bool]
+pub fn wantsRead(mut c: &Connection): Result[bool]
+pub fn wantsWrite(mut c: &Connection): Result[bool]
+```
+
+Rules:
+
+- `make` validates and deep-copies `Limits`, creates the parser and response
+  buffers and arms the accept/handshake deadlines on the first `next`. A plain
+  transport completes `handshakeStep` immediately; the caller must call
+  `acceptAlpn` after `HandshakeDone` before any HTTP parse.
+- `next` checks active deadlines, drives the handshake, flushes bounded output,
+  then parses a head or advances a completed response. It never reads a body on
+  the handler's behalf. While a body is unread it returns `InvalidState` instead
+  of parsing a second request.
+- `readBody` returns 1..max owned bytes, `BodyEnd` once, or `BodyNeedRead`. It
+  starts the body-progress deadline on the first call and renews it only on
+  positive decoded data. `Expect: 100-continue` is sent on the first read when
+  `autoContinue` is true and no body was already buffered. `readBody` is
+  `InvalidState` after `endResponse` or after an early final response that set
+  the close policy. The strict design reading ("after any beginResponse") was
+  relaxed so the server can stream a request body into a chunked response; the
+  early-final Expect case remains closed.
+- `writeBody`/`writeText` accept only what fits the bounded encoded buffer and
+  return the accepted prefix (0 means flush and retry). `endResponse` returns
+  `false` while the final chunk/trailer block does not fit; callers must flush
+  and retry. The connection does not spin.
+- `flush` performs at most one `writeSome` and then drains adapter ciphertext;
+  `Flushed` requires both buffers empty. `next` maps `FlushWantRead/Write` to
+  `NeedRead/NeedWrite`.
+- `requestClose` sets `Connection: close` before header commit; after commit the
+  connection closes after the flushed response. `shutdownStep` flushes, then
+  drives the transport's multi-step shutdown. `close` is abortive and
+  idempotent.
+- Deadline policy: accept/handshake are disarmed on first request byte/
+  `StepDone`; header is absolute from the first byte; body idle starts at first
+  read; idle starts when a response completes; response idle renews on positive
+  writes; response total starts at header commit. `deadline` returns the earliest
+  active finite deadline or `forever()`. Timeouts queue `408` when a response is
+  still possible, otherwise close silently.
+- `discardBody` is a bounded early-response drain; it refuses after the final
+  response and closes when its byte cap is exceeded.
+- `memoryOutput`, `memoryClearOutput`, `memoryAppendInput`,
+  `memorySetReadLimit`, `memorySetWriteLimit`, `memorySetWant`,
+  `memorySetPending`, `memorySetAlpn`, `memorySetSecure`, `memoryPending` and
+  `memoryClosed` are deterministic test accessors for the memory transport.
+
+## `http1server`
+
+```obo
+pub type Action = closed {
+    Hello {} Echo {} Chunked {} Head {} NoContent {}
+    NotModified {} Big {} Slow {} Stop {} Close {}
+}
+pub type Handler = fn(http1core::RequestInfo, &http1conn::Now): Action
+pub type Metrics = ref record { /* accepted, rejected, closedConnections, ... */ }
+
+pub fn make(l: sysnet::Listener, r: sysreactor::Reactor,
+            limits: &Limits): Result[Server]
+pub fn runOnce(mut s: &Server, handler: Handler, maxEvents: int): Result[bool]
+pub fn beginShutdown(mut s: &Server, now: &http1conn::Now): Result[bool]
+pub fn drain(mut s: &Server, handler: Handler, maxTurns: int): Result[bool]
+pub fn shutdown(mut s: &Server, now: &http1conn::Now): Result[bool]
+pub fn metrics(s: &Server): Metrics
+pub fn active(s: &Server): int
+pub fn reservedBytes(s: &Server): int
+pub fn isStopping(s: &Server): bool
+pub fn stopRequested(s: &Server): bool
+pub fn now(): Result<http1conn::Now>
+pub fn isAcceptPressure(code: int): bool
+pub fn admissionFits(active: int, reserved: int, perConnection: int,
+                     limits: &Limits): bool
+```
+
+Rules:
+
+- `make` owns the listener and reactor, validates `Limits`, registers the
+  listener watch and starts an empty fixed slot table. `maxConnections` is
+  capped at 65536 (the tag table width).
+- `runOnce` blocks in `reactor::wait` until an event or the earliest connection/
+  accept-pause/drain deadline. It accepts at most 32 per batch, drives each ready
+  slot at most 32 events, checks all deadlines again after I/O, and refreshes
+  watch interest. It never registers writable interest without queued output or
+  transport `WantWrite`.
+- Admission enforces both the count and the aggregate reservation. When full it
+  leaves sockets in the accept queue; a `ResourceLimit` accept error (EMFILE/
+  ENFILE) pauses acceptance for 100 ms and increments `acceptPressure`.
+- `beginShutdown` removes the listener watch, stops accepting, closes idle/
+  handshaking connections immediately and calls `requestClose` on in-flight
+  connections. `drain` runs turns until active reaches zero or the drain
+  deadline. `shutdown` closes remaining slots, the listener and the reactor.
+- `Handler` is pure. It cannot drive the connection because 0.14 function values
+  and interface methods cannot be impure. The server itself performs the bounded
+  actions: `Hello` (`hello\n`), `Echo` (stream the request body into a chunked
+  response, sending `100 Continue` when needed), `Chunked`, `Head`, `NoContent`,
+  `NotModified`, `Big` (20 KB fixed), `Slow` (10 bytes per turn),
+  `Stop` (respond, then request shutdown) and `Close` (`Connection: close` then
+  `Hello`). A general application handler needs a future impure function-value
+  tier or a different dispatch API; this is documented as an H1c/follow-up
+  language gap, not a hidden callback.
+- Tags are `generation * 65536 + slot`; stale events from a retired generation
+  are ignored. Transport close happens exactly once per slot.

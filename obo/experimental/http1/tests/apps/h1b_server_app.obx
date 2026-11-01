@@ -1,0 +1,170 @@
+// H1b loopback server driver. Not public API.
+import "http1core.obx" as core
+import "http1conn.obx" as conn
+import "http1server.obx" as server
+import "sysaddress.obx" as address
+import "sysnet.obx" as net
+import "sysreactor.obx" as reactor
+import "sysplatform.obx" as platform
+
+fn mk(s: string): []byte {
+    let b = new []byte(len(s))
+    for i in 0..len(s) { b[i] = s[i] }
+    return b
+}
+
+fn emit(s: string) {
+    let b = mk(s)
+    let w = writeFd(stdout(), b)
+}
+
+fn toInt(s: string): int {
+    var v = 0
+    for i in 0..len(s) {
+        if s[i] < '0' || s[i] > '9' { return 0 }
+        v = v * 10 + int(s[i]) - int('0')
+    }
+    return v
+}
+
+// Pure router: reads request metadata and returns a bounded action. It performs
+// no I/O and holds no state.
+fn route(info: core::RequestInfo, now: &conn::Now): server::Action {
+    if info.path == "/echo" { return new server::Echo{} }
+    if info.path == "/post" { return new server::Echo{} }
+    if info.path == "/chunked" { return new server::Chunked{} }
+    if info.path == "/head" { return new server::Head{} }
+    if info.path == "/204" { return new server::NoContent{} }
+    if info.path == "/304" { return new server::NotModified{} }
+    if info.path == "/big" { return new server::Big{} }
+    if info.path == "/slow" { return new server::Slow{} }
+    if info.path == "/quit" { return new server::Stop{} }
+    if info.path == "/close" { return new server::Close{} }
+    return new server::Hello{}
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini {
+        ok(v) { }
+        err(m, c) { println("INITERR ", c); return }
+    }
+    let av = args()
+    if len(av) < 3 {
+        println("USAGE family addr port")
+        return
+    }
+    let family = av[1]
+    let text = av[2]
+    var port = 0
+    if len(av) > 3 { port = toInt(av[3]) }
+    var target: address::Address = new address::UnixPath{path: text}
+    if family == "tcp4" || family == "tcp6" {
+        let a = address::parseNumeric(text, port)
+        match a {
+            ok(v) { target = v }
+            err(m, c) { println("ADDRERR ", c); return }
+        }
+    }
+    let opts = net::listenOptions()
+    opts.backlog = 512
+    let made = net::listen(&target, &opts)
+    match made {
+        ok(listener) {
+            let local = net::listenerLocalAddress(&listener)
+            var bound = 0
+            match local {
+                ok(a) {
+                    match a {
+                        IPv4 { bound = a.port }
+                        IPv6 { bound = a.port }
+                        UnixPath { }
+                        UnixAbstract { }
+                    }
+                }
+                err(m, c) { }
+            }
+            emit("PORT " + string(bound) + "\n")
+            let rc = reactor::create(512, 512)
+            match rc {
+                ok(r) {
+                    var lim = core::defaultLimits()
+                    if len(av) > 4 && av[4] == "fast" {
+                        lim.acceptTimeoutMs = 500
+                        lim.handshakeTimeoutMs = 500
+                        lim.headerTimeoutMs = 500
+                        lim.bodyIdleTimeoutMs = 500
+                        lim.idleTimeoutMs = 800
+                        lim.responseTimeoutMs = 500
+                        lim.responseTotalTimeoutMs = 1000
+                        lim.totalTimeoutMs = 1500
+                    }
+                    if len(av) > 4 && av[4] == "small" {
+                        lim.maxStartLine = 256
+                        lim.maxTarget = 128
+                        lim.maxHeaderBytes = 512
+                        lim.maxHeaderCount = 5
+                        lim.maxHeaderLine = 256
+                        lim.maxBody = 16
+                        lim.maxChunkLine = 64
+                        lim.maxChunkSize = 16
+                        lim.maxChunkCount = 5
+                        lim.maxChunkMetadata = 128
+                        lim.maxTrailerBytes = 64
+                        lim.maxTrailerCount = 2
+                        lim.maxResponseHeaderBytes = 256
+                        lim.maxResponseBuffer = 256
+                        lim.maxResponseTrailerCount = 2
+                        lim.maxResponseTrailerBytes = 64
+                        lim.maxPipelineBytes = 512
+                        lim.maxRequests = 2
+                    }
+                    let srv = server::make(listener, r, &lim)
+                    match srv {
+                        ok(s) {
+                            let h = fn (info: core::RequestInfo, at: &conn::Now): server::Action {
+                                return route(info, at)
+                            }
+                            var turns = 0
+                            while !server::stopRequested(&s) && turns < 200000 {
+                                turns += 1
+                                let p = server::runOnce(&s, h, 64)
+                                match p {
+                                    ok(v) { }
+                                    err(m, c) { println("LOOPERR ", c); break }
+                                }
+                            }
+                            let n = server::now()
+                            match n {
+                                ok(now) {
+                                    let b = server::beginShutdown(&s, &now)
+                                    let d = server::drain(&s, h, 500)
+                                    let sh = server::shutdown(&s, &now)
+                                }
+                                err(m, c) { }
+                            }
+                            let m = server::metrics(&s)
+                            emit("METRICS " + string(m.accepted) + " " +
+                                 string(m.closedConnections) + " " +
+                                 string(m.requests) + " " +
+                                 string(m.protocolErrors) + " " +
+                                 string(m.timeouts) + " " +
+                                 string(m.acceptErrors) + " " +
+                                 string(m.handlerErrors) + " " +
+                                 string(m.peakActive) + " " +
+                                 string(m.active) + "\n")
+                        }
+                        err(m, c) { println("SERVERERR ", c) }
+                    }
+                }
+                err(m, c) {
+                    let cl = net::closeListener(&listener)
+                    drop(listener)
+                    println("REACTORERR ", c)
+                }
+            }
+        }
+        err(m, c) { println("LISTENERR ", c) }
+    }
+}

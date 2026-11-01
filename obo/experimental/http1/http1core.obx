@@ -29,7 +29,18 @@ pub type Limits = ref record {
     pub maxResponseTrailerBytes: int
     pub maxPipelineBytes: int
     pub maxRequests: int
+    pub maxConnections: int
+    pub maxTotalConnectionBytes: int
+    pub acceptTimeoutMs: int
+    pub handshakeTimeoutMs: int
+    pub headerTimeoutMs: int
+    pub bodyIdleTimeoutMs: int
+    pub idleTimeoutMs: int
+    pub responseTimeoutMs: int
+    pub responseTotalTimeoutMs: int
+    pub totalTimeoutMs: int
     pub allowHttp10: bool
+    pub allowNoAlpn: bool
     pub allowExtensionMethods: bool
     pub pipelining: bool
     pub autoContinue: bool
@@ -77,6 +88,24 @@ pub const MAX_SERVER_NAME = 64
 pub const MIN_RESPONSE_BUFFER = 256
 pub const MAX_HEADER_BUDGET = 16777216
 pub const MAX_RESPONSE_BUFFER = 16777216
+pub const MAX_MILLISECONDS = 9223372036854775807 / 1000000
+
+// Fixed reservation per admitted connection: the header input buffer plus one
+// maximum header line, the encoded response buffer, the owned RequestInfo
+// header copy, and the target/path/query copies (which can approach 2*maxTarget).
+// The server admits against both maxConnections and maxTotalConnectionBytes.
+pub fn reservation(l: &Limits): Result[int] {
+    let a = l.maxHeaderBytes + l.maxHeaderLine
+    if a < 0 { return err("connection reservation overflowed", ERR_LIMIT_EXCEEDED) }
+    let b = a + l.maxResponseBuffer
+    if b < 0 { return err("connection reservation overflowed", ERR_LIMIT_EXCEEDED) }
+    let c = b + l.maxHeaderBytes
+    if c < 0 { return err("connection reservation overflowed", ERR_LIMIT_EXCEEDED) }
+    if l.maxTarget > (9223372036854775807 - c) / 2 {
+        return err("connection reservation overflowed", ERR_LIMIT_EXCEEDED)
+    }
+    return ok(c + 2 * l.maxTarget)
+}
 
 pub fn defaultLimits(): Limits {
     return new Limits{
@@ -98,7 +127,18 @@ pub fn defaultLimits(): Limits {
         maxResponseTrailerBytes: 4096,
         maxPipelineBytes: 24576,
         maxRequests: 1000,
+        maxConnections: 256,
+        maxTotalConnectionBytes: 67108864,
+        acceptTimeoutMs: 10000,
+        handshakeTimeoutMs: 10000,
+        headerTimeoutMs: 10000,
+        bodyIdleTimeoutMs: 30000,
+        idleTimeoutMs: 60000,
+        responseTimeoutMs: 60000,
+        responseTotalTimeoutMs: 300000,
+        totalTimeoutMs: 300000,
         allowHttp10: false,
+        allowNoAlpn: true,
         allowExtensionMethods: false,
         pipelining: true,
         autoContinue: true,
@@ -128,7 +168,18 @@ pub fn copyLimits(l: &Limits): Limits {
         maxResponseTrailerBytes: l.maxResponseTrailerBytes,
         maxPipelineBytes: l.maxPipelineBytes,
         maxRequests: l.maxRequests,
+        maxConnections: l.maxConnections,
+        maxTotalConnectionBytes: l.maxTotalConnectionBytes,
+        acceptTimeoutMs: l.acceptTimeoutMs,
+        handshakeTimeoutMs: l.handshakeTimeoutMs,
+        headerTimeoutMs: l.headerTimeoutMs,
+        bodyIdleTimeoutMs: l.bodyIdleTimeoutMs,
+        idleTimeoutMs: l.idleTimeoutMs,
+        responseTimeoutMs: l.responseTimeoutMs,
+        responseTotalTimeoutMs: l.responseTotalTimeoutMs,
+        totalTimeoutMs: l.totalTimeoutMs,
         allowHttp10: l.allowHttp10,
+        allowNoAlpn: l.allowNoAlpn,
         allowExtensionMethods: l.allowExtensionMethods,
         pipelining: l.pipelining,
         autoContinue: l.autoContinue,
@@ -150,8 +201,23 @@ pub fn validateLimits(l: &Limits): Result[bool] {
        !positive(l.maxResponseHeaderBytes) || !positive(l.maxResponseBuffer) ||
        !positive(l.maxResponseTrailerCount) ||
        !positive(l.maxResponseTrailerBytes) || !positive(l.maxPipelineBytes) ||
-       !positive(l.maxRequests) {
+       !positive(l.maxRequests) || !positive(l.maxConnections) ||
+       !positive(l.maxTotalConnectionBytes) ||
+       !positive(l.acceptTimeoutMs) || !positive(l.handshakeTimeoutMs) ||
+       !positive(l.headerTimeoutMs) || !positive(l.bodyIdleTimeoutMs) ||
+       !positive(l.idleTimeoutMs) || !positive(l.responseTimeoutMs) ||
+       !positive(l.responseTotalTimeoutMs) || !positive(l.totalTimeoutMs) {
         return err("every HTTP limit must be positive", ERR_INVALID_ARGUMENT)
+    }
+    if l.acceptTimeoutMs > MAX_MILLISECONDS ||
+       l.handshakeTimeoutMs > MAX_MILLISECONDS ||
+       l.headerTimeoutMs > MAX_MILLISECONDS ||
+       l.bodyIdleTimeoutMs > MAX_MILLISECONDS ||
+       l.idleTimeoutMs > MAX_MILLISECONDS ||
+       l.responseTimeoutMs > MAX_MILLISECONDS ||
+       l.responseTotalTimeoutMs > MAX_MILLISECONDS ||
+       l.totalTimeoutMs > MAX_MILLISECONDS {
+        return err("timeout does not fit signed nanoseconds", ERR_LIMIT_EXCEEDED)
     }
     if l.maxTarget > 9223372036854775763 {
         return err("maxTarget is too large", ERR_LIMIT_EXCEEDED)
@@ -188,6 +254,14 @@ pub fn validateLimits(l: &Limits): Result[bool] {
     }
     if l.maxResponseTrailerBytes > l.maxResponseBuffer - 16 {
         return err("response trailer budget does not fit maxResponseBuffer", ERR_INVALID_ARGUMENT)
+    }
+    let per = try reservation(l)
+    if l.maxConnections > 9223372036854775807 / per {
+        return err("maxConnections exceeds the connection-byte budget", ERR_LIMIT_EXCEEDED)
+    }
+    if l.maxTotalConnectionBytes < l.maxConnections * per {
+        return err("maxTotalConnectionBytes is below the aggregate reservation",
+                   ERR_LIMIT_EXCEEDED)
     }
     if l.maxPipelineBytes > l.maxHeaderBytes + l.maxHeaderLine {
         return err("maxPipelineBytes exceeds the input buffer budget", ERR_INVALID_ARGUMENT)

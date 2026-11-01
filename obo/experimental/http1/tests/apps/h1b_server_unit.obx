@@ -1,0 +1,27 @@
+import "http1core.obx" as core
+import "http1server.obx" as server
+import "syserrors.obx" as errors
+
+fn main() {
+    let rl = new errors::ResourceLimit{}
+    let wb = new errors::WouldBlock{}
+    println("pressure_res=", server::isAcceptPressure(errors::code(&rl)))
+    println("pressure_wb=", server::isAcceptPressure(errors::code(&wb)))
+    let lim = core::defaultLimits()
+    let per = core::reservation(&lim)
+    match per {
+        ok(v) {
+            println("per=", v)
+            println("admit0=", server::admissionFits(0, 0, v, &lim))
+            println("admit255=", server::admissionFits(255, 255 * v, v, &lim))
+            println("admit256=", server::admissionFits(256, 256 * v, v, &lim))
+            println("admit_budget=", server::admissionFits(0, lim.maxTotalConnectionBytes, v, &lim))
+        }
+        err(m, c) { println("PERERR ", c) }
+    }
+    var bad = core::defaultLimits()
+    bad.maxConnections = 1000
+    bad.maxTotalConnectionBytes = 1024
+    let v = core::validateLimits(&bad)
+    match v { ok(x) { println("badbudget=ok") } err(m, c) { println("badbudget=", c) } }
+}

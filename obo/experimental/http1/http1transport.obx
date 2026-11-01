@@ -1,0 +1,586 @@
+// Experimental HTTP/1.1 byte transport seam (H1b).
+//
+// Status: experimental and unstable. This module exposes the operation set from
+// obo/design/http1-server-design.md section 4.3:
+//
+//     handshakeStep readSome writeSome flushPending shutdownStep
+//     pending want alpn isSecure maxTransfer watch close
+//
+// Two constructors exist: `plain` over an owned sysstream::Stream and `memory`
+// for deterministic, socket-free tests. There is no TLS here; H1c adds it.
+//
+// Language note: this revision cannot use an obo `interface` for the seam.
+// `obo` 0.14 has no impure interface-member tier, so an interface method may not
+// call a native/impure function (`sysstream::readSome` and friends). The seam is
+// therefore an opaque record with module functions. The observable contract is
+// the same: owned read bytes, accepted-prefix writes, Want* control flow,
+// multi-step shutdown, ALPN/secure metadata, maxTransfer and no exposed fd or
+// native token. H1c must either add a TLS-backed variant inside this module or
+// wait for an impure interface tier; it does not change the connection API.
+module http1transport
+
+import "syserrors.obx" as errors
+import "sysplatform.obx" as platform
+import "sysreactor.obx" as reactor
+import "sysstream.obx" as stream
+
+pub type Step = closed {
+    StepDone {}
+    StepWantRead {}
+    StepWantWrite {}
+}
+
+pub type ReadOutcome = closed {
+    ReadData { bytes: []byte }
+    ReadEof {}
+    ReadWantRead {}
+    ReadWantWrite {}
+}
+
+pub type WriteOutcome = closed {
+    WriteWrote { count: int }
+    WriteWantRead {}
+    WriteWantWrite {}
+}
+
+pub type ShutdownOutcome = closed {
+    ShutdownDone {}
+    ShutdownSent {}
+    ShutdownPeerClosed {}
+    ShutdownWantRead {}
+    ShutdownWantWrite {}
+}
+
+pub type Want = closed {
+    WantNone {}
+    WantRead {}
+    WantWrite {}
+    WantReadWrite {}
+}
+
+pub type Alpn = closed {
+    AlpnNone {}
+    AlpnHttp11 {}
+    AlpnH2 {}
+    AlpnOther { name: string }
+}
+
+pub const MAX_TRANSFER = 65536
+pub const KIND_PLAIN = 1
+pub const KIND_MEMORY = 2
+
+const W_NONE = 0
+const W_READ = 1
+const W_WRITE = 2
+const W_BOTH = 3
+
+const A_NONE = 0
+const A_HTTP11 = 1
+const A_H2 = 2
+const A_OTHER = 3
+
+// The representation is private. Applications construct a transport only with
+// plain() or memory(); every entry point revalidates the record.
+pub type Transport = ref record {
+    kind: int
+    s: stream::Stream
+    shut: bool
+    inBytes: []byte
+    inPos: int
+    outBytes: []byte
+    readLimit: int
+    writeLimit: int
+    readable: bool
+    eof: bool
+    pendingBytes: int
+    pendingLimit: int
+    wantMode: int
+    secure: bool
+    alpnKind: int
+    alpnName: string
+    maxXfer: int
+    readCount: int
+    writeCount: int
+}
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn unsupported(): int { return libCode(new errors::Unsupported{}) }
+
+fn placeholderStream(): stream::Stream {
+    return new stream::Stream{res: new platform::Resource{reserved: 0}}
+}
+
+// Internal placeholder used while an owned transport is moved into a local for
+// one native call. It performs no I/O and owns no native object.
+pub fn empty(): Transport {
+    return new Transport{
+        kind: KIND_MEMORY,
+        s: placeholderStream(),
+        shut: true,
+        inBytes: new []byte(0),
+        inPos: 0,
+        outBytes: new []byte(0),
+        readLimit: 0,
+        writeLimit: 0,
+        readable: false,
+        eof: true,
+        pendingBytes: 0,
+        pendingLimit: 0,
+        wantMode: W_NONE,
+        secure: false,
+        alpnKind: A_NONE,
+        alpnName: "",
+        maxXfer: MAX_TRANSFER,
+        readCount: 0,
+        writeCount: 0
+    }
+}
+
+fn memoryRecord(input: &[]byte): Transport {
+    let copy = new []byte(len(input))
+    for i in 0..len(input) { copy[i] = input[i] }
+    return new Transport{
+        kind: KIND_MEMORY,
+        s: placeholderStream(),
+        shut: false,
+        inBytes: copy,
+        inPos: 0,
+        outBytes: new []byte(0),
+        readLimit: 0,
+        writeLimit: 0,
+        readable: true,
+        eof: false,
+        pendingBytes: 0,
+        pendingLimit: 0,
+        wantMode: W_NONE,
+        secure: false,
+        alpnKind: A_NONE,
+        alpnName: "",
+        maxXfer: MAX_TRANSFER,
+        readCount: 0,
+        writeCount: 0
+    }
+}
+
+pub fn plain(s: stream::Stream): Transport {
+    return new Transport{
+        kind: KIND_PLAIN,
+        s: s,
+        shut: false,
+        inBytes: new []byte(0),
+        inPos: 0,
+        outBytes: new []byte(0),
+        readLimit: 0,
+        writeLimit: 0,
+        readable: true,
+        eof: false,
+        pendingBytes: 0,
+        pendingLimit: 0,
+        wantMode: W_NONE,
+        secure: false,
+        alpnKind: A_NONE,
+        alpnName: "",
+        maxXfer: MAX_TRANSFER,
+        readCount: 0,
+        writeCount: 0
+    }
+}
+
+pub fn memory(input: &[]byte): Transport {
+    return memoryRecord(input)
+}
+
+pub fn isPlain(t: &Transport): bool { return t.kind == KIND_PLAIN }
+pub fn isMemory(t: &Transport): bool { return t.kind == KIND_MEMORY }
+pub fn memoryClosed(t: &Transport): bool { return t.shut }
+pub fn memoryOutput(t: &Transport): Result[[]byte] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    let copy = new []byte(len(t.outBytes))
+    for i in 0..len(t.outBytes) { copy[i] = t.outBytes[i] }
+    return ok(copy)
+}
+pub fn memoryAppendInput(mut t: &Transport, bytes: &[]byte): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    for i in 0..len(bytes) { append(t.inBytes, bytes[i]) }
+    return ok(true)
+}
+
+pub fn memoryClearOutput(mut t: &Transport): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    t.outBytes = new []byte(0)
+    return ok(true)
+}
+pub fn memoryReadCount(t: &Transport): int { return t.readCount }
+pub fn memoryWriteCount(t: &Transport): int { return t.writeCount }
+
+pub fn memorySetReadLimit(mut t: &Transport, n: int): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    if n < 0 { return err("read limit is negative", invalidArgument()) }
+    t.readLimit = n
+    return ok(true)
+}
+
+pub fn memorySetWriteLimit(mut t: &Transport, n: int): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    if n < 0 { return err("write limit is negative", invalidArgument()) }
+    t.writeLimit = n
+    return ok(true)
+}
+
+pub fn memorySetReadable(mut t: &Transport, value: bool): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    t.readable = value
+    return ok(true)
+}
+
+pub fn memorySetEof(mut t: &Transport, value: bool): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    t.eof = value
+    return ok(true)
+}
+
+pub fn memorySetWant(mut t: &Transport, w: &Want): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    match w {
+        WantNone { t.wantMode = W_NONE }
+        WantRead { t.wantMode = W_READ }
+        WantWrite { t.wantMode = W_WRITE }
+        WantReadWrite { t.wantMode = W_BOTH }
+    }
+    return ok(true)
+}
+
+pub fn memorySetPending(mut t: &Transport, total: int, perFlush: int): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    if total < 0 || perFlush < 0 {
+        return err("pending byte counts are negative", invalidArgument())
+    }
+    t.pendingBytes = total
+    t.pendingLimit = perFlush
+    return ok(true)
+}
+
+pub fn memorySetAlpn(mut t: &Transport, a: &Alpn): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    match a {
+        AlpnNone { t.alpnKind = A_NONE; t.alpnName = "" }
+        AlpnHttp11 { t.alpnKind = A_HTTP11; t.alpnName = "" }
+        AlpnH2 { t.alpnKind = A_H2; t.alpnName = "" }
+        AlpnOther { t.alpnKind = A_OTHER; t.alpnName = a.name }
+    }
+    return ok(true)
+}
+
+pub fn memorySetSecure(mut t: &Transport, value: bool): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    t.secure = value
+    return ok(true)
+}
+
+pub fn memorySetMaxTransfer(mut t: &Transport, n: int): Result[bool] {
+    if t.kind != KIND_MEMORY {
+        return err("transport is not a memory transport", invalidArgument())
+    }
+    if n < 1 || n > MAX_TRANSFER {
+        return err("maxTransfer is outside 1..65536", invalidArgument())
+    }
+    t.maxXfer = n
+    return ok(true)
+}
+
+// Plain stream calls move the owned Stream briefly into a local because obo's
+// conservative native-effect rule rejects a reference to a field of a borrowed
+// record. One call, one bounded transfer; nothing is retained through the move.
+fn plainRead(mut t: &Transport, max: int): Result[?[]byte] {
+    let tmp = replace(t.s, placeholderStream())
+    let outcome = stream::readSome(&tmp, max)
+    t.s = tmp
+    return outcome
+}
+
+fn plainWrite(mut t: &Transport, bytes: &[]byte, offset: int,
+              count: int): Result[int] {
+    let tmp = replace(t.s, placeholderStream())
+    let outcome = stream::writeSome(&tmp, bytes, offset, count)
+    t.s = tmp
+    return outcome
+}
+
+fn plainShutdown(mut t: &Transport): Result[bool] {
+    let tmp = replace(t.s, placeholderStream())
+    let outcome = stream::shutdownWrite(&tmp)
+    t.s = tmp
+    return outcome
+}
+
+pub fn handshakeStep(mut t: &Transport): Result[Step] {
+    if t.kind == KIND_PLAIN || t.kind == KIND_MEMORY {
+        let done: Step = new StepDone{}
+        return ok(done)
+    }
+    return err("transport kind is invalid", invalidArgument())
+}
+
+pub fn readSome(mut t: &Transport, max: int): Result[ReadOutcome] {
+    if max < 1 || max > t.maxXfer || max > MAX_TRANSFER {
+        return err("readSome max is outside the transport transfer bound",
+                   invalidArgument())
+    }
+    if t.shut { return err("transport is closed", invalidArgument()) }
+    if t.kind == KIND_MEMORY {
+        if !t.readable {
+            let want: ReadOutcome = new ReadWantRead{}
+            return ok(want)
+        }
+        t.readCount += 1
+        if t.inPos >= len(t.inBytes) {
+            if t.eof {
+                let eof: ReadOutcome = new ReadEof{}
+                return ok(eof)
+            }
+            let want: ReadOutcome = new ReadWantRead{}
+            return ok(want)
+        }
+        var n = len(t.inBytes) - t.inPos
+        if n > max { n = max }
+        if t.readLimit > 0 && n > t.readLimit { n = t.readLimit }
+        let out = new []byte(n)
+        for i in 0..n { out[i] = t.inBytes[t.inPos + i] }
+        t.inPos += n
+        let data: ReadOutcome = new ReadData{bytes: out}
+        return ok(data)
+    }
+    if t.kind != KIND_PLAIN {
+        return err("transport kind is invalid", invalidArgument())
+    }
+    let data = plainRead(t, max)
+    match data {
+        ok(bytes) {
+            if bytes == nil {
+                let eof: ReadOutcome = new ReadEof{}
+                return ok(eof)
+            }
+            let got: ReadOutcome = new ReadData{bytes: bytes}
+            return ok(got)
+        }
+        err(m, code) {
+            if errors::isWouldBlock(code) {
+                let want: ReadOutcome = new ReadWantRead{}
+                return ok(want)
+            }
+            return err(m, code)
+        }
+    }
+}
+
+pub fn writeSome(mut t: &Transport, bytes: &[]byte, offset: int,
+                 count: int): Result[WriteOutcome] {
+    if offset < 0 || count < 0 || offset > len(bytes) ||
+       count > len(bytes) - offset {
+        return err("writeSome source range is outside the array", invalidArgument())
+    }
+    if count > t.maxXfer || count > MAX_TRANSFER {
+        return err("writeSome count is above maxTransfer", invalidArgument())
+    }
+    if t.shut { return err("transport is closed", invalidArgument()) }
+    if count == 0 {
+        let zero: WriteOutcome = new WriteWrote{count: 0}
+        return ok(zero)
+    }
+    if t.kind == KIND_MEMORY {
+        if t.writeLimit == 0 {
+            let want: WriteOutcome = new WriteWantWrite{}
+            return ok(want)
+        }
+        var n = count
+        if t.writeLimit > 0 && n > t.writeLimit { n = t.writeLimit }
+        for i in 0..n { append(t.outBytes, bytes[offset + i]) }
+        t.writeCount += 1
+        let wrote: WriteOutcome = new WriteWrote{count: n}
+        return ok(wrote)
+    }
+    if t.kind != KIND_PLAIN {
+        return err("transport kind is invalid", invalidArgument())
+    }
+    let n = plainWrite(t, bytes, offset, count)
+    match n {
+        ok(count_out) {
+            let wrote: WriteOutcome = new WriteWrote{count: count_out}
+            return ok(wrote)
+        }
+        err(m, code) {
+            if errors::isWouldBlock(code) {
+                let want: WriteOutcome = new WriteWantWrite{}
+                return ok(want)
+            }
+            return err(m, code)
+        }
+    }
+}
+
+pub fn flushPending(mut t: &Transport): Result[WriteOutcome] {
+    if t.kind == KIND_MEMORY {
+        if t.pendingBytes <= 0 {
+            let zero: WriteOutcome = new WriteWrote{count: 0}
+            return ok(zero)
+        }
+        var n = t.pendingBytes
+        if t.pendingLimit > 0 && n > t.pendingLimit { n = t.pendingLimit }
+        t.pendingBytes -= n
+        let wrote: WriteOutcome = new WriteWrote{count: n}
+        return ok(wrote)
+    }
+    if t.kind != KIND_PLAIN {
+        return err("transport kind is invalid", invalidArgument())
+    }
+    let zero: WriteOutcome = new WriteWrote{count: 0}
+    return ok(zero)
+}
+
+pub fn shutdownStep(mut t: &Transport): Result[ShutdownOutcome] {
+    if t.shut {
+        let peer: ShutdownOutcome = new ShutdownPeerClosed{}
+        return ok(peer)
+    }
+    if t.kind == KIND_MEMORY {
+        let done: ShutdownOutcome = new ShutdownDone{}
+        return ok(done)
+    }
+    if t.kind != KIND_PLAIN {
+        return err("transport kind is invalid", invalidArgument())
+    }
+    let sent_ok = plainShutdown(t)
+    match sent_ok {
+        ok(done) {
+            if done {
+                let sent: ShutdownOutcome = new ShutdownDone{}
+                return ok(sent)
+            }
+            let peer: ShutdownOutcome = new ShutdownPeerClosed{}
+            return ok(peer)
+        }
+        err(m, code) {
+            if errors::isWouldBlock(code) {
+                let want: ShutdownOutcome = new ShutdownWantWrite{}
+                return ok(want)
+            }
+            return err(m, code)
+        }
+    }
+}
+
+pub fn pending(t: &Transport): Result[int] {
+    if t.kind == KIND_MEMORY {
+        return ok(t.pendingBytes)
+    }
+    if t.kind == KIND_PLAIN {
+        return ok(0)
+    }
+    return err("transport kind is invalid", invalidArgument())
+}
+
+pub fn want(t: &Transport): Result[Want] {
+    if t.kind == KIND_MEMORY {
+        if t.wantMode == W_READ {
+            let w: Want = new WantRead{}
+            return ok(w)
+        }
+        if t.wantMode == W_WRITE {
+            let w: Want = new WantWrite{}
+            return ok(w)
+        }
+        if t.wantMode == W_BOTH {
+            let w: Want = new WantReadWrite{}
+            return ok(w)
+        }
+        let none: Want = new WantNone{}
+        return ok(none)
+    }
+    if t.kind == KIND_PLAIN {
+        let none: Want = new WantNone{}
+        return ok(none)
+    }
+    return err("transport kind is invalid", invalidArgument())
+}
+
+pub fn alpn(t: &Transport): Result[Alpn] {
+    if t.kind == KIND_MEMORY {
+        if t.alpnKind == A_HTTP11 {
+            let a: Alpn = new AlpnHttp11{}
+            return ok(a)
+        }
+        if t.alpnKind == A_H2 {
+            let a: Alpn = new AlpnH2{}
+            return ok(a)
+        }
+        if t.alpnKind == A_OTHER {
+            let a: Alpn = new AlpnOther{name: t.alpnName}
+            return ok(a)
+        }
+        let a: Alpn = new AlpnNone{}
+        return ok(a)
+    }
+    if t.kind == KIND_PLAIN {
+        let none: Alpn = new AlpnNone{}
+        return ok(none)
+    }
+    return err("transport kind is invalid", invalidArgument())
+}
+
+pub fn isSecure(t: &Transport): bool {
+    if t.kind == KIND_MEMORY { return t.secure }
+    return false
+}
+
+pub fn maxTransfer(t: &Transport): int {
+    return t.maxXfer
+}
+
+pub fn watch(t: &Transport, r: &reactor::Reactor, readable: bool,
+             writable: bool, tag: int): Result[reactor::Watch] {
+    if !readable && !writable {
+        return err("a watch needs read or write interest", invalidArgument())
+    }
+    if t.kind != KIND_PLAIN {
+        return err("this transport has no reactor watch", unsupported())
+    }
+    // Mirror net::watchConnection: pass a checked handle (a scalar) rather than
+    // a reference to the transport's field. No fd or source identity escapes.
+    let h = handle(t.s.res)
+    let checked = try platform::_requireKindHandle(h, platform::KIND_STREAM)
+    return reactor::watchResource(r, checked, readable, writable, tag)
+}
+
+pub fn close(mut t: &Transport): Result[bool] {
+    if t.shut { return ok(false) }
+    t.shut = true
+    if t.kind != KIND_PLAIN { return ok(true) }
+    let tmp = replace(t.s, placeholderStream())
+    return stream::close(&tmp)
+}

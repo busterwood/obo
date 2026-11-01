@@ -1,0 +1,1512 @@
+// Experimental HTTP/1.1 connection state machine (H1b).
+//
+// Status: experimental and unstable. The grammar, limits and serializer live in
+// http1core/http1parse/http1write/http1date (H1a0); this module owns phases,
+// request/response coordination, framing policy, deadlines, keep-alive,
+// sequential pipelining, bounded buffering and graceful close. It performs
+// bounded I/O through http1transport and never calls application code.
+//
+// API mapping to obo/design/http1-server-design.md section 4.4:
+//   - make(stream, limits) binds the byte transport to the connection. This is
+//     the H1b shape requested by the implementation task; the design's separate
+//     `&Transport` parameter is not representable without an impure interface
+//     tier (see http1transport.obx).
+//   - next/readBody/flush take a `Now` because deadlines are explicit monotonic
+//     values; no hidden clock read or retry occurs.
+//   - The Connection record is opaque. Every entry point revalidates it.
+module http1conn
+
+import "http1core.obx" as core
+import "http1parse.obx" as parse
+import "http1write.obx" as write
+import "http1transport.obx" as transport
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+import "sysreactor.obx" as reactor
+
+pub type Now = ref record {
+    pub mono: clock::Instant
+    pub wall: clock::Timestamp
+}
+
+pub type Phase = closed {
+    Handshaking {}
+    Idle {}
+    ReadingHead {}
+    ReadingBody {}
+    Responding {}
+    Draining {}
+    Closing {}
+    Closed {}
+}
+
+pub type Event = closed {
+    HandshakeDone {}
+    NeedRead {}
+    NeedWrite {}
+    HeadReady {}
+    ResponseComplete {}
+    TimedOut {}
+    ProtocolError { status: int }
+    ConnectionClosed {}
+}
+
+pub type BodyRead = closed {
+    BodyData { bytes: []byte }
+    BodyEnd {}
+    BodyNeedRead {}
+}
+
+pub type FlushOutcome = closed {
+    Flushed {}
+    FlushWantRead {}
+    FlushWantWrite {}
+}
+
+const P_HANDSHAKING = 0
+const P_IDLE = 1
+const P_READING_HEAD = 2
+const P_READING_BODY = 3
+const P_RESPONDING = 4
+const P_DRAINING = 5
+const P_CLOSING = 6
+const P_CLOSED = 7
+
+const T_NONE = 0
+const T_ACCEPT = 1
+const T_HANDSHAKE = 2
+const T_HEADER = 3
+const T_BODY = 4
+const T_IDLE = 5
+const T_RESPONSE = 6
+const T_RESPONSE_TOTAL = 7
+const T_REQUEST_TOTAL = 8
+
+pub type Connection = ref record {
+    limits: core::Limits
+    t: transport::Transport
+    parser: parse::Parser
+    response: write::Response
+    phase: int
+    deadlinesArmed: bool
+    alpnAccepted: bool
+    completedHandshake: bool
+
+    acceptDl: clock::Deadline
+    handshakeDl: clock::Deadline
+    headerDl: clock::Deadline
+    bodyDl: clock::Deadline
+    idleDl: clock::Deadline
+    responseIdleDl: clock::Deadline
+    responseTotalDl: clock::Deadline
+    requestTotalDl: clock::Deadline
+
+    requestBegan: bool
+    headReady: bool
+    bodyComplete: bool
+    bodyEndSeen: bool
+    bodyStarted: bool
+    bodyTotal: int
+    method: string
+    http10: bool
+    hasBody: bool
+    expectContinue: bool
+    continueSent: bool
+
+    responseStarted: bool
+    responseFinal: bool
+    responseCommitted: bool
+    earlyFinal: bool
+    closeAfter: bool
+    failed: bool
+    wroteAnything: bool
+    out: []byte
+    outPos: int
+
+    requests: int
+    bytesRead: int
+    bytesWritten: int
+    lastStatus: int
+}
+
+fn forever(): clock::Deadline {
+    return clock::forever()
+}
+
+fn deadlineAt(now: &Now, ms: int): clock::Deadline {
+    let add = ms * 1000000
+    var at = now.mono.nanos + add
+    if at < now.mono.nanos { at = 9223372036854775807 }
+    return new clock::Deadline{finite: true, nanos: at}
+}
+
+fn expired(now: &Now, d: &clock::Deadline): bool {
+    if !d.finite { return false }
+    return now.mono.nanos >= d.nanos
+}
+
+fn copyDeadline(d: &clock::Deadline): clock::Deadline {
+    return new clock::Deadline{finite: d.finite, nanos: d.nanos}
+}
+
+fn earlier(a: &clock::Deadline, b: &clock::Deadline): clock::Deadline {
+    if !a.finite { return copyDeadline(b) }
+    if !b.finite { return copyDeadline(a) }
+    if a.nanos <= b.nanos { return copyDeadline(a) }
+    return copyDeadline(b)
+}
+
+fn invalidState(): int { return core::ERR_INVALID_STATE }
+fn invalidArgument(): int { return core::ERR_INVALID_ARGUMENT }
+
+fn unsupportedCode(): int {
+    let k = new errors::Unsupported{}
+    return errors::code(&k)
+}
+
+// ---------------------------------------------------------------------------
+// Transport calls. The public entry points move the owned transport into a
+// local exactly once and pass a reference to the inner step, so no reference to
+// a Connection field crosses a native call and no field is moved twice in one
+// function (which the 0.14 symbol writer rejects).
+// ---------------------------------------------------------------------------
+
+fn tRead(mut t: &transport::Transport, max: int): Result[transport::ReadOutcome] {
+    var n = max
+    let mt = transport::maxTransfer(t)
+    if n > mt { n = mt }
+    if n > transport::MAX_TRANSFER { n = transport::MAX_TRANSFER }
+    return transport::readSome(t, n)
+}
+
+fn tWrite(mut t: &transport::Transport, bytes: &[]byte, offset: int,
+          count: int): Result[transport::WriteOutcome] {
+    return transport::writeSome(t, bytes, offset, count)
+}
+
+fn tPending(mut t: &transport::Transport): Result[int] {
+    return transport::pending(t)
+}
+
+fn tFlushPending(mut t: &transport::Transport): Result[transport::WriteOutcome] {
+    return transport::flushPending(t)
+}
+
+fn tWant(mut t: &transport::Transport): Result[transport::Want] {
+    return transport::want(t)
+}
+
+fn tMaxTransfer(mut t: &transport::Transport): int {
+    return transport::maxTransfer(t)
+}
+
+fn tAlpn(mut t: &transport::Transport): Result[transport::Alpn] {
+    return transport::alpn(t)
+}
+
+fn tSecure(mut t: &transport::Transport): bool {
+    return transport::isSecure(t)
+}
+
+fn tShutdown(mut t: &transport::Transport): Result[transport::ShutdownOutcome] {
+    return transport::shutdownStep(t)
+}
+
+fn tHandshake(mut t: &transport::Transport): Result[transport::Step] {
+    return transport::handshakeStep(t)
+}
+
+fn tClose(mut t: &transport::Transport): Result[bool] {
+    return transport::close(t)
+}
+
+pub fn watch(mut c: &Connection, r: &reactor::Reactor, readable: bool,
+             writable: bool, tag: int): Result[reactor::Watch] {
+    let t = replace(c.t, transport::empty())
+    let w = transport::watch(&t, r, readable, writable, tag)
+    c.t = t
+    return w
+}
+
+// Deterministic memory-transport accessors. They exist for the H1b in-memory
+// test driver (and for an application that deliberately uses a memory
+// transport); a plain socket connection returns an error for them.
+pub fn memoryOutput(mut c: &Connection): Result[[]byte] {
+    let t = replace(c.t, transport::empty())
+    let out = transport::memoryOutput(&t)
+    c.t = t
+    return out
+}
+
+pub fn memoryClearOutput(mut c: &Connection): Result[bool] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::memoryClearOutput(&t)
+    c.t = t
+    return done
+}
+
+pub fn memoryAppendInput(mut c: &Connection, bytes: &[]byte): Result[bool] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::memoryAppendInput(&t, bytes)
+    c.t = t
+    return done
+}
+
+pub fn memorySetReadLimit(mut c: &Connection, n: int): Result[bool] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::memorySetReadLimit(&t, n)
+    c.t = t
+    return done
+}
+
+pub fn memorySetWriteLimit(mut c: &Connection, n: int): Result[bool] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::memorySetWriteLimit(&t, n)
+    c.t = t
+    return done
+}
+
+pub fn memorySetWant(mut c: &Connection, w: &transport::Want): Result[bool] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::memorySetWant(&t, w)
+    c.t = t
+    return done
+}
+
+pub fn memorySetPending(mut c: &Connection, total: int,
+                        perFlush: int): Result[bool] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::memorySetPending(&t, total, perFlush)
+    c.t = t
+    return done
+}
+
+pub fn memorySetAlpn(mut c: &Connection, a: &transport::Alpn): Result[bool] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::memorySetAlpn(&t, a)
+    c.t = t
+    return done
+}
+
+pub fn memorySetSecure(mut c: &Connection, value: bool): Result[bool] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::memorySetSecure(&t, value)
+    c.t = t
+    return done
+}
+
+pub fn memoryPending(mut c: &Connection): Result[int] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::pending(&t)
+    c.t = t
+    return done
+}
+
+pub fn memoryClosed(mut c: &Connection): Result[bool] {
+    let t = replace(c.t, transport::empty())
+    let done = transport::memoryClosed(&t)
+    c.t = t
+    return ok(done)
+}
+
+// ---------------------------------------------------------------------------
+// Output queue. The writer's encoded buffer is moved into `out` only when `out`
+// is empty, so at most one maxResponseBuffer-sized array is pending.
+// ---------------------------------------------------------------------------
+
+fn writerPending(c: &Connection): int {
+    return write::pending(&c.response)
+}
+
+fn outputPending(c: &Connection): bool {
+    return c.outPos < len(c.out) || writerPending(c) > 0
+}
+
+fn takeWriterOutput(mut c: &Connection): Result[[]byte] {
+    let r = replace(c.response, write::emptyResponse())
+    let bytes = write::takeOutput(&r)
+    c.response = r
+    return bytes
+}
+
+fn pullWriter(mut c: &Connection): Result[bool] {
+    if c.outPos < len(c.out) { return ok(true) }
+    if writerPending(c) == 0 { return ok(false) }
+    let bytes = try takeWriterOutput(c)
+    c.out = bytes
+    c.outPos = 0
+    return ok(len(c.out) > 0)
+}
+
+fn queueRaw(mut c: &Connection, bytes: &[]byte): Result[bool] {
+    for i in 0..len(bytes) {
+        if len(c.out) >= c.limits.maxResponseBuffer {
+            return err("response output buffer is full", core::ERR_LIMIT_EXCEEDED)
+        }
+        append(c.out, bytes[i])
+    }
+    return ok(true)
+}
+
+fn queueContinue(mut c: &Connection): Result[bool] {
+    if c.continueSent { return ok(true) }
+    let bytes = write::continueBytes()
+    let queued = try queueRaw(c, &bytes)
+    if !queued { return ok(false) }
+    let marked = try parse::markContinueSent(&c.parser)
+    c.continueSent = true
+    return ok(marked)
+}
+
+fn canQueueError(c: &Connection): bool {
+    if c.wroteAnything || c.responseCommitted { return false }
+    return true
+}
+
+fn clearResponseDeadlines(mut c: &Connection) {
+    c.responseIdleDl = forever()
+    c.responseTotalDl = forever()
+    c.requestTotalDl = forever()
+}
+
+fn silentTimeout(mut c: &Connection): Event {
+    c.closeAfter = true
+    c.failed = true
+    c.phase = P_CLOSING
+    c.acceptDl = forever()
+    c.handshakeDl = forever()
+    c.headerDl = forever()
+    c.bodyDl = forever()
+    c.idleDl = forever()
+    clearResponseDeadlines(c)
+    let ev: Event = new TimedOut{}
+    return ev
+}
+
+fn queueProtocolError(mut c: &Connection, status: int, now: &Now) {
+    if !canQueueError(c) {
+        c.failed = true
+        c.closeAfter = true
+        c.out = new []byte(0)
+        c.outPos = 0
+        c.phase = P_CLOSING
+        c.lastStatus = status
+        return
+    }
+    let isHead = c.headReady && c.method == "HEAD"
+    let lim = core::copyLimits(&c.limits)
+    let made = write::errorResponse(&lim, status, isHead, c.http10,
+                                    now.wall.seconds, now.wall.nanos)
+    match made {
+        ok(bytes) {
+            c.out = bytes
+            c.outPos = 0
+            c.responseStarted = true
+            c.responseFinal = true
+            c.responseCommitted = true
+            c.closeAfter = true
+            c.phase = P_CLOSING
+            c.lastStatus = status
+            c.acceptDl = forever()
+            c.headerDl = forever()
+            c.bodyDl = forever()
+            c.idleDl = forever()
+            clearResponseDeadlines(c)
+        }
+        err(m, code) {
+            c.failed = true
+            c.closeAfter = true
+            c.out = new []byte(0)
+            c.outPos = 0
+            c.phase = P_CLOSING
+            c.lastStatus = status
+        }
+    }
+}
+
+fn observeCommit(mut c: &Connection, now: &Now) {
+    if write::isCommitted(&c.response) && !c.responseCommitted {
+        c.responseCommitted = true
+        c.responseIdleDl = deadlineAt(now, c.limits.responseTimeoutMs)
+        c.responseTotalDl = deadlineAt(now, c.limits.responseTotalTimeoutMs)
+    }
+}
+
+fn resetRequestState(mut c: &Connection) {
+    c.headReady = false
+    c.bodyComplete = true
+    c.bodyEndSeen = false
+    c.bodyStarted = false
+    c.bodyTotal = 0
+    c.method = ""
+    c.http10 = false
+    c.hasBody = false
+    c.expectContinue = false
+    c.continueSent = false
+    c.responseStarted = false
+    c.responseFinal = false
+    c.responseCommitted = false
+    c.earlyFinal = false
+    c.closeAfter = false
+    c.failed = false
+    c.wroteAnything = false
+    c.out = new []byte(0)
+    c.outPos = 0
+}
+
+// ---------------------------------------------------------------------------
+// Construction and inspection
+// ---------------------------------------------------------------------------
+
+pub fn make(stream: transport::Transport, limits: &core::Limits): Result[Connection] {
+    let checked = try core::validateLimits(limits)
+    if !checked { return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT) }
+    let parser = try parse::makeParser(limits)
+    let response = try write::makeResponse(limits, "GET", false, false, 0, 0)
+    return ok(new Connection{
+        limits: core::copyLimits(limits),
+        t: stream,
+        parser: parser,
+        response: response,
+        phase: P_HANDSHAKING,
+        deadlinesArmed: false,
+        alpnAccepted: false,
+        completedHandshake: false,
+        acceptDl: forever(),
+        handshakeDl: forever(),
+        headerDl: forever(),
+        bodyDl: forever(),
+        idleDl: forever(),
+        responseIdleDl: forever(),
+        responseTotalDl: forever(),
+        requestTotalDl: forever(),
+        requestBegan: false,
+        headReady: false,
+        bodyComplete: true,
+        bodyEndSeen: false,
+        bodyStarted: false,
+        bodyTotal: 0,
+        method: "",
+        http10: false,
+        hasBody: false,
+        expectContinue: false,
+        continueSent: false,
+        responseStarted: false,
+        responseFinal: false,
+        responseCommitted: false,
+        earlyFinal: false,
+        closeAfter: false,
+        failed: false,
+        wroteAnything: false,
+        out: new []byte(0),
+        outPos: 0,
+        requests: 0,
+        bytesRead: 0,
+        bytesWritten: 0,
+        lastStatus: 0
+    })
+}
+
+pub fn phase(c: &Connection): Phase {
+    if c.phase == P_HANDSHAKING { return new Handshaking{} }
+    if c.phase == P_IDLE { return new Idle{} }
+    if c.phase == P_READING_HEAD { return new ReadingHead{} }
+    if c.phase == P_READING_BODY { return new ReadingBody{} }
+    if c.phase == P_RESPONDING { return new Responding{} }
+    if c.phase == P_DRAINING { return new Draining{} }
+    if c.phase == P_CLOSING { return new Closing{} }
+    return new Closed{}
+}
+
+pub fn deadline(c: &Connection): clock::Deadline {
+    var best = forever()
+    best = earlier(&best, &c.acceptDl)
+    best = earlier(&best, &c.handshakeDl)
+    best = earlier(&best, &c.headerDl)
+    best = earlier(&best, &c.bodyDl)
+    best = earlier(&best, &c.idleDl)
+    best = earlier(&best, &c.responseIdleDl)
+    best = earlier(&best, &c.responseTotalDl)
+    best = earlier(&best, &c.requestTotalDl)
+    return best
+}
+
+pub fn requestInfo(c: &Connection): Result[core::RequestInfo] {
+    if !c.headReady { return err("request head is not ready", invalidState()) }
+    return parse::requestInfo(&c.parser)
+}
+
+pub fn headerCount(c: &Connection): int {
+    if !c.headReady { return 0 }
+    return parse::headerCount(&c.parser)
+}
+
+pub fn headerAt(c: &Connection, index: int): Result[core::Header] {
+    if !c.headReady { return err("request head is not ready", invalidState()) }
+    return parse::headerAt(&c.parser, index)
+}
+
+pub fn headerValue(c: &Connection, name: string): Result[?core::Header] {
+    if !c.headReady { return err("request head is not ready", invalidState()) }
+    return parse::headerValue(&c.parser, name)
+}
+
+pub fn trailerValue(c: &Connection, name: string): Result[?core::Header] {
+    return parse::trailerValue(&c.parser, name)
+}
+
+pub fn requestCount(c: &Connection): int { return c.requests }
+pub fn bodySize(c: &Connection): int { return c.bodyTotal }
+pub fn bytesRead(c: &Connection): int { return c.bytesRead }
+pub fn bytesWritten(c: &Connection): int { return c.bytesWritten }
+pub fn lastStatus(c: &Connection): int { return c.lastStatus }
+pub fn isClosed(c: &Connection): bool { return c.phase == P_CLOSED }
+
+// ---------------------------------------------------------------------------
+// Timeout policy
+// ---------------------------------------------------------------------------
+
+fn timeoutKind(c: &Connection, now: &Now): int {
+    if expired(now, &c.acceptDl) { return T_ACCEPT }
+    if expired(now, &c.handshakeDl) { return T_HANDSHAKE }
+    if expired(now, &c.headerDl) { return T_HEADER }
+    if expired(now, &c.bodyDl) { return T_BODY }
+    if expired(now, &c.idleDl) { return T_IDLE }
+    if expired(now, &c.responseIdleDl) { return T_RESPONSE }
+    if expired(now, &c.responseTotalDl) { return T_RESPONSE_TOTAL }
+    if expired(now, &c.requestTotalDl) { return T_REQUEST_TOTAL }
+    return T_NONE
+}
+
+fn handleTimeout(mut c: &Connection, kind: int, now: &Now): Event {
+    if kind == T_HEADER || kind == T_BODY || kind == T_REQUEST_TOTAL {
+        if canQueueError(c) {
+            queueProtocolError(c, 408, now)
+        } else {
+            c.failed = true
+            c.closeAfter = true
+            c.out = new []byte(0)
+            c.outPos = 0
+            c.phase = P_CLOSING
+        }
+        let ev: Event = new TimedOut{}
+        return ev
+    }
+    return silentTimeout(c)
+}
+
+// ---------------------------------------------------------------------------
+// Flush
+// ---------------------------------------------------------------------------
+
+fn flushOn(mut c: &Connection, now: &Now,
+           mut t: &transport::Transport): Result[FlushOutcome] {
+    observeCommit(c, now)
+    let pulled = try pullWriter(c)
+    if c.outPos < len(c.out) {
+        let remaining = len(c.out) - c.outPos
+        var n = remaining
+        let mt = tMaxTransfer(t)
+        if n > mt { n = mt }
+        let chunk = new []byte(n)
+        for i in 0..n { chunk[i] = c.out[c.outPos + i] }
+        let outcome = try tWrite(t, &chunk, 0, n)
+        match outcome {
+            WriteWrote {
+                if outcome.count < 0 || outcome.count > n {
+                    c.failed = true
+                    c.phase = P_CLOSING
+                    return err("transport write returned an impossible count",
+                               core::ERR_INTERNAL)
+                }
+                if outcome.count == 0 && n > 0 {
+                    c.failed = true
+                    c.phase = P_CLOSING
+                    return err("transport accepted no bytes for a non-empty write",
+                               core::ERR_INTERNAL)
+                }
+                c.outPos += outcome.count
+                c.bytesWritten += outcome.count
+                c.wroteAnything = true
+                if c.responseCommitted {
+                    c.responseIdleDl = deadlineAt(now, c.limits.responseTimeoutMs)
+                }
+                if c.outPos < len(c.out) {
+                    let want: FlushOutcome = new FlushWantWrite{}
+                    return ok(want)
+                }
+                c.out = new []byte(0)
+                c.outPos = 0
+            }
+            WriteWantRead {
+                let want: FlushOutcome = new FlushWantRead{}
+                return ok(want)
+            }
+            WriteWantWrite {
+                let want: FlushOutcome = new FlushWantWrite{}
+                return ok(want)
+            }
+        }
+    }
+    let more = try pullWriter(c)
+    if more {
+        let want: FlushOutcome = new FlushWantWrite{}
+        return ok(want)
+    }
+    let pendingBytes = try tPending(t)
+    if pendingBytes > 0 {
+        let outcome = try tFlushPending(t)
+        match outcome {
+            WriteWrote {
+                let left = try tPending(t)
+                if left > 0 {
+                    let want: FlushOutcome = new FlushWantWrite{}
+                    return ok(want)
+                }
+            }
+            WriteWantRead {
+                let want: FlushOutcome = new FlushWantRead{}
+                return ok(want)
+            }
+            WriteWantWrite {
+                let want: FlushOutcome = new FlushWantWrite{}
+                return ok(want)
+            }
+        }
+    }
+    let done: FlushOutcome = new Flushed{}
+    return ok(done)
+}
+
+pub fn flush(mut c: &Connection, now: &Now): Result[FlushOutcome] {
+    if c.phase == P_CLOSED {
+        return err("connection is closed", invalidState())
+    }
+    let t = replace(c.t, transport::empty())
+    let result = flushOn(c, now, &t)
+    c.t = t
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// Response completion
+// ---------------------------------------------------------------------------
+
+fn responseFinished(c: &Connection): bool {
+    return c.responseFinal && !outputPending(c)
+}
+
+fn completeResponse(mut c: &Connection, now: &Now): Event {
+    clearResponseDeadlines(c)
+    if c.closeAfter || !c.responseStarted {
+        c.phase = P_CLOSING
+        let ev: Event = new ResponseComplete{}
+        return ev
+    }
+    if c.hasBody && !c.bodyComplete {
+        c.phase = P_DRAINING
+        c.idleDl = forever()
+        let ev: Event = new ResponseComplete{}
+        return ev
+    }
+    resetRequestState(c)
+    c.phase = P_IDLE
+    c.idleDl = deadlineAt(now, c.limits.idleTimeoutMs)
+    let ev: Event = new ResponseComplete{}
+    return ev
+}
+
+// ---------------------------------------------------------------------------
+// Head parsing
+// ---------------------------------------------------------------------------
+
+fn installHead(mut c: &Connection, now: &Now): Result[Event] {
+    let info = try parse::requestInfo(&c.parser)
+    c.headReady = true
+    c.method = info.method
+    c.http10 = info.http10
+    c.hasBody = info.hasBody
+    c.bodyComplete = !info.hasBody
+    c.bodyEndSeen = !info.hasBody
+    c.bodyStarted = false
+    c.bodyTotal = 0
+    c.expectContinue = info.expectContinue
+    c.continueSent = false
+    c.responseStarted = false
+    c.responseFinal = false
+    c.responseCommitted = false
+    c.earlyFinal = false
+    c.closeAfter = info.close || !info.keepAlive || info.http10
+    c.wroteAnything = false
+    c.out = new []byte(0)
+    c.outPos = 0
+    c.headerDl = forever()
+    let closePolicy = c.closeAfter
+    let lim = core::copyLimits(&c.limits)
+    let made = try write::makeResponse(&lim, info.method, info.http10,
+                                       closePolicy, now.wall.seconds,
+                                       now.wall.nanos)
+    c.response = made
+    if !info.hasBody {
+        // The parser reaches its complete state by stepping S_FIXED with a zero
+        // remaining count. Do that now so a later nextHead can start the next
+        // pipelined request; no body bytes are consumed.
+        let ended = parse::readBody(&c.parser, 1)
+        match ended { ok(e) { } err(m, code) { } }
+    }
+    c.phase = P_READING_BODY
+    c.requests += 1
+    let ev: Event = new HeadReady{}
+    return ok(ev)
+}
+
+fn noteFirstByte(mut c: &Connection, now: &Now) {
+    if c.requestBegan { return }
+    c.requestBegan = true
+    c.acceptDl = forever()
+    c.idleDl = forever()
+    c.phase = P_READING_HEAD
+    c.headerDl = deadlineAt(now, c.limits.headerTimeoutMs)
+    c.requestTotalDl = deadlineAt(now, c.limits.totalTimeoutMs)
+}
+
+fn readIntoParserOn(mut c: &Connection, now: &Now,
+                    mut t: &transport::Transport): Result[int] {
+    let cap = c.limits.maxHeaderBytes + c.limits.maxHeaderLine
+    let used = parse::buffered(&c.parser)
+    var free = cap - used
+    if free <= 0 { return ok(0) }
+    if free > transport::MAX_TRANSFER { free = transport::MAX_TRANSFER }
+    let outcome = try tRead(t, free)
+    match outcome {
+        ReadData {
+            let fed = try parse::feed(&c.parser, &outcome.bytes)
+            if !fed { return ok(-1) }
+            c.bytesRead += len(outcome.bytes)
+            noteFirstByte(c, now)
+            return ok(len(outcome.bytes))
+        }
+        ReadEof {
+            let signalled = try parse::eof(&c.parser)
+            return ok(-2)
+        }
+        ReadWantRead { return ok(0) }
+        ReadWantWrite { return ok(-3) }
+    }
+}
+
+fn driveHeadOn(mut c: &Connection, now: &Now,
+               mut t: &transport::Transport): Result[Event] {
+    var guard = 0
+    while guard < 8 {
+        guard += 1
+        let ev = try parse::nextHead(&c.parser)
+        match ev {
+            HeadReady {
+                return installHead(c, now)
+            }
+            Error {
+                queueProtocolError(c, ev.status, now)
+                let out: Event = new ProtocolError{status: ev.status}
+                return ok(out)
+            }
+            Closed {
+                c.phase = P_CLOSING
+                let out: Event = new ConnectionClosed{}
+                return ok(out)
+            }
+            NeedRead {
+                let got = try readIntoParserOn(c, now, t)
+                if got == -1 {
+                    let evHead = try parse::nextHead(&c.parser)
+                    match evHead {
+                        Error {
+                            queueProtocolError(c, evHead.status, now)
+                            let out: Event = new ProtocolError{status: evHead.status}
+                            return ok(out)
+                        }
+                        HeadReady { return installHead(c, now) }
+                        NeedRead {
+                            let out: Event = new NeedRead{}
+                            return ok(out)
+                        }
+                        Closed {
+                            c.phase = P_CLOSING
+                            let out: Event = new ConnectionClosed{}
+                            return ok(out)
+                        }
+                        Failed {
+                            c.failed = true
+                            c.phase = P_CLOSING
+                            let out: Event = new ConnectionClosed{}
+                            return ok(out)
+                        }
+                        BodyData { }
+                        BodyEnd { }
+                    }
+                }
+                if got == -2 {
+                    let evHead = try parse::nextHead(&c.parser)
+                    match evHead {
+                        HeadReady { return installHead(c, now) }
+                        Error {
+                            queueProtocolError(c, evHead.status, now)
+                            let out: Event = new ProtocolError{status: evHead.status}
+                            return ok(out)
+                        }
+                        Closed {
+                            c.phase = P_CLOSING
+                            let out: Event = new ConnectionClosed{}
+                            return ok(out)
+                        }
+                        NeedRead {
+                            c.phase = P_CLOSING
+                            let out: Event = new ConnectionClosed{}
+                            return ok(out)
+                        }
+                        Failed {
+                            c.phase = P_CLOSING
+                            let out: Event = new ConnectionClosed{}
+                            return ok(out)
+                        }
+                        BodyData { }
+                        BodyEnd { }
+                    }
+                }
+                if got == -3 {
+                    let out: Event = new NeedWrite{}
+                    return ok(out)
+                }
+                if got == 0 {
+                    let out: Event = new NeedRead{}
+                    return ok(out)
+                }
+            }
+            Failed {
+                c.failed = true
+                c.phase = P_CLOSING
+                let out: Event = new ConnectionClosed{}
+                return ok(out)
+            }
+            BodyData { }
+            BodyEnd { }
+        }
+    }
+    // A bounded number of transport transfers per call; the caller re-enters
+    // on NeedRead. This is not an error.
+    let out: Event = new NeedRead{}
+    return ok(out)
+}
+
+fn closeWith(mut c: &Connection,
+             mut t: &transport::Transport): Result[bool]
+
+fn nextOn(mut c: &Connection, now: &Now,
+          mut t: &transport::Transport): Result[Event] {
+    if !c.deadlinesArmed {
+        c.deadlinesArmed = true
+        c.acceptDl = deadlineAt(now, c.limits.acceptTimeoutMs)
+        c.handshakeDl = deadlineAt(now, c.limits.handshakeTimeoutMs)
+    }
+    let kind = timeoutKind(c, now)
+    if kind != T_NONE {
+        let ev = handleTimeout(c, kind, now)
+        return ok(ev)
+    }
+    if c.phase == P_HANDSHAKING {
+        let step = try tHandshake(t)
+        match step {
+            StepDone {
+                c.completedHandshake = true
+                c.handshakeDl = forever()
+                c.phase = P_IDLE
+                c.idleDl = deadlineAt(now, c.limits.idleTimeoutMs)
+                let ev: Event = new HandshakeDone{}
+                return ok(ev)
+            }
+            StepWantRead {
+                let ev: Event = new NeedRead{}
+                return ok(ev)
+            }
+            StepWantWrite {
+                let ev: Event = new NeedWrite{}
+                return ok(ev)
+            }
+        }
+    }
+    if c.completedHandshake && !c.alpnAccepted {
+        return err("acceptAlpn must be called after HandshakeDone", invalidState())
+    }
+    if outputPending(c) {
+        let f = try flushOn(c, now, t)
+        match f {
+            Flushed { }
+            FlushWantRead {
+                let ev: Event = new NeedRead{}
+                return ok(ev)
+            }
+            FlushWantWrite {
+                let ev: Event = new NeedWrite{}
+                return ok(ev)
+            }
+        }
+    }
+    if c.phase == P_CLOSING {
+        let shut = try closeWith(c, t)
+        let ev: Event = new ConnectionClosed{}
+        return ok(ev)
+    }
+    if c.phase == P_IDLE || c.phase == P_READING_HEAD {
+        return driveHeadOn(c, now, t)
+    }
+    if c.phase == P_READING_BODY {
+        if !c.bodyComplete {
+            return err("next requires readBody while the request body is unread",
+                       invalidState())
+        }
+        if c.responseStarted {
+            if c.responseFinal {
+                if responseFinished(c) {
+                    let ev = completeResponse(c, now)
+                    return ok(ev)
+                }
+                let ev: Event = new NeedWrite{}
+                return ok(ev)
+            }
+            let ev: Event = new NeedRead{}
+            return ok(ev)
+        }
+        let ev: Event = new NeedRead{}
+        return ok(ev)
+    }
+    if c.phase == P_RESPONDING {
+        if c.responseFinal && responseFinished(c) {
+            let ev = completeResponse(c, now)
+            return ok(ev)
+        }
+        if c.responseFinal {
+            let ev: Event = new NeedWrite{}
+            return ok(ev)
+        }
+        let ev: Event = new NeedRead{}
+        return ok(ev)
+    }
+    if c.phase == P_DRAINING {
+        if c.bodyComplete {
+            let ev = completeResponse(c, now)
+            return ok(ev)
+        }
+        if c.closeAfter {
+            c.phase = P_CLOSING
+            c.idleDl = forever()
+            clearResponseDeadlines(c)
+            let ev: Event = new NeedWrite{}
+            return ok(ev)
+        }
+        return err("next requires readBody or discardBody while draining", invalidState())
+    }
+    return err("connection phase is invalid", invalidState())
+}
+
+pub fn next(mut c: &Connection, now: &Now): Result[Event] {
+    if c.phase == P_CLOSED {
+        let ev: Event = new ConnectionClosed{}
+        return ok(ev)
+    }
+    let t = replace(c.t, transport::empty())
+    let result = nextOn(c, now, &t)
+    c.t = t
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// Close
+// ---------------------------------------------------------------------------
+
+fn closeWith(mut c: &Connection,
+             mut t: &transport::Transport): Result[bool] {
+    if c.phase == P_CLOSED { return ok(false) }
+    c.phase = P_CLOSED
+    c.acceptDl = forever()
+    c.handshakeDl = forever()
+    c.headerDl = forever()
+    c.bodyDl = forever()
+    c.idleDl = forever()
+    clearResponseDeadlines(c)
+    return tClose(t)
+}
+
+pub fn close(mut c: &Connection): Result[bool] {
+    if c.phase == P_CLOSED { return ok(false) }
+    let t = replace(c.t, transport::empty())
+    let result = closeWith(c, &t)
+    c.t = t
+    return result
+}
+
+fn shutdownOn(mut c: &Connection, now: &Now,
+              mut t: &transport::Transport): Result[transport::ShutdownOutcome] {
+    if !c.bodyComplete {
+        return err("shutdown requires a complete request body", invalidState())
+    }
+    if c.responseStarted && !c.responseFinal {
+        return err("shutdown requires a completed response", invalidState())
+    }
+    let f = try flushOn(c, now, t)
+    match f {
+        Flushed { }
+        FlushWantRead {
+            let want: transport::ShutdownOutcome = new transport::ShutdownWantRead{}
+            return ok(want)
+        }
+        FlushWantWrite {
+            let want: transport::ShutdownOutcome = new transport::ShutdownWantWrite{}
+            return ok(want)
+        }
+    }
+    return tShutdown(t)
+}
+
+pub fn shutdownStep(mut c: &Connection, now: &Now): Result[transport::ShutdownOutcome] {
+    if c.phase == P_CLOSED {
+        let peer: transport::ShutdownOutcome = new transport::ShutdownPeerClosed{}
+        return ok(peer)
+    }
+    let t = replace(c.t, transport::empty())
+    let result = shutdownOn(c, now, &t)
+    c.t = t
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// Response API
+// ---------------------------------------------------------------------------
+
+fn responseUsable(c: &Connection): bool {
+    if !c.headReady { return false }
+    if c.phase == P_CLOSED || c.phase == P_CLOSING { return false }
+    if c.failed { return false }
+    return !c.responseFinal
+}
+
+fn markWriterClose(mut c: &Connection): Result[bool] {
+    let r = replace(c.response, write::emptyResponse())
+    let result = write::requestClose(&r)
+    c.response = r
+    return result
+}
+
+fn beginWriter(mut c: &Connection, status: int): Result[bool] {
+    let r = replace(c.response, write::emptyResponse())
+    let result = write::beginResponse(&r, status)
+    c.response = r
+    return result
+}
+
+fn beginWriterReason(mut c: &Connection, status: int,
+                     reason: string): Result[bool] {
+    let r = replace(c.response, write::emptyResponse())
+    let result = write::beginResponseWithReason(&r, status, reason)
+    c.response = r
+    return result
+}
+
+pub fn beginResponse(mut c: &Connection, status: int, now: &Now): Result[bool] {
+    if !responseUsable(c) { return err("response cannot begin", invalidState()) }
+    if c.responseStarted { return err("response has already begun", invalidState()) }
+    if c.expectContinue && c.hasBody && !c.bodyComplete && !c.continueSent {
+        c.closeAfter = true
+        c.earlyFinal = true
+    }
+    if c.closeAfter {
+        let closing = try markWriterClose(c)
+        if !closing { return err("could not set the close policy", core::ERR_INTERNAL) }
+    }
+    let began = try beginWriter(c, status)
+    c.responseStarted = true
+    c.phase = P_RESPONDING
+    c.lastStatus = status
+    return ok(began)
+}
+
+pub fn beginResponseWithReason(mut c: &Connection, status: int, reason: string,
+                               now: &Now): Result[bool] {
+    if !responseUsable(c) { return err("response cannot begin", invalidState()) }
+    if c.responseStarted { return err("response has already begun", invalidState()) }
+    if c.expectContinue && c.hasBody && !c.bodyComplete && !c.continueSent {
+        c.closeAfter = true
+        c.earlyFinal = true
+    }
+    if c.closeAfter {
+        let closing = try markWriterClose(c)
+        if !closing { return err("could not set the close policy", core::ERR_INTERNAL) }
+    }
+    let began = try beginWriterReason(c, status, reason)
+    c.responseStarted = true
+    c.phase = P_RESPONDING
+    c.lastStatus = status
+    return ok(began)
+}
+
+pub fn setHeader(mut c: &Connection, name: string, value: string): Result[bool] {
+    if !responseUsable(c) { return err("response headers are not writable", invalidState()) }
+    let r = replace(c.response, write::emptyResponse())
+    let result = write::setHeader(&r, name, value)
+    c.response = r
+    return result
+}
+
+pub fn setLength(mut c: &Connection, length: int): Result[bool] {
+    if !responseUsable(c) { return err("response framing is not writable", invalidState()) }
+    let r = replace(c.response, write::emptyResponse())
+    let result = write::setLength(&r, length)
+    c.response = r
+    return result
+}
+
+pub fn setTrailerNames(mut c: &Connection, names: &[]string): Result[bool] {
+    if !responseUsable(c) { return err("response trailers are not writable", invalidState()) }
+    let r = replace(c.response, write::emptyResponse())
+    let result = write::setTrailerNames(&r, names)
+    c.response = r
+    return result
+}
+
+pub fn addTrailer(mut c: &Connection, name: string, value: string): Result[bool] {
+    if !responseUsable(c) { return err("response trailers are not writable", invalidState()) }
+    let r = replace(c.response, write::emptyResponse())
+    let result = write::addTrailer(&r, name, value)
+    c.response = r
+    return result
+}
+
+fn noteWriteFailure(mut c: &Connection) {
+    c.failed = true
+    c.closeAfter = true
+    c.phase = P_CLOSING
+}
+
+pub fn writeBody(mut c: &Connection, bytes: &[]byte, offset: int,
+                 count: int): Result[int] {
+    if !c.responseStarted || c.responseFinal || c.failed {
+        return err("response body is not writable", invalidState())
+    }
+    let r = replace(c.response, write::emptyResponse())
+    let n = write::writeBody(&r, bytes, offset, count)
+    c.response = r
+    match n {
+        ok(value) { return ok(value) }
+        err(m, code) {
+            noteWriteFailure(c)
+            return err(m, code)
+        }
+    }
+}
+
+pub fn writeText(mut c: &Connection, text: string, offset: int,
+                 count: int): Result[int] {
+    if !c.responseStarted || c.responseFinal || c.failed {
+        return err("response body is not writable", invalidState())
+    }
+    let r = replace(c.response, write::emptyResponse())
+    let n = write::writeText(&r, text, offset, count)
+    c.response = r
+    match n {
+        ok(value) { return ok(value) }
+        err(m, code) {
+            noteWriteFailure(c)
+            return err(m, code)
+        }
+    }
+}
+
+pub fn endResponse(mut c: &Connection, now: &Now): Result[bool] {
+    if !c.responseStarted || c.failed {
+        return err("response has not begun", invalidState())
+    }
+    if c.responseFinal { return err("response is already complete", invalidState()) }
+    let r = replace(c.response, write::emptyResponse())
+    let done = write::endResponse(&r)
+    c.response = r
+    match done {
+        ok(value) {
+            observeCommit(c, now)
+            if value {
+                c.responseFinal = true
+                c.responseTotalDl = forever()
+            }
+            return ok(value)
+        }
+        err(m, code) {
+            noteWriteFailure(c)
+            return err(m, code)
+        }
+    }
+}
+
+pub fn requestClose(mut c: &Connection): Result[bool] {
+    if c.phase == P_CLOSED { return err("connection is closed", invalidState()) }
+    c.closeAfter = true
+    if c.phase == P_IDLE {
+        c.phase = P_CLOSING
+        c.idleDl = forever()
+        return ok(true)
+    }
+    if (c.responseStarted && !c.responseFinal) || (c.headReady && !c.responseStarted) {
+        return markWriterClose(c)
+    }
+    return ok(true)
+}
+
+pub fn closeAfterResponse(c: &Connection): bool {
+    return c.closeAfter
+}
+
+// ---------------------------------------------------------------------------
+// Request body
+// ---------------------------------------------------------------------------
+
+fn bodyOn(mut c: &Connection, max: int, now: &Now,
+          mut t: &transport::Transport): Result[BodyRead] {
+    if c.phase == P_CLOSED { return err("connection is closed", invalidState()) }
+    if c.phase == P_CLOSING { return err("connection is closing", invalidState()) }
+    if !c.headReady { return err("request head is not ready", invalidState()) }
+    if c.responseFinal {
+        return err("the final response is complete; the body can no longer be read",
+                   invalidState())
+    }
+    if c.earlyFinal {
+        return err("an early final response closed the request body path",
+                   invalidState())
+    }
+    if max <= 0 {
+        return err("readBody needs a positive maximum", invalidArgument())
+    }
+    let kind = timeoutKind(c, now)
+    if kind != T_NONE {
+        let ev = handleTimeout(c, kind, now)
+        return err("request timed out", c.lastStatus)
+    }
+    if c.bodyComplete {
+        if c.bodyEndSeen {
+            return err("request body is already complete", invalidState())
+        }
+        c.bodyEndSeen = true
+        let ev: BodyRead = new BodyEnd{}
+        return ok(ev)
+    }
+    if !c.bodyStarted {
+        c.bodyStarted = true
+        c.bodyDl = deadlineAt(now, c.limits.bodyIdleTimeoutMs)
+    }
+    if c.expectContinue && !c.continueSent && c.limits.autoContinue {
+        if parse::continueDue(&c.parser) {
+            let sent = try queueContinue(c)
+            if !sent {
+                return err("100-continue could not be queued", core::ERR_LIMIT_EXCEEDED)
+            }
+            let f = try flushOn(c, now, t)
+            match f {
+                Flushed { }
+                FlushWantRead {
+                    let out: BodyRead = new BodyNeedRead{}
+                    return ok(out)
+                }
+                FlushWantWrite {
+                    let out: BodyRead = new BodyNeedRead{}
+                    return ok(out)
+                }
+            }
+        }
+    }
+    var cap = max
+    let mt = tMaxTransfer(t)
+    if cap > mt { cap = mt }
+    var guard = 0
+    while guard < 4 {
+        guard += 1
+        let ev = try parse::readBody(&c.parser, cap)
+        match ev {
+            BodyData {
+                c.bodyDl = deadlineAt(now, c.limits.bodyIdleTimeoutMs)
+                c.bodyTotal += len(ev.bytes)
+                let bytes = new []byte(len(ev.bytes))
+                for i in 0..len(ev.bytes) { bytes[i] = ev.bytes[i] }
+                let out: BodyRead = new BodyData{bytes: bytes}
+                return ok(out)
+            }
+            BodyEnd {
+                c.bodyComplete = true
+                c.bodyEndSeen = true
+                c.bodyDl = forever()
+                let out: BodyRead = new BodyEnd{}
+                return ok(out)
+            }
+            NeedRead {
+                let got = try readIntoParserOn(c, now, t)
+                if got > 0 { continue }
+                let out: BodyRead = new BodyNeedRead{}
+                return ok(out)
+            }
+            Error {
+                queueProtocolError(c, ev.status, now)
+                return err("request body protocol error", ev.status)
+            }
+            Closed {
+                c.phase = P_CLOSING
+                return err("connection closed while reading the body", invalidState())
+            }
+            Failed {
+                c.phase = P_CLOSING
+                return err("request body parser failed", invalidState())
+            }
+            HeadReady { }
+        }
+    }
+    return err("request body parser returned an unexpected event", core::ERR_INTERNAL)
+}
+
+pub fn readBody(mut c: &Connection, max: int, now: &Now): Result[BodyRead] {
+    if c.phase == P_CLOSED { return err("connection is closed", invalidState()) }
+    let t = replace(c.t, transport::empty())
+    let result = bodyOn(c, max, now, &t)
+    c.t = t
+    return result
+}
+
+pub fn discardBody(mut c: &Connection, maxBytes: int, now: &Now): Result[bool] {
+    if maxBytes <= 0 {
+        return err("discardBody needs a positive byte cap", invalidArgument())
+    }
+    if c.bodyComplete { return ok(true) }
+    if c.responseFinal {
+        return err("the final response is complete; the body cannot be drained",
+                   invalidState())
+    }
+    if c.earlyFinal {
+        return err("an early final response closed the request body path",
+                   invalidState())
+    }
+    var drained = 0
+    var guard = 0
+    while guard < 16 && !c.bodyComplete && drained < maxBytes {
+        guard += 1
+        let r = try readBody(c, maxBytes - drained, now)
+        match r {
+            BodyData { drained += len(r.bytes) }
+            BodyEnd { return ok(true) }
+            BodyNeedRead { return ok(false) }
+        }
+    }
+    if c.bodyComplete { return ok(true) }
+    if drained >= maxBytes {
+        c.failed = true
+        c.closeAfter = true
+        c.phase = P_CLOSING
+        return err("discard cap was exceeded", core::ERR_LIMIT_EXCEEDED)
+    }
+    return ok(false)
+}
+
+pub fn sendContinue(mut c: &Connection): Result[bool] {
+    if c.phase == P_CLOSED || c.phase == P_CLOSING { return ok(false) }
+    if !c.headReady || !c.hasBody || !c.expectContinue { return ok(false) }
+    if c.responseStarted { return ok(false) }
+    if c.continueSent { return ok(true) }
+    if !parse::continueDue(&c.parser) { return ok(false) }
+    return queueContinue(c)
+}
+
+// ---------------------------------------------------------------------------
+// ALPN
+// ---------------------------------------------------------------------------
+
+fn checkAlpn(mut c: &Connection, mut t: &transport::Transport, secure: bool,
+             a: Result[transport::Alpn]): Result[bool]
+
+pub fn acceptAlpn(mut c: &Connection): Result[bool] {
+    if c.phase == P_CLOSED { return err("connection is closed", invalidState()) }
+    if !c.completedHandshake {
+        return err("the transport handshake has not completed", invalidState())
+    }
+    if c.alpnAccepted { return ok(true) }
+    let t = replace(c.t, transport::empty())
+    let secure = tSecure(t)
+    let a = tAlpn(t)
+    let result = checkAlpn(c, &t, secure, a)
+    c.t = t
+    return result
+}
+
+fn checkAlpn(mut c: &Connection, mut t: &transport::Transport, secure: bool,
+             a: Result[transport::Alpn]): Result[bool] {
+    let alpnValue = try a
+    var accepted = false
+    match alpnValue {
+        AlpnHttp11 { accepted = true }
+        AlpnNone {
+            if !secure || c.limits.allowNoAlpn { accepted = true }
+        }
+        AlpnH2 { accepted = false }
+        AlpnOther { accepted = false }
+    }
+    if !accepted {
+        c.closeAfter = true
+        c.phase = P_CLOSING
+        let shut = try closeWith(c, t)
+        return err("negotiated protocol is not HTTP/1.1", unsupportedCode())
+    }
+    c.alpnAccepted = true
+    return ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// Interest
+// ---------------------------------------------------------------------------
+
+fn readWanted(c: &Connection, w: &transport::Want): bool {
+    var want = false
+    if c.phase == P_HANDSHAKING || c.phase == P_IDLE ||
+       c.phase == P_READING_HEAD || c.phase == P_READING_BODY {
+        want = true
+    }
+    if c.hasBody && !c.bodyComplete && !c.responseFinal { want = true }
+    match w {
+        WantRead { want = true }
+        WantReadWrite { want = true }
+        WantNone { }
+        WantWrite { }
+    }
+    return want
+}
+
+fn writeWanted(c: &Connection, w: &transport::Want, p: int): bool {
+    var want = outputPending(c) || p > 0
+    match w {
+        WantWrite { want = true }
+        WantReadWrite { want = true }
+        WantNone { }
+        WantRead { }
+    }
+    return want
+}
+
+pub fn wantsRead(mut c: &Connection): Result[bool] {
+    if c.phase == P_CLOSED { return ok(false) }
+    let t = replace(c.t, transport::empty())
+    let w = tWant(t)
+    c.t = t
+    let value = try w
+    return ok(readWanted(c, &value))
+}
+
+pub fn wantsWrite(mut c: &Connection): Result[bool] {
+    if c.phase == P_CLOSED { return ok(false) }
+    let t = replace(c.t, transport::empty())
+    let p = tPending(t)
+    let w = tWant(t)
+    c.t = t
+    let pendingBytes = try p
+    let value = try w
+    return ok(writeWanted(c, &value, pendingBytes))
+}

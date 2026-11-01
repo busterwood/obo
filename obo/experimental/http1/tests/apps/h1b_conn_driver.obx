@@ -1,0 +1,856 @@
+// H1b deterministic connection driver. Not public API.
+import "http1core.obx" as core
+import "http1conn.obx" as conn
+import "http1transport.obx" as tr
+import "sysclock.obx" as clock
+
+fn mk(s: string): []byte {
+    let out = new []byte(len(s))
+    for i in 0..len(s) { out[i] = s[i] }
+    return out
+}
+
+fn hexBytes(b: &[]byte): string {
+    let digits = "0123456789abcdef"
+    var out = new []byte(0)
+    for i in 0..len(b) {
+        let v = int(b[i])
+        append(out, digits[(v / 16) % 16])
+        append(out, digits[v % 16])
+    }
+    return string(out)
+}
+
+fn nowAt(ms: int): conn::Now {
+    return new conn::Now{mono: new clock::Instant{nanos: ms * 1000000},
+                         wall: new clock::Timestamp{seconds: 0, nanos: 0}}
+}
+
+fn evName(e: &conn::Event): string {
+    match e {
+        HandshakeDone { return "handshake" }
+        NeedRead { return "needread" }
+        NeedWrite { return "needwrite" }
+        HeadReady { return "head" }
+        ResponseComplete { return "complete" }
+        TimedOut { return "timedout" }
+        ProtocolError { return "protocol:" + string(e.status) }
+        ConnectionClosed { return "closed" }
+    }
+}
+
+fn phaseName(p: &conn::Phase): string {
+    match p {
+        Handshaking { return "handshaking" }
+        Idle { return "idle" }
+        ReadingHead { return "readinghead" }
+        ReadingBody { return "readingbody" }
+        Responding { return "responding" }
+        Draining { return "draining" }
+        Closing { return "closing" }
+        Closed { return "closed" }
+    }
+}
+
+fn flushName(f: &conn::FlushOutcome): string {
+    match f {
+        Flushed { return "flushed" }
+        FlushWantRead { return "wantread" }
+        FlushWantWrite { return "wantwrite" }
+    }
+}
+
+fn bodyName(b: &conn::BodyRead): string {
+    match b {
+        BodyData { return "data:" + hexBytes(&b.bytes) }
+        BodyEnd { return "end" }
+        BodyNeedRead { return "needread" }
+    }
+}
+
+fn show(r: Result[conn::Event]) {
+    match r {
+        ok(e) { println("EV ", evName(&e)) }
+        err(m, c) { println("ERR ", c, " ", m) }
+    }
+}
+
+fn showFlush(r: Result[conn::FlushOutcome]) {
+    match r {
+        ok(f) { println("FL ", flushName(&f)) }
+        err(m, c) { println("FERR ", c) }
+    }
+}
+
+fn showBody(r: Result[conn::BodyRead]) {
+    match r {
+        ok(b) { println("BD ", bodyName(&b)) }
+        err(m, c) { println("BERR ", c, " ", m) }
+    }
+}
+
+fn out(mut c: &conn::Connection) {
+    let r = conn::memoryOutput(c)
+    match r {
+        ok(b) { println("OUT ", hexBytes(&b)) }
+        err(m, code) { println("OUTERR ", code) }
+    }
+    let cl = conn::memoryClearOutput(c)
+    match cl { ok(v) { } err(m, c2) { } }
+}
+
+fn setup(req: string): Result[conn::Connection] {
+    let bytes = mk(req)
+    let t = tr::memory(&bytes)
+    let lim = core::defaultLimits()
+    let c = try conn::make(t, &lim)
+    let w = try conn::memorySetWriteLimit(c, 65536)
+    return ok(c)
+}
+
+fn setupSmall(req: string): Result[conn::Connection] {
+    let bytes = mk(req)
+    let t = tr::memory(&bytes)
+    var lim = core::defaultLimits()
+    lim.maxStartLine = 256
+    lim.maxTarget = 128
+    lim.maxHeaderBytes = 512
+    lim.maxHeaderCount = 5
+    lim.maxHeaderLine = 256
+    lim.maxBody = 16
+    lim.maxChunkLine = 64
+    lim.maxChunkSize = 16
+    lim.maxChunkCount = 5
+    lim.maxChunkMetadata = 128
+    lim.maxTrailerBytes = 64
+    lim.maxTrailerCount = 2
+    lim.maxResponseHeaderBytes = 256
+    lim.maxResponseBuffer = 256
+    lim.maxResponseTrailerCount = 2
+    lim.maxResponseTrailerBytes = 64
+    lim.maxPipelineBytes = 512
+    lim.maxRequests = 2
+    let c = try conn::make(t, &lim)
+    let w = try conn::memorySetWriteLimit(c, 65536)
+    return ok(c)
+}
+
+fn start(mut c: &conn::Connection, now: &conn::Now): bool {
+    let e1 = conn::next(c, now)
+    match e1 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+    let a = conn::acceptAlpn(c)
+    match a { ok(v) { println("ALPN ", v) } err(m, code) { println("ALPNERR ", code) } }
+    var guard = 0
+    while guard < 200 {
+        guard += 1
+        let e2 = conn::next(c, now)
+        match e2 {
+            ok(ev) {
+                println("EV ", evName(&ev))
+                match ev {
+                    NeedRead { }
+                    NeedWrite { }
+                    HeadReady { return true }
+                    HandshakeDone { }
+                    ResponseComplete { return true }
+                    TimedOut { return true }
+                    ProtocolError { return true }
+                    ConnectionClosed { return true }
+                }
+            }
+            err(m, code) { println("ERR ", code, " ", m); return true }
+        }
+    }
+    return true
+}
+
+fn respondText(mut c: &conn::Connection, text: string, length: bool, now: &conn::Now) {
+    let b1 = conn::beginResponse(c, 200, now)
+    match b1 { ok(v) { } err(m, code) { println("BEGERR ", code) } }
+    if length {
+        let s = conn::setLength(c, len(text))
+        match s { ok(v) { } err(m, code) { println("LENERR ", code) } }
+    }
+    let w = conn::writeText(c, text, 0, len(text))
+    match w { ok(n) { println("WR ", n) } err(m, code) { println("WERR ", code) } }
+    let e = conn::endResponse(c, now)
+    match e { ok(v) { println("END ", v) } err(m, code) { println("EERR ", code) } }
+    var guard = 0
+    while guard < 200 {
+        guard += 1
+        let f = conn::flush(c, now)
+        match f {
+            ok(fl) {
+                match fl {
+                    Flushed {
+                        println("FL flushed")
+                        break
+                    }
+                    FlushWantRead { println("FL wantread") }
+                    FlushWantWrite { println("FL wantwrite") }
+                }
+            }
+            err(m, code) { println("FERR ", code); break }
+        }
+    }
+    out(c)
+}
+
+fn modeBasic() {
+    let made = setup("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let info = conn::requestInfo(c)
+            match info { ok(i) { println("REQ ", i.method, " ", i.path) } err(m, code) { } }
+            let ct = conn::setHeader(c, "Content-Type", "text/plain")
+            match ct { ok(v) { } err(m, code) { println("HERR ", code) } }
+            respondText(c, "hello", true, &now)
+            let e3 = conn::next(c, &now)
+            match e3 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let p = conn::phase(c)
+            println("PH ", phaseName(&p))
+            println("N ", conn::requestCount(c))
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeKeepalive() {
+    let made = setup("GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            respondText(c, "A", true, &now)
+            let e3 = conn::next(c, &now)
+            match e3 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let e4 = conn::next(c, &now)
+            match e4 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let info = conn::requestInfo(c)
+            match info { ok(i) { println("REQ2 ", i.path) } err(m, code) { } }
+            respondText(c, "B", true, &now)
+            let e5 = conn::next(c, &now)
+            match e5 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            println("N ", conn::requestCount(c))
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeHead() {
+    let made = setup("HEAD /x HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let b = conn::beginResponse(c, 200, &now)
+            let l = conn::setLength(c, 5)
+            match l { ok(v) { } err(m, code) { println("LENERR ", code) } }
+            let w = conn::writeText(c, "hello", 0, 5)
+            match w { ok(n) { println("WR ", n) } err(m, code) { println("WERR ", code) } }
+            let e = conn::endResponse(c, &now)
+            match e { ok(v) { println("END ", v) } err(m, code) { println("EERR ", code) } }
+            showFlush(conn::flush(c, &now))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeFixed() {
+    let made = setup("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            showBody(conn::readBody(c, 3, &now))
+            showBody(conn::readBody(c, 10, &now))
+            showBody(conn::readBody(c, 10, &now))
+            respondText(c, "ok", true, &now)
+            let e = conn::next(c, &now)
+            match e { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeChunked() {
+    let made = setup("POST /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            showBody(conn::readBody(c, 10, &now))
+            showBody(conn::readBody(c, 10, &now))
+            respondText(c, "ok", true, &now)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeContinue() {
+    let made = setup("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            out(c)
+            showBody(conn::readBody(c, 5, &now))
+            out(c)
+            let more = mk("hello")
+            let a = conn::memoryAppendInput(c, &more)
+            showBody(conn::readBody(c, 5, &now))
+            showBody(conn::readBody(c, 5, &now))
+            respondText(c, "ok", true, &now)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeContinueEarlyFinal() {
+    let made = setup("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let b = conn::beginResponse(c, 413, &now)
+            match b { ok(v) { } err(m, code) { println("BEGERR ", code) } }
+            let e = conn::endResponse(c, &now)
+            match e { ok(v) { println("END ", v) } err(m, code) { println("EERR ", code) } }
+            showFlush(conn::flush(c, &now))
+            out(c)
+            println("CLOSE ", conn::closeAfterResponse(c))
+            showBody(conn::readBody(c, 5, &now))
+            let e2 = conn::next(c, &now)
+            match e2 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeUnread() {
+    let made = setup("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhelloGET /y HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            respondText(c, "ok", true, &now)
+            let e = conn::next(c, &now)
+            match e { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            println("N ", conn::requestCount(c))
+            let rc = conn::requestClose(c)
+            match rc { ok(v) { println("RC ", v) } err(m, code) { println("RCERR ", code) } }
+            let e2 = conn::next(c, &now)
+            match e2 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            println("N2 ", conn::requestCount(c))
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeLimits() {
+    let made = setupSmall("GET / HTTP/1.1\r\nHost: x\r\nX-A: a\r\nX-B: b\r\nX-C: c\r\nX-D: d\r\nX-E: e\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeBigBody() {
+    let made = setupSmall("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 17\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeInjection() {
+    let made = setup("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let h = conn::setHeader(c, "X-Test", "a\r\nInjected: yes")
+            match h { ok(v) { println("H ", v) } err(m, code) { println("HERR ", code) } }
+            let h2 = conn::setHeader(c, "Content-Length", "9")
+            match h2 { ok(v) { println("H2 ", v) } err(m, code) { println("H2ERR ", code) } }
+            respondText(c, "ok", true, &now)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeBackpressure() {
+    let made = setupSmall("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let b = conn::beginResponse(c, 200, &now)
+            let s = conn::setLength(c, 400)
+            let w1 = conn::writeText(c, "x", 0, 1)
+            match w1 { ok(n) { println("W1 ", n) } err(m, code) { println("W1ERR ", code) } }
+            let w2 = conn::writeText(c, "x", 0, 1)
+            match w2 { ok(n) { println("W2 ", n) } err(m, code) { println("W2ERR ", code) } }
+            let e = conn::endResponse(c, &now)
+            match e { ok(v) { println("END ", v) } err(m, code) { println("EERR ", code) } }
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeTimeoutHeader() {
+    let made = setup("GET / HTTP/1.1\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            let e1 = conn::next(c, &now)
+            match e1 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let a = conn::acceptAlpn(c)
+            let e2 = conn::next(c, &now)
+            match e2 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let late = nowAt(20000)
+            let e3 = conn::next(c, &late)
+            match e3 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            showFlush(conn::flush(c, &late))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeTimeoutAccept() {
+    let made = setup("")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            let e1 = conn::next(c, &now)
+            match e1 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let a = conn::acceptAlpn(c)
+            let late = nowAt(20000)
+            let e2 = conn::next(c, &late)
+            match e2 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let p = conn::phase(c)
+            println("PH ", phaseName(&p))
+            let e3 = conn::next(c, &late)
+            match e3 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeH2() {
+    let bytes = mk("")
+    let t = tr::memory(&bytes)
+    let lim = core::defaultLimits()
+    let made = conn::make(t, &lim)
+    match made {
+        ok(c) {
+            let h2 = new tr::AlpnH2{}
+            let s = conn::memorySetAlpn(c, &h2)
+            let sec = conn::memorySetSecure(c, true)
+            let now = nowAt(1)
+            let e1 = conn::next(c, &now)
+            match e1 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let a = conn::acceptAlpn(c)
+            match a { ok(v) { println("ALPN ", v) } err(m, code) { println("ALPNERR ", code) } }
+            let n = conn::next(c, &now)
+            match n { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeAlpnRequired() {
+    let made = setup("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            let e1 = conn::next(c, &now)
+            match e1 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let e2 = conn::next(c, &now)
+            match e2 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeClose() {
+    let made = setup("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let a = conn::close(c)
+            match a { ok(v) { println("C1 ", v) } err(m, code) { println("C1ERR ", code) } }
+            let b = conn::close(c)
+            match b { ok(v) { println("C2 ", v) } err(m, code) { println("C2ERR ", code) } }
+            let mc = conn::memoryClosed(c)
+            match mc { ok(v) { println("MC ", v) } err(m, code) { } }
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+
+fn setupHttp10(req: string): Result[conn::Connection] {
+    let bytes = mk(req)
+    let t = tr::memory(&bytes)
+    var lim = core::defaultLimits()
+    lim.allowHttp10 = true
+    let c = try conn::make(t, &lim)
+    let w = try conn::memorySetWriteLimit(c, 65536)
+    return ok(c)
+}
+
+fn setupNoPipe(req: string): Result[conn::Connection] {
+    let bytes = mk(req)
+    let t = tr::memory(&bytes)
+    var lim = core::defaultLimits()
+    lim.pipelining = false
+    let c = try conn::make(t, &lim)
+    let w = try conn::memorySetWriteLimit(c, 65536)
+    return ok(c)
+}
+
+fn setupMaxReq1(req: string): Result[conn::Connection] {
+    let bytes = mk(req)
+    let t = tr::memory(&bytes)
+    var lim = core::defaultLimits()
+    lim.maxRequests = 1
+    let c = try conn::make(t, &lim)
+    let w = try conn::memorySetWriteLimit(c, 65536)
+    return ok(c)
+}
+
+fn setupXfer4(req: string): Result[conn::Connection] {
+    let bytes = mk(req)
+    let t = tr::memory(&bytes)
+    let lim = core::defaultLimits()
+    let c = try conn::make(t, &lim)
+    let w = try conn::memorySetWriteLimit(c, 65536)
+    let x = try conn::memorySetReadLimit(c, 3)
+    let m = try conn::memorySetWriteLimit(c, 4)
+    return ok(c)
+}
+
+fn showErrPage(req: string, small: bool) {
+    var made: Result[conn::Connection] = setup(req)
+    if small { made = setupSmall(req) }
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            let e1 = conn::next(c, &now)
+            match e1 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let a = conn::acceptAlpn(c)
+            match a { ok(v) { } err(m, code) { println("ALPNERR ", code) } }
+            let e2 = conn::next(c, &now)
+            match e2 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            showFlush(conn::flush(c, &now))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeErrors() {
+    showErrPage("BAD\r\n\r\n", false)
+    showErrPage("GET /" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HHTP/1.1\r\nHost: x\r\n\r\n", true)
+    showErrPage("GET / HTTP/1.1\r\nHost: x\r\nA: 1\r\nB: 2\r\nC: 3\r\nD: 4\r\nE: 5\r\n\r\n", true)
+    showErrPage("TRACE / HTTP/1.1\r\nHost: x\r\n\r\n", false)
+    showErrPage("GET / HTTP/2.0\r\nHost: x\r\n\r\n", false)
+    showErrPage("GET / HTTP/1.1\r\nHost: x\r\nExpect: something\r\n\r\n", false)
+    showErrPage("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 17\r\n\r\n", true)
+}
+
+fn modeRules() {
+    let made = setup("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let b = conn::beginResponse(c, 204, &now)
+            let l = conn::setLength(c, 5)
+            match l { ok(v) { println("L204 ", v) } err(m, code) { println("L204ERR ", code) } }
+            let e = conn::endResponse(c, &now)
+            match e { ok(v) { println("E204 ", v) } err(m, code) { println("E204ERR ", code) } }
+            showFlush(conn::flush(c, &now))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+    let made2 = setup("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made2 {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let b = conn::beginResponse(c, 304, &now)
+            let l = conn::setLength(c, 9)
+            let e = conn::endResponse(c, &now)
+            match e { ok(v) { println("E304 ", v) } err(m, code) { println("E304ERR ", code) } }
+            showFlush(conn::flush(c, &now))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeTrailers() {
+    let made = setup("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let names = new []string(0)
+            append(names, "X-Sum")
+            let st = conn::setTrailerNames(c, &names)
+            match st { ok(v) { } err(m, code) { println("TERR ", code) } }
+            let b = conn::beginResponse(c, 200, &now)
+            let w = conn::writeText(c, "abc", 0, 3)
+            let t = conn::addTrailer(c, "X-Sum", "1")
+            match t { ok(v) { println("TRAILER ", v) } err(m, code) { println("TRAILERERR ", code) } }
+            let e = conn::endResponse(c, &now)
+            match e { ok(v) { println("ET ", v) } err(m, code) { println("ETERR ", code) } }
+            showFlush(conn::flush(c, &now))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeHttp10() {
+    let made = setupHttp10("GET / HTTP/1.0\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            respondText(c, "old", false, &now)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeNoPipe() {
+    let made = setupNoPipe("GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            respondText(c, "A", true, &now)
+            let e = conn::next(c, &now)
+            match e { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            showFlush(conn::flush(c, &now))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeMaxReq1() {
+    let made = setupMaxReq1("GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            respondText(c, "A", true, &now)
+            let e = conn::next(c, &now)
+            match e { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let e2 = conn::next(c, &now)
+            match e2 { ok(ev) { println("EV2 ", evName(&ev)) } err(m, code) { println("ERR2 ", code, " ", m) } }
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeTimeoutBody() {
+    let made = setup("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhe")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            showBody(conn::readBody(c, 5, &now))
+            let late = nowAt(40000)
+            showBody(conn::readBody(c, 5, &late))
+            showFlush(conn::flush(c, &late))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeIdleTimeout() {
+    let made = setup("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            respondText(c, "ok", true, &now)
+            let e = conn::next(c, &now)
+            match e { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
+            let late = nowAt(70000)
+            let e2 = conn::next(c, &late)
+            match e2 { ok(ev) { println("EV2 ", evName(&ev)) } err(m, code) { println("ERR2 ", code, " ", m) } }
+            let p = conn::phase(c)
+            println("PH ", phaseName(&p))
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeXfer() {
+    let made = setupXfer4("GET /this-is-a-long-path HTTP/1.1\r\nHost: x\r\nX-Long: 0123456789abcdef\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            respondText(c, "0123456789", true, &now)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeNoAlpnForbidden() {
+    let bytes = mk("")
+    let t = tr::memory(&bytes)
+    var lim = core::defaultLimits()
+    lim.allowNoAlpn = false
+    let made = conn::make(t, &lim)
+    match made {
+        ok(c) {
+            let sec = conn::memorySetSecure(c, true)
+            let now = nowAt(1)
+            let e1 = conn::next(c, &now)
+            match e1 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code) } }
+            let a = conn::acceptAlpn(c)
+            match a { ok(v) { println("ALPN ", v) } err(m, code) { println("ALPNERR ", code) } }
+            let n = conn::next(c, &now)
+            match n { ok(ev) { println("EV2 ", evName(&ev)) } err(m, code) { println("ERR2 ", code) } }
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+
+fn modeEndFalse() {
+    let made = setupSmall("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let names = new []string(0)
+            append(names, "X-Long")
+            let st = conn::setTrailerNames(c, &names)
+            let b = conn::beginResponse(c, 200, &now)
+            var guard = 0
+            while guard < 50 {
+                guard += 1
+                let w = conn::writeText(c, "0123456789abcdef", 0, 16)
+                match w {
+                    ok(n) { if n == 0 { break } }
+                    err(m, code) { println("WERR ", code); break }
+                }
+            }
+            let t = conn::addTrailer(c, "X-Long", "0123456789012345678901234567890123456789")
+            match t { ok(v) { println("TRAILER ", v) } err(m, code) { println("TRAILERERR ", code) } }
+            let e1 = conn::endResponse(c, &now)
+            match e1 { ok(v) { println("END1 ", v) } err(m, code) { println("END1ERR ", code) } }
+            showFlush(conn::flush(c, &now))
+            let e2 = conn::endResponse(c, &now)
+            match e2 { ok(v) { println("END2 ", v) } err(m, code) { println("END2ERR ", code) } }
+            showFlush(conn::flush(c, &now))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+
+fn setupNoAuto(req: string): Result[conn::Connection] {
+    let bytes = mk(req)
+    let t = tr::memory(&bytes)
+    var lim = core::defaultLimits()
+    lim.autoContinue = false
+    let c = try conn::make(t, &lim)
+    let w = try conn::memorySetWriteLimit(c, 65536)
+    return ok(c)
+}
+
+fn modeDiscard() {
+    let made = setup("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let d = conn::discardBody(c, 1000, &now)
+            match d { ok(v) { println("DISCARD ", v) } err(m, code) { println("DISCARDERR ", code) } }
+            respondText(c, "ok", true, &now)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn modeManualContinue() {
+    let made = setupNoAuto("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            showBody(conn::readBody(c, 5, &now))
+            out(c)
+            let sc = conn::sendContinue(c)
+            match sc { ok(v) { println("SENDCONT ", v) } err(m, code) { println("SENDCONT ", code) } }
+            showFlush(conn::flush(c, &now))
+            out(c)
+            let more = mk("hello")
+            let a = conn::memoryAppendInput(c, &more)
+            showBody(conn::readBody(c, 5, &now))
+            showBody(conn::readBody(c, 5, &now))
+            respondText(c, "ok", true, &now)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+fn main() {
+    let args = args()
+    var mode = "basic"
+    if len(args) > 1 { mode = args[1] }
+    if mode == "basic" { modeBasic() }
+    if mode == "keepalive" { modeKeepalive() }
+    if mode == "head" { modeHead() }
+    if mode == "fixed" { modeFixed() }
+    if mode == "chunked" { modeChunked() }
+    if mode == "continue" { modeContinue() }
+    if mode == "continue_early" { modeContinueEarlyFinal() }
+    if mode == "unread" { modeUnread() }
+    if mode == "limits" { modeLimits() }
+    if mode == "bigbody" { modeBigBody() }
+    if mode == "injection" { modeInjection() }
+    if mode == "backpressure" { modeBackpressure() }
+    if mode == "timeout_header" { modeTimeoutHeader() }
+    if mode == "timeout_accept" { modeTimeoutAccept() }
+    if mode == "h2" { modeH2() }
+    if mode == "alpn_required" { modeAlpnRequired() }
+    if mode == "close" { modeClose() }
+    if mode == "errors" { modeErrors() }
+    if mode == "rules" { modeRules() }
+    if mode == "trailers" { modeTrailers() }
+    if mode == "http10" { modeHttp10() }
+    if mode == "nopipe" { modeNoPipe() }
+    if mode == "maxreq1" { modeMaxReq1() }
+    if mode == "timeout_body" { modeTimeoutBody() }
+    if mode == "idle_timeout" { modeIdleTimeout() }
+    if mode == "xfer" { modeXfer() }
+    if mode == "noalpn" { modeNoAlpnForbidden() }
+    if mode == "endfalse" { modeEndFalse() }
+    if mode == "discard" { modeDiscard() }
+    if mode == "manual_continue" { modeManualContinue() }
+}
