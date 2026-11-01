@@ -1635,6 +1635,7 @@ type Sym = ref record {
     pureMember: bool          // ifn: an interface member declared pure (its summary is pfree 0; the tier check reads this)
     home: int                 // an int or bool local held in this register (r12 to r15) instead of a stack slot, or -1
     recv: ^Type               // a method's receiver type; tVoid for a plain function
+    native: bool              // fn: a body-less `native fn` declaration (its call has no obo body)
 }
 
 // A reference local's binding, on one path: what it may point into. Its roots are owned locals,
@@ -1783,9 +1784,11 @@ type FnRec = ref record {
 // future object emitter would turn into .rela.text. Not part of .sym and not a stable ABI.
 type NativeReloc = ref record {
     off: int                  // offset of the rel32 field from CODE_BASE
-    sym: string               // C symbol before the generated obo_native_ prefix
+    sym: string               // sidecar name: the C symbol for a call, the obo name for a native fn
     nargs: int                // call-site arguments; the tool checks this against the spec
-    kinds: string             // the argument-kind descriptor (stage (a)); "" for the int form
+    kinds: string             // call: the kind descriptor (stage (a)); "" for the int form. fn: the shapes
+    mode: string              // "call" (__cinterop) or "fn" (a typed native fn call, stage (c))
+    retShape: string          // "i64", "void", "bytes" or "optbytes" (sidecar v2, stage (b)/(c))
 }
 
 var nativeRelocs = new []NativeReloc(0)
@@ -1816,7 +1819,7 @@ var symArena = new []Sym(0)            // owns every symbol; the rest of the com
 
 fn newSym(kind: string, name: string, t: ?^Type): ^Sym {
     append(symArena, new Sym{kind: kind, name: name, typ: t, bind: noBind, addr: -1, fnRec: noFnRec,
-                   ret: tVoid, line: -1, home: -1, recv: tVoid})
+                   ret: tVoid, line: -1, home: -1, recv: tVoid, native: false})
     return handle(symArena[len(symArena) - 1])
 }
 
@@ -7359,6 +7362,7 @@ fn conversion(t: ^Type): Item {
 // build tool can reject a direct or tampered call whose signature does not match the spec.
 fn nativeKindCall(cname: string, desc: string): Item
 fn nativeIntCall(cname: string, first: bool): Item
+fn nativeFnCall(f: ^Sym): Item
 
 fn nativeCall(): Item {
     if checking { error("__cinterop is not supported in --check: native calls need the typed sidecar and link step") }
@@ -7424,7 +7428,8 @@ fn nativeIntCall(cname: string, first: bool): Item {
     emit(0xE8)
     let at = pc()
     emit32(0)
-    append(nativeRelocs, new NativeReloc{off: at, sym: cname, nargs: n})
+    append(nativeRelocs, new NativeReloc{off: at, sym: cname, nargs: n,
+                                         mode: "call", retShape: "i64"})
     if n > 0 || pad != 0 {
         aluRI(0, RSP, 8 * n + pad)
         depth -= 8 * n + pad
@@ -7536,8 +7541,21 @@ fn kindWords(kd: &NativeKind): int {
     return 1
 }
 
+fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: string,
+                  shapeText: string, retShape: string, retType: ^Type, declaredArgs: int,
+                  firstArgReady: bool): Item
+
 fn nativeKindCall(cname: string, desc: string): Item {
-    let ks = parseKinds(desc)
+    return nativeCallCore(cname, parseKinds(desc), "__cinterop " + cname, "call", desc, "i64", tInt, -1, false)
+}
+
+// The shared call machinery for __cinterop (call mode) and body-less native fn calls (fn mode).
+// recName is the sidecar name, display the error prefix, shapeText the sidecar shapes/kinds field,
+// retShape the sidecar result shape, retType the obo type of the result (tVoid for a void result),
+// and declaredArgs the sidecar arity (-1: the number of descriptor entries, as for __cinterop).
+fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: string,
+                  shapeText: string, retShape: string, retType: ^Type, declaredArgs: int,
+                  firstArgReady: bool): Item {
     var m = 0
     for i in 0..len(ks) {
         if ks[i].arg >= m { m = ks[i].arg + 1 }
@@ -7547,19 +7565,19 @@ fn nativeKindCall(cname: string, desc: string): Item {
     for i in 0..len(ks) {
         let kd = &ks[i]
         if kd.arg >= 0 && !(kd.name == "ints" && kd.flag == "len") {
-            if dataOf[kd.arg] >= 0 { error("__cinterop " + cname + ": argument " + string(kd.arg) + " has two kinds") }
+            if dataOf[kd.arg] >= 0 { error(display + ": argument " + string(kd.arg) + " has two kinds") }
             dataOf[kd.arg] = i
         }
     }
     for k in 0..m {
-        if dataOf[k] < 0 { error("__cinterop " + cname + ": argument " + string(k) + " has no kind") }
+        if dataOf[k] < 0 { error(display + ": argument " + string(k) + " has no kind") }
     }
     for i in 0..len(ks) {
         let kd = &ks[i]
         if kd.name == "ints" && kd.flag == "len" {
             let dn = ks[dataOf[kd.arg]].name
             if dn != "ints" && dn != "nil_bytes_list" {
-                error("__cinterop " + cname + ": ints:len counts a list, and argument " + string(kd.arg) + " is not one")
+                error(display + ": ints:len counts a list, and argument " + string(kd.arg) + " is not one")
             }
         }
     }
@@ -7577,8 +7595,12 @@ fn nativeKindCall(cname: string, desc: string): Item {
     var deepLine = 0
     var deepCol = 0
     for k in 0..m {
-        if sym != T_COMMA { error("__cinterop " + cname + " takes " + string(m) + " argument(s), not " + string(k)) }
-        next()
+        if k == 0 && firstArgReady {
+            // a native fn call leaves the scanner on its first argument (nameItem did not read '(')
+        } else {
+            if sym != T_COMMA { error(display + " takes " + string(m) + " argument(s), not " + string(k)) }
+            next()
+        }
         let argLine = tline
         let argCol = tcol
         var a = nestedExpr()
@@ -7586,18 +7608,18 @@ fn nativeKindCall(cname: string, desc: string): Item {
         let isArr = a.typ.kind == "array"
         if kn == "borrow_bytes" || kn == "borrow_cstr" {
             if a.typ.kind == "string" {
-                if a.mode == "reg" { error("__cinterop " + cname + ": store this string in a variable first: a native call only borrows it") }
+                if a.mode == "reg" { error(display + ": store this string in a variable first: a native call only borrows it") }
             } else if !(isArr && baseOf(a.typ).kind == "byte") {
-                error("__cinterop " + cname + ": argument " + string(k + 1) + " needs a []byte or a string, not " + tname(a.typ))
+                error(display + ": argument " + string(k + 1) + " needs a []byte or a string, not " + tname(a.typ))
             }
         } else if kn == "ints" {
-            if !(isArr && baseOf(a.typ).kind == "int") { error("__cinterop " + cname + ": argument " + string(k + 1) + " needs a []int, not " + tname(a.typ)) }
+            if !(isArr && baseOf(a.typ).kind == "int") { error(display + ": argument " + string(k + 1) + " needs a []int, not " + tname(a.typ)) }
         } else if kn == "nil_bytes_list" {
             if !(isArr && baseOf(a.typ).kind == "opt" && baseOf(baseOf(a.typ)).kind == "array" && baseOf(baseOf(baseOf(a.typ))).kind == "byte") {
-                error("__cinterop " + cname + ": argument " + string(k + 1) + " needs a []?[]byte, not " + tname(a.typ))
+                error(display + ": argument " + string(k + 1) + " needs a []?[]byte, not " + tname(a.typ))
             }
         } else if !isInt(a.typ) {
-            error("__cinterop " + cname + ": argument " + string(k + 1) + " must be int, not " + tname(a.typ))
+            error(display + ": argument " + string(k + 1) + " must be int, not " + tname(a.typ))
         }
         if isArr {
             let b = borrowBind(a)
@@ -7605,27 +7627,27 @@ fn nativeKindCall(cname: string, desc: string): Item {
                 deepLine = argLine
                 deepCol = argCol
             }
-            argOrderCheck(tbase, cname, false, k, argLine, argCol)
+            argOrderCheck(tbase, recName, false, k, argLine, argCol)
             append(argBinds, b)
             holdArg(b, k, false)
         }
         append(args, a)
     }
-    if sym != T_RPAREN { error("__cinterop " + cname + " takes " + string(m) + " argument(s), not more") }
+    if sym != T_RPAREN { error(display + " takes " + string(m) + " argument(s), not more") }
     expect(T_RPAREN, "")
     releaseArgs(tbase, omark)
     if deepLine > 0 {
-        errorAt("cannot pass a reference that points inside something to __cinterop " + cname + ": a native call writes through a handle, which could free it", deepLine, deepCol)
+        errorAt("cannot pass a reference that points inside something to " + display + ": a native call writes through a handle, which could free it", deepLine, deepCol)
     }
     for i in 0..len(argBinds) {
         let b = argBinds[i]
         for p in 0..len(b.roots) {
             let ar = b.roots[p]
             if ar.storage == "global" {
-                error("cannot pass a reference into global '" + qualifiedSymName(ar) + "' to __cinterop " + cname + ": a native call might free it")
+                error("cannot pass a reference into global '" + qualifiedSymName(ar) + "' to " + display + ": a native call might free it")
             }
             if ar == handleSym {
-                error("cannot pass a reference that borrows through a handle to __cinterop " + cname + ": a native call might free what the handle names")
+                error("cannot pass a reference that borrows through a handle to " + display + ": a native call might free what the handle names")
             }
         }
     }
@@ -7669,7 +7691,10 @@ fn nativeKindCall(cname: string, desc: string): Item {
     emit(0xE8)
     let at = pc()
     emit32(0)
-    append(nativeRelocs, new NativeReloc{off: at, sym: cname, nargs: len(ks), kinds: desc})
+    var n = len(ks)
+    if declaredArgs >= 0 { n = declaredArgs }
+    append(nativeRelocs, new NativeReloc{off: at, sym: recName, nargs: n, kinds: shapeText,
+                                         mode: mode, retShape: retShape})
     if w > 0 || pad != 0 {
         aluRI(0, RSP, 8 * w + pad)
         depth -= 8 * w + pad
@@ -7681,9 +7706,75 @@ fn nativeKindCall(cname: string, desc: string): Item {
     nativeEffectSym.writesHandles = true
     afterCall(nativeEffectSym)
     userCalls += 1
+    if retType == tVoid { return voidItem() }
     let r = alloc()
     movRR(r, RAX)
-    return makeReg(tInt, r)
+    return makeReg(retType, r)
+}
+
+// ================================================ typed native declarations (stage (c), experimental)
+//
+// A body-less `native fn` binds an obo name to a spec function (the tool maps the name to the C
+// symbol). The compiler knows only the obo-side shape of each argument, not the exact C kind: a
+// shape fixes the words pushed for the thunk, and the spec's kind fixes the C parameter and any
+// range check. The tool accepts a call only when each shape matches the spec kind.
+
+// The obo-side shape of one native parameter: int, bytes, ints or byteslist; "" if unsupported.
+fn nativeParamShape(t: ^Type, mode: int): string {
+    if mode == 0 && t == tInt { return "int" }
+    if mode == 0 && t == tString { return "bytes" }
+    if mode == 1 && t.kind == "array" {
+        let b = baseOf(t)
+        if b == tByte { return "bytes" }
+        if b == tInt { return "ints" }
+        if b.kind == "opt" && baseOf(b).kind == "array" && baseOf(baseOf(b)) == tByte { return "byteslist" }
+    }
+    return ""
+}
+
+// The sidecar result shape of a declared native return: i64, void, bytes or optbytes; "" otherwise.
+fn nativeRetShape(t: ^Type): string {
+    if t == tVoid { return "void" }
+    if t == tInt { return "i64" }
+    if t.kind == "array" && baseOf(t) == tByte { return "bytes" }
+    if t.kind == "opt" && baseOf(t).kind == "array" && baseOf(baseOf(t)) == tByte { return "optbytes" }
+    return ""
+}
+
+fn nativeFnCall(f: ^Sym): Item {
+    if checking { error("native fn '" + f.name + "' cannot be called in --check: native calls need the typed sidecar and link step") }
+    expect(T_LPAREN, "")             // nameItem left the call's '(' unread
+    var desc = ""
+    var shapes = ""
+    for i in 0..len(f.fnRec.params) {
+        let sh = nativeParamShape(f.fnRec.params[i], f.fnRec.pmodes[i])
+        if len(sh) == 0 {
+            error("native fn '" + f.name + "': parameter " + string(i + 1) +
+                  " has an unsupported type (use int, string, &[]byte, &[]int or &[]?[]byte)")
+        }
+        if i > 0 {
+            desc = desc + ","
+            shapes = shapes + ","
+        }
+        if sh == "int" {
+            desc = desc + "i64@" + string(i)
+        } else if sh == "bytes" {
+            desc = desc + "borrow_bytes@" + string(i)
+        } else if sh == "ints" {
+            desc = desc + "ints@" + string(i) + ":i32"
+        } else {
+            desc = desc + "nil_bytes_list@" + string(i)
+        }
+        shapes = shapes + sh
+    }
+    let retShape = nativeRetShape(f.ret)
+    if len(retShape) == 0 { error("native fn '" + f.name + "': unsupported return type") }
+    // The descriptor here is compiler-internal only (it drives the same word layout as __cinterop);
+    // the sidecar records the shapes, and the tool compares them with the spec.
+    var ks = new []NativeKind(0)
+    if len(desc) > 0 { ks = parseKinds(desc) }
+    return nativeCallCore(f.name, ks, "native fn '" + f.name + "'", "fn", shapes, retShape,
+                          f.ret, len(f.fnRec.params), true)
 }
 
 // ======================================================= template literals (0.15)
@@ -9042,6 +9133,10 @@ fn designator(): Item { return designatorT(false) }
 fn nameItem(s: ^Sym, name: string, target: bool): Item {
     if s.kind == "builtin" { return builtin(name) }
     if s.kind == "fn" {
+        if s.native {
+            if sym != T_LPAREN { error("a native fn can only be called") }
+            return nativeFnCall(s)
+        }
         if sym != T_LPAREN { error("functions can only be called") }
         return callFn(s)
     }
@@ -12789,6 +12884,63 @@ fn ifaceDecl(name: string, line: int, isPub: bool) {
     t.incomplete = false
 }
 
+// [pub] native fn name(params): ret -- a body-less declaration (stage (c), D1 without foreign
+// types). The name is the spec name; the tool maps it to the C symbol in the sidecar. `native` is
+// contextual: it is recognised only here, at the start of a top-level declaration.
+fn nativeFnDecl(isPub: bool) {
+    if isPub {
+        error("'pub' is not allowed on a native fn; declare a normal function that calls it and export that")
+    }
+    if sym == T_LPAREN { error("a native fn cannot have a receiver: declare a plain native fn") }
+    expect(T_FN, "")
+    if sym == T_LPAREN { error("a native fn cannot have a receiver: declare a plain native fn") }
+    if sym != T_IDENT { error("expected a native fn name") }
+    let hline = tline
+    let name = ident()
+    if name == "main" { error("'main' cannot be native: the program needs an obo entry point") }
+    let params = new []Param(0)
+    expect(T_LPAREN, "")
+    parseParams(&params, false)
+    var ret = tVoid
+    if sym == T_COLON {
+        next()
+        ret = parseType()
+    }
+    for i in 0..len(params) {
+        if len(nativeParamShape(params[i].typ, params[i].mode)) == 0 {
+            var spelled = tname(params[i].typ)
+            if params[i].mode == 1 { spelled = "&" + spelled }
+            if params[i].mode == 2 { spelled = "mut &" + spelled }
+            error("native fn '" + name + "': parameter " + string(i + 1) + " has an unsupported type " +
+                  spelled + " (use int, string, &[]byte, &[]int or &[]?[]byte)")
+        }
+    }
+    if len(nativeRetShape(ret)) == 0 {
+        error("native fn '" + name + "': unsupported return type " + tname(ret) +
+              " (use void, int, []byte or ?[]byte)")
+    }
+    if sym == T_LBRACE { error("native fn '" + name + "' is a declaration: it takes no body") }
+    let prior = findSym(curModule.globals, name)
+    if prior != nil {
+        if prior.kind == "fn" && prior.native { error("native fn '" + name + "' is already declared") }
+        if prior.kind == "fn" {
+            error("'" + name + "' is already declared as a normal function; a native declaration cannot share its name")
+        }
+        error("'" + name + "' is already declared in this scope")
+    }
+    let f = newSym("fn", name, nil)
+    f.native = true
+    f.fnRec = newFnRec()
+    for p in params {
+        append(f.fnRec.params, p.typ)
+        append(f.fnRec.pmodes, p.mode)
+    }
+    f.ret = ret
+    f.line = hline
+    f.addr = 0                    // a native declaration is complete: there is no body to wait for
+    declare(f)
+}
+
 fn fnDecl(isPub: bool) {
     let hline = tline
     var isMethod = false
@@ -12876,6 +13028,9 @@ fn fnDecl(isPub: bool) {
         }
     } else {
         let prior = findSym(curModule.globals, name)
+        if prior != nil && prior.kind == "fn" && prior.native {
+            error("'" + name + "' is declared native; a native fn is a declaration and cannot have a body")
+        }
         if prior != nil && prior.kind == "fn" && prior.addr < 0 {
             f = prior
             var ok = len(f.fnRec.params) == len(params) && same(f.ret, ret)
@@ -13346,6 +13501,10 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
                 if k == T_IDENT && sval == "impl" {
                     next()
                     implDecl(isPub)
+                } else if k == T_IDENT && sval == "native" {
+                    // contextual: `native` is recognised only here, as `native fn`
+                    next()
+                    nativeFnDecl(isPub)
                 } else {
                     error("expected a declaration")
                 }
@@ -15905,7 +16064,10 @@ fn compileFile(path: string, out: string, rtDir: string) {
     }
     if len(nativeRelocPath) > 0 {
         let b = new []byte(0)
-        appStr(b, "cinterop-relocs 1\n")
+        // Sidecar v2 (stage (c)): off name nargs mode shapes ret-shape effects. `mode` is "call"
+        // (__cinterop: an int form with shapes "-", or an explicit kinds descriptor) or "fn" (a typed
+        // native fn call, one shape per obo argument). The tool still reads v1 sidecars.
+        appStr(b, "cinterop-relocs 2\n")
         for i in 0..len(nativeRelocs) {
             appInt(b, nativeRelocs[i].off)
             append(b, ' ')
@@ -15913,17 +16075,24 @@ fn compileFile(path: string, out: string, rtDir: string) {
             append(b, ' ')
             appInt(b, nativeRelocs[i].nargs)
             append(b, ' ')
+            if len(nativeRelocs[i].mode) > 0 {
+                appStr(b, nativeRelocs[i].mode)
+            } else {
+                appStr(b, "call")
+            }
+            append(b, ' ')
             if len(nativeRelocs[i].kinds) > 0 {
                 appStr(b, nativeRelocs[i].kinds)
-            } else if nativeRelocs[i].nargs == 0 {
-                append(b, '-')
             } else {
-                for j in 0..nativeRelocs[i].nargs {
-                    if j > 0 { append(b, ',') }
-                    appStr(b, "i64")
-                }
+                append(b, '-')
             }
-            appStr(b, " i64 freesall,writeshandles\n")
+            append(b, ' ')
+            if len(nativeRelocs[i].retShape) > 0 {
+                appStr(b, nativeRelocs[i].retShape)
+            } else {
+                appStr(b, "i64")
+            }
+            appStr(b, " freesall,writeshandles\n")
         }
         if !writeFile(nativeRelocPath, b, false) {
             eprintln("obxc: cannot write native relocations to ", nativeRelocPath)
