@@ -6820,23 +6820,34 @@ never emits the summary itself.
 - `tests/run/ifaces_impure.obx`: `impure fn` and `impure mut fn`, implemented by
   a method that frees a global, one that calls an impure helper, one that is
   pure and one that is plain; direct calls and calls through `I` and `&I`; two
-  implementations; a wrapper that is itself poisoned by the call.
+  implementations.
 - `tests/modules/run/iface_impure/`: a library interface with both impure forms
   and an implementation; the importer calls through `lib::Handler`.
-- `tests/errors/ifaces_impure.obx`: a handle-borrowed reference read after an
-  impure member call; a deep reference argument; a pure member with an impure
-  method (still refused); `pure`+`impure`, repeated `impure`, `impure` after
-  `mut`, and `impure` on a method declaration.
+- `tests/errors/ifaces_impure.obx`: a handle-borrowed reference and a deep
+  reference into a local object, each read after an impure member call; a deep
+  reference argument; a reference read after a call through a wrapper that
+  calls an impure member (the wrapper inherits the maximum summary); an impure
+  member that fails the signature check; a pure member with an impure method
+  (still refused); `pure`+`impure`, repeated `impure`, `impure` after `mut`, and
+  `impure` on a method declaration.
+- `tests/modules/errors/iface_impure/`: a root that keeps a deep reference into
+  a local object across a call through an imported impure member. It is in
+  `sym_test`'s full-build/`--check` parity list, so a reader that rebuilds the
+  member as plain accepts the source-less check and fails the gate.
 - `tests/sym_test.py` `sym/iface_impure_roundtrip`: canonical markers in
   `lib.sym`, byte-identical `--reemit-sym`, a source-less `--check` whose
   `main.sym` equals the full build's, a format-9 file refused by the format
-  check, and the three malformed marker forms refused by the reader.
+  check, the three malformed marker forms refused by the reader, and the
+  imported-impure parity case above.
 - `tests/run/ifaces_effects.obx` and `tests/errors/ifaces_tiers.obx` are
   unchanged and pass, so the plain and pure tiers did not move.
 - `tests/mutate_fork.py`: X23 is repointed at the new `setMemberSummary`
-  signature, and two mutants are added: an impure summary that is not the
-  maximum, and an impl check that applies the plain rules to an impure member.
-  Both are caught. No mutant was added without a catcher.
+  signature. Six impure mutants are added, each with a real catcher: a summary
+  that is not the maximum; an impl check that applies the plain rules to an
+  impure member; a reader that rebuilds the member as plain; a writer that
+  emits plain for an impure member; a summary that frees all but does not write
+  through handles (caught by the local-deep-reference case); and a pure-member
+  check that accepts an impure method. No mutant was added without a catcher.
 
 **Fixtures.** All committed `.sym` files and the harness constants are updated
 mechanically: `obosym 9` → `obosym 10`, `compiler "0.16"` → `compiler "0.17"`,
@@ -6850,15 +6861,16 @@ writer output byte for byte without `--update`.
 **Gates (after the last source change).**
 - `make obo`: `obo 0.17 sym-format 10 abi 1`; fixed point `stage2 == stage3`
   (`cmp`), and both differ from the 0.16 seed as expected.
-- `run_fork` **1,865 passed, 0 failed**; `module_test` **148 passed, 0 failed**;
+- `run_fork` **1,869 passed, 0 failed**; `module_test` **149 passed, 0 failed**;
   `sym_test` **56 passed, 0 failed**.
 - `sym_fuzz` **200/200 clean** (seed 20261028, digest `896ee2b42dbe8a5c`).
 - `doc_check` **74 examples, 0 problems**.
 - `heap_test` passes; self-compile peak **2,586,448 bytes** live (budget
   2,750,000, headroom 163,552).
-- `port_compare` **1,843 of 1,843** Stage B; the port's self-compile peak is
-  2,586,416 bytes.
-- `mutate_fork` filtered: `interfaces impure` **2/2 caught**, `X23` **2/2
+- `port_compare` **1,847 of 1,847** Stage B; the port's self-compile peak is
+  2,586,432 bytes (the path in the reported line varies by a few bytes between
+  runs).
+- `mutate_fork` filtered: `interfaces impure` **6/6 caught**, `X23` **2/2
   caught**.
 
 **Stage I2 (follow-up, not this stage).** `http1server` can then accept an
@@ -6867,5 +6879,14 @@ interface handler: the application implements a `Handler` with
 the server owns the listener and connection and the implementation owns its
 state. The server loop calls `handler.handle(req)` through the interface; the
 impure member conservatively invalidates the loop's references and handles, so
-the compiler refuses to keep a borrow across the blocking call. I2 changes
-`experimental/http1server` and its design note, not the compiler.
+the compiler refuses to keep a borrow across the blocking call. One constraint
+I2 must respect: an impure member cannot be called through an interface stored
+in a record or a global (`h.d.run()`/`G.d.run()` is refused as a deep receiver
+that writes through a handle), so the server must keep the handler in a local or
+pass it as an `&I` parameter, not in a `Server` field or a global, or I2 needs a
+compiler change this stage excludes. I2 changes `experimental/http1server` and
+its design note, not the compiler.
+
+**Pre-existing follow-up (not changed here).** The `.sym` interface reader does
+not reject a forged `decimal` member parameter or return that the source parser
+refuses. This is present on `50cca0a` and is a separate reader-consistency fix.

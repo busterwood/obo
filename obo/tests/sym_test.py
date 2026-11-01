@@ -2069,7 +2069,7 @@ def qualified_fnfwd_alias():
 # with its library read from the .sym alone (--check), which rebuilds the members' summaries in the reader
 IFACE_TIER_CASES = ['run/iface_tier_bits', 'errors/iface_tier_global', 'errors/iface_tier_handle',
                     'errors/iface_tier_pure_param', 'errors/iface_tier_pure_recv',
-                    'run/iface_calls', 'run/iface_call_tiers']
+                    'errors/iface_impure', 'run/iface_calls', 'run/iface_call_tiers']
 
 
 def iface_tier_check():

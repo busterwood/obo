@@ -1628,6 +1628,18 @@ INTERFACE_MUTANTS = {
     "interfaces impure: the impl check applies the plain rules to an impure member": (
         "        if m.impureMember {\n",
         "        if m.impureMember && false {\n"),
+    "interfaces impure: the reader rebuilds an impure member as plain": (
+        "            m.impureMember = impure\n            setMemberSummary(m, pure, impure)\n            append(ifaceSyms, m)\n",
+        "            m.impureMember = impure\n            setMemberSummary(m, pure, false)\n            append(ifaceSyms, m)\n"),
+    "interfaces impure: the writer emits plain for an impure member": (
+        "        if m.impureMember { appStr(b, \"impure \") }\n",
+        "        if false { appStr(b, \"impure \") }\n"),
+    "interfaces impure: an impure summary frees all but does not write through handles": (
+        "    if impure {\n        m.freesAll = true\n        m.writesHandles = true\n        return\n    }\n",
+        "    if impure {\n        m.freesAll = true\n        m.writesHandles = false\n        return\n    }\n"),
+    "interfaces impure: the impl check accepts a pure member with an impure method": (
+        "        } else if m.pureMember {\n",
+        "        } else if false {\n"),
     "interfaces v3 X24: the reader ignores a mut mode on a later parameter": (
         "                if pmut { append(pmodes, 2) } else { append(pmodes, 1) }\n            } else {\n                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n",
         "                if pmut && len(pmodes) < 2 { append(pmodes, 2) } else { append(pmodes, 1) }\n            } else {\n                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n"),

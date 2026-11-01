@@ -17,6 +17,44 @@ fn main() {
     println(inner.s)  // error: 'inner' may point to freed memory: something under what it points into was changed; point it again first
 }
 
+// === a reference into a local object, read after a call through an impure member
+// (the handle case above is caught by invalidate(handleSym); this one needs invalidateDeep/writesHandles)
+type I = interface { impure fn run(): int }
+type Square = ref record { s: int }
+type Box = ref record { sq: Square }
+var G: []int = new []int(0)
+fn (q: &Square) run(): int { truncate(G, 0); return q.s }
+impl I for Square
+fn main() {
+    var h = new Box{sq: new Square{s: 4}}
+    let inner: &Square = h.sq
+    let d: I = new Square{s: 1}
+    let x = d.run()
+    println(inner.s)  // error: 'inner' may point to freed memory: something under what it points into was changed; point it again first
+}
+
+// === a wrapper that calls an impure member inherits the maximum summary
+type I = interface { impure fn run(): int }
+type Square = ref record { s: int }
+type Box = ref record { sq: Square }
+var G: []int = new []int(0)
+fn (q: &Square) run(): int { truncate(G, 0); return q.s }
+impl I for Square
+fn via(d: &I): int { return d.run() }
+fn main() {
+    var h = new Box{sq: new Square{s: 4}}
+    let inner: &Square = h.sq
+    let d: I = new Square{s: 1}
+    let x = via(&d)
+    println(inner.s)  // error: 'inner' may point to freed memory: something under what it points into was changed; point it again first
+}
+
+// === an impure member is still signature-checked
+type I = interface { impure fn f(k: int): int }
+type T = ref record { n: int }
+fn (t: &T) f(k: int): string { return "x" }
+impl I for T  // error: method 'T::f' does not match interface 'I' method 'f': it must return int, not string
+
 // === a deep reference passed to an impure member is refused
 type Square = ref record { s: int }
 type Box = ref record { sq: Square }

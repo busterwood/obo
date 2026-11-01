@@ -116,9 +116,9 @@ Plain and pure members keep their current rules and messages. In particular a
 
 ## 5. Dispatch
 
-No code-generation change. The receiver's box (`I`, `&I`, `^I`) is loaded, the
-arguments run, and the member's vtable slot is called exactly as for every other
-member. Only the member metadata (`freesAll`, `writesHandles`) read by the call
+No code-generation change. The receiver's box (`I` or `&I`; `^I` is a later
+phase) is loaded, the arguments run, and the member's vtable slot is called
+exactly as for every other member. Only the member metadata (`freesAll`, `writesHandles`) read by the call
 machinery changes.
 
 ## 6. `.sym` and versions
@@ -163,19 +163,28 @@ markers it already covers.
 - `tests/run/ifaces_impure.obx`: an `impure fn` and an `impure mut fn`
   implemented by a method that frees a global and by one that calls an impure
   helper; direct calls and calls through `I` and `&I`; two implementations of
-  one interface; the caller's own summary is poisoned (`freesAll` and
-  `writesHandles` propagate).
+  one interface.
 - `tests/modules/run/iface_impure/`: a library interface with impure members,
   written to and read back from `.sym`; the importer calls through `lib::Handler`.
 - `tests/errors/ifaces_impure.obx`: a live reference borrowed through a handle
-  and used after an impure member call; a deep argument refused; an impure
-  member still signature-checked; `pure`/`impure` conflicts and `impure` on a
-  non-member.
+  and a deep reference into a local object, each used after an impure member
+  call; a deep argument refused; a reference used after a call through a
+  wrapper that calls an impure member (the wrapper inherits the maximum);
+  an impure member that fails the signature check; `pure`/`impure` conflicts
+  and `impure` on a non-member.
+- `tests/modules/errors/iface_impure/`: a root that keeps a deep reference into
+  a local object across a call through an imported impure member. It is in
+  `sym_test`'s full-build/`--check` parity list, so a reader that rebuilds the
+  member as plain accepts the source-less check and fails the gate.
 - `tests/errors/ifaces_tiers.obx`: unchanged, proving the plain/pure rules did
   not move; `tests/run/ifaces_effects.obx` must keep passing.
 - `tests/sym_test.py`: impure marker round-trip and re-emission; a forged
   duplicate marker and a pure+impure marker are refused; the format-9 file is
-  refused by the new reader.
+  refused by the new reader; the imported-impure parity case above.
+- `tests/mutate_fork.py`: the impure summary setter, the impl-tier branch, the
+  reader's summary rebuild, the writer's marker, a summary that frees all but
+  does not write through handles, and a pure-member check that accepts an
+  impure method. Each has a real catcher.
 - `tests/mutate_fork.py`: add an interface mutant only if it has a real catcher
   (the `impure` summary setter and the impl-tier branch).
 - Docs: `LANGUAGE.md` interface section, `FORK.md` 0.17 section, this design's
@@ -195,6 +204,11 @@ data-carrying response record), and the connection setup, blocking I/O and
 teardown live in the implementation or in `impure` helpers it calls. The server's
 loop then calls `handler.handle(req)` through the interface; because the member
 is impure, the loop's references and handles are conservatively invalidated and
-the compiler refuses to keep a borrow across the call. I2 changes
+the compiler refuses to keep a borrow across the call. One constraint I2 must
+respect: an impure member cannot be called through an interface stored inside a
+record or a global (`h.d.run()`/`G.d.run()` is refused as a deep receiver that
+writes through a handle). The server must therefore hold the handler in a local
+or pass it as an `&I` parameter, not keep it in a `Server` field or a global, or
+I2 needs a compiler change that this stage excludes. I2 changes
 `experimental/http1server` (and its design note around the current "no impure
 interface-member tier" limitation), not the compiler.

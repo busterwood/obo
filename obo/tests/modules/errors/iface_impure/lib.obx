@@ -1,0 +1,15 @@
+module lib
+// An imported impure member: its .sym marker must rebuild the maximum summary in the reader, or a
+// source-less --check of the root below accepts a reference that the full build refuses.
+var log: []int = new []int(0)
+fn zap() { truncate(log, 0) }
+
+pub type Local = ref record { pub s: int }
+pub type Runner = interface {
+    impure fn run(): int
+}
+pub fn (l: &Local) run(): int {
+    zap()
+    return l.s
+}
+pub impl Runner for Local
