@@ -2,8 +2,9 @@
 
 **Date:** 2026-11-01
 **Status:** **revision 2 — APPROVE WITH NITS review folded in.** Layout approved
-and implemented on the `decimal-d4b` branch as `0.19`/format 12/ABI 1 (seed not
-promoted). This note remains the authoritative layout and implementation order.
+and released as `0.19`/format 12/ABI 1 (merge `147f7fc`, seed promoted at
+`ba02031`, 757,761 bytes, sha256 `8327ca50…`, fixed point). This note remains
+the authoritative layout and implementation order.
 **Baseline:** `main` `b52b886` (obo `0.18`, `SYM_FORMAT=11`, `SYM_ABI=1`).
 **Review note:** line numbers below follow the review's scratch tree where the
 accepted insertions shift them; function names are the stable anchors.
@@ -635,7 +636,8 @@ would require the copy.
 Each step is one compiler commit on the D4b branch, reviewed before the next.
 The format/version bump is in **step 1**, not step 3, so no intermediate
 binary ever emits a format-11 `.sym` containing `fn(decimal)` types. The branch
-is still not merged or released until the full gate set is green.
+was merged as `147f7fc` and released after the full gate set was green; the seed
+is promoted at `ba02031`.
 
 1. **Layout + call path + identity (with the smallest reachable value).** Move
    the `fnval` cell push above the destination; remove `decRet && fnval`; remove

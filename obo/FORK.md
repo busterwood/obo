@@ -6776,7 +6776,7 @@ merged `main` `6fc3584` (cinterop v2 stage h); that merge is the landing image b
 the promoted `seed/obo` at `50cca0a` (757,761 bytes, sha256 `5700668d…`), which
 reproduces itself byte for byte. The release is one version/format/ABI step,
 `0.16`/9/1; D4–D6 were the later stages, and all are now complete (D4a at
-`0.18`, D4b at `0.19` on its branch, D5 library-only and D6 released).
+`0.18`, D4b at `0.19`, D5 library-only and D6 released).
 
 **Review nits closed.** N1: `tests/run/decimal_global_init.obx` now hands each
 `div`/`quantize`/`toInt`/`check`/`parse`/`format` temporary to a function that consumes and
@@ -7076,20 +7076,22 @@ tests. A 0.17 reader rejects these format-11 files before the body; the 0.18
 compiler reads format 11 only. The stage is three commits: `78c02c4` compiler,
 `3aaa8ce` tests, `ef5c86d` docs, followed by the review fixes and the D5 merge.
 D4b (function values, non-capturing lambdas with decimal signatures, Stage B
-captures) followed on the `decimal-d4b` branch as `0.19`/format 12, and D6 is
-released (merge `4a32742`).
+captures) is released as `0.19`/format 12 (merge `147f7fc`, seed `ba02031`), and
+D6 is released (merge `4a32742`).
 **Pre-existing follow-up (not changed here).** The `.sym` interface reader does
 not reject a forged `decimal` member parameter or return that the source parser
 refuses. This is present on `50cca0a` and is a separate reader-consistency fix.
 
-## Decimal function values, lambdas and captures (0.19, format 12, ABI 1), stage D4b
+## Decimal function values, lambdas and captures (0.19 released, format 12, ABI 1), stage D4b
 
 Stage D4b of `design/decimal-storage-plan.md` makes a decimal a function-type
 parameter and return, a non-capturing or capturing lambda parameter and return,
 and a capturing lambda's value. The implementation follows
 `design/decimal-d4b-layout.md` revision 2. `OBO_VERSION` is `0.19`,
-`SYM_FORMAT` is `12`, `SYM_ABI` stays `1`. The seed remains the promoted 0.18
-image and is not changed.
+`SYM_FORMAT` is `12`, `SYM_ABI` stays `1`. The stage is **released**: merge
+`147f7fc`, and `seed/obo` is promoted at `ba02031` as the same 757,761-byte
+image (sha256 `8327ca50…`), which is the self-host fixed point and runs 1,884
+`run_fork` tests.
 
 **Value-call layout.** `callFnWith` pushes the function-value cell **above** the
 hidden decimal destination. With `A` = the callee's visible parameter bytes
@@ -7213,6 +7215,15 @@ bodies are unchanged, so no `--update` was used.
   with an explicit baseline; the equivalent is `capture snapshot taken by
   address`, planted, built and run, and reported as `equiv`.
 - `git diff main -- obo/seed` is empty; the tree is clean after the docs commit.
+
+**Release (0.19, format 12, ABI 1).** Merged as `147f7fc` and promoted as
+`seed/obo` at `ba02031` (757,761 bytes, sha256 `8327ca50…`); `seed/obo` and the
+compiler are the same image, `stage2 == stage3 == compiler == seed`, and the
+promoted image runs 1,884 tests. The gates above are the D4b branch
+measurements, taken with the 0.18 seed; after promotion the default self
+comparison is 1,859/1,859 and the flat comparison against the same 0.19 seed is
+1,655/1,655. The 0.19 compiler reads format 12 only and rejects formats 6–11
+before reading the body.
 
 ## Systems library P1b (practical filesystem, 0.17/format 10), on top of P0/P1a/P2/P2q
 
