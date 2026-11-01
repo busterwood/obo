@@ -1,0 +1,54 @@
+// Decimal element access (0.16): read, write, compound assignment (+= -= *= %=),
+// element-to-element copy and compare, a range loop that writes through its own
+// index variable, and for-in over a decimal array (a 24-byte copy per element).
+
+fn last(xs: &[]decimal): int { return len(xs) - 1 }
+
+fn main() {
+    var xs = new []decimal(0)
+    append(xs, 1.25)
+    append(xs, 2.5)
+    append(xs, -3.0)
+    xs[0] += 0.75              // 1.25 + 0.75
+    xs[1] -= 0.5               // 2.5 - 0.5
+    xs[2] *= 2.0               // -3.0 * 2.0
+    println(xs[0], " ", xs[1], " ", xs[2])      // expect: 2.00 2.0 -6.00
+    xs[1] = xs[0]              // element to element
+    xs[2] %= 4.0               // the remainder keeps the sign of the dividend
+    println(xs[1], " ", xs[2])                  // expect: 2.00 -2.00
+    if xs[0] == xs[1] { println("equal") }     // expect: equal
+    if xs[0] < xs[2] { println("less") } else { println("not less") }   // expect: not less
+
+    // for-in: each element is copied, so the body sees the value at that index
+    var sum = 0.0
+    for d in xs {
+        sum += d
+        print(d, ";")
+    }
+    println()                                   // expect: 2.00;2.00;-2.00;
+    println(sum)                                // expect: 2.00
+
+    // a range loop writes through its own index; the index stays an int afterwards
+    var ys = new []decimal(0)
+    for i in 0..5 { append(ys, decimal(i)) }
+    for i in 0..len(ys) { ys[i] = decimal(i) * 1.5 }
+    println(ys[0], " ", ys[1], " ", ys[4])      // expect: 0.0 1.5 6.0
+    for i in 0..len(ys) { ys[i] += 0.5 }
+    println(ys[0], " ", ys[4], " ", ys[last(ys)])   // expect: 0.5 6.5 6.5
+    println(ys[last(ys)] * 2.0)                 // expect: 13.00
+
+    // a for-in loop after writes, and a copy of an element into a local
+    var n = 0
+    var top = ys[0]
+    for d in ys {
+        if d > top { top = d }
+        n += 1
+    }
+    println(n, " ", top)                        // expect: 5 6.5
+
+    // the element is read at its own index, not the one before it
+    var zs = new []decimal(3)
+    zs[2] = 9.75
+    let got = zs[2] + zs[0]
+    println(got, " ", zs[1])                    // expect: 9.75 0
+}

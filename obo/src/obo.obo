@@ -2173,6 +2173,8 @@ const RT_TPL_HTML_VALUE = 90
 const RT_TPL_HTML_SPLICE = 91
 const RT_TPL_HTML_JOIN = 92
 const RT_TPL_HTML_COPY = 93
+// decimal arrays (0.16): append a 24-byte decimal, by pointer, to a []decimal
+const RT_APPEND_DEC = 94
 
 const RAX = 0
 const RCX = 1
@@ -3304,6 +3306,9 @@ fn boundsCheck(idx: int, length: Mem, line: int) {
     trapBounds(line)
 }
 
+// A decimal element is 24 bytes: the index is scaled by 3 into a fresh register, after the bounds
+// check, and the address scale is 8. The index is never scaled in place: it may be a local's home
+// register (asReg returns it), which must keep its value.
 fn resolve(mut x: &Item) {
     if x.mode == "elem" {
         boundsCheck(x.index, mem(x.base, -1, 0, 8), x.line)
@@ -3311,6 +3316,14 @@ fn resolve(mut x: &Item) {
         x.mode = "mem"
         x.disp = 8
         x.scale = x.width
+        if x.typ.kind == "decimal" {
+            let old = x.index
+            let r = alloc()
+            opMem(0x8D, r, mem(old, old, 0, 2), true, false)   // lea r, [old + old*2]
+            release(old)                                         // a no-op for a home register
+            x.index = r
+            x.scale = 8
+        }
     }
 }
 
@@ -5717,7 +5730,6 @@ fn parseType(): ^Type {
         expect(T_RBRACK, "")
         let b = parseType()
         rejectFn(b, "an array cannot hold function values")
-        if b.kind == "decimal" { error("arrays of decimal (24-byte stride) are not supported in v1") }
         return derived("array", b)
     }
     if sym == T_CARET {
@@ -9334,6 +9346,12 @@ fn builtin(name: string): Item {
             checkAssign(baseOf(a.typ), b, "appended value")
             consume(b)
             expect(T_RPAREN, "")
+            if b.typ.kind == "decimal" {
+                // a decimal is passed by address: the runtime copies its 24 bytes before it grows the array
+                let pb = decPtr(b)
+                rtCall2(RT_APPEND_DEC, a, pb, tVoid)
+                return voidItem()
+            }
             rtCall2(RT_APPEND, a, b, tVoid)
             return voidItem()
         }
@@ -9777,6 +9795,8 @@ fn newExpr(): Item {
             kind = 4
         } else if b.kind == "string" {
             kind = 6                                  // reference-counted strings
+        } else if b.kind == "decimal" {
+            kind = 7                                  // 24-byte pointer-free decimals (all-zero bits are 0)
         } else if isOwned(b) {
             kind = 2                                  // owned objects, freed with the array (not handles)
         }
@@ -11948,12 +11968,25 @@ fn forStat() {
         opMem(0x8B, ra, mem(RBP, -1, arr.offset, 8), true, false)
         if strs { rtCall1(RT_STR_DEC, dupItem(vi), tVoid) }  // drop the previous element
         opMem(0x8B, ra, mem(ra, -1, 16, 8), true, false)
-        if baseOf(xt).kind == "byte" {
-            opMem(0x0FB6, ri, mem(ra, ri, 8, 1), true, false)
+        if baseOf(xt).kind == "decimal" {
+            // a decimal element is 24 bytes: the index times 3 is a fresh register, then three words are copied
+            let rt = alloc()
+            opMem(0x8D, rt, mem(ri, ri, 0, 2), true, false)   // lea rt, [ri + ri*2]
+            for off in 0..3 {
+                let tw = alloc()
+                opMem(0x8B, tw, mem(ra, rt, 8 + 8 * off, 8), true, false)
+                opMem(0x89, tw, mem(RBP, -1, v.offset + 8 * off, 8), true, false)
+                release(tw)
+            }
+            release(rt)
         } else {
-            opMem(0x8B, ri, mem(ra, ri, 8, 8), true, false)
+            if baseOf(xt).kind == "byte" {
+                opMem(0x0FB6, ri, mem(ra, ri, 8, 1), true, false)
+            } else {
+                opMem(0x8B, ri, mem(ra, ri, 8, 8), true, false)
+            }
+            opMem(0x89, ri, mem(RBP, -1, v.offset, 8), true, false)
         }
-        opMem(0x89, ri, mem(RBP, -1, v.offset, 8), true, false)
         release(ri)
         release(ra)
         if strs {
@@ -15040,7 +15073,6 @@ fn symParseType(): ^Type {
         expect(T_RBRACK, "")
         let b = symParseType()
         rejectFn(b, "an array cannot hold function values")
-        if b.kind == "decimal" { error("arrays of decimal (24-byte stride) are not supported in v1") }
         return derived("array", b)
     }
     if sym == T_CARET {

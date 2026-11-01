@@ -307,6 +307,56 @@ RUNTIME_MUTANTS = [
      '    if (payload > MAX_PAYLOAD) die("obx: object too large\\n");'),
 ]
 
+# Decimal arrays (0.16, kind 7 and rt_append_dec). Each compiler mutant is caught by a
+# run test named in its comment; each runtime mutant by a run test or by a C array case in
+# tests/rt_heap_test.c, run by run_array_suite below.
+ARRAY_MUTANTS = [
+    # decimal_array_sizes and decimal_array_elements index every element through the stride
+    ("decimal array stride is 16 bytes",
+     "            opMem(0x8D, r, mem(old, old, 0, 2), true, false)   // lea r, [old + old*2]",
+     "            opMem(0x8D, r, mem(old, old, 0, 1), true, false)   // lea r, [old + old*2]"),
+    # decimal_array_elements: `for i in 0..len(ys) { ys[i] = ... }` keeps i in a register
+    ("decimal array index is scaled in place",
+     "            let r = alloc()\n            opMem(0x8D, r, mem(old, old, 0, 2), true, false)   // lea r, [old + old*2]",
+     "            let r = old\n            opMem(0x8D, r, mem(old, old, 0, 2), true, false)   // lea r, [old + old*2]"),
+    # decimal_array_elements: `for d in ys` copies all three words
+    ("decimal for-in copies one word",
+     "            for off in 0..3 {\n                let tw = alloc()",
+     "            for off in 0..1 {\n                let tw = alloc()"),
+]
+
+# runtime mutants (name, file, old, new); each is caught by the named test
+RUNTIME_ARRAY_MUTANTS = [
+    # decimal_array_sizes: the third word of an appended decimal is lost
+    ("rt_append_dec copies only two words", "runtime.c",
+     "    slot[0] = w0; slot[1] = w1; slot[2] = w2;",
+     "    slot[0] = w0; slot[1] = w1;"),
+    # decimal_array_calls: `append(xs, xs[0])` at a full block reads the source after the old block is freed
+    ("rt_append_dec reads its source after growth", "runtime.c",
+     "    u64 w0 = src[0], w1 = src[1], w2 = src[2];\n    if (a->len == a->cap) grow_array(a);",
+     "    if (a->len == a->cap) grow_array(a);\n    u64 w0 = src[0], w1 = src[1], w2 = src[2];"),
+    # every new []decimal(0) and the C case dec_kind: the shared empty block must exist for kind 7
+    ("decimal empty array block is missing", "runtime.c",
+     "    if (kind == 7) return (u64)&empty_blocks[4][2];\n",
+     ""),
+    # C case dec_kind: the shared empty block is kind 1, so the first growth is a kind-1 block
+    ("decimal empty array block is treated as kind 1", "runtime.c",
+     "{6, 32, 0, 0}, {7, 32, 0, 0}",
+     "{6, 32, 0, 0}, {1, 32, 0, 0}"),
+    # decimal_array_* run tests free every decimal array: the kind is not walked as a descriptor
+    ("rt_free walks the decimal kind as a descriptor", "runtime.c",
+     "} else if (kind != 1 && kind != 4 && kind != 7) {",
+     "} else if (kind != 1 && kind != 4) {"),
+    # decimal_array_sizes: the element size of the decimal kind is 8
+    ("decimal array elements are 8 bytes", "runtime.c",
+     "u64 esize = kind == 4 ? 1 : kind == 7 ? 24 : 8;",
+     "u64 esize = kind == 4 ? 1 : 8;"),
+    # C case dec_clone: a clone of a decimal array maps the kind to 1 with 8-byte elements
+    ("tpl_clone maps the decimal kind to 1 with esize 8", "runtime.c",
+     "u64 kind = dk == 2 ? 2 : dk == 6 ? 6 : dk == 4 ? 4 : dk == 7 ? 7 : 1;",
+     "u64 kind = dk == 2 ? 2 : dk == 6 ? 6 : dk == 4 ? 4 : 1;"),
+]
+
 ENTRY_MUTANTS = [
     ("entry slot 73 targets format", "    slot rt_dec_parse_text", "    slot rt_dec_format_text"),
     ("entry slot 74 targets canonical", "    slot rt_dec_format_text", "    slot rt_dec_canonical_text"),
@@ -314,6 +364,8 @@ ENTRY_MUTANTS = [
     ("entry slot 76 targets parse", "    slot rt_dec_check", "    slot rt_dec_parse_text"),
     ("entry slot 77 targets dscale", "    slot rt_dec_exponent", "    slot rt_dec_dscale"),
     ("entry slot 78 targets exponent", "    slot rt_dec_dscale", "    slot rt_dec_exponent"),
+    # decimal_array_*: rt_append_dec is slot 94; another builder there breaks every append
+    ("entry slot 94 targets html copy", "    slot rt_append_dec", "    slot rt_tpl_html_copy"),
 ]
 
 
@@ -408,6 +460,45 @@ def run_text_suite(rt, work, verbose):
     return True
 
 
+# The C array cases of tests/rt_heap_test.c (decimal arrays, kind 7): the empty block's
+# kind, the append's source read, the clone's element size, the free walk and truncation.
+ARRAY_CASES = ('dec_kind', 'dec_self', 'dec_clone', 'dec_free', 'dec_truncate')
+
+
+def run_array_suite(rt, work, verbose):
+    src = os.path.join(HERE, 'rt_heap_test.c')
+    text = open(src).read()
+    text = text.replace('#include "../runtime/runtime.c"',
+                        '#include "%s/runtime.c"' % rt)
+    mut = os.path.join(work, 'rt_heap_test.c')
+    open(mut, 'w').write(text)
+    obj = os.path.join(work, 'rt_heap_test.o')
+    exe = os.path.join(work, 'rt_heap_test')
+    p = subprocess.run(['gcc', *CFLAGS, '-c', mut, '-o', obj],
+                       capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        if verbose: print('        array harness did not compile:', p.stderr.strip()[:160])
+        return False
+    p = subprocess.run(['ld', '-T', os.path.join(rt, 'rt.ld'), '-o', exe, obj],
+                       capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        if verbose: print('        array harness did not link:', p.stderr.strip()[:160])
+        return False
+    for case in ARRAY_CASES:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('OBO_HEAP_LIMIT', 'OBO_CHECK', 'OBO_STATS', 'OBX_GC')}
+        env['OBO_CHECK'] = '1'
+        env['OBX_GC'] = 'poison'
+        r = subprocess.run([exe, case], capture_output=True, text=True,
+                           timeout=120, env=env)
+        if r.returncode != 0:
+            if verbose:
+                print(f'        array case {case}: exit {r.returncode}; '
+                      f'stderr {r.stderr.strip()[:120]!r}')
+            return False
+    return True
+
+
 def run_suite(exe, rt, work, verbose, runtime_dir=None, patterns=('decimal',)):
     env = dict(os.environ, OBO=exe, OBO_RT=rt)
     for pattern in patterns:
@@ -418,7 +509,8 @@ def run_suite(exe, rt, work, verbose, runtime_dir=None, patterns=('decimal',)):
                 for line in (r.stdout + r.stderr).splitlines()[:8]:
                     print('        ' + line)
             return False
-    return run_text_suite(runtime_dir or rt, work, verbose)
+    rdir = runtime_dir or rt
+    return run_text_suite(rdir, work, verbose) and run_array_suite(rdir, work, verbose)
 
 
 def main():
@@ -434,7 +526,7 @@ def main():
             print("BROKEN  baseline: the unmutated decimal suite or text cases failed")
             return 1
         print("baseline ok")
-        for item in MUTANTS:
+        for item in MUTANTS + ARRAY_MUTANTS:
             name, old, new = item[0], item[1], item[2]
             want = item[3] if len(item) > 3 else 1
             n = text.count(old)
@@ -451,13 +543,13 @@ def main():
                 print(f"BROKEN  {name}: mutant did not compile: {p.stderr.strip()[:140]}")
                 broken += 1
                 continue
-            if not run_suite(exe, FORK, tmp, verbose):
+            if not run_suite(exe, FORK, tmp, verbose, runtime_dir=os.path.join(FORK, 'runtime')):
                 caught += 1
                 print(f"caught  {name}")
             else:
                 missed += 1
                 print(f"MISSED  {name}")
-        for name, filename, old, new in RUNTIME_MUTANTS:
+        for name, filename, old, new in RUNTIME_MUTANTS + RUNTIME_ARRAY_MUTANTS:
             rt, err = build_runtime_mutant(tmp, filename, old, new)
             if rt is None:
                 print(f"BROKEN  {name}: {err}")
@@ -502,7 +594,7 @@ def main():
                 print(f"MISSED  {name}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    total = len(MUTANTS) + len(RUNTIME_MUTANTS) + len(ENTRY_MUTANTS)
+    total = len(MUTANTS) + len(ARRAY_MUTANTS) + len(RUNTIME_MUTANTS) + len(RUNTIME_ARRAY_MUTANTS) + len(ENTRY_MUTANTS)
     print(f"\n{caught} caught, {missed} missed, {broken} broken (of {total})")
     return 1 if missed or broken else 0
 

@@ -2590,6 +2590,50 @@ def decimal_fields_sym():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def decimal_arrays_sym():
+    '''D2: []decimal in a .sym. A function signature, a public record field, a private owned array and a
+    public global carry the array type; the file re-emits byte-identically, a source-less check of main
+    writes the same main.sym as the full build, and a signature that names the wrong element type is
+    refused by the check (the interface hash is recomputed, so the change reaches the importer).'''
+    src = os.path.join(HERE, 'modules', 'run', 'decimal_arrays')
+    files = {}
+    for name in ('main.obx', 'lib.obx'):
+        with open(os.path.join(src, name)) as f:
+            files[name] = f.read()
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'prog')), 'full build of the decimal-array tree')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        for want in (b'type Book = ref record { pub lines: []decimal; pub name: string; priv }',
+                     b'var shared: []decimal',
+                     b'fn make(p0: int): []decimal',
+                     b'fn total(p0: &[]decimal): decimal',
+                     b'fn push(mut p0: &[]decimal, p1: decimal)'):
+            if want not in text:
+                raise Fail(f"decimal array line is wrong, wanted {want!r}: {text!r}")
+        r = reemit(lib)
+        if r.returncode != 0 or r.stdout != text:
+            raise Fail('the decimal-array lib.sym does not re-emit unchanged')
+        full_main = sym_text(os.path.join(s, 'main.sym'))
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(s, chk)
+        ok(build(d, chk, check=True), 'source-less check of the decimal-array tree')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+        os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
+        base = sym_text(lib)
+        open(lib, 'wb').write(base)
+        mutate(lib, b'fn total(p0: &[]decimal): decimal', b'fn total(p0: &[]int): decimal', recompute=True)
+        q = build(d, s, check=True)
+        if q.returncode == 0 or 'cannot use []decimal as []int' not in q.stderr:
+            raise Fail(f"a signature with the wrong element type was not refused: {q.returncode} {q.stderr.strip()}")
+        open(lib, 'wb').write(base)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def tests():
     return [
         ('sym/roundtrip_rich', roundtrip_rich),
@@ -2645,6 +2689,7 @@ def tests():
         ('sym/field_visibility_library_summaries', field_visibility_library_summaries),
         ('sym/field_visibility_old_format', field_visibility_old_format),
         ('sym/decimal_fields', decimal_fields_sym),
+        ('sym/decimal_arrays', decimal_arrays_sym),
     ]
 
 

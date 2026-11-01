@@ -97,8 +97,10 @@ static void die(const char *msg) { die_code(msg, 2); }
 /* ---------- heap ---------- */
 /* Object: 16-byte header [kind-or-descriptor][size], payload follows.
  * kind 1 = block of 8-byte scalars, 2 = block of pointers, 3 = string,
- * 4 = block of bytes, 5 = array header, otherwise a pointer to a record
- * descriptor: [payload size][pointer count][offsets...].
+ * 4 = block of bytes, 5 = array header, 6 = block of strings, 7 = block of
+ * 24-byte decimals (pointer-free, freed as data), otherwise a pointer to a
+ * record descriptor: [payload size][pointer count][offsets...]. Descriptor
+ * addresses are in the data segment, far above the small kind numbers.
  *
  * An array is a header {len, cap, data, element size} whose data points to a
  * block [count][elements...] holding cap elements. Growing replaces the block,
@@ -338,20 +340,22 @@ static void free_block(u64 h) {
  * read-only segment: one per supported element kind. It has a valid fake header
  * (kind, size) but is never written (len == 0) or freed; a real heap block
  * replaces it on the first append. */
-static const u64 empty_blocks[4][4] __attribute__((aligned(16))) = {
-    {1, 32, 0, 0}, {2, 32, 0, 0}, {4, 32, 0, 0}, {6, 32, 0, 0}
+static const u64 empty_blocks[5][4] __attribute__((aligned(16))) = {
+    {1, 32, 0, 0}, {2, 32, 0, 0}, {4, 32, 0, 0}, {6, 32, 0, 0}, {7, 32, 0, 0}
 };
 static u64 empty_data(u64 kind) {
     if (kind == 1) return (u64)&empty_blocks[0][2];
     if (kind == 2) return (u64)&empty_blocks[1][2];
     if (kind == 4) return (u64)&empty_blocks[2][2];
     if (kind == 6) return (u64)&empty_blocks[3][2];
+    if (kind == 7) return (u64)&empty_blocks[4][2];
     die("obx: internal error: empty array kind\n");
     return 0;
 }
 static int is_empty_data(u64 p) {
     return p == (u64)&empty_blocks[0][2] || p == (u64)&empty_blocks[1][2] ||
-           p == (u64)&empty_blocks[2][2] || p == (u64)&empty_blocks[3][2];
+           p == (u64)&empty_blocks[2][2] || p == (u64)&empty_blocks[3][2] ||
+           p == (u64)&empty_blocks[4][2];
 }
 #ifdef OBO_RUNTIME_GUARD_TEST
 void rt_test_free_static(void) { free_block((u64)&empty_blocks[0][0]); }
@@ -402,7 +406,7 @@ void rt_free(u64 p) {
             for (u64 i = 0; i < body[0]; i++) if (body[1 + i]) free_push(body[1 + i]);
         } else if (kind == 6) {
             for (u64 i = 0; i < body[0]; i++) rt_str_dec(body[1 + i]);
-        } else if (kind != 1 && kind != 4) {
+        } else if (kind != 1 && kind != 4 && kind != 7) {
             /* descriptor: [size][n owned][offsets...][n strings][offsets...] */
             u64 *desc = (u64 *)kind, n = desc[1];
             for (u64 i = 0; i < n; i++) {
@@ -496,11 +500,12 @@ static u64 new_block(u64 kind, u64 esize, u64 cap) {
     return b;
 }
 
-/* kind: 1 = ints and bools, 2 = owned references, 4 = bytes, 6 = strings */
+/* kind: 1 = ints and bools, 2 = owned references, 4 = bytes, 6 = strings,
+ * 7 = decimals (24 bytes each, all-zero bits are decimal 0) */
 u64 rt_alloc_array(i64 n, u64 kind) {
     if (n < 0) die("obx: negative array length\n");
-    if (kind != 1 && kind != 2 && kind != 4 && kind != 6) die("obx: internal error: empty array kind\n");
-    u64 esize = kind == 4 ? 1 : 8;
+    if (kind != 1 && kind != 2 && kind != 4 && kind != 6 && kind != 7) die("obx: internal error: empty array kind\n");
+    u64 esize = kind == 4 ? 1 : kind == 7 ? 24 : 8;
     u64 b = n ? new_block(kind, esize, (u64)n) : empty_data(kind);
     tmp_root[0] = b;
     Array *a = (Array *)alloc_raw(5, sizeof(Array));
@@ -509,25 +514,41 @@ u64 rt_alloc_array(i64 n, u64 kind) {
     return (u64)a;
 }
 
+/* Grows the data block when it is full: capacity doubles (8 at first), the
+ * elements are copied, and the old block is freed unless it is the shared empty block. */
+static void grow_array(Array *a) {
+    u64 cap;
+    if (a->cap < 4) cap = 8;
+    else {
+        if (!a->esize || a->cap > MAX_PAYLOAD / a->esize / 2)
+            die("obx: allocation size overflow\n");
+        cap = a->cap * 2;
+    }
+    u64 kind = KIND(a->data - GRAN);
+    u64 b = new_block(kind, a->esize, cap);
+    memcpy((char *)b + 8, (char *)a->data + 8, a->len * a->esize);
+    if (!is_empty_data(a->data)) free_block(a->data - GRAN);
+    a->data = b; a->cap = cap;
+}
+
 /* Appends v, growing the data block when full. v is a value copied into the
  * new block; growth never moves v. */
 void rt_append(Array *a, u64 v) {
-    if (a->len == a->cap) {
-        u64 cap;
-        if (a->cap < 4) cap = 8;
-        else {
-            if (!a->esize || a->cap > MAX_PAYLOAD / a->esize / 2)
-                die("obx: allocation size overflow\n");
-            cap = a->cap * 2;
-        }
-        u64 kind = KIND(a->data - GRAN);
-        u64 b = new_block(kind, a->esize, cap);
-        memcpy((char *)b + 8, (char *)a->data + 8, a->len * a->esize);
-        if (!is_empty_data(a->data)) free_block(a->data - GRAN);
-        a->data = b; a->cap = cap;
-    }
+    if (a->len == a->cap) grow_array(a);
     char *slot = (char *)a->data + 8 + a->len * a->esize;
     if (a->esize == 1) *slot = (char)v; else *(u64 *)slot = v;
+    a->len++;
+}
+
+/* Appends the 24-byte decimal at src (for a []decimal array, esize 24). The three
+ * words are read before growth: src may point into the array's own block, which
+ * growth frees. */
+void rt_append_dec(Array *a, const u64 *src) {
+    if (a->esize != 24) die("obx: internal error: decimal append to a non-decimal array\n");
+    u64 w0 = src[0], w1 = src[1], w2 = src[2];
+    if (a->len == a->cap) grow_array(a);
+    u64 *slot = (u64 *)((char *)a->data + 8 + a->len * 24);
+    slot[0] = w0; slot[1] = w1; slot[2] = w2;
     a->len++;
 }
 
@@ -1519,7 +1540,7 @@ static u64 tpl_clone(u64 p) {
     if (k == 5) {
         Array *src = (Array *)p;
         u64 dk = KIND(src->data - GRAN);
-        u64 kind = dk == 2 ? 2 : dk == 6 ? 6 : dk == 4 ? 4 : 1;
+        u64 kind = dk == 2 ? 2 : dk == 6 ? 6 : dk == 4 ? 4 : dk == 7 ? 7 : 1;
         Array *dst = (Array *)rt_alloc_array((i64)src->len, kind);
         u64 n = src->len;
         if (dk == 2) {

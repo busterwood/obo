@@ -27,9 +27,9 @@
 #define RT_ALLOC_ARRAY_SLOT 3
 #define RT_ALLOC_ARRAY_ADDR (RT_TEXT_BASE + 8ULL * RT_ALLOC_ARRAY_SLOT)
 
-/* The hosted runtime appends a foreign-census callback slot after the last existing slot (93), only
- * under OBO_HOSTED_EXIT. The baseline build has no slot 94 at all, so its bytes are unchanged. */
-#define RT_FOREIGN_CENSUS_SLOT 94
+/* The hosted runtime appends a foreign-census callback slot after the last existing slot (94), only
+ * under OBO_HOSTED_EXIT. The baseline build has no slot 95 at all, so its bytes are unchanged. */
+#define RT_FOREIGN_CENSUS_SLOT 95
 #define RT_FOREIGN_CENSUS_ADDR (RT_TEXT_BASE + 8ULL * RT_FOREIGN_CENSUS_SLOT)
 
 typedef void (*rt_host_exit_fn)(long code);

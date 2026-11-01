@@ -6533,3 +6533,107 @@ run; for example `2.5 * 3.0 = 7.50` where the bad result was `301.50`.
 
 The record-field change is not promoted: the compiler still needs one
 `make promote` after the merge, and that is the orchestrator's step.
+
+## Decimal arrays (0.16 release candidate, format 9, ABI 1), stage D2
+
+Stage D2 of `design/decimal-storage-plan.md` makes `[]decimal` an array of 24-byte
+decimals. `OBO_VERSION` stays `0.16` and `SYM_FORMAT` stays `9`, `SYM_ABI` stays `1`:
+a decimal array was refused in source and in `.sym` before, so accepting it changes no
+existing layout. The runtime gains one fixed slot (94) and one block kind (7); that is
+an additive runtime extension inside the unreleased 0.16 candidate. The policy comment
+in `obo.obo` suggests a patch release for additive runtime extensions; this stage
+does not take one, because 0.16 is not released yet (for the orchestrator to decide).
+
+**Runtime (`obo/runtime/runtime.c`, `entry.S`, `host_abi.h`).**
+- Block kind 7 is a `[]decimal` block: pointer-free, 24-byte elements. It is the next
+  free small number after 1-6. The dispatch is explicit: `rt_free` skips the descriptor
+  walk for kinds 1, 4 and 7, so a kind 7 block is never read as a descriptor pointer.
+- `empty_blocks[4] = {7,32,0,0}` is the shared zero-capacity block; `empty_data(7)` and
+  `is_empty_data` know it, so `new []decimal(0)` and the first append never free rodata.
+- `rt_alloc_array` takes kind 7 with `esize = 24`. `tpl_clone` maps kind 7 to 7; before,
+  an unknown kind became kind 1 with esize 8, which would overflow a 24-byte element.
+- The growth code is factored into `grow_array(Array*)`, used by `rt_append` and the new
+  `rt_append_dec(Array*, const u64 *src)`. `rt_append_dec` reads the three source words
+  before it grows, because `src` may point into the array's own block, which growth frees.
+- `rt_append_dec` is slot 94 (`slot rt_append_dec` and a `check_` stub in `entry.S`,
+  `RT_APPEND_DEC = 94` in `obo.obo`). **Deviation:** the hosted (`OBO_HOSTED_EXIT`)
+  build's foreign-census slot moved from 94 to 95 (`RT_FOREIGN_CENSUS_SLOT` in
+  `host_abi.h` and `cinterop.py`), because the new slot is present in both builds. The
+  baseline build still has no slot 95, so its bytes do not change.
+
+**Compiler (`obo/src/obo.obo`).**
+- `newExpr` gives a `[]decimal` literal kind 7 (after the string branch).
+- `resolve()` scales a decimal element index after the bounds check, into a fresh
+  register (`lea r, [i+i*2]`, then scale 8). It never scales in place: `asReg` can return
+  a local's home register.
+- `append(xs, d)` on a decimal array calls `RT_APPEND_DEC` with the address of `d`.
+- `for d in xs` copies all three words (the decimal branch of the for-in loop).
+- The two `arrays of decimal ... not supported in v1` refusals are removed (the source
+  `parseType` and the `.sym` `symParseType`). `.sym` lines for decimal arrays now read
+  `[]decimal` in signatures, record fields and globals.
+
+**Decisions.**
+- A `[]decimal` global is accepted. The plan asked for it to be refused, but it is a
+  pointer-valued global with a normal owned lifecycle, the same as `[]int`, so it is
+  sound and checked in check mode. Decimal globals (`var g: decimal`) are still refused
+  (D3). **Deviation from the plan, reported.**
+- `take` and `replace` on a decimal element are refused with the diagnostics for a
+  non-owned element (`take needs an optional variable, field or element holding an
+  owned value`), the same shape as for an int element. `println`, `string` and borrowing
+  a decimal element are refused too.
+- Call ordering follows section 12 unchanged: `xs[f(xs)]` and `append(xs, f(xs))` compile
+  for int and decimal arrays alike, since only calls that might free are refused.
+
+**Tests.** New: `tests/run/decimal_array_sizes.obx` (lengths 0, 1, 8 and 9 across the growth
+boundaries, display and sign, zero fill, sums, truncate and append);
+`decimal_array_elements.obx` (compound operators, element copy, compare, for-in,
+range-loop writes); `decimal_array_calls.obx` (calls that grow, shrink or read the array
+inside an index or value expression, and a self-append at a full block);
+`decimal_array_shapes.obx` (record field, borrowed and `mut` parameters, return,
+`Result`, optional, `[][]decimal`); `decimal_array_trap_read.obx`,
+`decimal_array_trap_write.obx` and `decimal_array_trap_negative.obx` (exit 3, `index out
+of range`); `tests/errors/decimal_arrays.obx` (the refusals above). `tests/errors/decimal.obx`
+no longer refuses arrays; its global and constant refusals stay. `tests/modules/run/decimal_arrays/`
+(a cross-module library with `[]decimal` through a public function, a `mut` parameter, a
+public record with public and private arrays, and a public global). `tests/sym_test.py`
+`sym/decimal_arrays`: the `.sym` lines, byte-identical re-emit, the source-less `--check`
+matching the full build, and a wrong element type in a signature refused by the importer
+(`cannot use []decimal as []int`). `tests/rt_heap_test.c` gains five C cases (`dec_kind`,
+`dec_self`, `dec_clone`, `dec_free`, `dec_truncate`), run from `tests/heap_test.py`'s
+`rt_section`.
+
+**Mutants (`tests/mutate_decimal.py`).** Three compiler mutants (a 16-byte stride, an index
+scaled in place, a one-word for-in copy), seven runtime mutants (`rt_append_dec` copies two
+words, reads its source after growth, a missing or kind-1 empty block, `rt_free` walking
+kind 7, an 8-byte element size, a clone that maps kind 7 to kind 1), and slot 94 pointed at
+`rt_tpl_html_copy`. The judge gained `run_array_suite`, which builds `rt_heap_test.c`
+against the mutant runtime and runs the five C cases. The compiler-mutant judge now
+passes the runtime directory (the repository root has no `runtime.c`, so before this
+fix every compiler mutant would have been "caught" by a compile failure).
+
+**Tooling fixes found along the way.** `tests/mutate_io.py` had a stale runtime pattern
+after `grow_array` re-indented the empty-block guard (STALE); its pattern is updated to
+the new text and the mutant still removes the guard.
+
+**Gates.**
+- `run_fork` **1,837 passed, 0 failed**.
+- `module_test` **145 passed, 0 failed**; `sym_test` **54 passed, 0 failed**.
+- `sym_fuzz` **200/200 clean** (seed 20261028, digest `10de5ef0c1be7359`).
+- `doc_check` **73 examples, 0 problems** (the new LANGUAGE.md array example is one).
+- `heap_test` passes (the five `dec_*` cases included); `elf_test` ok; `io_test` 0 failures;
+  `meta_test` 34 of 34; `port_test` **624 of 624**; `port_compare` **1,817 of 1,817**;
+  `homes_check` and `homes_edge` (1,028 statements, 119 refused by both, 0 differ) pass;
+  `imports` **30/30**; `stdlib` **17/17**.
+- `mutate_decimal` **95 caught, 0 missed, 0 broken** (84 before D2, plus the 11 array mutants).
+- `mutate_io` **36/36 caught** after the pattern fix.
+- `mutate_port` **539 of 540**. The one unjudged mutant, `modules: token names lack ::`, is
+  a pre-existing stale pattern in `mutate_fork.py` and `mutant_catchers.tsv`: the source
+  no longer contains `try :: float decimal /= %= \`"` (unchanged at HEAD). Not fixed here.
+- `mutate_fork` filtered runs, each all caught: `sym` 78/79 (1 equivalent), `decimal` 4/4,
+  `X36` 2/2, `field` 33/34 (1 equivalent), `array` 10/10, `append` 4/4, `index` 13/13,
+  `resolve` 1/1.
+- Fixed point: `stage2 == stage3` (`cmp`), and the seed-built compiler equals stage 2 byte
+  for byte (737,281 bytes).
+- Self-compile peak: `OBO_STATS=1` reports **2,529,104 bytes** live (56,085,456 allocated),
+  against the budget of 2,750,000 (headroom 220,896). The budget is unchanged.
+- `cinterop` `test_cinterop.py`: ok (the libpq smoke test is skipped without `CINTEROP_TEST_DSN`).

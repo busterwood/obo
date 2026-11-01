@@ -176,6 +176,9 @@ def rt_section():
     check_case(exe, 'tiny heap metadata scales down', 'limit', clean_env('64KiB'),
                address_space=32 << 20, args=('64KiB',))
 
+    # decimal arrays (kind 7): the empty block, self-append, clone, free and truncate
+    for case in ('dec_kind', 'dec_self', 'dec_clone', 'dec_free', 'dec_truncate'):
+        check_case(exe, f'decimal array {case}', case, clean_env())
 
 def text_section():
     exe = build_text_harness()

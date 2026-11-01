@@ -227,7 +227,7 @@ ran, even if `f` replaces the record or writes the field. The same holds for eac
 decimal or int argument of `decimal::div`, `quantize`, `toInt` and `check` that a later
 argument follows. Like an int field, a field may not be assigned from a call
 that might free its record (`cannot assign to a field or element across a
-call`). Decimal globals, constants, arrays, captures, methods, interfaces and
+call`). Decimal globals, constants, captures, methods, interfaces and
 function values are not implemented yet and are refused with a clear diagnostic.
 A decimal value in a global initializer, such as `var g = new R{d: 1.5}`, is
 refused too, because a global initializer has no frame for the temporary it
@@ -244,6 +244,34 @@ fn main() {
     l.total = l.price * 3.0
     l.price += 0.25
     println(l.total, " ", l.price * 2.0)
+}
+```
+
+`[]decimal` (0.16) is an array of decimals, stored inline at a 24-byte stride. It
+is created with `new []decimal(n)` (zero-filled) or `new []decimal(0)` and then
+`append`ed, and it works where other arrays do: locals, fields, elements of
+`[][]decimal`, parameters (`&[]decimal`, `mut &[]decimal`), returns, `Result` and
+optional payloads. An element reads and writes like a decimal local (`xs[i]`,
+`xs[i] = v`, `xs[i] += v`), and `for d in xs` copies each element. `len`,
+`truncate` and `append` work as for other arrays. An index outside the array traps
+with `index out of range` and exit code 3, read or write, and a negative index traps
+the same way. An `append` takes a decimal value; there is no implicit conversion from
+`int`. A `[]decimal` cannot be printed, converted with `string`, taken or replaced
+element by element, or borrowed element by element; a decimal element is not an owned
+value. The ordering rule for record fields applies to elements too: a decimal element
+or value is read before the operand after it runs. The call-ordering rules of section 12
+(`xs[f(xs)]`, `append(xs, f(xs))`) apply to `[]decimal` exactly as to `[]int`.
+
+```obo
+// example: runs
+// prints 3.75 2 0
+fn main() {
+    var xs = new []decimal(0)
+    append(xs, 1.5)
+    append(xs, 2.25)
+    xs[0] += xs[1]
+    let z = new []decimal(1)
+    println(xs[0], " ", len(xs), " ", z[0])
 }
 ```
 

@@ -1,0 +1,12 @@
+// Reading the element past the end of a []decimal traps with exit 3, as an []int read does.
+fn main() {
+    var xs = new []decimal(0)
+    append(xs, 1.5)
+    append(xs, 2.5)
+    println(xs[1])                              // expect: 2.5
+    println(xs[2])
+    println("unreachable")
+}
+
+// expect-exit: 3
+// expect-stderr: index out of range

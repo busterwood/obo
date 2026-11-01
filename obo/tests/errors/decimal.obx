@@ -38,9 +38,6 @@ fn main() { let x = 1.0 + 1 }  // error: cannot mix decimal with int; convert ex
 // === decimal does not compare with int
 fn main() { println(1.0 == 1) }  // error: cannot compare decimal with int; convert explicitly
 
-// === arrays of decimal are not v1
-fn main() { let a: []decimal = new []decimal(1) }  // error: arrays of decimal (24-byte stride) are not supported in v1
-
 // === decimal globals are not v1
 var g: decimal = 1.0  // error: decimal globals are not supported in v1
 fn main() {}
