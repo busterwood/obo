@@ -607,6 +607,7 @@ static int stream_release(void *ptr) {
     s->token = 0;
     if (s->conn == NULL) {
         free_stream(s);
+        g_streams_closed += 1;
         return 0;
     }
     if (!s->closing) {
@@ -646,6 +647,8 @@ static int conn_release(void *ptr) {
             stream_clear_deadlines(s);
         } else {
             free_stream(s);
+            c->streams_closed += 1;
+            g_streams_closed += 1;
         }
     }
     c->stream_count = 0;
