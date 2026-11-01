@@ -7176,3 +7176,108 @@ record-cap/capacity/forged-policy/fd-flag cases plus
 `run_fork.py` **1869 passed, 0 failed**; `module_test.py` **149 passed**;
 `doc_check.py` **74 examples, 0 problems**; `git diff --check` clean. These are
 Linux x86-64 host measurements, not portable promises.
+
+## Systems library P3 (processes, signals, terminal, 0.18/format 11), on top of P0/P1a/P1b/P2/P2q
+
+**Scope.** P3 implements §8.1 spawn/pipes/reaping, §8.2 queued signal delivery,
+the `cwd`/`chdir` part of §8.3 and the terminal raw-mode/window-size part of §8.4
+in `obo/experimental/sys`, without changing the compiler, runtime, ABI, symbol
+format, seed or package version. Process environment mutation remains
+`Unsupported`; resolver policy, mapping and all thread/synchronization kinds
+remain out of scope.
+
+**Public surface added.**
+- `sysprocess::Child`, `Redirect` (`Inherit`/`Null`/`Pipe`/`FromStream`/
+  `MergeError`), `EnvPolicy`, `Command`, `ExitStatus`, `spawn`, `closeCommand`, `takeInput`/`takeOutput`/`takeError`, `pollExit`,
+  `wait`, `terminate`, `watchChild`, `detach`, `close`, `reapChildren`, `cwd`
+  and `chdir`.
+- `syssignals::SignalSet`, `SignalSource`, `Event`, library ids
+  `INTERRUPT`/`TERMINATE`/`HANGUP`/`CHILD`/`WINDOW_CHANGED`/`OTHER` and
+  `empty`/`add`/`remove`/`subscribe`/`watch`/`next`/`close`.
+- `systerminal::Terminal`, `Size`, `openStandard`, `size`, `enterRaw`,
+  `restore`, `watchResize`, `duplicate` and `close`.
+
+**Spawn and reaping.** A validated `Command` becomes an internal spawn plan of
+copied executable/argv/environment bytes and duplicated directory/FromStream
+descriptors; no pointer, pid or token is public. Requests without an anchored
+directory use `posix_spawn` with file actions and spawn attributes; the anchored
+cwd path uses trusted `fork`/`execve`. The fork child preallocates everything,
+runs only async-signal-safe C (setpgid/fchdir/sigprocmask/signal/dup2/execve),
+resets mask and dispositions, duplicates stream sources instead of consuming
+them and reports exec failure through a CLOEXEC error pipe. A genuine exit 127
+therefore remains `Exited{127}` while a missing executable is `NotFound`.
+Unintended descriptors are CLOEXEC and the child standard ends are blocking
+while the parent pipe ends are nonblocking. Failed spawns close both pipe ends
+and reap the failed child. `close` on Running transfers to the single-threaded
+reaper rather than killing or blocking; `detach` is explicit. `pollExit` is one
+`WNOHANG` observation and `wait` is one blocking `waitpid`; the terminal status
+is cached and reaped exactly once. Reaping runs at reactor turns and in
+`reapChildren`, so a detached child can be a zombie until the next turn.
+`watchChild` prefers pidfd and reports `Unsupported` without it. Group
+termination is accepted only for a group created by `newGroup`; no unchecked
+negative pid or public pid authority exists.
+
+**Signal backend and mask ownership.** Linux blocks the selected library-id
+signals in the calling thread and drains one nonblocking signalfd. Overlapping
+subscriptions return `Busy`; the single source owns the saved mask and restores
+it on close/shutdown. `next` coalesces queued notifications into one
+`Event{signal,count}`; counts are observations, not exact delivery accounting.
+`OTHER` is status-only, empty sets and SIGKILL/SIGSTOP/synchronous faults are
+not representable. There is no obo handler or C-to-obo callback. Systems-context
+initialization ignores SIGPIPE when it was not already ignored and spawn resets
+child defaults.
+
+**Terminal ownership.** `openStandard` duplicates 0/1/2 with CLOEXEC and never
+takes ownership of the standard descriptor or changes its shared description
+flags. A saved termios snapshot makes `enterRaw` an explicit obligation;
+`restore` and idempotent `close` put it back. `size`/`enterRaw` report
+`Unsupported` on a non-tty. `watchResize` reuses the signal service through a
+module-private `WINDOW_CHANGED` source; closing the terminal that created it
+retires resize watches. No arbitrary ioctl or UI framework is exposed.
+
+**Deviations, all deliberate.**
+- `EnvPolicy` variants are `EnvInherit`/`EnvExplicit` because closed variants
+  share one module-scope name and `Redirect` already uses `Inherit`.
+- The fake backend's blocking `wait` on a still-Running scripted child returns
+  `WouldBlock` instead of sleeping; pipe data and exits are explicit scripts.
+- One module-private resize source exists per process; closing its creating
+  terminal retires watches made through it.
+- Argument text is capped at 128 KiB per argument and a 4 MiB spawn plan in
+  addition to `ARG_MAX`; `FromStream` is duplicated, never consumed.
+- Shutdown reports outstanding children as cleanup failures instead of silently
+  blocking, killing or hiding them. A running child whose owner is dropped is
+  reaped only at a reaper turn.
+- Without pidfd, terminate tracks owned children but cannot promise immunity
+  from an externally reused pid after the child is reaped; the reaper and
+  terminate never signal an arbitrary negative pid.
+
+**P3 review fixes (B1-B5).** Prepared child descriptors and the fork error-pipe
+write end are forced to >=3, a redirect target is never closed or left CLOEXEC,
+and both spawn paths close all unintended parent descriptors
+(`closefrom`/`close_range`, inventory fallback) while preserving 0/1/2 and the
+CLOEXEC error pipe. A `FromStream` source with
+`O_NONBLOCK` is rejected with `Unsupported` rather than handed to the child as a
+broken standard fd; pipe chaining needs a future relay. The fake backend takes
+an inode reference for a `FromStream` source so closing that source cannot free
+the child's state, and fake shutdown frees every scripted child while reporting
+running ones as cleanup failures. SIGCHLD ignored is rejected at
+initialization/spawn with `Busy`, call-class counters cover all new classes, and
+close over a raw terminal still releases the private resize source. The P3
+suite adds 0/1/2-closed descriptor regressions, a non-CLOEXEC marker-fd check,
+the fake UAF/shutdown LSan cases, takeInput, FromStream output/error, extra
+terminal close paths and kill/detach/take/reap/next/size/raw/restore/dup faults.
+
+**P1b fake-only nits fixed.** `openBeneath O_CREAT|O_EXCL` on `.` or an existing
+directory now returns `AlreadyExists` like Linux (plain create is `IsDirectory`);
+the fake `.` opens use one stable directory inode so kind and identity match the
+real backend; the design's monotonic record-latency deferral and the
+`flush`-is-one-drain-attempt wording are recorded in the design/API/LIMITS.
+
+**Gates measured on this branch (Linux x86-64).** `test_sys_p0.py`,
+`test_sys_p1a.py`, `test_sys_p1b.py`, `test_sys_p2.py`, `test_sys_p2q.py` and
+`test_sys_p3.py` all pass; the P3 C harness runs normally and under
+ASan/UBSan/LSan on both adapters, and the real pty test runs visibly (skip only
+if `/dev/pts` is absent). `run_fork.py` **1878 passed, 0 failed**;
+`module_test.py` **150 passed**; `doc_check.py` **75 examples, 0 problems**;
+`git diff --check` is clean and `git diff main -- obo/src obo/runtime obo/seed
+obo/obo` is empty. These are host measurements, not portable promises.

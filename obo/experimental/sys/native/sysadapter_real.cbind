@@ -23,12 +23,16 @@
     "../syswaitio.obx",
     "../syscalendar.obx",
     "../sysenv.obx",
-    "../syslog.obx"
+    "../syslog.obx",
+    "../syssignals.obx",
+    "../sysprocess.obx",
+    "../systerminal.obx"
   ],
   "sources": [
     "sysregistry.c",
     "sysadapter_real.c",
-    "sysnet_real.c"
+    "sysnet_real.c",
+    "sysproc_real.c"
   ],
   "headers": [
     "sysadapter.h",
@@ -1023,6 +1027,227 @@
         "i64",
         "i64"
       ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_plan_set",
+      "symbol": "sys_proc_plan_set",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_spawn",
+      "symbol": "sys_proc_spawn",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_take",
+      "symbol": "sys_proc_take",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_wait",
+      "symbol": "sys_proc_wait",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_terminate",
+      "symbol": "sys_proc_terminate",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_detach",
+      "symbol": "sys_proc_detach",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_reap_children",
+      "symbol": "sys_proc_reap_children",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_child_count",
+      "symbol": "sys_proc_child_count",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_cwd",
+      "symbol": "sys_proc_cwd",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_chdir",
+      "symbol": "sys_proc_chdir",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_arg_max",
+      "symbol": "sys_proc_arg_max",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_signal_init",
+      "symbol": "sys_signal_init",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_signal_subscribe",
+      "symbol": "sys_signal_subscribe",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_signal_next",
+      "symbol": "sys_signal_next",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_terminal_open",
+      "symbol": "sys_terminal_open",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_terminal_size",
+      "symbol": "sys_terminal_size",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_terminal_raw",
+      "symbol": "sys_terminal_raw",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_terminal_restore",
+      "symbol": "sys_terminal_restore",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_terminal_dup",
+      "symbol": "sys_terminal_dup",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_proc_pidfd_supported",
+      "symbol": "sys_proc_pidfd_supported",
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"

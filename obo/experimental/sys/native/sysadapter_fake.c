@@ -39,6 +39,9 @@ struct fake_desc {
     fake_inode *ino;
     size_t pos;
     int append;
+    int pipe;            /* parent end of a scripted child pipe */
+    int nonblocking;     /* taken-pipe contract; survives producer exit */
+    long pipe_ordinal;
     long refs;
 };
 
@@ -75,6 +78,8 @@ static const struct {
 static long err(long e) {
     return -(e > 0 ? e : EIO);
 }
+
+static int fake_pipe_alive(long ordinal);
 
 int fake_pop_script(long call_class, long *result) {
     if (qhead == qtail) return 0;
@@ -398,18 +403,30 @@ long sys_file_open(long dir_token, long path_token, long flags, long mode) {
     }
     have_script = pop_script(SYS_CALL_FILE_OPEN, &scripted);
     if (have_script && scripted < 0) return scripted;
-    idx = store_find(path, pathlen);
-    if (idx < 0) {
-        if ((flags & SYS_OPEN_CREATE) == 0) return err(ENOENT);
-        ino = store_add(path, pathlen, mode);
-        if (ino == NULL) return err(ENOMEM);
-    } else {
-        if ((flags & SYS_OPEN_CREATE) != 0 && (flags & SYS_OPEN_EXCLUSIVE) != 0) {
-            return err(EEXIST);
+    if (pathlen == 1 && path[0] == '.') {
+        /* The root path "." is a directory, matching the real backend. Its
+         * identity is stable across opens. */
+        if ((flags & SYS_OPEN_CREATE) != 0) {
+            if ((flags & SYS_OPEN_EXCLUSIVE) != 0) return err(EEXIST);
+            return err(EISDIR);
         }
-        ino = fake_store[idx].ino;
-        if ((flags & SYS_OPEN_CREATE) != 0) ino->mode = mode & 07777;
-        if ((flags & SYS_OPEN_TRUNCATE) != 0) ino->len = 0;
+        ino = store_ensure(".", 0755);
+        if (ino == NULL) return err(ENOMEM);
+        ino->ftype = 4;
+    } else {
+        idx = store_find(path, pathlen);
+        if (idx < 0) {
+            if ((flags & SYS_OPEN_CREATE) == 0) return err(ENOENT);
+            ino = store_add(path, pathlen, mode);
+            if (ino == NULL) return err(ENOMEM);
+        } else {
+            if ((flags & SYS_OPEN_CREATE) != 0 && (flags & SYS_OPEN_EXCLUSIVE) != 0) {
+                return err(EEXIST);
+            }
+            ino = fake_store[idx].ino;
+            if ((flags & SYS_OPEN_CREATE) != 0) ino->mode = mode & 07777;
+            if ((flags & SYS_OPEN_TRUNCATE) != 0) ino->len = 0;
+        }
     }
     f = (fake_file *)calloc(1, sizeof(*f));
     d = (fake_desc *)calloc(1, sizeof(*d));
@@ -547,7 +564,13 @@ long sys_io_read(long token, long kind, long buf_token, long offset, long count,
         if ((unsigned long long)position >= f->d->ino->len) return 0;
         n = f->d->ino->len - (size_t)position;
     } else {
-        if (f->d->pos >= f->d->ino->len) return 0;
+        if (f->d->pos >= f->d->ino->len) {
+            if (f->d->pipe) {
+                if (fake_pipe_alive(f->d->pipe_ordinal)) return err(EAGAIN);
+                return 0;
+            }
+            return 0;
+        }
         n = f->d->ino->len - f->d->pos;
     }
     if (n > (size_t)count) n = (size_t)count;
@@ -1016,11 +1039,20 @@ long sys_file_open_beneath(long dir_token, long path_token, long flags,
     have_script = pop_script(SYS_CALL_OPEN_BENEATH, &scripted);
     if (have_script && scripted < 0) return scripted;
     if (normlen == 1 && norm[0] == '.') {
-        if ((flags & SYS_OPEN_CREATE) != 0) return err(EISDIR);
-        ino = new_inode(0755);
-        if (ino == NULL) return err(ENOMEM);
-        ino->ftype = 4;
-        ino->refs = 1;
+        if ((flags & SYS_OPEN_CREATE) != 0) {
+            /* openat2/O_CREAT|O_EXCL on an existing directory is EEXIST, as it
+             * is for any existing name; plain O_CREAT on a directory is EISDIR. */
+            if ((flags & SYS_OPEN_EXCLUSIVE) != 0) return err(EEXIST);
+            return err(EISDIR);
+        }
+        idx = store_find(".", 1);
+        if (idx < 0) {
+            ino = store_add(".", 1, 0755);
+            if (ino == NULL) return err(ENOMEM);
+            ino->ftype = 4;
+        } else {
+            ino = fake_store[idx].ino;
+        }
     } else {
         idx = store_find(norm, normlen);
         if (idx < 0) {
@@ -1029,12 +1061,12 @@ long sys_file_open_beneath(long dir_token, long path_token, long flags,
             if (ino == NULL) return err(ENOMEM);
         } else {
             ino = fake_store[idx].ino;
-            if ((flags & SYS_OPEN_CREATE) != 0 && ino->ftype == 4) {
-                return err(EISDIR);
-            }
             if ((flags & SYS_OPEN_CREATE) != 0 &&
                 (flags & SYS_OPEN_EXCLUSIVE) != 0) {
                 return err(EEXIST);
+            }
+            if ((flags & SYS_OPEN_CREATE) != 0 && ino->ftype == 4) {
+                return err(EISDIR);
             }
             if ((flags & SYS_OPEN_TRUNCATE) != 0) ino->len = 0;
         }
@@ -1389,6 +1421,11 @@ long sys_res_new(long kind, long a, long b) {
         (void)b;
         return fake_cancel_new();
     }
+    if (kind == SYS_KIND_SPAWN_PLAN) {
+        (void)a;
+        (void)b;
+        return sys_proc_plan_new();
+    }
     (void)b;
     if (kind == SYS_KIND_BYTE_BUFFER) {
         return sys_reg_new_buffer(a);
@@ -1415,6 +1452,9 @@ long sys_res_op(long token, long kind, long op, long a, long b, long c) {
         void *ptr = sys_reg_peek(token, SYS_KIND_BYTE_BUFFER);
         if (ptr == NULL) return err(EINVAL);
         return sys_reg_buffer_op(ptr, op, a, b, c);
+    }
+    if (kind == SYS_KIND_SPAWN_PLAN) {
+        return sys_proc_plan_set(token, op, a, b);
     }
     if (kind == SYS_KIND_TEST_RESOURCE || kind == SYS_KIND_TEST_RESOURCE_ALT) {
         fake_file *f = file_of(token, kind);
@@ -1469,4 +1509,803 @@ long sys_res_close(long token, long kind) {
         return err(e);
     }
     return 1;
+}
+
+/* ---- P3 fake process, signal and terminal backend ---------------------- */
+
+typedef struct {
+    char *exec;
+    unsigned char *argv_blob;
+    size_t argv_len;
+    int argc;
+    unsigned char *env_blob;
+    size_t env_len;
+    int envc;
+    int env_mode;
+    int redir[3];
+    long src_token[3];
+    int group;
+} fake_plan;
+
+typedef struct fake_child {
+    long token;
+    long pid;
+    long ordinal;
+    int state;              /* 0 running, 1 exited */
+    int detached;
+    int observed;
+    long status;
+    int group;
+    int merge_error;
+    fake_file *parent[3];
+    fake_inode *ino[3];
+    int ino_owned[3];
+    size_t read_pos[3];
+    struct fake_child *next;
+} fake_child;
+
+static fake_child *fake_children;
+static long fake_child_next = 1;
+static long fake_proc_ordinal;
+static long fake_arg_max = 2097152L;
+static void fake_child_close_pipes(fake_child *c);
+static char fake_cwd[64] = "/fake-cwd";
+static long fake_signal_active;
+static long fake_signal_bits;
+static long fake_signal_pending[6];
+static long fake_term_rows = 24;
+static long fake_term_columns = 80;
+static int fake_term_raw;
+
+static fake_plan *fake_plan_of(long token) {
+    return (fake_plan *)sys_reg_peek(token, SYS_KIND_SPAWN_PLAN);
+}
+
+static int release_fake_plan(void *p) {
+    fake_plan *plan = (fake_plan *)p;
+    if (plan == NULL) return EINVAL;
+    free(plan->exec);
+    free(plan->argv_blob);
+    free(plan->env_blob);
+    free(plan);
+    return 0;
+}
+
+long sys_proc_plan_new(void) {
+    fake_plan *plan;
+    long token;
+    sys_reg_bump_call(SYS_CALL_PROC_PLAN_NEW);
+    plan = (fake_plan *)calloc(1, sizeof(*plan));
+    if (plan == NULL) return err(ENOMEM);
+    plan->redir[0] = SYS_REDIRECT_INHERIT;
+    plan->redir[1] = SYS_REDIRECT_INHERIT;
+    plan->redir[2] = SYS_REDIRECT_INHERIT;
+    token = sys_reg_new_object(SYS_KIND_SPAWN_PLAN, plan, release_fake_plan, 0);
+    if (token < 0) release_fake_plan(plan);
+    return token;
+}
+
+static int fake_count_nul(const unsigned char *data, size_t len, int env) {
+    size_t i;
+    size_t start = 0;
+    int count = 0;
+    if (len < 1 || data[len - 1] != 0) return -1;
+    for (i = 0; i < len; i++) {
+        if (data[i] != 0) continue;
+        if (i == start && env) return -1;
+        if (env) {
+            size_t j;
+            int sep = 0;
+            for (j = start; j < i; j++) {
+                if (data[j] == '=' && j > start) { sep = 1; break; }
+            }
+            if (!sep) return -1;
+        }
+        count++;
+        start = i + 1;
+    }
+    return count;
+}
+
+long sys_proc_plan_set(long plan_token, long field, long a, long b) {
+    fake_plan *plan = fake_plan_of(plan_token);
+    unsigned char *data = NULL;
+    size_t len = 0;
+    long r;
+    sys_reg_bump_call(SYS_CALL_PROC_PLAN_SET);
+    if (plan == NULL) return err(EINVAL);
+    if (field == SYS_OP_PLAN_GROUP) {
+        if (a != 0 && a != 1) return err(EINVAL);
+        plan->group = (int)a;
+        return 1;
+    }
+    if (field == SYS_OP_PLAN_ENV_MODE) {
+        if (a != 0 && a != 1) return err(EINVAL);
+        plan->env_mode = (int)a;
+        return 1;
+    }
+    if (field == SYS_OP_PLAN_INPUT || field == SYS_OP_PLAN_OUTPUT ||
+        field == SYS_OP_PLAN_ERROR) {
+        int which = (int)(field - SYS_OP_PLAN_INPUT);
+        if (a < SYS_REDIRECT_INHERIT || a > SYS_REDIRECT_MERGE_ERROR) return err(EINVAL);
+        if (a == SYS_REDIRECT_MERGE_ERROR && which != 2) return err(EINVAL);
+        if (a == SYS_REDIRECT_STREAM) {
+            fake_file *sf = file_of(b, SYS_KIND_STREAM);
+            if (sf == NULL) return err(EBADF);
+            if (sf->d != NULL && sf->d->nonblocking) {
+                /* Nonblocking pipe source: the child would inherit EAGAIN
+                 * semantics, so reject it like the real adapter. */
+                return err(EOPNOTSUPP);
+            }
+            plan->src_token[which] = b;
+        } else {
+            if (b != 0) return err(EINVAL);
+            plan->src_token[which] = 0;
+        }
+        plan->redir[which] = (int)a;
+        return 1;
+    }
+    if (field == SYS_OP_PLAN_DIRECTORY) {
+        if (a != 0 && sys_reg_peek(a, SYS_KIND_DIRECTORY) == NULL) return err(EBADF);
+        return 1;
+    }
+    r = sys_reg_buffer_data(a, &data, &len);
+    if (r < 0) return r;
+    if (data == NULL) return err(EINVAL);
+    if (field == SYS_OP_PLAN_EXEC) {
+        char *copy;
+        if (len < 1 || len > 4095 || memchr(data, 0, len) != NULL) return err(EINVAL);
+        copy = (char *)malloc(len + 1);
+        if (copy == NULL) return err(ENOMEM);
+        memcpy(copy, data, len);
+        copy[len] = '\0';
+        free(plan->exec);
+        plan->exec = copy;
+        return 1;
+    }
+    if (field == SYS_OP_PLAN_ARGV || field == SYS_OP_PLAN_ENV) {
+        int count;
+        unsigned char *copy;
+        if (len == 0 && field == SYS_OP_PLAN_ENV) {
+            free(plan->env_blob);
+            plan->env_blob = NULL;
+            plan->env_len = 0;
+            plan->envc = 0;
+            return 1;
+        }
+        count = fake_count_nul(data, len, field == SYS_OP_PLAN_ENV);
+        if (count < 0) return err(EINVAL);
+        if (field == SYS_OP_PLAN_ARGV && count < 1) return err(EINVAL);
+        copy = (unsigned char *)malloc(len);
+        if (copy == NULL) return err(ENOMEM);
+        memcpy(copy, data, len);
+        if (field == SYS_OP_PLAN_ARGV) {
+            free(plan->argv_blob);
+            plan->argv_blob = copy;
+            plan->argv_len = len;
+            plan->argc = count;
+        } else {
+            free(plan->env_blob);
+            plan->env_blob = copy;
+            plan->env_len = len;
+            plan->envc = count;
+        }
+        return 1;
+    }
+    return err(EINVAL);
+}
+
+static fake_file *fake_pipe_file(fake_inode *ino, long ordinal) {
+    fake_file *f = (fake_file *)calloc(1, sizeof(*f));
+    fake_desc *d = (fake_desc *)calloc(1, sizeof(*d));
+    if (f == NULL || d == NULL) {
+        free(f);
+        free(d);
+        return NULL;
+    }
+    d->ino = ino;
+    d->pipe = 1;
+    d->nonblocking = 1;
+    d->pipe_ordinal = ordinal;
+    d->refs = 1;
+    ino->refs++;
+    f->d = d;
+    return f;
+}
+
+static fake_child *fake_find_ordinal(long ordinal) {
+    fake_child *c = fake_children;
+    while (c != NULL && c->ordinal != ordinal) c = c->next;
+    return c;
+}
+
+static int fake_pipe_alive(long ordinal) {
+    fake_child *c = fake_find_ordinal(ordinal);
+    return c != NULL && c->state == 0;
+}
+
+static void fake_child_unlink(fake_child *victim) {
+    fake_child **pp = &fake_children;
+    while (*pp != NULL) {
+        if (*pp == victim) {
+            *pp = victim->next;
+            return;
+        }
+        pp = &(*pp)->next;
+    }
+}
+
+static void fake_child_drop_inodes(fake_child *c) {
+    int i;
+    for (i = 0; i < 3; i++) {
+        if (c->ino_owned[i] && c->ino[i] != NULL) {
+            fake_inode *ino = c->ino[i];
+            c->ino[i] = NULL;
+            c->ino_owned[i] = 0;
+            ino->refs--;
+            if (ino->refs <= 0) {
+                free(ino->data);
+                free(ino->link_target);
+                free(ino);
+            }
+        }
+    }
+}
+
+static int release_fake_child(void *p) {
+    fake_child *c = (fake_child *)p;
+    int i;
+    if (c == NULL) return EINVAL;
+    for (i = 0; i < 3; i++) {
+        if (c->parent[i] != NULL) {
+            release_shared(c->parent[i]);
+            c->parent[i] = NULL;
+        }
+    }
+    fake_child_drop_inodes(c);
+    /* close on a running or not-yet-observed child transfers the obligation
+     * to the module reaper, exactly like the real backend. */
+    if (!c->observed) {
+        c->token = 0;
+        return 0;
+    }
+    fake_child_unlink(c);
+    free(c);
+    return 0;
+}
+
+static fake_child *fake_child_of(long token) {
+    return (fake_child *)sys_reg_peek(token, SYS_KIND_CHILD);
+}
+
+long sys_proc_spawn(long plan_token) {
+    fake_plan *plan = fake_plan_of(plan_token);
+    fake_child *c;
+    long token;
+    long scripted = 0;
+    int have_script;
+    int i;
+    int fail_code = ENOMEM;
+    sys_reg_bump_call(SYS_CALL_PROC_SPAWN);
+    if (plan == NULL || plan->exec == NULL || plan->argc < 1) return err(EINVAL);
+    have_script = pop_script(SYS_CALL_PROC_SPAWN, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    have_script = pop_script(SYS_CALL_PROC_EXEC, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    c = (fake_child *)calloc(1, sizeof(*c));
+    if (c == NULL) return err(ENOMEM);
+    c->pid = 1000 + fake_child_next;
+    c->ordinal = ++fake_proc_ordinal;
+    c->group = plan->group;
+    c->merge_error = plan->redir[2] == SYS_REDIRECT_MERGE_ERROR;
+    for (i = 0; i < 3; i++) {
+        int kind = plan->redir[i];
+        if (kind == SYS_REDIRECT_NULL) {
+            c->ino[i] = NULL;
+        } else if (kind == SYS_REDIRECT_PIPE) {
+            fake_inode *ino;
+            fake_file *pf;
+            have_script = pop_script(SYS_CALL_PROC_PIPE, &scripted);
+            if (have_script && scripted < 0) { fail_code = (int)(0 - scripted); goto fail; }
+            ino = new_inode(0600);
+            if (ino == NULL) goto fail;
+            ino->refs = 1;
+            pf = fake_pipe_file(ino, c->ordinal);
+            if (pf == NULL) {
+                ino->refs--;
+                free(ino->data);
+                free(ino);
+                goto fail;
+            }
+            c->ino[i] = ino;
+            c->ino_owned[i] = 1;
+            c->parent[i] = pf;
+        } else if (kind == SYS_REDIRECT_STREAM) {
+            fake_file *sf;
+            have_script = pop_script(SYS_CALL_PROC_DUP, &scripted);
+            if (have_script && scripted < 0) { fail_code = (int)(0 - scripted); goto fail; }
+            sf = file_of(plan->src_token[i], SYS_KIND_STREAM);
+            if (sf == NULL || sf->d == NULL || sf->d->ino == NULL) goto fail;
+            c->ino[i] = sf->d->ino;
+            /* The child owns this reference for its whole lifetime, so closing
+             * the source stream cannot free the inode under proc_read/write. */
+            c->ino_owned[i] = 1;
+            c->ino[i]->refs++;
+        }
+    }
+    if (c->merge_error) {
+        c->ino[2] = c->ino[1];
+        c->ino_owned[2] = 0;
+    }
+    token = sys_reg_new_object(SYS_KIND_CHILD, c, release_fake_child, 0);
+    if (token < 0) goto fail;
+    c->token = token;
+    c->state = 0;
+    c->status = 0;
+    c->observed = 0;
+    c->read_pos[0] = 0;
+    c->read_pos[1] = 0;
+    c->read_pos[2] = 0;
+    c->next = fake_children;
+    fake_children = c;
+    fake_child_next++;
+    return token;
+fail:
+    for (i = 0; i < 3; i++) {
+        if (c->parent[i] != NULL) {
+            release_shared(c->parent[i]);
+            c->parent[i] = NULL;
+        }
+    }
+    fake_child_drop_inodes(c);
+    free(c);
+    return err(fail_code);
+}
+
+long sys_proc_take(long child_token, long which, long to_kind) {
+    fake_child *c = fake_child_of(child_token);
+    long token;
+    sys_reg_bump_call(SYS_CALL_PROC_TAKE);
+    {
+        long scripted = 0;
+        int have_script = pop_script(SYS_CALL_PROC_TAKE, &scripted);
+        if (have_script && scripted < 0) return scripted;
+    }
+    if (c == NULL) return err(EINVAL);
+    if (which < 0 || which > 2 || to_kind != SYS_KIND_STREAM) return err(EINVAL);
+    if (c->detached) return err(ECHILD);
+    if (c->parent[which] == NULL) return err(EINVAL);
+    token = sys_reg_new_object(SYS_KIND_STREAM, c->parent[which], release_shared, 0);
+    if (token < 0) return token;
+    c->parent[which] = NULL;
+    return token;
+}
+
+long sys_proc_wait(long child_token, long block) {
+    fake_child *c = fake_child_of(child_token);
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_PROC_WAIT);
+    have_script = pop_script(SYS_CALL_PROC_WAIT, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (c == NULL) return err(EINVAL);
+    if (block != 0 && block != 1) return err(EINVAL);
+    if (c->detached) return err(ECHILD);
+    if (c->state == 1) {
+        c->observed = 1;
+        return c->status;
+    }
+    if (block) return err(EAGAIN);
+    return 0;
+}
+
+long sys_proc_terminate(long child_token, long force, long group) {
+    fake_child *c = fake_child_of(child_token);
+    long id;
+    sys_reg_bump_call(SYS_CALL_PROC_KILL);
+    {
+        long scripted = 0;
+        int have_script = pop_script(SYS_CALL_PROC_KILL, &scripted);
+        if (have_script && scripted < 0) return scripted;
+    }
+    if (c == NULL) return err(EINVAL);
+    if ((force != 0 && force != 1) || (group != 0 && group != 1)) return err(EINVAL);
+    if (c->detached) return err(ECHILD);
+    if (group && !c->group) return err(EINVAL);
+    if (c->state == 1) return 0;
+    id = force ? 6 : 2;
+    c->state = 1;
+    c->status = (id << 8) | SYS_EXIT_SIGNALLED;
+    fake_child_close_pipes(c);
+    return 1;
+}
+
+long sys_proc_detach(long child_token) {
+    fake_child *c = fake_child_of(child_token);
+    sys_reg_bump_call(SYS_CALL_PROC_DETACH);
+    {
+        long scripted = 0;
+        int have_script = pop_script(SYS_CALL_PROC_DETACH, &scripted);
+        if (have_script && scripted < 0) return scripted;
+    }
+    if (c == NULL) return err(EINVAL);
+    if (c->detached || c->state == 1) return 0;
+    c->detached = 1;
+    return 1;
+}
+
+long sys_proc_reap_children(void) {
+    fake_child **pp = &fake_children;
+    long n = 0;
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_PROC_REAP);
+    have_script = pop_script(SYS_CALL_PROC_REAP, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    while (*pp != NULL) {
+        fake_child *c = *pp;
+        if (c->state == 1 && !c->observed) {
+            c->observed = 1;
+            n++;
+        }
+        if (c->observed && c->token == 0) {
+            *pp = c->next;
+            free(c);
+            continue;
+        }
+        pp = &c->next;
+    }
+    return n;
+}
+
+long sysfake_proc_last(void) {
+    return fake_proc_ordinal;
+}
+
+long sys_proc_child_count(void) {
+    fake_child *c = fake_children;
+    long n = 0;
+    while (c != NULL) {
+        if (c->token > 0) n++;
+        c = c->next;
+    }
+    return n;
+}
+
+long sys_proc_watch_fd(long child_token) {
+    (void)child_token;
+    return err(EOPNOTSUPP);
+}
+
+long sysfake_proc_ready(long child_token) {
+    fake_child *c = fake_child_of(child_token);
+    if (c == NULL) return 0;
+    return c->state == 1 ? 1 : 0;
+}
+
+long sysfake_set_arg_max(long value) {
+    if (value < 4096 || value > 2147483647L) return err(EINVAL);
+    fake_arg_max = value;
+    return 1;
+}
+
+static void fake_child_close_pipes(fake_child *c) {
+    int i;
+    for (i = 0; i < 3; i++) {
+        if (c->parent[i] != NULL && c->parent[i]->d != NULL) {
+            c->parent[i]->d->pipe = 0;
+        }
+    }
+}
+
+long sysfake_proc_exit(long ordinal, long flags, long payload) {
+    fake_child *c = fake_children;
+    while (c != NULL && c->ordinal != ordinal) c = c->next;
+    if (c == NULL) return err(ENOENT);
+    if (c->state != 0) return 0;
+    if (flags != SYS_EXIT_EXITED && flags != SYS_EXIT_SIGNALLED &&
+        flags != (SYS_EXIT_SIGNALLED | SYS_EXIT_CORE)) {
+        return err(EINVAL);
+    }
+    c->state = 1;
+    c->status = ((payload & 0xffffff) << 8) | flags;
+    fake_child_close_pipes(c);
+    return 1;
+}
+
+long sysfake_proc_write(long ordinal, long which, long buf_token,
+                        long offset, long count) {
+    fake_child *c = fake_children;
+    unsigned char *data = NULL;
+    size_t len = 0;
+    fake_inode *ino;
+    size_t at;
+    long r;
+    while (c != NULL && c->ordinal != ordinal) c = c->next;
+    if (c == NULL) return err(ENOENT);
+    if (which < 0 || which > 2 || offset < 0 || count < 0) return err(EINVAL);
+    r = buffer_span(buf_token, &data, &len);
+    if (r < 0) return r;
+    if ((size_t)offset > len || (size_t)count > len - (size_t)offset) return err(ERANGE);
+    ino = c->ino[which];
+    if (ino == NULL) return count; /* inherited or /dev/null: discarded */
+    at = ino->len;
+    if (at > (size_t)FAKE_FILE_MAX || (size_t)count > (size_t)FAKE_FILE_MAX - at) {
+        return err(ENOSPC);
+    }
+    r = grow_inode(ino, at + (size_t)count);
+    if (r < 0) return r;
+    if (count > 0) memcpy(ino->data + at, data + offset, (size_t)count);
+    ino->len = at + (size_t)count;
+    return count;
+}
+
+long sysfake_proc_read(long ordinal, long which, long buf_token,
+                       long offset, long count) {
+    fake_child *c = fake_children;
+    unsigned char *data = NULL;
+    size_t len = 0;
+    fake_inode *ino;
+    size_t n;
+    long r;
+    while (c != NULL && c->ordinal != ordinal) c = c->next;
+    if (c == NULL) return err(ENOENT);
+    if (which < 0 || which > 2 || offset < 0 || count < 0) return err(EINVAL);
+    r = buffer_span(buf_token, &data, &len);
+    if (r < 0) return r;
+    if ((size_t)offset > len || (size_t)count > len - (size_t)offset) return err(ERANGE);
+    ino = c->ino[which];
+    if (ino == NULL) return 0;
+    if (c->read_pos[which] >= ino->len) return 0;
+    n = ino->len - c->read_pos[which];
+    if (n > (size_t)count) n = (size_t)count;
+    if (n > 0) memcpy(data + offset, ino->data + c->read_pos[which], n);
+    c->read_pos[which] += n;
+    return (long)n;
+}
+
+long sys_proc_cwd(long buf_token, long cap) {
+    unsigned char *data = NULL;
+    size_t len = 0;
+    size_t n;
+    long r;
+    sys_reg_bump_call(SYS_CALL_PROC_CWD);
+    if (cap < 1) return err(EINVAL);
+    r = sys_reg_buffer_data(buf_token, &data, &len);
+    if (r < 0) return r;
+    if (data == NULL || (size_t)cap > len) return err(ERANGE);
+    n = strlen(fake_cwd);
+    if (n + 1 > (size_t)cap) return err(ERANGE);
+    memcpy(data, fake_cwd, n + 1);
+    return (long)n;
+}
+
+long sys_proc_chdir(long dir_token) {
+    sys_reg_bump_call(SYS_CALL_PROC_CHDIR);
+    if (dir_token == 0 || sys_reg_peek(dir_token, SYS_KIND_DIRECTORY) == NULL) {
+        return err(EBADF);
+    }
+    strcpy(fake_cwd, "/fake-dir");
+    return 1;
+}
+
+long sys_proc_arg_max(void) {
+    return fake_arg_max;
+}
+
+long sys_proc_pidfd_supported(void) {
+    return 1;
+}
+
+long sys_signal_init(long ignore_pipe) {
+    if (ignore_pipe != 0 && ignore_pipe != 1) return err(EINVAL);
+    return 1;
+}
+
+typedef struct fake_signal_source {
+    long bits;
+    long pending[6];
+} fake_signal_source;
+
+static fake_signal_source *fake_signal_current;
+
+static int release_fake_signal(void *p) {
+    fake_signal_source *s = (fake_signal_source *)p;
+    sys_reg_bump_call(SYS_CALL_SIGNAL_CLOSE);
+    free(s);
+    if (fake_signal_active == 1) {
+        fake_signal_active = 0;
+        fake_signal_bits = 0;
+        fake_signal_current = NULL;
+    }
+    return 0;
+}
+
+long sys_signal_subscribe(long bits) {
+    fake_signal_source *s;
+    long token;
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_SIGNAL_SUBSCRIBE);
+    have_script = pop_script(SYS_CALL_SIGNAL_SUBSCRIBE, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (bits <= 0 || (bits & ~0x1fL) != 0) return err(EINVAL);
+    if (fake_signal_active) return err(EBUSY);
+    s = (fake_signal_source *)calloc(1, sizeof(*s));
+    if (s == NULL) return err(ENOMEM);
+    s->bits = bits;
+    token = sys_reg_new_object(SYS_KIND_SIGNAL_SOURCE, s, release_fake_signal, 0);
+    if (token < 0) {
+        free(s);
+        return token;
+    }
+    fake_signal_active = 1;
+    fake_signal_bits = bits;
+    fake_signal_current = s;
+    return token;
+}
+
+long sys_signal_next(long source_token) {
+    fake_signal_source *s = (fake_signal_source *)sys_reg_peek(source_token,
+                                                               SYS_KIND_SIGNAL_SOURCE);
+    long i;
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_SIGNAL_NEXT);
+    have_script = pop_script(SYS_CALL_SIGNAL_NEXT, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (s == NULL) return err(EINVAL);
+    for (i = 1; i <= 5; i++) {
+        if (s->pending[i] > 0) {
+            long count = s->pending[i];
+            s->pending[i] = 0;
+            return (count << 8) | i;
+        }
+    }
+    return 0;
+}
+
+long sysfake_signal_push(long signal, long count) {
+    fake_signal_source *s = fake_signal_current;
+    if (signal < 1 || signal > 5 || count < 1 || count > 255) return err(EINVAL);
+    if (!fake_signal_active || s == NULL) return err(EINVAL);
+    s->pending[signal] = count;
+    fake_signal_pending[signal] = count;
+    return 1;
+}
+
+long sysfake_signal_ready(long source_token) {
+    fake_signal_source *s = (fake_signal_source *)sys_reg_peek(source_token,
+                                                               SYS_KIND_SIGNAL_SOURCE);
+    long i;
+    if (s == NULL) return 0;
+    for (i = 1; i <= 5; i++) {
+        if (s->pending[i] > 0) return 1;
+    }
+    return 0;
+}
+
+/* Fake signal pending is global; sys_signal_next reads the active source. Add
+ * the global into the next lookup by mirroring it when subscribed. */
+long sys_signal_watch_fd(long source_token) {
+    (void)source_token;
+    return err(EOPNOTSUPP);
+}
+
+typedef struct {
+    int raw;
+    int restores;
+} fake_terminal;
+
+static int release_fake_terminal(void *p) {
+    free(p);
+    return 0;
+}
+
+long sys_terminal_open(long which) {
+    fake_terminal *t;
+    long token;
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_TERMINAL_OPEN);
+    have_script = pop_script(SYS_CALL_TERMINAL_OPEN, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (which < 0 || which > 2) return err(EINVAL);
+    t = (fake_terminal *)calloc(1, sizeof(*t));
+    if (t == NULL) return err(ENOMEM);
+    token = sys_reg_new_object(SYS_KIND_TERMINAL, t, release_fake_terminal, 0);
+    if (token < 0) free(t);
+    return token;
+}
+
+long sys_terminal_size(long terminal_token) {
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_TERMINAL_SIZE);
+    have_script = pop_script(SYS_CALL_TERMINAL_SIZE, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (sys_reg_peek(terminal_token, SYS_KIND_TERMINAL) == NULL) return err(EBADF);
+    if (fake_term_rows < 0 || fake_term_rows > 65535 ||
+        fake_term_columns < 0 || fake_term_columns > 65535) return err(ERANGE);
+    return (fake_term_rows << 32) | fake_term_columns;
+}
+
+long sys_terminal_raw(long terminal_token) {
+    fake_terminal *t = (fake_terminal *)sys_reg_peek(terminal_token, SYS_KIND_TERMINAL);
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_TERMINAL_RAW);
+    have_script = pop_script(SYS_CALL_TERMINAL_RAW, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (t == NULL) return err(EBADF);
+    if (t->raw) return 0;
+    t->raw = 1;
+    fake_term_raw = 1;
+    return 1;
+}
+
+long sys_terminal_restore(long terminal_token) {
+    fake_terminal *t = (fake_terminal *)sys_reg_peek(terminal_token, SYS_KIND_TERMINAL);
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_TERMINAL_RESTORE);
+    have_script = pop_script(SYS_CALL_TERMINAL_RESTORE, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (t == NULL) return err(EBADF);
+    if (!t->raw) return 0;
+    t->raw = 0;
+    t->restores++;
+    fake_term_raw = 0;
+    return 1;
+}
+
+long sys_terminal_dup(long terminal_token) {
+    fake_file *f;
+    long token;
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_TERMINAL_DUP);
+    have_script = pop_script(SYS_CALL_TERMINAL_DUP, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (sys_reg_peek(terminal_token, SYS_KIND_TERMINAL) == NULL) return err(EBADF);
+    f = new_file(0600, 0);
+    if (f == NULL) return err(ENOMEM);
+    token = sys_reg_new_object(SYS_KIND_STREAM, f, release_shared, 0);
+    if (token < 0) release_shared(f);
+    return token;
+}
+
+long sysfake_terminal_size(long rows, long columns) {
+    if (rows < 0 || rows > 65535 || columns < 0 || columns > 65535) return err(EINVAL);
+    fake_term_rows = rows;
+    fake_term_columns = columns;
+    return 1;
+}
+
+long sysfake_terminal_raw(long raw) {
+    fake_term_raw = raw != 0;
+    return 1;
+}
+
+void sys_proc_shutdown(void) {
+    fake_child *c = fake_children;
+    fake_children = NULL;
+    while (c != NULL) {
+        fake_child *next = c->next;
+        if (c->state == 0) {
+            /* Still running at explicit shutdown: report the outstanding
+             * obligation like the real backend, then free the scripted state
+             * so LSan sees no child leak. */
+            sys_reg_add_cleanup_failure();
+        }
+        c->next = NULL;
+        c->token = 0;
+        c->observed = 1;
+        release_fake_child(c);
+        c = next;
+    }
+    fake_signal_active = 0;
+    fake_signal_bits = 0;
+    fake_signal_current = NULL;
+    memset(fake_signal_pending, 0, sizeof(fake_signal_pending));
 }

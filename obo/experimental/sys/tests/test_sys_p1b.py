@@ -357,7 +357,7 @@ def main():
 
     # C harness: normal and ASAN/UBSAN, real and fake.
     native = cc_compile('p1b_c_real', 'p1b_test.c',
-                        ['sysregistry.c', 'sysadapter_real.c', 'sysnet_real.c'], ['-O2'], tmp)
+                        ['sysregistry.c', 'sysadapter_real.c', 'sysproc_real.c', 'sysnet_real.c'], ['-O2'], tmp)
     fake = cc_compile('p1b_c_fake', 'p1b_test.c',
                       ['sysregistry.c', 'sysadapter_fake.c', 'sysnet_fake.c'], ['-O2'], tmp)
     for exe, label, arg in ((native, 'p1b_c_real', 'real'), (fake, 'p1b_c_fake', 'fake')):
@@ -367,7 +367,7 @@ def main():
     san_flags = ['-O1', '-g', '-fsanitize=address,undefined',
                  '-fno-sanitize-recover=all', '-fno-omit-frame-pointer']
     native_san = cc_compile('p1b_c_real_san', 'p1b_test.c',
-                            ['sysregistry.c', 'sysadapter_real.c', 'sysnet_real.c'], san_flags, tmp)
+                            ['sysregistry.c', 'sysadapter_real.c', 'sysproc_real.c', 'sysnet_real.c'], san_flags, tmp)
     fake_san = cc_compile('p1b_c_fake_san', 'p1b_test.c',
                           ['sysregistry.c', 'sysadapter_fake.c', 'sysnet_fake.c'], san_flags, tmp)
     for exe, label, arg in ((native_san, 'p1b_c_real_san', 'real'),

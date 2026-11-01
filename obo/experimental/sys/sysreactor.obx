@@ -56,6 +56,8 @@ fn watchable(kind: int): bool {
            kind == platform::KIND_CONNECTION ||
            kind == platform::KIND_DATAGRAM ||
            kind == platform::KIND_CANCELLATION ||
+           kind == platform::KIND_CHILD ||
+           kind == platform::KIND_SIGNAL_SOURCE ||
            kind == platform::KIND_TEST_RESOURCE ||
            kind == platform::KIND_TEST_RESOURCE_ALT
 }
@@ -141,6 +143,9 @@ pub fn wait(r: &Reactor, until: &clock::Deadline,
     // many records; a larger caller request is accepted but capped.
     var cap = maxEvents
     if cap > MAX_BATCH { cap = MAX_BATCH }
+    // Single-threaded reaper turn: only children owned by this module are
+    // observed, never an unchecked waitpid(-1).
+    let ignoredReap = platform::_procReap()
     let rt = try platform::_tokenHandle(handle(r.res), platform::KIND_REACTOR)
     let out = try bytesbuf::create(cap * EVENT_BYTES)
     defer bytesbuf::close(&out)

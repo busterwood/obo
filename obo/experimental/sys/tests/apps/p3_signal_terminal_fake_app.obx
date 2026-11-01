@@ -1,0 +1,268 @@
+// P3 fake signal and terminal contract: validation, coalescing, close/mask
+// ownership, typed resize watch, raw-mode restore, duplicate and scripted
+// faults. Uses the fake_ctl link only.
+module app
+
+import "sysplatform.obx" as platform
+import "sysbytes.obx" as bytes
+import "syssignals.obx" as signals
+import "systerminal.obx" as terminal
+import "sysstream.obx" as stream
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "sysfakectl.obx" as fake
+import "syserrors.obx" as errors
+
+fn intText(v: int): string {
+    if v == 0 { return "0" }
+    var n = v
+    var neg = false
+    if n < 0 { neg = true; n = 0 - n }
+    var digits = ""
+    while n > 0 {
+        let d = n % 10
+        if d == 0 { digits = "0" + digits }
+        if d == 1 { digits = "1" + digits }
+        if d == 2 { digits = "2" + digits }
+        if d == 3 { digits = "3" + digits }
+        if d == 4 { digits = "4" + digits }
+        if d == 5 { digits = "5" + digits }
+        if d == 6 { digits = "6" + digits }
+        if d == 7 { digits = "7" + digits }
+        if d == 8 { digits = "8" + digits }
+        if d == 9 { digits = "9" + digits }
+        n = n / 10
+    }
+    if neg { return "-" + digits }
+    return digits
+}
+
+fn kindText(code: int): string {
+    let k = errors::kind(code)
+    return errors::text(&k)
+}
+
+fn textBytes(text: string): []byte {
+    let out = new []byte(len(text))
+    for i in 0..len(text) { out[i] = text[i] }
+    return out
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let inited = platform::initialize(&o)
+    match inited { ok(v) { println("init=true") } err(m,c) { println("init-failed"); return } }
+    let reset = fake::reset()
+
+    let set = signals::empty()
+    let a1 = signals::add(&set, signals::TERMINATE)
+    match a1 { ok(v) { if v { println("add=true") } else { println("add=false") } } err(m,c) { println("add=err") } }
+    let a2 = signals::add(&set, signals::TERMINATE)
+    match a2 { ok(v) { if v { println("add2=true") } else { println("add2=false") } } err(m,c) { println("add2=err") } }
+    let a3 = signals::add(&set, signals::OTHER)
+    match a3 { ok(v) { println("add_other=ok") } err(m,c) { println("add_other=" + kindText(c)) } }
+    let a4 = signals::add(&set, 7)
+    match a4 { ok(v) { println("add_range=ok") } err(m,c) { println("add_range=" + kindText(c)) } }
+    let emptySet = signals::empty()
+    let subEmpty = signals::subscribe(&emptySet)
+    match subEmpty { ok(v) { println("sub_empty=ok") } err(m,c) { println("sub_empty=" + kindText(c)) } }
+    let forged = new signals::SignalSet{bits: 32}
+    let subForged = signals::subscribe(&forged)
+    match subForged { ok(v) { println("sub_forged=ok") } err(m,c) { println("sub_forged=" + kindText(c)) } }
+
+    let sub = signals::subscribe(&set)
+    match sub {
+        ok(src) {
+            let over = signals::subscribe(&set)
+            match over { ok(v) { println("overlap=ok") } err(m,c) { println("overlap=" + kindText(c)) } }
+            let none = signals::next(&src)
+            match none { ok(v) { if v == nil { println("next_empty=nil") } else { println("next_empty=event") } } err(m,c) { println("next_empty=err") } }
+            let pushed = fake::signalPush(signals::TERMINATE, 3)
+            println("push=" + intText(pushed))
+            let first = signals::next(&src)
+            match first {
+                ok(v) {
+                    if v == nil { println("event=nil") } else { println("event=" + intText(v.signal) + "," + intText(v.count)) }
+                }
+                err(m,c) { println("event=err") }
+            }
+            let second = signals::next(&src)
+            match second { ok(v) { if v == nil { println("event2=nil") } else { println("event2=event") } } err(m,c) { println("event2=err") } }
+
+            // Typed reactor integration: a pending window-change signal wakes.
+            let rtc = reactor::create(16, 16)
+            match rtc {
+                ok(rt) {
+                    let rc = reactor::close(&rt)
+                }
+                err(m,c) { println("reactor=err") }
+            }
+            let cl = signals::close(&src)
+            match cl { ok(v) { println("sigclose=true") } err(m,c) { println("sigclose=err") } }
+            let cl2 = signals::close(&src)
+            match cl2 { ok(v) { if v { println("sigclose2=true") } else { println("sigclose2=false") } } err(m,c) { println("sigclose2=err") } }
+        }
+        err(m,c) { println("subscribe=" + kindText(c)) }
+    }
+
+    // Resize watch uses its own WINDOW_CHANGED source and reactor.
+    let which = new stream::Input{}
+    let term = terminal::openStandard(&which)
+    match term {
+        ok(t) {
+            let sz = terminal::size(&t)
+            match sz { ok(v) { println("size=" + intText(v.rows) + "," + intText(v.columns)) } err(m,c) { println("size=err") } }
+            let set2 = fake::terminalSize(40, 100)
+            let sz2 = terminal::size(&t)
+            match sz2 { ok(v) { println("size2=" + intText(v.rows) + "," + intText(v.columns)) } err(m,c) { println("size2=err") } }
+            let raw1 = terminal::enterRaw(&t)
+            match raw1 { ok(v) { if v { println("raw=true") } else { println("raw=false") } } err(m,c) { println("raw=err") } }
+            let raw2 = terminal::enterRaw(&t)
+            match raw2 { ok(v) { if v { println("raw2=true") } else { println("raw2=false") } } err(m,c) { println("raw2=err") } }
+            let res1 = terminal::restore(&t)
+            match res1 { ok(v) { if v { println("restore=true") } else { println("restore=false") } } err(m,c) { println("restore=err") } }
+            let res2 = terminal::restore(&t)
+            match res2 { ok(v) { if v { println("restore2=true") } else { println("restore2=false") } } err(m,c) { println("restore2=err") } }
+            let dup = terminal::duplicate(&t)
+            match dup {
+                ok(s) {
+                    let data = textBytes("x")
+                    let w = stream::writeSome(&s, &data, 0, 1)
+                    match w { ok(n) { println("dup_write=" + intText(n)) } err(m,c) { println("dup_write=err") } }
+                    let cs = stream::close(&s)
+                }
+                err(m,c) { println("dup=err") }
+            }
+            let rtc2 = reactor::create(16, 16)
+            match rtc2 {
+                ok(rt) {
+                    let watch = terminal::watchResize(&rt, &t, 9)
+                    match watch {
+                        ok(w) {
+                            let ps = fake::signalPush(signals::WINDOW_CHANGED, 1)
+                            let now = clock::monotonic()
+                            match now {
+                                ok(inst) {
+                                    let dur = clock::durationMs(1000)
+                                    match dur {
+                                        ok(d) {
+                                            let dl = clock::after(&inst, &d)
+                                            match dl {
+                                                ok(deadline) {
+                                                    let ev = reactor::wait(&rt, &deadline, 8)
+                                                    match ev {
+                                                        ok(list) {
+                                                            var seen = false
+                                                            for i in 0..len(list) { if list[i].tag == 9 { seen = true } }
+                                                            if seen { println("resize=true") } else { println("resize=false") }
+                                                        }
+                                                        err(m,c) { println("resize=err") }
+                                                    }
+                                                }
+                                                err(m,c) { println("resize=err") }
+                                            }
+                                        }
+                                        err(m,c) { println("resize=err") }
+                                    }
+                                }
+                                err(m,c) { println("resize=err") }
+                            }
+                            let rm = reactor::remove(&w)
+                        }
+                        err(m,c) { println("resize=watch_err") }
+                    }
+                    let rc2 = reactor::close(&rt)
+                }
+                err(m,c) { println("resize=reactor_err") }
+            }
+            let tc = terminal::close(&t)
+            match tc { ok(v) { if v { println("term_close=true") } else { println("term_close=false") } } err(m,c) { println("term_close=err") } }
+            let sz3 = terminal::size(&t)
+            match sz3 { ok(v) { println("size_closed=ok") } err(m,c) { println("size_closed=" + kindText(c)) } }
+        }
+        err(m,c) { println("terminal_open=" + kindText(c)) }
+    }
+
+    // Closing the creating terminal retires an active resize watch.
+    let wWhich = new stream::Output{}
+    let wTerm = terminal::openStandard(&wWhich)
+    match wTerm {
+        ok(t) {
+            let wrtc = reactor::create(8, 8)
+            match wrtc {
+                ok(rt) {
+                    let ww = terminal::watchResize(&rt, &t, 11)
+                    match ww {
+                        ok(watch) {
+                            let tc = terminal::close(&t)
+                            match tc { ok(v) { println("watch_close=true") } err(m,c) { println("watch_close=err") } }
+                            let rmc = reactor::remove(&watch)
+                        }
+                        err(m,c) { println("watch_close=watch_err") }
+                    }
+                    let rcl = reactor::close(&rt)
+                }
+                err(m,c) { println("watch_close=reactor_err") }
+            }
+        }
+        err(m,c) { println("watch_close=open_err") }
+    }
+
+    // Close while raw is an explicit restoration path.
+    let rawWhich = new stream::Output{}
+    let rawTerm = terminal::openStandard(&rawWhich)
+    match rawTerm {
+        ok(t) {
+            let raw = terminal::enterRaw(&t)
+            let cl = terminal::close(&t)
+            match cl { ok(v) { println("raw_close=true") } err(m,c) { println("raw_close=err") } }
+        }
+        err(m,c) { println("raw_close=open_err") }
+    }
+
+    // Scripted P3 faults at signal and terminal stages.
+    let p1 = fake::push(fake::CLASS_SIGNAL_SUBSCRIBE, -16)
+    let fs = signals::subscribe(&set)
+    match fs { ok(v) { println("fault_sub=ok") } err(m,c) { println("fault_sub=" + kindText(c)) } }
+    let p2 = fake::push(fake::CLASS_TERMINAL_OPEN, -24)
+    let which2 = new stream::Input{}
+    let ft = terminal::openStandard(&which2)
+    match ft { ok(v) { println("fault_term=ok") } err(m,c) { println("fault_term=" + kindText(c)) } }
+
+    let set3 = signals::empty()
+    let a5 = signals::add(&set3, signals::INTERRUPT)
+    let s3 = signals::subscribe(&set3)
+    match s3 {
+        ok(src) {
+            let p3 = fake::push(fake::CLASS_SIGNAL_NEXT, -4)
+            let n3 = signals::next(&src)
+            match n3 { ok(v) { println("fault_next=ok") } err(m,c) { println("fault_next=" + kindText(c)) } }
+            let cl = signals::close(&src)
+        }
+        err(m,c) { println("fault_next=subscribe_err") }
+    }
+
+    let tw = new stream::Output{}
+    let t3 = terminal::openStandard(&tw)
+    match t3 {
+        ok(t) {
+            let p4 = fake::push(fake::CLASS_TERMINAL_SIZE, -95)
+            let sz = terminal::size(&t)
+            match sz { ok(v) { println("fault_size=ok") } err(m,c) { println("fault_size=" + kindText(c)) } }
+            let p5 = fake::push(fake::CLASS_TERMINAL_RAW, -95)
+            let rw = terminal::enterRaw(&t)
+            match rw { ok(v) { println("fault_raw=ok") } err(m,c) { println("fault_raw=" + kindText(c)) } }
+            let p6 = fake::push(fake::CLASS_TERMINAL_RESTORE, -95)
+            let rs = terminal::restore(&t)
+            match rs { ok(v) { println("fault_restore=ok") } err(m,c) { println("fault_restore=" + kindText(c)) } }
+            let p7 = fake::push(fake::CLASS_TERMINAL_DUP, -24)
+            let dp = terminal::duplicate(&t)
+            match dp { ok(v) { println("fault_dup=ok") } err(m,c) { println("fault_dup=" + kindText(c)) } }
+            let cl = terminal::close(&t)
+        }
+        err(m,c) { println("fault_size=open_err") }
+    }
+
+    let sh = platform::shutdown()
+    match sh { ok(c) { println("counts=" + intText(c.resources) + "," + intText(c.shells)) } err(m,c) { println("shutdown=err") } }
+}

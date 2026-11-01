@@ -60,6 +60,28 @@ pub const CLASS_LOG_OPEN = 52
 pub const CLASS_LOG_EMIT = 53
 pub const CLASS_LOG_DRAIN = 54
 pub const CLASS_LOG_FLUSH = 55
+pub const CLASS_PROC_PLAN_NEW = 56
+pub const CLASS_PROC_PLAN_SET = 57
+pub const CLASS_PROC_SPAWN = 58
+pub const CLASS_PROC_PIPE = 59
+pub const CLASS_PROC_DUP = 60
+pub const CLASS_PROC_EXEC = 61
+pub const CLASS_PROC_TAKE = 62
+pub const CLASS_PROC_WAIT = 63
+pub const CLASS_PROC_KILL = 64
+pub const CLASS_PROC_DETACH = 65
+pub const CLASS_PROC_REAP = 66
+pub const CLASS_PROC_CWD = 67
+pub const CLASS_PROC_CHDIR = 68
+pub const CLASS_SIGNAL_INIT = 69
+pub const CLASS_SIGNAL_SUBSCRIBE = 70
+pub const CLASS_SIGNAL_NEXT = 71
+pub const CLASS_SIGNAL_CLOSE = 72
+pub const CLASS_TERMINAL_OPEN = 73
+pub const CLASS_TERMINAL_SIZE = 74
+pub const CLASS_TERMINAL_RAW = 75
+pub const CLASS_TERMINAL_RESTORE = 76
+pub const CLASS_TERMINAL_DUP = 77
 
 pub fn reset(): int {
     return __cinterop("sysfake_reset")
@@ -117,4 +139,43 @@ pub fn setLogShort(bytes: int): int {
 
 pub fn storeCount(): int {
     return __cinterop("sysfake_store_count")
+}
+
+// P3 fake controls.
+pub fn setArgMax(value: int): int {
+    return __cinterop("sysfake_set_arg_max", value)
+}
+
+pub fn procExit(ordinal: int, flags: int, payload: int): int {
+    return __cinterop("sysfake_proc_exit", ordinal, flags, payload)
+}
+
+pub fn lastOrdinal(): int {
+    return __cinterop("sysfake_proc_last")
+}
+
+pub fn procWrite(ordinal: int, which: int, bufToken: int, offset: int,
+                 count: int): int {
+    return __cinterop("sysfake_proc_write", ordinal, which, bufToken, offset,
+                      count)
+}
+
+pub fn procRead(ordinal: int, which: int, bufToken: int, offset: int,
+                count: int): int {
+    return __cinterop("sysfake_proc_read", ordinal, which, bufToken, offset,
+                      count)
+}
+
+pub fn signalPush(signal: int, count: int): int {
+    return __cinterop("sysfake_signal_push", signal, count)
+}
+
+pub fn terminalSize(rows: int, columns: int): int {
+    return __cinterop("sysfake_terminal_size", rows, columns)
+}
+
+pub fn terminalRaw(raw: bool): int {
+    var flag = 0
+    if raw { flag = 1 }
+    return __cinterop("sysfake_terminal_raw", flag)
 }

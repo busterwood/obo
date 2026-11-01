@@ -6,19 +6,19 @@ obo 0.12, symbol format 6, ABI 1. Date: 2026-10-31. Decimal `0.12` and the
 experimental Postgres/SQLite adapters are present at this baseline.
 No compiler, ABI, symbol-format or package version is reserved by this note.
 
-Progress on current `main` (0.17/format 10): **P0, P1a, P1b, P2 and P2q are
+Progress on current `main` (0.18/format 11): **P0, P1a, P1b, P2, P2q and P3 are
 implemented experimentally** under `obo/experimental/sys` and have their own
 real/fake suites. P1b covers the anchored directory-mutation and `openBeneath`
 parts of §5.1, the file operations and atomic replacement transaction in §5.2
 (using the §5.3 metadata snapshots), the RFC3339 profile in §6.1, **environment
-snapshots only** in §8.3, and **bounded logging only** in §8.4. The rest of
-§8.3 (`sysprocess::cwd`/`chdir` and process environment mutation) and §8.4
-(terminal raw mode) are P3/later work, not P1b. P2T/P2C remain separately scoped
-adapters, P3 (processes, signals, cwd/environment mutation, resolver policy) and
-P4/P5 (threads and synchronization) are not implemented by this progress line.
-`sysmapping` and terminal raw mode remain optional later extensions. The source
-lives at `obo/experimental/sys/`, not yet at the `obo/lib/sys/` stable layout in
-§12.1.
+snapshots only** in §8.3, and **bounded logging only** in §8.4. P3 adds §8.1
+spawn/pipes/reaping, §8.2 signal delivery, `cwd`/`chdir` from §8.3 and terminal
+raw mode/window size from §8.4. Process environment mutation remains
+`Unsupported`, resolver policy is not implemented, and P2T/P2C remain separately
+scoped adapters. P4/P5 (threads and synchronization) are a separate design and
+are not implemented by this progress line. `sysmapping` remains an optional
+later extension. The source lives at `obo/experimental/sys/`, not yet at the
+`obo/lib/sys/` stable layout in §12.1.
 
 ## 1. Decision and scope
 
@@ -1374,6 +1374,10 @@ pub fn cwd(): Result[string]
 pub fn chdir(directory: &dir::Directory): Result[bool]
 ```
 
+Implementation note: the P3 module spells the `EnvPolicy` variants
+`EnvInherit`/`EnvExplicit` because closed variants share one module name scope
+and `Inherit` is already the `Redirect` variant. The semantics are unchanged.
+
 Command owns its arrays/environment policy/redirection resources; `spawn`
 revalidates the whole public record (nonempty executable, argv shape, no NULs,
 valid `EnvPolicy`, each `Redirect` kind, open directory) and copies validated
@@ -1502,7 +1506,9 @@ of a Result-returning pipe API. Socket sends use `MSG_NOSIGNAL` without changing
 global state. Do not change process dispositions on module import. A caller that
 needs the old disposition sets `ignorePipeSignal = false`; in that mode new
 pipe-write APIs return `Unsupported` **before** writing, rather than allowing
-default termination. Spawn restores intended child defaults. When hosted
+default termination. P3 installs the ignore policy at context initialization
+when requested but exposes no new pipe-write API, so the visible effect in this
+slice is the documented legacy `print` behavior. Spawn restores intended child defaults. When hosted
 libraries also own signals, incompatible subscriptions return `Busy`; no handler
 replacement behind their backs. There is no separate per-call suppression
 primitive in v1.
@@ -1544,8 +1550,9 @@ blocker, not two contradictory environments called one API.
 the systems context. Thread-local cwd is not a Unix feature. Prefer anchored
 directory operations and Command.directory. Libraries must not chdir as a hidden
 side effect. Resource-limit query/update is a separate process policy API with
-named limits and checked integers, not arbitrary prlimit numbers; v1 needs at
-least open-files and address-space queries for diagnostics.
+named limits and checked integers, not arbitrary prlimit numbers; v1 would need
+at least open-files and address-space queries for diagnostics. P3 does **not**
+implement that query and it remains deferred.
 
 ### 8.4 Terminal and logging
 
@@ -1598,7 +1605,9 @@ limit, and policy (`ReturnWouldBlock` or explicit `DropWithCounter`).
 it with CLOEXEC, and accepts no arbitrary fd. `emit` copies a record atomically
 into the queue or rejects it;
 `drain`/`flush` report sink errors. Escape newline/control bytes in fields; timestamp by realtime and
-record latency by monotonic time. No implicit global logger, background thread,
+record latency by monotonic time; P1b's bounded logger implements the realtime
+timestamp only and defers monotonic record latency (a caller-supplied start
+instant is required). No implicit global logger, background thread,
 unbounded queue or hidden application secrets. An initial line format is
 sufficient; structured JSON needs a separately tested encoder. Reactor must never
 log by calling a potentially blocking sink on every error. Multi-process logging
@@ -1881,10 +1890,12 @@ Each phase has a usable exit point and can stop without exposing later APIs.
 | P1b: practical filesystem | rename/link/mkdir/chmod/sync and atomic replace reports, RFC3339, env snapshots, basic bounded logging; configuration-update example | P1a; openBeneath capability tested separately; mapping is optional P1b extension with SIGBUS contract | 2–4 (+1–2 mapping) |
 | P2: network/reactor | numeric addresses, TCP/UDP/Unix sockets, partial/vector I/O, level readiness, timers/wake/fairness, bounded echo and timeout demos; blocking DNS clearly named | P1a; native bridge performance gate, no thread requirement | 4–7 |
 | P2T/P2C: optional adapters | TLS transport and streaming compression readiness, not HTTP | separate adapter designs; production hosted boundary/TLS library validation | 3–6 TLS; 1–3 codec, independently scoped |
-| P3: processes | spawn/exec/wait, pipes/redirection, process groups, reaper, signals, cwd policy, resolver policy and supervisor example | P2 for nonblocking supervision; process env mutation blocked on coherent env bridge; controlled prefork optional separate audit | 4–6 |
+| P3: processes | spawn/exec/wait, pipes/redirection, process groups, reaper, signals, cwd policy and supervisor example; resolver policy deferred | P2 for nonblocking supervision; process env mutation blocked on coherent env bridge; controlled prefork optional separate audit | 4–6 |
 
-P4 (threads) and P5 (synchronization) are **not estimated or authorized in this
-core note**. They are specified in `systems-threads-design.md`; P4a is an
+P0, P1a, P1b, P2, P2q and P3 above are implemented experimentally in
+`obo/experimental/sys` with real/fake suites; none is promoted to the stable
+layout yet. P4 (threads) and P5 (synchronization) are **not estimated or
+authorized in this core note**. They are specified in `systems-threads-design.md`; P4a is an
 infrastructure spike, while P4b/P5 are blocked on T2 context-relative globals
 and the identity table. They keep their own phase gates. Core P0/P1a are the
 approvable slice; P2/P3 are directional until their P0 evidence lands.

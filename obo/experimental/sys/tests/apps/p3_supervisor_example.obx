@@ -1,0 +1,165 @@
+// P3 deterministic supervisor example. It creates one worker process group,
+// reads bounded output from a pipe, receives a signal through syssignals, and
+// terminates only the group it created. It writes nothing; argv[1] is the
+// anchored working directory supplied by the test harness.
+module app
+
+import "sysplatform.obx" as platform
+import "sysprocess.obx" as process
+import "syssignals.obx" as signals
+import "sysstream.obx" as stream
+import "sysdir.obx" as dir
+import "syserrors.obx" as errors
+
+fn intText(v: int): string {
+    if v == 0 { return "0" }
+    var n = v
+    var digits = ""
+    while n > 0 {
+        let d = n % 10
+        if d == 0 { digits = "0" + digits }
+        if d == 1 { digits = "1" + digits }
+        if d == 2 { digits = "2" + digits }
+        if d == 3 { digits = "3" + digits }
+        if d == 4 { digits = "4" + digits }
+        if d == 5 { digits = "5" + digits }
+        if d == 6 { digits = "6" + digits }
+        if d == 7 { digits = "7" + digits }
+        if d == 8 { digits = "8" + digits }
+        if d == 9 { digits = "9" + digits }
+        n = n / 10
+    }
+    return digits
+}
+
+fn statusText(st: &process::ExitStatus): string {
+    match st {
+        Exited { return "exit:" + intText(st.code) }
+        Signalled { return "signal:" + intText(st.signal) }
+    }
+}
+
+fn drain(s: &stream::Stream): string {
+    var out = ""
+    var guard = 0
+    while guard < 2000 && len(out) < 64 {
+        let p = stream::readSome(s, 64)
+        match p {
+            ok(v) {
+                if v == nil { return out }
+                out = out + string(v)
+            }
+            err(m, c) {
+                if c == 10015 { sleepMs(1) } else { return out }
+            }
+        }
+        guard += 1
+    }
+    return out
+}
+
+fn shell(args: []string, out: process::Redirect, directory: ?dir::Directory,
+         group: bool): process::Command {
+    let cmd = new process::Command{
+        executable: "/bin/sh"
+        arguments: args
+        environment: new process::EnvInherit{}
+        directory: directory
+        input: new process::Inherit{}
+        output: out
+        error: new process::Inherit{}
+        newGroup: group
+    }
+    return cmd
+}
+
+fn sargs(script: string): []string {
+    var args = new []string(0)
+    append(args, "/bin/sh")
+    append(args, "-c")
+    append(args, script)
+    return args
+}
+
+fn main() {
+    let av = args()
+    if len(av) < 2 { println("missing-dir"); return }
+    let o = platform::defaultOptions()
+    let inited = platform::initialize(&o)
+    match inited { ok(v) { println("init=true") } err(m,c) { println("init-failed"); return } }
+
+    let dirOpen = dir::open(av[1])
+    match dirOpen {
+        ok(work) {
+            let ch = process::chdir(&work)
+            let set = signals::empty()
+            let add = signals::add(&set, signals::TERMINATE)
+            let sub = signals::subscribe(&set)
+            match sub {
+                ok(src) {
+                    let cmd = shell(sargs("printf ready; sleep 30"),
+                                    new process::Pipe{}, nil, true)
+                    let made = process::spawn(&cmd)
+                    match made {
+                        ok(worker) {
+                            let out = process::takeOutput(&worker)
+                            match out {
+                                ok(s) {
+                                    let ready = drain(&s)
+                                    println("worker=" + ready)
+                                    let closedS = stream::close(&s)
+                                }
+                                err(m, c) { println("worker=no-pipe") }
+                            }
+                            // A separate notifier child delivers TERM to the
+                            // supervisor; the supervisor does not signal itself.
+                            let notify = shell(sargs("kill -TERM $PPID"), new process::Inherit{},
+                                               nil, false)
+                            let n = process::spawn(&notify)
+                            match n {
+                                ok(nc) {
+                                    let st = process::wait(&nc)
+                                    let cl = process::close(&nc)
+                                }
+                                err(m, c) { println("notify=err") }
+                            }
+                            let ncc = process::closeCommand(&notify)
+
+                            var event = 0
+                            var guard = 0
+                            while event == 0 && guard < 2000 {
+                                let next = signals::next(&src)
+                                match next {
+                                    ok(v) {
+                                        if v == nil { sleepMs(1) } else { event = v.signal }
+                                    }
+                                    err(m, c) { guard = 2000 }
+                                }
+                                guard += 1
+                            }
+                            println("signal=" + intText(event))
+                            let term = process::terminate(&worker, false, true)
+                            match term {
+                                ok(v) { println("group_term=true") }
+                                err(m, c) { println("group_term=err") }
+                            }
+                            let st = process::wait(&worker)
+                            match st { ok(v) { println("worker_status=" + statusText(&v)) } err(m,c) { println("worker_status=err") } }
+                            let cl = process::close(&worker)
+                        }
+                        err(m, c) { println("worker=spawn_err") }
+                    }
+                    let cc = process::closeCommand(&cmd)
+                    let cl = signals::close(&src)
+                    match cl { ok(v) { if v { println("sig_closed=true") } else { println("sig_closed=false") } } err(m,c) { println("sig_closed=err") } }
+                }
+                err(m, c) { println("subscribe=err") }
+            }
+            let dc = dir::close(&work)
+            match dc { ok(v) { if v { println("dir_closed=true") } else { println("dir_closed=false") } } err(m,c) { println("dir_closed=err") } }
+        }
+        err(m, c) { println("dir=err") }
+    }
+    let sh = platform::shutdown()
+    match sh { ok(c) { println("cleanup=" + intText(c.resources) + "," + intText(c.shells)) } err(m,c) { println("cleanup=err") } }
+}

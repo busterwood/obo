@@ -1234,6 +1234,8 @@ static long source_fd(long token, long kind) {
         real_cancel *c = (real_cancel *)sys_reg_peek(token, SYS_KIND_CANCELLATION);
         return c == NULL ? err(EBADF) : c->fd;
     }
+    if (kind == SYS_KIND_CHILD) return sys_proc_watch_fd(token);
+    if (kind == SYS_KIND_SIGNAL_SOURCE) return sys_signal_watch_fd(token);
     if (kind == SYS_KIND_STREAM || kind == SYS_KIND_LISTENER ||
         kind == SYS_KIND_CONNECTION || kind == SYS_KIND_DATAGRAM ||
         kind == SYS_KIND_TEST_RESOURCE || kind == SYS_KIND_TEST_RESOURCE_ALT) {
@@ -1247,7 +1249,8 @@ static long source_fd(long token, long kind) {
 static int watchable_kind(long kind) {
     return kind == SYS_KIND_STREAM || kind == SYS_KIND_LISTENER ||
            kind == SYS_KIND_CONNECTION || kind == SYS_KIND_DATAGRAM ||
-           kind == SYS_KIND_CANCELLATION ||
+           kind == SYS_KIND_CANCELLATION || kind == SYS_KIND_CHILD ||
+           kind == SYS_KIND_SIGNAL_SOURCE ||
            kind == SYS_KIND_TEST_RESOURCE || kind == SYS_KIND_TEST_RESOURCE_ALT;
 }
 
