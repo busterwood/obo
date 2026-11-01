@@ -1662,10 +1662,10 @@ INTERFACE_MUTANTS = {
     "interfaces v3 dispatch: the member's summary is not applied to the caller's receiver": (
         "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) {\n",
         "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) && !iface {\n"),
-    # D4a: the refusal that used to stop a decimal-returning interface call (the old internal error)
-    "decimal D4a: a decimal-returning interface member is refused internally": (
-        "    if decRet && fnval { error(\"internal error: a decimal-returning function value is not supported\") }\n",
-        "    if decRet && (iface || fnval) { error(\"internal error: a decimal-returning function value is not supported\") }\n"),
+    # D4b: the refusal that used to stop a decimal-returning value call (the old internal error)
+    "decimal D4b: a decimal-returning function value is refused internally": (
+        "    let decRet = f.ret.kind == \"decimal\"\n",
+        "    let decRet = f.ret.kind == \"decimal\"\n    if decRet && fnval { error(\"internal error: a decimal-returning function value is not supported\") }\n"),
     # D4a: a decimal-returning interface call must step over the hidden destination pointer to the vtable
     "decimal D4a: a decimal-returning interface call reads the vtable at the object slot": (
         "        if decRet { vtAt = vtAt + 8 }\n",
@@ -1796,8 +1796,9 @@ LAMBDA_MUTANTS = {
     "lambdas X25: synthetic callee returns from an arena": (
         '    let fa = new []FnRec(0)\n',
         '    let leak = newSym("fncall", "function value \'" + name + "\'", nil)\n    let fa = new []FnRec(0)\n'),
-    "lambdas X26: hidden environment is named env": (
-        'name: "a lambda\'s environment"', 'name: "env"'),
+    "lambdas X26: the decimal environment read has no +8": (
+        '        if ret.kind == "decimal" { envOff += 8 }\n',
+        '        if false { envOff += 8 }\n'),
     "lambdas X27: outer-name stack is not truncated": (
         '    truncate(lambdaOuterNames, outerFrom)\n', ''),
     "lambdas X28: outer-name lookup check dropped": (
@@ -1851,8 +1852,8 @@ LAMBDA_B_MUTANTS = {
     "lambdas B27: float scalar capture has no snapshot mode": (
         '            if ct.kind == "int" || ct.kind == "byte" || ct.kind == "bool" || ct.kind == "float" {\n',
         '            if ct.kind == "int" || ct.kind == "byte" || ct.kind == "bool" {\n'),
-    "lambdas B28: float capture write gets the immutable message": (
-        '            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool" || symType(xs).kind == "float") {\n',
+    "lambdas B28: float or decimal capture write gets the immutable message": (
+        '            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool" || symType(xs).kind == "float" || symType(xs).kind == "decimal") {\n',
         '            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool") {\n'),
     "lambdas B11: island does not reset lambdaArgOK": (
         '    lastFnBind = nil\n    lambdaArgOK = 0\n    selfCalls = 0\n',
@@ -1877,13 +1878,13 @@ LAMBDA_B_MUTANTS = {
         '            } else {\n                append(roots, s)\n                append(deeps, false)\n                append(paths, "")\n            }\n',
         '            } else {\n                append(roots, s)\n                append(deeps, true)\n                append(paths, "")\n            }\n'),
     "lambdas B19: capture prologue reads the wrong env word": (
-        '            opMem(0x8B, rv, mem(er, -1, 8 + 8 * i, 8), true, false)\n',
-        '            opMem(0x8B, rv, mem(er, -1, 9 + 8 * i, 8), true, false)\n'),
+        '        opMem(0x8B, er, mem(RBP, -1, envOff, 8), true, false)\n',
+        '        opMem(0x8B, er, mem(RBP, -1, envOff + 8, 8), true, false)\n'),
     "lambdas B20: cell stores a code offset": (
         '    movRI(cw, CODE_BASE + f.addr)\n', '    movRI(cw, f.addr)\n'),
     "lambdas B21: capture cell word offset off by one": (
-        '        opMem(0x89, v.r, mem(RBP, -1, base + 8 + 8 * i, 8), true, false)\n',
-        '        opMem(0x89, v.r, mem(RBP, -1, base + 8 * i, 8), true, false)\n'),
+        '        let off = capOff(caps, i)\n',
+        '        let off = 8 + 8 * i\n'),
     "lambdas B23: capture mut-overlap labels use compressed binding indexes": (
         '                            if meth || argIsCapture[j] || argIsCapture[i] {\n',
         '                            if meth {\n'),
