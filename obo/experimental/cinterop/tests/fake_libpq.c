@@ -1,4 +1,4 @@
-/* Fake libpq ABI for deterministic adapter/resource tests. It implements only
+/* Fake libpq ABI for deterministic tests of the v2 wrapper. It implements only
  * the declarations in toolkit/libpq_decls.h and never opens a socket. */
 #include "../toolkit/libpq_decls.h"
 
@@ -110,7 +110,7 @@ static void fake_clear_last(void) {
 
 /* Test-only decimal result marker:
  *   FAKE_DECIMAL oid=<int> mod=<int> value=<text|NULL>
- * It is deliberately a decimal-integer parser; the adapter tests need to
+ * It is deliberately a decimal-integer parser; the v2 wrapper tests need to
  * choose an OID/typmod/text without a server and without any float path. */
 static int fake_int_field(const char *s, const char *key, int *out) {
     const char *p = strstr(s, key);
@@ -388,7 +388,7 @@ PGresult *PQmakeEmptyPGresult(PGconn *conn, int status) {
     return fake_new_result(status, 0, 0);
 }
 
-/* Minimal fake conninfo parser: enough to exercise the adapter's
+/* Minimal fake conninfo parser: enough to exercise the v2 wrapper's
  * "is connect_timeout present?" query without a hand-rolled production parser.
  * It walks unquoted tokens and ignores quoted text. */
 PQconninfoOption *PQconninfoParse(const char *conninfo, char **errmsg) {
