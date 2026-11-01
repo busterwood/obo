@@ -183,10 +183,10 @@ markers it already covers.
   refused by the new reader; the imported-impure parity case above.
 - `tests/mutate_fork.py`: the impure summary setter, the impl-tier branch, the
   reader's summary rebuild, the writer's marker, a summary that frees all but
-  does not write through handles, and a pure-member check that accepts an
-  impure method. Each has a real catcher.
-- `tests/mutate_fork.py`: add an interface mutant only if it has a real catcher
-  (the `impure` summary setter and the impl-tier branch).
+  does not write through handles, and a pure-member check that applies the
+  plain tier (the method is still refused; only the diagnostic changes). X16
+  and X17 are repointed at the new `} else if m.pureMember {` branch. Each has
+  a real catcher.
 - Docs: `LANGUAGE.md` interface section, `FORK.md` 0.17 section, this design's
   status line, and the v3 design's "not in v1" note.
 

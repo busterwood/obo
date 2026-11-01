@@ -1529,11 +1529,11 @@ INTERFACE_MUTANTS = {
         "            if (cm.fnRec.pfree & ~m.fnRec.pfree) != 0 {\n",
         "            if false {\n"),
     "interfaces v3 X16: a pure member is checked with the local tier": (
-        "        if m.pureMember {\n            if !pureFn(cm) || cm.writesHandles {\n",
-        "        if false {\n            if !pureFn(cm) || cm.writesHandles {\n"),
+        "        } else if m.pureMember {\n",
+        "        } else if false {\n"),
     "interfaces v3 X17: a local member is checked with the pure tier": (
-        "        if m.pureMember {\n            if !pureFn(cm) || cm.writesHandles {\n",
-        "        if true {\n            if !pureFn(cm) || cm.writesHandles {\n"),
+        "        } else if m.pureMember {\n",
+        "        } else if true {\n"),
     # X38: each signature comparison the implementation check makes
     "interfaces v3 X38a: the receiver-mode comparison is dropped": (
         "        if cm.fnRec.pmodes[0] != m.fnRec.pmodes[0] {\n",
@@ -1637,7 +1637,9 @@ INTERFACE_MUTANTS = {
     "interfaces impure: an impure summary frees all but does not write through handles": (
         "    if impure {\n        m.freesAll = true\n        m.writesHandles = true\n        return\n    }\n",
         "    if impure {\n        m.freesAll = true\n        m.writesHandles = false\n        return\n    }\n"),
-    "interfaces impure: the impl check accepts a pure member with an impure method": (
+    # for a pure member the plain tier is at least as strict (pfree 0), so the method is still
+    # refused; only the diagnostic changes
+    "interfaces impure: the pure-member check applies the plain tier": (
         "        } else if m.pureMember {\n",
         "        } else if false {\n"),
     "interfaces v3 X24: the reader ignores a mut mode on a later parameter": (

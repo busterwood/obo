@@ -6847,7 +6847,9 @@ never emits the summary itself.
   impure member; a reader that rebuilds the member as plain; a writer that
   emits plain for an impure member; a summary that frees all but does not write
   through handles (caught by the local-deep-reference case); and a pure-member
-  check that accepts an impure method. No mutant was added without a catcher.
+  check that applies the plain tier (the method is still refused, only the
+  diagnostic changes). X16 and X17 are repointed at the new
+  `} else if m.pureMember {` branch. No mutant was added without a catcher.
 
 **Fixtures.** All committed `.sym` files and the harness constants are updated
 mechanically: `obosym 9` → `obosym 10`, `compiler "0.16"` → `compiler "0.17"`,
@@ -6868,8 +6870,7 @@ writer output byte for byte without `--update`.
 - `heap_test` passes; self-compile peak **2,586,448 bytes** live (budget
   2,750,000, headroom 163,552).
 - `port_compare` **1,847 of 1,847** Stage B; the port's self-compile peak is
-  2,586,432 bytes (the path in the reported line varies by a few bytes between
-  runs).
+  2,586,432 bytes.
 - `mutate_fork` filtered: `interfaces impure` **6/6 caught**, `X23` **2/2
   caught**.
 
