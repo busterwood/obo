@@ -8,8 +8,20 @@ fn main() {
         ok(d) {
             defer d.close()
             println("byte0=", d.byte_at(0))
+            println("open=", d.is_open())
+            d.close()                     // safe: a second close is ok(false)
+            println("closed=", !d.is_open())
         }
         err(m, c) { println("open error ", m, " ", c); exit(1) }
     }
-    println("live=", demo::live())
+
+    // The same handle through an out record (rc + ?Demo).
+    let made_out = demo::open_out(2)
+    match made_out {
+        ok(d) {
+            defer d.close()
+            println("out_byte0=", d.byte_at(0))
+        }
+        err(m, c) { println("out error ", m, " ", c); exit(1) }
+    }
 }
