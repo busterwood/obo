@@ -2,6 +2,7 @@
  * the declarations in toolkit/libpq_decls.h and never opens a socket. */
 #include "../toolkit/libpq_decls.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +45,8 @@ static char fake_last_sql[256];
 static Oid fake_last_types[FAKE_MAX_PARAMS];
 static int fake_last_result_format_value = 0;
 static char fake_last_conninfo[256];
+static int fake_misaligned;
+static int fake_binary_format_seen;
 
 long fake_get_conn_live(void) { return fake_conn_live; }
 long fake_get_result_live(void) { return fake_result_live; }
@@ -72,13 +75,19 @@ long fake_last_sql_byte(long i) {
 /* Printed only with FAKE_REPORT=1, so ordinary runs stay quiet. It lets a test
  * assert the release counts and the bounded conninfo without exporting the
  * fake's control functions through the libpq binding. */
+static void fake_check_alignment(void) {
+    if (((uintptr_t)__builtin_frame_address(0) % 16) != 0) fake_misaligned = 1;
+}
+
 __attribute__((destructor)) static void fake_report(void) {
     const char *t = getenv("FAKE_REPORT");
     if (t == NULL || t[0] != '1') return;
     fprintf(stderr,
-            "fake_report conns=%ld results=%ld finish=%ld clear=%ld exec=%ld empty=%ld conninfo=%s\n",
+            "fake_report conns=%ld results=%ld finish=%ld clear=%ld exec=%ld empty=%ld "
+            "misaligned=%d binary_fmt=%d conninfo=%s\n",
             fake_conn_live, fake_result_live, fake_finish_count, fake_clear_count,
-            fake_exec_count, fake_make_empty_count, fake_last_conninfo);
+            fake_exec_count, fake_make_empty_count, fake_misaligned,
+            fake_binary_format_seen, fake_last_conninfo);
 }
 
 static void fake_clear_last(void) {
@@ -203,6 +212,7 @@ PGresult *PQexecParams(PGconn *conn, const char *command, int nParams,
                        int resultFormat) {
     PGresult *r;
     int i;
+    fake_check_alignment();
     fake_exec_count++;
     fake_clear_last();
     fake_last_result_format_value = resultFormat;
@@ -215,6 +225,9 @@ PGresult *PQexecParams(PGconn *conn, const char *command, int nParams,
         fake_last_isnull[i] = paramValues != NULL && paramValues[i] == NULL;
         fake_last_len[i] = (paramValues != NULL && paramValues[i] != NULL) ? paramLengths[i] : 0;
         fake_last_format[i] = (paramValues != NULL && paramValues[i] != NULL) ? paramFormats[i] : 0;
+        if (paramValues != NULL && paramValues[i] != NULL && paramFormats[i] == 1) {
+            fake_binary_format_seen = 1;
+        }
         fake_last_types[i] = (paramTypes != NULL) ? paramTypes[i] : 0;
         if (paramValues != NULL && paramValues[i] != NULL) {
             fake_last_values[i] = (char *)malloc((size_t)fake_last_len[i] + 1);
@@ -282,11 +295,13 @@ int PQgetisnull(const PGresult *res, int row, int col) {
     return res->isnull[row][col];
 }
 int PQgetlength(const PGresult *res, int row, int col) {
+    fake_check_alignment();
     if (res == NULL || row < 0 || row >= res->ntuples || col < 0 || col >= res->nfields) return -1;
     return res->lengths[row][col];
 }
 char *PQgetvalue(const PGresult *res, int row, int col) {
     static char empty[] = "";
+    fake_check_alignment();
     if (res == NULL || row < 0 || row >= res->ntuples || col < 0 || col >= res->nfields) return empty;
     if (res->values[row][col] == NULL) return empty;
     return res->values[row][col];

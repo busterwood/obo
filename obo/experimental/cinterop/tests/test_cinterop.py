@@ -830,7 +830,7 @@ def fake_adapter(tmp):
             raise Fail("fake libpq v2 output missing %r:\n%s" % (line, p.stdout))
     rep = report(p)
     for line in ('conns=0', 'results=0', 'finish=2', 'clear=3', 'exec=2', 'empty=1',
-                 'conninfo=fake-fail connect_timeout=5'):
+                 'misaligned=0', 'binary_fmt=1', 'conninfo=fake-fail connect_timeout=5'):
         if line not in rep:
             raise Fail("fake libpq v2 counters missing %r:\n%s" % (line, rep))
 
@@ -884,7 +884,7 @@ def libpq_fake(tmp):
                  'conn_closed=true', 'conn_again=false', 'connect_failed=1'):
         if line not in p.stdout:
             raise Fail("fake libpq output missing %r:\n%s" % (line, p.stdout))
-    for line in ('conns=0', 'results=0', 'finish=2', 'clear=3'):
+    for line in ('conns=0', 'results=0', 'finish=2', 'clear=3', 'misaligned=0', 'binary_fmt=1'):
         if line not in p.stderr:
             raise Fail("fake libpq counters missing %r:\n%s" % (line, p.stderr))
     need(verify(out), 'fake libpq manifest verify')
@@ -909,7 +909,7 @@ def libpq_fake(tmp):
     for line in ('query_ok=true', 'early_error=7', 'nested_ok=true', 'loop_closes=3'):
         if line not in p.stdout:
             raise Fail("fake libpq defer output missing %r:\n%s" % (line, p.stdout))
-    for line in ('conns=0', 'results=0', 'finish=7', 'clear=1'):
+    for line in ('conns=0', 'results=0', 'finish=7', 'clear=1', 'misaligned=0'):
         if line not in p.stderr:
             raise Fail("fake libpq defer counters missing %r:\n%s" % (line, p.stderr))
     print('fake libpq wrapper: ok (explicit defer cleanup and the foreign census)')
@@ -922,7 +922,7 @@ def libpq_fake(tmp):
     for line in ('result_after_conn_close=1.234567890123456789', 'live_result_outlives_conn=ok'):
         if line not in p.stdout:
             raise Fail("fake libpq outlives output missing %r:\n%s" % (line, p.stdout))
-    for line in ('conns=0', 'results=0', 'finish=1', 'clear=1'):
+    for line in ('conns=0', 'results=0', 'finish=1', 'clear=1', 'misaligned=0'):
         if line not in p.stderr:
             raise Fail("fake libpq outlives counters missing %r:\n%s" % (line, p.stderr))
     print('fake libpq result-outlives-connection: ok')
