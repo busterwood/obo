@@ -158,7 +158,7 @@ interface members are 0.18 and decimal function values and captures are 0.19.
 | Compiler (`--version`) | 757,761 bytes, sha256 `8327ca50…`, `obo 0.19`, sym-format 12, abi 1 |
 | Seed (`--version`) | promoted obo 0.19 at `ba02031`: 757,761 bytes, sha256 `8327ca50…`, sym-format 12, abi 1; the immediate pre-0.19 seed is the 757,761-byte 0.18 image (`ca513536…`, `769a359`), which built this image once (historical) |
 | Self-host fixed point | stage 2 == stage 3 == compiler == seed, 757,761 bytes, `8327ca50…`; the 0.18 seed built this image once (historical) |
-| Self-compile wall time | 0.252 s one stage (5 runs, median; range 0.2473-0.2549 s) and 0.500 s for the two-stage seed → stage 2 → stage 3 build; host-dependent, measured on the 0.16 line on 1 November 2026, and carried unchanged because 0.17–0.19 changed checks, frames and decimal dispatch, not non-decimal codegen |
+| Self-compile wall time | 0.252 s one stage (5 runs, median; range 0.2473-0.2549 s) and 0.500 s for the two-stage seed → stage 2 → stage 3 build; host-dependent, measured on the 0.16 line on 1 November 2026, and carried unchanged because 0.17–0.19 changed compiler checks, lambda frames and decimal dispatch, not any benchmarked non-decimal path |
 | Self-compile live peak | 2,590,496 bytes direct (`heap_test`); 2,590,480 bytes port comparison (budget 2,750,000) |
 | Total allocated | 58,005,840 bytes direct; 58,009,088 bytes port comparison |
 | Maximum resident set | 5,092 KB (measured on the 0.16 line on 1 November 2026, carried) |
@@ -281,9 +281,10 @@ library-only addition; it changes no compiler, runtime, format or seed. D6, the
 database read bridge (`DecimalOrNull` and `getDecimal` in each adapter), is
 released (merge `4a32742`) and described below; writes already travel losslessly
 as `DecimalText`, and there is no `SqlArg.Decimal` or `decimal(p,s)` in this
-tier. The remaining decimal work is none; `^I`, named function values and stored
-closures remain later. `string(decimal)` stays a compile error; use
-`decimal::format`.
+tier. No decimal storage or function-value stage remains; a typed database write
+path (`SqlArg.Decimal`/`decimal(p,s)`) and further containers remain later, as
+do `^I`, named function values and stored closures. `string(decimal)` stays a
+compile error; use `decimal::format`.
 
 ### Decimal function values, lambdas and captures 0.19 (released)
 
@@ -305,10 +306,13 @@ change it. `mut`/`move` captures, `&decimal`, named function values, stored
 closures and `string(decimal)` remain out of scope. Cross-module `DecFn` aliases
 and `apply` functions round-trip through `.sym`.
 
-**Why format 12.** The function-type text itself did not change, but a format-11
-reader accepts that text and pushes the value-call cell in the old order, so it
-would miscompile a decimal-returning call. The change is therefore a meaning
-change: the format check runs before the body, and a format-11 file is rejected
+**Why format 12.** The function-type text itself did not change. A 0.18 reader
+would accept the same text in a format-11 file, but it fails closed at
+`callFnWith` with
+`internal error: a decimal-returning function value is not supported`, so it
+rejects the call rather than miscompiling it. The change is still a meaning
+change because the call layout is new, so the format check runs before the body
+and this compiler rejects a format-11 file
 (`has format 11; this compiler reads 12; rebuild it`). `SYM_ABI` stays 1 because
 the descriptors, argument stride and return protocol do not move.
 
@@ -492,9 +496,9 @@ statuses (1, 3, 4, 5, 6), as documented in `obo/LANGUAGE.md` section 9.
 These are one host's measurements, not portable constants: an AMD Ryzen 7
 8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4 and **obo 0.16 sym-format
 9 abi 1**, `50cca0a`, measured on 1 November 2026. The 0.17, 0.18 and 0.19
-lines changed compiler checks, frames and decimal dispatch (impure-member
+lines changed compiler checks, lambda frames and decimal dispatch (impure-member
 checking, decimal method/interface codegen, then function-value and capture
-frames), not non-decimal code generation or the runtime, so this table is
+frames), not any benchmarked non-decimal path or the runtime, so this table is
 carried unchanged from its 0.16 measurement; it was not re-run afterwards.
 The table is the last of three default runs; the runs differed most on `sort`
 (168.6–237.5 ms), `sort -n` (216.4–237.3 ms), `sieve` and `wc -l`, and
@@ -533,10 +537,10 @@ and static, with the runtime included; the 0.16 runtime text added one
 (whose runtime cleanup had removed 4,096 bytes from each), while the compiler
 itself grew by 61,440 bytes with the new storage code (historical). Those tool,
 eza and minimal sizes are unchanged in 0.18 and 0.19 because code generation
-outside decimal method, interface and value calls did not change. The benchmark
-rows above were measured on the 0.16 line; 0.17–0.19 change compiler checks,
-frames and decimal dispatch, not non-decimal codegen or the runtime, so they do
-not move them. The
+outside lambda frames and decimal method, interface and value calls did not
+change. The benchmark rows above were measured on the 0.16 line; 0.17–0.19
+change compiler checks, lambda frames and decimal dispatch, not any benchmarked
+non-decimal path and not the runtime, so they do not move them. The
 honest shape of these numbers is unchanged: pure
 compute is far ahead of CPython, while `wc -l` is close to Python and behind
 GNU, eza is slower than Python and `ls` on names (its case is size and memory),
@@ -611,9 +615,10 @@ globals and constants) is `0.16`/format 9/ABI 1, impure interface members are
 `0.17`/format 10/ABI 1, and decimal methods and interface members are
 `0.18`/format 11/ABI 1. D4b (decimal function values, lambdas and captures) is
 released at `0.19`/format 12/ABI 1, and D6 (the database read bridge) is
-released, so the remaining decimal work is none. The next options are the I2
-HTTP handler, `^I`, named function values and stored closures, P2C compression,
-and threads. I2 follows D4b: the `http1server` handler becomes an interface
+released, so no decimal stage remains; a typed database write path
+(`SqlArg.Decimal`/`decimal(p,s)`) and further containers remain later. The next
+compiler options are the I2 HTTP handler, `^I`, named function values and
+stored closures, P2C compression, and threads. I2 follows D4b: the `http1server` handler becomes an interface
 with a data-carrying response, kept in a local or `&I` parameter, not a `Server`
 field or global; async libpq and a deferred response follow it. The
 experimental packages remain probes, not a stable API. `^I`'s phase 2a design is

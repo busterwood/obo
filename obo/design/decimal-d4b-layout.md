@@ -574,7 +574,7 @@ A decimal-returning function-value call must preserve the existing summary:
 `port_compare.py`'s `SEED_FILE_MIN` (`obo/tests/port_compare.py:205`) also needs
 `(0, 19)` entries for the three new flat cases:
 `tests/run/decimal_fnvalues.obx`, `tests/run/decimal_captures.obx` and
-`tests/errors/decimal_fnvalues.obx`. The promoted 0.18 seed cannot compile
+`tests/errors/decimal_fnvalues.obx`. The pre-promotion 0.18 seed cannot compile
 `fn(decimal)`; without the entries the seed comparison tries them and fails.
 
 ### 8.2 Gates
