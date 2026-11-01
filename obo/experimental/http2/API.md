@@ -1,4 +1,4 @@
-# `http2` public API (experimental H2a)
+# `http2` public API (experimental H2a/H2b/H2c)
 
 Status: experimental and unstable. Every function returns `Result[...]` or a
 plain value as shown. Errors carry an `httpapi` failure code; decode with
@@ -260,13 +260,16 @@ pub fn runAction(mut st: &ActionState, h: http::Handler,
                  now: &http::Now): Result[bool]
 pub fn actionStopRequested(st: &ActionState): bool
 pub fn actionCloseRequested(st: &ActionState): bool
+pub fn actionDone(st: &ActionState): bool
 ```
 
 `runAction` latches the first action returned by the pure handler, executes the
 closed action set (`Hello`, `Echo`, `Chunked`, `Head`, `NoContent`,
 `NotModified`, `Big`, `Slow`, `Stop`, `Close`), and returns `false` on yield
 (write buffer full, body not ready, or end not yet accepted). It never spins and
-never calls a handler twice to change a decision. Non-echo actions discard any
+never calls a handler twice to change a decision. `actionDone` is true only
+after the response is ended and the request body is consumed; the server loop
+uses it to distinguish a completed action from a yielded one. Non-echo actions discard any
 remaining request body in bounded pieces; an oversized body or timeout resets
 with `CANCEL`. The function is ordinary impure module code, not a callback or
 interface.
@@ -287,3 +290,105 @@ pub fn resetCounts(mut c: &Connection): Result[bool]
 `consumeConnection` restores connection-level window for an externally
 discarded range; normal reads/discards/retirement already do this.
 `resetCounts` zeroes diagnostic counters only.
+
+## Reactor server (`http2server`)
+
+`http2server` is the H2b/H2c concrete server loop. It owns a nonblocking
+listener, a level-triggered reactor, the optional `systls::TlsContext`, and a
+fixed table of connection slots. Each connection owns a bounded table of
+`http2::Stream` shells. The handler is the same pure `httpapi::Handler`; no C
+callback, hidden thread or interface dispatch is involved.
+
+```obo
+import "http2server.obx" as server
+
+pub type Handler = httpapi::Handler
+
+pub fn make(listener: net::Listener, r: reactor::Reactor,
+            limits: &http2::Limits,
+            options: &http2::Options): Result[Server]
+pub fn makeTls(listener: net::Listener, r: reactor::Reactor,
+               limits: &http2::Limits, options: &http2::Options,
+               ctx: tls::TlsContext): Result[Server]
+
+pub fn runOnce(mut s: &Server, handler: Handler,
+               maxEvents: int): Result[bool]
+pub fn run(mut s: &Server, handler: Handler,
+           maxTurns: int): Result[bool]
+pub fn beginShutdown(mut s: &Server, now: &httpapi::Now): Result[bool]
+pub fn drain(mut s: &Server, handler: Handler,
+             maxTurns: int): Result[bool]
+pub fn shutdown(mut s: &Server, now: &httpapi::Now): Result[bool]
+```
+
+`make` is the cleartext prior-knowledge (h2c) listener. Every accepted
+transport is passed to `http2::make` with `ModePriorKnowledge`; the 24-byte
+preface is validated before any frame and an HTTP/1.1 `Upgrade` is never
+accepted. `makeTls` takes ownership of a `systls` context. The caller must
+configure `Require(["h2"])`; the loop additionally requires the negotiated
+ALPN to be exactly `h2` after the handshake and closes the session otherwise.
+The context is closed by `shutdown` after the last session.
+
+Admission uses `http2::reservation(limits)` plus both `maxConnections` and
+`maxTotalConnectionBytes`. TLS sessions, transport staging and other native
+users are outside that H2 reservation. Accept batches are capped at 32, and
+`ResourceLimit`/`EMFILE` pauses acceptance with a short backoff instead of
+spinning.
+
+Connection slots are tagged by `(generation, index)` so a stale reactor event
+cannot drive a reused slot. A connection failure, handler failure, protocol
+error or timeout closes only that connection; the loop and other connections
+keep running. Per-turn work is bounded (32 connection steps and 32 stream
+resumptions). A batch that exhausts the connection-step budget marks the slot
+resumable, so queued events are driven without waiting for new socket
+readiness.
+
+The loop enforces the H2 core deadlines from `http2::deadline`, the TLS
+handshake deadline (`prefaceTimeoutMs`), and the server drain deadline. A TLS
+handshake completion drives the new H2 connection once so a preface already
+buffered inside the TLS layer is not stranded.
+
+`runOnce` performs one accept batch, one reactor wait, the resulting slot
+steps, deadline checks and bounded resumable work. It automatically calls
+`beginShutdown` after an action reports `Stop`. `run` loops `runOnce` up to
+`maxTurns`; `drain` drives live connections after `beginShutdown` until they
+finish or `drainTimeoutMs` elapses. `shutdown` is the final close: it removes
+watches, closes every stream shell, runs a bounded close-notify/shutdown step,
+closes each H2 connection once, releases admission, and closes the TLS context,
+listener and reactor.
+
+```obo
+pub type Metrics = ref record {
+    pub accepted, rejected, closedConnections, requests: int
+    pub streamsOpened, streamsClosed, protocolErrors, timeouts: int
+    pub acceptPressure, acceptErrors, handlerErrors, watchErrors: int
+    pub handshakeFailures, drains, peakActive, active: int
+    pub reservedBytes: int
+}
+pub fn metrics(s: &Server): Metrics
+pub fn active(s: &Server): int
+pub fn reservedBytes(s: &Server): int
+pub fn isStopping(s: &Server): bool
+pub fn stopRequested(s: &Server): bool
+pub fn now(): Result[httpapi::Now]
+pub fn isAcceptPressure(code: int): bool
+```
+
+`metrics` is a snapshot. `active` counts live connection slots and
+`reservedBytes` is the aggregate H2 reservation held by admission. Diagnostic
+counters never control admission. `now()` is the same monotonic/realtime pair
+the loop uses for deadlines. A normal application loop is:
+
+```obo
+let srv = try server::makeTls(listener, reactor, &limits, &options, ctx)
+let h = fn (req: &httpapi::RequestMeta, at: &httpapi::Now): httpapi::Action {
+    return route(req, at)
+}
+while !server::stopRequested(&srv) {
+    let progressed = try server::runOnce(&srv, h, 64)
+}
+let at = try server::now()
+let _ = try server::beginShutdown(&srv, &at)
+let _ = try server::drain(&srv, h, 2000)
+let _ = try server::shutdown(&srv, &at)
+```
