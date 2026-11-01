@@ -111,3 +111,31 @@ fn main() {}
 type Box = ref record { parts: []Sql }
 fn whereAll(b: &Box): Sql { return sqlWhere(b.parts) }  // error: sqlWhere needs a local []Sql array; store it in a variable first
 fn main() {}
+
+// === sqlJoin's separator must not move the array
+fn steal(xs: []Sql): Sql { return sqlRaw`, ` }
+fn main() { var xs = new []Sql(0); let j = sqlJoin(xs, steal(xs)) }  // error: sqlJoin's separator may move or free the []Sql array; compute the separator before the call
+
+// === a fake </scriptx> does not close a script body
+fn main() { let v = "x"; let h = html`<script></scriptx>${v}</script>` }  // error: html template: a hole is not allowed in a <script> body; use a typed encoder
+
+// === a fake </styley> does not close a style body
+fn main() { let v = "x"; let h = html`<style></styley>${v}</style>` }  // error: html template: a hole is not allowed in a <style> body; use a typed encoder
+
+// === a URL attribute may not split a scheme across holes
+fn main() { let a = "javascript"; let b = "alert(1)"; let h = html`<a href="${a}:${b}">x</a>` }  // error: a URL attribute may contain only one hole; build and validate the URL string first
+
+// === a hole cannot complete a scheme prefix
+fn main() { let u = "java"; let h = html`<a href="${u}script:alert(1)">x</a>` }  // error: a URL attribute's first hole must not be followed by a scheme colon; build and validate the URL string first
+
+// === a literal URL prefix is validated before a hole
+fn main() { let x = "1"; let h = html`<a href="javascript:${x}">x</a>` }  // error: a URL hole must be at the start or after a validated scheme or relative path; build the URL string first
+
+// === srcdoc holes are script contexts
+fn main() { let v = "x"; let h = html`<iframe srcdoc="${v}"></iframe>` }  // error: html template: a hole is not allowed in a srcdoc attribute; use a typed encoder
+
+// === event-handler holes are script contexts
+fn main() { let v = "x"; let h = html`<button onclick="${v}">x</button>` }  // error: html template: a hole is not allowed in a onclick attribute; use a typed encoder
+
+// === style holes are CSS contexts
+fn main() { let v = "x"; let h = html`<div style="${v}">x</div>` }  // error: html template: a hole is not allowed in a style attribute; use a typed encoder

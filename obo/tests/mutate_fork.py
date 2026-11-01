@@ -226,6 +226,27 @@ MUTANTS.update({
 })
 
 
+# template review regressions: array holding, assembled URL, dangerous contexts, layout, shadowing
+MUTANTS.update({
+    'template: sqlJoin parts move check dropped': ('    if heldLost(ps, t0) || heldHitAt(hp) {',
+                '    if false {'),
+    'template: URL multiple-hole check dropped': ('                        if hsUrlHoles > 0 {',
+                '                        if false {'),
+    'template: URL prefix check dropped': ('                        } else if !hsUrlPrefixOk() {',
+                '                        } else if false {'),
+    'template: URL suffix check dropped': ('                if hsAttrUrl && hsUrlHoles > 0 && hsUrlAtStart && hsUrlSuffixUnsafe() {',
+                '                if false {'),
+    'template: dangerous attribute check dropped': ('                    if hsAttrDanger {',
+                '                    if false {'),
+    'template: script close delimiter check dropped': ("                    if !(d == ' ' || d == '\\t' || d == '\\n' || d == '\\r' || d == '/' || d == '>') {",
+                '                    if false {'),
+    'template: Html layout check dropped': ('        if len(tHtml.fields) != 1 || tHtml.fields[0].name != "text" ||\n           tHtml.fields[0].typ != tString || !tHtml.fields[0].private || tHtml.fields[0].offset != 0 {\n            errorAt("module \'html\' must define Html as a ref record with exactly one private string field \'text\'", line, 1)\n        }',
+                '        if false {\n            errorAt("module \'html\' must define Html as a ref record with exactly one private string field \'text\'", line, 1)\n        }'),
+    'template: shadow helper probe dropped': ('    if name == "sql" && sym == T_DOT && lookupMaybe(name) == nil { return sqlCopyExpr() }',
+                '    if name == "sql" && sym == T_DOT { return sqlCopyExpr() }'),
+})
+
+
 # the mutants whose patterns the reference bindings per path replaced: retargeted to the same behaviour
 RETARGET = {
     "writes through read-only references": ("if x.deref && wr != nil && wr.isRef && !wr.bind.writable {",

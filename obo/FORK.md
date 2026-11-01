@@ -6333,11 +6333,15 @@ to ordinary values. `Sql` is a public-field record `{text: []string; params:
 `html.obx`). SQL scalar holes become ordered bind arguments, strings never become
 SQL syntax, `Sql` fragments splice, `sql.copy`/`sqlJoin`/`sqlWhere`/`sqlNull`/
 `sqlBytes` are the explicit helpers, `[]Sql` is never expanded implicitly, and a
-literal `$` followed by a digit is rejected because `$n` is reserved. HTML
-literal chunks are trusted; holes are context-escaped for text, quoted
-attributes and allow-listed URLs; `Html` splices only as text, `[]Html`
-concatenates, and script/style/comment/doctype/unquoted-attribute/tag-name/
-attribute-name holes are compile errors. Decimal SQL arguments use exact
+literal `$` followed by a digit is rejected because `$n` is reserved.
+`sqlWhere` parenthesizes every predicate (`WHERE (p1) AND (p2)`) and `sqlJoin`
+holds its parts array across the separator expression. HTML literal chunks are
+trusted; holes are context-escaped for text, quoted attributes and allow-listed
+URLs; `Html` splices only as text, `[]Html` concatenates, and script/style/
+comment/doctype/unquoted-attribute/tag-name/attribute-name/`srcdoc`/`style`/
+`on*` holes are compile errors. A raw script/style body closes only at a real
+`</script`/`</style` with a delimiter, and URL attributes validate the assembled
+value: a scheme may not span holes and only one hole is accepted per URL. Decimal SQL arguments use exact
 `SqlArg.DecimalText` bytes: display text when exact, canonical only when the
 display scale was capped, never a rounded value. Splicing consumes fragments;
 `sql.copy`/`html.copy` clone them.
@@ -6354,17 +6358,17 @@ database driver, dialect placeholder rendering, identifier/`ORDER BY`
 allow-lists, array expansion and user-defined tags remain later work.
 `DecimalText` is the lossless decimal transport.
 
-**Gates (this worktree).** `run_fork` **1,797 passed** (1,756 + 41 template/
-fuzz cases); default `port_compare` **1,784/1,784**; `OBO_REF=obo/seed/obo`
-**1,549/1,549** (the five new run/error files are skipped at `(0,15)`);
-`port_test` **610/610**; `module_test` **142**; `sym_test` **52/52**;
+**Gates (this worktree, review revision).** `run_fork` **1,808 passed**;
+default `port_compare` **1,795/1,795**; `OBO_REF=obo/seed/obo`
+**1,549/1,549** (seven new run/error files are skipped at `(0,15)`);
+`port_test` **611/611**; `module_test` **143**; `sym_test` **52/52**;
 `float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **29/29**;
 `stdlib` **16/16**; `tools` **509 passed**; cinterop, DB-adapter and systems
 P0/P1a/P2 suites pass; the decimal evidence runner reports **32,719 C checks**.
-`mutate_fork` **708 caught + 31 equivalent of 739** (including 14 new template
-compiler mutants), `mutate_decimal` **70/70**, and `mutate_port` **540/540**;
-all template mutants are caught by the new run/error cases. Self-compile peaks
-at **2,364,800 bytes** in the port comparison (budget 2,500,000); the
-empty-array savings oracle is **50,528 bytes** above baseline (minimum 30,000).
+`mutate_fork` **716 caught + 31 equivalent of 747** (including 22 template
+compiler mutants), `mutate_decimal` **70/70** (including the sqlWhere runtime
+mutant), and `mutate_port` **540/540**. Self-compile peaks at **2,383,088
+bytes** in the port comparison (budget 2,500,000, about 4.7% headroom); the
+empty-array savings oracle is **51,296 bytes** above baseline (minimum 30,000).
 The fixed point is stage 2 == stage 3 and `hello` is byte-identical between the
 0.14 seed and this compiler.

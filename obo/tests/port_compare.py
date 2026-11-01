@@ -282,6 +282,7 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'template_sql.obx'): (0, 15),
     os.path.join(FORK, 'tests', 'run', 'template_html.obx'): (0, 15),
     os.path.join(FORK, 'tests', 'run', 'template_url_trap.obx'): (0, 15),
+    os.path.join(FORK, 'tests', 'run', 'template_url_data_trap.obx'): (0, 15),
     os.path.join(FORK, 'tests', 'run', 'template_adversarial.obx'): (0, 15),
     os.path.join(FORK, 'tests', 'run', 'template_ownership.obx'): (0, 15),
     os.path.join(FORK, 'tests', 'errors', 'template.obx'): (0, 15),

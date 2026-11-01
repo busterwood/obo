@@ -84,6 +84,14 @@ fn main() {
     let raw = htmlRaw`<b>raw &amp; \` ok</b>`
     show(raw)  // expect: <b>raw &amp; ` ok</b>
 
+    // literal script/style bodies and dangerous attributes are trusted markup
+    let script = html`<script>if (a < b) { x(); }</script><p>${"ok"}</p>`
+    show(script)  // expect: <script>if (a < b) { x(); }</script><p>ok</p>
+    let styleLit = html`<style>a{color:red}</style>`
+    show(styleLit)  // expect: <style>a{color:red}</style>
+    let dangerLit = html`<div style="color: red" onclick="go()">x</div>`
+    show(dangerLit)  // expect: <div style="color: red" onclick="go()">x</div>
+
     // explicit trusted construction composes with the tag
     let trusted = html::raw("<em>trusted</em>")
     let out = html`<p>${trusted}</p>`

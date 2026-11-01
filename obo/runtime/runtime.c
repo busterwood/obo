@@ -1756,20 +1756,20 @@ u64 rt_tpl_sql_join(Array *parts, u64 sep, u64 desc) {
 u64 rt_tpl_sql_where(Array *parts, u64 desc) {
     u64 sql = rt_tpl_sql_new(desc);
     if (parts->len == 0) return sql;
-    u64 pre = tpl_mkstr("WHERE (", 7);
+    u64 pre = tpl_mkstr("WHERE ", 6);
     rt_tpl_sql_text(sql, pre);
     rt_str_dec(pre);
     for (u64 i = 0; i < parts->len; i++) {
-        if (i > 0) {
-            u64 ands = tpl_mkstr(" AND ", 5);
-            rt_tpl_sql_text(sql, ands);
-            rt_str_dec(ands);
-        }
+        u64 open;
+        if (i > 0) open = tpl_mkstr(" AND (", 6);
+        else open = tpl_mkstr("(", 1);
+        rt_tpl_sql_text(sql, open);
+        rt_str_dec(open);
         tpl_sql_append_frag(sql, ((u64 *)((char *)parts->data + 8))[i], 0);
+        u64 close = tpl_mkstr(")", 1);
+        rt_tpl_sql_text(sql, close);
+        rt_str_dec(close);
     }
-    u64 post = tpl_mkstr(")", 1);
-    rt_tpl_sql_text(sql, post);
-    rt_str_dec(post);
     return sql;
 }
 

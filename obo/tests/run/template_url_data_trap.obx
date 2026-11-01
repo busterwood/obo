@@ -1,0 +1,11 @@
+// A data: URL is not in the allow-list, even when the scheme is assembled at run time.
+
+import "html.obx" as html
+
+fn main() {
+    let url = "data:text/html,<script>alert(1)</script>"
+    let h = html`<a href="${url}">x</a>`
+    println(html::toText(h))
+}
+// expect-exit: 10
+// expect-stderr: obo: URL scheme is not allowed

@@ -75,6 +75,14 @@ def run_case() -> None:
     cases = corpus()
     lines = ['import "html.obx" as html', 'fn main() {']
     want = bytearray()
+    safe_urls = ["/a/b?x=1&y=2", "https://example.com/a?b=1&c=2", "mailto:a@b",
+                 "//host/x", "?q=1#f", "/é☃?x"]
+    for k, u in enumerate(safe_urls):
+        lit = u.replace('\\', '\\\\').replace('"', '\\"')
+        lines.append(f'    let su{k} = "{lit}"')
+        lines.append(f'    let sa{k} = html`<a href="${{su{k}}}">x</a>`')
+        lines.append(f'    println(html::toText(sa{k}))')
+        want += b'<a href="' + escape_attr(u.encode()) + b'">x</a>\n'
     for i, c in enumerate(cases):
         lines.append(f'    var b{i} = new []byte(0)')
         for byte in c:
@@ -86,9 +94,22 @@ def run_case() -> None:
         lines.append(f'    println(html::toText(a{i}))')
         lines.append(f'    let q{i} = sql`SELECT ${{s{i}}}`')
         lines.append(f'    println(len(q{i}.text), " ", len(q{i}.params), " ", q{i}.text[0])')
+        lines.append(f'    var c{i} = new []byte(0)')
+        for byte in c:
+            lines.append(f'    append(c{i}, byte({byte}))')
+        lines.append(f'    let qb{i} = sql`${{c{i}}}`')
+        lines.append(f'    println(len(qb{i}.params), " ", len(qb{i}.text))')
+        lines.append(f'    let f{i} = html`<b>${{s{i}}}</b>`')
+        lines.append(f'    var arr{i} = new []Html(0)')
+        lines.append(f'    append(arr{i}, html.copy(f{i}))')
+        lines.append(f'    append(arr{i}, f{i})')
+        lines.append(f'    let list{i} = html`<ul>${{arr{i}}}</ul>`')
+        lines.append(f'    println(html::toText(list{i}))')
         want += b'<p>' + escape_text(c) + b'</p>\n'
         want += b'<p title="' + escape_attr(c) + b'">x</p>\n'
         want += b'2 1 SELECT \n'
+        want += b'1 2\n'
+        want += b'<ul><b>' + escape_text(c) + b'</b><b>' + escape_text(c) + b'</b></ul>\n'
     lines.append('}')
 
     case = tempfile.mkdtemp(prefix='template-fuzz-', dir=run.TMP)

@@ -2256,7 +2256,8 @@ chunk := raw source bytes; only \` and \${ escape
 ```
 
 The tags are contextual: `sql` and `html` are ordinary identifiers everywhere
-else. `sqlRaw` and `htmlRaw` take a literal with no holes. Chunks are raw, so
+else, so a local or field named `sql`/`html` keeps its normal field access. The
+type names `Sql`, `SqlArg`, `Html`, `HtmlAttr` and `HtmlAttrs` are reserved. `sqlRaw` and `htmlRaw` take a literal with no holes. Chunks are raw, so
 backslashes, newlines and UTF-8 survive byte-for-byte. A `sql` literal chunk may
 not contain `$` followed by a digit because `$n` is reserved for parameters;
 `$tag$` quoting is still literal text. A template cannot be built in a global
@@ -2273,8 +2274,11 @@ exact text in `SqlArg.DecimalText` (display form, canonical only when the displa
 scale was capped; never rounded). `sqlNull()` is an explicit NULL argument,
 distinct from an empty fragment. Splicing a `Sql` consumes it; `sql.copy(frag)`
 copies it first. `sqlJoin(parts, sep)` joins a `[]Sql` with a separator and
-`sqlWhere(parts)` returns empty for an empty array, otherwise `WHERE (p AND ...)`
-with parentheses. A `[]Sql` is never expanded implicitly.
+`sqlWhere(parts)` returns empty for an empty array, otherwise
+`WHERE (p1) AND (p2)`: each predicate is parenthesized so an inner `OR` cannot
+capture its neighbour. `sqlJoin` holds its parts array across the separator
+expression and rejects a separator that moves or frees it. A `[]Sql` is never
+expanded implicitly.
 
 `html` and `Html` are the claimed-safe content type. Its `text` field is private
 to module `html`; `html::toText` is the rendering accessor, `html::raw` is the
@@ -2282,13 +2286,18 @@ explicit trusted constructor, and `html.copy(frag)` copies a fragment before a
 splice. Literal chunks are trusted markup. A hole in text content escapes
 `& < > " '` and ASCII controls; a hole in a quoted attribute escapes both quote
 characters and tab/LF/CR; a hole in a URL attribute (`href`, `src`, `action`,
-`formaction`, `cite`, `poster`, `background`, `longdesc`, `usemap`) also applies
-the scheme allow-list (relative references, `http`, `https`, `mailto`) and traps
-on any other scheme. An `Html` hole is inserted raw and is allowed only in text
+`formaction`, `cite`, `poster`, `background`, `longdesc`, `usemap`, `data`,
+`manifest`, `ping`, `profile`, `xlink:href`) also applies the scheme allow-list
+(relative references, `http`, `https`, `mailto`) and traps on any other scheme.
+URL values are validated as assembled attribute values: a scheme may not be
+split across holes, and a URL attribute may contain only one hole (build and
+validate the whole string first if a dynamic URL is needed). An `Html` hole is inserted raw and is allowed only in text
 content; `[]Html` concatenates there. `Html` in an attribute is a compile error,
 and `HtmlAttrs`/`HtmlAttr` have no v1 hole. Holes are rejected at compile time in
-script/style bodies, comments, doctypes, unquoted attribute values, tag names and
-attribute names. There is no script/CSS encoder, dynamic tag or attribute name
+script/style bodies, comments, doctypes, unquoted attribute values, tag names,
+attribute names, and `srcdoc`/`style`/`on*` values (script, CSS and event-handler
+contexts need typed encoders, not attribute escaping). A fake `</scriptx>` or
+`</styley>` does not close a raw-text body; a closing tag needs a delimiter. There is no script/CSS encoder, dynamic tag or attribute name
 API, sanitizer, or generic `escape` entry point.
 
 ```text

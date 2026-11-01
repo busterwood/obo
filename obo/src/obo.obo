@@ -4006,6 +4006,22 @@ fn lookup(name: string): ^Sym {
     return newSym("var", name, nil)
 }
 
+// A non-erroring name probe used by contextual syntax (sql.copy/html.copy):
+// a local, parameter, global, type or imported module alias shadows the helper.
+fn lookupMaybe(name: string): ?^Sym {
+    var i = len(blocks) - 1
+    while i >= 0 {
+        let s = findSym(blocks[i].syms, name)
+        if s != nil { return s }
+        i -= 1
+    }
+    let g = findSym(curModule.globals, name)
+    if g != nil { return g }
+    let u = findSym(universe, name)
+    if u != nil { return u }
+    return nil
+}
+
 fn declare(s: ^Sym): ^Sym {
     if len(blocks) > 0 {
         let scope = &blocks[len(blocks) - 1].syms
@@ -5758,6 +5774,13 @@ fn typeDecl(isPub: bool) {
         expect(T_RECORD, "")
         truncate(tHtml.fields, 0)
         fieldList(tHtml, false)
+        if !isPub {
+            errorAt("module 'html' must export Html", line, 1)
+        }
+        if len(tHtml.fields) != 1 || tHtml.fields[0].name != "text" ||
+           tHtml.fields[0].typ != tString || !tHtml.fields[0].private || tHtml.fields[0].offset != 0 {
+            errorAt("module 'html' must define Html as a ref record with exactly one private string field 'text'", line, 1)
+        }
         tHtml.incomplete = false
         let hs = newSym("type", "Html", tHtml)
         hs.line = line
@@ -7469,9 +7492,15 @@ const HS_DOCTYPE = 13
 var hsState = HS_DATA
 var hsClosing = false
 var hsAttrUrl = false
+var hsAttrDanger = false
 var hsTag = new []byte(0)
 var hsAttr = new []byte(0)
 var hsRaw = ""
+var hsUrlLit = new []byte(0)
+var hsUrlHoles = 0
+var hsUrlAtStart = false
+var hsUrlLine = 0
+var hsUrlCol = 0
 
 fn hsLower(b: int): int {
     if b >= 'A' && b <= 'Z' { return b + 32 }
@@ -7491,7 +7520,77 @@ fn hsIsUrlName(): bool {
        hsBytesAre(&hsAttr, "action") || hsBytesAre(&hsAttr, "formaction") ||
        hsBytesAre(&hsAttr, "cite") || hsBytesAre(&hsAttr, "poster") ||
        hsBytesAre(&hsAttr, "background") || hsBytesAre(&hsAttr, "longdesc") ||
-       hsBytesAre(&hsAttr, "usemap") { return true }
+       hsBytesAre(&hsAttr, "usemap") || hsBytesAre(&hsAttr, "data") ||
+       hsBytesAre(&hsAttr, "manifest") || hsBytesAre(&hsAttr, "ping") ||
+       hsBytesAre(&hsAttr, "profile") || hsBytesAre(&hsAttr, "xlink:href") { return true }
+    return false
+}
+
+// srcdoc, style and on* are script/CSS/navigation contexts, not ordinary
+// attributes: a data hole there would be executable content.
+fn hsIsDangerName(): bool {
+    if hsBytesAre(&hsAttr, "srcdoc") || hsBytesAre(&hsAttr, "style") { return true }
+    if len(hsAttr) >= 2 && int(hsAttr[0]) == int('o') && int(hsAttr[1]) == int('n') { return true }
+    return false
+}
+
+fn hsUrlReset() {
+    truncate(hsUrlLit, 0)
+    hsUrlHoles = 0
+    hsUrlAtStart = false
+    hsUrlLine = line
+    hsUrlCol = col
+}
+
+fn hsSchemeByte(b: int): bool {
+    return isLetter(b) || isDigit(b) || b == '+' || b == '-' || b == '.'
+}
+
+fn hsSchemeIs(a: &[]byte, end: int, name: string): bool {
+    if end != len(name) { return false }
+    for i in 0..end {
+        var b = int(a[i])
+        if b >= 'A' && b <= 'Z' { b = b + 32 }
+        if b != int(name[i]) { return false }
+    }
+    return true
+}
+
+fn hsSchemeAllowed(a: &[]byte, end: int): bool {
+    if end <= 0 { return false }
+    if !isLetter(int(a[0])) { return false }
+    for i in 1..end {
+        if !hsSchemeByte(int(a[i])) { return false }
+    }
+    return hsSchemeIs(a, end, "http") || hsSchemeIs(a, end, "https") ||
+           hsSchemeIs(a, end, "mailto")
+}
+
+// The literal text before a URL hole: empty is a hole at the start; a scheme
+// colon must name an allowed scheme; a /, ? or # begins a relative reference.
+// A bare first segment is rejected because a following hole could complete it
+// into a scheme.
+fn hsUrlPrefixOk(): bool {
+    var i = 0
+    while i < len(hsUrlLit) {
+        let b = int(hsUrlLit[i])
+        if b == ':' { return hsSchemeAllowed(&hsUrlLit, i) }
+        if b == '/' || b == '?' || b == '#' { return true }
+        i += 1
+    }
+    return false
+}
+
+// A hole at the start can only be followed by path/query/fragment text; a
+// scheme colon after it would join the hole's text into a scheme.
+fn hsUrlSuffixUnsafe(): bool {
+    var i = 0
+    while i < len(hsUrlLit) {
+        let b = int(hsUrlLit[i])
+        if b == ':' { return true }
+        if b == '/' || b == '?' || b == '#' { return false }
+        i += 1
+    }
     return false
 }
 
@@ -7501,6 +7600,7 @@ fn hsStartTag(closing: bool) {
     truncate(hsTag, 0)
     truncate(hsAttr, 0)
     hsAttrUrl = false
+    hsAttrDanger = false
 }
 
 fn hsEndTag() {
@@ -7578,6 +7678,8 @@ fn htmlLiteral(chunk: &[]byte) {
                 i += 1
             } else if isLetter(hsLower(b)) || b == ':' {
                 hsState = HS_ATTR_NAME
+                hsAttrUrl = false
+                hsAttrDanger = false
                 truncate(hsAttr, 0)
                 append(hsAttr, byte(hsLower(b)))
                 i += 1
@@ -7587,6 +7689,7 @@ fn htmlLiteral(chunk: &[]byte) {
         } else if hsState == HS_ATTR_NAME {
             if b == '=' {
                 hsAttrUrl = hsIsUrlName()
+                hsAttrDanger = hsIsDangerName()
                 hsState = HS_BEFORE_VALUE
                 i += 1
             } else if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
@@ -7605,6 +7708,7 @@ fn htmlLiteral(chunk: &[]byte) {
         } else if hsState == HS_AFTER_ATTR {
             if b == '=' {
                 hsAttrUrl = hsIsUrlName()
+                hsAttrDanger = hsIsDangerName()
                 hsState = HS_BEFORE_VALUE
                 i += 1
             } else if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
@@ -7614,6 +7718,8 @@ fn htmlLiteral(chunk: &[]byte) {
                 i += 1
             } else if isLetter(hsLower(b)) || b == ':' {
                 hsState = HS_ATTR_NAME
+                hsAttrUrl = false
+                hsAttrDanger = false
                 truncate(hsAttr, 0)
                 append(hsAttr, byte(hsLower(b)))
                 i += 1
@@ -7625,9 +7731,11 @@ fn htmlLiteral(chunk: &[]byte) {
                 i += 1
             } else if b == '"' {
                 hsState = HS_VALUE_DQ
+                if hsAttrUrl { hsUrlReset() }
                 i += 1
             } else if b == '\'' {
                 hsState = HS_VALUE_SQ
+                if hsAttrUrl { hsUrlReset() }
                 i += 1
             } else if b == '>' {
                 hsEndTag()
@@ -7640,7 +7748,12 @@ fn htmlLiteral(chunk: &[]byte) {
             var quote = int('"')
             if hsState == HS_VALUE_SQ { quote = int('\'') }
             if b == quote {
+                if hsAttrUrl && hsUrlHoles > 0 && hsUrlAtStart && hsUrlSuffixUnsafe() {
+                    errorAt("a URL attribute's first hole must not be followed by a scheme colon; build and validate the URL string first", hsUrlLine, hsUrlCol)
+                }
                 hsState = HS_TAG_BODY
+            } else if hsAttrUrl {
+                append(hsUrlLit, byte(b))
             }
             i += 1
         } else if hsState == HS_VALUE_UNQ {
@@ -7664,10 +7777,16 @@ fn htmlLiteral(chunk: &[]byte) {
             // raw-text state: look for the matching case-insensitive closing tag
             let n = len(hsRaw)
             var closeMatch = false
-            if b == '<' && i + 2 + n <= len(chunk) && chunk[i + 1] == '/' {
+            if b == '<' && i + 2 + n < len(chunk) && chunk[i + 1] == '/' {
                 closeMatch = true
                 for j in 0..n {
                     if hsLower(int(chunk[i + 2 + j])) != int(hsRaw[j]) { closeMatch = false }
+                }
+                if closeMatch {
+                    let d = int(chunk[i + 2 + n])
+                    if !(d == ' ' || d == '\t' || d == '\n' || d == '\r' || d == '/' || d == '>') {
+                        closeMatch = false
+                    }
                 }
             }
             if closeMatch {
@@ -7814,14 +7933,24 @@ fn templateExpr(tag: string): Item {
     let saveState = hsState
     let saveClosing = hsClosing
     let saveUrl = hsAttrUrl
+    let saveDanger = hsAttrDanger
+    let saveUrlLit = copyBytes(&hsUrlLit)
+    let saveUrlHoles = hsUrlHoles
+    let saveUrlAtStart = hsUrlAtStart
+    let saveUrlLine = hsUrlLine
+    let saveUrlCol = hsUrlCol
     let saveTag = copyBytes(&hsTag)
     let saveAttr = copyBytes(&hsAttr)
     let saveRaw = hsRaw
     hsState = HS_DATA
     hsClosing = false
     hsAttrUrl = false
+    hsAttrDanger = false
     truncate(hsTag, 0)
     truncate(hsAttr, 0)
+    truncate(hsUrlLit, 0)
+    hsUrlHoles = 0
+    hsUrlAtStart = false
     hsRaw = ""
 
     let s = templateBuilder(t, slot)
@@ -7861,7 +7990,24 @@ fn templateExpr(tag: string): Item {
             } else {
                 var ctx = 0
                 if hsState == HS_VALUE_DQ || hsState == HS_VALUE_SQ {
-                    if hsAttrUrl { ctx = 2 } else { ctx = 1 }
+                    if hsAttrDanger {
+                        errorAt("html template: a hole is not allowed in a " + string(hsAttr) +
+                                " attribute; use a typed encoder", tplHoleLine, tplHoleCol)
+                    }
+                    if hsAttrUrl {
+                        if hsUrlHoles > 0 {
+                            errorAt("a URL attribute may contain only one hole; build and validate the URL string first", tplHoleLine, tplHoleCol)
+                        }
+                        if len(hsUrlLit) == 0 {
+                            hsUrlAtStart = true
+                        } else if !hsUrlPrefixOk() {
+                            errorAt("a URL hole must be at the start or after a validated scheme or relative path; build the URL string first", tplHoleLine, tplHoleCol)
+                        }
+                        hsUrlHoles += 1
+                        ctx = 2
+                    } else {
+                        ctx = 1
+                    }
                 } else if hsState == HS_DATA {
                     ctx = 0
                 } else if hsState == HS_VALUE_UNQ || hsState == HS_BEFORE_VALUE {
@@ -7886,6 +8032,13 @@ fn templateExpr(tag: string): Item {
     hsState = saveState
     hsClosing = saveClosing
     hsAttrUrl = saveUrl
+    hsAttrDanger = saveDanger
+    truncate(hsUrlLit, 0)
+    for b in saveUrlLit { append(hsUrlLit, b) }
+    hsUrlHoles = saveUrlHoles
+    hsUrlAtStart = saveUrlAtStart
+    hsUrlLine = saveUrlLine
+    hsUrlCol = saveUrlCol
     truncate(hsTag, 0)
     for b in saveTag { append(hsTag, b) }
     truncate(hsAttr, 0)
@@ -7950,9 +8103,18 @@ fn sqlJoinBuiltin(): Item {
     }
     noTemp(parts)
     requireTemplateArray(parts, "sqlJoin")
+    let ps = parts.sym
+    let t0 = heldTouch(ps)
+    let hp = heldPush(ps, false, nil, nil, "", "")
     expect(T_COMMA, "")
+    let sepLine = tline
+    let sepCol = tcol
     let sep = nestedExpr()
     if sep.typ != tSql { error("sqlJoin needs a Sql separator, not " + tname(sep.typ)) }
+    if heldLost(ps, t0) || heldHitAt(hp) {
+        errorAt("sqlJoin's separator may move or free the []Sql array; compute the separator before the call", sepLine, sepCol)
+    }
+    heldPop(hp)
     expect(T_RPAREN, "")
     consume(sep)
     return rtCall3(RT_TPL_SQL_JOIN, parts, sep, makeConst(tInt, tSql.desc), tSql)
@@ -8667,8 +8829,8 @@ fn designatorT(target: bool): Item {
         }
         error("unknown template tag '" + name + "'; v1 has sql, sqlRaw, html and htmlRaw")
     }
-    if name == "sql" && sym == T_DOT { return sqlCopyExpr() }
-    if name == "html" && sym == T_DOT { return htmlCopyExpr() }
+    if name == "sql" && sym == T_DOT && lookupMaybe(name) == nil { return sqlCopyExpr() }
+    if name == "html" && sym == T_DOT && lookupMaybe(name) == nil { return htmlCopyExpr() }
     if name == "decimal" && sym == T_COLONCOLON {
         next()
         if sym != T_IDENT { error("expected a decimal operation after 'decimal::'") }

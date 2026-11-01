@@ -121,10 +121,12 @@ bind parameters in public `Sql`/`SqlArg` records; literal chunks stay raw text,
 `Sql` fragments splice, `sql.copy`, `sqlJoin`, `sqlWhere`, `sqlNull` and
 `sqlBytes` compose explicitly, and `[]Sql` never expands implicitly. Decimal
 arguments use exact `DecimalText` bytes (display form, canonical only when the
-display scale was capped; never rounded). HTML holes are context-escaped for
-text, quoted attributes and allow-listed URLs; `Html` fragments splice only as
-text, `[]Html` concatenates, and script/style/comment/name/unquoted holes are
-compile errors. The database driver is later: `Sql` is a dialect-neutral
+display scale was capped; never rounded); `sqlWhere` parenthesizes every
+predicate. HTML holes are context-escaped for text, quoted attributes and
+allow-listed URLs; URL values are validated as assembled values (a scheme may
+not span holes); `Html` fragments splice only as text, `[]Html` concatenates,
+and script/style/comment/name/unquoted/srcdoc/style/`on*` holes are compile
+errors. The database driver is later: `Sql` is a dialect-neutral
 text/parameter pair, and SQL identifiers, `ORDER BY` and `$n` rendering remain
 the adapter's or a future allow-list API's job.
 

@@ -20,6 +20,8 @@ fn showSql(q: &Sql) {
     for a in ps { showArg(a) }
 }
 
+type T = ref record { pub v: int }
+
 fn apply(f: fn(int): int): int { return f(2) }
 
 fn main() {
@@ -94,10 +96,20 @@ fn main() {
     let w = sql`SELECT * FROM t ${sqlWhere(where)}`
     showSql(w)  // expect: texts 3 params 2
     // expect: t[SELECT * FROM t WHERE (name = ]
-    // expect: t[ AND id = ]
+    // expect: t[) AND (id = ]
     // expect: t[)]
     // expect: str a
     // expect: int 2
+
+    // every predicate is parenthesized, so an inner OR cannot capture a neighbour
+    var ors = new []Sql(0)
+    append(ors, sqlRaw`tenant = 1 OR admin = true`)
+    append(ors, sql`active = ${1}`)
+    let ow = sql`SELECT * FROM t ${sqlWhere(ors)}`
+    showSql(ow)  // expect: texts 2 params 1
+    // expect: t[SELECT * FROM t WHERE (tenant = 1 OR admin = true) AND (active = ]
+    // expect: t[)]
+    // expect: int 1
 
     var none = new []Sql(0)
     let empty = sqlWhere(none)
@@ -180,10 +192,10 @@ fn main() {
     // expect: t[]
     // expect: int 3
 
-    // tag names are contextual: ordinary identifiers named sql/html still work
-    let sql = 5
-    let html = "h"
-    println(sql, " ", html)  // expect: 5 h
+    // tag names are contextual: values named sql/html keep their field access
+    let sql = new T{v: 5}
+    let html = new T{v: 2}
+    println(sql.v, " ", html.v)  // expect: 5 2
 
     // chunks are raw: newlines, UTF-8 and backslashes survive
     let raw = sql`SELECT 'é'

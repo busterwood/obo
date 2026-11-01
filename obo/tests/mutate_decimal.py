@@ -114,6 +114,10 @@ MUTANTS = [
 # programs embed the mutant runtime.  Each item is (name, file, old, new).
 RUNTIME_MUTANTS = [
     # template decimal transport and escaping (0.15)
+    ("template: sqlWhere omits per-predicate parentheses",
+     "runtime.c",
+     '        if (i > 0) open = tpl_mkstr(" AND (", 6);',
+     '        if (i > 0) open = tpl_mkstr(" AND ", 5);'),
     ("template: SQL decimal text is always canonical",
      "runtime.c",
      "    int canonical = 0;",
