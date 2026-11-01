@@ -279,6 +279,10 @@ def load_spec(path):
             if info[0] != 'ptr':
                 raise ToolError("%s: ret_ctype must be a pointer type, not %r"
                                 % (f['name'], f['ret_ctype']))
+            if '(*)' in re.sub(r'\s+', '', f['ret_ctype']):
+                # The thunk treats a pointer-returning result as a data pointer in rax, never calls it.
+                raise ToolError("%s: ret_ctype must be an object pointer type, not a function pointer"
+                                % f['name'])
         if f['ret'] == 'cbytes':
             length = f.get('length')
             if not isinstance(length, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', length):
@@ -635,8 +639,16 @@ def kinds_thunk(f):
     words, with no obo code in between, and copies through obo_ci_copy_out. cstr_out copies up to
     the first NUL through obo_ci_cstr_out. Every call resets rsp to the fixed frame, so the second
     cbytes call gets the same 16-byte alignment and stack arguments as the first.
+
+    The int form (every C parameter a bare i64) is also valid here when its return is typed: the
+    words are the same as the int-form thunk's, so synthesize the i64@k kinds rather than rejecting
+    a bare i64 as a descriptor.
     """
-    kinds = check_kinds(f['name'], f['args'])
+    if all(a == 'i64' for a in f['args']):
+        kinds = [{'name': 'i64', 'arg': i, 'flag': None, 'val': 0}
+                 for i in range(len(f['args']))]
+    else:
+        kinds = check_kinds(f['name'], f['args'])
     data = {}
     for k in kinds:
         if k['arg'] is None or (k['name'] == 'ints' and k['flag'] == 'len'):
@@ -1187,12 +1199,10 @@ def validate_calls(relocs, spec, fmt=None):
         if r.get('mode', 'call') == 'fn':
             if fmt != FORMAT_V2:
                 raise ToolError("native fn call %r needs a cinterop-proto/2 spec" % r['sym'])
+            # The declaration name is the spec `name`; the C symbol is deliberately not accepted here.
             f = by_name.get(r['sym'])
             if f is None:
-                # a hand-written or older sidecar may name the C symbol
-                f = by_sym.get(r['sym'])
-            if f is None:
-                raise ToolError("native fn call to %r is not in the binding spec" % r['sym'])
+                raise ToolError("native fn call to %r is not in the binding spec by name" % r['sym'])
             expected = _fn_expected_shapes(f)
             if r['nargs'] != len(expected):
                 raise ToolError("native fn call to %r has %d argument(s), spec uses %d"
