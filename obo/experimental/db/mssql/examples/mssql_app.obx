@@ -509,6 +509,78 @@ fn datetimeoffset_text(c: &mssql::Connection): Result[bool] {
     return ok(true)
 }
 
+fn decimal_errors(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec(
+        "SELECT CAST(0x01 AS varbinary(4)) AS b, CAST(N'' AS nvarchar(4)) AS e, " +
+        "CAST(NULL AS decimal(18,4)) AS n")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c130 = try eq_bool("decimal errors fetch", more, true)
+
+    let bdt = rows.decimal_text(0)
+    match bdt {
+        ok(v) { return err("binary decimal_text unexpectedly ok", 100) }
+        err(m, code) {
+            let _c131 = try eq_int("binary decimal_text code", code,
+                                   mssql::DEC_DB_NOT_DECIMAL)
+        }
+    }
+    let bd = rows.decimal(0)
+    match bd {
+        ok(v) { return err("binary decimal unexpectedly ok", 101) }
+        err(m, code) {
+            let _c132 = try eq_int("binary decimal code", code,
+                                   mssql::DEC_DB_NOT_DECIMAL)
+        }
+    }
+    let ed = rows.decimal(1)
+    match ed {
+        ok(v) { return err("empty decimal unexpectedly ok", 102) }
+        err(m, code) {
+            let _c133 = try eq_int("empty decimal code", code,
+                                   mssql::DEC_DB_TEXT_INVALID)
+        }
+    }
+    let nd = rows.decimal(2)
+    match nd {
+        ok(v) { return err("NULL decimal unexpectedly ok", 103) }
+        err(m, code) {
+            let _c134 = try eq_int("NULL decimal code", code, mssql::DEC_DB_NULL)
+        }
+    }
+
+    var empty = new []byte(0)
+    let p0 = mssql::param_decimal_text(empty)
+    match p0 {
+        ok(v) { return err("empty decimal param unexpectedly ok", 104) }
+        err(m, code) {
+            let _c135 = try eq_int("empty decimal param code", code,
+                                   mssql::DEC_DB_TEXT_INVALID)
+        }
+    }
+    var nuldec = new []byte(0)
+    append(nuldec, '1')
+    append(nuldec, byte(0))
+    append(nuldec, '2')
+    let p1 = mssql::param_decimal_text(nuldec)
+    match p1 {
+        ok(v) { return err("NUL decimal param unexpectedly ok", 105) }
+        err(m, code) {
+            let _c136 = try eq_int("NUL decimal param code", code,
+                                   mssql::DEC_DB_TEXT_INVALID)
+        }
+    }
+    let p2 = mssql::param_decimal_text(bytes_of("not-a-decimal"))
+    match p2 {
+        ok(v) { return err("bad decimal param unexpectedly ok", 106) }
+        err(m, code) {
+            let _c137 = try eq_int("bad decimal param code", code,
+                                   mssql::DEC_DB_TEXT_INVALID)
+        }
+    }
+    return ok(true)
+}
+
 fn statement_reuse(c: &mssql::Connection): Result[bool] {
     var r = try c.prepare("SELECT CAST(? AS bigint) AS v")
     defer r.close()
