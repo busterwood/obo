@@ -1665,7 +1665,11 @@ INTERFACE_MUTANTS = {
     # D4a: the refusal that used to stop a decimal-returning interface call (the old internal error)
     "decimal D4a: a decimal-returning interface member is refused internally": (
         "    if decRet && fnval { error(\"internal error: a decimal-returning function value is not supported\") }\n",
-        "    if decRet { error(\"internal error: a decimal-returning function value is not supported\") }\n"),
+        "    if decRet && (iface || fnval) { error(\"internal error: a decimal-returning function value is not supported\") }\n"),
+    # D4a: a decimal-returning interface call must step over the hidden destination pointer to the vtable
+    "decimal D4a: a decimal-returning interface call reads the vtable at the object slot": (
+        "        if decRet { vtAt = vtAt + 8 }\n",
+        "        if false { vtAt = vtAt + 8 }\n"),
 }
 
 # a mutation whose behaviour needs more than one replacement, each of which must occur exactly once

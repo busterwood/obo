@@ -67,3 +67,15 @@ fn main() {
     let z = redo(b, 1.0)
     println(r.v)  // error: 'r' may point to freed memory
 }
+
+// === a higher-index mut parameter keeps its own bit, not an earlier parameter's
+fn f(a: int, b: int, mut c: &Box, d: decimal): decimal {
+    c.inner = new Inner{v: 3}
+    return d
+}
+fn main() {
+    var c = new Box{inner: new Inner{v: 1}, n: 0}
+    let r = &c.inner
+    let z = f(1, 2, c, 1.0)
+    println(r.v)  // error: 'r' may point to freed memory
+}

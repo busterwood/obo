@@ -2795,17 +2795,22 @@ def decimal_globals_sym():
 
 
 def decimal_pfree_sym():
-    '''D4a: the free summary of a method whose mut receiver is followed by a decimal parameter.
-    recordParamFree must map the receiver's rbp offset back to parameter index 0 over the whole
-    signature: the old offset/8 mapping saw a 24-byte parameter and dropped the bit entirely. The
-    written method line carries pfree 0x1 and its pf row; the file re-emits byte-identically, and a
-    source-less check rebuilds it identically.'''
+    '''D4a: the free summary when a decimal parameter follows a mut reference. recordParamFree
+    must map the reference's rbp offset back to its parameter index over the whole signature: the
+    old offset/8 mapping saw a 24-byte parameter and dropped the bit entirely. Index 0 (a mut
+    receiver) and index 2 (after two int parameters) are both pinned, so a regression that only
+    misnames a higher index is caught. The written lines carry the right pfree masks and pf rows;
+    the file re-emits byte-identically, and a source-less check rebuilds it identically.'''
     files = {
         'lib.obx': ('module lib\n'
                     'pub type Inner = ref record { pub v: int }\n'
                     'pub type Box = ref record { pub inner: Inner; pub n: int }\n'
                     'pub fn (mut b: &Box) redo(d: decimal): decimal {\n'
                     '    b.inner = new Inner{v: 2}\n'
+                    '    return d\n'
+                    '}\n'
+                    'pub fn f(a: int, b: int, mut c: &Box, d: decimal): decimal {\n'
+                    '    c.inner = new Inner{v: 3}\n'
                     '    return d\n'
                     '}\n'),
         'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n',
@@ -2815,9 +2820,10 @@ def decimal_pfree_sym():
         ok(build(d, s, out=os.path.join(d, 'prog')), 'full build of the decimal-pfree tree')
         lib = os.path.join(s, 'lib.sym')
         text = sym_text(lib)
-        want = b'fn (mut p0: &Box) redo(p1: decimal): decimal pfree 0x1 pf 0 "=/inner"'
-        if want not in text:
-            raise Fail(f"the mut receiver's pfree bit is wrong, wanted {want!r}: {text!r}")
+        for want in (b'fn (mut p0: &Box) redo(p1: decimal): decimal pfree 0x1 pf 0 "=/inner"',
+                     b'fn f(p0: int, p1: int, mut p2: &Box, p3: decimal): decimal pfree 0x4 pf 2 "=/inner"'):
+            if want not in text:
+                raise Fail(f"a pfree bit or row is wrong, wanted {want!r}: {text!r}")
         r = reemit(lib)
         if r.returncode != 0 or r.stdout != text:
             raise Fail('the decimal-pfree lib.sym does not re-emit unchanged')
