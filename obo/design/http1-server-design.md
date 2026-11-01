@@ -1,6 +1,9 @@
 # HTTP/1.1 server protocol layer
 
-Status: **design for independent review; no implementation authorized.**
+Status: **H1a0, the H1b plain server loop and the H1c HTTPS integration are
+implemented experimentally under `obo/experimental/http1/`; H1d and H2/H3 are
+not authorized. This note remains the design, not a stability or release
+claim.**
 Revision 4 (2026-10-31): final handler-example corrections after `1c24d2c`
 (resumable/reset state, viable response-buffer minimum, known-length example,
 `2 * maxTarget` aggregate). Revision 3 resolved the focused review at
@@ -2124,6 +2127,14 @@ ALPN and server policy:
 `H1c` is therefore not "tests only": it adds the neutral adapter, maps
 `flushPending` to `systls::flush(s)`, and adds ALPN/`acceptAlpn` dispatch
 tests.
+
+Implementation note (H1c, 2026-11-01): because 0.14 still has no impure
+interface-member tier, the neutral adapter is the concrete `http1io` module
+instead of an interface implementation. It owns a closed `Plain`/`Tls`/`Memory`
+dispatch, imports both `sysstream` and `systls`, and keeps `systls` free of HTTP
+imports. `http1conn` and `http1server` call `http1io` operations only; the
+server additionally owns the `TlsContext` passed to `makeTls`. The mapping,
+ALPN policy and close/shutdown rules below are unchanged.
 
 ### 11.6 With `html`/`sql` templates
 

@@ -1,19 +1,24 @@
-# Experimental HTTP/1.1 protocol core (H1a0 + H1b)
+# Experimental HTTP/1.1 protocol core (H1a0 + H1b + H1c)
 
-Status: **experimental H1a0/H1b slice. Unstable. Not a merged or versioned API,
-and not a stability, protocol-version or release claim.** This directory
-implements the pure grammar/parser/serializer/date core (H1a0) and the plain
-transport, connection state machine and server loop (H1b) from the approved
-design in `obo/design/http1-server-design.md`. It makes no compiler, runtime,
-ABI, symbol-format, seed or package-version change.
+Status: **experimental H1a0/H1b/H1c slice. Unstable. Not a merged or versioned
+API, and not a stability, protocol-version or release claim.** This directory
+implements the pure grammar/parser/serializer/date core (H1a0), the plain
+transport, connection state machine and server loop (H1b), and HTTPS/TLS
+integration (H1c) from the approved design in
+`obo/design/http1-server-design.md`. It makes no compiler, runtime, ABI,
+symbol-format, seed or package-version change.
 
 H1a0 runs entirely in memory and has no systems dependency. H1b adds a
 deterministic in-memory transport and a plain nonblocking `sysstream` transport,
 explicit deadlines, keep-alive/pipelining, graceful drain, and a
-`sysnet`/`sysreactor` loopback server loop. There is still **no TLS**: the
-neutral TLS adapter and ALPN dispatch are H1c. A connection with parser-buffered
-body bytes or a fairness-cap exit requests an immediate server turn, so an Echo
-response cannot stall waiting for a socket-read event that will never arrive.
+`sysnet`/`sysreactor` loopback server loop. H1c replaces the H1b opaque seam
+with the concrete `http1io` closed dispatch, adds an owned
+`systls::TlsSession` backend, drives the TLS handshake through the existing
+connection state machine, enforces ALPN `http/1.1`/h2/nil policy before any HTTP
+parse, and gives the server an optional owned `TlsContext`. A connection with
+parser-buffered body bytes or a fairness-cap exit requests an immediate server
+turn, so an Echo response cannot stall waiting for a socket-read event that will
+never arrive.
 
 ## Layout
 
@@ -23,12 +28,13 @@ obo/experimental/http1/
   http1parse.obx     incremental request parser (feed/next/readBody/eof)
   http1write.obx     response serializer and protocol error responses
   http1date.obx      IMF-fixdate formatter, RFC 850/asctime parser
-  http1transport.obx Transport operation seam, plain and memory adapters
+  http1io.obx        closed concrete transport dispatch: plain, TLS, memory
   http1conn.obx      Connection phases, deadlines, framing, body/response API
-  http1server.obx    listener accept, reactor watches, admission, drain, metrics
+  http1server.obx    listener accept, reactor watches, TLS context, drain, metrics
   tests/
     test_http1.py    one-command H1a0 suite (no sockets, TLS or clock)
-    test_http1b.py   H1b memory + loopback suite (fake and real systems adapters)
+    test_http1b.py   H1b memory + loopback suite
+    test_http1c.py   H1c HTTPS/TLS suite (self-signed certs, ALPN, curl -k)
     apps/            small drivers used only by the tests
 ```
 
@@ -39,7 +45,7 @@ import "http1core.obx" as core
 import "http1parse.obx" as http1parse
 import "http1write.obx" as http1write
 import "http1date.obx" as http1date
-import "http1transport.obx" as http1transport
+import "http1io.obx" as http1io
 import "http1conn.obx" as http1conn
 import "http1server.obx" as http1server
 ```
@@ -85,13 +91,13 @@ point revalidates caller-visible fields.
 
 ## H1b surface
 
-- `http1transport::plain(stream)` wraps an owned `sysstream::Stream`;
-  `http1transport::memory(bytes)` is the deterministic test transport. Both
-  expose `handshakeStep`, `readSome`, `writeSome`, `flushPending`,
-  `shutdownStep`, `pending`, `want`, `alpn`, `isSecure`, `maxTransfer`, `watch`
-  and `close`. The plain adapter maps `WouldBlock` to `ReadWantRead`/
-  `WriteWantWrite`, reports `AlpnNone`/`isSecure=false`/`pending=0` and never
-  exposes a descriptor or native token.
+- `http1io::plain(stream)` wraps an owned `sysstream::Stream`;
+  `http1io::memory(bytes)` is the deterministic test transport. Both expose
+  `handshakeStep`, `readSome`, `writeSome`, `flushPending`, `shutdownStep`,
+  `pending`, `want`, `alpn`, `isSecure`, `maxTransfer`, `watch` and `close`.
+  The plain adapter maps `WouldBlock` to `ReadWantRead`/`WriteWantWrite`,
+  reports `AlpnNone`/`isSecure=false`/`pending=0` and never exposes a
+  descriptor or native token.
 - `http1conn::make(transport, limits)` deep-copies `Limits` and binds the
   transport; `makeAt(transport, limits, now)` also arms the accept/handshake
   deadlines at creation and is what the server uses at accept. `next`, `readBody`, `discardBody`, `beginResponse`,
@@ -118,18 +124,40 @@ point revalidates caller-visible fields.
   methods cannot be impure either, so application code cannot itself drive a
   mutable connection through a function value. There is still no C callback and
   no hidden thread.
-- `http1transport` uses an opaque record with module functions rather than an
-  interface for the same reason: 0.14 has no impure interface-member tier, so
-  an interface method could not call `sysstream`/`sysnet`. The operation
-  contract is unchanged.
-- H1c seam note: the opaque `Transport` cannot be extended by another module.
-  A feasible option is a dedicated `http1io` module that imports both
-  `sysstream` and `systls` and defines a closed `Plain`/`Tls` transport; the
-  connection then dispatches over that closed value and never imports `systls`
-  itself. The alternative is a future compiler impure interface/function-value
-  tier, which would also restore the design's mutable-`&Connection` handler.
-  H1b implements neither TLS nor that compiler change; the pure action router
-  and opaque transport above are the 0.14-compatible seam.
+- `http1io` uses an opaque record with a closed concrete backend rather than an
+  interface for the same reason: 0.14 has no impure interface-member tier, so an
+  interface method could not call `sysstream`/`systls`. The operation contract
+  is unchanged.
+- H1c seam note: `http1io` is the dedicated module that imports both
+  `sysstream` and `systls` and dispatches over `Plain`/`Tls`/`Memory`; the
+  connection and server never import `systls` for byte I/O. The server imports
+  `systls` only for the owned `TlsContext` passed to `makeTls`. The alternative
+  remains a future compiler impure interface/function-value tier, which would
+  also restore the design's mutable-`&Connection` handler.
+
+## H1c surface
+
+- `http1io::fromTls(session)` takes ownership of an established or handshaking
+  `systls::TlsSession`. `handshakeStep`, `readSome`, `writeSome`,
+  `flushPending`, `shutdownStep`, `pending`, `want`, `alpn`, `isSecure`,
+  `maxTransfer`, `watch` and `close` map the TLS adapter outcomes without
+  inventing retries; `flushPending` maps `tls::flush` and cannot accept
+  plaintext. A TLS `close` is abortive and exactly once.
+- `http1server::makeTls(listener, reactor, limits, ctx)` owns the
+  `TlsContext`. Each accepted TCP stream becomes a `TlsSession`; the existing
+  per-connection handshake state and absolute handshake deadline drive the TLS
+  handshake. After `HandshakeDone`, `http1conn::acceptAlpn` accepts only
+  `http/1.1`; `h2`/other always close before parsing, and no ALPN is accepted
+  only when `Limits.allowNoAlpn` is true. The server closes the context after
+  the last session during `shutdown`.
+- Normal close after a response (or an idle TLS connection during graceful
+  server shutdown) drives `shutdownStep` so close_notify is queued and flushed
+  before `close`; fatal errors and expiry take the abortive path. The
+  per-connection close deadline is `responseTimeoutMs`.
+- TLS session/context accounting stays in `systls`; HTTP admission continues to
+  use `maxConnections` and `maxTotalConnectionBytes` for the fixed HTTP
+  reservation. OpenSSL/BIO memory is outside that budget and is reported by
+  `systls::counts()` in the H1c test driver.
 
 ## Build and test
 
@@ -137,26 +165,33 @@ From the repository root:
 
 ```sh
 make -C obo obo runtime_text.bin runtime_data.bin   # or: make -C obo http1
-make -C obo http1        # H1a0 + H1b
+make -C obo http1        # H1a0 + H1b + H1c
 make -C obo http1b       # H1b alone
+make -C obo http1c       # H1c HTTPS alone
 ```
 
-`make http1` builds the seed compiler image, then runs the H1a0 in-memory suite
-and the H1b suite. H1a0 covers exact bytes/statuses, fragmentation, smuggling,
-limits, HTTP/1.0, 100-continue, HEAD/204/205/304, injection, backpressure and
-dates. H1b covers the connection state machine and deadlines over a memory
-transport, then loopback TCP IPv4/IPv6 and Unix sockets, curl and raw clients,
-keep-alive/pipelining, 100-continue, slowloris/accept/idle timeouts, request
-limits, 256 idle connections and graceful shutdown. Every driver runs with
-`OBO_CHECK=1`; cinterop builds also verify their manifests.
+`make http1` builds the seed compiler image, then runs the H1a0 in-memory suite,
+the H1b suite and the H1c HTTPS suite. H1a0 covers exact bytes/statuses,
+fragmentation, smuggling, limits, HTTP/1.0, 100-continue, HEAD/204/205/304,
+injection, backpressure and dates. H1b covers the connection state machine and
+deadlines over a memory transport, then loopback TCP IPv4/IPv6 and Unix sockets,
+curl and raw clients, keep-alive/pipelining, 100-continue,
+slowloris/accept/idle timeouts, request limits, 256 idle connections and
+graceful shutdown. H1c covers TLS 1.2/1.3, ALPN `http/1.1`, h2/no-ALPN policy,
+silent handshake timeout, byte-at-a-time ClientHello fragmentation,
+keep-alive/pipelining over TLS, slowloris, close_notify, large/partial writes,
+optional client certificates, plaintext-on-TLS-port rejection, graceful
+shutdown and `curl -k`. Every driver runs with `OBO_CHECK=1`; cinterop builds
+also verify their manifests. OpenSSL headers are located or fetched privately
+by the TLS suite, exactly as in P2T-b.
 
 ## Explicit non-goals
 
-No TLS implementation, `http1tls` adapter, ALPN negotiation over TLS,
-certificate/key handling, HTTP/2, WebSocket, upgrade, `CONNECT` tunneling,
-routing, middleware, compression, caching, redirects or a client. H1c (TLS) is
-explicitly later. H1b does not buffer a whole request or response, never parses
-a second request after a terminal error, and has no request queue or concurrent
-handler. The `http1server` handler is a pure router/action selector, not the
-full mutable-connection handler described in the design; see the language note
-above.
+No HTTP/2, HTTP/3, WebSocket, upgrade, `CONNECT` tunneling, routing,
+middleware, compression, caching, redirects or a client. TLS client mode,
+session tickets/resumption/0-RTT, SNI multi-certificate selection, revocation,
+hidden threads and callbacks remain P2T-b non-goals. H1c does not buffer a whole
+request or response, never parses a second request after a terminal error, and
+has no request queue or concurrent handler. The `http1server` handler is a pure
+router/action selector, not the full mutable-connection handler described in
+the design; see the language note above.
