@@ -26,7 +26,7 @@ sha256 `29ffadc8…`), with impure interface members, decimal record fields,
 fields, exact 24-byte decimals, Stage B capture lists, the HTML escaping library
 and the configurable heap runtime. The experimental cinterop v2 line adds
 `foreign` handles, generated `_out` records and a leak census in its own packages
-(libpq, SQLite and PostgreSQL); it is a trusted-build probe with no threads and
+(libpq, SQLite, PostgreSQL and SQL Server via ODBC); it is a trusted-build probe with no threads and
 no stable API. The runtime cleanup removed the disabled collector and `gc`
 builtins. `seed/obo` is the promoted **0.17** image (same size and hash). The
 immediate pre-0.17 seed was the 757,761-byte 0.16 image (sha256 `5700668d…`,
@@ -70,7 +70,7 @@ storage is 0.16 and impure interface members are 0.17.
   function values are later. An experimental cinterop v2 boundary adds
   `foreign` handles, owned and borrowed C pointers, body-less `native fn`
   declarations, generated `_out` records and a leak census for its own libpq,
-  SQLite and PostgreSQL packages; it has no threads and no stable API. The full
+  SQLite, PostgreSQL and SQL Server (ODBC) packages; it has no threads and no stable API. The full
   reference is [obo/LANGUAGE.md](obo/LANGUAGE.md).
 - **Compiler.** 17,159 lines / 656,261 bytes of obo source (the released
   0.15 line was 15,787 / 596,288; the 0.14 line was 14,813 / 559,468).
@@ -164,8 +164,9 @@ and script/style/comment/name/unquoted/srcdoc/style/`on*` holes are compile
 errors. `Sql` stays a dialect-neutral text/parameter pair. `obo/lib/sqldialect.obx`
 now renders PostgreSQL `$n`, SQLite `?`, SQL Server TDS `@pN`, SQL Server ODBC
 `?` and Oracle `:n`; the experimental PostgreSQL and SQLite packages add
-`execute_sql` and `prepare_sql`/`bind_sql`. SQL Server/Oracle adapters,
-`SqlArg.Float` binding and identifier/`ORDER BY` allow-lists remain later work.
+`execute_sql` and `prepare_sql`/`bind_sql`, and `db/mssql` adds a first-slice
+SQL Server ODBC adapter. Oracle, a SQL Server template bridge, `SqlArg.Float`
+binding and identifier/`ORDER BY` allow-lists remain later work.
 
 ### Decimal storage 0.16 (released, D1–D3; previous release)
 
@@ -457,7 +458,7 @@ lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md)
 | Decimal scalar tier | released at 0.12/format 6/ABI 1 |
 | Decimal storage: fields, arrays, globals, constants | released at 0.16/format 9/ABI 1; methods and interface members (D4a), function values/lambdas/captures (D4b), `lib/decimals.obx` (D5) and the database read bridge (D6) still later |
 | Impure interface members | released at 0.17/format 10/ABI 1; next is I2: an `http1server` interface handler and data-carrying response, with the handler in a local or `&I` parameter, not a `Server` field or global; async libpq and a deferred response after that |
-| cinterop v2 | experimental stages (a)–(h) merged: `foreign` handles, out records, leak census and the libpq/SQLite/PostgreSQL packages; not a stable API, no threads |
+| cinterop v2 | experimental stages (a)–(h) merged: `foreign` handles, out records, leak census and the libpq/SQLite/PostgreSQL packages, plus a SQL Server ODBC adapter in `db/mssql`; not a stable API, no threads |
 | Peephole/optimizer audit | evidence-gated |
 | More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
 | Concurrency and TUI | threads are design-only and unapproved ([obo/design/systems-threads-design.md](obo/design/systems-threads-design.md)); TUI later |
