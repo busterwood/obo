@@ -1,0 +1,1048 @@
+// Live Microsoft SQL Server test app for the experimental db/mssql package.
+//
+// The DSN comes from MSSQL_TEST_DSN (the Python runner reads ~/.obo-mssql-dsn or
+// the environment); this app never reads a file and never prints the DSN.
+// SELECT-only: no schema, role, service or persistent data is changed. The only
+// session-scoped object is nothing at all; every statement is a SELECT.
+module app
+
+import "mssql.obx"
+import "../../../../lib/env.obx" as env
+
+fn eq_int(name: string, got: int, want: int): Result[bool] {
+    if got != want {
+        return err(name + ": got " + string(got) + " want " + string(want), 1)
+    }
+    return ok(true)
+}
+
+fn eq_str(name: string, got: string, want: string): Result[bool] {
+    if got != want {
+        return err(name + ": got '" + got + "' want '" + want + "'", 2)
+    }
+    return ok(true)
+}
+
+fn eq_bool(name: string, got: bool, want: bool): Result[bool] {
+    if got != want {
+        return err(name + ": boolean mismatch", 3)
+    }
+    return ok(true)
+}
+
+fn eq_bytes(name: string, got: []byte, want: []byte): Result[bool] {
+    if len(got) != len(want) {
+        return err(name + ": length " + string(len(got)) + " want " +
+                   string(len(want)), 4)
+    }
+    for i in 0..len(got) {
+        if got[i] != want[i] {
+            return err(name + ": byte " + string(i) + " differs", 5)
+        }
+    }
+    return ok(true)
+}
+
+fn contains(hay: string, needle: string): bool {
+    if len(needle) == 0 { return true }
+    if len(needle) > len(hay) { return false }
+    for i in 0..(len(hay) - len(needle) + 1) {
+        if substr(hay, i, i + len(needle)) == needle { return true }
+    }
+    return false
+}
+
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn copy_bytes(b: &[]byte): []byte {
+    var out = new []byte(0)
+    for i in 0..len(b) { append(out, b[i]) }
+    return out
+}
+
+fn bin3(): []byte {
+    var b = new []byte(0)
+    append(b, byte(0))
+    append(b, byte(255))
+    append(b, byte(65))
+    return b
+}
+
+fn payload0(): []byte {
+    var b = new []byte(0)
+    append(b, byte(0))
+    append(b, byte(255))
+    append(b, byte(16))
+    return b
+}
+
+fn expect_clean(rows: &mssql::Rows, name: string): Result[bool] {
+    let em = rows.error_message()
+    if len(em) != 0 {
+        return err(name + ": diagnostic is not empty: " + string(em), 60)
+    }
+    let es = rows.sqlstate()
+    if len(es) != 0 {
+        return err(name + ": SQLSTATE is not empty: " + string(es), 61)
+    }
+    if rows.error_code() != 0 {
+        return err(name + ": error code is not zero", 62)
+    }
+    return ok(true)
+}
+
+fn select_one(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec("SELECT 1 AS one, N'café' AS txt")
+    defer rows.close()
+    let _c1 = try eq_int("select1 columns", rows.column_count(), 2)
+    let n0 = try rows.column_name(0)
+    let _c2 = try eq_str("select1 name 0", n0, "one")
+    let n1 = try rows.column_name(1)
+    let _c3 = try eq_str("select1 name 1", n1, "txt")
+    let t0 = try rows.column_type(0)
+    let _c3b = try eq_int("select1 type 0", t0, mssql::SQL_INTEGER)
+    let _c3a = try expect_clean(rows, "select1 metadata")
+    let more = try rows.fetch()
+    let _c4 = try eq_bool("select1 fetch", more, true)
+    let v0 = try rows.text(0)
+    let _c5 = try eq_str("select1 value 0", v0, "1")
+    let v1 = try rows.text(1)
+    let _c6 = try eq_str("select1 value 1", v1, "café")
+    let isn = try rows.is_null(1)
+    let _c7 = try eq_bool("select1 not null", isn, false)
+    let _c7a = try expect_clean(rows, "select1 values")
+    let done = try rows.fetch()
+    let _c8 = try eq_bool("select1 done", done, false)
+    let _c9 = try eq_int("select1 row_count", rows.row_count(), 1)
+    let _c10 = try eq_int("select1 status", rows.status(), mssql::SQL_NO_DATA)
+    let _c10a = try eq_int("select1 error_code", rows.error_code(), 0)
+    let _c10b = try expect_clean(rows, "select1 exhausted")
+    return ok(true)
+}
+
+fn items(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec(
+        "SELECT id, name, amount, created, uid, payload FROM dbo.items ORDER BY id")
+    defer rows.close()
+    let _c11 = try eq_int("items columns", rows.column_count(), 6)
+    let t0 = try rows.column_type(0)
+    let t1 = try rows.column_type(1)
+    let t2 = try rows.column_type(2)
+    let t3 = try rows.column_type(3)
+    let t4 = try rows.column_type(4)
+    let t5 = try rows.column_type(5)
+    let _c12 = try eq_int("items type id", t0, mssql::SQL_INTEGER)
+    let _c13 = try eq_int("items type name", t1, mssql::SQL_WVARCHAR)
+    let _c14 = try eq_int("items type amount", t2, mssql::SQL_DECIMAL)
+    let _c15 = try eq_int("items type created", t3, mssql::SQL_TYPE_TIMESTAMP)
+    let _c16 = try eq_int("items type uid", t4, mssql::SQL_GUID)
+    let _c17 = try eq_int("items type payload", t5, mssql::SQL_VARBINARY)
+    let sz1 = try rows.column_size(1)
+    let _c18 = try eq_int("items name size", sz1, 100)
+    let dg2 = try rows.column_digits(2)
+    let _c19 = try eq_int("items amount digits", dg2, 4)
+    let nl0 = try rows.column_nullable(0)
+    let _c20 = try eq_int("items id nullable", nl0, 0)
+    let cn = try rows.column_name(2)
+    let _c21 = try eq_str("items column name", cn, "amount")
+
+    var row = 0
+    while true {
+        let more = try rows.fetch()
+        if !more { break }
+        let id = try rows.text(0)
+        let name = try rows.text(1)
+        let amount_text = try rows.decimal_text(2)
+        if amount_text == nil { return err("items amount is NULL", 10) }
+        let at = amount_text
+        var amount = string(at)
+        let created = try rows.text(3)
+        let uid = try rows.text(4)
+        if row == 0 {
+            let _c22 = try eq_str("items id 0", id, "1")
+            let _c23 = try eq_str("items name 0", name, "alpha")
+            let _c24 = try eq_str("items amount text 0", amount, "12.3400")
+            let _c25 = try eq_str("items created 0", created,
+                               "2026-01-02 03:04:05.678")
+            let _c26 = try eq_str("items uid 0", uid,
+                               "11111111-1111-1111-1111-111111111111")
+            let isn = try rows.is_null(5)
+            let _c27 = try eq_bool("items payload 0 not null", isn, false)
+            let pb = try rows.bytes(5)
+            let _c28 = try eq_bytes("items payload 0 bytes", pb, payload0())
+            let cache_null = try rows.is_null(1)
+            let _c28b = try eq_bool("items name not null", cache_null, false)
+            let cache_txt = try rows.text(1)
+            let _c28c = try eq_str("items name text after is_null", cache_txt, "alpha")
+            let cache_b = try rows.bytes(1)
+            let _c28d = try eq_bytes("items name utf8 bytes", cache_b, bytes_of("alpha"))
+            let d = try rows.decimal(2)
+            let can = try decimal::canonical(d)
+            let _c29 = try eq_str("items amount 0 decimal", can, "12.34")
+        } else if row == 1 {
+            let _c30 = try eq_str("items id 1", id, "2")
+            let _c31 = try eq_str("items name 1", name, "beta")
+            let _c32 = try eq_str("items amount text 1", amount, "-.5000")
+            let isn = try rows.is_null(5)
+            let _c33 = try eq_bool("items payload 1 null", isn, true)
+            let pv = try rows.value(5)
+            let _c34 = try eq_bool("items payload 1 value nil", pv == nil, true)
+            let pb = rows.bytes(5)
+            match pb {
+                ok(v) { return err("NULL payload bytes unexpectedly ok", 8) }
+                err(m, code) {
+                    let _c35 = try eq_int("NULL payload bytes code", code, 1)
+                }
+            }
+        } else if row == 2 {
+            let _c36 = try eq_str("items id 2", id, "3")
+            let _c37 = try eq_str("items name 2", name, "café")
+            let _c38 = try eq_str("items amount text 2", amount, ".0000")
+            let _c39 = try eq_str("items created 2", created,
+                               "2026-03-04 05:06:07.890")
+            let _c40 = try eq_str("items uid 2", uid,
+                               "33333333-3333-3333-3333-333333333333")
+            let isn = try rows.is_null(5)
+            let _c41 = try eq_bool("items payload 2 not null", isn, false)
+            let pb = try rows.bytes(5)
+            var empty = new []byte(0)
+            let _c42 = try eq_bytes("items payload 2 empty", pb, empty)
+            let d = try rows.decimal(2)
+            let can = try decimal::canonical(d)
+            let _c43 = try eq_str("items amount 2 decimal", can, "0")
+        } else {
+            return err("items returned too many rows", 11)
+        }
+        row += 1
+    }
+    let _c44 = try eq_int("items rows", row, 3)
+    let _c45 = try eq_int("items row_count", rows.row_count(), 3)
+    return ok(true)
+}
+
+fn null_handling(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec(
+        "SELECT CAST(NULL AS nvarchar(10)) AS n, N'' AS e, CAST(0x AS varbinary(4)) AS b, CAST(NULL AS decimal(18,4)) AS d")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c46 = try eq_bool("null fetch", more, true)
+    let n = try rows.is_null(0)
+    let _c47 = try eq_bool("null column", n, true)
+    let e = try rows.is_null(1)
+    let _c48 = try eq_bool("empty column not null", e, false)
+    let ev = try rows.text(1)
+    let _c49 = try eq_str("empty text", ev, "")
+    let b = try rows.is_null(2)
+    let _c50 = try eq_bool("empty binary not null", b, false)
+    let bb = try rows.bytes(2)
+    let _c51 = try eq_int("empty binary length", len(bb), 0)
+    let dn = try rows.is_null(3)
+    let _c52 = try eq_bool("null decimal is null", dn, true)
+    let de = try rows.decimal_text(3)
+    let _c53 = try eq_bool("null decimal text nil", de == nil, true)
+    let derr = rows.decimal(3)
+    match derr {
+        ok(v) { return err("NULL decimal unexpectedly parsed", 12) }
+        err(m, code) {
+            let _c54 = try eq_int("NULL decimal code", code, mssql::DEC_DB_NULL)
+        }
+    }
+    return ok(true)
+}
+
+fn params(c: &mssql::Connection): Result[bool] {
+    let sql = "SELECT CAST(? AS nvarchar(20)) AS t, " +
+              "CASE WHEN ? IS NULL THEN 1 ELSE 0 END AS n, " +
+              "CAST(? AS bigint) AS i, CAST(? AS varbinary(8)) AS b, " +
+              "CAST(? AS decimal(18,4)) AS d"
+    var ps = new []mssql::Param(0)
+    append(ps, mssql::param_text("café"))
+    append(ps, mssql::param_null())
+    append(ps, mssql::param_int(-9223372036854775807))
+    append(ps, mssql::param_bytes(bin3()))
+    let dp = try mssql::param_decimal_text(bytes_of("1.2300"))
+    append(ps, dp)
+    var rows = try c.exec_params(sql, ps)
+    defer rows.close()
+    let _c55 = try eq_int("params count", rows.param_count(), 5)
+    let more = try rows.fetch()
+    let _c56 = try eq_bool("params fetch", more, true)
+    let t = try rows.text(0)
+    let _c57 = try eq_str("param text", t, "café")
+    let n = try rows.text(1)
+    let _c58 = try eq_str("param null", n, "1")
+    let i = try rows.text(2)
+    let _c59 = try eq_str("param int", i, "-9223372036854775807")
+    let b = try rows.bytes(3)
+    let _c60 = try eq_bytes("param binary", b, bin3())
+    let dt = try rows.decimal_text(4)
+    if dt == nil { return err("param decimal is NULL", 13) }
+    let dts = dt
+    let _c61 = try eq_str("param decimal text", string(dts), "1.2300")
+    let d = try rows.decimal(4)
+    let can = try decimal::canonical(d)
+    let _c62 = try eq_str("param decimal", can, "1.23")
+
+    // A checked decimal constructor: 1.23 at scale 4 must render 1.2300.
+    var ps2 = new []mssql::Param(0)
+    let decv = try mssql::param_decimal(1.23, 18, 4)
+    append(ps2, decv)
+    var r2 = try c.exec_params("SELECT CAST(? AS decimal(18,4))", ps2)
+    defer r2.close()
+    let m2 = try r2.fetch()
+    let _c63 = try eq_bool("param decimal 2 fetch", m2, true)
+    let d2 = try r2.decimal_text(0)
+    if d2 == nil { return err("param decimal 2 is NULL", 14) }
+    let d2b = d2
+    let _c64 = try eq_str("param decimal 2 text", string(d2b), "1.2300")
+
+    // Empty text and empty binary are values, not NULL.
+    var emptyb = new []byte(0)
+    var ps4 = new []mssql::Param(0)
+    append(ps4, mssql::param_text(""))
+    append(ps4, mssql::param_bytes(emptyb))
+    var r4 = try c.exec_params(
+        "SELECT CAST(? AS nvarchar(4)) AS e, CAST(? AS varbinary(4)) AS b", ps4)
+    defer r4.close()
+    let m4 = try r4.fetch()
+    let _c95 = try eq_bool("empty params fetch", m4, true)
+    let e4 = try r4.is_null(0)
+    let _c96 = try eq_bool("empty text not null", e4, false)
+    let et = try r4.text(0)
+    let _c97 = try eq_str("empty text value", et, "")
+    let b4 = try r4.is_null(1)
+    let _c98 = try eq_bool("empty binary not null", b4, false)
+    let eb = try r4.bytes(1)
+    let _c99 = try eq_int("empty binary length", len(eb), 0)
+
+    // A value that the declared scale would round is refused before binding.
+    let baddec = mssql::param_decimal(1.234, 18, 2)
+    match baddec {
+        ok(p) { return err("decimal scale unexpectedly ok", 15) }
+        err(m, code) {
+            let _c65 = try eq_int("decimal scale code", code, mssql::DEC_DB_SCALE)
+        }
+    }
+    return ok(true)
+}
+
+fn error_paths(c: &mssql::Connection): Result[bool] {
+    let missing = c.exec("SELECT * FROM dbo.no_such_table_obo")
+    match missing {
+        ok(rows) { rows.close(); return err("missing table unexpectedly ok", 20) }
+        err(m, code) {
+            let _c66 = try eq_int("missing table code", code, 208)
+            if !contains(m, "42S02") {
+                return err("missing table message lacks SQLSTATE: " + m, 21)
+            }
+            if !contains(m, "208") {
+                return err("missing table message lacks native code: " + m, 22)
+            }
+        }
+    }
+    let unicode = c.exec("SELECT * FROM [no_such_café]")
+    match unicode {
+        ok(rows) { rows.close(); return err("unicode missing table unexpectedly ok", 23) }
+        err(m, code) {
+            if !contains(m, "café") {
+                return err("non-ASCII diagnostic lost: " + m, 24)
+            }
+        }
+    }
+    let empty = c.exec("")
+    match empty {
+        ok(rows) { rows.close(); return err("empty SQL unexpectedly ok", 25) }
+        err(m, code) {
+            let _c67 = try eq_int("empty SQL code", code, 2)
+        }
+    }
+    var nulb = new []byte(0)
+    append(nulb, 'S')
+    append(nulb, byte(0))
+    append(nulb, 'Q')
+    let nulsql = string(nulb)
+    let nul = c.exec(nulsql)
+    match nul {
+        ok(rows) { rows.close(); return err("NUL SQL unexpectedly ok", 26) }
+        err(m, code) {
+            let _c68 = try eq_int("NUL SQL code", code, 2)
+        }
+    }
+    var big = new []byte(0)
+    for i in 0..1048577 { append(big, 'x') }
+    let bigs = string(big)
+    let oversize = c.exec(bigs)
+    match oversize {
+        ok(rows) { rows.close(); return err("oversize SQL unexpectedly ok", 27) }
+        err(m, code) {
+            let _c69 = try eq_int("oversize SQL code", code, 2)
+        }
+    }
+    return ok(true)
+}
+
+fn metadata_unicode(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec("SELECT 1 AS [café]")
+    defer rows.close()
+    let n = try rows.column_name(0)
+    let _c70 = try eq_str("unicode column name", n, "café")
+    let oob = rows.text(9)
+    match oob {
+        ok(v) { return err("out-of-range column unexpectedly ok", 30) }
+        err(m, code) {
+            let _c71 = try eq_int("out-of-range code", code, 2)
+        }
+    }
+    let isbin = try rows.is_binary(0)
+    let _c72 = try eq_bool("unicode column not binary", isbin, false)
+    return ok(true)
+}
+
+fn close_semantics(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec("SELECT 1")
+    let first = try rows.close()
+    let _c73 = try eq_bool("rows close first", first, true)
+    let second = try rows.close()
+    let _c74 = try eq_bool("rows close second", second, false)
+    let _c75 = try eq_bool("rows closed is_open", rows.is_open(), false)
+    let after = rows.text(0)
+    match after {
+        ok(v) { return err("closed Rows accessor unexpectedly ok", 31) }
+        err(m, code) {
+            let _c76 = try eq_int("closed Rows code", code, 2)
+        }
+    }
+    return ok(true)
+}
+
+fn param_errors(c: &mssql::Connection): Result[bool] {
+    var prep = try c.prepare("SELECT ?, ?")
+    defer prep.close()
+    var one = new []mssql::Param(0)
+    append(one, mssql::param_int(1))
+    let mismatch = prep.bind_all(&one)
+    match mismatch {
+        ok(v) { return err("parameter mismatch unexpectedly ok", 40) }
+        err(m, code) {
+            let _c77 = try eq_int("parameter mismatch code", code, 2)
+        }
+    }
+    var good = new []mssql::Param(0)
+    append(good, mssql::param_int(1))
+    append(good, mssql::param_text("x"))
+    let bound = try prep.bind_all(&good)
+    let _c78 = try eq_bool("bind good", bound, true)
+    let cleared = try prep.clear_params()
+    let _c79 = try eq_bool("clear params", cleared, true)
+
+    var nulb = new []byte(0)
+    append(nulb, 'a')
+    append(nulb, byte(0))
+    append(nulb, 'b')
+    let badnul = mssql::param_text(string(nulb))
+    var withnul = new []mssql::Param(0)
+    append(withnul, badnul)
+    append(withnul, mssql::param_int(2))
+    let nulbind = prep.bind_all(&withnul)
+    match nulbind {
+        ok(v) { return err("NUL text bind unexpectedly ok", 41) }
+        err(m, code) {
+            let _c80 = try eq_int("NUL text bind code", code, 2)
+        }
+    }
+
+    // Invalid UTF-8 is rejected before the driver can replace it with U+FFFD.
+    var badutf = new []byte(0)
+    append(badutf, 'x')
+    append(badutf, byte(255))
+    let pbad = mssql::param_text(string(badutf))
+    var withbad = new []mssql::Param(0)
+    append(withbad, pbad)
+    append(withbad, mssql::param_int(2))
+    let badbind = prep.bind_all(&withbad)
+    match badbind {
+        ok(v) { return err("invalid UTF-8 bind unexpectedly ok", 42) }
+        err(m, code) {
+            let _c81 = try eq_int("invalid UTF-8 bind code", code, 2)
+            if !contains(m, "not valid UTF-8") {
+                return err("invalid UTF-8 message differs: " + m, 43)
+            }
+        }
+    }
+
+    // A successful clear removes the synthetic diagnostic left by the failure.
+    let cleared2 = try prep.clear_params()
+    let residual = prep.error_message()
+    if len(residual) != 0 {
+        return err("synthetic diagnostic survived a successful clear", 44)
+    }
+    return ok(true)
+}
+
+fn varchar_unicode(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec("SELECT CAST(N'café' AS varchar(20)) AS v")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c110 = try eq_bool("varchar fetch", more, true)
+    let t = try rows.text(0)
+    let _c111 = try eq_str("varchar unicode", t, "café")
+    return ok(true)
+}
+
+fn large_values(c: &mssql::Connection): Result[bool] {
+    // Text: 3,000 x (N'a' + NCHAR(0)) is 6,000 UTF-16 units but 6,000 UTF-8
+    // bytes (ASCII 'a' plus one NUL byte each), then N'z' adds one: 6,001.
+    // Binary: the verified varchar(max) replicate cast to varbinary(max) is
+    // exactly 10,000 bytes.
+    var rows = try c.exec(
+        "SELECT REPLICATE(CAST(N'ab' AS nvarchar(max)), 5000) AS big, " +
+        "REPLICATE(CAST(N'a' + NCHAR(0) AS nvarchar(max)), 3000) + N'z' AS nulbig, " +
+        "CAST(REPLICATE(CAST('ab' AS varchar(max)), 5000) AS varbinary(max)) AS binbig")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c80 = try eq_bool("large fetch", more, true)
+
+    let big = try rows.bytes(0)
+    let _c81 = try eq_int("large text length", len(big), 10000)
+    let bigs = string(big)
+    let _c82 = try eq_str("large text prefix", substr(bigs, 0, 4), "abab")
+    let _c83 = try eq_str("large text suffix", substr(bigs, 9998, 10000), "ab")
+
+    let nb = try rows.bytes(1)
+    let _c84 = try eq_int("nul text utf8 length", len(nb), 6001)
+    if nb[0] != 'a' || nb[1] != byte(0) || nb[len(nb) - 1] != 'z' {
+        return err("embedded NUL text was not preserved", 81)
+    }
+    let nbt = rows.text(1)
+    match nbt {
+        ok(v) { return err("NUL text unexpectedly became a string", 82) }
+        err(m, code) { let _c85 = try eq_int("NUL text code", code, 1) }
+    }
+
+    let binbig = try rows.bytes(2)
+    let _c86 = try eq_int("large binary length", len(binbig), 10000)
+    if binbig[0] != 'a' || binbig[1] != 'b' ||
+       binbig[9998] != 'a' || binbig[9999] != 'b' {
+        return err("large binary content differs", 83)
+    }
+    return ok(true)
+}
+
+fn oversize_value(c: &mssql::Connection): Result[bool] {
+    // 16,777,217 UTF-8 bytes: one over the 16 MiB cap.
+    var rows = try c.exec(
+        "SELECT REPLICATE(CAST(N'a' AS nvarchar(max)), 16777217) AS big")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c87 = try eq_bool("oversize fetch", more, true)
+    let v = rows.value(0)
+    match v {
+        ok(b) { return err("oversize value unexpectedly ok", 84) }
+        err(m, code) {
+            let _c88 = try eq_int("oversize code", code, 2)
+            if !contains(m, "16 MiB cap") {
+                return err("oversize message lacks the cap: " + m, 87)
+            }
+        }
+    }
+    return ok(true)
+}
+
+fn datetimeoffset_text(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec(
+        "SELECT CAST('2024-01-02T03:04:05.6789012+02:00' AS datetimeoffset(7)) AS d")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c89 = try eq_bool("dto fetch", more, true)
+    let t = try rows.text(0)
+    if !contains(t, "2024-01-02 03:04:05.6789012") {
+        return err("datetimeoffset text differs: " + t, 85)
+    }
+    if !contains(t, "+02:00") {
+        return err("datetimeoffset offset differs: " + t, 86)
+    }
+    return ok(true)
+}
+
+fn decimal_errors(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec(
+        "SELECT CAST(0x01 AS varbinary(4)) AS b, CAST(N'' AS nvarchar(4)) AS e, " +
+        "CAST(NULL AS decimal(18,4)) AS n")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c130 = try eq_bool("decimal errors fetch", more, true)
+
+    let bdt = rows.decimal_text(0)
+    match bdt {
+        ok(v) { return err("binary decimal_text unexpectedly ok", 100) }
+        err(m, code) {
+            let _c131 = try eq_int("binary decimal_text code", code,
+                                   mssql::DEC_DB_NOT_DECIMAL)
+        }
+    }
+    let bd = rows.decimal(0)
+    match bd {
+        ok(v) { return err("binary decimal unexpectedly ok", 101) }
+        err(m, code) {
+            let _c132 = try eq_int("binary decimal code", code,
+                                   mssql::DEC_DB_NOT_DECIMAL)
+        }
+    }
+    let ed = rows.decimal(1)
+    match ed {
+        ok(v) { return err("empty decimal unexpectedly ok", 102) }
+        err(m, code) {
+            let _c133 = try eq_int("empty decimal code", code,
+                                   mssql::DEC_DB_TEXT_INVALID)
+        }
+    }
+    let nd = rows.decimal(2)
+    match nd {
+        ok(v) { return err("NULL decimal unexpectedly ok", 103) }
+        err(m, code) {
+            let _c134 = try eq_int("NULL decimal code", code, mssql::DEC_DB_NULL)
+        }
+    }
+
+    var empty = new []byte(0)
+    let p0 = mssql::param_decimal_text(empty)
+    match p0 {
+        ok(v) { return err("empty decimal param unexpectedly ok", 104) }
+        err(m, code) {
+            let _c135 = try eq_int("empty decimal param code", code,
+                                   mssql::DEC_DB_TEXT_INVALID)
+        }
+    }
+    var nuldec = new []byte(0)
+    append(nuldec, '1')
+    append(nuldec, byte(0))
+    append(nuldec, '2')
+    let p1 = mssql::param_decimal_text(nuldec)
+    match p1 {
+        ok(v) { return err("NUL decimal param unexpectedly ok", 105) }
+        err(m, code) {
+            let _c136 = try eq_int("NUL decimal param code", code,
+                                   mssql::DEC_DB_TEXT_INVALID)
+        }
+    }
+    let p2 = mssql::param_decimal_text(bytes_of("not-a-decimal"))
+    match p2 {
+        ok(v) { return err("bad decimal param unexpectedly ok", 106) }
+        err(m, code) {
+            let _c137 = try eq_int("bad decimal param code", code,
+                                   mssql::DEC_DB_TEXT_INVALID)
+        }
+    }
+
+    // SQL Server decimal has at most 38 significant digits. A 38-digit value
+    // round-trips exactly; a 39-digit value is rejected by the parser.
+    let d38 = mssql::param_decimal_text(
+        bytes_of("12345678901234567890123456789012345678"))
+    match d38 {
+        ok(p) {
+            var ps = new []mssql::Param(0)
+            append(ps, p)
+            var r38 = try c.exec_params("SELECT CAST(? AS decimal(38,0))", ps)
+            defer r38.close()
+            let m38 = try r38.fetch()
+            let _c138 = try eq_bool("38 digit fetch", m38, true)
+            let t38 = try r38.decimal_text(0)
+            if t38 == nil { return err("38 digit value is NULL", 107) }
+            let t38b = t38
+            let _c139 = try eq_str("38 digit round trip", string(t38b),
+                                   "12345678901234567890123456789012345678")
+        }
+        err(m, code) { return err("38 digit decimal rejected: " + m, 108) }
+    }
+    let d39 = mssql::param_decimal_text(
+        bytes_of("123456789012345678901234567890123456789"))
+    match d39 {
+        ok(v) { return err("39 digit decimal unexpectedly ok", 109) }
+        err(m, code) {
+            let _c140 = try eq_int("39 digit decimal code", code,
+                                   mssql::DEC_DB_PRECISION)
+        }
+    }
+    return ok(true)
+}
+
+fn statement_reuse(c: &mssql::Connection): Result[bool] {
+    var r = try c.prepare("SELECT CAST(? AS bigint) AS v")
+    defer r.close()
+    var p1 = new []mssql::Param(0)
+    append(p1, mssql::param_int(7))
+    let b1 = try r.bind_all(&p1)
+    let e1 = try r.execute()
+    let f1 = try r.fetch()
+    let v1 = try r.text(0)
+    let _c120 = try eq_str("reuse first", v1, "7")
+    let d1 = try r.fetch()
+    let _c121 = try eq_bool("reuse first done", d1, false)
+    let cl = try r.clear_params()
+
+    var p2 = new []mssql::Param(0)
+    append(p2, mssql::param_int(-3))
+    let b2 = try r.bind_all(&p2)
+    let e2 = try r.execute()
+    let f2 = try r.fetch()
+    let v2 = try r.text(0)
+    let _c122 = try eq_str("reuse second", v2, "-3")
+    return ok(true)
+}
+
+fn float_rejected(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec("SELECT CAST(0.1 AS float) AS f")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c100 = try eq_bool("float fetch", more, true)
+    let dt = rows.decimal_text(0)
+    match dt {
+        ok(v) { return err("float decimal_text unexpectedly ok", 90) }
+        err(m, code) {
+            let _c101 = try eq_int("float decimal_text code", code,
+                                   mssql::DEC_DB_INEXACT_STORAGE)
+        }
+    }
+    let d = rows.decimal(0)
+    match d {
+        ok(v) { return err("float decimal unexpectedly ok", 91) }
+        err(m, code) {
+            let _c102 = try eq_int("float decimal code", code,
+                                   mssql::DEC_DB_INEXACT_STORAGE)
+        }
+    }
+    // The value is still readable as the driver's text for display purposes.
+    let t = try rows.text(0)
+    if len(t) == 0 { return err("float text is empty", 92) }
+    return ok(true)
+}
+
+fn unicode_astral(c: &mssql::Connection): Result[bool] {
+    // The W path must carry surrogate pairs both ways: in SQL text, in a column
+    // alias (wide metadata) and through a typed parameter.
+    let face = "😀"
+    let sql = "SELECT N'" + face + "' AS [" + face + "]"
+    var rows = try c.exec(sql)
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c90 = try eq_bool("astral fetch", more, true)
+    let v = try rows.text(0)
+    let _c91 = try eq_str("astral value", v, face)
+    let n = try rows.column_name(0)
+    let _c92 = try eq_str("astral column name", n, face)
+
+    var ps = new []mssql::Param(0)
+    append(ps, mssql::param_text("a" + face + "b"))
+    var r2 = try c.exec_params("SELECT CAST(? AS nvarchar(20))", ps)
+    defer r2.close()
+    let m2 = try r2.fetch()
+    let _c93 = try eq_bool("astral param fetch", m2, true)
+    let v2 = try r2.text(0)
+    let _c94 = try eq_str("astral param value", v2, "a" + face + "b")
+    return ok(true)
+}
+
+fn big_params(c: &mssql::Connection): Result[bool] {
+    // 1 MiB text and binary parameters: the >4000/8000 ColumnSize path.
+    var big = new []byte(0)
+    for i in 0..1048576 { append(big, 'x') }
+    let bigb = copy_bytes(&big)
+    let bigtxt = string(big)
+    var ps = new []mssql::Param(0)
+    append(ps, mssql::param_text(bigtxt))
+    append(ps, mssql::param_bytes(bigb))
+    var rows = try c.exec_params(
+        "SELECT DATALENGTH(CAST(? AS nvarchar(max))) AS t, " +
+        "DATALENGTH(CAST(? AS varbinary(max))) AS b", ps)
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c140 = try eq_bool("big params fetch", more, true)
+    let t = try rows.text(0)
+    let _c141 = try eq_str("big text DATALENGTH", t, "2097152")
+    let b = try rows.text(1)
+    let _c142 = try eq_str("big binary DATALENGTH", b, "1048576")
+    return ok(true)
+}
+
+fn exact_cap_multibyte(c: &mssql::Connection): Result[bool] {
+    // Exactly 16 MiB of UTF-8 ending in a two-byte character. The cell buffer
+    // needs room for that character plus the NUL, hence the +4 cap.
+    var rows = try c.exec(
+        "SELECT REPLICATE(CAST(N'a' AS nvarchar(max)), 16777214) + N'é' AS v")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c143 = try eq_bool("exact cap fetch", more, true)
+    let b = try rows.bytes(0)
+    let _c144 = try eq_int("exact cap length", len(b), 16777216)
+    if b[len(b) - 2] != byte(0xc3) || b[len(b) - 1] != byte(0xa9) {
+        return err("exact-cap multibyte tail differs", 88)
+    }
+    return ok(true)
+}
+
+fn ascending_columns(c: &mssql::Connection): Result[bool] {
+    // SQLGetData consumes columns in order. Reading column 1 first must read
+    // and cache column 0; a later column 0 is served from the cache.
+    var rows = try c.exec("SELECT N'zero', N'one', N'café'")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c145 = try eq_bool("ascending fetch", more, true)
+    let one = try rows.text(1)
+    let _c146 = try eq_str("ascending first col 1", one, "one")
+    let zero = try rows.text(0)
+    let _c147 = try eq_str("ascending later col 0", zero, "zero")
+    let two = try rows.bytes(2)
+    let _c148 = try eq_bytes("ascending later col 2", two, bytes_of("café"))
+    let t2 = try rows.text(2)
+    let _c149 = try eq_str("ascending text col 2", t2, "café")
+    return ok(true)
+}
+
+fn int64_range(c: &mssql::Connection): Result[bool] {
+    let minv = -9223372036854775807 - 1
+    let maxv = 9223372036854775807
+    var ps = new []mssql::Param(0)
+    append(ps, mssql::param_int(minv))
+    append(ps, mssql::param_int(maxv))
+    var rows = try c.exec_params(
+        "SELECT CAST(? AS bigint) AS mn, CAST(? AS bigint) AS mx", ps)
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c150 = try eq_bool("i64 params fetch", more, true)
+    let mn = try rows.text(0)
+    let _c151 = try eq_str("i64 min param", mn, "-9223372036854775808")
+    let mx = try rows.text(1)
+    let _c152 = try eq_str("i64 max param", mx, "9223372036854775807")
+
+    var res = try c.exec(
+        "SELECT CAST(-9223372036854775807 - 1 AS bigint) AS mn, " +
+        "CAST(9223372036854775807 AS bigint) AS mx")
+    defer res.close()
+    let m2 = try res.fetch()
+    let _c153 = try eq_bool("i64 results fetch", m2, true)
+    let rmn = try res.text(0)
+    let _c154 = try eq_str("i64 min result", rmn, "-9223372036854775808")
+    let rmx = try res.text(1)
+    let _c155 = try eq_str("i64 max result", rmx, "9223372036854775807")
+    return ok(true)
+}
+
+fn stale_row(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec("SELECT 1 AS v")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c156 = try eq_bool("stale first fetch", more, true)
+    let v = try rows.text(0)
+    let _c157 = try eq_str("stale first value", v, "1")
+    let done = try rows.fetch()
+    let _c158 = try eq_bool("stale done", done, false)
+    let after = rows.text(0)
+    match after {
+        ok(v) { return err("exhausted row returned a stale value: " + v, 89) }
+        err(m, code) {
+            let _c159 = try eq_int("stale row code", code, 2)
+            if !contains(m, "no current row") {
+                return err("stale row message differs: " + m, 90)
+            }
+        }
+    }
+    return ok(true)
+}
+
+fn skipped_overcap(c: &mssql::Connection): Result[bool] {
+    // Column 0 is over the 16 MiB cache cap. Reading column 1 first must drain
+    // and discard column 0, keep column 1 readable, and report the cap only
+    // when column 0 itself is requested.
+    var rows = try c.exec(
+        "SELECT CAST(REPLICATE(CAST('a' AS varchar(max)), 16777217) AS varbinary(max)) AS big, N'small' AS s")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c160 = try eq_bool("skipped overcap fetch", more, true)
+    let s = try rows.text(1)
+    let _c161 = try eq_str("skipped overcap later column", s, "small")
+    let big = rows.bytes(0)
+    match big {
+        ok(v) { return err("skipped over-cap column unexpectedly ok", 120) }
+        err(m, code) {
+            let _c162 = try eq_int("skipped overcap code", code, 2)
+            if !contains(m, "16 MiB cap") {
+                return err("skipped overcap message differs: " + m, 121)
+            }
+        }
+    }
+
+    // The same drain path for text and multibyte chunks: 8,388,609 x N'é' is
+    // 16,777,218 UTF-8 bytes, one byte over the cap.
+    var trows = try c.exec(
+        "SELECT REPLICATE(CAST(N'é' AS nvarchar(max)), 8388609) AS big, N'small' AS s")
+    defer trows.close()
+    let tm = try trows.fetch()
+    let _c163 = try eq_bool("skipped overcap text fetch", tm, true)
+    let ts = try trows.text(1)
+    let _c164 = try eq_str("skipped overcap text later column", ts, "small")
+    let tb = trows.text(0)
+    match tb {
+        ok(v) { return err("skipped over-cap text unexpectedly ok", 122) }
+        err(m, code) {
+            let _c165 = try eq_int("skipped overcap text code", code, 2)
+            if !contains(m, "16 MiB cap") {
+                return err("skipped overcap text message differs: " + m, 123)
+            }
+        }
+    }
+    return ok(true)
+}
+
+fn mars_busy(c: &mssql::Connection): Result[bool] {
+    // Without MARS one executed result set holds the connection. A second
+    // exec while it is open is a clean busy error; the first cursor still
+    // works, and two prepared (unexecuted) statements are fine.
+    var r1 = try c.exec("SELECT 1 AS v")
+    let f1 = try r1.fetch()
+    let _c163 = try eq_bool("mars first fetch", f1, true)
+    let q2 = c.exec("SELECT 2 AS v")
+    match q2 {
+        ok(r2) {
+            r2.close()
+            r1.close()
+            return err("second exec while busy unexpectedly ok", 130)
+        }
+        err(m, code) {
+            let _c164 = try eq_int("mars busy code", code, 2)
+            if !contains(m, "Connection is busy") {
+                r1.close()
+                return err("mars busy message differs: " + m, 131)
+            }
+        }
+    }
+    let v = try r1.text(0)
+    let _c165 = try eq_str("mars first value", v, "1")
+    let done = try r1.fetch()
+    let _c166 = try eq_bool("mars first done", done, false)
+    r1.close()
+
+    var p1 = try c.prepare("SELECT 1")
+    var p2 = try c.prepare("SELECT 2")
+    p1.close()
+    p2.close()
+
+    var r3 = try c.exec("SELECT 3 AS v")
+    let f3 = try r3.fetch()
+    let _c167 = try eq_bool("mars after close fetch", f3, true)
+    let v3 = try r3.text(0)
+    let _c168 = try eq_str("mars after close value", v3, "3")
+    r3.close()
+    return ok(true)
+}
+
+fn run_all(c: &mssql::Connection): Result[bool] {
+    let _c1 = try select_one(c)
+    println("mssql section select_one")
+    let _c2 = try items(c)
+    println("mssql section items")
+    let _c3 = try null_handling(c)
+    println("mssql section null_handling")
+    let _c4 = try params(c)
+    println("mssql section params")
+    let _c5 = try error_paths(c)
+    println("mssql section error_paths")
+    let _c6 = try metadata_unicode(c)
+    println("mssql section metadata_unicode")
+    let _c7 = try close_semantics(c)
+    println("mssql section close_semantics")
+    let _c8 = try param_errors(c)
+    println("mssql section param_errors")
+    let _c9 = try varchar_unicode(c)
+    println("mssql section varchar_unicode")
+    let _c10 = try large_values(c)
+    println("mssql section large_values")
+    let _c11 = try oversize_value(c)
+    println("mssql section oversize_value")
+    let _c12 = try datetimeoffset_text(c)
+    println("mssql section datetimeoffset_text")
+    let _c13 = try decimal_errors(c)
+    println("mssql section decimal_errors")
+    let _c14 = try statement_reuse(c)
+    println("mssql section statement_reuse")
+    let _c15 = try float_rejected(c)
+    println("mssql section float_rejected")
+    let _c16 = try unicode_astral(c)
+    println("mssql section unicode_astral")
+    let _c17 = try big_params(c)
+    println("mssql section big_params")
+    let _c18 = try exact_cap_multibyte(c)
+    println("mssql section exact_cap_multibyte")
+    let _c19 = try ascending_columns(c)
+    println("mssql section ascending_columns")
+    let _c20 = try int64_range(c)
+    println("mssql section int64_range")
+    let _c21 = try stale_row(c)
+    println("mssql section stale_row")
+    let _c22 = try skipped_overcap(c)
+    println("mssql section skipped_overcap")
+    let _c23 = try mars_busy(c)
+    println("mssql section mars_busy")
+
+    // A failed open reports its SQLSTATE and native code without a connection.
+    let bad = mssql::open("DSN=no_such_dsn_obo;")
+    match bad {
+        ok(conn) { conn.close(); return err("bad DSN unexpectedly opened", 50) }
+        err(m, code) {
+            if !contains(m, "IM002") {
+                return err("bad DSN message lacks IM002: " + m, 51)
+            }
+        }
+    }
+    return ok(true)
+}
+
+fn main() {
+    let got = env::get("MSSQL_TEST_DSN")
+    if got == nil {
+        println("MSSQL_TEST_DSN is not set")
+        exit(64)
+    }
+    let dsn = string(got)
+    let made = mssql::open(dsn)
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let st = conn.status()
+            if st != mssql::SQL_SUCCESS { println("FAIL connection status"); exit(7) }
+            let cm = conn.error_message()
+            let cs = conn.sqlstate()
+            let cc = conn.error_code()
+            let r = run_all(&conn)
+            match r {
+                ok(v) { println("mssql=ok") }
+                err(m, code) {
+                    println("FAIL ", code, " ", m)
+                    exit(1)
+                }
+            }
+            let first = conn.close()
+            match first {
+                ok(v) {
+                    if !v { println("FAIL connection close first"); exit(2) }
+                    if conn.is_open() { println("FAIL connection still open"); exit(8) }
+                }
+                err(m, code) { println("FAIL connection close ", code, " ", m); exit(3) }
+            }
+            let second = conn.close()
+            match second {
+                ok(v) {
+                    if v { println("FAIL connection close second"); exit(4) }
+                }
+                err(m, code) { println("FAIL connection close 2 ", code, " ", m); exit(5) }
+            }
+        }
+        err(m, code) {
+            println("FAIL open ", code, " ", m)
+            exit(6)
+        }
+    }
+}

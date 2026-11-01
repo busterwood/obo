@@ -1,0 +1,35 @@
+// Negative fixture: use a Connection after close.
+//
+// The exec borrow reaches the native thunk with a zero handle word, so the
+// program stops with exit 7 and "foreign handle used after close" before any C
+// call. No census runs on the trap path.
+module app
+
+import "mssql.obx"
+import "../../../../lib/env.obx" as env
+
+fn main() {
+    let got = env::get("MSSQL_TEST_DSN")
+    if got == nil { exit(64) }
+    let made = mssql::open(string(got))
+    match made {
+        ok(conn) {
+            let c = conn.close()
+            match c {
+                ok(v) {
+                    if !v { println("connection close failed"); exit(2) }
+                }
+                err(m, code) {
+                    println("connection close ", code, " ", m)
+                    exit(3)
+                }
+            }
+            let q = conn.exec("SELECT 1")
+            match q {
+                ok(rows) { rows.close(); println("unexpected: exec after close"); exit(4) }
+                err(m, code) { println("unexpected: exec error ", code, " ", m); exit(5) }
+            }
+        }
+        err(m, code) { println("open failed ", code, " ", m); exit(6) }
+    }
+}

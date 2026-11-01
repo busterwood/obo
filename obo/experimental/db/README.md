@@ -16,14 +16,20 @@ The packages deliberately stay small:
   with explicit close and the foreign-handle census. The host has no SQLite
   development header, so the C ABI is a read-only-verified
   **declarations-only** subset; see below.
+- `mssql/` — a first-slice Microsoft SQL Server adapter over unixODBC and
+  `ODBC Driver 18 for SQL Server` on v2 foreign handles. Text crosses as UTF-8;
+  the W entry points carry SQL text, column names and diagnostics, and narrow
+  `SQL_C_CHAR` carries result and parameter values (both measured). It is
+  **declarations-only** and links `-l:libodbc.so.2`; see
+  [`mssql/README.md`](mssql/README.md) for the probe results and the full API.
 
-Both packages accept scalars and return exact bytes/text, with explicit NULL
-flags rather than length inference. PostgreSQL columns expose type OID and
+All three packages accept scalars and return exact bytes/text, with explicit
+NULL flags rather than length inference. PostgreSQL columns expose type OID and
 typmod, and numeric/text values are never routed through a float. Scalar
 `decimal` values bind and read back as exact decimal text (PostgreSQL numeric
 OID 1700, SQLite TEXT); there is no binary numeric wire format. The
 dialect-neutral `Sql` template value now has a PostgreSQL bridge and a SQLite
-bridge (below); SQL Server and Oracle have placeholder rendering only. Neither
+bridge (below); SQL Server and Oracle have placeholder rendering only. No
 package implements HTML templates, callbacks, automatic finalizers, or a
 schema/ORM layer.
 
@@ -270,6 +276,70 @@ NULL/result format and the ported adapter cases), `postgres_sql_app.obx`
 `PQexecParams` call import the test-only `postgres_fake_probe.obx`; the probe
 functions are declared in `cinterop/tests/fake_libpq_probe.h`.
 
+## SQL Server
+
+`mssql` is a streaming-row adapter on ODBC, not a TDS implementation. Read its
+probe notes and full surface in [`mssql/README.md`](mssql/README.md).
+
+```obo
+module app
+import "mssql.obx"
+
+fn main() {
+    let made = mssql::open(dsn)                 // ODBC connection string
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let q = conn.exec("SELECT id, name, amount FROM dbo.items ORDER BY id")
+            match q {
+                ok(rows) {
+                    defer rows.close()
+                    let more = rows.fetch()          // Result[bool]: streaming cursor
+                    // text(col), bytes(col), value(col), is_null(col),
+                    // decimal_text(col), decimal(col), column_name(col), ...
+                }
+                err(m, c) { }
+            }
+        }
+        err(m, c) { }
+    }
+}
+```
+
+- `open` converts the UTF-8 DSN to UTF-16 and uses `SQLDriverConnectW`; the
+  process-wide `SQLHENV` is lazy and never freed. A failed connect reports the
+  diagnostic, SQLSTATE and native code with the `err` message and code.
+- `exec`/`prepare`/`exec_params` use `?` placeholders. Typed parameters are
+  `param_text`, `param_int`, `param_bytes`, `param_null`, `param_decimal_text`
+  and `param_decimal`; every value is copied into a C slot at bind time.
+  Decimal values travel as exact text and never through a float.
+- Result values are UTF-8 through `SQL_C_CHAR`; `varbinary` is raw bytes.
+  NULL and empty are distinct. A truncated text chunk is recovered with a
+  `0xFF` sentinel because the driver reports `SQL_NO_TOTAL`; this preserves
+  embedded NUL. Values are capped at 16 MiB; a larger value is an error, and an
+  exactly-16-MiB value ending in a multi-byte character is still readable.
+- Text and binary parameters support the full 16 MiB value cap. Above 4000
+  text bytes / 8000 binary bytes the binding passes an unspecified ODBC
+  `ColumnSize`; the driver otherwise rejects the value with `HY104`.
+- The connection owns its statements. `Connection.close()` marks every child
+  statement dead and frees its HSTMT before disconnecting, so a `Rows` that
+  outlives its connection returns `err("statement's connection is closed", 2)`
+  and `Rows.is_open()` is false, never a use-after-free. A reused prepared
+  statement closes its previous cursor before `SQLExecute`, and the per-row
+  cell cache is cleared on `SQL_NO_DATA`.
+- `SQLGetData` consumes columns in ascending order; reading a later column
+  first reads and caches the skipped ones, so `text(1)` then `text(0)` is
+  well defined. After the cursor is exhausted, `text(0)` is `no current row`,
+  not the last row.
+- The cursor is streaming, so `row_count()` is `SQLRowCount` (-1 before the end
+  of a SELECT, the count after fetching to the end, affected rows for DML).
+- SQL Server decimal has at most 38 significant digits. `decimal::parse`
+  enforces that bound; the generic 98,342-byte decimal text cap used by the
+  other adapters does not apply.
+- No transactions API, typed `datetimeoffset`/`money` accessors, multiple
+  result sets, `Sql` bridge, fake driver or pooling in this slice; the package
+  README lists them as follow-ups.
+
 ## SQLite
 
 ```obo
@@ -400,6 +470,7 @@ Runnable apps: `sqlite/examples/sqlite_memory_app.obx`,
 
 ```sh
 python3 obo/experimental/db/tests/test_db_adapters.py
+python3 obo/experimental/db/mssql/tests/test_mssql.py   # opt-in live SQL Server
 ```
 
 The suite covers:
@@ -451,6 +522,19 @@ The suite covers:
   SQLite ABI test. Stage (g) deleted the postgres C adapter suite, so there is
   no postgres C sanitizer half.
 
+The SQL Server suite is opt-in and SELECT-only. It reads the DSN from
+`MSSQL_TEST_DSN` or, when that is unset, from the mode-600 `~/.obo-mssql-dsn`
+fixture; it never prints the DSN and reads no other credential file. The
+standard db-adapter gate invokes this suite, or prints a visible
+`mssql live: skipped` line when neither source exists (it does not report a
+silent green pass). The 23 live sections cover the measured W/narrow split,
+`dbo.items` text/decimal/temporal/GUID/binary/NULL, typed and 1 MiB parameters,
+SQLSTATE errors, chunked/oversize/exact-cap reads, i64 min/max, ascending-column
+and stale-row behaviour, skipped over-cap columns, parent-close safety,
+statement reuse, MARS-off busy handling and the `OBO_CHECK=1` census; a
+standalone ASan harness repeats the parent-close sequence directly against the
+shims. See [`mssql/README.md`](mssql/README.md).
+
 The PostgreSQL live section is opt-in and SELECT-only, including the
 `execute_sql` bridge vectors:
 
@@ -469,7 +553,9 @@ is not a skip because the committed adapter is declarations-only.
 ## Known limits
 
 - No production driver, prepared-statement cache, notifications, COPY, TLS
-  policy, connection pool, migrations, transactions API or ORM.
+  policy, connection pool, migrations, transactions API or ORM. SQL Server adds
+  the same restrictions: no transaction helpers, multiple result sets, typed
+  `datetimeoffset`/`money` accessors, output parameters or `Sql` bridge yet.
 - SQL templates are bridged for PostgreSQL and SQLite only; SQL Server and
   Oracle have placeholder rendering, not adapters. No HTML templates, no binary
   numeric wire format and no `Float`/binary64 binding path (code `1014`); these

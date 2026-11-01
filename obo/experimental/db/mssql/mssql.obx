@@ -1,0 +1,783 @@
+// Experimental Microsoft SQL Server package for obo, on cinterop v2 foreign
+// handles over unixODBC and the Microsoft ODBC Driver 18 for SQL Server.
+//
+// This is an explicit-close package, not a stable driver. Connection and Stmt
+// are foreign handles; obo never sees a SQLHDBC or SQLHSTMT. Rows is an
+// ordinary record that owns one Stmt and is the streaming row cursor: fetch()
+// advances one row, then the column accessors read that row. Close explicitly
+// and defer the close; under OBO_CHECK=1 the foreign census reports a dropped
+// handle at normal end (exit 8). Using a closed Connection or bare Stmt stops
+// with exit 7 in the native thunk; a closed Rows returns err("rows are
+// closed", 2), and after its Connection closes it returns
+// err("statement's connection is closed", 2).
+//
+// Text crosses as UTF-8. Phase 1 measured that the driver converts narrow SQL
+// text, column names and diagnostics through the process locale, so this
+// binding converts those itself and calls the W entry points; result values and
+// parameter values are UTF-8 through SQL_C_CHAR and were measured correct under
+// the C locale. See README.md.
+//
+// Values are never formatted through a float. decimal() parses SQL Server's
+// exact text; decimal_text() returns that text unchanged. SQL is a fixed
+// statement with `?` placeholders; there is no string interpolation.
+module mssql
+
+// SQLRETURN codes exposed as Rows.status().
+pub const SQL_SUCCESS = 0
+pub const SQL_SUCCESS_WITH_INFO = 1
+pub const SQL_NO_DATA = 100
+pub const SQL_ERROR = -1
+pub const SQL_INVALID_HANDLE = -2
+pub const SQL_STILL_EXECUTING = 2
+pub const SQL_NEED_DATA = 99
+
+// SQL data type codes (SQLDescribeCol).
+pub const SQL_CHAR = 1
+pub const SQL_NUMERIC = 2
+pub const SQL_DECIMAL = 3
+pub const SQL_INTEGER = 4
+pub const SQL_SMALLINT = 5
+pub const SQL_FLOAT = 6
+pub const SQL_REAL = 7
+pub const SQL_DOUBLE = 8
+pub const SQL_VARCHAR = 12
+pub const SQL_TYPE_DATE = 91
+pub const SQL_TYPE_TIMESTAMP = 93
+pub const SQL_LONGVARCHAR = -1
+pub const SQL_BINARY = -2
+pub const SQL_VARBINARY = -3
+pub const SQL_LONGVARBINARY = -4
+pub const SQL_BIGINT = -5
+pub const SQL_TINYINT = -6
+pub const SQL_BIT = -7
+pub const SQL_WCHAR = -8
+pub const SQL_WVARCHAR = -9
+pub const SQL_WLONGVARCHAR = -10
+pub const SQL_GUID = -11
+// Microsoft SQL Server driver-specific SQLDescribeCol codes.
+pub const SQL_XML = -152
+pub const SQL_SS_TIME2 = -154
+pub const SQL_SS_TIMESTAMPOFFSET = -155
+
+// Typed parameter kinds.
+pub const PARAM_NULL = 0
+pub const PARAM_TEXT = 1
+pub const PARAM_INT = 2
+pub const PARAM_BINARY = 3
+pub const PARAM_DECIMAL = 4
+
+// SqlArg.Float has no binding here: a binary64 value would have to be formatted
+// or rounded, so the SQL-template bridge is not part of this first slice.
+pub const SQL_ARG_FLOAT_UNSUPPORTED = 1014
+
+// Decimal boundary error codes, shared with the other db adapters.
+pub const DEC_DB_NULL = 1001
+pub const DEC_DB_NOT_DECIMAL = 1002
+pub const DEC_DB_BINARY = 1003
+pub const DEC_DB_NONFINITE = 1004
+pub const DEC_DB_INEXACT_STORAGE = 1005
+pub const DEC_DB_TEXT_INVALID = 1006
+pub const DEC_DB_PRECISION = 1007
+pub const DEC_DB_EXPONENT = 1008
+pub const DEC_DB_DISPLAY_RANGE = 1009
+pub const DEC_DB_SCALE = 1010
+pub const DEC_DB_RANGE = 1011
+pub const DEC_DB_METADATA = 1012
+pub const DEC_DB_PG_RANGE = 1013
+
+// Limits kept from the other adapters (design C15), plus the ODBC column cap.
+const MAX_DSN = 16777216
+const MAX_SQL = 1048576
+const MAX_VALUE = 16777216
+const MAX_PARAMS = 32
+const MAX_COLUMNS = 4096
+
+pub type Connection = foreign "ms_conn"
+pub type Stmt = foreign "ms_stmt"
+
+// One prepared/executed statement and its streaming cursor. last_status is the
+// most recent SQLRETURN; status() exposes it. The handle is private.
+pub type Rows = ref record { h: Stmt; last_status: int }
+
+// A typed bind parameter. kind is PARAM_*; i carries int values and data
+// carries text/binary/decimal-text bytes. NULL is an explicit kind, never an
+// empty byte string.
+pub type Param = ref record { kind: int; i: int; data: []byte }
+
+// ---------------------------------------------------------- native declarations
+
+native fn open_native(dsn: &[]byte): ?Connection
+native fn open_error(): []byte
+native fn open_sqlstate(): []byte
+native fn open_error_code(): int
+
+native fn conn_diag(c: &Connection): []byte
+native fn conn_sqlstate(c: &Connection): []byte
+native fn conn_error_code(c: &Connection): int
+
+native fn exec_direct(c: &Connection, sql: &[]byte,
+                      out st: Stmt): exec_direct_out
+native fn prepare_native(c: &Connection, sql: &[]byte,
+                         out st: Stmt): prepare_native_out
+native fn execute_native(s: &Stmt): int
+native fn fetch_native(s: &Stmt): int
+native fn num_cols(s: &Stmt): int
+native fn num_params(s: &Stmt): int
+native fn row_count(s: &Stmt): int
+
+native fn col_name(s: &Stmt, col: int): []byte
+native fn col_type(s: &Stmt, col: int): int
+native fn col_size(s: &Stmt, col: int): int
+native fn col_digits(s: &Stmt, col: int): int
+native fn col_nullable(s: &Stmt, col: int): int
+
+native fn read_cell(s: &Stmt, col: int, binary: int): int
+native fn cell_value(s: &Stmt, col: int, binary: int): ?[]byte
+
+native fn stmt_diag(s: &Stmt): []byte
+native fn stmt_sqlstate(s: &Stmt): []byte
+native fn stmt_error_code(s: &Stmt): int
+native fn stmt_live(s: &Stmt): int
+
+native fn bind_null_native(s: &Stmt, index: int): int
+native fn bind_int_native(s: &Stmt, index: int, value: int): int
+native fn bind_text_native(s: &Stmt, index: int, value: &[]byte): int
+native fn bind_binary_native(s: &Stmt, index: int, value: &[]byte): int
+native fn bind_clear_native(s: &Stmt): int
+
+// -------------------------------------------------------------------- helpers
+
+fn encode_string(s: string): []byte {
+    var out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn has_nul(b: &[]byte): bool {
+    for i in 0..len(b) {
+        if b[i] == byte(0) { return true }
+    }
+    return false
+}
+
+fn string_has_nul(s: string): bool {
+    for i in 0..len(s) {
+        if s[i] == byte(0) { return true }
+    }
+    return false
+}
+
+fn copy_bytes(b: &[]byte): []byte {
+    var out = new []byte(0)
+    for i in 0..len(b) { append(out, b[i]) }
+    return out
+}
+
+fn check_sql(sql: string): Result[bool] {
+    if len(sql) == 0 { return err("SQL text is empty", 2) }
+    if len(sql) > MAX_SQL { return err("SQL text is too large", 2) }
+    if string_has_nul(sql) { return err("SQL text contains an embedded NUL", 2) }
+    return ok(true)
+}
+
+fn is_binary_type(t: int): bool {
+    return t == SQL_BINARY || t == SQL_VARBINARY || t == SQL_LONGVARBINARY
+}
+
+fn rows_live(r: &Rows): Result[bool] {
+    if !r.h.is_open() { return err("rows are closed", 2) }
+    if stmt_live(&r.h) == 0 {
+        return err("statement's connection is closed", 2)
+    }
+    return ok(true)
+}
+
+// binary64 storage has no exact decimal text. It is refused rather than parsed
+// as if the driver's rendering were exact.
+fn is_inexact_float(t: int): bool {
+    return t == SQL_FLOAT || t == SQL_REAL || t == SQL_DOUBLE
+}
+
+// ---------------------------------------------------------------- decimal text
+
+fn fraction_digits(s: string): int {
+    for i in 0..len(s) {
+        if s[i] == '.' { return len(s) - i - 1 }
+    }
+    return 0
+}
+
+fn canonical_db(value: decimal): Result[string] {
+    let c = decimal::canonical(value)
+    match c {
+        ok(s) { return ok(s) }
+        err(m, code) {
+            if code == 6 || code == 9 {
+                return err("decimal display scale is outside uint16", DEC_DB_DISPLAY_RANGE)
+            }
+            if code == 10 { return err("decimal text could not be allocated", 3) }
+            return err("invalid decimal value", 2)
+        }
+    }
+}
+
+// SQL Server's decimal(p,s) has p 1..38 and s 0..38. This is the same exact
+// display-then-canonical rule as the other db adapters, with the SQL Server cap.
+fn encode_decimal(value: decimal, max_dscale: int): Result[string] {
+    let f = decimal::format(value)
+    match f {
+        ok(s) {
+            let ds = fraction_digits(s)
+            if max_dscale < 0 || ds <= max_dscale { return ok(s) }
+            if value != 0.0 && decimal::exponent(value) < -max_dscale {
+                return err("value is not representable with the declared scale",
+                           DEC_DB_RANGE)
+            }
+            return canonical_db(value)
+        }
+        err(m, c) {
+            if c == 3 {
+                if value != 0.0 && decimal::exponent(value) < -max_dscale {
+                    return err("value is not representable with the declared scale",
+                               DEC_DB_RANGE)
+                }
+                return canonical_db(value)
+            }
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 6 || c == 9 {
+                return err("decimal display scale is outside uint16",
+                           DEC_DB_DISPLAY_RANGE)
+            }
+            return err("invalid decimal value", 2)
+        }
+    }
+}
+
+// ----------------------------------------------------------------- connection
+
+pub fn open(dsn: string): Result[Connection] {
+    if len(dsn) == 0 { return err("connection string is empty", 2) }
+    if len(dsn) > MAX_DSN { return err("connection string is too large", 2) }
+    if string_has_nul(dsn) {
+        return err("connection string contains an embedded NUL", 2)
+    }
+    var raw = encode_string(dsn)
+    let made = open_native(&raw)
+    if made == nil {
+        var mb = open_error()
+        var msg = string(mb)
+        var code = open_error_code()
+        if len(msg) == 0 {
+            let st = open_sqlstate()
+            var sb = string(st)
+            if len(sb) == 0 { msg = "connection failed" } else { msg = "SQLSTATE " + sb }
+        }
+        if code == 0 { code = 2 }
+        return err(msg, code)
+    }
+    var conn = made
+    return ok(conn)
+}
+
+pub fn (mut c: &Connection) close(): Result[bool] { return __foreignClose(c) }
+pub fn (c: &Connection) is_open(): bool { return __foreignIsOpen(c) }
+
+pub fn (c: &Connection) status(): int {
+    if c.is_open() { return SQL_SUCCESS }
+    return SQL_ERROR
+}
+
+// All diagnostic records of the last connection-level operation, formatted as
+// UTF-8 "SQLSTATE/native/message" lines. Empty when there is none.
+pub fn (c: &Connection) error_message(): []byte {
+    if !c.is_open() { return new []byte(0) }
+    return conn_diag(c)
+}
+
+pub fn (c: &Connection) sqlstate(): []byte {
+    if !c.is_open() { return new []byte(0) }
+    return conn_sqlstate(c)
+}
+
+pub fn (c: &Connection) error_code(): int {
+    if !c.is_open() { return 0 }
+    return conn_error_code(c)
+}
+
+// ------------------------------------------------------------------ execution
+
+// Execute one fixed SQL string with no parameters. The returned Rows owns the
+// statement; close it with defer. A SQL failure is an err carrying the
+// diagnostic text (SQLSTATE and native message) and the native error code; the
+// statement is closed before returning.
+pub fn (c: &Connection) exec(sql: string): Result[Rows] {
+    let _ = try check_sql(sql)
+    var sb = encode_string(sql)
+    var out = exec_direct(c, &sb)
+    var st = take(out.st)
+    if out.rc < 0 {
+        if st == nil { return err("statement could not be allocated", 2) }
+        var mb = stmt_diag(&st)
+        var msg = string(mb)
+        if len(msg) == 0 { msg = "SQL execution failed" }
+        var code = stmt_error_code(&st)
+        st.close()
+        if code == 0 { code = 2 }
+        return err(msg, code)
+    }
+    if st == nil { return err("statement could not be allocated", 2) }
+    return ok(new Rows{h: st, last_status: out.rc})
+}
+
+// Prepare one statement for typed parameters. The returned Rows is not executed
+// yet; bind, then call execute(). A prepare failure is an err and the statement
+// is closed first.
+pub fn (c: &Connection) prepare(sql: string): Result[Rows] {
+    let _ = try check_sql(sql)
+    var sb = encode_string(sql)
+    var out = prepare_native(c, &sb)
+    var st = take(out.st)
+    if out.rc < 0 {
+        if st == nil { return err("statement could not be allocated", 2) }
+        var mb = stmt_diag(&st)
+        var msg = string(mb)
+        if len(msg) == 0 { msg = "SQL prepare failed" }
+        var code = stmt_error_code(&st)
+        st.close()
+        if code == 0 { code = 2 }
+        return err(msg, code)
+    }
+    if st == nil { return err("statement could not be allocated", 2) }
+    return ok(new Rows{h: st, last_status: out.rc})
+}
+
+// ----------------------------------------------------------------- typed params
+
+pub fn param_null(): Param {
+    return new Param{kind: PARAM_NULL, i: 0, data: new []byte(0)}
+}
+
+pub fn param_int(v: int): Param {
+    return new Param{kind: PARAM_INT, i: v, data: new []byte(0)}
+}
+
+pub fn param_text(s: string): Param {
+    return new Param{kind: PARAM_TEXT, i: 0, data: encode_string(s)}
+}
+
+pub fn param_bytes(b: []byte): Param {
+    return new Param{kind: PARAM_BINARY, i: 0, data: b}
+}
+
+pub fn param_blob(b: []byte): Param {
+    return new Param{kind: PARAM_BINARY, i: 0, data: b}
+}
+
+// Decimal parameters travel as exact text. SQL Server converts the text to the
+// target column's type; no binary decimal format and no float is involved.
+pub fn param_decimal_text(b: []byte): Result[Param] {
+    if len(b) == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    if has_nul(&b) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    let copy = copy_bytes(&b)
+    let txt = string(copy)
+    let d = decimal::parse(txt)
+    match d {
+        ok(v) { return ok(new Param{kind: PARAM_DECIMAL, i: 0, data: b}) }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 4 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+            if c == 7 {
+                return err("decimal text has more than 38 significant digits",
+                           DEC_DB_PRECISION)
+            }
+            if c == 8 {
+                return err("decimal exponent is outside int16", DEC_DB_EXPONENT)
+            }
+            if c == 9 {
+                return err("decimal display scale is outside uint16",
+                           DEC_DB_DISPLAY_RANGE)
+            }
+            return err("invalid decimal value", 2)
+        }
+    }
+}
+
+// The default checked decimal constructor. SQL Server rounds or rejects values
+// that do not fit decimal(p,s); this refuses them before any bytes are sent.
+pub fn param_decimal(value: decimal, p: int, s: int): Result[Param] {
+    let r = decimal::check(value, p, s)
+    match r {
+        ok(v) {
+            let txt = try encode_decimal(v, 38)
+            let raw = encode_string(txt)
+            if has_nul(&raw) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+            return ok(new Param{kind: PARAM_DECIMAL, i: 0, data: raw})
+        }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 1 || c == 4 { return err("invalid decimal value", 2) }
+            if c == 3 {
+                return err("value does not fit the declared scale without rounding",
+                           DEC_DB_SCALE)
+            }
+            if c == 7 {
+                return err("value exceeds the declared precision", DEC_DB_RANGE)
+            }
+            if c == 6 {
+                return err("invalid numeric typmod or precision/scale metadata",
+                           DEC_DB_METADATA)
+            }
+            return err(m, c)
+        }
+    }
+}
+
+// ----------------------------------------------------------------------- rows
+
+pub fn (mut r: &Rows) close(): Result[bool] { return r.h.close() }
+
+// False after the owner connection closes, even though the obo Stmt word is
+// still nonzero (the C state stays allocated until Rows.close()).
+pub fn (r: &Rows) is_open(): bool {
+    if !r.h.is_open() { return false }
+    return stmt_live(&r.h) != 0
+}
+
+// The most recent SQLRETURN (0 success, 1 success with info, 100 no data,
+// negative error).
+pub fn (r: &Rows) status(): int { return r.last_status }
+
+pub fn (r: &Rows) row_count(): int {
+    if !r.is_open() { return -1 }
+    return row_count(&r.h)
+}
+
+pub fn (r: &Rows) column_count(): int {
+    if !r.is_open() { return -1 }
+    return num_cols(&r.h)
+}
+
+pub fn (r: &Rows) param_count(): int {
+    if !r.is_open() { return -1 }
+    return num_params(&r.h)
+}
+
+fn check_col(r: &Rows, col: int): Result[bool] {
+    let _ = try rows_live(r)
+    let n = num_cols(&r.h)
+    if col < 0 || col >= n { return err("column out of range", 2) }
+    return ok(true)
+}
+
+pub fn (r: &Rows) column_name(col: int): Result[string] {
+    let _ = try check_col(r, col)
+    var b = col_name(&r.h, col)
+    if has_nul(&b) { return err("column name contains an embedded NUL", 1) }
+    return ok(string(b))
+}
+
+pub fn (r: &Rows) column_type(col: int): Result[int] {
+    let _ = try check_col(r, col)
+    return ok(col_type(&r.h, col))
+}
+
+pub fn (r: &Rows) column_size(col: int): Result[int] {
+    let _ = try check_col(r, col)
+    return ok(col_size(&r.h, col))
+}
+
+pub fn (r: &Rows) column_digits(col: int): Result[int] {
+    let _ = try check_col(r, col)
+    return ok(col_digits(&r.h, col))
+}
+
+pub fn (r: &Rows) column_nullable(col: int): Result[int] {
+    let _ = try check_col(r, col)
+    return ok(col_nullable(&r.h, col))
+}
+
+pub fn (r: &Rows) is_binary(col: int): Result[bool] {
+    let t = try r.column_type(col)
+    return ok(is_binary_type(t))
+}
+
+// Advance to the next row. true means a row is available, false means
+// SQL_NO_DATA, and a driver failure is an err.
+pub fn (mut r: &Rows) fetch(): Result[bool] {
+    let _ = try rows_live(r)
+    let rc = fetch_native(&r.h)
+    r.last_status = rc
+    if rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO { return ok(true) }
+    if rc == SQL_NO_DATA { return ok(false) }
+    var mb = stmt_diag(&r.h)
+    var msg = string(mb)
+    if len(msg) == 0 { msg = "fetch failed" }
+    var code = stmt_error_code(&r.h)
+    if code == 0 { code = 2 }
+    return err(msg, code)
+}
+
+// Execute a prepared statement that has no result columns, or a prepared query
+// whose rows are then fetched. Binding must already have happened.
+pub fn (mut r: &Rows) execute(): Result[bool] {
+    let _ = try rows_live(r)
+    let rc = execute_native(&r.h)
+    r.last_status = rc
+    if rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO { return ok(true) }
+    var mb = stmt_diag(&r.h)
+    var msg = string(mb)
+    if len(msg) == 0 { msg = "SQL execution failed" }
+    var code = stmt_error_code(&r.h)
+    if code == 0 { code = 2 }
+    return err(msg, code)
+}
+
+// Bind every eager parameter in order. The SQL must have been prepared with the
+// same number of `?` placeholders; a count mismatch is refused before binding.
+pub fn (mut r: &Rows) bind_all(params: &[]Param): Result[bool] {
+    let _ = try rows_live(r)
+    let n = num_params(&r.h)
+    if n < 0 { return err("statement is not prepared", 2) }
+    if n != len(params) {
+        return err("parameter count mismatch: SQL expects " + string(n) +
+                   ", got " + string(len(params)), 2)
+    }
+    if len(params) > MAX_PARAMS {
+        return err("too many parameters (maximum 32)", 2)
+    }
+    let cleared = bind_clear_native(&r.h)
+    if cleared < 0 {
+        var mb = stmt_diag(&r.h)
+        var msg = string(mb)
+        if len(msg) == 0 { msg = "parameters could not be reset" }
+        var code = stmt_error_code(&r.h)
+        if code == 0 { code = 2 }
+        return err(msg, code)
+    }
+    for i in 0..len(params) {
+        let p = &params[i]
+        let index = i + 1
+        var rc = 0
+        if p.kind == PARAM_NULL {
+            rc = bind_null_native(&r.h, index)
+        } else if p.kind == PARAM_INT {
+            rc = bind_int_native(&r.h, index, p.i)
+        } else if p.kind == PARAM_TEXT || p.kind == PARAM_DECIMAL {
+            if len(p.data) > MAX_VALUE { return err("bound value is too large", 2) }
+            if p.kind == PARAM_TEXT && has_nul(&p.data) {
+                return err("text value contains an embedded NUL", 2)
+            }
+            let data = copy_bytes(&p.data)
+            rc = bind_text_native(&r.h, index, &data)
+        } else if p.kind == PARAM_BINARY {
+            if len(p.data) > MAX_VALUE { return err("bound value is too large", 2) }
+            let data = copy_bytes(&p.data)
+            rc = bind_binary_native(&r.h, index, &data)
+        } else {
+            return err("unknown parameter kind", 2)
+        }
+        if rc < 0 {
+            var mb = stmt_diag(&r.h)
+            var msg = string(mb)
+            if len(msg) == 0 { msg = "parameter could not be bound" }
+            var code = stmt_error_code(&r.h)
+            if code == 0 { code = 2 }
+            return err(msg, code)
+        }
+    }
+    return ok(true)
+}
+
+// Free the bound parameter slots and reset the parameter state.
+pub fn (mut r: &Rows) clear_params(): Result[bool] {
+    let _ = try rows_live(r)
+    let rc = bind_clear_native(&r.h)
+    if rc < 0 {
+        var mb = stmt_diag(&r.h)
+        var msg = string(mb)
+        if len(msg) == 0 { msg = "parameters could not be cleared" }
+        var code = stmt_error_code(&r.h)
+        if code == 0 { code = 2 }
+        return err(msg, code)
+    }
+    return ok(true)
+}
+
+// ------------------------------------------------------------- cell accessors
+
+// Read the current row's cell into the per-statement cache. The cache is keyed
+// by column and representation, so is_null and text/bytes for the same column
+// reuse one SQLGetData read. Returns 0 for a value and 1 for SQL NULL.
+fn cell_read(r: &Rows, col: int): Result[int] {
+    let _ = try check_col(r, col)
+    let t = col_type(&r.h, col)
+    var mode = 0
+    if is_binary_type(t) { mode = 1 }
+    let rc = read_cell(&r.h, col, mode)
+    if rc < 0 {
+        var mb = stmt_diag(&r.h)
+        var msg = string(mb)
+        if len(msg) == 0 { msg = "column value could not be read" }
+        var code = stmt_error_code(&r.h)
+        if code == 0 { code = 2 }
+        return err(msg, code)
+    }
+    return ok(rc)
+}
+
+pub fn (r: &Rows) is_null(col: int): Result[bool] {
+    let rc = try cell_read(r, col)
+    return ok(rc == 1)
+}
+
+// Exact bytes of one cell with SQL NULL distinct: nil means NULL, an empty
+// array means an empty value. Binary columns return their raw bytes; text
+// columns return the driver's UTF-8 bytes. Embedded NUL is preserved.
+pub fn (r: &Rows) value(col: int): Result[?[]byte] {
+    let rc = try cell_read(r, col)
+    if rc == 1 {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    let t = col_type(&r.h, col)
+    var mode = 0
+    if is_binary_type(t) { mode = 1 }
+    var v = cell_value(&r.h, col, mode)
+    if v == nil { return err("column value could not be copied", 2) }
+    let b = v
+    let out: ?[]byte = b
+    return ok(out)
+}
+
+// Exact bytes for a non-NULL cell. SQL NULL is an error; check is_null or use
+// value() when NULL must be distinct.
+pub fn (r: &Rows) bytes(col: int): Result[[]byte] {
+    let v = try r.value(col)
+    if v == nil { return err("SQL NULL", 1) }
+    let b = v
+    return ok(b)
+}
+
+// Convenience string form for a non-NULL text cell. SQL NULL is an error;
+// embedded NUL is rejected because a string cannot represent it losslessly
+// here. Binary columns are refused; use bytes().
+pub fn (r: &Rows) text(col: int): Result[string] {
+    let rc = try cell_read(r, col)
+    if rc == 1 { return err("SQL NULL", 1) }
+    let t = col_type(&r.h, col)
+    if is_binary_type(t) { return err("column is binary; use bytes", 2) }
+    var v = cell_value(&r.h, col, 0)
+    if v == nil { return err("column value could not be copied", 2) }
+    let b = v
+    if has_nul(&b) { return err("value contains an embedded NUL; use bytes", 1) }
+    return ok(string(b))
+}
+
+// Exact decimal text with SQL NULL distinct: nil means NULL. This is SQL
+// Server's own rendering (decimal(18,4) keeps four fraction digits, and values
+// below one are printed as ".5000"). No float is involved.
+pub fn (r: &Rows) decimal_text(col: int): Result[?[]byte] {
+    let _ = try check_col(r, col)
+    let t = col_type(&r.h, col)
+    if is_binary_type(t) {
+        return err("value is not numeric decimal data", DEC_DB_NOT_DECIMAL)
+    }
+    if is_inexact_float(t) {
+        return err("REAL/FLOAT storage is not exact decimal",
+                   DEC_DB_INEXACT_STORAGE)
+    }
+    let rc = try cell_read(r, col)
+    if rc == 1 {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    let v = try r.value(col)
+    if v == nil { return err("SQL NULL", DEC_DB_NULL) }
+    let b = v
+    let out: ?[]byte = b
+    return ok(out)
+}
+
+// Parse the exact decimal text into obo's decimal. The order is normative:
+// NULL, then binary (not decimal), then exact text. SQL Server omits the leading
+// zero below one (".0000", "-.5000"); decimal::parse requires a digit before the
+// point, so one is inserted without changing the value or its display scale.
+pub fn (r: &Rows) decimal(col: int): Result[decimal] {
+    let raw = try r.decimal_text(col)
+    if raw == nil { return err("SQL NULL", DEC_DB_NULL) }
+    let b = raw
+    if len(b) == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    if has_nul(&b) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    var txt = string(b)
+    if txt == "NaN" || txt == "Infinity" || txt == "-Infinity" {
+        return err("non-finite numeric is not representable", DEC_DB_NONFINITE)
+    }
+    if len(txt) > 0 {
+        var prefix = 0
+        if txt[0] == '-' || txt[0] == '+' { prefix = 1 }
+        if prefix < len(txt) && txt[prefix] == '.' {
+            txt = substr(txt, 0, prefix) + "0" + substr(txt, prefix, len(txt))
+        }
+    }
+    let d = decimal::parse(txt)
+    match d {
+        ok(v) { return ok(v) }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 1 || c == 6 { return err("invalid decimal value", 2) }
+            if c == 4 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+            if c == 7 {
+                return err("decimal text has more than 38 significant digits",
+                           DEC_DB_PRECISION)
+            }
+            if c == 8 {
+                return err("decimal exponent is outside int16", DEC_DB_EXPONENT)
+            }
+            if c == 9 {
+                return err("decimal display scale is outside uint16",
+                           DEC_DB_DISPLAY_RANGE)
+            }
+            return err(m, c)
+        }
+    }
+}
+
+// All diagnostic records of the last statement operation.
+pub fn (r: &Rows) error_message(): []byte {
+    if !r.h.is_open() { return new []byte(0) }
+    return stmt_diag(&r.h)
+}
+
+pub fn (r: &Rows) sqlstate(): []byte {
+    if !r.h.is_open() { return new []byte(0) }
+    return stmt_sqlstate(&r.h)
+}
+
+pub fn (r: &Rows) error_code(): int {
+    if !r.h.is_open() { return 0 }
+    return stmt_error_code(&r.h)
+}
+
+// Prepare, bind and execute in one call. The parameter values are copied into
+// C-side slots before execution, so the array need not outlive this call.
+pub fn (c: &Connection) exec_params(sql: string, params: []Param): Result[Rows] {
+    if len(params) > MAX_PARAMS {
+        return err("too many parameters (maximum 32)", 2)
+    }
+    var r = try c.prepare(sql)
+    let bound = r.bind_all(&params)
+    match bound {
+        ok(v) {
+            if !v { r.close(); return err("parameters could not be bound", 2) }
+        }
+        err(m, code) { r.close(); return err(m, code) }
+    }
+    let ex = r.execute()
+    match ex {
+        ok(v) {
+            if !v { r.close(); return err("SQL execution failed", 2) }
+        }
+        err(m, code) { r.close(); return err(m, code) }
+    }
+    return ok(r)
+}
