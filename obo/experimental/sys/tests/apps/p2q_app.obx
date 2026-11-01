@@ -1,0 +1,465 @@
+// P2q conformance root: built against the Linux adapter and the scripted fake.
+// It prints only backend-independent properties. The kernel may coalesce a
+// UDP_GRO receive or deliver ordinary datagrams; both are accepted when the
+// byte accounting, segment invariants and peer identity agree.
+module app
+
+import "sysplatform.obx" as platform
+import "sysaddress.obx" as address
+import "sysnet.obx" as net
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn mk(s: string): []byte {
+    let out = new []byte(len(s))
+    for i in 0..len(s) { out[i] = s[i] }
+    return out
+}
+
+fn portOf(a: address::Address): int {
+    var port = 0
+    match a {
+        IPv4 { port = a.port }
+        IPv6 { port = a.port }
+        UnixPath { }
+        UnixAbstract { }
+    }
+    return port
+}
+
+fn deadlineAfter(ms: int): clock::Deadline {
+    let now = clock::monotonic()
+    match now {
+        ok(n) {
+            let d = clock::durationMs(ms)
+            match d {
+                ok(dur) {
+                    let dl = clock::after(&n, &dur)
+                    match dl { ok(x) { return x } err(m,c) { } }
+                }
+                err(m,c) { }
+            }
+        }
+        err(m,c) { }
+    }
+    return clock::forever()
+}
+
+fn hasTag(events: &[]reactor::Event, tag: int): bool {
+    for i in 0..len(events) {
+        if events[i].tag == tag && events[i].readable { return true }
+    }
+    return false
+}
+
+fn batchTotal(packets: &[]net::Packet): int {
+    var total = 0
+    for i in 0..len(packets) { total += len(packets[i].bytes) }
+    return total
+}
+
+
+
+
+fn segments(packets: &[]net::Packet): int {
+    var n = 0
+    for i in 0..len(packets) {
+        if packets[i].segmentSize > 0 {
+            n += (len(packets[i].bytes) + packets[i].segmentSize - 1) / packets[i].segmentSize
+        } else {
+            n += 1
+        }
+    }
+    return n
+}
+
+fn segmentsConsistent(packets: &[]net::Packet): bool {
+    for i in 0..len(packets) {
+        let p = packets[i]
+        if len(p.bytes) != p.originalSize { return false }
+        if p.truncated { return false }
+        if p.segmentSize < 0 || p.segmentSize > 65535 { return false }
+        if p.segmentSize > 0 {
+            // Every full segment is exactly segmentSize; only the final one
+            // may be shorter, and a segment is one UDP datagram.
+            if len(p.bytes) < p.segmentSize { return false }
+        }
+    }
+    return true
+}
+
+// Wait through watchDatagram, then take one bounded batch. Ready may arrive
+// before the kernel GRO batch is flushed, so a short retry loop is explicit.
+fn receiveBatchWait(r: &reactor::Reactor, d: &net::Datagram, tag: int,
+                    maxPackets: int, maxBytes: int): Result[net::Datagrams] {
+    let w = try net::watchDatagram(r, d, tag)
+    var attempt = 0
+    while attempt < 40 {
+        let dl = deadlineAfter(100)
+        let events = try reactor::wait(r, &dl, 4)
+        if hasTag(&events, tag) || len(events) > 0 {
+            let got = net::receiveBatch(d, maxPackets, maxBytes)
+            match got {
+                ok(packets) {
+                    let removed = reactor::remove(&w)
+                    match removed { ok(v) { } err(m,c) { } }
+                    return ok(packets)
+                }
+                err(m,c) {
+                    let k = errors::kind(c)
+                    if !errors::isRetryable(c) {
+                        let removed = reactor::remove(&w)
+                        match removed { ok(v) { } err(m,c2) { } }
+                        return err(m, c)
+                    }
+                }
+            }
+        }
+        attempt += 1
+    }
+    let removed = reactor::remove(&w)
+    match removed { ok(v) { } err(m,c) { } }
+    let timedOut = new errors::TimedOut{}
+    return err("datagram batch did not arrive", errors::code(&timedOut))
+}
+
+fn batchChecks(sender: &net::Datagram, receiver: &net::Datagram,
+               target: &address::Address)
+fn profileChecks()
+fn validationChecks()
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m,c) { show("init", c) } }
+
+    let opts = net::datagramOptions()
+    println("opts=", !opts.reusePort, ",", opts.gro, ",", opts.gso)
+    let bindA = address::parseNumeric("127.0.0.1", 0)
+    match bindA {
+        ok(aa) {
+            let bound = net::bindQuicDatagram(&aa, &opts)
+            match bound {
+                ok(sender) {
+                    let bindB = address::parseNumeric("127.0.0.1", 0)
+                    match bindB {
+                        ok(ab) {
+                            let bound2 = net::bindDatagramOptions(&ab, &opts)
+                            match bound2 {
+                                ok(receiver) {
+                                    let caps = net::datagramCapabilities(&sender)
+                                    match caps {
+                                        ok(c) { println("caps=", c.gso || c.gro) }
+                                        err(m,c) { show("caps", c) }
+                                    }
+                                    let local = net::datagramLocalAddress(&receiver)
+                                    var rport = 0
+                                    match local { ok(a) { rport = portOf(a) } err(m,c) { show("local_addr", c) } }
+                                    println("local=", rport > 0)
+                                    let targetA = address::parseNumeric("127.0.0.1", rport)
+                                    match targetA {
+                                        ok(target) {
+                                            batchChecks(&sender, &receiver, &target)
+                                        }
+                                        err(m,c) { show("target", c) }
+                                    }
+                                    let rc = net::closeDatagram(&receiver)
+                                    match rc { ok(v) { } err(m,c) { show("receiver_close", c) } }
+                                }
+                                err(m,c) { show("bind_receiver", c) }
+                            }
+                        }
+                        err(m,c) { show("bind_b", c) }
+                    }
+                    let sc = net::closeDatagram(&sender)
+                    match sc { ok(v) { } err(m,c) { show("sender_close", c) } }
+                }
+                err(m,c) { show("bind_sender", c) }
+            }
+        }
+        err(m,c) { show("bind_a", c) }
+    }
+    profileChecks()
+    validationChecks()
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m,c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m,c) { show("shutdown", c) } }
+}
+
+fn batchChecks(sender: &net::Datagram, receiver: &net::Datagram,
+               target: &address::Address) {
+    var payload = new []byte(300)
+    for i in 0..300 { payload[i] = byte(i) }
+    let rr = reactor::create(8, 8)
+    match rr {
+        ok(r) {
+            var gso = true
+            let sent = net::sendBatch(sender, target, &payload, 0, 300, 100)
+            match sent {
+                ok(n) { println("batch_send=", n == 300) }
+                err(m,c) {
+                    let k = errors::kind(c)
+                    if errors::text(&k) == "Unsupported" {
+                        gso = false
+                        let f = net::sendBatchFallback(sender, target, &payload, 0, 300, 100)
+                        match f { ok(n) { println("batch_send=", n == 300) } err(m2,c2) { show("batch_send_fallback", c2) } }
+                    } else {
+                        show("batch_send", c)
+                    }
+                }
+            }
+            let got = receiveBatchWait(&r, receiver, 70, 8, 1024)
+            match got {
+                ok(packets) {
+                    println("batch_count=", len(packets) >= 1 && len(packets) <= 8)
+                    println("batch_total=", batchTotal(&packets))
+                    println("batch_segments=", segments(&packets))
+                    println("batch_segment_ok=", segmentsConsistent(&packets))
+                }
+                err(m,c) { show("batch_recv", c) }
+            }
+
+            // Total budget, not a per-packet bound.
+            let sent2 = net::sendBatch(sender, target, &payload, 0, 300, 100)
+            match sent2 {
+                ok(n) { }
+                err(m,c) {
+                    let f = net::sendBatchFallback(sender, target, &payload, 0, 300, 100)
+                    match f { ok(n) { } err(m2,c2) { show("budget_send", c2) } }
+                }
+            }
+            let got2 = receiveBatchWait(&r, receiver, 71, 8, 300)
+            match got2 {
+                ok(packets) {
+                    println("batch_budget=", len(packets) >= 1, ",", batchTotal(&packets))
+                    println("batch_budget_ok=", segmentsConsistent(&packets))
+                }
+                err(m,c) { show("batch_budget", c) }
+            }
+
+            // A datagram larger than the remaining budget is Range.
+            let s2 = net::sendBatch(sender, target, &payload, 0, 150, 0)
+            match s2 { ok(n) { } err(m,c) { show("range_send2", c) } }
+            let s3 = net::sendBatch(sender, target, &payload, 150, 100, 0)
+            match s3 { ok(n) { } err(m,c) { show("range_send3", c) } }
+            // Drain may still be coalescing; use a bounded wait then one batch.
+            let dl = deadlineAfter(100)
+            let ev = reactor::wait(&r, &dl, 4)
+            match ev { ok(v) { } err(m,c) { } }
+            let ranged = net::receiveBatch(receiver, 8, 200)
+            match ranged { ok(p) { println("batch_range=ok") } err(m,c) { show("batch_range", c) } }
+
+            // Single receive keeps truncation and originalSize.
+            let one = net::send(sender, target, &payload)
+            match one { ok(n) { } err(m,c) { show("single_send", c) } }
+            var single: net::Packet = new net::Packet{bytes: new []byte(0), peer: nil, truncated: false, originalSize: 0, segmentSize: 0}
+            var gotSingle = false
+            var attempt = 0
+            while attempt < 40 {
+                let wdl = deadlineAfter(100)
+                let wev = reactor::wait(&r, &wdl, 4)
+                match wev { ok(v) { } err(m,c) { } }
+                let sr = net::receive(receiver, 10)
+                match sr {
+                    ok(p) { single = p; gotSingle = true; attempt = 40 }
+                    err(m,c) {
+                        if !errors::isRetryable(c) {
+                            attempt = 40
+                        } else {
+                            attempt += 1
+                        }
+                    }
+                }
+            }
+            if gotSingle {
+                println("single_trunc=", single.truncated, ",", single.originalSize, ",", len(single.bytes))
+            } else {
+                println("single_trunc=false")
+            }
+
+            let rc = reactor::close(&r)
+            match rc { ok(v) { } err(m,c) { show("reactor_close", c) } }
+        }
+        err(m,c) { show("reactor", c) }
+    }
+}
+
+fn profileChecks() {
+    let pa = address::parseNumeric("127.0.0.1", 0)
+    match pa {
+        ok(a) {
+            // GRO off gives one datagram per GSO segment when GSO works; the
+            // fallback sends ordinary datagrams, so the count is the same.
+            let ropts = net::datagramOptions()
+            ropts.gro = false
+            let rb = net::bindDatagramOptions(&a, &ropts)
+            match rb {
+                ok(recv) {
+                    let rp = net::datagramLocalAddress(&recv)
+                    var port = 0
+                    match rp { ok(x) { port = portOf(x) } err(m,c) { show("gro_port", c) } }
+                    let ta = address::parseNumeric("127.0.0.1", port)
+                    match ta {
+                        ok(target) {
+                            let sopts = net::datagramOptions()
+                            let sb = net::bindDatagramOptions(&a, &sopts)
+                            match sb {
+                                ok(sender) {
+                                    var payload = new []byte(300)
+                                    for i in 0..300 { payload[i] = byte(i) }
+                                    let s = net::sendBatch(&sender, &target, &payload, 0, 300, 100)
+                                    match s {
+                                        ok(n) { println("gro_off_send=", n == 300) }
+                                        err(m,c) {
+                                            let f = net::sendBatchFallback(&sender, &target, &payload, 0, 300, 100)
+                                            match f { ok(n) { println("gro_off_send=", n == 300) } err(m2,c2) { show("gro_off_send", c2) } }
+                                        }
+                                    }
+                                    let rr = reactor::create(8, 8)
+                                    match rr {
+                                        ok(r) {
+                                            let got = receiveBatchWait(&r, &recv, 72, 8, 1024)
+                                            match got {
+                                                ok(packets) {
+                                                    println("gro_off_count=", len(packets))
+                                                    println("gro_off_plain=", segments(&packets) == len(packets))
+                                                }
+                                                err(m,c) { show("gro_off_recv", c) }
+                                            }
+                                            let rc = reactor::close(&r)
+                                            match rc { ok(v) { } err(m,c) { } }
+                                        }
+                                        err(m,c) { show("gro_off_reactor", c) }
+                                    }
+                                    let sc = net::closeDatagram(&sender)
+                                    match sc { ok(v) { } err(m,c) { } }
+                                }
+                                err(m,c) { show("gro_off_sender", c) }
+                            }
+                        }
+                        err(m,c) { show("gro_off_target", c) }
+                    }
+                    let rc = net::closeDatagram(&recv)
+                    match rc { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("gro_off_bind", c) }
+            }
+
+            // GSO explicitly disabled: caps says so and a segmented send is
+            // Unsupported rather than a silent one-datagram loop.
+            let oopts = net::datagramOptions()
+            oopts.gso = false
+            let ob = net::bindDatagramOptions(&a, &oopts)
+            match ob {
+                ok(off) {
+                    let caps = net::datagramCapabilities(&off)
+                    match caps {
+                        ok(c) { println("caps_off=", c.gso) }
+                        err(m,c) { show("caps_off", c) }
+                    }
+                    var payload = new []byte(100)
+                    let ta = address::parseNumeric("127.0.0.1", 9)
+                    match ta {
+                        ok(target) {
+                            let s = net::sendBatch(&off, &target, &payload, 0, 100, 10)
+                            match s { ok(n) { println("gso_off=ok") } err(m,c) { show("gso_off", c) } }
+                        }
+                        err(m,c) { show("gso_off_target", c) }
+                    }
+                    let cl = net::closeDatagram(&off)
+                    match cl { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("gso_off_bind", c) }
+            }
+
+            // SO_REUSEPORT is allowed by bindDatagramOptions, forbidden by the
+            // QUIC profile.
+            let ro = net::datagramOptions()
+            ro.reusePort = true
+            let rej = net::bindQuicDatagram(&a, &ro)
+            match rej { ok(v) { println("quic_reuse=ok") } err(m,c) { show("quic_reuse", c) } }
+            let wild = address::parseNumeric("0.0.0.0", 0)
+            match wild {
+                ok(w) {
+                    let qo = net::datagramOptions()
+                    let qw = net::bindQuicDatagram(&w, &qo)
+                    match qw { ok(v) { println("quic_wildcard=ok") } err(m,c) { show("quic_wildcard", c) } }
+                }
+                err(m,c) { show("quic_wildcard_addr", c) }
+            }
+            let ua: address::Address = new address::UnixPath{path: "/tmp/opencode/p2q-unused"}
+            let qo2 = net::datagramOptions()
+            let qu = net::bindQuicDatagram(&ua, &qo2)
+            match qu { ok(v) { println("quic_unix=ok") } err(m,c) { show("quic_unix", c) } }
+
+            // Two reusePort sockets may share a concrete port.
+            let base = net::bindDatagramOptions(&a, &ro)
+            match base {
+                ok(first) {
+                    let la = net::datagramLocalAddress(&first)
+                    var port = 0
+                    match la { ok(x) { port = portOf(x) } err(m,c) { } }
+                    let sa = address::parseNumeric("127.0.0.1", port)
+                    match sa {
+                        ok(same) {
+                            let second = net::bindDatagramOptions(&same, &ro)
+                            match second { ok(v) { println("reuse_second=true"); let c = net::closeDatagram(&v); match c { ok(x) { } err(m,c2) { } } } err(m,c) { show("reuse_second", c) } }
+                        }
+                        err(m,c) { show("reuse_addr", c) }
+                    }
+                    let cf = net::closeDatagram(&first)
+                    match cf { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("reuse_first", c) }
+            }
+        }
+        err(m,c) { show("profile_addr", c) }
+    }
+}
+
+fn validationChecks() {
+    let a = address::parseNumeric("127.0.0.1", 0)
+    match a {
+        ok(addr) {
+            let o = net::datagramOptions()
+            let d = net::bindDatagramOptions(&addr, &o)
+            match d {
+                ok(dgram) {
+                    let empty = net::receiveBatch(&dgram, 4, 64)
+                    match empty { ok(p) { println("empty_batch=ok") } err(m,c) { show("empty_batch", c) } }
+                    let tooMany = net::receiveBatch(&dgram, 0, 1024)
+                    match tooMany { ok(v) { println("bad_max=ok") } err(m,c) { show("bad_max", c) } }
+                    let tooBig = net::receiveBatch(&dgram, 8, 65537)
+                    match tooBig { ok(v) { println("bad_bytes=ok") } err(m,c) { show("bad_bytes", c) } }
+                    let target = address::parseNumeric("127.0.0.1", 9)
+                    match target {
+                        ok(t) {
+                            var payload = new []byte(10)
+                            let badSeg = net::sendBatch(&dgram, &t, &payload, 0, 10, 20)
+                            match badSeg { ok(v) { println("bad_seg=ok") } err(m,c) { show("bad_seg", c) } }
+                            let badRange = net::sendBatch(&dgram, &t, &payload, 5, 10, 0)
+                            match badRange { ok(v) { println("bad_range=ok") } err(m,c) { show("bad_range", c) } }
+                        }
+                        err(m,c) { show("bad_target", c) }
+                    }
+                    let cl = net::closeDatagram(&dgram)
+                    match cl { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("validation_bind", c) }
+            }
+            let bo = net::datagramOptions()
+            bo.receiveBuffer = 0
+            let bad = net::bindDatagramOptions(&addr, &bo)
+            match bad { ok(v) { println("bad_buffer=ok") } err(m,c) { show("bad_buffer", c) } }
+        }
+        err(m,c) { show("validation_addr", c) }
+    }
+}

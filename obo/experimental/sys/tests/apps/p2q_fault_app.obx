@@ -1,0 +1,118 @@
+// P2q scripted-fault root: link-time fake plus the test-only control surface.
+// It prints only backend-independent status names.
+module app
+
+import "sysplatform.obx" as platform
+import "sysaddress.obx" as address
+import "sysnet.obx" as net
+import "syserrors.obx" as errors
+import "sysfakectl.obx" as fake
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn portOf(a: address::Address): int {
+    var port = 0
+    match a {
+        IPv4 { port = a.port }
+        IPv6 { port = a.port }
+        UnixPath { }
+        UnixAbstract { }
+    }
+    return port
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m,c) { show("init", c) } }
+    println("fake_reset=", fake::reset())
+
+    let base = address::parseNumeric("127.0.0.1", 0)
+    match base {
+        ok(bindAddr) {
+            let opts = net::datagramOptions()
+
+            // Scripted bind pressure.
+            let pushed = fake::push(fake::CLASS_NET_LISTEN, -24)
+            let failed = net::bindDatagramOptions(&bindAddr, &opts)
+            match failed { ok(v) { println("listen_fail=ok") } err(m,c) { show("listen_fail", c) } }
+
+            let ready = net::bindDatagramOptions(&bindAddr, &opts)
+            match ready {
+                ok(dgram) {
+                    // Scripted batch write/read errors stay observable.
+                    let wp = fake::push(fake::CLASS_CONN_WRITE, -11)
+                    var bytes = new []byte(20)
+                    let target = address::parseNumeric("127.0.0.1", 9)
+                    match target {
+                        ok(t) {
+                            let sw = net::sendBatch(&dgram, &t, &bytes, 0, 20, 0)
+                            match sw { ok(n) { println("write_fail=ok") } err(m,c) { show("write_fail", c) } }
+                        }
+                        err(m,c) { show("fault_target", c) }
+                    }
+                    let rp = fake::push(fake::CLASS_CONN_READ, -11)
+                    let sr = net::receiveBatch(&dgram, 4, 1024)
+                    match sr { ok(n) { println("read_fail=ok") } err(m,c) { show("read_fail", c) } }
+
+                    // A GSO-off socket refuses a segmented batch; the explicit
+                    // fallback sends the same bytes one datagram at a time.
+                    let fopts = net::datagramOptions()
+                    fopts.gso = false
+                    let fallbackBind = net::bindDatagramOptions(&bindAddr, &fopts)
+                    match fallbackBind {
+                        ok(sender) {
+                            let target2 = address::parseNumeric("127.0.0.1", 9)
+                            match target2 {
+                                ok(t2) {
+                                    var payload = new []byte(300)
+                                    let seg = net::sendBatch(&sender, &t2, &payload, 0, 300, 100)
+                                    match seg { ok(n) { println("gso_off=ok") } err(m,c) { show("gso_off", c) } }
+                                    let fb = net::sendBatchFallback(&sender, &t2, &payload, 0, 300, 100)
+                                    match fb { ok(n) { println("fallback_ok=", n) } err(m,c) { show("fallback", c) } }
+                                }
+                                err(m,c) { show("fallback_target", c) }
+                            }
+                            let cf = net::closeDatagram(&sender)
+                            match cf { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("fallback_bind", c) }
+                    }
+                    let cd = net::closeDatagram(&dgram)
+                    match cd { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("ready_bind", c) }
+            }
+
+            // No SO_REUSEPORT: a second bind on the same concrete port fails.
+            let first = net::bindDatagramOptions(&bindAddr, &opts)
+            match first {
+                ok(f) {
+                    let la = net::datagramLocalAddress(&f)
+                    var port = 0
+                    match la { ok(a) { port = portOf(a) } err(m,c) { } }
+                    let same = address::parseNumeric("127.0.0.1", port)
+                    match same {
+                        ok(s) {
+                            let second = net::bindDatagramOptions(&s, &opts)
+                            match second { ok(v) { println("reuse_conflict=ok") } err(m,c) { show("reuse_conflict", c) } }
+                        }
+                        err(m,c) { show("reuse_addr", c) }
+                    }
+                    let cf = net::closeDatagram(&f)
+                    match cf { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("reuse_first", c) }
+            }
+        }
+        err(m,c) { show("fault_addr", c) }
+    }
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m,c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m,c) { show("shutdown", c) } }
+}
