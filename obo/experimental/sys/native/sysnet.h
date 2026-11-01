@@ -24,6 +24,8 @@ typedef struct {
     long mode;
     int sock;
     sys_sockstate *state;
+    int dgram_flags;       /* SYS_DGRAM_* bits enabled at bind time */
+    int gso_disabled;      /* set after the kernel rejects UDP_SEGMENT */
 } sys_fdobj;
 
 #endif

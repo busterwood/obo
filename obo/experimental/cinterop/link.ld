@@ -30,7 +30,10 @@ SECTIONS
   .init : { *(.init) }
   .fini : { *(.fini) }
   . = ALIGN(0x1000);
-  ASSERT(. <= 0x03010000, "host .text exceeds its 64 KiB slot")
+  /* P2q adds a small UDP batch/shim surface to every hosted image, so the
+   * former 64 KiB cap has no headroom. Keep a real bound; the rodata/data/bss
+   * assertion below still owns the rest of this slot. */
+  ASSERT(. <= 0x03020000, "host .text exceeds its 128 KiB slot")
   .rodata : { *(.rodata) *(.rodata.*) }
   . = ALIGN(0x1000);
   /* Full RELRO: the dynamic linker makes these read-only after relocation.

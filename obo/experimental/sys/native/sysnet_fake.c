@@ -32,6 +32,7 @@ typedef struct fake_msg {
     size_t len;
     fake_addr peer;
     int has_peer;
+    long segment_size;         /* >0 when this message is a coalesced GRO read */
     struct fake_msg *next;
 } fake_msg;
 
@@ -48,6 +49,10 @@ struct fake_sock {
     int write_closed;
     int force_readable;
     int force_writable;
+    int dgram_flags;
+    int gso_disabled;
+    long rcvbuf;
+    long sndbuf;
     struct fake_sock *peer;
     int peer_closed;
     fake_addr peer_addr;
@@ -175,12 +180,7 @@ static long addr_from_packet(long token, fake_addr *out) {
     return 0;
 }
 
-static long addr_to_packet(const fake_addr *a, long token) {
-    unsigned char *out = NULL;
-    size_t outlen = 0;
-    long r = buffer_span(token, &out, &outlen);
-    if (r < 0) return r;
-    if (outlen < (size_t)SYS_ADDR_PACKET_BYTES) return err(EINVAL);
+static long addr_write_packet_at(const fake_addr *a, unsigned char *out) {
     memset(out, 0, (size_t)SYS_ADDR_PACKET_BYTES);
     if (a == NULL || a->family == SYS_ADDR_FAMILY_NONE) return 0;
     put64(out, 0, a->family);
@@ -189,6 +189,15 @@ static long addr_to_packet(const fake_addr *a, long token) {
     put64(out, 3, a->length);
     memcpy(out + SYS_ADDR_DATA_OFFSET, a->data, (size_t)a->length);
     return 1;
+}
+
+static long addr_to_packet(const fake_addr *a, long token) {
+    unsigned char *out = NULL;
+    size_t outlen = 0;
+    long r = buffer_span(token, &out, &outlen);
+    if (r < 0) return r;
+    if (outlen < (size_t)SYS_ADDR_PACKET_BYTES) return err(EINVAL);
+    return addr_write_packet_at(a, out);
 }
 
 static fake_addr make_loopback(int family, int port) {
@@ -399,24 +408,41 @@ long sys_net_listen(long addr_token, long backlog, long flags) {
     return token;
 }
 
-long sys_net_bind_datagram(long addr_token) {
+static long bind_datagram_common(long addr_token, long rcvbuf, long sndbuf,
+                                 long flags) {
     fake_addr a;
     fake_sock *s;
+    fake_sock *existing;
     long r;
     long token;
     long scripted = 0;
     sys_reg_bump_call(SYS_CALL_NET_LISTEN);
+    if (rcvbuf < 1 || rcvbuf > 1073741824L) return err(ERANGE);
+    if (sndbuf < 1 || sndbuf > 1073741824L) return err(ERANGE);
+    if (flags < 0 || (flags & ~(SYS_DGRAM_REUSE_PORT | SYS_DGRAM_GRO |
+                               SYS_DGRAM_GSO | SYS_DGRAM_DONT_FRAGMENT)) != 0) {
+        return err(EINVAL);
+    }
     r = addr_from_packet(addr_token, &a);
     if (r < 0) return r;
     if (fake_pop_script(SYS_CALL_NET_LISTEN, &scripted) && scripted < 0) {
         return scripted;
     }
     fake_assign_port(&a);
-    if (find_bound(&a, SYS_KIND_DATAGRAM) != NULL) return err(EADDRINUSE);
+    existing = find_bound(&a, SYS_KIND_DATAGRAM);
+    if (existing != NULL) {
+        if ((flags & SYS_DGRAM_REUSE_PORT) == 0 ||
+            (existing->dgram_flags & SYS_DGRAM_REUSE_PORT) == 0) {
+            return err(EADDRINUSE);
+        }
+    }
     s = new_sock(SYS_KIND_DATAGRAM);
     if (s == NULL) return err(ENOMEM);
     s->addr = a;
     s->bound = 1;
+    s->dgram_flags = (int)flags;
+    s->rcvbuf = rcvbuf;
+    s->sndbuf = sndbuf;
     token = new_sock_handle(SYS_KIND_DATAGRAM, s);
     if (token < 0) {
         fake_sock_release(s);
@@ -425,6 +451,30 @@ long sys_net_bind_datagram(long addr_token) {
     s->next_global = fake_socks;
     fake_socks = s;
     return token;
+}
+
+long sys_net_bind_datagram(long addr_token) {
+    return bind_datagram_common(addr_token, 4194304L, 4194304L,
+                                SYS_DGRAM_GRO | SYS_DGRAM_GSO |
+                                SYS_DGRAM_DONT_FRAGMENT);
+}
+
+long sys_net_bind_datagram_options(long addr_token, long rcvbuf, long sndbuf,
+                                   long flags) {
+    return bind_datagram_common(addr_token, rcvbuf, sndbuf, flags);
+}
+
+long sys_net_datagram_caps(long token) {
+    fake_file *f = sock_handle(token, SYS_KIND_DATAGRAM);
+    long caps = 0;
+    sys_reg_bump_call(SYS_CALL_SOCKOPT);
+    if (f == NULL) return err(EBADF);
+    if (!f->sock->gso_disabled &&
+        (f->sock->dgram_flags & SYS_DGRAM_GSO) != 0) {
+        caps |= SYS_DGRAM_CAP_GSO;
+    }
+    if ((f->sock->dgram_flags & SYS_DGRAM_GRO) != 0) caps |= SYS_DGRAM_CAP_GRO;
+    return caps;
 }
 
 static fake_sock *find_listener(const fake_addr *a) {
@@ -770,11 +820,76 @@ long sys_net_receive(long token, long buf_token, long max, long peer_token,
     memset(meta, 0, (size_t)SYS_DGRAM_META_BYTES);
     put64(meta, 0, original);
     put64(meta, 1, original > max ? 1 : 0);
+    put64(meta, 2, m->segment_size);
     if (m->has_peer) (void)addr_to_packet(&m->peer, peer_token);
     else (void)addr_to_packet(NULL, peer_token);
     free(m->data);
     free(m);
     return copied;
+}
+
+long sys_net_receive_batch(long token, long data_token, long meta_token,
+                           long peer_token, long max_packets,
+                           long max_bytes) {
+    fake_file *f = sock_handle(token, SYS_KIND_DATAGRAM);
+    unsigned char *data = NULL;
+    size_t datalen = 0;
+    unsigned char *meta = NULL;
+    size_t metalen = 0;
+    unsigned char *peer = NULL;
+    size_t peerlen = 0;
+    long r;
+    long i;
+    size_t used = 0;
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_CONN_READ);
+    if (f == NULL) return err(EBADF);
+    if (max_packets < 1 || max_packets > SYS_DGRAM_MAX_BATCH) return err(ERANGE);
+    if (max_bytes < 1 || max_bytes > SYS_DGRAM_MAX_BATCH_BYTES) return err(ERANGE);
+    r = buffer_span(data_token, &data, &datalen);
+    if (r < 0) return r;
+    if ((size_t)max_bytes > datalen) return err(ERANGE);
+    r = buffer_span(meta_token, &meta, &metalen);
+    if (r < 0) return r;
+    if (metalen < (size_t)max_packets * SYS_DGRAM_BATCH_ENTRY) return err(ERANGE);
+    r = buffer_span(peer_token, &peer, &peerlen);
+    if (r < 0) return r;
+    if (peerlen < (size_t)max_packets * SYS_ADDR_PACKET_BYTES) return err(ERANGE);
+    have_script = fake_pop_script(SYS_CALL_CONN_READ, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    memset(meta, 0, (size_t)max_packets * SYS_DGRAM_BATCH_ENTRY);
+    for (i = 0; i < max_packets; i++) {
+        fake_msg *m = f->sock->msgs_head;
+        unsigned char *entry = meta + (size_t)i * SYS_DGRAM_BATCH_ENTRY;
+        unsigned char *pentry = peer + (size_t)i * SYS_ADDR_PACKET_BYTES;
+        size_t remaining = (size_t)max_bytes - used;
+        if (m == NULL) {
+            if (i == 0) return err(EAGAIN);
+            break;
+        }
+        if (remaining == 0) break;
+        f->sock->msgs_head = m->next;
+        if (f->sock->msgs_head == NULL) f->sock->msgs_tail = NULL;
+        if (m->len > remaining) {
+            /* Match the kernel: the oversized datagram was consumed before
+             * the budget check, so it cannot be returned by a later call. */
+            free(m->data);
+            free(m);
+            return err(ERANGE);
+        }
+        if (m->len > 0) memcpy(data + used, m->data, m->len);
+        put64(entry, 0, (long long)used);
+        put64(entry, 1, (long long)m->len);
+        put64(entry, 2, (long long)m->len);
+        put64(entry, 3, 0);
+        put64(entry, 4, m->segment_size);
+        (void)addr_write_packet_at(m->has_peer ? &m->peer : NULL, pentry);
+        used += m->len;
+        free(m->data);
+        free(m);
+    }
+    return i;
 }
 
 long sys_net_send(long token, long addr_token, long buf_token, long offset,
@@ -821,6 +936,94 @@ long sys_net_send(long token, long addr_token, long buf_token, long offset,
     if (receiver->msgs_tail == NULL) receiver->msgs_head = m;
     else receiver->msgs_tail->next = m;
     receiver->msgs_tail = m;
+    return count;
+}
+
+static long fake_enqueue_msg(fake_sock *receiver, fake_sock *sender,
+                             const unsigned char *src, size_t len,
+                             long segment_size) {
+    fake_msg *m = (fake_msg *)calloc(1, sizeof(*m));
+    if (m == NULL) return err(ENOMEM);
+    if (len > 0) {
+        m->data = (unsigned char *)malloc(len);
+        if (m->data == NULL) {
+            free(m);
+            return err(ENOMEM);
+        }
+        memcpy(m->data, src, len);
+    }
+    m->len = len;
+    m->segment_size = segment_size;
+    if (sender->bound) {
+        m->peer = sender->addr;
+        m->has_peer = 1;
+    }
+    if (receiver->msgs_tail == NULL) receiver->msgs_head = m;
+    else receiver->msgs_tail->next = m;
+    receiver->msgs_tail = m;
+    return 0;
+}
+
+long sys_net_send_batch(long token, long addr_token, long buf_token,
+                        long offset, long count, long segment_size) {
+    fake_file *f = sock_handle(token, SYS_KIND_DATAGRAM);
+    fake_addr to;
+    unsigned char *buf = NULL;
+    size_t buflen = 0;
+    fake_sock *receiver;
+    long r;
+    long segments;
+    long sent = 0;
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_CONN_WRITE);
+    if (f == NULL) return err(EBADF);
+    if (offset < 0 || count < 0) return err(EINVAL);
+    if (segment_size < 0 || segment_size > 65535) return err(ERANGE);
+    if (count > SYS_DGRAM_MAX_BATCH_BYTES) return err(EMSGSIZE);
+    if (segment_size == 0) {
+        if (count > 65507) return err(EMSGSIZE);
+    } else {
+        if (count < segment_size) return err(ERANGE);
+        segments = (count + segment_size - 1) / segment_size;
+        if (segments < 1 || segments > SYS_DGRAM_MAX_BATCH) return err(ERANGE);
+        if (f->sock->gso_disabled ||
+            (f->sock->dgram_flags & SYS_DGRAM_GSO) == 0) {
+            return err(EOPNOTSUPP);
+        }
+    }
+    r = addr_from_packet(addr_token, &to);
+    if (r < 0) return r;
+    r = buffer_span(buf_token, &buf, &buflen);
+    if (r < 0) return r;
+    if ((size_t)offset > buflen || (size_t)count > buflen - (size_t)offset) {
+        return err(ERANGE);
+    }
+    have_script = fake_pop_script(SYS_CALL_CONN_WRITE, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    receiver = find_bound(&to, SYS_KIND_DATAGRAM);
+    if (receiver == NULL) return count;
+    if (segment_size == 0) {
+        r = fake_enqueue_msg(receiver, f->sock, buf + offset, (size_t)count, 0);
+        if (r < 0) return r;
+        return count;
+    }
+    if ((receiver->dgram_flags & SYS_DGRAM_GRO) != 0) {
+        /* One coalesced logical receive with a segment size, like Linux
+         * UDP_GRO. The kernel may still deliver individual datagrams. */
+        r = fake_enqueue_msg(receiver, f->sock, buf + offset, (size_t)count,
+                             segment_size);
+        if (r < 0) return r;
+        return count;
+    }
+    while (sent < count) {
+        long piece = count - sent;
+        if (piece > segment_size) piece = segment_size;
+        r = fake_enqueue_msg(receiver, f->sock, buf + offset + sent,
+                             (size_t)piece, 0);
+        if (r < 0) return r;
+        sent += piece;
+    }
     return count;
 }
 

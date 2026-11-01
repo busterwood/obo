@@ -173,14 +173,10 @@ static long addr_from_packet(long token, struct sockaddr_storage *ss,
     return err(EINVAL);
 }
 
-/* Write an address packet; returns 1 for a written address, 0 for "none". */
-static long addr_to_packet(const struct sockaddr *sa, socklen_t salen,
-                           long token) {
-    unsigned char *out = NULL;
-    size_t outlen = 0;
-    long r = buffer_span(token, &out, &outlen);
-    if (r < 0) return r;
-    if (outlen < (size_t)SYS_ADDR_PACKET_BYTES) return err(EINVAL);
+/* Write an address packet at `out`; returns 1 for a written address, 0 for
+ * "none". The caller has already checked the 160-byte span. */
+static long addr_write_packet(const struct sockaddr *sa, socklen_t salen,
+                              unsigned char *out) {
     memset(out, 0, (size_t)SYS_ADDR_PACKET_BYTES);
     if (sa == NULL || salen < sizeof(sa_family_t)) return 0;
     if (sa->sa_family == AF_INET) {
@@ -229,6 +225,16 @@ static long addr_to_packet(const struct sockaddr *sa, socklen_t salen,
         }
     }
     return 0;
+}
+
+static long addr_to_packet(const struct sockaddr *sa, socklen_t salen,
+                           long token) {
+    unsigned char *out = NULL;
+    size_t outlen = 0;
+    long r = buffer_span(token, &out, &outlen);
+    if (r < 0) return r;
+    if (outlen < (size_t)SYS_ADDR_PACKET_BYTES) return err(EINVAL);
+    return addr_write_packet(sa, salen, out);
 }
 
 /* ---- socket objects ----------------------------------------------------- */
@@ -649,13 +655,50 @@ long sys_net_set_broadcast(long token, long enabled) {
 
 /* ---- datagrams ---------------------------------------------------------- */
 
-long sys_net_bind_datagram(long addr_token) {
+#define DGRAM_DEFAULT_BUFFER 4194304L
+#define DGRAM_MAX_BUFFER 1073741824L
+
+#ifndef IP_MTU_DISCOVER
+#define IP_MTU_DISCOVER 10
+#endif
+#ifndef IP_PMTUDISC_DO
+#define IP_PMTUDISC_DO 2
+#endif
+#ifndef IPV6_MTU_DISCOVER
+#define IPV6_MTU_DISCOVER 23
+#endif
+#ifndef IPV6_PMTUDISC_DO
+#define IPV6_PMTUDISC_DO 2
+#endif
+#ifndef UDP_SEGMENT
+#define UDP_SEGMENT 103
+#endif
+#ifndef UDP_GRO
+#define UDP_GRO 104
+#endif
+
+static int ignore_unsupported_option(int e) {
+    return e == ENOPROTOOPT || e == EOPNOTSUPP || e == EINVAL;
+}
+
+/* Bind one nonblocking CLOEXEC UDP socket with the P2q option profile. The
+ * socket is closed on every post-bind failure. Flags the kernel rejects are
+ * cleared rather than treated as correctness failures. */
+static long bind_datagram_common(long addr_token, long rcvbuf, long sndbuf,
+                                 long flags) {
     struct sockaddr_storage ss;
     socklen_t salen = 0;
     int fd;
     long r;
     long token;
+    sys_fdobj *d;
     sys_reg_bump_call(SYS_CALL_NET_LISTEN);
+    if (rcvbuf < 1 || rcvbuf > DGRAM_MAX_BUFFER) return err(ERANGE);
+    if (sndbuf < 1 || sndbuf > DGRAM_MAX_BUFFER) return err(ERANGE);
+    if (flags < 0 || (flags & ~(SYS_DGRAM_REUSE_PORT | SYS_DGRAM_GRO |
+                               SYS_DGRAM_GSO | SYS_DGRAM_DONT_FRAGMENT)) != 0) {
+        return err(EINVAL);
+    }
     r = addr_from_packet(addr_token, &ss, &salen);
     if (r < 0) return r;
     fd = socket(ss.ss_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
@@ -669,11 +712,117 @@ long sys_net_bind_datagram(long addr_token) {
             int e = errno; (void)close(fd); return err(e);
         }
     }
+    if ((flags & SYS_DGRAM_REUSE_PORT) != 0) {
+        int on = 1;
+        if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) != 0) {
+            int e = errno; (void)close(fd); return err(e);
+        }
+    }
+    {
+        int rb = (int)rcvbuf;
+        int sb = (int)sndbuf;
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rb, sizeof(rb)) != 0) {
+            int e = errno; (void)close(fd); return err(e);
+        }
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sb, sizeof(sb)) != 0) {
+            int e = errno; (void)close(fd); return err(e);
+        }
+    }
+    if ((flags & SYS_DGRAM_GRO) != 0) {
+        int on = 1;
+        if (setsockopt(fd, IPPROTO_UDP, UDP_GRO, &on, sizeof(on)) != 0) {
+            if (!ignore_unsupported_option(errno)) {
+                int e = errno; (void)close(fd); return err(e);
+            }
+            flags &= ~(long)SYS_DGRAM_GRO;
+        }
+    }
+    if ((flags & SYS_DGRAM_DONT_FRAGMENT) != 0) {
+        if (ss.ss_family == AF_INET) {
+            int mode = IP_PMTUDISC_DO;
+            if (setsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER, &mode,
+                           sizeof(mode)) != 0 &&
+                !ignore_unsupported_option(errno)) {
+                int e = errno; (void)close(fd); return err(e);
+            }
+        } else if (ss.ss_family == AF_INET6) {
+            int mode = IPV6_PMTUDISC_DO;
+            if (setsockopt(fd, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &mode,
+                           sizeof(mode)) != 0 &&
+                !ignore_unsupported_option(errno)) {
+                int e = errno; (void)close(fd); return err(e);
+            }
+        }
+    }
     if (bind(fd, (struct sockaddr *)&ss, salen) != 0) {
         int e = errno; (void)close(fd); return err(e);
     }
     token = register_sock(fd, SYS_KIND_DATAGRAM, 0);
+    if (token < 0) return token;
+    d = sock_of(token, SYS_KIND_DATAGRAM);
+    if (d == NULL) return err(EIO);
+    d->dgram_flags = (int)flags;
     return token;
+}
+
+long sys_net_bind_datagram(long addr_token) {
+    return bind_datagram_common(addr_token, DGRAM_DEFAULT_BUFFER,
+                                DGRAM_DEFAULT_BUFFER,
+                                SYS_DGRAM_GRO | SYS_DGRAM_GSO |
+                                SYS_DGRAM_DONT_FRAGMENT);
+}
+
+long sys_net_bind_datagram_options(long addr_token, long rcvbuf, long sndbuf,
+                                   long flags) {
+    return bind_datagram_common(addr_token, rcvbuf, sndbuf, flags);
+}
+
+long sys_net_datagram_caps(long token) {
+    sys_fdobj *d = sock_of(token, SYS_KIND_DATAGRAM);
+    long caps = 0;
+    sys_reg_bump_call(SYS_CALL_SOCKOPT);
+    if (d == NULL) return err(EBADF);
+    if (!d->gso_disabled && (d->dgram_flags & SYS_DGRAM_GSO) != 0) {
+        caps |= SYS_DGRAM_CAP_GSO;
+    }
+    if ((d->dgram_flags & SYS_DGRAM_GRO) != 0) caps |= SYS_DGRAM_CAP_GRO;
+    return caps;
+}
+
+/* One recvmsg with a UDP_GRO ancillary read. `segment` is 0 when the kernel
+ * did not coalesce the datagram or the option is unavailable. */
+static ssize_t dgram_recvmsg(int fd, unsigned char *buf, size_t cap,
+                             struct sockaddr_storage *ss, socklen_t *salen,
+                             long *segment) {
+    struct iovec iov;
+    struct msghdr msg;
+    char cbuf[CMSG_SPACE(sizeof(int))];
+    struct cmsghdr *cmsg;
+    ssize_t n;
+    *segment = 0;
+    memset(ss, 0, sizeof(*ss));
+    memset(&msg, 0, sizeof(msg));
+    iov.iov_base = buf;
+    iov.iov_len = cap;
+    msg.msg_name = ss;
+    msg.msg_namelen = sizeof(*ss);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cbuf;
+    msg.msg_controllen = sizeof(cbuf);
+    n = recvmsg(fd, &msg, MSG_TRUNC);
+    if (n < 0) return n;
+    *salen = msg.msg_namelen;
+    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL;
+         cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+        if (cmsg->cmsg_level == IPPROTO_UDP && cmsg->cmsg_type == UDP_GRO &&
+            cmsg->cmsg_len >= CMSG_LEN(sizeof(int))) {
+            int value = 0;
+            memcpy(&value, CMSG_DATA(cmsg), sizeof(value));
+            if (value > 0 && value <= 65535) *segment = (long)value;
+        }
+    }
+    return n;
 }
 
 long sys_net_receive(long token, long buf_token, long max, long peer_token,
@@ -686,12 +835,12 @@ long sys_net_receive(long token, long buf_token, long max, long peer_token,
     unsigned char *meta = NULL;
     size_t metalen = 0;
     struct sockaddr_storage ss;
-    struct iovec iov;
-    struct msghdr msg;
+    socklen_t salen = 0;
     ssize_t n;
     long r;
     long copied;
     long original;
+    long segment = 0;
     int truncated;
     sys_reg_bump_call(SYS_CALL_CONN_READ);
     if (d == NULL) return err(EBADF);
@@ -705,31 +854,92 @@ long sys_net_receive(long token, long buf_token, long max, long peer_token,
     r = buffer_span(meta_token, &meta, &metalen);
     if (r < 0) return r;
     if (metalen < (size_t)SYS_DGRAM_META_BYTES) return err(ERANGE);
-    memset(&ss, 0, sizeof(ss));
-    iov.iov_base = buf;
-    iov.iov_len = (size_t)max;
-    memset(&msg, 0, sizeof(msg));
-    msg.msg_name = &ss;
-    msg.msg_namelen = sizeof(ss);
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    n = recvmsg(d->fd, &msg, MSG_TRUNC);
+    n = dgram_recvmsg(d->fd, buf, (size_t)max, &ss, &salen, &segment);
     if (n < 0) return err(errno);
     original = (long)n;
     copied = original;
     if (copied > max) copied = max;
     truncated = original > max ? 1 : 0;
-    if ((msg.msg_flags & MSG_TRUNC) != 0) truncated = 1;
     memset(meta, 0, (size_t)SYS_DGRAM_META_BYTES);
     put64(meta, 0, original);
     put64(meta, 1, truncated);
-    if (msg.msg_namelen == 0) {
+    put64(meta, 2, segment);
+    if (salen == 0) {
         memset(peer, 0, (size_t)SYS_ADDR_PACKET_BYTES);
     } else {
-        r = addr_to_packet((struct sockaddr *)&ss, msg.msg_namelen, peer_token);
+        r = addr_write_packet((struct sockaddr *)&ss, salen, peer);
         if (r < 0) return r;
     }
     return copied;
+}
+
+long sys_net_receive_batch(long token, long data_token, long meta_token,
+                           long peer_token, long max_packets,
+                           long max_bytes) {
+    sys_fdobj *d = sock_of(token, SYS_KIND_DATAGRAM);
+    unsigned char *data = NULL;
+    size_t datalen = 0;
+    unsigned char *meta = NULL;
+    size_t metalen = 0;
+    unsigned char *peer = NULL;
+    size_t peerlen = 0;
+    struct sockaddr_storage ss;
+    socklen_t salen = 0;
+    ssize_t n;
+    long r;
+    long i;
+    size_t used = 0;
+    sys_reg_bump_call(SYS_CALL_CONN_READ);
+    if (d == NULL) return err(EBADF);
+    if (max_packets < 1 || max_packets > SYS_DGRAM_MAX_BATCH) return err(ERANGE);
+    if (max_bytes < 1 || max_bytes > SYS_DGRAM_MAX_BATCH_BYTES) return err(ERANGE);
+    r = buffer_span(data_token, &data, &datalen);
+    if (r < 0) return r;
+    if ((size_t)max_bytes > datalen) return err(ERANGE);
+    r = buffer_span(meta_token, &meta, &metalen);
+    if (r < 0) return r;
+    if (metalen < (size_t)max_packets * SYS_DGRAM_BATCH_ENTRY) return err(ERANGE);
+    r = buffer_span(peer_token, &peer, &peerlen);
+    if (r < 0) return r;
+    if (peerlen < (size_t)max_packets * SYS_ADDR_PACKET_BYTES) return err(ERANGE);
+    memset(meta, 0, (size_t)max_packets * SYS_DGRAM_BATCH_ENTRY);
+    for (i = 0; i < max_packets; i++) {
+        size_t remaining = (size_t)max_bytes - used;
+        long segment = 0;
+        unsigned char *entry = meta + (size_t)i * SYS_DGRAM_BATCH_ENTRY;
+        unsigned char *pentry = peer + (size_t)i * SYS_ADDR_PACKET_BYTES;
+        if (remaining == 0) break;
+        n = dgram_recvmsg(d->fd, data + used, remaining, &ss, &salen, &segment);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (i == 0) return err(EAGAIN);
+                break;
+            }
+            if (errno == EINTR) {
+                if (i == 0) return err(EINTR);
+                break;
+            }
+            return err(errno);
+        }
+        if ((size_t)n > remaining) {
+            /* The datagram does not fit the remaining batch budget. It has
+             * already been consumed; the caller retries with a larger budget. */
+            return err(ERANGE);
+        }
+        put64(entry, 0, (long long)used);
+        put64(entry, 1, (long long)n);
+        put64(entry, 2, (long long)n);
+        put64(entry, 3, 0);
+        put64(entry, 4, segment);
+        if (salen == 0) {
+            memset(pentry, 0, (size_t)SYS_ADDR_PACKET_BYTES);
+        } else {
+            r = addr_write_packet((struct sockaddr *)&ss, salen, pentry);
+            if (r < 0) return r;
+        }
+        used += (size_t)n;
+    }
+    return i;
 }
 
 long sys_net_send(long token, long addr_token, long buf_token, long offset,
@@ -755,6 +965,74 @@ long sys_net_send(long token, long addr_token, long buf_token, long offset,
     n = sendto(d->fd, buf + offset, (size_t)count, MSG_NOSIGNAL,
                (struct sockaddr *)&ss, salen);
     if (n < 0) return err(errno);
+    if ((long)n != count) return err(EIO);
+    return (long)n;
+}
+
+long sys_net_send_batch(long token, long addr_token, long buf_token,
+                        long offset, long count, long segment_size) {
+    sys_fdobj *d = sock_of(token, SYS_KIND_DATAGRAM);
+    struct sockaddr_storage ss;
+    socklen_t salen = 0;
+    unsigned char *buf = NULL;
+    size_t buflen = 0;
+    struct iovec iov;
+    struct msghdr msg;
+    char cbuf[CMSG_SPACE(sizeof(uint16_t))];
+    ssize_t n;
+    long r;
+    long segments;
+    sys_reg_bump_call(SYS_CALL_CONN_WRITE);
+    if (d == NULL) return err(EBADF);
+    if (offset < 0 || count < 0) return err(EINVAL);
+    if (segment_size < 0 || segment_size > 65535) return err(ERANGE);
+    if (count > SYS_DGRAM_MAX_BATCH_BYTES) return err(EMSGSIZE);
+    if (segment_size == 0) {
+        if (count > 65507) return err(EMSGSIZE);
+    } else {
+        if (count < segment_size) return err(ERANGE);
+        segments = (count + segment_size - 1) / segment_size;
+        if (segments < 1 || segments > SYS_DGRAM_MAX_BATCH) return err(ERANGE);
+        if (d->gso_disabled || (d->dgram_flags & SYS_DGRAM_GSO) == 0) {
+            return err(EOPNOTSUPP);
+        }
+    }
+    r = addr_from_packet(addr_token, &ss, &salen);
+    if (r < 0) return r;
+    r = buffer_span(buf_token, &buf, &buflen);
+    if (r < 0) return r;
+    if ((size_t)offset > buflen || (size_t)count > buflen - (size_t)offset) {
+        return err(ERANGE);
+    }
+    memset(&msg, 0, sizeof(msg));
+    iov.iov_base = buf + offset;
+    iov.iov_len = (size_t)count;
+    msg.msg_name = &ss;
+    msg.msg_namelen = salen;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    if (segment_size > 0) {
+        struct cmsghdr *cmsg;
+        uint16_t value = (uint16_t)segment_size;
+        memset(cbuf, 0, sizeof(cbuf));
+        msg.msg_control = cbuf;
+        msg.msg_controllen = sizeof(cbuf);
+        cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = IPPROTO_UDP;
+        cmsg->cmsg_type = UDP_SEGMENT;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(uint16_t));
+        memcpy(CMSG_DATA(cmsg), &value, sizeof(value));
+    }
+    n = sendmsg(d->fd, &msg, MSG_NOSIGNAL);
+    if (n < 0) {
+        int e = errno;
+        if (segment_size > 0 &&
+            (e == EIO || e == EINVAL || e == ENOPROTOOPT || e == EOPNOTSUPP)) {
+            d->gso_disabled = 1;
+            return err(EOPNOTSUPP);
+        }
+        return err(e);
+    }
     if ((long)n != count) return err(EIO);
     return (long)n;
 }
