@@ -163,6 +163,50 @@ CI_HIDDEN int *obo_ci_list_lens(long list) {
     return out;
 }
 
+/* ---- native results (stage (b), design 3.3): helpers the generated thunks call ----
+ *
+ * A copy-out allocates a normal obo []byte array through the runtime's jump-table slot 3
+ * (rt_alloc_array, runtime.c). The raw runtime blob has no symbols, so this goes through the fixed
+ * address in host_abi.h. alloc_raw counts it in live_owned, so OBO_CHECK=1 leak checking applies as
+ * usual. The array layout is runtime.c's Array {len, cap, data, esize}, with its elements at data + 8.
+ */
+#define CI_CSTR_OUT_MAX (16L << 20)   /* 16 MiB, design 3.3 */
+
+static uint64_t ci_new_byte_array(uint64_t n) {
+    rt_alloc_array_fn alloc = (rt_alloc_array_fn)RT_ALLOC_ARRAY_ADDR;
+    return alloc((int64_t)n, 4);      /* kind 4 = byte elements */
+}
+
+static void *ci_byte_array_data(uint64_t a) {
+    uint64_t data = *(const uint64_t *)(uintptr_t)(a + 16);
+    return (void *)(uintptr_t)(data + 8);
+}
+
+/* cbytes: copy n bytes from p into a new obo array. n < 0, or NULL with n > 0, exits 11. Above cap
+ * gives nil (0), which the wrapper turns into err. n == 0 gives an empty array. NULs are preserved:
+ * this never calls strlen. */
+CI_HIDDEN const void *obo_ci_copy_out(const void *p, long n, long cap) {
+    uint64_t a;
+    if (n < 0) ci_fail("obo: native copy-out length is negative\n", 11);
+    if (p == NULL && n > 0) ci_fail("obo: native copy-out is NULL with a positive length\n", 11);
+    if (n > cap) return NULL;
+    a = ci_new_byte_array((uint64_t)n);
+    if (n > 0) memcpy(ci_byte_array_data(a), p, (size_t)n);
+    return (const void *)(uintptr_t)a;
+}
+
+/* cstr_out: copy up to the first NUL into a new obo array. NULL gives an empty array; no NUL within
+ * 16 MiB exits 11 rather than reading past the bound. */
+CI_HIDDEN const void *obo_ci_cstr_out(const char *p) {
+    uint64_t n = 0, a;
+    if (p == NULL) return (const void *)(uintptr_t)ci_new_byte_array(0);
+    while (n < (uint64_t)CI_CSTR_OUT_MAX && p[n] != 0) n++;
+    if (n == (uint64_t)CI_CSTR_OUT_MAX) ci_fail("obo: native C string result has no NUL within 16 MiB\n", 11);
+    a = ci_new_byte_array(n);
+    if (n > 0) memcpy(ci_byte_array_data(a), p, (size_t)n);
+    return (const void *)(uintptr_t)a;
+}
+
 static void startup_fail(const char *msg) {
     size_t n = 0;
     while (msg[n] != 0) n++;
