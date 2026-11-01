@@ -193,18 +193,22 @@ unsupported but well-formed features use `501`/`505`/`417`/`413` as above.
   still bounds a fresh connection before the first plaintext request byte.
   Both are absolute and are not re-armed by partial records. A silent TCP peer
   therefore closes at the earlier of the two under the default equal values.
-- ALPN is decided before any HTTP parse. Only `http/1.1` is accepted. `h2` and
-  any other protocol close the connection and count a handler error. No ALPN is
-  accepted as HTTP/1.1 only when `allowNoAlpn` is true (default). The listener
-  should configure TLS `Require(["http/1.1"])` when no-ALPN is not wanted.
+- ALPN is decided before any HTTP parse. Only `http/1.1` is accepted. A
+  negotiated `h2` or any other protocol closes the connection and counts a
+  handler error. No ALPN is accepted as HTTP/1.1 only when `allowNoAlpn` is true
+  (default). The default HTTPS listener policy is TLS
+  `Require(["http/1.1"])`; with `Prefer`, a client that offers only h2 negotiates
+  h2 and is closed by the HTTP layer, while with `Require` the TLS handshake
+  fails before HTTP.
 - TLS `readSome` enforces 1..65536 plaintext bytes; `writeSome` accepts a
   0..65536 prefix; `pending` reports ciphertext (staging plus BIO). The HTTP
   output buffer and `maxTransfer` still split larger writes.
 - A normal close after a response, and an idle established connection during
-  graceful server shutdown, drive `shutdownStep` so close_notify is queued and
-  flushed before `close`. The per-connection shutdown deadline is
-  `responseTimeoutMs`; server drain is bounded by `totalTimeoutMs`. Expiry and
-  fatal TLS errors use abortive `close`.
+  graceful server shutdown, queue the local close_notify, drain remaining
+  ciphertext, and then `close` without waiting for the peer close_notify. The
+  per-connection shutdown deadline is `responseTimeoutMs`; server drain is
+  bounded by `totalTimeoutMs`. Expiry and fatal TLS errors use abortive
+  `close`.
 - TLS context/session memory (OpenSSL and BIO staging) is outside
   `maxTotalConnectionBytes`. HTTP admission still reserves the fixed per-
   connection HTTP buffers; `systls::counts()` reports live contexts, sessions,

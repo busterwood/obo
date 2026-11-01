@@ -121,6 +121,7 @@ pub type Connection = ref record {
     closeAfter: bool
     failed: bool
     wroteAnything: bool
+    closeSent: bool
     out: []byte
     outPos: int
 
@@ -468,6 +469,7 @@ fn resetRequestState(mut c: &Connection) {
     c.closeAfter = false
     c.failed = false
     c.wroteAnything = false
+    c.closeSent = false
     c.out = new []byte(0)
     c.outPos = 0
 }
@@ -477,10 +479,44 @@ fn resetRequestState(mut c: &Connection) {
 // ---------------------------------------------------------------------------
 
 pub fn make(stream: transport::Transport, limits: &core::Limits): Result[Connection] {
-    let checked = try core::validateLimits(limits)
-    if !checked { return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT) }
-    let parser = try parse::makeParser(limits)
-    let response = try write::makeResponse(limits, "GET", false, false, 0, 0)
+    let checkedR = core::validateLimits(limits)
+    match checkedR {
+        ok(checked) {
+            if !checked {
+                // make() owns the transport even on failure; close it exactly
+                // once instead of leaking a TLS session or socket.
+                let cl = transport::close(&stream)
+                return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT)
+            }
+        }
+        err(m, code) {
+            let cl = transport::close(&stream)
+            return err(m, code)
+        }
+    }
+    let parserR = parse::makeParser(limits)
+    var parserOpt: ?parse::Parser = nil
+    match parserR {
+        ok(p) { parserOpt = p }
+        err(m, code) {
+            let cl = transport::close(&stream)
+            return err(m, code)
+        }
+    }
+    if parserOpt == nil {
+        let cl = transport::close(&stream)
+        return err("parser construction failed", core::ERR_INTERNAL)
+    }
+    let parser: parse::Parser = parserOpt
+    let responseR = write::makeResponse(limits, "GET", false, false, 0, 0)
+    var response: write::Response = write::emptyResponse()
+    match responseR {
+        ok(r) { response = r }
+        err(m, code) {
+            let cl = transport::close(&stream)
+            return err(m, code)
+        }
+    }
     return ok(new Connection{
         limits: core::copyLimits(limits),
         t: stream,
@@ -517,6 +553,7 @@ pub fn make(stream: transport::Transport, limits: &core::Limits): Result[Connect
         closeAfter: false,
         failed: false,
         wroteAnything: false,
+        closeSent: false,
         out: new []byte(0),
         outPos: 0,
         requests: 0,
@@ -974,6 +1011,27 @@ fn closingOn(mut c: &Connection, now: &Now,
         let ev: Event = new ConnectionClosed{}
         return ok(ev)
     }
+    // Once our close_notify has been queued, only drain the remaining ciphertext.
+    // Calling SSL_shutdown again would wait for the peer close_notify and turn a
+    // one-way close into a responseTimeout abort.
+    if c.closeSent {
+        let f = try flushOn(c, now, t)
+        match f {
+            Flushed {
+                let shutRes = try closeWith(c, t)
+                let ev: Event = new ConnectionClosed{}
+                return ok(ev)
+            }
+            FlushWantRead {
+                let ev: Event = new NeedRead{}
+                return ok(ev)
+            }
+            FlushWantWrite {
+                let ev: Event = new NeedWrite{}
+                return ok(ev)
+            }
+        }
+    }
     let f = try flushOn(c, now, t)
     match f {
         Flushed { }
@@ -999,6 +1057,7 @@ fn closingOn(mut c: &Connection, now: &Now,
             return ok(ev)
         }
         ShutdownSent {
+            c.closeSent = true
             let left = try tPending(t)
             if left > 0 {
                 let ev: Event = new NeedWrite{}
@@ -1200,7 +1259,15 @@ fn shutdownOn(mut c: &Connection, now: &Now,
             return ok(want)
         }
     }
-    return tShutdown(t)
+    let out = try tShutdown(t)
+    match out {
+        ShutdownSent { c.closeSent = true }
+        ShutdownDone { }
+        ShutdownPeerClosed { }
+        ShutdownWantRead { }
+        ShutdownWantWrite { }
+    }
+    return ok(out)
 }
 
 // Begin a normal close for an idle connection. The server uses this for TLS so

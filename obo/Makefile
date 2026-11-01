@@ -11,7 +11,7 @@ CFLAGS = -O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie -fno-stack-
 # Each build's symbol files live in <out>/sym, created by tools/build_tools.py;
 # build/tools/sym for `make tools`. Symbol writes truncate in place, so tests use
 # private output directories instead of sharing one writable sym dir.
-.PHONY: tools tools-check tools-memory eza eza-check eza-memory sys-p0 sys-p1a sys-p2 tls http1 http1b all clean
+.PHONY: tools tools-check tools-memory eza eza-check eza-memory sys-p0 sys-p1a sys-p2 tls http1 http1b http1c all clean
 OUT_TOOLS = build/tools
 OUT_EZA   = build/eza
 

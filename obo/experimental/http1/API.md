@@ -365,7 +365,9 @@ pub fn wantsWrite(mut c: &Connection): Result[bool]
 Rules:
 
 - `make` validates and deep-copies `Limits`, creates the parser and response
-  buffers and arms the accept/handshake deadlines on the first `next`.
+  buffers and arms the accept/handshake deadlines on the first `next`. It owns
+  the transport at entry and closes it exactly once if validation or buffer
+  construction fails, so a server accept error cannot leak a TLS session.
   `makeAt` arms them immediately; the server uses it at accept so a silent
   socket is closed by the accept timeout even if it never becomes readable. A
   plain transport completes `handshakeStep` immediately; the caller must call
@@ -458,8 +460,11 @@ Rules:
   ENFILE) pauses acceptance for 100 ms and increments `acceptPressure`.
 - `beginShutdown` removes the listener watch, stops accepting, closes idle/
   handshaking connections immediately and calls `requestClose` on in-flight
-  connections. `drain` runs turns until active reaches zero or the drain
-  deadline. `shutdown` closes remaining slots, the listener and the reactor.
+  connections. An established idle TLS connection is switched to the
+  close_notify path and its watch is changed to write interest for the drain.
+  Already-closed slots are retired immediately. `drain` runs turns until active
+  reaches zero or the drain deadline. `shutdown` closes remaining slots, the
+  listener, the TLS context and the reactor.
 - `Handler` is pure. It cannot drive the connection because 0.14 function values
   and interface methods cannot be impure. It is therefore the design's
   action-router adaptation, not the `&Connection` handler sketch. The design's
@@ -496,15 +501,18 @@ pub fn http1server::makeTls(l: sysnet::Listener, r: sysreactor::Reactor,
   session; `close` is exactly once.
 - The handshake is driven by `http1conn::next` under `handshakeTimeoutMs`.
   `HandshakeDone` requires a subsequent `acceptAlpn` before any HTTP parse.
-  `AlpnHttp11` is accepted; `AlpnH2`/`AlpnOther` close before parsing; `AlpnNone`
-  is accepted only when `Limits.allowNoAlpn` is true.
+  `AlpnHttp11` is accepted; a *negotiated* `AlpnH2`/`AlpnOther` closes before
+  parsing; `AlpnNone` is accepted only when `Limits.allowNoAlpn` is true. The
+  default HTTPS listener policy is TLS `Require(["http/1.1"])`, so a client that
+  offers only h2 fails the TLS handshake before HTTP; `Prefer` is the explicit
+  application choice that reaches the HTTP-layer rejection path.
 - A normal close (`Connection: close`, HTTP/1.0, max requests, or an idle
-  established TLS connection during server shutdown) drives
-  `shutdownStep`/`flush` until close_notify is queued and flushed, then
-  `close`. The close path has one absolute `responseTimeoutMs` deadline.
-  Fatal TLS errors, parse errors after a partial response and timeouts take the
-  abortive path. A truncated TLS close is not reported as a clean EOF by
-  `systls`.
+  established TLS connection during server shutdown) queues the local
+  close_notify, drains remaining ciphertext, and then closes without waiting
+  indefinitely for the peer close_notify. The close path has one absolute
+  `responseTimeoutMs` deadline. Fatal TLS errors, parse errors after a partial
+  response and timeouts take the abortive path. A truncated TLS close is not
+  reported as a clean EOF by `systls`.
 - `shutdown` closes every slot, then the TLS context, listener and reactor. The
   context close is expected to report `Busy` only if a session leaked; the H1c
   driver asserts zero live contexts/sessions from `systls::counts()`.

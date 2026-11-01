@@ -54,7 +54,13 @@ fn alpnOptions(mode: string): tls::ContextOptions {
         append(p, "http/1.1")
         opts.alpn = new tls::Prefer{protocols: p}
     }
-    if mode == "alpn" || mode == "clientcert" {
+    if mode == "other" {
+        let p = new []string(0)
+        append(p, "spdy/3")
+        append(p, "http/1.1")
+        opts.alpn = new tls::Prefer{protocols: p}
+    }
+    if mode == "alpn" || mode == "clientcert" || mode == "reqclient" {
         let p = new []string(0)
         append(p, "http/1.1")
         opts.alpn = new tls::Require{protocols: p}
@@ -69,6 +75,9 @@ fn alpnOptions(mode: string): tls::ContextOptions {
     }
     if mode == "clientcert" {
         opts.verify = new tls::VerifyOptional{}
+    }
+    if mode == "reqclient" {
+        opts.verify = new tls::VerifyRequired{}
     }
     return opts
 }

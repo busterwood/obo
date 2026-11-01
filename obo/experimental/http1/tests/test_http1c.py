@@ -141,9 +141,9 @@ class Server:
         ctx = self.context(version, alpn, cert, key, verify)
         return ctx.wrap_socket(raw, server_hostname='localhost')
 
-    def quit(self, timeout=15):
+    def quit(self, timeout=15, cert=None, key=None):
         try:
-            ss = self.tls()
+            ss = self.tls(alpn=('http/1.1',), cert=cert, key=key)
             ss.sendall(b'GET /quit HTTP/1.1\r\nHost: localhost\r\n'
                        b'Connection: close\r\n\r\n')
             recv_http(ss)
@@ -237,6 +237,16 @@ def tls_counts(out):
     return None
 
 
+def need_clean(out, label):
+    m = metrics(out)
+    tc = tls_counts(out)
+    need(m is not None and tc is not None, label + ' metrics/counts')
+    need(m[8] == 0, label + ' has live HTTP connections')
+    need(tc[0] == 0 and tc[1] == 0, label + ' leaked TLS context/session')
+    need(tc[6] == 0 and tc[7] == 0, label + ' left TLS ciphertext/plaintext')
+    return m, tc
+
+
 def scenario_basic(exe, fixtures):
     srv = Server(exe, fixtures, 'alpn')
     try:
@@ -277,11 +287,8 @@ def scenario_basic(exe, fixtures):
         ss.close()
     finally:
         out = srv.quit()
-    m = metrics(out)
-    tc = tls_counts(out)
-    need(m is not None and tc is not None, 'metrics/tls counts after basic')
-    need(m[8] == 0 and m[9] == 0, 'all connections drained')
-    need(tc[0] == 0 and tc[1] == 0, 'TLS context/session leak after basic')
+    m, tc = need_clean(out, 'basic')
+    need(m[9] == 0, 'basic rejected a connection')
 
 
 def scenario_alpn(exe, fixtures):
@@ -310,8 +317,31 @@ def scenario_alpn(exe, fixtures):
         ss.close()
     finally:
         out = srv.quit()
-    m = metrics(out)
-    need(m is not None and m[6] >= 1, 'h2 rejection counted as handler error')
+    m, tc = need_clean(out, 'h2 rejection')
+    need(m[6] >= 1, 'h2 rejection counted as handler error')
+
+    # A negotiated non-h2, non-http/1.1 protocol (AlpnOther) is also rejected
+    # before any HTTP parse.
+    srv = Server(exe, fixtures, 'other')
+    try:
+        ss = srv.tls(alpn=('spdy/3',))
+        need(ss.selected_alpn_protocol() == 'spdy/3', 'client expected spdy/3')
+        ss.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n')
+        got = b''
+        try:
+            while True:
+                part = ss.recv(65536)
+                if not part:
+                    break
+                got += part
+        except (ssl.SSLError, OSError):
+            pass
+        need(b'HTTP/1.1' not in got, 'AlpnOther received an HTTP/1.1 response')
+        ss.close()
+    finally:
+        out = srv.quit()
+    m, tc = need_clean(out, 'AlpnOther')
+    need(m[6] >= 1, 'AlpnOther rejection counted')
 
     # No ALPN is accepted only when Limits.allowNoAlpn is true.
     srv = Server(exe, fixtures, 'noalpn')
@@ -324,7 +354,7 @@ def scenario_alpn(exe, fixtures):
         ss.close()
     finally:
         out = srv.quit()
-    need(metrics(out) is not None, 'noalpn metrics')
+    need_clean(out, 'noalpn')
 
     srv = Server(exe, fixtures, 'noalpn', 'deny')
     try:
@@ -343,8 +373,8 @@ def scenario_alpn(exe, fixtures):
         ss.close()
     finally:
         out = srv.quit()
-    m = metrics(out)
-    need(m is not None and m[6] >= 1,
+    m, tc = need_clean(out, 'no-ALPN denial')
+    need(m[6] >= 1,
          'no-ALPN denial counted: metrics=%r counts=%r\n%s'
          % (m, tls_counts(out), out[-1500:]))
 
@@ -369,9 +399,8 @@ def scenario_keepalive(exe, fixtures):
         except subprocess.TimeoutExpired:
             srv.proc.kill()
             out = srv.proc.communicate()[0] or ''
-    m = metrics(out)
-    need(m is not None and m[2] >= 3, 'keep-alive request count')
-    need(m[8] == 0, 'keep-alive drained')
+    m, tc = need_clean(out, 'keep-alive')
+    need(m[2] >= 3, 'keep-alive request count')
 
 
 def scenario_slowloris(exe, fixtures):
@@ -394,8 +423,8 @@ def scenario_slowloris(exe, fixtures):
         ss.close()
     finally:
         out = srv.quit()
-    m = metrics(out)
-    need(m is not None and m[4] >= 1, 'slowloris timeout counted')
+    m, tc = need_clean(out, 'slowloris')
+    need(m[4] >= 1, 'slowloris timeout counted')
 
 
 def scenario_handshake_timeout(exe, fixtures):
@@ -414,6 +443,31 @@ def scenario_handshake_timeout(exe, fixtures):
             pass
         need(len(got) < 64, 'silent handshake produced data: %r' % got[:80])
         raw.close()
+        # A partial ClientHello also fails the handshake deadline.
+        ctx = srv.context()
+        inb = ssl.MemoryBIO()
+        outb = ssl.MemoryBIO()
+        obj = ctx.wrap_bio(inb, outb, server_hostname='localhost')
+        try:
+            obj.do_handshake()
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+            pass
+        hello = outb.read()
+        need(len(hello) > 16, 'client produced no ClientHello')
+        raw = srv.connect_raw()
+        raw.sendall(hello[:max(8, len(hello) // 2)])
+        raw.settimeout(3)
+        got = b''
+        try:
+            while True:
+                part = raw.recv(4096)
+                if not part:
+                    break
+                got += part
+        except (socket.timeout, OSError):
+            pass
+        need(len(got) < 128, 'partial handshake produced data: %r' % got[:80])
+        raw.close()
         # The server is still healthy for a complete handshake.
         ss = srv.tls()
         ss.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\n'
@@ -422,8 +476,8 @@ def scenario_handshake_timeout(exe, fixtures):
         ss.close()
     finally:
         out = srv.quit()
-    m = metrics(out)
-    need(m is not None and m[4] >= 1, 'handshake timeout counted')
+    m, tc = need_clean(out, 'handshake timeout')
+    need(m[4] >= 1, 'handshake timeout counted')
 
 
 def fragmented_handshake(server):
@@ -493,31 +547,36 @@ def scenario_fragmented(exe, fixtures):
         fragmented_handshake(srv)
     finally:
         out = srv.quit()
-    need(metrics(out) is not None, 'fragmented metrics')
+    need_clean(out, 'fragmented handshake')
 
 
 def scenario_close_notify(exe, fixtures):
-    srv = Server(exe, fixtures, 'alpn')
+    # The client sends no close_notify and never calls unwrap: only a
+    # server-initiated close_notify makes recv return clean b''. A TCP-only
+    # close raises SSLEOFError (unexpected EOF), which is the old defect.
+    srv = Server(exe, fixtures, 'alpn', 'fast')
     try:
         ss = srv.tls()
+        ss.settimeout(5)
         ss.sendall(b'GET /close HTTP/1.1\r\nHost: localhost\r\n\r\n')
         resp = recv_http(ss)
         need(b'200 OK' in resp and b'Connection: close' in resp,
              'close-path response')
-        clean = True
+        started = time.time()
+        clean = False
         try:
-            # unwrap reads the peer close_notify and sends ours. A truncated
-            # TLS close raises SSLEOFError instead.
-            ss.unwrap()
+            data = ss.recv(1)
+            clean = data == b''
         except ssl.SSLEOFError:
             clean = False
         except (ssl.SSLError, OSError):
-            pass
+            clean = False
         need(clean, 'server closed TLS without close_notify')
+        need(time.time() - started < 5, 'close_notify arrived after the deadline')
         ss.close()
     finally:
         out = srv.quit()
-    need(metrics(out) is not None, 'close_notify metrics')
+    need_clean(out, 'close_notify')
 
 
 def scenario_shutdown_idle(exe, fixtures):
@@ -531,14 +590,15 @@ def scenario_shutdown_idle(exe, fixtures):
                         b'Connection: close\r\n\r\n')
         need(b'200 OK' in recv_http(quitter), 'quit response')
         quitter.close()
-        clean = True
+        idle.settimeout(5)
+        clean = False
         try:
-            idle.settimeout(5)
-            idle.unwrap()
+            data = idle.recv(1)
+            clean = data == b''
         except ssl.SSLEOFError:
             clean = False
         except (ssl.SSLError, OSError):
-            pass
+            clean = False
         need(clean, 'idle TLS connection did not get close_notify on shutdown')
         idle.close()
     finally:
@@ -547,8 +607,7 @@ def scenario_shutdown_idle(exe, fixtures):
         except subprocess.TimeoutExpired:
             srv.proc.kill()
             out = srv.proc.communicate()[0] or ''
-    m = metrics(out)
-    need(m is not None and m[8] == 0, 'idle connection drained on shutdown')
+    need_clean(out, 'idle shutdown')
 
 
 def scenario_error_page(exe, fixtures):
@@ -559,19 +618,18 @@ def scenario_error_page(exe, fixtures):
         resp = recv_http(ss)
         need(resp.startswith(b'HTTP/1.1 400'), 'TLS malformed request 400')
         need(b'BAD' not in resp, 'TLS error page echoed request data')
-        clean = True
+        ss.settimeout(5)
+        clean = False
         try:
-            ss.unwrap()
-        except ssl.SSLEOFError:
+            clean = ss.recv(1) == b''
+        except (ssl.SSLEOFError, ssl.SSLError, OSError):
             clean = False
-        except (ssl.SSLError, OSError):
-            pass
         need(clean, 'TLS error page closed without close_notify')
         ss.close()
     finally:
         out = srv.quit()
-    m = metrics(out)
-    need(m is not None and m[3] >= 1, 'TLS protocol error counted')
+    m, tc = need_clean(out, 'TLS error page')
+    need(m[3] >= 1, 'TLS protocol error counted')
 
 
 def scenario_client_cert(exe, fixtures):
@@ -592,7 +650,37 @@ def scenario_client_cert(exe, fixtures):
         ss.close()
     finally:
         out = srv.quit()
-    need(metrics(out) is not None, 'client-cert metrics')
+    need_clean(out, 'client certificate')
+
+
+def scenario_required_client_cert(exe, fixtures):
+    cert = os.path.join(fixtures, 'client.pem')
+    key = os.path.join(fixtures, 'client.key')
+    srv = Server(exe, fixtures, 'reqclient')
+    try:
+        accepted = False
+        try:
+            ss = srv.tls()
+            ss.settimeout(5)
+            ss.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\n'
+                       b'Connection: close\r\n\r\n')
+            # TLS 1.3 clients can finish their side before the server's
+            # certificate-required alert arrives; require no HTTP response.
+            data = ss.recv(1024)
+            accepted = b'HTTP/1.1' in data
+            ss.close()
+        except (ssl.SSLError, OSError):
+            accepted = False
+        need(not accepted, 'VerifyRequired accepted a client with no certificate')
+        # The server survives the failed handshake and accepts a trusted cert.
+        ss = srv.tls(cert=cert, key=key)
+        ss.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\n'
+                   b'Connection: close\r\n\r\n')
+        need(recv_http(ss).endswith(b'hello\n'), 'required client cert accepted')
+        ss.close()
+    finally:
+        out = srv.quit(cert=cert, key=key)
+    need_clean(out, 'required client certificate')
 
 
 def scenario_plaintext(exe, fixtures):
@@ -621,7 +709,33 @@ def scenario_plaintext(exe, fixtures):
         ss.close()
     finally:
         out = srv.quit()
-    need(metrics(out) is not None, 'plaintext metrics')
+    need_clean(out, 'plaintext rejection')
+
+
+def scenario_backpressure(exe, fixtures):
+    curl = shutil.which('curl')
+    if not curl:
+        return
+    srv = Server(exe, fixtures, 'alpn')
+    body_path = os.path.join(TMP, 'backpressure.bin')
+    body = bytes((i * 13) & 0xff for i in range(4_000_000))
+    with open(body_path, 'wb') as f:
+        f.write(body)
+    try:
+        base = 'https://127.0.0.1:%d' % srv.port
+        p = subprocess.run(
+            [curl, '-skS', '--http1.1', '--max-time', '60',
+             '--limit-rate', '512k', '--data-binary', '@' + body_path,
+             base + '/echo'],
+            capture_output=True, timeout=90)
+        need(p.returncode == 0,
+             'slow-reader curl failed: %r' % (p.stderr[-300:],))
+        need(p.stdout == body,
+             'slow-reader echo mismatch: %d/%d bytes' %
+             (len(p.stdout), len(body)))
+    finally:
+        out = srv.quit()
+    need_clean(out, 'slow-reader backpressure')
 
 
 def scenario_curl(exe, fixtures):
@@ -639,7 +753,7 @@ def scenario_curl(exe, fixtures):
              'curl -k POST echo')
     finally:
         out = srv.quit()
-    need(metrics(out) is not None, 'curl metrics')
+    need_clean(out, 'curl')
 
 
 def main():
@@ -671,10 +785,14 @@ def main():
     print('ok   idle TLS connection close_notify on server shutdown')
     scenario_client_cert(exe, fixtures)
     print('ok   optional client certificate')
+    scenario_required_client_cert(exe, fixtures)
+    print('ok   required client certificate failure and recovery')
     scenario_plaintext(exe, fixtures)
     print('ok   no plaintext handling on the TLS listener')
     scenario_curl(exe, fixtures)
     print('ok   curl -k HTTPS differential')
+    scenario_backpressure(exe, fixtures)
+    print('ok   slow-reader TLS backpressure and partial writes')
     print('all H1c tests passed')
 
 

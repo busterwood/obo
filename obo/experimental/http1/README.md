@@ -147,13 +147,16 @@ point revalidates caller-visible fields.
   `TlsContext`. Each accepted TCP stream becomes a `TlsSession`; the existing
   per-connection handshake state and absolute handshake deadline drive the TLS
   handshake. After `HandshakeDone`, `http1conn::acceptAlpn` accepts only
-  `http/1.1`; `h2`/other always close before parsing, and no ALPN is accepted
-  only when `Limits.allowNoAlpn` is true. The server closes the context after
-  the last session during `shutdown`.
+  `http/1.1`; a *negotiated* `h2` or other protocol closes before parsing, and
+  no ALPN is accepted only when `Limits.allowNoAlpn` is true. The default HTTPS
+  listener policy is TLS `Require(["http/1.1"])`; `Prefer` is only for an
+  application that wants the HTTP-layer h2/other dispatch. The server closes the
+  context after the last session during `shutdown`.
 - Normal close after a response (or an idle TLS connection during graceful
-  server shutdown) drives `shutdownStep` so close_notify is queued and flushed
-  before `close`; fatal errors and expiry take the abortive path. The
-  per-connection close deadline is `responseTimeoutMs`.
+  server shutdown) queues the local close_notify, drains remaining ciphertext,
+  and then closes without waiting indefinitely for the peer close_notify; fatal
+  errors and expiry take the abortive path. The per-connection close deadline is
+  `responseTimeoutMs`.
 - TLS session/context accounting stays in `systls`; HTTP admission continues to
   use `maxConnections` and `maxTotalConnectionBytes` for the fixed HTTP
   reservation. OpenSSL/BIO memory is outside that budget and is reported by
@@ -177,13 +180,16 @@ injection, backpressure and dates. H1b covers the connection state machine and
 deadlines over a memory transport, then loopback TCP IPv4/IPv6 and Unix sockets,
 curl and raw clients, keep-alive/pipelining, 100-continue,
 slowloris/accept/idle timeouts, request limits, 256 idle connections and
-graceful shutdown. H1c covers TLS 1.2/1.3, ALPN `http/1.1`, h2/no-ALPN policy,
-silent handshake timeout, byte-at-a-time ClientHello fragmentation,
-keep-alive/pipelining over TLS, slowloris, close_notify, large/partial writes,
-optional client certificates, plaintext-on-TLS-port rejection, graceful
-shutdown and `curl -k`. Every driver runs with `OBO_CHECK=1`; cinterop builds
-also verify their manifests. OpenSSL headers are located or fetched privately
-by the TLS suite, exactly as in P2T-b.
+graceful shutdown. H1c covers TLS 1.2/1.3, ALPN `http/1.1`, h2/other/no-ALPN
+policy, silent and partial handshake timeout, byte-at-a-time ClientHello
+fragmentation, keep-alive/pipelining over TLS, slowloris, server-initiated
+close_notify (client does not send one), large/slow-reader backpressure,
+optional and required client certificates, plaintext-on-TLS-port rejection,
+graceful shutdown and `curl -k`. Every driver runs with `OBO_CHECK=1`; cinterop builds
+also verify their manifests. Because `http1io` links the TLS backend, even the
+H1b memory/plain drivers use the combined systems+TLS cbind; they still open no
+TLS listener and need no certificate. OpenSSL headers are located or fetched
+privately by the TLS suite, exactly as in P2T-b.
 
 ## Explicit non-goals
 

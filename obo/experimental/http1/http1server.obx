@@ -19,8 +19,9 @@
 // H1c adds makeTls(): the server owns an optional systls::TlsContext until
 // shutdown. It accepts TCP connections exactly as the plain loop does, wraps
 // each accepted stream in a TLS session and lets the existing per-connection
-// handshake state machine drive handshakeStep/ALPN. The HTTP modules never
-// import systls directly; http1io owns the concrete dispatch.
+// handshake state machine drive handshakeStep/ALPN. The request/parser/framing
+// modules never call TLS byte I/O directly; http1io owns the concrete
+// dispatch, and http1server imports systls only for the owned context.
 module http1server
 
 import "http1core.obx" as core
@@ -534,9 +535,27 @@ fn closeSlotWith(mut s: &Server, index: int, mut cn: &conn::Connection,
                     ShutdownDone { break }
                     ShutdownPeerClosed { break }
                     ShutdownSent {
-                        // Local close_notify is queued; flush one more bounded
-                        // step, then stop waiting for the peer.
-                        let f = conn::flush(cn, now)
+                        // Local close_notify is queued. Drain ciphertext until
+                        // it is fully flushed, the socket asks for read, or the
+                        // connection shutdown deadline has already passed; do
+                        // not call shutdownStep again and wait for the peer.
+                        var flushes = 0
+                        while flushes < 32 {
+                            flushes += 1
+                            let dl = conn::deadline(cn)
+                            if dl.finite && now.mono.nanos >= dl.nanos { break }
+                            let f = conn::flush(cn, now)
+                            match f {
+                                ok(fo) {
+                                    match fo {
+                                        Flushed { break }
+                                        FlushWantRead { break }
+                                        FlushWantWrite { }
+                                    }
+                                }
+                                err(m, c) { break }
+                            }
+                        }
                         break
                     }
                     ShutdownWantRead { break }
@@ -1108,6 +1127,11 @@ fn driveSlot(mut s: &Server, index: int, handler: Handler,
     let held = take(slot.conn)
     if held == nil { return false }
     let cn: conn::Connection = held
+    if conn::isClosed(&cn) {
+        // A closed session must not keep a slot live and delay drain.
+        closeSlotWith(s, index, &cn, now)
+        return true
+    }
     let driven = driveConn(s, index, cn, handler, now)
     let heldBack = take(driven.conn)
     if heldBack == nil {
@@ -1279,7 +1303,8 @@ fn removeListenerWatch(mut s: &Server) {
     }
 }
 
-fn stopConnections(mut s: &Server, now: &conn::Now) {
+fn stopConnections(mut s: &Server, now: &conn::Now,
+                   r: &reactor::Reactor) {
     for i in 0..len(s.slots) {
         let slot = s.slots[i]
         if !slot.live { continue }
@@ -1289,6 +1314,7 @@ fn stopConnections(mut s: &Server, now: &conn::Now) {
         let p = conn::phase(&cn)
         var idle = false
         var handshaking = false
+        var closedPhase = false
         match p {
             Handshaking { idle = true; handshaking = true }
             Idle { idle = true }
@@ -1297,22 +1323,38 @@ fn stopConnections(mut s: &Server, now: &conn::Now) {
             Responding { }
             Draining { }
             Closing { }
-            Closed { idle = true }
+            Closed { idle = true; closedPhase = true }
         }
-        if idle {
+        if closedPhase {
+            // Retire a closed session immediately so it cannot delay drain.
+            closeSlotWith(s, i, &cn, now)
+            drop(cn)
+        } else if idle {
             // An established TLS idle connection gets the close_notify path;
             // a handshake that has not completed has no clean TLS close.
+            var keep = false
             if !handshaking && conn::isSecure(&cn) {
                 let began = conn::beginShutdown(&cn, now)
                 match began {
                     ok(v) {
-                        // Queue close_notify now instead of waiting for a
-                        // readable event that an idle peer may never send.
-                        let driven = conn::next(&cn, now)
-                        match driven { ok(e) { } err(m2, c2) { } }
+                        if v {
+                            // Queue close_notify now instead of waiting for a
+                            // readable event that an idle peer may never send.
+                            let driven = conn::next(&cn, now)
+                            match driven { ok(e) { } err(m2, c2) { } }
+                            // The idle watch was read-only; closing now needs
+                            // write interest to flush the close_notify.
+                            let refreshed = refreshSlotInterest(s, i, &cn, r)
+                            match refreshed {
+                                ok(alive) { keep = alive }
+                                err(m3, c3) { keep = false }
+                            }
+                        }
                     }
                     err(m, c) { }
                 }
+            }
+            if keep {
                 let again = s.slots[i]
                 again.conn = cn
             } else {
@@ -1336,7 +1378,14 @@ pub fn beginShutdown(mut s: &Server, now: &conn::Now): Result[bool] {
         removeListenerWatch(s)
         s.listenerClosed = true
     }
-    stopConnections(s, now)
+    let heldR = take(s.reactor)
+    if heldR != nil {
+        let r: reactor::Reactor = heldR
+        stopConnections(s, now, &r)
+        s.reactor = r
+    } else {
+        drop(heldR)
+    }
     return ok(true)
 }
 
