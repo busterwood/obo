@@ -1136,15 +1136,10 @@ pub fn shutdownStep(s: &TlsSession): Result[ShutdownOutcome] {
         let flushed = try flushOne(s, tok)
         if flushed == STEP_WANT_WRITE { return ok(shutdownWantWrite()) }
     }
-    let cipher = __cinterop("tls_session_ciphertext_pending", tok)
-    if cipher < 0 {
-        let code = 0 - cipher
-        return err(sessionError(tok, code), code)
-    }
-    if cipher == 0 {
-        let read = try readTransportOne(s, tok)
-        if read == 3 { return ok(shutdownWantRead()) }
-    }
+    // Do not pre-read the transport or wait for the peer before sending our
+    // close_notify. SSL_shutdown queues the local close_notify on an idle peer;
+    // the caller drives the output and then closes. The TLS design requires one
+    // SSL_shutdown call per step and no read-ahead here.
     let raw = __cinterop("tls_session_shutdown", tok)
     if raw < 0 {
         let code = 0 - raw

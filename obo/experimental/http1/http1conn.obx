@@ -4,13 +4,12 @@
 // http1core/http1parse/http1write/http1date (H1a0); this module owns phases,
 // request/response coordination, framing policy, deadlines, keep-alive,
 // sequential pipelining, bounded buffering and graceful close. It performs
-// bounded I/O through http1transport and never calls application code.
+// bounded I/O through http1io and never calls application code.
 //
 // API mapping to obo/design/http1-server-design.md section 4.4:
-//   - make(stream, limits) binds the byte transport to the connection. This is
-//     the H1b shape requested by the implementation task; the design's separate
-//     `&Transport` parameter is not representable without an impure interface
-//     tier (see http1transport.obx).
+//   - make(stream, limits) binds the byte transport to the connection. The
+//     transport is the H1c concrete closed dispatch in http1io (plain, TLS or
+//     memory); this module never imports systls itself.
 //   - next/readBody/flush take a `Now` because deadlines are explicit monotonic
 //     values; no hidden clock read or retry occurs.
 //   - The Connection record is opaque. Every entry point revalidates it.
@@ -19,7 +18,7 @@ module http1conn
 import "http1core.obx" as core
 import "http1parse.obx" as parse
 import "http1write.obx" as write
-import "http1transport.obx" as transport
+import "http1io.obx" as transport
 import "sysclock.obx" as clock
 import "syserrors.obx" as errors
 import "sysreactor.obx" as reactor
@@ -81,6 +80,7 @@ const T_IDLE = 5
 const T_RESPONSE = 6
 const T_RESPONSE_TOTAL = 7
 const T_REQUEST_TOTAL = 8
+const T_SHUTDOWN = 9
 
 pub type Connection = ref record {
     limits: core::Limits
@@ -100,6 +100,7 @@ pub type Connection = ref record {
     responseIdleDl: clock::Deadline
     responseTotalDl: clock::Deadline
     requestTotalDl: clock::Deadline
+    shutdownDl: clock::Deadline
 
     requestBegan: bool
     headReady: bool
@@ -120,6 +121,7 @@ pub type Connection = ref record {
     closeAfter: bool
     failed: bool
     wroteAnything: bool
+    closeSent: bool
     out: []byte
     outPos: int
 
@@ -369,6 +371,15 @@ fn clearResponseDeadlines(mut c: &Connection) {
     c.requestTotalDl = forever()
 }
 
+// Enter the closing phase with one absolute close_notify/shutdown deadline.
+// The deadline is not re-armed by partial progress.
+fn enterClosing(mut c: &Connection, now: &Now) {
+    c.phase = P_CLOSING
+    if !c.shutdownDl.finite {
+        c.shutdownDl = deadlineAt(now, c.limits.responseTimeoutMs)
+    }
+}
+
 fn silentTimeout(mut c: &Connection): Event {
     c.closeAfter = true
     c.failed = true
@@ -378,6 +389,7 @@ fn silentTimeout(mut c: &Connection): Event {
     c.headerDl = forever()
     c.bodyDl = forever()
     c.idleDl = forever()
+    c.shutdownDl = forever()
     clearResponseDeadlines(c)
     let ev: Event = new TimedOut{}
     return ev
@@ -390,6 +402,7 @@ fn queueProtocolError(mut c: &Connection, status: int, now: &Now) {
         c.out = new []byte(0)
         c.outPos = 0
         c.phase = P_CLOSING
+        c.shutdownDl = forever()
         c.lastStatus = status
         return
     }
@@ -412,6 +425,7 @@ fn queueProtocolError(mut c: &Connection, status: int, now: &Now) {
             c.bodyDl = forever()
             c.idleDl = forever()
             clearResponseDeadlines(c)
+            enterClosing(c, now)
         }
         err(m, code) {
             c.failed = true
@@ -419,6 +433,7 @@ fn queueProtocolError(mut c: &Connection, status: int, now: &Now) {
             c.out = new []byte(0)
             c.outPos = 0
             c.phase = P_CLOSING
+            c.shutdownDl = forever()
             c.lastStatus = status
         }
     }
@@ -454,6 +469,7 @@ fn resetRequestState(mut c: &Connection) {
     c.closeAfter = false
     c.failed = false
     c.wroteAnything = false
+    c.closeSent = false
     c.out = new []byte(0)
     c.outPos = 0
 }
@@ -463,10 +479,44 @@ fn resetRequestState(mut c: &Connection) {
 // ---------------------------------------------------------------------------
 
 pub fn make(stream: transport::Transport, limits: &core::Limits): Result[Connection] {
-    let checked = try core::validateLimits(limits)
-    if !checked { return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT) }
-    let parser = try parse::makeParser(limits)
-    let response = try write::makeResponse(limits, "GET", false, false, 0, 0)
+    let checkedR = core::validateLimits(limits)
+    match checkedR {
+        ok(checked) {
+            if !checked {
+                // make() owns the transport even on failure; close it exactly
+                // once instead of leaking a TLS session or socket.
+                let cl = transport::close(&stream)
+                return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT)
+            }
+        }
+        err(m, code) {
+            let cl = transport::close(&stream)
+            return err(m, code)
+        }
+    }
+    let parserR = parse::makeParser(limits)
+    var parserOpt: ?parse::Parser = nil
+    match parserR {
+        ok(p) { parserOpt = p }
+        err(m, code) {
+            let cl = transport::close(&stream)
+            return err(m, code)
+        }
+    }
+    if parserOpt == nil {
+        let cl = transport::close(&stream)
+        return err("parser construction failed", core::ERR_INTERNAL)
+    }
+    let parser: parse::Parser = parserOpt
+    let responseR = write::makeResponse(limits, "GET", false, false, 0, 0)
+    var response: write::Response = write::emptyResponse()
+    match responseR {
+        ok(r) { response = r }
+        err(m, code) {
+            let cl = transport::close(&stream)
+            return err(m, code)
+        }
+    }
     return ok(new Connection{
         limits: core::copyLimits(limits),
         t: stream,
@@ -484,6 +534,7 @@ pub fn make(stream: transport::Transport, limits: &core::Limits): Result[Connect
         responseIdleDl: forever(),
         responseTotalDl: forever(),
         requestTotalDl: forever(),
+        shutdownDl: forever(),
         requestBegan: false,
         headReady: false,
         bodyComplete: true,
@@ -502,6 +553,7 @@ pub fn make(stream: transport::Transport, limits: &core::Limits): Result[Connect
         closeAfter: false,
         failed: false,
         wroteAnything: false,
+        closeSent: false,
         out: new []byte(0),
         outPos: 0,
         requests: 0,
@@ -550,6 +602,7 @@ pub fn deadline(c: &Connection): clock::Deadline {
     best = earlier(&best, &c.responseIdleDl)
     best = earlier(&best, &c.responseTotalDl)
     best = earlier(&best, &c.requestTotalDl)
+    best = earlier(&best, &c.shutdownDl)
     return best
 }
 
@@ -595,6 +648,7 @@ fn clearAllDeadlines(mut c: &Connection) {
     c.headerDl = forever()
     c.bodyDl = forever()
     c.idleDl = forever()
+    c.shutdownDl = forever()
     clearResponseDeadlines(c)
 }
 
@@ -607,6 +661,7 @@ fn timeoutKind(c: &Connection, now: &Now): int {
     if expired(now, &c.responseIdleDl) { return T_RESPONSE }
     if expired(now, &c.responseTotalDl) { return T_RESPONSE_TOTAL }
     if expired(now, &c.requestTotalDl) { return T_REQUEST_TOTAL }
+    if expired(now, &c.shutdownDl) { return T_SHUTDOWN }
     return T_NONE
 }
 
@@ -735,7 +790,7 @@ fn responseFinished(c: &Connection): bool {
 fn completeResponse(mut c: &Connection, now: &Now): Event {
     clearResponseDeadlines(c)
     if c.closeAfter || !c.responseStarted {
-        c.phase = P_CLOSING
+        enterClosing(c, now)
         let ev: Event = new ResponseComplete{}
         return ev
     }
@@ -944,6 +999,85 @@ fn driveHeadOn(mut c: &Connection, now: &Now,
 fn closeWith(mut c: &Connection,
              mut t: &transport::Transport): Result[bool]
 
+// Normal close path. Plain closes abortively. TLS drives the multi-step
+// shutdownStep path so a close_notify is queued and flushed before the socket
+// is closed; `Sent` means local close_notify is on the wire, so the connection
+// can then close without waiting indefinitely for the peer. Errors and fatal
+// timeouts keep `c.failed` set and take the abortive path.
+fn closingOn(mut c: &Connection, now: &Now,
+             mut t: &transport::Transport): Result[Event] {
+    if c.failed || !transport::isTls(t) {
+        let shutRes = try closeWith(c, t)
+        let ev: Event = new ConnectionClosed{}
+        return ok(ev)
+    }
+    // Once our close_notify has been queued, only drain the remaining ciphertext.
+    // Calling SSL_shutdown again would wait for the peer close_notify and turn a
+    // one-way close into a responseTimeout abort.
+    if c.closeSent {
+        let f = try flushOn(c, now, t)
+        match f {
+            Flushed {
+                let shutRes = try closeWith(c, t)
+                let ev: Event = new ConnectionClosed{}
+                return ok(ev)
+            }
+            FlushWantRead {
+                let ev: Event = new NeedRead{}
+                return ok(ev)
+            }
+            FlushWantWrite {
+                let ev: Event = new NeedWrite{}
+                return ok(ev)
+            }
+        }
+    }
+    let f = try flushOn(c, now, t)
+    match f {
+        Flushed { }
+        FlushWantRead {
+            let ev: Event = new NeedRead{}
+            return ok(ev)
+        }
+        FlushWantWrite {
+            let ev: Event = new NeedWrite{}
+            return ok(ev)
+        }
+    }
+    let shut = try tShutdown(t)
+    match shut {
+        ShutdownDone {
+            let shutRes = try closeWith(c, t)
+            let ev: Event = new ConnectionClosed{}
+            return ok(ev)
+        }
+        ShutdownPeerClosed {
+            let shutRes = try closeWith(c, t)
+            let ev: Event = new ConnectionClosed{}
+            return ok(ev)
+        }
+        ShutdownSent {
+            c.closeSent = true
+            let left = try tPending(t)
+            if left > 0 {
+                let ev: Event = new NeedWrite{}
+                return ok(ev)
+            }
+            let shutRes = try closeWith(c, t)
+            let ev: Event = new ConnectionClosed{}
+            return ok(ev)
+        }
+        ShutdownWantRead {
+            let ev: Event = new NeedRead{}
+            return ok(ev)
+        }
+        ShutdownWantWrite {
+            let ev: Event = new NeedWrite{}
+            return ok(ev)
+        }
+    }
+}
+
 fn nextOn(mut c: &Connection, now: &Now,
           mut t: &transport::Transport): Result[Event] {
     if !c.deadlinesArmed {
@@ -1014,9 +1148,7 @@ fn nextOn(mut c: &Connection, now: &Now,
         }
     }
     if c.phase == P_CLOSING {
-        let shut = try closeWith(c, t)
-        let ev: Event = new ConnectionClosed{}
-        return ok(ev)
+        return closingOn(c, now, t)
     }
     if c.phase == P_IDLE || c.phase == P_READING_HEAD {
         return driveHeadOn(c, now, t)
@@ -1094,6 +1226,7 @@ fn closeWith(mut c: &Connection,
     c.headerDl = forever()
     c.bodyDl = forever()
     c.idleDl = forever()
+    c.shutdownDl = forever()
     clearResponseDeadlines(c)
     return tClose(t)
 }
@@ -1126,7 +1259,37 @@ fn shutdownOn(mut c: &Connection, now: &Now,
             return ok(want)
         }
     }
-    return tShutdown(t)
+    let out = try tShutdown(t)
+    match out {
+        ShutdownSent { c.closeSent = true }
+        ShutdownDone { }
+        ShutdownPeerClosed { }
+        ShutdownWantRead { }
+        ShutdownWantWrite { }
+    }
+    return ok(out)
+}
+
+// Begin a normal close for an idle connection. The server uses this for TLS so
+// close_notify is sent by the next()/closingOn path instead of an abortive
+// close. An in-flight request must finish (or be timed out) first.
+pub fn beginShutdown(mut c: &Connection, now: &Now): Result[bool] {
+    if c.phase == P_CLOSED { return ok(false) }
+    if c.phase == P_CLOSING { return ok(true) }
+    if !c.bodyComplete { return err("shutdown requires a complete request body", invalidState()) }
+    if c.responseStarted && !c.responseFinal {
+        return err("shutdown requires a completed response", invalidState())
+    }
+    c.failed = false
+    enterClosing(c, now)
+    return ok(true)
+}
+
+pub fn isSecure(mut c: &Connection): bool {
+    let t = replace(c.t, transport::empty())
+    let secure = tSecure(t)
+    c.t = t
+    return secure
 }
 
 pub fn shutdownStep(mut c: &Connection, now: &Now): Result[transport::ShutdownOutcome] {

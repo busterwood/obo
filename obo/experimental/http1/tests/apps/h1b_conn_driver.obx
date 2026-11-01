@@ -1,7 +1,7 @@
 // H1b deterministic connection driver. Not public API.
 import "http1core.obx" as core
 import "http1conn.obx" as conn
-import "http1transport.obx" as tr
+import "http1io.obx" as tr
 import "sysclock.obx" as clock
 
 fn mk(s: string): []byte {

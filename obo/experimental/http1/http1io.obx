@@ -1,28 +1,33 @@
-// Experimental HTTP/1.1 byte transport seam (H1b).
+// Experimental HTTP/1.1 byte transport seam (H1c).
 //
-// Status: experimental and unstable. This module exposes the operation set from
-// obo/design/http1-server-design.md section 4.3:
+// Status: experimental and unstable. This module is the concrete H1c seam from
+// obo/design/http1-server-design.md section 4.3 and section 11.5. It imports
+// both `sysstream` and `systls`; `systls` never imports HTTP.
 //
-//     handshakeStep readSome writeSome flushPending shutdownStep
-//     pending want alpn isSecure maxTransfer watch close
+// The seam is a closed concrete dispatch record with three backends:
 //
-// Two constructors exist: `plain` over an owned sysstream::Stream and `memory`
-// for deterministic, socket-free tests. There is no TLS here; H1c adds it.
+//     Plain  -- an owned sysstream::Stream (loopback TCP/Unix tests)
+//     Tls    -- an owned systls::TlsSession (HTTPS)
+//     Memory -- the deterministic socket-free test transport
 //
-// Language note: this revision cannot use an obo `interface` for the seam.
-// `obo` 0.14 has no impure interface-member tier, so an interface method may not
-// call a native/impure function (`sysstream::readSome` and friends). The seam is
-// therefore an opaque record with module functions. The observable contract is
-// the same: owned read bytes, accepted-prefix writes, Want* control flow,
-// multi-step shutdown, ALPN/secure metadata, maxTransfer and no exposed fd or
-// native token. H1c must either add a TLS-backed variant inside this module or
-// wait for an impure interface tier; it does not change the connection API.
-module http1transport
+// obo 0.14 has no impure interface-member tier, so an interface method could not
+// call `stream::readSome` or `tls::readSome`. This record is therefore the
+// 0.14-compatible concrete dispatch: every operation is an ordinary module
+// function over an owned value, with no function value, callback, fd or native
+// token exposed. The observable contract is unchanged: owned read bytes,
+// accepted-prefix writes, Want* control flow, multi-step shutdown, ALPN/secure
+// metadata, maxTransfer and no hidden retry.
+//
+// A transport owns exactly one backend. `Plain` owns a Stream, `Tls` owns a
+// TlsSession, and `Memory` owns no native object. `close` is abortive and
+// exactly once; clean TLS close is the multi-step `shutdownStep` path.
+module http1io
 
 import "syserrors.obx" as errors
 import "sysplatform.obx" as platform
 import "sysreactor.obx" as reactor
 import "sysstream.obx" as stream
+import "systls.obx" as tls
 
 pub type Step = closed {
     StepDone {}
@@ -68,6 +73,7 @@ pub type Alpn = closed {
 pub const MAX_TRANSFER = 65536
 pub const KIND_PLAIN = 1
 pub const KIND_MEMORY = 2
+pub const KIND_TLS = 3
 
 const W_NONE = 0
 const W_READ = 1
@@ -80,10 +86,11 @@ const A_H2 = 2
 const A_OTHER = 3
 
 // The representation is private. Applications construct a transport only with
-// plain() or memory(); every entry point revalidates the record.
+// plain(), fromTls() or memory(); every entry point revalidates the record.
 pub type Transport = ref record {
     kind: int
     s: stream::Stream
+    session: ?tls::TlsSession
     shut: bool
     inBytes: []byte
     inPos: int
@@ -120,6 +127,7 @@ pub fn empty(): Transport {
     return new Transport{
         kind: KIND_MEMORY,
         s: placeholderStream(),
+        session: nil,
         shut: true,
         inBytes: new []byte(0),
         inPos: 0,
@@ -146,6 +154,7 @@ fn memoryRecord(input: &[]byte): Transport {
     return new Transport{
         kind: KIND_MEMORY,
         s: placeholderStream(),
+        session: nil,
         shut: false,
         inBytes: copy,
         inPos: 0,
@@ -170,6 +179,7 @@ pub fn plain(s: stream::Stream): Transport {
     return new Transport{
         kind: KIND_PLAIN,
         s: s,
+        session: nil,
         shut: false,
         inBytes: new []byte(0),
         inPos: 0,
@@ -190,12 +200,41 @@ pub fn plain(s: stream::Stream): Transport {
     }
 }
 
+// Wrap an already-created systls::TlsSession. The transport takes ownership of
+// the session and closes it exactly once. The caller must not keep or close a
+// second alias for the same session.
+pub fn fromTls(session: tls::TlsSession): Transport {
+    return new Transport{
+        kind: KIND_TLS,
+        s: placeholderStream(),
+        session: session,
+        shut: false,
+        inBytes: new []byte(0),
+        inPos: 0,
+        outBytes: new []byte(0),
+        readLimit: 0,
+        writeLimit: 0,
+        readable: true,
+        eof: false,
+        pendingBytes: 0,
+        pendingLimit: 0,
+        wantMode: W_NONE,
+        secure: true,
+        alpnKind: A_NONE,
+        alpnName: "",
+        maxXfer: MAX_TRANSFER,
+        readCount: 0,
+        writeCount: 0
+    }
+}
+
 pub fn memory(input: &[]byte): Transport {
     return memoryRecord(input)
 }
 
 pub fn isPlain(t: &Transport): bool { return t.kind == KIND_PLAIN }
 pub fn isMemory(t: &Transport): bool { return t.kind == KIND_MEMORY }
+pub fn isTls(t: &Transport): bool { return t.kind == KIND_TLS }
 pub fn memoryClosed(t: &Transport): bool { return t.shut }
 pub fn memoryOutput(t: &Transport): Result[[]byte] {
     if t.kind != KIND_MEMORY {
@@ -339,12 +378,180 @@ fn plainShutdown(mut t: &Transport): Result[bool] {
     return outcome
 }
 
+fn takeTls(mut t: &Transport): ?tls::TlsSession {
+    return take(t.session)
+}
+
+fn restoreTls(mut t: &Transport, held: ?tls::TlsSession) {
+    let old = replace(t.session, held)
+    drop(old)
+}
+
+fn tlsRead(mut t: &Transport, max: int): Result[ReadOutcome] {
+    let held = takeTls(t)
+    if held == nil {
+        return err("TLS transport has no session", invalidArgument())
+    }
+    let s: tls::TlsSession = held
+    let outcome = tls::readSome(&s, max)
+    restoreTls(t, s)
+    match outcome {
+        ok(v) {
+            match v {
+                ReadData {
+                    // The systls outcome owns its array; copy the bytes into
+                    // the HTTP outcome so the TLS outcome can be dropped.
+                    let copy = new []byte(len(v.bytes))
+                    for i in 0..len(v.bytes) { copy[i] = v.bytes[i] }
+                    let data: ReadOutcome = new ReadData{bytes: copy}
+                    return ok(data)
+                }
+                ReadEof {
+                    let eof: ReadOutcome = new ReadEof{}
+                    return ok(eof)
+                }
+                ReadWantRead {
+                    let want: ReadOutcome = new ReadWantRead{}
+                    return ok(want)
+                }
+                ReadWantWrite {
+                    let want: ReadOutcome = new ReadWantWrite{}
+                    return ok(want)
+                }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+fn tlsWrite(mut t: &Transport, bytes: &[]byte, offset: int,
+            count: int): Result[WriteOutcome] {
+    let held = takeTls(t)
+    if held == nil {
+        return err("TLS transport has no session", invalidArgument())
+    }
+    let s: tls::TlsSession = held
+    let outcome = tls::writeSome(&s, bytes, offset, count)
+    restoreTls(t, s)
+    match outcome {
+        ok(v) {
+            match v {
+                WriteWrote {
+                    let wrote: WriteOutcome = new WriteWrote{count: v.count}
+                    return ok(wrote)
+                }
+                WriteWantRead {
+                    let want: WriteOutcome = new WriteWantRead{}
+                    return ok(want)
+                }
+                WriteWantWrite {
+                    let want: WriteOutcome = new WriteWantWrite{}
+                    return ok(want)
+                }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+fn tlsFlush(mut t: &Transport): Result[WriteOutcome] {
+    let held = takeTls(t)
+    if held == nil {
+        return err("TLS transport has no session", invalidArgument())
+    }
+    let s: tls::TlsSession = held
+    let outcome = tls::flush(&s)
+    restoreTls(t, s)
+    match outcome {
+        ok(v) {
+            match v {
+                FlushDone {
+                    // `flush` reports progress, not an accepted plaintext
+                    // count. The connection checks `pending` afterwards.
+                    let done: WriteOutcome = new WriteWrote{count: 0}
+                    return ok(done)
+                }
+                FlushWantWrite {
+                    let want: WriteOutcome = new WriteWantWrite{}
+                    return ok(want)
+                }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+fn tlsShutdown(mut t: &Transport): Result[ShutdownOutcome] {
+    let held = takeTls(t)
+    if held == nil {
+        return err("TLS transport has no session", invalidArgument())
+    }
+    let s: tls::TlsSession = held
+    let outcome = tls::shutdownStep(&s)
+    restoreTls(t, s)
+    match outcome {
+        ok(v) {
+            match v {
+                ShutdownDone {
+                    let out: ShutdownOutcome = new ShutdownDone{}
+                    return ok(out)
+                }
+                ShutdownSent {
+                    let out: ShutdownOutcome = new ShutdownSent{}
+                    return ok(out)
+                }
+                ShutdownPeerClosed {
+                    let out: ShutdownOutcome = new ShutdownPeerClosed{}
+                    return ok(out)
+                }
+                ShutdownWantRead {
+                    let out: ShutdownOutcome = new ShutdownWantRead{}
+                    return ok(out)
+                }
+                ShutdownWantWrite {
+                    let out: ShutdownOutcome = new ShutdownWantWrite{}
+                    return ok(out)
+                }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
 pub fn handshakeStep(mut t: &Transport): Result[Step] {
     if t.kind == KIND_PLAIN || t.kind == KIND_MEMORY {
         let done: Step = new StepDone{}
         return ok(done)
     }
-    return err("transport kind is invalid", invalidArgument())
+    if t.kind != KIND_TLS {
+        return err("transport kind is invalid", invalidArgument())
+    }
+    let held = takeTls(t)
+    if held == nil {
+        return err("TLS transport has no session", invalidArgument())
+    }
+    let s: tls::TlsSession = held
+    let outcome = tls::handshakeStep(&s)
+    restoreTls(t, s)
+    match outcome {
+        ok(v) {
+            match v {
+                StepDone {
+                    let out: Step = new StepDone{}
+                    return ok(out)
+                }
+                StepWantRead {
+                    let out: Step = new StepWantRead{}
+                    return ok(out)
+                }
+                StepWantWrite {
+                    let out: Step = new StepWantWrite{}
+                    return ok(out)
+                }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
 }
 
 pub fn readSome(mut t: &Transport, max: int): Result[ReadOutcome] {
@@ -353,6 +560,9 @@ pub fn readSome(mut t: &Transport, max: int): Result[ReadOutcome] {
                    invalidArgument())
     }
     if t.shut { return err("transport is closed", invalidArgument()) }
+    if t.kind == KIND_TLS {
+        return tlsRead(t, max)
+    }
     if t.kind == KIND_MEMORY {
         if !t.readable {
             let want: ReadOutcome = new ReadWantRead{}
@@ -413,6 +623,9 @@ pub fn writeSome(mut t: &Transport, bytes: &[]byte, offset: int,
         let zero: WriteOutcome = new WriteWrote{count: 0}
         return ok(zero)
     }
+    if t.kind == KIND_TLS {
+        return tlsWrite(t, bytes, offset, count)
+    }
     if t.kind == KIND_MEMORY {
         if t.writeLimit == 0 {
             let want: WriteOutcome = new WriteWantWrite{}
@@ -445,6 +658,9 @@ pub fn writeSome(mut t: &Transport, bytes: &[]byte, offset: int,
 }
 
 pub fn flushPending(mut t: &Transport): Result[WriteOutcome] {
+    if t.kind == KIND_TLS {
+        return tlsFlush(t)
+    }
     if t.kind == KIND_MEMORY {
         if t.pendingBytes <= 0 {
             let zero: WriteOutcome = new WriteWrote{count: 0}
@@ -467,6 +683,9 @@ pub fn shutdownStep(mut t: &Transport): Result[ShutdownOutcome] {
     if t.shut {
         let peer: ShutdownOutcome = new ShutdownPeerClosed{}
         return ok(peer)
+    }
+    if t.kind == KIND_TLS {
+        return tlsShutdown(t)
     }
     if t.kind == KIND_MEMORY {
         let done: ShutdownOutcome = new ShutdownDone{}
@@ -495,7 +714,20 @@ pub fn shutdownStep(mut t: &Transport): Result[ShutdownOutcome] {
     }
 }
 
-pub fn pending(t: &Transport): Result[int] {
+pub fn pending(mut t: &Transport): Result[int] {
+    if t.kind == KIND_TLS {
+        let held = takeTls(t)
+        if held == nil {
+            return err("TLS transport has no session", invalidArgument())
+        }
+        let s: tls::TlsSession = held
+        let p = tls::pending(&s)
+        restoreTls(t, s)
+        match p {
+            ok(v) { return ok(v.ciphertext) }
+            err(m, c) { return err(m, c) }
+        }
+    }
     if t.kind == KIND_MEMORY {
         return ok(t.pendingBytes)
     }
@@ -505,7 +737,39 @@ pub fn pending(t: &Transport): Result[int] {
     return err("transport kind is invalid", invalidArgument())
 }
 
-pub fn want(t: &Transport): Result[Want] {
+pub fn want(mut t: &Transport): Result[Want] {
+    if t.kind == KIND_TLS {
+        let held = takeTls(t)
+        if held == nil {
+            return err("TLS transport has no session", invalidArgument())
+        }
+        let s: tls::TlsSession = held
+        let outcome = tls::want(&s)
+        restoreTls(t, s)
+        match outcome {
+            ok(v) {
+                match v {
+                    WantNone {
+                        let out: Want = new WantNone{}
+                        return ok(out)
+                    }
+                    WantRead {
+                        let out: Want = new WantRead{}
+                        return ok(out)
+                    }
+                    WantWrite {
+                        let out: Want = new WantWrite{}
+                        return ok(out)
+                    }
+                    WantReadWrite {
+                        let out: Want = new WantReadWrite{}
+                        return ok(out)
+                    }
+                }
+            }
+            err(m, c) { return err(m, c) }
+        }
+    }
     if t.kind == KIND_MEMORY {
         if t.wantMode == W_READ {
             let w: Want = new WantRead{}
@@ -529,7 +793,35 @@ pub fn want(t: &Transport): Result[Want] {
     return err("transport kind is invalid", invalidArgument())
 }
 
-pub fn alpn(t: &Transport): Result[Alpn] {
+pub fn alpn(mut t: &Transport): Result[Alpn] {
+    if t.kind == KIND_TLS {
+        let held = takeTls(t)
+        if held == nil {
+            return err("TLS transport has no session", invalidArgument())
+        }
+        let s: tls::TlsSession = held
+        let outcome = tls::alpn(&s)
+        restoreTls(t, s)
+        match outcome {
+            ok(name) {
+                if name == "http/1.1" {
+                    let a: Alpn = new AlpnHttp11{}
+                    return ok(a)
+                }
+                if name == "h2" {
+                    let a: Alpn = new AlpnH2{}
+                    return ok(a)
+                }
+                if len(name) == 0 {
+                    let a: Alpn = new AlpnNone{}
+                    return ok(a)
+                }
+                let a: Alpn = new AlpnOther{name: name}
+                return ok(a)
+            }
+            err(m, c) { return err(m, c) }
+        }
+    }
     if t.kind == KIND_MEMORY {
         if t.alpnKind == A_HTTP11 {
             let a: Alpn = new AlpnHttp11{}
@@ -553,19 +845,38 @@ pub fn alpn(t: &Transport): Result[Alpn] {
     return err("transport kind is invalid", invalidArgument())
 }
 
-pub fn isSecure(t: &Transport): bool {
+pub fn isSecure(mut t: &Transport): bool {
+    if t.kind == KIND_TLS {
+        let held = takeTls(t)
+        if held == nil { return true }
+        let s: tls::TlsSession = held
+        let secure = tls::isSecure(&s)
+        restoreTls(t, s)
+        return secure
+    }
     if t.kind == KIND_MEMORY { return t.secure }
     return false
 }
 
 pub fn maxTransfer(t: &Transport): int {
+    if t.kind == KIND_TLS { return MAX_TRANSFER }
     return t.maxXfer
 }
 
-pub fn watch(t: &Transport, r: &reactor::Reactor, readable: bool,
+pub fn watch(mut t: &Transport, r: &reactor::Reactor, readable: bool,
              writable: bool, tag: int): Result[reactor::Watch] {
     if !readable && !writable {
         return err("a watch needs read or write interest", invalidArgument())
+    }
+    if t.kind == KIND_TLS {
+        let held = takeTls(t)
+        if held == nil {
+            return err("TLS transport has no session", invalidArgument())
+        }
+        let s: tls::TlsSession = held
+        let made = tls::watch(&s, r, readable, writable, tag)
+        restoreTls(t, s)
+        return made
     }
     if t.kind != KIND_PLAIN {
         return err("this transport has no reactor watch", unsupported())
@@ -580,6 +891,14 @@ pub fn watch(t: &Transport, r: &reactor::Reactor, readable: bool,
 pub fn close(mut t: &Transport): Result[bool] {
     if t.shut { return ok(false) }
     t.shut = true
+    if t.kind == KIND_TLS {
+        let held = takeTls(t)
+        if held == nil { return ok(true) }
+        let s: tls::TlsSession = held
+        let shutRes = tls::close(&s)
+        drop(s)
+        return shutRes
+    }
     if t.kind != KIND_PLAIN { return ok(true) }
     let tmp = replace(t.s, placeholderStream())
     return stream::close(&tmp)

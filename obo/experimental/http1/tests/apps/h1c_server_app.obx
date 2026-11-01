@@ -1,0 +1,239 @@
+// H1c HTTPS loopback server driver. Not public API.
+//
+// argv: PORT MODE CERT_PEM KEY_PEM [CA_PEM] [PROFILE]
+// MODE:   alpn | h2 | noalpn | clientcert
+// PROFILE: default | fast | many | small
+import "http1core.obx" as core
+import "http1conn.obx" as conn
+import "http1server.obx" as server
+import "sysaddress.obx" as address
+import "sysnet.obx" as net
+import "sysplatform.obx" as platform
+import "sysreactor.obx" as reactor
+import "systls.obx" as tls
+
+fn mk(s: string): []byte {
+    let b = new []byte(len(s))
+    for i in 0..len(s) { b[i] = s[i] }
+    return b
+}
+
+fn emit(s: string) {
+    let b = mk(s)
+    let w = writeFd(stdout(), b)
+}
+
+fn toInt(s: string): int {
+    var v = 0
+    for i in 0..len(s) {
+        if s[i] < '0' || s[i] > '9' { return 0 }
+        v = v * 10 + int(s[i]) - int('0')
+    }
+    return v
+}
+
+fn route(info: core::RequestInfo, now: &conn::Now): server::Action {
+    if info.path == "/echo" { return new server::Echo{} }
+    if info.path == "/post" { return new server::Echo{} }
+    if info.path == "/chunked" { return new server::Chunked{} }
+    if info.path == "/head" { return new server::Head{} }
+    if info.path == "/204" { return new server::NoContent{} }
+    if info.path == "/304" { return new server::NotModified{} }
+    if info.path == "/big" { return new server::Big{} }
+    if info.path == "/slow" { return new server::Slow{} }
+    if info.path == "/quit" { return new server::Stop{} }
+    if info.path == "/close" { return new server::Close{} }
+    return new server::Hello{}
+}
+
+fn alpnOptions(mode: string): tls::ContextOptions {
+    let opts = tls::serverOptions()
+    if mode == "h2" {
+        let p = new []string(0)
+        append(p, "h2")
+        append(p, "http/1.1")
+        opts.alpn = new tls::Prefer{protocols: p}
+    }
+    if mode == "other" {
+        let p = new []string(0)
+        append(p, "spdy/3")
+        append(p, "http/1.1")
+        opts.alpn = new tls::Prefer{protocols: p}
+    }
+    if mode == "alpn" || mode == "clientcert" || mode == "reqclient" {
+        let p = new []string(0)
+        append(p, "http/1.1")
+        opts.alpn = new tls::Require{protocols: p}
+    }
+    if mode == "noalpn" {
+        // The server still prefers http/1.1, so a client that offers nothing
+        // negotiates AlpnNone and exercises Limits.allowNoAlpn. A client that
+        // offers http/1.1 can still use the control path to stop the server.
+        let p = new []string(0)
+        append(p, "http/1.1")
+        opts.alpn = new tls::Prefer{protocols: p}
+    }
+    if mode == "clientcert" {
+        opts.verify = new tls::VerifyOptional{}
+    }
+    if mode == "reqclient" {
+        opts.verify = new tls::VerifyRequired{}
+    }
+    return opts
+}
+
+fn makeLimits(profile: string): core::Limits {
+    var lim = core::defaultLimits()
+    if profile == "fast" {
+        lim.acceptTimeoutMs = 500
+        lim.handshakeTimeoutMs = 500
+        lim.headerTimeoutMs = 500
+        lim.bodyIdleTimeoutMs = 500
+        lim.idleTimeoutMs = 800
+        lim.responseTimeoutMs = 500
+        lim.responseTotalTimeoutMs = 1000
+        lim.totalTimeoutMs = 1500
+    }
+    if profile == "many" {
+        lim.acceptTimeoutMs = 60000
+        lim.handshakeTimeoutMs = 60000
+        lim.idleTimeoutMs = 60000
+    }
+    if profile == "deny" {
+        lim.allowNoAlpn = false
+    }
+    if profile == "small" {
+        lim.maxStartLine = 256
+        lim.maxTarget = 128
+        lim.maxHeaderBytes = 512
+        lim.maxHeaderCount = 5
+        lim.maxHeaderLine = 256
+        lim.maxBody = 16
+        lim.maxChunkLine = 64
+        lim.maxChunkSize = 16
+        lim.maxChunkCount = 5
+        lim.maxChunkMetadata = 128
+        lim.maxTrailerBytes = 64
+        lim.maxTrailerCount = 2
+        lim.maxResponseHeaderBytes = 256
+        lim.maxResponseBuffer = 256
+        lim.maxResponseTrailerCount = 2
+        lim.maxResponseTrailerBytes = 64
+        lim.maxPipelineBytes = 512
+        lim.maxRequests = 2
+    }
+    return lim
+}
+
+fn run(): Result[bool] {
+    let av = args()
+    if len(av) < 5 { return err("usage: h1c_server_app PORT MODE CERT KEY [CA] [PROFILE]", 2) }
+    let port = toInt(av[1])
+    let mode = av[2]
+    let certPath = av[3]
+    let keyPath = av[4]
+    var caPath = ""
+    if len(av) >= 6 { caPath = av[5] }
+    var profile = "default"
+    if len(av) >= 7 { profile = av[6] }
+
+    let po = platform::defaultOptions()
+    let init = platform::initialize(&po)
+    let started = try init
+
+    let opts = alpnOptions(mode)
+    let ctx = try tls::createContext(&opts)
+    // From here the server owns the context and closes it in shutdown().
+    let cert = readFile(certPath)
+    if cert == nil { return err("certificate file could not be read", 3) }
+    let certBytes: []byte = cert
+    let loadedChain = try tls::loadCertificateChain(&ctx, &certBytes)
+    let key = readFile(keyPath)
+    if key == nil { return err("private key file could not be read", 3) }
+    let keyBytes: []byte = key
+    let loadedKey = try tls::loadPrivateKey(&ctx, &keyBytes)
+    if len(caPath) > 0 {
+        let ca = readFile(caPath)
+        if ca == nil { return err("CA file could not be read", 3) }
+        let caBytes: []byte = ca
+        let trusted = try tls::setTrustedCertificates(&ctx, &caBytes)
+    }
+
+    let addr = try address::parseNumeric("127.0.0.1", port)
+    let lo = net::listenOptions()
+    lo.backlog = 512
+    let listener = try net::listen(&addr, &lo)
+    let local = try net::listenerLocalAddress(&listener)
+    var bound = 0
+    match local {
+        IPv4 { bound = local.port }
+        IPv6 { bound = local.port }
+        UnixPath { }
+        UnixAbstract { }
+    }
+    emit("PORT " + string(bound) + "\n")
+
+    let r = try reactor::create(512, 512)
+    let lim = makeLimits(profile)
+    let srv = server::makeTls(listener, r, &lim, ctx)
+    match srv {
+        ok(s) {
+            let h = fn (info: core::RequestInfo, at: &conn::Now): server::Action {
+                return route(info, at)
+            }
+            var turns = 0
+            while !server::stopRequested(&s) && turns < 500000 {
+                turns += 1
+                let p = server::runOnce(&s, h, 64)
+                match p {
+                    ok(v) { }
+                    err(m, c) { println("LOOPERR ", c); break }
+                }
+            }
+            let n = try server::now()
+            let b = try server::beginShutdown(&s, &n)
+            let d = try server::drain(&s, h, 1000)
+            let sh = try server::shutdown(&s, &n)
+            let m = server::metrics(&s)
+            emit("METRICS " + string(m.accepted) + " " +
+                 string(m.closedConnections) + " " +
+                 string(m.requests) + " " +
+                 string(m.protocolErrors) + " " +
+                 string(m.timeouts) + " " +
+                 string(m.acceptErrors) + " " +
+                 string(m.handlerErrors) + " " +
+                 string(m.peakActive) + " " +
+                 string(m.active) + " " +
+                 string(m.rejected) + " " +
+                 string(m.watchErrors) + " " +
+                 string(m.acceptPressure) + "\n")
+            let tc = tls::counts()
+            match tc {
+                ok(counts) {
+                    emit("TLSCOUNTS " + string(counts.liveContexts) + " " +
+                         string(counts.liveSessions) + " " +
+                         string(counts.handshakesStarted) + " " +
+                         string(counts.handshakesCompleted) + " " +
+                         string(counts.handshakeFailures) + " " +
+                         string(counts.truncations) + " " +
+                         string(counts.ciphertextPending) + " " +
+                         string(counts.plaintextPending) + "\n")
+                }
+                err(m, c) { emit("TLSCOUNTSERR " + string(c) + "\n") }
+            }
+            return ok(true)
+        }
+        err(m, c) { return err("server makeTls failed", c) }
+    }
+}
+
+fn main() {
+    let result = run()
+    match result {
+        ok(v) { }
+        err(m, c) {
+            println("error=", m, " code=", string(c))
+            exit(1)
+        }
+    }
+}

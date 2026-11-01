@@ -1,10 +1,10 @@
 # H1a0/H1b API
 
 Status: experimental, unstable. The first part is the H1a0 pure grammar,
-serializer and date surface. The H1b section at the end adds the transport,
-connection state machine and server loop; it performs I/O, deadlines and socket
-accept. H1c (TLS/`http1tls`) is explicitly later. Nothing here is a stability,
-protocol-version or release claim.
+serializer and date surface. The H1b section adds the transport, connection
+state machine and server loop; it performs I/O, deadlines and socket accept. The
+H1c section adds the concrete `http1io` plain/TLS dispatch and the HTTPS server
+path. Nothing here is a stability, protocol-version or release claim.
 
 ## `http1core`
 
@@ -235,19 +235,19 @@ these explicit seconds/nanos functions.
 # H1b API (experimental)
 
 Status: experimental, unstable. H1b adds the transport seam, connection state
-machine and server loop. It does **not** add TLS, `http1tls`, routing or a full
-mutable-connection handler; H1c is later.
+machine and server loop. It does **not** add routing or a full
+mutable-connection handler. H1c adds the TLS backend and `makeTls`.
 
-## `http1transport`
+## `http1io`
 
 `Transport` is an opaque record, not an interface: 0.14 has no impure
-interface-member tier, so an interface method could not call `sysstream`. The
-record is private and cannot be extended by an external module. For H1c, a
-feasible seam is a dedicated `http1io` module importing both `sysstream` and
-`systls` and defining a closed `Plain`/`Tls` transport; `http1conn` would
-dispatch over that closed value without importing `systls`. The alternative is
-a future impure interface/function-value compiler tier. H1b implements neither
-TLS nor that compiler change.
+interface-member tier, so an interface method could not call
+`sysstream`/`systls`. The record has a closed concrete backend (`Plain`, `Tls`,
+`Memory`) and is private, so no external module can extend it. This is the H1c
+seam: `http1io` imports both systems and TLS modules; `http1conn` and
+`http1server` dispatch over the closed value and never call TLS byte I/O
+directly. The alternative is a future impure interface/function-value compiler
+tier.
 
 ```obo
 pub type Step = closed { StepDone {} StepWantRead {} StepWantWrite {} }
@@ -265,8 +265,12 @@ pub type Want = closed { WantNone {} WantRead {} WantWrite {} WantReadWrite {} }
 pub type Alpn = closed { AlpnNone {} AlpnHttp11 {} AlpnH2 {} AlpnOther { name: string } }
 
 pub fn plain(s: sysstream::Stream): Transport
+pub fn fromTls(session: systls::TlsSession): Transport
 pub fn memory(input: &[]byte): Transport
 pub fn empty(): Transport
+pub fn isPlain(t: &Transport): bool
+pub fn isMemory(t: &Transport): bool
+pub fn isTls(t: &Transport): bool
 
 pub fn handshakeStep(mut t: &Transport): Result[Step]
 pub fn readSome(mut t: &Transport, max: int): Result[ReadOutcome]
@@ -296,7 +300,12 @@ Rules:
 - `shutdownStep` is multi-step. `close` is abortive and exactly once.
 - `watch` passes a checked handle internally; no fd, native token or stream
   identity is exposed. The memory transport has no watch and returns
-  `Unsupported`.
+  `Unsupported`; TLS uses `systls::watch`.
+- `fromTls(session)` takes ownership of a `systls::TlsSession`. The TLS backend
+  maps `handshakeStep`, `readSome`, `writeSome`, `flushPending` (`systls::flush`),
+  `shutdownStep`, `pending` (ciphertext total), `want`, `alpn`, `isSecure`,
+  `maxTransfer`, `watch` and abortive `close`; `Want*` is never converted into a
+  systems error. `flushPending` cannot accept plaintext.
 - `memory*` helpers configure the deterministic test transport (read/write
   limits, pending ciphertext, want flags, ALPN, secure flag, captured output).
 
@@ -315,8 +324,8 @@ pub type Event = closed {
 pub type BodyRead = closed { BodyData { bytes: []byte } BodyEnd {} BodyNeedRead {} }
 pub type FlushOutcome = closed { Flushed {} FlushWantRead {} FlushWantWrite {} }
 
-pub fn make(t: http1transport::Transport, l: &Limits): Result[Connection]
-pub fn makeAt(t: http1transport::Transport, l: &Limits,
+pub fn make(t: http1io::Transport, l: &Limits): Result[Connection]
+pub fn makeAt(t: http1io::Transport, l: &Limits,
               now: &Now): Result[Connection]
 pub fn phase(c: &Connection): Phase
 pub fn deadline(c: &Connection): sysclock::Deadline
@@ -345,8 +354,10 @@ pub fn sendContinue(mut c: &Connection): Result[bool]
 pub fn requestClose(mut c: &Connection): Result[bool]
 pub fn closeAfterResponse(c: &Connection): bool
 pub fn acceptAlpn(mut c: &Connection): Result[bool]
+pub fn beginShutdown(mut c: &Connection, now: &Now): Result[bool]
 pub fn shutdownStep(mut c: &Connection, now: &Now): Result[ShutdownOutcome]
 pub fn close(mut c: &Connection): Result[bool]
+pub fn isSecure(mut c: &Connection): bool
 pub fn wantsRead(mut c: &Connection): Result[bool]
 pub fn wantsWrite(mut c: &Connection): Result[bool]
 ```
@@ -354,7 +365,9 @@ pub fn wantsWrite(mut c: &Connection): Result[bool]
 Rules:
 
 - `make` validates and deep-copies `Limits`, creates the parser and response
-  buffers and arms the accept/handshake deadlines on the first `next`.
+  buffers and arms the accept/handshake deadlines on the first `next`. It owns
+  the transport at entry and closes it exactly once if validation or buffer
+  construction fails, so a server accept error cannot leak a TLS session.
   `makeAt` arms them immediately; the server uses it at accept so a silent
   socket is closed by the accept timeout even if it never becomes readable. A
   plain transport completes `handshakeStep` immediately; the caller must call
@@ -380,8 +393,9 @@ Rules:
   `NeedRead/NeedWrite`.
 - `requestClose` sets `Connection: close` before header commit; after commit the
   connection closes after the flushed response. `shutdownStep` flushes, then
-  drives the transport's multi-step shutdown. `close` is abortive and
-  idempotent.
+  drives the transport's multi-step shutdown; for TLS, `next` drives that path
+  so close_notify is queued/flushed before `close`. `beginShutdown` enters that
+  path for an idle established connection. `close` is abortive and idempotent.
 - Deadline policy: accept/handshake are disarmed on first request byte/
   `StepDone`; header is absolute from the first byte; body idle starts at first
   read; idle starts when a response completes; response idle renews on positive
@@ -411,6 +425,8 @@ pub type Metrics = ref record { /* accepted, rejected, closedConnections, ... */
 
 pub fn make(l: sysnet::Listener, r: sysreactor::Reactor,
             limits: &Limits): Result[Server]
+pub fn makeTls(l: sysnet::Listener, r: sysreactor::Reactor,
+               limits: &Limits, ctx: systls::TlsContext): Result[Server]
 pub fn runOnce(mut s: &Server, handler: Handler, maxEvents: int): Result[bool]
 pub fn beginShutdown(mut s: &Server, now: &http1conn::Now): Result[bool]
 pub fn drain(mut s: &Server, handler: Handler, maxTurns: int): Result[bool]
@@ -430,7 +446,10 @@ Rules:
 
 - `make` owns the listener and reactor, validates `Limits`, registers the
   listener watch and starts an empty fixed slot table. `maxConnections` is
-  capped at 65536 (the tag table width).
+  capped at 65536 (the tag table width). `makeTls` additionally owns the
+  supplied `systls::TlsContext`, wraps each accepted stream in a `TlsSession`,
+  and closes the context after the last session in `shutdown`. The context must
+  not be aliased or closed by the caller.
 - `runOnce` blocks in `reactor::wait` until an event or the earliest connection/
   accept-pause/drain deadline. It accepts at most 32 per batch, drives each ready
   slot at most 32 events, checks all deadlines again after I/O, and refreshes
@@ -441,8 +460,11 @@ Rules:
   ENFILE) pauses acceptance for 100 ms and increments `acceptPressure`.
 - `beginShutdown` removes the listener watch, stops accepting, closes idle/
   handshaking connections immediately and calls `requestClose` on in-flight
-  connections. `drain` runs turns until active reaches zero or the drain
-  deadline. `shutdown` closes remaining slots, the listener and the reactor.
+  connections. An established idle TLS connection is switched to the
+  close_notify path and its watch is changed to write interest for the drain.
+  Already-closed slots are retired immediately. `drain` runs turns until active
+  reaches zero or the drain deadline. `shutdown` closes remaining slots, the
+  listener, the TLS context and the reactor.
 - `Handler` is pure. It cannot drive the connection because 0.14 function values
   and interface methods cannot be impure. It is therefore the design's
   action-router adaptation, not the `&Connection` handler sketch. The design's
@@ -452,7 +474,48 @@ Rules:
   `NotModified`, `Big` (20 KB fixed), `Slow` (10 bytes per turn),
   `Stop` (respond, then request shutdown) and `Close` (`Connection: close` then
   `Hello`). A general application handler needs a future impure function-value
-  tier or a different dispatch API; this is documented as an H1c/follow-up
+  tier or a different dispatch API; this is documented as an H1d/follow-up
   language gap, not a hidden callback.
 - Tags are `generation * 65536 + slot`; stale events from a retired generation
   are ignored. Transport close happens exactly once per slot.
+
+---
+
+# H1c HTTPS/TLS integration (experimental)
+
+Status: experimental, unstable. H1c adds no new HTTP grammar or framing. It
+changes the byte seam and adds server-side TLS ownership/lifecycle.
+
+## Transport and server lifecycle
+
+```obo
+pub fn http1io::fromTls(session: systls::TlsSession): Transport
+pub fn http1server::makeTls(l: sysnet::Listener, r: sysreactor::Reactor,
+                            limits: &Limits,
+                            ctx: systls::TlsContext): Result[Server]
+```
+
+- `openAccepted` (internal) wraps each accepted `sysstream::Stream` as
+  `http1io::plain` for a plain server or as `http1io::fromTls(tls::accept(...))`
+  for `makeTls`. The TLS session owns the stream and the transport owns the
+  session; `close` is exactly once.
+- The handshake is driven by `http1conn::next` under `handshakeTimeoutMs`.
+  `HandshakeDone` requires a subsequent `acceptAlpn` before any HTTP parse.
+  `AlpnHttp11` is accepted; a *negotiated* `AlpnH2`/`AlpnOther` closes before
+  parsing; `AlpnNone` is accepted only when `Limits.allowNoAlpn` is true. The
+  default HTTPS listener policy is TLS `Require(["http/1.1"])`, so a client that
+  offers only h2 fails the TLS handshake before HTTP; `Prefer` is the explicit
+  application choice that reaches the HTTP-layer rejection path.
+- A normal close (`Connection: close`, HTTP/1.0, max requests, or an idle
+  established TLS connection during server shutdown) queues the local
+  close_notify, drains remaining ciphertext, and then closes without waiting
+  indefinitely for the peer close_notify. The close path has one absolute
+  `responseTimeoutMs` deadline. Fatal TLS errors, parse errors after a partial
+  response and timeouts take the abortive path. A truncated TLS close is not
+  reported as a clean EOF by `systls`.
+- `shutdown` closes every slot, then the TLS context, listener and reactor. The
+  context close is expected to report `Busy` only if a session leaked; the H1c
+  driver asserts zero live contexts/sessions from `systls::counts()`.
+- No callback, finalizer, hidden thread or plaintext fallback is introduced.
+  TLS errors map to a connection close (or an already-started HTTP error page);
+  after a fatal TLS error no plaintext error page is attempted.
