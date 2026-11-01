@@ -197,19 +197,24 @@ The `SYM_FORMAT` 8 → 9 and `OBO_VERSION` 0.16 bump lands here, with the first
   `tests/modules/run/decimal_iface/`, and the `sym/decimal_methods_ifaces` and
   `sym/decimal_pfree` cases in `tests/sym_test.py`.
 
-### D4b — function values, lambdas and captures (write the layout first)
+### D4b — function values, lambdas and captures
 
-Before any code, the D4b agent writes the frame layout into this note for
-review. Function values push the cell at `callFnWith` (`obo.obo:7199-7213`),
-after the hidden destination pointer (`obo.obo:7183-7197`), and a
-decimal-returning callee reads that pointer at `16 +
-visibleTypeParamsBytes(params)` (`obo.obo:12626`), so the cell sits where the
-callee reads its destination pointer. "Identical to direct calls" can't hold.
-Define where the destination pointer and cell live for a call through a
-function value. Change the lambda environment read `16 + 8*(n-1)`
-(`obo.obo:13258`) to a byte offset. Captures are 8 bytes each (classified at
-`obo.obo:10237-10250`, with the decimal refusal at 10221) and are loaded per
-word (`obo.obo:13258-13274`). A decimal capture needs a 24-byte slot.
+**Status: layout proposed, awaiting review.** The frame layout, capture layout,
+`.sym` decision, refusals, tests/mutants and implementation order are in
+[decimal-d4b-layout.md](decimal-d4b-layout.md). No compiler, runtime, test or
+seed change is in that branch.
+
+The blocker is recorded here for the review history. Function values push the
+cell at `callFnWith` (`obo.obo:7199-7213`), after the hidden destination pointer
+(`obo.obo:7183-7197`), and a decimal-returning callee reads that pointer at
+`16 + visibleTypeParamsBytes(params)` (`obo.obo:12626`), so the cell sits where
+the callee reads its destination pointer. "Identical to direct calls" cannot
+hold with that order. **Decision:** push the cell *before* the destination, so
+the destination stays at `16 + A` and the cell sits above it at `24 + A`; the
+lambda environment pseudo-parameter is removed from `FnRec.params` and read at
+`16 + A` (or `24 + A` for a decimal return); a decimal capture is a 24-byte
+value snapshot at a byte offset; and `.sym` moves to format 12 / `0.19` while
+`SYM_ABI` stays 1. Direct, method and interface calls are unchanged.
 
 The original D4 bullets below apply across D4a and D4b.
 
@@ -217,19 +222,22 @@ The original D4 bullets below apply across D4a and D4b.
   pointer for returns. A decimal is never a receiver.
 - Interface members: decimal parameters and returns through the vtable call,
   with the hidden destination pointer pushed in the same place as for direct
-  calls. D4a closed this bullet and removed the old internal error; the remaining
-  function-value guard is `decRet && fnval` in `callFnWith` (`obo.obo:7172`).
+  calls. D4a closed this bullet; D4b's layout removes the remaining
+  `decRet && fnval` guard in `callFnWith` (`obo.obo:7172`).
 - Function types and non-capturing lambdas: `fn(decimal): decimal` with
   call-through-pointer. Keep the destination-pointer convention identical to
-  direct calls, so one function can be both called and used as a value.
+  direct calls, so a callee body has one layout whether entered directly or
+  through a cell. Named function values themselves remain out of scope; the
+  layout note's §2.1 records the ABI point.
 - Stage B captures: a decimal is captured by a **24-byte value snapshot**, like
   the float one-word snapshot (`LANGUAGE.md` §5d). `mut`/`move` captures stay
   unsupported.
 - `.sym`: function, method and interface signatures with decimal parameters and
   returns.
 - Tests: each form direct and cross-module, a lambda passed to a sort or
-  accumulator, a capture snapshot that doesn't see later changes, and
-  interface dispatch over two implementations.
+  accumulator, a capture snapshot (the layout note's §4.5 explains what is
+  observable under the second-class rules), and interface dispatch over two
+  implementations.
 
 ### D5 — `lib/decimals.obx` (no compiler change)
 
