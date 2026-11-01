@@ -114,13 +114,14 @@ const T_FOREIGN = 73            // type X = foreign "C": a D2 reserved word
 // extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A, 0.10 is
 // numeric floats, 0.11 is Stage B capture lists, 0.12 is the decimal integration,
 // 0.13 is private-by-default record fields, 0.14 adds the decimal text API,
-// 0.15 adds compiler-known sql/html template literals, 0.16 is decimal storage
-// and 0.17 adds the impure interface-member tier.
+// 0.15 adds compiler-known sql/html template literals, 0.16 is decimal storage,
+// 0.17 adds the impure interface-member tier and 0.18 adds decimal method and
+// interface signatures.
 // Bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect
 // change.
-const OBO_VERSION = "0.17"
-const SYM_FORMAT = 10
+const OBO_VERSION = "0.18"
+const SYM_FORMAT = 11
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -5109,7 +5110,20 @@ fn pfAdd(f: ^Sym, i: int, ev: string) {
 fn recordParamFree(g: ^Sym, ev: string) {
     let f = curFn
     if f == nil { return }
-    let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8
+    // Map the parameter's rbp offset back to its index over the signature, not by dividing by the word
+    // size: a decimal parameter takes three words, so an offset-derived index would name the wrong
+    // parameter (and corrupt the pfree mask) after one.
+    var pi = -1
+    var at = 16
+    var j = len(f.fnRec.params) - 1
+    while j >= 0 {
+        if at == g.offset { pi = j }
+        if f.fnRec.params[j].kind == "decimal" { at += 24 } else { at += 8 }
+        j -= 1
+    }
+    // A reference parameter's offset must be on the signature's byte layout. If it is not, the
+    // compiler's parameter bookkeeping is wrong; dropping the summary would be unsound, so fail.
+    if pi < 0 { error("internal error: a reference parameter's offset is not on the current function's signature") }
     if pi < 62 {
         f.fnRec.pfree = f.fnRec.pfree | (1 << pi)
         pfAdd(f, pi, ev)
@@ -7068,13 +7082,21 @@ fn ifaceSlot(f: ^Sym): int {
 // The dispatch loads of an interface call (v3 7.1, S4), made for argument 0 and so before any explicit argument runs.
 // a is the receiver place, which holds its box: the vtable is read from [box+8] and pushed first, so it lies above
 // the arguments; then the object from [box] is pushed as argument 0. The box's register is only read, never written,
-// since it may be a home register of a local.
-fn pushIfaceReceiver(a: Item) {
+// since it may be a home register of a local. A decimal-returning member's hidden destination pointer must sit
+// directly above the visible parameters, as in a direct call, so it is pushed between the vtable and the object: the
+// order is vtable, destination pointer, object, explicit arguments.
+fn pushIfaceReceiver(a: Item, decRet: bool, dstBase: int, dstDisp: int) {
     let b = asReg(a)
     let vt = alloc()
     opMem(0x8B, vt, mem(b.r, -1, 8, 8), true, false)
     pushR(vt)
     release(vt)
+    if decRet {
+        let dr = alloc()
+        opMem(0x8D, dr, mem(dstBase, -1, dstDisp, 8), true, false)
+        pushR(dr)
+        release(dr)
+    }
     let ob = alloc()
     opMem(0x8B, ob, mem(b.r, -1, 0, 8), true, false)
     release(b.r)
@@ -7147,7 +7169,7 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     var total = visibleTypeParamsBytes(f.fnRec.params)
     if iface || fnval { total += 8 }
     let decRet = f.ret.kind == "decimal"
-    if decRet && (iface || fnval) { error("internal error: a decimal-returning interface or function value is not supported") }
+    if decRet && fnval { error("internal error: a decimal-returning function value is not supported") }
     if decRet { total += 8 }
     let pad = (depth + total) % 16
     if pad != 0 {
@@ -7156,14 +7178,22 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     }
     var retBase = RBP
     var retDisp = 0
+    var retSlotBase = -2
+    var retSlotDisp = 0
     if decRet {
         let ds = decimalMem()
         retBase = ds.base
         retDisp = ds.disp
-        let dr = alloc()
-        opMem(0x8D, dr, memOf(ds), true, false)
-        pushR(dr)
-        release(dr)
+        retSlotBase = ds.base
+        retSlotDisp = ds.disp
+        // An interface call pushes the vtable above this pointer and the object below it, so it is pushed
+        // in the i == 0 branch (pushIfaceReceiver). A direct call pushes it before parameter 0.
+        if !iface {
+            let dr = alloc()
+            opMem(0x8D, dr, memOf(ds), true, false)
+            pushR(dr)
+            release(dr)
+        }
     }
     expect(T_LPAREN, "")
     if fnval {
@@ -7284,7 +7314,8 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             tcol = savedTokCol
         }
         if iface && i == 0 {
-            pushIfaceReceiver(a)                   // the box's vtable and object, before any explicit argument runs (v3 7.1)
+            // the box's vtable (above the destination pointer and arguments) and object, before any explicit argument runs (v3 7.1)
+            pushIfaceReceiver(a, decRet, retSlotBase, retSlotDisp)
         } else if a.typ.kind == "decimal" {
             pushDecimalValue(a)
         } else if a.mode == "const" && fits32(a.val) {
@@ -7404,8 +7435,14 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             release(e.r)
         }
     } else if iface {
-        // the vtable word lies above the n arguments, at [rsp + 8n]: call the member's slot through it (v3 4, 7.1)
-        opMem(0x8B, RAX, mem(RSP, -1, 8 * n, 8), true, false)
+        // The vtable word lies above the object, the hidden decimal destination pointer and the explicit
+        // arguments: its offset is the explicit arguments' byte count (24 per decimal), plus 8 for the
+        // object and 8 for the destination pointer when the member returns a decimal (v3 4, 7.1).
+        let explicitBytes = typeParamsBytes(f.fnRec.params, start)
+        let vtOff = explicitBytes + 8
+        var vtAt = vtOff
+        if decRet { vtAt = vtAt + 8 }
+        opMem(0x8B, RAX, mem(RSP, -1, vtAt, 8), true, false)
         opMem(0xFF, 2, mem(RAX, -1, 8 * ifaceSlot(f), 8), false, false)
     } else {
         emit(0xE8)
@@ -13379,7 +13416,6 @@ fn parseParams(mut params: &[]Param, member: bool, allowOut: bool) {
         expect(T_COLON, "")
         let t = parseRefType()
         if member { rejectFn(t, "an interface method cannot use a function value; function types are not supported in interfaces") }
-        if member && t.kind == "decimal" { error("decimal interface method parameters are not supported in v1") }
         var mode = refMode
         if pmut {
             if mode == 0 { error("mut needs a reference parameter: write mut name: &T") }
@@ -13490,7 +13526,6 @@ fn ifaceDecl(name: string, line: int, isPub: bool) {
             next()
             ret = parseType()
         }
-        if ret.kind == "decimal" { error("decimal interface method returns are not supported in v1") }
         rejectFn(ret, "an interface method cannot use a function value; function types are not supported in interfaces")
         if sym != T_RBRACE { expect(T_SEMI, "';' or newline") }
         skipSemis()
@@ -13718,10 +13753,6 @@ fn fnDecl(isPub: bool) {
     if sym == T_COLON {
         next()
         ret = parseType()
-    }
-    if isMethod {
-        if ret.kind == "decimal" { error("decimal returns from methods are not supported in v1") }
-        for p in params { if p.typ.kind == "decimal" { error("decimal method parameters are not supported in v1") } }
     }
     rejectFn(ret, "a function cannot return a function value; function values are parameters and locals only")
     var f = newSym("fn", name, nil)

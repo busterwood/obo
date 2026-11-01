@@ -1,6 +1,6 @@
-obosym 10
+obosym 11
 abi 1
-compiler "0.17"
+compiler "0.18"
 source 0x725060c1718985c6
 dep lib "lib.obx"
 interface 0x7dd9f1e54ebeab6b

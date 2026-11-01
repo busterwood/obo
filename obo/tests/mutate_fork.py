@@ -563,7 +563,12 @@ FP_MUTANTS = {
     'a callee with a forward heading is assumed to free nothing': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }\n', '    if f == curFn || f.freesAll || f.writesHandles { return true }\n'),
     'a recursive callee is assumed to free nothing': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }\n', '    if f.addr < 0 || f.freesAll || f.writesHandles { return true }\n'),
     'a callee that writes through a handle is assumed to free nothing': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }\n', '    if f.addr < 0 || f == curFn { return true }\n'),
-    'a parameter is recorded by the wrong place': ('    let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8', '    let pi = (g.offset - 16) / 8'),
+    'a parameter is recorded by the wrong place': (
+        "    var pi = -1\n    var at = 16\n    var j = len(f.fnRec.params) - 1\n    while j >= 0 {\n"
+        "        if at == g.offset { pi = j }\n"
+        "        if f.fnRec.params[j].kind == \"decimal\" { at += 24 } else { at += 8 }\n"
+        "        j -= 1\n    }\n",
+        "    let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8\n"),
     'a mut argument passed on is not recorded as freed': ('                if !(br.isParam && br.isRef) { recordFree(br) }\n', '                if false { recordFree(br) }\n'),
     'the frees of a reference parameter are recorded as a global': ('    if g.isParam && g.isRef {', '    if g.isParam && g.isRef && false {'),
     # pure calls with mut parameters (pureFn, movesFn)
@@ -1599,8 +1604,8 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X9: a temporary may be borrowed into a cell": (
         "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
         "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
-    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 10\n", "const SYM_FORMAT = 2\n"),
-    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.17\"\n", "const OBO_VERSION = \"0.6\"\n"),
+    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 11\n", "const SYM_FORMAT = 2\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.18\"\n", "const OBO_VERSION = \"0.6\"\n"),
 
     # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
     "interfaces v3 X18: the receiver bit is omitted for mut fn": (
@@ -1647,9 +1652,9 @@ INTERFACE_MUTANTS = {
         "                if pmut && len(pmodes) < 2 { append(pmodes, 2) } else { append(pmodes, 1) }\n            } else {\n                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n"),
     # step 4: dispatch through an owned interface value (design sections 7 and 11): the call's vtable word, the
     # slot offset, and the caller's effects from the member's synthetic summary
-    "interfaces v3 dispatch extra: the vtable word is read from the wrong stack slot": (
-        "        opMem(0x8B, RAX, mem(RSP, -1, 8 * n, 8), true, false)\n",
-        "        opMem(0x8B, RAX, mem(RSP, -1, 8 * n - 8, 8), true, false)\n"),
+    "decimal D4a: an interface call loads the vtable by the old word count, not the argument bytes": (
+        "        let explicitBytes = typeParamsBytes(f.fnRec.params, start)\n",
+        "        let explicitBytes = 8 * (len(f.fnRec.params) - start)\n"),
     # a design-ID-free name: this is an extra dispatch mutation, not one of X1-X38
     "interfaces v3 dispatch: the call goes to the wrong vtable slot": (
         "mem(RAX, -1, 8 * ifaceSlot(f), 8)",
@@ -1657,6 +1662,14 @@ INTERFACE_MUTANTS = {
     "interfaces v3 dispatch: the member's summary is not applied to the caller's receiver": (
         "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) {\n",
         "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) && !iface {\n"),
+    # D4a: the refusal that used to stop a decimal-returning interface call (the old internal error)
+    "decimal D4a: a decimal-returning interface member is refused internally": (
+        "    if decRet && fnval { error(\"internal error: a decimal-returning function value is not supported\") }\n",
+        "    if decRet && (iface || fnval) { error(\"internal error: a decimal-returning function value is not supported\") }\n"),
+    # D4a: a decimal-returning interface call must step over the hidden destination pointer to the vtable
+    "decimal D4a: a decimal-returning interface call reads the vtable at the object slot": (
+        "        if decRet { vtAt = vtAt + 8 }\n",
+        "        if false { vtAt = vtAt + 8 }\n"),
 }
 
 # a mutation whose behaviour needs more than one replacement, each of which must occur exactly once
@@ -1665,7 +1678,7 @@ MULTI_MUTANTS = {
     # argument has run. The box pointer itself is saved as argument 0 before the arguments, and the
     # vtable position is reserved, so the call layout and dispatch words stay valid.
     "interfaces v3 X8: the receiver's obj and vtable are loaded after the arguments (S4)": [
-        ("        if iface && i == 0 {\n            pushIfaceReceiver(a)                   // the box's vtable and object, before any explicit argument runs (v3 7.1)\n",
+        ("        if iface && i == 0 {\n            // the box's vtable (above the destination pointer and arguments) and object, before any explicit argument runs (v3 7.1)\n            pushIfaceReceiver(a, decRet, retSlotBase, retSlotDisp)\n",
          "        if iface && i == 0 {\n            let pb = asReg(a)\n            pushI(0)                               // S4 mutant: the vtable slot, filled after the arguments run\n            depth += 8\n            pushR(pb.r)                            // argument 0: the box pointer; its two words are read after the arguments\n            release(pb.r)\n"),
         ("            release(r.r)\n        }\n    }\n    // argIsCapture is appended exactly when argBinds is appended; the checks below index them together\n",
          "            release(r.r)\n        }\n    }\n    if iface {\n        // S4 mutant: read the receiver's obj and vtable only after every explicit argument has run\n        let pb = alloc()\n        opMem(0x8B, pb, mem(RSP, -1, 8 * (n - 1), 8), true, false)\n        let ob = alloc()\n        opMem(0x8B, ob, mem(pb, -1, 0, 8), true, false)\n        opMem(0x8B, pb, mem(pb, -1, 8, 8), true, false)\n        opMem(0x89, pb, mem(RSP, -1, 8 * n, 8), true, false)\n        opMem(0x89, ob, mem(RSP, -1, 8 * (n - 1), 8), true, false)\n        release(ob)\n        release(pb)\n    }\n    // argIsCapture is appended exactly when argBinds is appended; the checks below index them together\n"),

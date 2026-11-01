@@ -1,0 +1,54 @@
+// Decimal method parameters and returns (stage D4a): a decimal is passed by value in
+// a 24-byte slot, a decimal return uses the hidden destination pointer, and one-word
+// parameters may sit on either side of a decimal one. The receiver is never decimal.
+type Account = ref record { amount: decimal; n: int }
+type Box = ref record { acc: Account }
+
+// decimal parameters only, a decimal return
+fn (a: &Account) add(x: decimal, y: decimal): decimal {
+    return a.amount + x + y
+}
+// int, decimal, int, decimal, owned string: both strides and a non-decimal parameter
+fn (mut a: &Account) mix(n: int, x: decimal, m: int, y: decimal, s: string): decimal {
+    a.n += n + m + len(s)
+    return a.amount + x + y
+}
+// a decimal parameter before an owned reference parameter
+fn (a: &Account) withOwner(x: decimal, other: Box): decimal {
+    return a.amount + x + other.acc.amount
+}
+// a decimal return through Result[decimal], and a direct Result payload
+fn (a: &Account) share(k: int, scale: int): Result[decimal] {
+    return decimal::div(a.amount, decimal(k), scale, HALF_AWAY)
+}
+// a method returning a decimal used in arithmetic and comparison
+fn (a: &Account) rate(): decimal { return decimal(1) * 0.01 }
+// a mut method with decimal parameters and a decimal return
+fn (mut a: &Account) deposit(x: decimal): decimal {
+    a.amount = a.amount + x
+    return a.amount
+}
+// a method called on a handle field and on a value returned by a constructor
+fn make(n: int): decimal { return decimal(n) }
+fn (a: &Account) plus(x: decimal): decimal { return a.amount + x }
+
+fn main() {
+    var a = new Account{amount: 10.00, n: 0}
+    println(a.add(1.50, 2.5))                   // expect: 14.00
+    println(a.mix(1, 2.25, 3, 0.75, "ab"))      // expect: 13.00
+    println(a.n)                                 // expect: 6
+    var b = new Box{acc: new Account{amount: 4.5, n: 0}}
+    // a method on a field value
+    println(b.acc.add(0.5, 0.5))                 // expect: 5.5
+    println(a.withOwner(0.5, b))                 // expect: 15.00
+    println(a.deposit(0.25))                     // expect: 10.25
+    println(a.rate())                            // expect: 0.01
+    println(a.plus(make(2)))                     // expect: 12.25
+    let d = a.share(4, 2)
+    match d {
+        ok(v) { println(v) }                     // expect: 2.56
+        err(m, c) { println(m, " ", c) }
+    }
+    // a decimal method return compared without storing it first
+    if a.plus(1.0) > 11.0 && a.plus(1.0) < 12.0 { println("in range") } // expect: in range
+}

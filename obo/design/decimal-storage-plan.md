@@ -1,7 +1,7 @@
 # Decimal storage tier: plan
 
 **Date:** 2026-11-01
-**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`; D4 is next.
+**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented in `0.18`/format 11/ABI 1 on `decimal-d4a`, cut from `f45a729`; it also fixes the interface vtable offset and the `recordParamFree` index mapping. The APPROVE WITH NITS review is closed (fail-closed mapping, faithful refusal mutant, higher-index pfree tests, refreshed references), and main's D5 library (`0138651`) is merged. D4b is next.
 **Baseline:** `main` `6f83880` (obo `0.15`, `SYM_FORMAT=8`, `SYM_ABI=1`, after cinterop v2 stage d).
 **Branch/worktree:** `decimal-storage` at `.claude/worktrees/decimal-storage`.
 **Target:** one release, `0.16` / `SYM_FORMAT=9` / `SYM_ABI=1`, merged once with one seed promotion (done; see Status).
@@ -178,26 +178,38 @@ The `SYM_FORMAT` 8 → 9 and `OBO_VERSION` 0.16 bump lands here, with the first
   across modules from `.sym` only, a malformed `.sym` constant (`sym_fuzz`
   corpus), and a negative zero constant (prints `0`, positive).
 
-### D4a — methods and interface members
+### D4a — methods and interface members (done, 0.18/format 11)
 
-- Interface calls load the vtable from `[RSP+8*n]` (`obo.obo:7278`) after the
-  receiver pair is pushed (`pushIfaceReceiver` 6944). With decimal arguments,
-  the offset must be the **explicit-argument byte count** + 8, not `8*n`.
-- `recordParamFree` (`obo.obo:5003`) maps a parameter offset to an index with
-  `/8`. A 24-byte parameter shifts that and corrupts the `pfree` mask, which is
-  a free-summary soundness bug. Map by parameter index, not by offset.
+- Interface calls load the vtable at the **explicit-argument byte count** plus 8
+  for the object, plus 8 more when the member returns a decimal (the hidden
+  destination pointer sits between the object and the vtable), not `8*n`.
+- `recordParamFree` maps a parameter's rbp offset to its index by walking the
+  signature and each parameter's byte size (24 for decimal, 8 otherwise). The old
+  `/8` mapping dropped or misnamed a bit when a decimal followed a `mut` reference.
+  An offset that is not on the signature is now an internal error rather than a
+  silently dropped summary, and the tests pin index 0 and index 2.
+- A decimal method parameter is a 24-byte slot and its return uses the direct
+  call's hidden destination pointer; a decimal interface member works in `pure`,
+  plain, `mut` and `impure` tiers. A decimal is still never a receiver. Function
+  values and captures remain D4b.
+- Tests: `tests/run/decimal_methods.obx`, `tests/run/decimal_ifaces.obx`,
+  `tests/errors/decimal_methods_ifaces.obx`,
+  `tests/modules/run/decimal_iface/`, and the `sym/decimal_methods_ifaces` and
+  `sym/decimal_pfree` cases in `tests/sym_test.py`.
 
 ### D4b — function values, lambdas and captures (write the layout first)
 
 Before any code, the D4b agent writes the frame layout into this note for
-review. Function values push the return pointer, then the cell, then the
-arguments (`obo.obo:7029-7050`), so the cell sits where a decimal-returning
-callee reads its destination pointer (12300). "Identical to direct calls" can't
-hold. Define where the destination pointer and cell live for a call through a
-function value. Change the lambda environment read `16 + 8*(n-1)` (12932) to
-a byte offset. Captures are 8 bytes each (10236-10250, with `load()` refusing
-decimal at 10245) and are loaded per word (12940-12955). A decimal capture
-needs a 24-byte slot.
+review. Function values push the cell at `callFnWith` (`obo.obo:7199-7213`),
+after the hidden destination pointer (`obo.obo:7183-7197`), and a
+decimal-returning callee reads that pointer at `16 +
+visibleTypeParamsBytes(params)` (`obo.obo:12626`), so the cell sits where the
+callee reads its destination pointer. "Identical to direct calls" can't hold.
+Define where the destination pointer and cell live for a call through a
+function value. Change the lambda environment read `16 + 8*(n-1)`
+(`obo.obo:13258`) to a byte offset. Captures are 8 bytes each (classified at
+`obo.obo:10237-10250`, with the decimal refusal at 10221) and are loaded per
+word (`obo.obo:13258-13274`). A decimal capture needs a 24-byte slot.
 
 The original D4 bullets below apply across D4a and D4b.
 
@@ -205,7 +217,8 @@ The original D4 bullets below apply across D4a and D4b.
   pointer for returns. A decimal is never a receiver.
 - Interface members: decimal parameters and returns through the vtable call,
   with the hidden destination pointer pushed in the same place as for direct
-  calls. This also removes the internal error at `obo.obo:7022`.
+  calls. D4a closed this bullet and removed the old internal error; the remaining
+  function-value guard is `decRet && fnval` in `callFnWith` (`obo.obo:7172`).
 - Function types and non-capturing lambdas: `fn(decimal): decimal` with
   call-through-pointer. Keep the destination-pointer convention identical to
   direct calls, so one function can be both called and used as a value.

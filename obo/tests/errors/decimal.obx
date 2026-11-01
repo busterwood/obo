@@ -62,24 +62,6 @@ fn main() { let f = fn (d: decimal): int { return 1 } }  // error: decimal lambd
 // === decimal lambda return is refused
 fn main() { let f = fn (x: int): decimal { return 1.0 } }  // error: decimal lambda returns are not supported in v1
 
-// === decimal method parameter is refused
-type R = ref record { v: int }
-fn (r: R) f(d: decimal): int { return 1 }  // error: decimal method parameters are not supported in v1
-fn main() {}
-
-// === decimal method return is refused
-type R2 = ref record { v: int }
-fn (r: R2) f(): decimal { return 1.0 }  // error: decimal returns from methods are not supported in v1
-fn main() {}
-
-// === decimal interface parameter is refused
-type I = interface { fn f(x: decimal): int }  // error: decimal interface method parameters are not supported in v1
-fn main() {}
-
-// === decimal interface return is refused
-type I2 = interface { fn f(): decimal }  // error: decimal interface method returns are not supported in v1
-fn main() {}
-
 // === decimal function values are refused
 fn use(f: fn(decimal): int): int { return 1 }  // error: decimal function values are not supported in v1
 fn main() {}
