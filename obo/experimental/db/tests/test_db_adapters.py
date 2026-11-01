@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.dirname(HERE)
@@ -61,6 +62,7 @@ PG_DECL_FILES = [
 SQLITE_DECL_FILES = [
     ('declaration_0', os.path.join(DB, 'sqlite', 'sqlite_decls.h')),
     ('source_0', os.path.join(DB, 'sqlite', 'sq_stmt_errcode.c')),
+    ('source_1', os.path.join(DB, 'sqlite', 'sq_prepare_at.c')),
 ]
 
 
@@ -365,6 +367,25 @@ def sqlite_decimal(tmp):
 SQLITE_TESTS = os.path.join(DB, 'sqlite', 'tests')
 
 
+
+def sqlite_exec_many(tmp):
+    """The 1 MiB/116,500-statement exec case is linear (bounded wall time)."""
+    if not sqlite_present():
+        print('sqlite exec many: skipped (libsqlite3.so.0 is absent)')
+        return
+    out = os.path.join(tmp, 'sq_exec_many')
+    app = must_build(SQLITE, os.path.join(SQLITE_TESTS, 'sqlite_exec_many_app.obx'),
+                     out, 'sqlite exec many')
+    start = time.monotonic()
+    p = need(run([app], env=dict(os.environ, OBO_CHECK='1')), 'sqlite exec many run')
+    elapsed = time.monotonic() - start
+    if p.returncode != 0 or p.stderr.strip():
+        raise Fail('sqlite exec many exited %d: %s' % (p.returncode, p.stderr))
+    expect_lines(p.stdout, ['exec_many=ok bytes=1048500'], 'sqlite exec many')
+    if elapsed > 10.0:
+        raise Fail('sqlite exec many took %.1fs; the quadratic copy regressed' % elapsed)
+    print('sqlite exec many: 116,500 statements in %.2fs (linear): ok' % elapsed)
+
 def sqlite_real_v2(tmp):
     """Real libsqlite3 3.45.1 through the v2 out-parameter binding."""
     if not sqlite_present():
@@ -410,7 +431,8 @@ def sqlite_fake_v2(tmp):
         print('sqlite v2 fake: skipped (libsqlite3.so.0 is absent)')
         return None
     spec = json.load(open(SQLITE))
-    spec['sources'] = [os.path.join(SQLITE_TESTS, 'fake_sqlite.c')]
+    spec['sources'] = [os.path.join(SQLITE_TESTS, 'fake_sqlite.c'),
+                       os.path.join(DB, 'sqlite', 'sq_prepare_at.c')]
     spec['libs'] = []
     spec['wrapper'] = os.path.join(DB, 'sqlite', 'sqlite.obx')
     spec['wrapper_sources'] = [os.path.join(DB, '..', '..', 'lib', 'sqldialect.obx')]
@@ -674,6 +696,7 @@ def main():
         sqlite_sql_app = sqlite_sql(tmp)
         sqlite_file(tmp)
         sqlite_real_v2(tmp)
+        sqlite_exec_many(tmp)
         sqlite_fake_v2(tmp)
         sqlite_asan_uaf(tmp)
         sqlite_abi(tmp)

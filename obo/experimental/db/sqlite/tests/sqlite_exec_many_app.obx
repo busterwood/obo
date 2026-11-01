@@ -1,0 +1,38 @@
+module app
+
+import "sqlite.obx"
+
+// 116,500 "SELECT 1;" statements, about 1.05 MiB. The v2 exec loop prepares
+// each statement at an absolute offset (sq_prepare_at), so this is linear; the
+// earlier copy-the-remainder loop took minutes on this input.
+fn make_sql(n: int): string {
+    var b = new []byte(0)
+    for i in 0..n {
+        append(b, byte(83))     // S
+        append(b, byte(69))     // E
+        append(b, byte(76))     // L
+        append(b, byte(69))     // E
+        append(b, byte(67))     // C
+        append(b, byte(84))     // T
+        append(b, byte(32))     // space
+        append(b, byte(49))     // 1
+        append(b, byte(59))     // ;
+    }
+    return string(b)
+}
+
+fn main() {
+    let made = sqlite::open(":memory:")
+    match made {
+        ok(c) {
+            defer c.close()
+            let sql = make_sql(116500)
+            let r = c.exec(sql)
+            match r {
+                ok(v) { println("exec_many=ok bytes=", len(sql)) }
+                err(m, code) { println("exec_many error ", m, " ", code); exit(1) }
+            }
+        }
+        err(m, code) { println("open error ", m, " ", code); exit(2) }
+    }
+}

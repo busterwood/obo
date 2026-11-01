@@ -3137,6 +3137,8 @@ def out_spec():
         'functions': [
             {'name': 'of_new', 'symbol': 'of_new', 'args': ['i32@0', 'out_own<Of>'],
              'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_zero', 'symbol': 'of_zero', 'args': ['out_own<Of>'],
+             'ret': 'i32', 'effects': ['impure']},
             {'name': 'of_new_fail', 'symbol': 'of_new_fail',
              'args': ['i32@0', 'out_own<Of>'], 'ret': 'i32', 'effects': ['impure']},
             {'name': 'of_new_null', 'symbol': 'of_new_null',
@@ -3227,6 +3229,11 @@ OUT_APP = '''fn main() {
                         " ", outnat::get(&h)); h.close() }
         err(m, c) { println("bind err ", m, " ", c) }
     }
+    var zr = outnat::open_zero()
+    match zr {
+        ok(h) { println("zero ", outnat::get(&h)); h.close() }
+        err(m, c) { println("zero err ", m, " ", c) }
+    }
     outnat::close_drop(11)
     println("flow ", outnat::flow(1, 3))
     println("final ", outnat::live(), " ", outnat::releases())
@@ -3246,8 +3253,9 @@ OUT_WANT = [
     'tail 2 0 3 -1 -1 -1',
     'empty -1 0 0',
     'bind -1 3 3',
+    'zero 0',
     'flow 6',
-    'final 0 11',
+    'final 0 12',
 ]
 
 
@@ -3282,6 +3290,8 @@ def out_params(tmp):
     relocs = open(os.path.join(out, 'native.relocs')).read().splitlines()
     if 'outrec of_new of_new_out rc:int o:own:Obj' not in relocs:
         raise Fail("out_own outrec line missing: %r" % relocs[:8])
+    if 'outrec of_zero of_zero_out rc:int o:own:Obj' not in relocs:
+        raise Fail("zero-input out_own outrec line missing: %r" % relocs[:12])
     if 'outrec of_prepare of_prepare_out rc:int st:own:Obj tail:offset:1' not in relocs:
         raise Fail("out_offset outrec line missing or out of order: %r" % relocs[:10])
     if any(ln.startswith('outrec of_get ') for ln in relocs):
@@ -3352,6 +3362,21 @@ def out_params(tmp):
             raise Fail("out compile negative %s: want %r, got rc %d: %s"
                        % (name, want, p.returncode, (p.stderr + p.stdout).strip()[-500:]))
 
+    # The generated <native>_out name is reserved in both declaration orders.
+    for name, wrap, want in (
+            ('collide_before',
+             base_wrap.replace('module outnat\n',
+                               'module outnat\n\ntype of_new_out = ref record { x: int }\n',
+                               1),
+             'already declared'),
+            ('collide_after',
+             base_wrap + '\ntype of_new_out = ref record { x: int }\n',
+             'reserved by the generated out record')):
+        p, _, _ = app('neg_' + name, 'fn main() {}\n', wrapper=wrap)
+        if p.returncode == 0 or want not in (p.stderr + p.stdout):
+            raise Fail("out name collision %s: want %r, got rc %d: %s"
+                       % (name, want, p.returncode, (p.stderr + p.stdout).strip()[-400:]))
+
     # --check parses an out declaration but refuses a native call.
     ckdir = os.path.join(tmp, 'out_check')
     os.makedirs(ckdir)
@@ -3384,6 +3409,7 @@ def out_params(tmp):
     reject([ln.replace('rc:int o:own:Obj', 'o:own:Obj rc:int')
             for ln in good], 'rc:int')
     reject([ln.replace('o:own:Obj', 'o:own:Obj o:own:Obj') for ln in good], 'duplicate')
+    reject(good + ['outrec of_new of_new_out rc:int o:own:Obj'], 'duplicate out record')
     reject([ln.replace('o:own:Obj', 'o:own:Nope') for ln in good], 'not in the sidecar')
     reject([ln.replace('rc:int st:own:Obj tail:offset:1',
                        'rc:int tail:offset:1 st:own:Obj') for ln in good], 'spec needs')
@@ -3426,6 +3452,20 @@ def out_params(tmp):
     else:
         raise Fail("const:0 in a function-pointer slot was accepted")
     tool.check_ctypes('dtor', ['const:-1'], ['void (*)(void *)'])
+    try:
+        tool.check_ctypes('dtor', ['const:7'], ['void (*)(void *)'])
+    except tool.ToolError as e:
+        if 'must be -1' not in str(e):
+            raise Fail("const:7 function pointer: unexpected error %s" % e)
+    else:
+        raise Fail("const:7 in a function-pointer slot was accepted")
+    try:
+        tool.check_kinds('bad', ['borrow_cstr@0', 'out_offset@0'])
+    except tool.ToolError as e:
+        if 'out_offset@0 must name a borrow_bytes argument' not in str(e):
+            raise Fail("out_offset on borrow_cstr: unexpected error %s" % e)
+    else:
+        raise Fail("out_offset targeting borrow_cstr was accepted")
     print('out parameter tests: ok')
 
 def main():

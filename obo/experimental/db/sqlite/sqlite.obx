@@ -91,6 +91,8 @@ pub type Stmt = foreign "sqlite3_stmt"
 native fn open_v2(path: &[]byte, flags: int, out db: Connection): open_v2_out
 native fn prepare_v2(db: &Connection, sql: &[]byte,
                      out st: Stmt, out tail: int from sql): prepare_v2_out
+native fn prepare_at(db: &Connection, sql: &[]byte, off: int,
+                     out st: Stmt, out tail: int from sql): prepare_at_out
 native fn has_live(db: &Connection): int
 native fn step(s: &Stmt): int
 native fn stmt_reset(s: &Stmt): int
@@ -151,12 +153,6 @@ fn blank_tail(s: &[]byte, off: int): bool {
         if !blank_byte(s[i]) { return false }
     }
     return true
-}
-
-fn remainder(s: &[]byte, from: int): []byte {
-    var out = new []byte(0)
-    for i in from..len(s) { append(out, s[i]) }
-    return out
 }
 
 // ------------------------------------------------------- decimal text helpers
@@ -281,8 +277,7 @@ pub fn (c: &Connection) exec(sql: string): Result[bool] {
     while true {
         while off < len(all) && blank_byte(all[off]) { off += 1 }
         if off >= len(all) { break }
-        var part = remainder(&all, off)
-        var out = prepare_v2(c, &part)
+        var out = prepare_at(c, &all, off)
         if out.rc != SQLITE_OK {
             var mb = error_message(c)
             let msg = string(mb)
@@ -294,7 +289,7 @@ pub fn (c: &Connection) exec(sql: string): Result[bool] {
         }
         var st = take(out.st)
         if st == nil { break }                  // only trailing whitespace remains
-        if out.tail < 0 || out.tail > len(part) {
+        if out.tail < 0 || out.tail > len(all) {
             st.close()
             return err("SQL statement has an invalid tail", 2)
         }
@@ -310,8 +305,8 @@ pub fn (c: &Connection) exec(sql: string): Result[bool] {
             }
         }
         st.close()
-        if out.tail <= 0 { return err("SQL statement did not advance", 2) }
-        off += out.tail
+        if out.tail <= off { return err("SQL statement did not advance", 2) }
+        off = out.tail
     }
     return ok(true)
 }

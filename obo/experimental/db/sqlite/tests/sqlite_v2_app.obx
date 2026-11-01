@@ -107,6 +107,22 @@ fn basic(c: &sqlite::Connection): Result[bool] {
     if got == nil { return err("blob NUL NULL", 23) }
     check(len(got) == 3 && int(got[1]) == 0, "blob NUL bytes", 24)
     nultext.close()
+
+    // TEXT containing a NUL is exact through column_bytes and refused by
+    // column_text with the documented text-NUL error.
+    let tq = try c.prepare("SELECT CAST(x'610062' AS TEXT)")
+    defer tq.close()
+    let tr = try tq.step()
+    if !tr { return err("text NUL row", 25) }
+    let tb = try tq.column_bytes(0)
+    if tb == nil { return err("text NUL bytes nil", 26) }
+    check(len(tb) == 3 && int(tb[1]) == 0, "text NUL bytes", 27)
+    let tt = tq.column_text(0)
+    match tt {
+        ok(v) { return err("text NUL column_text accepted", 28) }
+        err(m, code) { check(code == 1, "text NUL code", 29) }
+    }
+    tq.close()
     return ok(true)
 }
 
@@ -150,6 +166,25 @@ fn exec_test(c: &sqlite::Connection): Result[bool] {
     match p3 {
         ok(s) { s.close(); return err("trailing text accepted", 8) }
         err(m, code) { check(code == 2, "trailing code", 9) }
+    }
+    // SQL text with an embedded NUL is refused before the call.
+    var nb = new []byte(0)
+    append(nb, byte(83))
+    append(nb, byte(69))
+    append(nb, byte(76))
+    append(nb, byte(69))
+    append(nb, byte(67))
+    append(nb, byte(84))
+    append(nb, byte(32))
+    append(nb, byte(49))
+    append(nb, byte(0))
+    append(nb, byte(59))
+    let ns = string(nb)
+    expect_code(c.exec(ns), 2, "SQL NUL exec", 10)
+    let np = c.prepare(ns)
+    match np {
+        ok(s) { s.close(); return err("SQL NUL prepare accepted", 11) }
+        err(m, code) { check(code == 2, "SQL NUL prepare code", 12) }
     }
     return ok(true)
 }
@@ -240,6 +275,9 @@ fn close_v2_test(path: string): Result[bool] {
         err(m, code) { return err("close_v2 failed: " + m, 4) }
     }
     check(!c1.is_open(), "close_v2 closed", 5)
+    // sqlite3_errcode on the orphan's connection is SQLITE_MISUSE (21), as
+    // documented in 6.2; the step return code remains the statement signal.
+    check(st.error_code() == sqlite::SQLITE_MISUSE, "orphan errcode", 5)
     // The orphaned statement still works, and while it remains on a row its
     // read lock keeps a second connection's write at SQLITE_BUSY.
     let row2 = try st.step()

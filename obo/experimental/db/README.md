@@ -285,8 +285,10 @@ fn main() {
   files under `/tmp` are supported; the tests use both and remove their files.
 - `exec(sql)` is prepare/step/finalize per statement in obo (no `sqlite3_exec`)
   and accepts multiple statements; every exit from the loop finalizes the
-  current statement. `prepare(sql)` accepts exactly one statement and
-  conservatively rejects trailing text after it, including a trailing SQL
+  current statement. It prepares each statement at an absolute offset through
+  `sq_prepare_at.c` (native `prepare_at`), so a 1 MiB script is linear rather
+  than a copy-the-remainder O(n²). `prepare(sql)` remains the one-shot API; it
+  accepts exactly one statement and conservatively rejects trailing text after it, including a trailing SQL
   comment; this is deliberate, not a full SQL lexer.
 - Bind indices are 1-based; out-of-range is `SQLITE_RANGE`. Bindings are
   `bind_null`, `bind_int` (i64), `bind_text` and `bind_blob`; text rejects
@@ -330,7 +332,8 @@ bytes and `long` for `sqlite3_int64`. `sqlite.cbind` records
 Linking is `-l:libsqlite3.so.0`. The declaration file is listed under
 `declaration_files` and hashed into the manifest as provenance, without being
 promoted to a compiled header check; `tests/real_sqlite_abi_test.c` resolves
-every declared symbol from the real library with independent prototypes. The PostgreSQL cbind does the same for `libpq_decls.h`,
+every declared symbol from the real library with independent prototypes. The
+trusted helpers are `sq_stmt_errcode.c` and `sq_prepare_at.c`. The PostgreSQL cbind does the same for `libpq_decls.h`,
 `postgres_adapter.h` and `cres.h`.
 
 A private evidence-only cross-check compiled the real 3.45.1 header first and

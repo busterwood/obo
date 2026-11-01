@@ -39,6 +39,11 @@ int of_new(int v, Of **out) {
     return *out ? 0 : 1;
 }
 
+int of_zero(Of **out) {
+    *out = of_make(0);
+    return *out ? 0 : 1;
+}
+
 int of_new_fail(int v, Of **out) {
     *out = of_make(v);
     return 3;

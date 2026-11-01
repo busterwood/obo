@@ -28,8 +28,8 @@ where the work stands, how to run it, and when to stop and ask the user.
 - **Stage (f)**, out parameters and the SQLite v2 port: implemented on `cinterop-v2-f`, pending
   independent review and merge. Design §8 records the implementation, the one deviation (an
   out_offset-only `var` is freed at scope end, so the sketched exit 5 is unreachable), and the gate
-  results. The one trusted helper lives in `obo/experimental/db/sqlite/sq_stmt_errcode.c`; the binding
-  no longer has a C adapter.
+  results. The trusted helpers live in `obo/experimental/db/sqlite/sq_stmt_errcode.c` and
+  `sq_prepare_at.c` (linear `exec`); the binding no longer has a C adapter.
 - **Stage (g) and (h):** not started.
 - **Cleanup audit:** in progress. A read-only audit of old interop code and docs is running. It sorts
   items into three groups: wrong or dead now, removable at a named stage, and keep. Nothing will be

@@ -3,6 +3,7 @@ module outnat
 pub type Obj = foreign "Of"
 
 native fn of_new(v: int, out o: Obj): of_new_out
+native fn of_zero(out o: Obj): of_zero_out
 native fn of_new_fail(v: int, out o: Obj): of_new_fail_out
 native fn of_new_null(v: int, out o: Obj): of_new_null_out
 native fn of_wide(a: int, b: int, c: int, d: int, e: int, f: int, out o: Obj): of_wide_out
@@ -34,6 +35,18 @@ pub fn open(v: int): Result[Obj] {
         var b = take(r.o)
         if b != nil { b.close() }
         return err("new failed", 1)
+    }
+    var h = take(r.o)
+    if h == nil { return err("no handle", 1) }
+    return ok(h)
+}
+
+pub fn open_zero(): Result[Obj] {
+    var r = of_zero()
+    if r.rc != 0 {
+        var bad = take(r.o)
+        if bad != nil { bad.close() }
+        return err("zero failed", 1)
     }
     var h = take(r.o)
     if h == nil { return err("no handle", 1) }

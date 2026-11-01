@@ -9,7 +9,8 @@
     "../../../lib/sqldialect.obx"
   ],
   "sources": [
-    "sq_stmt_errcode.c"
+    "sq_stmt_errcode.c",
+    "sq_prepare_at.c"
   ],
   "headers": [],
   "declaration_files": [
@@ -35,6 +36,10 @@
      "ret": "i32", "effects": ["impure"]},
     {"name": "prepare_v2", "symbol": "sqlite3_prepare_v2",
      "args": ["borrow_mut<sqlite3>@0", "borrow_bytes@1",
+              "out_own<sqlite3_stmt>", "out_offset@1"],
+     "ret": "i32", "effects": ["impure"]},
+    {"name": "prepare_at", "symbol": "sq_prepare_at",
+     "args": ["borrow_mut<sqlite3>@0", "borrow_bytes@1", "i32@2",
               "out_own<sqlite3_stmt>", "out_offset@1"],
      "ret": "i32", "effects": ["impure"]},
     {"name": "has_live", "symbol": "sqlite3_next_stmt",

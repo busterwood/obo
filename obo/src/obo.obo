@@ -1256,6 +1256,7 @@ type OutRecDesc = ref record {
 }
 
 var outRecs = new []OutRecDesc(0)   // plain values: the sidecar is written after releaseTables
+var outRecNames = new []string(0)   // generated <native>_out names reserved in this compilation
 
 var fnStack = new []^Sym(0)       // functions and lambda bodies being compiled, for active-callee checks
 var lambdaOuterNames = new []string(0)  // enclosing local/parameter names while a lambda body compiles
@@ -4070,6 +4071,11 @@ fn declare(s: ^Sym): ^Sym {
         return s
     }
     if findSym(curModule.globals, s.name) != nil { error("'" + s.name + "' is already declared in this scope") }
+    for i in 0..len(outRecNames) {
+        if outRecNames[i] == s.name {
+            error("'" + s.name + "' is reserved by the generated out record of a native fn")
+        }
+    }
     for i in 0..len(curModule.imports) {
         if curModule.imports[i].alias == s.name { error("'" + s.name + "' clashes with a top-level declaration") }
     }
@@ -13368,10 +13374,10 @@ fn nativeFnDecl(isPub: bool) {
         let pkind = params[i].kind
         let pmode = params[i].mode
         let ptyp = params[i].typ
+        if pname == "rc" { error("native fn '" + name + "': an out field may not be named 'rc'") }
         for n in fieldNames {
             if n == pname { error("native fn '" + name + "': duplicate out field '" + pname + "'") }
         }
-        if pname == "rc" { error("native fn '" + name + "': an out field may not be named 'rc'") }
         append(fieldNames, pname)
         if pkind == 1 {
             ownCount += 1
@@ -13427,6 +13433,7 @@ fn nativeFnDecl(isPub: bool) {
         rt.desc = descriptor(off, ptrs, strs)
         ret = rt
         append(outRecs, new OutRecDesc{native: name, recname: recName, desc: rt.desc, fields: fields})
+        append(outRecNames, recName)
         outRecIndex = len(outRecs) - 1
     } else {
         if sym == T_COLON {
@@ -16546,6 +16553,7 @@ fn releaseTables() {
     globalKeys = new []string(0)
     globalRegistry = new []^Sym(0)
     symLoadNames = new []string(0)
+    outRecNames = new []string(0)
     if NF_CHECK {
         verifyNonFresh()
         if len(freeArena) == 0 && len(nonFreshLog) != 0 {

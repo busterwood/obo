@@ -13,6 +13,7 @@ long of_last_len(void);
 
 /* out_own: success, failure with a non-NULL handle, and failure with NULL. */
 int of_new(int v, Of **out);
+int of_zero(Of **out);
 int of_new_fail(int v, Of **out);
 int of_new_null(int v, Of **out);
 

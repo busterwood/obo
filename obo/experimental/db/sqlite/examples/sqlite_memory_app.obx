@@ -2,9 +2,9 @@ module app
 
 import "sqlite.obx"
 
-// SQLite in-memory smoke test. It uses only the declarations-only adapter and
-// never touches a real database file. Every Connection and Stmt is closed
-// explicitly, normally with defer, and the adapter live counters must return 0.
+// SQLite in-memory smoke test for the cinterop v2 wrapper. It never touches a
+// real database file. Every Connection and Stmt is closed explicitly, normally
+// with defer; under OBO_CHECK=1 the foreign handle census must stay at zero.
 fn check(ok: bool, name: string, code: int) {
     if !ok {
         println("FAIL ", name)

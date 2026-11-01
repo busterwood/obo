@@ -458,7 +458,7 @@ def check_kinds(fname, args):
         raise ToolError("%s: at most one out_own is supported" % fname)
     if len([k for k in outs if k['name'] == 'out_offset']) > 1:
         raise ToolError("%s: at most one out_offset is supported" % fname)
-    if kinds and not data and not any(k['name'] in ('null', 'const') for k in kinds):
+    if kinds and not data and not any(k['name'] in ('null', 'const') + OUT_KINDS for k in kinds):
         raise ToolError("%s: no argument kind" % fname)
     for i in range(max(data) + 1 if data else 0):
         if i not in data:
@@ -1348,6 +1348,8 @@ def _read_outrec_v2(lines, foreign):
     always the first field, and the out fields follow in declaration order. Own fields name an obo
     foreign type from the sidecar's foreign table; offset fields name an input index."""
     out = []
+    seen_native = set()
+    seen_record = set()
     for line in lines:
         parts = line.split()
         if len(parts) < 4 or parts[0] != 'outrec':
@@ -1356,6 +1358,12 @@ def _read_outrec_v2(lines, foreign):
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', native) or \
                 not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', record):
             raise ToolError("bad out record identifiers %r" % line)
+        if native in seen_native:
+            raise ToolError("duplicate out record for native %r" % native)
+        if record in seen_record:
+            raise ToolError("duplicate out record name %r" % record)
+        seen_native.add(native)
+        seen_record.add(record)
         if record != native + '_out':
             raise ToolError("out record %r must be named %r" % (record, native + '_out'))
         tokens = parts[3:]

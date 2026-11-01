@@ -86,4 +86,9 @@ extern int sqlite3_finalize(sqlite3_stmt *stmt);
  * C, so obo holds no pointer. */
 extern int sq_stmt_errcode(sqlite3_stmt *stmt);
 
+/* Trusted helper for exec(): prepare from an absolute offset in the caller's
+ * SQL bytes and return the tail as an absolute pointer (see sq_prepare_at.c). */
+extern int sq_prepare_at(sqlite3 *db, const void *sql, int n, int off,
+                         sqlite3_stmt **st, const char **tail);
+
 #endif
