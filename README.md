@@ -347,8 +347,8 @@ each type's byte size (24 for decimal, 8 otherwise). An offset that is not on
 the signature is a fail-closed internal error, not a silently dropped summary.
 
 **`.sym` and format 11.** The grammar is unchanged: the same signature text now
-means decimal parameters and returns. A 0.17 reader can parse it but cannot run
-it: its interface call path raises
+means decimal parameters and returns. Without the format bump a 0.17 reader
+would parse the signature and miscompile it: its interface call path raises
 `internal error: a decimal-returning interface or function value is not supported`
 for a decimal return, and a decimal parameter would dispatch with the old
 `8*n` vtable offset and corrupt the call. The change is therefore a meaning
