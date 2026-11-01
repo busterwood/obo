@@ -153,6 +153,53 @@ MUTANTS = [
 # Runtime, core-include and entry-table mutants are built in a private runtime
 # directory; the compiler is rebuilt from the unmutated source so the test
 # programs embed the mutant runtime.  Each item is (name, file, old, new).
+# Observationally equivalent mutants: planted, built and run like the rest, but a passing
+# verdict counts as `equiv`, not `missed`. Each entry is (name, [(old, new), ...]).
+EQUIVALENT = {
+    "capture snapshot taken by address":
+        "observationally equivalent under v1: no &decimal, call-argument-only captures, and "
+        "cell/local share the creating call's lifetime, so no program can change d between the "
+        "snapshot and the load",
+}
+
+EQUIVALENT_MUTANTS = [
+    ("capture snapshot taken by address", [
+        # construction: store &d (one word) instead of copying the 24 value bytes
+        ("        if caps[i].kind == 4 {\n"
+         "            let v = localItem(co, tDecimal)\n"
+         "            copyDecimalToBase(v, RBP, base + off)\n",
+         "        if caps[i].kind == 4 {\n"
+         "            let v = localItem(co, tDecimal)\n"
+         "            let p = decPtr(v)\n"
+         "            opMem(0x89, p.r, mem(RBP, -1, base + off, 8), true, false)\n"
+         "            release(p.r)\n"),
+        # body: load the pointer, then the 24 value bytes through it
+        ("                for w in 0..3 {\n"
+         "                    let rv = alloc()\n"
+         "                    opMem(0x8B, rv, mem(er, -1, off + 8 * w, 8), true, false)\n",
+         "                let ap = alloc()\n"
+         "                opMem(0x8B, ap, mem(er, -1, off, 8), true, false)\n"
+         "                for w in 0..3 {\n"
+         "                    let rv = alloc()\n"
+         "                    opMem(0x8B, rv, mem(ap, -1, 8 * w, 8), true, false)\n"),
+        ("                }\n"
+         "            } else {\n"
+         "                frame += 8\n"
+         "                let s = newSym(\"let\", cname, ctyp)\n"
+         "                s.storage = \"local\"\n"
+         "                s.offset = -frame\n"
+         "                if ckind == 1 {\n",
+         "                }\n"
+         "                release(ap)\n"
+         "            } else {\n"
+         "                frame += 8\n"
+         "                let s = newSym(\"let\", cname, ctyp)\n"
+         "                s.storage = \"local\"\n"
+         "                s.offset = -frame\n"
+         "                if ckind == 1 {\n"),
+    ]),
+]
+
 RUNTIME_MUTANTS = [
     # template decimal transport and escaping (0.15)
     ("template: sqlWhere omits per-predicate parentheses",
@@ -566,7 +613,7 @@ def main():
     verbose = '-v' in sys.argv[1:]
     text = open(SRC).read()
     tmp = tempfile.mkdtemp(prefix='obo-mut-decimal-')
-    caught = missed = broken = 0
+    caught = equiv = missed = broken = 0
     try:
         # The unmutated baseline must pass the same judge path; otherwise a
         # broken expectation would make every mutant look caught.
@@ -595,6 +642,37 @@ def main():
             if not run_suite(exe, FORK, tmp, verbose, runtime_dir=os.path.join(FORK, 'runtime')):
                 caught += 1
                 print(f"caught  {name}")
+            else:
+                missed += 1
+                print(f"MISSED  {name}")
+        for name, edits in EQUIVALENT_MUTANTS:
+            src_text = text
+            okpat = True
+            for old, new in edits:
+                n = src_text.count(old)
+                if n != 1:
+                    print(f"BROKEN  {name}: pattern occurs {n} times, want 1")
+                    broken += 1
+                    okpat = False
+                    break
+                src_text = src_text.replace(old, new)
+            if not okpat:
+                continue
+            src = os.path.join(tmp, 'src.obo')
+            exe = os.path.join(tmp, 'obo-eq')
+            open(src, 'w').write(src_text)
+            p = subprocess.run([SEED, src, '-o', exe, '--rt', FORK],
+                               capture_output=True, text=True, timeout=180)
+            if p.returncode != 0:
+                print(f"BROKEN  {name}: mutant did not compile: {p.stderr.strip()[:140]}")
+                broken += 1
+                continue
+            if not run_suite(exe, FORK, tmp, verbose, runtime_dir=os.path.join(FORK, 'runtime')):
+                caught += 1
+                print(f"caught  {name}")
+            elif name in EQUIVALENT:
+                equiv += 1
+                print(f"equiv   {name}: {EQUIVALENT[name]}")
             else:
                 missed += 1
                 print(f"MISSED  {name}")
@@ -666,9 +744,10 @@ def main():
                 print(f"MISSED  {name}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    total = (len(MUTANTS) + len(DGLOBAL_MUTANTS) + len(ARRAY_MUTANTS) + len(RUNTIME_MUTANTS) + len(RUNTIME_ARRAY_MUTANTS)
+    total = (len(MUTANTS) + len(DGLOBAL_MUTANTS) + len(ARRAY_MUTANTS) + len(EQUIVALENT_MUTANTS)
+             + len(RUNTIME_MUTANTS) + len(RUNTIME_ARRAY_MUTANTS)
              + len(ENTRY_MUTANTS) + len(SYM_MUTANTS))
-    print(f"\n{caught} caught, {missed} missed, {broken} broken (of {total})")
+    print(f"\n{caught} caught, {equiv} equiv, {missed} missed, {broken} broken (of {total})")
     return 1 if missed or broken else 0
 
 

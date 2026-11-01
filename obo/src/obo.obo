@@ -10232,9 +10232,6 @@ fn lambdaExpr(): Item {
             }
             let ct = symType(su)
             if ct.kind == "handle" { deadHandleCheck(su) }
-            if ct.kind == "decimal" {
-                error("cannot capture decimal '" + cn + "': decimals have no capture mode in v1; pass it as a parameter")
-            }
             if ct.kind == "string" {
                 error("cannot capture '" + cn + "': strings are owned; pass it as a parameter")
             }
@@ -10253,6 +10250,9 @@ fn lambdaExpr(): Item {
             if ct.kind == "int" || ct.kind == "byte" || ct.kind == "bool" || ct.kind == "float" {
                 // float is one raw binary64 word, so a scalar snapshot is the same one-word copy as int.
                 ck = 0
+            } else if ct.kind == "decimal" {
+                // a decimal capture is a 24-byte value snapshot in the environment cell
+                ck = 4
             } else if ct.kind == "handle" {
                 ck = 2
             } else if ct.kind == "fn" {
@@ -10530,9 +10530,12 @@ fn lambdaExpr(): Item {
         foldEnd = -1
         return makeConst(ft, cell)
     }
-    // The capturing cell lives in the creating function's frame: [code][cap0]...[capN]. It contains
+    // The capturing cell lives in the creating function's frame: [code][cap0]...[capN], where a
+    // decimal capture is a 24-byte value snapshot and every other capture is one word. It contains
     // no owned value, so it is plain frame words and nothing frees it.
-    frame += 8 * (1 + len(caps))
+    var cellBytes = 8
+    for i in 0..len(caps) { cellBytes += capSlotAt(caps, i) }
+    frame += cellBytes
     let base = -frame
     let cw = alloc()
     movRI(cw, CODE_BASE + f.addr)
@@ -10540,9 +10543,15 @@ fn lambdaExpr(): Item {
     release(cw)
     for i in 0..len(caps) {
         let co = caps[i].outer
-        let v = load(localItem(co, symType(co)))
-        opMem(0x89, v.r, mem(RBP, -1, base + 8 + 8 * i, 8), true, false)
-        release(v.r)
+        let off = capOff(caps, i)
+        if caps[i].kind == 4 {
+            let v = localItem(co, tDecimal)
+            copyDecimalToBase(v, RBP, base + off)
+        } else {
+            let v = load(localItem(co, symType(co)))
+            opMem(0x89, v.r, mem(RBP, -1, base + off, 8), true, false)
+            release(v.r)
+        }
     }
     lastFnBind = captureBind(&caps)
     let cellReg = alloc()
@@ -11436,7 +11445,7 @@ fn assignmentOrCall(): bool {
             let xs = x.sym
             if xs == nil {
                 errorAt("strings are immutable", line, col)
-            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool" || symType(xs).kind == "float") {
+            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool" || symType(xs).kind == "float" || symType(xs).kind == "decimal") {
                 errorAt("cannot change captured '" + qualifiedSymName(xs) + "': captures are read-only; pass a mutable parameter instead", line, col)
             } else {
                 errorAt("'" + qualifiedSymName(xs) + "' is immutable (declared with let)", line, col)
@@ -13272,24 +13281,42 @@ fn lambdaBody(f: ^Sym, ret: ^Type, params: &[]Param, caps: &[]LambdaCap) {
         var envOff = 16 + visibleParamBytes(params)
         if ret.kind == "decimal" { envOff += 8 }
         opMem(0x8B, er, mem(RBP, -1, envOff, 8), true, false)
+        var off = 8
         for i in 0..len(caps) {
             let cname = caps[i].name
             let ctyp = caps[i].typ
             let ckind = caps[i].kind
-            frame += 8
-            let s = newSym("let", cname, ctyp)
-            s.storage = "local"
-            s.offset = -frame
-            if ckind == 1 {
-                s.isRef = true
-                s.bind = singleBind(s, false, "", false, nil)
+            if ckind == 4 {
+                // a decimal capture is a real 24-byte local: a snapshot of the environment slot
+                frame += 24
+                let s = newSym("let", cname, ctyp)
+                s.storage = "local"
+                s.offset = -frame
+                declare(s)
+                append(captureSyms, s)
+                for w in 0..3 {
+                    let rv = alloc()
+                    opMem(0x8B, rv, mem(er, -1, off + 8 * w, 8), true, false)
+                    opMem(0x89, rv, mem(RBP, -1, s.offset + 8 * w, 8), true, false)
+                    release(rv)
+                }
+            } else {
+                frame += 8
+                let s = newSym("let", cname, ctyp)
+                s.storage = "local"
+                s.offset = -frame
+                if ckind == 1 {
+                    s.isRef = true
+                    s.bind = singleBind(s, false, "", false, nil)
+                }
+                declare(s)
+                append(captureSyms, s)
+                let rv = alloc()
+                opMem(0x8B, rv, mem(er, -1, off, 8), true, false)
+                opMem(0x89, rv, mem(RBP, -1, s.offset, 8), true, false)
+                release(rv)
             }
-            declare(s)
-            append(captureSyms, s)
-            let rv = alloc()
-            opMem(0x8B, rv, mem(er, -1, 8 + 8 * i, 8), true, false)
-            opMem(0x89, rv, mem(RBP, -1, s.offset, 8), true, false)
-            release(rv)
+            off += capSlotAt(caps, i)
         }
         release(er)
     }

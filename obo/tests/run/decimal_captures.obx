@@ -1,0 +1,117 @@
+// Decimal capture snapshots (stage D4b): a captured decimal is a copy of its three 24-byte
+// value words in the lambda environment cell, at a byte offset past the earlier captures.
+// The cell is [code][cap...]; a decimal slot is 24 bytes and every other slot is 8, so an
+// int beside a decimal is not at 8*i. The snapshot is taken when the literal is evaluated.
+type Rec = ref record { n: int }
+
+fn apply(d: decimal, f: fn(decimal): decimal): decimal { return f(d) }
+fn applyR(d: decimal, f: fn(decimal): Result[decimal]): Result[decimal] { return f(d) }
+fn applyI(d: decimal, f: fn(decimal): int): int { return f(d) }
+fn twiceD(x: decimal, f: fn(decimal): decimal): decimal { return f(f(x)) }
+fn fold(acc: decimal, d: decimal, f: fn(decimal, decimal): decimal): decimal { return f(acc, d) }
+
+// the callback runs after the callee allocates: the cell belongs to the creating call's frame
+fn later(f: fn(decimal): decimal, x: decimal): decimal {
+    let junk = new Rec{n: 1}
+    return f(x) + decimal(junk.n) - 1.0
+}
+
+fn sortIndices(mut order: &[]int, vals: &[]decimal, cmp: fn(decimal, decimal): int) {
+    var i = 1
+    while i < len(order) {
+        let v = order[i]
+        var j = i - 1
+        while j >= 0 && cmp(vals[order[j]], vals[v]) > 0 {
+            order[j + 1] = order[j]
+            j -= 1
+        }
+        order[j + 1] = v
+        i += 1
+    }
+}
+
+fn main() {
+    // a snapshot does not see a later write to the outer local; a second literal sees it
+    var d = 1.25
+    let a = apply(0.00, fn [d](x: decimal): decimal { return d + x })
+    d = 5.00
+    let b = apply(0.00, fn [d](x: decimal): decimal { return d + x })
+    println(a)                                             // expect: 1.25
+    println(b)                                             // expect: 5.00
+
+    // all three value words: a non-zero w1, a scale in w2 and a negative-zero sign/scale
+    let p = 12345678901234567890.12
+    println(apply(0.0, fn [p](x: decimal): decimal { return p }))  // expect: 12345678901234567890.12
+    let small = 0.01
+    let negzero = -0.00
+    println(apply(0.0, fn [small, negzero](x: decimal): decimal { return small }))  // expect: 0.01
+    println(apply(0.0, fn [small, negzero](x: decimal): decimal { return negzero }))  // expect: 0.00
+
+    // the same cell is called twice: the first call must not consume or clobber it
+    let c = 2.5
+    println(twiceD(1.0, fn [c](x: decimal): decimal { return x + c }))  // expect: 6.0
+
+    // [decimal, int] and [int, decimal]: offsets are byte sizes, not 8*i
+    let di = 3.0
+    let ni = 7
+    println(apply(1.0, fn [di, ni](x: decimal): decimal { return di + x + decimal(ni) }))  // expect: 11.0
+    println(apply(1.0, fn [ni, di](x: decimal): decimal { return di + x + decimal(ni) }))  // expect: 11.0
+
+    // a nested capturing lambda snapshots the outer decimal capture and parameter again
+    let o = 1.5
+    println(apply(1.0, fn [o](x: decimal): decimal {
+        return fold(0.0, x, fn [o, x](acc: decimal, y: decimal): decimal {
+            return acc + o + x + y
+        })
+    }))                                                    // expect: 3.5
+
+    // a capturing lambda returning Result[decimal] reads the cell at 16 + A, with no +8
+    let q = 0.25
+    let rr = applyR(1.5, fn [q](x: decimal): Result[decimal] { return ok(x + q) })
+    match rr {
+        ok(v) { println(v) }                               // expect: 1.75
+        err(m, c) { println(m, " ", c) }
+    }
+
+    // a capturing decimal lambda with an int return: the cell is at 16 + A
+    let z = 2.0
+    println(applyI(2.5, fn [z](x: decimal): int {
+        if x > z { return 1 }
+        return 0
+    }))                                                    // expect: 1
+
+    // a record capture beside a decimal capture
+    let rec = new Rec{n: 9}
+    let w = 0.5
+    println(apply(1.0, fn [rec, w](x: decimal): decimal { return x + w + decimal(rec.n) }))  // expect: 10.5
+    println(apply(1.0, fn [w, rec](x: decimal): decimal { return x + w + decimal(rec.n) }))  // expect: 10.5
+
+    // the creating call is still on the stack when the callback runs
+    let g = 2.0
+    println(later(fn [g](x: decimal): decimal { return g + x }, 1.0))  // expect: 3.0
+
+    // a sort comparator captures a decimal threshold and returns int
+    let vals = new []decimal(0)
+    append(vals, 2.50)
+    append(vals, 0.75)
+    append(vals, 1.25)
+    let order = new []int(0)
+    append(order, 0)
+    append(order, 1)
+    append(order, 2)
+    let threshold = 1.00
+    sortIndices(&order, vals, fn [threshold](a: decimal, b: decimal): int {
+        if a < threshold && !(b < threshold) { return -1 }
+        if !(a < threshold) && b < threshold { return 1 }
+        if a < b { return -1 }
+        if a > b { return 1 }
+        return 0
+    })
+    var k = 0
+    while k < len(order) {
+        print(vals[order[k]])
+        print(" ")
+        k += 1
+    }
+    println("")                                            // expect: 0.75 1.25 2.50 
+}

@@ -22,3 +22,17 @@ fn main() {
     let d = 1.0
     println(apply(0.0, fn [mut d](x: decimal): decimal { return d }))  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
 }
+
+// === a decimal capture cannot be moved
+fn apply(d: decimal, f: fn(decimal): decimal): decimal { return f(d) }
+fn main() {
+    let d = 1.0
+    println(apply(0.0, fn [move d](x: decimal): decimal { return d }))  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
+}
+
+// === a captured decimal is read-only
+fn apply(d: decimal, f: fn(decimal): decimal): decimal { return f(d) }
+fn main() {
+    var d = 1.0
+    println(apply(0.0, fn [d](x: decimal): decimal { d = 2.0; return d }))  // error: cannot change captured 'd': captures are read-only; pass a mutable parameter instead
+}
