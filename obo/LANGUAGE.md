@@ -1081,7 +1081,8 @@ either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I
 of its own kind with fields or identity. Interfaces arrived in `0.8`; additive
 builtin/runtime extensions use patch releases such as the historical `0.8.1`.
 Lambdas are `0.9`, numeric floats are `0.10`/format 6, Stage B capture lists are
-`0.11`/format 6, and handles to interfaces (`^I`) are a later phase.
+`0.11`/format 6, the impure member tier is `0.17`/format 10, and handles to
+interfaces (`^I`) are a later phase.
 
 ### Declarations and implementations
 
@@ -1100,8 +1101,9 @@ impl Shape for Square
 ```
 
 - `type I = interface { ... }` declares an interface; it needs at least one member, is never forward-declared,
-  and a member is `[pure] [mut] fn name(params)[: T]`. `pure` and `mut` come before `fn`; `pub` is not allowed
-  on a member (mark the interface type `pub`). A member cannot take or return a function value.
+  and a member is `[pure | impure] [mut] fn name(params)[: T]`. `pure`, `impure` and `mut` come before `fn`
+  (`pure` and `impure` are mutually exclusive); `pub` is not allowed on a member (mark the interface type `pub`).
+  A member cannot take or return a function value.
 - A member's receiver is parameter 0: borrowed for `fn`, mutable for `mut fn`; it is not written in the member.
   Explicit parameters are owned `p: T`, borrowed `p: &T`, or mutable borrowed `mut p: &T`. `mut p: T` is the
   existing `mut needs a reference parameter` error. Interface types may appear as parameter and return types.
@@ -1113,7 +1115,9 @@ impl Shape for Square
   argument count, argument types, argument modes, and return type. A `pure` member needs a method that is pure.
   A plain or `mut` member (the **local** tier) needs a method that writes no owned value through a handle, frees
   no global, does not call an uncompiled function, and frees nothing below a parameter the member does not
-  declare `mut`. A method must be defined before its implementation.
+  declare `mut`. An `impure` member may be implemented by any method, including a pure or plain one: its summary
+  is the maximum, so every caller is conservatively invalidated. A method must be defined before its
+  implementation.
 - A `pub impl` is visible to importers; a private implementation is not. An imported private implementation
   is reported as `module 'M' has no exported implementation of 'I' for 'T' (only 'pub' implementations are
   visible)`.
@@ -1256,6 +1260,9 @@ receiver. The caller uses the member's synthetic summary, not the implementation
   globals and its receiver, so `pure` does **not** forbid those writes.
 - A plain or `mut` member may free only below its own `mut` parameters (the receiver for `mut fn`), so a call
   invalidates references below those places. It never frees a global or writes through a handle.
+- An `impure` member has the maximum summary: it may free anything and write through a handle. A call through
+  it invalidates every live reference and handle, and a reference borrowed through a handle cannot be read
+  afterwards. The calling function inherits that maximum, so it is itself impure for later tier checks.
 
 A reference borrowed through a handle can be passed only to a member that cannot free; otherwise the message
 is `cannot pass a reference that borrows through a handle to interface method 'I::m': it might free what the
@@ -1277,7 +1284,7 @@ Interface values cannot be compared: `interface values cannot be compared; test 
 work.
 
 Not in this phase: interface-to-interface conversion, structural typing, variance, superinterfaces, downcasts,
-type tests, owned-receiver members, method values, an impure member tier, `?T -> ?I`, and `^I`. An interface
+type tests, owned-receiver members, method values, `?T -> ?I`, and `^I`. An interface
 member cannot take or return a function value; the lambda firewall is part of the lambda phase. An interface
 value cannot be `new`-ed, used as a constant, `match`ed, or printed: `new I` is `'I' is not a record type`,
 `new []I(n > 0)` starts as nil (use `[]?I` or start empty), and a missing initializer is the existing nil error.
@@ -1694,9 +1701,10 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.16 sym-format 9 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.17 sym-format 10 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
-when a `.sym` is read. The historical `0.15` release printed
+when a `.sym` is read. The historical `0.16` release printed
+`obo 0.16 sym-format 9 abi 1`, the `0.15` release printed
 `obo 0.15 sym-format 8 abi 1`, and the `0.14` release printed
 `obo 0.14 sym-format 7 abi 1`, `0.12` printed `obo 0.12 sym-format 6 abi 1`,
 and `0.8.1` printed
@@ -1710,9 +1718,9 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 9
+obosym 10
 abi 1
-compiler "0.16"
+compiler "0.17"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210

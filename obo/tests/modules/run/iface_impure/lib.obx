@@ -1,0 +1,24 @@
+module lib
+// The impure member tier across a module boundary (0.17, format 10): the markers are written to
+// lib.sym and the importer rebuilds the maximum summary from them.
+var log: []int = new []int(0)
+fn zap() { truncate(log, 0) }
+
+pub type Handler = interface {
+    impure fn handle(k: int): int
+    impure mut fn reset(k: int): int
+}
+pub type Counter = ref record { pub n: int }
+
+pub fn (c: &Counter) handle(k: int): int {
+    zap()
+    return c.n + k
+}
+pub fn (mut c: &Counter) reset(k: int): int {
+    zap()
+    c.n = k
+    return c.n
+}
+pub impl Handler for Counter
+
+pub fn run(h: &Handler, k: int): int { return h.handle(k) }

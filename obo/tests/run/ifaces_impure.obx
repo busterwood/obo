@@ -1,0 +1,60 @@
+// The impure interface-member tier (design/impure-interface-members.md): an `impure fn` and an
+// `impure mut fn` are implemented by a method that frees a global and by one that calls an impure
+// helper; direct calls and calls through `I` and `&I`; two implementations of one interface, one of
+// them pure; and a wrapper that calls through the member and is therefore impure itself.
+var g: []int = new []int(0)
+var hits = 0
+
+fn sink() {
+    truncate(g, 0)
+    hits += 1
+}
+
+type Reader = interface {
+    impure fn read(k: int): int
+    impure mut fn bump(k: int): int
+}
+type File = ref record { n: int }
+type Mem = ref record { n: int }
+
+// an impure fn implemented by a method that frees a global
+fn (f: &File) read(k: int): int {
+    sink()
+    return f.n + k
+}
+// an impure mut fn implemented by a method that calls an impure helper
+fn (mut m: &Mem) bump(k: int): int {
+    sink()
+    m.n += k
+    return m.n
+}
+// an impure fn implemented by a pure method: the tier is an upper bound, so this is allowed
+fn (m: &Mem) read(k: int): int { return m.n * k }
+// a plain method also implements an impure mut member
+fn (mut f: &File) bump(k: int): int {
+    f.n += k
+    return f.n
+}
+impl Reader for File
+impl Reader for Mem
+
+// a wrapper that calls an impure member is itself impure; a direct call still works
+fn viaIface(r: &Reader, k: int): int { return r.read(k) }
+
+fn main() {
+    // a direct method call
+    var file = new File{n: 7}
+    println(file.read(2))                  // expect: 9
+    // through an owned interface value
+    let f: Reader = new File{n: 10}
+    println(f.read(5))                     // expect: 15
+    // through a borrowed interface value, inside another function
+    let rf: &Reader = &f
+    println(viaIface(rf, 1))               // expect: 11
+    // two implementations of one interface; an impure mut member through the interface
+    var m: Reader = new Mem{n: 4}
+    println(m.bump(2))                     // expect: 6
+    println(m.read(3))                     // expect: 18
+    println(hits)                          // expect: 4
+    println(len(g))                        // expect: 0
+}

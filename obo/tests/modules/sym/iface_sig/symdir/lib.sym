@@ -1,6 +1,6 @@
-obosym 9
+obosym 10
 abi 1
-compiler "0.16"
+compiler "0.17"
 source 0x2695746401331cf3
 dep dep "dep.obx"
 interface 0x73c0d5be3d8f9dea

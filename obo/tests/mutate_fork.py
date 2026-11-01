@@ -1599,8 +1599,8 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X9: a temporary may be borrowed into a cell": (
         "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
         "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
-    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 9\n", "const SYM_FORMAT = 2\n"),
-    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.16\"\n", "const OBO_VERSION = \"0.6\"\n"),
+    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 10\n", "const SYM_FORMAT = 2\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.17\"\n", "const OBO_VERSION = \"0.6\"\n"),
 
     # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
     "interfaces v3 X18: the receiver bit is omitted for mut fn": (
@@ -1619,8 +1619,15 @@ INTERFACE_MUTANTS = {
         "    if pure { return }\n    for i in 0..len(m.fnRec.pmodes) {\n",
         "    if pure && m.fnRec.pmodes[0] != 2 { return }\n    for i in 0..len(m.fnRec.pmodes) {\n"),
     "interfaces v3 X23: the reader ignores pure": (
-        "            setMemberSummary(m, pure)\n            append(ifaceSyms, m)\n",
-        "            setMemberSummary(m, false)\n            append(ifaceSyms, m)\n"),
+        "            setMemberSummary(m, pure, impure)\n            append(ifaceSyms, m)\n",
+        "            setMemberSummary(m, false, impure)\n            append(ifaceSyms, m)\n"),
+    # the impure tier (0.17): the summary is the maximum and the impl check skips the tier rules
+    "interfaces impure: an impure member's summary is not the maximum": (
+        "    if impure {\n        m.freesAll = true\n        m.writesHandles = true\n        return\n    }\n",
+        "    if impure {\n        m.freesAll = false\n        m.writesHandles = false\n        return\n    }\n"),
+    "interfaces impure: the impl check applies the plain rules to an impure member": (
+        "        if m.impureMember {\n",
+        "        if m.impureMember && false {\n"),
     "interfaces v3 X24: the reader ignores a mut mode on a later parameter": (
         "                if pmut { append(pmodes, 2) } else { append(pmodes, 1) }\n            } else {\n                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n",
         "                if pmut && len(pmodes) < 2 { append(pmodes, 2) } else { append(pmodes, 1) }\n            } else {\n                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n"),

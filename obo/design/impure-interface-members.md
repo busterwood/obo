@@ -1,6 +1,7 @@
 # Impure interface members (0.17, format 10, ABI 1)
 
-**Status:** implementation stage I1 (compiler only), branch `impure-handler`.
+**Status:** implemented, stage I1 (compiler only), branch `impure-handler`; gate
+results are recorded in `FORK.md`.
 **Version:** `OBO_VERSION = "0.17"`, `SYM_FORMAT = 10`, `SYM_ABI = 1`.
 **Follow-up:** stage I2 changes `http1server`'s handler contract (not this stage).
 
@@ -54,8 +55,9 @@ type Handler = interface {
   `fn impure(...)` still names a method `impure`.
 
 Accepted source spellings, all equivalent to the canonical one:
-`impure fn m(...)`, `impure mut fn m(...)`, and `mut impure fn m(...)` (the
-writer always emits the canonical order).
+`impure fn m(...)` and `impure mut fn m(...)`. As for `pure`, the marker comes
+before `mut`; `mut impure fn m(...)` is refused, and the writer always emits the
+canonical order.
 
 ## 3. The summary: the maximum
 
