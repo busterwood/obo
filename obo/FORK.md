@@ -7034,21 +7034,44 @@ golden body changed.
 **Gates (after the last source change).**
 - `make obo`: `obo 0.18 sym-format 11 abi 1`; fixed point `stage2 == stage3`
   (`cmp`), both differing from the 0.17 seed as expected.
-- `run_fork` **1,877 passed, 0 failed**; `module_test` **150 passed, 0 failed**;
-  `sym_test` **58 passed, 0 failed**.
+- `run_fork` **1,878 passed, 0 failed**; `module_test` **150 passed, 0 failed**;
+  `sym_test` **58 passed, 0 failed**; `stdlib.py` 24/24 and `imports.py` 31/31
+  after the D5 merge.
 - `sym_fuzz` **200/200 clean** (seed 20261028, digest `896ee2b42dbe8a5c`).
 - `doc_check` **75 examples, 0 problems**.
-- `heap_test` passes; self-compile peak **2,587,360 bytes** live (budget
-  2,750,000, headroom 162,640).
-- `port_compare` **1,853 of 1,853** Stage B; the port's self-compile peak is
-  2,587,344 bytes.
-- `mutate_fork` full run: **726/756 caught, 30 equivalent, 0 missed, 0 stale,
-  0 broken** (the 0.17 catalog was 724/755 + 31 equivalent). One catalog
+- `heap_test` passes on the merged tree; self-compile peak **2,587,776 bytes**
+  live (budget 2,750,000, headroom 162,224).
+- `port_compare` **1,854 of 1,854** Stage B; the port's self-compile peak is
+  2,587,760 bytes.
+- `mutate_fork` full run: **727/757 caught, 30 equivalent, 0 missed, 0 stale,
+  0 broken** (the 0.17 catalog was 724/755 + 31 equivalent). Two mutants were
+  added (the faithful decimal-interface refusal and the destination-pointer step
+  in the vtable offset) and two catalog patterns were repointed. One catalog
   equivalent, the S4 receiver-load-order mutant, is now caught because the
   decimal interface tests exercise the reordered receiver/destination slots; the
   note is in the run output. `mutate_decimal` **105/105 caught**.
 
-**Release.** Not merged or promoted on this branch: `decimal-d4a` is cut from
-`main` at `f45a729` (0.17/format 10/ABI 1) and lands as one compiler commit plus
-one docs/test commit. D4b (function values, non-capturing lambdas with decimal
-signatures, Stage B captures) is next.
+**Review fixes.** The APPROVE WITH NITS review asked for five changes and an
+optional mutant, all closed in `4ace05c` (compiler), `d68c09d` (tests) and
+`8aae0b1` (docs): `recordParamFree` now reports an internal error instead of
+silently dropping a summary it cannot map; the refusal mutant is faithful again
+(`if decRet && (iface || fnval)`, caught at `tests/run/decimal_ifaces.obx:53`);
+a higher-index pfree case pins index 2 (`f(a: int, b: int, mut c: &Box, d:
+decimal)` -> `pfree 0x4 pf 2 "=/inner"`) in both `sym/decimal_pfree` and
+`errors/decimal_methods_ifaces.obx`; this section's fixture count and release
+wording are corrected; and the D4b `obo.obo` line references were refreshed.
+The optional new mutant drops the destination-pointer step in the vtable offset
+and is caught at `tests/run/decimal_ifaces.obx:70`.
+
+**Merge.** `main` (`0138651`, the D5 `lib/decimals.obx` library and its docs)
+was merged in `c9316d2`. The only conflict was this design status line;
+D4a (methods/interfaces on this branch) and D5 (library-only, released on the
+0.17 line) are both recorded. No compiler, runtime or seed file from main
+conflicts with D4a, and `git diff main -- obo/seed` is empty.
+
+**Release.** Not merged into `main` or promoted: `decimal-d4a` is cut from
+`main` at `f45a729` (0.17/format 10/ABI 1), and the stage itself is three
+commits: `78c02c4` compiler, `3aaa8ce` tests, `ef5c86d` docs, followed by the
+review fixes above and the D5 merge. `seed/obo` is untouched. D4b (function
+values, non-capturing lambdas with decimal signatures, Stage B captures) is
+next.
