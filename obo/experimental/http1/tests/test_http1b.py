@@ -459,51 +459,66 @@ def network_tests(exe):
         need(len(slow_body) == 1000, 'slow body length %d' % len(slow_body))
         need(slow_body.endswith(b'0123456789'), 'slow body tail')
 
-        # 8 MiB echo with a concurrent reader (backpressure without truncation).
-        s = srv.connect()
-        try:
-            big = bytes((i % 251 for i in range(8_000_000)))
-            s.sendall(b'POST /echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n'
-                      b'Content-Length: ' + str(len(big)).encode() + b'\r\n\r\n')
-            got = bytearray()
-            done = []
+        # 8 MiB echo with a concurrent reader (backpressure without truncation),
+        # repeated to catch the fairness/workPending handoff stall.
+        big = bytes((i % 251 for i in range(8_000_000)))
+        for iteration in range(3):
+            s = srv.connect()
+            try:
+                s.sendall(b'POST /echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n'
+                          b'Content-Length: ' + str(len(big)).encode() + b'\r\n\r\n')
+                got = bytearray()
+                errors = []
+                done = []
 
-            def reader():
-                s.settimeout(30)
-                while True:
+                def reader(sock=s, got=got, errors=errors, done=done):
                     try:
-                        part = s.recv(65536)
-                    except Exception:
-                        break
-                    if not part:
-                        break
-                    got.extend(part)
-                done.append(True)
+                        sock.settimeout(30)
+                        while True:
+                            part = sock.recv(65536)
+                            if not part:
+                                break
+                            got.extend(part)
+                        done.append(True)
+                    except Exception as e:
+                        errors.append(repr(e))
 
-            th = threading.Thread(target=reader)
-            th.start()
-            sent = 0
-            while sent < len(big):
-                sent += s.send(big[sent:sent + 65536])
-            th.join(timeout=60)
-            need(done, '8 MiB echo response read')
-            head, _, rest = bytes(got).partition(b'\r\n\r\n')
-            need(b'transfer-encoding: chunked' in head.lower(), 'echo chunked: ' + repr(head[:200]))
-            parsed = bytearray()
-            p = rest
-            while True:
-                line, _, p = p.partition(b'\r\n')
-                if not line:
-                    break
-                n = int(line.split(b';')[0], 16)
-                if n == 0:
-                    break
-                parsed.extend(p[:n])
-                p = p[n + 2:]
-            need(len(parsed) == len(big) and bytes(parsed) == big,
-                 '8 MiB echo is complete and untruncated: %d/%d done=%r' % (len(parsed), len(big), done))
-        finally:
-            s.close()
+                th = threading.Thread(target=reader)
+                th.start()
+                sent = 0
+                while sent < len(big):
+                    sent += s.send(big[sent:sent + 65536])
+                th.join(timeout=90)
+                need(not errors, '8 MiB echo reader error: %r' % errors)
+                need(done, '8 MiB echo response did not reach EOF')
+                data = bytes(got)
+                need(data.endswith(b'0\r\n\r\n'),
+                     '8 MiB echo final chunk terminator: ' + repr(data[-40:]))
+                head, _, rest = data.partition(b'\r\n\r\n')
+                need(b'transfer-encoding: chunked' in head.lower(),
+                     'echo chunked: ' + repr(head[:200]))
+                parsed = bytearray()
+                p = rest
+                saw_zero = False
+                while True:
+                    line, _, p = p.partition(b'\r\n')
+                    if not line:
+                        break
+                    n = int(line.split(b';')[0], 16)
+                    if n == 0:
+                        need(p.startswith(b'\r\n'),
+                             'final terminator after zero chunk')
+                        saw_zero = True
+                        break
+                    need(len(p) >= n + 2, 'truncated echo chunk')
+                    parsed.extend(p[:n])
+                    p = p[n + 2:]
+                need(saw_zero, 'zero chunk observed')
+                need(len(parsed) == len(big) and bytes(parsed) == big,
+                     '8 MiB echo run %d complete: %d/%d' %
+                     (iteration, len(parsed), len(big)))
+            finally:
+                s.close()
 
         # A malformed connection is isolated; a new connection still works.
         resp = srv.request(b'BAD\r\n\r\n')

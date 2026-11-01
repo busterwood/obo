@@ -179,7 +179,9 @@ unsupported but well-formed features use `501`/`505`/`417`/`413` as above.
 - Accept batches are capped at 32; a slot processes at most 32 events and about
   64 KiB of reads/writes per turn (Echo actions additionally cap four 16 KiB
   chunks per call). Every readable/writable event is one bounded step, not a
-  hidden retry loop.
+  hidden retry loop. An Echo action that still has parser-buffered body bytes or
+  an unfinished response at the cap requests an immediate next turn; it does not
+  wait for a readable event that cannot arrive.
 - Graceful shutdown removes the listener watch, closes idle/handshaking
   connections immediately, calls `requestClose` on in-flight responses, drains
   until `totalTimeoutMs`, then closes remaining slots and the reactor.

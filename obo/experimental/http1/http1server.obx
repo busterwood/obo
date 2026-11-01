@@ -553,6 +553,14 @@ fn serveText(mut s: &Server, index: int, mut c: &conn::Connection,
     return ok(flushed)
 }
 
+fn echoStaged(s: &Server, index: int, c: &conn::Connection): bool {
+    let slot = s.slots[index]
+    if slot.finalPending { return true }
+    if slot.echoPos < len(slot.echoPending) { return true }
+    if conn::bufferedInput(c) > 0 { return true }
+    return false
+}
+
 fn serveAction(mut s: &Server, index: int, mut c: &conn::Connection,
                now: &conn::Now): Result[bool] {
     var act = s.slots[index].action
@@ -624,7 +632,10 @@ fn serveAction(mut s: &Server, index: int, mut c: &conn::Connection,
                 let n = try conn::writeBody(c, &chunk, 0, len(chunk))
                 if n == 0 {
                     let flushed = try flushOk(c, now)
-                    if !flushed { return ok(false) }
+                    if !flushed {
+                        s.slots[index].workPending = false
+                        return ok(false)
+                    }
                     continue
                 }
                 s.slots[index].echoPos += n
@@ -646,6 +657,7 @@ fn serveAction(mut s: &Server, index: int, mut c: &conn::Connection,
                     s.slots[index].echoPos = 0
                 }
                 BodyNeedRead {
+                    s.slots[index].workPending = false
                     let flushed = try flushOk(c, now)
                     return ok(false)
                 }
@@ -664,6 +676,13 @@ fn serveAction(mut s: &Server, index: int, mut c: &conn::Connection,
                     s.slots[index].finalPending = false
                 }
             }
+        }
+        if !s.slots[index].respDone {
+            // Even with no buffered bytes, one more readBody may observe
+            // BodyEnd for a body that ended exactly at the last data chunk.
+            // The next turn clears this on BodyNeedRead.
+            s.slots[index].workPending = true
+            return ok(true)
         }
         s.slots[index].workPending = false
         let flushed = try flushOk(c, now)
@@ -847,8 +866,17 @@ fn driveConn(mut s: &Server, index: int, cn: conn::Connection,
     let baseWrite = conn::bytesWritten(&c)
     while guard < 32 {
         guard += 1
-        // Fairness: at most 64 KiB of connection work per reactor turn.
+        // Fairness: at most 64 KiB of connection work per reactor turn. If an
+        // Echo action still has parser-buffered body or an unaccepted prefix,
+        // ask for an immediate turn so the fairness cap cannot strand it.
         if conn::bytesRead(&c) - baseRead + conn::bytesWritten(&c) - baseWrite >= 65536 {
+            if s.slots[index].served && !s.slots[index].respDone &&
+               s.slots[index].action == A_ECHO {
+                // The action may need one more readBody call to observe
+                // BodyEnd after the last data chunk; do not wait for a socket
+                // read that will never arrive.
+                s.slots[index].workPending = true
+            }
             return outcome(c, true)
         }
         if conn::isClosed(&c) { return outcome(c, true) }

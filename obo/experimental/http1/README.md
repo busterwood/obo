@@ -11,7 +11,9 @@ H1a0 runs entirely in memory and has no systems dependency. H1b adds a
 deterministic in-memory transport and a plain nonblocking `sysstream` transport,
 explicit deadlines, keep-alive/pipelining, graceful drain, and a
 `sysnet`/`sysreactor` loopback server loop. There is still **no TLS**: the
-neutral TLS adapter and ALPN dispatch are H1c.
+neutral TLS adapter and ALPN dispatch are H1c. A connection with parser-buffered
+body bytes or a fairness-cap exit requests an immediate server turn, so an Echo
+response cannot stall waiting for a socket-read event that will never arrive.
 
 ## Layout
 
