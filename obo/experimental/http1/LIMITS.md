@@ -156,9 +156,10 @@ unsupported but well-formed features use `501`/`505`/`417`/`413` as above.
 
 ## H1b deadlines and pressure
 
-- Accept and handshake deadlines always exist on a fresh connection. The accept
-  deadline is cleared on the first request byte; the handshake deadline on
-  `StepDone`. Neither is re-armed.
+- Accept and handshake deadlines always exist on a fresh connection. The server
+  arms them at accept with `http1conn::makeAt`; the accept deadline is cleared
+  on the first request byte and the handshake deadline on `StepDone`. Neither is
+  re-armed.
 - The header deadline is absolute from the first byte and is never reset by
   partial input. The body-progress deadline starts at the first `readBody` and
   renews only on decoded data, not on chunk metadata. The idle deadline starts
@@ -167,12 +168,18 @@ unsupported but well-formed features use `501`/`505`/`417`/`413` as above.
   deadlines.
 - A header/body/total timeout queues `408` when no response bytes are on the
   wire; accept/handshake/idle/response timeouts close silently. A response
-  timeout never attempts a second status line.
+  timeout never attempts a second status line. A timeout is reported once and
+  every deadline is disarmed in the same step, so an expired body/request-total
+  deadline cannot make `next` spin after a response has started.
 - `maxConnections` and `maxTotalConnectionBytes` both gate admission. A full
-  count or budget leaves new sockets queued. `ResourceLimit` (EMFILE/ENFILE)
-  pauses acceptance for 100 ms and increments `acceptPressure`.
-- Accept batches are capped at 32; a slot processes at most 32 events per turn.
-  Every readable/writable event is one bounded step, not a hidden retry loop.
+  count or budget leaves new sockets queued and increments `rejected`.
+  `ResourceLimit` (EMFILE/ENFILE) pauses acceptance for 100 ms and increments
+  `acceptPressure`; the pause is rechecked before every accept, including on a
+  ready-listener event.
+- Accept batches are capped at 32; a slot processes at most 32 events and about
+  64 KiB of reads/writes per turn (Echo actions additionally cap four 16 KiB
+  chunks per call). Every readable/writable event is one bounded step, not a
+  hidden retry loop.
 - Graceful shutdown removes the listener watch, closes idle/handshaking
   connections immediately, calls `requestClose` on in-flight responses, drains
   until `totalTimeoutMs`, then closes remaining slots and the reactor.

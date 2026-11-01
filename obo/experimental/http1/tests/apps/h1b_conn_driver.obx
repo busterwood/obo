@@ -424,6 +424,10 @@ fn modeTimeoutHeader() {
             match e3 { ok(ev) { println("EV ", evName(&ev)) } err(m, code) { println("ERR ", code, " ", m) } }
             showFlush(conn::flush(c, &late))
             out(c)
+            let e4 = conn::next(c, &late)
+            match e4 { ok(ev) { println("EV4 ", evName(&ev)) } err(m, code) { println("ERR4 ", code, " ", m) } }
+            let e5 = conn::next(c, &late)
+            match e5 { ok(ev) { println("EV5 ", evName(&ev)) } err(m, code) { println("ERR5 ", code, " ", m) } }
         }
         err(m, code) { println("MAKEERR ", code) }
     }
@@ -819,6 +823,113 @@ fn modeManualContinue() {
     }
 }
 
+
+fn modeSecondDeadline() {
+    let made = setup("GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            respondText(c, "A", true, &now)
+            let e3 = conn::next(c, &now)
+            match e3 { ok(ev) { println("EV3 ", evName(&ev)) } err(m, code) { println("ERR3 ", code, " ", m) } }
+            let e4 = conn::next(c, &now)
+            match e4 { ok(ev) { println("EV4 ", evName(&ev)) } err(m, code) { println("ERR4 ", code, " ", m) } }
+            let d = conn::deadline(c)
+            if d.finite { println("DL ", d.nanos / 1000000) } else { println("DL forever") }
+            let p = conn::phase(c)
+            println("PH ", phaseName(&p))
+            let late = nowAt(15000)
+            let e5 = conn::next(c, &late)
+            match e5 { ok(ev) { println("EV5 ", evName(&ev)) } err(m, code) { println("ERR5 ", code, " ", m) } }
+            showFlush(conn::flush(c, &late))
+            out(c)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+
+fn modeCloseHead() {
+    let made = setup("GET / HTTP/1.1\r\nHo")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            let e1 = conn::next(c, &now)
+            let a = conn::acceptAlpn(c)
+            let e2 = conn::next(c, &now)
+            match e2 { ok(ev) { println("EV2 ", evName(&ev)) } err(m, code) { println("ERR2 ", code) } }
+            let rc = conn::requestClose(c)
+            match rc { ok(v) { println("RC ", v) } err(m, code) { println("RCERR ", code) } }
+            let rest = mk("st: x\r\n\r\n")
+            let ap = conn::memoryAppendInput(c, &rest)
+            var guard = 0
+            while guard < 20 {
+                guard += 1
+                let e = conn::next(c, &now)
+                match e {
+                    ok(ev) {
+                        println("EV ", evName(&ev))
+                        match ev {
+                            HeadReady { guard = 20 }
+                            NeedRead { }
+                            NeedWrite { }
+                            HandshakeDone { }
+                            ResponseComplete { guard = 20 }
+                            TimedOut { guard = 20 }
+                            ProtocolError { guard = 20 }
+                            ConnectionClosed { guard = 20 }
+                        }
+                    }
+                    err(m, code) { println("ERR ", code); guard = 20 }
+                }
+            }
+            respondText(c, "ok", true, &now)
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
+
+fn modeTimeoutStarted() {
+    let made = setup("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhe")
+    match made {
+        ok(c) {
+            let now = nowAt(1)
+            start(c, &now)
+            let b = conn::beginResponse(c, 200, &now)
+            let w = conn::writeText(c, "x", 0, 1)
+            showBody(conn::readBody(c, 5, &now))
+            let late = nowAt(40000)
+            showBody(conn::readBody(c, 5, &late))
+            var guard = 0
+            while guard < 5 {
+                guard += 1
+                let e = conn::next(c, &late)
+                match e {
+                    ok(ev) {
+                        println("EV ", evName(&ev))
+                        match ev {
+                            TimedOut { println("REPEAT_TIMEOUT") }
+                            ConnectionClosed { guard = 5 }
+                            ProtocolError { guard = 5 }
+                            HandshakeDone { }
+                            NeedRead { }
+                            NeedWrite { }
+                            HeadReady { }
+                            ResponseComplete { }
+                        }
+                    }
+                    err(m, code) { println("ERR ", code); guard = 5 }
+                }
+            }
+            let p = conn::phase(c)
+            println("PH ", phaseName(&p))
+        }
+        err(m, code) { println("MAKEERR ", code) }
+    }
+}
+
 fn main() {
     let args = args()
     var mode = "basic"
@@ -852,5 +963,8 @@ fn main() {
     if mode == "noalpn" { modeNoAlpnForbidden() }
     if mode == "endfalse" { modeEndFalse() }
     if mode == "discard" { modeDiscard() }
+    if mode == "second_deadline" { modeSecondDeadline() }
+    if mode == "close_head" { modeCloseHead() }
+    if mode == "timeout_started" { modeTimeoutStarted() }
     if mode == "manual_continue" { modeManualContinue() }
 }

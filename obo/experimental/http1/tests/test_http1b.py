@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -160,6 +161,27 @@ def memory_tests(exe):
     need(has(lines, 'EV timedout'), 'header timeout')
     need(any(b'408 Request Timeout' in b for b in out_bytes(lines)),
          'header timeout error page')
+    need(not has(lines, 'EV4 timedout') and not has(lines, 'EV5 timedout'),
+         'timeout is reported once and deadlines are disarmed')
+
+    lines = driver_lines(exe, 'timeout_started')
+    need(has(lines, 'BERR 408'), 'started-response body timeout reports once')
+    need(not has(lines, 'REPEAT_TIMEOUT'),
+         'expired body deadline is not reported again after a response starts')
+    need(has(lines, 'PH closing') or has(lines, 'EV closed'),
+         'started-response timeout closes the connection')
+
+    lines = driver_lines(exe, 'close_head')
+    need(has(lines, 'RC true'), 'requestClose during a partial head')
+    need(any(b'Connection: close\r\n' in b for b in out_bytes(lines)),
+         'requestClose is preserved when the head installs')
+
+    lines = driver_lines(exe, 'second_deadline')
+    need(has(lines, 'DL 10001'), 'second request re-arms the header deadline')
+    need(has(lines, 'PH readinghead'), 'second request is reading its head')
+    need(has(lines, 'EV5 timedout'), 'second request header timeout fires')
+    need(any(b'408 Request Timeout' in b for b in out_bytes(lines)),
+         'second request 408')
 
     lines = driver_lines(exe, 'timeout_accept')
     need(has(lines, 'EV timedout') and has(lines, 'PH closing'),
@@ -423,6 +445,72 @@ def network_tests(exe):
         need(b'hello' in resp and b' world' in resp,
              'tcp4 chunked request echo')
 
+        # GET /echo has no body: the server must answer and stay alive.
+        resp = srv.request(b'GET /echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
+        need(resp.startswith(b'HTTP/1.1 200 OK') and resp.endswith(b'\r\n\r\n'),
+             'GET /echo with no body')
+        resp = srv.request(b'GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
+        need(resp.endswith(b'hello\n'), 'server survives an empty echo')
+
+        # /slow must send its full staged body, not a truncated prefix.
+        resp = srv.request(b'GET /slow HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
+        head, _, slow_body = resp.partition(b'\r\n\r\n')
+        need(b'Content-Length: 1000\r\n' in head, 'slow length')
+        need(len(slow_body) == 1000, 'slow body length %d' % len(slow_body))
+        need(slow_body.endswith(b'0123456789'), 'slow body tail')
+
+        # 8 MiB echo with a concurrent reader (backpressure without truncation).
+        s = srv.connect()
+        try:
+            big = bytes((i % 251 for i in range(8_000_000)))
+            s.sendall(b'POST /echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n'
+                      b'Content-Length: ' + str(len(big)).encode() + b'\r\n\r\n')
+            got = bytearray()
+            done = []
+
+            def reader():
+                s.settimeout(30)
+                while True:
+                    try:
+                        part = s.recv(65536)
+                    except Exception:
+                        break
+                    if not part:
+                        break
+                    got.extend(part)
+                done.append(True)
+
+            th = threading.Thread(target=reader)
+            th.start()
+            sent = 0
+            while sent < len(big):
+                sent += s.send(big[sent:sent + 65536])
+            th.join(timeout=60)
+            need(done, '8 MiB echo response read')
+            head, _, rest = bytes(got).partition(b'\r\n\r\n')
+            need(b'transfer-encoding: chunked' in head.lower(), 'echo chunked: ' + repr(head[:200]))
+            parsed = bytearray()
+            p = rest
+            while True:
+                line, _, p = p.partition(b'\r\n')
+                if not line:
+                    break
+                n = int(line.split(b';')[0], 16)
+                if n == 0:
+                    break
+                parsed.extend(p[:n])
+                p = p[n + 2:]
+            need(len(parsed) == len(big) and bytes(parsed) == big,
+                 '8 MiB echo is complete and untruncated: %d/%d done=%r' % (len(parsed), len(big), done))
+        finally:
+            s.close()
+
+        # A malformed connection is isolated; a new connection still works.
+        resp = srv.request(b'BAD\r\n\r\n')
+        need(b'400' in resp.split(b'\r\n')[0], 'malformed 400')
+        resp = srv.request(b'GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
+        need(resp.endswith(b'hello\n'), 'server isolated a malformed connection')
+
         # Keep-alive: two requests on one connection, then a close.
         s = srv.connect()
         try:
@@ -481,7 +569,12 @@ def network_tests(exe):
             s.close()
         s = srv.connect()
         try:
-            resp = recv_all(s, 3)
+            time.sleep(1.0)
+            s.settimeout(2)
+            try:
+                resp = s.recv(1)
+            except socket.timeout:
+                resp = b'TIMEOUT'
             need(resp == b'', 'accept timeout closes silently')
         finally:
             s.close()
@@ -536,22 +629,28 @@ def network_tests(exe):
             pass
 
     # 256 idle connections and aggregate admission.
-    srv = start(exe, 'tcp4', '127.0.0.1')
+    srv = start(exe, 'tcp4', '127.0.0.1', 'many')
     socks = []
     try:
         for i in range(256):
             s = srv.connect()
             socks.append(s)
         time.sleep(2.0)
+        # A 257th connection cannot be admitted; it stays in the accept queue and
+        # the admission pressure is counted.
+        extra = srv.connect()
+        socks.append(extra)
+        time.sleep(0.3)
         # Ask the first connection to stop the server and report metrics.
         socks[0].sendall(b'GET /quit HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
         recv_all(socks[0], 5)
         out = srv.proc.communicate(timeout=15)[0] or ''
         m = metrics_line(out)
         need(m is not None, 'metric line after idle pressure')
-        need(m[0] == 256, '256 connections accepted, got %d' % m[0])
+        need(m[0] >= 256, 'at least 256 connections accepted, got %d' % m[0])
         need(m[7] == 256, 'peak active 256, got %d' % m[7])
         need(m[8] == 0, 'all idle connections closed on shutdown')
+        need(m[1] >= 1, 'admission rejection counted')
     finally:
         for s in socks:
             try:

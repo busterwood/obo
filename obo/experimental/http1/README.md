@@ -91,7 +91,8 @@ point revalidates caller-visible fields.
   `WriteWantWrite`, reports `AlpnNone`/`isSecure=false`/`pending=0` and never
   exposes a descriptor or native token.
 - `http1conn::make(transport, limits)` deep-copies `Limits` and binds the
-  transport. `next`, `readBody`, `discardBody`, `beginResponse`,
+  transport; `makeAt(transport, limits, now)` also arms the accept/handshake
+  deadlines at creation and is what the server uses at accept. `next`, `readBody`, `discardBody`, `beginResponse`,
   `beginResponseWithReason`, `setHeader`, `setLength`, `setTrailerNames`,
   `addTrailer`, `writeBody`, `writeText`, `endResponse`, `flush`,
   `requestClose`, `shutdownStep`, `close`, `acceptAlpn`, `sendContinue`,
@@ -118,8 +119,15 @@ point revalidates caller-visible fields.
 - `http1transport` uses an opaque record with module functions rather than an
   interface for the same reason: 0.14 has no impure interface-member tier, so
   an interface method could not call `sysstream`/`sysnet`. The operation
-  contract is unchanged. H1c must revisit the seam (a TLS variant inside the
-  adapter, or a future impure interface tier) before adding TLS.
+  contract is unchanged.
+- H1c seam note: the opaque `Transport` cannot be extended by another module.
+  A feasible option is a dedicated `http1io` module that imports both
+  `sysstream` and `systls` and defines a closed `Plain`/`Tls` transport; the
+  connection then dispatches over that closed value and never imports `systls`
+  itself. The alternative is a future compiler impure interface/function-value
+  tier, which would also restore the design's mutable-`&Connection` handler.
+  H1b implements neither TLS nor that compiler change; the pure action router
+  and opaque transport above are the 0.14-compatible seam.
 
 ## Build and test
 

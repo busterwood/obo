@@ -100,6 +100,11 @@ fn main() {
                         lim.responseTotalTimeoutMs = 1000
                         lim.totalTimeoutMs = 1500
                     }
+                    if len(av) > 4 && av[4] == "many" {
+                        lim.acceptTimeoutMs = 60000
+                        lim.handshakeTimeoutMs = 60000
+                        lim.idleTimeoutMs = 60000
+                    }
                     if len(av) > 4 && av[4] == "small" {
                         lim.maxStartLine = 256
                         lim.maxTarget = 128

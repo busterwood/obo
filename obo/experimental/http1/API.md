@@ -241,7 +241,13 @@ mutable-connection handler; H1c is later.
 ## `http1transport`
 
 `Transport` is an opaque record, not an interface: 0.14 has no impure
-interface-member tier, so an interface method could not call `sysstream`.
+interface-member tier, so an interface method could not call `sysstream`. The
+record is private and cannot be extended by an external module. For H1c, a
+feasible seam is a dedicated `http1io` module importing both `sysstream` and
+`systls` and defining a closed `Plain`/`Tls` transport; `http1conn` would
+dispatch over that closed value without importing `systls`. The alternative is
+a future impure interface/function-value compiler tier. H1b implements neither
+TLS nor that compiler change.
 
 ```obo
 pub type Step = closed { StepDone {} StepWantRead {} StepWantWrite {} }
@@ -310,6 +316,8 @@ pub type BodyRead = closed { BodyData { bytes: []byte } BodyEnd {} BodyNeedRead 
 pub type FlushOutcome = closed { Flushed {} FlushWantRead {} FlushWantWrite {} }
 
 pub fn make(t: http1transport::Transport, l: &Limits): Result[Connection]
+pub fn makeAt(t: http1transport::Transport, l: &Limits,
+              now: &Now): Result[Connection]
 pub fn phase(c: &Connection): Phase
 pub fn deadline(c: &Connection): sysclock::Deadline
 pub fn next(mut c: &Connection, now: &Now): Result[Event]
@@ -346,8 +354,10 @@ pub fn wantsWrite(mut c: &Connection): Result[bool]
 Rules:
 
 - `make` validates and deep-copies `Limits`, creates the parser and response
-  buffers and arms the accept/handshake deadlines on the first `next`. A plain
-  transport completes `handshakeStep` immediately; the caller must call
+  buffers and arms the accept/handshake deadlines on the first `next`.
+  `makeAt` arms them immediately; the server uses it at accept so a silent
+  socket is closed by the accept timeout even if it never becomes readable. A
+  plain transport completes `handshakeStep` immediately; the caller must call
   `acceptAlpn` after `HandshakeDone` before any HTTP parse.
 - `next` checks active deadlines, drives the handshake, flushes bounded output,
   then parses a head or advances a completed response. It never reads a body on
@@ -375,9 +385,13 @@ Rules:
 - Deadline policy: accept/handshake are disarmed on first request byte/
   `StepDone`; header is absolute from the first byte; body idle starts at first
   read; idle starts when a response completes; response idle renews on positive
-  writes; response total starts at header commit. `deadline` returns the earliest
-  active finite deadline or `forever()`. Timeouts queue `408` when a response is
-  still possible, otherwise close silently.
+  writes; response total starts at header commit. Every new request (including
+  one already buffered after a response) re-arms its header/request deadlines
+  and clears the idle deadline. `deadline` returns the earliest active finite
+  deadline or `forever()`. Timeouts queue `408` when a response is still
+  possible, otherwise close silently. A timeout is reported at most once: all
+  deadlines are disarmed in the same step, including when a response had already
+  started, so `next` cannot spin on an expired body/request-total deadline.
 - `discardBody` is a bounded early-response drain; it refuses after the final
   response and closes when its byte cap is exceeded.
 - `memoryOutput`, `memoryClearOutput`, `memoryAppendInput`,
@@ -430,7 +444,9 @@ Rules:
   connections. `drain` runs turns until active reaches zero or the drain
   deadline. `shutdown` closes remaining slots, the listener and the reactor.
 - `Handler` is pure. It cannot drive the connection because 0.14 function values
-  and interface methods cannot be impure. The server itself performs the bounded
+  and interface methods cannot be impure. It is therefore the design's
+  action-router adaptation, not the `&Connection` handler sketch. The design's
+  handler shape needs the impure function-value/interface tier noted above. The server itself performs the bounded
   actions: `Hello` (`hello\n`), `Echo` (stream the request body into a chunked
   response, sending `100 Continue` when needed), `Chunked`, `Head`, `NoContent`,
   `NotModified`, `Big` (20 KB fixed), `Slow` (10 bytes per turn),

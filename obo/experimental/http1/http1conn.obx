@@ -434,6 +434,10 @@ fn observeCommit(mut c: &Connection, now: &Now) {
 
 fn resetRequestState(mut c: &Connection) {
     c.headReady = false
+    c.requestBegan = false
+    c.headerDl = forever()
+    c.bodyDl = forever()
+    c.requestTotalDl = forever()
     c.bodyComplete = true
     c.bodyEndSeen = false
     c.bodyStarted = false
@@ -507,6 +511,24 @@ pub fn make(stream: transport::Transport, limits: &core::Limits): Result[Connect
     })
 }
 
+fn armInitial(mut c: &Connection, now: &Now) {
+    c.deadlinesArmed = true
+    c.acceptDl = deadlineAt(now, c.limits.acceptTimeoutMs)
+    c.handshakeDl = deadlineAt(now, c.limits.handshakeTimeoutMs)
+}
+
+// Construction with the accept/handshake deadlines armed immediately. The
+// server uses this at accept so a silent socket is closed by the accept timeout
+// even if no readable event ever arrives. `make` keeps the deterministic
+// first-step arming used by the in-memory driver.
+pub fn makeAt(stream: transport::Transport, limits: &core::Limits,
+              now: &Now): Result[Connection] {
+    let made = try make(stream, limits)
+    let c = made
+    armInitial(&c, now)
+    return ok(c)
+}
+
 pub fn phase(c: &Connection): Phase {
     if c.phase == P_HANDSHAKING { return new Handshaking{} }
     if c.phase == P_IDLE { return new Idle{} }
@@ -566,6 +588,15 @@ pub fn isClosed(c: &Connection): bool { return c.phase == P_CLOSED }
 // Timeout policy
 // ---------------------------------------------------------------------------
 
+fn clearAllDeadlines(mut c: &Connection) {
+    c.acceptDl = forever()
+    c.handshakeDl = forever()
+    c.headerDl = forever()
+    c.bodyDl = forever()
+    c.idleDl = forever()
+    clearResponseDeadlines(c)
+}
+
 fn timeoutKind(c: &Connection, now: &Now): int {
     if expired(now, &c.acceptDl) { return T_ACCEPT }
     if expired(now, &c.handshakeDl) { return T_HANDSHAKE }
@@ -579,6 +610,10 @@ fn timeoutKind(c: &Connection, now: &Now): int {
 }
 
 fn handleTimeout(mut c: &Connection, kind: int, now: &Now): Event {
+    // A timeout is reported at most once. Clear every deadline before queueing
+    // a response or closing so a partially written response cannot spin on the
+    // same expired body/request-total deadline.
+    clearAllDeadlines(c)
     if kind == T_HEADER || kind == T_BODY || kind == T_REQUEST_TOTAL {
         if canQueueError(c) {
             queueProtocolError(c, 408, now)
@@ -727,7 +762,7 @@ fn installHead(mut c: &Connection, now: &Now): Result[Event] {
     c.http10 = info.http10
     c.hasBody = info.hasBody
     c.bodyComplete = !info.hasBody
-    c.bodyEndSeen = !info.hasBody
+    c.bodyEndSeen = false
     c.bodyStarted = false
     c.bodyTotal = 0
     c.expectContinue = info.expectContinue
@@ -736,7 +771,8 @@ fn installHead(mut c: &Connection, now: &Now): Result[Event] {
     c.responseFinal = false
     c.responseCommitted = false
     c.earlyFinal = false
-    c.closeAfter = info.close || !info.keepAlive || info.http10
+    let forcedClose = c.closeAfter
+    c.closeAfter = forcedClose || info.close || !info.keepAlive || info.http10
     c.wroteAnything = false
     c.out = new []byte(0)
     c.outPos = 0
@@ -797,6 +833,12 @@ fn readIntoParserOn(mut c: &Connection, now: &Now,
 
 fn driveHeadOn(mut c: &Connection, now: &Now,
                mut t: &transport::Transport): Result[Event] {
+    // Pipelined bytes may already be buffered after the previous response;
+    // starting the next request must re-arm its header/request deadlines and
+    // clear the idle deadline even when no transport read is needed.
+    if !c.requestBegan && parse::buffered(&c.parser) > 0 {
+        noteFirstByte(c, now)
+    }
     var guard = 0
     while guard < 8 {
         guard += 1
@@ -948,6 +990,25 @@ fn nextOn(mut c: &Connection, now: &Now,
             FlushWantWrite {
                 let ev: Event = new NeedWrite{}
                 return ok(ev)
+            }
+        }
+    }
+    if c.responseFinal {
+        // Ciphertext may remain even when the HTTP output buffer is empty (TLS
+        // H1c). A completed response must not be reported before it drains.
+        let tp = try tPending(t)
+        if tp > 0 {
+            let f = try flushOn(c, now, t)
+            match f {
+                Flushed { }
+                FlushWantRead {
+                    let ev: Event = new NeedRead{}
+                    return ok(ev)
+                }
+                FlushWantWrite {
+                    let ev: Event = new NeedWrite{}
+                    return ok(ev)
+                }
             }
         }
     }
