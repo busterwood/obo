@@ -2695,6 +2695,20 @@ def foreigns(tmp):
              '    match rb {\n        ok(v) { println("builtin close ", v) }\n'
              '        err(m, c) { println("builtin err ", m, " ", c) }\n    }\n'
              '    println("builtin closed ", b.is_open())\n'
+             '    let hc = handles::open(7)\n'
+             '    let hh = handle(hc)\n'
+             '    println("handle sugar ", hh.is_open())\n'
+             '    let rh = hh.close()\n'
+             '    match rh {\n        ok(v) { println("handle sugar close ", v) }\n'
+             '        err(m, c) { println("handle sugar err ", m, " ", c) }\n    }\n'
+             '    println("handle sugar closed ", hc.is_open())\n'
+             '    let hc2 = handles::open(8)\n'
+             '    let hh2 = handle(hc2)\n'
+             '    println("hbuiltin open ", hh2.is_open())\n'
+             '    let rh2 = __foreignClose(hh2)\n'
+             '    match rh2 {\n        ok(v) { println("hbuiltin close ", v) }\n'
+             '        err(m, c) { println("hbuiltin err ", m, " ", c) }\n    }\n'
+             '    println("hbuiltin closed ", hc2.is_open())\n'
              '}\n')
     sugarspec = {'format': 'cinterop-proto/2', 'module': 'handles',
                  'platform': 'x86_64-linux-gnu', 'abi': 'sysv-amd64',
@@ -2708,13 +2722,19 @@ def foreigns(tmp):
     need(p, 'foreign sugar build')
     r = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')), 'foreign sugar run')
     want = ['sugar open true', 'sugar close true', 'sugar closed false',
-            'builtin close true', 'builtin closed false']
+            'builtin close true', 'builtin closed false',
+            'handle sugar true', 'handle sugar close true', 'handle sugar closed false',
+            'hbuiltin open true', 'hbuiltin close true', 'hbuiltin closed false']
     if r.stdout.splitlines() != want:
         raise Fail("foreign sugar output %r, want %r" % (r.stdout.splitlines(), want))
     # The method path and the builtin both refuse a temporary, with the ordinary message.
-    for name, body in (('temp_method', 'fn main() { handles::open(1).close() }\n'),
-                       ('temp_builtin', 'fn main() { __foreignClose(handles::open(1)) }\n')):
-        p, _ = app(name, body, spec=sugarspec, wrapper=nowrap)
+    # The sugar path (no declared methods), the declared-method path, and the builtin all refuse a
+    # temporary with the same message.
+    for name, body, sp, wr in (
+            ('temp_sugar', 'fn main() { handles::open(1).close() }\n', sugarspec, nowrap),
+            ('temp_method', 'fn main() { handles::open(1).close() }\n', foreign_spec(), FOREIGN_WRAPPER),
+            ('temp_builtin', 'fn main() { __foreignClose(handles::open(1)) }\n', sugarspec, nowrap)):
+        p, _ = app(name, body, spec=sp, wrapper=wr)
         if p.returncode == 0 or 'store this value in a variable first' not in (p.stderr + p.stdout):
             raise Fail("foreign %s: want the temporary refusal, got rc %d: %s"
                        % (name, p.returncode, (p.stderr + p.stdout).strip()[-300:]))

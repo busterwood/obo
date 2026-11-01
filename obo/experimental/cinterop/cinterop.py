@@ -70,7 +70,6 @@ FOREIGN_MAX = 64
 HOST_HELPERS = {
     'obo_ci_foreign_own': 4,
     'obo_ci_foreign_close': 5,
-    'obo_ci_foreign_is_open': 1,
     'obo_ci_foreign_census_adjust': 2,
 }
 # Shape a spec return kind gives a native fn call (own/own_opt are resolved through `types`).
@@ -323,7 +322,8 @@ def load_spec(path):
             if not all(isinstance(a, str) for a in f['args']):
                 raise ToolError("%s: args must be i64, or a kind such as i64@0" % f['name'])
             for a in f['args']:
-                # own/out_* are return or out-slot kinds; only borrow<C> is an argument kind.
+                # own/out_* are return or out-slot kinds; borrow<C> and borrow_mut<C> are the
+                # foreign argument kinds.
                 if a.startswith('own') or a.startswith('out_own') or a.startswith('out_offset'):
                     raise ToolError("%s: %s is not an argument kind" % (f['name'], a))
             check_kinds(f['name'], f['args'])

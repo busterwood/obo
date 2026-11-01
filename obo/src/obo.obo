@@ -7961,13 +7961,26 @@ fn foreignWritable(x: &Item): bool {
     return b.writable
 }
 
+// A ^X handle names a live foreign record; dereference it for the builtins, as the method designator
+// already does for the sugar. The result is a handle-derived register, not a temporary, so noTemp
+// must not refuse it.
+fn foreignDeref(x: Item): Item {
+    if x.typ.kind == "handle" && baseOf(x.typ).isForeign {
+        let y = rtCall1(RT_DEREF, copyItem(x), baseOf(x.typ))
+        y.viaHandle = true
+        return y
+    }
+    return x
+}
+
 fn foreignCloseItem(x: Item): Item {
-    if !x.typ.isForeign { error("__foreignClose needs a foreign handle, not " + tname(x.typ)) }
-    noTemp(x)
-    if !foreignWritable(x) { error("close needs a writable foreign handle, not a read-only reference") }
-    let ft = x.typ
+    let fx = foreignDeref(x)
+    if !fx.typ.isForeign { error("__foreignClose needs a foreign handle, not " + tname(fx.typ)) }
+    if !fx.viaHandle { noTemp(fx) }
+    if !foreignWritable(fx) { error("close needs a writable foreign handle, not a read-only reference") }
+    let ft = fx.typ
     let rt = derived("result", tBool)
-    let rec = asReg(x)
+    let rec = asReg(fx)
     let args = new []?Item(0)
     append(args, makeConst(tInt, ft.isForeignId))
     append(args, rec)
@@ -7984,9 +7997,10 @@ fn foreignCloseItem(x: Item): Item {
 
 // is_open reads the word directly: no call, so references are not invalidated.
 fn foreignIsOpenItem(x: Item): Item {
-    if !x.typ.isForeign { error("__foreignIsOpen needs a foreign handle, not " + tname(x.typ)) }
-    noTemp(x)
-    let rec = asReg(x)
+    let fx = foreignDeref(x)
+    if !fx.typ.isForeign { error("__foreignIsOpen needs a foreign handle, not " + tname(fx.typ)) }
+    if !fx.viaHandle { noTemp(fx) }
+    let rec = asReg(fx)
     aluMI(7, mem(rec.r, -1, 0, 8), 0)
     release(rec.r)
     let c = newItem("cond", tBool)

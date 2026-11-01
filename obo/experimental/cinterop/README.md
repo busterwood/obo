@@ -669,11 +669,12 @@ the existing `cinterop-relocs 2` header without a version bump; a reader that
 expects only the 7-field relocation lines rejects them as malformed (the v2
 reader here is the updated one). A typed foreign call records
 shapes `foreign:X`, `own:X` or `own_opt:X`; the tool maps the shape's obo name
-through `types` to the C name. Internal helpers appear as mode `host` records
-with fixed arity (`obo_ci_foreign_own` 4, `obo_ci_foreign_close` 5,
-`obo_ci_foreign_is_open` 1, `obo_ci_foreign_census_adjust` 2); the tool
-generates their thunks. A sidecar `foreign` line must match a spec `types`
-entry.
+through `types` to the C name. The tool accepts mode `host` records for the
+internal helpers with fixed arity (`obo_ci_foreign_own` 4,
+`obo_ci_foreign_close` 5, `obo_ci_foreign_census_adjust` 2) and generates their
+thunks, but the compiler only emits `own` and `close`; `is_open` is an inline
+word load and the census adjust is internal to the own/close helpers. A sidecar
+`foreign` line must match a spec `types` entry.
 
 ## Tests
 

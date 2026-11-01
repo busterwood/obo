@@ -298,11 +298,6 @@ CI_HIDDEN const void *obo_ci_foreign_own(long id, const void *raw, long desc, lo
     return (const void *)(uintptr_t)rec;
 }
 
-/* is_open: an inline query in the compiler, also exported for a host reloc. Never exits. */
-CI_HIDDEN long obo_ci_foreign_is_open(const void *rec) {
-    return rec != NULL && *(const uint64_t *)rec != 0;
-}
-
 /* close: word 0 gives ok(false) and makes no C call. Otherwise zero the word, decrement the census,
  * release, then return ok(true) or, for an int release with a non-zero result, err(msg, code). */
 CI_HIDDEN void *obo_ci_foreign_close(long id, void *rec, long okdesc, long errdesc, long msg) {

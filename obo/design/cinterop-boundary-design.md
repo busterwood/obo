@@ -740,7 +740,8 @@ tests; stage (d) covers own/own_opt/borrow/borrow_mut.
 - double close: `ok(false)` and exactly one C release call;
 - census underflow, forced by `OBO_CENSUS_FAULT=underflow` (inert unless `OBO_CHECK=1`): exit 4;
 - census under `OBO_CHECK=1`: a handle never closed exits 8 at normal end and names the type; the same for a handle dropped at scope end, overwritten, or dropped with its enclosing record, each with no C release call;
-- an `out_own` written with an error return and not closed on the error path: exit 8;
+- (stage (f), with `out_own`) an `out_own` written with an error return and not closed on the error
+  path: exit 8;
 - a release returning an error (`"release_result": "int"`): `err` with the code, and the handle is zero afterwards;
 - exit paths (3.4 table): `exit(n)` with a leaked fd and a live handle exits `n` with no message; a trap with a live handle exits with the trap code and no message; the hosted build matches;
 - without `OBO_CHECK=1`: no census output and no exit 8 for the same programs.
