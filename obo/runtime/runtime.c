@@ -112,7 +112,7 @@ static void die(const char *msg) { die_code(msg, 2); }
  * I/O helper, and match compares the header tag against the cached variants,
  * so the helpers must use exactly the descriptor they are given. */
 #define HEAP_DEFAULT (4UL << 30)    /* 4,294,967,296 bytes: 4 GiB */
-#define HEAP_CEILING (16UL << 30)   /* 17,179,869,184 bytes: 16 GiB */
+#define HEAP_CEILING (64UL << 30)   /* 68,719,476,736 bytes: 64 GiB */
 #define HEAP_MIN     (64UL << 10)   /* 65,536 bytes: 64 KiB */
 #define GRAN 16
 #define NCLASS 65
@@ -124,7 +124,7 @@ static void die(const char *msg) { die_code(msg, 2); }
 #define MAX_PAYLOAD (MAX_OBJECT - GRAN)
 
 static u64 heap_start, heap_top, heap_end;
-static u64 heap_size;                  /* resolved arena size: default 4 GiB, ceiling 16 GiB */
+static u64 heap_size;                  /* resolved arena size: default 4 GiB, ceiling 64 GiB */
 static unsigned char *starts;          /* one bit per granule: an object header starts here */
 static u64 *free_small[NCLASS];
 static u64 *free_large;
@@ -164,7 +164,7 @@ static int starts_with(const char *s, const char *p) { while (*p) if (*s++ != *p
  * leading zero, no whitespace, no fraction or exponent, and an optional exact
  * binary suffix KiB, MiB or GiB.  The value must be a multiple of one granule
  * and in [HEAP_MIN, HEAP_CEILING]; it is never clamped.  4294967296 means
- * 4 GiB, 17179869184 means the compiled 16 GiB ceiling. */
+ * 4 GiB, 68719476736 means the compiled 64 GiB ceiling. */
 static int heap_parse_size(const char *v, u64 *out) {
     const char *p = v;
     if (!*p) return 0;
@@ -204,6 +204,16 @@ static void heap_limit_bad(const char *v) {
     for (;;);
 }
 
+/* A handle's low 32 bits are a granule offset, so the handle layout can name at
+ * most 2^32 granules = 64 GiB.  The parser already bounds the arena by
+ * HEAP_CEILING; this guard keeps a future ceiling change from silently
+ * truncating offsets.  At exactly 64 GiB the final granule is 0xffffffff and
+ * still fits, so only a larger arena is rejected. */
+static void heap_check_handle_range(u64 n) {
+    if (n / GRAN > 0x100000000UL)
+        die("obx: heap limit exceeds the 64 GiB handle range\n");
+}
+
 void rt_init(u64 sbase, u64 gstart, u64 gend) {
     (void)gstart; (void)gend;          /* globals need no collector roots */
     stack_base = sbase;
@@ -236,11 +246,12 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
         fault_winsz = 1;
         fault_sleep = 1;
     }
+    heap_check_handle_range(heap_size);
     heap_start = (u64)sys_mmap(heap_size);
     if ((i64)heap_start < 0) die("obx: cannot reserve heap\n");
     if (heap_start > ~0UL - heap_size) die("obx: cannot reserve heap\n");
     heap_top = heap_start; heap_end = heap_start + heap_size;
-    /* One start bit per 16-byte granule: 32 MiB at 4 GiB, 128 MiB at 16 GiB.
+    /* One start bit per 16-byte granule: 32 MiB at 4 GiB, 512 MiB at 64 GiB.
      * Round the bitmap up: a limit whose granule count is not a multiple of 8
      * still sets a start bit in the final partial byte, and truncating that
      * byte would place the last bit past the mapping. */
@@ -355,6 +366,7 @@ static int is_empty_data(u64 p) {
 }
 #ifdef OBO_RUNTIME_GUARD_TEST
 void rt_test_free_static(void) { free_block((u64)&empty_blocks[0][0]); }
+void rt_test_heap_range(u64 n) { heap_check_handle_range(n); }
 #endif
 
 /* Strings are reference counted: the high 32 bits of the header's size word
@@ -417,8 +429,9 @@ void rt_free(u64 p) {
 
 /* Handles: the object's offset in the heap (in 16-byte units) and, in the
  * high half, the generation of its block when the handle was taken. 0 is nil.
- * The low half is a granule offset, so it addresses 2^32 * 16 = 64 GiB; the
- * 30-bit maximum of a 16 GiB arena leaves the generation half untouched. */
+ * The low half is a granule offset, so it addresses 2^32 * 16 = 64 GiB; at the
+ * 64 GiB ceiling that field is fully used (the last granule is 0xffffffff)
+ * while the generation half stays untouched. */
 u64 rt_handle(u64 p) {
     if (!p) return 0;
     return ((p - heap_start) / GRAN) | (((u64 *)(p - GRAN))[0] >> 32) << 32;
