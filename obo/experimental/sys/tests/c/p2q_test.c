@@ -230,14 +230,29 @@ static int run(void) {
           "max_packets 65");
     CHECK(sys_net_receive_batch(receiver, data, meta, peer, 8, 0) == -ERANGE,
           "max_bytes 0");
-    CHECK(sys_net_receive_batch(receiver, data, meta, peer, 8, 65537) == -ERANGE,
-          "max_bytes 65537");
-    CHECK(sys_net_send_batch(sender, ab, buf, 0, 300, 65535) == -ERANGE,
-          "segment larger than batch");
+    CHECK(sys_net_receive_batch(receiver, data, meta, peer, 8, 65508) == -ERANGE,
+          "max_bytes 65508");
+    CHECK(sys_net_send_batch(sender, ab, buf, 0, 300, 65508) == -ERANGE,
+          "segment larger than datagram limit");
     CHECK(sys_net_send_batch(sender, ab, buf, 0, 65, 1) == -ERANGE,
           "too many segments");
-    CHECK(sys_net_send_batch(sender, ab, buf, 0, 65537, 0) == -EMSGSIZE,
+    CHECK(sys_net_send_batch(sender, ab, buf, 0, 65508, 0) == -EMSGSIZE,
           "batch too large");
+
+    /* The kernel datagram cap is 65507, including a GSO super-packet. */
+    {
+        unsigned char *bigp = (unsigned char *)calloc(1, 65507);
+        long big;
+        CHECK(bigp != NULL, "big batch allocation");
+        big = mkbuf(bigp, 65507);
+        free(bigp);
+        CHECK(big > 0, "big batch buffer");
+        r = sys_net_send_batch(sender, ab, big, 0, 65507, 1024);
+        if (r != -EOPNOTSUPP) CHECK(r == 65507, "gso 65507 accepted");
+        CHECK(sys_net_send_batch(sender, ab, big, 0, 65508, 1024) == -EMSGSIZE,
+              "gso 65508 rejected");
+        sys_res_close(big, SYS_KIND_BYTE_BUFFER);
+    }
 
     /* GSO-off profile rejects a segmented send and caps say so. */
     {
@@ -283,6 +298,52 @@ static int run(void) {
         sys_res_close(plain, SYS_KIND_DATAGRAM);
         sys_res_close(plain_addr, SYS_KIND_BYTE_BUFFER);
         sys_res_close(ptarget, SYS_KIND_BYTE_BUFFER);
+    }
+
+    /* Legacy sys_net_bind_datagram keeps one-datagram receive and permits a
+     * 5000-byte send (no forced DF). */
+    {
+        long la = mkipv4(loop, 0);
+        long lb = mkipv4(loop, 0);
+        long legacy_sender;
+        long legacy_receiver;
+        long lport;
+        long ltarget;
+        long big;
+        unsigned char *bigp;
+        CHECK(la > 0 && lb > 0, "legacy addrs");
+        legacy_sender = sys_net_bind_datagram(la);
+        legacy_receiver = sys_net_bind_datagram(lb);
+        CHECK(legacy_sender > 0 && legacy_receiver > 0, "legacy binds");
+        lport = local_port(legacy_receiver);
+        CHECK(lport > 0, "legacy port");
+        ltarget = mkipv4(loop, lport);
+        CHECK(ltarget > 0, "legacy target");
+        CHECK(sys_net_send(legacy_sender, ltarget, buf, 0, 100) == 100,
+              "legacy send 1");
+        CHECK(sys_net_send(legacy_sender, ltarget, buf, 100, 100) == 100,
+              "legacy send 2");
+        CHECK(sys_net_send(legacy_sender, ltarget, buf, 200, 100) == 100,
+              "legacy send 3");
+        r = receive_retry(legacy_receiver, data, 1024, peer, meta);
+        CHECK(r == 100, "legacy receive is one datagram");
+        CHECK(field(meta, 0) == 100 && field(meta, 2) == 0,
+              "legacy original/segment");
+        bigp = (unsigned char *)calloc(1, 5000);
+        CHECK(bigp != NULL, "legacy big alloc");
+        big = mkbuf(bigp, 5000);
+        free(bigp);
+        CHECK(big > 0, "legacy big buffer");
+        CHECK(sys_net_send(legacy_sender, ltarget, big, 0, 5000) == 5000,
+              "legacy 5000 send");
+        sys_res_close(big, SYS_KIND_BYTE_BUFFER);
+        CHECK(sys_res_close(legacy_receiver, SYS_KIND_DATAGRAM) == 1,
+              "legacy receiver close");
+        CHECK(sys_res_close(legacy_sender, SYS_KIND_DATAGRAM) == 1,
+              "legacy sender close");
+        sys_res_close(la, SYS_KIND_BYTE_BUFFER);
+        sys_res_close(lb, SYS_KIND_BYTE_BUFFER);
+        sys_res_close(ltarget, SYS_KIND_BYTE_BUFFER);
     }
 
     /* SO_REUSEPORT is explicit; without it a second bind conflicts. */

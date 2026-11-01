@@ -46,9 +46,7 @@
     {
       "name": "tls_init",
       "symbol": "tls_init",
-      "args": [
-
-      ],
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"
@@ -468,9 +466,7 @@
     {
       "name": "sys_adapter_shutdown",
       "symbol": "sys_adapter_shutdown",
-      "args": [
-
-      ],
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"
@@ -492,9 +488,7 @@
     {
       "name": "sys_res_nonce",
       "symbol": "sys_res_nonce",
-      "args": [
-
-      ],
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"
@@ -543,9 +537,7 @@
     {
       "name": "sys_res_live_count",
       "symbol": "sys_res_live_count",
-      "args": [
-
-      ],
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"
@@ -554,9 +546,7 @@
     {
       "name": "sys_res_bytes",
       "symbol": "sys_res_bytes",
-      "args": [
-
-      ],
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"
@@ -565,9 +555,7 @@
     {
       "name": "sys_res_cleanup_failures",
       "symbol": "sys_res_cleanup_failures",
-      "args": [
-
-      ],
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"
@@ -728,9 +716,7 @@
     {
       "name": "sys_clock_monotonic_ns",
       "symbol": "sys_clock_monotonic_ns",
-      "args": [
-
-      ],
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"
@@ -739,9 +725,7 @@
     {
       "name": "sys_clock_realtime_sec",
       "symbol": "sys_clock_realtime_sec",
-      "args": [
-
-      ],
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"
@@ -750,9 +734,7 @@
     {
       "name": "sys_clock_realtime_nsec",
       "symbol": "sys_clock_realtime_nsec",
-      "args": [
-
-      ],
+      "args": [],
       "ret": "i64",
       "effects": [
         "impure"
@@ -964,6 +946,17 @@
       ]
     },
     {
+      "name": "sys_net_bind_datagram",
+      "symbol": "sys_net_bind_datagram",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
       "name": "sys_net_receive",
       "symbol": "sys_net_receive",
       "args": [
@@ -979,9 +972,13 @@
       ]
     },
     {
-      "name": "sys_net_bind_datagram",
-      "symbol": "sys_net_bind_datagram",
+      "name": "sys_net_send",
+      "symbol": "sys_net_send",
       "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
         "i64"
       ],
       "ret": "i64",
@@ -1019,21 +1016,6 @@
       "symbol": "sys_net_receive_batch",
       "args": [
         "i64",
-        "i64",
-        "i64",
-        "i64",
-        "i64",
-        "i64"
-      ],
-      "ret": "i64",
-      "effects": [
-        "impure"
-      ]
-    },
-    {
-      "name": "sys_net_send",
-      "symbol": "sys_net_send",
-      "args": [
         "i64",
         "i64",
         "i64",

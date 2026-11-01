@@ -499,7 +499,7 @@ pub fn _opHandle(h: ^Resource, kind: int, op: int, a: int, b: int, c: int): Resu
     return ok(raw)
 }
 
-pub fn _rawResult(raw: int, message: string): Result[int] {
+fn _rawResult(raw: int, message: string): Result[int] {
     if raw < 0 { return err(message, rawCode(raw)) }
     return ok(raw)
 }

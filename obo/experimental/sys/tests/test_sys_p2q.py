@@ -6,8 +6,9 @@
 Builds the real Linux adapter and the link-time scripted fake, runs the C
 batch harness normally and under ASAN/UBSAN/LSAN, compares real/fake obo
 contract traces for batch receive/send, GSO fallback, GRO segment reporting,
-total-budget Range, truncation, peer, capabilities, reusePort and the QUIC
-bind profile, then exercises scripted batch faults.
+the 65507-byte boundary, total-budget Range, legacy one-datagram bind behavior,
+truncation, peer, capabilities, reusePort and the QUIC bind profile, then
+exercises scripted batch/GSO faults.
 """
 import os
 import shutil
@@ -93,6 +94,8 @@ TRACE = [
     'batch_budget_ok=true',
     'batch_range=Range',
     'single_trunc=true,300,10',
+    'legacy_recv=100,100,0',
+    'legacy_send5000=true',
     'gro_off_send=true',
     'gro_off_count=3',
     'gro_off_plain=true',
@@ -106,7 +109,12 @@ TRACE = [
     'bad_max=Range',
     'bad_bytes=Range',
     'bad_seg=Range',
+    'bad_seg_max=Range',
     'bad_range=InvalidArgument',
+    'bad_total=Range',
+    'bad_fallback=Range',
+    'bad_fallback_seg=Range',
+    'fallback_clamp=true',
     'bad_buffer=Range',
     'counts=0,0',
     'shutdown=0,0,0',
@@ -117,6 +125,9 @@ FAULT = [
     'fake_reset=1',
     'listen_fail=ResourceLimit',
     'write_fail=WouldBlock',
+    'gso_reject=Unsupported',
+    'gso_caps_after=false',
+    'gso_after=Unsupported',
     'read_fail=WouldBlock',
     'gso_off=Unsupported',
     'fallback_ok=300',

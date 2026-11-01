@@ -51,6 +51,18 @@ fn main() {
                         ok(t) {
                             let sw = net::sendBatch(&dgram, &t, &bytes, 0, 20, 0)
                             match sw { ok(n) { println("write_fail=ok") } err(m,c) { show("write_fail", c) } }
+
+                            // A scripted kernel rejection of UDP_SEGMENT must
+                            // clear GSO and surface Unsupported on this and
+                            // later segmented sends.
+                            var chunk = new []byte(300)
+                            let gp = fake::push(fake::CLASS_CONN_WRITE, -5)
+                            let gs = net::sendBatch(&dgram, &t, &chunk, 0, 300, 100)
+                            match gs { ok(n) { println("gso_reject=ok") } err(m,c) { show("gso_reject", c) } }
+                            let gc = net::datagramCapabilities(&dgram)
+                            match gc { ok(caps) { println("gso_caps_after=", caps.gso) } err(m,c) { show("gso_caps_after", c) } }
+                            let gs2 = net::sendBatch(&dgram, &t, &chunk, 0, 300, 100)
+                            match gs2 { ok(n) { println("gso_after=ok") } err(m,c) { show("gso_after", c) } }
                         }
                         err(m,c) { show("fault_target", c) }
                     }

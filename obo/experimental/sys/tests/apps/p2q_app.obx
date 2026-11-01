@@ -129,8 +129,39 @@ fn receiveBatchWait(r: &reactor::Reactor, d: &net::Datagram, tag: int,
     return err("datagram batch did not arrive", errors::code(&timedOut))
 }
 
+fn receiveOneWait(r: &reactor::Reactor, d: &net::Datagram, tag: int,
+                  max: int): Result[net::Packet] {
+    let w = try net::watchDatagram(r, d, tag)
+    var attempt = 0
+    while attempt < 40 {
+        let dl = deadlineAfter(100)
+        let events = try reactor::wait(r, &dl, 4)
+        let got = net::receive(d, max)
+        match got {
+            ok(p) {
+                let removed = reactor::remove(&w)
+                match removed { ok(v) { } err(m,c) { } }
+                return ok(p)
+            }
+            err(m,c) {
+                if !errors::isRetryable(c) {
+                    let removed = reactor::remove(&w)
+                    match removed { ok(v) { } err(m,c2) { } }
+                    return err(m, c)
+                }
+            }
+        }
+        attempt += 1
+    }
+    let removed = reactor::remove(&w)
+    match removed { ok(v) { } err(m,c) { } }
+    let timedOut = new errors::TimedOut{}
+    return err("datagram did not arrive", errors::code(&timedOut))
+}
+
 fn batchChecks(sender: &net::Datagram, receiver: &net::Datagram,
                target: &address::Address)
+fn legacyChecks()
 fn profileChecks()
 fn validationChecks()
 
@@ -185,6 +216,7 @@ fn main() {
         }
         err(m,c) { show("bind_a", c) }
     }
+    legacyChecks()
     profileChecks()
     validationChecks()
 
@@ -289,6 +321,87 @@ fn batchChecks(sender: &net::Datagram, receiver: &net::Datagram,
             match rc { ok(v) { } err(m,c) { show("reactor_close", c) } }
         }
         err(m,c) { show("reactor", c) }
+    }
+}
+
+fn legacyChecks() {
+    let pa = address::parseNumeric("127.0.0.1", 0)
+    match pa {
+        ok(a) {
+            // bindDatagram keeps the pre-P2q profile: one receive is one
+            // datagram and fragmentation is not forbidden.
+            let legacyBind = net::bindDatagram(&a)
+            match legacyBind {
+                ok(receiver) {
+                    let la = net::datagramLocalAddress(&receiver)
+                    var port = 0
+                    match la { ok(x) { port = portOf(x) } err(m,c) { show("legacy_port", c) } }
+                    let targetA = address::parseNumeric("127.0.0.1", port)
+                    match targetA {
+                        ok(target) {
+                            let opts = net::datagramOptions()
+                            let sb = net::bindDatagramOptions(&a, &opts)
+                            match sb {
+                                ok(sender) {
+                                    var payload = new []byte(300)
+                                    let s = net::sendBatch(&sender, &target, &payload, 0, 300, 100)
+                                    match s {
+                                        ok(n) { }
+                                        err(m,c) {
+                                            let f = net::sendBatchFallback(&sender, &target, &payload, 0, 300, 100)
+                                            match f { ok(n) { } err(m2,c2) { show("legacy_send", c2) } }
+                                        }
+                                    }
+                                    let rr = reactor::create(8, 8)
+                                    match rr {
+                                        ok(r) {
+                                            let one = receiveOneWait(&r, &receiver, 73, 1024)
+                                            match one {
+                                                ok(p) {
+                                                    println("legacy_recv=", len(p.bytes), ",", p.originalSize, ",", p.segmentSize)
+                                                }
+                                                err(m,c) { show("legacy_recv", c) }
+                                            }
+                                            let rc = reactor::close(&r)
+                                            match rc { ok(v) { } err(m,c) { } }
+                                        }
+                                        err(m,c) { show("legacy_reactor", c) }
+                                    }
+                                    let rb = net::bindDatagramOptions(&a, &opts)
+                                    match rb {
+                                        ok(peer) {
+                                            let lp = net::datagramLocalAddress(&peer)
+                                            var pport = 0
+                                            match lp { ok(x) { pport = portOf(x) } err(m,c) { } }
+                                            let targetB = address::parseNumeric("127.0.0.1", pport)
+                                            match targetB {
+                                                ok(dest) {
+                                                    var big = new []byte(5000)
+                                                    let s5000 = net::send(&receiver, &dest, &big)
+                                                    match s5000 { ok(n) { println("legacy_send5000=", n == 5000) } err(m,c) { show("legacy_send5000", c) } }
+                                                }
+                                                err(m,c) { show("legacy_dest", c) }
+                                            }
+                                            let cp = net::closeDatagram(&peer)
+                                            match cp { ok(v) { } err(m,c) { } }
+                                        }
+                                        err(m,c) { show("legacy_peer", c) }
+                                    }
+                                    let cs = net::closeDatagram(&sender)
+                                    match cs { ok(v) { } err(m,c) { } }
+                                }
+                                err(m,c) { show("legacy_sender", c) }
+                            }
+                        }
+                        err(m,c) { show("legacy_target", c) }
+                    }
+                    let cr = net::closeDatagram(&receiver)
+                    match cr { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("legacy_bind", c) }
+            }
+        }
+        err(m,c) { show("legacy_addr", c) }
     }
 }
 
@@ -437,16 +550,28 @@ fn validationChecks() {
                     match empty { ok(p) { println("empty_batch=ok") } err(m,c) { show("empty_batch", c) } }
                     let tooMany = net::receiveBatch(&dgram, 0, 1024)
                     match tooMany { ok(v) { println("bad_max=ok") } err(m,c) { show("bad_max", c) } }
-                    let tooBig = net::receiveBatch(&dgram, 8, 65537)
+                    let tooBig = net::receiveBatch(&dgram, 8, 65508)
                     match tooBig { ok(v) { println("bad_bytes=ok") } err(m,c) { show("bad_bytes", c) } }
                     let target = address::parseNumeric("127.0.0.1", 9)
                     match target {
                         ok(t) {
                             var payload = new []byte(10)
+                            var big = new []byte(65508)
+                            var many = new []byte(65)
                             let badSeg = net::sendBatch(&dgram, &t, &payload, 0, 10, 20)
                             match badSeg { ok(v) { println("bad_seg=ok") } err(m,c) { show("bad_seg", c) } }
+                            let badSegMax = net::sendBatch(&dgram, &t, &payload, 0, 10, 65508)
+                            match badSegMax { ok(v) { println("bad_seg_max=ok") } err(m,c) { show("bad_seg_max", c) } }
                             let badRange = net::sendBatch(&dgram, &t, &payload, 5, 10, 0)
                             match badRange { ok(v) { println("bad_range=ok") } err(m,c) { show("bad_range", c) } }
+                            let badTotal = net::sendBatch(&dgram, &t, &big, 0, 65508, 0)
+                            match badTotal { ok(v) { println("bad_total=ok") } err(m,c) { show("bad_total", c) } }
+                            let badFallback = net::sendBatchFallback(&dgram, &t, &big, 0, 65508, 1024)
+                            match badFallback { ok(v) { println("bad_fallback=ok") } err(m,c) { show("bad_fallback", c) } }
+                            let badFallbackSeg = net::sendBatchFallback(&dgram, &t, &many, 0, 65, 1)
+                            match badFallbackSeg { ok(v) { println("bad_fallback_seg=ok") } err(m,c) { show("bad_fallback_seg", c) } }
+                            let clamp = net::sendBatchFallback(&dgram, &t, &payload, 0, 10, 65535)
+                            match clamp { ok(n) { println("fallback_clamp=", n == 10) } err(m,c) { show("fallback_clamp", c) } }
                         }
                         err(m,c) { show("bad_target", c) }
                     }

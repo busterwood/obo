@@ -20,6 +20,9 @@ GSO/GRO reporting, `watchDatagram`, concrete QUIC bind) is implemented in
 P2q's real backend uses one bounded `recvmsg` loop over a single `maxBytes`
 buffer instead of `recvmmsg` per-message iovecs, so the total-budget bound is
 exact and a 64-packet batch never allocates 4 MiB (see the package `LIMITS.md`).
+The batch/segment cap is 65507 bytes, matching the kernel UDP datagram limit;
+legacy `bindDatagram` keeps `gro=false`/`dontFragment=false`, while the QUIC
+profile uses `bindQuicDatagram` and the explicit `DatagramOptions`.
 No H3/QUIC code exists yet; the QUIC transport, shim, HTTP/3 mapping and server
 shells remain unimplemented design.
 

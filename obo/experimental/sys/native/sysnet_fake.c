@@ -454,9 +454,10 @@ static long bind_datagram_common(long addr_token, long rcvbuf, long sndbuf,
 }
 
 long sys_net_bind_datagram(long addr_token) {
+    /* Legacy P2 profile: no GRO coalescing and no forced DF. GSO is only a
+     * capability bit and does not change one-datagram receive behavior. */
     return bind_datagram_common(addr_token, 4194304L, 4194304L,
-                                SYS_DGRAM_GRO | SYS_DGRAM_GSO |
-                                SYS_DGRAM_DONT_FRAGMENT);
+                                SYS_DGRAM_GSO);
 }
 
 long sys_net_bind_datagram_options(long addr_token, long rcvbuf, long sndbuf,
@@ -979,7 +980,7 @@ long sys_net_send_batch(long token, long addr_token, long buf_token,
     sys_reg_bump_call(SYS_CALL_CONN_WRITE);
     if (f == NULL) return err(EBADF);
     if (offset < 0 || count < 0) return err(EINVAL);
-    if (segment_size < 0 || segment_size > 65535) return err(ERANGE);
+    if (segment_size < 0 || segment_size > 65507) return err(ERANGE);
     if (count > SYS_DGRAM_MAX_BATCH_BYTES) return err(EMSGSIZE);
     if (segment_size == 0) {
         if (count > 65507) return err(EMSGSIZE);
@@ -1000,7 +1001,17 @@ long sys_net_send_batch(long token, long addr_token, long buf_token,
         return err(ERANGE);
     }
     have_script = fake_pop_script(SYS_CALL_CONN_WRITE, &scripted);
-    if (have_script && scripted < 0) return scripted;
+    if (have_script && scripted < 0) {
+        if (segment_size > 0 &&
+            (scripted == -EIO || scripted == -EINVAL ||
+             scripted == -ENOPROTOOPT || scripted == -EOPNOTSUPP)) {
+            /* Model a kernel that rejects UDP_SEGMENT: the capability is
+             * cleared and the caller gets the documented Unsupported. */
+            f->sock->gso_disabled = 1;
+            return err(EOPNOTSUPP);
+        }
+        return scripted;
+    }
     receiver = find_bound(&to, SYS_KIND_DATAGRAM);
     if (receiver == NULL) return count;
     if (segment_size == 0) {

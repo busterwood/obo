@@ -93,8 +93,8 @@ explicit rather than hidden behind a stable-looking API.
 | Unix path / abstract name | 107 bytes | 107 bytes |
 | One TCP/Unix stream transfer | 1 MiB | 1 MiB (`MAX_CHUNK`) |
 | One datagram message | 65507 bytes | 65507 bytes (`MAX_DATAGRAM`) |
-| One datagram batch | 16 (QUIC plan) | 64 datagrams / 65536 total bytes |
-| One GSO send | 16 (QUIC plan) | 64 segments / 65536 total bytes |
+| One datagram batch | 16 (QUIC plan) | 64 datagrams / 65507 total bytes |
+| One GSO send | 16 (QUIC plan) | 64 segments / 65507 total bytes |
 | Datagram socket buffer | 4 MiB | 1 GiB per direction |
 | One reactor batch | 64 events | 4096 requested, 64 returned (`MAX_BATCH`) |
 | Reactor watches / timers | configured at create | 65536 each |
@@ -192,21 +192,32 @@ allocate past the stated capacity.
 ## P2q UDP batch limits
 
 - `receiveBatch` accepts `1..64` datagrams and a **total** byte budget of
-  `1..65536` bytes. It allocates one data buffer of `maxBytes`, one metadata
-  packet of `maxPackets * 40` bytes and one peer packet of
-  `maxPackets * 160` bytes; it never allocates `maxPackets * maxBytes`.
-  The real adapter uses a bounded `recvmsg` loop against that one buffer rather
-  than `recvmmsg`'s per-message iovecs, so the total budget is exact and a
-  64-packet batch cannot reserve 4 MiB. A datagram that does not fit the
-  remaining budget is consumed and the call returns `Range`; earlier datagrams
-  in that partial batch are not returned. Size the budget for the largest
-  expected datagram (QUIC uses 1200-byte payloads) and retry after a `Range`.
-- `sendBatch` accepts at most 64 segments, `65535` bytes per segment and
-  `65536` total bytes. `segmentSize == 0` is one ordinary datagram (at most
+  `1..65507` bytes, the kernel's UDP datagram cap. It allocates one data buffer
+  of `maxBytes`, one metadata packet of `maxPackets * 40` bytes and one peer
+  packet of `maxPackets * 160` bytes; it never allocates
+  `maxPackets * maxBytes`. The real adapter uses a bounded `recvmsg` loop
+  against that one buffer rather than `recvmmsg`'s per-message iovecs, so the
+  total budget is exact and a 64-packet batch cannot reserve 4 MiB.
+  A datagram that does not fit the remaining budget is consumed and the call
+  returns `Range`; earlier datagrams in that partial batch are not returned.
+  A coalesced GRO buffer is one message for this budget: if it exceeds the
+  remaining `maxBytes`, all of its segments are consumed and lost, and the call
+  returns `Range`. Batch results always set `truncated=false`; over-budget is
+  `Range`, not silent truncation. Size the budget for the largest expected
+  datagram or coalesced buffer (QUIC uses 1200-byte payloads) and retry after a
+  `Range`.
+- `bindDatagram` keeps the legacy P2 profile: `gro=false`,
+  `dontFragment=false` and default buffers. Legacy `receive` therefore returns
+  exactly one UDP datagram and legacy `send` may fragment. Use
+  `bindDatagramOptions`/`bindQuicDatagram` for GRO, GSO, DF and explicit
+  buffers.
+- `sendBatch` accepts at most 64 segments, `65507` bytes per segment and
+  `65507` total bytes. `segmentSize == 0` is one ordinary datagram (at most
   `65507` bytes). Every segment but the last must be exactly `segmentSize`;
   a call is all-or-error. GSO unavailability is `Unsupported`, and
-  `sendBatchFallback` is the explicit, bounded one-datagram loop (it stops at
-  the first error and does not retry).
+  `sendBatchFallback` is the explicit one-datagram loop: it is capped at
+  `65507` total bytes and 64 pieces, clamps each piece to `MAX_DATAGRAM`,
+  stops at the first error and does not retry.
 - A GRO segment is one UDP datagram, not one QUIC packet. `Packet.bytes` may
   contain several coalesced QUIC packets; the shim/consumer must not infer
   packet boundaries from `segmentSize`. `segmentSize == 0` means one ordinary

@@ -247,14 +247,17 @@ crosses the application boundary.
   datagram local address.
 - `sysnet` P2q UDP batch: `bindDatagramOptions` validates the explicit
   receive/send buffer, reusePort, GRO, GSO and DF profile; `bindDatagram` keeps
-  its old signature and uses those defaults. `receiveBatch` returns a bounded
-  `[]Packet` with a **total** `maxBytes` budget and at most 64 datagrams;
+  its old signature and the legacy P2 profile (`gro=false`,
+  `dontFragment=false`, default buffers) so existing one-datagram `receive`
+  and fragmenting `send` behavior is unchanged. `receiveBatch` returns a
+  bounded `[]Packet` with a **total** `maxBytes` budget, at most 64 datagrams
+  and a 65507-byte cap;
   `Packet.segmentSize` is a GRO segment size (0 for an ordinary datagram) and a
   GRO segment is one UDP datagram, not one QUIC packet. `sendBatch` with a
   non-zero segment size asks for one `UDP_SEGMENT` send and returns
   `Unsupported` rather than looping; `sendBatchFallback` is the explicit
-  one-datagram fallback. `watchDatagram` is the only readiness helper and
-  exposes no descriptor. `datagramCapabilities` reports the features the
+  one-datagram fallback, capped at 65507 total bytes and 64 pieces.
+  `watchDatagram` is the only readiness helper and exposes no descriptor. `datagramCapabilities` reports the features the
   socket actually enabled. `bindQuicDatagram` rejects SO_REUSEPORT, a wildcard
   local address and Unix datagrams for the one-socket QUIC profile.
 - `sysreactor`: level-triggered epoll only in v1. `watchResource` accepts a

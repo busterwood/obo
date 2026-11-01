@@ -174,7 +174,7 @@ enum {
  * dataOffset, length, originalSize, truncated, segmentSize. */
 #define SYS_DGRAM_BATCH_ENTRY 40L
 #define SYS_DGRAM_MAX_BATCH 64L
-#define SYS_DGRAM_MAX_BATCH_BYTES 65536L
+#define SYS_DGRAM_MAX_BATCH_BYTES 65507L
 
 /* Datagram bind option bits (library bits, not Linux flags). */
 enum {

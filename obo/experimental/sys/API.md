@@ -477,7 +477,8 @@ pub const MAX_CHUNK = 1048576
 pub const MAX_BACKLOG = 65535
 pub const MAX_DATAGRAM = 65507
 pub const MAX_BATCH_DATAGRAMS = 64
-pub const MAX_BATCH_BYTES = 65536
+pub const MAX_BATCH_BYTES = 65507
+pub const MAX_BATCH_SEGMENT = 65507
 
 pub fn listenOptions(): ListenOptions
 pub fn listen(a: &Address, options: &ListenOptions): Result[Listener]
@@ -562,29 +563,41 @@ every field, sets CLOEXEC/nonblocking, applies the options before bind, and
 closes on any post-bind failure. A kernel that rejects `UDP_GRO` clears only
 that feature; a rejected `UDP_SEGMENT` send returns `Unsupported` and clears the
 socket's GSO capability. `datagramCapabilities` reports the features actually
-enabled. `bindDatagram` keeps its old signature and uses these defaults.
+enabled. `bindDatagram` keeps its old signature and uses the **legacy P2
+profile**: `gro=false`, `dontFragment=false` and the default 4 MiB buffers. A
+legacy `receive` therefore still returns exactly one UDP datagram per call and
+a legacy `send` may fragment. GRO, DF and the explicit buffer/reuse/GSO profile
+are opt-in through `bindDatagramOptions`.
 
 `receiveBatch(d, maxPackets, maxBytes)` requires `1..64` datagrams and a
-`1..65536` **total** byte budget. The sum of `Packet.bytes` never exceeds
-`maxBytes`; a datagram larger than the remaining budget returns `Range` after
-that one datagram is consumed, never silent truncation. The real adapter uses
-one bounded `recvmsg` loop over that single `maxBytes` buffer, not
-`recvmmsg`'s per-message iovecs, so the native allocation stays proportional to
-`maxBytes` rather than `maxPackets * maxBytes`. `truncated` and
-`originalSize` remain available (kernel truncation is not silently retried).
-The call fills at most one bounded batch and leaves extra datagrams queued.
-An empty queue returns `WouldBlock`. `Packet.segmentSize > 0` means the kernel
-coalesced GRO segments; `bytes` holds all of them, the final segment may be
-shorter, and a segment is **one UDP datagram**, not one QUIC packet. With GRO
-off or unavailable, `segmentSize == 0` and every datagram is separate.
+`1..65507` **total** byte budget (the kernel's UDP datagram cap). The sum of
+`Packet.bytes` never exceeds `maxBytes`; a datagram (or a coalesced GRO buffer)
+larger than the remaining budget returns `Range` after that whole message is
+consumed, never silent truncation. A coalesced GRO buffer counts as one
+datagram for the budget, so an over-budget coalesce loses all of its segments;
+that is one bounded loss, and the caller can retry with a larger budget. The
+real adapter uses one bounded `recvmsg` loop over that single `maxBytes`
+buffer, not `recvmmsg`'s per-message iovecs, so the native allocation stays
+proportional to `maxBytes` rather than `maxPackets * maxBytes`. Batch results
+always set `truncated=false`; an over-budget message is `Range`, not a
+truncated packet. `receive` (single datagram) still reports kernel truncation
+through `truncated`/`originalSize`, and both forms report `originalSize` as the
+returned datagram/coalesced length. The call fills at most one bounded batch
+and leaves extra datagrams queued. An empty queue returns `WouldBlock`.
+`Packet.segmentSize > 0` means the kernel coalesced GRO segments; `bytes` holds
+all of them, the final segment may be shorter, and a segment is **one UDP
+datagram**, not one QUIC packet. With GRO off or unavailable,
+`segmentSize == 0` and every datagram is separate.
 
 `sendBatch` with `segmentSize == 0` sends one ordinary datagram, all-or-error.
 With `segmentSize > 0` it makes one `sendmsg` with a `UDP_SEGMENT` control
 message; every segment except the last is exactly `segmentSize`, the final may
-be shorter, at most 64 segments and 65536 total bytes are accepted, and it is
-all-or-error. GSO unavailability is `Unsupported`; `sendBatch` never hides a
-partial one-datagram loop. `sendBatchFallback` is the explicit fallback and
-stops at the first error. `watchDatagram` validates the checked Datagram
+be shorter, at most 64 segments, `segmentSize <= 65507` and 65507 total bytes
+are accepted, and it is all-or-error. GSO unavailability is `Unsupported`;
+`sendBatch` never hides a partial one-datagram loop. `sendBatchFallback` is the
+explicit fallback: it is capped at 65507 total bytes and 64 pieces, clamps each
+piece to the 65507-byte datagram limit, and stops at the first error.
+`watchDatagram` validates the checked Datagram
 resource and registers level-triggered read interest; it is the only
 datagram-readiness route and exposes no descriptor.
 

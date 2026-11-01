@@ -92,7 +92,8 @@ pub const MAX_BACKLOG = 65535
 pub const MAX_DATAGRAM = 65507
 pub const MAX_UNIX_PATH = 107
 pub const MAX_BATCH_DATAGRAMS = 64
-pub const MAX_BATCH_BYTES = 65536
+pub const MAX_BATCH_BYTES = 65507
+pub const MAX_BATCH_SEGMENT = 65507
 pub const MAX_DATAGRAM_OPTION_BUFFER = 1073741824
 
 // Must match sysadapter.h. Not a Linux flag word.
@@ -491,8 +492,18 @@ pub fn watchListener(r: &reactor::Reactor, l: &Listener,
     return reactor::watchResource(r, source, true, false, tag)
 }
 
-pub fn bindDatagram(a: &address::Address): Result[Datagram] {
+// Legacy P2 datagram profile: one receive is one datagram and DF is not
+// forced, so existing consumers keep their pre-P2q behavior. GRO, GSO and the
+// explicit option profile are opt-in through bindDatagramOptions.
+fn legacyDatagramOptions(): DatagramOptions {
     let o = datagramOptions()
+    o.gro = false
+    o.dontFragment = false
+    return o
+}
+
+pub fn bindDatagram(a: &address::Address): Result[Datagram] {
+    let o = legacyDatagramOptions()
     return bindDatagramOptions(a, &o)
 }
 
@@ -591,7 +602,7 @@ pub fn receive(d: &Datagram, max: int): Result[Packet] {
 
 // Bounded batch receive. maxBytes is the total byte budget of the returned
 // batch, not a per-packet bound, so a 64-packet batch never allocates
-// 64 * 65536 bytes. At most one datagram may be consumed but not returned: a
+// 64 * 65507 bytes. At most one datagram may be consumed but not returned: a
 // datagram larger than the remaining budget returns Range.
 pub fn receiveBatch(d: &Datagram, maxPackets: int,
                     maxBytes: int): Result[Datagrams] {
@@ -599,7 +610,7 @@ pub fn receiveBatch(d: &Datagram, maxPackets: int,
         return err("maxPackets is outside 1..64", rangeCode())
     }
     if maxBytes < 1 || maxBytes > MAX_BATCH_BYTES {
-        return err("maxBytes is outside 1..65536", rangeCode())
+        return err("maxBytes is outside 1..65507", rangeCode())
     }
     let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
     let data = try bytesbuf::create(maxBytes)
@@ -661,11 +672,11 @@ pub fn sendBatch(d: &Datagram, to: &address::Address, bytes: &[]byte,
     if !checkSource(bytes, offset, count) {
         return err("sendBatch source range is outside the array", invalidArgument())
     }
-    if segmentSize < 0 || segmentSize > 65535 {
-        return err("segmentSize is outside 0..65535", rangeCode())
+    if segmentSize < 0 || segmentSize > MAX_BATCH_SEGMENT {
+        return err("segmentSize is outside 0..65507", rangeCode())
     }
     if count > MAX_BATCH_BYTES {
-        return err("sendBatch is limited to 65536 total bytes", rangeCode())
+        return err("sendBatch is limited to 65507 total bytes", rangeCode())
     }
     if segmentSize == 0 {
         if count > MAX_DATAGRAM {
@@ -702,8 +713,10 @@ pub fn sendBatch(d: &Datagram, to: &address::Address, bytes: &[]byte,
     return ok(n)
 }
 
-// Explicit one-datagram fallback for a GSO-capable caller. Returns the total
-// bytes sent or the first error; it never retries a failed segment.
+// Explicit one-datagram fallback for a GSO-capable caller. It is batch
+// bounded: at most 65507 total bytes and 64 pieces. Pieces are clamped to the
+// 65507-byte datagram limit. Returns the total bytes sent or the first error;
+// it never retries a failed piece.
 pub fn sendBatchFallback(d: &Datagram, to: &address::Address, bytes: &[]byte,
                          offset: int, count: int,
                          segmentSize: int): Result[int] {
@@ -714,10 +727,20 @@ pub fn sendBatchFallback(d: &Datagram, to: &address::Address, bytes: &[]byte,
     if segmentSize <= 0 || count <= 0 {
         return sendBatch(d, to, bytes, offset, count, 0)
     }
+    if count > MAX_BATCH_BYTES {
+        return err("sendBatchFallback is limited to 65507 total bytes",
+                   rangeCode())
+    }
+    var step = segmentSize
+    if step > MAX_DATAGRAM { step = MAX_DATAGRAM }
+    let pieces = (count + step - 1) / step
+    if pieces > MAX_BATCH_DATAGRAMS {
+        return err("sendBatchFallback is limited to 64 datagrams", rangeCode())
+    }
     var sent = 0
     while sent < count {
         var piece = count - sent
-        if piece > segmentSize { piece = segmentSize }
+        if piece > step { piece = step }
         let n = try sendBatch(d, to, bytes, offset + sent, piece, 0)
         sent += n
     }
