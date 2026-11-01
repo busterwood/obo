@@ -185,7 +185,7 @@ The direct self-compile was run from `obo/` as
 `OBO_STATS=1 ./obo src/obo.obo -o /tmp/self.obo --rt .`; the port comparison
 peaks at 2,385,776 bytes and allocates 52,990,848. The live peak varies by a few
 hundred bytes with the compiler source path. The 0.278 s median is higher than
-0.195 s on 0.14, but the 0.15 source is 998 lines larger and every benchmark
+0.195 s on 0.14, but the 0.15 source is 986 lines larger and every benchmark
 row on this host ran slower than the 0.14 record, so that movement is not a
 clean like-for-like code comparison. Leaks are caught separately by the port
 gate's leak check.
