@@ -7477,8 +7477,9 @@ fn kindNumber(desc: string, from: int, to: int, signed: bool): int {
     while i < to {
         let c = int(desc[i])
         if c < 48 || c > 57 { error("__cinterop argument kind needs a number: '" + substr(desc, from, to) + "'") }
-        // 17 digits at most: the value stays inside int, so a long descriptor cannot overflow
-        if v > 99999999999999999 { error("__cinterop argument kind number is too large: '" + substr(desc, from, to) + "'") }
+        // the prefix is tested before it grows: a value of at most 17 digits (99999999999999999) results,
+        // so a long descriptor cannot overflow. Leading zeros do not count.
+        if v > 9999999999999999 { error("__cinterop argument kind number is too large: '" + substr(desc, from, to) + "'") }
         v = v * 10 + c - 48
         i += 1
     }
