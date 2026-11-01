@@ -1,0 +1,168 @@
+// decimals_high_scale: allocate and allocateWeighted across the full
+// documented scale range, including 41, 100 and 32768. unitAt builds 10^-scale
+// through decimal::parse, so a zero or tiny total still splits exactly where a
+// repeated division would overflow. The remainder distribution is checked at
+// scale 100 and 32768, not only the zero case. No value is formatted here:
+// scale 32768 text is 32,769 bytes.
+// expect: decimals high scale ok
+import "decimals.obx" as decimals
+
+fn fail(label: string, detail: string) {
+    println("FAIL ", label, ": ", detail)
+    exit(1)
+}
+
+fn checkInt(label: string, got: int, want: int) {
+    if got != want { fail(label, "got " + string(got) + ", want " + string(want)) }
+}
+
+fn checkPart(label: string, xs: &[]decimal, i: int, want: decimal) {
+    if xs[i] != want { fail(label, "part " + string(i) + " differs") }
+}
+
+// len, every part's display scale, the exact sum, and the sum's scale
+fn checkAllocate(label: string, total: decimal, parts: int, scale: int) {
+    let r = decimals::allocate(total, parts, scale)
+    match r {
+        ok(xs) {
+            checkInt(label + " len", len(xs), parts)
+            for i in 0..len(xs) {
+                checkInt(label + " dscale", decimal::dscale(xs[i]), scale)
+            }
+            let qr = decimal::quantize(total, scale, HALF_EVEN)
+            match qr {
+                ok(q) {
+                    let s = decimals::sum(xs)
+                    if s != q { fail(label, "sum differs") }
+                    checkInt(label + " sum dscale", decimal::dscale(s), scale)
+                }
+                err(m, c) { fail(label, "quantize " + string(c)) }
+            }
+        }
+        err(m, c) { fail(label, "unexpected error " + string(c) + " [" + m + "]") }
+    }
+}
+
+fn checkWeighted(label: string, total: decimal, weights: &[]decimal, scale: int) {
+    let r = decimals::allocateWeighted(total, weights, scale)
+    match r {
+        ok(xs) {
+            checkInt(label + " len", len(xs), len(weights))
+            for i in 0..len(xs) {
+                checkInt(label + " dscale", decimal::dscale(xs[i]), scale)
+            }
+            let qr = decimal::quantize(total, scale, HALF_EVEN)
+            match qr {
+                ok(q) {
+                    let s = decimals::sum(xs)
+                    if s != q { fail(label, "sum differs") }
+                    checkInt(label + " sum dscale", decimal::dscale(s), scale)
+                }
+                err(m, c) { fail(label, "quantize " + string(c)) }
+            }
+        }
+        err(m, c) { fail(label, "unexpected error " + string(c) + " [" + m + "]") }
+    }
+}
+
+fn weights1(a: decimal): []decimal {
+    var out = new []decimal(0)
+    append(out, a)
+    return out
+}
+
+fn weights2(a: decimal, b: decimal): []decimal {
+    var out = new []decimal(0)
+    append(out, a)
+    append(out, b)
+    return out
+}
+
+fn weights3(a: decimal, b: decimal, c: decimal): []decimal {
+    var out = new []decimal(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    return out
+}
+
+fn main() {
+    // zero totals at and past the old 40-digit division limit
+    checkAllocate("zero 41", 0.0, 1, 41)
+    checkAllocate("zero 100", 0.0, 3, 100)
+    checkAllocate("zero 32768", 0.0, 2, 32768)
+
+    // tiny totals: 1e-100 into 3 leaves one part with the whole unit
+    checkAllocate("tiny 41 by 3", 1e-41, 3, 41)
+    checkAllocate("tiny 100 by 3", 1e-100, 3, 100)
+    let t3 = decimals::allocate(1e-100, 3, 100)
+    match t3 {
+        ok(xs) {
+            checkPart("tiny 100 first", xs, 0, 1e-100)
+            checkPart("tiny 100 second", xs, 1, 0.0)
+            checkPart("tiny 100 third", xs, 2, 0.0)
+        }
+        err(m, c) { fail("tiny 100 by 3", "unexpected error " + string(c)) }
+    }
+    checkAllocate("tiny 100 by 1", 1e-100, 1, 100)
+    checkAllocate("tiny 32768 by 3", 1e-32768, 3, 32768)
+    let t32 = decimals::allocate(1e-32768, 3, 32768)
+    match t32 {
+        ok(xs) {
+            checkPart("tiny 32768 first", xs, 0, 1e-32768)
+            checkPart("tiny 32768 second", xs, 1, 0.0)
+        }
+        err(m, c) { fail("tiny 32768 by 3", "unexpected error " + string(c)) }
+    }
+
+    // a meaningful remainder at scale 100: 5e-100 into two gives 3e-100 + 2e-100
+    checkAllocate("split 100", 5e-100, 2, 100)
+    let sp = decimals::allocate(5e-100, 2, 100)
+    match sp {
+        ok(xs) {
+            checkPart("split 100 first", xs, 0, 3e-100)
+            checkPart("split 100 second", xs, 1, 2e-100)
+        }
+        err(m, c) { fail("split 100", "unexpected error " + string(c)) }
+    }
+
+    // weighted, zero and tiny totals over the same range
+    var w2a = weights2(1.0, 2.0)
+    checkWeighted("w zero 41", 0.0, w2a, 41)
+    checkWeighted("w zero 100", 0.0, w2a, 100)
+    checkWeighted("w zero 32768", 0.0, w2a, 32768)
+    var w3 = weights3(1.0, 1.0, 1.0)
+    checkWeighted("w tiny 41", 1e-41, w3, 41)
+    checkWeighted("w tiny 100", 1e-100, w3, 100)
+    let wt = decimals::allocateWeighted(1e-100, w3, 100)
+    match wt {
+        ok(xs) {
+            checkPart("w tiny 100 first", xs, 0, 1e-100)
+            checkPart("w tiny 100 second", xs, 1, 0.0)
+        }
+        err(m, c) { fail("w tiny 100", "unexpected error " + string(c)) }
+    }
+    checkWeighted("w tiny 32768", 1e-32768, w3, 32768)
+    let wt32 = decimals::allocateWeighted(1e-32768, w3, 32768)
+    match wt32 {
+        ok(xs) {
+            checkPart("w tiny 32768 first", xs, 0, 1e-32768)
+            checkPart("w tiny 32768 second", xs, 1, 0.0)
+        }
+        err(m, c) { fail("w tiny 32768", "unexpected error " + string(c)) }
+    }
+
+    // uneven weights at scale 100: the larger remainder (index 1) takes the unit
+    var w21 = weights2(1.0, 2.0)
+    checkWeighted("w uneven 100", 1e-100, w21, 100)
+    let wu = decimals::allocateWeighted(1e-100, w21, 100)
+    match wu {
+        ok(xs) {
+            checkPart("w uneven 100 first", xs, 0, 0.0)
+            checkPart("w uneven 100 second", xs, 1, 1e-100)
+        }
+        err(m, c) { fail("w uneven 100", "unexpected error " + string(c)) }
+    }
+
+    println("decimals high scale ok")
+}

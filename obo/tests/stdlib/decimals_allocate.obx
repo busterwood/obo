@@ -1,0 +1,312 @@
+// decimals_allocate: the largest-remainder split. Exact division, leftover
+// distribution, 0/1 parts, negative totals, scales 0/2/6, the cents example,
+// a deterministic sweep of the exact-sum invariant, and the invalid inputs.
+// allocateWeighted covers equal, uneven, fractional and zero weights and the
+// negative/empty/zero-sum rejections. Bad arguments are errors, not traps.
+// expect: decimals allocate ok
+import "decimals.obx" as decimals
+
+fn fail(label: string, detail: string) {
+    println("FAIL ", label, ": ", detail)
+    exit(1)
+}
+
+fn checkInt(label: string, got: int, want: int) {
+    if got != want { fail(label, "got " + string(got) + ", want " + string(want)) }
+}
+
+fn text(d: decimal): string {
+    let r = decimal::format(d)
+    match r {
+        ok(s) { return s }
+        err(m, c) { return "err " + string(c) + " " + m }
+    }
+}
+
+fn listText(xs: &[]decimal): string {
+    var out = ""
+    for i in 0..len(xs) {
+        if i > 0 { out = out + " " }
+        out = out + text(xs[i])
+    }
+    return out
+}
+
+fn checkList(label: string, r: Result[[]decimal], want: string, wantScale: int) {
+    match r {
+        ok(xs) {
+            let g = listText(xs)
+            if g != want { fail(label, "got [" + g + "], want [" + want + "]") }
+            for i in 0..len(xs) {
+                if decimal::dscale(xs[i]) != wantScale {
+                    fail(label, "part " + string(i) + " dscale " +
+                         string(decimal::dscale(xs[i])) + ", want " + string(wantScale))
+                }
+            }
+        }
+        err(m, c) { fail(label, "unexpected error " + string(c) + " [" + m + "]") }
+    }
+}
+
+fn checkErr(label: string, r: Result[[]decimal], code: int) {
+    match r {
+        ok(xs) { fail(label, "expected error " + string(code) + ", got " + listText(xs)) }
+        err(m, c) {
+            if c != code {
+                fail(label, "code " + string(c) + ", want " + string(code) + " [" + m + "]")
+            }
+        }
+    }
+}
+
+// the exact-sum invariant: len is parts, the shares sum to total rounded to
+// scale HALF_EVEN, and each share carries the requested display scale
+fn checkAllocate(label: string, total: decimal, parts: int, scale: int) {
+    let r = decimals::allocate(total, parts, scale)
+    match r {
+        ok(xs) {
+            if len(xs) != parts {
+                fail(label, "length " + string(len(xs)) + ", want " + string(parts))
+            }
+            let qr = decimal::quantize(total, scale, HALF_EVEN)
+            match qr {
+                ok(q) {
+                    let s = decimals::sum(xs)
+                    if s != q {
+                        fail(label, "sum " + text(s) + ", want " + text(q))
+                    }
+                    if parts > 0 && decimal::dscale(s) != scale {
+                        fail(label, "sum dscale " + string(decimal::dscale(s)) +
+                             ", want " + string(scale))
+                    }
+                }
+                err(m, c) { fail(label, "quantize " + string(c) + " [" + m + "]") }
+            }
+        }
+        err(m, c) { fail(label, "unexpected error " + string(c) + " [" + m + "]") }
+    }
+}
+
+fn checkWeighted(label: string, total: decimal, weights: &[]decimal, scale: int) {
+    let r = decimals::allocateWeighted(total, weights, scale)
+    match r {
+        ok(xs) {
+            if len(xs) != len(weights) {
+                fail(label, "length " + string(len(xs)) + ", want " + string(len(weights)))
+            }
+            let qr = decimal::quantize(total, scale, HALF_EVEN)
+            match qr {
+                ok(q) {
+                    let s = decimals::sum(xs)
+                    if s != q {
+                        fail(label, "sum " + text(s) + ", want " + text(q))
+                    }
+                    if decimal::dscale(s) != scale {
+                        fail(label, "sum dscale " + string(decimal::dscale(s)) +
+                             ", want " + string(scale))
+                    }
+                }
+                err(m, c) { fail(label, "quantize " + string(c) + " [" + m + "]") }
+            }
+        }
+        err(m, c) { fail(label, "unexpected error " + string(c) + " [" + m + "]") }
+    }
+}
+
+fn oneWeight(w: decimal): []decimal {
+    var out = new []decimal(0)
+    append(out, w)
+    return out
+}
+
+fn twoWeights(a: decimal, b: decimal): []decimal {
+    var out = new []decimal(0)
+    append(out, a)
+    append(out, b)
+    return out
+}
+
+fn threeWeights(a: decimal, b: decimal, c: decimal): []decimal {
+    var out = new []decimal(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    return out
+}
+
+// A deterministic sweep: every total x parts 0..8 x scales 0,2,4,6, including
+// a negative total and values that need rounding to the target scale.
+fn sweep() {
+    var totals = new []decimal(0)
+    append(totals, 0.00)
+    append(totals, 0.05)
+    append(totals, 1.00)
+    append(totals, 7.77)
+    append(totals, 100.00)
+    append(totals, -100.00)
+    append(totals, 1234.56)
+    append(totals, -0.01)
+    append(totals, 999999.999)
+    append(totals, 1e30)
+    for ti in 0..len(totals) {
+        var parts = 0
+        while parts <= 8 {
+            var scale = 0
+            while scale <= 6 {
+                var label = "sweep " + string(ti) + "/" + string(parts) + "/" + string(scale)
+                if parts > 0 {
+                    checkAllocate(label, totals[ti], parts, scale)
+                } else if totals[ti] == 0.0 {
+                    // zero parts is legal only for a zero total; the empty
+                    // result sums to 0 at its own (scale 0) display scale
+                    checkList(label, decimals::allocate(totals[ti], 0, scale), "", 0)
+                }
+                scale += 2
+            }
+            parts += 1
+        }
+    }
+}
+
+fn weightedSweep() {
+    var totals = new []decimal(0)
+    append(totals, 0.00)
+    append(totals, 0.05)
+    append(totals, 100.00)
+    append(totals, -100.00)
+    append(totals, 1234.56)
+    var w1 = oneWeight(7.0)
+    var w2 = twoWeights(1.0, 2.0)
+    var w3 = threeWeights(1.0, 2.0, 3.0)
+    var wz = threeWeights(0.00, 2.0, 0.5)
+    var ws = threeWeights(0.1, 0.2, 0.7)
+    for ti in 0..len(totals) {
+        for wsIdx in 0..5 {
+            var scale = 0
+            while scale <= 6 {
+                var label = "wsweep " + string(ti) + "/" + string(wsIdx) + "/" + string(scale)
+                if wsIdx == 0 {
+                    checkWeighted(label, totals[ti], w1, scale)
+                } else if wsIdx == 1 {
+                    checkWeighted(label, totals[ti], w2, scale)
+                } else if wsIdx == 2 {
+                    checkWeighted(label, totals[ti], w3, scale)
+                } else if wsIdx == 3 {
+                    checkWeighted(label, totals[ti], wz, scale)
+                } else {
+                    checkWeighted(label, totals[ti], ws, scale)
+                }
+                scale += 2
+            }
+        }
+    }
+}
+
+fn main() {
+    // the exported argument code is the errno value
+    checkInt("EINVAL", decimals::EINVAL, 22)
+
+    // exact division and the cents example: 100.00 / 3
+    checkList("100 by 3", decimals::allocate(100.00, 3, 2),
+              "33.34 33.33 33.33", 2)
+    // negative totals distribute negative units
+    checkList("-100 by 3", decimals::allocate(-100.00, 3, 2),
+              "-33.34 -33.33 -33.33", 2)
+    checkList("0.05 by 2", decimals::allocate(0.05, 2, 2), "0.03 0.02", 2)
+    checkList("0.05 by 3", decimals::allocate(0.05, 3, 2),
+              "0.02 0.02 0.01", 2)
+    checkList("-0.05 by 2", decimals::allocate(-0.05, 2, 2), "-0.03 -0.02", 2)
+    checkList("1 by 3 scale 0", decimals::allocate(1.00, 3, 0), "1 0 0", 0)
+    checkList("100 by 3 scale 0", decimals::allocate(100.00, 3, 0), "34 33 33", 0)
+    checkList("100 by 1", decimals::allocate(100.00, 1, 2), "100.00", 2)
+    checkList("exact division", decimals::allocate(10.00, 4, 2),
+              "2.50 2.50 2.50 2.50", 2)
+    checkList("seven ways", decimals::allocate(999.99, 7, 2),
+              "142.86 142.86 142.86 142.86 142.85 142.85 142.85", 2)
+    checkList("scale 6", decimals::allocate(1.00, 3, 6),
+              "0.333334 0.333333 0.333333", 6)
+    // total is rounded to the target scale with HALF_EVEN before the split
+    checkList("total rounds down", decimals::allocate(1.005, 2, 2), "0.50 0.50", 2)
+    checkList("total rounds up", decimals::allocate(1.015, 2, 2), "0.51 0.51", 2)
+    checkList("total rounds to zero", decimals::allocate(0.001, 3, 2),
+              "0.00 0.00 0.00", 2)
+    // zero parts: only a zero total can be allocated to nobody
+    checkList("zero parts zero", decimals::allocate(0.00, 0, 2), "", 0)
+    checkList("zero parts zero scale 6", decimals::allocate(0.000, 0, 6), "", 0)
+
+    // bad arguments are errors, never traps
+    checkErr("negative parts", decimals::allocate(1.00, -1, 2), decimals::EINVAL)
+    checkErr("zero parts nonzero", decimals::allocate(1.00, 0, 2), decimals::EINVAL)
+    checkErr("negative scale", decimals::allocate(1.00, 3, -1), 6)
+    checkErr("scale 32769", decimals::allocate(1.00, 3, 32769), 6)
+    checkErr("scale 32768 overflow", decimals::allocate(1.0, 3, 32768), 1)
+
+    // error precedence: scale first, then the shape checks
+    checkErr("scale before negative parts", decimals::allocate(1.0, -1, -1), 6)
+    checkErr("scale before zero parts", decimals::allocate(1.0, 0, -1), 6)
+    checkErr("scale before zero parts high", decimals::allocate(1.0, 0, 32769), 6)
+    var emptyBad = new []decimal(0)
+    checkErr("scale before empty weights",
+             decimals::allocateWeighted(1.0, emptyBad, -1), 6)
+    var negBad = twoWeights(-1.0, 2.0)
+    checkErr("scale before negative weight",
+             decimals::allocateWeighted(1.0, negBad, -1), 6)
+
+    // invariant across totals, part counts and scales
+    sweep()
+
+    // weighted: equal weights reproduce allocate
+    var wa = threeWeights(1.0, 1.0, 1.0)
+    checkList("weights equal", decimals::allocateWeighted(100.00, wa, 2),
+              "33.34 33.33 33.33", 2)
+    // uneven weights: the largest fractional remainder (index 0 here) wins
+    var wb = threeWeights(1.0, 2.0, 3.0)
+    checkList("weights 1 2 3", decimals::allocateWeighted(100.00, wb, 2),
+              "16.67 33.33 50.00", 2)
+    var wc = twoWeights(2.0, 1.0)
+    checkList("weights 2 1", decimals::allocateWeighted(100.00, wc, 2),
+              "66.67 33.33", 2)
+    checkList("weights negative total",
+              decimals::allocateWeighted(-100.00, wc, 2),
+              "-66.67 -33.33", 2)
+    // a tie between remainders goes to the earlier index
+    var wd = twoWeights(1.0, 1.0)
+    checkList("weights tie", decimals::allocateWeighted(0.05, wd, 2),
+              "0.03 0.02", 2)
+    var we = twoWeights(1.5, 2.5)
+    checkList("weights tie scale 0", decimals::allocateWeighted(100.00, we, 0),
+              "38 62", 0)
+    // a zero weight always gets zero
+    var wf = twoWeights(0.0, 1.0)
+    checkList("weights zero first", decimals::allocateWeighted(10.00, wf, 2),
+              "0.00 10.00", 2)
+    var wg = threeWeights(0.0, 0.0, 1.0)
+    checkList("weights zero middle", decimals::allocateWeighted(10.00, wg, 2),
+              "0.00 0.00 10.00", 2)
+    // fractional weights and differing display scales
+    var wh = threeWeights(0.1, 0.2, 0.7)
+    checkList("weights fractional",
+              decimals::allocateWeighted(10.00, wh, 2),
+              "1.00 2.00 7.00", 2)
+    var wi = twoWeights(1.0, 2.00)
+    checkList("weights display scales",
+              decimals::allocateWeighted(9.00, wi, 2),
+              "3.00 6.00", 2)
+    var wj = twoWeights(1.0, 2.0)
+    checkList("weights zero total", decimals::allocateWeighted(0.00, wj, 2),
+              "0.00 0.00", 2)
+
+    // weighted rejections
+    var empty = new []decimal(0)
+    checkErr("weights empty", decimals::allocateWeighted(10.00, empty, 2), decimals::EINVAL)
+    var wneg = twoWeights(-1.0, 2.0)
+    checkErr("weights negative", decimals::allocateWeighted(10.00, wneg, 2), decimals::EINVAL)
+    var wzero = twoWeights(0.00, 0.0)
+    checkErr("weights all zero", decimals::allocateWeighted(10.00, wzero, 2), decimals::EINVAL)
+    var wscale = twoWeights(1.0, 2.0)
+    checkErr("weights bad scale", decimals::allocateWeighted(10.00, wscale, 32769), 6)
+
+    weightedSweep()
+
+    println("decimals allocate ok")
+}

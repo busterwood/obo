@@ -1,0 +1,286 @@
+// obo/lib/decimals.obx: rounding, inspection, summation and exact allocation
+// for decimal amounts. It is a source module (`module decimals`; `decimal` is a
+// reserved type name, hence the plural); importers write
+//
+//     import "decimals.obx" as decimals      // from obo/lib/
+//
+// and reach exported declarations as decimals::name. The module is
+// dependency-free (decimal builtins only) and defines no main.
+//
+// Rounding is a thin Result[decimal] over decimal::quantize, so every caller
+// names the scale explicitly. floor rounds down (FLOOR), ceil up (CEILING),
+// trunc toward zero (TOWARD_ZERO), round to nearest with ties to even
+// (HALF_EVEN: 2.5 -> 2, 3.5 -> 4, -2.5 -> -2) and roundAway to nearest with
+// ties away from zero (HALF_AWAY: 2.5 -> 3, -2.5 -> -3). A scale outside
+// 0..32768 is code 6, and a value that cannot be represented at that scale is
+// code 1, exactly as in decimal::quantize; no wrapper catches those.
+//
+// abs, neg, sign, isZero, min, max and cmp compare numeric value only: display
+// scale is metadata, so 1.0 and 1.00 are equal (cmp 0), min/max return their
+// first argument on a tie and sign/isZero accept -0.00 as positive zero. sum
+// adds at full precision and traps (exit 10) on overflow exactly like `+`; it
+// does not return a Result. An empty array sums to 0.
+//
+// allocate(total, parts, scale) and allocateWeighted(total, weights, scale)
+// split a total into parts whose sum is exactly the total at `scale`, using the
+// largest-remainder method. total is first rounded to `scale` with HALF_EVEN,
+// because the parts and their sum live at that scale. The quotient of each
+// share is truncated at `scale`, and the leftover units of 10^-scale go to the
+// earliest parts (allocate) or to the largest fractional remainders, ties by
+// earlier index (allocateWeighted); a negative total distributes negative
+// units, so the parts keep the total's sign. 100.00 into 3 at scale 2 is
+// 33.34, 33.33, 33.33, and -100.00 into 3 is -33.34, -33.33, -33.33.
+// A zero weight always receives zero.
+//
+// These functions never trap on bad arguments. Validation runs scale first
+// (code 6), then the shape checks in a fixed order: for allocate a negative
+// part count, then zero parts with a nonzero total; for allocateWeighted an
+// empty list, then a negative weight, then a zero weight sum. Shape failures
+// are code 22 (EINVAL, the errno convention obo/lib uses), and the output
+// array is allocated only after the total has passed quantize. Decimal
+// failures from quantize/div/toInt keep their core code (1, 3, 4, 5 or 6).
+// The arithmetic inside is exact and has the same 38-digit trap as `*` and
+// `+`; in particular allocateWeighted multiplies the total by each weight and
+// sums the weights.
+//
+// formatGrouped(d, sep) is decimal::format's fixed display text with sep
+// inserted every three digits of the integer part, preserving the sign and the
+// fraction. It is byte-wise and locale-free: sep is inserted verbatim, so any
+// byte is a separator, including a non-ASCII byte (which stays one byte). A
+// format failure (usually code 3, a display scale that would drop a nonzero
+// digit) is returned unchanged.
+module decimals
+
+// Argument error for a malformed request, matching the errno convention of the
+// other obo/lib modules (EINVAL 22). Decimal value failures use their own codes.
+pub const EINVAL = 22
+
+// 10^-scale as an exact decimal through the builtin text parser, which covers
+// the whole 0..32768 range (repeated division overflows once the coefficient
+// would need more than 38 digits). It is only used to count a split's leftover
+// units, so the dividend is a small multiple of it and the final division is
+// exact. The caller has validated scale.
+fn unitAt(scale: int): Result[decimal] {
+    if scale == 0 { return ok(decimal::fromInt(1)) }
+    return decimal::parse("1e-" + string(scale))
+}
+
+// round down at scale (toward negative infinity)
+pub fn floor(d: decimal, scale: int): Result[decimal] {
+    return decimal::quantize(d, scale, FLOOR)
+}
+
+// round up at scale (toward positive infinity)
+pub fn ceil(d: decimal, scale: int): Result[decimal] {
+    return decimal::quantize(d, scale, CEILING)
+}
+
+// round toward zero at scale
+pub fn trunc(d: decimal, scale: int): Result[decimal] {
+    return decimal::quantize(d, scale, TOWARD_ZERO)
+}
+
+// round to nearest at scale, ties to even (2.5 -> 2, 3.5 -> 4, -2.5 -> -2)
+pub fn round(d: decimal, scale: int): Result[decimal] {
+    return decimal::quantize(d, scale, HALF_EVEN)
+}
+
+// round to nearest at scale, ties away from zero (2.5 -> 3, -2.5 -> -3)
+pub fn roundAway(d: decimal, scale: int): Result[decimal] {
+    return decimal::quantize(d, scale, HALF_AWAY)
+}
+
+// absolute value; -0.00 has no negative counterpart, so it returns zero
+pub fn abs(d: decimal): decimal {
+    if d < 0.0 { return -d }
+    return d
+}
+
+// unary minus; the value is negated, the display scale of a zero is kept
+pub fn neg(d: decimal): decimal {
+    return -d
+}
+
+// -1, 0 or 1 by numeric value; -0.00 is 0
+pub fn sign(d: decimal): int {
+    if d < 0.0 { return -1 }
+    if d > 0.0 { return 1 }
+    return 0
+}
+
+// true for either zero spelling (0, 0.00, -0.00)
+pub fn isZero(d: decimal): bool {
+    return d == 0.0
+}
+
+// -1, 0 or 1 by numeric value, ignoring display scale
+pub fn cmp(a: decimal, b: decimal): int {
+    if a < b { return -1 }
+    if a > b { return 1 }
+    return 0
+}
+
+// the numerically smaller value; on a tie the first argument (and its scale)
+pub fn min(a: decimal, b: decimal): decimal {
+    if b < a { return b }
+    return a
+}
+
+// the numerically larger value; on a tie the first argument (and its scale)
+pub fn max(a: decimal, b: decimal): decimal {
+    if b > a { return b }
+    return a
+}
+
+// sum at full precision; traps on overflow exactly like `+`, so a caller that
+// needs a Result must bound its inputs. Empty is 0.
+pub fn sum(xs: &[]decimal): decimal {
+    var s = decimal::fromInt(0)
+    for i in 0..len(xs) {
+        s = s + xs[i]
+    }
+    return s
+}
+
+// decimal::format's fixed text with sep every three integer digits; the
+// fraction and sign are untouched and sep is inserted byte for byte
+pub fn formatGrouped(d: decimal, sep: byte): Result[string] {
+    let f = decimal::format(d)
+    var text = ""
+    match f {
+        ok(s) { text = s }
+        err(m, c) { return err(m, c) }
+    }
+    var out = new []byte(0)
+    var start = 0
+    if len(text) > 0 && text[0] == '-' {
+        append(out, '-')
+        start = 1
+    }
+    var end = len(text)
+    for i in start..len(text) {
+        if text[i] == '.' {
+            end = i
+            break
+        }
+    }
+    for i in start..end {
+        if i > start && (end - i) % 3 == 0 { append(out, sep) }
+        append(out, text[i])
+    }
+    for i in end..len(text) { append(out, text[i]) }
+    return ok(string(out))
+}
+
+// Split total into `parts` equal shares at `scale` (largest remainder).
+// total is rounded to scale HALF_EVEN first; the shares sum exactly to that
+// rounded total. Zero parts needs a zero total and returns an empty array.
+pub fn allocate(total: decimal, parts: int, scale: int): Result[[]decimal] {
+    if scale < 0 || scale > 32768 {
+        return err("decimal scale must be 0..32768", 6)
+    }
+    if parts < 0 { return err("part count must be non-negative", EINVAL) }
+    if parts == 0 {
+        if total != 0.0 {
+            return err("cannot allocate a nonzero total to zero parts", EINVAL)
+        }
+        return ok(new []decimal(0))
+    }
+
+    let q = try decimal::quantize(total, scale, HALF_EVEN)
+    let base = try decimal::div(q, decimal::fromInt(parts), scale, TOWARD_ZERO)
+    let leftover = q - base * decimal::fromInt(parts)
+
+    var step = decimal::fromInt(0)
+    var n = 0
+    if leftover != 0.0 {
+        let unit = try unitAt(scale)
+        let unitCount = try decimal::div(leftover, unit, 0, UNNECESSARY)
+        let units = try decimal::toInt(unitCount, UNNECESSARY)
+        step = unit
+        if q < 0.0 { step = -unit }
+        n = units
+        if n < 0 { n = -n }
+    }
+
+    var out = new []decimal(parts)
+    var i = 0
+    while i < n {
+        out[i] = base + step
+        i += 1
+    }
+    while i < parts {
+        out[i] = base
+        i += 1
+    }
+    return ok(out)
+}
+
+// Split total in proportion to weights at `scale` (largest remainder). The
+// shares sum exactly to total rounded to scale HALF_EVEN. Negative weights, an
+// empty list and a zero weight sum are errors; a zero weight gets zero.
+pub fn allocateWeighted(total: decimal, weights: &[]decimal,
+                        scale: int): Result[[]decimal] {
+    let n = len(weights)
+    if scale < 0 || scale > 32768 {
+        return err("decimal scale must be 0..32768", 6)
+    }
+    if n == 0 { return err("weights must not be empty", EINVAL) }
+    var totalWeight = decimal::fromInt(0)
+    for i in 0..n {
+        if weights[i] < 0.0 {
+            return err("weights must be non-negative", EINVAL)
+        }
+        totalWeight = totalWeight + weights[i]
+    }
+    if totalWeight == 0.0 {
+        return err("weights must sum to a positive value", EINVAL)
+    }
+
+    let q = try decimal::quantize(total, scale, HALF_EVEN)
+    var base = new []decimal(n)
+    var rem = new []decimal(n)
+    var sumBase = decimal::fromInt(0)
+    for i in 0..n {
+        let share = q * weights[i]
+        let b = try decimal::div(share, totalWeight, scale, TOWARD_ZERO)
+        base[i] = b
+        rem[i] = share - b * totalWeight
+        sumBase = sumBase + b
+    }
+
+    let leftover = q - sumBase
+    var step = decimal::fromInt(0)
+    var count = 0
+    if leftover != 0.0 {
+        let unit = try unitAt(scale)
+        let unitCount = try decimal::div(leftover, unit, 0, UNNECESSARY)
+        let units = try decimal::toInt(unitCount, UNNECESSARY)
+        step = unit
+        if leftover < 0.0 { step = -unit }
+        count = units
+        if count < 0 { count = -count }
+    }
+
+    // Give one unit to the largest remainders; a strict > keeps the earlier
+    // index on a tie, and the used mask keeps a part from taking two units.
+    var used = new []bool(n)
+    var k = 0
+    while k < count {
+        var best = -1
+        var bestMag = 0.0
+        for i in 0..n {
+            if !used[i] {
+                let mag = abs(rem[i])
+                if best < 0 || mag > bestMag {
+                    best = i
+                    bestMag = mag
+                }
+            }
+        }
+        used[best] = true
+        base[best] = base[best] + step
+        k += 1
+    }
+    return ok(base)
+}

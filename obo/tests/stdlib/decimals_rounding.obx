@@ -1,0 +1,119 @@
+// decimals_rounding: floor/ceil/trunc/round/roundAway at scales 0, 2 and 6,
+// negative values, HALF_EVEN and HALF_AWAY ties, invalid scales and the
+// decimal core error codes. Expected values were checked by hand against
+// decimal::quantize's documented modes; the strings also pin the display scale.
+// expect: decimals rounding ok
+import "decimals.obx" as decimals
+
+fn fail(label: string, detail: string) {
+    println("FAIL ", label, ": ", detail)
+    exit(1)
+}
+
+// the exact display text, so a wrong dscale also fails
+fn text(d: decimal): string {
+    let r = decimal::format(d)
+    match r {
+        ok(s) { return s }
+        err(m, c) { return "err " + string(c) + " " + m }
+    }
+}
+
+fn checkOk(label: string, r: Result[decimal], want: string) {
+    match r {
+        ok(v) {
+            let g = text(v)
+            if g != want { fail(label, "got " + g + ", want " + want) }
+        }
+        err(m, c) { fail(label, "unexpected error " + string(c) + " [" + m + "]") }
+    }
+}
+
+fn checkErr(label: string, r: Result[decimal], code: int) {
+    match r {
+        ok(v) { fail(label, "expected error " + string(code) + ", got " + text(v)) }
+        err(m, c) {
+            if c != code {
+                fail(label, "code " + string(c) + ", want " + string(code) + " [" + m + "]")
+            }
+        }
+    }
+}
+
+fn main() {
+    // floor, including negatives and scale 0
+    checkOk("floor 2.7 0", decimals::floor(2.7, 0), "2")
+    checkOk("floor -2.7 0", decimals::floor(-2.7, 0), "-3")
+    checkOk("floor -0.1 0", decimals::floor(-0.1, 0), "-1")
+    checkOk("floor 1.234 2", decimals::floor(1.234, 2), "1.23")
+    checkOk("floor -1.234 2", decimals::floor(-1.234, 2), "-1.24")
+    checkOk("floor 1.2345678 6", decimals::floor(1.2345678, 6), "1.234567")
+    checkOk("floor -1.2345678 6", decimals::floor(-1.2345678, 6), "-1.234568")
+    checkOk("floor 0.00 2", decimals::floor(0.00, 2), "0.00")
+
+    // ceil
+    checkOk("ceil 2.1 0", decimals::ceil(2.1, 0), "3")
+    checkOk("ceil -2.1 0", decimals::ceil(-2.1, 0), "-2")
+    checkOk("ceil -0.1 0", decimals::ceil(-0.1, 0), "0")
+    checkOk("ceil 1.231 2", decimals::ceil(1.231, 2), "1.24")
+    checkOk("ceil -1.231 2", decimals::ceil(-1.231, 2), "-1.23")
+    checkOk("ceil 0.004 2", decimals::ceil(0.004, 2), "0.01")
+    checkOk("ceil -0.004 2", decimals::ceil(-0.004, 2), "0.00")
+    checkOk("ceil 1.2345671 6", decimals::ceil(1.2345671, 6), "1.234568")
+
+    // trunc: toward zero, so the sign's magnitude only shrinks
+    checkOk("trunc 2.7 0", decimals::trunc(2.7, 0), "2")
+    checkOk("trunc -2.7 0", decimals::trunc(-2.7, 0), "-2")
+    checkOk("trunc -1.999 2", decimals::trunc(-1.999, 2), "-1.99")
+    checkOk("trunc 1.999 2", decimals::trunc(1.999, 2), "1.99")
+    checkOk("trunc -0.004 2", decimals::trunc(-0.004, 2), "0.00")
+    checkOk("trunc -1.2345678 6", decimals::trunc(-1.2345678, 6), "-1.234567")
+
+    // round is HALF_EVEN: a tie goes to the even last kept digit
+    checkOk("round 2.5 0", decimals::round(2.5, 0), "2")
+    checkOk("round 3.5 0", decimals::round(3.5, 0), "4")
+    checkOk("round -2.5 0", decimals::round(-2.5, 0), "-2")
+    checkOk("round -3.5 0", decimals::round(-3.5, 0), "-4")
+    checkOk("round 0.5 0", decimals::round(0.5, 0), "0")
+    checkOk("round -0.5 0", decimals::round(-0.5, 0), "0")
+    checkOk("round 1.5 0", decimals::round(1.5, 0), "2")
+    checkOk("round 2.4 0", decimals::round(2.4, 0), "2")
+    checkOk("round 2.6 0", decimals::round(2.6, 0), "3")
+    checkOk("round -2.6 0", decimals::round(-2.6, 0), "-3")
+    checkOk("round 1.005 2", decimals::round(1.005, 2), "1.00")
+    checkOk("round 1.015 2", decimals::round(1.015, 2), "1.02")
+    checkOk("round 1.025 2", decimals::round(1.025, 2), "1.02")
+    checkOk("round 1.235 2", decimals::round(1.235, 2), "1.24")
+    checkOk("round -1.235 2", decimals::round(-1.235, 2), "-1.24")
+    checkOk("round -1.245 2", decimals::round(-1.245, 2), "-1.24")
+    checkOk("round 0.004 2", decimals::round(0.004, 2), "0.00")
+    checkOk("round 1.2345675 6", decimals::round(1.2345675, 6), "1.234568")
+    checkOk("round 1.2345685 6", decimals::round(1.2345685, 6), "1.234568")
+    checkOk("round -1.2345675 6", decimals::round(-1.2345675, 6), "-1.234568")
+    checkOk("round 1.5 6", decimals::round(1.5, 6), "1.500000")
+
+    // roundAway is HALF_AWAY: every tie moves away from zero
+    checkOk("away 2.5 0", decimals::roundAway(2.5, 0), "3")
+    checkOk("away -2.5 0", decimals::roundAway(-2.5, 0), "-3")
+    checkOk("away 0.5 0", decimals::roundAway(0.5, 0), "1")
+    checkOk("away -0.5 0", decimals::roundAway(-0.5, 0), "-1")
+    checkOk("away 1.5 0", decimals::roundAway(1.5, 0), "2")
+    checkOk("away 2.4 0", decimals::roundAway(2.4, 0), "2")
+    checkOk("away 1.005 2", decimals::roundAway(1.005, 2), "1.01")
+    checkOk("away -1.005 2", decimals::roundAway(-1.005, 2), "-1.01")
+    checkOk("away 1.2345675 6", decimals::roundAway(1.2345675, 6), "1.234568")
+    checkOk("away -1.2345675 6", decimals::roundAway(-1.2345675, 6), "-1.234568")
+    checkOk("away 0.00 2", decimals::roundAway(0.00, 2), "0.00")
+
+    // invalid scales are code 6; a value that cannot fit 32768 digits is code 1
+    var neg = -1
+    var big = 32769
+    checkErr("floor bad scale", decimals::floor(1.0, neg), 6)
+    checkErr("ceil bad scale", decimals::ceil(1.0, big), 6)
+    checkErr("trunc bad scale", decimals::trunc(1.0, neg), 6)
+    checkErr("round bad scale", decimals::round(1.0, big), 6)
+    checkErr("away bad scale", decimals::roundAway(1.0, neg), 6)
+    checkErr("round scale 32768", decimals::round(1.0, 32768), 1)
+
+    println("decimals rounding ok")
+}

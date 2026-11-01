@@ -1,0 +1,147 @@
+// decimals_values: sign, isZero, cmp, min, max, abs, neg over negative zero,
+// negatives and differing display scales, and sum over empty, mixed-scale,
+// negative and large exact inputs. Comparisons ignore display scale, while
+// min/max return the first operand (and its scale) on a tie.
+// expect: decimals values ok
+import "decimals.obx" as decimals
+
+fn fail(label: string, detail: string) {
+    println("FAIL ", label, ": ", detail)
+    exit(1)
+}
+
+fn text(d: decimal): string {
+    let r = decimal::format(d)
+    match r {
+        ok(s) { return s }
+        err(m, c) { return "err " + string(c) + " " + m }
+    }
+}
+
+fn checkDec(label: string, got: decimal, want: decimal) {
+    let g = text(got)
+    let w = text(want)
+    if g != w { fail(label, "got " + g + ", want " + w) }
+}
+
+fn checkInt(label: string, got: int, want: int) {
+    if got != want { fail(label, "got " + string(got) + ", want " + string(want)) }
+}
+
+fn checkBool(label: string, got: bool, want: bool) {
+    if got != want {
+        if want { fail(label, "got false, want true") }
+        fail(label, "got true, want false")
+    }
+}
+
+fn checkSum(label: string, xs: &[]decimal, want: decimal, wantScale: int) {
+    let s = decimals::sum(xs)
+    let g = text(s)
+    let w = text(want)
+    if g != w { fail(label, "got " + g + ", want " + w) }
+    checkInt(label + " scale", decimal::dscale(s), wantScale)
+}
+
+fn main() {
+    // sign and isZero, including both zero spellings
+    checkInt("sign positive", decimals::sign(1.0), 1)
+    checkInt("sign negative", decimals::sign(-1.0), -1)
+    checkInt("sign zero", decimals::sign(0.00), 0)
+    checkInt("sign negative zero", decimals::sign(-0.00), 0)
+    checkInt("sign tiny negative", decimals::sign(-1e-40), -1)
+    checkInt("sign tiny positive", decimals::sign(1e-40), 1)
+    checkBool("isZero 0.00", decimals::isZero(0.00), true)
+    checkBool("isZero -0.00", decimals::isZero(-0.00), true)
+    checkBool("isZero 0", decimals::isZero(decimal::fromInt(0)), true)
+    checkBool("isZero 1e-40", decimals::isZero(1e-40), false)
+    checkBool("isZero -1e-40", decimals::isZero(-1e-40), false)
+
+    // cmp ignores display scale
+    checkInt("cmp equal 1.0 1.00", decimals::cmp(1.0, 1.00), 0)
+    checkInt("cmp equal -2.5 -2.50", decimals::cmp(-2.5, -2.50), 0)
+    checkInt("cmp zeros", decimals::cmp(-0.00, 0.00), 0)
+    checkInt("cmp less", decimals::cmp(1.0, 1.01), -1)
+    checkInt("cmp greater", decimals::cmp(2.0, 1.99), 1)
+    checkInt("cmp negative order", decimals::cmp(-1.0, -2.0), 1)
+    checkInt("cmp negative less", decimals::cmp(-1.01, -1.0), -1)
+    checkInt("cmp tiny", decimals::cmp(1e-40, 0.00), 1)
+
+    // min/max are value comparisons; a tie keeps the first argument's scale
+    checkDec("min negative", decimals::min(-1.5, 2.0), -1.5)
+    checkDec("min positive", decimals::min(3.0, 2.5), 2.5)
+    checkDec("max negative", decimals::max(-1.5, 2.0), 2.0)
+    checkDec("max positive", decimals::max(3.0, 2.5), 3.0)
+    checkDec("min tie first", decimals::min(1.0, 1.00), 1.0)
+    checkDec("max tie first", decimals::max(1.0, 1.00), 1.0)
+    checkDec("min tie second scale", decimals::min(1.00, 1.0), 1.00)
+    checkDec("max tie second scale", decimals::max(1.00, 1.0), 1.00)
+    checkDec("min zero signs", decimals::min(-0.00, 0.00), -0.00)
+    checkDec("max zero signs", decimals::max(0.00, -0.00), 0.00)
+
+    // abs and neg preserve the display scale; zero has no negative spelling
+    checkDec("abs negative", decimals::abs(-123.450), 123.450)
+    checkDec("abs positive", decimals::abs(123.450), 123.450)
+    checkDec("abs negative zero", decimals::abs(-0.00), 0.00)
+    checkDec("abs zero", decimals::abs(0.00), 0.00)
+    checkDec("neg positive", decimals::neg(1.2300), -1.2300)
+    checkDec("neg negative", decimals::neg(-1.2300), 1.2300)
+    checkDec("neg zero", decimals::neg(0.00), 0.00)
+    checkDec("neg negative zero", decimals::neg(-0.00), 0.00)
+    checkDec("neg tiny", decimals::neg(1e-40), -1e-40)
+    checkInt("neg sign", decimals::sign(decimals::neg(7.5)), -1)
+    checkInt("abs sign", decimals::sign(decimals::abs(-7.5)), 1)
+
+    // sum: empty is 0 at scale 0
+    var empty = new []decimal(0)
+    checkSum("sum empty", empty, decimal::fromInt(0), 0)
+
+    // mixed scales keep the widest display scale
+    var mixed = new []decimal(0)
+    append(mixed, 1.5)
+    append(mixed, 2.25)
+    append(mixed, -0.75)
+    checkSum("sum mixed", mixed, 3.00, 2)
+    checkDec("sum mixed first kept", mixed[0], 1.5)
+
+    // negatives and a zero result
+    var negs = new []decimal(0)
+    append(negs, -1.25)
+    append(negs, -2.50)
+    checkSum("sum negatives", negs, -3.75, 2)
+    var cancels = new []decimal(0)
+    append(cancels, 1.5)
+    append(cancels, -1.5)
+    checkSum("sum cancels", cancels, 0.0, 1)
+    var zeros = new []decimal(0)
+    append(zeros, -0.00)
+    append(zeros, 0.00)
+    checkSum("sum zero signs", zeros, 0.00, 2)
+
+    // exact accumulation: ten tenths are one, not an approximation
+    var tenths = new []decimal(0)
+    for i in 0..10 { append(tenths, 0.1) }
+    checkSum("sum tenths", tenths, 1.0, 1)
+
+    // six decimal places
+    var micros = new []decimal(0)
+    append(micros, 0.000001)
+    append(micros, 0.000002)
+    checkSum("sum micros", micros, 0.000003, 6)
+
+    // large exact sums at the top of the 38-digit range
+    var large = new []decimal(0)
+    append(large, 1e30)
+    append(large, 2e30)
+    checkSum("sum large", large, 3e30, 0)
+    var wide = new []decimal(0)
+    append(wide, 1.5e30)
+    append(wide, 2.25e30)
+    checkSum("sum wide", wide, 3.75e30, 0)
+    var nearMax = new []decimal(0)
+    append(nearMax, 99999999999999999999999999999999999999.0)
+    append(nearMax, 0.0)
+    checkSum("sum near max", nearMax, 99999999999999999999999999999999999999.0, 1)
+
+    println("decimals values ok")
+}

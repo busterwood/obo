@@ -1,0 +1,17 @@
+// decimals_trap_weight: allocateWeighted multiplies the rounded total by each
+// weight exactly, so a product outside the 38-digit range traps like `*`
+// (exit 10). Bad arguments are the only failures this module returns.
+// expect: before weighted
+// expect-exit: 10
+import "decimals.obx" as decimals
+
+fn main() {
+    var ws = new []decimal(0)
+    append(ws, 99999999999999999999999999999999999999.0)
+    println("before weighted")
+    let r = decimals::allocateWeighted(99999999999999999999999999999999999999.0, ws, 0)
+    match r {
+        ok(xs) { println("unexpected ok ", len(xs)) }
+        err(m, c) { println("unexpected error ", c) }
+    }
+}
