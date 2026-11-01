@@ -196,6 +196,7 @@ long h2_conn_feed(long conn_token, long in_token, long offset, long count,
                   long now_ns);
 long h2_conn_send(long conn_token, long max);
 long h2_conn_wire_pending(long conn_token);
+long h2_conn_want_write(long conn_token);
 long h2_conn_wire_read(long conn_token, long out_token, long max);
 long h2_conn_next_event(long conn_token, long now_ns);
 long h2_conn_event_stream_id(long conn_token);

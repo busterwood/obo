@@ -151,7 +151,7 @@ fn earlier(a: &clock::Deadline, b: &clock::Deadline): clock::Deadline {
 
 fn beginShutdown(mut s: &Server, now: &http::Now): Result[bool]
 fn removeListenerWatch(mut s: &Server)
-fn connPending(cn: &h2::Connection): int
+fn connPending(mut cn: &h2::Connection): int
 fn flushDrain(mut cn: &h2::Connection, now: &http::Now): bool
 
 fn currentNow(): Result[http::Now] {
@@ -671,6 +671,7 @@ fn closeStreamAt(mut s: &Server, ci: int, si: int) {
     let stream = replace(s.slots[ci].streams[si].stream, h2::_emptyStream())
     let cl = h2::closeStream(&stream)
     match cl { ok(v) { } err(m, c) { } }
+    drop(stream)
     let slot2 = s.slots[ci]
     let again = slot2.streams[si]
     again.live = false
@@ -784,12 +785,20 @@ fn setWatchInterest(mut s: &Server, index: int,
     }
 }
 
-fn connPending(cn: &h2::Connection): int {
+fn connPending(mut cn: &h2::Connection): int {
+    var total = 0
     let p = h2::pending(cn)
-    match p {
-        ok(v) { return v }
-        err(m, c) { return -1 }
+    match p { ok(v) { total = v } err(m, c) { return -1 } }
+    let q = h2::outputPending(cn)
+    match q { ok(v) { total += v } err(m, c) { return -1 } }
+    if total == 0 {
+        let w = h2::canWrite(cn)
+        match w {
+            ok(v) { if v { return 1 } }
+            err(m, c) { return -1 }
+        }
     }
+    return total
 }
 
 fn flushDrain(mut cn: &h2::Connection, now: &http::Now): bool {
@@ -806,7 +815,7 @@ fn flushDrain(mut cn: &h2::Connection, now: &http::Now): bool {
 }
 
 fn refreshSlotInterest(mut s: &Server, index: int,
-                       cn: &h2::Connection): Result[bool] {
+                       mut cn: &h2::Connection): Result[bool] {
     let pending = connPending(cn)
     if pending < 0 { return ok(false) }
     let hasWork = s.slots[index].pendingWork
@@ -814,6 +823,10 @@ fn refreshSlotInterest(mut s: &Server, index: int,
     if pending == 0 { readWant = true }
     var writeWant = false
     if pending > 0 { writeWant = true }
+    // Keep the read side armed while output is pending. HTTP/2 needs to read
+    // WINDOW_UPDATE and request DATA to make progress, and a write-only watch
+    // misses a peer FIN, leaving a connection slot live after the peer closes.
+    if pending > 0 { readWant = true }
     if !readWant && !writeWant && !hasWork {
         return ok(false)
     }
@@ -1106,11 +1119,17 @@ fn driveConn(mut s: &Server, ci: int, mut cn: &h2::Connection, h: Handler,
                     EventNeedRead {
                         let made = runPending(s, ci, h, now)
                         if made { out.progress = true; continue }
+                        // h2::next may have just flushed the final drain
+                        // GOAWAY. Recheck before yielding so a peer-initiated
+                        // GOAWAY with no live streams closes in this turn
+                        // instead of waiting for another readiness event.
+                        if h2::drainComplete(cn) { continue }
                         return out
                     }
                     EventNeedWrite {
                         let made = runPending(s, ci, h, now)
                         if made { out.progress = true; continue }
+                        if h2::drainComplete(cn) { continue }
                         return out
                     }
                 }

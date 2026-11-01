@@ -31,6 +31,7 @@ obo/experimental/http2/
   http2_adapter.cbind    scalar/token binding (headers required)
   native/h2_adapter.h    fixed scalar surface and packet/event constants
   native/h2_adapter.c    trusted nghttp2 server shim
+  CONFORMANCE.md         pinned h2spec/h2load versions, commands and triage
   tests/
     test_http2.py        one-command C + obo + h2c/TLS + curl suite
     c/h2_harness.c       nghttp2 client/server harness, error and ASAN gates
@@ -120,7 +121,10 @@ pause does not spin and that service recovers. A small-buffer profile checks
 test keeps an active stream open and asserts the notice GOAWAY, barrier PING,
 and final `min(last_proc, cutoff)` GOAWAY reach the wire before close. TLS tests
 enforce the wrong-ALPN failure, multiplex over TLS, graceful GOAWAY drain and
-balanced connection/stream/platform counts.
+balanced connection/stream/platform counts. Conformance regressions cover
+frames after END_STREAM/RST_STREAM (`STREAM_CLOSED`), PRIORITY stream 0 and
+self-dependency (`PROTOCOL_ERROR`), peer-GOAWAY-plus-PING progress, and TLS
+control-frame flush (PING ACK on an idle connection and after a response).
 h2spec and h2load are explicit integration dependencies. They are skipped when
 not installed, with the missing-tool reason printed; no default test downloads a
 protocol tool or contacts a protocol peer outside loopback. The only optional
@@ -128,7 +132,10 @@ network action is `apt-get download libnghttp2-dev=<installed version>` when the
 matching headers are not installed; it is recorded and the archive is extracted
 privately. h2spec v2.6.0 is the pinned manual integration target
 (`h2spec_linux_amd64.tar.gz`, GitHub release v2.6.0); it is not fetched
-automatically.
+automatically. `CONFORMANCE.md` records the exact pinned tools, commands and
+results: final h2spec is 145/146 default (146/147 strict) on both h2c and TLS
+ALPN h2, with the one residual upstream nghttp2 stream-id case; h2load completes
+5000/5000 requests at `-n 5000 -c 10 -m 10` on both listeners.
 
 ## Non-goals
 

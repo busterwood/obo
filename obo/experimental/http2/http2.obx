@@ -868,6 +868,23 @@ fn fillOutput(mut c: &Connection, ct: int): Result[bool] {
     return ok(true)
 }
 
+// Push TLS ciphertext that writeSome queued. Without this, a control frame
+// (PING/SETTINGS ACK, GOAWAY) can sit in the TLS session with no pending H2
+// bytes, so the reactor would never arm a write and the frame would stall.
+fn flushTransport(mut c: &Connection): Result[bool] {
+    let t = takeTransport(c)
+    let f = transport::flushPending(&t)
+    let p = transport::outputPending(&t)
+    putTransport(c, t)
+    match f {
+        ok(out) { }
+        err(m, code) { return err("HTTP/2 transport flush failed", mapSystem(code)) }
+    }
+    let left = try p
+    if left == 0 { return ok(true) }
+    return ok(false)
+}
+
 fn feedBytes(mut c: &Connection, ct: int, bytes: &[]byte,
              now: &http::Now): Result[bool] {
     if len(bytes) == 0 { return ok(true) }
@@ -1048,6 +1065,7 @@ pub fn next(mut c: &Connection, now: &http::Now): Result[Event] {
     let readProgress = try readOnce(c, ct, now)
     let filled = try fillOutput(c, ct)
     let flushed = try pumpOut(c)
+    let flushedTls = try flushTransport(c)
     if c.eofSeen {
         let e: Event = new EventConnectionClosed{}
         return ok(e)
@@ -1098,9 +1116,36 @@ pub fn pending(c: &Connection): Result[int] {
     return ok(out + wire)
 }
 
+// Bytes still buffered inside the transport (TLS ciphertext). The server must
+// count these as pending output so a write-readiness event drains them.
+pub fn outputPending(mut c: &Connection): Result[int] {
+    if c.ended { return ok(0) }
+    let t = takeTransport(c)
+    let p = transport::outputPending(&t)
+    putTransport(c, t)
+    return p
+}
+
+// nghttp2 may still hold frames/data it has not serialized into the wire ring
+// (for example after WINDOW_UPDATE resumes a deferred response). Report that
+// as write interest so the server keeps driving send instead of waiting for a
+// readiness edge that will never arrive.
+pub fn canWrite(c: &Connection): Result[bool] {
+    if c.ended { return ok(false) }
+    let ct = try connectionToken(c)
+    let w = __cinterop("h2_conn_want_write", ct)
+    if w < 0 { return err("HTTP/2 write query failed", nativeFailure(0 - w)) }
+    return ok(w == 1)
+}
+
 pub fn want(c: &Connection): Result[transport::Want] {
     let n = try pending(c)
     if n > 0 {
+        let w: transport::Want = new transport::WantWrite{}
+        return ok(w)
+    }
+    let can = try canWrite(c)
+    if can {
         let w: transport::Want = new transport::WantWrite{}
         return ok(w)
     }
@@ -1114,7 +1159,7 @@ pub fn wantsWrite(c: &Connection): Result[bool] {
     let ct = try connectionToken(c)
     let pending = __cinterop("h2_conn_wire_pending", ct)
     if pending > 0 { return ok(true) }
-    return ok(false)
+    return canWrite(c)
 }
 
 pub fn memoryOutput(mut c: &Connection): Result[[]byte] {

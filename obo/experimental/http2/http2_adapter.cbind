@@ -1216,6 +1216,17 @@
       ]
     },
     {
+      "name": "h2_conn_want_write",
+      "symbol": "h2_conn_want_write",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
       "name": "h2_conn_wire_read",
       "symbol": "h2_conn_wire_read",
       "args": [

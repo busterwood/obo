@@ -83,6 +83,8 @@ pub fn make(t: transport::Transport, limits: &Limits,
 pub fn next(mut c: &Connection, now: &http::Now): Result[Event]
 pub fn deadline(c: &Connection): Result[clock::Deadline]
 pub fn pending(c: &Connection): Result[int]
+pub fn outputPending(mut c: &Connection): Result[int]
+pub fn canWrite(c: &Connection): Result[bool]
 pub fn want(c: &Connection): Result[transport::Want]
 pub fn wantsRead(c: &Connection): Result[bool]
 pub fn wantsWrite(c: &Connection): Result[bool]
@@ -108,6 +110,11 @@ shim's preface deadline at accept time; a server must call it before waiting on
 the reactor so a zero-byte h2c client cannot hold a slot indefinitely.
 `flush(c, now)` flushes already-queued shim wire, obo output and TLS ciphertext
 without pulling events; it returns true only when all output is drained.
+`pending` counts shim wire plus obo output, `outputPending` counts bytes still
+buffered inside the transport (TLS ciphertext), and `canWrite` reports nghttp2
+outbound work not yet serialized into the wire ring (for example deferred data
+resumed by WINDOW_UPDATE). `want`/`wantsWrite` include all three so a caller
+does not wait for a readiness edge that will never arrive.
 `refuse(c, id, code)` submits RST_STREAM for a stream the shim knows but obo has
 not adopted, used for policy refusal such as `maxRequestsPerConnection`.
 `deadline` returns the earliest active finite monotonic deadline (nanoseconds)
