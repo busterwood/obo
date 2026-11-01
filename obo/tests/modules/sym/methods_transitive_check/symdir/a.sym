@@ -1,6 +1,6 @@
-obosym 7
+obosym 8
 abi 1
-compiler "0.14"
+compiler "0.15"
 source 0xf6569c84545b5483
 dep l "l.obx"
 interface 0x9a5308e9c46055f5

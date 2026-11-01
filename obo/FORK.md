@@ -6317,3 +6317,62 @@ The seed was rebuilt and promoted as the same 0.14 identity
 (`d7b0c755…`); the temporary `SEED_BUG_SKIP` was removed once the seed carried
 the fix. Gates after promotion: `run_fork` 1,757; `port_compare` 1,745/1,745;
 seed 1,550/1,550; `port_test` 605/605; fixed point and hello byte-identical.
+## Template literals (0.15 implementation branch)
+
+**Identity.** `OBO_VERSION = "0.15"`, `SYM_FORMAT = 8`, `SYM_ABI = 1`. The
+grammar adds backtick template tags and the universe gains `Sql`, `SqlArg`,
+`Html`, `HtmlAttr` and `HtmlAttrs`; old format-7 symbol files are refused with
+`has format 7; this compiler reads 8; rebuild it`. No seed promotion is made:
+`seed/obo` remains the 0.14 image, and the 0.14 seed builds this compiler once.
+
+**Language.** Compiler-known `sql`/`sqlRaw`/`html`/`htmlRaw` backtick tags lower
+to ordinary values. `Sql` is a public-field record `{text: []string; params:
+[]SqlArg}`; `SqlArg` is a closed union (`Null`, `Int`, `Bool`, `Float`, `Str`,
+`Bytes`, `DecimalText`); `Html` is a record whose text field is private to module
+`html` (revision of the approved design's public-field sentence, matching
+`html.obx`). SQL scalar holes become ordered bind arguments, strings never become
+SQL syntax, `Sql` fragments splice, `sql.copy`/`sqlJoin`/`sqlWhere`/`sqlNull`/
+`sqlBytes` are the explicit helpers, `[]Sql` is never expanded implicitly, and a
+literal `$` followed by a digit is rejected because `$n` is reserved.
+`sqlWhere` parenthesizes every predicate (`WHERE (p1) AND (p2)`) and `sqlJoin`
+holds its parts array across the separator expression (moving, freeing,
+replacing, appending to or truncating it is rejected). HTML literal chunks are
+trusted; holes are context-escaped for text, quoted attributes and allow-listed
+URLs; `Html` splices only as text, `[]Html` concatenates, and script/style/
+comment/doctype/unquoted-attribute/tag-name/attribute-name/`srcdoc`/`style`/
+`on*` holes are compile errors. HTML whitespace includes form feed (U+000C) at
+every tag/attribute/value and raw-close site. A raw script/style body closes
+only at a real `</script`/`</style` with a delimiter, and URL attributes validate
+the assembled value: a scheme may not span holes, only one hole is accepted per
+URL, and a literal `&` next to a hole is rejected because it could be an HTML
+character reference. Decimal SQL arguments use exact
+`SqlArg.DecimalText` bytes: display text when exact, canonical only when the
+display scale was capped, never a rounded value. Splicing consumes fragments;
+`sql.copy`/`html.copy` clone them.
+
+**Implementation.** The scanner emits `T_BACKTICK`; the template parser reads raw
+chunks and re-enters the token scanner at `${...}` holes, with an HTML state
+machine local to the literal. Hidden builders are owned locals, so loops and
+early exits free them through the ordinary ownership rules. Template type
+descriptors are created lazily on first use, which keeps the `hello` gate
+byte-identical to the seed compiler for a program that does not mention a
+template type. Runtime slots 79-93 append the builder helpers; float and decimal
+slots 41-78 keep their meaning. The
+database driver, dialect placeholder rendering, identifier/`ORDER BY`
+allow-lists, array expansion and user-defined tags remain later work.
+`DecimalText` is the lossless decimal transport.
+
+**Gates (this worktree, re-review revision).** `run_fork` **1,809 passed**;
+default `port_compare` **1,796/1,796**; `OBO_REF=obo/seed/obo`
+**1,550/1,550** (the template run/error files are skipped at `(0,15)`);
+`port_test` **612/612**; `module_test` **143**; `sym_test` **52/52**;
+`float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **29/29**;
+`stdlib` **16/16**; `tools` **509 passed**; cinterop, DB-adapter and systems
+P0/P1a/P2 suites pass; the decimal evidence runner reports **32,719 C checks**.
+`mutate_fork` **718 caught + 31 equivalent of 749** (including 24 template
+compiler mutants), `mutate_decimal` **71/71** (including the sqlWhere runtime
+mutant), and `mutate_port` **540/540**. Self-compile peaks at **2,385,776
+bytes** in the port comparison (budget 2,500,000, about 4.6% headroom); the
+empty-array savings oracle is **51,488 bytes** above baseline (minimum 30,000).
+The fixed point is stage 2 == stage 3 and `hello` is byte-identical between the
+0.14 seed and this compiler.

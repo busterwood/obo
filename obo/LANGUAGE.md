@@ -1308,9 +1308,10 @@ fn main() {
 
 Stored function values, owned or mutable captures, string/interface captures and impure
 callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
-interface handles `^I` remain later. The implemented compiler is `0.14`/format 7/ABI 1; the
-promoted `0.13` seed built the 0.14 image once, and the released `0.11` seed
-(`01fa9ed3…`) also builds it. The historical `0.9` seed
+interface handles `^I` remain later. The source compiler on this branch is
+`0.15`/format 8/ABI 1 (template literals); the promoted `0.14` seed builds it
+once, and the historical `0.13` seed built the 0.14 image. The released `0.11`
+seed (`01fa9ed3…`) also builds the older line. The historical `0.9` seed
 (`540,673` bytes, sha256 `3d369273…`) built the 0.10 compiler, and the historical `0.8` seed
 (`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
 
@@ -1609,10 +1610,11 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.14 sym-format 7 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.15 sym-format 8 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
-when a `.sym` is read. The historical `0.12` release printed
-`obo 0.12 sym-format 6 abi 1`, and `0.8.1` printed
+when a `.sym` is read. The historical `0.14` release printed
+`obo 0.14 sym-format 7 abi 1`, `0.12` printed `obo 0.12 sym-format 6 abi 1`,
+and `0.8.1` printed
 `obo 0.8.1 sym-format 4 abi 1`. A format-6 file is rejected by the exact check;
 rebuild it. `--reemit-sym FILE` is a testing hook: it reads a symbol
 file with the reader and prints the canonical re-emission, which the symbol-file
@@ -1623,9 +1625,9 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 7
+obosym 8
 abi 1
-compiler "0.14"
+compiler "0.15"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -1667,7 +1669,7 @@ fn split(p0: string, p1: string): []string
   offset, descriptor, pointer, timestamp or absolute path appears.
 - A record definition lists its fields in declaration order (offsets are
   recomputed: one 8-byte word each). Every public field is written explicitly as
-  `pub name: Type`; a bare `name: Type` is malformed in format 7, so a writer bug
+  `pub name: Type`; a bare `name: Type` is malformed in format 8, so a writer bug
   cannot silently publish a field. A private field is the single token `priv`, or
   `priviface` when its hidden type contains an interface (directly or through
   `[]`, `?`, `^`, `Result`, records or variants). The slot is one word at the next
@@ -2237,9 +2239,91 @@ accepts any string and is equivalent to the old direct construction. Escaping is
 one pass and not idempotent: an already-encoded string is encoded again, and
 `raw` must not be fed untrusted values. There is deliberately no API for
 script/style bodies, comments, unquoted attributes or dynamic tag/attribute
-names, and no sanitizer. The future compiler-known `html` tag will lower literal
-chunks to `raw` and holes to these context functions; until then, this module is
-the builder-only form. Its header documents the byte, control and URL policies.
+names, and no sanitizer. The compiler-known `html` tag lowers literal chunks to
+trusted markup and holes to the same context policy; the builder API remains the
+explicit form and shares the nominal `Html` type. Its header documents the byte,
+control and URL policies.
+
+### Template literals (sql/html)
+
+Compiler-known backtick tags are values, not a user-extensible tag protocol.
+A tag name is immediately followed by a backtick in source:
+
+```text
+tag   := "sql" | "sqlRaw" | "html" | "htmlRaw"
+expr  := tag "`" (chunk | "${" expression "}")* "`"
+chunk := raw source bytes; only \` and \${ escape
+```
+
+The tags are contextual: `sql` and `html` are ordinary identifiers everywhere
+else, so a local or field named `sql`/`html` keeps its normal field access. The
+type names `Sql`, `SqlArg`, `Html`, `HtmlAttr` and `HtmlAttrs` are reserved. `sqlRaw` and `htmlRaw` take a literal with no holes. Chunks are raw, so
+backslashes, newlines and UTF-8 survive byte-for-byte. A `sql` literal chunk may
+not contain `$` followed by a digit because `$n` is reserved for parameters;
+`$tag$` quoting is still literal text. A template cannot be built in a global
+initializer.
+
+`sql` and `Sql` are ordinary public-field records: `text: []string` and
+`params: []SqlArg`. The text array alternates chunks and arguments, so rendering
+walks text, then `$1`, then text, and so on; a bound value is never interpolated
+into SQL text. Supported holes are `int`, `byte`, `bool`, `string`, `float`,
+`[]byte`, `decimal`, `SqlArg` and a `Sql` fragment. A string is always a
+parameter, even when it contains SQL syntax. `[]byte` is moved into a `Bytes`
+argument; use `sqlBytes(bytes)` for an explicit copy. A decimal is transported as
+exact text in `SqlArg.DecimalText` (display form, canonical only when the display
+scale was capped; never rounded). `sqlNull()` is an explicit NULL argument,
+distinct from an empty fragment. Splicing a `Sql` consumes it; `sql.copy(frag)`
+copies it first. `sqlJoin(parts, sep)` joins a `[]Sql` with a separator and
+`sqlWhere(parts)` returns empty for an empty array, otherwise
+`WHERE (p1) AND (p2)`: each predicate is parenthesized so an inner `OR` cannot
+capture its neighbour. `sqlJoin` holds its parts array across the separator
+expression and rejects a separator that moves, frees, replaces, appends to or
+truncates it; compute such a separator before the call. A `[]Sql` is never
+expanded implicitly.
+
+`html` and `Html` are the claimed-safe content type. Its `text` field is private
+to module `html`; `html::toText` is the rendering accessor, `html::raw` is the
+explicit trusted constructor, and `html.copy(frag)` copies a fragment before a
+splice. Literal chunks are trusted markup. A hole in text content escapes
+`& < > " '` and ASCII controls; a hole in a quoted attribute escapes both quote
+characters and tab/LF/CR; a hole in a URL attribute (`href`, `src`, `action`,
+`formaction`, `cite`, `poster`, `background`, `longdesc`, `usemap`, `data`,
+`manifest`, `ping`, `profile`, `xlink:href`) also applies the scheme allow-list
+(relative references, `http`, `https`, `mailto`) and traps on any other scheme.
+URL values are validated as assembled attribute values: a scheme may not be
+split across holes, a URL attribute may contain only one hole, and a literal
+`&` next to a hole is rejected because it could be an HTML character reference
+(for example `&#58;`) that the browser decodes before URL parsing. Build and
+validate the whole string first if a dynamic URL is needed. HTML whitespace is
+space, tab, LF, form feed (U+000C) and CR; form feed separates names and values
+exactly like the other whitespace bytes. An `Html` hole is inserted raw and is allowed only in text
+content; `[]Html` concatenates there. `Html` in an attribute is a compile error,
+and `HtmlAttrs`/`HtmlAttr` have no v1 hole. Holes are rejected at compile time in
+script/style bodies, comments, doctypes, unquoted attribute values, tag names,
+attribute names, and `srcdoc`/`style`/`on*` values (script, CSS and event-handler
+contexts need typed encoders, not attribute escaping). A fake `</scriptx>` or
+`</styley>` does not close a raw-text body; a closing tag needs a delimiter. There is no script/CSS encoder, dynamic tag or attribute name
+API, sanitizer, or generic `escape` entry point.
+
+```text
+let q = sql`SELECT * FROM account WHERE id = ${id} AND name = ${name}`
+let extra = sqlRaw`WHERE x = y`
+let q2 = sql`${q} ${extra}`                    // splice: q and extra are consumed
+let safe = html`<a href="/u/${id}" title="${name}">${name}</a>`
+let page = html`<article>${body}</article>`   // body: Html, inserted raw
+var states = new []Sql(0)
+append(states, sql`state = ${s}`)
+let inList = sql`state IN (${sqlJoin(states, sqlRaw`, `)})`
+```
+
+Ownership follows ordinary records: a template builder is a hidden owned local
+freed on every exit, the result is an owned `Sql`/`Html`, and splicing moves the
+fragment. `SqlArg` is a closed type (`Null`, `Int`, `Bool`, `Float`, `Str`,
+`Bytes`, `DecimalText`); direct `new Sql{...}`/`new Html{...}` construction is
+the explicit raw escape hatch, and `Html` is private to its module. SQL driver
+binding, dialect placeholder rendering and identifier/`ORDER BY` allow-lists are
+later work; the value/parameter pair is dialect-neutral. Tests live in
+`tests/run/template_*.obx` and `tests/errors/template.obx`.
 
 ### Metadata
 
@@ -2600,6 +2684,19 @@ value. The reviewed core keeps its strict quantize target limit of 32768. The
 shared lexer; that is a pre-existing lexer-wide gap, not decimal-specific.
 `float` remains a separate pre-existing reserved-type-name gap; `decimal` is
 now reserved.
+
+Template literals are implemented in the source compiler on this branch but are
+not promoted to `seed/obo`. The v1 scope has no SQL driver or dialect renderer,
+no SQL parser or identifier/`ORDER BY` allow-list API, no array expansion, no
+user-defined template tags or public domain registry, no generic `escape`, and
+no `string -> Sql`/`Html` conversion. HTML has no script/style/comment/unquoted
+or dynamic name encoder and no sanitizer; `HtmlAttrs`/`HtmlAttr` exist as
+nominal types but have no v1 hole. `Html` is a claimed-safe convention, not a
+type-enforced provenance check; direct `new Html{...}` is private to module
+`html`, while `Sql`/`SqlArg` fields are public. The SQL driver binding layer,
+dialect `$n`/`?` rendering and the DB adapters are later work; `DecimalText` is
+the lossless decimal transport. The source compiler is `0.15`/format 8/ABI 1;
+the seed remains 0.14 until promotion.
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target

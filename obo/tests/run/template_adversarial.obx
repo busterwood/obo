@@ -1,0 +1,26 @@
+// Adversarial template values: data never becomes SQL syntax or markup.
+
+import "html.obx" as html
+
+fn main() {
+    var payloads = new []string(0)
+    append(payloads, "<script>alert(1)</script>")
+    append(payloads, "\" onmouseover=\"alert(1)")
+    append(payloads, "'><img src=x onerror=alert(1)>")
+    append(payloads, "&lt;already&gt;")
+    for p in payloads {
+        let h = html`<div title="${p}">${p}</div>`
+        println(html::toText(h))
+    }
+    // expect: <div title="&lt;script&gt;alert(1)&lt;/script&gt;">&lt;script&gt;alert(1)&lt;/script&gt;</div>
+    // expect: <div title="&quot; onmouseover=&quot;alert(1)">&quot; onmouseover=&quot;alert(1)</div>
+    // expect: <div title="&#39;&gt;&lt;img src=x onerror=alert(1)&gt;">&#39;&gt;&lt;img src=x onerror=alert(1)&gt;</div>
+    // expect: <div title="&amp;lt;already&amp;gt;">&amp;lt;already&amp;gt;</div>
+
+    // SQL metacharacters stay in bound values; no text chunk contains them
+    let evil = "1; DELETE FROM account; --"
+    let q = sql`SELECT * FROM account WHERE id = ${evil}`
+    println("[", q.text[0], "]")  // expect: [SELECT * FROM account WHERE id = ]
+    let ps = &q.params
+    println(len(ps))  // expect: 1
+}

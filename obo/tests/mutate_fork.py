@@ -193,6 +193,69 @@ MUTANTS = {
 }
 
 
+# template literals (0.15): syntax, holes, contexts, ownership and exact decimal transport
+MUTANTS.update({
+    'template: raw tags accept holes': ('            if isRaw {\n                errorAt(tag + " takes a literal with no holes", tplHoleLine, tplHoleCol)\n            }',
+                '            if false {\n                errorAt(tag + " takes a literal with no holes", tplHoleLine, tplHoleCol)\n            }'),
+    'template: $ digit check dropped': ("        if sqlText && c == '$' && pos + 1 < len(src) && isDigit(src[pos + 1]) {",
+                '        if false {'),
+    'template: HTML builder uses the SQL constructor': ('        slot = RT_TPL_HTML_NEW',
+                '        slot = RT_TPL_SQL_NEW'),
+    'template: builder not moved out': ('    opMem(0x8B, r, memOf(x), true, false)\n    s.moved = true',
+                '    opMem(0x8B, r, memOf(x), true, false)'),
+    'template: Html allowed in attributes': ('        if ctx != 0 {\n            errorAt("an " + tname(t) + " fragment is not allowed',
+                '        if false {\n            errorAt("an " + tname(t) + " fragment is not allowed'),
+    'template: non-string URL allowed': ('    if ctx == 2 && k != "string" {',
+                '    if false {'),
+    'template: script body treated as text': ('    if hsBytesAre(&hsTag, "script") {\n        hsState = HS_RAW_SCRIPT',
+                '    if hsBytesAre(&hsTag, "script") {\n        hsState = HS_DATA'),
+    'template: unquoted attribute accepted': ('} else if hsState == HS_VALUE_UNQ || hsState == HS_BEFORE_VALUE {',
+                '} else if hsState == HS_VALUE_UNQ {'),
+    'template: []Sql hole allowed': ('    } else if k == "array" && baseOf(t) == tSql {',
+                '    } else if false {'),
+    'template: SQL decimal bound as float': ('        rtCall4(RT_TPL_SQL_ARG, localItem(s, tSql), makeConst(tInt, 6), decPtr(ud),',
+                '        rtCall4(RT_TPL_SQL_ARG, localItem(s, tSql), makeConst(tInt, 3), decPtr(ud),'),
+    'template: HTML decimal bound as float': ('        rtCall4(RT_TPL_HTML_VALUE, localItem(s, tHtml), makeConst(tInt, 4), decPtr(ud),',
+                '        rtCall4(RT_TPL_HTML_VALUE, localItem(s, tHtml), makeConst(tInt, 3), decPtr(ud),'),
+    'template: sqlJoin keeps its separator': ('    consume(sep)\n    return rtCall3(RT_TPL_SQL_JOIN',
+                '    return rtCall3(RT_TPL_SQL_JOIN'),
+    'template: comments do not enter comment state': ('                    hsState = HS_COMMENT',
+                '                    hsState = HS_DATA'),
+    'template: ${ escape dropped': ("            if src[pos + 1] == '$' && pos + 2 < len(src) && src[pos + 2] == '{' {\n                advance()\n                advance()\n                advance()\n                append(chunk, '$')\n                append(chunk, '{')\n                continue\n            }\n",
+                ''),
+})
+
+
+# template review regressions: array holding, assembled URL, dangerous contexts, layout, shadowing
+MUTANTS.update({
+    'template: sqlJoin parts move check dropped': ('    if heldLost(ps, t0) || heldHitAt(hp) {',
+                '    if false {'),
+    'template: URL multiple-hole check dropped': ('                        if hsUrlHoles > 0 {',
+                '                        if false {'),
+    'template: URL prefix check dropped': ('                        } else if !hsUrlPrefixOk() {',
+                '                        } else if false {'),
+    'template: URL suffix check dropped': ('                if hsAttrUrl && hsUrlHoles > 0 && hsUrlAtStart && hsUrlSuffixUnsafe() {',
+                '                if false {'),
+    'template: dangerous attribute check dropped': ('                    if hsAttrDanger {',
+                '                    if false {'),
+    'template: script close delimiter check dropped': ("                    if !(hsSpace(d) || d == '/' || d == '>') {",
+                '                    if false {'),
+    'template: Html layout check dropped': ('        if len(tHtml.fields) != 1 || tHtml.fields[0].name != "text" ||\n           tHtml.fields[0].typ != tString || !tHtml.fields[0].private || tHtml.fields[0].offset != 0 {\n            errorAt("module \'html\' must define Html as a ref record with exactly one private string field \'text\'", line, 1)\n        }',
+                '        if false {\n            errorAt("module \'html\' must define Html as a ref record with exactly one private string field \'text\'", line, 1)\n        }'),
+    'template: shadow helper probe dropped': ('    if name == "sql" && sym == T_DOT && lookupMaybe(name) == nil { return sqlCopyExpr() }',
+                '    if name == "sql" && sym == T_DOT { return sqlCopyExpr() }'),
+})
+
+
+# template re-review: form-feed whitespace and URL character references
+MUTANTS.update({
+    'template: hsSpace omits form feed': ("    return b == ' ' || b == '\\t' || b == '\\n' || b == '\\r' || b == 0x0C",
+                "    return b == ' ' || b == '\\t' || b == '\\n' || b == '\\r'"),
+    'template: URL literal ampersand check dropped': ('                if hsAttrUrl && hsUrlHoles > 0 && hsUrlHasAmp() {',
+                '                if false {'),
+})
+
+
 # the mutants whose patterns the reference bindings per path replaced: retargeted to the same behaviour
 RETARGET = {
     "writes through read-only references": ("if x.deref && wr != nil && wr.isRef && !wr.bind.writable {",
@@ -656,7 +719,7 @@ MODULE_MUTANTS = {
     "modules: -I ignored": ("        for k in 0..len(incDirs) { append(cands, joinDirPath(incDirs[k], raw)) }\n", ""),
     "modules: module globals share one slot": ("        gsym.offset = GLOBAL_BASE + gsize", "        gsym.offset = GLOBAL_BASE"),
     "modules: T_COLONCOLON is 66": ("const T_COLONCOLON = 67", "const T_COLONCOLON = 66"),
-    "modules: token names lack ::": ("try :: float decimal /= %=\"", "try float decimal /= %=\""),
+    "modules: token names lack ::": ("try :: float decimal /= %= `\"", "try float decimal /= %= `\""),
     "modules: pre-scan forgets the :: of a qualified literal": ("""        } else if c == ':' {
             // `new lib::Node{...}`: the `::` is part of the type name, so the member word after it is
             // still the type a record literal names. Treating the `::` like `new` keeps afterNew set
@@ -1536,8 +1599,8 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X9: a temporary may be borrowed into a cell": (
         "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
         "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
-    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 7\n", "const SYM_FORMAT = 2\n"),
-    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.14\"\n", "const OBO_VERSION = \"0.6\"\n"),
+    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 8\n", "const SYM_FORMAT = 2\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.15\"\n", "const OBO_VERSION = \"0.6\"\n"),
 
     # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
     "interfaces v3 X18: the receiver bit is omitted for mut fn": (
@@ -1607,8 +1670,8 @@ LAMBDA_MUTANTS = {
     "lambdas X3: writer has no function branch": (
         '    if k == "fn" {\n        appStr(b, "fn(")\n', '    if false {\n        appStr(b, "fn(")\n'),
     "lambdas X4: symTypeText has no function branch": (
-        'fn symTypeText(t: ^Type): string {\n    if t.kind == "fn" {\n',
-        'fn symTypeText(t: ^Type): string {\n    if false {\n'),
+        'fn symTypeText(t: ^Type): string {\n    if isHtmlType(t) { return t.name }\n    if t.kind == "fn" {\n',
+        'fn symTypeText(t: ^Type): string {\n    if isHtmlType(t) { return t.name }\n    if false {\n'),
     "lambdas X5: containsFn does not recurse constructors": (
         '    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {\n        return containsFn(baseOf(t))\n    }\n',
         '    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {\n        return false\n    }\n'),

@@ -48,6 +48,7 @@ import module_test  # noqa: E402
 import sym_test  # noqa: E402
 import elf_test  # noqa: E402
 import html_lib_test  # noqa: E402
+import template_fuzz  # noqa: E402
 
 run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 run.ROOT = os.path.abspath(os.environ.get('OBO_RT', FORK))  # --rt: the fork's runtime (OBO_RT overrides for mutation harnesses)
@@ -173,6 +174,7 @@ def main():
     # memory size the full image, and the program built by the compiler runs
     tests.append(("image/runtime_data_segment", lambda: elf_test.check(run.OBXC)))
     tests.append(("html/decimal-private", html_lib_test.decimal_private))
+    tests.append(("template/fuzz", template_fuzz.run_case))
     tests.append(("lambda/call-arena-bound", call_arena_bound))
     tests.append(("float/core", lambda: program_test(os.path.join(HERE, "float_core.obx"))))
     def float_reader_gate():

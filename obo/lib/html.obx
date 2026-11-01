@@ -80,7 +80,10 @@
 module html
 
 // Claimed-safe HTML content. text is private: importers construct through raw or
-// an escaper and read through toText. Trust is still convention-level.
+// an escaper and read through toText. Trust is still convention-level. The
+// compiler-known `html` tag lowers to this same record (the compiler binds the
+// declaration in this module to its built-in Html type), so tag values and
+// builder values are one nominal type.
 pub type Html = ref record {
     text: string
 }

@@ -1,0 +1,141 @@
+// Template literal diagnostics: unsupported holes, contexts and tags.
+
+// === sqlRaw takes no holes
+fn main() { let q = sqlRaw`x ${1}` }  // error: sqlRaw takes a literal with no holes
+
+// === htmlRaw takes no holes
+fn main() { let h = htmlRaw`x ${1}` }  // error: htmlRaw takes a literal with no holes
+
+// === an unknown template tag is refused
+fn main() { let q = xml`x` }  // error: unknown template tag 'xml'; v1 has sql, sqlRaw, html and htmlRaw
+
+// === an optional does not bind implicitly
+type R = ref record { v: int }
+fn main() { let x: ?R = nil; let q = sql`${x}` }  // error: sql template cannot bind ?R; supported holes are int, byte, bool, string, float, []byte, decimal, SqlArg and Sql fragments
+
+// === a []Sql hole needs an explicit join
+fn main() { var xs = new []Sql(0); let q = sql`${xs}` }  // error: a []Sql hole is not implicit; use sqlJoin(parts, sep) or sqlWhere(parts)
+
+// === a scalar array does not bind
+fn main() { var xs = new []int(0); let q = sql`${xs}` }  // error: sql template cannot bind []int; supported holes are int, byte, bool, string, float, []byte, decimal, SqlArg and Sql fragments
+
+// === a record does not bind
+type R = ref record { v: int }
+fn main() { let r = new R{v: 1}; let q = sql`${r}` }  // error: sql template cannot bind R; supported holes are int, byte, bool, string, float, []byte, decimal, SqlArg and Sql fragments
+
+// === Html cannot splice into SQL
+fn main() { let h = html`x`; let q = sql`${h}` }  // error: Html is not a SQL value or fragment; only Sql splices into a sql template
+
+// === SQL cannot splice into HTML
+fn main() { let q = sql`x`; let h = html`<p>${q}</p>` }  // error: html template cannot insert Sql; supported holes are int, byte, bool, string, float, decimal, Html and []Html
+
+// === an Html fragment never goes in an attribute
+fn main() { let x = html`<b>b</b>`; let h = html`<p title="${x}">y</p>` }  // error: an html::Html fragment is not allowed in an attribute value; trusted markup can only be spliced as text content
+
+// === a []Html fragment never goes in an attribute
+fn main() { var xs = new []Html(0); let h = html`<p title="${xs}">y</p>` }  // error: a []Html fragment is not allowed in an attribute value; concatenate it as text content
+
+// === a tag-name hole is refused
+fn main() { let n = "div"; let h = html`<${n}></${n}>` }  // error: html template: a hole is not allowed in a tag name
+
+// === an attribute-name hole is refused
+fn main() { let n = "title"; let h = html`<p ${n}="x">y</p>` }  // error: html template: a hole is not allowed in an attribute name
+
+// === an unquoted attribute value is refused
+fn main() { let v = "x"; let h = html`<p title=${v}>y</p>` }  // error: html template: a hole is not allowed in an unquoted attribute value; quote the attribute
+
+// === a comment hole is refused
+fn main() { let v = "x"; let h = html`<!-- ${v} -->` }  // error: html template: a hole is not allowed in an HTML comment
+
+// === a script body hole is refused
+fn main() { let v = "x"; let h = html`<script>${v}</script>` }  // error: html template: a hole is not allowed in a <script> body; use a typed encoder
+
+// === a style body hole is refused
+fn main() { let v = "x"; let h = html`<style>${v}</style>` }  // error: html template: a hole is not allowed in a <style> body; use a typed encoder
+
+// === a doctype hole is refused
+fn main() { let v = "x"; let h = html`<!DOCTYPE ${v}>` }  // error: html template: a hole is not allowed in a doctype
+
+// === a URL hole needs a string
+fn main() { let n = 1; let h = html`<a href="${n}">x</a>` }  // error: a URL hole needs a string, not int
+
+// === $ followed by a digit is reserved in SQL text
+fn main() { let q = sqlRaw`SELECT $1` }  // error: sql template literal text cannot contain '$' followed by a digit; $n is reserved for bound parameters
+
+// === a template cannot be a global initializer
+var G = sql`SELECT 1`  // error: a template cannot be built in a global initializer; build it in a function
+fn main() {}
+
+// === sql.copy needs a Sql fragment
+fn main() { let s = "x"; let q = sql.copy(s) }  // error: sql.copy needs a Sql fragment, not string
+
+// === html.copy needs an Html fragment
+fn main() { let s = "x"; let h = html.copy(s) }  // error: html.copy needs an Html fragment, not string
+
+// === sql.copy has no other helper
+fn main() { let q = sql`x`; let r = sql.join(q) }  // error: unknown sql helper 'join'; v1 has sql.copy
+
+// === html.copy has no other helper
+fn main() { let h = html`x`; let r = html.join(h) }  // error: unknown html helper 'join'; v1 has html.copy
+
+// === sqlJoin needs []Sql
+fn main() { var xs = new []int(0); let q = sqlJoin(xs, sqlRaw`, `) }  // error: sqlJoin needs a []Sql, not []int
+
+// === sqlJoin needs a Sql separator
+fn main() { var xs = new []Sql(0); let q = sqlJoin(xs, "x") }  // error: sqlJoin needs a Sql separator, not string
+
+// === sqlWhere needs []Sql
+fn main() { var xs = new []int(0); let q = sqlWhere(xs) }  // error: sqlWhere needs a []Sql, not []int
+
+// === sqlBytes needs []byte
+fn main() { let s = "x"; let a = sqlBytes(s) }  // error: sqlBytes needs a []byte, not string
+
+// === Html.text stays private to module html
+fn main() { let h = html`x`; println(h.text) }  // error: type 'html::Html' has no public field 'text' (only 'pub' fields are visible outside module 'html'; mark 'text' 'pub' or add an accessor)
+
+// === Html cannot be constructed outside module html
+fn main() { let h = new Html{text: "x"} }  // error: cannot construct 'html::Html' outside its module: it has private fields; add a constructor function in module 'html'
+
+// === sqlJoin consumes its separator fragment
+fn main() { var xs = new []Sql(0); let sep = sqlRaw`, `; let j = sqlJoin(xs, sep); let k = sql`${sep}` }  // error: 'sep' was moved and has no value here
+
+// === template-domain type names are reserved
+type Sql = ref record { v: int }  // error: cannot declare a type named 'Sql'
+fn main() {}
+
+// === sqlJoin needs the array stored as a local
+fn joinAll(a: &[]Sql): Sql { return sqlJoin(a, sqlRaw`, `) }  // error: sqlJoin needs a local []Sql array; store it in a variable first
+fn main() {}
+
+// === sqlWhere needs the array stored as a local
+type Box = ref record { parts: []Sql }
+fn whereAll(b: &Box): Sql { return sqlWhere(b.parts) }  // error: sqlWhere needs a local []Sql array; store it in a variable first
+fn main() {}
+
+// === sqlJoin's separator must not move the array
+fn steal(xs: []Sql): Sql { return sqlRaw`, ` }
+fn main() { var xs = new []Sql(0); let j = sqlJoin(xs, steal(xs)) }  // error: sqlJoin's separator may move or free the []Sql array; compute the separator before the call
+
+// === a fake </scriptx> does not close a script body
+fn main() { let v = "x"; let h = html`<script></scriptx>${v}</script>` }  // error: html template: a hole is not allowed in a <script> body; use a typed encoder
+
+// === a fake </styley> does not close a style body
+fn main() { let v = "x"; let h = html`<style></styley>${v}</style>` }  // error: html template: a hole is not allowed in a <style> body; use a typed encoder
+
+// === a URL attribute may not split a scheme across holes
+fn main() { let a = "javascript"; let b = "alert(1)"; let h = html`<a href="${a}:${b}">x</a>` }  // error: a URL attribute may contain only one hole; build and validate the URL string first
+
+// === a hole cannot complete a scheme prefix
+fn main() { let u = "java"; let h = html`<a href="${u}script:alert(1)">x</a>` }  // error: a URL attribute's first hole must not be followed by a scheme colon; build and validate the URL string first
+
+// === a literal URL prefix is validated before a hole
+fn main() { let x = "1"; let h = html`<a href="javascript:${x}">x</a>` }  // error: a URL hole must be at the start or after a validated scheme or relative path; build the URL string first
+
+// === srcdoc holes are script contexts
+fn main() { let v = "x"; let h = html`<iframe srcdoc="${v}"></iframe>` }  // error: html template: a hole is not allowed in a srcdoc attribute; use a typed encoder
+
+// === event-handler holes are script contexts
+fn main() { let v = "x"; let h = html`<button onclick="${v}">x</button>` }  // error: html template: a hole is not allowed in a onclick attribute; use a typed encoder
+
+// === style holes are CSS contexts
+fn main() { let v = "x"; let h = html`<div style="${v}">x</div>` }  // error: html template: a hole is not allowed in a style attribute; use a typed encoder

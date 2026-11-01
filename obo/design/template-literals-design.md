@@ -8,6 +8,12 @@ No source, test, runtime, seed, version or format changes in this pass.
 **Revision 3 (final decisions):** records the approved choices. SQL semantics and
 examples are unchanged. HTML remains a separate domain instance with
 contextual escaping, not parameter binding.
+**Revision 4 (implementation review, 2026-11-01):** `Html.text` is private to
+module `html`, following the field-visibility decision, while `Sql`/`SqlArg`
+remain public-field records. URL values are validated as assembled attribute
+values (a split scheme is rejected); each `sqlWhere` predicate is parenthesized;
+`srcdoc`, `style` and `on*` holes are rejected; `sqlJoin` holds its parts array
+across the separator expression.
 **Baseline:** `main` at `c6c4d3f3ce18f3aa872e4ba0880ccdac7e7257de`; isolated
 worktree `/home/chris/.local/share/opencode/worktree/fa36f3/template-literals-design`,
 branch `template-literals-design`; compiler 13,550 lines / 509,773 bytes.
@@ -322,7 +328,7 @@ type SqlArg = closed {
     Float { v: float }  Str { v: string }  Bytes { v: []byte }
     // Decimal { v: decimal } when decimal exists
 }
-type Html = ref record { text: string }       // claimed-safe content
+type Html = ref record { text: string }       // claimed-safe content; text is private to module html
 type HtmlAttr = ref record { text: string }   // one complete attribute
 type HtmlAttrs = ref record { text: string }  // claimed-safe attribute list
 ```
@@ -339,9 +345,11 @@ SQL; `decimal` is reserved for the future exact type. `Html` stores text that th
 calling convention declares safe; `HtmlAttr`/`HtmlAttrs` are separate because
 markup is not an attribute fragment.
 
-Direct construction is legal and is an explicit raw operation:
-`new Sql{text: ..., params: ...}` and `new Html{text: ...}` are equivalent to
-using a raw constructor. Tags and `sqlRaw`/`htmlRaw` are the documented route;
+Direct construction is legal and is an explicit raw operation for `Sql` and
+`SqlArg`. `Html.text` is private to module `html` (revision 4), so external code
+constructs `Html` through `html::raw` or the `html` tag; the compiler tag shares
+that same private-layout type. There is no public-field escape hatch for `Html`
+outside its module. Tags and `sqlRaw`/`htmlRaw` are the documented route;
 docs/lint enforce that convention. There is no `SafeString` or cross-domain
 conversion, and the compiler cannot enforce provenance because the fields are
 public.
@@ -451,13 +459,15 @@ These five decisions are approved and are not reopened:
    `html.copy(fragment)`; there is no auto-copy and no borrow-only outer-fragment
    lifetime rule.
 3. **Type ownership.** `Sql`, `SqlArg`, `Html`, `HtmlAttr` and `HtmlAttrs` are
-   ordinary standard-library records with **public fields**, not opaque builtins
-   and not private fields. Direct construction is legal and equivalent to an
-   explicit raw constructor: `new Sql{text: ..., params: ...}` and
-   `new Html{text: ...}`. Documentation/lint require construction through the
-   tags or raw constructors. Trust is convention-level; the design does not claim
-   type-enforced safety. The types stay distinct and there is no shared
-   `SafeString`.
+   ordinary standard-library records, not opaque builtins. `Sql`/`SqlArg` fields
+   are **public**, so `new Sql{text: ..., params: ...}` is legal and equivalent
+   to an explicit raw constructor. Revision 4 applies the field-visibility
+   decision to `Html`: its `text` field is **private to module `html`**, so
+   external code constructs `Html` through `html::raw` or the `html` tag (the
+   tag shares the same private-layout type). Documentation/lint still require
+   construction through the tags or raw constructors where a public field
+   exists. Trust is convention-level; the design does not claim type-enforced
+   provenance. The types stay distinct and there is no shared `SafeString`.
 4. **HTML v1 scope.** Support text content, quoted attribute values and URL
    attributes with scheme validation. Reject holes in script/style, unquoted
    attributes, tag names, attribute names and comments, with clear diagnostics.

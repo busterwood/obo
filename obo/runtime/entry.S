@@ -107,6 +107,22 @@ _entry:
     slot rt_dec_check
     slot rt_dec_exponent
     slot rt_dec_dscale
+    /* compiler-known sql/html template builders (0.15): slots 79..93 append. */
+    slot rt_tpl_sql_new
+    slot rt_tpl_sql_text
+    slot rt_tpl_sql_arg
+    slot rt_tpl_sql_splice
+    slot rt_tpl_sql_copy
+    slot rt_tpl_sql_join
+    slot rt_tpl_sql_where
+    slot rt_tpl_sql_null
+    slot rt_tpl_sql_bytes
+    slot rt_tpl_html_new
+    slot rt_tpl_html_chunk
+    slot rt_tpl_html_value
+    slot rt_tpl_html_splice
+    slot rt_tpl_html_join
+    slot rt_tpl_html_copy
 
     .text
     .macro check f
@@ -201,5 +217,20 @@ check_\f:
     check rt_dec_check
     check rt_dec_exponent
     check rt_dec_dscale
+    check rt_tpl_sql_new
+    check rt_tpl_sql_text
+    check rt_tpl_sql_arg
+    check rt_tpl_sql_splice
+    check rt_tpl_sql_copy
+    check rt_tpl_sql_join
+    check rt_tpl_sql_where
+    check rt_tpl_sql_null
+    check rt_tpl_sql_bytes
+    check rt_tpl_html_new
+    check rt_tpl_html_chunk
+    check rt_tpl_html_value
+    check rt_tpl_html_splice
+    check rt_tpl_html_join
+    check rt_tpl_html_copy
 
     .section .note.GNU-stack,"",@progbits

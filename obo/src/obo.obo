@@ -105,23 +105,25 @@ const T_FLOAT = 68              // a float literal token; float is a type name, 
 const T_DECIMAL = 69            // a bare fractional/exponent literal: exact decimal
 const T_SLASHEQ = 70            // '/=' is refused for decimal with a decimal::div hint
 const T_PERCENTEQ = 71          // '%=' is decimal (and int) compound assignment
+const T_BACKTICK = 72           // starts and ends a template literal chunk
 
 // Stage 2: the symbol-file format, the compiled-program ABI and the compiler version.
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
 // Bump OBO_VERSION with each merged compiler feature; additive builtin/runtime
 // extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A, 0.10 is
 // numeric floats, 0.11 is Stage B capture lists, 0.12 is the decimal integration,
-// 0.13 is private-by-default record fields and 0.14 adds the decimal text API.
+// 0.13 is private-by-default record fields, 0.14 adds the decimal text API and
+// 0.15 adds compiler-known sql/html template literals.
 // Bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect
 // change.
-const OBO_VERSION = "0.14"
-const SYM_FORMAT = 7
+const OBO_VERSION = "0.15"
+const SYM_FORMAT = 8
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
     let k = new []string(0)
-    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try :: float decimal /= %="
+    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try :: float decimal /= %= `"
     var start = 0
     for i in 0..len(names) + 1 {
         if i == len(names) || names[i] == ' ' {
@@ -153,6 +155,7 @@ var tcol = 0
 var tokStart = 0          // where the current token's text starts in src (the .sym reader checks hex forms)
 var dumpMode = false
 var testFloatBits = false      // --test-float-bits: internal bit-diagnostic mode
+var tplHoleDepth = 0           // suppress semicolon insertion inside ${...}
 
 fn makeKeywords(): []string {
     let k = new []string(0)
@@ -236,7 +239,7 @@ fn advance() {
 fn semiAfter(k: int): bool {
     match k {
         T_IDENT, T_INT, T_FLOAT, T_DECIMAL, T_CHAR, T_STRING, T_TRUE, T_FALSE, T_NIL, T_RETURN, T_BREAK, T_CONTINUE,
-        T_RPAREN, T_RBRACK, T_RBRACE { return true }
+        T_RPAREN, T_RBRACK, T_RBRACE, T_BACKTICK { return true }
         else { return false }
     }
 }
@@ -313,6 +316,7 @@ fn punct1(c: int): int {
         '|' { return T_BAR }
         '^' { return T_CARET }
         '~' { return T_TILDE }
+        '`' { return T_BACKTICK }
         else { return -1 }
     }
 }
@@ -758,7 +762,7 @@ fn next() {
         while pos < len(src) {
             let c = src[pos]
             if c != ' ' && c != '\t' && c != '\r' && c != '\n' { break }
-            if c == '\n' && semiAfter(last) {
+            if c == '\n' && semiAfter(last) && tplHoleDepth == 0 {
                 tline = line
                 tcol = col
                 tokStart = pos
@@ -1305,6 +1309,24 @@ let tNil = newType("nil", "nil", nil)
 let tResultCtor = newType("resultctor", "Result", nil)   // the universe's Result; parseType makes Result[T]
 let tErrVal = newType("errval", "err", nil)              // the static type of err(...): one allocated err cell
 
+// Compiler-known template-domain types (0.15). Sql/SqlArg are ordinary records with
+// public fields; Html's text field is private to module "html" (see html.obx), but
+// the tag is compiled by the compiler and may build it directly.
+// Initialised by initCompiler (the handles start at a harmless type; ^Type
+// cannot hold nil).
+var tSql: ^Type = tVoid
+var tSqlArg: ^Type = tVoid
+var tSqlNull: ^Type = tVoid
+var tSqlInt: ^Type = tVoid
+var tSqlBool: ^Type = tVoid
+var tSqlFloat: ^Type = tVoid
+var tSqlStr: ^Type = tVoid
+var tSqlBytes: ^Type = tVoid
+var tSqlDec: ^Type = tVoid
+var tHtml: ^Type = tVoid
+var tHtmlAttr: ^Type = tVoid
+var tHtmlAttrs: ^Type = tVoid
+
 fn baseOf(t: ^Type): ^Type {
     let b = t.base
     if b != nil { return b }
@@ -1329,6 +1351,12 @@ fn fnMode(t: ^Type, i: int): int {
     return 0
 }
 fn fnRet(t: ^Type): ^Type { return baseOf(t) }
+
+// The compiler-known HTML records are identified by pointer; their owner is
+// "html" so the private text field stays private.
+fn isHtmlType(t: ^Type): bool {
+    return t == tHtml || t == tHtmlAttr || t == tHtmlAttrs
+}
 
 fn tname(t: ^Type): string {
     if t.kind == "fn" {
@@ -2113,6 +2141,23 @@ const RT_DEC_CANONICAL = 75
 const RT_DEC_CHECK = 76
 const RT_DEC_EXPONENT = 77
 const RT_DEC_DSCALE = 78
+// compiler-known sql/html template builders (0.15): slots 79..93 append after
+// the decimal text block.  No existing slot changes meaning.
+const RT_TPL_SQL_NEW = 79
+const RT_TPL_SQL_TEXT = 80
+const RT_TPL_SQL_ARG = 81
+const RT_TPL_SQL_SPLICE = 82
+const RT_TPL_SQL_COPY = 83
+const RT_TPL_SQL_JOIN = 84
+const RT_TPL_SQL_WHERE = 85
+const RT_TPL_SQL_NULL = 86
+const RT_TPL_SQL_BYTES = 87
+const RT_TPL_HTML_NEW = 88
+const RT_TPL_HTML_CHUNK = 89
+const RT_TPL_HTML_VALUE = 90
+const RT_TPL_HTML_SPLICE = 91
+const RT_TPL_HTML_JOIN = 92
+const RT_TPL_HTML_COPY = 93
 
 const RAX = 0
 const RCX = 1
@@ -2406,9 +2451,17 @@ fn containsInt(a: &[]int, v: int): bool {
     return false
 }
 
+fn buildTemplateTypes()
+
 fn initCompiler() {
     let poolRefs = &pool
     for r in poolRefs { append(free, r) }
+    buildTemplateTypes()
+    append(universe, newSym("type", "Sql", tSql))
+    append(universe, newSym("type", "SqlArg", tSqlArg))
+    append(universe, newSym("type", "Html", tHtml))
+    append(universe, newSym("type", "HtmlAttr", tHtmlAttr))
+    append(universe, newSym("type", "HtmlAttrs", tHtmlAttrs))
     append(universe, newSym("type", "int", tInt))
     append(universe, newSym("type", "float", tFloat))
     append(universe, newSym("type", "byte", tByte))
@@ -2432,6 +2485,10 @@ fn initCompiler() {
     append(universe, newSym("builtin", "alive", nil))
     append(universe, newSym("builtin", "drop", nil))
     append(universe, newSym("builtin", "replace", nil))
+    append(universe, newSym("builtin", "sqlJoin", nil))
+    append(universe, newSym("builtin", "sqlWhere", nil))
+    append(universe, newSym("builtin", "sqlNull", nil))
+    append(universe, newSym("builtin", "sqlBytes", nil))
 }
 
 fn error(msg: string) { errorAt(msg, 0, 0) }
@@ -2698,7 +2755,8 @@ fn reservedTypeName(n: string): bool {
     // decimal joined the built-in types in 0.12.  float is a separate
     // pre-existing naming hole and is deliberately not changed here.
     return n == "int" || n == "byte" || n == "bool" || n == "string" ||
-        n == "void" || n == "nil" || n == "Result" || n == "decimal"
+        n == "void" || n == "nil" || n == "Result" || n == "decimal" ||
+        n == "Sql" || n == "SqlArg" || n == "Html" || n == "HtmlAttr" || n == "HtmlAttrs"
 }
 
 // ------------------------------------------------- the canonical registries
@@ -2717,6 +2775,11 @@ var globalRegistry = new []^Sym(0)
 fn keyOf(owner: string, name: string): string { return owner + "::" + name }
 
 fn typeAtKey(key: string): ?^Type {
+    // The HTML records are defined by the compiler but declared by module html
+    // for compatibility.
+    if key == "html::Html" { return tHtml }
+    if key == "html::HtmlAttr" { return tHtmlAttr }
+    if key == "html::HtmlAttrs" { return tHtmlAttrs }
     for i in 0..len(typeKeys) {
         if typeKeys[i] == key { return typeRegistry[i] }
     }
@@ -2996,6 +3059,82 @@ fn errVariantType(): ^Type {
     e.desc = descriptor(16, ptrs, strs)
     errVariant = e
     return e
+}
+
+// ---- compiler-known template-domain types (0.15)
+//
+// These are ordinary records/closed variants with the layouts in the approved
+// template design. Sql/SqlArg are public (direct construction is legal). The Html
+// records are owned by module "html" so their text field stays private to
+// obo/lib/html.obx; the compiler's tag lowering is allowed to construct them.
+fn templateVariant(parent: ^Type, name: string, fieldName: string, ft: ^Type): ^Type {
+    let v = newType("record", name, nil)
+    v.parent = parent
+    if len(fieldName) > 0 {
+        append(v.fields, new Field{name: fieldName, offset: 0, typ: ft})
+    }
+    append(parent.variants, v)
+    return v
+}
+
+fn buildTemplateTypes() {
+    let bytes = derived("array", tByte)
+
+    tSqlArg = newType("closed", "SqlArg", nil)
+    tSqlArg.incomplete = false
+    tSqlNull = templateVariant(tSqlArg, "Null", "", tVoid)
+    tSqlInt = templateVariant(tSqlArg, "Int", "v", tInt)
+    tSqlBool = templateVariant(tSqlArg, "Bool", "v", tBool)
+    tSqlFloat = templateVariant(tSqlArg, "Float", "v", tFloat)
+    tSqlStr = templateVariant(tSqlArg, "Str", "v", tString)
+    tSqlBytes = templateVariant(tSqlArg, "Bytes", "v", bytes)
+    tSqlDec = templateVariant(tSqlArg, "DecimalText", "v", bytes)
+
+    tSql = newType("record", "Sql", nil)
+    let textArr = derived("array", tString)
+    let paramArr = derived("array", tSqlArg)
+    append(tSql.fields, new Field{name: "text", offset: 0, typ: textArr})
+    append(tSql.fields, new Field{name: "params", offset: 8, typ: paramArr})
+
+    tHtml = newType("record", "Html", nil)
+    tHtml.owner = "html"
+    tHtml.uid = fnv1a("html::Html")
+    append(tHtml.fields, new Field{name: "text", offset: 0, typ: tString, private: true})
+
+    tHtmlAttr = newType("record", "HtmlAttr", nil)
+    tHtmlAttr.owner = "html"
+    append(tHtmlAttr.fields, new Field{name: "text", offset: 0, typ: tString, private: true})
+
+    tHtmlAttrs = newType("record", "HtmlAttrs", nil)
+    tHtmlAttrs.owner = "html"
+    append(tHtmlAttrs.fields, new Field{name: "text", offset: 0, typ: tString, private: true})
+}
+
+// Descriptors are created on first use, so a program that never mentions a
+// template type emits exactly the same rodata and code as before 0.15.
+fn ensureTemplateDescs() {
+    let noPtrs = new []int(0)
+    let noStrs = new []int(0)
+    let textStr = new []int(0)
+    append(textStr, 0)
+    if tSqlNull.desc == 0 { tSqlNull.desc = descriptor(8, noPtrs, noStrs) }
+    if tSqlInt.desc == 0 { tSqlInt.desc = descriptor(8, noPtrs, noStrs) }
+    if tSqlBool.desc == 0 { tSqlBool.desc = descriptor(8, noPtrs, noStrs) }
+    if tSqlFloat.desc == 0 { tSqlFloat.desc = descriptor(8, noPtrs, noStrs) }
+    if tSqlStr.desc == 0 { tSqlStr.desc = descriptor(8, noPtrs, textStr) }
+    let bytesPtrs = new []int(0)
+    append(bytesPtrs, 0)
+    if tSqlBytes.desc == 0 { tSqlBytes.desc = descriptor(8, bytesPtrs, noStrs) }
+    if tSqlDec.desc == 0 { tSqlDec.desc = descriptor(8, bytesPtrs, noStrs) }
+    if tSql.desc == 0 {
+        let sqlPtrs = new []int(0)
+        append(sqlPtrs, 0)
+        append(sqlPtrs, 8)
+        tSql.desc = descriptor(16, sqlPtrs, noStrs)
+    }
+    if tHtml.desc == 0 { tHtml.desc = descriptor(8, noPtrs, textStr) }
+    if tHtmlAttr.desc == 0 { tHtmlAttr.desc = descriptor(8, noPtrs, textStr) }
+    if tHtmlAttrs.desc == 0 { tHtmlAttrs.desc = descriptor(8, noPtrs, textStr) }
 }
 
 // Result[base], made once per base type and cached in base.resultOf: the tag of an ok cell is this
@@ -3865,6 +4004,24 @@ fn lookup(name: string): ^Sym {
     if u != nil { return u }
     error("undeclared identifier '" + name + "' (declare before use; use a forward heading for mutual recursion)")
     return newSym("var", name, nil)
+}
+
+// A non-erroring name probe used by contextual syntax (sql.copy/html.copy):
+// a local, parameter, global or type shadows the helper. Imported module aliases
+// are deliberately not consulted: Obo module members use '::', so an alias named
+// sql/html does not shadow the dot helper.
+fn lookupMaybe(name: string): ?^Sym {
+    var i = len(blocks) - 1
+    while i >= 0 {
+        let s = findSym(blocks[i].syms, name)
+        if s != nil { return s }
+        i -= 1
+    }
+    let g = findSym(curModule.globals, name)
+    if g != nil { return g }
+    let u = findSym(universe, name)
+    if u != nil { return u }
+    return nil
 }
 
 fn declare(s: ^Sym): ^Sym {
@@ -5609,6 +5766,30 @@ fn typeAlias(name: string, line: int, isPub: bool, t: ^Type)
 fn typeDecl(isPub: bool) {
     let line = tline
     let name = ident()
+    // obo/lib/html.obx keeps its ordinary source declaration so an older seed can
+    // still compile it; in 0.15 this declaration defines the compiler-known Html
+    // type instead of a second, incompatible record.
+    if name == "Html" && curModuleName == "html" && sym == T_ASSIGN {
+        next()
+        if sym != T_REF { errorAt("type 'Html' in module 'html' must be a ref record", line, 1) }
+        next()
+        expect(T_RECORD, "")
+        truncate(tHtml.fields, 0)
+        fieldList(tHtml, false)
+        if !isPub {
+            errorAt("module 'html' must export Html", line, 1)
+        }
+        if len(tHtml.fields) != 1 || tHtml.fields[0].name != "text" ||
+           tHtml.fields[0].typ != tString || !tHtml.fields[0].private || tHtml.fields[0].offset != 0 {
+            errorAt("module 'html' must define Html as a ref record with exactly one private string field 'text'", line, 1)
+        }
+        tHtml.incomplete = false
+        let hs = newSym("type", "Html", tHtml)
+        hs.line = line
+        declare(hs)
+        if isPub { hs.exported = true }
+        return
+    }
     if reservedTypeName(name) { errorAt("cannot declare a type named '" + name + "'", line, 1) }
     let prior = findSym(curModule.globals, name)
     var fwd: ?^Type = nil
@@ -7244,8 +7425,761 @@ fn nativeCall(): Item {
     return makeReg(tInt, r)
 }
 
+// ======================================================= template literals (0.15)
+//
+// sql`...` / sqlRaw`...` / html`...` / htmlRaw`...` are compiler-known tags.
+// The scanner emits T_BACKTICK and leaves pos after it; the template parser then
+// reads raw chunks directly from src and re-enters the token scanner at each
+// ${...} hole. A closing backtick resumes ordinary token scanning.
+
+var tplHoleLine = 0
+var tplHoleCol = 0
+
+// Reads raw template text from pos to the closing backtick (returns 0) or to a
+// hole (returns 1). The only escapes are \` and \${; every other byte, including
+// a newline and a bare backslash, is literal.
+fn scanTemplateChunk(mut chunk: &[]byte, sqlText: bool): int {
+    while pos < len(src) {
+        let c = src[pos]
+        if c == '`' {
+            advance()
+            return 0
+        }
+        if c == '$' && pos + 1 < len(src) && src[pos + 1] == '{' {
+            advance()
+            advance()
+            return 1
+        }
+        if sqlText && c == '$' && pos + 1 < len(src) && isDigit(src[pos + 1]) {
+            errorAt("sql template literal text cannot contain '$' followed by a digit; $n is reserved for bound parameters", line, col)
+        }
+        if c == '\\' && pos + 1 < len(src) {
+            if src[pos + 1] == '`' {
+                advance()
+                advance()
+                append(chunk, '`')
+                continue
+            }
+            if src[pos + 1] == '$' && pos + 2 < len(src) && src[pos + 2] == '{' {
+                advance()
+                advance()
+                advance()
+                append(chunk, '$')
+                append(chunk, '{')
+                continue
+            }
+        }
+        append(chunk, byte(c))
+        advance()
+    }
+    return -1
+}
+
+// ---- the HTML literal state machine, local to the compiler
+const HS_DATA = 0
+const HS_TAG_NAME = 1
+const HS_TAG_BODY = 2
+const HS_ATTR_NAME = 3
+const HS_AFTER_ATTR = 4
+const HS_BEFORE_VALUE = 5
+const HS_VALUE_DQ = 6
+const HS_VALUE_SQ = 7
+const HS_VALUE_UNQ = 8
+const HS_COMMENT = 9
+const HS_RAW_SCRIPT = 10
+const HS_RAW_STYLE = 11
+const HS_CLOSE_NAME = 12
+const HS_DOCTYPE = 13
+
+var hsState = HS_DATA
+var hsClosing = false
+var hsAttrUrl = false
+var hsAttrDanger = false
+var hsTag = new []byte(0)
+var hsAttr = new []byte(0)
+var hsRaw = ""
+var hsUrlLit = new []byte(0)
+var hsUrlHoles = 0
+var hsUrlAtStart = false
+var hsUrlLine = 0
+var hsUrlCol = 0
+
+fn hsLower(b: int): int {
+    if b >= 'A' && b <= 'Z' { return b + 32 }
+    return b
+}
+
+// HTML whitespace: space, tab, LF, FF and CR. Form feed (0x0C) separates a
+// tag/attribute name from its value in a browser, so the local state machine
+// must treat it as whitespace everywhere.
+fn hsSpace(b: int): bool {
+    return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == 0x0C
+}
+
+fn hsBytesAre(a: &[]byte, name: string): bool {
+    if len(a) != len(name) { return false }
+    for i in 0..len(a) {
+        if int(a[i]) != int(name[i]) { return false }
+    }
+    return true
+}
+
+fn hsIsUrlName(): bool {
+    if hsBytesAre(&hsAttr, "href") || hsBytesAre(&hsAttr, "src") ||
+       hsBytesAre(&hsAttr, "action") || hsBytesAre(&hsAttr, "formaction") ||
+       hsBytesAre(&hsAttr, "cite") || hsBytesAre(&hsAttr, "poster") ||
+       hsBytesAre(&hsAttr, "background") || hsBytesAre(&hsAttr, "longdesc") ||
+       hsBytesAre(&hsAttr, "usemap") || hsBytesAre(&hsAttr, "data") ||
+       hsBytesAre(&hsAttr, "manifest") || hsBytesAre(&hsAttr, "ping") ||
+       hsBytesAre(&hsAttr, "profile") || hsBytesAre(&hsAttr, "xlink:href") { return true }
+    return false
+}
+
+// srcdoc, style and on* are script/CSS/navigation contexts, not ordinary
+// attributes: a data hole there would be executable content.
+fn hsIsDangerName(): bool {
+    if hsBytesAre(&hsAttr, "srcdoc") || hsBytesAre(&hsAttr, "style") { return true }
+    if len(hsAttr) >= 2 && int(hsAttr[0]) == int('o') && int(hsAttr[1]) == int('n') { return true }
+    return false
+}
+
+fn hsUrlReset() {
+    truncate(hsUrlLit, 0)
+    hsUrlHoles = 0
+    hsUrlAtStart = false
+    hsUrlLine = line
+    hsUrlCol = col
+}
+
+fn hsSchemeByte(b: int): bool {
+    return isLetter(b) || isDigit(b) || b == '+' || b == '-' || b == '.'
+}
+
+fn hsSchemeIs(a: &[]byte, end: int, name: string): bool {
+    if end != len(name) { return false }
+    for i in 0..end {
+        var b = int(a[i])
+        if b >= 'A' && b <= 'Z' { b = b + 32 }
+        if b != int(name[i]) { return false }
+    }
+    return true
+}
+
+fn hsSchemeAllowed(a: &[]byte, end: int): bool {
+    if end <= 0 { return false }
+    if !isLetter(int(a[0])) { return false }
+    for i in 1..end {
+        if !hsSchemeByte(int(a[i])) { return false }
+    }
+    return hsSchemeIs(a, end, "http") || hsSchemeIs(a, end, "https") ||
+           hsSchemeIs(a, end, "mailto")
+}
+
+// The literal text before a URL hole: empty is a hole at the start; a scheme
+// colon must name an allowed scheme; a /, ? or # begins a relative reference.
+// A bare first segment is rejected because a following hole could complete it
+// into a scheme.
+fn hsUrlPrefixOk(): bool {
+    var i = 0
+    while i < len(hsUrlLit) {
+        let b = int(hsUrlLit[i])
+        if b == ':' { return hsSchemeAllowed(&hsUrlLit, i) }
+        if b == '/' || b == '?' || b == '#' { return true }
+        i += 1
+    }
+    return false
+}
+
+// A literal ampersand next to a URL hole may start an HTML character
+// reference (for example &#58;), which the browser decodes before URL parsing.
+// Reject it instead of guessing: build and validate the whole URL string.
+fn hsUrlHasAmp(): bool {
+    for i in 0..len(hsUrlLit) {
+        if int(hsUrlLit[i]) == int('&') { return true }
+    }
+    return false
+}
+
+// A hole at the start can only be followed by path/query/fragment text; a
+// scheme colon after it would join the hole's text into a scheme.
+fn hsUrlSuffixUnsafe(): bool {
+    var i = 0
+    while i < len(hsUrlLit) {
+        let b = int(hsUrlLit[i])
+        if b == ':' { return true }
+        if b == '/' || b == '?' || b == '#' { return false }
+        i += 1
+    }
+    return false
+}
+
+fn hsStartTag(closing: bool) {
+    hsState = HS_TAG_NAME
+    hsClosing = closing
+    truncate(hsTag, 0)
+    truncate(hsAttr, 0)
+    hsAttrUrl = false
+    hsAttrDanger = false
+}
+
+fn hsEndTag() {
+    if hsClosing {
+        hsState = HS_DATA
+        return
+    }
+    if hsBytesAre(&hsTag, "script") {
+        hsState = HS_RAW_SCRIPT
+        hsRaw = "script"
+    } else if hsBytesAre(&hsTag, "style") {
+        hsState = HS_RAW_STYLE
+        hsRaw = "style"
+    } else {
+        hsState = HS_DATA
+    }
+}
+
+fn htmlLiteral(chunk: &[]byte) {
+    var i = 0
+    while i < len(chunk) {
+        let b = int(chunk[i])
+        if hsState == HS_DATA {
+            if b == '<' {
+                if i + 1 >= len(chunk) {
+                    hsStartTag(false)
+                    i += 1
+                    continue
+                }
+                if i + 3 < len(chunk) && chunk[i + 1] == '!' && chunk[i + 2] == '-' && chunk[i + 3] == '-' {
+                    hsState = HS_COMMENT
+                    i += 4
+                    continue
+                }
+                if i + 1 < len(chunk) && chunk[i + 1] == '!' {
+                    hsState = HS_DOCTYPE
+                    i += 2
+                    continue
+                }
+                if i + 1 < len(chunk) && chunk[i + 1] == '/' {
+                    hsStartTag(true)
+                    i += 2
+                    continue
+                }
+                if i + 1 < len(chunk) && (isLetter(hsLower(int(chunk[i + 1]))) || chunk[i + 1] == ':') {
+                    hsStartTag(false)
+                    i += 1
+                    continue
+                }
+            }
+            i += 1
+        } else if hsState == HS_TAG_NAME || hsState == HS_CLOSE_NAME {
+            if isLetter(hsLower(b)) || isDigit(b) || b == '-' || b == ':' {
+                append(hsTag, byte(hsLower(b)))
+                i += 1
+            } else if hsSpace(b) {
+                hsState = HS_TAG_BODY
+                i += 1
+            } else if b == '>' {
+                hsEndTag()
+                i += 1
+            } else if b == '/' {
+                if hsState == HS_CLOSE_NAME { hsState = HS_TAG_BODY } else { hsState = HS_TAG_BODY }
+                i += 1
+            } else {
+                i += 1
+            }
+        } else if hsState == HS_TAG_BODY {
+            if b == '>' {
+                hsEndTag()
+                i += 1
+            } else if b == '/' {
+                i += 1
+            } else if hsSpace(b) {
+                i += 1
+            } else if isLetter(hsLower(b)) || b == ':' {
+                hsState = HS_ATTR_NAME
+                hsAttrUrl = false
+                hsAttrDanger = false
+                truncate(hsAttr, 0)
+                append(hsAttr, byte(hsLower(b)))
+                i += 1
+            } else {
+                i += 1
+            }
+        } else if hsState == HS_ATTR_NAME {
+            if b == '=' {
+                hsAttrUrl = hsIsUrlName()
+                hsAttrDanger = hsIsDangerName()
+                hsState = HS_BEFORE_VALUE
+                i += 1
+            } else if hsSpace(b) {
+                hsState = HS_AFTER_ATTR
+                i += 1
+            } else if b == '>' {
+                hsEndTag()
+                i += 1
+            } else if b == '/' {
+                hsState = HS_TAG_BODY
+                i += 1
+            } else {
+                append(hsAttr, byte(hsLower(b)))
+                i += 1
+            }
+        } else if hsState == HS_AFTER_ATTR {
+            if b == '=' {
+                hsAttrUrl = hsIsUrlName()
+                hsAttrDanger = hsIsDangerName()
+                hsState = HS_BEFORE_VALUE
+                i += 1
+            } else if hsSpace(b) {
+                i += 1
+            } else if b == '>' {
+                hsEndTag()
+                i += 1
+            } else if isLetter(hsLower(b)) || b == ':' {
+                hsState = HS_ATTR_NAME
+                hsAttrUrl = false
+                hsAttrDanger = false
+                truncate(hsAttr, 0)
+                append(hsAttr, byte(hsLower(b)))
+                i += 1
+            } else {
+                i += 1
+            }
+        } else if hsState == HS_BEFORE_VALUE {
+            if hsSpace(b) {
+                i += 1
+            } else if b == '"' {
+                hsState = HS_VALUE_DQ
+                if hsAttrUrl { hsUrlReset() }
+                i += 1
+            } else if b == '\'' {
+                hsState = HS_VALUE_SQ
+                if hsAttrUrl { hsUrlReset() }
+                i += 1
+            } else if b == '>' {
+                hsEndTag()
+                i += 1
+            } else {
+                hsState = HS_VALUE_UNQ
+                i += 1
+            }
+        } else if hsState == HS_VALUE_DQ || hsState == HS_VALUE_SQ {
+            var quote = int('"')
+            if hsState == HS_VALUE_SQ { quote = int('\'') }
+            if b == quote {
+                if hsAttrUrl && hsUrlHoles > 0 && hsUrlHasAmp() {
+                    errorAt("a URL attribute with a hole cannot contain a literal '&'; build and validate the URL string first", hsUrlLine, hsUrlCol)
+                }
+                if hsAttrUrl && hsUrlHoles > 0 && hsUrlAtStart && hsUrlSuffixUnsafe() {
+                    errorAt("a URL attribute's first hole must not be followed by a scheme colon; build and validate the URL string first", hsUrlLine, hsUrlCol)
+                }
+                hsState = HS_TAG_BODY
+            } else if hsAttrUrl {
+                append(hsUrlLit, byte(b))
+            }
+            i += 1
+        } else if hsState == HS_VALUE_UNQ {
+            if hsSpace(b) {
+                hsState = HS_TAG_BODY
+            } else if b == '>' {
+                hsEndTag()
+            }
+            i += 1
+        } else if hsState == HS_COMMENT {
+            if b == '-' && i + 2 < len(chunk) && chunk[i + 1] == '-' && chunk[i + 2] == '>' {
+                hsState = HS_DATA
+                i += 3
+            } else {
+                i += 1
+            }
+        } else if hsState == HS_DOCTYPE {
+            if b == '>' { hsState = HS_DATA }
+            i += 1
+        } else {
+            // raw-text state: look for the matching case-insensitive closing tag
+            let n = len(hsRaw)
+            var closeMatch = false
+            if b == '<' && i + 2 + n < len(chunk) && chunk[i + 1] == '/' {
+                closeMatch = true
+                for j in 0..n {
+                    if hsLower(int(chunk[i + 2 + j])) != int(hsRaw[j]) { closeMatch = false }
+                }
+                if closeMatch {
+                    let d = int(chunk[i + 2 + n])
+                    if !(hsSpace(d) || d == '/' || d == '>') {
+                        closeMatch = false
+                    }
+                }
+            }
+            if closeMatch {
+                hsState = HS_CLOSE_NAME
+                hsClosing = true
+                truncate(hsTag, 0)
+                for j in 0..n { append(hsTag, byte(hsRaw[j])) }
+                i += 2 + n
+            } else {
+                i += 1
+            }
+        }
+    }
+}
+
+fn copyBytes(a: &[]byte): []byte {
+    let out = new []byte(0)
+    for i in 0..len(a) { append(out, a[i]) }
+    return out
+}
+
+fn templateBuilder(t: ^Type, slot: int): ^Sym {
+    let s = newLocal("", t, "var")
+    let init = rtCall1(slot, makeConst(tInt, t.desc), t)
+    store(localItem(s, t), init)
+    addOwnedLocal(s)
+    return s
+}
+
+fn finishTemplateLocal(s: ^Sym, t: ^Type): Item {
+    let x = localItem(s, t)
+    let r = alloc()
+    opMem(0x8B, r, memOf(x), true, false)
+    s.moved = true
+    return makeReg(t, r)
+}
+
+fn templateHoleError(line: int, col: int) {
+    errorAt("expected '}' to close the template hole", line, col)
+}
+
+fn sqlTemplateHole(s: ^Sym, h: Item, line: int, col: int) {
+    let t = h.typ
+    let k = t.kind
+    var use = copyItem(h)
+    if isOwned(t) { consume(h) }
+    if k == "string" {
+        rtCall4(RT_TPL_SQL_ARG, localItem(s, tSql), makeConst(tInt, 4), copyItem(use),
+                makeConst(tInt, tSqlStr.desc), tVoid)
+    } else if k == "int" || k == "byte" {
+        rtCall4(RT_TPL_SQL_ARG, localItem(s, tSql), makeConst(tInt, 1), asReg(copyItem(use)),
+                makeConst(tInt, tSqlInt.desc), tVoid)
+    } else if k == "bool" {
+        rtCall4(RT_TPL_SQL_ARG, localItem(s, tSql), makeConst(tInt, 2), asReg(copyItem(use)),
+                makeConst(tInt, tSqlBool.desc), tVoid)
+    } else if k == "float" {
+        rtCall4(RT_TPL_SQL_ARG, localItem(s, tSql), makeConst(tInt, 3), copyItem(use),
+                makeConst(tInt, tSqlFloat.desc), tVoid)
+    } else if k == "decimal" {
+        let ud = copyItem(use)
+        rtCall4(RT_TPL_SQL_ARG, localItem(s, tSql), makeConst(tInt, 6), decPtr(ud),
+                makeConst(tInt, tSqlDec.desc), tVoid)
+    } else if k == "array" && baseOf(t) == tByte {
+        rtCall4(RT_TPL_SQL_ARG, localItem(s, tSql), makeConst(tInt, 5), copyItem(use),
+                makeConst(tInt, tSqlBytes.desc), tVoid)
+    } else if t == tSqlArg {
+        rtCall4(RT_TPL_SQL_ARG, localItem(s, tSql), makeConst(tInt, 7), copyItem(use),
+                makeConst(tInt, 0), tVoid)
+    } else if t == tSql {
+        rtCall2(RT_TPL_SQL_SPLICE, localItem(s, tSql), copyItem(use), tVoid)
+    } else if k == "array" && baseOf(t) == tSql {
+        errorAt("a []Sql hole is not implicit; use sqlJoin(parts, sep) or sqlWhere(parts)", line, col)
+    } else if isHtmlType(t) {
+        errorAt("Html is not a SQL value or fragment; only Sql splices into a sql template", line, col)
+    } else {
+        errorAt("sql template cannot bind " + tname(t) +
+                "; supported holes are int, byte, bool, string, float, []byte, decimal, SqlArg and Sql fragments", line, col)
+    }
+}
+
+fn htmlTemplateHole(s: ^Sym, h: Item, ctx: int, line: int, col: int) {
+    let t = h.typ
+    let k = t.kind
+    var use = copyItem(h)
+    if isOwned(t) { consume(h) }
+    if isHtmlType(t) {
+        if ctx != 0 {
+            errorAt("an " + tname(t) + " fragment is not allowed in an attribute value; trusted markup can only be spliced as text content", line, col)
+        }
+        if t != tHtml {
+            errorAt(tname(t) + " is an attribute fragment, not HTML content; v1 has no attribute hole", line, col)
+        }
+        rtCall2(RT_TPL_HTML_SPLICE, localItem(s, tHtml), copyItem(use), tVoid)
+        return
+    }
+    if k == "array" && baseOf(t) == tHtml {
+        if ctx != 0 {
+            errorAt("a []Html fragment is not allowed in an attribute value; concatenate it as text content", line, col)
+        }
+        rtCall2(RT_TPL_HTML_JOIN, localItem(s, tHtml), copyItem(use), tVoid)
+        return
+    }
+    if ctx == 2 && k != "string" {
+        errorAt("a URL hole needs a string, not " + tname(t), line, col)
+    }
+    if k == "string" {
+        rtCall4(RT_TPL_HTML_VALUE, localItem(s, tHtml), makeConst(tInt, 0), copyItem(use),
+                makeConst(tInt, ctx), tVoid)
+    } else if k == "int" || k == "byte" {
+        rtCall4(RT_TPL_HTML_VALUE, localItem(s, tHtml), makeConst(tInt, 1), asReg(copyItem(use)),
+                makeConst(tInt, ctx), tVoid)
+    } else if k == "bool" {
+        rtCall4(RT_TPL_HTML_VALUE, localItem(s, tHtml), makeConst(tInt, 2), asReg(copyItem(use)),
+                makeConst(tInt, ctx), tVoid)
+    } else if k == "float" {
+        rtCall4(RT_TPL_HTML_VALUE, localItem(s, tHtml), makeConst(tInt, 3), copyItem(use),
+                makeConst(tInt, ctx), tVoid)
+    } else if k == "decimal" {
+        let ud = copyItem(use)
+        rtCall4(RT_TPL_HTML_VALUE, localItem(s, tHtml), makeConst(tInt, 4), decPtr(ud),
+                makeConst(tInt, ctx), tVoid)
+    } else {
+        errorAt("html template cannot insert " + tname(t) +
+                "; supported holes are int, byte, bool, string, float, decimal, Html and []Html", line, col)
+    }
+}
+
+fn templateExpr(tag: string): Item {
+    let startLine = tline
+    let startCol = tcol
+    if curFn == nil {
+        errorAt("a template cannot be built in a global initializer; build it in a function", startLine, startCol)
+    }
+    ensureTemplateDescs()
+    let isSql = tag == "sql" || tag == "sqlRaw"
+    let isRaw = tag == "sqlRaw" || tag == "htmlRaw"
+    var t = tSql
+    var slot = RT_TPL_SQL_NEW
+    if !isSql {
+        t = tHtml
+        slot = RT_TPL_HTML_NEW
+    }
+    // save the outer HTML state: a nested html template is independent and restores it
+    let saveState = hsState
+    let saveClosing = hsClosing
+    let saveUrl = hsAttrUrl
+    let saveDanger = hsAttrDanger
+    let saveUrlLit = copyBytes(&hsUrlLit)
+    let saveUrlHoles = hsUrlHoles
+    let saveUrlAtStart = hsUrlAtStart
+    let saveUrlLine = hsUrlLine
+    let saveUrlCol = hsUrlCol
+    let saveTag = copyBytes(&hsTag)
+    let saveAttr = copyBytes(&hsAttr)
+    let saveRaw = hsRaw
+    hsState = HS_DATA
+    hsClosing = false
+    hsAttrUrl = false
+    hsAttrDanger = false
+    truncate(hsTag, 0)
+    truncate(hsAttr, 0)
+    truncate(hsUrlLit, 0)
+    hsUrlHoles = 0
+    hsUrlAtStart = false
+    hsRaw = ""
+
+    let s = templateBuilder(t, slot)
+    let chunk = new []byte(0)
+    var done = false
+    while !done {
+        truncate(chunk, 0)
+        let boundary = scanTemplateChunk(chunk, isSql)
+        if boundary < 0 {
+            errorAt("unterminated " + tag + " template literal", startLine, startCol)
+        }
+        let text = string(chunk)
+        if isSql {
+            let lit = makeConst(tString, stringLit(text))
+            rtCall2(RT_TPL_SQL_TEXT, localItem(s, tSql), lit, tVoid)
+        } else {
+            htmlLiteral(&chunk)
+            let lit = makeConst(tString, stringLit(text))
+            rtCall2(RT_TPL_HTML_CHUNK, localItem(s, tHtml), lit, tVoid)
+        }
+        if boundary == 0 {
+            done = true
+        } else {
+            tplHoleLine = line
+            tplHoleCol = col
+            if isRaw {
+                errorAt(tag + " takes a literal with no holes", tplHoleLine, tplHoleCol)
+            }
+            last = -1                       // no semicolon insertion inside a hole
+            next()
+            tplHoleDepth += 1
+            var h = nestedExpr()
+            tplHoleDepth -= 1
+            if sym != T_RBRACE { templateHoleError(tplHoleLine, tplHoleCol) }
+            if isSql {
+                sqlTemplateHole(s, h, tplHoleLine, tplHoleCol)
+            } else {
+                var ctx = 0
+                if hsState == HS_VALUE_DQ || hsState == HS_VALUE_SQ {
+                    if hsAttrDanger {
+                        errorAt("html template: a hole is not allowed in a " + string(hsAttr) +
+                                " attribute; use a typed encoder", tplHoleLine, tplHoleCol)
+                    }
+                    if hsAttrUrl {
+                        if hsUrlHoles > 0 {
+                            errorAt("a URL attribute may contain only one hole; build and validate the URL string first", tplHoleLine, tplHoleCol)
+                        }
+                        if len(hsUrlLit) == 0 {
+                            hsUrlAtStart = true
+                        } else if !hsUrlPrefixOk() {
+                            errorAt("a URL hole must be at the start or after a validated scheme or relative path; build the URL string first", tplHoleLine, tplHoleCol)
+                        }
+                        hsUrlHoles += 1
+                        ctx = 2
+                    } else {
+                        ctx = 1
+                    }
+                } else if hsState == HS_DATA {
+                    ctx = 0
+                } else if hsState == HS_VALUE_UNQ || hsState == HS_BEFORE_VALUE {
+                    errorAt("html template: a hole is not allowed in an unquoted attribute value; quote the attribute", tplHoleLine, tplHoleCol)
+                } else if hsState == HS_COMMENT {
+                    errorAt("html template: a hole is not allowed in an HTML comment", tplHoleLine, tplHoleCol)
+                } else if hsState == HS_RAW_SCRIPT || hsState == HS_RAW_STYLE {
+                    errorAt("html template: a hole is not allowed in a <" + hsRaw + "> body; use a typed encoder", tplHoleLine, tplHoleCol)
+                } else if hsState == HS_ATTR_NAME || hsState == HS_AFTER_ATTR || hsState == HS_TAG_BODY {
+                    errorAt("html template: a hole is not allowed in an attribute name", tplHoleLine, tplHoleCol)
+                } else if hsState == HS_TAG_NAME || hsState == HS_CLOSE_NAME {
+                    errorAt("html template: a hole is not allowed in a tag name", tplHoleLine, tplHoleCol)
+                } else if hsState == HS_DOCTYPE {
+                    errorAt("html template: a hole is not allowed in a doctype", tplHoleLine, tplHoleCol)
+                } else {
+                    errorAt("html template: a hole is not allowed in this tag context", tplHoleLine, tplHoleCol)
+                }
+                htmlTemplateHole(s, h, ctx, tplHoleLine, tplHoleCol)
+            }
+        }
+    }
+    hsState = saveState
+    hsClosing = saveClosing
+    hsAttrUrl = saveUrl
+    hsAttrDanger = saveDanger
+    truncate(hsUrlLit, 0)
+    for b in saveUrlLit { append(hsUrlLit, b) }
+    hsUrlHoles = saveUrlHoles
+    hsUrlAtStart = saveUrlAtStart
+    hsUrlLine = saveUrlLine
+    hsUrlCol = saveUrlCol
+    truncate(hsTag, 0)
+    for b in saveTag { append(hsTag, b) }
+    truncate(hsAttr, 0)
+    for b in saveAttr { append(hsAttr, b) }
+    hsRaw = saveRaw
+    last = T_BACKTICK
+    next()
+    return finishTemplateLocal(s, t)
+}
+
+fn sqlCopyExpr(): Item {
+    let line = tline
+    let col = tcol
+    ensureTemplateDescs()
+    next()
+    if sym != T_IDENT { errorAt("expected 'copy' after 'sql.'", line, col) }
+    let member = ident()
+    if member != "copy" {
+        errorAt("unknown sql helper '" + member + "'; v1 has sql.copy", line, col)
+    }
+    expect(T_LPAREN, "")
+    let h = nestedExpr()
+    expect(T_RPAREN, "")
+    if h.typ != tSql { errorAt("sql.copy needs a Sql fragment, not " + tname(h.typ), line, col) }
+    noTemp(h)
+    return rtCall2(RT_TPL_SQL_COPY, h, makeConst(tInt, tSql.desc), tSql)
+}
+
+fn htmlCopyExpr(): Item {
+    let line = tline
+    let col = tcol
+    ensureTemplateDescs()
+    next()
+    if sym != T_IDENT { errorAt("expected 'copy' after 'html.'", line, col) }
+    let member = ident()
+    if member != "copy" {
+        errorAt("unknown html helper '" + member + "'; v1 has html.copy", line, col)
+    }
+    expect(T_LPAREN, "")
+    let h = nestedExpr()
+    expect(T_RPAREN, "")
+    if h.typ != tHtml { errorAt("html.copy needs an Html fragment, not " + tname(h.typ), line, col) }
+    noTemp(h)
+    return rtCall2(RT_TPL_HTML_COPY, h, makeConst(tInt, tHtml.desc), tHtml)
+}
+
+// sqlJoin/sqlWhere borrow the element array while the separator expression
+// runs; require a whole local so no later expression can free or replace it.
+fn requireTemplateArray(x: &Item, what: string) {
+    let s = x.sym
+    if x.mode != "mem" || s == nil || s.storage != "local" || x.borrowed || x.deref {
+        error(what + " needs a local []Sql array; store it in a variable first")
+    }
+}
+
+fn sqlJoinBuiltin(): Item {
+    ensureTemplateDescs()
+    expect(T_LPAREN, "")
+    let parts = nestedExpr()
+    if parts.typ.kind != "array" || baseOf(parts.typ) != tSql {
+        error("sqlJoin needs a []Sql, not " + tname(parts.typ))
+    }
+    noTemp(parts)
+    requireTemplateArray(parts, "sqlJoin")
+    let ps = parts.sym
+    let t0 = heldTouch(ps)
+    let hp = heldPush(ps, false, nil, nil, "", "")
+    expect(T_COMMA, "")
+    let sepLine = tline
+    let sepCol = tcol
+    let sep = nestedExpr()
+    if sep.typ != tSql { error("sqlJoin needs a Sql separator, not " + tname(sep.typ)) }
+    if heldLost(ps, t0) || heldHitAt(hp) {
+        errorAt("sqlJoin's separator may move or free the []Sql array; compute the separator before the call", sepLine, sepCol)
+    }
+    heldPop(hp)
+    expect(T_RPAREN, "")
+    consume(sep)
+    return rtCall3(RT_TPL_SQL_JOIN, parts, sep, makeConst(tInt, tSql.desc), tSql)
+}
+
+fn sqlWhereBuiltin(): Item {
+    ensureTemplateDescs()
+    expect(T_LPAREN, "")
+    let parts = nestedExpr()
+    if parts.typ.kind != "array" || baseOf(parts.typ) != tSql {
+        error("sqlWhere needs a []Sql, not " + tname(parts.typ))
+    }
+    noTemp(parts)
+    requireTemplateArray(parts, "sqlWhere")
+    expect(T_RPAREN, "")
+    return rtCall2(RT_TPL_SQL_WHERE, parts, makeConst(tInt, tSql.desc), tSql)
+}
+
+fn sqlNullBuiltin(): Item {
+    ensureTemplateDescs()
+    expect(T_LPAREN, "")
+    expect(T_RPAREN, "")
+    return rtCall1(RT_TPL_SQL_NULL, makeConst(tInt, tSqlNull.desc), tSqlArg)
+}
+
+fn sqlBytesBuiltin(): Item {
+    ensureTemplateDescs()
+    expect(T_LPAREN, "")
+    let b = nestedExpr()
+    if b.typ.kind != "array" || baseOf(b.typ) != tByte {
+        error("sqlBytes needs a []byte, not " + tname(b.typ))
+    }
+    noTemp(b)
+    expect(T_RPAREN, "")
+    return rtCall2(RT_TPL_SQL_BYTES, b, makeConst(tInt, tSqlBytes.desc), tSqlArg)
+}
+
 fn builtin(name: string): Item {
     if name == "__cinterop" { return nativeCall() }
+    if name == "sqlJoin" { return sqlJoinBuiltin() }
+    if name == "sqlWhere" { return sqlWhereBuiltin() }
+    if name == "sqlNull" { return sqlNullBuiltin() }
+    if name == "sqlBytes" { return sqlBytesBuiltin() }
     if name == "ok" {
         // ok(v): Result[T] where T is v's type. v is moved into the cell, so a reference or an
         // error value (which has no payload type) cannot be its value.
@@ -7911,6 +8845,14 @@ fn designatorT(target: bool): Item {
     let uline = tline
     let ucol = tcol
     let name = ident()
+    if sym == T_BACKTICK {
+        if name == "sql" || name == "sqlRaw" || name == "html" || name == "htmlRaw" {
+            return templateExpr(name)
+        }
+        error("unknown template tag '" + name + "'; v1 has sql, sqlRaw, html and htmlRaw")
+    }
+    if name == "sql" && sym == T_DOT && lookupMaybe(name) == nil { return sqlCopyExpr() }
+    if name == "html" && sym == T_DOT && lookupMaybe(name) == nil { return htmlCopyExpr() }
     if name == "decimal" && sym == T_COLONCOLON {
         next()
         if sym != T_IDENT { error("expected a decimal operation after 'decimal::'") }
@@ -8201,6 +9143,11 @@ fn newExpr(): Item {
     if s.kind == "type" && symType(s).incomplete { error("'" + qname + "' is declared but not yet defined") }
     if s.kind != "type" || symType(s).kind != "record" { error("'" + qname + "' is not a record type") }
     let t = symType(s)
+    if t == tSql || t == tHtml || t == tHtmlAttr || t == tHtmlAttrs {
+        ensureTemplateDescs()
+    }
+    let par = t.parent
+    if par != nil && par == tSqlArg { ensureTemplateDescs() }
     if t.owner != "" && t.owner != curModuleName && hasPrivateFields(t) {
         error("cannot construct '" + tname(t) + "' outside its module: it has private fields; add a constructor function in module '" +
               t.owner + "'")
@@ -10568,6 +11515,7 @@ fn matchStat(): bool {
     if t.kind != "closed" && t.kind != "opt" && t.kind != "result" && !t.incomplete {
         errorAt("match needs an int, byte, closed type or Result, not " + tname(t), line, col)
     }
+    if t == tSqlArg { ensureTemplateDescs() }
     let xs = x.sym
     if x.mode != "mem" || xs == nil || (xs.kind != "var" && xs.kind != "let") || xs.storage != "local" {
         errorAt("match needs a local variable or parameter", line, col)
@@ -11330,6 +12278,10 @@ fn fnBody(f: ^Sym, name: string, ret: ^Type, params: &[]Param, homes: bool): boo
 // releases the enclosing function's state: the enclosing LamCtx restores it, and the hidden symbol,
 // its FnRec and the island's argument holders stay in the shared arenas (the safe default policy).
 fn lambdaBody(f: ^Sym, ret: ^Type, params: &[]Param, caps: &[]LambdaCap) {
+    // A lambda body has ordinary statement boundaries even when the literal is
+    // syntactically inside a template hole.
+    let savedHoleDepth = tplHoleDepth
+    tplHoleDepth = 0
     homeBits = 0
     setFree(0)
     pendLine = 0
@@ -11394,6 +12346,7 @@ fn lambdaBody(f: ^Sym, ret: ^Type, params: &[]Param, caps: &[]LambdaCap) {
     expect(T_LBRACE, "")
     openBlock()
     let term = statSeq()
+    tplHoleDepth = savedHoleDepth
     expect(T_RBRACE, "")
     if !term && ret != tVoid { error("a lambda must return a value on every path") }
     closeBlock(term)
@@ -12629,6 +13582,10 @@ fn appQuoted(mut b: &[]byte, s: string) {
 // module; Module::Name for a foreign one. Alias names are never emitted: the underlying
 // type is, so layout never depends on an alias.
 fn appTypeExpr(mut b: &[]byte, t: ^Type, modName: string) {
+    if isHtmlType(t) {
+        appStr(b, t.name)
+        return
+    }
     let k = t.kind
     if k == "fn" {
         appStr(b, "fn(")
@@ -13175,6 +14132,7 @@ fn symWord(w: string) {
 }
 
 fn symTypeText(t: ^Type): string {
+    if isHtmlType(t) { return t.name }
     if t.kind == "fn" {
         var s = "fn("
         for i in 0..fnArity(t) {
@@ -13267,6 +14225,12 @@ fn symFinishTypeName(name: string, nline: int, ncol: int): ^Type {
     if name == "byte" { return tByte }
     if name == "bool" { return tBool }
     if name == "string" { return tString }
+    // compiler-known template-domain types are in the universe, not a module export
+    if name == "Sql" { return tSql }
+    if name == "SqlArg" { return tSqlArg }
+    if name == "Html" { return tHtml }
+    if name == "HtmlAttr" { return tHtmlAttr }
+    if name == "HtmlAttrs" { return tHtmlAttrs }
     if name == "Result" {
         if sym != T_LBRACK { error("Result needs a type: write Result[T]") }
         next()
@@ -13734,8 +14698,20 @@ fn symTypeDecl(mode: int) {
         append(symShells, name)
         if mode == 1 {
             let key = keyOf(symCurMod.name, name)
-            if typeAtKey(key) != nil { error("duplicate type key '" + key + "'") }
             if uid != fnv1a(key) { error("type '" + name + "' uid does not match its key") }
+            let have = typeAtKey(key)
+            if have != nil {
+                let hv = have
+                if isHtmlType(hv) && (key == "html::Html" || key == "html::HtmlAttr" || key == "html::HtmlAttrs") {
+                    let s = newSym("type", name, hv)
+                    s.owner = symCurMod.name
+                    s.exported = true
+                    s.line = nline
+                    append(symCurMod.globals, s)
+                    return
+                }
+                error("duplicate type key '" + key + "'")
+            }
             let t = newType("record", name, nil)
             t.owner = symCurMod.name
             t.uid = uid
@@ -13776,6 +14752,12 @@ fn symTypeDecl(mode: int) {
             if got == nil { error("unknown type key '" + keyOf(symCurMod.name, name) + "'") }
             var t: ^Type = tVoid
             if got != nil { t = got }
+            if isHtmlType(t) {
+                let tmpb = newType("record", "", nil)
+                symFieldList(tmpb, false)
+                symCompareFields(t, tmpb, "type '" + name + "'")
+                return
+            }
             if !t.incomplete { error("duplicate definition of type '" + name + "'") }
             t.kind = "record"
             symFieldList(t, false)

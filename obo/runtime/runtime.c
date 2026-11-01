@@ -1543,3 +1543,378 @@ void rt_exit(i64 code) { flush(); OBO_EXIT(code); for (;;); }
  * explicit; runtime.c remains the only translation unit the build and test
  * harnesses compile. */
 #include "decimal24_core.inc"
+
+/* =====================================================================
+ * Compiler-known template builders (0.15): slots 79..93
+ *
+ * SQL is {text: []string, params: []SqlArg}, alternating text and bound
+ * arguments.  Literal chunks are trusted SQL text; scalar holes become
+ * SqlArg variants, never interpolated text; a Sql hole is spliced (its text
+ * and parameters merge).  HTML is {text: string}; literal chunks are trusted
+ * markup, value holes are context-escaped here, and an Html hole is appended
+ * raw.  These helpers own and free only values the compiler transfers to them.
+ * ===================================================================== */
+
+static u64 tpl_mkstr(const char *s, u64 n) {
+    u64 p = alloc_raw(3, payload_add(8, n));
+    *(u64 *)p = n;
+    memcpy((char *)p + 8, s, n);
+    return p;
+}
+
+/* A generic deep clone of one owned runtime object: descriptor records (with
+ * owned and string fields), array headers and their elements.  Used to copy a
+ * SQL fragment before it is consumed and to copy/merge fragments in joins. */
+static u64 tpl_clone(u64 p) {
+    if (!p) return 0;
+    u64 h = p - GRAN, k = KIND(h);
+    u64 *body = (u64 *)p;
+    if (k == 3) return rt_str_inc(p);
+    if (k == 1 || k == 4) {
+        u64 size = ((u64 *)h)[1] & ~(GRAN - 1);
+        u64 q = alloc_raw(k, size - GRAN);
+        memcpy((char *)q, body, size - GRAN);
+        return q;
+    }
+    if (k == 5) {
+        Array *src = (Array *)p;
+        u64 dk = KIND(src->data - GRAN);
+        u64 kind = dk == 2 ? 2 : dk == 6 ? 6 : dk == 4 ? 4 : 1;
+        Array *dst = (Array *)rt_alloc_array((i64)src->len, kind);
+        u64 n = src->len;
+        if (dk == 2) {
+            for (u64 i = 0; i < n; i++)
+                ((u64 *)((char *)dst->data + 8))[i] =
+                    tpl_clone(((u64 *)((char *)src->data + 8))[i]);
+        } else if (dk == 6) {
+            for (u64 i = 0; i < n; i++)
+                ((u64 *)((char *)dst->data + 8))[i] =
+                    rt_str_inc(((u64 *)((char *)src->data + 8))[i]);
+        } else {
+            memcpy((char *)dst->data + 8, (char *)src->data + 8, n * src->esize);
+        }
+        return (u64)dst;
+    }
+    /* a descriptor record */
+    u64 *desc = (u64 *)k;
+    u64 payload = desc[0] ? desc[0] : 8;
+    u64 q = alloc_raw(k, payload);
+    memcpy((char *)q, body, payload);
+    u64 nowned = desc[1];
+    for (u64 i = 0; i < nowned; i++) {
+        u64 off = desc[2 + i];
+        *(u64 *)(q + off) = tpl_clone(*(u64 *)(body + off));
+    }
+    u64 nstr = desc[2 + nowned];
+    for (u64 i = 0; i < nstr; i++) {
+        u64 off = desc[3 + nowned + i];
+        *(u64 *)(q + off) = rt_str_inc(*(u64 *)(body + off));
+    }
+    return q;
+}
+
+static u64 tpl_copy_bytes(Array *src) {
+    u64 n = src->len;
+    Array *dst = (Array *)rt_alloc_array((i64)n, 4);
+    if (n) memcpy((char *)dst->data + 8, (char *)src->data + 8, n);
+    return (u64)dst;
+}
+
+/* The exact SQL text for a decimal: display form, canonical only when the
+ * display scale was capped and would hide a nonzero digit.  No rounding. */
+static u64 tpl_dec_string(const dec24 *v) {
+    size_t n = 0;
+    int st = dec_format_display_len(v, &n);
+    int canonical = 0;
+    if (st == DEC_INEXACT) { st = dec_format_canonical_len(v, &n); canonical = 1; }
+    if (st != DEC_OK) rt_dec_trap(st);
+    if (n == 0 || n > (size_t)DEC_TEXT_MAX_OUTPUT) rt_dec_trap(DEC_DISPLAY_RANGE);
+    u64 out = alloc_raw(3, payload_add(9, n));   /* length, n bytes, NUL */
+    size_t got = 0;
+    st = canonical ? dec_format_canonical(v, (char *)out + 8, n + 1, &got)
+                   : dec_format_display(v, (char *)out + 8, n + 1, &got);
+    if (st != DEC_OK) { rt_str_dec(out); rt_dec_trap(st); }
+    if (got != n) { rt_str_dec(out); rt_dec_trap(DEC_BUFFER_SMALL); }
+    *(u64 *)out = n;
+    return out;
+}
+
+/* ---- SQL ---- */
+
+u64 rt_tpl_sql_new(u64 desc) {
+    u64 *s = (u64 *)alloc_raw(desc, 16);
+    Array *text = (Array *)rt_alloc_array(0, 6);
+    Array *params = (Array *)rt_alloc_array(0, 2);
+    s[0] = (u64)text;
+    s[1] = (u64)params;
+    rt_append(text, 0);                 /* the text before the first argument */
+    return (u64)s;
+}
+
+void rt_tpl_sql_text(u64 sql, u64 s) {
+    Array *text = (Array *)((u64 *)sql)[0];
+    if (text->len == 0) {
+        u64 one = rt_str_inc(s);
+        rt_append(text, one);
+        return;
+    }
+    u64 *elems = (u64 *)((char *)text->data + 8);
+    u64 last = elems[text->len - 1];
+    u64 merged = rt_concat(last, s);
+    if (last) rt_str_dec(last);
+    elems[text->len - 1] = merged;
+}
+
+static void tpl_sql_add_arg(u64 sql, u64 variant) {
+    Array *params = (Array *)((u64 *)sql)[1];
+    Array *text = (Array *)((u64 *)sql)[0];
+    rt_append(params, variant);
+    rt_append(text, 0);
+}
+
+/* tag: 0 Null, 1 Int, 2 Bool, 3 Float, 4 Str, 5 Bytes (array moved in),
+ * 6 Decimal pointer, 7 an already-built SqlArg variant (moved in). */
+void rt_tpl_sql_arg(u64 sql, i64 tag, u64 value, u64 desc) {
+    if (tag == 7) {
+        tpl_sql_add_arg(sql, value);
+        return;
+    }
+    u64 *v = (u64 *)alloc_raw(desc, 8);
+    if (tag == 1 || tag == 2 || tag == 3) {
+        v[0] = value;
+    } else if (tag == 4) {
+        v[0] = rt_str_inc(value);
+    } else if (tag == 5) {
+        v[0] = value;                       /* the compiler moved the []byte into the argument */
+    } else if (tag == 6) {
+        u64 text = tpl_dec_string((const dec24 *)value);
+        Array *b = (Array *)rt_alloc_array((i64)slen(text), 4);
+        if (slen(text)) memcpy((char *)b->data + 8, sdata(text), slen(text));
+        rt_str_dec(text);
+        v[0] = (u64)b;
+    } else {
+        v[0] = 0;
+    }
+    tpl_sql_add_arg(sql, (u64)v);
+}
+
+u64 rt_tpl_sql_null(u64 desc) {
+    u64 *v = (u64 *)alloc_raw(desc, 8);
+    v[0] = 0;
+    return (u64)v;
+}
+
+u64 rt_tpl_sql_bytes(Array *b, u64 desc) {
+    u64 *v = (u64 *)alloc_raw(desc, 8);
+    v[0] = tpl_copy_bytes(b);
+    return (u64)v;
+}
+
+/* Append frag's text and parameters to sql, copying them; frag itself is freed
+ * when consume is true (a splice moves the fragment). */
+static void tpl_sql_append_frag(u64 sql, u64 frag, int consume) {
+    Array *ft = (Array *)((u64 *)frag)[0];
+    Array *fp = (Array *)((u64 *)frag)[1];
+    if (ft->len == 0) {
+        u64 empty = 0;
+        rt_tpl_sql_text(sql, empty);
+    } else {
+        rt_tpl_sql_text(sql, ((u64 *)((char *)ft->data + 8))[0]);
+        for (u64 i = 1; i < ft->len; i++) {
+            if (i - 1 < fp->len)
+                tpl_sql_add_arg(sql, tpl_clone(((u64 *)((char *)fp->data + 8))[i - 1]));
+            rt_tpl_sql_text(sql, ((u64 *)((char *)ft->data + 8))[i]);
+        }
+        /* a malformed fragment may have more parameters than text slots */
+        for (u64 i = ft->len > 0 ? ft->len - 1 : 0; i < fp->len; i++)
+            tpl_sql_add_arg(sql, tpl_clone(((u64 *)((char *)fp->data + 8))[i]));
+    }
+    if (consume) rt_free(frag);
+}
+
+void rt_tpl_sql_splice(u64 sql, u64 frag) {
+    tpl_sql_append_frag(sql, frag, 1);
+}
+
+u64 rt_tpl_sql_copy(u64 frag, u64 desc) {
+    u64 sql = rt_tpl_sql_new(desc);
+    tpl_sql_append_frag(sql, frag, 0);
+    return sql;
+}
+
+/* parts is borrowed; sep and the result are owned by the caller/helper. */
+u64 rt_tpl_sql_join(Array *parts, u64 sep, u64 desc) {
+    u64 sql = rt_tpl_sql_new(desc);
+    for (u64 i = 0; i < parts->len; i++) {
+        if (i > 0) tpl_sql_append_frag(sql, sep, 0);
+        tpl_sql_append_frag(sql, ((u64 *)((char *)parts->data + 8))[i], 0);
+    }
+    rt_free(sep);
+    return sql;
+}
+
+u64 rt_tpl_sql_where(Array *parts, u64 desc) {
+    u64 sql = rt_tpl_sql_new(desc);
+    if (parts->len == 0) return sql;
+    u64 pre = tpl_mkstr("WHERE ", 6);
+    rt_tpl_sql_text(sql, pre);
+    rt_str_dec(pre);
+    for (u64 i = 0; i < parts->len; i++) {
+        u64 open;
+        if (i > 0) open = tpl_mkstr(" AND (", 6);
+        else open = tpl_mkstr("(", 1);
+        rt_tpl_sql_text(sql, open);
+        rt_str_dec(open);
+        tpl_sql_append_frag(sql, ((u64 *)((char *)parts->data + 8))[i], 0);
+        u64 close = tpl_mkstr(")", 1);
+        rt_tpl_sql_text(sql, close);
+        rt_str_dec(close);
+    }
+    return sql;
+}
+
+/* ---- HTML ---- */
+
+/* The byte length the escaped form needs, and then its bytes: exactly the
+ * policy documented in obo/lib/html.obx. */
+static u64 tpl_escape(u64 s, int attr) {
+    u64 n = slen(s);
+    const unsigned char *p = (const unsigned char *)sdata(s);
+    u64 need = 0;
+    for (u64 i = 0; i < n; i++) {
+        unsigned char b = p[i];
+        if (b == '&') need += 5;
+        else if (b == '<' || b == '>') need += 4;
+        else if (b == '"') need += 6;
+        else if (b == '\'') need += 5;
+        else if (b == 0 || b == 0x7F ||
+                 (b < 0x20 && (attr || (b != '\t' && b != '\n' && b != '\r')))) {
+            u64 v = b, d = 1;
+            while (v >= 10) { v /= 10; d++; }
+            need += 3 + d;                 /* &# N ; */
+        } else need += 1;
+    }
+    if (need == 0) return 0;
+    u64 out = alloc_raw(3, payload_add(8, need));
+    *(u64 *)out = need;
+    char *q = (char *)out + 8;
+    const char *amp = "&amp;", *lt = "&lt;", *gt = "&gt;", *quot = "&quot;", *apos = "&#39;";
+    for (u64 i = 0; i < n; i++) {
+        unsigned char b = p[i];
+        if (b == '&') { memcpy(q, amp, 5); q += 5; }
+        else if (b == '<') { memcpy(q, lt, 4); q += 4; }
+        else if (b == '>') { memcpy(q, gt, 4); q += 4; }
+        else if (b == '"') { memcpy(q, quot, 6); q += 6; }
+        else if (b == '\'') { memcpy(q, apos, 5); q += 5; }
+        else if (b == 0 || b == 0x7F ||
+                 (b < 0x20 && (attr || (b != '\t' && b != '\n' && b != '\r')))) {
+            char tmp[16]; u64 k = 0;
+            tmp[k++] = '&'; tmp[k++] = '#';
+            u64 v = b, d = 1; while (v >= 10) { v /= 10; d++; }
+            for (u64 j = d; j > 0; j--) { tmp[k + j - 1] = (char)('0' + (b % 10)); b /= 10; }
+            k += d; tmp[k++] = ';';
+            memcpy(q, tmp, k); q += k;
+        } else { *q++ = (char)b; }
+    }
+    return out;
+}
+
+static int tpl_alpha(unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+static int tpl_scheme_byte(unsigned char c) {
+    return tpl_alpha(c) || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+}
+static int tpl_scheme_is(const unsigned char *p, u64 n, const char *name) {
+    u64 m = 0; while (name[m]) m++;
+    if (n != m) return 0;
+    for (u64 i = 0; i < n; i++) {
+        unsigned char c = p[i];
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
+        if (c != (unsigned char)name[i]) return 0;
+    }
+    return 1;
+}
+static int tpl_url_ok(u64 s) {
+    u64 n = slen(s);
+    const unsigned char *p = (const unsigned char *)sdata(s);
+    for (u64 i = 0; i < n; i++)
+        if (p[i] <= 0x20 || p[i] == 0x7F) return 0;
+    u64 i = 0;
+    while (i < n) {
+        unsigned char c = p[i];
+        if (c == ':') break;
+        if (c == '/' || c == '?' || c == '#') return 1;
+        i++;
+    }
+    if (i >= n) return 1;                  /* relative reference */
+    if (i == 0 || !tpl_alpha(p[0])) return 0;
+    for (u64 j = 1; j < i; j++) if (!tpl_scheme_byte(p[j])) return 0;
+    return tpl_scheme_is(p, i, "http") || tpl_scheme_is(p, i, "https") ||
+           tpl_scheme_is(p, i, "mailto");
+}
+
+static void tpl_html_append(u64 html, u64 s) {
+    u64 *h = (u64 *)html;
+    u64 merged = rt_concat(h[0], s);
+    if (h[0]) rt_str_dec(h[0]);
+    h[0] = merged;
+}
+
+u64 rt_tpl_html_new(u64 desc) {
+    u64 *h = (u64 *)alloc_raw(desc, 8);
+    h[0] = 0;
+    return (u64)h;
+}
+
+void rt_tpl_html_chunk(u64 html, u64 s) {
+    tpl_html_append(html, s);
+}
+
+/* tag: 0 string, 1 int, 2 bool, 3 float, 4 decimal pointer.
+ * ctx: 0 text, 1 quoted attribute, 2 URL-valued quoted attribute. */
+void rt_tpl_html_value(u64 html, i64 tag, u64 value, i64 ctx) {
+    u64 text = 0;
+    if (tag == 0) {
+        text = value;
+    } else if (tag == 1) {
+        char b[24]; int i = 24; i64 v = (i64)value;
+        u64 u = v < 0 ? (u64)0 - (u64)v : (u64)v;
+        do { b[--i] = (char)('0' + u % 10); u /= 10; } while (u);
+        if (v < 0) b[--i] = '-';
+        text = tpl_mkstr(b + i, (u64)(24 - i));
+    } else if (tag == 2) {
+        text = value ? tpl_mkstr("true", 4) : tpl_mkstr("false", 5);
+    } else if (tag == 3) {
+        text = rt_f_to_str(value);
+    } else if (tag == 4) {
+        text = tpl_dec_string((const dec24 *)value);
+    }
+    if (ctx == 2 && !tpl_url_ok(text))
+        die_code("obo: URL scheme is not allowed\n", 10);
+    u64 esc = tpl_escape(text, ctx != 0);
+    tpl_html_append(html, esc);
+    if (esc) rt_str_dec(esc);
+    if (tag != 0) rt_str_dec(text);
+}
+
+void rt_tpl_html_splice(u64 html, u64 frag) {
+    tpl_html_append(html, ((u64 *)frag)[0]);
+    rt_free(frag);
+}
+
+/* Concatenate an owned []Html and free the array and its fragments. */
+void rt_tpl_html_join(u64 html, Array *parts) {
+    for (u64 i = 0; i < parts->len; i++) {
+        u64 h = ((u64 *)((char *)parts->data + 8))[i];
+        tpl_html_append(html, ((u64 *)h)[0]);
+    }
+    rt_free((u64)parts);
+}
+
+u64 rt_tpl_html_copy(u64 h, u64 desc) {
+    u64 *src = (u64 *)h;
+    u64 *dst = (u64 *)alloc_raw(desc, 8);
+    dst[0] = rt_str_inc(src[0]);
+    return (u64)dst;
+}

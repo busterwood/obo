@@ -1,0 +1,5 @@
+module html
+pub type Html = ref record {
+    text: []string
+}
+pub fn toText(h: &Html): string { return "?" }
