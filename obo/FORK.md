@@ -7069,12 +7069,14 @@ D4a (methods/interfaces on this branch) and D5 (library-only, released on the
 0.17 line) are both recorded. No compiler, runtime or seed file from main
 conflicts with D4a, and `git diff main -- obo/seed` is empty.
 
-**Release.** Merged as `e47a8c8` and promoted as `seed/obo` at `769a359`
-(757,761 bytes, sha256 `ca513536…`); the promoted image reproduces itself and
-runs 1,878 tests. The stage is three commits: `78c02c4` compiler, `3aaa8ce`
-tests, `ef5c86d` docs, followed by the review fixes and the D5 merge. D4b
-(function values, non-capturing lambdas with decimal signatures, Stage B
-captures) is next.
+**Release (0.18, format 11, ABI 1).** Merged as `e47a8c8` and promoted as
+`seed/obo` at `769a359` (757,761 bytes, sha256 `ca513536…`). The promoted image
+is the self-host fixed point: `stage2 == stage3 == seed`, and it runs 1,878
+tests. A 0.17 reader rejects these format-11 files before the body; the 0.18
+compiler reads format 11 only. The stage is three commits: `78c02c4` compiler,
+`3aaa8ce` tests, `ef5c86d` docs, followed by the review fixes and the D5 merge.
+D4b (function values, non-capturing lambdas with decimal signatures, Stage B
+captures) is next, then D6.
 **Pre-existing follow-up (not changed here).** The `.sym` interface reader does
 not reject a forged `decimal` member parameter or return that the source parser
 refuses. This is present on `50cca0a` and is a separate reader-consistency fix.
