@@ -222,6 +222,7 @@ typedef struct h2_conn {
     unsigned idle_active;
     unsigned settings_active;
     unsigned drain_state; /* 0 off, 1 notice queued, 2 notice sent, 3 barrier, 4 final */
+    unsigned drain_final_sent;
     int32_t drain_cutoff;
     unsigned barrier_acked;
     uint8_t barrier_nonce[8];
@@ -1143,6 +1144,8 @@ static int cb_frame_send(nghttp2_session *session, const nghttp2_frame *frame,
         g_goaways_sent += 1;
         if (c->drain_state == 1) {
             c->drain_state = 2;
+        } else if (c->drain_state == 4) {
+            c->drain_final_sent = 1;
         } else if (!c->failed && c->state != H2_STATE_DRAINING &&
                    c->state != H2_STATE_CLOSING) {
             /* nghttp2 queues GOAWAY for connection-level protocol errors
@@ -1669,7 +1672,8 @@ long h2_conn_next_event(long conn_token, long now_ns) {
     if (c == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
     check_deadlines(c, now_ns);
     c->now_ns = now_ns;
-    if (c->drain_state == 4 && c->stream_count == 0 && !c->drain_complete_enqueued) {
+    if (c->drain_state == 4 && c->drain_final_sent &&
+        c->stream_count == 0 && !c->drain_complete_enqueued) {
         c->drain_complete_enqueued = 1;
         event_push(c, H2_EV_DRAIN_COMPLETE, 0, 0, 0, 0);
     }
@@ -1788,7 +1792,31 @@ long h2_conn_drain_poll(long conn_token, long now_ns) {
 long h2_conn_drain_complete(long conn_token) {
     h2_conn *c = peek_conn(conn_token);
     if (c == NULL) return 0;
-    return (c->drain_state == 4 && c->stream_count == 0) ? 1 : 0;
+    return (c->drain_state == 4 && c->drain_final_sent &&
+            c->stream_count == 0) ? 1 : 0;
+}
+
+long h2_conn_arm_preface(long conn_token, long now_ns) {
+    h2_conn *c = peek_conn(conn_token);
+    if (c == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
+    if (c->closed || c->failed) return h2_err(H2_FAIL_CLOSED, 0);
+    c->now_ns = now_ns;
+    if (!c->preface_ok && c->preface_deadline < 0)
+        c->preface_deadline = deadline_add(now_ns, c->preface_timeout_ms);
+    return 1;
+}
+
+long h2_conn_refuse(long conn_token, long stream_id, long error_code) {
+    h2_conn *c = peek_conn(conn_token);
+    int r;
+    if (c == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
+    if (c->closed || c->failed) return h2_err(H2_FAIL_CLOSED, 0);
+    if (stream_id <= 0 || error_code < 0 ||
+        error_code > 0xffffffffL) return h2_err(H2_FAIL_INVALID_ARGUMENT, 0);
+    r = nghttp2_submit_rst_stream(c->session, NGHTTP2_FLAG_NONE,
+                                  (int32_t)stream_id, (uint32_t)error_code);
+    if (r != 0) return h2_err(H2_FAIL_REFUSED, 0);
+    return 1;
 }
 
 long h2_conn_goaway(long conn_token, long last_stream_id, long error_code) {

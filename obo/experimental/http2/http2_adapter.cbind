@@ -1718,6 +1718,31 @@
       "effects": [
         "impure"
       ]
+    },
+    {
+      "name": "h2_conn_arm_preface",
+      "symbol": "h2_conn_arm_preface",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "h2_conn_refuse",
+      "symbol": "h2_conn_refuse",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
     }
   ]
 }

@@ -209,6 +209,8 @@ long h2_conn_settings_acked(long conn_token);
 long h2_conn_drain(long conn_token);
 long h2_conn_drain_poll(long conn_token, long now_ns);
 long h2_conn_drain_complete(long conn_token);
+long h2_conn_arm_preface(long conn_token, long now_ns);
+long h2_conn_refuse(long conn_token, long stream_id, long error_code);
 long h2_conn_goaway(long conn_token, long last_stream_id, long error_code);
 long h2_conn_terminate(long conn_token, long last_stream_id, long error_code);
 long h2_conn_consume(long conn_token, long bytes);

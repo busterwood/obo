@@ -646,6 +646,25 @@ pub fn pending(mut t: &Transport): Result[int] {
     }
 }
 
+// Output-only pending count. TLS pending() includes buffered plaintext input,
+// which must not be mistaken for unsent output during a drain flush.
+pub fn outputPending(mut t: &Transport): Result[int] {
+    if t.kind == KIND_MEMORY { return ok(t.pendingBytes) }
+    if t.kind == KIND_PLAIN { return ok(0) }
+    if t.kind != KIND_TLS { return err("transport kind is invalid", invalidArgument()) }
+    let held = takeSession(t)
+    if held == nil {
+        return err("TLS transport has no session", invalidArgument())
+    }
+    let s: tls::TlsSession = held
+    let p = tls::pending(&s)
+    putSession(t, s)
+    match p {
+        ok(value) { return ok(value.ciphertext) }
+        err(m, code) { return err(m, code) }
+    }
+}
+
 pub fn want(mut t: &Transport): Result[Want] {
     if t.kind == KIND_MEMORY {
         if t.wantMode == W_READ {

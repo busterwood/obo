@@ -3,7 +3,9 @@
 // argv: MODE PORT [CERT_PEM KEY_PEM] [PROFILE]
 //   MODE: h2c  (cleartext prior knowledge; PROFILE is argv[3])
 //         tls  (server TLS with ALPN h2 required; PROFILE is argv[5])
-//   PROFILE: default | fast (short handshake/header/body/idle timeouts)
+//   PROFILE: default | fast | small
+//            fast  = short handshake/header/body/idle timeouts
+//            small = 8 KiB send buffer, 4 KiB read chunk, 2 requests
 //
 // Prints H2LISTEN, serves until /stop (or the test harness kills it), then
 // drains, prints H2METRICS/H2COUNTS and H2DONE. The handler is an ordinary
@@ -113,6 +115,11 @@ fn serveWith(srv: server::Server, port: int,
 
 fn makeLimits(profile: string): h2::Limits {
     let lim = h2::defaultLimits()
+    if profile == "small" {
+        lim.maxStreamSendBuffer = 8192
+        lim.maxReadChunk = 4096
+        lim.maxRequestsPerConnection = 2
+    }
     if profile == "fast" {
         lim.prefaceTimeoutMs = 300
         lim.settingsTimeoutMs = 500

@@ -79,6 +79,7 @@ type Slot = ref record {
     handshakeDeadline: clock::Deadline
     streams: []StreamSlot
     pendingWork: bool
+    resumeCursor: int
 }
 
 pub type Server = ref record {
@@ -92,6 +93,7 @@ pub type Server = ref record {
     slots: []Slot
     listenerWatch: ?reactor::Watch
     listenerClosed: bool
+    listenerPaused: bool
     nextGen: int
     active: int
     reserved: int
@@ -148,6 +150,7 @@ fn earlier(a: &clock::Deadline, b: &clock::Deadline): clock::Deadline {
 fn beginShutdown(mut s: &Server, now: &http::Now): Result[bool]
 fn removeListenerWatch(mut s: &Server)
 fn connPending(cn: &h2::Connection): int
+fn flushDrain(mut cn: &h2::Connection, now: &http::Now): bool
 
 fn currentNow(): Result[http::Now] {
     let mono = try clock::monotonic()
@@ -267,6 +270,7 @@ fn makeWith(listener: net::Listener, r: reactor::Reactor,
         slots: new []Slot(0)
         listenerWatch: watch
         listenerClosed: false
+        listenerPaused: false
         nextGen: 1
         active: 0
         reserved: 0
@@ -371,10 +375,16 @@ fn reserveAdmission(mut s: &Server): Result[bool] {
     return r
 }
 
-fn releaseAdmission(mut s: &Server) {
+// Roll back a reservation that never became a live slot. It must not touch
+// s.active/s.reserved: those counters are only incremented by addSlot.
+fn rollbackAdmission(mut s: &Server) {
     let a = replace(s.admission, h2::makeAdmission())
     let okRelease = h2::release(&a, s.perConnectionBytes)
     s.admission = a
+}
+
+fn releaseAdmission(mut s: &Server) {
+    rollbackAdmission(s)
     if s.active > 0 { s.active -= 1 }
     s.reserved -= s.perConnectionBytes
     if s.reserved < 0 { s.reserved = 0 }
@@ -408,6 +418,7 @@ fn addSlot(mut s: &Server, index: int, gen: int,
         handshakeDeadline: deadline
         streams: new []StreamSlot(0)
         pendingWork: false
+        resumeCursor: 0
     }
     if index == len(s.slots) {
         append(s.slots, fresh)
@@ -440,6 +451,17 @@ fn openPlain(mut s: &Server, r: &reactor::Reactor,
     let made = h2::make(tr, &lim, &opts)
     match made {
         ok(cn) {
+            let armed = h2::armPrefaceDeadline(&cn, now)
+            match armed {
+                ok(v) { }
+                err(m, code) {
+                    s.metrics.acceptErrors += 1
+                    let cl = h2::close(&cn)
+                    match cl { ok(v) { } err(m2, c2) { } }
+                    rollbackAdmission(s)
+                    return false
+                }
+            }
             let gen = s.nextGen
             s.nextGen += 1
             let index = freeSlotIndex(s)
@@ -454,14 +476,14 @@ fn openPlain(mut s: &Server, r: &reactor::Reactor,
                     s.metrics.watchErrors += 1
                     let cl = h2::close(&cn)
                     match cl { ok(v) { } err(m2, c2) { } }
-                    releaseAdmission(s)
+                    rollbackAdmission(s)
                     return false
                 }
             }
         }
         err(m, code) {
             s.metrics.acceptErrors += 1
-            releaseAdmission(s)
+            rollbackAdmission(s)
             return false
         }
     }
@@ -475,7 +497,7 @@ fn openTls(mut s: &Server, r: &reactor::Reactor,
         drop(st)
         s.tlsContext = held
         s.metrics.acceptErrors += 1
-        releaseAdmission(s)
+        rollbackAdmission(s)
         return false
     }
     let ctx: tls::TlsContext = held
@@ -498,7 +520,7 @@ fn openTls(mut s: &Server, r: &reactor::Reactor,
                     s.metrics.watchErrors += 1
                     let cl = tls::close(&sess)
                     match cl { ok(v) { } err(m2, c2) { } }
-                    releaseAdmission(s)
+                    rollbackAdmission(s)
                     return false
                 }
             }
@@ -506,7 +528,33 @@ fn openTls(mut s: &Server, r: &reactor::Reactor,
         err(m, code) {
             // systls::accept closes the stream on every failure.
             s.metrics.acceptErrors += 1
-            releaseAdmission(s)
+            rollbackAdmission(s)
+            return false
+        }
+    }
+}
+
+fn pauseListener(mut s: &Server) {
+    if s.listenerPaused || s.listenerClosed { return }
+    removeListenerWatch(s)
+    s.listenerPaused = true
+    s.metrics.rejected += 1
+}
+
+fn resumeListener(mut s: &Server, l: &net::Listener,
+                  r: &reactor::Reactor): bool {
+    if !s.listenerPaused || s.stopping || s.listenerClosed { return false }
+    if !admissionFits(s) { return false }
+    let made = net::watchListener(r, l, LISTENER_TAG)
+    match made {
+        ok(w) {
+            let prior = replace(s.listenerWatch, w)
+            drop(prior)
+            s.listenerPaused = false
+            return true
+        }
+        err(m, code) {
+            s.metrics.watchErrors += 1
             return false
         }
     }
@@ -518,10 +566,14 @@ fn acceptBatch(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
     if s.acceptPausedUntil.finite && now.mono.nanos < s.acceptPausedUntil.nanos {
         return ok(0)
     }
+    if !admissionFits(s) {
+        pauseListener(s)
+        return ok(0)
+    }
     var accepted = 0
     for i in 0..MAX_ACCEPT_BATCH {
         if !admissionFits(s) {
-            s.metrics.rejected += 1
+            pauseListener(s)
             break
         }
         let got = net::accept(l)
@@ -560,12 +612,16 @@ fn acceptBatch(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
                             started = openPlain(s, r, st, peer, now)
                         }
                         if started { accepted += 1 }
+                        if !admissionFits(s) {
+                            pauseListener(s)
+                            break
+                        }
                     }
                     err(m, code) {
                         s.metrics.acceptErrors += 1
                         let cc = net::closeConnection(&connection)
                         match cc { ok(v) { } err(m2, c2) { } }
-                        releaseAdmission(s)
+                        rollbackAdmission(s)
                     }
                 }
             }
@@ -630,6 +686,13 @@ fn closeConnSlot(mut s: &Server, index: int, mut cn: &h2::Connection,
     if !slot.live { return }
     removeSlotWatch(s, index)
     closeAllStreams(s, index)
+    var flushGuard = 0
+    while flushGuard < 8 {
+        flushGuard += 1
+        if connPending(cn) <= 0 { break }
+        let f = h2::flush(cn, now)
+        match f { ok(done) { if done { break } } err(m, c) { break } }
+    }
     // Best-effort close_notify/flush, bounded; close is abortive and exactly
     // once. The GOAWAY drain is driven before this point by drainPoll.
     var guard = 0
@@ -718,6 +781,19 @@ fn connPending(cn: &h2::Connection): int {
     }
 }
 
+fn flushDrain(mut cn: &h2::Connection, now: &http::Now): bool {
+    var guard = 0
+    while guard < 8 {
+        guard += 1
+        let f = h2::flush(cn, now)
+        match f {
+            ok(done) { if done { return true } }
+            err(m, code) { return false }
+        }
+    }
+    return false
+}
+
 fn refreshSlotInterest(mut s: &Server, index: int,
                        cn: &h2::Connection): Result[bool] {
     let pending = connPending(cn)
@@ -769,6 +845,7 @@ fn driveStreamAt(mut s: &Server, ci: int, si: int, h: Handler,
     }
     let stop = h2::actionStopRequested(&state)
     let closeConn = h2::actionCloseRequested(&state)
+    let writeBlocked = h2::actionWriteBlocked(&state)
     let done = h2::actionDone(&state)
     if failed {
         let rr = h2::reset(&stream, 8)
@@ -788,7 +865,7 @@ fn driveStreamAt(mut s: &Server, ci: int, si: int, h: Handler,
         if done {
             ss.workPending = false
         } else {
-            ss.workPending = progress
+            ss.workPending = progress || writeBlocked
         }
     }
     let ss2 = s.slots[ci].streams[si]
@@ -825,24 +902,29 @@ fn runPending(mut s: &Server, ci: int, h: Handler,
     var progress = false
     var count = 0
     while count < MAX_STREAM_WORK {
+        let total = len(s.slots[ci].streams)
+        if total == 0 { break }
+        var start = s.slots[ci].resumeCursor
+        if start < 0 || start >= total { start = 0 }
         var found = -1
-        for i in 0..len(s.slots[ci].streams) {
-            if s.slots[ci].streams[i].live &&
-               s.slots[ci].streams[i].workPending {
-                found = i
+        var step = 0
+        while step < total {
+            let idx = (start + step) % total
+            if s.slots[ci].streams[idx].live &&
+               s.slots[ci].streams[idx].workPending {
+                found = idx
                 break
             }
+            step += 1
         }
         if found < 0 { break }
+        let againCursor = s.slots[ci]
+        againCursor.resumeCursor = found + 1
         count += 1
         let made = driveStreamAt(s, ci, found, h, now)
         if made { progress = true }
-        // Clear the flag first so a non-progress action does not spin; a
-        // later body/write event will re-arm it.
-        if !made {
-            let again = s.slots[ci].streams[found]
-            if again.live { again.workPending = false }
-        }
+        // driveStreamAt sets workPending false for a completed action, true
+        // for progress or a blocked response write, and false for a body wait.
     }
     return progress
 }
@@ -890,8 +972,12 @@ fn openAndRun(mut s: &Server, ci: int, mut cn: &h2::Connection, id: int,
         }
         err(m, code) {
             // A refused/unknown stream has no shell to close. C already
-            // submitted REFUSED_STREAM when its own concurrent cap applied.
+            // submitted REFUSED_STREAM when its own concurrent cap applied;
+            // for obo policy refusals (maxRequestsPerConnection) submit the
+            // reset explicitly so the peer stream never hangs open.
             s.metrics.rejected += 1
+            let rr = h2::refuse(cn, id, 7)
+            match rr { ok(v) { } err(m2, c2) { } }
         }
     }
     return progress
@@ -913,7 +999,15 @@ fn driveConn(mut s: &Server, ci: int, mut cn: &h2::Connection, h: Handler,
     while guard < MAX_CONN_WORK {
         guard += 1
         if h2::drainComplete(cn) {
-            out.closeNow = true
+            let flushed = flushDrain(cn, now)
+            if flushed {
+                out.closeNow = true
+                return out
+            }
+            out.progress = true
+            var more = false
+            if connPending(cn) == 0 { more = true }
+            out.more = more
             return out
         }
         let evr = h2::next(cn, now)
@@ -977,7 +1071,15 @@ fn driveConn(mut s: &Server, ci: int, mut cn: &h2::Connection, h: Handler,
                         return out
                     }
                     EventDrainComplete {
-                        out.closeNow = true
+                        let flushed = flushDrain(cn, now)
+                        if flushed {
+                            out.closeNow = true
+                            return out
+                        }
+                        out.progress = true
+                        var more = false
+                        if connPending(cn) == 0 { more = true }
+                        out.more = more
                         return out
                     }
                     EventConnectionClosed {
@@ -1032,6 +1134,20 @@ fn completeHandshake(mut s: &Server, ci: int, r: &reactor::Reactor,
     let made = h2::make(tr, &lim, &opts)
     match made {
         ok(cn) {
+            let armed = h2::armPrefaceDeadline(&cn, now)
+            match armed {
+                ok(v) { }
+                err(m, code) {
+                    s.metrics.acceptErrors += 1
+                    let cl = h2::close(&cn)
+                    match cl { ok(v) { } err(m2, c2) { } }
+                    let again = s.slots[ci]
+                    let prior = replace(again.tlsSession, nil)
+                    drop(prior)
+                    closeHandshakeSlot(s, ci)
+                    return true
+                }
+            }
             removeSlotWatch(s, ci)
             let watch = h2::watch(&cn, r, true, false, tag)
             match watch {
@@ -1241,9 +1357,13 @@ fn runOnceOn(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
              handler: Handler, maxEvents: int): Result[bool] {
     let now = try currentNow()
     var progress = false
+    if s.listenerPaused && !s.stopping && !s.listenerClosed {
+        let resumed = resumeListener(s, l, r)
+        if resumed { progress = true }
+    }
     let paused = s.acceptPausedUntil.finite &&
                  now.mono.nanos < s.acceptPausedUntil.nanos
-    if !paused && !s.stopping && !s.listenerClosed {
+    if !paused && !s.stopping && !s.listenerClosed && !s.listenerPaused {
         let n = try acceptBatch(s, l, r, &now)
         if n > 0 { progress = true }
     }
@@ -1255,7 +1375,8 @@ fn runOnceOn(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
         let tag = events[i].tag
         let readable = events[i].readable
         if tag == LISTENER_TAG {
-            if readable && !s.stopping && !s.listenerClosed {
+            if readable && !s.stopping && !s.listenerClosed &&
+               !s.listenerPaused {
                 let n = try acceptBatch(s, l, r, &after)
                 if n > 0 { progress = true }
             }

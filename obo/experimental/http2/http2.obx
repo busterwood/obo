@@ -1155,6 +1155,26 @@ pub fn state(c: &Connection): Result[int] {
     return ok(s)
 }
 
+// Arm the C preface deadline at accept time. Without this, a client that never
+// sends the 24-byte preface has no deadline until the first next_event call.
+pub fn armPrefaceDeadline(c: &Connection, now: &http::Now): Result[bool] {
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_conn_arm_preface", ct, now.mono.nanos)
+    if raw < 0 { return err("HTTP/2 preface deadline arm failed", nativeFailure(0 - raw)) }
+    return ok(true)
+}
+
+// Submit RST_STREAM for a stream the shim knows but obo has not adopted (or
+// refused before adoption). This is used for maxRequests and admission policy;
+// it never dereferences a shell token.
+pub fn refuse(c: &Connection, id: int, code: int): Result[bool] {
+    if id <= 0 || id % 2 == 0 { return err("server streams must be positive and odd", http::code(FAIL_INVALID_ARGUMENT, 0)) }
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_conn_refuse", ct, id, code)
+    if raw < 0 { return err("HTTP/2 stream refusal failed", nativeFailure(0 - raw)) }
+    return ok(true)
+}
+
 pub fn settingsAcked(c: &Connection): Result[bool] {
     let ct = try connectionToken(c)
     let sent = __cinterop("h2_conn_settings_sent", ct)
@@ -1597,13 +1617,36 @@ pub fn endResponse(s: &Stream): Result[bool] {
     }
     let raw = __cinterop("h2_stream_end", tok)
     if raw < 0 { return err("HTTP/2 response end failed", nativeFailure(0 - raw)) }
-    if raw == 1 { return ok(true) }
+    if raw == 1 || raw == 0 { return ok(true) }
     return ok(false)
 }
 
 // ---------------------------------------------------------------------------
 // Drain, close, stats
 // ---------------------------------------------------------------------------
+
+// Flush already-queued C wire and obo output, then TLS ciphertext, without
+// pulling events. Returns true only when no H2 or transport output remains.
+pub fn flush(mut c: &Connection, now: &http::Now): Result[bool] {
+    if c.ended { return ok(false) }
+    let ct = try connectionToken(c)
+    let filled = try fillOutput(c, ct)
+    let pumped = try pumpOut(c)
+    let t = takeTransport(c)
+    let fp = transport::flushPending(&t)
+    let tp = transport::outputPending(&t)
+    putTransport(c, t)
+    match fp {
+        ok(out) { }
+        err(m, code) { return err("HTTP/2 transport flush failed", mapSystem(code)) }
+    }
+    var transportEmpty = false
+    match tp { ok(n) { if n == 0 { transportEmpty = true } } err(m, code) { } }
+    if !filled || !pumped || !transportEmpty { return ok(false) }
+    let p = try pending(c)
+    if p == 0 { return ok(true) }
+    return ok(false)
+}
 
 pub fn drain(mut c: &Connection, now: &http::Now): Result[bool] {
     if c.ended { return err("HTTP/2 connection is closed", http::code(FAIL_CLOSED, 0)) }
@@ -1830,6 +1873,7 @@ pub type ActionState = ref record {
     pendingPos: int
     echoed: int
     discarded: int
+    writeBlocked: bool
     stopRequested: bool
     closeRequested: bool
 }
@@ -1847,6 +1891,7 @@ pub fn makeActionState(): ActionState {
         pendingPos: 0
         echoed: 0
         discarded: 0
+        writeBlocked: false
         stopRequested: false
         closeRequested: false
     }
@@ -1854,6 +1899,7 @@ pub fn makeActionState(): ActionState {
 
 pub fn actionStopRequested(st: &ActionState): bool { return st.stopRequested }
 pub fn actionCloseRequested(st: &ActionState): bool { return st.closeRequested }
+pub fn actionWriteBlocked(st: &ActionState): bool { return st.writeBlocked }
 // True when runAction has finished the response and consumed the request body.
 // The server loop uses this to decide whether a yielded action needs another
 // immediate turn; it exposes no action internals.
@@ -1990,6 +2036,7 @@ pub fn runAction(mut st: &ActionState, h: http::Handler,
                  now: &http::Now): Result[bool] {
     var sink = false
     if st.done { return ok(true) }
+    st.writeBlocked = false
     if !st.latched {
         let action = h(req, now)
         st.action = actionCode(&action)
@@ -2013,7 +2060,7 @@ pub fn runAction(mut st: &ActionState, h: http::Handler,
                 let chunk = new []byte(left)
                 for i in 0..left { chunk[i] = st.pending[st.pendingPos + i] }
                 let n = try writeBody(s, &chunk, 0, left)
-                if n == 0 { return ok(false) }
+                if n == 0 { st.writeBlocked = true; return ok(false) }
                 st.pendingPos += n
                 st.echoed += n
                 if st.echoed > s.maxBody {
@@ -2058,7 +2105,7 @@ pub fn runAction(mut st: &ActionState, h: http::Handler,
         let chunk = new []byte(take)
         for i in 0..take { chunk[i] = st.body[st.bodyPos + i] }
         let n = try writeBody(s, &chunk, 0, take)
-        if n == 0 { return ok(false) }
+        if n == 0 { st.writeBlocked = true; return ok(false) }
         st.bodyPos += n
         return ok(true)
     }
