@@ -524,7 +524,15 @@ pub fn (mut r: &Rows) bind_all(params: &[]Param): Result[bool] {
     if len(params) > MAX_PARAMS {
         return err("too many parameters (maximum 32)", 2)
     }
-    bind_clear_native(&r.h)
+    let cleared = bind_clear_native(&r.h)
+    if cleared < 0 {
+        var mb = stmt_diag(&r.h)
+        var msg = string(mb)
+        if len(msg) == 0 { msg = "parameters could not be reset" }
+        var code = stmt_error_code(&r.h)
+        if code == 0 { code = 2 }
+        return err(msg, code)
+    }
     for i in 0..len(params) {
         let p = &params[i]
         let index = i + 1

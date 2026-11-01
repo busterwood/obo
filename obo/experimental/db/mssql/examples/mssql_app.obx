@@ -509,6 +509,30 @@ fn datetimeoffset_text(c: &mssql::Connection): Result[bool] {
     return ok(true)
 }
 
+fn statement_reuse(c: &mssql::Connection): Result[bool] {
+    var r = try c.prepare("SELECT CAST(? AS bigint) AS v")
+    defer r.close()
+    var p1 = new []mssql::Param(0)
+    append(p1, mssql::param_int(7))
+    let b1 = try r.bind_all(&p1)
+    let e1 = try r.execute()
+    let f1 = try r.fetch()
+    let v1 = try r.text(0)
+    let _c120 = try eq_str("reuse first", v1, "7")
+    let d1 = try r.fetch()
+    let _c121 = try eq_bool("reuse first done", d1, false)
+    let cl = try r.clear_params()
+
+    var p2 = new []mssql::Param(0)
+    append(p2, mssql::param_int(-3))
+    let b2 = try r.bind_all(&p2)
+    let e2 = try r.execute()
+    let f2 = try r.fetch()
+    let v2 = try r.text(0)
+    let _c122 = try eq_str("reuse second", v2, "-3")
+    return ok(true)
+}
+
 fn float_rejected(c: &mssql::Connection): Result[bool] {
     var rows = try c.exec("SELECT CAST(0.1 AS float) AS f")
     defer rows.close()
