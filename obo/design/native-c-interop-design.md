@@ -9,6 +9,8 @@ explicit-close libpq adapter and hardening checkpoints. This remains an experime
 trusted-build prototype: not production, not a public API, not a stable format,
 and not permission to merge, push or promote a seed.
 
+**Superseded direction (note added 2026-11-01):** the v2 boundary design in [cinterop-boundary-design.md](cinterop-boundary-design.md) supersedes the explicit-close token adapter direction of this note for libpq and SQLite. `cres` stays for integer-ID APIs and existing packages.
+
 The prototype lives outside the public compiler surface under
 `obo/experimental/cinterop/`. It is labelled experimental. Nothing in this note
 claims that the prototype is complete; section 14 records what was actually
