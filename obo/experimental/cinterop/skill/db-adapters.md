@@ -10,8 +10,8 @@ directly.
 
 - Keep the real C pointer in a `foreign` record's private word. `own`/`own_opt`
   return it, `borrow`/`borrow_mut` pass it, `is_open` reads the word, and a
-  direct borrow after close exits 7. The older `cres` token registry is for the
-  zlib/buffer examples, the skill templates and the registry test, not these
+  direct borrow after close exits 7. The older `cres` token registry is only
+  for the zlib adapter, the buffer example and the registry test, not these
   packages.
 - Release every connection/result/statement exactly once from an explicit
   close. A second close is a safe `false`/`ok(false)`.
@@ -33,6 +33,56 @@ directly.
 - Test with a deterministic fake API first, then the real library; an installed
   library must not produce a silent skip after a build failure.
 
+## Out parameters and error paths
+
+SQLite's open and prepare calls report errors through a status code while still
+writing (or leaving NULL) an out handle. The v2 out record exists for this:
+
+```obo
+native fn open_v2(path: &[]byte, flags: int, out db: Connection): open_v2_out
+native fn prepare_v2(db: &Connection, sql: &[]byte,
+                     out st: Stmt, out tail: int from sql): prepare_v2_out
+native fn prepare_at(db: &Connection, sql: &[]byte, off: int,
+                     out st: Stmt, out tail: int from sql): prepare_at_out
+```
+
+- An out call is stored in a `var`; a bare statement is refused because it
+  would drop a live `out_own`.
+- The record is `rc: int` first, then one field per out parameter in
+  declaration order (`?Stmt` for `out_own`, `int` for `out_offset`).
+- `take(out.st)` moves the handle out. Close it exactly once on the error path
+  too: `sqlite3_open_v2` writes a non-NULL `sqlite3*` on most failures, so read
+  the message before closing it.
+- `out_offset` yields `-1` for a NULL or out-of-range tail pointer; the wrapper
+  turns that into an error. `sq_prepare_at` prepares at an absolute offset
+  (linear in the statement stream, not a copy per statement).
+- The out record is an ordinary owned value. Dropping it frees the obo record,
+  not the C object; a missed close is reported by the census.
+
+## `release_result: discard`
+
+`db/sqlite/sqlite.cbind` uses `"release_result": "discard"` for
+`sqlite3_close_v2` and `sqlite3_finalize`. Both return an int, but their result
+is not treated as a close failure here (D14/D15): close succeeds while
+statements are live, the `Connection` census drops, and the statements keep
+working until finalized. `discard` calls the int-returning release and ignores
+the value. Use `"int"` only when a non-zero release really is an error, and
+`"void"` for a void release such as `PQfinish`/`PQclear`.
+
+## Text NUL, binary length and parameter formats
+
+- A text-format parameter is a `len+1` copy truncated back to `len`. libpq
+  reads text `paramValues[]` with `strlen` and ignores `paramLengths`, so the
+  terminator sits one byte past the data. SQL, text and C-string inputs reject
+  embedded NUL before the call.
+- A binary parameter (OID 17 `bytea`) keeps its exact length and may contain
+  NUL. `Rows.fmt` is 0 for a text result and 1 for
+  `exec_params_binary`/`exec_params_typed_binary`.
+- Result values and error messages are copied by length. `PQgetlength`/
+  `sqlite3_column_bytes` are authoritative; never call `strlen`.
+- Preserve exact numeric text, OID and typmod. No numeric value is routed
+  through a float.
+
 ## Database-specific choices
 
 - **PostgreSQL.** `db/postgres` wraps the v2 `examples/libpq.obx`. The wrapper
@@ -49,7 +99,8 @@ directly.
   `declaration_files` so the manifest hashes it without pretending it was a
   compiled header check. If a real header is available in a private evidence
   location, compile the declarations against it as a read-only cross-check, but
-  keep the committed build independent of that header.
+  keep the committed build independent of that header. The libpq binding is
+  the `signature_check: "header"` example (against `toolkit/libpq_decls.h`).
 - SQLite uses `sqlite3_close_v2` (D14): close succeeds while statements are
   live, the `Connection` census drops, and the statements keep working until
   finalized. Register `defer conn.close()` before `defer stmt.close()` as the
