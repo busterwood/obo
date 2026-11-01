@@ -64,6 +64,7 @@ type StreamSlot = ref record {
     state: h2::ActionState
     live: bool
     workPending: bool
+    writeBlocked: bool
 }
 
 type Slot = ref record {
@@ -79,6 +80,7 @@ type Slot = ref record {
     handshakeDeadline: clock::Deadline
     streams: []StreamSlot
     pendingWork: bool
+    moreWork: bool
     resumeCursor: int
 }
 
@@ -418,6 +420,7 @@ fn addSlot(mut s: &Server, index: int, gen: int,
         handshakeDeadline: deadline
         streams: new []StreamSlot(0)
         pendingWork: false
+        moreWork: false
         resumeCursor: 0
     }
     if index == len(s.slots) {
@@ -436,6 +439,7 @@ fn addSlot(mut s: &Server, index: int, gen: int,
     slot.handshaking = handshaking
     slot.draining = false
     slot.pendingWork = false
+    slot.moreWork = false
     s.active += 1
     s.reserved += s.perConnectionBytes
     s.metrics.accepted += 1
@@ -542,8 +546,12 @@ fn pauseListener(mut s: &Server) {
 }
 
 fn resumeListener(mut s: &Server, l: &net::Listener,
-                  r: &reactor::Reactor): bool {
+                  r: &reactor::Reactor, now: &http::Now): bool {
     if !s.listenerPaused || s.stopping || s.listenerClosed { return false }
+    if s.acceptPausedUntil.finite {
+        if now.mono.nanos < s.acceptPausedUntil.nanos { return false }
+        s.acceptPausedUntil = forever()
+    }
     if !admissionFits(s) { return false }
     let made = net::watchListener(r, l, LISTENER_TAG)
     match made {
@@ -563,8 +571,9 @@ fn resumeListener(mut s: &Server, l: &net::Listener,
 fn acceptBatch(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
                now: &http::Now): Result[int] {
     if s.stopping || s.listenerClosed { return ok(0) }
-    if s.acceptPausedUntil.finite && now.mono.nanos < s.acceptPausedUntil.nanos {
-        return ok(0)
+    if s.acceptPausedUntil.finite {
+        if now.mono.nanos < s.acceptPausedUntil.nanos { return ok(0) }
+        s.acceptPausedUntil = forever()
     }
     if !admissionFits(s) {
         pauseListener(s)
@@ -630,6 +639,7 @@ fn acceptBatch(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
                 if isAcceptPressure(code) {
                     s.metrics.acceptPressure += 1
                     s.acceptPausedUntil = deadlineAt(now, ACCEPT_BACKOFF_MS)
+                    pauseListener(s)
                     break
                 }
                 s.metrics.acceptErrors += 1
@@ -665,6 +675,7 @@ fn closeStreamAt(mut s: &Server, ci: int, si: int) {
     let again = slot2.streams[si]
     again.live = false
     again.workPending = false
+    again.writeBlocked = false
     s.metrics.streamsClosed += 1
 }
 
@@ -855,6 +866,7 @@ fn driveStreamAt(mut s: &Server, ci: int, si: int, h: Handler,
         let ss = s.slots[ci].streams[si]
         ss.live = false
         ss.workPending = false
+        ss.writeBlocked = false
         ss.stream = h2::_emptyStream()
         drop(stream)
         s.metrics.handlerErrors += 1
@@ -864,8 +876,10 @@ fn driveStreamAt(mut s: &Server, ci: int, si: int, h: Handler,
         ss.stream = stream
         if done {
             ss.workPending = false
+            ss.writeBlocked = false
         } else {
             ss.workPending = progress || writeBlocked
+            ss.writeBlocked = writeBlocked
         }
     }
     let ss2 = s.slots[ci].streams[si]
@@ -950,6 +964,7 @@ fn openAndRun(mut s: &Server, ci: int, mut cn: &h2::Connection, id: int,
                         state: state
                         live: true
                         workPending: false
+                        writeBlocked: false
                     }
                     if si == len(s.slots[ci].streams) {
                         append(s.slots[ci].streams, fresh)
@@ -976,8 +991,10 @@ fn openAndRun(mut s: &Server, ci: int, mut cn: &h2::Connection, id: int,
             // for obo policy refusals (maxRequestsPerConnection) submit the
             // reset explicitly so the peer stream never hangs open.
             s.metrics.rejected += 1
-            let rr = h2::refuse(cn, id, 7)
-            match rr { ok(v) { } err(m2, c2) { } }
+            if http::kind(code) == http::FAIL_REFUSED {
+                let rr = h2::refuse(cn, id, 7)
+                match rr { ok(v) { } err(m2, c2) { } }
+            }
         }
     }
     return progress
@@ -1279,6 +1296,7 @@ fn driveSlot(mut s: &Server, index: int, handler: Handler,
         }
     }
     again.pendingWork = pending
+    again.moreWork = driven.more
     let refreshed = refreshSlotInterest(s, index, &cn)
     match refreshed {
         ok(alive) {
@@ -1299,6 +1317,14 @@ fn driveSlot(mut s: &Server, index: int, handler: Handler,
     }
 }
 
+fn slotHasReadyWork(slot: &Slot): bool {
+    for i in 0..len(slot.streams) {
+        let ss = slot.streams[i]
+        if ss.live && ss.workPending && !ss.writeBlocked { return true }
+    }
+    return false
+}
+
 fn computeUntil(mut s: &Server): clock::Deadline {
     var until = forever()
     if s.stopping {
@@ -1310,7 +1336,7 @@ fn computeUntil(mut s: &Server): clock::Deadline {
     for i in 0..len(s.slots) {
         let slot = s.slots[i]
         if !slot.live { continue }
-        if slot.pendingWork && !s.stopping {
+        if !s.stopping && (slot.moreWork || slotHasReadyWork(slot)) {
             return new clock::Deadline{finite: true, nanos: 0}
         }
         if slot.handshaking {
@@ -1358,7 +1384,7 @@ fn runOnceOn(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
     let now = try currentNow()
     var progress = false
     if s.listenerPaused && !s.stopping && !s.listenerClosed {
-        let resumed = resumeListener(s, l, r)
+        let resumed = resumeListener(s, l, r, &now)
         if resumed { progress = true }
     }
     let paused = s.acceptPausedUntil.finite &&
