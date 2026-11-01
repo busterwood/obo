@@ -1,0 +1,92 @@
+// obo/lib/sqldialect.obx: render a dialect-neutral Sql fragment for a database.
+//
+// A compiler-known `sql` template (or the `sqlRaw`/`sqlJoin`/`sqlWhere`
+// builders) is a `Sql` record: alternating literal text and ordered `SqlArg`
+// parameters, with no placeholders in the text. This module adds only the
+// placeholder spelling for one dialect; it does not parse, quote, escape or
+// interpolate SQL text or values. Text chunks are trusted structure chosen by
+// the program author, and parameters stay in traversal order.
+//
+// Dialect ids and placeholder forms:
+//
+//     POSTGRES       $1, $2, ...     (extended query protocol)
+//     SQLITE         ?, ?, ...
+//     SQLSERVER      @p1, @p2, ...   (TDS / sp_executesql)
+//     SQLSERVER_ODBC ?, ?, ...       (ODBC positional parameters)
+//     ORACLE         :1, :2, ...
+//
+// SQL Server and Oracle have renderer support only in this pass; their vendor
+// adapters (ODBC/OCI) are later work. See the experimental db README for the
+// per-dialect type and placeholder gaps (bit, nvarchar, varbinary, NUMBER,
+// NVARCHAR2, RAW and Oracle's empty-string-as-NULL rule).
+//
+// This is an ordinary standard-library module: no compiler, runtime, seed,
+// format or ABI change, and no dependency on the experimental database
+// packages. Import it as
+//
+//     import "sqldialect.obx" as sqldialect       // from obo/lib/ with -I
+//     import "../../../lib/sqldialect.obx" ...     // from a source tree
+module sqldialect
+
+pub const POSTGRES = 0
+pub const SQLITE = 1
+pub const SQLSERVER = 2
+pub const SQLSERVER_ODBC = 3
+pub const ORACLE = 4
+
+fn dialect_known(dialect: int): bool {
+    return dialect >= POSTGRES && dialect <= ORACLE
+}
+
+// n is 1-based. The caller has already checked the dialect.
+fn placeholder(dialect: int, n: int): string {
+    if dialect == POSTGRES { return "$" + string(n) }
+    if dialect == SQLSERVER { return "@p" + string(n) }
+    if dialect == ORACLE { return ":" + string(n) }
+    return "?"
+}
+
+// Render s for one dialect. The only structural validation is that the text
+// and parameter arrays alternate: len(text) == len(params) + 1. An empty text
+// array is an empty fragment and is rejected rather than indexed. Unknown
+// dialect ids are rejected. Literal chunks are copied verbatim, so `$`, `?`,
+// `@` and `:` text is preserved and never rewritten. Parameters are rendered in
+// order as $1..$n, ?..., @p1.., or :1.. per the dialect.
+pub fn render(s: &Sql, dialect: int): Result[string] {
+    if !dialect_known(dialect) {
+        return err("unknown SQL dialect", 2)
+    }
+    let texts = &s.text
+    if len(texts) == 0 {
+        return err("empty Sql fragment", 2)
+    }
+    if len(texts) != len(s.params) + 1 {
+        return err("malformed Sql fragment: text and parameters do not alternate", 2)
+    }
+    var out = texts[0]
+    for i in 0..len(s.params) {
+        out = out + placeholder(dialect, i + 1)
+        out = out + texts[i + 1]
+    }
+    return ok(out)
+}
+
+pub fn renderPostgres(s: &Sql): Result[string] {
+    return render(s, POSTGRES)
+}
+
+pub fn renderSqlite(s: &Sql): Result[string] {
+    return render(s, SQLITE)
+}
+
+pub fn renderSqlServer(s: &Sql): Result[string] {
+    return render(s, SQLSERVER)
+}
+
+pub fn renderSqlServerOdbc(s: &Sql): Result[string] {
+    return render(s, SQLSERVER_ODBC)
+}
+
+pub fn renderOracle(s: &Sql): Result[string] {
+    return render(s, ORACLE)
+}

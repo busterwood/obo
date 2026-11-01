@@ -10,7 +10,13 @@
 // safe false while statements are live; finalize them first. A second close is
 // also a safe false. SQL and text bindings reject embedded NUL; BLOB bindings
 // preserve their exact length, including NUL. There is no SQL interpolation.
+// prepare_sql/bind_sql add the dialect-neutral Sql-template bridge: prepare_sql
+// renders `?` placeholders with lib/sqldialect and bind_sql binds the ordered
+// SqlArg values, while SqlArg.Float is an explicit SQL_ARG_FLOAT_UNSUPPORTED
+// error.
 module sqlite
+
+import "sqldialect.obx" as sqldialect
 
 pub const SQLITE_OK = 0
 pub const SQLITE_ERROR = 1
@@ -46,6 +52,11 @@ pub const SQLITE_TEXT = 3
 pub const SQLITE_BLOB = 4
 pub const SQLITE_NULL = 5
 
+// SqlArg.Float is a binary64 value. This adapter does not bind REAL through a
+// float path, so bind_sql rejects it explicitly instead of rounding or
+// interpolating it. Use decimal TEXT, or an explicit integer/text form.
+pub const SQL_ARG_FLOAT_UNSUPPORTED = 1014
+
 // Decimal boundary error codes. They start at 1000 so they do not collide with
 // SQLite's SQLITE_* values or the adapter's plumbing codes 2/3.
 pub const DEC_DB_NULL = 1001
@@ -71,9 +82,24 @@ fn encode_string(s: string): []byte {
     return out
 }
 
+// Copy a borrowed byte array. SqlArg payloads are borrowed from the Sql
+// fragment, so a bridge must not move them into a binding.
+fn copy_bytes(b: &[]byte): []byte {
+    var out = new []byte(0)
+    for i in 0..len(b) { append(out, b[i]) }
+    return out
+}
+
 fn has_nul(b: &[]byte): bool {
     for i in 0..len(b) {
         if b[i] == byte(0) { return true }
+    }
+    return false
+}
+
+fn string_has_nul(s: string): bool {
+    for i in 0..len(s) {
+        if s[i] == byte(0) { return true }
     }
     return false
 }
@@ -249,6 +275,14 @@ pub fn (c: &Connection) prepare(sql: string): Result[Stmt] {
     return ok(new Stmt{tok: t})
 }
 
+// Prepare a dialect-neutral Sql fragment for SQLite with `?` placeholders.
+// The fragment is borrowed; its literal chunks are trusted SQL and its values
+// are bound separately by bind_sql. No text is interpolated.
+pub fn prepare_sql(c: &Connection, s: &Sql): Result[Stmt] {
+    let text = try sqldialect::renderSqlite(s)
+    return c.prepare(text)
+}
+
 // ---------------------------------------------------------------- statements
 
 fn stmt_error(s: &Stmt, fallback: int): Result[bool] {
@@ -315,6 +349,101 @@ pub fn (s: &Stmt) bind_blob(index: int, value: []byte): Result[bool] {
     __cinterop("cres_buf_free", b)
     if rc == SQLITE_OK { return ok(true) }
     return stmt_error(s, int(rc))
+}
+
+// Bind every parameter of s to st at indices 1..n, in order. The SQL must have
+// been prepared from the same fragment with prepare_sql (or an equivalent
+// statement with the same number and order of placeholders). The relation
+// len(text) == len(params) + 1 is checked here too, so a malformed fragment
+// fails before any binding. Byte payloads are deep-copied because they are
+// borrowed from the fragment; DecimalText is bound as its exact TEXT bytes,
+// never parsed or reformatted. Float has no binding here. The match is inline
+// because a borrowed SqlArg must not be passed to a helper that writes through
+// the statement handle.
+pub fn bind_sql(st: &Stmt, s: &Sql): Result[bool] {
+    if len(s.text) == 0 {
+        return err("empty Sql fragment", 2)
+    }
+    if len(s.text) != len(s.params) + 1 {
+        return err("malformed Sql fragment: text and parameters do not alternate", 2)
+    }
+    // Validate the arguments that cannot be bound before touching the
+    // statement, so an unsupported Float or invalid DecimalText leaves no
+    // partially bound parameters behind.
+    for i in 0..len(s.params) {
+        let a = &s.params[i]
+        match a {
+            Null { }
+            Int { }
+            Bool { }
+            Str {
+                if string_has_nul(a.v) {
+                    return err("text value contains an embedded NUL", 2)
+                }
+                if len(a.v) > 16777216 {
+                    return err("bound value is too large", 2)
+                }
+            }
+            Bytes {
+                if len(a.v) > 16777216 {
+                    return err("bound value is too large", 2)
+                }
+            }
+            Float {
+                return err("float SqlArg is not supported by the SQLite adapter; use decimal or text",
+                           SQL_ARG_FLOAT_UNSUPPORTED)
+            }
+            DecimalText {
+                if len(a.v) == 0 {
+                    return err("invalid decimal text", DEC_DB_TEXT_INVALID)
+                }
+                if has_nul(&a.v) {
+                    return err("invalid decimal text", DEC_DB_TEXT_INVALID)
+                }
+            }
+        }
+    }
+    for i in 0..len(s.params) {
+        let index = i + 1
+        let a = &s.params[i]
+        match a {
+            Null {
+                let one = try st.bind_null(index)
+                if !one { return err("parameter could not be bound", 2) }
+            }
+            Int {
+                let v = a.v
+                let one = try st.bind_int(index, v)
+                if !one { return err("parameter could not be bound", 2) }
+            }
+            Bool {
+                var v = 0
+                if a.v { v = 1 }
+                let one = try st.bind_int(index, v)
+                if !one { return err("parameter could not be bound", 2) }
+            }
+            Float {
+                return err("float SqlArg is not supported by the SQLite adapter; use decimal or text",
+                           SQL_ARG_FLOAT_UNSUPPORTED)
+            }
+            Str {
+                let v = a.v
+                let one = try st.bind_text(index, v)
+                if !one { return err("parameter could not be bound", 2) }
+            }
+            Bytes {
+                let v = copy_bytes(&a.v)
+                let one = try st.bind_blob(index, v)
+                if !one { return err("parameter could not be bound", 2) }
+            }
+            DecimalText {
+                let v = string(a.v)
+                let one = try st.bind_text(index, v)
+                if !one { return err("parameter could not be bound", 2) }
+            }
+        }
+    }
+    return ok(true)
 }
 
 // Store an exact decimal as TEXT. This never binds REAL and never interpolates.

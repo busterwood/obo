@@ -6357,11 +6357,13 @@ machine local to the literal. Hidden builders are owned locals, so loops and
 early exits free them through the ordinary ownership rules. Template type
 descriptors are created lazily on first use, which keeps the `hello` gate
 byte-identical to the seed compiler for a program that does not mention a
-template type. Runtime slots 79-93 append the builder helpers; float and decimal
-slots 41-78 keep their meaning. The
-database driver, dialect placeholder rendering, identifier/`ORDER BY`
-allow-lists, array expansion and user-defined tags remain later work.
-`DecimalText` is the lossless decimal transport.
+template type. Runtime slots 77-91 append the builder helpers; float and decimal
+slots 39-76 keep their meaning. The
+database drivers beyond the experimental PostgreSQL/SQLite adapters,
+identifier/`ORDER BY` allow-lists, array expansion and user-defined tags remain
+later work. `sqldialect` renders dialect placeholders and the PostgreSQL/SQLite
+adapters bridge `Sql`/`SqlArg` directly; SQL Server and Oracle are renderer-only
+for now. `DecimalText` is the lossless decimal transport.
 
 A follow-up 0.15 runtime cleanup removed the disabled mark-sweep remnants and
 the `gc()`/`gcstats()` builtins (the language and standard library are
@@ -6373,9 +6375,9 @@ authoritative ones.
 **Gates (post-promotion).** `run_fork` **1,809 passed**;
 default `port_compare` **1,791/1,791**; `OBO_REF=obo/seed/obo`
 **1,595/1,595** against the promoted 0.15 seed;
-`port_test` **612/612**; `module_test` **143**; `sym_test` **52/52**;
-`float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **29/29**;
-`stdlib` **16/16**; `tools` **509 passed**; cinterop, DB-adapter and systems
+`port_test` **613/613**; `module_test` **143**; `sym_test` **52/52**;
+`float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **30/30**;
+`stdlib` **17/17**; `tools` **509 passed**; cinterop, DB-adapter and systems
 P0/P1a/P2 suites pass; the decimal evidence runner reports **32,719 C checks**.
 `mutate_fork` **718 caught + 31 equivalent of 749** (including 24 template
 compiler mutants), `mutate_decimal` **71/71** (including the sqlWhere runtime

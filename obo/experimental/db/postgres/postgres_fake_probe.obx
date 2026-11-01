@@ -1,0 +1,39 @@
+// Test-only probe for the deterministic fake libpq.
+//
+// This module is copied beside postgres.obx by postgres_fake_sql.cbind and imported
+// only by the fake-packet SQL-template test. It reads the fake's last
+// PQexecParams call (types, lengths, NULL flags and bytes). It is not part of
+// the postgres package and is never built against real libpq.
+module postgres_fake_probe
+
+pub fn last_param_count(): int {
+    return __cinterop("fake_last_param_count")
+}
+
+pub fn last_param_type(i: int): int {
+    return __cinterop("fake_last_param_type", i)
+}
+
+pub fn last_param_len(i: int): int {
+    return __cinterop("fake_last_param_len", i)
+}
+
+pub fn last_param_isnull(i: int): int {
+    return __cinterop("fake_last_param_isnull", i)
+}
+
+pub fn last_param_format(i: int): int {
+    return __cinterop("fake_last_param_format", i)
+}
+
+pub fn last_param_byte(i: int, j: int): int {
+    return __cinterop("fake_last_param_byte", i, j)
+}
+
+pub fn last_sql_len(): int {
+    return __cinterop("fake_last_sql_len")
+}
+
+pub fn last_sql_byte(i: int): int {
+    return __cinterop("fake_last_sql_byte", i)
+}

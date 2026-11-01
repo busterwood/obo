@@ -4,6 +4,9 @@
   "platform": "x86_64-linux-gnu",
   "abi": "sysv-amd64",
   "wrapper": "postgres.obx",
+  "wrapper_sources": [
+    "../../../lib/sqldialect.obx"
+  ],
   "sources": [
     "../../cinterop/toolkit/cres.c",
     "../../cinterop/toolkit/libpq_adapter.c",

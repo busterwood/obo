@@ -1,0 +1,59 @@
+// Dialect renderer tests: every placeholder spelling, parameter order, literal
+// text preserved, empty chunks, and the three structural errors.
+
+import "sqldialect.obx" as sqldialect
+
+fn show(name: string, r: Result[string]) {
+    match r {
+        ok(s) { println(name, "=", s) }
+        err(m, c) { println(name, "=", c, " ", m) }
+    }
+}
+
+fn main() {
+    let q = sql`SELECT * FROM t WHERE a = ${1} AND b = ${"x'} DROP"} AND c = ${true}`
+    show("pg", sqldialect::renderPostgres(&q))
+    show("sq", sqldialect::renderSqlite(&q))
+    show("ms", sqldialect::renderSqlServer(&q))
+    show("odbc", sqldialect::renderSqlServerOdbc(&q))
+    show("ora", sqldialect::renderOracle(&q))
+    show("pg2", sqldialect::render(&q, sqldialect::POSTGRES))
+
+    // Text chunks are literal: $ and ? are not rewritten, and the bound value
+    // (with SQL syntax) never enters the rendered text.
+    let lit = sql`SELECT '$' AS d, '?' AS q, x = ${7}`
+    show("lit_pg", sqldialect::renderPostgres(&lit))
+    show("lit_sq", sqldialect::renderSqlite(&lit))
+
+    // Empty leading/trailing chunks are valid: they surround parameters.
+    let only = sql`${1} ${2}`
+    show("only_pg", sqldialect::renderPostgres(&only))
+    show("only_sq", sqldialect::renderSqlite(&only))
+
+    var ts = new []string(0)
+    append(ts, "a")
+    append(ts, "b")
+    var ps = new []SqlArg(0)
+    let bad = new Sql{text: ts, params: ps}
+    show("bad", sqldialect::renderPostgres(&bad))
+
+    var ets = new []string(0)
+    var eps = new []SqlArg(0)
+    let empty = new Sql{text: ets, params: eps}
+    show("empty", sqldialect::renderPostgres(&empty))
+
+    show("unknown", sqldialect::render(&q, 99))
+}
+// expect: pg=SELECT * FROM t WHERE a = $1 AND b = $2 AND c = $3
+// expect: sq=SELECT * FROM t WHERE a = ? AND b = ? AND c = ?
+// expect: ms=SELECT * FROM t WHERE a = @p1 AND b = @p2 AND c = @p3
+// expect: odbc=SELECT * FROM t WHERE a = ? AND b = ? AND c = ?
+// expect: ora=SELECT * FROM t WHERE a = :1 AND b = :2 AND c = :3
+// expect: pg2=SELECT * FROM t WHERE a = $1 AND b = $2 AND c = $3
+// expect: lit_pg=SELECT '$' AS d, '?' AS q, x = $1
+// expect: lit_sq=SELECT '$' AS d, '?' AS q, x = ?
+// expect: only_pg=$1 $2
+// expect: only_sq=? ?
+// expect: bad=2 malformed Sql fragment: text and parameters do not alternate
+// expect: empty=2 empty Sql fragment
+// expect: unknown=2 unknown SQL dialect

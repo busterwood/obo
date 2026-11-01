@@ -2220,8 +2220,8 @@ QuoteSpaces helpers), `paths`, `sort`, `time`, `cli`, `fmt` (`digits`,
 `appendPadded`, `writePadded`, `modeString`), `errors` (C-locale errno
 `text`, `osError`, `debugPath` and the eza-shaped `EXIT_*` constants), `fs`
 (directory iteration, stat/lstat and symlink targets; see "Metadata" below),
-`env` (`get`, `has`, `value`, `getOr`; see "Environment" below) and `html`.
-P2 moved
+`env` (`get`, `has`, `value`, `getOr`; see "Environment" below), `html` and
+`sqldialect`. P2 moved
 `writePadded` from `io` and the digit/padding helpers from `strings` into
 `fmt`, and removed the four P1 compatibility functions.
 
@@ -2279,7 +2279,9 @@ copies it first. `sqlJoin(parts, sep)` joins a `[]Sql` with a separator and
 capture its neighbour. `sqlJoin` holds its parts array across the separator
 expression and rejects a separator that moves, frees, replaces, appends to or
 truncates it; compute such a separator before the call. A `[]Sql` is never
-expanded implicitly.
+expanded implicitly. Literal chunks are preserved verbatim and are not parsed:
+a literal `?`, `:1`, `$1` or `@p1` in a chunk is still a placeholder for the
+target dialect, so quote such text or bind it as a value.
 
 `html` and `Html` are the claimed-safe content type. Its `text` field is private
 to module `html`; `html::toText` is the rendering accessor, `html::raw` is the
@@ -2324,10 +2326,20 @@ Ownership follows ordinary records: a template builder is a hidden owned local
 freed on every exit, the result is an owned `Sql`/`Html`, and splicing moves the
 fragment. `SqlArg` is a closed type (`Null`, `Int`, `Bool`, `Float`, `Str`,
 `Bytes`, `DecimalText`); direct `new Sql{...}`/`new Html{...}` construction is
-the explicit raw escape hatch, and `Html` is private to its module. SQL driver
-binding, dialect placeholder rendering and identifier/`ORDER BY` allow-lists are
-later work; the value/parameter pair is dialect-neutral. Tests live in
-`tests/run/template_*.obx` and `tests/errors/template.obx`.
+the explicit raw escape hatch, and `Html` is private to its module. The
+value/parameter pair is dialect-neutral. `obo/lib/sqldialect.obx` renders it
+without parsing or interpolation: `render(&s, dialect)` and
+`renderPostgres`/`renderSqlite`/`renderSqlServer`/`renderSqlServerOdbc`/
+`renderOracle` emit `$1..$n`, `?`, `@p1..`, `?` or `:1..`, validate
+`len(text) == len(params) + 1`, and preserve literal text. The experimental
+`postgres` package adds `execute_sql(&conn, &s)` and SQLite adds
+`prepare_sql(&conn, &s)`/`bind_sql(&stmt, &s)`, mapping the ordered arguments
+(including exact `DecimalText` and deep-copied `Bytes`) without interpolation.
+`SqlArg.Float` returns the explicit `SQL_ARG_FLOAT_UNSUPPORTED` (1014) error in
+both bridges; there is no binary64 parameter path. SQL Server and Oracle have
+renderer support only, not adapters. Identifier/`ORDER BY` allow-lists remain
+later work. Tests live in `tests/run/template_*.obx`,
+`tests/errors/template.obx` and `tests/stdlib/sqldialect_dialects.obx`.
 
 ### Metadata
 
@@ -2689,17 +2701,19 @@ shared lexer; that is a pre-existing lexer-wide gap, not decimal-specific.
 `float` remains a separate pre-existing reserved-type-name gap; `decimal` is
 now reserved.
 
-Template literals are released in `0.15`. The v1 scope has no SQL driver or dialect renderer,
-no SQL parser or identifier/`ORDER BY` allow-list API, no array expansion, no
-user-defined template tags or public domain registry, no generic `escape`, and
-no `string -> Sql`/`Html` conversion. HTML has no script/style/comment/unquoted
-or dynamic name encoder and no sanitizer; `HtmlAttrs`/`HtmlAttr` exist as
-nominal types but have no v1 hole. `Html` is a claimed-safe convention, not a
+Template literals are released in `0.15`. The v1 scope has no SQL parser or
+identifier/`ORDER BY` allow-list API, no array expansion, no user-defined
+template tags or public domain registry, no generic `escape`, and no
+`string -> Sql`/`Html` conversion. HTML has no script/style/comment/unquoted or
+dynamic name encoder and no sanitizer; `HtmlAttrs`/`HtmlAttr` exist as nominal
+types but have no v1 hole. `Html` is a claimed-safe convention, not a
 type-enforced provenance check; direct `new Html{...}` is private to module
-`html`, while `Sql`/`SqlArg` fields are public. The SQL driver binding layer,
-dialect `$n`/`?` rendering and the DB adapters are later work; `DecimalText` is
-the lossless decimal transport. The released compiler is `0.15`/format 8/ABI 1;
-`seed/obo` is the matching 0.15 image.
+`html`, while `Sql`/`SqlArg` fields are public. `obo/lib/sqldialect.obx`
+renders `$n`/`?`/`@pN`/`:n`; the experimental PostgreSQL and SQLite packages
+provide the binding bridge, while SQL Server and Oracle adapters and
+`SqlArg.Float` binding (`SQL_ARG_FLOAT_UNSUPPORTED`, 1014) are later work.
+`DecimalText` is the lossless decimal transport. The released compiler is
+`0.15`/format 8/ABI 1; `seed/obo` is the matching 0.15 image.
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target
