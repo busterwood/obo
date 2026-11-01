@@ -1,5 +1,6 @@
 /* Native fixture for the stage (b) return kinds and the stage (c) typed native fn form. */
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "return_fixture.h"
@@ -43,6 +44,31 @@ int rf_cb_many_len(const void *a, int n, const void *b, int m, int x, int y, int
     return v == 9 ? 2 : 0;
 }
 
+static const char rf_even_data[] = {'a', 'b', 'c'};
+const char *rf_cb_even(const void *a, int n, const void *b, int m, int x, int y, int z, int w) {
+    (void)a; (void)n; (void)b; (void)m; (void)x; (void)y; (void)z; (void)w;
+    return rf_even_data;
+}
+int rf_cb_even_len(const void *a, int n, const void *b, int m, int x, int y, int z, int w) {
+    (void)a; (void)n; (void)b; (void)m; (void)x; (void)y; (void)z;
+    return w == 8 ? 3 : 0;
+}
+long rf_cb_even_len_wrong(const void *a, int n, const void *b, int m, int x, int y, int z, int w) {
+    (void)a; (void)n; (void)b; (void)m; (void)x; (void)y; (void)z;
+    return w == 8 ? 3 : 0;
+}
+
+void rf_take(long v) { rf_last = v; }
+const void *rf_nz_i(long v) { return v == 7 ? (const void *)&rf_anchor : NULL; }
+
+static const char rf_arg_data[] = {'o', 'k'};
+const char *rf_cb_arg(long v) { return v == 7 ? rf_arg_data : NULL; }
+int rf_cb_arg_len(long v) { return v == 7 ? 2 : 0; }
+const char *rf_cs_arg(long v) { return v == 5 ? "arg" : ""; }
+
+const char *rf_cb_neg(void) { return rf_over_data; }
+int rf_cb_neg_len(void) { return -1; }
+
 const char *rf_cs_normal(void) { return "hello"; }
 const char *rf_cs_empty(void) { return ""; }
 const char *rf_cs_null(void) { return NULL; }
@@ -71,4 +97,38 @@ long rf_tagged(const char *s, int tag) { return tag + (long)strlen(s); }
 long rf_bytes_arg(const void *p, int n) {
     (void)p;
     return (long)n;
+}
+
+long rf_prefix(const char *p, int v) { return p == NULL ? v : -1; }
+
+long rf_lenfirst(int n, const int *v) {
+    long s = 0;
+    for (int i = 0; i < n; i++) s += v[i];
+    return s;
+}
+
+/* 16 MiB, the cstr_out bound: one byte short of the cap plus a NUL is accepted; no NUL within the
+ * bound exits 11. Allocated with libc so the fixture does not add a 16 MiB static slot to the
+ * hosted image's data areas. */
+#define RF_BIG (16u << 20)
+static unsigned char *rf_big;
+
+static unsigned char *rf_big_buffer(void) {
+    if (rf_big == NULL) rf_big = (unsigned char *)malloc((size_t)RF_BIG);
+    return rf_big;
+}
+
+const char *rf_cs_big_ok(void) {
+    unsigned char *b = rf_big_buffer();
+    if (b == NULL) return NULL;
+    memset(b, 'x', (size_t)RF_BIG - 1);
+    b[RF_BIG - 1] = 0;
+    return (const char *)b;
+}
+
+const char *rf_cs_big_bad(void) {
+    unsigned char *b = rf_big_buffer();
+    if (b == NULL) return NULL;
+    memset(b, 'x', (size_t)RF_BIG);
+    return (const char *)b;
 }
