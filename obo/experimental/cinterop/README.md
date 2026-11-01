@@ -18,9 +18,11 @@ Design:
 The compiler boundary supports **`i64` arguments, and argument kinds** (borrowed
 bytes and strings, NUL-checked C strings, `i32`/`u32` scalars, int arrays and
 nil-able byte-array lists; see *Argument kinds* below), with `i32`/`i64` results,
-and the stage (b)/(c) additions: copy-out `cbytes`, `cstr_out`, `void` and
+the stage (b)/(c) additions: copy-out `cbytes`, `cstr_out`, `void` and
 `nonzero` results, and body-less `native fn` declarations (see *Return kinds and
-typed native declarations* below). The toolkit now also has a small trusted **C resource registry**
+typed native declarations* below), and the stage (d) foreign handles with
+`own`/`own_opt`/`borrow<C>`, explicit `close`/`is_open`, use-after-close exit 7
+and the leak census (see *Foreign handles* below). The toolkit now also has a small trusted **C resource registry**
 and an explicit-close libpq adapter: obo receives generation/kind-checked
 integer tokens, never a raw `PGconn*`/`PGresult*`. Connection/Rows/Buffer close
 is explicit and normally written with obo `defer`; dropping an ordinary record
@@ -584,6 +586,86 @@ shape, or result shape, and checks shapes against the spec before the link.
 A spec function that no call reaches is still refused (`no native call for spec
 symbol(s)`), as before.
 
+## Foreign handles (stage (d))
+
+```obo
+pub type Conn = foreign "PGconn"
+
+native fn connectdb(conninfo: &[]byte): ?Conn     // spec ret own_opt<PGconn>
+native fn status(c: &Conn): int                    // spec arg borrow<PGconn>@0
+
+pub fn (mut c: &Conn) close(): Result[bool] { return __foreignClose(c) }
+pub fn (c: &Conn) is_open(): bool { return __foreignIsOpen(c) }
+```
+
+`foreign` is a reserved word. `type X = foreign "C"` declares an owned reference
+type: a normal record with one private word at offset 0, in neither the owned nor
+the string offset list of its descriptor, so `rt_free` frees the record and never
+reads the C pointer. `open`/`new X` cannot construct it, `x.word` is always
+refused (even in the declaring module), and `int(x)`/`string(x)` conversions are
+refused. A value exists only from a native `own`/`own_opt` result (or an own
+result of a typed native fn). `pub type X = foreign` exports as an ordinary
+opaque record with one `priv` placeholder field in the `.sym`; no format bump and
+no C name is needed by importers. The wrapper's exported `close`/`is_open`
+methods are ordinary methods.
+
+**Native kinds.** A `&X` parameter is the shape `foreign:X` and the spec kind
+`borrow<C>@k`; the call site pushes the record pointer, and the thunk calls
+`obo_ci_foreign_word`, which exits 7 with `obo: foreign handle used after close`
+for a nil record or a zero word. A return `X` is `own:X` / spec `own<C>`; `?X` is
+`own_opt:X` / `own_opt<C>`. The thunk returns the raw C word, then the compiler
+calls `obo_ci_foreign_own(id, raw, desc, optional)`: `own` with NULL exits 11,
+`own_opt` with NULL gives nil, otherwise it allocates a normal record of `desc`,
+stores the word and increments the per-type census. The spec `types` entry gives
+the C type name and the release:
+
+```json
+"types": [{"name": "PGconn", "obo": "Conn", "release": "PQfinish", "release_result": "void"}]
+```
+
+`release_result` is `"void"` or `"int"`. The release is signature-checked against
+its `CType *` prototype. `out_own` and `out_offset` are **deferred to stage (f)**
+(SQLite); stage (d) needs only own/own_opt/borrow/close for libpq.
+
+**close and is_open.** `close` is `close(mut &X): Result[bool]`:
+
+- word 0 gives `ok(false)` and makes no C call (double close);
+- otherwise it copies the word, zeroes it, decrements the census, calls the
+  release, and returns `ok(true)`;
+- a `release_result: "int"` release with a non-zero result gives
+  `err("foreign release failed", code)`, and the word stays zero.
+
+`is_open(&X): bool` reads the word. In this implementation wrappers declare both
+methods over two internal builtins, `__foreignClose(x)` and
+`__foreignIsOpen(x)`, instead of the compiler generating method bodies (a
+documented pragmatic deviation; the public API and semantics are the same).
+`__foreignClose` needs a writable place (a `var`, a `mut &X`, a field through a
+mut receiver, an array element, or a `^TX` handle) and is not given the
+conservative C summary, so closing a field receiver is allowed; the release is
+trusted not to free obo memory or call back. `__foreignIsOpen` is an inline word
+load, so it does not invalidate references. `x.close()` and `x.is_open()` on a
+foreign receiver with no explicit method are sugar for the same builtins.
+
+**Census.** The generated `foreign_table.c` supplies the release wrappers, the
+obo type names and `release_result`, in sidecar order. `host.c` keeps one live
+count per type. Under `OBO_CHECK=1`, `rt_finish` calls the hosted-only foreign
+census between the fd census and the object census: every non-zero type is
+reported as `obo: foreign handles leaked: T n` and the program exits 8. Dropping
+an open handle, overwriting it, or dropping an enclosing record releases nothing
+and leaves the count up. `exit(n)` and traps run no census. A decrement at zero
+exits 4 (`obo: internal error: foreign handle census underflow`);
+`OBO_CENSUS_FAULT=underflow` forces one underflow and is inert unless
+`OBO_CHECK=1`.
+
+**Sidecar.** Sidecar v2 starts with `foreign <id> <obo-name> <c-name>` lines in
+first-declaration order, then the relocations. A typed foreign call records
+shapes `foreign:X`, `own:X` or `own_opt:X`; the tool maps the shape's obo name
+through `types` to the C name. Internal helpers appear as mode `host` records
+with fixed arity (`obo_ci_foreign_own` 4, `obo_ci_foreign_close` 5,
+`obo_ci_foreign_is_open` 1, `obo_ci_foreign_census_adjust` 2); the tool
+generates their thunks. A sidecar `foreign` line must match a spec `types`
+entry.
+
 ## Tests
 
 ```sh
@@ -622,9 +704,17 @@ shape/mode/return/nargs tampering, a v2 fn against a v1 spec, a v2 call against
 a typed return, spec v2 `signature_check` (header and declarations-only), a
 function-pointer `ret_ctype`, and `cbytes` key/length-function refusals,
 declaration/spec shape mismatches, the native declaration negatives, the
-`native` identifier programs, and the `--check` refusal. A libpq build
-failure is a test failure when `libpq.so.5` is present; the test skips only when
-the library is absent.
+`native` identifier programs, and the `--check` refusal. The stage (d) surface
+(`foreigns()`) covers own/own_opt/borrow, close through a local, field, `mut`
+receiver, `^T` handle and array element, deferred close, double close, exactly one
+release, `is_open` and `alive`, a `release_result: "int"` error, use-after-close
+exit 7 with no C call, the leak census (scope end, overwrite, enclosing record;
+exit 8 and no release; inert without `OBO_CHECK=1`), no census on `exit`/trap,
+census underflow exit 4 and `OBO_CENSUS_FAULT`, the compile negatives
+(`new`/field/conversion/owned parameter), a mismatched foreign borrow, sidecar
+foreign/host tampering, an app importing a wrapper with `pub type X = foreign`,
+and `--check` over that wrapper's `.sym`. A libpq build failure is a test failure
+when `libpq.so.5` is present; the test skips only when the library is absent.
 
 It also builds and runs:
 

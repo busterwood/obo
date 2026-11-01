@@ -18,7 +18,12 @@ where the work stands, how to run it, and when to stop and ask the user.
   `main` as `85923af` after independent review (verdict APPROVE WITH NITS; nits closed in `472872f`).
   The seed was promoted in `67dbd8c`. The live PostgreSQL checks passed on the branch and again on
   `main` after promotion. Design §8 records what they actually do.
-- **Stages (d) to (h):** not started. Stage (d) is the next step and the designated stop point.
+- **Stage (d)**, foreign handles: implemented on `cinterop-v2-d`, pending independent review and merge.
+  Design §8 records what it actually does, including the documented deviation (internal
+  `__foreignClose`/`__foreignIsOpen` builtins plus wrapper methods instead of compiler-generated
+  bodies) and the deferral of `out_own`/`out_offset` to stage (f).
+- **Stages (e) to (h):** not started. Stage (d) was the designated stop point; the user directed the
+  work to continue through it.
 - **Cleanup audit:** in progress. A read-only audit of old interop code and docs is running. It sorts
   items into three groups: wrong or dead now, removable at a named stage, and keep. Nothing will be
   deleted until the user has seen its list.
@@ -126,9 +131,9 @@ The full scope and gates for each stage are in design §8; the test lists are in
 |---|---|---|---|---|
 | (b) copy-out | `cbytes` returning `?[]byte` with caps, `cstr_out`, `void`, `nonzero` | none | medium | Done in `85923af` with (c). Fake `PQgetvalue`: empty, NUL-containing, NULL-with-length (exit 11), over cap. |
 | (c) `native fn` | body-less declarations, kind table, `cinterop-relocs 2`, `cinterop-proto/2`, `signature_check` | parse and type-check body-less natives | medium | Done in `85923af` with (b). Replaces the stage (a) kinds string at each call. Int-form natives stay byte-identical. |
-| (d) foreign handles | `foreign` record kind with one private word, `own`/`own_opt`/`out_own`/`borrow<T>`, generated `close` and `is_open`, exit 7 in the thunk, per-type census | `foreign` record kind, private-field checks; no new ownership rule | medium to high | **Stop point:** see below. Needs the full foreign-handle suite and an ASan run on the fixtures. |
+| (d) foreign handles | `foreign` record kind with one private word, `own`/`own_opt`/`borrow<T>`, `close`/`is_open`, exit 7 in the thunk, per-type census | `foreign` record kind, private-field checks; no new ownership rule | medium to high | Implemented on `cinterop-v2-d`, pending review/merge. `out_own`/`out_offset` deferred to (f); close/is_open are internal builtins plus wrapper methods (design §8). No ASan run over the obo image. |
 | (e) libpq | rewrite `libpq.obx`/`libpq.cbind`; delete `libpq_adapter.c`/`.h` except the conninfo helper; keep `cres.c` | none | low to medium | Live smoke test. A `Rows` dropped without `close` must be reported by the census. |
-| (f) SQLite | `sqlite3_close_v2`, the `nonzero` probe, `exec` loop; delete `sqlite_adapter.c`/`.h` | none | medium | The UAF reproduction must fail in the old shape and pass in the new. |
+| (f) SQLite | `sqlite3_close_v2`, the `nonzero` probe, `exec` loop, `out_own`/`out_offset` (deferred from (d)); delete `sqlite_adapter.c`/`.h` | none | medium | The UAF reproduction must fail in the old shape and pass in the new. |
 | (g) db/postgres | map the surface in §5.6; remove `live_*` counters and the packet builder; move decimal checks into obo | none | medium | The SQL template bridge (`912143d`, merged during stage (a)) is now part of this surface and must keep passing. |
 | (h) skill and templates | `skill/SKILL.md` and project templates for explicit close, the census, the kinds and the `cres` policy | none | low | Folds in the "later stage" items from the cleanup audit. zlib stays on its adapter. |
 
