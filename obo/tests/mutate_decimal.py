@@ -185,11 +185,9 @@ MUTANTS = [
      "    let f = handle(sa[0])\n    f.freesAll = true\n    f.writesHandles = true\n    for i in 0..fnArity(t) {"),
 ]
 
-# Runtime, core-include and entry-table mutants are built in a private runtime
-# directory; the compiler is rebuilt from the unmutated source so the test
-# programs embed the mutant runtime.  Each item is (name, file, old, new).
 # Observationally equivalent mutants: planted, built and run like the rest, but a passing
-# verdict counts as `equiv`, not `missed`. Each entry is (name, [(old, new), ...]).
+# verdict counts as `equiv`, not `missed`. The key is the mutant name and the value is the
+# reason.
 EQUIVALENT = {
     "capture snapshot taken by address":
         "observationally equivalent under v1: no &decimal, call-argument-only captures, and "
@@ -197,6 +195,8 @@ EQUIVALENT = {
         "snapshot and the load",
 }
 
+# Mutants whose behaviour needs more than one replacement. Each entry is
+# (name, [(old, new), ...]); every pattern must occur exactly once.
 MULTI_MUTANTS = [
     ("push the destination before the function cell (old order)", [
         # cut the cell push from above the destination
@@ -279,6 +279,9 @@ MULTI_MUTANTS = [
     ]),
 ]
 
+# Runtime, core-include and entry-table mutants are built in a private runtime
+# directory; the compiler is rebuilt from the unmutated source so the test
+# programs embed the mutant runtime.  Each item is (name, file, old, new).
 RUNTIME_MUTANTS = [
     # template decimal transport and escaping (0.15)
     ("template: sqlWhere omits per-predicate parentheses",

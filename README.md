@@ -77,8 +77,9 @@ interface members are 0.18 and decimal function values and captures are 0.19.
   `Result[decimal]`, in every member tier; an interface call loads its vtable by
   the explicit argument byte count rather than `8*n`, and `recordParamFree`
   maps a parameter offset to its index by parameter size. The HTML escaping
-  library is in `obo/lib/html.obx`. Interface handles `^I`, decimal function
-  values and captures (D4b) and the database read bridge (D6) are later. An
+  library is in `obo/lib/html.obx`. Interface handles `^I`, named function
+  values and stored closures are later; D4b is implemented at `0.19`/format 12/
+  ABI 1, and the database read bridge D6 is released. An
   experimental cinterop v2 boundary adds
   `foreign` handles, owned and borrowed C pointers, body-less `native fn`
   declarations, generated `_out` records and a leak census for its own libpq,
@@ -255,7 +256,7 @@ character, reserved bits 40..63 of the third word, a sign other than 0/1, a zero
 with sign 1 or a nonzero exponent, and a coefficient above `10^38-1`; a
 source-less `--check` builds the value from those bytes alone.
 
-**Still to come.** D4a, decimal method and interface-member parameters and
+**Status.** D4a, decimal method and interface-member parameters and
 returns (including the interface vtable offset and the `pfree` mask fixes), was
 released as `0.18`/format 11 and is described above; D4b, decimal function
 values, lambdas and 24-byte capture snapshots, is implemented on the
@@ -263,11 +264,12 @@ values, lambdas and 24-byte capture snapshots, is implemented on the
 `lib/decimals.obx` module (`floor`/`ceil`/`trunc`/`round`/`roundAway`, `abs`/
 `neg`/`sign`/`isZero`/`cmp`/`min`/`max`, `sum`, largest-remainder `allocate` and
 `allocateWeighted`, and `formatGrouped`), is released with the 0.17 line as a
-library-only addition; it changes no compiler, runtime, format or seed. D6 is the database read bridge: a
-`DecimalOrNull` closed type and `getDecimal` in each adapter; writes already
-travel losslessly as `DecimalText`, and there is no `SqlArg.Decimal` or
-`decimal(p,s)` in this tier. `string(decimal)` stays a compile error; use
-`decimal::format`.
+library-only addition; it changes no compiler, runtime, format or seed. D6, the
+database read bridge (`DecimalOrNull` and `getDecimal` in each adapter), is
+released (merge `4a32742`); writes already travel losslessly as `DecimalText`,
+and there is no `SqlArg.Decimal` or `decimal(p,s)` in this tier. The remaining
+decimal work is none; `^I`, named function values and stored closures remain
+later. `string(decimal)` stays a compile error; use `decimal::format`.
 
 ### Decimal function values, lambdas and captures 0.19 (this branch)
 
@@ -339,9 +341,9 @@ interface. One constraint: an impure member cannot be called through an
 interface stored in a record or a global, so the server must keep the handler in
 a local or pass it as an `&I` parameter, not in a `Server` field or a global; I2
 changes `experimental/http1server` and its design note, not the compiler. Async
-libpq and a deferred response follow after I2. D6 decimal work and `^I`
-remain later (D4a is released as 0.18, D4b is on the `decimal-d4b` branch as
-0.19, and D5 as the library-only `lib/decimals.obx`).
+libpq and a deferred response follow after I2. `^I` remains later (D4a is
+released as 0.18, D4b is implemented as 0.19 on the `decimal-d4b` branch, D5 as
+the library-only `lib/decimals.obx`, and D6 is released).
 
 ### Decimal methods and interface members 0.18 (released)
 
@@ -386,10 +388,11 @@ not move.
 **Still to come.** D4b adds decimal function values, non-capturing lambdas with
 decimal signatures and 24-byte Stage B capture snapshots; it must define the
 destination-pointer and cell layout for a call through a function value first.
-D6 remains the database read bridge (`DecimalOrNull` and `getDecimal` in each
-adapter); writes already travel losslessly as `DecimalText`. D5 is the
-already-released library-only `lib/decimals.obx`. No part of D4b or D6 is
-claimed here.
+D4b is implemented as `0.19`/format 12/ABI 1 on the `decimal-d4b` branch. D6,
+the database read bridge (`DecimalOrNull` and `getDecimal` in each adapter), is
+released (merge `4a32742`); writes already travel losslessly as `DecimalText`.
+D5 is the already-released library-only `lib/decimals.obx`. No part of D4b is
+claimed as merged here.
 
 ### Field visibility 0.13
 
@@ -554,8 +557,10 @@ scalar tier is `0.12`/format 6, the decimal storage tier (fields, arrays,
 globals and constants) is `0.16`/format 9/ABI 1, impure interface members are
 `0.17`/format 10/ABI 1, and decimal methods and interface members are
 `0.18`/format 11/ABI 1, with the seed at 0.18. D4b (decimal function values,
-lambdas and captures) is next, then D6 (the database read bridge); I2 follows
-after that. `^I` remains later work; its phase 2a design is in
+lambdas and captures) is implemented at `0.19`/format 12/ABI 1 on the
+`decimal-d4b` branch; D6 (the database read bridge) is released, so the
+remaining decimal work is none. `^I`, named function values and stored closures
+remain later, and I2 follows. `^I` remains later work; its phase 2a design is in
 [obo/design/interface-handles-design.md](obo/design/interface-handles-design.md). The
 lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md).
 
@@ -566,8 +571,8 @@ lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md)
 | Lambdas Stage B | merged, promoted and pushed at 0.11/format 6/ABI 1; `^I` follows Stage B |
 | Decimal scalar tier | released at 0.12/format 6/ABI 1 |
 | Decimal storage: fields, arrays, globals, constants | released at 0.16/format 9/ABI 1 |
-| Decimal methods and interface members (D4a) | released at 0.18/format 11/ABI 1; next is D4b: decimal function values, non-capturing lambdas with decimal signatures and 24-byte capture snapshots, then D6: the database read bridge (`DecimalOrNull`/`getDecimal`); `lib/decimals.obx` (D5) is released on the 0.17 line (library only, no version or format change) |
-| Impure interface members | released at 0.17/format 10/ABI 1; I2 follows D4b and D6: an `http1server` interface handler and data-carrying response, with the handler in a local or `&I` parameter, not a `Server` field or global; async libpq and a deferred response after that |
+| Decimal methods and interface members (D4a) | released at 0.18/format 11/ABI 1; D4b (decimal function values, non-capturing lambdas with decimal signatures and 24-byte capture snapshots) is implemented at 0.19/format 12/ABI 1; D6 (the database read bridge, `DecimalOrNull`/`getDecimal`) is released, and the remaining decimal work is none; `lib/decimals.obx` (D5) is released on the 0.17 line (library only, no version or format change) |
+| Impure interface members | released at 0.17/format 10/ABI 1; I2 follows D4b: an `http1server` interface handler and data-carrying response, with the handler in a local or `&I` parameter, not a `Server` field or global; async libpq and a deferred response after that |
 | cinterop v2 | experimental stages (a)–(h) merged: `foreign` handles, out records, leak census and the libpq/SQLite/PostgreSQL packages, plus a SQL Server ODBC adapter in `db/mssql`; not a stable API, no threads |
 | Systems library | `obo/experimental/sys`: P0/P1a/P1b/P2/P2q merged (P1b the practical-filesystem slice); P3 processes/signals in progress; threads design-only |
 | Peephole/optimizer audit | evidence-gated |
@@ -706,7 +711,7 @@ cd obo && python3 tests/tools.py --memory              # the four pinned tool me
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.18 sym-format 11 abi 1 (the promoted 0.18 seed is the same image)
+cd obo && ./obo --version                # obo 0.19 sym-format 12 abi 1 (the promoted 0.18 seed built this image once)
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 

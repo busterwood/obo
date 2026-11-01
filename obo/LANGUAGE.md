@@ -1409,8 +1409,8 @@ result is the caller's ordinary result. Purity here is the existing compiler pre
 referential-purity guarantee; ref-counted string writes follow their existing rules.
 
 A lambda body cannot use an enclosing local or parameter by implicit capture. A referenced
-outer local produces the capture-list diagnostic; capture lists themselves are a Stage B
-feature and are not accepted by this compiler. A lambda cannot appear in a `while` condition,
+outer local produces the capture-list diagnostic; capture lists are the Stage B feature
+described in section 5d. A lambda cannot appear in a `while` condition,
 a `defer` body, a global/constant initializer, or outside a function. A bare lambda is not a
 statement and cannot be invoked directly.
 

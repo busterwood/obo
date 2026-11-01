@@ -283,6 +283,36 @@ replacing that seed.
   dynamic dispatch and effect tiers. `OBO_VERSION` 0.8, symbol format 4, ABI 1.
   The 507,905-byte seed (sha256 `673ae7ba…`) was promoted. `^I` is not in 0.8;
   it follows lambda Stage B.
+- **0.9.** Lambda Stage A: non-capturing literals, structural function types and
+  indirect calls. `OBO_VERSION` 0.9, symbol format 5, ABI 1.
+- **0.10.** Numeric floats: exact literal/constant conversion, arithmetic and
+  formatting. `OBO_VERSION` 0.10, symbol format 6, ABI 1.
+- **0.11.** Lambda Stage B: explicit capture lists, including one-word float
+  snapshots. `OBO_VERSION` 0.11, symbol format 6, ABI 1.
+- **0.12.** The decimal scalar tier: the 24-byte value, exact `+ - * %`,
+  comparisons, `decimal::div`/`quantize`/`toInt`, and display scale.
+  `OBO_VERSION` 0.12, symbol format 6, ABI 1.
+- **0.13.** Private-by-default record fields with per-field `pub` and opaque
+  `priv`/`priviface` `.sym` slots. `OBO_VERSION` 0.13, symbol format 7, ABI 1.
+- **0.14.** The decimal text API: `parse`, `format`, `canonical`, `check`,
+  `exponent` and `dscale`. `OBO_VERSION` 0.14, symbol format 7, ABI 1.
+- **0.15.** Compiler-known `sql`/`html` template literals and the HTML escaping
+  library. `OBO_VERSION` 0.15, symbol format 8, ABI 1.
+- **0.16.** Decimal storage: record fields, `[]decimal`, globals and literal
+  constants. `OBO_VERSION` 0.16, symbol format 9, ABI 1.
+- **0.17.** Impure interface members with the maximum synthetic summary.
+  `OBO_VERSION` 0.17, symbol format 10, ABI 1.
+- **0.18.** Decimal methods and interface members, including
+  `Result[decimal]`, plus the interface vtable-offset and `recordParamFree`
+  fixes. `OBO_VERSION` 0.18, symbol format 11, ABI 1.
+- **0.19.** Decimal function values, lambda parameters/returns and 24-byte
+  decimal capture snapshots. `OBO_VERSION` 0.19, symbol format 12, ABI 1. It is
+  implemented on the `decimal-d4b` branch pending merge; the seed remains 0.18
+  and is promoted by the coordinator.
+
+D5 (`lib/decimals.obx`) and D6 (the exact database read bridge,
+`DecimalOrNull`/`getDecimal`, merged as `4a32742`) are library-only additions;
+they change no compiler, runtime, symbol format or seed. D6 is released.
 
 `Result[T]`/`try`, incremental I/O and modules (source imports plus `.sym` files
 and `--check`) landed before and alongside those versions and remain current. The

@@ -203,7 +203,8 @@ The `SYM_FORMAT` 8 → 9 and `OBO_VERSION` 0.16 bump lands here, with the first
 green; seed not promoted.** The frame layout, capture layout, `.sym` decision,
 refusals, tests/mutants and implementation order are in
 [decimal-d4b-layout.md](decimal-d4b-layout.md). The layout note remains revision
-2 (approved with nits); the branch is three implementation commits plus docs.
+2 (approved with nits); the branch has four code commits (`2db55b2`,
+`050580b`, `87ba52e`, `4f3136b`) plus docs.
 
 The blocker is recorded here for the review history. Function values push the
 cell at `callFnWith` (`obo.obo:7199-7213`), after the hidden destination pointer
