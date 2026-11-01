@@ -7,10 +7,10 @@ host.
 
 **It is not a gate.** No script under `obo/tests/` and no CI job runs it. The
 numbers are host-dependent; treat them as relative measurements from one run,
-not as portable facts. The recorded table below is an obo 0.14 run measured on
-31 October 2026 at main `1db9995`. Everything on the obo side was built from
-that tree by `run.py`; the repo's own eza is the 262,145-byte binary (sha256
-`4d30009f…`). The pinned eza reference was not present on `PATH`, so that row
+not as portable facts. The recorded table below is an obo 0.15 run measured on
+1 November 2026 at main `57298f3`. Everything on the obo side was built from
+that tree by `run.py`; the repo's own eza is the 270,337-byte binary (sha256
+`53bf3a06…`). The pinned eza reference was not present on `PATH`, so that row
 was skipped and no reference binary was substituted. The historical 0.5 / 0.6
 sample and its provenance are in [`HISTORY.md`](../../../HISTORY.md).
 
@@ -83,15 +83,15 @@ runtime binaries that `make -C obo obo` normally produces (gitignored).
 
 ## Sample output
 
-One recorded run on the host named in the header, at `main` commit `1db9995`.
+One recorded run on the host named in the header, at `main` commit `57298f3`.
 The pinned eza reference was absent from `PATH`, so the suite skipped that row
 with a note (this run passed no `--eza` path):
 
 ```text
 obo CLI benchmark suite (on-demand; NOT a gate, not run by CI)
 repo:      /path/to/checkout
-git:       main @ 1db9995
-compiler:  obo 0.14 sym-format 7 abi 1
+git:       main @ 57298f3
+compiler:  obo 0.15 sym-format 8 abi 1
 python:    Python 3.12.3  (/usr/bin/python3)
 cpu:       AMD Ryzen 7 8745HS w/ Radeon 780M Graphics
 kernel:    Linux-6.18.54.1-microsoft-standard-WSL2-x86_64-with-glibc2.39
@@ -103,72 +103,73 @@ env:       LC_ALL=C LANG=C TZ=UTC; OBO_*/OBX_*/PYTHON*/POSIXLY_CORRECT unset; ti
 implementation                       median     ratio
 
 process startup (hello; 40 runs per repetition)
-  obo hello (static binary)           0.20 ms     1.00x
-  python3 -c pass                     11.8 ms    58.54x
-  python3 -c print("hi")              11.8 ms    58.38x
+  obo hello (static binary)           0.24 ms     1.00x
+  python3 -c pass                     15.6 ms    66.34x
+  python3 -c print("hi")              15.4 ms    65.51x
 
 fib(32) recursive
-  obo fib                             10.2 ms     1.00x
-  python3 fib.py                     204.9 ms    20.04x
+  obo fib                             11.6 ms     1.00x
+  python3 fib.py                     240.9 ms    20.82x
 
 sum of integers below 100,000,000 (explicit loop)
-  obo loopsum                         22.1 ms     1.00x
-  python3 loopsum.py                 7,179 ms   324.68x
+  obo loopsum                         24.9 ms     1.00x
+  python3 loopsum.py                 8,828 ms   353.84x
 
 sum(range(100,000,000)) (reference; a different algorithm)
-  python3 sum(range)                 889.3 ms    40.22x
+  python3 sum(range)                 1,087 ms    43.55x
 
 sieve of Eratosthenes <= 10,000,000
-  obo sieve                          135.9 ms     1.00x
-  python3 sieve.py                   2,204 ms    16.22x
+  obo sieve                          174.1 ms     1.00x
+  python3 sieve.py                   2,933 ms    16.85x
 
 wc -l on 110,000,000 B
-  obo wc -l                           78.1 ms     1.00x
-  python3 wc_lines.py                 71.9 ms     0.92x
-  GNU wc -l (ref)                     11.4 ms     0.15x
+  obo wc -l                           90.0 ms     1.00x
+  python3 wc_lines.py                 85.9 ms     0.95x
+  GNU wc -l (ref)                     15.4 ms     0.17x
 
 wc -lwc on 110,000,000 B
-  obo wc -lwc                        126.4 ms     1.00x
-  python3 wc_full.py                 471.8 ms     3.73x
-  GNU wc -lwc (ref)                1,005 ms       7.95x
+  obo wc -lwc                        146.0 ms     1.00x
+  python3 wc_full.py                 595.5 ms     4.08x
+  GNU wc -lwc (ref)                1,144 ms       7.84x
 
 sort 1,000,000 lines
-  obo sort                           173.3 ms     1.00x
-  python3 sort.py                    585.3 ms     3.38x
-  GNU sort (ref)                     245.7 ms     1.42x
+  obo sort                           319.3 ms     1.00x
+  python3 sort.py                    848.8 ms     2.66x
+  GNU sort (ref)                     352.1 ms     1.10x
 
 sort -n 1,000,000 lines (numeric order)
-  obo sort -n                        196.6 ms     1.00x
-  GNU sort -n (ref)                  476.7 ms     2.43x
-  python3 sorted(key=int) (ref)      495.1 ms     2.52x
+  obo sort -n                        378.1 ms     1.00x
+  GNU sort -n (ref)                  697.7 ms     1.85x
+  python3 sorted(key=int) (ref)      629.7 ms     1.67x
 
 eza 10,000 names
-  obo eza                             29.8 ms     1.00x
-  python3 listdir + sort              16.1 ms     0.54x
-  GNU ls -1 (ref)                     6.42 ms     0.22x
+  obo eza                             35.2 ms     1.00x
+  python3 listdir + sort              20.4 ms     0.58x
+  GNU ls -1 (ref)                     8.43 ms     0.24x
 
 binary sizes:
-  hello                73,729 B
-  fib                  73,729 B
-  loopsum              73,729 B
-  sieve                73,729 B
-  cat (tool)           86,017 B
-  wc (tool)            90,113 B
-  sort (tool)         114,689 B
-  eza (tool)          262,145 B
+  hello                81,921 B
+  fib                  81,921 B
+  loopsum              81,921 B
+  sieve                81,921 B
+  cat (tool)           94,209 B
+  wc (tool)            98,305 B
+  sort (tool)         122,881 B
+  eza (tool)          270,337 B
 
 notes:
   - pinned eza: no eza on PATH (pass --eza PATH); its reference row is skipped
 
-total: 78.9 s on this host; the numbers are host-dependent.
+total: 100.3 s on this host; the numbers are host-dependent.
 ```
 
-The obo-side binaries used for these medians were built from main `1db9995`:
-cat 86,017, wc 90,113, sort 114,689, head 86,017, tail 98,305, eza 262,145
-(sha256 `4d30009f…`), and the four bench programs 73,729 each. The compiler is
-the promoted 0.14 fixed point (655,361 bytes, sha256 `d7b0c755…`); stage 2 and
-stage 3 match, and `seed/obo` is that image. The pinned eza reference was
-absent, so its timing row was skipped rather than substituted. The earlier
+The obo-side binaries used for these medians were built from main `57298f3`:
+cat 94,209, wc 98,305, sort 122,881, head 94,209, tail 106,497, eza 270,337
+(sha256 `53bf3a06…`), and the four bench programs 81,921 each. The compiler is
+the 0.15 fixed point (700,417 bytes, sha256 `8ca8e59e…`); stage 2 and stage 3
+match, and `seed/obo` is the promoted 0.15 image (same size and hash). The 0.14
+seed (655,361 bytes, `d7b0c755…`) built it once. The pinned eza reference
+was absent, so its timing row was skipped rather than substituted. The earlier
 0.5 / 0.6 sample is preserved in [`HISTORY.md`](../../../HISTORY.md).
 
 `--quick` changes the workload sizes as well as the repetition counts, so its
@@ -238,8 +239,8 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
   isolates the numeric key path, not a different result. `sort_n.py` is a
   plain-integer reference (`sorted(key=int)`), kept only when byte-identical
   and skipped with a note otherwise. obo's `sort -n` uses a stable numeric
-  radix sort and beats GNU `sort -n` on this fixture (196.6 ms against
-  476.7 ms in the recorded run); that is one fixture, not a general claim.
+  radix sort and beats GNU `sort -n` on this fixture (378.1 ms against
+  697.7 ms in the recorded run); that is one fixture, not a general claim.
 * **`sum(range(n))` is a reference, not an equivalent.** It is Python's
   C-level builtin and is labeled as a different algorithm; it is in the table to
   show what the same arithmetic costs without a Python-level loop.

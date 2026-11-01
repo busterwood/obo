@@ -170,38 +170,40 @@ statuses (1, 3, 4, 5, 6), as documented in `obo/LANGUAGE.md` section 9.
 ## Performance
 
 These are one host's measurements, not portable constants: an AMD Ryzen 7
-8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4 and **obo 0.14 sym-format
-7 abi 1**, main `1db9995`, measured on 31 October 2026. The table is the second
-of two default runs; the runs differed most on Python startup, the explicit
-loop, `wc -l` and `sort -n` (up to about 10%), while most other obo rows stayed
-within about 3%. The benchmark uses warm page cache, one pinned core, medians
-of repeated runs, timed output to `/dev/null`, `LC_ALL=C` and `TZ=UTC`; the
-command is `python3 obo/bench/cli/run.py` (add `--eza PATH`, or have a matching
-eza on `PATH`, for the optional pinned-eza row). The pinned eza 0.23.3
-reference was not on this host's `PATH`, so that row was skipped. Full tables,
-binary sizes, memory figures, methodology and caveats are in
+8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4 and **obo 0.15 sym-format
+8 abi 1**, main `57298f3`, measured on 1 November 2026. The table is the second
+of two default runs; the runs differed most on startup, `sieve`, `sort -n`,
+`sort` and `wc -l`, and Python/GNU reference rows moved by up to about 16%.
+The benchmark uses warm page cache, one pinned core, medians of repeated runs,
+timed output to `/dev/null`, `LC_ALL=C` and `TZ=UTC`; the command is
+`python3 obo/bench/cli/run.py` (add `--eza PATH`, or have a matching eza on
+`PATH`, for the optional pinned-eza row). The pinned eza 0.23.3 reference was
+not on this host's `PATH`, so that row was skipped. Full tables, binary sizes,
+memory figures, methodology and caveats are in
 [PERFORMANCE.md](PERFORMANCE.md); how to run and read the suite is in
 [obo/bench/cli/README.md](obo/bench/cli/README.md). The earlier 0.5 / 0.6
 sample is historical and lives in [HISTORY.md](HISTORY.md).
 
 | Workload | obo | Comparison |
 |---|---:|---:|
-| Process startup | 0.20 ms | Python 11.8 ms (58.5x slower) |
-| `fib(32)` recursive | 10.2 ms | Python 204.9 ms (20.0x slower) |
-| Sum below 100,000,000, explicit loop | 22.1 ms | Python 7,179 ms (324.7x slower) |
-| Sieve of Eratosthenes to 10,000,000 | 135.9 ms | Python 2,204 ms (16.2x slower) |
-| `wc -l`, 110 MB | 78.1 ms | Python 71.9 ms (0.92x); GNU 11.4 ms (0.15x) |
-| `wc -lwc`, 110 MB | 126.4 ms | Python 471.8 ms (3.73x slower); GNU 1,005 ms (7.95x slower) |
-| `sort`, 1,000,000 lines | 173.3 ms | Python 585.3 ms (3.38x slower); GNU 245.7 ms (1.42x slower) |
-| `sort -n`, 1,000,000 lines | 196.6 ms | GNU 476.7 ms (2.43x slower); Python 495.1 ms (2.52x slower) |
-| `eza`, 10,000 names | 29.8 ms | Python 16.1 ms and GNU `ls` 6.42 ms are faster; pinned eza row skipped |
+| Process startup | 0.24 ms | Python 15.6 ms (65.5x slower) |
+| `fib(32)` recursive | 11.6 ms | Python 240.9 ms (20.8x slower) |
+| Sum below 100,000,000, explicit loop | 24.9 ms | Python 8,828 ms (353.8x slower) |
+| Sieve of Eratosthenes to 10,000,000 | 174.1 ms | Python 2,933 ms (16.9x slower) |
+| `wc -l`, 110 MB | 90.0 ms | Python 85.9 ms (0.95x); GNU 15.4 ms (0.17x) |
+| `wc -lwc`, 110 MB | 146.0 ms | Python 595.5 ms (4.08x slower); GNU 1,144 ms (7.84x slower) |
+| `sort`, 1,000,000 lines | 319.3 ms | Python 848.8 ms (2.66x slower); GNU 352.1 ms (1.10x slower) |
+| `sort -n`, 1,000,000 lines | 378.1 ms | GNU 697.7 ms (1.85x slower); Python 629.7 ms (1.67x slower) |
+| `eza`, 10,000 names | 35.2 ms | Python 20.4 ms and GNU `ls` 8.43 ms are faster; pinned eza row skipped |
 
-The compiler is the 655,361-byte 0.14 fixed point (sha256 `d7b0c755…`);
-`seed/obo` is the same image. The tools are cat 86,017, wc 90,113, sort
-114,689, head 86,017 and tail 98,305 bytes; eza is 262,145 bytes. Every obo
-binary is freestanding and static, with the runtime included. The benchmark
-rows above are the current 0.14 line. The honest shape of these numbers is in
-[PERFORMANCE.md](PERFORMANCE.md): pure compute is far ahead of CPython, while
+The compiler is the 700,417-byte 0.15 fixed point (sha256 `8ca8e59e…`), and
+`seed/obo` is the promoted 0.15 image (same size and hash); the 0.14 seed
+(655,361 bytes, `d7b0c755…`) built it once. The tools are cat 94,209, wc
+98,305, sort 122,881, head 94,209 and tail 106,497 bytes; eza is 270,337 bytes.
+Every obo binary is freestanding and static, with the runtime included. The
+benchmark rows above are the current 0.15 line. The honest shape of these
+numbers is in [PERFORMANCE.md](PERFORMANCE.md): pure compute is far ahead of
+CPython, while
 `wc -l` is close to Python and behind GNU, eza is slower than Python and `ls`
 on names (its case is size and memory), and the sort rows are fixture-specific.
 
