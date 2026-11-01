@@ -239,9 +239,13 @@ constant is a literal or a unary-minus literal (`const RATE = 0.0825`,
 with `decimal constants must be a literal; arithmetic is not folded`. A constant
 takes no storage of its own; each use materialises its three words into a
 temporary. `-0.00` is positive zero and keeps its written display scale. Decimal
-captures, methods, interfaces and function values are not implemented yet and are
-refused with a clear diagnostic. `?decimal` is not representable; there is no raw-bits
-access and no owned or mutable decimal.
+methods and interface members work (0.18): a decimal is a method parameter and
+return value, including `Result[decimal]`, and a decimal-returning method is called
+directly or through an interface's vtable. A decimal is never a receiver, and a
+decimal member can be `pure`, plain, `mut` or `impure` like any other. Decimal
+captures and decimal function values (a function type with a decimal parameter or
+return) are not implemented yet and are refused with a clear diagnostic. `?decimal`
+is not representable; there is no raw-bits access and no owned or mutable decimal.
 
 ```obo
 // example: runs
@@ -267,6 +271,25 @@ var total: decimal
 
 fn main() {
     println(RATE, " ", total, " ", RATE + 1.0, " ", NEG0)
+}
+```
+
+A decimal method and an interface member (0.18):
+
+```obo
+// example: runs
+// prints 13.30
+// prints 11.00
+type Account = ref record { v: decimal }
+fn (a: &Account) add(x: decimal, y: decimal): decimal { return a.v + x + y }
+type Ledger = interface { pure fn add(x: decimal, y: decimal): decimal }
+impl Ledger for Account
+
+fn main() {
+    let a = new Account{v: 10.00}
+    println(a.add(1.10, 2.20))
+    let l: Ledger = a
+    println(l.add(0.50, 0.50))
 }
 ```
 
@@ -1081,8 +1104,8 @@ either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I
 of its own kind with fields or identity. Interfaces arrived in `0.8`; additive
 builtin/runtime extensions use patch releases such as the historical `0.8.1`.
 Lambdas are `0.9`, numeric floats are `0.10`/format 6, Stage B capture lists are
-`0.11`/format 6, the impure member tier is `0.17`/format 10, and handles to
-interfaces (`^I`) are a later phase.
+`0.11`/format 6, the impure member tier is `0.17`/format 10, decimal members are
+`0.18`/format 11, and handles to interfaces (`^I`) are a later phase.
 
 ### Declarations and implementations
 
@@ -1103,6 +1126,7 @@ impl Shape for Square
 - `type I = interface { ... }` declares an interface; it needs at least one member, is never forward-declared,
   and a member is `[pure | impure] [mut] fn name(params)[: T]`. `pure`, `impure` and `mut` come before `fn`
   (`pure` and `impure` are mutually exclusive); `pub` is not allowed on a member (mark the interface type `pub`).
+  A member may take or return a decimal (0.18), and a decimal is never a receiver.
   A member cannot take or return a function value.
 - A member's receiver is parameter 0: borrowed for `fn`, mutable for `mut fn`; it is not written in the member.
   Explicit parameters are owned `p: T`, borrowed `p: &T`, or mutable borrowed `mut p: &T`. `mut p: T` is the
@@ -1701,9 +1725,10 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.17 sym-format 10 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.18 sym-format 11 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
-when a `.sym` is read. The historical `0.16` release printed
+when a `.sym` is read. The historical `0.17` release printed
+`obo 0.17 sym-format 10 abi 1`, the `0.16` release printed
 `obo 0.16 sym-format 9 abi 1`, the `0.15` release printed
 `obo 0.15 sym-format 8 abi 1`, and the `0.14` release printed
 `obo 0.14 sym-format 7 abi 1`, `0.12` printed `obo 0.12 sym-format 6 abi 1`,
@@ -1718,9 +1743,9 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 10
+obosym 11
 abi 1
-compiler "0.17"
+compiler "0.18"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -2795,8 +2820,8 @@ depend on the program.
 ## 12. Known holes and planned changes
 
 Decimal is the released minimum scalar tier at 0.12; record fields, `[]decimal`,
-globals and constants follow in 0.16: no decimal methods, lambdas/captures or
-interfaces; no
+globals and constants followed in 0.16, and methods and interface members in 0.18:
+no decimal lambdas/captures or function values; no
 `format`/`parse` stdlib, database adapter, `decimal(p,s)` syntax, float interop
 or owned/mut decimal. Display scale is independent metadata, and a multiply
 caps the propagated display scale at the 38-digit rule without changing the

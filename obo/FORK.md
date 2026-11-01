@@ -6905,6 +6905,117 @@ pass it as an `&I` parameter, not in a `Server` field or a global, or I2 needs a
 compiler change this stage excludes. I2 changes `experimental/http1server` and
 its design note, not the compiler.
 
-**Pre-existing follow-up (not changed here).** The `.sym` interface reader does
-not reject a forged `decimal` member parameter or return that the source parser
-refuses. This is present on `50cca0a` and is a separate reader-consistency fix.
+## Decimal methods and interface members (0.18, format 11, ABI 1), stage D4a
+
+Stage D4a of `design/decimal-storage-plan.md` makes a decimal a method parameter
+and return value, including `Result[decimal]`, and an interface member parameter
+and return in every tier (`pure`, plain, `mut` and `impure`). `OBO_VERSION` is
+`0.18`, `SYM_FORMAT` is `11`, `SYM_ABI` stays `1`: the vtable shape, descriptors,
+argument stride and return protocol are unchanged. The format bump is a meaning
+change, not a text grammar change: a 0.17 reader can parse the same signature
+text, but its interface call path still raises
+`internal error: a decimal-returning interface or function value is not supported`
+for a decimal-returning member, and a decimal *parameter* would dispatch with the
+old `8*n` vtable offset and corrupt the call. A file that a 0.17 reader cannot run
+must be rejected before its body is read, so format 10 is refused with the exact
+check.
+The old note that the reader accepted a decimal member the source parser refused
+is closed by this stage: the source parser now accepts it too.
+
+**Methods.** A decimal method parameter is a 24-byte by-value slot and its return
+uses the same hidden destination pointer as a direct function: the callee reads
+it at `16 + visibleTypeParamsBytes(params)` and the caller pushes it above the
+receiver and the explicit arguments. A method value and a method call through a
+receiver's field work unchanged; a decimal is still never a receiver (`&decimal`
+is refused as not borrowable), and function values with decimal parameters or
+returns stay D4b refusals.
+
+**Interface members.** A member may now take and return decimal in every tier.
+The internal error at the old `decRet && (iface || fnval)` check is removed for
+interfaces (the function-value half stays until D4b). The push order at an
+interface call is now: vtable, then the hidden destination pointer, then the
+object (parameter 0), then the explicit arguments. That keeps the destination
+pointer directly above the visible parameters, where a method compiled for a
+direct call reads it, while the vtable stays above it. The dispatch load is
+therefore `explicit argument bytes + 8 (object) + 8 (destination pointer when
+the member returns decimal)`, not `8 * n`.
+
+**`recordParamFree`.** The old `len(params) - 1 - (g.offset - 16) / 8` mapping
+assumed every parameter is one word. A 24-byte decimal after a `mut` reference
+made the offset-derived index too small (often negative), so the `pfree` bit and
+its `pf` row were dropped: a free-summary soundness bug, since a caller could
+keep a reference into the mut argument across the call. It now walks the
+signature from the last parameter and maps the offset to the parameter index
+through each type's byte size (24 for decimal, 8 otherwise).
+
+**Tests.** (all with `OBO_CHECK=1`)
+- `tests/run/decimal_methods.obx`: decimal parameters only, int/decimal mixed on
+  both sides, a decimal before an owned record parameter, an owned string after
+  decimals, a mut method, `Result[decimal]`, a decimal return used in arithmetic
+  and comparison, and calls through a field value.
+- `tests/run/decimal_ifaces.obx`: `pure`, plain, `mut` and `impure` members with
+  decimal parameters and returns, two record types under one interface, direct
+  calls and dispatch through `I`, `&I` and `mut &I`, 24-byte arguments mixed with
+  int and string arguments, decimal-returning calls with no arguments, and a
+  decimal return used in arithmetic and comparison.
+- `tests/errors/decimal_methods_ifaces.obx`: wrong argument type for a method and
+  for an interface member, wrong return type in both, a decimal receiver still
+  refused, and two `pfree` soundness cases (a mut method receiver and a plain
+  mut parameter, each followed by a decimal parameter).
+- `tests/errors/decimal.obx`: the four old refusal cases for decimal method and
+  interface parameters/returns are gone; the decimal-function-value refusal stays.
+- `tests/modules/run/decimal_iface/`: a library interface with all four member
+  tiers and decimal signatures, written to `lib.sym`; the importer implements it
+  for its own type and calls it, and the library dispatches over it.
+- `tests/sym_test.py` `sym/decimal_methods_ifaces`: the canonical interface,
+  method and function signature lines, byte-identical `--reemit-sym`, a
+  source-less `--check` whose `main.sym` equals the full build's, and a format-10
+  file refused by the new reader. `sym/decimal_pfree`: the
+  `fn (mut p0: &Box) redo(p1: decimal): decimal pfree 0x1 pf 0 "=/inner"` line,
+  its round trip and its source-less check.
+
+**Mutants.** Two catalog patterns named the code this stage rewrote and were
+repointed. `interfaces v3 dispatch extra: the vtable word is read from the wrong
+stack slot` is now `decimal D4a: an interface call loads the vtable by the old
+word count, not the argument bytes` (`8 * (len(params) - start)`), caught by
+`run/decimal_ifaces` with a wrong vtable and a crash. `a parameter is recorded by
+the wrong place` now plants the old offset/8 mapping; it is caught by the new
+`errors/decimal_methods_ifaces.obx` pfree case (which compiles when the bit is
+lost) and by `sym/decimal_pfree`. One mutant is added:
+`decimal D4a: a decimal-returning interface member is refused internally`
+(restores the old `if decRet` internal error), caught by `run/decimal_ifaces`.
+The S4 multi-mutant's first anchor was repointed at the new
+`pushIfaceReceiver(a, decRet, retSlotBase, retSlotDisp)` call. The catalog count
+and the full run are below.
+
+**Fixtures.** The committed `.sym` files and harness strings are updated
+mechanically: `obosym 10` → `obosym 11`, `compiler "0.17"` → `compiler "0.18"`,
+`this compiler reads 10` → `this compiler reads 11`, and the `--version` string.
+The deliberate old-format fixtures stay old (`tests/modules/sym/format` is still
+format 8, and the `sym_test` stale cases still use 1, 3, 4, 5 and 6); a new case
+rejects format 10. The only non-version fixture changes are the new decimal test
+files and `tests/modules/sym/compiler/expect` (its message now names 0.18).
+`sym_test` compares every golden body byte for byte without `--update`, so no
+golden body changed.
+
+**Gates (after the last source change).**
+- `make obo`: `obo 0.18 sym-format 11 abi 1`; fixed point `stage2 == stage3`
+  (`cmp`), both differing from the 0.17 seed as expected.
+- `run_fork` **1,877 passed, 0 failed**; `module_test` **150 passed, 0 failed**;
+  `sym_test` **58 passed, 0 failed**.
+- `sym_fuzz` **200/200 clean** (seed 20261028, digest `896ee2b42dbe8a5c`).
+- `doc_check` **75 examples, 0 problems**.
+- `heap_test` passes; self-compile peak **2,587,360 bytes** live (budget
+  2,750,000, headroom 162,640).
+- `port_compare` **1,853 of 1,853** Stage B; the port's self-compile peak is
+  2,587,344 bytes.
+- `mutate_fork` full run: **726/756 caught, 30 equivalent, 0 missed, 0 stale,
+  0 broken** (the 0.17 catalog was 724/755 + 31 equivalent). One catalog
+  equivalent, the S4 receiver-load-order mutant, is now caught because the
+  decimal interface tests exercise the reordered receiver/destination slots; the
+  note is in the run output. `mutate_decimal` **105/105 caught**.
+
+**Release.** Not merged or promoted on this branch: `decimal-d4a` is cut from
+`main` at `f45a729` (0.17/format 10/ABI 1) and lands as one compiler commit plus
+one docs/test commit. D4b (function values, non-capturing lambdas with decimal
+signatures, Stage B captures) is next.

@@ -1,7 +1,7 @@
 # Decimal storage tier: plan
 
 **Date:** 2026-11-01
-**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`; D4 is next.
+**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented in `0.18`/format 11/ABI 1 on `decimal-d4a`, cut from `f45a729`; it also fixes the interface vtable offset and the `recordParamFree` index mapping. D4b is next.
 **Baseline:** `main` `6f83880` (obo `0.15`, `SYM_FORMAT=8`, `SYM_ABI=1`, after cinterop v2 stage d).
 **Branch/worktree:** `decimal-storage` at `.claude/worktrees/decimal-storage`.
 **Target:** one release, `0.16` / `SYM_FORMAT=9` / `SYM_ABI=1`, merged once with one seed promotion (done; see Status).
@@ -178,14 +178,22 @@ The `SYM_FORMAT` 8 → 9 and `OBO_VERSION` 0.16 bump lands here, with the first
   across modules from `.sym` only, a malformed `.sym` constant (`sym_fuzz`
   corpus), and a negative zero constant (prints `0`, positive).
 
-### D4a — methods and interface members
+### D4a — methods and interface members (done, 0.18/format 11)
 
-- Interface calls load the vtable from `[RSP+8*n]` (`obo.obo:7278`) after the
-  receiver pair is pushed (`pushIfaceReceiver` 6944). With decimal arguments,
-  the offset must be the **explicit-argument byte count** + 8, not `8*n`.
-- `recordParamFree` (`obo.obo:5003`) maps a parameter offset to an index with
-  `/8`. A 24-byte parameter shifts that and corrupts the `pfree` mask, which is
-  a free-summary soundness bug. Map by parameter index, not by offset.
+- Interface calls load the vtable at the **explicit-argument byte count** plus 8
+  for the object, plus 8 more when the member returns a decimal (the hidden
+  destination pointer sits between the object and the vtable), not `8*n`.
+- `recordParamFree` maps a parameter's rbp offset to its index by walking the
+  signature and each parameter's byte size (24 for decimal, 8 otherwise). The old
+  `/8` mapping dropped or misnamed a bit when a decimal followed a `mut` reference.
+- A decimal method parameter is a 24-byte slot and its return uses the direct
+  call's hidden destination pointer; a decimal interface member works in `pure`,
+  plain, `mut` and `impure` tiers. A decimal is still never a receiver. Function
+  values and captures remain D4b.
+- Tests: `tests/run/decimal_methods.obx`, `tests/run/decimal_ifaces.obx`,
+  `tests/errors/decimal_methods_ifaces.obx`,
+  `tests/modules/run/decimal_iface/`, and the `sym/decimal_methods_ifaces` and
+  `sym/decimal_pfree` cases in `tests/sym_test.py`.
 
 ### D4b — function values, lambdas and captures (write the layout first)
 
