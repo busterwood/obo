@@ -471,7 +471,12 @@ use the new result kinds.
 
 Pointer-returning kinds (`cbytes`, `cstr_out`, `nonzero`) require
 `"ret_ctype"`, and the signature check compares that exact C type with the
-header. `void`/`i32`/`u32`/`i64` use their fixed C types. A kind that is not
+header. `ret_ctype` must spell an **object pointer type with `*`**, using the
+`[const] T *...` grammar (`const char *`, `void *`, `struct foo *`). A typedef
+that hides the pointer (for example a typedef whose type is a function
+pointer), a pointer to a function pointer (`void (**)(void *)`), a pointer to
+an array (`int (*)[4]`) and a function-pointer return type are refused.
+`void`/`i32`/`u32`/`i64` use their fixed C types. A kind that is not
 implemented yet (`own`, `own_opt`, `borrow`) is refused as a stage (d) kind.
 
 ### `cbytes`

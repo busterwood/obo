@@ -272,17 +272,20 @@ def load_spec(path):
             if 'ret_ctype' not in f:
                 raise ToolError("%s: ret %r needs \"ret_ctype\", the exact C return type "
                                 "(for example \"const char *\")" % (f['name'], f['ret']))
+            grammar = ("an object pointer type written with '*' as [const] T *... "
+                       "(a typedef that hides the pointer, a pointer to a function pointer and a "
+                       "pointer to an array are refused)")
             try:
                 info = parse_ctype(f['ret_ctype'])
             except ToolError as e:
-                raise ToolError("%s: ret_ctype: %s" % (f['name'], e))
+                raise ToolError("%s: ret_ctype must spell %s: %s" % (f['name'], grammar, e))
             if info[0] != 'ptr':
-                raise ToolError("%s: ret_ctype must be a pointer type, not %r"
-                                % (f['name'], f['ret_ctype']))
+                raise ToolError("%s: ret_ctype must spell %s, not %r"
+                                % (f['name'], grammar, f['ret_ctype']))
             if '(*)' in re.sub(r'\s+', '', f['ret_ctype']):
                 # The thunk treats a pointer-returning result as a data pointer in rax, never calls it.
-                raise ToolError("%s: ret_ctype must be an object pointer type, not a function pointer"
-                                % f['name'])
+                raise ToolError("%s: ret_ctype must spell %s, not a function pointer"
+                                % (f['name'], grammar))
         if f['ret'] == 'cbytes':
             length = f.get('length')
             if not isinstance(length, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', length):

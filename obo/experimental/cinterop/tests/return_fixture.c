@@ -13,6 +13,11 @@ static const char rf_tail_data[] = {'o', 'k', 0, 'j', 'u', 'n', 'k'};
 static int rf_anchor;
 static long rf_last;
 
+/* The thunk must enter every C call (both cbytes calls included) with a 16-byte aligned frame. A
+ * misaligned value call returns NULL (so a positive length exits 11); a misaligned length call
+ * returns a sentinel above the cap (so the wrapper sees nil and the test's output mismatches). */
+static int rf_aligned(void) { return (uintptr_t)__builtin_frame_address(0) % 16 == 0; }
+
 const char *rf_cb_empty(void) { return NULL; }
 int rf_cb_empty_len(void) { return 0; }
 
@@ -34,6 +39,7 @@ int rf_cb_exact_len(void) { return 4; }
 const char *rf_cb_many(const void *a, int n, const void *b, int m, int x, int y, int z, int w,
                        int v) {
     (void)a; (void)n; (void)b; (void)m; (void)x; (void)y; (void)z; (void)w; (void)v;
+    if (!rf_aligned()) return NULL;
     return "hi";
 }
 
@@ -41,16 +47,19 @@ const char *rf_cb_many(const void *a, int n, const void *b, int m, int x, int y,
  * alignment would not return 2. */
 int rf_cb_many_len(const void *a, int n, const void *b, int m, int x, int y, int z, int w, int v) {
     (void)a; (void)n; (void)b; (void)m; (void)x; (void)y; (void)z; (void)w;
+    if (!rf_aligned()) return 1000;
     return v == 9 ? 2 : 0;
 }
 
 static const char rf_even_data[] = {'a', 'b', 'c'};
 const char *rf_cb_even(const void *a, int n, const void *b, int m, int x, int y, int z, int w) {
     (void)a; (void)n; (void)b; (void)m; (void)x; (void)y; (void)z; (void)w;
+    if (!rf_aligned()) return NULL;
     return rf_even_data;
 }
 int rf_cb_even_len(const void *a, int n, const void *b, int m, int x, int y, int z, int w) {
     (void)a; (void)n; (void)b; (void)m; (void)x; (void)y; (void)z;
+    if (!rf_aligned()) return 1000;
     return w == 8 ? 3 : 0;
 }
 long rf_cb_even_len_wrong(const void *a, int n, const void *b, int m, int x, int y, int z, int w) {
@@ -68,6 +77,20 @@ const char *rf_cs_arg(long v) { return v == 5 ? "arg" : ""; }
 
 const char *rf_cb_neg(void) { return rf_over_data; }
 int rf_cb_neg_len(void) { return -1; }
+
+static const char rf_i64_data[] = {'w', 'x', 'y', 'z'};
+const char *rf_cb_i64_many(long a, long b, long c, long d, long e, long f, long g, long h) {
+    (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
+    if (!rf_aligned()) return NULL;
+    return (g == 7 && h == 9) ? rf_i64_data : NULL;
+}
+int rf_cb_i64_many_len(long a, long b, long c, long d, long e, long f, long g, long h) {
+    (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
+    if (!rf_aligned()) return 1000;
+    return (g == 7 && h == 9) ? 4 : 0;
+}
+
+int rf_i32_neg(long v) { return v == 9 ? -5 : 0; }
 
 const char *rf_cs_normal(void) { return "hello"; }
 const char *rf_cs_empty(void) { return ""; }

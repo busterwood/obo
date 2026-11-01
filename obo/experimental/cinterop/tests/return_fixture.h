@@ -33,6 +33,11 @@ int rf_cb_arg_len(long v);
 const char *rf_cs_arg(long v);
 const char *rf_cb_neg(void);
 int rf_cb_neg_len(void);
+/* All-i64 cbytes with eight C parameters: the length depends on the last two stack words. */
+const char *rf_cb_i64_many(long a, long b, long c, long d, long e, long f, long g, long h);
+int rf_cb_i64_many_len(long a, long b, long c, long d, long e, long f, long g, long h);
+/* All-i64 i32 return: sign extension of a negative value. */
+int rf_i32_neg(long v);
 
 /* 16 MiB cstr_out bound: a NUL at the last byte is accepted; no NUL within the bound exits 11. */
 const char *rf_cs_big_ok(void);

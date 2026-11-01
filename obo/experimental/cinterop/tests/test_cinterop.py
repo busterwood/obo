@@ -1679,6 +1679,8 @@ native fn rf_cs_arg(v: int): []byte
 native fn rf_cs_big_ok(): []byte
 native fn rf_prefix(v: int): int
 native fn rf_lenfirst(v: &[]int): int
+native fn rf_cb_i64_many(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int): ?[]byte
+native fn rf_i32_neg(v: int): int
 native fn rf_cs_normal(): []byte
 native fn rf_cs_empty(): []byte
 native fn rf_cs_null(): []byte
@@ -1711,6 +1713,10 @@ pub fn cs_arg(v: int): []byte { return rf_cs_arg(v) }
 pub fn cs_big_ok(): []byte { return rf_cs_big_ok() }
 pub fn prefix(v: int): int { return rf_prefix(v) }
 pub fn lenfirst(v: &[]int): int { return rf_lenfirst(v) }
+pub fn cb_i64_many(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int): ?[]byte {
+    return rf_cb_i64_many(a, b, c, d, e, f, g, h)
+}
+pub fn i32neg(v: int): int { return rf_i32_neg(v) }
 pub fn cs_normal(): []byte { return rf_cs_normal() }
 pub fn cs_empty(): []byte { return rf_cs_empty() }
 pub fn cs_null(): []byte { return rf_cs_null() }
@@ -1770,6 +1776,9 @@ fn main() {
     append(lv, 2)
     append(lv, 3)
     println("lenfirst ", retfix::lenfirst(&lv))
+    let i64m = retfix::cb_i64_many(1, 2, 3, 4, 5, 6, 7, 9)
+    if i64m == nil { println("i64many nil") } else { println("i64many ", len(i64m), " ", string(i64m)) }
+    println("i32neg ", retfix::i32neg(9))
     let cn = retfix::cs_normal()
     println("cs ", len(cn), " ", string(cn))
     let ce = retfix::cs_empty()
@@ -1802,6 +1811,7 @@ RET_WANT = [
     'empty len 0', 'one 1 A', 'nul 3 97 0 98', 'exact 4 120 121 0 122',
     'many 2 hi', 'even 3 abc', 'cbarg 2 ok', 'take 77', 'nzi 1 0',
     'csarg 3 arg', 'big 16777215', 'prefix 11', 'lenfirst 6',
+    'i64many 4 wxyz', 'i32neg -5',
     'cs 5 hello', 'cse 0', 'csn 0', 'cst 2 ok', 'void 42', 'u32 4294967295', 'nz 0 1',
     'add 42', 'sum3 16', 'nc 5', 'tag 9', 'over err over cap 2',
 ]
@@ -1821,7 +1831,7 @@ def returns_spec():
         'platform': 'x86_64-linux-gnu', 'abi': 'sysv-amd64',
         'signature_check': 'header',
         'sources': ['return_fixture.c'], 'headers': ['return_fixture.h'],
-        'libs': [], 'cflags': [], 'wrapper': 'retfix_wrap.obx',
+        'libs': [], 'cflags': ['-fno-omit-frame-pointer'], 'wrapper': 'retfix_wrap.obx',
         'functions': [
             cb('rf_cb_empty'), cb('rf_cb_one'), cb('rf_cb_nul'),
             cb('rf_cb_null_pos'), cb('rf_cb_over'), cb('rf_cb_exact'),
@@ -1849,6 +1859,11 @@ def returns_spec():
              'ctypes': ['const char *', None], 'ret': 'i64', 'effects': ['impure']},
             {'name': 'rf_lenfirst', 'symbol': 'rf_lenfirst',
              'args': ['ints@0:len', 'ints@0:i32'], 'ret': 'i64', 'effects': ['impure']},
+            {'name': 'rf_cb_i64_many', 'symbol': 'rf_cb_i64_many',
+             'args': ['i64'] * 8, 'ret': 'cbytes', 'length': 'rf_cb_i64_many_len', 'cap': 8,
+             'ret_ctype': 'const char *', 'effects': ['impure']},
+            {'name': 'rf_i32_neg', 'symbol': 'rf_i32_neg', 'args': ['i64'], 'ret': 'i32',
+             'effects': ['impure']},
             ret_func('rf_cs_normal', 'cstr_out', ret_ctype='const char *'),
             ret_func('rf_cs_empty', 'cstr_out', ret_ctype='const char *'),
             ret_func('rf_cs_null', 'cstr_out', ret_ctype='const char *'),
@@ -2121,29 +2136,39 @@ def returns(tmp):
     else:
         raise Fail("a v2 call against a typed return was accepted")
 
-    # declarations-only is a valid /2 mode; a function-pointer ret_ctype is not.
+    # declarations-only is a valid /2 mode; a non-object-pointer ret_ctype is not.
     ds = {'format': 'cinterop-proto/2', 'module': 'one',
           'platform': 'x86_64-linux-gnu', 'abi': 'sysv-amd64',
           'signature_check': 'declarations-only',
           'declarations': ['long rf_add(long, long);'],
+          'wrapper': 'one_wrap.obx',
           'functions': [{'name': 'rf_add', 'symbol': 'rf_add', 'args': ['i64', 'i64'],
                          'ret': 'i64', 'effects': ['impure']}]}
     dsp = os.path.join(tmp, 'declonly.cbind')
     json.dump(ds, open(dsp, 'w'), indent=2)
     tool.load_spec(dsp)
-    fp = dict(ds)
-    fp['signature_check'] = 'declarations-only'
-    fp['functions'] = [{'name': 'rf_nz', 'symbol': 'rf_nz', 'args': [], 'ret': 'nonzero',
-                        'ret_ctype': 'void (*)(void *)', 'effects': ['impure']}]
-    fpp = os.path.join(tmp, 'fnptr.cbind')
-    json.dump(fp, open(fpp, 'w'), indent=2)
-    try:
-        tool.load_spec(fpp)
-    except tool.ToolError as e:
-        if 'not a function pointer' not in str(e):
-            raise Fail("function-pointer ret_ctype: unexpected error %s" % e)
-    else:
-        raise Fail("a function-pointer ret_ctype was accepted")
+    # Every spelling below must be refused by the ret_ctype grammar, not by a missing wrapper.
+    ret_variants = [
+        ('fnptr_spaced', 'void ( * )(void *)', 'not a function pointer'),
+        ('fnptr_unprototyped', 'void (*)()', 'parameter'),
+        ('typedef_name', 'rf_dtor', 'not a pointer'),
+        ('ptr_to_fnptr', 'void (**)(void *)', 'not one C type'),
+        ('ptr_to_array', 'int (*)[4]', 'characters'),
+    ]
+    for name, ctype, want in ret_variants:
+        fp = dict(ds)
+        fp['functions'] = [{'name': 'rf_nz', 'symbol': 'rf_nz', 'args': [], 'ret': 'nonzero',
+                            'ret_ctype': ctype, 'effects': ['impure']}]
+        fpp = os.path.join(tmp, 'retctype_' + name + '.cbind')
+        json.dump(fp, open(fpp, 'w'), indent=2)
+        try:
+            tool.load_spec(fpp)
+        except tool.ToolError as e:
+            text = str(e)
+            if 'must spell an object pointer type' not in text or want not in text:
+                raise Fail("ret_ctype %s: unexpected error %s" % (name, e))
+        else:
+            raise Fail("ret_ctype %s was accepted" % name)
 
     # Sidecar v2 tamper: an unknown shape, mode or result shape is refused by the reader.
     good = open(os.path.join(out, 'native.relocs')).read().splitlines()
