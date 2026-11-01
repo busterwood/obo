@@ -598,9 +598,12 @@ is not a skip because the committed adapter is declarations-only.
   Oracle have placeholder rendering, not adapters. No HTML templates, no binary
   numeric wire format and no `Float`/binary64 binding path (code `1014`); these
   are separate future work. Scalar exact decimal text is implemented.
-- No decimal fields, `?decimal`, decimal arrays, `decimal(p,s)` language type or
-  `DecimalOrNull` wrapper. NULL is error-only (`is_null` first); `DEC_DB_NULL`
-  1001 is a defensive fallback.
+- `DecimalOrNull`/`getDecimal` implement the exact read side for all three
+  adapters (NULL is distinct from zero). The older `decimal()`/`decimal_text()`
+  accessors remain error-only: `is_null` first, and `DEC_DB_NULL` 1001 is a
+  defensive fallback. There is no `?decimal`, `decimal(p,s)` language type or
+  `SqlArg.Decimal`; writes use `DecimalText`. SQLite `getDecimal` must be called
+  after `step()`, since an unstepped statement reports no current row as NULL.
 - Domains over numeric, COPY, arrays, intervals, prepared-statement caches and
   catalog/typmod discovery beyond the result metadata are out of scope.
 - No source float arguments/results in the native contract and no `SqlArg.Float`
