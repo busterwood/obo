@@ -16,12 +16,16 @@ import json
 import os
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import h2client
 PKG = os.path.dirname(HERE)
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(PKG)))
 OBO = os.path.abspath(os.environ.get('OBO', os.path.join(REPO, 'obo', 'obo')))
@@ -162,6 +166,7 @@ def private_cbind(tmp, include_dirs):
     spec['cflags'] = ['-pthread', '-Os']
     spec['wrapper_sources'] = [
         os.path.join(PKG, 'http2.obx'),
+        os.path.join(PKG, 'http2server.obx'),
         os.path.join(REPO, 'obo', 'experimental', 'httpapi', 'httpapi.obx'),
         os.path.join(REPO, 'obo', 'experimental', 'httptransport', 'httptransport.obx'),
         os.path.join(tls_dir, 'systls.obx'),
@@ -252,6 +257,19 @@ class Server:
         self.stop()
         raise Fail('server did not print LISTEN')
 
+    def finish(self, timeout=20):
+        try:
+            out, err = self.proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            out, err = self.proc.communicate()
+            raise Fail('server did not exit after graceful shutdown')
+        text = ''.join(self.lines) + (out or '') + (err or '')
+        if self.proc.returncode != 0 or 'H2ERR' in text or 'H2LOOPERR' in text:
+            raise Fail('server reported an error:\n%s' % text)
+        self.lines = text.splitlines(True)
+        return text
+
     def stop(self):
         if self.proc.poll() is None:
             self.proc.kill()
@@ -260,8 +278,9 @@ class Server:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             out, err = self.proc.communicate()
-        if 'H2ERR' in (out or '') or 'H2ERR' in (err or ''):
-            raise Fail('server reported an error:\n%s\n%s' % (out, err))
+        text = ''.join(self.lines) + (out or '') + (err or '')
+        if 'H2ERR' in text or 'H2LOOPERR' in text:
+            raise Fail('server reported an error:\n%s' % text)
 
 
 def curl(*args, timeout=30):
@@ -298,6 +317,60 @@ def check_nghttp2_provenance(include_dirs):
     print('nghttp2 provenance: pinned 1.59.0-1ubuntu0.4 headers match')
 
 
+METRIC_FIELDS = [
+    'accepted', 'rejected', 'closedConnections', 'requests', 'streamsOpened',
+    'streamsClosed', 'protocolErrors', 'timeouts', 'acceptErrors',
+    'handlerErrors', 'watchErrors', 'handshakeFailures', 'drains',
+    'peakActive', 'active', 'reservedBytes',
+]
+
+
+def parse_metrics(text):
+    line = None
+    for item in text.splitlines():
+        if item.startswith('H2METRICS '):
+            line = item
+    need(line is not None, 'server printed no H2METRICS')
+    values = [int(x) for x in line.split()[1:]]
+    need(len(values) == len(METRIC_FIELDS), 'H2METRICS field count changed')
+    return dict(zip(METRIC_FIELDS, values))
+
+
+def parse_counts(text):
+    line = None
+    for item in text.splitlines():
+        if item.startswith('H2COUNTS '):
+            line = item
+    need(line is not None, 'server printed no H2COUNTS')
+    values = [int(x) for x in line.split()[1:]]
+    need(len(values) == 5, 'H2COUNTS field count changed')
+    return dict(zip(['liveConnections', 'liveStreams', 'closingStreams',
+                     'streamsOpened', 'streamsClosed'], values))
+
+
+def parse_platform(text):
+    line = None
+    for item in text.splitlines():
+        if item.startswith('H2PLATFORM '):
+            line = item
+    need(line is not None, 'server printed no H2PLATFORM')
+    values = [int(x) for x in line.split()[1:]]
+    need(len(values) == 4, 'H2PLATFORM field count changed')
+    return dict(zip(['resources', 'shells', 'nativeBytes',
+                     'cleanupFailures'], values))
+
+
+def tls_raw_client(port, authority):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.set_alpn_protocols(['h2'])
+    raw = socket.create_connection(('127.0.0.1', port), timeout=8)
+    sock = ctx.wrap_socket(raw, server_hostname='localhost')
+    need(sock.selected_alpn_protocol() == 'h2', 'client ALPN is not h2')
+    return h2client.H2Client(authority=authority, sock=sock)
+
+
 def main():
     if not os.path.exists(OBO):
         raise Fail('no compiler at %s; run make -C obo obo' % OBO)
@@ -327,6 +400,7 @@ def main():
     mem = build_app(tmp, spec, 'h2_mem_driver')
     h2c = build_app(tmp, spec, 'h2c_server')
     tls = build_app(tmp, spec, 'h2tls_server')
+    h2srv = build_app(tmp, spec, 'h2server')
 
     # Pure API checks.
     p = run([mem, 'unit'], timeout=60, env=dict(os.environ, OBO_CHECK='1'))
@@ -405,6 +479,250 @@ def main():
         srv.stop()
     print('h2c prior-knowledge curl interop: ok')
 
+    # H2b/H2c reactor server: multiplexed streams, flow control, abuse
+    # isolation and graceful shutdown on a cleartext prior-knowledge listener.
+    port = free_port(1744)
+    srv = Server(h2srv, ['h2c', port])
+    try:
+        need(curl('--http2-prior-knowledge',
+                  'http://127.0.0.1:%d/hello' % port) == 'hello\n',
+             'H2b h2c hello failed')
+        need(len(curl('--http2-prior-knowledge',
+                      'http://127.0.0.1:%d/big' % port)) == 20480,
+             'H2b h2c big failed')
+        curl('--http2-prior-knowledge', '-I', '-o', '/dev/null',
+             'http://127.0.0.1:%d/head' % port)
+        need(curl('--http2-prior-knowledge',
+                  'http://127.0.0.1:%d/204' % port) == '', 'H2b 204')
+        need(curl('--http2-prior-knowledge',
+                  'http://127.0.0.1:%d/304' % port) == '', 'H2b 304')
+        need(curl('--http2-prior-knowledge', '-d', 'abcdef',
+                  'http://127.0.0.1:%d/echo' % port) == 'abcdef',
+             'H2b echo failed')
+        need(curl('--http2-prior-knowledge',
+                  'http://127.0.0.1:%d/chunked' % port) ==
+             'chunk one\nchunk two\nchunk three\n', 'H2b chunked failed')
+        need(curl('--http2-prior-knowledge',
+                  'http://127.0.0.1:%d/hello' % port,
+                  'http://127.0.0.1:%d/hello' % port) ==
+             'hello\nhello\n', 'H2b connection reuse failed')
+
+        # Multiplexed concurrent streams on one connection.
+        c = h2client.H2Client(port)
+        ids = [1, 3, 5, 7, 9, 11, 13, 15]
+        paths = ['/hello', '/big', '/slow', '/chunked',
+                 '/204', '/304', '/hello', '/head']
+        for sid, path in zip(ids, paths):
+            c.request(sid, path)
+        c.collect(ids, timeout=10)
+        need(c.body(1) == b'hello\n', 'multiplex hello body')
+        need(len(c.body(3)) == 20480, 'multiplex big body')
+        need(c.body(5) == b'slow body\n', 'multiplex slow body')
+        need(c.body(7) == b'chunk one\nchunk two\nchunk three\n',
+             'multiplex chunked body')
+        need(c.body(9) == b'' and c.body(11) == b'',
+             'multiplex empty-body statuses')
+        need(c.body(13) == b'hello\n' and c.body(15) == b'',
+             'multiplex later streams')
+        need(c.goaway is None, 'multiplex connection received GOAWAY')
+        c.close()
+        print('H2b multiplexed concurrent streams: ok')
+
+        # Flow control/backpressure across many streams and a 30 KiB echo.
+        c = h2client.H2Client(port)
+        ids = list(range(1, 17, 2))
+        for sid in ids:
+            c.request(sid, '/big')
+        c.collect(ids, timeout=15)
+        need(all(len(c.body(sid)) == 20480 for sid in ids),
+             'flow-control /big bodies incomplete')
+        need(sum(len(c.body(sid)) for sid in ids) > 65535,
+             'flow-control test did not exceed the initial window')
+        c.close()
+        c = h2client.H2Client(port)
+        payload = b'x' * 30000
+        c.request(1, '/echo', method='POST', body=payload)
+        c.collect({1}, timeout=10)
+        need(c.body(1) == payload, 'flow-control echo body mismatch')
+        c.close()
+        print('H2b flow control/backpressure: ok')
+
+        # Concurrent-stream cap: exactly 32 complete; a 33-stream burst is
+        # isolated to its connection and the server keeps serving.
+        c = h2client.H2Client(port)
+        ids = list(range(1, 65, 2))
+        for sid in ids:
+            c.request(sid, '/hello')
+        c.collect(ids, timeout=10)
+        need(sum(1 for sid in ids if c.body(sid) == b'hello\n') == 32,
+             'maxConcurrentStreams did not complete 32 streams')
+        c.close()
+        c = h2client.H2Client(port)
+        ids = list(range(1, 67, 2))
+        for sid in ids:
+            c.request(sid, '/hello')
+        c.collect(ids, timeout=5)
+        need(c.goaway is not None or c.reset,
+             '33-stream burst was neither refused nor drained')
+        c.close()
+        c = h2client.H2Client(port)
+        c.request(1, '/hello')
+        c.collect({1}, timeout=5)
+        need(c.body(1) == b'hello\n', 'server did not survive stream cap')
+        c.close()
+        print('H2b max streams/connection limits: ok')
+
+        # Rapid reset (CVE-2023-44487 shape): the connection is bounded and
+        # closed/drained; a fresh connection still works.
+        c = h2client.H2Client(port)
+        for i in range(130):
+            sid = 2 * i + 1
+            c.headers_without_end(sid, '/echo')
+            c.reset_stream(sid, 8)
+        c.drain_for(2)
+        need(c.goaway is not None or c.closed, 'rapid reset was not bounded')
+        c.close()
+        c = h2client.H2Client(port)
+        c.request(1, '/hello')
+        c.collect({1}, timeout=5)
+        need(c.body(1) == b'hello\n', 'server did not survive rapid reset')
+        c.close()
+        print('H2c rapid reset isolation: ok')
+
+        # CONTINUATION flood trips the continuation/frame budget.
+        c = h2client.H2Client(port)
+        c.continuation_flood(1, 20)
+        c.drain_for(2)
+        need(c.goaway is not None or c.closed,
+             'CONTINUATION flood was not bounded')
+        c.close()
+        c = h2client.H2Client(port)
+        c.request(1, '/hello')
+        c.collect({1}, timeout=5)
+        need(c.body(1) == b'hello\n', 'server did not survive CONTINUATION flood')
+        c.close()
+        print('H2c CONTINUATION flood: ok')
+
+        # Header-list flood is refused at stream scope; connection survives.
+        c = h2client.H2Client(port)
+        c.header_flood(1, 140)
+        c.collect({1}, timeout=5)
+        need(1 in c.reset or c.goaway is not None,
+             'header-list flood was not refused')
+        c.close()
+        c = h2client.H2Client(port)
+        c.request(1, '/hello')
+        c.collect({1}, timeout=5)
+        need(c.body(1) == b'hello\n', 'server did not survive header flood')
+        c.close()
+        print('H2c header/HPACK caps: ok')
+
+        # Zero-length DATA flood trips the zero-DATA budget.
+        c = h2client.H2Client(port)
+        c.headers_without_end(1, '/echo')
+        c.empty_data(1, 300)
+        c.drain_for(2)
+        need(c.goaway is not None or c.closed, 'zero-DATA flood was not bounded')
+        c.close()
+        c = h2client.H2Client(port)
+        c.request(1, '/hello')
+        c.collect({1}, timeout=5)
+        need(c.body(1) == b'hello\n', 'server did not survive zero-DATA flood')
+        c.close()
+        print('H2c zero-DATA/frame budget: ok')
+
+        # h2c policy: no HTTP/1.1 Upgrade, and a bad preface closes only the
+        # offending connection.
+        p = run(['curl', '-sS', '--max-time', '5', '--http2',
+                 'http://127.0.0.1:%d/hello' % port])
+        need(p.returncode != 0, 'h2c Upgrade unexpectedly succeeded')
+        bad = socket.create_connection(('127.0.0.1', port), timeout=5)
+        bad.sendall(b'GET / HTTP/1.1\r\nHost: x\r\n\r\n')
+        dead = False
+        try:
+            dead = bad.recv(16) == b''
+        except OSError:
+            dead = True
+        bad.close()
+        need(dead, 'bad h2c preface was not closed')
+        c = h2client.H2Client(port)
+        c.request(1, '/hello')
+        c.collect({1}, timeout=5)
+        need(c.body(1) == b'hello\n', 'server did not survive bad preface')
+        c.close()
+        print('H2c h2c policy/preface isolation: ok')
+
+        # Graceful shutdown: GOAWAY drain, no live resources, zero counts.
+        need(curl('--http2-prior-knowledge',
+                  'http://127.0.0.1:%d/stop' % port) == 'hello\n',
+             'stop request body')
+        text = srv.finish()
+        need('H2DRAINED' in text and 'H2DONE' in text,
+             'graceful drain did not complete:\n%s' % text)
+        m = parse_metrics(text)
+        c = parse_counts(text)
+        plat = parse_platform(text)
+        need(m['active'] == 0 and m['accepted'] == m['closedConnections'],
+             'H2 server connection accounting is not balanced: %r' % m)
+        need(m['streamsOpened'] == m['streamsClosed'],
+             'H2 server stream accounting is not balanced: %r' % m)
+        need(m['protocolErrors'] > 0, 'abuse tests produced no protocol errors')
+        need(c['liveConnections'] == 0 and c['liveStreams'] == 0 and
+             c['closingStreams'] == 0, 'H2 global counts leaked: %r' % c)
+        need(c['streamsOpened'] == c['streamsClosed'],
+             'H2 global stream counts are not balanced: %r' % c)
+        need(plat['cleanupFailures'] == 0,
+             'H2 platform cleanup failures: %r' % plat)
+        print('H2c graceful shutdown/accounting: ok')
+    finally:
+        srv.stop()
+
+    # Fast-timeout profile: idle, stalled header block and body-idle deadlines
+    # close only the offending connection; the loop keeps serving.
+    port = free_port(1746)
+    srv = Server(h2srv, ['h2c', port, 'fast'])
+    try:
+        c = h2client.H2Client(port)
+        c.drain_for(1.6)
+        need(c.goaway is not None or c.closed, 'idle timeout did not close')
+        c.close()
+
+        c = h2client.H2Client(port)
+        c.stall_headers(1)
+        c.drain_for(1.0)
+        need(c.goaway is not None or c.closed or 1 in c.reset,
+             'header timeout did not bound a stalled HEADERS block')
+        c.close()
+
+        c = h2client.H2Client(port)
+        c.stalled_body(1)
+        c.drain_for(1.0)
+        need(c.goaway is not None or c.closed or 1 in c.reset,
+             'body-idle timeout did not bound a paused body')
+        c.close()
+
+        c = h2client.H2Client(port)
+        c.request(1, '/hello')
+        c.collect({1}, timeout=5)
+        need(c.body(1) == b'hello\n', 'server did not survive timeout tests')
+        c.close()
+
+        need(curl('--http2-prior-knowledge',
+                  'http://127.0.0.1:%d/stop' % port) == 'hello\n',
+             'fast-profile stop body')
+        text = srv.finish()
+        need('H2DRAINED' in text and 'H2DONE' in text,
+             'fast-profile drain did not complete:\n%s' % text)
+        m = parse_metrics(text)
+        c = parse_counts(text)
+        need(m['timeouts'] >= 3, 'timeout metrics were not recorded: %r' % m)
+        need(m['active'] == 0 and c['liveStreams'] == 0,
+             'timeout profile left live resources: %r %r' % (m, c))
+        print('H2b idle/header/body timeout isolation: ok')
+    finally:
+        srv.stop()
+
+
     # TLS ALPN h2 interop.
     certdir = os.path.join(tmp, 'certs')
     os.makedirs(certdir)
@@ -427,19 +745,71 @@ def main():
         srv.stop()
     print('TLS ALPN h2 curl interop: ok')
 
+    # H2c TLS reactor server: ALPN enforcement, multiplexing over TLS and
+    # graceful shutdown. A client offering only http/1.1 must fail the
+    # handshake; there is no downgrade.
+    port = free_port(1549)
+    srv = Server(h2srv, ['tls', port, os.path.join(certdir, 'cert.pem'),
+                         os.path.join(certdir, 'key.pem')])
+    try:
+        need(curl('-k', '--http2', 'https://127.0.0.1:%d/hello' % port) ==
+             'hello\n', 'H2c TLS hello failed')
+        need(curl('-k', '--http2', '-d', 'abcdef',
+                  'https://127.0.0.1:%d/echo' % port) == 'abcdef',
+             'H2c TLS echo failed')
+        wrong = run(['curl', '-k', '-sS', '--max-time', '5', '--http1.1',
+                     'https://127.0.0.1:%d/hello' % port])
+        need(wrong.returncode != 0, 'TLS server accepted ALPN http/1.1')
+
+        c = tls_raw_client(port, '127.0.0.1:%d' % port)
+        ids = [1, 3, 5, 7]
+        for sid in ids:
+            c.request(sid, '/hello')
+        c.collect(ids, timeout=10)
+        need(all(c.body(sid) == b'hello\n' for sid in ids),
+             'TLS multiplexed bodies mismatch')
+        c.close()
+
+        need(curl('-k', '--http2',
+                  'https://127.0.0.1:%d/stop' % port) == 'hello\n',
+             'TLS stop request body')
+        text = srv.finish()
+        need('H2DRAINED' in text and 'H2DONE' in text,
+             'TLS graceful drain did not complete:\n%s' % text)
+        m = parse_metrics(text)
+        c = parse_counts(text)
+        plat = parse_platform(text)
+        need(m['active'] == 0 and m['accepted'] == m['closedConnections'],
+             'TLS connection accounting is not balanced: %r' % m)
+        need(m['streamsOpened'] == m['streamsClosed'],
+             'TLS stream accounting is not balanced: %r' % m)
+        need(m['handshakeFailures'] >= 1,
+             'TLS server did not record the wrong-ALPN failure')
+        need(c['liveConnections'] == 0 and c['liveStreams'] == 0 and
+             c['closingStreams'] == 0, 'TLS H2 counts leaked: %r' % c)
+        need(plat['cleanupFailures'] == 0,
+             'TLS platform cleanup failures: %r' % plat)
+        print('H2c TLS ALPN + multiplex + graceful shutdown: ok')
+    finally:
+        srv.stop()
+
+
     h2spec = shutil.which('h2spec')
     h2load = shutil.which('h2load')
     if h2spec is None:
         print('h2spec: not installed (manual pinned target v2.6.0, '
-              'h2spec_linux_amd64.tar.gz; no automatic fetch)')
+              'h2spec_linux_amd64.tar.gz; no automatic fetch). Manual h2c: '
+              'h2spec -h 127.0.0.1 -p <port> -P /')
     else:
-        print('h2spec: present at %s (not run by the H2a default suite)' % h2spec)
+        print('h2spec: present at %s (manual target; the deterministic suite '
+              'does not run external protocol tools)' % h2spec)
     if h2load is None:
-        print('h2load: not installed (Ubuntu package nghttp2-client; '
-              'manual integration only)')
+        print('h2load: not installed (Ubuntu package nghttp2-client; manual '
+              'integration: h2load -n 1000 -c 10 -m 10 http://127.0.0.1:<port>/)')
     else:
-        print('h2load: present at %s (not run by the H2a default suite)' % h2load)
-    print('H2a tests: all ok')
+        print('h2load: present at %s (manual target; not run automatically)'
+              % h2load)
+    print('H2a/H2b/H2c tests: all ok')
 
 
 if __name__ == '__main__':

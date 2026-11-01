@@ -6,6 +6,7 @@
   "wrapper": "http2.obx",
   "wrapper_sources": [
     "http2.obx",
+    "http2server.obx",
     "../httpapi/httpapi.obx",
     "../httptransport/httptransport.obx",
     "../tls/systls.obx",

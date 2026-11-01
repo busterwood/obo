@@ -1,0 +1,206 @@
+// H2b/H2c loopback server driver. Not public API.
+//
+// argv: MODE PORT [CERT_PEM KEY_PEM] [PROFILE]
+//   MODE: h2c  (cleartext prior knowledge; PROFILE is argv[3])
+//         tls  (server TLS with ALPN h2 required; PROFILE is argv[5])
+//   PROFILE: default | fast (short handshake/header/body/idle timeouts)
+//
+// Prints H2LISTEN, serves until /stop (or the test harness kills it), then
+// drains, prints H2METRICS/H2COUNTS and H2DONE. The handler is an ordinary
+// pure function value routed through http2server::runOnce.
+module app
+
+import "http2.obx" as h2
+import "http2server.obx" as server
+import "httpapi.obx" as http
+import "sysaddress.obx" as address
+import "sysnet.obx" as net
+import "sysplatform.obx" as platform
+import "sysreactor.obx" as reactor
+import "systls.obx" as tls
+
+fn mk(s: string): []byte {
+    let b = new []byte(len(s))
+    for i in 0..len(s) { b[i] = s[i] }
+    return b
+}
+
+fn emit(s: string) {
+    let b = mk(s)
+    let w = writeFd(stdout(), b)
+}
+
+fn toInt(s: string): int {
+    if len(s) == 0 { return 0 }
+    var v = 0
+    for i in 0..len(s) {
+        if s[i] < '0' || s[i] > '9' { return 0 }
+        v = v * 10 + int(s[i]) - int('0')
+    }
+    return v
+}
+
+fn route(req: &http::RequestMeta, now: &http::Now): http::Action {
+    let path = req.path
+    if path == "/echo" { let a: http::Action = new http::Echo{}; return a }
+    if path == "/big" { let a: http::Action = new http::Big{}; return a }
+    if path == "/head" { let a: http::Action = new http::Head{}; return a }
+    if path == "/204" { let a: http::Action = new http::NoContent{}; return a }
+    if path == "/304" { let a: http::Action = new http::NotModified{}; return a }
+    if path == "/slow" { let a: http::Action = new http::Slow{}; return a }
+    if path == "/chunked" { let a: http::Action = new http::Chunked{}; return a }
+    if path == "/stop" { let a: http::Action = new http::Stop{}; return a }
+    if path == "/close" { let a: http::Action = new http::Close{}; return a }
+    let a: http::Action = new http::Hello{}
+    return a
+}
+
+fn serveWith(srv: server::Server, port: int,
+             h: server::Handler): Result[bool] {
+    emit("H2LISTEN " + string(port) + "\n")
+    var turns = 0
+    while !server::stopRequested(&srv) && turns < 2000000 {
+        turns += 1
+        let p = server::runOnce(&srv, h, 64)
+        match p {
+            ok(v) { }
+            err(m, c) {
+                emit("H2LOOPERR " + string(c) + "\n")
+                break
+            }
+        }
+    }
+    var stopFlag = 0
+    if server::stopRequested(&srv) { stopFlag = 1 }
+    emit("H2STOP " + string(turns) + " " + string(stopFlag) + " " +
+         string(server::active(&srv)) + "\n")
+    let n = try server::now()
+    let began = try server::beginShutdown(&srv, &n)
+    let drained = try server::drain(&srv, h, 2000)
+    let shut = try server::shutdown(&srv, &n)
+    let m = server::metrics(&srv)
+    emit("H2METRICS " + string(m.accepted) + " " +
+         string(m.rejected) + " " + string(m.closedConnections) + " " +
+         string(m.requests) + " " + string(m.streamsOpened) + " " +
+         string(m.streamsClosed) + " " + string(m.protocolErrors) + " " +
+         string(m.timeouts) + " " + string(m.acceptErrors) + " " +
+         string(m.handlerErrors) + " " + string(m.watchErrors) + " " +
+         string(m.handshakeFailures) + " " + string(m.drains) + " " +
+         string(m.peakActive) + " " + string(m.active) + " " +
+         string(m.reservedBytes) + "\n")
+    let counts = h2::counts()
+    match counts {
+        ok(c) {
+            emit("H2COUNTS " + string(c.liveConnections) + " " +
+                 string(c.liveStreams) + " " + string(c.closingStreams) + " " +
+                 string(c.streamsOpened) + " " + string(c.streamsClosed) + "\n")
+        }
+        err(m2, c2) { emit("H2COUNTSERR " + string(c2) + "\n") }
+    }
+    let pc = platform::counts()
+    match pc {
+        ok(c) {
+            emit("H2PLATFORM " + string(c.resources) + " " +
+                 string(c.shells) + " " + string(c.nativeBytes) + " " +
+                 string(c.cleanupFailures) + "\n")
+        }
+        err(m2, c2) { emit("H2PLATFORMERR " + string(c2) + "\n") }
+    }
+    if drained { emit("H2DRAINED\n") } else { emit("H2DRAININCOMPLETE\n") }
+    emit("H2DONE\n")
+    return ok(true)
+}
+
+fn makeLimits(profile: string): h2::Limits {
+    let lim = h2::defaultLimits()
+    if profile == "fast" {
+        lim.prefaceTimeoutMs = 300
+        lim.settingsTimeoutMs = 500
+        lim.headerTimeoutMs = 300
+        lim.bodyIdleTimeoutMs = 300
+        lim.responseTimeoutMs = 500
+        lim.responseTotalTimeoutMs = 1000
+        lim.streamTotalTimeoutMs = 1500
+        lim.idleTimeoutMs = 1000
+        lim.drainBarrierMs = 100
+        lim.drainTimeoutMs = 2000
+    }
+    return lim
+}
+
+fn runServer(mode: string, port: int, certPath: string,
+             keyPath: string, profile: string): Result[bool] {
+    let po = platform::defaultOptions()
+    let init = try platform::initialize(&po)
+    let addr = try address::parseNumeric("127.0.0.1", port)
+    let lo = net::listenOptions()
+    lo.backlog = 128
+    let listener = try net::listen(&addr, &lo)
+    let r = try reactor::create(512, 512)
+    let lim = makeLimits(profile)
+    let opts = h2::defaultOptions()
+    let h = fn (req: &http::RequestMeta, at: &http::Now): http::Action {
+        return route(req, at)
+    }
+    if mode == "tls" {
+        let copts = tls::serverOptions()
+        let ctx = try tls::createContext(&copts)
+        let cert = readFile(certPath)
+        if cert == nil { return err("certificate file could not be read", 3) }
+        let certBytes: []byte = cert
+        let loadedChain = try tls::loadCertificateChain(&ctx, &certBytes)
+        let key = readFile(keyPath)
+        if key == nil { return err("private key file could not be read", 3) }
+        let keyBytes: []byte = key
+        let loadedKey = try tls::loadPrivateKey(&ctx, &keyBytes)
+        let protos = new []string(0)
+        append(protos, "h2")
+        let policy: tls::AlpnPolicy = new tls::Require{protocols: protos}
+        let sa = try tls::setAlpn(&ctx, &policy)
+        let made = server::makeTls(listener, r, &lim, &opts, ctx)
+        match made {
+            ok(s) { return serveWith(s, port, h) }
+            err(m, c) { return err(m, c) }
+        }
+    }
+    if mode == "h2c" {
+        let made = server::make(listener, r, &lim, &opts)
+        match made {
+            ok(s) { return serveWith(s, port, h) }
+            err(m, c) { return err(m, c) }
+        }
+    }
+    let lc = net::closeListener(&listener)
+    let rc = reactor::close(&r)
+    return err("unknown mode", 2)
+}
+
+fn main() {
+    let av = args()
+    if len(av) < 3 {
+        emit("H2ERR usage: MODE PORT [CERT KEY]\n")
+        exit(1)
+    }
+    let mode = av[1]
+    let port = toInt(av[2])
+    var certPath = ""
+    var keyPath = ""
+    var profile = "default"
+    if mode == "tls" {
+        if len(av) >= 5 {
+            certPath = av[3]
+            keyPath = av[4]
+        }
+        if len(av) >= 6 { profile = av[5] }
+    } else if len(av) >= 4 {
+        profile = av[3]
+    }
+    let r = runServer(mode, port, certPath, keyPath, profile)
+    match r {
+        ok(v) { }
+        err(m, c) {
+            emit("H2ERR " + string(c) + "\n")
+            exit(1)
+        }
+    }
+}
