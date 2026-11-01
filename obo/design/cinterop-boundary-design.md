@@ -1,6 +1,6 @@
 # Native C interop: generic boundary types (v2 proposal, revision 4)
 
-Status: **design for independent review; no implementation authorized.**
+Status: **approved design** (2026-11-01): user decisions recorded in 7.1; implementation proceeds in stages (a)–(h); still experimental, no stable format or public API.
 Date: 2026-11-01. Revision 4 follows the independent re-review of 715af0f (verdict REVISE). It keeps the
 user's cleanup decision of 2026-11-01: foreign handles are **file-consistent** (explicit borrowing close, leak
 census under `OBO_CHECK=1`), not must-close. Revision 4 fixes sketch and codegen errors, specifies the exit
@@ -659,27 +659,18 @@ stored `[]byte` locals (C16). The `close()` calls are statements, so their disca
 Decided by the user (2026-11-01, not for review): cleanup is **file-consistent explicit close**. Foreign handles use a borrowing,
 deferrable `close` and a leak census. No must-close rule, no consuming defer, no release on drop.
 
-### 7.1 For the user (one approval each; each default is recommended and user-visible)
+### 7.1 User decisions (decided 2026-11-01)
 
-- **D1. Body-less `native fn` plus `type X = foreign "C"`.** Recommended. One approval covers both `native fn` and `type X = foreign "C"`; they are the only language change in this note. The alternative is a
-  compiler flag that reads the spec. The form adds a declaration and a type syntax.
-- **D4. Exit codes.** Recommended default, user-visible. Exit **11** (new) for native contract violations: a NUL past the helper
-  check, a `cbytes` NULL with positive length, an `i32` or `u32` out of range, a list mismatch or above the cap, an `own` NULL.
-  Exit **7** (existing) for a foreign handle used after close. Exit **8** (existing, generalized) for a foreign handle left open at
-  normal end under `OBO_CHECK=1`; the alternative is a new code 13, so fd and foreign leaks are told apart. Exit **4** (existing) for
-  a census underflow. `LANGUAGE.md` section 9 gets the 11 entry and the generalized 8 entry when stage (d) is accepted.
-- **D14. SQLite `close_v2` with live statements succeeds.** Recommended default, user-visible. `close` returns `ok(true)` while statements
-  are live, the `Db` census drops, and the file lock persists until the last statement closes (6.2, point 1). The alternative is plain
-  `sqlite3_close`, which refuses with BUSY, as today.
-- **D16. `is_open(&T): bool`.** Recommended default, user-visible. A generated query next to `close`, for wrappers that want a `Result`
-  for a closed handle. It is not a substitute for the thunk check (3.4). The alternative is no query, with every closed case going to
-  exit 7.
-- **D6. `.sym` for foreign types.** Recommended: deferred until the first exported foreign type, with its own version decision.
-- **D8. List kinds versus one helper.** Recommended: scoped kinds (`nil_bytes_list`, `ints` with flags, `ints@k:len`). Alternative: one
-  helper `pq_exec_params_list`, which keeps C parsing for later libraries.
-- **D12. No rename in this change.** Recommended: keep `Connection`, `Rows` and the existing names.
-- **D13. Keep the `connect_timeout` default and its helper.** Recommended. Alternative: drop the default, which removes the helper and
-  changes behaviour for DSNs without a timeout.
+Each item below was decided by the user with the recommended option. The chosen option is stated for each.
+
+- **D1. Body-less `native fn` plus `type X = foreign "C"`.** Decided (user, 2026-11-01): the native form and the foreign type, one approval for both. They are the only language change in this note. Not chosen: a compiler flag that reads the spec.
+- **D4. Exit codes.** Decided (user, 2026-11-01): exit **11** (new) for native contract violations (a NUL past the helper check, a `cbytes` NULL with positive length, an `i32` or `u32` out of range, a list mismatch or above the cap, an `own` NULL); exit **7** (existing) for a foreign handle used after close; exit **8** (existing, generalized) for a foreign handle left open at normal end under `OBO_CHECK=1`; exit **4** (existing) for a census underflow. Not chosen: a new code 13 for foreign leaks. `LANGUAGE.md` section 9 gets the 11 entry and the generalized 8 entry when stage (d) is accepted.
+- **D14. SQLite `close_v2` with live statements succeeds.** Decided (user, 2026-11-01): `close` returns `ok(true)` while statements are live, the `Db` census drops, and the file lock persists until the last statement closes (6.2, point 1). Not chosen: plain `sqlite3_close`, which refuses with BUSY, as today.
+- **D16. `is_open(&T): bool`.** Decided (user, 2026-11-01): a generated query next to `close`, for wrappers that want a `Result` for a closed handle. It is not a substitute for the thunk check (3.4).
+- **D6. `.sym` for foreign types.** Decided (user, 2026-11-01): deferred until the first exported foreign type, with its own version decision.
+- **D8. List kinds versus one helper.** Decided (user, 2026-11-01): scoped kinds (`nil_bytes_list`, `ints` with flags, `ints@k:len`). Not chosen: one helper `pq_exec_params_list`.
+- **D12. No rename in this change.** Decided (user, 2026-11-01): keep `Connection`, `Rows` and the existing names.
+- **D13. Keep the `connect_timeout` default and its helper.** Decided (user, 2026-11-01): keep the default and its helper. Not chosen: drop the default.
 
 ### 7.2 Technical defaults (no approval needed unless challenged)
 
