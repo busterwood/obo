@@ -198,14 +198,16 @@ The `SYM_FORMAT` 8 → 9 and `OBO_VERSION` 0.16 bump lands here, with the first
 ### D4b — function values, lambdas and captures (write the layout first)
 
 Before any code, the D4b agent writes the frame layout into this note for
-review. Function values push the return pointer, then the cell, then the
-arguments (`obo.obo:7029-7050`), so the cell sits where a decimal-returning
-callee reads its destination pointer (12300). "Identical to direct calls" can't
-hold. Define where the destination pointer and cell live for a call through a
-function value. Change the lambda environment read `16 + 8*(n-1)` (12932) to
-a byte offset. Captures are 8 bytes each (10236-10250, with `load()` refusing
-decimal at 10245) and are loaded per word (12940-12955). A decimal capture
-needs a 24-byte slot.
+review. Function values push the cell at `callFnWith` (`obo.obo:7199-7212`),
+after the hidden destination pointer (`obo.obo:7183-7197`), and a
+decimal-returning callee reads that pointer at `16 +
+visibleTypeParamsBytes(params)` (`obo.obo:12624`), so the cell sits where the
+callee reads its destination pointer. "Identical to direct calls" can't hold.
+Define where the destination pointer and cell live for a call through a
+function value. Change the lambda environment read `16 + 8*(n-1)`
+(`obo.obo:13256`) to a byte offset. Captures are 8 bytes each (classified at
+`obo.obo:10240-10249`, with the decimal refusal at 10219) and are loaded per
+word (`obo.obo:13256-13272`). A decimal capture needs a 24-byte slot.
 
 The original D4 bullets below apply across D4a and D4b.
 
@@ -213,7 +215,8 @@ The original D4 bullets below apply across D4a and D4b.
   pointer for returns. A decimal is never a receiver.
 - Interface members: decimal parameters and returns through the vtable call,
   with the hidden destination pointer pushed in the same place as for direct
-  calls. This also removes the internal error at `obo.obo:7022`.
+  calls. D4a closed this bullet and removed the old internal error; the remaining
+  function-value guard is `decRet && fnval` in `callFnWith` (`obo.obo:7172`).
 - Function types and non-capturing lambdas: `fn(decimal): decimal` with
   call-through-pointer. Keep the destination-pointer convention identical to
   direct calls, so one function can be both called and used as a value.

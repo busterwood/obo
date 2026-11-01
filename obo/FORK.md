@@ -6991,9 +6991,12 @@ and the full run are below.
 **Fixtures.** The committed `.sym` files and harness strings are updated
 mechanically: `obosym 10` → `obosym 11`, `compiler "0.17"` → `compiler "0.18"`,
 `this compiler reads 10` → `this compiler reads 11`, and the `--version` string.
-The deliberate old-format fixtures stay old (`tests/modules/sym/format` is still
-format 8, and the `sym_test` stale cases still use 1, 3, 4, 5 and 6); a new case
-rejects format 10. The only non-version fixture changes are the new decimal test
+95 committed `.sym` files changed: 93 carry both header lines, and 2 are
+deliberate one-line fixtures (`tests/modules/sym/format` keeps `obosym 8`, so
+only its compiler line moved; `tests/modules/sym/compiler` keeps
+`compiler "9.9"`, so only its format line moved). The other deliberate
+old-format fixtures stay old (the `sym_test` stale cases use 1, 3, 4, 5 and 6);
+a new case rejects format 10. The only non-version fixture changes are the new decimal test
 files and `tests/modules/sym/compiler/expect` (its message now names 0.18).
 `sym_test` compares every golden body byte for byte without `--update`, so no
 golden body changed.
