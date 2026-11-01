@@ -1,0 +1,60 @@
+// P1b RFC3339 profile trace. Pure source: no native call is required for the
+// calendar cases, though the root still links the systems adapter.
+module app
+
+import "syscalendar.obx" as calendar
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn roundtrip(label: string, text: string) {
+    let parsed = calendar::parseRfc3339(text)
+    match parsed {
+        ok(v) {
+            let formatted = calendar::formatRfc3339(&v)
+            match formatted {
+                ok(s) { println(label, "=", s) }
+                err(m, c) { show(label, c) }
+            }
+        }
+        err(m, c) { show(label, c) }
+    }
+}
+
+fn main() {
+    roundtrip("utc", "1985-04-12T23:20:50.52Z")
+    roundtrip("lower_t", "1996-12-19t16:39:57-08:00")
+    roundtrip("offset_east", "2024-02-29T12:34:56.1200+02:30")
+    roundtrip("negative_zero", "2020-01-01T00:00:00-00:00")
+    roundtrip("lower_z", "2020-06-01T12:00:00z")
+    roundtrip("max_offset", "2020-01-01T00:00:00+23:59")
+    roundtrip("min", "0001-01-01T00:00:00Z")
+    roundtrip("max", "9999-12-31T23:59:59.999999999Z")
+    roundtrip("zero_fraction", "2020-01-01T00:00:00.000000000Z")
+    roundtrip("trim", "2020-01-01T00:00:00.120000000Z")
+    roundtrip("leap_second", "1990-12-31T23:59:60Z")
+    roundtrip("bad_date", "2023-02-29T00:00:00Z")
+    roundtrip("year_zero", "0000-01-01T00:00:00Z")
+    roundtrip("year_five", "10000-01-01T00:00:00Z")
+    roundtrip("bad_offset", "2020-01-01T00:00:00+24:00")
+    roundtrip("excess_fraction", "2020-01-01T00:00:00.1234567890Z")
+    roundtrip("trailing", "2020-01-01T00:00:00Zx")
+    roundtrip("space_separator", "2020-01-01 00:00:00Z")
+    roundtrip("no_zone", "2020-01-01T00:00:00")
+    roundtrip("fraction_empty", "2020-01-01T00:00:00.Z")
+    roundtrip("hour_24", "2020-01-01T24:00:00Z")
+
+    let badNanos = new clock::Timestamp{seconds: 0, nanos: 1000000000}
+    let f1 = calendar::formatRfc3339(&badNanos)
+    match f1 { ok(s) { println("format_bad_nanos=ok") } err(m, c) { show("format_bad_nanos", c) } }
+    let low = new clock::Timestamp{seconds: -62135596801, nanos: 0}
+    let f2 = calendar::formatRfc3339(&low)
+    match f2 { ok(s) { println("format_low=ok") } err(m, c) { show("format_low", c) } }
+    let high = new clock::Timestamp{seconds: 253402300800, nanos: 0}
+    let f3 = calendar::formatRfc3339(&high)
+    match f3 { ok(s) { println("format_high=ok") } err(m, c) { show("format_high", c) } }
+}

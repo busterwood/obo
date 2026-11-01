@@ -1,9 +1,11 @@
-# Experimental sys P0/P1a/P2 API
+# Experimental sys P0/P1a/P1b/P2 API
 
 Status: **experimental, internal, unstable.** No numeric value below is a
-stable ABI. P2 adds addresses, sockets, the reactor, waitio and resolution;
-P2q adds the bounded UDP batch, GSO/GRO and datagram-watch surface. P1b/P3 and
-later phases may change or replace any of these modules before promotion.
+stable ABI. P1b adds directory mutation, openat2 containment, the atomic
+replacement transaction, RFC3339, environment snapshots and bounded logging.
+P2 adds addresses, sockets, the reactor, waitio and resolution; P2q adds the
+bounded UDP batch, GSO/GRO and datagram-watch surface. P3 and later phases may
+change or replace any of these modules before promotion.
 
 Common rules:
 
@@ -262,6 +264,71 @@ wrap/saturation. `remaining` returns nil only for `forever()` and zero at/before
 the deadline. `sleepUntil` is interruptible (`Interrupted`) and never restarts a
 deadline; an infinite deadline is `InvalidArgument` for a finite sleep call.
 
+## `syscalendar`
+
+```obo
+pub fn parseRfc3339(text: string): Result[clock::Timestamp]
+pub fn formatRfc3339(t: &clock::Timestamp): Result[string]
+```
+
+This is the §6.1 RFC3339 profile, not all ISO-8601 and not locale/TZ support.
+Input accepts year 0001..9999, a valid Gregorian date, `T`/`t`, `Z`/`z`, an
+optional 1..9-digit fraction and signed `HH:MM` offsets; `-00:00` is accepted as
+UTC with an unknown local offset. Leap seconds, excess fraction digits,
+out-of-range offsets, invalid dates and trailing text are rejected. Output is
+UTC `Z`, omitting a zero fraction and trimming trailing zeros. Arithmetic is
+checked seconds+nanos with no floats.
+
+## `sysenv`
+
+```obo
+pub type Pair = ref record { pub name: string; pub value: string }
+pub type Environment = ref record { pub entries: []Pair }
+pub const MAX_ENVIRONMENT_BYTES = 1048576
+pub const MAX_ENVIRONMENT_ENTRIES = 65536
+pub fn snapshot(): Result[Environment]
+pub fn get(e: &Environment, name: string): Result[?[]byte]
+pub fn set(mut e: &Environment, name: string, value: string): Result[bool]
+pub fn unset(mut e: &Environment, name: string): Result[bool]
+pub fn entries(e: &Environment): Result[[]Pair]
+```
+
+Names are nonempty and contain no `=` or NUL; values contain no NUL; total
+serialized size and entry count are capped. Every operation revalidates the
+whole record. Missing is nil, present-empty is an empty byte array. Startup order
+is preserved, duplicates are allowed, and lookup/update is first-match; unset
+removes every occurrence. `entries` returns new Pair records and value arrays.
+Local mutation has no process effect. `setProcess`/`unsetProcess` are
+intentionally absent (process mutation remains `Unsupported`).
+
+## `syslog`
+
+```obo
+pub type Logger = ref record { pub res: platform::Resource; pub policy: int }
+pub type Level = closed { Debug {} Info {} Warn {} Error {} }
+pub type Policy = closed { ReturnWouldBlock {} DropWithCounter {} }
+pub type EmitResult = ref record { pub accepted: bool; pub dropped: int }
+pub const MAX_QUEUE_BYTES = 1048576
+pub const MAX_RECORD_BYTES = 4096
+pub fn openStandard(which: &stream::Standard, capacity: int,
+                    policy: &Policy): Result[Logger]
+pub fn emit(l: &Logger, level: &Level, message: &[]byte): Result[EmitResult]
+pub fn drain(l: &Logger, until: &clock::Deadline): Result[bool]
+pub fn flush(l: &Logger): Result[bool]
+pub fn close(l: &Logger): Result[bool]
+```
+
+`openStandard` duplicates Input/Output/Error with CLOEXEC and creates a fixed
+1..1 MiB queue. `policy` is the documented public-field limitation on `Logger`
+(`0` ReturnWouldBlock, `1` DropWithCounter) and is revalidated on emit. A record
+is timestamped with realtime RFC3339, carries the level, escapes newline/carriage
+return/tab/backslash/other control bytes and ends with one newline; a record over
+4096 bytes is `LimitExceeded`. `ReturnWouldBlock` rejects a full queue with
+`WouldBlock`; `DropWithCounter` drops the whole record and reports the cumulative
+`dropped` count. `drain` uses one absolute deadline (or an infinite one), makes
+short-write progress and reports sink errors; `flush` is one immediate drain.
+There is no global logger, background thread, unbounded queue or JSON encoder.
+
 ## `sysrandom`
 
 ```obo
@@ -286,14 +353,19 @@ pub type OpenOptions = ref record {
     pub truncate: bool; pub append: bool; pub noFollow: bool
     pub nonblocking: bool; pub permissions: int
 }
+pub type ReplaceReport = ref record {
+    pub committed: bool; pub durable: bool; pub code: int; pub message: string
+}
 pub const SEEK_START = 0
 pub const SEEK_CURRENT = 1
 pub const SEEK_END = 2
 pub const MAX_CHUNK = 1048576
+pub const MAX_REPLACE_BYTES = 16777216
 
 pub fn readOptions(): OpenOptions
 pub fn open(path: string, options: &OpenOptions): Result[File]
 pub fn openAt(base: &dir::Directory, name: string, options: &OpenOptions): Result[File]
+pub fn openBeneath(base: &dir::Directory, path: string, options: &OpenOptions): Result[File]
 pub fn readSome(f: &File, max: int): Result[?[]byte]
 pub fn writeSome(f: &File, bytes: &[]byte, offset: int, count: int): Result[int]
 pub fn readAt(f: &File, position: int, max: int): Result[?[]byte]
@@ -301,6 +373,15 @@ pub fn writeAt(f: &File, position: int, bytes: &[]byte): Result[int]
 pub fn seek(f: &File, offset: int, origin: int): Result[int]
 pub fn truncateTo(f: &File, length: int): Result[bool]
 pub fn metadata(f: &File): Result[stat::Metadata]
+pub fn chmod(f: &File, permissions: int): Result[bool]
+pub fn sync(f: &File, dataOnly: bool): Result[bool]
+pub fn rename(from: &dir::Directory, old: string, to: &dir::Directory,
+              name: string, replace: bool): Result[bool]
+pub fn link(from: &dir::Directory, old: string,
+            to: &dir::Directory, name: string): Result[bool]
+pub fn symlink(target: string, to: &dir::Directory, name: string): Result[bool]
+pub fn replaceAtomic(to: &dir::Directory, name: string, data: &[]byte,
+                     permissions: int, durable: bool): Result[ReplaceReport]
 pub fn duplicateStream(f: &File): Result[stream::Stream]
 pub fn intoStream(mut f: &File): Result[stream::Stream]
 pub fn close(f: &File): Result[bool]
@@ -316,6 +397,34 @@ including a zero-length write, are `InvalidArgument`. `close` never retries afte
 live resource and replaces the old shell's `res`; `duplicateStream` shares the
 open file description (offset and flags), matching `dup(2)`.
 
+### P1b filesystem operations
+
+`openBeneath(base, path, options)` accepts a multi-component path and asks
+`openat2` for `RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS`. It is not a string-prefix
+check. A kernel without openat2 returns `Unsupported`; an escape (`..`, an
+absolute path, or a symlink that leaves the base) is the kernel's `EXDEV`, which
+maps to `CrossDevice`; a magic link maps to `PathLoop`.
+`hasCapability("file.openBeneath")` reports the kernel capability.
+
+`chmod` sets the low 0..0xFFF permission bits on the open file. `sync(dataOnly)`
+selects `fdatasync(true)` or `fsync(false)` and is one attempt. Anchored
+`rename` is atomic for name visibility; `replace=false` uses
+`RENAME_NOREPLACE` and returns `Unsupported` when no atomic no-replace primitive
+exists, never a check-then-overwrite. `link` does not follow a source symlink.
+`symlink` stores target bytes without resolving them (dangling targets are
+valid). Cross-device rename is `CrossDevice`, never copy/delete.
+
+`replaceAtomic` validates a 0..16 MiB payload and permissions, creates a unique
+O_EXCL temporary in the target directory, writes with explicit short-write
+progress, applies the requested permissions, optionally fsyncs the temporary,
+closes it, then renames it over the target. A precommit failure returns `err` and
+removes the temporary; the old target is untouched. The rename is the commit
+point. A directory-fsync failure after commit returns
+`ok(ReplaceReport{committed:true, durable:false, code:DurabilityUnknown})`; a
+committed rename is never rolled back. Successful nondurable replacement reports
+`committed=true, durable=false, code=0`, and a committed/durable replacement
+reports `durable=true, code=0`.
+
 ## `sysdir`
 
 ```obo
@@ -329,12 +438,22 @@ pub fn child(base: &Directory, name: string): Result[Directory]
 pub fn iterate(base: &Directory): Result[Iterator]
 pub fn next(it: &Iterator): Result[?Entry]
 pub fn metadata(base: &Directory, name: string, follow: bool): Result[stat::Metadata]
+pub fn readLink(base: &Directory, name: string): Result[[]byte]
+pub fn mkdir(base: &Directory, name: string, permissions: int): Result[bool]
+pub fn unlink(base: &Directory, name: string): Result[bool]
+pub fn removeEmpty(base: &Directory, name: string): Result[bool]
+pub fn sync(base: &Directory): Result[bool]
 pub fn close(base: &Directory): Result[bool]
 pub fn closeIterator(it: &Iterator): Result[bool]
 ```
 
-`open` follows host symlinks. `child`, `metadata` and `openAt` accept one
-component only (nonempty, no `/`, NUL, `.` or `..`); `child` opens NOFOLLOW.
+`open` follows host symlinks. `child`, `metadata`, `readLink`, `mkdir`,
+`unlink`, `removeEmpty` and `openAt` accept one component only (nonempty, no
+`/`, NUL, `.` or `..`); `child` opens NOFOLLOW. `readLink` returns raw target
+bytes (dangling succeeds, non-symlink is `InvalidArgument`, 4095+ bytes is
+`NameTooLong`). `removeEmpty` is rmdir; kernel `ENOTEMPTY` maps to `Busy`
+because the error namespace has no `NotEmpty` kind. `sync` fsyncs the directory
+and is the replaceAtomic durability step.
 `next` skips `.`/`..`, returns owned names, reports Unknown kind rather than
 hiding a failed stat, and fails permanently on corrupt dirents. Order is not
 promised and this is not a path-containment API. `iterate` duplicates the

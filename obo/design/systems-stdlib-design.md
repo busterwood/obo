@@ -1,10 +1,19 @@
 # Systems standard library
 
-Status: **design for independent review; no implementation authorized.**
-Baseline: released `main` `51ce9e7680a90df9e3d5e38a9b469a460a2ca968`,
+Status: **design for independent review; implementation progress is tracked per
+phase.** Baseline: released `main` `51ce9e7680a90df9e3d5e38a9b469a460a2ca968`,
 obo 0.12, symbol format 6, ABI 1. Date: 2026-10-31. Decimal `0.12` and the
 experimental Postgres/SQLite adapters are present at this baseline.
 No compiler, ABI, symbol-format or package version is reserved by this note.
+
+Progress on current `main` (0.17/format 10): **P0, P1a, P1b, P2 and P2q are
+implemented experimentally** under `obo/experimental/sys` and have their own
+real/fake suites; P1b completes the practical-filesystem slice in §5.1/§5.2/§5.3,
+§6.1, §8.3 and §8.4. P2T/P2C remain separately scoped adapters, P3 (processes,
+signals, cwd/environment mutation, resolver policy) and P4/P5 (threads and
+synchronization) are not implemented by this progress line. `sysmapping` and
+terminal raw mode remain optional later extensions. The source lives at
+`obo/experimental/sys/`, not yet at the `obo/lib/sys/` stable layout in §12.1.
 
 ## 1. Decision and scope
 

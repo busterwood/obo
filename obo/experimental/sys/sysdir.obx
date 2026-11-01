@@ -1,11 +1,13 @@
-// Experimental systems library: anchored directories and bounded iteration
-// (P1a).
+// Experimental systems library: anchored directories, bounded iteration and
+// directory mutation (P1a/P1b).
 //
-// Status: experimental P1a slice, unstable. A Directory is an owned CLOEXEC
-// native handle; open(path) accepts an ordinary host path and follows symlinks
-// (the application chooses the initial anchor). child, metadata and every
-// anchored name operation accept exactly one component: nonempty, no '/', no
-// NUL, and not "." or "..". child opens with NOFOLLOW.
+// Status: experimental P1a/P1b surface, unstable. A Directory is an owned
+// CLOEXEC native handle; open(path) accepts an ordinary host path and follows
+// symlinks (the application chooses the initial anchor). child, metadata and
+// every anchored name operation accept exactly one component: nonempty, no '/',
+// no NUL, and not "." or "..". child opens with NOFOLLOW. P1b adds mkdir,
+// unlink, removeEmpty, readLink and directory sync; they do not claim path
+// containment against concurrent rename or mount changes.
 //
 // These operations do NOT claim path containment against concurrent rename or
 // mount changes. Multi-component hostile paths belong to a later openBeneath
@@ -35,6 +37,8 @@ fn libCode(k: errors::Kind): int {
 
 fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
 fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+fn nameTooLong(): int { return libCode(new errors::NameTooLong{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
 
 fn validPath(path: string): bool {
     if len(path) == 0 || len(path) > MAX_PATH_BYTES { return false }
@@ -149,6 +153,81 @@ pub fn metadata(base: &Directory, name: string, follow: bool): Result[stat::Meta
     let ignored = try platform::_statToken(0, 0, dt, nt, followFlag, pt)
     if ignored < 0 { return err("metadata packet was not produced", systemFailure()) }
     return stat::_decode(handle(packet.res))
+}
+
+// readLink returns the raw target bytes. A dangling target succeeds; a
+// non-symlink is InvalidArgument; a target of 4095 bytes or more is
+// NameTooLong, never a silent truncation.
+pub fn readLink(base: &Directory, name: string): Result[[]byte] {
+    if !validName(name) {
+        return err("readLink name must be one ordinary path component", invalidArgument())
+    }
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let nb = try pathBytes(name)
+    defer bytesbuf::close(&nb)
+    let nt = try platform::_tokenHandle(handle(nb.res), platform::KIND_BYTE_BUFFER)
+    let cap = MAX_NAME_BYTES
+    let out = try bytesbuf::create(cap)
+    defer bytesbuf::close(&out)
+    let ot = try platform::_tokenHandle(handle(out.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_dirReadLinkToken(dt, nt, ot, cap)
+    if n >= cap { return err("symlink target is too long", nameTooLong()) }
+    if n < 0 { return err("readlink returned a negative length", systemFailure()) }
+    let target = new []byte(n)
+    let copied = try bytesbuf::copyOut(&out, &target, 0, 0, n)
+    if copied != n { return err("short native symlink-target copy", systemFailure()) }
+    return ok(target)
+}
+
+pub fn mkdir(base: &Directory, name: string, permissions: int): Result[bool] {
+    if !validName(name) {
+        return err("mkdir name must be one ordinary path component", invalidArgument())
+    }
+    if permissions < 0 || permissions > 4095 {
+        return err("mkdir permissions are outside 0..0xFFF", rangeCode())
+    }
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let nb = try pathBytes(name)
+    defer bytesbuf::close(&nb)
+    let nt = try platform::_tokenHandle(handle(nb.res), platform::KIND_BYTE_BUFFER)
+    let done = try platform::_dirMkdirToken(dt, nt, permissions)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn unlink(base: &Directory, name: string): Result[bool] {
+    if !validName(name) {
+        return err("unlink name must be one ordinary path component", invalidArgument())
+    }
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let nb = try pathBytes(name)
+    defer bytesbuf::close(&nb)
+    let nt = try platform::_tokenHandle(handle(nb.res), platform::KIND_BYTE_BUFFER)
+    let done = try platform::_dirUnlinkToken(dt, nt)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn removeEmpty(base: &Directory, name: string): Result[bool] {
+    if !validName(name) {
+        return err("removeEmpty name must be one ordinary path component",
+                   invalidArgument())
+    }
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let nb = try pathBytes(name)
+    defer bytesbuf::close(&nb)
+    let nt = try platform::_tokenHandle(handle(nb.res), platform::KIND_BYTE_BUFFER)
+    let done = try platform::_dirRemoveEmptyToken(dt, nt)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+// Directory sync is the replaceAtomic durability step; explicit and one-shot.
+pub fn sync(base: &Directory): Result[bool] {
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let done = try platform::_dirSyncToken(dt)
+    if done == 1 { return ok(true) }
+    return ok(false)
 }
 
 pub fn close(base: &Directory): Result[bool] {

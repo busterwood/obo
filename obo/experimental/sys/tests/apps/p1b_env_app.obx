@@ -1,0 +1,107 @@
+// P1b environment-snapshot trace using the scripted fake table. Ordering,
+// present-empty vs missing, first-match duplicates, deep copy and local
+// mutation are all backend-independent contracts of sysenv.
+module app
+
+import "sysplatform.obx" as platform
+import "sysenv.obx" as env
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+
+    let made = env::snapshot()
+    match made {
+        ok(e) {
+            println("count=", len(e.entries))
+            var names = ""
+            for i in 0..len(e.entries) {
+                if i > 0 { names = names + "," }
+                names = names + e.entries[i].name
+            }
+            println("order=", names)
+
+            let empty = env::get(&e, "OBO_FAKE_EMPTY")
+            match empty {
+                ok(v) {
+                    if v == nil { println("empty=nil") } else { println("empty=len", len(v)) }
+                }
+                err(m, c) { show("empty", c) }
+            }
+            let missing = env::get(&e, "OBO_FAKE_MISSING")
+            match missing {
+                ok(v) { if v == nil { println("missing=nil") } else { println("missing=present") } }
+                err(m, c) { show("missing", c) }
+            }
+            let dup = env::get(&e, "OBO_FAKE_DUP")
+            match dup {
+                ok(v) { if v == nil { println("dup=nil") } else { println("dup=", string(v)) } }
+                err(m, c) { show("dup", c) }
+            }
+
+            let copied = env::entries(&e)
+            match copied {
+                ok(list) {
+                    list[0].name = "MUTATED"
+                    list[0].value = "changed"
+                    let again = env::get(&e, "OBO_FAKE_ENV")
+                    match again {
+                        ok(v) { if v == nil { println("deep_copy=nil") } else { println("deep_copy=", string(v)) } }
+                        err(m, c) { show("deep_copy", c) }
+                    }
+                }
+                err(m, c) { show("entries", c) }
+            }
+
+            let setExisting = env::set(&e, "OBO_FAKE_ENV", "updated")
+            match setExisting { ok(v) { println("set_existing=", v) } err(m, c) { show("set_existing", c) } }
+            let setNew = env::set(&e, "OBO_NEW", "value")
+            match setNew { ok(v) { println("set_new=", v) } err(m, c) { show("set_new", c) } }
+            let afterNew = env::get(&e, "OBO_NEW")
+            match afterNew {
+                ok(v) { if v == nil { println("new=nil") } else { println("new=", string(v)) } }
+                err(m, c) { show("new", c) }
+            }
+            let unsetDup = env::unset(&e, "OBO_FAKE_DUP")
+            match unsetDup { ok(v) { println("unset_dup=", v) } err(m, c) { show("unset_dup", c) } }
+            let dupGone = env::get(&e, "OBO_FAKE_DUP")
+            match dupGone {
+                ok(v) { if v == nil { println("dup_gone=nil") } else { println("dup_gone=present") } }
+                err(m, c) { show("dup_gone", c) }
+            }
+            let unsetMissing = env::unset(&e, "OBO_FAKE_MISSING")
+            match unsetMissing { ok(v) { println("unset_missing=", v) } err(m, c) { show("unset_missing", c) } }
+            println("count_after=", len(e.entries))
+
+            let badName = env::get(&e, "BAD=NAME")
+            match badName { ok(v) { println("bad_name=ok") } err(m, c) { show("bad_name", c) } }
+            let badSet = env::set(&e, "", "x")
+            match badSet { ok(v) { println("bad_set=ok") } err(m, c) { show("bad_set", c) } }
+            let badUnset = env::unset(&e, "A=B")
+            match badUnset { ok(v) { println("bad_unset=ok") } err(m, c) { show("bad_unset", c) } }
+        }
+        err(m, c) { show("snapshot", c) }
+    }
+
+    // A directly constructed record is untrusted at every entry.
+    var pair = new env::Pair{name: "A=B", value: "v"}
+    var direct = new []env::Pair(0)
+    append(direct, pair)
+    let forged = new env::Environment{entries: direct}
+    let fg = env::get(&forged, "A")
+    match fg { ok(v) { println("forged=ok") } err(m, c) { show("forged", c) } }
+    let fe = env::entries(&forged)
+    match fe { ok(v) { println("forged_entries=ok") } err(m, c) { show("forged_entries", c) } }
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}

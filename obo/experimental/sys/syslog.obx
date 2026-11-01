@@ -1,0 +1,188 @@
+// Experimental systems library: bounded line logging (P1b).
+//
+// Status: experimental P1b slice, unstable. A Logger owns a CLOEXEC duplicate
+// of one standard stream and a fixed-capacity C queue. There is no implicit
+// global logger, no background thread and no unbounded queue. `emit` builds one
+// bounded line (realtime RFC3339 timestamp, level, escaped message, newline) and
+// copies it atomically into the queue or rejects it. Newlines and control bytes
+// are escaped; the output stays line-oriented (there is no JSON encoder).
+//
+// ReturnWouldBlock rejects a record when the queue lacks room. DropWithCounter
+// silently counts and drops that whole record. drain/flush report sink errors;
+// a short write is progress, not an error. close is explicit and one-shot.
+module syslog
+
+import "sysplatform.obx" as platform
+import "sysstream.obx" as stream
+import "sysclock.obx" as clock
+import "syscalendar.obx" as calendar
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub type Logger = ref record {
+    pub res: platform::Resource
+    // Documented public-field limitation: 0 ReturnWouldBlock, 1 DropWithCounter.
+    // Revalidated at every emit; the queue itself stays C-owned and private.
+    pub policy: int
+}
+
+pub type Level = closed { Debug {} Info {} Warn {} Error {} }
+pub type Policy = closed { ReturnWouldBlock {} DropWithCounter {} }
+
+pub type EmitResult = ref record {
+    pub accepted: bool
+    pub dropped: int
+}
+
+pub const MAX_QUEUE_BYTES = 1048576
+pub const MAX_RECORD_BYTES = 4096
+
+fn emitWithPolicy(token: int, line: &[]byte,
+                  policy: int): Result[EmitResult]
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn limitCode(): int { return libCode(new errors::LimitExceeded{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+fn selector(which: &stream::Standard): int {
+    match which {
+        Input { return platform::_STANDARD_INPUT }
+        Output { return platform::_STANDARD_OUTPUT }
+        Error { return platform::_STANDARD_ERROR }
+    }
+}
+
+fn levelCode(level: &Level): int {
+    match level {
+        Debug { return 0 }
+        Info { return 1 }
+        Warn { return 2 }
+        Error { return 3 }
+    }
+}
+
+fn levelText(level: &Level): string {
+    match level {
+        Debug { return "DEBUG" }
+        Info { return "INFO" }
+        Warn { return "WARN" }
+        Error { return "ERROR" }
+    }
+}
+
+fn policyCode(policy: &Policy): int {
+    match policy {
+        ReturnWouldBlock { return 0 }
+        DropWithCounter { return 1 }
+    }
+}
+
+fn hexDigit(n: int): byte {
+    if n < 10 { return byte(48 + n) }
+    return byte(87 + n)
+}
+
+fn appendText(mut out: &[]byte, text: string) {
+    for i in 0..len(text) { append(out, text[i]) }
+}
+
+fn appendEscaped(mut out: &[]byte, message: &[]byte) {
+    for i in 0..len(message) {
+        let b = int(message[i])
+        if b == 10 {
+            append(out, '\\')
+            append(out, 'n')
+        } else if b == 13 {
+            append(out, '\\')
+            append(out, 'r')
+        } else if b == 9 {
+            append(out, '\\')
+            append(out, 't')
+        } else if b == 92 {
+            append(out, '\\')
+            append(out, '\\')
+        } else if b < 32 || b == 127 {
+            append(out, '\\')
+            append(out, 'x')
+            append(out, hexDigit(b / 16))
+            append(out, hexDigit(b % 16))
+        } else {
+            append(out, message[i])
+        }
+    }
+}
+
+pub fn openStandard(which: &stream::Standard, capacity: int,
+                    policy: &Policy): Result[Logger] {
+    if capacity < 1 || capacity > MAX_QUEUE_BYTES {
+        return err("logger capacity is outside 1..1 MiB", rangeCode())
+    }
+    let token = try platform::_logOpenToken(selector(which), capacity)
+    let r = try platform::_adoptToken(platform::KIND_LOGGER, token)
+    let p = policyCode(policy)
+    return ok(new Logger{res: r, policy: p})
+}
+
+pub fn emit(l: &Logger, level: &Level, message: &[]byte): Result[EmitResult] {
+    if l.policy != 0 && l.policy != 1 {
+        return err("logger policy field is invalid", invalidArgument())
+    }
+    let lt = try platform::_tokenHandle(handle(l.res), platform::KIND_LOGGER)
+    let stamp = try clock::realtime()
+    let text = try calendar::formatRfc3339(&stamp)
+    var line = new []byte(0)
+    appendText(&line, text)
+    append(&line, ' ')
+    appendText(&line, levelText(level))
+    append(&line, ' ')
+    appendEscaped(&line, message)
+    append(&line, '\n')
+    if len(line) > MAX_RECORD_BYTES {
+        return err("log record exceeds the 4096-byte cap", limitCode())
+    }
+    return emitWithPolicy(lt, &line, l.policy)
+}
+
+fn emitWithPolicy(token: int, line: &[]byte,
+                  policy: int): Result[EmitResult] {
+    let buf = try bytesbuf::create(len(line))
+    defer bytesbuf::close(&buf)
+    let copied = try bytesbuf::copyIn(&buf, line, 0, 0, len(line))
+    if copied != len(line) { return err("short log-record copy", systemFailure()) }
+    let bt = try platform::_tokenHandle(handle(buf.res), platform::KIND_BYTE_BUFFER)
+    let raw = try platform::_logEmitToken(token, bt, 0, len(line), policy)
+    let dropped = try platform::_logDropped(token)
+    if raw == 1 {
+        return ok(new EmitResult{accepted: true, dropped: dropped})
+    }
+    if raw == 0 {
+        return ok(new EmitResult{accepted: false, dropped: dropped})
+    }
+    return err("log emit returned an impossible status", systemFailure())
+}
+
+pub fn drain(l: &Logger, until: &clock::Deadline): Result[bool] {
+    if until.finite && until.nanos < 0 {
+        return err("log drain deadline is malformed", invalidArgument())
+    }
+    let lt = try platform::_tokenHandle(handle(l.res), platform::KIND_LOGGER)
+    let done = try platform::_logDrainToken(lt, until.finite, until.nanos)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn flush(l: &Logger): Result[bool] {
+    let lt = try platform::_tokenHandle(handle(l.res), platform::KIND_LOGGER)
+    let done = try platform::_logFlushToken(lt)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn close(l: &Logger): Result[bool] {
+    return platform::_closeHandle(handle(l.res), platform::KIND_LOGGER)
+}

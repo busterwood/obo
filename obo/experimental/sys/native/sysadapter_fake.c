@@ -1,6 +1,7 @@
-/* Scripted P1a fake backend. Selected at link time only; there is no runtime
+/* Scripted P1a/P1b fake backend. Selected at link time only; there is no runtime
  * production toggle and no stored obo callback. Paths are logical names; file
- * contents and directory entries live in C-owned fake objects, not real fds. */
+ * contents, directory entries and logger queues live in C-owned fake objects,
+ * not real fds. */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -30,6 +31,8 @@ typedef struct {
     long mode;
     long id;
     long refs;
+    long ftype;          /* 0 regular, 4 directory, 10 symlink */
+    char *link_target;
 } fake_inode;
 
 struct fake_desc {
@@ -59,6 +62,8 @@ static unsigned long long fake_seed = 1;
 static long fake_next_id = 1;
 static fake_store_entry fake_store[FAKE_STORE_MAX];
 static long fake_store_used;
+static long fake_open_beneath_disabled;
+static long fake_log_short;
 
 static const struct {
     const char *name;
@@ -114,6 +119,7 @@ static int release_shared(void *p) {
                 ino->refs--;
                 if (ino->refs <= 0) {
                     free(ino->data);
+                    free(ino->link_target);
                     free(ino);
                 }
             }
@@ -246,6 +252,23 @@ static fake_inode *store_ensure(const char *path, long mode) {
     return store_add(path, strlen(path), mode);
 }
 
+static void store_remove_at(long idx) {
+    if (idx < 0 || idx >= fake_store_used) return;
+    free(fake_store[idx].path);
+    if (fake_store[idx].ino != NULL) {
+        fake_store[idx].ino->refs--;
+        if (fake_store[idx].ino->refs <= 0) {
+            free(fake_store[idx].ino->data);
+            free(fake_store[idx].ino->link_target);
+            free(fake_store[idx].ino);
+        }
+    }
+    fake_store[idx] = fake_store[fake_store_used - 1];
+    fake_store[fake_store_used - 1].path = NULL;
+    fake_store[fake_store_used - 1].ino = NULL;
+    fake_store_used--;
+}
+
 static void store_clear(void) {
     long i;
     for (i = 0; i < fake_store_used; i++) {
@@ -254,6 +277,7 @@ static void store_clear(void) {
             fake_store[i].ino->refs--;
             if (fake_store[i].ino->refs <= 0) {
                 free(fake_store[i].ino->data);
+                free(fake_store[i].ino->link_target);
                 free(fake_store[i].ino);
             }
         }
@@ -302,6 +326,8 @@ long sysfake_reset(void) {
     fake_rt_nsec = 123456789L;
     fake_seed = 1;
     fake_next_id = 1;
+    fake_open_beneath_disabled = 0;
+    fake_log_short = 0;
     store_clear();
     sys_reg_reset_counts();
     return 1;
@@ -335,6 +361,20 @@ long sysfake_set_realtime(long seconds, long nanos) {
 long sysfake_set_seed(long value) {
     fake_seed = (unsigned long long)value;
     return 1;
+}
+
+long sysfake_disable_open_beneath(long disabled) {
+    fake_open_beneath_disabled = (disabled != 0);
+    return 1;
+}
+
+long sysfake_log_short(long bytes) {
+    fake_log_short = bytes;
+    return 1;
+}
+
+long sysfake_store_count(void) {
+    return fake_store_used;
 }
 
 long sys_file_open(long dir_token, long path_token, long flags, long mode) {
@@ -611,6 +651,7 @@ long sys_stat_get(long subject_token, long subject_kind, long dir_token,
     long r;
     long id;
     long mode = 040644;
+    long ftype = 8;
     long size = 0;
     long mtime_s = fake_time / 1000000000L;
     long mtime_ns = fake_time % 1000000000L;
@@ -625,6 +666,7 @@ long sys_stat_get(long subject_token, long subject_kind, long dir_token,
         fake_file *f = file_of(subject_token, subject_kind);
         if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
         mode = 040000 | (f->d->ino->mode & 07777);
+        ftype = f->d->ino->ftype ? f->d->ino->ftype : 8;
         size = (long)f->d->ino->len;
         id = f->d->ino->id;
     } else {
@@ -640,6 +682,7 @@ long sys_stat_get(long subject_token, long subject_kind, long dir_token,
         if (idx >= 0) {
             fake_inode *ino = fake_store[idx].ino;
             mode = 040000 | (ino->mode & 07777);
+            ftype = ino->ftype ? ino->ftype : 8;
             size = (long)ino->len;
             id = ino->id;
         } else {
@@ -651,7 +694,7 @@ long sys_stat_get(long subject_token, long subject_kind, long dir_token,
         int64_t v;
         long fields[16];
         long i;
-        fields[0] = 8;             /* regular */
+        fields[0] = ftype;
         fields[1] = mode & 07777;
         fields[2] = size;
         fields[3] = 1;             /* links */
@@ -777,6 +820,505 @@ long sys_stream_standard(long which) {
     token = sys_reg_new_object(SYS_KIND_STREAM, f, release_shared, 0);
     if (token < 0) release_shared(f);
     return token;
+}
+
+/* ---- P1b practical filesystem ------------------------------------------ */
+
+static long fake_component(long token, const char **out, size_t *outlen) {
+    const char *p = NULL;
+    size_t len = 0;
+    long r = path_of(token, &p, &len);
+    if (r < 0) return r;
+    if (len == 1 && p[0] == '.') return err(EINVAL);
+    if (len == 2 && p[0] == '.' && p[1] == '.') return err(EINVAL);
+    if (memchr(p, '/', len) != NULL) return err(EINVAL);
+    *out = p;
+    *outlen = len;
+    return 0;
+}
+
+static int fake_dir_ok(long token) {
+    if (token == 0) return 1;
+    return sys_reg_peek(token, SYS_KIND_DIRECTORY) != NULL;
+}
+
+long sys_dir_mkdir(long dir_token, long name_token, long mode) {
+    const char *name = NULL;
+    size_t len = 0;
+    long scripted = 0;
+    int have_script;
+    fake_inode *ino;
+    long r;
+    sys_reg_bump_call(SYS_CALL_DIR_MKDIR);
+    if (!fake_dir_ok(dir_token)) return err(EBADF);
+    if (mode < 0 || mode > 07777) return err(EINVAL);
+    r = fake_component(name_token, &name, &len);
+    if (r < 0) return r;
+    have_script = pop_script(SYS_CALL_DIR_MKDIR, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (store_find(name, len) >= 0) return err(EEXIST);
+    ino = store_add(name, len, mode);
+    if (ino == NULL) return err(ENOMEM);
+    ino->ftype = 4;
+    return 1;
+}
+
+long sys_dir_unlink(long dir_token, long name_token) {
+    const char *name = NULL;
+    size_t len = 0;
+    long scripted = 0;
+    int have_script;
+    long idx;
+    long r;
+    sys_reg_bump_call(SYS_CALL_DIR_UNLINK);
+    if (!fake_dir_ok(dir_token)) return err(EBADF);
+    r = fake_component(name_token, &name, &len);
+    if (r < 0) return r;
+    have_script = pop_script(SYS_CALL_DIR_UNLINK, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    idx = store_find(name, len);
+    if (idx < 0) return err(ENOENT);
+    if (fake_store[idx].ino->ftype == 4) return err(EISDIR);
+    store_remove_at(idx);
+    return 1;
+}
+
+long sys_dir_remove_empty(long dir_token, long name_token) {
+    const char *name = NULL;
+    size_t len = 0;
+    long scripted = 0;
+    int have_script;
+    long idx;
+    long r;
+    sys_reg_bump_call(SYS_CALL_DIR_RMDIR);
+    if (!fake_dir_ok(dir_token)) return err(EBADF);
+    r = fake_component(name_token, &name, &len);
+    if (r < 0) return r;
+    have_script = pop_script(SYS_CALL_DIR_RMDIR, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    idx = store_find(name, len);
+    if (idx < 0) return err(ENOENT);
+    if (fake_store[idx].ino->ftype != 4) return err(ENOTDIR);
+    store_remove_at(idx);
+    return 1;
+}
+
+long sys_dir_readlink(long dir_token, long name_token, long buf_token, long cap) {
+    const char *name = NULL;
+    size_t len = 0;
+    unsigned char *out = NULL;
+    size_t outlen = 0;
+    long scripted = 0;
+    int have_script;
+    long idx;
+    long r;
+    size_t n;
+    sys_reg_bump_call(SYS_CALL_DIR_READLINK);
+    if (!fake_dir_ok(dir_token)) return err(EBADF);
+    r = fake_component(name_token, &name, &len);
+    if (r < 0) return r;
+    r = buffer_span(buf_token, &out, &outlen);
+    if (r < 0) return r;
+    if (cap < 1 || (size_t)cap > outlen) return err(ERANGE);
+    have_script = pop_script(SYS_CALL_DIR_READLINK, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    idx = store_find(name, len);
+    if (idx < 0) return err(ENOENT);
+    if (fake_store[idx].ino->ftype != 10 || fake_store[idx].ino->link_target == NULL) {
+        return err(EINVAL);
+    }
+    n = strlen(fake_store[idx].ino->link_target);
+    if (n > (size_t)cap) return err(ERANGE);
+    memcpy(out, fake_store[idx].ino->link_target, n);
+    return (long)n;
+}
+
+long sys_dir_sync(long dir_token) {
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_DIR_SYNC);
+    if (!fake_dir_ok(dir_token)) return err(EBADF);
+    have_script = pop_script(SYS_CALL_DIR_SYNC, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    return 1;
+}
+
+long sys_file_open_beneath_supported(void) {
+    return fake_open_beneath_disabled ? 0 : 1;
+}
+
+long sys_file_open_beneath(long dir_token, long path_token, long flags,
+                           long mode) {
+    const char *path = NULL;
+    size_t len = 0;
+    size_t i;
+    long scripted = 0;
+    int have_script;
+    fake_file *f;
+    fake_inode *ino;
+    long idx;
+    long token;
+    sys_reg_bump_call(SYS_CALL_OPEN_BENEATH);
+    if (!fake_dir_ok(dir_token)) return err(EBADF);
+    if (fake_open_beneath_disabled) return err(ENOSYS);
+    if (mode < 0 || mode > 07777 || !valid_open_flags(flags)) return err(EINVAL);
+    {
+        long pr = path_of(path_token, &path, &len);
+        if (pr < 0) return pr;
+    }
+    if (len == 0) return err(EINVAL);
+    if (path[0] == '/') return err(EXDEV);
+    for (i = 0; i < len; i++) {
+        if (path[i] == '.') {
+            if ((i == 0 || path[i - 1] == '/') &&
+                (i + 1 == len || path[i + 1] == '/')) return err(EXDEV);
+            if (i + 2 < len && path[i + 1] == '.' &&
+                (path[i + 2] == '/' || i + 2 == len) &&
+                (i == 0 || path[i - 1] == '/')) return err(EXDEV);
+        }
+    }
+    have_script = pop_script(SYS_CALL_OPEN_BENEATH, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    idx = store_find(path, len);
+    if (idx < 0) {
+        if ((flags & SYS_OPEN_CREATE) == 0) return err(ENOENT);
+        ino = store_add(path, len, mode);
+        if (ino == NULL) return err(ENOMEM);
+    } else {
+        if ((flags & SYS_OPEN_CREATE) != 0 && (flags & SYS_OPEN_EXCLUSIVE) != 0) {
+            return err(EEXIST);
+        }
+        ino = fake_store[idx].ino;
+        if ((flags & SYS_OPEN_TRUNCATE) != 0) ino->len = 0;
+    }
+    f = (fake_file *)calloc(1, sizeof(*f));
+    if (f == NULL) return err(ENOMEM);
+    f->d = (fake_desc *)calloc(1, sizeof(*f->d));
+    if (f->d == NULL) {
+        free(f);
+        return err(ENOMEM);
+    }
+    f->d->ino = ino;
+    f->d->append = (flags & SYS_OPEN_APPEND) != 0;
+    f->d->refs = 1;
+    ino->refs++;
+    token = sys_reg_new_object(SYS_KIND_FILE, f, release_shared, 0);
+    if (token < 0) release_shared(f);
+    return token;
+}
+
+long sys_file_chmod(long token, long kind, long mode) {
+    long scripted = 0;
+    int have_script;
+    fake_file *f;
+    sys_reg_bump_call(SYS_CALL_CHMOD);
+    if (mode < 0 || mode > 07777) return err(EINVAL);
+    f = file_of(token, kind);
+    if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
+    have_script = pop_script(SYS_CALL_CHMOD, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    f->d->ino->mode = mode;
+    return 1;
+}
+
+long sys_file_sync(long token, long kind, long data_only) {
+    long scripted = 0;
+    int have_script;
+    fake_file *f;
+    sys_reg_bump_call(SYS_CALL_SYNC);
+    if (data_only != 0 && data_only != 1) return err(EINVAL);
+    f = file_of(token, kind);
+    if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
+    have_script = pop_script(SYS_CALL_SYNC, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    return 1;
+}
+
+long sys_file_rename(long from_dir, long old_name, long to_dir, long new_name,
+                     long replace) {
+    const char *oldp = NULL;
+    const char *newp = NULL;
+    size_t oldlen = 0;
+    size_t newlen = 0;
+    long scripted = 0;
+    int have_script;
+    long from;
+    long to;
+    long r;
+    sys_reg_bump_call(SYS_CALL_RENAME);
+    if (!fake_dir_ok(from_dir) || !fake_dir_ok(to_dir)) return err(EBADF);
+    if (replace != 0 && replace != 1) return err(EINVAL);
+    r = fake_component(old_name, &oldp, &oldlen);
+    if (r < 0) return r;
+    r = fake_component(new_name, &newp, &newlen);
+    if (r < 0) return r;
+    have_script = pop_script(SYS_CALL_RENAME, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    from = store_find(oldp, oldlen);
+    if (from < 0) return err(ENOENT);
+    to = store_find(newp, newlen);
+    if (to >= 0 && !replace) return err(EEXIST);
+    if (to >= 0) {
+        long from_type = fake_store[from].ino->ftype;
+        long to_type = fake_store[to].ino->ftype;
+        if (to_type == 4 && from_type != 4) return err(EISDIR);
+        if (to_type != 4 && from_type == 4) return err(ENOTDIR);
+    }
+    if (to >= 0) {
+        store_remove_at(to);
+        from = store_find(oldp, oldlen);
+        if (from < 0) return err(ENOENT);
+    }
+    {
+        char *copy = (char *)malloc(newlen + 1);
+        if (copy == NULL) return err(ENOMEM);
+        memcpy(copy, newp, newlen);
+        copy[newlen] = '\0';
+        free(fake_store[from].path);
+        fake_store[from].path = copy;
+    }
+    return 1;
+}
+
+long sys_file_link(long from_dir, long old_name, long to_dir, long new_name) {
+    const char *oldp = NULL;
+    const char *newp = NULL;
+    size_t oldlen = 0;
+    size_t newlen = 0;
+    long scripted = 0;
+    int have_script;
+    long from;
+    long r;
+    sys_reg_bump_call(SYS_CALL_LINK);
+    if (!fake_dir_ok(from_dir) || !fake_dir_ok(to_dir)) return err(EBADF);
+    r = fake_component(old_name, &oldp, &oldlen);
+    if (r < 0) return r;
+    r = fake_component(new_name, &newp, &newlen);
+    if (r < 0) return r;
+    have_script = pop_script(SYS_CALL_LINK, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    from = store_find(oldp, oldlen);
+    if (from < 0) return err(ENOENT);
+    if (store_find(newp, newlen) >= 0) return err(EEXIST);
+    if (fake_store_used >= FAKE_STORE_MAX) return err(ENOSPC);
+    {
+        char *copy = (char *)malloc(newlen + 1);
+        if (copy == NULL) return err(ENOMEM);
+        memcpy(copy, newp, newlen);
+        copy[newlen] = '\0';
+        fake_store[fake_store_used].path = copy;
+        fake_store[fake_store_used].ino = fake_store[from].ino;
+        fake_store[fake_store_used].ino->refs++;
+        fake_store_used++;
+    }
+    return 1;
+}
+
+long sys_file_symlink(long target_token, long to_dir, long name_token) {
+    const char *target = NULL;
+    const char *name = NULL;
+    size_t targetlen = 0;
+    size_t namelen = 0;
+    long scripted = 0;
+    int have_script;
+    fake_inode *ino;
+    long r;
+    sys_reg_bump_call(SYS_CALL_SYMLINK);
+    if (!fake_dir_ok(to_dir)) return err(EBADF);
+    {
+        long pr = path_of(target_token, &target, &targetlen);
+        if (pr < 0) return pr;
+    }
+    if (targetlen == 0) return err(EINVAL);
+    r = fake_component(name_token, &name, &namelen);
+    if (r < 0) return r;
+    have_script = pop_script(SYS_CALL_SYMLINK, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    if (store_find(name, namelen) >= 0) return err(EEXIST);
+    ino = store_add(name, namelen, 0777);
+    if (ino == NULL) return err(ENOMEM);
+    ino->ftype = 10;
+    ino->link_target = (char *)malloc(targetlen + 1);
+    if (ino->link_target == NULL) return err(ENOMEM);
+    memcpy(ino->link_target, target, targetlen);
+    ino->link_target[targetlen] = '\0';
+    return 1;
+}
+
+/* ---- fake bounded logger ------------------------------------------------ */
+
+typedef struct {
+    fake_file *sink;
+    unsigned char *buf;
+    size_t cap;
+    size_t start;
+    size_t end;
+    long dropped;
+} fake_logger;
+
+static int release_fake_logger(void *p) {
+    fake_logger *l = (fake_logger *)p;
+    if (l == NULL) return EINVAL;
+    if (l->sink != NULL) release_shared(l->sink);
+    free(l->buf);
+    free(l);
+    return 0;
+}
+
+long sys_log_open(long which, long capacity) {
+    fake_logger *l;
+    long token;
+    sys_reg_bump_call(SYS_CALL_LOG_OPEN);
+    if (which < 0 || which > 2) return err(EINVAL);
+    if (capacity < 1 || capacity > (16L * 1024L * 1024L)) return err(ERANGE);
+    l = (fake_logger *)calloc(1, sizeof(*l));
+    if (l == NULL) return err(ENOMEM);
+    l->buf = (unsigned char *)malloc((size_t)capacity);
+    l->sink = new_file(0600, 0);
+    if (l->buf == NULL || l->sink == NULL) {
+        free(l->buf);
+        if (l->sink != NULL) release_shared(l->sink);
+        free(l);
+        return err(ENOMEM);
+    }
+    l->cap = (size_t)capacity;
+    token = sys_reg_new_object(SYS_KIND_LOGGER, l, release_fake_logger, 0);
+    if (token < 0) release_fake_logger(l);
+    return token;
+}
+
+long sys_log_emit(long token, long buf_token, long offset, long count,
+                  long policy) {
+    fake_logger *l;
+    unsigned char *src = NULL;
+    size_t srclen = 0;
+    size_t used;
+    long r;
+    sys_reg_bump_call(SYS_CALL_LOG_EMIT);
+    if (policy != 0 && policy != 1) return err(EINVAL);
+    if (offset < 0 || count <= 0) return err(EINVAL);
+    l = (fake_logger *)sys_reg_peek(token, SYS_KIND_LOGGER);
+    if (l == NULL) return err(EBADF);
+    r = buffer_span(buf_token, &src, &srclen);
+    if (r < 0) return r;
+    if ((size_t)offset > srclen || (size_t)count > srclen - (size_t)offset) {
+        return err(ERANGE);
+    }
+    used = l->end - l->start;
+    if ((size_t)count > l->cap - used) {
+        if (policy == 1) {
+            l->dropped++;
+            return 0;
+        }
+        return err(EAGAIN);
+    }
+    if (l->end + (size_t)count > l->cap) {
+        memmove(l->buf, l->buf + l->start, used);
+        l->start = 0;
+        l->end = used;
+    }
+    memcpy(l->buf + l->end, src + offset, (size_t)count);
+    l->end += (size_t)count;
+    return 1;
+}
+
+static long fake_log_write(fake_logger *l, size_t n) {
+    size_t at = l->sink->d->ino->len;
+    if (grow_inode(l->sink->d->ino, at + n) < 0) return err(ENOSPC);
+    memcpy(l->sink->d->ino->data + at, l->buf + l->start, n);
+    l->sink->d->ino->len = at + n;
+    l->start += n;
+    if (l->start == l->end) {
+        l->start = 0;
+        l->end = 0;
+    }
+    return 1;
+}
+
+long sys_log_drain(long token, long finite, long deadline_ns) {
+    fake_logger *l;
+    long scripted = 0;
+    int have_script;
+    size_t n;
+    sys_reg_bump_call(SYS_CALL_LOG_DRAIN);
+    if (finite != 0 && finite != 1) return err(EINVAL);
+    if (finite && deadline_ns < 0) return err(EINVAL);
+    l = (fake_logger *)sys_reg_peek(token, SYS_KIND_LOGGER);
+    if (l == NULL) return err(EBADF);
+    have_script = pop_script(SYS_CALL_LOG_DRAIN, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    n = l->end - l->start;
+    if (have_script && scripted >= 0 && (size_t)scripted < n) n = (size_t)scripted;
+    if (fake_log_short > 0 && (size_t)fake_log_short < n) n = (size_t)fake_log_short;
+    if (n > 0 && fake_log_write(l, n) < 0) return err(ENOSPC);
+    if (l->start < l->end) return 0;
+    return 1;
+}
+
+long sys_log_flush(long token) {
+    fake_logger *l;
+    long scripted = 0;
+    int have_script;
+    sys_reg_bump_call(SYS_CALL_LOG_FLUSH);
+    l = (fake_logger *)sys_reg_peek(token, SYS_KIND_LOGGER);
+    if (l == NULL) return err(EBADF);
+    have_script = pop_script(SYS_CALL_LOG_FLUSH, &scripted);
+    if (have_script && scripted < 0) return scripted;
+    while (l->start < l->end) {
+        if (fake_log_write(l, l->end - l->start) < 0) return err(ENOSPC);
+    }
+    return 1;
+}
+
+long sys_log_dropped(long token) {
+    fake_logger *l = (fake_logger *)sys_reg_peek(token, SYS_KIND_LOGGER);
+    if (l == NULL) return err(EBADF);
+    return l->dropped;
+}
+
+long sys_log_queued(long token) {
+    fake_logger *l = (fake_logger *)sys_reg_peek(token, SYS_KIND_LOGGER);
+    if (l == NULL) return err(EBADF);
+    return (long)(l->end - l->start);
+}
+
+static const char *fake_env[] = {
+    "OBO_FAKE_ENV=1",
+    "PATH=/fake/bin",
+    "OBO_FAKE_EMPTY=",
+    "OBO_FAKE_DUP=first",
+    "OBO_FAKE_DUP=second",
+    NULL
+};
+
+long sys_env_size(void) {
+    long total = 0;
+    long i;
+    for (i = 0; fake_env[i] != NULL; i++) {
+        total += (long)strlen(fake_env[i]) + 1;
+    }
+    return total;
+}
+
+long sys_env_snapshot(long buf_token, long cap) {
+    unsigned char *out = NULL;
+    size_t outlen = 0;
+    long total = 0;
+    long i;
+    long r;
+    if (cap < 0) return err(EINVAL);
+    r = buffer_span(buf_token, &out, &outlen);
+    if (r < 0) return r;
+    if ((size_t)cap > outlen) return err(ERANGE);
+    for (i = 0; fake_env[i] != NULL; i++) {
+        size_t n = strlen(fake_env[i]) + 1;
+        if ((size_t)total > (size_t)cap || n > (size_t)cap - (size_t)total) {
+            return err(ERANGE);
+        }
+        memcpy(out + total, fake_env[i], n);
+        total += (long)n;
+    }
+    return total;
 }
 
 long sys_res_new(long kind, long a, long b) {

@@ -1,0 +1,63 @@
+// P1b real-filesystem directory error and cross-device semantics. The test
+// prepares a nonempty directory and (when available) a second filesystem root.
+module app
+
+import "sysplatform.obx" as platform
+import "sysfile.obx" as file
+import "sysdir.obx" as dir
+import "syserrors.obx" as errs
+
+fn show(label: string, code: int) {
+    let k = errs::kind(code)
+    println(label, "=", errs::text(&k))
+}
+
+fn main() {
+    let av = args()
+    let firstPath = av[1]
+    let secondPath = av[2]
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+    let first = dir::open(firstPath)
+    match first {
+        ok(a) {
+            let rm = dir::removeEmpty(&a, "nonempty")
+            match rm { ok(v) { println("nonempty=ok") } err(m, c) { show("nonempty", c) } }
+            let ul = dir::unlink(&a, "nonempty")
+            match ul { ok(v) { println("unlink_nonempty=ok") } err(m, c) { show("unlink_nonempty", c) } }
+            let mk = dir::mkdir(&a, "nonempty", 493)
+            match mk { ok(v) { println("mkdir_existing=ok") } err(m, c) { show("mkdir_existing", c) } }
+            let second = dir::open(secondPath)
+            match second {
+                ok(b) {
+                    let opts = file::readOptions()
+                    opts.write = true
+                    opts.create = true
+                    let made = file::openAt(&a, "crossdev-src", &opts)
+                    match made {
+                        ok(f) {
+                            let c = file::close(&f)
+                            match c { ok(v) { } err(m, cc) { } }
+                            let rn = file::rename(&a, "crossdev-src", &b, "crossdev-dst", false)
+                            match rn { ok(v) { println("crossdev=ok") } err(m, cc) { show("crossdev", cc) } }
+                            let un = dir::unlink(&a, "crossdev-src")
+                            match un { ok(v) { } err(m, cc) { show("crossdev_cleanup", cc) } }
+                        }
+                        err(m, c) { show("crossdev_create", c) }
+                    }
+                    let c = dir::close(&b)
+                    match c { ok(v) { println("second_close=", v) } err(m, cc) { show("second_close", cc) } }
+                }
+                err(m, c) { show("second_open", c) }
+            }
+            let c = dir::close(&a)
+            match c { ok(v) { println("first_close=", v) } err(m, cc) { show("first_close", cc) } }
+        }
+        err(m, c) { show("first_open", c) }
+    }
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}

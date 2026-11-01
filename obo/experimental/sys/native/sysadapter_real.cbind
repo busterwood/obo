@@ -20,7 +20,10 @@
     "../sysreactor.obx",
     "../sysnet.obx",
     "../sysresolve.obx",
-    "../syswaitio.obx"
+    "../syswaitio.obx",
+    "../syscalendar.obx",
+    "../sysenv.obx",
+    "../syslog.obx"
   ],
   "sources": [
     "sysregistry.c",
@@ -770,6 +773,253 @@
         "i64",
         "i64",
         "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_mkdir",
+      "symbol": "sys_dir_mkdir",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_unlink",
+      "symbol": "sys_dir_unlink",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_remove_empty",
+      "symbol": "sys_dir_remove_empty",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_readlink",
+      "symbol": "sys_dir_readlink",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_sync",
+      "symbol": "sys_dir_sync",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_open_beneath",
+      "symbol": "sys_file_open_beneath",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_open_beneath_supported",
+      "symbol": "sys_file_open_beneath_supported",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_chmod",
+      "symbol": "sys_file_chmod",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_sync",
+      "symbol": "sys_file_sync",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_rename",
+      "symbol": "sys_file_rename",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_link",
+      "symbol": "sys_file_link",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_symlink",
+      "symbol": "sys_file_symlink",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_log_open",
+      "symbol": "sys_log_open",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_log_emit",
+      "symbol": "sys_log_emit",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_log_drain",
+      "symbol": "sys_log_drain",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_log_flush",
+      "symbol": "sys_log_flush",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_log_dropped",
+      "symbol": "sys_log_dropped",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_log_queued",
+      "symbol": "sys_log_queued",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_env_size",
+      "symbol": "sys_env_size",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_env_snapshot",
+      "symbol": "sys_env_snapshot",
+      "args": [
         "i64",
         "i64"
       ],

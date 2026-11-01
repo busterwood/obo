@@ -1,0 +1,43 @@
+// P1b openBeneath capability fallback: the fake can model a kernel/adapter
+// without openat2. The public outcome must be capability=false and Unsupported,
+// never string-prefix validation.
+module app
+
+import "sysplatform.obx" as platform
+import "sysfile.obx" as file
+import "sysdir.obx" as dir
+import "sysfakectl.obx" as fake
+import "syserrors.obx" as errs
+
+fn show(label: string, code: int) {
+    let k = errs::kind(code)
+    println(label, "=", errs::text(&k))
+}
+
+fn main() {
+    let av = args()
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+    println("fake_reset=", fake::reset())
+    println("disable=", fake::disableOpenBeneath(true))
+    println("cap=", platform::hasCapability("file.openBeneath"))
+    let d = dir::open(av[1])
+    match d {
+        ok(dd) {
+            let ro = file::readOptions()
+            let made = file::openBeneath(&dd, "plain", &ro)
+            match made {
+                ok(f) { println("beneath=ok"); let c = file::close(&f); match c { ok(v) { } err(m, cc) { } } }
+                err(m, c) { show("beneath", c) }
+            }
+            let c = dir::close(&dd)
+            match c { ok(v) { println("dir_close=", v) } err(m, cc) { show("dir_close", cc) } }
+        }
+        err(m, c) { show("dir_open", c) }
+    }
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}

@@ -1,0 +1,40 @@
+// P1b real-sink logger probe. The record goes to stderr so the deterministic
+// stdout trace stays comparable; the test checks the escaped line there.
+module app
+
+import "sysplatform.obx" as platform
+import "syslog.obx" as log
+import "sysstream.obx" as stream
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init", c) } }
+    let errSel = new stream::Error{}
+    let policy = new log::ReturnWouldBlock{}
+    let level = new log::Warn{}
+    let made = log::openStandard(&errSel, 4096, &policy)
+    match made {
+        ok(l) {
+            var msg = new []byte(0)
+            append(msg, 'a'); append(msg, 10); append(msg, 'b'); append(msg, 9)
+            append(msg, 'c'); append(msg, 1); append(msg, 'd'); append(msg, 92)
+            append(msg, 'e')
+            let r = log::emit(&l, &level, &msg)
+            match r { ok(v) { println("emit=", v.accepted, ",", v.dropped) } err(m, c) { show("emit", c) } }
+            let f = log::flush(&l)
+            match f { ok(v) { println("flush=", v) } err(m, c) { show("flush", c) } }
+            let c = log::close(&l)
+            match c { ok(v) { println("close=", v) } err(m, c) { show("close", c) } }
+        }
+        err(m, c) { show("open", c) }
+    }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown", c) } }
+}
