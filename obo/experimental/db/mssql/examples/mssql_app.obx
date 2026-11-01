@@ -58,6 +58,12 @@ fn bytes_of(s: string): []byte {
     return b
 }
 
+fn copy_bytes(b: &[]byte): []byte {
+    var out = new []byte(0)
+    for i in 0..len(b) { append(out, b[i]) }
+    return out
+}
+
 fn bin3(): []byte {
     var b = new []byte(0)
     append(b, byte(0))
@@ -430,6 +436,32 @@ fn param_errors(c: &mssql::Connection): Result[bool] {
             let _c80 = try eq_int("NUL text bind code", code, 2)
         }
     }
+
+    // Invalid UTF-8 is rejected before the driver can replace it with U+FFFD.
+    var badutf = new []byte(0)
+    append(badutf, 'x')
+    append(badutf, byte(255))
+    let pbad = mssql::param_text(string(badutf))
+    var withbad = new []mssql::Param(0)
+    append(withbad, pbad)
+    append(withbad, mssql::param_int(2))
+    let badbind = prep.bind_all(&withbad)
+    match badbind {
+        ok(v) { return err("invalid UTF-8 bind unexpectedly ok", 42) }
+        err(m, code) {
+            let _c81 = try eq_int("invalid UTF-8 bind code", code, 2)
+            if !contains(m, "not valid UTF-8") {
+                return err("invalid UTF-8 message differs: " + m, 43)
+            }
+        }
+    }
+
+    // A successful clear removes the synthetic diagnostic left by the failure.
+    let cleared2 = try prep.clear_params()
+    let residual = prep.error_message()
+    if len(residual) != 0 {
+        return err("synthetic diagnostic survived a successful clear", 44)
+    }
     return ok(true)
 }
 
@@ -444,10 +476,14 @@ fn varchar_unicode(c: &mssql::Connection): Result[bool] {
 }
 
 fn large_values(c: &mssql::Connection): Result[bool] {
+    // Text: 3,000 x (N'a' + NCHAR(0)) is 6,000 UTF-16 units but 6,000 UTF-8
+    // bytes (ASCII 'a' plus one NUL byte each), then N'z' adds one: 6,001.
+    // Binary: the verified varchar(max) replicate cast to varbinary(max) is
+    // exactly 10,000 bytes.
     var rows = try c.exec(
         "SELECT REPLICATE(CAST(N'ab' AS nvarchar(max)), 5000) AS big, " +
-        "REPLICATE(N'a' + NCHAR(0), 3000) + N'z' AS nulbig, " +
-        "REPLICATE(CAST(0x00FF AS varbinary(max)), 5000) AS binbig")
+        "REPLICATE(CAST(N'a' + NCHAR(0) AS nvarchar(max)), 3000) + N'z' AS nulbig, " +
+        "CAST(REPLICATE(CAST('ab' AS varchar(max)), 5000) AS varbinary(max)) AS binbig")
     defer rows.close()
     let more = try rows.fetch()
     let _c80 = try eq_bool("large fetch", more, true)
@@ -459,7 +495,7 @@ fn large_values(c: &mssql::Connection): Result[bool] {
     let _c83 = try eq_str("large text suffix", substr(bigs, 9998, 10000), "ab")
 
     let nb = try rows.bytes(1)
-    let _c84 = try eq_int("nul text length", len(nb), 12002)
+    let _c84 = try eq_int("nul text utf8 length", len(nb), 6001)
     if nb[0] != 'a' || nb[1] != byte(0) || nb[len(nb) - 1] != 'z' {
         return err("embedded NUL text was not preserved", 81)
     }
@@ -471,15 +507,17 @@ fn large_values(c: &mssql::Connection): Result[bool] {
 
     let binbig = try rows.bytes(2)
     let _c86 = try eq_int("large binary length", len(binbig), 10000)
-    if binbig[0] != byte(0) || binbig[1] != byte(255) ||
-       binbig[2] != byte(0) || binbig[3] != byte(255) {
+    if binbig[0] != 'a' || binbig[1] != 'b' ||
+       binbig[9998] != 'a' || binbig[9999] != 'b' {
         return err("large binary content differs", 83)
     }
     return ok(true)
 }
 
 fn oversize_value(c: &mssql::Connection): Result[bool] {
-    var rows = try c.exec("SELECT REPLICATE(CAST(N'a' AS nvarchar(max)), 8500000) AS big")
+    // 16,777,217 UTF-8 bytes: one over the 16 MiB cap.
+    var rows = try c.exec(
+        "SELECT REPLICATE(CAST(N'a' AS nvarchar(max)), 16777217) AS big")
     defer rows.close()
     let more = try rows.fetch()
     let _c87 = try eq_bool("oversize fetch", more, true)
@@ -488,6 +526,9 @@ fn oversize_value(c: &mssql::Connection): Result[bool] {
         ok(b) { return err("oversize value unexpectedly ok", 84) }
         err(m, code) {
             let _c88 = try eq_int("oversize code", code, 2)
+            if !contains(m, "16 MiB cap") {
+                return err("oversize message lacks the cap: " + m, 87)
+            }
         }
     }
     return ok(true)
@@ -578,6 +619,36 @@ fn decimal_errors(c: &mssql::Connection): Result[bool] {
                                    mssql::DEC_DB_TEXT_INVALID)
         }
     }
+
+    // SQL Server decimal has at most 38 significant digits. A 38-digit value
+    // round-trips exactly; a 39-digit value is rejected by the parser.
+    let d38 = mssql::param_decimal_text(
+        bytes_of("12345678901234567890123456789012345678"))
+    match d38 {
+        ok(p) {
+            var ps = new []mssql::Param(0)
+            append(ps, p)
+            var r38 = try c.exec_params("SELECT CAST(? AS decimal(38,0))", ps)
+            defer r38.close()
+            let m38 = try r38.fetch()
+            let _c138 = try eq_bool("38 digit fetch", m38, true)
+            let t38 = try r38.decimal_text(0)
+            if t38 == nil { return err("38 digit value is NULL", 107) }
+            let t38b = t38
+            let _c139 = try eq_str("38 digit round trip", string(t38b),
+                                   "12345678901234567890123456789012345678")
+        }
+        err(m, code) { return err("38 digit decimal rejected: " + m, 108) }
+    }
+    let d39 = mssql::param_decimal_text(
+        bytes_of("123456789012345678901234567890123456789"))
+    match d39 {
+        ok(v) { return err("39 digit decimal unexpectedly ok", 109) }
+        err(m, code) {
+            let _c140 = try eq_int("39 digit decimal code", code,
+                                   mssql::DEC_DB_PRECISION)
+        }
+    }
     return ok(true)
 }
 
@@ -657,15 +728,156 @@ fn unicode_astral(c: &mssql::Connection): Result[bool] {
     return ok(true)
 }
 
+fn big_params(c: &mssql::Connection): Result[bool] {
+    // 1 MiB text and binary parameters: the >4000/8000 ColumnSize path.
+    var big = new []byte(0)
+    for i in 0..1048576 { append(big, 'x') }
+    let bigb = copy_bytes(&big)
+    let bigtxt = string(big)
+    var ps = new []mssql::Param(0)
+    append(ps, mssql::param_text(bigtxt))
+    append(ps, mssql::param_bytes(bigb))
+    var rows = try c.exec_params(
+        "SELECT DATALENGTH(CAST(? AS nvarchar(max))) AS t, " +
+        "DATALENGTH(CAST(? AS varbinary(max))) AS b", ps)
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c140 = try eq_bool("big params fetch", more, true)
+    let t = try rows.text(0)
+    let _c141 = try eq_str("big text DATALENGTH", t, "2097152")
+    let b = try rows.text(1)
+    let _c142 = try eq_str("big binary DATALENGTH", b, "1048576")
+    return ok(true)
+}
+
+fn exact_cap_multibyte(c: &mssql::Connection): Result[bool] {
+    // Exactly 16 MiB of UTF-8 ending in a two-byte character. The cell buffer
+    // needs room for that character plus the NUL, hence the +4 cap.
+    var rows = try c.exec(
+        "SELECT REPLICATE(CAST(N'a' AS nvarchar(max)), 16777214) + N'é' AS v")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c143 = try eq_bool("exact cap fetch", more, true)
+    let b = try rows.bytes(0)
+    let _c144 = try eq_int("exact cap length", len(b), 16777216)
+    if b[len(b) - 2] != byte(0xc3) || b[len(b) - 1] != byte(0xa9) {
+        return err("exact-cap multibyte tail differs", 88)
+    }
+    return ok(true)
+}
+
+fn ascending_columns(c: &mssql::Connection): Result[bool] {
+    // SQLGetData consumes columns in order. Reading column 1 first must read
+    // and cache column 0; a later column 0 is served from the cache.
+    var rows = try c.exec("SELECT N'zero', N'one', N'café'")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c145 = try eq_bool("ascending fetch", more, true)
+    let one = try rows.text(1)
+    let _c146 = try eq_str("ascending first col 1", one, "one")
+    let zero = try rows.text(0)
+    let _c147 = try eq_str("ascending later col 0", zero, "zero")
+    let two = try rows.bytes(2)
+    let _c148 = try eq_bytes("ascending later col 2", two, bytes_of("café"))
+    let t2 = try rows.text(2)
+    let _c149 = try eq_str("ascending text col 2", t2, "café")
+    return ok(true)
+}
+
+fn int64_range(c: &mssql::Connection): Result[bool] {
+    let minv = -9223372036854775807 - 1
+    let maxv = 9223372036854775807
+    var ps = new []mssql::Param(0)
+    append(ps, mssql::param_int(minv))
+    append(ps, mssql::param_int(maxv))
+    var rows = try c.exec_params(
+        "SELECT CAST(? AS bigint) AS mn, CAST(? AS bigint) AS mx", ps)
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c150 = try eq_bool("i64 params fetch", more, true)
+    let mn = try rows.text(0)
+    let _c151 = try eq_str("i64 min param", mn, "-9223372036854775808")
+    let mx = try rows.text(1)
+    let _c152 = try eq_str("i64 max param", mx, "9223372036854775807")
+
+    var res = try c.exec(
+        "SELECT CAST(-9223372036854775807 - 1 AS bigint) AS mn, " +
+        "CAST(9223372036854775807 AS bigint) AS mx")
+    defer res.close()
+    let m2 = try res.fetch()
+    let _c153 = try eq_bool("i64 results fetch", m2, true)
+    let rmn = try res.text(0)
+    let _c154 = try eq_str("i64 min result", rmn, "-9223372036854775808")
+    let rmx = try res.text(1)
+    let _c155 = try eq_str("i64 max result", rmx, "9223372036854775807")
+    return ok(true)
+}
+
+fn stale_row(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec("SELECT 1 AS v")
+    defer rows.close()
+    let more = try rows.fetch()
+    let _c156 = try eq_bool("stale first fetch", more, true)
+    let v = try rows.text(0)
+    let _c157 = try eq_str("stale first value", v, "1")
+    let done = try rows.fetch()
+    let _c158 = try eq_bool("stale done", done, false)
+    let after = rows.text(0)
+    match after {
+        ok(v) { return err("exhausted row returned a stale value: " + v, 89) }
+        err(m, code) {
+            let _c159 = try eq_int("stale row code", code, 2)
+            if !contains(m, "no current row") {
+                return err("stale row message differs: " + m, 90)
+            }
+        }
+    }
+    return ok(true)
+}
+
 fn run_all(c: &mssql::Connection): Result[bool] {
-    let _c81 = try select_one(c)
-    let _c82 = try items(c)
-    let _c83 = try null_handling(c)
-    let _c84 = try params(c)
-    let _c85 = try error_paths(c)
-    let _c86 = try metadata_unicode(c)
-    let _c87 = try close_semantics(c)
-    let _c88 = try param_errors(c)
+    let _c1 = try select_one(c)
+    println("mssql section select_one")
+    let _c2 = try items(c)
+    println("mssql section items")
+    let _c3 = try null_handling(c)
+    println("mssql section null_handling")
+    let _c4 = try params(c)
+    println("mssql section params")
+    let _c5 = try error_paths(c)
+    println("mssql section error_paths")
+    let _c6 = try metadata_unicode(c)
+    println("mssql section metadata_unicode")
+    let _c7 = try close_semantics(c)
+    println("mssql section close_semantics")
+    let _c8 = try param_errors(c)
+    println("mssql section param_errors")
+    let _c9 = try varchar_unicode(c)
+    println("mssql section varchar_unicode")
+    let _c10 = try large_values(c)
+    println("mssql section large_values")
+    let _c11 = try oversize_value(c)
+    println("mssql section oversize_value")
+    let _c12 = try datetimeoffset_text(c)
+    println("mssql section datetimeoffset_text")
+    let _c13 = try decimal_errors(c)
+    println("mssql section decimal_errors")
+    let _c14 = try statement_reuse(c)
+    println("mssql section statement_reuse")
+    let _c15 = try float_rejected(c)
+    println("mssql section float_rejected")
+    let _c16 = try unicode_astral(c)
+    println("mssql section unicode_astral")
+    let _c17 = try big_params(c)
+    println("mssql section big_params")
+    let _c18 = try exact_cap_multibyte(c)
+    println("mssql section exact_cap_multibyte")
+    let _c19 = try ascending_columns(c)
+    println("mssql section ascending_columns")
+    let _c20 = try int64_range(c)
+    println("mssql section int64_range")
+    let _c21 = try stale_row(c)
+    println("mssql section stale_row")
 
     // A failed open reports its SQLSTATE and native code without a connection.
     let bad = mssql::open("DSN=no_such_dsn_obo;")

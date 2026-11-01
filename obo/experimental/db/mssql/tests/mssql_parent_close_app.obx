@@ -1,0 +1,92 @@
+// B1 regression fixture: a Rows that outlives its Connection.
+//
+// SQL Server/unixODBC leaves a freed DBC's child HSTMTs dangling. The C shim
+// now frees and marks children dead before disconnecting the DBC, so this app
+// must see a clean error and exit 0 under OBO_CHECK=1, never a signal.
+module app
+
+import "mssql.obx"
+import "../../../../lib/env.obx" as env
+
+fn main() {
+    let got = env::get("MSSQL_TEST_DSN")
+    if got == nil { exit(64) }
+    let made = mssql::open(string(got))
+    match made {
+        ok(conn) {
+            let q = conn.exec("SELECT N'before' AS v")
+            match q {
+                ok(rows) {
+                    let f = rows.fetch()
+                    match f {
+                        ok(more) {
+                            if !more { println("FAIL no row"); exit(2) }
+                        }
+                        err(m, code) { println("FAIL fetch ", code, " ", m); exit(3) }
+                    }
+                    let v = rows.text(0)
+                    match v {
+                        ok(s) {
+                            if s != "before" { println("FAIL value"); exit(4) }
+                        }
+                        err(m, code) { println("FAIL text ", code, " ", m); exit(5) }
+                    }
+                    let c = conn.close()
+                    match c {
+                        ok(v) {
+                            if !v { println("FAIL close"); exit(6) }
+                        }
+                        err(m, code) { println("FAIL close ", code, " ", m); exit(7) }
+                    }
+                    if rows.is_open() {
+                        println("FAIL rows still open after connection close")
+                        exit(8)
+                    }
+                    let after = rows.text(0)
+                    match after {
+                        ok(s) { println("FAIL stale value ", s); exit(9) }
+                        err(m, code) {
+                            if code != 2 {
+                                println("FAIL error code ", code)
+                                exit(10)
+                            }
+                            if len(m) == 0 || (m != "statement's connection is closed") {
+                                println("FAIL error message: ", m)
+                                exit(11)
+                            }
+                        }
+                    }
+                    let f2 = rows.fetch()
+                    match f2 {
+                        ok(v) { println("FAIL fetch after close"); exit(12) }
+                        err(m, code) {
+                            if code != 2 { println("FAIL fetch code ", code); exit(13) }
+                        }
+                    }
+                    if rows.column_count() != -1 {
+                        println("FAIL column_count after close")
+                        exit(14)
+                    }
+                    let close1 = rows.close()
+                    match close1 {
+                        ok(v) {
+                            if !v { println("FAIL rows close first"); exit(15) }
+                        }
+                        err(m, code) { println("FAIL rows close ", code, " ", m); exit(16) }
+                    }
+                    let close2 = rows.close()
+                    match close2 {
+                        ok(v) {
+                            if v { println("FAIL rows close second"); exit(17) }
+                        }
+                        err(m, code) { println("FAIL rows close 2 ", code, " ", m); exit(18) }
+                    }
+                    println("parent_close=ok")
+                    return
+                }
+                err(m, code) { println("FAIL exec ", code, " ", m); exit(19) }
+            }
+        }
+        err(m, code) { println("FAIL open ", code, " ", m); exit(20) }
+    }
+}

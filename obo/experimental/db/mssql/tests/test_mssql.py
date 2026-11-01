@@ -37,7 +37,22 @@ NEGATIVE = {
     'leak_conn': os.path.join(HERE, 'mssql_leak_conn_app.obx'),
     'leak_stmt': os.path.join(HERE, 'mssql_leak_stmt_app.obx'),
     'uac': os.path.join(HERE, 'mssql_uac_app.obx'),
+    'parent_close': os.path.join(HERE, 'mssql_parent_close_app.obx'),
 }
+SECTIONS = [
+    'select_one', 'items', 'null_handling', 'params', 'error_paths',
+    'metadata_unicode', 'close_semantics', 'param_errors', 'varchar_unicode',
+    'large_values', 'oversize_value', 'datetimeoffset_text', 'decimal_errors',
+    'statement_reuse', 'float_rejected', 'unicode_astral', 'big_params',
+    'exact_cap_multibyte', 'ascending_columns', 'int64_range', 'stale_row',
+]
+UAF_SOURCES = [
+    os.path.join(PKG, 'ms_utf16.c'),
+    os.path.join(PKG, 'ms_diag.c'),
+    os.path.join(PKG, 'ms_open.c'),
+    os.path.join(PKG, 'ms_stmt.c'),
+]
+UAF_TEST = os.path.join(HERE, 'ms_uaf_test.c')
 DECLARATION_FILES = [
     ('declaration_0', os.path.join(PKG, 'mssql_decls.h')),
     ('declaration_1', os.path.join(PKG, 'ms_internal.h')),
@@ -126,6 +141,7 @@ def check_manifest(out, what):
 
 def run_app(exe, what, env_extra=None, args=None, expect=0):
     env = dict(os.environ)
+    env.pop('OBO_CHECK', None)
     env['MSSQL_TEST_DSN'] = TEST_DSN
     if env_extra:
         env.update(env_extra)
@@ -175,7 +191,8 @@ def main():
             raise Fail('mssql app does not depend on libodbc.so.2')
 
         p = run_app(exe, 'mssql live', {'OBO_CHECK': '1'})
-        expect_lines(p, ['mssql=ok'], 'mssql live')
+        expect_lines(p, ['mssql section ' + name for name in SECTIONS] +
+                        ['mssql=ok'], 'mssql live')
         if (p.stderr or '').strip():
             raise Fail('mssql live wrote to stderr:\n%s' % p.stderr)
 
@@ -208,12 +225,35 @@ def main():
                     expect=7)
         expect_stderr(p, ['foreign handle used after close'],
                       'mssql use after close')
+
+        p = run_app(neg['parent_close'], 'mssql parent close',
+                    {'OBO_CHECK': '1'}, expect=0)
+        expect_lines(p, ['parent_close=ok'], 'mssql parent close')
+
+        uaf_exe = os.path.join(tmp, 'ms_uaf_test')
+        uaf_cc = os.environ.get('CC', 'gcc')
+        c = run([uaf_cc, '-fsanitize=address', '-g', '-O1', '-I', PKG,
+                 UAF_TEST, *UAF_SOURCES, '-l:libodbc.so.2', '-o', uaf_exe])
+        if c.returncode != 0:
+            raise Fail('ASan UAF harness build failed:\n%s\n%s'
+                       % ((c.stdout or '').strip(), (c.stderr or '').strip()))
+        env = dict(os.environ)
+        env.pop('OBO_CHECK', None)
+        env['MSSQL_TEST_DSN'] = TEST_DSN
+        env['ASAN_OPTIONS'] = 'detect_leaks=0'
+        u = run([uaf_exe], env=env)
+        if u.returncode != 0:
+            raise Fail('ASan UAF harness exited %d:\n%s\n%s'
+                       % (u.returncode, (u.stdout or '').strip(),
+                          (u.stderr or '').strip()))
+        expect_lines(u, ['ms_uaf_test=ok'], 'ASan UAF harness')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print('mssql live tests: ok (SELECT 1, dbo.items text/decimal/nvarchar/'
-          'varbinary/NULL/uniqueidentifier, typed params, SQLSTATE errors, '
-          'close/double-close, W metadata/diagnostics, OBO_CHECK census)')
+    print('mssql live tests: ok (%d sections: SELECT 1, dbo.items, typed/'
+          'big params, chunked/oversize/exact-cap reads, i64 range, ascending '
+          'columns, stale-row and parent-close safety, SQLSTATE errors, '
+          'OBO_CHECK census; ASan UAF harness)' % len(SECTIONS))
     return 0
 
 

@@ -797,6 +797,30 @@ def postgres_decimal_live(tmp):
     print('live postgres decimal SELECT-only vectors: ok')
 
 
+def mssql_live():
+    """Run the dedicated SQL Server suite, or print a visible job-level skip.
+
+    The mssql package has its own runner because the live SQL Server fixture is
+    opt-in. This hook keeps the standard db-adapter gate honest: it never
+    silently passes when the DSN is absent, and it fails on a real mssql test
+    failure when the DSN is present.
+    """
+    script = os.path.join(DB, 'mssql', 'tests', 'test_mssql.py')
+    if not os.path.exists(script):
+        raise Fail('mssql test runner is missing: %s' % script)
+    if not os.environ.get('MSSQL_TEST_DSN') and not os.path.exists(
+            os.path.expanduser('~/.obo-mssql-dsn')):
+        print('mssql live: skipped (set MSSQL_TEST_DSN or provide '
+              '~/.obo-mssql-dsn)')
+        return
+    p = run([sys.executable, script])
+    if p.returncode != 0:
+        raise Fail('mssql live suite failed:\n%s\n%s'
+                   % ((p.stdout or '').strip(), (p.stderr or '').strip()))
+    lines = [line for line in (p.stdout or '').splitlines() if line.strip()]
+    print(lines[-1] if lines else 'mssql live: ok')
+
+
 def main():
     os.makedirs(TMPROOT, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix='db-adapters-test-', dir=TMPROOT)
@@ -822,6 +846,7 @@ def main():
         postgres_live(tmp)
         postgres_sql_live(tmp)
         postgres_decimal_live(tmp)
+        mssql_live()
         print('db adapter tests ok')
         return 0
     except Fail as e:
