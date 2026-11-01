@@ -1,9 +1,10 @@
 # HTTP/3 server over QUIC
 
-Status: **design for concentrated re-review; no implementation authorized.**
-Revision 2 (2026-11-01): response to independent review
-`/tmp/opencode/http3-design-review-1793508586` (F1–F11, F29 and the low
-findings). Baseline: current `main`
+Status: **design for short re-check; no implementation authorized.**
+Revision 3 (2026-11-01): closes the focused re-review
+`/tmp/opencode/http3-design-rereview-1793509913` (R1–R4) after revision 2's
+response to `/tmp/opencode/http3-design-review-1793508586` (F1–F11, F29 and
+the low findings). Baseline: current `main`
 `544dff836eb9f3f815d71f29875e2db9c9c175ae` (HTTP/2 H2a/H2b/H2c, HTTP/1.1
 H1c and TLS P2T-b merged). Date: 2026-11-01.
 Current obo is `0.14`, symbol format 7, ABI 1. This note reserves no compiler,
@@ -1880,7 +1881,7 @@ checked arithmetic; a reservation below the minimum is
 | Limit | Default | Rule |
 |---|---|---|
 | `maxConnections` | 8 | established/draining connections |
-| `maxPendingHandshakes` | 32 | unadopted handshakes without a validated address |
+| `maxPendingHandshakes` | 32 | all unadopted handshakes, validated or not |
 | `maxTotalBytes` | 67108864 | 64 MiB aggregate reservation |
 | `maxConcurrentRequests` | 32 | 1..256; `initial_max_streams_bidi` |
 | `maxRequestsPerConnection` | 1000 | cumulative client bidi streams |
@@ -1945,7 +1946,13 @@ Validation checks (exact):
   maxResponseTrailerBytes)`.
 - `maxWire >= maxUdpPayload * maxBatchDatagrams` and
   `maxWire >= 65536`; `maxBatchDatagrams <= 64`.
-- `maxEvents >= 5 * maxConcurrentRequests + 32`.
+- `maxEvents >= 6 * maxConcurrentRequests + 32`. The worst case is six fixed
+  records per stream: `EventStreamOpened`, request `EventHeaders`,
+  `EventStreamData`, `EventStreamEnd`, trailer `EventHeaders`, and
+  `EventStreamClosed`, plus 32 connection/server records. With
+  `maxConcurrentRequests=32` the minimum is 224; the default `maxEvents=256`
+  covers it. A profile below the checked minimum is `InvalidArgument`, not a
+  ring overflow at runtime.
 - `maxTinyDatagramBurst <= maxDatagramBurst`;
   `maxTinyDatagramRate <= maxDatagramRate`.
 - Timeouts fit checked millisecond-to-nanosecond conversion.
@@ -2009,7 +2016,10 @@ is loopback-test only.
 
 **Pre-adoption buffering invariant (F3).** A connection created on the first
 Initial is not adopted until the application calls `openConnection` and
-`platform::_adoptToken` succeeds. Until `q3_conn_markAdopted`:
+`platform::_adoptToken` succeeds. `maxPendingHandshakes` counts **all**
+unadopted connections, including those that already completed Retry/address
+validation and the TLS handshake; validation does not move a connection into
+the `maxConnections` budget. Until `q3_conn_markAdopted`:
 
 - C allocates only the fixed connection record, handshake state and at most
   `pendingReservation=65536` bytes of C-owned handshake/stream staging; it does
@@ -2283,7 +2293,9 @@ when the block completed, `421` authority mismatch, `500` handler/internal,
 - Stateless reset: only short-header unknown-DCID packets; minimum size,
   response <= input, rate limit, no reset for small/long-header packets.
 - Event ring: coalescing, high-water, deliberate overflow -> connection
-  failure; server ring overflow -> stop accepting.
+  failure; server ring overflow -> stop accepting. A profile with
+  `maxEvents=6*maxConcurrentRequests+32` accepts the six-record-per-stream
+  worst case; one record less is rejected by `validateLimits`.
 - Wire batch: max datagrams, exact `segmentSize`, last shorter segment,
   `WOULDBLOCK` when the buffer is full, no partial datagram.
 - H3: control/QPACK stream binding, SETTINGS first, missing/duplicate
@@ -2305,9 +2317,12 @@ when the block completed, `421` authority mismatch, `500` handler/internal,
   unread DATA, connection credit restoration, send ring full/blocked/resume.
   Force 16 QPACK-blocked streams, unblock them, and assert `deferred_consume`
   restores both stream and connection credit exactly once.
-- Pre-adoption: complete a handshake, send a header/body burst, never call
-  `q3_conn_markAdopted`; assert `pendingReservation` bound, no per-connection
-  rings, `pendingAdoptTimeoutMs` close, and no leak.
+- Pre-adoption: complete Retry/address validation and the handshake, send a
+  header/body burst, never call `q3_conn_markAdopted`; assert the
+  `maxPendingHandshakes` count cap applies to **validated and unvalidated**
+  handshakes, the `pendingReservation` bound holds, no per-connection rings
+  exist, `pendingAdoptTimeoutMs` closes the connection, and nothing leaks. The
+  test must not rely on the 1 s timeout alone to enforce the count cap.
 - Key update: force a key update, ACK across the update, and a
   `KEY_UPDATE_ERROR` path. Retry+tombstone: Retry, CID routing, close, late
   short-header packet gets a bounded stateless reset.
@@ -2690,8 +2705,9 @@ Prerequisites:
     h3spec/aioquic/curl and the sidecar differential?
 13. Are the reservation formula and 64 MiB/8-connection default safe once
     QPACK/uni buffers and GnuTLS/ngtcp2/nghttp3 internal heaps are considered?
-14. Is the phasing right: P2q and H3a before H3b, and H3c after a working
-    h3spec/aioquic path?
+14. Is the phasing right: P2q and H3a before H3b, and H3c after H3b and the
+    deterministic/in-tree path; h3spec/aioquic are conditional conformance
+    tools, not prerequisites?
 
 ## 14. Conclusion
 
@@ -2710,7 +2726,8 @@ application handler sees a request. It does not pretend HTTP/1.1, HTTP/2 and
 HTTP/3 are the same transport, and it does not pretend a sidecar is native
 HTTP/3.
 
-The design is ready for independent review, not implementation. The first
+The design is ready for implementation review, not implementation. The first
 implementation gate is P2q plus a compiled shim against the pinned headers, a
-real GnuTLS/ngtcp2 handshake with `gtlsclient` or aioquic, and the C harness
-proving Retry/CID/event/wire/flow-control invariants.
+real GnuTLS/ngtcp2 handshake with the in-tree `q3_test_client` (`gtlsclient`
+and aioquic are optional independent clients), and the C harness proving
+Retry/CID/event/wire/flow-control invariants.
