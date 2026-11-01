@@ -1,0 +1,131 @@
+// Experimental systems library: queued/coalesced signal delivery (P3).
+//
+// Status: experimental P3 slice, unstable. This is a notification service, not
+// an exact event counter: ordinary Unix signals coalesce, and `Event.count` is
+// the number observed by one drain, never a promise about every delivery.
+//
+// Linux uses signalfd. `subscribe` blocks the selected signals in the calling
+// thread and keeps them blocked; one source is the designated consumer.
+// Overlapping subscriptions are rejected with Busy rather than reference
+// counted, so there is exactly one mask owner. Closing that source restores the
+// saved mask. No obo signal handler, C-to-obo callback or background thread is
+// installed. SIGKILL/SIGSTOP and synchronous fault signals are not
+// representable: the library ids cover only the subscribable set.
+//
+// The ids are library values mapped by the C adapter; they are never Linux
+// signal numbers. `OTHER` is status-only (an exit signal outside the
+// subscribable set) and `add` rejects it.
+module syssignals
+
+import "sysplatform.obx" as platform
+import "sysreactor.obx" as reactor
+import "syserrors.obx" as errors
+
+pub type SignalSet = ref record { pub bits: int }
+pub type SignalSource = ref record { pub res: platform::Resource }
+pub type Event = ref record { pub signal: int; pub count: int }
+
+pub const INTERRUPT = 1
+pub const TERMINATE = 2
+pub const HANGUP = 3
+pub const CHILD = 4
+pub const WINDOW_CHANGED = 5
+pub const OTHER = 6
+
+// Subscribable ids 1..5; bit (id - 1) represents one signal.
+const SUBSCRIBABLE_MASK = 31
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+fn validBit(signal: int): bool {
+    return signal >= INTERRUPT && signal <= WINDOW_CHANGED
+}
+
+// Revalidate the public `bits` field. Bits above 5 can only come from a
+// directly constructed record and are never treated as authority.
+fn setCode(s: &SignalSet): int {
+    if s.bits < 0 { return invalidArgument() }
+    if s.bits > SUBSCRIBABLE_MASK { return rangeCode() }
+    if s.bits == 0 { return invalidArgument() }
+    return 0
+}
+
+pub fn empty(): SignalSet {
+    return new SignalSet{bits: 0}
+}
+
+pub fn add(mut s: &SignalSet, signal: int): Result[bool] {
+    if signal == OTHER {
+        return err("OTHER is a status-only signal id, not subscribable",
+                   invalidArgument())
+    }
+    if !validBit(signal) {
+        return err("signal id is outside the subscribable set", rangeCode())
+    }
+    if s.bits < 0 || s.bits > SUBSCRIBABLE_MASK {
+        return err("signal set bits are outside the supported range", rangeCode())
+    }
+    let bit = 1 << (signal - 1)
+    if (s.bits & bit) != 0 { return ok(false) }
+    s.bits = s.bits | bit
+    return ok(true)
+}
+
+pub fn remove(mut s: &SignalSet, signal: int): Result[bool] {
+    if signal == OTHER || !validBit(signal) {
+        return err("signal id is outside the subscribable set", invalidArgument())
+    }
+    if s.bits < 0 || s.bits > SUBSCRIBABLE_MASK {
+        return err("signal set bits are outside the supported range", rangeCode())
+    }
+    let bit = 1 << (signal - 1)
+    if (s.bits & bit) == 0 { return ok(false) }
+    s.bits = s.bits & (SUBSCRIBABLE_MASK - bit)
+    return ok(true)
+}
+
+pub fn subscribe(set: &SignalSet): Result[SignalSource] {
+    let code = setCode(set)
+    if code != 0 {
+        return err("signal set is empty or malformed", code)
+    }
+    let token = try platform::_signalSubscribe(set.bits)
+    let r = try platform::_adoptToken(platform::KIND_SIGNAL_SOURCE, token)
+    platform::_freezeCwd()
+    return ok(new SignalSource{res: r})
+}
+
+pub fn watch(r: &reactor::Reactor, source: &SignalSource,
+             tag: int): Result[reactor::Watch] {
+    let src = try platform::_requireKindHandle(handle(source.res),
+                                               platform::KIND_SIGNAL_SOURCE)
+    return reactor::watchResource(r, src, true, false, tag)
+}
+
+pub fn next(source: &SignalSource): Result[?Event] {
+    let token = try platform::_tokenHandle(handle(source.res),
+                                           platform::KIND_SIGNAL_SOURCE)
+    let raw = try platform::_signalNext(token)
+    if raw == 0 {
+        let none: ?Event = nil
+        return ok(none)
+    }
+    let signal = raw & 255
+    let count = raw >> 8
+    if !validBit(signal) || count < 1 {
+        return err("native signal packet is malformed", systemFailure())
+    }
+    let event: ?Event = new Event{signal: signal, count: count}
+    return ok(event)
+}
+
+pub fn close(source: &SignalSource): Result[bool] {
+    return platform::_closeHandle(handle(source.res),
+                                 platform::KIND_SIGNAL_SOURCE)
+}

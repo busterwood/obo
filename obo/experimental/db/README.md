@@ -27,8 +27,12 @@ All three packages accept scalars and return exact bytes/text, with explicit
 NULL flags rather than length inference. PostgreSQL columns expose type OID and
 typmod, and numeric/text values are never routed through a float. Scalar
 `decimal` values bind and read back as exact decimal text (PostgreSQL numeric
-OID 1700, SQLite TEXT); there is no binary numeric wire format. The
-dialect-neutral `Sql` template value now has a PostgreSQL bridge and a SQLite
+OID 1700, SQLite TEXT, SQL Server `decimal`/`numeric`); there is no binary
+numeric wire format. The read side also has a NULL-aware
+`getDecimal(...): Result[DecimalOrNull]` (`Null {}` / `Value { v: decimal }`),
+where a SQL NULL is never zero and a present zero is `Value{0}`. It is added
+alongside `decimal()`/`decimal_text()`, which keep their existing error-only
+NULL contract. The dialect-neutral `Sql` template value now has a PostgreSQL bridge and a SQLite
 bridge (below); SQL Server and Oracle have placeholder rendering only. No
 package implements HTML templates, callbacks, automatic finalizers, or a
 schema/ORM layer.
@@ -235,7 +239,8 @@ postgres::param_decimal(value, p, s)      // checked default
 postgres::param_decimal_unchecked(value)  // unconstrained/deliberate coercion
 postgres::param_decimal_null()
 let meta = rows.decimal_type(col)         // precision, scale, constrained
-let d = rows.decimal(row, col)            // Result[decimal]
+let d = rows.decimal(row, col)            // Result[decimal], NULL is 1001
+let g = postgres::getDecimal(&rows, row, col) // Result[DecimalOrNull]
 ```
 
 - The default binder is checked: it calls `decimal::check` first and returns
@@ -252,8 +257,20 @@ let d = rows.decimal(row, col)            // Result[decimal]
 - `decimal_type` accepts only OID 1700; a domain over numeric or any other OID
   is `1002`. It decodes the upstream typmod formula, including negative scale,
   and rejects out-of-range metadata rather than returning an unconstrained
-  record. The text keeps its own dscale; a negative column scale is metadata
-  only.
+  record. For a constrained `numeric(p,s)` with `s >= 0`, the typmod scale is
+  authoritative: the value is parsed from the exact text and, if a
+  nonconforming producer omitted trailing zeros, the display scale is restored
+  by exact zero padding (never rounding). PostgreSQL's own `numeric_out` already
+  prints exactly `s` fraction digits, so this normally changes nothing. A
+  negative scale prints no fraction digits and stays metadata only; the parsed
+  dscale is 0. Unconstrained numeric keeps the text's dscale.
+- `getDecimal(rows,row,col)` is the read-side NULL wrapper. It returns
+  `ok(Null{})` for SQL NULL, `ok(Value{v: 0})` for a present zero, and otherwise
+  the same value and codes as `decimal()`. Null wins over the binary-format,
+  OID and typmod checks, so callers never have to special-case code `1001`.
+  `1004` (non-finite), `1006` (malformed text), `1007` (over 38
+  significant digits), `1008`/`1009` (exponent/display range) and `1010`/`1011`
+  (a constrained value that would not fit) apply unchanged.
 - The obo encoder is the single validator: it parses the strict public grammar,
   caps decimal text at 98,342 bytes and maps `decimal::parse` failures to
   `1006`/`1007`/`1008`/`1009` or plumbing 2. Empty text, `.5`, `1.`, `1..2`,
@@ -336,6 +353,20 @@ fn main() {
 - SQL Server decimal has at most 38 significant digits. `decimal::parse`
   enforces that bound; the generic 98,342-byte decimal text cap used by the
   other adapters does not apply.
+- `decimal(col)` parses the driver's exact text and keeps its NULL-as-`1001`
+  contract. SQL Server omits the leading zero below one (`.5000`, `-.5000`);
+  the adapter inserts it without changing the value or display scale.
+  `getDecimal(rows,col)` is the NULL-aware accessor: `ok(Null{})` is a SQL
+  NULL, `ok(Value{v: 0})` is a present zero, and every other failure keeps
+  `decimal()`'s codes. `rows.decimal_type(col)` reads the declared precision
+  and scale from `SQLDescribeCol` (`ColumnSize`/`DecimalDigits`) for
+  `decimal`/`numeric`; out-of-range metadata is `1012`. A non-decimal column is
+  `1002` (`float`/`real` is `1005`) and is never parsed as decimal. The declared
+  scale is authoritative for display: a conforming `decimal(18,4)` cell prints
+  `12.3400`/`-.5000`/`.0000`, and a short nonconforming text is zero-padded
+  exactly, never rounded. `money`/`smallmoney` are reported by the driver as
+  `SQL_DECIMAL`, so their exact text decodes here as a decimal value; there is
+  still no separate `Money` language type.
 - No transactions API, typed `datetimeoffset`/`money` accessors, multiple
   result sets, `Sql` bridge, fake driver or pooling in this slice; the package
   README lists them as follow-ups.
@@ -438,7 +469,8 @@ prototypes, constness, enum values and `SQLITE_TRANSIENT` matched).
 ```obo
 sqlite::bind_decimal(st, index, value, p, s)  // checked default
 sqlite::bind_decimal_unchecked(st, index, value)
-let d = st.decimal(col)                       // Result[decimal]
+let d = st.decimal(col)                       // Result[decimal], NULL is 1001
+let g = sqlite::getDecimal(&st, col)          // Result[DecimalOrNull]
 ```
 
 - Decimal storage is `TEXT` containing exact decimal text. The default binder
@@ -450,6 +482,12 @@ let d = st.decimal(col)                       // Result[decimal]
   rendering with dscale 0. Empty/NUL/non-ASCII text is `1006`; `NaN`/`Infinity`
   is `1004`; precision/exponent/display-scale parse failures map to
   `1007`/`1008`/`1009`.
+- `getDecimal(st,col)` is the NULL-aware accessor. SQL NULL is `ok(Null{})`,
+  a present zero is `ok(Value{v: 0})`, and TEXT/INTEGER/REAL/BLOB keep
+  `decimal()`'s exact rules and codes. SQLite has no typmod or `(p,s)`
+  metadata, so there is no declared-scale check on read: TEXT preserves its
+  written dscale and INTEGER necessarily reads with dscale 0. This is the same
+  documented NUMERIC/INTEGER-affinity consequence as `decimal()`.
 - Declare decimal columns `TEXT`. NUMERIC/INTEGER affinity converts integral
   text such as `1.00`, `1.0` and `0.0000` to INTEGER and loses display scale
   (accepted, dscale 0); non-integral text becomes REAL and is rejected as
@@ -560,9 +598,12 @@ is not a skip because the committed adapter is declarations-only.
   Oracle have placeholder rendering, not adapters. No HTML templates, no binary
   numeric wire format and no `Float`/binary64 binding path (code `1014`); these
   are separate future work. Scalar exact decimal text is implemented.
-- No decimal fields, `?decimal`, decimal arrays, `decimal(p,s)` language type or
-  `DecimalOrNull` wrapper. NULL is error-only (`is_null` first); `DEC_DB_NULL`
-  1001 is a defensive fallback.
+- `DecimalOrNull`/`getDecimal` implement the exact read side for all three
+  adapters (NULL is distinct from zero). The older `decimal()`/`decimal_text()`
+  accessors remain error-only: `is_null` first, and `DEC_DB_NULL` 1001 is a
+  defensive fallback. There is no `?decimal`, `decimal(p,s)` language type or
+  `SqlArg.Decimal`; writes use `DecimalText`. SQLite `getDecimal` must be called
+  after `step()`, since an unstepped statement reports no current row as NULL.
 - Domains over numeric, COPY, arrays, intervals, prepared-statement caches and
   catalog/typmod discovery beyond the result metadata are out of scope.
 - No source float arguments/results in the native contract and no `SqlArg.Float`

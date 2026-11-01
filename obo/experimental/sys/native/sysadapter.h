@@ -25,11 +25,16 @@ enum {
     SYS_KIND_LISTENER = 9,
     SYS_KIND_CONNECTION = 10,
     SYS_KIND_DATAGRAM = 11,
+    SYS_KIND_CHILD = 12,
+    SYS_KIND_SIGNAL_SOURCE = 13,
+    SYS_KIND_TERMINAL = 14,
     SYS_KIND_LOGGER = 15,
     SYS_KIND_CANCELLATION = 17,
     SYS_KIND_TEST_RESOURCE = 90,
     SYS_KIND_TEST_RESOURCE_ALT = 91,
-    SYS_KIND_BYTE_BUFFER = 92
+    SYS_KIND_BYTE_BUFFER = 92,
+    /* Internal P3 spawn aggregate; never placed in a public record. */
+    SYS_KIND_SPAWN_PLAN = 93
 };
 
 /* Must match sysplatform::OP_*. */
@@ -44,7 +49,17 @@ enum {
     SYS_OP_BUF_GET_PACKED = 14,
     SYS_OP_BUF_FILL = 15,
     SYS_OP_BUF_GET64 = 16,
-    SYS_OP_BUF_SET64 = 17
+    SYS_OP_BUF_SET64 = 17,
+    /* Spawn-plan fields, applied through sys_res_op on SYS_KIND_SPAWN_PLAN. */
+    SYS_OP_PLAN_EXEC = 20,
+    SYS_OP_PLAN_ARGV = 21,
+    SYS_OP_PLAN_ENV = 22,
+    SYS_OP_PLAN_ENV_MODE = 23,
+    SYS_OP_PLAN_DIRECTORY = 24,
+    SYS_OP_PLAN_INPUT = 25,
+    SYS_OP_PLAN_OUTPUT = 26,
+    SYS_OP_PLAN_ERROR = 27,
+    SYS_OP_PLAN_GROUP = 28
 };
 
 /* Library open-option bits. These are not a Linux flag word; the adapter maps
@@ -119,7 +134,29 @@ enum {
     SYS_CALL_LOG_OPEN = 52,
     SYS_CALL_LOG_EMIT = 53,
     SYS_CALL_LOG_DRAIN = 54,
-    SYS_CALL_LOG_FLUSH = 55
+    SYS_CALL_LOG_FLUSH = 55,
+    SYS_CALL_PROC_PLAN_NEW = 56,
+    SYS_CALL_PROC_PLAN_SET = 57,
+    SYS_CALL_PROC_SPAWN = 58,
+    SYS_CALL_PROC_PIPE = 59,
+    SYS_CALL_PROC_DUP = 60,
+    SYS_CALL_PROC_EXEC = 61,
+    SYS_CALL_PROC_TAKE = 62,
+    SYS_CALL_PROC_WAIT = 63,
+    SYS_CALL_PROC_KILL = 64,
+    SYS_CALL_PROC_DETACH = 65,
+    SYS_CALL_PROC_REAP = 66,
+    SYS_CALL_PROC_CWD = 67,
+    SYS_CALL_PROC_CHDIR = 68,
+    SYS_CALL_SIGNAL_INIT = 69,
+    SYS_CALL_SIGNAL_SUBSCRIBE = 70,
+    SYS_CALL_SIGNAL_NEXT = 71,
+    SYS_CALL_SIGNAL_CLOSE = 72,
+    SYS_CALL_TERMINAL_OPEN = 73,
+    SYS_CALL_TERMINAL_SIZE = 74,
+    SYS_CALL_TERMINAL_RAW = 75,
+    SYS_CALL_TERMINAL_RESTORE = 76,
+    SYS_CALL_TERMINAL_DUP = 77
 };
 
 /* Fixed C-owned metadata packet: 16 signed 64-bit fields (128 bytes). */
@@ -192,6 +229,56 @@ long sys_log_queued(long token);
 /* P1b process-environment snapshot. Mutation has no exported adapter symbol. */
 long sys_env_size(void);
 long sys_env_snapshot(long buf_token, long cap);
+
+/* P3 process, signal and terminal operations. Every argument and result is a
+ * scalar; no pid, fd or termios struct reaches obo. */
+enum {
+    SYS_REDIRECT_INHERIT = 0,
+    SYS_REDIRECT_NULL = 1,
+    SYS_REDIRECT_PIPE = 2,
+    SYS_REDIRECT_STREAM = 3,
+    SYS_REDIRECT_MERGE_ERROR = 4
+};
+enum {
+    SYS_TAKE_INPUT = 0,
+    SYS_TAKE_OUTPUT = 1,
+    SYS_TAKE_ERROR = 2
+};
+#define SYS_EXIT_EXITED 1L
+#define SYS_EXIT_SIGNALLED 2L
+#define SYS_EXIT_CORE 4L
+
+long sys_proc_plan_set(long plan_token, long field, long a, long b);
+long sys_proc_plan_new(void);
+long sys_proc_spawn(long plan_token);
+long sys_proc_take(long child_token, long which, long to_kind);
+/* block != 0 waits; returns 0 while running, an encoded terminal status, or
+ * -errno. The encoded status is ((payload & 0xffffff) << 8) | flags. */
+long sys_proc_wait(long child_token, long block);
+long sys_proc_terminate(long child_token, long force, long group);
+long sys_proc_detach(long child_token);
+long sys_proc_reap_children(void);
+long sys_proc_child_count(void);
+long sys_proc_cwd(long buf_token, long cap);
+long sys_proc_chdir(long dir_token);
+long sys_proc_arg_max(void);
+long sys_proc_pidfd_supported(void);
+/* Reactor integration: -EOPNOTSUPP when no pidfd exists. */
+long sys_proc_watch_fd(long child_token);
+/* Called by sys_adapter_shutdown after every registry release. */
+void sys_proc_shutdown(void);
+
+long sys_signal_init(long ignore_pipe);
+long sys_signal_subscribe(long bits);
+long sys_signal_next(long source_token);
+/* Reactor integration for a signalfd source. */
+long sys_signal_watch_fd(long source_token);
+
+long sys_terminal_open(long which);
+long sys_terminal_size(long terminal_token);
+long sys_terminal_raw(long terminal_token);
+long sys_terminal_restore(long terminal_token);
+long sys_terminal_dup(long terminal_token);
 
 /* P2 address packet: four 64-bit fields then up to 108 address bytes. */
 #define SYS_ADDR_PACKET_BYTES 160L
@@ -320,5 +407,19 @@ long sysfake_set_seed(long value);
 long sysfake_disable_open_beneath(long disabled);
 long sysfake_log_short(long bytes);
 long sysfake_store_count(void);
+
+/* Fake P3 controls. */
+long sysfake_set_arg_max(long value);
+long sysfake_proc_exit(long ordinal, long flags, long payload);
+long sysfake_proc_last(void);
+long sysfake_proc_write(long ordinal, long which, long buf_token,
+                        long offset, long count);
+long sysfake_proc_read(long ordinal, long which, long buf_token,
+                       long offset, long count);
+long sysfake_proc_ready(long child_token);
+long sysfake_signal_ready(long source_token);
+long sysfake_signal_push(long signal, long count);
+long sysfake_terminal_size(long rows, long columns);
+long sysfake_terminal_raw(long raw);
 
 #endif

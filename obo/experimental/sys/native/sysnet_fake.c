@@ -1182,7 +1182,8 @@ static fake_reactor *fake_reactor_of(long token) {
 static int watchable_kind(long kind) {
     return kind == SYS_KIND_STREAM || kind == SYS_KIND_LISTENER ||
            kind == SYS_KIND_CONNECTION || kind == SYS_KIND_DATAGRAM ||
-           kind == SYS_KIND_CANCELLATION ||
+           kind == SYS_KIND_CANCELLATION || kind == SYS_KIND_CHILD ||
+           kind == SYS_KIND_SIGNAL_SOURCE ||
            kind == SYS_KIND_TEST_RESOURCE || kind == SYS_KIND_TEST_RESOURCE_ALT;
 }
 
@@ -1193,6 +1194,16 @@ static long source_ready(long token, long kind, int *readable, int *writable,
         fake_cancel *c = (fake_cancel *)sys_reg_peek(token, (int)kind);
         if (c == NULL) return err(EBADF);
         if (c->requested) *readable = 1;
+        return 0;
+    }
+    if (kind == SYS_KIND_CHILD) {
+        if (sys_reg_peek(token, (int)kind) == NULL) return err(EBADF);
+        if (sysfake_proc_ready(token)) *readable = 1;
+        return 0;
+    }
+    if (kind == SYS_KIND_SIGNAL_SOURCE) {
+        if (sys_reg_peek(token, (int)kind) == NULL) return err(EBADF);
+        if (sysfake_signal_ready(token)) *readable = 1;
         return 0;
     }
     {

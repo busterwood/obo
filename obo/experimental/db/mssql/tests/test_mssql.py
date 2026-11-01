@@ -45,7 +45,7 @@ SECTIONS = [
     'large_values', 'oversize_value', 'datetimeoffset_text', 'decimal_errors',
     'statement_reuse', 'float_rejected', 'unicode_astral', 'big_params',
     'exact_cap_multibyte', 'ascending_columns', 'int64_range', 'stale_row',
-    'skipped_overcap', 'mars_busy',
+    'skipped_overcap', 'mars_busy', 'decimal_or_null',
 ]
 UAF_SOURCES = [
     os.path.join(PKG, 'ms_utf16.c'),

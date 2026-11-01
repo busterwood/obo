@@ -1214,6 +1214,11 @@ long sys_res_new(long kind, long a, long b) {
         (void)b;
         return sys_net_cancel_new();
     }
+    if (kind == SYS_KIND_SPAWN_PLAN) {
+        (void)a;
+        (void)b;
+        return sys_proc_plan_new();
+    }
     if (kind == SYS_KIND_TEST_RESOURCE || kind == SYS_KIND_TEST_RESOURCE_ALT) {
         int fd;
         sys_fdobj *f;
@@ -1246,6 +1251,9 @@ long sys_res_op(long token, long kind, long op, long a, long b, long c) {
         void *ptr = sys_reg_peek(token, SYS_KIND_BYTE_BUFFER);
         if (ptr == NULL) return err(EINVAL);
         return sys_reg_buffer_op(ptr, op, a, b, c);
+    }
+    if (kind == SYS_KIND_SPAWN_PLAN) {
+        return sys_proc_plan_set(token, op, a, b);
     }
     if (kind == SYS_KIND_TEST_RESOURCE || kind == SYS_KIND_TEST_RESOURCE_ALT) {
         sys_fdobj *f = fdobj(token, kind);

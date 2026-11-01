@@ -6775,8 +6775,8 @@ merged `main` `6fc3584` (cinterop v2 stage h); that merge is the landing image b
 **Release.** The 0.16 storage tier is merged as `fc76c5c` and its compiler is
 the promoted `seed/obo` at `50cca0a` (757,761 bytes, sha256 `5700668d…`), which
 reproduces itself byte for byte. The release is one version/format/ABI step,
-`0.16`/9/1; D4–D6 remain the later stages listed in
-`design/decimal-storage-plan.md`.
+`0.16`/9/1; D4–D6 were the later stages, and all are now complete (D4a at
+`0.18`, D4b at `0.19` on its branch, D5 library-only and D6 released).
 
 **Review nits closed.** N1: `tests/run/decimal_global_init.obx` now hands each
 `div`/`quantize`/`toInt`/`check`/`parse`/`format` temporary to a function that consumes and
@@ -7076,7 +7076,8 @@ tests. A 0.17 reader rejects these format-11 files before the body; the 0.18
 compiler reads format 11 only. The stage is three commits: `78c02c4` compiler,
 `3aaa8ce` tests, `ef5c86d` docs, followed by the review fixes and the D5 merge.
 D4b (function values, non-capturing lambdas with decimal signatures, Stage B
-captures) is next, then D6.
+captures) followed on the `decimal-d4b` branch as `0.19`/format 12, and D6 is
+released (merge `4a32742`).
 **Pre-existing follow-up (not changed here).** The `.sym` interface reader does
 not reject a forged `decimal` member parameter or return that the source parser
 refuses. This is present on `50cca0a` and is a separate reader-consistency fix.
@@ -7308,3 +7309,211 @@ record-cap/capacity/forged-policy/fd-flag cases plus
 `run_fork.py` **1869 passed, 0 failed**; `module_test.py` **149 passed**;
 `doc_check.py` **74 examples, 0 problems**; `git diff --check` clean. These are
 Linux x86-64 host measurements, not portable promises.
+
+## Systems library P3 (processes, signals, terminal, 0.18/format 11), on top of P0/P1a/P1b/P2/P2q
+
+**Scope.** P3 implements §8.1 spawn/pipes/reaping, §8.2 queued signal delivery,
+the `cwd`/`chdir` part of §8.3 and the terminal raw-mode/window-size part of §8.4
+in `obo/experimental/sys`, without changing the compiler, runtime, ABI, symbol
+format, seed or package version. Process environment mutation remains
+`Unsupported`; resolver policy, mapping and all thread/synchronization kinds
+remain out of scope.
+
+**Public surface added.**
+- `sysprocess::Child`, `Redirect` (`Inherit`/`Null`/`Pipe`/`FromStream`/
+  `MergeError`), `EnvPolicy`, `Command`, `ExitStatus`, `spawn`, `closeCommand`, `takeInput`/`takeOutput`/`takeError`, `pollExit`,
+  `wait`, `terminate`, `watchChild`, `detach`, `close`, `reapChildren`, `cwd`
+  and `chdir`.
+- `syssignals::SignalSet`, `SignalSource`, `Event`, library ids
+  `INTERRUPT`/`TERMINATE`/`HANGUP`/`CHILD`/`WINDOW_CHANGED`/`OTHER` and
+  `empty`/`add`/`remove`/`subscribe`/`watch`/`next`/`close`.
+- `systerminal::Terminal`, `Size`, `openStandard`, `size`, `enterRaw`,
+  `restore`, `watchResize`, `duplicate` and `close`.
+
+**Spawn and reaping.** A validated `Command` becomes an internal spawn plan of
+copied executable/argv/environment bytes and duplicated directory/FromStream
+descriptors; no pointer, pid or token is public. Requests without an anchored
+directory use `posix_spawn` with file actions and spawn attributes; the anchored
+cwd path uses trusted `fork`/`execve`. The fork child preallocates everything,
+runs only async-signal-safe C (setpgid/fchdir/sigprocmask/signal/dup2/execve),
+resets mask and dispositions, duplicates stream sources instead of consuming
+them and reports exec failure through a CLOEXEC error pipe. A genuine exit 127
+therefore remains `Exited{127}` while a missing executable is `NotFound`.
+Unintended descriptors are CLOEXEC and the child standard ends are blocking
+while the parent pipe ends are nonblocking. Failed spawns close both pipe ends
+and reap the failed child. `close` on Running transfers to the single-threaded
+reaper rather than killing or blocking; `detach` is explicit. `pollExit` is one
+`WNOHANG` observation and `wait` is one blocking `waitpid`; the terminal status
+is cached and reaped exactly once. Reaping runs at reactor turns and in
+`reapChildren`, so a detached child can be a zombie until the next turn.
+`watchChild` prefers pidfd and reports `Unsupported` without it. Group
+termination is accepted only for a group created by `newGroup`; no unchecked
+negative pid or public pid authority exists.
+
+**Signal backend and mask ownership.** Linux blocks the selected library-id
+signals in the calling thread and drains one nonblocking signalfd. Overlapping
+subscriptions return `Busy`; the single source owns the saved mask and restores
+it on close/shutdown. `next` coalesces queued notifications into one
+`Event{signal,count}`; counts are observations, not exact delivery accounting.
+`OTHER` is status-only, empty sets and SIGKILL/SIGSTOP/synchronous faults are
+not representable. There is no obo handler or C-to-obo callback. Systems-context
+initialization ignores SIGPIPE when it was not already ignored and spawn resets
+child defaults.
+
+**Terminal ownership.** `openStandard` duplicates 0/1/2 with CLOEXEC and never
+takes ownership of the standard descriptor or changes its shared description
+flags. A saved termios snapshot makes `enterRaw` an explicit obligation;
+`restore` and idempotent `close` put it back. `size`/`enterRaw` report
+`Unsupported` on a non-tty. `watchResize` reuses the signal service through a
+module-private `WINDOW_CHANGED` source; closing the terminal that created it
+retires resize watches. No arbitrary ioctl or UI framework is exposed.
+
+**Deviations, all deliberate.**
+- `EnvPolicy` variants are `EnvInherit`/`EnvExplicit` because closed variants
+  share one module-scope name and `Redirect` already uses `Inherit`.
+- The fake backend's blocking `wait` on a still-Running scripted child returns
+  `WouldBlock` instead of sleeping; pipe data and exits are explicit scripts.
+- One module-private resize source exists per process; closing its creating
+  terminal retires watches made through it.
+- Argument text is capped at 128 KiB per argument and a 4 MiB spawn plan in
+  addition to `ARG_MAX`; `FromStream` is duplicated, never consumed.
+- Shutdown reports outstanding children as cleanup failures instead of silently
+  blocking, killing or hiding them. A running child whose owner is dropped is
+  reaped only at a reaper turn.
+- Without pidfd, terminate tracks owned children but cannot promise immunity
+  from an externally reused pid after the child is reaped; the reaper and
+  terminate never signal an arbitrary negative pid.
+
+**P3 review fixes (B1-B5).** Prepared child descriptors and the fork error-pipe
+write end are forced to >=3, a redirect target is never closed or left CLOEXEC,
+and both spawn paths close all unintended parent descriptors
+(`closefrom`/`close_range`, inventory fallback) while preserving 0/1/2 and the
+CLOEXEC error pipe. A `FromStream` source with
+`O_NONBLOCK` is rejected with `Unsupported` rather than handed to the child as a
+broken standard fd; pipe chaining needs a future relay. The fake backend takes
+an inode reference for a `FromStream` source so closing that source cannot free
+the child's state, and fake shutdown frees every scripted child while reporting
+running ones as cleanup failures. SIGCHLD ignored is rejected at
+initialization/spawn with `Busy`, call-class counters cover all new classes, and
+close over a raw terminal still releases the private resize source. The P3
+suite adds 0/1/2-closed descriptor regressions, a non-CLOEXEC marker-fd check,
+the fake UAF/shutdown LSan cases, takeInput, FromStream output/error, extra
+terminal close paths and kill/detach/take/reap/next/size/raw/restore/dup faults.
+
+**P1b fake-only nits fixed.** `openBeneath O_CREAT|O_EXCL` on `.` or an existing
+directory now returns `AlreadyExists` like Linux (plain create is `IsDirectory`);
+the fake `.` opens use one stable directory inode so kind and identity match the
+real backend; the design's monotonic record-latency deferral and the
+`flush`-is-one-drain-attempt wording are recorded in the design/API/LIMITS.
+
+**Gates measured on this branch (Linux x86-64).** `test_sys_p0.py`,
+`test_sys_p1a.py`, `test_sys_p1b.py`, `test_sys_p2.py`, `test_sys_p2q.py` and
+`test_sys_p3.py` all pass; the P3 C harness runs normally and under
+ASan/UBSan/LSan on both adapters, and the real pty test runs visibly (skip only
+if `/dev/pts` is absent). `run_fork.py` **1878 passed, 0 failed**;
+`module_test.py` **150 passed**; `doc_check.py` **75 examples, 0 problems**;
+`git diff --check` is clean and `git diff main -- obo/src obo/runtime obo/seed
+obo/obo` is empty. These are host measurements, not portable promises.
+
+## Decimal database read bridge (stage D6), library-only
+
+Stage D6 of `design/decimal-storage-plan.md` adds the exact decimal **read**
+side to the experimental database adapters. It is **released as merge
+`4a32742`**, from a branch cut at `main` `f4df244` (obo 0.18/format 11); it
+changes no compiler, runtime, symbol format,
+ABI or seed, and it does not add `SqlArg.Decimal`, a binary numeric path, a
+`?decimal` form or a compiler branch. Writes stay `DecimalText`.
+
+**Public API (per adapter).** The closed type is duplicated in each package
+rather than shared, so no new module enters the cinterop wrapper specs and
+there is no cross-package import cycle:
+
+- `postgres::DecimalOrNull = closed { Null {}; Value { v: decimal } }`,
+  `postgres::getDecimal(rows: &Rows, row: int, col: int): Result[DecimalOrNull]`.
+- `sqlite::DecimalOrNull` and
+  `sqlite::getDecimal(st: &Stmt, col: int): Result[DecimalOrNull]`. SQLite rows
+  are a streaming statement, so the analogue of `(rows,row,col)` is
+  `(stmt,col)`.
+- `mssql::DecimalOrNull`,
+  `mssql::getDecimal(rows: &Rows, col: int): Result[DecimalOrNull]`,
+  `mssql::DecimalType`, and `Rows.decimal_type(col)`.
+
+`postgres::Rows.decimal`, `sqlite::Stmt.decimal` and `mssql::Rows.decimal`
+(plus `mssql::Rows.decimal_text`) keep their existing API and error-only NULL
+contract. `getDecimal` is added alongside them.
+
+**NULL and zero.** `getDecimal` returns `ok(Null{})` for a SQL NULL and
+`ok(Value{v: 0})` for a present zero. NULL is never zero or empty text, and it
+wins over the binary/OID/typmod/storage-class checks. `decimal()` still returns
+`DEC_DB_NULL` (1001) for NULL; `getDecimal` does not use the error arm for it.
+
+**PostgreSQL typmod.** `numeric(p,s)` with `s >= 0` makes the typmod scale
+authoritative. PostgreSQL's `numeric_out` already prints exactly `s` fractional
+digits, so the parsed dscale normally matches; a nonconforming short text is
+restored to the declared display scale by exact zero padding (never rounding).
+Negative scale prints no fraction digits: dscale is 0 and the scale stays
+metadata only. Unconstrained numeric keeps the text's dscale. The deterministic
+fake-libpq test covers a short `1` under `numeric(10,4)` and pins dscale 4; the
+live test pins `SELECT 1::numeric(10,4)` at dscale 4. The typmod decode,
+`decimal::check` and all read errors keep the existing 1001/1002/1003/1004/
+1006/1007/1008/1009/1010/1011/1012/1013 mappings.
+
+**SQLite storage classes.** TEXT is the exact path and keeps its written
+display scale. INTEGER is SQLite's documented exact i64-to-text rendering and
+reads with dscale 0; this is the accepted NUMERIC/INTEGER-affinity consequence
+(`1.00`/`1.0`/`0.0000` become INTEGER and lose display scale), documented as a
+trap rather than repaired. REAL is refused as `DEC_DB_INEXACT_STORAGE` (1005)
+and never goes through `sqlite3_column_double`; BLOB is `DEC_DB_NOT_DECIMAL`
+(1002). There is no typmod or `(p,s)` metadata and therefore no declared-scale
+read check. Empty/NUL/non-ASCII text is 1006, `NaN`/`Infinity` is 1004, and
+over-38-digit/exponent/display-range text keeps 1007/1008/1009.
+
+**SQL Server metadata.** `getDecimal` reads the declared precision/scale from
+the existing `SQLDescribeCol` metadata (`ColumnSize`/`DecimalDigits`) through
+`decimal_type`, accepts only `decimal`/`numeric`, and applies
+`decimal::check(v,p,s)`; an out-of-range `(p,s)` is 1012 and a value that would
+round/overflow is 1010/1011. The driver's exact text carries the scale
+(`12.3400`, `-.5000`, `.0000`); the adapter inserts the omitted leading zero and
+zero-pads a short nonconforming fraction exactly. `float`/`real` is 1005 and
+text/binary columns are 1002, never silently parsed. `money`/`smallmoney` are
+reported by the driver as `SQL_DECIMAL`, so their exact text decodes as a
+decimal value; there is still no separate `Money` language type. A typed SQL
+Server `decimal` cell cannot be malformed or over 38 digits (the server rejects
+that), so the shared parse path's 1006/1007 mappings are defensive there; the
+live suite checks the 38-digit round trip and the existing 39-digit parameter
+rejection.
+
+**Tests.** `obo/experimental/db/tests/test_db_adapters.py` now expects the
+`postgres_get_decimal=ok` and `sqlite_get_decimal=ok` markers and the MSSQL
+runner asserts the new `decimal_or_null` section. Vectors cover NULL vs zero,
+positive/negative, scales 0/2/6, a 38-digit value, a large display scale
+(PostgreSQL 16383; SQLite 16384; SQL Server `decimal(38,38)`), PostgreSQL
+`numeric(10,4)` typmod, SQLite TEXT vs INTEGER affinity, SQLite REAL/BLOB
+rejection, SQL Server `decimal(18,4)`/NULL and metadata, exact
+`money`/`smallmoney` text (reported as `SQL_DECIMAL`) with `float`/text/binary
+rejection, malformed text, and over-38-digit/exponent errors. The pre-existing `decimal()`/`decimal_text()`
+oracles remain unchanged and pass.
+
+**Gates measured on this branch (Linux x86-64).**
+- `test_db_adapters.py` with a live local PostgreSQL DSN and the local SQL
+  Server DSN: **all checks ok**, including live PostgreSQL decimal/getDecimal,
+  SQLite (real 3.45.1), SQL Server 24 sections, the fake-libpq typmod vector,
+  the ASan UAF harness, the no-float source/nm gate and the manifest checks.
+  Without a DSN the live hooks print visible `skipped` lines; the SQLite and
+  fake-libpq vectors still run.
+- `run_fork.py` **1878 passed, 0 failed**; `module_test.py` **150 passed,
+  0 failed**; `doc_check.py` **75 examples, 0 problems**.
+- `git diff --check` is clean; `git diff main -- obo/src obo/runtime obo/seed
+  obo/obo` is empty. `git status --short` lists only the D6 docs, adapters,
+  examples and tests.
+
+**Deviations.** (1) The closed type is per adapter, not one shared module, to
+avoid changing every cinterop wrapper spec and to keep the packages
+independent. (2) The SQLite accessor is `(stmt,col)` because a SQLite result is
+a streaming statement, not a row-addressed `Rows`. (3) SQL Server `getDecimal`
+uses declared metadata and therefore refuses non-decimal columns; the older
+`decimal()` remains permissive for compatibility. (4) PostgreSQL and SQLite
+have no dedicated package README in this tree; their read-side documentation is
+in `experimental/db/README.md`, and `mssql/README.md` documents the SQL Server
+surface. Library-only: released as merge `4a32742`; no compiler, runtime,
+symbol format or seed change.

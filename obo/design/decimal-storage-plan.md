@@ -1,7 +1,7 @@
 # Decimal storage tier: plan
 
 **Date:** 2026-11-01
-**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented and released as `0.18`/format 11/ABI 1 (merged as `e47a8c8`, seed `769a359`, 757,761 bytes, sha256 `ca513536…`, fixed point); it also fixes the interface vtable offset and the `recordParamFree` index mapping. The APPROVE WITH NITS review is closed (fail-closed mapping, faithful refusal mutant, higher-index pfree tests, refreshed references), and main's D5 library (`0138651`) is merged. D4b (decimal function values, lambda parameters/returns and captures) is implemented on the `decimal-d4b` branch as `0.19`/format 12/ABI 1 with measured gates in `FORK.md`; the seed is not promoted. D6 is next.
+**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented and released as `0.18`/format 11/ABI 1 (merged as `e47a8c8`, seed `769a359`, 757,761 bytes, sha256 `ca513536…`, fixed point); it also fixes the interface vtable offset and the `recordParamFree` index mapping. The APPROVE WITH NITS review is closed (fail-closed mapping, faithful refusal mutant, higher-index pfree tests, refreshed references), and main's D5 library (`0138651`) is merged. D4b (decimal function values, lambda parameters/returns and captures) is implemented on the `decimal-d4b` branch as `0.19`/format 12/ABI 1 with measured gates in `FORK.md`; it is pending this merge and is released as `0.19`/format 12/ABI 1, with the seed not promoted here. D6 (the read-side `DecimalOrNull`/`getDecimal` database bridge) is released (merge `4a32742`); it is library-only and changes no compiler, runtime, symbol format or seed. No decimal stage remains.
 **Baseline:** `main` `6f83880` (obo `0.15`, `SYM_FORMAT=8`, `SYM_ABI=1`, after cinterop v2 stage d).
 **Branch/worktree:** `decimal-storage` at `.claude/worktrees/decimal-storage`.
 **Target:** one release, `0.16` / `SYM_FORMAT=9` / `SYM_ABI=1`, merged once with one seed promotion (done; see Status).
@@ -199,8 +199,9 @@ The `SYM_FORMAT` 8 → 9 and `OBO_VERSION` 0.16 bump lands here, with the first
 
 ### D4b — function values, lambdas and captures
 
-**Status: implemented on the `decimal-d4b` branch (0.19/format 12/ABI 1), gates
-green; seed not promoted.** The frame layout, capture layout, `.sym` decision,
+**Status: implemented on the `decimal-d4b` branch (0.19/format 12/ABI 1),
+pending this merge, then released as `0.19`/format 12/ABI 1; gates green, seed
+not promoted.** The frame layout, capture layout, `.sym` decision,
 refusals, tests/mutants and implementation order are in
 [decimal-d4b-layout.md](decimal-d4b-layout.md). The layout note remains revision
 2 (approved with nits); the branch has four code commits (`2db55b2`,
@@ -263,6 +264,15 @@ units) is milestone M4 and is **not** in this branch.
 
 ### D6 — database bridge
 
+**Status:** released (merge `4a32742`, from main `f4df244`, obo 0.18/format 11);
+library-only. The read side
+adds `DecimalOrNull { Null {}; Value { v: decimal } }` and
+`getDecimal(rows, row, col)` to the PostgreSQL, SQLite and SQL Server adapters
+(SQLite takes `(&Stmt, col)` because its rows are a streaming statement). NULL
+is `Null`, never zero; a present zero is `Value{0}`. The existing
+`decimal()`/`decimal_text()` accessors keep working, and writes stay
+`DecimalText` with no `SqlArg.Decimal`. See `FORK.md` for the measured results.
+
 **Review correction:** a `${d}` decimal hole already works. `sqlTemplateHole`
 (`obo.obo:8436-8464`, decimal branch 8453-8456) maps it to tag 6, `DecimalText`,
 and the runtime formats it (`runtime.c:1617-1636`). So the write path is
@@ -280,10 +290,11 @@ change:
 
 ### Ordering
 
-D1 (with the format bump), D2, D3, D4a, D4b (the first two released, D4a and
-D4b as 0.18 and the 0.19 branch). Then D5 (needs D2's `[]decimal`)
-and D6 (needs D1's variant fields). D5 and D6 are not compiler work and may run
-in parallel with each other after D2.
+D1 (with the format bump), D2, D3, D4a, D4b, D5 and D6 are complete: D1–D3 are
+released as `0.16`/format 9/ABI 1, D4a as `0.18`/format 11/ABI 1, D4b is
+implemented on the `decimal-d4b` branch and released as `0.19`/format 12/ABI 1,
+D5 is the library-only 0.17-line addition and D6 is released (merge `4a32742`).
+No decimal stage remains.
 
 ### Files every compiler stage also updates
 

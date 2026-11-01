@@ -1,0 +1,619 @@
+// Experimental systems library: explicit process supervision (P3).
+//
+// Status: experimental P3 slice, unstable. A Child is one owned registered
+// process identity; spawn is a transaction over a validated public Command. No
+// shell, PATH search or metacharacter interpretation exists here: executable is
+// an explicit pathname and arguments includes argv[0]. The adapter uses
+// posix_spawn when it can express the request and a trusted fork/execve
+// sequence otherwise; obo code never runs after fork.
+//
+// Reaping: pollExit is one WNOHANG observation, wait is one blocking waitpid
+// call (EINTR is Interrupted). The terminal status is cached and reaps exactly
+// once. close on a Running child transfers the wait obligation to the
+// single-threaded reaper; it never kills or blocks. detach is the explicit form.
+// The reaper runs at reactor turns and in reapChildren. A detached child may
+// briefly be a zombie until the next reactor turn or reapChildren call.
+//
+// Process-group termination is accepted only for a group created by this
+// module (Command.newGroup) and never for an unchecked negative pid. No public
+// pid authority exists. chdir is startup-only: after spawn or signal
+// subscription it returns Busy. There is no hidden library chdir and no
+// thread-local cwd. Process-environment mutation remains Unsupported.
+module sysprocess
+
+import "sysenv.obx" as env
+import "sysdir.obx" as dir
+import "sysplatform.obx" as platform
+import "sysstream.obx" as stream
+import "sysreactor.obx" as reactor
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub type Child = ref record { pub res: platform::Resource }
+
+pub type Redirect = closed {
+    Inherit {}
+    Null {}
+    Pipe {}
+    FromStream { source: ?stream::Stream }
+    MergeError {}
+}
+
+pub type EnvPolicy = closed {
+    EnvInherit {}
+    EnvExplicit { value: env::Environment }
+}
+
+pub type Command = ref record {
+    pub executable: string
+    pub arguments: []string
+    pub environment: EnvPolicy
+    pub directory: ?dir::Directory
+    pub input: Redirect
+    pub output: Redirect
+    pub error: Redirect
+    pub newGroup: bool
+}
+
+pub type ExitStatus = closed {
+    Exited { code: int }
+    Signalled { signal: int; coreDumped: bool }
+}
+
+// Linux MAX_ARG_STRLEN is 32 * PAGE_SIZE including the terminating NUL.
+pub const MAX_ARGUMENT_BYTES = 131071
+pub const MAX_SPAWN_BYTES = 4194304
+pub const MAX_ARGUMENTS = 65536
+const MAX_PATH_BYTES = 4096
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+fn busyCode(): int { return libCode(new errors::Busy{}) }
+
+fn validText(text: string): bool {
+    if len(text) > MAX_ARGUMENT_BYTES { return false }
+    for i in 0..len(text) {
+        if int(text[i]) == 0 { return false }
+    }
+    return true
+}
+
+fn validPath(text: string): bool {
+    // The native plan stores at most 4095 bytes plus its NUL terminator.
+    if len(text) == 0 || len(text) > MAX_PATH_BYTES - 1 { return false }
+    return validText(text)
+}
+
+fn textBytes(text: string): []byte {
+    let out = new []byte(len(text))
+    for i in 0..len(text) { out[i] = text[i] }
+    return out
+}
+
+fn redirectKind(r: &Redirect): int {
+    match r {
+        Inherit { return platform::_REDIRECT_INHERIT }
+        Null { return platform::_REDIRECT_NULL }
+        Pipe { return platform::_REDIRECT_PIPE }
+        FromStream { return platform::_REDIRECT_STREAM }
+        MergeError { return platform::_REDIRECT_MERGE_ERROR }
+    }
+}
+
+// The checked hint of a FromStream source, or 0. This is a pure read: spawn
+// never consumes or moves the command-owned source. The caller builds an
+// alias shell for the internal token lookup while the registered owner (the
+// command's source) is alive.
+fn redirectSourceHint(r: &Redirect): int {
+    match r {
+        FromStream {
+            let o = r.source
+            if o == nil { return 0 }
+            return o.res.reserved
+        }
+        Inherit { }
+        Null { }
+        Pipe { }
+        MergeError { }
+    }
+    return 0
+}
+
+fn sourceAlias(hint: int): stream::Stream {
+    return new stream::Stream{res: new platform::Resource{reserved: hint}}
+}
+
+// Private environment description. Entries are a deep copy owned by this
+// spawn transaction.
+type EnvPlan = ref record {
+    inherit: bool
+    entries: []env::Pair
+}
+
+fn describeEnvironment(p: &EnvPolicy): Result[EnvPlan] {
+    match p {
+        EnvInherit {
+            return ok(new EnvPlan{inherit: true, entries: new []env::Pair(0)})
+        }
+        EnvExplicit {
+            let entries = try env::entries(&p.value)
+            return ok(new EnvPlan{inherit: false, entries: entries})
+        }
+    }
+}
+
+// Pure composition of the NUL-separated argv blob.
+fn buildArgv(args: &[]string): Result[[]byte] {
+    if len(args) < 1 || len(args) > MAX_ARGUMENTS {
+        return err("arguments must contain argv[0] and stay bounded",
+                   invalidArgument())
+    }
+    var total = 0
+    for i in 0..len(args) {
+        if !validText(args[i]) {
+            return err("argument is too long or contains NUL", invalidArgument())
+        }
+        if i == 0 && len(args[i]) == 0 {
+            return err("argv[0] must be nonempty", invalidArgument())
+        }
+        if total > MAX_SPAWN_BYTES - (len(args[i]) + 1) {
+            return err("argument vector exceeds the spawn byte cap", rangeCode())
+        }
+        total += len(args[i]) + 1
+    }
+    let out = new []byte(total)
+    var at = 0
+    for i in 0..len(args) {
+        for j in 0..len(args[i]) {
+            out[at] = args[i][j]
+            at += 1
+        }
+        out[at] = 0
+        at += 1
+    }
+    return ok(out)
+}
+
+fn buildEnvironment(entries: &[]env::Pair): Result[[]byte] {
+    var total = 0
+    for i in 0..len(entries) {
+        let n = len(entries[i].name)
+        let v = len(entries[i].value)
+        if n + v + 2 > MAX_ARGUMENT_BYTES {
+            return err("one environment entry exceeds MAX_ARG_STRLEN",
+                       rangeCode())
+        }
+        if total > MAX_SPAWN_BYTES - (n + v + 2) {
+            return err("environment exceeds the spawn byte cap", rangeCode())
+        }
+        total += n + v + 2
+    }
+    let out = new []byte(total)
+    var at = 0
+    for i in 0..len(entries) {
+        let p = entries[i]
+        for j in 0..len(p.name) {
+            out[at] = p.name[j]
+            at += 1
+        }
+        out[at] = 61
+        at += 1
+        for j in 0..len(p.value) {
+            out[at] = p.value[j]
+            at += 1
+        }
+        out[at] = 0
+        at += 1
+    }
+    return ok(out)
+}
+
+// Copy a scalar plan field from a C-owned byte buffer. The plan keeps its own
+// copy, so the temporary is closed immediately.
+fn setPlanBytes(planTok: int, field: int, data: &[]byte): Result[bool] {
+    let b = try bytesbuf::create(len(data))
+    let copied = bytesbuf::copyIn(&b, data, 0, 0, len(data))
+    match copied {
+        ok(n) {
+            if n != len(data) {
+                let ignored = bytesbuf::close(&b)
+                return err("short spawn-plan copy", systemFailure())
+            }
+        }
+        err(m, c) {
+            let ignored = bytesbuf::close(&b)
+            return err(m, c)
+        }
+    }
+    let bt = platform::_tokenHandle(handle(b.res), platform::KIND_BYTE_BUFFER)
+    match bt {
+        ok(token) {
+            let set = platform::_procPlanSet(planTok, field, token, 0)
+            let ignored = bytesbuf::close(&b)
+            match set {
+                ok(v) { return ok(v == 1) }
+                err(m, c) { return err(m, c) }
+            }
+        }
+        err(m, c) {
+            let ignored = bytesbuf::close(&b)
+            return err(m, c)
+        }
+    }
+}
+
+fn setPlanText(planTok: int, field: int, text: string): Result[bool] {
+    let data = textBytes(text)
+    return setPlanBytes(planTok, field, &data)
+}
+
+fn argWall(args: &[]string, entries: &[]env::Pair, argMax: int): int {
+    var pointers = len(args) + len(entries) + 2
+    var bytes = 0
+    for i in 0..len(args) { bytes += len(args[i]) + 1 }
+    for i in 0..len(entries) {
+        bytes += len(entries[i].name) + len(entries[i].value) + 2
+    }
+    let total = bytes + (pointers * 8)
+    if total > argMax || total > MAX_SPAWN_BYTES {
+        return rangeCode()
+    }
+    return 0
+}
+
+// Full public-Command validation before the plan is built or any spawn
+// resource is created. No field is trusted because a module constructor usually
+// sets it.
+fn validateCommand(command: &Command): Result[bool] {
+    if !validPath(command.executable) {
+        return err("executable must be a nonempty NUL-free pathname",
+                   invalidArgument())
+    }
+    if len(command.arguments) < 1 || len(command.arguments) > MAX_ARGUMENTS {
+        return err("arguments must contain argv[0] and stay bounded",
+                   invalidArgument())
+    }
+    if len(command.arguments[0]) == 0 {
+        return err("argv[0] must be nonempty", invalidArgument())
+    }
+    for i in 0..len(command.arguments) {
+        if !validText(command.arguments[i]) {
+            return err("argument is too long or contains NUL", invalidArgument())
+        }
+    }
+    if redirectKind(command.input) == platform::_REDIRECT_MERGE_ERROR {
+        return err("MergeError is valid only for the error redirect",
+                   invalidArgument())
+    }
+    if redirectKind(command.output) == platform::_REDIRECT_MERGE_ERROR {
+        return err("MergeError is valid only for the error redirect",
+                   invalidArgument())
+    }
+    // A FromStream source must be present and live; every source is duplicated
+    // by the plan, never consumed.
+    let inKind = redirectKind(command.input)
+    if inKind == platform::_REDIRECT_STREAM {
+        let hint = redirectSourceHint(command.input)
+        if hint == 0 {
+            return err("FromStream input needs a source", invalidArgument())
+        }
+        let s = sourceAlias(hint)
+        let ignored = try platform::_tokenHandle(handle(s.res),
+                                                 platform::KIND_STREAM)
+    }
+    let outKind = redirectKind(command.output)
+    if outKind == platform::_REDIRECT_STREAM {
+        let hint = redirectSourceHint(command.output)
+        if hint == 0 {
+            return err("FromStream output needs a source", invalidArgument())
+        }
+        let s = sourceAlias(hint)
+        let ignored = try platform::_tokenHandle(handle(s.res),
+                                                 platform::KIND_STREAM)
+    }
+    let errKind = redirectKind(command.error)
+    if errKind == platform::_REDIRECT_STREAM {
+        let hint = redirectSourceHint(command.error)
+        if hint == 0 {
+            return err("FromStream error needs a source", invalidArgument())
+        }
+        let s = sourceAlias(hint)
+        let ignored = try platform::_tokenHandle(handle(s.res),
+                                                 platform::KIND_STREAM)
+    }
+    let dirOpt = command.directory
+    if dirOpt != nil {
+        let d: &dir::Directory = dirOpt
+        let ignored = try platform::_tokenHandle(handle(d.res),
+                                                 platform::KIND_DIRECTORY)
+    }
+    let plan = try describeEnvironment(&command.environment)
+    let argMax = try platform::_procArgMax()
+    let wall = argWall(&command.arguments, &plan.entries, argMax)
+    if wall != 0 {
+        return err("argv/environment exceed ARG_MAX or the spawn byte cap", wall)
+    }
+    return ok(true)
+}
+
+pub fn spawn(command: &Command): Result[Child] {
+    try validateCommand(command)
+    let envPlan = try describeEnvironment(&command.environment)
+    let planRes = try platform::_create(platform::_KIND_SPAWN_PLAN, 0, 0)
+    defer platform::_closeHandle(handle(planRes), platform::_KIND_SPAWN_PLAN)
+    let pt = try platform::_tokenHandle(handle(planRes),
+                                        platform::_KIND_SPAWN_PLAN)
+    let execOk = try setPlanText(pt, platform::_PLAN_EXEC, command.executable)
+    if !execOk {
+        return err("spawn plan rejected executable", systemFailure())
+    }
+    let argvBlob = try buildArgv(&command.arguments)
+    let argvOk = try setPlanBytes(pt, platform::_PLAN_ARGV, &argvBlob)
+    if !argvOk {
+        return err("spawn plan rejected argv", systemFailure())
+    }
+    if envPlan.inherit {
+        let ignored = try platform::_procPlanSet(pt, platform::_PLAN_ENV_MODE, 0, 0)
+    } else {
+        let envBlob = try buildEnvironment(&envPlan.entries)
+        let envOk = try setPlanBytes(pt, platform::_PLAN_ENV, &envBlob)
+        if !envOk {
+            return err("spawn plan rejected environment", systemFailure())
+        }
+        let ignored = try platform::_procPlanSet(pt, platform::_PLAN_ENV_MODE, 1, 0)
+    }
+    let dirOpt = command.directory
+    if dirOpt != nil {
+        let d: &dir::Directory = dirOpt
+        let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DIRECTORY)
+        let ignored = try platform::_procPlanSet(pt, platform::_PLAN_DIRECTORY,
+                                                dt, 0)
+    } else {
+        let ignored = try platform::_procPlanSet(pt, platform::_PLAN_DIRECTORY,
+                                                0, 0)
+    }
+    let inKind = redirectKind(command.input)
+    var inTok = 0
+    if inKind == platform::_REDIRECT_STREAM {
+        let hint = redirectSourceHint(command.input)
+        if hint == 0 {
+            return err("FromStream input disappeared", invalidArgument())
+        }
+        let s = sourceAlias(hint)
+        inTok = try platform::_tokenHandle(handle(s.res), platform::KIND_STREAM)
+    }
+    let outKind = redirectKind(command.output)
+    var outTok = 0
+    if outKind == platform::_REDIRECT_STREAM {
+        let hint = redirectSourceHint(command.output)
+        if hint == 0 {
+            return err("FromStream output disappeared", invalidArgument())
+        }
+        let s = sourceAlias(hint)
+        outTok = try platform::_tokenHandle(handle(s.res), platform::KIND_STREAM)
+    }
+    let errKind = redirectKind(command.error)
+    var errTok = 0
+    if errKind == platform::_REDIRECT_STREAM {
+        let hint = redirectSourceHint(command.error)
+        if hint == 0 {
+            return err("FromStream error disappeared", invalidArgument())
+        }
+        let s = sourceAlias(hint)
+        errTok = try platform::_tokenHandle(handle(s.res), platform::KIND_STREAM)
+    }
+    let ignoredIn = try platform::_procPlanSet(pt, platform::_PLAN_INPUT,
+                                              inKind, inTok)
+    let ignoredOut = try platform::_procPlanSet(pt, platform::_PLAN_OUTPUT,
+                                               outKind, outTok)
+    let ignoredErr = try platform::_procPlanSet(pt, platform::_PLAN_ERROR,
+                                               errKind, errTok)
+    var group = 0
+    if command.newGroup { group = 1 }
+    let ignoredGroup = try platform::_procPlanSet(pt, platform::_PLAN_GROUP,
+                                                 group, 0)
+    let token = try platform::_procSpawn(pt)
+    let r = try platform::_adoptToken(platform::KIND_CHILD, token)
+    platform::_freezeCwd()
+    return ok(new Child{res: r})
+}
+
+fn takePipe(child: &Child, which: int): Result[stream::Stream] {
+    let ct = try platform::_tokenHandle(handle(child.res), platform::KIND_CHILD)
+    let token = try platform::_procTake(ct, which, platform::KIND_STREAM)
+    let r = try platform::_adoptToken(platform::KIND_STREAM, token)
+    return ok(new stream::Stream{res: r})
+}
+
+pub fn takeInput(child: &Child): Result[stream::Stream] {
+    return takePipe(child, 0)
+}
+
+pub fn takeOutput(child: &Child): Result[stream::Stream] {
+    return takePipe(child, 1)
+}
+
+pub fn takeError(child: &Child): Result[stream::Stream] {
+    return takePipe(child, 2)
+}
+
+fn decodeExit(raw: int): Result[ExitStatus] {
+    let flags = raw & 255
+    let payload = raw >> 8
+    if (flags & platform::_EXIT_SIGNALLED) != 0 {
+        if payload < 1 || payload > 6 {
+            return err("exit signal id is outside the library range",
+                       systemFailure())
+        }
+        let core = (flags & platform::_EXIT_CORE) != 0
+        let status: ExitStatus = new Signalled{signal: payload, coreDumped: core}
+        return ok(status)
+    }
+    if (flags & platform::_EXIT_EXITED) != 0 {
+        if payload < 0 || payload > 255 {
+            return err("exit code is outside 0..255", systemFailure())
+        }
+        let status: ExitStatus = new Exited{code: payload}
+        return ok(status)
+    }
+    return err("native exit-status packet is malformed", systemFailure())
+}
+
+pub fn pollExit(child: &Child): Result[?ExitStatus] {
+    let ct = try platform::_tokenHandle(handle(child.res), platform::KIND_CHILD)
+    let raw = try platform::_procWait(ct, false)
+    if raw == 0 {
+        let none: ?ExitStatus = nil
+        return ok(none)
+    }
+    let status = try decodeExit(raw)
+    let some: ?ExitStatus = status
+    return ok(some)
+}
+
+pub fn wait(child: &Child): Result[ExitStatus] {
+    let ct = try platform::_tokenHandle(handle(child.res), platform::KIND_CHILD)
+    let raw = try platform::_procWait(ct, true)
+    if raw == 0 {
+        return err("blocking wait made no progress", systemFailure())
+    }
+    return decodeExit(raw)
+}
+
+pub fn terminate(child: &Child, force: bool, group: bool): Result[bool] {
+    let ct = try platform::_tokenHandle(handle(child.res), platform::KIND_CHILD)
+    let done = try platform::_procTerminate(ct, force, group)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn watchChild(r: &reactor::Reactor, child: &Child,
+                  tag: int): Result[reactor::Watch] {
+    let src = try platform::_requireKindHandle(handle(child.res),
+                                               platform::KIND_CHILD)
+    return reactor::watchResource(r, src, true, false, tag)
+}
+
+pub fn detach(child: &Child): Result[bool] {
+    let ct = try platform::_tokenHandle(handle(child.res), platform::KIND_CHILD)
+    let done = try platform::_procDetach(ct)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn close(child: &Child): Result[bool] {
+    return platform::_closeHandle(handle(child.res), platform::KIND_CHILD)
+}
+
+pub fn reapChildren(): Result[int] {
+    return platform::_procReap()
+}
+
+// ---- cwd ---------------------------------------------------------------
+
+pub fn cwd(): Result[string] {
+    let cap = MAX_PATH_BYTES
+    let b = try bytesbuf::create(cap)
+    defer bytesbuf::close(&b)
+    let token = try platform::_tokenHandle(handle(b.res),
+                                           platform::KIND_BYTE_BUFFER)
+    let n = try platform::_procCwd(token, cap)
+    if n < 0 || n >= cap {
+        return err("cwd length is outside the buffer", systemFailure())
+    }
+    let out = new []byte(n)
+    let copied = try bytesbuf::copyOut(&b, &out, 0, 0, n)
+    if copied != n {
+        return err("short cwd copy", systemFailure())
+    }
+    return ok(string(out))
+}
+
+pub fn chdir(directory: &dir::Directory): Result[bool] {
+    if platform::_cwdFrozen() {
+        return err("chdir is startup-only and the systems context has frozen cwd",
+                   busyCode())
+    }
+    let dt = try platform::_tokenHandle(handle(directory.res),
+                                        platform::KIND_DIRECTORY)
+    let done = try platform::_procChdir(dt)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+// ---- explicit Command resource cleanup ---------------------------------
+
+fn takeDirectory(mut command: &Command): ?dir::Directory {
+    return take(command.directory)
+}
+
+fn takeRedirectSource(mut r: &Redirect): ?stream::Stream {
+    match r {
+        FromStream { return take(r.source) }
+        Inherit { }
+        Null { }
+        Pipe { }
+        MergeError { }
+    }
+    let none: ?stream::Stream = nil
+    return none
+}
+
+fn closeDirectoryOnce(d: ?dir::Directory): Result[bool] {
+    if d == nil { return ok(false) }
+    let directory: dir::Directory = d
+    return dir::close(&directory)
+}
+
+fn closeSourceOnce(s: ?stream::Stream): Result[bool] {
+    if s == nil { return ok(false) }
+    let held: stream::Stream = s
+    return stream::close(&held)
+}
+
+// Tries every owned cleanup even if one fails, and returns the first failure.
+// The directory and FromStream sources are taken out and left nil; repeated
+// calls with no remaining resources return ok(false). Spawned Children are
+// independent owners and are never closed here.
+pub fn closeCommand(mut command: &Command): Result[bool] {
+    var any = false
+    var code = 0
+    var message = ""
+    let dr = closeDirectoryOnce(takeDirectory(command))
+    match dr {
+        ok(v) { if v { any = true } }
+        err(m, c) {
+            if code == 0 { code = c; message = m }
+        }
+    }
+    let ir = closeSourceOnce(takeRedirectSource(command.input))
+    match ir {
+        ok(v) { if v { any = true } }
+        err(m, c) {
+            if code == 0 { code = c; message = m }
+        }
+    }
+    let orr = closeSourceOnce(takeRedirectSource(command.output))
+    match orr {
+        ok(v) { if v { any = true } }
+        err(m, c) {
+            if code == 0 { code = c; message = m }
+        }
+    }
+    let er = closeSourceOnce(takeRedirectSource(command.error))
+    match er {
+        ok(v) { if v { any = true } }
+        err(m, c) {
+            if code == 0 { code = c; message = m }
+        }
+    }
+    if code != 0 {
+        return err(message, code)
+    }
+    return ok(any)
+}

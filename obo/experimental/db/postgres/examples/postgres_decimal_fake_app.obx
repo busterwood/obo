@@ -83,6 +83,55 @@ fn decode_type(rows: &postgres::Rows, name: string, p: int, s: int,
     }
 }
 
+fn get_ok(rows: &postgres::Rows, name: string, want_can: string,
+          want_dscale: int, exit_code: int) {
+    let g = postgres::getDecimal(rows, 0, 0)
+    match g {
+        ok(v) {
+            match v {
+                Null { println("FAIL ", name, " unexpectedly null"); exit(exit_code) }
+                Value {
+                    let can = decimal::canonical(v.v)
+                    match can {
+                        ok(s) {
+                            check(s == want_can, name + " canonical", exit_code)
+                            check(decimal::dscale(v.v) == want_dscale,
+                                  name + " dscale", exit_code)
+                        }
+                        err(m, c) { println("FAIL ", name, " can ", m, " ", c); exit(exit_code) }
+                    }
+                }
+            }
+        }
+        err(m, c) { println("FAIL ", name, " get ", m, " ", c); exit(exit_code) }
+    }
+}
+
+fn get_null(rows: &postgres::Rows, name: string, exit_code: int) {
+    let g = postgres::getDecimal(rows, 0, 0)
+    match g {
+        ok(v) {
+            match v {
+                Null { }
+                Value { println("FAIL ", name, " unexpectedly a value"); exit(exit_code) }
+            }
+        }
+        err(m, c) { println("FAIL ", name, " get ", m, " ", c); exit(exit_code) }
+    }
+}
+
+fn get_err(rows: &postgres::Rows, name: string, want_code: int,
+           want_msg: string, exit_code: int) {
+    let g = postgres::getDecimal(rows, 0, 0)
+    match g {
+        ok(v) { println("FAIL ", name, " unexpectedly ok"); exit(exit_code) }
+        err(m, c) {
+            check(c == want_code, name + " code", exit_code)
+            check(m == want_msg, name + " message", exit_code)
+        }
+    }
+}
+
 fn expect_param_ok(c: &postgres::Connection, name: string,
                    r: Result[postgres::Param], want: string, exit_code: int) {
     match r {
@@ -214,6 +263,115 @@ fn main() {
                     decode_type(&rows, "10,2", 10, 2, 30)
                 }
                 err(m, c) { println("FAIL q1 ", m, " ", c); exit(31) }
+            }
+
+            // getDecimal: NULL is Null, a present zero is Value{0}, and the
+            // typmod scale is authoritative when the text omits trailing zeros.
+            let qnull = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=655368 value=NULL")
+            match qnull {
+                ok(rows) {
+                    defer rows.close()
+                    get_null(&rows, "get null", 200)
+                }
+                err(m, c) { println("FAIL get null exec ", m, " ", c); exit(201) }
+            }
+            let qzero = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=655368 value=0.0000")
+            match qzero {
+                ok(rows) {
+                    defer rows.close()
+                    get_ok(&rows, "get zero", "0", 4, 202)
+                }
+                err(m, c) { println("FAIL get zero exec ", m, " ", c); exit(203) }
+            }
+            let qpad = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=655368 value=1")
+            match qpad {
+                ok(rows) {
+                    defer rows.close()
+                    // numeric(10,4) with a nonconforming short text: the typmod
+                    // restores dscale 4 and decimal() and getDecimal agree.
+                    get_ok(&rows, "get typmod pad", "1", 4, 204)
+                    let d = rows.decimal(0, 0)
+                    match d {
+                        ok(v) { check(decimal::dscale(v) == 4, "typmod pad decimal", 205) }
+                        err(m, c) { println("FAIL typmod pad decimal ", m, " ", c); exit(206) }
+                    }
+                }
+                err(m, c) { println("FAIL get pad exec ", m, " ", c); exit(207) }
+            }
+            let qneg = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=-1.23")
+            match qneg {
+                ok(rows) {
+                    defer rows.close()
+                    get_ok(&rows, "get negative", "-1.23", 2, 208)
+                }
+                err(m, c) { println("FAIL get neg exec ", m, " ", c); exit(209) }
+            }
+            let q6 = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=1.230000")
+            match q6 {
+                ok(rows) {
+                    defer rows.close()
+                    get_ok(&rows, "get scale 6", "1.23", 6, 210)
+                }
+                err(m, c) { println("FAIL get scale 6 exec ", m, " ", c); exit(211) }
+            }
+            let q38g = query_one(&conn,
+                "FAKE_DECIMAL oid=1700 mod=2490372 value=99999999999999999999999999999999999999")
+            match q38g {
+                ok(rows) {
+                    defer rows.close()
+                    get_ok(&rows, "get 38 digits",
+                           "99999999999999999999999999999999999999", 0, 212)
+                }
+                err(m, c) { println("FAIL get 38 exec ", m, " ", c); exit(213) }
+            }
+            let qwrong = query_one(&conn, "FAKE_DECIMAL oid=25 mod=-1 value=1.23")
+            match qwrong {
+                ok(rows) {
+                    defer rows.close()
+                    get_err(&rows, "get wrong oid", postgres::DEC_DB_NOT_DECIMAL,
+                            "value is not numeric decimal data", 214)
+                }
+                err(m, c) { println("FAIL get wrong exec ", m, " ", c); exit(215) }
+            }
+            let qmal = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=1..2")
+            match qmal {
+                ok(rows) {
+                    defer rows.close()
+                    get_err(&rows, "get malformed", postgres::DEC_DB_TEXT_INVALID,
+                            "invalid decimal text", 216)
+                }
+                err(m, c) { println("FAIL get malformed exec ", m, " ", c); exit(217) }
+            }
+            let qbig = query_one(&conn,
+                "FAKE_DECIMAL oid=1700 mod=-1 value=999999999999999999999999999999999999999")
+            match qbig {
+                ok(rows) {
+                    defer rows.close()
+                    get_err(&rows, "get 39 digits", postgres::DEC_DB_PRECISION,
+                            "decimal text has more than 38 significant digits", 218)
+                }
+                err(m, c) { println("FAIL get 39 exec ", m, " ", c); exit(219) }
+            }
+            let qgetnan = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=NaN")
+            match qgetnan {
+                ok(rows) {
+                    defer rows.close()
+                    get_err(&rows, "get NaN", postgres::DEC_DB_NONFINITE,
+                            "non-finite numeric is not representable", 220)
+                }
+                err(m, c) { println("FAIL get NaN exec ", m, " ", c); exit(221) }
+            }
+
+            // A binary result is rejected by getDecimal after NULL wins.
+            let qbin = postgres::execute_binary(&conn,
+                "FAKE_DECIMAL oid=1700 mod=-1 value=1.23", new []postgres::Param(0))
+            match qbin {
+                ok(rows) {
+                    defer rows.close()
+                    get_err(&rows, "get binary", postgres::DEC_DB_BINARY,
+                            "binary decimal result is not supported", 222)
+                }
+                err(m, c) { println("FAIL get binary exec ", m, " ", c); exit(223) }
             }
 
             // Every typmod vector decodes without reading the value.
@@ -394,7 +552,7 @@ fn main() {
                 err(m, c) { println("FAIL qb1 ", m, " ", c); exit(60) }
             }
             let qb2 = postgres::execute_binary(&conn,
-                "FAKE_DECIMAL oid=1700 mod=655366 value=NULL", new []postgres::Param(0))
+                "FAKE_DECIMAL oid=1700 mod=655368 value=NULL", new []postgres::Param(0))
             match qb2 {
                 ok(rows) {
                     defer rows.close()

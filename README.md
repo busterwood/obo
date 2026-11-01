@@ -134,9 +134,11 @@ interface members are 0.18 and decimal function values and captures are 0.19.
   imports only what it uses; `obo/tools/build_tools.py` compiles it directly
   with the ordinary compiler, with nothing concatenated. The exact subsets and
   caveats are in [obo/cmd/README.md](obo/cmd/README.md).
-  The systems library is in `obo/experimental/sys`; P0/P1a/P1b/P2/P2q are
-  merged (P1b is the practical-filesystem slice), P3 processes/signals is in
-  progress, and threads remain design-only.
+  The systems library is in `obo/experimental/sys`; P0/P1a/P1b/P2/P2q and P3
+  are merged. P1b is the practical-filesystem slice; P3 adds spawn/exec,
+  pipes and redirects, reaping and process groups, signalfd-backed signals,
+  cwd/chdir and terminal raw mode. Threads remain design-only, and P2C
+  compression is a separate optional adapter.
 
 | Current metric | Value |
 |---|---:|
@@ -385,7 +387,7 @@ format 11 only and rejects 6–10 before reading the body
 because the vtable shape, descriptors, argument stride and return protocol do
 not move.
 
-**Still to come.** D4b adds decimal function values, non-capturing lambdas with
+**Status.** D4b adds decimal function values, non-capturing lambdas with
 decimal signatures and 24-byte Stage B capture snapshots; it must define the
 destination-pointer and cell layout for a call through a function value first.
 D4b is implemented as `0.19`/format 12/ABI 1 on the `decimal-d4b` branch. D6,
@@ -574,7 +576,7 @@ lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md)
 | Decimal methods and interface members (D4a) | released at 0.18/format 11/ABI 1; D4b (decimal function values, non-capturing lambdas with decimal signatures and 24-byte capture snapshots) is implemented at 0.19/format 12/ABI 1; D6 (the database read bridge, `DecimalOrNull`/`getDecimal`) is released, and the remaining decimal work is none; `lib/decimals.obx` (D5) is released on the 0.17 line (library only, no version or format change) |
 | Impure interface members | released at 0.17/format 10/ABI 1; I2 follows D4b: an `http1server` interface handler and data-carrying response, with the handler in a local or `&I` parameter, not a `Server` field or global; async libpq and a deferred response after that |
 | cinterop v2 | experimental stages (a)–(h) merged: `foreign` handles, out records, leak census and the libpq/SQLite/PostgreSQL packages, plus a SQL Server ODBC adapter in `db/mssql`; not a stable API, no threads |
-| Systems library | `obo/experimental/sys`: P0/P1a/P1b/P2/P2q merged (P1b the practical-filesystem slice); P3 processes/signals in progress; threads design-only |
+| Systems library | `obo/experimental/sys`: P0/P1a/P1b/P2/P2q and P3 merged (P1b the practical-filesystem slice; P3 spawn/exec, pipes, reaping, signals, cwd and terminal); threads design-only, P2C compression a separate optional adapter |
 | Peephole/optimizer audit | evidence-gated |
 | More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
 | Concurrency and TUI | threads are design-only and unapproved ([obo/design/systems-threads-design.md](obo/design/systems-threads-design.md)); TUI later |

@@ -1,0 +1,698 @@
+// P3 fake process contract: deterministic spawn plans, pipe data, exit
+// statuses, detach/reap/terminate, validation, ARG_MAX and every scripted
+// fault class. Uses the fake_ctl link only.
+module app
+
+import "sysplatform.obx" as platform
+import "sysbytes.obx" as bytes
+import "sysprocess.obx" as process
+import "sysstream.obx" as stream
+import "sysfile.obx" as file
+import "sysenv.obx" as env
+import "sysdir.obx" as dir
+import "sysfakectl.obx" as fake
+import "syserrors.obx" as errors
+
+fn intText(v: int): string
+
+fn kindText(code: int): string {
+    let k = errors::kind(code)
+    return errors::text(&k)
+}
+
+fn statusText(st: &process::ExitStatus): string {
+    match st {
+        Exited { return "exit:" + intText(st.code) }
+        Signalled {
+            var text = "signal:" + intText(st.signal)
+            if st.coreDumped { text = text + ":core" }
+            return text
+        }
+    }
+}
+
+fn intText(v: int): string {
+    if v == 0 { return "0" }
+    var neg = false
+    var n = v
+    if n < 0 { neg = true; n = 0 - n }
+    var digits = ""
+    while n > 0 {
+        let d = n % 10
+        if d == 0 { digits = "0" + digits }
+        if d == 1 { digits = "1" + digits }
+        if d == 2 { digits = "2" + digits }
+        if d == 3 { digits = "3" + digits }
+        if d == 4 { digits = "4" + digits }
+        if d == 5 { digits = "5" + digits }
+        if d == 6 { digits = "6" + digits }
+        if d == 7 { digits = "7" + digits }
+        if d == 8 { digits = "8" + digits }
+        if d == 9 { digits = "9" + digits }
+        n = n / 10
+    }
+    if neg { return "-" + digits }
+    return digits
+}
+
+fn textBytes(text: string): []byte {
+    let out = new []byte(len(text))
+    for i in 0..len(text) { out[i] = text[i] }
+    return out
+}
+
+fn byteBuffer(text: string): Result[bytes::Bytes] {
+    let data = textBytes(text)
+    let b = try bytes::create(len(data))
+    let copied = try bytes::copyIn(&b, &data, 0, 0, len(data))
+    if copied != len(data) { return err("short fake data copy", 10038) }
+    return ok(b)
+}
+
+fn fakeWrite(ordinal: int, which: int, text: string): int {
+    let made = byteBuffer(text)
+    match made {
+        ok(b) {
+            let tok = platform::_tokenHandle(handle(b.res), platform::KIND_BYTE_BUFFER)
+            match tok {
+                ok(t) {
+                    let n = fake::procWrite(ordinal, which, t, 0, len(text))
+                    let c = bytes::close(&b)
+                    return n
+                }
+                err(m, c) { return -1 }
+            }
+        }
+        err(m, c) { return -1 }
+    }
+}
+
+fn fakeRead(ordinal: int, which: int, count: int): string {
+    let b = bytes::create(count)
+    match b {
+        ok(bb) {
+            let tok = platform::_tokenHandle(handle(bb.res), platform::KIND_BYTE_BUFFER)
+            match tok {
+                ok(t) {
+                    let n = fake::procRead(ordinal, which, t, 0, count)
+                    if n <= 0 { let c = bytes::close(&bb); return "" }
+                    let out = new []byte(n)
+                    let copied = bytes::copyOut(&bb, &out, 0, 0, n)
+                    let c = bytes::close(&bb)
+                    match copied { ok(k) { return string(out) } err(m, c) { return "" } }
+                }
+                err(m, c) { let c2 = bytes::close(&bb); return "" }
+            }
+        }
+        err(m, c) { return "" }
+    }
+}
+
+fn simple(args: []string, out: process::Redirect, err: process::Redirect,
+          input: process::Redirect, group: bool): process::Command {
+    let cmd = new process::Command{
+        executable: "/fake"
+        arguments: args
+        environment: new process::EnvInherit{}
+        directory: nil
+        input: input
+        output: out
+        error: err
+        newGroup: group
+    }
+    return cmd
+}
+
+fn oneArg(): []string {
+    var args = new []string(0)
+    append(args, "fake")
+    return args
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let inited = platform::initialize(&o)
+    match inited { ok(v) { println("init=true") } err(m,c) { println("init-failed"); return } }
+    let reset = fake::reset()
+
+    // cwd/chdir fake policy.
+    let c0 = process::cwd()
+    match c0 { ok(p) { println("cwd0=" + p) } err(m,c) { println("cwd0=err") } }
+    let dr = dir::open("/")
+    match dr {
+        ok(d) {
+            let ch = process::chdir(&d)
+            match ch { ok(v) { println("chdir=true") } err(m,c) { println("chdir=err") } }
+            let c1 = process::cwd()
+            match c1 { ok(p) { println("cwd1=" + p) } err(m,c) { println("cwd1=err") } }
+            let dc = dir::close(&d)
+        }
+        err(m,c) { println("chdir=dir_err") }
+    }
+
+    // Basic spawn + pipe + exit.
+    let cmd = simple(oneArg(), new process::Pipe{}, new process::Inherit{},
+                     new process::Inherit{}, false)
+    let made = process::spawn(&cmd)
+    match made {
+        ok(child) {
+            let so = process::takeOutput(&child)
+            match so {
+                ok(s) {
+                    let ord = fake::lastOrdinal()
+                    let p0 = process::pollExit(&child)
+                    match p0 { ok(v) { if v == nil { println("poll_running=nil") } else { println("poll_running=unexpected") } } err(m,c) { println("poll_running=err") } }
+                    let w = fakeWrite(ord, 1, "hello")
+                    println("fake_write=" + intText(w))
+                    let ex = fake::procExit(ord, 1, 7)
+                    println("fake_exit=" + intText(ex))
+                    let part = stream::readSome(&s, 64)
+                    match part { ok(v) { if v == nil { println("out=nil") } else { println("out=" + string(v)) } } err(m,c) { println("out=err") } }
+                    let eof = stream::readSome(&s, 64)
+                    match eof { ok(v) { if v == nil { println("eof=nil") } else { println("eof=extra") } } err(m,c) { println("eof=err") } }
+                    let cs = stream::close(&s)
+                }
+                err(m,c) { println("take=err") }
+            }
+            let again = process::takeOutput(&child)
+            match again { ok(v) { println("take2=ok") } err(m,c) { println("take2=" + kindText(c)) } }
+            let st = process::wait(&child)
+            match st { ok(v) { println("status=" + statusText(&v)) } err(m,c) { println("status=err") } }
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("spawn=err") }
+    }
+    let cc = process::closeCommand(&cmd)
+
+    // takeInput transfers the parent write end once.
+    let cmdIn = simple(oneArg(), new process::Inherit{}, new process::Inherit{},
+                       new process::Pipe{}, false)
+    let rin = process::spawn(&cmdIn)
+    match rin {
+        ok(child) {
+            let ord = fake::lastOrdinal()
+            let ti = process::takeInput(&child)
+            match ti {
+                ok(s) {
+                    let data = textBytes("in")
+                    let w = stream::writeSome(&s, &data, 0, 2)
+                    match w { ok(n) { println("take_input_write="); println(n) } err(m,c) { println("take_input_write=err") } }
+                    let got = fakeRead(ord, 0, 8)
+                    println("take_input=" + got)
+                    let cs = stream::close(&s)
+                }
+                err(m,c) { println("take_input=err") }
+            }
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&child)
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("take_input=spawn_err") }
+    }
+    let ccin = process::closeCommand(&cmdIn)
+
+    // A taken pipe is nonblocking and must be rejected as a FromStream source.
+    let cmdNb = simple(oneArg(), new process::Pipe{}, new process::Inherit{},
+                       new process::Inherit{}, false)
+    let rnb = process::spawn(&cmdNb)
+    match rnb {
+        ok(prod) {
+            let ord = fake::lastOrdinal()
+            let taken = process::takeOutput(&prod)
+            match taken {
+                ok(nbs) {
+                    let cmdNb2 = simple(oneArg(), new process::Inherit{},
+                                        new process::Inherit{},
+                                        new process::FromStream{source: nbs}, false)
+                    let r2 = process::spawn(&cmdNb2)
+                    match r2 {
+                        ok(child) { println("nonblocking_fromstream=ok"); let cl = process::close(&child) }
+                        err(m,c) { println("nonblocking_fromstream=" + kindText(c)) }
+                    }
+                    let cc2 = process::closeCommand(&cmdNb2)
+                }
+                err(m,c) { println("nonblocking_fromstream=take_err") }
+            }
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&prod)
+            let cl = process::close(&prod)
+        }
+        err(m,c) { println("nonblocking_fromstream=spawn_err") }
+    }
+    let ccnb = process::closeCommand(&cmdNb)
+
+    // A taken pipe remains a nonblocking source after the producer exits.
+    let cmdAfter = simple(oneArg(), new process::Pipe{}, new process::Inherit{},
+                          new process::Inherit{}, false)
+    let rAfter = process::spawn(&cmdAfter)
+    match rAfter {
+        ok(prod) {
+            let ord = fake::lastOrdinal()
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&prod)
+            let taken = process::takeOutput(&prod)
+            match taken {
+                ok(nbs) {
+                    let cmdAfter2 = simple(oneArg(), new process::Inherit{},
+                                           new process::Inherit{},
+                                           new process::FromStream{source: nbs}, false)
+                    let r2 = process::spawn(&cmdAfter2)
+                    match r2 {
+                        ok(child) { println("nonblocking_after_exit=ok"); let cl = process::close(&child) }
+                        err(m,c) { println("nonblocking_after_exit=" + kindText(c)) }
+                    }
+                    let cc2 = process::closeCommand(&cmdAfter2)
+                }
+                err(m,c) { println("nonblocking_after_exit=take_err") }
+            }
+            let cl = process::close(&prod)
+        }
+        err(m,c) { println("nonblocking_after_exit=spawn_err") }
+    }
+    let ccAfter = process::closeCommand(&cmdAfter)
+
+    // A blocking regular-file FromStream outlives closing its source.
+    let uafOpts = new file::OpenOptions{read:true, write:true, create:true,
+        exclusive:false, truncate:true, append:false, noFollow:false,
+        nonblocking:false, permissions:0}
+    let uafFile = file::open("uaf.txt", &uafOpts)
+    match uafFile {
+        ok(uf) {
+            let seed = textBytes("uafdata")
+            let wr = file::writeSome(&uf, &seed, 0, 7)
+            let con = file::intoStream(&uf)
+            match con {
+                ok(src) {
+                    let cmdU = simple(oneArg(), new process::Inherit{},
+                                      new process::Inherit{},
+                                      new process::FromStream{source: src}, false)
+                    let ru = process::spawn(&cmdU)
+                    match ru {
+                        ok(child) {
+                            let ord = fake::lastOrdinal()
+                            let ccu = process::closeCommand(&cmdU)
+                            let got = fakeRead(ord, 0, 8)
+                            println("uaf_input=" + got)
+                            let ex = fake::procExit(ord, 1, 0)
+                            let st = process::wait(&child)
+                            let cl = process::close(&child)
+                        }
+                        err(m,c) { println("uaf_input=spawn_err") }
+                    }
+                }
+                err(m,c) { println("uaf_input=convert_err") }
+            }
+        }
+        err(m,c) { println("uaf_input=open_err") }
+    }
+
+    // FromStream is valid for output and error too.
+    let outOpts = new file::OpenOptions{read:false, write:true, create:true,
+        exclusive:false, truncate:true, append:false, noFollow:false,
+        nonblocking:false, permissions:0}
+    let outFile = file::open("fromout.txt", &outOpts)
+    match outFile {
+        ok(of) {
+            let con = file::intoStream(&of)
+            match con {
+                ok(src) {
+                    let cmdO = simple(oneArg(), new process::FromStream{source: src},
+                                      new process::Inherit{}, new process::Inherit{}, false)
+                    let ro = process::spawn(&cmdO)
+                    match ro {
+                        ok(child) {
+                            let ord = fake::lastOrdinal()
+                            let w = fakeWrite(ord, 1, "out")
+                            println("fromstream_output="); println(w)
+                            let ex = fake::procExit(ord, 1, 0)
+                            let st = process::wait(&child)
+                            let cl = process::close(&child)
+                        }
+                        err(m,c) { println("fromstream_output=spawn_err") }
+                    }
+                    let cco = process::closeCommand(&cmdO)
+                }
+                err(m,c) { println("fromstream_output=convert_err") }
+            }
+        }
+        err(m,c) { println("fromstream_output=open_err") }
+    }
+    let errOpts = new file::OpenOptions{read:false, write:true, create:true,
+        exclusive:false, truncate:true, append:false, noFollow:false,
+        nonblocking:false, permissions:0}
+    let errFile = file::open("fromerr.txt", &errOpts)
+    match errFile {
+        ok(ef) {
+            let con = file::intoStream(&ef)
+            match con {
+                ok(src) {
+                    let cmdE = simple(oneArg(), new process::Inherit{},
+                                      new process::FromStream{source: src},
+                                      new process::Inherit{}, false)
+                    let re = process::spawn(&cmdE)
+                    match re {
+                        ok(child) {
+                            let ord = fake::lastOrdinal()
+                            let w = fakeWrite(ord, 2, "err")
+                            println("fromstream_error="); println(w)
+                            let ex = fake::procExit(ord, 1, 0)
+                            let st = process::wait(&child)
+                            let cl = process::close(&child)
+                        }
+                        err(m,c) { println("fromstream_error=spawn_err") }
+                    }
+                    let cce = process::closeCommand(&cmdE)
+                }
+                err(m,c) { println("fromstream_error=convert_err") }
+            }
+        }
+        err(m,c) { println("fromstream_error=open_err") }
+    }
+
+    // MergeError maps stderr to stdout.
+    let cmdm = simple(oneArg(), new process::Pipe{}, new process::MergeError{},
+                      new process::Inherit{}, false)
+    let rm = process::spawn(&cmdm)
+    match rm {
+        ok(child) {
+            let so = process::takeOutput(&child)
+            match so {
+                ok(s) {
+                    let ord = fake::lastOrdinal()
+                    let w = fakeWrite(ord, 2, "merged")
+                    let ex = fake::procExit(ord, 1, 0)
+                    let part = stream::readSome(&s, 64)
+                    match part { ok(v) { if v == nil { println("merge=nil") } else { println("merge=" + string(v)) } } err(m,c) { println("merge=err") } }
+                    let cs = stream::close(&s)
+                }
+                err(m,c) { println("merge=take_err") }
+            }
+            let st = process::wait(&child)
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("merge=spawn_err") }
+    }
+    let ccm = process::closeCommand(&cmdm)
+
+    // FromStream input is duplicated, not consumed.
+    let opts = new file::OpenOptions{read:true, write:true, create:true,
+        exclusive:false, truncate:true, append:false, noFollow:false,
+        nonblocking:false, permissions:0}
+    let madeF = file::open("seed.txt", &opts)
+    match madeF {
+        ok(f) {
+            let seed = textBytes("seed")
+            let wr = file::writeSome(&f, &seed, 0, 4)
+            let con = file::intoStream(&f)
+            match con {
+                ok(src) {
+                    let cmdF = simple(oneArg(), new process::Pipe{},
+                                      new process::Inherit{},
+                                      new process::FromStream{source: src}, false)
+                    let rf = process::spawn(&cmdF)
+                    match rf {
+                        ok(child) {
+                            let ord = fake::lastOrdinal()
+                            let got = fakeRead(ord, 0, 8)
+                            println("fromstream=" + got)
+                            let ex = fake::procExit(ord, 1, 0)
+                            let st = process::wait(&child)
+                            let cl = process::close(&child)
+                        }
+                        err(m,c) { println("fromstream=spawn_err") }
+                    }
+                    let ccf = process::closeCommand(&cmdF)
+                    match ccf { ok(v) { if v { println("fromstream_close=true") } else { println("fromstream_close=false") } } err(m,c) { println("fromstream_close=err") } }
+                }
+                err(m,c) { println("fromstream=convert_err") }
+            }
+        }
+        err(m,c) { println("fromstream=open_err") }
+    }
+
+    // Validation of the whole public record.
+    var badArgs = new []string(0)
+    let bad1 = new process::Command{executable:"", arguments:badArgs,
+        environment:new process::EnvInherit{}, directory:nil,
+        input:new process::Inherit{}, output:new process::Inherit{},
+        error:new process::Inherit{}, newGroup:false}
+    let b1 = process::spawn(&bad1)
+    match b1 { ok(v) { println("empty_exec=ok") } err(m,c) { println("empty_exec=" + kindText(c)) } }
+
+    var emptyArgv = new []string(0)
+    let bad2 = new process::Command{executable:"/fake", arguments:emptyArgv,
+        environment:new process::EnvInherit{}, directory:nil,
+        input:new process::Inherit{}, output:new process::Inherit{},
+        error:new process::Inherit{}, newGroup:false}
+    let b2 = process::spawn(&bad2)
+    match b2 { ok(v) { println("empty_argv=ok") } err(m,c) { println("empty_argv=" + kindText(c)) } }
+
+    var mergeArgs = new []string(0)
+    append(mergeArgs, "fake")
+    let bad3 = new process::Command{executable:"/fake", arguments:mergeArgs,
+        environment:new process::EnvInherit{}, directory:nil,
+        input:new process::MergeError{}, output:new process::Inherit{},
+        error:new process::Inherit{}, newGroup:false}
+    let b3 = process::spawn(&bad3)
+    match b3 { ok(v) { println("merge_input=ok") } err(m,c) { println("merge_input=" + kindText(c)) } }
+
+    var streamArgs = new []string(0)
+    append(streamArgs, "fake")
+    let bad4 = new process::Command{executable:"/fake", arguments:streamArgs,
+        environment:new process::EnvInherit{}, directory:nil,
+        input:new process::FromStream{source: nil}, output:new process::Inherit{},
+        error:new process::Inherit{}, newGroup:false}
+    let b4 = process::spawn(&bad4)
+    match b4 { ok(v) { println("nil_source=ok") } err(m,c) { println("nil_source=" + kindText(c)) } }
+
+    // ARG_MAX is a Result, not a trap.
+    let setmax = fake::setArgMax(4096)
+    var bigArgs = new []string(0)
+    append(bigArgs, "fake")
+    var big = ""
+    for i in 0..5000 { big = big + "a" }
+    append(bigArgs, big)
+    let bad5 = new process::Command{executable:"/fake", arguments:bigArgs,
+        environment:new process::EnvInherit{}, directory:nil,
+        input:new process::Inherit{}, output:new process::Inherit{},
+        error:new process::Inherit{}, newGroup:false}
+    let b5 = process::spawn(&bad5)
+    match b5 { ok(v) { println("argmax=ok") } err(m,c) { println("argmax=" + kindText(c)) } }
+    let resetmax = fake::setArgMax(2097152)
+
+    // Explicit environment is accepted and copied.
+    var pairs = new []env::Pair(0)
+    append(pairs, new env::Pair{name:"A", value:"B"})
+    let explicitEnv = new env::Environment{entries: pairs}
+    let cmde = simple(oneArg(), new process::Inherit{}, new process::Inherit{},
+                      new process::Inherit{}, false)
+    let cmde2 = new process::Command{executable:"/fake", arguments:oneArg(),
+        environment:new process::EnvExplicit{value: explicitEnv}, directory:nil,
+        input:new process::Inherit{}, output:new process::Inherit{},
+        error:new process::Inherit{}, newGroup:false}
+    let re = process::spawn(&cmde2)
+    match re {
+        ok(child) {
+            let ord = fake::lastOrdinal()
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&child)
+            match st { ok(v) { println("explicit=" + statusText(&v)) } err(m,c) { println("explicit=err") } }
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("explicit=spawn_err") }
+    }
+    let cce = process::closeCommand(&cmde2)
+
+    // Explicit empty environment and an empty (but present) argument.
+    var emptyPairs = new []env::Pair(0)
+    let emptyEnv = new env::Environment{entries: emptyPairs}
+    let cmdEmptyEnv = new process::Command{executable:"/fake", arguments:oneArg(),
+        environment:new process::EnvExplicit{value: emptyEnv}, directory:nil,
+        input:new process::Inherit{}, output:new process::Inherit{},
+        error:new process::Inherit{}, newGroup:false}
+    let ree = process::spawn(&cmdEmptyEnv)
+    match ree {
+        ok(child) {
+            let ord = fake::lastOrdinal()
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&child)
+            match st { ok(v) { println("empty_env=" + statusText(&v)) } err(m,c) { println("empty_env=err") } }
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("empty_env=spawn_err") }
+    }
+    let ccee = process::closeCommand(&cmdEmptyEnv)
+
+    var emptyArgv2 = new []string(0)
+    append(emptyArgv2, "fake")
+    append(emptyArgv2, "")
+    let cmdEmptyArg = simple(emptyArgv2, new process::Inherit{},
+                             new process::Inherit{}, new process::Inherit{}, false)
+    let rea = process::spawn(&cmdEmptyArg)
+    match rea {
+        ok(child) {
+            let ord = fake::lastOrdinal()
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&child)
+            match st { ok(v) { println("empty_arg=" + statusText(&v)) } err(m,c) { println("empty_arg=err") } }
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("empty_arg=spawn_err") }
+    }
+    let ccea = process::closeCommand(&cmdEmptyArg)
+
+    // Group termination only for a group this module created.
+    let cmdg = simple(oneArg(), new process::Inherit{}, new process::Inherit{},
+                      new process::Inherit{}, true)
+    let rg = process::spawn(&cmdg)
+    match rg {
+        ok(child) {
+            let t = process::terminate(&child, false, true)
+            match t { ok(v) { if v { println("group_term=true") } else { println("group_term=false") } } err(m,c) { println("group_term=err") } }
+            let st = process::wait(&child)
+            match st { ok(v) { println("group_status=" + statusText(&v)) } err(m,c) { println("group_status=err") } }
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("group=spawn_err") }
+    }
+    let ccg = process::closeCommand(&cmdg)
+
+    let cmdn = simple(oneArg(), new process::Inherit{}, new process::Inherit{},
+                      new process::Inherit{}, false)
+    let rn = process::spawn(&cmdn)
+    match rn {
+        ok(child) {
+            let t = process::terminate(&child, false, true)
+            match t { ok(v) { println("nogroup_term=ok") } err(m,c) { println("nogroup_term=" + kindText(c)) } }
+            let t2 = process::terminate(&child, true, false)
+            let st = process::wait(&child)
+            match st { ok(v) { println("force_status=" + statusText(&v)) } err(m,c) { println("force_status=err") } }
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("nogroup=spawn_err") }
+    }
+    let ccn = process::closeCommand(&cmdn)
+
+    // Detach and close-on-running transfer.
+    let cmdd = simple(oneArg(), new process::Inherit{}, new process::Inherit{},
+                      new process::Inherit{}, false)
+    let rd = process::spawn(&cmdd)
+    match rd {
+        ok(child) {
+            let d = process::detach(&child)
+            match d { ok(v) { if v { println("detach=true") } else { println("detach=false") } } err(m,c) { println("detach=err") } }
+            let w = process::wait(&child)
+            match w { ok(v) { println("detached_wait=ok") } err(m,c) { println("detached_wait=" + kindText(c)) } }
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("detach=spawn_err") }
+    }
+    let ccd = process::closeCommand(&cmdd)
+
+    let cmdc = simple(oneArg(), new process::Inherit{}, new process::Inherit{},
+                      new process::Inherit{}, false)
+    let rc = process::spawn(&cmdc)
+    match rc {
+        ok(child) {
+            let ord = fake::lastOrdinal()
+            let ex = fake::procExit(ord, 1, 0)
+            let cl = process::close(&child)
+            let n = process::reapChildren()
+            match n { ok(v) { if v > 0 { println("reaped=true") } else { println("reaped=false") } } err(m,c) { println("reaped=err") } }
+        }
+        err(m,c) { println("close=spawn_err") }
+    }
+    let ccc = process::closeCommand(&cmdc)
+
+    // Scripted faults at each P3 stage.
+    let p1 = fake::push(fake::CLASS_PROC_SPAWN, -12)
+    let f1 = process::spawn(&cmd)
+    match f1 { ok(v) { println("fault_spawn=ok") } err(m,c) { println("fault_spawn=" + kindText(c)) } }
+    let p2 = fake::push(fake::CLASS_PROC_PIPE, -24)
+    let f2 = process::spawn(&cmd)
+    match f2 { ok(v) { println("fault_pipe=ok") } err(m,c) { println("fault_pipe=" + kindText(c)) } }
+    let dupOpts = new file::OpenOptions{read:false, write:true, create:true,
+        exclusive:false, truncate:true, append:false, noFollow:false,
+        nonblocking:false, permissions:0}
+    let dupFile = file::open("dup.txt", &dupOpts)
+    match dupFile {
+        ok(df) {
+            let dconv = file::intoStream(&df)
+            match dconv {
+                ok(dsrc) {
+                    let cmdd2 = simple(oneArg(), new process::FromStream{source: dsrc},
+                                       new process::Inherit{}, new process::Inherit{}, false)
+                    let p3 = fake::push(fake::CLASS_PROC_DUP, -9)
+                    let f3 = process::spawn(&cmdd2)
+                    match f3 { ok(v) { println("fault_dup=ok") } err(m,c) { println("fault_dup=" + kindText(c)) } }
+                    let ccd2 = process::closeCommand(&cmdd2)
+                }
+                err(m,c) { println("fault_dup=convert_err") }
+            }
+        }
+        err(m,c) { println("fault_dup=open_err") }
+    }
+    let p4 = fake::push(fake::CLASS_PROC_EXEC, -2)
+    let f4 = process::spawn(&cmd)
+    match f4 { ok(v) { println("fault_exec=ok") } err(m,c) { println("fault_exec=" + kindText(c)) } }
+    let fw = process::spawn(&cmd)
+    match fw {
+        ok(fchild) {
+            let p5 = fake::push(fake::CLASS_PROC_WAIT, -4)
+            let f5 = process::wait(&fchild)
+            match f5 { ok(v) { println("fault_wait=ok") } err(m,c) { println("fault_wait=" + kindText(c)) } }
+            let fcl = process::close(&fchild)
+        }
+        err(m,c) { println("fault_wait=spawn_err") }
+    }
+    // More scripted stages: kill, detach, take and reap.
+    let fk = process::spawn(&cmd)
+    match fk {
+        ok(child) {
+            let ord = fake::lastOrdinal()
+            let p6 = fake::push(fake::CLASS_PROC_KILL, -1)
+            let t = process::terminate(&child, false, false)
+            match t { ok(v) { println("fault_kill=ok") } err(m,c) { println("fault_kill=" + kindText(c)) } }
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&child)
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("fault_kill=spawn_err") }
+    }
+    let fdsp = process::spawn(&cmd)
+    match fdsp {
+        ok(child) {
+            let ord = fake::lastOrdinal()
+            let p7 = fake::push(fake::CLASS_PROC_DETACH, -22)
+            let d = process::detach(&child)
+            match d { ok(v) { println("fault_detach=ok") } err(m,c) { println("fault_detach=" + kindText(c)) } }
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&child)
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("fault_detach=spawn_err") }
+    }
+    let ftkcmd = simple(oneArg(), new process::Pipe{}, new process::Inherit{},
+                        new process::Inherit{}, false)
+    let ftk = process::spawn(&ftkcmd)
+    match ftk {
+        ok(child) {
+            let ord = fake::lastOrdinal()
+            let p8 = fake::push(fake::CLASS_PROC_TAKE, -4)
+            let tk = process::takeOutput(&child)
+            match tk { ok(v) { println("fault_take=ok") } err(m,c) { println("fault_take=" + kindText(c)) } }
+            let ex = fake::procExit(ord, 1, 0)
+            let st = process::wait(&child)
+            let cl = process::close(&child)
+        }
+        err(m,c) { println("fault_take=spawn_err") }
+    }
+    let cctk = process::closeCommand(&ftkcmd)
+    let p9 = fake::push(fake::CLASS_PROC_REAP, -4)
+    let rp = process::reapChildren()
+    match rp { ok(v) { println("fault_reap=ok") } err(m,c) { println("fault_reap=" + kindText(c)) } }
+
+    let ccc2 = process::closeCommand(&cmd)
+    let sh = platform::shutdown()
+    match sh { ok(c) { println("counts=" + intText(c.resources) + "," + intText(c.shells)) } err(m,c) { println("shutdown=err") } }
+}

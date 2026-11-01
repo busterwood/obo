@@ -146,7 +146,7 @@ def main():
 
     # C batch harness: normal and ASAN/UBSAN/LSAN, real and fake.
     native = cc_compile('p2q_c_real', 'p2q_test.c',
-                        ['sysregistry.c', 'sysadapter_real.c', 'sysnet_real.c'],
+                        ['sysregistry.c', 'sysadapter_real.c', 'sysproc_real.c', 'sysnet_real.c'],
                         ['-O2'], tmp)
     fake = cc_compile('p2q_c_fake', 'p2q_test.c',
                       ['sysregistry.c', 'sysadapter_fake.c', 'sysnet_fake.c'],
@@ -157,7 +157,7 @@ def main():
     san_flags = ['-O1', '-g', '-fsanitize=address,undefined',
                  '-fno-omit-frame-pointer']
     native_san = cc_compile('p2q_c_real_san', 'p2q_test.c',
-                            ['sysregistry.c', 'sysadapter_real.c', 'sysnet_real.c'],
+                            ['sysregistry.c', 'sysadapter_real.c', 'sysproc_real.c', 'sysnet_real.c'],
                             san_flags, tmp)
     fake_san = cc_compile('p2q_c_fake_san', 'p2q_test.c',
                           ['sysregistry.c', 'sysadapter_fake.c', 'sysnet_fake.c'],

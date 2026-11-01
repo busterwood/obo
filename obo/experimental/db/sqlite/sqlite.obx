@@ -83,6 +83,13 @@ pub const DEC_DB_RANGE = 1011
 pub const DEC_DB_METADATA = 1012
 pub const DEC_DB_PG_RANGE = 1013
 
+// Read-side NULL wrapper for the exact decimal bridge. Null is a SQL NULL and is
+// never zero; a present zero is Value{v: 0}. A SQL NULL is not an error value.
+pub type DecimalOrNull = closed {
+    Null { }
+    Value { v: decimal }
+}
+
 pub type Connection = foreign "sqlite3"
 pub type Stmt = foreign "sqlite3_stmt"
 
@@ -657,6 +664,21 @@ pub fn (s: &Stmt) decimal(col: int): Result[decimal] {
             return err(m, c)
         }
     }
+}
+
+// The read-side NULL-aware accessor. A SQL NULL is ok(Null{}), not an error and
+// not zero; a present zero is ok(Value{v: 0}). TEXT keeps its exact display
+// scale, INTEGER is SQLite's exact i64 text with dscale 0, and REAL/BLOB keep
+// their decimal() error codes. SQLite has no typmod or (p,s) metadata.
+pub fn getDecimal(st: &Stmt, col: int): Result[DecimalOrNull] {
+    let t = try st.column_type(col)
+    if t == SQLITE_NULL {
+        let out: DecimalOrNull = new Null{}
+        return ok(out)
+    }
+    let d = try st.decimal(col)
+    let out: DecimalOrNull = new Value{v: d}
+    return ok(out)
 }
 
 // Convenience string form for a non-NULL column. SQL NULL is an error; use

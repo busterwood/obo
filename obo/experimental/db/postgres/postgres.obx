@@ -96,6 +96,13 @@ pub type DecimalType = ref record {
     pub constrained: bool
 }
 
+// Read-side NULL wrapper for the exact decimal bridge. Null is a SQL NULL and is
+// never zero; a present zero is Value{v: 0}. A SQL NULL is not an error value.
+pub type DecimalOrNull = closed {
+    Null { }
+    Value { v: decimal }
+}
+
 pub type Param = ref record {
     kind: int
     i: int
@@ -143,6 +150,30 @@ fn fraction_digits(s: string): int {
         if s[i] == '.' { return len(s) - i - 1 }
     }
     return 0
+}
+
+fn has_exponent(s: string): bool {
+    for i in 0..len(s) {
+        if s[i] == 'e' || s[i] == 'E' { return true }
+    }
+    return false
+}
+
+// PostgreSQL numeric_out prints a constrained numeric(p,s) with exactly s
+// fractional digits for s >= 0, so the typmod scale and the text agree. If a
+// nonconforming producer omits trailing zeros, restore the declared display
+// scale by exact zero padding; this never rounds and never changes the value.
+// An exponent form is left alone (PostgreSQL numeric_out does not emit one).
+fn typmod_dscale_text(txt: string, meta: &DecimalType): string {
+    if !meta.constrained || meta.scale < 0 { return txt }
+    if has_exponent(txt) { return txt }
+    let ds = fraction_digits(txt)
+    if ds >= meta.scale { return txt }
+    var b = new []byte(0)
+    for i in 0..len(txt) { append(b, txt[i]) }
+    if ds == 0 { append(b, '.') }
+    for i in 0..(meta.scale - ds) { append(b, '0') }
+    return string(b)
 }
 
 fn canonical_db(value: decimal): Result[string] {
@@ -647,7 +678,10 @@ pub fn (r: &Rows) decimal(row: int, col: int): Result[decimal] {
     if txt == "NaN" || txt == "Infinity" || txt == "-Infinity" {
         return err("non-finite numeric is not representable", DEC_DB_NONFINITE)
     }
-    let d = decimal::parse(txt)
+    // The typmod scale is authoritative when the column is constrained with
+    // s >= 0; parsed text already carries it for a conforming server value.
+    let scaled = typmod_dscale_text(txt, &meta)
+    let d = decimal::parse(scaled)
     match d {
         ok(v) {
             if meta.constrained {
@@ -698,6 +732,21 @@ pub fn (r: &Rows) decimal(row: int, col: int): Result[decimal] {
             return err(m, c)
         }
     }
+}
+
+// The read-side NULL-aware accessor. A SQL NULL is ok(Null{}), not an error and
+// not zero; a present zero is ok(Value{v: 0}). Every other failure keeps the
+// same codes and messages as decimal(), so callers that already handle those
+// errors do not need a second mapping.
+pub fn getDecimal(r: &Rows, row: int, col: int): Result[DecimalOrNull] {
+    let isn = try r.is_null(row, col)
+    if isn {
+        let out: DecimalOrNull = new Null{}
+        return ok(out)
+    }
+    let d = try r.decimal(row, col)
+    let out: DecimalOrNull = new Value{v: d}
+    return ok(out)
 }
 
 pub fn (r: &Rows) error_message(): []byte {
