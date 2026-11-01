@@ -1,9 +1,9 @@
 # D4b — function-value and lambda frame layout (decimal)
 
 **Date:** 2026-11-01
-**Status:** **revision 2 — APPROVE WITH NITS review folded in.** Layout approved;
-ready for implementation. Design only: this branch contains no compiler, runtime,
-test or seed change.
+**Status:** **revision 2 — APPROVE WITH NITS review folded in.** Layout approved
+and implemented on the `decimal-d4b` branch as `0.19`/format 12/ABI 1 (seed not
+promoted). This note remains the authoritative layout and implementation order.
 **Baseline:** `main` `b52b886` (obo `0.18`, `SYM_FORMAT=11`, `SYM_ABI=1`).
 **Review note:** line numbers below follow the review's scratch tree where the
 accepted insertions shift them; function names are the stable anchors.

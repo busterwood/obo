@@ -7081,6 +7081,138 @@ captures) is next, then D6.
 not reject a forged `decimal` member parameter or return that the source parser
 refuses. This is present on `50cca0a` and is a separate reader-consistency fix.
 
+## Decimal function values, lambdas and captures (0.19, format 12, ABI 1), stage D4b
+
+Stage D4b of `design/decimal-storage-plan.md` makes a decimal a function-type
+parameter and return, a non-capturing or capturing lambda parameter and return,
+and a capturing lambda's value. The implementation follows
+`design/decimal-d4b-layout.md` revision 2. `OBO_VERSION` is `0.19`,
+`SYM_FORMAT` is `12`, `SYM_ABI` stays `1`. The seed remains the promoted 0.18
+image and is not changed.
+
+**Value-call layout.** `callFnWith` pushes the function-value cell **above** the
+hidden decimal destination. With `A` = the callee's visible parameter bytes
+(24 per decimal, 8 otherwise), the destination is at `16 + A` on every call
+kind and the cell is at `24 + A`; a non-decimal or `Result[decimal]` return has
+no destination row, so the cell is at `16 + A` and the result is in `RAX`. This
+is the one new row in D4a's call-kind table: direct, method and interface calls
+do not change. A non-capturing lambda ignores the cell at `24 + A`; a capturing
+lambda reads its environment there.
+
+**Lambda environment.** The hidden environment pseudo-parameter is removed from
+both the local `hp` list and `FnRec.params`. `lambdaBody` receives the visible
+parameter list and reads the cell at
+`16 + visibleParamBytes(params)` for a non-decimal return, plus 8 for a decimal
+return. The old `16 + 8*(n-1)` formula is gone; visible parameter offsets are
+unchanged because the removed entry was first.
+
+**Captures.** Capture kind 4 is a decimal. The cell is
+`[code][capture...]`; a decimal slot is 24 bytes and every other slot is 8, so
+`capSlotAt(caps, i)` gives the slot size and `capOff(caps, i)` the byte offset
+`8 + sum(earlier slots)`. Construction copies all 24 value bytes with
+`copyDecimalToBase`; the body loads them into a real 24-byte frame local. The
+snapshot is taken when the literal is evaluated, so a later write to the outer
+local cannot change the cell, and a later literal takes a fresh snapshot.
+`mut`/`move` captures remain unsupported, and writing a captured decimal reports
+the capture-specific read-only message. The by-address implementation is
+observationally equivalent under v1 because there is no `&decimal`, captures
+are call-argument-only, and the cell shares the creating call's lifetime; the
+copy remains the specified layout for a future stored closure. Named function
+values remain out of scope.
+
+**Effects.** The synthetic `fncall` keeps `bind: noBind`, `freesAll = false`,
+`writesHandles = false` and no named frees; a decimal-returning value call is
+still pure, and its destination is a caller frame temporary. A `Result[decimal]`
+return is a one-word owned Result cell and follows the existing rules.
+
+**`.sym`.** The canonical function-type text is unchanged; the format bump is a
+meaning change (format 11 accepted the text but had no working value-call
+order). `fn(decimal): decimal`, `fn(decimal, int): Result[decimal]` and
+`fn(): decimal` round-trip; `&decimal`, a function type returning a function type
+and a capture list are rejected. A `pub type DecFn = fn(decimal): decimal` alias
+keeps its alias line and a function signature expands it. A format-11 file is
+refused at the header before its body is read.
+
+**Tests.**
+- `tests/run/decimal_fnvalues.obx`: direct vs value calls with zero, one and two
+  decimal parameters, a value in a local and passed to `apply`, a decimal
+  parameter followed by an int (`A = 32`), `fn(decimal): Result[decimal]` and
+  `fn(): Result[decimal]`, a method and an interface member in the same function
+  as a value call, a `&Record` borrow, a deep `&Record` borrow (the positive
+  `freesAll`/`writesHandles` catcher) and a `^Record` handle read after a
+  decimal-returning value call.
+- `tests/run/decimal_captures.obx`: a snapshot that does not see a later write
+  and a second literal that does, `12345678901234567890.12` (non-zero `w1`),
+  `0.01` and `-0.00` (`w2`), `twiceD`, `[decimal, int]` and `[int, decimal]`,
+  a nested lambda, a capturing `Result[decimal]` (no `+8`), a capturing
+  int-returning lambda, mixed record+decimal captures in both orders, the
+  creating call still on the stack, and a sort comparator that captures a
+  decimal threshold.
+- `tests/errors/decimal_fnvalues.obx`: `&decimal` in a function type, a function
+  type returning a function type, an interface in a function type, `mut` and
+  `move` captures, and a write to a captured decimal.
+- `tests/modules/run/decimal_fnvalue/`: a library exports `DecFn`,
+  `DecResultFn`, `apply`, `applyR`, `zero` and `scale`; the importer passes
+  non-capturing and capturing lambdas across the boundary.
+- `tests/sym_test.py` `sym/decimal_fnvalue`: canonical alias and signature lines,
+  byte-identical `--reemit-sym`, a source-less `--check` whose `main.sym` equals
+  the full build's, format-11 rejection, and the three reader refusals.
+
+**Mutants.** The decimal mutation catalog gains twelve compiler mutants, each
+with a named catcher: the old destination-before-cell order
+(`run/decimal_fnvalues`, old-order fault), an 8-byte capture store and an 8-byte
+capture load (`run/decimal_captures`, lost `w1`/`w2`), an 8-byte capture slot
+(`[decimal, int]` overwrites the next slot), an `8 + 8*i` capture offset (`n`
+reads `d.w1`), a missing decimal `+8` in the environment (`run/decimal_captures`,
+wrong cell), an unconditional `+8` (decimal-returning int-returning lambda), a
+`+8` for `Result[decimal]` (capturing result reads one word high), a destination
+one word low, a value-call `total` without the cell (stack imbalance), a
+synthetic `fncall` that loses the decimal return, and one that claims
+`freesAll`/`writesHandles` (the deep `&Record` read is refused).
+`capture snapshot taken by address` is in the new `EQUIVALENT` table: it is
+planted, built and run, and a pass is reported as `equiv` (observationally
+equivalent under v1, as above), not `missed`. The summary now reports
+caught/equiv/missed/broken.
+
+**Fixtures.** 95 committed `.sym` files changed: 93 in both header lines
+(`obosym 11` → `obosym 12`, `compiler "0.18"` → `compiler "0.19"`) and two in one
+line each, deliberately: `tests/modules/sym/format` keeps `obosym 8` (only its
+compiler line moved) and `tests/modules/sym/compiler` keeps `compiler "9.9"`
+(only its format line moved). Their `expect` messages now name format 12 /
+compiler 0.19. Older deliberate stale cases keep their older formats. The golden
+bodies are unchanged, so no `--update` was used.
+
+**Gates (after the last source change).**
+- `make obo`: `obo 0.19 sym-format 12 abi 1`; fixed point `stage2 == stage3`
+  (`cmp`), both built by the 0.18 seed.
+- `run_fork` **1,884 passed, 0 failed**; `module_test` **151 passed, 0 failed**;
+  `sym_test` **59 passed, 0 failed**; `sym_fuzz` **200/200 clean** (seed
+  20261028, digest `896ee2b42dbe8a5c`).
+- `doc_check` **76 examples, 0 problems**; `homes_check` and `homes_edge` pass
+  (1,028 statements, 0 differing).
+- `heap_test` passes; self-compile peak **2,590,496 bytes** direct (budget
+  2,750,000, headroom 159,504), total allocation 58,005,840 bytes.
+- `port_compare` **1,859 of 1,859** Stage B; the port's self-compile peak is
+  2,590,480 bytes and its total allocation 58,009,088. The seed comparison
+  (`OBO_REF=obo/seed/obo`) is **1,647 of 1,647**; the 0.19-only flat cases are
+  skipped by `SEED_FILE_MIN`.
+- `float_f1` **19 groups** in both register modes.
+- `port_test` **643/643** identical with 10 encoder groups; `imports.py`
+  **31/31**, `stdlib.py` **24/24**, `tools.py --require-reference` **509/509**,
+  `own_fuzz --count 50 --profile both` **0 failures in 100 programs**;
+  `elf_test`, `io_test` and `meta_test` pass (34 metadata checks).
+- `mutate_fork` full run: **727/757 caught, 30 equivalent, 0 missed, 0 stale,
+  0 broken** (catalog 757, exit 0). Five catalog patterns that named the old
+  lambda environment and capture offsets were repointed to the new code: the
+  D4a interface-refusal mutant becomes the D4b value-call refusal, X26 becomes a
+  missing decimal `+8`, B28 includes a decimal capture write, B19 reads the
+  environment one word high and B21 uses the old `8+8*i` capture offset. All
+  five are caught; the S4 receiver-load-order catalog-equivalent remains caught.
+- `mutate_decimal` **117 caught, 1 equivalent, 0 missed, 0 broken (of 118)**
+  with an explicit baseline; the equivalent is `capture snapshot taken by
+  address`, planted, built and run, and reported as `equiv`.
+- `git diff main -- obo/seed` is empty; the tree is clean after the docs commit.
+
 ## Systems library P1b (practical filesystem, 0.17/format 10), on top of P0/P1a/P2/P2q
 
 **Scope.** P1b completes the practical-filesystem slice of

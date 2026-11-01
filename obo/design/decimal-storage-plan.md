@@ -1,7 +1,7 @@
 # Decimal storage tier: plan
 
 **Date:** 2026-11-01
-**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented and released as `0.18`/format 11/ABI 1 (merged as `e47a8c8`, seed `769a359`, 757,761 bytes, sha256 `ca513536…`, fixed point); it also fixes the interface vtable offset and the `recordParamFree` index mapping. The APPROVE WITH NITS review is closed (fail-closed mapping, faithful refusal mutant, higher-index pfree tests, refreshed references), and main's D5 library (`0138651`) is merged. D4b is next, then D6.
+**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented and released as `0.18`/format 11/ABI 1 (merged as `e47a8c8`, seed `769a359`, 757,761 bytes, sha256 `ca513536…`, fixed point); it also fixes the interface vtable offset and the `recordParamFree` index mapping. The APPROVE WITH NITS review is closed (fail-closed mapping, faithful refusal mutant, higher-index pfree tests, refreshed references), and main's D5 library (`0138651`) is merged. D4b (decimal function values, lambda parameters/returns and captures) is implemented on the `decimal-d4b` branch as `0.19`/format 12/ABI 1 with measured gates in `FORK.md`; the seed is not promoted. D6 is next.
 **Baseline:** `main` `6f83880` (obo `0.15`, `SYM_FORMAT=8`, `SYM_ABI=1`, after cinterop v2 stage d).
 **Branch/worktree:** `decimal-storage` at `.claude/worktrees/decimal-storage`.
 **Target:** one release, `0.16` / `SYM_FORMAT=9` / `SYM_ABI=1`, merged once with one seed promotion (done; see Status).
@@ -199,11 +199,11 @@ The `SYM_FORMAT` 8 → 9 and `OBO_VERSION` 0.16 bump lands here, with the first
 
 ### D4b — function values, lambdas and captures
 
-**Status: layout approved with nits (2026-11-01); revision 2, ready for
-implementation.** The frame layout, capture layout, `.sym` decision, refusals,
-tests/mutants and implementation order are in
-[decimal-d4b-layout.md](decimal-d4b-layout.md). No compiler, runtime, test or
-seed change is in that branch.
+**Status: implemented on the `decimal-d4b` branch (0.19/format 12/ABI 1), gates
+green; seed not promoted.** The frame layout, capture layout, `.sym` decision,
+refusals, tests/mutants and implementation order are in
+[decimal-d4b-layout.md](decimal-d4b-layout.md). The layout note remains revision
+2 (approved with nits); the branch is three implementation commits plus docs.
 
 The blocker is recorded here for the review history. Function values push the
 cell at `callFnWith` (`obo.obo:7199-7213`), after the hidden destination pointer
@@ -279,7 +279,8 @@ change:
 
 ### Ordering
 
-D1 (with the format bump), D2, D3, D4a, D4b. Then D5 (needs D2's `[]decimal`)
+D1 (with the format bump), D2, D3, D4a, D4b (the first two released, D4a and
+D4b as 0.18 and the 0.19 branch). Then D5 (needs D2's `[]decimal`)
 and D6 (needs D1's variant fields). D5 and D6 are not compiler work and may run
 in parallel with each other after D2.
 

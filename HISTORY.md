@@ -9,7 +9,8 @@ The language reference and design records remain current, not historical:
 obo grew out of **obx**, the original garbage-collected Oberon-derived dialect
 and compiler. obo began as an ownership fork of obx — originally
 `obo-on-obx.obx`, a copy of `obx/src/obxc.obx` built by `obx/obxc` — proved the
-ownership model, became self-hosting, and is now the 0.8 compiler with modules,
+ownership model, became self-hosting, and is now a 0.19 compiler on the D4b
+branch (0.18 is the promoted seed) with modules,
 methods and first-class interfaces. obx remains in `obx/` as the historical
 reference; it is not the current compiler.
 
