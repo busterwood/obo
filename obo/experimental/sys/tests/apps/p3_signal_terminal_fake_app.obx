@@ -183,6 +183,43 @@ fn main() {
         err(m,c) { println("terminal_open=" + kindText(c)) }
     }
 
+    // Closing the creating terminal retires an active resize watch.
+    let wWhich = new stream::Output{}
+    let wTerm = terminal::openStandard(&wWhich)
+    match wTerm {
+        ok(t) {
+            let wrtc = reactor::create(8, 8)
+            match wrtc {
+                ok(rt) {
+                    let ww = terminal::watchResize(&rt, &t, 11)
+                    match ww {
+                        ok(watch) {
+                            let tc = terminal::close(&t)
+                            match tc { ok(v) { println("watch_close=true") } err(m,c) { println("watch_close=err") } }
+                            let rmc = reactor::remove(&watch)
+                        }
+                        err(m,c) { println("watch_close=watch_err") }
+                    }
+                    let rcl = reactor::close(&rt)
+                }
+                err(m,c) { println("watch_close=reactor_err") }
+            }
+        }
+        err(m,c) { println("watch_close=open_err") }
+    }
+
+    // Close while raw is an explicit restoration path.
+    let rawWhich = new stream::Output{}
+    let rawTerm = terminal::openStandard(&rawWhich)
+    match rawTerm {
+        ok(t) {
+            let raw = terminal::enterRaw(&t)
+            let cl = terminal::close(&t)
+            match cl { ok(v) { println("raw_close=true") } err(m,c) { println("raw_close=err") } }
+        }
+        err(m,c) { println("raw_close=open_err") }
+    }
+
     // Scripted P3 faults at signal and terminal stages.
     let p1 = fake::push(fake::CLASS_SIGNAL_SUBSCRIBE, -16)
     let fs = signals::subscribe(&set)
@@ -191,6 +228,40 @@ fn main() {
     let which2 = new stream::Input{}
     let ft = terminal::openStandard(&which2)
     match ft { ok(v) { println("fault_term=ok") } err(m,c) { println("fault_term=" + kindText(c)) } }
+
+    let set3 = signals::empty()
+    let a5 = signals::add(&set3, signals::INTERRUPT)
+    let s3 = signals::subscribe(&set3)
+    match s3 {
+        ok(src) {
+            let p3 = fake::push(fake::CLASS_SIGNAL_NEXT, -4)
+            let n3 = signals::next(&src)
+            match n3 { ok(v) { println("fault_next=ok") } err(m,c) { println("fault_next=" + kindText(c)) } }
+            let cl = signals::close(&src)
+        }
+        err(m,c) { println("fault_next=subscribe_err") }
+    }
+
+    let tw = new stream::Output{}
+    let t3 = terminal::openStandard(&tw)
+    match t3 {
+        ok(t) {
+            let p4 = fake::push(fake::CLASS_TERMINAL_SIZE, -95)
+            let sz = terminal::size(&t)
+            match sz { ok(v) { println("fault_size=ok") } err(m,c) { println("fault_size=" + kindText(c)) } }
+            let p5 = fake::push(fake::CLASS_TERMINAL_RAW, -95)
+            let rw = terminal::enterRaw(&t)
+            match rw { ok(v) { println("fault_raw=ok") } err(m,c) { println("fault_raw=" + kindText(c)) } }
+            let p6 = fake::push(fake::CLASS_TERMINAL_RESTORE, -95)
+            let rs = terminal::restore(&t)
+            match rs { ok(v) { println("fault_restore=ok") } err(m,c) { println("fault_restore=" + kindText(c)) } }
+            let p7 = fake::push(fake::CLASS_TERMINAL_DUP, -24)
+            let dp = terminal::duplicate(&t)
+            match dp { ok(v) { println("fault_dup=ok") } err(m,c) { println("fault_dup=" + kindText(c)) } }
+            let cl = terminal::close(&t)
+        }
+        err(m,c) { println("fault_size=open_err") }
+    }
 
     let sh = platform::shutdown()
     match sh { ok(c) { println("counts=" + intText(c.resources) + "," + intText(c.shells)) } err(m,c) { println("shutdown=err") } }

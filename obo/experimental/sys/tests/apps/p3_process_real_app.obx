@@ -40,6 +40,12 @@ fn drain(s: &stream::Stream): string {
     return "TIMEOUT"
 }
 
+fn textBytes(text: string): []byte {
+    let out = new []byte(len(text))
+    for i in 0..len(text) { out[i] = text[i] }
+    return out
+}
+
 fn intText(v: int): string
 
 fn kindText(code: int): string {
@@ -168,6 +174,83 @@ fn main() {
                 err(m, c) { println("spawn1=err") }
             }
             let cc1 = process::closeCommand(&cmd1)
+
+            // A taken pipe is nonblocking; FromStream must not hand it to a
+            // child as a broken standard descriptor.
+            let cmdNb = sh(shellArgs("printf nb"), new process::Pipe{},
+                           new process::Inherit{}, new process::Inherit{}, nil,
+                           new process::EnvInherit{}, false)
+            let rnb = process::spawn(&cmdNb)
+            match rnb {
+                ok(prod) {
+                    let taken = process::takeOutput(&prod)
+                    match taken {
+                        ok(nbs) {
+                            let st = process::wait(&prod)
+                            var catArgs = new []string(0)
+                            append(catArgs, "/bin/cat")
+                            let ccmdNb = new process::Command{
+                                executable: "/bin/cat"
+                                arguments: catArgs
+                                environment: new process::EnvInherit{}
+                                directory: nil
+                                input: new process::FromStream{source: nbs}
+                                output: new process::Pipe{}
+                                error: new process::Inherit{}
+                                newGroup: false
+                            }
+                            let cr = process::spawn(&ccmdNb)
+                            match cr {
+                                ok(child) { println("nonblocking_fromstream=ok"); let cl = process::close(&child) }
+                                err(m, c) { println("nonblocking_fromstream=" + kindText(c)) }
+                            }
+                            let ccnb = process::closeCommand(&ccmdNb)
+                        }
+                        err(m,c) { println("nonblocking_fromstream=take_err") }
+                    }
+                    let cl = process::close(&prod)
+                }
+                err(m,c) { println("nonblocking_fromstream=spawn_err") }
+            }
+            let ccnb2 = process::closeCommand(&cmdNb)
+
+            // Input pipe + takeInput + bounded parent write.
+            var catArgs2 = new []string(0)
+            append(catArgs2, "/bin/cat")
+            let cmdIn = new process::Command{
+                executable: "/bin/cat"
+                arguments: catArgs2
+                environment: new process::EnvInherit{}
+                directory: nil
+                input: new process::Pipe{}
+                output: new process::Pipe{}
+                error: new process::Inherit{}
+                newGroup: false
+            }
+            let rin = process::spawn(&cmdIn)
+            match rin {
+                ok(child) {
+                    let ti = process::takeInput(&child)
+                    match ti {
+                        ok(w) {
+                            let data = textBytes("abc")
+                            let wrote = stream::writeSome(&w, &data, 0, 3)
+                            match wrote { ok(n) { println("take_input_write=" + intText(n)) } err(m,c) { println("take_input_write=err") } }
+                            let cw = stream::close(&w)
+                        }
+                        err(m,c) { println("take_input=err") }
+                    }
+                    let to = process::takeOutput(&child)
+                    match to {
+                        ok(r) { println("take_input_out=" + drain(&r)); let cr = stream::close(&r) }
+                        err(m,c) { println("take_input_out=err") }
+                    }
+                    let st = process::wait(&child)
+                    let cl = process::close(&child)
+                }
+                err(m,c) { println("take_input=spawn_err") }
+            }
+            let ccin2 = process::closeCommand(&cmdIn)
 
             // 2: separate stdout/stderr pipes.
             let cmd2 = sh(shellArgs("printf out; printf err >&2"),

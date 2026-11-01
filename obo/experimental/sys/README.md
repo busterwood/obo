@@ -361,9 +361,14 @@ struct, signal number or registry token crosses the boundary.
   anchored child cwd, resets the signal mask/dispositions, and uses a CLOEXEC
   error pipe to distinguish exec failure from a genuine exit 127. Redirects are
   `Inherit`, `Null`, `Pipe`, duplicated `FromStream` (never consumed) and
-  `MergeError` (error only). Parent pipe ends are nonblocking; child ends are
-  blocking. `takeInput`/`takeOutput`/`takeError` transfer each parent pipe end
-  at most once. `closeCommand` closes only the command-owned directory and
+  `MergeError` (error only). A `FromStream` source with `O_NONBLOCK` is rejected
+  with `Unsupported`: a pipe has no independent duplicate with separate status
+  flags, so pipe chaining needs a future relay/blocking-source mechanism. Parent
+  pipe ends are nonblocking; child ends are blocking. Every prepared child
+  descriptor is forced to >=3, the redirect target is never closed, and the
+  child closes unintended parent descriptors with `closefrom`/`close_range`
+  (inventory fallback) before exec. `takeInput`/`takeOutput`/`takeError`
+  transfer each parent pipe end at most once. `closeCommand` closes only the command-owned directory and
   FromStream sources, tries every cleanup and is idempotent.
 - `sysprocess` wait: `pollExit` is one `WNOHANG` observation, `wait` is one
   blocking `waitpid` (EINTR is `Interrupted`), the terminal status is cached and
@@ -377,8 +382,8 @@ struct, signal number or registry token crosses the boundary.
   this module (`newGroup`); an unchecked negative pid is never signalled, and
   no public pid authority exists.
 - `sysprocess::cwd` snapshots the process cwd. `chdir` is startup-only and
-  returns `Busy` after spawn/signal/terminal state has frozen the systems
-  context. There is no hidden library chdir and no thread-local cwd. Process
+  returns `Busy` after spawn or signal subscription has frozen the systems
+  context (terminal open alone does not freeze it). There is no hidden library chdir and no thread-local cwd. Process
   environment mutation remains absent/`Unsupported`.
 - `syssignals::SignalSet` uses library ids and bit positions, not Linux signal
   numbers. `add`/`remove`/`subscribe` revalidate the public `bits`; `OTHER` is
@@ -531,18 +536,24 @@ The P3 suite additionally runs:
   pipes, exec failure versus genuine exit 127, anchored child cwd, created
   process groups, signalfd delivery/mask restoration, chdir/cwd and terminal
   basics, under ASan/UBSan/LSan;
-- a real process contract covering every redirect, Inherit/Explicit policy,
-  pipes and takes, wait/poll/repeat/status decoding, detached and close-on-
-  running transfer, the reactor reaper, watchChild, process groups, chdir
-  freeze and FromStream duplication/cleanup;
+- a real process contract covering input Null/Inherit/Pipe/FromStream,
+  output/error Pipe/FromStream/MergeError, Inherit/Explicit/empty policy, pipes
+  and takes, wait/poll/repeat/status decoding, detached and close-on-running
+  transfer, the reactor reaper, watchChild, process groups, chdir freeze and
+  FromStream duplication/cleanup;
 - identical fake process, signal and terminal roots with scripted pipe data,
   exact exit/signal statuses, coalescing, overlap rejection, raw/restore and
-  resize-watch behavior, plus per-stage faults at plan/spawn/pipe/dup/exec/
-  wait/kill/subscribe/terminal stages;
+  resize-watch behavior, plus per-stage faults at spawn/pipe/dup/exec/wait/
+  kill/detach/take/reap, signal subscribe/next and terminal open/size/raw/
+  restore/duplicate;
 - real signal delivery through a child fixture and the default-action
   restoration check (the die mode must exit by SIGTERM), and a real pty run
-  that verifies window size, raw-mode termios, restoration, duplicate and EOF
+  that changes `TIOCSWINSZ` (kernel SIGWINCH) after a direct READY marker and
+  verifies window size, raw-mode termios, restoration, duplicate and EOF
   handling, with a visible skip when `/dev/pts` is unavailable;
+- B1/B2 descriptor regressions with 0/1/2 closed (Null/Inherit/Pipe/FromStream
+  input, Pipe/Inherit output, both spawn paths) and a non-CLOEXEC marker fd
+  absent from the child, under ASan/UBSan/LSan;
 - the deterministic supervisor example in a test temp directory and the P1b
   fake-only nit checks (`.` identity, `O_CREAT|O_EXCL` on a directory).
 

@@ -7186,8 +7186,7 @@ remain out of scope.
 
 **Public surface added.**
 - `sysprocess::Child`, `Redirect` (`Inherit`/`Null`/`Pipe`/`FromStream`/
-  `MergeError`), `EnvPolicy`, `Command`, `ExitStatus`, `validateCommand`,
-  `spawn`, `closeCommand`, `takeInput`/`takeOutput`/`takeError`, `pollExit`,
+  `MergeError`), `EnvPolicy`, `Command`, `ExitStatus`, `spawn`, `closeCommand`, `takeInput`/`takeOutput`/`takeError`, `pollExit`,
   `wait`, `terminate`, `watchChild`, `detach`, `close`, `reapChildren`, `cwd`
   and `chdir`.
 - `syssignals::SignalSet`, `SignalSource`, `Event`, library ids
@@ -7249,6 +7248,21 @@ retires resize watches. No arbitrary ioctl or UI framework is exposed.
 - Without pidfd, terminate tracks owned children but cannot promise immunity
   from an externally reused pid after the child is reaped; the reaper and
   terminate never signal an arbitrary negative pid.
+
+**P3 review fixes (B1-B5).** Prepared child descriptors are forced to >=3, a
+redirect target is never closed or left CLOEXEC, and both spawn paths close all
+unintended parent descriptors (`closefrom`/`close_range`, inventory fallback)
+while preserving the CLOEXEC error pipe. A `FromStream` source with
+`O_NONBLOCK` is rejected with `Unsupported` rather than handed to the child as a
+broken standard fd; pipe chaining needs a future relay. The fake backend takes
+an inode reference for a `FromStream` source so closing that source cannot free
+the child's state, and fake shutdown frees every scripted child while reporting
+running ones as cleanup failures. SIGCHLD ignored is rejected at
+initialization/spawn with `Busy`, call-class counters cover all new classes, and
+close over a raw terminal still releases the private resize source. The P3
+suite adds 0/1/2-closed descriptor regressions, a non-CLOEXEC marker-fd check,
+the fake UAF/shutdown LSan cases, takeInput, FromStream output/error, extra
+terminal close paths and kill/detach/take/reap/next/size/raw/restore/dup faults.
 
 **P1b fake-only nits fixed.** `openBeneath O_CREAT|O_EXCL` on `.` or an existing
 directory now returns `AlreadyExists` like Linux (plain create is `IsDirectory`);

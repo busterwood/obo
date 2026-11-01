@@ -402,8 +402,12 @@ consume readiness batches.
   uses one signalfd; there is no obo handler and no C-to-obo callback. Signals
   coalesce, `Event.count` is an observation and never an exact delivery count,
   and `OTHER` is status-only. Overlapping subscriptions are rejected with
-  `Busy`; one source owns the saved mask at a time. The mask is per-thread, so
-  this is a single-threaded contract. SIGKILL/SIGSTOP and synchronous faults
+  `Busy`; one source owns the saved mask at a time. An existing application
+  handler stays installed but cannot run while its signal is blocked; the
+  signalfd source is the sole consumer until close restores the mask. An
+  inherited `SIGCHLD = SIG_IGN` makes waits unreapable, so initialization and
+  spawn return `Busy` instead of silently losing every exit status. The mask is
+  per-thread, so this is a single-threaded contract. SIGKILL/SIGSTOP and synchronous faults
   cannot be represented. Closing a source restores the saved mask; shutdown
   restores it through the same release path.
 - **SIGPIPE policy is explicit.** Systems-context initialization ignores SIGPIPE
@@ -413,7 +417,8 @@ consume readiness batches.
   pipe writes are not exposed in P3, but spawn restores the child default
   disposition.
 - **cwd is process-global.** `cwd` snapshots it; `chdir` is startup-only and
-  returns `Busy` once spawn/signal/terminal state has frozen the context. No
+  returns `Busy` once spawn or signal subscription has frozen the context
+  (opening a terminal alone does not freeze it). No
   library operation chdirs behind the caller, and there is no thread-local cwd.
   Process environment mutation remains **Unsupported** because libc setenv
   cannot update the runtime's initial-envp view coherently.
@@ -430,9 +435,14 @@ consume readiness batches.
   Inherit/Explicit policies.
 - **Spawn limits.** Executable/argument text is NUL-free and bounded by
   `ARG_MAX`, the 4 MiB spawn cap and a 128 KiB per-argument cap. `FromStream` is
-  duplicated into the child and never consumes the command's source. A failed
-  spawn closes both pipe ends and reaps any failed child; the error pipe
-  distinguishes exec failure from a genuine exit 127. `posix_spawn` is used when
+  duplicated into the child and never consumes the command's source; a source
+  with `O_NONBLOCK` is rejected with `Unsupported` because a pipe has no
+  independent blocking duplicate, so pipe chaining needs a future relay. Every
+  prepared child fd is forced to >=3, the redirect target is never closed, and
+  unintended parent fds are closed before exec (`closefrom`/`close_range` with
+  an inventory fallback). A failed spawn closes both pipe ends and reaps any
+  failed child; the error pipe distinguishes exec failure from a genuine exit
+  127. `posix_spawn` is used when
   the request has no anchored directory; the fork/execve path is trusted C only.
 - **No hidden process work.** P3 creates no thread, signal handler returning to
   obo, background reaper or implicit kill. `shutdown` reports outstanding

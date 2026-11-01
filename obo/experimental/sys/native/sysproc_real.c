@@ -82,6 +82,12 @@ static int release_fdobj_p3(void *p) {
     return e;
 }
 
+static int sigchld_ignored(void) {
+    struct sigaction sa;
+    if (sigaction(SIGCHLD, NULL, &sa) != 0) return 0;
+    return sa.sa_handler == SIG_IGN;
+}
+
 static int lib_signal(int sig) {
     switch (sig) {
         case SIGINT: return 1;
@@ -108,6 +114,20 @@ static int set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return errno;
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return errno;
+    return 0;
+}
+
+/* The child-side descriptor must never be 0/1/2: those are redirect targets,
+ * and when the parent's standard descriptors are closed open/pipe can return
+ * them. F_DUPFD_CLOEXEC also guarantees the explicit target is not the source
+ * of a later dup2 collision. */
+static long fd_at_least_3(int *fdp) {
+    int fd = *fdp;
+    if (fd > 2) return 0;
+    fd = fcntl(*fdp, F_DUPFD_CLOEXEC, 3);
+    if (fd < 0) return err(errno);
+    (void)close(*fdp);
+    *fdp = fd;
     return 0;
 }
 
@@ -359,7 +379,16 @@ long sys_proc_plan_set(long plan_token, long field, long a, long b) {
         if (a == SYS_REDIRECT_MERGE_ERROR && which != 2) return err(EINVAL);
         if (a == SYS_REDIRECT_STREAM) {
             sys_fdobj *s = (sys_fdobj *)sys_reg_peek(b, SYS_KIND_STREAM);
+            int flags;
             if (s == NULL || s->fd < 0) return err(EBADF);
+            flags = fcntl(s->fd, F_GETFL, 0);
+            if (flags < 0) return err(errno);
+            if ((flags & O_NONBLOCK) != 0) {
+                /* A pipe has no independent duplicate with separate status
+                 * flags; handing a nonblocking source to the child would break
+                 * the blocking-standard-end contract. */
+                return err(EOPNOTSUPP);
+            }
             src = fcntl(s->fd, F_DUPFD_CLOEXEC, 3);
             if (src < 0) return err(errno);
         } else if (b != 0) {
@@ -393,20 +422,31 @@ static long prepare_redirect(sys_spawn_plan *plan, int which, int *child_fd,
         case SYS_REDIRECT_NULL:
             fd = open("/dev/null", O_RDWR | O_CLOEXEC);
             if (fd < 0) return err(errno);
+            {
+                long moved = fd_at_least_3(&fd);
+                if (moved != 0) {
+                    (void)close(fd);
+                    return moved;
+                }
+            }
             *child_fd = fd;
             return 0;
-        case SYS_REDIRECT_PIPE:
+        case SYS_REDIRECT_PIPE: {
+            int child_at = which == SYS_TAKE_INPUT ? 0 : 1;
+            int parent_at = which == SYS_TAKE_INPUT ? 1 : 0;
+            long moved;
             sys_reg_bump_call(SYS_CALL_PROC_PIPE);
             if (pipe2(fds, O_CLOEXEC) != 0) return err(errno);
-            if (which == SYS_TAKE_INPUT) {
-                *child_fd = fds[0];
-                *parent_fd = fds[1];
-                fd = set_nonblocking(*parent_fd);
-            } else {
-                *child_fd = fds[1];
-                *parent_fd = fds[0];
-                fd = set_nonblocking(*parent_fd);
+            moved = fd_at_least_3(&fds[0]);
+            if (moved == 0) moved = fd_at_least_3(&fds[1]);
+            if (moved != 0) {
+                (void)close(fds[0]);
+                (void)close(fds[1]);
+                return moved;
             }
+            *child_fd = fds[child_at];
+            *parent_fd = fds[parent_at];
+            fd = set_nonblocking(*parent_fd);
             if (fd != 0) {
                 (void)close(fds[0]);
                 (void)close(fds[1]);
@@ -415,6 +455,7 @@ static long prepare_redirect(sys_spawn_plan *plan, int which, int *child_fd,
                 return err(fd);
             }
             return 0;
+        }
         case SYS_REDIRECT_STREAM:
             sys_reg_bump_call(SYS_CALL_PROC_DUP);
             if (plan->src_fd[which] < 0) return err(EBADF);
@@ -451,6 +492,17 @@ static int child_apply_redirect(int target, int kind, int child_fd) {
     if (kind == SYS_REDIRECT_NULL) {
         int fd = open("/dev/null", O_RDWR);
         if (fd < 0) return errno;
+        if (fd == target) {
+            /* open returned the redirect target: keep it and make sure exec
+             * does not close it. */
+            int flags = fcntl(fd, F_GETFD, 0);
+            if (flags < 0 || fcntl(fd, F_SETFD, flags & ~FD_CLOEXEC) < 0) {
+                int e = errno;
+                (void)close(fd);
+                return e;
+            }
+            return 0;
+        }
         if (dup2(fd, target) < 0) {
             int e = errno;
             (void)close(fd);
@@ -462,9 +514,39 @@ static int child_apply_redirect(int target, int kind, int child_fd) {
     if (child_fd < 0) return EBADF;
     /* All prepared sources are >= 3, so target 0/1/2 never collides with a
      * not-yet-duplicated source. */
-    if (child_fd != target && dup2(child_fd, target) < 0) return errno;
-    if (child_fd != target) (void)close(child_fd);
+    if (child_fd == target) {
+        int flags = fcntl(child_fd, F_GETFD, 0);
+        if (flags < 0) return errno;
+        return fcntl(child_fd, F_SETFD, flags & ~FD_CLOEXEC) < 0 ? errno : 0;
+    }
+    if (dup2(child_fd, target) < 0) return errno;
+    (void)close(child_fd);
     return 0;
+}
+
+static void close_inventory_except(long max_fd, int keep) {
+    long fd;
+    for (fd = 3; fd < max_fd; fd++) {
+        if ((int)fd != keep) (void)close((int)fd);
+    }
+}
+
+/* Only this module's redirect targets (0/1/2), the error pipe and the exec
+ * image may survive into the child. */
+static void child_close_unintended(int keep, long max_fd) {
+#ifdef SYS_close_range
+    int failed = 0;
+    if (keep > 3) {
+        if (syscall(SYS_close_range, 3U, (unsigned int)(keep - 1), 0U) != 0) {
+            failed = 1;
+        }
+    }
+    if (syscall(SYS_close_range, (unsigned int)(keep + 1), ~0U, 0U) != 0) {
+        failed = 1;
+    }
+    if (!failed) return;
+#endif
+    close_inventory_except(max_fd, keep);
 }
 
 static long spawn_fork(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
@@ -475,7 +557,11 @@ static long spawn_fork(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
     int i;
     size_t got = 0;
     int child_err = 0;
+    long max_fd = sysconf(_SC_OPEN_MAX);
+    int read_failed = 0;
+    int read_errno = 0;
 
+    if (max_fd < 4 || max_fd > 1048576) max_fd = 1048576;
     if (pipe2(errpipe, O_CLOEXEC) != 0) return err(errno);
     pid = fork();
     if (pid < 0) {
@@ -487,12 +573,12 @@ static long spawn_fork(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
     if (pid == 0) {
         /* Trusted C only. No allocation, stdio or obo code here. */
         (void)close(errpipe[0]);
-        if (plan->new_group && setpgid(0, 0) != 0) {
+        child_err = reset_child_signals();
+        if (child_err == 0 && plan->new_group && setpgid(0, 0) != 0) {
             child_err = errno;
-        } else if (plan->dir_fd >= 0 && fchdir(plan->dir_fd) != 0) {
+        } else if (child_err == 0 && plan->dir_fd >= 0 &&
+                   fchdir(plan->dir_fd) != 0) {
             child_err = errno;
-        } else {
-            child_err = reset_child_signals();
         }
         if (child_err == 0) {
             child_err = child_apply_redirect(0, plan->redir[0], child_fd[0]);
@@ -504,7 +590,11 @@ static long spawn_fork(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
             child_err = child_apply_redirect(2, plan->redir[2], child_fd[2]);
         }
         for (i = 0; i < 3; i++) {
-            if (child_fd[i] >= 0) (void)close(child_fd[i]);
+            if (child_fd[i] >= 0 && child_fd[i] != i) (void)close(child_fd[i]);
+        }
+        if (child_err == 0) {
+            /* Keep the error pipe so exec failure is still reported. */
+            child_close_unintended(errpipe[1], max_fd);
         }
         if (child_err == 0) {
             char *empty_envp[1] = { NULL };
@@ -532,8 +622,8 @@ static long spawn_fork(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
         ssize_t n = read(errpipe[0], (unsigned char *)&e + got, sizeof(e) - got);
         if (n < 0) {
             if (errno == EINTR) continue;
-            got = 0;
-            e = errno;
+            read_failed = 1;
+            read_errno = errno;
             break;
         }
         if (n == 0) break;
@@ -541,11 +631,15 @@ static long spawn_fork(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
         if (got == sizeof(e)) break;
     }
     (void)close(errpipe[0]);
-    if (got == sizeof(e)) {
+    if (read_failed || got == sizeof(e)) {
         int status = 0;
+        int ecode = read_failed ? read_errno : e;
+        /* The exec result was not verified: retire our own child rather than
+         * reporting success. */
+        if (read_failed) (void)kill(pid, SIGKILL);
         while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
         (void)status;
-        return err(e);
+        return err(ecode);
     }
     *out_pid = pid;
     return 0;
@@ -584,14 +678,36 @@ static long spawn_posix(sys_spawn_plan *plan, int child_fd[3], pid_t *out_pid,
             if (child_fd[i] < 0) {
                 rc = EINVAL;
             } else {
-                rc = posix_spawn_file_actions_adddup2(&fa, child_fd[i], i);
-                if (rc == 0) {
-                    rc = posix_spawn_file_actions_addclose(&fa, child_fd[i]);
+                if (child_fd[i] == i) {
+                    /* Defensive: clear CLOEXEC rather than dup2(fd,fd). */
+                    rc = posix_spawn_file_actions_adddup2(&fa, child_fd[i], i);
+                } else {
+                    rc = posix_spawn_file_actions_adddup2(&fa, child_fd[i], i);
+                    if (rc == 0) {
+                        rc = posix_spawn_file_actions_addclose(&fa, child_fd[i]);
+                    }
                 }
             }
         }
         if (rc != 0) goto done;
     }
+    /* Close every unintended parent descriptor. posix_spawn's closefrom action
+     * runs after the redirects above, so targets 0/1/2 survive. */
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2, 34)
+    rc = posix_spawn_file_actions_addclosefrom_np(&fa, 3);
+#else
+    {
+        long max_fd = sysconf(_SC_OPEN_MAX);
+        long fd;
+        if (max_fd < 4 || max_fd > 1048576) max_fd = 1048576;
+        for (fd = 3; fd < max_fd && rc == 0; fd++) {
+            if (fcntl((int)fd, F_GETFD, 0) >= 0) {
+                rc = posix_spawn_file_actions_addclose(&fa, fd);
+            }
+        }
+    }
+#endif
+    if (rc != 0) goto done;
     sigemptyset(&empty);
     sigfillset(&defaults);
     rc = posix_spawnattr_setsigmask(&attr, &empty);
@@ -627,6 +743,7 @@ long sys_proc_spawn(long plan_token) {
     long token;
     sys_reg_bump_call(SYS_CALL_PROC_SPAWN);
     if (plan == NULL) return err(EINVAL);
+    if (sigchld_ignored()) return err(EBUSY);
     if (plan->exec == NULL || plan->argc < 1 || plan->argv == NULL) return err(EINVAL);
     if (plan->env_mode == 1 && plan->envp == NULL && plan->envc != 0) return err(EINVAL);
 
@@ -862,6 +979,9 @@ long sys_proc_arg_max(void) {
 
 long sys_proc_pidfd_supported(void) {
 #ifdef SYS_pidfd_open
+    long fd = syscall(SYS_pidfd_open, getpid(), 0);
+    if (fd < 0) return 0;
+    (void)close((int)fd);
     return 1;
 #else
     return 0;
@@ -884,6 +1004,9 @@ long sys_signal_init(long ignore_pipe) {
     struct sigaction sa;
     sys_reg_bump_call(SYS_CALL_SIGNAL_INIT);
     if (ignore_pipe != 0 && ignore_pipe != 1) return err(EINVAL);
+    /* An ignored SIGCHLD is not queued and waitpid reports ECHILD; spawning
+     * would silently lose every exit status. */
+    if (sigchld_ignored()) return err(EBUSY);
     if (ignore_pipe) {
         if (sigaction(SIGPIPE, NULL, &sa) == 0 && sa.sa_handler != SIG_IGN) {
             struct sigaction ign;

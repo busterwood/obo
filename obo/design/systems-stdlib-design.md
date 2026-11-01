@@ -1374,6 +1374,10 @@ pub fn cwd(): Result[string]
 pub fn chdir(directory: &dir::Directory): Result[bool]
 ```
 
+Implementation note: the P3 module spells the `EnvPolicy` variants
+`EnvInherit`/`EnvExplicit` because closed variants share one module name scope
+and `Inherit` is already the `Redirect` variant. The semantics are unchanged.
+
 Command owns its arrays/environment policy/redirection resources; `spawn`
 revalidates the whole public record (nonempty executable, argv shape, no NULs,
 valid `EnvPolicy`, each `Redirect` kind, open directory) and copies validated
@@ -1502,7 +1506,9 @@ of a Result-returning pipe API. Socket sends use `MSG_NOSIGNAL` without changing
 global state. Do not change process dispositions on module import. A caller that
 needs the old disposition sets `ignorePipeSignal = false`; in that mode new
 pipe-write APIs return `Unsupported` **before** writing, rather than allowing
-default termination. Spawn restores intended child defaults. When hosted
+default termination. P3 installs the ignore policy at context initialization
+when requested but exposes no new pipe-write API, so the visible effect in this
+slice is the documented legacy `print` behavior. Spawn restores intended child defaults. When hosted
 libraries also own signals, incompatible subscriptions return `Busy`; no handler
 replacement behind their backs. There is no separate per-call suppression
 primitive in v1.
@@ -1544,8 +1550,9 @@ blocker, not two contradictory environments called one API.
 the systems context. Thread-local cwd is not a Unix feature. Prefer anchored
 directory operations and Command.directory. Libraries must not chdir as a hidden
 side effect. Resource-limit query/update is a separate process policy API with
-named limits and checked integers, not arbitrary prlimit numbers; v1 needs at
-least open-files and address-space queries for diagnostics.
+named limits and checked integers, not arbitrary prlimit numbers; v1 would need
+at least open-files and address-space queries for diagnostics. P3 does **not**
+implement that query and it remains deferred.
 
 ### 8.4 Terminal and logging
 
@@ -1883,7 +1890,7 @@ Each phase has a usable exit point and can stop without exposing later APIs.
 | P1b: practical filesystem | rename/link/mkdir/chmod/sync and atomic replace reports, RFC3339, env snapshots, basic bounded logging; configuration-update example | P1a; openBeneath capability tested separately; mapping is optional P1b extension with SIGBUS contract | 2–4 (+1–2 mapping) |
 | P2: network/reactor | numeric addresses, TCP/UDP/Unix sockets, partial/vector I/O, level readiness, timers/wake/fairness, bounded echo and timeout demos; blocking DNS clearly named | P1a; native bridge performance gate, no thread requirement | 4–7 |
 | P2T/P2C: optional adapters | TLS transport and streaming compression readiness, not HTTP | separate adapter designs; production hosted boundary/TLS library validation | 3–6 TLS; 1–3 codec, independently scoped |
-| P3: processes | spawn/exec/wait, pipes/redirection, process groups, reaper, signals, cwd policy, resolver policy and supervisor example | P2 for nonblocking supervision; process env mutation blocked on coherent env bridge; controlled prefork optional separate audit | 4–6 |
+| P3: processes | spawn/exec/wait, pipes/redirection, process groups, reaper, signals, cwd policy and supervisor example; resolver policy deferred | P2 for nonblocking supervision; process env mutation blocked on coherent env bridge; controlled prefork optional separate audit | 4–6 |
 
 P0, P1a, P1b, P2, P2q and P3 above are implemented experimentally in
 `obo/experimental/sys` with real/fake suites; none is promoted to the stable

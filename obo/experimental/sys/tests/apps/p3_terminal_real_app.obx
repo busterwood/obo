@@ -37,6 +37,20 @@ fn kindText(code: int): string {
     return errors::text(&k)
 }
 
+fn marker(text: string): bool {
+    let made = stream::standardError()
+    match made {
+        ok(s) {
+            let data = new []byte(len(text))
+            for i in 0..len(text) { data[i] = text[i] }
+            let w = stream::writeSome(&s, &data, 0, len(data))
+            let c = stream::close(&s)
+            match w { ok(n) { return n == len(data) } err(m,c) { return false } }
+        }
+        err(m,c) { return false }
+    }
+}
+
 fn main() {
     let av = args()
     let o = platform::defaultOptions()
@@ -64,29 +78,33 @@ fn main() {
                         let w = terminal::watchResize(&rt, &t, 5)
                         match w {
                             ok(watch) {
-                                var sargs = new []string(0)
-                                append(sargs, "/bin/sh")
-                                append(sargs, "-c")
-                                append(sargs, "sleep 0.2; kill -WINCH $PPID")
-                                let scmd = new process::Command{
-                                    executable: "/bin/sh"
-                                    arguments: sargs
-                                    environment: new process::EnvInherit{}
-                                    directory: nil
-                                    input: new process::Inherit{}
-                                    output: new process::Inherit{}
-                                    error: new process::Inherit{}
-                                    newGroup: false
-                                }
-                                let sigchild = process::spawn(&scmd)
-                                match sigchild {
-                                    ok(sc) {
-                                        let st = process::wait(&sc)
-                                        let cl = process::close(&sc)
+                                if len(av) > 1 && av[1] == "resizeonly" {
+                                    let marked = marker("READY\n")
+                                } else {
+                                    var sargs = new []string(0)
+                                    append(sargs, "/bin/sh")
+                                    append(sargs, "-c")
+                                    append(sargs, "sleep 0.2; kill -WINCH $PPID")
+                                    let scmd = new process::Command{
+                                        executable: "/bin/sh"
+                                        arguments: sargs
+                                        environment: new process::EnvInherit{}
+                                        directory: nil
+                                        input: new process::Inherit{}
+                                        output: new process::Inherit{}
+                                        error: new process::Inherit{}
+                                        newGroup: false
                                     }
-                                    err(m,c) { println("resize_event=sig_spawn_err") }
+                                    let sigchild = process::spawn(&scmd)
+                                    match sigchild {
+                                        ok(sc) {
+                                            let st = process::wait(&sc)
+                                            let cl = process::close(&sc)
+                                        }
+                                        err(m,c) { println("resize_event=sig_spawn_err") }
+                                    }
+                                    let scc = process::closeCommand(&scmd)
                                 }
-                                let scc = process::closeCommand(&scmd)
                                 let now = clock::monotonic()
                                 match now {
                                     ok(inst) {

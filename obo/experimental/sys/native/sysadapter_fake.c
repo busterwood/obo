@@ -1629,7 +1629,13 @@ long sys_proc_plan_set(long plan_token, long field, long a, long b) {
         if (a < SYS_REDIRECT_INHERIT || a > SYS_REDIRECT_MERGE_ERROR) return err(EINVAL);
         if (a == SYS_REDIRECT_MERGE_ERROR && which != 2) return err(EINVAL);
         if (a == SYS_REDIRECT_STREAM) {
-            if (file_of(b, SYS_KIND_STREAM) == NULL) return err(EBADF);
+            fake_file *sf = file_of(b, SYS_KIND_STREAM);
+            if (sf == NULL) return err(EBADF);
+            if (sf->d != NULL && sf->d->pipe) {
+                /* Nonblocking pipe source: the child would inherit EAGAIN
+                 * semantics, so reject it like the real adapter. */
+                return err(EOPNOTSUPP);
+            }
             plan->src_token[which] = b;
         } else {
             if (b != 0) return err(EINVAL);
@@ -1819,6 +1825,10 @@ long sys_proc_spawn(long plan_token) {
             sf = file_of(plan->src_token[i], SYS_KIND_STREAM);
             if (sf == NULL || sf->d == NULL || sf->d->ino == NULL) goto fail;
             c->ino[i] = sf->d->ino;
+            /* The child owns this reference for its whole lifetime, so closing
+             * the source stream cannot free the inode under proc_read/write. */
+            c->ino_owned[i] = 1;
+            c->ino[i]->refs++;
         }
     }
     if (c->merge_error) {
@@ -1925,7 +1935,11 @@ long sys_proc_detach(long child_token) {
 long sys_proc_reap_children(void) {
     fake_child **pp = &fake_children;
     long n = 0;
+    long scripted = 0;
+    int have_script;
     sys_reg_bump_call(SYS_CALL_PROC_REAP);
+    have_script = pop_script(SYS_CALL_PROC_REAP, &scripted);
+    if (have_script && scripted < 0) return scripted;
     while (*pp != NULL) {
         fake_child *c = *pp;
         if (c->state == 1 && !c->observed) {
@@ -1950,7 +1964,7 @@ long sys_proc_child_count(void) {
     fake_child *c = fake_children;
     long n = 0;
     while (c != NULL) {
-        n++;
+        if (c->token > 0) n++;
         c = c->next;
     }
     return n;
@@ -2276,7 +2290,15 @@ void sys_proc_shutdown(void) {
     fake_children = NULL;
     while (c != NULL) {
         fake_child *next = c->next;
+        if (c->state == 0) {
+            /* Still running at explicit shutdown: report the outstanding
+             * obligation like the real backend, then free the scripted state
+             * so LSan sees no child leak. */
+            sys_reg_add_cleanup_failure();
+        }
         c->next = NULL;
+        c->token = 0;
+        c->observed = 1;
         release_fake_child(c);
         c = next;
     }

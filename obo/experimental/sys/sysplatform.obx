@@ -827,8 +827,9 @@ pub fn _procSpawn(planTok: int): Result[int] {
 }
 
 pub fn _procTake(childTok: int, which: int, toKind: int): Result[int] {
-    return _rawResult(__cinterop("sys_proc_take", childTok, which, toKind),
-                      "child pipe take failed")
+    let raw = __cinterop("sys_proc_take", childTok, which, toKind)
+    if raw == -10 { return err("child is detached to the reaper", closedCode()) }
+    return _rawResult(raw, "child pipe take failed")
 }
 
 pub fn _procWait(childTok: int, block: bool): Result[int] {

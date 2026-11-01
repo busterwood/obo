@@ -149,12 +149,27 @@ fn closeResizeSource(s: ?signals::SignalSource): Result[bool] {
 pub fn close(t: &Terminal): Result[bool] {
     let owner = resizeOwner
     let hint = t.res.reserved
-    let retired = try platform::_closeHandle(handle(t.res),
-                                             platform::KIND_TERMINAL)
+    var retired = false
+    var code = 0
+    var message = ""
+    let closeResult = platform::_closeHandle(handle(t.res), platform::KIND_TERMINAL)
+    match closeResult {
+        ok(v) { retired = v }
+        err(m, c) { code = c; message = m }
+    }
+    // Always release the private resize source, even when termios restoration
+    // or the native close reported the first error.
     if owner != 0 && owner == hint && resizeSource != nil {
         let held = take(resizeSource)
         resizeOwner = 0
-        let ignored = closeResizeSource(held)
+        let sourceClosed = closeResizeSource(held)
+        match sourceClosed {
+            ok(v) { }
+            err(m, c) {
+                if code == 0 { code = c; message = m }
+            }
+        }
     }
+    if code != 0 { return err(message, code) }
     return ok(retired)
 }

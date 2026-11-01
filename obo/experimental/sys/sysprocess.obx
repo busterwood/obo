@@ -60,7 +60,8 @@ pub type ExitStatus = closed {
     Signalled { signal: int; coreDumped: bool }
 }
 
-pub const MAX_ARGUMENT_BYTES = 131072
+// Linux MAX_ARG_STRLEN is 32 * PAGE_SIZE including the terminating NUL.
+pub const MAX_ARGUMENT_BYTES = 131071
 pub const MAX_SPAWN_BYTES = 4194304
 pub const MAX_ARGUMENTS = 65536
 const MAX_PATH_BYTES = 4096

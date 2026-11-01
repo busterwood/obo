@@ -173,7 +173,68 @@ static int fake_mode(int argc, char **argv) {
     printf("fake_term_restore=%ld\n", sys_terminal_restore(b));
     (void)sys_res_close(b, SYS_KIND_TERMINAL);
 
+    /* B4: the child keeps its own reference to a FromStream inode, so closing
+     * the source cannot free it under proc_read. */
+    {
+        const char *uaf[] = {"fake"};
+        long path = mktext("uaf.txt");
+        long f = sys_file_open(0, path,
+                               SYS_OPEN_READ | SYS_OPEN_WRITE | SYS_OPEN_CREATE |
+                               SYS_OPEN_TRUNCATE, 0600);
+        long data = mktext("uafdata");
+        long stream2;
+        long child2;
+        long plan2;
+        char got[16];
+        (void)sys_res_close(path, SYS_KIND_BYTE_BUFFER);
+        (void)sys_io_write(f, SYS_KIND_FILE, data, 0, 7, -1);
+        (void)sys_res_close(data, SYS_KIND_BYTE_BUFFER);
+        printf("fake_uaf_retag=%ld\n", sys_file_retag(f, SYS_KIND_FILE,
+                                                      SYS_KIND_STREAM));
+        stream2 = f;
+        plan2 = plan_for("/fake", 1, uaf, 0);
+        if (plan2 >= 0) {
+            (void)sys_proc_plan_set(plan2, SYS_OP_PLAN_INPUT,
+                                    SYS_REDIRECT_STREAM, stream2);
+            child2 = sys_proc_spawn(plan2);
+            (void)sys_res_close(plan2, SYS_KIND_SPAWN_PLAN);
+            (void)sys_res_close(stream2, SYS_KIND_STREAM);
+            if (child2 >= 0) {
+                long bb = sys_reg_new_buffer(16);
+                long n = sysfake_proc_read(sysfake_proc_last(), 0, bb, 0, 16);
+                unsigned char *pp = NULL;
+                size_t ll = 0;
+                if (n > 0 && sys_reg_buffer_data(bb, &pp, &ll) == 0 &&
+                    (size_t)n <= ll) {
+                    memcpy(got, pp, (size_t)n);
+                    got[n] = '\0';
+                    printf("fake_uaf=%s\n", got);
+                } else {
+                    printf("fake_uaf=read_err:%ld\n", n);
+                }
+                (void)sys_res_close(bb, SYS_KIND_BYTE_BUFFER);
+                (void)sysfake_proc_exit(sysfake_proc_last(), SYS_EXIT_EXITED, 0);
+                (void)wait_block(child2);
+                (void)sys_res_close(child2, SYS_KIND_CHILD);
+            }
+        }
+    }
+
     printf("fake_shutdown=%ld\n", sys_adapter_shutdown());
+
+    /* B5: a running/unobserved child at explicit shutdown is reported and
+     * freed, not silently dropped. */
+    if (sys_adapter_init(64, 1 << 20) < 0) return 2;
+    (void)sysfake_reset();
+    plan = plan_for("/fake", 1, a1, 0);
+    child = sys_proc_spawn(plan);
+    (void)sys_res_close(plan, SYS_KIND_SPAWN_PLAN);
+    if (child >= 0) (void)sys_res_close(child, SYS_KIND_CHILD);
+    {
+        long closed = sys_adapter_shutdown();
+        long cleanup = sys_res_cleanup_failures();
+        printf("fake_leak_shutdown=%ld,%ld\n", closed, (long)(cleanup > 0 ? 1 : 0));
+    }
     return 0;
 }
 #endif
@@ -299,6 +360,24 @@ static int real_mode(void) {
         (void)sys_res_close(cb, SYS_KIND_BYTE_BUFFER);
     }
     if (chdir(saved) != 0) return 2;
+
+    /* An ignored SIGCHLD makes every waiting child unreapable. */
+    {
+        struct sigaction oldsa;
+        struct sigaction ign;
+        if (sigaction(SIGCHLD, NULL, &oldsa) == 0) {
+            memset(&ign, 0, sizeof(ign));
+            ign.sa_handler = SIG_IGN;
+            sigemptyset(&ign.sa_mask);
+            if (sigaction(SIGCHLD, &ign, NULL) == 0) {
+                printf("real_sigchld_init=%ld\n", sys_signal_init(1));
+                plan = plan_for("/bin/true", 1, bad, 0);
+                printf("real_sigchld_spawn=%ld\n", sys_proc_spawn(plan));
+                (void)sys_res_close(plan, SYS_KIND_SPAWN_PLAN);
+                (void)sigaction(SIGCHLD, &oldsa, NULL);
+            }
+        }
+    }
 
     printf("real_shutdown=%ld\n", sys_adapter_shutdown());
     return 0;

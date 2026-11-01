@@ -42,6 +42,7 @@ class Fail(Exception):
 
 def run(cmd, **kw):
     timeout = kw.pop('timeout', 300)
+    kw.setdefault('stdin', subprocess.DEVNULL)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
 
 
@@ -112,6 +113,8 @@ REAL_C_TRACE = [
     'real_term_dup=1',
     'real_chdir=1',
     'real_cwd_len_ok=1',
+    'real_sigchld_init=-16',
+    'real_sigchld_spawn=-16',
     'real_shutdown=0',
 ]
 
@@ -126,7 +129,10 @@ FAKE_C_TRACE = [
     'fake_term_size=103079215184',
     'fake_term_raw=1',
     'fake_term_restore=1',
+    'fake_uaf_retag=1',
+    'fake_uaf=uafdata',
     'fake_shutdown=0',
+    'fake_leak_shutdown=0,1',
 ]
 
 REAL_PROCESS_TRACE = [
@@ -137,6 +143,9 @@ REAL_PROCESS_TRACE = [
     'take2=InvalidArgument',
     'status1=exit:7',
     'status_repeat=exit:7',
+    'nonblocking_fromstream=Unsupported',
+    'take_input_write=3',
+    'take_input_out=abc',
     'out2=out',
     'err2=err',
     'merge=merged',
@@ -178,6 +187,15 @@ FAKE_PROCESS_TRACE = [
     'eof=nil',
     'take2=InvalidArgument',
     'status=exit:7',
+    'take_input_write=',
+    '2',
+    'take_input=in',
+    'nonblocking_fromstream=Unsupported',
+    'uaf_input=uafdata',
+    'fromstream_output=',
+    '3',
+    'fromstream_error=',
+    '3',
     'merge=merged',
     'fromstream=seed',
     'fromstream_close=true',
@@ -201,6 +219,10 @@ FAKE_PROCESS_TRACE = [
     'fault_dup=InvalidResource',
     'fault_exec=NotFound',
     'fault_wait=Interrupted',
+    'fault_kill=Permission',
+    'fault_detach=InvalidArgument',
+    'fault_take=Interrupted',
+    'fault_reap=Interrupted',
     'counts=0,0',
 ]
 
@@ -229,8 +251,15 @@ FAKE_SIGNAL_TERMINAL_TRACE = [
     'resize=true',
     'term_close=true',
     'size_closed=Closed',
+    'watch_close=true',
+    'raw_close=true',
     'fault_sub=Busy',
     'fault_term=ResourceLimit',
+    'fault_next=Interrupted',
+    'fault_size=Unsupported',
+    'fault_raw=Unsupported',
+    'fault_restore=Unsupported',
+    'fault_dup=ResourceLimit',
     'counts=0,0',
 ]
 
@@ -276,14 +305,29 @@ NITS_TRACE = [
 ]
 
 
+FD_TRACE = [
+    'posix_null_pipe=stdin=open stdout=open stderr=closed marker=clean',
+    'fork_null_pipe=stdin=open stdout=open stderr=closed marker=clean',
+    'posix_stream_pipe=stdin=open stdout=open stderr=closed marker=clean',
+    'fork_stream_pipe=stdin=open stdout=open stderr=closed marker=clean',
+    'posix_inherit_pipe=stdin=closed stdout=open stderr=closed marker=clean',
+    'fork_inherit_pipe=stdin=closed stdout=open stderr=closed marker=clean',
+    'posix_pipe_inherit=stdin=open stdout=closed stderr=closed marker=clean',
+    'fork_pipe_inherit=stdin=open stdout=closed stderr=closed marker=clean',
+    'fd_shutdown=0',
+]
+
+
 def run_pty_terminal(app, label):
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
-    p = subprocess.Popen([app], stdin=slave, stdout=slave, stderr=slave,
-                         env=dict(os.environ, OBO_CHECK='1'), close_fds=True)
+    pid, master = pty.fork()
+    if pid == 0:
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+        os.environ['OBO_CHECK'] = '1'
+        os.execv(app, [app, 'resizeonly'])
     buf = b''
     raw_seen = False
     restored_seen = False
+    resized = False
     try:
         while True:
             r, _, _ = select.select([master], [], [], 0.02)
@@ -294,34 +338,42 @@ def run_pty_terminal(app, label):
                     chunk = b''
                 if chunk:
                     buf += chunk
+                    if b'READY' in buf and not resized:
+                        fcntl.ioctl(master, termios.TIOCSWINSZ,
+                                    struct.pack('HHHH', 40, 100, 0, 0))
+                        resized = True
             try:
-                attrs = termios.tcgetattr(slave)
+                attrs = termios.tcgetattr(master)
                 if not (attrs[3] & termios.ICANON) and not (attrs[3] & termios.ECHO):
                     raw_seen = True
                 if raw_seen and (attrs[3] & termios.ICANON):
                     restored_seen = True
             except termios.error:
                 pass
-            if p.poll() is not None and not r:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done == pid:
                 break
+        if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+            raise Fail('%s exited abnormally: status %d' % (label, status))
     finally:
-        p.wait(timeout=10)
-        os.close(master)
-        os.close(slave)
-    if p.returncode != 0:
-        raise Fail('%s exited %d' % (label, p.returncode))
-    text = buf.decode('utf-8', 'replace')
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    if not resized:
+        raise Fail('%s: READY marker was not observed' % label)
     if not raw_seen:
         raise Fail('%s: raw mode was never visible on the pty' % label)
     if not restored_seen:
         raise Fail('%s: termios was not restored before close' % label)
+    text = buf.decode('utf-8', 'replace')
     want = [
         'init=true', 'size=24,80', 'resize_event=true', 'raw=true',
         'raw_marker', 'restore=true', 'restore2=false', 'dup_ok=true',
         'term_close=true', 'late_size=Closed', 'out_close=true',
         'err_close=true', 'counts=0,0',
     ]
-    lines = [line for line in text.splitlines() if line.strip()]
+    lines = [line for line in text.splitlines() if line.strip() and line.strip() != 'READY']
     if lines != want:
         raise Fail('%s output mismatch:\n--- got ---\n%s\n--- want ---\n%s'
                    % (label, '\n'.join(lines), '\n'.join(want)))
@@ -351,6 +403,18 @@ def main():
                  env=dict(os.environ, ASAN_OPTIONS='detect_leaks=1',
                           UBSAN_OPTIONS='halt_on_error=1:abort_on_error=1'))
         print(label + ': ok')
+
+    # B1/B2: prepared-fd collisions and unintended-inheritance regression,
+    # including a sanitizer run. This harness deliberately closes 0/1/2.
+    fd_real = cc_compile('p3_fd_real', 'p3_fd_test.c', REAL_C, ['-O2'], tmp)
+    p = must([fd_real], 'p3_fd_real')
+    exact('p3 fd real', p.stdout.strip().splitlines(), FD_TRACE)
+    fd_san = cc_compile('p3_fd_real_san', 'p3_fd_test.c', REAL_C, san, tmp)
+    p = must([fd_san], 'p3_fd_real_san',
+             env=dict(os.environ, ASAN_OPTIONS='detect_leaks=1',
+                      UBSAN_OPTIONS='halt_on_error=1:abort_on_error=1'))
+    exact('p3 fd real san', p.stdout.strip().splitlines(), FD_TRACE)
+    print('p3_fd_real_san: ok')
 
     # Real process contract.
     work = os.path.join(tmp, 'process-work')

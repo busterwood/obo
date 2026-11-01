@@ -895,12 +895,18 @@ pub fn chdir(directory: &dir::Directory): Result[bool]
 
 `EnvPolicy` variants are `EnvInherit`/`EnvExplicit` because a module has one
 closed-variant name scope and `Inherit` is already used by `Redirect`; this is a
-the whole public record. The executable is an explicit pathname; there is no
+naming deviation, not a semantic one. `spawn` revalidates the whole public
+record. The executable is an explicit pathname; there is no
 shell, PATH search or metacharacter interpretation. Arguments include
 `argv[0]`. `ARG_MAX` and the 4 MiB spawn byte cap are checked before a plan is
 built. Redirects: `Inherit`, `Null`, `Pipe`, `FromStream` (source required,
-duplicated and never consumed) and `MergeError` for `error` only. Parent pipe
-ends are nonblocking, child ends blocking, and each take succeeds at most once.
+duplicated and never consumed) and `MergeError` for `error` only. A
+`FromStream` source with `O_NONBLOCK` is rejected with `Unsupported`: a pipe has
+no independent duplicate with separate status flags, so handing a taken pipe to
+a child would break the blocking-standard-end contract. Parent pipe ends are
+nonblocking, child ends blocking, and each take succeeds at most once. Every
+prepared child fd is forced to >=3, the redirect target is never closed, and
+unintended parent descriptors are closed before exec.
 
 `spawn` uses posix_spawn when it can express the request and a trusted
 fork/execve path for an anchored directory. The fork child runs only
@@ -953,8 +959,11 @@ Linux blocks the selected signals and uses one signalfd; overlapping
 subscriptions are rejected with `Busy` rather than reference counted. `next`
 returns nil when nothing is queued, otherwise one coalesced event; counts are
 notification observations, not exact delivery accounting. `watch` is the typed
-reactor integration. Closing the source restores the saved mask. There is no obo
-handler or C-to-obo callback. Systems-context initialization ignores SIGPIPE
+reactor integration. Closing the source restores the saved mask. An existing
+application handler remains installed but cannot run while its signal is
+blocked; the signalfd source is the sole consumer. An inherited
+`SIGCHLD = SIG_IGN` is rejected by initialization/spawn with `Busy`. There is no
+obo handler or C-to-obo callback. Systems-context initialization ignores SIGPIPE
 when it was not already ignored; spawn restores child defaults.
 
 ## `systerminal`
