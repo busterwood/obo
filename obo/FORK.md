@@ -6323,8 +6323,8 @@ seed 1,550/1,550; `port_test` 605/605; fixed point and hello byte-identical.
 grammar adds backtick template tags and the universe gains `Sql`, `SqlArg`,
 `Html`, `HtmlAttr` and `HtmlAttrs`; old format-7 symbol files are refused with
 `has format 7; this compiler reads 8; rebuild it`. The reviewed branch is
-merged and promoted: `seed/obo` is the 0.15 image (700,417 bytes, sha256
-`8ca8e59e…`), and the 0.14 seed built this compiler once.
+merged and promoted: `seed/obo` is the 0.15 image (696,321 bytes, sha256
+`4213f9a3…`), and the 0.14 seed built this compiler once.
 
 **Language.** Compiler-known `sql`/`sqlRaw`/`html`/`htmlRaw` backtick tags lower
 to ordinary values. `Sql` is a public-field record `{text: []string; params:
