@@ -37,8 +37,12 @@ RT_TEXT = 0x10000000
 RT_DATA = 0x20000000
 PLATFORM = 'x86_64-linux-gnu'
 ABI = 'sysv-amd64'
-FORMAT = 'cinterop-proto/1'
-RELOC_HEADER = 'cinterop-relocs 1'
+FORMAT_V1 = 'cinterop-proto/1'
+FORMAT_V2 = 'cinterop-proto/2'
+FORMATS = (FORMAT_V1, FORMAT_V2)
+FORMAT = FORMAT_V1
+RELOC_HEADER_V1 = 'cinterop-relocs 1'
+RELOC_HEADER_V2 = 'cinterop-relocs 2'
 MAX_ARGS = 8
 MAX_KIND_ARGS = 12        # kinds bindings: C-parameter descriptors per function (stage (a))
 MAX_KIND_INDEX = 16       # obo argument indexes: @k must be below this (the compiler checks the same bound)
@@ -50,6 +54,20 @@ SIG_MODES = ('header', 'declarations-only')
 # reads as kind@k, and the call site passes the same list as a descriptor string (see nativeKindCall in
 # obo/src/obo.obo). The sidecar records the list, and the tool compares it with the spec.
 BYTES_KINDS = ('borrow_bytes', 'borrow_cstr')
+# Return kinds. /1 keeps the int-only pair; /2 adds copy-out and typed results (stage (b)).
+RET_KINDS_V1 = ('i32', 'i64')
+RET_KINDS_V2 = ('void', 'i32', 'u32', 'i64', 'nonzero', 'cbytes', 'cstr_out')
+POINTER_RET_KINDS = ('nonzero', 'cbytes', 'cstr_out')   # require "ret_ctype"
+STAGE_D_RET_KINDS = ('own', 'own_opt', 'borrow')
+# A native fn call records a shape per obo argument, not an exact kind. The thunk's spec decides i32 vs
+# u32 and so on; the shape only fixes the words the compiler pushes and the C parameter shape.
+FN_SHAPES = ('int', 'bytes', 'ints', 'byteslist')
+FN_RET_SHAPES = ('i64', 'void', 'bytes', 'optbytes')
+# Shape a spec return kind gives a native fn call.
+RET_SHAPE_OF = {
+    'i32': 'i64', 'i64': 'i64', 'u32': 'i64', 'nonzero': 'i64',
+    'void': 'void', 'cstr_out': 'bytes', 'cbytes': 'optbytes',
+}
 # A const:<n> magnitude is at most 17 digits (99999999999999999); the compiler checks the same bound.
 CONST_LIMIT = 99999999999999999
 # The C parameters each kind expands to (the sigcheck types and the thunk's arguments). The null and const
@@ -203,8 +221,20 @@ def load_spec(path):
         spec = json.load(open(path))
     except (OSError, ValueError) as e:
         raise ToolError("cannot read spec %s: %s" % (path, e))
-    if spec.get('format') != FORMAT:
-        raise ToolError("spec format is %r, expected %r" % (spec.get('format'), FORMAT))
+    fmt = spec.get('format')
+    if fmt not in FORMATS:
+        raise ToolError("spec format is %r, expected %r or %r"
+                        % (fmt, FORMAT_V1, FORMAT_V2))
+    if fmt == FORMAT_V2:
+        mode = spec.get('signature_check')
+        if mode not in SIG_MODES:
+            raise ToolError("a cinterop-proto/2 spec needs \"signature_check\": \"header\" or "
+                            "\"declarations-only\"")
+        if mode == 'header' and not spec.get('headers'):
+            raise ToolError("signature_check 'header' requires \"headers\"")
+        if mode == 'declarations-only' and not spec.get('declarations'):
+            raise ToolError("signature_check 'declarations-only' requires explicit \"declarations\" "
+                            "(there is no header to check against)")
     if spec.get('platform') != PLATFORM:
         raise ToolError("platform is %r, expected %r" % (spec.get('platform'), PLATFORM))
     if spec.get('abi') != ABI:
@@ -231,8 +261,38 @@ def load_spec(path):
             raise ToolError("duplicate C symbol %r" % f['symbol'])
         seen_names.add(f['name'])
         seen_symbols.add(f['symbol'])
-        if f['ret'] not in ('i32', 'i64'):
-            raise ToolError("%s: ret must be i32 or i64" % f['name'])
+        if fmt == FORMAT_V1:
+            if f['ret'] not in RET_KINDS_V1:
+                raise ToolError("%s: ret must be i32 or i64" % f['name'])
+        elif f['ret'] not in RET_KINDS_V2:
+            if f['ret'] in STAGE_D_RET_KINDS:
+                raise ToolError("%s: ret %r is a foreign-handle kind (stage (d))" % (f['name'], f['ret']))
+            raise ToolError("%s: ret must be one of %s" % (f['name'], ', '.join(RET_KINDS_V2)))
+        if f['ret'] in POINTER_RET_KINDS:
+            if 'ret_ctype' not in f:
+                raise ToolError("%s: ret %r needs \"ret_ctype\", the exact C return type "
+                                "(for example \"const char *\")" % (f['name'], f['ret']))
+            grammar = ("an object pointer type written with '*' as [const] T *... "
+                       "(a typedef that hides the pointer, a pointer to a function pointer and a "
+                       "pointer to an array are refused)")
+            try:
+                info = parse_ctype(f['ret_ctype'])
+            except ToolError as e:
+                raise ToolError("%s: ret_ctype must spell %s: %s" % (f['name'], grammar, e))
+            if info[0] != 'ptr':
+                raise ToolError("%s: ret_ctype must spell %s, not %r"
+                                % (f['name'], grammar, f['ret_ctype']))
+            if '(*)' in re.sub(r'\s+', '', f['ret_ctype']):
+                # The thunk treats a pointer-returning result as a data pointer in rax, never calls it.
+                raise ToolError("%s: ret_ctype must spell %s, not a function pointer"
+                                % (f['name'], grammar))
+        if f['ret'] == 'cbytes':
+            length = f.get('length')
+            if not isinstance(length, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', length):
+                raise ToolError("%s: cbytes needs \"length\": the C length function symbol" % f['name'])
+            cap = f.get('cap')
+            if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
+                raise ToolError("%s: cbytes needs \"cap\": a positive integer" % f['name'])
         if not isinstance(f['args'], list) or len(f['args']) > MAX_KIND_ARGS:
             raise ToolError("%s: args must be a list of at most %d entries" % (f['name'], MAX_ARGS))
         if all(a == 'i64' for a in f['args']):
@@ -247,6 +307,10 @@ def load_spec(path):
                                 "at the call" % f['name'])
             if not all(isinstance(a, str) for a in f['args']):
                 raise ToolError("%s: args must be i64, or a kind such as i64@0" % f['name'])
+            for a in f['args']:
+                if a.startswith('borrow<') or a.startswith('own') or a.startswith('out_own') \
+                        or a.startswith('out_offset'):
+                    raise ToolError("%s: %s is a foreign-handle kind (stage (d))" % (f['name'], a))
             check_kinds(f['name'], f['args'])
             ct = f.get('ctypes')
             if ct is not None:
@@ -260,6 +324,9 @@ def load_spec(path):
             if 'wrapper' not in spec:
                 raise ToolError("%s: a binding with argument kinds needs a maintained wrapper "
                                 "(the \"wrapper\" key)" % f['name'])
+        if f['ret'] not in ('i32', 'i64') and 'wrapper' not in spec:
+            raise ToolError("%s: ret %r needs a typed native fn declaration, so the binding needs a "
+                            "maintained wrapper (the \"wrapper\" key)" % (f['name'], f['ret']))
         effects = f.get('effects', ['impure'])
         if not isinstance(effects, list) or any(e != 'impure' for e in effects):
             raise ToolError("%s: only the conservative 'impure' effect is supported" % f['name'])
@@ -335,7 +402,7 @@ def check_kinds(fname, args):
         if k['name'] == 'ints' and k['flag'] == 'len':
             if k['arg'] not in data or data[k['arg']]['name'] not in ('ints', 'nil_bytes_list'):
                 raise ToolError("%s: ints:len counts a list, and argument %d is not one" % (fname, k['arg']))
-    if not data and not any(k['name'] in ('null', 'const') for k in kinds):
+    if kinds and not data and not any(k['name'] in ('null', 'const') for k in kinds):
         raise ToolError("%s: no argument kind" % fname)
     for i in range(max(data) + 1 if data else 0):
         if i not in data:
@@ -561,7 +628,8 @@ def generate_wrapper(spec):
 
 
 def kinds_thunk(f):
-    """Thunk body for a binding with argument kinds (stage (a), design 3.2).
+    """Thunk body for a binding with argument kinds (stage (a), design 3.2) and the typed return
+    kinds of stage (b).
 
     The call site pushed one word per data kind word, in argument order, so the
     first word is at the highest address. The thunk reads those words only now,
@@ -569,8 +637,21 @@ def kinds_thunk(f):
     lengths are made by the obo_ci_* helpers (host.c) into rbp-relative slots;
     the scratch among them is freed after the call on the normal return path.
     A contract violation exits 11 inside a helper, before the call.
+
+    cbytes calls the value function and then the length function with the same expanded argument
+    words, with no obo code in between, and copies through obo_ci_copy_out. cstr_out copies up to
+    the first NUL through obo_ci_cstr_out. Every call resets rsp to the fixed frame, so the second
+    cbytes call gets the same 16-byte alignment and stack arguments as the first.
+
+    The int form (every C parameter a bare i64) is also valid here when its return is typed: the
+    words are the same as the int-form thunk's, so synthesize the i64@k kinds rather than rejecting
+    a bare i64 as a descriptor.
     """
-    kinds = check_kinds(f['name'], f['args'])
+    if all(a == 'i64' for a in f['args']):
+        kinds = [{'name': 'i64', 'arg': i, 'flag': None, 'val': 0}
+                 for i in range(len(f['args']))]
+    else:
+        kinds = check_kinds(f['name'], f['args'])
     data = {}
     for k in kinds:
         if k['arg'] is None or (k['name'] == 'ints' and k['flag'] == 'len'):
@@ -647,25 +728,62 @@ def kinds_thunk(f):
             return '    movabs %s, %s' % (src, reg)
         return '    movq %s, %s' % (src, reg)
 
-    n = len(srcs)
     tail = []
-    stack = srcs[6:]
-    if stack and len(stack) % 2 == 1:
-        tail.append('    sub $8, %rsp')
-    for src in reversed(stack):
-        if src.startswith('$'):
-            tail.append('    movabs %s, %%rax' % src)
-            tail.append('    pushq %rax')
-        else:
-            tail.append('    pushq %s' % src)
-    for i, src in enumerate(srcs[:6]):
-        tail.append(load(src, ARG_REGS[i]))
-    tail.append('    call %s@PLT' % f['symbol'])
-    if f['ret'] == 'i32':
-        tail.append('    movslq %eax, %rax')
+    first_call = [True]
+
+    def native_call(target):
+        # Reset rsp to the fixed frame before every call but the first: stack arguments and any
+        # alignment pad from an earlier call (cbytes calls twice) must not accumulate.
+        if not first_call[0]:
+            tail.append('    lea -$FRAME(%rbp), %rsp')
+        first_call[0] = False
+        stack = srcs[6:]
+        if stack and len(stack) % 2 == 1:
+            tail.append('    sub $8, %rsp')
+        for src in reversed(stack):
+            if src.startswith('$'):
+                tail.append('    movabs %s, %%rax' % src)
+                tail.append('    pushq %rax')
+            else:
+                tail.append('    pushq %s' % src)
+        for i, src in enumerate(srcs[:6]):
+            tail.append(load(src, ARG_REGS[i]))
+        tail.append('    call %s@PLT' % target)
+
+    ret_kind = f['ret']
+    if ret_kind == 'cbytes':
+        if 'length' not in f:
+            raise ToolError("%s: cbytes needs a length function" % f['name'])
+        native_call(f['symbol'])
+        ptr = slot()
+        tail.append('    movq %%rax, %s' % ptr)
+        native_call(f['length'])
+        tail.append('    movslq %eax, %rsi')
+        tail.append('    movq %s, %%rdi' % ptr)
+        tail.append('    movabs $%d, %%rdx' % f['cap'])
+        tail.append('    call obo_ci_copy_out@PLT')
+    elif ret_kind == 'cstr_out':
+        native_call(f['symbol'])
+        tail.append('    movq %rax, %rdi')
+        tail.append('    call obo_ci_cstr_out@PLT')
+    else:
+        native_call(f['symbol'])
+        if ret_kind == 'i32':
+            tail.append('    movslq %eax, %rax')
+        elif ret_kind == 'u32':
+            tail.append('    movl %eax, %eax')
+        elif ret_kind == 'nonzero':
+            tail.append('    testq %rax, %rax')
+            tail.append('    setne %al')
+            tail.append('    movzbl %al, %eax')
+        elif ret_kind == 'void':
+            tail.append('    xor %eax, %eax')
+        elif ret_kind != 'i64':
+            raise ToolError("%s: no thunk for return kind %r" % (f['name'], ret_kind))
     ret = slot()
     tail.append('    movq %%rax, %s' % ret)
     frame = (8 * len(slots) + 15) // 16 * 16
+    tail = [line.replace('$FRAME', str(frame)) for line in tail]
     tail.append('    lea -%d(%%rbp), %%rsp' % frame)
     for s_ in scratch:
         tail.append('    movq %s, %%rdi' % s_)
@@ -683,7 +801,11 @@ def generate_shim(spec):
         n = len(f['args'])
         sym = 'obo_native_' + f['symbol']
         out += ['', '    .globl %s' % sym, '    .type %s,@function' % sym, '%s:' % sym]
-        if not all(a == 'i64' for a in f['args']):
+        # The int-form thunk keeps its original shape when the arguments are all i64 and the result
+        # is a scalar it handles. Any typed return (stage (b)) uses the kinds thunk, whose word
+        # layout for i64@k is the same as the int form's.
+        int_thunk = all(a == 'i64' for a in f['args']) and f['ret'] in ('i32', 'i64', 'u32')
+        if not int_thunk:
             out += kinds_thunk(f)
             continue
         out += ['    push %rbp', '    mov %rsp, %rbp']
@@ -699,9 +821,26 @@ def generate_shim(spec):
         out.append('    call %s@PLT' % f['symbol'])
         if f['ret'] == 'i32':
             out.append('    movslq %eax, %rax')
+        elif f['ret'] == 'u32':
+            out.append('    movl %eax, %eax')
         out += ['    leave', '    ret']
     out += ['', '    .section .note.GNU-stack,"",@progbits', '']
     return '\n'.join(out)
+
+
+def ret_ctype(f):
+    """The exact C return type of one spec function: the fixed type for the scalar kinds, the
+    author's `ret_ctype` for a pointer-returning kind."""
+    r = f['ret']
+    if r == 'i64':
+        return 'long'
+    if r == 'i32':
+        return 'int'
+    if r == 'u32':
+        return 'unsigned int'
+    if r == 'void':
+        return 'void'
+    return ' '.join(f['ret_ctype'].split())
 
 
 def generate_sigcheck(spec):
@@ -710,17 +849,26 @@ def generate_sigcheck(spec):
     explicit declaration, not against the installed library header."""
     headers = spec.get('headers', [])
     decls = spec.get('declarations', [])
-    mode = 'header' if headers else 'declarations-only'
+    if spec.get('format') == FORMAT_V2:
+        mode = spec['signature_check']
+    else:
+        mode = 'header' if headers else 'declarations-only'
     out = ['/* generated signature check; not linked */']
-    for h in headers:
-        out.append('#include "%s"' % h)
+    # declarations-only makes no header claim: only explicit declarations are compiled.
+    if mode == 'header':
+        for h in headers:
+            out.append('#include "%s"' % h)
     for d in decls:
         out.append(d)
     for i, f in enumerate(spec['functions']):
-        ret = c_arg(f['ret'])
+        ret = ret_ctype(f)
         args = ', '.join(sig_params(f)) or 'void'
         out.append('static %s (*obo_sig_%d)(%s) __attribute__((unused)) = %s;'
                    % (ret, i, args, f['symbol']))
+        if f['ret'] == 'cbytes':
+            # The length function takes the same C parameters and returns int (design 3.1, 3.3).
+            out.append('static int (*obo_sig_%d_len)(%s) __attribute__((unused)) = %s;'
+                       % (i, args, f['length']))
     out.append('')
     return '\n'.join(out), mode
 
@@ -732,7 +880,7 @@ def manifest_doc(spec, paths, compiler_version, toolchain, signature_check, kind
     for key, path in paths.items():
         files[key] = sha256(require_file(path, key))
     doc = {
-        'format': FORMAT,
+        'format': spec.get('format', FORMAT_V1),
         'kind': kind,
         'module': spec['module'],
         'platform': spec['platform'],
@@ -911,14 +1059,11 @@ def image_segments(data):
     return seg
 
 
-def read_relocs(path):
-    if not os.path.isfile(path):
-        raise ToolError("native relocation sidecar is missing: %s" % path)
-    lines = [ln.strip() for ln in open(path) if ln.strip()]
-    if not lines or lines[0] != RELOC_HEADER:
-        raise ToolError("native relocation sidecar has no %r header" % RELOC_HEADER)
+def _read_relocs_v1(lines):
+    """cinterop-relocs 1: off sym nargs types ret effects. Kept for sidecars written by an older
+    compiler."""
     out = []
-    for line in lines[1:]:
+    for line in lines:
         parts = line.split()
         if len(parts) != 6:
             raise ToolError("bad native relocation line %r" % line)
@@ -940,28 +1085,169 @@ def read_relocs(path):
                 parse_kind(t)
         if ret != 'i64' or effects != 'freesall,writeshandles':
             raise ToolError("native relocation has an unexpected result/effect contract: %r" % line)
-        out.append({'off': off, 'sym': sym, 'nargs': nargs,
-                    'argtypes': argtypes, 'ret': ret, 'effects': effects})
+        out.append({'off': off, 'sym': sym, 'nargs': nargs, 'argtypes': argtypes,
+                    'shapes': argtypes, 'mode': 'call', 'ret': ret, 'effects': effects,
+                    'version': 1})
     return out
 
 
-def validate_calls(relocs, spec):
+def _read_relocs_v2(lines):
+    """cinterop-relocs 2: off name nargs mode shapes ret-shape effects.
+
+    mode is 'call' (an int-form call with shapes '-', or an explicit kinds descriptor) or 'fn' (a
+    typed native fn call with one shape per obo argument). Every token is checked here, so a tampered
+    or unknown shape or mode is refused before it can reach the linker."""
+    out = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 7:
+            raise ToolError("bad cinterop-relocs 2 line %r" % line)
+        name, mode, shape_text, ret, effects = parts[1], parts[3], parts[4], parts[5], parts[6]
+        try:
+            off = int(parts[0])
+            nargs = int(parts[2])
+        except ValueError:
+            raise ToolError("bad native relocation line %r" % line)
+        if off < 1 or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
+            raise ToolError("bad native relocation %r" % line)
+        if nargs < 0 or nargs > MAX_KIND_ARGS:
+            raise ToolError("native relocation arity %d out of range" % nargs)
+        if effects != 'freesall,writeshandles':
+            raise ToolError("native relocation has an unexpected effect contract: %r" % line)
+        if mode not in ('call', 'fn'):
+            raise ToolError("native relocation has an unknown mode %r: %r" % (mode, line))
+        if mode == 'call':
+            if ret != 'i64':
+                raise ToolError("a call-form native relocation must have result i64: %r" % line)
+            if shape_text == '-':
+                shapes = []
+            else:
+                shapes = shape_text.split(',')
+                for t in shapes:
+                    parse_kind(t)
+            if shape_text != '-' and len(shapes) != nargs:
+                raise ToolError("native relocation argument kinds do not match arity: %r" % line)
+            if shape_text == '-' and nargs > 0:
+                # the int form: all i64, exactly nargs words
+                shapes = ['i64'] * nargs
+            out.append({'off': off, 'sym': name, 'nargs': nargs, 'argtypes': shapes,
+                        'shapes': shapes, 'mode': mode, 'ret': ret, 'effects': effects,
+                        'version': 2})
+        else:
+            if ret not in FN_RET_SHAPES:
+                raise ToolError("native fn relocation has an unknown result shape %r: %r" % (ret, line))
+            shapes = [] if shape_text == '-' else shape_text.split(',')
+            if len(shapes) != nargs:
+                raise ToolError("native fn relocation shapes do not match arity: %r" % line)
+            for s in shapes:
+                if s not in FN_SHAPES:
+                    raise ToolError("native fn relocation has an unknown shape %r: %r" % (s, line))
+            out.append({'off': off, 'sym': name, 'nargs': nargs, 'argtypes': shapes,
+                        'shapes': shapes, 'mode': mode, 'ret': ret, 'effects': effects,
+                        'version': 2})
+    return out
+
+
+def read_relocs(path):
+    if not os.path.isfile(path):
+        raise ToolError("native relocation sidecar is missing: %s" % path)
+    lines = [ln.strip() for ln in open(path) if ln.strip()]
+    if not lines:
+        raise ToolError("native relocation sidecar is empty")
+    if lines[0] == RELOC_HEADER_V1:
+        return _read_relocs_v1(lines[1:])
+    if lines[0] == RELOC_HEADER_V2:
+        return _read_relocs_v2(lines[1:])
+    raise ToolError("native relocation sidecar has no %r or %r header"
+                    % (RELOC_HEADER_V1, RELOC_HEADER_V2))
+
+
+def _fn_expected_shapes(f):
+    """The shape each spec function expects from a typed native fn call, one per obo argument."""
+    if all(a == 'i64' for a in f['args']):
+        return ['int'] * len(f['args'])
+    data = {}
+    for a in f['args']:
+        k = parse_kind(a)
+        if k['arg'] is None or (k['name'] == 'ints' and k['flag'] == 'len'):
+            continue
+        data[k['arg']] = k
+    shapes = []
+    for i in range(len(data)):
+        k = data[i]
+        if k['name'] in ('i64', 'i32', 'u32'):
+            shapes.append('int')
+        elif k['name'] in BYTES_KINDS:
+            shapes.append('bytes')
+        elif k['name'] == 'ints':
+            shapes.append('ints')
+        elif k['name'] == 'nil_bytes_list':
+            shapes.append('byteslist')
+        else:
+            raise ToolError("%s: %s is not supported by a typed native fn call (foreign-handle kinds "
+                            "arrive in stage (d))" % (f['name'], a))
+    return shapes
+
+
+def validate_calls(relocs, spec, fmt=None):
+    fmt = fmt or spec.get('format')
     by_sym = {f['symbol']: f for f in spec['functions']}
+    by_name = {f['name']: f for f in spec['functions']}
     seen = set()
     offsets = set()
     for r in relocs:
         if r['off'] in offsets:
             raise ToolError("duplicate native relocation offset %d" % r['off'])
         offsets.add(r['off'])
+        if r.get('mode', 'call') == 'fn':
+            if fmt != FORMAT_V2:
+                raise ToolError("native fn call %r needs a cinterop-proto/2 spec" % r['sym'])
+            # The declaration name is the spec `name`; the C symbol is deliberately not accepted here.
+            f = by_name.get(r['sym'])
+            if f is None:
+                raise ToolError("native fn call to %r is not in the binding spec by name" % r['sym'])
+            expected = _fn_expected_shapes(f)
+            if r['nargs'] != len(expected):
+                raise ToolError("native fn call to %r has %d argument(s), spec uses %d"
+                                % (r['sym'], r['nargs'], len(expected)))
+            if r['shapes'] != expected:
+                raise ToolError("native fn call to %r has shapes %s, the spec needs %s"
+                                % (r['sym'], ','.join(r['shapes']) or '-',
+                                   ','.join(expected) or '-'))
+            if f['ret'] not in RET_SHAPE_OF:
+                raise ToolError("native fn call to %r uses ret %r, which needs the stage (d) "
+                                "foreign-handle kinds" % (r['sym'], f['ret']))
+            want_ret = RET_SHAPE_OF[f['ret']]
+            if r['ret'] != want_ret:
+                raise ToolError("native fn call to %r returns %s, the spec needs %s"
+                                % (r['sym'], r['ret'], want_ret))
+            # The relocatable object and the thunk are named by the C symbol, not the obo name.
+            r['sym'] = f['symbol']
+            seen.add(f['symbol'])
+            continue
         f = by_sym.get(r['sym'])
         if f is None:
             raise ToolError("native call to %r is not in the binding spec" % r['sym'])
-        if r['nargs'] != len(f['args']):
-            raise ToolError("native call to %r has %d argument(s), spec says %d"
-                            % (r['sym'], r['nargs'], len(f['args'])))
-        if r['argtypes'] != list(f['args']):
-            raise ToolError("native call to %r has argument kinds %s, the spec says %s"
-                            % (r['sym'], ','.join(r['argtypes']) or '-', ','.join(f['args']) or '-'))
+        if fmt == FORMAT_V2 and f['ret'] not in ('i32', 'i64'):
+            raise ToolError("native call to %r has spec ret %r; a __cinterop call returns int, so "
+                            "use a typed native fn declaration" % (r['sym'], f['ret']))
+        int_form = (r.get('shapes') == '-' or
+                    (r['argtypes'] and all(t == 'i64' for t in r['argtypes'])))
+        if int_form:
+            if not all(a == 'i64' for a in f['args']):
+                raise ToolError("native call to %r is the int form, but the spec has argument kinds"
+                                % r['sym'])
+            if r['nargs'] != len(f['args']):
+                raise ToolError("native call to %r has %d argument(s), spec says %d"
+                                % (r['sym'], r['nargs'], len(f['args'])))
+        else:
+            if r['nargs'] != len(f['args']):
+                raise ToolError("native call to %r has %d argument(s), spec says %d"
+                                % (r['sym'], r['nargs'], len(f['args'])))
+            if r['argtypes'] != list(f['args']):
+                raise ToolError("native call to %r has argument kinds %s, the spec says %s"
+                                % (r['sym'], ','.join(r['argtypes']) or '-',
+                                   ','.join(f['args']) or '-'))
         seen.add(r['sym'])
     missing = set(by_sym) - seen
     if missing:
@@ -1222,8 +1508,9 @@ def verify_doc(doc, base, full):
                 'expected_thunks', 'files', 'paths'):
         if key not in doc:
             raise ToolError("manifest is missing %r" % key)
-    if doc['format'] != FORMAT:
-        raise ToolError("manifest format is %r, expected %r" % (doc['format'], FORMAT))
+    if doc['format'] not in FORMATS:
+        raise ToolError("manifest format is %r, expected %r or %r"
+                        % (doc['format'], FORMAT_V1, FORMAT_V2))
     if doc['kind'] not in ('input', 'build') or (full and doc['kind'] != 'build'):
         raise ToolError("manifest kind is not build")
     if doc['platform'] != PLATFORM or doc['abi'] != ABI or doc['pointer_width'] != 64:
@@ -1251,8 +1538,10 @@ def verify_doc(doc, base, full):
             raise ToolError("manifest symbol arguments are malformed")
         if any(a != 'i64' for a in sym['args']):
             check_kinds(str(sym['name']), sym['args'])
-        if sym['ret'] not in ('i32', 'i64'):
-            raise ToolError("manifest symbol result is not i32/i64")
+        allowed_ret = RET_KINDS_V1 if doc['format'] == FORMAT_V1 else RET_KINDS_V2
+        if sym['ret'] not in allowed_ret:
+            raise ToolError("manifest symbol result %r is not valid for %s"
+                            % (sym['ret'], doc['format']))
     if sorted(doc['expected_thunks']) != sorted('obo_native_' + s['symbol'] for s in doc['symbols']):
         raise ToolError("manifest thunk list does not match its symbols")
     files = doc['files']
