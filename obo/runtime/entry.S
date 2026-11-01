@@ -123,6 +123,10 @@ _entry:
     slot rt_tpl_html_splice
     slot rt_tpl_html_join
     slot rt_tpl_html_copy
+#ifdef OBO_HOSTED_EXIT
+    /* Appended only in the hosted build: the baseline table ends at 93 and gains no reserved slot. */
+    slot rt_set_foreign_census
+#endif
 
     .text
     .macro check f
@@ -229,5 +233,8 @@ check_\f:
     check rt_tpl_html_splice
     check rt_tpl_html_join
     check rt_tpl_html_copy
+#ifdef OBO_HOSTED_EXIT
+    check rt_set_foreign_census
+#endif
 
     .section .note.GNU-stack,"",@progbits

@@ -15,6 +15,7 @@
  * appended set-host-exit slot. host_exit calls libc exit(), so C stdio is
  * flushed and atexit handlers run. The baseline freestanding runtime is built
  * without this variant and keeps its raw-syscall exit. */
+#include "foreign_abi.h"
 #include "host_stack.h"
 #include "../../runtime/host_abi.h"
 
@@ -207,6 +208,124 @@ CI_HIDDEN const void *obo_ci_cstr_out(const char *p) {
     return (const void *)(uintptr_t)a;
 }
 
+/* ---- foreign handles (stage (d), design 3.4) ----
+ *
+ * A foreign type is an ordinary obo record with one private word at offset 0. The word is in neither
+ * the owned nor the string offset list of its descriptor, so rt_free frees the block and never reads
+ * or releases the C pointer. The live count for each type is kept here; the generated foreign table
+ * (foreign_abi.h) supplies the release wrapper and the obo type name. */
+
+static long ci_foreign_live[OBO_CI_FOREIGN_MAX];
+static int ci_census_fault_underflow;
+
+static void ci_write_str(int fd, const char *s) {
+    size_t n = 0;
+    while (s[n] != 0) n++;
+    while (n > 0) {
+        ssize_t w = write(fd, s, n);
+        if (w <= 0) return;
+        s += w;
+        n -= (size_t)w;
+    }
+}
+
+static void ci_write_int(int fd, unsigned long v) {
+    char b[24];
+    int i = 24;
+    do { b[--i] = (char)('0' + v % 10); v /= 10; } while (v != 0);
+    while (i < 24) {
+        ssize_t w = write(fd, &b[i], (size_t)(24 - i));
+        if (w <= 0) return;
+        i += (int)w;
+    }
+}
+
+/* The host foreign census, called by rt_finish between the fd and object censuses. It reports each
+ * non-zero type and exits 8 once; with no OBO_CHECK=1 rt_finish never calls it. */
+static void ci_foreign_census(void) {
+    int any = 0;
+    for (long i = 0; i < obo_ci_foreign_type_count; i++) {
+        if (ci_foreign_live[i] == 0) continue;
+        any = 1;
+        ci_write_str(2, "obo: foreign handles leaked: ");
+        ci_write_str(2, obo_ci_foreign_types[i].name);
+        ci_write_str(2, " ");
+        ci_write_int(2, (unsigned long)ci_foreign_live[i]);
+        ci_write_str(2, "\n");
+    }
+    if (any) exit(8);
+}
+
+CI_HIDDEN long obo_ci_foreign_census_adjust(long id, long delta) {
+    if (id < 0 || id >= obo_ci_foreign_type_count)
+        ci_fail("obo: foreign census type id out of range\n", 11);
+    if (delta < 0) {
+        if (ci_census_fault_underflow) ci_foreign_live[id] = 0;
+        if (ci_foreign_live[id] == 0)
+            ci_fail("obo: internal error: foreign handle census underflow\n", 4);
+        ci_foreign_live[id] -= 1;
+    } else {
+        ci_foreign_live[id] += delta;
+    }
+    return (long)ci_foreign_live[id];
+}
+
+static uint64_t ci_alloc_record(uint64_t desc) {
+    rt_alloc_record_fn alloc = (rt_alloc_record_fn)RT_ALLOC_RECORD_ADDR;
+    return alloc((const uint64_t *)(uintptr_t)desc);
+}
+
+/* borrow<T>: the C word for a live record; a nil record or a zero word exits 7 before the call. */
+CI_HIDDEN const void *obo_ci_foreign_word(const void *rec) {
+    const uint64_t *r = (const uint64_t *)rec;
+    if (rec == NULL || r[0] == 0) ci_fail("obo: foreign handle used after close\n", 7);
+    return (const void *)(uintptr_t)r[0];
+}
+
+/* own<T> / own_opt<T>: allocate a normal record of desc, store the raw C word, count it, return the
+ * record pointer. own with NULL exits 11; own_opt with NULL returns nil. */
+CI_HIDDEN const void *obo_ci_foreign_own(long id, const void *raw, long desc, long optional) {
+    uint64_t rec;
+    if (id < 0 || id >= obo_ci_foreign_type_count)
+        ci_fail("obo: foreign type id out of range\n", 11);
+    if (raw == NULL) {
+        if (optional) return NULL;
+        ci_fail("obo: native own returned NULL\n", 11);
+    }
+    rec = ci_alloc_record((uint64_t)desc);
+    *(uint64_t *)(uintptr_t)rec = (uint64_t)(uintptr_t)raw;
+    (void)obo_ci_foreign_census_adjust(id, 1);
+    return (const void *)(uintptr_t)rec;
+}
+
+/* close: word 0 gives ok(false) and makes no C call. Otherwise zero the word, decrement the census,
+ * release, then return ok(true) or, for an int release with a non-zero result, err(msg, code). */
+CI_HIDDEN void *obo_ci_foreign_close(long id, void *rec, long okdesc, long errdesc, long msg) {
+    uint64_t word;
+    uint64_t cell;
+    long rc;
+    if (id < 0 || id >= obo_ci_foreign_type_count)
+        ci_fail("obo: foreign type id out of range\n", 11);
+    word = (rec != NULL) ? *(uint64_t *)rec : 0;
+    if (word == 0) {
+        cell = ci_alloc_record((uint64_t)okdesc);
+        *(uint64_t *)(uintptr_t)cell = 0;
+        return (void *)(uintptr_t)cell;
+    }
+    *(uint64_t *)rec = 0;                      /* before the release: a trap cannot release twice */
+    (void)obo_ci_foreign_census_adjust(id, -1);
+    rc = obo_ci_foreign_types[id].release((void *)(uintptr_t)word);
+    if (obo_ci_foreign_types[id].release_result != 0 && rc != 0) {
+        cell = ci_alloc_record((uint64_t)errdesc);
+        *(uint64_t *)(uintptr_t)cell = (uint64_t)msg;
+        *((uint64_t *)(uintptr_t)cell + 1) = (uint64_t)rc;
+        return (void *)(uintptr_t)cell;
+    }
+    cell = ci_alloc_record((uint64_t)okdesc);
+    *(uint64_t *)(uintptr_t)cell = 1;
+    return (void *)(uintptr_t)cell;
+}
+
 static void startup_fail(const char *msg) {
     size_t n = 0;
     while (msg[n] != 0) n++;
@@ -256,6 +375,14 @@ int main(int argc, char **argv, char **envp) {
     char err[160];
 
     if (argc < 0) startup_fail("obo: cinterop invalid argc\n");
+    /* The census fault hook is inert unless OBO_CHECK=1, like OBO_IO_FAULT and OBO_META_FAULT. */
+    {
+        const char *check = getenv("OBO_CHECK");
+        const char *fault = getenv("OBO_CENSUS_FAULT");
+        if (check != NULL && check[0] == '1' && fault != NULL && strcmp(fault, "underflow") == 0) {
+            ci_census_fault_underflow = 1;
+        }
+    }
     size_env = getenv("OBO_CINTEROP_STACK_BYTES");
     if (size_env != NULL && !parse_size(size_env, &requested)) {
         startup_fail("obo: cinterop invalid stack size\n");
@@ -296,6 +423,7 @@ int main(int argc, char **argv, char **envp) {
     /* The runtime callback is set before obo code runs, so normal finish,
      * exit(), OBO_CHECK failures and runtime panics all leave through libc. */
     ((rt_host_exit_fn)RT_HOST_EXIT_ADDR)((rt_host_exit_fn)host_exit);
+    ((rt_set_foreign_census_fn)RT_FOREIGN_CENSUS_ADDR)(ci_foreign_census);
     if (obo_host_prelaunch != 0) obo_host_prelaunch();
 
     _obo_launch(p);
