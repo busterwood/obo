@@ -106,9 +106,9 @@ storage is 0.16 and impure interface members are 0.17.
   and staleness/version checks. A full build still compiles every module body
   from source; `--check` checks against dependencies' symbol files, including
   dependencies without sources.
-- **Library and tools.** The twelve modules under `obo/lib/` are `strings`,
-  `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors`, `fs`, `env`, `html`
-  and `sqldialect`.
+- **Library and tools.** The thirteen modules under `obo/lib/` are `strings`,
+  `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors`, `fs`, `env`, `html`,
+  `sqldialect` and `decimals`.
   Each tool is a module root and imports only what it uses;
   `obo/tools/build_tools.py` compiles
   it directly with the ordinary compiler, with nothing concatenated. The exact
@@ -125,7 +125,7 @@ storage is 0.16 and impure interface members are 0.17.
 | Total allocated | 57,876,000 bytes direct; 57,877,328 bytes port comparison |
 | Maximum resident set | 5,092 KB (measured 1 November 2026) |
 | Live-memory budget | 2,750,000 bytes: 163,744 spare direct / 163,728 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 53,984 on 0.17) |
-| obo suite | 1,869 `run_fork` tests; 149 `module_test`; `sym_test.py` 56/56; `sym_fuzz.py` 200/200; `port_test` 630/630 with 10 encoder groups; `port_compare` 1,847/1,847 default; seed comparisons 1,645/1,645 against the promoted 0.17 seed; 74 doc examples; 30/30 import checks; 17/17 stdlib roots |
+| obo suite | 1,869 `run_fork` tests; 149 `module_test`; `sym_test.py` 56/56; `sym_fuzz.py` 200/200; `port_test` 630/630 with 10 encoder groups; `port_compare` 1,847/1,847 default; seed comparisons 1,645/1,645 against the promoted 0.17 seed; 74 doc examples; 31/31 import checks; 24/24 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
 | Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.17) is 1,645/1,645; that flat count omits the 202 non-flat checks the default comparison adds — 191 module-tree cases (including the two 0.17 `iface_impure` trees), 4 CLI, 5 special, 1 re-emit and 1 `modules/tokens` — so the default (self) comparison is 1,847/1,847 |
 | Mutation gates | `mutate_fork` 724/755 caught + 31 equivalent, 0 missed/stale/broken (including the six impure mutants); `mutate_port` 540/540 caught, 0 missed/stale/broken; `mutate_meta` 71/82 caught + 11 equivalent, 0 missed/stale/broken (runtime/entry.S 50/52 + 2 equivalent; compiler 21/30 + 9 equivalent); `mutate_decimal` 105/105 with an explicit baseline; `mutate_io` 36/36, 0 missed/stale/broken (including the self-host memory oracle, empty-array delta 53,984 bytes). The 0.17 catalog is green: the 31 + 11 equivalents are the same as before, and no pattern is stale or broken |
@@ -232,9 +232,11 @@ source-less `--check` builds the value from those bytes alone.
 
 **Still to come.** D4a is decimal method and interface-member parameters and
 returns (including the interface vtable offset and the `pfree` mask fixes); D4b is
-decimal function values, lambdas and 24-byte capture snapshots. D5 is the
-`lib/decimals.obx` module (`round`/`floor`/`ceil`, `sum`, largest-remainder
-`allocate`, grouped formatting). D6 is the database read bridge: a
+decimal function values, lambdas and 24-byte capture snapshots. D5, the
+`lib/decimals.obx` module (`floor`/`ceil`/`trunc`/`round`/`roundAway`, `abs`/
+`neg`/`sign`/`isZero`/`cmp`/`min`/`max`, `sum`, largest-remainder `allocate` and
+`allocateWeighted`, and `formatGrouped`), is released with the 0.17 line as a
+library-only addition; it changes no compiler, runtime, format or seed. D6 is the database read bridge: a
 `DecimalOrNull` closed type and `getDecimal` in each adapter; writes already
 travel losslessly as `DecimalText`, and there is no `SqlArg.Decimal` or
 `decimal(p,s)` in this tier. `string(decimal)` stays a compile error; use
@@ -287,8 +289,8 @@ interface. One constraint: an impure member cannot be called through an
 interface stored in a record or a global, so the server must keep the handler in
 a local or pass it as an `&I` parameter, not in a `Server` field or a global; I2
 changes `experimental/http1server` and its design note, not the compiler. Async
-libpq and a deferred response follow after I2. D4a/D4b/D5/D6 decimal work and
-`^I` remain later.
+libpq and a deferred response follow after I2. D4a/D4b/D6 decimal work and
+`^I` remain later (D5 is released as the library-only `lib/decimals.obx`).
 
 ### Field visibility 0.13
 
@@ -456,7 +458,7 @@ lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md)
 | Numeric floats | released at 0.10/format 6/ABI 1 |
 | Lambdas Stage B | merged, promoted and pushed at 0.11/format 6/ABI 1; `^I` follows Stage B |
 | Decimal scalar tier | released at 0.12/format 6/ABI 1 |
-| Decimal storage: fields, arrays, globals, constants | released at 0.16/format 9/ABI 1; methods and interface members (D4a), function values/lambdas/captures (D4b), `lib/decimals.obx` (D5) and the database read bridge (D6) still later |
+| Decimal storage: fields, arrays, globals, constants | released at 0.16/format 9/ABI 1; methods and interface members (D4a), function values/lambdas/captures (D4b) and the database read bridge (D6) still later; `lib/decimals.obx` (D5) is released on the 0.17 line (library only, no version or format change) |
 | Impure interface members | released at 0.17/format 10/ABI 1; next is I2: an `http1server` interface handler and data-carrying response, with the handler in a local or `&I` parameter, not a `Server` field or global; async libpq and a deferred response after that |
 | cinterop v2 | experimental stages (a)–(h) merged: `foreign` handles, out records, leak census and the libpq/SQLite/PostgreSQL packages, plus a SQL Server ODBC adapter in `db/mssql`; not a stable API, no threads |
 | Peephole/optimizer audit | evidence-gated |
@@ -553,7 +555,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
 | `obo/seed/obo` | the trusted previous stage |
 | `obo/LANGUAGE.md` | the current language reference, including known holes |
-| `obo/lib/` | the twelve source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs`, `env`, `html` and `sqldialect` |
+| `obo/lib/` | the thirteen source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs`, `env`, `html`, `sqldialect` and `decimals` |
 | `obo/cmd/` | the tools: `cat`, `wc`, `sort`, `head`, `tail` and `eza`, with `README.md` and their subsets |
 | `obo/tests/` | obo's suite, mutants, the I/O, tools and eza gates |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |

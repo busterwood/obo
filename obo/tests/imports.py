@@ -5,8 +5,8 @@
 
 Cases:
   * every stdlib module (io, strings, paths, sort, time, cli, fmt, errors, fs,
-    env, html, sqldialect) compiles through a tiny importer root built with
-    `-I obo/lib`;
+    env, html, sqldialect, decimals) compiles through a tiny importer root
+    built with `-I obo/lib`;
   * every tool source (cmd/cat.obx, wc.obx, sort.obx, head.obx, tail.obx,
     eza.obx) compiles with its own relative `../lib/...` imports and no -I;
   * the design 4.2 P2/P4 tool-matrix checks: every tool import is an explicit
@@ -16,9 +16,9 @@ Cases:
     tool root), and a scratch cmd/ tree with io/fmt/errors/strings decoys
     beside cat.obx still builds and runs against the real lib/ modules;
   * obo/lib holds exactly the staged module set: io, strings, paths, sort,
-    time, cli, fmt, errors, fs, env, html and sqldialect. The exact-set check
-    proves no module outside the staged set exists (and that no leftover
-    compatibility module does);
+    time, cli, fmt, errors, fs, env, html, sqldialect and decimals. The
+    exact-set check proves no module outside the staged set exists (and that
+    no leftover compatibility module does);
   * collision/decoy trees pin module resolution and the exact diagnostics:
     a headerless imported module, a self import cycle, a mutual import cycle,
     a headerless local decoy shadowing a lib module, a headed local decoy with
@@ -168,14 +168,19 @@ IMPORTERS = {
                    '    let r = sqldialect::renderPostgres(&q)\n'
                    '    match r { ok(s) { println(s) } err(m, c) { println(c) } }\n'
                    '}\n', 'x = $1\n'),
+    'decimals': ('import "decimals.obx" as decimals\n'
+                 'fn main() {\n'
+                 '    let r = decimals::round(2.5, 0)\n'
+                 '    match r { ok(v) { println(v) } err(m, c) { println(c) } }\n'
+                 '}\n', '2\n'),
 }
 
 TOOLS = ['cat.obx', 'wc.obx', 'sort.obx', 'head.obx', 'tail.obx',
          'eza.obx']
 
-WANT_LIB = {'cli.obx', 'env.obx', 'errors.obx', 'fmt.obx', 'fs.obx',
-            'html.obx', 'io.obx', 'paths.obx', 'sort.obx', 'sqldialect.obx',
-            'strings.obx', 'time.obx'}
+WANT_LIB = {'cli.obx', 'decimals.obx', 'env.obx', 'errors.obx', 'fmt.obx',
+            'fs.obx', 'html.obx', 'io.obx', 'paths.obx', 'sort.obx',
+            'sqldialect.obx', 'strings.obx', 'time.obx'}
 
 
 def main():
