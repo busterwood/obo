@@ -169,7 +169,7 @@ test script records the extracted header version and rejects a mismatched
 | per-connection streams | `maxConcurrentStreams` live shells; the shim also enforces the same advertised cap |
 | accept batch | 32 sockets per turn; `ResourceLimit`/EMFILE pauses 100 ms |
 | per-turn connection work | 32 `http2::next` steps; exhaust marks the slot resumable for an immediate turn |
-| per-turn stream resumption | 32 action steps across live streams, rotating a fair cursor |
+| per-turn stream resumption | 32 action steps across live streams, rotating a fair cursor; blocked writes wait for readiness/deadline |
 | handshake deadline | `prefaceTimeoutMs` from accept, before any H2 session exists |
 | server drain | `drainTimeoutMs` from `beginShutdown`; each connection uses the H2 GOAWAY/PING barrier and `drainBarrierMs` |
 | admission | `http2::reservation(limits)` x live connections, bounded by `maxConnections` and `maxTotalConnectionBytes`; full admission removes the listener watch |
@@ -202,6 +202,16 @@ level-triggered readable backlog. `rejected` increments once per transition.
 The watch is restored when a slot closes and capacity exists. Reservation
 rollback for a pre-slot failure releases the H2 admission charge without
 decrementing the live connection/reserved counters.
+
+`ResourceLimit`/EMFILE accept pressure uses the same watch pause plus a 100 ms
+`acceptPausedUntil` backoff; the listener is not left readable during the
+backoff. `acceptPressure` is reported in `http2server::Metrics` and H2METRICS.
+
+A zero-count `writeBody` is a blocked write, not ready work. Such a stream
+keeps `workPending` for a later retry but does not force a zero-timeout reactor
+turn: `computeUntil` returns immediately only for event-backlog work or a
+resumable action that can progress without new readiness. A client withholding
+WINDOW_UPDATE therefore costs no CPU until a window update or deadline.
 
 A response action that accepted zero bytes from `writeBody` sets
 `actionWriteBlocked`; the server keeps the stream resumable and retries after

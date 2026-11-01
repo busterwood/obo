@@ -109,12 +109,18 @@ HTTP/1.1 `Upgrade` attempt. Each abuse case must leave the server serving a
 fresh connection. A fast-timeout limits profile checks 14 zero-byte h2c
 prefaces, idle, stalled-header and body-idle deadlines without stopping the
 loop. A saturation test fills `maxConnections`, leaves a 15th connection
-pending, and asserts the paused listener does not spin. A small-buffer profile
-checks 8 KiB `maxStreamSendBuffer` progress, 4 KiB `maxReadChunk` echo and
+pending, and asserts the paused listener does not spin. A response-flow-control
+test requests 204800 bytes across ten `/big` streams and a 100 KiB Echo
+response, withholds connection/stream WINDOW_UPDATE, asserts low CPU, then
+grants credit and asserts every response resumes. An EMFILE test runs
+under `ulimit -n 12`, opens 30 pending connections, asserts the accept-pressure
+pause does not spin and that service recovers. A small-buffer profile checks
+8 KiB `maxStreamSendBuffer` progress, 4 KiB `maxReadChunk` echo and
 `maxRequestsPerConnection` refusal with `RST_STREAM(REFUSED_STREAM)`. The drain
 test keeps an active stream open and asserts the notice GOAWAY, barrier PING,
-and final `min(last_proc, cutoff)` GOAWAY reach the wire before close. TLS tests enforce the wrong-ALPN failure, multiplex over TLS,
-graceful GOAWAY drain and balanced connection/stream/platform counts.
+and final `min(last_proc, cutoff)` GOAWAY reach the wire before close. TLS tests
+enforce the wrong-ALPN failure, multiplex over TLS, graceful GOAWAY drain and
+balanced connection/stream/platform counts.
 h2spec and h2load are explicit integration dependencies. They are skipped when
 not installed, with the missing-tool reason printed; no default test downloads a
 protocol tool or contacts a protocol peer outside loopback. The only optional

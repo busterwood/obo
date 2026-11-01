@@ -238,8 +238,14 @@ def free_port(preferred):
 
 
 class Server:
-    def __init__(self, exe, args, timeout=20):
-        self.proc = subprocess.Popen([exe] + [str(a) for a in args],
+    def __init__(self, exe, args, timeout=20, wrap_limit=None):
+        if wrap_limit is None:
+            argv = [exe] + [str(a) for a in args]
+        else:
+            argv = ['bash', '-c',
+                    'ulimit -n %d; exec "$0" "$@"' % wrap_limit,
+                    exe] + [str(a) for a in args]
+        self.proc = subprocess.Popen(argv,
                                      stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True,
                                      bufsize=1,
@@ -321,7 +327,7 @@ METRIC_FIELDS = [
     'accepted', 'rejected', 'closedConnections', 'requests', 'streamsOpened',
     'streamsClosed', 'protocolErrors', 'timeouts', 'acceptErrors',
     'handlerErrors', 'watchErrors', 'handshakeFailures', 'drains',
-    'peakActive', 'active', 'reservedBytes',
+    'peakActive', 'active', 'reservedBytes', 'acceptPressure',
 ]
 
 
@@ -892,6 +898,112 @@ def main():
              'small profile left live resources: %r %r' % (m, c))
         print('H2b small buffers/maxRequests: ok')
     finally:
+        srv.stop()
+
+    # Response flow-control backpressure: request ten /big streams (204800
+    # bytes total) and withhold connection WINDOW_UPDATE. The server must sleep
+    # on readiness/deadline instead of busy-retrying blocked writes; one
+    # connection WINDOW_UPDATE must resume every stream.
+    port = free_port(1750)
+    srv = Server(h2srv, ['h2c', port])
+    try:
+        c = h2client.H2Client(port, auto_window=False)
+        ids = list(range(1, 21, 2))
+        for sid in ids:
+            c.request(sid, '/big')
+        c.drain_for(0.5)
+        seen = sum(len(c.body(sid)) for sid in ids)
+        need(seen > 0, 'slow-reader received no response bytes')
+        base = server_cpu(srv.proc)
+        time.sleep(2.0)
+        used = server_cpu(srv.proc) - base
+        need(used < 0.3,
+             'blocked response write busy-spins: %.2fs over 2s' % used)
+        c.grant(0, 300000)
+        c.collect(set(ids), timeout=10)
+        need(all(c.body(sid) == b'x' * 20480 for sid in ids),
+             'WINDOW_UPDATE did not resume all blocked responses')
+        c.close()
+
+        # The same blocked-write rule on the Echo path: send a 100 KiB body,
+        # let the response fill the withheld window, then grant credit.
+        c = h2client.H2Client(port, auto_window=False)
+        payload = b'q' * 100000
+        need(c.post_flow_controlled(1, payload),
+             'slow-reader request body was not accepted')
+        seen = len(c.body(1))
+        need(seen > 0 and seen < len(payload),
+             'echo response was not held by flow control: %d' % seen)
+        base = server_cpu(srv.proc)
+        time.sleep(1.5)
+        used = server_cpu(srv.proc) - base
+        need(used < 0.3,
+             'blocked echo write busy-spins: %.2fs over 1.5s' % used)
+        c.grant(1, 300000)
+        c.grant(0, 300000)
+        c.collect({1}, timeout=10)
+        need(c.body(1) == payload,
+             'WINDOW_UPDATE did not resume the blocked echo')
+        c.close()
+        d = h2client.H2Client(port)
+        d.request(1, '/stop')
+        d.collect({1}, timeout=8)
+        d.close()
+        text = srv.finish()
+        need('H2DRAINED' in text and 'H2DONE' in text,
+             'slow-reader server did not drain:\n%s' % text)
+        m = parse_metrics(text)
+        need(m['active'] == 0 and m['reservedBytes'] == 0,
+             'slow-reader left live admission: %r' % m)
+        print('H2b response flow-control backpressure: ok')
+    finally:
+        srv.stop()
+
+    # Accept-pressure backoff under a low fd limit: EMFILE must pause the
+    # listener (no readable-backlog spin) and recover once descriptors return.
+    port = free_port(1751)
+    srv = Server(h2srv, ['h2c', port], wrap_limit=12)
+    socks = []
+    try:
+        for _ in range(30):
+            try:
+                socks.append(socket.create_connection(('127.0.0.1', port),
+                                                      timeout=3))
+            except OSError:
+                break
+            time.sleep(0.01)
+        need(len(socks) > 0, 'low-fd test opened no sockets')
+        time.sleep(0.4)
+        base = server_cpu(srv.proc)
+        time.sleep(2.0)
+        used = server_cpu(srv.proc) - base
+        need(used < 0.3,
+             'EMFILE accept backoff busy-spins: %.2fs over 2s' % used)
+        for raw in socks:
+            raw.close()
+        socks = []
+        time.sleep(0.5)
+        c = h2client.H2Client(port)
+        c.request(1, '/hello')
+        c.collect({1}, timeout=5)
+        need(c.body(1) == b'hello\n', 'low-fd server did not recover')
+        c.close()
+        d = h2client.H2Client(port)
+        d.request(1, '/stop')
+        d.collect({1}, timeout=8)
+        d.close()
+        text = srv.finish()
+        need('H2DRAINED' in text and 'H2DONE' in text,
+             'low-fd server did not drain:\n%s' % text)
+        m = parse_metrics(text)
+        need(m['acceptPressure'] >= 1,
+             'acceptPressure was not recorded: %r' % m)
+        need(m['active'] == 0 and m['reservedBytes'] == 0,
+             'low-fd recovery left live admission: %r' % m)
+        print('H2c EMFILE accept-pressure pause/recovery: ok')
+    finally:
+        for raw in socks:
+            raw.close()
         srv.stop()
 
 

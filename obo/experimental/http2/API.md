@@ -350,7 +350,8 @@ users are outside that H2 reservation. Accept batches are capped at 32, and
 `ResourceLimit`/`EMFILE` pauses acceptance with a short backoff instead of
 spinning. When admission is full the listener watch is removed; it is restored
 when a slot becomes available. A permanently readable backlog therefore does
-not wake or burn CPU. A reserved-but-never-slotted connection rolls its
+not wake or burn CPU. EMFILE uses the same watch pause plus a 100 ms backoff,
+reported as `acceptPressure`. A reserved-but-never-slotted connection rolls its
 admission back without changing the live connection counters.
 
 Connection slots are tagged by `(generation, index)` so a stale reactor event
@@ -396,8 +397,11 @@ pub fn isAcceptPressure(code: int): bool
 ```
 
 `metrics` is a snapshot. `active` counts live connection slots and
-`reservedBytes` is the aggregate H2 reservation held by admission. Diagnostic
-counters never control admission. `now()` is the same monotonic/realtime pair
+`reservedBytes` is the aggregate H2 reservation held by admission.
+`acceptPressure` counts EMFILE/ResourceLimit pauses. Diagnostic counters never
+control admission. A stream blocked by a full response window keeps
+`workPending` but does not force an immediate reactor turn; it waits for a
+WINDOW_UPDATE/writability or its response deadline. `now()` is the same monotonic/realtime pair
 the loop uses for deadlines. A normal application loop is:
 
 ```obo

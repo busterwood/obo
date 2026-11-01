@@ -89,7 +89,7 @@ fn serveWith(srv: server::Server, port: int,
          string(m.handlerErrors) + " " + string(m.watchErrors) + " " +
          string(m.handshakeFailures) + " " + string(m.drains) + " " +
          string(m.peakActive) + " " + string(m.active) + " " +
-         string(m.reservedBytes) + "\n")
+         string(m.reservedBytes) + " " + string(m.acceptPressure) + "\n")
     let counts = h2::counts()
     match counts {
         ok(c) {

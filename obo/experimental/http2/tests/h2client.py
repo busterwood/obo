@@ -73,7 +73,8 @@ def request_block(method, path, authority, headers=()):
 
 
 class H2Client:
-    def __init__(self, port=None, timeout=8.0, authority=None, sock=None):
+    def __init__(self, port=None, timeout=8.0, authority=None, sock=None,
+                 auto_window=True):
         if sock is None:
             self.sock = socket.create_connection(('127.0.0.1', port),
                                                  timeout=timeout)
@@ -89,6 +90,9 @@ class H2Client:
         self.goaways = []
         self.frames = []
         self.closed = False
+        self.auto_window = auto_window
+        self.cw = 65535
+        self.sw = {}
         self._deadline = None
         self.sock.sendall(PREFACE + frame(SETTINGS, 0, 0))
         self._wait_server_settings(timeout)
@@ -137,13 +141,21 @@ class H2Client:
         if ftype == DATA:
             if payload:
                 self.bodies.setdefault(sid, bytearray()).extend(payload)
-                self.send(frame(WINDOW_UPDATE, 0, 0,
-                                struct.pack('!I', len(payload))))
-                if sid not in self.ended:
-                    self.send(frame(WINDOW_UPDATE, 0, sid,
+                if self.auto_window:
+                    self.send(frame(WINDOW_UPDATE, 0, 0,
                                     struct.pack('!I', len(payload))))
+                    if sid not in self.ended:
+                        self.send(frame(WINDOW_UPDATE, 0, sid,
+                                        struct.pack('!I', len(payload))))
             if flags & FLAG_END_STREAM:
                 self.ended.add(sid)
+            return
+        if ftype == WINDOW_UPDATE and len(payload) >= 4:
+            inc = struct.unpack('!I', payload[:4])[0] & 0x7fffffff
+            if sid == 0:
+                self.cw += inc
+            else:
+                self.sw[sid] = self.sw.get(sid, 0) + inc
             return
         if ftype == HEADERS:
             self.header_seen.add(sid)
@@ -204,6 +216,42 @@ class H2Client:
                 if not self.send(frame(DATA, f, sid, part)):
                     return False
         return True
+
+    def grant(self, sid, increment):
+        return self.send(frame(WINDOW_UPDATE, 0, sid,
+                               struct.pack('!I', increment)))
+
+    def post_flow_controlled(self, sid, body):
+        self.sw[sid] = 32768
+        if not self.send(frame(HEADERS, FLAG_END_HEADERS, sid,
+                               request_block('POST', '/echo', self.authority))):
+            return False
+        off = 0
+        deadline = time.time() + 10
+        while off < len(body) and time.time() < deadline:
+            while True:
+                r, _, _ = select.select([self.sock], [], [], 0)
+                if not r:
+                    break
+                self._deadline = time.time() + 10
+                fr = self._recv_frame()
+                if fr is None:
+                    return False
+                self._handle(fr)
+            allow = min(self.sw.get(sid, 0), self.cw)
+            if allow <= 0:
+                select.select([self.sock], [], [], 0.02)
+                continue
+            n = min(4096, allow, len(body) - off)
+            last = off + n >= len(body)
+            f = FLAG_END_STREAM if last else 0
+            if not self.send(frame(DATA, f, sid, body[off:off + n])):
+                return False
+            off += n
+            self.sw[sid] -= n
+            self.cw -= n
+            time.sleep(0.001)
+        return off == len(body)
 
     def reset_stream(self, sid, code=8):
         self.send(frame(RST_STREAM, 0, sid, struct.pack('!I', code)))
