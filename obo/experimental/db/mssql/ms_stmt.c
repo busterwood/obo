@@ -443,11 +443,15 @@ int ms_read_cell(ms_stmt *ss, int col, int binary) {
         }
         /* SQL_SUCCESS_WITH_INFO: a truncated chunk. */
         if (mode) {
-            chunk = (ind >= 0 && ind < (SQLLEN)remain) ? (int)ind : remain;
+            /* The binary indicator is the remaining total; a zero or negative
+             * value on a truncation means the buffer was filled. */
+            chunk = (ind > 0 && ind < (SQLLEN)remain) ? (int)ind : remain;
         } else {
             int pos = 0;
             while (pos < remain && c->buf[c->len + pos] != 0xFF) pos++;
-            chunk = pos > 0 ? pos - 1 : remain - 1;
+            /* pos == 0 means the driver wrote no data (a character did not
+             * fit); the guard below grows the buffer and retries. */
+            chunk = pos > 0 ? pos - 1 : 0;
         }
         if (chunk <= 0) {
             /* Some drivers refuse to split a multi-byte character at a small
