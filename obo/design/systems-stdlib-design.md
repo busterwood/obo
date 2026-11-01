@@ -135,7 +135,7 @@ also write the global `rt_entry_sp` (entry.S:110).
   fd tracker and output buffer are global (runtime.c:83–159,330–468).
   `rt_str_inc/dec` use ordinary loads/stores (:417–428). `rt_collect` returns
   immediately (:309–321); collector comments at the file head are historical.
-- [README.md](../../README.md):163–211: 4 GiB default arena, 16 GiB ceiling,
+- [README.md](../../README.md):163–211: 4 GiB default arena, 64 GiB ceiling,
   one-object payload at most 4 GiB minus 32 bytes, separate metadata and native
   memory. mmap reserves virtual address space, not RAM. Free lists retain
   memory; `OBO_STATS` is not an RSS meter.
@@ -1728,7 +1728,7 @@ Core boundary tests required before the relevant phase:
 - RLIMIT_NOFILE tests with a very low soft limit, inherited descriptors above
   1024, standard descriptors initially closed, and exec inheritance checks.
 - RLIMIT_AS and low OBO_HEAP_LIMIT distinguish native ENOMEM, arena reservation
-  failure and managed fatal OOM. Test the 4/16 GiB virtual reservations and
+  failure and managed fatal OOM. Test the 4/64 GiB virtual reservations and
   per-process/native quotas separately. cgroup memory.max/pids.max tests run in
   an available isolated harness; record unavailable facilities, do not modify
   host-wide limits. Record OOM-kill as external termination, not a Result.

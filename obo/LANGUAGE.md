@@ -2540,9 +2540,10 @@ Environment variables:
   garbage rather than as a value that happens to still be there.
 - `OBO_STATS=1` prints the exact live peak and total allocation at exit.
 - `OBO_HEAP_LIMIT` sets the runtime heap arena. The compiled default is 4 GiB
-  and the compiled ceiling is 16 GiB. The value is bytes or bytes with an exact
-  `KiB`, `MiB` or `GiB` suffix, a multiple of 16, at least 64 KiB and at most
-  the ceiling. Invalid or above-ceiling values print
+  and the compiled ceiling is 64 GiB: 2^32 granules of 16 bytes, the full low
+  32-bit handle offset, with the final granule at 0xffffffff. The value is bytes
+  or bytes with an exact `KiB`, `MiB` or `GiB` suffix, a multiple of 16, at
+  least 64 KiB and at most the ceiling. Invalid or above-ceiling values print
   `obo: invalid OBO_HEAP_LIMIT: <value>` and exit 2 before mapping; there is no
   silent clamp. The limit controls the arena, not any single object: one
   allocation's payload remains at most 4 GiB - 32 bytes. `MAP_NORESERVE` means
