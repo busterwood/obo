@@ -440,6 +440,15 @@ u64 rt_deref(u64 hd) {
 
 i64 rt_alive(u64 hd) { return handle_target(hd) != 0; }
 
+#ifdef OBO_HOSTED_EXIT
+/* The hosted-only foreign census callback. The baseline runtime has no such slot and no such code:
+ * host.c registers its per-type counter report here, and rt_finish calls it between the fd and
+ * object censuses (design 3.4). */
+typedef void (*rt_foreign_census_fn)(void);
+static rt_foreign_census_fn foreign_census_fn;
+void rt_set_foreign_census(rt_foreign_census_fn fn) { foreign_census_fn = fn; }
+#endif
+
 /* Normal end of the program: with OBO_CHECK=1, anything still live is a leak. */
 void rt_finish(void) {
     flush();
@@ -463,6 +472,10 @@ void rt_finish(void) {
             sys3(1, 2, (i64)msg, n); OBO_EXIT(8);
         }
     }
+#ifdef OBO_HOSTED_EXIT
+    /* Between the fd census and the object census, exactly as the fd category wins first. */
+    if (leak_check && foreign_census_fn != 0) foreign_census_fn();
+#endif
     if (leak_check && live_owned) {
         char msg[64]; const char *p = "obo: objects leaked: "; int n = 0;
         while (*p) msg[n++] = *p++;
