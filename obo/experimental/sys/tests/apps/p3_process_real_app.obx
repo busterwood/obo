@@ -1,0 +1,543 @@
+// P3 real process contract: spawn, every redirect, pipes, environment policy,
+// anchored cwd, exec failure vs genuine exit 127, wait/poll/reap/detach,
+// process-group termination and watchChild. Runs only inside argv[1].
+module app
+
+import "sysplatform.obx" as platform
+import "sysprocess.obx" as process
+import "sysstream.obx" as stream
+import "sysdir.obx" as dir
+import "sysenv.obx" as env
+import "sysfile.obx" as file
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+
+fn codeOf(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn drain(s: &stream::Stream): string {
+    var out = ""
+    var guard = 0
+    while guard < 20000 {
+        let p = stream::readSome(s, 256)
+        match p {
+            ok(v) {
+                if v == nil { return out }
+                out = out + string(v)
+            }
+            err(m, c) {
+                if c == codeOf(new errors::WouldBlock{}) {
+                    sleepMs(1)
+                } else {
+                    return "ERR:" + m
+                }
+            }
+        }
+        guard += 1
+    }
+    return "TIMEOUT"
+}
+
+fn intText(v: int): string
+
+fn kindText(code: int): string {
+    let k = errors::kind(code)
+    return errors::text(&k)
+}
+
+fn statusText(st: &process::ExitStatus): string {
+    match st {
+        Exited { return "exit:" + intText(st.code) }
+        Signalled {
+            var text = "signal:" + intText(st.signal)
+            if st.coreDumped { text = text + ":core" }
+            return text
+        }
+    }
+}
+
+fn intText(v: int): string {
+    if v == 0 { return "0" }
+    var neg = false
+    var n = v
+    if n < 0 { neg = true; n = 0 - n }
+    var digits = ""
+    while n > 0 {
+        let d = n % 10
+        if d == 0 { digits = "0" + digits }
+        if d == 1 { digits = "1" + digits }
+        if d == 2 { digits = "2" + digits }
+        if d == 3 { digits = "3" + digits }
+        if d == 4 { digits = "4" + digits }
+        if d == 5 { digits = "5" + digits }
+        if d == 6 { digits = "6" + digits }
+        if d == 7 { digits = "7" + digits }
+        if d == 8 { digits = "8" + digits }
+        if d == 9 { digits = "9" + digits }
+        n = n / 10
+    }
+    if neg { return "-" + digits }
+    return digits
+}
+
+fn sh(args: []string, out: process::Redirect, err: process::Redirect,
+      input: process::Redirect, directory: ?dir::Directory,
+      environment: process::EnvPolicy, group: bool): process::Command {
+    let cmd = new process::Command{
+        executable: "/bin/sh"
+        arguments: args
+        environment: environment
+        directory: directory
+        input: input
+        output: out
+        error: err
+        newGroup: group
+    }
+    return cmd
+}
+
+fn shellArgs(script: string): []string {
+    var args = new []string(0)
+    append(args, "/bin/sh")
+    append(args, "-c")
+    append(args, script)
+    return args
+}
+
+fn main() {
+    let args = args()
+    if len(args) < 2 { println("missing-workdir"); return }
+    let workdir = args[1]
+    let o = platform::defaultOptions()
+    let inited = platform::initialize(&o)
+    match inited {
+        ok(v) { println("init=true") }
+        err(m, c) { println("init-failed"); return }
+    }
+    let base = dir::open(workdir)
+    match base {
+        ok(baseDir) {
+            let changed = process::chdir(&baseDir)
+            match changed {
+                ok(v) { println("chdir=true") }
+                err(m, c) { println("chdir=false") }
+            }
+            let here = process::cwd()
+            match here {
+                ok(p) {
+                    if p == workdir { println("cwd=workdir") } else { println("cwd=other") }
+                }
+                err(m, c) { println("cwd=error") }
+            }
+
+            // 1: output pipe, null input, genuine exit 7.
+            let envInherit = new process::EnvInherit{}
+            let cmd1 = sh(shellArgs("printf hello; exit 7"), new process::Pipe{},
+                          new process::Inherit{}, new process::Null{},
+                          nil, envInherit, false)
+            let r1 = process::spawn(&cmd1)
+            match r1 {
+                ok(child) {
+                    let so = process::takeOutput(&child)
+                    match so {
+                        ok(s) {
+                            println("out1=" + drain(&s))
+                            let again = process::takeOutput(&child)
+                            match again {
+                                ok(x) { println("take2=ok") }
+                                err(m, c) { println("take2=" + kindText(c)) }
+                            }
+                            let closedS = stream::close(&s)
+                        }
+                        err(m, c) { println("take1=err") }
+                    }
+                    let st = process::wait(&child)
+                    match st {
+                        ok(v) { println("status1=" + statusText(&v)) }
+                        err(m, c) { println("status1=err") }
+                    }
+                    let st2 = process::wait(&child)
+                    match st2 {
+                        ok(v) { println("status_repeat=" + statusText(&v)) }
+                        err(m, c) { println("status_repeat=err") }
+                    }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("spawn1=err") }
+            }
+            let cc1 = process::closeCommand(&cmd1)
+
+            // 2: separate stdout/stderr pipes.
+            let cmd2 = sh(shellArgs("printf out; printf err >&2"),
+                          new process::Pipe{}, new process::Pipe{},
+                          new process::Inherit{}, nil, new process::EnvInherit{}, false)
+            let r2 = process::spawn(&cmd2)
+            match r2 {
+                ok(child) {
+                    let st = process::wait(&child)
+                    let so = process::takeOutput(&child)
+                    match so { ok(s) { println("out2=" + drain(&s)); let c = stream::close(&s) } err(m,c) { println("out2=err") } }
+                    let se = process::takeError(&child)
+                    match se { ok(s) { println("err2=" + drain(&s)); let c = stream::close(&s) } err(m,c) { println("err2=err") } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("spawn2=err") }
+            }
+            let cc2 = process::closeCommand(&cmd2)
+
+            // 3: MergeError duplicates stdout as stderr.
+            let cmd3 = sh(shellArgs("printf merged >&2"), new process::Pipe{},
+                          new process::MergeError{}, new process::Inherit{}, nil,
+                          new process::EnvInherit{}, false)
+            let r3 = process::spawn(&cmd3)
+            match r3 {
+                ok(child) {
+                    let st = process::wait(&child)
+                    let so = process::takeOutput(&child)
+                    match so { ok(s) { println("merge=" + drain(&s)); let c = stream::close(&s) } err(m,c) { println("merge=err") } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("spawn3=err") }
+            }
+            let cc3 = process::closeCommand(&cmd3)
+
+            // 4: EnvPolicy Inherit vs Explicit.
+            let cmd4 = sh(shellArgs("printf $OBO_P3_INHERIT"), new process::Pipe{},
+                          new process::Inherit{}, new process::Inherit{}, nil,
+                          new process::EnvInherit{}, false)
+            let r4 = process::spawn(&cmd4)
+            match r4 {
+                ok(child) {
+                    let st = process::wait(&child)
+                    let so = process::takeOutput(&child)
+                    match so { ok(s) { println("inherit=" + drain(&s)); let c = stream::close(&s) } err(m,c) { println("inherit=err") } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("spawn4=err") }
+            }
+            let cc4 = process::closeCommand(&cmd4)
+
+            var pairs = new []env::Pair(0)
+            append(pairs, new env::Pair{name: "P3_EXPLICIT", value: "explicit"})
+            let explicitEnv = new env::Environment{entries: pairs}
+            let cmd5 = sh(shellArgs("printf $P3_EXPLICIT"), new process::Pipe{},
+                          new process::Inherit{}, new process::Inherit{}, nil,
+                          new process::EnvExplicit{value: explicitEnv}, false)
+            let r5 = process::spawn(&cmd5)
+            match r5 {
+                ok(child) {
+                    let st = process::wait(&child)
+                    let so = process::takeOutput(&child)
+                    match so { ok(s) { println("explicit=" + drain(&s)); let c = stream::close(&s) } err(m,c) { println("explicit=err") } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("spawn5=err") }
+            }
+            let cc5 = process::closeCommand(&cmd5)
+
+            var emptyPairs = new []env::Pair(0)
+            let emptyEnv = new env::Environment{entries: emptyPairs}
+            let cmdEmpty = sh(shellArgs("printf emptyenv"), new process::Pipe{},
+                              new process::Inherit{}, new process::Inherit{}, nil,
+                              new process::EnvExplicit{value: emptyEnv}, false)
+            let rempty = process::spawn(&cmdEmpty)
+            match rempty {
+                ok(child) {
+                    let st = process::wait(&child)
+                    let so = process::takeOutput(&child)
+                    match so { ok(s) { println("empty_env=" + drain(&s)); let c = stream::close(&s) } err(m,c) { println("empty_env=err") } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("empty_env=spawn_err") }
+            }
+            let ccempty = process::closeCommand(&cmdEmpty)
+
+            // 5: anchored child cwd through Command.directory.
+            let sub = dir::child(&baseDir, "sub")
+            match sub {
+                ok(subDir) {
+                    var pargs = new []string(0)
+                    append(pargs, "/bin/pwd")
+                    let pcmd = new process::Command{
+                        executable: "/bin/pwd"
+                        arguments: pargs
+                        environment: new process::EnvInherit{}
+                        directory: subDir
+                        input: new process::Inherit{}
+                        output: new process::Pipe{}
+                        error: new process::Inherit{}
+                        newGroup: false
+                    }
+                    let pr = process::spawn(&pcmd)
+                    match pr {
+                        ok(child) {
+                            let st = process::wait(&child)
+                            let so = process::takeOutput(&child)
+                            match so {
+                                ok(s) {
+                                    let p = drain(&s)
+                                    if p == workdir + "/sub\n" { println("child_cwd=sub") } else { println("child_cwd=other") }
+                                    let c = stream::close(&s)
+                                }
+                                err(m, c) { println("child_cwd=err") }
+                            }
+                            let cl = process::close(&child)
+                        }
+                        err(m, c) { println("child_cwd=spawn_err") }
+                    }
+                    // A parent-side directory shell in Command.directory is not
+                    // consumed by spawn.
+                    let pcc = process::closeCommand(&pcmd)
+                    match pcc { ok(v) { if v { println("pcmd_close=true") } else { println("pcmd_close=false") } } err(m,c) { println("pcmd_close=err") } }
+                }
+                err(m, c) { println("sub=err") }
+            }
+
+            // 6: exec failure versus genuine exit 127.
+            var noArgs = new []string(0)
+            append(noArgs, "/no/such/p3-executable")
+            let bad = new process::Command{
+                executable: "/no/such/p3-executable"
+                arguments: noArgs
+                environment: new process::EnvInherit{}
+                directory: nil
+                input: new process::Inherit{}
+                output: new process::Inherit{}
+                error: new process::Inherit{}
+                newGroup: false
+            }
+            let br = process::spawn(&bad)
+            match br {
+                ok(child) { println("execfail=ok"); let cl = process::close(&child) }
+                err(m, c) { println("execfail=" + kindText(c)) }
+            }
+            let bcc = process::closeCommand(&bad)
+
+            let cmd127 = sh(shellArgs("exit 127"), new process::Inherit{},
+                            new process::Inherit{}, new process::Inherit{}, nil,
+                            new process::EnvInherit{}, false)
+            let r127 = process::spawn(&cmd127)
+            match r127 {
+                ok(child) {
+                    let st = process::wait(&child)
+                    match st { ok(v) { println("exit127=" + statusText(&v)) } err(m,c) { println("exit127=err") } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("exit127=spawn_err") }
+            }
+            let ccc = process::closeCommand(&cmd127)
+
+            // 7: signalled status uses a library id.
+            let cmds = sh(shellArgs("kill -TERM $$"), new process::Inherit{},
+                          new process::Inherit{}, new process::Inherit{}, nil,
+                          new process::EnvInherit{}, false)
+            let rs = process::spawn(&cmds)
+            match rs {
+                ok(child) {
+                    let st = process::wait(&child)
+                    match st { ok(v) { println("signalled=" + statusText(&v)) } err(m,c) { println("signalled=err") } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("signalled=spawn_err") }
+            }
+            let ccs = process::closeCommand(&cmds)
+
+            // 8: process-group termination only for a created group.
+            let cmpg = sh(shellArgs("sleep 5"), new process::Inherit{},
+                          new process::Inherit{}, new process::Inherit{}, nil,
+                          new process::EnvInherit{}, true)
+            let rpg = process::spawn(&cmpg)
+            match rpg {
+                ok(child) {
+                    let t = process::terminate(&child, false, true)
+                    match t { ok(v) { println("group_term=true") } err(m,c) { println("group_term=err") } }
+                    let st = process::wait(&child)
+                    match st { ok(v) { println("group_status=" + statusText(&v)) } err(m,c) { println("group_status=err") } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("group=spawn_err") }
+            }
+            let ccpg = process::closeCommand(&cmpg)
+
+            let cmpn = sh(shellArgs("sleep 5"), new process::Inherit{},
+                          new process::Inherit{}, new process::Inherit{}, nil,
+                          new process::EnvInherit{}, false)
+            let rpn = process::spawn(&cmpn)
+            match rpn {
+                ok(child) {
+                    let t = process::terminate(&child, false, true)
+                    match t { ok(v) { println("nogroup_term=ok") } err(m,c) { println("nogroup_term=" + kindText(c)) } }
+                    let t2 = process::terminate(&child, true, false)
+                    let st = process::wait(&child)
+                    match st { ok(v) { println("nogroup_status=" + statusText(&v)) } err(m,c) { println("nogroup_status=err") } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("nogroup=spawn_err") }
+            }
+            let ccn = process::closeCommand(&cmpn)
+
+            // 9: detach transfers the obligation and wait reports Closed.
+            let cmpd = sh(shellArgs("exit 0"), new process::Inherit{},
+                          new process::Inherit{}, new process::Inherit{}, nil,
+                          new process::EnvInherit{}, false)
+            let rd = process::spawn(&cmpd)
+            match rd {
+                ok(child) {
+                    let d = process::detach(&child)
+                    match d { ok(v) { println("detach=true") } err(m,c) { println("detach=err") } }
+                    let w = process::wait(&child)
+                    match w { ok(v) { println("detached_wait=ok") } err(m,c) { println("detached_wait=" + kindText(c)) } }
+                    let p = process::pollExit(&child)
+                    match p { ok(v) { println("detached_poll=ok") } err(m,c) { println("detached_poll=" + kindText(c)) } }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("detach=spawn_err") }
+            }
+            let ccd = process::closeCommand(&cmpd)
+
+            // 10: close on a Running child transfers to the reaper.
+            let cmpc = sh(shellArgs("exit 0"), new process::Inherit{},
+                          new process::Inherit{}, new process::Inherit{}, nil,
+                          new process::EnvInherit{}, false)
+            let rc = process::spawn(&cmpc)
+            match rc {
+                ok(child) {
+                    let cl = process::close(&child)
+                    match cl { ok(v) { println("close_running=true") } err(m,c) { println("close_running=err") } }
+                    var reaped = 0
+                    var tries = 0
+                    while reaped == 0 && tries < 5000 {
+                        let n = process::reapChildren()
+                        match n { ok(v) { reaped = v } err(m,c) { reaped = -1 } }
+                        if reaped == 0 { sleepMs(1) }
+                        tries += 1
+                    }
+                    if reaped > 0 { println("reaped=true") } else { println("reaped=false") }
+                }
+                err(m, c) { println("close=spawn_err") }
+            }
+            let ccc2 = process::closeCommand(&cmpc)
+
+            // 11: watchChild at a reactor turn.
+            let cmpw = sh(shellArgs("exit 3"), new process::Inherit{},
+                          new process::Inherit{}, new process::Inherit{}, nil,
+                          new process::EnvInherit{}, false)
+            let rw = process::spawn(&cmpw)
+            match rw {
+                ok(child) {
+                    let rtc = reactor::create(64, 64)
+                    match rtc {
+                        ok(rt) {
+                            let w = process::watchChild(&rt, &child, 77)
+                            match w {
+                                ok(watch) {
+                                    let now = clock::monotonic()
+                                    match now {
+                                        ok(inst) {
+                                            let dur = clock::durationMs(3000)
+                                            match dur {
+                                                ok(d) {
+                                                    let dl = clock::after(&inst, &d)
+                                                    match dl {
+                                                        ok(deadline) {
+                                                            let ev = reactor::wait(&rt, &deadline, 16)
+                                                            match ev {
+                                                                ok(list) {
+                                                                    var seen = false
+                                                                    for i in 0..len(list) {
+                                                                        if list[i].tag == 77 { seen = true }
+                                                                    }
+                                                                    if seen { println("watch_event=true") } else { println("watch_event=false") }
+                                                                }
+                                                                err(m,c) { println("watch_event=err") }
+                                                            }
+                                                        }
+                                                        err(m,c) { println("watch_event=err") }
+                                                    }
+                                                }
+                                                err(m,c) { println("watch_event=err") }
+                                            }
+                                        }
+                                        err(m,c) { println("watch_event=err") }
+                                    }
+                                    let pe = process::pollExit(&child)
+                                    match pe { ok(v) { if v == nil { println("watch_status=nil") } else { println("watch_status=" + statusText(v)) } } err(m,c) { println("watch_status=err") } }
+                                    let rm = reactor::remove(&watch)
+                                }
+                                err(m, c) { println("watch_event=err") }
+                            }
+                            let rc2 = reactor::close(&rt)
+                        }
+                        err(m, c) { println("reactor=err") }
+                    }
+                    let cl = process::close(&child)
+                }
+                err(m, c) { println("watch=spawn_err") }
+            }
+            let ccw = process::closeCommand(&cmpw)
+
+            // 12: chdir is frozen after process work started.
+            let late = process::chdir(&baseDir)
+            match late { ok(v) { println("late_chdir=ok") } err(m,c) { println("late_chdir=" + kindText(c)) } }
+
+            // 13: FromStream is duplicated, not consumed, and closeCommand
+            // releases the command-owned source.
+            let opts = new file::OpenOptions{
+                read: true
+                write: false
+                create: false
+                exclusive: false
+                truncate: false
+                append: false
+                noFollow: false
+                nonblocking: false
+                permissions: 0
+            }
+            let made = file::openAt(&baseDir, "input.txt", &opts)
+            match made {
+                ok(f) {
+                    let conv = file::intoStream(&f)
+                    match conv {
+                        ok(src) {
+                            var catArgs = new []string(0)
+                            append(catArgs, "/bin/cat")
+                            let ccmd = new process::Command{
+                                executable: "/bin/cat"
+                                arguments: catArgs
+                                environment: new process::EnvInherit{}
+                                directory: nil
+                                input: new process::FromStream{source: src}
+                                output: new process::Pipe{}
+                                error: new process::Inherit{}
+                                newGroup: false
+                            }
+                            let cr = process::spawn(&ccmd)
+                            match cr {
+                                ok(child) {
+                                    let st = process::wait(&child)
+                                    let so = process::takeOutput(&child)
+                                    match so { ok(s) { println("fromstream=" + drain(&s)); let c = stream::close(&s) } err(m,c) { println("fromstream=err") } }
+                                    let cl = process::close(&child)
+                                }
+                                err(m, c) { println("fromstream=spawn_err") }
+                            }
+                            let ccc3 = process::closeCommand(&ccmd)
+                            match ccc3 { ok(v) { if v { println("ccmd_close=true") } else { println("ccmd_close=false") } } err(m,c) { println("ccmd_close=err") } }
+                            let again = process::closeCommand(&ccmd)
+                            match again { ok(v) { println("ccmd_close2=false") } err(m,c) { println("ccmd_close2=err") } }
+                        }
+                        err(m, c) { println("fromstream=convert_err") }
+                    }
+                }
+                err(m, c) { println("fromstream=open_err") }
+            }
+
+            let bc = dir::close(&baseDir)
+        }
+        err(m, c) { println("workdir=err") }
+    }
+    let sh = platform::shutdown()
+    match sh { ok(c) { println("counts=" + intText(c.resources) + "," + intText(c.shells)) } err(m,c) { println("shutdown=err") } }
+}

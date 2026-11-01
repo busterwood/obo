@@ -1,0 +1,95 @@
+// P1b fake-only nits: O_CREAT|O_EXCL on an existing directory (including ".")
+// is AlreadyExists, plain O_CREAT is IsDirectory, and the fake "." identity is
+// stable across independent opens, matching the real backend.
+module app
+
+import "sysplatform.obx" as platform
+import "sysfile.obx" as file
+import "sysdir.obx" as dir
+import "sysstat.obx" as stat
+import "syserrors.obx" as errors
+
+fn kindText(code: int): string {
+    let k = errors::kind(code)
+    return errors::text(&k)
+}
+
+fn opts(read: bool, write: bool, create: bool, exclusive: bool): file::OpenOptions {
+    return new file::OpenOptions{
+        read: read
+        write: write
+        create: create
+        exclusive: exclusive
+        truncate: false
+        append: false
+        noFollow: false
+        nonblocking: false
+        permissions: 0
+    }
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let inited = platform::initialize(&o)
+    match inited { ok(v) { println("init=true") } err(m,c) { println("init-failed"); return } }
+    let d0 = dir::open(".")
+    match d0 {
+        ok(d) {
+            let excl = opts(false, true, true, true)
+            let a = file::openBeneath(&d, ".", &excl)
+            match a { ok(v) { println("dot_excl=ok") } err(m,c) { println("dot_excl=" + kindText(c)) } }
+            let plain = opts(false, true, true, false)
+            let b = file::openBeneath(&d, ".", &plain)
+            match b { ok(v) { println("dot_plain=ok") } err(m,c) { println("dot_plain=" + kindText(c)) } }
+            let rd = opts(true, false, false, false)
+            let c = file::openBeneath(&d, ".", &rd)
+            match c {
+                ok(f) {
+                    let md = file::metadata(&f)
+                    match md { ok(m) { println("dot_kind="); println(m.kind) } err(m,c) { println("dot_kind=err") } }
+                    let fc = file::close(&f)
+                }
+                err(m,c) { println("dot_open=" + kindText(c)) }
+            }
+            let dc = dir::close(&d)
+        }
+        err(m,c) { println("dir_failed") }
+    }
+
+    let rd = opts(true, false, false, false)
+    let f1 = file::open(".", &rd)
+    match f1 {
+        ok(a) {
+            let f2 = file::open(".", &rd)
+            match f2 {
+                ok(b) {
+                    let m1 = file::metadata(&a)
+                    let m2 = file::metadata(&b)
+                    var xkind = 0
+                    var xbits = 0
+                    var same = false
+                    var ok1 = false
+                    var ok2 = false
+                    match m1 {
+                        ok(x) { ok1 = true; xkind = x.kind; xbits = x.identity.bits }
+                        err(m,c) { println("m1=err") }
+                    }
+                    match m2 {
+                        ok(y) { ok2 = true; same = xbits == y.identity.bits }
+                        err(m,c) { println("m2=err") }
+                    }
+                    if ok1 && ok2 {
+                        if xkind == stat::KIND_DIR { println("root_kind=dir") } else { println("root_kind=other") }
+                        if same { println("dot_identity=same") } else { println("dot_identity=other") }
+                    }
+                    let c2 = file::close(&b)
+                }
+                err(m,c) { println("f2=" + kindText(c)) }
+            }
+            let c1 = file::close(&a)
+        }
+        err(m,c) { println("f1=" + kindText(c)) }
+    }
+    let sh = platform::shutdown()
+    match sh { ok(c) { println("counts="); println(c.resources); println(c.shells) } err(m,c) { println("shutdown=err") } }
+}

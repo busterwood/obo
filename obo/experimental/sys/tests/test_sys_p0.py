@@ -247,7 +247,7 @@ def main():
 
     # C harnesses first: they need no obo compiler.
     native = cc_compile('native_test', 'native_test.c',
-                        ['sysregistry.c', 'sysadapter_real.c', 'sysnet_real.c'], ['-O2'], tmp)
+                        ['sysregistry.c', 'sysadapter_real.c', 'sysproc_real.c', 'sysnet_real.c'], ['-O2'], tmp)
     fake = cc_compile('fake_test', 'fake_test.c',
                       ['sysregistry.c', 'sysadapter_fake.c', 'sysnet_fake.c'], ['-O2'], tmp)
     for exe, label in ((native, 'native_test'), (fake, 'fake_test')):
@@ -258,7 +258,7 @@ def main():
     # so the sanitizer can map freely).
     san_flags = ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer']
     native_san = cc_compile('native_test_san', 'native_test.c',
-                            ['sysregistry.c', 'sysadapter_real.c', 'sysnet_real.c'], san_flags, tmp)
+                            ['sysregistry.c', 'sysadapter_real.c', 'sysproc_real.c', 'sysnet_real.c'], san_flags, tmp)
     fake_san = cc_compile('fake_test_san', 'fake_test.c',
                           ['sysregistry.c', 'sysadapter_fake.c', 'sysnet_fake.c'], san_flags, tmp)
     env = dict(os.environ, ASAN_OPTIONS='detect_leaks=1')
@@ -268,7 +268,7 @@ def main():
 
     # Bridge microbenchmark (C exact path).
     bench = cc_compile('bench_copy', 'bench_copy.c',
-                       ['sysregistry.c', 'sysadapter_real.c', 'sysnet_real.c'], ['-O2'], tmp)
+                       ['sysregistry.c', 'sysadapter_real.c', 'sysproc_real.c', 'sysnet_real.c'], ['-O2'], tmp)
     bp = must([bench], 'bench_copy')
     print('bridge benchmark: ' + bp.stdout.strip())
     if 'scalar_in=' not in bp.stdout or 'packed_in=' not in bp.stdout:

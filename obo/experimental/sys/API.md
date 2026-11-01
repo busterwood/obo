@@ -1,11 +1,12 @@
-# Experimental sys P0/P1a/P1b/P2 API
+# Experimental sys P0/P1a/P1b/P2/P3 API
 
 Status: **experimental, internal, unstable.** No numeric value below is a
 stable ABI. P1b adds directory mutation, openat2 containment, the atomic
 replacement transaction, RFC3339, environment snapshots and bounded logging.
 P2 adds addresses, sockets, the reactor, waitio and resolution; P2q adds the
-bounded UDP batch, GSO/GRO and datagram-watch surface. P3 and later phases may
-change or replace any of these modules before promotion.
+bounded UDP batch, GSO/GRO and datagram-watch surface; P3 adds process
+supervision, queued signals, cwd and terminal raw-mode ownership. Later phases
+may change or replace any of these modules before promotion.
 
 Common rules:
 
@@ -106,8 +107,10 @@ boolean policy. Defaults: 4096 resources, 8192 shells, 64 MiB native bytes,
 the same policy returns `ok(false)`; a different policy returns `Busy`. Invalid
 fields return `InvalidArgument`. Importing the module performs no native action.
 
-`ignorePipeSignal` is stored for P1a pipe APIs. P0 installs no signal handler
-and exposes no pipe write, so the flag changes no P0 behavior.
+`ignorePipeSignal = true` asks the systems context to ignore SIGPIPE when it
+was not already ignored; `false` preserves the inherited disposition. Child
+spawn always restores the intended child default, and P3 exposes no separate
+pipe-write API.
 
 ### `source` / `requireKind`
 
@@ -335,7 +338,8 @@ backslash/other control bytes and ends with one newline; a message larger than
 `LimitExceeded`. `ReturnWouldBlock` rejects a full queue with `WouldBlock`;
 `DropWithCounter` drops the whole record and reports the cumulative `dropped`
 count. `drain` uses one absolute deadline (or an infinite one), makes short-write
-progress and reports sink errors; `flush` is one immediate drain. `close` is
+progress and reports sink errors; `flush` is one drain attempt and may report
+WouldBlock/short progress rather than promising a complete queue drain. `close` is
 explicit and **discards any queued records not yet drained/flushed**; callers
 that need delivery must drain or flush first and inspect the result. P1b emits a
 realtime timestamp only: monotonic record latency is not part of the line
@@ -843,6 +847,138 @@ loops. No cache, TTL, helper process or reactive resolver is part of P2. The
 fake resolver is a deterministic table (`localhost`, `example.test`,
 `resolve-again.test`, `notfound.test`, `system.test`) plus numeric parsing; it
 performs no NSS/DNS.
+
+## `sysprocess`
+
+```obo
+pub type Child = ref record { pub res: platform::Resource }
+pub type Redirect = closed {
+    Inherit {}
+    Null {}
+    Pipe {}
+    FromStream { source: ?stream::Stream }
+    MergeError {}
+}
+pub type EnvPolicy = closed {
+    EnvInherit {}
+    EnvExplicit { value: env::Environment }
+}
+pub type Command = ref record {
+    pub executable: string
+    pub arguments: []string
+    pub environment: EnvPolicy
+    pub directory: ?dir::Directory
+    pub input: Redirect
+    pub output: Redirect
+    pub error: Redirect
+    pub newGroup: bool
+}
+pub type ExitStatus = closed {
+    Exited { code: int }
+    Signalled { signal: int; coreDumped: bool }
+}
+pub fn spawn(command: &Command): Result[Child]
+pub fn closeCommand(mut command: &Command): Result[bool]
+pub fn takeInput(child: &Child): Result[stream::Stream]
+pub fn takeOutput(child: &Child): Result[stream::Stream]
+pub fn takeError(child: &Child): Result[stream::Stream]
+pub fn pollExit(child: &Child): Result[?ExitStatus]
+pub fn wait(child: &Child): Result[ExitStatus]
+pub fn terminate(child: &Child, force: bool, group: bool): Result[bool]
+pub fn watchChild(r: &reactor::Reactor, child: &Child, tag: int): Result[reactor::Watch]
+pub fn detach(child: &Child): Result[bool]
+pub fn close(child: &Child): Result[bool]
+pub fn reapChildren(): Result[int]
+pub fn cwd(): Result[string]
+pub fn chdir(directory: &dir::Directory): Result[bool]
+```
+
+`EnvPolicy` variants are `EnvInherit`/`EnvExplicit` because a module has one
+closed-variant name scope and `Inherit` is already used by `Redirect`; this is a
+the whole public record. The executable is an explicit pathname; there is no
+shell, PATH search or metacharacter interpretation. Arguments include
+`argv[0]`. `ARG_MAX` and the 4 MiB spawn byte cap are checked before a plan is
+built. Redirects: `Inherit`, `Null`, `Pipe`, `FromStream` (source required,
+duplicated and never consumed) and `MergeError` for `error` only. Parent pipe
+ends are nonblocking, child ends blocking, and each take succeeds at most once.
+
+`spawn` uses posix_spawn when it can express the request and a trusted
+fork/execve path for an anchored directory. The fork child runs only
+async-signal-safe C with preallocated state, resets the signal mask/dispositions,
+uses `fchdir` on the anchored directory, and reports exec failure through a
+CLOEXEC error pipe. A genuine child exit 127 is therefore `Exited{127}` while a
+missing executable is `NotFound`.
+
+`pollExit` is one nonblocking observation (nil while Running), `wait` is one
+blocking `waitpid` (EINTR is `Interrupted`), and the terminal status is cached
+and reaped exactly once. `Signalled.signal` is a library id, never a Linux
+number. `close` on Running transfers the wait obligation to the reaper; it does
+not kill or block. `detach` is the explicit transfer. The reaper runs at
+reactor turns and `reapChildren`; a detached child can be a zombie until the
+next turn. `terminate(group=true)` is accepted only for a group created by this
+module (`newGroup`); no unchecked negative pid or public pid authority exists.
+`watchChild` uses pidfd where available and returns `Unsupported` otherwise.
+
+`cwd` copies the process cwd. `chdir` is startup-only: after spawn or signal
+subscription it returns `Busy`. `closeCommand` retires the command-owned
+directory and FromStream sources, tries every cleanup and returns the first
+failure; repeated calls with nothing left return `ok(false)`. Process
+environment mutation is not exposed.
+
+## `syssignals`
+
+```obo
+pub type SignalSet = ref record { pub bits: int }
+pub type SignalSource = ref record { pub res: platform::Resource }
+pub type Event = ref record { pub signal: int; pub count: int }
+pub const INTERRUPT = 1
+pub const TERMINATE = 2
+pub const HANGUP = 3
+pub const CHILD = 4
+pub const WINDOW_CHANGED = 5
+pub const OTHER = 6
+pub fn empty(): SignalSet
+pub fn add(mut s: &SignalSet, signal: int): Result[bool]
+pub fn remove(mut s: &SignalSet, signal: int): Result[bool]
+pub fn subscribe(set: &SignalSet): Result[SignalSource]
+pub fn watch(r: &reactor::Reactor, source: &SignalSource, tag: int): Result[reactor::Watch]
+pub fn next(source: &SignalSource): Result[?Event]
+pub fn close(source: &SignalSource): Result[bool]
+```
+
+Ids are library values, not Linux signal numbers. `add`/`subscribe` revalidate
+`bits`: an empty set or `OTHER` is `InvalidArgument`, unsupported bits are
+`Range`. SIGKILL/SIGSTOP and synchronous fault signals cannot be represented.
+Linux blocks the selected signals and uses one signalfd; overlapping
+subscriptions are rejected with `Busy` rather than reference counted. `next`
+returns nil when nothing is queued, otherwise one coalesced event; counts are
+notification observations, not exact delivery accounting. `watch` is the typed
+reactor integration. Closing the source restores the saved mask. There is no obo
+handler or C-to-obo callback. Systems-context initialization ignores SIGPIPE
+when it was not already ignored; spawn restores child defaults.
+
+## `systerminal`
+
+```obo
+pub type Terminal = ref record { pub res: platform::Resource }
+pub type Size = ref record { pub rows: int; pub columns: int }
+pub fn openStandard(which: &stream::Standard): Result[Terminal]
+pub fn size(t: &Terminal): Result[Size]
+pub fn enterRaw(t: &Terminal): Result[bool]
+pub fn restore(t: &Terminal): Result[bool]
+pub fn watchResize(r: &reactor::Reactor, t: &Terminal, tag: int): Result[reactor::Watch]
+pub fn duplicate(t: &Terminal): Result[stream::Stream]
+pub fn close(t: &Terminal): Result[bool]
+```
+
+`openStandard` takes an independent CLOEXEC duplicate of process fd 0/1/2; it
+never takes ownership of the standard descriptor or changes the shared open
+file description's flags. `size` and `enterRaw` return `Unsupported` when the
+duplicate is not a tty. `enterRaw` saves the pre-raw termios and is an explicit
+restoration obligation; `restore` is idempotent and `close` restores once.
+`duplicate` returns an independent Stream. `watchResize` uses a module-private
+`WINDOW_CHANGED` signal source; closing the terminal that created it retires the
+source and its watches. No arbitrary ioctl is exposed.
 
 ## `systestres` (P0 fixture, not a future File)
 

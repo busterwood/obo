@@ -1,0 +1,195 @@
+// P3 real signals: signalfd delivery, coalescing, validation, typed reactor
+// watch and mask restoration on close. With argv[1] == "die" the app closes
+// its TERM subscription and must then be terminated by the default action.
+module app
+
+import "sysplatform.obx" as platform
+import "sysprocess.obx" as process
+import "syssignals.obx" as signals
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+
+fn intText(v: int): string {
+    if v == 0 { return "0" }
+    var n = v
+    var neg = false
+    if n < 0 { neg = true; n = 0 - n }
+    var digits = ""
+    while n > 0 {
+        let d = n % 10
+        if d == 0 { digits = "0" + digits }
+        if d == 1 { digits = "1" + digits }
+        if d == 2 { digits = "2" + digits }
+        if d == 3 { digits = "3" + digits }
+        if d == 4 { digits = "4" + digits }
+        if d == 5 { digits = "5" + digits }
+        if d == 6 { digits = "6" + digits }
+        if d == 7 { digits = "7" + digits }
+        if d == 8 { digits = "8" + digits }
+        if d == 9 { digits = "9" + digits }
+        n = n / 10
+    }
+    if neg { return "-" + digits }
+    return digits
+}
+
+fn kindText(code: int): string {
+    let k = errors::kind(code)
+    return errors::text(&k)
+}
+
+fn script(scriptText: string): process::Command {
+    var args = new []string(0)
+    append(args, "/bin/sh")
+    append(args, "-c")
+    append(args, scriptText)
+    let cmd = new process::Command{
+        executable: "/bin/sh"
+        arguments: args
+        environment: new process::EnvInherit{}
+        directory: nil
+        input: new process::Inherit{}
+        output: new process::Inherit{}
+        error: new process::Inherit{}
+        newGroup: false
+    }
+    return cmd
+}
+
+fn runScript(scriptText: string) {
+    let cmd = script(scriptText)
+    let made = process::spawn(&cmd)
+    match made {
+        ok(child) {
+            let st = process::wait(&child)
+            let cl = process::close(&child)
+        }
+        err(m, c) { }
+    }
+    let cc = process::closeCommand(&cmd)
+}
+
+fn main() {
+    let av = args()
+    let o = platform::defaultOptions()
+    let inited = platform::initialize(&o)
+    match inited {
+        ok(v) { println("init=true") }
+        err(m, c) { println("init-failed"); return }
+    }
+    let set = signals::empty()
+    let a1 = signals::add(&set, signals::TERMINATE)
+    match a1 { ok(v) { if v { println("add=true") } else { println("add=false") } } err(m,c) { println("add=err") } }
+    let a2 = signals::add(&set, signals::TERMINATE)
+    match a2 { ok(v) { if v { println("add2=true") } else { println("add2=false") } } err(m,c) { println("add2=err") } }
+    let a3 = signals::add(&set, signals::OTHER)
+    match a3 { ok(v) { println("add_other=ok") } err(m,c) { println("add_other=" + kindText(c)) } }
+    let a4 = signals::add(&set, 7)
+    match a4 { ok(v) { println("add_range=ok") } err(m,c) { println("add_range=" + kindText(c)) } }
+
+    if len(av) > 1 && av[1] == "die" {
+        let src = signals::subscribe(&set)
+        match src {
+            ok(s) {
+                let cl = signals::close(&s)
+                runScript("kill -TERM $PPID; exit 0")
+                sleepMs(2000)
+                println("survived=true")
+            }
+            err(m, c) { println("subscribe=err") }
+        }
+        let sh = platform::shutdown()
+        return
+    }
+
+    let sub = signals::subscribe(&set)
+    match sub {
+        ok(src) {
+            let over = signals::subscribe(&set)
+            match over { ok(v) { println("overlap=ok") } err(m,c) { println("overlap=" + kindText(c)) } }
+            let none = signals::next(&src)
+            match none { ok(v) { if v == nil { println("next_empty=nil") } else { println("next_empty=event") } } err(m,c) { println("next_empty=err") } }
+            // The child blocks TERM in its own default mask? No: spawn resets
+            // child signals, and the parent has TERM blocked in signalfd.
+            runScript("kill -TERM $PPID; exit 0")
+            let first = signals::next(&src)
+            match first {
+                ok(v) {
+                    if v == nil { println("event=nil") } else { println("event=" + intText(v.signal) + "," + intText(v.count)) }
+                }
+                err(m,c) { println("event=err") }
+            }
+            let again = signals::next(&src)
+            match again { ok(v) { if v == nil { println("event2=nil") } else { println("event2=event") } } err(m,c) { println("event2=err") } }
+            let cl = signals::close(&src)
+            match cl { ok(v) { println("sigclose=true") } err(m,c) { println("sigclose=err") } }
+            let cl2 = signals::close(&src)
+            match cl2 { ok(v) { if v { println("sigclose2=true") } else { println("sigclose2=false") } } err(m,c) { println("sigclose2=err") } }
+        }
+        err(m, c) { println("subscribe=" + kindText(c)) }
+    }
+
+    // Typed resize watch on WINDOW_CHANGED.
+    let wset = signals::empty()
+    let wadd = signals::add(&wset, signals::WINDOW_CHANGED)
+    let wsub = signals::subscribe(&wset)
+    match wsub {
+        ok(src) {
+            let rtc = reactor::create(16, 16)
+            match rtc {
+                ok(rt) {
+                    let watch = signals::watch(&rt, &src, 42)
+                    match watch {
+                        ok(w) {
+                            runScript("kill -WINCH $PPID; exit 0")
+                            let now = clock::monotonic()
+                            match now {
+                                ok(inst) {
+                                    let dur = clock::durationMs(3000)
+                                    match dur {
+                                        ok(d) {
+                                            let dl = clock::after(&inst, &d)
+                                            match dl {
+                                                ok(deadline) {
+                                                    let ev = reactor::wait(&rt, &deadline, 8)
+                                                    match ev {
+                                                        ok(list) {
+                                                            var seen = false
+                                                            for i in 0..len(list) { if list[i].tag == 42 { seen = true } }
+                                                            if seen { println("resize_event=true") } else { println("resize_event=false") }
+                                                        }
+                                                        err(m,c) { println("resize_event=err") }
+                                                    }
+                                                }
+                                                err(m,c) { println("resize_event=err") }
+                                            }
+                                        }
+                                        err(m,c) { println("resize_event=err") }
+                                    }
+                                }
+                                err(m,c) { println("resize_event=err") }
+                            }
+                            let rm = reactor::remove(&w)
+                        }
+                        err(m,c) { println("resize_event=err") }
+                    }
+                    let rc = reactor::close(&rt)
+                }
+                err(m,c) { println("resize_event=err") }
+            }
+            let ev2 = signals::next(&src)
+            match ev2 {
+                ok(v) {
+                    if v == nil { println("resize_next=nil") } else { println("resize_next=" + intText(v.signal)) }
+                }
+                err(m,c) { println("resize_next=err") }
+            }
+            let cl = signals::close(&src)
+        }
+        err(m,c) { println("resize_subscribe=" + kindText(c)) }
+    }
+
+    let sh = platform::shutdown()
+    match sh { ok(c) { println("counts=" + intText(c.resources) + "," + intText(c.shells)) } err(m,c) { println("shutdown=err") } }
+}

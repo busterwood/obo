@@ -421,5 +421,6 @@ long sys_adapter_shutdown(void) {
     max_bytes_cfg = 0;
     used_bytes = 0;
     initialized = 0;
+    sys_proc_shutdown();
     return closed;
 }

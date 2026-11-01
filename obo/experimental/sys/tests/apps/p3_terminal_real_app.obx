@@ -1,0 +1,172 @@
+// P3 real terminal contract on a pty. The harness sets the window size and
+// sends SIGWINCH after "waiting"; it also inspects the slave termios while the
+// app is in raw mode. With argv[1] == "notty" the same API reports Unsupported.
+module app
+
+import "sysplatform.obx" as platform
+import "systerminal.obx" as terminal
+import "sysprocess.obx" as process
+import "sysstream.obx" as stream
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+
+fn intText(v: int): string {
+    if v == 0 { return "0" }
+    var n = v
+    var digits = ""
+    while n > 0 {
+        let d = n % 10
+        if d == 0 { digits = "0" + digits }
+        if d == 1 { digits = "1" + digits }
+        if d == 2 { digits = "2" + digits }
+        if d == 3 { digits = "3" + digits }
+        if d == 4 { digits = "4" + digits }
+        if d == 5 { digits = "5" + digits }
+        if d == 6 { digits = "6" + digits }
+        if d == 7 { digits = "7" + digits }
+        if d == 8 { digits = "8" + digits }
+        if d == 9 { digits = "9" + digits }
+        n = n / 10
+    }
+    return digits
+}
+
+fn kindText(code: int): string {
+    let k = errors::kind(code)
+    return errors::text(&k)
+}
+
+fn main() {
+    let av = args()
+    let o = platform::defaultOptions()
+    let inited = platform::initialize(&o)
+    match inited { ok(v) { println("init=true") } err(m,c) { println("init-failed"); return } }
+    let which = new stream::Input{}
+    let opened = terminal::openStandard(&which)
+    match opened {
+        ok(t) {
+            let sz = terminal::size(&t)
+            match sz {
+                ok(v) { println("size=" + intText(v.rows) + "," + intText(v.columns)) }
+                err(m, c) { println("size=" + kindText(c)) }
+            }
+            if len(av) > 1 && av[1] == "notty" {
+                let raw = terminal::enterRaw(&t)
+                match raw { ok(v) { println("raw=ok") } err(m,c) { println("raw=" + kindText(c)) } }
+                let restored = terminal::restore(&t)
+                let cl = terminal::close(&t)
+            } else {
+                // Resize watch. The harness resizes after it sees "waiting".
+                let rtc = reactor::create(16, 16)
+                match rtc {
+                    ok(rt) {
+                        let w = terminal::watchResize(&rt, &t, 5)
+                        match w {
+                            ok(watch) {
+                                var sargs = new []string(0)
+                                append(sargs, "/bin/sh")
+                                append(sargs, "-c")
+                                append(sargs, "sleep 0.2; kill -WINCH $PPID")
+                                let scmd = new process::Command{
+                                    executable: "/bin/sh"
+                                    arguments: sargs
+                                    environment: new process::EnvInherit{}
+                                    directory: nil
+                                    input: new process::Inherit{}
+                                    output: new process::Inherit{}
+                                    error: new process::Inherit{}
+                                    newGroup: false
+                                }
+                                let sigchild = process::spawn(&scmd)
+                                match sigchild {
+                                    ok(sc) {
+                                        let st = process::wait(&sc)
+                                        let cl = process::close(&sc)
+                                    }
+                                    err(m,c) { println("resize_event=sig_spawn_err") }
+                                }
+                                let scc = process::closeCommand(&scmd)
+                                let now = clock::monotonic()
+                                match now {
+                                    ok(inst) {
+                                        let dur = clock::durationMs(3000)
+                                        match dur {
+                                            ok(d) {
+                                                let dl = clock::after(&inst, &d)
+                                                match dl {
+                                                    ok(deadline) {
+                                                        let ev = reactor::wait(&rt, &deadline, 8)
+                                                        match ev {
+                                                            ok(list) {
+                                                                var seen = false
+                                                                for i in 0..len(list) { if list[i].tag == 5 { seen = true } }
+                                                                if seen { println("resize_event=true") } else { println("resize_event=false") }
+                                                            }
+                                                            err(m,c) { println("resize_event=err") }
+                                                        }
+                                                    }
+                                                    err(m,c) { println("resize_event=err") }
+                                                }
+                                            }
+                                            err(m,c) { println("resize_event=err") }
+                                        }
+                                    }
+                                    err(m,c) { println("resize_event=err") }
+                                }
+                                let rm = reactor::remove(&watch)
+                            }
+                            err(m,c) { println("resize_event=" + kindText(c)) }
+                        }
+                        let rc = reactor::close(&rt)
+                    }
+                    err(m,c) { println("resize_event=err") }
+                }
+
+                let raw1 = terminal::enterRaw(&t)
+                match raw1 { ok(v) { if v { println("raw=true") } else { println("raw=false") } } err(m,c) { println("raw=" + kindText(c)) } }
+                println("raw_marker")
+                sleepMs(800)
+                let res1 = terminal::restore(&t)
+                match res1 { ok(v) { if v { println("restore=true") } else { println("restore=false") } } err(m,c) { println("restore=" + kindText(c)) } }
+                let res2 = terminal::restore(&t)
+                match res2 { ok(v) { if v { println("restore2=true") } else { println("restore2=false") } } err(m,c) { println("restore2=err") } }
+
+                let dup = terminal::duplicate(&t)
+                match dup {
+                    ok(s) {
+                        println("dup_ok=true")
+                        let cs = stream::close(&s)
+                    }
+                    err(m,c) { println("dup=" + kindText(c)) }
+                }
+                let tc = terminal::close(&t)
+                match tc { ok(v) { if v { println("term_close=true") } else { println("term_close=false") } } err(m,c) { println("term_close=err") } }
+                let late = terminal::size(&t)
+                match late { ok(v) { println("late_size=ok") } err(m,c) { println("late_size=" + kindText(c)) } }
+            }
+        }
+        err(m, c) { println("open=" + kindText(c)) }
+    }
+
+    let outWhich = new stream::Output{}
+    let outTerm = terminal::openStandard(&outWhich)
+    match outTerm {
+        ok(t) {
+            let cl = terminal::close(&t)
+            println("out_close=true")
+        }
+        err(m,c) { println("out_close=err") }
+    }
+    let errWhich = new stream::Error{}
+    let errTerm = terminal::openStandard(&errWhich)
+    match errTerm {
+        ok(t) {
+            let cl = terminal::close(&t)
+            println("err_close=true")
+        }
+        err(m,c) { println("err_close=err") }
+    }
+    let sh = platform::shutdown()
+    match sh { ok(c) { println("counts=" + intText(c.resources) + "," + intText(c.shells)) } err(m,c) { println("shutdown=err") } }
+}

@@ -1,6 +1,6 @@
-# Experimental systems library P0/P1a/P1b/P2q (`obo/experimental/sys`)
+# Experimental systems library P0/P1a/P1b/P2q/P3 (`obo/experimental/sys`)
 
-Status: **experimental internal P1b/P2q slice. Not a stable API and not
+Status: **experimental internal P3 slice. Not a stable API and not
 authorized for merge/promotion by itself.** P0 proved the resource/error/byte
 boundary; P1a adds owned `File`, anchored `Directory`, metadata snapshots,
 clocks, `getrandom`, concrete streams, bounded buffers and a single-path copy
@@ -12,8 +12,10 @@ cancellation/deadline helpers and blocking numeric/name resolution on the same
 seam. P2q adds the bounded UDP batch extension HTTP/3 needs: `receiveBatch`,
 `sendBatch` with Linux `UDP_SEGMENT` GSO, `UDP_GRO` segment reporting, an
 explicit one-datagram fallback, `watchDatagram`, socket option profiles and the
-QUIC concrete-bind policy. Processes, signals, mappings, terminal raw mode and
-all thread/synchronization kinds are later phases.
+QUIC concrete-bind policy. P3 adds explicit process supervision, queued signal
+delivery and terminal raw-mode/window-size ownership. Mappings, thread and
+synchronization kinds, resolver policy and process environment mutation
+remain later work.
 
 P0 proved the boundary that P1a builds on:
 
@@ -56,13 +58,17 @@ obo/experimental/sys/
   sysreactor.obx                P2 epoll, watches, timers, wake/stop
   syswaitio.obx                 P2 cancellation + absolute-deadline helpers
   sysresolve.obx                P2 blocking numeric/name resolution
+  sysprocess.obx                P3 Child/Command, spawn, wait/reap, cwd/chdir
+  syssignals.obx                P3 SignalSet/SignalSource queued delivery
+  systerminal.obx               P3 terminal duplicate, size and raw mode
   native/
     sysadapter.h                scalar-only exported adapter contract
     sysregistry.{h,c}           separate trusted C registry (does not use cres.*)
     sysadapter_real.c           Linux files/dirs/stat/clock/getrandom + P0 fixtures
+    sysproc_real.c              P3 spawn/exec/wait, signals, terminal
     sysnet_real.c               Linux sockets/epoll/timers/eventfd/getaddrinfo
     sysnet.h                    shared socket object and refcounted half-close state
-    sysadapter_fake.c           scripted fake resources + file/dir/clock fixtures
+    sysadapter_fake.c           scripted fake resources + file/dir/clock + P3
     sysnet_fake.c               in-memory fake sockets/reactor/timers/resolver
     sysnet_fake.h               fake P2 helper surface
     sysfake_internal.h          shared fake handle shape
@@ -334,6 +340,63 @@ crosses the application boundary.
   addresses, connected UDP, `sendmmsg`/`recvmmsg`, edge-triggered readiness and
   a poll reference backend remain deferred.
 
+## P3 surface (experimental)
+
+All P3 shells are concrete records containing only
+`pub res: platform::Resource` (and documented value records). Public fields are
+untrusted and revalidated at every entry. No pid, raw descriptor, termios
+struct, signal number or registry token crosses the boundary.
+
+- `sysprocess::Command` is revalidated as a whole before a spawn plan exists:
+  nonempty NUL-free executable pathname, nonempty argv including `argv[0]`,
+  NUL-free arguments, checked `ARG_MAX`/spawn byte cap, valid `EnvPolicy` and
+  `Redirect` combinations, a live open `Directory`, and non-nil/live
+  `FromStream` sources. There is no shell, PATH search or metacharacter
+  interpretation. `EnvPolicy` variants are spelled `EnvInherit`/`EnvExplicit`
+  because closed variants share one module scope and `Inherit` is already the
+  `Redirect` variant.
+- `spawn` uses posix_spawn when the request has no anchored directory and a
+  trusted fork/execve path otherwise. The fork path preallocates argv/env and
+  descriptors, runs only async-signal-safe C actions after fork, sets an
+  anchored child cwd, resets the signal mask/dispositions, and uses a CLOEXEC
+  error pipe to distinguish exec failure from a genuine exit 127. Redirects are
+  `Inherit`, `Null`, `Pipe`, duplicated `FromStream` (never consumed) and
+  `MergeError` (error only). Parent pipe ends are nonblocking; child ends are
+  blocking. `takeInput`/`takeOutput`/`takeError` transfer each parent pipe end
+  at most once. `closeCommand` closes only the command-owned directory and
+  FromStream sources, tries every cleanup and is idempotent.
+- `sysprocess` wait: `pollExit` is one `WNOHANG` observation, `wait` is one
+  blocking `waitpid` (EINTR is `Interrupted`), the terminal status is cached and
+  reaped exactly once. `Exited.code` is not shifted; `Signalled.signal` is a
+  library id (`INTERRUPT`/`TERMINATE`/`HANGUP`/`CHILD`/`WINDOW_CHANGED`/`OTHER`),
+  never a Linux number. `close` on a Running child transfers the wait
+  obligation to the single-threaded reaper, not kill/blocking wait; `detach` is
+  explicit. The reaper runs at reactor turns and in `reapChildren`, so a
+  detached child may briefly be a zombie. `watchChild` uses pidfd when
+  available. Process-group termination is accepted only for a group created by
+  this module (`newGroup`); an unchecked negative pid is never signalled, and
+  no public pid authority exists.
+- `sysprocess::cwd` snapshots the process cwd. `chdir` is startup-only and
+  returns `Busy` after spawn/signal/terminal state has frozen the systems
+  context. There is no hidden library chdir and no thread-local cwd. Process
+  environment mutation remains absent/`Unsupported`.
+- `syssignals::SignalSet` uses library ids and bit positions, not Linux signal
+  numbers. `add`/`remove`/`subscribe` revalidate the public `bits`; `OTHER` is
+  status-only, empty sets and SIGKILL/SIGSTOP/synchronous faults are
+  unrepresentable. Linux blocks the selected signals and drains one signalfd;
+  overlapping subscriptions are rejected with `Busy`. `next` returns
+  nil when empty or one coalesced `Event{signal,count}`. `watch` is a typed
+  reactor integration. Closing the source restores the saved mask. No obo
+  signal handler or C-to-obo callback exists. Systems-context initialization
+  ignores SIGPIPE if it was not already ignored; spawn restores child defaults.
+- `systerminal` owns an independent CLOEXEC duplicate of 0/1/2 and a saved
+  termios snapshot. `size` and `enterRaw` return `Unsupported` on a non-tty;
+  `enterRaw` is an explicit restoration obligation and `restore`/idempotent
+  `close` restore the saved mode. `duplicate` returns an independent Stream.
+  `watchResize` uses the `WINDOW_CHANGED` signal source, not a second handler;
+  closing the terminal that created the module-private source retires resize
+  watches. No arbitrary ioctl or UI framework is exposed.
+
 ## Error namespace
 
 `syserrors` assigns library codes starting at 10001, separate from positive
@@ -387,11 +450,14 @@ make -C obo obo
 python3 obo/experimental/sys/tests/test_sys_p0.py
 python3 obo/experimental/sys/tests/test_sys_p1a.py
 python3 obo/experimental/sys/tests/test_sys_p1b.py
+python3 obo/experimental/sys/tests/test_sys_p2.py
+python3 obo/experimental/sys/tests/test_sys_p3.py
 # or
 make -C obo sys-p0
 make -C obo sys-p1a
 make -C obo sys-p1b
 make -C obo sys-p2
+make -C obo sys-p3
 ```
 
 The suite builds and runs:
@@ -459,6 +525,27 @@ The P2 suite additionally runs:
   accepted-connection pressure, watch/timer quota pressure and retained
   deadline/progress assertions.
 
+The P3 suite additionally runs:
+
+- a C harness on both adapters for spawn plans, argv/environment blobs, output
+  pipes, exec failure versus genuine exit 127, anchored child cwd, created
+  process groups, signalfd delivery/mask restoration, chdir/cwd and terminal
+  basics, under ASan/UBSan/LSan;
+- a real process contract covering every redirect, Inherit/Explicit policy,
+  pipes and takes, wait/poll/repeat/status decoding, detached and close-on-
+  running transfer, the reactor reaper, watchChild, process groups, chdir
+  freeze and FromStream duplication/cleanup;
+- identical fake process, signal and terminal roots with scripted pipe data,
+  exact exit/signal statuses, coalescing, overlap rejection, raw/restore and
+  resize-watch behavior, plus per-stage faults at plan/spawn/pipe/dup/exec/
+  wait/kill/subscribe/terminal stages;
+- real signal delivery through a child fixture and the default-action
+  restoration check (the die mode must exit by SIGTERM), and a real pty run
+  that verifies window size, raw-mode termios, restoration, duplicate and EOF
+  handling, with a visible skip when `/dev/pts` is unavailable;
+- the deterministic supervisor example in a test temp directory and the P1b
+  fake-only nit checks (`.` identity, `O_CREAT|O_EXCL` on a directory).
+
 The P2q suite additionally runs:
 
 - a C batch harness on both adapters (normal and ASAN/UBSAN/LSan) covering
@@ -485,8 +572,9 @@ obo whole process 2 MiB moved: packed 49.0 MiB/s, scalar 9.5 MiB/s
 
 This package is additive at P2 base commit
 `8cd46f1270454868ef68a2748d4eac28afba2461` (obo 0.13, symbol format 7, ABI 1).
-P0/P1a were separately reviewed; P2 builds on their package without modifying
-the compiler, runtime, ABI or seed. It reuses the existing `experimental/cinterop` build/verify tool and the
+P0/P1a/P1b/P2/P2q were separately reviewed; P3 adds the process, signal and
+terminal modules on that package without modifying the compiler, runtime, ABI
+or seed (base `90bb9de`, obo 0.18, symbol format 11, ABI 1). It reuses the existing `experimental/cinterop` build/verify tool and the
 existing tracked compiler/runtime **without modifying them**. It does not touch
 `experimental/cinterop/toolkit/cres.*`; the P0 registry is separate. Each
 `.cbind` build records hashes for the spec, wrapper sources, adapter sources,
@@ -494,15 +582,16 @@ header, compiler and link inputs in `manifest.json`; those hashes are
 provenance/corruption checks, not signatures. No version, ABI, symbol-format or
 seed value is reserved or changed.
 
-## What P2 is not
+## What P3 is not
 
 See [`LIMITS.md`](LIMITS.md) for the complete list. In short: one process
-context, single-threaded, no finalizers, no raw fd/token exposure, no process/
-signal/mapping API, no production stability, and no version or ABI reservation.
+context, single-threaded, no finalizers, no raw fd/pid/token exposure, no
+mapping API, no production stability, and no version or ABI reservation.
 Anchored names still make no containment claim against concurrent rename/mount
 changes; `openBeneath` covers hostile multi-component paths only where openat2 is
-available. P3 owns process supervision, signals, cwd/resolver policy and
-environment mutation; P4 owns threads/synchronization. Reactive DNS
-(`beginResolve`/`watchResolve`), multicast, general ancillary data beyond UDP
-GSO/GRO, per-datagram `IP_PKTINFO`, edge-triggered readiness and a poll
-reference backend remain deferred.
+available. P3 owns process supervision, signals, cwd and terminal raw mode;
+process environment mutation remains blocked on a coherent environment bridge,
+and resolver policy plus P4/P5 threads/synchronization are separate designs.
+Reactive DNS (`beginResolve`/`watchResolve`), multicast, general ancillary data
+beyond UDP GSO/GRO, per-datagram `IP_PKTINFO`, edge-triggered readiness and a
+poll reference backend remain deferred.

@@ -1,20 +1,22 @@
-# Experimental sys P0/P1a/P1b/P2q limits
+# Experimental sys P0/P1a/P1b/P2q/P3 limits
 
-These limits are part of the P0/P1a/P1b/P2 boundary proof. They are deliberately
+These limits are part of the P0/P1a/P1b/P2/P3 boundary proof. They are deliberately
 explicit rather than hidden behind a stable-looking API.
 
 ## Scope
 
-- **P0, P1a, P1b, P2 and P2q.** P0 provided the identity/error/byte seam; P1a
-  adds owned `File`, anchored `Directory`/`Iterator`, metadata snapshots, clocks,
-  `getrandom`, concrete streams and bounded buffers; P1b adds anchored directory
-  mutation, chmod/sync, rename/link/symlink, the atomic replacement transaction,
-  openat2 containment, RFC3339 text, environment snapshots and bounded logging.
-  P2 adds numeric addresses, TCP/UDP/Unix sockets, an epoll reactor,
-  cancellation/deadline helpers and blocking resolution. P2q adds the bounded
-  UDP batch, GSO/GRO reporting, an explicit one-datagram fallback, datagram
-  watch and the concrete QUIC bind profile. There is still no mapping, process,
-  signal, environment mutation, terminal raw mode or reactive DNS API.
+- **P0, P1a, P1b, P2, P2q and P3.** P0 provided the identity/error/byte seam;
+  P1a adds owned `File`, anchored `Directory`/`Iterator`, metadata snapshots,
+  clocks, `getrandom`, concrete streams and bounded buffers; P1b adds anchored
+  directory mutation, chmod/sync, rename/link/symlink, the atomic replacement
+  transaction, openat2 containment, RFC3339 text, environment snapshots and
+  bounded logging. P2 adds numeric addresses, TCP/UDP/Unix sockets, an epoll
+  reactor, cancellation/deadline helpers and blocking resolution. P2q adds the
+  bounded UDP batch, GSO/GRO reporting, an explicit one-datagram fallback,
+  datagram watch and the concrete QUIC bind profile. P3 adds `spawn`/exec,
+  wait/reap, pipes/redirection, process groups, queued signal delivery, cwd
+  policy and terminal raw-mode ownership. There is still no mapping,
+  environment mutation, reactive DNS API, thread or synchronization kind.
 - **One process context, single thread.** The managed table and C registry are
   process globals. There is no worker context selection, lock, atomic or TSAN
   claim.
@@ -374,6 +376,69 @@ consume readiness batches.
   to observe EMFILE, restored immediately. No database or persistent user data
   is touched.
 
+## P3 process, signal and terminal limits
+
+- **POSIX process authority is deliberately absent.** `Child` hides its pid and
+  every native token. `terminate` accepts a pid only through the registered
+  child and a group only when `newGroup` created it; there is no public pid,
+  kill, waitpid or negative-pid surface. A child is observed through
+  `pollExit`/`wait` or transferred to the module reaper.
+- **Reaping is single-threaded and turn-based.** `pollExit` is `WNOHANG` and
+  `wait` is one blocking waitpid. `close` on a Running child transfers the
+  obligation, never kills and never blocks in a defer. The reaper runs at
+  reactor turns and in `reapChildren`; a detached child can remain a zombie
+  until one of those turns. Applications without a reactor must call
+  `reapChildren` or `wait` themselves. `pidfd` is preferred when the kernel
+  provides it; without it, terminate tracks only owned children and cannot
+  promise pid-reuse immunity for an externally reused number.
+- **Fake process scheduling is scripted.** The fake backend has no real child,
+  pid, pipe fd or kernel signal. Pipe data is supplied by
+  `sysfake_proc_write`/`sysfake_proc_read`, exits by `sysfake_proc_exit`, and a
+  blocking `wait` on a still-Running scripted child returns `WouldBlock`
+  instead of sleeping. This proves state/error/cleanup behavior, not kernel
+  scheduling. Real pty tests use only the local test process and a child
+  fixture; no network is involved.
+- **Signals are queued notifications.** Linux blocks the selected signals and
+  uses one signalfd; there is no obo handler and no C-to-obo callback. Signals
+  coalesce, `Event.count` is an observation and never an exact delivery count,
+  and `OTHER` is status-only. Overlapping subscriptions are rejected with
+  `Busy`; one source owns the saved mask at a time. The mask is per-thread, so
+  this is a single-threaded contract. SIGKILL/SIGSTOP and synchronous faults
+  cannot be represented. Closing a source restores the saved mask; shutdown
+  restores it through the same release path.
+- **SIGPIPE policy is explicit.** Systems-context initialization ignores SIGPIPE
+  if it was not already ignored. This deliberately changes legacy
+  `print`/`println` on a closed pipe from termination to silently dropped
+  output; `Options.ignorePipeSignal = false` keeps the legacy disposition. New
+  pipe writes are not exposed in P3, but spawn restores the child default
+  disposition.
+- **cwd is process-global.** `cwd` snapshots it; `chdir` is startup-only and
+  returns `Busy` once spawn/signal/terminal state has frozen the context. No
+  library operation chdirs behind the caller, and there is no thread-local cwd.
+  Process environment mutation remains **Unsupported** because libc setenv
+  cannot update the runtime's initial-envp view coherently.
+- **Terminal ownership is narrow.** Only a CLOEXEC duplicate of 0/1/2 is owned;
+  the standard descriptors and their shared description flags are untouched.
+  `size`/`enterRaw` return `Unsupported` on a non-tty. Raw mode is an explicit
+  obligation; `restore` and idempotent `close` put the saved termios back. A
+  module-private `WINDOW_CHANGED` source backs `watchResize`; only one terminal
+  owns it at a time and closing that terminal retires resize watches. No
+  arbitrary ioctl or UI framework exists.
+- **Command variants share one name scope.** `EnvPolicy` uses
+  `EnvInherit`/`EnvExplicit` because closed variants cannot repeat
+  `Redirect::Inherit` in the same module. The semantics are the design's
+  Inherit/Explicit policies.
+- **Spawn limits.** Executable/argument text is NUL-free and bounded by
+  `ARG_MAX`, the 4 MiB spawn cap and a 128 KiB per-argument cap. `FromStream` is
+  duplicated into the child and never consumes the command's source. A failed
+  spawn closes both pipe ends and reaps any failed child; the error pipe
+  distinguishes exec failure from a genuine exit 127. `posix_spawn` is used when
+  the request has no anchored directory; the fork/execve path is trusted C only.
+- **No hidden process work.** P3 creates no thread, signal handler returning to
+  obo, background reaper or implicit kill. `shutdown` reports outstanding
+  children as cleanup failures rather than silently blocking, killing or
+  hiding them.
+
 ## Compatibility and provenance
 
 - This package makes **no version, ABI, symbol-format or seed reservation**.
@@ -384,4 +449,6 @@ consume readiness batches.
 - Experimental APIs may change with a migration note. Nothing here is stable;
   P1b adds the practical filesystem/calendar/environment/log surface, and P2
   adds addresses, sockets, the reactor, waitio and blocking resolution on the
-  reviewed P0/P1a seam. P3 and P4 remain deferred.
+  reviewed P0/P1a seam, and P3 adds processes, signals and terminal ownership.
+  Threads and synchronization remain a separate design (P4/P5); process
+  environment mutation and mapping remain deferred.

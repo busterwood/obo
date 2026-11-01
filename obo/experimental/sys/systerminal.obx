@@ -1,0 +1,160 @@
+// Experimental systems library: terminal mode and window-size ownership (P3).
+//
+// Status: experimental P3 slice, unstable. A Terminal owns one independent
+// CLOEXEC duplicate of process fd 0/1/2; it never takes ownership of 0/1/2 and
+// never changes their shared open-file-description flags. The saved termios
+// snapshot belongs to the Terminal. enterRaw is an explicit restoration
+// obligation; close restores once and is idempotent.
+//
+// Window-size changes are delivered through syssignals. watchResize is a typed
+// integration, not a second signal handler. There is exactly one module-private
+// resize source for this process; the terminal that created it retires it on
+// close (later calls create a fresh one). Closing an earlier terminal therefore
+// retires resize watches created through it. No arbitrary ioctl is exposed.
+module systerminal
+
+import "sysplatform.obx" as platform
+import "sysstream.obx" as stream
+import "sysreactor.obx" as reactor
+import "syssignals.obx" as signals
+import "syserrors.obx" as errors
+
+pub type Terminal = ref record { pub res: platform::Resource }
+pub type Size = ref record { pub rows: int; pub columns: int }
+
+var resizeSource: ?signals::SignalSource = nil
+var resizeOwner: int = 0
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+fn busyCode(): int { return libCode(new errors::Busy{}) }
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+
+fn selector(which: &stream::Standard): int {
+    match which {
+        Input { return platform::_STANDARD_INPUT }
+        Output { return platform::_STANDARD_OUTPUT }
+        Error { return platform::_STANDARD_ERROR }
+    }
+}
+
+pub fn openStandard(which: &stream::Standard): Result[Terminal] {
+    let token = try platform::_terminalOpen(selector(which))
+    let r = try platform::_adoptToken(platform::KIND_TERMINAL, token)
+    return ok(new Terminal{res: r})
+}
+
+pub fn size(t: &Terminal): Result[Size] {
+    let token = try platform::_tokenHandle(handle(t.res), platform::KIND_TERMINAL)
+    let packed = try platform::_terminalSize(token)
+    if packed < 0 {
+        return err("terminal size packet is malformed", systemFailure())
+    }
+    let rows = packed / 4294967296
+    let columns = packed - (rows * 4294967296)
+    if rows < 0 || rows > 65535 || columns < 0 || columns > 65535 {
+        return err("terminal size is outside the representable range",
+                   systemFailure())
+    }
+    return ok(new Size{rows: rows, columns: columns})
+}
+
+pub fn enterRaw(t: &Terminal): Result[bool] {
+    let token = try platform::_tokenHandle(handle(t.res), platform::KIND_TERMINAL)
+    let changed = try platform::_terminalRaw(token)
+    if changed == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn restore(t: &Terminal): Result[bool] {
+    let token = try platform::_tokenHandle(handle(t.res), platform::KIND_TERMINAL)
+    let changed = try platform::_terminalRestore(token)
+    if changed == 1 { return ok(true) }
+    return ok(false)
+}
+
+fn validResizeSource(s: ?signals::SignalSource): ?signals::SignalSource {
+    if s == nil { return s }
+    let held: signals::SignalSource = s
+    let check = platform::_tokenHandle(handle(held.res),
+                                       platform::KIND_SIGNAL_SOURCE)
+    match check {
+        ok(token) {
+            let back: ?signals::SignalSource = held
+            return back
+        }
+        err(m, c) {
+            let none: ?signals::SignalSource = nil
+            return none
+        }
+    }
+}
+
+pub fn watchResize(r: &reactor::Reactor, t: &Terminal,
+                   tag: int): Result[reactor::Watch] {
+    try platform::_tokenHandle(handle(t.res), platform::KIND_TERMINAL)
+    // A retained source can belong to a retired systems context. Drop it
+    // before reuse so a new context gets a fresh signalfd.
+    resizeSource = validResizeSource(take(resizeSource))
+    if resizeSource == nil {
+        resizeOwner = 0
+    }
+    if resizeSource == nil {
+        let set = signals::empty()
+        let added = try signals::add(&set, signals::WINDOW_CHANGED)
+        if !added {
+            return err("window-change signal could not be added", invalidArgument())
+        }
+        let made = signals::subscribe(&set)
+        match made {
+            ok(s) {
+                resizeSource = s
+                resizeOwner = t.res.reserved
+            }
+            err(m, c) {
+                if c == libCode(new errors::Busy{}) {
+                    return err("a signal subscription already exists", busyCode())
+                }
+                return err(m, c)
+            }
+        }
+    }
+    let held = take(resizeSource)
+    if held == nil {
+        return err("resize source disappeared", systemFailure())
+    }
+    let source: signals::SignalSource = held
+    let result = signals::watch(r, &source, tag)
+    var back: ?signals::SignalSource = source
+    resizeSource = back
+    return result
+}
+
+pub fn duplicate(t: &Terminal): Result[stream::Stream] {
+    let token = try platform::_tokenHandle(handle(t.res), platform::KIND_TERMINAL)
+    let dup = try platform::_terminalDup(token)
+    let r = try platform::_adoptToken(platform::KIND_STREAM, dup)
+    return ok(new stream::Stream{res: r})
+}
+
+fn closeResizeSource(s: ?signals::SignalSource): Result[bool] {
+    if s == nil { return ok(false) }
+    let source: signals::SignalSource = s
+    return signals::close(&source)
+}
+
+pub fn close(t: &Terminal): Result[bool] {
+    let owner = resizeOwner
+    let hint = t.res.reserved
+    let retired = try platform::_closeHandle(handle(t.res),
+                                             platform::KIND_TERMINAL)
+    if owner != 0 && owner == hint && resizeSource != nil {
+        let held = take(resizeSource)
+        resizeOwner = 0
+        let ignored = closeResizeSource(held)
+    }
+    return ok(retired)
+}
