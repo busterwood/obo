@@ -30,7 +30,7 @@ comparison, not as portable constants.
 * References: GNU coreutils 9.4. The pinned eza v0.23.3 reference was absent
   from `PATH`, so its row was skipped.
 * Compiler: `obo 0.14 sym-format 7 abi 1`, 655,361 bytes, sha256
-  `63437c3c…`; the promoted seed is the same image. The benchmark programs and
+  `d7b0c755…`; the promoted seed is the same image. The benchmark programs and
   the `cat`, `wc`, `sort` and `eza` tools below were built from main `1db9995`
   by the benchmark runner; `head` and `tail` were built from the same tree with
   `make -C obo tools`.
@@ -125,7 +125,7 @@ text/data.
 | seed compiler | 655,361 |
 
 The compiler is the promoted 0.14 fixed point: stage 2 and stage 3 are the
-same 655,361-byte image, sha256 `63437c3c…`, and `seed/obo` is that image. The
+same 655,361-byte image, sha256 `d7b0c755…`, and `seed/obo` is that image. The
 runner built the benchmark programs and the `cat`, `wc`, `sort` and `eza`
 tools from the same tree; `head` and `tail` are from `make -C obo tools`. The
 eza binary's sha256 is `4d30009f…`. Every obo binary is freestanding and
@@ -171,15 +171,15 @@ input, and there is no external merge.
 | Metric | Value |
 |---|---:|
 | Self-compile wall time | 0.195 s (5 runs, median; range 0.194-0.203 s) |
-| Live peak compiling itself | 2,238,928 bytes |
-| Total allocated | 49,850,816 bytes |
+| Live peak compiling itself | 2,239,264 bytes |
+| Total allocated | 49,859,376 bytes |
 | Maximum resident set | 4,352 KB |
-| Live-memory budget | 2,500,000 bytes (261,072 spare) |
-| Compiler size | 655,361 bytes, sha256 `63437c3c…` |
+| Live-memory budget | 2,500,000 bytes (260,736 spare) |
+| Compiler size | 655,361 bytes, sha256 `d7b0c755…` |
 
 The direct self-compile was run from `obo/` as
 `OBO_STATS=1 ./obo src/obo.obo -o /tmp/self.obo --rt .`; the port comparison
-peaks at 2,239,056 bytes. The live peak varies by a few hundred bytes with the
+peaks at 2,239,392 bytes. The live peak varies by a few hundred bytes with the
 compiler source path. The 0.195 s median is essentially unchanged from 0.201 s
 on 0.13 (within run-to-run noise on this host). Leaks are caught separately by
 the port gate's leak check.

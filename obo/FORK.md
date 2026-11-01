@@ -6246,7 +6246,7 @@ The stale-version mutant pattern in `mutate_fork` moved from 0.11 to 0.12.
 
 **Status: reviewed, merged and promoted on main.** The branch was based on
 released `0.13` main `618cc47b21c75d1ad498a048d302fead43b1b4b5`; the promoted
-0.14 `seed/obo` is the same image (sha256 `63437c3c…`). The approved design is
+0.14 `seed/obo` is the same image (sha256 `d7b0c755…`). The approved design is
 `design/decimal-text-api-design.md`; the database boundary design is unchanged.
 
 **Identity and ABI.** `OBO_VERSION = "0.14"`, `SYM_FORMAT = 7`, `SYM_ABI = 1`.
@@ -6281,10 +6281,10 @@ Malformed accessor backing bits trap with diagnostic 43 and exit 10. The
 freestanding runtime adds no libc/libgcc or float import; `runtime_text.bin` is
 59,776 bytes and `runtime_data.bin` 67,360.
 
-**Gates (this worktree).** `run_fork` **1,756 passed**; default
-`port_compare` **1,744/1,744**; `OBO_REF=obo/seed/obo` **1,549/1,549**
+**Gates (this worktree).** `run_fork` **1,757 passed**; default
+`port_compare` **1,745/1,745**; `OBO_REF=obo/seed/obo` **1,550/1,550**
 against the promoted 0.14 seed; the 0.13 seed compares **1,535/1,535** because
-the six new run/error files are skipped at `(0,14)`; `port_test` **604/604**;
+the six new run/error files are skipped at `(0,14)`; `port_test` **605/605**;
 `module_test` **142** (141 + `modules/run/decimal_text`); `sym_test` **52/52**;
 `float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **29/29**;
 `stdlib` **16/16**; `tools` **509 passed**; cinterop, DB-adapter and systems P0
@@ -6294,7 +6294,7 @@ text compiler/core/entry catalog lives there rather than in the shared
 `mutate_fork`/`mutate_port` catalogs) validates an unmutated baseline first and
 catches **64/64** (compiler dispatch/request, core text semantics, allocator,
 entry slots 73-78); `mutate_fork` is **694 caught + 31 equivalent of 725**;
-`mutate_port` is **540/540**. Self-compile live peak is 2,238,928 bytes direct and 2,239,056 in the port
+`mutate_port` is **540/540**. Self-compile live peak is 2,239,264 bytes direct and 2,239,392 in the port
 comparison, both below 2,500,000; the empty-array savings oracle is 48,192
 bytes, above 30,000.
 
@@ -6303,3 +6303,17 @@ only their `compiler` version line from 0.13 to 0.14 (body hashes unchanged);
 `tests/modules/sym/compiler/expect` now names 0.14. The private
 `decimal_text_oracle.py::parse_text`/`build_text_cases` and
 `dec24_text.c/h` are unchanged; the strict public model lives beside them.
+
+### Result[bool] codegen fix (0.14 patch)
+
+A comparison is lowered as condition flags. `ok(comparison)` allocated the
+Result cell before materialising the flags, and `RT_ALLOC_RECORD` clobbered
+them, so `fn g(x: int): Result[bool] { return ok(x == 1) }` returned false.
+The fix loads a `cond` payload before the allocation; local-then-ok was already
+correct. No ownership, effect, version, format or ABI rule changed. The
+regression is `tests/run/result_bool.obx` (all six operators, int/byte,
+direct/local, short-circuit, nested `Result`, methods, fields and arrays).
+The seed was rebuilt and promoted as the same 0.14 identity
+(`d7b0c755…`); the temporary `SEED_BUG_SKIP` was removed once the seed carried
+the fix. Gates after promotion: `run_fork` 1,757; `port_compare` 1,745/1,745;
+seed 1,550/1,550; `port_test` 605/605; fixed point and hello byte-identical.

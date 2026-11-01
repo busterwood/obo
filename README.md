@@ -20,7 +20,7 @@ measurements.
 ## Current state (31 October 2026)
 
 The released compiler is **obo 0.14, symbol format 7, ABI 1** (655,361 bytes,
-sha256 `63437c3c…`), with the decimal text API, private-by-default record
+sha256 `d7b0c755…`), with the decimal text API, private-by-default record
 fields, exact 24-byte decimals, Stage B capture lists, the HTML escaping
 library and the configurable heap runtime. `seed/obo` is the promoted **0.14**
 image (same size and hash). The 0.13 seed (647,169 bytes, `4ec4e0d6…`) built
@@ -81,17 +81,17 @@ field visibility is 0.13.
 | Current metric | Value |
 |---|---:|
 | Compiler source | 14,813 lines, 559,468 bytes |
-| Compiler (`--version`) | 655,361 bytes, sha256 `63437c3c…`, `obo 0.14`, sym-format 7, abi 1 |
-| Seed (`--version`) | promoted obo 0.14: 655,361 bytes, sha256 `63437c3c…`, sym-format 7, abi 1; the 0.13 seed (647,169 bytes, `4ec4e0d6…`) built this image once; the 0.12 seed (643,073 bytes, `d98d6b5f…`) and the 0.11 seed (585,729 bytes, `01fa9ed3…`) also build it |
-| Self-host fixed point | stage 2 == stage 3 == compiler, 655,361 bytes, `63437c3c…`; the 0.11, 0.12 and 0.13 seeds build this image from source, and the promoted 0.14 seed reproduces it |
+| Compiler (`--version`) | 655,361 bytes, sha256 `d7b0c755…`, `obo 0.14`, sym-format 7, abi 1 |
+| Seed (`--version`) | promoted obo 0.14: 655,361 bytes, sha256 `d7b0c755…`, sym-format 7, abi 1; the 0.13 seed (647,169 bytes, `4ec4e0d6…`) built this image once; the 0.12 seed (643,073 bytes, `d98d6b5f…`) and the 0.11 seed (585,729 bytes, `01fa9ed3…`) also build it |
+| Self-host fixed point | stage 2 == stage 3 == compiler, 655,361 bytes, `d7b0c755…`; the 0.11, 0.12 and 0.13 seeds build this image from source, and the promoted 0.14 seed reproduces it |
 | Self-compile wall time | 0.195 s (5 runs, median; range 0.194-0.203 s; host-dependent, measured 31 October 2026) |
-| Self-compile live peak | 2,238,928 bytes direct; 2,239,056 bytes port comparison (budget 2,500,000) |
-| Total allocated | 49,850,816 bytes direct; 49,852,144 bytes port comparison |
+| Self-compile live peak | 2,239,264 bytes direct; 2,239,392 bytes port comparison (budget 2,500,000) |
+| Total allocated | 49,859,376 bytes direct; 49,860,704 bytes port comparison |
 | Maximum resident set | 4,352 KB (measured 31 October 2026) |
-| Live-memory budget | 2,500,000 bytes: 261,072 spare direct / 260,944 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 48,192) |
-| obo suite | 1,756 `run_fork` tests; 142 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 604/604 with 10 encoder groups; `port_compare` 1,744/1,744 default; seed comparisons 1,549/1,549 against the promoted 0.14 seed, 1,535/1,535 against 0.13 and 0.12, and 1,477/1,477 against 0.11; 71 doc examples; 29/29 import checks; 16/16 stdlib roots |
+| Live-memory budget | 2,500,000 bytes: 260,736 spare direct / 260,608 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 48,192) |
+| obo suite | 1,757 `run_fork` tests; 142 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 605/605 with 10 encoder groups; `port_compare` 1,745/1,745 default; seed comparisons 1,550/1,550 against the promoted 0.14 seed, 1,535/1,535 against 0.13 and 0.12, and 1,477/1,477 against 0.11; 71 doc examples; 29/29 import checks; 16/16 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
-| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.14) is 1,549/1,549; the 0.13 and 0.12 seeds are 1,535/1,535 and the released 0.11 seed is 1,477/1,477; the default (self) comparison is 1,744/1,744 |
+| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.14) is 1,550/1,550; the 0.13 and 0.12 seeds are 1,535/1,535 and the released 0.11 seed is 1,477/1,477; the default (self) comparison is 1,745/1,745 |
 | Mutation gates | `mutate_fork` 694/725 caught + 31 equivalent, 0 missed/stale/broken; `mutate_port` 540/540 (5 reader/writer mutants exercised only by `sym_test` are judged by `mutate_fork`); `mutate_meta` 71/82 caught + 11 equivalent; `mutate_decimal` 64/64 with an explicit baseline; `mutate_io` 36/36 (including the self-host memory oracle) |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 86,017; wc 90,113; sort 114,689; head 86,017; tail 98,305 bytes (static, runtime included) |
@@ -101,9 +101,9 @@ field visibility is 0.13.
 | Minimal static executable | 32,769 bytes (runtime included) |
 
 The compiler budget is 2,500,000 bytes live, with the separate 30,000-byte
-empty-array oracle unchanged. The 0.14 line peaks at 2,238,928 bytes in direct self-compiles and
-2,239,056 in the port comparison: 261,072 and 260,944 bytes spare. Total
-allocation is 49,850,816 bytes direct and 49,852,144 bytes in the port comparison. No check was
+empty-array oracle unchanged. The 0.14 line peaks at 2,239,264 bytes in direct self-compiles and
+2,239,392 in the port comparison: 260,736 and 260,608 bytes spare. Total
+allocation is 49,859,376 bytes direct and 49,860,704 bytes in the port comparison. No check was
 weakened. The live peak varies by a few hundred bytes with the source path and
 total allocation by about 2.8 KB. The historical lambda release budget remains
 2,000,000 in its own record. The 0.14 release is merged and promoted on main;
@@ -177,7 +177,7 @@ sample is historical and lives in [HISTORY.md](HISTORY.md).
 | `sort -n`, 1,000,000 lines | 196.6 ms | GNU 476.7 ms (2.43x slower); Python 495.1 ms (2.52x slower) |
 | `eza`, 10,000 names | 29.8 ms | Python 16.1 ms and GNU `ls` 6.42 ms are faster; pinned eza row skipped |
 
-The compiler is the 655,361-byte 0.14 fixed point (sha256 `63437c3c…`);
+The compiler is the 655,361-byte 0.14 fixed point (sha256 `d7b0c755…`);
 `seed/obo` is the same image. The tools are cat 86,017, wc 90,113, sort
 114,689, head 86,017 and tail 98,305 bytes; eza is 262,145 bytes. Every obo
 binary is freestanding and static, with the runtime included. The benchmark

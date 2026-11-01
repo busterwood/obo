@@ -166,7 +166,7 @@ total: 78.9 s on this host; the numbers are host-dependent.
 The obo-side binaries used for these medians were built from main `1db9995`:
 cat 86,017, wc 90,113, sort 114,689, head 86,017, tail 98,305, eza 262,145
 (sha256 `4d30009f…`), and the four bench programs 73,729 each. The compiler is
-the promoted 0.14 fixed point (655,361 bytes, sha256 `63437c3c…`); stage 2 and
+the promoted 0.14 fixed point (655,361 bytes, sha256 `d7b0c755…`); stage 2 and
 stage 3 match, and `seed/obo` is that image. The pinned eza reference was
 absent, so its timing row was skipped rather than substituted. The earlier
 0.5 / 0.6 sample is preserved in [`HISTORY.md`](../../../HISTORY.md).
