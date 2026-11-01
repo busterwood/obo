@@ -717,7 +717,7 @@ MODULE_MUTANTS = {
     "modules: import paths need not end in .obx": ("    if !endsWith(raw, \".obx\") { errorAt(\"import paths must end in .obx\", iline, icol) }\n    next()",
                                                    "    if false { errorAt(\"import paths must end in .obx\", iline, icol) }\n    next()"),
     "modules: -I ignored": ("        for k in 0..len(incDirs) { append(cands, joinDirPath(incDirs[k], raw)) }\n", ""),
-    "modules: module globals share one slot": ("        gsym.offset = GLOBAL_BASE + gsize", "        gsym.offset = GLOBAL_BASE"),
+    "modules: module globals share one slot": ("    s.offset = GLOBAL_BASE + gsize\n", "    s.offset = GLOBAL_BASE\n"),
     "modules: T_COLONCOLON is 66": ("const T_COLONCOLON = 67", "const T_COLONCOLON = 66"),
     "modules: token names lack ::": ("try :: float decimal /= %= `\"", "try float decimal /= %= `\""),
     "modules: pre-scan forgets the :: of a qualified literal": ("""        } else if c == ':' {

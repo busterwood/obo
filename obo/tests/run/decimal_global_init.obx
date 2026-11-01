@@ -1,0 +1,36 @@
+// Decimal global initializers that need several live temporaries, and calls whose bodies need their own
+// (0.16): each initializer's temporaries are hidden global slots, so nested and call-carrying expressions
+// must not share one. The values are checked by hand: g1 = 3.75 * (4.0 - 21.0), g2 = 11.5 + 9.00 - 21.0,
+// g4 = 21.0 * 5.5 + 0.75.
+
+type R = ref record { d: decimal }
+var a = new R{d: 1.5}
+var b = new R{d: 2.25}
+var c = new R{d: 4.0}
+var base = 10.0
+
+fn f(): decimal {
+    var t = base + 0.5
+    return t * 2.0
+}
+
+fn g(x: decimal): decimal { return x + base }
+
+var g1 = (a.d + b.d) * (c.d - f())
+var g2 = g(a.d) + (b.d * c.d) - f()
+var g4 = f() * (a.d + c.d) + (b.d - a.d)
+
+// A Result-returning decimal builtin in a global initializer: there is no frame, so the builtin's status
+// word and its result both need a hidden global slot. Before the fix the status was stored at rbp+0 and the
+// program died on its first instruction. An owned Result global cannot be moved out, so the values are not
+// printed: building them cleanly, and freeing them at exit under OBO_CHECK=1, is the check.
+var q1: Result[decimal] = decimal::div(1.0, 3.0, 4, HALF_AWAY)
+var q2: Result[decimal] = decimal::quantize(1.234, 2, HALF_EVEN)
+var q3: Result[int] = decimal::toInt(7.5, HALF_AWAY)
+var q4: Result[decimal] = decimal::check(1.5, 5, 2)
+
+fn main() {
+    println(g1, " ", g2, " ", g4)                 // expect: -63.7500 -0.500 116.250
+    println(a.d, " ", b.d, " ", c.d, " ", base)   // expect: 1.5 2.25 4.0 10.0
+    println("built")                              // expect: built
+}

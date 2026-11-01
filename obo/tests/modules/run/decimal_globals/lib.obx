@@ -1,0 +1,29 @@
+module lib
+
+// Public decimal globals and constants (0.16). The importer sees the constants and the globals as
+// .sym lines; the private constant and global never leave this module. Initializers run in import
+// order: lib's before main's.
+
+pub const RATE = 0.0825
+pub const NEG = -1.5
+pub const NEG0 = -0.00
+const HIDDEN = 2.5
+
+fn mark(d: decimal): decimal { return d * 2.0 }
+
+pub var total: decimal
+pub var base = 10.25
+var cache: decimal
+pub var start = mark(1.5)                      // 3.00, from a call in an initializer
+
+pub fn addTotal(d: decimal) {
+    total += d
+    cache = total
+}
+
+pub fn bumpBase(): decimal {
+    base = base * 2.0
+    return base
+}
+
+pub fn hidden(): decimal { return HIDDEN + cache }

@@ -49,8 +49,3 @@ fn main() {
 fn main() {
     let r = new In{a: 1}  // error: cannot use int as decimal
 }
-
-// === a decimal value in a global record initializer has no frame to live in
-type G = ref record { d: decimal; n: int }
-var gr = new G{d: 1.5, n: 0}  // error: a decimal value in a global initializer is not supported yet
-fn main() {}

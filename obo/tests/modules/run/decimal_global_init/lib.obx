@@ -1,0 +1,11 @@
+module lib
+
+pub type R = ref record { pub d: decimal }
+
+pub fn scale(x: decimal): decimal {
+    var t = x * 2.0
+    return t + 0.25
+}
+
+pub var lv = scale(1.25) * 2.0 + 0.5
+pub var lt = new R{d: scale(0.5) + lv}

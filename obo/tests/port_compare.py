@@ -294,6 +294,21 @@ SEED_FILE_MIN = {
     # Decimal record fields are 0.16: the 0.15 seed refuses a decimal field.
     os.path.join(FORK, 'tests', 'run', 'decimal_fields.obx'): (0, 16),
     os.path.join(FORK, 'tests', 'errors', 'decimal_fields.obx'): (0, 16),
+    # Arrays of decimal are 0.16: the 0.15 seed refuses []decimal.
+    os.path.join(FORK, 'tests', 'run', 'decimal_operand_order.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'run', 'decimal_array_calls.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'run', 'decimal_array_elements.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'run', 'decimal_array_shapes.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'run', 'decimal_array_sizes.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'run', 'decimal_array_trap_negative.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'run', 'decimal_array_trap_read.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'run', 'decimal_array_trap_write.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'errors', 'decimal_arrays.obx'): (0, 16),
+    # Decimal globals and constants are 0.16: the 0.15 seed refuses both.
+    os.path.join(FORK, 'tests', 'run', 'decimal_globals.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'run', 'decimal_global_init.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'run', 'decimal_consts.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'errors', 'decimal_globals.obx'): (0, 16),
     # Compiler-known template literals are 0.15; the 0.14 seed cannot parse a
     # backtick tag or the template-domain types.
     os.path.join(FORK, 'tests', 'run', 'template_sql.obx'): (0, 15),

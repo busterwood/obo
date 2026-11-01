@@ -38,14 +38,6 @@ fn main() { let x = 1.0 + 1 }  // error: cannot mix decimal with int; convert ex
 // === decimal does not compare with int
 fn main() { println(1.0 == 1) }  // error: cannot compare decimal with int; convert explicitly
 
-// === decimal globals are not v1
-var g: decimal = 1.0  // error: decimal globals are not supported in v1
-fn main() {}
-
-// === decimal constants are not v1
-const C = 1.0  // error: decimal constants are not supported in v1
-fn main() {}
-
 // === optional decimal is not representable
 fn main() { let d: ?decimal = nil }  // error: only reference types can be optional, not decimal
 

@@ -2634,6 +2634,95 @@ def decimal_arrays_sym():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def dec_hex(lo, hi, packed):
+    """The 48 lowercase hex digits of a decimal constant: its 24 value bytes in memory order, each word
+    little-endian (the same bytes the compiler writes, computed here from the words alone)."""
+    return ''.join('%02x' % ((w & 0xFFFFFFFFFFFFFFFF) >> (8 * i) & 255)
+                   for w in (lo, hi, packed) for i in range(8))
+
+
+def decimal_globals_sym():
+    '''D3: decimal globals and constants in a .sym. A public constant is `const NAME: decimal = hex "<48>"`
+    (the 24 value bytes in memory order, from the three words) and a public global is `var NAME: decimal`.
+    The file re-emits byte-identically, a source-less check of main writes the same main.sym as the full
+    build, and each malformed constant is a symbol-file error.'''
+    src = os.path.join(HERE, 'modules', 'run', 'decimal_globals')
+    files = {}
+    for name in ('main.obx', 'lib.obx'):
+        with open(os.path.join(src, name)) as f:
+            files[name] = f.read()
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'prog')), 'full build of the decimal-global tree')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        rate = dec_hex(825, 0, 0xfffc | (4 << 16))            # 0.0825: coefficient 825, exponent -4, dscale 4
+        neg = dec_hex(15, 0, 0xffff | (1 << 16) | (1 << 32))  # -1.5: coefficient 15, exponent -1, dscale 1, sign 1
+        neg0 = dec_hex(0, 0, 2 << 16)                         # -0.00 is 0.00: dscale 2, sign 0
+        for want in (b'const RATE: decimal = hex "' + rate.encode() + b'"',
+                     b'const NEG: decimal = hex "' + neg.encode() + b'"',
+                     b'const NEG0: decimal = hex "' + neg0.encode() + b'"',
+                     b'var total: decimal', b'var base: decimal', b'var start: decimal'):
+            if want not in text:
+                raise Fail(f"decimal global or constant line is wrong, wanted {want!r}: {text!r}")
+        if b'HIDDEN' in text:
+            raise Fail('a private constant is in the .sym')
+        r = reemit(lib)
+        if r.returncode != 0 or r.stdout != text:
+            raise Fail('the decimal-global lib.sym does not re-emit unchanged')
+        full_main = sym_text(os.path.join(s, 'main.sym'))
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(s, chk)
+        ok(build(d, chk, check=True), 'source-less check of the decimal-global tree')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+        os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
+        base = sym_text(lib)
+        # the reader's list: each malformed constant is refused with its own message
+        bad = [
+            ('uppercase hex', rate, rate.upper(), 'a decimal constant\'s hex must be lowercase'),
+            ('47 digits', rate, rate[:-1], 'a decimal constant needs 48 lowercase hexadecimal digits'),
+            ('49 digits', rate, rate + '0', 'a decimal constant needs 48 lowercase hexadecimal digits'),
+            ('a non-hex digit', rate, rate[:47] + 'g', 'a decimal constant\'s hex has a character that is not hexadecimal'),
+            ('coefficient above 10^38-1', rate, dec_hex(825, 0x7FFFFFFFFFFFFFFF, 0xfffc | (4 << 16)),
+             'a decimal constant has more than 38 significant digits'),
+            ('coefficient 10^38', rate, dec_hex(0x098A224000000000, 0x4B3B4CA85A86C47A, 0),
+             'a decimal constant has more than 38 significant digits'),
+            ('a negative coefficient word', rate, dec_hex(825, -1, 0xfffc | (4 << 16)),
+             'a decimal constant has more than 38 significant digits'),
+            ('reserved bit 40', neg, dec_hex(15, 0, 0xffff | (1 << 16) | (1 << 32) | (1 << 40)),
+             'a decimal constant\'s reserved bits (40 to 63 of its last word) must be zero'),
+            ('reserved bit 63', neg, dec_hex(15, 0, 0xffff | (1 << 16) | (1 << 32) | (1 << 63)),
+             'a decimal constant\'s reserved bits (40 to 63 of its last word) must be zero'),
+            ('sign 2', neg, dec_hex(15, 0, 0xffff | (1 << 16) | (2 << 32)),
+             'a decimal constant\'s sign must be 0 or 1'),
+            ('zero with sign 1', neg0, dec_hex(0, 0, (2 << 16) | (1 << 32)),
+             'a decimal constant zero must have sign 0'),
+            ('zero with exponent 1', neg0, dec_hex(0, 0, (2 << 16) | 1),
+             'a decimal constant zero must have exponent 0'),
+        ]
+        for name, old, new, want in bad:
+            old_b = old.encode() if isinstance(old, str) else old
+            if base.count(old_b) != 1:
+                raise Fail(f"{name}: {old!r} occurs {base.count(old_b)} times")
+            open(lib, 'wb').write(base)
+            mutate(lib, old_b, new.encode(), recompute=True)
+            q = build(d, s, check=True)
+            if q.returncode != 2 or want not in q.stderr:
+                raise Fail(f"{name}: exit {q.returncode}: {q.stderr.strip()}")
+            if 'symbol file' not in q.stderr:
+                raise Fail(f"{name}: not a symbol-file error: {q.stderr.strip()}")
+        # the boundary: 10^38-1 is a valid coefficient, and the check build accepts it
+        open(lib, 'wb').write(base)
+        mutate(lib, rate.encode(), dec_hex(0x098A223FFFFFFFFF, 0x4B3B4CA85A86C47A, 0xfffc | (4 << 16)).encode(),
+               recompute=True)
+        ok(build(d, s, check=True), 'a 38-digit coefficient of 10^38-1 in a constant')
+        open(lib, 'wb').write(base)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def tests():
     return [
         ('sym/roundtrip_rich', roundtrip_rich),
@@ -2690,6 +2779,7 @@ def tests():
         ('sym/field_visibility_old_format', field_visibility_old_format),
         ('sym/decimal_fields', decimal_fields_sym),
         ('sym/decimal_arrays', decimal_arrays_sym),
+        ('sym/decimal_globals', decimal_globals_sym),
     ]
 
 
