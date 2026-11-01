@@ -1235,7 +1235,27 @@ type Param = ref record {
     name: string
     typ: ^Type
     mode: int                 // 0 owned, 1 &, 2 mut
+    kind: int                 // 0 input, 1 out_own, 2 out_offset (native fn only)
+    target: int               // out_offset: the input parameter index; -1 otherwise
 }
+
+// One field of a generated native out record: rc first, then the out fields in declaration order.
+type OutField = ref record {
+    name: string
+    own: bool                 // out_own<T> (an optional foreign handle) rather than out_offset
+    obo: string               // out_own: the obo foreign type name
+    target: int               // out_offset: the input parameter index
+    ftype: ^Type              // out_own: the foreign type, for wrapping the write
+}
+
+type OutRecDesc = ref record {
+    native: string            // the native fn's obo name
+    recname: string           // <native>_out
+    desc: int                 // the record descriptor written to rodata
+    fields: []OutField
+}
+
+var outRecs = new []OutRecDesc(0)   // plain values: the sidecar is written after releaseTables
 
 var fnStack = new []^Sym(0)       // functions and lambda bodies being compiled, for active-callee checks
 var lambdaOuterNames = new []string(0)  // enclosing local/parameter names while a lambda body compiles
@@ -1782,6 +1802,7 @@ type FnRec = ref record {
     freed: []^Sym             // the globals it might free (directly or through calls)
     pfree: int                // bit i: it might free something below the reference it was given for parameter i (directly or through
                               // calls); parameters from the 62nd on are always assumed to
+    outRecIndex: int          // index in outRecs of its generated result record, or -1
 }
 
 // Experimental native C interop: one recorded call whose rel32 target is resolved by the system
@@ -1822,7 +1843,7 @@ fn isCNativeName(s: string): bool {
 var fnArena = new []FnRec(0)          // owns the function records; the symbols hold handles to them
 
 fn newFnRec(): ^FnRec {
-    append(fnArena, new FnRec{fixups: new []int(0), params: new []^Type(0), pmodes: new []int(0), freed: new []^Sym(0)})
+    append(fnArena, new FnRec{fixups: new []int(0), params: new []^Type(0), pmodes: new []int(0), freed: new []^Sym(0), outRecIndex: -1})
     return handle(fnArena[len(fnArena) - 1])
 }
 
@@ -1981,6 +2002,7 @@ type Item = ref record {
     pPath: string
     path: string              // a field or element of root: "/a/b", "/items/[]"; "" = anywhere
     home: bool                // a reg item that is a local's own register: read it, never change or release it
+    outResult: bool           // a native call's generated out record: store it in a var, never discard it
 }
 
 fn newItem(mode: string, t: ^Type): Item {
@@ -2049,6 +2071,7 @@ fn copyItem(x: &Item): Item {
     y.pPath = x.pPath
     y.path = x.path
     y.home = x.home
+    y.outResult = x.outResult
     return y
 }
 
@@ -6608,6 +6631,7 @@ fn setItem(mut x: &Item, y: Item) {
     x.pPath = ""
     x.path = ""
     x.home = false
+    x.outResult = false
 }
 
 // Moves the owned value x (a record or closed value) into a new box of type dst (I or ?I), which holds x's object at
@@ -7317,7 +7341,7 @@ fn callValue(x: Item, name: string, line: int, col: int): Item {
     let t = x.typ
     let fa = new []FnRec(0)
     append(fa, new FnRec{fixups: new []int(0), params: new []^Type(0),
-                         pmodes: new []int(0), freed: new []^Sym(0)})
+                         pmodes: new []int(0), freed: new []^Sym(0), outRecIndex: -1})
     let fr = handle(fa[0])
     let sa = new []Sym(0)
     append(sa, new Sym{kind: "fncall", name: "function value '" + name + "'", fnRec: fr,
@@ -7596,10 +7620,10 @@ fn kindWords(kd: &NativeKind): int {
 
 fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: string,
                   shapeText: string, retShape: string, retType: ^Type, declaredArgs: int,
-                  firstArgReady: bool): Item
+                  firstArgReady: bool, outRecIndex: int): Item
 
 fn nativeKindCall(cname: string, desc: string): Item {
-    return nativeCallCore(cname, parseKinds(desc), "__cinterop " + cname, "call", desc, "i64", tInt, -1, false)
+    return nativeCallCore(cname, parseKinds(desc), "__cinterop " + cname, "call", desc, "i64", tInt, -1, false, -1)
 }
 
 // The shared call machinery for __cinterop (call mode) and body-less native fn calls (fn mode).
@@ -7608,7 +7632,11 @@ fn nativeKindCall(cname: string, desc: string): Item {
 // and declaredArgs the sidecar arity (-1: the number of descriptor entries, as for __cinterop).
 fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: string,
                   shapeText: string, retShape: string, retType: ^Type, declaredArgs: int,
-                  firstArgReady: bool): Item {
+                  firstArgReady: bool, outRecIndex: int): Item {
+    let hasOut = outRecIndex >= 0
+    if hasOut && curFn == nil {
+        error("a native call with out parameters is not supported in a global initializer")
+    }
     var m = 0
     for i in 0..len(ks) {
         if ks[i].arg >= m { m = ks[i].arg + 1 }
@@ -7718,9 +7746,38 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
             }
         }
     }
-    // Phase 2: push one word per data-kind word, in argument order. No obo code runs from here to the call.
-    var w = 0
-    for k in 0..m { w += kindWords(ks[dataOf[k]]) }
+    // Phase 2: push one word per data-kind word, in argument order, then one out-slot address per
+    // out field. No obo code runs from here to the call. The generated out record is a hidden,
+    // non-owned frame word (never an ownedLocal): the caller's var owns the result.
+    var win = 0
+    for k in 0..m { win += kindWords(ks[dataOf[k]]) }
+    var nout = 0
+    if hasOut { nout = len(outRecs[outRecIndex].fields) }
+    // Plain-value copies of the out_own fields, made before the call: no reference into the
+    // descriptor is held across a host helper.
+    let ownOffs = new []int(0)
+    let ownIds = new []int(0)
+    let ownDescs = new []int(0)
+    if hasOut {
+        for i in 0..len(outRecs[outRecIndex].fields) {
+            let fld = &outRecs[outRecIndex].fields[i]
+            if fld.own {
+                append(ownOffs, 8 * (i + 1))
+                append(ownIds, fld.ftype.isForeignId)
+                append(ownDescs, fld.ftype.desc)
+            }
+        }
+    }
+    let w = win + nout
+    var outSlot = 0
+    if hasOut {
+        outSlot = newFrameBytes(8)
+        opMem(0xC7, 0, mem(RBP, -1, outSlot, 8), true, false)
+        emit32(0)
+        let rec = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, outRecs[outRecIndex].desc), retType)
+        opMem(0x89, rec.r, mem(RBP, -1, outSlot, 8), true, false)
+        release(rec.r)
+    }
     let pad = (depth + 8 * w) % 16
     if pad != 0 {
         aluRI(5, RSP, 8)
@@ -7755,6 +7812,15 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
             drop(a)
         }
     }
+    for i in 0..nout {
+        let rr = alloc()
+        opMem(0x8B, rr, mem(RBP, -1, outSlot, 8), true, false)
+        let ar = alloc()
+        opMem(0x8D, ar, mem(rr, -1, 8 * (i + 1), 8), true, false)
+        pushR(ar)
+        release(ar)
+        release(rr)
+    }
     emit(0xE8)
     let at = pc()
     emit32(0)
@@ -7762,6 +7828,14 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
     if declaredArgs >= 0 { n = declaredArgs }
     append(nativeRelocs, new NativeReloc{off: at, sym: recName, nargs: n, kinds: shapeText,
                                          mode: mode, retShape: retShape})
+    // The C return (rc for an out record) is stored immediately, before restoreRegs and any helper
+    // call that could clobber rax.
+    if hasOut {
+        let rr = alloc()
+        opMem(0x8B, rr, mem(RBP, -1, outSlot, 8), true, false)
+        opMem(0x89, RAX, mem(rr, -1, 0, 8), true, false)
+        release(rr)
+    }
     if w > 0 || pad != 0 {
         aluRI(0, RSP, 8 * w + pad)
         depth -= 8 * w + pad
@@ -7802,6 +7876,43 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
         if retType.kind == "opt" { optional = 1 }
         append(hargs, makeConst(tInt, optional))
         return hostCall("obo_ci_foreign_own", hargs, retType)
+    }
+    if hasOut {
+        // Wrap each out_own write in a counted foreign record. Load the record pointer from the
+        // hidden slot around every helper call; never keep it in a register across one.
+        var oi = 0
+        while oi < len(ownOffs) {
+            let off = ownOffs[oi]
+            let fid = ownIds[oi]
+            let fdesc = ownDescs[oi]
+            let rr = alloc()
+            opMem(0x8B, rr, mem(RBP, -1, outSlot, 8), true, false)
+            let rw = alloc()
+            opMem(0x8B, rw, mem(rr, -1, off, 8), true, false)
+            release(rr)
+            aluRI(7, rw, 0)
+            let skip = jcc(CC_E)
+            let hargs = new []?Item(0)
+            append(hargs, makeConst(tInt, fid))
+            append(hargs, makeReg(tInt, rw))
+            append(hargs, makeConst(tInt, fdesc))
+            append(hargs, makeConst(tInt, 1))
+            let res = hostCall("obo_ci_foreign_own", hargs, tInt)
+            let rr2 = alloc()
+            opMem(0x8B, rr2, mem(RBP, -1, outSlot, 8), true, false)
+            opMem(0x89, res.r, mem(rr2, -1, off, 8), true, false)
+            release(rr2)
+            release(res.r)
+            let done = jmp()
+            fix(skip, pc())
+            fix(done, pc())
+            oi += 1
+        }
+        let r = alloc()
+        opMem(0x8B, r, mem(RBP, -1, outSlot, 8), true, false)
+        let result = makeReg(retType, r)
+        result.outResult = true
+        return result
     }
     if retType == tVoid { return voidItem() }
     let r = alloc()
@@ -7871,10 +7982,14 @@ fn nativeFnCall(f: ^Sym): Item {
             append(ks, new NativeKind{name: "foreign", arg: i, flag: pt.name, ftype: pt})
         }
     }
-    let retShape = nativeRetShape(f.ret)
-    if len(retShape) == 0 { error("native fn '" + f.name + "': unsupported return type") }
+    var retShape = nativeRetShape(f.ret)
+    if f.fnRec.outRecIndex >= 0 {
+        retShape = "outrec:" + outRecs[f.fnRec.outRecIndex].recname
+    } else if len(retShape) == 0 {
+        error("native fn '" + f.name + "': unsupported return type")
+    }
     return nativeCallCore(f.name, ks, "native fn '" + f.name + "'", "fn", shapes, retShape,
-                          f.ret, len(f.fnRec.params), true)
+                          f.ret, len(f.fnRec.params), true, f.fnRec.outRecIndex)
 }
 
 // ================================================ foreign handles (stage (d), experimental)
@@ -11083,6 +11198,9 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
 // a value that is only evaluated for its effect: freed at once if it is owned, its string reference
 // dropped, a scalar ignored. Shared by a plain expression statement and a discarded try.
 fn discardValue(x: Item, line: int, col: int) {
+    if x.outResult {
+        errorAt("store an out-native result in a 'var' before using it", line, col)
+    }
     if x.typ.kind == "decimal" {
         releaseItem(x)
         drop(x)
@@ -13016,8 +13134,68 @@ fn methodRecvType(t: ^Type) {
 // each group is [mut] name[, name]* ':' type. A parameter of interface type is owned (p: I), borrowed (p: &I)
 // or mutable (mut p: &I), as any record; `mut p: I` is refused like any owned mut. A member and an ordinary
 // function take the same interface parameter forms (v3 3.2).
-fn parseParams(mut params: &[]Param, member: bool) {
+fn parseParams(mut params: &[]Param, member: bool, allowOut: bool) {
     while sym != T_RPAREN {
+        // `out name: T` / `out name: int from input` (native fn only; `out` stays contextual, so a
+        // parameter named out still parses as `out: int`). Look ahead one token to tell them apart.
+        if allowOut && sym == T_IDENT && sval == "out" {
+            let sPos = pos
+            let sLine = line
+            let sCol = col
+            let sLast = last
+            let sSym = sym
+            let sSval = sval
+            let sIval = ival
+            let sFtext = ftext
+            let sDtext = dtext
+            let sTokSeq = tokSeq
+            let sTline = tline
+            let sTcol = tcol
+            let sTokStart = tokStart
+            next()
+            if sym == T_IDENT {
+                let oname = ident()
+                expect(T_COLON, "")
+                let ot = parseType()
+                var okind = 1
+                var target = -1
+                if ot.kind == "int" && sym == T_IDENT && sval == "from" {
+                    next()
+                    let input = ident()
+                    target = -1
+                    for i in 0..len(params) {
+                        if params[i].kind == 0 && params[i].name == input { target = i }
+                    }
+                    if target < 0 {
+                        error("out_offset '" + oname + "' needs an input parameter name after 'from'")
+                    }
+                    if params[target].mode != 1 || params[target].typ.kind != "array" ||
+                       baseOf(params[target].typ) != tByte {
+                        error("out_offset '" + oname + "' must name a &[]byte input parameter after 'from'")
+                    }
+                    okind = 2
+                } else if sym == T_IDENT && sval == "from" {
+                    error("only an int out parameter takes 'from <input>'")
+                }
+                append(params, new Param{name: oname, typ: ot, mode: 0, kind: okind, target: target})
+                if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+                continue
+            }
+            // not the out form: re-read the token as an ordinary parameter named out
+            pos = sPos
+            line = sLine
+            col = sCol
+            last = sLast
+            sym = sSym
+            sval = sSval
+            ival = sIval
+            ftext = sFtext
+            dtext = sDtext
+            tokSeq = sTokSeq
+            tline = sTline
+            tcol = sTcol
+            tokStart = sTokStart
+        }
         // `mut` before the names: the function may change what the parameter points to
         var pmut = false
         if sym == T_IDENT && sval == "mut" {
@@ -13039,7 +13217,7 @@ fn parseParams(mut params: &[]Param, member: bool) {
             if mode == 0 { error("mut needs a reference parameter: write mut name: &T") }
             mode = 2
         }
-        for n in names { append(params, new Param{name: n, typ: t, mode: mode}) }
+        for n in names { append(params, new Param{name: n, typ: t, mode: mode, kind: 0, target: -1}) }
         if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
     }
     expect(T_RPAREN, "")
@@ -13117,7 +13295,7 @@ fn ifaceDecl(name: string, line: int, isPub: bool) {
         if mutrecv { recvMode = 2 }
         append(params, new Param{name: "p0", typ: t, mode: recvMode})
         expect(T_LPAREN, "")
-        parseParams(&params, true)
+        parseParams(&params, true, false)
         var ret = tVoid
         if sym == T_COLON {
             next()
@@ -13151,7 +13329,8 @@ fn ifaceDecl(name: string, line: int, isPub: bool) {
 
 // [pub] native fn name(params): ret -- a body-less declaration (stage (c), D1 without foreign
 // types). The name is the spec name; the tool maps it to the C symbol in the sidecar. `native` is
-// contextual: it is recognised only here, at the start of a top-level declaration.
+// contextual: it is recognised only here, at the start of a top-level declaration. Stage (f) adds
+// out parameters: the return type is the generated `<name>_out` record and consumes no argument.
 fn nativeFnDecl(isPub: bool) {
     if isPub {
         error("'pub' is not allowed on a native fn; declare a normal function that calls it and export that")
@@ -13165,16 +13344,100 @@ fn nativeFnDecl(isPub: bool) {
     if name == "main" { error("'main' cannot be native: the program needs an obo entry point") }
     let params = new []Param(0)
     expect(T_LPAREN, "")
-    parseParams(&params, false)
-    var ret = tVoid
-    if sym == T_COLON {
-        next()
-        if sym == T_IDENT && sval == "void" {
-            error("native fn '" + name + "': omit the return type for a unit result; 'void' is not a type in obo")
-        }
-        ret = parseType()
-    }
+    parseParams(&params, false, true)
+    // inputs first, then out parameters; an input after an out is refused
+    var outStart = len(params)
+    var seenOut = false
     for i in 0..len(params) {
+        if params[i].kind == 0 {
+            if seenOut { error("native fn '" + name + "': an input parameter cannot follow an out parameter") }
+        } else if !seenOut {
+            seenOut = true
+            outStart = i
+        }
+    }
+    let inputCount = outStart
+    let outCount = len(params) - outStart
+    if outCount > 2 { error("native fn '" + name + "': at most one out_own and one out_offset parameter") }
+    var ownCount = 0
+    var offsetCount = 0
+    let fieldNames = new []string(0)
+    append(fieldNames, "rc")
+    for i in outStart..len(params) {
+        let pname = params[i].name
+        let pkind = params[i].kind
+        let pmode = params[i].mode
+        let ptyp = params[i].typ
+        for n in fieldNames {
+            if n == pname { error("native fn '" + name + "': duplicate out field '" + pname + "'") }
+        }
+        if pname == "rc" { error("native fn '" + name + "': an out field may not be named 'rc'") }
+        append(fieldNames, pname)
+        if pkind == 1 {
+            ownCount += 1
+            if ownCount > 1 { error("native fn '" + name + "': at most one out_own parameter") }
+            if pmode != 0 || !ptyp.isForeign {
+                error("native fn '" + name + "': an out_own parameter needs a foreign handle type by value")
+            }
+        } else {
+            offsetCount += 1
+            if offsetCount > 1 { error("native fn '" + name + "': at most one out_offset parameter") }
+            if ptyp != tInt || pmode != 0 {
+                error("native fn '" + name + "': an out_offset parameter needs the type int")
+            }
+        }
+    }
+    var ret = tVoid
+    var outRecIndex = -1
+    if outCount > 0 {
+        let recName = name + "_out"
+        if findSym(curModule.globals, recName) != nil {
+            error("native fn '" + name + "': the generated record name '" + recName + "' is already declared")
+        }
+        if sym != T_COLON {
+            error("native fn '" + name + "': a native with out parameters must return '" + recName + "'")
+        }
+        next()
+        if sym != T_IDENT || sval != recName {
+            error("native fn '" + name + "': the return type must be '" + recName + "'")
+        }
+        next()
+        // Built directly, never registered: the record is not a name obo code can write.
+        let rt = newType("record", recName, nil)
+        append(rt.fields, new Field{name: "rc", offset: 0, typ: tInt})
+        let ptrs = new []int(0)
+        let strs = new []int(0)
+        let fields = new []OutField(0)
+        var off = 8
+        for i in outStart..len(params) {
+            let pname = params[i].name
+            let pkind = params[i].kind
+            let ptarget = params[i].target
+            let ptyp = params[i].typ
+            var ftyp = tInt
+            if pkind == 1 {
+                ftyp = derived("opt", ptyp)
+                append(ptrs, off)
+            }
+            append(rt.fields, new Field{name: pname, offset: off, typ: ftyp})
+            append(fields, new OutField{name: pname, own: pkind == 1,
+                                        obo: ptyp.name, target: ptarget, ftype: ptyp})
+            off += 8
+        }
+        rt.desc = descriptor(off, ptrs, strs)
+        ret = rt
+        append(outRecs, new OutRecDesc{native: name, recname: recName, desc: rt.desc, fields: fields})
+        outRecIndex = len(outRecs) - 1
+    } else {
+        if sym == T_COLON {
+            next()
+            if sym == T_IDENT && sval == "void" {
+                error("native fn '" + name + "': omit the return type for a unit result; 'void' is not a type in obo")
+            }
+            ret = parseType()
+        }
+    }
+    for i in 0..inputCount {
         if len(nativeParamShape(params[i].typ, params[i].mode)) == 0 {
             var spelled = tname(params[i].typ)
             if params[i].mode == 1 { spelled = "&" + spelled }
@@ -13183,7 +13446,7 @@ fn nativeFnDecl(isPub: bool) {
                   spelled + " (use int, string, &[]byte, &[]int or &[]?[]byte)")
         }
     }
-    if len(nativeRetShape(ret)) == 0 {
+    if outCount == 0 && len(nativeRetShape(ret)) == 0 {
         error("native fn '" + name + "': unsupported return type " + tname(ret) +
               " (omit the return type for unit, or use int, []byte or ?[]byte)")
     }
@@ -13199,10 +13462,11 @@ fn nativeFnDecl(isPub: bool) {
     let f = newSym("fn", name, nil)
     f.native = true
     f.fnRec = newFnRec()
-    for p in params {
-        append(f.fnRec.params, p.typ)
-        append(f.fnRec.pmodes, p.mode)
+    for i in 0..inputCount {
+        append(f.fnRec.params, params[i].typ)
+        append(f.fnRec.pmodes, params[i].mode)
     }
+    f.fnRec.outRecIndex = outRecIndex
     f.ret = ret
     f.line = hline
     f.addr = 0                    // a native declaration is complete: there is no body to wait for
@@ -13257,7 +13521,7 @@ fn fnDecl(isPub: bool) {
     let params = new []Param(0)
     if isMethod { append(params, new Param{name: recvName, typ: recvType, mode: recvMode}) }
     expect(T_LPAREN, "")
-    parseParams(&params, false)
+    parseParams(&params, false, false)
     var ret = tVoid
     if sym == T_COLON {
         next()
@@ -16352,6 +16616,40 @@ fn compileFile(path: string, out: string, rtDir: string) {
             append(b, ' ')
             appStr(b, foreignDescs[i].cname)
             append(b, '\n')
+        }
+        // Generated out records, for out natives actually called. Each line says the native, the
+        // record name, rc first and then the out fields in declaration order. Old tools reject the
+        // unknown line; new tools accept a sidecar that has none.
+        for i in 0..len(outRecs) {
+            let onative = outRecs[i].native
+            let orecname = outRecs[i].recname
+            var used = false
+            for j in 0..len(nativeRelocs) {
+                if nativeRelocs[j].mode == "fn" && nativeRelocs[j].sym == onative { used = true }
+            }
+            if used {
+                appStr(b, "outrec ")
+                appStr(b, onative)
+                append(b, ' ')
+                appStr(b, orecname)
+                appStr(b, " rc:int")
+                for k in 0..len(outRecs[i].fields) {
+                    let fname = outRecs[i].fields[k].name
+                    let fown = outRecs[i].fields[k].own
+                    let fobo = outRecs[i].fields[k].obo
+                    let ftarget = outRecs[i].fields[k].target
+                    append(b, ' ')
+                    appStr(b, fname)
+                    if fown {
+                        appStr(b, ":own:")
+                        appStr(b, fobo)
+                    } else {
+                        appStr(b, ":offset:")
+                        appInt(b, ftarget)
+                    }
+                }
+                append(b, '\n')
+            }
         }
         for i in 0..len(nativeRelocs) {
             appInt(b, nativeRelocs[i].off)

@@ -47,6 +47,8 @@ RELOC_HEADER_V2 = 'cinterop-relocs 2'
 MAX_ARGS = 8
 MAX_KIND_ARGS = 12        # kinds bindings: C-parameter descriptors per function (stage (a))
 MAX_KIND_INDEX = 16       # obo argument indexes: @k must be below this (the compiler checks the same bound)
+MAX_OUT_SLOTS = 2         # at most one out_own and one out_offset per native (stage (f))
+OUT_KINDS = ('out_own', 'out_offset')
 ARG_REGS = ('%rdi', '%rsi', '%rdx', '%rcx', '%r8', '%r9')
 EFFECTS = ('freesall', 'writeshandles')
 SIG_MODES = ('header', 'declarations-only')
@@ -293,13 +295,13 @@ def load_spec(path):
                 info = parse_ctype(f['ret_ctype'])
             except ToolError as e:
                 raise ToolError("%s: ret_ctype must spell %s: %s" % (f['name'], grammar, e))
-            if info[0] != 'ptr':
-                raise ToolError("%s: ret_ctype must spell %s, not %r"
-                                % (f['name'], grammar, f['ret_ctype']))
-            if '(*)' in re.sub(r'\s+', '', f['ret_ctype']):
+            if info[0] == 'fnptr' or '(*)' in re.sub(r'\s+', '', f['ret_ctype']):
                 # The thunk treats a pointer-returning result as a data pointer in rax, never calls it.
                 raise ToolError("%s: ret_ctype must spell %s, not a function pointer"
                                 % (f['name'], grammar))
+            if info[0] != 'ptr':
+                raise ToolError("%s: ret_ctype must spell %s, not %r"
+                                % (f['name'], grammar, f['ret_ctype']))
         if f['ret'] == 'cbytes':
             length = f.get('length')
             if not isinstance(length, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', length):
@@ -324,12 +326,19 @@ def load_spec(path):
             for a in f['args']:
                 # own/out_* are return or out-slot kinds; borrow<C> and borrow_mut<C> are the
                 # foreign argument kinds.
-                if a.startswith('own') or a.startswith('out_own') or a.startswith('out_offset'):
-                    raise ToolError("%s: %s is not an argument kind" % (f['name'], a))
+                if a.startswith('own'):
+                    raise ToolError("%s: %s is a return kind, not an argument kind" % (f['name'], a))
             check_kinds(f['name'], f['args'])
+            out_kinds = [parse_kind(a) for a in f['args'] if parse_kind(a)['name'] in OUT_KINDS]
+            if out_kinds and f['ret'] not in ('i32', 'i64', 'u32'):
+                raise ToolError("%s: a native with out parameters needs a scalar C result "
+                                "(i32, i64 or u32), not %r" % (f['name'], f['ret']))
             for a in f['args']:
                 k = parse_kind(a)
                 if k['name'] in ('borrow', 'borrow_mut') and k['flag'] not in type_by_name:
+                    raise ToolError("%s: %s names C type %r, which is not in types"
+                                    % (f['name'], a, k['flag']))
+                if k['name'] == 'out_own' and k['flag'] not in type_by_name:
                     raise ToolError("%s: %s names C type %r, which is not in types"
                                     % (f['name'], a, k['flag']))
             ct = f.get('ctypes')
@@ -377,18 +386,27 @@ def load_spec(path):
 
 
 def parse_kind(tok):
-    """One argument kind: name, arg (obo argument index or None), flag, val (const only)."""
+    """One argument kind: name, arg (obo argument index or None), flag, val (const only),
+    target (out_offset's borrow_bytes argument) and type (out_own's C type)."""
     if tok == 'null':
-        return {'name': 'null', 'arg': None, 'flag': None, 'val': None}
+        return {'name': 'null', 'arg': None, 'flag': None, 'val': None, 'target': None}
     m = re.fullmatch(r'const:(-?[0-9]+)', tok)
     if m:
         val = int(m.group(1))
         if abs(val) > CONST_LIMIT:
             raise ToolError("const value %s is too large (at most 17 digits)" % m.group(1))
-        return {'name': 'const', 'arg': None, 'flag': None, 'val': val}
+        return {'name': 'const', 'arg': None, 'flag': None, 'val': val, 'target': None}
+    m = re.fullmatch(r'out_own<([A-Za-z_][A-Za-z0-9_]*)>', tok)
+    if m:
+        return {'name': 'out_own', 'arg': None, 'flag': m.group(1), 'val': None, 'target': None}
+    m = re.fullmatch(r'out_offset@([0-9]+)', tok)
+    if m:
+        return {'name': 'out_offset', 'arg': None, 'flag': None, 'val': None,
+                'target': int(m.group(1))}
     m = re.fullmatch(r'(borrow|borrow_mut)<([A-Za-z_][A-Za-z0-9_]*)>@([0-9]+)', tok)
     if m:
-        return {'name': m.group(1), 'arg': int(m.group(3)), 'flag': m.group(2), 'val': None}
+        return {'name': m.group(1), 'arg': int(m.group(3)), 'flag': m.group(2), 'val': None,
+                'target': None}
     m = re.fullmatch(r'(i64|i32|u32|borrow_bytes|borrow_cstr|ints|nil_bytes_list)@([0-9]+)(?::([a-z0-9]+))?', tok)
     if not m:
         raise ToolError("unknown argument kind %r (args must be i64, or a kind such as i64@0)" % tok)
@@ -398,7 +416,7 @@ def parse_kind(tok):
             raise ToolError("ints needs a flag: ints@%d:i32, ints@%d:u32 or ints@%d:len" % (arg, arg, arg))
     elif flag is not None:
         raise ToolError("%s takes no flag: %r" % (name, tok))
-    return {'name': name, 'arg': arg, 'flag': flag, 'val': None}
+    return {'name': name, 'arg': arg, 'flag': flag, 'val': None, 'target': None}
 
 
 def kind_key(k):
@@ -406,7 +424,8 @@ def kind_key(k):
 
 
 def check_kinds(fname, args):
-    """A kinds binding: every obo argument has exactly one data kind, and ints:len counts a list."""
+    """A kinds binding: every obo argument has exactly one data kind, ints:len counts a list, and
+    there is at most one out_own and one out_offset slot (in C order; inputs may surround them)."""
     if len(args) > MAX_KIND_ARGS:
         raise ToolError("%s: at most %d argument kinds" % (fname, MAX_KIND_ARGS))
     kinds = [parse_kind(a) for a in args]
@@ -414,6 +433,9 @@ def check_kinds(fname, args):
         if k['arg'] is not None and k['arg'] >= MAX_KIND_INDEX:
             raise ToolError("%s: argument index @%d is out of range (indexes run from 0 to %d)"
                             % (fname, k['arg'], MAX_KIND_INDEX - 1))
+        if k['name'] == 'out_offset' and k['target'] >= MAX_KIND_INDEX:
+            raise ToolError("%s: out_offset target @%d is out of range (indexes run from 0 to %d)"
+                            % (fname, k['target'], MAX_KIND_INDEX - 1))
     data = {}
     for k in kinds:
         if k['arg'] is None or (k['name'] == 'ints' and k['flag'] == 'len'):
@@ -425,6 +447,17 @@ def check_kinds(fname, args):
         if k['name'] == 'ints' and k['flag'] == 'len':
             if k['arg'] not in data or data[k['arg']]['name'] not in ('ints', 'nil_bytes_list'):
                 raise ToolError("%s: ints:len counts a list, and argument %d is not one" % (fname, k['arg']))
+        if k['name'] == 'out_offset':
+            if k['target'] not in data or data[k['target']]['name'] != 'borrow_bytes':
+                raise ToolError("%s: out_offset@%d must name a borrow_bytes argument"
+                                % (fname, k['target']))
+    outs = [k for k in kinds if k['name'] in OUT_KINDS]
+    if len(outs) > MAX_OUT_SLOTS:
+        raise ToolError("%s: at most one out_own and one out_offset are supported" % fname)
+    if len([k for k in outs if k['name'] == 'out_own']) > 1:
+        raise ToolError("%s: at most one out_own is supported" % fname)
+    if len([k for k in outs if k['name'] == 'out_offset']) > 1:
+        raise ToolError("%s: at most one out_offset is supported" % fname)
     if kinds and not data and not any(k['name'] in ('null', 'const') for k in kinds):
         raise ToolError("%s: no argument kind" % fname)
     for i in range(max(data) + 1 if data else 0):
@@ -576,7 +609,7 @@ def parse_ctype(t):
             raise ToolError("%r has unbalanced parentheses or a name after a parameter" % t)
     if k != len(toks):
         raise ToolError("%r has text after the function pointer type" % t)
-    return ('ptr',)
+    return ('fnptr',)
 
 
 def check_ctypes(fname, args, ct):
@@ -599,6 +632,13 @@ def check_ctypes(fname, args, ct):
                 if not lo <= k['val'] <= hi:
                     raise ToolError("%s: %s does not fit %s (%d..%d)"
                                     % (fname, args[i], name, lo, hi))
+            if k['name'] == 'const' and info[0] == 'fnptr':
+                # A function-pointer slot may only receive the one no-callback destructor,
+                # (void (*)(void *))-1. SQLITE_STATIC (0) is a use-after-free.
+                if k['val'] != -1:
+                    raise ToolError("%s: %s in a function-pointer slot must be -1 "
+                                    "(the transient destructor), not %d; 0 would be a use-after-free"
+                                    % (fname, args[i], k['val']))
         elif ct[i] is not None:
             raise ToolError("%s: ctypes may only annotate null and const, not %r" % (fname, args[i]))
 
@@ -610,6 +650,10 @@ def kind_ctypes(k):
         return ['const ' + k['flag'] + ' *']
     if k['name'] == 'borrow_mut':
         return [k['flag'] + ' *']
+    if k['name'] == 'out_own':
+        return [k['flag'] + ' **']
+    if k['name'] == 'out_offset':
+        return ['const char **']
     return KIND_CTYPES[kind_key(k)]
 
 
@@ -664,8 +708,8 @@ def spec_types(spec):
         for k in ('name', 'obo', 'release'):
             if not isinstance(e[k], str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', e[k]):
                 raise ToolError("types entry %r is not a C/obo identifier" % e[k])
-        if e['release_result'] not in ('void', 'int'):
-            raise ToolError("%s: release_result must be 'void' or 'int'" % e['obo'])
+        if e['release_result'] not in ('void', 'int', 'discard'):
+            raise ToolError("%s: release_result must be 'void', 'int' or 'discard'" % e['obo'])
         if e['name'] in by_name:
             raise ToolError("duplicate C type %r in types" % e['name'])
         if e['obo'] in by_obo:
@@ -728,11 +772,15 @@ def kinds_thunk(f):
             continue
         data[k['arg']] = k
     m = max(data) + 1 if data else 0
+    n_out = len([k for k in kinds if k['name'] in OUT_KINDS])
+    # The call site pushes the input words first and then one out-slot word per out field. Word 0
+    # is the first pushed word, so the inputs occupy words 0..W_in-1 and the out slots follow.
     base = {}
-    W = 0
+    W_in = 0
     for a in range(m):
-        base[a] = W
-        W += 2 if data[a]['name'] in BYTES_KINDS else 1
+        base[a] = W_in
+        W_in += 2 if data[a]['name'] in BYTES_KINDS else 1
+    W = W_in + n_out
 
     def word(w):
         return '%d(%%rbp)' % (16 + 8 * (W - 1 - w))
@@ -758,6 +806,10 @@ def kinds_thunk(f):
         return s_
 
     srcs = []
+    bytes_ptr = {}
+    bytes_len = {}
+    out_offsets = []
+    out_i = 0
     for k in kinds:
         nm = k['name']
         if nm == 'null':
@@ -772,8 +824,12 @@ def kinds_thunk(f):
             srcs.append(call('obo_ci_u32', [word(base[k['arg']])]))
         elif nm == 'borrow_bytes':
             v, fl = word(base[k['arg']]), word(base[k['arg']] + 1)
-            srcs.append(call('obo_ci_bytes_ptr', [v, fl]))
-            srcs.append(call('obo_ci_bytes_len', [v, fl]))
+            p = call('obo_ci_bytes_ptr', [v, fl])
+            n = call('obo_ci_bytes_len', [v, fl])
+            bytes_ptr[k['arg']] = p
+            bytes_len[k['arg']] = n
+            srcs.append(p)
+            srcs.append(n)
         elif nm == 'borrow_cstr':
             v, fl = word(base[k['arg']]), word(base[k['arg']] + 1)
             p = call('obo_ci_bytes_ptr', [v, fl])
@@ -791,8 +847,16 @@ def kinds_thunk(f):
         elif nm == 'nil_bytes_list':
             srcs.append(keep(call('obo_ci_list_ptrs', [word(base[k['arg']])])))
             srcs.append(keep(call('obo_ci_list_lens', [word(base[k['arg']])])))
+        elif nm == 'out_own' or nm == 'out_offset':
+            # Out slots follow every input word and were pushed in declaration order.
+            srcs.append(word(W_in + out_i))
+            if nm == 'out_offset':
+                out_offsets.append((k['target'], word(W_in + out_i)))
+            out_i += 1
         else:
             raise ToolError("%s: no thunk for kind %r" % (f['name'], nm))
+    if out_i != n_out:
+        raise ToolError("%s: out slot count mismatch" % f['name'])
     if len(srcs) != len(c_params(f)):
         raise ToolError("%s: kinds expand to %d C parameters, not %d"
                         % (f['name'], len(srcs), len(c_params(f))))
@@ -842,6 +906,32 @@ def kinds_thunk(f):
         tail.append('    call obo_ci_cstr_out@PLT')
     else:
         native_call(f['symbol'])
+        if out_offsets:
+            # Keep the C result across the offset arithmetic, then put it back in rax.
+            saved_ret = slot()
+            tail.append('    movq %%rax, %s' % saved_ret)
+            for oi, (target, outword) in enumerate(out_offsets):
+                if target not in bytes_ptr or target not in bytes_len:
+                    raise ToolError("%s: out_offset target %d is not a borrow_bytes argument"
+                                    % (f['name'], target))
+                null = '.Lout_null_%s_%d' % (f['symbol'], oi)
+                done = '.Lout_done_%s_%d' % (f['symbol'], oi)
+                tail.append('    movq %s, %%rcx' % outword)
+                tail.append('    movq (%rcx), %rax')
+                tail.append('    testq %rax, %rax')
+                tail.append('    je %s' % null)
+                tail.append('    movq %s, %%rdx' % bytes_ptr[target])
+                tail.append('    subq %rdx, %rax')
+                tail.append('    js %s' % null)
+                tail.append('    movq %s, %%rdx' % bytes_len[target])
+                tail.append('    cmpq %rdx, %rax')
+                tail.append('    ja %s' % null)
+                tail.append('    movq %rax, (%rcx)')
+                tail.append('    jmp %s' % done)
+                tail.append('%s:' % null)
+                tail.append('    movq $-1, (%rcx)')
+                tail.append('%s:' % done)
+            tail.append('    movq %s, %%rax' % saved_ret)
         if ret_kind == 'i32':
             tail.append('    movslq %eax, %rax')
         elif ret_kind == 'u32':
@@ -970,7 +1060,7 @@ def generate_sigcheck(spec):
     for i, t in enumerate(spec.get('types', [])):
         # The release is called from the generated table wrapper with the C type pointer; check its
         # own prototype (the table wrapper itself would fail on an incompatible one too).
-        ret = 'int' if t['release_result'] == 'int' else 'void'
+        ret = 'int' if t['release_result'] in ('int', 'discard') else 'void'
         out.append('static %s (*obo_sig_type_%d)(%s *) __attribute__((unused)) = %s;'
                    % (ret, i, t['name'], t['release']))
     out.append('')
@@ -993,7 +1083,8 @@ def generate_foreign_table(spec, entries, mode):
         if e['release_result'] == 'int':
             out.append('    return (long)%s((%s *)p);' % (e['release'], e['name']))
         else:
-            out.append('    %s((%s *)p);' % (e['release'], e['name']))
+            # void and discard: the release's own result is ignored
+            out.append('    (void)%s((%s *)p);' % (e['release'], e['name']))
             out.append('    return 0;')
         out.append('}')
     n = max(1, len(entries))
@@ -1250,15 +1341,76 @@ def _read_foreign_v2(lines):
     return out
 
 
+def _read_outrec_v2(lines, foreign):
+    """outrec <native> <record> rc:int <field>:own:<Obo> ... | <field>:offset:<k> ...
+
+    One generated out record per called out native. The record name follows the native name, rc is
+    always the first field, and the out fields follow in declaration order. Own fields name an obo
+    foreign type from the sidecar's foreign table; offset fields name an input index."""
+    out = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4 or parts[0] != 'outrec':
+            raise ToolError("bad out record line %r" % line)
+        native, record = parts[1], parts[2]
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', native) or \
+                not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', record):
+            raise ToolError("bad out record identifiers %r" % line)
+        if record != native + '_out':
+            raise ToolError("out record %r must be named %r" % (record, native + '_out'))
+        tokens = parts[3:]
+        if tokens[0] != 'rc:int':
+            raise ToolError("out record %r must start with rc:int" % record)
+        fields = []
+        names = {'rc'}
+        own_seen = 0
+        off_seen = 0
+        foreign_obo = {f['obo'] for f in foreign}
+        for tok in tokens[1:]:
+            seg = tok.split(':')
+            if len(seg) != 3:
+                raise ToolError("bad out record field %r in %r" % (tok, record))
+            fname, kind, arg = seg
+            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', fname):
+                raise ToolError("bad out record field name %r" % fname)
+            if fname in names:
+                raise ToolError("duplicate out record field %r in %r" % (fname, record))
+            names.add(fname)
+            if kind == 'own':
+                own_seen += 1
+                if own_seen > 1:
+                    raise ToolError("out record %r has more than one own field" % record)
+                if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', arg):
+                    raise ToolError("bad own type %r in %r" % (arg, record))
+                if arg not in foreign_obo:
+                    raise ToolError("out record %r names foreign type %r, not in the sidecar table"
+                                    % (record, arg))
+                fields.append({'name': fname, 'kind': 'own', 'obo': arg})
+            elif kind == 'offset':
+                off_seen += 1
+                if off_seen > 1:
+                    raise ToolError("out record %r has more than one offset field" % record)
+                if not re.fullmatch(r'[0-9]+', arg) or int(arg) >= MAX_KIND_INDEX:
+                    raise ToolError("bad out_offset target %r in %r" % (arg, record))
+                fields.append({'name': fname, 'kind': 'offset', 'target': int(arg)})
+            else:
+                raise ToolError("unknown out record field kind %r in %r" % (kind, record))
+        out.append({'native': native, 'record': record, 'fields': fields})
+    return out
+
+
 def _read_relocs_v2(lines):
-    """cinterop-relocs 2: foreign lines, then off name nargs mode shapes ret-shape effects.
+    """cinterop-relocs 2: foreign lines, optional outrec lines, then
+    off name nargs mode shapes ret-shape effects.
 
     mode is 'call' (an int-form call with shapes '-', or an explicit kinds descriptor), 'fn' (a
     typed native fn call with one shape per obo argument) or 'host' (an internal obo_ci_* helper
     with a fixed arity). Every token is checked here, so a tampered or unknown shape or mode is
     refused before it can reach the linker."""
-    reloc_lines = [ln for ln in lines if not ln.startswith('foreign ')]
+    reloc_lines = [ln for ln in lines
+                   if not ln.startswith('foreign ') and not ln.startswith('outrec ')]
     foreign = _read_foreign_v2([ln for ln in lines if ln.startswith('foreign ')])
+    outrec = _read_outrec_v2([ln for ln in lines if ln.startswith('outrec ')], foreign)
     out = []
     for line in reloc_lines:
         parts = line.split()
@@ -1296,7 +1448,9 @@ def _read_relocs_v2(lines):
                         'shapes': shapes, 'mode': mode, 'ret': ret, 'effects': effects,
                         'version': 2})
         elif mode == 'fn':
-            if ret not in FN_RET_SHAPES and not re.fullmatch(r'(own|own_opt):[A-Za-z_][A-Za-z0-9_]*', ret):
+            if ret not in FN_RET_SHAPES and \
+                    not re.fullmatch(r'(own|own_opt):[A-Za-z_][A-Za-z0-9_]*', ret) and \
+                    not re.fullmatch(r'outrec:[A-Za-z_][A-Za-z0-9_]*', ret):
                 raise ToolError("native fn relocation has an unknown result shape %r: %r" % (ret, line))
             shapes = [] if shape_text == '-' else shape_text.split(',')
             if len(shapes) != nargs:
@@ -1321,12 +1475,14 @@ def _read_relocs_v2(lines):
                         'version': 2})
     side = Sidecar(out)
     side.foreign = foreign
+    side.outrec = outrec
     return side
 
 
 class Sidecar(list):
-    """A relocation list that also carries the sidecar's foreign type table."""
+    """A relocation list that also carries the sidecar's foreign table and out records."""
     foreign = []
+    outrec = []
 
 
 def read_relocs(path):
@@ -1338,6 +1494,7 @@ def read_relocs(path):
     if lines[0] == RELOC_HEADER_V1:
         side = Sidecar(_read_relocs_v1(lines[1:]))
         side.foreign = []
+        side.outrec = []
         return side
     if lines[0] == RELOC_HEADER_V2:
         return _read_relocs_v2(lines[1:])
@@ -1377,8 +1534,29 @@ def _fn_expected_shapes(f, spec):
     return shapes
 
 
+def _fn_expected_outs(f, spec):
+    """The out slots of a spec function, in C order: own C types mapped to obo names, offsets to
+    their borrow_bytes argument index."""
+    if all(a == 'i64' for a in f['args']):
+        return []
+    type_by_name, _ = spec_types(spec)
+    outs = []
+    for a in f['args']:
+        k = parse_kind(a)
+        if k['name'] == 'out_own':
+            t = type_by_name.get(k['flag'])
+            if t is None:
+                raise ToolError("%s: out_own<%s> is not in types" % (f['name'], k['flag']))
+            outs.append({'kind': 'own', 'obo': t['obo']})
+        elif k['name'] == 'out_offset':
+            outs.append({'kind': 'offset', 'target': k['target']})
+    return outs
+
+
 def _fn_expected_ret(f, spec):
     """The whole-result shape of a typed native fn call for one spec function."""
+    if _fn_expected_outs(f, spec):
+        return 'outrec:' + f['name'] + '_out'
     if f['ret'] in RET_SHAPE_OF:
         return RET_SHAPE_OF[f['ret']]
     base, tn = parse_ret(f['ret'])
@@ -1409,8 +1587,11 @@ def validate_foreign(foreign, spec):
 def validate_calls(relocs, spec, fmt=None):
     fmt = fmt or spec.get('format')
     validate_foreign(getattr(relocs, 'foreign', []), spec)
+    outrecs = getattr(relocs, 'outrec', [])
     by_sym = {f['symbol']: f for f in spec['functions']}
     by_name = {f['name']: f for f in spec['functions']}
+    outrec_by_name = {o['native']: o for o in outrecs}
+    used_out = set()
     seen = set()
     offsets = set()
     for r in relocs:
@@ -1438,6 +1619,32 @@ def validate_calls(relocs, spec, fmt=None):
             if r['ret'] != want_ret:
                 raise ToolError("native fn call to %r returns %s, the spec needs %s"
                                 % (r['sym'], r['ret'], want_ret))
+            want_outs = _fn_expected_outs(f, spec)
+            rec = outrec_by_name.get(f['name'])
+            if want_outs:
+                if rec is None:
+                    raise ToolError("native fn call to %r needs its outrec line for %s"
+                                    % (f['name'], f['name'] + '_out'))
+                if rec['record'] != f['name'] + '_out':
+                    raise ToolError("native fn call to %r has record %r, the spec needs %r"
+                                    % (f['name'], rec['record'], f['name'] + '_out'))
+                if len(rec['fields']) != len(want_outs):
+                    raise ToolError("out record %r has %d field(s), the spec needs %d"
+                                    % (rec['record'], len(rec['fields']), len(want_outs)))
+                for fld, want in zip(rec['fields'], want_outs):
+                    if fld['kind'] != want['kind']:
+                        raise ToolError("out record %r field %r is %s, the spec needs %s"
+                                        % (rec['record'], fld['name'], fld['kind'], want['kind']))
+                    if want['kind'] == 'own' and fld['obo'] != want['obo']:
+                        raise ToolError("out record %r field %r is %s, the spec names %s"
+                                        % (rec['record'], fld['name'], fld['obo'], want['obo']))
+                    if want['kind'] == 'offset' and fld['target'] != want['target']:
+                        raise ToolError("out record %r field %r targets argument %d, the spec says %d"
+                                        % (rec['record'], fld['name'], fld['target'], want['target']))
+                used_out.add(f['name'])
+            elif rec is not None:
+                raise ToolError("out record %r has no out parameters in its spec function"
+                                % rec['record'])
             # The relocatable object and the thunk are named by the C symbol, not the obo name.
             r['sym'] = f['symbol']
             seen.add(f['symbol'])
@@ -1445,6 +1652,9 @@ def validate_calls(relocs, spec, fmt=None):
         f = by_sym.get(r['sym'])
         if f is None:
             raise ToolError("native call to %r is not in the binding spec" % r['sym'])
+        if _fn_expected_outs(f, spec):
+            raise ToolError("native call to %r has out parameters; use a typed native fn "
+                            "declaration, not __cinterop" % r['sym'])
         if fmt == FORMAT_V2 and f['ret'] not in ('i32', 'i64'):
             raise ToolError("native call to %r has spec ret %r; a __cinterop call returns int, so "
                             "use a typed native fn declaration" % (r['sym'], f['ret']))
@@ -1466,6 +1676,9 @@ def validate_calls(relocs, spec, fmt=None):
                                 % (r['sym'], ','.join(r['argtypes']) or '-',
                                    ','.join(f['args']) or '-'))
         seen.add(r['sym'])
+    for rec in outrecs:
+        if rec['native'] not in used_out:
+            raise ToolError("out record %r has no matching native fn call" % rec['record'])
     missing = set(by_sym) - seen
     if missing:
         raise ToolError("no native call for spec symbol(s): %s" % ', '.join(sorted(missing)))

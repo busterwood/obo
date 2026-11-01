@@ -3125,6 +3125,309 @@ def stack_args(tmp):
     print('stack-argument tests: ok')
 
 
+def out_spec():
+    return {
+        'format': 'cinterop-proto/2', 'module': 'outnat',
+        'platform': 'x86_64-linux-gnu', 'abi': 'sysv-amd64',
+        'signature_check': 'header',
+        'sources': ['out_fixture.c'], 'headers': ['out_fixture.h'],
+        'libs': [], 'cflags': [], 'wrapper': 'out_wrap.obx',
+        'types': [{'name': 'Of', 'obo': 'Obj', 'release': 'of_release',
+                   'release_result': 'void'}],
+        'functions': [
+            {'name': 'of_new', 'symbol': 'of_new', 'args': ['i32@0', 'out_own<Of>'],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_new_fail', 'symbol': 'of_new_fail',
+             'args': ['i32@0', 'out_own<Of>'], 'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_new_null', 'symbol': 'of_new_null',
+             'args': ['i32@0', 'out_own<Of>'], 'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_wide', 'symbol': 'of_wide',
+             'args': ['i32@0', 'i32@1', 'i32@2', 'i32@3', 'i32@4', 'i32@5',
+                      'out_own<Of>'], 'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_open', 'symbol': 'of_open',
+             'args': ['borrow_cstr@0', 'out_own<Of>', 'i32@1', 'null'],
+             'ctypes': [None, None, None, 'const char *'],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_prepare', 'symbol': 'of_prepare',
+             'args': ['borrow_mut<Of>@0', 'borrow_bytes@1', 'out_own<Of>',
+                      'out_offset@1'], 'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_tail', 'symbol': 'of_tail',
+             'args': ['borrow_bytes@0', 'i32@1', 'out_offset@0'],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_bind', 'symbol': 'of_bind',
+             'args': ['borrow_bytes@0', 'const:-1', 'out_own<Of>'],
+             'ctypes': [None, 'void (*)(void *)', None],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_get', 'symbol': 'of_get', 'args': ['borrow<Of>@0'],
+             'ret': 'i32', 'effects': ['impure']},
+            {'name': 'of_reset', 'symbol': 'of_reset', 'args': [], 'ret': 'void',
+             'effects': ['impure']},
+            {'name': 'of_live', 'symbol': 'of_live', 'args': [], 'ret': 'i64',
+             'effects': ['impure']},
+            {'name': 'of_closed', 'symbol': 'of_closed', 'args': [], 'ret': 'i64',
+             'effects': ['impure']},
+            {'name': 'of_last_dtor', 'symbol': 'of_last_dtor', 'args': [], 'ret': 'i64',
+             'effects': ['impure']},
+            {'name': 'of_last_len', 'symbol': 'of_last_len', 'args': [], 'ret': 'i64',
+             'effects': ['impure']},
+        ],
+    }
+
+
+OUT_APP = '''fn main() {
+    outnat::reset()
+    var r = outnat::open(5)
+    match r {
+        ok(h) {
+            println("open ", outnat::get(&h), " ", h.is_open())
+            h.close()
+            println("closed ", h.is_open())
+        }
+        err(m, c) { println("open err ", m, " ", c) }
+    }
+    println("counts ", outnat::live(), " ", outnat::releases())
+    println("fail ", outnat::open_fail(7), " ", outnat::live(), " ", outnat::releases())
+    println("null ", outnat::open_null(9), " ", outnat::live(), " ", outnat::releases())
+    var w = outnat::wide(1, 2, 3, 4, 5, 6)
+    match w {
+        ok(h) { println("wide ", outnat::get(&h)); h.close() }
+        err(m, c) { println("wide err ", m, " ", c) }
+    }
+    var pb = new []byte(0)
+    append(pb, byte(97))
+    append(pb, byte(98))
+    append(pb, byte(99))
+    var o = outnat::open_shape(&pb, 7)
+    match o {
+        ok(h) {
+            println("shape ", outnat::get(&h))
+            var sql = new []byte(0)
+            append(sql, byte(97))
+            append(sql, byte(98))
+            append(sql, byte(99))
+            append(sql, byte(100))
+            append(sql, byte(101))
+            println("ptail ", outnat::prepare_tail(&h, &sql))
+            var one = new []byte(0)
+            append(one, byte(120))
+            println("ptail1 ", outnat::prepare_tail(&h, &one))
+            println("tail ", outnat::tail(&pb, 0), " ", outnat::tail(&pb, 1),
+                    " ", outnat::tail(&pb, 2), " ", outnat::tail(&pb, 3),
+                    " ", outnat::tail(&pb, 4), " ", outnat::tail(&pb, 5))
+            var empty = new []byte(0)
+            println("empty ", outnat::tail(&empty, 0), " ", outnat::tail(&empty, 1),
+                    " ", outnat::tail(&empty, 2))
+            h.close()
+        }
+        err(m, c) { println("shape err ", m, " ", c) }
+    }
+    var bnd = outnat::bind(&pb)
+    match bnd {
+        ok(h) { println("bind ", outnat::last_dtor(), " ", outnat::last_len(),
+                        " ", outnat::get(&h)); h.close() }
+        err(m, c) { println("bind err ", m, " ", c) }
+    }
+    outnat::close_drop(11)
+    println("flow ", outnat::flow(1, 3))
+    println("final ", outnat::live(), " ", outnat::releases())
+}
+'''
+
+OUT_WANT = [
+    'open 5 true',
+    'closed false',
+    'counts 0 1',
+    'fail 1 0 2',
+    'null 4 0 2',
+    'wide 21',
+    'shape 7',
+    'ptail 2',
+    'ptail1 1',
+    'tail 2 0 3 -1 -1 -1',
+    'empty -1 0 0',
+    'bind -1 3 3',
+    'flow 6',
+    'final 0 11',
+]
+
+
+def out_params(tmp):
+    """Stage (f): out_own/out_offset, the generated out record, and its sidecar."""
+    def app(name, body, wrapper=None):
+        ad = os.path.join(tmp, 'outapp_' + name)
+        os.makedirs(ad)
+        for n in ('out_fixture.c', 'out_fixture.h'):
+            shutil.copy(os.path.join(HERE, n), os.path.join(ad, n))
+        sp = out_spec()
+        sp['sources'] = ['out_fixture.c']
+        sp['headers'] = ['out_fixture.h']
+        sp['wrapper'] = 'out_wrap.obx'
+        open(os.path.join(ad, 'out_wrap.obx'), 'w').write(wrapper or open(
+            os.path.join(HERE, 'out_wrap.obx')).read())
+        spath = os.path.join(ad, 'out.cbind')
+        json.dump(sp, open(spath, 'w'), indent=2)
+        ap = os.path.join(ad, 'app.obx')
+        open(ap, 'w').write('module app\n\nimport "outnat.obx"\n\n' + body)
+        out = os.path.join(ad, 'out')
+        return build(spath, ap, out), out, ad
+
+    p, out, _ = app('main', OUT_APP)
+    need(p, 'out main build')
+    r = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'out main run')
+    if r.stdout.splitlines() != OUT_WANT:
+        raise Fail("out main output:\n got  %r\n want %r" % (r.stdout.splitlines(), OUT_WANT))
+    if r.stderr.strip():
+        raise Fail("out main wrote to stderr: %r" % r.stderr)
+    relocs = open(os.path.join(out, 'native.relocs')).read().splitlines()
+    if 'outrec of_new of_new_out rc:int o:own:Obj' not in relocs:
+        raise Fail("out_own outrec line missing: %r" % relocs[:8])
+    if 'outrec of_prepare of_prepare_out rc:int st:own:Obj tail:offset:1' not in relocs:
+        raise Fail("out_offset outrec line missing or out of order: %r" % relocs[:10])
+    if any(ln.startswith('outrec of_get ') for ln in relocs):
+        raise Fail("a native with no out parameters wrote an outrec line")
+    if not any(' of_new 1 fn int outrec:of_new_out ' in ln for ln in relocs):
+        raise Fail("out_own return shape missing from the sidecar")
+    if not any(' of_prepare 2 fn foreign:Obj,bytes outrec:of_prepare_out ' in ln for ln in relocs):
+        raise Fail("out_offset return shape missing from the sidecar")
+    if not any(' of_bind 1 fn bytes outrec:of_bind_out ' in ln for ln in relocs):
+        raise Fail("const:-1 out binding missing from the sidecar")
+    # Old tools reject the new sidecar: a v1 reader sees an unknown relocation line.
+    tool = _tool()
+    try:
+        tool._read_relocs_v1(relocs[1:])
+    except tool.ToolError:
+        pass
+    else:
+        raise Fail("the old sidecar reader accepted an outrec line")
+
+    # out_own dropped: the nested record is freed, the C object is not. Exit 8.
+    leak = ('fn main() {\n    outnat::reset()\n    outnat::leak(3)\n'
+            '    println("live ", outnat::live())\n}\n')
+    p, out, _ = app('leak', leak)
+    need(p, 'out leak build')
+    r = run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    if r.returncode != 8 or 'foreign handles leaked: Obj 1' not in r.stderr:
+        raise Fail("out_own dropped: want exit 8 Obj 1, got %d: %r"
+                   % (r.returncode, (r.stderr, r.stdout)))
+    r = run([os.path.join(out, 'app')])
+    if r.returncode != 0 or 'leaked' in r.stderr:
+        raise Fail("out_own dropped without OBO_CHECK: want exit 0, got %d: %r"
+                   % (r.returncode, r.stderr))
+
+    # The wrapper closes the handle, then drops the record: no census.
+    closed = ('fn main() {\n    outnat::reset()\n    outnat::close_drop(4)\n'
+              '    println("c ", outnat::live(), " ", outnat::releases())\n}\n')
+    p, out, _ = app('closed', closed)
+    need(p, 'out closed build')
+    r = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'out closed run')
+    if r.stdout.strip() != 'c 0 1' or r.stderr.strip():
+        raise Fail("wrapper-closed record: want 'c 0 1', got %r %r"
+                   % (r.stdout, r.stderr))
+
+    # An out_offset-only var is an ordinary owned record, freed at scope end.
+    only = ('fn main() {\n    outnat::reset()\n    var pb = new []byte(0)\n'
+            '    append(pb, byte(97))\n    append(pb, byte(98))\n    append(pb, byte(99))\n'
+            '    println("t ", outnat::tail(&pb, 0))\n}\n')
+    p, out, _ = app('only', only)
+    need(p, 'out only build')
+    r = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'out only run')
+    if r.stdout.strip() != 't 2' or r.stderr.strip():
+        raise Fail("out_offset-only record: want 't 2' and no census, got %r %r"
+                   % (r.stdout, r.stderr))
+
+    # Compile negatives: a bare out-call statement, a global initializer, and defer.
+    base_wrap = open(os.path.join(HERE, 'out_wrap.obx')).read()
+    for name, extra, want in (
+            ('bare', '\npub fn bad() { of_new(1) }\n',
+             'store an out-native result'),
+            ('global', '\nvar g = of_new(1)\n',
+             'global initializer'),
+            ('defer', '\npub fn bad_defer(v: int) { defer of_new(v) }\n',
+             'out-native result')):
+        p, _, _ = app('neg_' + name, 'fn main() {}\n', wrapper=base_wrap + extra)
+        if p.returncode == 0 or want not in (p.stderr + p.stdout):
+            raise Fail("out compile negative %s: want %r, got rc %d: %s"
+                       % (name, want, p.returncode, (p.stderr + p.stdout).strip()[-500:]))
+
+    # --check parses an out declaration but refuses a native call.
+    ckdir = os.path.join(tmp, 'out_check')
+    os.makedirs(ckdir)
+    open(os.path.join(ckdir, 'out_wrap.obx'), 'w').write(base_wrap)
+    q = run([OBO, os.path.join(ckdir, 'out_wrap.obx'), '--check', '--sym-dir', ckdir])
+    if q.returncode == 0 or 'cannot be called in --check' not in (q.stderr + q.stdout):
+        raise Fail("--check with an out native call: want a refusal, got rc %d: %s"
+                   % (q.returncode, (q.stderr + q.stdout).strip()[-300:]))
+
+    # Tool negatives and tampered sidecars.
+    tool = _tool()
+    spec = out_spec()
+    good = open(os.path.join(out, 'native.relocs')).read().splitlines()
+
+    def reject(lines, want):
+        path = os.path.join(tmp, 'out_tamper_%d.relocs' % len(os.listdir(tmp)))
+        open(path, 'w').write('\n'.join(lines) + '\n')
+        try:
+            tool.validate_calls(tool.read_relocs(path), spec)
+        except tool.ToolError as e:
+            if want is not None and want not in str(e):
+                raise Fail("out tamper %r: unexpected error %s" % (want, e))
+        else:
+            raise Fail("an out tamper was accepted: %r" % want)
+
+    drop_new = [ln for ln in good if not ln.startswith('outrec of_new ')]
+    reject(drop_new, 'outrec')
+    reject([ln.replace('outrec of_new of_new_out', 'outrec of_new other_out')
+            for ln in good], 'must be named')
+    reject([ln.replace('rc:int o:own:Obj', 'o:own:Obj rc:int')
+            for ln in good], 'rc:int')
+    reject([ln.replace('o:own:Obj', 'o:own:Obj o:own:Obj') for ln in good], 'duplicate')
+    reject([ln.replace('o:own:Obj', 'o:own:Nope') for ln in good], 'not in the sidecar')
+    reject([ln.replace('rc:int st:own:Obj tail:offset:1',
+                       'rc:int tail:offset:1 st:own:Obj') for ln in good], 'spec needs')
+    reject([ln.replace('of_new 1 fn int outrec:of_new_out',
+                       'of_new 1 fn int i64') for ln in good], 'spec needs')
+    reject([ln.replace('of_new 1 fn int outrec:of_new_out',
+                       'of_new 1 call - i64') for ln in good], 'typed native fn')
+
+    # Spec-level refusals: out with a non-scalar result, out in __cinterop's shape, bad ordering.
+    for bad_ret in ('void', 'own<Of>'):
+        sp = out_spec()
+        sp['functions'] = [{'name': 'of_new', 'symbol': 'of_new',
+                            'args': ['i32@0', 'out_own<Of>'], 'ret': bad_ret,
+                            'effects': ['impure']}]
+        spath = os.path.join(tmp, 'out_bad_ret.cbind')
+        json.dump(sp, open(spath, 'w'), indent=2)
+        try:
+            tool.load_spec(spath)
+        except tool.ToolError as e:
+            if 'scalar C result' not in str(e):
+                raise Fail("out ret %r: unexpected error %s" % (bad_ret, e))
+        else:
+            raise Fail("out ret %r was accepted" % bad_ret)
+    for kinds, want in (
+            (['i32@0', 'out_own<Of>', 'out_own<Of>'], 'at most one out_own'),
+            (['i32@0', 'out_offset@0'], 'borrow_bytes')):
+        try:
+            tool.check_kinds('bad', kinds)
+        except tool.ToolError as e:
+            if want not in str(e):
+                raise Fail("out kinds %r: unexpected error %s" % (kinds, e))
+        else:
+            raise Fail("out kinds %r were accepted" % kinds)
+    # const:0 in a function-pointer slot is a use-after-free, and only -1 is accepted.
+    try:
+        tool.check_ctypes('dtor', ['const:0'], ['void (*)(void *)'])
+    except tool.ToolError as e:
+        if 'must be -1' not in str(e):
+            raise Fail("const:0 function pointer: unexpected error %s" % e)
+    else:
+        raise Fail("const:0 in a function-pointer slot was accepted")
+    tool.check_ctypes('dtor', ['const:-1'], ['void (*)(void *)'])
+    print('out parameter tests: ok')
+
 def main():
     # The guard/deep-recursion tests deliberately fault. A host core-dump pipe
     # can take longer than the test timeout; the signal verdict is what matters.
@@ -3154,6 +3457,7 @@ def main():
         kinds(tmp)
         returns(tmp)
         foreigns(tmp)
+        out_params(tmp)
         null_const_slots(tmp)
         stack_args(tmp)
         libpq_live(tmp)
