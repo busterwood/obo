@@ -1,0 +1,23 @@
+module main
+import "lib.obx"
+
+fn main() {
+    // a non-capturing lambda against the imported DecFn
+    println(lib::apply(1.25, fn (d: decimal): decimal { return d + 1.0 }))  // expect: 2.25
+    // a function value held in a local and passed on
+    let f = fn (d: decimal): decimal { return d * 3.0 }
+    println(lib::apply(2.0, f))                                             // expect: 6.00
+    // a capturing lambda across the module boundary
+    let n = 2
+    println(lib::apply(1.5, fn [n](d: decimal): decimal { return d + decimal(n) }))  // expect: 3.5
+    // zero arguments and Result[decimal]
+    println(lib::zero(fn (): decimal { return 9.5 }))                       // expect: 9.5
+    let r = lib::applyR(1.5, fn (d: decimal): Result[decimal] { return ok(d + 0.25) })
+    match r {
+        ok(v) { println(v) }                                                // expect: 1.75
+        err(m, c) { println(m, " ", c) }
+    }
+    // the imported named function directly and through a value with the same signature
+    println(lib::scale(1.25))                                               // expect: 2.500
+    println(lib::apply(1.25, fn (d: decimal): decimal { return d * 2.0 }))  // expect: 2.500
+}

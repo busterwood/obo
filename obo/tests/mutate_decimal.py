@@ -148,6 +148,41 @@ MUTANTS = [
     ("check request writes scale over precision",
      "    let sd = newItem(\"mem\", tInt)\n    sd.base = scratchBase()\n    sd.disp = at + 8\n    store(sd, sv)",
      "    let sd = newItem(\"mem\", tInt)\n    sd.base = scratchBase()\n    sd.disp = at\n    store(sd, sv)"),
+    # D4b: decimal function values, lambda frame and captures. Each is caught by
+    # run/decimal_fnvalues.obx or run/decimal_captures.obx.
+    ("capture store copies only w0",
+     "        if caps[i].kind == 4 {\n            let v = localItem(co, tDecimal)\n            copyDecimalToBase(v, RBP, base + off)",
+     "        if caps[i].kind == 4 {\n            let v = localItem(co, tDecimal)\n            let r = alloc()\n            opMem(0x8B, r, memOf(v), true, false)\n            opMem(0x89, r, mem(RBP, -1, base + off, 8), true, false)\n            release(r)"),
+    ("capture load copies only w0",
+     "                for w in 0..3 {\n                    let rv = alloc()\n                    opMem(0x8B, rv, mem(er, -1, off + 8 * w, 8), true, false)",
+     "                for w in 0..1 {\n                    let rv = alloc()\n                    opMem(0x8B, rv, mem(er, -1, off + 8 * w, 8), true, false)"),
+    ("decimal capture slot is 8 bytes",
+     'fn capSlotAt(caps: &[]LambdaCap, i: int): int {\n    if caps[i].kind == 4 { return 24 }',
+     'fn capSlotAt(caps: &[]LambdaCap, i: int): int {\n    if caps[i].kind == 4 { return 8 }'),
+    ("capture offset is 8 + 8*i",
+     "fn capOff(caps: &[]LambdaCap, i: int): int {\n    var off = 8\n    for j in 0..i { off += capSlotAt(caps, j) }\n    return off\n}",
+     "fn capOff(caps: &[]LambdaCap, i: int): int {\n    return 8 + 8 * i\n}"),
+    ("lambda env read has no decimal +8",
+     '        if ret.kind == "decimal" { envOff += 8 }\n',
+     '        // mutant: no decimal +8\n'),
+    ("lambda env read always adds 8",
+     '        if ret.kind == "decimal" { envOff += 8 }\n',
+     '        envOff += 8\n'),
+    ("lambda env read adds 8 for Result[decimal]",
+     '        if ret.kind == "decimal" { envOff += 8 }\n',
+     '        if ret.kind == "decimal" || ret.kind == "result" { envOff += 8 }\n'),
+    ("decimal return destination is one word low",
+     "            opMem(0x8B, dp, mem(RBP, -1, 16 + visibleTypeParamsBytes(f.fnRec.params), 8), true, false)",
+     "            opMem(0x8B, dp, mem(RBP, -1, 16 + visibleTypeParamsBytes(f.fnRec.params) - 8, 8), true, false)"),
+    ("value call total omits the cell",
+     "    if iface || fnval { total += 8 }\n",
+     "    if iface { total += 8 }\n"),
+    ("synthetic fncall return loses decimal",
+     '    let decRet = f.ret.kind == "decimal"\n',
+     '    let decRet = f.ret.kind == "decimal" && f.kind != "fncall"\n'),
+    ("synthetic fncall frees handles",
+     "    let f = handle(sa[0])\n    for i in 0..fnArity(t) {",
+     "    let f = handle(sa[0])\n    f.freesAll = true\n    f.writesHandles = true\n    for i in 0..fnArity(t) {"),
 ]
 
 # Runtime, core-include and entry-table mutants are built in a private runtime
@@ -162,7 +197,51 @@ EQUIVALENT = {
         "snapshot and the load",
 }
 
-EQUIVALENT_MUTANTS = [
+MULTI_MUTANTS = [
+    ("push the destination before the function cell (old order)", [
+        # cut the cell push from above the destination
+        ("    if fnval {\n"
+         "        if recv == nil { error(\"internal error: a function value call without a cell\") }\n"
+         "        if recv != nil {\n"
+         "            let e = copyItem(recv)\n"
+         "            if e.mode == \"const\" && fits32(e.val) {\n"
+         "                pushI(e.val)\n"
+         "                depth += 8\n"
+         "                drop(e)\n"
+         "            } else {\n"
+         "                let er = asReg(e)\n"
+         "                pushR(er.r)\n"
+         "                release(er.r)\n"
+         "            }\n"
+         "        }\n"
+         "    }\n"
+         "    if decRet && !iface {\n",
+         "    if decRet && !iface {\n"),
+        # and put it below the destination, restoring the old broken order
+        ("        pushR(dr)\n"
+         "        release(dr)\n"
+         "    }\n"
+         "    var argBinds = new []^RefBind(0)\n",
+         "        pushR(dr)\n"
+         "        release(dr)\n"
+         "    }\n"
+         "    if fnval {\n"
+         "        if recv == nil { error(\"internal error: a function value call without a cell\") }\n"
+         "        if recv != nil {\n"
+         "            let e = copyItem(recv)\n"
+         "            if e.mode == \"const\" && fits32(e.val) {\n"
+         "                pushI(e.val)\n"
+         "                depth += 8\n"
+         "                drop(e)\n"
+         "            } else {\n"
+         "                let er = asReg(e)\n"
+         "                pushR(er.r)\n"
+         "                release(er.r)\n"
+         "            }\n"
+         "        }\n"
+         "    }\n"
+         "    var argBinds = new []^RefBind(0)\n"),
+    ]),
     ("capture snapshot taken by address", [
         # construction: store &d (one word) instead of copying the 24 value bytes
         ("        if caps[i].kind == 4 {\n"
@@ -645,7 +724,7 @@ def main():
             else:
                 missed += 1
                 print(f"MISSED  {name}")
-        for name, edits in EQUIVALENT_MUTANTS:
+        for name, edits in MULTI_MUTANTS:
             src_text = text
             okpat = True
             for old, new in edits:
@@ -744,7 +823,7 @@ def main():
                 print(f"MISSED  {name}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    total = (len(MUTANTS) + len(DGLOBAL_MUTANTS) + len(ARRAY_MUTANTS) + len(EQUIVALENT_MUTANTS)
+    total = (len(MUTANTS) + len(DGLOBAL_MUTANTS) + len(ARRAY_MUTANTS) + len(MULTI_MUTANTS)
              + len(RUNTIME_MUTANTS) + len(RUNTIME_ARRAY_MUTANTS)
              + len(ENTRY_MUTANTS) + len(SYM_MUTANTS))
     print(f"\n{caught} caught, {equiv} equiv, {missed} missed, {broken} broken (of {total})")

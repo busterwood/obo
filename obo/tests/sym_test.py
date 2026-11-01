@@ -2898,6 +2898,79 @@ def decimal_methods_ifaces_sym():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def decimal_fnvalue_sym():
+    '''D4b: decimal function types in a .sym. A public alias keeps the canonical `fn(decimal): decimal`
+    text, a function signature expands the alias, a `Result[decimal]` return is one word, and a
+    source-less --check rebuilds main.sym identically. A format-11 file is refused before its body is
+    read, and the reader rejects a borrowed decimal, a function type returning a function type and a
+    capture list.'''
+    src = os.path.join(HERE, 'modules', 'run', 'decimal_fnvalue')
+    files = {}
+    for name in ('main.obx', 'lib.obx'):
+        with open(os.path.join(src, name)) as f:
+            files[name] = f.read()
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'prog')), 'full build of the decimal-function-value tree')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        for want in (
+            b'type DecFn = fn(decimal): decimal',
+            b'type DecResultFn = fn(decimal): Result[decimal]',
+            b'fn apply(p0: decimal, p1: fn(decimal): decimal): decimal',
+            b'fn applyR(p0: decimal, p1: fn(decimal): Result[decimal]): Result[decimal]',
+            b'fn zero(p0: fn(): decimal): decimal',
+            b'fn scale(p0: decimal): decimal',
+        ):
+            if want not in text:
+                raise Fail(f"decimal function type line is wrong, wanted {want!r}: {text!r}")
+        if b'compiler "0.19"' not in text or b'obosym 12\n' not in text:
+            raise Fail(f"the format/compiler header is wrong: {text[:60]!r}")
+        r = reemit(lib)
+        if r.returncode != 0 or r.stdout != text:
+            raise Fail('the decimal-function-value lib.sym does not re-emit unchanged')
+        full_main = sym_text(os.path.join(s, 'main.sym'))
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(s, chk)
+        ok(build(d, chk, check=True), 'source-less check of the decimal-function-value tree')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+        # a 0.18 (.sym format 11) file is refused, even though its text grammar is this one
+        chk_lib = os.path.join(chk, 'lib.sym')
+        base = sym_text(chk_lib)
+        with open(chk_lib, 'wb') as f:
+            f.write(base.replace(b'obosym 12', b'obosym 11', 1))
+        q = build(d, chk, check=True)
+        want = 'has format 11; this compiler reads 12; rebuild it'
+        if q.returncode != 2 or want not in q.stderr:
+            raise Fail(f"format-11 decimal function type: exit {q.returncode}: {q.stderr.strip()}")
+        # the reader's remaining function-type rules
+        for old, new, err in (
+            (b'type DecFn = fn(decimal): decimal',
+             b'type DecFn = fn(&decimal): decimal',
+             'only records, closed types and arrays can be borrowed, not decimal'),
+            (b'type DecFn = fn(decimal): decimal',
+             b'type DecFn = fn(decimal): fn(int): int',
+             'a function type cannot return a function value'),
+            (b'type DecFn = fn(decimal): decimal',
+             b'type DecFn = fn[decimal](decimal): decimal',
+             'a function type cannot have a capture list'),
+        ):
+            with open(chk_lib, 'wb') as f:
+                f.write(base)
+            mutate(chk_lib, old, new, recompute=True)
+            q = build(d, chk, check=True)
+            if q.returncode != 2 or err not in q.stderr:
+                raise Fail(f"decimal function-type rejection {new!r}: exit {q.returncode}: {q.stderr.strip()}")
+        with open(chk_lib, 'wb') as f:
+            f.write(base)
+        os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
+        ok(build(d, s, out=os.path.join(d, 'again')), 'rebuild after the function-type reader cases')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def tests():
     return [
         ('sym/roundtrip_rich', roundtrip_rich),
@@ -2958,6 +3031,7 @@ def tests():
         ('sym/decimal_globals', decimal_globals_sym),
         ('sym/decimal_methods_ifaces', decimal_methods_ifaces_sym),
         ('sym/decimal_pfree', decimal_pfree_sym),
+        ('sym/decimal_fnvalue', decimal_fnvalue_sym),
     ]
 
 

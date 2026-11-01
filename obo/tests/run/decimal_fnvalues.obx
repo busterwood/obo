@@ -3,6 +3,7 @@
 // pushed above the hidden decimal destination, so a callee's destination stays at
 // 16 + visibleParamBytes and its parameter offsets are identical either way.
 type Rec = ref record { v: int }
+type Outer = ref record { inner: Rec }
 type Acc = ref record { v: decimal }
 type Ledger = interface { pure fn add(x: decimal, y: decimal): decimal }
 
@@ -60,6 +61,12 @@ fn main() {
     let br = &rec
     println(apply1(2.5, fn (d: decimal): decimal { return d + 1.0 }))  // expect: 3.5
     println(br.v)                                             // expect: 5
+    // a reference inside something, after the same call: the synthetic fncall must not
+    // claim to free through a handle or free everything
+    let outer = new Outer{inner: new Rec{v: 7}}
+    let deep = &outer.inner
+    println(apply1(4.5, fn (d: decimal): decimal { return d + 1.0 }))  // expect: 5.5
+    println(deep.v)                                           // expect: 7
     var owned = new Rec{v: 6}
     let h = handle(owned)
     println(apply1(3.5, fn (d: decimal): decimal { return d + 1.0 }))  // expect: 4.5
