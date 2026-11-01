@@ -20,9 +20,9 @@ call or allocation.
 | `maxStreamRecvBuffer` | 32768 | must equal the window in v1 |
 | `maxConnectionWindow` | 1048576 | `maxConcurrentStreams * maxStreamRecvWindow` |
 | `maxStreamSendBuffer` | 32768 | per-stream response body |
-| `maxWire` | 65536 | C wire ring and obo out-buffer |
+| `maxWire` | 65536 | C wire ring and obo out-buffer; 64 KiB..16 MiB |
 | `maxEvents` | 256 | fixed event-ring records |
-| `maxBody` | 8388608 | decoded request body |
+| `maxBody` | 8388608 | declared/cumulative decoded request body; enforced in `requestInfo`/`readBody`/`discardBody` |
 | `maxTrailerBytes` | 4096 | decoded request trailer bytes |
 | `maxTrailerCount` | 32 | request trailer fields |
 | `maxResponseHeaderBytes` | 16384 | staged response header block |
@@ -74,12 +74,14 @@ perConnectionReservation =
   + 2 * maxWire
   + maxHeaderArena
   + maxEvents * 32
+  + maxConcurrentStreams * (2 * maxHeaderCount + maxTrailerCount +
+    maxResponseTrailerCount) * 16   (header-name/value reference records)
   + 65536 fixed overhead
 ```
 
-Defaults: `32*(32768+32768) + 2*65536 + 1572864 + 8192 + 65536` =
-**3,874,816 bytes** (about 3.70 MiB). Fourteen connections reserve
-**54,247,424 bytes** (about 51.7 MiB), under the platform's 64 MiB default.
+Defaults: `32*(32768+32768) + 2*65536 + 1572864 + 8192 + 135168 + 65536` =
+**4,009,984 bytes** (about 3.82 MiB). Fourteen connections reserve
+**56,139,776 bytes** (about 53.5 MiB), under the platform's 64 MiB default.
 
 The connection's `sys_reg_new_object(KIND_H2_CONNECTION)` charge is the whole
 per-connection reservation. Stream entries charge zero extra bytes: their
@@ -121,6 +123,20 @@ budget.
   registered stream entries (their shells still close and free them).
   Unregistered streams are freed with the connection. A never-closed stream
   shell is a deliberate leak reported by the platform leak oracle.
+- Orphaned stream header/trailer counts and payload accessors return `Closed`
+  before touching an arena. `conn_release` clears the counts and frees the
+  arenas; no accessor resolves an orphan to freed memory.
+- The idle deadline is armed after a valid preface when no live streams remain,
+  and again after the last stream retires. Expiry queues GOAWAY(NO_ERROR),
+  emits `EventTimedOut`, and enters CLOSING; the GOAWAY remains sendable.
+- A fatal shim or nghttp2 connection error sets FAILED and keeps a bounded
+  send path open for the queued GOAWAY. `http2::next` flushes it before
+  returning `EventProtocolError`; a connection-level nghttp2 error that is
+  reported only by a sent GOAWAY (for example DATA on stream 0) is surfaced from
+  the frame-send callback.
+- `requestInfo` rejects a declared `content-length` above `maxBody`, and
+  `readBody`/`discardBody` enforce the cumulative decoded body bound. A
+  `Host`/`:authority` mismatch is a protocol error.
 
 ## Provenance
 

@@ -36,6 +36,42 @@ fn requestBytes(): []byte {
     return b
 }
 
+fn requestWith(block: &[]byte, flags: int): []byte {
+    let n = 42 + len(block)
+    let b = new []byte(n)
+    let text = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    for i in 0..24 { b[i] = text[i] }
+    b[24] = 0; b[25] = 0; b[26] = 0; b[27] = 4
+    b[28] = 0; b[29] = 0; b[30] = 0; b[31] = 0; b[32] = 0
+    b[33] = 0; b[34] = 0; b[35] = byte(len(block))
+    b[36] = 1; b[37] = byte(flags)
+    b[38] = 0; b[39] = 0; b[40] = 0; b[41] = 1
+    for i in 0..len(block) { b[42 + i] = block[i] }
+    return b
+}
+
+fn badRequestBlock(mode: string): []byte {
+    var b = new []byte(0)
+    append(b, 0x82) // :method GET
+    append(b, 0x86) // :scheme http
+    append(b, 0x84) // :path /
+    append(b, 0x41) // :authority literal
+    append(b, 1); append(b, byte('a'))
+    if mode == "badhost" {
+        append(b, 0x40); append(b, 4)
+        append(b, byte('h')); append(b, byte('o')); append(b, byte('s')); append(b, byte('t'))
+        append(b, 1); append(b, byte('b'))
+    } else {
+        let name = "content-length"
+        append(b, 0x40); append(b, 14)
+        for i in 0..14 { append(b, name[i]) }
+        let value = "9999999"
+        append(b, 7)
+        for i in 0..7 { append(b, value[i]) }
+    }
+    return b
+}
+
 fn nowValue(): http::Now {
     let mono = clock::monotonic()
     let wall = clock::realtime()
@@ -85,7 +121,7 @@ fn main() {
         print("UNIT admitted ", admitted, " active ", http2::activeCount(&a), "\n")
         var j = 0
         while j < 14 {
-            let rel = http2::release(&a, 3874816)
+            let rel = http2::release(&a, 4009984)
             j += 1
         }
         print("UNIT released ", http2::activeCount(&a), " remaining ", http2::admissionReservedBytes(&a), "\n")
@@ -137,6 +173,53 @@ fn main() {
                 let cl = http2::close(&c)
                 match cl { ok(v) { } err(m, code) { } }
                 match blocker { ok(b) { let bc = bytesbuf::close(&b); match bc { ok(v) { } err(m, code) { } } } err(m, code) { } }
+            }
+        }
+        return
+    }
+    if mode == "badbody" || mode == "badhost" {
+        let block = badRequestBlock(mode)
+        var flags = 5
+        if mode == "badbody" { flags = 4 }
+        let bad = requestWith(&block, flags)
+        let bt = transport::memory(&bad)
+        let bwr = transport::memorySetWriteLimit(&bt, 65536)
+        let bl = http2::defaultLimits()
+        let bo = new http2::Options{mode: new http2::ModePriorKnowledge{}, serverName: "", requireAuthority: true}
+        let bm = http2::make(bt, &bl, &bo)
+        match bm {
+            err(m, c) { print("BADREQ make ", c, "\n") }
+            ok(c) {
+                var guard = 0
+                var started = false
+                while guard < 20 && !started {
+                    guard += 1
+                    let n = nowValue()
+                    let ev = http2::next(&c, &n)
+                    match ev {
+                        ok(e) { match e { EventStreamStarted { started = true } EventNeedRead { } EventNeedWrite { } EventSettingsAcked { } EventStreamClosed { } EventStreamData { } EventStreamEnd { } EventTrailers { } EventGoaway { } EventDrainComplete { } EventTimedOut { } EventProtocolError { } EventConnectionClosed { } } }
+                        err(m, code) { guard = 20 }
+                    }
+                }
+                if started {
+                    let opened = http2::openStream(&c, 1)
+                    match opened {
+                        ok(s) {
+                            let ri = http2::requestInfo(&s)
+                            match ri {
+                                ok(req) { print("BADREQ accepted\n") }
+                                err(m, code) { print("BADREQ ", code, "\n") }
+                            }
+                            let cl = http2::closeStream(&s)
+                            match cl { ok(v) { } err(m, code) { } }
+                        }
+                        err(m, code) { print("BADREQ open ", code, "\n") }
+                    }
+                } else {
+                    print("BADREQ nostream\n")
+                }
+                let cl = http2::close(&c)
+                match cl { ok(v) { } err(m, code) { } }
             }
         }
         return

@@ -152,6 +152,8 @@ def private_cbind(tmp, include_dirs):
     ]
     spec['headers'] = [
         os.path.join(PKG, 'native', 'h2_adapter.h'),
+        'nghttp2/nghttp2ver.h',
+        'nghttp2/nghttp2.h',
         os.path.join(tls_dir, 'native', 'tls_adapter.h'),
         os.path.join(sys_dir, 'native', 'sysadapter.h'),
         os.path.join(sys_dir, 'native', 'sysnet.h'),
@@ -269,12 +271,40 @@ def curl(*args, timeout=30):
     return p.stdout
 
 
+NGHTTP2_HEADER_HASHES = {
+    'nghttp2.h': '4eb610b672f7f6520250619330d16ec613c51e4f31c1418db93bfbbce58e50e9',
+    'nghttp2ver.h': 'b72d511ddaf0059ad532ec83a9a5b3ec8ccc34968332a9beb016ef301b8d1187',
+}
+
+
+def check_nghttp2_provenance(include_dirs):
+    version = runtime_version()
+    if version != '1.59.0-1ubuntu0.4':
+        print('nghttp2 provenance: non-baseline package %s (header hashes not pinned)' % version)
+        return
+    for name, want in NGHTTP2_HEADER_HASHES.items():
+        found = None
+        for root in include_dirs:
+            candidate = os.path.join(root, 'nghttp2', name)
+            if os.path.isfile(candidate):
+                found = candidate
+                break
+        if found is None:
+            raise Fail('pinned nghttp2 header %s not found' % name)
+        got = sha256(found)
+        if got != want:
+            raise Fail('nghttp2 header %s hash %s does not match pinned %s'
+                       % (name, got, want))
+    print('nghttp2 provenance: pinned 1.59.0-1ubuntu0.4 headers match')
+
+
 def main():
     if not os.path.exists(OBO):
         raise Fail('no compiler at %s; run make -C obo obo' % OBO)
     tmp = tempfile.mkdtemp(prefix='http2-h2a-', dir=TMPROOT)
     atexit.register(shutil.rmtree, tmp, ignore_errors=True)
     include_dirs = nghttp2_include_dirs()
+    check_nghttp2_provenance(include_dirs)
     ctests = load_cinterop_tests()
     include_dirs = include_dirs + ctests.openssl_include_dirs()
 
@@ -301,7 +331,7 @@ def main():
     # Pure API checks.
     p = run([mem, 'unit'], timeout=60, env=dict(os.environ, OBO_CHECK='1'))
     need(p.returncode == 0, 'unit driver failed:\n%s\n%s' % (p.stdout, p.stderr))
-    for want in ('UNIT limits-ok', 'UNIT reservation 3874816',
+    for want in ('UNIT limits-ok', 'UNIT reservation 4009984',
                  'UNIT bad-rejected', 'UNIT admitted 14 active 14',
                  'UNIT released 0 remaining 0', 'UNIT cleartext-rejected',
                  'UNIT alpn-accepted'):
@@ -313,6 +343,14 @@ def main():
     need('ADOPT rejected' in p.stdout and 'unexpectedly-adopted' not in p.stdout,
          'adoption failure was not handled:\n%s' % p.stdout)
     print('obo adoption failure/idempotent abandon: ok')
+
+    p = run([mem, 'badbody'], timeout=60, env=dict(os.environ, OBO_CHECK='1'))
+    need(p.returncode == 0 and 'BADREQ 33554432' in p.stdout,
+         'maxBody was not enforced:\n%s' % p.stdout)
+    p = run([mem, 'badhost'], timeout=60, env=dict(os.environ, OBO_CHECK='1'))
+    need(p.returncode == 0 and 'BADREQ 167772160' in p.stdout,
+         'Host/:authority mismatch was not rejected:\n%s' % p.stdout)
+    print('obo maxBody and Host/:authority policy: ok')
 
     # Memory transport response path, verified by the nghttp2 client harness.
     for mode in ('hello', 'trailers'):
@@ -384,7 +422,18 @@ def main():
         srv.stop()
     print('TLS ALPN h2 curl interop: ok')
 
-    print('h2spec/h2load: skipped (not installed; recorded integration dependency)')
+    h2spec = shutil.which('h2spec')
+    h2load = shutil.which('h2load')
+    if h2spec is None:
+        print('h2spec: not installed (manual pinned target v2.6.0, '
+              'h2spec_linux_amd64.tar.gz; no automatic fetch)')
+    else:
+        print('h2spec: present at %s (not run by the H2a default suite)' % h2spec)
+    if h2load is None:
+        print('h2load: not installed (Ubuntu package nghttp2-client; '
+              'manual integration only)')
+    else:
+        print('h2load: present at %s (not run by the H2a default suite)' % h2load)
     print('H2a tests: all ok')
 
 

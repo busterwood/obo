@@ -142,7 +142,7 @@ pub type StreamState = closed {
     StreamClosed {}
 }
 
-pub fn openStream(c: &Connection, id: int): Result[Stream]
+pub fn openStream(mut c: &Connection, id: int): Result[Stream]
 pub fn closeStream(s: &Stream): Result[bool]
 pub fn reset(s: &Stream, code: int): Result[bool]
 pub fn streamID(s: &Stream): Result[int]
@@ -172,8 +172,8 @@ pub fn headerCount(s: &Stream): Result[int]
 pub fn headerAt(s: &Stream, index: int): Result[http::Header]
 pub fn trailerCount(s: &Stream): Result[int]
 pub fn trailerAt(s: &Stream, index: int): Result[http::Header]
-pub fn readBody(s: &Stream, max: int, now: &http::Now): Result[http::BodyRead]
-pub fn discardBody(s: &Stream, max: int, now: &http::Now): Result[int]
+pub fn readBody(mut s: &Stream, max: int, now: &http::Now): Result[http::BodyRead]
+pub fn discardBody(mut s: &Stream, max: int, now: &http::Now): Result[int]
 ```
 
 `requestInfo` copies the whole lazy request header list into an owned
@@ -181,9 +181,17 @@ pub fn discardBody(s: &Stream, max: int, now: &http::Now): Result[int]
 before it and returns `InvalidState` afterwards. Pseudo-headers are excluded
 from `RequestMeta.headers`. `RequestMeta.target`/`path`/`query` are raw bytes;
 no percent-decoding or normalization is performed. `requireAuthority` rejects
-an empty `:authority`/`Host`. `readBody` returns owned `BodyData`, `BodyEnd` or
-`BodyNeedRead`; `max` is capped at `maxReadChunk`. `discardBody` drops and
-consumes bytes with the same bound, so an unread body does not hold the window.
+an empty `:authority`/`Host`; a non-empty `:authority` that disagrees with
+`Host` is a protocol error, and a declared `content-length` above `maxBody` is
+rejected. `readBody` returns owned `BodyData`, `BodyEnd` or `BodyNeedRead`;
+`max` is capped at `maxReadChunk` and the cumulative delivered/discarded body is
+capped at `maxBody`. `discardBody` drops and consumes bytes with the same bound,
+so an unread body does not hold the window.
+
+Request header/trailer accessors return `Closed` for an orphaned stream (after
+connection close) or a stream already closed by nghttp2; the C arenas are freed
+before an orphaned shell is retired, so no accessor may touch them. `streamID`
+and `streamState` on an orphan return `Closed`.
 
 ## Response
 
@@ -203,8 +211,9 @@ pub fn interim(s: &Stream, status: int): Result[bool]
 `setLength` declares `content-length`; C injects the protocol-owned header and
 `setHeader("content-length", ...)` is rejected. Normal `2xx` responses must
 deliver exactly the declared DATA sum; `HEAD`, `1xx`/`204`/`205`/`304` are
-exempt. `writeBody` accepts only free send-buffer space and returns the accepted
-count (`0` means full; yield and retry). Trailers are declared before body
+exempt and `writeBody` accepts-and-discards their bytes without emitting DATA.
+`writeBody` accepts only free send-buffer space and returns the accepted count
+(`0` means full; yield and retry). Trailers are declared before body
 writes and added after the body; `endResponse` uses `NO_END_STREAM` and
 `nghttp2_submit_trailer`. A trailer after `END_STREAM` is `InvalidState`.
 `interim` is `Unsupported` in H2a; `101` is invalid.
@@ -225,12 +234,16 @@ pub fn counts(): Result[Counts]
 ```
 
 `drain` submits the first GOAWAY notice, records the stream cutoff and refuses
-new ids above it. `drainPoll` submits the barrier PING only after the notice is
+new ids above it (a CLOSING/CLOSED connection also refuses new streams). `drainPoll` submits the barrier PING only after the notice is
 sent, waits for the matching ACK or `drainBarrierMs`, then submits the final
 GOAWAY with `min(last_proc, cutoff)`. `drainComplete` is true only after the
-final GOAWAY is queued and no live streams remain. `close` retires the
-connection token and closes the transport exactly once; live stream shells are
-orphaned and remain closable, returning `Closed` for operations.
+final GOAWAY is queued and no live streams remain. Idle timeout is armed whenever
+the preface is valid and no live streams remain; it queues GOAWAY(NO_ERROR),
+emits `EventTimedOut`, enters CLOSING and remains flushable. A fatal shim/nghttp2
+error enters FAILED but leaves a bounded send path open so `next` can flush the
+queued GOAWAY before the application closes. `close` retires the connection
+token and closes the transport exactly once; live stream shells are orphaned and
+remain closable, returning `Closed` for operations.
 
 ## Pure action executor
 

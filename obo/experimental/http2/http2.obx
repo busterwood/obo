@@ -287,8 +287,11 @@ pub fn validateLimits(l: &Limits): Result[bool] {
     if l.maxConnectionWindow != l.maxConcurrentStreams * l.maxStreamRecvWindow {
         return err("maxConnectionWindow must equal maxConcurrentStreams * maxStreamRecvWindow", http::code(FAIL_INVALID_ARGUMENT, 0))
     }
-    if l.maxWire < 65536 || l.maxReadChunk < 1 || l.maxWire < l.maxReadChunk + 9 {
-        return err("maxWire is below 64 KiB or maxReadChunk + 9", http::code(FAIL_INVALID_ARGUMENT, 0))
+    if l.maxWire < 65536 || l.maxWire > 16777216 {
+        return err("maxWire is outside 64 KiB..16 MiB", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxReadChunk < 1 || l.maxWire < l.maxReadChunk + 9 {
+        return err("maxWire is below maxReadChunk + 9", http::code(FAIL_INVALID_ARGUMENT, 0))
     }
     if !positive(l.maxEvents) || l.maxEvents < 5 * l.maxConcurrentStreams + 16 {
         return err("maxEvents is below 5 * maxConcurrentStreams + 16", http::code(FAIL_INVALID_ARGUMENT, 0))
@@ -396,6 +399,11 @@ pub fn reservation(l: &Limits): Result[int] {
         return err("event reservation overflows", http::code(FAIL_RANGE, 0))
     }
     let events = l.maxEvents * 32
+    let refs = 2 * l.maxHeaderCount + l.maxTrailerCount + l.maxResponseTrailerCount
+    if refs < 1 || l.maxConcurrentStreams > 9223372036854775807 / refs / 16 {
+        return err("header reference reservation overflows", http::code(FAIL_RANGE, 0))
+    }
+    let refBytes = l.maxConcurrentStreams * refs * 16
     var total = perStream
     if total > 9223372036854775807 - wire { return err("reservation overflows", http::code(FAIL_RANGE, 0)) }
     total += wire
@@ -403,6 +411,8 @@ pub fn reservation(l: &Limits): Result[int] {
     total += l.maxHeaderArena
     if total > 9223372036854775807 - events { return err("reservation overflows", http::code(FAIL_RANGE, 0)) }
     total += events
+    if total > 9223372036854775807 - refBytes { return err("reservation overflows", http::code(FAIL_RANGE, 0)) }
+    total += refBytes
     if total > 9223372036854775807 - FIXED_OVERHEAD { return err("reservation overflows", http::code(FAIL_RANGE, 0)) }
     total += FIXED_OVERHEAD
     return ok(total)
@@ -460,6 +470,7 @@ pub type Connection = ref record {
     eofSeen: bool
     drained: bool
     failureCode: int
+    requests: int
 }
 
 pub type Stream = ref record {
@@ -473,6 +484,7 @@ pub type Stream = ref record {
     headRequest: bool
     status: int
     bodyWritten: int
+    bodyRead: int
 }
 
 pub fn _emptyStream(): Stream {
@@ -487,6 +499,7 @@ pub fn _emptyStream(): Stream {
         headRequest: false
         status: 0
         bodyWritten: 0
+        bodyRead: 0
     }
 }
 
@@ -755,6 +768,7 @@ pub fn make(t: transport::Transport, limits: &Limits,
                 eofSeen: false
                 drained: false
                 failureCode: 0
+                requests: 0
             })
         }
         err(m, c) {
@@ -883,7 +897,14 @@ fn readOnce(mut c: &Connection, ct: int, now: &http::Now): Result[bool] {
                     let n = len(outcome.bytes)
                     let copy = new []byte(n)
                     for i in 0..n { copy[i] = outcome.bytes[i] }
-                    return feedBytes(c, ct, &copy, now)
+                    let fed = feedBytes(c, ct, &copy, now)
+                    match fed {
+                        ok(v) { return ok(true) }
+                        err(m, code) {
+                            if c.failureCode != 0 { return ok(true) }
+                            return err(m, code)
+                        }
+                    }
                 }
                 ReadEof {
                     let raw = __cinterop("h2_conn_terminate", ct, -1, 0)
@@ -973,6 +994,12 @@ fn wantEvent(mut c: &Connection): Result[Event] {
     }
 }
 
+fn flushFatal(mut c: &Connection, ct: int): Result[bool] {
+    let a = try fillOutput(c, ct)
+    let b = try pumpOut(c)
+    return ok(a && b)
+}
+
 // `next` performs one transport write/flush and at most one transport read per
 // call, then returns at most one event. It never loops on readiness and never
 // hides a retry.
@@ -987,8 +1014,16 @@ pub fn next(mut c: &Connection, now: &http::Now): Result[Event] {
         EventNeedRead { }
         EventNeedWrite { }
         EventConnectionClosed { let e: Event = new EventConnectionClosed{}; return ok(e) }
-        EventProtocolError { let e: Event = new EventProtocolError{code: first.code}; return ok(e) }
-        EventTimedOut { let e: Event = new EventTimedOut{id: first.id}; return ok(e) }
+        EventProtocolError {
+            let flushed = try flushFatal(c, ct)
+            let e: Event = new EventProtocolError{code: first.code}
+            return ok(e)
+        }
+        EventTimedOut {
+            let flushed = try flushFatal(c, ct)
+            let e: Event = new EventTimedOut{id: first.id}
+            return ok(e)
+        }
         EventGoaway {
             let e: Event = new EventGoaway{lastStreamID: first.lastStreamID, code: first.code}
             return ok(e)
@@ -1013,6 +1048,21 @@ pub fn next(mut c: &Connection, now: &http::Now): Result[Event] {
         return ok(e)
     }
     let second = try pullEvent(c, ct, now)
+    match second {
+        EventProtocolError { let flushed = try flushFatal(c, ct) }
+        EventTimedOut { let flushed = try flushFatal(c, ct) }
+        EventNeedRead { }
+        EventNeedWrite { }
+        EventStreamStarted { }
+        EventStreamData { }
+        EventStreamEnd { }
+        EventStreamClosed { }
+        EventTrailers { }
+        EventSettingsAcked { }
+        EventGoaway { }
+        EventDrainComplete { }
+        EventConnectionClosed { }
+    }
     return ok(second)
 }
 
@@ -1130,10 +1180,13 @@ fn streamInfo(s: &Stream): Result[[]int] {
     return ok(out)
 }
 
-pub fn openStream(c: &Connection, id: int): Result[Stream] {
+pub fn openStream(mut c: &Connection, id: int): Result[Stream] {
     if c.ended { return err("HTTP/2 connection is closed", http::code(FAIL_CLOSED, 0)) }
     if id <= 0 || id % 2 == 0 {
         return err("server streams must be positive and odd", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if c.requests >= c.limits.maxRequestsPerConnection {
+        return err("HTTP/2 request limit reached", http::code(FAIL_REFUSED, 0))
     }
     let ct = try connectionToken(c)
     let raw = __cinterop("h2_stream_adopt", ct, id)
@@ -1146,6 +1199,7 @@ pub fn openStream(c: &Connection, id: int): Result[Stream] {
                 let _ = platform::_closeHandle(handle(r), KIND_H2_STREAM)
                 return err("HTTP/2 stream adoption marker failed", http::code(FAIL_INTERNAL, 0))
             }
+            c.requests += 1
             return ok(new Stream{
                 res: r
                 readChunk: c.limits.maxReadChunk
@@ -1157,6 +1211,7 @@ pub fn openStream(c: &Connection, id: int): Result[Stream] {
                 headRequest: false
                 status: 0
                 bodyWritten: 0
+                bodyRead: 0
             })
         }
         err(m, code) {
@@ -1275,6 +1330,18 @@ fn parseDecimal(text: string): int {
     return value
 }
 
+fn equalFold(a: string, b: string): bool {
+    if len(a) != len(b) { return false }
+    for i in 0..len(a) {
+        var ca = a[i]
+        var cb = b[i]
+        if ca >= byte('A') && ca <= byte('Z') { ca = byte(int(ca) + 32) }
+        if cb >= byte('A') && cb <= byte('Z') { cb = byte(int(cb) + 32) }
+        if ca != cb { return false }
+    }
+    return true
+}
+
 pub fn requestInfo(mut s: &Stream): Result[http::RequestMeta] {
     let count = try headerCount(s)
     var method = ""
@@ -1310,8 +1377,14 @@ pub fn requestInfo(mut s: &Stream): Result[http::RequestMeta] {
     }
     var auth = authority
     if len(auth) == 0 { auth = host }
+    if len(authority) > 0 && len(host) > 0 && !equalFold(authority, host) {
+        return err("request :authority and Host disagree", http::code(FAIL_PROTOCOL, 0))
+    }
     if s.requireAuthority && len(auth) == 0 {
         return err("request has no authority", http::code(FAIL_PROTOCOL, 0))
+    }
+    if hasCL && contentLength > s.maxBody {
+        return err("request content-length is above maxBody", http::code(FAIL_RANGE, 0))
     }
     var path = target
     var query = ""
@@ -1343,10 +1416,19 @@ pub fn requestInfo(mut s: &Stream): Result[http::RequestMeta] {
     })
 }
 
-pub fn readBody(s: &Stream, max: int, now: &http::Now): Result[http::BodyRead] {
+fn peerEnded(s: &Stream): Result[bool]
+
+pub fn readBody(mut s: &Stream, max: int, now: &http::Now): Result[http::BodyRead] {
     if max <= 0 { return err("readBody max must be positive", http::code(FAIL_INVALID_ARGUMENT, 0)) }
+    let remaining = s.maxBody - s.bodyRead
+    if remaining <= 0 {
+        let ended = try peerEnded(s)
+        if ended { let e: http::BodyRead = new http::BodyEnd{}; return ok(e) }
+        return err("request body is above maxBody", http::code(FAIL_RANGE, 0))
+    }
     var take = max
     if take > s.readChunk { take = s.readChunk }
+    if take > remaining { take = remaining }
     let tok = try ensureStreamToken(s)
     let b = try makeBytes(take)
     defer bytesbuf::close(&b)
@@ -1366,18 +1448,27 @@ pub fn readBody(s: &Stream, max: int, now: &http::Now): Result[http::BodyRead] {
             StreamHalfClosedLocal { let e: http::BodyRead = new http::BodyNeedRead{}; return ok(e) }
         }
     }
+    s.bodyRead += n
     let bytes = try copyOutN(&b, n)
     let e: http::BodyRead = new http::BodyData{bytes: bytes}
     return ok(e)
 }
 
-pub fn discardBody(s: &Stream, max: int, now: &http::Now): Result[int] {
+pub fn discardBody(mut s: &Stream, max: int, now: &http::Now): Result[int] {
     if max <= 0 { return err("discardBody max must be positive", http::code(FAIL_INVALID_ARGUMENT, 0)) }
+    let remaining = s.maxBody - s.bodyRead
+    if remaining <= 0 {
+        let ended = try peerEnded(s)
+        if ended { return ok(0) }
+        return err("request body is above maxBody", http::code(FAIL_RANGE, 0))
+    }
     var take = max
     if take > s.readChunk { take = s.readChunk }
+    if take > remaining { take = remaining }
     let tok = try ensureStreamToken(s)
     let n = __cinterop("h2_stream_discard", tok, take, now.mono.nanos)
     if n < 0 { return err("HTTP/2 body discard failed", nativeFailure(0 - n)) }
+    s.bodyRead += n
     return ok(n)
 }
 
@@ -1432,6 +1523,8 @@ pub fn setLength(s: &Stream, length: int): Result[bool] {
     return ok(true)
 }
 
+fn bodyCapable(s: &Stream): bool
+
 pub fn writeBody(mut s: &Stream, bytes: &[]byte, offset: int,
                  count: int): Result[int] {
     if offset < 0 || count < 0 || offset > len(bytes) ||
@@ -1439,6 +1532,7 @@ pub fn writeBody(mut s: &Stream, bytes: &[]byte, offset: int,
         return err("response body range is outside the array", http::code(FAIL_INVALID_ARGUMENT, 0))
     }
     if count == 0 { return ok(0) }
+    if !bodyCapable(s) { return ok(count) }
     var take = count
     if take > s.readChunk { take = s.readChunk }
     let tok = try ensureStreamToken(s)
@@ -1477,7 +1571,7 @@ pub fn addTrailer(s: &Stream, name: string, value: string): Result[bool] {
 fn bodyCapable(s: &Stream): bool {
     if s.headRequest { return false }
     if s.status >= 100 && s.status < 200 { return false }
-    if s.status == 204 || s.status == 205 { return false }
+    if s.status == 204 || s.status == 205 || s.status == 304 { return false }
     return true
 }
 
@@ -1832,7 +1926,7 @@ fn peerEnded(s: &Stream): Result[bool] {
     return ok(info[17] != 0)
 }
 
-fn finishSimple(mut st: &ActionState, s: &Stream,
+fn finishSimple(mut st: &ActionState, mut s: &Stream,
                 now: &http::Now): Result[bool] {
     var sink = false
     if st.action == ACT_ECHO { return ok(true) }

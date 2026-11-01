@@ -34,6 +34,8 @@
   ],
   "headers": [
     "native/h2_adapter.h",
+    "nghttp2/nghttp2ver.h",
+    "nghttp2/nghttp2.h",
     "../tls/native/tls_adapter.h",
     "../sys/native/sysadapter.h",
     "../sys/native/sysnet.h"

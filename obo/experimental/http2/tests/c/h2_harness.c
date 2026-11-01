@@ -41,6 +41,8 @@ static int client_closed;
 static long input_token;
 static long wire_token;
 
+static int wire_has_type(uint8_t type);
+
 static void die(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -241,7 +243,7 @@ static long make_server(long now) {
     v[38] = 60000;
     v[39] = 1000;
     v[40] = 30000;
-    v[41] = 3874816;
+    v[41] = 4009984;
     v[42] = 0;
     v[43] = 0;
     (void)now;
@@ -769,6 +771,9 @@ static void test_continuation_flood(void) {
     r = server_feed(c, req, len, 0);
     check(r < 0, "continuation flood rejected");
     check(h2_conn_state(c) == H2_STATE_FAILED, "connection failed");
+    server_out_len = 0;
+    (void)server_send_all(c);
+    check(wire_has_type(NGHTTP2_GOAWAY), "failed connection flushed GOAWAY");
     (void)sys_res_close(c, H2_KIND_CONNECTION);
     nghttp2_session_del(g_client);
     g_client = NULL;
@@ -918,6 +923,138 @@ static void test_deadline(void) {
     printf("ok deadline\n");
 }
 
+static int wire_has_type(uint8_t type) {
+    size_t z = 0;
+    while (z + 9 <= server_out_len) {
+        size_t fl = ((size_t)server_out[z]<<16) |
+                    ((size_t)server_out[z+1]<<8) | server_out[z+2];
+        if (server_out[z+3] == type) return 1;
+        z += 9 + fl;
+    }
+    return 0;
+}
+
+static void test_orphan_access(void) {
+    long c = make_server(0);
+    long tok;
+    long out;
+    g_client = client_new();
+    client_to_server(c, 0);
+    server_to_client(c, 0);
+    submit_get(g_client, "/orphan", NULL, 0, 0);
+    client_to_server(c, 0);
+    expect_event(c, 0, H2_EV_STREAM_STARTED, 1);
+    tok = adopt(c, 1);
+    check(h2_stream_header_count(tok) > 0, "header count before orphan");
+    check(sys_res_close(c, H2_KIND_CONNECTION) == 1, "connection closed");
+    check(h2_stream_header_count(tok) == -H2_FAIL(H2_FAIL_CLOSED, 0),
+          "orphan header count is Closed");
+    out = buf_new(64);
+    check(h2_stream_header_at(tok, 0, out, 0) == -H2_FAIL(H2_FAIL_CLOSED, 0),
+          "orphan header at is Closed");
+    check(h2_stream_trailer_count(tok) == -H2_FAIL(H2_FAIL_CLOSED, 0),
+          "orphan trailer count is Closed");
+    check(h2_stream_trailer_at(tok, 0, out, 0) == -H2_FAIL(H2_FAIL_CLOSED, 0),
+          "orphan trailer at is Closed");
+    check(sys_res_close(tok, H2_KIND_STREAM) == 1, "orphan shell released");
+    (void)sys_res_close(out, SYS_KIND_BYTE_BUFFER);
+    nghttp2_session_del(g_client);
+    g_client = NULL;
+    printf("ok orphan\n");
+}
+
+static void test_idle(void) {
+    long c = make_server(0);
+    long ev;
+    long d;
+    g_client = client_new();
+    client_to_server(c, 0);
+    server_to_client(c, 0);
+    while ((ev = next_event(c, 0)) != H2_EV_NONE) { (void)ev; }
+    d = h2_conn_deadline(c);
+    check(d > 0 && d <= 60000000000LL, "idle deadline armed");
+    ev = next_event(c, 61000000000LL);
+    check(ev == H2_EV_TIMEOUT, "idle timeout event");
+    check(h2_conn_state(c) == H2_STATE_CLOSING, "idle timeout closes");
+    server_out_len = 0;
+    (void)server_send_all(c);
+    check(wire_has_type(NGHTTP2_GOAWAY), "idle timeout queued GOAWAY");
+    (void)sys_res_close(c, H2_KIND_CONNECTION);
+    nghttp2_session_del(g_client);
+    g_client = NULL;
+    printf("ok idle\n");
+}
+
+static void test_data_stream_zero(void) {
+    long c = make_server(0);
+    static unsigned char req[24 + 9 + 10];
+    long in;
+    long fed;
+    long ev;
+    int saw = 0;
+    memset(req, 0, sizeof(req));
+    memcpy(req, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24);
+    req[27] = 4; /* SETTINGS, empty */
+    req[35] = 1; /* DATA length 1 */
+    req[36] = 0; /* DATA */
+    req[37] = 0;
+    req[41] = 0; /* stream 0 */
+    req[42] = 'x';
+    in = buf_new(sizeof(req));
+    buf_put(in, req, sizeof(req));
+    fed = h2_conn_feed(c, in, 0, (long)sizeof(req), 0);
+    check(fed >= 0, "DATA on stream 0 is reported as a connection error");
+    server_out_len = 0;
+    (void)server_send_all(c);
+    check(h2_conn_state(c) == H2_STATE_FAILED, "stream-0 DATA failed the connection");
+    check(wire_has_type(NGHTTP2_GOAWAY), "stream-0 DATA queued GOAWAY");
+    while ((ev = next_event(c, 0)) != H2_EV_NONE) {
+        if (ev == H2_EV_PROTOCOL_ERROR) saw = 1;
+    }
+    check(saw == 1, "stream-0 DATA surfaced one protocol error");
+    (void)sys_res_close(c, H2_KIND_CONNECTION);
+    printf("ok data-stream-zero\n");
+}
+
+static void test_closing_refuses_streams(void) {
+    long c = make_server(0);
+    static const unsigned char block[] = {
+        0x82, 0x86, 0x84,
+        0x41, 0x0e, 'e','x','a','m','p','l','e','.','t','e','s','t'
+    };
+    static unsigned char req[MAX_CAP];
+    size_t len = 0;
+    long ev;
+    int started = 0;
+    g_client = client_new();
+    client_to_server(c, 0);
+    server_to_client(c, 0);
+    check(h2_conn_goaway(c, -1, NGHTTP2_NO_ERROR) == 1, "explicit GOAWAY");
+    check(h2_conn_state(c) == H2_STATE_CLOSING, "closing state");
+    (void)server_send_all(c);
+    append_frame(req, &len, 1, 5, 1, (const char *)block, sizeof(block));
+    check(server_feed(c, req, len, 0) == (long)len, "closing feed consumed");
+    while ((ev = next_event(c, 0)) != H2_EV_NONE) {
+        if (ev == H2_EV_STREAM_STARTED) started += 1;
+    }
+    check(started == 0, "closing connection refused a new stream");
+    {
+        long st = buf_new(H2_STATS_BYTES);
+        unsigned char *ptr = NULL;
+        size_t cap = 0;
+        int64_t vals[H2_STATS_FIELDS];
+        (void)h2_conn_stats(c, st);
+        (void)sys_reg_buffer_data(st, &ptr, &cap);
+        memcpy(vals, ptr, sizeof(vals));
+        check(vals[H2_ST_STREAMS_OPENED] == 0, "no stream record after closing");
+        (void)sys_res_close(st, SYS_KIND_BYTE_BUFFER);
+    }
+    (void)sys_res_close(c, H2_KIND_CONNECTION);
+    nghttp2_session_del(g_client);
+    g_client = NULL;
+    printf("ok closing-refuses\n");
+}
+
 static void test_goaway(void) {
     long c = make_server(0);
     g_client = client_new();
@@ -992,6 +1129,10 @@ int main(int argc, char **argv) {
     test_multiplexed();
     test_header_cap();
     test_deadline();
+    test_orphan_access();
+    test_idle();
+    test_data_stream_zero();
+    test_closing_refuses_streams();
     test_goaway();
     printf("ok all\n");
     return 0;

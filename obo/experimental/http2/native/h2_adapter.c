@@ -249,6 +249,7 @@ typedef struct h2_conn {
     size_t timeouts;
     unsigned drain_complete_enqueued;
     unsigned error_delivered;
+    unsigned failed_flush;
     int32_t refused_id;
 } h2_conn;
 
@@ -294,6 +295,15 @@ static h2_conn *peek_conn(long token) {
 
 static h2_stream *peek_stream(long token) {
     return (h2_stream *)sys_reg_peek(token, (int)H2_KIND_STREAM);
+}
+
+/* Accessors that read C-owned arenas must fail closed for an orphaned stream:
+ * connection release frees the arenas before the shell is closed, and the
+ * stream record stays alive so the shell can still retire its own token. */
+static int stream_access_closed(h2_stream *s) {
+    if (s == NULL) return 1;
+    if (s->conn == NULL || s->closed) return 1;
+    return 0;
 }
 
 static long buffer_view(long token, unsigned char **data, size_t *len) {
@@ -571,6 +581,11 @@ static int sweep_streams(h2_conn *c) {
                 c->streams_closed += 1;
                 g_streams_closed += 1;
                 free_stream(s);
+                if (c->stream_count == 0 && c->preface_ok && !c->failed &&
+                    !c->closed && c->state != H2_STATE_CLOSING) {
+                    c->idle_active = 1;
+                    c->idle_deadline = deadline_add(c->now_ns, c->idle_timeout_ms);
+                }
                 continue;
             }
         }
@@ -615,6 +630,13 @@ static int conn_release(void *ptr) {
             s->conn = NULL;
             consume_buffered(c, s, 1);
             free_stream_buffers(s);
+            s->hreq_count = 0;
+            s->htrail_count = 0;
+            s->hreq_used = 0;
+            s->htrail_used = 0;
+            s->hreq_list_bytes = 0;
+            s->htrail_list_bytes = 0;
+            s->request_cleared = 1;
             stream_clear_deadlines(s);
         } else {
             free_stream(s);
@@ -855,6 +877,11 @@ static int cb_begin_headers(nghttp2_session *session, const nghttp2_frame *frame
         return 0;
     }
     if (s == NULL) {
+        if (c->state == H2_STATE_CLOSING || c->state == H2_STATE_CLOSED ||
+            c->state == H2_STATE_FAILED) {
+            c->refused_id = frame->hd.stream_id;
+            return 0;
+        }
         if (c->streams_opened >= c->max_streams) {
             c->failed = 1;
             c->failed_code = H2_FAIL(H2_FAIL_FLOOD, 0);
@@ -1045,6 +1072,11 @@ static int cb_frame_recv(nghttp2_session *session, const nghttp2_frame *frame,
             c->settings_acked = 1;
             c->settings_active = 0;
             c->settings_deadline = -1;
+            if (c->stream_count == 0 && c->preface_ok && !c->failed &&
+                !c->closed && c->state != H2_STATE_CLOSING) {
+                c->idle_active = 1;
+                c->idle_deadline = deadline_add(c->now_ns, c->idle_timeout_ms);
+            }
             event_push(c, H2_EV_SETTINGS_ACKED, 0, 0, 0, 0);
         }
         break;
@@ -1100,7 +1132,22 @@ static int cb_frame_send(nghttp2_session *session, const nghttp2_frame *frame,
     } else if (frame->hd.type == NGHTTP2_GOAWAY) {
         c->goaways_sent += 1;
         g_goaways_sent += 1;
-        if (c->drain_state == 1) c->drain_state = 2;
+        if (c->drain_state == 1) {
+            c->drain_state = 2;
+        } else if (!c->failed && c->state != H2_STATE_DRAINING &&
+                   c->state != H2_STATE_CLOSING) {
+            /* nghttp2 queues GOAWAY for connection-level protocol errors
+             * without necessarily returning a negative mem_recv result. The
+             * frame-send callback is the authoritative point to surface it. */
+            c->failed = 1;
+            c->failed_flush = 1;
+            c->failed_code = H2_FAIL(H2_FAIL_PROTOCOL, frame->goaway.error_code);
+            c->state = H2_STATE_FAILED;
+            c->protocol_errors += 1;
+            g_protocol_errors += 1;
+            event_push(c, H2_EV_PROTOCOL_ERROR, 0, 0,
+                       (uint32_t)H2_FAIL_PROTOCOL, 0);
+        }
     } else if (frame->hd.type == NGHTTP2_HEADERS) {
         h2_stream *s = find_stream(c, frame->hd.stream_id);
         if (s != NULL && s->response_state == 1) {
@@ -1373,6 +1420,7 @@ nomem:
 static long conn_fail(h2_conn *c, long code, uint32_t event_error) {
     if (c == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
     c->failed = 1;
+    c->failed_flush = 1;
     c->failed_code = code;
     c->state = H2_STATE_FAILED;
     c->protocol_errors += 1;
@@ -1419,7 +1467,8 @@ long h2_conn_feed(long conn_token, long in_token, long offset, long count,
         c->state = H2_STATE_AWAIT_SETTINGS;
         c->settings_active = 1;
         c->settings_deadline = deadline_add(now_ns, c->settings_timeout_ms);
-        c->idle_active = 0;
+        c->idle_active = 1;
+        c->idle_deadline = deadline_add(now_ns, c->idle_timeout_ms);
     }
     if (count == 0) return preface_used;
     start = (size_t)offset;
@@ -1437,6 +1486,17 @@ long h2_conn_feed(long conn_token, long in_token, long offset, long count,
         }
         return conn_fail(c, code, (uint32_t)kind);
     }
+    /* nghttp2 reports some connection errors by queueing GOAWAY and stopping
+     * input rather than returning a negative value (for example DATA on stream
+     * 0 or a zero WINDOW_UPDATE increment). Surface that as a terminal protocol
+     * error so obo flushes the queued GOAWAY and closes. A peer GOAWAY is a
+     * drain, not a failure, and has already moved the state to DRAINING. */
+    if (c->session != NULL && !c->failed && c->state != H2_STATE_DRAINING &&
+        c->state != H2_STATE_CLOSING &&
+        nghttp2_session_want_read(c->session) == 0) {
+        (void)conn_fail(c, H2_FAIL(H2_FAIL_PROTOCOL, 0),
+                        (uint32_t)H2_FAIL_PROTOCOL);
+    }
     return preface_used + (long)r;
 }
 
@@ -1445,7 +1505,8 @@ long h2_conn_send(long conn_token, long max) {
     size_t before;
     int r;
     if (c == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
-    if (c->failed || c->closed) return h2_err(H2_FAIL_CLOSED, 0);
+    if (c->closed) return h2_err(H2_FAIL_CLOSED, 0);
+    if (c->failed && !c->failed_flush) return h2_err(H2_FAIL_CLOSED, 0);
     if (max < 0) return h2_err(H2_FAIL_INVALID_ARGUMENT, 0);
     if (!c->preface_ok && c->mode == H2_MODE_PRIOR_KNOWLEDGE) return 0;
     if (!c->preface_ok) {
@@ -1614,6 +1675,7 @@ long h2_conn_next_event(long conn_token, long now_ns) {
         e = event_pop(c);
     }
     if (e == NULL) return H2_EV_NONE;
+    if (e->type == H2_EV_PROTOCOL_ERROR) c->error_delivered = 1;
     return (long)e->type;
 }
 
@@ -1827,6 +1889,8 @@ long h2_stream_adopt(long conn_token, long stream_id) {
     if (c == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
     if (stream_id <= 0 || (stream_id & 1) == 0) return h2_err(H2_FAIL_INVALID_ARGUMENT, 0);
     if (c->failed || c->closed) return h2_err(H2_FAIL_CLOSED, 0);
+    if (c->state == H2_STATE_CLOSING || c->state == H2_STATE_CLOSED)
+        return h2_err(H2_FAIL_CLOSED, 0);
     s = find_stream(c, (int32_t)stream_id);
     if (s == NULL || s->closed) return h2_err(H2_FAIL_STREAM_CLOSED, 0);
     if (s->registered) return h2_err(H2_FAIL_INVALID_STATE, 1);
@@ -1834,6 +1898,7 @@ long h2_stream_adopt(long conn_token, long stream_id) {
         (int32_t)stream_id > c->drain_cutoff) return h2_err(H2_FAIL_REFUSED, 0);
     token = sys_reg_new_object((int)H2_KIND_STREAM, s, stream_release, 0);
     if (token < 0) {
+        consume_buffered(c, s, 1);
         (void)submit_rst(s, NGHTTP2_REFUSED_STREAM);
         s->closing = 1;
         return h2_err(H2_FAIL_RESOURCE_LIMIT, 0);
@@ -1925,6 +1990,7 @@ long h2_stream_info(long stream_token, long out_token) {
     h2_stream *s = peek_stream(stream_token);
     int64_t f[H2_STREAM_INFO_FIELDS];
     if (s == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
+    if (s->conn == NULL) return h2_err(H2_FAIL_CLOSED, 0);
     memset(f, 0, sizeof(f));
     f[H2_SI_ID] = s->id;
     f[H2_SI_STATE] = h2_stream_state(stream_token);
@@ -2242,6 +2308,7 @@ long h2_stream_discard(long stream_token, long max, long now_ns) {
 long h2_stream_header_count(long stream_token) {
     h2_stream *s = peek_stream(stream_token);
     if (s == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
+    if (stream_access_closed(s)) return h2_err(H2_FAIL_CLOSED, 0);
     if (s->request_cleared) return h2_err(H2_FAIL_INVALID_STATE, 0);
     return (long)s->hreq_count;
 }
@@ -2250,6 +2317,7 @@ long h2_stream_header_at(long stream_token, long index, long out_token, long whi
     h2_stream *s = peek_stream(stream_token);
     h2_nv_ref *ref;
     if (s == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
+    if (stream_access_closed(s)) return h2_err(H2_FAIL_CLOSED, 0);
     if (s->request_cleared) return h2_err(H2_FAIL_INVALID_STATE, 0);
     if (index < 0 || (size_t)index >= s->hreq_count) return h2_err(H2_FAIL_RANGE, 0);
     if (which != H2_NV_NAME && which != H2_NV_VALUE) return h2_err(H2_FAIL_INVALID_ARGUMENT, 0);
@@ -2262,6 +2330,7 @@ long h2_stream_header_at(long stream_token, long index, long out_token, long whi
 long h2_stream_trailer_count(long stream_token) {
     h2_stream *s = peek_stream(stream_token);
     if (s == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
+    if (stream_access_closed(s)) return h2_err(H2_FAIL_CLOSED, 0);
     return (long)s->htrail_count;
 }
 
@@ -2269,6 +2338,7 @@ long h2_stream_trailer_at(long stream_token, long index, long out_token, long wh
     h2_stream *s = peek_stream(stream_token);
     h2_nv_ref *ref;
     if (s == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
+    if (stream_access_closed(s)) return h2_err(H2_FAIL_CLOSED, 0);
     if (index < 0 || (size_t)index >= s->htrail_count) return h2_err(H2_FAIL_RANGE, 0);
     if (which != H2_NV_NAME && which != H2_NV_VALUE) return h2_err(H2_FAIL_INVALID_ARGUMENT, 0);
     ref = &s->htrail[index];
@@ -2280,6 +2350,7 @@ long h2_stream_trailer_at(long stream_token, long index, long out_token, long wh
 long h2_stream_clear_request(long stream_token) {
     h2_stream *s = peek_stream(stream_token);
     if (s == NULL) return h2_err(H2_FAIL_INVALID_RESOURCE, 0);
+    if (stream_access_closed(s)) return h2_err(H2_FAIL_CLOSED, 0);
     s->hreq_count = 0;
     s->hreq_used = 0;
     s->hreq_list_bytes = 0;

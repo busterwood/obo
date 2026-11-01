@@ -91,10 +91,17 @@ The suite builds the shim and harness against the pinned headers, runs the C
 harness and its ASAN/UBSAN/LSAN build, builds the obo memory/h2c/TLS drivers
 through cinterop, verifies manifests, checks limits/admission/mode policy and
 the adoption-failure path, verifies memory response bytes and trailers with a
-real nghttp2 client, checks reset and GOAWAY frames, and runs curl
+real nghttp2 client, checks orphan access, idle timeout, reset, fatal-error
+GOAWAY flush and DATA-on-stream-0 handling, and runs curl
 `--http2-prior-knowledge` and `--http2` over `systls` ALPN h2 on loopback.
-h2spec and h2load are explicit integration dependencies and are skipped when
-not installed; no default test downloads a tool or uses an external network.
+h2spec and h2load are explicit integration dependencies. They are skipped when
+not installed, with the missing-tool reason printed; no default test downloads a
+protocol tool or contacts a protocol peer outside loopback. The only optional
+network action is `apt-get download libnghttp2-dev=<installed version>` when the
+matching headers are not installed; it is recorded and the archive is extracted
+privately. h2spec v2.6.0 is the pinned manual integration target
+(`h2spec_linux_amd64.tar.gz`, GitHub release v2.6.0); it is not fetched
+automatically.
 
 ## Non-goals in H2a
 
