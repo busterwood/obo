@@ -1,19 +1,24 @@
 # Experimental C interop (`cinterop`)
 
-Status: **P2T-a cinterop prerequisites implemented; hardening checkpoint
-pending independent rereview.** The prototype was repaired after the
+Status: **cinterop v2 stages (a)–(g) merged; stage (h) is the skill/template
+rewrite and docs cleanup.** The prototype was repaired after the
 architecture/security review of `a29f35d`, merged with released `0.10` main, and
 now has an explicit-defer cleanup story, a guarded hosted entry stack with
 proper C exit/atexit/stdio shutdown, a second real library (zlib), validated
 private include roots/cflags and full RELRO/immediate binding on hosted links.
 A hosted OpenSSL 3.0 memory-BIO/TLS 1.3 qualification also passes. This is still
-an experimental, trusted-build probe, not a production API, not a stable format,
-and not approved for merge, push, promotion or seed copy. It does **not** add a
+an experimental, trusted-build probe: not a production API, not a stable format,
+and not a stable public surface. It does **not** add a
 TLS adapter API to the toolkit or change the compiler, symbol format, ABI or
 package version; the separate experimental P2T-b server adapter under
 `../tls/` consumes this seam.
-Design:
-[`../../design/native-c-interop-design.md`](../../design/native-c-interop-design.md).
+Design: [`../../design/cinterop-boundary-design.md`](../../design/cinterop-boundary-design.md)
+(the approved v2 boundary) and
+[`../../design/cinterop-v2-handoff.md`](../../design/cinterop-v2-handoff.md)
+(status, gates and the decisions that are final). The older
+[`../../design/native-c-interop-design.md`](../../design/native-c-interop-design.md)
+is historical: its pre-v2 scalar/token adapter is superseded for libpq and
+SQLite.
 
 The compiler boundary supports **`i64` arguments, and argument kinds** (borrowed
 bytes and strings, NUL-checked C strings, `i32`/`u32` scalars, int arrays and
@@ -22,13 +27,16 @@ the stage (b)/(c) additions: copy-out `cbytes`, `cstr_out`, `void` and
 `nonzero` results, and body-less `native fn` declarations (see *Return kinds and
 typed native declarations* below), and the stage (d) foreign handles with
 `own`/`own_opt`/`borrow<C>`, explicit `close`/`is_open`, use-after-close exit 7
-and the leak census (see *Foreign handles* below). The libpq package is now on
+and the leak census (see *Foreign handles* below). Stage (f) adds out parameters
+and the generated `_out` records; `db/sqlite` uses them for
+`open_v2`/`prepare_v2`/`prepare_at`. The libpq package is now on
 these foreign handles (`Connection`/`Res` hold the real `PGconn*`/`PGresult*` in
 a private word; there is no integer token or `cres` registry). `db/postgres` is
 also ported to these handles: its `Connection`/`Rows` hold a libpq handle and
 its former C adapter, packet builder and `live_*` counters are gone. The trusted
-**C resource registry** (`cres.c/.h`) remains for the zlib and buffer examples,
-the skill templates and the registry test, but neither database adapter uses it. Connection/Rows close is explicit
+**C resource registry** (`cres.c/.h`) remains for the zlib adapter and its test,
+the buffer example and the registry test; the skill templates moved to v2
+foreign handles in stage (h), and no database binding uses `cres`. Connection/Rows close is explicit
 and normally written with obo `defer`; dropping an ordinary record does **not**
 call `PQfinish`/`PQclear`/`free`. There are still no callbacks, C variadics,
 structs by value, source floats/decimals in the native contract, TLS or IFUNC
@@ -188,9 +196,10 @@ match made {
 - `examples/libpq_defer_app.obx` no longer imports `buffer.obx`: the buffer
   package has its own adapter and is not part of the libpq spec.
 - **Stage (g) cleanup:** the old libpq token adapter and the postgres C adapter
-  are deleted. `toolkit/cres.c/.h` remain because the zlib and buffer examples,
-  the skill templates and the registry test still use them; no database binding
-  lists them in a spec or wrapper source. `db/postgres` adds typed `exec_params_typed`/
+  are deleted. `toolkit/cres.c/.h` remain because the zlib adapter and its C
+  test, the buffer example and the registry test still use them; the stage (h)
+  templates no longer do. No database binding lists them in a spec or wrapper source.
+  `db/postgres` adds typed `exec_params_typed`/
   `exec_params_typed_binary` entry points to `libpq.obx` and keeps the same
   libpq native surface (a spec-drift guard checks it).
 
@@ -672,8 +681,10 @@ signature-checked against its `CType *` prototype (`int` for `int`/`discard`,
 `void` for `void`).
 
 
-**Out parameters (stage (f)).** A native declaration may end with out parameters,
-which consume no call argument:
+**Out parameters (stage (f)).** In the `.cbind` `args` array the out slots
+appear in C order and may be interleaved with inputs (for example
+`sqlite3_open_v2`'s `out_own` slot sits between the path and flags inputs). In
+the `native fn` declaration, inputs come first and the out parameters follow:
 
 ```obo
 native fn open_v2(path: &[]byte, flags: int, out db: Connection): open_v2_out
@@ -685,7 +696,7 @@ native fn prepare_v2(db: &Connection, sql: &[]byte,
 `C **`); at most one is allowed. `out name: int from input` is `out_offset@k`
 (C parameter `const char **`); `input` must be an `&[]byte` input parameter,
 at most one is allowed, and the offset is relative to that argument's borrowed
-bytes. Inputs come first in the declaration; the return type is the literal
+bytes. At most one of each form is allowed, and the return type is the literal
 `<native>_out`. The compiler builds that record directly (never in module globals
 or `.sym`): `rc: int` first, then one field per out parameter in declaration
 order, an `out_own` field being `?X`. The C return code is stored in `rc` before
@@ -858,8 +869,8 @@ It also builds and runs:
   `libcrypto.so.3` link, TLS 1.3 memory-BIO/ALPN handshake, provider/RAND,
   thread-local state, constructor/atexit/stdio/`OPENSSL_cleanup`, and a separate
   ASAN/UBSAN run;
-- ASAN/UBSAN runs of the fake adapter, zlib adapter, guarded-stack fixture and
-  the `libpq_conninfo.c` helper;
+- ASAN/UBSAN runs of the `cres_test.c` registry suite, the zlib adapter, the
+  guarded-stack fixture, the foreign fixture and the `libpq_conninfo.c` helper;
 - the opt-in live local PostgreSQL smoke test when `CINTEROP_TEST_DSN` is set.
 
 The project skill and buildable templates are in [`skill/`](skill/SKILL.md).
@@ -893,11 +904,11 @@ declarations-only SQLite adapter, both explicit-close and tested.
   handles; dropping a `Connection`/`Rows` never calls `PQfinish`/`PQclear` and
   is reported by the `OBO_CHECK=1` census. The binding is not a full database
   driver or a stable public API.
-- The retained `cres` token registry (zlib/buffer examples, skill templates and
-  the registry test) protects
+- The retained `cres` token registry (the zlib adapter and its test, the buffer
+  example and the registry test) protects
   against accidental stale/wrong-kind/forged integer use, not against trusted C
-  or an adversarial caller. Its generation is 31 bits. Neither database
-  adapter uses it any more. Obo token fields are private to their wrapper
+  or an adversarial caller. Its generation is 31 bits. No database binding or
+  skill template uses it any more. Obo token fields are private to their wrapper
   modules; that reduces accidental construction, not deliberate forgery.
 - Source floats/decimals are not part of the native contract. The libpq
   binding preserves exact numeric text/OID/typmod and never converts a database

@@ -762,9 +762,11 @@ def template(tmp):
     p = build(os.path.join(tdir, 'library.cbind'), os.path.join(tdir, 'app.obx'), out)
     if p.returncode != 0:
         raise Fail("template build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(out, 'app')]), 'template run')
-    if 'byte0=0' not in p.stdout or 'live=0' not in p.stdout:
-        raise Fail("template output mismatch:\n%s" % p.stdout)
+    p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'template run')
+    want = 'byte0=0\nopen=true\nclosed=true\nout_byte0=0\nout_error=7\n'
+    if p.stdout != want:
+        raise Fail("template output mismatch:\nwant %r\ngot  %r" % (want, p.stdout))
     need(verify(out), 'template manifest verify')
     print('template dry-run: ok')
 
@@ -808,7 +810,7 @@ def libpq_result(tmp):
         raise Fail("libpq signature_check is %r, expected header" % m.get('signature_check'))
     print('libpq result ownership: ok')
 
-def fake_adapter(tmp):
+def libpq_fake_edges(tmp):
     """Edge cases of the v2 libpq wrapper through the fake ABI: a dropped Rows,
     a missing Connection close, use-after-close, NUL rejection, an explicit
     connect_timeout, and a NULL PQmakeEmptyPGresult.
@@ -3505,7 +3507,7 @@ def main():
         libpq_limits(tmp)
         libpq_errors(tmp)
         libpq_constants()
-        fake_adapter(tmp)
+        libpq_fake_edges(tmp)
         libpq_fake(tmp)
         zlib_second(tmp)
         include_and_cflags(tmp)

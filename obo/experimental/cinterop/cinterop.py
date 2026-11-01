@@ -4,14 +4,18 @@
     python3 obo/experimental/cinterop/cinterop.py build SPEC APP.obx --out DIR [--obo PATH]
     python3 obo/experimental/cinterop/cinterop.py verify MANIFEST
 
-SPEC is a small JSON file (format cinterop-proto/1). This is a trusted-build
-prototype, not a public API. It generates an assembly thunk for each scalar
-function and either generates a simple .obx wrapper or copies the maintained
-wrapper named by "wrapper"; it checks the typed sidecar and builds a real
-system-linked non-PIE ELF. The compiler's experimental __cinterop builtin emits
-a call-site arity record; this tool checks every record against the spec before
-the link. Hashes are provenance/corruption checks, not a signature or a
-memory-safety proof.
+SPEC is a small JSON file (format cinterop-proto/1 or cinterop-proto/2). This
+is a trusted-build prototype, not a public API. For each function it generates
+an assembly thunk and either generates a simple .obx wrapper or copies the
+maintained wrapper named by "wrapper"; it checks the typed sidecar and builds a
+real system-linked non-PIE ELF. v2 adds the argument kinds (borrowed bytes and
+strings, scalars, lists, NULL/const slots, and own/borrow foreign handles), the
+copy-out and void/`nonzero` return kinds, body-less `native fn` declarations,
+`foreign` handle types with their release table, and the generated `_out`
+records for out parameters. The compiler's experimental `__cinterop` builtin
+and its `native fn` calls emit a call-site record; this tool checks every
+record against the spec before the link. Hashes are provenance/corruption
+checks, not a signature or a memory-safety proof.
 """
 import argparse
 import hashlib
@@ -41,7 +45,6 @@ ABI = 'sysv-amd64'
 FORMAT_V1 = 'cinterop-proto/1'
 FORMAT_V2 = 'cinterop-proto/2'
 FORMATS = (FORMAT_V1, FORMAT_V2)
-FORMAT = FORMAT_V1
 RELOC_HEADER_V1 = 'cinterop-relocs 1'
 RELOC_HEADER_V2 = 'cinterop-relocs 2'
 MAX_ARGS = 8
