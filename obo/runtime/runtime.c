@@ -123,6 +123,12 @@ static void die(const char *msg) { die_code(msg, 2); }
 #define MAX_OBJECT  0xFFFFFFF0UL
 #define MAX_PAYLOAD (MAX_OBJECT - GRAN)
 
+/* A handle's low 32 bits are a granule offset, so the arena may not contain a
+ * granule whose offset needs bit 32.  A future ceiling that would need one
+ * fails the build here, not every program's startup. */
+_Static_assert(HEAP_CEILING / GRAN <= 0x100000000UL,
+               "HEAP_CEILING exceeds the 32-bit handle granule offset");
+
 static u64 heap_start, heap_top, heap_end;
 static u64 heap_size;                  /* resolved arena size: default 4 GiB, ceiling 64 GiB */
 static unsigned char *starts;          /* one bit per granule: an object header starts here */
@@ -207,10 +213,12 @@ static void heap_limit_bad(const char *v) {
 /* A handle's low 32 bits are a granule offset, so the handle layout can name at
  * most 2^32 granules = 64 GiB.  The parser already bounds the arena by
  * HEAP_CEILING; this guard keeps a future ceiling change from silently
- * truncating offsets.  At exactly 64 GiB the final granule is 0xffffffff and
- * still fits, so only a larger arena is rejected. */
+ * truncating offsets.  An allocation can start at a granule only when a whole
+ * granule remains, so 64 GiB+1..+15 still cannot start a granule at offset
+ * 2^32 and stays valid; 64 GiB+16 is the first arena that can, and is
+ * rejected.  At exactly 64 GiB the final granule is 0xffffffff. */
 static void heap_check_handle_range(u64 n) {
-    if (n / GRAN > 0x100000000UL)
+    if (n / GRAN > (u64)0x100000000UL)
         die("obx: heap limit exceeds the 64 GiB handle range\n");
 }
 
