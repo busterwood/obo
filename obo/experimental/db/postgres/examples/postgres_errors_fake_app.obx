@@ -2,9 +2,9 @@ module app
 
 import "postgres.obx"
 
-// Fake libpq only. Each specific adapter message is produced by a real path:
-// PQexecParams NULL with no libpq error text (pg_exec_typed 0), exec on a closed
-// connection (pg_exec_typed -1), and PQconnectdb NULL at open.
+// Fake libpq only. Each specific message is produced by a real path:
+// PQexecParams NULL with no libpq error text, the closed-connection pre-check
+// before the native call, and PQconnectdb NULL at open.
 fn main() {
     let made = postgres::open("fake-ok")
     match made {
@@ -43,6 +43,4 @@ fn main() {
         }
         err(m, n) { println("null_open_error=", n, " ", m) }
     }
-    println("live=", postgres::live_resources())
-    println("conns=", postgres::live_connections())
 }

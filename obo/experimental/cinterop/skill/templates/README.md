@@ -31,10 +31,13 @@ C sources and libraries.
 
 For a complete real library example, read:
 
-- `../../examples/libpq.cbind` and `../../examples/libpq.obx` (the maintained wrapper);
-- `../../toolkit/libpq_adapter.c` (packet parsing, PQexecParams, result copies);
-- `../../tests/fake_libpq.c` and `../../tests/fake_adapter_test.c`
-  (deterministic ownership/error tests);
+- `../../examples/libpq.cbind` and `../../examples/libpq.obx` (the maintained
+  v2 wrapper, typed OID arrays and foreign handles);
+- `../../db/postgres/postgres.obx` (a second wrapper over libpq: `Connection`/
+  `Rows` records, typed parameters and the explicit close contract);
+- `../../tests/fake_libpq.c` and `../../tests/fake_libpq_probe.h`
+  (deterministic ownership/error tests), plus `../../tests/cres_test.c` for the
+  legacy token registry used by the zlib/buffer examples and these templates;
 - `../../examples/libpq_defer_app.obx` and `../../examples/zlib_app.obx`
   (explicit `defer` cleanup and a second real library).
 

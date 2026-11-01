@@ -2,15 +2,19 @@
 
 This note supplements `SKILL.md` for database-shaped C APIs. The worked
 packages are `obo/experimental/db/postgres` and `obo/experimental/db/sqlite`;
-both use the same `cres` registry and byte-buffer pattern as the libpq toolkit
-adapter.
+both use cinterop v2 foreign handles and explicit close. `db/postgres` wraps
+`libpq::Connection`/`libpq::Res`; `db/sqlite` owns `sqlite3*`/`sqlite3_stmt*`
+directly.
 
 ## What transfers from libpq
 
-- Keep foreign pointers in C and put only generation/kind-checked integer
-  tokens in obo records.
-- Register every connection/result/statement allocation; release it exactly
-  once from an explicit close. A second close is a safe false.
+- Keep the real C pointer in a `foreign` record's private word. `own`/`own_opt`
+  return it, `borrow`/`borrow_mut` pass it, `is_open` reads the word, and a
+  direct borrow after close exits 7. The older `cres` token registry is for the
+  zlib/buffer examples, the skill templates and the registry test, not these
+  packages.
+- Release every connection/result/statement exactly once from an explicit
+  close. A second close is a safe `false`/`ok(false)`.
 - Copy borrowed values and error strings with an explicit length. Use the
   library's reported length (`PQgetlength`, `sqlite3_column_bytes`), never
   `strlen`, for a value that may contain NUL.
@@ -18,22 +22,26 @@ adapter.
   on the connection, and a separate copied message/code per prepared statement.
   A successful bind on statement B must not erase A's last error.
 - Carry NULL as a distinct kind/flag. Empty bytes are not NULL.
-- Build a small length-delimited packet in obo for parameter batches, then copy
-  it once into a registry buffer. The C adapter parses and bounds the packet.
+- Pass the value/binary/OID arrays directly to `PQexecParams`; there is no
+  length-delimited packet and no local C parser. The typed OID array is checked
+  against the value count and `0..0xffffffff`.
 - Set explicit parameter OIDs/types when the API allows it. Preserve exact
   numeric text plus metadata; do not convert database numerics through a float.
 - Use a fixed SQL statement with placeholders. Do not interpolate strings.
-- Provide live counters and a test that fails when a close is omitted.
+- Under `OBO_CHECK=1` the foreign-handle census reports a dropped open handle
+  (exit 8); test that instead of adding `live_*` counters.
 - Test with a deterministic fake API first, then the real library; an installed
   library must not produce a silent skip after a build failure.
 
 ## Database-specific choices
 
-- **PostgreSQL.** Reuse the reviewed `toolkit/libpq_adapter.c` for connection
-  status, result metadata and close; add only a typed `PQexecParams` packet.
-  Keep the eight-argument call signature. OIDs used here: text 25, bytea 17,
-  int8 20, bool 16, untyped NULL 0. A `PGresult` outlives its `PGconn`; test
-  that explicitly.
+- **PostgreSQL.** `db/postgres` wraps the v2 `examples/libpq.obx`. The wrapper
+  records hold the libpq handle in a field, and the field reaches a **native
+  borrow** directly; passing that field to another obo function is refused by
+  the deep-reference rule. OIDs used here: text 25, bytea 17, int8 20, bool 16,
+  numeric 1700, untyped NULL 0. A text-format parameter is a `len+1` copy
+  truncated back to `len`; binary values keep their exact length. A `PGresult`
+  outlives its `PGconn`; test that explicitly.
 - **SQLite.** A missing development header is not permission to pretend a
   header check happened. Use a small, independently written declarations-only
   subset matching the official C API, link `-l:libsqlite3.so.0`, and record
@@ -42,17 +50,13 @@ adapter.
   compiled header check. If a real header is available in a private evidence
   location, compile the declarations against it as a read-only cross-check, but
   keep the committed build independent of that header.
-- SQLite connections must not close while prepared statements are live. Track a
-  per-connection statement count, return `SQLITE_BUSY` from close, and register
-  `defer conn.close()` before `defer stmt.close()`: LIFO then finalizes the
-  statement first. Reversing that order closes the connection first, gets
-  `SQLITE_BUSY`, and leaks the connection.
+- SQLite uses `sqlite3_close_v2` (D14): close succeeds while statements are
+  live, the `Connection` census drops, and the statements keep working until
+  finalized. Register `defer conn.close()` before `defer stmt.close()` as the
+  tidy order; the statement census catches a forgotten finalize.
 - SQLite's `sqlite3_exec` and `sqlite3_prepare_v2` have different statement
   counts: exec accepts multiple statements, prepare accepts exactly one. State
   that in the wrapper rather than silently truncating SQL.
-- A prepare error code can be a small positive SQLite result code, so the
-  adapter's "no token" return must be non-positive (0/negative) or the obo
-  wrapper will mistake an error for a token.
 - `sqlite3_reset` returns the previous step error after resetting. Report reset
   as success and clear that diagnostic; otherwise a reusable statement looks
   permanently failed.

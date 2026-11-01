@@ -1,0 +1,22 @@
+module app
+
+import "postgres.obx"
+
+// PQmakeEmptyPGresult returning NULL is an own contract violation: the native
+// result traps with exit 11 before make_empty_rows can see it. Run with
+// FAKE_EMPTY_NULL=1. Without that variable the same app succeeds.
+fn check(ok: bool) {
+    if !ok { println("FAIL empty null status"); exit(1) }
+}
+
+fn main() {
+    let made = postgres::make_empty_rows(postgres::PGRES_TUPLES_OK)
+    match made {
+        ok(rows) {
+            check(rows.status() == postgres::PGRES_TUPLES_OK)
+            rows.close()
+            println("empty_null=ok")
+        }
+        err(m, c) { println("empty_null_error=", c, " ", m) }
+    }
+}

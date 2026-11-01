@@ -101,5 +101,4 @@ fn main() {
         }
         err(m, c) { println("open ", m, " ", c); exit(21) }
     }
-    println("live=", postgres::live_resources())
 }

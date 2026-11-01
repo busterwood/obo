@@ -31,5 +31,4 @@ fn main() {
             println("invalid_conninfo_msg=", m)
         }
     }
-    println("live=", postgres::live_resources())
 }

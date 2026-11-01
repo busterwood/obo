@@ -16,8 +16,8 @@ Read these before changing code:
   skill, not a generator), §8 (ownership/effects) and §14 (what is built).
 - `obo/experimental/cinterop/README.md` and `toolkit/*.h`.
 - The real examples: `examples/libpq.cbind`, `examples/libpq.obx`,
-  `toolkit/libpq_adapter.c`, `tests/fake_libpq.c`,
-  `tests/fake_adapter_test.c`.
+  `tests/fake_libpq.c`, `tests/fake_libpq_probe.h`, `tests/cres_test.c`, and
+  the worked packages in `obo/experimental/db/{postgres,sqlite}`.
 
 ## The boundary you must preserve
 
@@ -27,16 +27,16 @@ Read these before changing code:
 2. **No raw C pointer reaches obo.** A C adapter exports only `long`-shaped
    scalar entry points. It keeps `PGconn*`, `PGresult*`, `void*`, `char*` and
    all pointer arithmetic on the C side.
-3. **Resources are tokens, not pointers.** Use the toolkit registry
-   (`toolkit/cres.h`): a token combines a table slot, a kind and a generation.
-   Validate kind and generation on every call; poison the generation on close;
-   free the underlying object exactly once. A token protects against accidental
-   stale/wrong-kind use, not against trusted C or an adversarial caller.
+3. **Foreign handles are not tokens.** A v2 binding keeps the real pointer in a
+   `foreign` record's private word; `own`/`own_opt`/`borrow` enforce ownership,
+   `is_open` reads the word, and a raw borrow after close exits 7. The older
+   `toolkit/cres.h` token registry remains for the zlib and buffer examples,
+   the skill templates and the registry test, not for the database adapters.
 4. **Explicit close is the contract, normally through `defer`.** Ordinary obo
    record drop frees only the record; it does **not** call `PQfinish`,
-   `PQclear`, `free` or any foreign destructor. Make `close` borrow the wrapper
-   (`&Connection`, `&Rows`, `&Buffer`) so `defer c.close()` is legal, poisons the
-   token, and is a safe false on a second close. Register the defer promptly
+   `PQclear`, `free` or any foreign destructor. A v2 wrapper's `close` zeroes
+   the handle word and releases once; a second close is a safe
+   `false`/`ok(false)`. Register the defer promptly
    after creation; block exit (normal, early return, error arm, loop
    break/continue) runs it. Obo `exit(...)` runs no defers, so return from the
    block when cleanup must run. If a user asks for automatic cleanup, explain
@@ -80,8 +80,13 @@ assumption down in the wrapper and tests.
 
 ### 2. Write the C adapter first
 
-Start from `toolkit/libpq_adapter.c` / `toolkit/libpq_adapter.h` and
-`toolkit/cres.h`. Keep the exported ABI scalar:
+Prefer v2 foreign handles: the spec maps each C opaque type to an obo `foreign`
+type with a release, and `own`/`own_opt`/`borrow`/`borrow_mut` carry the real
+pointer. Start from `examples/libpq.*` and the worked `db/postgres` package.
+`toolkit/cres.h` is the older token registry for the zlib/buffer examples, the
+skill templates and the registry test; it is not the default for a new binding.
+
+If a token adapter is still the right shape, keep the exported ABI scalar:
 
 ```c
 long my_lib_open(long config_buf);
@@ -125,12 +130,13 @@ fn use(c: &Connection) {
   honestly: a same-module raw constructor or accessor can still copy a token, and
   the C registry rejects forged or stale integers before dereference. Private
   fields are not a capability boundary.
-- Accept `[]byte`, `[]?[]byte` and `[]bool` at the public edge; build the small
-  fixed packet in obo, then copy it to a C buffer once.
+- Accept `[]byte`, `[]?[]byte` and `[]bool` at the public edge. On v2, pass the
+  arrays to the native call (`ints`/`nil_bytes_list`) instead of building a
+  length-delimited packet; a typed OID array goes with them.
 - Provide `value`/`text` accessors that use the C length and reject embedded NUL
   only when converting to `string`.
-- Provide `live_resources()`/`live_connections()`/`live_results()` counters and
-  a test that fails when a close is omitted.
+- Under `OBO_CHECK=1` the foreign-handle census reports a dropped open handle
+  (exit 8); test that instead of adding `live_*` counters.
 - Use `defer` in the application wrapper for success, error/early-return,
   nested and loop paths. A C buffer helper with the same borrowed `close` is a
   good demonstration. Do not claim automatic ownership.
@@ -230,11 +236,11 @@ or library substitution remains trusted input. Say that plainly.
 - `examples/libpq_defer_app.obx` and `examples/zlib_app.obx` — real worked
   examples of `defer` cleanup, binary buffers and a second library.
 - `db-adapters.md` — database-specific notes from the experimental
-  `obo/experimental/db/{postgres,sqlite}` packages: typed parameter packets,
-  statement/connection close ordering, and the declarations-only SQLite ABI
-  cross-check policy.
+  `obo/experimental/db/{postgres,sqlite}` packages: typed OIDs, statement/
+  connection close ordering, and the declarations-only SQLite ABI cross-check
+  policy.
 
-Start from `examples/libpq.*` and `toolkit/libpq_adapter.c` for a complete
+Start from `examples/libpq.*` and `db/postgres/postgres.obx` for a complete
 working example, then remove the parts your library does not need. Do not grow
 `cinterop.py` into a per-library option matrix or a universal IDL generator.
 

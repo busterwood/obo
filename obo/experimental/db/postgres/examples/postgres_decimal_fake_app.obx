@@ -4,7 +4,8 @@ import "postgres.obx"
 
 // Deterministic decimal boundary test over the fake libpq. It checks the obo
 // encoder's exact text/error codes and the Rows.decimal read order without a
-// server; the C packet suite checks the kind 5/6 wire descriptor itself.
+// server; postgres_fake_probe.obx reads the parameter arrays for the wire
+// descriptor (OID 1700, text format, exact bytes) in the fake v2 app.
 
 fn zeros(n: int): string {
     var b = new []byte(0)
@@ -491,6 +492,5 @@ fn main() {
         }
         err(m, c) { println("open_err=", m, " ", c); exit(79) }
     }
-    check(postgres::live_resources() == 0, "live", 80)
     println("postgres_decimal_fake=ok")
 }
