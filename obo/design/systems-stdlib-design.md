@@ -132,14 +132,14 @@ also write the global `rt_entry_sp` (entry.S:110).
   for the duration of a call (LANGUAGE.md:1214–1300). Neither a lambda
   cell nor a captured reference can be an asynchronous thread entry argument.
 - The allocator, free lists, free traversal stack, counters, temporary roots,
-  fd tracker and output buffer are global (runtime.c:83–159,330–468).
-  `rt_str_inc/dec` use ordinary loads/stores (:417–428). `rt_collect` returns
-  immediately (:309–321); collector comments at the file head are historical.
-- [README.md](../../README.md):163–211: 4 GiB default arena, 64 GiB ceiling,
+  fd tracker and output buffer are global. `rt_str_inc/dec` use ordinary
+  loads/stores. `rt_collect` returns immediately; collector comments at the
+  file head are historical.
+- [README.md](../../README.md):222–268: 4 GiB default arena, 64 GiB ceiling,
   one-object payload at most 4 GiB minus 32 bytes, separate metadata and native
   memory. mmap reserves virtual address space, not RAM. Free lists retain
   memory; `OBO_STATS` is not an RSS meter.
-- Managed allocation failure currently terminates with exit 2 (runtime.c:330–350).
+- Managed allocation failure currently terminates with exit 2.
   Even `err` and `ok` allocate cells. We can return Result for OS/native ENOMEM,
   validation and configured capacity exhaustion, **not guarantee recoverable
   managed-heap exhaustion without separate runtime allocation work**. No normal

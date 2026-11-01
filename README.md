@@ -238,8 +238,9 @@ For example, `OBO_HEAP_LIMIT=64KiB` gives a small bounded arena and
 the handle limit, not an arbitrary policy: a handle's low 32 bits are a
 heap-relative granule offset, so 2^32 granules of 16 bytes address exactly
 64 GiB. At that ceiling the final granule offset is 0xffffffff and the high
-32-bit generation field is untouched; a future compiled ceiling above 64 GiB is
-rejected by a runtime guard instead of silently truncating handles. The
+32-bit generation field is untouched; a future compiled ceiling that needs a
+granule at offset 2^32 fails a build-time assertion and the runtime guard,
+instead of silently truncating handles. The
 one-object cap is independent of the arena: an object's rounded size may not
 exceed 0xFFFFFFF0 bytes, so its payload is at most 4 GiB - 32 bytes even in a
 64 GiB heap. This is what keeps the size word's low 32 bits unambiguous while a
@@ -262,15 +263,17 @@ default.
 Regression note from the 64 GiB ceiling update: the 4 GiB default maps a 32 MiB
 starts bitmap and a 512 MiB worklist; the 64 GiB ceiling maps a 512 MiB
 starts bitmap and the same capped 512 MiB worklist, about 65 GiB of virtual
-address space in all. A sparse 64 GiB `heap_test` run touches only a few pages,
-so its RSS stays small. The change adds no runtime jump-table slot, so every
-existing index, including the hosted exit slot 59, is unchanged and decimal's
-future appended slots do not collide. Compiler source, version, symbol format
-and ABI are unchanged; the compiler image differs from the earlier 0.11 image
-(`198f3268…`) because the runtime text is embedded in every executable. The
-decimal release adds only appended runtime slots, so this index, including
-hosted exit slot 59, is unchanged; the promoted seed recorded for that release
-is the matching 0.12 `d98d6b5f…` image.
+address space in all. `heap_test` needs about 49 GiB of virtual address space
+for its mandatory sparse 48 GiB case; the 64 GiB cases need about 66 GiB and
+skip cleanly below that. The recorded sparse 64 GiB case runs in 0.00 s with
+264 KiB maximum RSS while touching only a few pages. The change adds no runtime
+jump-table slot, so every existing index, including the hosted exit slot 59, is
+unchanged and decimal's future appended slots do not collide. Compiler source,
+version, symbol format and ABI are unchanged; the compiler image differs from
+the earlier 0.11 image (`198f3268…`) because the runtime text is embedded in
+every executable. The decimal release adds only appended runtime slots, so this
+index, including hosted exit slot 59, is unchanged; the promoted seed recorded
+for that release is the matching 0.12 `d98d6b5f…` image.
 
 ## Roadmap
 
