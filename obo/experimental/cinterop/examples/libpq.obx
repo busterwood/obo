@@ -157,25 +157,41 @@ fn exec_params_fmt(c: &Connection, sql: []byte, values: []?[]byte,
     if has_nul(&sql) { return err("SQL text contains an embedded NUL", 2) }
     var oids = new []int(0)
     var formats = new []int(0)
-    var i = 0
-    for v in values {
+    // libpq treats a text paramValues[] entry as a C string and ignores
+    // paramLengths, so every text value needs a NUL one byte past its data.
+    // Build len+1, then truncate to len: the array keeps the terminator in its
+    // capacity while its length (and the thunk's paramLengths) stays exact.
+    var wire = new []?[]byte(0)
+    for i in 0..len(values) {
         append(oids, 0)                     // untyped parameter; libpq infers
         var fmt = 0
         if binary[i] { fmt = 1 }
         append(formats, fmt)
-        if v != nil {
+        let v = take(values[i])
+        if v == nil {
+            append(wire, nil)
+            drop(v)
+        } else {
             if len(v) > PQ_MAX_VALUE {
                 return err("query parameter is larger than the 16 MiB limit", 2)
             }
-            if !binary[i] && has_nul(&v) {
-                return err("text parameter contains an embedded NUL", 2)
+            if binary[i] {
+                append(wire, v)             // explicit length; NULs are data
+            } else {
+                if has_nul(&v) {
+                    return err("text parameter contains an embedded NUL", 2)
+                }
+                var t = new []byte(len(v) + 1)
+                for j in 0..len(v) { t[j] = v[j] }
+                truncate(t, len(v))
+                append(wire, t)
+                drop(v)                     // the original text bytes are copied
             }
         }
-        i += 1
     }
     var rf = 0
     if result_binary { rf = 1 }
-    let r = exec_params_raw(c, &sql, &values, &oids, &formats, rf)
+    let r = exec_params_raw(c, &sql, &wire, &oids, &formats, rf)
     if r == nil {
         let mb = conn_error(c)
         let msg = string(mb)
