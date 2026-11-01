@@ -214,12 +214,34 @@ fn main() {
 fn main() { let x = 1.0 / 2.0 }
 ```
 
-In this v1 tier decimals work as locals, parameters and returns (three-word
-by-value slots and a hidden destination pointer for returns) and in
-`Result[decimal]`. Decimal globals, constants, record fields, arrays, captures,
-methods, interfaces and function values are not implemented and are refused
-with a clear diagnostic. `?decimal` is not representable; there is no raw-bits
-access and no owned or mutable decimal.
+In this tier decimals work as locals, parameters and returns (three-word
+by-value slots and a hidden destination pointer for returns), in
+`Result[decimal]`, and as record fields (0.16). A decimal field takes 24 bytes
+inline in its record or closed-variant payload, in declaration order and on an
+8-byte boundary; an omitted decimal field is zero. Reads, `=`, `+=`, `-=`, `*=`,
+`%=` and record literals work through a handle (`^T`) and through a `&T` or
+`mut &T` borrow. A compound assignment computes into a temporary and then copies
+it into the field. Like an int field, a field may not be assigned from a call
+that might free its record (`cannot assign to a field or element across a
+call`). Decimal globals, constants, arrays, captures, methods, interfaces and
+function values are not implemented yet and are refused with a clear diagnostic.
+A decimal value in a global initializer, such as `var g = new R{d: 1.5}`, is
+refused too, because a global initializer has no frame for the temporary it
+needs. `?decimal` is not representable; there is no raw-bits access and no owned
+or mutable decimal.
+
+```obo
+// example: runs
+// prints 3.750 3.000
+type Line = ref record { qty: int; price: decimal; total: decimal }
+
+fn main() {
+    let l = new Line{qty: 3, price: 1.25, total: 0.00}
+    l.total = l.price * 3.0
+    l.price += 0.25
+    println(l.total, " ", l.price * 2.0)
+}
+```
 
 ## 2. Ownership
 
@@ -1626,9 +1648,9 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 8
+obosym 9
 abi 1
-compiler "0.15"
+compiler "0.16"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -1669,16 +1691,20 @@ fn split(p0: string, p1: string): []string
   declarations are skipped without reordering the exported ones. No address,
   offset, descriptor, pointer, timestamp or absolute path appears.
 - A record definition lists its fields in declaration order (offsets are
-  recomputed: one 8-byte word each). Every public field is written explicitly as
-  `pub name: Type`; a bare `name: Type` is malformed in format 8, so a writer bug
-  cannot silently publish a field. A private field is the single token `priv`, or
-  `priviface` when its hidden type contains an interface (directly or through
-  `[]`, `?`, `^`, `Result`, records or variants). The slot is one word at the next
-  offset; the private name and type are not written. `pub priv: int` and
+  recomputed: a field takes one 8-byte word, or 24 bytes for `decimal`, and each
+  field starts where the previous one ends). Every public field is written
+  explicitly as `pub name: Type`; a bare `name: Type` is malformed in format 9, so
+  a writer bug cannot silently publish a field. A private field is the single
+  token `priv`, or `priviface` when its hidden type contains an interface
+  (directly or through `[]`, `?`, `^`, `Result`, records or variants), or `priv24`
+  when its type is `decimal`. The slot is one word (`priv`, `priviface`) or 24
+  bytes (`priv24`) at the next offset; the private name and type are not written,
+  so the marker is the only thing that gives the slot its width. `pub priv: int` and
   `pub priviface: int` are ordinary public fields named `priv`/`priviface` and
   round-trip unchanged. A closed definition lists its variants in declaration
-  order; every variant field is written with `pub`, and `priv`/`priviface` inside
-  a variant is a malformed-symbol error. Every exported record/closed type has a
+  order; every variant field is written with `pub`, and `priv`/`priviface`/`priv24`
+  inside a variant is a malformed-symbol error. A public `decimal` field is written
+  `pub name: decimal`, and its width comes from its type. Every exported record/closed type has a
   shell line first, so recursive and mutually recursive types resolve. Variants
   are registered by the reader under `Module::Variant` and exported with their
   closed type.
@@ -2588,7 +2614,7 @@ depend on the program.
 | `'pub' is not allowed on a variant field; variant fields are always public` | a source `pub` in a closed variant's field list. |
 | `obxc: <p>:<line>:<col>: symbol file: expected 'pub', 'priv' or 'priviface' in a record field list` | a format-7 record field without a visibility marker, or an unknown marker. |
 | `obxc: <p>:<line>:<col>: symbol file: a private field has no name or type` | `priv`/`priviface` followed by a name or `:`. |
-| `obxc: <p>:<line>:<col>: symbol file: private fields are not allowed in a closed variant` | `priv`/`priviface` inside a closed definition. |
+| `obxc: <p>:<line>:<col>: symbol file: private fields are not allowed in a closed variant` | `priv`/`priviface`/`priv24` inside a closed definition. |
 | `exported '<T>' uses private type '<S>'; mark '<S>' pub too` | a **public** field of an exported record names a private type; private fields are skipped by the closure check and may use private types freely. |
 | `method '<T>::<m>' cannot be used as a value: call it with '(' after its name` | `x.m` without a call. |
 | `the receiver of method '<T>::<m>' needs a mut reference, but this one is read-only` | a `mut` receiver through a read-only binding. |
@@ -2689,8 +2715,9 @@ depend on the program.
 
 ## 12. Known holes and planned changes
 
-Decimal is the released minimum scalar tier at 0.12: no decimal globals,
-constants, record fields, arrays, methods, lambdas/captures or interfaces; no
+Decimal is the released minimum scalar tier at 0.12, and record fields follow
+in 0.16: no decimal globals, constants, arrays, methods, lambdas/captures or
+interfaces; no
 `format`/`parse` stdlib, database adapter, `decimal(p,s)` syntax, float interop
 or owned/mut decimal. Display scale is independent metadata, and a multiply
 caps the propagated display scale at the 38-digit rule without changing the

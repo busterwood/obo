@@ -118,8 +118,8 @@ const T_FOREIGN = 73            // type X = foreign "C": a D2 reserved word
 // Bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect
 // change.
-const OBO_VERSION = "0.15"
-const SYM_FORMAT = 8
+const OBO_VERSION = "0.16"
+const SYM_FORMAT = 9
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -3490,9 +3490,20 @@ fn decimalTemp(): Item {
     return localItem(s, tDecimal)
 }
 
+// A decimal temporary needs a frame, and a global initializer has none (its rbp is 0). A decimal
+// literal or operator in an initializer is refused until the global tier gives it a scratch area.
+// constDeclActive is set while a constant's value is parsed, so its refusal keeps its own text.
+var constDeclActive = false
+fn decimalFrameCheck() {
+    if curFn != nil { return }
+    if constDeclActive { error("decimal constants are not supported in v1; construct the value where it is used") }
+    error("a decimal value in a global initializer is not supported yet; build the value in a function")
+}
+
 // A raw frame temporary of n bytes (n a multiple of 8), returning its rbp
 // offset.  Used for the explicit decimal request block.
 fn newFrameBytes(n: int): int {
+    decimalFrameCheck()
     frame += n
     return -frame
 }
@@ -3521,13 +3532,14 @@ fn copyDecimal(dst0: &Item, src0: &Item) {
     releaseItem(src)
 }
 
-fn copyDecimalToBase(src0: &Item, p: int) {
+// copies a decimal to p+disp (p is a register that stays held: it is not released here)
+fn copyDecimalToBase(src0: &Item, p: int, disp: int) {
     var src = copyItem(src0)
     resolve(src)
     for off in 0..3 {
         let r = alloc()
         opMem(0x8B, r, mem(src.base, src.index, src.disp + 8 * off, 8), true, false)
-        opMem(0x89, r, mem(p, -1, 8 * off, 8), true, false)
+        opMem(0x89, r, mem(p, -1, disp + 8 * off, 8), true, false)
         release(r)
     }
     releaseItem(src)
@@ -5432,6 +5444,7 @@ fn runDefers(downTo: int) {
 }
 
 fn newLocal(name: string, t: ^Type, kind: string): ^Sym {
+    if t.kind == "decimal" { decimalFrameCheck() }
     if t.kind == "decimal" { frame += 24 } else { frame += 8 }
     let s = newSym(kind, name, t)
     s.storage = "local"
@@ -5734,6 +5747,14 @@ fn refuseOptionalIfaceLocal(t: ^Type) {
     }
 }
 
+// The bytes a field of type t takes inline in its record (or variant payload). A decimal is three
+// words (24 bytes, all-zero bits = 0); every other field type takes one word. Fields keep declaration
+// order and 8-byte alignment, with no padding and no reordering.
+fn sizeOf(t: ^Type): int {
+    if t.kind == "decimal" { return 24 }
+    return 8
+}
+
 fn fieldList(rec: ^Type, variant: bool) {
     expect(T_LBRACE, "")
     skipSemis()
@@ -5754,11 +5775,10 @@ fn fieldList(rec: ^Type, variant: bool) {
         expect(T_COLON, "")
         let t = parseType()
         rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")
-        if t.kind == "decimal" { error("decimal record fields are not supported in v1") }
         for n in names {
             if fieldIndex(rec, n) >= 0 { error("duplicate field '" + n + "'") }
             append(rec.fields, new Field{name: n, offset: offset, typ: t, private: !variant && !isPub})
-            offset += 8
+            offset += sizeOf(t)
         }
         if sym != T_RBRACE { expect(T_SEMI, "';' or newline") }
         skipSemis()
@@ -8795,7 +8815,7 @@ fn builtin(name: string): Item {
         let okv = rt.variants[0]
         let p = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, okv.desc), rt)
         if v.typ.kind == "decimal" {
-            copyDecimalToBase(v, p.r)
+            copyDecimalToBase(v, p.r, 0)
         } else {
             storeCellField(p.r, 0, copyItem(v))
         }
@@ -9781,15 +9801,20 @@ fn newExpr(): Item {
         var v = nestedExpr()
         checkAssign(fty, v, "field '" + fname + "'")
         consume(v)
-        let dst = mem(p.r, -1, foff, 8)
-        if v.mode == "const" && fits32(v.val) {
-            opMem(0xC7, 0, dst, true, false)
-            emit32(v.val)
+        if fty.kind == "decimal" {
+            copyDecimalToBase(v, p.r, foff)
             drop(v)
         } else {
-            let r = asReg(v)
-            opMem(0x89, r.r, dst, true, false)
-            release(r.r)
+            let dst = mem(p.r, -1, foff, 8)
+            if v.mode == "const" && fits32(v.val) {
+                opMem(0xC7, 0, dst, true, false)
+                emit32(v.val)
+                drop(v)
+            } else {
+                let r = asReg(v)
+                opMem(0x89, r.r, dst, true, false)
+                release(r.r)
+            }
         }
         if sym == T_COMMA || sym == T_SEMI {
             next()
@@ -10936,6 +10961,8 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
         if declRef > 0 && isGlobal { error("references cannot be global") }
         if declRef > 0 { refuseOptionalIfaceLocal(pt) }
     }
+    // a decimal global is refused before its initializer is parsed (a literal there would need a frame)
+    if isGlobal && t != nil && t.kind == "decimal" { error("decimal globals are not supported in v1; keep the value in a local") }
     var gsym = newSym(kind, name, t)
     gsym.line = nameLine
     if isGlobal {
@@ -11268,7 +11295,20 @@ fn assignmentOrCall(): bool {
                 }
                 var slot = RT_DEC_ADD
                 if o == T_MINUSEQ { slot = RT_DEC_SUB } else if o == T_STAREQ { slot = RT_DEC_MUL } else if o == T_PERCENTEQ { slot = RT_DEC_REM }
-                let res = decimalCall2(slot, copyItem(x), y)
+                // The result goes to a temporary, then into the target. The target's own address is taken
+                // with lea and not with decPtr, which would release x's base register: x stays held across the
+                // helper call (so the call saves it) and is stored to last.
+                resolve(x)
+                let res = decimalTemp()
+                let da = decPtr(res)
+                let pa = alloc()
+                opMem(0x8D, pa, memOf(x), true, false)
+                let pb = decPtr(y)
+                let dargs = new []?Item(0)
+                append(dargs, da)
+                append(dargs, makeReg(tInt, pa))
+                append(dargs, pb)
+                rtCall(slot, dargs, tVoid)
                 store(x, res)
                 return false
             }
@@ -13500,7 +13540,9 @@ fn constDecl(isPub: bool) {
     let line = tline
     let name = ident()
     expect(T_ASSIGN, "")
+    constDeclActive = true
     let x = expression()
+    constDeclActive = false
     if x.typ.kind == "decimal" { error("decimal constants are not supported in v1; construct the value where it is used") }
     if x.mode != "const" { error("constant value must be known at compile time") }
     rejectFn(x.typ, "a constant cannot hold a function value")
@@ -14322,9 +14364,12 @@ fn appFields(mut b: &[]byte, rec: ^Type, modName: string, variant: bool) {
             appStr(b, ": ")
             appTypeExpr(b, rec.fields[i].typ, modName)
         } else if rec.fields[i].private {
-            // opaque one-word slot: no name, no type; the carrier bit is the only metadata
+            // opaque slot: no name, no type; the carrier bit is the only metadata. A decimal slot is
+            // 24 bytes, so it is priv24 (a one-word priv would misplace every later field)
             if rec.fields[i].privateIface || containsIface(rec.fields[i].typ) {
                 appStr(b, "priviface")
+            } else if rec.fields[i].typ.kind == "decimal" {
+                appStr(b, "priv24")
             } else {
                 appStr(b, "priv")
             }
@@ -14991,18 +15036,21 @@ fn symParseType(): ^Type {
     return symFinishTypeName(name, nline, ncol)
 }
 
-// parses { pub field: type; priv; priviface } into rec's (empty) field list, in declaration order.
-// A private slot is a one-word placeholder with no name; `pub priv: int` is an ordinary public field.
+// parses { pub field: type; priv; priviface; priv24 } into rec's (empty) field list, in declaration order.
+// A private slot is a placeholder with no name: priv and priviface are one word (tInt), priv24 is a
+// 24-byte decimal (tDecimal). Offsets are running byte offsets, so each slot advances by its sizeOf.
+// `pub priv: int` is an ordinary public field.
 fn symFieldList(rec: ^Type, variant: bool) {
     expect(T_LBRACE, "")
     skipSemis()
+    var offset = 0
     while sym != T_RBRACE {
         var isPub = false
         if sym == T_PUB {
             next()
             isPub = true
         }
-        if !isPub && sym == T_IDENT && (sval == "priv" || sval == "priviface") {
+        if !isPub && sym == T_IDENT && (sval == "priv" || sval == "priviface" || sval == "priv24") {
             let marker = sval
             let mline = tline
             let mcol = tcol
@@ -15015,8 +15063,11 @@ fn symFieldList(rec: ^Type, variant: bool) {
             }
             var carrier = false
             if marker == "priviface" { carrier = true }
-            append(rec.fields, new Field{name: "", offset: 8 * len(rec.fields), typ: tInt,
+            var pt = tInt
+            if marker == "priv24" { pt = tDecimal }
+            append(rec.fields, new Field{name: "", offset: offset, typ: pt,
                                          private: true, privateIface: carrier})
+            offset += sizeOf(pt)
         } else {
             if !isPub {
                 errorAt("expected 'pub', 'priv' or 'priviface' in a record field list", 0, 0)
@@ -15031,7 +15082,8 @@ fn symFieldList(rec: ^Type, variant: bool) {
             for i in 0..len(rec.fields) {
                 if rec.fields[i].name == fname { error("duplicate field '" + fname + "'") }
             }
-            append(rec.fields, new Field{name: fname, offset: 8 * len(rec.fields), typ: t})
+            append(rec.fields, new Field{name: fname, offset: offset, typ: t})
+            offset += sizeOf(t)
         }
         if sym == T_SEMI { next() } else if sym != T_RBRACE { error("expected ';' or '}'") }
         skipSemis()
@@ -15046,8 +15098,10 @@ fn symCompareFields(live: ^Type, parsed: ^Type, what: string) {
         if live.fields[i].private != parsed.fields[i].private { symDisagree(what) }
         if live.fields[i].private {
             // the parsed side is a placeholder: only the carrier answer crosses the boundary, and
-            // the parsed flag (not a recomputation from the placeholder type) is authoritative
+            // the parsed flag (not a recomputation from the placeholder type) is authoritative.
+            // The one exception is the decimal width: a private decimal is priv24 and nothing else
             if containsIface(live.fields[i].typ) != parsed.fields[i].privateIface { symDisagree(what) }
+            if (live.fields[i].typ.kind == "decimal") != (parsed.fields[i].typ.kind == "decimal") { symDisagree(what) }
         } else {
             if live.fields[i].name != parsed.fields[i].name { symDisagree(what) }
             if !same(live.fields[i].typ, parsed.fields[i].typ) { symDisagree(what) }

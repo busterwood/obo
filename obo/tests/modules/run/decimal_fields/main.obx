@@ -1,0 +1,27 @@
+module main
+import "lib.obx"
+
+fn main() {
+    var l = lib::open("acct", 0.10)
+    println(l.name, " ", l.total, " ", l.fee)   // expect: acct 0.0 0.50
+    l.total = 5.00
+    l.fee = l.fee * 3.0
+    println(l.total, " ", l.fee)                // expect: 5.00 1.500
+    lib::accrue(l)
+    println(l.total, " ", lib::rate(l))         // expect: 5.5000 0.10
+    lib::accrue(l)
+    println(l.total)                            // expect: 6.050000
+    println(lib::held(l))                       // expect: 2.750
+    lib::setHold(l, 2.00)
+    println(lib::held(l), " ", l.fee)           // expect: 3.500 1.500
+    l.total += 1.0
+    println(l.total)                            // expect: 7.050000
+
+    let c: lib::Shape = new lib::Circle{r: 1.5}
+    let b: lib::Shape = new lib::Blank{}
+    println(lib::area(c), " ", lib::area(b)) // expect: 2.25 0.0
+    match c {
+        Circle { println("radius ", c.r) } // expect: radius 1.5
+        Blank { println("blank") }
+    }
+}

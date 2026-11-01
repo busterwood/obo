@@ -71,6 +71,10 @@ pub fn (n: &Node) valueOf(): int { return n.value }
 pub fn clear(mut a: &[]Node) { truncate(a, 0) }
 pub fn wipe() { hidden = nil; cache = nil; freesall = 0 }
 pub fn pure(x: int): int { return x + hiddenFn() }
+pub type Ledger = ref record { pub amt: decimal; hid: decimal; pub k: int }
+pub type Cash = closed { Amount { d: decimal } Nothing { } }
+pub fn ledger(): Ledger { return new Ledger{amt: 1.5, hid: 2.25, k: 3} }
+pub fn total(l: &Ledger): decimal { return l.amt + l.hid }
 '''
 
 MAIN = '''module main
@@ -194,6 +198,19 @@ def replace_number(rng, data):
     i = rng.randrange(16)
     digits[i] = ord(rng.choice('0123456789abcdef'))
     return data[:start + 2] + bytes(digits) + data[end:]
+
+
+@mutator
+def priv_marker(rng, data):
+    '''A private slot's marker (priv, priviface or priv24) is swapped for another spelling, a
+    named or typed slot, or a misspelling: a 24-byte decimal slot must not read as a word, or
+    the other way round.'''
+    spots = [m.span() for m in re.finditer(rb'priv(?:24|iface)?(?=[;} ])', data)]
+    if not spots:
+        return data
+    start, end = rng.choice(spots)
+    new = rng.choice([b'priv24', b'priv', b'priviface', b'priv24 x', b'priv24: int', b'priv24x', b'priv25'])
+    return data[:start] + new + data[end:]
 
 
 @mutator

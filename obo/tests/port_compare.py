@@ -291,6 +291,9 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'decimal_text_access.obx'): (0, 14),
     os.path.join(FORK, 'tests', 'run', 'decimal_text_limits.obx'): (0, 14),
     os.path.join(FORK, 'tests', 'errors', 'decimal_text.obx'): (0, 14),
+    # Decimal record fields are 0.16: the 0.15 seed refuses a decimal field.
+    os.path.join(FORK, 'tests', 'run', 'decimal_fields.obx'): (0, 16),
+    os.path.join(FORK, 'tests', 'errors', 'decimal_fields.obx'): (0, 16),
     # Compiler-known template literals are 0.15; the 0.14 seed cannot parse a
     # backtick tag or the template-domain types.
     os.path.join(FORK, 'tests', 'run', 'template_sql.obx'): (0, 15),
@@ -840,7 +843,7 @@ def compare_trees(tmp, quick, port, only=None, stats=None):
         # merely agree with a port that also failed
         if a.returncode != 0 or b.returncode != 0:
             failures.append(f"reemit {name}: exit obo {a.returncode}, port {b.returncode}")
-        elif not a.stdout or not a.stdout.startswith(b'obosym 8\n') or b'fn many(' not in a.stdout:
+        elif not a.stdout or not a.stdout.startswith(b'obosym 9\n') or b'fn many(' not in a.stdout:
             failures.append(f"reemit {name}: obo's output is not canonical: {a.stdout[:80]!r}")
         else:
             modline = next((l for l in a.stdout.splitlines() if l.startswith(b'module ')), b'module many')

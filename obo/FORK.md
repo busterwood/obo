@@ -6388,3 +6388,98 @@ bytes** in the port comparison (budget 2,500,000, about 4.7% headroom); the
 empty-array savings oracle is **51,488 bytes** above baseline (minimum 30,000).
 The fixed point is stage 2 == stage 3, and the promoted 0.15 seed reproduces
 the compiler; the seed and compiler build byte-identical `hello`.
+
+## Decimal record fields (0.16 release candidate, format 9, ABI 1), stage D1
+
+Stage D1 of `design/decimal-storage-plan.md` makes `decimal` a storable record
+and closed-variant field. `OBO_VERSION` is `0.16` and `SYM_FORMAT` is `9`;
+`SYM_ABI` stays `1`, because a record's layout changes only for records that
+contain a decimal field, and those records were refused before. The format
+bump is the first `.sym` change in this tier.
+
+**Changes (`obo/src/obo.obo`).**
+- `sizeOf(t)` gives 24 for `decimal` and 8 otherwise. `fieldList` (record and
+  variant offsets) and the `.sym` field-list reader `symFieldList` now use a
+  running offset built from `sizeOf`, so source and symbol file agree on every
+  offset. Alignment is still 8, and fields keep declaration order with no padding.
+- Field read goes through the existing selector path, which already yields a
+  `mem` item. The consumers (arithmetic, compare, print, argument push, `ok`,
+  return) accept a register base other than RBP; the checks are in the run
+  tests listed below.
+- Field writes: `copyDecimalToBase(src, p, disp)` writes the 24 bytes at
+  `disp + 8*off`. The record literal's decimal branch uses it and then drops the
+  value. A compound assignment `x.f op= y` computes the field's address with
+  `lea` into a register that stays held, calls the runtime helper with the
+  temporary and `y`, and stores the result into `x` last. This keeps the target
+  base valid across the helper call, and an assignment to a field across a call
+  is refused exactly as for an int field (`cannot assign to a field or element
+  across a call`), including through handles.
+- `.sym` writer (`appFields`): a private decimal field is written as
+  `priv24`, a 24-byte opaque slot that does not reveal the type. `priv` and
+  `priviface` stay one word. `symCompareFields` compares the decimal-ness of a
+  private slot against the live field, so a writer that emits `priv` for a
+  decimal slot is refused by a full build (`lib.sym` disagrees with the compiled
+  interface for type 'Ledger'; checked by hand).
+- `decimalFrameCheck()` refuses a decimal value in a global initializer
+  (`var g = new R{d: 1.5}`) with `a decimal value in a global initializer is not
+  supported yet; build the value in a function`, and a decimal constant with
+  its own text. The reason is that a global initializer has no frame (`rbp` is
+  0), and the literal's temporary needed one. Before this guard the compiler
+  segfaulted on such a program. Lifting it needs a global scratch area, which is
+  part of stage D3.
+- A `.sym` of the wrong format is refused with the format named (`has format 8;
+  this compiler reads 9`). Versions are pinned in about 100 test fixtures,
+  mechanically (`obosym 9`, `compiler "0.16"`); the format negative fixture uses
+  `obosym 8` in its library so that it still exercises a mismatch.
+
+**Decisions.**
+- Decimal globals, constants, arrays, methods and function values stay refused
+  (D2-D4). A decimal field's `.sym` form is `priv24` for private and
+  `pub name: decimal` for public, and its width comes from the type, not from the
+  marker's text.
+- A closed-variant decimal field is read by narrowing (`s.r` inside the arm), as
+  for other variant fields; `Circle { r, name }` bindings are not allowed.
+
+**Tests.** New: `tests/run/decimal_fields.obx` (read, write, compound, nested
+records, literals, borrows, handles, `Result` over a field, a narrowed variant
+read, a zero-filled omitted field); `tests/modules/run/decimal_fields/` (a
+cross-module record with public and private decimal fields, and a closed type,
+built from `.sym` on the importer side); `tests/errors/decimal_fields.obx` (the
+assign-across-call refusal for `=`, `+=`, nested and handle targets; a field
+given twice; a wrong-type literal; a decimal in a global initializer);
+`tests/sym_test.py` `sym/decimal_fields` (`priv24` lines, reemit byte identity,
+source-less `--check`, and negatives); `tests/sym_fuzz.py` gains a decimal seed
+and a `priv_marker` mutator (300/300 clean). `tests/errors/decimal.obx` no
+longer refuses record fields, and its global, constant and array refusals stay.
+`tests/mutate_fork.py` repoints one stale placeholder mutant (see the gates).
+`tests/mutate_decimal.py` gains seven mutants: a decimal field sized 8, a two-word
+field copy, a literal field not copied, a compound result not stored, and three
+`.sym` mutants (`priv24` read as one word, a reader that advances by one word,
+and a private decimal written as `priv`). Each one is caught.
+
+**Gates (this checkout, after the last source change).**
+- `run_fork` **1,818 passed, 0 failed**.
+- `module_test` **144 passed, 0 failed**; `sym_test` **53 passed, 0 failed**.
+- `sym_fuzz` **300/300 clean** (seed 20261028, digest `a5f83c5822041582`).
+- `doc_check` **72 examples, 0 problems** (the new LANGUAGE.md example is one).
+- `imports` **30/30**; `stdlib` **17/17**; `homes_check` passes;
+  `float_f1 --reader-only` passes.
+- `port_test` **615 of 615**; `port_compare` **1,799 of 1,799** (Stage B).
+- `mutate_decimal` **78 caught, 0 missed, 0 broken** (71 before D1, plus 7).
+- `mutate_fork` (restricted; the full 749-mutant run was not done here), by
+  pattern: `sym` **78 caught + 1 equivalent of 79**; `decimal` **4/4**; `X36`
+  **2/2**; `field` **33 caught + 1 equivalent of 34**. One mutant in `field`,
+  `private placeholder offset is zero`, was stale: its pattern named the old
+  placeholder line (`8 * len(rec.fields)`, `typ: tInt`), which the running-offset
+  reader replaced. Its pattern now names the new line (`offset: offset, typ: pt`)
+  and forces the same zero offset; it is caught (`1/1`). The equivalent entry is
+  the pre-existing `field visibility: symCompareFields ignores visibility`.
+- Fixed point: `stage2 == stage3` (`cmp`), the seed-built compiler equals stage 2
+  byte for byte (733,185 bytes, sha256 prefix `3ba53b7c…`).
+- Self-compile peak: `OBO_STATS=1` reports **2,524,544 bytes** live, 55,888,704
+  allocated; `heap_test` reports 2,524,608 (budget 2,750,000, headroom 225,392).
+  The budget is unchanged.
+- The decimal run tests pass under `OBO_CHECK=1`.
+
+The record-field change is not promoted: the compiler still needs one
+`make promote` after the merge, and that is the orchestrator's step.

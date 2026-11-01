@@ -1022,8 +1022,8 @@ SYM_MUTANTS = {
         '            if variant {\n                errorAt("private fields are not allowed in a closed variant", mline, mcol)\n            }',
         '            if false {\n                errorAt("private fields are not allowed in a closed variant", mline, mcol)\n            }'),
     "field visibility: private placeholder offset is zero": (
-        '            append(rec.fields, new Field{name: "", offset: 8 * len(rec.fields), typ: tInt,',
-        '            append(rec.fields, new Field{name: "", offset: 0, typ: tInt,'),
+        '            append(rec.fields, new Field{name: "", offset: offset, typ: pt,',
+        '            append(rec.fields, new Field{name: "", offset: 0, typ: pt,'),
     "field visibility: containsIfaceIn ignores privateIface": (
         '                if t.fields[i].privateIface { return true }',
         '                if false { return true }'),
@@ -1599,8 +1599,8 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X9: a temporary may be borrowed into a cell": (
         "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
         "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
-    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 8\n", "const SYM_FORMAT = 2\n"),
-    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.15\"\n", "const OBO_VERSION = \"0.6\"\n"),
+    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 9\n", "const SYM_FORMAT = 2\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.16\"\n", "const OBO_VERSION = \"0.6\"\n"),
 
     # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
     "interfaces v3 X18: the receiver bit is omitted for mut fn": (
