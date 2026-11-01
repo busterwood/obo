@@ -6786,7 +6786,7 @@ construction/free check. N4: `LANGUAGE.md` no longer calls a record literal a de
 expression. N3 is noted above. N2 (the unused 8-byte inferred placeholder) and N5 (a decimal
 suite timeout counted as a caught mutant) are accepted as documented.
 
-## Impure interface members (0.17 release candidate, format 10, ABI 1), stage I1
+## Impure interface members (0.17 released, format 10, ABI 1), stage I1
 
 Stage I1 of `design/impure-interface-members.md` adds the third interface-member
 tier. `OBO_VERSION` is `0.17`, `SYM_FORMAT` is `10`, `SYM_ABI` stays `1` (the
@@ -6875,12 +6875,21 @@ writer output byte for byte without `--update`.
   `sym_test` **56 passed, 0 failed**.
 - `sym_fuzz` **200/200 clean** (seed 20261028, digest `896ee2b42dbe8a5c`).
 - `doc_check` **74 examples, 0 problems**.
-- `heap_test` passes; self-compile peak **2,586,448 bytes** live (budget
-  2,750,000, headroom 163,552).
+- `heap_test` passes; self-compile peak **2,586,256 bytes** live (budget
+  2,750,000, headroom 163,744).
 - `port_compare` **1,847 of 1,847** Stage B; the port's self-compile peak is
-  2,586,432 bytes.
+  2,586,272 bytes (headroom 163,728).
+- Earlier branch paths measured 2,586,448 and 2,586,432 bytes (headroom 163,552);
+  the live peak varies by a few hundred bytes with the source path. The final
+  merged-tree figures above are the ones the README records.
 - `mutate_fork` filtered: `interfaces impure` **6/6 caught**, `X23` **2/2
   caught**.
+
+**Release.** The impure member tier is merged as `06a0fe1`; its compiler is the
+promoted `seed/obo` at `e0b9686` (757,761 bytes, sha256 `29ffadc8…`), which
+reproduces itself byte for byte (`stage2 == stage3`) and is the same image on
+the merged tree. `run_fork` is 1,869 on both. The release is one version/format
+step, `0.17`/10/1; stage I2 (`http1server`) remains the follow-up.
 
 **Stage I2 (follow-up, not this stage).** `http1server` can then accept an
 interface handler: the application implements a `Handler` with

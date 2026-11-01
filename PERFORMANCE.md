@@ -263,8 +263,10 @@ workloads, with comparable times; it is faster on tokens and trees.
 
 * **Benchmark-only refresh.** Only the benchmark suite, the compiler
   self-compile, the eza and sort memory measurements and `obo/tests/doc_check.py`
-  were rerun for this page. This page records the 0.15 line; the README metric
-  table now holds the 0.16 numbers, and the suite, symbol, port, module, import
+  were rerun for this page. This page records the 0.15 line and remains the
+  0.15/0.16 record; the README metric table now holds the 0.16-measured
+  numbers carried into 0.17, and the
+  suite, symbol, port, module, import
   and stdlib counts shown here are the promoted 0.15 release runs, not
   remeasured here.
 * **Host-dependent.** CPU, governor, WSL, background load and thermal state
