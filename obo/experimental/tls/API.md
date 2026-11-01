@@ -116,16 +116,20 @@ pub fn contextCounts(ctx: &TlsContext): Result[ContextCounts]
   a clean close_notify exchange. `close` retires the session token even if the
   transport close reports an error; a second close returns `ok(false)`.
 - `closeContext` returns `Busy` while any session of that context is live.
+  If a public `res` replacement bypasses it, context release detaches live
+  sessions: handshaking sessions become `Failed` and their later
+  handshake/feed calls return `Closed`; established sessions remain closable
+  and retain their copied verification classification.
 - `want(s)` returns `WantNone` when plaintext is already buffered or the
   receive side is closed; call `readSome` rather than waiting for readability.
 - `isSecure(s)` is true only for an established, non-NULL session that is not
   both-closed.
 
-`setCipherSuites`/`setCipherList`/`setGroups` accept only explicit names of
-`[A-Za-z0-9_-]`; OpenSSL expressions/directives (`@SECLEVEL=0`, `ALL`,
-`eNULL`, `!`, `+`, `,`, `=`) and known weak/NULL/export/anon names are
-`InvalidArgument`. Security level 2 is re-applied and checked after each
-setter.
+`setCipherSuites`/`setCipherList`/`setGroups` accept only the exact approved
+AEAD suites/groups listed in `LIMITS.md`. OpenSSL expressions/directives
+(`@SECLEVEL=0`, `ALL`), broad keywords (`CBC`, `SHA`, `AES`), `eNULL`/`NULL`,
+export/anon/RC4/3DES/DES/MD5 and CBC suite names are `InvalidArgument`.
+Security level 2 is re-applied and checked after each setter.
 
 ## Errors
 

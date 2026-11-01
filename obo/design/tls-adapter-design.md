@@ -2645,14 +2645,17 @@ Implemented under `obo/experimental/tls/`:
   ASAN/UBSAN; `openssl s_client` (TLS 1.2/1.3 and ALPN variants); optional
   curl TLS handshake check.
 
-Review follow-up (2026-11-01): cipher/group setters now accept only explicit
-`[A-Za-z0-9_-]` names, reject OpenSSL expressions/directives and known
-NULL/weak names, and re-apply and verify security level 2 after every setter;
+Review follow-up (2026-11-01): cipher/group setters now accept only the exact
+approved AEAD suite/group names, reject CBC/broad keywords and OpenSSL
+expressions/directives, and re-apply and verify security level 2 after every
+setter;
 `writeSome` copies `bytes[offset..offset+count]` before the native call;
 context accounting includes context/PEM/session/BIO charges and flushes lower
 the session charge; fatal alert output is flushed best-effort; `want`/`isSecure`
 account for buffered plaintext and both-closed state; context release detaches
-live sessions rather than leaking on a bypassed close. Tests cover nonzero
+live sessions rather than leaking on a bypassed close, marks handshaking
+sessions failed, clears context callbacks and preserves established-session
+verification data. Tests cover nonzero
 offset/partial writes, NULL/security-level rejection, intermediate chains,
 trust atomicity, max BIO, forged/stale resources, handshake truncation,
 renegotiation and minimum-version enforcement.

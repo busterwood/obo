@@ -42,10 +42,16 @@ version, ABI or production-readiness claim.
   an RSS limit. Committing drained ciphertext lowers the charge.
 - `tls_context_set_alpn`'s C-side duplicate validation is defense in depth;
   the obo wrapper validates the public list first.
-- Cipher/group setters reject OpenSSL expressions and directives (`@`, `=`,
-  `,`, `!`, `+`, spaces, `ALL`, `DEFAULT`, `eNULL`/`NULL`, export/anon/RC4/
-  3DES/DES/MD5 and similar weak names). Security level 2 is re-applied and
-  verified after every cipher/group setter; a failure poisons the context.
+- Cipher/group setters accept only the exact approved names:
+  `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`,
+  `TLS_AES_128_GCM_SHA256`; `ECDHE-ECDSA/RSA-AES256-GCM-SHA384`,
+  `ECDHE-ECDSA/RSA-CHACHA20-POLY1305`,
+  `ECDHE-ECDSA/RSA-AES128-GCM-SHA256`; and `X25519`, `P-256`, `P-384`.
+  Everything else, including OpenSSL expressions/directives (`@SECLEVEL=0`,
+  `ALL`, `CBC`, `SHA`, `AES`, `eNULL`/`NULL`, export/anon/RC4/3DES/DES/MD5,
+  CBC suite names) is `InvalidArgument`. Security level 2 is re-applied and
+  verified after every cipher/group setter; a native failure poisons the
+  context.
 - A fatal handshake/read/write/shutdown error makes one bounded best-effort
   flush of queued alert output before the error is returned. A caller that
   still has pending ciphertext should call `flush`/`handshakeStep` until the
@@ -58,8 +64,11 @@ version, ABI or production-readiness claim.
   `isSecure` is true only for an established, non-NULL session in
   `Established`/`SendClosed`/`RecvClosed`, not after both directions close.
 - If a public `res` replacement bypasses `closeContext`, context release
-  detaches live sessions instead of leaking the context; those sessions remain
-  independently closable.
+  detaches live sessions instead of leaking the context. Handshaking sessions
+  are marked `Failed` and subsequent handshake/feed calls return `Closed`;
+  callbacks carrying the context pointer are cleared. Established detached
+  sessions remain closable, preserve the stored verification mode/code, and
+  no longer call context callbacks.
 - OpenSSL's per-process global state, provider and error queue are shared with
   every other OpenSSL user (for example libpq). The adapter clears the queue
   around its own calls; other components must read errors promptly.
