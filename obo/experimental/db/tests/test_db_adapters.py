@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.dirname(HERE)
@@ -60,8 +61,8 @@ PG_DECL_FILES = [
 ]
 SQLITE_DECL_FILES = [
     ('declaration_0', os.path.join(DB, 'sqlite', 'sqlite_decls.h')),
-    ('declaration_1', os.path.join(DB, 'sqlite', 'sqlite_adapter.h')),
-    ('declaration_2', os.path.join(TOOL, 'toolkit', 'cres.h')),
+    ('source_0', os.path.join(DB, 'sqlite', 'sq_stmt_errcode.c')),
+    ('source_1', os.path.join(DB, 'sqlite', 'sq_prepare_at.c')),
 ]
 
 
@@ -267,7 +268,7 @@ def sqlite_sql(tmp):
         return None
     out = os.path.join(tmp, 'sq_sql')
     app = must_build(SQLITE, SQ_SQL_APP, out, 'sqlite sql bridge')
-    p = need(run([app]), 'sqlite sql bridge run')
+    p = need(run([app], env=dict(os.environ, OBO_CHECK='1')), 'sqlite sql bridge run')
     expect_lines(p.stdout, [
         "s=x'); DROP TABLE t; --",
         'i=-7',
@@ -279,7 +280,6 @@ def sqlite_sql(tmp):
         'float=1014 float SqlArg is not supported by the SQLite adapter; use decimal or text',
         'bad=2 malformed Sql fragment: text and parameters do not alternate',
         'sqlite_sql=ok',
-        'live=0',
     ], 'sqlite sql bridge')
     if 'FAIL' in p.stdout:
         raise Fail('sqlite sql bridge reported a failure:\n%s' % p.stdout)
@@ -305,8 +305,8 @@ def sqlite_decimal(tmp):
         except FileNotFoundError:
             pass
     try:
-        p = need(run([app, path]), 'sqlite decimal run')
-        expect_lines(p.stdout, ['sqlite_decimal=ok', 'live=0'], 'sqlite decimal')
+        p = need(run([app, path], env=dict(os.environ, OBO_CHECK='1')), 'sqlite decimal run')
+        expect_lines(p.stdout, ['sqlite_decimal=ok'], 'sqlite decimal')
         import sqlite3
         conn = sqlite3.connect(path)
         try:
@@ -363,12 +363,142 @@ def sqlite_decimal(tmp):
     return app
 
 
+
+SQLITE_TESTS = os.path.join(DB, 'sqlite', 'tests')
+
+
+
+def sqlite_exec_many(tmp):
+    """The 1 MiB/116,500-statement exec case is linear (bounded wall time)."""
+    if not sqlite_present():
+        print('sqlite exec many: skipped (libsqlite3.so.0 is absent)')
+        return
+    out = os.path.join(tmp, 'sq_exec_many')
+    app = must_build(SQLITE, os.path.join(SQLITE_TESTS, 'sqlite_exec_many_app.obx'),
+                     out, 'sqlite exec many')
+    start = time.monotonic()
+    p = need(run([app], env=dict(os.environ, OBO_CHECK='1')), 'sqlite exec many run')
+    elapsed = time.monotonic() - start
+    if p.returncode != 0 or p.stderr.strip():
+        raise Fail('sqlite exec many exited %d: %s' % (p.returncode, p.stderr))
+    expect_lines(p.stdout, ['exec_many=ok bytes=1048500'], 'sqlite exec many')
+    if elapsed > 2.5:
+        raise Fail('sqlite exec many took %.1fs; the quadratic copy regressed' % elapsed)
+    print('sqlite exec many: 116,500 statements in %.2fs (linear): ok' % elapsed)
+
+def sqlite_real_v2(tmp):
+    """Real libsqlite3 3.45.1 through the v2 out-parameter binding."""
+    if not sqlite_present():
+        print('sqlite v2 real: skipped (libsqlite3.so.0 is absent)')
+        return None
+    out = os.path.join(tmp, 'sq_v2')
+    app = must_build(SQLITE, os.path.join(SQLITE_TESTS, 'sqlite_v2_app.obx'), out,
+                     'sqlite v2 real')
+    path = os.path.join(tmp, 'v2.db')
+    for suffix in ('', '-journal', '-wal', '-shm'):
+        try:
+            os.unlink(path + suffix)
+        except FileNotFoundError:
+            pass
+    try:
+        p = need(run([app, path], env=dict(os.environ, OBO_CHECK='1')),
+                 'sqlite v2 real run')
+        if p.returncode != 0 or p.stderr.strip():
+            raise Fail('sqlite v2 real exited %d: %s' % (p.returncode, p.stderr))
+        expect_lines(p.stdout, ['basic=ok exec=ok caps=ok errors=ok',
+                                'close_v2=ok', 'sqlite_v2=ok'], 'sqlite v2 real')
+    finally:
+        for suffix in ('', '-journal', '-wal', '-shm'):
+            try:
+                os.unlink(path + suffix)
+            except FileNotFoundError:
+                pass
+    ldd = need(run(['ldd', app]), 'sqlite v2 ldd')
+    if 'libsqlite3.so.0' not in ldd.stdout:
+        raise Fail('sqlite v2 app does not depend on libsqlite3.so.0')
+    m = manifest(out)
+    if m.get('signature_check') != 'declarations-only':
+        raise Fail('sqlite v2 signature_check is %r' % m.get('signature_check'))
+    check_declaration_hash(m, SQLITE_DECL_FILES, 'sqlite v2')
+    verify(out)
+    print('sqlite v2 real 3.45.1 out parameters/close_v2/NUL/caps: ok')
+    return app
+
+
+def sqlite_fake_v2(tmp):
+    """Fake libsqlite3 failures and counters through the same wrapper."""
+    if not sqlite_present():
+        print('sqlite v2 fake: skipped (libsqlite3.so.0 is absent)')
+        return None
+    spec = json.load(open(SQLITE))
+    spec['sources'] = [os.path.join(SQLITE_TESTS, 'fake_sqlite.c'),
+                       os.path.join(DB, 'sqlite', 'sq_prepare_at.c')]
+    spec['libs'] = []
+    spec['wrapper'] = os.path.join(DB, 'sqlite', 'sqlite.obx')
+    spec['wrapper_sources'] = [os.path.join(DB, '..', '..', 'lib', 'sqldialect.obx')]
+    spec['declaration_files'] = [os.path.join(DB, 'sqlite', 'sqlite_decls.h')]
+    spec['include_dirs'] = [os.path.join(DB, 'sqlite'), SQLITE_TESTS]
+    d = os.path.join(tmp, 'sq_fake_src')
+    os.makedirs(d)
+    sp = os.path.join(d, 'fake.cbind')
+    json.dump(spec, open(sp, 'w'), indent=2)
+    out = os.path.join(d, 'out')
+    app = must_build(sp, os.path.join(SQLITE_TESTS, 'sqlite_fake_app.obx'), out,
+                     'sqlite v2 fake')
+    p = need(run([app], env=dict(os.environ, OBO_CHECK='1')), 'sqlite v2 fake run')
+    if p.returncode != 0 or p.stderr.strip():
+        raise Fail('sqlite v2 fake exited %d: %s' % (p.returncode, p.stderr))
+    expect_lines(p.stdout, ['sqlite_fake=ok'], 'sqlite v2 fake')
+    ldd = need(run(['ldd', app]), 'sqlite v2 fake ldd')
+    if 'libsqlite3.so.0' in ldd.stdout:
+        raise Fail('sqlite v2 fake unexpectedly links real libsqlite3')
+    verify(out)
+    print('sqlite v2 fake: failed open/prepare, reset, NOMEM, -1 copy, zombie: ok')
+    return app
+
+
+def sqlite_asan_uaf(tmp):
+    """The old owner-pointer release has a UAF; the v2 statement does not."""
+    if not sqlite_present():
+        print('sqlite ASan UAF: skipped (libsqlite3.so.0 is absent)')
+        return
+    exe = os.path.join(tmp, 'sqlite_uaf')
+    cmd = [cc(), '-O1', '-g', '-fsanitize=address', '-fno-omit-frame-pointer',
+           '-I', os.path.join(DB, 'sqlite'), '-o', exe,
+           os.path.join(SQLITE_TESTS, 'sqlite_uaf_fixture.c'),
+           '-l:libsqlite3.so.0']
+    need(run(cmd), 'sqlite UAF build')
+    env = dict(os.environ, ASAN_OPTIONS='detect_leaks=0')
+    new = run([exe, 'new'], env=env)
+    if new.returncode != 0:
+        raise Fail('new-shape UAF fixture failed:\n%s' % (new.stderr + new.stdout))
+    old = run([exe, 'old'], env=env)
+    if old.returncode == 0 or 'heap-use-after-free' not in (old.stderr + old.stdout):
+        raise Fail('old-shape UAF fixture did not fail under ASan (exit %d)' % old.returncode)
+    print('ASan release_stmt UAF: old shape fails, new shape passes')
+
+
+def sqlite_abi(tmp):
+    """Every declared SQLite symbol resolved and called with a public prototype."""
+    if not sqlite_present():
+        print('sqlite ABI: skipped (libsqlite3.so.0 is absent)')
+        return
+    exe = os.path.join(tmp, 'sqlite_abi')
+    cmd = [cc(), '-O2', '-Wall', '-Wextra', '-Werror',
+           '-I', os.path.join(DB, 'sqlite'), '-o', exe,
+           os.path.join(SQLITE_TESTS, 'real_sqlite_abi_test.c'),
+           '-l:libsqlite3.so.0', '-ldl']
+    need(run(cmd), 'sqlite ABI build')
+    p = need(run([exe]), 'sqlite ABI run')
+    if 'sqlite3 ABI symbols: ok' not in p.stdout:
+        raise Fail('sqlite ABI suite failed:\n%s' % p.stdout)
+    print('sqlite real-library ABI over every declared function: ok')
+
 def no_float_gate(exes):
     sources = [
         os.path.join(DB, 'postgres', 'postgres.obx'),
         os.path.join(DB, 'postgres', 'postgres_adapter.c'),
         os.path.join(DB, 'sqlite', 'sqlite.obx'),
-        os.path.join(DB, 'sqlite', 'sqlite_adapter.c'),
     ]
     for path in sources:
         text = open(path, encoding='utf-8').read()
@@ -413,9 +543,8 @@ def sqlite_memory(tmp):
     out = os.path.join(tmp, 'sq_memory')
     app = must_build(SQLITE, os.path.join(SQ_EX, 'sqlite_memory_app.obx'), out,
                      'sqlite memory')
-    p = need(run([app]), 'sqlite memory run')
-    expect_lines(p.stdout, ['sqlite_memory=ok', 'live=0', 'conns=0', 'stmts=0',
-                            'buffers=0', 'path_errors=ok', 'defer_order=ok',
+    p = need(run([app], env=dict(os.environ, OBO_CHECK='1')), 'sqlite memory run')
+    expect_lines(p.stdout, ['sqlite_memory=ok', 'path_errors=ok', 'defer_order=ok',
                             'large_and_real_errors=ok', 'sqlite_smoke=ok'], 'sqlite memory')
     ldd = need(run(['ldd', app]), 'sqlite ldd')
     if 'libsqlite3.so.0' not in ldd.stdout:
@@ -443,7 +572,7 @@ def sqlite_file(tmp):
         except FileNotFoundError:
             pass
     try:
-        p = need(run([app, path]), 'sqlite file run')
+        p = need(run([app, path], env=dict(os.environ, OBO_CHECK='1')), 'sqlite file run')
         expect_lines(p.stdout, ['changes=1', 'sqlite_file=ok'], 'sqlite file')
         import sqlite3
         conn = sqlite3.connect(path)
@@ -467,26 +596,6 @@ def sqlite_file(tmp):
                 pass
 
 
-def sqlite_c(tmp):
-    if not sqlite_present():
-        print('sqlite C adapter: skipped (libsqlite3.so.0 is absent)')
-        return
-    exe = os.path.join(tmp, 'sqlite_adapter_test')
-    cmd = [cc(), '-O2', '-Wall', '-Wextra',
-           '-I', os.path.join(TOOL, 'toolkit'),
-           '-I', os.path.join(DB, 'sqlite'),
-           '-o', exe,
-           os.path.join(HERE, 'sqlite_adapter_test.c'),
-           os.path.join(TOOL, 'toolkit', 'cres.c'),
-           os.path.join(DB, 'sqlite', 'sqlite_adapter.c'),
-           '-l:libsqlite3.so.0']
-    need(run(cmd), 'sqlite C adapter build')
-    p = need(run([exe]), 'sqlite C adapter run')
-    if 'sqlite adapter tests ok' not in p.stdout:
-        raise Fail('sqlite C adapter suite failed:\n%s' % p.stdout)
-    print('sqlite direct C adapter: ok')
-
-
 def sanitizers(tmp):
     cflags = ['-O1', '-g', '-fsanitize=address,undefined',
               '-fno-sanitize-recover=all', '-fno-omit-frame-pointer']
@@ -505,20 +614,6 @@ def sanitizers(tmp):
     if 'postgres typed adapter tests ok' not in p.stdout:
         raise Fail('postgres fake ASAN/UBSAN failed:\n%s' % p.stdout)
 
-    if sqlite_present():
-        exe = os.path.join(tmp, 'sqlite_adapter_asan')
-        cmd = [cc(), *cflags,
-               '-I', os.path.join(TOOL, 'toolkit'),
-               '-I', os.path.join(DB, 'sqlite'),
-               '-o', exe,
-               os.path.join(HERE, 'sqlite_adapter_test.c'),
-               os.path.join(TOOL, 'toolkit', 'cres.c'),
-               os.path.join(DB, 'sqlite', 'sqlite_adapter.c'),
-               '-l:libsqlite3.so.0']
-        need(run(cmd), 'sqlite ASAN/UBSAN build')
-        p = need(run([exe]), 'sqlite ASAN/UBSAN run')
-        if 'sqlite adapter tests ok' not in p.stdout:
-            raise Fail('sqlite ASAN/UBSAN failed:\n%s' % p.stdout)
     print('ASAN/UBSAN adapter tests: ok')
 
 
@@ -596,11 +691,15 @@ def main():
         postgres_errors_fake_obo(tmp)
         decimal_fake_app = postgres_decimal_fake_obo(tmp)
         sql_fake_app = postgres_sql_fake_obo(tmp)
-        sqlite_c(tmp)
         sqlite_app = sqlite_memory(tmp)
         decimal_sqlite_app = sqlite_decimal(tmp)
         sqlite_sql_app = sqlite_sql(tmp)
         sqlite_file(tmp)
+        sqlite_real_v2(tmp)
+        sqlite_exec_many(tmp)
+        sqlite_fake_v2(tmp)
+        sqlite_asan_uaf(tmp)
+        sqlite_abi(tmp)
         no_float_gate([fake_app, decimal_fake_app, sql_fake_app,
                        sqlite_app, decimal_sqlite_app, sqlite_sql_app])
         sanitizers(tmp)

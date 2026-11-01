@@ -437,8 +437,10 @@ Rules:
   register). A `ctypes` key on an int-form binding (all `i64`) is refused.
 - A `const:<n>` value must fit its integer type by width and sign: `unsigned int`
   takes 0 to 4294967295, `int` takes -2147483648 to 2147483647, and a negative value
-  is refused for an unsigned type. A pointer or function-pointer type takes any 64-bit
-  value, such as `const:-1` for `SQLITE_TRANSIENT`. The magnitude is at most 17 digits.
+  is refused for an unsigned type. An object-pointer type takes any 64-bit value. A
+  **function-pointer** slot takes exactly `-1`, the one no-callback destructor
+  (`SQLITE_TRANSIENT`); `const:0` (`SQLITE_STATIC`) is refused as a use-after-free.
+  The magnitude is at most 17 digits.
 - Other slots keep their fixed types. A mismatched pointer slot is refused by the C
   compiler's signature check, not by the obx compiler: the generated sigcheck
   assignment is an incompatible-pointer error, and the build fails before link.
@@ -655,9 +657,52 @@ the C type name and the release:
 "types": [{"name": "PGconn", "obo": "Conn", "release": "PQfinish", "release_result": "void"}]
 ```
 
-`release_result` is `"void"` or `"int"`. The release is signature-checked against
-its `CType *` prototype. `out_own` and `out_offset` are **deferred to stage (f)**
-(SQLite); stage (d) needs only own/own_opt/borrow/close for libpq.
+`release_result` is `"void"`, `"int"` or `"discard"`. A `"void"` release gives
+`ok(true)`; an `"int"` release returns `err("foreign release failed", code)` for a
+non-zero result; `"discard"` calls a release that returns int and ignores that int,
+as `sqlite3_close_v2` and `sqlite3_finalize` require (D14/D15). The release is
+signature-checked against its `CType *` prototype (`int` for `int`/`discard`,
+`void` for `void`).
+
+
+**Out parameters (stage (f)).** A native declaration may end with out parameters,
+which consume no call argument:
+
+```obo
+native fn open_v2(path: &[]byte, flags: int, out db: Connection): open_v2_out
+native fn prepare_v2(db: &Connection, sql: &[]byte,
+                     out st: Stmt, out tail: int from sql): prepare_v2_out
+```
+
+`out name: X` for a `foreign` type is the spec kind `out_own<C>` (C parameter
+`C **`); at most one is allowed. `out name: int from input` is `out_offset@k`
+(C parameter `const char **`); `input` must be an `&[]byte` input parameter,
+at most one is allowed, and the offset is relative to that argument's borrowed
+bytes. Inputs come first in the declaration; the return type is the literal
+`<native>_out`. The compiler builds that record directly (never in module globals
+or `.sym`): `rc: int` first, then one field per out parameter in declaration
+order, an `out_own` field being `?X`. The C return code is stored in `rc` before
+any helper call. Each non-NULL `out_own` write is wrapped in a counted foreign
+record, so a wrapper must `take` and close it on the error path too. The generated
+record is an ordinary owned value: store it in a `var` (a bare out-call statement
+is refused, because it would silently drop a live `out_own`). The record's
+descriptor owns the nested foreign records, so dropping it frees them but never
+the C objects; the census then reports the C handles. `out_offset` yields `-1`
+for a NULL or out-of-range tail pointer; the wrapper turns `-1` into an error.
+
+The sidecar adds, only for out natives actually called, a line after the `foreign`
+lines:
+
+```
+outrec <native> <native>_out rc:int <field>:own:<Obo> <field>:offset:<k>
+```
+
+Old sidecar readers reject the unknown line; this tool still accepts a sidecar
+with no `outrec` lines (every pre-(f) sidecar). `outrec` is checked against the
+spec: the record name, `rc` first, unique fields, one field per out kind in order,
+an `own` type in the sidecar foreign table, and an in-range offset target. An out
+native must use a typed native fn call, not `__cinterop`, and its C result must be
+`i32`/`i64`/`u32`. See `tests/out_fixture.*` and `tests/out_wrap.obx`.
 
 **close and is_open.** `close` is `close(mut &X): Result[bool]`:
 
@@ -690,7 +735,8 @@ exits 4 (`obo: internal error: foreign handle census underflow`);
 `OBO_CHECK=1`.
 
 **Sidecar.** Sidecar v2 starts with `foreign <id> <obo-name> <c-name>` lines in
-first-declaration order, then the relocations. Stage (d) adds these lines under
+first-declaration order, then optional `outrec` lines (stage (f)), then the
+relocations. Stage (d) adds these lines under
 the existing `cinterop-relocs 2` header without a version bump; a reader that
 expects only the 7-field relocation lines rejects them as malformed (the v2
 reader here is the updated one). A typed foreign call records

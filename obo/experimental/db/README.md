@@ -109,10 +109,11 @@ Known type/placeholder gaps for the renderer-only dialects:
 
 ## Ownership and cleanup
 
-`Connection`, `Rows` and `Stmt` are ordinary obo records holding only an integer
-registry token. No raw `PGconn*`, `PGresult*`, `sqlite3*`, `sqlite3_stmt*` or
-`char*` reaches obo. The trusted C registry checks kind and generation before
-every dereference.
+In the PostgreSQL package (until stage (g)), `Connection`, `Rows` and `Stmt` are
+ordinary obo records holding an integer registry token. In SQLite v2,
+`Connection` and `Stmt` are foreign handles: an ordinary record with one private
+C word, no token and no generation. No raw `PGconn*`, `PGresult*`, `sqlite3*`,
+`sqlite3_stmt*` or `char*` reaches obo in either package.
 
 Dropping a record **does not** free the foreign object. Cleanup is explicit,
 normally with `defer`:
@@ -123,13 +124,17 @@ defer rows.close()
 defer stmt.close()
 ```
 
-- `close` borrows the wrapper, poisons the token, and returns `true` once.
-- A second close is a safe `false`, not a second `PQfinish`/`PQclear`/
-  `sqlite3_finalize`.
-- A stale or wrong-kind token is rejected before C uses a pointer.
+- PostgreSQL `close` borrows the wrapper, poisons the token, and returns
+  `true` once. SQLite `close` is `Result[bool]`: it zeroes the handle word
+  before the release and returns `ok(true)`, or `ok(false)` on a second close.
+- A second close is a safe `false`/`ok(false)`, not a second `PQfinish`/
+  `PQclear`/`sqlite3_close_v2`/`sqlite3_finalize`.
+- A stale token (PostgreSQL) or a zero handle word (SQLite, exit 7) is
+  rejected before C uses a pointer.
 - Obo `exit(...)` runs no defers; return from the block when cleanup must run.
-- Live counters (`live_resources`, `live_connections`, `live_results`,
-  `live_statements`, `live_buffers`) make an omitted close visible in tests.
+- The PostgreSQL adapter still has `live_*` counters until stage (g). SQLite v2
+  has none: under `OBO_CHECK=1` the foreign handle census reports an omitted
+  `close` at normal end (exit 8).
 - There is no automatic foreign finalizer. Adding one needs a separate,
   reviewed language/runtime design.
 
@@ -278,10 +283,13 @@ fn main() {
 
 - `open(path)` uses `sqlite3_open_v2` with READWRITE|CREATE|URI. `:memory:` and
   files under `/tmp` are supported; the tests use both and remove their files.
-- `exec(sql)` uses `sqlite3_exec` and accepts multiple statements. `prepare(sql)`
-  accepts exactly one statement and conservatively rejects trailing text after
-  it, including a trailing SQL comment; this is deliberate, not a full SQL
-  lexer.
+- `exec(sql)` is prepare/step/finalize per statement in obo (no `sqlite3_exec`)
+  and accepts multiple statements; every exit from the loop finalizes the
+  current statement. It prepares each statement at an absolute offset through
+  `sq_prepare_at.c` (native `prepare_at`), so a 1 MiB script is linear rather
+  than a copy-the-remainder O(n²). `prepare(sql)` remains the one-shot API; it
+  accepts exactly one statement and conservatively rejects trailing text after it, including a trailing SQL
+  comment; this is deliberate, not a full SQL lexer.
 - Bind indices are 1-based; out-of-range is `SQLITE_RANGE`. Bindings are
   `bind_null`, `bind_int` (i64), `bind_text` and `bind_blob`; text rejects
   embedded NUL, blob preserves it.
@@ -298,16 +306,18 @@ fn main() {
   REAL is rejected by `column_value`, `column_text` and `column_int` because it
   is not exact decimal/integer data. SQLite's documented integer-to-text
   conversion is used, never an obo float in the adapter.
-- A connection refuses to close while a prepared statement is live
-  (`SQLITE_BUSY`); close statements first, then the connection. In one block,
-  register `defer conn.close()` **before** `defer stmt.close()`: defers run
-  last-in, first-out, so the statement finalizes before the connection closes.
-  Registering the connection defer later would run `conn.close()` first, get
-  `SQLITE_BUSY`, and leak the connection.
-- Errors are copied immediately: `sqlite3_exec`'s allocated `errmsg` is copied
-  and freed, `open` copies the message before closing a failed handle, and
-  `error_message`/`error_code` are snapshots. Connection-level errors belong to
-  the connection; each statement has its own message/code, so statement B
+- A connection uses `sqlite3_close_v2` (D14): `close` succeeds while statements
+  are live, the `Connection` census drops, and the orphaned statements keep
+  working until finalized. Until the last statement closes the file lock
+  persists, so a second connection's write can report `SQLITE_BUSY`; the `Stmt`
+  census is the signal for a statement that was never closed. Registering
+  `defer conn.close()` before `defer stmt.close()` is still the tidy order.
+- Errors are read before a handle is closed: `open` copies the message before
+  closing a failed non-NULL handle, and `prepare` closes a non-NULL statement
+  written on error. `Stmt.error_code()` uses `sq_stmt_errcode`; its message is
+  the bounded `sqlite3_errstr` text, meaningful only while the connection is
+  open (design 6.2). Connection-level errors belong to
+  the connection; each statement has its own code, so statement B
   neither sees nor clears statement A's last error. Returned SQLite codes are
   exposed as `SQLITE_ERROR`, `SQLITE_CONSTRAINT`, `SQLITE_BUSY`, etc.
 
@@ -316,11 +326,14 @@ fn main() {
 The probe host has `/lib/x86_64-linux-gnu/libsqlite3.so.0` and the `sqlite3`
 3.45.1 shell, but no `/usr/include/sqlite3.h` and no `pkg-config`. The committed
 `sqlite_decls.h` is an independently written minimal ABI declaration subset.
-`sqlite.cbind` records `signature_check: "declarations-only"`; it does not claim
-a header check. Linking is `-l:libsqlite3.so.0`. The declaration file and the
-adapter/shared headers are listed under `declaration_files` and hashed into the
-manifest as provenance inputs, without being promoted to a compiled header
-check. The PostgreSQL cbind does the same for `libpq_decls.h`,
+It uses ABI-identical spellings for the v2 kinds: `const void *` for borrowed
+bytes and `long` for `sqlite3_int64`. `sqlite.cbind` records
+`signature_check: "declarations-only"`; it does not claim a header check.
+Linking is `-l:libsqlite3.so.0`. The declaration file is listed under
+`declaration_files` and hashed into the manifest as provenance, without being
+promoted to a compiled header check; `tests/real_sqlite_abi_test.c` resolves
+every SQLite symbol from the real library with independent prototypes. The
+trusted helpers are `sq_stmt_errcode.c` and `sq_prepare_at.c`. The PostgreSQL cbind does the same for `libpq_decls.h`,
 `postgres_adapter.h` and `cres.h`.
 
 A private evidence-only cross-check compiled the real 3.45.1 header first and

@@ -1,0 +1,167 @@
+module outnat
+
+pub type Obj = foreign "Of"
+
+native fn of_new(v: int, out o: Obj): of_new_out
+native fn of_zero(out o: Obj): of_zero_out
+native fn of_new_fail(v: int, out o: Obj): of_new_fail_out
+native fn of_new_null(v: int, out o: Obj): of_new_null_out
+native fn of_wide(a: int, b: int, c: int, d: int, e: int, f: int, out o: Obj): of_wide_out
+native fn of_open(path: &[]byte, flags: int, out db: Obj): of_open_out
+native fn of_prepare(db: &Obj, sql: &[]byte, out st: Obj, out tail: int from sql): of_prepare_out
+native fn of_tail(s: &[]byte, mode: int, out off: int from s): of_tail_out
+native fn of_bind(s: &[]byte, out o: Obj): of_bind_out
+
+native fn of_get(o: &Obj): int
+native fn of_reset()
+native fn of_live(): int
+native fn of_closed(): int
+native fn of_last_dtor(): int
+native fn of_last_len(): int
+
+pub fn (mut o: &Obj) close() { __foreignClose(o) }
+pub fn (o: &Obj) is_open(): bool { return __foreignIsOpen(o) }
+pub fn get(o: &Obj): int { return of_get(o) }
+
+pub fn reset() { of_reset() }
+pub fn live(): int { return of_live() }
+pub fn releases(): int { return of_closed() }
+pub fn last_dtor(): int { return of_last_dtor() }
+pub fn last_len(): int { return of_last_len() }
+
+pub fn open(v: int): Result[Obj] {
+    var r = of_new(v)
+    if r.rc != 0 {
+        var b = take(r.o)
+        if b != nil { b.close() }
+        return err("new failed", 1)
+    }
+    var h = take(r.o)
+    if h == nil { return err("no handle", 1) }
+    return ok(h)
+}
+
+pub fn open_zero(): Result[Obj] {
+    var r = of_zero()
+    if r.rc != 0 {
+        var bad = take(r.o)
+        if bad != nil { bad.close() }
+        return err("zero failed", 1)
+    }
+    var h = take(r.o)
+    if h == nil { return err("no handle", 1) }
+    return ok(h)
+}
+
+pub fn open_fail(v: int): int {
+    var r = of_new_fail(v)
+    var b = take(r.o)
+    if r.rc == 0 {
+        if b != nil { b.close() }
+        return 0
+    }
+    if b == nil { return 2 }
+    b.close()
+    return 1
+}
+
+pub fn open_null(v: int): int {
+    var r = of_new_null(v)
+    var b = take(r.o)
+    if b != nil { b.close(); return 3 }
+    return r.rc
+}
+
+pub fn wide(a: int, b: int, c: int, d: int, e: int, f: int): Result[Obj] {
+    var r = of_wide(a, b, c, d, e, f)
+    if r.rc != 0 {
+        var bad = take(r.o)
+        if bad != nil { bad.close() }
+        return err("wide failed", 1)
+    }
+    var h = take(r.o)
+    if h == nil { return err("no handle", 1) }
+    return ok(h)
+}
+
+pub fn open_shape(path: &[]byte, flags: int): Result[Obj] {
+    var r = of_open(path, flags)
+    if r.rc != 0 {
+        var bad = take(r.db)
+        if bad != nil { bad.close() }
+        return err("open failed", 1)
+    }
+    var h = take(r.db)
+    if h == nil { return err("no handle", 1) }
+    return ok(h)
+}
+
+pub fn prepare(db: &Obj, sql: &[]byte): Result[Obj] {
+    var r = of_prepare(db, sql)
+    if r.rc != 0 {
+        var bad = take(r.st)
+        if bad != nil { bad.close() }
+        return err("prepare failed", 1)
+    }
+    var st = take(r.st)
+    if st == nil { return err("no statement", 1) }
+    if r.tail < 0 || r.tail > len(sql) {
+        st.close()
+        return err("bad tail", 2)
+    }
+    return ok(st)
+}
+
+pub fn prepare_tail(db: &Obj, sql: &[]byte): int {
+    var r = of_prepare(db, sql)
+    var st = take(r.st)
+    if st != nil { st.close() }
+    return r.tail
+}
+
+pub fn tail(s: &[]byte, mode: int): int {
+    var r = of_tail(s, mode)
+    return r.off
+}
+
+pub fn bind(s: &[]byte): Result[Obj] {
+    var r = of_bind(s)
+    if r.rc != 0 {
+        var bad = take(r.o)
+        if bad != nil { bad.close() }
+        return err("bind failed", 1)
+    }
+    var h = take(r.o)
+    if h == nil { return err("no handle", 1) }
+    return ok(h)
+}
+
+pub fn leak(v: int) {
+    var r = of_new(v)
+    println("leak rc ", r.rc)
+}
+
+pub fn close_drop(v: int) {
+    var r = of_new(v)
+    var h = take(r.o)
+    if h != nil { h.close() }
+}
+
+pub fn flow_one(v: int): int {
+    var r = of_new(v)
+    var h = take(r.o)
+    if h == nil { return 0 }
+    let hh = h
+    defer hh.close()
+    return of_get(&hh)
+}
+
+pub fn flow(v: int, n: int): int {
+    var total = 0
+    var i = 0
+    while i < n {
+        if v >= 0 && i < n { total = total + flow_one(v + i) }
+        i += 1
+    }
+    return total
+}
