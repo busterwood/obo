@@ -113,13 +113,14 @@ const T_FOREIGN = 73            // type X = foreign "C": a D2 reserved word
 // Bump OBO_VERSION with each merged compiler feature; additive builtin/runtime
 // extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A, 0.10 is
 // numeric floats, 0.11 is Stage B capture lists, 0.12 is the decimal integration,
-// 0.13 is private-by-default record fields, 0.14 adds the decimal text API and
-// 0.15 adds compiler-known sql/html template literals.
+// 0.13 is private-by-default record fields, 0.14 adds the decimal text API,
+// 0.15 adds compiler-known sql/html template literals, 0.16 is decimal storage
+// and 0.17 adds the impure interface-member tier.
 // Bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect
 // change.
-const OBO_VERSION = "0.16"
-const SYM_FORMAT = 9
+const OBO_VERSION = "0.17"
+const SYM_FORMAT = 10
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -1660,6 +1661,7 @@ type Sym = ref record {
     freesAll: bool            // fn: it might free anything (or isn't compiled yet)
     writesHandles: bool       // fn: it frees owned objects through a handle (directly, by a callee, or a forward heading)
     pureMember: bool          // ifn: an interface member declared pure (its summary is pfree 0; the tier check reads this)
+    impureMember: bool        // ifn: an interface member declared impure (its summary is the maximum; the tier check reads this)
     home: int                 // an int or bool local held in this register (r12 to r15) instead of a stack slot, or -1
     recv: ^Type               // a method's receiver type; tVoid for a plain function
     native: bool              // fn: a body-less `native fn` declaration (its call has no obo body)
@@ -13389,16 +13391,23 @@ fn parseParams(mut params: &[]Param, member: bool, allowOut: bool) {
     expect(T_RPAREN, "")
 }
 
-// The synthetic summary of an interface member (v3 7.4), from its marker and its parameter modes alone, so a
-// symbol file's reader can rebuild it identically: a pure member frees nothing; any other member may free below
-// each of its mut parameters (the receiver for 'mut fn'), and nothing else. Parameters from 62 on need no bit,
-// since mutFrees already answers yes for them. The member has no globals and writes no handles.
+// The synthetic summary of an interface member (v3 7.4, impure tier), from its markers and its parameter modes
+// alone, so a symbol file's reader can rebuild it identically: a pure member frees nothing; an impure member has
+// the maximum summary (it may free anything and write through a handle, so a caller is conservatively
+// invalidated); any other member may free below each of its mut parameters (the receiver for 'mut fn'), and
+// nothing else. Parameters from 62 on need no bit, since mutFrees already answers yes for them. A pure or plain
+// member has no globals and writes no handles.
 // What 'pure' guarantees to a caller: the member frees nothing and writes no owned value through a handle. It may
 // still write scalars, globals and receivers, so a caller must not infer "no writes" from 'pure'.
-fn setMemberSummary(m: ^Sym, pure: bool) {
+fn setMemberSummary(m: ^Sym, pure: bool, impure: bool) {
     m.freesAll = false
     m.writesHandles = false
     m.fnRec.pfree = 0
+    if impure {
+        m.freesAll = true
+        m.writesHandles = true
+        return
+    }
     if pure { return }
     for i in 0..len(m.fnRec.pmodes) {
         if i < 62 && m.fnRec.pmodes[i] == 2 { m.fnRec.pfree = m.fnRec.pfree | (1 << i) }
@@ -13430,20 +13439,34 @@ fn ifaceDecl(name: string, line: int, isPub: bool) {
     while sym != T_RBRACE {
         let mline = tline
         var pure = false
+        var impure = false
         var mutrecv = false
         while true {
             if sym == T_PUB {
                 error("'pub' is not allowed on an interface member; mark the interface type pub")
             }
-            if sym == T_IDENT && sval == "pure" && !pure && !mutrecv {
+            if sym == T_IDENT && sval == "pure" && !pure && !impure && !mutrecv {
                 next()
                 pure = true
+                continue
+            }
+            if sym == T_IDENT && sval == "impure" && !impure && !pure && !mutrecv {
+                next()
+                impure = true
                 continue
             }
             if sym == T_IDENT && sval == "mut" && !mutrecv {
                 next()
                 mutrecv = true
                 continue
+            }
+            if sym == T_IDENT && sval == "pure" && impure {
+                error("'pure' and 'impure' are mutually exclusive on an interface member")
+            }
+            if sym == T_IDENT && sval == "impure" {
+                if pure { error("'pure' and 'impure' are mutually exclusive on an interface member") }
+                if impure { error("'impure' is repeated on an interface member") }
+                if mutrecv { error("'impure' comes before 'fn'") }
             }
             if sym == T_IDENT && (sval == "pure" || sval == "mut") {
                 error("'pure' and 'mut' come before 'fn'")
@@ -13484,7 +13507,8 @@ fn ifaceDecl(name: string, line: int, isPub: bool) {
         m.line = mline
         m.addr = 0
         m.pureMember = pure
-        setMemberSummary(m, pure)
+        m.impureMember = impure
+        setMemberSummary(m, pure, impure)
         append(ifaceSyms, m)
         count += 1
     }
@@ -13832,8 +13856,9 @@ fn modeSpelling(t: ^Type, mode: int): string {
 // [pub] impl I for T (v3 3.3, 7.2): a conformance declaration with no body. Every member of I must be matched
 // by a method of T of the same name, already defined, with the same receiver mode, parameter count, types and
 // modes, and the same return type. A pure member needs a pure method; a plain member needs a method that
-// changes only what is below its own mut parameters, so an importer may trust the member's marker. The
-// methods are ordinary top-level declarations of T's module.
+// changes only what is below its own mut parameters; an impure member may be implemented by any method, since
+// its summary is the maximum and its callers are already conservative. The methods are ordinary top-level
+// declarations of T's module.
 fn implDecl(isPub: bool) {
     let iline = tline
     let it = parseType()
@@ -13898,8 +13923,11 @@ fn implDecl(isPub: bool) {
         if !same(cm.ret, m.ret) {
             error(mism + "it must return " + tname(m.ret) + ", not " + tname(cm.ret))
         }
-        // the tier check (v3 7.2): what the member's marker promises, the method must keep
-        if m.pureMember {
+        // the tier check (v3 7.2, impure tier): what the member's marker promises, the method must keep. An
+        // impure member makes no promise, so any method that matches the signature implements it.
+        if m.impureMember {
+            // no effect check: the caller pays the maximum summary (setMemberSummary)
+        } else if m.pureMember {
             if !pureFn(cm) || cm.writesHandles {
                 error("method '" + methodKey(cm) + "' is not pure, but interface '" + tname(it) + "' declares '" + m.name + "' pure")
             }
@@ -14251,6 +14279,8 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
                     next()
                     nativeFnDecl(isPub)
                     declWasNative = true
+                } else if k == T_IDENT && sval == "impure" {
+                    error("'impure' is only allowed on an interface member: write impure fn m(...) inside an interface")
                 } else {
                     error("expected a declaration")
                 }
@@ -14873,6 +14903,7 @@ fn appIface(mut b: &[]byte, t: ^Type, modName: string) {
         append(b, ' ')
         let m = ms[i]
         if m.pureMember { appStr(b, "pure ") }
+        if m.impureMember { appStr(b, "impure ") }
         if m.fnRec.pmodes[0] == 2 { appStr(b, "mut ") }
         appStr(b, "fn ")
         appStr(b, m.name)
@@ -15731,11 +15762,24 @@ fn symIfaceDef(name: string, nline: int, mode: int) {
     while sym != T_RBRACE {
         let mline = tline
         var pure = false
+        var impure = false
         var mutrecv = false
-        if sym == T_IDENT && sval == "pure" { next(); pure = true }
-        if sym == T_IDENT && sval == "mut" { next(); mutrecv = true }
-        if sym == T_IDENT && (sval == "pure" || sval == "mut") {
-            error("'pure' and 'mut' come before 'fn'")
+        while true {
+            if sym == T_IDENT && sval == "pure" && !pure && !impure && !mutrecv { next(); pure = true; continue }
+            if sym == T_IDENT && sval == "impure" && !impure && !pure && !mutrecv { next(); impure = true; continue }
+            if sym == T_IDENT && sval == "mut" && !mutrecv { next(); mutrecv = true; continue }
+            if sym == T_IDENT && sval == "pure" && impure {
+                error("'pure' and 'impure' are mutually exclusive on an interface member")
+            }
+            if sym == T_IDENT && sval == "impure" {
+                if pure { error("'pure' and 'impure' are mutually exclusive on an interface member") }
+                if impure { error("'impure' is repeated on an interface member") }
+                if mutrecv { error("'impure' comes before 'fn'") }
+            }
+            if sym == T_IDENT && (sval == "pure" || sval == "mut") {
+                error("'pure' and 'mut' come before 'fn'")
+            }
+            break
         }
         if sym != T_FN { error("expected a method name in the interface") }
         next()
@@ -15794,12 +15838,13 @@ fn symIfaceDef(name: string, nline: int, mode: int) {
             m.line = mline
             m.addr = 0
             m.pureMember = pure
-            setMemberSummary(m, pure)
+            m.impureMember = impure
+            setMemberSummary(m, pure, impure)
             append(ifaceSyms, m)
         } else {
             if count >= len(live) { symDisagree(what) }
             let lm = live[count]
-            if lm.name != mname || lm.pureMember != pure { symDisagree(what) }
+            if lm.name != mname || lm.pureMember != pure || lm.impureMember != impure { symDisagree(what) }
             if len(lm.fnRec.params) != len(ptypes) { symDisagree(what) }
             for k in 0..len(ptypes) {
                 if !same(lm.fnRec.params[k], ptypes[k]) || lm.fnRec.pmodes[k] != pmodes[k] { symDisagree(what) }

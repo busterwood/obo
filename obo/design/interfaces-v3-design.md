@@ -484,6 +484,11 @@ An implementation that writes owned values through a handle, or frees a global, 
 member in v1; it is still an ordinary method, just not callable through an interface. If a tool needs one, the
 extension is a third marker with the old worst-case summary. Not in v1.
 
+(implementation, 0.17) The third marker is `impure`, implemented in
+`design/impure-interface-members.md` (0.17 / format 10 / ABI 1). An impure member's synthetic summary is the
+maximum (`freesAll` and `writesHandles`), any matching method may implement it, and a call through it
+conservatively invalidates the caller. The plain and pure tiers are unchanged.
+
 ---
 
 ## 8. `.sym` encoding and versions

@@ -1,0 +1,96 @@
+// The impure interface-member tier (design/impure-interface-members.md): marker errors, the
+// caller's conservative invalidation, and the rule that a pure member still needs a pure method.
+
+// === a reference borrowed through a handle, read after a call through an impure member
+type I = interface { impure fn run(): int }
+type Square = ref record { s: int }
+type Box = ref record { sq: Square }
+var G: []int = new []int(0)
+fn (q: &Square) run(): int { truncate(G, 0); return q.s }
+impl I for Square
+fn main() {
+    var h = new Box{sq: new Square{s: 4}}
+    let p = handle(h)
+    let inner: &Square = p.sq
+    let d: I = new Square{s: 1}
+    let x = d.run()
+    println(inner.s)  // error: 'inner' may point to freed memory: something under what it points into was changed; point it again first
+}
+
+// === a reference into a local object, read after a call through an impure member
+// (the handle case above is caught by invalidate(handleSym); this one needs invalidateDeep/writesHandles)
+type I = interface { impure fn run(): int }
+type Square = ref record { s: int }
+type Box = ref record { sq: Square }
+var G: []int = new []int(0)
+fn (q: &Square) run(): int { truncate(G, 0); return q.s }
+impl I for Square
+fn main() {
+    var h = new Box{sq: new Square{s: 4}}
+    let inner: &Square = h.sq
+    let d: I = new Square{s: 1}
+    let x = d.run()
+    println(inner.s)  // error: 'inner' may point to freed memory: something under what it points into was changed; point it again first
+}
+
+// === a wrapper that calls an impure member inherits the maximum summary
+type I = interface { impure fn run(): int }
+type Square = ref record { s: int }
+type Box = ref record { sq: Square }
+var G: []int = new []int(0)
+fn (q: &Square) run(): int { truncate(G, 0); return q.s }
+impl I for Square
+fn via(d: &I): int { return d.run() }
+fn main() {
+    var h = new Box{sq: new Square{s: 4}}
+    let inner: &Square = h.sq
+    let d: I = new Square{s: 1}
+    let x = via(&d)
+    println(inner.s)  // error: 'inner' may point to freed memory: something under what it points into was changed; point it again first
+}
+
+// === an impure member is still signature-checked
+type I = interface { impure fn f(k: int): int }
+type T = ref record { n: int }
+fn (t: &T) f(k: int): string { return "x" }
+impl I for T  // error: method 'T::f' does not match interface 'I' method 'f': it must return int, not string
+
+// === a deep reference passed to an impure member is refused
+type Square = ref record { s: int }
+type Box = ref record { sq: Square }
+type I = interface { impure fn take(q: &Square): int }
+var G: []int = new []int(0)
+fn (s: &Square) take(q: &Square): int { truncate(G, 0); return s.s + q.s }
+impl I for Square
+fn main() {
+    var h = new Box{sq: new Square{s: 4}}
+    let p = handle(h)
+    let d: I = new Square{s: 1}
+    println(d.take(p.sq))  // error: cannot pass a reference that points inside something to interface method 'I::take': it writes through a handle, which could free it
+}
+
+// === a pure member still refuses a method that frees a global, even though an impure member would take it
+type I = interface { pure fn f() }
+type T = ref record { n: int }
+var G = new T{n: 1}
+fn (t: &T) f() { G = new T{n: 2} }
+impl I for T  // error: method 'T::f' is not pure, but interface 'I' declares 'f' pure
+
+// === pure and impure together
+type I = interface {
+    pure impure fn f()  // error: 'pure' and 'impure' are mutually exclusive on an interface member
+}
+
+// === impure repeated
+type J = interface {
+    impure impure fn f()  // error: 'impure' is repeated on an interface member
+}
+
+// === impure after mut
+type K = interface {
+    mut impure fn f()  // error: 'impure' comes before 'fn'
+}
+
+// === impure on a method declaration, not a member
+type T = ref record { n: int }
+impure fn (t: &T) f() { }  // error: 'impure' is only allowed on an interface member: write impure fn m(...) inside an interface

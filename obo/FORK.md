@@ -6391,7 +6391,7 @@ empty-array savings oracle is **51,488 bytes** above baseline (minimum 30,000).
 The fixed point is stage 2 == stage 3, and the promoted 0.15 seed reproduces
 the compiler; the seed and compiler build byte-identical `hello`.
 
-## Decimal record fields (0.16 release candidate, format 9, ABI 1), stage D1
+## Decimal record fields (0.16 release, format 9, ABI 1), stage D1
 
 Stage D1 of `design/decimal-storage-plan.md` makes `decimal` a storable record
 and closed-variant field. `OBO_VERSION` is `0.16` and `SYM_FORMAT` is `9`;
@@ -6533,18 +6533,20 @@ and a global-rooted left operand; the int binop; the decimal field `+` with a fi
 write; and the compound result. Expected values were computed by hand before the
 run; for example `2.5 * 3.0 = 7.50` where the bad result was `301.50`.
 
-The record-field change is not promoted: the compiler still needs one
-`make promote` after the merge, and that is the orchestrator's step.
+The record-field change landed with the rest of the 0.16 line, merged as
+`fc76c5c` and promoted as the `seed/obo` at `50cca0a` (757,761 bytes, sha256
+`5700668d…`).
 
-## Decimal arrays (0.16 release candidate, format 9, ABI 1), stage D2
+## Decimal arrays (0.16 release, format 9, ABI 1), stage D2
 
 Stage D2 of `design/decimal-storage-plan.md` makes `[]decimal` an array of 24-byte
 decimals. `OBO_VERSION` stays `0.16` and `SYM_FORMAT` stays `9`, `SYM_ABI` stays `1`:
 a decimal array was refused in source and in `.sym` before, so accepting it changes no
 existing layout. The runtime gains one fixed slot (94) and one block kind (7); that is
-an additive runtime extension inside the unreleased 0.16 candidate. The policy comment
+an additive runtime extension inside what was then the unreleased 0.16 candidate. The policy comment
 in `obo.obo` suggests a patch release for additive runtime extensions; this stage
-does not take one, because 0.16 is not released yet (for the orchestrator to decide).
+did not take one while 0.16 was still an unreleased candidate; 0.16 shipped as
+one release, so the additive slot and kind are part of the 0.16 version bump.
 
 **Runtime (`obo/runtime/runtime.c`, `entry.S`, `host_abi.h`).**
 - Block kind 7 is a `[]decimal` block: pointer-free, 24-byte elements. It is the next
@@ -6643,7 +6645,7 @@ the new text and the mutant still removes the guard.
   against the budget of 2,750,000 (headroom 220,896). The budget is unchanged.
 - `cinterop` `test_cinterop.py`: ok (the libpq smoke test is skipped without `CINTEROP_TEST_DSN`).
 
-## Decimal globals and constants (0.16 release candidate, format 9, ABI 1), stage D3
+## Decimal globals and constants (0.16 release, format 9, ABI 1), stage D3
 
 Stage D3 of `design/decimal-storage-plan.md` makes a decimal storable as a global and a
 constant. `OBO_VERSION` stays `0.16`, `SYM_FORMAT` stays `9` and `SYM_ABI` stays `1`: both
@@ -6770,6 +6772,12 @@ merged `main` `6fc3584` (cinterop v2 stage h); that merge is the landing image b
   (757,761 bytes).
 - The decimal run tests pass under `OBO_CHECK=1`, which `run_fork` always sets.
 
+**Release.** The 0.16 storage tier is merged as `fc76c5c` and its compiler is
+the promoted `seed/obo` at `50cca0a` (757,761 bytes, sha256 `5700668d…`), which
+reproduces itself byte for byte. The release is one version/format/ABI step,
+`0.16`/9/1; D4–D6 remain the later stages listed in
+`design/decimal-storage-plan.md`.
+
 **Review nits closed.** N1: `tests/run/decimal_global_init.obx` now hands each
 `div`/`quantize`/`toInt`/`check`/`parse`/`format` temporary to a function that consumes and
 prints it, with an error path for `check`, `parse` and `format`, so a wrong status or result
@@ -6777,3 +6785,117 @@ address fails rather than only crashing; the plain `q1..q4` globals keep the
 construction/free check. N4: `LANGUAGE.md` no longer calls a record literal a decimal
 expression. N3 is noted above. N2 (the unused 8-byte inferred placeholder) and N5 (a decimal
 suite timeout counted as a caught mutant) are accepted as documented.
+
+## Impure interface members (0.17 release candidate, format 10, ABI 1), stage I1
+
+Stage I1 of `design/impure-interface-members.md` adds the third interface-member
+tier. `OBO_VERSION` is `0.17`, `SYM_FORMAT` is `10`, `SYM_ABI` stays `1` (the
+vtable shape, call layout and descriptors are unchanged). The format bump is a
+grammar change: a 0.16 reader does not know `impure` and must reject the file
+before its body is read.
+
+**Syntax.** A member is `[pure | impure] [mut] fn name(params)[: T]`. `pure` and
+`impure` are mutually exclusive; the marker comes before `mut` and `fn`. Both
+`impure fn` and `impure mut fn` are accepted, and `impure` is contextual (a
+method may still be named `impure`). `impure` at top level, on a method
+declaration rather than a member, is refused with
+`'impure' is only allowed on an interface member: write impure fn m(...) inside an interface`.
+
+**Summary and effects.** `setMemberSummary(m, pure, impure)` now sets the
+maximum for an impure member: `freesAll = true`, `writesHandles = true`,
+`pfree = 0`, no `freed` globals. No per-member summary is serialized; the source
+parser and the `.sym` reader rebuild it from the markers identically. At a call
+site the existing `afterCall`/`pureFn`/`mutFrees` machinery applies it with no
+special case, so an impure member call invalidates every live reference and
+handle and poisons the calling function's own summary (`freesAll` and
+`writesHandles`), exactly as a call to an uncompiled function does. A deep
+argument, a deep capturing closure, a handle receiver and a reference borrowed
+through a handle are all refused with the existing texts.
+
+**Impl rule.** An impure member may be implemented by any method that matches the
+signature, including a pure or plain one; the declaration is an upper bound. A
+`pure` member still requires `pureFn(c) && !c.writesHandles`, and a plain member
+keeps the existing local-tier checks and messages. Dispatch is unchanged: the
+member metadata drives the caller, the vtable still has one code address per
+member.
+
+**`.sym`.** The writer emits the marker canonically (`impure fn ...`,
+`impure mut fn ...`); the reader parses it, rebuilds the summary and compares the
+marker in mode 0. Duplicate/conflicting markers are structural errors. The writer
+never emits the summary itself.
+
+**Tests.**
+- `tests/run/ifaces_impure.obx`: `impure fn` and `impure mut fn`, implemented by
+  a method that frees a global, one that calls an impure helper, one that is
+  pure and one that is plain; direct calls and calls through `I` and `&I`; two
+  implementations.
+- `tests/modules/run/iface_impure/`: a library interface with both impure forms
+  and an implementation; the importer calls through `lib::Handler`.
+- `tests/errors/ifaces_impure.obx`: a handle-borrowed reference and a deep
+  reference into a local object, each read after an impure member call; a deep
+  reference argument; a reference read after a call through a wrapper that
+  calls an impure member (the wrapper inherits the maximum summary); an impure
+  member that fails the signature check; a pure member with an impure method
+  (still refused); `pure`+`impure`, repeated `impure`, `impure` after `mut`, and
+  `impure` on a method declaration.
+- `tests/modules/errors/iface_impure/`: a root that keeps a deep reference into
+  a local object across a call through an imported impure member. It is in
+  `sym_test`'s full-build/`--check` parity list, so a reader that rebuilds the
+  member as plain accepts the source-less check and fails the gate.
+- `tests/sym_test.py` `sym/iface_impure_roundtrip`: canonical markers in
+  `lib.sym`, byte-identical `--reemit-sym`, a source-less `--check` whose
+  `main.sym` equals the full build's, a format-9 file refused by the format
+  check, the three malformed marker forms refused by the reader, and the
+  imported-impure parity case above.
+- `tests/run/ifaces_effects.obx` and `tests/errors/ifaces_tiers.obx` are
+  unchanged and pass, so the plain and pure tiers did not move.
+- `tests/mutate_fork.py`: X23 is repointed at the new `setMemberSummary`
+  signature. Six impure mutants are added, each with a real catcher: a summary
+  that is not the maximum; an impl check that applies the plain rules to an
+  impure member; a reader that rebuilds the member as plain; a writer that
+  emits plain for an impure member; a summary that frees all but does not write
+  through handles (caught by the local-deep-reference case); and a pure-member
+  check that applies the plain tier (the method is still refused, only the
+  diagnostic changes). X16 and X17 are repointed at the new
+  `} else if m.pureMember {` branch. No mutant was added without a catcher.
+
+**Fixtures.** All committed `.sym` files and the harness constants are updated
+mechanically: `obosym 9` → `obosym 10`, `compiler "0.16"` → `compiler "0.17"`,
+`this compiler reads 9` → `this compiler reads 10`, and the `--version` string.
+The deliberate older-format fixtures stay older (`tests/modules/sym/format` is
+format 8; the `sym_test` stale-format cases use 1, 3, 4, 5 and 6), so they still
+exercise the format check. The only non-version changes in fixtures are the new
+impure test files; the golden bodies are unchanged, and `sym_test` compares the
+writer output byte for byte without `--update`.
+
+**Gates (after the last source change).**
+- `make obo`: `obo 0.17 sym-format 10 abi 1`; fixed point `stage2 == stage3`
+  (`cmp`), and both differ from the 0.16 seed as expected.
+- `run_fork` **1,869 passed, 0 failed**; `module_test` **149 passed, 0 failed**;
+  `sym_test` **56 passed, 0 failed**.
+- `sym_fuzz` **200/200 clean** (seed 20261028, digest `896ee2b42dbe8a5c`).
+- `doc_check` **74 examples, 0 problems**.
+- `heap_test` passes; self-compile peak **2,586,448 bytes** live (budget
+  2,750,000, headroom 163,552).
+- `port_compare` **1,847 of 1,847** Stage B; the port's self-compile peak is
+  2,586,432 bytes.
+- `mutate_fork` filtered: `interfaces impure` **6/6 caught**, `X23` **2/2
+  caught**.
+
+**Stage I2 (follow-up, not this stage).** `http1server` can then accept an
+interface handler: the application implements a `Handler` with
+`impure handle(req: &Request): Response` (a data-carrying response record), while
+the server owns the listener and connection and the implementation owns its
+state. The server loop calls `handler.handle(req)` through the interface; the
+impure member conservatively invalidates the loop's references and handles, so
+the compiler refuses to keep a borrow across the blocking call. One constraint
+I2 must respect: an impure member cannot be called through an interface stored
+in a record or a global (`h.d.run()`/`G.d.run()` is refused as a deep receiver
+that writes through a handle), so the server must keep the handler in a local or
+pass it as an `&I` parameter, not in a `Server` field or a global, or I2 needs a
+compiler change this stage excludes. I2 changes `experimental/http1server` and
+its design note, not the compiler.
+
+**Pre-existing follow-up (not changed here).** The `.sym` interface reader does
+not reject a forged `decimal` member parameter or return that the source parser
+refuses. This is present on `50cca0a` and is a separate reader-consistency fix.
