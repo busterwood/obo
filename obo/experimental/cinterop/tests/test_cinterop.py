@@ -777,9 +777,8 @@ def timeout_parse(tmp):
     cc = os.environ.get('CC', 'gcc')
     need(run([cc, '-O2', '-I', os.path.join(TOOL, 'toolkit'), '-o', exe,
               os.path.join(HERE, 'timeout_parse_test.c'),
-              os.path.join(TOOL, 'toolkit', 'cres.c'),
-              os.path.join(TOOL, 'toolkit', 'libpq_adapter.c'),
-              '-Wl,--wrap=PQconnectdb', '-l:libpq.so.5']), 'timeout parse C build')
+              os.path.join(TOOL, 'toolkit', 'libpq_conninfo.c'),
+              '-l:libpq.so.5']), 'timeout parse C build')
     p = need(run([exe]), 'timeout parse C run')
     if 'timeout parse tests ok' not in p.stdout:
         raise Fail("timeout parse C tests failed:\n%s" % p.stdout)
@@ -794,9 +793,10 @@ def libpq_result(tmp):
     p = build(os.path.join(EX, 'libpq.cbind'), os.path.join(EX, 'libpq_probe_app.obx'), out)
     if p.returncode != 0:
         raise Fail("libpq result probe build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(out, 'app')]), 'libpq result probe run')
+    p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'libpq result probe run')
     for line in ('PQlibVersion=', 'empty_status=2', 'empty_rows=0',
-                 'empty_fields=0', 'empty_closed=true', 'live=0'):
+                 'empty_fields=0', 'empty_closed=true'):
         if line not in p.stdout:
             raise Fail("libpq result probe output missing %r:\n%s" % (line, p.stdout))
     ldd = need(run(['ldd', os.path.join(out, 'app')]), 'libpq result ldd')
@@ -808,34 +808,120 @@ def libpq_result(tmp):
         raise Fail("libpq signature_check is %r, expected header" % m.get('signature_check'))
     print('libpq result ownership: ok')
 
-
 def fake_adapter(tmp):
-    exe = os.path.join(tmp, 'fake_adapter_test')
-    cc = os.environ.get('CC', 'gcc')
-    need(run([cc, '-O2', '-I', os.path.join(TOOL, 'toolkit'), '-o', exe,
-              os.path.join(HERE, 'fake_adapter_test.c'),
-              os.path.join(TOOL, 'toolkit', 'cres.c'),
-              os.path.join(TOOL, 'toolkit', 'libpq_adapter.c'),
-              os.path.join(HERE, 'fake_libpq.c')]), 'fake adapter C build')
-    p = need(run([exe]), 'fake adapter C run')
-    if 'fake adapter tests ok' not in p.stdout:
-        raise Fail("fake adapter C tests failed:\n%s" % p.stdout)
-    print('fake adapter C: ok')
+    """Edge cases of the v2 libpq wrapper through the fake ABI: a dropped Rows,
+    a missing Connection close, use-after-close, NUL rejection, an explicit
+    connect_timeout, and a NULL PQmakeEmptyPGresult.
 
+    The full fake app and its counter report run in libpq_fake(); this function
+    avoids duplicating that build. OBO_CHECK=1 turns the leaks into the census.
+    """
+    # A dropped Rows leaves its owned Res counted; the Connection is closed.
+    rlout = os.path.join(tmp, 'fake_v2_rows_leak')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'),
+              os.path.join(EX, 'libpq_rows_leak_app.obx'), rlout)
+    if p.returncode != 0:
+        raise Fail("fake libpq Rows-leak build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(rlout, 'app')],
+            env=dict(os.environ, OBO_CHECK='1', FAKE_REPORT='1'))
+    if p.returncode != 8 or 'foreign handles leaked: Res 1' not in p.stderr:
+        raise Fail("dropped Rows census: want exit 8 Res 1, got %d:\n%s"
+                   % (p.returncode, p.stderr))
+    if 'clear=0' not in p.stderr or 'finish=1' not in p.stderr:
+        raise Fail("a dropped Rows was cleared or its Connection left open:\n%s" % p.stderr)
+
+    # A missing close leaves the Connection counted and releases nothing.
+    leakout = os.path.join(tmp, 'fake_v2_leak')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_leak_app.obx'), leakout)
+    if p.returncode != 0:
+        raise Fail("fake libpq v2 leak build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(leakout, 'app')],
+            env=dict(os.environ, OBO_CHECK='1', FAKE_REPORT='1'))
+    if p.returncode != 8 or 'foreign handles leaked: Connection 1' not in p.stderr:
+        raise Fail("fake libpq missing-close census: want exit 8 Connection 1, got %d:\n%s"
+                   % (p.returncode, p.stderr))
+    if 'finish=0' not in p.stderr:
+        raise Fail("a dropped Connection was released:\n%s" % p.stderr)
+
+    # A second close is ok(false), and a native borrow after close exits 7.
+    uacout = os.path.join(tmp, 'fake_v2_uac')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_uac_app.obx'), uacout)
+    if p.returncode != 0:
+        raise Fail("fake libpq v2 use-after-close build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(uacout, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    # NUL rejection for the DSN, SQL and text values; binary NUL is data.
+    nulout = os.path.join(tmp, 'fake_v2_nul')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'),
+              os.path.join(EX, 'libpq_nul_app.obx'), nulout)
+    if p.returncode != 0:
+        raise Fail("fake libpq NUL build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(nulout, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'fake libpq NUL run')
+    for line in ('dsn_nul=2 connection string contains a NUL byte',
+                 'sql_nul=2 SQL text contains an embedded NUL',
+                 'text_nul=2 text parameter contains an embedded NUL',
+                 'binary_nul_ok=true', 'conn_closed=true'):
+        if line not in p.stdout:
+            raise Fail("fake libpq NUL output missing %r:\n%s" % (line, p.stdout))
+
+    # An explicit connect_timeout is not given a second one.
+    tout = os.path.join(tmp, 'fake_v2_timeout')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'),
+              os.path.join(EX, 'libpq_timeout_app.obx'), tout)
+    if p.returncode != 0:
+        raise Fail("fake libpq timeout build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(tout, 'app')], env=dict(os.environ, FAKE_REPORT='1')),
+             'fake libpq timeout run')
+    if 'timeout_open=true' not in p.stdout:
+        raise Fail("fake libpq timeout app did not connect:\n%s" % p.stdout)
+    if 'conninfo=fake-ok connect_timeout=3' not in p.stderr:
+        raise Fail("explicit connect_timeout was not preserved:\n%s" % p.stderr)
+    if 'connect_timeout=3 connect_timeout=5' in p.stderr:
+        raise Fail("a second default timeout was appended:\n%s" % p.stderr)
+
+    # PQmakeEmptyPGresult returning NULL is an own contract violation: exit 11.
+    enout = os.path.join(tmp, 'fake_v2_empty_null')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'),
+              os.path.join(EX, 'libpq_empty_null_app.obx'), enout)
+    if p.returncode != 0:
+        raise Fail("fake libpq empty-NULL build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(enout, 'app')], env=dict(os.environ, FAKE_EMPTY_NULL='1'))
+    if p.returncode != 11 or 'own returned NULL' not in p.stderr:
+        raise Fail("NULL PQmakeEmptyPGresult: want exit 11, got %d:\n%s"
+                   % (p.returncode, p.stderr))
+    print('fake libpq edge cases: ok (Rows/Connection census, use-after-close, NUL, timeout, own NULL)')
 
 def libpq_fake(tmp):
     out = os.path.join(tmp, 'fake')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_fake_app.obx'), out)
     if p.returncode != 0:
         raise Fail("fake libpq app build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(out, 'app')]), 'fake libpq app run')
+    p = need(run([os.path.join(out, 'app')], env=dict(os.environ, FAKE_REPORT='1')),
+             'fake libpq app run')
     for line in ('status=2', 't=hello', 'n_null=true', 'n_len=0', 'b_len=3',
                  'b0=0 b1=255 b2=65', 'num=1.234567890123456789',
-                 'num_type=1700 num_mod=-1', 'error_status=7', 'error_closed=true',
-                 'conn_closed=true', 'connect_failed=1', 'live=0', 'conns=0',
-                 'results=0', 'buffers=0'):
+                 'num_type=1700 num_mod=-1', 'exact_ok=true exact_len=8',
+                 'fmt=0', 'bin_fmt=1', 'null_value=1 SQL NULL',
+                 'overcap_error=2 value is larger than the 16 MiB limit',
+                 'num_name=num', 'error_len=17',
+                 'closed_null=false', 'closed_len=-1', 'closed_ftype=0',
+                 'closed_fmod=-1', 'closed_fname=2 rows are closed',
+                 'bounds_null=false', 'bounds_len=-1',
+                 'bounds_ftype=0', 'bounds_fmod=-1',
+                 'bounds_value=2 row or column is out of range',
+                 'bounds_fname=2 column is out of range',
+                 'rows_closed=true', 'closed_status=-1',
+                 'closed_value=2 rows are closed',
+                 'error_status=7', 'error_closed=true',
+                 'conn_closed=true', 'conn_again=false', 'connect_failed=1',
+                 'connect_failed_msg=fake connection failure'):
         if line not in p.stdout:
             raise Fail("fake libpq output missing %r:\n%s" % (line, p.stdout))
+    for line in ('conns=0', 'results=0', 'finish=2', 'clear=6', 'exec=5', 'empty=1',
+                 'misaligned=0', 'binary_fmt=1', 'text_overrun=0', 'oob=0',
+                 'conninfo=fake-fail connect_timeout=5'):
+        if line not in p.stderr:
+            raise Fail("fake libpq counters missing %r:\n%s" % (line, p.stderr))
     need(verify(out), 'fake libpq manifest verify')
     ldd = need(run(['ldd', os.path.join(out, 'app')]), 'fake libpq ldd')
     if 'libpq.so.5' in ldd.stdout:
@@ -844,34 +930,40 @@ def libpq_fake(tmp):
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_leak_app.obx'), leakout)
     if p.returncode != 0:
         raise Fail("fake libpq leak app build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(leakout, 'app')]), 'fake libpq leak app run')
-    if 'live=1' not in p.stdout or 'conns=1' not in p.stdout:
-        raise Fail("fake libpq leak app did not expose the missing close:\n%s" % p.stdout)
+    p = run([os.path.join(leakout, 'app')],
+            env=dict(os.environ, OBO_CHECK='1', FAKE_REPORT='1'))
+    if p.returncode != 8 or 'foreign handles leaked: Connection 1' not in p.stderr:
+        raise Fail("fake libpq leak app did not expose the missing close:\n%s%s"
+                   % (p.stdout, p.stderr))
     deferout = os.path.join(tmp, 'fake_defer')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_defer_app.obx'), deferout)
     if p.returncode != 0:
         raise Fail("fake libpq defer app build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(deferout, 'app')]), 'fake libpq defer app run')
-    for line in ('query_ok=true', 'early_error=7', 'nested_ok=true',
-                 'loop_closes=3', 'buffer_ok=true', 'live=0', 'conns=0',
-                 'results=0', 'buffers=0'):
+    p = need(run([os.path.join(deferout, 'app')], env=dict(os.environ, FAKE_REPORT='1')),
+             'fake libpq defer app run')
+    for line in ('query_ok=true', 'early_error=7', 'nested_ok=true', 'loop_closes=3'):
         if line not in p.stdout:
             raise Fail("fake libpq defer output missing %r:\n%s" % (line, p.stdout))
-    print('fake libpq wrapper: ok (explicit defer cleanup and leak counter)')
+    for line in ('conns=0', 'results=0', 'finish=7', 'clear=1', 'misaligned=0', 'text_overrun=0'):
+        if line not in p.stderr:
+            raise Fail("fake libpq defer counters missing %r:\n%s" % (line, p.stderr))
+    print('fake libpq wrapper: ok (explicit defer cleanup and the foreign census)')
     outlives = os.path.join(tmp, 'fake_outlives')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_outlives_app.obx'), outlives)
     if p.returncode != 0:
         raise Fail("fake libpq outlives app build failed:\n%s" % (p.stderr or p.stdout))
-    p = need(run([os.path.join(outlives, 'app')]), 'fake libpq outlives app run')
-    for line in ('result_after_conn_close=1.234567890123456789', 'live=0',
-                 'conns=0', 'results=0', 'live_result_outlives_conn=ok'):
+    p = need(run([os.path.join(outlives, 'app')], env=dict(os.environ, FAKE_REPORT='1')),
+             'fake libpq outlives app run')
+    for line in ('result_after_conn_close=1.234567890123456789', 'live_result_outlives_conn=ok'):
         if line not in p.stdout:
             raise Fail("fake libpq outlives output missing %r:\n%s" % (line, p.stdout))
+    for line in ('conns=0', 'results=0', 'finish=1', 'clear=1', 'misaligned=0', 'text_overrun=0'):
+        if line not in p.stderr:
+            raise Fail("fake libpq outlives counters missing %r:\n%s" % (line, p.stderr))
     print('fake libpq result-outlives-connection: ok')
 
-
 def libpq_conninfo(tmp):
-    """Invalid conninfo (pq_connect -4) returns libpq's copied diagnostic.
+    """Invalid conninfo returns libpq's copied diagnostic from the new helper.
 
     No server is contacted: libpq only parses the string. The fake ABI always
     runs; the real libpq parser runs too when libpq.so.5 is present.
@@ -889,18 +981,17 @@ def libpq_conninfo(tmp):
         p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
                  '%s conninfo app run' % label)
         for line in ('conninfo_error_code=2',
-                     'conninfo_error=unterminated quoted string in connection info string',
-                     'live=0', 'conns=0'):
+                     'conninfo_error=unterminated quoted string in connection info string'):
             if line not in p.stdout:
                 raise Fail("%s conninfo output missing %r:\n%s" % (label, line, p.stdout))
     print('libpq conninfo diagnostic: ok (%s)' % ' and '.join(v[0] for v in variants))
 
-
 def libpq_limits(tmp):
-    """Packet limits are enforced in the wrapper with specific messages.
+    """Wrapper limits are enforced before any C call, with specific messages.
 
-    Uses the fake ABI only, so no server is needed. 33 parameters and 1 MiB + 1
-    bytes of SQL are rejected before any C call; 32 parameters is accepted.
+    Uses the fake ABI only, so no server is needed. 33 parameters, 1 MiB + 1
+    bytes of SQL, a 16 MiB + 1 value and a 16 MiB + 1 DSN are rejected; 32
+    parameters, exact 1 MiB SQL and a 16 MiB value reach the C call.
     """
     out = os.path.join(tmp, 'libpq_limits')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_limits_app.obx'), out)
@@ -912,25 +1003,24 @@ def libpq_limits(tmp):
     for line in ('params33_error=too many query parameters: the limit is 32 (PQ_MAX_PARAMS) (2)',
                  'params32_status=2', 'params32_closed=true',
                  'sql_error=SQL text is larger than the 1 MiB limit (PQ_MAX_SQL) (2)',
-                 'packet_16mib=accepted status=2',
-                 'packet_16mib_plus1_error=query packet exceeds the 16 MiB buffer bound (2)',
-                 'conn_closed=true', 'live=0', 'conns=0', 'results=0'):
+                 'value_16mib=accepted status=2',
+                 'value_16mib_plus1_error=query parameter is larger than the 16 MiB limit (2)',
+                 'dsn_error=connection string is too large (2)',
+                 'conn_closed=true'):
         if line not in p.stdout:
             raise Fail("libpq limits output missing %r:\n%s" % (line, p.stdout))
-    # Exactly 1 MiB of SQL is not the limit error. The fake cannot run a statement
-    # this long, so its own failure is expected; only the limit message is excluded.
+    # Exactly 1 MiB of SQL is not the limit error. The fake cannot run a
+    # statement this long, so its own failure is expected; only the limit
+    # message is excluded.
     at = [l for l in p.stdout.splitlines() if l.startswith('sql_at_limit=')]
     if len(at) != 1 or 'PQ_MAX_SQL' in at[0] or 'larger than the 1 MiB' in at[0]:
         raise Fail("exact 1 MiB SQL was treated as over the limit: %r" % at)
-    print('libpq packet limits: ok (33 parameters, oversized SQL and 16 MiB+1 rejected; '
-          'exact 1 MiB SQL and exact 16 MiB packet accepted)')
-
+    print('libpq limits: ok (33 params, oversized SQL/value/DSN rejected; '
+          'exact 1 MiB SQL and 16 MiB value accepted)')
 
 def libpq_errors(tmp):
-    """Specific messages for the adapter codes that the wrapper now reports.
-
-    Fake ABI only. Covers pq_connect 0 (PQconnectdb returned NULL), PQexecParams
-    NULL with no libpq error text, and exec on a closed connection (-1).
+    """Specific messages for the wrapper's allocation failures, plus the closed
+    connection trap and the double-close result. Fake ABI only.
     """
     out = os.path.join(tmp, 'libpq_errors')
     p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_errors_app.obx'), out)
@@ -941,34 +1031,22 @@ def libpq_errors(tmp):
         raise Fail("libpq errors app failed: %d\n%s%s" % (p.returncode, p.stdout, p.stderr))
     for line in ('null_connect_error=2 libpq returned no connection object (PQconnectdb returned NULL)',
                  'alloc_error=2 libpq returned no result and no error message',
-                 'conn_closed=true',
-                 'stale_error=2 connection is closed or invalid',
-                 'live=0', 'conns=0'):
+                 'conn_closed=true', 'conn_open=false'):
         if line not in p.stdout:
             raise Fail("libpq errors output missing %r:\n%s" % (line, p.stdout))
-    print('libpq adapter error messages: ok (connect NULL, empty PQexecParams error, closed connection)')
 
+    uac = os.path.join(tmp, 'libpq_uac')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_uac_app.obx'), uac)
+    if p.returncode != 0:
+        raise Fail("libpq use-after-close build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(uac, 'app')], env=dict(os.environ, OBO_CHECK='1'))
+    if p.returncode != 7 or 'foreign handle used after close' not in p.stderr:
+        raise Fail("libpq use-after-close: want exit 7, got %d:\n%s" % (p.returncode, p.stderr))
+    print('libpq errors: ok (connect/exec allocation failures, closed trap, double close)')
 
 def libpq_constants():
-    """The obo wrapper limits must equal the C defines they mirror.
-
-    Reads the C source and header as text (no build). A define's value is
-    evaluated only when it is a plain integer product such as (16L * 1024L).
-    """
-    def c_value(text, name, path):
-        m = re.search(r'^#define\s+%s\s+(.+)$' % name, text, re.M)
-        if not m:
-            raise Fail("%s does not define %s" % (path, name))
-        expr = re.sub(r'(\d+)L\b', r'\1', m.group(1).strip())
-        if not re.fullmatch(r'[\d\s\*\(\)]+', expr):
-            raise Fail("cannot evaluate %s from %s: %r" % (name, path, m.group(1)))
-        return eval(expr)
-
-    adapter = os.path.join(TOOL, 'toolkit', 'libpq_adapter.c')
-    cres = os.path.join(TOOL, 'toolkit', 'cres.h')
+    """The wrapper's limits are the reviewed v2 values, with no adapter mirror."""
     wrapper = os.path.join(EX, 'libpq.obx')
-    c_text = open(adapter).read()
-    h_text = open(cres).read()
     obx = open(wrapper).read()
 
     def obo_value(name):
@@ -977,27 +1055,21 @@ def libpq_constants():
             raise Fail("libpq.obx does not define pub const %s" % name)
         return int(m.group(1))
 
-    checks = [
-        ('PQ_MAX_PARAMS', c_value(c_text, 'PQ_MAX_PARAMS', adapter), obo_value('PQ_MAX_PARAMS')),
-        ('PQ_MAX_SQL', c_value(c_text, 'PQ_MAX_SQL', adapter), obo_value('PQ_MAX_SQL')),
-        ('PQ_MAX_BUFFER', c_value(h_text, 'CRES_MAX_BUFFER', cres), obo_value('PQ_MAX_BUFFER')),
-    ]
-    for name, want, got in checks:
-        if want != got:
-            raise Fail("libpq.obx %s is %d but the C define is %d" % (name, got, want))
-    # The 16 MiB literal must not drift back into the wrapper as a second copy.
-    if obx.count('16777216') != 1:
-        raise Fail("libpq.obx repeats the 16 MiB literal; use PQ_MAX_BUFFER")
-    print('libpq limit constants: ok (PQ_MAX_PARAMS, PQ_MAX_SQL, PQ_MAX_BUFFER match the C defines)')
-
+    checks = [('PQ_MAX_PARAMS', 32), ('PQ_MAX_SQL', 1048576),
+              ('PQ_MAX_DSN', 16777216), ('PQ_MAX_VALUE', 16777216)]
+    for name, want in checks:
+        got = obo_value(name)
+        if got != want:
+            raise Fail("libpq.obx %s is %d, expected %d" % (name, got, want))
+    if obx.count('16777216') != 2:
+        raise Fail("libpq.obx must spell 16 MiB exactly once for DSN and once for values")
+    print('libpq limit constants: ok (PQ_MAX_PARAMS, PQ_MAX_SQL, PQ_MAX_DSN, PQ_MAX_VALUE)')
 
 def libpq_header_mismatch(tmp):
-    """A spec declaration that disagrees with the adapter header fails the
-    signature check before any link. A control copy of the same spec builds, so
-    the rejection is the mismatch and not a path or copy error."""
+    """A spec declaration that disagrees with libpq_decls.h fails the signature
+    check before any link. A control copy of the same spec builds."""
     spec = json.load(open(os.path.join(EX, 'libpq_fake.cbind')))
-    # The committed spec is relative to examples/; the copy uses absolute paths.
-    for key in ('sources', 'headers', 'wrapper_sources'):
+    for key in ('sources', 'headers'):
         spec[key] = [os.path.normpath(os.path.join(EX, p)) for p in spec.get(key, [])]
     spec['wrapper'] = os.path.join(EX, spec['wrapper'])
     app = os.path.join(EX, 'libpq_limits_app.obx')
@@ -1009,30 +1081,23 @@ def libpq_header_mismatch(tmp):
     if p.returncode != 0:
         raise Fail("control copy of the libpq spec did not build:\n%s" % (p.stderr + p.stdout))
 
-    # Internally consistent but wrong against the header: the declaration and the
-    # functions entry both say int/i32, while libpq_adapter.h says long/i64. A
-    # declarations-only check would accept this; the header tie must not.
-    before = 'extern long pq_lib_version(void);'
-    if not any(d == before for d in spec['declarations']):
-        raise Fail("libpq spec no longer declares %r; update this test" % before)
+    # PQlibVersion returns int in libpq_decls.h; declaring long/i64 in the
+    # binding is internally consistent but incompatible with the header.
     bad = json.loads(json.dumps(spec))
-    bad['declarations'] = [d.replace(before, 'extern int pq_lib_version(void);')
-                           for d in spec['declarations']]
     for f in bad['functions']:
-        if f['name'] == 'pq_lib_version':
-            f['ret'] = 'i32'
+        if f['name'] == 'lib_version_native':
+            f['ret'] = 'i64'
     mismatch = os.path.join(tmp, 'libpq_header_mismatch.cbind')
     json.dump(bad, open(mismatch, 'w'))
     out = os.path.join(tmp, 'libpq_header_mismatch')
     p = build(mismatch, app, out)
     text = p.stderr + p.stdout
-    if p.returncode == 0 or 'conflicting' not in text:
-        raise Fail("a spec declaration that disagrees with the header was not rejected:\n%s"
+    if p.returncode == 0 or 'incompatible' not in text:
+        raise Fail("a spec declaration that disagrees with libpq_decls.h was not rejected:\n%s"
                    % text)
     if os.path.exists(os.path.join(out, 'app')):
         raise Fail("a mismatched declaration reached the link")
-    print('libpq header mismatch: ok (declaration disagreeing with libpq_adapter.h rejected before link)')
-
+    print('libpq header mismatch: ok (declaration disagreeing with libpq_decls.h rejected before link)')
 
 def zlib_second(tmp):
     if not zlib_present():
@@ -1098,6 +1163,15 @@ def sanitizer_adapters(tmp):
     p = need(run([ff]), 'foreign fixture ASAN/UBSAN run')
     if 'foreign fixture tests ok' not in p.stdout:
         raise Fail("foreign fixture ASAN/UBSAN failed:\n%s" % p.stdout)
+    if libpq_present():
+        cq = os.path.join(tmp, 'libpq_conninfo_asan')
+        need(run([cc, *common, '-I', os.path.join(TOOL, 'toolkit'), '-o', cq,
+                  os.path.join(HERE, 'timeout_parse_test.c'),
+                  os.path.join(TOOL, 'toolkit', 'libpq_conninfo.c'),
+                  '-l:libpq.so.5']), 'libpq conninfo helper ASAN/UBSAN build')
+        p = need(run([cq]), 'libpq conninfo helper ASAN/UBSAN run')
+        if 'timeout parse tests ok' not in p.stdout:
+            raise Fail("libpq conninfo helper ASAN/UBSAN failed:\n%s" % p.stdout)
     if zlib_present():
         z = os.path.join(tmp, 'zlib_adapter_asan')
         need(run([cc, *common, '-o', z,
@@ -1122,10 +1196,11 @@ def libpq_live(tmp):
     p = build(os.path.join(EX, 'libpq.cbind'), os.path.join(EX, 'libpq_live_app.obx'), out)
     if p.returncode != 0:
         raise Fail("live libpq app build failed:\n%s" % (p.stderr or p.stdout))
-    p = run([os.path.join(out, 'app'), dsn], timeout=30)
+    p = run([os.path.join(out, 'app'), dsn], timeout=30,
+            env=dict(os.environ, OBO_CHECK='1'))
     if p.returncode != 0:
         raise Fail("live libpq smoke failed (exit %d):\n%s" % (p.returncode, p.stdout + p.stderr))
-    for line in ('live_db_smoke=ok', 'live=0', 'null_and_empty=ok',
+    for line in ('live_db_smoke=ok', 'exact_text=AAAAAAAA', 'null_and_empty=ok',
                  'numeric_text=1.234567890123456789 oid=1700 typmod=-1',
                  'binary_bytes=00ff41 len=3', 'sql_error_length='):
         if line not in p.stdout:
@@ -2377,7 +2452,12 @@ pub fn (c: &Conn) is_open(): bool { return __foreignIsOpen(c) }
 pub fn (mut c: &Bad) close(): Result[bool] { return __foreignClose(c) }
 pub fn (c: &Bad) is_open(): bool { return __foreignIsOpen(c) }
 
+pub type Box = ref record { h: Conn }
+
 pub fn open(v: int): Conn { return ff_new(v) }
+pub fn (mut b: &Box) touch(): int { return ff_touch(&b.h) }
+pub fn (mut b: &Box) closebox() { b.h.close() }
+pub fn boxed(v: int): Box { return new Box{h: open(v)} }
 pub fn open_opt(v: int): ?Conn { return ff_new_opt(v) }
 pub fn get(c: &Conn): int { return ff_get(c) }
 pub fn mark(c: &Conn): int { return ff_mark(c) }
@@ -2414,6 +2494,10 @@ fn main() {
         err(m, c) { println("err ", m, " ", c) }
     }
     println("frees ", handles::frees())
+
+    var bx = handles::boxed(4)
+    println("fieldtouch ", bx.touch())
+    bx.closebox()
 
     var b = new Box{h: handles::open(3)}
     println("field open ", b.h.is_open())
@@ -2457,13 +2541,13 @@ fn main() {
 
 FOREIGN_WANT = [
     'open true 11', 'touch 12', 'alive true open true', 'close true', 'closed false alive true',
-    'again false', 'frees 1',
+    'again false', 'frees 1', 'fieldtouch 5',
     'field open true', 'field closed false',
     'elem open true', 'elem closed false',
     'handle open true', 'handle closed false',
     'defer 8', 'opt nil', 'opt2 12 true',
     'bad open true', 'bad err foreign release failed 42', 'bad closed false',
-    'final frees 6',
+    'final frees 7',
 ]
 
 
@@ -2678,6 +2762,20 @@ def foreigns(tmp):
                 'module handles\npub type Conn = foreign "Fk"\n'
                 'native fn ff_touch(c: &Conn): int\n'
                 'pub fn touch(c: &Conn): int { return ff_touch(c) }\n', 'incompatible')
+
+    # The foreign-borrow relaxation is narrow: a deep array borrow to a native
+    # still gets the conservative refusal.
+    deepdir = os.path.join(tmp, 'deep_array')
+    os.makedirs(deepdir)
+    deepp = os.path.join(deepdir, 'm.obx')
+    open(deepp, 'w').write(
+        'module m\ntype Box = ref record { a: []int }\n'
+        'native fn f(a: &[]int): int\n'
+        'fn main() { var b = new Box{a: new []int(0)}\n    println(f(&b.a)) }\n')
+    q = run([OBO, deepp, '-o', os.path.join(deepdir, 'out')])
+    if q.returncode == 0 or 'points inside something' not in (q.stderr + q.stdout):
+        raise Fail("a deep array borrow to a native was not refused: %s"
+                   % (q.stderr + q.stdout).strip()[-400:])
 
     # A wrapper with no close/is_open methods: the sugar consumes its empty argument list.
     nowrap = ('module handles\n\npub type Conn = foreign "Fk"\n\n'

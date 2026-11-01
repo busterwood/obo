@@ -1,0 +1,67 @@
+module app
+
+import "libpq.obx"
+
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+// The wrapper rejects an embedded NUL in the DSN, SQL or a text value before
+// any C call; a binary value keeps NUL as data.
+fn main() {
+    var d = bytes_of("fake-ok")
+    append(d, byte(0))
+    let c = libpq::connect(d)
+    match c {
+        ok(conn) { println("dsn_nul=unexpected_ok"); conn.close(); exit(1) }
+        err(m, code) { println("dsn_nul=", code, " ", m) }
+    }
+
+    let made = libpq::connect(bytes_of("fake-ok"))
+    match made {
+        ok(conn) {
+            var sql = bytes_of("SELECT 1")
+            append(sql, byte(0))
+            let q = libpq::query(&conn, sql)
+            match q {
+                ok(rows) { println("sql_nul=unexpected_ok"); rows.close(); exit(2) }
+                err(m, code) { println("sql_nul=", code, " ", m) }
+            }
+            var tv = bytes_of("ab")
+            append(tv, byte(0))
+            var vals = new []?[]byte(0)
+            append(vals, tv)
+            var flags = new []bool(0)
+            append(flags, false)
+            let tq = libpq::exec_params(&conn, bytes_of("FAKE_OK"), vals, flags)
+            match tq {
+                ok(rows) { println("text_nul=unexpected_ok"); rows.close(); exit(3) }
+                err(m, code) { println("text_nul=", code, " ", m) }
+            }
+
+            var bv = new []byte(2)
+            bv[0] = byte(0)
+            bv[1] = byte(65)
+            var bvals = new []?[]byte(0)
+            append(bvals, bv)
+            var bflags = new []bool(0)
+            append(bflags, true)
+            let bq = libpq::exec_params(&conn, bytes_of("FAKE_OK"), bvals, bflags)
+            match bq {
+                ok(rows) {
+                    println("binary_nul_ok=true")
+                    rows.close()
+                }
+                err(m, code) { println("binary_nul_error=", code, " ", m); exit(4) }
+            }
+            let cr = conn.close()
+            match cr {
+                ok(v) { println("conn_closed=", v) }
+                err(m, code) { println("close error ", m, " ", code); exit(5) }
+            }
+        }
+        err(m, code) { println("connect error ", m, " ", code); exit(6) }
+    }
+}

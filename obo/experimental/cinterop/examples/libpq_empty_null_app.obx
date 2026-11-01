@@ -1,0 +1,17 @@
+module app
+
+import "libpq.obx"
+
+// The fake returns NULL for PQmakeEmptyPGresult with FAKE_EMPTY_NULL=1. The
+// own result is a contract violation and exits 11 before any Rows exists.
+fn main() {
+    let made = libpq::make_empty_rows(libpq::PGRES_TUPLES_OK)
+    match made {
+        ok(r) {
+            r.close()
+            println("unexpected_empty_ok")
+            exit(1)
+        }
+        err(m, c) { println("unexpected_empty_err ", m, " ", c); exit(2) }
+    }
+}

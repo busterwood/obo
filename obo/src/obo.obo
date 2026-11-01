@@ -7687,7 +7687,10 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
         }
         if isArr || kn == "foreign" {
             let b = borrowBind(a)
-            if anyDeep(b) && deepLine == 0 {
+            // A foreign borrow passes the handle's C word, never the enclosing obo record, so a
+            // native call cannot free what the reference points into. Array borrows still get the
+            // conservative deep-reference refusal.
+            if kn != "foreign" && anyDeep(b) && deepLine == 0 {
                 deepLine = argLine
                 deepCol = argCol
             }

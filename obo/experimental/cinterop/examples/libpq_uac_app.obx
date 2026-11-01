@@ -1,0 +1,26 @@
+module app
+
+import "libpq.obx"
+
+// A native borrow on a closed Connection exits 7 before the C call.
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn main() {
+    let made = libpq::connect(bytes_of("fake-ok"))
+    match made {
+        ok(conn) {
+            let cr = conn.close()
+            match cr {
+                ok(v) { if !v { exit(1) } }
+                err(m, c) { println("close error ", m, " ", c); exit(2) }
+            }
+            println("closed=", !conn.is_open())
+            println("status_after=", conn.status())
+        }
+        err(m, c) { println("connect error ", m, " ", c); exit(3) }
+    }
+}

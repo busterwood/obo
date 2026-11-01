@@ -2,6 +2,8 @@
  * the declarations in toolkit/libpq_decls.h and never opens a socket. */
 #include "../toolkit/libpq_decls.h"
 
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,6 +44,11 @@ static char *fake_last_values[FAKE_MAX_PARAMS];
 static char fake_last_sql[256];
 static Oid fake_last_types[FAKE_MAX_PARAMS];
 static int fake_last_result_format_value = 0;
+static char fake_last_conninfo[256];
+static int fake_misaligned;
+static int fake_binary_format_seen;
+static int fake_text_overrun;
+static int fake_oob_calls;
 
 long fake_get_conn_live(void) { return fake_conn_live; }
 long fake_get_result_live(void) { return fake_result_live; }
@@ -65,6 +72,25 @@ long fake_last_sql_len(void) { return (long)strlen(fake_last_sql); }
 long fake_last_sql_byte(long i) {
     if (i < 0 || i >= (long)strlen(fake_last_sql)) return -1;
     return (unsigned char)fake_last_sql[i];
+}
+
+/* Printed only with FAKE_REPORT=1, so ordinary runs stay quiet. It lets a test
+ * assert the release counts and the bounded conninfo without exporting the
+ * fake's control functions through the libpq binding. */
+static void fake_check_alignment(void) {
+    if (((uintptr_t)__builtin_frame_address(0) % 16) != 0) fake_misaligned = 1;
+}
+
+__attribute__((destructor)) static void fake_report(void) {
+    const char *t = getenv("FAKE_REPORT");
+    if (t == NULL || t[0] != '1') return;
+    fprintf(stderr,
+            "fake_report conns=%ld results=%ld finish=%ld clear=%ld exec=%ld empty=%ld "
+            "misaligned=%d binary_fmt=%d text_overrun=%d oob=%d conninfo=%s\n",
+            fake_conn_live, fake_result_live, fake_finish_count, fake_clear_count,
+            fake_exec_count, fake_make_empty_count, fake_misaligned,
+            fake_binary_format_seen, fake_text_overrun, fake_oob_calls,
+            fake_last_conninfo);
 }
 
 static void fake_clear_last(void) {
@@ -154,6 +180,7 @@ int PQlibVersion(void) { return 160015; }
 PGconn *PQconnectdb(const char *conninfo) {
     PGconn *c;
     if (conninfo == NULL) return NULL;
+    snprintf(fake_last_conninfo, sizeof fake_last_conninfo, "%s", conninfo);
     if (strstr(conninfo, "fake-null") != NULL) return NULL;
     c = (PGconn *)calloc(1, sizeof(*c));
     if (c == NULL) return NULL;
@@ -188,6 +215,7 @@ PGresult *PQexecParams(PGconn *conn, const char *command, int nParams,
                        int resultFormat) {
     PGresult *r;
     int i;
+    fake_check_alignment();
     fake_exec_count++;
     fake_clear_last();
     fake_last_result_format_value = resultFormat;
@@ -200,6 +228,16 @@ PGresult *PQexecParams(PGconn *conn, const char *command, int nParams,
         fake_last_isnull[i] = paramValues != NULL && paramValues[i] == NULL;
         fake_last_len[i] = (paramValues != NULL && paramValues[i] != NULL) ? paramLengths[i] : 0;
         fake_last_format[i] = (paramValues != NULL && paramValues[i] != NULL) ? paramFormats[i] : 0;
+        /* libpq treats text-format paramValues[] as C strings and ignores
+         * paramLengths. Mimic that so a missing terminator is observable. */
+        if (paramValues != NULL && paramValues[i] != NULL && fake_last_format[i] == 0) {
+            size_t sl = strlen(paramValues[i]);
+            if ((long)sl > paramLengths[i]) fake_text_overrun = 1;
+            fake_last_len[i] = (int)sl;
+        }
+        if (paramValues != NULL && paramValues[i] != NULL && paramFormats[i] == 1) {
+            fake_binary_format_seen = 1;
+        }
         fake_last_types[i] = (paramTypes != NULL) ? paramTypes[i] : 0;
         if (paramValues != NULL && paramValues[i] != NULL) {
             fake_last_values[i] = (char *)malloc((size_t)fake_last_len[i] + 1);
@@ -229,6 +267,18 @@ PGresult *PQexecParams(PGconn *conn, const char *command, int nParams,
         fake_set_cell(r, 0, 0, "d", (Oid)oid, mod, start, (int)vlen, isnull);
         return r;
     }
+    if (strstr(command, "FAKE_OVERCAP") != NULL) {
+        char *big;
+        size_t n = 16777217;
+        r = fake_new_result(PGRES_TUPLES_OK, 1, 1);
+        if (r == NULL) return NULL;
+        big = (char *)malloc(n);
+        if (big == NULL) return NULL;
+        memset(big, 'A', n);
+        fake_set_cell(r, 0, 0, "big", 17, -1, big, (int)n, 0);
+        free(big);
+        return r;
+    }
     if (strstr(command, "FAKE_ERROR") != NULL) {
         r = fake_new_result(PGRES_FATAL_ERROR, 0, 0);
         if (r != NULL) strcpy(r->error, "fake query failed");
@@ -241,17 +291,17 @@ PGresult *PQexecParams(PGconn *conn, const char *command, int nParams,
     r = fake_new_result(PGRES_TUPLES_OK, 1, 4);
     if (r == NULL) return NULL;
     if (nParams >= 1 && paramValues != NULL && paramValues[0] != NULL) {
-        fake_set_cell(r, 0, 0, "t", 25, -1, paramValues[0], paramLengths[0], 0);
+        fake_set_cell(r, 0, 0, "t", 25, -1, paramValues[0], fake_last_len[0], 0);
     } else {
         fake_set_cell(r, 0, 0, "t", 25, -1, NULL, 0, 1);
     }
     if (nParams >= 2 && paramValues != NULL && paramValues[1] != NULL) {
-        fake_set_cell(r, 0, 1, "n", 23, -1, paramValues[1], paramLengths[1], 0);
+        fake_set_cell(r, 0, 1, "n", 23, -1, paramValues[1], fake_last_len[1], 0);
     } else {
         fake_set_cell(r, 0, 1, "n", 23, -1, NULL, 0, 1);
     }
     if (nParams >= 3 && paramValues != NULL && paramValues[2] != NULL) {
-        fake_set_cell(r, 0, 2, "b", 17, -1, paramValues[2], paramLengths[2], 0);
+        fake_set_cell(r, 0, 2, "b", 17, -1, paramValues[2], fake_last_len[2], 0);
     } else {
         fake_set_cell(r, 0, 2, "b", 17, -1, NULL, 0, 1);
     }
@@ -263,30 +313,54 @@ int PQresultStatus(const PGresult *res) { return res == NULL ? PGRES_FATAL_ERROR
 int PQntuples(const PGresult *res) { return res == NULL ? -1 : res->ntuples; }
 int PQnfields(const PGresult *res) { return res == NULL ? -1 : res->nfields; }
 int PQgetisnull(const PGresult *res, int row, int col) {
-    if (res == NULL || row < 0 || row >= res->ntuples || col < 0 || col >= res->nfields) return -1;
+    if (res == NULL || row < 0 || row >= res->ntuples || col < 0 || col >= res->nfields) {
+        fake_oob_calls++;
+        return 42;                      /* distinctive: a wrapper bounds check must stop this */
+    }
     return res->isnull[row][col];
 }
 int PQgetlength(const PGresult *res, int row, int col) {
-    if (res == NULL || row < 0 || row >= res->ntuples || col < 0 || col >= res->nfields) return -1;
+    fake_check_alignment();
+    if (res == NULL || row < 0 || row >= res->ntuples || col < 0 || col >= res->nfields) {
+        fake_oob_calls++;
+        /* Above the 16 MiB cbytes cap, so a missing wrapper bounds check yields
+         * a clean over-cap error rather than an attempt to copy 424242 bytes. */
+        return 16777217;
+    }
     return res->lengths[row][col];
 }
 char *PQgetvalue(const PGresult *res, int row, int col) {
     static char empty[] = "";
-    if (res == NULL || row < 0 || row >= res->ntuples || col < 0 || col >= res->nfields) return empty;
+    static char oob[] = "OOB";
+    fake_check_alignment();
+    if (res == NULL || row < 0 || row >= res->ntuples || col < 0 || col >= res->nfields) {
+        fake_oob_calls++;
+        return oob;
+    }
     if (res->values[row][col] == NULL) return empty;
     return res->values[row][col];
 }
 char *PQfname(const PGresult *res, int col) {
     static char empty[] = "";
-    if (res == NULL || col < 0 || col >= res->nfields || res->names[col] == NULL) return empty;
+    static char oob[] = "OOB";
+    if (res == NULL || col < 0 || col >= res->nfields || res->names[col] == NULL) {
+        if (res == NULL || col < 0 || col >= res->nfields) fake_oob_calls++;
+        return res == NULL || col < 0 || col >= res->nfields ? oob : empty;
+    }
     return res->names[col];
 }
 Oid PQftype(const PGresult *res, int col) {
-    if (res == NULL || col < 0 || col >= res->nfields) return 0;
+    if (res == NULL || col < 0 || col >= res->nfields) {
+        fake_oob_calls++;
+        return (Oid)0xDEAD;
+    }
     return res->types[col];
 }
 int PQfmod(const PGresult *res, int col) {
-    if (res == NULL || col < 0 || col >= res->nfields) return -1;
+    if (res == NULL || col < 0 || col >= res->nfields) {
+        fake_oob_calls++;
+        return 777;
+    }
     return res->mods[col];
 }
 char *PQresultErrorMessage(const PGresult *res) {
@@ -307,8 +381,10 @@ void PQclear(PGresult *res) {
 }
 
 PGresult *PQmakeEmptyPGresult(PGconn *conn, int status) {
+    const char *t = getenv("FAKE_EMPTY_NULL");
     (void)conn;
     fake_make_empty_count++;
+    if (t != NULL && t[0] == '1') return NULL;
     return fake_new_result(status, 0, 0);
 }
 

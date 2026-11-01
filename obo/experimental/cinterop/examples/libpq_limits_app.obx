@@ -27,9 +27,16 @@ fn flags_of(n: int): []bool {
     return f
 }
 
-// Runs against the fake libpq only. The wrapper rejects an over-limit query
-// before any C call, so the message is specific and never a stale connection
-// error. The 32-parameter query at the limit is accepted.
+fn close_conn(mut conn: &libpq::Connection): bool {
+    let r = conn.close()
+    match r {
+        ok(v) { return v }
+        err(m, c) { println("close_error=", m, " (", c, ")"); return false }
+    }
+}
+
+// Runs against the fake libpq only. The wrapper rejects over-limit calls before
+// any C call, so each message is specific and never a stale connection error.
 fn main() {
     let made = libpq::connect(bytes_of("fake-ok"))
     match made {
@@ -48,7 +55,8 @@ fn main() {
             match q32 {
                 ok(rows) {
                     println("params32_status=", rows.status())
-                    println("params32_closed=", rows.close())
+                    rows.close()
+                    println("params32_closed=", !rows.is_open())
                 }
                 err(m, c) {
                     println("params32_error=", m, " (", c, ")")
@@ -66,7 +74,7 @@ fn main() {
                 }
                 err(m, c) { println("sql_error=", m, " (", c, ")") }
             }
-            // Exactly the 1 MiB SQL limit is not rejected by the limit check. The
+            // Exactly the 1 MiB SQL limit is not rejected by the wrapper. The
             // fake PQexecParams cannot run a statement this long, so the failure
             // that follows is not the limit message; only that is asserted.
             let at = filled(1048576, byte(97))
@@ -79,43 +87,50 @@ fn main() {
                 err(m, c) { println("sql_at_limit=rejected ", m, " (", c, ")") }
             }
 
-            // Packet bound, exact. The packet is 21 + L bytes for the 7-byte
-            // SQL "FAKE_OK" and one binary parameter of L bytes. L = 16777195
-            // makes exactly PQ_MAX_BUFFER (16 MiB) and must be accepted; one more
-            // byte must be rejected in build_packet. Binary, so no NUL scan.
+            // A single value of exactly 16 MiB is accepted; one more byte is
+            // rejected by the wrapper before the C call.
             var atvals = new []?[]byte(0)
-            append(atvals, new []byte(16777195))
+            append(atvals, new []byte(libpq::PQ_MAX_VALUE))
             var atflags = new []bool(0)
             append(atflags, true)
             let q16 = libpq::exec_params(&conn, bytes_of("FAKE_OK"), atvals, atflags)
             match q16 {
                 ok(rows) {
-                    println("packet_16mib=accepted status=", rows.status())
+                    println("value_16mib=accepted status=", rows.status())
                     rows.close()
                 }
-                err(m, c) { println("packet_16mib=rejected ", m, " (", c, ")") }
+                err(m, c) { println("value_16mib=rejected ", m, " (", c, ")") }
             }
             var overvals = new []?[]byte(0)
-            append(overvals, new []byte(16777196))
+            append(overvals, new []byte(libpq::PQ_MAX_VALUE + 1))
             var overflags = new []bool(0)
             append(overflags, true)
             let q16p = libpq::exec_params(&conn, bytes_of("FAKE_OK"), overvals, overflags)
             match q16p {
                 ok(rows) {
-                    println("packet_16mib_plus1=unexpected_ok")
+                    println("value_16mib_plus1=unexpected_ok")
                     rows.close()
                     exit(6)
                 }
-                err(m, c) { println("packet_16mib_plus1_error=", m, " (", c, ")") }
+                err(m, c) { println("value_16mib_plus1_error=", m, " (", c, ")") }
             }
-            println("conn_closed=", conn.close())
+            println("conn_closed=", close_conn(&conn))
         }
         err(m, c) {
             println("connect_error=", m, " (", c, ")")
             exit(5)
         }
     }
-    println("live=", libpq::live_resources())
-    println("conns=", libpq::live_connections())
-    println("results=", libpq::live_results())
+
+    // A DSN over 16 MiB is refused before any C call.
+    let bigdsn = filled(libpq::PQ_MAX_DSN + 1, byte(97))
+    let d = libpq::connect(bigdsn)
+    match d {
+        ok(conn) {
+            println("dsn_over_limit=unexpected_ok")
+            close_conn(&conn)
+            exit(7)
+        }
+        err(m, c) { println("dsn_error=", m, " (", c, ")") }
+    }
 }
