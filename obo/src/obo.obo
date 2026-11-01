@@ -1273,7 +1273,6 @@ type Type = ref record {
     incomplete: bool          // declared by 'type Name', not yet defined
     line: int
     isForeign: bool           // a foreign handle record: one private C word at offset 0
-    isForeignName: string     // foreign: the C type name from the declaration string
     isForeignId: int          // foreign: its index in the sidecar's foreign table, or -1
     arrayOf, optOf, handleOf, resultOf: ?^Type   // the types made from this one (see derived)
 }
@@ -5910,7 +5909,6 @@ fn typeDecl(isPub: bool) {
         }
         append(ft.fields, new Field{name: "word", offset: 0, typ: tInt, private: true})
         ft.isForeign = true
-        ft.isForeignName = cname
         let noPtrs = new []int(0)
         let noStrs = new []int(0)
         ft.desc = descriptor(8, noPtrs, noStrs)
@@ -7954,23 +7952,19 @@ fn hostCall(cname: string, args: []?Item, ret: ^Type): Item {
     return makeReg(ret, r)
 }
 
-// close needs a writable place: a var owns it, a mut &X may change through the reference, and a
-// change through a ^T handle is a change.
+// close needs a writable place. This is the ordinary `mut &T` receiver rule: an owned local (even a
+// let: the word is inside the object, not the binding), a field, an element, a mut &X, and a change
+// through a ^T handle are writable; a read-only &X is not. borrowBind also rejects a temporary
+// owned value with the same message the method path uses.
 fn foreignWritable(x: &Item): bool {
-    let r = x.root
-    // A reference parameter is a let local whose mutability is its binding, not its kind.
-    if r != nil && r.isRef {
-        if !r.bind.writable { return false }
-    } else if x.readonly {
-        return false
-    }
-    if x.deref && r != nil && r.isRef && !r.bind.writable { return false }
-    return true
+    let b = borrowBind(x)
+    return b.writable
 }
 
 fn foreignCloseItem(x: Item): Item {
     if !x.typ.isForeign { error("__foreignClose needs a foreign handle, not " + tname(x.typ)) }
-    if !foreignWritable(x) { error("close needs a writable foreign handle, not a read-only reference or let") }
+    noTemp(x)
+    if !foreignWritable(x) { error("close needs a writable foreign handle, not a read-only reference") }
     let ft = x.typ
     let rt = derived("result", tBool)
     let rec = asReg(x)
@@ -7991,6 +7985,7 @@ fn foreignCloseItem(x: Item): Item {
 // is_open reads the word directly: no call, so references are not invalidated.
 fn foreignIsOpenItem(x: Item): Item {
     if !x.typ.isForeign { error("__foreignIsOpen needs a foreign handle, not " + tname(x.typ)) }
+    noTemp(x)
     let rec = asReg(x)
     aluMI(7, mem(rec.r, -1, 0, 8), 0)
     release(rec.r)
@@ -9674,8 +9669,13 @@ fn methodCall(recv: Item, name: string, dline: int, dcol: int, rline: int, rcol:
     let m = findMethod(t, name)
     // Foreign sugar when the wrapper did not declare an explicit method: x.close()/x.is_open().
     if m == nil && t.kind == "record" && t.isForeign {
-        if name == "close" { return foreignCloseItem(recv) }
-        if name == "is_open" { return foreignIsOpenItem(recv) }
+        if name == "close" || name == "is_open" {
+            expect(T_LPAREN, "")
+            if sym != T_RPAREN { error(name + " on a foreign handle takes no arguments") }
+            expect(T_RPAREN, "")
+            if name == "close" { return foreignCloseItem(recv) }
+            return foreignIsOpenItem(recv)
+        }
     }
     if t.owner != "" && t.owner != curModuleName && (m == nil || !m.exported) {
         // a foreign mixed record hides names: a private field or an absent member gets the same

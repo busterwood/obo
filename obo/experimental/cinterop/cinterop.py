@@ -329,7 +329,7 @@ def load_spec(path):
             check_kinds(f['name'], f['args'])
             for a in f['args']:
                 k = parse_kind(a)
-                if k['name'] == 'borrow' and k['flag'] not in type_by_name:
+                if k['name'] in ('borrow', 'borrow_mut') and k['flag'] not in type_by_name:
                     raise ToolError("%s: %s names C type %r, which is not in types"
                                     % (f['name'], a, k['flag']))
             ct = f.get('ctypes')
@@ -386,9 +386,9 @@ def parse_kind(tok):
         if abs(val) > CONST_LIMIT:
             raise ToolError("const value %s is too large (at most 17 digits)" % m.group(1))
         return {'name': 'const', 'arg': None, 'flag': None, 'val': val}
-    m = re.fullmatch(r'borrow<([A-Za-z_][A-Za-z0-9_]*)>@([0-9]+)', tok)
+    m = re.fullmatch(r'(borrow|borrow_mut)<([A-Za-z_][A-Za-z0-9_]*)>@([0-9]+)', tok)
     if m:
-        return {'name': 'borrow', 'arg': int(m.group(2)), 'flag': m.group(1), 'val': None}
+        return {'name': m.group(1), 'arg': int(m.group(3)), 'flag': m.group(2), 'val': None}
     m = re.fullmatch(r'(i64|i32|u32|borrow_bytes|borrow_cstr|ints|nil_bytes_list)@([0-9]+)(?::([a-z0-9]+))?', tok)
     if not m:
         raise ToolError("unknown argument kind %r (args must be i64, or a kind such as i64@0)" % tok)
@@ -604,8 +604,11 @@ def check_ctypes(fname, args, ct):
 
 
 def kind_ctypes(k):
-    """The C parameters one parsed argument kind expands to."""
+    """The C parameters one parsed argument kind expands to. borrow is read-only (const T *);
+    borrow_mut is the mutable form (T *)."""
     if k['name'] == 'borrow':
+        return ['const ' + k['flag'] + ' *']
+    if k['name'] == 'borrow_mut':
         return [k['flag'] + ' *']
     return KIND_CTYPES[kind_key(k)]
 
@@ -778,9 +781,9 @@ def kinds_thunk(f):
             srcs.append(keep(call('obo_ci_cstr', [p, n])))
         elif nm == 'ints' and k['flag'] == 'len':
             srcs.append(call('obo_ci_count', [word(base[k['arg']])]))
-        elif nm == 'borrow':
+        elif nm == 'borrow' or nm == 'borrow_mut':
             # The call site pushed the record pointer; the helper checks it is live and yields the
-            # C word (exit 7 for a nil record or a zero word).
+            # C word (exit 7 for a nil record or a zero word). Constness is only a C type check.
             srcs.append(call('obo_ci_foreign_word', [word(base[k['arg']])]))
         elif nm == 'ints':
             srcs.append(keep(call('obo_ci_ints', [word(base[k['arg']]),
@@ -1364,10 +1367,10 @@ def _fn_expected_shapes(f, spec):
             shapes.append('ints')
         elif k['name'] == 'nil_bytes_list':
             shapes.append('byteslist')
-        elif k['name'] == 'borrow':
+        elif k['name'] in ('borrow', 'borrow_mut'):
             t = type_by_name.get(k['flag'])
             if t is None:
-                raise ToolError("%s: borrow<%s> is not in types" % (f['name'], k['flag']))
+                raise ToolError("%s: %s<%s> is not in types" % (f['name'], k['name'], k['flag']))
             shapes.append('foreign:' + t['obo'])
         else:
             raise ToolError("%s: %s is not supported by a typed native fn call" % (f['name'], a))

@@ -256,7 +256,7 @@ static void ci_foreign_census(void) {
     if (any) exit(8);
 }
 
-static uint64_t ci_foreign_adjust(long id, long delta) {
+CI_HIDDEN long obo_ci_foreign_census_adjust(long id, long delta) {
     if (id < 0 || id >= obo_ci_foreign_type_count)
         ci_fail("obo: foreign census type id out of range\n", 11);
     if (delta < 0) {
@@ -267,11 +267,7 @@ static uint64_t ci_foreign_adjust(long id, long delta) {
     } else {
         ci_foreign_live[id] += delta;
     }
-    return (uint64_t)ci_foreign_live[id];
-}
-
-CI_HIDDEN long obo_ci_foreign_census_adjust(long id, long delta) {
-    return (long)ci_foreign_adjust(id, delta);
+    return (long)ci_foreign_live[id];
 }
 
 static uint64_t ci_alloc_record(uint64_t desc) {
@@ -298,7 +294,7 @@ CI_HIDDEN const void *obo_ci_foreign_own(long id, const void *raw, long desc, lo
     }
     rec = ci_alloc_record((uint64_t)desc);
     *(uint64_t *)(uintptr_t)rec = (uint64_t)(uintptr_t)raw;
-    ci_foreign_adjust(id, 1);
+    (void)obo_ci_foreign_census_adjust(id, 1);
     return (const void *)(uintptr_t)rec;
 }
 
@@ -322,7 +318,7 @@ CI_HIDDEN void *obo_ci_foreign_close(long id, void *rec, long okdesc, long errde
         return (void *)(uintptr_t)cell;
     }
     *(uint64_t *)rec = 0;                      /* before the release: a trap cannot release twice */
-    ci_foreign_adjust(id, -1);
+    (void)obo_ci_foreign_census_adjust(id, -1);
     rc = obo_ci_foreign_types[id].release((void *)(uintptr_t)word);
     if (obo_ci_foreign_types[id].release_result != 0 && rc != 0) {
         cell = ci_alloc_record((uint64_t)errdesc);
