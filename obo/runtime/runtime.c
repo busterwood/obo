@@ -1,11 +1,9 @@
-/* obx runtime: output, strings, allocation and a mark-sweep garbage collector.
+/* obx runtime: output, strings and allocation under explicit ownership.
  * Freestanding: no libc, talks to Linux directly through syscalls.
- * Heap scanning is precise (type descriptors); stack and globals are scanned
- * conservatively. The compiler pushes every live register, including the
- * arguments, before any runtime call, so all roots are on the obx stack when
- * a collection runs; the runtime's own frames are deliberately not scanned.
- * No runtime routine may allocate twice while holding the first result only
- * in a C variable. */
+ * There is no collector: memory returns through the ownership calls (`pfree`,
+ * scope exits) and strings use the runtime's reference count. No runtime
+ * routine may allocate twice while holding the first result only in a C
+ * variable. */
 
 typedef unsigned long u64;
 typedef long i64;
@@ -97,7 +95,7 @@ static void die_code(const char *msg, i64 code) { flush(); u64 n = 0; while (msg
 static void die(const char *msg) { die_code(msg, 2); }
 
 /* ---------- heap ---------- */
-/* Object: 16-byte header [kind-or-descriptor][size|mark], payload follows.
+/* Object: 16-byte header [kind-or-descriptor][size], payload follows.
  * kind 1 = block of 8-byte scalars, 2 = block of pointers, 3 = string,
  * 4 = block of bytes, 5 = array header, otherwise a pointer to a record
  * descriptor: [payload size][pointer count][offsets...].
@@ -118,7 +116,6 @@ static void die(const char *msg) { die_code(msg, 2); }
 #define HEAP_MIN     (64UL << 10)   /* 65,536 bytes: 64 KiB */
 #define GRAN 16
 #define NCLASS 65
-#define MARK 1UL
 /* One object, header included, stays below 4 GiB even when the arena is larger.
  * The size word's low 32 bits hold the rounded size (a string's reference count
  * uses the high half), so 0xFFFFFFF0 is the largest size free_block can recover.
@@ -131,15 +128,13 @@ static u64 heap_size;                  /* resolved arena size: default 4 GiB, ce
 static unsigned char *starts;          /* one bit per granule: an object header starts here */
 static u64 *free_small[NCLASS];
 static u64 *free_large;
-static u64 *mstack; static u64 msp, mcap;   /* free/mark worklist; virtual, scaled, capped */
-static u64 stack_base, glob_start, glob_end;
+static u64 *mstack; static u64 msp, mcap;   /* explicit-free worklist; virtual, scaled, capped */
+static u64 stack_base;
 u64 env_base;                          /* the initial stack's envp, for getenv */
-u64 rt_entry_sp;                       /* set by the entry stubs in entry.S */
 static int gc_poison;                  /* debugging modes, from OBX_GC=poison|stress */
 #define POISON 0xDEADBEEFDEADBEEFUL
-static u64 since_gc, live_bytes, threshold = 8UL << 20;
 static u64 tmp_root[2];                /* objects held by a runtime routine across an allocation */
-static u64 n_collections, n_freed_total, total_alloc;
+static u64 total_alloc;
 /* obo: explicit ownership. Every non-string object is counted while live. */
 static u64 live_owned, live_bytes_now, peak_bytes;
 static int leak_check;
@@ -210,7 +205,8 @@ static void heap_limit_bad(const char *v) {
 }
 
 void rt_init(u64 sbase, u64 gstart, u64 gend) {
-    stack_base = sbase; glob_start = gstart; glob_end = gend;
+    (void)gstart; (void)gend;          /* globals need no collector roots */
+    stack_base = sbase;
     heap_size = HEAP_DEFAULT;
     /* the initial stack holds argc, argv[], NULL, envp[], NULL */
     u64 argc = *(u64 *)sbase;
@@ -252,72 +248,14 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
     u64 starts_bytes = (granules + 7) / 8;
     starts = sys_mmap(starts_bytes);
     if ((i64)starts < 0) die("obx: cannot reserve heap metadata\n");
-    /* The free/mark worklist scales with the arena but stays capped at 512 MiB
-     * of virtual address space (2^26 words) and never below 128 KiB. */
+    /* The explicit-free worklist scales with the arena but stays capped at
+     * 512 MiB of virtual address space (2^26 words) and never below 128 KiB. */
     u64 entries = heap_size / (GRAN * 4);
     if (entries < (1UL << 14)) entries = 1UL << 14;
     if (entries > (1UL << 26)) entries = 1UL << 26;
     mcap = entries;
     mstack = sys_mmap(mcap * 8);
     if ((i64)mstack < 0) die("obx: cannot reserve heap metadata\n");
-}
-
-static void mark_ptr(u64 w) {
-    if (w < heap_start + GRAN || w >= heap_top || (w & (GRAN - 1))) return;
-    u64 h = w - GRAN;
-    if (!is_start(h)) return;
-    u64 *hdr = (u64 *)h;
-    if (hdr[1] & MARK) return;
-    hdr[1] |= MARK;
-    if (msp == mcap) die("obx: mark stack overflow\n");
-    mstack[msp++] = h;
-}
-
-static void scan_range(u64 lo, u64 hi) {
-    for (u64 p = lo & ~7UL; p + 8 <= hi; p += 8) mark_ptr(*(u64 *)p);
-}
-
-static void scan_object(u64 h) {
-    u64 *hdr = (u64 *)h, kind = hdr[0];
-    u64 *body = (u64 *)(h + GRAN);
-    if (kind == 1 || kind == 3 || kind == 4) return;
-    if (kind == 2) { u64 n = body[0]; for (u64 i = 0; i < n; i++) mark_ptr(body[1 + i]); return; }
-    if (kind == 5) { mark_ptr(body[2]); return; }
-    u64 *desc = (u64 *)kind;
-    for (u64 i = 0; i < desc[1]; i++) mark_ptr(*(u64 *)((u64)body + desc[2 + i]));
-}
-
-static void sweep(void) {
-    for (int i = 0; i < NCLASS; i++) free_small[i] = 0;
-    free_large = 0;
-    live_bytes = 0;
-    for (u64 h = heap_start; h < heap_top; ) {
-        u64 *hdr = (u64 *)h, size = hdr[1] & ~(GRAN - 1);
-        if (is_start(h)) {
-            if (hdr[1] & MARK) { hdr[1] &= ~MARK; live_bytes += size; h += size; continue; }
-            clr_start(h); n_freed_total++;
-            if (gc_poison) for (u64 *w = (u64 *)(h + 2 * GRAN - 8); (u64)w < h + size; w++) *w = POISON;
-        }
-        u64 g = size / GRAN;
-        u64 *link = (u64 *)(h + GRAN);
-        if (g < NCLASS) { link[0] = (u64)free_small[g]; free_small[g] = (u64 *)h; }
-        else            { link[0] = (u64)free_large;    free_large = (u64 *)h; }
-        h += size;
-    }
-}
-
-void rt_collect(void) {
-    return;                            /* obo: no collector */
-    u64 sp = rt_entry_sp;
-    msp = 0;
-    scan_range(sp, stack_base);
-    scan_range(glob_start, glob_end);
-    mark_ptr(tmp_root[0]); mark_ptr(tmp_root[1]);
-    while (msp) scan_object(mstack[--msp]);
-    sweep();
-    n_collections++;
-    since_gc = 0;
-    threshold = live_bytes * 2 > (8UL << 20) ? live_bytes * 2 : (8UL << 20);
 }
 
 /* Payload arithmetic is checked before alloc_raw sees it: a wrapped sum must
@@ -388,7 +326,6 @@ static void free_block(u64 h) {
     hdr[0] = ((hdr[0] >> 32) + 1) << 32;                    /* a new generation: old handles go stale */
     live_owned--;
     live_bytes_now -= size;
-    n_freed_total++;
     hdr[1] = size;
     if (gc_poison) for (u64 *w = (u64 *)(h + 2 * GRAN - 8); (u64)w < h + size; w++) *w = POISON;
     u64 g = size / GRAN;
@@ -559,8 +496,8 @@ u64 rt_alloc_array(i64 n, u64 kind) {
     return (u64)a;
 }
 
-/* Appends v, growing the data block when full. v is on the obx stack, so it
- * survives a collection during the growth. */
+/* Appends v, growing the data block when full. v is a value copied into the
+ * new block; growth never moves v. */
 void rt_append(Array *a, u64 v) {
     if (a->len == a->cap) {
         u64 cap;
@@ -1509,16 +1446,6 @@ u64 rt_f_parse(u64 s, u64 descErr, u64 descOk) {
         return err_cell(descErr, iomsg_lit("float out of range"), 34);
     if (sign) bits |= 0x8000000000000000UL;
     return ok_cell(descOk, bits);
-}
-
-void rt_gc_stats(void) {
-    puts_("obo: "); put_int((i64)live_owned); puts_(" live objects, ");
-    put_int((i64)peak_bytes); puts_(" peak bytes\n");
-    return;
-    puts_("gc: "); put_int((i64)n_collections); puts_(" collections, ");
-    put_int((i64)n_freed_total); puts_(" objects freed, ");
-    put_int((i64)(live_bytes)); puts_(" bytes live after last, ");
-    put_int((i64)(total_alloc >> 20)); puts_(" MB allocated in total\n");
 }
 
 void rt_panic_bounds(i64 line) {

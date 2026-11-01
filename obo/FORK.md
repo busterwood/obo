@@ -68,8 +68,8 @@ walking the type descriptors (which now list only owning fields), iteratively, s
 a million-node list frees without recursion. Growing an array frees the old data
 block; `truncate` frees the removed elements. With `OBO_CHECK=1`, a program that
 ends with live objects exits with code 5 and a count; freeing anything twice exits
-with code 6; `OBX_GC=poison` poisons freed memory. `gcstats()` prints live objects
-and peak bytes.
+with code 6; `OBX_GC=poison` poisons freed memory. There is no `gc()` or
+`gcstats()` builtin.
 
 **Tests.** `python3 obo/tests/run_fork.py` (every program runs with the leak
 check on) and `python3 obo/tests/mutate_fork.py`: 15 mutants that free too little,
@@ -2893,7 +2893,7 @@ at most four arguments in registers, so a helper takes at most four (`openFile(p
 and a fifth needs a descriptor block or an extended calling convention; the Result layout becomes a runtime
 contract (payload size, field offsets, descriptor shape) and must be recorded next to the object-header comment
 in `runtime.c`; a helper that allocates more than once while holding earlier results must root them in
-`tmp_root[0]`/`tmp_root[1]`, even though `rt_collect` currently returns; a pinned string argument's temporary
+`tmp_root[0]`/`tmp_root[1]`, even though memory is owned explicitly; a pinned string argument's temporary
 reference is released by `rtCall` after the call, so a helper must not retain the path/mode/data pointer (a
 message that names a path copies it); `readFd` must reject `max <= 0` (`err(..., EINVAL)`, EINVAL=22), retry
 `EINTR`, free a partially built array on failure, treat 0 bytes as EOF (`ok(nil)` after freeing the empty array),
@@ -4767,8 +4767,8 @@ compiler source is 10,516 lines / 385,978 bytes (P3: 10,492 / 384,760).
   run_fork, port_compare and mutate_meta copy each root to a unique file
   name before compiling, so the import resolves to `lib/env.obx` and there
   is no cycle; the two meta_test roots are named `env_api`/`env_shadow`
-  for the same reason. `env_base` stays a non-static global, as
-  `rt_entry_sp` is; the image is a byte concatenation, so no program
+  for the same reason. `env_base` stays a non-static global; the image is a
+  byte concatenation, so no program
   symbol can collide with it.
 
 # Terminal-size metadata: slot 39 (P6a, done)
@@ -6363,17 +6363,24 @@ database driver, dialect placeholder rendering, identifier/`ORDER BY`
 allow-lists, array expansion and user-defined tags remain later work.
 `DecimalText` is the lossless decimal transport.
 
+A follow-up 0.15 runtime cleanup removed the disabled mark-sweep remnants and
+the `gc()`/`gcstats()` builtins (the language and standard library are
+pre-1.0). The two retired jump-table positions stay reserved so the bootstrap
+slot numbers do not move; the later slots are unchanged. The compiler and
+runtime are rebuilt and re-promoted together, so their numbers are the
+authoritative ones.
+
 **Gates (post-promotion).** `run_fork` **1,809 passed**;
-default `port_compare` **1,796/1,796**; `OBO_REF=obo/seed/obo`
-**1,600/1,600** against the promoted 0.15 seed;
+default `port_compare` **1,791/1,791**; `OBO_REF=obo/seed/obo`
+**1,595/1,595** against the promoted 0.15 seed;
 `port_test` **612/612**; `module_test` **143**; `sym_test` **52/52**;
 `float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **29/29**;
 `stdlib` **16/16**; `tools` **509 passed**; cinterop, DB-adapter and systems
 P0/P1a/P2 suites pass; the decimal evidence runner reports **32,719 C checks**.
 `mutate_fork` **718 caught + 31 equivalent of 749** (including 24 template
 compiler mutants), `mutate_decimal` **71/71** (including the sqlWhere runtime
-mutant), and `mutate_port` **540/540**. Self-compile peaks at **2,385,776
-bytes** in the port comparison (budget 2,500,000, about 4.6% headroom); the
+mutant), and `mutate_port` **540/540**. Self-compile peaks at **2,383,264
+bytes** in the port comparison (budget 2,500,000, about 4.7% headroom); the
 empty-array savings oracle is **51,488 bytes** above baseline (minimum 30,000).
 The fixed point is stage 2 == stage 3, and the promoted 0.15 seed reproduces
 the compiler; `hello` is byte-identical between the 0.14 seed and this compiler.

@@ -2132,8 +2132,6 @@ fn main() {}
 | `ok(v)` | a `Result[T]` success holding `v`, which is moved in |
 | `err(message[, code])` | a `Result[T]` failure; code defaults to 0 |
 | `alive(h)` | `true` if the handle's object has not been freed |
-| `gcstats()` | print the live object count and peak bytes |
-| `gc()` | does nothing; there is no collector |
 
 `drop` and `replace` need a local variable or a place holding an owned value:
 `drop(r.child)` is rejected.
@@ -2674,7 +2672,7 @@ depend on the program.
   `pub`, and `alias::name`. obx's `module`/`import`/`pub` tokens were accepted
   but unimplemented; obo has no unqualified or selective imports and no
   re-exports in Stage 1.
-- `gc()` does nothing.
+- There is no collector and no `gc()`/`gcstats()` builtin.
 - Strings are reference counted rather than collected.
 
 ## 12. Known holes and planned changes

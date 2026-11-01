@@ -2061,8 +2061,6 @@ const RT_NEWLINE = 7
 const RT_CONCAT = 8
 const RT_STREQ = 9
 const RT_PANIC_BOUNDS = 10
-const RT_COLLECT = 11
-const RT_GC_STATS = 12
 const RT_INT_TO_STR = 13
 const RT_APPEND = 14
 const RT_TRUNCATE = 15
@@ -2476,7 +2474,7 @@ fn initCompiler() {
         m.value = i
         append(universe, m)
     }
-    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")
+    let names = words("print println len exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")
     for n in names { append(universe, newSym("builtin", n, nil)) }
     append(universe, newSym("builtin", "ok", nil))
     append(universe, newSym("builtin", "err", nil))
@@ -8730,16 +8728,6 @@ fn builtin(name: string): Item {
         append(as, makeConst(tInt, line))
         return rtCall(RT_SUBSTR, as, tString)
     }
-    if name == "gc" || name == "gcstats" {
-        expect(T_LPAREN, "")
-        expect(T_RPAREN, "")
-        if name == "gc" {
-            rtCall0(RT_COLLECT, tVoid)
-        } else {
-            rtCall0(RT_GC_STATS, tVoid)
-        }
-        return voidItem()
-    }
     expect(T_LPAREN, "")
     let a = nestedExpr()
     expect(T_RPAREN, "")
@@ -11880,7 +11868,7 @@ fn dropFrame(at: int, f: ^Sym) {
 
 // ---- the pre-scan of a function
 
-let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte float string isNaN isInf signbit floatBits parseFloat ok err try __cinterop")
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte float string isNaN isInf signbit floatBits parseFloat ok err try __cinterop")
 
 fn wordAt(a: int, b: int, w: string): bool {
     if len(w) != b - a { return false }

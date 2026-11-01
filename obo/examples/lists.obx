@@ -41,5 +41,4 @@ fn main() {
     let k = take(keep)                    // a global can't be borrowed: take it out...
     println("kept list sum ", sum(k), ", first ", first(k))
     keep = k                              // ...and put it back
-    gcstats()
 }

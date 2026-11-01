@@ -950,7 +950,8 @@ def build_hosted_runtime(out, cc):
     link_script = require_file(os.path.join(OBO_ROOT, 'runtime', 'rt.ld'), 'runtime linker script')
     entry_text = open(entry_src).read()
     slot_lines = [line.strip() for line in entry_text.splitlines()
-                  if line.strip().startswith('slot ')]
+                  if line.strip().startswith('slot ')
+                  or line.strip().startswith('.quad ')]
     if 'slot rt_set_host_exit' not in slot_lines:
         raise ToolError("hosted runtime entry.S has no hosted exit slot")
     host_slot = slot_lines.index('slot rt_set_host_exit')
