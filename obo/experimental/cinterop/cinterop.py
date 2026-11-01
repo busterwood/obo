@@ -28,6 +28,7 @@ OBO_ROOT = os.path.dirname(os.path.dirname(HERE))
 DEFAULT_OBO = os.path.join(OBO_ROOT, 'obo')
 DEFAULT_RT = OBO_ROOT
 RT_HOST_EXIT_SLOT = 59
+RT_FOREIGN_CENSUS_SLOT = 94
 
 CODE_BASE = 0x401000
 IMAGE_BASE = 0x400000
@@ -58,12 +59,21 @@ BYTES_KINDS = ('borrow_bytes', 'borrow_cstr')
 RET_KINDS_V1 = ('i32', 'i64')
 RET_KINDS_V2 = ('void', 'i32', 'u32', 'i64', 'nonzero', 'cbytes', 'cstr_out')
 POINTER_RET_KINDS = ('nonzero', 'cbytes', 'cstr_out')   # require "ret_ctype"
-STAGE_D_RET_KINDS = ('own', 'own_opt', 'borrow')
 # A native fn call records a shape per obo argument, not an exact kind. The thunk's spec decides i32 vs
 # u32 and so on; the shape only fixes the words the compiler pushes and the C parameter shape.
 FN_SHAPES = ('int', 'bytes', 'ints', 'byteslist')
 FN_RET_SHAPES = ('i64', 'void', 'bytes', 'optbytes')
-# Shape a spec return kind gives a native fn call.
+# A foreign type needs a spec `types` entry; the interface table is generated in sidecar order.
+FOREIGN_MAX = 64
+# The internal host helpers a `host` relocation may name, with their fixed arity. They are not spec
+# functions; the tool generates their thunks and links them like any other reloc.
+HOST_HELPERS = {
+    'obo_ci_foreign_own': 4,
+    'obo_ci_foreign_close': 5,
+    'obo_ci_foreign_is_open': 1,
+    'obo_ci_foreign_census_adjust': 2,
+}
+# Shape a spec return kind gives a native fn call (own/own_opt are resolved through `types`).
 RET_SHAPE_OF = {
     'i32': 'i64', 'i64': 'i64', 'u32': 'i64', 'nonzero': 'i64',
     'void': 'void', 'cstr_out': 'bytes', 'cbytes': 'optbytes',
@@ -96,12 +106,13 @@ DF_1_NOW = 0x1
 REQUIRED_INPUT_KEYS = {
     'spec', 'app', 'wrapper', 'shim_source', 'signature_check_source',
     'host_source', 'host_stack_source', 'host_stack_header',
-    'host_abi_source', 'start_source', 'link_script', 'runtime_source',
+    'host_abi_source', 'foreign_abi_header', 'start_source', 'link_script', 'runtime_source',
     'runtime_entry', 'runtime_link_script', 'tool', 'compiler', 'cc',
 }
 REQUIRED_BUILD_KEYS = REQUIRED_INPUT_KEYS | {
     'wrapper_sym', 'shim_object', 'signature_check_object', 'host_object',
     'host_stack_object', 'start_object', 'runtime_text', 'runtime_data',
+    'foreign_table_source', 'foreign_table_object',
     'image', 'relocs', 'native_object', 'executable', 'input_manifest',
 }
 
@@ -245,6 +256,7 @@ def load_spec(path):
     funcs = spec.get('functions')
     if not isinstance(funcs, list) or not funcs:
         raise ToolError("functions must be a non-empty list")
+    type_by_name, type_by_obo = spec_types(spec)
     seen_names = set()
     seen_symbols = set()
     for f in funcs:
@@ -261,13 +273,16 @@ def load_spec(path):
             raise ToolError("duplicate C symbol %r" % f['symbol'])
         seen_names.add(f['name'])
         seen_symbols.add(f['symbol'])
+        ret_base, ret_type = parse_ret(f['ret'])
         if fmt == FORMAT_V1:
             if f['ret'] not in RET_KINDS_V1:
                 raise ToolError("%s: ret must be i32 or i64" % f['name'])
-        elif f['ret'] not in RET_KINDS_V2:
-            if f['ret'] in STAGE_D_RET_KINDS:
-                raise ToolError("%s: ret %r is a foreign-handle kind (stage (d))" % (f['name'], f['ret']))
-            raise ToolError("%s: ret must be one of %s" % (f['name'], ', '.join(RET_KINDS_V2)))
+        elif ret_base not in RET_KINDS_V2 and ret_base not in ('own', 'own_opt'):
+            raise ToolError("%s: ret must be one of %s, own<C> or own_opt<C>"
+                            % (f['name'], ', '.join(RET_KINDS_V2)))
+        if ret_base in ('own', 'own_opt') and ret_type not in type_by_name:
+            raise ToolError("%s: %s names C type %r, which is not in types"
+                            % (f['name'], f['ret'], ret_type))
         if f['ret'] in POINTER_RET_KINDS:
             if 'ret_ctype' not in f:
                 raise ToolError("%s: ret %r needs \"ret_ctype\", the exact C return type "
@@ -308,10 +323,15 @@ def load_spec(path):
             if not all(isinstance(a, str) for a in f['args']):
                 raise ToolError("%s: args must be i64, or a kind such as i64@0" % f['name'])
             for a in f['args']:
-                if a.startswith('borrow<') or a.startswith('own') or a.startswith('out_own') \
-                        or a.startswith('out_offset'):
-                    raise ToolError("%s: %s is a foreign-handle kind (stage (d))" % (f['name'], a))
+                # own/out_* are return or out-slot kinds; only borrow<C> is an argument kind.
+                if a.startswith('own') or a.startswith('out_own') or a.startswith('out_offset'):
+                    raise ToolError("%s: %s is not an argument kind" % (f['name'], a))
             check_kinds(f['name'], f['args'])
+            for a in f['args']:
+                k = parse_kind(a)
+                if k['name'] == 'borrow' and k['flag'] not in type_by_name:
+                    raise ToolError("%s: %s names C type %r, which is not in types"
+                                    % (f['name'], a, k['flag']))
             ct = f.get('ctypes')
             if ct is not None:
                 if not isinstance(ct, list) or len(ct) != len(f['args']):
@@ -366,6 +386,9 @@ def parse_kind(tok):
         if abs(val) > CONST_LIMIT:
             raise ToolError("const value %s is too large (at most 17 digits)" % m.group(1))
         return {'name': 'const', 'arg': None, 'flag': None, 'val': val}
+    m = re.fullmatch(r'borrow<([A-Za-z_][A-Za-z0-9_]*)>@([0-9]+)', tok)
+    if m:
+        return {'name': 'borrow', 'arg': int(m.group(2)), 'flag': m.group(1), 'val': None}
     m = re.fullmatch(r'(i64|i32|u32|borrow_bytes|borrow_cstr|ints|nil_bytes_list)@([0-9]+)(?::([a-z0-9]+))?', tok)
     if not m:
         raise ToolError("unknown argument kind %r (args must be i64, or a kind such as i64@0)" % tok)
@@ -580,6 +603,13 @@ def check_ctypes(fname, args, ct):
             raise ToolError("%s: ctypes may only annotate null and const, not %r" % (fname, args[i]))
 
 
+def kind_ctypes(k):
+    """The C parameters one parsed argument kind expands to."""
+    if k['name'] == 'borrow':
+        return [k['flag'] + ' *']
+    return KIND_CTYPES[kind_key(k)]
+
+
 def sig_params(f):
     """The sigcheck parameter types: the spec's annotation for a null or const slot, the fixed type
     for every other kind. The C compiler then checks each against the header exactly."""
@@ -591,7 +621,7 @@ def sig_params(f):
         if k['name'] in ('null', 'const'):
             out.append(' '.join(f['ctypes'][i].split()))
         else:
-            out += KIND_CTYPES[kind_key(k)]
+            out += kind_ctypes(k)
     return out
 
 
@@ -601,8 +631,45 @@ def c_params(f):
     if all(a == 'i64' for a in f['args']):
         return [c_arg(a) for a in f['args']]
     for a in f['args']:
-        out += KIND_CTYPES[kind_key(parse_kind(a))]
+        out += kind_ctypes(parse_kind(a))
     return out
+
+
+def parse_ret(tok):
+    """Split a return kind into (base, foreign C name). own/own_opt carry a type name."""
+    m = re.fullmatch(r'(own|own_opt)<([A-Za-z_][A-Za-z0-9_]*)>', tok)
+    if m:
+        return m.group(1), m.group(2)
+    return tok, None
+
+
+def spec_types(spec):
+    """Validate `types` and index it by C name and by obo name."""
+    types = spec.get('types', [])
+    if not isinstance(types, list):
+        raise ToolError("types must be a list")
+    if len(types) > FOREIGN_MAX:
+        raise ToolError("at most %d foreign types are supported" % FOREIGN_MAX)
+    by_name = {}
+    by_obo = {}
+    for e in types:
+        if not isinstance(e, dict):
+            raise ToolError("a types entry must be an object")
+        for k in ('name', 'obo', 'release', 'release_result'):
+            if k not in e:
+                raise ToolError("a types entry needs %r" % k)
+        for k in ('name', 'obo', 'release'):
+            if not isinstance(e[k], str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', e[k]):
+                raise ToolError("types entry %r is not a C/obo identifier" % e[k])
+        if e['release_result'] not in ('void', 'int'):
+            raise ToolError("%s: release_result must be 'void' or 'int'" % e['obo'])
+        if e['name'] in by_name:
+            raise ToolError("duplicate C type %r in types" % e['name'])
+        if e['obo'] in by_obo:
+            raise ToolError("duplicate obo type %r in types" % e['obo'])
+        by_name[e['name']] = e
+        by_obo[e['obo']] = e
+    return by_name, by_obo
 
 
 def c_arg(typ):
@@ -711,6 +778,10 @@ def kinds_thunk(f):
             srcs.append(keep(call('obo_ci_cstr', [p, n])))
         elif nm == 'ints' and k['flag'] == 'len':
             srcs.append(call('obo_ci_count', [word(base[k['arg']])]))
+        elif nm == 'borrow':
+            # The call site pushed the record pointer; the helper checks it is live and yields the
+            # C word (exit 7 for a nil record or a zero word).
+            srcs.append(call('obo_ci_foreign_word', [word(base[k['arg']])]))
         elif nm == 'ints':
             srcs.append(keep(call('obo_ci_ints', [word(base[k['arg']]),
                                                   '$%d' % (1 if k['flag'] == 'u32' else 0)])))
@@ -778,6 +849,8 @@ def kinds_thunk(f):
             tail.append('    movzbl %al, %eax')
         elif ret_kind == 'void':
             tail.append('    xor %eax, %eax')
+        elif ret_kind.startswith('own<') or ret_kind.startswith('own_opt<'):
+            pass                      # the raw C word; the compiler wraps it in a record
         elif ret_kind != 'i64':
             raise ToolError("%s: no thunk for return kind %r" % (f['name'], ret_kind))
     ret = slot()
@@ -795,6 +868,28 @@ def kinds_thunk(f):
     return lines + body + tail + ['    leave', '    ret']
 
 
+def int_thunk(symbol, n, ret):
+    """The original int-form thunk: n words on obo's stack, passed in SysV registers and on the
+    stack. It also serves host helpers, which all take i64-sized arguments."""
+    out = ['    push %rbp', '    mov %rsp, %rbp']
+    stack = list(range(6, n))
+    if stack and len(stack) % 2 == 1:
+        out.append('    sub $8, %rsp')
+    for i in reversed(stack):
+        off = 16 + 8 * (n - 1 - i)
+        out.append('    pushq %d(%%rbp)' % off)
+    for i in range(min(n, 6)):
+        off = 16 + 8 * (n - 1 - i)
+        out.append('    mov %d(%%rbp), %s' % (off, ARG_REGS[i]))
+    out.append('    call %s@PLT' % symbol)
+    if ret == 'i32':
+        out.append('    movslq %eax, %rax')
+    elif ret == 'u32':
+        out.append('    movl %eax, %eax')
+    out += ['    leave', '    ret']
+    return out
+
+
 def generate_shim(spec):
     out = ['    .text']
     for f in spec['functions']:
@@ -802,36 +897,36 @@ def generate_shim(spec):
         sym = 'obo_native_' + f['symbol']
         out += ['', '    .globl %s' % sym, '    .type %s,@function' % sym, '%s:' % sym]
         # The int-form thunk keeps its original shape when the arguments are all i64 and the result
-        # is a scalar it handles. Any typed return (stage (b)) uses the kinds thunk, whose word
+        # is a scalar it handles. Any typed return (stage (b)/(d)) uses the kinds thunk, whose word
         # layout for i64@k is the same as the int form's.
-        int_thunk = all(a == 'i64' for a in f['args']) and f['ret'] in ('i32', 'i64', 'u32')
-        if not int_thunk:
+        scalar = all(a == 'i64' for a in f['args']) and f['ret'] in ('i32', 'i64', 'u32')
+        if not scalar:
             out += kinds_thunk(f)
             continue
-        out += ['    push %rbp', '    mov %rsp, %rbp']
-        stack = list(range(6, n))
-        if stack and len(stack) % 2 == 1:
-            out.append('    sub $8, %rsp')
-        for i in reversed(stack):
-            off = 16 + 8 * (n - 1 - i)
-            out.append('    pushq %d(%%rbp)' % off)
-        for i in range(min(n, 6)):
-            off = 16 + 8 * (n - 1 - i)
-            out.append('    mov %d(%%rbp), %s' % (off, ARG_REGS[i]))
-        out.append('    call %s@PLT' % f['symbol'])
-        if f['ret'] == 'i32':
-            out.append('    movslq %eax, %rax')
-        elif f['ret'] == 'u32':
-            out.append('    movl %eax, %eax')
-        out += ['    leave', '    ret']
+        out += int_thunk(f['symbol'], n, f['ret'])
+    out += ['', '    .section .note.GNU-stack,"",@progbits', '']
+    return '\n'.join(out)
+
+
+def generate_host_shim(host_names):
+    """Thunks for the internal obo_ci_* host helpers used by the compiled image. They go into a
+    separate object so the spec shim (and the freestanding ABI probe) stays free of host symbols."""
+    out = ['    .text']
+    for h in sorted(host_names):
+        sym = 'obo_native_' + h
+        out += ['', '    .globl %s' % sym, '    .type %s,@function' % sym, '%s:' % sym]
+        out += int_thunk(h, HOST_HELPERS[h], 'i64')
     out += ['', '    .section .note.GNU-stack,"",@progbits', '']
     return '\n'.join(out)
 
 
 def ret_ctype(f):
     """The exact C return type of one spec function: the fixed type for the scalar kinds, the
-    author's `ret_ctype` for a pointer-returning kind."""
+    author's `ret_ctype` for a pointer-returning kind, and `<C> *` for own/own_opt."""
     r = f['ret']
+    base, tn = parse_ret(r)
+    if base in ('own', 'own_opt'):
+        return tn + ' *'
     if r == 'i64':
         return 'long'
     if r == 'i32':
@@ -869,8 +964,45 @@ def generate_sigcheck(spec):
             # The length function takes the same C parameters and returns int (design 3.1, 3.3).
             out.append('static int (*obo_sig_%d_len)(%s) __attribute__((unused)) = %s;'
                        % (i, args, f['length']))
+    for i, t in enumerate(spec.get('types', [])):
+        # The release is called from the generated table wrapper with the C type pointer; check its
+        # own prototype (the table wrapper itself would fail on an incompatible one too).
+        ret = 'int' if t['release_result'] == 'int' else 'void'
+        out.append('static %s (*obo_sig_type_%d)(%s *) __attribute__((unused)) = %s;'
+                   % (ret, i, t['name'], t['release']))
     out.append('')
     return '\n'.join(out), mode
+
+
+def generate_foreign_table(spec, entries, mode):
+    """The per-binding foreign table, in sidecar order. Each release gets a typed wrapper so host.c
+    can call it through one ABI without casting a function pointer."""
+    headers = spec.get('headers', [])
+    decls = spec.get('declarations', [])
+    out = ['/* generated foreign type table; do not edit */', '#include "foreign_abi.h"']
+    if mode == 'header':
+        for h in headers:
+            out.append('#include "%s"' % h)
+    for d in decls:
+        out.append(d)
+    for i, e in enumerate(entries):
+        out.append('static long obo_ci_rel_%d(void *p) {' % i)
+        if e['release_result'] == 'int':
+            out.append('    return (long)%s((%s *)p);' % (e['release'], e['name']))
+        else:
+            out.append('    %s((%s *)p);' % (e['release'], e['name']))
+            out.append('    return 0;')
+        out.append('}')
+    n = max(1, len(entries))
+    out.append('const obo_ci_foreign_type obo_ci_foreign_types[%d] = {' % n)
+    for i, e in enumerate(entries):
+        out.append('    {"%s", obo_ci_rel_%d, %d},' % (e['obo'], i, 1 if e['release_result'] == 'int' else 0))
+    if not entries:
+        out.append('    {0, 0, 0},')
+    out.append('};')
+    out.append('const long obo_ci_foreign_type_count = %d;' % len(entries))
+    out.append('')
+    return '\n'.join(out)
 
 
 def manifest_doc(spec, paths, compiler_version, toolchain, signature_check, kind,
@@ -890,6 +1022,7 @@ def manifest_doc(spec, paths, compiler_version, toolchain, signature_check, kind
         'toolchain': toolchain,
         'signature_check': signature_check,
         'effects': list(EFFECTS),
+        'types': list(spec.get('types', [])),
         'symbols': [{'name': f['name'], 'symbol': f['symbol'],
                      'args': f['args'], 'ret': f['ret']} for f in spec['functions']],
         'expected_thunks': ['obo_native_' + f['symbol'] for f in spec['functions']],
@@ -1091,14 +1224,40 @@ def _read_relocs_v1(lines):
     return out
 
 
-def _read_relocs_v2(lines):
-    """cinterop-relocs 2: off name nargs mode shapes ret-shape effects.
-
-    mode is 'call' (an int-form call with shapes '-', or an explicit kinds descriptor) or 'fn' (a
-    typed native fn call with one shape per obo argument). Every token is checked here, so a tampered
-    or unknown shape or mode is refused before it can reach the linker."""
+def _read_foreign_v2(lines):
+    """foreign <id> <obo-name> <c-name> lines, in first-declaration order."""
     out = []
     for line in lines:
+        parts = line.split()
+        if len(parts) != 4 or parts[0] != 'foreign':
+            raise ToolError("bad foreign type line %r" % line)
+        try:
+            fid = int(parts[1])
+        except ValueError:
+            raise ToolError("bad foreign type id %r" % line)
+        obo, cname = parts[2], parts[3]
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', obo) or \
+                not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', cname):
+            raise ToolError("bad foreign type line %r" % line)
+        if fid != len(out):
+            raise ToolError("foreign type ids must run from 0 in sidecar order: %r" % line)
+        out.append({'id': fid, 'obo': obo, 'cname': cname})
+    if len(out) > FOREIGN_MAX:
+        raise ToolError("at most %d foreign types are supported" % FOREIGN_MAX)
+    return out
+
+
+def _read_relocs_v2(lines):
+    """cinterop-relocs 2: foreign lines, then off name nargs mode shapes ret-shape effects.
+
+    mode is 'call' (an int-form call with shapes '-', or an explicit kinds descriptor), 'fn' (a
+    typed native fn call with one shape per obo argument) or 'host' (an internal obo_ci_* helper
+    with a fixed arity). Every token is checked here, so a tampered or unknown shape or mode is
+    refused before it can reach the linker."""
+    reloc_lines = [ln for ln in lines if not ln.startswith('foreign ')]
+    foreign = _read_foreign_v2([ln for ln in lines if ln.startswith('foreign ')])
+    out = []
+    for line in reloc_lines:
         parts = line.split()
         if len(parts) != 7:
             raise ToolError("bad cinterop-relocs 2 line %r" % line)
@@ -1114,7 +1273,7 @@ def _read_relocs_v2(lines):
             raise ToolError("native relocation arity %d out of range" % nargs)
         if effects != 'freesall,writeshandles':
             raise ToolError("native relocation has an unexpected effect contract: %r" % line)
-        if mode not in ('call', 'fn'):
+        if mode not in ('call', 'fn', 'host'):
             raise ToolError("native relocation has an unknown mode %r: %r" % (mode, line))
         if mode == 'call':
             if ret != 'i64':
@@ -1133,19 +1292,38 @@ def _read_relocs_v2(lines):
             out.append({'off': off, 'sym': name, 'nargs': nargs, 'argtypes': shapes,
                         'shapes': shapes, 'mode': mode, 'ret': ret, 'effects': effects,
                         'version': 2})
-        else:
-            if ret not in FN_RET_SHAPES:
+        elif mode == 'fn':
+            if ret not in FN_RET_SHAPES and not re.fullmatch(r'(own|own_opt):[A-Za-z_][A-Za-z0-9_]*', ret):
                 raise ToolError("native fn relocation has an unknown result shape %r: %r" % (ret, line))
             shapes = [] if shape_text == '-' else shape_text.split(',')
             if len(shapes) != nargs:
                 raise ToolError("native fn relocation shapes do not match arity: %r" % line)
             for s in shapes:
-                if s not in FN_SHAPES:
+                if s not in FN_SHAPES and not re.fullmatch(r'foreign:[A-Za-z_][A-Za-z0-9_]*', s):
                     raise ToolError("native fn relocation has an unknown shape %r: %r" % (s, line))
             out.append({'off': off, 'sym': name, 'nargs': nargs, 'argtypes': shapes,
                         'shapes': shapes, 'mode': mode, 'ret': ret, 'effects': effects,
                         'version': 2})
-    return out
+        else:
+            if name not in HOST_HELPERS:
+                raise ToolError("native relocation names an unknown host helper %r: %r" % (name, line))
+            if nargs != HOST_HELPERS[name]:
+                raise ToolError("host helper %r needs %d argument(s), not %d"
+                                % (name, HOST_HELPERS[name], nargs))
+            want_shape = ','.join(['i64'] * nargs) if nargs else '-'
+            if ret != 'i64' or shape_text != want_shape:
+                raise ToolError("host helper relocation has an unexpected shape/result: %r" % line)
+            out.append({'off': off, 'sym': name, 'nargs': nargs, 'argtypes': [],
+                        'shapes': [], 'mode': mode, 'ret': ret, 'effects': effects,
+                        'version': 2})
+    side = Sidecar(out)
+    side.foreign = foreign
+    return side
+
+
+class Sidecar(list):
+    """A relocation list that also carries the sidecar's foreign type table."""
+    foreign = []
 
 
 def read_relocs(path):
@@ -1155,17 +1333,20 @@ def read_relocs(path):
     if not lines:
         raise ToolError("native relocation sidecar is empty")
     if lines[0] == RELOC_HEADER_V1:
-        return _read_relocs_v1(lines[1:])
+        side = Sidecar(_read_relocs_v1(lines[1:]))
+        side.foreign = []
+        return side
     if lines[0] == RELOC_HEADER_V2:
         return _read_relocs_v2(lines[1:])
     raise ToolError("native relocation sidecar has no %r or %r header"
                     % (RELOC_HEADER_V1, RELOC_HEADER_V2))
 
 
-def _fn_expected_shapes(f):
+def _fn_expected_shapes(f, spec):
     """The shape each spec function expects from a typed native fn call, one per obo argument."""
     if all(a == 'i64' for a in f['args']):
         return ['int'] * len(f['args'])
+    type_by_name, _ = spec_types(spec)
     data = {}
     for a in f['args']:
         k = parse_kind(a)
@@ -1183,14 +1364,48 @@ def _fn_expected_shapes(f):
             shapes.append('ints')
         elif k['name'] == 'nil_bytes_list':
             shapes.append('byteslist')
+        elif k['name'] == 'borrow':
+            t = type_by_name.get(k['flag'])
+            if t is None:
+                raise ToolError("%s: borrow<%s> is not in types" % (f['name'], k['flag']))
+            shapes.append('foreign:' + t['obo'])
         else:
-            raise ToolError("%s: %s is not supported by a typed native fn call (foreign-handle kinds "
-                            "arrive in stage (d))" % (f['name'], a))
+            raise ToolError("%s: %s is not supported by a typed native fn call" % (f['name'], a))
     return shapes
+
+
+def _fn_expected_ret(f, spec):
+    """The whole-result shape of a typed native fn call for one spec function."""
+    if f['ret'] in RET_SHAPE_OF:
+        return RET_SHAPE_OF[f['ret']]
+    base, tn = parse_ret(f['ret'])
+    if base in ('own', 'own_opt'):
+        by_name, _ = spec_types(spec)
+        t = by_name.get(tn)
+        if t is None:
+            raise ToolError("%s: %s is not in types" % (f['name'], f['ret']))
+        return ('own_opt:' if base == 'own_opt' else 'own:') + t['obo']
+    raise ToolError("%s: ret %r is not supported by a typed native fn call" % (f['name'], f['ret']))
+
+
+def validate_foreign(foreign, spec):
+    """Check the sidecar foreign table against the spec `types`, in sidecar order."""
+    _, by_obo = spec_types(spec)
+    out = []
+    for ft in foreign:
+        e = by_obo.get(ft['obo'])
+        if e is None:
+            raise ToolError("foreign type %r is not in the spec types" % ft['obo'])
+        if e['name'] != ft['cname']:
+            raise ToolError("foreign type %r is C %r in the sidecar but %r in types"
+                            % (ft['obo'], ft['cname'], e['name']))
+        out.append(e)
+    return out
 
 
 def validate_calls(relocs, spec, fmt=None):
     fmt = fmt or spec.get('format')
+    validate_foreign(getattr(relocs, 'foreign', []), spec)
     by_sym = {f['symbol']: f for f in spec['functions']}
     by_name = {f['name']: f for f in spec['functions']}
     seen = set()
@@ -1199,6 +1414,8 @@ def validate_calls(relocs, spec, fmt=None):
         if r['off'] in offsets:
             raise ToolError("duplicate native relocation offset %d" % r['off'])
         offsets.add(r['off'])
+        if r.get('mode') == 'host':
+            continue
         if r.get('mode', 'call') == 'fn':
             if fmt != FORMAT_V2:
                 raise ToolError("native fn call %r needs a cinterop-proto/2 spec" % r['sym'])
@@ -1206,7 +1423,7 @@ def validate_calls(relocs, spec, fmt=None):
             f = by_name.get(r['sym'])
             if f is None:
                 raise ToolError("native fn call to %r is not in the binding spec by name" % r['sym'])
-            expected = _fn_expected_shapes(f)
+            expected = _fn_expected_shapes(f, spec)
             if r['nargs'] != len(expected):
                 raise ToolError("native fn call to %r has %d argument(s), spec uses %d"
                                 % (r['sym'], r['nargs'], len(expected)))
@@ -1214,10 +1431,7 @@ def validate_calls(relocs, spec, fmt=None):
                 raise ToolError("native fn call to %r has shapes %s, the spec needs %s"
                                 % (r['sym'], ','.join(r['shapes']) or '-',
                                    ','.join(expected) or '-'))
-            if f['ret'] not in RET_SHAPE_OF:
-                raise ToolError("native fn call to %r uses ret %r, which needs the stage (d) "
-                                "foreign-handle kinds" % (r['sym'], f['ret']))
-            want_ret = RET_SHAPE_OF[f['ret']]
+            want_ret = _fn_expected_ret(f, spec)
             if r['ret'] != want_ret:
                 raise ToolError("native fn call to %r returns %s, the spec needs %s"
                                 % (r['sym'], r['ret'], want_ret))
@@ -1539,9 +1753,14 @@ def verify_doc(doc, base, full):
         if any(a != 'i64' for a in sym['args']):
             check_kinds(str(sym['name']), sym['args'])
         allowed_ret = RET_KINDS_V1 if doc['format'] == FORMAT_V1 else RET_KINDS_V2
-        if sym['ret'] not in allowed_ret:
+        ret_base, ret_tn = parse_ret(sym['ret'])
+        if ret_base not in allowed_ret and ret_base not in ('own', 'own_opt'):
             raise ToolError("manifest symbol result %r is not valid for %s"
                             % (sym['ret'], doc['format']))
+        if ret_base in ('own', 'own_opt'):
+            by_name, _ = spec_types(doc)
+            if ret_tn not in by_name:
+                raise ToolError("manifest symbol result %r names a type not in types" % sym['ret'])
     if sorted(doc['expected_thunks']) != sorted('obo_native_' + s['symbol'] for s in doc['symbols']):
         raise ToolError("manifest thunk list does not match its symbols")
     files = doc['files']
@@ -1652,17 +1871,42 @@ def build_hosted_runtime(out, cc):
     entry_src = require_file(os.path.join(OBO_ROOT, 'runtime', 'entry.S'), 'runtime entry source')
     link_script = require_file(os.path.join(OBO_ROOT, 'runtime', 'rt.ld'), 'runtime linker script')
     entry_text = open(entry_src).read()
-    slot_lines = [line.strip() for line in entry_text.splitlines()
-                  if line.strip().startswith('slot ')
-                  or line.strip().startswith('.quad ')]
-    if 'slot rt_set_host_exit' not in slot_lines:
-        raise ToolError("hosted runtime entry.S has no hosted exit slot")
-    host_slot = slot_lines.index('slot rt_set_host_exit')
-    if host_slot != RT_HOST_EXIT_SLOT:
-        raise ToolError("hosted runtime slot mismatch: entry.S puts rt_set_host_exit at %d, host_abi says %d"
-                        % (host_slot, RT_HOST_EXIT_SLOT))
-    if '#ifdef OBO_HOSTED_EXIT' not in entry_text or 'slot rt_set_host_exit' not in entry_text:
-        raise ToolError("runtime entry.S has no hosted exit slot")
+
+    def hosted_slots(text):
+        """The jump-table entries of the hosted build, in order, with #ifdef OBO_HOSTED_EXIT resolved."""
+        lines = []
+        active = True
+        stack = []
+        for raw in text.splitlines():
+            s = raw.strip()
+            if s.startswith('#ifdef') or s.startswith('#ifndef'):
+                stack.append(active)
+                cond = s.endswith('OBO_HOSTED_EXIT')
+                if s.startswith('#ifndef'):
+                    cond = not cond
+                active = active and cond
+            elif s == '#else':
+                parent = stack[-1] if stack else True
+                active = parent and not active
+            elif s == '#endif':
+                active = stack.pop() if stack else True
+            elif s == '.text':
+                break
+            elif active and (s.startswith('slot ') or s.startswith('.quad ')):
+                lines.append(s)
+        return lines
+
+    slot_lines = hosted_slots(entry_text)
+    for slot_name, want in (('slot rt_set_host_exit', RT_HOST_EXIT_SLOT),
+                            ('slot rt_set_foreign_census', RT_FOREIGN_CENSUS_SLOT)):
+        if slot_name not in slot_lines:
+            raise ToolError("hosted runtime entry.S has no %r slot" % slot_name.replace('slot ', ''))
+        got = slot_lines.index(slot_name)
+        if got != want:
+            raise ToolError("hosted runtime slot mismatch: entry.S puts %s at %d, host_abi says %d"
+                            % (slot_name.replace('slot ', ''), got, want))
+    if '#ifdef OBO_HOSTED_EXIT' not in entry_text:
+        raise ToolError("runtime entry.S has no hosted-only branch")
     ld = shutil.which('ld')
     objcopy = shutil.which('objcopy')
     if not ld or not objcopy:
@@ -1755,6 +1999,7 @@ def build(args):
         'host_stack_source': os.path.join(HERE, 'host_stack.c'),
         'host_stack_header': os.path.join(HERE, 'host_stack.h'),
         'host_abi_source': os.path.join(OBO_ROOT, 'runtime', 'host_abi.h'),
+        'foreign_abi_header': os.path.join(HERE, 'foreign_abi.h'),
         'start_source': os.path.join(HERE, 'start.S'),
         'link_script': os.path.join(HERE, 'link.ld'),
         'tool': os.path.realpath(__file__),
@@ -1819,13 +2064,36 @@ def build(args):
          '--sym-dir', symdir, '--native-relocs', relocs_path])
     relocs = read_relocs(relocs_path)
     validate_calls(relocs, spec)
+    foreign_entries = validate_foreign(getattr(relocs, 'foreign', []), spec)
+    foreign_src = os.path.join(out, 'foreign_table.c')
+    write_text(foreign_src, generate_foreign_table(spec, foreign_entries, sig_mode))
+    foreign_o = os.path.join(out, 'foreign_table.o')
+    run([cc, '-c', '-I', HERE, *sig_flags, foreign_src, '-o', foreign_o])
     validate_thunks(shim_o, spec)
+    host_names = sorted({r['sym'] for r in relocs if r.get('mode') == 'host'})
+    host_shim = os.path.join(out, 'host_shim.S')
+    host_shim_o = None
+    if host_names:
+        write_text(host_shim, generate_host_shim(host_names))
+        host_shim_o = os.path.join(out, 'host_shim.o')
+        run([cc, '-c', host_shim, '-o', host_shim_o])
+        p = run(['nm', '-g', '--defined-only', host_shim_o])
+        got = set()
+        for line in p.stdout.splitlines():
+            parts = line.split()
+            if parts and parts[-1].startswith('obo_native_'):
+                got.add(parts[-1])
+        want = {'obo_native_' + h for h in host_names}
+        if got != want:
+            raise ToolError("host thunk set mismatch: got %s, expected %s"
+                            % (sorted(got), sorted(want)))
     native_o = os.path.join(out, 'native.o')
     make_object(image, native_o, relocs)
     exe = os.path.join(out, args.name or 'app')
+    host_objs = [host_shim_o] if host_shim_o else []
     link = [cc, '-nostartfiles', '-no-pie', '-T', os.path.join(HERE, 'link.ld'),
             '-o', exe, crt[0], crt[1], crt[2], native_o, host_o, host_stack_o, start_o,
-            shim_o, *src_objs, crt[3], crt[4],
+            shim_o, *host_objs, foreign_o, *src_objs, crt[3], crt[4],
             '-Wl,--no-as-needed', *LINK_HARDENING_FLAGS, *libs, '-lc']
     run(link)
     validate_final(exe)
@@ -1840,12 +2108,17 @@ def build(args):
         'start_object': start_o,
         'runtime_text': hosted_rt['blobs']['runtime_text'],
         'runtime_data': hosted_rt['blobs']['runtime_data'],
+        'foreign_table_source': foreign_src,
+        'foreign_table_object': foreign_o,
         'image': image,
         'relocs': relocs_path,
         'native_object': native_o,
         'executable': exe,
         'input_manifest': input_manifest_path,
     })
+    if host_shim_o:
+        paths['host_shim_source'] = host_shim
+        paths['host_shim_object'] = host_shim_o
     for i, o in enumerate(src_objs):
         paths['source_object_%d' % i] = o
     doc = manifest_doc(spec, paths, compiler_version, toolchain, sig_mode, 'build',
