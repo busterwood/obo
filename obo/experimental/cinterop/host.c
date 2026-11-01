@@ -32,6 +32,11 @@ extern void _obo_launch(uint64_t *sbase);
  * atexit/stdio state before the obo image runs. */
 __attribute__((weak)) void obo_host_prelaunch(void);
 
+/* Hidden visibility keeps the obo_ci_* helpers out of the dynamic symbol table, so a shared library
+ * cannot bind to them. It does not make the names private to the link: a second object defining the
+ * same obo_ci_* name in the same executable is still a duplicate-symbol link error. */
+#define CI_HIDDEN __attribute__((visibility("hidden")))
+
 /* ---- native argument kinds (stage (a)): helpers the generated thunks call ----
  *
  * These read obo values, so the thunk calls them only after every argument
@@ -41,10 +46,6 @@ __attribute__((weak)) void obo_host_prelaunch(void);
  * return scratch memory the thunk frees after the call (obo_ci_free). A contract
  * violation exits 11, as in design section 3.2 and D4; these exits run no census,
  * as a trap does. */
-/* The helpers are called only by the generated thunks in the same executable, so they are hidden: they do
- * not join the dynamic symbol table, and a user C library cannot bind to or clash with them. */
-#define CI_HIDDEN __attribute__((visibility("hidden")))
-
 static long ci_live = 0;                       /* scratch blocks not yet freed */
 static const uint64_t ci_nil_string[1] = {0};  /* the nil string: a valid, non-NULL, zero-length pointer */
 

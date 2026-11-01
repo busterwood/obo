@@ -395,10 +395,20 @@ Rules:
   `null`/`const`, `null` elsewhere), for example `"ctypes": ["const char *"]` for a
   NULL `const char *`, `"void (*)(void *)"` for `const:-1` as a destructor, and
   `"int"` for `const:5`. The signature check then compares that type with the
-  header exactly, like every other slot. A `ctypes` entry must be a pointer or
-  function-pointer type, or one of a fixed list of integer types: a struct by value
-  is refused, because the thunk passes every slot in a register. Other slots keep
-  their fixed types, so a mismatched pointer slot is still refused by the compiler.
+  header exactly, like every other slot.
+- A `ctypes` entry is exactly one C type: an integer type from the fixed list, a
+  pointer `[const] T *...`, or a function pointer `R (*)(P, ...)` whose parameters
+  are pointer or integer types. A comma is allowed only inside the parameter list, so
+  `"void *, void *"` is refused, as are unbalanced parentheses, a declarator name
+  (`"void *p"`), two types, and a struct by value (the thunk passes every slot in a
+  register). A `ctypes` key on an int-form binding (all `i64`) is refused.
+- A `const:<n>` value must fit its integer type by width and sign: `unsigned int`
+  takes 0 to 4294967295, `int` takes -2147483648 to 2147483647, and a negative value
+  is refused for an unsigned type. A pointer or function-pointer type takes any 64-bit
+  value, such as `const:-1` for `SQLITE_TRANSIENT`. The magnitude is at most 17 digits.
+- Other slots keep their fixed types. A mismatched pointer slot is refused by the C
+  compiler's signature check, not by the obx compiler: the generated sigcheck
+  assignment is an incompatible-pointer error, and the build fails before link.
 - `ints@k:len` must name a list kind (`ints` or `nil_bytes_list`).
 - Element counts are capped only at `INT_MAX`, which is what the C length parameter
   can hold. A per-library cap, such as libpq's 32 parameters, belongs to the wrapper
@@ -423,8 +433,10 @@ Rules:
   `@k` argument (`null` and `const:<n>` take none); results are still `i32`/`i64`.
 
 The helpers the thunks call are in `host.c` (`obo_ci_*`), hosted builds only. They
-have hidden visibility, so they stay out of the dynamic symbol table and a user C
-library cannot bind to them.
+have hidden visibility, so they stay out of the dynamic symbol table and a shared
+library cannot bind to them. That prevents dynamic-symbol clashes only: a second
+static object in the same executable that defines an `obo_ci_*` name is a
+duplicate-symbol link error.
 
 ## Tests
 
