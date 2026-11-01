@@ -2,6 +2,7 @@
  * the declarations in toolkit/libpq_decls.h and never opens a socket. */
 #include "../toolkit/libpq_decls.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,6 +43,7 @@ static char *fake_last_values[FAKE_MAX_PARAMS];
 static char fake_last_sql[256];
 static Oid fake_last_types[FAKE_MAX_PARAMS];
 static int fake_last_result_format_value = 0;
+static char fake_last_conninfo[256];
 
 long fake_get_conn_live(void) { return fake_conn_live; }
 long fake_get_result_live(void) { return fake_result_live; }
@@ -65,6 +67,18 @@ long fake_last_sql_len(void) { return (long)strlen(fake_last_sql); }
 long fake_last_sql_byte(long i) {
     if (i < 0 || i >= (long)strlen(fake_last_sql)) return -1;
     return (unsigned char)fake_last_sql[i];
+}
+
+/* Printed only with FAKE_REPORT=1, so ordinary runs stay quiet. It lets a test
+ * assert the release counts and the bounded conninfo without exporting the
+ * fake's control functions through the libpq binding. */
+__attribute__((destructor)) static void fake_report(void) {
+    const char *t = getenv("FAKE_REPORT");
+    if (t == NULL || t[0] != '1') return;
+    fprintf(stderr,
+            "fake_report conns=%ld results=%ld finish=%ld clear=%ld exec=%ld empty=%ld conninfo=%s\n",
+            fake_conn_live, fake_result_live, fake_finish_count, fake_clear_count,
+            fake_exec_count, fake_make_empty_count, fake_last_conninfo);
 }
 
 static void fake_clear_last(void) {
@@ -154,6 +168,7 @@ int PQlibVersion(void) { return 160015; }
 PGconn *PQconnectdb(const char *conninfo) {
     PGconn *c;
     if (conninfo == NULL) return NULL;
+    snprintf(fake_last_conninfo, sizeof fake_last_conninfo, "%s", conninfo);
     if (strstr(conninfo, "fake-null") != NULL) return NULL;
     c = (PGconn *)calloc(1, sizeof(*c));
     if (c == NULL) return NULL;
@@ -307,8 +322,10 @@ void PQclear(PGresult *res) {
 }
 
 PGresult *PQmakeEmptyPGresult(PGconn *conn, int status) {
+    const char *t = getenv("FAKE_EMPTY_NULL");
     (void)conn;
     fake_make_empty_count++;
+    if (t != NULL && t[0] == '1') return NULL;
     return fake_new_result(status, 0, 0);
 }
 
