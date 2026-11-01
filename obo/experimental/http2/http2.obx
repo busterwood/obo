@@ -1,0 +1,1950 @@
+// Experimental HTTP/2 server protocol core (H2a).
+//
+// Status: experimental, unstable, hosted-only. This module owns the
+// H2Connection/H2Stream shells, admission, deadlines, bounded header/body
+// reads, response staging, the fixed-event pull interface and the pure action
+// executor. Framing, HPACK, flow-control bookkeeping and stream state come
+// from the system nghttp2 through native/h2_adapter.c.
+//
+// No nghttp2 pointer, C struct, function pointer or callback crosses the cbind.
+// The C callbacks only queue fixed events and copy bounded payloads; obo polls.
+// See README.md, API.md, LIMITS.md and obo/design/http2-server-design.md.
+module http2
+
+import "httpapi.obx" as http
+import "httptransport.obx" as transport
+import "sysbytes.obx" as bytesbuf
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+import "sysplatform.obx" as platform
+import "sysreactor.obx" as reactor
+
+pub const KIND_H2_CONNECTION = platform::KIND_H2_CONNECTION
+pub const KIND_H2_STREAM = platform::KIND_H2_STREAM
+
+// Native failure kinds (must match native/h2_adapter.h).
+const FAIL_INVALID_ARGUMENT = 1
+const FAIL_RANGE = 2
+const FAIL_INVALID_RESOURCE = 3
+const FAIL_CLOSED = 4
+const FAIL_NOT_READY = 5
+const FAIL_INVALID_STATE = 6
+const FAIL_BAD_PREFACE = 7
+const FAIL_BAD_FRAME = 8
+const FAIL_FRAME_SIZE = 9
+const FAIL_PROTOCOL = 10
+const FAIL_COMPRESSION = 11
+const FAIL_HEADER_LIST = 12
+const FAIL_CONTINUATION = 13
+const FAIL_FLOOD = 14
+const FAIL_REFUSED = 15
+const FAIL_STREAM_CLOSED = 16
+const FAIL_RESET = 17
+const FAIL_GOAWAY = 18
+const FAIL_FLOW_CONTROL = 19
+const FAIL_SETTINGS_TIMEOUT = 20
+const FAIL_TIMEOUT = 21
+const FAIL_RESOURCE_LIMIT = 22
+const FAIL_BUSY = 23
+const FAIL_UNSUPPORTED = 24
+const FAIL_INTERNAL = 25
+
+const FAIL_SHIFT = 16777216
+
+// Event types (must match native/h2_adapter.h).
+const EV_NONE = 0
+const EV_STREAM_STARTED = 1
+const EV_STREAM_DATA = 2
+const EV_STREAM_END = 3
+const EV_STREAM_CLOSED = 4
+const EV_TRAILERS = 5
+const EV_SETTINGS_ACKED = 6
+const EV_GOAWAY = 7
+const EV_TIMEOUT = 8
+const EV_PROTOCOL_ERROR = 9
+const EV_DRAIN_COMPLETE = 10
+const EV_CONNECTION_CLOSED = 11
+
+const FLAG_END_STREAM = 1
+const FLAG_TRAILERS = 2
+const FLAG_LOCAL = 4
+
+const STATE_AWAIT_PREFACE = 0
+const STATE_AWAIT_SETTINGS = 1
+const STATE_OPEN = 2
+const STATE_DRAINING = 3
+const STATE_CLOSING = 4
+const STATE_CLOSED = 5
+const STATE_FAILED = 6
+
+const STREAM_OPEN = 1
+const STREAM_HALF_CLOSED_REMOTE = 2
+const STREAM_HALF_CLOSED_LOCAL = 3
+const STREAM_CLOSED_STATE = 4
+
+const MODE_TLS = 0
+const MODE_PRIOR = 1
+
+const OPTION_FIELDS = 44
+const OPTION_BYTES = 352
+const OPTION_MAGIC = 1211253041
+
+const INFO_FIELDS = 18
+const INFO_BYTES = 144
+const STATS_FIELDS = 22
+const STATS_BYTES = 176
+const COUNTS_FIELDS = 22
+const COUNTS_BYTES = 176
+
+pub type Mode = closed {
+    ModeTls {}
+    ModePriorKnowledge {}
+}
+
+pub type Options = ref record {
+    pub mode: Mode
+    pub serverName: string
+    pub requireAuthority: bool
+}
+
+pub type Limits = ref record {
+    pub maxConcurrentStreams: int
+    pub maxStreamsPerConnection: int
+    pub maxHeaderListBytes: int
+    pub maxHeaderCount: int
+    pub maxHeaderFieldBytes: int
+    pub maxHeaderBlockBytes: int
+    pub maxContinuations: int
+    pub maxHeaderArena: int
+    pub maxStreamRecvWindow: int
+    pub maxStreamRecvBuffer: int
+    pub maxConnectionWindow: int
+    pub maxStreamSendBuffer: int
+    pub maxWire: int
+    pub maxEvents: int
+    pub maxBody: int
+    pub maxTrailerBytes: int
+    pub maxTrailerCount: int
+    pub maxResponseHeaderBytes: int
+    pub maxResponseTrailerBytes: int
+    pub maxResponseTrailerCount: int
+    pub maxReadChunk: int
+    pub maxRequestsPerConnection: int
+    pub maxConnections: int
+    pub maxTotalConnectionBytes: int
+    pub maxResetBurst: int
+    pub maxResetRate: int
+    pub maxPingAcks: int
+    pub maxSettingsEntries: int
+    pub frameBurst: int
+    pub frameRate: int
+    pub zeroDataBurst: int
+    pub zeroDataRate: int
+    pub prefaceTimeoutMs: int
+    pub settingsTimeoutMs: int
+    pub headerTimeoutMs: int
+    pub bodyIdleTimeoutMs: int
+    pub responseTimeoutMs: int
+    pub responseTotalTimeoutMs: int
+    pub streamTotalTimeoutMs: int
+    pub idleTimeoutMs: int
+    pub drainBarrierMs: int
+    pub drainTimeoutMs: int
+}
+
+pub const FIXED_OVERHEAD = 65536
+
+pub fn defaultLimits(): Limits {
+    return new Limits{
+        maxConcurrentStreams: 32
+        maxStreamsPerConnection: 1000
+        maxHeaderListBytes: 16384
+        maxHeaderCount: 100
+        maxHeaderFieldBytes: 8192
+        maxHeaderBlockBytes: 81920
+        maxContinuations: 4
+        maxHeaderArena: 1572864
+        maxStreamRecvWindow: 32768
+        maxStreamRecvBuffer: 32768
+        maxConnectionWindow: 1048576
+        maxStreamSendBuffer: 32768
+        maxWire: 65536
+        maxEvents: 256
+        maxBody: 8388608
+        maxTrailerBytes: 4096
+        maxTrailerCount: 32
+        maxResponseHeaderBytes: 16384
+        maxResponseTrailerBytes: 4096
+        maxResponseTrailerCount: 32
+        maxReadChunk: 16384
+        maxRequestsPerConnection: 1000
+        maxConnections: 14
+        maxTotalConnectionBytes: 67108864
+        maxResetBurst: 100
+        maxResetRate: 20
+        maxPingAcks: 100
+        maxSettingsEntries: 32
+        frameBurst: 4000
+        frameRate: 2000
+        zeroDataBurst: 200
+        zeroDataRate: 100
+        prefaceTimeoutMs: 10000
+        settingsTimeoutMs: 10000
+        headerTimeoutMs: 10000
+        bodyIdleTimeoutMs: 30000
+        responseTimeoutMs: 60000
+        responseTotalTimeoutMs: 300000
+        streamTotalTimeoutMs: 300000
+        idleTimeoutMs: 60000
+        drainBarrierMs: 1000
+        drainTimeoutMs: 30000
+    }
+}
+
+pub fn copyLimits(l: &Limits): Limits {
+    return new Limits{
+        maxConcurrentStreams: l.maxConcurrentStreams
+        maxStreamsPerConnection: l.maxStreamsPerConnection
+        maxHeaderListBytes: l.maxHeaderListBytes
+        maxHeaderCount: l.maxHeaderCount
+        maxHeaderFieldBytes: l.maxHeaderFieldBytes
+        maxHeaderBlockBytes: l.maxHeaderBlockBytes
+        maxContinuations: l.maxContinuations
+        maxHeaderArena: l.maxHeaderArena
+        maxStreamRecvWindow: l.maxStreamRecvWindow
+        maxStreamRecvBuffer: l.maxStreamRecvBuffer
+        maxConnectionWindow: l.maxConnectionWindow
+        maxStreamSendBuffer: l.maxStreamSendBuffer
+        maxWire: l.maxWire
+        maxEvents: l.maxEvents
+        maxBody: l.maxBody
+        maxTrailerBytes: l.maxTrailerBytes
+        maxTrailerCount: l.maxTrailerCount
+        maxResponseHeaderBytes: l.maxResponseHeaderBytes
+        maxResponseTrailerBytes: l.maxResponseTrailerBytes
+        maxResponseTrailerCount: l.maxResponseTrailerCount
+        maxReadChunk: l.maxReadChunk
+        maxRequestsPerConnection: l.maxRequestsPerConnection
+        maxConnections: l.maxConnections
+        maxTotalConnectionBytes: l.maxTotalConnectionBytes
+        maxResetBurst: l.maxResetBurst
+        maxResetRate: l.maxResetRate
+        maxPingAcks: l.maxPingAcks
+        maxSettingsEntries: l.maxSettingsEntries
+        frameBurst: l.frameBurst
+        frameRate: l.frameRate
+        zeroDataBurst: l.zeroDataBurst
+        zeroDataRate: l.zeroDataRate
+        prefaceTimeoutMs: l.prefaceTimeoutMs
+        settingsTimeoutMs: l.settingsTimeoutMs
+        headerTimeoutMs: l.headerTimeoutMs
+        bodyIdleTimeoutMs: l.bodyIdleTimeoutMs
+        responseTimeoutMs: l.responseTimeoutMs
+        responseTotalTimeoutMs: l.responseTotalTimeoutMs
+        streamTotalTimeoutMs: l.streamTotalTimeoutMs
+        idleTimeoutMs: l.idleTimeoutMs
+        drainBarrierMs: l.drainBarrierMs
+        drainTimeoutMs: l.drainTimeoutMs
+    }
+}
+
+fn positive(n: int): bool { return n > 0 }
+
+pub fn reservation(l: &Limits): Result[int]
+
+// Pure checked validation. Every product is guarded against overflow before
+// any native call or allocation.
+pub fn validateLimits(l: &Limits): Result[bool] {
+    if !positive(l.maxConcurrentStreams) || l.maxConcurrentStreams > 256 {
+        return err("maxConcurrentStreams is outside 1..256", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxStreamsPerConnection < l.maxConcurrentStreams {
+        return err("maxStreamsPerConnection is below maxConcurrentStreams", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if !positive(l.maxHeaderListBytes) || !positive(l.maxHeaderCount) ||
+       !positive(l.maxHeaderFieldBytes) || !positive(l.maxHeaderBlockBytes) {
+        return err("header limits must be positive", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxHeaderBlockBytes < l.maxHeaderListBytes {
+        return err("maxHeaderBlockBytes is below maxHeaderListBytes", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxHeaderListBytes < l.maxHeaderFieldBytes {
+        return err("maxHeaderListBytes is below maxHeaderFieldBytes", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if !positive(l.maxContinuations) || !positive(l.maxHeaderArena) {
+        return err("continuation and arena limits must be positive", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if !positive(l.maxStreamRecvWindow) || !positive(l.maxStreamRecvBuffer) ||
+       !positive(l.maxConnectionWindow) || !positive(l.maxStreamSendBuffer) {
+        return err("flow-control limits must be positive", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxStreamRecvBuffer != l.maxStreamRecvWindow {
+        return err("v1 requires maxStreamRecvBuffer == maxStreamRecvWindow", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxConcurrentStreams > 2147483647 / l.maxStreamRecvWindow {
+        return err("connection window product overflows", http::code(FAIL_RANGE, 0))
+    }
+    if l.maxConnectionWindow != l.maxConcurrentStreams * l.maxStreamRecvWindow {
+        return err("maxConnectionWindow must equal maxConcurrentStreams * maxStreamRecvWindow", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxWire < 65536 || l.maxReadChunk < 1 || l.maxWire < l.maxReadChunk + 9 {
+        return err("maxWire is below 64 KiB or maxReadChunk + 9", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if !positive(l.maxEvents) || l.maxEvents < 5 * l.maxConcurrentStreams + 16 {
+        return err("maxEvents is below 5 * maxConcurrentStreams + 16", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if !positive(l.maxBody) || !positive(l.maxTrailerBytes) ||
+       !positive(l.maxTrailerCount) || !positive(l.maxResponseHeaderBytes) ||
+       !positive(l.maxResponseTrailerBytes) || !positive(l.maxResponseTrailerCount) {
+        return err("body, trailer and response limits must be positive", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxTrailerBytes > l.maxHeaderListBytes || l.maxTrailerCount > l.maxHeaderCount {
+        return err("trailer limits exceed the request header limits", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxResponseTrailerBytes > l.maxResponseHeaderBytes ||
+       l.maxResponseTrailerCount > l.maxHeaderCount {
+        return err("response trailer limits exceed the response header limits", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxConcurrentStreams > 2147483647 / (l.maxHeaderListBytes + l.maxTrailerBytes +
+                                              l.maxResponseHeaderBytes + l.maxResponseTrailerBytes) {
+        return err("per-stream staging product overflows", http::code(FAIL_RANGE, 0))
+    }
+    let staging = l.maxHeaderListBytes + l.maxTrailerBytes +
+                  l.maxResponseHeaderBytes + l.maxResponseTrailerBytes
+    if l.maxHeaderArena < l.maxConcurrentStreams * staging {
+        return err("maxHeaderArena is below maxConcurrentStreams * per-stream staging", http::code(FAIL_RESOURCE_LIMIT, 0))
+    }
+    if !positive(l.maxRequestsPerConnection) || !positive(l.maxConnections) ||
+       !positive(l.maxTotalConnectionBytes) {
+        return err("request and admission limits must be positive", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if !positive(l.maxResetBurst) || !positive(l.maxResetRate) ||
+       !positive(l.maxPingAcks) || !positive(l.maxSettingsEntries) ||
+       !positive(l.frameBurst) || !positive(l.frameRate) ||
+       !positive(l.zeroDataBurst) || !positive(l.zeroDataRate) {
+        return err("rate and ack limits must be positive", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    let t = l.prefaceTimeoutMs
+    if t < 1 || l.settingsTimeoutMs < 1 || l.headerTimeoutMs < 1 ||
+       l.bodyIdleTimeoutMs < 1 || l.responseTimeoutMs < 1 ||
+       l.responseTotalTimeoutMs < 1 || l.streamTotalTimeoutMs < 1 ||
+       l.idleTimeoutMs < 1 || l.drainBarrierMs < 1 || l.drainTimeoutMs < 1 {
+        return err("timeouts must be positive", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if t > 9223372036854 || l.settingsTimeoutMs > 9223372036854 ||
+       l.headerTimeoutMs > 9223372036854 || l.bodyIdleTimeoutMs > 9223372036854 ||
+       l.responseTimeoutMs > 9223372036854 || l.responseTotalTimeoutMs > 9223372036854 ||
+       l.streamTotalTimeoutMs > 9223372036854 || l.idleTimeoutMs > 9223372036854 ||
+       l.drainBarrierMs > 9223372036854 || l.drainTimeoutMs > 9223372036854 {
+        return err("a timeout overflows nanosecond conversion", http::code(FAIL_RANGE, 0))
+    }
+    let per = try reservation(l)
+    if l.maxConnections > 2147483647 / per {
+        return err("aggregate reservation product overflows", http::code(FAIL_RANGE, 0))
+    }
+    if l.maxTotalConnectionBytes < l.maxConnections * per {
+        return err("maxTotalConnectionBytes is below maxConnections * reservation", http::code(FAIL_RESOURCE_LIMIT, 0))
+    }
+    return ok(true)
+}
+
+pub fn defaultOptions(): Options {
+    return new Options{mode: new ModeTls{}, serverName: "", requireAuthority: true}
+}
+
+fn optionMode(o: &Options): int {
+    let m = o.mode
+    match m {
+        ModeTls { return MODE_TLS }
+        ModePriorKnowledge { return MODE_PRIOR }
+    }
+}
+
+fn alpnIsH2(a: &transport::Alpn): bool {
+    match a {
+        AlpnH2 { return true }
+        AlpnNone { return false }
+        AlpnHttp11 { return false }
+        AlpnOther { return false }
+    }
+}
+
+fn validServerName(name: string): bool {
+    if len(name) > 64 { return false }
+    for i in 0..len(name) {
+        let ch = name[i]
+        if ch == '\r' || ch == '\n' || ch == byte(0) { return false }
+    }
+    return true
+}
+
+pub fn reservation(l: &Limits): Result[int] {
+    if l.maxConcurrentStreams < 1 || l.maxStreamRecvBuffer < 1 ||
+       l.maxStreamSendBuffer < 1 || l.maxWire < 1 || l.maxHeaderArena < 1 ||
+       l.maxEvents < 1 {
+        return err("reservation inputs must be positive", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if l.maxConcurrentStreams > 2147483647 / (l.maxStreamRecvBuffer + l.maxStreamSendBuffer) {
+        return err("per-stream reservation overflows", http::code(FAIL_RANGE, 0))
+    }
+    let perStream = l.maxConcurrentStreams * (l.maxStreamRecvBuffer + l.maxStreamSendBuffer)
+    if l.maxWire > 9223372036854775807 / 2 {
+        return err("wire reservation overflows", http::code(FAIL_RANGE, 0))
+    }
+    let wire = 2 * l.maxWire
+    if l.maxEvents > 9223372036854775807 / 32 {
+        return err("event reservation overflows", http::code(FAIL_RANGE, 0))
+    }
+    let events = l.maxEvents * 32
+    var total = perStream
+    if total > 9223372036854775807 - wire { return err("reservation overflows", http::code(FAIL_RANGE, 0)) }
+    total += wire
+    if total > 9223372036854775807 - l.maxHeaderArena { return err("reservation overflows", http::code(FAIL_RANGE, 0)) }
+    total += l.maxHeaderArena
+    if total > 9223372036854775807 - events { return err("reservation overflows", http::code(FAIL_RANGE, 0)) }
+    total += events
+    if total > 9223372036854775807 - FIXED_OVERHEAD { return err("reservation overflows", http::code(FAIL_RANGE, 0)) }
+    total += FIXED_OVERHEAD
+    return ok(total)
+}
+
+// Application-owned aggregate admission. It is not a native resource and has
+// no destructor. The application calls admit() before make() and release()
+// after close() with reservedBytes(c).
+pub type Admission = ref record {
+    active: int
+    reserved: int
+}
+
+pub fn makeAdmission(): Admission {
+    return new Admission{active: 0, reserved: 0}
+}
+
+pub fn admit(mut a: &Admission, l: &Limits): Result[bool] {
+    let checked = try validateLimits(l)
+    if !checked { return ok(false) }
+    let per = try reservation(l)
+    if a.active >= l.maxConnections { return ok(false) }
+    if a.reserved > l.maxTotalConnectionBytes - per { return ok(false) }
+    a.active += 1
+    a.reserved += per
+    return ok(true)
+}
+
+pub fn release(mut a: &Admission, reserved: int): bool {
+    if reserved < 0 { return false }
+    var n = reserved
+    if n > a.reserved { n = a.reserved }
+    a.reserved -= n
+    if a.active > 0 { a.active -= 1 }
+    return true
+}
+
+pub fn activeCount(a: &Admission): int { return a.active }
+pub fn admissionReservedBytes(a: &Admission): int { return a.reserved }
+
+// ---------------------------------------------------------------------------
+// Shells and public values
+// ---------------------------------------------------------------------------
+
+pub type Connection = ref record {
+    pub res: platform::Resource
+    t: transport::Transport
+    reserved: int
+    limits: Limits
+    options: Options
+    mode: int
+    outBytes: []byte
+    outPos: int
+    ended: bool
+    eofSeen: bool
+    drained: bool
+    failureCode: int
+}
+
+pub type Stream = ref record {
+    pub res: platform::Resource
+    readChunk: int
+    fieldBytes: int
+    maxBody: int
+    secure: bool
+    serverName: string
+    requireAuthority: bool
+    headRequest: bool
+    status: int
+    bodyWritten: int
+}
+
+pub fn _emptyStream(): Stream {
+    return new Stream{
+        res: new platform::Resource{reserved: 0}
+        readChunk: 1
+        fieldBytes: 1
+        maxBody: 1
+        secure: false
+        serverName: ""
+        requireAuthority: false
+        headRequest: false
+        status: 0
+        bodyWritten: 0
+    }
+}
+
+
+pub type StreamState = closed {
+    StreamOpen {}
+    StreamHalfClosedRemote {}
+    StreamHalfClosedLocal {}
+    StreamClosed {}
+}
+
+pub type Event = closed {
+    EventNeedRead {}
+    EventNeedWrite {}
+    EventStreamStarted { id: int }
+    EventStreamData { id: int }
+    EventStreamEnd { id: int }
+    EventTrailers { id: int }
+    EventStreamClosed { id: int; code: int }
+    EventSettingsAcked {}
+    EventGoaway { lastStreamID: int; code: int }
+    EventTimedOut { id: int }
+    EventProtocolError { code: int }
+    EventDrainComplete {}
+    EventConnectionClosed {}
+}
+
+pub type Counts = ref record {
+    pub liveConnections: int
+    pub liveStreams: int
+    pub closingStreams: int
+    pub streamsOpened: int
+    pub streamsClosed: int
+    pub requestsCompleted: int
+    pub resetsSent: int
+    pub resetsReceived: int
+    pub goawaysSent: int
+    pub goawaysReceived: int
+    pub framesIn: int
+    pub zeroDataFrames: int
+    pub headerBytes: int
+    pub bodyBytesIn: int
+    pub bodyBytesOut: int
+    pub wireBytes: int
+    pub windowRestored: int
+    pub flowControlBlocked: int
+    pub eventQueueHighWater: int
+    pub wireHighWater: int
+    pub timeouts: int
+    pub protocolErrors: int
+    pub nativeBytes: int
+    pub maxNativeBytes: int
+}
+
+pub type Stats = ref record {
+    pub liveStreams: int
+    pub closingStreams: int
+    pub maxConcurrentStreams: int
+    pub streamsOpened: int
+    pub streamsClosed: int
+    pub resetsSent: int
+    pub resetsReceived: int
+    pub goawaysSent: int
+    pub goawaysReceived: int
+    pub framesIn: int
+    pub zeroDataFrames: int
+    pub headerBytesIn: int
+    pub bodyBytesIn: int
+    pub bodyBytesOut: int
+    pub wireBytes: int
+    pub windowRestored: int
+    pub recvWindow: int
+    pub connWindow: int
+    pub eventQueueHighWater: int
+    pub wireHighWater: int
+}
+
+// ---------------------------------------------------------------------------
+// Native packet helpers
+// ---------------------------------------------------------------------------
+
+fn makeBytes(n: int): Result[bytesbuf::Bytes] {
+    let made = bytesbuf::create(n)
+    match made {
+        ok(b) { return ok(b) }
+        err(m, c) { return err("HTTP/2 packet allocation failed", c) }
+    }
+}
+
+fn bytesToken(b: &bytesbuf::Bytes): Result[int] {
+    return platform::_tokenHandle(handle(b.res), platform::KIND_BYTE_BUFFER)
+}
+
+fn putI64(b: &bytesbuf::Bytes, field: int, value: int): Result[bool] {
+    let r = try bytesbuf::writeInt64(b, field * 8, value)
+    return ok(r == 1)
+}
+
+fn getI64(b: &bytesbuf::Bytes, field: int): Result[int] {
+    return bytesbuf::readInt64(b, field * 8)
+}
+
+fn copyOutN(b: &bytesbuf::Bytes, n: int): Result[[]byte] {
+    let out = new []byte(n)
+    let copied = try bytesbuf::copyOut(b, &out, 0, 0, n)
+    if copied != n { return err("short HTTP/2 native copy", http::code(FAIL_INTERNAL, 0)) }
+    return ok(out)
+}
+
+fn nativeFailure(code: int): int {
+    return code
+}
+
+fn text(code: int): string {
+    return http::text(code)
+}
+
+pub fn failure(code: int): http::Failure {
+    return http::failure(code)
+}
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn mapSystem(code: int): int {
+    if code == libCode(new errors::InvalidArgument{}) { return http::code(FAIL_INVALID_ARGUMENT, 0) }
+    if code == libCode(new errors::Range{}) { return http::code(FAIL_RANGE, 0) }
+    if code == libCode(new errors::InvalidResource{}) { return http::code(FAIL_INVALID_RESOURCE, 0) }
+    if code == libCode(new errors::Closed{}) { return http::code(FAIL_CLOSED, 0) }
+    if code == libCode(new errors::ResourceLimit{}) { return http::code(FAIL_RESOURCE_LIMIT, 0) }
+    if code == libCode(new errors::LimitExceeded{}) { return http::code(FAIL_RESOURCE_LIMIT, 0) }
+    if code == libCode(new errors::Busy{}) { return http::code(FAIL_BUSY, 0) }
+    if code == libCode(new errors::Unsupported{}) { return http::code(FAIL_UNSUPPORTED, 0) }
+    return http::code(FAIL_INTERNAL, code)
+}
+
+fn connectionToken(c: &Connection): Result[int] {
+    return platform::_tokenHandle(handle(c.res), KIND_H2_CONNECTION)
+}
+
+fn streamToken(s: &Stream): Result[int] {
+    return platform::_tokenHandle(handle(s.res), KIND_H2_STREAM)
+}
+
+fn optionPacket(l: &Limits, o: &Options, reserved: int): Result[bytesbuf::Bytes] {
+    let b = try makeBytes(OPTION_BYTES)
+    var sink = false
+    sink = try putI64(&b, 0, OPTION_MAGIC)
+    sink = try putI64(&b, 1, optionMode(o))
+    sink = try putI64(&b, 2, l.maxConcurrentStreams)
+    sink = try putI64(&b, 3, l.maxStreamsPerConnection)
+    sink = try putI64(&b, 4, l.maxHeaderListBytes)
+    sink = try putI64(&b, 5, l.maxHeaderCount)
+    sink = try putI64(&b, 6, l.maxHeaderFieldBytes)
+    sink = try putI64(&b, 7, l.maxHeaderBlockBytes)
+    sink = try putI64(&b, 8, l.maxContinuations)
+    sink = try putI64(&b, 9, l.maxHeaderArena)
+    sink = try putI64(&b, 10, l.maxStreamRecvWindow)
+    sink = try putI64(&b, 11, l.maxStreamRecvBuffer)
+    sink = try putI64(&b, 12, l.maxConnectionWindow)
+    sink = try putI64(&b, 13, l.maxStreamSendBuffer)
+    sink = try putI64(&b, 14, l.maxWire)
+    sink = try putI64(&b, 15, l.maxEvents)
+    sink = try putI64(&b, 16, l.maxBody)
+    sink = try putI64(&b, 17, l.maxTrailerBytes)
+    sink = try putI64(&b, 18, l.maxTrailerCount)
+    sink = try putI64(&b, 19, l.maxResponseHeaderBytes)
+    sink = try putI64(&b, 20, l.maxResponseTrailerBytes)
+    sink = try putI64(&b, 21, l.maxResponseTrailerCount)
+    sink = try putI64(&b, 22, l.maxReadChunk)
+    sink = try putI64(&b, 23, l.maxResetBurst)
+    sink = try putI64(&b, 24, l.maxResetRate)
+    sink = try putI64(&b, 25, l.maxPingAcks)
+    sink = try putI64(&b, 26, l.maxSettingsEntries)
+    sink = try putI64(&b, 27, l.frameBurst)
+    sink = try putI64(&b, 28, l.frameRate)
+    sink = try putI64(&b, 29, l.zeroDataBurst)
+    sink = try putI64(&b, 30, l.zeroDataRate)
+    sink = try putI64(&b, 31, l.prefaceTimeoutMs)
+    sink = try putI64(&b, 32, l.settingsTimeoutMs)
+    sink = try putI64(&b, 33, l.headerTimeoutMs)
+    sink = try putI64(&b, 34, l.bodyIdleTimeoutMs)
+    sink = try putI64(&b, 35, l.responseTimeoutMs)
+    sink = try putI64(&b, 36, l.responseTotalTimeoutMs)
+    sink = try putI64(&b, 37, l.streamTotalTimeoutMs)
+    sink = try putI64(&b, 38, l.idleTimeoutMs)
+    sink = try putI64(&b, 39, l.drainBarrierMs)
+    sink = try putI64(&b, 40, l.drainTimeoutMs)
+    sink = try putI64(&b, 41, reserved)
+    sink = try putI64(&b, 42, len(o.serverName))
+    sink = try putI64(&b, 43, 0)
+    return ok(b)
+}
+
+// ---------------------------------------------------------------------------
+// Construction and connection operations
+// ---------------------------------------------------------------------------
+
+pub fn make(t: transport::Transport, limits: &Limits,
+            options: &Options): Result[Connection] {
+    var owned = t
+    let checked = try validateLimits(limits)
+    if !checked {
+        let closeResult = transport::close(&owned)
+        return err("HTTP/2 limits are invalid", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    let secure = transport::isSecure(&owned)
+    let alpn = transport::alpn(&owned)
+    var alpnOk = false
+    match alpn {
+        ok(a) { alpnOk = alpnIsH2(&a) }
+        err(m, c) { alpnOk = false }
+    }
+    let mode = optionMode(options)
+    if mode == MODE_TLS {
+        if !secure {
+            let closeResult = transport::close(&owned)
+            return err("TLS mode requires a secure transport", http::code(FAIL_UNSUPPORTED, 0))
+        }
+        if !alpnOk {
+            let closeResult = transport::close(&owned)
+            return err("TLS mode requires ALPN h2", http::code(FAIL_UNSUPPORTED, 0))
+        }
+    } else {
+        if secure {
+            let closeResult = transport::close(&owned)
+            return err("prior-knowledge mode requires a cleartext transport", http::code(FAIL_UNSUPPORTED, 0))
+        }
+    }
+    if !validServerName(options.serverName) {
+        let closeResult = transport::close(&owned)
+        return err("serverName is longer than 64 bytes or contains CR/LF/NUL", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    let reserved = try reservation(limits)
+    let inited = __cinterop("h2_init")
+    if inited != 1 {
+        let closeResult = transport::close(&owned)
+        return err("nghttp2 version or ABI is not supported", http::code(FAIL_UNSUPPORTED, 0))
+    }
+    let packet = try optionPacket(limits, options, reserved)
+    defer bytesbuf::close(&packet)
+    let pt = try bytesToken(&packet)
+    let raw = __cinterop("h2_conn_new", pt, OPTION_BYTES)
+    if raw < 0 {
+        let closeResult = transport::close(&owned)
+        return err("HTTP/2 native session creation failed", nativeFailure(0 - raw))
+    }
+    let adopted = platform::_adoptToken(KIND_H2_CONNECTION, raw)
+    match adopted {
+        ok(r) {
+            var modeValue: Mode = new ModeTls{}
+            if mode == MODE_PRIOR { modeValue = new ModePriorKnowledge{} }
+            let serverName = options.serverName
+            return ok(new Connection{
+                res: r
+                t: owned
+                reserved: reserved
+                limits: copyLimits(limits)
+                options: new Options{mode: modeValue, serverName: serverName,
+                                     requireAuthority: options.requireAuthority}
+                mode: mode
+                outBytes: new []byte(0)
+                outPos: 0
+                ended: false
+                eofSeen: false
+                drained: false
+                failureCode: 0
+            })
+        }
+        err(m, c) {
+            let closeResult = transport::close(&owned)
+            return err("HTTP/2 connection admission failed", mapSystem(c))
+        }
+    }
+}
+
+pub fn reservedBytes(c: &Connection): int {
+    return c.reserved
+}
+
+fn takeTransport(mut c: &Connection): transport::Transport {
+    let t = replace(c.t, transport::empty())
+    return t
+}
+
+fn putTransport(mut c: &Connection, t: transport::Transport) {
+    let prior = replace(c.t, t)
+    drop(prior)
+}
+
+fn tRead(mut c: &Connection, max: int): Result[transport::ReadOutcome] {
+    let t = takeTransport(c)
+    let r = transport::readSome(&t, max)
+    putTransport(c, t)
+    return r
+}
+
+fn tWrite(mut c: &Connection, bytes: &[]byte, offset: int,
+          count: int): Result[transport::WriteOutcome] {
+    let t = takeTransport(c)
+    let r = transport::writeSome(&t, bytes, offset, count)
+    putTransport(c, t)
+    return r
+}
+
+fn tWant(mut c: &Connection): Result[transport::Want] {
+    let t = transport::empty()
+    let held = replace(c.t, t)
+    let r = transport::want(&held)
+    c.t = held
+    return r
+}
+
+fn clearOut(mut c: &Connection) {
+    c.outBytes = new []byte(0)
+    c.outPos = 0
+}
+
+fn appendOut(mut c: &Connection, bytes: &[]byte) {
+    for i in 0..len(bytes) { append(c.outBytes, bytes[i]) }
+}
+
+fn pumpOut(mut c: &Connection): Result[bool] {
+    if c.outPos >= len(c.outBytes) {
+        clearOut(c)
+        return ok(true)
+    }
+    let n = len(c.outBytes) - c.outPos
+    let chunk = new []byte(n)
+    for i in 0..n { chunk[i] = c.outBytes[c.outPos + i] }
+    let w = try tWrite(c, &chunk, 0, n)
+    match w {
+        WriteWrote {
+            c.outPos += w.count
+            if c.outPos >= len(c.outBytes) { clearOut(c) }
+            return ok(true)
+        }
+        WriteWantRead { return ok(false) }
+        WriteWantWrite { return ok(false) }
+    }
+}
+
+fn fillOutput(mut c: &Connection, ct: int): Result[bool] {
+    if len(c.outBytes) > 0 && c.outPos < len(c.outBytes) { return ok(false) }
+    clearOut(c)
+    let sent = __cinterop("h2_conn_send", ct, c.limits.maxWire)
+    if sent < 0 { return err("HTTP/2 send failed", nativeFailure(0 - sent)) }
+    let pending = __cinterop("h2_conn_wire_pending", ct)
+    if pending < 0 { return err("HTTP/2 wire query failed", nativeFailure(0 - pending)) }
+    if pending == 0 { return ok(true) }
+    var take = pending
+    if take > c.limits.maxWire { take = c.limits.maxWire }
+    let wire = try makeBytes(take)
+    defer bytesbuf::close(&wire)
+    let wt = try bytesToken(&wire)
+    let n = __cinterop("h2_conn_wire_read", ct, wt, take)
+    if n < 0 { return err("HTTP/2 wire read failed", nativeFailure(0 - n)) }
+    if n == 0 { return ok(true) }
+    let chunk = try copyOutN(&wire, n)
+    appendOut(c, &chunk)
+    return ok(true)
+}
+
+fn feedBytes(mut c: &Connection, ct: int, bytes: &[]byte,
+             now: &http::Now): Result[bool] {
+    if len(bytes) == 0 { return ok(true) }
+    let buf = try makeBytes(len(bytes))
+    defer bytesbuf::close(&buf)
+    let copied = try bytesbuf::copyIn(&buf, bytes, 0, 0, len(bytes))
+    if copied != len(bytes) { return err("HTTP/2 feed copy failed", http::code(FAIL_INTERNAL, 0)) }
+    let bt = try bytesToken(&buf)
+    var off = 0
+    while off < len(bytes) {
+        let used = __cinterop("h2_conn_feed", ct, bt, off, len(bytes) - off,
+                              now.mono.nanos)
+        if used < 0 {
+            c.failureCode = 0 - used
+            return err("HTTP/2 feed failed", nativeFailure(c.failureCode))
+        }
+        if used == 0 { break }
+        off += used
+    }
+    return ok(true)
+}
+
+fn readOnce(mut c: &Connection, ct: int, now: &http::Now): Result[bool] {
+    let max = c.limits.maxReadChunk
+    let r = tRead(c, max)
+    match r {
+        ok(outcome) {
+            match outcome {
+                ReadData {
+                    let n = len(outcome.bytes)
+                    let copy = new []byte(n)
+                    for i in 0..n { copy[i] = outcome.bytes[i] }
+                    return feedBytes(c, ct, &copy, now)
+                }
+                ReadEof {
+                    let raw = __cinterop("h2_conn_terminate", ct, -1, 0)
+                    if raw < 0 { return ok(true) }
+                    c.eofSeen = true
+                    return ok(true)
+                }
+                ReadWantRead { return ok(true) }
+                ReadWantWrite { return ok(true) }
+            }
+        }
+        err(m, code) {
+            if errors::isWouldBlock(code) { return ok(true) }
+            c.failureCode = mapSystem(code)
+            return err("HTTP/2 transport read failed", mapSystem(code))
+        }
+    }
+}
+
+fn wantEvent(mut c: &Connection): Result[Event]
+
+fn pullEvent(mut c: &Connection, ct: int, now: &http::Now): Result[Event] {
+    let ev = __cinterop("h2_conn_next_event", ct, now.mono.nanos)
+    if ev < 0 { return err("HTTP/2 event pull failed", nativeFailure(0 - ev)) }
+    if ev == EV_NONE {
+        let want = try wantEvent(c)
+        return ok(want)
+    }
+    let id = __cinterop("h2_conn_event_stream_id", ct)
+    let flags = __cinterop("h2_conn_event_flags", ct)
+    let evErr = __cinterop("h2_conn_event_error", ct)
+    let aux = __cinterop("h2_conn_event_aux", ct)
+    if flags < 0 { return err("HTTP/2 event flags failed", nativeFailure(0 - flags)) }
+    if ev == EV_STREAM_STARTED { let e: Event = new EventStreamStarted{id: id}; return ok(e) }
+    if ev == EV_STREAM_DATA { let e: Event = new EventStreamData{id: id}; return ok(e) }
+    if ev == EV_STREAM_END { let e: Event = new EventStreamEnd{id: id}; return ok(e) }
+    if ev == EV_STREAM_CLOSED {
+        let e: Event = new EventStreamClosed{id: id, code: evErr}
+        return ok(e)
+    }
+    if ev == EV_TRAILERS { let e: Event = new EventTrailers{id: id}; return ok(e) }
+    if ev == EV_SETTINGS_ACKED { let e: Event = new EventSettingsAcked{}; return ok(e) }
+    if ev == EV_GOAWAY {
+        let e: Event = new EventGoaway{lastStreamID: aux, code: evErr}
+        return ok(e)
+    }
+    if ev == EV_TIMEOUT { let e: Event = new EventTimedOut{id: id}; return ok(e) }
+    if ev == EV_PROTOCOL_ERROR {
+        let e: Event = new EventProtocolError{code: evErr}
+        return ok(e)
+    }
+    if ev == EV_DRAIN_COMPLETE { let e: Event = new EventDrainComplete{}; return ok(e) }
+    if ev == EV_CONNECTION_CLOSED { let e: Event = new EventConnectionClosed{}; return ok(e) }
+    let none: Event = new EventNeedRead{}
+    return ok(none)
+}
+
+fn wantEvent(mut c: &Connection): Result[Event] {
+    let ct = try connectionToken(c)
+    let pending = __cinterop("h2_conn_wire_pending", ct)
+    if pending > 0 {
+        let e: Event = new EventNeedWrite{}
+        return ok(e)
+    }
+    if len(c.outBytes) > c.outPos {
+        let e: Event = new EventNeedWrite{}
+        return ok(e)
+    }
+    let w = try tWant(c)
+    match w {
+        WantWrite {
+            let e: Event = new EventNeedWrite{}
+            return ok(e)
+        }
+        WantRead {
+            let e: Event = new EventNeedRead{}
+            return ok(e)
+        }
+        WantReadWrite {
+            let e: Event = new EventNeedWrite{}
+            return ok(e)
+        }
+        WantNone {
+            let e: Event = new EventNeedRead{}
+            return ok(e)
+        }
+    }
+}
+
+// `next` performs one transport write/flush and at most one transport read per
+// call, then returns at most one event. It never loops on readiness and never
+// hides a retry.
+pub fn next(mut c: &Connection, now: &http::Now): Result[Event] {
+    if c.ended {
+        let e: Event = new EventConnectionClosed{}
+        return ok(e)
+    }
+    let ct = try connectionToken(c)
+    let first = try pullEvent(c, ct, now)
+    match first {
+        EventNeedRead { }
+        EventNeedWrite { }
+        EventConnectionClosed { let e: Event = new EventConnectionClosed{}; return ok(e) }
+        EventProtocolError { let e: Event = new EventProtocolError{code: first.code}; return ok(e) }
+        EventTimedOut { let e: Event = new EventTimedOut{id: first.id}; return ok(e) }
+        EventGoaway {
+            let e: Event = new EventGoaway{lastStreamID: first.lastStreamID, code: first.code}
+            return ok(e)
+        }
+        EventDrainComplete { let e: Event = new EventDrainComplete{}; return ok(e) }
+        EventSettingsAcked { let e: Event = new EventSettingsAcked{}; return ok(e) }
+        EventStreamStarted { let e: Event = new EventStreamStarted{id: first.id}; return ok(e) }
+        EventStreamData { let e: Event = new EventStreamData{id: first.id}; return ok(e) }
+        EventStreamEnd { let e: Event = new EventStreamEnd{id: first.id}; return ok(e) }
+        EventStreamClosed {
+            let e: Event = new EventStreamClosed{id: first.id, code: first.code}
+            return ok(e)
+        }
+        EventTrailers { let e: Event = new EventTrailers{id: first.id}; return ok(e) }
+    }
+    let movedOut = try pumpOut(c)
+    let readProgress = try readOnce(c, ct, now)
+    let filled = try fillOutput(c, ct)
+    let flushed = try pumpOut(c)
+    if c.eofSeen {
+        let e: Event = new EventConnectionClosed{}
+        return ok(e)
+    }
+    let second = try pullEvent(c, ct, now)
+    return ok(second)
+}
+
+pub fn deadline(c: &Connection): Result[clock::Deadline] {
+    let ct = try connectionToken(c)
+    let d = __cinterop("h2_conn_deadline", ct)
+    if d == -1 { return ok(clock::forever()) }
+    if d < 0 { return err("HTTP/2 deadline query failed", nativeFailure(0 - d)) }
+    return ok(new clock::Deadline{finite: true, nanos: d})
+}
+
+pub fn wantsRead(c: &Connection): Result[bool] {
+    if c.ended { return ok(false) }
+    if len(c.outBytes) > c.outPos { return ok(false) }
+    let ct = try connectionToken(c)
+    let pending = __cinterop("h2_conn_wire_pending", ct)
+    if pending > 0 { return ok(false) }
+    return ok(true)
+}
+
+pub fn pending(c: &Connection): Result[int] {
+    if c.ended { return ok(0) }
+    let ct = try connectionToken(c)
+    let wire = __cinterop("h2_conn_wire_pending", ct)
+    if wire < 0 { return err("HTTP/2 pending query failed", nativeFailure(0 - wire)) }
+    var out = len(c.outBytes) - c.outPos
+    if out < 0 { out = 0 }
+    return ok(out + wire)
+}
+
+pub fn want(c: &Connection): Result[transport::Want] {
+    let n = try pending(c)
+    if n > 0 {
+        let w: transport::Want = new transport::WantWrite{}
+        return ok(w)
+    }
+    let r: transport::Want = new transport::WantRead{}
+    return ok(r)
+}
+
+pub fn wantsWrite(c: &Connection): Result[bool] {
+    if c.ended { return ok(false) }
+    if len(c.outBytes) > c.outPos { return ok(true) }
+    let ct = try connectionToken(c)
+    let pending = __cinterop("h2_conn_wire_pending", ct)
+    return ok(pending > 0)
+}
+
+pub fn memoryOutput(mut c: &Connection): Result[[]byte] {
+    let t = takeTransport(c)
+    let r = transport::memoryOutput(&t)
+    putTransport(c, t)
+    return r
+}
+
+pub fn memoryAppendInput(mut c: &Connection, bytes: &[]byte): Result[bool] {
+    let t = takeTransport(c)
+    let r = transport::memoryAppendInput(&t, bytes)
+    putTransport(c, t)
+    return r
+}
+
+pub fn watch(mut c: &Connection, r: &reactor::Reactor, readable: bool,
+             writable: bool, tag: int): Result[reactor::Watch] {
+    let t = transport::empty()
+    let held = replace(c.t, t)
+    let result = transport::watch(&held, r, readable, writable, tag)
+    c.t = held
+    return result
+}
+
+pub fn shutdownStep(mut c: &Connection,
+                    now: &http::Now): Result[transport::ShutdownOutcome] {
+    let t = takeTransport(c)
+    let result = transport::shutdownStep(&t)
+    putTransport(c, t)
+    return result
+}
+
+pub fn state(c: &Connection): Result[int] {
+    let ct = try connectionToken(c)
+    let s = __cinterop("h2_conn_state", ct)
+    if s < 0 { return err("HTTP/2 state query failed", nativeFailure(0 - s)) }
+    return ok(s)
+}
+
+pub fn settingsAcked(c: &Connection): Result[bool] {
+    let ct = try connectionToken(c)
+    let sent = __cinterop("h2_conn_settings_sent", ct)
+    if sent < 0 { return err("HTTP/2 settings query failed", nativeFailure(0 - sent)) }
+    let v = __cinterop("h2_conn_settings_acked", ct)
+    return ok(v == 1)
+}
+
+// ---------------------------------------------------------------------------
+// Streams
+// ---------------------------------------------------------------------------
+
+fn ensureStreamToken(s: &Stream): Result[int] {
+    return streamToken(s)
+}
+
+fn streamInfo(s: &Stream): Result[[]int] {
+    let tok = try ensureStreamToken(s)
+    let b = try makeBytes(INFO_BYTES)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let n = __cinterop("h2_stream_info", tok, bt)
+    if n < 0 { return err("HTTP/2 stream info failed", nativeFailure(0 - n)) }
+    var out = new []int(0)
+    for i in 0..INFO_FIELDS {
+        let v = try getI64(&b, i)
+        append(out, v)
+    }
+    return ok(out)
+}
+
+pub fn openStream(c: &Connection, id: int): Result[Stream] {
+    if c.ended { return err("HTTP/2 connection is closed", http::code(FAIL_CLOSED, 0)) }
+    if id <= 0 || id % 2 == 0 {
+        return err("server streams must be positive and odd", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_stream_adopt", ct, id)
+    if raw < 0 { return err("HTTP/2 stream adoption failed", nativeFailure(0 - raw)) }
+    let adopted = platform::_adoptToken(KIND_H2_STREAM, raw)
+    match adopted {
+        ok(r) {
+            let mark = __cinterop("h2_stream_mark_adopted", raw)
+            if mark != 1 {
+                let _ = platform::_closeHandle(handle(r), KIND_H2_STREAM)
+                return err("HTTP/2 stream adoption marker failed", http::code(FAIL_INTERNAL, 0))
+            }
+            return ok(new Stream{
+                res: r
+                readChunk: c.limits.maxReadChunk
+                fieldBytes: c.limits.maxHeaderFieldBytes
+                maxBody: c.limits.maxBody
+                secure: c.mode == MODE_TLS
+                serverName: c.options.serverName
+                requireAuthority: c.options.requireAuthority
+                headRequest: false
+                status: 0
+                bodyWritten: 0
+            })
+        }
+        err(m, code) {
+            let _ = __cinterop("h2_stream_abandon", raw)
+            return err("HTTP/2 stream admission failed", mapSystem(code))
+        }
+    }
+}
+
+pub fn closeStream(s: &Stream): Result[bool] {
+    let found = streamToken(s)
+    match found {
+        err(m, c) {
+            if c == http::code(FAIL_CLOSED, 0) || c == http::code(FAIL_INVALID_RESOURCE, 0) {
+                return ok(false)
+            }
+            return err("HTTP/2 stream is not live", c)
+        }
+        ok(tok) {
+            let raw = __cinterop("h2_stream_close", tok)
+            let closeResult = platform::_closeHandle(handle(s.res), KIND_H2_STREAM)
+            match closeResult {
+                ok(v) { return ok(v) }
+                err(m, c) {
+                    if c == libCode(new errors::InvalidResource{}) ||
+                       c == libCode(new errors::Closed{}) { return ok(false) }
+                    return err("HTTP/2 stream close failed", mapSystem(c))
+                }
+            }
+        }
+    }
+}
+
+pub fn streamID(s: &Stream): Result[int] {
+    let info = try streamInfo(s)
+    return ok(info[0])
+}
+
+pub fn streamState(s: &Stream): Result[StreamState] {
+    let tok = try ensureStreamToken(s)
+    let st = __cinterop("h2_stream_state", tok)
+    if st < 0 { return err("HTTP/2 stream state failed", nativeFailure(0 - st)) }
+    if st == STREAM_HALF_CLOSED_REMOTE { let v: StreamState = new StreamHalfClosedRemote{}; return ok(v) }
+    if st == STREAM_HALF_CLOSED_LOCAL { let v: StreamState = new StreamHalfClosedLocal{}; return ok(v) }
+    if st == STREAM_CLOSED_STATE { let v: StreamState = new StreamClosed{}; return ok(v) }
+    let v: StreamState = new StreamOpen{}
+    return ok(v)
+}
+
+pub fn reset(s: &Stream, code: int): Result[bool] {
+    let tok = try ensureStreamToken(s)
+    let raw = __cinterop("h2_stream_reset", tok, code)
+    if raw < 0 { return err("HTTP/2 reset failed", nativeFailure(0 - raw)) }
+    return ok(raw == 1)
+}
+
+fn headerAtNative(s: &Stream, index: int, which: int,
+                  trailer: bool): Result[http::Header] {
+    let tok = try ensureStreamToken(s)
+    var cap = s.fieldBytes
+    if cap < 1 { cap = 1 }
+    let nb = try makeBytes(cap)
+    defer bytesbuf::close(&nb)
+    let vb = try makeBytes(cap)
+    defer bytesbuf::close(&vb)
+    let nt = try bytesToken(&nb)
+    let vt = try bytesToken(&vb)
+    var nn = 0
+    var vn = 0
+    if trailer {
+        nn = __cinterop("h2_stream_trailer_at", tok, index, nt, 0)
+        if nn < 0 { return err("HTTP/2 trailer name read failed", nativeFailure(0 - nn)) }
+        vn = __cinterop("h2_stream_trailer_at", tok, index, vt, 1)
+        if vn < 0 { return err("HTTP/2 trailer value read failed", nativeFailure(0 - vn)) }
+    } else {
+        nn = __cinterop("h2_stream_header_at", tok, index, nt, 0)
+        if nn < 0 { return err("HTTP/2 header name read failed", nativeFailure(0 - nn)) }
+        vn = __cinterop("h2_stream_header_at", tok, index, vt, 1)
+        if vn < 0 { return err("HTTP/2 header value read failed", nativeFailure(0 - vn)) }
+    }
+    let nameBytes = try copyOutN(&nb, nn)
+    let valueBytes = try copyOutN(&vb, vn)
+    return ok(new http::Header{name: string(nameBytes), value: string(valueBytes)})
+}
+
+pub fn headerCount(s: &Stream): Result[int] {
+    let tok = try ensureStreamToken(s)
+    let n = __cinterop("h2_stream_header_count", tok)
+    if n < 0 { return err("HTTP/2 header count failed", nativeFailure(0 - n)) }
+    return ok(n)
+}
+
+pub fn headerAt(s: &Stream, index: int): Result[http::Header] {
+    return headerAtNative(s, index, 0, false)
+}
+
+pub fn trailerCount(s: &Stream): Result[int] {
+    let tok = try ensureStreamToken(s)
+    let n = __cinterop("h2_stream_trailer_count", tok)
+    if n < 0 { return err("HTTP/2 trailer count failed", nativeFailure(0 - n)) }
+    return ok(n)
+}
+
+pub fn trailerAt(s: &Stream, index: int): Result[http::Header] {
+    return headerAtNative(s, index, 0, true)
+}
+
+fn parseDecimal(text: string): int {
+    if len(text) == 0 || len(text) > 18 { return -1 }
+    var value = 0
+    for i in 0..len(text) {
+        let ch = text[i]
+        if ch < byte('0') || ch > byte('9') { return -1 }
+        value = value * 10 + int(ch - byte('0'))
+    }
+    return value
+}
+
+pub fn requestInfo(mut s: &Stream): Result[http::RequestMeta] {
+    let count = try headerCount(s)
+    var method = ""
+    var scheme = ""
+    var target = ""
+    var authority = ""
+    var host = ""
+    var headers = new []http::Header(0)
+    var hasCL = false
+    var contentLength = 0
+    for i in 0..count {
+        let h = try headerAt(s, i)
+        if h.name == ":method" { method = h.value } else if h.name == ":scheme" {
+            scheme = h.value
+        } else if h.name == ":path" { target = h.value } else if h.name == ":authority" {
+            authority = h.value
+        } else if h.name == "host" { host = h.value } else {
+            append(headers, new http::Header{name: h.name, value: h.value})
+            if h.name == "content-length" {
+                hasCL = true
+                contentLength = parseDecimal(h.value)
+                if contentLength < 0 {
+                    return err("request content-length is malformed", http::code(FAIL_PROTOCOL, 0))
+                }
+            }
+        }
+    }
+    let tok = try ensureStreamToken(s)
+    let _ = __cinterop("h2_stream_clear_request", tok)
+    s.headRequest = method == "HEAD"
+    if len(method) == 0 || len(target) == 0 {
+        return err("request is missing :method or :path", http::code(FAIL_PROTOCOL, 0))
+    }
+    var auth = authority
+    if len(auth) == 0 { auth = host }
+    if s.requireAuthority && len(auth) == 0 {
+        return err("request has no authority", http::code(FAIL_PROTOCOL, 0))
+    }
+    var path = target
+    var query = ""
+    for i in 0..len(target) {
+        if target[i] == byte('?') {
+            path = substr(target, 0, i)
+            query = substr(target, i + 1, len(target))
+            break
+        }
+    }
+    let info = try streamInfo(s)
+    let peerEnd = info[17] != 0
+    return ok(new http::RequestMeta{
+        protocol: new http::ProtocolHttp2{}
+        streamID: info[0]
+        method: method
+        target: target
+        path: path
+        query: query
+        scheme: scheme
+        authority: auth
+        versionMajor: 2
+        versionMinor: 0
+        headers: headers
+        secure: s.secure
+        hasBody: !peerEnd || contentLength > 0
+        hasContentLength: hasCL
+        contentLength: contentLength
+    })
+}
+
+pub fn readBody(s: &Stream, max: int, now: &http::Now): Result[http::BodyRead] {
+    if max <= 0 { return err("readBody max must be positive", http::code(FAIL_INVALID_ARGUMENT, 0)) }
+    var take = max
+    if take > s.readChunk { take = s.readChunk }
+    let tok = try ensureStreamToken(s)
+    let b = try makeBytes(take)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let n = __cinterop("h2_stream_read", tok, bt, take)
+    if n < 0 {
+        let e: http::BodyRead = new http::BodyEnd{}
+        if (0 - n) == http::code(FAIL_CLOSED, 0) { return ok(e) }
+        return err("HTTP/2 body read failed", nativeFailure(0 - n))
+    }
+    if n == 0 {
+        let st = try streamState(s)
+        match st {
+            StreamHalfClosedRemote { let e: http::BodyRead = new http::BodyEnd{}; return ok(e) }
+            StreamClosed { let e: http::BodyRead = new http::BodyEnd{}; return ok(e) }
+            StreamOpen { let e: http::BodyRead = new http::BodyNeedRead{}; return ok(e) }
+            StreamHalfClosedLocal { let e: http::BodyRead = new http::BodyNeedRead{}; return ok(e) }
+        }
+    }
+    let bytes = try copyOutN(&b, n)
+    let e: http::BodyRead = new http::BodyData{bytes: bytes}
+    return ok(e)
+}
+
+pub fn discardBody(s: &Stream, max: int, now: &http::Now): Result[int] {
+    if max <= 0 { return err("discardBody max must be positive", http::code(FAIL_INVALID_ARGUMENT, 0)) }
+    var take = max
+    if take > s.readChunk { take = s.readChunk }
+    let tok = try ensureStreamToken(s)
+    let n = __cinterop("h2_stream_discard", tok, take, now.mono.nanos)
+    if n < 0 { return err("HTTP/2 body discard failed", nativeFailure(0 - n)) }
+    return ok(n)
+}
+
+fn packetField(name: string, value: string): Result[bytesbuf::Bytes] {
+    let total = len(name) + len(value)
+    if total < 1 { return err("header name is empty", http::code(FAIL_INVALID_ARGUMENT, 0)) }
+    let b = try makeBytes(total)
+    let nameBytes = new []byte(len(name))
+    for i in 0..len(name) { nameBytes[i] = name[i] }
+    let valueBytes = new []byte(len(value))
+    for i in 0..len(value) { valueBytes[i] = value[i] }
+    let n = try bytesbuf::copyIn(&b, &nameBytes, 0, 0, len(name))
+    if n != len(name) { return err("header name copy failed", http::code(FAIL_INTERNAL, 0)) }
+    let v = try bytesbuf::copyIn(&b, &valueBytes, 0, len(name), len(value))
+    if v != len(value) { return err("header value copy failed", http::code(FAIL_INTERNAL, 0)) }
+    return ok(b)
+}
+
+pub fn setHeader(s: &Stream, name: string, value: string): Result[bool]
+
+pub fn beginResponse(mut s: &Stream, status: int): Result[bool] {
+    if status < 100 || status > 599 || status == 101 {
+        return err("response status is invalid for HTTP/2", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    let tok = try ensureStreamToken(s)
+    let raw = __cinterop("h2_stream_begin", tok, status)
+    if raw < 0 { return err("HTTP/2 response begin failed", nativeFailure(0 - raw)) }
+    s.status = status
+    s.bodyWritten = 0
+    if len(s.serverName) > 0 {
+        let added = try setHeader(s, "server", s.serverName)
+        if !added { return ok(false) }
+    }
+    return ok(true)
+}
+
+pub fn setHeader(s: &Stream, name: string, value: string): Result[bool] {
+    let tok = try ensureStreamToken(s)
+    let b = try packetField(name, value)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let raw = __cinterop("h2_stream_header", tok, bt, 0, len(name), len(name), len(value))
+    if raw < 0 { return err("HTTP/2 response header failed", nativeFailure(0 - raw)) }
+    return ok(true)
+}
+
+pub fn setLength(s: &Stream, length: int): Result[bool] {
+    if length < 0 { return err("response length is negative", http::code(FAIL_RANGE, 0)) }
+    let tok = try ensureStreamToken(s)
+    let raw = __cinterop("h2_stream_set_length", tok, length)
+    if raw < 0 { return err("HTTP/2 response length failed", nativeFailure(0 - raw)) }
+    return ok(true)
+}
+
+pub fn writeBody(mut s: &Stream, bytes: &[]byte, offset: int,
+                 count: int): Result[int] {
+    if offset < 0 || count < 0 || offset > len(bytes) ||
+       count > len(bytes) - offset {
+        return err("response body range is outside the array", http::code(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if count == 0 { return ok(0) }
+    var take = count
+    if take > s.readChunk { take = s.readChunk }
+    let tok = try ensureStreamToken(s)
+    let b = try makeBytes(take)
+    defer bytesbuf::close(&b)
+    let copied = try bytesbuf::copyIn(&b, bytes, offset, 0, take)
+    if copied != take { return err("response body copy failed", http::code(FAIL_INTERNAL, 0)) }
+    let bt = try bytesToken(&b)
+    let raw = __cinterop("h2_stream_write", tok, bt, 0, take)
+    if raw < 0 { return err("HTTP/2 response write failed", nativeFailure(0 - raw)) }
+    s.bodyWritten += raw
+    return ok(raw)
+}
+
+pub fn interim(s: &Stream, status: int): Result[bool] {
+    return err("interim 1xx responses are not implemented in H2a", http::code(FAIL_UNSUPPORTED, 0))
+}
+
+pub fn setTrailerNames(s: &Stream, names: &[]string): Result[bool] {
+    for i in 0..len(names) {
+        if len(names[i]) == 0 { return err("trailer name is empty", http::code(FAIL_INVALID_ARGUMENT, 0)) }
+    }
+    return ok(true)
+}
+
+pub fn addTrailer(s: &Stream, name: string, value: string): Result[bool] {
+    let tok = try ensureStreamToken(s)
+    let b = try packetField(name, value)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let raw = __cinterop("h2_stream_trailer", tok, bt, 0, len(name), len(name), len(value))
+    if raw < 0 { return err("HTTP/2 response trailer failed", nativeFailure(0 - raw)) }
+    return ok(true)
+}
+
+fn bodyCapable(s: &Stream): bool {
+    if s.headRequest { return false }
+    if s.status >= 100 && s.status < 200 { return false }
+    if s.status == 204 || s.status == 205 { return false }
+    return true
+}
+
+pub fn endResponse(s: &Stream): Result[bool] {
+    let tok = try ensureStreamToken(s)
+    if s.status == 0 { return err("response was not begun", http::code(FAIL_INVALID_STATE, 0)) }
+    let info = try streamInfo(s)
+    let declaredEncoded = info[11]
+    let written = info[9]
+    if bodyCapable(s) && declaredEncoded > 0 && written != declaredEncoded - 1 {
+        return err("response body does not match content-length", http::code(FAIL_INVALID_STATE, 0))
+    }
+    let raw = __cinterop("h2_stream_end", tok)
+    if raw < 0 { return err("HTTP/2 response end failed", nativeFailure(0 - raw)) }
+    return ok(raw == 1)
+}
+
+// ---------------------------------------------------------------------------
+// Drain, close, stats
+// ---------------------------------------------------------------------------
+
+pub fn drain(mut c: &Connection, now: &http::Now): Result[bool] {
+    if c.ended { return err("HTTP/2 connection is closed", http::code(FAIL_CLOSED, 0)) }
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_conn_drain", ct)
+    if raw < 0 { return err("HTTP/2 drain failed", nativeFailure(0 - raw)) }
+    c.drained = true
+    return ok(raw == 1)
+}
+
+pub fn drainPoll(c: &Connection, now: &http::Now): Result[bool] {
+    if c.ended { return ok(false) }
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_conn_drain_poll", ct, now.mono.nanos)
+    if raw < 0 { return err("HTTP/2 drain poll failed", nativeFailure(0 - raw)) }
+    return ok(raw == 1)
+}
+
+pub fn drainComplete(c: &Connection): bool {
+    if c.ended { return false }
+    let found = connectionToken(c)
+    match found {
+        ok(ct) { return __cinterop("h2_conn_drain_complete", ct) == 1 }
+        err(m, code) { return false }
+    }
+}
+
+pub fn goaway(c: &Connection, lastStreamID: int, code: int): Result[bool] {
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_conn_goaway", ct, lastStreamID, code)
+    if raw < 0 { return err("HTTP/2 GOAWAY failed", nativeFailure(0 - raw)) }
+    return ok(raw == 1)
+}
+
+pub fn close(mut c: &Connection): Result[bool] {
+    if c.ended { return ok(false) }
+    c.ended = true
+    let t = takeTransport(c)
+    let tc = transport::close(&t)
+    let closeResult = platform::_closeHandle(handle(c.res), KIND_H2_CONNECTION)
+    match closeResult {
+        ok(v) {
+            match tc {
+                ok(tv) { return ok(v) }
+                err(m, code) { return err("HTTP/2 transport close failed", mapSystem(code)) }
+            }
+        }
+        err(m, code) {
+            return err("HTTP/2 connection close failed", mapSystem(code))
+        }
+    }
+}
+
+fn readStats(c: &Connection): Result[[]int] {
+    let ct = try connectionToken(c)
+    let b = try makeBytes(STATS_BYTES)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let n = __cinterop("h2_conn_stats", ct, bt)
+    if n < 0 { return err("HTTP/2 stats failed", nativeFailure(0 - n)) }
+    var out = new []int(0)
+    for i in 0..STATS_FIELDS {
+        let v = try getI64(&b, i)
+        append(out, v)
+    }
+    return ok(out)
+}
+
+pub fn stats(c: &Connection): Result[Stats] {
+    let f = try readStats(c)
+    return ok(new Stats{
+        liveStreams: f[0]
+        closingStreams: f[1]
+        maxConcurrentStreams: f[2]
+        streamsOpened: f[3]
+        streamsClosed: f[4]
+        resetsSent: f[5]
+        resetsReceived: f[6]
+        goawaysSent: f[7]
+        goawaysReceived: f[8]
+        framesIn: f[9]
+        zeroDataFrames: f[10]
+        headerBytesIn: f[11]
+        bodyBytesIn: f[12]
+        bodyBytesOut: f[13]
+        wireBytes: f[14]
+        windowRestored: f[15]
+        recvWindow: f[16]
+        connWindow: f[17]
+        eventQueueHighWater: f[18]
+        wireHighWater: f[19]
+    })
+}
+
+pub fn counts(): Result[Counts] {
+    let b = try makeBytes(COUNTS_BYTES)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let n = __cinterop("h2_counts", bt)
+    if n < 0 { return err("HTTP/2 counts failed", nativeFailure(0 - n)) }
+    var f = new []int(0)
+    for i in 0..COUNTS_FIELDS {
+        let v = try getI64(&b, i)
+        append(f, v)
+    }
+    let plat = try platform::counts()
+    return ok(new Counts{
+        liveConnections: f[0]
+        liveStreams: f[1]
+        closingStreams: 0
+        streamsOpened: f[2]
+        streamsClosed: f[3]
+        requestsCompleted: 0
+        resetsSent: f[4]
+        resetsReceived: f[5]
+        goawaysSent: f[6]
+        goawaysReceived: f[7]
+        framesIn: f[8]
+        zeroDataFrames: f[9]
+        headerBytes: f[10]
+        bodyBytesIn: f[11]
+        bodyBytesOut: f[12]
+        wireBytes: f[13]
+        windowRestored: f[14]
+        flowControlBlocked: 0
+        eventQueueHighWater: 0
+        wireHighWater: 0
+        timeouts: f[16]
+        protocolErrors: f[15]
+        nativeBytes: plat.nativeBytes
+        maxNativeBytes: 0
+    })
+}
+
+// Native version/diagnostic helpers. They are ordinary scalar calls; the
+// numeric version is diagnostic and never a policy input.
+pub fn nativeVersion(): Result[int] {
+    let v = __cinterop("h2_version_num")
+    if v < 0 { return err("HTTP/2 version query failed", nativeFailure(0 - v)) }
+    return ok(v)
+}
+
+pub fn diagnostic(code: int): Result[string] {
+    let b = try makeBytes(256)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let n = __cinterop("h2_text", code, bt, 256)
+    if n < 0 { return err("HTTP/2 diagnostic failed", nativeFailure(0 - n)) }
+    let out = try copyOutN(&b, n)
+    return ok(string(out))
+}
+
+pub fn consumeConnection(c: &Connection, bytes: int): Result[bool] {
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_conn_consume", ct, bytes)
+    if raw < 0 { return err("HTTP/2 connection consume failed", nativeFailure(0 - raw)) }
+    return ok(raw == 1)
+}
+
+pub fn resetCounts(mut c: &Connection): Result[bool] {
+    let ct = try connectionToken(c)
+    let raw = __cinterop("h2_conn_reset_counts", ct)
+    if raw < 0 { return err("HTTP/2 counter reset failed", nativeFailure(0 - raw)) }
+    return ok(raw == 1)
+}
+
+pub type Windows = ref record {
+    pub stream: int
+    pub connection: int
+}
+
+pub fn windows(s: &Stream): Result[Windows] {
+    let tok = try ensureStreamToken(s)
+    let b = try makeBytes(16)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let n = __cinterop("h2_stream_windows", tok, bt)
+    if n < 0 { return err("HTTP/2 windows query failed", nativeFailure(0 - n)) }
+    let sw = try getI64(&b, 0)
+    let cw = try getI64(&b, 1)
+    return ok(new Windows{stream: sw, connection: cw})
+}
+
+pub fn commitResponse(s: &Stream, endStream: bool): Result[bool] {
+    let tok = try ensureStreamToken(s)
+    var end = 0
+    if endStream { end = 1 }
+    let raw = __cinterop("h2_stream_commit", tok, end)
+    if raw < 0 { return err("HTTP/2 response commit failed", nativeFailure(0 - raw)) }
+    return ok(raw == 1)
+}
+
+// ---------------------------------------------------------------------------
+// Shared pure action executor (§5.4)
+// ---------------------------------------------------------------------------
+
+const ACT_NONE = 0
+const ACT_HELLO = 1
+const ACT_ECHO = 2
+const ACT_CHUNKED = 3
+const ACT_HEAD = 4
+const ACT_NOCONTENT = 5
+const ACT_NOTMODIFIED = 6
+const ACT_BIG = 7
+const ACT_SLOW = 8
+const ACT_STOP = 9
+const ACT_CLOSE = 10
+
+pub type ActionState = ref record {
+    latched: bool
+    action: int
+    started: bool
+    responseFinished: bool
+    done: bool
+    body: []byte
+    bodyPos: int
+    pending: []byte
+    pendingPos: int
+    echoed: int
+    discarded: int
+    stopRequested: bool
+    closeRequested: bool
+}
+
+pub fn makeActionState(): ActionState {
+    return new ActionState{
+        latched: false
+        action: ACT_NONE
+        started: false
+        responseFinished: false
+        done: false
+        body: new []byte(0)
+        bodyPos: 0
+        pending: new []byte(0)
+        pendingPos: 0
+        echoed: 0
+        discarded: 0
+        stopRequested: false
+        closeRequested: false
+    }
+}
+
+pub fn actionStopRequested(st: &ActionState): bool { return st.stopRequested }
+pub fn actionCloseRequested(st: &ActionState): bool { return st.closeRequested }
+
+fn actionCode(a: &http::Action): int {
+    match a {
+        Hello { return ACT_HELLO }
+        Echo { return ACT_ECHO }
+        Chunked { return ACT_CHUNKED }
+        Head { return ACT_HEAD }
+        NoContent { return ACT_NOCONTENT }
+        NotModified { return ACT_NOTMODIFIED }
+        Big { return ACT_BIG }
+        Slow { return ACT_SLOW }
+        Stop { return ACT_STOP }
+        Close { return ACT_CLOSE }
+    }
+}
+
+fn patternBytes(text: string): []byte {
+    let out = new []byte(len(text))
+    for i in 0..len(text) { out[i] = text[i] }
+    return out
+}
+
+fn bigBytes(n: int): []byte {
+    let out = new []byte(n)
+    for i in 0..n { out[i] = byte('x') }
+    return out
+}
+
+fn latchBody(mut st: &ActionState, s: &Stream): Result[bool] {
+    if st.action == ACT_HELLO || st.action == ACT_STOP || st.action == ACT_CLOSE {
+        st.body = patternBytes("hello\n")
+        return ok(true)
+    }
+    if st.action == ACT_CHUNKED {
+        st.body = patternBytes("chunk one\nchunk two\nchunk three\n")
+        return ok(true)
+    }
+    if st.action == ACT_BIG {
+        st.body = bigBytes(20480)
+        return ok(true)
+    }
+    if st.action == ACT_SLOW {
+        st.body = patternBytes("slow body\n")
+        return ok(true)
+    }
+    return ok(true)
+}
+
+fn startSimple(mut st: &ActionState, mut s: &Stream): Result[bool] {
+    var sink = false
+    if st.action == ACT_HELLO || st.action == ACT_STOP || st.action == ACT_CLOSE {
+        let b = try beginResponse(s, 200)
+        if !b { return ok(false) }
+        sink = try setHeader(s, "content-type", "text/plain")
+        sink = try setLength(s, 6)
+    } else if st.action == ACT_CHUNKED {
+        let b = try beginResponse(s, 200)
+        if !b { return ok(false) }
+        sink = try setHeader(s, "content-type", "text/plain")
+    } else if st.action == ACT_BIG {
+        let b = try beginResponse(s, 200)
+        if !b { return ok(false) }
+        sink = try setHeader(s, "content-type", "text/plain")
+        sink = try setLength(s, 20480)
+    } else if st.action == ACT_SLOW {
+        let b = try beginResponse(s, 200)
+        if !b { return ok(false) }
+        sink = try setHeader(s, "content-type", "text/plain")
+        sink = try setLength(s, len(st.body))
+    } else if st.action == ACT_HEAD {
+        let b = try beginResponse(s, 200)
+        if !b { return ok(false) }
+        sink = try setHeader(s, "content-type", "text/plain")
+        sink = try setLength(s, 6)
+    } else if st.action == ACT_NOCONTENT {
+        let b = try beginResponse(s, 204)
+        if !b { return ok(false) }
+    } else if st.action == ACT_NOTMODIFIED {
+        let b = try beginResponse(s, 304)
+        if !b { return ok(false) }
+    }
+    st.started = true
+    return ok(true)
+}
+
+fn peerEnded(s: &Stream): Result[bool] {
+    let info = try streamInfo(s)
+    return ok(info[17] != 0)
+}
+
+fn finishSimple(mut st: &ActionState, s: &Stream,
+                now: &http::Now): Result[bool] {
+    var sink = false
+    if st.action == ACT_ECHO { return ok(true) }
+    if !st.responseFinished {
+        let ended = try endResponse(s)
+        if !ended { return ok(false) }
+        st.responseFinished = true
+    }
+    // Discard any unread request body in bounded pieces. This is required so
+    // an unread body cannot hold the connection window.
+    var rounds = 0
+    while rounds < 8 {
+        let n = try discardBody(s, s.readChunk, now)
+        if n > 0 {
+            st.discarded += n
+            if st.discarded > s.maxBody {
+                sink = try reset(s, 8)
+                st.done = true
+                return ok(true)
+            }
+            rounds += 1
+            continue
+        }
+        let ended = try peerEnded(s)
+        if ended {
+            st.done = true
+            if st.action == ACT_STOP { st.stopRequested = true }
+            if st.action == ACT_CLOSE { st.closeRequested = true }
+            return ok(true)
+        }
+        return ok(false)
+    }
+    return ok(true)
+}
+
+pub fn runAction(mut st: &ActionState, h: http::Handler,
+                 req: &http::RequestMeta, mut s: &Stream,
+                 now: &http::Now): Result[bool] {
+    var sink = false
+    if st.done { return ok(true) }
+    if !st.latched {
+        let action = h(req, now)
+        st.action = actionCode(&action)
+        st.latched = true
+        let _ = try latchBody(st, s)
+        if st.action == ACT_ECHO {
+            let b = try beginResponse(s, 200)
+            if !b { return ok(false) }
+            st.started = true
+        } else if st.action != ACT_NONE {
+            let okStart = try startSimple(st, s)
+            if !okStart { return ok(false) }
+        }
+    }
+    if st.action == ACT_NONE { st.done = true; return ok(true) }
+    if st.action == ACT_ECHO {
+        var rounds = 0
+        while rounds < 8 {
+            if st.pendingPos < len(st.pending) {
+                let left = len(st.pending) - st.pendingPos
+                let chunk = new []byte(left)
+                for i in 0..left { chunk[i] = st.pending[st.pendingPos + i] }
+                let n = try writeBody(s, &chunk, 0, left)
+                if n == 0 { return ok(false) }
+                st.pendingPos += n
+                st.echoed += n
+                if st.echoed > s.maxBody {
+                    sink = try reset(s, 8)
+                    st.done = true
+                    return ok(true)
+                }
+                rounds += 1
+                continue
+            }
+            let got = try readBody(s, s.readChunk, now)
+            match got {
+                BodyData {
+                    let n = len(got.bytes)
+                    let copy = new []byte(n)
+                    for i in 0..n { copy[i] = got.bytes[i] }
+                    st.pending = copy
+                    st.pendingPos = 0
+                    rounds += 1
+                    continue
+                }
+                BodyNeedRead { return ok(false) }
+                BodyEnd {
+                    let ended = try endResponse(s)
+                    if !ended { return ok(false) }
+                    st.responseFinished = true
+                    st.done = true
+                    return ok(true)
+                }
+            }
+        }
+        return ok(true)
+    }
+    if st.action == ACT_HEAD || st.action == ACT_NOCONTENT ||
+       st.action == ACT_NOTMODIFIED {
+        let fin = try finishSimple(&st, s, now)
+        return ok(fin)
+    }
+    if st.bodyPos < len(st.body) {
+        var take = len(st.body) - st.bodyPos
+        if st.action == ACT_SLOW && take > 10 { take = 10 }
+        let chunk = new []byte(take)
+        for i in 0..take { chunk[i] = st.body[st.bodyPos + i] }
+        let n = try writeBody(s, &chunk, 0, take)
+        if n == 0 { return ok(false) }
+        st.bodyPos += n
+        return ok(true)
+    }
+    let fin = try finishSimple(&st, s, now)
+    return ok(fin)
+}

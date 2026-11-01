@@ -1,0 +1,250 @@
+// Experimental shared HTTP vocabulary (H2a).
+//
+// Status: experimental, unstable. This module contains only pure types and
+// pure functions: headers, request metadata, the closed action set, the
+// handler function type and the shared failure family. It performs no I/O and
+// imports no native or systems module except the clock value types.
+//
+// The handler seam is deliberately pure:
+//
+//     Handler = fn(&RequestMeta, &Now): Action
+//
+// obo 0.14 has no impure interface-member or function-value tier, so a handler
+// cannot itself read a body or write a response. The concrete HTTP/1.1 and
+// HTTP/2 connection/stream functions perform the bounded I/O, exactly as H1b
+// records. There is no Exchange or Transport interface here.
+module httpapi
+
+import "sysclock.obx" as clock
+
+pub type Now = ref record {
+    pub mono: clock::Instant
+    pub wall: clock::Timestamp
+}
+
+pub type ProtocolKind = closed {
+    ProtocolHttp11 {}
+    ProtocolHttp2 {}
+}
+
+pub type Header = ref record {
+    pub name: string
+    pub value: string
+}
+
+pub type RequestMeta = ref record {
+    pub protocol: ProtocolKind
+    pub streamID: int
+    pub method: string
+    pub target: string
+    pub path: string
+    pub query: string
+    pub scheme: string
+    pub authority: string
+    pub versionMajor: int
+    pub versionMinor: int
+    pub headers: []Header
+    pub secure: bool
+    pub hasBody: bool
+    pub hasContentLength: bool
+    pub contentLength: int
+}
+
+pub type CommonLimits = ref record {
+    pub maxBody: int
+    pub maxResponseBuffer: int
+    pub maxReadChunk: int
+    pub maxHeaderListBytes: int
+    pub maxHeaderCount: int
+}
+
+// Failure kinds are shared with the HTTP/2 C shim's numeric codes and with
+// HTTP/1.1's category mapping. `text` is diagnostic only.
+pub type Failure = closed {
+    InvalidArgument {}
+    Range {}
+    InvalidResource {}
+    Closed {}
+    NotReady {}
+    InvalidState {}
+    BadPreface {}
+    BadFrame {}
+    FrameSize {}
+    ProtocolFailure {}
+    Compression {}
+    HeaderList {}
+    ContinuationFlood {}
+    Flood {}
+    Refused {}
+    StreamClosed {}
+    Reset {}
+    Goaway {}
+    FlowControl {}
+    SettingsTimeout {}
+    Timeout {}
+    ResourceLimit {}
+    Busy {}
+    Unsupported {}
+    Internal {}
+    TransportFailure { sysCode: int }
+    TlsFailure { tlsCode: int }
+}
+
+pub type Action = closed {
+    Hello {}
+    Echo {}
+    Chunked {}
+    Head {}
+    NoContent {}
+    NotModified {}
+    Big {}
+    Slow {}
+    Stop {}
+    Close {}
+}
+
+pub type Handler = fn(&RequestMeta, &Now): Action
+
+pub type BodyRead = closed {
+    BodyData { bytes: []byte }
+    BodyEnd {}
+    BodyNeedRead {}
+}
+
+pub const FAIL_INVALID_ARGUMENT = 1
+pub const FAIL_RANGE = 2
+pub const FAIL_INVALID_RESOURCE = 3
+pub const FAIL_CLOSED = 4
+pub const FAIL_NOT_READY = 5
+pub const FAIL_INVALID_STATE = 6
+pub const FAIL_BAD_PREFACE = 7
+pub const FAIL_BAD_FRAME = 8
+pub const FAIL_FRAME_SIZE = 9
+pub const FAIL_PROTOCOL = 10
+pub const FAIL_COMPRESSION = 11
+pub const FAIL_HEADER_LIST = 12
+pub const FAIL_CONTINUATION = 13
+pub const FAIL_FLOOD = 14
+pub const FAIL_REFUSED = 15
+pub const FAIL_STREAM_CLOSED = 16
+pub const FAIL_RESET = 17
+pub const FAIL_GOAWAY = 18
+pub const FAIL_FLOW_CONTROL = 19
+pub const FAIL_SETTINGS_TIMEOUT = 20
+pub const FAIL_TIMEOUT = 21
+pub const FAIL_RESOURCE_LIMIT = 22
+pub const FAIL_BUSY = 23
+pub const FAIL_UNSUPPORTED = 24
+pub const FAIL_INTERNAL = 25
+
+const FAIL_SHIFT = 16777216
+
+pub fn code(kind: int, payload: int): int {
+    return kind * FAIL_SHIFT + payload
+}
+
+pub fn kind(code: int): int {
+    return code / FAIL_SHIFT
+}
+
+pub fn failure(code: int): Failure {
+    let k = kind(code)
+    if k == FAIL_INVALID_ARGUMENT { return new InvalidArgument{} }
+    if k == FAIL_RANGE { return new Range{} }
+    if k == FAIL_INVALID_RESOURCE { return new InvalidResource{} }
+    if k == FAIL_CLOSED { return new Closed{} }
+    if k == FAIL_NOT_READY { return new NotReady{} }
+    if k == FAIL_INVALID_STATE { return new InvalidState{} }
+    if k == FAIL_BAD_PREFACE { return new BadPreface{} }
+    if k == FAIL_BAD_FRAME { return new BadFrame{} }
+    if k == FAIL_FRAME_SIZE { return new FrameSize{} }
+    if k == FAIL_PROTOCOL { return new ProtocolFailure{} }
+    if k == FAIL_COMPRESSION { return new Compression{} }
+    if k == FAIL_HEADER_LIST { return new HeaderList{} }
+    if k == FAIL_CONTINUATION { return new ContinuationFlood{} }
+    if k == FAIL_FLOOD { return new Flood{} }
+    if k == FAIL_REFUSED { return new Refused{} }
+    if k == FAIL_STREAM_CLOSED { return new StreamClosed{} }
+    if k == FAIL_RESET { return new Reset{} }
+    if k == FAIL_GOAWAY { return new Goaway{} }
+    if k == FAIL_FLOW_CONTROL { return new FlowControl{} }
+    if k == FAIL_SETTINGS_TIMEOUT { return new SettingsTimeout{} }
+    if k == FAIL_TIMEOUT { return new Timeout{} }
+    if k == FAIL_RESOURCE_LIMIT { return new ResourceLimit{} }
+    if k == FAIL_BUSY { return new Busy{} }
+    if k == FAIL_UNSUPPORTED { return new Unsupported{} }
+    return new Internal{}
+}
+
+pub fn text(code: int): string {
+    let k = kind(code)
+    if k == FAIL_INVALID_ARGUMENT { return "invalid argument" }
+    if k == FAIL_RANGE { return "range" }
+    if k == FAIL_INVALID_RESOURCE { return "invalid resource" }
+    if k == FAIL_CLOSED { return "closed" }
+    if k == FAIL_NOT_READY { return "not ready" }
+    if k == FAIL_INVALID_STATE { return "invalid state" }
+    if k == FAIL_BAD_PREFACE { return "bad client preface" }
+    if k == FAIL_BAD_FRAME { return "bad frame" }
+    if k == FAIL_FRAME_SIZE { return "frame size" }
+    if k == FAIL_PROTOCOL { return "protocol failure" }
+    if k == FAIL_COMPRESSION { return "header compression" }
+    if k == FAIL_HEADER_LIST { return "header list" }
+    if k == FAIL_CONTINUATION { return "continuation flood" }
+    if k == FAIL_FLOOD { return "flood" }
+    if k == FAIL_REFUSED { return "refused" }
+    if k == FAIL_STREAM_CLOSED { return "stream closed" }
+    if k == FAIL_RESET { return "reset" }
+    if k == FAIL_GOAWAY { return "goaway" }
+    if k == FAIL_FLOW_CONTROL { return "flow control" }
+    if k == FAIL_SETTINGS_TIMEOUT { return "settings timeout" }
+    if k == FAIL_TIMEOUT { return "timeout" }
+    if k == FAIL_RESOURCE_LIMIT { return "resource limit" }
+    if k == FAIL_BUSY { return "busy" }
+    if k == FAIL_UNSUPPORTED { return "unsupported" }
+    return "internal"
+}
+
+pub fn emptyRequestMeta(): RequestMeta {
+    return new RequestMeta{
+        protocol: new ProtocolHttp2{}
+        streamID: 0
+        method: ""
+        target: ""
+        path: ""
+        query: ""
+        scheme: ""
+        authority: ""
+        versionMajor: 2
+        versionMinor: 0
+        headers: new []Header(0)
+        secure: false
+        hasBody: false
+        hasContentLength: false
+        contentLength: 0
+    }
+}
+
+pub fn copyHeader(h: &Header): Header {
+    return new Header{name: h.name, value: h.value}
+}
+
+pub fn copyHeaders(headers: &[]Header): []Header {
+    let out = new []Header(0)
+    for i in 0..len(headers) {
+        let h = headers[i]
+        append(out, new Header{name: h.name, value: h.value})
+    }
+    return out
+}
+
+pub fn commonLimits(maxBody: int, maxResponseBuffer: int, maxReadChunk: int,
+                    maxHeaderListBytes: int, maxHeaderCount: int): CommonLimits {
+    return new CommonLimits{
+        maxBody: maxBody
+        maxResponseBuffer: maxResponseBuffer
+        maxReadChunk: maxReadChunk
+        maxHeaderListBytes: maxHeaderListBytes
+        maxHeaderCount: maxHeaderCount
+    }
+}
