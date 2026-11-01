@@ -1,0 +1,11 @@
+module lib
+
+// A cross-module decimal function type. The alias is written to lib.sym, and the
+// importer passes non-capturing and capturing lambdas across the module boundary.
+pub type DecFn = fn(decimal): decimal
+pub type DecResultFn = fn(decimal): Result[decimal]
+
+pub fn apply(d: decimal, f: DecFn): decimal { return f(d) }
+pub fn applyR(d: decimal, f: DecResultFn): Result[decimal] { return f(d) }
+pub fn zero(f: fn(): decimal): decimal { return f() }
+pub fn scale(d: decimal): decimal { return d * 2.0 }

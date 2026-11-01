@@ -148,6 +148,135 @@ MUTANTS = [
     ("check request writes scale over precision",
      "    let sd = newItem(\"mem\", tInt)\n    sd.base = scratchBase()\n    sd.disp = at + 8\n    store(sd, sv)",
      "    let sd = newItem(\"mem\", tInt)\n    sd.base = scratchBase()\n    sd.disp = at\n    store(sd, sv)"),
+    # D4b: decimal function values, lambda frame and captures. Each is caught by
+    # run/decimal_fnvalues.obx or run/decimal_captures.obx.
+    ("capture store copies only w0",
+     "        if caps[i].kind == 4 {\n            let v = localItem(co, tDecimal)\n            copyDecimalToBase(v, RBP, base + off)",
+     "        if caps[i].kind == 4 {\n            let v = localItem(co, tDecimal)\n            let r = alloc()\n            opMem(0x8B, r, memOf(v), true, false)\n            opMem(0x89, r, mem(RBP, -1, base + off, 8), true, false)\n            release(r)"),
+    ("capture load copies only w0",
+     "                for w in 0..3 {\n                    let rv = alloc()\n                    opMem(0x8B, rv, mem(er, -1, off + 8 * w, 8), true, false)",
+     "                for w in 0..1 {\n                    let rv = alloc()\n                    opMem(0x8B, rv, mem(er, -1, off + 8 * w, 8), true, false)"),
+    ("decimal capture slot is 8 bytes",
+     'fn capSlotAt(caps: &[]LambdaCap, i: int): int {\n    if caps[i].kind == 4 { return 24 }',
+     'fn capSlotAt(caps: &[]LambdaCap, i: int): int {\n    if caps[i].kind == 4 { return 8 }'),
+    ("capture offset is 8 + 8*i",
+     "fn capOff(caps: &[]LambdaCap, i: int): int {\n    var off = 8\n    for j in 0..i { off += capSlotAt(caps, j) }\n    return off\n}",
+     "fn capOff(caps: &[]LambdaCap, i: int): int {\n    return 8 + 8 * i\n}"),
+    ("lambda env read has no decimal +8",
+     '        if ret.kind == "decimal" { envOff += 8 }\n',
+     '        // mutant: no decimal +8\n'),
+    ("lambda env read always adds 8",
+     '        if ret.kind == "decimal" { envOff += 8 }\n',
+     '        envOff += 8\n'),
+    ("lambda env read adds 8 for Result[decimal]",
+     '        if ret.kind == "decimal" { envOff += 8 }\n',
+     '        if ret.kind == "decimal" || ret.kind == "result" { envOff += 8 }\n'),
+    ("decimal return destination is one word low",
+     "            opMem(0x8B, dp, mem(RBP, -1, 16 + visibleTypeParamsBytes(f.fnRec.params), 8), true, false)",
+     "            opMem(0x8B, dp, mem(RBP, -1, 16 + visibleTypeParamsBytes(f.fnRec.params) - 8, 8), true, false)"),
+    ("value call total omits the cell",
+     "    if iface || fnval { total += 8 }\n",
+     "    if iface { total += 8 }\n"),
+    ("synthetic fncall return loses decimal",
+     '    let decRet = f.ret.kind == "decimal"\n',
+     '    let decRet = f.ret.kind == "decimal" && f.kind != "fncall"\n'),
+    ("synthetic fncall frees handles",
+     "    let f = handle(sa[0])\n    for i in 0..fnArity(t) {",
+     "    let f = handle(sa[0])\n    f.freesAll = true\n    f.writesHandles = true\n    for i in 0..fnArity(t) {"),
+]
+
+# Observationally equivalent mutants: planted, built and run like the rest, but a passing
+# verdict counts as `equiv`, not `missed`. The key is the mutant name and the value is the
+# reason.
+EQUIVALENT = {
+    "capture snapshot taken by address":
+        "observationally equivalent under v1: no &decimal, call-argument-only captures, and "
+        "cell/local share the creating call's lifetime, so no program can change d between the "
+        "snapshot and the load",
+}
+
+# Mutants whose behaviour needs more than one replacement. Each entry is
+# (name, [(old, new), ...]); every pattern must occur exactly once.
+MULTI_MUTANTS = [
+    ("push the destination before the function cell (old order)", [
+        # cut the cell push from above the destination
+        ("    if fnval {\n"
+         "        if recv == nil { error(\"internal error: a function value call without a cell\") }\n"
+         "        if recv != nil {\n"
+         "            let e = copyItem(recv)\n"
+         "            if e.mode == \"const\" && fits32(e.val) {\n"
+         "                pushI(e.val)\n"
+         "                depth += 8\n"
+         "                drop(e)\n"
+         "            } else {\n"
+         "                let er = asReg(e)\n"
+         "                pushR(er.r)\n"
+         "                release(er.r)\n"
+         "            }\n"
+         "        }\n"
+         "    }\n"
+         "    if decRet && !iface {\n",
+         "    if decRet && !iface {\n"),
+        # and put it below the destination, restoring the old broken order
+        ("        pushR(dr)\n"
+         "        release(dr)\n"
+         "    }\n"
+         "    var argBinds = new []^RefBind(0)\n",
+         "        pushR(dr)\n"
+         "        release(dr)\n"
+         "    }\n"
+         "    if fnval {\n"
+         "        if recv == nil { error(\"internal error: a function value call without a cell\") }\n"
+         "        if recv != nil {\n"
+         "            let e = copyItem(recv)\n"
+         "            if e.mode == \"const\" && fits32(e.val) {\n"
+         "                pushI(e.val)\n"
+         "                depth += 8\n"
+         "                drop(e)\n"
+         "            } else {\n"
+         "                let er = asReg(e)\n"
+         "                pushR(er.r)\n"
+         "                release(er.r)\n"
+         "            }\n"
+         "        }\n"
+         "    }\n"
+         "    var argBinds = new []^RefBind(0)\n"),
+    ]),
+    ("capture snapshot taken by address", [
+        # construction: store &d (one word) instead of copying the 24 value bytes
+        ("        if caps[i].kind == 4 {\n"
+         "            let v = localItem(co, tDecimal)\n"
+         "            copyDecimalToBase(v, RBP, base + off)\n",
+         "        if caps[i].kind == 4 {\n"
+         "            let v = localItem(co, tDecimal)\n"
+         "            let p = decPtr(v)\n"
+         "            opMem(0x89, p.r, mem(RBP, -1, base + off, 8), true, false)\n"
+         "            release(p.r)\n"),
+        # body: load the pointer, then the 24 value bytes through it
+        ("                for w in 0..3 {\n"
+         "                    let rv = alloc()\n"
+         "                    opMem(0x8B, rv, mem(er, -1, off + 8 * w, 8), true, false)\n",
+         "                let ap = alloc()\n"
+         "                opMem(0x8B, ap, mem(er, -1, off, 8), true, false)\n"
+         "                for w in 0..3 {\n"
+         "                    let rv = alloc()\n"
+         "                    opMem(0x8B, rv, mem(ap, -1, 8 * w, 8), true, false)\n"),
+        ("                }\n"
+         "            } else {\n"
+         "                frame += 8\n"
+         "                let s = newSym(\"let\", cname, ctyp)\n"
+         "                s.storage = \"local\"\n"
+         "                s.offset = -frame\n"
+         "                if ckind == 1 {\n",
+         "                }\n"
+         "                release(ap)\n"
+         "            } else {\n"
+         "                frame += 8\n"
+         "                let s = newSym(\"let\", cname, ctyp)\n"
+         "                s.storage = \"local\"\n"
+         "                s.offset = -frame\n"
+         "                if ckind == 1 {\n"),
+    ]),
 ]
 
 # Runtime, core-include and entry-table mutants are built in a private runtime
@@ -566,7 +695,7 @@ def main():
     verbose = '-v' in sys.argv[1:]
     text = open(SRC).read()
     tmp = tempfile.mkdtemp(prefix='obo-mut-decimal-')
-    caught = missed = broken = 0
+    caught = equiv = missed = broken = 0
     try:
         # The unmutated baseline must pass the same judge path; otherwise a
         # broken expectation would make every mutant look caught.
@@ -595,6 +724,37 @@ def main():
             if not run_suite(exe, FORK, tmp, verbose, runtime_dir=os.path.join(FORK, 'runtime')):
                 caught += 1
                 print(f"caught  {name}")
+            else:
+                missed += 1
+                print(f"MISSED  {name}")
+        for name, edits in MULTI_MUTANTS:
+            src_text = text
+            okpat = True
+            for old, new in edits:
+                n = src_text.count(old)
+                if n != 1:
+                    print(f"BROKEN  {name}: pattern occurs {n} times, want 1")
+                    broken += 1
+                    okpat = False
+                    break
+                src_text = src_text.replace(old, new)
+            if not okpat:
+                continue
+            src = os.path.join(tmp, 'src.obo')
+            exe = os.path.join(tmp, 'obo-eq')
+            open(src, 'w').write(src_text)
+            p = subprocess.run([SEED, src, '-o', exe, '--rt', FORK],
+                               capture_output=True, text=True, timeout=180)
+            if p.returncode != 0:
+                print(f"BROKEN  {name}: mutant did not compile: {p.stderr.strip()[:140]}")
+                broken += 1
+                continue
+            if not run_suite(exe, FORK, tmp, verbose, runtime_dir=os.path.join(FORK, 'runtime')):
+                caught += 1
+                print(f"caught  {name}")
+            elif name in EQUIVALENT:
+                equiv += 1
+                print(f"equiv   {name}: {EQUIVALENT[name]}")
             else:
                 missed += 1
                 print(f"MISSED  {name}")
@@ -666,9 +826,10 @@ def main():
                 print(f"MISSED  {name}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    total = (len(MUTANTS) + len(DGLOBAL_MUTANTS) + len(ARRAY_MUTANTS) + len(RUNTIME_MUTANTS) + len(RUNTIME_ARRAY_MUTANTS)
+    total = (len(MUTANTS) + len(DGLOBAL_MUTANTS) + len(ARRAY_MUTANTS) + len(MULTI_MUTANTS)
+             + len(RUNTIME_MUTANTS) + len(RUNTIME_ARRAY_MUTANTS)
              + len(ENTRY_MUTANTS) + len(SYM_MUTANTS))
-    print(f"\n{caught} caught, {missed} missed, {broken} broken (of {total})")
+    print(f"\n{caught} caught, {equiv} equiv, {missed} missed, {broken} broken (of {total})")
     return 1 if missed or broken else 0
 
 

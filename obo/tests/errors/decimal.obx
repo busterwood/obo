@@ -49,23 +49,6 @@ fn main() {}
 fn f(mut d: decimal) {}  // error: mut needs a reference parameter: write mut name: &T
 fn main() {}
 
-// === decimal capture is refused
-fn apply(f: fn(int): int): int { return f(1) }
-fn main() {
-    let d = 1.0
-    println(apply(fn [d](x: int): int { return x }))  // error: cannot capture decimal 'd': decimals have no capture mode in v1
-}
-
-// === decimal lambda parameter is refused
-fn main() { let f = fn (d: decimal): int { return 1 } }  // error: decimal lambda parameters are not supported in v1
-
-// === decimal lambda return is refused
-fn main() { let f = fn (x: int): decimal { return 1.0 } }  // error: decimal lambda returns are not supported in v1
-
-// === decimal function values are refused
-fn use(f: fn(decimal): int): int { return 1 }  // error: decimal function values are not supported in v1
-fn main() {}
-
 // === int %= is not supported
 fn main() { var x = 3; x %= 2 }  // error: '%=' is only supported for decimal values
 

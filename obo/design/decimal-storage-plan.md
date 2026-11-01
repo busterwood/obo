@@ -1,7 +1,7 @@
 # Decimal storage tier: plan
 
 **Date:** 2026-11-01
-**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented and released as `0.18`/format 11/ABI 1 (merged as `e47a8c8`, seed `769a359`, 757,761 bytes, sha256 `ca513536…`, fixed point); it also fixes the interface vtable offset and the `recordParamFree` index mapping. The APPROVE WITH NITS review is closed (fail-closed mapping, faithful refusal mutant, higher-index pfree tests, refreshed references), and main's D5 library (`0138651`) is merged. D4b is next. D6 (the read-side database bridge) is implemented on branch `decimal-d6` from main `f4df244` and is pending independent review; it is library-only and changes no compiler, runtime, symbol format or seed.
+**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented and released as `0.18`/format 11/ABI 1 (merged as `e47a8c8`, seed `769a359`, 757,761 bytes, sha256 `ca513536…`, fixed point); it also fixes the interface vtable offset and the `recordParamFree` index mapping. The APPROVE WITH NITS review is closed (fail-closed mapping, faithful refusal mutant, higher-index pfree tests, refreshed references), and main's D5 library (`0138651`) is merged. D4b (decimal function values, lambda parameters/returns and captures) is implemented on the `decimal-d4b` branch as `0.19`/format 12/ABI 1 with measured gates in `FORK.md`; it is pending this merge and is released as `0.19`/format 12/ABI 1, with the seed not promoted here. D6 (the read-side `DecimalOrNull`/`getDecimal` database bridge) is released (merge `4a32742`); it is library-only and changes no compiler, runtime, symbol format or seed. No decimal stage remains.
 **Baseline:** `main` `6f83880` (obo `0.15`, `SYM_FORMAT=8`, `SYM_ABI=1`, after cinterop v2 stage d).
 **Branch/worktree:** `decimal-storage` at `.claude/worktrees/decimal-storage`.
 **Target:** one release, `0.16` / `SYM_FORMAT=9` / `SYM_ABI=1`, merged once with one seed promotion (done; see Status).
@@ -197,19 +197,27 @@ The `SYM_FORMAT` 8 → 9 and `OBO_VERSION` 0.16 bump lands here, with the first
   `tests/modules/run/decimal_iface/`, and the `sym/decimal_methods_ifaces` and
   `sym/decimal_pfree` cases in `tests/sym_test.py`.
 
-### D4b — function values, lambdas and captures (write the layout first)
+### D4b — function values, lambdas and captures
 
-Before any code, the D4b agent writes the frame layout into this note for
-review. Function values push the cell at `callFnWith` (`obo.obo:7199-7213`),
-after the hidden destination pointer (`obo.obo:7183-7197`), and a
-decimal-returning callee reads that pointer at `16 +
-visibleTypeParamsBytes(params)` (`obo.obo:12626`), so the cell sits where the
-callee reads its destination pointer. "Identical to direct calls" can't hold.
-Define where the destination pointer and cell live for a call through a
-function value. Change the lambda environment read `16 + 8*(n-1)`
-(`obo.obo:13258`) to a byte offset. Captures are 8 bytes each (classified at
-`obo.obo:10237-10250`, with the decimal refusal at 10221) and are loaded per
-word (`obo.obo:13258-13274`). A decimal capture needs a 24-byte slot.
+**Status: implemented on the `decimal-d4b` branch (0.19/format 12/ABI 1),
+pending this merge, then released as `0.19`/format 12/ABI 1; gates green, seed
+not promoted.** The frame layout, capture layout, `.sym` decision,
+refusals, tests/mutants and implementation order are in
+[decimal-d4b-layout.md](decimal-d4b-layout.md). The layout note remains revision
+2 (approved with nits); the branch has four code commits (`2db55b2`,
+`050580b`, `87ba52e`, `4f3136b`) plus docs.
+
+The blocker is recorded here for the review history. Function values push the
+cell at `callFnWith` (`obo.obo:7199-7213`), after the hidden destination pointer
+(`obo.obo:7182-7196`), and a decimal-returning callee reads that pointer at
+`16 + visibleTypeParamsBytes(params)` (`obo.obo:12626`), so the cell sits where
+the callee reads its destination pointer. "Identical to direct calls" cannot
+hold with that order. **Decision:** push the cell *before* the destination, so
+the destination stays at `16 + A` and the cell sits above it at `24 + A`; the
+lambda environment pseudo-parameter is removed from `FnRec.params` and read at
+`16 + A` (or `24 + A` for a decimal return); a decimal capture is a 24-byte
+value snapshot at a byte offset; and `.sym` moves to format 12 / `0.19` while
+`SYM_ABI` stays 1. Direct, method and interface calls are unchanged.
 
 The original D4 bullets below apply across D4a and D4b.
 
@@ -217,19 +225,22 @@ The original D4 bullets below apply across D4a and D4b.
   pointer for returns. A decimal is never a receiver.
 - Interface members: decimal parameters and returns through the vtable call,
   with the hidden destination pointer pushed in the same place as for direct
-  calls. D4a closed this bullet and removed the old internal error; the remaining
-  function-value guard is `decRet && fnval` in `callFnWith` (`obo.obo:7172`).
+  calls. D4a closed this bullet; D4b's layout removes the remaining
+  `decRet && fnval` guard in `callFnWith` (`obo.obo:7172`).
 - Function types and non-capturing lambdas: `fn(decimal): decimal` with
   call-through-pointer. Keep the destination-pointer convention identical to
-  direct calls, so one function can be both called and used as a value.
+  direct calls, so a callee body has one layout whether entered directly or
+  through a cell. Named function values themselves remain out of scope; the
+  layout note's §2.1 records the ABI point.
 - Stage B captures: a decimal is captured by a **24-byte value snapshot**, like
   the float one-word snapshot (`LANGUAGE.md` §5d). `mut`/`move` captures stay
   unsupported.
 - `.sym`: function, method and interface signatures with decimal parameters and
   returns.
 - Tests: each form direct and cross-module, a lambda passed to a sort or
-  accumulator, a capture snapshot that doesn't see later changes, and
-  interface dispatch over two implementations.
+  accumulator, a capture snapshot (the layout note's §4.5 explains what is
+  observable under the second-class rules), and interface dispatch over two
+  implementations.
 
 ### D5 — `lib/decimals.obx` (no compiler change)
 
@@ -253,8 +264,8 @@ units) is milestone M4 and is **not** in this branch.
 
 ### D6 — database bridge
 
-**Status:** implemented on branch `decimal-d6` (cut from main `f4df244`,
-obo 0.18/format 11); library-only, pending independent review. The read side
+**Status:** released (merge `4a32742`, from main `f4df244`, obo 0.18/format 11);
+library-only. The read side
 adds `DecimalOrNull { Null {}; Value { v: decimal } }` and
 `getDecimal(rows, row, col)` to the PostgreSQL, SQLite and SQL Server adapters
 (SQLite takes `(&Stmt, col)` because its rows are a streaming statement). NULL
@@ -279,9 +290,11 @@ change:
 
 ### Ordering
 
-D1 (with the format bump), D2, D3, D4a, D4b. Then D5 (needs D2's `[]decimal`)
-and D6 (needs D1's variant fields). D5 and D6 are not compiler work and may run
-in parallel with each other after D2.
+D1 (with the format bump), D2, D3, D4a, D4b, D5 and D6 are complete: D1–D3 are
+released as `0.16`/format 9/ABI 1, D4a as `0.18`/format 11/ABI 1, D4b is
+implemented on the `decimal-d4b` branch and released as `0.19`/format 12/ABI 1,
+D5 is the library-only 0.17-line addition and D6 is released (merge `4a32742`).
+No decimal stage remains.
 
 ### Files every compiler stage also updates
 

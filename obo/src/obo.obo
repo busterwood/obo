@@ -115,13 +115,14 @@ const T_FOREIGN = 73            // type X = foreign "C": a D2 reserved word
 // numeric floats, 0.11 is Stage B capture lists, 0.12 is the decimal integration,
 // 0.13 is private-by-default record fields, 0.14 adds the decimal text API,
 // 0.15 adds compiler-known sql/html template literals, 0.16 is decimal storage,
-// 0.17 adds the impure interface-member tier and 0.18 adds decimal method and
-// interface signatures.
+// 0.17 adds the impure interface-member tier, 0.18 adds decimal method and
+// interface signatures, and 0.19 adds decimal function values, lambda
+// parameters/returns and decimal captures.
 // Bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect
 // change.
-const OBO_VERSION = "0.18"
-const SYM_FORMAT = 11
+const OBO_VERSION = "0.19"
+const SYM_FORMAT = 12
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -5786,7 +5787,6 @@ fn parseType(): ^Type {
             }
             let p = parseType()
             if mode == 1 && !isOwned(p) { error("only records, closed types and arrays can be borrowed, not " + tname(p)) }
-            if p.kind == "decimal" { error("decimal function values are not supported in v1") }
             rejectIfaceFn(p)
             fnAddParam(t, p, mode)
             if sym != T_RPAREN {
@@ -5799,7 +5799,6 @@ fn parseType(): ^Type {
             next()
             let r = parseType()
             rejectFn(r, "a function type cannot return a function value")
-            if r.kind == "decimal" { error("decimal function values are not supported in v1") }
             rejectIfaceFn(r)
             t.base = r
         }
@@ -7169,7 +7168,6 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     var total = visibleTypeParamsBytes(f.fnRec.params)
     if iface || fnval { total += 8 }
     let decRet = f.ret.kind == "decimal"
-    if decRet && fnval { error("internal error: a decimal-returning function value is not supported") }
     if decRet { total += 8 }
     let pad = (depth + total) % 16
     if pad != 0 {
@@ -7186,16 +7184,12 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
         retDisp = ds.disp
         retSlotBase = ds.base
         retSlotDisp = ds.disp
-        // An interface call pushes the vtable above this pointer and the object below it, so it is pushed
-        // in the i == 0 branch (pushIfaceReceiver). A direct call pushes it before parameter 0.
-        if !iface {
-            let dr = alloc()
-            opMem(0x8D, dr, memOf(ds), true, false)
-            pushR(dr)
-            release(dr)
-        }
     }
     expect(T_LPAREN, "")
+    // The function-value cell is pushed before the hidden destination, so the
+    // destination stays at 16 + A (A = the visible parameters' bytes) and the
+    // cell sits above it at 24 + A. A non-capturing lambda ignores the cell; a
+    // capturing lambda reads its environment there.
     if fnval {
         if recv == nil { error("internal error: a function value call without a cell") }
         if recv != nil {
@@ -7210,6 +7204,14 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
                 release(er.r)
             }
         }
+    }
+    if decRet && !iface {
+        // An interface call pushes the vtable above this pointer and the object below it, so it is pushed
+        // in the i == 0 branch (pushIfaceReceiver). A direct call pushes it before parameter 0.
+        let dr = alloc()
+        opMem(0x8D, dr, mem(retBase, -1, retDisp, 8), true, false)
+        pushR(dr)
+        release(dr)
     }
     var argBinds = new []^RefBind(0)
     let argModes = new []int(0)
@@ -10103,6 +10105,21 @@ fn tryExpr(): Item
 fn lambdaBody(f: ^Sym, ret: ^Type, params: &[]Param, caps: &[]LambdaCap)
 fn lambdaExpr(): Item
 
+// The byte size of one capture slot in the environment cell: a decimal is a
+// 24-byte value snapshot, every other capture kind is one word.
+fn capSlotAt(caps: &[]LambdaCap, i: int): int {
+    if caps[i].kind == 4 { return 24 }
+    return 8
+}
+
+// The byte offset of capture i in the environment cell: the code cell is one
+// word, then each earlier capture's slot at its own size.
+fn capOff(caps: &[]LambdaCap, i: int): int {
+    var off = 8
+    for j in 0..i { off += capSlotAt(caps, j) }
+    return off
+}
+
 // Lambda parameters: the same groups as a function's, without mut, with the lambda-specific diagnostic.
 fn lambdaParams(mut params: &[]Param) {
     while sym != T_RPAREN {
@@ -10118,7 +10135,6 @@ fn lambdaParams(mut params: &[]Param) {
         expect(T_COLON, "")
         let t = parseRefType()
         let mode = refMode
-        if t.kind == "decimal" { error("decimal lambda parameters are not supported in v1") }
         rejectIfaceFn(t)
         for n in names { append(params, new Param{name: n, typ: t, mode: mode}) }
         if sym != T_RPAREN {
@@ -10170,7 +10186,6 @@ fn lambdaExpr(): Item {
         next()
         ret = parseType()
     }
-    if ret.kind == "decimal" { error("decimal lambda returns are not supported in v1") }
     rejectFn(ret, "a function cannot return a function value; function values are parameters and locals only")
     for p in params { rejectIfaceFn(p.typ) }
     rejectIfaceFn(ret)
@@ -10217,9 +10232,6 @@ fn lambdaExpr(): Item {
             }
             let ct = symType(su)
             if ct.kind == "handle" { deadHandleCheck(su) }
-            if ct.kind == "decimal" {
-                error("cannot capture decimal '" + cn + "': decimals have no capture mode in v1; pass it as a parameter")
-            }
             if ct.kind == "string" {
                 error("cannot capture '" + cn + "': strings are owned; pass it as a parameter")
             }
@@ -10238,6 +10250,9 @@ fn lambdaExpr(): Item {
             if ct.kind == "int" || ct.kind == "byte" || ct.kind == "bool" || ct.kind == "float" {
                 // float is one raw binary64 word, so a scalar snapshot is the same one-word copy as int.
                 ck = 0
+            } else if ct.kind == "decimal" {
+                // a decimal capture is a 24-byte value snapshot in the environment cell
+                ck = 4
             } else if ct.kind == "handle" {
                 ck = 2
             } else if ct.kind == "fn" {
@@ -10260,7 +10275,6 @@ fn lambdaExpr(): Item {
     f.line = hline
     f.addr = entry
     let hp = new []Param(0)
-    append(hp, new Param{name: "a lambda's environment", typ: tInt, mode: 1})
     for p in params { append(hp, new Param{name: p.name, typ: p.typ, mode: p.mode}) }
     for p in hp {
         append(f.fnRec.params, p.typ)
@@ -10516,9 +10530,12 @@ fn lambdaExpr(): Item {
         foldEnd = -1
         return makeConst(ft, cell)
     }
-    // The capturing cell lives in the creating function's frame: [code][cap0]...[capN]. It contains
+    // The capturing cell lives in the creating function's frame: [code][cap0]...[capN], where a
+    // decimal capture is a 24-byte value snapshot and every other capture is one word. It contains
     // no owned value, so it is plain frame words and nothing frees it.
-    frame += 8 * (1 + len(caps))
+    var cellBytes = 8
+    for i in 0..len(caps) { cellBytes += capSlotAt(caps, i) }
+    frame += cellBytes
     let base = -frame
     let cw = alloc()
     movRI(cw, CODE_BASE + f.addr)
@@ -10526,9 +10543,15 @@ fn lambdaExpr(): Item {
     release(cw)
     for i in 0..len(caps) {
         let co = caps[i].outer
-        let v = load(localItem(co, symType(co)))
-        opMem(0x89, v.r, mem(RBP, -1, base + 8 + 8 * i, 8), true, false)
-        release(v.r)
+        let off = capOff(caps, i)
+        if caps[i].kind == 4 {
+            let v = localItem(co, tDecimal)
+            copyDecimalToBase(v, RBP, base + off)
+        } else {
+            let v = load(localItem(co, symType(co)))
+            opMem(0x89, v.r, mem(RBP, -1, base + off, 8), true, false)
+            release(v.r)
+        }
     }
     lastFnBind = captureBind(&caps)
     let cellReg = alloc()
@@ -11422,7 +11445,7 @@ fn assignmentOrCall(): bool {
             let xs = x.sym
             if xs == nil {
                 errorAt("strings are immutable", line, col)
-            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool" || symType(xs).kind == "float") {
+            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool" || symType(xs).kind == "float" || symType(xs).kind == "decimal") {
                 errorAt("cannot change captured '" + qualifiedSymName(xs) + "': captures are read-only; pass a mutable parameter instead", line, col)
             } else {
                 errorAt("'" + qualifiedSymName(xs) + "' is immutable (declared with let)", line, col)
@@ -13255,25 +13278,45 @@ fn lambdaBody(f: ^Sym, ret: ^Type, params: &[]Param, caps: &[]LambdaCap) {
     // reference local; scalars, handles and function values are plain let locals.
     if len(caps) > 0 {
         let er = alloc()
-        opMem(0x8B, er, mem(RBP, -1, 16 + 8 * (n - 1), 8), true, false)
+        var envOff = 16 + visibleParamBytes(params)
+        if ret.kind == "decimal" { envOff += 8 }
+        opMem(0x8B, er, mem(RBP, -1, envOff, 8), true, false)
+        var off = 8
         for i in 0..len(caps) {
             let cname = caps[i].name
             let ctyp = caps[i].typ
             let ckind = caps[i].kind
-            frame += 8
-            let s = newSym("let", cname, ctyp)
-            s.storage = "local"
-            s.offset = -frame
-            if ckind == 1 {
-                s.isRef = true
-                s.bind = singleBind(s, false, "", false, nil)
+            if ckind == 4 {
+                // a decimal capture is a real 24-byte local: a snapshot of the environment slot
+                frame += 24
+                let s = newSym("let", cname, ctyp)
+                s.storage = "local"
+                s.offset = -frame
+                declare(s)
+                append(captureSyms, s)
+                for w in 0..3 {
+                    let rv = alloc()
+                    opMem(0x8B, rv, mem(er, -1, off + 8 * w, 8), true, false)
+                    opMem(0x89, rv, mem(RBP, -1, s.offset + 8 * w, 8), true, false)
+                    release(rv)
+                }
+            } else {
+                frame += 8
+                let s = newSym("let", cname, ctyp)
+                s.storage = "local"
+                s.offset = -frame
+                if ckind == 1 {
+                    s.isRef = true
+                    s.bind = singleBind(s, false, "", false, nil)
+                }
+                declare(s)
+                append(captureSyms, s)
+                let rv = alloc()
+                opMem(0x8B, rv, mem(er, -1, off, 8), true, false)
+                opMem(0x89, rv, mem(RBP, -1, s.offset, 8), true, false)
+                release(rv)
             }
-            declare(s)
-            append(captureSyms, s)
-            let rv = alloc()
-            opMem(0x8B, rv, mem(er, -1, 8 + 8 * i, 8), true, false)
-            opMem(0x89, rv, mem(RBP, -1, s.offset, 8), true, false)
-            release(rv)
+            off += capSlotAt(caps, i)
         }
         release(er)
     }

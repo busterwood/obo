@@ -1,0 +1,38 @@
+// Decimal function values and captures (stage D4b) stay fail-closed where the v1 rules
+// still exclude them: a decimal cannot be borrowed inside a function type, a function type
+// cannot return a function value, a function value cannot take an interface value, captures
+// are read-only, and a captured decimal is a let local.
+
+// === a decimal cannot be borrowed in a function type
+fn use(f: fn(&decimal): decimal) {}  // error: only records, closed types and arrays can be borrowed, not decimal
+fn main() {}
+
+// === a function type cannot return a function value
+fn use(f: fn(decimal): fn(int): int) {}  // error: a function type cannot return a function value
+fn main() {}
+
+// === a function value cannot take an interface value
+type I = interface { fn get(): decimal }
+fn use(f: fn(I): decimal) {}  // error: a function value cannot take or return an interface value
+fn main() {}
+
+// === a decimal capture cannot be memory-managed
+fn apply(d: decimal, f: fn(decimal): decimal): decimal { return f(d) }
+fn main() {
+    let d = 1.0
+    println(apply(0.0, fn [mut d](x: decimal): decimal { return d }))  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
+}
+
+// === a decimal capture cannot be moved
+fn apply(d: decimal, f: fn(decimal): decimal): decimal { return f(d) }
+fn main() {
+    let d = 1.0
+    println(apply(0.0, fn [move d](x: decimal): decimal { return d }))  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
+}
+
+// === a captured decimal is read-only
+fn apply(d: decimal, f: fn(decimal): decimal): decimal { return f(d) }
+fn main() {
+    var d = 1.0
+    println(apply(0.0, fn [d](x: decimal): decimal { d = 2.0; return d }))  // error: cannot change captured 'd': captures are read-only; pass a mutable parameter instead
+}

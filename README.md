@@ -19,9 +19,11 @@ measurements.
 
 ## Current state (1 November 2026)
 
-The released compiler is **obo 0.18, symbol format 11, ABI 1** (757,761 bytes,
-sha256 `ca513536…`), with decimal method and interface-member parameters and
-returns, impure interface members, decimal record fields, `[]decimal` arrays,
+The compiler on the `decimal-d4b` branch is **obo 0.19, symbol format 12, ABI 1**
+(757,761 bytes, sha256 `8327ca50…`), adding decimal function values, lambda
+parameters/returns and 24-byte decimal capture snapshots. It also carries decimal
+method and interface-member parameters and returns, impure interface members,
+decimal record fields, `[]decimal` arrays,
 decimal globals and literal constants, compiler-known `sql`/`html` template
 literals, the decimal text API, private-by-default record fields, exact 24-byte
 decimals, Stage B capture lists, the HTML escaping library and the configurable
@@ -29,22 +31,24 @@ heap runtime. The experimental cinterop v2 line adds `foreign` handles,
 generated `_out` records and a leak census in its own packages (libpq, SQLite,
 PostgreSQL and SQL Server via ODBC); it is a trusted-build probe with no threads
 and no stable API. The runtime cleanup removed the disabled collector and `gc`
-builtins. `seed/obo` is the promoted **0.18** image (same size and hash). The
+builtins. `seed/obo` remains the promoted **0.18** image (757,761 bytes,
+`ca513536…`), which built this 0.19 image once; it is not promoted here. The
 immediate pre-0.18 seed was the 757,761-byte 0.17 image (sha256 `29ffadc8…`,
-promoted at `e0b9686`); it built this 0.18 image once, and the 0.18 image reaches
-a fixed point. The 0.15 seeds built the 0.16 line. Floats were released at
+promoted at `e0b9686`), which built the 0.18 image once. The 0.15 seeds built
+the 0.16 line. Floats were released at
 `0.10`/format 6; Stage B is `0.11`/format 6; decimal is `0.12`/format 6;
 private-by-default fields are `0.13`/format 7; the decimal text API is
 `0.14`/format 7; templates are `0.15`/format 8; decimal storage (fields, arrays,
 globals and constants) is `0.16`/format 9; impure interface members are
-`0.17`/format 10; decimal methods and interface members are `0.18`/format 11.
-The 0.18 compiler reads format 11 only: formats 6, 7, 8, 9 and 10 are rejected,
+`0.17`/format 10; decimal methods and interface members are `0.18`/format 11;
+decimal function values, lambdas and captures are `0.19`/format 12.
+The 0.19 compiler reads format 12 only: formats 6, 7, 8, 9, 10 and 11 are rejected,
 so rebuild old `.sym` files.
 Version policy: additive builtin/runtime extensions use patch releases such as
 the historical 0.8.1; floats are 0.10, Stage B is 0.11, decimal is 0.12,
 field visibility is 0.13, decimal text is 0.14, templates are 0.15, decimal
-storage is 0.16, impure interface members are 0.17 and decimal methods and
-interface members are 0.18.
+storage is 0.16, impure interface members are 0.17, decimal methods and
+interface members are 0.18 and decimal function values and captures are 0.19.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
@@ -73,8 +77,9 @@ interface members are 0.18.
   `Result[decimal]`, in every member tier; an interface call loads its vtable by
   the explicit argument byte count rather than `8*n`, and `recordParamFree`
   maps a parameter offset to its index by parameter size. The HTML escaping
-  library is in `obo/lib/html.obx`. Interface handles `^I`, decimal function
-  values and captures (D4b) and the database read bridge (D6) are later. An
+  library is in `obo/lib/html.obx`. Interface handles `^I`, named function
+  values and stored closures are later; D4b is implemented at `0.19`/format 12/
+  ABI 1, and the database read bridge D6 is released. An
   experimental cinterop v2 boundary adds
   `foreign` handles, owned and borrowed C pointers, body-less `native fn`
   declarations, generated `_out` records and a leak census for its own libpq,
@@ -137,19 +142,19 @@ interface members are 0.18.
 
 | Current metric | Value |
 |---|---:|
-| Compiler source | 17,190 lines, 657,807 bytes |
-| Compiler (`--version`) | 757,761 bytes, sha256 `ca513536…`, `obo 0.18`, sym-format 11, abi 1 |
-| Seed (`--version`) | promoted obo 0.18: 757,761 bytes, sha256 `ca513536…`, sym-format 11, abi 1; the immediate pre-0.18 seed is the 757,761-byte 0.17 image (`29ffadc8…`, `e0b9686`), which built this image once; earlier seeds build the 0.16 line |
-| Self-host fixed point | stage 2 == stage 3 == compiler, 757,761 bytes, `ca513536…`; the promoted 0.18 seed reproduces it |
-| Self-compile wall time | 0.252 s one stage (5 runs, median; range 0.2473-0.2549 s) and 0.500 s for the two-stage seed → stage 2 → stage 3 build; host-dependent, measured on the 0.16 line on 1 November 2026, and carried unchanged because 0.17 and 0.18 changed checks and decimal dispatch, not non-decimal codegen |
-| Self-compile live peak | 2,587,584 bytes direct (`heap_test`); 2,587,600 bytes port comparison (budget 2,750,000) |
-| Total allocated | 57,908,272 bytes direct; 57,909,584 bytes port comparison |
+| Compiler source | 17,233 lines, 659,375 bytes |
+| Compiler (`--version`) | 757,761 bytes, sha256 `8327ca50…`, `obo 0.19`, sym-format 12, abi 1 |
+| Seed (`--version`) | promoted obo 0.18: 757,761 bytes, sha256 `ca513536…`, sym-format 11, abi 1; it built the 0.19 image once but is not promoted on this branch; the immediate pre-0.18 seed is the 757,761-byte 0.17 image (`29ffadc8…`, `e0b9686`) |
+| Self-host fixed point | stage 2 == stage 3 == compiler, 757,761 bytes, `8327ca50…`; the promoted 0.18 seed built this image once |
+| Self-compile wall time | 0.252 s one stage (5 runs, median; range 0.2473-0.2549 s) and 0.500 s for the two-stage seed → stage 2 → stage 3 build; host-dependent, measured on the 0.16 line on 1 November 2026, and carried unchanged because 0.17-0.19 changed checks, frames and decimal dispatch, not non-decimal codegen |
+| Self-compile live peak | 2,590,496 bytes direct (`heap_test`); 2,590,480 bytes port comparison (budget 2,750,000) |
+| Total allocated | 58,005,840 bytes direct; 58,009,088 bytes port comparison |
 | Maximum resident set | 5,092 KB (measured on the 0.16 line on 1 November 2026, carried) |
-| Live-memory budget | 2,750,000 bytes: 162,416 spare direct / 162,400 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 53,984 on 0.18) |
-| obo suite | 1,878 `run_fork` tests; 150 `module_test`; `sym_test.py` 58/58; `sym_fuzz.py` 200/200; `port_test` 640/640 with 10 encoder groups; `port_compare` 1,854/1,854 default; seed comparisons 1,651/1,651 against the promoted 0.18 seed; 75 doc examples; 31/31 import checks; 24/24 stdlib roots |
+| Live-memory budget | 2,750,000 bytes: 159,504 spare direct / 159,520 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 53,984 on 0.18) |
+| obo suite | 1,884 `run_fork` tests; 151 `module_test`; `sym_test.py` 59/59; `sym_fuzz.py` 200/200; `port_test` 643/643 with 10 encoder groups; `port_compare` 1,859/1,859 default; seed comparisons 1,647/1,647 against the promoted 0.18 seed; 76 doc examples; 31/31 import checks; 24/24 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
-| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.18) is 1,651/1,651; that flat count omits the 203 non-flat checks the default comparison adds — 192 module-tree cases (including the new 0.18 `decimal_iface` tree), 4 CLI, 5 special, 1 re-emit and 1 `modules/tokens` — so the default (self) comparison is 1,854/1,854 |
-| Mutation gates | `mutate_fork` 727/757 caught + 30 equivalent, 0 missed/stale/broken (catalog 757, including the decimal D4a mutants); `mutate_port` 540/540 caught, 0 missed/stale/broken; `mutate_meta` 71/82 caught + 11 equivalent, 0 missed/stale/broken (runtime/entry.S 50/52 + 2 equivalent; compiler 21/30 + 9 equivalent); `mutate_decimal` 105/105 with an explicit baseline; `mutate_io` 36/36, 0 equivalent, 0 missed/stale/broken (including the self-host memory oracle, empty-array delta 53,984 bytes). The 0.18 catalog is green: the fork catalog grows to 757, its equivalents fall from 31 to 30 because the S4 receiver-load-order catalog-equivalent is now caught (recorded in `obo/FORK.md`), the meta 11 are unchanged, and no pattern is stale or broken |
+| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.18) is 1,647/1,647; that flat count omits 212 more checks the default comparison adds (the module trees including the new 0.19 `decimal_fnvalue` tree, CLI, special, re-emit and `modules/tokens` cases, and the 0.19-only source cases the seed's version skips), so the default (self) comparison is 1,859/1,859 |
+| Mutation gates | `mutate_fork` 727/757 caught + 30 equivalent, 0 missed/stale/broken (catalog 757, including the decimal D4a/D4b mutants; five patterns that named the old frame/capture code were repointed); `mutate_port` 540/540 caught, 0 missed/stale/broken; `mutate_meta` 71/82 caught + 11 equivalent, 0 missed/stale/broken (runtime/entry.S 50/52 + 2 equivalent; compiler 21/30 + 9 equivalent); `mutate_decimal` 117/118 caught + 1 equivalent (`capture snapshot taken by address`), 0 missed/stale/broken, with an explicit baseline; `mutate_io` 36/36, 0 equivalent, 0 missed/stale/broken (including the self-host memory oracle, empty-array delta 53,984 bytes). The 0.19 catalog is green: the fork catalog stays at 757, its 30 equivalents are unchanged (the S4 receiver-load-order catalog-equivalent is still caught), the meta 11 are unchanged, and no pattern is stale or broken |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 94,209; wc 98,305; sort 122,881; head 94,209; tail 106,497 bytes (static, runtime included) |
 | eza E2 differential gate | own-binary gate: 482 passed, 0 failed, 72 live-only skips; pinned reference eza is not on the host `PATH` |
@@ -158,17 +163,18 @@ interface members are 0.18.
 | Minimal static executable | 81,921 bytes (runtime included; a page-rounded `module mini; fn main() {}` binary) |
 
 The compiler budget is 2,750,000 bytes live (raised from 2,500,000 on 1 November 2026), with the separate 30,000-byte
-empty-array oracle unchanged. The 0.18 line peaks at 2,587,584 bytes in direct self-compiles and
-2,587,600 in the port comparison: 162,416 and 162,400 bytes spare. Total
-allocation is 57,908,272 bytes direct and 57,909,584 bytes in the port
+empty-array oracle unchanged. The 0.19 line peaks at 2,590,496 bytes in direct self-compiles and
+2,590,480 in the port comparison: 159,504 and 159,520 bytes spare. Total
+allocation is 58,005,840 bytes direct and 58,009,088 bytes in the port
 comparison. No memory check was weakened. The live peak varies by a few hundred
 bytes with the source path and total allocation by about 1.3 KB. The historical
 lambda release budget remains 2,000,000 in its own record. The 0.15 line peaked
 at 2,519,296 bytes direct (historical); the decimal storage tier raised the peak
 without raising the cap again, 0.17 interface-member checking added 3,152 bytes,
-and 0.18 decimal method/interface codegen added 1,328 bytes. The 0.15 runtime
-cleanup is also historical (main `b61f189`); `seed/obo` is now the matching 0.18
-image promoted at `769a359`.
+0.18 decimal method/interface codegen added 1,328 bytes, and 0.19 function-value
+and capture codegen added 2,912 bytes. The 0.15 runtime
+cleanup is also historical (main `b61f189`); `seed/obo` remains the 0.18 image
+promoted at `769a359`.
 
 ### Template literals 0.15 (released)
 
@@ -252,18 +258,39 @@ character, reserved bits 40..63 of the third word, a sign other than 0/1, a zero
 with sign 1 or a nonzero exponent, and a coefficient above `10^38-1`; a
 source-less `--check` builds the value from those bytes alone.
 
-**Still to come.** D4a, decimal method and interface-member parameters and
+**Status.** D4a, decimal method and interface-member parameters and
 returns (including the interface vtable offset and the `pfree` mask fixes), was
-released as `0.18`/format 11 and is described above; D4b is decimal function
-values, lambdas and 24-byte capture snapshots. D5, the
+released as `0.18`/format 11 and is described above; D4b, decimal function
+values, lambdas and 24-byte capture snapshots, is implemented on the
+`decimal-d4b` branch as `0.19`/format 12 and described below. D5, the
 `lib/decimals.obx` module (`floor`/`ceil`/`trunc`/`round`/`roundAway`, `abs`/
 `neg`/`sign`/`isZero`/`cmp`/`min`/`max`, `sum`, largest-remainder `allocate` and
 `allocateWeighted`, and `formatGrouped`), is released with the 0.17 line as a
-library-only addition; it changes no compiler, runtime, format or seed. D6 is the database read bridge: a
-`DecimalOrNull` closed type and `getDecimal` in each adapter; writes already
-travel losslessly as `DecimalText`, and there is no `SqlArg.Decimal` or
-`decimal(p,s)` in this tier. `string(decimal)` stays a compile error; use
-`decimal::format`.
+library-only addition; it changes no compiler, runtime, format or seed. D6, the
+database read bridge (`DecimalOrNull` and `getDecimal` in each adapter), is
+released (merge `4a32742`); writes already travel losslessly as `DecimalText`,
+and there is no `SqlArg.Decimal` or `decimal(p,s)` in this tier. The remaining
+decimal work is none; `^I`, named function values and stored closures remain
+later. `string(decimal)` stays a compile error; use `decimal::format`.
+
+### Decimal function values, lambdas and captures 0.19 (this branch)
+
+D4b makes a decimal a function-type parameter and return, a lambda parameter and
+return, and a capturing lambda's value. It is `0.19`/format 12/ABI 1; the seed
+remains 0.18 and is not promoted here. A decimal-returning value call pushes the
+function cell **above** the hidden destination, so the callee keeps reading the
+destination at `16 + visible parameter bytes` (`A`) on every call kind and the
+cell sits at `24 + A` (at `16 + A` for a non-decimal or `Result[decimal]`
+return, which is one word). The lambda environment pseudo-parameter is gone from
+both the local parameter list and `FnRec.params`; the body reads the cell at
+`16 + A`, plus 8 for a decimal return. A captured decimal is a 24-byte snapshot
+of its three value words in the cell `[code][capture...]`, at byte offset
+`8 + the earlier slot sizes`; every other slot is 8 bytes. A capture is taken
+when the literal is evaluated, so a later write to the outer local does not
+change it. `mut`/`move` captures, `&decimal`, named function values, stored
+closures and `string(decimal)` remain out of scope. Cross-module `DecFn` aliases
+and `apply` functions round-trip through `.sym`, and a format-11 file is rejected
+before its body is read.
 
 ### Impure interface members 0.17 (previous release)
 
@@ -316,9 +343,9 @@ interface. One constraint: an impure member cannot be called through an
 interface stored in a record or a global, so the server must keep the handler in
 a local or pass it as an `&I` parameter, not in a `Server` field or a global; I2
 changes `experimental/http1server` and its design note, not the compiler. Async
-libpq and a deferred response follow after I2. D4b/D6 decimal work and `^I`
-remain later (D4a is released as 0.18, and D5 as the library-only
-`lib/decimals.obx`).
+libpq and a deferred response follow after I2. `^I` remains later (D4a is
+released as 0.18, D4b is implemented as 0.19 on the `decimal-d4b` branch, D5 as
+the library-only `lib/decimals.obx`, and D6 is released).
 
 ### Decimal methods and interface members 0.18 (released)
 
@@ -360,13 +387,14 @@ format 11 only and rejects 6–10 before reading the body
 because the vtable shape, descriptors, argument stride and return protocol do
 not move.
 
-**Still to come.** D4b adds decimal function values, non-capturing lambdas with
+**Status.** D4b adds decimal function values, non-capturing lambdas with
 decimal signatures and 24-byte Stage B capture snapshots; it must define the
 destination-pointer and cell layout for a call through a function value first.
-D6 remains the database read bridge (`DecimalOrNull` and `getDecimal` in each
-adapter); writes already travel losslessly as `DecimalText`. D5 is the
-already-released library-only `lib/decimals.obx`. No part of D4b or D6 is
-claimed here.
+D4b is implemented as `0.19`/format 12/ABI 1 on the `decimal-d4b` branch. D6,
+the database read bridge (`DecimalOrNull` and `getDecimal` in each adapter), is
+released (merge `4a32742`); writes already travel losslessly as `DecimalText`.
+D5 is the already-released library-only `lib/decimals.obx`. No part of D4b is
+claimed as merged here.
 
 ### Field visibility 0.13
 
@@ -531,8 +559,10 @@ scalar tier is `0.12`/format 6, the decimal storage tier (fields, arrays,
 globals and constants) is `0.16`/format 9/ABI 1, impure interface members are
 `0.17`/format 10/ABI 1, and decimal methods and interface members are
 `0.18`/format 11/ABI 1, with the seed at 0.18. D4b (decimal function values,
-lambdas and captures) is next, then D6 (the database read bridge); I2 follows
-after that. `^I` remains later work; its phase 2a design is in
+lambdas and captures) is implemented at `0.19`/format 12/ABI 1 on the
+`decimal-d4b` branch; D6 (the database read bridge) is released, so the
+remaining decimal work is none. `^I`, named function values and stored closures
+remain later, and I2 follows. `^I` remains later work; its phase 2a design is in
 [obo/design/interface-handles-design.md](obo/design/interface-handles-design.md). The
 lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md).
 
@@ -543,8 +573,8 @@ lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md)
 | Lambdas Stage B | merged, promoted and pushed at 0.11/format 6/ABI 1; `^I` follows Stage B |
 | Decimal scalar tier | released at 0.12/format 6/ABI 1 |
 | Decimal storage: fields, arrays, globals, constants | released at 0.16/format 9/ABI 1 |
-| Decimal methods and interface members (D4a) | released at 0.18/format 11/ABI 1; next is D4b: decimal function values, non-capturing lambdas with decimal signatures and 24-byte capture snapshots, then D6: the database read bridge (`DecimalOrNull`/`getDecimal`); `lib/decimals.obx` (D5) is released on the 0.17 line (library only, no version or format change) |
-| Impure interface members | released at 0.17/format 10/ABI 1; I2 follows D4b and D6: an `http1server` interface handler and data-carrying response, with the handler in a local or `&I` parameter, not a `Server` field or global; async libpq and a deferred response after that |
+| Decimal methods and interface members (D4a) | released at 0.18/format 11/ABI 1; D4b (decimal function values, non-capturing lambdas with decimal signatures and 24-byte capture snapshots) is implemented at 0.19/format 12/ABI 1; D6 (the database read bridge, `DecimalOrNull`/`getDecimal`) is released, and the remaining decimal work is none; `lib/decimals.obx` (D5) is released on the 0.17 line (library only, no version or format change) |
+| Impure interface members | released at 0.17/format 10/ABI 1; I2 follows D4b: an `http1server` interface handler and data-carrying response, with the handler in a local or `&I` parameter, not a `Server` field or global; async libpq and a deferred response after that |
 | cinterop v2 | experimental stages (a)–(h) merged: `foreign` handles, out records, leak census and the libpq/SQLite/PostgreSQL packages, plus a SQL Server ODBC adapter in `db/mssql`; not a stable API, no threads |
 | Systems library | `obo/experimental/sys`: P0/P1a/P1b/P2/P2q and P3 merged (P1b the practical-filesystem slice; P3 spawn/exec, pipes, reaping, signals, cwd and terminal); threads design-only, P2C compression a separate optional adapter |
 | Peephole/optimizer audit | evidence-gated |
@@ -683,7 +713,7 @@ cd obo && python3 tests/tools.py --memory              # the four pinned tool me
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.18 sym-format 11 abi 1 (the promoted 0.18 seed is the same image)
+cd obo && ./obo --version                # obo 0.19 sym-format 12 abi 1 (the promoted 0.18 seed built this image once)
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 

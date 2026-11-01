@@ -243,8 +243,11 @@ methods and interface members work (0.18): a decimal is a method parameter and
 return value, including `Result[decimal]`, and a decimal-returning method is called
 directly or through an interface's vtable. A decimal is never a receiver, and a
 decimal member can be `pure`, plain, `mut` or `impure` like any other. Decimal
-captures and decimal function values (a function type with a decimal parameter or
-return) are not implemented yet and are refused with a clear diagnostic. `?decimal`
+function values and non-capturing lambdas work (0.19): a function type may take
+and return a decimal, a decimal-returning value call keeps the hidden
+destination at `16 + visible parameter bytes` and puts the value cell above it,
+and a captured decimal is a 24-byte value snapshot. `mut`/`move` captures,
+`&decimal`, stored closures and named function values remain out of scope. `?decimal`
 is not representable; there is no raw-bits access and no owned or mutable decimal.
 
 ```obo
@@ -1105,7 +1108,8 @@ of its own kind with fields or identity. Interfaces arrived in `0.8`; additive
 builtin/runtime extensions use patch releases such as the historical `0.8.1`.
 Lambdas are `0.9`, numeric floats are `0.10`/format 6, Stage B capture lists are
 `0.11`/format 6, the impure member tier is `0.17`/format 10, decimal members are
-`0.18`/format 11, and handles to interfaces (`^I`) are a later phase.
+`0.18`/format 11, decimal function values and captures are `0.19`/format 12,
+and handles to interfaces (`^I`) are a later phase.
 
 ### Declarations and implementations
 
@@ -1326,14 +1330,17 @@ type Item = ref record { n: int }
 type Cmp = fn(int, int): int
 type Pred = fn(&Item): bool
 type Mapping = fn(fn(int): int): int
+type DecFn = fn(decimal): decimal
 fn main() { println(0) }
 ```
 
 Function types are allowed as function/method/lambda **parameter** types, local `let`/`var`
-variable types (with an initializer) and type aliases. They are not allowed as returns,
-fields, globals, constants, array/optional/handle/`Result` components, references, interface
-members or receivers. An interface inside a function type is refused, including through a
-record or closed-type field.
+variable types (with an initializer) and type aliases. A decimal parameter or return is
+allowed (`fn(decimal): decimal`, `fn(): decimal`); a `&decimal` is refused because a decimal
+cannot be borrowed. They are not allowed as returns, fields, globals, constants,
+array/optional/handle/`Result` components, references, interface members or receivers. An
+interface inside a function type is refused, including through a record or closed-type
+field.
 
 A **non-capturing lambda literal** is `fn (Params) [: Ret] { Body }`. It has no name and no
 capture list. The body is an ordinary function body and must return a value on every path when
@@ -1382,7 +1389,12 @@ fn main() {
 
 The value representation is one word: a pointer to an immutable cell whose word 0 is the code
 address. A call passes that cell as a hidden environment argument before the visible arguments,
-then dispatches indirectly through the cell. The environment is not a source name: a user
+then dispatches indirectly through the cell. For a decimal-returning value call the cell is
+pushed **first**, then the hidden decimal destination, so the callee keeps reading its
+destination at `16 + visible parameter bytes` exactly as on a direct call and the cell sits
+above it at `24 + visible parameter bytes` (a `Result[decimal]` return is one word, not a
+decimal return, so its cell is at `16 + visible parameter bytes`). A direct, method or
+interface call has no cell. The environment is not a source name: a user
 global, local or parameter called `env` remains an ordinary name. The runtime and array ABI are
 unchanged.
 
@@ -1397,8 +1409,8 @@ result is the caller's ordinary result. Purity here is the existing compiler pre
 referential-purity guarantee; ref-counted string writes follow their existing rules.
 
 A lambda body cannot use an enclosing local or parameter by implicit capture. A referenced
-outer local produces the capture-list diagnostic; capture lists themselves are a Stage B
-feature and are not accepted by this compiler. A lambda cannot appear in a `while` condition,
+outer local produces the capture-list diagnostic; capture lists are the Stage B feature
+described in section 5d. A lambda cannot appear in a `while` condition,
 a `defer` body, a global/constant initializer, or outside a function. A bare lambda is not a
 statement and cannot be invoked directly.
 
@@ -1422,14 +1434,14 @@ fn main() {
 
 Stored function values, owned or mutable captures, string/interface captures and impure
 callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
-interface handles `^I` remain later. The released compiler is
-`0.15`/format 8/ABI 1 (template literals); the promoted `0.14` seed built it
-once, and the historical `0.13` seed built the 0.14 image. The released `0.11`
+interface handles `^I` remain later. The compiler on this branch is
+`0.19`/format 12/ABI 1 (decimal function values and captures); the promoted `0.18` seed
+built it once, and the historical `0.15` seed built the 0.16 image. The released `0.11`
 seed (`01fa9ed3…`) also builds the older line. The historical `0.9` seed
 (`540,673` bytes, sha256 `3d369273…`) built the 0.10 compiler, and the historical `0.8` seed
 (`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
 
-## 5d. Capturing lambdas (Stage B, 0.11/format 6/ABI 1)
+## 5d. Capturing lambdas (Stage B, 0.11/format 6/ABI 1; decimal captures 0.19/format 12)
 
 A capturing lambda writes an explicit capture list: `fn [a, b](Params) [: Ret] { Body }`.
 Each name must resolve to a local or parameter of the immediately enclosing function; an
@@ -1439,7 +1451,10 @@ There is no `mut` or `move` capture syntax.
 
 A scalar `int`/`byte`/`bool`/`float` is captured by **value snapshot**. A float snapshot is
 its one raw binary64 word, exactly as stored in a local, parameter or field; no conversion,
-rounding or host-float path is involved. A record, closed type, array, optional or `Result`
+rounding or host-float path is involved. A **decimal** is captured by a 24-byte value
+snapshot: all three value words (coefficient, exponent, display scale and sign) are copied
+when the literal is evaluated, so a later write to the outer local cannot change the cell.
+A record, closed type, array, optional or `Result`
 is captured as a **read-only borrow of the whole local**. A `&T` reference copies its
 read-only binding; a `^T` handle copies its token (a tracked `let` handle also holds its
 origin owner); a function value copies its cell pointer. Float aliases and float parameters
@@ -1457,7 +1472,7 @@ The body may read fields/elements, narrow an optional with `if x != nil`, narrow
 or `Result` payload in an arm, match a closed type or a `Result` non-consumingly, and call
 read-only methods. It may not write, move, drop, take, replace, truncate or append the
 captured owned value, point a captured reference elsewhere, or call a `mut` method through
-it; a captured scalar write is
+it; a captured scalar or decimal write is
 `cannot change captured 'x': captures are read-only; pass a mutable parameter instead`.
 
 ```obo
@@ -1467,6 +1482,16 @@ fn apply(x: int, f: fn(int): int): int { return f(x) }
 fn main() {
     let n = 7
     println(apply(1, fn [n](x: int): int { return x + n }))
+}
+```
+
+```obo
+// example: runs
+// prints 3.75
+fn apply(d: decimal, f: fn(decimal): decimal): decimal { return f(d) }
+fn main() {
+    let n = 2.5
+    println(apply(1.25, fn [n](x: decimal): decimal { return x + n }))
 }
 ```
 
@@ -1488,11 +1513,15 @@ initializer. The callee may keep it in a local/parameter, copy it, forward it in
 chain, call it, or put it in a `defer`; it cannot store it beyond the call or return it. The
 creator's frame cell is plain stack memory: no heap allocation, no destructor, no escape.
 
-The hidden environment is **one read-only parameter**, a pointer to
+The hidden environment is **one read-only word**, a pointer to
 `[code][cap0]...[capN]` in the creator's frame; it is not one hidden parameter per capture and
-it is not a source name (a user `env` is ordinary). The one-word value ABI, symbol format 6
-and ABI 1 are unchanged: capture lists add grammar and a frame cell, not a new calling
-convention.
+it is not a source name (a user `env` is ordinary). The visible parameter list is the only
+parameter list: the callee reads the cell at `16 + visible parameter bytes`, plus 8 when it
+returns a decimal (the destination sits below the cell). Each capture slot is 8 bytes except a
+decimal capture, which is 24; the byte offset of capture `i` is `8 + the sizes of the earlier
+slots`, not `8*i`, and the cell size is `8 + the sum of the slot sizes`. The decimal value ABI
+is unchanged (24-byte parameters and a hidden destination), symbol format 12 and ABI 1 apply:
+capture lists add grammar and a frame cell, not a new calling convention.
 
 The creating call holds the capture binding across later arguments exactly like a read-only
 reference argument. A later argument that moves/frees the captured root is refused; a `mut`
@@ -1725,9 +1754,10 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.18 sym-format 11 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.19 sym-format 12 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
-when a `.sym` is read. The historical `0.17` release printed
+when a `.sym` is read. The historical `0.18` release printed
+`obo 0.18 sym-format 11 abi 1`, the `0.17` release printed
 `obo 0.17 sym-format 10 abi 1`, the `0.16` release printed
 `obo 0.16 sym-format 9 abi 1`, the `0.15` release printed
 `obo 0.15 sym-format 8 abi 1`, and the `0.14` release printed
@@ -1743,9 +1773,9 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 11
+obosym 12
 abi 1
-compiler "0.18"
+compiler "0.19"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -1766,6 +1796,7 @@ fn (p0: &Builder) length(): int
 fn (mut p0: &Builder) reset() pfree 0x1 pf 0 "=/items" frees 1 strings::scratch
 impl Sized for Builder
 fn split(p0: string, p1: string): []string
+fn apply(p0: decimal, p1: fn(decimal): decimal): decimal
 ```
 
 - The first word is the single identifier `obosym` (not `obo-sym`), then the
@@ -2821,7 +2852,9 @@ depend on the program.
 
 Decimal is the released minimum scalar tier at 0.12; record fields, `[]decimal`,
 globals and constants followed in 0.16, and methods and interface members in 0.18:
-no decimal lambdas/captures or function values; no
+decimal function values, lambda parameters/returns and captures followed in 0.19 (a
+capture is a 24-byte value snapshot; named function values, stored closures,
+`&decimal` and `mut`/`move` captures remain out of scope). No
 `format`/`parse` stdlib, database adapter, `decimal(p,s)` syntax, float interop
 or owned/mut decimal. Display scale is independent metadata, and a multiply
 caps the propagated display scale at the 38-digit rule without changing the
@@ -2843,8 +2876,8 @@ type-enforced provenance check; direct `new Html{...}` is private to module
 renders `$n`/`?`/`@pN`/`:n`; the experimental PostgreSQL and SQLite packages
 provide the binding bridge, while SQL Server and Oracle adapters and
 `SqlArg.Float` binding (`SQL_ARG_FLOAT_UNSUPPORTED`, 1014) are later work.
-`DecimalText` is the lossless decimal transport. The released compiler is
-`0.15`/format 8/ABI 1; `seed/obo` is the matching 0.15 image.
+`DecimalText` is the lossless decimal transport. The compiler on this branch is
+`0.19`/format 12/ABI 1; `seed/obo` remains the promoted 0.18 image.
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target
