@@ -48,7 +48,6 @@ SIG_MODES = ('header', 'declarations-only')
 # and its calls carry no descriptor. Any other binding uses kinds: each entry names the obo argument it
 # reads as kind@k, and the call site passes the same list as a descriptor string (see nativeKindCall in
 # obo/src/obo.obo). The sidecar records the list, and the tool compares it with the spec.
-DATA_KIND_NAMES = ('i64', 'i32', 'u32', 'borrow_bytes', 'borrow_cstr', 'ints', 'nil_bytes_list')
 BYTES_KINDS = ('borrow_bytes', 'borrow_cstr')
 INT_LIMIT = (1 << 63) - 1
 # The C parameters each kind expands to (the sigcheck types and the thunk's arguments).
