@@ -346,9 +346,9 @@ def scalar(tmp):
     if 'fn add(p0: int, p1: int): int freesall writeshandles' not in sym:
         raise Fail("wrapper .sym is not conservatively freesall/writeshandles")
     relocs = open(os.path.join(out, 'native.relocs')).read().splitlines()
-    if not relocs or relocs[0] != 'cinterop-relocs 1':
-        raise Fail("native sidecar header is missing")
-    if not any(' add 2 i64,i64 i64 freesall,writeshandles' in ln for ln in relocs):
+    if not relocs or relocs[0] != 'cinterop-relocs 2':
+        raise Fail("native sidecar header is missing or not v2")
+    if not any(' add 2 call - i64 freesall,writeshandles' in ln for ln in relocs):
         raise Fail("native sidecar does not carry the checked add contract")
     elf = need(run(['readelf', '-hW', os.path.join(out, 'app')]), 'readelf -h')
     if 'EXEC' not in elf.stdout:
@@ -1580,7 +1580,7 @@ def kinds(tmp):
     if got != want:
         raise Fail("kinds main output mismatch:\n got  %r\n want %r" % (got, want))
     relocs = open(os.path.join(out, 'native.relocs')).read().splitlines()
-    if not any(' ints_sum 2 ints@0:i32,ints@0:len ' in ln for ln in relocs):
+    if not any(' ints_sum 2 call ints@0:i32,ints@0:len ' in ln for ln in relocs):
         raise Fail("kinds sidecar does not carry the ints_sum descriptor: %r" % relocs)
 
     # Exit 11 contracts (design D4): each trap happens before the C call.
@@ -1659,6 +1659,376 @@ def kinds(tmp):
             'takes no flag')
     print('kinds tests: ok')
 
+
+# Stage (b) return kinds and stage (c) typed native fn declarations. The wrapper declares each native
+# with its obo-side shape; the spec supplies the exact C kind and any C-only slots.
+RET_WRAPPER = """module retfix
+
+native fn rf_cb_empty(): ?[]byte
+native fn rf_cb_one(): ?[]byte
+native fn rf_cb_nul(): ?[]byte
+native fn rf_cb_null_pos(): ?[]byte
+native fn rf_cb_over(): ?[]byte
+native fn rf_cb_exact(): ?[]byte
+native fn rf_cb_many(a: &[]byte, b: &[]byte, x: int, y: int, z: int, w: int, v: int): ?[]byte
+native fn rf_cs_normal(): []byte
+native fn rf_cs_empty(): []byte
+native fn rf_cs_null(): []byte
+native fn rf_cs_tail(): []byte
+native fn rf_setv(v: int)
+native fn rf_u32max(): int
+native fn rf_lastv(): int
+native fn rf_nz_null(): int
+native fn rf_nz_ptr(): int
+native fn rf_add(a: int, b: int): int
+native fn rf_sum3(v: &[]int, bias: int): int
+native fn rf_nullconst(): int
+native fn rf_tagged(s: string): int
+
+pub fn cb_empty(): ?[]byte { return rf_cb_empty() }
+pub fn cb_one(): ?[]byte { return rf_cb_one() }
+pub fn cb_nul(): ?[]byte { return rf_cb_nul() }
+pub fn cb_null_pos(): ?[]byte { return rf_cb_null_pos() }
+pub fn cb_exact(): ?[]byte { return rf_cb_exact() }
+pub fn cb_many(a: &[]byte, b: &[]byte, x: int, y: int, z: int, w: int, v: int): ?[]byte {
+    return rf_cb_many(a, b, x, y, z, w, v)
+}
+pub fn cs_normal(): []byte { return rf_cs_normal() }
+pub fn cs_empty(): []byte { return rf_cs_empty() }
+pub fn cs_null(): []byte { return rf_cs_null() }
+pub fn cs_tail(): []byte { return rf_cs_tail() }
+pub fn setv(v: int) { rf_setv(v) }
+pub fn u32max(): int { return rf_u32max() }
+pub fn lastv(): int { return rf_lastv() }
+pub fn nz_null(): int { return rf_nz_null() }
+pub fn nz_ptr(): int { return rf_nz_ptr() }
+pub fn add(a: int, b: int): int { return rf_add(a, b) }
+pub fn sum3(v: &[]int, bias: int): int { return rf_sum3(v, bias) }
+pub fn nullconst(): int { return rf_nullconst() }
+pub fn tagged(s: string): int { return rf_tagged(s) }
+
+pub fn over(): Result[[]byte] {
+    let v = rf_cb_over()
+    if v == nil { return err("over cap", 2) }
+    return ok(v)
+}
+"""
+
+RET_APP = """module app
+
+import "retfix.obx"
+
+fn main() {
+    let e = retfix::cb_empty()
+    if e == nil { println("empty nil") } else { println("empty len ", len(e)) }
+    let o = retfix::cb_one()
+    if o == nil { println("one nil") } else { println("one ", len(o), " ", string(o)) }
+    let n = retfix::cb_nul()
+    if n == nil { println("nul nil") } else {
+        println("nul ", len(n), " ", int(n[0]), " ", int(n[1]), " ", int(n[2]))
+    }
+    let x = retfix::cb_exact()
+    if x == nil { println("exact nil") } else {
+        println("exact ", len(x), " ", int(x[0]), " ", int(x[1]), " ", int(x[2]), " ", int(x[3]))
+    }
+    var ma = new []byte(0)
+    var mb = new []byte(0)
+    let many = retfix::cb_many(&ma, &mb, 1, 2, 3, 4, 9)
+    if many == nil { println("many nil") } else { println("many ", len(many), " ", string(many)) }
+    let cn = retfix::cs_normal()
+    println("cs ", len(cn), " ", string(cn))
+    let ce = retfix::cs_empty()
+    println("cse ", len(ce))
+    let cx = retfix::cs_null()
+    println("csn ", len(cx))
+    let ct = retfix::cs_tail()
+    println("cst ", len(ct), " ", string(ct))
+    retfix::setv(42)
+    println("void ", retfix::lastv())
+    println("u32 ", retfix::u32max())
+    println("nz ", retfix::nz_null(), " ", retfix::nz_ptr())
+    println("add ", retfix::add(20, 22))
+    var v = new []int(0)
+    append(v, 1)
+    append(v, 2)
+    append(v, 3)
+    println("sum3 ", retfix::sum3(&v, 10))
+    println("nc ", retfix::nullconst())
+    println("tag ", retfix::tagged("hi"))
+    let ov = retfix::over()
+    match ov {
+        ok(b) { println("over ok ", len(b)) }
+        err(m, c) { println("over err ", m, " ", c) }
+    }
+}
+"""
+
+RET_WANT = [
+    'empty len 0', 'one 1 A', 'nul 3 97 0 98', 'exact 4 120 121 0 122',
+    'many 2 hi',
+    'cs 5 hello', 'cse 0', 'csn 0', 'cst 2 ok', 'void 42', 'u32 4294967295', 'nz 0 1',
+    'add 42', 'sum3 16', 'nc 5', 'tag 9', 'over err over cap 2',
+]
+
+
+def ret_func(name, ret, **extra):
+    e = {'name': name, 'symbol': name, 'args': [], 'ret': ret, 'effects': ['impure']}
+    e.update(extra)
+    return e
+
+
+def returns_spec():
+    cb = lambda n, cap=8: ret_func(n, 'cbytes', length=n + '_len', cap=cap,
+                                  ret_ctype='const char *')
+    return {
+        'format': 'cinterop-proto/2', 'module': 'retfix',
+        'platform': 'x86_64-linux-gnu', 'abi': 'sysv-amd64',
+        'signature_check': 'header',
+        'sources': ['return_fixture.c'], 'headers': ['return_fixture.h'],
+        'libs': [], 'cflags': [], 'wrapper': 'retfix_wrap.obx',
+        'functions': [
+            cb('rf_cb_empty'), cb('rf_cb_one'), cb('rf_cb_nul'),
+            cb('rf_cb_null_pos'), cb('rf_cb_over'), cb('rf_cb_exact'),
+            {'name': 'rf_cb_many', 'symbol': 'rf_cb_many',
+             'args': ['borrow_bytes@0', 'borrow_bytes@1', 'i32@2', 'i32@3', 'i32@4', 'i32@5',
+                      'i32@6'],
+             'ret': 'cbytes', 'length': 'rf_cb_many_len', 'cap': 8,
+             'ret_ctype': 'const char *', 'effects': ['impure']},
+            ret_func('rf_cs_normal', 'cstr_out', ret_ctype='const char *'),
+            ret_func('rf_cs_empty', 'cstr_out', ret_ctype='const char *'),
+            ret_func('rf_cs_null', 'cstr_out', ret_ctype='const char *'),
+            ret_func('rf_cs_tail', 'cstr_out', ret_ctype='const char *'),
+            {'name': 'rf_setv', 'symbol': 'rf_setv', 'args': ['i32@0'], 'ret': 'void',
+             'effects': ['impure']},
+            ret_func('rf_u32max', 'u32'),
+            ret_func('rf_lastv', 'i64'),
+            ret_func('rf_nz_null', 'nonzero', ret_ctype='const void *'),
+            ret_func('rf_nz_ptr', 'nonzero', ret_ctype='const void *'),
+            {'name': 'rf_add', 'symbol': 'rf_add', 'args': ['i64', 'i64'], 'ret': 'i64',
+             'effects': ['impure']},
+            {'name': 'rf_sum3', 'symbol': 'rf_sum3',
+             'args': ['ints@0:i32', 'ints@0:len', 'i32@1'], 'ret': 'i64', 'effects': ['impure']},
+            {'name': 'rf_nullconst', 'symbol': 'rf_nullconst', 'args': ['null', 'const:5'],
+             'ctypes': ['const char *', 'int'], 'ret': 'i64', 'effects': ['impure']},
+            {'name': 'rf_tagged', 'symbol': 'rf_tagged',
+             'args': ['borrow_cstr@0', 'const:7'], 'ctypes': [None, 'int'],
+             'ret': 'i64', 'effects': ['impure']},
+        ],
+    }
+
+
+def _tool():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('cinterop_tool_ret', TOOLPY)
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    return tool
+
+
+def returns(tmp):
+    """Stage (b) copy-out and typed returns, and stage (c) native fn declarations end to end."""
+    d = os.path.join(tmp, 'returns_src')
+    os.makedirs(d)
+    for name in ('return_fixture.c', 'return_fixture.h'):
+        shutil.copy(os.path.join(HERE, name), os.path.join(d, name))
+    open(os.path.join(d, 'retfix_wrap.obx'), 'w').write(RET_WRAPPER)
+    spec_path = os.path.join(d, 'retfix.cbind')
+    json.dump(returns_spec(), open(spec_path, 'w'), indent=2)
+    ad = os.path.join(d, 'app.obx')
+    open(ad, 'w').write(RET_APP)
+    out = os.path.join(d, 'out')
+    need(build(spec_path, ad, out), 'returns build')
+    p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')), 'returns run')
+    if p.stdout.splitlines() != RET_WANT:
+        raise Fail("returns output:\n got  %r\n want %r" % (p.stdout.splitlines(), RET_WANT))
+    relocs = open(os.path.join(out, 'native.relocs')).read().splitlines()
+    if relocs[0] != 'cinterop-relocs 2':
+        raise Fail("returns sidecar is not v2")
+    if not any(' rf_cb_one 0 fn - optbytes ' in ln for ln in relocs):
+        raise Fail("cbytes sidecar record is missing: %r" % relocs[:3])
+    if not any(' rf_sum3 2 fn ints,int i64 ' in ln for ln in relocs):
+        raise Fail("C-only list expansion sidecar record is missing")
+    if not any(' rf_nullconst 0 fn - i64 ' in ln for ln in relocs):
+        raise Fail("null/const native fn sidecar record is missing")
+
+    # cbytes NULL with a positive length exits 11 before any C call returns.
+    npd = os.path.join(tmp, 'returns_nullpos')
+    os.makedirs(npd)
+    for name in ('return_fixture.c', 'return_fixture.h', 'retfix_wrap.obx'):
+        shutil.copy(os.path.join(d, name), os.path.join(npd, name))
+    shutil.copy(spec_path, os.path.join(npd, 'retfix.cbind'))
+    nap = os.path.join(npd, 'app.obx')
+    open(nap, 'w').write('module app\n\nimport "retfix.obx"\n\n'
+                         'fn main() {\n    let v = retfix::cb_null_pos()\n'
+                         '    if v == nil { println("nil") } else { println(len(v)) }\n}\n')
+    nout = os.path.join(npd, 'out')
+    need(build(os.path.join(npd, 'retfix.cbind'), nap, nout), 'returns null-positive build')
+    r = run([os.path.join(nout, 'app')])
+    if r.returncode != 11 or 'NULL' not in (r.stderr + r.stdout):
+        raise Fail("cbytes NULL with positive length: want exit 11, got %d: %s"
+                   % (r.returncode, (r.stderr or r.stdout).strip()))
+
+    # Tool negatives: a typed declaration that disagrees with the spec is refused before link.
+    def one_build(name, spec, wrapper, app_body, want):
+        nd = os.path.join(tmp, 'retneg_' + name)
+        os.makedirs(nd)
+        for n in ('return_fixture.c', 'return_fixture.h'):
+            shutil.copy(os.path.join(HERE, n), os.path.join(nd, n))
+        sp = dict(spec)
+        sp['module'] = 'one'
+        sp['wrapper'] = 'one_wrap.obx'
+        open(os.path.join(nd, 'one_wrap.obx'), 'w').write(wrapper)
+        spath = os.path.join(nd, 'one.cbind')
+        json.dump(sp, open(spath, 'w'), indent=2)
+        ap = os.path.join(nd, 'app.obx')
+        open(ap, 'w').write('module app\n\nimport "one.obx"\n\n' + app_body)
+        q = build(spath, ap, os.path.join(nd, 'out'))
+        if q.returncode == 0 or want not in (q.stderr + q.stdout):
+            raise Fail("returns negative %s: want %r, got rc %d: %s"
+                       % (name, want, q.returncode, (q.stderr + q.stdout).strip()[-500:]))
+
+    one_build('ret_int_for_cbytes',
+              {'format': 'cinterop-proto/2', 'module': 'one',
+               'platform': 'x86_64-linux-gnu', 'abi': 'sysv-amd64',
+               'signature_check': 'header', 'sources': ['return_fixture.c'],
+               'headers': ['return_fixture.h'], 'libs': [], 'cflags': [],
+               'functions': [ret_func('rf_cb_one', 'cbytes', length='rf_cb_one_len', cap=8,
+                                      ret_ctype='const char *')]},
+              'module one\n\nnative fn rf_cb_one(): int\n\n'
+              'pub fn run(): int { return rf_cb_one() }\n',
+              'fn main() { println(one::run()) }\n',
+              'the spec needs optbytes')
+    one_build('ints_for_borrow_bytes',
+              {'format': 'cinterop-proto/2', 'module': 'one',
+               'platform': 'x86_64-linux-gnu', 'abi': 'sysv-amd64',
+               'signature_check': 'header', 'sources': ['return_fixture.c'],
+               'headers': ['return_fixture.h'], 'libs': [], 'cflags': [],
+               'functions': [{'name': 'rf_bytes_arg', 'symbol': 'rf_bytes_arg',
+                              'args': ['borrow_bytes@0'], 'ret': 'i64',
+                              'effects': ['impure']}]},
+              'module one\n\nnative fn rf_bytes_arg(v: &[]int): int\n\n'
+              'pub fn run(v: &[]int): int { return rf_bytes_arg(v) }\n',
+              'fn main() {\n    var v = new []int(0)\n    append(v, 1)\n'
+              '    println(one::run(&v))\n}\n',
+              'the spec needs bytes')
+
+    # A v1 sidecar (written by an older compiler) is still read and accepted for its int form.
+    tool = _tool()
+    v1 = os.path.join(tmp, 'v1.relocs')
+    open(v1, 'w').write('cinterop-relocs 1\n42 add 2 i64,i64 i64 freesall,writeshandles\n'
+                        '99 zero 0 - i64 freesall,writeshandles\n')
+    old = tool.read_relocs(v1)
+    if [r['mode'] for r in old] != ['call', 'call']:
+        raise Fail("a v1 sidecar was not read as call mode")
+    tool.validate_calls(old, {'format': 'cinterop-proto/1', 'functions': [
+        {'name': 'add', 'symbol': 'add', 'args': ['i64', 'i64'], 'ret': 'i64'},
+        {'name': 'zero', 'symbol': 'zero', 'args': [], 'ret': 'i64'}]})
+
+    # Sidecar v2 tamper: an unknown shape, mode or result shape is refused by the reader.
+    good = open(os.path.join(out, 'native.relocs')).read().splitlines()
+
+    def reloc_index(word):
+        for i, ln in enumerate(good):
+            if (' ' + word + ' ') in ln:
+                return i
+        raise Fail("no sidecar record for %r" % word)
+
+    def reloc_tamper(name, index, old, new, want):
+        lines = list(good)
+        lines[index] = lines[index].replace(old, new, 1)
+        path = os.path.join(tmp, 'tamper_' + name)
+        open(path, 'w').write('\n'.join(lines) + '\n')
+        try:
+            tool.read_relocs(path)
+        except tool.ToolError as e:
+            if want not in str(e):
+                raise Fail("sidecar tamper %s: unexpected error %s" % (name, e))
+        else:
+            raise Fail("sidecar tamper %s was accepted" % name)
+
+    # a shape on a record with one argument, so the arity still matches and the token itself is checked
+    reloc_tamper('shape', reloc_index('rf_setv'), ' fn int void ', ' fn bogus void ', 'unknown shape')
+    reloc_tamper('mode', reloc_index('rf_cb_one'), ' fn ', ' weird ', 'unknown mode')
+    # A syntactically valid but different shape is refused by the spec comparison, not the reader.
+    lines = list(good)
+    for i, ln in enumerate(lines):
+        if ' rf_sum3 ' in ln:
+            lines[i] = ln.replace(' ints,int ', ' int,int ', 1)
+    tp = os.path.join(tmp, 'tamper_shape_spec')
+    open(tp, 'w').write('\n'.join(lines) + '\n')
+    relocs = tool.read_relocs(tp)
+    try:
+        tool.validate_calls(relocs, returns_spec())
+    except tool.ToolError as e:
+        if 'the spec needs ints,int' not in str(e):
+            raise Fail("sidecar shape tamper: unexpected error %s" % e)
+    else:
+        raise Fail("a sidecar shape tamper was accepted")
+
+    # Spec v2: signature_check is required and honest; cbytes carries length, cap and ret_ctype.
+    def spec_error(name, mutate, want):
+        sp = returns_spec()
+        mutate(sp)
+        path = os.path.join(tmp, 'spec_' + name + '.cbind')
+        json.dump(sp, open(path, 'w'), indent=2)
+        try:
+            tool.load_spec(path)
+        except tool.ToolError as e:
+            if want not in str(e):
+                raise Fail("spec negative %s: unexpected error %s" % (name, e))
+        else:
+            raise Fail("spec negative %s was accepted" % name)
+
+    spec_error('no_sigmode', lambda s: s.pop('signature_check'), 'needs "signature_check"')
+    spec_error('bad_sigmode', lambda s: s.__setitem__('signature_check', 'trust-me'),
+               'needs "signature_check"')
+    spec_error('header_no_headers',
+               lambda s: s.__setitem__('headers', []), 'requires "headers"')
+    spec_error('cbytes_no_length',
+               lambda s: s['functions'][0].pop('length'), 'cbytes needs "length"')
+    spec_error('cbytes_no_cap',
+               lambda s: s['functions'][0].pop('cap'), 'cbytes needs "cap"')
+    spec_error('cbytes_no_ret_ctype',
+               lambda s: s['functions'][0].pop('ret_ctype'), 'needs "ret_ctype"')
+    spec_error('nonzero_no_ret_ctype',
+               lambda s: next(f for f in s['functions'] if f['name'] == 'rf_nz_null').pop('ret_ctype'),
+               'needs "ret_ctype"')
+
+    # Compile-time negatives: the declaration form and its collisions.
+    compile_neg = [
+        ('body', 'module m\nnative fn f(a: int): int { return a }\n', 'takes no body'),
+        ('method', 'module m\ntype T = ref record { x: int }\n'
+                   'native fn (r: &T) f(a: int): int\n', 'cannot have a receiver'),
+        ('pub', 'module m\npub native fn f(a: int): int\n', "'pub' is not allowed"),
+        ('badparam', 'module m\nnative fn f(a: float): int\n', 'unsupported type'),
+        ('badret', 'module m\nnative fn f(): []int\n', 'unsupported return type'),
+        ('duplicate', 'module m\nnative fn f(a: int): int\nnative fn f(a: int): int\n',
+         'already declared'),
+        ('native_then_fn', 'module m\nnative fn f(a: int): int\n'
+                           'fn f(a: int): int { return a }\n', 'declared native'),
+        ('fn_then_native', 'module m\nfn f(a: int): int { return a }\n'
+                           'native fn f(a: int): int\n',
+         'already declared as a normal function'),
+    ]
+    for name, text, want in compile_neg:
+        cd = os.path.join(tmp, 'compile_neg_' + name)
+        os.makedirs(cd)
+        path = os.path.join(cd, 'm.obx')
+        open(path, 'w').write(text)
+        q = run([OBO, path, '-o', os.path.join(cd, 'out')])
+        if q.returncode == 0 or want not in (q.stderr + q.stdout):
+            raise Fail("native compile negative %s: want %r, got rc %d: %s"
+                       % (name, want, q.returncode, (q.stderr + q.stdout).strip()[-400:]))
+
+    # --check parses and type-checks native declarations but refuses a native call.
+    ck = os.path.join(tmp, 'returns_check')
+    os.makedirs(ck)
+    open(os.path.join(ck, 'retfix.obx'), 'w').write(RET_WRAPPER)
+    q = run([OBO, os.path.join(ck, 'retfix.obx'), '--check', '--sym-dir', ck])
+    if q.returncode == 0 or 'cannot be called in --check' not in (q.stderr + q.stdout):
+        raise Fail("--check did not refuse a native call: %s"
+                   % (q.stderr + q.stdout).strip()[-400:])
+    print('returns tests: ok')
 
 
 # Null and const slots take the C type from the spec's ctypes annotation (sig_params), so they are checked
@@ -1917,6 +2287,7 @@ def main():
         openssl_qualification(tmp)
         sanitizer_adapters(tmp)
         kinds(tmp)
+        returns(tmp)
         null_const_slots(tmp)
         stack_args(tmp)
         libpq_live(tmp)
