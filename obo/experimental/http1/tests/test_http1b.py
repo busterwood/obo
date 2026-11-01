@@ -3,15 +3,19 @@
 
     python3 obo/experimental/http1/tests/test_http1b.py
 
-Two drivers are built with the experimental cinterop tool:
-  * h1b_conn_driver over the in-memory transport (fake systems adapter): exact
-    state-machine, framing, deadline, ALPN, injection and backpressure cases;
+Three drivers are built with the experimental cinterop tool:
+  * h1b_conn_driver over the in-memory transport: exact state-machine, framing,
+    deadline, ALPN, injection and backpressure cases;
+  * h1b_server_unit: admission and accept-pressure policy;
   * h1b_server_app over the real Linux adapter: loopback TCP IPv4/IPv6, Unix
     sockets, raw/curl clients, keep-alive/pipelining, 100-continue, timeouts,
     admission/idle pressure and graceful shutdown.
-No TLS, no compiler/runtime change, no external network.
+The drivers use the combined systems+TLS cbind because H1c's http1io dispatch
+links the TLS backend; no TLS listener or certificate is used here. No compiler
+or runtime change, no external network.
 """
 import atexit
+import importlib.util
 import os
 import select
 import shutil
@@ -29,16 +33,37 @@ REPO = os.path.dirname(OBO_ROOT)
 OBO = os.path.abspath(os.environ.get('OBO', os.path.join(OBO_ROOT, 'obo')))
 TOOLPY = os.path.join(REPO, 'obo', 'experimental', 'cinterop', 'cinterop.py')
 APPS = os.path.join(HERE, 'apps')
-SPEC_FAKE = os.path.join(REPO, 'obo', 'experimental', 'sys', 'native',
-                         'sysadapter_fake.cbind')
-SPEC_REAL = os.path.join(REPO, 'obo', 'experimental', 'sys', 'native',
-                         'sysadapter_real.cbind')
+TLS_TESTS = os.path.join(REPO, 'obo', 'experimental', 'tls', 'tests',
+                         'test_tls.py')
 TMP = tempfile.mkdtemp(prefix='http1-h1b-', dir='/tmp/opencode')
 atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 
 MODULES = ['http1core.obx', 'http1parse.obx', 'http1write.obx',
-           'http1date.obx', 'http1transport.obx', 'http1conn.obx',
+           'http1date.obx', 'http1io.obx', 'http1conn.obx',
            'http1server.obx']
+
+
+def load_tls_tests():
+    spec = importlib.util.spec_from_file_location('http1_tls_tests', TLS_TESTS)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def combined_cbind():
+    """TLS cbind plus the systems declarations the H1b modules still use.
+
+    http1io imports systls so even the memory/plain drivers need the TLS and
+    systems native symbols at link time. The private cbind from the TLS suite is
+    exactly that combined contract and keeps the OpenSSL header discovery in one
+    place.
+    """
+    tls = load_tls_tests()
+    cinterop = tls.load_cinterop_tests()
+    include_dirs = cinterop.openssl_include_dirs()
+    cb = os.path.join(TMP, 'cbind')
+    os.makedirs(cb, exist_ok=True)
+    return tls.private_cbind(cb, include_dirs)
 
 
 class Fail(Exception):
@@ -691,9 +716,10 @@ def network_tests(exe):
 def main():
     if not os.path.exists(OBO):
         raise Fail('no compiler at %s; run make -C obo http1' % OBO)
-    memory = build('h1b_conn_driver', SPEC_FAKE, 'memory')
-    unit = build('h1b_server_unit', SPEC_FAKE, 'unit')
-    server = build('h1b_server_app', SPEC_REAL, 'server')
+    spec = combined_cbind()
+    memory = build('h1b_conn_driver', spec, 'memory')
+    unit = build('h1b_server_unit', spec, 'unit')
+    server = build('h1b_server_app', spec, 'server')
     memory_tests(memory)
     print('ok   connection state machine (memory transport)')
     unit_tests(unit)

@@ -11,21 +11,29 @@
 // (ResourceLimit) pauses acceptance with an explicit backoff instead of
 // spinning. See LIMITS.md for the exact limits and defaults.
 //
-// The listener, reactor and per-slot watches are optional owned fields because
-// obo's conservative native-effect rule rejects passing a reference to a field
-// of a borrowed record to a native callee. Each turn moves them into locals and
-// restores them; no second native object is created.
+// The listener, reactor, optional TLS context and per-slot watches are owned
+// fields because obo's conservative native-effect rule rejects passing a
+// reference to a field of a borrowed record to a native callee. Each turn moves
+// them into locals and restores them; no second native object is created.
+//
+// H1c adds makeTls(): the server owns an optional systls::TlsContext until
+// shutdown. It accepts TCP connections exactly as the plain loop does, wraps
+// each accepted stream in a TLS session and lets the existing per-connection
+// handshake state machine drive handshakeStep/ALPN. The HTTP modules never
+// import systls directly; http1io owns the concrete dispatch.
 module http1server
 
 import "http1core.obx" as core
 import "http1conn.obx" as conn
-import "http1transport.obx" as transport
+import "http1io.obx" as transport
 import "sysaddress.obx" as address
 import "sysclock.obx" as clock
 import "syserrors.obx" as errors
 import "sysnet.obx" as net
 import "sysplatform.obx" as platform
 import "sysreactor.obx" as reactor
+import "sysstream.obx" as streammod
+import "systls.obx" as tls
 
 // The handler is an ordinary pure function value: it inspects the request
 // metadata and returns an Action. obo 0.14 function values cannot be impure, so
@@ -118,6 +126,7 @@ type Slot = ref record {
 pub type Server = ref record {
     listener: ?net::Listener
     reactor: ?reactor::Reactor
+    tlsContext: ?tls::TlsContext
     limits: core::Limits
     perConnectionBytes: int
     slots: []Slot
@@ -200,14 +209,59 @@ fn tagGen(tag: int): int {
     return tag / MAX_SLOTS
 }
 
+fn makeWith(listener: net::Listener, r: reactor::Reactor,
+            limits: &core::Limits, ctx: ?tls::TlsContext): Result[Server]
+
+fn closeContextOpt(held: ?tls::TlsContext): Result[bool] {
+    if held == nil { return ok(false) }
+    let ctx: tls::TlsContext = held
+    return tls::closeContext(&ctx)
+}
+
 pub fn make(listener: net::Listener, r: reactor::Reactor,
             limits: &core::Limits): Result[Server] {
-    let checked = try core::validateLimits(limits)
-    if !checked { return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT) }
+    return makeWith(listener, r, limits, nil)
+}
+
+// TLS listener. The server takes ownership of `ctx`; it must stay live for
+// every session and is closed by shutdown() after the last session is closed.
+// The caller configures certificates, versions and ALPN on the context.
+// `conn::acceptAlpn` still rejects h2/other and (when allowNoAlpn is false)
+// no-ALPN before any HTTP/1.1 parse.
+pub fn makeTls(listener: net::Listener, r: reactor::Reactor,
+               limits: &core::Limits,
+               ctx: tls::TlsContext): Result[Server] {
+    return makeWith(listener, r, limits, ctx)
+}
+
+fn makeWith(listener: net::Listener, r: reactor::Reactor,
+            limits: &core::Limits, ctx: ?tls::TlsContext): Result[Server] {
+    let checkedR = core::validateLimits(limits)
+    match checkedR {
+        ok(checked) {
+            if !checked {
+                let cl = closeContextOpt(ctx)
+                return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT)
+            }
+        }
+        err(m, code) {
+            let cl = closeContextOpt(ctx)
+            return err(m, code)
+        }
+    }
     if limits.maxConnections > MAX_SLOTS {
+        let cl = closeContextOpt(ctx)
         return err("maxConnections exceeds the server slot table", core::ERR_LIMIT_EXCEEDED)
     }
-    let per = try core::reservation(limits)
+    let reserved = core::reservation(limits)
+    var per = 0
+    match reserved {
+        ok(n) { per = n }
+        err(m, code) {
+            let cl = closeContextOpt(ctx)
+            return err(m, code)
+        }
+    }
     let madeWatch = net::watchListener(&r, &listener, LISTENER_TAG)
     var watch: reactor::Watch = new reactor::Watch{res: new platform::Resource{reserved: 0}}
     match madeWatch {
@@ -215,12 +269,14 @@ pub fn make(listener: net::Listener, r: reactor::Reactor,
         err(m, code) {
             let lc = net::closeListener(&listener)
             let rc = reactor::close(&r)
+            let cl = closeContextOpt(ctx)
             return err("listener watch registration failed", code)
         }
     }
     return ok(new Server{
         listener: listener,
         reactor: r,
+        tlsContext: ctx,
         limits: core::copyLimits(limits),
         perConnectionBytes: per,
         slots: new []Slot(0),
@@ -334,6 +390,29 @@ fn newSlot(mut s: &Server, cn: conn::Connection, peer: string, gen: int,
     return ok(true)
 }
 
+// Wrap one accepted stream as a plain or TLS transport. The server owns the
+// context, so it is moved out for the systls call and restored on every path;
+// systls::accept closes the stream on every failure.
+fn openAccepted(mut s: &Server,
+                st: streammod::Stream): Result[transport::Transport] {
+    if s.tlsContext == nil {
+        return ok(transport::plain(st))
+    }
+    let held = take(s.tlsContext)
+    if held == nil {
+        drop(st)
+        s.tlsContext = held
+        return err("TLS listener has no context", core::ERR_INVALID_STATE)
+    }
+    let ctx: tls::TlsContext = held
+    let sess = tls::accept(&ctx, st)
+    s.tlsContext = ctx
+    match sess {
+        ok(session) { return ok(transport::fromTls(session)) }
+        err(m, code) { return err(m, code) }
+    }
+}
+
 fn acceptBatch(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
                now: &conn::Now): Result[int] {
     if s.stopping || s.listenerClosed { return ok(0) }
@@ -363,40 +442,48 @@ fn acceptBatch(mut s: &Server, l: &net::Listener, r: &reactor::Reactor,
                 let made = net::intoStream(&connection)
                 match made {
                     ok(stream) {
-                        let tr = transport::plain(stream)
-                        let lim = core::copyLimits(&s.limits)
-                        let built = conn::makeAt(tr, &lim, now)
-                        match built {
-                            ok(cn) {
-                                let gen = s.nextGen
-                                s.nextGen += 1
-                                let index = freeSlotIndex(s)
-                                let tag = tagFor(gen, index)
-                                let watch = conn::watch(&cn, r, true, false, tag)
-                                match watch {
-                                    ok(w) {
-                                        let addedR = newSlot(s, cn, peer, gen, index, w)
-                                        match addedR {
-                                            ok(added) {
-                                                if !added { break }
-                                                accepted += 1
+                        let opened = openAccepted(s, stream)
+                        match opened {
+                            ok(tr) {
+                                let lim = core::copyLimits(&s.limits)
+                                let built = conn::makeAt(tr, &lim, now)
+                                match built {
+                                    ok(cn) {
+                                        let gen = s.nextGen
+                                        s.nextGen += 1
+                                        let index = freeSlotIndex(s)
+                                        let tag = tagFor(gen, index)
+                                        let watch = conn::watch(&cn, r, true, false, tag)
+                                        match watch {
+                                            ok(w) {
+                                                let addedR = newSlot(s, cn, peer, gen, index, w)
+                                                match addedR {
+                                                    ok(added) {
+                                                        if !added { break }
+                                                        accepted += 1
+                                                    }
+                                                    err(m, code) {
+                                                        s.metrics.rejected += 1
+                                                        break
+                                                    }
+                                                }
                                             }
                                             err(m, code) {
+                                                s.metrics.watchErrors += 1
                                                 s.metrics.rejected += 1
-                                                break
+                                                let closing = conn::close(&cn)
+                                                match closing { ok(v) { } err(m2, c2) { } }
+                                                drop(cn)
                                             }
                                         }
                                     }
                                     err(m, code) {
-                                        s.metrics.watchErrors += 1
-                                        s.metrics.rejected += 1
-                                        let closing = conn::close(&cn)
-                                        match closing { ok(v) { } err(m2, c2) { } }
-                                        drop(cn)
+                                        s.metrics.acceptErrors += 1
                                     }
                                 }
                             }
                             err(m, code) {
+                                // systls::accept closed the stream on failure.
                                 s.metrics.acceptErrors += 1
                             }
                         }
@@ -434,9 +521,31 @@ fn closeSlotWith(mut s: &Server, index: int, mut cn: &conn::Connection,
     } else {
         drop(heldWatch)
     }
-    // Best-effort clean shutdown; close is abortive and exactly once.
-    let sd = conn::shutdownStep(cn, now)
-    match sd { ok(v) { } err(m, c) { } }
+    // Best-effort clean shutdown; close is abortive and exactly once. The
+    // bounded loop flushes a TLS close_notify when the socket is immediately
+    // writable; final shutdown()/drain() deadlines bound the wait.
+    var guard = 0
+    while guard < 8 {
+        guard += 1
+        let sd = conn::shutdownStep(cn, now)
+        match sd {
+            ok(out) {
+                match out {
+                    ShutdownDone { break }
+                    ShutdownPeerClosed { break }
+                    ShutdownSent {
+                        // Local close_notify is queued; flush one more bounded
+                        // step, then stop waiting for the peer.
+                        let f = conn::flush(cn, now)
+                        break
+                    }
+                    ShutdownWantRead { break }
+                    ShutdownWantWrite { }
+                }
+            }
+            err(m, c) { break }
+        }
+    }
     let cl = conn::close(cn)
     match cl { ok(v) { } err(m, c) { } }
     let again = s.slots[index]
@@ -1179,8 +1288,9 @@ fn stopConnections(mut s: &Server, now: &conn::Now) {
         let cn: conn::Connection = held
         let p = conn::phase(&cn)
         var idle = false
+        var handshaking = false
         match p {
-            Handshaking { idle = true }
+            Handshaking { idle = true; handshaking = true }
             Idle { idle = true }
             ReadingHead { }
             ReadingBody { }
@@ -1190,8 +1300,25 @@ fn stopConnections(mut s: &Server, now: &conn::Now) {
             Closed { idle = true }
         }
         if idle {
-            closeSlotWith(s, i, &cn, now)
-            drop(cn)
+            // An established TLS idle connection gets the close_notify path;
+            // a handshake that has not completed has no clean TLS close.
+            if !handshaking && conn::isSecure(&cn) {
+                let began = conn::beginShutdown(&cn, now)
+                match began {
+                    ok(v) {
+                        // Queue close_notify now instead of waiting for a
+                        // readable event that an idle peer may never send.
+                        let driven = conn::next(&cn, now)
+                        match driven { ok(e) { } err(m2, c2) { } }
+                    }
+                    err(m, c) { }
+                }
+                let again = s.slots[i]
+                again.conn = cn
+            } else {
+                closeSlotWith(s, i, &cn, now)
+                drop(cn)
+            }
         } else {
             let asked = conn::requestClose(&cn)
             match asked { ok(v) { } err(m, c) { } }
@@ -1241,6 +1368,17 @@ fn closeListenerOwned(mut s: &Server) {
     }
 }
 
+fn closeTlsContextOwned(mut s: &Server) {
+    let heldC = take(s.tlsContext)
+    if heldC != nil {
+        let ctx: tls::TlsContext = heldC
+        let cc = tls::closeContext(&ctx)
+        match cc { ok(v) { } err(m, c) { } }
+    } else {
+        drop(heldC)
+    }
+}
+
 fn closeReactorOwned(mut s: &Server) {
     let heldR = take(s.reactor)
     if heldR != nil {
@@ -1280,6 +1418,7 @@ pub fn shutdown(mut s: &Server, now: &conn::Now): Result[bool] {
         let cn: conn::Connection = held
         closeSlotWith(s, i, &cn, now)
     }
+    closeTlsContextOwned(s)
     closeListenerOwned(s)
     closeReactorOwned(s)
     noteActive(s)

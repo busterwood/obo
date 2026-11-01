@@ -101,10 +101,15 @@ tls: obo
 http1: obo runtime_text.bin runtime_data.bin
 	python3 experimental/http1/tests/test_http1.py
 	python3 experimental/http1/tests/test_http1b.py
+	python3 experimental/http1/tests/test_http1c.py
 
-# H1b alone (still builds the H1a0 modules it imports).
+# H1b alone (still builds the H1a0 and H1c transport modules it imports).
 http1b: obo runtime_text.bin runtime_data.bin
 	python3 experimental/http1/tests/test_http1b.py
+
+# H1c HTTPS integration alone.
+http1c: obo runtime_text.bin runtime_data.bin
+	python3 experimental/http1/tests/test_http1c.py
 
 # make the current compiler the new seed, once it is a fixed point and the suite passes
 promote: obo
