@@ -1,7 +1,7 @@
 # Decimal storage tier: plan
 
 **Date:** 2026-11-01
-**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). Implementation is **blocked on the memory budget** (§6).
+**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6); implementation proceeds.
 **Baseline:** `main` `6f83880` (obo `0.15`, `SYM_FORMAT=8`, `SYM_ABI=1`, after cinterop v2 stage d).
 **Branch/worktree:** `decimal-storage` at `.claude/worktrees/decimal-storage`.
 **Target:** one release, `0.16` / `SYM_FORMAT=9` / `SYM_ABI=1`, merged once with one seed promotion.
@@ -305,13 +305,13 @@ a dropped interface destination pointer.
 
 ## 6. Risks and stop conditions
 
-- **Memory budget: already exceeded at the baseline.** The 0.15 self-compile
+- **Memory budget: raised to 2,750,000 by the user (2026-11-01).** It was already exceeded at the baseline: The 0.15 self-compile
   peak was 2,383,264 bytes. Cinterop v2 stages a-d added about 134 KB, which
   `FORK.md` doesn't record. Main `6f83880` now measures **2,519,264 bytes**
   (`OBO_STATS=1 ./obo $PWD/src/obo.obo -o … --rt $PWD`, as in
   `tests/heap_test.py:238-250`), 19,264 over `PEAK_BUDGET = 2,500,000`. So
-  `heap_test.py` already fails on main. **No compiler stage starts until the
-  user decides** whether to raise the budget, reduce memory first, or both.
+  `heap_test.py` fails on main at the old cap. The user chose 2,750,000; the
+  first commit after this plan records it.
   After that, measure after every stage and stop again at the new cap.
 - **Single-pass codegen.** The 24-byte copies need two registers and must not
   clobber live registers. Reuse the existing helpers and don't open-code moves.

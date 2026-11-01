@@ -192,7 +192,7 @@ LIB_MUTANTS = {
 }
 
 # Runtime mutants with no program-observable semantic difference are judged by the actual
-# compiler self-host memory oracle.  The absolute numeric-branch budget is 2,500,000 bytes;
+# compiler self-host memory oracle.  The absolute budget is PEAK_BUDGET (tests/peak_budget.py);
 # the zero-array mutant is additionally judged by its delta from the unmutated baseline because
 # the baseline is itself above the historical 2,000,000 lambda budget.  The normal program suite
 # is still run first for every mutant.

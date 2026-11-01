@@ -1,6 +1,7 @@
 """Authoritative compiler live-peak budget for this numeric branch.
 
-The user explicitly approved 2,500,000 *decimal bytes* for numeric work.  This
+The user approved 2,500,000 *decimal bytes* (2026-10-31), then 2,750,000
+(2026-11-01, see FORK.md "Budget raised, 2,500,000 to 2,750,000").  This
 is a numeric-branch decision, not a change to the historical lambda release
 budget (which remains 2,000,000 in its own release record).
 
@@ -16,7 +17,7 @@ variance is only hundreds of bytes; 30,000 bytes is a deliberately conservative
 floor below both measured deltas and above that noise.
 """
 
-PEAK_BUDGET = 2_500_000
+PEAK_BUDGET = 2_750_000
 
 # Fresh exact-converter measurement is 45,728 bytes (latest run baseline
 # 2,030,784 -> mutant 2,076,512); the old 44,672 was the pre-float historical

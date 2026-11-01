@@ -21,7 +21,7 @@ as they do for a compiled program.  It covers:
 The program section compiles a normal hello with the current compiler and the
 seed and requires byte-identical images, then runs it under the default and the
 64 KiB limit.  It also checks the compiler's self-compile live peak against the
-2,500,000-byte numeric budget.
+2,750,000-byte budget (tests/peak_budget.py).
 """
 import atexit
 import os
