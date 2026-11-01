@@ -1,0 +1,95 @@
+// decimals_format: formatGrouped inserts a byte every three integer digits of
+// decimal::format's fixed text. Covers 0 and 2 decimals, negatives, millions,
+// each ASCII separator, a non-ASCII byte kept verbatim, tiny and huge values,
+// and a propagated decimal::format failure (code 3).
+// expect: decimals format ok
+import "decimals.obx" as decimals
+
+fn fail(label: string, detail: string) {
+    println("FAIL ", label, ": ", detail)
+    exit(1)
+}
+
+fn checkStr(label: string, r: Result[string], want: string) {
+    match r {
+        ok(s) {
+            if s != want || len(s) != len(want) {
+                fail(label, "got [" + s + "] len " + string(len(s)) +
+                     ", want [" + want + "] len " + string(len(want)))
+            }
+        }
+        err(m, c) { fail(label, "unexpected error " + string(c) + " [" + m + "]") }
+    }
+}
+
+fn checkErr(label: string, r: Result[string], code: int) {
+    match r {
+        ok(s) { fail(label, "expected error " + string(code) + ", got [" + s + "]") }
+        err(m, c) {
+            if c != code {
+                fail(label, "code " + string(c) + ", want " + string(code) + " [" + m + "]")
+            }
+        }
+    }
+}
+
+fn main() {
+    // zero, with and without a fraction; -0.00 prints positive
+    checkStr("zero", decimals::formatGrouped(decimal::fromInt(0), ','), "0")
+    checkStr("zero 2dp", decimals::formatGrouped(0.00, ','), "0.00")
+    checkStr("negative zero", decimals::formatGrouped(-0.00, ','), "0.00")
+    checkStr("small fraction", decimals::formatGrouped(0.001, ','), "0.001")
+
+    // short integer parts never gain a separator
+    checkStr("one digit", decimals::formatGrouped(7.0, ','), "7.0")
+    checkStr("three digits", decimals::formatGrouped(999.99, ','), "999.99")
+    checkStr("four digits", decimals::formatGrouped(1000.00, ','), "1,000.00")
+    checkStr("separator boundary", decimals::formatGrouped(100.00, ','), "100.00")
+
+    // fractions are copied unchanged, even when they are long
+    checkStr("cents", decimals::formatGrouped(1234.50, ','), "1,234.50")
+    checkStr("million", decimals::formatGrouped(decimal::fromInt(1000000), ','), "1,000,000")
+    checkStr("millions with fraction", decimals::formatGrouped(1234567.89, ','),
+             "1,234,567.89")
+    checkStr("six decimals", decimals::formatGrouped(1000000.000001, ','),
+             "1,000,000.000001")
+
+    // negatives: the sign stays before the first digit, not before a group
+    checkStr("negative", decimals::formatGrouped(-1234.5, ','), "-1,234.5")
+    checkStr("negative millions", decimals::formatGrouped(-1234567.890, ','),
+             "-1,234,567.890")
+    checkStr("negative four", decimals::formatGrouped(decimal::fromInt(-1000), ','), "-1,000")
+
+    // the separator is a byte, and every byte is inserted verbatim
+    checkStr("space", decimals::formatGrouped(1234567.89, ' '), "1 234 567.89")
+    checkStr("dot", decimals::formatGrouped(1234567.89, '.'), "1.234.567.89")
+    checkStr("apostrophe", decimals::formatGrouped(1000.00, '\''), "1'000.00")
+    let hi = decimals::formatGrouped(1234.50, byte(128))
+    match hi {
+        ok(s) {
+            if len(s) != 8 { fail("high byte length", string(len(s))) }
+            if s[0] != '1' { fail("high byte first", string(int(s[0]))) }
+            if s[1] != byte(128) { fail("high byte sep", string(int(s[1]))) }
+            if s[2] != '2' { fail("high byte 234", string(int(s[2]))) }
+            if s[6] != '5' { fail("high byte fraction", string(int(s[6]))) }
+        }
+        err(m, c) { fail("high byte", "unexpected error " + string(c) + " [" + m + "]") }
+    }
+
+    // huge integer part: 1 followed by thirty zeros groups as 1 + ten groups
+    var want = "1"
+    for i in 0..10 { want = want + ",000" }
+    checkStr("huge", decimals::formatGrouped(1e30, ','), want)
+
+    // tiny values keep the integer zero alone in front of the point
+    var tinyWant = "0."
+    for i in 0..39 { tinyWant = tinyWant + "0" }
+    tinyWant = tinyWant + "1"
+    checkStr("tiny", decimals::formatGrouped(1e-40, ','), tinyWant)
+
+    // a format failure is returned unchanged (capped display scale drops a digit)
+    let bad = 1e-20 * 1e-20
+    checkErr("format inexact", decimals::formatGrouped(bad, ','), 3)
+
+    println("decimals format ok")
+}
