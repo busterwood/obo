@@ -34,11 +34,16 @@ Fk *ff_new_opt(int v) {
     return ff_new(v);
 }
 
-int ff_get(Fk *p) { return p->v; }
+int ff_get(const Fk *p) { return p->v; }
 
 /* A borrow that traces its own entry, so use-after-close can assert it was never called. */
-int ff_mark(Fk *p) {
+int ff_mark(const Fk *p) {
     ff_trace("ff_mark\n");
+    return p->v;
+}
+
+int ff_touch(Fk *p) {
+    p->v += 1;
     return p->v;
 }
 

@@ -7,8 +7,9 @@ typedef struct FkBad FkBad;
 
 Fk *ff_new(int v);
 Fk *ff_new_opt(int v);
-int ff_get(Fk *p);
-int ff_mark(Fk *p);
+int ff_get(const Fk *p);
+int ff_mark(const Fk *p);
+int ff_touch(Fk *p);
 void ff_release(Fk *p);
 int ff_frees(void);
 
