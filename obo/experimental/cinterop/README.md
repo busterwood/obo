@@ -681,9 +681,10 @@ signature-checked against its `CType *` prototype (`int` for `int`/`discard`,
 `void` for `void`).
 
 
-**Out parameters (stage (f)).** A native declaration may carry out parameters,
-which consume no call argument and appear in C order (interleaved with inputs
-when the C prototype does):
+**Out parameters (stage (f)).** In the `.cbind` `args` array the out slots
+appear in C order and may be interleaved with inputs (for example
+`sqlite3_open_v2`'s `out_own` slot sits between the path and flags inputs). In
+the `native fn` declaration, inputs come first and the out parameters follow:
 
 ```obo
 native fn open_v2(path: &[]byte, flags: int, out db: Connection): open_v2_out

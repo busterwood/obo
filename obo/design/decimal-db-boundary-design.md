@@ -546,7 +546,7 @@ This subsection and 4.3 retarget the pre-v2 C adapter design to the current
 `db/sqlite/sqlite.obx`; the deleted `sqlite_adapter.c` citations are historical.
 
 `bind_text`/`bind_text_raw` already copy exact bytes and reject embedded NUL
-(`sqlite.obx:407-425`). Add free functions (not
+(`sqlite.obx:407-427`). Add free functions (not
 methods: decimal method parameters are rejected in v1,
 `obo/src/obo.obo:11483-11484`):
 
@@ -572,7 +572,7 @@ fn bind_decimal_unchecked(st: &Stmt, index: int, value: decimal): Result[bool]
 
 `Stmt.decimal(col)` performs:
 
-1. `column_type(col)` bounds-checked (`sqlite.obx:262-266`); `SQLITE_NULL` →
+1. `column_type(col)` bounds-checked (`sqlite.obx:574-579`); `SQLITE_NULL` →
    `1001`; `SQLITE_FLOAT` → `1005`; `SQLITE_BLOB` → `1002`;
 2. for TEXT/INTEGER, `column_value(col)` (`sqlite.obx:595-616`, which uses
    `sqlite3_column_text` + `sqlite3_column_bytes`) or `column_bytes` for exact
