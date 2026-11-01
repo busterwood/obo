@@ -14,7 +14,9 @@ where the work stands, how to run it, and when to stop and ask the user.
   - `c0640a3`, `1d9cb1e`, `68191f2`: fixes from the second review.
 
   Design §8 records what stage (a) actually does.
-- **Stages (b) to (h):** not started.
+- **Stages (b) and (c)**, copy-out/typed returns and body-less `native fn` with sidecar v2: implemented
+  on `cinterop-v2-bc`, pending review and merge. Design §8 records what they actually do.
+- **Stages (d) to (h):** not started.
 - **Cleanup audit:** in progress. A read-only audit of old interop code and docs is running. It sorts
   items into three groups: wrong or dead now, removable at a named stage, and keep. Nothing will be
   deleted until the user has seen its list.
@@ -119,8 +121,8 @@ The full scope and gates for each stage are in design §8; the test lists are in
 
 | Stage | Scope | Checker exposure | Risk | Coordinator notes |
 |---|---|---|---|---|
-| (b) copy-out | `cbytes` returning `?[]byte` with caps, `cstr_out`, `void`, `nonzero` | none | medium | **Next.** Fake `PQgetvalue`: empty, NUL-containing, NULL-with-length (exit 11), over cap. |
-| (c) `native fn` | body-less declarations, kind table, `cinterop-relocs 2`, `cinterop-proto/2`, `signature_check` | parse and type-check body-less natives | medium | Replaces the stage (a) kinds string at each call. Int-form natives must stay byte-identical. Test sidecar tampering. |
+| (b) copy-out | `cbytes` returning `?[]byte` with caps, `cstr_out`, `void`, `nonzero` | none | medium | Implemented on `cinterop-v2-bc`, pending review/merge. Fake `PQgetvalue`: empty, NUL-containing, NULL-with-length (exit 11), over cap. |
+| (c) `native fn` | body-less declarations, kind table, `cinterop-relocs 2`, `cinterop-proto/2`, `signature_check` | parse and type-check body-less natives | medium | Implemented on `cinterop-v2-bc` with (b), pending review/merge. Replaces the stage (a) kinds string at each call. Int-form natives stay byte-identical. |
 | (d) foreign handles | `foreign` record kind with one private word, `own`/`own_opt`/`out_own`/`borrow<T>`, generated `close` and `is_open`, exit 7 in the thunk, per-type census | `foreign` record kind, private-field checks; no new ownership rule | medium to high | **Stop point:** see below. Needs the full foreign-handle suite and an ASan run on the fixtures. |
 | (e) libpq | rewrite `libpq.obx`/`libpq.cbind`; delete `libpq_adapter.c`/`.h` except the conninfo helper; keep `cres.c` | none | low to medium | Live smoke test. A `Rows` dropped without `close` must be reported by the census. |
 | (f) SQLite | `sqlite3_close_v2`, the `nonzero` probe, `exec` loop; delete `sqlite_adapter.c`/`.h` | none | medium | The UAF reproduction must fail in the old shape and pass in the new. |

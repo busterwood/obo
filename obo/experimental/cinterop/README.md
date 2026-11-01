@@ -513,10 +513,14 @@ call site ignores). `nonzero` turns the pointer into 1/0 for probes such as
 ### Body-less `native fn`
 
 ```obo
-native fn getvalue(r: &Res, row: int, col: int): ?[]byte
-native fn status(c: &Conn): int
-native fn finish(c: &Conn)
+native fn sum3(v: &[]int, bias: int): int
+native fn error_message(code: int): []byte
+native fn version(): int
+native fn finish(rc: int)          // no return annotation: a unit result
 ```
+
+A foreign-handle parameter such as `fn status(c: &Conn): int` is **stage (d)**;
+stage (c) accepts only the types below.
 
 `native` is contextual: only a top-level `native fn` is a declaration, so
 programs may still use `native` as an identifier. The declaration name is the
@@ -603,12 +607,17 @@ refusals for a struct swap, a pointer mismatch, a missing or by-value type), and
 seven to eleven C parameters with odd and even stack-argument counts, each checked
 for a 16-byte aligned callee frame and for its values). It also covers the
 stage (b)/(c) surface (`returns()`): `cbytes` empty/1-byte/NUL-containing/exact
-length/over-cap/`nil`-then-`err` and NULL-with-positive-length exit 11, both
-`cbytes` calls with two stack arguments, `cstr_out` normal/empty/NULL/no trailing
-text, `void`, `nonzero`, typed declarations with C-only `null`/`const`/`ints:len`
-slots, a v1 sidecar reader, sidecar shape/mode tampering, spec v2
-`signature_check` and `cbytes` key refusals, declaration/spec shape mismatches,
-the native declaration negatives, and the `--check` refusal. A libpq build
+length/over-cap/`nil`-then-`err`, NULL-with-positive-length and negative length
+exit 11, both `cbytes` calls with even and odd stack-argument counts (8 and 9 C
+parameters), `cstr_out` normal/empty/NULL/no trailing text and the 16 MiB bound,
+an all-`i64` spec with each typed return, `void`, `nonzero`, typed declarations
+with C-only `null`/`const`/`ints:len` slots (including C-only slots before an
+obo argument and `ints:len` before its list), a v1 sidecar reader, sidecar
+shape/mode/return/nargs tampering, a v2 fn against a v1 spec, a v2 call against
+a typed return, spec v2 `signature_check` (header and declarations-only), a
+function-pointer `ret_ctype`, and `cbytes` key/length-function refusals,
+declaration/spec shape mismatches, the native declaration negatives, the
+`native` identifier programs, and the `--check` refusal. A libpq build
 failure is a test failure when `libpq.so.5` is present; the test skips only when
 the library is absent.
 
