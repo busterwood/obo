@@ -6724,6 +6724,10 @@ constant spelling (`hex "<48 lowercase digits>"`) and decimal globals use the ex
   constant and a public decimal global.
 - `tests/errors/decimal.obx` and `tests/errors/decimal_fields.obx` drop their global and
   constant refusals; `LANGUAGE.md` gains the two runnable examples and the `.sym` rules.
+- **port_compare seed entries:** the 0.16 `[]decimal` run files were added to
+  `SEED_FILE_MIN` in the D3 tests commit (D2 had left them out). They are preparatory: the
+  0.15 seed cannot compile them, and they stop being skipped once the promoted seed reaches
+  0.16.
 
 **Mutants (`tests/mutate_decimal.py`).** Ten new: a global slot of 8 bytes; an inferred
 global of 8; a global operand that skips the capture; initializer temporaries sharing one
@@ -6742,23 +6746,34 @@ so the path was unreachable. `decimalStatusSlot` and `decimalToInt` now use `scr
 `scratchAt`, and `decimal_global_init.obx` covers all four builtins. This was caught by a
 direct probe, not by a gate; the two new mutants above hold it.
 
-**Gates (after the last source change).**
+**Gates (after the last source change, re-run on the merged tree).** The branch then
+merged `main` `6fc3584` (cinterop v2 stage h); that merge is the landing image below.
 - `run_fork` **1,855 passed, 0 failed**; `module_test` **147 passed, 0 failed**;
   `sym_test` **55 passed, 0 failed**.
 - `sym_fuzz` **200/200 clean** (seed 20261028, digest `f3ddd18c8db2b6b1`).
 - `doc_check` **74 examples, 0 problems** (the new LANGUAGE.md global/constant example is one).
-- `heap_test` passes; the self-compile peak is **2,562,320 bytes** live (budget 2,750,000,
-  headroom 187,680). `OBO_STATS=1` on the same source reports 2,562,240 live and 56,527,312
+- `heap_test` passes; the self-compile peak is **2,583,344 bytes** live (budget 2,750,000,
+  headroom 166,656). `OBO_STATS=1` on the same source reports 2,583,264 live and 57,743,168
   allocated; the few hundred bytes between runs are the temporary output path in rodata.
 - `port_test` **628 of 628** identical, no leaks; `port_compare` **1,834 of 1,834** Stage B,
-  the port's peak 2,562,208 bytes.
+  the port's peak 2,583,312 bytes.
 - `elf_test` ok; `io_test` 0 failures; `meta_test` **34** checks; `homes_check` and
   `homes_edge` (1,028 statements, 119 refused by both, 0 differ); `imports` **30/30**;
   `stdlib` **17/17**; `own_fuzz` **0 failures in 200 programs**.
+- `test_cinterop.py` and `test_db_adapters.py` pass on the merged tree (the live libpq,
+  postgres and sqlite-DSN cases are skipped without `CINTEROP_TEST_DSN`/a live server).
 - `mutate_decimal` **105 caught, 0 missed, 0 broken** (95 before D3, plus the ten above).
 - `mutate_fork` filtered runs: `module globals share one slot` **1/1**; `decimal` **4/4**;
   `sym` **78 caught + 1 equivalent of 79** (the pre-existing `field visibility:
   symCompareFields ignores visibility` equivalent).
 - Fixed point: `stage2 == stage3` (`cmp`), the seed-built `obo` equals stage 2 byte for byte
-  (745,473 bytes).
+  (757,761 bytes).
 - The decimal run tests pass under `OBO_CHECK=1`, which `run_fork` always sets.
+
+**Review nits closed.** N1: `tests/run/decimal_global_init.obx` now hands each
+`div`/`quantize`/`toInt`/`check`/`parse`/`format` temporary to a function that consumes and
+prints it, with an error path for `check`, `parse` and `format`, so a wrong status or result
+address fails rather than only crashing; the plain `q1..q4` globals keep the
+construction/free check. N4: `LANGUAGE.md` no longer calls a record literal a decimal
+expression. N3 is noted above. N2 (the unused 8-byte inferred placeholder) and N5 (a decimal
+suite timeout counted as a caught mutant) are accepted as documented.

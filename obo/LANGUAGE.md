@@ -229,8 +229,9 @@ argument follows. Like an int field, a field may not be assigned from a call
 that might free its record (`cannot assign to a field or element across a
 call`). A decimal global works (0.16): it takes 24 bytes of the zero-initialised
 global data, so `var g: decimal` starts at zero, and
-`var g = expr` takes any decimal expression, including a call, a record literal
-or a product, so a global initializer may build decimals as a local may. Module
+`var g = expr` takes any decimal expression, including a call or a product, and a
+record global may be built from a record literal with decimal fields: a global
+initializer may build values as a local may. Module
 initializers run in import order: a dependency's before its importer's, and
 declarations in source order. A decimal
 constant is a literal or a unary-minus literal (`const RATE = 0.0825`,
