@@ -1,4 +1,5 @@
-// error: literal arms need
+// SPEC 8: an arm may name several variants of a closed type (was an error before).
+// expect: 1
 type C = closed { Red; Blue }
 fn main() {
     let c = C.Red

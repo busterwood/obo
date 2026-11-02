@@ -1,0 +1,11 @@
+// SPEC 7.8: every name of a list arm is a variant of the scrutinee's type.
+// error: Other.B is not a variant of Sort
+type Sort = closed { Name; Size }
+type Other = closed { A; B }
+fn main() {
+    let s = Sort.Name
+    match s {
+        Sort.Name, Other.B { }
+        else { }
+    }
+}

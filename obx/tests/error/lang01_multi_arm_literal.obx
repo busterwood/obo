@@ -1,0 +1,10 @@
+// SPEC 7.8: a match on a closed type takes no literals.
+// error: literal arms need an integer, byte or str scrutinee
+type Sort = closed { Name; Size }
+fn main() {
+    let s = Sort.Name
+    match s {
+        Sort.Name, 3 { }
+        else { }
+    }
+}

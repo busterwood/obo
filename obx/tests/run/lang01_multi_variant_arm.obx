@@ -1,0 +1,64 @@
+// SPEC 7.8: an arm may name several variants (none binding fields); it is taken
+// when the scrutinee is any of them, in a match statement and a match expression,
+// on a place (borrowing) and on a value (consuming; the fields are dropped).
+// expect: small
+// expect: big
+// expect: small
+// expect: other 3
+// expect: 1 2 1 0
+// expect: boxed text
+// expect: v 7
+// expect: done
+type Sort = closed { Name; Size; Modified; Kind }
+type Shape = closed { Dot; Line(int); Text(str); Pair(str, str) }
+type VShape = value closed { VDot; VText(str); VNum(int) }
+type Tree = closed { Leaf; Node(Tree, Tree); Label(str) }
+
+fn weight(s: Sort): int {
+    return match s {
+        Sort.Size, Sort.Modified { 1 }
+        Sort.Name { 2 }
+        else { 0 }
+    }
+}
+
+fn kind(t: Tree): str {
+    match t {
+        Tree.Leaf, Tree.Node { return "plain" }
+        Tree.Label(s) { return "boxed " + s }
+    }
+}
+
+fn main() {
+    let shapes: []Shape = [Shape.Dot, Shape.Text("big"), Shape.Line(4), Shape.Pair("x", "y")]
+    for sh in &shapes {
+        match sh {
+            Shape.Dot, Shape.Line { println("small") }
+            Shape.Text(s) { println(s) }
+            else { println("other " + intToStr(len(shapes) - 1)) }
+        }
+    }
+    println(intToStr(weight(Sort.Size)) + " " + intToStr(weight(Sort.Name)) + " " + intToStr(weight(Sort.Modified)) +
+        " " + intToStr(weight(Sort.Kind)))
+    // consuming arms drop the fields of the variant they matched
+    let owned = Shape.Pair("p", "q")
+    match owned {
+        Shape.Pair, Shape.Text { }
+        Shape.Dot, Shape.Line { println("no") }
+    }
+    let t1 = kind(Tree.Node(Tree.Label("a"), Tree.Leaf))
+    if t1 != "plain" { println("bad") }
+    println(kind(Tree.Label("text")))
+    let vs = VShape.VText("t")
+    let r = match vs {
+        VShape.VDot, VShape.VText { "v" }
+        VShape.VNum(n) { intToStr(n) }
+    }
+    let k = VShape.VNum(7)
+    let m = match &k {
+        VShape.VDot, VShape.VText { 0 }
+        VShape.VNum(n) { n }
+    }
+    println(r + " " + intToStr(m))
+    println("done")
+}

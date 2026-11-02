@@ -1728,9 +1728,26 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
     let arms = c.items(n.b)
     for arm in arms {
         let an = c.nd(arm)
-        if an.c >= 0 { c.err(an.line, "literal arms need an integer, byte or str scrutinee") }
         var vr = -1
-        if an.s == "" {
+        var multi = false
+        if an.c >= 0 {
+            // several variants, none binding fields (SPEC 7.8)
+            multi = true
+            var conds = newStrBuf()
+            var k = 0
+            for it in c.items(an.c) {
+                if c.kind(it) != sx.N_LNAME { c.err(an.line, "literal arms need an integer, byte or str scrutinee") }
+                let ivr = c.armVariantAt(c.nd(it).a, an.line, d, base)
+                let idx = c.pg.variants[ivr].index
+                if seen[idx] { c.err(an.line, c.pg.variants[ivr].name + " is matched twice") }
+                seen[idx] = true
+                nseen += 1
+                if k > 0 { conds.add(" || ") }
+                conds.add(acc + sep + "tag == " + intToStr(idx))
+                k += 1
+            }
+            c.emit((if first { "if" } else { "} else if" }) + " (" + conds.toStr() + ") {")
+        } else if an.s == "" {
             hasElse = true
             c.emit(if !first { "} else {" } else { "{" })
         } else {
@@ -1746,7 +1763,7 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
         c.restore(&snap)
         c.cx.dead = false
         c.pushScope()
-        if an.s == "" {
+        if an.s == "" || multi {
             if !borrowing { c.dropc(acc, base) }
         } else {
             let vname = c.pg.variants[vr].name
@@ -1813,18 +1830,24 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
 
 fn (c: mut &Checker) armVariant(arm: int, d: int, base: int): int {
     let an = c.nd(arm)
-    let np = c.count(an.a)
+    return c.armVariantAt(an.a, an.line, d, base)
+}
+
+// The variant of the closed type d (instance base) that the arm's path vpath names.
+fn (c: mut &Checker) armVariantAt(vpath: int, line: int, d: int, base: int): int {
+    let np = c.count(vpath)
+    let last = c.nd(c.item(vpath, np - 1)).s
     var vr = -1
-    if np > 1 || c.pg.prelude.has(&an.s) {
-        let st = c.static(c.vpathExpr(an.a, an.line))
+    if np > 1 || c.pg.prelude.has(&last) {
+        let st = c.static(c.vpathExpr(vpath, line))
         if st.k == ST_DECL && st.dk == D_VARIANT { vr = st.di }
     }
     if vr < 0 || c.pg.variants[vr].decl != d {
         if np == 1 {
-            c.err(an.line, "write " + c.pg.types[d].name + "." + an.s + ": a variant is qualified by its type (only Some, " +
+            c.err(line, "write " + c.pg.types[d].name + "." + last + ": a variant is qualified by its type (only Some, " +
                 "None, Ok and Err of the prelude may be written bare)")
         }
-        c.err(an.line, c.vpathText(an.a) + " is not a variant of " + c.tstr(base))
+        c.err(line, c.vpathText(vpath) + " is not a variant of " + c.tstr(base))
     }
     return vr
 }

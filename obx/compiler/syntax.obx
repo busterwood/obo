@@ -1421,9 +1421,13 @@ fn (p: mut &Parser) matchstmt(w: int, kind: int): int {
                 p.next()
                 p.ast.nodes[arm].b = p.list(&binds)
             }
+            if p.ast.nodes[arm].b >= 0 && p.atSym(S_COMMA) {
+                p.err("an arm with several variants binds no fields")
+            }
             while p.ast.nodes[arm].b < 0 && p.atSym(S_COMMA) {
                 p.next()
                 append(mut &lits, p.literal())
+                if p.atSym(S_LPAREN) { p.err("an arm with several variants binds no fields") }
             }
             if len(lits) == 1 && p.ast.nodes[first].kind == N_LNAME {
                 let vpath = p.ast.nodes[first].a

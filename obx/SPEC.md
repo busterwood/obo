@@ -603,7 +603,10 @@ let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" 
   borrowed for the whole loop.
 - `match e { ... }` takes a closed value. An arm names a variant and binds its
   positional fields (`Expr.Add(l, r)`) or named fields in declaration order; `_`
-  ignores one. Arms must cover every variant or end with `else`. `match` on an
+  ignores one. An arm may instead name several variants of the type, binding
+  no fields (`Sort.Size, Sort.Modified { ... }`); it is taken when the value is
+  any of them. A variant may be named once in the whole match, alone or in a
+  list. Arms must cover every variant or end with `else`. `match` on an
   integer, `byte` or `str` takes literal arms and requires `else`. Such an arm
   may also name a constant (`K` or `mod.K`, section 5.2), alone or in a list
   with literals (`N_INT, N_FRAC, 7 { ... }`), when `x == K` would type-check:
@@ -659,7 +662,8 @@ from first to last.
 or named fields of owned types are bound as `&T`, and of copy types as copies.
 `match` on any other expression (a call result, `move(x)`) consumes it: the
 bindings own the fields, and fields not bound (or bound to `_`) are dropped at
-the start of the arm, before its body runs.
+the start of the arm, before its body runs; an arm naming several variants, like
+`else`, drops the whole value there.
 
 A path that ends in `return`, `break`, `continue`, `panic` or `exit` does not
 take part in the join of section 9.1.
