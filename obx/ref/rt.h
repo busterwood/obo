@@ -119,10 +119,14 @@ __attribute__((noreturn)) static void rt_exit(int64_t code) { rt_flush(); exit((
    block, so its bytes are not in general NUL-terminated; but every block ends with a NUL, so
    RT_SP(s)[s.len] can always be read. Offsets and lengths are 32 bits: a str holds < 4 GiB. */
 
+#ifndef RT_STR_MAX
+#define RT_STR_MAX UINT32_MAX       /* the longest str; a test lowers it with -DRT_STR_MAX=n */
+#endif
 static struct { int64_t rc; char data[1]; } rt_empty = {-1, ""};
+/* Every str with new bytes is made here; lengths are computed in 64 bits by the callers. */
 static obx_str rt_str_new(int64_t len) {
     if (len == 0) return (obx_str){(obx_sblk*)&rt_empty, 0, 0};
-    if (len > (int64_t)UINT32_MAX) rt_trap(2, "string too long (4 GiB or more)", "runtime");
+    if (len < 0 || len > (int64_t)RT_STR_MAX) rt_trap(2, "string too long (4 GiB or more)", "runtime");
     obx_sblk* b = rt_alloc(sizeof(obx_sblk) + (size_t)len + 1);
     b->rc = 1;
     return (obx_str){b, 0, (uint32_t)len};
@@ -146,7 +150,7 @@ static int rt_str_cmp(obx_str a, obx_str b) {
 static obx_str rt_str_concat(obx_str a, obx_str b) {
     if (b.len == 0) return rt_str_dup(a);
     if (a.len == 0) return rt_str_dup(b);
-    obx_str s = rt_str_new(a.len + b.len);
+    obx_str s = rt_str_new((int64_t)a.len + b.len);
     memcpy(s.b->data, RT_SP(a), (size_t)a.len);
     memcpy(s.b->data + a.len, RT_SP(b), (size_t)b.len);
     return s;

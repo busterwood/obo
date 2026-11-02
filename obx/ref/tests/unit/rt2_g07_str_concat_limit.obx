@@ -1,0 +1,15 @@
+// Red-team round 2, g07 (SPEC 4.1): making a str longer than the limit stops
+// the program with exit 2. The real limit is 4 GiB - 1 bytes; this test lowers
+// it to 100 bytes (the full-size program, which needs about 6 GiB, is
+// ../../../redteam/round2/g07_str_concat_4gib.obx). rt_str_concat used to
+// add two 32-bit lengths, so 2 GiB + 2 GiB wrapped to 0.
+// cflags: -DRT_STR_MAX=100
+// expect: 100
+// exit: 2
+fn main() {
+    let a = strFromBytes(&array(50, 'x'))
+    let s = a + a
+    println(len(s).toStr())
+    let t = s + "y"
+    println("not reached")
+}
