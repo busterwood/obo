@@ -98,3 +98,42 @@ signature clashes; fractional literal limits and order.
 `rt.py` (default: `cases/`, `mcases/`, `h*`; `CC=clang` for the clang build;
 `--probe`), `split.py batch.txt [outdir]` (`=== dir/main` makes multi-module
 cases), `fuzz.py N seed` (`FZGCC=1`), `run1.sh`.
+
+## Status after the fixes (2026-11-02)
+
+All 11 are fixed; `rt.py` gives 450 OK of 450 (436 single-file cases, 14
+multi-module cases), under gcc and under clang. Each finding has regression
+tests `rt3_*` in `../../tests/{run,error}` (all are spec behaviour now).
+
+| | Fix | Tests |
+|---|---|---|
+| H1 | Every path that hands on a `mut` slice or borrow borrows its root mutably, as `borrow()` does for `mut &x`: the slice-parameter branch of `call()` (also `mut &[]T` variables viewed as slices, generic slice parameters), `x_sub` of a slice operand when the result is `mut`, and a `let` of any `mut` borrow or slice (typed or not). Since `frozen()` also marks captures, a closure that passes a captured slice on captures it mutably (nested closures too). `for` loops and match bindings over a slice were already frozen; passing the slice on inside them is now caught. | `error/rt3_h01_*`, `error/rt3_h01b_*`, `error/rt3_h01c_*` (for), `error/rt3_h02_*`, `error/rt3_h02b_*` (let), `error/rt3_h03_*`, `run/rt3_h01_mutslice_pass_on` |
+| H2, L2 | `emit.program()` orders the exit drops: set-once globals module by module, importers first (post-order over the imports, `std` first, reversed), each module's in reverse declaration order. A set-once global has a state byte (0 empty, 1 set, 2 dropped) and is marked dropped before its drop glue runs: `isSet()` is false, `get()` and `set()` stop the program ("... is dropped", exit 12), also in its own drop. Copy globals (`str`, value records holding one) are dropped after all of them; see below. | `run/rt3_h04_*`, `run/rt3_h04b_*`, `run/rt3_h05_*/`, `run/rt3_h06_*`, `run/rt3_h07_*`, `run/rt3_h07b_*` |
+| M1 | A fractional literal whose scale does not fit an `int` is a compile error (`x_frac`). | `error/rt3_h08_*` |
+| L1 | A number literal longer than 1,000 characters is a compile error in the lexer, so no Python `int`/`str` conversion of user text can hit the 4,300-digit limit (folded constants are range-checked at every step and stay within 256 bits). | `error/rt3_h09_*` |
+| M2, M3 | `check_targs` rejects `never` and "no result" as type arguments with a message naming the parameter; every inference path (calls, generic function values, variant and record literals) goes through it. | `error/rt3_h10_*`, `error/rt3_h10b_*`, `error/rt3_h11_*` |
+| L3 | An extern's C name (with or without `as`) may not be `main`, `rt_*`, `obx_*` (except the `obx_` helpers of `rt.h` that the library calls) or a generated name (`f1_`, `g1_`, `k1_`, `gl1_`, `S1_`, `sl1`, `fn1` forms). | `error/rt3_h12_*`, `error/rt3_h12b_*` (main), `error/rt3_h12c_*` (generated) |
+| L4 | `var` on a closure parameter is an error, as on any borrow parameter. | `error/rt3_h13_*` |
+| L5 | `R.V` through a generic alias without arguments gives the variant with the alias's target arguments, whose free parameters (the alias's) are inferred by `call()` from the values and the expected type; match arms work through `static()`. | `run/rt3_h14_*`, `error/rt3_h14b_*` |
+| L6 | A point not followed by a digit ends a number literal (`5.toStr()`); `never` at the end of a line ends the statement. | `run/rt3_l6_*` |
+
+**Copy globals at exit.** The spec decision says a dropped `str` global
+reverts to its constant initializer. The fix takes the equivalent sound route
+the decision allowed: copy globals are dropped after every set-once global.
+Dropping a copy value runs no code (a copy type has no drop method), so the
+order among them is not observable, no drop method can read a freed one, and
+a value a drop method stores into one at exit is still freed (no revert, no
+leak). h06 / o71 keep their expectation (`drop ab`). SPEC 9.4 says so.
+
+**A drop method reading its own set-once global.** The global is marked
+dropped before its drop glue runs, so `G.get()` inside `G`'s own drop (or a
+field's) stops the program: otherwise a field's drop method could reach the
+already dropped fields through `get()`.
+
+**Expectations changed** (each now follows the spec decisions above):
+- `h04`, `o01` (`GA.get()` in GB's drop after GA is dropped): exit 12 after "set".
+- `h07`, `o02b` (`GA.set` in GB's drop after GA is dropped): exit 12 after "drop b".
+- `o60` (`GB.get()` in GB's own drop): exit 12.
+- `f01` (scale 2^64 + 1) and `f03` (`0e99999999999999999999`, scale −10^20): compile errors.
+- `s18` (`5.toStr()`): prints 5. `s23` (an extern ending in `never` with the next declaration on the following line): compiles; it now calls `exit` through `as "exit"` (exit 3).
+- `n30`, `n31`, `n32`, `n35`, `n37` (`never` inferred as a type argument): compile errors; `n36` accepts the new message.

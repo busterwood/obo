@@ -60,16 +60,16 @@ literals are `int`/`char`/`str` nodes with line `-`.
 
 | File | Lines | Role |
 |---|---:|---|
-| `syntax.py` | 877 | lexer (with the ASI rule) and parser to `N` nodes |
-| `sema.py` | 853 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
-| `check.py` | 2,344 | checks every function body once and writes it as a C template |
-| `emit.py` | 341 | renders templates once per instance, drop/dup glue, struct layouts |
+| `syntax.py` | 881 | lexer (with the ASI rule) and parser to `N` nodes |
+| `sema.py` | 865 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
+| `check.py` | 2,359 | checks every function body once and writes it as a C template |
+| `emit.py` | 354 | renders templates once per instance, drop/dup glue, struct layouts |
 | `obxc.py` | 136 | driver |
 | `dump.py` | 298 | `--dump-ast` |
 | `rt.h` | 460 | the C runtime: allocation counter, traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
 | `../lib/std.obx` | 1,400 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
 
-Python total: about 4,880 lines (with `run_tests.py`, 54).
+Python total: about 4,950 lines (with `run_tests.py`, 55).
 
 **Checking once, rendering per instance (SPEC 6.2, 6.4).** `check.py` checks a
 function body exactly once, generic or not. A type parameter is an opaque type:
@@ -108,7 +108,7 @@ rendered with the enclosing instance, and `env` is an array of pointers to
 the captured variables in the enclosing frame (no allocation). A plain
 function passed as a closure gets a trampoline whose `env` is the function
 pointer. A constant table is a `static const` C array viewed as a slice; a
-set-once global is a static plus an `is set` flag. A `drop` method runs before the fields are
+set-once global is a static plus a state byte (0 empty, 1 set, 2 dropped). A `drop` method runs before the fields are
 dropped (in reverse declaration order, array elements first to last).
 
 **Ownership and borrows.** Variable states (live/moved) are tracked per path
@@ -243,7 +243,10 @@ is a default import root: `import "money"`. See `../lib/README.md`.
     variant (`Some`, `None`, `Ok`, `Err`); a user variant with such a name is
     still allowed but must be qualified, including in match arms
     (`R.Ok(v)`). `Type.Variant` also works through an alias and a module
-    (`m.Shape.Circle(1)`).
+    (`m.Shape.Circle(1)`), and through a generic alias without type
+    arguments (`R.Ok(3)` with `type R[T] = Result[T, str]`): the variant's
+    constructor then takes the alias's type parameters, which are inferred
+    as for a call (`Checker.variant_of`, `construct_variant`).
 16. Imports: `./x` and `../x` are relative to the importing file; a bare
     `x` is looked up only in the library roots (`../lib`, `-L`), and the
     error for a bare path that exists next to the file suggests `"./x"`.
@@ -251,7 +254,8 @@ is a default import root: `import "money"`. See `../lib/README.md`.
     function's variables (the no-shadowing rule covers the whole function).
     A closure may not return a borrow. Its captures are found by use: a
     variable is captured mutably when the closure assigns it, borrows it
-    `mut`, or (for a `mut &` borrow variable) writes through it. A closure
+    `mut`, or (for a `mut &` borrow or slice variable) writes through it or
+    passes it on as `mut`. A closure
     argument holds its captures for the call (rule 3, `mut` for mutable
     captures); a `let` closure freezes them for its scope (rule 4).
     Parameter and result types are inferred only from the callee's parameter
@@ -259,8 +263,15 @@ is a default import root: `import "money"`. See `../lib/README.md`.
     they must be written.
 18. A set-once global's `get()` is a shared borrow rooted at static data:
     it can be kept in a `let` and freezes nothing. A global of an owned type
-    must be `once` (or a constant table).
-
+    must be `once` (or a constant table). At exit (SPEC 9.4) the set-once
+    globals are dropped importers first (a post-order walk of the imports,
+    `std` first, reversed), each module's in reverse declaration order; each
+    is marked dropped (state 2) before its drop glue runs, so a `get()` in any
+    drop method from then on, its own included, stops the program (exit 12)
+    instead of reading a half-dropped value. Copy globals (`str` and value
+    records holding one) are dropped after all of them: that runs no code, so
+    no drop method can see a freed one, and a value a drop method stores into
+    one is still freed.
 19. Compound assignment `a op= b` (SPEC 7.4): the index expressions in `a` run
     once, before `b`, and `a`'s value is read before `b` when `b` may have an
     effect; the result is stored to the place `a` names, found again after `b`
@@ -268,6 +279,20 @@ is a default import root: `import "money"`. See `../lib/README.md`.
     compile and the index is checked again at the store. When `a` is reached
     through a slice or a borrow returned by a call (a pointer taken before
     `b`), it is held while `b` is evaluated (rule 3).
+20. Passing a `mut &[T]` on (to a slice parameter, `swap`), re-slicing it as
+    `mut` (`mut &s[a..b]`, a typed `let`), and a `let` of any `mut` borrow
+    or slice borrow the root mutably (rule 4), exactly like `mut &x`.
+21. An extern's C name may not be `main`, start with `rt_` or `obx_` (the
+    runtime; `sema.CHELPERS`, the `obx_` helpers of `rt.h` for the library,
+    are allowed), or have the form of a generated name: `f`, `g`, `k`, `gl`
+    or `S`, digits and `_` (instances, globals, constants, glue, structs), or
+    `sl` or `fn` and digits (string literals, function types). `x_` is not
+    reserved: an extern `foo` is the C identifier `x_foo` bound to the symbol
+    `foo` by `__asm__`, so no symbol `x_...` is defined.
+22. A number literal longer than 1,000 characters is a compile error, so no
+    literal reaches Python's 4,300-digit `int`/`str` limit; a fractional
+    literal's scale must fit an `int` (both checked in `syntax.lex` and
+    `Checker.x_frac`).
 
 ## Known gaps
 
