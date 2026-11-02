@@ -2,13 +2,15 @@
 
 Stage 4 of [../PLAN.md](../PLAN.md): the obx compiler written in obx, a port
 of the reference compiler (`../ref/`, Python) with the same algorithms, checked
-mechanically against it. Step 1 (the front end) is done; the driver only
-parses for now.
+mechanically against it. Steps 1 (the front end) and 2 (sema) are done; the
+driver parses and resolves declarations for now.
 
     python3 obx/ref/obxc.py obx/compiler/main.obx -o obxc   # build (ref compiles it to C, then gcc)
     ./obxc --dump-ast file.obx...                           # the parse tree, as ref's --dump-ast
+    ./obxc --dump-types file.obx...                         # what sema resolves, as ref's --dump-types
     python3 obx/compiler/run_compare.py                     # build, then compare with ref on every test file
     python3 obx/compiler/run_compare.py --mutants 20000 --seed 2   # also on mutated programs
+    python3 obx/compiler/run_compare.py --mode types        # only --dump-types (or --mode ast)
     python3 obx/compiler/run_compare.py --hashseed          # ref's C output is independent of PYTHONHASHSEED
 
 ## Layout
@@ -16,9 +18,13 @@ parses for now.
 | File | Lines | Ports | Contents |
 |---|---:|---|---|
 | `syntax.obx` | 1,840 | `ref/syntax.py` (889) | errors, tokens, source text (UTF-8 check, newlines), lexer with the ASI rule, the AST arena, the parser |
+| `sema.obx` | 2,010 | `ref/sema.py` (865) | paths, module loading and imports, scopes, the type table, type resolution, constraints and `satisfies`, signatures, constant folding |
+| `num.obx` | 523 | (Python's `int`, `float`, `repr`) | big integers for constant folding; float parsing and Python's float `repr` |
 | `dump.obx` | 388 | `ref/dump.py` (298) | `--dump-ast` |
-| `main.obx` | 63 | `ref/obxc.py` (`--dump-ast` only) | driver |
-| `run_compare.py` | 256 | | build and compare with ref; mutant generator; hash-seed check |
+| `tdump.obx` | 269 | `ref/dump.py` `dump_types` (99) | `--dump-types` |
+| `main.obx` | 61 | `ref/obxc.py` (the dump modes) | driver |
+| `run_compare.py` | 320 | | build and compare with ref; mutant generators; hash-seed check |
+| `tests/types/` | | | programs that cover the dump (constant folding, generics, two modules with one name) |
 
 The obx code is about twice as many lines as the Python it replaces (1,660
 against 800 lines without comments and blank lines for the parser). The
@@ -27,6 +33,15 @@ difference is mostly what obx does not have: tuples and list comprehensions
 a conditional expression, exceptions (an error is a `never` function), and
 Python's `repr`, `int(text, base)` and UTF-8 decoder, which ref's messages and
 literals depend on and which are written out here (about 200 lines).
+
+sema is 2.25 times its Python (1,770 lines against 785 without comments and
+blank lines), plus 450 lines of `num.obx` for what Python's numbers give ref
+for free: constant folding uses unbounded integers (a literal may have 1,000
+digits, and a message prints the exact out-of-range value) and prints floats
+with Python's `repr`. The rest of the growth is tables instead of objects
+(`pg.types[d].tparams[i]` for `d.tparams[i]`), copies of a list before a
+loop that mutates the program (rule 4: a `for` over `pg.x` freezes `pg`), and
+the `let`s rule 3 asks for (PLAN.md, pain points).
 
 ## Design
 
@@ -70,6 +85,26 @@ dumped, so that it stays in order) and exits 1, as ref does with its first
 `CompileError`. A run over many files therefore stops at the first syntax error;
 `run_compare.py` starts the compiler again from the next file.
 
+**sema's tables.** ref's objects (Module, TypeDecl, Variant, FnDecl, Const,
+Global, TypeParam) become value records in arrays of one `Program`, named by
+index; a scope maps a name to a kind and an index. A type is an int: types
+are interned (hash-consed) in `Program.tys` with their lists in
+`Program.tlists`, so the equality ref gets from comparing type tuples is
+`==` on ints, and substitution builds new ids. An environment (ref's dict
+from type parameters to types) is a flat list of pairs, with -1 for `Self`.
+A folded constant is a `CVal` record (ref's `(type, value, kind)` tuple).
+ref's `const_value` catches an error in an initializer and raises it again
+wrapped ("the initializer of const C is not constant (...)", nested for
+constants that refer to constants); with no exceptions, `Program` keeps a
+stack of the constants being folded and the error function applies the
+wrappers itself. ref's `RecursionError` from `is_copy` on a value type that
+contains itself (before the inline-cycle check) is a depth limit of 5,000.
+
+Known differences, none reached by a test: a module's C prefix replaces
+every non-ASCII-alphanumeric byte with `_`, where ref keeps Unicode letters
+(Python's `isalnum`); absolute paths are normalized fully, where Python keeps
+a leading `//`; the nesting limits differ, as below.
+
 **Nesting depth.** ref turns Python's `RecursionError` into `file:1: the
 program is nested too deeply`; that limit comes from Python's frame count, so
 the dump of about 900 nested parentheses already fails there. This parser
@@ -80,9 +115,12 @@ agree between those depths; no test is that deep.
 ## How the port is checked
 
 `run_compare.py` builds the compiler with ref, then dumps every `.obx` file
-under `tests/`, `ref/tests/`, `lib/`, `redteam/` and `compiler/` (1,969 files,
+under `tests/`, `ref/tests/`, `lib/`, `redteam/` and `compiler/` (2,025 files,
 44 of them syntax errors) with both compilers, each in one process, and
-compares the text. The syntax-error files are also run one at a time, where
+compares the text; then the same with `--dump-types` (ref in parallel
+batches). `--dump-types` stops after sema, so a program whose first error is
+in a function body prints its full dump on both sides; its error is compared
+in step 3. The syntax-error files are also run one at a time, where
 the message goes to stderr, and exit status and stderr must match. The
 compiler runs with `OBX_CHECK=1`, so a leak fails the run.
 
@@ -90,17 +128,35 @@ The suites have few syntax errors, so `--mutants N` makes N programs from the
 test files by token edits (deletions, insertions of tokens and of bad bytes:
 quotes, backslashes, CR, non-ASCII letters and digits, a BOM, invalid UTF-8,
 long literals) and compares those too: about 88% of them are syntax errors,
-covering every lexer and parser message.
+covering every lexer and parser message. Every second mutant instead has one
+or two names or numbers replaced (by others from the program, or by type
+names, `Self`, `copy`, limits), which mostly parses and reaches sema. The
+mutants are written next to the program they come from, as hidden
+`.obxmut*.obx` files removed afterwards, so their `./` imports resolve.
 
 ## Status
 
-- `--dump-ast`: identical for all 1,969 test files and for 25,000 mutants
+- `--dump-types`: identical for all 2,025 test files (181 of them errors in
+  sema or the parser) and for 15,000 mutants (half token edits, half names
+  and numbers replaced, which mostly reach sema), in the many-file and the
+  one-file form; no leaks. Every sema error message is reached by a test
+  (`ref/tests/error/sema_*`: 43 tests added for this) except those that
+  cannot happen before bodies are checked (a type parameter declared outside
+  a receiver; `never`, no result or a borrow as a type argument, which only
+  inference makes) or outside std (a primitive's `drop`, type arguments on a
+  primitive receiver); `cannot read` of the main file was compared by hand.
+  Random constant-folding programs (3,000 float constants; integer
+  expressions in every type with wrapping, shifts, division and their
+  errors: 925 constants and 2,076 error messages) fold identically.
+- Speed: `--dump-types` on all test files in 7.9 s in one process, 3.4 ms a
+  file (ref: 45 to 65 ms a file, 13 s over all cores); most of it is std,
+  which is loaded again for every file.
+
+- `--dump-ast`: identical for all 2,025 test files and for 25,000 mutants
   after the round-3 lexer changes (22,000 of them syntax errors; 65,000
   more before them), in both the many-file and the one-file form. No leaks.
 - Speed: all 1,969 test files in 0.15 s (ref: 1.0 s in one Python process);
   a 409,000-line file (12.9 MB, 2.7 million dump lines) in 1.4 s (ref:
   15.8 s).
-- Next: `sema.obx` (`--dump-types`), then `check.obx` and `emit.obx`
-  (identical C), then the bootstrap (PLAN.md, stage 4, "Order"). sema needs
-  ref's `CRESERVED` pattern and `CHELPERS` list (the `obx_` helpers an extern
-  may name) word for word.
+- Next: `check.obx` and `emit.obx` (identical C), then the bootstrap
+  (PLAN.md, stage 4, "Order").

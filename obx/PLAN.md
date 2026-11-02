@@ -11,7 +11,7 @@ and the self-hosted compiler first. Only then port the existing programs
 | 1 | Core spec, [SPEC.md](SPEC.md) | about the size of obo's core guide | draft 1 written (about 580 lines) |
 | 2 | Reference compiler, `ref/` (Python to C) | under 5,000 lines; conformance suite passes with no leaks | done: 3,800 lines, 387 conformance + 77 own tests pass; soundness review next |
 | 3 | Library: `lib/` | no compiler change except primitives | done: 9 modules, 3,300 lines, 25 library tests (OBX_CHECK=1); compiler changes: `lib/` import root, `obx_*` C helpers in rt.h; see [lib/README.md](lib/README.md) |
-| 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | step 1 done: lexer and parser, identical `--dump-ast` on all 1,969 test files and 90,000 mutants; see [compiler/README.md](compiler/README.md) |
+| 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | steps 1 and 2 done: lexer and parser, identical `--dump-ast` on all 2,025 test files and 90,000 mutants; sema, identical `--dump-types` and sema errors on all test files and 15,000 mutants; see [compiler/README.md](compiler/README.md) |
 | 5 | Native x86-64 ELF backend; then eza, SQLite, Postgres | eza shorter than obo's and as fast | |
 | 6 | Retire obo 0.19 | | |
 
@@ -134,6 +134,26 @@ Pain points from writing the self-hosted front end (stage 4 step 1,
 4. No conditional expression; no tuples or multiple results (out-parameters).
 5. Imported names are always qualified (`sx.` about 130 times in one file).
 6. No exceptions: the first error stops the program (fine for a compiler).
+
+More from porting sema (stage 4 step 2, 2026-11-02):
+
+7. An element of an array of records cannot be read into a local without a
+   copy type (`let d = pg.types[i]` moves out of a borrow), and a `let d =
+   &pg.types[i]` borrow freezes all of `pg`, so no `pg.mk...()` call may
+   follow while it lives. sema therefore writes `pg.types[d].tparams[i]`
+   paths in full (about 250 of them), and splits a dump function into a
+   part that mutates `pg` and a read-only part that borrows.
+8. Rule 4 (a `for` over `pg.x` freezes `pg`) makes every loop that interns
+   types while walking a declaration's list copy the list first (`copyInts`,
+   about 15 times) or use an index loop.
+9. No big integers: constant folding needs Python's unbounded `int` (and
+   `repr(float)` for its dump and for C), so `num.obx` adds 450 lines.
+10. A record literal names every field, so creating a FnDecl or TypeDecl
+    lists 15 to 18 fields, most of them defaults; field defaults (or a
+    `..base` update form) would remove that.
+11. A record as a map key needs hand-written `eq` and `hash` methods;
+    interning types wants a structural key, so sema builds a string key per
+    type instead.
 
 Small gaps noted by the round-3 fixes (2026-11-02), not yet decided:
 
