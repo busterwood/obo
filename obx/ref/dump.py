@@ -296,3 +296,106 @@ class Dumper:
 
 def dump_ast(fname, imports, decls):
     return '\n'.join(Dumper().module(fname, imports, decls)) + '\n'
+
+
+# ---------------------------------------------------------------- --dump-types
+
+def dump_types(prog):
+    """--dump-types: what sema computes before bodies are checked (ref/README.md, "Types dump"),
+    for every module in load order, then the program-wide tables. Types are written in full:
+    a declared type by its C name (unique), a type parameter by its name and a number
+    (`T#3`, numbered in the order the dump first meets them, so identity is visible)."""
+    import os
+    from sema import TypeDecl, FnDecl, Const, Global, VOID, is_copy
+    out, tpn = [], {}
+
+    def tp(p):
+        if id(p) not in tpn:
+            tpn[id(p)] = (len(tpn) + 1, p)      # keep p alive, so its id is not reused
+        return f"{p.name}#{tpn[id(p)][0]}"
+
+    def ts(t):
+        k = t[0]
+        if k == 'prim':
+            return t[1]
+        if k == 'arr':
+            return '[]' + ts(t[1])
+        if k == 'ref':
+            return ('mut &' if t[2] else '&') + ts(t[1])
+        if k == 'slice':
+            return ('mut &[' if t[2] else '&[') + ts(t[1]) + ']'
+        if k in ('fn', 'clo'):
+            r = '' if t[2] == VOID else ': ' + ts(t[2])
+            return ('&' if k == 'clo' else '') + 'fn(' + ', '.join(ts(p) for p in t[1]) + ')' + r
+        if k == 'tp':
+            return tp(t[1])
+        if k == 'self':
+            return 'Self'
+        return t[1].cname + ('[' + ', '.join(ts(a) for a in t[2]) + ']' if t[2] else '')
+
+    def tparam(ind, p):
+        out.append(f"{ind}tparam {tp(p)} copy={flag(p.copy)} cons=[{', '.join(ts(c) for c in p.cons)}]")
+
+    def val(v):
+        ty, x, kind = v
+        if kind == 'table':
+            return f"table {ts(ty)}"
+        k = kind
+        if kind == 'typed':
+            k = 'float' if ty == ('prim', 'float') else ty[1] if ty[1] in ('str', 'bool') else 'int'
+        s = repr(float(x)) if k == 'float' else q(x) if k == 'str' else flag(x) if k == 'bool' else str(x)
+        return f"{kind} {ts(ty) if ty else '-'} {s}"
+
+    for m in prog.modules.values():
+        out.append(f"module {m.name} file={os.path.basename(m.path)} cprefix={m.cprefix} std={flag(m.is_std)}")
+        for alias, sub in m.imports.items():
+            out.append(f"  import {alias} {sub.cprefix}")
+        out.append("  scope" + ''.join(' ' + n for n in m.scope))
+        for d in m.scope.values():
+            w = line(d.where)
+            if isinstance(d, TypeDecl):
+                cp = drop = '-'
+                if d.form in ('record', 'closed'):
+                    cp = flag(is_copy(('inst', d, tuple(('tp', p) for p in d.tparams))))
+                    drop = d.drop.label if d.drop else '-'
+                out.append(f"  type {d.name} {w} pub={flag(d.pub)} form={d.form} value={flag(d.value)} "
+                           f"cname={d.cname} copy={cp} drop={drop}")
+                for p in d.tparams:
+                    tparam('    ', p)
+                for n, ft, pub in d.fields:
+                    out.append(f"    field {n} pub={flag(pub)} {ts(ft)}")
+                for v in d.variants:
+                    out.append(f"    variant {v.index} {v.name} {line(v.where)} named={flag(v.named)}")
+                    for n, ft, _ in v.fields:
+                        out.append(f"      field {n} {ts(ft)}")
+                for mb in d.members:
+                    out.append(f"    member {mb.name} {line(mb.where)} mode={opt(mb.mode)} "
+                               f"params=[{', '.join(ts(p) for p in mb.params)}] ret={ts(mb.ret)}")
+                if d.form == 'alias':
+                    out.append(f"    target {ts(d.target)}")
+                if d.methods:
+                    out.append("    methods" + ''.join(' ' + n for n in d.methods))
+            elif isinstance(d, Const):
+                out.append(f"  const {d.name} {w} pub={flag(d.pub)} cname={d.cname} {val(d.value)}")
+            elif isinstance(d, Global):
+                out.append(f"  global {d.name} {w} pub={flag(d.pub)} once={flag(d.ast.once)} cname={d.cname} "
+                           f"type={ts(d.ty)}")
+        for fd in m.fns:
+            ext = '-' if fd.extern is None else q(fd.extern)
+            cname = '-' if fd.extern is None else q(fd.ast.cname)
+            rt = '-' if fd.recv_type is None else ts(fd.recv_type)
+            out.append(f"  fn {fd.label} {line(fd.where)} pub={flag(fd.pub)} extern={ext} cname={cname} "
+                       f"recv={opt(fd.recv_mode)} recvname={opt(fd.recv_name)} recvtype={rt}")
+            for p in fd.tps:
+                tparam('    ', p)
+            for n, t, isvar, pw in fd.params:
+                out.append(f"    param {n} {line(pw)} var={flag(isvar)} {ts(t)}")
+            out.append(f"    ret {ts(fd.ret)} bparam={opt(fd.bparam)}")
+    for p, ms in prog.prim_methods.items():
+        if ms:
+            out.append(f"prim {p} methods" + ''.join(' ' + n for n in ms))
+    for n, v in prog.prelude.items():
+        out.append(f"prelude {n} {v.decl.cname}.{v.name}")
+    for c, (sig, fd) in prog.externs.items():
+        out.append(f"extern {c} {fd.module.cprefix}.{fd.name}")
+    return '\n'.join(out) + '\n'

@@ -9,6 +9,7 @@ by Python, then to a binary by gcc.
     python3 obxc.py file.obx --emit-c         # prints the generated C
     python3 obxc.py file.obx -L libroot       # another root for `import` paths
     python3 obxc.py --dump-ast a.obx b.obx    # prints the parse tree of each file (see "AST dump")
+    python3 obxc.py --dump-types a.obx        # what sema resolves for the program (see "Types dump")
     python3 run_tests.py                      # own tests (tests/run, tests/error, tests/unit)
     python3 run_tests.py --conformance        # also the conformance suite in ../tests
 
@@ -56,6 +57,58 @@ The node kinds and their fields in order are those of `dump.py`. An index
 or call bracket argument that parses as a type is `targ`; a match arm's
 literals are `int`/`char`/`str` nodes with line `-`.
 
+## Types dump
+
+`--dump-types` loads the program of each file given (std, then the file and
+its imports), resolves its declarations (`Program.resolve_all`: type
+parameters, constraints, fields, variants, interface members, signatures,
+globals' types, constant values) and prints what it computed; no function
+body is checked. It is `dump_types` in `dump.py`, and `../compiler` compares
+its own sema with it. Several files and errors work as for `--dump-ast`;
+an error is any error up to the end of `resolve_all` (syntax in any module,
+imports, declarations, constants), so a program whose first error is in a
+body prints its full dump.
+
+Modules come in load order (std first; a module before the modules it
+imports), each with its declarations in scope order, then its functions
+(methods too) in source order; then the program-wide tables:
+
+    module m file=m.obx cprefix=m std=false
+      import util util2                  # an alias, the imported module's cprefix
+      scope Box N main                   # the module's top-level names, in order
+      type Box 2 pub=false form=record value=false cname=m_Box copy=false drop=-
+        tparam T#90 copy=false cons=[]
+        field v pub=false T#90
+        methods get
+      const N 3 pub=false cname=k1_m_N typed int 2
+      fn Box.get 4 pub=false extern=- cname=- recv=ref recvname=b recvtype=m_Box[T#91]
+        tparam T#91 copy=true cons=[]
+        param b 4 var=false &m_Box[T#91]
+        ret T#91 bparam=-
+    prim str methods len ...             # the methods of each primitive, in declaration order
+    prelude Some std_Option.Some         # the bare variants
+    extern sqrt std.sqrt                 # each C name, with the first extern that declared it
+
+A type is written in full: a primitive by name, `[]T`, `&T`, `mut &T`,
+`&[T]`, `mut &[T]`, `fn(A, B): R` (no `: R` without a result), a closure
+`&fn(...)`, `Self`, a declared type by its C name (unique in the program) with
+its arguments in brackets, and a type parameter by its name and a number,
+`T#3`, given in the order the dump first meets each parameter (so that two
+parameters with one name can be told apart). A type's `copy` (`-` for an
+interface or alias) is `is_copy` of the type applied to its own parameters;
+`drop` is the label of its drop method. A member's `mode` is `val`, `ref`,
+`mut` or `-` (an associated function); a function's `recv` is also `assoc`,
+or `-` when it is not a method. A constant's value is its fold kind (`int`,
+`frac`, `float`, `str`, `bool`, `typed` for a constant with a declared type,
+or `table` for an array, record or variant constant, which has no folded
+value), its type or `-`, and the value: decimal for integers, the literal's
+text for an untyped fraction, Python's `repr` for floats, a quoted string.
+Lines are the declaration's line in its file.
+
+Not in the dump: a global's initializer value. ref computes it after the
+bodies are checked (`check.global_init`), so it belongs to the next stage of
+the comparison (the C output).
+
 ## Architecture
 
 | File | Lines | Role |
@@ -64,8 +117,8 @@ literals are `int`/`char`/`str` nodes with line `-`.
 | `sema.py` | 865 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
 | `check.py` | 2,359 | checks every function body once and writes it as a C template |
 | `emit.py` | 354 | renders templates once per instance, drop/dup glue, struct layouts |
-| `obxc.py` | 136 | driver |
-| `dump.py` | 298 | `--dump-ast` |
+| `obxc.py` | 149 | driver |
+| `dump.py` | 401 | `--dump-ast`, `--dump-types` |
 | `rt.h` | 460 | the C runtime: allocation counter, traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
 | `../lib/std.obx` | 1,400 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
 

@@ -3,6 +3,7 @@
 
     python3 obxc.py file.obx [-o out] [--run] [--emit-c] [-L libroot] [-- args...]
     python3 obxc.py --dump-ast file.obx...
+    python3 obxc.py --dump-types file.obx...
 """
 import glob, os, subprocess, sys, tempfile
 
@@ -46,9 +47,19 @@ def lib_flags(libs):
     return out
 
 
-def dump_ast(files):
-    """--dump-ast: the parse tree of each file (no imports, no checking). With several files each
-    dump follows a line `== path`, and a file that fails to parse prints `error: message` there."""
+def sema_only(path):
+    """--dump-types: load the program and resolve its declarations (no body is checked)."""
+    from dump import dump_types
+    prog = Program(os.path.join(LIB, 'std.obx'), [LIB])
+    prog.main = prog.load(path, None, os.path.splitext(os.path.basename(path))[0])
+    prog.resolve_all()
+    return dump_types(prog)
+
+
+def dump_ast(files, types=False):
+    """--dump-ast: the parse tree of each file (no imports, no checking); --dump-types: what sema
+    computes for the program of each file. With several files each dump follows a line `== path`,
+    and a file that fails prints `error: message` there."""
     from dump import dump_ast as dump
     rc = 0
     for path in files:
@@ -56,7 +67,7 @@ def dump_ast(files):
             print(f"== {path}")
         fname = os.path.basename(path)
         try:
-            out = dump(fname, *parse(read_source(path), fname))
+            out = sema_only(path) if types else dump(fname, *parse(read_source(path), fname))
         except CompileError as e:
             out, rc = None, 1
             msg = str(e)
@@ -78,6 +89,8 @@ def dump_ast(files):
 def main(argv):
     if argv[:1] == ['--dump-ast']:
         return dump_ast(argv[1:])
+    if argv[:1] == ['--dump-types']:
+        return dump_ast(argv[1:], types=True)
     out, run, emit_c, roots, src, rest = None, False, False, [], None, []
     i = 0
     while i < len(argv):
