@@ -45,6 +45,14 @@ pub fn (o: Option[T]) unwrapOr(d: T): T {
     }
 }
 
+// The value passed through f, or None.
+pub fn (o: Option[T]) map[U](f: &fn(T): U): Option[U] {
+    match move(o) {
+        Some(x) { return Some(f(x)) }
+        None { return None }
+    }
+}
+
 pub fn (a: &Option[T: Eq]) eq(b: &Option[T]): bool {
     match a {
         Some(x) {
@@ -93,6 +101,38 @@ pub fn (r: Result[T, E]) unwrapOr(d: T): T {
     match move(r) {
         Ok(x) { return x }
         Err(_) { return d }
+    }
+}
+
+// The Err value; a panic on Ok.
+pub fn (r: Result[T, E]) unwrapErr(): E {
+    match move(r) {
+        Ok(_) { panic("unwrapErr of Ok") }
+        Err(e) { return e }
+    }
+}
+
+// The Err value, or a panic with msg.
+pub fn (r: Result[T, E]) expectErr(msg: str): E {
+    match move(r) {
+        Ok(_) { panic(msg) }
+        Err(e) { return e }
+    }
+}
+
+// The Ok value passed through f; an Err is kept.
+pub fn (r: Result[T, E]) map[U](f: &fn(T): U): Result[U, E] {
+    match move(r) {
+        Ok(x) { return Ok(f(x)) }
+        Err(e) { return Err(e) }
+    }
+}
+
+// The Err value passed through f; an Ok is kept.
+pub fn (r: Result[T, E]) mapErr[F](f: &fn(E): F): Result[T, F] {
+    match move(r) {
+        Ok(x) { return Ok(x) }
+        Err(e) { return Err(f(e)) }
     }
 }
 

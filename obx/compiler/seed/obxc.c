@@ -8412,7 +8412,7 @@ static bool f21_std_endsWith(obx_str p_s, obx_str p_suffix) {
   if (b2) {
     obx_str t3 = rt_str_dup(p_s);
     int64_t t4 = ((int64_t)(p_s).len);
-    bool t5 = f38_std_matchAt(t3, rt_sub_int(t4, ((int64_t)(p_suffix).len), "std.obx:498"), rt_str_dup(p_suffix));
+    bool t5 = f38_std_matchAt(t3, rt_sub_int(t4, ((int64_t)(p_suffix).len), "std.obx:538"), rt_str_dup(p_suffix));
     b2 = t5;
   }
   bool r6 = b2;
@@ -8424,8 +8424,8 @@ static bool f38_std_matchAt(obx_str p_s, int64_t p_at, obx_str p_sub) {
   int64_t end1 = ((int64_t)(p_sub).len);
   for (int64_t v_j_2 = 0LL; v_j_2 < end1; v_j_2++) {
     obx_str t3 = rt_str_dup(p_s);
-    uint8_t t4 = rt_str_byte(t3, rt_add_int(p_at, v_j_2, "std.obx:488"), "std.obx:488");
-    uint8_t t5 = rt_str_byte(p_sub, v_j_2, "std.obx:488");
+    uint8_t t4 = rt_str_byte(t3, rt_add_int(p_at, v_j_2, "std.obx:528"), "std.obx:528");
+    uint8_t t5 = rt_str_byte(p_sub, v_j_2, "std.obx:528");
     bool c6 = (t4 != t5);
     rt_str_drop(t3);
     if (c6) {
@@ -8641,49 +8641,49 @@ static obx_arr f41_main_libFlags(obx_arr* p_libs) {
 }
 static void f44_std_sort(obx_slice p_xs) {
   int64_t v_n_1 = (p_xs).len;
-  int64_t v_i_2 = rt_div_int(v_n_1, 2LL, "std.obx:1288");
+  int64_t v_i_2 = rt_div_int(v_n_1, 2LL, "std.obx:1328");
   while (1) {
     bool c3 = (v_i_2 > 0LL);
     if (!c3) break;
-    v_i_2 = rt_sub_int(v_i_2, 1LL, "std.obx:1290");
+    v_i_2 = rt_sub_int(v_i_2, 1LL, "std.obx:1330");
     f45_std_siftDown(p_xs, v_i_2, v_n_1);
   }
   int64_t v_end_4 = v_n_1;
   while (1) {
     bool c5 = (v_end_4 > 1LL);
     if (!c5) break;
-    v_end_4 = rt_sub_int(v_end_4, 1LL, "std.obx:1295");
-    rt_swap(p_xs, 0LL, v_end_4, sizeof(obx_str), "std.obx:1296");
+    v_end_4 = rt_sub_int(v_end_4, 1LL, "std.obx:1335");
+    rt_swap(p_xs, 0LL, v_end_4, sizeof(obx_str), "std.obx:1336");
     f45_std_siftDown(p_xs, 0LL, v_end_4);
   }
 }
 static void f45_std_siftDown(obx_slice p_xs, int64_t p_start, int64_t p_end) {
   int64_t v_root_1 = p_start;
   while (1) {
-    int64_t v_child_2 = rt_add_int(rt_mul_int(v_root_1, 2LL, "std.obx:1304"), 1LL, "std.obx:1304");
+    int64_t v_child_2 = rt_add_int(rt_mul_int(v_root_1, 2LL, "std.obx:1344"), 1LL, "std.obx:1344");
     bool c3 = (v_child_2 >= p_end);
     if (c3) {
       break;
     }
-    bool b4 = (rt_add_int(v_child_2, 1LL, "std.obx:1306") < p_end);
+    bool b4 = (rt_add_int(v_child_2, 1LL, "std.obx:1346") < p_end);
     if (b4) {
       int64_t ix5 = v_child_2;
-      (void)(&((obx_str*)(p_xs).data)[rt_idx(ix5, (p_xs).len, "std.obx:1306")]);
-      int64_t ix6 = rt_add_int(v_child_2, 1LL, "std.obx:1306");
-      int64_t t7 = f46_std_str_cmp(rt_str_dup((*(&((obx_str*)(p_xs).data)[rt_idx(ix5, (p_xs).len, "std.obx:1306")]))), (&((obx_str*)(p_xs).data)[rt_idx(ix6, (p_xs).len, "std.obx:1306")]));
+      (void)(&((obx_str*)(p_xs).data)[rt_idx(ix5, (p_xs).len, "std.obx:1346")]);
+      int64_t ix6 = rt_add_int(v_child_2, 1LL, "std.obx:1346");
+      int64_t t7 = f46_std_str_cmp(rt_str_dup((*(&((obx_str*)(p_xs).data)[rt_idx(ix5, (p_xs).len, "std.obx:1346")]))), (&((obx_str*)(p_xs).data)[rt_idx(ix6, (p_xs).len, "std.obx:1346")]));
       b4 = (t7 < 0);
     }
     bool c8 = b4;
     if (c8) {
-      v_child_2 = rt_add_int(v_child_2, 1LL, "std.obx:1306");
+      v_child_2 = rt_add_int(v_child_2, 1LL, "std.obx:1346");
     }
     int64_t ix9 = v_root_1;
-    (void)(&((obx_str*)(p_xs).data)[rt_idx(ix9, (p_xs).len, "std.obx:1307")]);
+    (void)(&((obx_str*)(p_xs).data)[rt_idx(ix9, (p_xs).len, "std.obx:1347")]);
     int64_t ix10 = v_child_2;
-    int64_t t11 = f46_std_str_cmp(rt_str_dup((*(&((obx_str*)(p_xs).data)[rt_idx(ix9, (p_xs).len, "std.obx:1307")]))), (&((obx_str*)(p_xs).data)[rt_idx(ix10, (p_xs).len, "std.obx:1307")]));
+    int64_t t11 = f46_std_str_cmp(rt_str_dup((*(&((obx_str*)(p_xs).data)[rt_idx(ix9, (p_xs).len, "std.obx:1347")]))), (&((obx_str*)(p_xs).data)[rt_idx(ix10, (p_xs).len, "std.obx:1347")]));
     bool c12 = (t11 < 0);
     if (c12) {
-      rt_swap(p_xs, v_root_1, v_child_2, sizeof(obx_str), "std.obx:1308");
+      rt_swap(p_xs, v_root_1, v_child_2, sizeof(obx_str), "std.obx:1348");
       v_root_1 = v_child_2;
     } else {
       break;
@@ -8747,7 +8747,7 @@ static bool f42_fs_exists(obx_str p_path) {
 static void f15_std_StrBuf_add(S3_std_StrBuf** p_b, obx_str p_s) {
   int64_t end1 = ((int64_t)(p_s).len);
   for (int64_t v_i_2 = 0LL; v_i_2 < end1; v_i_2++) {
-    uint8_t t3 = rt_str_byte(p_s, v_i_2, "std.obx:448");
+    uint8_t t3 = rt_str_byte(p_s, v_i_2, "std.obx:488");
     uint8_t ap4 = t3;
     *(uint8_t*)rt_arr_push((&(*p_b)->f_bytes), sizeof(uint8_t)) = ap4;
   }
@@ -9930,62 +9930,62 @@ static void f80_std_Map_put(S27_std_Map** p_m, obx_str p_k, int64_t p_v) {
   bool c5 = (v_p_4.f_entry >= 0LL);
   if (c5) {
     int64_t ix6 = v_p_4.f_entry;
-    int64_t old7 = *(&((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]);
-    *(&((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]) = p_v;
+    int64_t old7 = *(&((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]);
+    *(&((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]) = p_v;
     ((void)0);
     rt_str_drop(p_k);
     return;
   }
   int64_t ix8 = v_p_4.f_slot;
-  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1428")] = ((*p_m)->f_keys).len;
+  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1468")] = ((*p_m)->f_keys).len;
   obx_str ap9 = p_k;
   *(obx_str*)rt_arr_push((&(*p_m)->f_keys), sizeof(obx_str)) = ap9;
   int64_t ap10 = p_v;
   *(int64_t*)rt_arr_push((&(*p_m)->f_vals), sizeof(int64_t)) = ap10;
   uint64_t ap11 = v_h_2;
   *(uint64_t*)rt_arr_push((&(*p_m)->f_hashes), sizeof(uint64_t)) = ap11;
-  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1432");
+  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1472");
   bool c13 = (t12 > ((*p_m)->f_index).len);
   if (c13) {
     f83_std_Map_grow(p_m);
   }
 }
 static void f83_std_Map_grow(S27_std_Map** p_m) {
-  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1487");
+  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1527");
   int64_t fill2 = -1LL;
-  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1488");
+  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1528");
   for (int64_t i4 = 0; i4 < a3.len; i4++) ((int64_t*)a3.data)[i4] = fill2;
   obx_arr old5 = *(&(*p_m)->f_index);
   *(&(*p_m)->f_index) = a3;
   gl9_drop(old5);
-  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1489");
-  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1490");
+  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1529");
+  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1530");
   int64_t end7 = ((*p_m)->f_keys).len;
   for (int64_t v_e_8 = 0LL; v_e_8 < end7; v_e_8++) {
     int64_t ix9 = v_e_8;
-    int64_t t10 = f84_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1492")]);
+    int64_t t10 = f84_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1532")]);
     int64_t v_i_11 = t10;
     while (1) {
       int64_t ix12 = v_i_11;
-      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1493")] >= 0LL);
+      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1533")] >= 0LL);
       if (!c13) break;
-      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1493") & v_mask_6));
+      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1533") & v_mask_6));
     }
     int64_t ix14 = v_i_11;
-    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1494")] = v_e_8;
+    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1534")] = v_e_8;
   }
 }
 static int64_t f84_std_Map_home(S27_std_Map** p_m, uint64_t p_h) {
-  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1338"), "std.obx:1338");
+  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1378"), "std.obx:1378");
   return r1;
 }
 static S28_std_Probe f82_std_Map_find(S27_std_Map** p_m, obx_str* p_k, uint64_t p_h) {
-  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1342");
+  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1382");
   int64_t t2 = f84_std_Map_home(p_m, p_h);
   int64_t v_i_3 = t2;
   while (1) {
     int64_t ix4 = v_i_3;
-    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1345")];
+    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1385")];
     bool c6 = (v_e_5 < 0LL);
     if (c6) {
       S28_std_Probe t7 = ((S28_std_Probe){.f_slot = v_i_3, .f_entry = -1LL});
@@ -9993,10 +9993,10 @@ static S28_std_Probe f82_std_Map_find(S27_std_Map** p_m, obx_str* p_k, uint64_t 
       return r8;
     }
     int64_t ix9 = v_e_5;
-    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1347")] == p_h);
+    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1387")] == p_h);
     if (b10) {
       int64_t ix11 = v_e_5;
-      bool t12 = f85_std_str_eq(rt_str_dup((*(&((obx_str*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1347")]))), (&(*p_k)));
+      bool t12 = f85_std_str_eq(rt_str_dup((*(&((obx_str*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1387")]))), (&(*p_k)));
       b10 = t12;
     }
     bool c13 = b10;
@@ -10005,7 +10005,7 @@ static S28_std_Probe f82_std_Map_find(S27_std_Map** p_m, obx_str* p_k, uint64_t 
       S28_std_Probe r15 = t14;
       return r15;
     }
-    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1348") & v_mask_1));
+    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1388") & v_mask_1));
   }
 }
 static bool f85_std_str_eq(obx_str p_a, obx_str* p_b) {
@@ -10018,8 +10018,8 @@ static uint64_t f81_std_str_hash(obx_str p_s) {
   int64_t end2 = ((int64_t)(p_s).len);
   for (int64_t v_i_3 = 0LL; v_i_3 < end2; v_i_3++) {
     uint64_t t4 = v_h_1;
-    uint8_t t5 = rt_str_byte(p_s, v_i_3, "std.obx:418");
-    v_h_1 = rt_wmul_u64(((uint64_t)(t4 ^ rt_cvs_u64((__int128)t5, "std.obx:418"))), 1099511628211ULL);
+    uint8_t t5 = rt_str_byte(p_s, v_i_3, "std.obx:458");
+    v_h_1 = rt_wmul_u64(((uint64_t)(t4 ^ rt_cvs_u64((__int128)t5, "std.obx:458"))), 1099511628211ULL);
   }
   uint64_t r6 = v_h_1;
   rt_str_drop(p_s);
@@ -10030,7 +10030,7 @@ static S27_std_Map* f77_std_newMap(void) {
   obx_arr a2 = rt_arr_new(0, sizeof(int64_t));
   obx_arr a3 = rt_arr_new(0, sizeof(uint64_t));
   int64_t fill4 = -1LL;
-  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1335");
+  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1375");
   for (int64_t i6 = 0; i6 < a5.len; i6++) ((int64_t*)a5.data)[i6] = fill4;
   S27_std_Map* o7 = rt_alloc(sizeof(*o7));
   o7->f_keys = a1;
@@ -10053,7 +10053,7 @@ static int64_t f67_std_Map_getOr(S27_std_Map** p_m, obx_str* p_k, int64_t p_d) {
     return r5;
   }
   int64_t ix6 = v_p_3.f_entry;
-  int64_t r7 = ((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1365")];
+  int64_t r7 = ((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1405")];
   ((void)0);
   return r7;
 }
@@ -10163,17 +10163,17 @@ static obx_str f88_std_Map_getOr(S29_std_Map** p_m, obx_str* p_k, obx_str p_d) {
     return r5;
   }
   int64_t ix6 = v_p_3.f_entry;
-  obx_str r7 = rt_str_dup(((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1365")]);
+  obx_str r7 = rt_str_dup(((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1405")]);
   rt_str_drop(p_d);
   return r7;
 }
 static S28_std_Probe f89_std_Map_find(S29_std_Map** p_m, obx_str* p_k, uint64_t p_h) {
-  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1342");
+  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1382");
   int64_t t2 = f90_std_Map_home(p_m, p_h);
   int64_t v_i_3 = t2;
   while (1) {
     int64_t ix4 = v_i_3;
-    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1345")];
+    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1385")];
     bool c6 = (v_e_5 < 0LL);
     if (c6) {
       S28_std_Probe t7 = ((S28_std_Probe){.f_slot = v_i_3, .f_entry = -1LL});
@@ -10181,10 +10181,10 @@ static S28_std_Probe f89_std_Map_find(S29_std_Map** p_m, obx_str* p_k, uint64_t 
       return r8;
     }
     int64_t ix9 = v_e_5;
-    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1347")] == p_h);
+    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1387")] == p_h);
     if (b10) {
       int64_t ix11 = v_e_5;
-      bool t12 = f85_std_str_eq(rt_str_dup((*(&((obx_str*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1347")]))), (&(*p_k)));
+      bool t12 = f85_std_str_eq(rt_str_dup((*(&((obx_str*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1387")]))), (&(*p_k)));
       b10 = t12;
     }
     bool c13 = b10;
@@ -10193,11 +10193,11 @@ static S28_std_Probe f89_std_Map_find(S29_std_Map** p_m, obx_str* p_k, uint64_t 
       S28_std_Probe r15 = t14;
       return r15;
     }
-    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1348") & v_mask_1));
+    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1388") & v_mask_1));
   }
 }
 static int64_t f90_std_Map_home(S29_std_Map** p_m, uint64_t p_h) {
-  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1338"), "std.obx:1338");
+  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1378"), "std.obx:1378");
   return r1;
 }
 static obx_str f87_strings_join(obx_slice p_parts, obx_str p_sep) {
@@ -11146,7 +11146,7 @@ static void f148_std_Map_clear(S27_std_Map** p_m) {
   *(&(*p_m)->f_hashes) = a5;
   gl26_drop(old6);
   int64_t fill7 = -1LL;
-  obx_arr a8 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1458");
+  obx_arr a8 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1498");
   for (int64_t i9 = 0; i9 < a8.len; i9++) ((int64_t*)a8.data)[i9] = fill7;
   obx_arr old10 = *(&(*p_m)->f_index);
   *(&(*p_m)->f_index) = a8;
@@ -11743,17 +11743,17 @@ static int64_t f174_std_Map_getOr(S36_std_Map** p_m, int64_t* p_k, int64_t p_d) 
     return r5;
   }
   int64_t ix6 = v_p_3.f_entry;
-  int64_t r7 = ((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1365")];
+  int64_t r7 = ((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1405")];
   ((void)0);
   return r7;
 }
 static S28_std_Probe f176_std_Map_find(S36_std_Map** p_m, int64_t* p_k, uint64_t p_h) {
-  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1342");
+  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1382");
   int64_t t2 = f177_std_Map_home(p_m, p_h);
   int64_t v_i_3 = t2;
   while (1) {
     int64_t ix4 = v_i_3;
-    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1345")];
+    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1385")];
     bool c6 = (v_e_5 < 0LL);
     if (c6) {
       S28_std_Probe t7 = ((S28_std_Probe){.f_slot = v_i_3, .f_entry = -1LL});
@@ -11761,10 +11761,10 @@ static S28_std_Probe f176_std_Map_find(S36_std_Map** p_m, int64_t* p_k, uint64_t
       return r8;
     }
     int64_t ix9 = v_e_5;
-    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1347")] == p_h);
+    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1387")] == p_h);
     if (b10) {
       int64_t ix11 = v_e_5;
-      bool t12 = f178_std_int_eq((*(&((int64_t*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1347")])), (&(*p_k)));
+      bool t12 = f178_std_int_eq((*(&((int64_t*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1387")])), (&(*p_k)));
       b10 = t12;
     }
     bool c13 = b10;
@@ -11773,7 +11773,7 @@ static S28_std_Probe f176_std_Map_find(S36_std_Map** p_m, int64_t* p_k, uint64_t
       S28_std_Probe r15 = t14;
       return r15;
     }
-    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1348") & v_mask_1));
+    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1388") & v_mask_1));
   }
 }
 static bool f178_std_int_eq(int64_t p_a, int64_t* p_b) {
@@ -11781,13 +11781,13 @@ static bool f178_std_int_eq(int64_t p_a, int64_t* p_b) {
   return r1;
 }
 static int64_t f177_std_Map_home(S36_std_Map** p_m, uint64_t p_h) {
-  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1338"), "std.obx:1338");
+  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1378"), "std.obx:1378");
   return r1;
 }
 static uint64_t f175_std_int_hash(int64_t p_a) {
-  uint64_t t1 = rt_cvs_u64((__int128)((int64_t)(p_a & 9223372036854775807LL)), "std.obx:150");
+  uint64_t t1 = rt_cvs_u64((__int128)((int64_t)(p_a & 9223372036854775807LL)), "std.obx:190");
   int64_t t2 = f179_std_b2i((p_a < 0LL));
-  uint64_t r3 = rt_wmul_u64(((uint64_t)(t1 ^ rt_cvs_u64((__int128)t2, "std.obx:150"))), 11400714819323198485ULL);
+  uint64_t r3 = rt_wmul_u64(((uint64_t)(t1 ^ rt_cvs_u64((__int128)t2, "std.obx:190"))), 11400714819323198485ULL);
   return r3;
 }
 static int64_t f179_std_b2i(bool p_b) {
@@ -11869,49 +11869,49 @@ static void f180_std_Map_put(S36_std_Map** p_m, int64_t p_k, int64_t p_v) {
   bool c5 = (v_p_4.f_entry >= 0LL);
   if (c5) {
     int64_t ix6 = v_p_4.f_entry;
-    int64_t old7 = *(&((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]);
-    *(&((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]) = p_v;
+    int64_t old7 = *(&((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]);
+    *(&((int64_t*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]) = p_v;
     ((void)0);
     ((void)0);
     return;
   }
   int64_t ix8 = v_p_4.f_slot;
-  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1428")] = ((*p_m)->f_keys).len;
+  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1468")] = ((*p_m)->f_keys).len;
   int64_t ap9 = p_k;
   *(int64_t*)rt_arr_push((&(*p_m)->f_keys), sizeof(int64_t)) = ap9;
   int64_t ap10 = p_v;
   *(int64_t*)rt_arr_push((&(*p_m)->f_vals), sizeof(int64_t)) = ap10;
   uint64_t ap11 = v_h_2;
   *(uint64_t*)rt_arr_push((&(*p_m)->f_hashes), sizeof(uint64_t)) = ap11;
-  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1432");
+  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1472");
   bool c13 = (t12 > ((*p_m)->f_index).len);
   if (c13) {
     f181_std_Map_grow(p_m);
   }
 }
 static void f181_std_Map_grow(S36_std_Map** p_m) {
-  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1487");
+  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1527");
   int64_t fill2 = -1LL;
-  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1488");
+  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1528");
   for (int64_t i4 = 0; i4 < a3.len; i4++) ((int64_t*)a3.data)[i4] = fill2;
   obx_arr old5 = *(&(*p_m)->f_index);
   *(&(*p_m)->f_index) = a3;
   gl9_drop(old5);
-  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1489");
-  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1490");
+  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1529");
+  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1530");
   int64_t end7 = ((*p_m)->f_keys).len;
   for (int64_t v_e_8 = 0LL; v_e_8 < end7; v_e_8++) {
     int64_t ix9 = v_e_8;
-    int64_t t10 = f177_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1492")]);
+    int64_t t10 = f177_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1532")]);
     int64_t v_i_11 = t10;
     while (1) {
       int64_t ix12 = v_i_11;
-      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1493")] >= 0LL);
+      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1533")] >= 0LL);
       if (!c13) break;
-      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1493") & v_mask_6));
+      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1533") & v_mask_6));
     }
     int64_t ix14 = v_i_11;
-    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1494")] = v_e_8;
+    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1534")] = v_e_8;
   }
 }
 static void f172_x64gen_Gen_genReturn(S16_x64gen_Gen** p_g, int64_t p_x) {
@@ -16229,7 +16229,7 @@ static S36_std_Map* f258_std_newMap(void) {
   obx_arr a2 = rt_arr_new(0, sizeof(int64_t));
   obx_arr a3 = rt_arr_new(0, sizeof(uint64_t));
   int64_t fill4 = -1LL;
-  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1335");
+  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1375");
   for (int64_t i6 = 0; i6 < a5.len; i6++) ((int64_t*)a5.data)[i6] = fill4;
   S36_std_Map* o7 = rt_alloc(sizeof(*o7));
   o7->f_keys = a1;
@@ -16546,49 +16546,49 @@ static void f266_std_Map_put(S29_std_Map** p_m, obx_str p_k, obx_str p_v) {
   bool c5 = (v_p_4.f_entry >= 0LL);
   if (c5) {
     int64_t ix6 = v_p_4.f_entry;
-    obx_str old7 = *(&((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]);
-    *(&((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]) = p_v;
+    obx_str old7 = *(&((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]);
+    *(&((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]) = p_v;
     rt_str_drop(old7);
     rt_str_drop(p_k);
     return;
   }
   int64_t ix8 = v_p_4.f_slot;
-  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1428")] = ((*p_m)->f_keys).len;
+  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1468")] = ((*p_m)->f_keys).len;
   obx_str ap9 = p_k;
   *(obx_str*)rt_arr_push((&(*p_m)->f_keys), sizeof(obx_str)) = ap9;
   obx_str ap10 = p_v;
   *(obx_str*)rt_arr_push((&(*p_m)->f_vals), sizeof(obx_str)) = ap10;
   uint64_t ap11 = v_h_2;
   *(uint64_t*)rt_arr_push((&(*p_m)->f_hashes), sizeof(uint64_t)) = ap11;
-  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1432");
+  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1472");
   bool c13 = (t12 > ((*p_m)->f_index).len);
   if (c13) {
     f267_std_Map_grow(p_m);
   }
 }
 static void f267_std_Map_grow(S29_std_Map** p_m) {
-  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1487");
+  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1527");
   int64_t fill2 = -1LL;
-  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1488");
+  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1528");
   for (int64_t i4 = 0; i4 < a3.len; i4++) ((int64_t*)a3.data)[i4] = fill2;
   obx_arr old5 = *(&(*p_m)->f_index);
   *(&(*p_m)->f_index) = a3;
   gl9_drop(old5);
-  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1489");
-  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1490");
+  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1529");
+  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1530");
   int64_t end7 = ((*p_m)->f_keys).len;
   for (int64_t v_e_8 = 0LL; v_e_8 < end7; v_e_8++) {
     int64_t ix9 = v_e_8;
-    int64_t t10 = f90_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1492")]);
+    int64_t t10 = f90_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1532")]);
     int64_t v_i_11 = t10;
     while (1) {
       int64_t ix12 = v_i_11;
-      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1493")] >= 0LL);
+      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1533")] >= 0LL);
       if (!c13) break;
-      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1493") & v_mask_6));
+      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1533") & v_mask_6));
     }
     int64_t ix14 = v_i_11;
-    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1494")] = v_e_8;
+    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1534")] = v_e_8;
   }
 }
 static obx_str f265_std_Map_getOr(S41_std_Map** p_m, int64_t* p_k, obx_str p_d) {
@@ -16602,17 +16602,17 @@ static obx_str f265_std_Map_getOr(S41_std_Map** p_m, int64_t* p_k, obx_str p_d) 
     return r5;
   }
   int64_t ix6 = v_p_3.f_entry;
-  obx_str r7 = rt_str_dup(((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1365")]);
+  obx_str r7 = rt_str_dup(((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1405")]);
   rt_str_drop(p_d);
   return r7;
 }
 static S28_std_Probe f268_std_Map_find(S41_std_Map** p_m, int64_t* p_k, uint64_t p_h) {
-  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1342");
+  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1382");
   int64_t t2 = f269_std_Map_home(p_m, p_h);
   int64_t v_i_3 = t2;
   while (1) {
     int64_t ix4 = v_i_3;
-    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1345")];
+    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1385")];
     bool c6 = (v_e_5 < 0LL);
     if (c6) {
       S28_std_Probe t7 = ((S28_std_Probe){.f_slot = v_i_3, .f_entry = -1LL});
@@ -16620,10 +16620,10 @@ static S28_std_Probe f268_std_Map_find(S41_std_Map** p_m, int64_t* p_k, uint64_t
       return r8;
     }
     int64_t ix9 = v_e_5;
-    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1347")] == p_h);
+    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1387")] == p_h);
     if (b10) {
       int64_t ix11 = v_e_5;
-      bool t12 = f178_std_int_eq((*(&((int64_t*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1347")])), (&(*p_k)));
+      bool t12 = f178_std_int_eq((*(&((int64_t*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1387")])), (&(*p_k)));
       b10 = t12;
     }
     bool c13 = b10;
@@ -16632,11 +16632,11 @@ static S28_std_Probe f268_std_Map_find(S41_std_Map** p_m, int64_t* p_k, uint64_t
       S28_std_Probe r15 = t14;
       return r15;
     }
-    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1348") & v_mask_1));
+    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1388") & v_mask_1));
   }
 }
 static int64_t f269_std_Map_home(S41_std_Map** p_m, uint64_t p_h) {
-  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1338"), "std.obx:1338");
+  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1378"), "std.obx:1378");
   return r1;
 }
 static bool f264_std_Map_has(S15_std_Map** p_m, obx_str* p_k) {
@@ -16646,12 +16646,12 @@ static bool f264_std_Map_has(S15_std_Map** p_m, obx_str* p_k) {
   return r3;
 }
 static S28_std_Probe f270_std_Map_find(S15_std_Map** p_m, obx_str* p_k, uint64_t p_h) {
-  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1342");
+  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1382");
   int64_t t2 = f271_std_Map_home(p_m, p_h);
   int64_t v_i_3 = t2;
   while (1) {
     int64_t ix4 = v_i_3;
-    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1345")];
+    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1385")];
     bool c6 = (v_e_5 < 0LL);
     if (c6) {
       S28_std_Probe t7 = ((S28_std_Probe){.f_slot = v_i_3, .f_entry = -1LL});
@@ -16659,10 +16659,10 @@ static S28_std_Probe f270_std_Map_find(S15_std_Map** p_m, obx_str* p_k, uint64_t
       return r8;
     }
     int64_t ix9 = v_e_5;
-    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1347")] == p_h);
+    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1387")] == p_h);
     if (b10) {
       int64_t ix11 = v_e_5;
-      bool t12 = f85_std_str_eq(rt_str_dup((*(&((obx_str*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1347")]))), (&(*p_k)));
+      bool t12 = f85_std_str_eq(rt_str_dup((*(&((obx_str*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1387")]))), (&(*p_k)));
       b10 = t12;
     }
     bool c13 = b10;
@@ -16671,11 +16671,11 @@ static S28_std_Probe f270_std_Map_find(S15_std_Map** p_m, obx_str* p_k, uint64_t
       S28_std_Probe r15 = t14;
       return r15;
     }
-    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1348") & v_mask_1));
+    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1388") & v_mask_1));
   }
 }
 static int64_t f271_std_Map_home(S15_std_Map** p_m, uint64_t p_h) {
-  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1338"), "std.obx:1338");
+  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1378"), "std.obx:1378");
   return r1;
 }
 static void f263_std_Map_put(S41_std_Map** p_m, int64_t p_k, obx_str p_v) {
@@ -16686,49 +16686,49 @@ static void f263_std_Map_put(S41_std_Map** p_m, int64_t p_k, obx_str p_v) {
   bool c5 = (v_p_4.f_entry >= 0LL);
   if (c5) {
     int64_t ix6 = v_p_4.f_entry;
-    obx_str old7 = *(&((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]);
-    *(&((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]) = p_v;
+    obx_str old7 = *(&((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]);
+    *(&((obx_str*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]) = p_v;
     rt_str_drop(old7);
     ((void)0);
     return;
   }
   int64_t ix8 = v_p_4.f_slot;
-  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1428")] = ((*p_m)->f_keys).len;
+  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1468")] = ((*p_m)->f_keys).len;
   int64_t ap9 = p_k;
   *(int64_t*)rt_arr_push((&(*p_m)->f_keys), sizeof(int64_t)) = ap9;
   obx_str ap10 = p_v;
   *(obx_str*)rt_arr_push((&(*p_m)->f_vals), sizeof(obx_str)) = ap10;
   uint64_t ap11 = v_h_2;
   *(uint64_t*)rt_arr_push((&(*p_m)->f_hashes), sizeof(uint64_t)) = ap11;
-  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1432");
+  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1472");
   bool c13 = (t12 > ((*p_m)->f_index).len);
   if (c13) {
     f272_std_Map_grow(p_m);
   }
 }
 static void f272_std_Map_grow(S41_std_Map** p_m) {
-  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1487");
+  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1527");
   int64_t fill2 = -1LL;
-  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1488");
+  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1528");
   for (int64_t i4 = 0; i4 < a3.len; i4++) ((int64_t*)a3.data)[i4] = fill2;
   obx_arr old5 = *(&(*p_m)->f_index);
   *(&(*p_m)->f_index) = a3;
   gl9_drop(old5);
-  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1489");
-  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1490");
+  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1529");
+  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1530");
   int64_t end7 = ((*p_m)->f_keys).len;
   for (int64_t v_e_8 = 0LL; v_e_8 < end7; v_e_8++) {
     int64_t ix9 = v_e_8;
-    int64_t t10 = f269_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1492")]);
+    int64_t t10 = f269_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1532")]);
     int64_t v_i_11 = t10;
     while (1) {
       int64_t ix12 = v_i_11;
-      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1493")] >= 0LL);
+      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1533")] >= 0LL);
       if (!c13) break;
-      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1493") & v_mask_6));
+      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1533") & v_mask_6));
     }
     int64_t ix14 = v_i_11;
-    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1494")] = v_e_8;
+    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1534")] = v_e_8;
   }
 }
 static obx_str f262_elf_cstrAt(obx_str* p_s, int64_t p_off) {
@@ -16750,7 +16750,7 @@ static S41_std_Map* f261_std_newMap(void) {
   obx_arr a2 = rt_arr_new(0, sizeof(obx_str));
   obx_arr a3 = rt_arr_new(0, sizeof(uint64_t));
   int64_t fill4 = -1LL;
-  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1335");
+  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1375");
   for (int64_t i6 = 0; i6 < a5.len; i6++) ((int64_t*)a5.data)[i6] = fill4;
   S41_std_Map* o7 = rt_alloc(sizeof(*o7));
   o7->f_keys = a1;
@@ -16783,7 +16783,7 @@ static S29_std_Map* f259_std_newMap(void) {
   obx_arr a2 = rt_arr_new(0, sizeof(obx_str));
   obx_arr a3 = rt_arr_new(0, sizeof(uint64_t));
   int64_t fill4 = -1LL;
-  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1335");
+  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1375");
   for (int64_t i6 = 0; i6 < a5.len; i6++) ((int64_t*)a5.data)[i6] = fill4;
   S29_std_Map* o7 = rt_alloc(sizeof(*o7));
   o7->f_keys = a1;
@@ -16974,49 +16974,49 @@ static void f51_std_Map_put(S15_std_Map** p_m, obx_str p_k, bool p_v) {
   bool c5 = (v_p_4.f_entry >= 0LL);
   if (c5) {
     int64_t ix6 = v_p_4.f_entry;
-    bool old7 = *(&((bool*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]);
-    *(&((bool*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]) = p_v;
+    bool old7 = *(&((bool*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]);
+    *(&((bool*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]) = p_v;
     ((void)0);
     rt_str_drop(p_k);
     return;
   }
   int64_t ix8 = v_p_4.f_slot;
-  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1428")] = ((*p_m)->f_keys).len;
+  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1468")] = ((*p_m)->f_keys).len;
   obx_str ap9 = p_k;
   *(obx_str*)rt_arr_push((&(*p_m)->f_keys), sizeof(obx_str)) = ap9;
   bool ap10 = p_v;
   *(bool*)rt_arr_push((&(*p_m)->f_vals), sizeof(bool)) = ap10;
   uint64_t ap11 = v_h_2;
   *(uint64_t*)rt_arr_push((&(*p_m)->f_hashes), sizeof(uint64_t)) = ap11;
-  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1432");
+  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1472");
   bool c13 = (t12 > ((*p_m)->f_index).len);
   if (c13) {
     f274_std_Map_grow(p_m);
   }
 }
 static void f274_std_Map_grow(S15_std_Map** p_m) {
-  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1487");
+  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1527");
   int64_t fill2 = -1LL;
-  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1488");
+  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1528");
   for (int64_t i4 = 0; i4 < a3.len; i4++) ((int64_t*)a3.data)[i4] = fill2;
   obx_arr old5 = *(&(*p_m)->f_index);
   *(&(*p_m)->f_index) = a3;
   gl9_drop(old5);
-  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1489");
-  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1490");
+  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1529");
+  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1530");
   int64_t end7 = ((*p_m)->f_keys).len;
   for (int64_t v_e_8 = 0LL; v_e_8 < end7; v_e_8++) {
     int64_t ix9 = v_e_8;
-    int64_t t10 = f271_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1492")]);
+    int64_t t10 = f271_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1532")]);
     int64_t v_i_11 = t10;
     while (1) {
       int64_t ix12 = v_i_11;
-      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1493")] >= 0LL);
+      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1533")] >= 0LL);
       if (!c13) break;
-      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1493") & v_mask_6));
+      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1533") & v_mask_6));
     }
     int64_t ix14 = v_i_11;
-    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1494")] = v_e_8;
+    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1534")] = v_e_8;
   }
 }
 static S15_std_Map* f50_std_newMap(void) {
@@ -17024,7 +17024,7 @@ static S15_std_Map* f50_std_newMap(void) {
   obx_arr a2 = rt_arr_new(0, sizeof(bool));
   obx_arr a3 = rt_arr_new(0, sizeof(uint64_t));
   int64_t fill4 = -1LL;
-  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1335");
+  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1375");
   for (int64_t i6 = 0; i6 < a5.len; i6++) ((int64_t*)a5.data)[i6] = fill4;
   S15_std_Map* o7 = rt_alloc(sizeof(*o7));
   o7->f_keys = a1;
@@ -18526,18 +18526,18 @@ static obx_arr f324_std_split(obx_str p_s, uint8_t p_sep) {
   int64_t v_start_3 = 0LL;
   int64_t end4 = ((int64_t)(p_s).len);
   for (int64_t v_i_5 = 0LL; v_i_5 < end4; v_i_5++) {
-    uint8_t t6 = rt_str_byte(p_s, v_i_5, "std.obx:508");
+    uint8_t t6 = rt_str_byte(p_s, v_i_5, "std.obx:548");
     bool c7 = (t6 == p_sep);
     if (c7) {
-      obx_str t8 = rt_str_sub(p_s, v_start_3, v_i_5, "std.obx:509");
+      obx_str t8 = rt_str_sub(p_s, v_start_3, v_i_5, "std.obx:549");
       obx_str ap9 = t8;
       *(obx_str*)rt_arr_push((&v_out_2), sizeof(obx_str)) = ap9;
-      v_start_3 = rt_add_int(v_i_5, 1LL, "std.obx:510");
+      v_start_3 = rt_add_int(v_i_5, 1LL, "std.obx:550");
     }
   }
   obx_str t10 = rt_str_dup(p_s);
   int64_t t11 = v_start_3;
-  obx_str t12 = rt_str_sub(t10, t11, ((int64_t)(p_s).len), "std.obx:513");
+  obx_str t12 = rt_str_sub(t10, t11, ((int64_t)(p_s).len), "std.obx:553");
   obx_str ap13 = t12;
   *(obx_str*)rt_arr_push((&v_out_2), sizeof(obx_str)) = ap13;
   rt_str_drop(t10);
@@ -19829,64 +19829,64 @@ static S46_std_Option f342_std_Map_remove(S27_std_Map** p_m, obx_str* p_k) {
     return r6;
   }
   f343_std_Map_unlink(p_m, v_p_3.f_slot);
-  int64_t v_last_7 = rt_sub_int(((*p_m)->f_keys).len, 1LL, "std.obx:1440");
+  int64_t v_last_7 = rt_sub_int(((*p_m)->f_keys).len, 1LL, "std.obx:1480");
   bool c8 = (v_p_3.f_entry != v_last_7);
   if (c8) {
     int64_t t9 = f344_std_Map_slotOf(p_m, v_last_7);
     int64_t v_s_10 = t9;
     int64_t ix11 = v_s_10;
-    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix11, ((*p_m)->f_index).len, "std.obx:1444")] = v_p_3.f_entry;
-    rt_swap(rt_as_slice((&(*p_m)->f_keys)), v_p_3.f_entry, v_last_7, sizeof(obx_str), "std.obx:1445");
-    rt_swap(rt_as_slice((&(*p_m)->f_vals)), v_p_3.f_entry, v_last_7, sizeof(int64_t), "std.obx:1446");
-    rt_swap(rt_as_slice((&(*p_m)->f_hashes)), v_p_3.f_entry, v_last_7, sizeof(uint64_t), "std.obx:1447");
+    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix11, ((*p_m)->f_index).len, "std.obx:1484")] = v_p_3.f_entry;
+    rt_swap(rt_as_slice((&(*p_m)->f_keys)), v_p_3.f_entry, v_last_7, sizeof(obx_str), "std.obx:1485");
+    rt_swap(rt_as_slice((&(*p_m)->f_vals)), v_p_3.f_entry, v_last_7, sizeof(int64_t), "std.obx:1486");
+    rt_swap(rt_as_slice((&(*p_m)->f_hashes)), v_p_3.f_entry, v_last_7, sizeof(uint64_t), "std.obx:1487");
   }
-  obx_str t12 = *(obx_str*)rt_arr_pop((&(*p_m)->f_keys), sizeof(obx_str), "std.obx:1449");
+  obx_str t12 = *(obx_str*)rt_arr_pop((&(*p_m)->f_keys), sizeof(obx_str), "std.obx:1489");
   rt_str_drop(t12);
-  uint64_t t13 = *(uint64_t*)rt_arr_pop((&(*p_m)->f_hashes), sizeof(uint64_t), "std.obx:1450");
-  int64_t t14 = *(int64_t*)rt_arr_pop((&(*p_m)->f_vals), sizeof(int64_t), "std.obx:1451");
+  uint64_t t13 = *(uint64_t*)rt_arr_pop((&(*p_m)->f_hashes), sizeof(uint64_t), "std.obx:1490");
+  int64_t t14 = *(int64_t*)rt_arr_pop((&(*p_m)->f_vals), sizeof(int64_t), "std.obx:1491");
   S46_std_Option t15 = ((S46_std_Option){.tag = 0, .u.V_Some = {.f_0 = t14}});
   S46_std_Option r16 = t15;
   return r16;
 }
 static int64_t f344_std_Map_slotOf(S27_std_Map** p_m, int64_t p_e) {
-  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1464");
+  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1504");
   int64_t ix2 = p_e;
-  int64_t t3 = f84_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix2, ((*p_m)->f_hashes).len, "std.obx:1465")]);
+  int64_t t3 = f84_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix2, ((*p_m)->f_hashes).len, "std.obx:1505")]);
   int64_t v_i_4 = t3;
   while (1) {
     int64_t ix5 = v_i_4;
-    bool c6 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix5, ((*p_m)->f_index).len, "std.obx:1466")] != p_e);
+    bool c6 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix5, ((*p_m)->f_index).len, "std.obx:1506")] != p_e);
     if (!c6) break;
-    v_i_4 = ((int64_t)(rt_add_int(v_i_4, 1LL, "std.obx:1466") & v_mask_1));
+    v_i_4 = ((int64_t)(rt_add_int(v_i_4, 1LL, "std.obx:1506") & v_mask_1));
   }
   int64_t r7 = v_i_4;
   return r7;
 }
 static void f343_std_Map_unlink(S27_std_Map** p_m, int64_t p_s) {
-  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1472");
+  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1512");
   int64_t v_hole_2 = p_s;
-  int64_t v_j_3 = ((int64_t)(rt_add_int(p_s, 1LL, "std.obx:1474") & v_mask_1));
+  int64_t v_j_3 = ((int64_t)(rt_add_int(p_s, 1LL, "std.obx:1514") & v_mask_1));
   while (1) {
     int64_t ix4 = v_j_3;
-    bool c5 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1475")] >= 0LL);
+    bool c5 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1515")] >= 0LL);
     if (!c5) break;
     int64_t ix6 = v_j_3;
-    int64_t ix7 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix6, ((*p_m)->f_index).len, "std.obx:1476")];
-    int64_t t8 = f84_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix7, ((*p_m)->f_hashes).len, "std.obx:1476")]);
+    int64_t ix7 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix6, ((*p_m)->f_index).len, "std.obx:1516")];
+    int64_t t8 = f84_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix7, ((*p_m)->f_hashes).len, "std.obx:1516")]);
     int64_t v_h_9 = t8;
-    int64_t t10 = ((int64_t)(rt_sub_int(v_j_3, v_h_9, "std.obx:1477") & v_mask_1));
-    bool c11 = (t10 >= ((int64_t)(rt_sub_int(v_j_3, v_hole_2, "std.obx:1477") & v_mask_1)));
+    int64_t t10 = ((int64_t)(rt_sub_int(v_j_3, v_h_9, "std.obx:1517") & v_mask_1));
+    bool c11 = (t10 >= ((int64_t)(rt_sub_int(v_j_3, v_hole_2, "std.obx:1517") & v_mask_1)));
     if (c11) {
       int64_t ix12 = v_j_3;
-      int64_t t13 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1478")];
+      int64_t t13 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1518")];
       int64_t ix14 = v_hole_2;
-      ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1478")] = t13;
+      ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1518")] = t13;
       v_hole_2 = v_j_3;
     }
-    v_j_3 = ((int64_t)(rt_add_int(v_j_3, 1LL, "std.obx:1481") & v_mask_1));
+    v_j_3 = ((int64_t)(rt_add_int(v_j_3, 1LL, "std.obx:1521") & v_mask_1));
   }
   int64_t ix15 = v_hole_2;
-  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix15, ((*p_m)->f_index).len, "std.obx:1483")] = -1LL;
+  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix15, ((*p_m)->f_index).len, "std.obx:1523")] = -1LL;
 }
 static int64_t f340_cfront_Unit_block(S42_cfront_Unit** p_u) {
   f287_cfront_Unit_expect(p_u, sl28);
@@ -27365,10 +27365,10 @@ static obx_str f509_std_float_toStr(double p_a) {
   }
   int64_t v_x_9 = 0LL;
   bool v_neg_10 = false;
-  int64_t t11 = rt_add_int(v_e_6, 1LL, "std.obx:285");
+  int64_t t11 = rt_add_int(v_e_6, 1LL, "std.obx:325");
   int64_t end12 = ((int64_t)(v_s_4).len);
   for (int64_t v_i_13 = t11; v_i_13 < end12; v_i_13++) {
-    uint8_t t14 = rt_str_byte(v_s_4, v_i_13, "std.obx:286");
+    uint8_t t14 = rt_str_byte(v_s_4, v_i_13, "std.obx:326");
     uint8_t v_c_15 = t14;
     bool c16 = (v_c_15 == ((uint8_t)45));
     if (c16) {
@@ -27377,15 +27377,15 @@ static obx_str f509_std_float_toStr(double p_a) {
     bool t17 = f513_std_isDigit(v_c_15);
     bool c18 = t17;
     if (c18) {
-      int64_t t19 = rt_mul_int(v_x_9, 10LL, "std.obx:288");
-      v_x_9 = rt_add_int(t19, rt_cvs_int((__int128)rt_sub_byte(v_c_15, ((uint8_t)48), "std.obx:288"), "std.obx:288"), "std.obx:288");
+      int64_t t19 = rt_mul_int(v_x_9, 10LL, "std.obx:328");
+      v_x_9 = rt_add_int(t19, rt_cvs_int((__int128)rt_sub_byte(v_c_15, ((uint8_t)48), "std.obx:328"), "std.obx:328"), "std.obx:328");
     }
   }
   bool c20 = v_neg_10;
   if (c20) {
-    v_x_9 = rt_neg_int(v_x_9, "std.obx:290");
+    v_x_9 = rt_neg_int(v_x_9, "std.obx:330");
   }
-  obx_str t21 = rt_str_sub(v_s_4, 0LL, v_e_6, "std.obx:291");
+  obx_str t21 = rt_str_sub(v_s_4, 0LL, v_e_6, "std.obx:331");
   obx_str v_mant_22 = t21;
   bool c23 = (v_x_9 <= -308LL);
   if (c23) {
@@ -27410,7 +27410,7 @@ static obx_str f514_std_shortestMantissa(double p_a, obx_str p_mant, int64_t p_x
   S3_std_StrBuf* v_digits_3 = t2;
   int64_t end4 = ((int64_t)(p_mant).len);
   for (int64_t v_i_5 = 0LL; v_i_5 < end4; v_i_5++) {
-    uint8_t t6 = rt_str_byte(p_mant, v_i_5, "std.obx:371");
+    uint8_t t6 = rt_str_byte(p_mant, v_i_5, "std.obx:411");
     uint8_t v_c_7 = t6;
     bool c8 = (v_c_7 == ((uint8_t)45));
     if (c8) {
@@ -27428,13 +27428,13 @@ static obx_str f514_std_shortestMantissa(double p_a, obx_str p_mant, int64_t p_x
   obx_str v_d_13 = t12;
   int64_t end14 = ((int64_t)(v_d_13).len);
   for (int64_t v_k_15 = 1LL; v_k_15 < end14; v_k_15++) {
-    obx_str t16 = rt_str_sub(v_d_13, 0LL, v_k_15, "std.obx:378");
+    obx_str t16 = rt_str_sub(v_d_13, 0LL, v_k_15, "std.obx:418");
     obx_arr t17 = rt_str_to_bytes(t16);
     obx_arr v_bytes_18 = t17;
     rt_str_drop(t16);
-    uint8_t t19 = rt_str_byte(v_d_13, v_k_15, "std.obx:379");
+    uint8_t t19 = rt_str_byte(v_d_13, v_k_15, "std.obx:419");
     bool v_carry_20 = (t19 >= ((uint8_t)53));
-    int64_t v_i_21 = rt_sub_int(v_k_15, 1LL, "std.obx:380");
+    int64_t v_i_21 = rt_sub_int(v_k_15, 1LL, "std.obx:420");
     while (1) {
       bool b22 = v_carry_20;
       if (b22) {
@@ -27443,14 +27443,14 @@ static obx_str f514_std_shortestMantissa(double p_a, obx_str p_mant, int64_t p_x
       bool c23 = b22;
       if (!c23) break;
       int64_t ix24 = v_i_21;
-      bool c25 = (((uint8_t*)(v_bytes_18).data)[rt_idx(ix24, (v_bytes_18).len, "std.obx:382")] == ((uint8_t)57));
+      bool c25 = (((uint8_t*)(v_bytes_18).data)[rt_idx(ix24, (v_bytes_18).len, "std.obx:422")] == ((uint8_t)57));
       if (c25) {
         int64_t ix26 = v_i_21;
-        ((uint8_t*)(v_bytes_18).data)[rt_idx(ix26, (v_bytes_18).len, "std.obx:383")] = ((uint8_t)48);
-        v_i_21 = rt_sub_int(v_i_21, 1LL, "std.obx:384");
+        ((uint8_t*)(v_bytes_18).data)[rt_idx(ix26, (v_bytes_18).len, "std.obx:423")] = ((uint8_t)48);
+        v_i_21 = rt_sub_int(v_i_21, 1LL, "std.obx:424");
       } else {
         int64_t ix27 = v_i_21;
-        ((uint8_t*)(v_bytes_18).data)[rt_idx(ix27, (v_bytes_18).len, "std.obx:386")] = rt_add_byte(((uint8_t*)(v_bytes_18).data)[rt_idx(ix27, (v_bytes_18).len, "std.obx:386")], ((uint8_t)1), "std.obx:386");
+        ((uint8_t*)(v_bytes_18).data)[rt_idx(ix27, (v_bytes_18).len, "std.obx:426")] = rt_add_byte(((uint8_t*)(v_bytes_18).data)[rt_idx(ix27, (v_bytes_18).len, "std.obx:426")], ((uint8_t)1), "std.obx:426");
         v_carry_20 = false;
       }
     }
@@ -27459,7 +27459,7 @@ static obx_str f514_std_shortestMantissa(double p_a, obx_str p_mant, int64_t p_x
       obx_str t29 = rt_str_from_bytes(rt_as_slice((&v_bytes_18)));
       obx_str v_r_30 = t29;
       obx_str t31 = rt_str_dup(v_sign_1);
-      obx_str t32 = rt_str_sub(v_r_30, 0LL, 1LL, "std.obx:392");
+      obx_str t32 = rt_str_sub(v_r_30, 0LL, 1LL, "std.obx:432");
       obx_str t33 = rt_str_concat(t31, t32);
       obx_str v_m_34 = t33;
       rt_str_drop(t32);
@@ -27468,7 +27468,7 @@ static obx_str f514_std_shortestMantissa(double p_a, obx_str p_mant, int64_t p_x
       if (c35) {
         obx_str t36 = rt_str_dup(v_m_34);
         obx_str t37 = sl37;
-        obx_str t38 = rt_str_sub(v_r_30, 1LL, v_k_15, "std.obx:393");
+        obx_str t38 = rt_str_sub(v_r_30, 1LL, v_k_15, "std.obx:433");
         obx_str t39 = rt_str_concat(t37, t38);
         obx_str t40 = rt_str_concat(t36, t39);
         { obx_str nw41 = t40;
@@ -27540,14 +27540,14 @@ static int64_t f512_std_indexOf(obx_str p_s, obx_str p_sub, int64_t p_from) {
     rt_str_drop(p_s);
     return r6;
   }
-  uint8_t t7 = rt_str_byte(p_sub, 0LL, "std.obx:476");
+  uint8_t t7 = rt_str_byte(p_sub, 0LL, "std.obx:516");
   uint8_t v_first_8 = t7;
   int64_t v_i_9 = p_from;
   while (1) {
-    int64_t t10 = rt_add_int(v_i_9, v_n_1, "std.obx:478");
+    int64_t t10 = rt_add_int(v_i_9, v_n_1, "std.obx:518");
     bool c11 = (t10 <= ((int64_t)(p_s).len));
     if (!c11) break;
-    uint8_t t12 = rt_str_byte(p_s, v_i_9, "std.obx:479");
+    uint8_t t12 = rt_str_byte(p_s, v_i_9, "std.obx:519");
     bool b13 = (t12 == v_first_8);
     if (b13) {
       bool t14 = f38_std_matchAt(rt_str_dup(p_s), v_i_9, rt_str_dup(p_sub));
@@ -27560,7 +27560,7 @@ static int64_t f512_std_indexOf(obx_str p_s, obx_str p_sub, int64_t p_from) {
       rt_str_drop(p_s);
       return r16;
     }
-    v_i_9 = rt_add_int(v_i_9, 1LL, "std.obx:480");
+    v_i_9 = rt_add_int(v_i_9, 1LL, "std.obx:520");
   }
   int64_t r17 = -1LL;
   rt_str_drop(p_sub);
@@ -28084,17 +28084,17 @@ static S0_sema_Sym f528_std_Map_getOr(S68_std_Map** p_m, obx_str* p_k, S0_sema_S
     return r5;
   }
   int64_t ix6 = v_p_3.f_entry;
-  S0_sema_Sym r7 = ((S0_sema_Sym*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1365")];
+  S0_sema_Sym r7 = ((S0_sema_Sym*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1405")];
   ((void)0);
   return r7;
 }
 static S28_std_Probe f529_std_Map_find(S68_std_Map** p_m, obx_str* p_k, uint64_t p_h) {
-  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1342");
+  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1382");
   int64_t t2 = f530_std_Map_home(p_m, p_h);
   int64_t v_i_3 = t2;
   while (1) {
     int64_t ix4 = v_i_3;
-    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1345")];
+    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1385")];
     bool c6 = (v_e_5 < 0LL);
     if (c6) {
       S28_std_Probe t7 = ((S28_std_Probe){.f_slot = v_i_3, .f_entry = -1LL});
@@ -28102,10 +28102,10 @@ static S28_std_Probe f529_std_Map_find(S68_std_Map** p_m, obx_str* p_k, uint64_t
       return r8;
     }
     int64_t ix9 = v_e_5;
-    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1347")] == p_h);
+    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1387")] == p_h);
     if (b10) {
       int64_t ix11 = v_e_5;
-      bool t12 = f85_std_str_eq(rt_str_dup((*(&((obx_str*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1347")]))), (&(*p_k)));
+      bool t12 = f85_std_str_eq(rt_str_dup((*(&((obx_str*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1387")]))), (&(*p_k)));
       b10 = t12;
     }
     bool c13 = b10;
@@ -28114,11 +28114,11 @@ static S28_std_Probe f529_std_Map_find(S68_std_Map** p_m, obx_str* p_k, uint64_t
       S28_std_Probe r15 = t14;
       return r15;
     }
-    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1348") & v_mask_1));
+    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1388") & v_mask_1));
   }
 }
 static int64_t f530_std_Map_home(S68_std_Map** p_m, uint64_t p_h) {
-  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1338"), "std.obx:1338");
+  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1378"), "std.obx:1378");
   return r1;
 }
 static void f480_tdump_TDumper_header(S54_tdump_TDumper** p_d, S53_sema_Program** p_pg, int64_t p_m) {
@@ -33390,49 +33390,49 @@ static void f636_std_Map_put(S68_std_Map** p_m, obx_str p_k, S0_sema_Sym p_v) {
   bool c5 = (v_p_4.f_entry >= 0LL);
   if (c5) {
     int64_t ix6 = v_p_4.f_entry;
-    S0_sema_Sym old7 = *(&((S0_sema_Sym*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]);
-    *(&((S0_sema_Sym*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]) = p_v;
+    S0_sema_Sym old7 = *(&((S0_sema_Sym*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]);
+    *(&((S0_sema_Sym*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]) = p_v;
     ((void)0);
     rt_str_drop(p_k);
     return;
   }
   int64_t ix8 = v_p_4.f_slot;
-  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1428")] = ((*p_m)->f_keys).len;
+  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1468")] = ((*p_m)->f_keys).len;
   obx_str ap9 = p_k;
   *(obx_str*)rt_arr_push((&(*p_m)->f_keys), sizeof(obx_str)) = ap9;
   S0_sema_Sym ap10 = p_v;
   *(S0_sema_Sym*)rt_arr_push((&(*p_m)->f_vals), sizeof(S0_sema_Sym)) = ap10;
   uint64_t ap11 = v_h_2;
   *(uint64_t*)rt_arr_push((&(*p_m)->f_hashes), sizeof(uint64_t)) = ap11;
-  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1432");
+  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1472");
   bool c13 = (t12 > ((*p_m)->f_index).len);
   if (c13) {
     f637_std_Map_grow(p_m);
   }
 }
 static void f637_std_Map_grow(S68_std_Map** p_m) {
-  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1487");
+  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1527");
   int64_t fill2 = -1LL;
-  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1488");
+  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1528");
   for (int64_t i4 = 0; i4 < a3.len; i4++) ((int64_t*)a3.data)[i4] = fill2;
   obx_arr old5 = *(&(*p_m)->f_index);
   *(&(*p_m)->f_index) = a3;
   gl9_drop(old5);
-  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1489");
-  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1490");
+  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1529");
+  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1530");
   int64_t end7 = ((*p_m)->f_keys).len;
   for (int64_t v_e_8 = 0LL; v_e_8 < end7; v_e_8++) {
     int64_t ix9 = v_e_8;
-    int64_t t10 = f530_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1492")]);
+    int64_t t10 = f530_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1532")]);
     int64_t v_i_11 = t10;
     while (1) {
       int64_t ix12 = v_i_11;
-      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1493")] >= 0LL);
+      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1533")] >= 0LL);
       if (!c13) break;
-      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1493") & v_mask_6));
+      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1533") & v_mask_6));
     }
     int64_t ix14 = v_i_11;
-    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1494")] = v_e_8;
+    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1534")] = v_e_8;
   }
 }
 static bool f635_sema_isReserved(obx_str p_name) {
@@ -33673,7 +33673,7 @@ static S68_std_Map* f626_std_newMap(void) {
   obx_arr a2 = rt_arr_new(0, sizeof(S0_sema_Sym));
   obx_arr a3 = rt_arr_new(0, sizeof(uint64_t));
   int64_t fill4 = -1LL;
-  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1335");
+  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1375");
   for (int64_t i6 = 0; i6 < a5.len; i6++) ((int64_t*)a5.data)[i6] = fill4;
   S68_std_Map* o7 = rt_alloc(sizeof(*o7));
   o7->f_keys = a1;
@@ -34529,62 +34529,62 @@ static void f665_std_Map_put(S78_std_Map** p_m, int64_t p_k, bool p_v) {
   bool c5 = (v_p_4.f_entry >= 0LL);
   if (c5) {
     int64_t ix6 = v_p_4.f_entry;
-    bool old7 = *(&((bool*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]);
-    *(&((bool*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1425")]) = p_v;
+    bool old7 = *(&((bool*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]);
+    *(&((bool*)((*p_m)->f_vals).data)[rt_idx(ix6, ((*p_m)->f_vals).len, "std.obx:1465")]) = p_v;
     ((void)0);
     ((void)0);
     return;
   }
   int64_t ix8 = v_p_4.f_slot;
-  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1428")] = ((*p_m)->f_keys).len;
+  ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix8, ((*p_m)->f_index).len, "std.obx:1468")] = ((*p_m)->f_keys).len;
   int64_t ap9 = p_k;
   *(int64_t*)rt_arr_push((&(*p_m)->f_keys), sizeof(int64_t)) = ap9;
   bool ap10 = p_v;
   *(bool*)rt_arr_push((&(*p_m)->f_vals), sizeof(bool)) = ap10;
   uint64_t ap11 = v_h_2;
   *(uint64_t*)rt_arr_push((&(*p_m)->f_hashes), sizeof(uint64_t)) = ap11;
-  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1432");
+  int64_t t12 = rt_mul_int(2LL, ((*p_m)->f_keys).len, "std.obx:1472");
   bool c13 = (t12 > ((*p_m)->f_index).len);
   if (c13) {
     f667_std_Map_grow(p_m);
   }
 }
 static void f667_std_Map_grow(S78_std_Map** p_m) {
-  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1487");
+  int64_t v_n_1 = rt_mul_int(((*p_m)->f_index).len, 2LL, "std.obx:1527");
   int64_t fill2 = -1LL;
-  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1488");
+  obx_arr a3 = rt_arr_fill(v_n_1, sizeof(int64_t), "std.obx:1528");
   for (int64_t i4 = 0; i4 < a3.len; i4++) ((int64_t*)a3.data)[i4] = fill2;
   obx_arr old5 = *(&(*p_m)->f_index);
   *(&(*p_m)->f_index) = a3;
   gl9_drop(old5);
-  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1489");
-  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1490");
+  (*p_m)->f_shift = rt_sub_int((*p_m)->f_shift, 1LL, "std.obx:1529");
+  int64_t v_mask_6 = rt_sub_int(v_n_1, 1LL, "std.obx:1530");
   int64_t end7 = ((*p_m)->f_keys).len;
   for (int64_t v_e_8 = 0LL; v_e_8 < end7; v_e_8++) {
     int64_t ix9 = v_e_8;
-    int64_t t10 = f668_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1492")]);
+    int64_t t10 = f668_std_Map_home(p_m, ((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1532")]);
     int64_t v_i_11 = t10;
     while (1) {
       int64_t ix12 = v_i_11;
-      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1493")] >= 0LL);
+      bool c13 = (((int64_t*)((*p_m)->f_index).data)[rt_idx(ix12, ((*p_m)->f_index).len, "std.obx:1533")] >= 0LL);
       if (!c13) break;
-      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1493") & v_mask_6));
+      v_i_11 = ((int64_t)(rt_add_int(v_i_11, 1LL, "std.obx:1533") & v_mask_6));
     }
     int64_t ix14 = v_i_11;
-    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1494")] = v_e_8;
+    ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix14, ((*p_m)->f_index).len, "std.obx:1534")] = v_e_8;
   }
 }
 static int64_t f668_std_Map_home(S78_std_Map** p_m, uint64_t p_h) {
-  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1338"), "std.obx:1338");
+  int64_t r1 = rt_cvs_int((__int128)rt_shr_u64(rt_wmul_u64(p_h, 11400714819323198485ULL), (*p_m)->f_shift, "std.obx:1378"), "std.obx:1378");
   return r1;
 }
 static S28_std_Probe f666_std_Map_find(S78_std_Map** p_m, int64_t* p_k, uint64_t p_h) {
-  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1342");
+  int64_t v_mask_1 = rt_sub_int(((*p_m)->f_index).len, 1LL, "std.obx:1382");
   int64_t t2 = f668_std_Map_home(p_m, p_h);
   int64_t v_i_3 = t2;
   while (1) {
     int64_t ix4 = v_i_3;
-    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1345")];
+    int64_t v_e_5 = ((int64_t*)((*p_m)->f_index).data)[rt_idx(ix4, ((*p_m)->f_index).len, "std.obx:1385")];
     bool c6 = (v_e_5 < 0LL);
     if (c6) {
       S28_std_Probe t7 = ((S28_std_Probe){.f_slot = v_i_3, .f_entry = -1LL});
@@ -34592,10 +34592,10 @@ static S28_std_Probe f666_std_Map_find(S78_std_Map** p_m, int64_t* p_k, uint64_t
       return r8;
     }
     int64_t ix9 = v_e_5;
-    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1347")] == p_h);
+    bool b10 = (((uint64_t*)((*p_m)->f_hashes).data)[rt_idx(ix9, ((*p_m)->f_hashes).len, "std.obx:1387")] == p_h);
     if (b10) {
       int64_t ix11 = v_e_5;
-      bool t12 = f178_std_int_eq((*(&((int64_t*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1347")])), (&(*p_k)));
+      bool t12 = f178_std_int_eq((*(&((int64_t*)((*p_m)->f_keys).data)[rt_idx(ix11, ((*p_m)->f_keys).len, "std.obx:1387")])), (&(*p_k)));
       b10 = t12;
     }
     bool c13 = b10;
@@ -34604,7 +34604,7 @@ static S28_std_Probe f666_std_Map_find(S78_std_Map** p_m, int64_t* p_k, uint64_t
       S28_std_Probe r15 = t14;
       return r15;
     }
-    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1348") & v_mask_1));
+    v_i_3 = ((int64_t)(rt_add_int(v_i_3, 1LL, "std.obx:1388") & v_mask_1));
   }
 }
 static bool f664_std_Map_has(S78_std_Map** p_m, int64_t* p_k) {
@@ -34618,7 +34618,7 @@ static S78_std_Map* f661_std_newMap(void) {
   obx_arr a2 = rt_arr_new(0, sizeof(bool));
   obx_arr a3 = rt_arr_new(0, sizeof(uint64_t));
   int64_t fill4 = -1LL;
-  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1335");
+  obx_arr a5 = rt_arr_fill(8LL, sizeof(int64_t), "std.obx:1375");
   for (int64_t i6 = 0; i6 < a5.len; i6++) ((int64_t*)a5.data)[i6] = fill4;
   S78_std_Map* o7 = rt_alloc(sizeof(*o7));
   o7->f_keys = a1;
@@ -52040,26 +52040,26 @@ static obx_str f920_std_trim(obx_str p_s) {
   while (1) {
     bool b3 = (v_a_1 < v_b_2);
     if (b3) {
-      uint8_t t4 = rt_str_byte(p_s, v_a_1, "std.obx:521");
+      uint8_t t4 = rt_str_byte(p_s, v_a_1, "std.obx:561");
       bool t5 = f929_std_isSpace(t4);
       b3 = t5;
     }
     bool c6 = b3;
     if (!c6) break;
-    v_a_1 = rt_add_int(v_a_1, 1LL, "std.obx:521");
+    v_a_1 = rt_add_int(v_a_1, 1LL, "std.obx:561");
   }
   while (1) {
     bool b7 = (v_b_2 > v_a_1);
     if (b7) {
-      uint8_t t8 = rt_str_byte(p_s, rt_sub_int(v_b_2, 1LL, "std.obx:522"), "std.obx:522");
+      uint8_t t8 = rt_str_byte(p_s, rt_sub_int(v_b_2, 1LL, "std.obx:562"), "std.obx:562");
       bool t9 = f929_std_isSpace(t8);
       b7 = t9;
     }
     bool c10 = b7;
     if (!c10) break;
-    v_b_2 = rt_sub_int(v_b_2, 1LL, "std.obx:522");
+    v_b_2 = rt_sub_int(v_b_2, 1LL, "std.obx:562");
   }
-  obx_str t11 = rt_str_sub(p_s, v_a_1, v_b_2, "std.obx:523");
+  obx_str t11 = rt_str_sub(p_s, v_a_1, v_b_2, "std.obx:563");
   obx_str r12 = t11;
   rt_str_drop(p_s);
   return r12;

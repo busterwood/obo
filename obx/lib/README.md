@@ -37,9 +37,11 @@ for leaks.
 ### std (prelude)
 
 - **Option[T]** `Some(T)`/`None`: `isSome`, `isNone`, `unwrap`, `expect(msg)`,
-  `unwrapOr(d)`, `eq` (T: Eq), `toStr` (T: Show). **Result[T, E]** `Ok`/`Err`
-  (the `try` lang item): `isOk`, `isErr`, `unwrap`, `expect`, `unwrapOr`,
-  `ok()`, `err()`, `toStr`. **Unit**.
+  `unwrapOr(d)`, `map(&f)`, `eq` (T: Eq), `toStr` (T: Show). **Result[T, E]**
+  `Ok`/`Err` (the `try` lang item): `isOk`, `isErr`, `unwrap`, `expect`,
+  `unwrapOr`, `unwrapErr`, `expectErr(msg)`, `map(&f)` (the Ok value),
+  `mapErr(&f)` (the Err value: `try r.mapErr(toError)`), `ok()`, `err()`,
+  `toStr`. **Unit**.
 - **Eq, Ord, Hash, Show** with implementations for `int i32 u32 u64 byte i128
   u128 float bool str` (float has no `hash`). `min`, `max` for `T: Ord + copy`.
 - **Checked arithmetic** on every integer type: `a.checkedAdd(b)`,
