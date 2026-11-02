@@ -2,9 +2,9 @@
 // insertion and removal, searching), Set, and a binary Heap.
 //
 // Map, newMap and sort (an unstable, allocation-free heap sort) are in std.
-// Algorithms over a whole array take &[]T / mut &[]T; the ones marked
-// "slice:" will take &[T] / mut &[T] once slices exist, so that they also
-// work on part of an array.
+// Algorithms that do not grow or shrink the array take a slice (&[T] /
+// mut &[T]), so they work on part of an array too: sortBy(mut &xs[2..8], cmp).
+// &xs and mut &xs pass as the whole array.
 
 // ------------------------------------------------------------ sorting
 
@@ -12,8 +12,7 @@
 // positive: b before a). Merge sort over indices, then the elements are
 // permuted in place with swaps, so T may be owned. O(n log n) time, O(n)
 // extra ints.
-// slice: sortBy(xs, cmp) takes a mut &[T].
-pub fn sortBy[T](xs: mut &[]T, cmp: fn(&T, &T): int) {
+pub fn sortBy[T](xs: mut &[T], cmp: fn(&T, &T): int) {
     let n = len(xs)
     if n < 2 { return }
     var idx = identity(n)
@@ -46,8 +45,7 @@ pub fn sortBy[T](xs: mut &[]T, cmp: fn(&T, &T): int) {
 
 // Stable sort by the natural order (the same merge sort as sortBy: a
 // generic function cannot be passed as a fn value).
-// slice: sortStable(xs) takes a mut &[T].
-pub fn sortStable[T: Ord](xs: mut &[]T) {
+pub fn sortStable[T: Ord](xs: mut &[T]) {
     let n = len(xs)
     if n < 2 { return }
     var idx = identity(n)
@@ -85,7 +83,7 @@ fn identity(n: int): []int {
 
 // Rearranges xs so that the new xs[i] is the old xs[idx[i]]; idx is used up
 // (left as the identity). Follows each cycle with swaps.
-fn permute[T](xs: mut &[]T, idx: mut &[]int) {
+fn permute[T](xs: mut &[T], idx: mut &[int]) {
     for start in 0..len(idx) {
         var cur = start
         while idx[cur] != start {
@@ -99,8 +97,7 @@ fn permute[T](xs: mut &[]T, idx: mut &[]int) {
 }
 
 // Whether xs is in ascending order.
-// slice: isSorted(xs) takes a &[T].
-pub fn isSorted[T: Ord](xs: &[]T): bool {
+pub fn isSorted[T: Ord](xs: &[T]): bool {
     for i in 1..len(xs) {
         if xs[i] < xs[i - 1] { return false }
     }
@@ -111,16 +108,14 @@ pub fn isSorted[T: Ord](xs: &[]T): bool {
 
 // In a sorted xs: Ok(i) where xs[i] == x (some such i), or Err(i), the index
 // where x would be inserted to keep xs sorted.
-// slice: binarySearch(xs, x) takes a &[T].
-pub fn binarySearch[T: Ord](xs: &[]T, x: &T): Result[int, int] {
+pub fn binarySearch[T: Ord](xs: &[T], x: &T): Result[int, int] {
     let i = lowerBound(xs, x)
     if i < len(xs) && !(x < xs[i]) { return Ok(i) }
     return Err(i)
 }
 
 // The first index i of the sorted xs with xs[i] >= x (len(xs) if none).
-// slice: lowerBound(xs, x) takes a &[T].
-pub fn lowerBound[T: Ord](xs: &[]T, x: &T): int {
+pub fn lowerBound[T: Ord](xs: &[T], x: &T): int {
     var lo = 0
     var hi = len(xs)
     while lo < hi {
@@ -135,8 +130,7 @@ pub fn lowerBound[T: Ord](xs: &[]T, x: &T): int {
 }
 
 // The first index i of the sorted xs with xs[i] > x (len(xs) if none).
-// slice: upperBound(xs, x) takes a &[T].
-pub fn upperBound[T: Ord](xs: &[]T, x: &T): int {
+pub fn upperBound[T: Ord](xs: &[T], x: &T): int {
     var lo = 0
     var hi = len(xs)
     while lo < hi {
@@ -150,12 +144,10 @@ pub fn upperBound[T: Ord](xs: &[]T, x: &T): int {
     return lo
 }
 
-// slice: contains(xs, x) takes a &[T].
-pub fn contains[T: Eq](xs: &[]T, x: &T): bool { return find(xs, x) >= 0 }
+pub fn contains[T: Eq](xs: &[T], x: &T): bool { return find(xs, x) >= 0 }
 
 // The first index of x in xs, or -1.
-// slice: find(xs, x) takes a &[T].
-pub fn find[T: Eq](xs: &[]T, x: &T): int {
+pub fn find[T: Eq](xs: &[T], x: &T): int {
     for i in 0..len(xs) {
         if xs[i] == x { return i }
     }
@@ -163,8 +155,7 @@ pub fn find[T: Eq](xs: &[]T, x: &T): int {
 }
 
 // The first index whose element satisfies pred, or -1.
-// slice: findBy(xs, pred) takes a &[T].
-pub fn findBy[T](xs: &[]T, pred: fn(&T): bool): int {
+pub fn findBy[T](xs: &[T], pred: fn(&T): bool): int {
     for i in 0..len(xs) {
         if pred(&xs[i]) { return i }
     }
@@ -172,8 +163,7 @@ pub fn findBy[T](xs: &[]T, pred: fn(&T): bool): int {
 }
 
 // How many elements satisfy pred.
-// slice: count(xs, pred) takes a &[T].
-pub fn count[T](xs: &[]T, pred: fn(&T): bool): int {
+pub fn count[T](xs: &[T], pred: fn(&T): bool): int {
     var n = 0
     for i in 0..len(xs) {
         if pred(&xs[i]) { n += 1 }
@@ -181,8 +171,7 @@ pub fn count[T](xs: &[]T, pred: fn(&T): bool): int {
     return n
 }
 
-// slice: equal(a, b) takes two &[T].
-pub fn equal[T: Eq](a: &[]T, b: &[]T): bool {
+pub fn equal[T: Eq](a: &[T], b: &[T]): bool {
     if len(a) != len(b) { return false }
     for i in 0..len(a) {
         if a[i] != b[i] { return false }
@@ -192,8 +181,7 @@ pub fn equal[T: Eq](a: &[]T, b: &[]T): bool {
 
 // ------------------------------------------------------------ rearranging
 
-// slice: reverse(xs) takes a mut &[T].
-pub fn reverse[T](xs: mut &[]T) {
+pub fn reverse[T](xs: mut &[T]) {
     var i = 0
     var j = len(xs) - 1
     while i < j {
@@ -204,25 +192,13 @@ pub fn reverse[T](xs: mut &[]T) {
 }
 
 // Rotates xs left by k: the element at k moves to 0.
-// slice: rotateLeft(xs, k) takes a mut &[T].
-pub fn rotateLeft[T](xs: mut &[]T, k: int) {
+pub fn rotateLeft[T](xs: mut &[T], k: int) {
     let n = len(xs)
     if n == 0 { return }
     let s = ((k % n) + n) % n
-    reverseRange(xs, 0, s)
-    reverseRange(xs, s, n)
-    reverseRange(xs, 0, n)
-}
-
-// slice: becomes reverse(xs[a..b]).
-fn reverseRange[T](xs: mut &[]T, a: int, b: int) {
-    var i = a
-    var j = b - 1
-    while i < j {
-        swap(xs, i, j)
-        i += 1
-        j -= 1
-    }
+    reverse(xs[0..s])
+    reverse(xs[s..n])
+    reverse(xs)
 }
 
 // Inserts x before index i (0 <= i <= len(xs)), shifting the rest up.
@@ -278,27 +254,26 @@ pub fn dedup[T: Eq](xs: mut &[]T) {
 
 // ------------------------------------------------------------ copying
 
-// A copy of xs[a..b].
-// slice: copyRange(xs, a, b) becomes copyOf(xs[a..b]).
-pub fn copyRange[T: copy](xs: &[]T, a: int, b: int): []T {
+// A copy of xs[a..b] (the same as copyOf(xs[a..b])).
+pub fn copyRange[T: copy](xs: &[T], a: int, b: int): []T {
     if a < 0 || b < a || b > len(xs) { panic("copyRange: range out of bounds") }
+    return copyOf(xs[a..b])
+}
+
+// A new array of copies of the elements of xs.
+pub fn copyOf[T: copy](xs: &[T]): []T {
     var out: []T = []
-    for i in a..b { append(mut &out, xs[i]) }
+    for x in xs { append(mut &out, x) }
     return out
 }
 
-// slice: copyOf(xs) takes a &[T].
-pub fn copyOf[T: copy](xs: &[]T): []T { return copyRange(xs, 0, len(xs)) }
-
 // Appends copies of the elements of ys to xs.
-// slice: extend(xs, ys) takes ys: &[T].
-pub fn extend[T: copy](xs: mut &[]T, ys: &[]T) {
+pub fn extend[T: copy](xs: mut &[]T, ys: &[T]) {
     for y in ys { append(xs, y) }
 }
 
 // The elements of xs for which pred holds, copied.
-// slice: filter(xs, pred) takes a &[T].
-pub fn filter[T: copy](xs: &[]T, pred: fn(&T): bool): []T {
+pub fn filter[T: copy](xs: &[T], pred: fn(&T): bool): []T {
     var out: []T = []
     for x in xs {
         if pred(&x) { append(mut &out, x) }
@@ -307,8 +282,7 @@ pub fn filter[T: copy](xs: &[]T, pred: fn(&T): bool): []T {
 }
 
 // f of each element.
-// slice: mapTo(xs, f) takes a &[T].
-pub fn mapTo[T, U](xs: &[]T, f: fn(&T): U): []U {
+pub fn mapTo[T, U](xs: &[T], f: fn(&T): U): []U {
     var out: []U = []
     for i in 0..len(xs) { append(mut &out, f(&xs[i])) }
     return out
@@ -325,8 +299,7 @@ pub type Set[T: Eq + Hash] = record {
 pub fn newSet[T: Eq + Hash](): Set[T] { return Set{m: newMap()} }
 
 // A set of copies of the elements of xs.
-// slice: setOf(xs) takes a &[T].
-pub fn setOf[T: Eq + Hash + copy](xs: &[]T): Set[T] {
+pub fn setOf[T: Eq + Hash + copy](xs: &[T]): Set[T] {
     var s: Set[T] = newSet()
     for x in xs { s.add(x) }
     return s

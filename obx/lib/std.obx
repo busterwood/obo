@@ -355,7 +355,6 @@ pub type StrBuf = record { bytes: []byte }
 
 pub fn newStrBuf(): StrBuf { return StrBuf{bytes: []} }
 
-// slice: add(s) is a byte-run append; with slices it becomes one copy.
 pub fn (b: mut &StrBuf) add(s: str) {
     for i in 0..len(s) { append(mut &b.bytes, strByte(s, i)) }
 }
@@ -950,7 +949,8 @@ pub fn (d: Decimal) canonical(): str {
 // 0.012300. Nothing else is accepted (no spaces, "_", ".5", "1." or NaN).
 // Errors, in this order: DecInvalid (syntax), DecPrecision (more than 38
 // significant digits), DecDisplay (scale above 65535), DecExponent.
-// slice: parse(s) can take a byte range of a larger text.
+// To parse part of a larger text, pass a substring: Decimal.parse(text[a..b])
+// shares the bytes of text.
 pub fn (Decimal) parse(s: str): Result[Decimal, DecError] {
     let n = len(s)
     var i = 0
@@ -1024,8 +1024,7 @@ pub fn (Decimal) parse(s: str): Result[Decimal, DecError] {
 }
 
 // The sum of xs (0 for none); stops the program on overflow like +.
-// slice: sum(xs) takes a &[Decimal].
-pub fn sumDecimals(xs: &[]Decimal): Decimal {
+pub fn sumDecimals(xs: &[Decimal]): Decimal {
     var s = zeroDec(0)
     for x in xs { s = s + x }
     return s
@@ -1210,8 +1209,7 @@ fn pow10(k: int): u128 {
 
 // Heap sort: in place, O(n log n), no allocation, not stable (lib/collections
 // has the stable sortBy).
-// slice: sort(xs) takes a mut &[T].
-pub fn sort[T: Ord](xs: mut &[]T) {
+pub fn sort[T: Ord](xs: mut &[T]) {
     let n = len(xs)
     var i = n / 2
     while i > 0 {
@@ -1226,7 +1224,7 @@ pub fn sort[T: Ord](xs: mut &[]T) {
     }
 }
 
-fn siftDown[T: Ord](xs: mut &[]T, start: int, end: int) {
+fn siftDown[T: Ord](xs: mut &[T], start: int, end: int) {
     var root = start
     while true {
         var child = root * 2 + 1

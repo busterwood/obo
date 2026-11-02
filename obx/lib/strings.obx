@@ -113,8 +113,7 @@ pub fn cut(s: str, sep: str): Option[Cut] {
 }
 
 // The parts with sep between them.
-// slice: join(parts, sep) takes a &[str].
-pub fn join(parts: &[]str, sep: str): str {
+pub fn join(parts: &[str], sep: str): str {
     var b = newStrBuf()
     for i in 0..len(parts) {
         if i > 0 { b.add(sep) }
@@ -450,8 +449,7 @@ pub fn fromRune(r: int): str {
 }
 
 // The UTF-8 text of code points.
-// slice: fromRunes(rs) takes a &[int].
-pub fn fromRunes(rs: &[]int): str {
+pub fn fromRunes(rs: &[int]): str {
     var b = newStrBuf()
     for r in rs { addRune(mut &b, r) }
     return b.toStr()

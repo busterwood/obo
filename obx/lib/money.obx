@@ -156,8 +156,7 @@ pub fn (a: Money[C]) allocate(n: int): []Money[C] {
 // exactly: each is a * w / sum truncated to the minor unit, and the leftover
 // units go one each to the parts with the largest truncated remainders (the
 // earlier part on a tie). A zero weight gets zero.
-// slice: allocateBy(weights) takes a &[int].
-pub fn (a: Money[C]) allocateBy(weights: &[]int): []Money[C] {
+pub fn (a: Money[C]) allocateBy(weights: &[int]): []Money[C] {
     var total = 0
     for w in weights {
         if w < 0 { panic("Money.allocateBy: a weight is negative") }
@@ -193,8 +192,7 @@ pub fn (a: Money[C]) allocateBy(weights: &[]int): []Money[C] {
 }
 
 // The sum of xs (zero for none).
-// slice: sum(xs) takes a &[Money[C]].
-pub fn sum[C: Currency](xs: &[]Money[C]): Money[C] {
+pub fn sum[C: Currency](xs: &[Money[C]]): Money[C] {
     var s: Money[C] = zero()
     for x in xs { s = s + x }
     return s

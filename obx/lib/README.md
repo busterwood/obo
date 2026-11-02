@@ -169,27 +169,29 @@ errno, a static buffer):
 The self-hosted compiler's runtime needs the same helpers (or the language a
 way to read C structs).
 
-## Slices: functions to change
+## Slices
 
-SPEC 4.2a adds `&[T]` / `mut &[T]` slices and `s[a..b]` on str; the
-reference compiler does not implement them yet. Each function below is marked
-`// slice:` in its source and should take a slice instead of `&[]T` /
-`mut &[]T` (callers passing `&xs` keep working), or use one internally:
+The algorithms that do not grow or shrink an array take a slice (SPEC 4.2a),
+so they also work on part of one; `&xs` / `mut &xs` still pass the whole
+array:
 
-- std: `StrBuf.add` (one copy of a byte run), `Decimal.parse` (a byte range
-  of a larger text), `sumDecimals`, `sort`.
+- std: `sort` (and its `siftDown`), `sumDecimals`.
 - collections: `sortBy`, `sortStable`, `isSorted`, `binarySearch`,
   `lowerBound`, `upperBound`, `contains`, `find`, `findBy`, `count`, `equal`,
-  `reverse`, `rotateLeft` (and its `reverseRange`, which becomes
-  `reverse(xs[a..b])`), `copyRange` (becomes `copyOf(xs[a..b])`), `copyOf`,
-  `extend` (ys), `filter`, `mapTo`, `setOf`.
+  `reverse`, `rotateLeft` (which reverses subslices), `copyOf` (`copyRange(xs,
+  a, b)` is `copyOf(xs[a..b])`), `extend` (its `ys`), `filter`, `mapTo`,
+  `setOf`.
 - money: `allocateBy` (weights), `sum`.
 - strings: `join`, `fromRunes`.
 
-Substrings are always taken with `strSlice` (a copy today, a shared view with
-slices); no library code relies on a str being NUL-terminated. C calls get a
-NUL-terminated copy from the compiler (`rt_cstr` today relies on the str's own
-terminator, which must change when str slices share bytes).
+Functions that append, pop or insert (`insert`, `removeAt`, `swapRemove`,
+`retain`, `dedup`, `extend`'s `xs`) keep `mut &[]T`.
+
+`s[a..b]` on a str shares its bytes, so taking substrings costs no copy;
+`strSlice(s, a, b)` is the same operation. `Decimal.parse(text[a..b])` parses
+part of a larger text without copying it. No library code relies on a str
+being NUL-terminated: an extern call gets the str's bytes when a NUL follows
+them and a NUL-terminated temporary copy otherwise (freed after the call).
 
 ## Gaps
 
