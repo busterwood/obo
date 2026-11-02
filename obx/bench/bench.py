@@ -2,10 +2,10 @@
 """obo vs obx benchmark table.
 
 For each program NAME it builds obx/bench/NAME.obx with the reference compiler
-(python3 obx/ref/obxc.py, gcc -O1), the same program with gcc -O2 (obxc --emit-c
-then gcc), and obo/bench/NAME_obo.obx with the obo compiler (obo/obo, if it runs).
-It checks that the outputs are equal and that the obx program is leak free
-(OBX_CHECK=1), then prints the best wall time of N runs of each.
+(python3 obx/ref/obxc.py, gcc -O2) and obo/bench/NAME_obo.obx with the obo
+compiler (obo/obo, if it runs). It checks that the outputs are equal and that the
+obx program is leak free (OBX_CHECK=1), then prints the best wall time of N runs
+of each.
 
     python3 obx/bench/bench.py [-n RUNS] [--only NAME ...]
 """
@@ -50,17 +50,9 @@ def best(exe, name, n):
 
 
 def build_obx(name, tmp):
-    src = os.path.join(HERE, name + '.obx')
     exe = os.path.join(tmp, name + '_obx')
-    subprocess.run([sys.executable, OBXC, src, '-o', exe], check=True)
-    c = subprocess.run([sys.executable, OBXC, src, '--emit-c'], check=True, capture_output=True, text=True).stdout
-    cfile = os.path.join(tmp, name + '.c')
-    with open(cfile, 'w') as f:
-        f.write(c)
-    exe2 = os.path.join(tmp, name + '_obx_O2')
-    # same flags as obxc.py, with -O2 (none of these programs link a library)
-    subprocess.run(['gcc', '-O2', '-w', '-std=gnu11', '-o', exe2, cfile, '-lm'], check=True)
-    return exe, exe2
+    subprocess.run([sys.executable, OBXC, os.path.join(HERE, name + '.obx'), '-o', exe], check=True)
+    return exe
 
 
 def build_obo(name, tmp):
@@ -86,27 +78,25 @@ def main():
     tmp = tempfile.mkdtemp(prefix='obxbench')
     rows = []
     for name in names:
-        obx, obx2 = build_obx(name, tmp)
+        obx = build_obx(name, tmp)
         obo = build_obo(name, tmp)
         code, out, err, _ = run(obx, name, {'OBX_CHECK': '1'})
         if code != 0:
             raise SystemExit(f"{name}: obx with OBX_CHECK=1 exited {code}: {err}")
         t_obx, out_obx = best(obx, name, a.n)
-        t_o2, out_o2 = best(obx2, name, a.n)
         t_obo, out_obo = (None, None)
         if obo:
             t_obo, out_obo = best(obo, name, a.n)
-        if out_o2 != out_obx or (obo and out_obo != out_obx):
-            raise SystemExit(f"{name}: outputs differ: obx {out_obx!r}, obx -O2 {out_o2!r}, obo {out_obo!r}")
-        rows.append((name, t_obo, t_obx, t_o2, out_obx))
+        if obo and out_obo != out_obx:
+            raise SystemExit(f"{name}: outputs differ: obx {out_obx!r}, obo {out_obo!r}")
+        rows.append((name, t_obo, t_obx, out_obx))
     if all(r[1] is None for r in rows):
         print("note: the obo compiler did not build anything; obo columns skipped", file=sys.stderr)
-    print("| benchmark | obo | obx (-O1) | obx/obo | obx (-O2) | -O2/obo | output |")
-    print("|---|---:|---:|---:|---:|---:|---|")
-    for name, t_obo, t_obx, t_o2, out in rows:
-        r1 = f"{t_obx / t_obo:.2f}" if t_obo else "n/a"
-        r2 = f"{t_o2 / t_obo:.2f}" if t_obo else "n/a"
-        print(f"| {name} | {fmt(t_obo)} | {fmt(t_obx)} | {r1} | {fmt(t_o2)} | {r2} | {out} |")
+    print("| benchmark | obo | obx | obx/obo | output |")
+    print("|---|---:|---:|---:|---|")
+    for name, t_obo, t_obx, out in rows:
+        r = f"{t_obx / t_obo:.2f}" if t_obo else "n/a"
+        print(f"| {name} | {fmt(t_obo)} | {fmt(t_obx)} | {r} | {out} |")
 
 
 if __name__ == '__main__':

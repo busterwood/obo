@@ -23,7 +23,7 @@ def unit(path):
         if c.returncode:
             return f"compile failed: {c.stderr.strip()[:300]}"
         open(os.path.join(tmp, 'p.c'), 'w').write(c.stdout)
-        g = subprocess.run(['gcc', '-O1', '-w', '-std=gnu11', *flags, '-o', os.path.join(tmp, 'p'),
+        g = subprocess.run(['gcc', '-O2', '-w', '-std=gnu11', *flags, '-o', os.path.join(tmp, 'p'),
                             os.path.join(tmp, 'p.c'), '-lm'], capture_output=True, text=True)
         if g.returncode:
             return f"gcc failed: {g.stderr[:300]}"

@@ -14,8 +14,10 @@ by Python, then to a binary by gcc.
     python3 run_tests.py --conformance        # also the conformance suite in ../tests
 
 A compile error prints `file:line: message` and exits 1 (one error, then stop).
-gcc runs with `-O1 -w`. An `extern "lib"` links `-llib`, or the library by its
-full path when only `libX.so.N` exists (no dev symlink); `"c"` adds nothing.
+gcc runs with `-O2 -w` (`-O1` until 2026-11-02: `-O2` builds the largest
+program, the self-hosted compiler, in 3.9 s instead of 1.6 s, and runs
+`bench/loop` 1.6x faster). An `extern "lib"` links `-llib`, or the library by
+its full path when only `libX.so.N` exists (no dev symlink); `"c"` adds nothing.
 Run a program with `OBX_CHECK=1` to make a leak (live objects at exit) exit 5.
 
 ## AST dump

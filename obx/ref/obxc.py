@@ -133,7 +133,7 @@ def main(argv):
     with open(cfile, 'w') as f:
         f.write(csrc)
     exe = out or (os.path.join(tmp, 'prog') if run else os.path.splitext(src)[0])
-    r = subprocess.run(['gcc', '-O1', '-w', '-std=gnu11', '-o', exe, cfile] + lib_flags(libs) + ['-lm'],
+    r = subprocess.run(['gcc', '-O2', '-w', '-std=gnu11', '-o', exe, cfile] + lib_flags(libs) + ['-lm'],
                        capture_output=True, text=True)
     if r.returncode != 0:
         print(f"obxc: internal error: the C compiler failed (C kept in {cfile})\n{r.stderr[:4000]}",
