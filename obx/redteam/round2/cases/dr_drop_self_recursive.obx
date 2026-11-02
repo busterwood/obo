@@ -1,7 +1,13 @@
-// A drop method that makes a value of its own type recurses until the stack overflows.
+// A drop method that makes a value of its own type and drops it before its last statement
+// recurses until the stack overflows. (Values a drop method still owns when it returns are
+// dropped from the worklist instead, so `let m = N{...}` as the last statement would loop
+// forever without using stack; see FINDINGS.md, g08.)
 // exit: 4
 type N = record { v: int }
-fn (n: mut &N) drop() { let m = N{v: n.v + 1} }
+fn (n: mut &N) drop() {
+    { let m = N{v: n.v + 1} }
+    println("not reached")
+}
 fn main() {
     let n = N{v: 0}
 }

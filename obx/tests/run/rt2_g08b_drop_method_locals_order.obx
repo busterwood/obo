@@ -1,0 +1,25 @@
+// Red-team round 2, g08 (SPEC 9.2, 9.4): the values a drop method still owns
+// when it returns are dropped then, in reverse declaration order, before the
+// fields; a detached child is dropped whole (with its own locals and fields)
+// in that place.
+// expect: drop 1
+// expect: drop 2
+// expect: drop 3
+// expect: L 3
+// expect: L 300
+// expect: L 2
+// expect: L 200
+// expect: L 1
+// expect: L 100
+type L = record { n: int }
+fn (l: mut &L) drop() { println("L " + l.n.toStr()) }
+type N = record { v: int; f: L; next: Option[N] }
+fn (n: mut &N) drop() {
+    println("drop " + n.v.toStr())
+    let a = L{n: n.v}
+    let c = replace(mut &n.next, None)
+}
+fn main() {
+    let t = N{v: 1, f: L{n: 100}, next: Some(N{v: 2, f: L{n: 200},
+                                                next: Some(N{v: 3, f: L{n: 300}, next: None})})}
+}

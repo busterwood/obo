@@ -72,6 +72,14 @@ static void rt_drun(rt_dfn f, void* p) {
     while (rt_dn > base) { rt_dact a = rt_ds[--rt_dn]; a.f(a.p); }
 }
 static void rt_free_act(void* p) { rt_free(p); }
+/* A drop method's own values, dropped as it returns, go onto the worklist (in a heap copy) to be
+   dropped right after it, so that a method that detaches a child does not recurse (SPEC 9.4). */
+static void rt_ddefer(rt_dfn f, void* p, size_t n) {
+    void* q = rt_alloc(n);
+    memcpy(q, p, n);
+    rt_dpush(rt_free_act, q);
+    rt_dpush(f, q);
+}
 
 /* Stack overflow (SPEC 14, exit 4): a SIGSEGV near the stack, caught on an alternate stack. */
 static char* rt_stack_top;

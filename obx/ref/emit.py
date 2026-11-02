@@ -136,7 +136,7 @@ class Emitter:
             self.protos.append(f"static void {n}({ct} v);")
             self.bodies.append(f"static void {n}({ct} v) {{ rt_drun({self.glue_fn('dbody', t)}, &v); }}")
             return
-        if kind == 'dbody':
+        if kind in ('dbody', 'drest'):
             # Drop as actions on an explicit stack (rt_drun): no C recursion per boxed value, and
             # the order of SPEC 9.2 is kept (fields last to first, elements first to last).
             self.protos.append(f"static void {n}(void* p);")
@@ -149,13 +149,17 @@ class Emitter:
                     else:
                         body.append(f"for (int64_t i = a->len - 1; i >= 0; i--) "
                                     f"rt_dpush({self.glue_fn('dbody', et)}, &(({ec}*)a->data)[i]);")
+            elif t[1].drop is not None and kind == 'dbody':
+                # The drop method runs first; the fields are dropped by a second action, pushed
+                # before the call, so that what the method defers (rt_ddefer) is dropped before them.
+                body = [f"rt_dpush({self.glue_fn('drest', t)}, p);",
+                        f"{self.instance(t[1].drop, t[2])}(({ct}*)p);"]
             else:
                 d, env = t[1], decl_env(t)
                 if d.value:
-                    body = [f"{ct}* v = p;"] + ([f"{self.instance(d.drop, t[2])}(v);"] if d.drop else [])
+                    body = [f"{ct}* v = p;"]
                 else:
-                    body = ([f"{self.instance(d.drop, t[2])}(({ct}*)p);"] if d.drop else []) + \
-                        [f"{ct} v = *({ct}*)p;", "rt_dpush(rt_free_act, v);"]
+                    body = [f"{ct} v = *({ct}*)p;", "rt_dpush(rt_free_act, v);"]
                 if d.form == 'record':
                     body += [self.fdrop(ft, f"v->f_{fn}") for fn, ft in field_types(t)]
                 else:
@@ -199,6 +203,11 @@ class Emitter:
             return self.ctype(subst(h[1], env))
         if k == 'drop':
             return self.drop_c(subst(h[1], env), self.render(h[2], holes, env))
+        if k == 'ddrop':        # a drop when a drop method returns: onto the worklist (SPEC 9.4)
+            t, c = subst(h[1], env), self.render(h[2], holes, env)
+            if pod(t) or t == STR or self.flat(t):
+                return self.drop_c(t, c)
+            return f"rt_ddefer({self.glue_fn('dbody', t)}, &{c}, sizeof({c}))"
         if k == 'dup':
             return self.dup_c(subst(h[1], env), self.render(h[2], holes, env))
         if k in ('str', 'gstr'):

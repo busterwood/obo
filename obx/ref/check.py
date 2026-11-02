@@ -109,7 +109,7 @@ class Ctx:
     def __init__(self, fd):
         self.fd, self.lines, self.holes, self.ind = fd, [], [], 1
         self.scopes, self.frames, self.loops, self.pending = [], [], [], []
-        self.dead, self.nomove, self.n = False, [], 0
+        self.dead, self.nomove, self.n, self.tail = False, [], 0, None
         self.module = fd.module
         self.outer, self.caps, self.lifted = None, {}, []     # closures (SPEC 4.6)
 
@@ -147,7 +147,28 @@ class Checker:
 
     def drop(self, c, t):
         if not is_pod(t):
-            self.emit(self.H('drop', t, c) + ';')
+            if self.ctx.tail is not None:
+                self.ctx.tail.append((c, t))
+            else:
+                self.emit(self.H('drop', t, c) + ';')
+
+    def in_drop(self):
+        fd = self.ctx.fd
+        return isinstance(getattr(fd, 'owner', None), TypeDecl) and fd.owner.drop is fd
+
+    def exit_drops(self, drops):
+        """Run drops() for leaving the function. In a drop method its drops are deferred: pushed on
+        the drop worklist (in reverse, so they run in order) to run as soon as the method returns,
+        so a method that moves a child into a local does not drop the child by recursion (SPEC 9.4).
+        Nothing of the method runs after them, so the order is that of SPEC 9.2."""
+        ctx = self.ctx
+        if not self.in_drop():
+            return drops()
+        ctx.tail = ctx.tail if ctx.tail is not None else []
+        drops()
+        tail, ctx.tail = ctx.tail, None
+        for c, t in reversed(tail):
+            self.emit(self.H('ddrop', t, c) + ';')
 
     def dup(self, c, t):
         return c if is_pod(t) else self.H('dup', t, c)
@@ -175,14 +196,14 @@ class Checker:
         if fd.name == 'main' and fd.owner is None and fd.module is self.prog.main:
             if fd.params or fd.ret != VOID or fd.tps:
                 self.err("main takes no parameters and returns nothing", fd.where)
-        self.block(fd.ast.body, scope=False)
+        self.block(fd.ast.body, scope=False, top=True)
         if not ctx.dead:
             if fd.ret == NEVER:
                 self.err(f"{fd.label} returns never, but it may reach its end: every path must end in a "
                          "call to a never function or a loop without break", fd.where)
             if fd.ret != VOID:
                 self.err(f"{fd.label} may reach its end without a return", fd.where)
-            self.drop_scope(sc)
+            self.exit_drops(lambda: self.drop_scope(sc))
         fd.template, fd.lifted = (ctx.lines, ctx.holes), ctx.lifted
         self.ctx = None
 
@@ -246,7 +267,7 @@ class Checker:
         self.restore(live[0])
         self.ctx.dead = False
 
-    def block(self, b, scope=True):
+    def block(self, b, scope=True, top=False):
         ctx = self.ctx
         if scope:
             ctx.scopes.append(Scope())
@@ -262,6 +283,8 @@ class Checker:
             stop = ctx.dead and s.kind in ('return', 'break', 'continue', 'expr')
             fr = self.pop_frame()
             if not ctx.dead:
+                if top and s is b.stmts[-1] and self.in_drop():
+                    ctx.tail = []           # the last statement's temporaries: exit drops too
                 self.drop_frame(fr)
         ctx.dead = ctx.dead or unreachable
         if scope:
@@ -863,7 +886,7 @@ class Checker:
         if s.e is None:
             if ret != VOID:
                 self.err(f"return needs a {tstr(ret)} value in {fd.label}", s.where)
-            self.cleanup()
+            self.exit_drops(self.cleanup)
             self.emit("return;")
         else:
             if ret == VOID:
