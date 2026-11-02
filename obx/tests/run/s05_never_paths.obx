@@ -1,0 +1,43 @@
+// expect: 5
+// expect: 9
+// expect: kept 2
+// expect: kept 1
+// expect: bye
+// exit: 3
+type D = record { id: int }
+fn (d: mut &D) drop() { println("kept " + d.id.toStr()) }
+fn fail(msg: str): never { panic(msg) }
+fn bye(): never {
+    println("bye")
+    exit(3)
+}
+fn spin(): never { while true {} }
+fn pick(x: int): int {
+    if x > 0 { return x }
+    fail("negative")
+}
+fn get(o: Option[int]): int {
+    match o {
+        Some(v) { return v }
+        None { fail("none") }
+    }
+}
+fn eat(d: D) {}
+fn main() {
+    println(pick(5))
+    println(get(Some(9)))
+    let d = D{id: 1}
+    let keep = true
+    if keep {
+        let e = D{id: 2}
+        eat(e)
+    } else {
+        eat(d)
+        fail("unreachable at run time")
+    }
+    let f: fn(): never = bye
+    if keep { drop1(d) }
+    else { spin() }
+    f()
+}
+fn drop1(d: D) {}

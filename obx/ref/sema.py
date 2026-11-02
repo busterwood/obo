@@ -9,7 +9,8 @@ from syntax import CompileError, parse
 
 INTS = ('int', 'i32', 'u32', 'u64', 'byte', 'i128', 'u128')
 PRIMS = INTS + ('float', 'bool', 'str', 'ptr')
-INT, BOOL, STR, FLOAT, BYTE, VOID = (('prim', n) for n in ('int', 'bool', 'str', 'float', 'byte', 'void'))
+INT, BOOL, STR, FLOAT, BYTE, VOID, NEVER = (('prim', n) for n in ('int', 'bool', 'str', 'float', 'byte', 'void',
+                                                                   'never'))
 SELF = ('self',)
 BITS = {'int': 64, 'i32': 32, 'u32': 32, 'u64': 64, 'byte': 8, 'i128': 128, 'u128': 128}
 RESERVED = {'len', 'append', 'pop', 'swap', 'replace', 'move', 'array', 'panic', 'assert', 'exit'}
@@ -410,6 +411,10 @@ class Program:
             return ('fn', ps, r)
         if k == 'tparam':
             raise CompileError("a type parameter declaration is only allowed in a receiver", a[3])
+        if k == 'never':
+            if pos != 'ret':
+                raise CompileError("never can only be a result type", where or a[1])
+            return NEVER
         _, parts, args, w = a
         if len(parts) == 1:
             n = parts[0]

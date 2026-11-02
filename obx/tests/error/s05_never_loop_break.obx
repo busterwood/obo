@@ -1,0 +1,5 @@
+// error: never
+fn f(): never {
+    while true { break }
+}
+fn main() {}

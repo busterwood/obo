@@ -1,0 +1,5 @@
+// error: never
+fn fail(c: bool): never {
+    if c { panic("x") }
+}
+fn main() {}

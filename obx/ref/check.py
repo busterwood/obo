@@ -7,7 +7,7 @@ depends on the type arguments (C types, drop and dup glue, callees). The
 emitter renders the template once per instance (emit.py).
 """
 from syntax import CompileError, N
-from sema import (INTS, PRIMS, INT, BOOL, STR, FLOAT, BYTE, VOID, RANGES, TypeDecl, Variant, FnDecl,
+from sema import (INTS, PRIMS, INT, BOOL, STR, FLOAT, BYTE, VOID, NEVER, RANGES, TypeDecl, Variant, FnDecl,
                   Const, Global, tstr, subst, has_tp, unify, decl_env, is_copy, field_types)
 
 
@@ -175,6 +175,9 @@ class Checker:
                 self.err("main takes no parameters and returns nothing", fd.where)
         self.block(fd.ast.body, scope=False)
         if not ctx.dead:
+            if fd.ret == NEVER:
+                self.err(f"{fd.label} returns never, but it may reach its end: every path must end in a "
+                         "call to a never function or a loop without break", fd.where)
             if fd.ret != VOID:
                 self.err(f"{fd.label} may reach its end without a return", fd.where)
             self.drop_scope(sc)
@@ -759,6 +762,8 @@ class Checker:
         ctx = self.ctx
         fd = ctx.fd
         ret = fd.ret
+        if ret == NEVER:
+            self.err(f"{fd.label} returns never: it cannot return", s.where)
         if s.e is None:
             if ret != VOID:
                 self.err(f"return needs a {tstr(ret)} value in {fd.label}", s.where)
@@ -1843,12 +1848,12 @@ class Checker:
             if ret == STR:
                 text = f"rt_str_from_c((void*){text})"
             if STR in [v.t for _, v in vals]:       # free the NUL-terminated copies after the call
-                v = self.holdtmp(text, ret) if ret != VOID else self.emit(text + ';')
+                v = self.holdtmp(text, ret) if ret not in (VOID, NEVER) else self.emit(text + ';')
                 self.emit("rt_cfree();")
-                return v or Val('', VOID, 'rv')
-        if ret == VOID:
+                return v or Val('', VOID, 'rv', noreturn=ret == NEVER)
+        if ret in (VOID, NEVER):
             self.emit(text + ';')
-            return Val('', VOID, 'rv')
+            return Val('', VOID, 'rv', noreturn=ret == NEVER)
         if ret[0] in ('ref', 'slice'):
             bi = [i for i, p in enumerate(sig.params) if p[0] in ('ref', 'slice')]
             src = vals[bi[0]][1] if len(bi) == 1 else None
@@ -2084,4 +2089,4 @@ from sema import depth  # noqa: E402
 
 CTYPES = {'int': 'int64_t', 'i32': 'int32_t', 'u32': 'uint32_t', 'u64': 'uint64_t', 'byte': 'uint8_t',
           'i128': '__int128', 'u128': 'unsigned __int128', 'float': 'double', 'bool': 'bool',
-          'str': 'obx_str', 'ptr': 'void*', 'void': 'void'}
+          'str': 'obx_str', 'ptr': 'void*', 'void': 'void', 'never': 'void'}

@@ -8,7 +8,7 @@ class CompileError(Exception):
 
 
 KEYWORDS = {'as', 'break', 'closed', 'const', 'continue', 'else', 'extern', 'false', 'fn',
-            'for', 'if', 'import', 'in', 'interface', 'let', 'match', 'mut', 'pub', 'record',
+            'for', 'if', 'import', 'in', 'interface', 'let', 'match', 'mut', 'never', 'once', 'pub', 'record',
             'return', 'true', 'try', 'type', 'var', 'while'}
 SYMS = ['+=', '-=', '*=', '/=', '%=', '|=', '&=', '^=', '+%', '-%', '*%', '<<', '>>', '..',
         '==', '!=', '<=', '>=', '&&', '||', '{', '}', '(', ')', '[', ']', ',', ':', ';', '.',
@@ -489,6 +489,8 @@ class Parser:
                 self.sym(']')
                 return ('slice', t, mut)
             return ('ref', self.type(), mut)
+        if self.atkw('never'):
+            return ('never', self.next().where)
         if self.atsym('['):
             self.next()
             self.sym(']')

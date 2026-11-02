@@ -56,4 +56,4 @@ pub fn setCwd(path: str): Result[Unit, int] {
 
 // Stops the program with code after flushing standard output. Nothing is
 // dropped (and OBX_CHECK does not look for leaks).
-pub fn quit(code: int) { exit(code) }
+pub fn quit(code: int): never { exit(code) }

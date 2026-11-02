@@ -1,0 +1,3 @@
+// error: never
+fn f(x: never) {}
+fn main() {}

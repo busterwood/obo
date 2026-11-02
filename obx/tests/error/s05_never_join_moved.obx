@@ -1,0 +1,9 @@
+// error: moved
+type D = record { id: int }
+fn eat(d: D) {}
+fn maybe(): bool { return true }
+fn main() {
+    let d = D{id: 1}
+    if maybe() { eat(d) } else { println("no") }
+    eat(d)
+}

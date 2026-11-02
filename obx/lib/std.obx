@@ -548,7 +548,7 @@ const SCALE_MAX = 32768
 const DSCALE_MAX = 65535
 
 // Stops the program for a failed operator (exit code 10, as an arithmetic trap).
-fn decStop(e: DecError): Decimal {
+fn decStop(e: DecError): never {
     writeFd(2, "obx: " + e.toStr() + "\n")
     exit(10)
 }
@@ -556,7 +556,7 @@ fn decStop(e: DecError): Decimal {
 fn orStop(r: Result[Decimal, DecError]): Decimal {
     match r {
         Ok(d) { return d }
-        Err(e) { return decStop(e) }
+        Err(e) { decStop(e) }
     }
 }
 
@@ -568,7 +568,7 @@ fn zeroDec(dscale: int): Decimal { return Decimal{coef: 0, exp: 0, dscale: dscal
 // 12.50 shows as "12.50" and 1.5e3 as "1500". Up to 38 significant digits are
 // exact; a literal that is not representable stops the program.
 pub fn fromFraction(units: i128, scale: int): Decimal {
-    if scale > DSCALE_MAX { return decStop(DecError.Range) }
+    if scale > DSCALE_MAX { decStop(DecError.Range) }
     let neg = units < 0
     var m = u128(0)
     if neg { m = u128(-(units + 1)) + 1 } else { m = u128(units) }
@@ -577,7 +577,7 @@ pub fn fromFraction(units: i128, scale: int): Decimal {
 
 // units * 10^-scale with display scale `scale` (scale >= 0): fromUnits(1250, 2) is 12.50.
 pub fn (Decimal) fromUnits(units: int, scale: int): Decimal {
-    if scale < 0 { return decStop(DecError.Range) }
+    if scale < 0 { decStop(DecError.Range) }
     return fromFraction(i128(units), scale)
 }
 
@@ -711,7 +711,7 @@ pub fn (a: Decimal) mulExact(b: Decimal): Result[Decimal, DecError] {
 // The truncating remainder: a - trunc(a / b) * b, with the sign of a. Stops
 // the program when b is zero. Display scale: the larger of the two.
 pub fn (a: Decimal) rem(b: Decimal): Decimal {
-    if b.coef == 0 { return decStop(DecError.DivZero) }
+    if b.coef == 0 { decStop(DecError.DivZero) }
     let ds = max(a.dscale, b.dscale)
     if a.coef == 0 { return zeroDec(ds) }
     let d = a.exp - b.exp
@@ -1277,7 +1277,6 @@ fn (m: &Map[K, V]) find(k: &K, h: u64): Probe {
         if m.hashes[e] == h && m.keys[e] == k { return Probe{slot: i, entry: e} }
         i = (i + 1) & mask
     }
-    panic("Map: no free slot")
 }
 
 pub fn (m: &Map[K, V]) size(): int { return len(m.keys) }

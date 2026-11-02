@@ -41,7 +41,7 @@ pub fn (JPY) scale(): int { return 0 }
 
 pub type Money[C: Currency] = value record { amt: Decimal }
 
-fn stop(e: DecError): Decimal {
+fn stop(e: DecError): never {
     writeFd(2, "obx: " + e.toStr() + "\n")
     exit(10)
 }
@@ -49,7 +49,7 @@ fn stop(e: DecError): Decimal {
 fn check(r: Result[Decimal, DecError]): Decimal {
     match r {
         Ok(d) { return d }
-        Err(e) { return stop(e) }
+        Err(e) { stop(e) }
     }
 }
 
@@ -126,10 +126,7 @@ fn unitCount(d: Decimal, scale: int): int {
     let u = check(d.abs().div(Decimal.fromUnits(1, scale), 0, Rounding.UNNECESSARY))
     match u.toInt(Rounding.UNNECESSARY) {
         Ok(n) { return n }
-        Err(e) {
-            stop(e)
-            return 0
-        }
+        Err(e) { stop(e) }
     }
 }
 
