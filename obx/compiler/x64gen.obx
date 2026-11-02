@@ -36,6 +36,10 @@ const INT_REGS: []int = [7, 6, 2, 1, 8, 9]       // rdi rsi rdx rcx r8 r9
 const NO_MEM: x64.Mem = x64.Mem{base: -9, index: -1, scale: 1, disp: 0}
 const LOCAL_REGS: []int = [3, 12, 13, 14, 15]     // rbx r12-r15 (callee-saved): locals
 
+// The largest frame that needs no stack probe: below a page, so that no access of the frame
+// (nor the return address of a call from it) can skip the guard page.
+const PROBE_FREE = 2048
+
 // Symbol kinds.
 const SK_FUNC = 0        // idx: a function with a body
 const SK_GLOBAL = 1      // idx: a global
@@ -92,6 +96,7 @@ type Gen = record {
     caseL: Map[int, int]
     retPtr: int
     retTy: int
+    epiL: int                   // the label of the function's restores and return, or -1
     entrySym: int
     dyn: bool                   // dynamically linked: every C function the program calls is imported
     libs: []elf.Lib
@@ -113,7 +118,7 @@ type Stub = value record {
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
-        caseL: newMap(), retPtr: 0, retTy: 0, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
+        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [],
         saved: []}
     g.a.peep = true
@@ -383,31 +388,15 @@ fn rbp(d: int): x64.Mem { return x64.mem(RBP, d) }
 // ---------------------------------------------------------------- functions
 
 fn (g: mut &Gen) genFunc(f: int) {
-    g.funcPos[f] = g.a.pos()
+    let start = g.a.pos()
+    let firstLabel = g.a.labelCount()
+    g.funcPos[f] = start
     g.frame = 0
     g.maxFrame = 0
     g.outArgs = 0
     let ft = g.u.funcs[f].ty
     g.retTy = g.u.tys[ft].base
-    g.a.push(RBP)
-    g.a.movRR(8, RBP, RSP)
-    g.a.b(0x48)                 // sub rsp, imm32 (patched below)
-    g.a.b(0x81)
-    g.a.b(0xEC)
-    let patch = g.a.pos()
-    g.a.d32(0)
-    // touch the frame a page at a time from the top, so that a stack overflow faults at
-    // the guard page (rt_segv reports it) and never skips past it
-    let probe = g.a.newLabel()
-    let probed = g.a.newLabel()
-    g.a.movRR(8, R11, RBP)
-    g.a.bind(probe)
-    g.a.aluI(x64.SUB, 8, R11, 4096)
-    g.a.alu(x64.CMP, 8, R11, RSP)
-    g.a.jcc(x64.CC_B, probed)
-    g.a.storeI(1, x64.mem(R11, 0), 0)
-    g.a.jmp(probe)
-    g.a.bind(probed)
+    g.epiL = -1
     g.allocRegs(f)
     var ni = 0
     var nx = 0
@@ -457,9 +446,34 @@ fn (g: mut &Gen) genFunc(f: int) {
     }
     g.stmt(g.u.funcs[f].body)
     g.epilogue()
+    if g.epiL >= 0 {
+        g.a.bind(g.epiL)
+        g.leaveFrame()
+    }
     g.genStubs()
     let frame = ir.alignUp(g.maxFrame, 16) + ir.alignUp(g.outArgs, 16)
-    g.a.put32(patch, frame)
+    // the prologue, now that the frame is known
+    var p = x64.newAsm()
+    p.push(RBP)
+    p.movRR(8, RBP, RSP)
+    if frame > 0 { p.aluI(x64.SUB, 8, RSP, frame) }
+    if frame > PROBE_FREE {
+        // touch the frame a page at a time from the top, so that a stack overflow faults at
+        // the guard page (rt_segv reports it) and never skips past it
+        let probe = p.newLabel()
+        let probed = p.newLabel()
+        p.movRR(8, R11, RBP)
+        p.bind(probe)
+        p.aluI(x64.SUB, 8, R11, 4096)
+        p.alu(x64.CMP, 8, R11, RSP)
+        p.jcc(x64.CC_B, probed)
+        p.storeI(1, x64.mem(R11, 0), 0)
+        p.jmp(probe)
+        p.bind(probed)
+        p.fixLabels()
+    }
+    for i in 0..len(g.saved) { p.store(8, rbp(g.saved[i]), LOCAL_REGS[i]) }
+    g.a.insert(start, &p.code, firstLabel)
 }
 
 // Chooses the locals of function f that live in registers (g.reg), and saves the registers.
@@ -488,9 +502,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
         }
         if best < 0 { break }
         g.reg[best] = r
-        let s = g.temp(8, 8)
-        g.a.store(8, rbp(s), r)
-        append(mut &g.saved, s)
+        append(mut &g.saved, g.temp(8, 8))
     }
 }
 
@@ -577,10 +589,21 @@ fn (g: &Gen) regOf(e: int): int {
     return -1
 }
 
+// A return: the frame left in place when no register is to be restored, else a jump to the
+// function's one copy of the restores.
 fn (g: mut &Gen) epilogue() {
+    if !g.a.reachable() { return }
+    if len(g.saved) == 0 {
+        g.leaveFrame()
+        return
+    }
+    if g.epiL < 0 { g.epiL = g.a.newLabel() }
+    g.a.jmp(g.epiL)
+}
+
+fn (g: mut &Gen) leaveFrame() {
     for i in 0..len(g.saved) { g.a.load(8, LOCAL_REGS[i], rbp(g.saved[i])) }
-    g.a.movRR(8, RSP, RBP)
-    g.a.pop(RBP)
+    g.a.leave()
     g.a.ret()
 }
 

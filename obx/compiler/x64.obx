@@ -126,10 +126,14 @@ pub type Asm = record {
     stEnd: int              // the end of the last 8-byte store of a register, or -1
     stMem: Mem
     stReg: int
+    jmpEnd: int             // the end of the last jmp to a label (no label bound since), or -1
+    jmpLabel: int
+    termEnd: int            // the end of the last ret or jmp (no label bound since), or -1
 }
 
 pub fn newAsm(): Asm {
-    return Asm{code: [], labels: [], fixes: [], relocs: [], peep: false, stEnd: -1, stMem: mem(-1, 0), stReg: 0}
+    return Asm{code: [], labels: [], fixes: [], relocs: [], peep: false, stEnd: -1, stMem: mem(-1, 0), stReg: 0,
+        jmpEnd: -1, jmpLabel: -1, termEnd: -1}
 }
 
 fn memEq(a: Mem, b: Mem): bool {
@@ -437,7 +441,12 @@ pub fn (a: mut &Asm) pop(r: int) {
     a.b(0x58 + (r & 7))
 }
 
-pub fn (a: mut &Asm) ret() { a.b(0xC3) }
+pub fn (a: mut &Asm) ret() {
+    a.b(0xC3)
+    a.termEnd = a.pos()
+}
+
+pub fn (a: mut &Asm) leave() { a.b(0xC9) }
 
 pub fn (a: mut &Asm) ud2() {
     a.b(0x0F)
@@ -490,8 +499,49 @@ pub fn (a: mut &Asm) newLabel(): int {
 }
 
 pub fn (a: mut &Asm) bind(l: int) {
+    // peephole: a jmp to the label bound right after it is dropped
+    if a.peep && a.jmpEnd == a.pos() && a.jmpLabel == l {
+        for i in 0..5 { pop(mut &a.code) }
+        pop(mut &a.fixes)
+    }
+    a.jmpEnd = -1
+    a.termEnd = -1
     a.labels[l] = a.pos()
     a.stEnd = -1
+}
+
+pub fn (a: &Asm) labelCount(): int { return len(a.labels) }
+
+// Inserts bytes at position at of the code generated since label first was made: the labels
+// from first on that are bound at or after at, and the jump fix-ups and relocations at or
+// after at, move with the code (the prologue of a function, written when its frame is known).
+pub fn (a: mut &Asm) insert(at: int, bytes: &[]byte, first: int) {
+    let n = len(bytes)
+    if n == 0 { return }
+    let old = len(a.code)
+    for i in 0..n { append(mut &a.code, 0) }
+    var i = old - 1
+    while i >= at {
+        a.code[i + n] = a.code[i]
+        i -= 1
+    }
+    for j in 0..n { a.code[at + j] = bytes[j] }
+    for l in first..len(a.labels) {
+        if a.labels[l] >= at { a.labels[l] = a.labels[l] + n }
+    }
+    var k = len(a.fixes) - 1
+    while k >= 0 && a.fixes[k].at >= at {
+        a.fixes[k].at = a.fixes[k].at + n
+        k -= 1
+    }
+    k = len(a.relocs) - 1
+    while k >= 0 && a.relocs[k].at >= at {
+        a.relocs[k].at = a.relocs[k].at + n
+        k -= 1
+    }
+    a.stEnd = -1
+    a.jmpEnd = -1
+    a.termEnd = -1
 }
 
 pub fn (a: mut &Asm) jcc(cc: int, l: int) {
@@ -501,10 +551,17 @@ pub fn (a: mut &Asm) jcc(cc: int, l: int) {
     a.d32(0)
 }
 
+// Whether the code at the current position can be reached (not right after a ret or jmp).
+pub fn (a: &Asm) reachable(): bool { return a.termEnd != a.pos() }
+
 pub fn (a: mut &Asm) jmp(l: int) {
+    if a.peep && !a.reachable() { return }
     a.b(0xE9)
     append(mut &a.fixes, Fix{at: a.pos(), label: l})
     a.d32(0)
+    a.jmpEnd = a.pos()
+    a.jmpLabel = l
+    a.termEnd = a.pos()
 }
 
 // call sym (a relocation).
@@ -609,7 +666,7 @@ const SSE_OPS: []int = [0x58, 0x59, 0x5C, 0x5E, 0x51, 0x10]
 //   lea DST MEM | movri R IMM | imul SIZE DST SRC | un OP SIZE R | shcl OP SIZE R
 //   shi OP SIZE R N | setcc CC R | cmov CC DST SRC | push R | pop R | callr R | jmpr R
 //   shld DST SRC | shrd DST SRC
-//   ret | cqo | cdq | movsb | stosb | ud2 | sse OP X Y | ucomisd X Y | xorpd X Y
+//   ret | leave | cqo | cdq | movsb | stosb | ud2 | sse OP X Y | ucomisd X Y | xorpd X Y
 //   movsdload X MEM | movsdstore MEM X | movqxr X R | movqrx R X | cvtsi2sd X R
 //   cvttsd2si R X
 fn (a: mut &Asm) testLine(l: str) {
@@ -672,6 +729,8 @@ fn (a: mut &Asm) testLine(l: str) {
         a.jmpR(num(w[1]))
     } else if k == "ret" {
         a.ret()
+    } else if k == "leave" {
+        a.leave()
     } else if k == "cqo" {
         a.cqo()
     } else if k == "cdq" {

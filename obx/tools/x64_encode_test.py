@@ -168,7 +168,7 @@ def gen(r):
     if k == 23:
         return f'jmpr {a}', f'jmp {R64[a]}'
     if k == 24:
-        w = r.choice([('ret', 'ret'), ('cqo', 'cqo'), ('cdq', 'cdq'), ('movsb', 'rep movsb'), ('stosb', 'rep stosb'),
+        w = r.choice([('ret', 'ret'), ('leave', 'leave'), ('cqo', 'cqo'), ('cdq', 'cdq'), ('movsb', 'rep movsb'), ('stosb', 'rep stosb'),
                       ('ud2', 'ud2')])
         return w
     if k == 25:
