@@ -1,0 +1,9 @@
+// --dump-types coverage: two modules called util (cprefix util, util2), an alias import.
+import "./a/util"
+import "./b/util" as u2
+import "fs"
+import "strings" as s
+type Main = record { v: util.R; w: u2.R; s: s.Cut }
+const C = util.K + u2.K
+fn (m: &Main) get(): int { return m.v.v }
+fn main() {}

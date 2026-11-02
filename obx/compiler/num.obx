@@ -1,0 +1,523 @@
+// num: Python's numbers as ref's constant folding uses them. Big is an
+// integer of any size with Python's semantics (floor shifts, two's complement
+// bitwise operators on negative values); pyFloatRepr and floatOfText are
+// Python's repr(float) and float(text).
+
+// ---------------------------------------------------------------- big integers
+
+// Sign and magnitude: mag is little-endian base 256 with no high zero byte,
+// so zero is "" (and never negative). A copy type: the bytes are a str.
+pub type Big = value record {
+    pub neg: bool
+    pub mag: str
+}
+
+pub fn bigOf(n: int): Big {
+    if n == 0 { return Big{neg: false, mag: ""} }
+    var bytes: []int = []
+    var v = n
+    // -n overflows for the minimum int: take the bytes of the negative value
+    if v < 0 {
+        while v != 0 {
+            let r = v % 256
+            append(mut &bytes, -r)
+            v = v / 256
+        }
+        return fromInts(true, mut &bytes)
+    }
+    while v != 0 {
+        append(mut &bytes, v % 256)
+        v = v / 256
+    }
+    return fromInts(false, mut &bytes)
+}
+
+// 2 to the power n (n >= 0).
+pub fn bigPow2(n: int): Big {
+    var bytes = array(n / 8 + 1, 0)
+    bytes[n / 8] = 1 << (n % 8)
+    return fromInts(false, mut &bytes)
+}
+
+// Normalizes base-256 digits (each 0..255) into a Big.
+fn fromInts(neg: bool, ds: mut &[]int): Big {
+    var n = len(ds)
+    while n > 0 && ds[n - 1] == 0 { n -= 1 }
+    if n == 0 { return Big{neg: false, mag: ""} }
+    var bytes: []byte = []
+    for i in 0..n { append(mut &bytes, byte(ds[i])) }
+    return Big{neg: neg, mag: strFromBytes(&bytes)}
+}
+
+fn digitsOf(mag: str, n: int): []int {
+    var out = array(n, 0)
+    for i in 0..len(mag) { out[i] = int(strByte(mag, i)) }
+    return out
+}
+
+pub fn bigIsZero(a: Big): bool { return len(a.mag) == 0 }
+
+// The value of decimal digits, negated when neg.
+pub fn bigParse(digits: str, neg: bool): Big {
+    var ds: []int = []
+    var i = 0
+    while i < len(digits) {
+        // up to 9 digits at a time: ds = ds * 10^k + chunk
+        var k = 0
+        var chunk = 0
+        var m = 1
+        while k < 9 && i < len(digits) {
+            chunk = chunk * 10 + int(strByte(digits, i) - '0')
+            m *= 10
+            k += 1
+            i += 1
+        }
+        var carry = chunk
+        for j in 0..len(ds) {
+            let t = ds[j] * m + carry
+            ds[j] = t & 255
+            carry = t >> 8
+        }
+        while carry > 0 {
+            append(mut &ds, carry & 255)
+            carry = carry >> 8
+        }
+    }
+    return fromInts(neg, mut &ds)
+}
+
+// Decimal text, with a leading - when negative (Python's str of an int).
+pub fn bigStr(a: Big): str {
+    if bigIsZero(a) { return "0" }
+    var ds = digitsOf(a.mag, len(a.mag))
+    var chunks: []int = []
+    var n = len(ds)
+    while n > 0 {
+        var r = 0
+        var j = n - 1
+        while j >= 0 {
+            let cur = r * 256 + ds[j]
+            ds[j] = cur / 1000000000
+            r = cur % 1000000000
+            j -= 1
+        }
+        append(mut &chunks, r)
+        while n > 0 && ds[n - 1] == 0 { n -= 1 }
+    }
+    var b = newStrBuf()
+    if a.neg { b.addByte('-') }
+    var k = len(chunks) - 1
+    b.add(intToStr(chunks[k]))
+    k -= 1
+    while k >= 0 {
+        let s = intToStr(chunks[k])
+        for z in len(s)..9 { b.addByte('0') }
+        b.add(s)
+        k -= 1
+    }
+    return b.toStr()
+}
+
+fn magCmp(a: str, b: str): int {
+    if len(a) != len(b) {
+        if len(a) < len(b) { return -1 }
+        return 1
+    }
+    var i = len(a) - 1
+    while i >= 0 {
+        let x = strByte(a, i)
+        let y = strByte(b, i)
+        if x != y {
+            if x < y { return -1 }
+            return 1
+        }
+        i -= 1
+    }
+    return 0
+}
+
+pub fn bigCmp(a: Big, b: Big): int {
+    if a.neg != b.neg {
+        if a.neg { return -1 }
+        return 1
+    }
+    let c = magCmp(a.mag, b.mag)
+    if a.neg { return -c }
+    return c
+}
+
+pub fn bigEq(a: Big, b: Big): bool { return a.neg == b.neg && a.mag == b.mag }
+
+pub fn bigNeg(a: Big): Big {
+    if bigIsZero(a) { return a }
+    return Big{neg: !a.neg, mag: a.mag}
+}
+
+pub fn bigAbs(a: Big): Big { return Big{neg: false, mag: a.mag} }
+
+fn magAdd(a: str, b: str): str {
+    var n = len(a)
+    if len(b) > n { n = len(b) }
+    var ds = digitsOf(a, n + 1)
+    var c = 0
+    for i in 0..n + 1 {
+        var s = ds[i] + c
+        if i < len(b) { s += int(strByte(b, i)) }
+        ds[i] = s & 255
+        c = s >> 8
+    }
+    let r = fromInts(false, mut &ds)
+    return r.mag
+}
+
+// a - b for magnitudes with a >= b.
+fn magSub(a: str, b: str): str {
+    var ds = digitsOf(a, len(a))
+    var borrow = 0
+    for i in 0..len(a) {
+        var s = ds[i] - borrow
+        if i < len(b) { s -= int(strByte(b, i)) }
+        borrow = 0
+        if s < 0 {
+            s += 256
+            borrow = 1
+        }
+        ds[i] = s
+    }
+    let r = fromInts(false, mut &ds)
+    return r.mag
+}
+
+pub fn bigAdd(a: Big, b: Big): Big {
+    if a.neg == b.neg { return Big{neg: a.neg, mag: magAdd(a.mag, b.mag)} }
+    let c = magCmp(a.mag, b.mag)
+    if c == 0 { return Big{neg: false, mag: ""} }
+    if c > 0 { return Big{neg: a.neg, mag: magSub(a.mag, b.mag)} }
+    return Big{neg: b.neg, mag: magSub(b.mag, a.mag)}
+}
+
+pub fn bigSub(a: Big, b: Big): Big { return bigAdd(a, bigNeg(b)) }
+
+pub fn bigMul(a: Big, b: Big): Big {
+    if bigIsZero(a) || bigIsZero(b) { return Big{neg: false, mag: ""} }
+    var ds = array(len(a.mag) + len(b.mag) + 1, 0)
+    for i in 0..len(a.mag) {
+        let x = int(strByte(a.mag, i))
+        if x == 0 { continue }
+        var c = 0
+        for j in 0..len(b.mag) {
+            let t = ds[i + j] + x * int(strByte(b.mag, j)) + c
+            ds[i + j] = t & 255
+            c = t >> 8
+        }
+        var k = i + len(b.mag)
+        while c > 0 {
+            let t = ds[k] + c
+            ds[k] = t & 255
+            c = t >> 8
+            k += 1
+        }
+    }
+    return fromInts(a.neg != b.neg, mut &ds)
+}
+
+// The quotient of magnitudes, |a| // |b| (b not zero), and the remainder.
+pub type QR = value record {
+    pub q: Big
+    pub r: Big
+}
+
+pub fn magDivMod(a: Big, b: Big): QR {
+    if magCmp(a.mag, b.mag) < 0 { return QR{q: Big{neg: false, mag: ""}, r: bigAbs(a)} }
+    let nb = len(b.mag)
+    let d = digitsOf(b.mag, nb + 1)
+    var r = array(nb + 1, 0)
+    var q = array(len(a.mag), 0)
+    var bit = len(a.mag) * 8 - 1
+    while bit >= 0 {
+        // r = r * 2 + the next bit of a
+        var c = (int(strByte(a.mag, bit / 8)) >> (bit % 8)) & 1
+        for i in 0..nb + 1 {
+            let t = r[i] * 2 + c
+            r[i] = t & 255
+            c = t >> 8
+        }
+        // if r >= d: r -= d and set the quotient bit
+        var ge = true
+        var i = nb
+        while i >= 0 {
+            if r[i] != d[i] {
+                ge = r[i] > d[i]
+                break
+            }
+            i -= 1
+        }
+        if ge {
+            var borrow = 0
+            for j in 0..nb + 1 {
+                var s = r[j] - d[j] - borrow
+                borrow = 0
+                if s < 0 {
+                    s += 256
+                    borrow = 1
+                }
+                r[j] = s
+            }
+            q[bit / 8] = q[bit / 8] | (1 << (bit % 8))
+        }
+        bit -= 1
+    }
+    return QR{q: fromInts(false, mut &q), r: fromInts(false, mut &r)}
+}
+
+// a << n (n >= 0).
+pub fn bigShl(a: Big, n: int): Big {
+    if bigIsZero(a) { return a }
+    let bytes = n / 8
+    let bits = n % 8
+    var ds = array(len(a.mag) + bytes + 1, 0)
+    var c = 0
+    for i in 0..len(a.mag) {
+        let t = (int(strByte(a.mag, i)) << bits) | c
+        ds[i + bytes] = t & 255
+        c = t >> 8
+    }
+    ds[len(a.mag) + bytes] = c
+    return fromInts(a.neg, mut &ds)
+}
+
+// |a| >> n for a magnitude.
+fn magShr(a: str, n: int): Big {
+    let bytes = n / 8
+    let bits = n % 8
+    if bytes >= len(a) { return Big{neg: false, mag: ""} }
+    var ds = array(len(a) - bytes, 0)
+    for i in 0..len(ds) {
+        var t = int(strByte(a, i + bytes)) >> bits
+        if i + bytes + 1 < len(a) { t = t | ((int(strByte(a, i + bytes + 1)) << (8 - bits)) & 255) }
+        ds[i] = t
+    }
+    return fromInts(false, mut &ds)
+}
+
+// a >> n (n >= 0), rounding towards minus infinity as Python does.
+pub fn bigShr(a: Big, n: int): Big {
+    if !a.neg { return magShr(a.mag, n) }
+    // -((|a| - 1) >> n) - 1
+    let m = bigSub(bigAbs(a), bigOf(1))
+    let s = magShr(m.mag, n)
+    return bigSub(bigNeg(s), bigOf(1))
+}
+
+// n bytes of two's complement.
+fn twos(a: Big, n: int): []int {
+    var ds = digitsOf(a.mag, n)
+    if a.neg {
+        var c = 1
+        for i in 0..n {
+            let v = (255 - ds[i]) + c
+            ds[i] = v & 255
+            c = v >> 8
+        }
+    }
+    return ds
+}
+
+fn fromTwos(ds: mut &[]int): Big {
+    let n = len(ds)
+    let neg = ds[n - 1] >= 128
+    if neg {
+        var c = 1
+        for i in 0..n {
+            let v = (255 - ds[i]) + c
+            ds[i] = v & 255
+            c = v >> 8
+        }
+    }
+    return fromInts(neg, ds)
+}
+
+const OP_AND = 0
+const OP_OR = 1
+const OP_XOR = 2
+
+fn bitop(a: Big, b: Big, op: int): Big {
+    var n = len(a.mag)
+    if len(b.mag) > n { n = len(b.mag) }
+    n += 1
+    var x = twos(a, n)
+    let y = twos(b, n)
+    for i in 0..n {
+        if op == OP_AND {
+            x[i] = x[i] & y[i]
+        } else if op == OP_OR {
+            x[i] = x[i] | y[i]
+        } else {
+            x[i] = x[i] ^ y[i]
+        }
+    }
+    return fromTwos(mut &x)
+}
+
+pub fn bigAnd(a: Big, b: Big): Big { return bitop(a, b, OP_AND) }
+pub fn bigOr(a: Big, b: Big): Big { return bitop(a, b, OP_OR) }
+pub fn bigXor(a: Big, b: Big): Big { return bitop(a, b, OP_XOR) }
+
+// ~a, which is -a - 1.
+pub fn bigNot(a: Big): Big { return bigSub(bigNeg(a), bigOf(1)) }
+
+// a & (2^w - 1): a modulo 2^w, never negative.
+pub fn bigMask(a: Big, w: int): Big { return bigAnd(a, bigSub(bigPow2(w), bigOf(1))) }
+
+// The value as an int, when it fits (callers check the range first).
+pub fn bigToInt(a: Big): int {
+    var v = 0
+    var i = len(a.mag) - 1
+    while i >= 0 {
+        v = v * 256 - int(strByte(a.mag, i))
+        i -= 1
+    }
+    if a.neg { return v }
+    return -v
+}
+
+// Python's float(a): correctly rounded; an int too large is inf (ref turns
+// Python's OverflowError into inf too).
+pub fn bigToFloat(a: Big): float { return floatOfText(bigStr(a)) }
+
+// ---------------------------------------------------------------- floats
+
+// Python's float(text) of a decimal literal ("12.5", "-1.5e3", "2E-7",
+// digits only): the nearest float, inf on overflow. Text longer than strtod's
+// buffer keeps its first 300 significant digits and a sticky digit for the rest.
+pub fn floatOfText(s: str): float {
+    var f: float = 0.0
+    if len(s) <= 400 {
+        if parseFloat(s, mut &f) { return f }
+        return f
+    }
+    var i = 0
+    var sign = ""
+    if strByte(s, 0) == '-' {
+        sign = "-"
+        i = 1
+    }
+    var digits = newStrBuf()
+    var exp = 0
+    var seenPoint = false
+    while i < len(s) && strByte(s, i) != 'e' && strByte(s, i) != 'E' {
+        let c = strByte(s, i)
+        if c == '.' {
+            seenPoint = true
+        } else {
+            if digits.size() > 0 || c != '0' {
+                digits.addByte(c)
+            }
+            if seenPoint { exp -= 1 }
+        }
+        i += 1
+    }
+    if i < len(s) {
+        // the exponent, saturated
+        i += 1
+        var eneg = false
+        if i < len(s) && (strByte(s, i) == '-' || strByte(s, i) == '+') {
+            eneg = strByte(s, i) == '-'
+            i += 1
+        }
+        var e = 0
+        while i < len(s) {
+            if e < 100000000 { e = e * 10 + int(strByte(s, i) - '0') }
+            i += 1
+        }
+        if eneg { e = -e }
+        exp += e
+    }
+    var d = digits.toStr()
+    if len(d) == 0 {
+        if parseFloat(sign + "0", mut &f) { return f }
+        return f
+    }
+    if len(d) > 300 {
+        var sticky = false
+        for k in 300..len(d) {
+            if strByte(d, k) != '0' { sticky = true }
+        }
+        exp += len(d) - 300
+        d = d[0..300]
+        if sticky {
+            d = d + "1"
+            exp -= 1
+        }
+    }
+    if exp > 100000 { exp = 100000 }
+    if exp < -100000 { exp = -100000 }
+    if parseFloat(sign + d + "e" + intToStr(exp), mut &f) { return f }
+    return f
+}
+
+// Python's repr of a float: the shortest text that reads back as the same
+// value (std's float toStr finds those digits), written as Python does: fixed
+// notation with ".0" for an integral value from 1e-4 up to 1e16, otherwise
+// d.ddde+XX with at least two exponent digits.
+pub fn pyFloatRepr(x: float): str {
+    if x != x { return "nan" }
+    let s = x.toStr()
+    if s == "inf" { return "inf" }
+    if s == "-inf" { return "-inf" }
+    var i = 0
+    var sign = ""
+    if strByte(s, 0) == '-' {
+        sign = "-"
+        i = 1
+    }
+    // the digits without leading zeros, and decpt: value = 0.DIGITS * 10^decpt
+    var digits = newStrBuf()
+    var decpt = 0
+    var seenPoint = false
+    while i < len(s) && strByte(s, i) != 'e' {
+        let c = strByte(s, i)
+        if c == '.' {
+            seenPoint = true
+        } else if digits.size() == 0 && c == '0' {
+            if seenPoint { decpt -= 1 }
+        } else {
+            digits.addByte(c)
+            if !seenPoint { decpt += 1 }
+        }
+        i += 1
+    }
+    if i < len(s) {
+        var e = 0
+        var eneg = false
+        for k in i + 1..len(s) {
+            let c = strByte(s, k)
+            if c == '-' { eneg = true }
+            if c >= '0' && c <= '9' { e = e * 10 + int(c - '0') }
+        }
+        if eneg { e = -e }
+        decpt += e
+    }
+    var d = digits.toStr()
+    // trailing zeros are not digits of the shortest form
+    var n = len(d)
+    while n > 1 && strByte(d, n - 1) == '0' { n -= 1 }
+    d = d[0..n]
+    if len(d) == 0 { return sign + "0.0" }
+    if decpt > -4 && decpt <= 16 {
+        if decpt <= 0 { return sign + "0." + repeat("0", -decpt) + d }
+        if decpt < len(d) { return sign + d[0..decpt] + "." + d[decpt..] }
+        return sign + d + repeat("0", decpt - len(d)) + ".0"
+    }
+    var m = d[0..1]
+    if len(d) > 1 { m = m + "." + d[1..] }
+    var e = decpt - 1
+    var esign = "+"
+    if e < 0 {
+        esign = "-"
+        e = -e
+    }
+    var es = intToStr(e)
+    if len(es) < 2 { es = "0" + es }
+    return sign + m + "e" + esign + es
+}

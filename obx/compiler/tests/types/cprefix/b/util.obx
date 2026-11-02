@@ -1,0 +1,3 @@
+import "../a/util" as base
+pub type R = value record { v: []base.R }
+pub const K: int = base.K * 2

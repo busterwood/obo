@@ -1,0 +1,2010 @@
+// sema: modules, imports, declarations, types, type parameters and
+// constraints, `satisfies`, typed constant folding (SPEC sections 4, 5, 6).
+// A port of ref/sema.py: the same algorithms, the same order of work and the
+// same error messages; `--dump-types` prints what it computes (dump.obx).
+//
+// ref's objects become tables in Program, named by index: modules, type
+// declarations, variants, functions, constants, globals and type parameters.
+// A type is an int too: types are interned in Program.tys, so two types are
+// equal exactly when their ids are (ref compares its type tuples with ==).
+
+import "fs"
+import "os"
+import "./syntax" as sx
+import "./num"
+
+// ---------------------------------------------------------------- types
+
+// The primitive types are the type ids 0 to 12, in this order. The first
+// eleven (to ptr) can be written; void ("no result") and never cannot.
+pub const PRIM_NAMES: []str = ["int", "i32", "u32", "u64", "byte", "i128", "u128", "float", "bool", "str",
+    "ptr", "void", "never"]
+pub const T_INT = 0
+pub const T_I32 = 1
+pub const T_U32 = 2
+pub const T_U64 = 3
+pub const T_BYTE = 4
+pub const T_I128 = 5
+pub const T_U128 = 6
+pub const T_FLOAT = 7
+pub const T_BOOL = 8
+pub const T_STR = 9
+pub const T_PTR = 10
+pub const T_VOID = 11
+pub const T_NEVER = 12
+pub const T_SELF = 13      // Self, inside interfaces
+pub const NPRIMS = 11      // ref's PRIMS
+pub const NINTS = 7        // ref's INTS: the ids below this
+pub const BITS: []int = [64, 32, 32, 64, 8, 128, 128]
+
+// Type kinds. Ty fields by kind: TK_PRIM a = the prim's id; TK_ARR a = the
+// element; TK_REF, TK_SLICE a = the inner type, m = mut; TK_FN, TK_CLO l =
+// the parameters, b = the result; TK_INST a = the TypeDecl, l = the type
+// arguments; TK_TP a = the TParam. l is a handle into Program.tlists.
+pub const TK_PRIM = 0
+pub const TK_ARR = 1
+pub const TK_REF = 2
+pub const TK_SLICE = 3
+pub const TK_FN = 4
+pub const TK_CLO = 5
+pub const TK_INST = 6
+pub const TK_TP = 7
+pub const TK_SELF = 8
+
+pub type Ty = value record {
+    pub k: int
+    pub a: int
+    pub b: int
+    pub m: bool
+    pub l: int
+}
+
+// ---------------------------------------------------------------- declarations
+
+// A scope entry: a declaration kind (D_*) and its index in that table.
+pub const D_NONE = -1
+pub const D_TYPE = 0
+pub const D_FN = 1
+pub const D_CONST = 2
+pub const D_GLOBAL = 3
+
+pub type Sym = value record {
+    pub k: int
+    pub i: int
+}
+
+const NOSYM: Sym = Sym{k: -1, i: -1}
+
+// Receiver modes of a function (RM_NONE: not a method). An interface
+// member's mode (sx.M_*) uses the same numbers, with M_NONE for assoc.
+pub const RM_NONE = 0
+pub const RM_VAL = 1
+pub const RM_REF = 2
+pub const RM_MUT = 3
+pub const RM_ASSOC = 4
+pub const RM_NAMES: []str = ["-", "val", "ref", "mut", "assoc"]
+
+// What owns a method: nothing, a primitive (owner = its id), a TypeDecl.
+pub const O_NONE = 0
+pub const O_PRIM = 1
+pub const O_DECL = 2
+
+// Where a type is written (ref's pos argument of resolve_type).
+pub const P_PARAM = 0
+pub const P_LET = 1
+pub const P_RET = 2
+pub const P_FIELD = 3
+pub const P_ELEM = 4
+pub const P_TARG = 5
+pub const P_VAR = 6
+pub const P_GLOBAL = 7
+pub const P_INNER = 8
+pub const P_CONSTRAINT = 9
+pub const P_ALIAS = 10
+
+pub type TParam = value record {
+    pub name: str
+    pub line: int
+    pub copy: bool
+    pub cons: []int
+}
+
+pub type Field = value record {
+    pub name: str
+    pub ty: int
+    pub isPub: bool
+}
+
+pub type Variant = value record {
+    pub name: str
+    pub decl: int
+    pub index: int
+    pub node: int      // N_VARIANT
+    pub fields: []Field
+    pub named: bool
+    pub line: int
+}
+
+pub type Member = value record {
+    pub name: str
+    pub mode: int      // sx.M_*
+    pub params: []int
+    pub ret: int
+    pub line: int
+}
+
+pub type TypeDecl = value record {
+    pub node: int
+    pub mod: int
+    pub name: str
+    pub line: int
+    pub isPub: bool
+    pub form: int      // sx.F_*
+    pub value: bool
+    pub tparams: []int
+    pub fields: []Field
+    pub variants: []int
+    pub members: []Member
+    pub methods: Map[str, int]
+    pub methodNames: []str
+    pub drop: int      // a FnDecl, or -1
+    pub target: int    // an alias's type, or -1
+    pub resolving: bool
+    pub cname: str
+}
+
+pub type Param = value record {
+    pub name: str
+    pub ty: int
+    pub isVar: bool
+    pub line: int
+}
+
+pub type FnDecl = value record {
+    pub node: int
+    pub mod: int
+    pub name: str
+    pub line: int
+    pub isPub: bool
+    pub isExtern: bool
+    pub lib: str
+    pub cname: str
+    pub tps: []int     // also ref's env: the type parameters in scope, by name
+    pub params: []Param
+    pub ret: int
+    pub recvMode: int
+    pub recvName: str  // "" when there is none
+    pub recvType: int  // -1 when there is none
+    pub ownerKind: int
+    pub owner: int
+    pub bparam: str    // the borrowed parameter a borrow result comes from; ""
+}
+
+// A folded constant (ref's (type, value, kind) tuple). ty is -1 for an
+// untyped value. By kind: CK_INT i; CK_FRAC s (the literal's text); CK_FLOAT
+// f; CK_STR s (bytes); CK_BOOL b; CK_TYPED the value of the declared type ty
+// in i, f, s or b; CK_TABLE a constant table of type ty.
+pub const CK_INT = 0
+pub const CK_FRAC = 1
+pub const CK_FLOAT = 2
+pub const CK_STR = 3
+pub const CK_BOOL = 4
+pub const CK_TYPED = 5
+pub const CK_TABLE = 6
+pub const CK_NAMES: []str = ["int", "frac", "float", "str", "bool", "typed", "table"]
+
+pub type CVal = value record {
+    pub ty: int
+    pub kind: int
+    pub i: num.Big
+    pub f: float
+    pub s: str
+    pub b: bool
+}
+
+pub type Const = value record {
+    pub node: int
+    pub mod: int
+    pub name: str
+    pub line: int
+    pub isPub: bool
+    pub cname: str
+    pub busy: bool
+    pub done: bool
+    pub table: int     // the type of a constant table, or -1
+    pub value: CVal
+}
+
+pub type Global = value record {
+    pub node: int
+    pub mod: int
+    pub name: str
+    pub line: int
+    pub isPub: bool
+    pub isOnce: bool
+    pub ty: int
+    pub cname: str
+}
+
+pub type Module = value record {
+    pub path: str
+    pub name: str
+    pub fname: str
+    pub cprefix: str
+    pub isStd: bool
+    pub ast: sx.Ast
+    pub importNames: []str   // ref's imports dict: alias -> module, in order
+    pub importMods: []int
+    pub scope: Map[str, Sym]
+    pub scopeNames: []str
+    pub fns: []int
+    pub loading: bool
+}
+
+// A check_targs call waiting for the end of resolution: the instance type, and
+// the module and line of the use.
+type Pending = value record {
+    t: int
+    mod: int
+    line: int
+}
+
+// A constant whose initializer is being folded: an error inside is reported
+// as "the initializer of const C is not constant (...)" at C (ref catches it).
+type Wrap = value record {
+    name: str
+    mod: int
+    line: int
+}
+
+pub type Program = record {
+    pub libroots: []str
+    pub mainFile: str        // the main file's name, for "nested too deeply"
+    pub mods: []Module
+    pub modIndex: Map[str, int]
+    pub types: []TypeDecl
+    pub variants: []Variant
+    pub fns: []FnDecl
+    pub consts: []Const
+    pub globals: []Global
+    pub tparams: []TParam
+    pub tys: []Ty
+    pub tlists: []int
+    pub tindex: Map[str, int]
+    pub primMethods: []Map[str, int]
+    pub primMethodNames: [][]str
+    pub prelude: Map[str, int]     // Some, None, Ok, Err: variants that may be written bare
+    pub preludeNames: []str
+    pub externs: Map[str, int]     // C name -> the first extern FnDecl with it
+    pub externNames: []str
+    pending: []Pending
+    pub resolved: bool
+    wraps: []Wrap
+    pub std: int
+    pub main: int
+}
+
+// ---------------------------------------------------------------- errors
+
+// Stops with ref's CompileError text: "file:line: msg", or msg alone when
+// there is no line. Inside const initializers the message is wrapped as ref's
+// const_value does when it catches the error.
+pub fn (pg: &Program) err(m: int, line: int, msg: str): never {
+    var text = msg
+    var wm = m
+    var wl = line
+    var i = len(pg.wraps) - 1
+    while i >= 0 {
+        text = "the initializer of const " + pg.wraps[i].name + " is not constant (" + text + ")"
+        wm = pg.wraps[i].mod
+        wl = pg.wraps[i].line
+        i -= 1
+    }
+    if wl == 0 || wm < 0 { sx.failText(text) }
+    sx.fail(pg.mods[wm].fname, wl, text)
+}
+
+// ref turns Python's RecursionError into this message (the limit is Python's
+// frame count; here a depth count catches the same infinite recursions).
+pub fn (pg: &Program) tooDeep(): never { sx.failText(pg.mainFile + ":1: the program is nested too deeply") }
+
+// ---------------------------------------------------------------- paths
+
+// The last component of a path.
+pub fn baseName(path: str): str {
+    var i = len(path)
+    while i > 0 && strByte(path, i - 1) != '/' { i -= 1 }
+    return path[i..]
+}
+
+// Python's os.path.dirname.
+pub fn dirName(path: str): str {
+    var i = len(path)
+    while i > 0 && strByte(path, i - 1) != '/' { i -= 1 }
+    var head = path[0..i]
+    // strip the trailing slashes unless the head is all slashes
+    var j = len(head)
+    while j > 0 && strByte(head, j - 1) == '/' { j -= 1 }
+    if j > 0 { return head[0..j] }
+    return head
+}
+
+// Python's os.path.join of two paths.
+pub fn joinPath(a: str, b: str): str {
+    if len(b) > 0 && strByte(b, 0) == '/' { return b }
+    if len(a) == 0 || strByte(a, len(a) - 1) == '/' { return a + b }
+    return a + "/" + b
+}
+
+// Python's os.path.abspath: joined with the working directory, normalized.
+pub fn absPath(path: str): str {
+    var p = path
+    if len(p) == 0 || strByte(p, 0) != '/' { p = os.cwd() + "/" + p }
+    var parts: []str = []
+    for part in split(p, '/') {
+        if len(part) == 0 || part == "." { continue }
+        if part == ".." {
+            if len(parts) > 0 { pop(mut &parts) }
+            continue
+        }
+        append(mut &parts, part)
+    }
+    var b = newStrBuf()
+    for part in parts {
+        b.addByte('/')
+        b.add(part)
+    }
+    if len(parts) == 0 { return "/" }
+    return b.toStr()
+}
+
+// Python's os.path.splitext(name)[0] for a file name.
+pub fn stripExt(name: str): str {
+    var i = len(name) - 1
+    while i >= 0 && strByte(name, i) != '.' { i -= 1 }
+    if i <= 0 { return name }
+    // a name of dots then an extension has none (".obx", "..obx")
+    for k in 0..i {
+        if strByte(name, k) != '.' { return name[0..i] }
+    }
+    return name
+}
+
+// Python's s[:-n].
+fn dropLast(s: str, n: int): str {
+    if len(s) <= n { return "" }
+    return s[0..len(s) - n]
+}
+
+// os.path.isfile (a path with a NUL byte is not a file, as in Python).
+fn isFile(path: str): bool {
+    for i in 0..len(path) {
+        if strByte(path, i) == 0 { return false }
+    }
+    return fs.isFile(path)
+}
+
+fn isAlnum(c: byte): bool { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+
+// ---------------------------------------------------------------- the program
+
+pub fn newProgram(stdPath: str, libroots: []str, mainFile: str): Program {
+    var pg = Program{libroots: libroots, mainFile: mainFile, mods: [], modIndex: newMap(), types: [],
+        variants: [], fns: [], consts: [], globals: [], tparams: [], tys: [], tlists: [], tindex: newMap(),
+        primMethods: [], primMethodNames: [], prelude: newMap(), preludeNames: [], externs: newMap(),
+        externNames: [], pending: [], resolved: false, wraps: [], std: -1, main: -1}
+    let none: []int = []
+    for p in 0..len(PRIM_NAMES) { pg.intern(TK_PRIM, p, 0, false, &none) }
+    pg.intern(TK_SELF, 0, 0, false, &none)
+    for p in 0..NPRIMS {
+        append(mut &pg.primMethods, newMap())
+        append(mut &pg.primMethodNames, [])
+    }
+    pg.std = pg.load(stdPath, &[], "std", true)
+    return pg
+}
+
+// The main module: ref's prog.main = prog.load(path, None, name).
+pub fn (pg: mut &Program) loadMain(path: str) {
+    pg.main = pg.load(path, &[], stripExt(baseName(path)), false)
+}
+
+// ---- type table
+
+fn (pg: mut &Program) intern(k: int, a: int, b: int, m: bool, l: &[]int): int {
+    var key = newStrBuf()
+    key.addInt(k)
+    key.addByte(':')
+    key.addInt(a)
+    key.addByte(':')
+    key.addInt(b)
+    if m { key.add(":m") }
+    for x in l {
+        key.addByte(',')
+        key.addInt(x)
+    }
+    let ks = key.toStr()
+    let found = pg.tindex.getOr(&ks, -1)
+    if found >= 0 { return found }
+    let h = len(pg.tlists)
+    append(mut &pg.tlists, len(l))
+    for x in l { append(mut &pg.tlists, x) }
+    append(mut &pg.tys, Ty{k: k, a: a, b: b, m: m, l: h})
+    let id = len(pg.tys) - 1
+    pg.tindex.put(ks, id)
+    return id
+}
+
+pub fn (pg: mut &Program) mkArr(e: int): int { return pg.intern(TK_ARR, e, 0, false, &[]) }
+pub fn (pg: mut &Program) mkRef(e: int, m: bool): int { return pg.intern(TK_REF, e, 0, m, &[]) }
+pub fn (pg: mut &Program) mkSlice(e: int, m: bool): int { return pg.intern(TK_SLICE, e, 0, m, &[]) }
+pub fn (pg: mut &Program) mkFn(ps: &[]int, r: int): int { return pg.intern(TK_FN, 0, r, false, ps) }
+pub fn (pg: mut &Program) mkClo(ps: &[]int, r: int): int { return pg.intern(TK_CLO, 0, r, false, ps) }
+pub fn (pg: mut &Program) mkInst(d: int, args: &[]int): int { return pg.intern(TK_INST, d, 0, false, args) }
+pub fn (pg: mut &Program) mkTp(tp: int): int { return pg.intern(TK_TP, tp, 0, false, &[]) }
+
+pub fn (pg: &Program) tk(t: int): int { return pg.tys[t].k }
+pub fn (pg: &Program) ta(t: int): int { return pg.tys[t].a }
+pub fn (pg: &Program) tb(t: int): int { return pg.tys[t].b }
+pub fn (pg: &Program) tm(t: int): bool { return pg.tys[t].m }
+// The parameters of a function type or the arguments of an instance.
+pub fn (pg: &Program) tn(t: int): int { return pg.tlists[pg.tys[t].l] }
+pub fn (pg: &Program) ti(t: int, i: int): int { return pg.tlists[pg.tys[t].l + 1 + i] }
+pub fn (pg: &Program) targs(t: int): []int {
+    var out: []int = []
+    for i in 0..pg.tn(t) { append(mut &out, pg.ti(t, i)) }
+    return out
+}
+
+pub fn (pg: &Program) isInt(t: int): bool { return t < NINTS }
+pub fn (pg: &Program) isPrim(t: int): bool { return pg.tys[t].k == TK_PRIM }
+// ref's t[0] in ('ref', 'slice').
+pub fn (pg: &Program) isBorrow(t: int): bool { return pg.tys[t].k == TK_REF || pg.tys[t].k == TK_SLICE }
+
+// ref's tstr: a type as messages write it.
+pub fn (pg: &Program) tstr(t: int): str {
+    let k = pg.tk(t)
+    if k == TK_PRIM { return PRIM_NAMES[t] }
+    if k == TK_ARR { return "[]" + pg.tstr(pg.ta(t)) }
+    if k == TK_REF {
+        if pg.tm(t) { return "mut &" + pg.tstr(pg.ta(t)) }
+        return "&" + pg.tstr(pg.ta(t))
+    }
+    if k == TK_SLICE {
+        if pg.tm(t) { return "mut &[" + pg.tstr(pg.ta(t)) + "]" }
+        return "&[" + pg.tstr(pg.ta(t)) + "]"
+    }
+    if k == TK_FN || k == TK_CLO {
+        var b = newStrBuf()
+        if k == TK_CLO { b.addByte('&') }
+        b.add("fn(")
+        for i in 0..pg.tn(t) {
+            if i > 0 { b.add(", ") }
+            b.add(pg.tstr(pg.ti(t, i)))
+        }
+        b.addByte(')')
+        if pg.tb(t) != T_VOID {
+            b.add(": ")
+            b.add(pg.tstr(pg.tb(t)))
+        }
+        return b.toStr()
+    }
+    if k == TK_TP { return pg.tparams[pg.ta(t)].name }
+    if k == TK_SELF { return "Self" }
+    var b = newStrBuf()
+    b.add(pg.types[pg.ta(t)].name)
+    if pg.tn(t) > 0 {
+        b.addByte('[')
+        for i in 0..pg.tn(t) {
+            if i > 0 { b.add(", ") }
+            b.add(pg.tstr(pg.ti(t, i)))
+        }
+        b.addByte(']')
+    }
+    return b.toStr()
+}
+
+// ---- substitution, unification
+//
+// An environment (ref's dict from type parameters to types) is a flat list of
+// pairs: a TParam id (or -1 for Self) and its type.
+
+fn envGet(env: &[]int, tp: int): int {
+    var i = 0
+    while i < len(env) {
+        if env[i] == tp { return env[i + 1] }
+        i += 2
+    }
+    return -1
+}
+
+pub fn (pg: mut &Program) subst(t: int, env: &[]int): int {
+    if len(env) == 0 { return t }
+    let k = pg.tk(t)
+    if k == TK_TP {
+        let r = envGet(env, pg.ta(t))
+        if r >= 0 { return r }
+        return t
+    }
+    if k == TK_SELF {
+        let r = envGet(env, -1)
+        if r >= 0 { return r }
+        return t
+    }
+    if k == TK_PRIM { return t }
+    if k == TK_ARR {
+        let e = pg.subst(pg.ta(t), env)
+        return pg.mkArr(e)
+    }
+    if k == TK_REF || k == TK_SLICE {
+        let e = pg.subst(pg.ta(t), env)
+        return pg.intern(k, e, 0, pg.tm(t), &[])
+    }
+    var xs: []int = []
+    for i in 0..pg.tn(t) {
+        let x = pg.subst(pg.ti(t, i), env)
+        append(mut &xs, x)
+    }
+    if k == TK_FN || k == TK_CLO {
+        let r = pg.subst(pg.tb(t), env)
+        return pg.intern(k, 0, r, false, &xs)
+    }
+    return pg.mkInst(pg.ta(t), &xs)
+}
+
+// ref's has_tp(t, tps): tps empty means any type parameter.
+pub fn (pg: &Program) hasTp(t: int, tps: &[]int): bool {
+    let k = pg.tk(t)
+    if k == TK_TP {
+        if len(tps) == 0 { return true }
+        for x in tps {
+            if x == pg.ta(t) { return true }
+        }
+        return false
+    }
+    if k == TK_PRIM || k == TK_SELF { return false }
+    if k == TK_ARR || k == TK_REF || k == TK_SLICE { return pg.hasTp(pg.ta(t), tps) }
+    for i in 0..pg.tn(t) {
+        if pg.hasTp(pg.ti(t, i), tps) { return true }
+    }
+    if k == TK_FN || k == TK_CLO { return pg.hasTp(pg.tb(t), tps) }
+    return false
+}
+
+pub fn (pg: &Program) depth(t: int): int {
+    let k = pg.tk(t)
+    if k == TK_ARR || k == TK_REF || k == TK_SLICE { return 1 + pg.depth(pg.ta(t)) }
+    if k == TK_FN || k == TK_CLO || k == TK_INST {
+        var m = 0
+        if k != TK_INST { m = pg.depth(pg.tb(t)) }
+        for i in 0..pg.tn(t) {
+            let d = pg.depth(pg.ti(t, i))
+            if d > m { m = d }
+        }
+        return 1 + m
+    }
+    return 0
+}
+
+fn contains(xs: &[]int, x: int): bool {
+    for y in xs {
+        if y == x { return true }
+    }
+    return false
+}
+
+// Matches the pattern p (which may mention the type parameters tps) against
+// t, adding to bind (pairs, as an environment).
+pub fn (pg: &Program) unify(p: int, t: int, bind: mut &[]int, tps: &[]int): bool {
+    let k = pg.tk(p)
+    if k == TK_TP && contains(tps, pg.ta(p)) {
+        let b = envGet(bind, pg.ta(p))
+        if b >= 0 { return b == t }
+        append(bind, pg.ta(p))
+        append(bind, t)
+        return true
+    }
+    if k != pg.tk(t) { return false }
+    if k == TK_PRIM || k == TK_TP || k == TK_SELF { return p == t }
+    if k == TK_ARR { return pg.unify(pg.ta(p), pg.ta(t), bind, tps) }
+    if k == TK_REF || k == TK_SLICE { return pg.tm(p) == pg.tm(t) && pg.unify(pg.ta(p), pg.ta(t), bind, tps) }
+    if k == TK_FN || k == TK_CLO {
+        if pg.tn(p) != pg.tn(t) { return false }
+        for i in 0..pg.tn(p) {
+            if !pg.unify(pg.ti(p, i), pg.ti(t, i), bind, tps) { return false }
+        }
+        return pg.unify(pg.tb(p), pg.tb(t), bind, tps)
+    }
+    if pg.ta(p) != pg.ta(t) { return false }
+    // zip: the shorter list (always the same length for one declaration)
+    var n = pg.tn(p)
+    if pg.tn(t) < n { n = pg.tn(t) }
+    for i in 0..n {
+        if !pg.unify(pg.ti(p, i), pg.ti(t, i), bind, tps) { return false }
+    }
+    return true
+}
+
+// ref's decl_env(t): the declaration's type parameters bound to t's arguments.
+pub fn (pg: &Program) declEnv(t: int): []int {
+    let d = pg.ta(t)
+    var env: []int = []
+    var n = len(pg.types[d].tparams)
+    if pg.tn(t) < n { n = pg.tn(t) }
+    for i in 0..n {
+        append(mut &env, pg.types[d].tparams[i])
+        append(mut &env, pg.ti(t, i))
+    }
+    return env
+}
+
+// ref's field_types(t): the field types of an instance (of every variant of a
+// closed type), in order.
+pub fn (pg: mut &Program) fieldTypes(t: int): []int {
+    let d = pg.ta(t)
+    let env = pg.declEnv(t)
+    var out: []int = []
+    if pg.types[d].form == sx.F_RECORD {
+        for i in 0..len(pg.types[d].fields) {
+            let x = pg.subst(pg.types[d].fields[i].ty, &env)
+            append(mut &out, x)
+        }
+        return out
+    }
+    for j in 0..len(pg.types[d].variants) {
+        let v = pg.types[d].variants[j]
+        for i in 0..len(pg.variants[v].fields) {
+            let x = pg.subst(pg.variants[v].fields[i].ty, &env)
+            append(mut &out, x)
+        }
+    }
+    return out
+}
+
+pub fn (pg: mut &Program) isCopy(t: int): bool { return pg.isCopyAt(t, 0) }
+
+fn (pg: mut &Program) isCopyAt(t: int, depth: int): bool {
+    if depth > 5000 { pg.tooDeep() }
+    let k = pg.tk(t)
+    if k == TK_PRIM || k == TK_FN || k == TK_REF || k == TK_SLICE || k == TK_CLO { return true }
+    if k == TK_ARR || k == TK_SELF { return false }
+    if k == TK_TP { return pg.tparams[pg.ta(t)].copy }
+    let d = pg.ta(t)
+    if !pg.types[d].value || pg.types[d].drop >= 0 { return false }
+    let fts = pg.fieldTypes(t)
+    for ft in fts {
+        if !pg.isCopyAt(ft, depth + 1) { return false }
+    }
+    return true
+}
+
+// ---------------------------------------------------------------- AST access
+
+pub fn (pg: &Program) nd(m: int, n: int): sx.Node { return pg.mods[m].ast.nodes[n] }
+pub fn (pg: &Program) kind(m: int, n: int): int { return pg.mods[m].ast.nodes[n].kind }
+pub fn (pg: &Program) count(m: int, l: int): int { return pg.mods[m].ast.items[l] }
+pub fn (pg: &Program) item(m: int, l: int, i: int): int { return pg.mods[m].ast.items[l + 1 + i] }
+pub fn (pg: &Program) has(m: int, n: int, flag: int): bool { return pg.mods[m].ast.nodes[n].flags & flag != 0 }
+
+// ---------------------------------------------------------------- loading
+
+fn (pg: mut &Program) load(path0: str, chain0: &[]str, name: str, isStd: bool): int {
+    let path = absPath(path0)
+    let known = pg.modIndex.getOr(&path, -1)
+    if known >= 0 { return known }
+    var chain: []str = []
+    for c in chain0 { append(mut &chain, c) }
+    append(mut &chain, path)
+    var data = ""
+    if readFile(path, mut &data) != 0 { pg.err(-1, 0, "cannot read " + path) }
+    let fname = baseName(path)
+    let src = sx.sourceText(data, fname)
+    let ast = sx.parse(src, fname)
+    var base = newStrBuf()
+    for i in 0..len(name) {
+        let c = strByte(name, i)
+        if isAlnum(c) {
+            base.addByte(c)
+        } else {
+            base.addByte('_')
+        }
+    }
+    let bs = base.toStr()
+    var cp = bs
+    var n = 1
+    while pg.cprefixUsed(cp) {
+        n += 1
+        cp = bs + intToStr(n)
+    }
+    append(mut &pg.mods, Module{path: path, name: name, fname: fname, cprefix: cp, isStd: isStd, ast: ast,
+        importNames: [], importMods: [], scope: newMap(), scopeNames: [], fns: [], loading: true})
+    let m = len(pg.mods) - 1
+    pg.modIndex.put(path, m)
+    let imps = pg.mods[m].ast.imports
+    for k in 0..pg.count(m, imps) {
+        let imp = pg.nd(m, pg.item(m, imps, k))
+        let target = pg.findModule(imp.s, dirName(path), m, imp.line)
+        let tm = pg.modIndex.getOr(&target, -1)
+        if tm >= 0 && pg.mods[tm].loading {
+            var names = baseName(target)
+            var at = -1
+            for j in 0..len(chain) {
+                if at < 0 && chain[j] == target { at = j }
+            }
+            if at >= 0 {
+                var b = newStrBuf()
+                for j in at..len(chain) {
+                    b.add(dropLast(baseName(chain[j]), 4))
+                    b.add(" -> ")
+                }
+                b.add(dropLast(baseName(target), 4))
+                names = b.toStr()
+            }
+            pg.err(m, imp.line, "import cycle: " + names)
+        }
+        let sub = pg.load(target, &chain, baseName(imp.s), false)
+        var alias = imp.t
+        if len(alias) == 0 { alias = baseName(imp.s) }
+        for a in pg.mods[m].importNames {
+            if a == alias { pg.err(m, imp.line, "module name " + alias + " is imported twice") }
+        }
+        append(mut &pg.mods[m].importNames, alias)
+        append(mut &pg.mods[m].importMods, sub)
+    }
+    pg.mods[m].loading = false
+    pg.collect(m)
+    return m
+}
+
+fn (pg: &Program) cprefixUsed(cp: str): bool {
+    for i in 0..len(pg.mods) {
+        if pg.mods[i].cprefix == cp { return true }
+    }
+    return false
+}
+
+// SPEC 5.1: ./ and ../ are relative to the importing file; any other path is
+// a library module.
+fn (pg: &Program) findModule(rel: str, here: str, m: int, line: int): str {
+    let local = startsWith(rel, "./") || startsWith(rel, "../")
+    if local {
+        let p = absPath(joinPath(here, rel + ".obx"))
+        if isFile(p) { return p }
+        pg.err(m, line, "cannot find module " + rel)
+    }
+    for root in pg.libroots {
+        let p = absPath(joinPath(root, rel + ".obx"))
+        if isFile(p) { return p }
+    }
+    pg.err(m, line, "cannot find module " + rel + " in the library roots (a local module is imported as \"./" +
+        rel + "\")")
+}
+
+// The module imported under alias by m, or -1.
+pub fn (pg: &Program) importOf(m: int, alias: str): int {
+    for i in 0..len(pg.mods[m].importNames) {
+        if pg.mods[m].importNames[i] == alias { return pg.mods[m].importMods[i] }
+    }
+    return -1
+}
+
+fn isReserved(name: str): bool {
+    return name == "len" || name == "append" || name == "pop" || name == "swap" || name == "replace" ||
+        name == "move" || name == "array" || name == "panic" || name == "assert" || name == "exit"
+}
+
+pub fn isPrelude(name: str): bool { return name == "Some" || name == "None" || name == "Ok" || name == "Err" }
+
+// The id of the primitive that can be written as name, or -1.
+pub fn primOf(name: str): int {
+    for p in 0..NPRIMS {
+        if PRIM_NAMES[p] == name { return p }
+    }
+    return -1
+}
+
+fn (pg: mut &Program) add(m: int, name: str, s: Sym, line: int) {
+    if pg.mods[m].scope.has(&name) { pg.err(m, line, name + " is declared twice") }
+    if primOf(name) >= 0 { pg.err(m, line, name + " is a primitive type and cannot be redeclared") }
+    if isReserved(name) { pg.err(m, line, name + " is a built-in function; its name is reserved") }
+    if isPrelude(name) && !pg.mods[m].isStd {
+        pg.err(m, line, name + " is a prelude variant (std's " + name + "); no other module may " +
+            "declare a top-level name that clashes with it")
+    }
+    pg.mods[m].scope.put(name, s)
+    append(mut &pg.mods[m].scopeNames, name)
+}
+
+fn (pg: mut &Program) collect(m: int) {
+    let decls = pg.mods[m].ast.decls
+    let cp = pg.mods[m].cprefix
+    let kp = "k" + intToStr(len(cp)) + "_" + cp + "_"
+    let gp = "g" + intToStr(len(cp)) + "_" + cp + "_"
+    for k in 0..pg.count(m, decls) {
+        let a = pg.item(m, decls, k)
+        let n = pg.nd(m, a)
+        let isPub = n.flags & sx.PUB != 0
+        if n.kind == sx.N_TYPE {
+            append(mut &pg.types, TypeDecl{node: a, mod: m, name: n.s, line: n.line, isPub: isPub, form: n.b,
+                value: n.flags & sx.VALUE != 0, tparams: [], fields: [], variants: [], members: [],
+                methods: newMap(), methodNames: [], drop: -1, target: -1, resolving: false,
+                cname: cp + "_" + n.s})
+            let d = len(pg.types) - 1
+            pg.add(m, n.s, Sym{k: D_TYPE, i: d}, n.line)
+            if n.b == sx.F_CLOSED {
+                for i in 0..pg.count(m, n.c) {
+                    let vn = pg.item(m, n.c, i)
+                    let v = pg.nd(m, vn)
+                    append(mut &pg.variants, Variant{name: v.s, decl: d, index: i, node: vn, fields: [],
+                        named: v.flags & sx.NAMED != 0, line: v.line})
+                    let vi = len(pg.variants) - 1
+                    append(mut &pg.types[d].variants, vi)
+                    if pg.mods[m].isStd && isPrelude(v.s) {
+                        if !pg.prelude.has(&v.s) { append(mut &pg.preludeNames, v.s) }
+                        pg.prelude.put(v.s, vi)
+                    }
+                }
+            }
+        } else if n.kind == sx.N_FN {
+            append(mut &pg.fns, FnDecl{node: a, mod: m, name: n.s, line: n.line, isPub: isPub,
+                isExtern: n.flags & sx.EXTERN != 0, lib: n.t, cname: n.u, tps: [], params: [], ret: T_VOID,
+                recvMode: RM_NONE, recvName: "", recvType: -1, ownerKind: O_NONE, owner: -1, bparam: ""})
+            let f = len(pg.fns) - 1
+            append(mut &pg.mods[m].fns, f)
+            if n.a < 0 { pg.add(m, n.s, Sym{k: D_FN, i: f}, n.line) }
+        } else if n.kind == sx.N_CONST {
+            append(mut &pg.consts, Const{node: a, mod: m, name: n.s, line: n.line, isPub: isPub, cname: kp + n.s,
+                busy: false, done: false, table: -1, value: noValue()})
+            pg.add(m, n.s, Sym{k: D_CONST, i: len(pg.consts) - 1}, n.line)
+        } else {
+            append(mut &pg.globals, Global{node: a, mod: m, name: n.s, line: n.line, isPub: isPub,
+                isOnce: n.flags & sx.ONCE != 0, ty: -1, cname: gp + n.s})
+            pg.add(m, n.s, Sym{k: D_GLOBAL, i: len(pg.globals) - 1}, n.line)
+        }
+    }
+}
+
+fn noValue(): CVal { return CVal{ty: -1, kind: CK_INT, i: num.bigOf(0), f: 0.0, s: "", b: false} }
+
+// ---------------------------------------------------------------- names
+
+pub fn (pg: &Program) symPub(s: Sym): bool {
+    if s.k == D_TYPE { return pg.types[s.i].isPub }
+    if s.k == D_FN { return pg.fns[s.i].isPub }
+    if s.k == D_CONST { return pg.consts[s.i].isPub }
+    return pg.globals[s.i].isPub
+}
+
+pub fn (pg: &Program) scopeGet(m: int, name: str): Sym { return pg.mods[m].scope.getOr(&name, NOSYM) }
+
+// ref's lookup: the module's own names, then std's public ones.
+pub fn (pg: &Program) lookup(m: int, name: str): Sym {
+    var s = pg.scopeGet(m, name)
+    if s.k < 0 && !pg.mods[m].isStd {
+        s = pg.scopeGet(pg.std, name)
+        if s.k >= 0 && !pg.symPub(s) { return NOSYM }
+    }
+    return s
+}
+
+// ref's lookup_in: target.name, seen from module m.
+pub fn (pg: &Program) lookupIn(m: int, target: int, name: str, line: int): Sym {
+    let s = pg.scopeGet(target, name)
+    if s.k < 0 { pg.err(m, line, "module " + pg.mods[target].name + " has no " + name) }
+    if !pg.symPub(s) && target != m { pg.err(m, line, name + " is not public in module " + pg.mods[target].name) }
+    return s
+}
+
+// ref's FnDecl.label: name, or Owner.name for a method.
+pub fn (pg: &Program) label(f: int): str {
+    let k = pg.fns[f].ownerKind
+    if k == O_NONE { return pg.fns[f].name }
+    if k == O_PRIM { return PRIM_NAMES[pg.fns[f].owner] + "." + pg.fns[f].name }
+    return pg.types[pg.fns[f].owner].name + "." + pg.fns[f].name
+}
+
+// ---------------------------------------------------------------- resolution
+
+fn copyInts(xs: &[]int): []int {
+    var out: []int = []
+    for x in xs { append(mut &out, x) }
+    return out
+}
+
+pub fn (pg: mut &Program) resolveAll() {
+    let nm = len(pg.mods)
+    for m in 0..nm {
+        for k in 0..len(pg.mods[m].scopeNames) {
+            let s = pg.scopeGet(m, pg.mods[m].scopeNames[k])
+            if s.k == D_TYPE { pg.makeTparams(s.i) }
+        }
+    }
+    for m in 0..nm {
+        for k in 0..len(pg.mods[m].scopeNames) {
+            let s = pg.scopeGet(m, pg.mods[m].scopeNames[k])
+            if s.k == D_TYPE { pg.resolveTypedecl(s.i) }
+        }
+    }
+    for m in 0..nm {
+        for k in 0..len(pg.mods[m].fns) { pg.resolveFn(pg.mods[m].fns[k]) }
+    }
+    for m in 0..nm {
+        for k in 0..len(pg.mods[m].scopeNames) {
+            let s = pg.scopeGet(m, pg.mods[m].scopeNames[k])
+            if s.k == D_GLOBAL {
+                pg.resolveGlobal(s.i)
+            } else if s.k == D_CONST {
+                pg.constValue(s.i)
+            }
+        }
+    }
+    pg.resolved = true
+    for k in 0..len(pg.pending) {
+        let p = pg.pending[k]
+        let args = pg.targs(p.t)
+        let tps = copyInts(&pg.types[pg.ta(p.t)].tparams)
+        pg.checkTargs(&args, &tps, p.mod, p.line)
+    }
+    replace(mut &pg.pending, [])
+    for m in 0..nm {
+        for k in 0..len(pg.mods[m].scopeNames) {
+            let s = pg.scopeGet(m, pg.mods[m].scopeNames[k])
+            if s.k == D_TYPE && pg.types[s.i].value && pg.types[s.i].form != sx.F_ALIAS { pg.checkInlineCycle(s.i) }
+        }
+    }
+}
+
+// Whether the constraint list l (module m) contains `copy`.
+fn (pg: &Program) hasCopy(m: int, l: int): bool {
+    for i in 0..pg.count(m, l) {
+        if pg.kind(m, pg.item(m, l, i)) == sx.N_COPY { return true }
+    }
+    return false
+}
+
+fn (pg: mut &Program) makeTparams(d: int) {
+    let m = pg.types[d].mod
+    let l = pg.nd(m, pg.types[d].node).a
+    var seen: []str = []
+    for i in 0..pg.count(m, l) {
+        let tn = pg.nd(m, pg.item(m, l, i))
+        for s in seen {
+            if s == tn.s { pg.err(m, tn.line, "type parameter " + tn.s + " is declared twice") }
+        }
+        append(mut &seen, tn.s)
+        append(mut &pg.tparams, TParam{name: tn.s, line: tn.line, copy: pg.hasCopy(m, tn.a), cons: []})
+        append(mut &pg.types[d].tparams, len(pg.tparams) - 1)
+    }
+}
+
+// The constraints of an N_TPARAM's list cons, resolved into tparam tp.
+fn (pg: mut &Program) resolveCons(tp: int, m: int, cons: int, env: &[]int, skipCopy: bool) {
+    for i in 0..pg.count(m, cons) {
+        let c = pg.item(m, cons, i)
+        if pg.kind(m, c) == sx.N_COPY {
+            if !skipCopy { pg.tparams[tp].copy = true }
+            continue
+        }
+        let t = pg.resolveType(c, m, env, P_CONSTRAINT, 0)
+        append(mut &pg.tparams[tp].cons, t)
+    }
+}
+
+fn (pg: mut &Program) resolveTypedecl(d: int) {
+    let m = pg.types[d].mod
+    let env = copyInts(&pg.types[d].tparams)
+    let a = pg.nd(m, pg.types[d].node)
+    for i in 0..len(env) {
+        let tn = pg.nd(m, pg.item(m, a.a, i))
+        pg.resolveCons(env[i], m, tn.a, &env, false)
+    }
+    let form = pg.types[d].form
+    if form == sx.F_ALIAS {
+        pg.aliasTarget(d)
+    } else if form == sx.F_RECORD {
+        var names: []str = []
+        for i in 0..pg.count(m, a.c) {
+            let f = pg.nd(m, pg.item(m, a.c, i))
+            for s in names {
+                if s == f.s { pg.err(m, pg.types[d].line, "field " + f.s + " is declared twice") }
+            }
+            append(mut &names, f.s)
+            let t = pg.resolveType(f.a, m, &env, P_FIELD, 0)
+            append(mut &pg.types[d].fields, Field{name: f.s, ty: t, isPub: f.flags & sx.PUB != 0})
+        }
+    } else if form == sx.F_CLOSED {
+        for j in 0..len(pg.types[d].variants) {
+            let v = pg.types[d].variants[j]
+            let vf = pg.nd(m, pg.variants[v].node).a
+            for i in 0..pg.count(m, vf) {
+                let f = pg.nd(m, pg.item(m, vf, i))
+                let t = pg.resolveType(f.a, m, &env, P_FIELD, 0)
+                append(mut &pg.variants[v].fields, Field{name: f.s, ty: t, isPub: true})
+            }
+        }
+    } else {
+        var senv = copyInts(&env)
+        append(mut &senv, -1)
+        for i in 0..pg.count(m, a.c) {
+            let mb = pg.nd(m, pg.item(m, a.c, i))
+            var ps: []int = []
+            for j in 0..pg.count(m, mb.a) {
+                let pn = pg.nd(m, pg.item(m, mb.a, j))
+                let t = pg.resolveType(pn.a, m, &senv, P_PARAM, 0)
+                append(mut &ps, t)
+            }
+            var ret = T_VOID
+            if mb.b >= 0 { ret = pg.resolveType(mb.b, m, &senv, P_RET, 0) }
+            append(mut &pg.types[d].members, Member{name: mb.s, mode: mb.c, params: ps, ret: ret, line: mb.line})
+        }
+    }
+}
+
+pub fn (pg: mut &Program) aliasTarget(d: int): int {
+    if pg.types[d].target < 0 {
+        if pg.types[d].resolving {
+            pg.err(pg.types[d].mod, pg.types[d].line, "type alias " + pg.types[d].name + " refers to itself")
+        }
+        pg.types[d].resolving = true
+        let env = copyInts(&pg.types[d].tparams)
+        let m = pg.types[d].mod
+        let target = pg.nd(m, pg.types[d].node).c
+        let t = pg.resolveType(target, m, &env, P_ALIAS, 0)
+        pg.types[d].target = t
+        pg.types[d].resolving = false
+    }
+    return pg.types[d].target
+}
+
+// The type a name means in an environment of type parameters (a list of
+// TParam ids, -1 for Self), or -1. Self wins, as ref's dict(env, Self=SELF).
+pub fn (pg: &Program) envLookup(env: &[]int, name: str): int {
+    if name == "Self" && contains(env, -1) { return T_SELF }
+    for tp in env {
+        if tp >= 0 && pg.tparams[tp].name == name { return tp }
+    }
+    return -1
+}
+
+fn posWhat(pos: int): str {
+    if pos == P_FIELD { return "a field" }
+    if pos == P_ELEM { return "an array element" }
+    if pos == P_TARG { return "a type argument" }
+    if pos == P_VAR { return "the type of a var" }
+    if pos == P_GLOBAL { return "the type of a global" }
+    return "used here"
+}
+
+// ref's type_where: the line of the name or fn type under borrows and arrays,
+// or 0 (ref's '').
+fn (pg: &Program) typeWhere(m: int, a: int): int {
+    var x = a
+    while pg.kind(m, x) == sx.N_TREF || pg.kind(m, x) == sx.N_TARR || pg.kind(m, x) == sx.N_TSLICE {
+        x = pg.nd(m, x).a
+    }
+    let k = pg.kind(m, x)
+    if k == sx.N_TNAME || k == sx.N_TFN { return pg.nd(m, x).line }
+    return 0
+}
+
+fn (pg: &Program) orWhere(where: int, m: int, a: int): int {
+    if where != 0 { return where }
+    return pg.typeWhere(m, a)
+}
+
+// ref's resolve_type: the type written as node a in module m. env holds the
+// type parameters in scope; where (a line, or 0) is the place of errors below.
+pub fn (pg: mut &Program) resolveType(a: int, m: int, env: &[]int, pos: int, where: int): int {
+    let n = pg.nd(m, a)
+    let k = n.kind
+    let isMut = n.flags & sx.MUT != 0
+    if k == sx.N_TREF && pg.kind(m, n.a) == sx.N_TFN {     // &fn(...): a closure, a parameter or a let only
+        if isMut || (pos != P_PARAM && pos != P_LET) {
+            var msg = "mut &fn is not a type: a closure is &fn(...)"
+            if !isMut {
+                var what = "stored"
+                if pos == P_RET { what = "a result" }
+                msg = "a closure type cannot be " + what + ": closures are second class (a parameter or a let)"
+            }
+            pg.err(m, pg.orWhere(where, m, a), msg)
+        }
+        let f = pg.resolveType(n.a, m, env, pos, where)
+        let ps = pg.targs(f)
+        return pg.mkClo(&ps, pg.tb(f))
+    }
+    if k == sx.N_TREF || k == sx.N_TSLICE {
+        if pos != P_PARAM && pos != P_RET && pos != P_LET {
+            pg.err(m, pg.orWhere(where, m, a), "a borrow type cannot be " + posWhat(pos) +
+                ": borrows are second class")
+        }
+        if k == sx.N_TREF {
+            let inner = pg.resolveType(n.a, m, env, P_INNER, where)
+            return pg.mkRef(inner, isMut)
+        }
+        let inner = pg.resolveType(n.a, m, env, P_ELEM, where)
+        return pg.mkSlice(inner, isMut)
+    }
+    if k == sx.N_TARR {
+        let e = pg.resolveType(n.a, m, env, P_ELEM, where)
+        return pg.mkArr(e)
+    }
+    if k == sx.N_TFN {
+        var ps: []int = []
+        for i in 0..pg.count(m, n.a) {
+            let t = pg.resolveType(pg.item(m, n.a, i), m, env, P_PARAM, where)
+            append(mut &ps, t)
+        }
+        var r = T_VOID
+        if n.b >= 0 { r = pg.resolveType(n.b, m, env, P_RET, where) }
+        return pg.mkFn(&ps, r)
+    }
+    if k == sx.N_TPARAM { pg.err(m, n.line, "a type parameter declaration is only allowed in a receiver") }
+    if k == sx.N_TNEVER {
+        if pos != P_RET {
+            var w = where
+            if w == 0 { w = n.line }
+            pg.err(m, w, "never can only be a result type")
+        }
+        return T_NEVER
+    }
+    let w = n.line
+    var name = ""
+    var s = NOSYM
+    if pg.count(m, n.a) == 1 {
+        name = pg.nd(m, pg.item(m, n.a, 0)).s
+        let e = pg.envLookup(env, name)
+        if e >= 0 {
+            if pg.count(m, n.b) > 0 { pg.err(m, w, "type parameter " + name + " takes no type arguments") }
+            if e == T_SELF && name == "Self" && contains(env, -1) { return T_SELF }
+            return pg.mkTp(e)
+        }
+        let p = primOf(name)
+        if p >= 0 {
+            if pg.count(m, n.b) > 0 { pg.err(m, w, name + " takes no type arguments") }
+            return p
+        }
+        s = pg.lookup(m, name)
+    } else {
+        let first = pg.nd(m, pg.item(m, n.a, 0)).s
+        let target = pg.importOf(m, first)
+        if target < 0 { pg.err(m, w, "unknown module " + first) }
+        name = pg.nd(m, pg.item(m, n.a, 1)).s
+        s = pg.lookupIn(m, target, name, w)
+    }
+    if s.k < 0 { pg.err(m, w, "unknown type " + name) }
+    if s.k != D_TYPE { pg.err(m, w, name + " is not a type") }
+    let d = s.i
+    var targs: []int = []
+    for i in 0..pg.count(m, n.b) {
+        let t = pg.resolveType(pg.item(m, n.b, i), m, env, P_TARG, w)
+        append(mut &targs, t)
+    }
+    let ntp = len(pg.types[d].tparams)
+    if len(targs) != ntp {
+        pg.err(m, w, name + " takes " + intToStr(ntp) + " type arguments, not " + intToStr(len(targs)))
+    }
+    let form = pg.types[d].form
+    if form == sx.F_INTERFACE {
+        if pos != P_CONSTRAINT { pg.err(m, w, name + " is an interface: it can only constrain a type parameter") }
+        return pg.mkInst(d, &targs)
+    }
+    if pos == P_CONSTRAINT { pg.err(m, w, name + " is not an interface") }
+    if form == sx.F_ALIAS {
+        let target = pg.aliasTarget(d)
+        var env2: []int = []
+        for i in 0..ntp {
+            append(mut &env2, pg.types[d].tparams[i])
+            append(mut &env2, targs[i])
+        }
+        return pg.subst(target, &env2)
+    }
+    let t = pg.mkInst(d, &targs)
+    if pg.resolved {
+        let tps = copyInts(&pg.types[d].tparams)
+        pg.checkTargs(&targs, &tps, m, w)
+    } else {
+        append(mut &pg.pending, Pending{t: t, mod: m, line: w})
+    }
+    return t
+}
+
+// ref's check_targs: type arguments against their parameters' constraints.
+pub fn (pg: mut &Program) checkTargs(targs: &[]int, tparams: &[]int, m: int, line: int) {
+    var env: []int = []
+    var n = len(tparams)
+    if len(targs) < n { n = len(targs) }
+    for i in 0..n {
+        append(mut &env, tparams[i])
+        append(mut &env, targs[i])
+    }
+    for i in 0..n {
+        let p = tparams[i]
+        let t = targs[i]
+        let pn = pg.tparams[p].name
+        if t == T_VOID || t == T_NEVER {     // SPEC 6.1: written or inferred (from a function's result)
+            var what = "inferred as no result (nothing)"
+            if t == T_NEVER { what = "never" }
+            pg.err(m, line, "type parameter " + pn + " cannot be " + what + ": never and no result are not " +
+                "types, so they cannot be type arguments")
+        }
+        let k = pg.tk(t)
+        if k == TK_REF || k == TK_SLICE || k == TK_CLO {
+            pg.err(m, line, "a borrow type (" + pg.tstr(t) + ") cannot be a type argument (type parameter " +
+                pn + "): borrows are second class")
+        }
+        if pg.tparams[p].copy && !pg.isCopy(t) {
+            pg.err(m, line, pg.tstr(t) + " is not a copy type (type parameter " + pn + " needs copy)")
+        }
+        let cons = copyInts(&pg.tparams[p].cons)
+        for c0 in cons {
+            let c = pg.subst(c0, &env)
+            let why = pg.satisfies(t, c, m)
+            if len(why) > 0 {
+                pg.err(m, line, pg.tstr(t) + " does not satisfy " + pg.tstr(c) + " (type parameter " + pn +
+                    "): " + why)
+            }
+        }
+    }
+}
+
+fn (pg: mut &Program) resolveFn(f: int) {
+    let m = pg.fns[f].mod
+    let a = pg.nd(m, pg.fns[f].node)
+    var env: []int = []
+    if pg.fns[f].isExtern {
+        for i in 0..pg.count(m, a.c) {
+            let pn = pg.nd(m, pg.item(m, a.c, i))
+            let t = pg.resolveType(pn.a, m, &env, P_PARAM, pn.line)
+            var ok = pg.tk(t) == TK_PRIM && t != T_VOID
+            if !ok && pg.tk(t) == TK_REF && pg.tm(t) {
+                let inner = pg.ta(t)
+                ok = pg.isInt(inner) || inner == T_PTR || inner == T_FLOAT
+            }
+            if !ok { pg.err(m, pn.line, "extern parameter " + pn.s + " cannot have type " + pg.tstr(t)) }
+            append(mut &pg.fns[f].params, Param{name: pn.s, ty: t, isVar: false, line: pn.line})
+        }
+        if a.d >= 0 {
+            let r = pg.resolveType(a.d, m, &env, P_RET, 0)
+            pg.fns[f].ret = r
+            if pg.tk(r) != TK_PRIM { pg.err(m, a.line, "an extern function cannot return " + pg.tstr(r)) }
+        }
+        let cname = a.u
+        if cReserved(cname) && !cHelper(cname) {
+            pg.err(m, a.line, "the C name " + cname + " is reserved: an extern cannot name main, rt_*, obx_* " +
+                "or a name the compiler generates")
+        }
+        let other = pg.externs.getOr(&cname, -1)
+        if other < 0 {
+            pg.externs.put(cname, f)
+            append(mut &pg.externNames, cname)
+        } else if !pg.sameSig(f, other) {
+            pg.err(m, a.line, "extern " + pg.fns[f].name + " declares the C function " + cname +
+                " with another signature than " + pg.fns[other].name + " in module " +
+                pg.mods[pg.fns[other].mod].name)
+        }
+        return
+    }
+    if a.a >= 0 {
+        let recv = pg.nd(m, a.a)
+        var rt = recv.a
+        var mode = RM_VAL
+        if pg.kind(m, rt) == sx.N_TREF {
+            mode = RM_REF
+            if pg.has(m, rt, sx.MUT) { mode = RM_MUT }
+            rt = pg.nd(m, rt).a
+        }
+        if pg.kind(m, rt) != sx.N_TNAME { pg.err(m, a.line, "a receiver must name a type") }
+        let rn = pg.nd(m, rt)
+        let w = rn.line
+        let np = pg.count(m, rn.a)
+        let nargs = pg.count(m, rn.b)
+        let first = pg.nd(m, pg.item(m, rn.a, 0)).s
+        let prim = primOf(first)
+        var table = -1      // the owning TypeDecl, or -1 for a primitive's table
+        if np == 1 && prim >= 0 {
+            if !pg.mods[m].isStd {
+                pg.err(m, a.line, "methods of " + first + " can only be declared in module std, " +
+                    "the module of the primitive types")
+            }
+            pg.fns[f].ownerKind = O_PRIM
+            pg.fns[f].owner = prim
+            pg.fns[f].recvType = prim
+            if nargs > 0 { pg.err(m, w, first + " takes no type arguments") }
+        } else {
+            var s = NOSYM
+            if np == 1 { s = pg.lookup(m, first) }
+            if np != 1 || s.k != D_TYPE || (pg.types[s.i].form != sx.F_RECORD && pg.types[s.i].form != sx.F_CLOSED) {
+                if s.k == D_TYPE && pg.types[s.i].form == sx.F_ALIAS {
+                    pg.err(m, a.line, "a receiver must name the type itself, not an alias")
+                }
+                var full = first
+                if np > 1 { full = first + "." + pg.nd(m, pg.item(m, rn.a, 1)).s }
+                pg.err(m, a.line, "a method receiver must be a record or closed type declared in " +
+                    "this module, not " + full)
+            }
+            let d = s.i
+            if pg.types[d].mod != m {
+                pg.err(m, a.line, "methods of " + pg.types[d].name + " can only be declared in its module " +
+                    pg.mods[pg.types[d].mod].name)
+            }
+            let ntp = len(pg.types[d].tparams)
+            if nargs != ntp {
+                pg.err(m, w, "the receiver " + pg.types[d].name + " needs " + intToStr(ntp) + " type arguments")
+            }
+            pg.fns[f].ownerKind = O_DECL
+            pg.fns[f].owner = d
+            table = d
+            var extra: []int = []    // the constraint list of each receiver argument, or -1
+            for i in 0..nargs {
+                let x = pg.item(m, rn.b, i)
+                let xn = pg.nd(m, x)
+                var nm = ""
+                var cons = -1
+                if xn.kind == sx.N_TPARAM {
+                    nm = xn.s
+                    cons = xn.a
+                } else if xn.kind == sx.N_TNAME && pg.count(m, xn.a) == 1 && pg.count(m, xn.b) == 0 {
+                    nm = pg.nd(m, pg.item(m, xn.a, 0)).s
+                } else {
+                    pg.err(m, w, "the type arguments of a receiver must be type parameter names")
+                }
+                if pg.envLookup(&env, nm) >= 0 { pg.err(m, xn.line, "type parameter " + nm + " is declared twice") }
+                let dp = pg.types[d].tparams[i]
+                append(mut &pg.tparams, TParam{name: nm, line: xn.line, copy: pg.tparams[dp].copy, cons: []})
+                let tp = len(pg.tparams) - 1
+                append(mut &env, tp)
+                append(mut &extra, cons)
+            }
+            var denv: []int = []
+            for i in 0..ntp {
+                append(mut &denv, pg.types[d].tparams[i])
+                let tt = pg.mkTp(env[i])
+                append(mut &denv, tt)
+            }
+            for i in 0..ntp {
+                let tp = env[i]
+                let pcons = copyInts(&pg.tparams[pg.types[d].tparams[i]].cons)
+                for c in pcons {
+                    let sc = pg.subst(c, &denv)
+                    append(mut &pg.tparams[tp].cons, sc)
+                }
+                if extra[i] >= 0 { pg.resolveCons(tp, m, extra[i], &env, false) }
+            }
+            var rargs: []int = []
+            for i in 0..ntp {
+                let tt = pg.mkTp(env[i])
+                append(mut &rargs, tt)
+            }
+            pg.fns[f].recvType = pg.mkInst(d, &rargs)
+        }
+        if len(recv.s) == 0 {
+            if mode != RM_VAL { pg.err(m, a.line, "an associated function has no receiver to borrow") }
+            mode = RM_ASSOC
+        }
+        pg.fns[f].recvMode = mode
+        pg.fns[f].recvName = recv.s
+        let name = pg.fns[f].name
+        if table < 0 {
+            if pg.primMethods[prim].has(&name) { pg.err(m, a.line, "method " + pg.label(f) + " is declared twice") }
+            pg.primMethods[prim].put(name, f)
+            append(mut &pg.primMethodNames[prim], name)
+        } else {
+            if pg.types[table].methods.has(&name) { pg.err(m, a.line, "method " + pg.label(f) + " is declared twice") }
+            pg.types[table].methods.put(name, f)
+            append(mut &pg.types[table].methodNames, name)
+        }
+    }
+    let nrecv = len(env)
+    for i in 0..pg.count(m, a.b) {
+        let tn = pg.nd(m, pg.item(m, a.b, i))
+        if pg.envLookup(&env, tn.s) >= 0 { pg.err(m, tn.line, "type parameter " + tn.s + " is declared twice") }
+        append(mut &pg.tparams, TParam{name: tn.s, line: tn.line, copy: pg.hasCopy(m, tn.a), cons: []})
+        append(mut &env, len(pg.tparams) - 1)
+    }
+    for i in 0..pg.count(m, a.b) {
+        let tn = pg.nd(m, pg.item(m, a.b, i))
+        pg.resolveCons(env[nrecv + i], m, tn.a, &env, true)
+    }
+    pg.fns[f].tps = copyInts(&env)
+    var names: []str = []
+    let mode = pg.fns[f].recvMode
+    if mode == RM_VAL || mode == RM_REF || mode == RM_MUT {
+        var rt = pg.fns[f].recvType
+        if mode != RM_VAL { rt = pg.mkRef(rt, mode == RM_MUT) }
+        append(mut &pg.fns[f].params, Param{name: pg.fns[f].recvName, ty: rt, isVar: false, line: a.line})
+        append(mut &names, pg.fns[f].recvName)
+    }
+    for i in 0..pg.count(m, a.c) {
+        let pn = pg.nd(m, pg.item(m, a.c, i))
+        for s in names {
+            if s == pn.s { pg.err(m, pn.line, "parameter " + pn.s + " is declared twice") }
+        }
+        append(mut &names, pn.s)
+        let t = pg.resolveType(pn.a, m, &env, P_PARAM, pn.line)
+        let isVar = pn.flags & sx.VAR != 0
+        let k = pg.tk(t)
+        if isVar && (k == TK_REF || k == TK_SLICE || k == TK_CLO) {
+            pg.err(m, pn.line, "var parameter " + pn.s + " cannot be a borrow or a closure")
+        }
+        append(mut &pg.fns[f].params, Param{name: pn.s, ty: t, isVar: isVar, line: pn.line})
+    }
+    if a.d >= 0 {
+        let r = pg.resolveType(a.d, m, &env, P_RET, 0)
+        pg.fns[f].ret = r
+    }
+    if pg.fns[f].name == "drop" && pg.fns[f].ownerKind != O_NONE {
+        if pg.fns[f].recvMode != RM_MUT || len(pg.fns[f].params) != 1 || pg.fns[f].ret != T_VOID ||
+                pg.count(m, a.b) > 0 {
+            pg.err(m, a.line, "a drop method takes `mut &` receiver and nothing else")
+        }
+        if pg.fns[f].ownerKind == O_PRIM { pg.err(m, a.line, "primitive types cannot have a drop method") }
+        pg.types[pg.fns[f].owner].drop = f
+    }
+    let ret = pg.fns[f].ret
+    if pg.isBorrow(ret) {
+        var count = 0
+        var first = -1
+        for i in 0..len(pg.fns[f].params) {
+            if pg.isBorrow(pg.fns[f].params[i].ty) {
+                count += 1
+                if first < 0 { first = i }
+            }
+        }
+        if count != 1 {
+            pg.err(m, a.line, pg.label(f) + " returns a borrow, so it needs exactly one borrowed " +
+                "parameter, not " + intToStr(count))
+        }
+        if pg.tm(ret) && !pg.tm(pg.fns[f].params[first].ty) {
+            pg.err(m, a.line, pg.label(f) + " returns a mut borrow, so its borrowed parameter must " + "be mut &")
+        }
+        pg.fns[f].bparam = pg.fns[f].params[first].name
+    }
+}
+
+// ref's comparison of extern signatures: the parameter types and the result.
+fn (pg: &Program) sameSig(f: int, g: int): bool {
+    if pg.fns[f].ret != pg.fns[g].ret || len(pg.fns[f].params) != len(pg.fns[g].params) { return false }
+    for i in 0..len(pg.fns[f].params) {
+        if pg.fns[f].params[i].ty != pg.fns[g].params[i].ty { return false }
+    }
+    return true
+}
+
+// ref's CRESERVED pattern, (main|rt_\w*|obx_\w*|(f|g|k|gl|S)\d+_\w*|(sl|fn)\d+\w*)$,
+// for a C name (ASCII letters, digits and _ only, which the parser checked).
+fn cReserved(s: str): bool {
+    if s == "main" || startsWith(s, "rt_") || startsWith(s, "obx_") { return true }
+    for p in ["f", "g", "k", "gl", "S"] {
+        if startsWith(s, p) {
+            var i = len(p)
+            let start = i
+            while i < len(s) && strByte(s, i) >= '0' && strByte(s, i) <= '9' { i += 1 }
+            if i > start && i < len(s) && strByte(s, i) == '_' { return true }
+        }
+    }
+    for p in ["sl", "fn"] {
+        if startsWith(s, p) && len(s) > len(p) && strByte(s, len(p)) >= '0' && strByte(s, len(p)) <= '9' {
+            return true
+        }
+    }
+    return false
+}
+
+// ref's CHELPERS: rt.h's obx_ helpers that the library's externs may name.
+fn cHelper(s: str): bool {
+    return s == "obx_errno" || s == "obx_dirent_name" || s == "obx_dirent_type" || s == "obx_stat" ||
+        s == "obx_stat_field" || s == "obx_open" || s == "obx_clock_ns" || s == "obx_getcwd"
+}
+
+fn (pg: mut &Program) resolveGlobal(g: int) {
+    let m = pg.globals[g].mod
+    let a = pg.nd(m, pg.globals[g].node)
+    let t = pg.resolveType(a.a, m, &[], P_GLOBAL, a.line)
+    pg.globals[g].ty = t
+    if !pg.isCopy(t) && !pg.globals[g].isOnce {
+        let ts = pg.tstr(t)
+        let gn = pg.globals[g].name
+        pg.err(m, a.line, "global " + gn + " has the owned type " + ts + "; globals must have " +
+            "copy types (or be set-once: var " + gn + ": once " + ts + ")")
+    }
+}
+
+// ---------------------------------------------------------------- constants
+
+fn cv(ty: int, kind: int): CVal { return CVal{ty: ty, kind: kind, i: num.bigOf(0), f: 0.0, s: "", b: false} }
+
+fn cInt(ty: int, x: num.Big): CVal {
+    var v = cv(ty, CK_INT)
+    v.i = x
+    return v
+}
+
+fn cFloat(ty: int, x: float): CVal {
+    var v = cv(ty, CK_FLOAT)
+    v.f = x
+    return v
+}
+
+fn cText(ty: int, kind: int, s: str): CVal {
+    var v = cv(ty, kind)
+    v.s = s
+    return v
+}
+
+fn cBool(x: bool): CVal {
+    var v = cv(T_BOOL, CK_BOOL)
+    v.b = x
+    return v
+}
+
+// ref's const_value: the folded value of constant c, computed once.
+pub fn (pg: mut &Program) constValue(c: int): CVal {
+    if !pg.consts[c].done {
+        let m = pg.consts[c].mod
+        let line = pg.consts[c].line
+        let name = pg.consts[c].name
+        if pg.consts[c].busy { pg.err(m, line, "constant " + name + " refers to itself") }
+        pg.consts[c].busy = true
+        let a = pg.nd(m, pg.consts[c].node)
+        var t = -1
+        if a.a >= 0 { t = pg.resolveType(a.a, m, &[], P_GLOBAL, line) }
+        if t >= 0 && (pg.tk(t) == TK_ARR || pg.tk(t) == TK_INST) {     // a constant table, or a record/variant constant
+            var et = t
+            if pg.tk(t) == TK_ARR { et = pg.ta(t) }
+            if !pg.isCopy(et) { pg.err(m, line, "const " + name + ": " + pg.tstr(et) + " is not a copy type") }
+            pg.consts[c].table = t
+            pg.consts[c].value = cv(t, CK_TABLE)
+            pg.consts[c].busy = false
+            pg.consts[c].done = true
+            return pg.consts[c].value
+        }
+        let ek = pg.kind(m, a.b)
+        if t < 0 && (ek == sx.N_ARRLIT || ek == sx.N_LIT) {
+            pg.err(m, line, "const " + name + " needs a declared type")
+        }
+        append(mut &pg.wraps, Wrap{name: name, mod: m, line: line})
+        var v = pg.fold(a.b, m, t)
+        pop(mut &pg.wraps)
+        if t >= 0 {
+            v = pg.constAs(v, t, m, line)
+            v.ty = t
+            v.kind = CK_TYPED
+        }
+        pg.consts[c].value = v
+        pg.consts[c].busy = false
+        pg.consts[c].done = true
+    }
+    return pg.consts[c].value
+}
+
+// The range of an integer type (ty -1: an untyped integer, 128 bits).
+fn rangeLo(ty: int): num.Big {
+    if ty < 0 || ty == T_I128 { return num.bigNeg(num.bigPow2(127)) }
+    if ty == T_INT { return num.bigNeg(num.bigPow2(63)) }
+    if ty == T_I32 { return num.bigNeg(num.bigPow2(31)) }
+    return num.bigOf(0)
+}
+
+fn rangeHi(ty: int): num.Big {
+    var bits = 128
+    if ty == T_INT { bits = 63 }
+    if ty == T_I32 { bits = 31 }
+    if ty == T_U32 { bits = 32 }
+    if ty == T_U64 { bits = 64 }
+    if ty == T_BYTE { bits = 8 }
+    if ty == T_I128 { bits = 127 }
+    return num.bigSub(num.bigPow2(bits), num.bigOf(1))
+}
+
+fn inRange(x: num.Big, ty: int): bool { return num.bigCmp(rangeLo(ty), x) <= 0 && num.bigCmp(x, rangeHi(ty)) <= 0 }
+
+// ref's cfit: a folded number must fit its type (an untyped integer: 128 bits).
+pub fn (pg: &Program) cfit(v: CVal, m: int, line: int): CVal {
+    if v.kind == CK_INT {
+        if !inRange(v.i, v.ty) {
+            var what = "an integer"
+            if v.ty >= 0 { what = pg.tstr(v.ty) }
+            pg.err(m, line, "constant " + num.bigStr(v.i) + " does not fit " + what + " (overflow)")
+        }
+    } else if v.kind == CK_FLOAT {
+        let x = v.f
+        if x != x || x - x != x - x { pg.err(m, line, "float constant out of range (overflow)") }
+    }
+    return v
+}
+
+// A folded int or fractional value as a float (Python's float(x)).
+fn toFloat(v: CVal): float {
+    if v.kind == CK_INT { return num.bigToFloat(v.i) }
+    if v.kind == CK_FRAC { return num.floatOfText(v.s) }
+    return v.f
+}
+
+// ref's cto: a folded value as the type t (an untyped literal or constant takes the type).
+pub fn (pg: &Program) cto(v: CVal, t: int, m: int, line: int): CVal {
+    if v.ty == t { return v }
+    if v.ty < 0 && t == T_FLOAT && (v.kind == CK_INT || v.kind == CK_FRAC) {
+        return pg.cfit(cFloat(T_FLOAT, toFloat(v)), m, line)
+    }
+    if v.ty < 0 && pg.isInt(t) && v.kind == CK_INT { return pg.cfit(cInt(t, v.i), m, line) }
+    var what = CK_NAMES[v.kind]
+    if v.ty >= 0 { what = pg.tstr(v.ty) }
+    pg.err(m, line, "a " + what + " constant cannot be " + pg.tstr(t))
+}
+
+// ref's const_as: a folded value converted to the type t.
+pub fn (pg: &Program) constAs(v: CVal, t: int, m: int, line: int): CVal {
+    if (t == T_BOOL && v.kind == CK_BOOL) || (t == T_STR && v.kind == CK_STR) { return v }
+    return pg.cto(v, t, m, line)
+}
+
+fn isCmp(op: str): bool { return op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" }
+
+fn cmpResult(op: str, c: int): bool {
+    if op == "==" { return c == 0 }
+    if op == "!=" { return c != 0 }
+    if op == "<" { return c < 0 }
+    if op == "<=" { return c <= 0 }
+    if op == ">" { return c > 0 }
+    return c >= 0
+}
+
+fn isUnsigned(t: int): bool { return t == T_U32 || t == T_U64 || t == T_U128 || t == T_BYTE }
+
+// Wraps r to the width of the integer type ty (two's complement), as ref's
+// `r &= 2**w - 1` and the sign fix-up do.
+fn wrapTo(r: num.Big, ty: int): num.Big {
+    let w = BITS[ty]
+    let x = num.bigMask(r, w)
+    if !isUnsigned(ty) && num.bigCmp(x, num.bigPow2(w - 1)) >= 0 { return num.bigSub(x, num.bigPow2(w)) }
+    return x
+}
+
+// ref's fold: a constant expression folded; t is the declared type, whose
+// arithmetic is used (-1: none).
+pub fn (pg: mut &Program) fold(e: int, m: int, t0: int): CVal {
+    var t = t0
+    if t >= 0 && !(pg.isInt(t) || t == T_FLOAT) { t = -1 }
+    let n = pg.nd(m, e)
+    let k = n.kind
+    let w = n.line
+    if k == sx.N_INT {
+        let v = cInt(-1, num.bigParse(n.s, n.flags & sx.MINUS != 0))
+        if t >= 0 { return pg.cto(v, t, m, w) }
+        return v
+    }
+    if k == sx.N_CHAR { return cInt(T_BYTE, num.bigOf(n.a)) }
+    if k == sx.N_FRAC {
+        let v = cText(-1, CK_FRAC, n.s)
+        if t == T_FLOAT { return pg.cto(v, t, m, w) }
+        return v
+    }
+    if k == sx.N_STR { return cText(T_STR, CK_STR, n.s) }
+    if k == sx.N_BOOL { return cBool(n.flags & sx.TRUE != 0) }
+    if k == sx.N_NAME || k == sx.N_FIELDX {
+        var s = NOSYM
+        if k == sx.N_NAME {
+            s = pg.lookup(m, n.s)
+        } else if pg.kind(m, n.a) == sx.N_NAME {
+            let target = pg.importOf(m, pg.nd(m, n.a).s)
+            if target >= 0 { s = pg.lookupIn(m, target, n.s, w) }
+        }
+        if s.k != D_CONST { pg.err(m, w, n.s + " is not a constant") }
+        var v = pg.constValue(s.i)
+        if v.kind == CK_TABLE { pg.err(m, w, pg.consts[s.i].name + " is a constant table") }
+        if v.kind == CK_TYPED {
+            if v.ty == T_FLOAT {
+                v.kind = CK_FLOAT
+            } else if pg.isInt(v.ty) {
+                v.kind = CK_INT
+            } else if v.ty == T_STR {
+                v.kind = CK_STR
+            } else {
+                v.kind = CK_BOOL
+            }
+            return v
+        }
+        if t >= 0 && (v.kind == CK_INT || v.kind == CK_FRAC) { return pg.cto(v, t, m, w) }
+        return v
+    }
+    if k == sx.N_UN {
+        var v = pg.fold(n.a, m, t)
+        if n.s == "!" && v.kind == CK_BOOL {
+            v.b = !v.b
+            return v
+        }
+        if n.s == "~" && v.kind == CK_INT {
+            if v.ty >= 0 && isUnsigned(v.ty) {
+                v.i = num.bigXor(v.i, num.bigSub(num.bigPow2(BITS[v.ty]), num.bigOf(1)))
+            } else {
+                v.i = num.bigNot(v.i)
+            }
+            return v
+        }
+        if n.s == "-" && v.kind == CK_INT {
+            v.i = num.bigNeg(v.i)
+            return pg.cfit(v, m, w)
+        }
+        if n.s == "-" && v.kind == CK_FLOAT {
+            v.f = -v.f
+            return pg.cfit(v, m, w)
+        }
+        if n.s == "-" && v.kind == CK_FRAC {
+            if startsWith(v.s, "-") {
+                v.s = v.s[1..]
+            } else {
+                v.s = "-" + v.s
+            }
+            return v
+        }
+    }
+    if k == sx.N_BIN { return pg.foldBin(n, m, t) }
+    pg.err(m, w, "not a constant expression")
+}
+
+fn (pg: mut &Program) foldBin(n: sx.Node, m: int, t: int): CVal {
+    let op = n.s
+    let w = n.line
+    let shift = op == "<<" || op == ">>"
+    var sub = t
+    if isCmp(op) || op == "&&" || op == "||" { sub = -1 }
+    var a = pg.fold(n.a, m, sub)
+    var rsub = sub
+    if shift { rsub = -1 }
+    var b = pg.fold(n.b, m, rsub)
+    if shift {
+        if a.kind != CK_INT || b.kind != CK_INT { pg.err(m, w, op + " needs integer constants") }
+        var width = 128
+        if a.ty >= 0 { width = BITS[a.ty] }
+        if num.bigCmp(b.i, num.bigOf(0)) < 0 || num.bigCmp(b.i, num.bigOf(width)) >= 0 {
+            pg.err(m, w, "shift count " + num.bigStr(b.i) + " out of range in a constant")
+        }
+        let count = num.bigToInt(b.i)
+        if op == ">>" { return cInt(a.ty, num.bigShr(a.i, count)) }
+        var r = num.bigShl(a.i, count)
+        if a.ty >= 0 { r = wrapTo(r, a.ty) }
+        return pg.cfit(cInt(a.ty, r), m, w)
+    }
+    if a.ty < 0 && b.ty >= 0 {
+        a = pg.cto(a, b.ty, m, w)
+    } else if b.ty < 0 && a.ty >= 0 {
+        b = pg.cto(b, a.ty, m, w)
+    }
+    if a.kind != b.kind || a.ty != b.ty { pg.err(m, w, "operator " + op + " needs operands of the same type") }
+    let ty = a.ty
+    let kind = a.kind
+    if isCmp(op) && kind != CK_FRAC {
+        var c = 0
+        if kind == CK_INT {
+            c = num.bigCmp(a.i, b.i)
+        } else if kind == CK_FLOAT {
+            if a.f < b.f { c = -1 }
+            if a.f > b.f { c = 1 }
+            if a.f != b.f && !(a.f < b.f) && !(a.f > b.f) { c = 2 }     // NaN: only != holds
+        } else if kind == CK_STR {
+            if a.s < b.s { c = -1 }
+            if a.s > b.s { c = 1 }
+        } else {
+            if !a.b && b.b { c = -1 }
+            if a.b && !b.b { c = 1 }
+        }
+        if c == 2 { return cBool(op == "!=") }
+        return cBool(cmpResult(op, c))
+    }
+    if (kind == CK_INT || kind == CK_FLOAT) && (op == "/" || op == "%") {
+        var zero = false
+        if kind == CK_INT { zero = num.bigIsZero(b.i) }
+        if kind == CK_FLOAT { zero = b.f == 0.0 }
+        if zero { pg.err(m, w, "division by zero in a constant") }
+    }
+    let arith = op == "+" || op == "-" || op == "*"
+    if kind == CK_INT {
+        let x = a.i
+        let y = b.i
+        if arith {
+            var r = num.bigAdd(x, y)
+            if op == "-" { r = num.bigSub(x, y) }
+            if op == "*" { r = num.bigMul(x, y) }
+            return pg.cfit(cInt(ty, r), m, w)
+        }
+        if op == "/" || op == "%" {
+            let qr = num.magDivMod(x, y)
+            var q = qr.q
+            if x.neg != y.neg { q = num.bigNeg(q) }
+            if ty >= 0 && !inRange(q, ty) {     // MIN / -1 and MIN % -1
+                pg.err(m, w, num.bigStr(x) + " " + op + " " + num.bigStr(y) + " overflows " + pg.tstr(ty) +
+                    " in a constant")
+            }
+            if op == "/" { return pg.cfit(cInt(ty, q), m, w) }
+            return pg.cfit(cInt(ty, num.bigSub(x, num.bigMul(q, y))), m, w)
+        }
+        if op == "+%" || op == "-%" || op == "*%" {
+            if ty < 0 {
+                pg.err(m, w, op + " in a constant needs a typed operand (it wraps at the " + "width of its type)")
+            }
+            var r = num.bigAdd(x, y)
+            if op == "-%" { r = num.bigSub(x, y) }
+            if op == "*%" { r = num.bigMul(x, y) }
+            return cInt(ty, wrapTo(r, ty))
+        }
+        if op == "&" { return cInt(ty, num.bigAnd(x, y)) }
+        if op == "|" { return cInt(ty, num.bigOr(x, y)) }
+        if op == "^" { return cInt(ty, num.bigXor(x, y)) }
+    }
+    if kind == CK_FLOAT && (arith || op == "/") {
+        var r = a.f + b.f
+        if op == "-" { r = a.f - b.f }
+        if op == "*" { r = a.f * b.f }
+        if op == "/" { r = a.f / b.f }
+        return pg.cfit(cFloat(ty, r), m, w)
+    }
+    if kind == CK_STR && op == "+" { return cText(ty, CK_STR, a.s + b.s) }
+    if kind == CK_BOOL && (op == "&&" || op == "||") {
+        var r = a.b && b.b
+        if op == "||" { r = a.b || b.b }
+        var v = cBool(r)
+        v.ty = ty
+        return v
+    }
+    pg.err(m, w, "not a constant expression")
+}
+
+// ---------------------------------------------------------------- methods and constraints
+
+// ref's methods_of: the method table of a type (a primitive, an instance), or -1 (none);
+// a primitive's table is -2 - its id.
+fn (pg: &Program) methodsOf(t: int): int {
+    if pg.tk(t) == TK_PRIM {
+        if t < NPRIMS { return -2 - t }
+        return -1
+    }
+    if pg.tk(t) == TK_INST { return pg.ta(t) }
+    return -1
+}
+
+// The method name of type t, or -1 (ref's methods_of(t).get(name)).
+pub fn (pg: &Program) methodOf(t: int, name: str): int {
+    let tab = pg.methodsOf(t)
+    if tab == -1 { return -1 }
+    if tab < -1 { return pg.primMethods[-2 - tab].getOr(&name, -1) }
+    return pg.types[tab].methods.getOr(&name, -1)
+}
+
+// A candidate for an interface member: a receiver mode, parameter types, result.
+pub type Cand = value record {
+    pub mode: int
+    pub params: []int
+    pub ret: int
+    pub con: int
+}
+
+// ref's iface_members: the members called name that a type parameter's
+// constraints promise (tpT is the type of the parameter).
+pub fn (pg: mut &Program) ifaceMembers(tpT: int, name: str): []Cand {
+    var out: []Cand = []
+    let cons = copyInts(&pg.tparams[pg.ta(tpT)].cons)
+    for c in cons {
+        var env = pg.declEnv(c)
+        append(mut &env, -1)
+        append(mut &env, tpT)
+        let d = pg.ta(c)
+        for j in 0..len(pg.types[d].members) {
+            if pg.types[d].members[j].name == name {
+                var ps: []int = []
+                for i in 0..len(pg.types[d].members[j].params) {
+                    let x = pg.subst(pg.types[d].members[j].params[i], &env)
+                    append(mut &ps, x)
+                }
+                let r = pg.subst(pg.types[d].members[j].ret, &env)
+                append(mut &out, Cand{mode: pg.types[d].members[j].mode, params: ps, ret: r, con: c})
+            }
+        }
+    }
+    return out
+}
+
+fn sameInts(a: &[]int, b: &[]int): bool {
+    if len(a) != len(b) { return false }
+    for i in 0..len(a) {
+        if a[i] != b[i] { return false }
+    }
+    return true
+}
+
+// ref's satisfies(t, con, mod): "" when t satisfies the interface instance
+// con (seen from module m), otherwise the reason.
+pub fn (pg: mut &Program) satisfies(t: int, con: int, m: int): str {
+    let iface = pg.ta(con)
+    var env = pg.declEnv(con)
+    append(mut &env, -1)
+    append(mut &env, t)
+    for j in 0..len(pg.types[iface].members) {
+        let mname = pg.types[iface].members[j].name
+        var want: []int = []
+        for i in 0..len(pg.types[iface].members[j].params) {
+            let x = pg.subst(pg.types[iface].members[j].params[i], &env)
+            append(mut &want, x)
+        }
+        let wantR = pg.subst(pg.types[iface].members[j].ret, &env)
+        var wantMode = pg.types[iface].members[j].mode
+        if wantMode == sx.M_NONE { wantMode = RM_ASSOC }
+        var cands: []Cand = []
+        if pg.tk(t) == TK_TP {
+            let ms = pg.ifaceMembers(t, mname)
+            for c in ms {
+                var mode = c.mode
+                if mode == sx.M_NONE { mode = RM_ASSOC }
+                append(mut &cands, Cand{mode: mode, params: copyInts(&c.params), ret: c.ret, con: c.con})
+            }
+        } else {
+            let fd = pg.methodOf(t, mname)
+            if fd < 0 || (pg.tk(t) == TK_INST && fd == pg.types[pg.ta(t)].drop) {
+                // no candidates
+            } else if !(pg.fns[fd].isPub || pg.fns[fd].mod == m) {
+                return "its method '" + mname + "' is not public"
+            } else {
+                let tps = copyInts(&pg.fns[fd].tps)
+                var bind: []int = []
+                if pg.unify(pg.fns[fd].recvType, t, mut &bind, &tps) && len(bind) == 2 * len(tps) {
+                    var ps: []int = []
+                    let rm = pg.fns[fd].recvMode
+                    var start = 0
+                    if rm == RM_VAL || rm == RM_REF || rm == RM_MUT { start = 1 }
+                    for i in start..len(pg.fns[fd].params) {
+                        let x = pg.subst(pg.fns[fd].params[i].ty, &bind)
+                        append(mut &ps, x)
+                    }
+                    let r = pg.subst(pg.fns[fd].ret, &bind)
+                    append(mut &cands, Cand{mode: rm, params: ps, ret: r, con: -1})
+                    for tp in tps {
+                        let bt = envGet(&bind, tp)
+                        let cons = copyInts(&pg.tparams[tp].cons)
+                        for c0 in cons {
+                            let c = pg.subst(c0, &bind)
+                            let why = pg.satisfies(bt, c, m)
+                            if len(why) > 0 { replace(mut &cands, []) }
+                        }
+                        if pg.tparams[tp].copy && !pg.isCopy(bt) { replace(mut &cands, []) }
+                    }
+                }
+            }
+        }
+        if len(cands) == 0 { return "it has no method '" + mname + "'" }
+        var ok = false
+        for c in cands {
+            var modeOk = c.mode == wantMode
+            if !modeOk && wantMode == RM_REF && c.mode == RM_VAL { modeOk = pg.isCopy(t) }
+            if modeOk && sameInts(&c.params, &want) && c.ret == wantR { ok = true }
+        }
+        if !ok {
+            if cands[0].mode != wantMode { return "its method '" + mname + "' has the wrong receiver mode" }
+            return "its method '" + mname + "' has the wrong signature"
+        }
+    }
+    return ""
+}
+
+// A value type may not contain itself (directly or through other value types).
+fn (pg: mut &Program) checkInlineCycle(d: int) {
+    var args: []int = []
+    for tp in copyInts(&pg.types[d].tparams) {
+        let x = pg.mkTp(tp)
+        append(mut &args, x)
+    }
+    let t = pg.mkInst(d, &args)
+    var path: []int = []
+    pg.walkInline(d, t, mut &path)
+}
+
+fn (pg: mut &Program) walkInline(d: int, t: int, path: mut &[]int) {
+    if pg.tk(t) != TK_INST || !pg.types[pg.ta(t)].value { return }
+    if pg.ta(t) == d && len(path) > 0 {
+        pg.err(pg.types[d].mod, pg.types[d].line, "value type " + pg.types[d].name +
+            " contains itself (an infinite type)")
+    }
+    if contains(path, t) || len(path) > 40 { return }
+    let fts = pg.fieldTypes(t)
+    append(path, t)
+    for ft in fts { pg.walkInline(d, ft, path) }
+    pop(path)
+}

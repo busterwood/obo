@@ -1,0 +1,269 @@
+// tdump: --dump-types, what sema computes before bodies are checked. The same
+// text as ref/dump.py's dump_types (the format is in ref/README.md, "Types dump").
+
+import "./syntax" as sx
+import "./sema"
+import "./num"
+
+type TDumper = record {
+    b: StrBuf
+    tpn: Map[int, int]     // a TParam -> its number, in the order the dump meets them
+}
+
+const FORMS: []str = ["record", "closed", "interface", "alias"]
+
+fn join(xs: &[]str, sep: str): str {
+    var b = newStrBuf()
+    for i in 0..len(xs) {
+        if i > 0 { b.add(sep) }
+        b.add(xs[i])
+    }
+    return b.toStr()
+}
+
+fn flag(x: bool): str {
+    if x { return "true" }
+    return "false"
+}
+
+fn opt(s: str): str {
+    if len(s) == 0 { return "-" }
+    return s
+}
+
+// ref's q: a quoted string, printable ASCII as is except \ and ", other bytes as \xHH.
+fn quote(s: str): str {
+    var b = newStrBuf()
+    b.addByte('"')
+    let digits = "0123456789abcdef"
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c == '\\' {
+            b.add("\\\\")
+        } else if c == '"' {
+            b.add("\\\"")
+        } else if c >= 32 && c < 127 {
+            b.addByte(c)
+        } else {
+            b.add("\\x")
+            b.addByte(strByte(digits, int(c >> 4)))
+            b.addByte(strByte(digits, int(c & 15)))
+        }
+    }
+    b.addByte('"')
+    return b.toStr()
+}
+
+fn (d: mut &TDumper) tp(pg: &sema.Program, p: int): str {
+    var n = d.tpn.getOr(&p, 0)
+    if n == 0 {
+        n = d.tpn.size() + 1
+        d.tpn.put(p, n)
+    }
+    return pg.tparams[p].name + "#" + intToStr(n)
+}
+
+fn (d: mut &TDumper) list(pg: &sema.Program, ts: &[]int): str {
+    var b = newStrBuf()
+    for i in 0..len(ts) {
+        if i > 0 { b.add(", ") }
+        b.add(d.ts(pg, ts[i]))
+    }
+    return b.toStr()
+}
+
+fn (d: mut &TDumper) ts(pg: &sema.Program, t: int): str {
+    let k = pg.tk(t)
+    if k == sema.TK_PRIM { return sema.PRIM_NAMES[t] }
+    if k == sema.TK_ARR { return "[]" + d.ts(pg, pg.ta(t)) }
+    if k == sema.TK_REF {
+        let inner = d.ts(pg, pg.ta(t))
+        if pg.tm(t) { return "mut &" + inner }
+        return "&" + inner
+    }
+    if k == sema.TK_SLICE {
+        let inner = d.ts(pg, pg.ta(t))
+        if pg.tm(t) { return "mut &[" + inner + "]" }
+        return "&[" + inner + "]"
+    }
+    if k == sema.TK_TP { return d.tp(pg, pg.ta(t)) }
+    if k == sema.TK_SELF { return "Self" }
+    let args = pg.targs(t)
+    if k == sema.TK_FN || k == sema.TK_CLO {
+        var s = "fn(" + d.list(pg, &args) + ")"
+        if k == sema.TK_CLO { s = "&" + s }
+        if pg.tb(t) != sema.T_VOID { s = s + ": " + d.ts(pg, pg.tb(t)) }
+        return s
+    }
+    if len(args) == 0 { return pg.types[pg.ta(t)].cname }
+    return pg.types[pg.ta(t)].cname + "[" + d.list(pg, &args) + "]"
+}
+
+fn (d: mut &TDumper) line(s: str) {
+    d.b.add(s)
+    d.b.addByte('\n')
+}
+
+fn (d: mut &TDumper) tparam(pg: &sema.Program, ind: str, p: int) {
+    let name = d.tp(pg, p)
+    let cons = d.list(pg, &pg.tparams[p].cons)
+    d.line(ind + "tparam " + name + " copy=" + flag(pg.tparams[p].copy) + " cons=[" + cons + "]")
+}
+
+// ref's val: a folded constant value.
+fn (d: mut &TDumper) value(pg: &sema.Program, v: sema.CVal): str {
+    if v.kind == sema.CK_TABLE { return "table " + d.ts(pg, v.ty) }
+    var k = v.kind
+    if k == sema.CK_TYPED {
+        k = sema.CK_INT
+        if v.ty == sema.T_FLOAT { k = sema.CK_FLOAT }
+        if v.ty == sema.T_STR { k = sema.CK_STR }
+        if v.ty == sema.T_BOOL { k = sema.CK_BOOL }
+    }
+    var s = ""
+    if k == sema.CK_FLOAT {
+        s = num.pyFloatRepr(v.f)
+    } else if k == sema.CK_FRAC {
+        s = v.s
+    } else if k == sema.CK_STR {
+        s = quote(v.s)
+    } else if k == sema.CK_BOOL {
+        s = flag(v.b)
+    } else {
+        s = num.bigStr(v.i)
+    }
+    var ty = "-"
+    if v.ty >= 0 { ty = d.ts(pg, v.ty) }
+    return sema.CK_NAMES[v.kind] + " " + ty + " " + s
+}
+
+fn (d: mut &TDumper) typeDecl(pg: mut &sema.Program, t: int) {
+    var cp = "-"
+    var drop = "-"
+    let form = pg.types[t].form
+    if form == sx.F_RECORD || form == sx.F_CLOSED {
+        var args: []int = []
+        for i in 0..len(pg.types[t].tparams) {
+            let x = pg.mkTp(pg.types[t].tparams[i])
+            append(mut &args, x)
+        }
+        let it = pg.mkInst(t, &args)
+        cp = flag(pg.isCopy(it))
+        if pg.types[t].drop >= 0 { drop = pg.label(pg.types[t].drop) }
+    }
+    d.typeBody(pg, t, cp, drop)
+}
+
+fn (d: mut &TDumper) typeBody(pg: &sema.Program, t: int, cp: str, drop: str) {
+    let td = &pg.types[t]
+    d.line("  type " + td.name + " " + intToStr(td.line) + " pub=" + flag(td.isPub) + " form=" +
+        FORMS[td.form] + " value=" + flag(td.value) + " cname=" + td.cname + " copy=" + cp + " drop=" + drop)
+    for p in td.tparams { d.tparam(pg, "    ", p) }
+    for f in td.fields {
+        let ft = d.ts(pg, f.ty)
+        d.line("    field " + f.name + " pub=" + flag(f.isPub) + " " + ft)
+    }
+    for v in td.variants {
+        let vr = &pg.variants[v]
+        d.line("    variant " + intToStr(vr.index) + " " + vr.name + " " + intToStr(vr.line) + " named=" +
+            flag(vr.named))
+        for f in vr.fields {
+            let ft = d.ts(pg, f.ty)
+            d.line("      field " + f.name + " " + ft)
+        }
+    }
+    for mb in td.members {
+        var mode = "-"
+        if mb.mode != sx.M_NONE { mode = sema.RM_NAMES[mb.mode] }
+        let ps = d.list(pg, &mb.params)
+        let r = d.ts(pg, mb.ret)
+        d.line("    member " + mb.name + " " + intToStr(mb.line) + " mode=" + mode + " params=[" + ps + "] ret=" + r)
+    }
+    if td.form == sx.F_ALIAS {
+        let tt = d.ts(pg, td.target)
+        d.line("    target " + tt)
+    }
+    if len(td.methodNames) > 0 { d.line("    methods " + join(&td.methodNames, " ")) }
+}
+
+fn (d: mut &TDumper) fnDecl(pg: &sema.Program, f: int) {
+    let fd = &pg.fns[f]
+    var ext = "-"
+    var cname = "-"
+    if fd.isExtern {
+        ext = quote(fd.lib)
+        cname = quote(fd.cname)
+    }
+    var rt = "-"
+    if fd.recvType >= 0 { rt = d.ts(pg, fd.recvType) }
+    d.line("  fn " + pg.label(f) + " " + intToStr(fd.line) + " pub=" + flag(fd.isPub) + " extern=" + ext + " cname=" +
+        cname + " recv=" + sema.RM_NAMES[fd.recvMode] + " recvname=" + opt(fd.recvName) + " recvtype=" + rt)
+    for p in fd.tps { d.tparam(pg, "    ", p) }
+    for p in fd.params {
+        let pt = d.ts(pg, p.ty)
+        d.line("    param " + p.name + " " + intToStr(p.line) + " var=" + flag(p.isVar) + " " + pt)
+    }
+    let r = d.ts(pg, fd.ret)
+    d.line("    ret " + r + " bparam=" + opt(fd.bparam))
+}
+
+fn (d: mut &TDumper) header(pg: &sema.Program, m: int) {
+    let md = &pg.mods[m]
+    d.line("module " + md.name + " file=" + sema.baseName(md.path) + " cprefix=" + md.cprefix + " std=" +
+        flag(md.isStd))
+    for i in 0..len(md.importNames) {
+        d.line("  import " + md.importNames[i] + " " + pg.mods[md.importMods[i]].cprefix)
+    }
+    var sc = newStrBuf()
+    sc.add("  scope")
+    for n in md.scopeNames {
+        sc.addByte(' ')
+        sc.add(n)
+    }
+    d.line(sc.toStr())
+}
+
+fn (d: mut &TDumper) constDecl(pg: &sema.Program, i: int) {
+    let c = &pg.consts[i]
+    let v = d.value(pg, c.value)
+    d.line("  const " + c.name + " " + intToStr(c.line) + " pub=" + flag(c.isPub) + " cname=" + c.cname + " " + v)
+}
+
+fn (d: mut &TDumper) globalDecl(pg: &sema.Program, i: int) {
+    let g = &pg.globals[i]
+    let gt = d.ts(pg, g.ty)
+    d.line("  global " + g.name + " " + intToStr(g.line) + " pub=" + flag(g.isPub) + " once=" + flag(g.isOnce) +
+        " cname=" + g.cname + " type=" + gt)
+}
+
+pub fn dumpTypes(pg: mut &sema.Program): str {
+    var d = TDumper{b: newStrBuf(), tpn: newMap()}
+    for m in 0..len(pg.mods) {
+        d.header(pg, m)
+        for k in 0..len(pg.mods[m].scopeNames) {
+            let s = pg.scopeGet(m, pg.mods[m].scopeNames[k])
+            if s.k == sema.D_TYPE {
+                d.typeDecl(pg, s.i)
+            } else if s.k == sema.D_CONST {
+                d.constDecl(pg, s.i)
+            } else if s.k == sema.D_GLOBAL {
+                d.globalDecl(pg, s.i)
+            }
+        }
+        for k in 0..len(pg.mods[m].fns) { d.fnDecl(pg, pg.mods[m].fns[k]) }
+    }
+    for p in 0..sema.NPRIMS {
+        if len(pg.primMethodNames[p]) > 0 {
+            d.line("prim " + sema.PRIM_NAMES[p] + " methods " + join(&pg.primMethodNames[p], " "))
+        }
+    }
+    for n in pg.preludeNames {
+        let v = pg.prelude.getOr(&n, -1)
+        d.line("prelude " + n + " " + pg.types[pg.variants[v].decl].cname + "." + pg.variants[v].name)
+    }
+    for c in pg.externNames {
+        let f = pg.externs.getOr(&c, -1)
+        d.line("extern " + c + " " + pg.mods[pg.fns[f].mod].cprefix + "." + pg.fns[f].name)
+    }
+    return d.b.toStr()
+}

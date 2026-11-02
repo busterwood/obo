@@ -1,0 +1,44 @@
+// --dump-types coverage: type parameters, constraints, interfaces, receivers, aliases.
+type Sized = interface { fn (&Self) size(): int }
+type Into[T] = interface { fn (&Self) into(): T }
+type Zero = interface { fn zero(): Self }
+type Both[T] = interface {
+    fn (mut &Self) push(x: T)
+    fn (Self) take(): T
+    fn make(a: &[T], f: &fn(T): bool): Self
+}
+pub type Box[T] = record { pub v: T; n: int }
+type Pair[A: copy, B: Sized] = value record { a: A; b: B }
+type Shape = closed { Circle(float); Rect { w: float; h: float }; Dot }
+type Tree[T] = closed { Leaf; Node(Tree[T], T, Tree[T]) }
+type IntBox = Box[int]
+type Boxes[T] = []Box[T]
+type Fn2 = fn(int, &str): bool
+type Res = record { fd: int }
+fn (r: mut &Res) drop() {}
+type Holder = value record { r: Res }
+fn (b: &Box[T]) size(): int { return b.n }
+fn (b: Box[T: copy]) get(): T { return b.v }
+fn (b: mut &Box[T]) set(x: T) { b.v = x }
+fn (Box[T]) empty(): int { return 0 }
+fn (b: &Box[T: Sized + copy]) inner(): int { return b.v.size() }
+fn (s: &Shape) area(): float { return 0.0 }
+fn first[T](xs: &[T]): &T { return &xs[0] }
+fn firstMut[T](xs: mut &[]T): mut &T { return &xs[0] }
+fn apply[T: copy, U](x: T, f: &fn(T): U): U { return f(x) }
+fn sum[T: Sized](xs: &[]T): int { return 0 }
+fn conv[T: Into[int] + Sized](x: &T): int { return 0 }
+fn mk[T: Zero](): T { return T.zero() }
+fn noret(var x: int, y: &fn()) {}
+fn never1(): never { exit(1) }
+fn ptrs(a: fn(Pair[int, Box[str]]): Fn2, b: Boxes[i128], c: IntBox, d: &[u32], e: mut &str) {}
+extern "c" fn cAbs(x: int): int as "abs"
+extern "c" fn cLabs(x: int): int as "abs"
+extern "c" fn cCos(x: float): float as "cos"
+extern "c" fn cTime(t: mut &int): int as "time"
+var counter: int = 0
+var cache: once []str
+pub var flag: bool = false
+var shape: once Shape
+var holder: once Holder
+fn main() {}

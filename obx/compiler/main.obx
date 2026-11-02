@@ -1,63 +1,61 @@
-// obxc: the self-hosted obx compiler driver. For now (stage 4, step 1) it
-// only parses: --dump-ast prints the tree of each file given, as
-// `python3 ref/obxc.py --dump-ast` does.
+// obxc: the self-hosted obx compiler driver. For now (stage 4, steps 1 and 2)
+// it parses and resolves declarations: --dump-ast prints the tree of each file
+// given, --dump-types what sema computes for the program of each file, as
+// `python3 ref/obxc.py --dump-ast` and `--dump-types` do.
 //
 //     obxc --dump-ast file.obx...
+//     obxc --dump-types file.obx...
+//
+// The library is $OBX_LIB, or ../lib next to the directory of the executable
+// given as argv[0] (the compiler is built into obx/compiler/out/).
 
 import "os"
 import "./syntax" as sx
+import "./sema"
 import "./dump"
+import "./tdump"
 
 fn usage(): never {
-    writeFd(2, "usage: obxc --dump-ast file.obx...\n")
+    writeFd(2, "usage: obxc --dump-ast|--dump-types file.obx...\n")
     exit(2)
 }
 
-// The last component of a path.
-fn baseName(path: str): str {
-    var i = len(path)
-    while i > 0 && strByte(path, i - 1) != '/' { i -= 1 }
-    return path[i..]
-}
-
-// Python's os.path.abspath: joined with the working directory, normalized.
-fn absPath(path: str): str {
-    var p = path
-    if len(p) == 0 || strByte(p, 0) != '/' { p = os.cwd() + "/" + p }
-    var parts: []str = []
-    for part in split(p, '/') {
-        if len(part) == 0 || part == "." { continue }
-        if part == ".." {
-            if len(parts) > 0 { pop(mut &parts) }
-            continue
-        }
-        append(mut &parts, part)
-    }
-    var b = newStrBuf()
-    for part in parts {
-        b.addByte('/')
-        b.add(part)
-    }
-    if len(parts) == 0 { return "/" }
-    return b.toStr()
-}
-
 fn dumpFile(path: str) {
-    let fname = baseName(path)
+    let fname = sema.baseName(path)
     var data = ""
-    if readFile(path, mut &data) != 0 { sx.failText("cannot read " + absPath(path)) }
+    if readFile(path, mut &data) != 0 { sx.failText("cannot read " + sema.absPath(path)) }
     let src = sx.sourceText(data, fname)
     let ast = sx.parse(src, fname)
     writeFd(1, dump.dumpAst(&ast))
 }
 
+fn libDir(argv0: str): str {
+    let env = os.envOr("OBX_LIB", "")
+    if len(env) > 0 { return sema.absPath(env) }
+    return sema.absPath(sema.dirName(sema.dirName(sema.absPath(argv0))) + "/../lib")
+}
+
+fn typesFile(lib: str, path: str) {
+    var pg = sema.newProgram(lib + "/std.obx", [lib], sema.baseName(path))
+    pg.loadMain(path)
+    pg.resolveAll()
+    writeFd(1, tdump.dumpTypes(mut &pg))
+}
+
 fn main() {
     let argv = args()
-    if len(argv) < 3 || argv[1] != "--dump-ast" { usage() }
+    if len(argv) < 3 || (argv[1] != "--dump-ast" && argv[1] != "--dump-types") { usage() }
+    let types = argv[1] == "--dump-types"
+    var lib = ""
+    if types { lib = libDir(argv[0]) }
     let multi = len(argv) > 3
     sx.errorsToStdout(multi)
     for i in 2..len(argv) {
         if multi { writeFd(1, "== " + argv[i] + "\n") }
-        dumpFile(argv[i])
+        if types {
+            typesFile(lib, argv[i])
+        } else {
+            dumpFile(argv[i])
+        }
     }
 }
