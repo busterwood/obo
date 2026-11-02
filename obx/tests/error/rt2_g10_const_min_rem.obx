@@ -1,0 +1,7 @@
+// Red-team round 2, g10 (SPEC 5.2, 7.1): a constant expression that overflows
+// is a compile error. MIN % -1 stops the program at run time like MIN / -1,
+// but was folded to 0.
+// error: overflow
+const A: int = -9223372036854775807 - 1
+const B: int = A % -1
+fn main() { println(B) }

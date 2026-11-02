@@ -750,7 +750,16 @@ class Program:
                     return self.cfit((ty, ar[e.op](x, y), kind), e.where)
                 if e.op in ('/', '%'):
                     q = abs(x) // abs(y) * (1 if (x >= 0) == (y >= 0) else -1)
+                    if ty and not RANGES[ty[1]][0] <= q <= RANGES[ty[1]][1]:     # MIN / -1 and MIN % -1
+                        raise CompileError(f"{x} {e.op} {y} overflows {tstr(ty)} in a constant", e.where)
                     return self.cfit((ty, q if e.op == '/' else x - q * y, kind), e.where)
+                if e.op in ('+%', '-%', '*%'):
+                    if ty is None:
+                        raise CompileError(f"{e.op} in a constant needs a typed operand (it wraps at the "
+                                           "width of its type)", e.where)
+                    w, r = BITS[ty[1]], ar[e.op[0]](x, y)
+                    r &= 2**w - 1
+                    return (ty, r - 2**w if ty[1][0] not in 'ub' and r >= 2**(w - 1) else r, kind)
                 bit = {'&': o.and_, '|': o.or_, '^': o.xor}
                 if e.op in bit:
                     return (ty, bit[e.op](x, y), kind)
