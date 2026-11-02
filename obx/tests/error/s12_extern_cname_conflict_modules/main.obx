@@ -1,0 +1,4 @@
+// error: labs
+import "./util"
+extern "c" fn labs(x: i32): i32
+fn main() { println(util.mag(-3)) }

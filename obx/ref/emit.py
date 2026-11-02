@@ -251,10 +251,11 @@ class Emitter:
         seen = set()
         for m in self.prog.modules.values():
             for fd in m.fns:
-                if fd.extern is not None and fd.name not in seen:
-                    seen.add(fd.name)
+                cn = fd.extern is not None and fd.ast.cname
+                if cn and cn not in seen:
+                    seen.add(cn)
                     ps = ', '.join(self.extern_c(t) for _, t, _, _ in fd.params) or 'void'
-                    externs.append(f"extern {self.extern_c(fd.ret)} x_{fd.name}({ps}) __asm__(\"{fd.name}\");")
+                    externs.append(f"extern {self.extern_c(fd.ret)} x_{cn}({ps}) __asm__(\"{cn}\");")
                     if fd.extern not in ('c', '') and fd.extern not in libs:
                         libs.append(fd.extern)
         entry = self.instance(main, ())

@@ -1,0 +1,2 @@
+extern "c" fn getpid(): i32
+pub fn pid(): int { return int(getpid()) }

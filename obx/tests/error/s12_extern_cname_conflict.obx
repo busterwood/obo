@@ -1,0 +1,4 @@
+// error: abs
+extern "c" fn absA(x: i32): i32 as "abs"
+extern "c" fn absB(x: int): int as "abs"
+fn main() { println(int(absA(i32(1)))) }

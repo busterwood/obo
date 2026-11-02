@@ -3,7 +3,7 @@
 // Wall-clock times are Unix times (seconds since 1970-01-01T00:00:00Z, plus
 // nanoseconds); dates are in the proleptic Gregorian calendar, UTC only.
 
-extern "c" fn obx_clock_ns(which: int): int
+extern "c" fn clockNs(which: int): int as "obx_clock_ns"
 extern "c" fn usleep(us: u32): i32
 
 pub type Time = value record {
@@ -18,18 +18,18 @@ pub type Date = value record {
 }
 
 // The current wall-clock time.
-pub fn now(): Time { return fromNanos(obx_clock_ns(0)) }
+pub fn now(): Time { return fromNanos(clockNs(0)) }
 
 // The time ns nanoseconds after the epoch.
 pub fn fromNanos(ns: int): Time {
     return Time{sec: floorDiv(ns, 1000000000), nsec: floorMod(ns, 1000000000)}
 }
 
-pub fn unixSeconds(): int { return floorDiv(obx_clock_ns(0), 1000000000) }
-pub fn unixMillis(): int { return floorDiv(obx_clock_ns(0), 1000000) }
+pub fn unixSeconds(): int { return floorDiv(clockNs(0), 1000000000) }
+pub fn unixMillis(): int { return floorDiv(clockNs(0), 1000000) }
 
 // Nanoseconds of a clock that never goes back; only differences mean anything.
-pub fn monotonicNs(): int { return obx_clock_ns(1) }
+pub fn monotonicNs(): int { return clockNs(1) }
 
 pub fn sleepMs(ms: int) {
     var left = ms

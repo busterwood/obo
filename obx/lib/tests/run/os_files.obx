@@ -43,7 +43,7 @@ fn main() {
     println("lines " + len(ls).toStr() + ": " + ls[0] + "|" + ls[1] + "|" + ls[2])
     let st = check(fs.stat(a))
     println("size " + st.size.toStr() + " file " + st.isFile().toStr() + " dir " + st.isDir().toStr())
-    check(fs.makeLink("a.txt", fs.join(dir, "link")))
+    check(fs.symlink("a.txt", fs.join(dir, "link")))
 
     var names = ""
     for n in check(fs.listNames(dir)) { names += n + " " }
@@ -81,7 +81,7 @@ fn main() {
     let text = check(io.read(wpath))
     println("w: " + len(io.splitLines(text)).toStr() + " lines, " + len(text).toStr() + " bytes")
 
-    check(fs.setPerm(a, 0x1A4))
+    check(fs.chmod(a, 0x1A4))
     let perm = check(fs.stat(a)).perm()
 
     check(fs.removeAll(dir))

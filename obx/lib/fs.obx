@@ -8,17 +8,17 @@ import "io"
 extern "c" fn opendir(path: str): ptr
 extern "c" fn readdir(d: ptr): ptr
 extern "c" fn closedir(d: ptr): i32
-extern "c" fn mkdir(path: str, mode: u32): i32
+extern "c" fn cMkdir(path: str, mode: u32): i32 as "mkdir"
 extern "c" fn rmdir(path: str): i32
 extern "c" fn unlink(path: str): i32
-extern "c" fn rename(from: str, to: str): i32
-extern "c" fn symlink(target: str, path: str): i32
-extern "c" fn chmod(path: str, mode: u32): i32
-extern "c" fn obx_errno(): int
-extern "c" fn obx_dirent_name(d: ptr): ptr
-extern "c" fn obx_dirent_type(d: ptr): int
-extern "c" fn obx_stat(path: str, follow: int): int
-extern "c" fn obx_stat_field(i: int): int
+extern "c" fn cRename(from: str, to: str): i32 as "rename"
+extern "c" fn cSymlink(target: str, path: str): i32 as "symlink"
+extern "c" fn cChmod(path: str, mode: u32): i32 as "chmod"
+extern "c" fn errno(): int as "obx_errno"
+extern "c" fn direntName(d: ptr): str as "obx_dirent_name"
+extern "c" fn direntType(d: ptr): int as "obx_dirent_type"
+extern "c" fn statInto(path: str, follow: int): int as "obx_stat"
+extern "c" fn statField(i: int): int as "obx_stat_field"
 
 pub type Kind = value closed { File; Dir; Link; Other }
 
@@ -77,16 +77,16 @@ pub fn stat(path: str): Result[Stat, io.IoError] { return statHow(path, 1, "stat
 pub fn lstat(path: str): Result[Stat, io.IoError] { return statHow(path, 0, "lstat") }
 
 fn statHow(path: str, follow: int, op: str): Result[Stat, io.IoError] {
-    let e = obx_stat(path, follow)
+    let e = statInto(path, follow)
     if e != 0 { return Err(io.ioError(e, op, path)) }
     return Ok(Stat{
-        size: obx_stat_field(0), mode: obx_stat_field(1),
-        mtime: obx_stat_field(2), mtimeNs: obx_stat_field(3),
-        nlink: obx_stat_field(4), uid: obx_stat_field(5), gid: obx_stat_field(6),
-        ino: obx_stat_field(7), blocks: obx_stat_field(11)})
+        size: statField(0), mode: statField(1),
+        mtime: statField(2), mtimeNs: statField(3),
+        nlink: statField(4), uid: statField(5), gid: statField(6),
+        ino: statField(7), blocks: statField(11)})
 }
 
-pub fn exists(path: str): bool { return obx_stat(path, 1) == 0 }
+pub fn exists(path: str): bool { return statInto(path, 1) == 0 }
 
 pub fn isDir(path: str): bool {
     match stat(path) {
@@ -113,14 +113,14 @@ pub type Entry = record {
 // the file system gives them (sort them for a stable order).
 pub fn list(path: str): Result[[]Entry, io.IoError] {
     let d = opendir(path)
-    if isNull(d) { return Err(io.ioError(obx_errno(), "opendir", path)) }
+    if isNull(d) { return Err(io.ioError(errno(), "opendir", path)) }
     var out: []Entry = []
     while true {
         let e = readdir(d)
         if isNull(e) { break }
-        let name = strFromC(obx_dirent_name(e))
+        let name = direntName(e)
         if name != "." && name != ".." {
-            append(mut &out, Entry{name: name, kind: kindOfDirent(obx_dirent_type(e))})
+            append(mut &out, Entry{name: name, kind: kindOfDirent(direntType(e))})
         }
     }
     closedir(d)
@@ -144,8 +144,8 @@ fn kindOfDirent(t: int): Kind {
 }
 
 // Creates the directory path (mode 0777 less umask).
-pub fn mkdirOne(path: str): Result[Unit, io.IoError] {
-    if mkdir(path, u32(0x1FF)) != 0 { return Err(io.ioError(obx_errno(), "mkdir", path)) }
+pub fn mkdir(path: str): Result[Unit, io.IoError] {
+    if cMkdir(path, u32(0x1FF)) != 0 { return Err(io.ioError(errno(), "mkdir", path)) }
     return Ok(Unit{})
 }
 
@@ -154,8 +154,8 @@ pub fn mkdirAll(path: str): Result[Unit, io.IoError] {
     if isDir(path) { return Ok(Unit{}) }
     let parent = dirName(path)
     if parent != path && parent != "." && parent != "/" { try mkdirAll(parent) }
-    if mkdir(path, u32(0x1FF)) != 0 {
-        let e = obx_errno()
+    if cMkdir(path, u32(0x1FF)) != 0 {
+        let e = errno()
         if e == 17 && isDir(path) { return Ok(Unit{}) }   // EEXIST: made meanwhile
         return Err(io.ioError(e, "mkdir", path))
     }
@@ -167,13 +167,13 @@ pub fn remove(path: str): Result[Unit, io.IoError] {
     match lstat(path) {
         Ok(s) {
             if s.isDir() {
-                if rmdir(path) != 0 { return Err(io.ioError(obx_errno(), "rmdir", path)) }
+                if rmdir(path) != 0 { return Err(io.ioError(errno(), "rmdir", path)) }
                 return Ok(Unit{})
             }
         }
         Err(e) { return Err(e) }
     }
-    if unlink(path) != 0 { return Err(io.ioError(obx_errno(), "unlink", path)) }
+    if unlink(path) != 0 { return Err(io.ioError(errno(), "unlink", path)) }
     return Ok(Unit{})
 }
 
@@ -188,19 +188,21 @@ pub fn removeAll(path: str): Result[Unit, io.IoError] {
     return remove(path)
 }
 
-pub fn renamePath(from: str, to: str): Result[Unit, io.IoError] {
-    if rename(from, to) != 0 { return Err(io.ioError(obx_errno(), "rename", from)) }
+// Renames (moves) from to to.
+pub fn rename(from: str, to: str): Result[Unit, io.IoError] {
+    if cRename(from, to) != 0 { return Err(io.ioError(errno(), "rename", from)) }
     return Ok(Unit{})
 }
 
 // Makes path a symbolic link to target.
-pub fn makeLink(target: str, path: str): Result[Unit, io.IoError] {
-    if symlink(target, path) != 0 { return Err(io.ioError(obx_errno(), "symlink", path)) }
+pub fn symlink(target: str, path: str): Result[Unit, io.IoError] {
+    if cSymlink(target, path) != 0 { return Err(io.ioError(errno(), "symlink", path)) }
     return Ok(Unit{})
 }
 
-pub fn setPerm(path: str, perm: int): Result[Unit, io.IoError] {
-    if chmod(path, u32(perm)) != 0 { return Err(io.ioError(obx_errno(), "chmod", path)) }
+// Sets the permission bits of path.
+pub fn chmod(path: str, perm: int): Result[Unit, io.IoError] {
+    if cChmod(path, u32(perm)) != 0 { return Err(io.ioError(errno(), "chmod", path)) }
     return Ok(Unit{})
 }
 

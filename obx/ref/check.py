@@ -1839,7 +1839,9 @@ class Checker:
             cs2 = []
             for (kind, v), c in zip(vals, cs):
                 cs2.append(f"rt_cstr({c}, {self.W(where)})" if v.t == STR else c)
-            text = f"x_{sig.fd.name}({', '.join(cs2)})"
+            text = f"x_{sig.fd.ast.cname}({', '.join(cs2)})"
+            if ret == STR:
+                text = f"rt_str_from_c((void*){text})"
             if STR in [v.t for _, v in vals]:       # free the NUL-terminated copies after the call
                 v = self.holdtmp(text, ret) if ret != VOID else self.emit(text + ';')
                 self.emit("rt_cfree();")

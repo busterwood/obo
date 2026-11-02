@@ -1,0 +1,9 @@
+// expect: 5
+// expect: 7
+extern "c" fn cAbs(x: i32): i32 as "abs"
+extern "c" fn labs(x: int): int
+fn abs(x: int): int { return labs(x) }
+fn main() {
+    println(int(cAbs(i32(-5))))
+    println(abs(-7))
+}

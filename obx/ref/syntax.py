@@ -268,8 +268,17 @@ class Parser:
                 name = self.ident()
                 ps = self.params()
                 ret = self.typeopt()
+                cname = name
+                if self.atkw('as'):
+                    self.next()
+                    cname = self.expect('str').v.decode('utf-8')
+                    if not cname.isidentifier() or not cname.isascii():
+                        self.err(f"{cname!r} is not a C function name")
+                if pub:
+                    raise CompileError(f"extern {name} cannot be pub: an extern is always private to its "
+                                       "module (export a safe wrapper instead)", w)
                 d = N('fn', w, name=name, recv=None, tparams=[], params=ps, ret=ret, body=None,
-                      extern=lib)
+                      extern=lib, cname=cname)
                 self.sep()
             elif t.k == 'kw' and t.v == 'import':
                 self.err("imports must come before the declarations")

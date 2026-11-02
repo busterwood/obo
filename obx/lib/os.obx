@@ -5,8 +5,8 @@ extern "c" fn setenv(name: str, value: str, overwrite: i32): i32
 extern "c" fn unsetenv(name: str): i32
 extern "c" fn getpid(): i32
 extern "c" fn chdir(path: str): i32
-extern "c" fn obx_getcwd(): ptr
-extern "c" fn obx_errno(): int
+extern "c" fn getcwd(): str as "obx_getcwd"
+extern "c" fn errno(): int as "obx_errno"
 
 // The command line: argv()[0] is the program, then its arguments.
 pub fn argv(): []str { return args() }
@@ -35,22 +35,22 @@ pub fn envOr(name: str, d: str): str {
 
 // Sets an environment variable; the errno on failure.
 pub fn setEnv(name: str, value: str): Result[Unit, int] {
-    if setenv(name, value, 1) != 0 { return Err(obx_errno()) }
+    if setenv(name, value, 1) != 0 { return Err(errno()) }
     return Ok(Unit{})
 }
 
 pub fn unsetEnv(name: str): Result[Unit, int] {
-    if unsetenv(name) != 0 { return Err(obx_errno()) }
+    if unsetenv(name) != 0 { return Err(errno()) }
     return Ok(Unit{})
 }
 
 pub fn pid(): int { return int(getpid()) }
 
 // The working directory ("" if it cannot be read).
-pub fn cwd(): str { return strFromC(obx_getcwd()) }
+pub fn cwd(): str { return getcwd() }
 
 pub fn setCwd(path: str): Result[Unit, int] {
-    if chdir(path) != 0 { return Err(obx_errno()) }
+    if chdir(path) != 0 { return Err(errno()) }
     return Ok(Unit{})
 }
 

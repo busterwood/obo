@@ -11,9 +11,9 @@ pub type IoError = value record {
     pub path: str
 }
 
-extern "c" fn strerror(e: i32): ptr
-extern "c" fn obx_errno(): int
-extern "c" fn obx_open(path: str, how: int): int
+extern "c" fn strerror(e: i32): str
+extern "c" fn errno(): int as "obx_errno"
+extern "c" fn openFd(path: str, how: int): int as "obx_open"
 extern "c" fn close(fd: i32): i32
 
 // "open nope.txt: No such file or directory"
@@ -26,10 +26,10 @@ pub fn (a: IoError) eq(b: &IoError): bool {
 }
 
 // The C library's text for an errno.
-pub fn errorText(errno: int): str { return strFromC(strerror(i32(errno))) }
+pub fn errorText(errno: int): str { return strerror(i32(errno)) }
 
 // The errno of the last failed C call.
-pub fn lastErrno(): int { return obx_errno() }
+pub fn lastErrno(): int { return errno() }
 
 pub fn ioError(errno: int, op: str, path: str): IoError {
     return IoError{errno: errno, op: op, path: path}
@@ -76,14 +76,14 @@ pub fn write(path: str, data: str): Result[Unit, IoError] { return writeHow(path
 pub fn appendTo(path: str, data: str): Result[Unit, IoError] { return writeHow(path, data, 2) }
 
 fn writeHow(path: str, data: str, how: int): Result[Unit, IoError] {
-    let fd = obx_open(path, how)
+    let fd = openFd(path, how)
     if fd < 0 { return Err(ioError(-fd, "open", path)) }
     if writeFd(fd, data) != len(data) {
-        let e = obx_errno()
+        let e = errno()
         close(i32(fd))
         return Err(ioError(e, "write", path))
     }
-    if close(i32(fd)) != 0 { return Err(ioError(obx_errno(), "close", path)) }
+    if close(i32(fd)) != 0 { return Err(ioError(errno(), "close", path)) }
     return Ok(Unit{})
 }
 
@@ -111,7 +111,7 @@ pub fn create(path: str): Result[Writer, IoError] { return openWriter(path, 1) }
 pub fn openAppend(path: str): Result[Writer, IoError] { return openWriter(path, 2) }
 
 fn openWriter(path: str, how: int): Result[Writer, IoError] {
-    let fd = obx_open(path, how)
+    let fd = openFd(path, how)
     if fd < 0 { return Err(ioError(-fd, "open", path)) }
     return Ok(Writer{fd: fd, path: path, buf: newStrBuf(), ownsFd: true})
 }
@@ -138,7 +138,7 @@ pub fn (w: mut &Writer) flush(): Result[Unit, IoError] {
     let s = w.buf.toStr()
     w.buf.clear()
     if w.fd < 0 { return Err(ioError(9, "write", w.path)) }
-    if writeFd(w.fd, s) != len(s) { return Err(ioError(obx_errno(), "write", w.path)) }
+    if writeFd(w.fd, s) != len(s) { return Err(ioError(errno(), "write", w.path)) }
     return Ok(Unit{})
 }
 
@@ -148,7 +148,7 @@ pub fn (w: mut &Writer) close(): Result[Unit, IoError] {
     if w.ownsFd && w.fd >= 0 {
         let fd = w.fd
         w.fd = -1
-        if close(i32(fd)) != 0 { return Err(ioError(obx_errno(), "close", w.path)) }
+        if close(i32(fd)) != 0 { return Err(ioError(errno(), "close", w.path)) }
     }
     return Ok(Unit{})
 }

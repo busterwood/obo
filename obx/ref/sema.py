@@ -209,6 +209,7 @@ class Program:
         self.pending_checks = []
         self.resolved = False
         self.prelude = {}           # Some, None, Ok, Err: the variants that may be written bare
+        self.externs = {}           # C name -> (signature, first FnDecl)
         self.std = self.load(std_path, None, 'std', True)
 
     # ---- loading
@@ -482,8 +483,13 @@ class Program:
                 fd.params.append((n, t, False, w))
             if a.ret:
                 fd.ret = self.resolve_type(a.ret, mod, env, 'ret')
-                if fd.ret[0] != 'prim' or fd.ret[1] == 'str':
+                if fd.ret[0] != 'prim':
                     raise CompileError(f"an extern function cannot return {tstr(fd.ret)}", a.where)
+            sig = ([t for _, t, _, _ in fd.params], fd.ret)
+            other = self.externs.setdefault(a.cname, (sig, fd))
+            if other[0] != sig:
+                raise CompileError(f"extern {fd.name} declares the C function {a.cname} with another signature "
+                                   f"than {other[1].name} in module {other[1].module.name}", a.where)
             return
         if a.recv is not None:
             rname, rt = a.recv

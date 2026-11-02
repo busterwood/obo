@@ -1,0 +1,2 @@
+extern "c" fn cl(x: int): int as "labs"
+pub fn mag(x: int): int { return cl(x) }

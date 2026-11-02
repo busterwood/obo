@@ -1,0 +1,3 @@
+// error: C function name
+extern "c" fn f(): i32 as "not a name"
+fn main() {}

@@ -132,9 +132,9 @@ emoji 2, combining marks 0).
 - **fs**: `stat`/`lstat(path): Result[Stat, IoError]` (`size mode mtime
   mtimeNs nlink uid gid ino blocks`, `kind() isDir() isFile() isLink()
   perm()`), `exists`, `isDir`, `isFile`, `list(path): Result[[]Entry]`
-  (`name`, `kind` from readdir), `listNames` (sorted), `mkdirOne`,
-  `mkdirAll`, `remove`, `removeAll` (does not follow links), `renamePath`,
-  `makeLink`, `setPerm`; paths: `join`, `baseName`, `dirName`, `extension`.
+  (`name`, `kind` from readdir), `listNames` (sorted), `mkdir`,
+  `mkdirAll`, `remove`, `removeAll` (does not follow links), `rename`,
+  `symlink`, `chmod`; paths: `join`, `baseName`, `dirName`, `extension`.
 - **os**: `argv()`, `arguments()`, `env(name): Option[str]`, `envOr`,
   `setEnv`, `unsetEnv`, `pid`, `cwd`, `setCwd`, `quit(code)`.
 - **time**: `Time {sec, nsec}` (`now`, `fromNanos`, `cmp`, `eq`, `toStr`,
