@@ -40,7 +40,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
-sys.path.insert(0, os.path.join(os.path.dirname(FORK), 'obx', 'tests'))
+sys.path.insert(0, os.path.join(os.path.dirname(FORK), 'archive', 'obx', 'tests'))
 os.environ['OBO_CHECK'] = '1'
 import run  # noqa: E402
 import own_fuzz  # noqa: E402

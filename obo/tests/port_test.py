@@ -27,7 +27,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
-ROOT = os.path.join(os.path.dirname(FORK), 'obx')
+ROOT = os.path.join(os.path.dirname(FORK), 'archive', 'obx')
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
 import stage_test  # noqa: E402  (scanner fragments and encoder scripts)
 import encoder_test  # noqa: E402  (objdump cross-checks)

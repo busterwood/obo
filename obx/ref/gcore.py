@@ -1763,9 +1763,9 @@ def main(argv):
     prelude = '--no-prelude' not in args
     files = [a for a in args if not a.startswith('--')]
     if not files:
-        print("usage: gcore.py FILE.gc [--run] [--emit-c] [--no-prelude]", file=sys.stderr)
+        print("usage: gcore.py FILE.obx [--run] [--emit-c] [--no-prelude]", file=sys.stderr)
         return 2
-    paths = ([os.path.join(here, 'std.gc')] if prelude else []) + files
+    paths = ([os.path.join(here, 'std.obx')] if prelude else []) + files
     try:
         c = compile_files(paths)
     except CompileError as e:

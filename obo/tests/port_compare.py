@@ -27,7 +27,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
-ROOT = os.path.join(os.path.dirname(FORK), 'obx')
+ROOT = os.path.join(os.path.dirname(FORK), 'archive', 'obx')
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
 sys.path.insert(0, HERE)
 import run  # noqa: E402  (for error_cases)

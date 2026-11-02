@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Runs every examples/*.gc (expected output, exit 0, no leaks) and every
-errors/*.gc (rejected with the expected message)."""
+"""Runs every examples/*.obx (expected output, exit 0, no leaks) and every
+errors/*.obx (rejected with the expected message)."""
 import glob, os, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))
 gc = [sys.executable, os.path.join(here, 'gcore.py')]
 fails = 0
-for p in sorted(glob.glob(os.path.join(here, 'examples', '*.gc'))):
+for p in sorted(glob.glob(os.path.join(here, 'examples', '*.obx'))):
     want = [l.split('// expect: ', 1)[1].rstrip('\n') for l in open(p) if l.startswith('// expect: ')]
     if subprocess.run(gc + [p]).returncode != 0:
         print('FAIL compile', p); fails += 1; continue
@@ -17,7 +17,7 @@ for p in sorted(glob.glob(os.path.join(here, 'examples', '*.gc'))):
             if a != b: print('  want', repr(a), 'got', repr(b))
     else:
         print('ok  ', os.path.relpath(p, here))
-for p in sorted(glob.glob(os.path.join(here, 'errors', '*.gc'))):
+for p in sorted(glob.glob(os.path.join(here, 'errors', '*.obx'))):
     want = next(l.split('// error: ', 1)[1].strip() for l in open(p) if l.startswith('// error: '))
     r = subprocess.run(gc + [p], capture_output=True, text=True)
     if r.returncode != 1 or want not in r.stderr:

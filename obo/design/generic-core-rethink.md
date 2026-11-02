@@ -10,7 +10,7 @@ Short answer: yes, and yes. Most of the compiler's recent growth comes from
 one cause: each new kind of value has to be wired through every place a value
 can appear. Generics alone do not fix that. Generics plus **value records**,
 **operators as methods** and **associated functions** do. A throwaway
-prototype (`obo/experimental/gcore/`) supports the claim: it builds Decimal,
+prototype (`obx/ref/`) supports the claim: it builds Decimal,
 Money, Option, Result, a generic sort and a generic Map as library code, keeps
 single ownership, and its compiler has no knowledge of any of those types.
 
@@ -93,7 +93,7 @@ general mechanisms, so that new kinds of values become library code.
 
 ## 3. The prototype
 
-`obo/experimental/gcore/` is a throwaway Python compiler for a small obo-like
+`obx/ref/` is a throwaway Python compiler for a small obo-like
 language that emits C. It exists to test the claims above, not as a starting
 point for real code.
 

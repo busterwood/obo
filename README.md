@@ -12,8 +12,8 @@ single-pass: no AST, no intermediate representation, and x86-64 machine code
 written straight into a static ELF executable.
 
 **History:** obo grew out of **obx**, the original garbage-collected dialect and
-compiler. obx is kept in `obx/` as the historical reference; the current compiler
-is `obo/src/obo.obo`. See [HISTORY.md](HISTORY.md) for the obx language,
+compiler. That compiler is kept in `archive/obx/` as the historical reference; the
+current compiler is `obo/src/obo.obo`. See [HISTORY.md](HISTORY.md) for the obx language,
 architecture and tests, the ownership fork, the milestone chronology, the release
 records for each stage and earlier measurements.
 
@@ -338,7 +338,8 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `obo/tools/build_tools.py` | builds the tool module roots directly (no concatenation) |
 | `obo/tools/` | the patch scripts behind each change |
 | `HISTORY.md` | the obx predecessor, the ownership fork, milestones, release records and earlier measurements |
-| `obx/` | the historical GC compiler, suite and stage tests (see `HISTORY.md`) |
+| `archive/obx/` | the historical GC compiler, suite and stage tests (see `HISTORY.md`) |
+| `obx/` | the next generation: obx with generics, after the 2026-11 restart decision (see `obx/README.md`) |
 | `PERFORMANCE.md` | the full benchmark record: tables, methodology and caveats (the README holds the table and its provenance) |
 
 ```
