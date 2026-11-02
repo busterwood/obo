@@ -68,11 +68,16 @@ pending, the round after the red-team fixes):
 - Variants are always qualified by their type (`Expr.Num(1)`,
   `Rounding.HALF_EVEN`), in expressions and match arms, except the prelude's
   `Some`, `None`, `Ok` and `Err` (4.4).
+- Generic function values inside generic code are a compiler gap to fix; and
+  non-escaping closures, `&fn(A): R`, second class like borrows (4.6).
+  Escaping closures wait for interface values.
+- Globals: copy globals as before, plus constant tables (`const T: []u128 =
+  [...]`, read-only static data seen as `&[T]`) and set-once globals
+  (`var C: once Config`, `set`/`get`/`isSet`). Other mutable owned state is
+  owned by `main` or a context record and passed down (5.2).
 
 Still open:
 
 | Item | Proposal |
 |---|---|
-| Generic function values inside generic code; no closures | closures are planned (section 13 of the spec); until then `sortBy` takes a plain `fn` |
-| Owned globals banned | needs the effect rules (section 13); tables are matches or constants for now |
 | A local file can shadow a library module | keep (relative first), document |

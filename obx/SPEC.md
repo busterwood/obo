@@ -43,7 +43,8 @@ Keywords:
 
 ```
 as break closed const continue else extern false fn for if import in
-interface let match mut never pub record return true try type value var while
+interface let match mut never once pub record return true try type value var
+while
 ```
 
 `value` is reserved only before `record` and `closed`. `copy` and `Self` are
@@ -77,7 +78,8 @@ params      = param { "," param } ;
 param       = [ "var" ] IDENT ":" type ;
 
 constdecl   = "const" IDENT [ ":" type ] "=" expr sep ;
-globaldecl  = "var" IDENT ":" type "=" expr sep ;
+globaldecl  = "var" IDENT ":" type "=" expr sep
+            | "var" IDENT ":" "once" type sep ;
 externdecl  = "extern" STRING "fn" IDENT "(" [ params ] ")" [ ":" type ]
               [ "as" STRING ] sep ;
 
@@ -309,9 +311,29 @@ constant that does not fit its type is an error, and `const C: u32 = ~0` is
 (`&g` is an error; a method call that needs a borrow of a global works on a
 temporary copy; a `mut &Self` method on a global is an error).
 
-**(default)** Globals of owned types are not allowed in draft 1. They need the
-effect rules of section 13 to be sound, and a program can pass its state as a
-parameter instead.
+**Constant tables.** A `const` may also be an array literal of constants, or a
+value record or variant literal of constants, of a copy type:
+`const POW10: []u128 = [1, 10, 100]`. A constant table lives in read-only
+static data; it is never freed and never changes. Using its name gives a
+`&[T]` slice (section 4.2a), so `POW10[i]`, `len(POW10)` and `for p in POW10`
+work, and it can be passed wherever a `&[T]` is expected. It cannot be
+appended to or assigned.
+
+**Set-once globals.** `var CONFIG: once Config` declares a global of any type,
+owned or copy, that starts empty and is set at most once:
+
+- `CONFIG.set(v)` moves `v` in. Setting it a second time stops the program
+  (exit 12).
+- `CONFIG.get()` returns a `&Config` borrow. Reading it before it is set
+  stops the program (exit 12). `CONFIG.isSet()` tells which.
+- Once set, the value never changes and is not freed until the program ends,
+  so a borrow from `get()` is valid everywhere and freezes nothing.
+
+**Globals of owned types** are otherwise not allowed. Mutable state that owns
+heap data belongs to `main` (or a context record it creates) and is passed down
+by borrow. Borrowing mutable owned globals soundly would need the effect rules
+of section 13; they will be considered only if real programs need more than
+copy globals, constant tables and set-once globals.
 
 ### 5.3 Functions and methods
 
