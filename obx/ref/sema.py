@@ -365,6 +365,8 @@ class Program:
                 tp.copy = True
                 continue
             t = self.resolve_type(c, mod, env, 'constraint')
+            if t[0] != 'inst':          # a primitive, a type parameter, an array, a fn type
+                raise CompileError(f"{tstr(t)} is not an interface", self.type_where(c))
             tp.cons.append(t)
 
     def resolve_typedecl(self, d):

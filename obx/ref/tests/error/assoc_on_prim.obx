@@ -1,0 +1,5 @@
+// error: int has no associated function 'foo'
+// line: 4
+fn main() {
+    let x = int.foo()
+}

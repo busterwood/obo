@@ -2130,7 +2130,7 @@ class Checker:
                 return None
             if fd is not None:
                 self.err(f"{fd.label} is a method: call it on a value", where)
-            self.err(f"{tstr(t) if t[2] is not None or t[0] != 'inst' else t[1].name} has no associated "
+            self.err(f"{tstr(t) if t[0] != 'inst' or t[2] is not None else t[1].name} has no associated "
                      f"function '{name}'", where)
         self.visible(fd, where)
         return fn_sig(fd, bind)

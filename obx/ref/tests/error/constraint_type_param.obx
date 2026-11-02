@@ -1,0 +1,4 @@
+// error: T is not an interface
+// line: 3
+fn g[T, U: T](x: U) {}
+fn main() {}

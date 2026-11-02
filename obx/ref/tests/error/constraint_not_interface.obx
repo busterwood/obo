@@ -1,0 +1,4 @@
+// error: u64 is not an interface
+// line: 3
+fn f[T: u64](h: T) {}
+fn main() { f(1) }
