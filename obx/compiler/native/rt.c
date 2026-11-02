@@ -29,6 +29,7 @@ static i64 sys6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) {
 #define SYS4(n, a, b, c, d) sys6(n, (i64)(a), (i64)(b), (i64)(c), (i64)(d), 0, 0)
 
 enum { S_READ = 0, S_WRITE = 1, S_OPEN = 2, S_CLOSE = 3, S_MMAP = 9, S_MUNMAP = 11, S_RT_SIGACTION = 13,
+       S_MREMAP = 25,
        S_NANOSLEEP = 35, S_GETPID = 39, S_FORK = 57, S_EXECVE = 59, S_WAIT4 = 61, S_KILL = 62, S_GETCWD = 79,
        S_CHDIR = 80, S_RENAME = 82, S_MKDIR = 83, S_RMDIR = 84, S_UNLINK = 87, S_SYMLINK = 88,
        S_CHMOD = 90, S_GETRLIMIT = 97, S_SIGALTSTACK = 131, S_GETDENTS64 = 217,
@@ -59,23 +60,35 @@ __attribute__((noreturn, noinline)) static void rt_quit(int code) {
 
 /* ---- what gcc may call even in freestanding code, and the string basics */
 
+/* rep movsb / rep stosb past a few words (fast since Ivy Bridge, ERMSB; slow to start) */
 void* memcpy(void* d, const void* s, size_t n) {
-    unsigned char* p = d;
-    const unsigned char* q = s;
-    while (n--) *p++ = *q++;
-    return d;
+    void* r = d;
+    if (n < 64) {
+        unsigned char* p = d;
+        const unsigned char* q = s;
+        while (n >= 8) { __builtin_memcpy(p, q, 8); p += 8; q += 8; n -= 8; }
+        while (n--) *p++ = *q++;
+        return r;
+    }
+    __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+    return r;
 }
 void* memmove(void* d, const void* s, size_t n) {
     unsigned char* p = d;
     const unsigned char* q = s;
-    if (p < q) { while (n--) *p++ = *q++; }
-    else { p += n; q += n; while (n--) *--p = *--q; }
+    if (p <= q || p >= q + n) return memcpy(d, s, n);
+    p += n; q += n; while (n--) *--p = *--q;
     return d;
 }
 void* memset(void* d, int c, size_t n) {
-    unsigned char* p = d;
-    while (n--) *p++ = (unsigned char)c;
-    return d;
+    void* r = d;
+    if (n < 64) {
+        unsigned char* p = d;
+        while (n--) *p++ = (unsigned char)c;
+        return r;
+    }
+    __asm__ volatile("rep stosb" : "+D"(d), "+c"(n) : "a"(c) : "memory");
+    return r;
 }
 int memcmp(const void* a, const void* b, size_t n) {
     const unsigned char* p = a;
@@ -179,6 +192,15 @@ void* realloc(void* p, size_t n) {
     if (!p) return malloc(n);
     size_t have = block_size(p);
     if (n <= have) return p;
+    size_t* h = (size_t*)((char*)p - 16);
+    if (h[1]) {                     /* a large block grows by moving its pages, not its bytes */
+        size_t m = (n + 16 + 4095) & ~(size_t)4095;
+        if (m < n) return 0;
+        i64 r = sys6(S_MREMAP, (i64)h, (i64)h[0], (i64)m, 1, 0, 0);    /* MREMAP_MAYMOVE */
+        if (r < 0 && r > -4096) return 0;
+        ((size_t*)r)[0] = m;
+        return (char*)r + 16;
+    }
     void* q = malloc(n);
     if (!q) return 0;
     memcpy(q, p, have);

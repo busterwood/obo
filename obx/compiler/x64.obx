@@ -363,6 +363,17 @@ pub fn (a: mut &Asm) test(size: int, x: int, y: int) {
 // imul dst, src (size 4 or 8).
 pub fn (a: mut &Asm) imul(size: int, dst: int, src: int) { a.rr(0, size == 8, 0x0FAF, dst, src, false, false) }
 
+// imul dst, src, imm (the immediate fits 32 bits, sign-extended).
+pub fn (a: mut &Asm) imulI(size: int, dst: int, src: int, v: int) {
+    if fits8(v) {
+        a.rr(0, size == 8, 0x6B, dst, src, false, false)
+        a.b(v & 255)
+    } else {
+        a.rr(0, size == 8, 0x69, dst, src, false, false)
+        a.d32(v)
+    }
+}
+
 // NOT, NEG, MUL, IMUL1, DIV, IDIV of r (size 4 or 8).
 pub fn (a: mut &Asm) unary(op: int, size: int, r: int) { a.rr(0, size == 8, 0xF7, op, r, false, false) }
 
@@ -612,6 +623,8 @@ fn (a: mut &Asm) testLine(l: str) {
         a.movRI(num(w[1]), num(w[2]))
     } else if k == "imul" {
         a.imul(num(w[1]), num(w[2]), num(w[3]))
+    } else if k == "imuli" {
+        a.imulI(num(w[1]), num(w[2]), num(w[3]), num(w[4]))
     } else if k == "un" {
         a.unary(nameIndex(UN_NAMES, w[1]), num(w[2]), num(w[3]))
     } else if k == "shcl" {

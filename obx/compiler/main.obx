@@ -287,7 +287,15 @@ fn buildNative(csrc: str, libs: &[]str, src: str, out: str, isRun: bool, rest: &
             append(mut &dl, l)
         }
     }
-    let img = x64gen.build(p, dl)
+    var symMap = ""
+    let img = x64gen.buildMap(p, dl, mut &symMap)
+    let mapFile = os.envOr("OBX_NATIVE_MAP", "")
+    if mapFile != "" {
+        match io.write(mapFile, symMap) {
+            Ok(u) {}
+            Err(e) { sx.failText("obxc: cannot write " + mapFile + ": " + e.toStr()) }
+        }
+    }
     var tmp = ""
     var exe = out
     if len(exe) == 0 {

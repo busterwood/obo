@@ -138,6 +138,9 @@ def gen(r):
         return f'movri {a} {v}', f'movabs {R64[a]}, {v}'
     if k == 14:
         sz = r.choice([4, 8])
+        if r.random() < 0.5:
+            v = rnd_imm(r)
+            return f'imuli {sz} {a} {b} {v}', f'imul {REGS[sz][a]}, {REGS[sz][b]}, {v}'
         return f'imul {sz} {a} {b}', f'imul {REGS[sz][a]}, {REGS[sz][b]}'
     if k == 15:
         op = r.choice(['not', 'neg', 'mul', 'imul', 'div', 'idiv'])

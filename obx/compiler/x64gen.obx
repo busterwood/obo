@@ -33,6 +33,8 @@ const R10 = 10
 const R11 = 11
 
 const INT_REGS: []int = [7, 6, 2, 1, 8, 9]       // rdi rsi rdx rcx r8 r9
+const NO_MEM: x64.Mem = x64.Mem{base: -9, index: -1, scale: 1, disp: 0}
+const LOCAL_REGS: []int = [3, 12, 13, 14, 15]     // rbx r12-r15 (callee-saved): locals
 
 // Symbol kinds.
 const SK_FUNC = 0        // idx: a function with a body
@@ -75,6 +77,12 @@ type Gen = record {
     strs: []str
     funcPos: []int
     slots: []int
+    reg: []int                  // per local: its register, or -1 (in its slot)
+    uses: []int                 // per local: the times the function being generated names it
+    weight: []int               // ... weighted by loop depth
+    bad: []bool                 // ... whether it can't be in a register
+    touched: []int              // the locals the scan of the function saw
+    saved: []int                // the frame slots of the callee-saved registers the function uses
     frame: int
     maxFrame: int
     outArgs: int
@@ -89,12 +97,25 @@ type Gen = record {
     libs: []elf.Lib
     imports: []str              // the imported functions, in dynamic symbol order
     importSym: Map[str, int]
+    stubs: []Stub               // the trap paths of the inlined runtime checks, after the function
+    stubOf: Map[str, int]       // their labels by (code, where)
+    codeEnd: int
+}
+
+// A call of rt_trap(code, msg, where) out of line, at the end of a function: its label.
+type Stub = value record {
+    label: int
+    code: int
+    msg: str
+    where: int          // the node of the location string
 }
 
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
-        caseL: newMap(), retPtr: 0, retTy: 0, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap()}
+        caseL: newMap(), retPtr: 0, retTy: 0, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
+        stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [],
+        saved: []}
     for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
     for i in 0..len(g.u.funcs) {
         append(mut &g.funcSym, -1)
@@ -104,7 +125,13 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.syms, Sym{kind: SK_GLOBAL, idx: i, addr: 0})
         append(mut &g.globalSym, len(g.syms) - 1)
     }
-    for i in 0..len(g.u.locals) { append(mut &g.slots, 0) }
+    for i in 0..len(g.u.locals) {
+        append(mut &g.slots, 0)
+        append(mut &g.reg, -1)
+        append(mut &g.uses, 0)
+        append(mut &g.weight, 0)
+        append(mut &g.bad, false)
+    }
     return g
 }
 
@@ -114,11 +141,47 @@ fn (g: &Gen) fail(e: int, msg: str): never { ir.failAt("C line", g.u.nodes[e].li
 
 // The executable for the program p, linked with libs (static when there are none).
 pub fn build(p: ir.Ir, libs: []elf.Lib): []byte {
+    var m = ""
+    return buildMap(p, libs, mut &m)
+}
+
+// build, and in symMap the address, size and name of every function, one per line in hex
+// (perf's /tmp/perf-PID.map format; obxc --native writes it to $OBX_NATIVE_MAP).
+pub fn buildMap(p: ir.Ir, libs: []elf.Lib, symMap: mut &str): []byte {
     var g = newGen(p)
     g.dyn = len(libs) > 0
     g.libs = libs
     g.genAll()
-    return g.link()
+    let img = g.link()
+    let codeBase = ir.alignUp(rtx.TEXT_ADDR + rtx.TEXT_SIZE, 16)
+    var b = newStrBuf()
+    var fs: []int = []
+    for f in 0..len(g.u.funcs) {
+        if g.funcPos[f] >= 0 { append(mut &fs, f) }
+    }
+    for i in 0..len(fs) {
+        let f = fs[i]
+        let end = if i + 1 < len(fs) { g.funcPos[fs[i + 1]] } else { g.codeEnd }
+        b.add(hex(codeBase + g.funcPos[f]) + " " + hex(end - g.funcPos[f]) + " " + g.u.funcs[f].name + "\n")
+    }
+    symMap = b.toStr()
+    return img
+}
+
+fn hex(v: int): str {
+    let d = "0123456789abcdef"
+    var b = newStrBuf()
+    var sh = 60
+    var started = false
+    while sh >= 0 {
+        let x = (v >> sh) & 15
+        if x != 0 || started || sh == 0 {
+            b.addByte(strByte(d, x))
+            started = true
+        }
+        sh -= 4
+    }
+    return b.toStr()
 }
 
 // The libc functions the runtime calls in a dynamically linked program (rt_n_libc in
@@ -185,6 +248,7 @@ fn (g: mut &Gen) genAll() {
         if g.u.funcs[f].body >= 0 { g.genFunc(f) }
     }
     g.a.fixLabels()
+    g.codeEnd = g.a.pos()
 }
 
 fn (g: &Gen) findFunc(name: str): int {
@@ -339,6 +403,7 @@ fn (g: mut &Gen) genFunc(f: int) {
     g.a.storeI(1, x64.mem(R11, 0), 0)
     g.a.jmp(probe)
     g.a.bind(probed)
+    g.allocRegs(f)
     var ni = 0
     var nx = 0
     g.retPtr = 0
@@ -357,7 +422,12 @@ fn (g: mut &Gen) genFunc(f: int) {
         if cls[0] == CL_MEM || ni + nInt > 6 || nx + nSse > 8 {
             stackOff = ir.alignUp(stackOff, if g.u.alignOf(t) > 8 { g.u.alignOf(t) } else { 8 })
             g.slots[l] = stackOff
+            if g.reg[l] >= 0 { g.loadInt(t, g.reg[l], rbp(stackOff)) }
             stackOff += ir.alignUp(g.size(t), 8)
+        } else if g.reg[l] >= 0 {
+            g.a.movRR(8, g.reg[l], INT_REGS[ni])
+            g.normR(g.tk(t), g.reg[l])
+            ni += 1
         } else {
             let s = g.tempFor(t)
             g.slots[l] = s
@@ -382,11 +452,120 @@ fn (g: mut &Gen) genFunc(f: int) {
     }
     g.stmt(g.u.funcs[f].body)
     g.epilogue()
+    g.genStubs()
     let frame = ir.alignUp(g.maxFrame, 16) + ir.alignUp(g.outArgs, 16)
     g.a.put32(patch, frame)
 }
 
+// Chooses the locals of function f that live in registers (g.reg), and saves the registers.
+// Candidates: integers and pointers whose address is not taken, named three times or in a
+// loop (else saving the register costs what it saves); the heaviest uses (a use in a loop
+// counts 8 times one outside, nested loops more) win.
+fn (g: mut &Gen) allocRegs(f: int) {
+    let old = replace(mut &g.touched, [])
+    for l in old {
+        g.reg[l] = -1
+        g.uses[l] = 0
+        g.weight[l] = 0
+        g.bad[l] = false
+    }
+    g.saved = []
+    g.scan(g.u.funcs[f].body, 0)
+    var cands: []int = []
+    for l in g.touched {
+        let t = g.u.locals[l].ty
+        if !g.bad[l] && g.weight[l] >= 3 && g.u.isScalar(t) && !g.isF(t) && !g.is128(t) { append(mut &cands, l) }
+    }
+    for r in LOCAL_REGS {
+        var best = -1
+        for l in cands {
+            if g.reg[l] < 0 && (best < 0 || g.weight[l] > g.weight[best]) { best = l }
+        }
+        if best < 0 { break }
+        g.reg[best] = r
+        let s = g.temp(8, 8)
+        g.a.store(8, rbp(s), r)
+        append(mut &g.saved, s)
+    }
+}
+
+fn loopWeight(depth: int): int {
+    var w = 1
+    for i in 0..(if depth > 5 { 5 } else { depth }) { w *= 8 }
+    return w
+}
+
+fn (g: mut &Gen) scanList(l: int, depth: int) {
+    if l < 0 { return }
+    for j in 0..g.u.listLen(l) { g.scan(g.u.listAt(l, j), depth) }
+}
+
+// Counts the uses of locals in the tree x (at loop depth depth).
+fn (g: mut &Gen) scan(x: int, depth: int) {
+    if x < 0 { return }
+    let n = g.u.nodes[x]
+    let k = n.k
+    if k == ir.E_LOCAL {
+        if g.uses[n.a] == 0 && g.weight[n.a] == 0 && !g.bad[n.a] { append(mut &g.touched, n.a) }
+        g.uses[n.a] += 1
+        g.weight[n.a] += loopWeight(depth)
+    } else if k == ir.E_ADDR || k == ir.E_DECAY {
+        if g.u.nk(n.a) == ir.E_LOCAL {
+            let l = g.u.nodes[n.a].a
+            if g.uses[l] == 0 && g.weight[l] == 0 && !g.bad[l] { append(mut &g.touched, l) }
+            g.bad[l] = true
+        }
+        g.scan(n.a, depth)
+    } else if k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_CAST || k == ir.E_NEG || k == ir.E_BNOT ||
+        k == ir.E_LNOT || k == ir.E_POSTINC || k == ir.E_IENT || k == ir.S_EXPR || k == ir.S_RETURN {
+        g.scan(n.a, depth)
+    } else if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD ||
+        k == ir.S_SWITCH {
+        g.scan(n.a, depth)
+        g.scan(n.b, depth)
+    } else if k == ir.E_COND || k == ir.S_IF {
+        g.scan(n.a, depth)
+        g.scan(n.b, depth)
+        g.scan(n.c, depth)
+    } else if k == ir.E_CALL {
+        g.scan(n.a, depth)
+        g.scanList(n.b, depth)
+    } else if k == ir.E_CLIT {
+        g.scanList(n.b, depth)
+    } else if k == ir.S_BLOCK {
+        g.scanList(n.a, depth)
+    } else if k == ir.S_DECL {
+        let l = n.a
+        if g.uses[l] == 0 && g.weight[l] == 0 && !g.bad[l] { append(mut &g.touched, l) }
+        if n.b >= 0 {
+            g.uses[l] += 1
+            g.weight[l] += loopWeight(depth)
+        }
+        if n.c >= 0 {
+            g.bad[l] = true
+            g.scanList(n.c, depth)
+        }
+        g.scan(n.b, depth)
+    } else if k == ir.S_WHILE {
+        g.scan(n.a, depth + 1)
+        g.scan(n.b, depth + 1)
+    } else if k == ir.S_FOR {
+        g.scan(n.a, depth)
+        g.scan(n.b, depth + 1)
+        g.scan(n.c, depth + 1)
+        g.scan(n.d, depth + 1)
+    }
+}
+
+// The register of e if it is a local in one, else -1.
+fn (g: &Gen) regOf(e: int): int {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_LOCAL { return g.reg[n.a] }
+    return -1
+}
+
 fn (g: mut &Gen) epilogue() {
+    for i in 0..len(g.saved) { g.a.load(8, LOCAL_REGS[i], rbp(g.saved[i])) }
     g.a.movRR(8, RSP, RBP)
     g.a.pop(RBP)
     g.a.ret()
@@ -404,16 +583,34 @@ fn (g: mut &Gen) stmt(s: int) {
     let k = n.k
     if k == ir.S_BLOCK {
         let mark = g.frame
-        for j in 0..g.u.listLen(n.a) {
+        var j = 0
+        while j < g.u.listLen(n.a) {
             let x = g.u.listAt(n.a, j)
             let before = g.frame
+            if j + 1 < g.u.listLen(n.a) && (g.fusedIf(x, g.u.listAt(n.a, j + 1)) ||
+                g.fusedReturn(x, g.u.listAt(n.a, j + 1))) {
+                j += 2
+                continue
+            }
             g.stmt(x)
             g.frame = if g.isDecl(x) { g.declMark } else { before }
+            j += 1
         }
         if n.v != 1 { g.frame = mark }
     } else if k == ir.S_DECL {
         let l = n.a
         let t = g.u.locals[l].ty
+        if g.reg[l] >= 0 {
+            g.declMark = g.frame
+            if n.b >= 0 && g.simple(n.b) && g.u.nodes[n.b].ty == t {
+                g.genInto(n.b, g.reg[l])
+            } else if n.b >= 0 {
+                g.gen(n.b)
+                g.normR(g.tk(t), RAX)
+                g.a.movRR(8, g.reg[l], RAX)
+            }
+            return
+        }
         let s2 = g.temp(ir.alignUp(g.size(t), 8), g.u.alignOf(t))
         g.slots[l] = s2
         g.declMark = g.frame
@@ -424,7 +621,14 @@ fn (g: mut &Gen) stmt(s: int) {
             g.initEntries(s2, g.size(t), n.c)
         }
     } else if k == ir.S_EXPR {
-        g.gen(n.a)
+        let x = g.u.nodes[n.a]
+        if x.k == ir.E_ASSIGN && g.regOf(x.a) >= 0 && g.simple(x.b) && g.u.nodes[x.b].ty == x.ty {
+            g.genInto(x.b, g.regOf(x.a))            // the value unused: straight into the register
+        } else {
+            g.gen(n.a)
+        }
+    } else if k == ir.S_IF && n.c < 0 && g.jumpOnly(n.b) >= 0 {
+        g.branch(n.a, g.jumpOnly(n.b), true)
     } else if k == ir.S_IF {
         let elseL = g.a.newLabel()
         g.branch(n.a, elseL, false)
@@ -491,6 +695,64 @@ fn (g: mut &Gen) stmt(s: int) {
     } else {
         g.fail(s, "statement kind " + intToStr(k))
     }
+}
+
+// `bool c = e; if (!c) ...` (the C of every loop condition) with c named nowhere else:
+// generates the if with e for its condition and no c, and true. Else false, nothing generated.
+fn (g: mut &Gen) fusedIf(d: int, s: int): bool {
+    let dn = g.u.nodes[d]
+    if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 || g.uses[dn.a] != 2 { return false }
+    if g.tk(g.u.locals[dn.a].ty) != ir.TY_BOOL || g.u.nk(s) != ir.S_IF { return false }
+    let sn = g.u.nodes[s]
+    var cond = sn.a
+    var neg = false
+    if g.u.nk(cond) == ir.E_LNOT {
+        cond = g.u.nodes[cond].a
+        neg = true
+    }
+    if g.u.nk(cond) != ir.E_LOCAL || g.u.nodes[cond].a != dn.a { return false }
+    let jl = g.jumpOnly(sn.b)
+    if jl >= 0 && sn.c < 0 {
+        g.branch(dn.b, jl, !neg)
+        return true
+    }
+    let elseL = g.a.newLabel()
+    g.branch(dn.b, elseL, neg)
+    let before = g.frame
+    g.stmt(sn.b)
+    g.frame = before
+    if sn.c >= 0 {
+        let end = g.a.newLabel()
+        g.a.jmp(end)
+        g.a.bind(elseL)
+        g.stmt(sn.c)
+        g.frame = before
+        g.a.bind(end)
+    } else {
+        g.a.bind(elseL)
+    }
+    return true
+}
+
+// `T r = e; return r;` with r named nowhere else: generates return e, and true.
+fn (g: mut &Gen) fusedReturn(d: int, s: int): bool {
+    let dn = g.u.nodes[d]
+    if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 || g.uses[dn.a] != 2 || g.u.nk(s) != ir.S_RETURN { return false }
+    let r = g.u.nodes[s].a
+    if r < 0 || g.u.nk(r) != ir.E_LOCAL || g.u.nodes[r].a != dn.a { return false }
+    if g.u.nodes[r].ty != g.u.nodes[dn.b].ty || g.isAggr(g.u.nodes[r].ty) { return false }
+    g.genReturn(dn.b)
+    g.epilogue()
+    return true
+}
+
+// The label s jumps to if it is only a break or a continue (perhaps in a block), else -1.
+fn (g: &Gen) jumpOnly(s: int): int {
+    let n = g.u.nodes[s]
+    if n.k == ir.S_BLOCK && g.u.listLen(n.a) == 1 { return g.jumpOnly(g.u.listAt(n.a, 0)) }
+    if n.k == ir.S_BREAK && len(g.breakL) > 0 { return g.breakL[len(g.breakL) - 1] }
+    if n.k == ir.S_CONTINUE && len(g.contL) > 0 { return g.contL[len(g.contL) - 1] }
+    return -1
 }
 
 fn (g: mut &Gen) genReturn(x: int) {
@@ -674,7 +936,10 @@ fn (g: mut &Gen) storeT(t: int, m: x64.Mem) {
 // The memory of an lvalue that needs no code (a local or a member of one), or base -9.
 fn (g: &Gen) staticMem(e: int): x64.Mem {
     let n = g.u.nodes[e]
-    if n.k == ir.E_LOCAL { return rbp(g.slots[n.a]) }
+    if n.k == ir.E_LOCAL {
+        if g.reg[n.a] >= 0 { return x64.mem(-9, 0) }
+        return rbp(g.slots[n.a])
+    }
     if n.k == ir.E_MEMBER {
         let m = g.staticMem(n.a)
         if m.base != -9 { return at(m, n.v) }
@@ -710,6 +975,7 @@ fn (g: mut &Gen) genAddr(e: int) {
     let n = g.u.nodes[e]
     let k = n.k
     if k == ir.E_LOCAL {
+        if g.reg[n.a] >= 0 { g.fail(e, "the address of a local in a register") }
         g.a.lea(RAX, rbp(g.slots[n.a]))
     } else if k == ir.E_GLOBAL {
         g.a.movRSym(RAX, g.globalSym[n.a], 0)
@@ -742,7 +1008,8 @@ fn (g: mut &Gen) genAddr(e: int) {
 // Whether e can be loaded into a register other than rax with no other register used.
 fn (g: &Gen) simple(e: int): bool {
     let n = g.u.nodes[e]
-    if n.k == ir.E_INT { return true }
+    if n.k == ir.E_INT || g.regOf(e) >= 0 || g.constAddrSym(e) >= 0 { return true }
+    if g.noopCast(e) { return g.simple(n.a) }
     if g.isAggr(n.ty) || g.isF(n.ty) || g.is128(n.ty) { return false }
     return (n.k == ir.E_LOCAL || n.k == ir.E_MEMBER) && g.staticMem(e).base != -9
 }
@@ -751,18 +1018,183 @@ fn (g: mut &Gen) genInto(e: int, r: int) {
     let n = g.u.nodes[e]
     if n.k == ir.E_INT {
         g.a.movRI(r, n.v)
+    } else if g.regOf(e) >= 0 {
+        g.a.movRR(8, r, g.regOf(e))
+    } else if g.constAddrSym(e) >= 0 {
+        g.a.movRSym(r, g.constAddrSym(e), 0)
+    } else if g.noopCast(e) {
+        g.genInto(n.a, r)
     } else {
         g.loadInt(n.ty, r, g.staticMem(e))
     }
 }
 
+// Whether e is a conversion between 8-byte integers and pointers (no code).
+fn (g: &Gen) noopCast(e: int): bool {
+    let n = g.u.nodes[e]
+    if n.k != ir.E_CAST { return false }
+    let s = g.u.nodes[n.a].ty
+    let tk = g.tk(n.ty)
+    let sk = g.tk(s)
+    return g.size(n.ty) == 8 && g.size(s) == 8 && tk != ir.TY_F64 && sk != ir.TY_F64 && !g.isAggr(n.ty) &&
+        !g.isAggr(s)
+}
+
+// Whether evaluating x has no effect but its value or a trap (no assignments, and no calls
+// but those of the runtime functions generated inline that change nothing).
+fn (g: &Gen) pure(x: int): bool {
+    if x < 0 { return true }
+    let n = g.u.nodes[x]
+    let k = n.k
+    if k == ir.E_ASSIGN || k == ir.E_POSTINC || k == ir.E_CLIT { return false }
+    if k == ir.E_CALL {
+        let c = n.a
+        if g.u.nk(c) != ir.E_DECAY || g.u.nk(g.u.nodes[c].a) != ir.E_FUNC { return false }
+        let name = g.u.funcs[g.u.nodes[g.u.nodes[c].a].a].name
+        if name != "rt_idx" && name != "rt_str_byte" && arOp(name).k < 0 { return false }
+        for j in 0..g.u.listLen(n.b) {
+            if !g.pure(g.u.listAt(n.b, j)) { return false }
+        }
+        return true
+    }
+    if k == ir.E_INT || k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_STR || k == ir.E_FUNC || k == ir.E_FLT {
+        return true
+    }
+    if k == ir.E_BIN { return g.pure(n.a) && g.pure(n.b) }
+    return g.pure(n.a) && g.pure(n.b) && g.pure(n.c)
+}
+
+// The symbol of e if it is the address of a string literal or a global, else -1.
+fn (g: &Gen) constAddrSym(e: int): int {
+    let n = g.u.nodes[e]
+    if n.k != ir.E_DECAY && n.k != ir.E_ADDR { return -1 }
+    let x = g.u.nodes[n.a]
+    if x.k == ir.E_GLOBAL { return g.globalSym[x.a] }
+    if x.k == ir.E_STR { return g.strSym.getOr(&x.s, -1) }
+    return -1
+}
+
+// Whether evaluating x may assign the local in a register r.
+fn (g: &Gen) writesReg(x: int, r: int): bool {
+    if x < 0 { return false }
+    let n = g.u.nodes[x]
+    let k = n.k
+    if k == ir.E_INT || k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_STR || k == ir.E_FUNC || k == ir.E_FLT {
+        return false
+    }
+    if (k == ir.E_ASSIGN || k == ir.E_POSTINC) && g.regOf(n.a) == r { return true }
+    if k == ir.E_CALL || k == ir.E_CLIT {
+        if g.writesReg(n.a, r) && k == ir.E_CALL { return true }
+        for j in 0..g.u.listLen(n.b) {
+            if g.writesReg(g.u.listAt(n.b, j), r) { return true }
+        }
+        return false
+    }
+    if k == ir.E_BIN { return g.writesReg(n.a, r) || g.writesReg(n.b, r) }
+    return g.writesReg(n.a, r) || g.writesReg(n.b, r) || g.writesReg(n.c, r)
+}
+
+// The second operand of an instruction: an immediate or a register.
+type Src = value record {
+    imm: bool
+    v: int
+    r: int              // -2: the memory m
+    m: x64.Mem
+}
+
+// a into rax, and b as an operand: an immediate, the register of a local, or rcx.
+fn (g: mut &Gen) pairSrc(a: int, b: int): Src {
+    let bn = g.u.nodes[b]
+    if a < 0 {
+        if bn.k == ir.E_INT { return Src{imm: true, v: bn.v, r: -1, m: NO_MEM} }
+        if g.regOf(b) >= 0 { return Src{imm: false, v: 0, r: g.regOf(b), m: NO_MEM} }
+        return Src{imm: false, v: 0, r: -2, m: g.staticMem(b)}
+    }
+    if bn.k == ir.E_INT && x64.fits32(bn.v) {
+        g.gen(a)
+        return Src{imm: true, v: bn.v, r: -1, m: NO_MEM}
+    }
+    if g.regOf(b) >= 0 {
+        g.gen(a)
+        return Src{imm: false, v: 0, r: g.regOf(b), m: NO_MEM}
+    }
+    if g.memOperand(b) {
+        g.gen(a)
+        return Src{imm: false, v: 0, r: -2, m: g.staticMem(b)}
+    }
+    g.pair(a, b)
+    return Src{imm: false, v: 0, r: RCX, m: NO_MEM}
+}
+
+// Whether e is an 8-byte integer or pointer in memory that needs no code (a local in its
+// slot, a member of one).
+fn (g: &Gen) memOperand(e: int): bool {
+    let n = g.u.nodes[e]
+    return (n.k == ir.E_LOCAL || n.k == ir.E_MEMBER) && g.size(n.ty) == 8 && !g.isF(n.ty) && !g.isAggr(n.ty) &&
+        g.regOf(e) < 0 && g.staticMem(e).base != -9
+}
+
+// Compares a with b (integers or pointers of 8 bytes or less, normalized), comparing the
+// register of a local in place.
+fn (g: mut &Gen) cmpPair(a: int, b: int) {
+    let ra = g.regOf(a)
+    let bn = g.u.nodes[b]
+    if ra >= 0 && (g.regOf(b) >= 0 || (bn.k == ir.E_INT && x64.fits32(bn.v)) || g.memOperand(b)) {
+        g.aluSrc(x64.CMP, 8, ra, g.pairSrc(-1, b))
+        return
+    }
+    g.aluSrc(x64.CMP, 8, RAX, g.pairSrc(a, b))
+}
+
+fn (g: mut &Gen) aluSrc(op: int, size: int, dst: int, s: Src) {
+    if s.imm {
+        g.a.aluI(op, size, dst, s.v)
+    } else if s.r == -2 {
+        g.a.aluRM(op, size, dst, s.m)
+    } else {
+        g.a.alu(op, size, dst, s.r)
+    }
+}
+
+fn (g: mut &Gen) imulSrc(size: int, dst: int, s: Src) {
+    if s.imm {
+        g.a.imulI(size, dst, dst, s.v)
+    } else if s.r == -2 {
+        g.a.load(8, RCX, s.m)
+        g.a.imul(size, dst, RCX)
+    } else {
+        g.a.imul(size, dst, s.r)
+    }
+}
+
+// The operand into rcx.
+fn (g: mut &Gen) srcRCX(s: Src) {
+    if s.imm {
+        g.a.movRI(RCX, s.v)
+    } else if s.r == -2 {
+        g.a.load(8, RCX, s.m)
+    } else if s.r != RCX {
+        g.a.movRR(8, RCX, s.r)
+    }
+}
+
 // a into rax, b into rcx (integers or pointers).
 fn (g: mut &Gen) pair(a: int, b: int) {
-    g.gen(a)
     if g.simple(b) {
+        g.gen(a)
         g.genInto(b, RCX)
         return
     }
+    let an = g.u.nodes[a]
+    if !g.isAggr(an.ty) && !g.isF(an.ty) && !g.is128(an.ty) &&
+        (an.k == ir.E_INT || g.constAddrSym(a) >= 0 || (g.regOf(a) >= 0 && !g.writesReg(b, g.regOf(a))) ||
+        (g.simple(a) && g.pure(b))) {
+        g.gen(b)
+        g.a.movRR(8, RCX, RAX)
+        g.genInto(a, RAX)
+        return
+    }
+    g.gen(a)
     let s = g.temp(8, 8)
     g.a.store(8, rbp(s), RAX)
     g.gen(b)
@@ -806,6 +1238,10 @@ fn (g: mut &Gen) gen(e: int) {
         k == ir.E_FUNC {
         if g.isAggr(t) || k == ir.E_FUNC {
             g.genAddr(e)
+            return
+        }
+        if g.regOf(e) >= 0 {
+            g.a.movRR(8, RAX, g.regOf(e))
             return
         }
         let m = g.staticMem(e)
@@ -876,6 +1312,11 @@ fn (g: mut &Gen) gen(e: int) {
         g.a.bind(end)
     } else if k == ir.E_ASSIGN {
         g.genAssign(e)
+    } else if k == ir.E_POSTINC && g.regOf(n.a) >= 0 {
+        let r = g.regOf(n.a)
+        g.a.movRR(8, RAX, r)
+        g.a.lea(r, x64.mem(RAX, n.v))
+        g.normR(g.tk(t), r)
     } else if k == ir.E_POSTINC {
         var m = g.staticMem(n.a)
         if m.base == -9 {
@@ -912,6 +1353,12 @@ fn (g: mut &Gen) genAssign(e: int) {
     let n = g.u.nodes[e]
     let lhs = n.a
     let t = n.ty
+    if g.regOf(lhs) >= 0 {
+        g.gen(n.b)
+        g.normR(g.tk(t), RAX)
+        g.a.movRR(8, g.regOf(lhs), RAX)
+        return
+    }
     let m = g.staticMem(lhs)
     if m.base != -9 {
         g.gen(n.b)
@@ -922,6 +1369,10 @@ fn (g: mut &Gen) genAssign(e: int) {
     if g.u.nk(lhs) == ir.E_GLOBAL {
         g.gen(n.b)
         g.a.movRSym(R11, g.globalSym[g.u.nodes[lhs].a], 0)
+    } else if g.simple(n.b) && !g.isAggr(t) && !g.isF(t) && !g.is128(t) {
+        g.genAddr(lhs)
+        g.a.movRR(8, R11, RAX)
+        g.genInto(n.b, RAX)
     } else {
         g.genAddr(lhs)
         let s = g.temp(8, 8)
@@ -996,7 +1447,7 @@ fn (g: mut &Gen) genCast(e: int) {
         }
     } else if !s128 && !t128 {
         if tk == ir.TY_BOOL {
-            if sk != ir.TY_BOOL {
+            if sk != ir.TY_BOOL && !g.isBoolVal(n.a) {
                 g.a.test(8, RAX, RAX)
                 g.a.setcc(x64.CC_NE, RAX)
                 g.a.zx(1, RAX, RAX)
@@ -1008,6 +1459,12 @@ fn (g: mut &Gen) genCast(e: int) {
 }
 
 fn isCmp(op: int): bool { return op >= ir.OP_EQ }
+
+// Whether e's value is always 0 or 1 (a comparison or a logical operator).
+fn (g: &Gen) isBoolVal(e: int): bool {
+    let n = g.u.nodes[e]
+    return (n.k == ir.E_BIN && isCmp(n.v)) || n.k == ir.E_LNOT || n.k == ir.E_LAND || n.k == ir.E_LOR
+}
 
 fn (g: mut &Gen) genBin(e: int) {
     let n = g.u.nodes[e]
@@ -1071,22 +1528,27 @@ fn (g: mut &Gen) genBin(e: int) {
         }
         return
     }
-    g.pair(n.a, n.b)
+    let src = g.pairSrc(n.a, n.b)
     let sz = if g.size(c) == 8 { 8 } else { 4 }
     let sgn = g.u.isSigned(c)
     if op == ir.OP_ADD {
-        g.a.alu(x64.ADD, sz, RAX, RCX)
+        g.aluSrc(x64.ADD, sz, RAX, src)
     } else if op == ir.OP_SUB {
-        g.a.alu(x64.SUB, sz, RAX, RCX)
+        g.aluSrc(x64.SUB, sz, RAX, src)
     } else if op == ir.OP_AND {
-        g.a.alu(x64.AND, sz, RAX, RCX)
+        g.aluSrc(x64.AND, sz, RAX, src)
     } else if op == ir.OP_OR {
-        g.a.alu(x64.OR, sz, RAX, RCX)
+        g.aluSrc(x64.OR, sz, RAX, src)
     } else if op == ir.OP_XOR {
-        g.a.alu(x64.XOR, sz, RAX, RCX)
+        g.aluSrc(x64.XOR, sz, RAX, src)
     } else if op == ir.OP_MUL {
-        g.a.imul(sz, RAX, RCX)
+        g.imulSrc(sz, RAX, src)
+    } else if op == ir.OP_SHL && src.imm {
+        g.a.shiftI(x64.SHL, sz, RAX, src.v & (sz * 8 - 1))
+    } else if op == ir.OP_SHR && src.imm {
+        g.a.shiftI(if sgn { x64.SAR } else { x64.SHR }, sz, RAX, src.v & (sz * 8 - 1))
     } else if op == ir.OP_DIV || op == ir.OP_REM {
+        g.srcRCX(src)
         if sgn {
             if sz == 8 { g.a.cqo() } else { g.a.cdq() }
             g.a.unary(x64.IDIV, sz, RCX)
@@ -1096,8 +1558,10 @@ fn (g: mut &Gen) genBin(e: int) {
         }
         if op == ir.OP_REM { g.a.movRR(8, RAX, RDX) }
     } else if op == ir.OP_SHL {
+        g.srcRCX(src)
         g.a.shiftCL(x64.SHL, sz, RAX)
     } else if op == ir.OP_SHR {
+        g.srcRCX(src)
         g.a.shiftCL(if sgn { x64.SAR } else { x64.SHR }, sz, RAX)
     }
     g.norm(c)
@@ -1168,8 +1632,7 @@ fn (g: mut &Gen) genCmp(e: int): int {
         if sgn { return if lt { x64.CC_L } else { x64.CC_GE } }
         return if lt { x64.CC_B } else { x64.CC_AE }
     }
-    g.pair(n.a, n.b)
-    g.a.alu(x64.CMP, 8, RAX, RCX)
+    g.cmpPair(n.a, n.b)
     if op == ir.OP_EQ { return x64.CC_E }
     if op == ir.OP_NE { return x64.CC_NE }
     if op == ir.OP_LT { return if sgn { x64.CC_L } else { x64.CC_B } }
@@ -1251,6 +1714,8 @@ fn (g: mut &Gen) branch(e: int, l: int, when: bool) {
         }
     } else if k == ir.E_BIN && isCmp(n.v) {
         g.jumpCC(g.genCmp(e), l, when)
+    } else if k == ir.E_CAST && g.tk(n.ty) == ir.TY_BOOL && !g.is128(g.u.nodes[n.a].ty) {
+        g.branch(n.a, l, when)              // the truth of a value is that of its conversion to bool
     } else {
         g.genTest(e)
         g.a.jcc(if when { x64.CC_NE } else { x64.CC_E }, l)
@@ -1269,6 +1734,10 @@ fn (g: mut &Gen) genCall(e: int) {
     if g.u.nk(callee) == ir.E_DECAY && g.u.nk(g.u.nodes[callee].a) == ir.E_FUNC {
         direct = g.u.nodes[g.u.nodes[callee].a].a
     }
+    if direct >= 0 && g.u.funcs[direct].body < 0 && !g.u.funcs[direct].isExtern &&
+        g.inlineRt(e, g.u.funcs[direct].name) {
+        return
+    }
     var calleeSlot = 0
     if direct < 0 {
         g.gen(callee)
@@ -1276,24 +1745,6 @@ fn (g: mut &Gen) genCall(e: int) {
         g.a.store(8, rbp(calleeSlot), RAX)
     }
     let nargs = g.u.listLen(n.b)
-    var slots: []int = []
-    for j in 0..nargs {
-        let x = g.u.listAt(n.b, j)
-        let t = pts[j]
-        g.gen(x)
-        let s = g.tempFor(t)
-        if g.isAggr(t) {
-            g.copyMem(rbp(s), x64.mem(RAX, 0), g.size(t))
-        } else if g.isF(t) {
-            g.a.movsdStore(rbp(s), 0)
-        } else if g.is128(t) {
-            g.a.store(8, rbp(s), RAX)
-            g.a.store(8, rbp(s + 8), RDX)
-        } else {
-            g.a.store(8, rbp(s), RAX)
-        }
-        append(mut &slots, s)
-    }
     var ni = 0
     var nx = 0
     var retSlot = 0
@@ -1301,7 +1752,6 @@ fn (g: mut &Gen) genCall(e: int) {
     var rcls: []int = []
     if aggrRet {
         rcls = g.classify(rt)
-        retSlot = g.tempFor(rt)
         if rcls[0] == CL_MEM { ni = 1 }
     }
     // where each argument goes: -1 registers, else its offset in the outgoing area
@@ -1317,7 +1767,6 @@ fn (g: mut &Gen) genCall(e: int) {
         if cls[0] == CL_MEM || ti + nInt > 6 || tx + nSse > 8 {
             stackOff = ir.alignUp(stackOff, if g.u.alignOf(t) > 8 { g.u.alignOf(t) } else { 8 })
             append(mut &place, stackOff)
-            g.copyMem(x64.mem(RSP, stackOff), rbp(slots[j]), ir.alignUp(g.size(t), 8))
             stackOff += ir.alignUp(g.size(t), 8)
         } else {
             append(mut &place, -1)
@@ -1325,16 +1774,72 @@ fn (g: mut &Gen) genCall(e: int) {
             tx += nSse
         }
     }
+    // the arguments into temporaries, except those loaded straight into their registers
+    // below (slot 0: constants, locals, members of locals; slot 1: in rax)
+    // the last of the others stays in rax if it is an integer and no argument is on the stack
+    var inRax = -1
+    for j in 0..nargs {
+        let x = g.u.listAt(n.b, j)
+        if !(place[j] < 0 && g.argDirect(x, pts[j])) { inRax = j }
+    }
+    if inRax >= 0 && (stackOff > 0 || g.isAggr(pts[inRax]) || g.isF(pts[inRax]) || g.is128(pts[inRax])) {
+        inRax = -1
+    }
+    var slots: []int = []
+    for j in 0..nargs {
+        let x = g.u.listAt(n.b, j)
+        let t = pts[j]
+        if place[j] < 0 && g.argDirect(x, t) {
+            append(mut &slots, 0)
+            continue
+        }
+        g.gen(x)
+        if j == inRax {
+            append(mut &slots, 1)
+            continue
+        }
+        let s = g.tempFor(t)
+        if g.isAggr(t) {
+            g.copyMem(rbp(s), x64.mem(RAX, 0), g.size(t))
+        } else if g.isF(t) {
+            g.a.movsdStore(rbp(s), 0)
+        } else if g.is128(t) {
+            g.a.store(8, rbp(s), RAX)
+            g.a.store(8, rbp(s + 8), RDX)
+        } else {
+            g.a.store(8, rbp(s), RAX)
+        }
+        append(mut &slots, s)
+    }
+    if aggrRet { retSlot = g.tempFor(rt) }
+    for j in 0..nargs {
+        if place[j] >= 0 {
+            let t = pts[j]
+            g.copyMem(x64.mem(RSP, place[j]), rbp(slots[j]), ir.alignUp(g.size(t), 8))
+        }
+    }
     if stackOff > g.outArgs { g.outArgs = stackOff }
     for j in 0..nargs {
         if place[j] < 0 {
+            let x = g.u.listAt(n.b, j)
             let cls = g.classify(pts[j])
+            if slots[j] == 0 && !g.isAggr(pts[j]) && !g.isF(pts[j]) {
+                g.genInto(x, INT_REGS[ni])
+                ni += 1
+                continue
+            }
+            if slots[j] == 1 {
+                g.a.movRR(8, INT_REGS[ni], RAX)
+                ni += 1
+                continue
+            }
+            let m = if slots[j] == 0 { g.staticMem(x) } else { rbp(slots[j]) }
             for i in 0..len(cls) {
                 if cls[i] == CL_SSE {
-                    g.a.movsdLoad(nx, rbp(slots[j] + 8 * i))
+                    g.a.movsdLoad(nx, at(m, 8 * i))
                     nx += 1
                 } else if cls[i] == CL_INT {
-                    g.a.load(8, INT_REGS[ni], rbp(slots[j] + 8 * i))
+                    g.a.load(8, INT_REGS[ni], at(m, 8 * i))
                     ni += 1
                 }
             }
@@ -1371,6 +1876,181 @@ fn (g: mut &Gen) genCall(e: int) {
     } else if g.u.isInt(rt) && g.size(rt) < 8 {
         g.norm(rt)
     }
+}
+
+// Whether argument x (of type t, passed in registers) can be loaded into its registers at the
+// call with no other register used: a simple integer, or a double or aggregate in memory that
+// needs no code.
+fn (g: &Gen) argDirect(x: int, t: int): bool {
+    if g.is128(t) { return false }
+    if g.isAggr(t) || g.isF(t) { return g.staticMem(x).base != -9 }
+    return g.simple(x)
+}
+
+// ---------------------------------------------------------------- inlined runtime functions
+
+// The label of a jump to rt_trap(code, msg, where) for the location string w (a node).
+fn (g: mut &Gen) stub(code: int, msg: str, w: int): int {
+    let key = intToStr(code) + " " + g.u.nodes[g.u.nodes[w].a].s
+    let have = g.stubOf.getOr(&key, -1)
+    if have >= 0 { return have }
+    let l = g.a.newLabel()
+    append(mut &g.stubs, Stub{label: l, code: code, msg: msg, where: w})
+    g.stubOf.put(key, l)
+    return l
+}
+
+fn (g: mut &Gen) genStubs() {
+    let sts = replace(mut &g.stubs, [])
+    for st in sts {
+        g.a.bind(st.label)
+        g.a.movRI(RDI, st.code)
+        g.a.movRSym(RSI, g.symStr(st.msg), 0)
+        g.a.movRSym(RDX, g.symStr(g.u.nodes[g.u.nodes[st.where].a].s), 0)
+        g.callRt("rt_trap")
+    }
+    g.stubOf.clear()
+}
+
+// The integer kind and operation of a checked or wrapping runtime arithmetic function
+// (rt_add_int, rt_wmul_u32, ...): kind -1 when name is not one.
+type ArOp = value record {
+    k: int
+    op: int
+    wrap: bool
+}
+
+fn arOp(name: str): ArOp {
+    let none = ArOp{k: -1, op: 0, wrap: false}
+    if !startsWith(name, "rt_") { return none }
+    var rest = name[3..len(name)]
+    var wrap = false
+    if startsWith(rest, "w") {
+        wrap = true
+        rest = rest[1..len(rest)]
+    }
+    let op = if startsWith(rest, "add_") { ir.OP_ADD } else if startsWith(rest, "sub_") { ir.OP_SUB } else if
+        startsWith(rest, "mul_") { ir.OP_MUL } else { -1 }
+    if op < 0 { return none }
+    let ty = rest[4..len(rest)]
+    let k = if ty == "int" { ir.TY_I64 } else if ty == "i32" { ir.TY_I32 } else if ty == "u32" { ir.TY_U32 } else if
+        ty == "u64" { ir.TY_U64 } else if ty == "byte" { ir.TY_U8 } else { -1 }
+    return ArOp{k: k, op: op, wrap: wrap}
+}
+
+// Whether the location argument w is a string literal (the runtime functions' last argument).
+fn (g: &Gen) isWhere(w: int): bool {
+    return g.u.nk(w) == ir.E_DECAY && g.u.nk(g.u.nodes[w].a) == ir.E_STR
+}
+
+// Generates the call e of the runtime function name inline, if it is one of those the code
+// generator knows (checked arithmetic, index checks, str reference counts): the same
+// results, traps and messages as the runtime's code. False: not inlined, nothing emitted.
+fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
+    let n = g.u.nodes[e]
+    let nargs = g.u.listLen(n.b)
+    let ar = arOp(name)
+    if ar.k >= 0 {
+        let a = g.u.listAt(n.b, 0)
+        let b = g.u.listAt(n.b, 1)
+        if !ar.wrap && (nargs != 3 || !g.isWhere(g.u.listAt(n.b, 2))) { return false }
+        let src = g.pairSrc(a, b)
+        let k = ar.k
+        let sz = if k == ir.TY_I64 || k == ir.TY_U64 { 8 } else { 4 }
+        let sgn = k == ir.TY_I64 || k == ir.TY_I32
+        if ar.op == ir.OP_MUL && k == ir.TY_U64 && !ar.wrap {
+            g.srcRCX(src)
+            g.a.unary(x64.MUL, 8, RCX)                  // rdx:rax; CF and OF when rdx != 0
+        } else if ar.op == ir.OP_MUL {
+            g.imulSrc(if k == ir.TY_I32 || k == ir.TY_I64 { sz } else { 8 }, RAX, src)
+        } else {
+            g.aluSrc(if ar.op == ir.OP_ADD { x64.ADD } else { x64.SUB }, sz, RAX, src)
+        }
+        if !ar.wrap {
+            let l = g.stub(10, "integer overflow", g.u.listAt(n.b, 2))
+            if sgn {
+                g.a.jcc(x64.CC_O, l)
+            } else if k == ir.TY_U8 {
+                // operands are 0..255: the 32-bit result is out of range when above 255
+                g.a.aluI(x64.CMP, 4, RAX, 255)
+                g.a.jcc(x64.CC_A, l)
+            } else if ar.op == ir.OP_MUL && k == ir.TY_U32 {
+                g.a.movRR(8, RCX, RAX)                  // the 64-bit product of two u32s
+                g.a.shiftI(x64.SHR, 8, RCX, 32)
+                g.a.jcc(x64.CC_NE, l)
+            } else {
+                g.a.jcc(x64.CC_B, l)                    // the carry: unsigned overflow
+            }
+        }
+        g.normR(k, RAX)
+        return true
+    }
+    if name == "rt_idx" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
+        // the index into rax (the result) and compared unsigned: a negative one is above any length
+        g.aluSrc(x64.CMP, 8, RAX, g.pairSrc(g.u.listAt(n.b, 0), g.u.listAt(n.b, 1)))
+        g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(n.b, 2)))
+        return true
+    }
+    if name == "rt_str_byte" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
+        let sx = g.u.listAt(n.b, 0)
+        let ix = g.u.listAt(n.b, 1)
+        g.gen(sx)                                       // the address of the str
+        if g.simple(ix) {
+            g.genInto(ix, RCX)
+        } else {
+            let s = g.temp(8, 8)
+            g.a.store(8, rbp(s), RAX)
+            g.gen(ix)
+            g.a.movRR(8, RCX, RAX)
+            g.a.load(8, RAX, rbp(s))
+        }
+        g.a.loadZX(4, RDX, x64.mem(RAX, 12))            // len
+        g.a.alu(x64.CMP, 8, RCX, RDX)
+        g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+        g.a.loadZX(4, RDX, x64.mem(RAX, 8))             // off
+        g.a.load(8, RAX, x64.mem(RAX, 0))               // the block
+        g.a.alu(x64.ADD, 8, RAX, RDX)
+        g.a.loadZX(1, RAX, x64.memx(RAX, RCX, 1, 8))    // data[off + i]
+        return true
+    }
+    if name == "rt_str_dup" && nargs == 1 {
+        // if (b && b->rc >= 0) b->rc++; the result is the same str
+        let s = g.temp(16, 8)
+        g.gen(g.u.listAt(n.b, 0))
+        g.a.load(8, RCX, x64.mem(RAX, 0))
+        g.a.load(8, RDX, x64.mem(RAX, 8))
+        g.a.store(8, rbp(s), RCX)
+        g.a.store(8, rbp(s + 8), RDX)
+        let done = g.a.newLabel()
+        g.a.test(8, RCX, RCX)
+        g.a.jcc(x64.CC_E, done)
+        g.a.load(8, RDX, x64.mem(RCX, 0))
+        g.a.test(8, RDX, RDX)
+        g.a.jcc(x64.CC_S, done)
+        g.a.aluI(x64.ADD, 8, RDX, 1)
+        g.a.store(8, x64.mem(RCX, 0), RDX)
+        g.a.bind(done)
+        g.a.lea(RAX, rbp(s))
+        return true
+    }
+    if name == "rt_str_drop" && nargs == 1 {
+        // if (b && b->rc > 0 && --b->rc == 0) rt_free(b)
+        g.gen(g.u.listAt(n.b, 0))
+        let done = g.a.newLabel()
+        g.a.load(8, RDI, x64.mem(RAX, 0))
+        g.a.test(8, RDI, RDI)
+        g.a.jcc(x64.CC_E, done)
+        g.a.load(8, RCX, x64.mem(RDI, 0))
+        g.a.test(8, RCX, RCX)
+        g.a.jcc(x64.CC_LE, done)
+        g.a.aluI(x64.SUB, 8, RCX, 1)
+        g.a.store(8, x64.mem(RDI, 0), RCX)
+        g.a.jcc(x64.CC_NE, done)
+        g.callRt("rt_free")
+        g.a.bind(done)
+        return true
+    }
+    return false
 }
 
 // ---------------------------------------------------------------- constants
