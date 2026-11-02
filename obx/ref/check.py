@@ -1173,12 +1173,14 @@ class Checker:
         return None
 
     def variant_of(self, b, name, where):
-        """Type.Variant (SPEC 4.4): the variant, with the type's arguments when it has them."""
-        t = self.static_type(b, where)
+        """Type.Variant (SPEC 4.4): the variant, with the type's arguments when it has them. Through a generic
+        alias without arguments (R.Ok), those mention R's parameters, which are inferred (4th item)."""
+        free = (b[1].tparams,) if len(b) == 2 and b[1].form == 'alias' and b[1].tparams else ()
+        t = self.prog.alias_target(b[1]) if free else self.static_type(b, where)
         if t and t[0] == 'inst' and t[1].form == 'closed':
             vr = next((v for v in t[1].variants if v.name == name), None)
             if vr is not None:
-                return ('decl', vr) if t[2] is None else ('decl', vr, t[2])
+                return ('decl', vr) if t[2] is None else ('decl', vr, t[2]) + free
         return None
 
     def texpr(self, x):
@@ -1253,7 +1255,7 @@ class Checker:
         if isinstance(d, Variant):
             if d.fields:
                 self.err(f"variant {d.name} has fields: write {d.decl.name}.{d.name}(...)", e.where)
-            return self.construct_variant(d, [], e.where, exp, targs)
+            return self.construct_variant(st, [], e.where, exp)
         if isinstance(d, FnDecl):
             if d.extern is not None:
                 self.err(f"extern function {d.name} cannot be used as a value", e.where)
@@ -1697,13 +1699,16 @@ class Checker:
             self.emit(f"{pre}f_{f[0]} = {c};")
         return n
 
-    def construct_variant(self, vr, args, where, exp, targs, named=None):
+    def construct_variant(self, st, args, where, exp, named=None):
+        vr, targs, env = st[1], st[2] if len(st) > 2 else None, {}
         d = vr.decl
         if d.module is not self.ctx.module and not d.pub:
             self.err(f"{vr.name} is not public", where)
         tps = d.tparams
         bind = {}
-        if targs is not None:
+        if len(st) > 3:                 # through a generic alias: infer the alias's parameters
+            env, tps = dict(zip(tps, targs)), st[3]
+        elif targs is not None:
             if len(targs) != len(tps):
                 self.err(f"{d.name} takes {len(tps)} type arguments, not {len(targs)}", where)
             for tp, a in zip(tps, targs):
@@ -1711,7 +1716,7 @@ class Checker:
                     self.prog.resolve_type(a, self.ctx.module, self.ctx.fd.env, 'targ', where)
         elif exp is not None and exp[0] == 'inst' and exp[1] is d:
             bind = dict(zip(tps, exp[2]))
-        fts = [f[1] for f in vr.fields]
+        fts = [subst(f[1], env) for f in vr.fields]
         names = [f[0] for f in vr.fields]
         order = None
         if named is not None:
@@ -1719,7 +1724,8 @@ class Checker:
             order = self.init_order
         if len(args) != len(fts):
             self.err(f"variant {vr.name} takes {len(fts)} values, not {len(args)}", where)
-        sig = Sig(vr.name, 'ctor', fts, ('inst', d, tuple(('tp', p) for p in tps)), tps, bind=bind)
+        sig = Sig(vr.name, 'ctor', fts, ('inst', d, targs if env else tuple(('tp', p) for p in tps)), tps,
+                  bind=bind)
         sig.variant = vr
         return self.call(sig, None, args, where, exp, order=order)
 
@@ -1746,7 +1752,7 @@ class Checker:
         d = st[1]
         targs = st[2] if len(st) > 2 else None
         if isinstance(d, Variant):
-            return self.construct_variant(d, None, e.where, exp, targs, named=e.inits)
+            return self.construct_variant(st, None, e.where, exp, named=e.inits)
         if not isinstance(d, TypeDecl):
             self.err(f"{d.name} is not a record type", e.where)
         if d.form == 'alias':
@@ -1842,7 +1848,7 @@ class Checker:
             st = self.static_ns(f.e)
             vst = self.static(f) if st is not None and st[0] != 'module' else None
             if vst is not None and isinstance(vst[1], Variant):
-                return self.construct_variant(vst[1], e.args, e.where, exp, vst[2] if len(vst) > 2 else None)
+                return self.construct_variant(vst, e.args, e.where, exp)
             if st is not None and st[0] != 'module':
                 t = self.static_type(st, f.where)
                 if t is None:
@@ -1866,7 +1872,7 @@ class Checker:
             d = st[1]
             ta = st[2] if len(st) > 2 else None
             if isinstance(d, Variant):
-                return self.construct_variant(d, e.args, e.where, exp, ta)
+                return self.construct_variant(st, e.args, e.where, exp)
             if isinstance(d, FnDecl):
                 return self.call(fn_sig(d), None, e.args, e.where, exp, targs=ta, alltargs=True)
             if isinstance(d, TypeDecl):

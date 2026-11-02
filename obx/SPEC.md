@@ -236,7 +236,10 @@ types may use the same variant names. The one exception is the prelude:
 `Some`, `None`, `Ok` and `Err` may be written bare (and also qualified, as
 `Option.Some`), and no other module may declare a top-level name that clashes
 with them. A user type may have variants with those names; they are always
-written qualified.
+written qualified. An alias names the variants of the type it aliases, and a
+generic one may leave out its type arguments, which are then inferred like
+the type's own: with `type R[T] = Result[T, str]`, `R.Ok(3)` is
+`Result[int, str].Ok(3)`, and `R.Ok(v)` is a `match` arm.
 
 A variant with positional fields is built like a call, `Expr.Num(3)`,
 `Option.None` or `None`; one with named fields like a record,
