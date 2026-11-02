@@ -1,0 +1,5 @@
+// SPEC 11: the built-ins are reserved names; declaring a function swap is an error.
+// error: swap
+// error: reserved|built-in
+fn swap(a: int): int { return a + 6 }
+fn main() { println(swap(1)) }

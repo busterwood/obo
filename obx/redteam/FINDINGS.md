@@ -100,3 +100,25 @@ function values and constraint-method results tracked); one-path moves,
 arguments, literals and consuming arms; generic instances with `str`, owned and
 value records, boxed closed types, `sort`, `Map`; string reference counting and
 the extern NUL check; integer traps at every width; globals.
+
+## Status after the fixes
+
+All 25 are fixed. Each `fNN` program moved into a test suite as `rt1_fNN_*`
+(`tests/run`, `tests/error`; F16 is the multi-file `ref/tests/run/rt1_f16_global_cname_clash`).
+`rt.py` reports all 222 cases OK under ASan, UBSan and `OBX_CHECK=1`. Five cases had
+expectations that contradict the decisions above; their headers were corrected (each
+says what it expected before): `const_byte_shl` (a shift count of 8 on a byte
+constant is an error, not 0), `const_fdiv_zero` (error, not `inf`),
+`dead_code_unchecked` (error "unreachable"), `global_decimal_frac` (stays an error),
+`spec_builtin_name_user_fn` (reserved name). Two conformance tests put a statement
+after `exit(...)` (`s11_exit_code`, `s11_exit_zero_early`); they now call `exit`
+inside `if true { ... }`.
+
+How the shared cause of F05 to F10 was fixed: `effects()` is now conservative (it
+treats a call, `try`, a fractional literal or constant, unary minus and every
+arithmetic or comparison operator without a literal operand as a possible effect,
+and it looks inside literal fields), and every place that evaluates one operand
+before another (call arguments in evaluation order, literals in source order,
+operator operands, `p = e`, compound assignment, `swap`, `array`, `for` ranges,
+string indexes) reads the earlier copy value into a C temporary when a later
+operand may have an effect. Function bodies grew by 0.15% on the s05 to s10 tests.

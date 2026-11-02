@@ -1,0 +1,7 @@
+// SPEC 8: a statement after return in the same block is an error (unreachable).
+// error: unreachable
+fn f(): int {
+    return 1
+    let x: int = "no"
+}
+fn main() { println(f()) }

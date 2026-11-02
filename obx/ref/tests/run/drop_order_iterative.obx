@@ -1,0 +1,39 @@
+// The iterative drop glue keeps the order of SPEC 9.2 through boxed, value,
+// array and recursive closed types.
+// expect: 30
+// expect: 31
+// expect: 32
+// expect: 24
+// expect: 23
+// expect: 22
+// expect: 21
+// expect: 20
+// expect: 10
+// expect: 11
+// expect: 12
+// expect: 13
+// expect: -2
+// expect: 7
+// expect: 6
+// expect: -1
+// expect: 3
+// expect: 2
+// expect: -1
+// expect: 5
+// expect: 4
+// expect: 1
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+type V = value record { a: D; s: str; b: D }
+fn (v: mut &V) drop() { println(-1) }
+type R = record { x: D; vs: []V; y: D; o: Option[D] }
+fn (r: mut &R) drop() { println(-2) }
+type L = closed { Nil; Cons(D, L) }
+type T = closed { Leaf(D); Node(T, D, T) }
+fn main() {
+    let r = R{x: D{v: 1}, vs: [V{a: D{v: 2}, s: "x" + "y", b: D{v: 3}}, V{a: D{v: 4}, s: "z", b: D{v: 5}}], y: D{v: 6}, o: Some(D{v: 7})}
+    var l = Nil
+    for i in 10..14 { l = Cons(D{v: i}, move(l)) }
+    let t = Node(Node(Leaf(D{v: 20}), D{v: 21}, Leaf(D{v: 22})), D{v: 23}, Leaf(D{v: 24}))
+    let ds = [[D{v: 30}, D{v: 31}], [D{v: 32}]]
+}

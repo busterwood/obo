@@ -1,4 +1,5 @@
-// expect: inf
+// A constant float division by zero is a compile error (decision F13). Was: expect inf.
+// error: zero
 const A: float = 1.0
 const Z: float = 0.0
 const B: float = A / Z

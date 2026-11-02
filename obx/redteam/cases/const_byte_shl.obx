@@ -1,4 +1,5 @@
-// Bits shifted out of << are lost (7.1).
-// expect: 0
+// Bits shifted out of << are lost (7.1), but a count of 8 is outside 0..7 for byte:
+// in a constant that is a compile error (5.2, decision F24). Was: expect 0.
+// error: shift
 const C: byte = 1 << 8
 fn main() { println(int(C)) }

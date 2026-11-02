@@ -1,0 +1,9 @@
+// SPEC 9.4: dropping a long chain of boxed values (here 10 million nodes) does not
+// use stack depth proportional to its length.
+// expect: done
+type L = closed { Nil; Cons(int, L) }
+fn main() {
+    var l = Nil
+    for i in 0..10000000 { l = Cons(i, move(l)) }
+    println("done")
+}

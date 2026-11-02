@@ -1,5 +1,6 @@
-// error: 'd' is moved inside the loop
-// line: 7
+// error: cannot move 'd'
+// error: while
+// line: 8
 type D = record { v: int }
 fn take(d: D): bool { return false }
 fn main() {

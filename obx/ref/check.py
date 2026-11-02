@@ -31,19 +31,6 @@ def is_pod(t):
     return d.value and d.drop is None and all(is_pod(ft) for _, ft in field_types(t))
 
 
-def effects(e):
-    if not isinstance(e, N):
-        return False
-    if e.kind in ('call', 'try'):
-        return True
-    for v in e.__dict__.values():
-        if isinstance(v, N) and effects(v):
-            return True
-        if isinstance(v, list) and any(effects(x) for x in v if isinstance(x, N)):
-            return True
-    return False
-
-
 def is_lit(e):
     return e.kind in ('int', 'frac')
 
@@ -118,7 +105,7 @@ class Ctx:
     def __init__(self, fd):
         self.fd, self.lines, self.holes, self.ind = fd, [], [], 1
         self.scopes, self.frames, self.loops, self.pending = [], [], [], []
-        self.dead, self.nomove, self.n = False, 0, 0
+        self.dead, self.nomove, self.n = False, [], 0
         self.module = fd.module
 
     def fresh(self, p='t'):
@@ -245,7 +232,8 @@ class Checker:
             ctx.scopes.append(Scope())
         for s in b.stmts:
             if ctx.dead:
-                break
+                self.err("unreachable statement: the code before it always returns, breaks, continues "
+                         "or stops the program", s.where)
             self.push_frame()
             self.stmt(s)
             fr = self.pop_frame()
@@ -288,8 +276,13 @@ class Checker:
                              "borrow is in scope", where)
 
     def overlap(self, a, b):
-        n = min(len(a), len(b))
-        return a[:n] == b[:n]
+        # '*' marks the result of a borrow-returning call: somewhere under the argument.
+        for x, y in zip(a, b):
+            if x == '*' or y == '*':
+                return True
+            if x != y:
+                return False
+        return True
 
     def check_pending(self, root, path, mut, where, move=False):
         """A move or assignment may not touch a place held by a call (or operator) in progress."""
@@ -333,7 +326,7 @@ class Checker:
             if var.state != 'live':
                 self.err(f"'{var.name}' was moved and has no value here", where)
             if self.ctx.nomove:
-                self.err(f"cannot move '{var.name}' inside && or ||", where)
+                self.err(f"cannot move '{var.name}' {self.ctx.nomove[-1]}", where)
             self.frozen(var, 'move', where)
             self.check_pending(var, (), False, where, move=True)
             var.state = 'moved'
@@ -392,6 +385,26 @@ class Checker:
                 self.err(f"cannot {verb} parameter '{name}': declare it `var {name}`", where)
             self.err(f"cannot {verb} '{name}': it is declared with let, not var", where)
         self.err(f"cannot {verb} this place", where)
+
+    def effects(self, e):
+        """Whether evaluating e may run code that changes a value read before it in the statement:
+        a call, try, an operator method or fromFraction. Conservative where types are unknown."""
+        if not isinstance(e, N):
+            return False
+        k, lits = e.kind, ('int', 'char', 'str', 'bool')
+        if k in ('call', 'try', 'frac') or (k == 'un' and e.op == '-' and e.e.kind not in lits):
+            return True
+        if k == 'bin' and (e.op in OPS or e.op in CMPS) and e.l.kind not in lits and e.r.kind not in lits:
+            return True
+        if k == 'name' and self.lookup_var(e.v) is None:
+            d = self.prog.lookup(self.ctx.module, e.v)
+            if isinstance(d, Const) and self.prog.const_value(d)[2] == 'frac':
+                return True
+        for v in e.__dict__.values():
+            for x in (v if isinstance(v, list) else [v]):
+                if any(isinstance(y, N) and self.effects(y) for y in (x if isinstance(x, tuple) else [x])):
+                    return True
+        return False
 
     def snap_val(self, v):
         """Read a place (or compute a value) now, before later side effects in the statement."""
@@ -480,6 +493,12 @@ class Checker:
             return b[1] if b and b[0] == 'arr' else None
         return None
 
+    def self_in_drop(self, v, where):
+        fd = self.ctx.fd
+        if isinstance(fd.owner, TypeDecl) and fd.owner.drop is fd and isinstance(v.root, Var) \
+                and v.root.name == fd.recv_name and v.root.kind == 'param' and not v.path:
+            self.err("a drop method may not assign or replace the whole of its receiver", where)
+
     def s_assign(self, s):
         ctx = self.ctx
         tg = s.target
@@ -507,8 +526,15 @@ class Checker:
         if tg.kind not in ('name', 'field', 'index'):
             self.err("cannot assign to this expression", s.where)
         if s.op is None:
+            # p = e evaluates e first: a value read now must not see the effects of the target
             v = self.expr(s.e, self.place_type(tg))
+            mark = len(ctx.pending)
+            if self.effects(tg):
+                v = self.snap_val(v)
+            if v.cat == 'place' and not is_copy(v.t):
+                self.hold(v, None, object(), s.where)
             p = self.place(tg)
+            del ctx.pending[mark:]
             v = self.coerce(v, p.t, s.where, "the assigned value")
             c = self.consume(v, s.where)
             self.store(p, c, True)
@@ -516,7 +542,8 @@ class Checker:
         p = self.place(tg)
         if p.var is not None and p.var.state != 'live':
             self.err(f"'{p.var.name}' was moved and has no value here", s.where)
-        r = self.binop(s.op, p, s.e, s.where, p.t)
+        lv = self.snap_val(self.rd(p)) if self.effects(s.e) else p
+        r = self.binop(s.op, lv, s.e, s.where, p.t, held=p)
         c = self.consume(self.coerce(r, p.t, s.where, "the result"), s.where)
         live = not (p.var is not None and p.var.state != 'live')
         self.store(p, c, live)
@@ -533,6 +560,7 @@ class Checker:
             v = self.deref(v)
         if v.cat != 'place':
             self.err("cannot assign to a value that is not a place", e.where)
+        self.self_in_drop(v, e.where)
         if v.glob is None:
             if not v.mutable:
                 self.immutable(v, e.where, 'assign to')
@@ -619,7 +647,9 @@ class Checker:
         ctx.ind += 1
         entry = self.snapshot()
         if not infinite:
+            ctx.nomove.append('in a while condition (it runs on every iteration)')
             c = self.cond(s.cond)
+            ctx.nomove.pop()
             self.emit(f"if (!{c}) break;")
         self.loop(s.body, s.where, infinite, entry=entry)
         ctx.ind -= 1
@@ -628,7 +658,7 @@ class Checker:
     def s_break(self, s):
         lp = self.cur_loop(s, 'break')
         self.cleanup(lp.nscopes, lp.nframes)
-        lp.breaks.append(self.snapshot())
+        lp.breaks.append({v: st for v, st in self.snapshot().items() if v in lp.entry})
         self.emit("break;")
         self.ctx.dead = True
 
@@ -648,6 +678,8 @@ class Checker:
         ctx = self.ctx
         if s.b is not None:
             a = self.rd(self.expr(s.a, INT))
+            if self.effects(s.b):
+                a = self.snap_val(a)
             b = self.rd(self.expr(s.b, INT))
             if a.t != INT or b.t != INT:
                 self.err(f"a for range needs int bounds, not {tstr(a.t)} and {tstr(b.t)}", s.where)
@@ -891,11 +923,14 @@ class Checker:
     def x_int(self, e, exp):
         t = exp if exp is not None and exp[0] == 'prim' and (exp[1] in INTS or exp[1] == 'float') else INT
         if t == FLOAT:
-            return Val(repr(float(e.v)), FLOAT, 'rv')
+            return self.fconst(e.v, e.where)
         lo, hi = RANGES[t[1]]
         if not lo <= e.v <= hi:
             self.err(f"integer literal {e.v} does not fit {t[1]} (out of range)", e.where)
         return Val(self.cint(e.v, t), t, 'rv')
+
+    def fconst(self, x, where):
+        return Val(repr(self.prog.cfit((FLOAT, x, 'float'), where)[1]), FLOAT, 'rv')
 
     def x_char(self, e, exp):
         return Val(f"((uint8_t){e.v})", BYTE, 'rv')
@@ -913,7 +948,7 @@ class Checker:
         neg = e.v.startswith('-')
         whole, frac = e.v.lstrip('-').split('.')
         if exp == FLOAT:
-            return Val(repr(float(e.v)), FLOAT, 'rv')
+            return self.fconst(e.v, e.where)
         digits = int(whole + frac) * (-1 if neg else 1)
         lo, hi = RANGES['int']
         if not lo <= digits <= hi:
@@ -1109,6 +1144,8 @@ class Checker:
             self.err("an index takes one expression", e.where)
         v = self.deref(self.expr(e.e, None))
         if v.t == STR:
+            if self.effects(e.items[0]):
+                v = self.snap_val(v)
             i = self.int_index(e.items[0])
             return Val(f"rt_str_byte({v.c}, {i}, {self.W(e.where)})", BYTE, 'rv')
         if v.t[0] != 'arr':
@@ -1168,11 +1205,11 @@ class Checker:
             return self.binop(e.op, lv, r, e.where, exp)
         hint = exp if e.op not in CMPS and exp is not None and exp[0] == 'prim' else None
         lv = self.rd(self.expr(e.l, hint))
-        if effects(e.r):
+        if self.effects(e.r):
             lv = self.snap_val(lv)
         return self.binop(e.op, lv, e.r, e.where, exp)
 
-    def binop(self, op, lv, r, where, exp):
+    def binop(self, op, lv, r, where, exp, held=None):
         """lv: the evaluated left operand; r: the right operand (an AST node or a Val)."""
         lv = self.rd(lv)
         lt = lv.t
@@ -1181,8 +1218,8 @@ class Checker:
         else:
             rexp = INT if op in ('<<', '>>') else lt
             mark = len(self.ctx.pending)
-            if lv.cat == 'place':
-                self.hold(lv, False, object(), where)
+            if (held or lv).cat == 'place':
+                self.hold(held or lv, False, object(), where)
             rv = self.expr(r, rexp)
             del self.ctx.pending[mark:]
         rv = self.rd(rv)
@@ -1251,7 +1288,7 @@ class Checker:
 
     def logic(self, e):
         ctx = self.ctx
-        ctx.nomove += 1
+        ctx.nomove.append('inside && or ||')
         self.push_frame()
         lv = self.rd(self.expr(e.l, BOOL))
         if lv.t != BOOL:
@@ -1269,7 +1306,7 @@ class Checker:
         self.drop_frame(self.pop_frame())
         ctx.ind -= 1
         self.emit("}")
-        ctx.nomove -= 1
+        ctx.nomove.pop()
         return Val(ln, BOOL, 'rv')
 
     def x_try(self, e, exp):
@@ -1363,13 +1400,15 @@ class Checker:
             bind = dict(zip(tps, exp[2]))
         fts = [f[1] for f in vr.fields]
         names = [f[0] for f in vr.fields]
+        order = None
         if named is not None:
             args = self.order_inits(names, named, vr.name, where)
+            order = self.init_order
         if len(args) != len(fts):
             self.err(f"variant {vr.name} takes {len(fts)} values, not {len(args)}", where)
         sig = Sig(vr.name, 'ctor', fts, ('inst', d, tuple(('tp', p) for p in tps)), tps, bind=bind)
         sig.variant = vr
-        return self.call(sig, None, args, where, exp)
+        return self.call(sig, None, args, where, exp, order=order)
 
     def order_inits(self, names, inits, tname, where):
         given = {}
@@ -1382,6 +1421,7 @@ class Checker:
         for n in names:
             if n not in given:
                 self.err(f"field '{n}' of {tname} needs a value", where)
+        self.init_order = [names.index(n) for n, _, _ in inits]
         return [given[n] for n in names]
 
     def x_lit(self, e, exp):
@@ -1425,7 +1465,7 @@ class Checker:
         sig = Sig(d.name, 'ctor', [f[1] for f in d.fields], ('inst', d, tuple(('tp', p) for p in tps)),
                   tps, bind=bind)
         sig.variant = None
-        return self.call(sig, None, args, e.where, exp, fieldnames=names)
+        return self.call(sig, None, args, e.where, exp, fieldnames=names, order=self.init_order)
 
     def x_arrlit(self, e, exp):
         et = exp[1] if exp is not None and exp[0] == 'arr' else None
@@ -1438,7 +1478,7 @@ class Checker:
                 et = v.t
             if v.t != et:
                 self.err(f"array element is {tstr(v.t)}, not {tstr(et)}", it.where)
-            if any(effects(x) for x in e.items[i + 1:]):
+            if any(self.effects(x) for x in e.items[i + 1:]):
                 v = self.snap_val(v)
             vals.append(v)
         if et is None:
@@ -1459,7 +1499,7 @@ class Checker:
     def x_call(self, e, exp):
         f = e.fn
         if f.kind == 'name' and self.lookup_var(f.v) is None:
-            if f.v in BUILTINS:
+            if f.v in BUILTINS and (f.v != 'isNull' or self.prog.lookup(self.ctx.module, f.v) is None):
                 mark = len(self.ctx.pending)
                 r = getattr(self, 'b_' + f.v)(e, exp)
                 del self.ctx.pending[mark:]
@@ -1471,7 +1511,8 @@ class Checker:
                 sig.loc = loc
                 return self.call(sig, None, e.args, e.where, exp)
         targs = None
-        if f.kind == 'index' and f.e.kind == 'field' and self.static_ns(f.e.e) is None and self.static(f) is None:
+        if f.kind == 'index' and f.e.kind == 'field' and self.static_ns(f.e.e) is None and self.static(f) is None \
+                and all(self.typeish(x) for x in f.items):
             targs = [self.texpr(x) for x in f.items]
             f = f.e
         if f.kind == 'field':
@@ -1513,6 +1554,15 @@ class Checker:
             self.err(f"{d.name} is not a function", e.where)
         return self.call_value(self.expr(f, None), e, exp)
 
+    def typeish(self, x):
+        """Whether x (in x.m[...]) can be a type argument rather than an index."""
+        if x.kind == 'type':
+            return True
+        if x.kind in ('borrow', 'index'):
+            return self.typeish(x.e)
+        st = self.static_ns(x) if x.kind in ('name', 'field') else None
+        return st is not None and (st[0] == 'type' or isinstance(st[1], TypeDecl))
+
     def call_value(self, fv, e, exp):
         fv = self.rd(fv)
         if fv.t[0] != 'fn':
@@ -1553,6 +1603,8 @@ class Checker:
             self.err(f"{fd.label} is not public in module {fd.module.name}", where)
 
     def method_sig(self, t, name, where, quiet=False):
+        if name == 'drop' and t[0] == 'tp' and self.prog.iface_members(t, name):
+            self.err("a drop method cannot be called directly", where)
         if t[0] == 'tp':
             ms = [m for m in self.prog.iface_members(t, name) if m[0] is not None]
             if not ms:
@@ -1576,7 +1628,8 @@ class Checker:
         unify(fd.recv_type, t, bind, set(fd.tps))
         return fn_sig(fd, bind)
 
-    def call(self, sig, recv, args, where, exp, targs=None, alltargs=False, op=False, fieldnames=None):
+    def call(self, sig, recv, args, where, exp, targs=None, alltargs=False, op=False, fieldnames=None,
+             order=None):
         ctx = self.ctx
         tps = set(sig.tps)
         bind = dict(sig.bind)
@@ -1594,9 +1647,10 @@ class Checker:
         if len(allargs) != len(sig.params):
             n = len(sig.params) - (1 if recv is not None else 0)
             self.err(f"{sig.label} takes {n} arguments, not {len(args)}", where)
-        vals, cid, mark = [], object(), len(ctx.pending)
-        for i, a in enumerate(allargs):
-            pt = sig.params[i]
+        vals, cid, mark = [None] * len(allargs), object(), len(ctx.pending)
+        order = order or list(range(len(allargs)))      # evaluation order (source order of a literal)
+        for pos, i in enumerate(order):
+            a, pt = allargs[i], sig.params[i]
             isrecv = recv is not None and i == 0
             what = f"the receiver of {sig.label}" if isrecv else \
                 f"argument {i + (0 if recv is not None else 1)} of {sig.label}"
@@ -1618,7 +1672,7 @@ class Checker:
                 if not unify(pt[1], v.t[1], bind, tps):
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)
                 self.hold(v, pt[2], cid, where)
-                vals.append(('b', v))
+                vals[i] = ('b', v)
             else:
                 if v.t[0] == 'ref':
                     v = self.deref(v)
@@ -1626,11 +1680,11 @@ class Checker:
                     self.err(f"{what} has no value", where)
                 if not unify(pt, v.t, bind, tps):
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)
-                if any(effects(x) for x in allargs[i + 1:] if isinstance(x, N)):
+                if any(self.effects(allargs[j]) for j in order[pos + 1:]):
                     v = self.snap_val(v)
                 if v.cat == 'place' and not is_copy(v.t):
                     self.hold(v, None, cid, where)
-                vals.append(('v', v))
+                vals[i] = ('v', v)
         missing = [tp.name for tp in sig.tps if tp not in bind]
         if missing:
             self.err(f"cannot infer the type argument {', '.join(missing)} of {sig.label}; give it "
@@ -1677,7 +1731,7 @@ class Checker:
             n = ctx.fresh('b')
             self.emit(f"{self.T(ret[1])}* {n} = {text};")
             root = src.root if src is not None else None
-            path = src.path if src is not None else ()
+            path = src.path + ('*',) if src is not None else ()
             return Val(n, ret, 'rv', root=root, path=path)
         return self.holdtmp(text, ret)
 
@@ -1759,6 +1813,8 @@ class Checker:
         self.nargs(e, 3)
         a = self.arr_arg(e, True)
         i = self.rd(self.expr(e.args[1], INT))
+        if self.effects(e.args[2]):
+            i = self.snap_val(i)
         j = self.rd(self.expr(e.args[2], INT))
         if i.t != INT or j.t != INT:
             self.err("swap needs int indexes", e.where)
@@ -1771,6 +1827,7 @@ class Checker:
         p = self.expr(e.args[0], None)
         if p.t[0] != 'ref' or not p.t[2]:
             self.err(f"replace needs mut &place as its first argument, not {tstr(p.t)}", e.where)
+        self.self_in_drop(p, e.where)
         p = self.builtin_borrow(p, True, e.where)
         t = p.t[1]
         v = self.coerce(self.expr(e.args[1], t), t, e.where, "the new value")
@@ -1799,6 +1856,8 @@ class Checker:
         n = self.rd(self.expr(e.args[0], INT))
         if n.t != INT:
             self.err("array needs an int length", e.where)
+        if self.effects(e.args[1]):
+            n = self.snap_val(n)
         et = exp[1] if exp is not None and exp[0] == 'arr' else None
         v = self.rd(self.expr(e.args[1], et))
         if not is_copy(v.t):
@@ -1852,7 +1911,7 @@ class Checker:
 
     def const_init(self, e, t):
         if t[0] == 'prim':
-            v = self.prog.const_as(self.prog.fold(e, self.ctx.module), t, e.where)
+            v = self.prog.const_as(self.prog.fold(e, self.ctx.module, t), t, e.where)
             if t == STR:
                 return self.H('str', v)
             if t == BOOL:

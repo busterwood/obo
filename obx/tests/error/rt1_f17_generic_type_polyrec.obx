@@ -1,0 +1,8 @@
+// SPEC 6.4: instantiation must terminate, for types too (a generic type naming a
+// larger instance of itself).
+// error: terminate
+type T[A] = record { next: Option[T[Option[A]]]; v: int }
+fn main() {
+    let t: T[int] = T{next: None, v: 1}
+    println(t.v)
+}

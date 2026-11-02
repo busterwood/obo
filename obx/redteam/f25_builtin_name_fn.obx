@@ -1,5 +1,0 @@
-// A module may declare a function named like a built-in (swap), but calls
-// still go to the built-in.
-// expect: 7
-fn swap(a: int): int { return a + 6 }
-fn main() { println(swap(1)) }

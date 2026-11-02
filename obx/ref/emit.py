@@ -49,6 +49,15 @@ class Emitter:
         if k in ('tp', 'self'):
             raise CompileError(f"internal error: unsubstituted type {tstr(t)}")
         if t not in self.names:
+            if depth(t) > MAX_DEPTH + 8:
+                ds, x = [], t
+                while x[0] in ('inst', 'arr', 'ref') and (x[0] != 'inst' or x[2]):
+                    ds += [x[1]] if x[0] == 'inst' else []
+                    x = x[2][0] if x[0] == 'inst' else x[1]
+                d = next((y for y in ds if not y.module.is_std), ds[0] if ds else None)
+                raise CompileError(f"instantiation of type {d.name if d else tstr(t)[:40]} does not terminate: "
+                                   f"its type arguments grow without bound ({tstr(t)[:80]}...)",
+                                   d.where if d else '')
             if k == 'fn':
                 ps = ', '.join(self.ctype(p) for p in t[1]) or 'void'
                 r = self.ctype(t[2])
@@ -89,6 +98,21 @@ class Emitter:
             return f"rt_str_dup({c})"
         return f"{self.glue_fn('dup', t)}({c})"
 
+    def flat(self, t):
+        """Dropping t frees memory only (no drop method, no boxed value): it may run inline."""
+        if t[0] != 'inst':
+            return t[0] != 'arr' or self.flat(t[1])
+        return t[1].value and t[1].drop is None and all(self.flat(ft) for _, ft in field_types(t))
+
+    def fdrop(self, t, loc):
+        """Drop the field or element at loc inside a dbody action: now if flat, else pushed."""
+        if pod(t):
+            return ''
+        if t == STR:
+            return f"rt_str_drop({loc});"
+        b = self.glue_fn('dbody', t)
+        return f"{b}(&{loc});" if self.flat(t) else f"rt_dpush({b}, &{loc});"
+
     def glue_fn(self, kind, t):
         key = (kind, t)
         if key not in self.glue:
@@ -101,30 +125,37 @@ class Emitter:
         body = []
         if kind == 'drop':
             self.protos.append(f"static void {n}({ct} v);")
+            self.bodies.append(f"static void {n}({ct} v) {{ rt_drun({self.glue_fn('dbody', t)}, &v); }}")
+            return
+        if kind == 'dbody':
+            # Drop as actions on an explicit stack (rt_drun): no C recursion per boxed value, and
+            # the order of SPEC 9.2 is kept (fields last to first, elements first to last).
+            self.protos.append(f"static void {n}(void* p);")
             if t[0] == 'arr':
-                et = t[1]
+                et, ec = t[1], self.ctype(t[1])
+                body = ["obx_arr* a = p;", "if (a->data) rt_dpush(rt_free_act, a->data);"]
                 if not pod(et):
-                    body.append(f"for (int64_t i = 0; i < v.len; i++) "
-                                f"{self.drop_c(et, f'(({self.ctype(et)}*)v.data)[i]')};")
-                body.append("rt_arr_free(v);")
+                    if self.flat(et):
+                        body.append(f"for (int64_t i = 0; i < a->len; i++) {self.fdrop(et, f'(({ec}*)a->data)[i]')}")
+                    else:
+                        body.append(f"for (int64_t i = a->len - 1; i >= 0; i--) "
+                                    f"rt_dpush({self.glue_fn('dbody', et)}, &(({ec}*)a->data)[i]);")
             else:
-                d = t[1]
-                sep = '.' if d.value else '->'
-                if d.drop is not None:
-                    body.append(f"{self.instance(d.drop, t[2])}(&v);")
-                if d.form == 'record':
-                    body += [self.drop_c(ft, f"v{sep}f_{fn}") + ';' for fn, ft in reversed(field_types(t))]
+                d, env = t[1], decl_env(t)
+                if d.value:
+                    body = [f"{ct}* v = p;"] + ([f"{self.instance(d.drop, t[2])}(v);"] if d.drop else [])
                 else:
-                    env = decl_env(t)
-                    body.append(f"switch (v{sep}tag) {{")
+                    body = ([f"{self.instance(d.drop, t[2])}(({ct}*)p);"] if d.drop else []) + \
+                        [f"{ct} v = *({ct}*)p;", "rt_dpush(rt_free_act, v);"]
+                if d.form == 'record':
+                    body += [self.fdrop(ft, f"v->f_{fn}") for fn, ft in field_types(t)]
+                else:
+                    body.append("switch (v->tag) {")
                     for vr in d.variants:
-                        ds = [self.drop_c(subst(ft, env), f"v{sep}u.V_{vr.name}.f_{fn}") + ';'
-                              for fn, ft, _ in reversed(vr.fields)]
+                        ds = [self.fdrop(subst(ft, env), f"v->u.V_{vr.name}.f_{fn}") for fn, ft, _ in vr.fields]
                         body.append(f"case {vr.index}: {' '.join(ds)} break;")
                     body.append("}")
-                if not d.value:
-                    body.append("rt_free(v);")
-            self.bodies.append(f"static void {n}({ct} v) {{\n  " + '\n  '.join(body) + "\n}")
+            self.bodies.append(f"static void {n}(void* p) {{\n  " + '\n  '.join(body) + "\n}")
             return
         self.protos.append(f"static {ct} {n}({ct} v);")
         d = t[1]
@@ -224,12 +255,14 @@ class Emitter:
                     if fd.extern not in ('c', '') and fd.extern not in libs:
                         libs.append(fd.extern)
         entry = self.instance(main, ())
-        globs = []
+        globs, gdrops = [], []
         for m in self.prog.modules.values():
             for g in m.scope.values():
                 if g.__class__.__name__ == 'Global':
                     c, holes = g.init
                     globs.append(f"static {self.ctype(g.ty)} {g.cname} = {self.render(c, holes, {})};")
+                    if not pod(g.ty):
+                        gdrops.insert(0, self.drop_c(g.ty, g.cname) + ';')
         while self.work or self.gluework:
             if self.work:
                 self.make_instance(*self.work.pop())
@@ -260,6 +293,6 @@ class Emitter:
             out.append(f"static struct {{ int64_t rc; int64_t len; char data[{len(b) + 1}]; }} {n} = "
                        f"{{-1, {len(b)}, {cstr(b)}}};")
         out += externs + globs + self.protos + self.bodies
-        out.append(f"int main(int argc, char** argv) {{ rt_init(argc, argv); {entry}(); rt_finish(); "
-                   "return 0; }")
+        out.append(f"int main(int argc, char** argv) {{ rt_init(argc, argv); {entry}(); {' '.join(gdrops)} "
+                   "rt_finish(); return 0; }")
         return '\n'.join(out) + '\n', libs

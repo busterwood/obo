@@ -11,6 +11,8 @@ INTS = ('int', 'i32', 'u32', 'u64', 'byte', 'i128', 'u128')
 PRIMS = INTS + ('float', 'bool', 'str', 'ptr')
 INT, BOOL, STR, FLOAT, BYTE, VOID = (('prim', n) for n in ('int', 'bool', 'str', 'float', 'byte', 'void'))
 SELF = ('self',)
+BITS = {'int': 64, 'i32': 32, 'u32': 32, 'u64': 64, 'byte': 8, 'i128': 128, 'u128': 128}
+RESERVED = {'len', 'append', 'pop', 'swap', 'replace', 'move', 'array', 'panic', 'assert', 'exit'}
 RANGES = {'int': (-2**63, 2**63 - 1), 'i32': (-2**31, 2**31 - 1), 'u32': (0, 2**32 - 1),
           'u64': (0, 2**64 - 1), 'byte': (0, 255), 'i128': (-2**127, 2**127 - 1),
           'u128': (0, 2**128 - 1)}
@@ -72,7 +74,7 @@ class Global:
     def __init__(self, ast, mod):
         self.ast, self.module, self.name, self.where, self.pub = ast, mod, ast.name, ast.where, ast.pub
         self.ty, self.value = None, None
-        self.cname = f"g_{mod.cprefix}_{self.name}"
+        self.cname = f"g{len(mod.cprefix)}_{mod.cprefix}_{self.name}"
 
 
 class Module:
@@ -256,6 +258,8 @@ class Program:
                 raise CompileError(f"{name} is declared twice", where)
             if name in PRIMS:
                 raise CompileError(f"{name} is a primitive type and cannot be redeclared", where)
+            if name in RESERVED:
+                raise CompileError(f"{name} is a built-in function; its name is reserved", where)
             mod.scope[name] = d
         for a in decls:
             if a.kind == 'type':
@@ -441,6 +445,9 @@ class Program:
     def check_targs(self, targs, tparams, mod, where):
         env = dict(zip(tparams, targs))
         for p, t in zip(tparams, targs):
+            if t[0] in ('ref', 'slice'):
+                raise CompileError(f"a borrow type ({tstr(t)}) cannot be a type argument (type parameter "
+                                   f"{p.name}): borrows are second class", where)
             if p.copy and not is_copy(t):
                 raise CompileError(f"{tstr(t)} is not a copy type (type parameter {p.name} needs copy)",
                                    where)
@@ -581,39 +588,62 @@ class Program:
             if c.busy:
                 raise CompileError(f"constant {c.name} refers to itself", c.where)
             c.busy = True
+            t = self.resolve_type(c.ast.ty, c.module, {}, 'global', c.where) if c.ast.ty else None
             try:
-                v = self.fold(c.ast.e, c.module)
+                v = self.fold(c.ast.e, c.module, t)
             except CompileError as e:
                 raise CompileError(f"the initializer of const {c.name} is not constant ({e.msg})", c.where)
-            if c.ast.ty:
-                t = self.resolve_type(c.ast.ty, c.module, {}, 'global', c.where)
+            if t is not None:
                 v = (t, self.const_as(v, t, c.where), 'typed')
             c.value = v
             c.busy = False
         return c.value
 
+    def cfit(self, v, where):
+        """Check that a folded number fits its type (an untyped integer: 128 bits)."""
+        ty, x, kind = v
+        if kind == 'int':
+            lo, hi = RANGES[ty[1]] if ty else (-2**127, 2**128 - 1)
+            if not lo <= x <= hi:
+                raise CompileError(f"constant {x} does not fit {tstr(ty) if ty else 'an integer'} (overflow)",
+                                   where)
+        elif kind == 'float':
+            try:
+                x = float(x)
+            except OverflowError:
+                x = float('inf')
+            if x != x or x in (float('inf'), float('-inf')):
+                raise CompileError("float constant out of range (overflow)", where)
+            v = (ty, x, kind)
+        return v
+
+    def cto(self, v, t, where):
+        """A folded value v as the type t (an untyped literal or constant takes the type)."""
+        ty, x, kind = v
+        if ty == t:
+            return v
+        if ty is None and t == FLOAT and kind in ('int', 'frac'):
+            return self.cfit((FLOAT, x, 'float'), where)
+        if ty is None and t[0] == 'prim' and t[1] in INTS and kind == 'int':
+            return self.cfit((t, x, 'int'), where)
+        raise CompileError(f"a {tstr(ty) if ty else kind} constant cannot be {tstr(t)}", where)
+
     def const_as(self, v, t, where):
         """Convert a folded value (type-or-None, pyvalue, kind) to the type t."""
-        ty, x, kind = v
-        if ty is not None and ty != t:
-            raise CompileError(f"a constant of type {tstr(ty)} cannot be {tstr(t)}", where)
-        if t[0] == 'prim' and t[1] in INTS and kind == 'int':
-            lo, hi = RANGES[t[1]]
-            if not lo <= x <= hi:
-                raise CompileError(f"integer literal {x} does not fit {t[1]}", where)
-            return x
-        if t == FLOAT and kind in ('int', 'float', 'frac'):
-            return float(x)
-        if (t == BOOL and kind == 'bool') or (t == STR and kind == 'str'):
-            return x
-        raise CompileError(f"a {kind} constant cannot be {tstr(t)}", where)
+        if (t == BOOL and v[2] == 'bool') or (t == STR and v[2] == 'str'):
+            return v[1]
+        return self.cto(v, t, where)[1]
 
-    def fold(self, e, mod):
+    def fold(self, e, mod, t=None):
+        """Fold a constant expression; t is the declared type (its arithmetic is used)."""
         k = e.kind
+        if t is not None and (t[0] != 'prim' or t[1] not in INTS + ('float',)):
+            t = None
         if k in ('int', 'char'):
-            return (None if k == 'int' else BYTE, e.v, 'int')
+            v = (None if k == 'int' else BYTE, e.v, 'int')
+            return self.cto(v, t, e.where) if t and k == 'int' else v
         if k == 'frac':
-            return (None, e.v, 'frac')
+            return self.cto((None, e.v, 'frac'), t, e.where) if t == FLOAT else (None, e.v, 'frac')
         if k == 'str':
             return (STR, e.v, 'str')
         if k == 'bool':
@@ -628,41 +658,62 @@ class Program:
             if not isinstance(d, Const):
                 raise CompileError(f"{e.v if k == 'name' else e.name} is not a constant", e.where)
             v = self.const_value(d)
-            return v if v[2] != 'typed' else (v[0], v[1], 'float' if v[0] == FLOAT else
-                                              'int' if v[0][1] in INTS else v[0][1])
+            if v[2] == 'typed':
+                return (v[0], v[1], 'float' if v[0] == FLOAT else 'int' if v[0][1] in INTS else v[0][1])
+            return self.cto(v, t, e.where) if t and v[2] in ('int', 'frac') else v
         if k == 'un':
-            ty, x, kind = self.fold(e.e, mod)
+            ty, x, kind = self.fold(e.e, mod, t)
             if e.op == '!' and kind == 'bool':
                 return (ty, not x, kind)
             if e.op == '~' and kind == 'int':
-                return (ty, ~x, kind)
+                return (ty, x ^ (2**BITS[ty[1]] - 1) if ty and ty[1][0] in 'ub' else ~x, kind)
             if e.op == '-' and kind in ('int', 'float'):
-                return (ty, -x, kind)
+                return self.cfit((ty, -x, kind), e.where)
             if e.op == '-' and kind == 'frac':
                 return (ty, x[1:] if x.startswith('-') else '-' + x, kind)
         if k == 'bin':
-            a, b = self.fold(e.l, mod), self.fold(e.r, mod)
-            if a[2] != b[2] or (a[0] and b[0] and a[0] != b[0]):
-                raise CompileError(f"operator {e.op} needs operands of the same type", e.where)
-            ty, x, y, kind = a[0] or b[0], a[1], b[1], a[2]
             import operator as o
-            ar = {'+': o.add, '-': o.sub, '*': o.mul}
             cmp = {'==': o.eq, '!=': o.ne, '<': o.lt, '<=': o.le, '>': o.gt, '>=': o.ge}
+            sub = None if e.op in cmp or e.op in ('&&', '||') else t
+            a = self.fold(e.l, mod, sub)
+            b = self.fold(e.r, mod, None if e.op in ('<<', '>>') else sub)
+            if e.op in ('<<', '>>'):
+                if a[2] != 'int' or b[2] != 'int':
+                    raise CompileError(f"{e.op} needs integer constants", e.where)
+                w = BITS[a[0][1]] if a[0] else 128
+                if not 0 <= b[1] < w:
+                    raise CompileError(f"shift count {b[1]} out of range in a constant", e.where)
+                if e.op == '>>':
+                    return (a[0], a[1] >> b[1], 'int')
+                r = a[1] << b[1]
+                if a[0]:
+                    r &= 2**w - 1
+                    if a[0][1][0] not in 'ub' and r >= 2**(w - 1):
+                        r -= 2**w
+                return self.cfit((a[0], r, 'int'), e.where)
+            if a[0] is None and b[0] is not None:
+                a = self.cto(a, b[0], e.where)
+            elif b[0] is None and a[0] is not None:
+                b = self.cto(b, a[0], e.where)
+            if a[2] != b[2] or a[0] != b[0]:
+                raise CompileError(f"operator {e.op} needs operands of the same type", e.where)
+            ty, x, y, kind = a[0], a[1], b[1], a[2]
+            ar = {'+': o.add, '-': o.sub, '*': o.mul}
             if e.op in cmp and kind != 'frac':
                 return (BOOL, cmp[e.op](x, y), 'bool')
+            if kind in ('int', 'float') and e.op in ('/', '%') and y == 0:
+                raise CompileError("division by zero in a constant", e.where)
             if kind == 'int':
                 if e.op in ar:
-                    return (ty, ar[e.op](x, y), kind)
+                    return self.cfit((ty, ar[e.op](x, y), kind), e.where)
                 if e.op in ('/', '%'):
-                    if y == 0:
-                        raise CompileError("division by zero in a constant", e.where)
                     q = abs(x) // abs(y) * (1 if (x >= 0) == (y >= 0) else -1)
-                    return (ty, q if e.op == '/' else x - q * y, kind)
-                bit = {'&': o.and_, '|': o.or_, '^': o.xor, '<<': o.lshift, '>>': o.rshift}
+                    return self.cfit((ty, q if e.op == '/' else x - q * y, kind), e.where)
+                bit = {'&': o.and_, '|': o.or_, '^': o.xor}
                 if e.op in bit:
                     return (ty, bit[e.op](x, y), kind)
             if kind == 'float' and e.op in ('+', '-', '*', '/'):
-                return (ty, ar[e.op](x, y) if e.op != '/' else x / y, kind)
+                return self.cfit((ty, ar[e.op](x, y) if e.op != '/' else x / y, kind), e.where)
             if kind == 'str' and e.op == '+':
                 return (ty, x + y, kind)
             if kind == 'bool' and e.op in ('&&', '||'):
@@ -703,7 +754,7 @@ class Program:
                 cands = [(mode or 'assoc', ps, r) for mode, ps, r, _ in self.iface_members(t, m.name)]
             else:
                 fd = self.methods_of(t).get(m.name)
-                if fd is None:
+                if fd is None or (t[0] == 'inst' and fd is t[1].drop):
                     cands = []
                 elif not (fd.pub or fd.module is mod):
                     return f"its method '{m.name}' is not public"

@@ -1,0 +1,11 @@
+// SPEC 14: too deep a recursion stops the program with exit code 4.
+// expect: start
+// exit: 4
+fn f(n: int): int {
+    if n == 0 { return 0 }
+    return f(n - 1) + 1
+}
+fn main() {
+    println("start")
+    println(f(1000000000))
+}

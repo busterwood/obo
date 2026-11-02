@@ -1,0 +1,4 @@
+// SPEC 5.2: a constant is folded in the arithmetic of its type: ~0 as u32 is 0xffffffff.
+// expect: 4294967295
+const C: u32 = ~0
+fn main() { println(int(C)) }

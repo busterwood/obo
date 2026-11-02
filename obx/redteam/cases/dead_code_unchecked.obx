@@ -1,5 +1,5 @@
-// Statements after return are still checked (the spec has no unreachable-code exemption).
-// error: str|int
+// A statement after return is an error: unreachable (SPEC 8, decision F23). Was: error str|int.
+// error: unreachable
 fn f(): int {
     return 1
     let x: int = "no"

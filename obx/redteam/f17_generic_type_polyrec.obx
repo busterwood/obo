@@ -1,8 +1,0 @@
-// SPEC 6.4: instantiation must terminate. A generic type naming a larger
-// instance of itself makes the emitter loop forever (no depth limit for types).
-// error: terminate|instan
-type T[A] = record { next: Option[T[Option[A]]]; v: int }
-fn main() {
-    let t: T[int] = T{next: None, v: 1}
-    println(t.v)
-}

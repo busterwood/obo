@@ -1,7 +1,0 @@
-// Statements after a return are not checked at all.
-// error: str|int
-fn f(): int {
-    return 1
-    let x: int = "no"
-}
-fn main() { println(f()) }

@@ -1,9 +1,0 @@
-// Drop glue recurses once per node: dropping a long list overflows the stack
-// although the program has no recursion (SIGSEGV at 1e6 nodes, -O1).
-// expect: done
-type L = closed { Nil; Cons(int, L) }
-fn main() {
-    var l = Nil
-    for i in 0..1000000 { l = Cons(i, move(l)) }
-    println("done")
-}

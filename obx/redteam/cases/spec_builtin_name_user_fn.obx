@@ -1,4 +1,4 @@
-// A top-level function may use a name that is a built-in; the module's declaration is visible.
-// expect: 7
+// The built-ins are reserved names (SPEC 11, decision F25). Was: expect 7.
+// error: reserved
 fn swap(a: int): int { return a + 6 }
 fn main() { println(swap(1)) }

@@ -1,4 +1,4 @@
-// Compiler traceback (ZeroDivisionError in sema.fold).
+// SPEC 5.2: a constant float division by zero is a compile error (not inf).
 // error: zero
 const A: float = 1.0
 const Z: float = 0.0

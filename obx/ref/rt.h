@@ -8,6 +8,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <signal.h>
+#include <sys/resource.h>
 
 typedef struct { int64_t rc; int64_t len; char data[]; } obx_str;
 typedef struct { void* data; int64_t len, cap; } obx_arr;
@@ -44,7 +46,56 @@ static void* rt_alloc(size_t n) {
 }
 static void rt_free(void* p) { free(p); rt_live--; }
 
-static void rt_init(int argc, char** argv) { rt_argc = argc; rt_argv = argv; }
+/* Drop actions: drop glue pushes the parts of a value instead of recursing (SPEC 9.4). */
+typedef void (*rt_dfn)(void*);
+typedef struct { rt_dfn f; void* p; } rt_dact;
+static rt_dact* rt_ds;
+static int64_t rt_dn, rt_dcap;
+static void rt_dpush(rt_dfn f, void* p) {
+    if (rt_dn == rt_dcap) {
+        rt_dcap = rt_dcap ? rt_dcap * 2 : 256;
+        rt_ds = realloc(rt_ds, (size_t)rt_dcap * sizeof *rt_ds);
+        if (!rt_ds) rt_trap(2, "out of memory", "runtime");
+    }
+    rt_ds[rt_dn].f = f; rt_ds[rt_dn++].p = p;
+}
+static void rt_drun(rt_dfn f, void* p) {
+    int64_t base = rt_dn;
+    f(p);
+    while (rt_dn > base) { rt_dact a = rt_ds[--rt_dn]; a.f(a.p); }
+}
+static void rt_free_act(void* p) { rt_free(p); }
+
+/* Stack overflow (SPEC 14, exit 4): a SIGSEGV near the stack, caught on an alternate stack. */
+static char* rt_stack_top;
+static size_t rt_stack_max;
+static void rt_segv(int sig, siginfo_t* si, void* uc) {
+    char* a = si->si_addr;
+    (void)uc;
+    if (a <= rt_stack_top && (size_t)(rt_stack_top - a) <= rt_stack_max + (1 << 20)) {
+        static const char m[] = "obx: stack overflow\n";
+        rt_flush();
+        if (write(2, m, sizeof m - 1)) {}
+        _exit(4);
+    }
+    signal(sig, SIG_DFL);           /* any other fault: the default action when it repeats */
+}
+static void rt_init(int argc, char** argv) {
+    static char alt[1 << 16];
+    stack_t ss = {0};
+    struct sigaction sa;
+    struct rlimit rl;
+    rt_argc = argc; rt_argv = argv;
+    rt_stack_top = __builtin_frame_address(0);
+    rt_stack_max = getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY ? rl.rlim_cur : (size_t)1 << 30;
+    ss.ss_sp = alt; ss.ss_size = sizeof alt;
+    sigaltstack(&ss, 0);
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = rt_segv;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, 0);
+}
 static void rt_finish(void) {
     rt_flush();
     const char* c = getenv("OBX_CHECK");
