@@ -1,0 +1,93 @@
+// strings: search, split/join, replace, trim, case, integer parsing and
+// formatting, padding, UTF-8.
+// expect: 7 -1 5 3 0
+// expect: [a|b||c] [] [a|b,c] [x|y|z] [a|b=c]
+// expect: key=k value=v=w | none
+// expect: a-b-c || one
+// expect: hi there hi | hX there hX | hi there hi
+// expect: [x  ] [  x] [x] .cfg | config
+// expect: HELLO, WORLD 1 | hello, world 1 | true false
+// expect: Ok(42) Ok(-42) Ok(7) Err(no digits) Err(no digits) Err(invalid digit at 2) Err(out of range)
+// expect: Ok(-9223372036854775808) Ok(9223372036854775807) Err(out of range)
+// expect: Ok(255) Ok(-5) Ok(35) Err(invalid digit at 1)
+// expect: ff -1a 101 z 0 | 00000000000000ff ffffffffffffffff
+// expect: 007 -007 12345 | 1,234,567 -1,000 999 0
+// expect: [   ab] [ab***] [-ab--] [abcdef]
+// expect: 5 8 | 104 233 8364 128512 | true false false false
+// expect: 65533 65533 65533 65533 65533 | 4 bytes, 2 runes
+// expect: héllo €😀 | true
+// expect: width 5 4 2
+import "strings"
+
+fn show(xs: &[]str, sep: str): str { return "[" + strings.join(xs, sep) + "]" }
+
+fn res(r: Result[int, strings.ParseError]): str {
+    match r {
+        Ok(n) { return "Ok(" + n.toStr() + ")" }
+        Err(e) { return "Err(" + e.toStr() + ")" }
+    }
+}
+
+fn ints(xs: &[]int): str {
+    var s = ""
+    for x in xs {
+        if len(s) > 0 { s += " " }
+        s += x.toStr()
+    }
+    return s
+}
+
+fn main() {
+    let s = "hello, world"
+    println(indexOf(s, "world", 0).toStr() + " " + indexOf(s, "x", 0).toStr() + " " +
+        strings.lastIndexOf("abcabc", "c").toStr() + " " + strings.count("ababab", "ab").toStr() + " " +
+        strings.count("aaa", "b").toStr())
+    println(show(&strings.splitOn("a, b, , c", ", "), "|") + " " + show(&strings.fields("  \t "), "|") + " " +
+        show(&strings.splitN("a,b,c", ",", 2), "|") + " " +
+        show(&strings.fields(" x  y\tz\n"), "|") + " " + show(&strings.splitN("a=b=c", "=", 2), "|"))
+    match strings.cut("k=v=w", "=") {
+        Some(c) { print("key=" + c.before + " value=" + c.after) }
+        None { print("none") }
+    }
+    if strings.cut("kv", "=").isNone() { println(" | none") }
+    println(strings.join(&["a", "b", "c"], "-") + " |" + strings.join(&[], ",") + "| " + strings.join(&["one"], ","))
+    let t = "hi there hi"
+    println(t + " | " + strings.replaceAll(t, "i", "X") + " | " + strings.replaceN(t, "zz", "y", -1))
+    println("[" + strings.trimRight("x  \n") + "  ] [  " + strings.trimLeft("\t x") + "] [" +
+        strings.trimPrefix(strings.trimSuffix("x.txt", ".txt"), "y") + "] " + strings.trimPrefix("a.cfg", "a") +
+        " | " + strings.trimSuffix("config", "x"))
+    println(strings.toUpper(s) + " 1 | " + strings.toLower("HeLLo, World") + " 1 | " +
+        strings.equalFold("Go", "GO").toStr() + " " + strings.equalFold("Go", "Goo").toStr())
+
+    println(res(strings.parseInt("42")) + " " + res(strings.parseInt("-42")) + " " + res(strings.parseInt("+7")) +
+        " " + res(strings.parseInt("")) + " " + res(strings.parseInt("-")) + " " + res(strings.parseInt("12x4")) +
+        " " + res(strings.parseInt("99999999999999999999")))
+    println(res(strings.parseInt("-9223372036854775808")) + " " + res(strings.parseInt("9223372036854775807")) +
+        " " + res(strings.parseInt("9223372036854775808")))
+    println(res(strings.parseIntBase("FF", 16)) + " " + res(strings.parseIntBase("-101", 2)) + " " +
+        res(strings.parseIntBase("z", 36)) + " " + res(strings.parseIntBase("12", 2)))
+    println(strings.hex(255) + " " + strings.hex(-26) + " " + strings.formatInt(5, 2) + " " +
+        strings.formatInt(35, 36) + " " + strings.formatInt(0, 7) + " | " + strings.hex64(u64(255)) + " " +
+        strings.hex64(u64(0) -% u64(1)))
+    println(strings.zeroPad(7, 3) + " " + strings.zeroPad(-7, 3) + " " + strings.zeroPad(12345, 3) + " | " +
+        strings.groupDigits(1234567, ",") + " " + strings.groupDigits(-1000, ",") + " " +
+        strings.groupDigits(999, ",") + " " + strings.groupDigits(0, ","))
+    println("[" + strings.padLeft("ab", 5, ' ') + "] [" + strings.padRight("ab", 5, '*') + "] [" +
+        strings.center("ab", 5, '-') + "] [" + strings.padLeft("abcdef", 3, ' ') + "]")
+
+    let u = "h\xC3\xA9llo"
+    println(strings.runeCount(u).toStr() + " " + strings.runeCount("\xE2\x82\xAC\xF0\x9F\x98\x80abc\xC3\xA9xy").toStr() +
+        " | " + ints(&strings.runes("h\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80")) + " | " +
+        strings.isValidUtf8(u).toStr() + " " + strings.isValidUtf8("\xC0\xAF").toStr() + " " +
+        strings.isValidUtf8("\xED\xA0\x80").toStr() + " " + strings.isValidUtf8("\xE2\x82").toStr())
+    // overlong, surrogate, too large, stray continuation, truncated
+    let bad = "\xC0\xAF\xED\xA0\x80\xF4\x90\x80\x80\x80\xE2\x82"
+    var firsts: []int = []
+    for i in [0, 2, 5, 9, 10] { append(mut &firsts, strings.decodeAt(bad, i).rune) }
+    println(ints(&firsts) + " | " + len(strings.fromRune(0x1F600)).toStr() + " bytes, " +
+        strings.runeCount(strings.fromRune(0xE9) + strings.fromRune(0x20AC)).toStr() + " runes")
+    let back = strings.fromRunes(&[104, 233, 108, 108, 111, 32, 8364, 128512])
+    println(back + " | " + (strings.fromRunes(&strings.runes(back)) == back).toStr())
+    println("width " + strings.displayWidth("h\xC3\xA9llo").toStr() + " " + strings.displayWidth("\xE4\xBD\xA0\xE5\xA5\xBD").toStr() +
+        " " + strings.displayWidth("\xF0\x9F\x98\x80").toStr())
+}
