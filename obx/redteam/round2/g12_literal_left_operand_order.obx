@@ -5,7 +5,7 @@
 // expect: f
 // expect: 3
 type Fx = value record { v: int }
-fn (Fx) fromFraction(units: int, scale: int): Fx { println("lit"); return Fx{v: units} }
+fn (Fx) fromFraction(units: i128, scale: int): Fx { println("lit"); return Fx{v: int(units)} }
 fn (a: Fx) add(b: Fx): Fx { return Fx{v: a.v + b.v} }
 fn f(): Fx { println("f"); return Fx{v: 1} }
 fn main() {

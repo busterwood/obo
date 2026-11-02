@@ -1,0 +1,9 @@
+// Red-team round 2, g03: for x in g[..][0] freezes g for the loop body.
+// error: borrowed
+fn main() {
+    var g: [][]str = [["a" + "", "b" + ""]]
+    for x in g[..][0] {
+        g = []
+        println(x)
+    }
+}

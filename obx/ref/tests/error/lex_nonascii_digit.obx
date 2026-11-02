@@ -1,0 +1,4 @@
+// The lexer is ASCII (SPEC 2): a superscript digit is not a digit (it crashed int()).
+// error: unexpected character U+00B2
+// line: 4
+fn main() { let x = 1² }

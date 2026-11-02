@@ -109,7 +109,7 @@ class Ctx:
     def __init__(self, fd):
         self.fd, self.lines, self.holes, self.ind = fd, [], [], 1
         self.scopes, self.frames, self.loops, self.pending = [], [], [], []
-        self.dead, self.nomove, self.n = False, [], 0
+        self.dead, self.nomove, self.n, self.tail = False, [], 0, None
         self.module = fd.module
         self.outer, self.caps, self.lifted = None, {}, []     # closures (SPEC 4.6)
 
@@ -147,7 +147,28 @@ class Checker:
 
     def drop(self, c, t):
         if not is_pod(t):
-            self.emit(self.H('drop', t, c) + ';')
+            if self.ctx.tail is not None:
+                self.ctx.tail.append((c, t))
+            else:
+                self.emit(self.H('drop', t, c) + ';')
+
+    def in_drop(self):
+        fd = self.ctx.fd
+        return isinstance(getattr(fd, 'owner', None), TypeDecl) and fd.owner.drop is fd
+
+    def exit_drops(self, drops):
+        """Run drops() for leaving the function. In a drop method its drops are deferred: pushed on
+        the drop worklist (in reverse, so they run in order) to run as soon as the method returns,
+        so a method that moves a child into a local does not drop the child by recursion (SPEC 9.4).
+        Nothing of the method runs after them, so the order is that of SPEC 9.2."""
+        ctx = self.ctx
+        if not self.in_drop():
+            return drops()
+        ctx.tail = ctx.tail if ctx.tail is not None else []
+        drops()
+        tail, ctx.tail = ctx.tail, None
+        for c, t in reversed(tail):
+            self.emit(self.H('ddrop', t, c) + ';')
 
     def dup(self, c, t):
         return c if is_pod(t) else self.H('dup', t, c)
@@ -175,14 +196,14 @@ class Checker:
         if fd.name == 'main' and fd.owner is None and fd.module is self.prog.main:
             if fd.params or fd.ret != VOID or fd.tps:
                 self.err("main takes no parameters and returns nothing", fd.where)
-        self.block(fd.ast.body, scope=False)
+        self.block(fd.ast.body, scope=False, top=True)
         if not ctx.dead:
             if fd.ret == NEVER:
                 self.err(f"{fd.label} returns never, but it may reach its end: every path must end in a "
                          "call to a never function or a loop without break", fd.where)
             if fd.ret != VOID:
                 self.err(f"{fd.label} may reach its end without a return", fd.where)
-            self.drop_scope(sc)
+            self.exit_drops(lambda: self.drop_scope(sc))
         fd.template, fd.lifted = (ctx.lines, ctx.holes), ctx.lifted
         self.ctx = None
 
@@ -246,7 +267,7 @@ class Checker:
         self.restore(live[0])
         self.ctx.dead = False
 
-    def block(self, b, scope=True):
+    def block(self, b, scope=True, top=False):
         ctx = self.ctx
         if scope:
             ctx.scopes.append(Scope())
@@ -262,6 +283,8 @@ class Checker:
             stop = ctx.dead and s.kind in ('return', 'break', 'continue', 'expr')
             fr = self.pop_frame()
             if not ctx.dead:
+                if top and s is b.stmts[-1] and self.in_drop():
+                    ctx.tail = []           # the last statement's temporaries: exit drops too
                 self.drop_frame(fr)
         ctx.dead = ctx.dead or unreachable
         if scope:
@@ -278,9 +301,12 @@ class Checker:
         del self.ctx.pending[m:]
         return self.ctx.frames.pop()
 
-    def holdtmp(self, c, t):
+    def holdtmp(self, c, t, src=None):
+        """c evaluated now into a C variable; a slice keeps the root and path of src (SPEC 4.2a)."""
         n = self.ctx.fresh('t')
         self.emit(f"{self.T(t)} {n} = {c};")
+        if t[0] == 'slice' and src is not None:
+            return Val(n, t, 'rv', root=src.root, path=src.path)
         if is_pod(t):
             return Val(n, t, 'rv')
         tmp = Tmp(n, t)
@@ -450,7 +476,7 @@ class Checker:
     def snap_val(self, v):
         """Read a place (or compute a value) now, before later side effects in the statement."""
         if v.cat == 'rv' and v.t != VOID and v.t[0] != 'ref' and not v.c.replace('_', 'a').isalnum():
-            return self.holdtmp(v.c, v.t)
+            return self.holdtmp(v.c, v.t, v)
         if v.cat != 'place' or v.t[0] == 'ref' or not is_copy(v.t):
             return v
         return self.holdtmp(self.dup(v.c, v.t), v.t)
@@ -662,7 +688,13 @@ class Checker:
         if p.var is not None and p.var.state != 'live':
             self.err(f"'{p.var.name}' was moved and has no value here", s.where)
         lv = self.snap_val(self.rd(p)) if self.effects(s.e) else p
-        r = self.binop(s.op, lv, s.e, s.where, p.t, held=p)
+        # a += b is a = a + b with a evaluated once (SPEC 7.4). A place made of variables, fields
+        # and indexes is found again when it is stored to, as in a = a + b; one reached through a
+        # slice or a call result is held while b is evaluated (rule 3).
+        fixed = tg
+        while fixed.kind in ('field', 'index'):
+            fixed = fixed.e
+        r = self.binop(s.op, lv, s.e, s.where, p.t, held=None if fixed.kind == 'name' else p)
         c = self.consume(self.coerce(r, p.t, s.where, "the result"), s.where)
         live = not (p.var is not None and p.var.state != 'live')
         self.store(p, c, live)
@@ -854,7 +886,7 @@ class Checker:
         if s.e is None:
             if ret != VOID:
                 self.err(f"return needs a {tstr(ret)} value in {fd.label}", s.where)
-            self.cleanup()
+            self.exit_drops(self.cleanup)
             self.emit("return;")
         else:
             if ret == VOID:
@@ -1363,7 +1395,7 @@ class Checker:
         if v.t[0] not in ('arr', 'slice'):
             self.err(f"cannot index a {tstr(v.t)}", e.where)
         if v.cat == 'rv':
-            v = self.holdtmp(v.c, v.t)
+            v = self.holdtmp(v.c, v.t, v)
         mark = len(self.ctx.pending)
         self.hold(v, False, object(), e.where)
         i = self.int_index(e.items[0])
@@ -1406,7 +1438,7 @@ class Checker:
         mark = len(self.ctx.pending)
         self.hold(v, False, object(), e.where)
         lo = self.int_index(e.lo) if e.lo is not None else '0'
-        hi = self.int_index(e.hi) if e.hi is not None else '-1'
+        hi = self.int_index(e.hi) if e.hi is not None else f"({base}).len"
         del self.ctx.pending[mark:]
         n = self.ctx.fresh('sv')
         self.emit(f"obx_slice {n} = rt_sub({base}, {lo}, {hi}, sizeof({self.T(v.t[1])}), {W});")
@@ -1454,7 +1486,12 @@ class Checker:
     def x_bin(self, e, exp):
         if e.op in ('&&', '||'):
             return self.logic(e)
-        if is_lit(e.l) and not is_lit(e.r):
+        if e.l.kind == 'frac' and not is_lit(e.r):
+            # The literal takes the type of the right operand, but its fromFraction runs first
+            # (operands are evaluated left to right): find that type with a discarded check.
+            lv = self.expr(e.l, self.peek_type(e.r, exp if e.op not in CMPS else None))
+            return self.binop(e.op, lv, e.r, e.where, exp)
+        if is_lit(e.l) and not is_lit(e.r):         # an integer literal: no code, so no order
             r = self.rd(self.expr(e.r, exp if e.op not in CMPS else None))
             lt = r.t if e.op not in ('<<', '>>') else exp
             lv = self.rd(self.expr(e.l, lt))
@@ -1464,6 +1501,20 @@ class Checker:
         if self.effects(e.r):
             lv = self.snap_val(lv)
         return self.binop(e.op, lv, e.r, e.where, exp)
+
+    def peek_type(self, e, exp):
+        """The type of e: e is checked, then its code and its effects on the checker are undone."""
+        ctx = self.ctx
+        lines, holes, lifted, pending = len(ctx.lines), len(ctx.holes), len(ctx.lifted), list(ctx.pending)
+        frames, states, caps = [list(f) for f in ctx.frames], self.snapshot(), dict(ctx.caps)
+        try:
+            return self.rd(self.expr(e, exp)).t
+        finally:
+            del ctx.lines[lines:], ctx.holes[holes:], ctx.lifted[lifted:]
+            ctx.pending[:], ctx.caps = pending, caps
+            for f, saved in zip(ctx.frames, frames):
+                f[:] = saved
+            self.restore(states)
 
     def binop(self, op, lv, r, where, exp, held=None):
         """lv: the evaluated left operand; r: the right operand (an AST node or a Val)."""
@@ -1724,15 +1775,22 @@ class Checker:
         sig.variant = None
         return self.call(sig, None, args, e.where, exp, fieldnames=names, order=self.init_order)
 
+    def elem_type(self, t, where):
+        """SPEC 10 rule 1: an element type inferred from a value may not be a borrow or a slice."""
+        if t[0] in ('ref', 'slice', 'clo'):
+            self.err(f"an array element cannot be a borrow, slice or closure ({tstr(t)}): they are second "
+                     "class", where)
+        return t
+
     def x_arrlit(self, e, exp):
         et = exp[1] if exp is not None and exp[0] == 'arr' else None
         vals = []
         for i, it in enumerate(e.items):
-            v = self.rd(self.expr(it, et)) if False else self.expr(it, et)
+            v = self.expr(it, et)
             if v.t[0] == 'ref':
                 v = self.deref(v)
             if et is None:
-                et = v.t
+                et = self.elem_type(v.t, it.where)
             if v.t != et:
                 self.err(f"array element is {tstr(v.t)}, not {tstr(et)}", it.where)
             if any(self.effects(x) for x in e.items[i + 1:]):
@@ -2188,6 +2246,7 @@ class Checker:
             n = self.snap_val(n)
         et = exp[1] if exp is not None and exp[0] == 'arr' else None
         v = self.rd(self.expr(e.args[1], et))
+        self.elem_type(v.t, e.args[1].where)
         if not is_copy(v.t):
             self.err(f"array needs a copy value, and {tstr(v.t)} is not a copy type", e.where)
         ctx = self.ctx

@@ -1,4 +1,5 @@
-// error: borrow
+// Accepted since red-team round 2 (g09): a += b behaves like a = a + b.
+// expect: 2
 fn f(xs: mut &[]int): int { append(xs, 1); return 1 }
 fn main() {
     var xs: []int = [1]

@@ -1,0 +1,19 @@
+// Red-team round 2, g11 (SPEC 5.2, 7.1): +% -% *% are operators, so they may
+// appear in constants; they wrap at the width of the constant's type.
+// expect: -9223372036854775808
+// expect: 4294967295
+// expect: -2147483648
+// expect: 1
+// expect: -2
+const A: int = 9223372036854775807 +% 1
+const B: u32 = 0 -% 1
+const C: i32 = 2147483647 +% 1
+const D: byte = 255 *% 255
+const E: int = 9223372036854775807 *% 2
+fn main() {
+    println(A)
+    println(int(B))
+    println(int(C))
+    println(int(D))
+    println(E)
+}

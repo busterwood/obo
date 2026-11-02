@@ -1,0 +1,9 @@
+// Red-team round 2, g06 (SPEC 10 rule 1): array(n, v) with a slice v would
+// store borrows in elements (a slice is "copy" only as a borrow is).
+// error: borrow|second class
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let a = array(2, xs[0..2])
+    xs = []
+    println(a[1][0])
+}

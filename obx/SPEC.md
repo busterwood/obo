@@ -25,8 +25,10 @@ separate decision from the user; they are the ones to revisit first.
 
 ## 2. Lexical structure
 
-- Source is UTF-8. Comments run from `//` to the end of the line.
-- Identifiers: a letter or `_`, then letters, digits and `_`.
+- Source is UTF-8 (invalid UTF-8 is a compile error). A line ends at LF, CRLF
+  or a lone CR. Comments run from `//` to the end of the line.
+- Identifiers: an ASCII letter or `_`, then ASCII letters, digits and `_`.
+  Outside comments, string and character literals the source is ASCII.
 - A newline ends a statement when the last token on the line is an
   identifier, a literal, `)`, `]`, `}`, or one of `return break continue`.
   `;` also ends a statement. Inside `(` `)` and `[` `]` a newline never ends
@@ -487,7 +489,10 @@ For operands that are not primitive, an operator is a method call:
 
 `str` has built-in `+` (concatenation), `==` and the comparisons (bytewise).
 `bool` has `== != && || !`. A compound assignment `a += b` means `a = a + b`
-with `a` evaluated once.
+with `a` evaluated once: the index expressions in `a` run once, before `b`, and,
+as in `a = a + b`, the value is stored to the place they name after `b` has run
+(so `xs[i] += f(mut &xs)` is allowed, and `i` is checked again when it is
+stored to).
 
 ### 7.5 Calls and method calls
 
@@ -592,7 +597,14 @@ closes a C resource. A `drop` method may not move out of `self` or assign the
 whole of `self`, and no interface member can be satisfied by it.
 
 Dropping a long chain of boxed values (a linked list) does not use stack depth
-proportional to its length.
+proportional to its length. This includes a chain whose `drop` method detaches
+the rest of the chain into a local variable or a temporary
+(`let c = replace(mut &self.next, None)`): what the method still owns when it
+returns is dropped then, before the fields, as section 9.2 says, and without
+nesting. It does not include a method that drops the rest of the chain before
+its last statement (in an inner block, or by passing it to another function
+that drops it): the rest of its body must run after that drop, so each node
+needs a stack frame, and a long enough chain overflows the stack (exit 4).
 
 Globals are dropped when `main` returns, in reverse order of declaration.
 

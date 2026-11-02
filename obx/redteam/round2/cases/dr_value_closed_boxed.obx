@@ -2,7 +2,7 @@
 type L = record { v: int; next: W }
 type W = value closed { End; More(L) }
 fn main() {
-    var w = End
-    for i in 0..300000 { w = More(L{v: i, next: w}) }
+    var w = W.End
+    for i in 0..300000 { w = W.More(L{v: i, next: w}) }
     println("done")
 }

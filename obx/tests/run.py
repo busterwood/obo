@@ -32,7 +32,7 @@ def find_tests():
 
 def parse_directives(path):
     d = {'expect': [], 'exit': 0, 'stdin': [], 'error': [], 'line': None}
-    with open(path, encoding='utf-8') as f:
+    with open(path, encoding='utf-8', errors='replace') as f:
         for raw in f:
             m = DIRECTIVE.match(raw.rstrip('\n').rstrip('\r'))
             if not m:

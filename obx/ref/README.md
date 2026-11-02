@@ -8,7 +8,8 @@ by Python, then to a binary by gcc.
     python3 obxc.py file.obx --run -- a b     # compiles to a temp dir and runs it with arguments
     python3 obxc.py file.obx --emit-c         # prints the generated C
     python3 obxc.py file.obx -L libroot       # another root for `import` paths
-    python3 run_tests.py                      # own tests (tests/run, tests/error)
+    python3 obxc.py --dump-ast a.obx b.obx    # prints the parse tree of each file (see "AST dump")
+    python3 run_tests.py                      # own tests (tests/run, tests/error, tests/unit)
     python3 run_tests.py --conformance        # also the conformance suite in ../tests
 
 A compile error prints `file:line: message` and exits 1 (one error, then stop).
@@ -16,19 +17,59 @@ gcc runs with `-O1 -w`. An `extern "lib"` links `-llib`, or the library by its
 full path when only `libX.so.N` exists (no dev symlink); `"c"` adds nothing.
 Run a program with `OBX_CHECK=1` to make a leak (live objects at exit) exit 5.
 
+## AST dump
+
+`--dump-ast` parses each file given (no imports are followed, nothing is
+checked) and prints its tree in a canonical, line-oriented form, so that the
+self-hosted compiler's parser can be compared with this one
+(`../compiler/run_compare.py`). It is `dump.py`. With several files each dump
+follows a line `== path`, and a file that does not parse prints `error:
+message` there instead (exit status 1); with one file the error goes to stderr.
+
+One node per line, indented two spaces per depth. Each line is `label: body`:
+the label is the field name in the parent (`module` for the root, the index
+for a list item), the body is `-` (absent), `[n]` (a list, whose n items
+follow, labelled `0` to `n-1`), or a node `kind line scalar=value ...` whose
+child fields follow on the next lines in a fixed order. The line is `-` for
+type and pattern tuples that carry none. Scalars are names written bare,
+`true`/`false`, `-` for none, decimal integers, name lists `[a,b]`, and
+quoted strings (`"..."` with printable ASCII as is, `\\`, `\"`, and every
+other byte `\xHH`) for string literals, import paths and extern names.
+
+    module: m.obx
+      imports: [0]
+      decls: [1]
+        0: fn 1 name=main pub=false extern=- cname=-
+          recv: -
+          tparams: [0]
+          params: [0]
+          ret: -
+          body: block 1
+            stmts: [1]
+              0: expr 1
+                e: call 1
+                  fn: name 1 v=println
+                  args: [1]
+                    0: str 1 v="hi"
+
+The node kinds and their fields in order are those of `dump.py`. An index
+or call bracket argument that parses as a type is `targ`; a match arm's
+literals are `int`/`char`/`str` nodes with line `-`.
+
 ## Architecture
 
 | File | Lines | Role |
 |---|---:|---|
-| `syntax.py` | 855 | lexer (with the ASI rule) and parser to `N` nodes |
-| `sema.py` | 845 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
-| `check.py` | 2,285 | checks every function body once and writes it as a C template |
-| `emit.py` | 330 | renders templates once per instance, drop/dup glue, struct layouts |
-| `obxc.py` | 105 | driver |
-| `rt.h` | 450 | the C runtime: allocation counter, traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
+| `syntax.py` | 877 | lexer (with the ASI rule) and parser to `N` nodes |
+| `sema.py` | 853 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
+| `check.py` | 2,344 | checks every function body once and writes it as a C template |
+| `emit.py` | 341 | renders templates once per instance, drop/dup glue, struct layouts |
+| `obxc.py` | 136 | driver |
+| `dump.py` | 298 | `--dump-ast` |
+| `rt.h` | 460 | the C runtime: allocation counter, traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
 | `../lib/std.obx` | 1,400 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
 
-Python total: about 4,440 lines.
+Python total: about 4,880 lines (with `run_tests.py`, 54).
 
 **Checking once, rendering per instance (SPEC 6.2, 6.4).** `check.py` checks a
 function body exactly once, generic or not. A type parameter is an opaque type:
@@ -50,8 +91,12 @@ render-time error is a non-terminating instantiation (type argument depth > 24).
 `str` increments the count, and `s[a..b]` is the same block with another
 offset and length (no allocation). So a str's bytes are not NUL-terminated in
 general, but a NUL always ends its block, so the byte after them can be read.
-Offsets and lengths are 32 bits: a str holds less than 4 GiB (making one
-longer stops the program like out of memory, exit 2). Sixteen bytes matter:
+Offsets and lengths are 32 bits: a str holds less than 4 GiB. Every str with
+new bytes is made by `rt_str_new`, which checks the length, computed in 64 bits
+by its callers (concatenation, `strFromBytes`, so `StrBuf`, `join` and
+`repeat`), against `RT_STR_MAX` (4 GiB − 1) and stops the program like out of
+memory (exit 2). `tests/unit` builds with `-DRT_STR_MAX=100` to test that
+without gigabytes. Sixteen bytes matter:
 a 24-byte str (block, pointer, 64-bit length) is passed in memory, and made
 gcc -O1 four times slower on the largest library test. `[]T` is an inline
 `{data, len, cap}`; a slice `&[T]` / `mut &[T]` is `{data, len}`. `record` and `closed` are pointers to heap structs; `value
@@ -103,8 +148,12 @@ borrow of that array and its elements (rule 3, as 4.2a says). `xs[a..b]`,
 borrows, and on slices; the bounds are checked when the slice is made (exit
 3). A range is a `mut` slice only where a `mut &[T]` is expected (a parameter,
 a typed `let`, `swap`) or when written `mut &xs[a..b]`; `mut` needs a mutable
-array (or a `mut` slice). `&xs` / `mut &xs` and values of type `&[]T` / `mut
-&[]T` convert to a slice where one is expected, including for generic
+array (or a `mut` slice). An indexed slice result keeps its root:
+`xs[0..2][i]` holds `xs` while `i` is evaluated, and `&xs[1..][0]` is a borrow
+rooted at `xs`. A slice cannot be an array element: an array literal or
+`array(n, v)` whose element type would be a borrow, slice or closure is an
+error (a written `[]&[T]` already was). `&xs` / `mut &xs` and values of type
+`&[]T` / `mut &[]T` convert to a slice where one is expected, including for generic
 parameters (`sort(mut &xs)` and `sort(mut &xs[2..10])`). `len`, indexing,
 element assignment, `swap`, `for x in s` and re-slicing take slices;
 `append` and `pop` do not, and a slice does not convert to `&[]T`.
@@ -159,18 +208,29 @@ is a default import root: `import "money"`. See `../lib/README.md`.
 9. An untyped integer constant is folded with exact integers and range-checked
    where it is used (a typed constant at its declaration). A typed constant is
    folded in its type: an out-of-range shift count, a division by zero (also
-   for floats) or a float overflow is a compile error, `<<` wraps and `~` is
-   masked as at run time.
+   for floats), `MIN / -1`, `MIN % -1` or a float overflow is a compile error,
+   `<<`, `+%`, `-%` and `*%` wrap and `~` is masked as at run time. A wrapping
+   operator needs a typed operand (an untyped constant has no width).
 10. A statement after `return`, `break`, `continue`, `panic(...)` or `exit(...)`
     in the same block is an error ("unreachable statement"). Other dead code
     (after `while true {}` without `break`) is still checked, as if reachable.
 11. Operands and arguments are evaluated left to right; a place read early is
     copied to a temporary when a later operand or argument could change it (a
     call, `try`, an operator method), so `a[i] + f()` reads `a[i]` first.
-    Record and variant literals evaluate their fields in source order.
+    Record and variant literals evaluate their fields in source order. A
+   fractional literal on the left takes the type of the right operand, which
+   is found by checking that operand and discarding its code
+   (`Checker.peek_type`), so the literal's `fromFraction` still runs first.
+   An integer literal on the left has no code, so its order does not matter.
 12. Drop glue runs on an explicit stack (`rt_dpush`/`rt_drun`), not by C
     recursion, so dropping a 10-million-node list does not overflow; the order
-    is still that of section 9.2. Deep recursion in user code is caught by a
+    is still that of section 9.2. For a type with a `drop` method, the glue
+    pushes the field drops first, then calls the method; what the method still
+    owns when it returns (its locals and the last statement's temporaries) is
+    copied to the heap and pushed (`rt_ddefer`), so it is dropped after the
+    method and before the fields without nesting (SPEC 9.4): a method that
+    detaches its child does not recurse. One that drops a child before its last
+    statement does, and overflows the stack on a long enough chain (exit 4). Deep recursion in user code is caught by a
     SIGSEGV handler on an alternate stack: `obx: stack overflow`, exit 4.
 13. Slices: see above. A slice of a temporary array can be passed to a call
     but not kept in a `let`. A slice of a global is an error (as a borrow of
@@ -200,6 +260,14 @@ is a default import root: `import "money"`. See `../lib/README.md`.
 18. A set-once global's `get()` is a shared borrow rooted at static data:
     it can be kept in a `let` and freezes nothing. A global of an owned type
     must be `once` (or a constant table).
+
+19. Compound assignment `a op= b` (SPEC 7.4): the index expressions in `a` run
+    once, before `b`, and `a`'s value is read before `b` when `b` may have an
+    effect; the result is stored to the place `a` names, found again after `b`
+    (as `a = a + b` would), so `n += f(mut &n)` and `xs[i] += f(mut &xs)`
+    compile and the index is checked again at the store. When `a` is reached
+    through a slice or a borrow returned by a call (a pointer taken before
+    `b`), it is held while `b` is evaluated (rule 3).
 
 ## Known gaps
 

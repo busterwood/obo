@@ -45,7 +45,8 @@ def run1(path):
     if c.returncode != 0:
         msg = c.stderr.strip()
         if d['error'] is not None:
-            ok = all(any(w.lower() in msg.lower() for w in e.split('|')) for e in d['error'] if e)
+            text = re.sub(r'^\S+:\d+: ', '', msg)  # the file name is not part of the message
+            ok = all(any(w.lower() in text.lower() for w in e.split('|')) for e in d['error'] if e)
             return name, 'OK' if ok else 'WRONGMSG', msg
         return name, 'REJECT', msg
     if d['error'] is not None and not PROBE:

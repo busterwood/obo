@@ -1,0 +1,16 @@
+// Red-team round 2, g04 (SPEC 4.2a, 10): &xs[1..][0] borrows an element of xs,
+// rooted at xs, so it can be kept in a let and returned as a borrow of the
+// borrowed parameter. Both were rejected as borrows of a temporary.
+// expect: 2
+// expect: 2
+// expect: 3
+fn second(xs: &[int]): &int { return &xs[1..][0] }
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let r = &xs[1..][0]
+    println(r)
+    println(second(&xs))
+    let m = &mid(&xs)[1]
+    println(m)
+}

@@ -48,9 +48,47 @@ the generated C of stage 2 and stage 3 must be identical (fixed point). The
 generated C of the compiler is checked in as the seed, so a build needs only a
 C compiler. Then `ref/` is retired.
 
-Draft 1 of the language has no closures and no interface values. A compiler
-does not need either: AST walks are `match`, and symbol tables are maps from
-names to indices.
+The compiler needs no interface values: AST walks are `match`, and symbol
+tables are maps from names to indices. Closures (`&fn`) help with sorting and
+table walks.
+
+### How the port is checked
+
+The self-hosted compiler is a port of `ref/`, module by module, with the same
+algorithms. Its gate is mechanical: for every program in the test suites
+(conformance, `ref/tests`, `lib/tests`, the red-team corpora) both compilers
+must produce **byte-identical C**, and identical error messages for rejected
+programs. That makes every step checkable without judgement, and catches a
+porting slip on the first program that reaches it.
+
+Before the port starts, `ref/` must be deterministic (no iteration over Python
+sets or hash-ordered structures in anything that reaches the output; runs with
+different `PYTHONHASHSEED` values must give the same C) and gains
+`--dump-ast` and `--dump-types` outputs, so the front end can be compared
+before the back end exists.
+
+### Order
+
+1. `compiler/syntax.obx` (lexer, AST as boxed closed types, parser). Gate:
+   identical `--dump-ast` on every test file.
+2. `compiler/sema.obx` (modules, imports, declarations, types, constraints,
+   constant folding). Gate: identical `--dump-types` and identical errors for
+   the rejection tests that fail in sema.
+3. `compiler/check.obx` and `compiler/emit.obx` (bodies to C templates,
+   instances, glue). Gate: identical C for every test program; identical
+   errors for every rejection test.
+4. `compiler/main.obx` (driver; the runtime `rt.h` embedded as a constant;
+   gcc invoked as `ref/` does). Bootstrap: `ref/` compiles the compiler (stage
+   1), stage 1 compiles it (stage 2), stage 2 compiles it (stage 3); the C of
+   stages 2 and 3 must be identical. The generated C of the compiler is checked
+   in as the seed, so a build needs only gcc.
+Notes for the port: `ref/` checks the right operand of an operator twice when
+the left operand is a fractional literal (to learn its type, red-team fix
+g12), which is exponential in deeply right-nested chains. The port should get
+the type from a cheaper type-only query and keep the C identical.
+
+5. Retire `ref/` once the seed build passes every suite. The conformance suite
+   and red-team corpora remain the acceptance tests.
 
 ## Language backlog
 

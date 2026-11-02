@@ -1,0 +1,11 @@
+// Red-team round 2, g07: a StrBuf may grow past the str limit (it is a
+// []byte), but making a str of it then stops the program (exit 2).
+// cflags: -DRT_STR_MAX=100
+// expect: 120
+// exit: 2
+fn main() {
+    var b = newStrBuf()
+    for i in 0..12 { b.add("0123456789") }
+    println(b.size().toStr())
+    println(b.toStr())
+}

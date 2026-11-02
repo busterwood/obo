@@ -6,7 +6,7 @@ A type is a tuple:
   ('inst', TypeDecl, (args...))  ('tp', TParam)  ('self',) inside interfaces
 """
 import os
-from syntax import CompileError, parse
+from syntax import CompileError, parse, read_source
 
 INTS = ('int', 'i32', 'u32', 'u64', 'byte', 'i128', 'u128')
 PRIMS = INTS + ('float', 'bool', 'str', 'ptr')
@@ -223,8 +223,7 @@ class Program:
             return self.modules[path]
         chain = (chain or []) + [path]
         try:
-            with open(path, encoding='utf-8') as f:
-                src = f.read()
+            src = read_source(path)
         except OSError:
             raise CompileError(f"cannot read {path}")
         fname = os.path.basename(path)
@@ -750,7 +749,16 @@ class Program:
                     return self.cfit((ty, ar[e.op](x, y), kind), e.where)
                 if e.op in ('/', '%'):
                     q = abs(x) // abs(y) * (1 if (x >= 0) == (y >= 0) else -1)
+                    if ty and not RANGES[ty[1]][0] <= q <= RANGES[ty[1]][1]:     # MIN / -1 and MIN % -1
+                        raise CompileError(f"{x} {e.op} {y} overflows {tstr(ty)} in a constant", e.where)
                     return self.cfit((ty, q if e.op == '/' else x - q * y, kind), e.where)
+                if e.op in ('+%', '-%', '*%'):
+                    if ty is None:
+                        raise CompileError(f"{e.op} in a constant needs a typed operand (it wraps at the "
+                                           "width of its type)", e.where)
+                    w, r = BITS[ty[1]], ar[e.op[0]](x, y)
+                    r &= 2**w - 1
+                    return (ty, r - 2**w if ty[1][0] not in 'ub' and r >= 2**(w - 1) else r, kind)
                 bit = {'&': o.and_, '|': o.or_, '^': o.xor}
                 if e.op in bit:
                     return (ty, bit[e.op](x, y), kind)

@@ -75,3 +75,50 @@ function; constant-fold widths, conversions, shifts and traps.
   `batches/findings.txt` is the source of the g-files).
 - `run1.sh`: one file with ASan. `fuzz.py N seed`: mutation fuzzer (`FZGCC=1`
   also runs gcc).
+
+## Status after the fixes (2026-11-02)
+
+All 12 are fixed; `rt.py` gives 498 OK of 498 (the 486 cases, now in the
+current syntax, and the 12 g-files). Each finding has a regression test,
+`rt2_gNN_*` (in `../../tests/{run,error}` for spec behaviour, in
+`../../ref/tests` for compiler choices and runtime limits).
+
+| | Fix | Tests |
+|---|---|---|
+| g01 | A missing upper slice bound is the slice's length, not -1. | `run/rt2_g01_slice_hi_minus_one` |
+| g02, g03, g04 | An indexed slice result keeps its array's root and path (`holdtmp` takes the source value), so it is held, frozen and can root a `let` or a returned borrow. | `error/rt2_g02_*`, `error/rt2_g02b_*`, `error/rt2_g03_*`, `error/rt2_g03b_*`, `run/rt2_g04_*` |
+| g05, g06 | An array literal (also nested) or `array(n, v)` whose element type would be a borrow, slice or closure is an error. `append` cannot get there: its array's element type comes from a literal, a written type or a type argument, and all three reject borrows. | `error/rt2_g05_*`, `error/rt2_g05b_*`, `error/rt2_g06_*` |
+| g07 | `rt_str_concat` passes a 64-bit length; every str with new bytes comes from `rt_str_new`, which checks it against `RT_STR_MAX` (4 GiB − 1) with exit 2. `StrBuf` is a `[]byte` (64-bit lengths) and `toStr`, `join` and `repeat` go through `strFromBytes`, which was already checked. g07 itself now stops with exit 2 after about 3 GiB; the unit tests build with `-DRT_STR_MAX=100` (a `// cflags:` directive of `ref/tests/unit`, run by `ref/run_tests.py`). | `ref/tests/unit/rt2_g07_*` (4) |
+| g08 | In a drop method, the drops on leaving it (locals, at the end or at `return`, and the last statement's temporaries) are copied to the heap and pushed on the drop worklist (`rt_ddefer`); the glue of a type with a drop method pushes its field drops before calling the method, so the deferred values are dropped right after the method and before the fields, in the order of SPEC 9.2. | `run/rt2_g08_*` (300,000 nodes, also with a discarded `replace`), `run/rt2_g08b_*` (order) |
+| g09 | A compound assignment to a place made of variables, fields and indexes no longer holds it while the right side is evaluated: the index runs once, before the right side, and the store finds the place again (as `a = a + b` does). Through a slice or a call's borrow result the place is still held. | `run/rt2_g09_*`, `error/rt2_g09b_*` |
+| g10 | `MIN / -1` and `MIN % -1` in a typed constant are overflow errors. | `error/rt2_g10_*` |
+| g11 | `+% -% *%` fold in a typed constant, wrapping at its width (untyped operands only: an error, there is no width). | `run/rt2_g11_*` |
+| g12 | With a fractional literal on the left, the right operand's type is found by checking it and discarding the code (`peek_type`); then the literal and the right operand are evaluated in order. | `ref/tests/run/rt2_g12_*` |
+
+**g08 and the spec.** A full guarantee is not possible: a drop method that
+drops its child *before its last statement* (in an inner block, or by passing
+it to a function that drops it) must run the rest of its body after the whole
+rest of the chain is dropped, so each node needs a live frame (the order of
+9.2 cannot be kept with constant stack). SPEC 9.4 now says that the guarantee
+covers what a drop method still owns when it returns, and that the other kind
+recurses and overflows on a long enough chain (exit 4).
+
+**g09 and older tests.** Two tests expected `xs[0] += f(mut &xs)` to be
+rejected (`ref/tests/error/compound_nested_mut`, round-1 case
+`hb_compound_index_mut`); both now expect the result, as `xs[0] = xs[0] +
+f(mut &xs)` gives. SPEC 7.4 says that the index runs once and the store goes
+to the place after the right side.
+
+**Corpus changes.** Syntax only (the meaning of each case is unchanged):
+qualified variants in `dr_drop_method_builds_array_deep`,
+`dr_mixed_closed_record`, `dr_tree_left_deep`, `dr_tree_right_deep`,
+`dr_value_closed_boxed`, `ev_variant_named_order`, `lr_global_in_variant`,
+`m2_match_consumed_drop_method`, `m2_match_global_closed_copy`,
+`m2_match_global_closed_str`; `fromFraction(units: i128, ...)` in
+`ev_frac_call_args_order`, `ev_frac_left_order` and `g12`. `rt.py` now
+matches `// error:` words against the message without the file name
+(`m2_match_consumed_drop_method` passed only because its file name contains
+"drop"). One expectation changed: `dr_drop_self_recursive` (a drop method
+that makes a value of its own type) loops forever without using stack now
+that the value is a deferred tail local, so the case drops it in an inner
+block, which still recurses to exit 4.

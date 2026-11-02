@@ -1,0 +1,16 @@
+// Red-team round 2, g03 (SPEC 10): a match on a place binds owned fields as
+// borrows and freezes the place's root for the arm. Through an element of a
+// slice the root was lost, so xs = [] freed the B that b points to.
+// error: xs
+// error: borrowed
+type B = record { s: str }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    match xs[0..1][0] {
+        Some(b) {
+            xs = []
+            println(b.s)
+        }
+        None {}
+    }
+}

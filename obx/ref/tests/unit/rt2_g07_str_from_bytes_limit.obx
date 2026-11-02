@@ -1,0 +1,9 @@
+// Red-team round 2, g07: strFromBytes of more bytes than the str limit stops
+// the program (exit 2); the limit is lowered to 100 bytes for the test.
+// cflags: -DRT_STR_MAX=100
+// expect: 100
+// exit: 2
+fn main() {
+    println(len(strFromBytes(&array(100, 'x'))).toStr())
+    println(len(strFromBytes(&array(101, 'x'))).toStr())
+}

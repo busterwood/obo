@@ -1,0 +1,4 @@
+// A non-ASCII letter does not start a name.
+// error: unexpected character U+00E9
+// line: 4
+fn main() { let été = 1 }

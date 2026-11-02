@@ -1,0 +1,29 @@
+// Red-team round 2, g08 (SPEC 9.4): dropping a long chain does not need a
+// deeper stack, also when a drop method detaches its child into a local (or a
+// temporary): it is dropped from the drop worklist right after the method
+// returns, not by a nested drop. 300,000 nodes overflowed the stack (exit 4).
+// expect: 300000
+// expect: 600000
+var count: int = 0
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() {
+    count += 1
+    let c = replace(mut &n.next, None)
+}
+type M = record { next: Option[M] }
+fn (m: mut &M) drop() {
+    count += 1
+    replace(mut &m.next, None)
+}
+fn main() {
+    {
+        var t: Option[N] = None
+        for i in 0..300000 { t = Some(N{v: i, next: move(t)}) }
+    }
+    println(count)
+    {
+        var t: Option[M] = None
+        for i in 0..300000 { t = Some(M{next: move(t)}) }
+    }
+    println(count)
+}

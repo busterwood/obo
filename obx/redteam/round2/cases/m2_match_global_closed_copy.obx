@@ -1,9 +1,9 @@
 // expect: 3
 type V = value closed { A(int); B }
-var g: V = A(3)
+var g: V = V.A(3)
 fn main() {
     match g {
-        A(n) { g = B; println(n.toStr()) }
-        B { println("b") }
+        V.A(n) { g = V.B; println(n.toStr()) }
+        V.B { println("b") }
     }
 }
