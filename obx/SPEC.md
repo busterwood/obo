@@ -230,7 +230,8 @@ Variant names belong to their type and are always written qualified by it:
 types may use the same variant names. The one exception is the prelude:
 `Some`, `None`, `Ok` and `Err` may be written bare (and also qualified, as
 `Option.Some`), and no other module may declare a top-level name that clashes
-with them.
+with them. A user type may have variants with those names; they are always
+written qualified.
 
 A variant with positional fields is built like a call, `Expr.Num(3)`,
 `Option.None` or `None`; one with named fields like a record,
@@ -280,6 +281,11 @@ let adults = count(&people, fn(p: &Person): bool { return p.age >= minAge })
 - A plain function value or a named function converts to a closure type, so a
   parameter of type `&fn(...)` accepts both.
 - A closure is called like a function: `cmp(&a, &b)`.
+- A closure's parameters and locals may not shadow a variable of the enclosing
+  function, and a closure may not return a borrow. A `mut &` variable that the
+  closure writes through is a mutable capture without being a `var`.
+- Types are inferred for a closure argument once the callee's type arguments
+  are known from the arguments before it; otherwise write them.
 
 ### 4.7 Copy types and owned types
 
@@ -549,7 +555,8 @@ it. The source then has no value until it is assigned again.
   (use `move(x)` for a local), unless the record is a copy type. A record type
   with a `drop` method cannot be taken apart, and private fields can be named
   only in the record's module. `var P{...} = e` makes the variables
-  assignable.
+  assignable. Unbound fields are dropped at once, in reverse declaration
+  order; the bound ones are bound in the order of the pattern.
 - Only a whole local variable or by-value parameter can be moved out of.
   Moving out of a field, an element, a borrow or a global is an error; use
   `replace`, `swap` or `pop`.
