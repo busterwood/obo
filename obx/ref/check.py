@@ -1053,6 +1053,9 @@ class Checker:
                     else:
                         if k == 'str':
                             self.err(f"a match on {tstr(t)} takes integer literals and constants", arm.where)
+                        if k == 'char' and t != BYTE:       # 'a' is a byte, as in x == 'a' (SPEC 2)
+                            self.err(f"a char literal is a byte: it cannot be an arm of a match on {tstr(t)}",
+                                     arm.where)
                         lo, hi = RANGES[t[1]]
                         if not lo <= x <= hi:
                             self.err(f"literal {x} does not fit {tstr(t)}", arm.where)
@@ -1683,10 +1686,12 @@ class Checker:
             ctx.ind -= 1
             lines, ctx.lines = ctx.lines, outer
             return v, lines, (self.snapshot(), v.noreturn)
-        a = branch(e.then, exp)
-        b = branch(e.els, exp or (None if a[0].noreturn or is_lit(e.then) else a[0].t))
-        if is_lit(e.then) and a[0].t != b[0].t and not b[0].noreturn:      # a literal takes the other's type
-            a = branch(e.then, b[0].t)
+        if exp is None and is_lit(e.then) and not is_lit(e.els):   # a literal takes the other's type
+            b = branch(e.els, None)
+            a = branch(e.then, None if b[0].noreturn else b[0].t)
+        else:
+            a = branch(e.then, exp)
+            b = branch(e.els, exp or (None if a[0].noreturn else a[0].t))
         t = b[0].t if a[0].noreturn else a[0].t
         if not a[0].noreturn and not b[0].noreturn and a[0].t != b[0].t:
             self.err(f"the branches of an if expression have different types, {tstr(a[0].t)} and "
@@ -1712,7 +1717,7 @@ class Checker:
 
     def x_matchx(self, e, exp):
         """match x { Arm { e } ... } (SPEC 7.8): the match statement, each arm storing its value in r.
-        An integer literal arm seen before the type is known is written again once it is."""
+        A literal arm seen before the type is known is written once the other arms give it."""
         ctx = self.ctx
         if exp is not None and exp[0] in ('ref', 'slice', 'clo'):
             self.err("a match expression cannot give a borrow, a slice or a closure", e.where)
@@ -1728,22 +1733,30 @@ class Checker:
             if v.noreturn:
                 ctx.dead = True
             else:
-                if x.kind == 'int' and st.t is None:
-                    st.lits.append((len(ctx.lines), x))
-                elif st.t is None:
+                if st.t is None:
                     st.t = v.t
                 elif v.t != st.t:
                     self.err(f"the arms of a match expression have different types, {tstr(st.t)} and "
                              f"{tstr(v.t)}", x.where)
                 self.emit(f"{r} = {self.consume(v, x.where)};")
             self.drop_frame(fr)
-        self.s_match(e, body)
-        t = st.t or (INT if st.lits else None)
-        for i, x in st.lits:
-            v = self.x_int(x, t)
-            if v.t != t:
-                self.err(f"the arms of a match expression have different types, {tstr(t)} and int", x.where)
-            ctx.lines[i] = ctx.lines[i].split('=')[0] + f"= {v.c};"
+
+        def arm(x):
+            if is_lit(x) and st.t is None:      # written once the other arms give the type
+                st.lits.append((len(ctx.lines), x, ctx.ind))
+                ctx.lines.append(None)
+            else:
+                body(x)
+        self.s_match(e, arm)
+        done, lines, saved = [], ctx.lines, ctx.ind
+        for i, x, ctx.ind in st.lits:
+            ctx.lines = []
+            body(x)
+            done.append((i, ctx.lines))
+        ctx.lines, ctx.ind = lines, saved
+        for i, new in reversed(done):
+            lines[i:i + 1] = new
+        t = st.t
         if ctx.dead:
             ctx.dead = False
             return Val('', VOID, 'rv', noreturn=True)
