@@ -154,7 +154,8 @@ copy type: copying a string never copies its bytes, and it is freed with its
 last copy. Its bytes are not required to be UTF-8. `s[a..b]` is the substring
 of bytes `a` to `b - 1`; it shares the bytes of `s` (no copy, no allocation)
 and is itself an ordinary `str`. `s[a..]` and `s[..b]` run to the end and from
-the start. Out-of-range bounds stop the program (exit 3).
+the start. Out-of-range bounds stop the program (exit 3). A string is at most
+4 GiB − 1 bytes long; making a longer one stops the program (exit 2).
 
 All primitive types are copy types.
 
@@ -183,7 +184,13 @@ class rules; its root is the root of the array it views. It differs from
 - A slice supports `len`, indexing (element places, checked), assignment to
   elements and `swap` when it is `mut`, `for x in s`, and slicing again.
 - For rule 3 of section 10, a slice of an array overlaps every other borrow of
-  that array and of its elements.
+  that array and of its elements, so two `mut` slices of disjoint ranges of
+  one array cannot be passed to one call.
+- A slice of a global array is an error, like any borrow of a global (constant
+  tables are already slices). A slice of a temporary array may be passed to a
+  call but not kept in a `let`.
+- A range is a `mut &[T]` only where one is expected (a parameter, a typed
+  `let`, `swap`) or when written `mut &xs[a..b]`.
 
 ### 4.3 Records
 
