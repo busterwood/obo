@@ -1,0 +1,6 @@
+// SPEC 2: a raw string ends at the next backtick.
+// error: unterminated raw string literal
+// line: 5
+fn main() {
+    let s = `abc
+def

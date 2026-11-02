@@ -44,6 +44,12 @@ separate decision from the user; they are the ones to revisit first.
   `5.toStr()` calls `toStr` on `5`.
 - A number literal longer than 1,000 characters is a compile error.
 - String literals `"..."` use the same escapes and may not span lines.
+- Raw string literals `` `...` `` have no escapes: every byte up to the next
+  backtick is part of the string, and they may span lines. A raw string cannot
+  contain a backtick. Each line break inside one is a single LF byte whatever
+  the source uses (LF, CRLF or a lone CR), so a raw string never contains a CR.
+  It is a `str` like any string literal, and a newline after its closing
+  backtick ends a statement.
 
 Keywords:
 
@@ -127,7 +133,7 @@ unary       = ( "-" | "!" | "~" | "&" | "mut" "&" | "try" ) unary | postfix ;
 postfix     = primary { "." IDENT [ targs ] | "[" index "]" | "(" [ args ] ")" } ;
 index       = expr | [ expr ] ".." [ expr ] ;
 args        = expr { "," expr } ;
-primary     = INT | FRACTION | CHAR | STRING | "true" | "false"
+primary     = INT | FRACTION | CHAR | STRING | RAWSTRING | "true" | "false"
             | qualname [ targs ] [ "{" [ inits ] "}" ]
             | "[" [ args ] "]"
             | "(" expr ")"

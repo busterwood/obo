@@ -493,6 +493,16 @@ fn (lx: mut &Lexer) run() {
             i = j
         } else if c == '"' {
             i = lx.string(i)
+        } else if c == '`' {
+            // a raw string (SPEC 2): no escapes; the source's line breaks are already LF
+            var j = i + 1
+            while j < n && strByte(src, j) != '`' {
+                if strByte(src, j) == '\n' { lx.line += 1 }
+                j += 1
+            }
+            if j >= n { lx.fail(line, "unterminated raw string literal") }
+            lx.push(T_STR, -1, src[i + 1..j], 0, line)
+            i = j + 1
         } else if c == '\'' {
             var v = 0
             var j = 0

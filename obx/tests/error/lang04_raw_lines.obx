@@ -1,0 +1,10 @@
+// SPEC 2: the lines of a raw string count: the error is reported at line 9.
+// error: undefined|unknown|not declared
+// line: 9
+fn main() {
+    let s = `one
+two
+three`
+    println(s)
+    println(nope)
+}

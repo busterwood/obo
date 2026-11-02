@@ -1,0 +1,22 @@
+// SPEC 2: raw string literals: no escapes, multi-line, any bytes but a backtick.
+// expect: a\n"b"\t\\
+// expect: 3
+// expect: line one
+// expect:   "two" \x41
+// expect: 21
+// expect: done 1
+// expect: héllo
+fn main() {
+    let a = `a\n"b"\t\\`
+    println(a)
+    let empty = ``
+    println(len(`abc`) + len(empty))
+    let m = `line one
+  "two" \x41`
+    println(m)
+    println(len(m))
+    let k = 1
+    let x = `done`
+    println(x + " " + intToStr(k))
+    println(`héllo`)
+}
