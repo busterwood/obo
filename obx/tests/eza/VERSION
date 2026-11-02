@@ -1,0 +1,6 @@
+eza - A modern, maintained replacement for ls
+v0.23.3 [+git]
+https://github.com/eza-community/eza
+binary-sha256: 10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8
+tarball-sha256: 02e818f7b06f2c637b25761731104f1e9d6ea8f6e5924ab05eae69db4ed072a5
+url: https://github.com/eza-community/eza/releases/download/v0.23.3/eza_x86_64-unknown-linux-gnu.tar.gz

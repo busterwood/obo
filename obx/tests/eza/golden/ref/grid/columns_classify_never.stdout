@@ -1,0 +1,4 @@
+-      broken     link    sock
+--x    dir        noexec  spaced
+alpha  dirlink    pipe    sub.dir
+Beta   gamma.txt  prog    'tar get'

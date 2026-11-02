@@ -1,0 +1,7 @@
+tree
+├── a.txt
+├── broken -> missing
+├── d1
+├── dirlink -> d1
+├── emptydir
+└── hidden

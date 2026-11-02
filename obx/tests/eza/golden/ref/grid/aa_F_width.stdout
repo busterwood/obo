@@ -1,0 +1,5 @@
+-         .hidden  dirlink@   prog*
+--x       alpha    gamma.txt  sock=
+./        Beta     link@      spaced@
+../       broken@  noexec     sub.dir/
+..double  dir/     pipe|      'tar get'

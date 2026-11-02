@@ -1,0 +1,17 @@
+mixed
+├── dir
+├── dirlink -> dir
+├── sub.dir
+├── -
+├── --x
+├── alpha
+├── Beta
+├── broken -> missing
+├── gamma.txt
+├── link -> alpha
+├── noexec
+├── pipe
+├── prog
+├── sock
+├── spaced -> 'tar get'
+└── 'tar get'

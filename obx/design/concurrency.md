@@ -4,7 +4,7 @@ Status: research note, 2026-11-02. Not a decision. Future work: after the
 self-hosted compiler (stage 4), alongside or after the native backend (stage
 5). Nothing here changes SPEC.md draft 1.
 
-Related: obo's [systems-threads-design.md](../../obo/design/systems-threads-design.md)
+Related: obo's [systems-threads-design.md](../../archive/obo/design/systems-threads-design.md)
 reached a similar verdict for obo 0.12: one reactor per process first, then
 supervised processes, and threads only behind strict gates. This note keeps
 that verdict and changes one thing. Handlers are written in blocking style on

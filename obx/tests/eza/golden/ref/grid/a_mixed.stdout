@@ -1,0 +1,5 @@
+-         Beta       link    spaced
+--x       broken     noexec  sub.dir
+..double  dir        pipe    'tar get'
+.hidden   dirlink    prog
+alpha     gamma.txt  sock

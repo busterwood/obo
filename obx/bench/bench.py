@@ -2,8 +2,8 @@
 """obo vs obx benchmark table.
 
 For each program NAME it builds obx/bench/NAME.obx with the compiler
-(obx/compiler/out/obxc, or $OBXC; gcc -O2) and obo/bench/NAME_obo.obx with the obo
-compiler (obo/obo, if it runs). It checks that the outputs are equal and that the
+(obx/compiler/out/obxc, or $OBXC; gcc -O2) and archive/obo/bench/NAME_obo.obx with the
+archived obo compiler (archive/obo/obo, if it runs). It checks that the outputs are equal and that the
 obx program is leak free (OBX_CHECK=1), then prints the best wall time of N runs
 of each.
 
@@ -19,7 +19,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OBXC = os.environ.get('OBXC') or os.path.join(ROOT, 'obx', 'compiler', 'out', 'obxc')
-OBO = os.path.join(ROOT, 'obo')
+OBO = os.path.join(ROOT, 'archive', 'obo')
 OBO_SRC = os.path.join(OBO, 'bench')
 NAMES = ['fib', 'loop', 'array', 'alloc', 'lists', 'strings', 'trees', 'tokens']
 TOKENS_INPUT = os.path.join(ROOT, 'obx', 'compiler', 'sema.obx')   # any text file; same for both

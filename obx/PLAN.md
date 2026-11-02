@@ -1,7 +1,7 @@
 # obx plan
 
 The stages come from section 7 of
-[generic-core-rethink.md](../obo/design/generic-core-rethink.md). The user set
+[generic-core-rethink.md](design/generic-core-rethink.md). The user set
 this order on 2026-11-02: finish the language (decimal, float and the rest)
 and the self-hosted compiler first. Only then port the existing programs
 (eza, the SQLite and Postgres bindings) to obx as targets.
@@ -13,7 +13,7 @@ and the self-hosted compiler first. Only then port the existing programs
 | 3 | Library: `lib/` | no compiler change except primitives | done: 9 modules, 3,300 lines, 25 library tests (OBX_CHECK=1); compiler changes: `lib/` import root, `obx_*` C helpers in rt.h; see [lib/README.md](lib/README.md) |
 | 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | done: identical AST, types and C to ref on all 2,427 test files; stage 2 == stage 3; C seed checked in (`compiler/seed/obxc.c`, `build.sh`, `reseed.sh`); full gate passes with the seed-built compiler; ref retired 2026-11-02, so `compiler/` is the only obx compiler; see [compiler/README.md](compiler/README.md) |
 | 5 | Native x86-64 ELF backend; then eza, SQLite, Postgres | eza shorter than obo's and as fast | native backend done; eza done: [cmd/eza.obx](cmd/eza.obx), 1,609 lines (1,335 without comments and blank lines) against obo's 3,482 (2,842) plus its library helpers; obo's golden suite passes with the native and the C build (482 cases, 72 live-only skipped, [cmd/README.md](cmd/README.md)); native time equal to obo's on `/usr/share` trees; SQLite and Postgres done: [lib/sqlite.obx](lib/sqlite.obx) 435 lines (307 without comments and blank lines) and [lib/postgres.obx](lib/postgres.obx) 372 (258), sharing [lib/sqldialect.obx](lib/sqldialect.obx) 257 (173), against obo's 747 (586) and 782 (595) plus its sqldialect (92), cbind files (359) and C shims (127); no C shim, six small byte and pointer helpers in rt.h; tests on both backends (lib/tests/run/sqlite_*, postgres_*; the live Postgres test is skipped without a server) |
-| 6 | Retire obo 0.19 | | |
+| 6 | Retire obo 0.19 | obx depends on nothing in obo | done 2026-11-02: obo is [archive/obo/](../archive/obo/README.md); the eza golden suite (harness, fixtures, goldens) is [tests/eza.py](tests/eza.py) and `tests/eza/`, without obo's build and `memory` family; the generic-core decision record is [design/generic-core-rethink.md](design/generic-core-rethink.md) |
 
 ## Stage 3: the library
 

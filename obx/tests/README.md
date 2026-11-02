@@ -40,6 +40,10 @@ the quick gate plus the red-team harnesses, rounds 1 to 4 (`obx/redteam/rt.py`,
 backend on the red-team corpora. The script prints a summary with the time of each
 step and the total, and exits 1 on any failure.
 
+`python3 obx/cmd/eza_gate.py -j 8` (or `python3 obx/tests/eza.py`) is the eza golden
+suite for `cmd/eza.obx`, outside the gates (about 2.5 minutes; see
+[../cmd/README.md](../cmd/README.md)).
+
 `python3 obx/compiler/fuzz.py [-n N] [--seed S] [--cc]` is a mutation fuzzer for the
 compiler, outside the gates: every mutant of a test program must compile or be rejected
 with one `file:line: message`, never crash or leak.

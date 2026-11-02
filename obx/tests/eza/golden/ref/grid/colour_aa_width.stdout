@@ -1,0 +1,5 @@
+-         .hidden  [36mdirlink[0m    [1;32mprog[0m
+--x       alpha    gamma.txt  [1;31msock[0m
+[1;34m.[0m         Beta     [36mlink[0m       [36mspaced[0m
+[1;34m..[0m        [31mbroken[0m   noexec     [1;34msub.dir[0m
+..double  [1;34mdir[0m      [33mpipe[0m       'tar get'

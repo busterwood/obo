@@ -1,7 +1,7 @@
 # obx core language
 
 Status: draft 1, 2026-11-02. This is the stage 1 document of
-[generic-core-rethink.md](../obo/design/generic-core-rethink.md). It defines
+[generic-core-rethink.md](design/generic-core-rethink.md). It defines
 the language that the compiler (`compiler/`) implements; the Python reference
 compiler that first implemented it was retired on 2026-11-02
 (`../archive/obx-ref/`). Where this document and the compiler disagree, this

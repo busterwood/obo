@@ -1,0 +1,6 @@
+.rw-r--r-- 2 2020-09-13 12:26 a.txt
+lrwxrwxrwx - 2020-09-13 12:26 broken -> missing
+drwxr-xr-x - 2020-09-13 12:26 d1
+lrwxrwxrwx - 2020-09-13 12:26 dirlink -> d1
+drwxr-xr-x - 2020-09-13 12:26 emptydir
+drwxr-xr-x - 2020-09-13 12:26 hidden

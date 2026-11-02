@@ -1,4 +1,4 @@
-// eza: lists a directory, a port of obo's eza (obo/cmd/eza.obx), the subset
+// eza: lists a directory, a port of obo's eza (archive/obo/cmd/eza.obx), the subset
 // of eza 0.23.3 that obo implements, byte for byte: the lines, grid, tree
 // and restricted long views, -a/-A, -d, -D/-f, the sort fields that need no
 // more than lstat, -r, directory grouping, quoting and --no-quotes, -F,

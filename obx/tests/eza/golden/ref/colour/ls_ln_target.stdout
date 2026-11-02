@@ -1,0 +1,16 @@
+-
+--x
+alpha
+Beta
+broken [31m->[0m [4;31mmissing[0m
+[1;34mdir[0m
+dirlink [1;90m->[0m [1;34mdir[0m
+gamma.txt
+link [1;90m->[0m alpha
+noexec
+[33mpipe[0m
+[1;32mprog[0m
+[1;31msock[0m
+spaced [1;90m->[0m 'tar get'
+[1;34msub.dir[0m
+'tar get'

@@ -1,0 +1,21 @@
+ext
+├── b
+├── d
+│   ├── b
+│   ├── sub
+│   └── a.txt
+├── noext
+├── sub
+├── dot.
+├── dx.
+│   ├── b
+│   ├── sub
+│   └── a.txt
+├── b.tar.gz
+├── a.txt
+├── same.txt
+├── Z.TXT
+└── dx.x
+    ├── b
+    ├── sub
+    └── a.txt

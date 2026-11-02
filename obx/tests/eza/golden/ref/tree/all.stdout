@@ -1,0 +1,14 @@
+tree
+├── .hiddenfile
+├── a.txt
+├── broken -> missing
+├── d1
+│   ├── b.txt
+│   └── d2
+│       ├── c.txt
+│       └── d3
+│           └── d.txt
+├── dirlink -> d1
+├── emptydir
+└── hidden
+    └── .secret

@@ -1,0 +1,6 @@
+tree/dirlink
+├── b.txt
+└── d2
+    ├── c.txt
+    └── d3
+        └── d.txt

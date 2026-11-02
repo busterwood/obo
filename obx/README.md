@@ -6,7 +6,7 @@ day one. Decimal, money, Option, Result and the containers are library code,
 not compiler features.
 
 The decision and the plan are in
-[obo/design/generic-core-rethink.md](../obo/design/generic-core-rethink.md)
+[design/generic-core-rethink.md](design/generic-core-rethink.md)
 (decisions G1 to G5, 2026-11-02). In short:
 
 - Each module is parsed to a tree, then checked and compiled in one walk per
@@ -17,8 +17,9 @@ The decision and the plan are in
 - A Python reference compiler settled the design first. The real compiler is
   written in obx, compiles itself, and emits C or native x86-64 ELF.
 
-obo 0.19 (`../obo/`) is frozen at bug fixes only. The original GC compiler that
-obo forked from is in `../archive/obx/`.
+obo 0.19, the predecessor, was retired on 2026-11-02 and is in
+`../archive/obo/`; the original GC compiler that obo forked from is in
+`../archive/obx/`.
 
 Source files use the `.obx` extension.
 
@@ -31,10 +32,10 @@ Source files use the `.obx` extension.
 | [compiler/](compiler/README.md) | the compiler, written in obx: obx to C, or `--native` to x86-64 ELF; its C seed |
 | [lib/](lib/README.md) | the library (std, collections, strings, fs, io, os, time, math, money, sqlite, postgres) |
 | [cmd/](cmd/README.md) | programs: eza |
-| [tests/](tests/README.md) | the conformance suite, the compiler tests, the native tests and their runners |
+| [tests/](tests/README.md) | the conformance suite, the compiler tests, the native tests, the eza golden suite and their runners |
 | `redteam/` | the red-team corpora and harnesses (rounds 1 to 4) |
 | `tools/` | the gate (`gate.sh`), the build cache (`cbuild.py`), the seed check |
-| `design/` | design notes: the native backend, concurrency |
+| `design/` | design notes: the generic-core decision, the native backend, concurrency |
 | `bench/` | benchmarks against obo |
 
 The Python reference compiler (`ref/`) was retired on 2026-11-02; it is in

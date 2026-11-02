@@ -1,0 +1,3 @@
+[36mb[0m         [36mexec[0m         [31mloop1[0m  [1;34mrealdir[0m      [36mspaced[0m
+[36mchain[0m     [1;32mexec-target[0m  [31mloop2[0m  [36mrealdirlink[0m  'tar get'
+[31mdangling[0m  file         [36mreal[0m   [36mrealfile[0m     [36mto_realdirlink[0m

@@ -1,0 +1,13 @@
+.rw-r--r-- 1234567 2020-09-13 12:26 big
+lrwxrwxrwx       - 2020-09-13 12:26 dangling -> missing
+drwxr-xr-x       - 2020-09-13 12:26 deep
+drwxr-xr-x       - 2020-09-13 12:26 dir
+.rw-r--r--       0 2020-09-13 12:26 empty
+.rwxr-xr-x      10 2020-09-13 12:26 exec
+.rw-r--r--    1000 2020-09-13 12:26 kilo
+lrwxrwxrwx       - 2020-09-13 12:26 link -> one
+.rw-r--r--       1 2020-09-13 12:26 one
+|rw-r--r--       - 2020-09-13 12:26 pipe
+.rw-r--r--       2 -                pre
+.rw-r--r--     999 2020-09-13 12:26 small
+srw-r--r--       - 2020-09-13 12:26 sock
