@@ -224,4 +224,7 @@ first error, is compared; a difference names the C function where it starts.
   sources with `out/obxc` and checks the fixed point. Run `reseed.sh` and
   commit the seed with every compiler change. The full gate passes with the
   seed-built compiler: `OBXC=obx/compiler/out/obxc obx/tools/gate.sh full`.
+- Native: `obxc --native` writes a static x86-64 ELF without gcc
+  (design/native.md). The compiler builds itself natively to a fixed point:
+  `obx/tools/native_selfbuild.sh`.
 - Next: retiring ref (the user decides).

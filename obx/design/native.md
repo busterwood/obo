@@ -275,17 +275,24 @@ global drops and `rt_finish`) and exits with its result.
   red-team programs are rejected by the compiler and skipped). The one
   unsupported calls libm's `hypot` (phase 5). Without `--redteam`: 346 of 346.
   The whole run takes about 25 s on 16 cores; `--lib` alone about 3 s.
+- Native self-build (`tools/native_selfbuild.sh`, 1.5 s): `out/obxc
+  main.obx --native` builds stage 2 (2.6 MB static ELF, 0.3 s), stage 2
+  builds stage 3 natively, and the two are byte-identical (stage 4 too);
+  stage 2's `--emit-c` equals out/obxc's. With stage 2 as `OBXC`,
+  `tests/run.py` passes 629 of 629 and `run_native.py --lib` 345/0/1.
+  Stage 2 is about 2.4 times slower than the gcc -O2 build (`--emit-c` of the
+  compiler: 0.26 s against 0.11 s).
 - Not done: `--emit-asm`; no optimization at all (code is about what
-  `gcc -O0` makes).
+  `gcc -O0` makes); `native_selfbuild.sh` is not in `gate.sh` yet.
 
 Next, in order:
 
-1. Phase 4: the native self-build. The compiler needs `system` and `mkdtemp`
-   (in the runtime already) and `parseFloat` (done); try
-   `obxc main.obx --native` and fix what it refuses or gets wrong; then stage
-   2 builds stage 3, compare.
-2. Then performance: a peephole pass and register allocation for locals.
-3. Phase 5: dynamic linking for the rest of libm and other C libraries.
+1. Performance: a peephole pass and register allocation for locals (the IR
+   already separates the code generator from the front end).
+2. Phase 5: dynamic linking for the rest of libm (`hypot`, `pow`, `exp`,
+   ...) and other C libraries (sqlite3, pq).
+3. After ref is retired: check.obx produces the IR directly (section 1a) and
+   cfront goes away.
 
 Phases:
 
@@ -294,6 +301,6 @@ Phases:
 - Phase 3: records, arrays, str, drop glue, closures, generic instances,
   interfaces. Passing in the run and library tests.
 - Phase 4: the whole suite; native self-build (the natively built compiler
-  builds itself; stage 2 == stage 3).
+  builds itself; stage 2 == stage 3). Done (no performance work yet).
 - Phase 5: dynamic linking (PLT/GOT, `.dynamic`; libc, libm, libsqlite3,
   libpq externs).
