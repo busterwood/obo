@@ -1,0 +1,5 @@
+// error: secretz
+import "./geo"
+fn main() {
+    let geo.Pt{x, secretz} = geo.make()
+}

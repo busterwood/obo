@@ -1,0 +1,6 @@
+// error: let
+type P = value record { a: int }
+fn main() {
+    let P{a} = P{a: 1}
+    a = 2
+}

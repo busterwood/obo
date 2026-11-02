@@ -502,6 +502,55 @@ class Checker:
         self.emit(f"{self.T(v.t)} {cn} = {c};")
         self.declare(Var(s.name, cn, v.t, s.mutable, 'local', s.where))
 
+    def s_destructure(self, s):
+        """let P{a, b: x, c: _} = e (SPEC 9.1): move (or copy) fields into new variables."""
+        ctx = self.ctx
+        _, parts, args, w = s.ty
+        mod = ctx.module
+        d = self.prog.lookup(mod, parts[0]) if len(parts) == 1 else None
+        if len(parts) > 1 and parts[0] in mod.imports:
+            d = self.prog.lookup_in(mod, mod.imports[parts[0]], parts[1], w)
+        exp = None
+        if isinstance(d, TypeDecl) and (args or d.form == 'alias'):
+            exp = self.prog.resolve_type(s.ty, mod, ctx.fd.env, 'let', w)
+            d = exp[1] if exp[0] == 'inst' else None
+        if not isinstance(d, TypeDecl) or d.form != 'record':
+            self.err(f"{'.'.join(parts)} is not a record type: only a record can be taken apart", s.where)
+        if d.drop is not None:
+            self.err(f"cannot take apart a {d.name}: it has a drop method", s.where)
+        v = self.expr(s.e, exp)
+        if v.t[0] == 'ref':
+            v = self.deref(v)
+        if v.t[0] != 'inst' or v.t[1] is not d:
+            self.err(f"the value is {tstr(v.t)}, not a {d.name}", s.where)
+        if v.cat == 'place' and not is_copy(v.t):
+            self.err(f"cannot take apart a place of the owned type {tstr(v.t)}: the value must not be a "
+                     "variable, field or element (use move(x) for a local)", s.where)
+        env, named = decl_env(v.t), {}
+        for f, b, fw in s.fields:
+            fd = next((x for x in d.fields if x[0] == f), None)
+            if fd is None:
+                self.err(f"{d.name} has no field '{f}'", fw)
+            if f in named:
+                self.err(f"field '{f}' is named twice", fw)
+            if not fd[2] and d.module is not mod:
+                self.err(f"field '{f}' of {d.name} is private to module {d.module.name}", fw)
+            named[f] = b
+        acc = ctx.fresh('ds')
+        self.emit(f"{self.T(v.t)} {acc} = {self.consume(v, s.where)};")
+        sep = '.' if d.value else '->'
+        for n, ft, _ in reversed(d.fields):
+            if named.get(n, '_') == '_':
+                self.drop(f"{acc}{sep}f_{n}", subst(ft, env))
+        for f, b, fw in s.fields:
+            if b != '_':
+                ft = subst(next(x[1] for x in d.fields if x[0] == f), env)
+                cn = ctx.fresh(f"v_{b}_")
+                self.emit(f"{self.T(ft)} {cn} = {acc}{sep}f_{f};")
+                self.declare(Var(b, cn, ft, s.mutable, 'local', fw))
+        if not d.value:
+            self.emit(f"rt_free({acc});")
+
     def place_type(self, e):
         """The type of a place expression, without evaluating it (None if unknown)."""
         k = e.kind

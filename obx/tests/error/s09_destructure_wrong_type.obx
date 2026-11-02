@@ -1,0 +1,6 @@
+// error: Qq
+type P = record { a: int }
+type Qq = record { a: int }
+fn main() {
+    let P{a} = Qq{a: 1}
+}

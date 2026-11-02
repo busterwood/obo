@@ -1,0 +1,2 @@
+pub type Pt = record { pub x: int; pub y: int; tag: str }
+pub fn make(): Pt { return Pt{x: 1, y: 2, tag: "t"} }

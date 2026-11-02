@@ -1,0 +1,17 @@
+// expect: 11
+// expect: ab
+// expect: 7
+type Pair[A, B] = record { first: A; second: B }
+fn pair[A, B](a: A, b: B): Pair[A, B] { return Pair{first: a, second: b} }
+fn swapped[A, B](p: Pair[A, B]): Pair[B, A] {
+    let Pair{first, second} = move(p)
+    return Pair{first: second, second: first}
+}
+fn main() {
+    let Pair[int, int]{first: x, second: y} = pair(5, 6)
+    println(x + y)
+    let Pair{first: s, second: t} = swapped(pair("b", "a"))
+    println(s + t)
+    let Pair{second: n} = pair([1, 2], 7)
+    println(n)
+}

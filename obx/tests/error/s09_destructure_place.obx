@@ -1,0 +1,6 @@
+// error: move(
+type P = record { a: []int }
+fn main() {
+    let p = P{a: [1]}
+    let P{a} = p
+}

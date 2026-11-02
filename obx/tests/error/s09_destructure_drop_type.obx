@@ -1,0 +1,6 @@
+// error: drop
+type P = record { a: int }
+fn (p: mut &P) drop() {}
+fn main() {
+    let P{a} = P{a: 1}
+}

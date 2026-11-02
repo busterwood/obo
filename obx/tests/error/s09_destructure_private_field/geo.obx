@@ -1,0 +1,2 @@
+pub type Pt = record { pub x: int; secretz: int }
+pub fn make(): Pt { return Pt{x: 1, secretz: 2} }

@@ -1,0 +1,5 @@
+// error: record
+type C = closed { A(int); B }
+fn main() {
+    let C{a} = C.B
+}

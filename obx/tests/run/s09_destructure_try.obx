@@ -1,0 +1,21 @@
+// expect: 3
+// expect: bad
+type P = record { a: int; b: str }
+fn parse(ok: bool): Result[P, str] {
+    if ok { return Ok(P{a: 3, b: "x"}) }
+    return Err("bad")
+}
+fn first(ok: bool): Result[int, str] {
+    let P{a, b: _} = try parse(ok)
+    return Ok(a)
+}
+fn main() {
+    match first(true) {
+        Ok(n) { println(n) }
+        Err(e) { println(e) }
+    }
+    match first(false) {
+        Ok(n) { println(n) }
+        Err(e) { println(e) }
+    }
+}

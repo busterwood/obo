@@ -1,0 +1,6 @@
+// expect: 3
+import "./geo"
+fn main() {
+    let geo.Pt{x, y} = geo.make()
+    println(x + y)
+}

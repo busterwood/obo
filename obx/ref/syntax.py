@@ -557,6 +557,8 @@ class Parser:
         if t.k == 'kw':
             if t.v in ('let', 'var'):
                 self.next()
+                if self.peek().k == 'id' and self.peek(1).k == 'sym' and self.peek(1).v in ('.', '{', '['):
+                    return self.destructure(w, t.v == 'var')
                 name = self.ident()
                 ty = self.typeopt()
                 self.sym('=')
@@ -592,6 +594,25 @@ class Parser:
             op = self.next().v
             return N('assign', w, target=e, op=op[:-1] if op != '=' else None, e=self.expr0())
         return N('expr', w, e=e)
+
+    def destructure(self, w, mutable):
+        ty = self.namedtype()
+        self.sym('{')
+        fs = []
+        while True:
+            fw = self.peek().where
+            f = self.ident()
+            b = f
+            if self.atsym(':'):
+                self.next()
+                b = self.ident()
+            fs.append((f, b, fw))
+            if not self.atsym(','):
+                break
+            self.next()
+        self.sym('}')
+        self.sym('=')
+        return N('destructure', w, ty=ty, fields=fs, e=self.expr0(), mutable=mutable)
 
     def matchstmt(self):
         w = self.next().where

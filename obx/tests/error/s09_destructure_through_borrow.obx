@@ -1,0 +1,6 @@
+// error: place|move
+type P = record { a: []int }
+fn f(p: &P) {
+    let P{a} = p
+}
+fn main() {}

@@ -1,0 +1,5 @@
+// error: zed
+type P = record { a: int }
+fn main() {
+    let P{zed} = P{a: 1}
+}

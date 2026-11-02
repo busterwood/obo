@@ -1,0 +1,15 @@
+// expect: hi 4
+// expect: hi 3
+// expect: 7
+type V = value record { s: str; k: int }
+type W = value record { v: V; z: int }
+fn main() {
+    let v = V{s: "hi", k: 3}
+    var V{s, k} = v
+    k += 1
+    println(s + " " + k.toStr())
+    println(v.s + " " + v.k.toStr())
+    let w = W{v: v, z: 4}
+    let W{v: inner, z} = w
+    println(inner.k + z)
+}
