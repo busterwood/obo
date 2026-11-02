@@ -63,8 +63,10 @@ pending, the round after the red-team fixes):
 - A `never` result type (5.3).
 - Fractional literals carry an `i128` coefficient and may have an exponent;
   the lang item is `fromFraction(units: i128, scale: int)` (2, 7.3).
-- Externs may be `pub`, renamed with `as "c_name"`, and return `str`; two
-  externs with the same C name and different signatures are an error (12).
+- Externs are always private to their module (corrected 2026-11-02: the user
+  wants C access hidden inside the module that wraps it), may be renamed with
+  `as "c_name"`, and may return `str`; two externs with the same C name and
+  different signatures are an error (12).
 - Variants are always qualified by their type (`Expr.Num(1)`,
   `Rounding.HALF_EVEN`), in expressions and match arms, except the prelude's
   `Some`, `None`, `Ok` and `Err` (4.4).
@@ -78,4 +80,12 @@ pending, the round after the red-team fixes):
 - Imports: `./` and `../` paths are relative to the importing file; bare
   paths are library modules only (5.1).
 
-Nothing is open.
+Deferred (user, 2026-11-02):
+
+- Marking unchecked code. Any module can still declare its own extern (for
+  example C's `close`) or call the raw intrinsics (`writeFd` takes a bare
+  descriptor). A rule that only modules marked unchecked may do either, as Go's
+  `unsafe` import or Rust's `unsafe` do, is left for later.
+- Library resource types: a streaming file reader, a directory handle and seek,
+  each an owned record with a private descriptor and a `drop` method, like
+  `io.Writer`. Added when eza and fd need them.

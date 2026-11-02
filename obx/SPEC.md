@@ -657,8 +657,10 @@ extern "c" fn getpid(): i32
 
 An `extern` declaration names a C function and the library that provides it
 (`"c"` for libc). `as "c_name"` gives the C name when the obx name differs:
-`extern "c" fn cAbs(x: i32): i32 as "abs"`. An extern may be `pub` like any
-function. Two extern declarations in a program with the same C name must have
+`extern "c" fn cAbs(x: i32): i32 as "abs"`. An extern is always private to
+the module that declares it (`pub extern` is an error): a module that needs C
+exposes safe wrappers, such as an owned type with a `drop` method, never the
+raw C function. Two extern declarations in a program with the same C name must have
 the same parameter and result types; otherwise it is a compile error.
 
 Parameter and result types are limited to integers, `float`, `bool`, `ptr`,
