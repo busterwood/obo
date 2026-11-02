@@ -17,6 +17,9 @@
 // expect: 65533 65533 65533 65533 65533 | 4 bytes, 2 runes
 // expect: héllo €😀 | true
 // expect: width 5 4 2
+// expect: sizes 1 1 1 1 1 1 1 1 1 1 2 | 6 ok
+// expect: width 0 2 0 1 2 1 3
+// expect: a?b?(c?
 import "strings"
 
 fn show(xs: &[]str, sep: str): str { return "[" + strings.join(xs, sep) + "]" }
@@ -90,4 +93,21 @@ fn main() {
     println(back + " | " + (strings.fromRunes(&strings.runes(back)) == back).toStr())
     println("width " + strings.displayWidth("h\xC3\xA9llo").toStr() + " " + strings.displayWidth("\xE4\xBD\xA0\xE5\xA5\xBD").toStr() +
         " " + strings.displayWidth("\xF0\x9F\x98\x80").toStr())
+    // maximal subparts: each bad lead or stray byte alone, E2 82 cut short as one
+    var sizes = ""
+    var i = 0
+    let parts = "\xC0\xAF\xED\xA0\x80\xF4\x90\x80\x80\x80\xE2\x82"
+    while i < len(parts) {
+        let d = strings.decodeAt(parts, i)
+        sizes += d.size.toStr() + " "
+        i += d.size
+    }
+    let good = strings.decodeAt("\xF0\x9F\x98\x80", 0)
+    println("sizes " + sizes + "| " + (good.size + 2).toStr() + " " + (if good.ok { "ok" } else { "bad" }))
+    println("width " + strings.runeWidth(0x301).toStr() + " " + strings.runeWidth(0x3000).toStr() + " " +
+        strings.runeWidth(0x200B).toStr() + " " + strings.runeWidth(0xE9).toStr() + " " +
+        strings.runeWidth(0x1F600).toStr() + " " + strings.runeWidth(0x10FFFF).toStr() + " " +
+        strings.displayWidth("e\xCC\x81\xE2\x82(").toStr())
+    let l = strings.lossy("a\xFFb\xE2\x82(c\xC3")
+    println(strings.replaceAll(l, strings.fromRune(0xFFFD), "?"))
 }

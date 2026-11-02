@@ -15,6 +15,10 @@
 // expect: env: unset ok, set ok
 // expect: cwd changed: true
 // expect: perm 1a4
+// expect: readlink a.txt | readlink a.txt: 22
+// expect: kinds chardev fifo socket blockdev other | /dev/null chardev
+// expect: terminal false none | flush ok
+// expect: full: spill kept 28, then 28
 
 import "io"
 import "fs"
@@ -56,6 +60,9 @@ fn main() {
     for k in kinds { ks += k + " " }
     println(trim(ks))
     let link = fs.join(dir, "link")
+    let target = check(fs.readlink(link))
+    let notLink = match fs.readlink(a) { Ok(_) { "?" } Err(e) { e.op + " a.txt: " + e.errno.toStr() } }
+    let linkLine = "readlink " + target + " | " + notLink
     println("link -> a.txt: is link " + check(fs.lstat(link)).isLink().toStr() + ", follows to a file " + fs.isFile(link).toStr())
 
     match io.read("nope/x.txt") {
@@ -97,6 +104,19 @@ fn main() {
     os.setCwd("/")
     println("cwd changed: " + (os.cwd() == "/" && before != "/").toStr())
     println("perm " + hexOf(perm))
+    println(linkLine)
+    var ks2 = "kinds"
+    for m in [0x2000, 0x1000, 0xC000, 0x6000, 0] { ks2 += " " + fs.kindOfMode(m | 0x1ED).toStr() }
+    println(ks2 + " | /dev/null " + check(fs.stat("/dev/null")).kind().toStr())
+    let tw = match io.terminalWidth(1) { Some(n) { n.toStr() } None { "none" } }
+    println("terminal " + io.isTerminal(1).toStr() + " " + tw + " | flush " +
+        (if io.flushStdout().isOk() { "ok" } else { "failed" }))
+    var full = check(io.create("/dev/full"))
+    for i in 0..10000 { full.write("0123456789") }
+    let first = match full.flush() { Ok(_) { "none" } Err(e) { e.errno.toStr() } }
+    full.write("x")
+    let again = match full.flush() { Ok(_) { "ok" } Err(e) { e.errno.toStr() } }
+    println("full: spill kept " + first + ", then " + again)
 }
 
 fn hexOf(n: int): str {

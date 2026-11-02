@@ -15,6 +15,9 @@ extern "c" fn strerror(e: i32): str
 extern "c" fn errno(): int as "obx_errno"
 extern "c" fn openFd(path: str, how: int): int as "obx_open"
 extern "c" fn close(fd: i32): i32
+extern "c" fn flushOut(): int as "obxlib_flush_out"
+extern "c" fn cIsatty(fd: int): int as "obxlib_isatty"
+extern "c" fn termCols(fd: int): int as "obxlib_term_cols"
 
 // "open nope.txt: No such file or directory"
 pub fn (e: IoError) toStr(): str {
@@ -91,18 +94,20 @@ fn writeHow(path: str, data: str, how: int): Result[Unit, IoError] {
 
 // A buffered writer. The buffer is written out when it passes 64 KiB, on
 // flush, and when the writer is dropped; a file writer also closes its file
-// then. Errors on the implicit flushes are lost: call close() to see them.
+// then. The first error of a write when the buffer is full is reported by the
+// next flush or close; errors when it is dropped are lost.
 pub type Writer = record {
     fd: int
     path: str
     buf: StrBuf
     ownsFd: bool
+    failed: Option[IoError]   // the first error of an implicit flush
 }
 
 const LIMIT = 65536
 
-pub fn stdout(): Writer { return Writer{fd: 1, path: "<stdout>", buf: newStrBuf(), ownsFd: false} }
-pub fn stderr(): Writer { return Writer{fd: 2, path: "<stderr>", buf: newStrBuf(), ownsFd: false} }
+pub fn stdout(): Writer { return Writer{fd: 1, path: "<stdout>", buf: newStrBuf(), ownsFd: false, failed: None} }
+pub fn stderr(): Writer { return Writer{fd: 2, path: "<stderr>", buf: newStrBuf(), ownsFd: false, failed: None} }
 
 // A writer to a new or emptied file.
 pub fn create(path: str): Result[Writer, IoError] { return openWriter(path, 1) }
@@ -113,33 +118,70 @@ pub fn openAppend(path: str): Result[Writer, IoError] { return openWriter(path, 
 fn openWriter(path: str, how: int): Result[Writer, IoError] {
     let fd = openFd(path, how)
     if fd < 0 { return Err(ioError(-fd, "open", path)) }
-    return Ok(Writer{fd: fd, path: path, buf: newStrBuf(), ownsFd: true})
+    return Ok(Writer{fd: fd, path: path, buf: newStrBuf(), ownsFd: true, failed: None})
 }
 
 pub fn (w: mut &Writer) write(s: str) {
     w.buf.add(s)
-    if w.buf.size() >= LIMIT { w.flush() }
+    if w.buf.size() >= LIMIT { w.spill() }
 }
 
 pub fn (w: mut &Writer) writeln(s: str) {
     w.buf.add(s)
     w.buf.addByte('\n')
-    if w.buf.size() >= LIMIT { w.flush() }
+    if w.buf.size() >= LIMIT { w.spill() }
 }
 
 pub fn (w: mut &Writer) writeByte(c: byte) {
     w.buf.addByte(c)
-    if w.buf.size() >= LIMIT { w.flush() }
+    if w.buf.size() >= LIMIT { w.spill() }
 }
 
-// Writes out the buffer.
+// Writes out the buffer (for stdout, also the runtime's buffer behind
+// print). An error of an earlier implicit flush is reported here, once.
 pub fn (w: mut &Writer) flush(): Result[Unit, IoError] {
+    try w.flushBuf()
+    if w.fd == 1 { try flushStdout() }
+    match replace(mut &w.failed, None) {
+        Some(e) { return Err(e) }
+        None { return Ok(Unit{}) }
+    }
+}
+
+// The implicit flush when the buffer is full: an error is kept for flush.
+fn (w: mut &Writer) spill() {
+    match w.flushBuf() {
+        Err(e) { if w.failed.isNone() { w.failed = Some(e) } }
+        Ok(_) {}
+    }
+}
+
+fn (w: mut &Writer) flushBuf(): Result[Unit, IoError] {
     if w.buf.size() == 0 { return Ok(Unit{}) }
     let s = w.buf.toStr()
     w.buf.clear()
     if w.fd < 0 { return Err(ioError(9, "write", w.path)) }
     if writeFd(w.fd, s) != len(s) { return Err(ioError(errno(), "write", w.path)) }
     return Ok(Unit{})
+}
+
+// Writes out what print and println (and stdout writers) have buffered; the
+// error of the first write to standard output that failed since the last
+// call, if any.
+pub fn flushStdout(): Result[Unit, IoError] {
+    let e = flushOut()
+    if e != 0 { return Err(ioError(e, "write", "<stdout>")) }
+    return Ok(Unit{})
+}
+
+// Whether the descriptor fd (0, 1, 2, ...) is a terminal.
+pub fn isTerminal(fd: int): bool { return cIsatty(fd) != 0 }
+
+// The width in columns of the terminal at fd; None when fd is not a terminal
+// or the terminal reports no size.
+pub fn terminalWidth(fd: int): Option[int] {
+    let n = termCols(fd)
+    return if n > 0 { Some(n) } else { None }
 }
 
 // Flushes, then closes a file writer; later writes fail with EBADF.

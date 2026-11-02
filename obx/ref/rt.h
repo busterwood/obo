@@ -12,6 +12,7 @@
 #include <sys/resource.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <time.h>
 
 typedef struct { int64_t rc; char data[]; } obx_sblk;
@@ -30,11 +31,12 @@ static char** rt_argv;
 static char rt_obuf[1 << 16];
 static size_t rt_olen;
 
+static int rt_oerr;                 /* the first failed write of rt_obuf (obxlib_flush_out) */
 static void rt_flush(void) {
     size_t off = 0;
     while (off < rt_olen) {
         ssize_t n = write(1, rt_obuf + off, rt_olen - off);
-        if (n <= 0) break;
+        if (n <= 0) { if (!rt_oerr) rt_oerr = n < 0 ? errno : EIO; break; }
         off += (size_t)n;
     }
     rt_olen = 0;
@@ -456,6 +458,30 @@ int64_t obx_open(const char* path, int64_t how) {
     if (how < 0 || how > 3) return -EINVAL;
     int fd = open(path, flags[how] | O_CLOEXEC, 0666);
     return fd < 0 ? -(int64_t)errno : fd;
+}
+/* flush the stdout buffer; the errno of the first write to stdout that failed since the last
+   call, or 0 */
+int64_t obxlib_flush_out(void) {
+    rt_flush();
+    int e = rt_oerr;
+    rt_oerr = 0;
+    return e;
+}
+/* readlink into a buffer read by obxlib_readlink_text; the length, or -errno */
+static char obxlib_link[4097];
+int64_t obxlib_readlink(const char* path) {
+    ssize_t n = readlink(path, obxlib_link, sizeof obxlib_link - 1);
+    if (n < 0) return -(int64_t)errno;
+    obxlib_link[n] = 0;
+    return n;
+}
+void* obxlib_readlink_text(void) { return obxlib_link; }
+/* 1 when fd is a terminal; its width in columns, or 0 when it reports none */
+int64_t obxlib_isatty(int64_t fd) { return isatty((int)fd); }
+int64_t obxlib_term_cols(int64_t fd) {
+    struct winsize w;
+    if (ioctl((int)fd, TIOCGWINSZ, &w) != 0 || w.ws_col == 0 || w.ws_row == 0) return 0;
+    return w.ws_col;
 }
 /* clock: 0 realtime, 1 monotonic; nanoseconds */
 int64_t obx_clock_ns(int64_t which) {

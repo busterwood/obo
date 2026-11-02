@@ -19,26 +19,35 @@ extern "c" fn direntName(d: ptr): str as "obx_dirent_name"
 extern "c" fn direntType(d: ptr): int as "obx_dirent_type"
 extern "c" fn statInto(path: str, follow: int): int as "obx_stat"
 extern "c" fn statField(i: int): int as "obx_stat_field"
+extern "c" fn cReadlink(path: str): int as "obxlib_readlink"
+extern "c" fn readlinkText(): str as "obxlib_readlink_text"
 
-pub type Kind = value closed { File; Dir; Link; Other }
+// The type of a file: regular, directory, symbolic link, named pipe, Unix
+// socket, character or block device, or Other (not known).
+pub type Kind = value closed { File; Dir; Link; Fifo; Socket; CharDev; BlockDev; Other }
 
 pub fn (k: Kind) eq(o: &Kind): bool { return k.code() == o.code() }
 
-fn (k: Kind) code(): int {
-    match k {
-        Kind.File { return 0 }
-        Kind.Dir { return 1 }
-        Kind.Link { return 2 }
-        Kind.Other { return 3 }
+// The S_IFMT bits of the kind's mode (0 for Other).
+pub fn (k: Kind) code(): int {
+    return match k {
+        Kind.File { 0x8000 } Kind.Dir { 0x4000 } Kind.Link { 0xA000 } Kind.Fifo { 0x1000 }
+        Kind.Socket { 0xC000 } Kind.CharDev { 0x2000 } Kind.BlockDev { 0x6000 } Kind.Other { 0 }
     }
 }
 
 pub fn (k: Kind) toStr(): str {
-    match k {
-        Kind.File { return "file" }
-        Kind.Dir { return "dir" }
-        Kind.Link { return "link" }
-        Kind.Other { return "other" }
+    return match k {
+        Kind.File { "file" } Kind.Dir { "dir" } Kind.Link { "link" } Kind.Fifo { "fifo" }
+        Kind.Socket { "socket" } Kind.CharDev { "chardev" } Kind.BlockDev { "blockdev" } Kind.Other { "other" }
+    }
+}
+
+// The kind of a st_mode value.
+pub fn kindOfMode(mode: int): Kind {
+    return match mode & 0xF000 {
+        0x8000 { Kind.File } 0x4000 { Kind.Dir } 0xA000 { Kind.Link } 0x1000 { Kind.Fifo }
+        0xC000 { Kind.Socket } 0x2000 { Kind.CharDev } 0x6000 { Kind.BlockDev } else { Kind.Other }
     }
 }
 
@@ -55,13 +64,7 @@ pub type Stat = value record {
     pub blocks: int    // 512-byte blocks
 }
 
-pub fn (s: Stat) kind(): Kind {
-    let t = s.mode & 0xF000
-    if t == 0x8000 { return Kind.File }
-    if t == 0x4000 { return Kind.Dir }
-    if t == 0xA000 { return Kind.Link }
-    return Kind.Other
-}
+pub fn (s: Stat) kind(): Kind { return kindOfMode(s.mode) }
 
 pub fn (s: Stat) isDir(): bool { return s.mode & 0xF000 == 0x4000 }
 pub fn (s: Stat) isFile(): bool { return s.mode & 0xF000 == 0x8000 }
@@ -102,8 +105,8 @@ pub fn isFile(path: str): bool {
     }
 }
 
-// One directory entry. kind comes from readdir and is Other when the file
-// system does not say; lstat the path to be sure.
+// One directory entry. kind comes from readdir, or from lstat when the file
+// system does not say (Other when that fails too).
 pub type Entry = record {
     pub name: str
     pub kind: Kind
@@ -120,7 +123,11 @@ pub fn list(path: str): Result[[]Entry, io.IoError] {
         if isNull(e) { break }
         let name = direntName(e)
         if name != "." && name != ".." {
-            append(mut &out, Entry{name: name, kind: kindOfDirent(direntType(e))})
+            var kind = kindOfDirent(direntType(e))
+            if kind == Kind.Other {
+                match lstat(join(path, name)) { Ok(st) { kind = st.kind() } Err(_) {} }
+            }
+            append(mut &out, Entry{name: name, kind: kind})
         }
     }
     closedir(d)
@@ -136,12 +143,8 @@ pub fn listNames(path: str): Result[[]str, io.IoError] {
     return Ok(names)
 }
 
-fn kindOfDirent(t: int): Kind {
-    if t == 8 { return Kind.File }    // DT_REG
-    if t == 4 { return Kind.Dir }     // DT_DIR
-    if t == 10 { return Kind.Link }   // DT_LNK
-    return Kind.Other
-}
+// DT_* is S_IFMT >> 12; DT_UNKNOWN (0) is Other.
+fn kindOfDirent(t: int): Kind { return kindOfMode(t << 12) }
 
 // Creates the directory path (mode 0777 less umask).
 pub fn mkdir(path: str): Result[Unit, io.IoError] {
@@ -192,6 +195,13 @@ pub fn removeAll(path: str): Result[Unit, io.IoError] {
 pub fn rename(from: str, to: str): Result[Unit, io.IoError] {
     if cRename(from, to) != 0 { return Err(io.ioError(errno(), "rename", from)) }
     return Ok(Unit{})
+}
+
+// The target of the symbolic link path, as stored in the link.
+pub fn readlink(path: str): Result[str, io.IoError] {
+    let n = cReadlink(path)
+    if n < 0 { return Err(io.ioError(-n, "readlink", path)) }
+    return Ok(readlinkText())
 }
 
 // Makes path a symbolic link to target.

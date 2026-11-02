@@ -133,10 +133,12 @@ insertion point), `lowerBound`, `upperBound`, `find`, `findBy`, `contains`,
 `parseIntBase(s, base)` return `Result[int, ParseError]` (`Empty`,
 `Invalid(at)`, `OutOfRange`); `formatInt(n, base)`, `hex`, `hex64`, `zeroPad`,
 `groupDigits(n, sep)`, `padLeft`, `padRight`, `center`. UTF-8: `decodeAt(s,
-i): Decoded {rune, size}` (strict; invalid bytes give U+FFFD, size 1),
-`runes`, `runeCount`, `isValidUtf8`, `addRune(mut &buf, r)`, `fromRune`,
-`fromRunes`, `displayWidth` (rough terminal columns: wide East Asian and
-emoji 2, combining marks 0).
+i): Decoded {rune, size, ok}` (strict; an invalid part gives U+FFFD and takes
+its maximal subpart, as Rust's `from_utf8_lossy`), `runes`, `runeCount`,
+`isValidUtf8`, `lossy(s)` (invalid parts replaced by U+FFFD), `addRune(mut
+&buf, r)`, `fromRune`, `fromRunes`, `displayWidth(s)` and `runeWidth(r)`
+(terminal columns per unicode-width 0.1.14: wide East Asian and emoji 2,
+combining marks, format and control characters 0).
 
 ### io, fs, os, time
 
@@ -145,13 +147,19 @@ emoji 2, combining marks 0).
   `readLines`, `readStdin`, `splitLines`, `write(path, data)`,
   `appendTo(path, data)`. `Writer` (`stdout()`, `stderr()`, `create(path)`,
   `openAppend(path)`): `write`, `writeln`, `writeByte`, `flush(): Result`,
-  `close(): Result`; flushed and closed when dropped (errors then are lost).
+  `close(): Result`; flushed and closed when dropped (errors then are lost); the
+first error of an implicit flush (buffer over 64 KiB) is kept for the next
+`flush` or `close`, and a stdout writer's `flush` also flushes the runtime's
+buffer behind `print`. `flushStdout(): Result` does that and reports the first
+failed write to stdout since the last call (so a program can see `ENOSPC` on a
+full disk). `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
 - **fs**: `stat`/`lstat(path): Result[Stat, IoError]` (`size mode mtime
   mtimeNs nlink uid gid ino blocks`, `kind() isDir() isFile() isLink()
-  perm()`), `exists`, `isDir`, `isFile`, `list(path): Result[[]Entry]`
-  (`name`, `kind` from readdir), `listNames` (sorted), `mkdir`,
-  `mkdirAll`, `remove`, `removeAll` (does not follow links), `rename`,
-  `symlink`, `chmod`; paths: `join`, `baseName`, `dirName`, `extension`.
+  perm()`), `Kind` (`File Dir Link Fifo Socket CharDev BlockDev Other`,
+  `kindOfMode(mode)`), `exists`, `isDir`, `isFile`, `list(path):
+  Result[[]Entry]` (`name`, `kind` from readdir, or lstat when readdir does
+  not say), `listNames` (sorted), `mkdir`, `mkdirAll`, `remove`, `removeAll`
+  (does not follow links), `rename`, `symlink`, `readlink`, `chmod`; paths: `join`, `baseName`, `dirName`, `extension`.
 - **os**: `argv()`, `arguments()`, `env(name): Option[str]`, `envOr`,
   `setEnv`, `unsetEnv`, `pid`, `cwd`, `setCwd`, `quit(code)`.
 - **time**: `Time {sec, nsec}` (`now`, `fromNanos`, `cmp`, `eq`, `toStr`,
@@ -182,6 +190,13 @@ errno, a static buffer):
 | `obx_open(path, how)` | open for read, write (truncate), append, or create-new; fd or -errno |
 | `obx_clock_ns(which)` | `clock_gettime` realtime or monotonic, in ns |
 | `obx_getcwd()` | `getcwd` into a static buffer |
+| `obxlib_readlink(path)`, `obxlib_readlink_text()` | readlink into a static buffer; length or -errno, then the text |
+| `obxlib_flush_out()` | flush the runtime's stdout buffer; errno of the first failed write since the last call, or 0 |
+| `obxlib_isatty(fd)`, `obxlib_term_cols(fd)` | `isatty`; `TIOCGWINSZ` columns or 0 |
+
+The `obxlib_` helpers are not `obx_` names because the compiler lets
+externs name only the `obx_` helpers it knows (sema's `cHelper`); any other
+name defined in both runtimes works, statically linked on the native backend.
 
 The self-hosted compiler's runtime needs the same helpers (or the language a
 way to read C structs).
@@ -221,10 +236,9 @@ them and a NUL-terminated temporary copy otherwise (freed after the call).
   file descriptor, no seek, no file handles for reading.
 - `fs.list` has no error for a failure in the middle of `readdir`; `Stat` has
   no atime/ctime fields (the helper can read them); no `chown`, `utimes`,
-  `realpath`, `readlink`.
+  `realpath`.
 - `time` is UTC only (no time zones), with millisecond helpers only.
-- `strings` case mapping and `displayWidth` are ASCII / rough tables, not
-  Unicode data.
+- `strings` case mapping is ASCII only.
 - No `Deque`, no `BTreeMap`/ordered map; `Set` iterates in insertion order
   until a remove.
 - Errors are errno ints in `os` (setEnv, setCwd) but `IoError` in `io` and

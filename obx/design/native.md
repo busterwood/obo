@@ -151,8 +151,10 @@ The runtime also provides the part of libc that `lib/` and the tests declare
 as externs: `close opendir readdir closedir mkdir rmdir unlink rename symlink
 chmod chdir getpid getenv setenv unsetenv usleep time strerror system mkdtemp
 malloc free strdup strlen strcmp strncmp strchr strrchr strstr abs labs atoi
-toupper exit abort` and the `obx_*` helpers of rt.h (`obx_errno`, `obx_stat`,
-`obx_open`, ...). `strerror` has glibc's texts. Of libm it has the functions
+toupper exit abort` and the `obx_*` and `obxlib_*` helpers of rt.h
+(`obx_errno`, `obx_stat`, `obx_open`, `obxlib_readlink`, `obxlib_isatty`,
+...). `obxlib_flush_out` reports the first failed write of the stdout buffer
+(both runtimes remember it). `strerror` has glibc's texts. Of libm it has the functions
 whose result is exact, so they match glibc bit for bit: `fabs copysign sqrt
 trunc floor ceil round rint fmod`. A program that calls any other C function
 (libm's `pow`, `exp`, `sin`, `hypot`, ..., or any library but `"c"`) is

@@ -30,7 +30,7 @@ static i64 sys6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) {
 
 enum { S_READ = 0, S_WRITE = 1, S_OPEN = 2, S_CLOSE = 3, S_MMAP = 9, S_MUNMAP = 11, S_RT_SIGACTION = 13,
        S_MREMAP = 25,
-       S_NANOSLEEP = 35, S_GETPID = 39, S_FORK = 57, S_EXECVE = 59, S_WAIT4 = 61, S_KILL = 62, S_GETCWD = 79,
+       S_NANOSLEEP = 35, S_GETPID = 39, S_FORK = 57, S_EXECVE = 59, S_WAIT4 = 61, S_KILL = 62, S_GETCWD = 79, S_READLINK = 89, S_IOCTL = 16,
        S_CHDIR = 80, S_RENAME = 82, S_MKDIR = 83, S_RMDIR = 84, S_UNLINK = 87, S_SYMLINK = 88,
        S_CHMOD = 90, S_GETRLIMIT = 97, S_SIGALTSTACK = 131, S_GETDENTS64 = 217,
        S_CLOCK_GETTIME = 228, S_EXIT_GROUP = 231, S_NEWFSTATAT = 262, S_GETRANDOM = 318 };
@@ -227,11 +227,12 @@ static void write_all(int fd, const char* p, size_t n) {
     }
 }
 
+static int rt_oerr;                 /* the first failed write of rt_obuf (obxlib_flush_out) */
 void rt_flush(void) {
     size_t off = 0;
     while (off < rt_olen) {
         i64 n = SYS(S_WRITE, 1, rt_obuf + off, rt_olen - off);
-        if (n <= 0) break;
+        if (n <= 0) { if (!rt_oerr) rt_oerr = n < 0 ? (int)-n : 5; break; }
         off += (size_t)n;
     }
     rt_olen = 0;
@@ -1107,6 +1108,29 @@ int64_t obx_open(const char* path, int64_t how) {
     if (how < 0 || how > 3) return -22;
     int fd = (int)sysret(SYS(S_OPEN, path, flags[how] | 0x80000, 0666));
     return fd < 0 ? -(int64_t)rt_errno : fd;
+}
+int64_t obxlib_flush_out(void) {
+    rt_flush();
+    int e = rt_oerr;
+    rt_oerr = 0;
+    return e;
+}
+static char obxlib_link[4097];
+int64_t obxlib_readlink(const char* path) {
+    i64 n = SYS(S_READLINK, path, obxlib_link, sizeof obxlib_link - 1);
+    if (n < 0) return n;
+    obxlib_link[n] = 0;
+    return n;
+}
+void* obxlib_readlink_text(void) { return obxlib_link; }
+int64_t obxlib_isatty(int64_t fd) {
+    char t[64];                                     /* struct termios */
+    return SYS(S_IOCTL, fd, 0x5401, t) == 0;        /* TCGETS */
+}
+int64_t obxlib_term_cols(int64_t fd) {
+    unsigned short w[4];                            /* struct winsize: rows, cols, xpixel, ypixel */
+    if (SYS(S_IOCTL, fd, 0x5413, w) != 0 || w[0] == 0 || w[1] == 0) return 0;   /* TIOCGWINSZ */
+    return w[1];
 }
 int64_t obx_clock_ns(int64_t which) {
     struct { i64 s, ns; } t;
