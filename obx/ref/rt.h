@@ -206,18 +206,22 @@ static const char* rt_cstr(obx_str s, const char* w) {
     return rt_ctmp[rt_nctmp++] = rt_cdup(s);
 }
 static void rt_cfree(void) { while (rt_nctmp) free(rt_ctmp[--rt_nctmp]); }
+/* The decimal digits of v, written backwards before end; returns the first. 64-bit division as
+   soon as v fits (a 128-bit one is a libgcc call). */
+static char* rt_digits(char* end, u128 v) {
+    for (; v > UINT64_MAX; v /= 10) *--end = (char)('0' + (int)(v % 10));
+    uint64_t w = (uint64_t)v;
+    do *--end = (char)('0' + (int)(w % 10)); while (w /= 10);
+    return end;
+}
 static obx_str rt_u128_to_str(u128 v) {
-    char buf[48]; int n = 48;
-    do { buf[--n] = (char)('0' + (int)(v % 10)); v /= 10; } while (v);
-    return rt_str_of(buf + n, 48 - n);
+    char buf[48], *p = rt_digits(buf + 48, v);
+    return rt_str_of(p, buf + 48 - p);
 }
 static obx_str rt_i128_to_str(i128 v) {
-    if (v >= 0) return rt_u128_to_str((u128)v);
-    char buf[48]; int n = 48;
-    u128 u = (u128)0 - (u128)v;
-    do { buf[--n] = (char)('0' + (int)(u % 10)); u /= 10; } while (u);
-    buf[--n] = '-';
-    return rt_str_of(buf + n, 48 - n);
+    char buf[48], *p = rt_digits(buf + 48, v < 0 ? (u128)0 - (u128)v : (u128)v);
+    if (v < 0) *--p = '-';
+    return rt_str_of(p, buf + 48 - p);
 }
 static obx_str rt_int_to_str(int64_t v) { return rt_i128_to_str(v); }
 static obx_str rt_u64_to_str(uint64_t v) { return rt_u128_to_str(v); }
