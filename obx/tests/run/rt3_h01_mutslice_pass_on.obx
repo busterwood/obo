@@ -1,0 +1,21 @@
+// Red-team round 3, h01: passing a mut slice on, re-slicing it and capturing
+// it in a closure still work when nothing else borrows from it.
+// expect: 9
+// expect: 7
+// expect: 5
+type B = record { v: []int }
+fn reset(s: mut &[B], n: int) { s[0] = B{v: [n]} }
+fn run(f: &fn()) { f() }
+fn f(s: mut &[B]) {
+    reset(s, 9)
+    println(s[0].v[0])
+    reset(mut &s[1..], 7)
+    let t: mut &[B] = s[1..]
+    println(t[0].v[0])
+}
+fn main() {
+    var xs = [B{v: [1]}, B{v: [2]}]
+    f(mut &xs)
+    run(fn() { reset(mut &xs, 5) })
+    println(xs[0].v[0])
+}

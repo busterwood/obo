@@ -1,0 +1,14 @@
+// Red-team round 3, h03 (SPEC 4.6): a closure that passes a captured mut
+// slice on as mut &[T] captures it mutably, so the call holds it mutably and
+// the second argument &s[0].v[0] overlaps it.
+// error: borrowed
+type B = record { v: []int }
+fn reset(s: mut &[B]) { s[0] = B{v: [9]} }
+fn run(f: &fn(), b: &int) { f(); println(b) }
+fn g(s: mut &[B]) {
+    run(fn() { reset(s) }, &s[0].v[0])
+}
+fn main() {
+    var xs = [B{v: [1]}]
+    g(mut &xs)
+}

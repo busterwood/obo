@@ -1,0 +1,14 @@
+// Red-team round 3, h02: re-slicing a mut &[T] as mut (mut &s[0..1]) borrows
+// s mutably, so it is an error while r borrows an element.
+// error: borrowed
+type B = record { v: []int }
+fn reset(s: mut &[B]) { s[0] = B{v: [9]} }
+fn f(s: mut &[B]) {
+    let r = &s[0].v[0]
+    reset(mut &s[0..1])
+    println(r)
+}
+fn main() {
+    var xs = [B{v: [1]}]
+    f(mut &xs)
+}

@@ -547,6 +547,8 @@ class Checker:
             if not isinstance(root, Var):
                 self.err(f"cannot borrow a temporary into let '{s.name}': the temporary does not outlive "
                          "the statement", s.where)
+            if v.t[2]:
+                self.frozen(root, 'mut', s.where)
             var = Var(s.name, cn, v.t, False, 'local', s.where)
             var.broot = root
             self.emit(f"{self.T(v.t[1])}* {cn} = {v.c};" if v.t[0] == 'ref' else f"obx_slice {cn} = {v.c};")
@@ -1428,13 +1430,13 @@ class Checker:
                 self.err(f"cannot slice global '{v.glob.name}'", e.where)
             if mut and not v.mutable:
                 self.immutable(v, e.where, 'take a mut slice of')
-            if mut:
-                self.frozen(v.root, 'mut', e.where)
             base = f"rt_as_slice(&{v.c})"
         else:
             if mut and not v.t[2]:
                 self.err("cannot make a mut slice from a shared slice", e.where)
             base = v.c
+        if mut:                         # rule 4: a mut re-slice is a mut borrow of the root
+            self.frozen(v.root, 'mut', e.where)
         mark = len(self.ctx.pending)
         self.hold(v, False, object(), e.where)
         lo = self.int_index(e.lo) if e.lo is not None else '0'
@@ -2011,6 +2013,8 @@ class Checker:
                              f"({'mut &' if pt[2] else '&'}x)", where)
                 if pt[2] and not sv.t[2]:
                     self.err(f"{what} needs a mut slice, not {tstr(sv.t)}", where)
+                if pt[2]:               # passing a mut slice on borrows its root mutably (rule 4)
+                    self.frozen(sv.root, 'mut', where)
                 v = Val(sv.c, ('slice', sv.t[1], pt[2]), 'rv', root=sv.root, path=sv.path)
                 if not unify(pt[1], v.t[1], bind, tps):
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)
