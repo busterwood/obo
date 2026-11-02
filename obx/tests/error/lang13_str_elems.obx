@@ -1,0 +1,4 @@
+// SPEC 12: array elements passed to C are C scalars.
+// error: cannot have type &[]str
+extern "c" fn f(a: &[]str)
+fn main() { }

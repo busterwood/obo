@@ -1,0 +1,4 @@
+// SPEC 12: no arrays of arrays.
+// error: cannot have type &[][]int
+extern "c" fn f(a: &[][]int)
+fn main() { }

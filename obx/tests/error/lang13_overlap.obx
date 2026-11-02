@@ -1,0 +1,4 @@
+// SPEC 10: an array C may write cannot be passed twice.
+// error: borrowed mutably twice
+extern "c" fn memcpy(dst: mut &[]byte, src: &[]byte, n: int): ptr
+fn main() { var a = array(4, byte(1)); memcpy(mut &a, &a, 2) }

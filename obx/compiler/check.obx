@@ -3958,7 +3958,16 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
     } else {
         var cs2: []str = []
         for k in 0..len(vals) {
-            append(mut &cs2, if vals[k].v.t == sema.T_STR { "rt_cstr(" + cs[k] + ", " + c.W(line) + ")" } else { cs[k] })
+            let pk = c.pg.tk(params[k])
+            if vals[k].v.t == sema.T_STR {
+                append(mut &cs2, "rt_cstr(" + cs[k] + ", " + c.W(line) + ")")
+            } else if pk == sema.TK_SLICE {       // SPEC 12: an array's elements (never a null pointer)
+                append(mut &cs2, "rt_cdata((" + cs[k] + ").data)")
+            } else if pk == sema.TK_REF && c.pg.tk(c.pg.ta(params[k])) == sema.TK_ARR {
+                append(mut &cs2, "rt_cdata((" + cs[k] + ")->data)")
+            } else {
+                append(mut &cs2, cs[k])
+            }
         }
         text = "x_" + c.pg.fns[sig.fd].cname + "(" + joinStrs(&cs2, 0) + ")"
         if ret == sema.T_STR { text = "rt_str_from_c((void*)" + text + ")" }

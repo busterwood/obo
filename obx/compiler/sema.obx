@@ -1222,6 +1222,14 @@ fn (pg: mut &Program) resolveFn(f: int) {
                 let inner = pg.ta(t)
                 ok = pg.isInt(inner) || inner == T_PTR || inner == T_FLOAT
             }
+            if !ok && (pg.tk(t) == TK_SLICE || (pg.tk(t) == TK_REF && pg.tk(pg.ta(t)) == TK_ARR)) {
+                let el = if pg.tk(t) == TK_SLICE { pg.ta(t) } else { pg.ta(pg.ta(t)) }
+                ok = pg.isInt(el) || el == T_FLOAT || el == T_PTR || (el == T_BOOL && !pg.tm(t))
+                if !ok {
+                    pg.err(m, pn.line, "extern parameter " + pn.s + " cannot have type " + pg.tstr(t) +
+                        " (the elements of an array passed to C are integers, float or ptr, or bool read-only)")
+                }
+            }
             if !ok && pg.tk(t) == TK_FN {
                 pg.err(m, pn.line, "extern parameter " + pn.s + " cannot have type " + pg.tstr(t) +
                     " (a C function pointer is written extern fn(...))")

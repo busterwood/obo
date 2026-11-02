@@ -831,7 +831,13 @@ named), or a name of the form the compiler generates (`f1_x`, `g1_x`, `k1_x`,
 underscore).
 
 Parameter and result types are limited to integers, `float`, `bool`, `ptr`,
-`mut &ptr`, `mut &int` and `str`. A `str` result copies a NUL-terminated
+`mut &ptr`, `mut &int` and `str`; a parameter may also be an array or a slice
+of integers, `float` or `ptr` (`&[]T`, `mut &[]T`, `&[T]`, `mut &[T]`; `bool`
+elements read-only), passed as a pointer to the elements and borrowed as for
+any call (section 10): the pointer is valid during the call only, C gets no
+length (pass `len(a)` as another argument), and with `mut` C may write the
+elements. An empty array or slice passes a valid pointer, never NULL, to no
+elements. A `str` result copies a NUL-terminated
 `char *` the C function returns (a NULL result gives `""`); the C memory is
 not freed. A `str` argument is passed as
 a NUL-terminated pointer valid for the call (the runtime copies the bytes

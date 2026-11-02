@@ -1,0 +1,37 @@
+// SPEC 12: arrays and slices of C scalars passed to C as element pointers: qsort sorts in place,
+// memcpy/memset write through mut, getcwd fills a buffer; an empty array passes a non-null pointer.
+// expect: 10 20 30 40 50 
+// expect: 104 105 33 46 46 0 
+// expect: 5
+// expect: true
+// expect: true
+extern "c" fn qsort(base: mut &[]i32, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+extern "c" fn memcpy(dst: mut &[]byte, src: &[byte], n: int): ptr
+extern "c" fn memset(dst: mut &[byte], c: i32, n: int): ptr
+extern "c" fn strnlen(s: &[]byte, n: int): int
+extern "c" fn memchr(s: &[]byte, c: i32, n: int): ptr
+extern "c" fn getcwd(buf: mut &[]byte, n: int): ptr
+extern "c" fn obxlib_peek(p: ptr, i: int): int
+fn cmp(a: ptr, b: ptr): i32 {
+    let x = obxlib_peek(a, 0)
+    let y = obxlib_peek(b, 0)
+    return if x < y { -1 } else if x > y { 1 } else { 0 }
+}
+fn main() {
+    var xs: []i32 = [30, 10, 20, 50, 40]
+    qsort(mut &xs, len(xs), 4, cmp)
+    for x in xs { print(intToStr(int(x)) + " ") }
+    println("")
+    var dst = array(6, byte(0))
+    let src: []byte = [104, 105, 33, 0]
+    memcpy(mut &dst, &src, 3)
+    memset(mut &dst[3..5], 46, 2)
+    for b in dst { print(intToStr(int(b)) + " ") }
+    println("")
+    println(strnlen(&dst, 6))
+    var none: []byte = []
+    println(isNull(memchr(&none, 0, 0)))
+    memcpy(mut &none, &src[0..0], 0)
+    var cwd = array(4096, byte(0))
+    println(!isNull(getcwd(mut &cwd, len(cwd))))
+}

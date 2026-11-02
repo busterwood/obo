@@ -683,7 +683,11 @@ fn (e: mut &Emitter) makeInstance(f: int, targs: int) {
     e.c.tmpls[f] = tm
 }
 
-fn (e: mut &Emitter) externC(t: int): str { return if t == sema.T_STR { "const char*" } else { e.ctype(t) } }
+fn (e: mut &Emitter) externC(t: int): str {
+    let k = e.c.pg.tk(t)
+    if k == sema.TK_SLICE || (k == sema.TK_REF && e.c.pg.tk(e.c.pg.ta(t)) == sema.TK_ARR) { return "void*" }
+    return if t == sema.T_STR { "const char*" } else { e.ctype(t) }
+}
 
 // ---- the program
 

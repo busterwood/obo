@@ -209,6 +209,9 @@ static const char* rt_cstr(obx_str s, const char* w) {
     return rt_ctmp[rt_nctmp++] = rt_cdup(s);
 }
 static int64_t rt_cmark(void) { return rt_nctmp; }
+/* An array's elements for a C call: an empty array (no buffer) passes a pointer to a byte */
+static char rt_cempty;
+static void* rt_cdata(void* p) { return p ? p : &rt_cempty; }
 static void rt_cfree(int64_t m) { while (rt_nctmp > m) free(rt_ctmp[--rt_nctmp]); }
 /* The decimal digits of v, written backwards before end; returns the first. 64-bit division as
    soon as v fits (a 128-bit one is a libgcc call). */
