@@ -56,16 +56,24 @@ names to indices.
 ## Language backlog
 
 Pain points found while writing the library (stage 3 report, 2026-11-02).
-Each needs a spec decision before the self-hosted compiler depends on it.
+
+Decided by the user on 2026-11-02 and written into SPEC.md (compiler work
+pending, the round after the red-team fixes):
+
+- Records can be taken apart: `let P{a, b: x, c: _} = e` (9.1).
+- A `never` result type (5.3).
+- Fractional literals carry an `i128` coefficient and may have an exponent;
+  the lang item is `fromFraction(units: i128, scale: int)` (2, 7.3).
+- Externs may be `pub`, renamed with `as "c_name"`, and return `str`; two
+  externs with the same C name and different signatures are an error (12).
+- Variants are always qualified by their type (`Expr.Num(1)`,
+  `Rounding.HALF_EVEN`), in expressions and match arms, except the prelude's
+  `Some`, `None`, `Ok` and `Err` (4.4).
+
+Still open:
 
 | Item | Proposal |
 |---|---|
-| Moving fields out of a record | `let P{a, b} = e` destructures a consumed record (as a consuming `match` does for closed types). The compiler will want it for AST rewriting. |
-| No `never` result type | a `never` result for functions that do not return (`panic`, `exit`, stop helpers) |
-| Fractional literals limited to 18 digits, no exponent | let the literal carry an `i128` coefficient and allow `e`, so `fromFraction(units: i128, scale: int)` with a negative scale for large exponents |
 | Generic function values inside generic code; no closures | closures are planned (section 13 of the spec); until then `sortBy` takes a plain `fn` |
 | Owned globals banned | needs the effect rules (section 13); tables are matches or constants for now |
-| Externs cannot be `pub`, renamed or return `str` | `extern "c" fn name(...) = "c_name"`, and a `str` result copied from a NUL-terminated `char *` |
-| Two externs with the same C name and different signatures | should be a compile error (today the first wins silently) |
-| std variant names (`HALF_EVEN`, `DecOverflow`) are visible everywhere | qualify by type (`Rounding.HALF_EVEN`) or keep std's closed types few |
 | A local file can shadow a library module | keep (relative first), document |

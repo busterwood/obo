@@ -33,15 +33,17 @@ separate decision from the user; they are the ones to revisit first.
   a statement, so arguments and array literals may span lines.
 - Integer literals: `123`, `1_000`, `0xff`, `0b1010`. A character literal
   `'a'` is a `byte`; escapes `\n \t \r \0 \\ \' \" \xHH`.
-- A fractional literal `12.34` (digits on both sides of the point, an
-  optional exponent is not allowed) is typed by context; see section 7.3.
+- A fractional literal has a fraction, an exponent or both: `12.34`,
+  `1.5e3`, `2e-7`, `6.02e23` (digits on both sides of a point; the exponent is
+  `e` or `E`, an optional sign and digits). It is typed by context; see
+  section 7.3.
 - String literals `"..."` use the same escapes and may not span lines.
 
 Keywords:
 
 ```
 as break closed const continue else extern false fn for if import in
-interface let match mut pub record return true try type value var while
+interface let match mut never pub record return true try type value var while
 ```
 
 `value` is reserved only before `record` and `closed`. `copy` and `Self` are
@@ -76,17 +78,20 @@ param       = [ "var" ] IDENT ":" type ;
 
 constdecl   = "const" IDENT [ ":" type ] "=" expr sep ;
 globaldecl  = "var" IDENT ":" type "=" expr sep ;
-externdecl  = "extern" STRING "fn" IDENT "(" [ params ] ")" [ ":" type ] sep ;
+externdecl  = "extern" STRING "fn" IDENT "(" [ params ] ")" [ ":" type ]
+              [ "as" STRING ] sep ;
 
-type        = "&" type | "mut" "&" type | "[]" type
+type        = "never" | "&" type | "mut" "&" type | "[]" type
             | "&" "[" type "]" | "mut" "&" "[" type "]"     (* slices *)
             | "fn" "(" [ type { "," type } ] ")" [ ":" type ]
             | qualname [ targs ] ;
 targs       = "[" type { "," type } "]" ;
-qualname    = IDENT [ "." IDENT ] ;
+qualname    = IDENT { "." IDENT } ;
 
 block       = "{" { stmt } "}" ;
 stmt        = ( "let" | "var" ) IDENT [ ":" type ] "=" expr sep
+            | ( "let" | "var" ) qualname [ targs ] "{" fieldpat { "," fieldpat } "}"
+              "=" expr sep                                (* destructuring *)
             | "if" expr block [ "else" ( block | ifstmt ) ]
             | "while" expr block
             | "for" IDENT "in" expr [ ".." expr ] block
@@ -97,6 +102,7 @@ stmt        = ( "let" | "var" ) IDENT [ ":" type ] "=" expr sep
 arm         = qualname [ "(" pattern { "," pattern } ")" ] block
             | literal { "," literal } block ;
 pattern     = IDENT | "_" ;
+fieldpat    = IDENT [ ":" pattern ] ;
 assignop    = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "|=" | "&=" | "^=" ;
 
 expr        = orexpr ;
@@ -206,12 +212,17 @@ A closed type has a fixed set of variants. `closed` is boxed and may be
 recursive; `value closed` is inline, and its size is that of its largest
 variant plus a tag. Copy and owned follow the same rule as records.
 
-A variant with positional fields is built like a call, `Some(3)`, `None`;
-one with named fields like a record, `Call{name: "f", args: []}`. Variant
-names live in the module scope of their type, so two closed types in one
-module may not share a variant name. Outside the module they are
-qualified like other names (`ast.Num(1)`) unless imported unqualified (std's
-are, section 9).
+Variant names belong to their type and are always written qualified by it:
+`Expr.Num(1)`, `Expr.Add(a, b)`, `Rounding.HALF_EVEN`, and from another module
+`ast.Expr.Num(1)`. This holds in expressions and in `match` arms. Two closed
+types may use the same variant names. The one exception is the prelude:
+`Some`, `None`, `Ok` and `Err` may be written bare (and also qualified, as
+`Option.Some`), and no other module may declare a top-level name that clashes
+with them.
+
+A variant with positional fields is built like a call, `Expr.Num(3)`,
+`Option.None` or `None`; one with named fields like a record,
+`Expr.Call{name: "f", args: []}`.
 
 ### 4.5 Borrows
 
@@ -293,6 +304,11 @@ fn (Decimal) parse(s: str): Result[Decimal, str] { ... }
 - A method named `drop`, with receiver `mut &T` and no other parameters, is
   the type's destructor (section 9.4). It cannot be called directly.
 - A function without a result type returns nothing.
+- A function whose result type is `never` does not return: every path through
+  its body must end in a call to another `never` function (`panic`, `exit` are
+  `never`) or a loop with no `break`. A call to a `never` function ends its
+  path like `return` (section 8 and the joins of 9.1). `never` may appear only
+  as a result type.
 
 ### 5.4 Interfaces
 
@@ -378,11 +394,16 @@ of range. There are no other conversions.
 
 ### 7.3 Fractional literals
 
-A fractional literal whose expected type is `float` is a float. Otherwise
-`d.ddd` with `n` digits after the point is the call `T.fromFraction(digits, n)`
-when the expected type `T` has an associated function `fromFraction(int, int)`,
-and the call `fromFraction(digits, n)` of the function in scope otherwise
-(std's makes a `Decimal`, so `int(1.5)` is an error). This is one of two lang items.
+A fractional literal whose expected type is `float` is a float (the nearest
+one). Otherwise the literal is written as `units × 10^-scale`, where `units` is
+its digits without the point as an `i128` and `scale` is the number of digits
+after the point minus the exponent (so `1.50` is `(150, 2)`, `1.5e3` is
+`(15, -2)` and `2e-7` is `(2, 7)`). It is then the call
+`T.fromFraction(units, scale)` when the expected type `T` has an associated
+function `fromFraction(i128, int)`, and the call `fromFraction(units, scale)`
+of the function in scope otherwise (std's makes a `Decimal`, so `int(1.5)` is
+an error). A literal whose digits do not fit an `i128` is a compile error.
+This is one of the lang items.
 
 ### 7.4 Operators on other types
 
@@ -437,7 +458,7 @@ that statement and is then dropped: `println(makeBox(3).v)` is allowed.
   element type is a copy type, and a `&T` borrow of it otherwise. The array is
   borrowed for the whole loop.
 - `match e { ... }` takes a closed value. An arm names a variant and binds its
-  positional fields (`Add(l, r)`) or named fields in declaration order; `_`
+  positional fields (`Expr.Add(l, r)`) or named fields in declaration order; `_`
   ignores one. Arms must cover every variant or end with `else`. `match` on an
   integer, `byte` or `str` takes literal arms and requires `else`.
 - `return e` returns. A function with a result type must return on every
@@ -458,6 +479,14 @@ Using an owned value where a value is expected (initialising a variable,
 passing a by-value argument, returning, storing in a field or element) moves
 it. The source then has no value until it is assigned again.
 
+- `let P{a, b: x, c: _} = e` takes a record apart: each named field is moved
+  (or copied) into a new variable (`a` binds field `a`, `b: x` binds field `b`
+  as `x`), fields bound to `_` or not named are dropped, and the record itself
+  is freed without dropping the moved fields. `e` must be a value, not a place
+  (use `move(x)` for a local), unless the record is a copy type. A record type
+  with a `drop` method cannot be taken apart, and private fields can be named
+  only in the record's module. `var P{...} = e` makes the variables
+  assignable.
 - Only a whole local variable or by-value parameter can be moved out of.
   Moving out of a field, an element, a borrow or a global is an error; use
   `replace`, `swap` or `pop`.
@@ -571,8 +600,15 @@ extern "c" fn getpid(): i32
 ```
 
 An `extern` declaration names a C function and the library that provides it
-(`"c"` for libc). Parameter and result types are limited to integers, `float`,
-`bool`, `ptr`, `mut &ptr`, `mut &int` and `str`; a `str` argument is passed as
+(`"c"` for libc). `as "c_name"` gives the C name when the obx name differs:
+`extern "c" fn cAbs(x: i32): i32 as "abs"`. An extern may be `pub` like any
+function. Two extern declarations in a program with the same C name must have
+the same parameter and result types; otherwise it is a compile error.
+
+Parameter and result types are limited to integers, `float`, `bool`, `ptr`,
+`mut &ptr`, `mut &int` and `str`. A `str` result copies a NUL-terminated
+`char *` the C function returns (a NULL result gives `""`); the C memory is
+not freed. A `str` argument is passed as
 a NUL-terminated pointer valid for the call (the runtime copies the bytes
 when the string is a substring without a NUL after it), and stops the program if it
 contains a NUL byte (exit code 12). `strFromC(p: ptr): str` copies a
@@ -611,6 +647,7 @@ exits with:
 
 ## 15. Lang items
 
-The compiler knows two names from the library: `fromFraction` (section 7.3)
-and the variant names `Ok` and `Err` (section 7.6). It knows no type from the
-library.
+The compiler knows these names from the library: `fromFraction` (section
+7.3), the variant names `Ok` and `Err` (section 7.6), and the four prelude
+variants that may be written bare (`Some`, `None`, `Ok`, `Err`, section 4.4).
+It knows no type from the library.
