@@ -1,0 +1,89 @@
+// sqldialect: placeholders per dialect (literal $ ? @ : kept), fragments from
+// explicit lists, Value display, hex, and the exact decimal text helpers.
+// expect: pg: SELECT * FROM t WHERE id = $1 AND name = $2 AND note = '$1 ?'
+// expect: sqlite: SELECT * FROM t WHERE id = ? AND name = ? AND note = '$1 ?'
+// expect: sqlserver: ... id = @p1 AND name = @p2 ... | odbc: ... id = ? AND name = ? ... | oracle: ... id = :1 AND name = :2 ...
+// expect: args 2: 7 'it''s'
+// expect: none: SELECT 1 | trailing arg: x = $1
+// expect: of: SELECT $1, $2 | 2 args
+// expect: of bad: error 1000: 2 text parts for 2 arguments; there must be one more
+// expect: values: NULL 42 2.5 true 'a' x'00ff10' 12.50 -0.001
+// expect: hex 00ff10 | unhex ok 3 | odd none | bad none
+// expect: text 12.50 | 0 | 0.000 | canonical 1 | sqlite 20004 chars
+// expect: pg range: error 1013: decimal needs more than 16383 fraction digits
+// expect: fit 12.50 | 99999999.99 | scale error 1010 | range error 1011 | meta error 1012 | meta error 1012 | zero 0.00
+// expect: parse 1.50 | error 1004 | error 1004 | error 1006 | error 1006 | error 1007
+// expect: nul: Err(error 1000: SQL text contains a NUL byte) | Ok(())
+
+import "sqldialect"
+
+type V = sqldialect.Value
+type D = sqldialect.Dialect
+
+fn code[T](r: Result[T, sqldialect.DbError]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() }
+    }
+}
+
+fn main() {
+    var q = sqldialect.sql("SELECT * FROM t WHERE id = ")
+    q.arg(V.Int(7))
+    q.add(" AND name = ")
+    q.arg(V.Text("it's"))
+    q.add(" AND note = '$1 ?'")
+    println("pg: " + q.render(D.Postgres))
+    println("sqlite: " + q.render(D.Sqlite))
+    var r = sqldialect.sql("... id = ")
+    r.arg(V.Null)
+    r.add(" AND name = ")
+    r.arg(V.Null)
+    r.add(" ...")
+    println("sqlserver: " + r.render(D.SqlServer) + " | odbc: " + r.render(D.SqlServerOdbc) + " | oracle: " + r.render(D.Oracle))
+    let args = q.args()
+    println("args " + len(args).toStr() + ": " + args[0].toStr() + " " + args[1].toStr())
+
+    let none = sqldialect.sql("SELECT 1")
+    var tail = sqldialect.sql("x = ")
+    tail.arg(V.Int(1))
+    println("none: " + none.render(D.Postgres) + " | trailing arg: " + tail.render(D.Postgres))
+
+    let made = sqldialect.of(["SELECT ", ", ", ""], [V.Int(1), V.Bool(false)]).unwrap()
+    println("of: " + made.render(D.Postgres) + " | " + len(made.args()).toStr() + " args")
+    match sqldialect.of(["a", "b"], [V.Int(1), V.Int(2)]) {
+        Ok(_) { println("of bad: accepted") }
+        Err(e) { println("of bad: " + e.toStr()) }
+    }
+
+    let vals = [V.Null, V.Int(42), V.Float(2.5), V.Bool(true), V.Text("a"), V.Bytes("\x00\xff\x10"), V.Dec(12.50), V.Dec(-0.001)]
+    var line = "values:"
+    for v in vals { line = line + " " + v.toStr() }
+    println(line)
+
+    let h = sqldialect.hex("\x00\xff\x10")
+    let back = sqldialect.unhex("00FF10")
+    println("hex " + h + " | unhex " + (if back.isSome() && back.unwrap() == "\x00\xff\x10" { "ok " } else { "bad " }) +
+        len(back.unwrapOr("")).toStr() + " | odd " + (if sqldialect.unhex("abc").isNone() { "none" } else { "some" }) +
+        " | bad " + (if sqldialect.unhex("zz").isNone() { "none" } else { "some" }))
+
+    let tiny = Decimal.parse("-1.5e-20000").unwrap()
+    println("text " + sqldialect.decimalText(12.50, 16383).unwrap() + " | " + sqldialect.decimalText(Decimal.zero(), 16383).unwrap() +
+        " | " + sqldialect.decimalText(0.000, 16383).unwrap() + " | canonical " +
+        sqldialect.decimalText(Decimal.parse("1e-0").unwrap().withScale(20000).unwrap(), 16383).unwrap() +
+        " | sqlite " + len(sqldialect.decimalText(tiny, 65535).unwrap()).toStr() + " chars")
+    match sqldialect.decimalText(tiny, 16383) {
+        Ok(t) { println("pg range: " + t) }
+        Err(e) { println("pg range: " + e.toStr()) }
+    }
+
+    println("fit " + sqldialect.fitDecimal(12.5, 4, 2).unwrap().toStr() + " | " +
+        sqldialect.fitDecimal(99999999.99, 10, 2).unwrap().toStr() + " | scale " +
+        code(sqldialect.fitDecimal(1.255, 10, 2)) + " | range " + code(sqldialect.fitDecimal(decimalOf(100000000), 10, 2)) +
+        " | meta " + code(sqldialect.fitDecimal(decimalOf(1), 0, 0)) + " | meta " + code(sqldialect.fitDecimal(decimalOf(1), 10, -1)) +
+        " | zero " + sqldialect.fitDecimal(Decimal.zero(), 1, 2).unwrap().toStr())
+    println("parse " + sqldialect.parseDecimal("1.50").unwrap().toStr() + " | " + code(sqldialect.parseDecimal("NaN")) +
+        " | " + code(sqldialect.parseDecimal("-Infinity")) + " | " + code(sqldialect.parseDecimal(".5")) +
+        " | " + code(sqldialect.parseDecimal("1 ")) + " | " + code(sqldialect.parseDecimal("123456789012345678901234567890123456789")))
+    println("nul: " + sqldialect.noNul("a\0b", "SQL text").toStr() + " | " + sqldialect.noNul("ab", "SQL text").toStr())
+}

@@ -1,0 +1,257 @@
+// sqldialect: what the database packages (sqlite, postgres) share.
+//
+// - Value: a typed SQL value. Parameters are bound from a Value, and a column
+//   can be read back as one. NULL is its own variant, never an empty string or
+//   zero; Bytes are exact (NUL included); Dec is an exact Decimal that crosses
+//   as decimal text, never through a float.
+// - DbError: the error of every adapter call, with the library's code and
+//   message (and the PostgreSQL SQLSTATE).
+// - Sql: trusted SQL text with ordered parameters in between, rendered with
+//   the placeholders of one dialect. The text is never parsed, quoted or
+//   escaped, and values are never interpolated into it: they stay in the
+//   argument list and are bound by the adapter.
+// - Exact decimal text for the adapters: decimalText, fitDecimal (the checked
+//   numeric(p, s) binder), parseDecimal.
+//
+//     var q = sqldialect.sql("SELECT name FROM t WHERE id = ")
+//     q.arg(Value.Int(7))
+//     q.add(" AND kind = ")
+//     q.arg(Value.Text("x"))
+//     q.render(Dialect.Postgres)   // SELECT name FROM t WHERE id = $1 AND kind = $2
+//     q.render(Dialect.Sqlite)     // ... id = ? AND kind = ?
+
+pub type Value = value closed {
+    Null
+    Int(int)
+    Float(float)
+    Bool(bool)
+    Text(str)       // text; binding one that contains a NUL byte is an error
+    Bytes(str)      // exact bytes: a BLOB or bytea
+    Dec(Decimal)    // an exact decimal, bound as its decimal text
+}
+
+// NULL, 42, 2.5, true, 'it''s', x'00ff', 12.50 (SQL literal syntax, for display only).
+pub fn (v: Value) toStr(): str {
+    match v {
+        Value.Null { return "NULL" }
+        Value.Int(n) { return n.toStr() }
+        Value.Float(f) { return f.toStr() }
+        Value.Bool(b) { return b.toStr() }
+        Value.Text(s) { return "'" + replaceQuotes(s) + "'" }
+        Value.Bytes(b) { return "x'" + hex(b) + "'" }
+        Value.Dec(d) { return d.toStr() }
+    }
+}
+
+fn replaceQuotes(s: str): str {
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c == '\'' { b.addByte(c) }
+        b.addByte(c)
+    }
+    return b.toStr()
+}
+
+const HEX = "0123456789abcdef"
+
+// The bytes of b as lowercase hexadecimal, two digits a byte.
+pub fn hex(b: str): str {
+    var out = array(2 * len(b), byte(0))
+    for i in 0..len(b) {
+        let c = int(strByte(b, i))
+        out[2 * i] = strByte(HEX, c >> 4)
+        out[2 * i + 1] = strByte(HEX, c & 15)
+    }
+    return strFromBytes(&out)
+}
+
+// The bytes written as hexadecimal digits (either case); None when s has an
+// odd length or a character that is not a hex digit.
+pub fn unhex(s: str): Option[str] {
+    if len(s) % 2 != 0 { return None }
+    var out = array(len(s) / 2, byte(0))
+    for i in 0..len(out) {
+        let hi = hexDigit(strByte(s, 2 * i))
+        let lo = hexDigit(strByte(s, 2 * i + 1))
+        if hi < 0 || lo < 0 { return None }
+        out[i] = byte(hi * 16 + lo)
+    }
+    return Some(strFromBytes(&out))
+}
+
+fn hexDigit(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'f' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'F' { return int(c - 'A') + 10 }
+    return -1
+}
+
+// ---------------------------------------------------------------- errors
+
+pub type DbError = value record {
+    pub code: int     // the library's code (an SQLite result code, a libpq status) or E_* below
+    pub state: str    // the PostgreSQL SQLSTATE ("23505"); "" otherwise
+    pub msg: str
+}
+
+// "error 19: UNIQUE constraint failed: t.id", "error 7 (42P01): relation "nope" does not exist"
+pub fn (e: DbError) toStr(): str {
+    let state = if len(e.state) > 0 { " (" + e.state + ")" } else { "" }
+    return "error " + e.code.toStr() + state + ": " + e.msg
+}
+
+pub fn (a: DbError) eq(b: &DbError): bool { return a.code == b.code && a.state == b.state && a.msg == b.msg }
+
+// The adapters' own codes, above every SQLite and libpq code. The decimal ones
+// are obo's DEC_DB_* numbers.
+pub const E_INPUT = 1000          // refused before the library was called (NUL in SQL text, an index out of range, no current row, ...)
+pub const E_NULL = 1001           // a NULL read where a value is required (use isNull, value or decimalOrNull)
+pub const E_TYPE = 1002           // a column read as a type its value does not convert to exactly
+pub const E_NONFINITE = 1004      // NaN or Infinity read as a decimal
+pub const E_INEXACT = 1005        // binary floating-point storage (SQLite REAL) read as a decimal
+pub const E_DEC_TEXT = 1006       // not decimal text
+pub const E_DEC_PRECISION = 1007  // more than 38 significant digits
+pub const E_DEC_EXPONENT = 1008   // an exponent out of range
+pub const E_DEC_DISPLAY = 1009    // a display scale above 65535
+pub const E_DEC_SCALE = 1010      // more fraction digits than numeric(p, s) holds: it would round
+pub const E_DEC_RANGE = 1011      // more integer digits than numeric(p, s) holds
+pub const E_DEC_METADATA = 1012   // an invalid precision and scale, or numeric typmod
+pub const E_DEC_PG_RANGE = 1013   // below PostgreSQL's smallest numeric exponent (-16383)
+
+pub fn dbError(code: int, msg: str): DbError { return DbError{code: code, state: "", msg: msg} }
+
+pub fn inputError(msg: str): DbError { return dbError(E_INPUT, msg) }
+
+// Err(E_INPUT) when s contains a NUL byte: C sees text up to its first NUL,
+// and the runtime stops a program that passes one to C.
+pub fn noNul(s: str, what: str): Result[Unit, DbError] {
+    for i in 0..len(s) {
+        if strByte(s, i) == 0 { return Err(inputError(what + " contains a NUL byte")) }
+    }
+    return Ok(Unit{})
+}
+
+// ----------------------------------------------------------- exact decimals
+
+fn decError(e: DecError): DbError {
+    match e {
+        DecError.Invalid { return dbError(E_DEC_TEXT, "invalid decimal text") }
+        DecError.Precision { return dbError(E_DEC_PRECISION, "decimal text has more than 38 significant digits") }
+        DecError.Exponent { return dbError(E_DEC_EXPONENT, "decimal exponent is out of range") }
+        DecError.Display { return dbError(E_DEC_DISPLAY, "decimal display scale is out of range") }
+        else { return dbError(E_DEC_TEXT, e.toStr()) }
+    }
+}
+
+// The decimal that text denotes (as Decimal.parse), with the adapters' codes:
+// NaN and Infinity are E_NONFINITE, anything else that is not decimal text
+// E_DEC_TEXT, and E_DEC_PRECISION/EXPONENT/DISPLAY as Decimal.parse says.
+pub fn parseDecimal(text: str): Result[Decimal, DbError] {
+    if text == "NaN" || text == "Infinity" || text == "-Infinity" || text == "+Infinity" {
+        return Err(dbError(E_NONFINITE, "non-finite numeric is not a decimal"))
+    }
+    match Decimal.parse(text) {
+        Ok(d) { return Ok(d) }
+        Err(e) { return Err(decError(e)) }
+    }
+}
+
+// The exact text to send for d: its display form ("12.50") when its scale is
+// at most maxScale, else its canonical form, which has no trailing zeros.
+// E_DEC_PG_RANGE when even that needs more than maxScale fraction digits.
+// Never rounds.
+pub fn decimalText(d: Decimal, maxScale: int): Result[str, DbError] {
+    if !d.isZero() && d.exponent() < -maxScale {
+        return Err(dbError(E_DEC_PG_RANGE, "decimal needs more than " + maxScale.toStr() + " fraction digits"))
+    }
+    if d.scale() <= maxScale {
+        match d.format() {
+            Ok(s) { return Ok(s) }
+            Err(_) {}
+        }
+    }
+    return Ok(d.canonical())
+}
+
+// d as a value of SQL type numeric(p, s), with display scale s: E_DEC_SCALE
+// when that would drop a nonzero fraction digit (it would round), E_DEC_RANGE
+// when it has more than p - s integer digits, E_DEC_METADATA when p is not in
+// 1..1000 or s not in 0..1000. The checked binders call it before anything is
+// sent, because SQLite enforces no (p, s) and PostgreSQL would round.
+pub fn fitDecimal(d: Decimal, p: int, s: int): Result[Decimal, DbError] {
+    if p < 1 || p > 1000 || s < 0 || s > 1000 {
+        return Err(dbError(E_DEC_METADATA, "invalid numeric(" + p.toStr() + ", " + s.toStr() + ")"))
+    }
+    let fit = d.withScale(s)
+    if fit.isErr() {
+        return Err(dbError(E_DEC_SCALE, d.toStr() + " does not fit scale " + s.toStr() + " without rounding"))
+    }
+    let r = fit.unwrap()
+    if !r.isZero() && len(r.coefficient().toStr()) + r.exponent() + s > p {
+        return Err(dbError(E_DEC_RANGE, d.toStr() + " exceeds numeric(" + p.toStr() + ", " + s.toStr() + ")"))
+    }
+    return Ok(r)
+}
+
+// ------------------------------------------------------------ SQL fragments
+
+pub type Dialect = value closed {
+    Postgres        // $1, $2, ...
+    Sqlite          // ?, ?, ...
+    SqlServer       // @p1, @p2, ... (TDS, sp_executesql)
+    SqlServerOdbc   // ?, ?, ... (ODBC numbers the parameters)
+    Oracle          // :1, :2, ...
+}
+
+pub fn (d: Dialect) placeholder(n: int): str {
+    match d {
+        Dialect.Postgres { return "$" + n.toStr() }
+        Dialect.SqlServer { return "@p" + n.toStr() }
+        Dialect.Oracle { return ":" + n.toStr() }
+        else { return "?" }
+    }
+}
+
+// Text chunks with one parameter between each two: len(parts) is always
+// len(args) + 1.
+pub type Sql = record { parts: []str; args: []Value }
+
+// A fragment that starts with the trusted SQL text `text`.
+pub fn sql(text: str): Sql { return Sql{parts: [text], args: []} }
+
+// A fragment from explicit lists: the text before the first parameter, between
+// each two, and after the last, so len(parts) must be len(args) + 1.
+pub fn of(parts: []str, args: []Value): Result[Sql, DbError] {
+    if len(parts) != len(args) + 1 {
+        return Err(inputError(len(parts).toStr() + " text parts for " + len(args).toStr() +
+            " arguments; there must be one more"))
+    }
+    return Ok(Sql{parts: parts, args: args})
+}
+
+// Appends trusted SQL text.
+pub fn (q: mut &Sql) add(text: str) {
+    let last = len(q.parts) - 1
+    q.parts[last] = q.parts[last] + text
+}
+
+// Appends a parameter: a placeholder in the text, v in the argument list.
+pub fn (q: mut &Sql) arg(v: Value) {
+    append(mut &q.args, v)
+    append(mut &q.parts, "")
+}
+
+pub fn (q: &Sql) args(): &[]Value { return &q.args }
+
+// The text with the dialect's placeholders. `$`, `?`, `@` and `:` in the
+// trusted text are kept as they are.
+pub fn (q: &Sql) render(d: Dialect): str {
+    var b = newStrBuf()
+    b.add(q.parts[0])
+    for i in 0..len(q.args) {
+        b.add(d.placeholder(i + 1))
+        b.add(q.parts[i + 1])
+    }
+    return b.toStr()
+}
