@@ -8,6 +8,7 @@ by Python, then to a binary by gcc.
     python3 obxc.py file.obx --run -- a b     # compiles to a temp dir and runs it with arguments
     python3 obxc.py file.obx --emit-c         # prints the generated C
     python3 obxc.py file.obx -L libroot       # another root for `import` paths
+    python3 obxc.py --dump-ast a.obx b.obx    # prints the parse tree of each file (see "AST dump")
     python3 run_tests.py                      # own tests (tests/run, tests/error, tests/unit)
     python3 run_tests.py --conformance        # also the conformance suite in ../tests
 
@@ -16,19 +17,59 @@ gcc runs with `-O1 -w`. An `extern "lib"` links `-llib`, or the library by its
 full path when only `libX.so.N` exists (no dev symlink); `"c"` adds nothing.
 Run a program with `OBX_CHECK=1` to make a leak (live objects at exit) exit 5.
 
+## AST dump
+
+`--dump-ast` parses each file given (no imports are followed, nothing is
+checked) and prints its tree in a canonical, line-oriented form, so that the
+self-hosted compiler's parser can be compared with this one
+(`../compiler/run_compare.py`). It is `dump.py`. With several files each dump
+follows a line `== path`, and a file that does not parse prints `error:
+message` there instead (exit status 1); with one file the error goes to stderr.
+
+One node per line, indented two spaces per depth. Each line is `label: body`:
+the label is the field name in the parent (`module` for the root, the index
+for a list item), the body is `-` (absent), `[n]` (a list, whose n items
+follow, labelled `0` to `n-1`), or a node `kind line scalar=value ...` whose
+child fields follow on the next lines in a fixed order. The line is `-` for
+type and pattern tuples that carry none. Scalars are names written bare,
+`true`/`false`, `-` for none, decimal integers, name lists `[a,b]`, and
+quoted strings (`"..."` with printable ASCII as is, `\\`, `\"`, and every
+other byte `\xHH`) for string literals, import paths and extern names.
+
+    module: m.obx
+      imports: [0]
+      decls: [1]
+        0: fn 1 name=main pub=false extern=- cname=-
+          recv: -
+          tparams: [0]
+          params: [0]
+          ret: -
+          body: block 1
+            stmts: [1]
+              0: expr 1
+                e: call 1
+                  fn: name 1 v=println
+                  args: [1]
+                    0: str 1 v="hi"
+
+The node kinds and their fields in order are those of `dump.py`. An index
+or call bracket argument that parses as a type is `targ`; a match arm's
+literals are `int`/`char`/`str` nodes with line `-`.
+
 ## Architecture
 
 | File | Lines | Role |
 |---|---:|---|
-| `syntax.py` | 853 | lexer (with the ASI rule) and parser to `N` nodes |
+| `syntax.py` | 877 | lexer (with the ASI rule) and parser to `N` nodes |
 | `sema.py` | 853 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
 | `check.py` | 2,344 | checks every function body once and writes it as a C template |
 | `emit.py` | 341 | renders templates once per instance, drop/dup glue, struct layouts |
-| `obxc.py` | 104 | driver |
+| `obxc.py` | 136 | driver |
+| `dump.py` | 298 | `--dump-ast` |
 | `rt.h` | 460 | the C runtime: allocation counter, traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
 | `../lib/std.obx` | 1,400 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
 
-Python total: about 4,550 lines (with `run_tests.py`, 54).
+Python total: about 4,880 lines (with `run_tests.py`, 54).
 
 **Checking once, rendering per instance (SPEC 6.2, 6.4).** `check.py` checks a
 function body exactly once, generic or not. A type parameter is an opaque type:

@@ -2,6 +2,7 @@
 """obxc: the obx reference compiler driver (obx -> C -> gcc).
 
     python3 obxc.py file.obx [-o out] [--run] [--emit-c] [-L libroot] [-- args...]
+    python3 obxc.py --dump-ast file.obx...
 """
 import glob, os, subprocess, sys, tempfile
 
@@ -9,7 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.setrecursionlimit(10000)
 
-from syntax import CompileError  # noqa: E402
+from syntax import CompileError, parse, read_source  # noqa: E402
 from sema import Program, FnDecl  # noqa: E402
 from check import Checker  # noqa: E402
 from emit import Emitter  # noqa: E402
@@ -45,7 +46,38 @@ def lib_flags(libs):
     return out
 
 
+def dump_ast(files):
+    """--dump-ast: the parse tree of each file (no imports, no checking). With several files each
+    dump follows a line `== path`, and a file that fails to parse prints `error: message` there."""
+    from dump import dump_ast as dump
+    rc = 0
+    for path in files:
+        if len(files) > 1:
+            print(f"== {path}")
+        fname = os.path.basename(path)
+        try:
+            out = dump(fname, *parse(read_source(path), fname))
+        except CompileError as e:
+            out, rc = None, 1
+            msg = str(e)
+        except RecursionError:
+            out, rc = None, 1
+            msg = f"{fname}:1: the program is nested too deeply"
+        except OSError:
+            out, rc = None, 1
+            msg = f"cannot read {os.path.abspath(path)}"
+        if out is not None:
+            sys.stdout.write(out)
+        elif len(files) > 1:
+            print(f"error: {msg}")
+        else:
+            print(msg, file=sys.stderr)
+    return rc
+
+
 def main(argv):
+    if argv[:1] == ['--dump-ast']:
+        return dump_ast(argv[1:])
     out, run, emit_c, roots, src, rest = None, False, False, [], None, []
     i = 0
     while i < len(argv):
