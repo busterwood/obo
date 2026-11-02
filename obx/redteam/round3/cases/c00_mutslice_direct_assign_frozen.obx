@@ -1,0 +1,13 @@
+// Control for H1: the same program with a direct element assignment is
+// rejected, so the freeze exists and only passing the slice on misses it.
+// error: borrowed
+type B = record { v: []int }
+fn f(s: mut &[B]) {
+    let r = &s[0].v[0]
+    s[0] = B{v: [9]}
+    println(r)
+}
+fn main() {
+    var xs = [B{v: [1]}]
+    f(mut &xs)
+}

@@ -1,0 +1,9 @@
+// expect: 2
+import "./shapes" as sh
+fn main() {
+    let s = sh.Shape.Square(2)
+    match s {
+        sh.Shape.Circle(r) { println(r) }
+        sh.Shape.Square(x) { println(x) }
+    }
+}

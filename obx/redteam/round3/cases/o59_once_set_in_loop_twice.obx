@@ -1,0 +1,3 @@
+// exit: 12
+var N: once int
+fn main() { for i in 0..2 { N.set(i) } }

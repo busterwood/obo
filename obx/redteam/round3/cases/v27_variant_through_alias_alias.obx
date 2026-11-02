@@ -1,0 +1,5 @@
+// expect: 9
+type Shape = closed { Circle(int); Sq(int) }
+type S1 = Shape
+type S2 = S1
+fn main() { match S2.Sq(9) { S1.Sq(x) { println(x) } Shape.Circle(r) {} } }

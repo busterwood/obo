@@ -1,0 +1,2 @@
+type Shape = closed { Circle(int); Square(int) }
+pub fn mk(): int { return 1 }

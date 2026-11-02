@@ -1,0 +1,7 @@
+// error: borrowed|twice|held
+fn first(xs: &[]str): &str { return &xs[0] }
+fn run(x: &str, f: &fn()) { f(); println(x) }
+fn main() {
+    var xs = ["a" + "b"]
+    run(first(&xs), fn() { xs = [] })
+}

@@ -1,0 +1,3 @@
+// exit: 12
+extern "c" fn strlen(s: str): u64
+fn main() { println(strlen("a\0b").toStr()) }

@@ -1,0 +1,7 @@
+// error: borrowed|twice
+fn run(f: &fn(), xs: &[]int) { f(); println(xs[0]) }
+fn main() {
+    var xs = [1]
+    let clear = fn() { xs = [] }
+    run(fn() { clear() }, &xs)
+}

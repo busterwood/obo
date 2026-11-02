@@ -1,0 +1,409 @@
+=== c01b_mutref_array_passed_as_slice_frozen
+// error: borrowed
+type B = record { v: int }
+fn reset(s: mut &[B]) { s[0] = B{v: 9} }
+fn f(xs: mut &[]B) {
+    let r = &xs[0].v
+    reset(xs)
+    println(r)
+}
+fn main() {
+    var xs = [B{v: 1}, B{v: 2}]
+    f(mut &xs)
+}
+=== c01c_closure_captures_mutref_passes_as_slice
+// error: borrowed|twice
+type B = record { v: int }
+fn reset(s: mut &[B]) { s[0] = B{v: 9} }
+fn run(f: &fn(), b: &int) { f(); println(b) }
+fn g(xs: mut &[]B) {
+    run(fn() { reset(xs) }, &xs[0].v)
+}
+fn main() {
+    var xs = [B{v: 1}, B{v: 2}]
+    g(mut &xs)
+}
+=== c01d_for_over_slice_param_mut_pass
+// error: borrowed|for
+type B = record { v: int }
+fn reset(s: mut &[B]) { s[0] = B{v: 9} }
+fn f(s: mut &[B]) {
+    for b in s {
+        reset(s)
+        println(b.v)
+    }
+}
+fn main() {
+    var xs = [B{v: 1}, B{v: 2}]
+    f(mut &xs)
+}
+=== c01e_match_slice_elem_then_pass
+// error: borrowed
+type B = record { v: []int }
+fn reset(s: mut &[Option[B]]) { s[0] = None }
+fn f(s: mut &[Option[B]]) {
+    match s[0] {
+        Some(b) { reset(s); println(len(b.v)) }
+        None {}
+    }
+}
+fn main() {
+    var xs: []Option[B] = [Some(B{v: [1]})]
+    f(mut &xs)
+}
+=== c73_closure_in_if_cond
+// expect: y
+fn call(f: &fn(): bool): bool { return f() }
+fn main() {
+    if call(fn(): bool { return true }) { println("y") }
+}
+=== c74_closure_in_while_cond_typed_bool
+// expect: 3
+fn call(f: &fn(): bool): bool { return f() }
+fn main() {
+    var i = 0
+    while call(fn(): bool { return i < 3 }) { i += 1 }
+    println(i)
+}
+=== c75_closure_in_match_scrutinee
+// expect: 4
+fn call(f: &fn(): Option[int]): Option[int] { return f() }
+fn main() {
+    match call(fn(): Option[int] { return Some(4) }) { Some(x) { println(x) } None {} }
+}
+=== c76_closure_in_for_bound
+// expect: 3
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    var n = 0
+    for i in 0..call(fn(): int { return 3 }) { n += 1 }
+    println(n)
+}
+=== c77_closure_immediately_called
+// expect: 5
+fn main() {
+    let x = 2
+    println((fn(): int { return x + 3 })())
+}
+=== c78_closure_in_logic_rhs
+// expect: t
+fn call(f: &fn(): bool): bool { return f() }
+fn main() {
+    let a = true
+    if a && call(fn(): bool { return a }) { println("t") }
+}
+=== c79_closure_untyped_let_param
+// error: type|infer
+fn main() {
+    let f = fn(x) { println(x) }
+}
+=== c80_closure_shadow_later_outer_ok
+// expect: 3
+fn call(f: &fn(int): int): int { return f(2) }
+fn main() {
+    let r = call(fn(y: int): int { return y + 1 })
+    let y = r
+    println(y)
+}
+=== c81_closure_captures_var_declared_later_rejected
+// error: unknown|zed
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    let r = call(fn(): int { return zed })
+    let zed = 1
+}
+=== c82_closure_capture_moved_in_branch
+// error: moved
+type B = record { v: int }
+fn eat(b: B) {}
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    let b = B{v: 1}
+    var c = true
+    if c { eat(b) }
+    println(call(fn(): int { return b.v }))
+}
+=== c83_closure_capture_moved_in_loop
+// error: moved
+type B = record { v: int }
+fn eat(b: B) {}
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    var b = B{v: 1}
+    for i in 0..2 {
+        println(call(fn(): int { return b.v }))
+        eat(b)
+    }
+}
+=== c84_closure_assign_moved_capture
+// error: moved
+type B = record { v: int }
+fn eat(b: B) {}
+fn call(f: &fn()) { f() }
+fn main() {
+    var b = B{v: 1}
+    eat(b)
+    call(fn() { b = B{v: 2} })
+    println(b.v)
+}
+=== c85_closure_field_assign_moved_capture
+// error: moved
+type B = record { v: int }
+fn eat(b: B) {}
+fn call(f: &fn()) { f() }
+fn main() {
+    var b = B{v: 1}
+    eat(b)
+    call(fn() { b.v = 2 })
+}
+=== c86_closure_mut_borrow_moved_capture
+// error: moved
+fn eat(b: []int) {}
+fn call(f: &fn()) { f() }
+fn main() {
+    var b = [1]
+    eat(b)
+    call(fn() { append(mut &b, 2) })
+}
+=== c87_closure_compound_moved_capture
+// error: moved
+fn eat(s: []int) {}
+fn call(f: &fn()) { f() }
+fn main() {
+    var n = [1]
+    eat(n)
+    call(fn() { let k = len(n) })
+}
+=== c88_closure_capture_reassigned_in_closure_then_used
+// expect: 2
+type B = record { v: int }
+fn eat(b: B) {}
+fn call(f: &fn()) { f() }
+fn main() {
+    var b = B{v: 1}
+    call(fn() { b = B{v: 2} })
+    println(b.v)
+}
+=== c89_closure_captures_two_vars_order
+// expect: a1b2
+fn call(f: &fn(): str): str { return f() }
+fn main() {
+    let a = "a"
+    let n = 1
+    let b = "b"
+    let m = 2
+    println(call(fn(): str { return a + n.toStr() + b + m.toStr() }))
+}
+=== c90_nested_closure_capture_order
+// expect: 6
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    let a = 1
+    let b = 2
+    let c = 3
+    println(call(fn(): int { let x = c; return call(fn(): int { return b + a }) + x }))
+}
+=== c91_nested_closure_inner_captures_outer_local
+// expect: 15
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    let a = 5
+    println(call(fn(): int { var loc = 10; return call(fn(): int { return loc + a }) }))
+}
+=== c92_nested_closure_inner_mut_outer_local
+// expect: 11
+fn call(f: &fn()) { f() }
+fn call2(f: &fn(): int): int { return f() }
+fn main() {
+    println(call2(fn(): int { var loc = 10; call(fn() { loc += 1 }); return loc }))
+}
+=== c93_nested_closure_inner_mut_outer_local_held
+// error: borrowed|twice
+fn run(f: &fn(), x: &[]int) { f(); println(x[0]) }
+fn call2(f: &fn(): int): int { return f() }
+fn main() {
+    println(call2(fn(): int { var loc = [10]; run(fn() { loc = [] }, &loc); return 0 }))
+}
+=== c94_closure_generic_capture_T
+// expect: 2
+fn call(f: &fn(): int): int { return f() }
+fn cnt[T](xs: &[]T): int { return call(fn(): int { return len(xs) }) }
+fn main() { println(cnt(&["a", "b"])) }
+=== c95_closure_generic_two_instances
+// expect: 1 x
+fn call[R](f: &fn(): R): R { return f() }
+fn main() {
+    let a = call(fn(): int { return 1 })
+    let b = call(fn(): str { return "x" })
+    println(a.toStr() + " " + b)
+}
+=== c96_closure_generic_callee_returns_owned_T
+// expect: 3
+fn mk[T](n: int, f: &fn(int): T): []T {
+    var out: []T = []
+    for i in 0..n { append(mut &out, f(i)) }
+    return out
+}
+type B = record { s: str }
+fn main() {
+    let bs = mk(3, fn(i: int): B { return B{s: i.toStr()} })
+    println(len(bs))
+}
+=== c97_closure_value_record_param_owned
+// expect: 2
+type P = value record { xs: []int }
+fn app(f: &fn(P): int): int { return f(P{xs: [1, 2]}) }
+fn main() { println(app(fn(p: P): int { return len(p.xs) })) }
+=== c98_closure_owned_param_dropped
+// expect: 1
+fn app(f: &fn([]int): int): int { return f([1, 2]) }
+fn main() { println(app(fn(p: []int): int { return 1 })) }
+=== c99_closure_owned_param_moved_out
+// expect: 2
+fn app(f: &fn([]int): []int): int { return len(f([1, 2])) }
+fn main() { println(app(fn(p: []int): []int { return p })) }
+=== c100_closure_mut_ref_param
+// expect: 3
+fn app(f: &fn(mut &[]int)): int { var x = [1]; f(mut &x); return len(x) }
+fn main() { println(app(fn(p: mut &[]int) { append(p, 2); append(p, 3) })) }
+=== c101_closure_returns_borrow_rejected
+// error: borrow
+fn main() {
+    let xs = [1]
+    let f = fn(): &int { return &xs[0] }
+}
+=== c102_closure_type_as_field
+// error: closure|second class|stored
+type R = record { f: &fn() }
+fn main() {}
+=== c103_closure_type_as_result
+// error: closure|second class|result
+fn mk(): &fn() { return fn() {} }
+fn main() {}
+=== c104_closure_var_param
+// error: closure|var|borrow
+fn app(var f: &fn()) { f() }
+fn main() {}
+=== c105_closure_reassign_let
+// error: assign|let
+fn main() {
+    let f = fn() {}
+    f = fn() {}
+}
+=== c106_closure_passed_to_fn_param_type
+// error: closure|fn
+fn app(f: fn()) { f() }
+fn main() {
+    let x = 1
+    app(fn() { println(x) })
+}
+=== c107_closure_compare
+// error: operator|closure|==
+fn main() {
+    let f = fn() {}
+    let g = fn() {}
+    if f == g { println("eq") }
+}
+=== c108_closure_ptr_as_drop
+// expect: d
+type D = record { n: int }
+fn (d: mut &D) drop() { let f = fn() { println("d") }; f() }
+fn main() { let d = D{n: 1} }
+=== c109_closure_inside_closure_let_freezes_capture
+// error: borrowed
+fn call(f: &fn()) { f() }
+fn main() {
+    var xs = [1]
+    call(fn() {
+        let g = fn(): int { return xs[0] }
+        xs = []
+        println(g())
+    })
+}
+=== c110_closure_param_shadow_outer
+// error: declared|shadow
+fn call(f: &fn(int)) { f(1) }
+fn main() {
+    let x = 1
+    call(fn(x: int) {})
+}
+=== c111_closure_local_shadow_outer
+// error: declared|shadow
+fn call(f: &fn()) { f() }
+fn main() {
+    let x = 1
+    call(fn() { let x = 2 })
+}
+=== c112_closure_capture_loop_index_var
+// expect: 3
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    var t = 0
+    for i in 0..3 { t += call(fn(): int { return 1 }) }
+    println(t)
+}
+=== c113_closure_assign_loop_index
+// error: assign|let|var
+fn call(f: &fn()) { f() }
+fn main() {
+    for i in 0..3 { call(fn() { i = 5 }) }
+}
+=== c114_closure_capture_for_elem_copy
+// expect: 6
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    var t = 0
+    for x in [1, 2, 3] { t += call(fn(): int { return x }) }
+    println(t)
+}
+=== c115_closure_capture_try_result_temp
+// expect: 4
+fn call(f: &fn(): int): int { return f() }
+fn g(): Result[int, str] {
+    let v = try Result[int, str].Ok(4)
+    return Ok(call(fn(): int { return v }))
+}
+fn main() { match g() { Ok(x) { println(x) } Err(e) {} } }
+=== c116_closure_sortby_lib
+// expect: 1 2 3
+import "collections"
+fn main() {
+    var xs = [3, 1, 2]
+    collections.sortBy(mut &xs, fn(a: &int, b: &int): int { return a.cmp(b) })
+    println(xs[0].toStr() + " " + xs[1].toStr() + " " + xs[2].toStr())
+}
+=== c117_closure_sortby_inferred
+// expect: c b a
+import "collections"
+fn main() {
+    var xs = ["a", "c", "b"]
+    collections.sortBy(mut &xs, fn(a, b) { return b.cmp(a) })
+    println(xs[0] + " " + xs[1] + " " + xs[2])
+}
+=== c118_closure_sortby_captures_array_mut
+// error: borrowed|twice
+import "collections"
+fn main() {
+    var xs = ["a", "c", "b"]
+    collections.sortBy(mut &xs, fn(a, b) { xs = []; return 0 })
+}
+=== c119_closure_mapTo_owned
+// expect: 2
+import "collections"
+fn main() {
+    let xs = [1, 2]
+    let ys = collections.mapTo(&xs, fn(x: &int): []int { return [x] })
+    println(len(ys))
+}
+=== c120_set_ops
+// expect: 1
+import "collections"
+fn main() {
+    var a = collections.newSet[int]()
+    a.add(1)
+    a.add(2)
+    var b = collections.newSet[int]()
+    b.add(2)
+    let c = a.minus(&b)
+    println(c.size())
+}

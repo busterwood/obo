@@ -1,0 +1,5 @@
+// expect: 3
+type P = value record { a: int; b: int }
+fn (p: &P) sum(): int { return p.a + p.b }
+const P0: P = P{a: 1, b: 2}
+fn main() { println(P0.sum()) }

@@ -1,0 +1,9 @@
+// error: borrowed|moved
+type B = record { v: int }
+fn eat(b: B) {}
+fn main() {
+    let b = B{v: 1}
+    let f = fn(): int { return b.v }
+    eat(b)
+    println(f())
+}

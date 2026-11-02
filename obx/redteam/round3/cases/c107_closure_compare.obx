@@ -1,0 +1,6 @@
+// error: operator|closure|==
+fn main() {
+    let f = fn() {}
+    let g = fn() {}
+    if f == g { println("eq") }
+}

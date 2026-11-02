@@ -1,0 +1,6 @@
+// error: Shape|Circle|field|variant
+type Shape = closed { Circle(int); Sq(int) }
+fn main() {
+    let s = Shape.Circle(1)
+    let t = s.Circle
+}

@@ -1,0 +1,5 @@
+// error: public|private|not
+import "./shapes"
+fn main() {
+    let s = shapes.Shape.Circle(3)
+}

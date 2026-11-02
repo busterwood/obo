@@ -1,0 +1,6 @@
+// Round 3 L. `var` on a borrow parameter is rejected for &T and &[T]
+// (a borrow is never rebound), but not for a closure parameter &fn().
+// Harmless today; should be rejected the same way.
+// error: var|borrow|closure
+fn app(var f: &fn()) { f() }
+fn main() {}

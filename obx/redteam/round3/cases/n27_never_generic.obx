@@ -1,0 +1,4 @@
+// exit: 12
+fn failT[T](x: T): never { panic("x") }
+fn f(): int { failT("s") }
+fn main() { println(f()) }

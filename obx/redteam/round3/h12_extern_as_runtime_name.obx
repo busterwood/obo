@@ -1,0 +1,7 @@
+// Round 3 L. `as "rt_alloc"` (or `as "main"`) names a symbol the runtime or
+// the generated program defines itself; the extern then binds to the
+// runtime's static function or the program's own main, not to a C library
+// symbol. Names the generated C reserves should be rejected.
+// error: name|reserved|clash
+extern "c" fn f(n: int): ptr as "rt_alloc"
+fn main() {}

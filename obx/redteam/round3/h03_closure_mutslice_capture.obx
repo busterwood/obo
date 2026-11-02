@@ -1,0 +1,16 @@
+// Round 3 H1 (closure form). Inside the closure, `reset(s)` passes the
+// captured slice on as `mut &[T]`, but the capture is recorded as a read
+// capture, so rule 3 does not see that the closure changes s while the other
+// argument &s[0].v[0] borrows from it. Must be a compile error; today it
+// compiles and run() reads freed memory.
+// error: borrowed
+type B = record { v: []int }
+fn reset(s: mut &[B]) { s[0] = B{v: [9]} }
+fn run(f: &fn(), b: &int) { f(); println(b) }
+fn g(s: mut &[B]) {
+    run(fn() { reset(s) }, &s[0].v[0])
+}
+fn main() {
+    var xs = [B{v: [1]}]
+    g(mut &xs)
+}

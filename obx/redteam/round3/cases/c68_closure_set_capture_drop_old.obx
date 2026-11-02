@@ -1,0 +1,8 @@
+// expect: new
+type D = record { s: str }
+fn call(f: &fn()) { f() }
+fn main() {
+    var d = D{s: "old"}
+    call(fn() { d = D{s: "new"} })
+    println(d.s)
+}

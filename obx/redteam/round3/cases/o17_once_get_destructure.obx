@@ -1,0 +1,7 @@
+// error: place|owned
+type A = record { s: str; n: int }
+var GA: once A
+fn main() {
+    GA.set(A{s: "x", n: 1})
+    let A{s, n} = GA.get()
+}

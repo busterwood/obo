@@ -1,0 +1,255 @@
+=== f01_frac_huge_neg_exponent_scale_wraps
+// The literal is 10^-18446744073709551617, far below any Decimal: a compile
+// error or a stop (exit 10), never the value 0.1.
+// exit: 10
+fn main() {
+    let d = 1e-18446744073709551617
+    println(d.toStr())
+}
+=== f02_frac_exponent_int64_min
+// exit: 10
+fn main() {
+    let d = 1e9223372036854775808
+    println(d.toStr())
+}
+=== f03_frac_zero_huge_exponent
+// expect: 0
+fn main() {
+    let d = 0e99999999999999999999
+    println(d.toStr())
+}
+=== f04_frac_float_subnormal
+// expect: ok
+fn main() {
+    let f: float = 5e-324
+    let g: float = 4.9406564584124654e-324
+    if f == g && f > 0.0 { println("ok") }
+}
+=== f05_frac_float_underflow_zero
+// expect: ok
+fn main() {
+    let f: float = 1e-400
+    if f == 0.0 { println("ok") }
+}
+=== f06_frac_float_overflow
+// error: overflow|range
+fn main() { let f: float = 1e309 }
+=== f07_frac_i128_units_max
+// expect: ok
+type Fx = value record { u: i128; s: int }
+fn (Fx) fromFraction(u: i128, s: int): Fx { return Fx{u: u, s: s} }
+fn main() {
+    let x: Fx = 17014118346046923173168730371588410572.7
+    if x.u == 170141183460469231731687303715884105727 && x.s == 1 { println("ok") }
+}
+=== f08_frac_i128_units_overflow
+// error: i128|digits
+type Fx = value record { u: i128; s: int }
+fn (Fx) fromFraction(u: i128, s: int): Fx { return Fx{u: u, s: s} }
+fn main() {
+    let x: Fx = 17014118346046923173168730371588410572.8
+}
+=== f09_frac_neg_i128_min
+// The units 2^127 do not fit an i128, so this is a compile error (spec 7.3).
+// error: too many digits
+type Fx = value record { u: i128; s: int }
+fn (Fx) fromFraction(u: i128, s: int): Fx { return Fx{u: u, s: s} }
+fn (a: Fx) neg(): Fx { return Fx{u: -a.u, s: a.s} }
+fn main() {
+    let x: Fx = -17014118346046923173168730371588410572.8
+    println("ok")
+}
+=== f10_user_fromfraction_neg_scale
+// expect: 15 -2
+type Fx = value record { u: i128; s: int }
+fn (Fx) fromFraction(u: i128, s: int): Fx { return Fx{u: u, s: s} }
+fn main() {
+    let x: Fx = 1.5e3
+    println(int(x.u).toStr() + " " + x.s.toStr())
+}
+=== f11_frac_exponent_plus
+// expect: 1500
+fn main() { println((1.5e+3).toStr()) }
+=== f12_frac_capital_E
+// expect: 0.00012
+fn main() { println((1.2E-4).toStr()) }
+=== f13_frac_many_trailing_zeros
+// The units 10^40 do not fit an i128: a compile error (spec 7.3).
+// error: too many digits
+fn main() { println((1.0000000000000000000000000000000000000000).toStr()) }
+=== f14_frac_scale_range_stop
+// exit: 10
+fn main() { println((1e-70000).toStr()) }
+=== f15_frac_too_many_digits_decimal
+// error: i128|digits
+fn main() { println((123456789012345678901234567890123456789012.5).toStr()) }
+=== f16_frac_float_many_digits
+// expect: ok
+fn main() {
+    let f: float = 123456789012345678901234567890123456789012.5
+    if f > 1.0e41 { println("ok") }
+}
+=== f17_frac_huge_digit_string
+// error: digits|i128|literal|too
+fn main() { let d = 1.FIVETHOUSAND }
+=== f18_int_literal_huge_digits
+// error: literal|too|fit
+fn main() { let d = FIVETHOUSANDINT }
+=== f19_frac_huge_exponent_digits
+// error: exponent|literal|too|range
+fn main() { let d = 1eFIVETHOUSANDEXP }
+=== f20_frac_in_const_typed_float
+// expect: ok
+const F: float = 2.5e-3
+fn main() { if F == 0.0025 { println("ok") } }
+=== f21_frac_const_untyped_decimal
+// expect: 0.0025
+const F = 2.5e-3
+fn main() { println(F.toStr()) }
+=== f22_frac_const_negated
+// expect: -1500
+const F = -1.5e3
+fn main() { println(F.toStr()) }
+=== f23_frac_in_binop_with_float
+// expect: ok
+fn main() {
+    let f: float = 2.0
+    if f * 1e2 == 200.0 { println("ok") }
+}
+=== f24_frac_as_int_rejected
+// error: Decimal|int
+fn main() { let x: int = 1e3 }
+=== f25_frac_fromfraction_generic_assoc
+// expect: 2 1
+type Fx[T] = value record { u: i128; s: int }
+fn (Fx[T]) fromFraction(u: i128, s: int): Fx[T] { return Fx{u: u, s: s} }
+fn main() {
+    let x: Fx[str] = 0.2
+    println(int(x.u).toStr() + " " + x.s.toStr())
+}
+=== f26_frac_wrong_sig_fromfraction
+// error: Decimal|Fx
+type Fx = value record { u: int; s: int }
+fn (Fx) fromFraction(u: int, s: int): Fx { return Fx{u: u, s: s} }
+fn main() { let x: Fx = 0.2 }
+=== f27_frac_exponent_zero_scale
+// expect: 5
+fn main() { println((5e0).toStr()) }
+=== f28_frac_money_literal
+// expect: 12.50
+fn main() { println((12.50).toStr()) }
+=== f29_frac_exponent_scale_display
+// expect: 0.0000002
+fn main() { println((2e-7).toStr()) }
+=== f30_frac_float_neg_zero
+// expect: ok
+fn main() {
+    let f: float = -0.0
+    if f == 0.0 { println("ok") }
+}
+=== f31_frac_float_max
+// expect: ok
+fn main() {
+    let f: float = 1.7976931348623157e308
+    if f > 1e308 { println("ok") }
+}
+=== f32_frac_float_just_over_max
+// error: overflow|range
+fn main() { let f: float = 1.7976931348623159e308 }
+=== x01_extern_str_result_null
+// expect: []
+extern "c" fn getenv(name: str): str
+fn main() { println("[" + getenv("OBX_SURELY_UNSET_VAR_X") + "]") }
+=== x02_extern_strchr_substring_arg
+// expect: lo
+extern "c" fn strchr(s: str, c: int): str
+fn main() {
+    let s = "hello world"
+    println(strchr(s[0..5], 108)[1..])
+}
+=== x03_extern_as_clash_with_obx_fn
+// expect: 3
+extern "c" fn cabs(x: i32): i32 as "abs"
+fn abs2(x: int): int { return int(cabs(i32(x))) }
+fn main() { println(abs2(-3)) }
+=== x04_extern_as_obx_name_same
+// expect: 4
+extern "c" fn labs(x: int): int
+fn main() { println(labs(-4)) }
+=== x05_extern_two_names_same_c
+// expect: 5 5
+extern "c" fn abs(x: i32): i32
+extern "c" fn myAbs(x: i32): i32 as "abs"
+fn main() { println(int(abs(i32(-5))).toStr() + " " + int(myAbs(i32(-5))).toStr()) }
+=== x06_extern_two_names_same_c_clash
+// error: signature
+extern "c" fn abs(x: i32): i32
+extern "c" fn myAbs(x: int): int as "abs"
+fn main() {}
+=== x07_extern_as_bad_name
+// error: C function name
+extern "c" fn f(): int as "a b"
+fn main() {}
+=== x08_extern_as_rt_name
+// error: name|reserved|clash
+extern "c" fn f(n: int): ptr as "rt_alloc"
+fn main() {}
+=== x09_extern_str_param_nul
+// exit: 12
+extern "c" fn strlen(s: str): u64
+fn main() { println(strlen("a\0b").toStr()) }
+=== x10_extern_str_result_and_str_args_nested
+// expect: 2 3
+extern "c" fn strlen(s: str): u64
+extern "c" fn strrchr(s: str, c: int): str
+fn main() {
+    let a = "x/yz"
+    let b = "p/q/rs"
+    println(strlen(strrchr(b[0..5], 47)).toStr() + " " + strlen(strrchr(a, 47)).toStr())
+}
+=== x11_extern_same_name_as_obx_fn_in_other
+// expect: 7
+extern "c" fn atoi(s: str): i32
+fn main() { println(int(atoi("7"))) }
+=== x12_extern_used_as_value
+// error: value
+extern "c" fn abs(x: i32): i32
+fn main() { let f: fn(i32): i32 = abs }
+=== x13_extern_closure_arg
+// error: closure|value|extern
+extern "c" fn abs(x: i32): i32
+fn app(f: &fn(i32): i32): i32 { return f(i32(1)) }
+fn main() { println(int(app(abs))) }
+=== x14_extern_str_result_long
+// expect: 1000
+extern "c" fn getenv(name: str): str
+extern "c" fn setenv(name: str, v: str, o: i32): i32
+fn main() {
+    var s = ""
+    for i in 0..1000 { s += "x" }
+    let _ = setenv("OBXLONG", s, i32(1))
+    println(len(getenv("OBXLONG")))
+}
+=== x15_extern_mut_int
+// expect: ok
+extern "c" fn time(t: mut &int): int
+fn main() {
+    var t = 0
+    let r = time(mut &t)
+    if r == t { println("ok") }
+}
+=== x16_extern_name_is_obx_keyword_like
+// expect: 3
+extern "c" fn cAbs(x: i32): i32 as "abs"
+fn main() { println(int(cAbs(i32(3)))) }
+=== x17_extern_as_main
+// error: main|name|reserved
+extern "c" fn m(): int as "main"
+fn main() {}
+=== x18_extern_str_result_freed_args_order
+// expect: bc
+extern "c" fn strstr(h: str, n: str): str
+fn main() {
+    let h = "abc" + "d"
+    println(strstr(h[0..3], "b"))
+}

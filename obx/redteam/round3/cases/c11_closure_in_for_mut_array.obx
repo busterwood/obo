@@ -1,0 +1,10 @@
+// error: borrowed|for
+type B = record { v: int }
+fn call(f: &fn()) { f() }
+fn main() {
+    var bs = [B{v: 1}, B{v: 2}, B{v: 3}]
+    for b in bs {
+        call(fn() { bs = [] })
+        println(b.v)
+    }
+}

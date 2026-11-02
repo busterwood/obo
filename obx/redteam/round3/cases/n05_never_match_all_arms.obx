@@ -1,0 +1,8 @@
+// exit: 12
+fn stop(o: Option[int]): never {
+    match o {
+        Some(x) { panic("a") }
+        None { exit(12) }
+    }
+}
+fn main() { stop(Some(1)) }

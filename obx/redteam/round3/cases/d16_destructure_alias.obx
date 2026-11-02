@@ -1,0 +1,7 @@
+// expect: 3
+type P = record { a: int; b: int }
+type Q = P
+fn main() {
+    let Q{a, b} = P{a: 1, b: 2}
+    println(a + b)
+}

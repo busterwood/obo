@@ -1,0 +1,4 @@
+// error: move|borrow|slice|global
+const T: []int = [1, 2]
+fn eat(xs: []int) {}
+fn main() { eat(T) }

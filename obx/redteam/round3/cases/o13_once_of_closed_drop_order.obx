@@ -1,0 +1,10 @@
+// expect: drop 2
+// expect: drop 1
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop " + d.id.toStr()) }
+var G1: once D
+var G2: once D
+fn main() {
+    G1.set(D{id: 1})
+    G2.set(D{id: 2})
+}

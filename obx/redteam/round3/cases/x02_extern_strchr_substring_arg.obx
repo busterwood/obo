@@ -1,0 +1,6 @@
+// expect: lo
+extern "c" fn strchr(s: str, c: int): str
+fn main() {
+    let s = "hello world"
+    println(strchr(s[0..5], 108)[1..])
+}

@@ -1,0 +1,5 @@
+// error: value
+fn call[R](f: &fn(): R): R { return f() }
+fn main() {
+    let x = call(fn(): never { exit(3) })
+}

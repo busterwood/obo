@@ -1,0 +1,5 @@
+// expect: y
+fn call(f: &fn(): bool): bool { return f() }
+fn main() {
+    if call(fn(): bool { return true }) { println("y") }
+}

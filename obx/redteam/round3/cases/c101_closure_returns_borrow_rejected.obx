@@ -1,0 +1,5 @@
+// error: borrow
+fn main() {
+    let xs = [1]
+    let f = fn(): &int { return &xs[0] }
+}

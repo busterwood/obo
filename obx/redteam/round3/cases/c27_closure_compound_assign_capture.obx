@@ -1,0 +1,6 @@
+// error: borrowed|twice
+fn run(f: &fn(), x: &str) { f(); println(x) }
+fn main() {
+    var s = "a" + "b"
+    run(fn() { s += "c" }, &s)
+}

@@ -1,0 +1,6 @@
+// expect: x
+fn app(f: &fn(): int): int { return f() }
+fn main() {
+    println("x")
+    let v = app(fn(): int { exit(0) })
+}

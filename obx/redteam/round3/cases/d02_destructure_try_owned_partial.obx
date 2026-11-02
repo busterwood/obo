@@ -1,0 +1,10 @@
+// expect: e
+type D = record { id: int }
+type P = record { a: D; b: []int }
+fn mk(ok: bool): Result[P, str] { if ok { return Ok(P{a: D{id: 1}, b: [1]}) } return Err("e") }
+fn g(): Result[int, str] {
+    let P{a, b} = try mk(true)
+    let P{a: a2, b: _} = try mk(false)
+    return Ok(a.id + a2.id)
+}
+fn main() { match g() { Ok(v) { println(v) } Err(e) { println(e) } } }

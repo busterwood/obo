@@ -1,0 +1,5 @@
+// expect: ok
+fn main() {
+    let f: float = 2.0
+    if f * 1e2 == 200.0 { println("ok") }
+}

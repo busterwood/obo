@@ -1,0 +1,7 @@
+// (wrong reject; same cause as round-2 g04)
+// expect: 2
+const T: []int = [1, 2, 3]
+fn main() {
+    let r = &T[1]
+    println(r)
+}

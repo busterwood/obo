@@ -1,0 +1,7 @@
+// expect: 1
+fn stop(): never {
+    while true {
+        while true { break }
+    }
+}
+fn main() { println(1) }

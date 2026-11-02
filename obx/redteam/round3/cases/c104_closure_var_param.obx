@@ -1,0 +1,3 @@
+// error: closure|var|borrow
+fn app(var f: &fn()) { f() }
+fn main() {}

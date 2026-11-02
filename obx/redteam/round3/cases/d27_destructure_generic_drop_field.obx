@@ -1,0 +1,9 @@
+// expect: drop
+// expect: x
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop") }
+type Pair[A, B] = record { a: A; b: B }
+fn main() {
+    let Pair{b} = Pair{a: D{id: 1}, b: "x"}
+    println(b)
+}

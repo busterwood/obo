@@ -1,0 +1,7 @@
+// expect: 3 6 30
+const T: []int = [1, 2, 3]
+fn main() {
+    var s = 0
+    for x in T { s += x }
+    println(len(T).toStr() + " " + s.toStr() + " " + (T[2] * 10).toStr())
+}

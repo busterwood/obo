@@ -1,0 +1,2 @@
+// error: int|str|closure
+fn main() { let f: &fn(int): int = fn(x: str): int { return 1 } }

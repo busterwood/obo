@@ -1,0 +1,5 @@
+// expect: ok
+fn main() {
+    fn() {}
+    println("ok")
+}

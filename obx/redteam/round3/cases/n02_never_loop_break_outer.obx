@@ -1,0 +1,9 @@
+// error: never|end
+fn stop(): never {
+    var i = 0
+    while true {
+        i += 1
+        if i > 3 { break }
+    }
+}
+fn main() {}

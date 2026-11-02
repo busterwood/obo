@@ -1,0 +1,11 @@
+// expect: 1
+import "collections"
+fn main() {
+    var a = collections.newSet[int]()
+    a.add(1)
+    a.add(2)
+    var b = collections.newSet[int]()
+    b.add(2)
+    let c = a.minus(&b)
+    println(c.size())
+}

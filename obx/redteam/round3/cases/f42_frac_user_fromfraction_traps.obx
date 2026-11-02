@@ -1,0 +1,8 @@
+// expect: before
+// exit: 12
+type Fx = value record { u: i128; s: int }
+fn (Fx) fromFraction(u: i128, s: int): Fx { if s < 0 { panic("neg") } return Fx{u: u, s: s} }
+fn main() {
+    println("before")
+    let x: Fx = 1e3
+}

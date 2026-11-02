@@ -1,0 +1,4 @@
+// exit: -6
+extern "c" fn abort(): never;
+fn f(): int { abort() }
+fn main() { println(f()) }

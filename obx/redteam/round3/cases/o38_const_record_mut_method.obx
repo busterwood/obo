@@ -1,0 +1,5 @@
+// error: mut|global|const|borrow
+type P = value record { a: int; b: int }
+fn (p: mut &P) bump() { p.a += 1 }
+const P0: P = P{a: 1, b: 2}
+fn main() { P0.bump() }

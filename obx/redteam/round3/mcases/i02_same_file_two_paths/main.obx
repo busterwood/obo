@@ -1,0 +1,4 @@
+// expect: 2
+import "./sub/x"
+import "./y"
+fn main() { println(x.f() + y.g() - 5) }

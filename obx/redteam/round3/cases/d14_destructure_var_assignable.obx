@@ -1,0 +1,8 @@
+// expect: 5
+type P = record { a: int; b: []int }
+fn main() {
+    var P{a, b} = P{a: 1, b: []}
+    a = 5
+    append(mut &b, 1)
+    println(a)
+}

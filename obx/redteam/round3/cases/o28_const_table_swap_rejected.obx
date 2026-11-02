@@ -1,0 +1,3 @@
+// error: mut|slice
+const T: []int = [1, 2, 3]
+fn main() { swap(T, 0, 1) }

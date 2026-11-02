@@ -1,0 +1,22 @@
+=== i11b_once_cross_module_dep_order/main
+// expect: ok
+// expect: drop b a
+import "./b"
+fn main() {
+    b.init()
+    println("ok")
+}
+=== i11b_once_cross_module_dep_order/a
+pub type A = record { pub s: str }
+var GA: once A
+pub fn init() { GA.set(A{s: "a" + ""}) }
+pub fn get(): str { return GA.get().s }
+=== i11b_once_cross_module_dep_order/b
+import "./a"
+type B = record { n: int }
+fn (x: mut &B) drop() { println("drop b " + a.get()) }
+var GB: once B
+pub fn init() {
+    a.init()
+    GB.set(B{n: 1})
+}

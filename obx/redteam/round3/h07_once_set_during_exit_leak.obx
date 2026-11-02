@@ -1,0 +1,16 @@
+// Round 3 L. GB's drop runs at exit after GA has been dropped; GA's _set
+// flag is not cleared, but here GA was never set, so the drop sets it and
+// that value is never freed (OBX_CHECK reports a leak, exit 5). A set during
+// the exit drops must either trap or be freed; it must not leak.
+// expect: drop b
+type A = record { s: str }
+type B = record { n: int }
+fn (b: mut &B) drop() {
+    println("drop b")
+    if !GA.isSet() { GA.set(A{s: "late" + ""}) }
+}
+var GB: once B
+var GA: once A
+fn main() {
+    GB.set(B{n: 1})
+}

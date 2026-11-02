@@ -1,0 +1,7 @@
+// error: borrowed|twice
+fn run(f: &fn(), x: &int) { f(); println(x) }
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    run(fn() { m.clear() }, m.valAt(0))
+}

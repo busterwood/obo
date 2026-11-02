@@ -1,0 +1,6 @@
+// error: declared|shadow
+fn call(f: &fn()) { f() }
+fn main() {
+    let x = 1
+    call(fn() { let x = 2 })
+}

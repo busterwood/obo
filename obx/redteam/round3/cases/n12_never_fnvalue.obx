@@ -1,0 +1,4 @@
+// exit: 7
+fn bye(): never { exit(7) }
+fn f(g: fn(): never): int { g() }
+fn main() { println(f(bye)) }

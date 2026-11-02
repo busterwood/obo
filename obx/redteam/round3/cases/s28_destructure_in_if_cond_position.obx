@@ -1,0 +1,5 @@
+// expect: 1
+type P = record { a: int }
+fn main() {
+    if true { let P{a} = P{a: 1}; println(a) }
+}

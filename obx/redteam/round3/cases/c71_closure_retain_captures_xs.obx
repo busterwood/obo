@@ -1,0 +1,6 @@
+// error: borrowed|twice
+import "collections"
+fn main() {
+    var xs = [1, 5, 2, 8]
+    collections.retain(mut &xs, fn(x: &int): bool { return len(xs) > 2 })
+}

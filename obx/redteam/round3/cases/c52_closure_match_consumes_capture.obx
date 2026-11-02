@@ -1,0 +1,6 @@
+// error: move
+fn call(f: &fn()) { f() }
+fn main() {
+    var o: Option[[]int] = Some([1])
+    call(fn() { match move(o) { Some(x) {} None {} } })
+}

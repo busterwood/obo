@@ -1,0 +1,6 @@
+// expect: none
+fn none[T](f: &fn(): T): Option[T] { return None }
+fn main() {
+    let o = none(fn(): never { exit(3) })
+    match o { Some(x) {} None { println("none") } }
+}

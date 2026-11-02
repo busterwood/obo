@@ -1,0 +1,4 @@
+// expect: 0
+type P = value record { s: str; n: int }
+const T: []P = []
+fn main() { println(len(T)) }

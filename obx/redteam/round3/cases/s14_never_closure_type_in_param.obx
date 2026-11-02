@@ -1,0 +1,3 @@
+// exit: 2
+fn app(f: &fn(int): never) { f(2) }
+fn main() { app(fn(c: int): never { exit(c) }) }

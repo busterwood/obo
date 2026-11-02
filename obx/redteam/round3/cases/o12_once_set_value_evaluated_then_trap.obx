@@ -1,0 +1,9 @@
+// expect: first
+// exit: 12
+type A = record { n: int; xs: []int }
+var GA: once A
+fn mk(): A { println("first"); return A{n: 1, xs: [1]} }
+fn main() {
+    GA.set(A{n: 0, xs: []})
+    GA.set(mk())
+}

@@ -1,0 +1,8 @@
+// expect: 2 3
+extern "c" fn strlen(s: str): u64
+extern "c" fn strrchr(s: str, c: int): str
+fn main() {
+    let a = "x/yz"
+    let b = "p/q/rs"
+    println(strlen(strrchr(b[0..5], 47)).toStr() + " " + strlen(strrchr(a, 47)).toStr())
+}

@@ -1,0 +1,8 @@
+// expect: 4 x
+type P = value record { s: str; n: int }
+fn dbl(p: P): P { return P{s: p.s, n: p.n * 2} }
+fn app(f: &fn(P): P, p: P): P { return f(p) }
+fn main() {
+    let r = app(dbl, P{s: "x", n: 2})
+    println(r.n.toStr() + " " + r.s)
+}

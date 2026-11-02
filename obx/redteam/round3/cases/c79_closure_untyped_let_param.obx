@@ -1,0 +1,4 @@
+// error: type|infer
+fn main() {
+    let f = fn(x) { println(x) }
+}

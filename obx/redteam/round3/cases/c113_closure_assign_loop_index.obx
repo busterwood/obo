@@ -1,0 +1,5 @@
+// error: assign|let|var
+fn call(f: &fn()) { f() }
+fn main() {
+    for i in 0..3 { call(fn() { i = 5 }) }
+}

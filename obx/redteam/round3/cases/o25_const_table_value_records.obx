@@ -1,0 +1,7 @@
+// expect: b 2
+type P = value record { s: str; n: int }
+const PS: []P = [P{s: "a", n: 1}, P{s: "b", n: 2}]
+fn main() {
+    let p = PS[1]
+    println(p.s + " " + p.n.toStr())
+}

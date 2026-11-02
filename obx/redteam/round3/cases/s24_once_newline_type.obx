@@ -1,0 +1,4 @@
+// expect: 3
+var N: once
+    int
+fn main() { N.set(3); println(N.get()) }

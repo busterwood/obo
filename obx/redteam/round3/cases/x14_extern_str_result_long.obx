@@ -1,0 +1,9 @@
+// expect: 1000
+extern "c" fn getenv(name: str): str
+extern "c" fn setenv(name: str, v: str, o: i32): i32
+fn main() {
+    var s = ""
+    for i in 0..1000 { s += "x" }
+    let _ = setenv("OBXLONG", s, i32(1))
+    println(len(getenv("OBXLONG")))
+}

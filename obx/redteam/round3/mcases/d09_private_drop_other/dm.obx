@@ -1,0 +1,3 @@
+pub type P = record { pub a: int }
+fn (p: mut &P) drop() {}
+pub fn mk(): P { return P{a: 1} }

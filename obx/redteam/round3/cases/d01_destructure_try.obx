@@ -1,0 +1,10 @@
+// expect: 1 x
+type P = record { a: int; s: str }
+fn mk(ok: bool): Result[P, str] { if ok { return Ok(P{a: 1, s: "x"}) } return Err("e") }
+fn g(): Result[int, str] {
+    let P{a, s} = try mk(true)
+    println(a.toStr() + " " + s)
+    let P{a: b, s: _} = try mk(false)
+    return Ok(b)
+}
+fn main() { match g() { Ok(v) {} Err(e) {} } }

@@ -1,0 +1,7 @@
+// exit: 12
+type A = record { n: int }
+var GA: once A
+fn show(a: &A, b: A) { println(a.n) }
+fn main() {
+    show(GA.get(), A{n: 1})
+}

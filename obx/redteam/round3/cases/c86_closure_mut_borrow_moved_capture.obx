@@ -1,0 +1,8 @@
+// error: moved
+fn eat(b: []int) {}
+fn call(f: &fn()) { f() }
+fn main() {
+    var b = [1]
+    eat(b)
+    call(fn() { append(mut &b, 2) })
+}

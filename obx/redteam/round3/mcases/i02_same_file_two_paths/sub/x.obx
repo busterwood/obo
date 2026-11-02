@@ -1,0 +1,2 @@
+import "../y"
+pub fn f(): int { return y.g() - 3 }

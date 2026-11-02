@@ -1,0 +1,7 @@
+// error: borrowed|twice
+fn run(f: &fn(), xs: &[]int) { f(); println(xs[0]) }
+fn each(f: &fn()) { f() }
+fn main() {
+    var xs = [1, 2]
+    run(fn() { each(fn() { xs = [] }) }, &xs)
+}

@@ -1,0 +1,6 @@
+// error: borrowed|twice
+import "collections"
+fn main() {
+    var xs = ["a", "c", "b"]
+    collections.sortBy(mut &xs, fn(a, b) { xs = []; return 0 })
+}

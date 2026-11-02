@@ -1,0 +1,5 @@
+// expect: 1
+fn main() {
+    let r: Result[int, str] = Result.Ok(1)
+    match r { Result.Ok(v) { println(v) } Result.Err(e) {} }
+}

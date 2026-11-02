@@ -1,0 +1,5 @@
+// exit: 12
+type B = record { v: int }
+fn (b: &B) die(): never { panic("die") }
+fn f(b: &B): int { b.die() }
+fn main() { println(f(&B{v: 1})) }

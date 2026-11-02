@@ -1,0 +1,4 @@
+// expect: 5 5
+extern "c" fn abs(x: i32): i32
+extern "c" fn myAbs(x: i32): i32 as "abs"
+fn main() { println(int(abs(i32(-5))).toStr() + " " + int(myAbs(i32(-5))).toStr()) }

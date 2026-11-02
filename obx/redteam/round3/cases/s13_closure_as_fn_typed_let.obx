@@ -1,0 +1,5 @@
+// error: closure|fn
+fn main() {
+    let x = 1
+    let f: fn(): int = fn(): int { return x }
+}

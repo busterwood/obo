@@ -1,0 +1,6 @@
+// error: closure|second class|copy
+fn main() {
+    let f = fn(): int { return 1 }
+    let a = array(2, f)
+    println(len(a))
+}

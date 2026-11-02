@@ -1,0 +1,4 @@
+// expect: 3
+const T: []int = [1, 2, 3]
+fn last[X: copy](xs: &[X]): X { return xs[len(xs) - 1] }
+fn main() { println(last(T)) }

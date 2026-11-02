@@ -1,0 +1,8 @@
+// expect: e
+type P = record { a: []int; b: []int }
+fn e(): Result[[]int, str] { return Err("e") }
+fn g(): Result[int, str] {
+    let P{a, b} = P{a: [1], b: try e()}
+    return Ok(len(a))
+}
+fn main() { match g() { Ok(v) { println(v) } Err(x) { println(x) } } }

@@ -1,0 +1,7 @@
+// expect: 3
+fn call(f: &fn(int): int): int { return f(2) }
+fn main() {
+    let r = call(fn(y: int): int { return y + 1 })
+    let y = r
+    println(y)
+}

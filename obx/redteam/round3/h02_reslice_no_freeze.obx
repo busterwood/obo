@@ -1,0 +1,16 @@
+// Round 3 H1 (second form). Re-slicing a `mut &[T]` (`mut &s[0..1]`, or
+// `s[0..1]` given to a `mut &[T]` let) does not freeze s either, so the
+// element behind r is replaced while r is live. Must be a compile error;
+// today it compiles and r reads freed memory.
+// error: borrowed
+type B = record { v: []int }
+fn reset(s: mut &[B]) { s[0] = B{v: [9]} }
+fn f(s: mut &[B]) {
+    let r = &s[0].v[0]
+    reset(mut &s[0..1])
+    println(r)
+}
+fn main() {
+    var xs = [B{v: [1]}]
+    f(mut &xs)
+}

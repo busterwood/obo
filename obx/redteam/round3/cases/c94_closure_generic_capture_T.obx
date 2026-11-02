@@ -1,0 +1,4 @@
+// expect: 2
+fn call(f: &fn(): int): int { return f() }
+fn cnt[T](xs: &[]T): int { return call(fn(): int { return len(xs) }) }
+fn main() { println(cnt(&["a", "b"])) }

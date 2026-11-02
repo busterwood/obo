@@ -1,0 +1,7 @@
+// expect: 2
+import "collections"
+fn main() {
+    let xs = [1, 2]
+    let ys = collections.mapTo(&xs, fn(x: &int): []int { return [x] })
+    println(len(ys))
+}

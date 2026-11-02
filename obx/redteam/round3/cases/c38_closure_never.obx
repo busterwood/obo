@@ -1,0 +1,7 @@
+// expect: b
+// exit: 6
+fn app(f: &fn(): never): int { f() }
+fn main() {
+    let c = 6
+    println(app(fn(): never { println("b"); exit(c) }).toStr())
+}

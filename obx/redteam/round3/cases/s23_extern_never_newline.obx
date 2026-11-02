@@ -1,0 +1,4 @@
+// never is a keyword, so a newline after it does not end the statement (spec 2)
+// error: expected ;
+extern "c" fn abort(): never
+fn main() { abort() }

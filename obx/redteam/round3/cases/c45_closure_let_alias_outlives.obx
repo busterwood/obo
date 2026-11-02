@@ -1,0 +1,10 @@
+// error: borrowed
+fn main() {
+    var n = 1
+    let inc = fn() { n += 1 }
+    {
+        let g = inc
+    }
+    n = 5
+    println(n)
+}

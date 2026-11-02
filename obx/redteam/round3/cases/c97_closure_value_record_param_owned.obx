@@ -1,0 +1,4 @@
+// expect: 2
+type P = value record { xs: []int }
+fn app(f: &fn(P): int): int { return f(P{xs: [1, 2]}) }
+fn main() { println(app(fn(p: P): int { return len(p.xs) })) }

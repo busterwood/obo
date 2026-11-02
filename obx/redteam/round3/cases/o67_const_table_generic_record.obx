@@ -1,0 +1,4 @@
+// expect: 7
+type Pair[A, B] = value record { a: A; b: B }
+const T: []Pair[int, str] = [Pair{a: 7, b: "x"}]
+fn main() { println(T[0].a) }

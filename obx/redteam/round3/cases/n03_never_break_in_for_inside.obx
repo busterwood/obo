@@ -1,0 +1,8 @@
+// error: never|end
+fn stop(): never {
+    while true {
+        for i in 0..3 { if i == 1 { break } }
+        return
+    }
+}
+fn main() {}

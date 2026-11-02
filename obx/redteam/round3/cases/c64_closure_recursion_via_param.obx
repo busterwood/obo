@@ -1,0 +1,7 @@
+// expect: 120
+fn fix(f: &fn(int, &fn(int): int): int, n: int): int {
+    return f(n, fn(m: int): int { return fix(f, m) })
+}
+fn main() {
+    println(fix(fn(n: int, self2: &fn(int): int): int { if n <= 1 { return 1 } return n * self2(n - 1) }, 5))
+}

@@ -1,0 +1,13 @@
+// expect: 2
+type Bag[T] = record { xs: []T }
+fn each[T](xs: &[T], f: &fn(&T)) { for x in xs { f(x) } }
+fn (b: &Bag[T]) cnt(): int {
+    var n = 0
+    each(&b.xs, fn(x: &T) { n += 1 })
+    return n
+}
+fn main() {
+    let b = Bag{xs: ["a", "b"]}
+    let c = Bag{xs: [1, 2]}
+    println(b.cnt() + c.cnt() - 2)
+}

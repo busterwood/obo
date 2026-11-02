@@ -1,0 +1,10 @@
+// expect: bad
+fn app(f: &fn(): Result[int, str]): Result[int, str] { return f() }
+fn p(): Result[int, str] { return Err("bad") }
+fn main() {
+    let owned = [1, 2]
+    match app(fn(): Result[int, str] { let x = [3]; let v = try p(); return Ok(v + owned[0] + x[0]) }) {
+        Ok(v) { println(v) }
+        Err(e) { println(e) }
+    }
+}

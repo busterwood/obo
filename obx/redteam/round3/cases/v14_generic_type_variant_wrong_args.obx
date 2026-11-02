@@ -1,0 +1,4 @@
+// error: Option|str|int
+fn main() {
+    let o: Option[int] = Option[str].Some("x")
+}

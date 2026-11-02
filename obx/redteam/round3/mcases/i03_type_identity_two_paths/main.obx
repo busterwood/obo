@@ -1,0 +1,7 @@
+// expect: 1
+import "./sub/x"
+import "./y"
+fn main() {
+    let p: y.P = x.mk()
+    println(p.a)
+}

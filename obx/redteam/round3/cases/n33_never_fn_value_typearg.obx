@@ -1,0 +1,7 @@
+// expect: 1
+fn keep[T](x: T): []T { return [x] }
+fn bye(): never { exit(3) }
+fn main() {
+    let xs = keep(bye)
+    println(len(xs))
+}

@@ -1,0 +1,4 @@
+// expect: 10
+const T: []int = [1, 2, 3, 4]
+fn sumT[X](x: X): int { var s = 0; for t in T { s += t }; return s }
+fn main() { println(sumT("a")) }

@@ -1,0 +1,2 @@
+extern "c" fn myAbs(v: i32): i32 as "abs"
+pub fn f(): int { return int(myAbs(i32(-6))) }

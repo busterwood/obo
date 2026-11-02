@@ -1,0 +1,8 @@
+// error: move
+type B = record { v: int }
+fn mk(f: &fn(): B): B { return f() }
+fn main() {
+    let b = B{v: 1}
+    let c = mk(fn(): B { return b })
+    println(c.v)
+}

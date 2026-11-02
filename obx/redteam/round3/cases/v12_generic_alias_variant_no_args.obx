@@ -1,0 +1,6 @@
+// expect: 3
+type R[T] = Result[T, str]
+fn f(): R[int] { return R.Ok(3) }
+fn main() {
+    match f() { R.Ok(v) { println(v) } R.Err(e) {} }
+}

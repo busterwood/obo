@@ -1,0 +1,4 @@
+// expect: 2
+type Ints = []int
+const T: Ints = [1, 2]
+fn main() { println(T[1]) }

@@ -1,0 +1,6 @@
+// error: borrowed|twice
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    m.each(fn(k: &str, v: &int) { m.put("b", 2) })
+}

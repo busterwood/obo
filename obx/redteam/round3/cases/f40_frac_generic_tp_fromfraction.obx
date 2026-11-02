@@ -1,0 +1,9 @@
+// expect: 5 1
+type FromFrac = interface { fn fromFraction(u: i128, s: int): Self }
+type Fx = value record { u: i128; s: int }
+fn (Fx) fromFraction(u: i128, s: int): Fx { return Fx{u: u, s: s} }
+fn half[T: FromFrac](): T { return 0.5 }
+fn main() {
+    let x: Fx = half()
+    println(int(x.u).toStr() + " " + x.s.toStr())
+}

@@ -1,0 +1,10 @@
+=== n38_void_inferred_type_arg
+// The closure returns nothing, so R cannot be inferred: a compile error.
+// error: infer|result|nothing|value
+fn call[R](f: &fn(): R): R { return f() }
+fn main() { call(fn() { println("x") }) }
+=== n39_void_fn_inferred_type_arg
+// error: infer|result|nothing|value
+fn call[R](f: &fn(): R): R { return f() }
+fn hi() { println("x") }
+fn main() { call(hi) }

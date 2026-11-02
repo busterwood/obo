@@ -1,0 +1,6 @@
+// exit: 4
+fn call[R](f: &fn(): R): R { return f() }
+fn g(): int {
+    call(fn(): never { exit(4) })
+}
+fn main() { println(g()) }

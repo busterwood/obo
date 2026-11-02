@@ -1,0 +1,6 @@
+// error: let|var
+fn main() {
+    let n = 1
+    let f = fn() { n += 3 }
+    f()
+}

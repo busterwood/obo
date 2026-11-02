@@ -1,0 +1,2 @@
+// expect: 1500
+fn main() { println(1.5e3.toStr()) }

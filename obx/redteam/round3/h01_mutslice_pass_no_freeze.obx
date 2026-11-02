@@ -1,0 +1,17 @@
+// Round 3 H1. Passing a `mut &[T]` variable on to a `mut &[T]` parameter
+// does not freeze it (rule 4), so a borrow taken from an element survives a
+// call that replaces the element. The compiler must reject the call to reset
+// while r is live. Today it compiles and r reads freed memory
+// (heap-use-after-free under ASan).
+// error: borrowed
+type B = record { v: []int }
+fn reset(s: mut &[B]) { s[0] = B{v: [9]} }
+fn f(s: mut &[B]) {
+    let r = &s[0].v[0]
+    reset(s)
+    println(r)
+}
+fn main() {
+    var xs = [B{v: [1]}]
+    f(mut &xs)
+}

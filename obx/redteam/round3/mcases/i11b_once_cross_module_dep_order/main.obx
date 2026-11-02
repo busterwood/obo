@@ -1,0 +1,7 @@
+// expect: ok
+// expect: drop b a
+import "./b"
+fn main() {
+    b.init()
+    println("ok")
+}

@@ -1,0 +1,7 @@
+// expect: 1 2 3
+import "collections"
+fn main() {
+    var xs = [3, 1, 2]
+    collections.sortBy(mut &xs, fn(a: &int, b: &int): int { return a.cmp(b) })
+    println(xs[0].toStr() + " " + xs[1].toStr() + " " + xs[2].toStr())
+}

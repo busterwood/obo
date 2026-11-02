@@ -1,0 +1,6 @@
+// expect: 5
+fn five(): int { return 5 }
+fn main() {
+    let f: &fn(): int = five
+    println(f())
+}

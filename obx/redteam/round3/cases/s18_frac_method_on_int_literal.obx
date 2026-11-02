@@ -1,0 +1,4 @@
+// The lexer reads "5." as the start of a fractional literal (pre-existing; spec 2
+// says a fractional literal has digits on both sides of the point).
+// error: digits after the point
+fn main() { println(5.toStr()) }

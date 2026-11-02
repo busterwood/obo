@@ -1,0 +1,6 @@
+// expect: 3
+type Pair[A, B] = record { a: A; b: B }
+fn main() {
+    let Pair[int, int]{a, b} = Pair{a: 1, b: 2}
+    println(a + b)
+}

@@ -1,0 +1,6 @@
+// exit: 3
+const T: []int = [1, 2, 3]
+fn main() {
+    var i = 3
+    println(T[i])
+}

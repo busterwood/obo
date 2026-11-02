@@ -1,0 +1,494 @@
+=== o01_once_drop_reads_other_once
+// expect: set
+// expect: drop b a
+type A = record { s: str }
+type B = record { n: int }
+fn (b: mut &B) drop() { println("drop b " + GA.get().s) }
+var GB: once B
+var GA: once A
+fn main() {
+    GB.set(B{n: 1})
+    GA.set(A{s: "a" + ""})
+    println("set")
+}
+=== o02_once_drop_sets_other_once
+// expect: drop b
+type A = record { s: str }
+type B = record { n: int }
+fn (b: mut &B) drop() {
+    println("drop b")
+    if !GA.isSet() { GA.set(A{s: "late" + ""}) }
+}
+var GA: once A
+var GB: once B
+fn main() {
+    GB.set(B{n: 1})
+}
+=== o02b_once_drop_sets_earlier_once_leak
+// expect: drop b
+type A = record { s: str }
+type B = record { n: int }
+fn (b: mut &B) drop() {
+    println("drop b")
+    if !GA.isSet() { GA.set(A{s: "late" + ""}) }
+}
+var GB: once B
+var GA: once A
+fn main() {
+    GB.set(B{n: 1})
+}
+=== o03_once_get_kept_across_set_attempt
+// expect: a
+// exit: 12
+type A = record { s: str }
+var GA: once A
+fn main() {
+    GA.set(A{s: "a" + ""})
+    let r = GA.get()
+    println(r.s)
+    GA.set(A{s: "b" + ""})
+    println(r.s)
+}
+=== o04_once_generic_type
+// expect: 2
+// expect: x
+var M: once Map[str, []int]
+fn main() {
+    var m: Map[str, []int] = newMap()
+    m.put("x", [1, 2])
+    M.set(m)
+    println(len(M.get().valAt(0)))
+    println(M.get().keyAt(0))
+}
+=== o05_once_mut_method_rejected
+// error: mut|borrow
+var M: once Map[str, int]
+fn main() {
+    M.set(newMap())
+    M.get().put("a", 1)
+}
+=== o06_once_assign_rejected
+// error: once|set-once
+type A = record { s: str }
+var GA: once A
+fn main() {
+    GA = A{s: "x"}
+}
+=== o07_once_field_assign_rejected
+// error: once|set-once|borrow|assign
+type A = value record { n: int }
+var GA: once A
+fn main() {
+    GA.set(A{n: 1})
+    GA.get().n = 5
+}
+=== o08_once_replace_rejected
+// error: mut|borrow|once
+type A = record { xs: []int }
+var GA: once A
+fn main() {
+    GA.set(A{xs: [1]})
+    let o = replace(mut &GA.get().xs, [])
+}
+=== o09_once_in_closure
+// expect: 7
+type A = record { n: int }
+var GA: once A
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    GA.set(A{n: 7})
+    println(call(fn(): int { return GA.get().n }))
+}
+=== o10_once_set_in_closure
+// expect: 3
+var N: once int
+fn call(f: &fn()) { f() }
+fn main() {
+    call(fn() { N.set(3) })
+    println(N.get())
+}
+=== o11_once_get_before_set_in_arg
+// exit: 12
+type A = record { n: int }
+var GA: once A
+fn show(a: &A, b: A) { println(a.n) }
+fn main() {
+    show(GA.get(), A{n: 1})
+}
+=== o12_once_set_value_evaluated_then_trap
+// expect: first
+// exit: 12
+type A = record { n: int; xs: []int }
+var GA: once A
+fn mk(): A { println("first"); return A{n: 1, xs: [1]} }
+fn main() {
+    GA.set(A{n: 0, xs: []})
+    GA.set(mk())
+}
+=== o13_once_of_closed_drop_order
+// expect: drop 2
+// expect: drop 1
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop " + d.id.toStr()) }
+var G1: once D
+var G2: once D
+fn main() {
+    G1.set(D{id: 1})
+    G2.set(D{id: 2})
+}
+=== o14_once_set_borrow_of_itself
+// error: once|set|borrow|move|copy
+type A = record { n: int }
+var GA: once A
+fn main() {
+    GA.set(A{n: 1})
+    GA.set(GA.get())
+}
+=== o15_once_get_returned_from_fn
+// error: borrow
+type A = record { n: int }
+var GA: once A
+fn cfg(): &A { return GA.get() }
+fn main() {}
+=== o16_once_get_passed_and_returned_borrow
+// expect: 4
+type A = record { xs: []int }
+var GA: once A
+fn first(a: &A): &int { return &a.xs[0] }
+fn main() {
+    GA.set(A{xs: [4]})
+    let r = first(GA.get())
+    println(r)
+}
+=== o17_once_get_destructure
+// error: place|owned
+type A = record { s: str; n: int }
+var GA: once A
+fn main() {
+    GA.set(A{s: "x", n: 1})
+    let A{s, n} = GA.get()
+}
+=== o18_once_value_copy_destructure
+// expect: 3 4
+type P = value record { a: int; b: int }
+var GP: once P
+fn main() {
+    GP.set(P{a: 3, b: 4})
+    let P{a, b} = GP.get()
+    println(a.toStr() + " " + b.toStr())
+}
+=== o19_once_match_get
+// expect: 5
+var GO: once Option[[]int]
+fn main() {
+    GO.set(Some([5]))
+    match GO.get() {
+        Some(xs) { println(xs[0]) }
+        None {}
+    }
+}
+=== o20_once_for_over_get
+// expect: 6
+type A = record { xs: []int }
+var GA: once A
+fn main() {
+    GA.set(A{xs: [1, 2, 3]})
+    var t = 0
+    for x in GA.get().xs { t += x }
+    println(t)
+}
+=== o21_once_isSet_paren
+// expect: no
+type A = record { n: int }
+var GA: once A
+fn main() { if GA.isSet() { println("yes") } else { println("no") } }
+=== o22_once_exit_no_drop
+// expect: x
+// exit: 3
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop") }
+var G: once D
+fn main() {
+    G.set(D{id: 1})
+    println("x")
+    exit(3)
+}
+=== o23_once_panic_no_leak_report
+// exit: 12
+type D = record { xs: []int }
+var G: once D
+fn main() {
+    G.set(D{xs: [1]})
+    panic("p")
+}
+=== o24_const_table_basic_ops
+// expect: 3 6 30
+const T: []int = [1, 2, 3]
+fn main() {
+    var s = 0
+    for x in T { s += x }
+    println(len(T).toStr() + " " + s.toStr() + " " + (T[2] * 10).toStr())
+}
+=== o25_const_table_value_records
+// expect: b 2
+type P = value record { s: str; n: int }
+const PS: []P = [P{s: "a", n: 1}, P{s: "b", n: 2}]
+fn main() {
+    let p = PS[1]
+    println(p.s + " " + p.n.toStr())
+}
+=== o26_const_table_assign_rejected
+// error: assign|mut|const
+const T: []int = [1, 2, 3]
+fn main() { T[0] = 5 }
+=== o27_const_table_append_rejected
+// error: append|mut|slice|array
+const T: []int = [1, 2, 3]
+fn main() { append(mut &T, 4) }
+=== o28_const_table_swap_rejected
+// error: mut|slice
+const T: []int = [1, 2, 3]
+fn main() { swap(T, 0, 1) }
+=== o29_const_table_sort_rejected
+// error: mut|slice
+import "collections"
+const T: []int = [3, 2, 1]
+fn main() { collections.sortStable(mut &T) }
+=== o30_const_table_slice_of
+// expect: 2 3
+const T: []int = [1, 2, 3]
+fn main() {
+    let s = T[1..]
+    println(s[0].toStr() + " " + s[1].toStr())
+}
+=== o31_const_table_generic
+// expect: 3
+const T: []int = [1, 2, 3]
+fn last[X: copy](xs: &[X]): X { return xs[len(xs) - 1] }
+fn main() { println(last(T)) }
+=== o32_const_table_in_generic_body
+// expect: 10
+const T: []int = [1, 2, 3, 4]
+fn sumT[X](x: X): int { var s = 0; for t in T { s += t }; return s }
+fn main() { println(sumT("a")) }
+=== o33_const_table_index_oob
+// exit: 3
+const T: []int = [1, 2, 3]
+fn main() {
+    var i = 3
+    println(T[i])
+}
+=== o34_const_table_empty
+// expect: 0
+const T: []int = []
+fn main() { println(len(T)) }
+=== o35_const_table_empty_records
+// expect: 0
+type P = value record { s: str; n: int }
+const T: []P = []
+fn main() { println(len(T)) }
+=== o36_const_record
+// expect: 3
+type P = value record { a: int; b: int }
+const P0: P = P{a: 1, b: 2}
+fn main() { println(P0.a + P0.b) }
+=== o37_const_record_field_assign
+// error: const|assign
+type P = value record { a: int; b: int }
+const P0: P = P{a: 1, b: 2}
+fn main() { P0.a = 5 }
+=== o38_const_record_mut_method
+// error: mut|global|const|borrow
+type P = value record { a: int; b: int }
+fn (p: mut &P) bump() { p.a += 1 }
+const P0: P = P{a: 1, b: 2}
+fn main() { P0.bump() }
+=== o39_const_record_shared_method
+// expect: 3
+type P = value record { a: int; b: int }
+fn (p: &P) sum(): int { return p.a + p.b }
+const P0: P = P{a: 1, b: 2}
+fn main() { println(P0.sum()) }
+=== o40_const_variant
+// expect: 4
+const O: Option[int] = Some(4)
+fn main() {
+    match O { Some(x) { println(x) } None {} }
+}
+=== o41_const_table_of_options
+// expect: 1 0
+const T: []Option[int] = [Some(1), None]
+fn main() {
+    var a = 0
+    var b = 0
+    match T[0] { Some(x) { a = x } None {} }
+    match T[1] { Some(x) { b = 1 } None { b = 0 } }
+    println(a.toStr() + " " + b.toStr())
+}
+=== o42_const_table_borrow_let
+// (wrong reject; same cause as round-2 g04)
+// expect: 2
+const T: []int = [1, 2, 3]
+fn main() {
+    let r = &T[1]
+    println(r)
+}
+=== o43_const_table_borrow_return
+// expect: 2
+const T: []int = [1, 2, 3]
+fn at(xs: &[int], i: int): &int { return &xs[i] }
+fn main() {
+    let r = at(T, 1)
+    println(r)
+}
+=== o44_const_table_str_dup
+// expect: ab
+const T: []str = ["a", "b"]
+fn main() {
+    var s = ""
+    for x in T { s += x }
+    println(s)
+}
+=== o45_const_table_i128_u64
+// expect: 18446744073709551615
+const T: []u64 = [0, 18446744073709551615]
+fn main() { println(T[1].toStr()) }
+=== o46_const_table_float
+// expect: 2.5
+const T: []float = [1.5, 2.5]
+fn main() { println(T[1].toStr()) }
+=== o47_const_table_bytes
+// expect: 98
+const T: []byte = ['a', 'b']
+fn main() { println(int(T[1])) }
+=== o48_const_table_overflow_elem
+// error: fit|overflow|range
+const T: []byte = [1, 256]
+fn main() {}
+=== o49_const_table_nonconst_elem
+// error: constant
+fn f(): int { return 1 }
+const T: []int = [1, f()]
+fn main() {}
+=== o50_const_table_refers_other_const
+// expect: 5
+const K = 5
+const T: []int = [K, K * 2]
+fn main() { println(T[0]) }
+=== o51_const_table_refers_other_table
+// error: table|constant
+const A: []int = [1]
+const T: []int = [A[0]]
+fn main() {}
+=== o52_const_table_moved
+// error: move|borrow|slice|global
+const T: []int = [1, 2]
+fn eat(xs: []int) {}
+fn main() { eat(T) }
+=== o53_const_table_for_mut
+// expect: 3
+const T: []int = [1, 2]
+fn main() {
+    var t = 0
+    for x in T { t += x }
+    println(t)
+}
+=== o54_global_copy_record
+// expect: 3
+type P = value record { a: int; b: int }
+var G: P = P{a: 1, b: 2}
+fn main() {
+    G.a = 2
+    println(G.a + 1)
+}
+=== o55_global_str_reassigned_dropped
+// expect: xy
+var G: str = "a"
+fn main() {
+    G = "x" + "y"
+    println(G)
+}
+=== o56_const_record_in_closure
+// expect: 3
+type P = value record { a: int; b: int }
+const P0: P = P{a: 1, b: 2}
+fn call(f: &fn(): int): int { return f() }
+fn main() { println(call(fn(): int { return P0.a + P0.b })) }
+=== o57_const_table_in_closure
+// expect: 6
+const T: []int = [1, 2, 3]
+fn call(f: &fn(): int): int { return f() }
+fn main() { println(call(fn(): int { var s = 0; for x in T { s += x }; return s })) }
+=== o58_once_get_in_let_then_block
+// expect: 1
+type A = record { n: int }
+var GA: once A
+fn main() {
+    var r2 = 0
+    {
+        GA.set(A{n: 1})
+        let r = GA.get()
+        r2 = r.n
+    }
+    println(r2)
+}
+=== o59_once_set_in_loop_twice
+// exit: 12
+var N: once int
+fn main() { for i in 0..2 { N.set(i) } }
+=== o60_once_drop_reads_self_get
+// expect: drop 5
+type B = record { n: int }
+fn (b: mut &B) drop() { println("drop " + GB.get().n.toStr()) }
+var GB: once B
+fn main() { GB.set(B{n: 5}) }
+=== o61_once_typed_ref_rejected
+// error: borrow
+var G: once &int
+fn main() {}
+=== o62_once_closure_type_rejected
+// error: closure|second class
+var G: once &fn(): int
+fn main() {}
+=== o63_const_table_record_with_array_rejected
+// error: copy
+type P = value record { xs: []int }
+const T: []P = []
+fn main() {}
+=== o64_const_table_drop_type_rejected
+// error: copy
+type P = value record { n: int }
+fn (p: mut &P) drop() {}
+const T: []P = [P{n: 1}]
+fn main() {}
+=== o65_once_value_record_drop
+// expect: drop 1
+type P = value record { n: int }
+fn (p: mut &P) drop() { println("drop " + p.n.toStr()) }
+var G: once P
+fn main() { G.set(P{n: 1}) }
+=== o66_const_alias_table
+// expect: 2
+type Ints = []int
+const T: Ints = [1, 2]
+fn main() { println(T[1]) }
+=== o67_const_table_generic_record
+// expect: 7
+type Pair[A, B] = value record { a: A; b: B }
+const T: []Pair[int, str] = [Pair{a: 7, b: "x"}]
+fn main() { println(T[0].a) }
+=== o68_const_table_pass_to_lib
+// expect: 1
+import "collections"
+const T: []int = [5, 3, 9]
+fn main() { println(collections.findBy(T, fn(x: &int): bool { return x == 3 })) }
+=== o69_const_neg_elems
+// expect: -5
+const T: []int = [-5, 3]
+fn main() { println(T[0]) }
+=== o70_const_table_i128_min
+// expect: ok
+const T: []i128 = [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]
+fn main() {
+    if T[0] < i128(0) && T[1] > i128(0) { println("ok") }
+}

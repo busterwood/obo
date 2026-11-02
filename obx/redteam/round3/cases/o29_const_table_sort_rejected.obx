@@ -1,0 +1,4 @@
+// error: mut|slice
+import "collections"
+const T: []int = [3, 2, 1]
+fn main() { collections.sortStable(mut &T) }

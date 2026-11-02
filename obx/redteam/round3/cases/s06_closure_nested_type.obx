@@ -1,0 +1,3 @@
+// expect: 2
+fn app(f: &fn(&fn(int): int): int): int { return f(fn(x: int): int { return x + 1 }) }
+fn main() { println(app(fn(g) { return g(1) })) }

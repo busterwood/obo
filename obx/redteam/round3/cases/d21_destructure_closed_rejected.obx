@@ -1,0 +1,2 @@
+// error: record
+fn main() { let Option{x} = Some(1) }

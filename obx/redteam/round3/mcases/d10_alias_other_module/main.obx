@@ -1,0 +1,6 @@
+// expect: 3
+import "./dm"
+fn main() {
+    let dm.Q{a, b} = dm.mk()
+    println(a + b)
+}

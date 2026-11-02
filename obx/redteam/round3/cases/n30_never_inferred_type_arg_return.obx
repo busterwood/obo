@@ -1,0 +1,8 @@
+// The type argument R is inferred as never; either a compile error or the
+// program stops with exit 3 (it must not fail in the C compiler).
+// expect: in
+// exit: 3
+fn call[R](f: &fn(): R): R { return f() }
+fn main() {
+    call(fn(): never { println("in"); exit(3) })
+}

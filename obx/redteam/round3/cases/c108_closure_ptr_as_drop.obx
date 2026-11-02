@@ -1,0 +1,4 @@
+// expect: d
+type D = record { n: int }
+fn (d: mut &D) drop() { let f = fn() { println("d") }; f() }
+fn main() { let d = D{n: 1} }

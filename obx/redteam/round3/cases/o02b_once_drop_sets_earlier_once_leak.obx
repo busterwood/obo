@@ -1,0 +1,12 @@
+// expect: drop b
+type A = record { s: str }
+type B = record { n: int }
+fn (b: mut &B) drop() {
+    println("drop b")
+    if !GA.isSet() { GA.set(A{s: "late" + ""}) }
+}
+var GB: once B
+var GA: once A
+fn main() {
+    GB.set(B{n: 1})
+}

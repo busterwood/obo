@@ -1,0 +1,6 @@
+// expect: 0
+fn empty[T](f: &fn(): T): []T { return [] }
+fn main() {
+    let xs = empty(fn(): never { exit(3) })
+    println(len(xs))
+}

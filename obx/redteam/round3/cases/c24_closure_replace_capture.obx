@@ -1,0 +1,7 @@
+// error: borrowed|twice
+type B = record { v: []int }
+fn run(f: &fn(), xs: &[]int) { f(); println(xs[0]) }
+fn main() {
+    var b = B{v: [1]}
+    run(fn() { let o = replace(mut &b.v, []) }, &b.v)
+}

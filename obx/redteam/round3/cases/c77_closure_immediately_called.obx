@@ -1,0 +1,5 @@
+// expect: 5
+fn main() {
+    let x = 2
+    println((fn(): int { return x + 3 })())
+}

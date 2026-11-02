@@ -1,0 +1,5 @@
+// expect: drop 1
+type P = value record { n: int }
+fn (p: mut &P) drop() { println("drop " + p.n.toStr()) }
+var G: once P
+fn main() { G.set(P{n: 1}) }

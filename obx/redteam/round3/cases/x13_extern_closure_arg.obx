@@ -1,0 +1,4 @@
+// error: closure|value|extern
+extern "c" fn abs(x: i32): i32
+fn app(f: &fn(i32): i32): i32 { return f(i32(1)) }
+fn main() { println(int(app(abs))) }

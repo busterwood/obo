@@ -1,0 +1,8 @@
+// expect: local
+// expect: AB
+import "./strings" as mine
+import "strings"
+fn main() {
+    println(mine.f())
+    println(strings.toUpper("ab"))
+}

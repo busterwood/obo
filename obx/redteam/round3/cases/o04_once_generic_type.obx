@@ -1,0 +1,10 @@
+// expect: 2
+// expect: x
+var M: once Map[str, []int]
+fn main() {
+    var m: Map[str, []int] = newMap()
+    m.put("x", [1, 2])
+    M.set(m)
+    println(len(M.get().valAt(0)))
+    println(M.get().keyAt(0))
+}

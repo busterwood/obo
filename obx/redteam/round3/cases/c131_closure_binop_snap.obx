@@ -1,0 +1,6 @@
+// expect: 1
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    var n = 1
+    println(n + call(fn(): int { n = 5; return 0 }))
+}

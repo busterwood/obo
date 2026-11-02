@@ -1,0 +1,6 @@
+// expect: 15
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    let a = 5
+    println(call(fn(): int { var loc = 10; return call(fn(): int { return loc + a }) }))
+}

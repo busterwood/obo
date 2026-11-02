@@ -1,0 +1,2 @@
+// error: mut
+fn main() { let f: mut &fn() = fn() {} }

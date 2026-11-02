@@ -1,0 +1,3 @@
+// expect: 3
+extern "c" fn cAbs(x: i32): i32 as "abs"
+fn main() { println(int(cAbs(i32(3)))) }

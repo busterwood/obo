@@ -1,0 +1,7 @@
+// expect: 4
+fn call(f: &fn(): int): int { return f() }
+fn g(): Result[int, str] {
+    let v = try Result[int, str].Ok(4)
+    return Ok(call(fn(): int { return v }))
+}
+fn main() { match g() { Ok(x) { println(x) } Err(e) {} } }

@@ -1,0 +1,5 @@
+// error: never|end
+fn stop(c: bool): never {
+    if c { panic("a") }
+}
+fn main() {}

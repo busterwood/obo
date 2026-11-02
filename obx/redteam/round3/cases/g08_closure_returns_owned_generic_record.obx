@@ -1,0 +1,8 @@
+// expect: 2
+type Box[T] = record { v: T }
+fn mk[T](f: &fn(): Box[T]): T {
+    let b = f()
+    let Box{v} = move(b)
+    return v
+}
+fn main() { println(len(mk(fn(): Box[[]int] { return Box{v: [1, 2]} }))) }

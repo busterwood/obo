@@ -1,0 +1,7 @@
+// exit: 12
+type D = record { xs: []int }
+var G: once D
+fn main() {
+    G.set(D{xs: [1]})
+    panic("p")
+}

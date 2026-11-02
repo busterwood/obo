@@ -1,0 +1,9 @@
+extern "c" fn m(): int as "main"
+extern "c" fn alloc(n: int): ptr as "rt_alloc"
+var N: int = 0
+fn main() {
+    N += 1
+    println(N)
+    let p = alloc(16)
+    if N < 3 { let _ = m() }
+}

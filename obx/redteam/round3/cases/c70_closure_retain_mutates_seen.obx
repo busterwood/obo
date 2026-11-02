@@ -1,0 +1,8 @@
+// expect: 2
+import "collections"
+fn main() {
+    var xs = [1, 5, 2, 8]
+    var seen = 0
+    collections.retain(mut &xs, fn(x: &int): bool { seen += 1; return x < 4 })
+    println(len(xs))
+}

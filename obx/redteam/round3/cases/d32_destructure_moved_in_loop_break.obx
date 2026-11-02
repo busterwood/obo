@@ -1,0 +1,10 @@
+// expect: 1
+type P = record { a: []int }
+fn main() {
+    var p = P{a: [1]}
+    while true {
+        let P{a} = move(p)
+        println(len(a))
+        break
+    }
+}

@@ -1,0 +1,7 @@
+// error: borrowed|twice
+type V = record { xs: []str }
+fn (v: &V) visit(f: &fn()) { f(); println(v.xs[0]) }
+fn main() {
+    var v = V{xs: ["a" + "b"]}
+    v.visit(fn() { v.xs = [] })
+}

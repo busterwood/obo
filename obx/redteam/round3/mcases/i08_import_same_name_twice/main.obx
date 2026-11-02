@@ -1,0 +1,4 @@
+// error: twice
+import "./a"
+import "./sub/a"
+fn main() {}

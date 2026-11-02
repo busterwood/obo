@@ -1,0 +1,3 @@
+// expect: 3
+fn app[T](f: &fn(T): int, x: T): int { return f(x) }
+fn main() { println(app(fn(s: str): int { return len(s) }, "abc")) }

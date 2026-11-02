@@ -1,0 +1,4 @@
+// error: copy
+type P = value record { xs: []int }
+const T: []P = []
+fn main() {}

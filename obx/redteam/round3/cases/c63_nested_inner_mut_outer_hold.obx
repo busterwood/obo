@@ -1,0 +1,7 @@
+// error: borrowed|twice
+fn each(n: int, f: &fn(int)) { for i in 0..n { f(i) } }
+fn run(f: &fn(), x: &str) { f(); println(x) }
+fn main() {
+    var s = "a" + "b"
+    run(fn() { each(1, fn(i: int) { each(1, fn(j: int) { s = "z" + "" }) }) }, &s)
+}

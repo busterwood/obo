@@ -1,0 +1,4 @@
+// expect: 3
+type P = value record { a: int; b: int }
+const P0: P = P{a: 1, b: 2}
+fn main() { println(P0.a + P0.b) }

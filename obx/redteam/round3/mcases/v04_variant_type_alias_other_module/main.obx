@@ -1,0 +1,9 @@
+// expect: 4
+import "./shapes"
+fn main() {
+    let s = shapes.Sh.Circle(4)
+    match s {
+        shapes.Sh.Circle(r) { println(r) }
+        else { println(0) }
+    }
+}

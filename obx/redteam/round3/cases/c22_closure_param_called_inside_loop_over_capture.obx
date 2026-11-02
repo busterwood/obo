@@ -1,0 +1,6 @@
+// error: borrowed|twice
+fn each(xs: &[]int, f: &fn(int)) { for x in xs { f(x) } }
+fn main() {
+    var xs = [1, 2]
+    each(&xs, fn(x: int) { append(mut &xs, x) })
+}

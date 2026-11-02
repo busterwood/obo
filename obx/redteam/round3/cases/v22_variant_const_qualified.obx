@@ -1,0 +1,4 @@
+// expect: 2
+type Shape = value closed { Circle(int); Sq(int) }
+const S: Shape = Shape.Sq(2)
+fn main() { match S { Shape.Circle(r) {} Shape.Sq(x) { println(x) } } }

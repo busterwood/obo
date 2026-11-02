@@ -1,0 +1,8 @@
+// error: never|end
+fn stop(o: Option[int]): never {
+    match o {
+        Some(x) { panic("a") }
+        None {}
+    }
+}
+fn main() {}

@@ -1,0 +1,7 @@
+// expect: 0
+type Box[T] = record { xs: []T }
+fn mk[T](f: &fn(): T): Box[T] { return Box{xs: []} }
+fn main() {
+    let b = mk(fn(): never { exit(3) })
+    println(len(b.xs))
+}

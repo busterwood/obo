@@ -1,0 +1,7 @@
+// expect: 8
+fn each(n: int, f: &fn(int)) { for i in 0..n { f(i) } }
+fn main() {
+    var t = 0
+    each(2, fn(i: int) { each(2, fn(j: int) { each(2, fn(k: int) { t += 1 }) }) })
+    println(t)
+}

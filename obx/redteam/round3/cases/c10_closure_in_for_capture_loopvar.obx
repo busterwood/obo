@@ -1,0 +1,11 @@
+// expect: 6
+type B = record { v: int }
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    let bs = [B{v: 1}, B{v: 2}, B{v: 3}]
+    var t = 0
+    for b in bs {
+        t += call(fn(): int { return b.v })
+    }
+    println(t)
+}

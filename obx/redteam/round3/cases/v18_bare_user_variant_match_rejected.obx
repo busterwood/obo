@@ -1,0 +1,6 @@
+// error: qualified|Circle
+type Shape = closed { Circle(int); Sq(int) }
+fn main() {
+    let s = Shape.Circle(1)
+    match s { Circle(r) {} Shape.Sq(x) {} }
+}

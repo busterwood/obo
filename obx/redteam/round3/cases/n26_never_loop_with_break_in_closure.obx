@@ -1,0 +1,8 @@
+// expect: 1
+fn each(f: &fn()) { f() }
+fn spin(): never {
+    while true {
+        each(fn() { var k = 0; while k < 2 { k += 1; if k == 1 { break } } })
+    }
+}
+fn main() { println(1) }

@@ -1,0 +1,13 @@
+// error: borrowed
+type B = record { v: int }
+fn call(f: &fn()) { f() }
+fn main() {
+    var o: Option[B] = Some(B{v: 1})
+    match o {
+        Some(b) {
+            call(fn() { o = None })
+            println(b.v)
+        }
+        None {}
+    }
+}

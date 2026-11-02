@@ -1,0 +1,10 @@
+// expect: 3
+fn app(f: &fn(int): Result[int, str]): Result[int, str] { return f(2) }
+fn g(): Result[int, str] {
+    let base = 1
+    let v = try app(fn(x: int): Result[int, str] { return Ok(x + base) })
+    return Ok(v)
+}
+fn main() {
+    match g() { Ok(v) { println(v) } Err(e) { println(e) } }
+}
