@@ -10,7 +10,7 @@ and the self-hosted compiler first. Only then port the existing programs
 |---|---|---|---|
 | 1 | Core spec, [SPEC.md](SPEC.md) | about the size of obo's core guide | draft 1 written (about 580 lines) |
 | 2 | Reference compiler, `ref/` (Python to C) | under 5,000 lines; conformance suite passes with no leaks | done: 3,800 lines, 387 conformance + 77 own tests pass; soundness review next |
-| 3 | Library: `lib/` | no compiler change except primitives | next |
+| 3 | Library: `lib/` | no compiler change except primitives | done: 9 modules, 3,300 lines, 25 library tests (OBX_CHECK=1); compiler changes: `lib/` import root, `obx_*` C helpers in rt.h; see [lib/README.md](lib/README.md) |
 | 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | |
 | 5 | Native x86-64 ELF backend; then eza, SQLite, Postgres | eza shorter than obo's and as fast | |
 | 6 | Retire obo 0.19 | | |
@@ -25,9 +25,8 @@ All of it is ordinary obx code over a small set of built-in intrinsics.
   eight rounding modes, `cmp`/`eq`/`hash` by value (`1.0 == 1.00`),
   `parse`/`format`/`canonical`. Errors are `Result` values for the operations
   that can fail by value (`div`, `quantize`, `parse`) and a stop for the
-  operators (overflow). It needs the 128 × 128 to 256-bit multiply. The
-  library can build that from 64-bit halves if the language gets a `u128` or a
-  `mulHigh` intrinsic. Deciding which belongs to this stage.
+  operators (overflow). The 128 × 128 to 256-bit multiply is built from
+  64-bit halves of `u128` in the library; no intrinsic was needed.
 - **Money[C: Currency]** over Decimal, with ISO 4217 currencies as types.
 - **Float**: formatting (shortest text that reads back as the same value),
   parsing, and the math functions as externs to libm.
