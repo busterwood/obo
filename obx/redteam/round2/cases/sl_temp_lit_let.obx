@@ -1,0 +1,5 @@
+// error: temporary
+fn main() {
+    let s = [1, 2, 3][1..]
+    println(s[0].toStr())
+}

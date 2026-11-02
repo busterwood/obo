@@ -1,0 +1,6 @@
+// error: borrow|held
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    m.put("b", m.remove(&"a").unwrapOr(0))
+}

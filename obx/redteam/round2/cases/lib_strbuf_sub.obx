@@ -1,0 +1,7 @@
+// expect: bcd
+fn main() {
+    var b = newStrBuf()
+    let s = "abcde" + ""
+    b.add(s[1..4])
+    println(b.toStr())
+}

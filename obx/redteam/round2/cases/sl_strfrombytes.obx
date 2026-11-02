@@ -1,0 +1,5 @@
+// expect: bc
+fn main() {
+    let b: []byte = ['a', 'b', 'c', 'd']
+    println(strFromBytes(b[1..3]))
+}

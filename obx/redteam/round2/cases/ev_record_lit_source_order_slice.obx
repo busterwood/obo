@@ -1,0 +1,7 @@
+// expect: b
+// expect: a
+type P = record { a: int; b: int }
+fn show(s: str, n: int): int { println(s); return n }
+fn main() {
+    let p = P{b: show("b", 1), a: show("a", 2)}
+}

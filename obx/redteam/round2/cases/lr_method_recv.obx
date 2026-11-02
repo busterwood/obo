@@ -1,0 +1,10 @@
+// The receiver xs[i] is evaluated before the argument.
+// expect: 1
+type P = value record { v: int }
+fn (p: P) plus(n: int): int { return p.v + n }
+fn f(i: mut &int): int { i = 1; return 0 }
+fn main() {
+    let xs: []P = [P{v: 1}, P{v: 2}]
+    var i = 0
+    println(xs[i].plus(f(mut &i)).toStr())
+}

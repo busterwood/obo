@@ -1,0 +1,8 @@
+// A &Self method on a global works on a copy taken before the argument runs.
+// expect: 0
+var g: str = ""
+fn f(): str { g = "zzzz" + "y"; return "ab" }
+fn main() {
+    g = "ab" + ""
+    println(g.cmp(&f()).toStr())
+}

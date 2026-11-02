@@ -1,0 +1,7 @@
+// exit: 3
+fn main() {
+    let s = "hello"
+    var a = 0
+    a -= 1
+    println(s[0..a])
+}

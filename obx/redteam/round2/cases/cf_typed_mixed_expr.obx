@@ -1,0 +1,4 @@
+// error: i32|int|type
+const K: i32 = 5
+const L: int = K + 1
+fn main() { println(L.toStr()) }

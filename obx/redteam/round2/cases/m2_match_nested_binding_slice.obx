@@ -1,0 +1,13 @@
+// error: borrowed
+type B = record { xs: []int }
+fn main() {
+    var o: Option[B] = Some(B{xs: [1, 2]})
+    match o {
+        Some(b) {
+            let s = b.xs[0..1]
+            o = None
+            println(s[0].toStr())
+        }
+        None {}
+    }
+}

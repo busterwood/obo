@@ -1,0 +1,7 @@
+// expect: 1 0
+fn f(n: mut &int): int { n = 100; return 0 }
+fn two(a: i32, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var n = 1
+    println(two(i32(n), f(mut &n)))
+}

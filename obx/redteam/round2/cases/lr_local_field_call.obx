@@ -1,0 +1,8 @@
+// expect: 1 0
+type P = value record { a: int }
+fn f(p: mut &P): int { p.a = 100; return 0 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var p = P{a: 1}
+    println(two(p.a, f(mut &p)))
+}

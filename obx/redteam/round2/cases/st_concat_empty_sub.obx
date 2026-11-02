@@ -1,0 +1,7 @@
+// expect: hel
+fn main() {
+    let s = "hello" + ""
+    let t = s[0..3] + s[3..3]
+    let u = s[0..0] + t
+    println(u)
+}

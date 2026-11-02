@@ -1,0 +1,7 @@
+// expect: bc
+import "strings"
+fn main() {
+    let s = "abcd" + ""
+    let xs: []str = [s[1..3]]
+    println(strings.join(xs[0..1], ","))
+}

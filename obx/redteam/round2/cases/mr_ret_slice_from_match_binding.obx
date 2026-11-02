@@ -1,0 +1,12 @@
+// expect: 2
+fn tail(o: &Option[[]int]): &[int] {
+    match o {
+        Some(a) { return a[1..] }
+        None { return o2(o) }
+    }
+}
+fn o2(o: &Option[[]int]): &[int] { panic("none") }
+fn main() {
+    let o: Option[[]int] = Some([1, 2])
+    println(tail(&o)[0].toStr())
+}

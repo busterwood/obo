@@ -1,0 +1,7 @@
+// expect: 70000
+fn main() {
+    var s = ""
+    for i in 0..70001 { s = s + "x" }
+    let n = writeFd(2, s[1..])
+    println(n.toStr())
+}

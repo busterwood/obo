@@ -1,0 +1,6 @@
+// error: twice|moved|overlap|held
+fn f(s: &[str], xs: []str): int { return len(s) + len(xs) }
+fn main() {
+    var xs: []str = ["a"]
+    println(f(&xs, move(xs)).toStr())
+}

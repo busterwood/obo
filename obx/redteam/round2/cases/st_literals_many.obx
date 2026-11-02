@@ -1,0 +1,11 @@
+// expect: a b a  \ " ' ?? ??= x
+// expect: 13
+fn main() {
+    let a = "a"
+    let b = "b"
+    let c = "a"
+    let e = ""
+    println(a + " " + b + " " + c + " " + e + " \\ \" ' ?? ??= " + "\x78")
+    let t = "\t\n\r\0\x01\xff\x7f\\\"'abc"
+    println(len(t).toStr())
+}

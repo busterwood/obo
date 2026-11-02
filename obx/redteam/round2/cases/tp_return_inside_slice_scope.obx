@@ -1,0 +1,12 @@
+// Rule 4 is lexical: s freezes xs to the end of the block.
+// error: borrowed
+fn f(xs: mut &[]str): int {
+    let s = xs[0..2]
+    if len(s) == 2 { return len(s) }
+    append(xs, "x")
+    return 0
+}
+fn main() {
+    var xs: []str = ["a" + "", "b" + ""]
+    println(f(mut &xs).toStr())
+}

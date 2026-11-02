@@ -1,0 +1,10 @@
+// error: borrowed
+type Mid = interface { fn (&Self) mid(xs: &[int]): &[int] }
+type S = record { k: int }
+fn (s: &S) mid(xs: &[int]): &[int] { return xs[1..] }
+fn main() {
+    let s = S{k: 2}
+    var xs: []int = [1, 2, 9]
+    let m = s.mid(&xs)
+    println(m[0].toStr())
+}

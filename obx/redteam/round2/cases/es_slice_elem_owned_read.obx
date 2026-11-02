@@ -1,0 +1,6 @@
+// expect: ab
+fn g(xs: mut &[]str): str { xs = []; return "" }
+fn main() {
+    var xs: []str = ["a" + "b"]
+    println(xs[0..1][0] + g(mut &xs))
+}

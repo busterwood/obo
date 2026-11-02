@@ -1,0 +1,6 @@
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let s = xs[3..]
+    println(s[0].toStr())
+}

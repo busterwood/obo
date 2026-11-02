@@ -1,0 +1,9 @@
+// expect: 1a 1b 2a 3a
+import "collections"
+type P = record { k: int; s: str }
+fn (p: &P) cmp(o: &P): int { return p.k.cmp(&o.k) }
+fn main() {
+    var xs: []P = [P{k: 3, s: "3a"}, P{k: 1, s: "1a"}, P{k: 2, s: "2a"}, P{k: 1, s: "1b"}]
+    collections.sortStable(mut &xs)
+    println(xs[0].s + " " + xs[1].s + " " + xs[2].s + " " + xs[3].s)
+}

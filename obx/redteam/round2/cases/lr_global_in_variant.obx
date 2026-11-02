@@ -1,0 +1,7 @@
+// expect: 1
+var g: int = 1
+fn f(): int { g = 9; return 0 }
+type V = closed { A(int, int) }
+fn main() {
+    match A(g, f()) { A(x, y) { println(x.toStr()) } }
+}

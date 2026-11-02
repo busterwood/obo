@@ -1,0 +1,8 @@
+// expect: 1 5
+fn f(n: mut &int): int { n = 7; return 5 }
+fn main() {
+    var a: []int = [1, 2]
+    var i = 0
+    let o = replace(mut &a[i], f(mut &i))
+    println(o.toStr() + " " + a[0].toStr())
+}

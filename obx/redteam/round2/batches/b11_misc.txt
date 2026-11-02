@@ -1,0 +1,303 @@
+=== ev_frac_left_order
+// Operands are evaluated left to right: the literal's fromFraction runs first.
+// expect: lit
+// expect: f
+// expect: 3
+type Fx = value record { v: int }
+fn (Fx) fromFraction(units: int, scale: int): Fx { println("lit"); return Fx{v: units} }
+fn (a: Fx) add(b: Fx): Fx { return Fx{v: a.v + b.v} }
+fn f(): Fx { println("f"); return Fx{v: 1} }
+fn main() {
+    let x: Fx = 0.2 + f()
+    println(x.v.toStr())
+}
+=== ev_frac_call_args_order
+// expect: lit
+// expect: f
+type Fx = value record { v: int }
+fn (Fx) fromFraction(units: int, scale: int): Fx { println("lit"); return Fx{v: units} }
+fn f(): Fx { println("f"); return Fx{v: 1} }
+fn two(a: Fx, b: Fx) {}
+fn main() {
+    two(0.2, f())
+}
+=== ev_lit_right_cmp_order
+// expect: f
+// expect: g
+// expect: true
+fn f(): int { println("f"); return 1 }
+fn g(): int { println("g"); return 1 }
+fn main() {
+    let b = f() == g()
+    println(b.toStr())
+}
+=== ev_record_lit_source_order_slice
+// expect: b
+// expect: a
+type P = record { a: int; b: int }
+fn show(s: str, n: int): int { println(s); return n }
+fn main() {
+    let p = P{b: show("b", 1), a: show("a", 2)}
+}
+=== ev_variant_named_order
+// expect: y
+// expect: x
+type V = closed { A { x: int; y: int } }
+fn show(s: str, n: int): int { println(s); return n }
+fn main() {
+    let v = A{y: show("y", 1), x: show("x", 2)}
+}
+=== ev_index_order
+// The array is evaluated before the index.
+// expect: arr
+// expect: idx
+fn arr(): []int { println("arr"); return [1, 2] }
+fn idx(): int { println("idx"); return 0 }
+fn main() {
+    let x = arr()[idx()]
+}
+=== ev_sub_order
+// expect: arr
+// expect: lo
+// expect: hi
+fn arr(): []int { println("arr"); return [1, 2] }
+fn lo(): int { println("lo"); return 0 }
+fn hi(): int { println("hi"); return 1 }
+fn main() {
+    let n = len(arr()[lo()..hi()])
+}
+=== ev_str_sub_order
+// expect: s
+// expect: lo
+// expect: hi
+fn s(): str { println("s"); return "abc" }
+fn lo(): int { println("lo"); return 0 }
+fn hi(): int { println("hi"); return 1 }
+fn main() {
+    let n = s()[lo()..hi()]
+}
+=== ev_assign_order
+// p = e evaluates e first.
+// expect: e
+// expect: i
+fn e(): int { println("e"); return 1 }
+fn i(): int { println("i"); return 0 }
+fn main() {
+    var xs: []int = [0]
+    xs[i()] = e()
+}
+=== ev_compound_order
+// a += b: the place a first, then b.
+// expect: i
+// expect: e
+fn e(): int { println("e"); return 1 }
+fn i(): int { println("i"); return 0 }
+fn main() {
+    var xs: []int = [0]
+    xs[i()] += e()
+}
+=== ev_swap_order
+// expect: a
+// expect: i
+// expect: j
+fn a(xs: mut &[]int): mut &[]int { println("a"); return xs }
+fn i(): int { println("i"); return 0 }
+fn j(): int { println("j"); return 1 }
+fn main() {
+    var xs: []int = [0, 1]
+    swap(a(mut &xs), i(), j())
+}
+=== ev_method_recv_order
+// expect: r
+// expect: a
+type P = record { v: int }
+fn (p: &P) m(n: int): int { return n }
+fn r(): P { println("r"); return P{v: 1} }
+fn a(): int { println("a"); return 1 }
+fn main() {
+    let x = r().m(a())
+}
+=== ev_shift_lit_left
+// expect: 8
+fn f(): int { return 3 }
+fn main() { println((1 << f()).toStr()) }
+=== ev_shift_lit_left_typed
+// 1 << n with an expected u32 result
+// expect: 2147483648
+fn main() {
+    var n = 31
+    let x: u32 = 1 << n
+    println(x.toStr())
+}
+=== ev_shift_lit_left_byte_overflow
+// exit: 10
+fn main() {
+    var n = 8
+    let x: byte = 1 << n
+    println(x.toStr())
+}
+=== ev_lit_minus_byte
+// expect: 255
+fn main() {
+    var b: byte = 0
+    let x = 255 - b
+    println(x.toStr())
+}
+=== ev_lit_minus_byte_underflow
+// exit: 10
+fn main() {
+    var b: byte = 1
+    let x = 0 - b
+    println(x.toStr())
+}
+=== ev_neg_lit_operand_u32
+// error: fit|range|negative|unary
+fn main() {
+    var b: u32 = 1
+    let x = b + -1
+    println(x.toStr())
+}
+=== ev_neg_min_int
+// exit: 10
+fn main() {
+    var n = -9223372036854775807 - 1
+    let m = -n
+    println(m.toStr())
+}
+=== ev_conv_float_nan
+// exit: 10
+fn main() {
+    var z: float = 0.0
+    let f: float = z / z
+    println(int(f).toStr())
+}
+=== ev_conv_float_big
+// exit: 10
+fn main() {
+    let f: float = 9223372036854775808.0
+    println(int(f).toStr())
+}
+=== ev_conv_float_edge
+// expect: -9223372036854775808
+fn main() {
+    let f: float = -9223372036854775808.0
+    println(int(f).toStr())
+}
+=== ev_conv_float_u64_edge
+// exit: 10
+fn main() {
+    let f: float = 18446744073709551616.0
+    println(u64(f).toStr())
+}
+=== ev_conv_float_byte_neg_frac
+// int(-0.5) truncates to 0, which fits a byte.
+// expect: 0
+fn main() {
+    let f: float = -0.5
+    println(byte(f).toStr())
+}
+=== ev_conv_float_byte_neg_one
+// exit: 10
+fn main() {
+    let f: float = -1.0
+    println(byte(f).toStr())
+}
+=== ev_conv_float_i128_big
+// exit: 10
+fn main() {
+    let f: float = 1000000000000000000000000000000000000000.0
+    println(i128(f).toStr())
+}
+=== ev_conv_float_u128_big
+// exit: 10
+fn main() {
+    let f: float = 1000000000000000000000000000000000000000.0
+    println(u128(f).toStr())
+}
+=== ev_conv_u128_to_i128
+// exit: 10
+fn main() {
+    let u: u128 = 170141183460469231731687303715884105728
+    println(i128(u).toStr())
+}
+=== ev_conv_i128_neg_to_u64
+// exit: 10
+fn main() {
+    let u: i128 = -1
+    println(u64(u).toStr())
+}
+=== ev_conv_u64_to_int
+// exit: 10
+fn main() {
+    let u: u64 = 9223372036854775808
+    println(int(u).toStr())
+}
+=== ev_shift_neg_count
+// exit: 10
+fn main() {
+    var n = -1
+    println((1 << n).toStr())
+}
+=== ev_shift_i128_127
+// expect: -170141183460469231731687303715884105728
+fn main() {
+    var n = 127
+    let one: i128 = 1
+    println((one << n).toStr())
+}
+=== ev_rem_min_neg1
+// exit: 10
+fn main() {
+    var a = -9223372036854775807 - 1
+    var b = -1
+    println((a % b).toStr())
+}
+=== ev_i32_mul_overflow
+// exit: 10
+fn main() {
+    var a: i32 = 65536
+    println((a * a).toStr())
+}
+=== ev_wrap_u32_mul
+// expect: 0
+fn main() {
+    var a: u32 = 65536
+    println((a *% a).toStr())
+}
+=== ev_byte_wrap_add
+// expect: 0
+fn main() {
+    var a: byte = 255
+    println((a +% 1).toStr())
+}
+=== ev_bitnot_byte
+// expect: 254
+fn main() {
+    var a: byte = 1
+    println((~a).toStr())
+}
+=== ev_shr_byte
+// expect: 127
+fn main() {
+    var a: byte = 255
+    println((a >> 1).toStr())
+}
+=== ev_shr_i32_neg
+// expect: -1
+fn main() {
+    var a: i32 = -2
+    println((a >> 1).toStr())
+}
+=== ev_shl_i32_wrap_bits
+// Bits shifted out of << are lost.
+// expect: -2147483648
+fn main() {
+    var a: i32 = 3
+    println((a << 31).toStr())
+}
+=== ev_shl_byte_lost
+// expect: 128
+fn main() {
+    var a: byte = 3
+    println((a << 7).toStr())
+}

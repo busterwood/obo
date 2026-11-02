@@ -1,0 +1,5 @@
+// expect: 101
+const H = "hello"
+fn main() {
+    println(H[1].toStr())
+}

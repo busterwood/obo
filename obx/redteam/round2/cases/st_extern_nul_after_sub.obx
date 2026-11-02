@@ -1,0 +1,7 @@
+// The byte after the substring is a NUL in the string itself: the substring has no NUL.
+// expect: 2
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "ab\0cd"
+    println(strlen(s[0..2]).toStr())
+}

@@ -1,0 +1,7 @@
+// expect: new old
+fn put[T](xs: mut &[T], v: T): T { return replace(mut &xs[0], v) }
+fn main() {
+    var xs: []str = ["old" + "!"]
+    let o = put(mut &xs, "new" + "")
+    println(xs[0] + " " + o[0..3])
+}

@@ -1,0 +1,6 @@
+// error: fit|range|negative|unary
+fn main() {
+    var b: u32 = 1
+    let x = b + -1
+    println(x.toStr())
+}

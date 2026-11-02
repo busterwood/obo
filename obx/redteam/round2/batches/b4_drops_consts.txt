@@ -1,0 +1,427 @@
+=== dr_tree_left_deep
+// expect: done
+type T = closed { Leaf; Node(T, T) }
+fn main() {
+    var t = Leaf
+    for i in 0..500000 { t = Node(move(t), Leaf) }
+    println("done")
+}
+=== dr_tree_right_deep
+// expect: done
+type T = closed { Leaf; Node(T, T) }
+fn main() {
+    var t = Leaf
+    for i in 0..500000 { t = Node(Leaf, move(t)) }
+    println("done")
+}
+=== dr_tree_record_option
+// expect: done
+type N = record { l: Option[N]; r: Option[N]; s: str }
+fn main() {
+    var t: Option[N] = None
+    for i in 0..300000 { t = Some(N{l: move(t), r: None, s: "x" + ""}) }
+    println("done")
+}
+=== dr_kids_array_deep
+// expect: done
+type N = record { kids: []N; v: int }
+fn main() {
+    var t = N{kids: [], v: 0}
+    for i in 0..300000 {
+        var k: []N = []
+        append(mut &k, move(t))
+        t = N{kids: move(k), v: i}
+    }
+    println("done")
+}
+=== dr_drop_method_chain_order
+// Drop methods run outer to inner along a chain, each before its fields.
+// expect: 3
+// expect: 2
+// expect: 1
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() { println(n.v.toStr()) }
+fn main() {
+    var t: Option[N] = None
+    for i in 1..4 { t = Some(N{v: i, next: move(t)}) }
+}
+=== dr_drop_method_deep
+// expect: 200000
+var count: int = 0
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() { count += 1 }
+fn main() {
+    {
+        var t: Option[N] = None
+        for i in 0..200000 { t = Some(N{v: i, next: move(t)}) }
+    }
+    println(count.toStr())
+}
+=== dr_drop_method_takes_child
+// A drop method that detaches its child (replace) still drops everything once.
+// expect: 3
+// expect: 2
+// expect: 1
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() {
+    println(n.v.toStr())
+    let c = replace(mut &n.next, None)
+}
+fn main() {
+    var t: Option[N] = None
+    for i in 1..4 { t = Some(N{v: i, next: move(t)}) }
+}
+=== dr_drop_method_takes_child_deep
+// expect: 100000
+var count: int = 0
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() {
+    count += 1
+    let c = replace(mut &n.next, None)
+}
+fn main() {
+    {
+        var t: Option[N] = None
+        for i in 0..100000 { t = Some(N{v: i, next: move(t)}) }
+    }
+    println(count.toStr())
+}
+=== dr_value_closed_boxed
+// expect: done
+type L = record { v: int; next: W }
+type W = value closed { End; More(L) }
+fn main() {
+    var w = End
+    for i in 0..300000 { w = More(L{v: i, next: w}) }
+    println("done")
+}
+=== dr_value_record_boxed_chain
+// expect: done
+type L = record { v: int; next: V }
+type V = value record { has: bool; s: str; l: []L }
+fn main() {
+    var v = V{has: false, s: "", l: []}
+    for i in 0..200000 {
+        var ls: []L = []
+        append(mut &ls, L{v: i, next: v})
+        v = V{has: true, s: "a" + "", l: move(ls)}
+    }
+    println("done")
+}
+=== dr_mixed_closed_record
+// expect: done
+type A = closed { Nil; Cons(B) }
+type B = record { s: str; a: A }
+fn main() {
+    var a = Nil
+    for i in 0..300000 { a = Cons(B{s: i.toStr(), a: move(a)}) }
+    println("done")
+}
+=== dr_array_order
+// Array elements are dropped first to last, fields last to first.
+// expect: b
+// expect: a1
+// expect: a2
+// expect: x
+type D = record { n: str }
+fn (d: mut &D) drop() { println(d.n) }
+type P = record { x: D; arr: []D; b: D }
+fn main() {
+    let p = P{x: D{n: "x"}, arr: [D{n: "a1"}, D{n: "a2"}], b: D{n: "b"}}
+}
+=== dr_array_nested_order
+// expect: 2a
+// expect: outer
+// expect: 1a
+// expect: 1b
+type D = record { n: str; kids: []D }
+fn (d: mut &D) drop() { println(d.n) }
+fn main() {
+    let xs: []D = [D{n: "1a", kids: []}, D{n: "1b", kids: []}]
+    let o = D{n: "outer", kids: []}
+    let ys: []D = [D{n: "2a", kids: []}]
+}
+=== dr_kids_order_depth_first
+// expect: root
+// expect: k1
+// expect: k1a
+// expect: k2
+type D = record { n: str; kids: []D }
+fn (d: mut &D) drop() { println(d.n) }
+fn main() {
+    let t = D{n: "root", kids: [D{n: "k1", kids: [D{n: "k1a", kids: []}]}, D{n: "k2", kids: []}]}
+}
+=== dr_drop_method_builds_value
+// A drop method that builds and drops another value of a type with a drop method.
+// expect: outer
+// expect: inner
+type I = record { n: str }
+fn (i: mut &I) drop() { println(i.n) }
+type O = record { n: str }
+fn (o: mut &O) drop() { println(o.n); let i = I{n: "inner"} }
+fn main() {
+    let o = O{n: "outer"}
+}
+=== dr_drop_method_builds_array_deep
+// expect: ok
+type L = closed { Nil; Cons(int, L) }
+type O = record { n: int }
+fn (o: mut &O) drop() {
+    var l = Nil
+    for i in 0..100000 { l = Cons(i, move(l)) }
+}
+fn main() {
+    var xs: []O = []
+    for i in 0..10 { append(mut &xs, O{n: i}) }
+    xs = []
+    println("ok")
+}
+=== dr_drop_self_recursive
+// A drop method that makes a value of its own type recurses until the stack overflows.
+// exit: 4
+type N = record { v: int }
+fn (n: mut &N) drop() { let m = N{v: n.v + 1} }
+fn main() {
+    let n = N{v: 0}
+}
+=== dr_global_order
+// Globals are dropped in reverse declaration order after main.
+// expect: done
+type P = value record { s: str }
+var a: P = P{s: ""}
+var b: str = ""
+fn main() {
+    a = P{s: "x" + "y"}
+    b = a.s[1..]
+    println("done")
+}
+=== dr_global_set_in_drop
+// A drop method that runs at the end of main stores into a global.
+// expect: done
+var last: str = ""
+type D = record { n: str }
+fn (d: mut &D) drop() { last = d.n }
+fn main() {
+    let d = D{n: "a" + "b"}
+    println("done")
+}
+=== dr_global_read_in_drop
+// expect: g=hi
+var g: str = ""
+type D = record { n: int }
+fn (d: mut &D) drop() { println("g=" + g) }
+fn main() {
+    g = "h" + "i"
+    let d = D{n: 1}
+}
+=== so_deep_recursion
+// exit: 4
+fn f(n: int): int { if n == 0 { return 0 }; return f(n - 1) + 1 }
+fn main() { println(f(100000000).toStr()) }
+=== so_mutual_recursion
+// exit: 4
+fn f(n: int): int { if n == 0 { return 0 }; return g(n - 1) + 1 }
+fn g(n: int): int { return f(n) + 1 }
+fn main() { println(f(100000000).toStr()) }
+=== so_output_flushed
+// Output before a stack overflow is flushed.
+// expect: before
+// exit: 4
+fn f(n: int): int { if n == 0 { return 0 }; return f(n - 1) + 1 }
+fn main() {
+    println("before")
+    println(f(100000000).toStr())
+}
+=== so_big_frames
+// exit: 4
+type V1 = value record { a: int; b: int; c: int; d: int; e: int; f: int; g: int; h: int; i: int; j: int; k: int; l: int; m: int; n: int; o: int; p: int }
+type V2 = value record { a: V1; b: V1; c: V1; d: V1; e: V1; f: V1; g: V1; h: V1; i: V1; j: V1; k: V1; l: V1; m: V1; n: V1; o: V1; p: V1 }
+type V3 = value record { a: V2; b: V2; c: V2; d: V2; e: V2; f: V2; g: V2; h: V2; i: V2; j: V2; k: V2; l: V2; m: V2; n: V2; o: V2; p: V2 }
+type V4 = value record { a: V3; b: V3; c: V3; d: V3; e: V3; f: V3; g: V3; h: V3; i: V3; j: V3; k: V3; l: V3; m: V3; n: V3; o: V3; p: V3 }
+type V5 = value record { a: V4; b: V4; c: V4; d: V4 }
+fn mk1(): V1 { return V1{a: 1, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0, i: 0, j: 0, k: 0, l: 0, m: 0, n: 0, o: 0, p: 0} }
+fn mk2(): V2 { let x = mk1(); return V2{a: x, b: x, c: x, d: x, e: x, f: x, g: x, h: x, i: x, j: x, k: x, l: x, m: x, n: x, o: x, p: x} }
+fn mk3(): V3 { let x = mk2(); return V3{a: x, b: x, c: x, d: x, e: x, f: x, g: x, h: x, i: x, j: x, k: x, l: x, m: x, n: x, o: x, p: x} }
+fn mk4(): V4 { let x = mk3(); return V4{a: x, b: x, c: x, d: x, e: x, f: x, g: x, h: x, i: x, j: x, k: x, l: x, m: x, n: x, o: x, p: x} }
+fn f(n: int): int {
+    if n == 0 { return 0 }
+    let x = mk4()
+    let y = V5{a: x, b: x, c: x, d: x}
+    return f(n - 1) + y.a.a.a.a.a
+}
+fn main() { println(f(100).toStr()) }
+=== so_not_on_index
+// An index error is exit 3, not a stack overflow.
+// exit: 3
+fn main() {
+    let xs: []int = []
+    println(xs[0].toStr())
+}
+=== cf_div_trunc
+// expect: -3 -1 3 1 -3 -1
+const A: int = -7 / 2
+const B: int = -7 % 2
+const C: int = 7 / 2
+const D: int = 7 % -2
+const E = -7 / 2
+const F = -7 % 2
+fn main() {
+    println(A.toStr() + " " + B.toStr() + " " + C.toStr() + " " + D.toStr() + " " + (E + 0).toStr() + " " + (F + 0).toStr())
+}
+=== cf_div_trunc_i32
+// expect: -3 -1
+const A: i32 = -7 / 2
+const B: i32 = -7 % 2
+fn main() { println(A.toStr() + " " + B.toStr()) }
+=== cf_shr_neg
+// expect: -4 -1 2147483647
+const A: int = -8 >> 1
+const B: i32 = -1 >> 31
+const C: u32 = ~0 >> 1
+fn main() { println(A.toStr() + " " + B.toStr() + " " + C.toStr()) }
+=== cf_shl_wrap
+// expect: -9223372036854775808 -2147483648 0
+const A: int = 1 << 63
+const B: i32 = 1 << 31
+const C: byte = 128 << 1
+fn main() { println(A.toStr() + " " + B.toStr() + " " + C.toStr()) }
+=== cf_not_widths
+// expect: -1 254 4294967295 18446744073709551615 -1
+const A: i32 = ~0
+const B: byte = ~1
+const C: u32 = ~0
+const D: u64 = ~0
+const E: int = ~0
+fn main() { println(A.toStr() + " " + B.toStr() + " " + C.toStr() + " " + D.toStr() + " " + E.toStr()) }
+=== cf_u128_not
+// expect: 340282366920938463463374607431768211455
+const A: u128 = ~0
+fn main() { println(A.toStr()) }
+=== cf_i128_min
+// expect: -170141183460469231731687303715884105728
+const A: i128 = -170141183460469231731687303715884105728
+fn main() { println(A.toStr()) }
+=== cf_i128_min_div
+// error: overflow|fit|range
+const A: i128 = -170141183460469231731687303715884105728
+const B: i128 = A / -1
+fn main() { println(B.toStr()) }
+=== cf_int_min_div
+// error: overflow|fit|range
+const A: int = -9223372036854775807 - 1
+const B: int = A / -1
+fn main() { println(B.toStr()) }
+=== cf_int_min_rem
+// error: overflow|fit|range
+const A: int = -9223372036854775807 - 1
+const B: int = A % -1
+fn main() { println(B.toStr()) }
+=== cf_i32_overflow_add
+// error: overflow|fit|range
+const A: i32 = 2147483647 + 1
+fn main() { println(A.toStr()) }
+=== cf_u32_negative
+// error: overflow|fit|range
+const A: u32 = 0 - 1
+fn main() { println(A.toStr()) }
+=== cf_byte_use_runtime_overflow
+// exit: 10
+const B: byte = 255
+fn main() {
+    var x = B
+    x = x + 1
+    println(x.toStr())
+}
+=== cf_untyped_in_byte
+// error: fit|range
+const K = 300
+fn main() {
+    let b: byte = K
+    println(b.toStr())
+}
+=== cf_untyped_expr_in_byte
+// expect: 44
+const K = 300 - 256
+fn main() {
+    let b: byte = K
+    println(b.toStr())
+}
+=== cf_typed_used_in_other_width
+// error: i32|int|type
+const K: i32 = 5
+fn main() {
+    let b: int = K
+    println(b.toStr())
+}
+=== cf_typed_mixed_expr
+// error: i32|int|type
+const K: i32 = 5
+const L: int = K + 1
+fn main() { println(L.toStr()) }
+=== cf_shift_count_width
+// error: shift
+const K: i32 = 1 << 32
+fn main() { println(K.toStr()) }
+=== cf_shift_count_untyped_huge
+// error: shift|range|fit
+const K = 1 << 100
+fn main() { println((K + 0).toStr()) }
+=== cf_untyped_huge_intermediate
+// The intermediate does not fit any type, but the value does: exact integers.
+// expect: 1
+const K = (1 << 70) >> 70
+fn main() { println((K + 0).toStr()) }
+=== cf_float_div_zero
+// error: zero
+const F: float = 1.0 / 0.0
+fn main() { println(F.toStr()) }
+=== cf_float_overflow_mul
+// error: overflow|range|fit
+const F: float = 1.0e308 * 10.0
+fn main() { println(F.toStr()) }
+=== cf_float_untyped_overflow
+// error: overflow|range|fit
+fn main() {
+    let f: float = 1.0e309
+    println(f.toStr())
+}
+=== cf_float_neg_zero
+// expect: -0
+const F: float = -0.0
+fn main() { println(F.toStr()) }
+=== cf_float_tiny
+// expect: 5e-324
+const F: float = 5e-324
+fn main() { println(F.toStr()) }
+=== cf_bool_const
+// expect: true
+const T: bool = 1 < 2 && !false
+fn main() { println(T.toStr()) }
+=== cf_str_const_concat
+// expect: abcd
+const S: str = "ab" + "cd"
+fn main() { println(S) }
+=== cf_str_const_cmp
+// expect: true
+const S: bool = "ab" < "b"
+fn main() { println(S.toStr()) }
+=== cf_rem_neg_divisor
+// expect: 1 -1
+const A: int = 7 % -3
+const B: int = -7 % 3
+fn main() { println(A.toStr() + " " + B.toStr()) }
+=== cf_wrap_ops
+// expect: -9223372036854775808 0 -2
+const A: int = 9223372036854775807 +% 1
+const B: u32 = 0 -% 0
+const C: int = 9223372036854775807 *% 2
+fn main() { println(A.toStr() + " " + B.toStr() + " " + C.toStr()) }
+=== cf_wrap_u32
+// expect: 4294967295 1
+const A: u32 = 0 -% 1
+const B: byte = 255 *% 255
+fn main() { println(A.toStr() + " " + B.toStr()) }
+=== cf_wrap_i32
+// expect: -2147483648
+const A: i32 = 2147483647 +% 1
+fn main() { println(A.toStr()) }

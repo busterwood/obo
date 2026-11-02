@@ -1,0 +1,82 @@
+=== in_getenv_same_var
+// expect: true
+fn main() {
+    var name = "PATH" + ""
+    println(getenv(name, mut &name).toStr())
+}
+=== in_readfile_same_var
+// expect: 0
+fn main() {
+    var p = "/etc/hostname" + ""
+    println(readFile(p, mut &p).toStr())
+}
+=== in_readfile_sub_same_var
+// expect: 0
+fn main() {
+    var p = "/etc/hostnameXYZ" + ""
+    println(readFile(p[0..13], mut &p).toStr())
+}
+=== in_getenv_out_is_sub_source
+// expect: true
+fn main() {
+    var s = "PATHPATH" + ""
+    let n = s[0..4]
+    println(getenv(n, mut &s).toStr())
+}
+=== in_parsefloat_bad_long
+// expect: false
+fn main() {
+    var f: float = 0.0
+    var s = "1"
+    for i in 0..500 { s = s + "0" }
+    println(parseFloat(s, mut &f).toStr())
+}
+=== in_writefd_sub_big
+// expect: 70000
+fn main() {
+    var s = ""
+    for i in 0..70001 { s = s + "x" }
+    let n = writeFd(2, s[1..])
+    println(n.toStr())
+}
+=== in_strfromc_null
+// expect: []
+extern "c" fn getenv(name: str): ptr
+fn main() {
+    let p = getenv("NO_SUCH_VAR_HOPEFULLY_42")
+    println("[" + strFromC(p) + "]")
+}
+=== in_strbyte_neg
+// exit: 3
+fn main() {
+    let s = "abc"
+    var i = 0
+    i -= 1
+    println(strByte(s[1..], i).toStr())
+}
+=== in_strbyte_past_sub
+// exit: 3
+fn main() {
+    let s = "abcdef" + ""
+    println(strByte(s[1..3], 2).toStr())
+}
+=== in_tobytes_frombytes_roundtrip
+// expect: true
+fn main() {
+    let s = "a\0b\xffc" + ""
+    let b = strToBytes(s[1..])
+    println((strFromBytes(&b) == s[1..]).toStr())
+}
+=== in_inttostr_min
+// expect: -9223372036854775808
+fn main() {
+    let n = -9223372036854775807 - 1
+    println(intToStr(n))
+}
+=== in_args_sub
+// expect: true
+fn main() {
+    let a = args()
+    let s = a[0][0..1]
+    println((len(s) == 1).toStr())
+}

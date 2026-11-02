@@ -1,0 +1,9 @@
+// expect: r
+// expect: a
+type P = record { v: int }
+fn (p: &P) m(n: int): int { return n }
+fn r(): P { println("r"); return P{v: 1} }
+fn a(): int { println("a"); return 1 }
+fn main() {
+    let x = r().m(a())
+}

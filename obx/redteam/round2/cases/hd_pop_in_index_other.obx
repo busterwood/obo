@@ -1,0 +1,6 @@
+// expect: 1
+fn main() {
+    var xs: []int = [0, 1, 2]
+    var ys: []int = [5, 1]
+    println(xs[pop(mut &ys)].toStr())
+}

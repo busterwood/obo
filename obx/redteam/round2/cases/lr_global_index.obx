@@ -1,0 +1,7 @@
+// expect: 1
+var gi: int = 0
+fn f(): int { gi = 1; return 0 }
+fn main() {
+    let xs: []int = [1, 2]
+    println((xs[gi] + f()).toStr())
+}

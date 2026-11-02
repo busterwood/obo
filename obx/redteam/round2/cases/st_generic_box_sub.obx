@@ -1,0 +1,11 @@
+// expect: bc
+type Box[T] = record { v: T }
+fn wrap[T](v: T): Box[T] { return Box{v: v} }
+fn main() {
+    var b: Box[str] = wrap("")
+    {
+        let s = "abc" + ""
+        b = wrap(s[1..])
+    }
+    println(b.v)
+}

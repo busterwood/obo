@@ -1,0 +1,9 @@
+// expect: root
+// expect: k1
+// expect: k1a
+// expect: k2
+type D = record { n: str; kids: []D }
+fn (d: mut &D) drop() { println(d.n) }
+fn main() {
+    let t = D{n: "root", kids: [D{n: "k1", kids: [D{n: "k1a", kids: []}]}, D{n: "k2", kids: []}]}
+}

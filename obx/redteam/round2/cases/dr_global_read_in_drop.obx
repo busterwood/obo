@@ -1,0 +1,8 @@
+// expect: g=hi
+var g: str = ""
+type D = record { n: int }
+fn (d: mut &D) drop() { println("g=" + g) }
+fn main() {
+    g = "h" + "i"
+    let d = D{n: 1}
+}

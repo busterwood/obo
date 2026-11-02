@@ -1,0 +1,6 @@
+// expect: -170141183460469231731687303715884105728
+fn main() {
+    var n = 127
+    let one: i128 = 1
+    println((one << n).toStr())
+}

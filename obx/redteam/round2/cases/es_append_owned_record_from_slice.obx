@@ -1,0 +1,6 @@
+// error: move|borrow|held|overlap
+type B = record { s: str }
+fn main() {
+    var xs: []B = [B{s: "a"}]
+    append(mut &xs, xs[0..1][0])
+}

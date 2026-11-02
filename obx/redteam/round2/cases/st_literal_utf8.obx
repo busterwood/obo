@@ -1,0 +1,8 @@
+// expect: 4
+// expect: é€
+fn main() {
+    let s = "\xc3\xa9"
+    let t = "€"
+    println((len(s) + len(t) - 1).toStr())
+    println(s + t)
+}

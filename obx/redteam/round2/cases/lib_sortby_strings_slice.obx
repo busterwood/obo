@@ -1,0 +1,8 @@
+// expect: z a b c y
+import "collections"
+fn byStr(a: &str, b: &str): int { return a.cmp(b) }
+fn main() {
+    var xs: []str = ["z", "c" + "", "a" + "", "b", "y"]
+    collections.sortBy(mut &xs[1..4], byStr)
+    println(xs[0] + " " + xs[1] + " " + xs[2] + " " + xs[3] + " " + xs[4])
+}

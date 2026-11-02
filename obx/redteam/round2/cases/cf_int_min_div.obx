@@ -1,0 +1,4 @@
+// error: overflow|fit|range
+const A: int = -9223372036854775807 - 1
+const B: int = A / -1
+fn main() { println(B.toStr()) }

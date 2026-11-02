@@ -1,0 +1,12 @@
+// expect: bc
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn two(a: str, b: int): str { return a }
+fn f(n: int): Result[str, str] {
+    let s = "abc" + ""
+    return Ok(two(s[1..], try get(n)))
+}
+fn main() {
+    match f(1) { Ok(v) { println(v) } Err(e) { println("err") } }
+    match f(-1) { Ok(v) { println(v) } Err(e) { println("err") } }
+}

@@ -1,0 +1,5 @@
+// expect: 0
+fn main() {
+    var a: u32 = 65536
+    println((a *% a).toStr())
+}

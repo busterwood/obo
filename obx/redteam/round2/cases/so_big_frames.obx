@@ -1,0 +1,17 @@
+// exit: 4
+type V1 = value record { a: int; b: int; c: int; d: int; e: int; f: int; g: int; h: int; i: int; j: int; k: int; l: int; m: int; n: int; o: int; p: int }
+type V2 = value record { a: V1; b: V1; c: V1; d: V1; e: V1; f: V1; g: V1; h: V1; i: V1; j: V1; k: V1; l: V1; m: V1; n: V1; o: V1; p: V1 }
+type V3 = value record { a: V2; b: V2; c: V2; d: V2; e: V2; f: V2; g: V2; h: V2; i: V2; j: V2; k: V2; l: V2; m: V2; n: V2; o: V2; p: V2 }
+type V4 = value record { a: V3; b: V3; c: V3; d: V3; e: V3; f: V3; g: V3; h: V3; i: V3; j: V3; k: V3; l: V3; m: V3; n: V3; o: V3; p: V3 }
+type V5 = value record { a: V4; b: V4; c: V4; d: V4 }
+fn mk1(): V1 { return V1{a: 1, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0, i: 0, j: 0, k: 0, l: 0, m: 0, n: 0, o: 0, p: 0} }
+fn mk2(): V2 { let x = mk1(); return V2{a: x, b: x, c: x, d: x, e: x, f: x, g: x, h: x, i: x, j: x, k: x, l: x, m: x, n: x, o: x, p: x} }
+fn mk3(): V3 { let x = mk2(); return V3{a: x, b: x, c: x, d: x, e: x, f: x, g: x, h: x, i: x, j: x, k: x, l: x, m: x, n: x, o: x, p: x} }
+fn mk4(): V4 { let x = mk3(); return V4{a: x, b: x, c: x, d: x, e: x, f: x, g: x, h: x, i: x, j: x, k: x, l: x, m: x, n: x, o: x, p: x} }
+fn f(n: int): int {
+    if n == 0 { return 0 }
+    let x = mk4()
+    let y = V5{a: x, b: x, c: x, d: x}
+    return f(n - 1) + y.a.a.a.a.a
+}
+fn main() { println(f(100).toStr()) }

@@ -1,0 +1,5 @@
+// expect: 3.5
+fn main() {
+    let xs: []Decimal = [Decimal.parse("1.5").unwrap(), Decimal.parse("2").unwrap(), Decimal.parse("9").unwrap()]
+    println(sumDecimals(xs[0..2]).toStr())
+}

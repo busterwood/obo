@@ -1,0 +1,8 @@
+// error: borrowed
+fn mid[T](xs: &[T]): &[T] { return xs[1..] }
+fn main() {
+    var xs: []str = ["a", "b" + "", "c"]
+    let m = mid(&xs)
+    xs = []
+    println(m[0])
+}

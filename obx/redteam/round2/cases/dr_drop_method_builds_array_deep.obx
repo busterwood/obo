@@ -1,0 +1,13 @@
+// expect: ok
+type L = closed { Nil; Cons(int, L) }
+type O = record { n: int }
+fn (o: mut &O) drop() {
+    var l = Nil
+    for i in 0..100000 { l = Cons(i, move(l)) }
+}
+fn main() {
+    var xs: []O = []
+    for i in 0..10 { append(mut &xs, O{n: i}) }
+    xs = []
+    println("ok")
+}

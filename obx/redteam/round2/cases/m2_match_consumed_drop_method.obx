@@ -1,0 +1,7 @@
+// error: drop
+type D = closed { A(str) }
+fn (d: mut &D) drop() {}
+fn mk(): D { return A("x") }
+fn main() {
+    match mk() { A(s) { println(s) } }
+}

@@ -1,0 +1,8 @@
+// expect: 2
+extern "c" fn strlen(s: str): u64
+extern "c" fn atoi(s: str): i32
+fn main() {
+    let s = "12345" + ""
+    let t = "xx" + ""
+    println(strlen(s[0..int(atoi(s[3..4])) - 2]).toStr())
+}

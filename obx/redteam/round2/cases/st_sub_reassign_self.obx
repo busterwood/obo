@@ -1,0 +1,7 @@
+// expect: c
+fn main() {
+    var s = "ab" + "c"
+    s = s[1..]
+    s = s[1..]
+    println(s)
+}

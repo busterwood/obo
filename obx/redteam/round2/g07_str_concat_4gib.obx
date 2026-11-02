@@ -1,0 +1,13 @@
+// SPEC 4.1: making a str of 4 GiB or more stops the program (exit 2).
+// rt_str_concat computes a.len + b.len in uint32_t, so 2 GiB + 2 GiB wraps
+// to 0, rt_str_new(0) returns the static empty block, and 4 GiB are copied
+// into it (overwriting rt_stack_top and the rest of .data/.bss; the crash
+// is then misreported as "obx: stack overflow", exit 4).
+// Needs about 6 GiB of memory; best run without ASan.
+// exit: 2
+fn main() {
+    var s = "x"
+    for i in 0..31 { s = s + s }
+    let t = s + s
+    println(len(t).toStr())
+}

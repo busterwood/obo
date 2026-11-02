@@ -1,0 +1,10 @@
+// error: borrowed|held|overlap
+fn g(o: mut &Option[[]int]): int { o = None; return 0 }
+fn use2(s: &[int], n: int): int { return s[0] + n }
+fn main() {
+    var o: Option[[]int] = Some([1, 2])
+    match o {
+        Some(a) { println(use2(a[0..1], g(mut &o)).toStr()) }
+        None {}
+    }
+}

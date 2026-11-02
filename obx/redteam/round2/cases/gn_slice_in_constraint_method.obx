@@ -1,0 +1,10 @@
+// expect: 6
+type Summer = interface { fn (&Self) total(xs: &[int]): int }
+type S = record { k: int }
+fn (s: &S) total(xs: &[int]): int { var t = 0; for x in xs { t += x * s.k }; return t }
+fn run[T: Summer](t: &T, xs: &[int]): int { return t.total(xs) }
+fn main() {
+    let s = S{k: 2}
+    let xs: []int = [1, 2, 9]
+    println(run(&s, xs[0..2]).toStr())
+}

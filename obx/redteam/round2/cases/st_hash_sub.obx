@@ -1,0 +1,6 @@
+// expect: true
+fn main() {
+    let s = "xxabc" + ""
+    let t = "abc"
+    println((s[2..].hash() == t.hash()).toStr())
+}

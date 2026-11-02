@@ -1,0 +1,6 @@
+// expect: 2
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "ab\0cd" + ""
+    println(strlen(s[3..]).toStr())
+}

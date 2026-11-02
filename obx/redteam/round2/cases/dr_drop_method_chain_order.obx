@@ -1,0 +1,10 @@
+// Drop methods run outer to inner along a chain, each before its fields.
+// expect: 3
+// expect: 2
+// expect: 1
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() { println(n.v.toStr()) }
+fn main() {
+    var t: Option[N] = None
+    for i in 1..4 { t = Some(N{v: i, next: move(t)}) }
+}

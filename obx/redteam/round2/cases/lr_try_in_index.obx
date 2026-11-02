@@ -1,0 +1,9 @@
+// expect: 2
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn pick(xs: &[]int, n: int): Result[int, str] { return Ok(xs[try get(n)]) }
+fn main() {
+    let xs: []int = [1, 2]
+    match pick(&xs, 1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+    match pick(&xs, -1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}

@@ -1,0 +1,9 @@
+// The element index is evaluated before the bounds: xs[i] is xs[0].
+// expect: 1
+fn bump(i: mut &int): int { i += 1; return 0 }
+fn main() {
+    let g: [][]int = [[1], [2]]
+    var i = 0
+    let s = g[i][bump(mut &i)..]
+    println(s[0].toStr())
+}

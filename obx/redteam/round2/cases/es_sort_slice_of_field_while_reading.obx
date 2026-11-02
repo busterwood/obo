@@ -1,0 +1,7 @@
+// error: held|overlap|borrow|twice
+type R = record { xs: []int }
+fn f(a: mut &[int], b: &R): int { return 0 }
+fn main() {
+    var r = R{xs: [3, 1, 2]}
+    println(f(mut &r.xs[0..2], &r).toStr())
+}

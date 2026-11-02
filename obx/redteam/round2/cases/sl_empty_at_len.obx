@@ -1,0 +1,13 @@
+// expect: 0
+// expect: 0
+// expect: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let s = xs[3..]
+    println(len(s).toStr())
+    let e: []int = []
+    let t = e[..]
+    println(len(t).toStr())
+    let u = xs[..]
+    println(len(u).toStr())
+}

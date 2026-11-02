@@ -1,0 +1,6 @@
+// expect: llo
+fn mk(): str {
+    let s = "he" + "llo"
+    return s[2..]
+}
+fn main() { println(mk()) }

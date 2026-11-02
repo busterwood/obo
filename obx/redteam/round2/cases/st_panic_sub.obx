@@ -1,0 +1,5 @@
+// exit: 12
+fn main() {
+    let s = "boom!!" + ""
+    panic(s[0..4])
+}

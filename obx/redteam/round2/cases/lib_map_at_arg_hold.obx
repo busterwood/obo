@@ -1,0 +1,8 @@
+// error: held|overlap|borrow
+fn use2(v: &str, n: int): int { return len(v) + n }
+fn main() {
+    var m: Map[str, str] = newMap()
+    m.put("a" + "", "x" + "")
+    println(use2(m.at("a"), toInt(m.remove(&"a").isSome())).toStr())
+}
+fn toInt(b: bool): int { if b { return 1 }; return 0 }

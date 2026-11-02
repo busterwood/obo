@@ -1,0 +1,6 @@
+// expect: 0 -1 1
+extern "c" fn strcmp(a: str, b: str): i32
+fn main() {
+    let s = "abcabd" + ""
+    println(strcmp(s[0..2], s[3..5]).toStr() + " " + strcmp(s[0..3], s[3..6]).toStr() + " " + strcmp(s[3..6], s[0..3]).toStr())
+}

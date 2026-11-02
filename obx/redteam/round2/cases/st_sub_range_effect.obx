@@ -1,0 +1,6 @@
+// expect: abc
+fn ch(s: mut &str): int { s = "zz"; return 3 }
+fn main() {
+    var s = "abc" + ""
+    println(s[0..ch(mut &s)])
+}

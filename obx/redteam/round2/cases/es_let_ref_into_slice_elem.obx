@@ -1,0 +1,7 @@
+// A borrow of an element of a slice of a variable's array is rooted at the variable.
+// expect: 2
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let r = &xs[1..][0]
+    println(r.toStr())
+}

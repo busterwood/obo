@@ -1,0 +1,83 @@
+=== hd_two_pops_call
+// Each pop's borrow ends when it returns.
+// expect: 3 2
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(two(pop(mut &xs), pop(mut &xs)))
+}
+=== hd_pop_then_mut_call
+// expect: 3 1
+fn g(xs: mut &[]int): int { return len(xs) - 1 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(two(pop(mut &xs), g(mut &xs)))
+}
+=== hd_pop_then_replace
+// expect: 3 1
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(two(pop(mut &xs), replace(mut &xs[0], 9)))
+}
+=== hd_mutcall_then_mutcall
+// expect: 2 1
+fn g(xs: mut &[]int): int { return pop(xs) }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var xs: []int = [1, 2]
+    println(two(g(mut &xs), g(mut &xs)))
+}
+=== hd_replace_then_assign_in_arg
+// expect: 1 9
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn set(xs: mut &[]int, v: int): int { xs[0] = v; return v }
+fn main() {
+    var xs: []int = [1, 2]
+    println(two(replace(mut &xs[0], 5), set(mut &xs, 9)))
+}
+=== hd_method_mut_twice
+// expect: 1 2
+type C = record { n: int }
+fn (c: mut &C) next(): int { c.n += 1; return c.n }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var c = C{n: 0}
+    println(two(c.next(), c.next()))
+}
+=== hd_map_put_get_nested
+// expect: 2
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    m.put("a", m.get(&"a").unwrapOr(0) + 1)
+    println(m.get(&"a").unwrapOr(0).toStr())
+}
+=== hd_map_put_nested_mut
+// error: borrow|held
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    m.put("b", m.remove(&"a").unwrapOr(0))
+}
+=== hd_swap_then_read
+// expect: 2
+fn main() {
+    var xs: []int = [1, 2]
+    swap(mut &xs, 0, 1)
+    println(xs[0].toStr())
+}
+=== hd_pop_in_index
+// error: borrow|held|overlap
+fn main() {
+    var xs: []int = [0, 1, 2]
+    println(xs[pop(mut &xs) - 2].toStr())
+}
+=== hd_pop_in_index_other
+// expect: 1
+fn main() {
+    var xs: []int = [0, 1, 2]
+    var ys: []int = [5, 1]
+    println(xs[pop(mut &ys)].toStr())
+}

@@ -1,0 +1,12 @@
+// error: borrowed
+type B = record { s: str }
+fn f(xs: mut &[B]) {
+    for b in xs[0..1] {
+        xs[0] = B{s: "z"}
+        println(b.s)
+    }
+}
+fn main() {
+    var xs: []B = [B{s: "a" + "b"}, B{s: "b"}]
+    f(mut &xs)
+}

@@ -1,0 +1,10 @@
+// expect: ell
+// expect:
+// expect: o
+fn main() {
+    let s = "hello"
+    println(s[1..4])
+    println(s[5..])
+    let t = s[1..][3..]
+    println(t)
+}

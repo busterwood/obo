@@ -1,0 +1,7 @@
+// g + 1 + f(): g + 1 is computed first.
+// expect: 3
+var g: int = 1
+fn f(): int { g = 100; return 1 }
+fn main() {
+    println((g + 1 + f()).toStr())
+}

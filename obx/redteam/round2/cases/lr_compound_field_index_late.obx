@@ -1,0 +1,9 @@
+// expect: 11 2
+type R = record { a: []int }
+fn f(i: mut &int): int { i = 1; return 10 }
+fn main() {
+    var r = R{a: [1, 2]}
+    var i = 0
+    r.a[i] += f(mut &i)
+    println(r.a[0].toStr() + " " + r.a[1].toStr())
+}

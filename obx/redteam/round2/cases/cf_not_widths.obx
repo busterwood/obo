@@ -1,0 +1,7 @@
+// expect: -1 254 4294967295 18446744073709551615 -1
+const A: i32 = ~0
+const B: byte = ~1
+const C: u32 = ~0
+const D: u64 = ~0
+const E: int = ~0
+fn main() { println(A.toStr() + " " + B.toStr() + " " + C.toStr() + " " + D.toStr() + " " + E.toStr()) }

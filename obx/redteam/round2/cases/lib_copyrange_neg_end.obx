@@ -1,0 +1,9 @@
+// exit: 12
+import "collections"
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var b = 0
+    b -= 1
+    let c = collections.copyRange(&xs, 0, b)
+    println(len(c).toStr())
+}

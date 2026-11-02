@@ -1,0 +1,7 @@
+// error: shared|mut
+fn z(xs: mut &[int]) { xs[0] = 0 }
+fn w(xs: &[]int) { z(xs[..]) }
+fn main() {
+    var xs: []int = [1, 2]
+    w(&xs)
+}

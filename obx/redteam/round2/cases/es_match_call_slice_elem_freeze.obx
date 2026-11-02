@@ -1,0 +1,13 @@
+// error: borrowed
+type B = record { s: str }
+fn mid(xs: &[Option[B]]): &[Option[B]] { return xs[0..] }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    match mid(&xs)[0] {
+        Some(b) {
+            xs = []
+            println(b.s)
+        }
+        None {}
+    }
+}

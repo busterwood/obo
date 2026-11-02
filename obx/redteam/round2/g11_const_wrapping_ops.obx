@@ -1,0 +1,7 @@
+// SPEC 5.2, 7.1: a constant is an operator expression over constants, and
+// +% -% *% are operators. sema.fold has no case for them ("not a constant
+// expression").
+// expect: -9223372036854775808 4294967295
+const A: int = 9223372036854775807 +% 1
+const B: u32 = 0 -% 1
+fn main() { println(A.toStr() + " " + B.toStr()) }

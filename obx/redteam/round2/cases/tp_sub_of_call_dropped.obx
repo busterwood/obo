@@ -1,0 +1,5 @@
+// expect: 1
+fn mk(): str { return "ab" + "c" }
+fn main() {
+    println(len(mk()[0..1]).toStr())
+}

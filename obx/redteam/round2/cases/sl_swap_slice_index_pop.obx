@@ -1,0 +1,5 @@
+// error: held|overlap|borrow
+fn main() {
+    var xs: []str = ["a", "b"]
+    swap(xs[0..2], 0, len(pop(mut &xs)))
+}

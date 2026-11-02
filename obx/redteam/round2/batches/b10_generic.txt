@@ -1,0 +1,123 @@
+=== gn_mid_generic_freeze
+// error: borrowed
+fn mid[T](xs: &[T]): &[T] { return xs[1..] }
+fn main() {
+    var xs: []str = ["a", "b" + "", "c"]
+    let m = mid(&xs)
+    xs = []
+    println(m[0])
+}
+=== gn_mid_generic_ok
+// expect: b 2
+type P = value record { a: int; b: str }
+fn mid[T](xs: &[T]): &[T] { return xs[1..len(xs) - 1] }
+fn main() {
+    let xs: []str = ["a", "b" + "", "c"]
+    let ps: []P = [P{a: 1, b: "x"}, P{a: 2, b: "y"}, P{a: 3, b: "z"}]
+    let m = mid(&xs)
+    let n = mid(&ps)
+    println(m[0] + " " + n[0].a.toStr())
+}
+=== gn_mut_mid_generic_write
+// expect: a q c
+fn mid[T](xs: mut &[T]): mut &[T] { return xs[1..2] }
+fn main() {
+    var xs: []str = ["a", "b" + "", "c"]
+    {
+        let m = mid(mut &xs)
+        m[0] = "q" + ""
+    }
+    println(xs[0] + " " + xs[1] + " " + xs[2])
+}
+=== gn_slice_sizeof_value_record
+// expect: 3 30
+type P = value record { a: int; b: int; c: int }
+fn last[T: copy](xs: &[T]): T { return xs[len(xs) - 1] }
+fn main() {
+    let ps: []P = [P{a: 1, b: 10, c: 100}, P{a: 3, b: 30, c: 300}, P{a: 2, b: 20, c: 200}]
+    let p = last(ps[0..2])
+    println(p.a.toStr() + " " + p.b.toStr())
+}
+=== gn_swap_value_record_owned
+// expect: y x
+type P = value record { s: str; a: []int }
+fn rev[T](xs: mut &[T]) { swap(xs, 0, len(xs) - 1) }
+fn main() {
+    var ps: []P = [P{s: "x" + "", a: [1]}, P{s: "y" + "", a: [2, 3]}]
+    rev(mut &ps)
+    println(ps[0].s + " " + ps[1].s)
+}
+=== gn_replace_through_slice_generic
+// expect: old new
+fn put[T](xs: mut &[T], i: int, v: T): T { return replace(mut &xs[i], v) }
+type B = record { s: str }
+fn main() {
+    var bs: []B = [B{s: "old" + ""}]
+    let o = put(mut &bs, 0, B{s: "new" + ""})
+    println(o.s + " " + bs[0].s)
+}
+=== gn_slice_of_generic_record_field
+// expect: 2
+type Bag[T] = record { items: []T }
+fn (b: &Bag[T]) rest(): &[T] { return b.items[1..] }
+fn main() {
+    let b = Bag{items: ["a", "b", "c"]}
+    println(len(b.rest()).toStr())
+}
+=== gn_slice_of_generic_record_freeze
+// error: borrowed
+type Bag[T] = record { items: []T }
+fn (b: &Bag[T]) rest(): &[T] { return b.items[1..] }
+fn (b: mut &Bag[T]) add(x: T) { append(mut &b.items, x) }
+fn main() {
+    var b = Bag{items: ["a", "b" + "", "c"]}
+    let r = b.rest()
+    b.add("d")
+    println(r[0])
+}
+=== gn_slice_in_constraint_method
+// expect: 6
+type Summer = interface { fn (&Self) total(xs: &[int]): int }
+type S = record { k: int }
+fn (s: &S) total(xs: &[int]): int { var t = 0; for x in xs { t += x * s.k }; return t }
+fn run[T: Summer](t: &T, xs: &[int]): int { return t.total(xs) }
+fn main() {
+    let s = S{k: 2}
+    let xs: []int = [1, 2, 9]
+    println(run(&s, xs[0..2]).toStr())
+}
+=== gn_slice_result_in_constraint
+// error: borrowed
+type Mid = interface { fn (&Self) mid(xs: &[int]): &[int] }
+type S = record { k: int }
+fn (s: &S) mid(xs: &[int]): &[int] { return xs[1..] }
+fn main() {
+    let s = S{k: 2}
+    var xs: []int = [1, 2, 9]
+    let m = s.mid(&xs)
+    println(m[0].toStr())
+}
+=== gn_two_borrows_slice_result
+// error: exactly one|borrowed parameter
+fn pick(a: &[int], b: &[int]): &[int] { return a }
+fn main() {
+    let xs: []int = [1]
+    println(len(pick(&xs, &xs)).toStr())
+}
+=== gn_slice_param_and_ref_result
+// error: exactly one|borrowed parameter
+fn pick(a: &[int], b: &int): &int { return &a[0] }
+fn main() {
+    let xs: []int = [1]
+    let y = 2
+    println(pick(&xs, &y).toStr())
+}
+=== gn_sort_generic_slice_of_records
+// expect: 1 2 3
+type P = record { k: int }
+fn (p: &P) cmp(o: &P): int { return p.k.cmp(&o.k) }
+fn main() {
+    var ps: []P = [P{k: 3}, P{k: 1}, P{k: 2}]
+    sort(mut &ps[..])
+    println(ps[0].k.toStr() + " " + ps[1].k.toStr() + " " + ps[2].k.toStr())
+}

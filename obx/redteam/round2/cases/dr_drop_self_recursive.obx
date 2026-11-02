@@ -1,0 +1,7 @@
+// A drop method that makes a value of its own type recurses until the stack overflows.
+// exit: 4
+type N = record { v: int }
+fn (n: mut &N) drop() { let m = N{v: n.v + 1} }
+fn main() {
+    let n = N{v: 0}
+}

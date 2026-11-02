@@ -1,0 +1,55 @@
+=== g2s_for_over_slice_elem
+// error: borrowed
+fn main() {
+    var g: [][]str = [["a" + "", "b" + ""]]
+    for x in g[..][0] {
+        g = []
+        println(x)
+    }
+}
+=== g2s_slice_of_slice_elem_hold
+// error: borrow|held|overlap
+fn clear(g: mut &[][]int): int { g = []; return 0 }
+fn cnt(s: &[int], n: int): int { return len(s) + n }
+fn main() {
+    var g: [][]int = [[1, 2]]
+    println(cnt(g[..][0][0..1], clear(mut &g)).toStr())
+}
+=== g2s_field_of_slice_elem_borrow_arg
+// error: borrow|held|overlap
+type B = record { s: str; n: []int }
+fn clear(g: mut &[]B): int { g = []; return 0 }
+fn rd(p: &[]int, n: int): int { return len(p) + n }
+fn main() {
+    var bs: []B = [B{s: "a", n: [1]}]
+    println(rd(&bs[..][0].n, clear(mut &bs)).toStr())
+}
+=== g2s_let_slice_of_slice_elem
+// error: borrowed|temporary
+fn main() {
+    var g: [][]int = [[1, 2]]
+    let s = g[..][0][0..1]
+    g = []
+    println(s[0].toStr())
+}
+=== g2s_method_recv_slice_elem
+// error: borrow|held|overlap
+type B = record { s: str }
+fn (b: &B) get(n: int): str { return b.s }
+fn clear(g: mut &[]B): int { g = []; return 0 }
+fn main() {
+    var bs: []B = [B{s: "a" + "b"}]
+    println(bs[0..1][0].get(clear(mut &bs)))
+}
+=== g2s_mutslice_elem_assign_in_call
+// A mut slice element assigned while the array is freed by the index.
+// error: borrow|held|overlap|assign
+fn clear(g: mut &[]int): int { g = []; return 0 }
+fn put(s: mut &[int]) {}
+fn main() {
+    var xs: []int = [1, 2]
+    {
+        let s: mut &[int] = mut &xs
+        s[clear(mut &xs)] = 5
+    }
+}

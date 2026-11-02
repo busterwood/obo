@@ -1,0 +1,9 @@
+// expect: f
+// expect: g
+// expect: true
+fn f(): int { println("f"); return 1 }
+fn g(): int { println("g"); return 1 }
+fn main() {
+    let b = f() == g()
+    println(b.toStr())
+}

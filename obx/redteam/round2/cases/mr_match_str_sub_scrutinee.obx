@@ -1,0 +1,8 @@
+// expect: b
+fn main() {
+    var s = "abc" + ""
+    match s[1..2] {
+        "b" { s = "zz"; println("b") }
+        else { println("?") }
+    }
+}

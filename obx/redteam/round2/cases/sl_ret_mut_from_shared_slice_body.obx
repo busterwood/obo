@@ -1,0 +1,7 @@
+// error: mut|shared
+fn head(xs: mut &[]int, ys: int): mut &[int] { let s = xs[0..1]; return s }
+fn main() {
+    var xs: []int = [1, 2]
+    let h = head(mut &xs, 1)
+    h[0] = 3
+}

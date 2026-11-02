@@ -1,0 +1,11 @@
+// expect: done
+type N = record { kids: []N; v: int }
+fn main() {
+    var t = N{kids: [], v: 0}
+    for i in 0..300000 {
+        var k: []N = []
+        append(mut &k, move(t))
+        t = N{kids: move(k), v: i}
+    }
+    println("done")
+}

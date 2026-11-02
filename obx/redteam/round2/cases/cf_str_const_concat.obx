@@ -1,0 +1,3 @@
+// expect: abcd
+const S: str = "ab" + "cd"
+fn main() { println(S) }

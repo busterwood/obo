@@ -1,0 +1,77 @@
+=== m2_match_ref_result_freeze
+// error: borrowed
+type B = record { s: str }
+fn first(xs: &[]Option[B]): &Option[B] { return &xs[0] }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    match first(&xs) {
+        Some(b) { xs = []; println(b.s) }
+        None {}
+    }
+}
+=== m2_match_map_at_freeze
+// error: borrowed
+type B = record { s: str }
+fn main() {
+    var m: Map[str, Option[B]] = newMap()
+    m.put("k", Some(B{s: "a" + "b"}))
+    match m.at("k") {
+        Some(b) { m.clear(); println(b.s) }
+        None {}
+    }
+}
+=== m2_match_str_reassign_in_arm
+// expect: one
+// expect: zz
+fn main() {
+    var s = "on" + "e"
+    match s {
+        "one" { s = "zz"; println("one") }
+        "two" { println("two") }
+        else { println("?") }
+    }
+    println(s)
+}
+=== m2_match_global_closed_copy
+// expect: 3
+type V = value closed { A(int); B }
+var g: V = A(3)
+fn main() {
+    match g {
+        A(n) { g = B; println(n.toStr()) }
+        B { println("b") }
+    }
+}
+=== m2_match_global_closed_str
+// expect: hi
+type V = value closed { A(str); B }
+var g: V = B
+fn main() {
+    g = A("h" + "i")
+    match g {
+        A(s) { g = B; println(s) }
+        B { println("b") }
+    }
+}
+=== m2_match_consumed_drop_method
+// error: drop
+type D = closed { A(str) }
+fn (d: mut &D) drop() {}
+fn mk(): D { return A("x") }
+fn main() {
+    match mk() { A(s) { println(s) } }
+}
+=== m2_match_nested_binding_slice
+// error: borrowed
+type B = record { xs: []int }
+fn main() {
+    var o: Option[B] = Some(B{xs: [1, 2]})
+    match o {
+        Some(b) {
+            let s = b.xs[0..1]
+            o = None
+            println(s[0].toStr())
+        }
+        None {}
+    }
+}

@@ -1,0 +1,11 @@
+// Re-slicing is relative to the slice and checked against its length.
+// expect: 3
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3, 4, 5]
+    let s = xs[1..3]
+    let t = s[1..2]
+    println(t[0].toStr())
+    let u = s[0..3]
+    println(len(u).toStr())
+}

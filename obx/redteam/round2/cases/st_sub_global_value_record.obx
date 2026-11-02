@@ -1,0 +1,8 @@
+// expect: bc 7
+type P = value record { s: str; n: int }
+var g: P = P{s: "", n: 0}
+fn main() {
+    let s = "abc" + ""
+    g = P{s: s[1..], n: 7}
+    println(g.s + " " + g.n.toStr())
+}

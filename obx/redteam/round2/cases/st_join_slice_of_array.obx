@@ -1,0 +1,6 @@
+// expect: b-c
+import "strings"
+fn main() {
+    let xs: []str = ["a", "b", "c", "d"]
+    println(strings.join(xs[1..3], "-"))
+}

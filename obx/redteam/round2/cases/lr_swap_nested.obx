@@ -1,0 +1,9 @@
+// swap(mut &xs, i, f(mut &i)): i is read before f runs.
+// expect: 2 1 3
+fn f(i: mut &int): int { i = 2; return 1 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    var i = 0
+    swap(mut &xs, i, f(mut &i))
+    println(xs[0].toStr() + " " + xs[1].toStr() + " " + xs[2].toStr())
+}

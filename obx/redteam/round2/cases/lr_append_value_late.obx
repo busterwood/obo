@@ -1,0 +1,9 @@
+// append(mut &xs, n) where n is changed later: no, append evaluates its value after the borrow.
+// expect: 1
+fn f(n: mut &int): int { n = 7; return 0 }
+fn main() {
+    var xs: []int = []
+    var n = 1
+    append(mut &xs, n + f(mut &n))
+    println(xs[0].toStr())
+}

@@ -1,0 +1,9 @@
+// error: borrow|held|overlap
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn use2(s: &[int], n: int): int { return s[0] + n }
+fn main() {
+    let f: fn(&[int]): &[int] = mid
+    var xs: []int = [1, 2, 3]
+    println(use2(f(&xs), g(mut &xs)).toStr())
+}

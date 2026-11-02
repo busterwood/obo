@@ -1,0 +1,3 @@
+// error: shift
+const K: i32 = 1 << 32
+fn main() { println(K.toStr()) }

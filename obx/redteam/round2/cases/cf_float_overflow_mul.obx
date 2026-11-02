@@ -1,0 +1,3 @@
+// error: overflow|range|fit
+const F: float = 1.0e308 * 10.0
+fn main() { println(F.toStr()) }

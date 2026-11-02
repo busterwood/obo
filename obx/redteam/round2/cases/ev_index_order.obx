@@ -1,0 +1,8 @@
+// The array is evaluated before the index.
+// expect: arr
+// expect: idx
+fn arr(): []int { println("arr"); return [1, 2] }
+fn idx(): int { println("idx"); return 0 }
+fn main() {
+    let x = arr()[idx()]
+}

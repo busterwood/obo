@@ -1,0 +1,9 @@
+// xs[i] += f(mut &i): the place xs[i] is evaluated once, before f runs.
+// expect: 11 2
+fn f(i: mut &int): int { i = 1; return 10 }
+fn main() {
+    var xs: []int = [1, 2]
+    var i = 0
+    xs[i] += f(mut &i)
+    println(xs[0].toStr() + " " + xs[1].toStr())
+}

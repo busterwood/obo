@@ -1,0 +1,8 @@
+// expect: 1
+type R = record { a: []int }
+fn bump(i: mut &int): int { i += 1; return 0 }
+fn main() {
+    let rs: []R = [R{a: [1]}, R{a: [2]}]
+    var i = 0
+    println(rs[i].a[bump(mut &i)].toStr())
+}

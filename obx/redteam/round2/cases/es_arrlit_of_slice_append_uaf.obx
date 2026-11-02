@@ -1,0 +1,7 @@
+// error: borrow|second class|slice
+fn main() {
+    var xs: []str = ["a" + "b"]
+    var a = [xs[0..1]]
+    xs = []
+    println(a[0][0])
+}

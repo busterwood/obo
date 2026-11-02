@@ -1,0 +1,8 @@
+// expect: y x
+type P = value record { s: str; a: []int }
+fn rev[T](xs: mut &[T]) { swap(xs, 0, len(xs) - 1) }
+fn main() {
+    var ps: []P = [P{s: "x" + "", a: [1]}, P{s: "y" + "", a: [2, 3]}]
+    rev(mut &ps)
+    println(ps[0].s + " " + ps[1].s)
+}

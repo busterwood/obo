@@ -1,0 +1,5 @@
+// exit: 10
+fn main() {
+    let u: i128 = -1
+    println(u64(u).toStr())
+}

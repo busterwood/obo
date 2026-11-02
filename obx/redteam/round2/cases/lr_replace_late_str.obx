@@ -1,0 +1,8 @@
+// expect: a b
+fn f(n: mut &int): str { n = 1; return "b" }
+fn main() {
+    var a: []str = ["a", "x"]
+    var i = 0
+    let o = replace(mut &a[i], f(mut &i))
+    println(o + " " + a[0])
+}

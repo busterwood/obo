@@ -1,0 +1,5 @@
+// expect: -1
+fn main() {
+    var a: i32 = -2
+    println((a >> 1).toStr())
+}

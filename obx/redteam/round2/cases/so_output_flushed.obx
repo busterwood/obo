@@ -1,0 +1,8 @@
+// Output before a stack overflow is flushed.
+// expect: before
+// exit: 4
+fn f(n: int): int { if n == 0 { return 0 }; return f(n - 1) + 1 }
+fn main() {
+    println("before")
+    println(f(100000000).toStr())
+}

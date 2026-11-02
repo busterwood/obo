@@ -1,0 +1,10 @@
+// A fn value that returns a slice: the result borrows the argument.
+// error: borrowed
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn main() {
+    let f: fn(&[int]): &[int] = mid
+    var xs: []int = [1, 2, 3]
+    let s = f(&xs)
+    xs = []
+    println(s[0].toStr())
+}

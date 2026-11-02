@@ -1,0 +1,8 @@
+// expect: 1 2
+type C = record { n: int }
+fn (c: mut &C) next(): int { c.n += 1; return c.n }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var c = C{n: 0}
+    println(two(c.next(), c.next()))
+}

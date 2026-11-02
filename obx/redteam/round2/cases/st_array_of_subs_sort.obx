@@ -1,0 +1,7 @@
+// expect: a b c
+fn main() {
+    let s = "c b a" + ""
+    var xs: []str = [s[0..1], s[2..3], s[4..5]]
+    sort(mut &xs)
+    println(xs[0] + " " + xs[1] + " " + xs[2])
+}

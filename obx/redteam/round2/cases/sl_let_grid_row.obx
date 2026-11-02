@@ -1,0 +1,7 @@
+// error: borrowed
+fn main() {
+    var g: [][]int = [[1, 2], [3, 4]]
+    let row = &g[0][..]
+    append(mut &g[0], 5)
+    println(row[0].toStr())
+}

@@ -1,0 +1,6 @@
+// expect: 0.30
+import "money"
+fn main() {
+    let xs: []money.Money[money.USD] = [money.fromMinor(10), money.fromMinor(20), money.fromMinor(30)]
+    println(money.sum(xs[0..2]).amount().toStr())
+}

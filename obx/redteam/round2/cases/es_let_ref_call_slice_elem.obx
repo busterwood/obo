@@ -1,0 +1,7 @@
+// expect: 2
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let r = &mid(&xs)[0]
+    println(r.toStr())
+}

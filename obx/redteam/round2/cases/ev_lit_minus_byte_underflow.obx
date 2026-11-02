@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    var b: byte = 1
+    let x = 0 - b
+    println(x.toStr())
+}

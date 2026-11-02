@@ -1,0 +1,10 @@
+// error: borrowed
+type B = record { s: str }
+fn mid(xs: &[]B): &[B] { return xs[0..] }
+fn main() {
+    var xs: []B = [B{s: "a" + "b"}, B{s: "b"}]
+    for b in mid(&xs) {
+        xs = []
+        println(b.s)
+    }
+}

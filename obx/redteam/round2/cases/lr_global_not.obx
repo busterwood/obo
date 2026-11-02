@@ -1,0 +1,6 @@
+// expect: false
+var g: bool = true
+fn f(): bool { g = false; return false }
+fn main() {
+    println((!g || f()).toStr())
+}

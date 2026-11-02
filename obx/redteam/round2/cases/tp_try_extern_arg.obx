@@ -1,0 +1,12 @@
+// expect: 2
+// expect: err
+extern "c" fn strncmp(a: str, b: str, n: u64): i32
+fn get(n: int): Result[u64, str] { if n < 0 { return Err("neg") }; return Ok(u64(n)) }
+fn f(n: int): Result[i32, str] {
+    let s = "abcdab" + ""
+    return Ok(strncmp(s[0..2], s[4..], try get(n)) + 2)
+}
+fn main() {
+    match f(2) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+    match f(-1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}

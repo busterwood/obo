@@ -1,0 +1,5 @@
+// error: borrow|held|overlap
+fn main() {
+    var xs: []int = [0, 1, 2]
+    println(xs[pop(mut &xs) - 2].toStr())
+}

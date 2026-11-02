@@ -1,0 +1,7 @@
+// expect: 3 1
+fn g(xs: mut &[]int): int { return len(xs) - 1 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(two(pop(mut &xs), g(mut &xs)))
+}

@@ -1,0 +1,11 @@
+// A mut slice element assigned while the array is freed by the index.
+// error: borrow|held|overlap|assign
+fn clear(g: mut &[]int): int { g = []; return 0 }
+fn put(s: mut &[int]) {}
+fn main() {
+    var xs: []int = [1, 2]
+    {
+        let s: mut &[int] = mut &xs
+        s[clear(mut &xs)] = 5
+    }
+}

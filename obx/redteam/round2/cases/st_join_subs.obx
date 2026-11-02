@@ -1,0 +1,7 @@
+// expect: b-d-f
+import "strings"
+fn main() {
+    let s = "abcdef" + ""
+    let xs: []str = [s[1..2], s[3..4], s[5..]]
+    println(strings.join(&xs, "-"[0..]))
+}

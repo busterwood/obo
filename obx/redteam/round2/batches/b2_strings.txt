@@ -1,0 +1,523 @@
+=== st_sub_outlives_var
+// expect: llo
+fn mk(): str {
+    let s = "he" + "llo"
+    return s[2..]
+}
+fn main() { println(mk()) }
+=== st_sub_outlives_scope
+// expect: cd
+fn main() {
+    var t = ""
+    {
+        let s = "ab" + "cd"
+        t = s[2..4]
+    }
+    println(t)
+}
+=== st_sub_reassign_self
+// expect: c
+fn main() {
+    var s = "ab" + "c"
+    s = s[1..]
+    s = s[1..]
+    println(s)
+}
+=== st_sub_in_array
+// expect: bc ef
+fn main() {
+    var xs: []str = []
+    {
+        let a = "abc" + ""
+        let b = "def" + ""
+        append(mut &xs, a[1..])
+        append(mut &xs, b[1..])
+    }
+    println(xs[0] + " " + xs[1])
+}
+=== st_sub_in_record
+// expect: yz
+type R = record { s: str }
+fn mk(): R {
+    let x = "xyz" + ""
+    return R{s: x[1..]}
+}
+fn main() { let r = mk(); println(r.s) }
+=== st_sub_in_option
+// expect: bc
+fn f(): Option[str] {
+    let x = "abc" + ""
+    return Some(x[1..])
+}
+fn main() {
+    match f() {
+        Some(s) { println(s) }
+        None { println("none") }
+    }
+}
+=== st_sub_in_global
+// expect: lo
+// expect: lo
+var g: str = ""
+fn set() {
+    let s = "hel" + "lo"
+    g = s[3..]
+}
+fn main() {
+    set()
+    println(g)
+    let t = g
+    g = t[0..2]
+    println(g)
+}
+=== st_sub_global_value_record
+// expect: bc 7
+type P = value record { s: str; n: int }
+var g: P = P{s: "", n: 0}
+fn main() {
+    let s = "abc" + ""
+    g = P{s: s[1..], n: 7}
+    println(g.s + " " + g.n.toStr())
+}
+=== st_sub_of_literal
+// expect: ell
+// expect:
+// expect: o
+fn main() {
+    let s = "hello"
+    println(s[1..4])
+    println(s[5..])
+    let t = s[1..][3..]
+    println(t)
+}
+=== st_sub_bounds_neg
+// exit: 3
+fn main() {
+    let s = "hello"
+    var a = 0
+    a -= 1
+    println(s[0..a])
+}
+=== st_sub_bounds_over
+// exit: 3
+fn main() {
+    let s = "hello"[1..3]
+    println(s[0..3])
+}
+=== st_sub_bounds_lo_gt_hi
+// exit: 3
+fn main() {
+    let s = "hello"
+    var a = 3
+    println(s[a..2])
+}
+=== st_sub_index_past_sub
+// exit: 3
+fn main() {
+    let s = "hello"[1..3]
+    println(s[2].toStr())
+}
+=== st_concat_subs
+// expect: elwo
+fn main() {
+    let s = "hello" + " world"
+    let t = s[1..3] + s[6..8]
+    println(t)
+}
+=== st_concat_empty_sub
+// expect: hel
+fn main() {
+    let s = "hello" + ""
+    let t = s[0..3] + s[3..3]
+    let u = s[0..0] + t
+    println(u)
+}
+=== st_eq_sub
+// expect: true false true
+fn main() {
+    let s = "abcabc" + ""
+    let a = s[0..3] == s[3..6]
+    let b = s[0..3] == s[1..4]
+    let c = s[0..0] == ""
+    println(a.toStr() + " " + b.toStr() + " " + c.toStr())
+}
+=== st_cmp_sub
+// expect: -1 -1 1
+fn main() {
+    let s = "abcab" + ""
+    let x = s[0..2]
+    let y = s[0..3]
+    let r1 = if0(x < y)
+    let r2 = if0(s[1..] > s[0..])
+    let r3 = if0(s[3..] < s[0..2])
+    println(r1.toStr() + " " + r2.toStr() + " " + r3.toStr())
+}
+fn if0(b: bool): int { if b { return -1 } ; return 1 }
+=== st_cmp_sub2
+// expect: -1 1 0
+fn main() {
+    let s = "abcab" + ""
+    println(s[0..2].cmp(&s[0..3]).toStr() + " " + s[1..].cmp(&s[0..]).toStr() + " " + s[3..].cmp(&s[0..2]).toStr())
+}
+=== st_map_sub_keys
+// expect: 2 1 0
+fn main() {
+    var m: Map[str, int] = newMap()
+    let s = "foo bar foo" + ""
+    let k1 = s[0..3]
+    let k2 = s[4..7]
+    let k3 = s[8..]
+    m.put(k1, m.get(&k1).unwrapOr(0) + 1)
+    m.put(k2, m.get(&k2).unwrapOr(0) + 1)
+    m.put(k3, m.get(&k3).unwrapOr(0) + 1)
+    println(m.get(&"foo").unwrapOr(0).toStr() + " " + m.get(&"bar").unwrapOr(0).toStr() + " " + m.get(&"baz").unwrapOr(0).toStr())
+}
+=== st_hash_sub
+// expect: true
+fn main() {
+    let s = "xxabc" + ""
+    let t = "abc"
+    println((s[2..].hash() == t.hash()).toStr())
+}
+=== st_match_sub
+// expect: yes
+fn main() {
+    let s = "xabc" + ""
+    match s[1..] {
+        "abc" { println("yes") }
+        else { println("no") }
+    }
+}
+=== st_extern_sub_end
+// expect: 3
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "hello" + "abc"
+    println(strlen(s[5..]).toStr())
+}
+=== st_extern_sub_middle
+// expect: 2
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "hello" + "abc"
+    println(strlen(s[1..3]).toStr())
+}
+=== st_extern_sub_literal_middle
+// expect: 2 0 5
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "hello"
+    println(strlen(s[1..3]).toStr() + " " + strlen(s[1..1]).toStr() + " " + strlen(s).toStr())
+}
+=== st_extern_two_subs
+// expect: 0 -1 1
+extern "c" fn strcmp(a: str, b: str): i32
+fn main() {
+    let s = "abcabd" + ""
+    println(strcmp(s[0..2], s[3..5]).toStr() + " " + strcmp(s[0..3], s[3..6]).toStr() + " " + strcmp(s[3..6], s[0..3]).toStr())
+}
+=== st_extern_nested
+// expect: 2
+extern "c" fn strlen(s: str): u64
+extern "c" fn atoi(s: str): i32
+fn main() {
+    let s = "12345" + ""
+    let t = "xx" + ""
+    println(strlen(s[0..int(atoi(s[3..4])) - 2]).toStr())
+}
+=== st_extern_nested_args
+// expect: 3 2
+extern "c" fn strlen(s: str): u64
+fn two(a: u64, b: u64): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    let s = "12345" + ""
+    println(two(strlen(s[0..3]), strlen(s[1..3])))
+}
+=== st_extern_interior_nul_literal
+// exit: 12
+extern "c" fn strlen(s: str): u64
+fn main() {
+    println(strlen("ab\0cd").toStr())
+}
+=== st_extern_nul_after_sub
+// The byte after the substring is a NUL in the string itself: the substring has no NUL.
+// expect: 2
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "ab\0cd"
+    println(strlen(s[0..2]).toStr())
+}
+=== st_extern_sub_after_nul
+// expect: 2
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "ab\0cd" + ""
+    println(strlen(s[3..]).toStr())
+}
+=== st_extern_in_loop_many
+// expect: 3000
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "abcdef" + ""
+    var n: u64 = 0
+    for i in 0..1000 {
+        n += strlen(s[1..4])
+    }
+    println(n.toStr())
+}
+=== st_extern_cond
+// expect: yes
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "abcdef" + ""
+    if strlen(s[1..4]) == 3 && strlen(s[0..1]) == 1 { println("yes") }
+}
+=== st_extern_while_cond
+// expect: 3
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "abcdef" + ""
+    var i = 0
+    while strlen(s[0..i]) < 3 { i += 1 }
+    println(i.toStr())
+}
+=== st_literals_many
+// expect: a b a  \ " ' ?? ??= x
+// expect: 13
+fn main() {
+    let a = "a"
+    let b = "b"
+    let c = "a"
+    let e = ""
+    println(a + " " + b + " " + c + " " + e + " \\ \" ' ?? ??= " + "\x78")
+    let t = "\t\n\r\0\x01\xff\x7f\\\"'abc"
+    println(len(t).toStr())
+}
+=== st_literal_hex_then_digit
+// expect: 3 65 66
+fn main() {
+    let s = "\x41BC"
+    println(len(s).toStr() + " " + s[0].toStr() + " " + s[1].toStr())
+}
+=== st_literal_octal_like
+// expect: 4 0 49
+fn main() {
+    let s = "\0123"
+    println(len(s).toStr() + " " + s[0].toStr() + " " + s[1].toStr())
+}
+=== st_literal_utf8
+// expect: 4
+// expect: é€
+fn main() {
+    let s = "\xc3\xa9"
+    let t = "€"
+    println((len(s) + len(t) - 1).toStr())
+    println(s + t)
+}
+=== st_literal_same_in_generic
+// expect: x x x
+fn id[T](v: T): T { return v }
+fn lit[T](v: T): str { return "x" }
+fn main() {
+    println(lit(1) + " " + lit("s") + " " + id("x"))
+}
+=== st_literal_in_const
+// expect: hello hel
+const H = "hello"
+const G: str = "hel"
+fn main() {
+    println(H + " " + H[0..3])
+    if G == H[..3] { }
+}
+=== st_const_sub_index
+// expect: 101
+const H = "hello"
+fn main() {
+    println(H[1].toStr())
+}
+=== st_strbyte_sub
+// expect: 99
+fn main() {
+    let s = "abcd" + ""
+    println(strByte(s[1..], 1).toStr())
+}
+=== st_strslice_intrinsic
+// expect: bc
+// exit: 3
+fn main() {
+    let s = "abcd" + ""
+    println(strSlice(s, 1, 3))
+    println(strSlice(s, 3, 1))
+}
+=== st_strslice_neg
+// exit: 3
+fn main() {
+    let s = "abcd" + ""
+    var a = 0
+    a -= 1
+    println(strSlice(s, 0, a))
+}
+=== st_tobytes_sub
+// expect: 2 98
+fn main() {
+    let s = "abcd" + ""
+    let b = strToBytes(s[1..3])
+    println(len(b).toStr() + " " + b[0].toStr())
+}
+=== st_parsefloat_sub
+// expect: 1.5
+fn main() {
+    let s = "x1.5y" + ""
+    var f: float = 0.0
+    if parseFloat(s[1..4], mut &f) { println(f.toStr()) }
+}
+=== st_parsefloat_sub_followed_digits
+// The substring is "1.5" even though "1.59" follows in the block.
+// expect: 1.5
+fn main() {
+    let s = "1.59"
+    var f: float = 0.0
+    if parseFloat(s[0..3], mut &f) { println(f.toStr()) }
+}
+=== st_getenv_sub
+// expect: true
+fn main() {
+    let s = "PATHXYZ" + ""
+    var out = ""
+    println(getenv(s[0..4], mut &out).toStr())
+}
+=== st_readfile_sub
+// expect: 0
+fn main() {
+    let s = "/etc/hostnameXX" + ""
+    var out = ""
+    println(readFile(s[0..13], mut &out).toStr())
+}
+=== st_panic_sub
+// exit: 12
+fn main() {
+    let s = "boom!!" + ""
+    panic(s[0..4])
+}
+=== st_sub_index_effect
+// s[i] where the index call changes s: the old s is indexed.
+// expect: 97
+fn ch(s: mut &str): int { s = "zz"; return 0 }
+fn main() {
+    var s = "abc" + ""
+    println(s[ch(mut &s)].toStr())
+}
+=== st_sub_range_effect
+// expect: abc
+fn ch(s: mut &str): int { s = "zz"; return 3 }
+fn main() {
+    var s = "abc" + ""
+    println(s[0..ch(mut &s)])
+}
+=== st_sub_assign_effect
+// expect: bc
+fn ch(s: mut &str): int { s = "zzzz"; return 1 }
+fn main() {
+    var s = "abc" + ""
+    s = s[ch(mut &s)..]
+    println(s)
+}
+=== st_concat_effect
+// expect: abcx
+fn ch(s: mut &str): str { s = "zz"; return "x" }
+fn main() {
+    var s = "abc" + ""
+    println(s + ch(mut &s))
+}
+=== st_compound_concat_effect
+// expect: abcx
+fn ch(s: mut &str): str { s = "zz"; return "x" }
+fn main() {
+    var s = "abc" + ""
+    s += ch(mut &s)
+    println(s)
+}
+=== st_eq_effect
+// expect: true
+fn ch(s: mut &str): str { s = "zz"; return "abc" }
+fn main() {
+    var s = "abc" + ""
+    println((s == ch(mut &s)).toStr())
+}
+=== st_array_of_subs_sort
+// expect: a b c
+fn main() {
+    let s = "c b a" + ""
+    var xs: []str = [s[0..1], s[2..3], s[4..5]]
+    sort(mut &xs)
+    println(xs[0] + " " + xs[1] + " " + xs[2])
+}
+=== st_big_concat_loop
+// expect: 100000
+fn main() {
+    var s = ""
+    for i in 0..100000 { s = s + "x"[0..1] }
+    println(len(s).toStr())
+}
+=== st_sub_chain_drop
+// expect: done
+fn main() {
+    var keep: []str = []
+    for i in 0..100 {
+        let s = "abcdefghij" + i.toStr()
+        append(mut &keep, s[i % 5..i % 5 + 3])
+    }
+    var t: []str = []
+    for k in keep { append(mut &t, k[1..]) }
+    keep = []
+    println("done")
+}
+=== st_generic_box_sub
+// expect: bc
+type Box[T] = record { v: T }
+fn wrap[T](v: T): Box[T] { return Box{v: v} }
+fn main() {
+    var b: Box[str] = wrap("")
+    {
+        let s = "abc" + ""
+        b = wrap(s[1..])
+    }
+    println(b.v)
+}
+=== st_strfromc_sub
+// expect: 3
+extern "c" fn strdup(s: str): ptr
+extern "c" fn free(p: ptr)
+fn main() {
+    let s = "abcdef" + ""
+    let p = strdup(s[1..4])
+    let t = strFromC(p)
+    free(p)
+    println(len(t).toStr())
+}
+=== st_join_subs
+// expect: b-d-f
+import "strings"
+fn main() {
+    let s = "abcdef" + ""
+    let xs: []str = [s[1..2], s[3..4], s[5..]]
+    println(strings.join(&xs, "-"[0..]))
+}
+=== st_join_slice_of_array
+// expect: b-c
+import "strings"
+fn main() {
+    let xs: []str = ["a", "b", "c", "d"]
+    println(strings.join(xs[1..3], "-"))
+}
+=== st_split_subs_outlive
+// expect: b
+import "strings"
+fn main() {
+    var parts: []str = []
+    {
+        let s = "a,b,c" + ""
+        parts = strings.splitOn(s, ",")
+    }
+    println(parts[1])
+}

@@ -1,0 +1,9 @@
+// expect: z
+// expect: done
+fn set(xs: mut &[str]) { xs[1] = "z" + "" }
+fn main() {
+    var xs: []str = ["a" + "", "b" + ""]
+    set(mut &xs)
+    println(xs[1])
+    println("done")
+}

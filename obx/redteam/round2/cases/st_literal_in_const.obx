@@ -1,0 +1,7 @@
+// expect: hello hel
+const H = "hello"
+const G: str = "hel"
+fn main() {
+    println(H + " " + H[0..3])
+    if G == H[..3] { }
+}

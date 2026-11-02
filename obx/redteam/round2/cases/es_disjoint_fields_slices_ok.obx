@@ -1,0 +1,9 @@
+// Slices of two different fields do not overlap.
+// expect: 1 1
+type R = record { a: []int; b: []int }
+fn cp(d: mut &[int], s: &[int]) { d[0] = s[0] }
+fn main() {
+    var r = R{a: [1, 2], b: [3, 4]}
+    cp(mut &r.b[0..1], r.a[0..1])
+    println(r.a[0].toStr() + " " + r.b[0].toStr())
+}

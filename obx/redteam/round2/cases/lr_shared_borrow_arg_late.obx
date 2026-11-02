@@ -1,0 +1,8 @@
+// expect: 1
+fn g(n: mut &int): int { n = 1; return 9 }
+fn rd(p: &int, v: int): int { return p }
+fn main() {
+    let a: []int = [1, 2]
+    var i = 0
+    println(rd(&a[i], g(mut &i)).toStr())
+}

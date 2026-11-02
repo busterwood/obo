@@ -1,0 +1,9 @@
+// expect: lit
+// expect: f
+type Fx = value record { v: int }
+fn (Fx) fromFraction(units: int, scale: int): Fx { println("lit"); return Fx{v: units} }
+fn f(): Fx { println("f"); return Fx{v: 1} }
+fn two(a: Fx, b: Fx) {}
+fn main() {
+    two(0.2, f())
+}

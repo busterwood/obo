@@ -1,0 +1,7 @@
+// expect: abcabc
+fn main() {
+    let s = "abc" + ""
+    var t = ""
+    t = t + s[0..1] + s[1..2] + s[2..] + s + t
+    println(t)
+}

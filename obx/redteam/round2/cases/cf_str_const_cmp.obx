@@ -1,0 +1,3 @@
+// expect: true
+const S: bool = "ab" < "b"
+fn main() { println(S.toStr()) }

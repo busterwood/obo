@@ -1,0 +1,9 @@
+// expect: a b c
+import "collections"
+fn main() {
+    var xs: []str = ["a", "a" + "", "b", "b", "b" + "", "c"]
+    collections.dedup(mut &xs)
+    var out = ""
+    for x in xs { out = out + x + " " }
+    println(out[0..len(out) - 1])
+}

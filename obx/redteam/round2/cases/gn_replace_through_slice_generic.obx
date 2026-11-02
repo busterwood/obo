@@ -1,0 +1,8 @@
+// expect: old new
+fn put[T](xs: mut &[T], i: int, v: T): T { return replace(mut &xs[i], v) }
+type B = record { s: str }
+fn main() {
+    var bs: []B = [B{s: "old" + ""}]
+    let o = put(mut &bs, 0, B{s: "new" + ""})
+    println(o.s + " " + bs[0].s)
+}

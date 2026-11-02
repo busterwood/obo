@@ -1,0 +1,10 @@
+// A drop method that builds and drops another value of a type with a drop method.
+// expect: outer
+// expect: inner
+type I = record { n: str }
+fn (i: mut &I) drop() { println(i.n) }
+type O = record { n: str }
+fn (o: mut &O) drop() { println(o.n); let i = I{n: "inner"} }
+fn main() {
+    let o = O{n: "outer"}
+}

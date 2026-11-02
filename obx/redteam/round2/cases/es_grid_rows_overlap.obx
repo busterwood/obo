@@ -1,0 +1,7 @@
+// Two rows of one grid count as overlapping (any two indexes of one array overlap).
+// error: twice|overlap
+fn cp(d: mut &[int], s: &[int]) { d[0] = s[0] }
+fn main() {
+    var g: [][]int = [[1, 2], [3, 4]]
+    cp(mut &g[0][..], g[1][..])
+}

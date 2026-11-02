@@ -1,0 +1,6 @@
+// error: held|overlap|borrow|moved
+fn g(xs: mut &[]str): str { xs = []; return "x" }
+fn main() {
+    var xs: []str = ["a", "b"]
+    let o = replace(mut &xs[0], g(mut &xs))
+}

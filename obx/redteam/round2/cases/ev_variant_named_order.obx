@@ -1,0 +1,7 @@
+// expect: y
+// expect: x
+type V = closed { A { x: int; y: int } }
+fn show(s: str, n: int): int { println(s); return n }
+fn main() {
+    let v = A{y: show("y", 1), x: show("x", 2)}
+}

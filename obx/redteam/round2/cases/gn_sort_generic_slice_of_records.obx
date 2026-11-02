@@ -1,0 +1,8 @@
+// expect: 1 2 3
+type P = record { k: int }
+fn (p: &P) cmp(o: &P): int { return p.k.cmp(&o.k) }
+fn main() {
+    var ps: []P = [P{k: 3}, P{k: 1}, P{k: 2}]
+    sort(mut &ps[..])
+    println(ps[0].k.toStr() + " " + ps[1].k.toStr() + " " + ps[2].k.toStr())
+}

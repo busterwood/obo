@@ -1,0 +1,7 @@
+// expect: 2
+type B = record { v: int }
+fn cnt[T](xs: &[T]): int { var n = 0; for x in xs { n += 1 }; return n }
+fn main() {
+    var xs: []B = [B{v: 1}, B{v: 2}, B{v: 3}]
+    println(cnt(xs[1..]).toStr())
+}

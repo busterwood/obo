@@ -1,0 +1,8 @@
+// expect: 3 30
+type P = value record { a: int; b: int; c: int }
+fn last[T: copy](xs: &[T]): T { return xs[len(xs) - 1] }
+fn main() {
+    let ps: []P = [P{a: 1, b: 10, c: 100}, P{a: 3, b: 30, c: 300}, P{a: 2, b: 20, c: 200}]
+    let p = last(ps[0..2])
+    println(p.a.toStr() + " " + p.b.toStr())
+}

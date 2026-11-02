@@ -1,0 +1,6 @@
+// expect: 44
+const K = 300 - 256
+fn main() {
+    let b: byte = K
+    println(b.toStr())
+}

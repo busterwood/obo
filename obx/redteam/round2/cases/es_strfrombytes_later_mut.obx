@@ -1,0 +1,6 @@
+// expect: ab0
+fn g(b: mut &[]byte): int { b = []; return 0 }
+fn main() {
+    var b: []byte = ['a', 'b']
+    println(strFromBytes(b[0..2]) + g(mut &b).toStr())
+}

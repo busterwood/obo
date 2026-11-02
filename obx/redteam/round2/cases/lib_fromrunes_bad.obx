@@ -1,0 +1,7 @@
+// An invalid code point becomes U+FFFD.
+// expect: �
+import "strings"
+fn main() {
+    let rs: []int = [-1]
+    println(strings.fromRunes(&rs))
+}

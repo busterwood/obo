@@ -1,0 +1,15 @@
+// error: borrowed|shared|assign
+type B = record { s: str }
+fn f(xs: mut &[Option[B]]) {
+    match xs[0] {
+        Some(b) {
+            xs[0] = None
+            println(b.s)
+        }
+        None {}
+    }
+}
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    f(mut &xs)
+}

@@ -1,0 +1,3 @@
+// error: overflow|fit|range
+const A: u32 = 0 - 1
+fn main() { println(A.toStr()) }

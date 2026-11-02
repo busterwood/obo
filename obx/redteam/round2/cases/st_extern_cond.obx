@@ -1,0 +1,6 @@
+// expect: yes
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "abcdef" + ""
+    if strlen(s[1..4]) == 3 && strlen(s[0..1]) == 1 { println("yes") }
+}

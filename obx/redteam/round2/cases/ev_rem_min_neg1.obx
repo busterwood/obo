@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    var a = -9223372036854775807 - 1
+    var b = -1
+    println((a % b).toStr())
+}

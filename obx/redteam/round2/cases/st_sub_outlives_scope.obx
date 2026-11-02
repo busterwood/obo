@@ -1,0 +1,9 @@
+// expect: cd
+fn main() {
+    var t = ""
+    {
+        let s = "ab" + "cd"
+        t = s[2..4]
+    }
+    println(t)
+}
