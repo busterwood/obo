@@ -1,0 +1,286 @@
+// ir: the backend's intermediate representation (design/native.md, sections 1 and 6).
+//
+// A program for a code generator: its types (with sizes, alignments and struct layouts, as
+// the platform ABI lays them out), functions, globals with constant initializers, and
+// bodies as typed trees of expressions and statements. Every implicit conversion is an
+// explicit node (E_CAST, E_DECAY, E_PADD for pointer arithmetic), so a code generator needs
+// no rules of the language the IR was read from. Nothing here is specific to a target
+// machine: no registers, instructions or encodings.
+//
+// Today cfront builds it from the generated C; later check.obx will build it directly and
+// both backends (C and x86-64) will be generated from it (section 1a).
+//
+// The IR is an arena like the obx AST (compiler/README.md): a node is a Node named by its
+// index, a list is an index into Ir.items (its length, then the elements).
+
+// ---------------------------------------------------------------- types
+
+pub const TY_VOID = 0
+pub const TY_BOOL = 1
+pub const TY_I8 = 2
+pub const TY_U8 = 3
+pub const TY_I16 = 4
+pub const TY_U16 = 5
+pub const TY_I32 = 6
+pub const TY_U32 = 7
+pub const TY_I64 = 8
+pub const TY_U64 = 9
+pub const TY_I128 = 10
+pub const TY_U128 = 11
+pub const TY_F64 = 12
+pub const TY_PTR = 13
+pub const TY_ARR = 14
+pub const TY_STRUCT = 15      // a struct or union
+pub const TY_FN = 16
+
+// The type ids of the scalar types are their kinds (tys[k] has kind k for k <= TY_F64).
+pub const T_VOIDP = 13        // void*
+pub const T_CHARP = 14        // char*
+
+pub type Ty = value record {
+    pub k: int
+    pub size: int
+    pub align: int
+    pub base: int         // pointee, element, or a function's result
+    pub n: int            // array length; a function's parameter list (items)
+    pub sid: int          // struct id
+}
+
+pub type Field = value record {
+    pub name: str
+    pub ty: int
+    pub off: int
+}
+
+pub type Struct = record {
+    pub name: str
+    pub isUnion: bool
+    pub fields: []Field
+    pub size: int
+    pub align: int
+    pub complete: bool
+    pub ty: int             // its type id
+}
+
+// ---------------------------------------------------------------- nodes
+
+// Expressions (ty: the type of the value).
+pub const E_INT = 1       // v: the value (64 bits, two's complement)
+pub const E_FLT = 2       // f
+pub const E_STR = 3       // s: the bytes (without the final NUL); its type is char[len+1]
+pub const E_LOCAL = 4     // a: local
+pub const E_GLOBAL = 5    // a: global
+pub const E_FUNC = 6      // a: function (a designator; E_DECAY makes its address)
+pub const E_CALL = 7      // a: callee (a function pointer value), b: arguments (list), c: function type
+pub const E_MEMBER = 8    // a: a struct value (lvalue or not), v: the byte offset
+pub const E_DEREF = 9     // a: a pointer
+pub const E_ADDR = 10     // a: an lvalue
+pub const E_DECAY = 11    // a: an array or function lvalue; its address
+pub const E_CAST = 12     // a: the operand (any conversion, to ty)
+pub const E_BIN = 13      // v: the operator (OP_*), a, b: operands of type c (converted)
+pub const E_NEG = 14      // a (of type ty)
+pub const E_BNOT = 15     // a (of type ty)
+pub const E_LNOT = 16     // a (scalar): int
+pub const E_LAND = 17     // a, b (scalars): int
+pub const E_LOR = 18
+pub const E_COND = 19     // a ? b : c (b and c converted to ty)
+pub const E_ASSIGN = 20   // a = b (b converted to the type of a)
+pub const E_POSTINC = 21  // a++ (v: +1 or -1; a is an integer or pointer lvalue; v scaled for pointers)
+pub const E_CLIT = 22     // a compound literal: b: initializer entries (list of E_IENT)
+pub const E_IENT = 23     // an initializer entry: v: offset, ty: the type stored, a: the value
+pub const E_PADD = 24     // a + b * v: pointer a (type ty), integer b (int64), element size v
+
+// Statements.
+pub const S_DECL = 40     // a: local, b: initializer expression or -1, c: initializer entries or -1
+pub const S_EXPR = 41     // a
+pub const S_IF = 42       // a: condition, b: then, c: else or -1
+pub const S_WHILE = 43    // a: condition, b: body
+pub const S_FOR = 44      // a: init statement or -1, b: condition or -1, c: step or -1, d: body
+pub const S_BREAK = 45
+pub const S_CONTINUE = 46
+pub const S_RETURN = 47   // a: value or -1 (converted to the result type)
+pub const S_BLOCK = 48    // a: statements (list)
+pub const S_SWITCH = 49   // a: the value (an integer of type ty), b: the body
+pub const S_CASE = 50     // v: the value
+pub const S_DEFAULT = 51
+pub const S_EMPTY = 52
+
+// Binary operators (E_BIN v).
+pub const OP_ADD = 0
+pub const OP_SUB = 1
+pub const OP_MUL = 2
+pub const OP_DIV = 3
+pub const OP_REM = 4
+pub const OP_SHL = 5
+pub const OP_SHR = 6
+pub const OP_AND = 7
+pub const OP_OR = 8
+pub const OP_XOR = 9
+pub const OP_EQ = 10
+pub const OP_NE = 11
+pub const OP_LT = 12
+pub const OP_LE = 13
+pub const OP_GT = 14
+pub const OP_GE = 15
+
+pub type Node = value record {
+    pub k: int
+    pub ty: int
+    pub line: int
+    pub a: int
+    pub b: int
+    pub c: int
+    pub d: int
+    pub v: int
+    pub f: float
+    pub s: str
+}
+
+pub type Local = value record {
+    pub name: str
+    pub ty: int
+}
+
+pub type Func = record {
+    pub name: str
+    pub ty: int             // TY_FN
+    pub params: []int       // locals (definitions only)
+    pub body: int           // S_BLOCK, or -1 for a declaration
+    pub asmName: str        // the symbol: the __asm__ label of an extern, else the name
+    pub isExtern: bool      // declared with extern and an __asm__ label (a C library function)
+    pub line: int
+}
+
+pub type Global = record {
+    pub name: str
+    pub ty: int
+    pub init: int           // initializer entries (list of E_IENT), or -1: zero
+    pub isConst: bool
+    pub line: int
+}
+
+pub type Ir = record {
+    pub tys: []Ty
+    pub structs: []Struct
+    pub nodes: []Node
+    pub items: []int
+    pub funcs: []Func
+    pub globals: []Global
+    pub locals: []Local
+    ptrOf: Map[int, int]
+}
+
+pub fn newIr(): Ir {
+    var p = Ir{tys: [], structs: [], nodes: [], items: [], funcs: [], globals: [], locals: [], ptrOf: newMap()}
+    let sizes: []int = [1, 1, 1, 1, 2, 2, 4, 4, 8, 8, 16, 16, 8]
+    for k in 0..13 {
+        append(mut &p.tys, Ty{k: k, size: sizes[k], align: sizes[k], base: -1, n: 0, sid: -1})
+    }
+    p.tys[TY_VOID].size = 0
+    let vp = p.ptrTo(TY_VOID)
+    let cp = p.ptrTo(TY_I8)
+    if vp != T_VOIDP || cp != T_CHARP { panic("ir: type table") }
+    return p
+}
+
+// ---------------------------------------------------------------- the type table
+
+pub fn (p: mut &Ir) ptrTo(t: int): int {
+    let have = p.ptrOf.getOr(&t, -1)
+    if have >= 0 { return have }
+    append(mut &p.tys, Ty{k: TY_PTR, size: 8, align: 8, base: t, n: 0, sid: -1})
+    let q = len(p.tys) - 1
+    p.ptrOf.put(t, q)
+    return q
+}
+
+pub fn (p: mut &Ir) arrOf(t: int, n: int): int {
+    let e = p.tys[t]
+    append(mut &p.tys, Ty{k: TY_ARR, size: e.size * n, align: e.align, base: t, n: n, sid: -1})
+    return len(p.tys) - 1
+}
+
+pub fn (p: mut &Ir) fnType(ret: int, params: &[]int): int {
+    append(mut &p.tys, Ty{k: TY_FN, size: 1, align: 1, base: ret, n: p.list(params), sid: -1})
+    return len(p.tys) - 1
+}
+
+pub fn (p: &Ir) tk(t: int): int { return p.tys[t].k }
+
+pub fn (p: &Ir) isInt(t: int): bool { return p.tys[t].k >= TY_BOOL && p.tys[t].k <= TY_U128 }
+
+pub fn (p: &Ir) isScalar(t: int): bool { return p.tys[t].k >= TY_BOOL && p.tys[t].k <= TY_PTR }
+
+pub fn (p: &Ir) isArith(t: int): bool { return p.tys[t].k >= TY_BOOL && p.tys[t].k <= TY_F64 }
+
+pub fn isSignedK(k: int): bool { return k == TY_I8 || k == TY_I16 || k == TY_I32 || k == TY_I64 || k == TY_I128 }
+
+pub fn (p: &Ir) isSigned(t: int): bool { return isSignedK(p.tys[t].k) }
+
+// A struct, union or array: a value that lives in memory.
+pub fn (p: &Ir) isAggr(t: int): bool { return p.tys[t].k == TY_STRUCT || p.tys[t].k == TY_ARR }
+
+pub fn (p: &Ir) sizeOf(t: int): int { return p.tys[t].size }
+
+pub fn (p: &Ir) alignOf(t: int): int { return p.tys[t].align }
+
+pub fn (p: &Ir) fnParams(f: int): []int {
+    let l = p.tys[f].n
+    var out: []int = []
+    for j in 0..p.items[l] { append(mut &out, p.items[l + 1 + j]) }
+    return out
+}
+
+pub fn (p: &Ir) typeName(t: int): str {
+    let k = p.tys[t].k
+    let names: []str = ["void", "bool", "int8_t", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t", "int64_t",
+        "uint64_t", "__int128", "unsigned __int128", "double"]
+    if k <= TY_F64 { return names[k] }
+    if k == TY_PTR { return p.typeName(p.tys[t].base) + "*" }
+    if k == TY_ARR { return p.typeName(p.tys[t].base) + "[" + intToStr(p.tys[t].n) + "]" }
+    if k == TY_STRUCT { return "struct " + p.structs[p.tys[t].sid].name }
+    return "function"
+}
+
+// ---------------------------------------------------------------- lists and nodes
+
+pub fn (p: mut &Ir) list(xs: &[]int): int {
+    let at = len(p.items)
+    append(mut &p.items, len(xs))
+    for x in xs { append(mut &p.items, x) }
+    return at
+}
+
+pub fn (p: &Ir) listLen(l: int): int { return p.items[l] }
+
+pub fn (p: &Ir) listAt(l: int, j: int): int { return p.items[l + 1 + j] }
+
+pub fn (p: &Ir) nk(n: int): int { return p.nodes[n].k }
+
+pub fn (p: &Ir) nty(n: int): int { return p.nodes[n].ty }
+
+
+pub fn failAt(what: str, line: int, msg: str): never {
+    writeFd(2, "native: unsupported: " + msg + " (" + what + " " + intToStr(line) + ")\n")
+    exit(1)
+}
+
+pub fn alignUp(v: int, a: int): int { return (v + a - 1) / a * a }
+
+// v as a value of the integer kind k (wrapped, then extended to 64 bits).
+pub fn truncTo(k: int, v: int): int {
+    if k == TY_BOOL { return if v != 0 { 1 } else { 0 } }
+    if k == TY_I8 || k == TY_U8 {
+        let x = v & 255
+        return if k == TY_I8 && x >= 128 { x - 256 } else { x }
+    }
+    if k == TY_I16 || k == TY_U16 {
+        let x = v & 65535
+        return if k == TY_I16 && x >= 32768 { x - 65536 } else { x }
+    }
+    if k == TY_I32 || k == TY_U32 {
+        let x = v & 4294967295
+        return if k == TY_I32 && x >= 2147483648 { x - 4294967296 } else { x }
+    }
+    return v
+}

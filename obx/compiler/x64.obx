@@ -1,0 +1,666 @@
+// x64: the x86-64 instruction encoder of the native backend (design/native.md).
+//
+// An Asm is a code buffer with labels (jumps within it, resolved by fixLabels) and
+// relocations (references to symbols outside it: calls, addresses of data, resolved by the
+// linker in native.obx). The encodings are those GNU as chooses for the same instruction
+// (the register-to-register ALU forms with the destination in r/m, the accumulator forms
+// of the immediate ALU, `shl r, 1` as D1), so that tools/x64_encode_test.py can compare the
+// bytes with as's: `obxc --encode-test file` reads one instruction per line (the format of
+// runTest below) and prints the bytes of each in hex.
+
+// Registers (their encoding numbers); xmm registers are 0 to 15 in their own operands.
+pub const RAX = 0
+pub const RCX = 1
+pub const RDX = 2
+pub const RBX = 3
+pub const RSP = 4
+pub const RBP = 5
+pub const RSI = 6
+pub const RDI = 7
+pub const R8 = 8
+pub const R9 = 9
+pub const R10 = 10
+pub const R11 = 11
+pub const R12 = 12
+pub const R13 = 13
+pub const R14 = 14
+pub const R15 = 15
+
+// ALU operations (the /digit of 0x81, 0x83 and the opcode row of the r/m forms).
+pub const ADD = 0
+pub const OR = 1
+pub const ADC = 2
+pub const SBB = 3
+pub const AND = 4
+pub const SUB = 5
+pub const XOR = 6
+pub const CMP = 7
+
+// Unary group 3 (0xF7 /digit).
+pub const NOT = 2
+pub const NEG = 3
+pub const MUL = 4
+pub const IMUL1 = 5
+pub const DIV = 6
+pub const IDIV = 7
+
+// Shifts (0xD3 /digit, 0xC1 /digit).
+pub const SHL = 4
+pub const SHR = 5
+pub const SAR = 7
+
+// Condition codes.
+pub const CC_O = 0
+pub const CC_NO = 1
+pub const CC_B = 2
+pub const CC_AE = 3
+pub const CC_E = 4
+pub const CC_NE = 5
+pub const CC_BE = 6
+pub const CC_A = 7
+pub const CC_S = 8
+pub const CC_NS = 9
+pub const CC_P = 10
+pub const CC_NP = 11
+pub const CC_L = 12
+pub const CC_GE = 13
+pub const CC_LE = 14
+pub const CC_G = 15
+
+// SSE2 scalar double operations (F2 0F op), and the 66 0F ones.
+pub const ADDSD = 0x58
+pub const MULSD = 0x59
+pub const SUBSD = 0x5C
+pub const DIVSD = 0x5E
+pub const SQRTSD = 0x51
+pub const MOVSD = 0x10
+pub const UCOMISD = 0x2E
+pub const XORPD = 0x57
+
+// Relocation kinds: a 32-bit displacement to the symbol from the end of the field (calls,
+// jumps), the symbol's absolute address in 32 bits (sign-extended by the CPU: everything
+// is below 2 GiB) or in 64 bits.
+pub const R_REL32 = 0
+pub const R_ABS32 = 1
+pub const R_ABS64 = 2
+
+// A memory operand [base + index*scale + disp]; base -1 with index -1 is an absolute
+// address (disp), encoded with a SIB byte and no base.
+pub type Mem = value record {
+    pub base: int
+    pub index: int
+    pub scale: int
+    pub disp: int
+}
+
+pub fn mem(base: int, disp: int): Mem { return Mem{base: base, index: -1, scale: 1, disp: disp} }
+
+pub fn memx(base: int, index: int, scale: int, disp: int): Mem {
+    return Mem{base: base, index: index, scale: scale, disp: disp}
+}
+
+pub fn absMem(addr: int): Mem { return Mem{base: -1, index: -1, scale: 1, disp: addr} }
+
+type Fix = value record {
+    at: int         // the rel32 field
+    label: int
+}
+
+pub type Reloc = value record {
+    pub at: int         // the field
+    pub sym: int        // the linker's symbol number
+    pub kind: int       // R_*
+    pub addend: int
+}
+
+pub type Asm = record {
+    pub code: []byte
+    labels: []int           // label -> position, -1 while unbound
+    fixes: []Fix
+    pub relocs: []Reloc
+}
+
+pub fn newAsm(): Asm { return Asm{code: [], labels: [], fixes: [], relocs: []} }
+
+pub fn (a: &Asm) pos(): int { return len(a.code) }
+
+pub fn (a: mut &Asm) b(x: int) { append(mut &a.code, byte(x & 255)) }
+
+pub fn (a: mut &Asm) d32(x: int) {
+    a.b(x)
+    a.b(x >> 8)
+    a.b(x >> 16)
+    a.b(x >> 24)
+}
+
+pub fn (a: mut &Asm) d64(x: int) {
+    a.d32(x)
+    a.d32(x >> 32)
+}
+
+// Overwrites the 32-bit field at.
+pub fn (a: mut &Asm) put32(at: int, x: int) {
+    a.code[at] = byte(x & 255)
+    a.code[at + 1] = byte((x >> 8) & 255)
+    a.code[at + 2] = byte((x >> 16) & 255)
+    a.code[at + 3] = byte((x >> 24) & 255)
+}
+
+pub fn fits8(v: int): bool { return v >= -128 && v < 128 }
+
+pub fn fits32(v: int): bool { return v >= -2147483648 && v < 2147483648 }
+
+// ---------------------------------------------------------------- ModRM forms
+
+// prefix (0, or 0x66, 0xF2, 0xF3), REX, the opcode (one to three bytes: 0x0FAF is 0F AF).
+fn (a: mut &Asm) head(pfx: int, w: bool, opc: int, reg: int, x: int, bse: int, force: bool) {
+    if pfx != 0 { a.b(pfx) }
+    var r = 0x40
+    if w { r = r | 8 }
+    r = r | (((reg >> 3) & 1) << 2) | (((x >> 3) & 1) << 1) | ((bse >> 3) & 1)
+    if r != 0x40 || force { a.b(r) }
+    if opc > 0xFFFF { a.b(opc >> 16) }
+    if opc > 0xFF { a.b(opc >> 8) }
+    a.b(opc)
+}
+
+// byte: an 8-bit register operand (spl, bpl, sil, dil need a REX prefix to be named).
+fn lowByte(r: int): bool { return r >= 4 && r <= 7 }
+
+// opc reg, rm (both registers). breg/brm: the operand is a byte register.
+pub fn (a: mut &Asm) rr(pfx: int, w: bool, opc: int, reg: int, rm: int, breg: bool, brm: bool) {
+    a.head(pfx, w, opc, reg, 0, rm, (breg && lowByte(reg)) || (brm && lowByte(rm)))
+    a.b(0xC0 | ((reg & 7) << 3) | (rm & 7))
+}
+
+// opc reg, [m].
+pub fn (a: mut &Asm) rm(pfx: int, w: bool, opc: int, reg: int, m: Mem, breg: bool) {
+    let x = if m.index >= 0 { m.index } else { 0 }
+    let bs = if m.base >= 0 { m.base } else { 0 }
+    a.head(pfx, w, opc, reg, x, bs, breg && lowByte(reg))
+    if m.base < 0 && m.index < 0 {
+        a.b(0x04 | ((reg & 7) << 3))
+        a.b(0x25)
+        a.d32(m.disp)
+        return
+    }
+    var md = 2
+    if m.base >= 0 && m.disp == 0 && (m.base & 7) != 5 {
+        md = 0
+    } else if m.base >= 0 && fits8(m.disp) {
+        md = 1
+    }
+    if m.index >= 0 {
+        let ss = if m.scale == 1 { 0 } else if m.scale == 2 { 1 } else if m.scale == 4 { 2 } else { 3 }
+        if m.base < 0 {             // [index*scale + disp32]: no base
+            a.b(((reg & 7) << 3) | 4)
+            a.b((ss << 6) | ((m.index & 7) << 3) | 5)
+            a.d32(m.disp)
+            return
+        }
+        a.b((md << 6) | ((reg & 7) << 3) | 4)
+        a.b((ss << 6) | ((m.index & 7) << 3) | (m.base & 7))
+    } else if (m.base & 7) == 4 {
+        a.b((md << 6) | ((reg & 7) << 3) | 4)
+        a.b(0x24)
+    } else {
+        a.b((md << 6) | ((reg & 7) << 3) | (m.base & 7))
+    }
+    if md == 1 {
+        a.b(m.disp)
+    } else if md == 2 {
+        a.d32(m.disp)
+    }
+}
+
+fn pfxOf(size: int): int { return if size == 2 { 0x66 } else { 0 } }
+
+// ---------------------------------------------------------------- moves
+
+// mov dst, src (size 1, 2, 4 or 8; a 4-byte move zero-extends to 64 bits).
+pub fn (a: mut &Asm) movRR(size: int, dst: int, src: int) {
+    a.rr(pfxOf(size), size == 8, if size == 1 { 0x88 } else { 0x89 }, src, dst, size == 1, size == 1)
+}
+
+pub fn (a: mut &Asm) load(size: int, dst: int, m: Mem) {
+    a.rm(pfxOf(size), size == 8, if size == 1 { 0x8A } else { 0x8B }, dst, m, size == 1)
+}
+
+pub fn (a: mut &Asm) store(size: int, m: Mem, src: int) {
+    a.rm(pfxOf(size), size == 8, if size == 1 { 0x88 } else { 0x89 }, src, m, size == 1)
+}
+
+// A load of size bytes, zero- or sign-extended to 64 bits.
+pub fn (a: mut &Asm) loadZX(size: int, dst: int, m: Mem) {
+    if size == 1 {
+        a.rm(0, false, 0x0FB6, dst, m, false)
+    } else if size == 2 {
+        a.rm(0, false, 0x0FB7, dst, m, false)
+    } else {
+        a.load(size, dst, m)
+    }
+}
+
+pub fn (a: mut &Asm) loadSX(size: int, dst: int, m: Mem) {
+    if size == 1 {
+        a.rm(0, true, 0x0FBE, dst, m, false)
+    } else if size == 2 {
+        a.rm(0, true, 0x0FBF, dst, m, false)
+    } else if size == 4 {
+        a.rm(0, true, 0x63, dst, m, false)
+    } else {
+        a.load(8, dst, m)
+    }
+}
+
+// dst = the low size bytes of src, zero- or sign-extended to 64 bits.
+pub fn (a: mut &Asm) zx(size: int, dst: int, src: int) {
+    if size == 1 {
+        a.rr(0, false, 0x0FB6, dst, src, false, true)
+    } else if size == 2 {
+        a.rr(0, false, 0x0FB7, dst, src, false, false)
+    } else if size == 4 {
+        a.movRR(4, dst, src)
+    } else if dst != src {
+        a.movRR(8, dst, src)
+    }
+}
+
+pub fn (a: mut &Asm) sx(size: int, dst: int, src: int) {
+    if size == 1 {
+        a.rr(0, true, 0x0FBE, dst, src, false, true)
+    } else if size == 2 {
+        a.rr(0, true, 0x0FBF, dst, src, false, false)
+    } else if size == 4 {
+        a.rr(0, true, 0x63, dst, src, false, false)
+    } else if dst != src {
+        a.movRR(8, dst, src)
+    }
+}
+
+// mov r, v: the shortest of mov r32, imm32 (zero-extends), mov r64, simm32 and movabs.
+pub fn (a: mut &Asm) movRI(r: int, v: int) {
+    if v >= 0 && v < 4294967296 {
+        if r >= 8 { a.b(0x41) }
+        a.b(0xB8 + (r & 7))
+        a.d32(v)
+    } else if fits32(v) {
+        a.rr(0, true, 0xC7, 0, r, false, false)
+        a.d32(v)
+    } else {
+        a.b(0x48 | ((r >> 3) & 1))
+        a.b(0xB8 + (r & 7))
+        a.d64(v)
+    }
+}
+
+// mov r, imm32 with the immediate a relocation (the absolute address of sym + addend).
+pub fn (a: mut &Asm) movRSym(r: int, sym: int, addend: int) {
+    if r >= 8 { a.b(0x41) }
+    a.b(0xB8 + (r & 7))
+    append(mut &a.relocs, Reloc{at: a.pos(), sym: sym, kind: R_ABS32, addend: addend})
+    a.d32(0)
+}
+
+// mov [m], imm32 (sign-extended for size 8).
+pub fn (a: mut &Asm) storeI(size: int, m: Mem, v: int) {
+    if size == 1 {
+        a.rm(0, false, 0xC6, 0, m, false)
+        a.b(v)
+    } else {
+        a.rm(pfxOf(size), size == 8, 0xC7, 0, m, false)
+        if size == 2 {
+            a.b(v)
+            a.b(v >> 8)
+        } else {
+            a.d32(v)
+        }
+    }
+}
+
+pub fn (a: mut &Asm) lea(dst: int, m: Mem) { a.rm(0, true, 0x8D, dst, m, false) }
+
+// ---------------------------------------------------------------- arithmetic
+
+// op dst, src (ADD ... CMP).
+pub fn (a: mut &Asm) alu(op: int, size: int, dst: int, src: int) {
+    a.rr(pfxOf(size), size == 8, op * 8 + (if size == 1 { 0 } else { 1 }), src, dst, size == 1, size == 1)
+}
+
+// op dst, [m].
+pub fn (a: mut &Asm) aluRM(op: int, size: int, dst: int, m: Mem) {
+    a.rm(pfxOf(size), size == 8, op * 8 + (if size == 1 { 2 } else { 3 }), dst, m, size == 1)
+}
+
+// op dst, imm (size 4 or 8; the immediate fits 32 bits, sign-extended).
+pub fn (a: mut &Asm) aluI(op: int, size: int, dst: int, v: int) {
+    if fits8(v) {
+        a.rr(0, size == 8, 0x83, op, dst, false, false)
+        a.b(v)
+    } else if dst == RAX {
+        if size == 8 { a.b(0x48) }
+        a.b(op * 8 + 5)
+        a.d32(v)
+    } else {
+        a.rr(0, size == 8, 0x81, op, dst, false, false)
+        a.d32(v)
+    }
+}
+
+pub fn (a: mut &Asm) test(size: int, x: int, y: int) {
+    a.rr(pfxOf(size), size == 8, if size == 1 { 0x84 } else { 0x85 }, y, x, size == 1, size == 1)
+}
+
+// imul dst, src (size 4 or 8).
+pub fn (a: mut &Asm) imul(size: int, dst: int, src: int) { a.rr(0, size == 8, 0x0FAF, dst, src, false, false) }
+
+// NOT, NEG, MUL, IMUL1, DIV, IDIV of r (size 4 or 8).
+pub fn (a: mut &Asm) unary(op: int, size: int, r: int) { a.rr(0, size == 8, 0xF7, op, r, false, false) }
+
+// SHL, SHR, SAR r by cl.
+pub fn (a: mut &Asm) shiftCL(op: int, size: int, r: int) { a.rr(0, size == 8, 0xD3, op, r, false, false) }
+
+pub fn (a: mut &Asm) shiftI(op: int, size: int, r: int, n: int) {
+    if n == 1 {
+        a.rr(0, size == 8, 0xD1, op, r, false, false)
+    } else {
+        a.rr(0, size == 8, 0xC1, op, r, false, false)
+        a.b(n)
+    }
+}
+
+// shld dst, src, cl / shrd dst, src, cl (64-bit).
+pub fn (a: mut &Asm) shldCL(dst: int, src: int) { a.rr(0, true, 0x0FA5, src, dst, false, false) }
+
+pub fn (a: mut &Asm) shrdCL(dst: int, src: int) { a.rr(0, true, 0x0FAD, src, dst, false, false) }
+
+// setcc r8.
+pub fn (a: mut &Asm) setcc(cc: int, r: int) { a.rr(0, false, 0x0F90 + cc, 0, r, false, true) }
+
+// cmovcc dst, src (64-bit).
+pub fn (a: mut &Asm) cmov(cc: int, dst: int, src: int) { a.rr(0, true, 0x0F40 + cc, dst, src, false, false) }
+
+pub fn (a: mut &Asm) cqo() {
+    a.b(0x48)
+    a.b(0x99)
+}
+
+pub fn (a: mut &Asm) cdq() { a.b(0x99) }
+
+pub fn (a: mut &Asm) push(r: int) {
+    if r >= 8 { a.b(0x41) }
+    a.b(0x50 + (r & 7))
+}
+
+pub fn (a: mut &Asm) pop(r: int) {
+    if r >= 8 { a.b(0x41) }
+    a.b(0x58 + (r & 7))
+}
+
+pub fn (a: mut &Asm) ret() { a.b(0xC3) }
+
+pub fn (a: mut &Asm) ud2() {
+    a.b(0x0F)
+    a.b(0x0B)
+}
+
+// call r / jmp r.
+pub fn (a: mut &Asm) callR(r: int) { a.rr(0, false, 0xFF, 2, r, false, false) }
+
+pub fn (a: mut &Asm) jmpR(r: int) { a.rr(0, false, 0xFF, 4, r, false, false) }
+
+// rep movsb (rdi <- rsi, rcx bytes) and rep stosb (rdi <- al, rcx bytes).
+pub fn (a: mut &Asm) repMovsb() {
+    a.b(0xF3)
+    a.b(0xA4)
+}
+
+pub fn (a: mut &Asm) repStosb() {
+    a.b(0xF3)
+    a.b(0xAA)
+}
+
+// ---------------------------------------------------------------- SSE2
+
+// op xd, xs: addsd, mulsd, subsd, divsd, sqrtsd, movsd (F2 0F op).
+pub fn (a: mut &Asm) sse(op: int, dst: int, src: int) { a.rr(0xF2, false, 0x0F00 + op, dst, src, false, false) }
+
+// ucomisd, xorpd (66 0F op).
+pub fn (a: mut &Asm) sse66(op: int, dst: int, src: int) { a.rr(0x66, false, 0x0F00 + op, dst, src, false, false) }
+
+pub fn (a: mut &Asm) movsdLoad(x: int, m: Mem) { a.rm(0xF2, false, 0x0F10, x, m, false) }
+
+pub fn (a: mut &Asm) movsdStore(m: Mem, x: int) { a.rm(0xF2, false, 0x0F11, x, m, false) }
+
+// movq x, r / movq r, x (64 bits between an integer and an xmm register).
+pub fn (a: mut &Asm) movqXR(x: int, r: int) { a.rr(0x66, true, 0x0F6E, x, r, false, false) }
+
+pub fn (a: mut &Asm) movqRX(r: int, x: int) { a.rr(0x66, true, 0x0F7E, x, r, false, false) }
+
+// cvtsi2sd x, r64 and cvttsd2si r64, x.
+pub fn (a: mut &Asm) cvtsi2sd(x: int, r: int) { a.rr(0xF2, true, 0x0F2A, x, r, false, false) }
+
+pub fn (a: mut &Asm) cvttsd2si(r: int, x: int) { a.rr(0xF2, true, 0x0F2C, r, x, false, false) }
+
+// ---------------------------------------------------------------- labels and relocations
+
+pub fn (a: mut &Asm) newLabel(): int {
+    append(mut &a.labels, -1)
+    return len(a.labels) - 1
+}
+
+pub fn (a: mut &Asm) bind(l: int) { a.labels[l] = a.pos() }
+
+pub fn (a: mut &Asm) jcc(cc: int, l: int) {
+    a.b(0x0F)
+    a.b(0x80 + cc)
+    append(mut &a.fixes, Fix{at: a.pos(), label: l})
+    a.d32(0)
+}
+
+pub fn (a: mut &Asm) jmp(l: int) {
+    a.b(0xE9)
+    append(mut &a.fixes, Fix{at: a.pos(), label: l})
+    a.d32(0)
+}
+
+// call sym (a relocation).
+pub fn (a: mut &Asm) callSym(sym: int) {
+    a.b(0xE8)
+    append(mut &a.relocs, Reloc{at: a.pos(), sym: sym, kind: R_REL32, addend: 0})
+    a.d32(0)
+}
+
+// A 32-bit absolute-address field for sym + addend at the current position (the disp32 of
+// an absMem operand is the last 4 bytes of the instruction when it has no immediate).
+pub fn (a: mut &Asm) relocAbs32(at: int, sym: int, addend: int) {
+    append(mut &a.relocs, Reloc{at: at, sym: sym, kind: R_ABS32, addend: addend})
+}
+
+// Resolves the jumps to labels; every label used must be bound.
+pub fn (a: mut &Asm) fixLabels() {
+    for i in 0..len(a.fixes) {
+        let f = a.fixes[i]
+        let t = a.labels[f.label]
+        if t < 0 { panic("x64: unbound label") }
+        a.put32(f.at, t - (f.at + 4))
+    }
+    a.fixes = []
+}
+
+// ---------------------------------------------------------------- the encoder test
+
+fn words(s: str): []str {
+    var out: []str = []
+    var start = -1
+    for i in 0..len(s) + 1 {
+        let sp = i == len(s) || strByte(s, i) == ' '
+        if sp && start >= 0 {
+            append(mut &out, s[start..i])
+            start = -1
+        } else if !sp && start < 0 {
+            start = i
+        }
+    }
+    return out
+}
+
+fn num(s: str): int {
+    var i = 0
+    var neg = false
+    if strByte(s, 0) == '-' {
+        neg = true
+        i = 1
+    }
+    var v = 0
+    while i < len(s) {
+        v = v * 10 + int(strByte(s, i) - '0')
+        i += 1
+    }
+    return if neg { -v } else { v }
+}
+
+// m:base,index,scale,disp
+fn memOf(s: str): Mem {
+    var ps: []int = []
+    var start = 2
+    for i in 2..len(s) + 1 {
+        if i == len(s) || strByte(s, i) == ',' {
+            append(mut &ps, num(s[start..i]))
+            start = i + 1
+        }
+    }
+    return Mem{base: ps[0], index: ps[1], scale: ps[2], disp: ps[3]}
+}
+
+const ALU_NAMES: []str = ["add", "or", "adc", "sbb", "and", "sub", "xor", "cmp"]
+const UN_NAMES: []str = ["", "", "not", "neg", "mul", "imul", "div", "idiv"]
+const SH_NAMES: []str = ["", "", "", "", "shl", "shr", "", "sar"]
+
+fn nameIndex(names: &[str], n: str): int {
+    for i in 0..len(names) {
+        if names[i] == n { return i }
+    }
+    panic("x64 test: unknown name " + n)
+}
+
+const SSE_NAMES: []str = ["addsd", "mulsd", "subsd", "divsd", "sqrtsd", "movsd"]
+const SSE_OPS: []int = [0x58, 0x59, 0x5C, 0x5E, 0x51, 0x10]
+
+// One instruction of the test format (operands are numbers; m: is a memory operand):
+//   alu OP SIZE DST SRC | alui OP SIZE DST IMM | alum OP SIZE DST MEM | test SIZE A B
+//   mov SIZE DST SRC | load SIZE DST MEM | store SIZE MEM SRC | storei SIZE MEM IMM
+//   loadzx SIZE DST MEM | loadsx SIZE DST MEM | zx SIZE DST SRC | sx SIZE DST SRC
+//   lea DST MEM | movri R IMM | imul SIZE DST SRC | un OP SIZE R | shcl OP SIZE R
+//   shi OP SIZE R N | setcc CC R | cmov CC DST SRC | push R | pop R | callr R | jmpr R
+//   shld DST SRC | shrd DST SRC
+//   ret | cqo | cdq | movsb | stosb | ud2 | sse OP X Y | ucomisd X Y | xorpd X Y
+//   movsdload X MEM | movsdstore MEM X | movqxr X R | movqrx R X | cvtsi2sd X R
+//   cvttsd2si R X
+fn (a: mut &Asm) testLine(l: str) {
+    let w = words(l)
+    if len(w) == 0 { return }
+    let k = w[0]
+    if k == "alu" {
+        a.alu(nameIndex(ALU_NAMES, w[1]), num(w[2]), num(w[3]), num(w[4]))
+    } else if k == "alui" {
+        a.aluI(nameIndex(ALU_NAMES, w[1]), num(w[2]), num(w[3]), num(w[4]))
+    } else if k == "alum" {
+        a.aluRM(nameIndex(ALU_NAMES, w[1]), num(w[2]), num(w[3]), memOf(w[4]))
+    } else if k == "test" {
+        a.test(num(w[1]), num(w[2]), num(w[3]))
+    } else if k == "mov" {
+        a.movRR(num(w[1]), num(w[2]), num(w[3]))
+    } else if k == "load" {
+        a.load(num(w[1]), num(w[2]), memOf(w[3]))
+    } else if k == "store" {
+        a.store(num(w[1]), memOf(w[2]), num(w[3]))
+    } else if k == "storei" {
+        a.storeI(num(w[1]), memOf(w[2]), num(w[3]))
+    } else if k == "loadzx" {
+        a.loadZX(num(w[1]), num(w[2]), memOf(w[3]))
+    } else if k == "loadsx" {
+        a.loadSX(num(w[1]), num(w[2]), memOf(w[3]))
+    } else if k == "zx" {
+        a.zx(num(w[1]), num(w[2]), num(w[3]))
+    } else if k == "sx" {
+        a.sx(num(w[1]), num(w[2]), num(w[3]))
+    } else if k == "lea" {
+        a.lea(num(w[1]), memOf(w[2]))
+    } else if k == "movri" {
+        a.movRI(num(w[1]), num(w[2]))
+    } else if k == "imul" {
+        a.imul(num(w[1]), num(w[2]), num(w[3]))
+    } else if k == "un" {
+        a.unary(nameIndex(UN_NAMES, w[1]), num(w[2]), num(w[3]))
+    } else if k == "shcl" {
+        a.shiftCL(nameIndex(SH_NAMES, w[1]), num(w[2]), num(w[3]))
+    } else if k == "shi" {
+        a.shiftI(nameIndex(SH_NAMES, w[1]), num(w[2]), num(w[3]), num(w[4]))
+    } else if k == "shld" {
+        a.shldCL(num(w[1]), num(w[2]))
+    } else if k == "shrd" {
+        a.shrdCL(num(w[1]), num(w[2]))
+    } else if k == "setcc" {
+        a.setcc(num(w[1]), num(w[2]))
+    } else if k == "cmov" {
+        a.cmov(num(w[1]), num(w[2]), num(w[3]))
+    } else if k == "push" {
+        a.push(num(w[1]))
+    } else if k == "pop" {
+        a.pop(num(w[1]))
+    } else if k == "callr" {
+        a.callR(num(w[1]))
+    } else if k == "jmpr" {
+        a.jmpR(num(w[1]))
+    } else if k == "ret" {
+        a.ret()
+    } else if k == "cqo" {
+        a.cqo()
+    } else if k == "cdq" {
+        a.cdq()
+    } else if k == "movsb" {
+        a.repMovsb()
+    } else if k == "stosb" {
+        a.repStosb()
+    } else if k == "ud2" {
+        a.ud2()
+    } else if k == "sse" {
+        a.sse(SSE_OPS[nameIndex(SSE_NAMES, w[1])], num(w[2]), num(w[3]))
+    } else if k == "ucomisd" {
+        a.sse66(UCOMISD, num(w[1]), num(w[2]))
+    } else if k == "xorpd" {
+        a.sse66(XORPD, num(w[1]), num(w[2]))
+    } else if k == "movsdload" {
+        a.movsdLoad(num(w[1]), memOf(w[2]))
+    } else if k == "movsdstore" {
+        a.movsdStore(memOf(w[1]), num(w[2]))
+    } else if k == "movqxr" {
+        a.movqXR(num(w[1]), num(w[2]))
+    } else if k == "movqrx" {
+        a.movqRX(num(w[1]), num(w[2]))
+    } else if k == "cvtsi2sd" {
+        a.cvtsi2sd(num(w[1]), num(w[2]))
+    } else if k == "cvttsd2si" {
+        a.cvttsd2si(num(w[1]), num(w[2]))
+    } else {
+        panic("x64 test: unknown instruction " + k)
+    }
+}
+
+// The bytes of each instruction of text (one per line), in hex, one line each.
+pub fn runTest(text: str): str {
+    var out = newStrBuf()
+    let hex = "0123456789abcdef"
+    for l in split(text, '\n') {
+        if len(trim(l)) == 0 { continue }
+        var a = newAsm()
+        a.testLine(l)
+        for x in a.code {
+            out.addByte(strByte(hex, int(x >> 4)))
+            out.addByte(strByte(hex, int(x & 15)))
+        }
+        out.addByte('\n')
+    }
+    return out.toStr()
+}

@@ -1,0 +1,1508 @@
+// x64gen: the x86-64 target layer (design/native.md, sections 3 to 6): instruction
+// selection, the SysV calling convention, frames, and the link of the program with the
+// runtime of rtx.obx. Its input is the IR (ir.obx); it emits machine code through the
+// encoder (x64.obx) and hands the segments to the executable writer (elf.obx).
+//
+// build(p) generates code for every function, lays out the data, links and returns the
+// bytes of a static ELF executable.
+//
+// Code generation is simple and correct first (section 4): every local has a stack slot
+// (rbp-relative); an expression's value is in rax (integers and pointers, normalized to 64
+// bits from their type), rax:rdx (128-bit integers), xmm0 (double), or, for a struct or
+// array, rax holds its address. Temporaries are stack slots that live until the end of
+// the statement. rsp is fixed in a function's body; the outgoing-argument area is at its
+// bottom.
+
+import "./ir"
+import "./x64"
+import "./elf"
+import "./rtx"
+
+const RAX = 0
+const RCX = 1
+const RDX = 2
+const RSP = 4
+const RBP = 5
+const RSI = 6
+const RDI = 7
+const R8 = 8
+const R9 = 9
+const R10 = 10
+const R11 = 11
+
+const INT_REGS: []int = [7, 6, 2, 1, 8, 9]       // rdi rsi rdx rcx r8 r9
+
+// Symbol kinds.
+const SK_FUNC = 0        // idx: a function with a body
+const SK_GLOBAL = 1      // idx: a global
+const SK_STR = 2         // idx: a string literal in rodata
+const SK_ABS = 3         // addr: a runtime symbol
+
+type Sym = value record {
+    kind: int
+    idx: int
+    addr: int
+}
+
+type DataReloc = value record {
+    ro: bool            // in rodata (else data)
+    off: int
+    sym: int
+    addend: int
+}
+
+// Eightbyte classes (SysV): a value's list of them, or [CL_MEM].
+const CL_NONE = 0
+const CL_INT = 1
+const CL_SSE = 2
+const CL_MEM = -1
+
+// Condition codes of float compares that need two flags.
+const CC_FEQ = -2
+const CC_FNE = -3
+
+type Gen = record {
+    u: ir.Ir
+    a: x64.Asm
+    syms: []Sym
+    rtAddr: Map[str, int]
+    funcSym: []int
+    globalSym: []int
+    strSym: Map[str, int]
+    strs: []str
+    funcPos: []int
+    slots: []int
+    frame: int
+    maxFrame: int
+    outArgs: int
+    declMark: int
+    breakL: []int
+    contL: []int
+    caseL: Map[int, int]
+    retPtr: int
+    retTy: int
+    entrySym: int
+}
+
+fn newGen(u: ir.Ir): Gen {
+    var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
+        strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
+        caseL: newMap(), retPtr: 0, retTy: 0, entrySym: -1}
+    for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
+    for i in 0..len(g.u.funcs) {
+        append(mut &g.funcSym, -1)
+        append(mut &g.funcPos, -1)
+    }
+    for i in 0..len(g.u.globals) {
+        append(mut &g.syms, Sym{kind: SK_GLOBAL, idx: i, addr: 0})
+        append(mut &g.globalSym, len(g.syms) - 1)
+    }
+    for i in 0..len(g.u.locals) { append(mut &g.slots, 0) }
+    return g
+}
+
+fn (g: &Gen) fail(e: int, msg: str): never { ir.failAt("C line", g.u.nodes[e].line, msg) }
+
+// ---------------------------------------------------------------- the build
+
+// The executable for the program p.
+pub fn build(p: ir.Ir): []byte {
+    var g = newGen(p)
+    g.genAll()
+    return g.link()
+}
+
+fn (g: mut &Gen) genAll() {
+    let main = g.findFunc("main")
+    if main < 0 { ir.failAt("C line", 1, "no main function") }
+    // the entry: rt_n_start(sp, main)
+    g.a.movRR(8, RDI, RSP)
+    g.a.movRSym(RSI, g.symFunc(main, -1), 0)
+    g.a.aluI(x64.AND, 8, RSP, -16)
+    g.a.callSym(g.symRt("rt_n_start"))
+    g.a.ud2()
+    for f in 0..len(g.u.funcs) {
+        if g.u.funcs[f].body >= 0 { g.genFunc(f) }
+    }
+    g.a.fixLabels()
+}
+
+fn (g: &Gen) findFunc(name: str): int {
+    for f in 0..len(g.u.funcs) {
+        if g.u.funcs[f].name == name { return f }
+    }
+    return -1
+}
+
+fn (g: mut &Gen) symFunc(f: int, e: int): int {
+    if g.funcSym[f] >= 0 { return g.funcSym[f] }
+    if g.u.funcs[f].body >= 0 {
+        append(mut &g.syms, Sym{kind: SK_FUNC, idx: f, addr: 0})
+    } else {
+        let name = g.u.funcs[f].asmName
+        let addr = g.rtAddr.getOr(&name, -1)
+        if addr < 0 {
+            let msg = if g.u.funcs[f].isExtern { "extern C function '" + name + "' needs dynamic linking" } else {
+                "'" + name + "' is not in the native runtime" }
+            if e >= 0 { g.fail(e, msg) }
+            ir.failAt("C line", g.u.funcs[f].line, msg)
+        }
+        append(mut &g.syms, Sym{kind: SK_ABS, idx: -1, addr: addr})
+    }
+    g.funcSym[f] = len(g.syms) - 1
+    return len(g.syms) - 1
+}
+
+fn (g: mut &Gen) symRt(name: str): int {
+    let addr = g.rtAddr.getOr(&name, -1)
+    if addr < 0 { panic("native: the runtime has no " + name) }
+    append(mut &g.syms, Sym{kind: SK_ABS, idx: -1, addr: addr})
+    return len(g.syms) - 1
+}
+
+fn (g: mut &Gen) symStr(s: str): int {
+    let have = g.strSym.getOr(&s, -1)
+    if have >= 0 { return have }
+    append(mut &g.strs, s)
+    append(mut &g.syms, Sym{kind: SK_STR, idx: len(g.strs) - 1, addr: 0})
+    g.strSym.put(s, len(g.syms) - 1)
+    return len(g.syms) - 1
+}
+
+// ---------------------------------------------------------------- types
+
+fn (g: &Gen) tk(t: int): int { return g.u.tys[t].k }
+
+fn (g: &Gen) size(t: int): int { return g.u.tys[t].size }
+
+fn (g: &Gen) is128(t: int): bool { return g.tk(t) == ir.TY_I128 || g.tk(t) == ir.TY_U128 }
+
+fn (g: &Gen) isF(t: int): bool { return g.tk(t) == ir.TY_F64 }
+
+fn (g: &Gen) isAggr(t: int): bool { return g.u.isAggr(t) }
+
+fn mergeCl(x: int, c: int): int {
+    if x == CL_INT || c == CL_INT { return CL_INT }
+    return CL_SSE
+}
+
+// The SysV classes of a value of type t, one per eightbyte; [CL_MEM] for memory.
+fn (g: &Gen) classify(t: int): []int {
+    let sz = g.size(t)
+    if sz > 16 { return [CL_MEM] }
+    var out: []int = []
+    for i in 0..(sz + 7) / 8 { append(mut &out, CL_NONE) }
+    g.classInto(t, 0, mut &out)
+    return out
+}
+
+fn (g: &Gen) classInto(t: int, off: int, out: mut &[]int) {
+    let k = g.tk(t)
+    if k == ir.TY_STRUCT {
+        let sid = g.u.tys[t].sid
+        for f in g.u.structs[sid].fields { g.classInto(f.ty, off + f.off, out) }
+    } else if k == ir.TY_ARR {
+        let et = g.u.tys[t].base
+        for j in 0..g.u.tys[t].n { g.classInto(et, off + j * g.size(et), out) }
+    } else if k == ir.TY_F64 {
+        out[off / 8] = mergeCl(out[off / 8], CL_SSE)
+    } else if k == ir.TY_I128 || k == ir.TY_U128 {
+        out[off / 8] = CL_INT
+        out[off / 8 + 1] = CL_INT
+    } else {
+        out[off / 8] = mergeCl(out[off / 8], CL_INT)
+    }
+}
+
+fn countCl(cls: &[]int, c: int): int {
+    var n = 0
+    for x in cls {
+        if x == c { n += 1 }
+    }
+    return n
+}
+
+// ---------------------------------------------------------------- frames
+
+fn (g: mut &Gen) temp(size: int, align: int): int {
+    g.frame = ir.alignUp(g.frame + size, if align > 8 { align } else { 8 })
+    if g.frame > g.maxFrame { g.maxFrame = g.frame }
+    return -g.frame
+}
+
+fn (g: mut &Gen) tempFor(t: int): int {
+    return g.temp(ir.alignUp(if g.size(t) > 8 { g.size(t) } else { 8 }, 8), g.u.alignOf(t))
+}
+
+fn at(m: x64.Mem, d: int): x64.Mem { return x64.memx(m.base, m.index, m.scale, m.disp + d) }
+
+fn rbp(d: int): x64.Mem { return x64.mem(RBP, d) }
+
+// ---------------------------------------------------------------- functions
+
+fn (g: mut &Gen) genFunc(f: int) {
+    g.funcPos[f] = g.a.pos()
+    g.frame = 0
+    g.maxFrame = 0
+    g.outArgs = 0
+    let ft = g.u.funcs[f].ty
+    g.retTy = g.u.tys[ft].base
+    g.a.push(RBP)
+    g.a.movRR(8, RBP, RSP)
+    g.a.b(0x48)                 // sub rsp, imm32 (patched below)
+    g.a.b(0x81)
+    g.a.b(0xEC)
+    let patch = g.a.pos()
+    g.a.d32(0)
+    var ni = 0
+    var nx = 0
+    g.retPtr = 0
+    if g.isAggr(g.retTy) && g.classify(g.retTy)[0] == CL_MEM {
+        g.retPtr = g.temp(8, 8)
+        g.a.store(8, rbp(g.retPtr), RDI)
+        ni = 1
+    }
+    var stackOff = 16
+    for j in 0..len(g.u.funcs[f].params) {
+        let l = g.u.funcs[f].params[j]
+        let t = g.u.locals[l].ty
+        let cls = g.classify(t)
+        let nInt = countCl(&cls, CL_INT)
+        let nSse = countCl(&cls, CL_SSE)
+        if cls[0] == CL_MEM || ni + nInt > 6 || nx + nSse > 8 {
+            stackOff = ir.alignUp(stackOff, if g.u.alignOf(t) > 8 { g.u.alignOf(t) } else { 8 })
+            g.slots[l] = stackOff
+            stackOff += ir.alignUp(g.size(t), 8)
+        } else {
+            let s = g.tempFor(t)
+            g.slots[l] = s
+            if g.isAggr(t) || g.is128(t) {
+                for i in 0..len(cls) {
+                    if cls[i] == CL_SSE {
+                        g.a.movsdStore(rbp(s + 8 * i), nx)
+                        nx += 1
+                    } else if cls[i] == CL_INT {
+                        g.a.store(8, rbp(s + 8 * i), INT_REGS[ni])
+                        ni += 1
+                    }
+                }
+            } else if g.isF(t) {
+                g.a.movsdStore(rbp(s), nx)
+                nx += 1
+            } else {
+                g.a.store(g.size(t), rbp(s), INT_REGS[ni])
+                ni += 1
+            }
+        }
+    }
+    g.stmt(g.u.funcs[f].body)
+    g.epilogue()
+    let frame = ir.alignUp(g.maxFrame, 16) + ir.alignUp(g.outArgs, 16)
+    g.a.put32(patch, frame)
+}
+
+fn (g: mut &Gen) epilogue() {
+    g.a.movRR(8, RSP, RBP)
+    g.a.pop(RBP)
+    g.a.ret()
+}
+
+// ---------------------------------------------------------------- statements
+
+fn (g: &Gen) isDecl(s: int): bool {
+    let n = g.u.nodes[s]
+    return n.k == ir.S_DECL || (n.k == ir.S_BLOCK && n.v == 1)
+}
+
+fn (g: mut &Gen) stmt(s: int) {
+    let n = g.u.nodes[s]
+    let k = n.k
+    if k == ir.S_BLOCK {
+        let mark = g.frame
+        for j in 0..g.u.listLen(n.a) {
+            let x = g.u.listAt(n.a, j)
+            let before = g.frame
+            g.stmt(x)
+            g.frame = if g.isDecl(x) { g.declMark } else { before }
+        }
+        if n.v != 1 { g.frame = mark }
+    } else if k == ir.S_DECL {
+        let l = n.a
+        let t = g.u.locals[l].ty
+        let s2 = g.temp(ir.alignUp(g.size(t), 8), g.u.alignOf(t))
+        g.slots[l] = s2
+        g.declMark = g.frame
+        if n.b >= 0 {
+            g.gen(n.b)
+            g.storeT(t, rbp(s2))
+        } else if n.c >= 0 {
+            g.initEntries(s2, g.size(t), n.c)
+        }
+    } else if k == ir.S_EXPR {
+        g.gen(n.a)
+    } else if k == ir.S_IF {
+        let elseL = g.a.newLabel()
+        g.branch(n.a, elseL, false)
+        g.stmt(n.b)
+        if n.c >= 0 {
+            let end = g.a.newLabel()
+            g.a.jmp(end)
+            g.a.bind(elseL)
+            g.stmt(n.c)
+            g.a.bind(end)
+        } else {
+            g.a.bind(elseL)
+        }
+    } else if k == ir.S_WHILE {
+        let top = g.a.newLabel()
+        let end = g.a.newLabel()
+        g.a.bind(top)
+        g.branch(n.a, end, false)
+        append(mut &g.breakL, end)
+        append(mut &g.contL, top)
+        g.stmt(n.b)
+        pop(mut &g.breakL)
+        pop(mut &g.contL)
+        g.a.jmp(top)
+        g.a.bind(end)
+    } else if k == ir.S_FOR {
+        let mark = g.frame
+        if n.a >= 0 {
+            let before = g.frame
+            g.stmt(n.a)
+            g.frame = if g.isDecl(n.a) { g.declMark } else { before }
+        }
+        let top = g.a.newLabel()
+        let cont = g.a.newLabel()
+        let end = g.a.newLabel()
+        g.a.bind(top)
+        if n.b >= 0 { g.branch(n.b, end, false) }
+        append(mut &g.breakL, end)
+        append(mut &g.contL, cont)
+        g.stmt(n.d)
+        pop(mut &g.breakL)
+        pop(mut &g.contL)
+        g.a.bind(cont)
+        if n.c >= 0 { g.gen(n.c) }
+        g.a.jmp(top)
+        g.a.bind(end)
+        g.frame = mark
+    } else if k == ir.S_BREAK {
+        if len(g.breakL) == 0 { g.fail(s, "break outside a loop") }
+        g.a.jmp(g.breakL[len(g.breakL) - 1])
+    } else if k == ir.S_CONTINUE {
+        if len(g.contL) == 0 { g.fail(s, "continue outside a loop") }
+        g.a.jmp(g.contL[len(g.contL) - 1])
+    } else if k == ir.S_RETURN {
+        if n.a >= 0 { g.genReturn(n.a) }
+        g.epilogue()
+    } else if k == ir.S_SWITCH {
+        g.genSwitch(s)
+    } else if k == ir.S_CASE || k == ir.S_DEFAULT {
+        let l = g.caseL.getOr(&s, -1)
+        if l < 0 { g.fail(s, "a case label outside the top level of a switch") }
+        g.a.bind(l)
+    } else if k == ir.S_EMPTY {
+    } else {
+        g.fail(s, "statement kind " + intToStr(k))
+    }
+}
+
+fn (g: mut &Gen) genReturn(x: int) {
+    let t = g.retTy
+    g.gen(x)
+    if !g.isAggr(t) { return }
+    let cls = g.classify(t)
+    if cls[0] == CL_MEM {
+        g.a.load(8, R11, rbp(g.retPtr))
+        g.copyMem(x64.mem(R11, 0), x64.mem(RAX, 0), g.size(t))
+        g.a.movRR(8, RAX, R11)
+        return
+    }
+    let s = g.tempFor(t)
+    g.copyMem(rbp(s), x64.mem(RAX, 0), g.size(t))
+    g.loadEightbytes(&cls, s)
+}
+
+// Loads the eightbytes of the value at rbp+s into the result registers.
+fn (g: mut &Gen) loadEightbytes(cls: &[]int, s: int) {
+    var ni = 0
+    var nx = 0
+    for i in 0..len(cls) {
+        if cls[i] == CL_SSE {
+            g.a.movsdLoad(nx, rbp(s + 8 * i))
+            nx += 1
+        } else if cls[i] == CL_INT {
+            g.a.load(8, if ni == 0 { RAX } else { RDX }, rbp(s + 8 * i))
+            ni += 1
+        }
+    }
+}
+
+fn (g: mut &Gen) genSwitch(s: int) {
+    let n = g.u.nodes[s]
+    if g.size(n.ty) > 8 { g.fail(s, "switch on a 128-bit integer") }
+    g.gen(n.a)
+    let body = n.b
+    if g.u.nk(body) != ir.S_BLOCK { g.fail(s, "a switch without a block") }
+    let lst = g.u.nodes[body].a
+    let end = g.a.newLabel()
+    var deflt = end
+    for j in 0..g.u.listLen(lst) {
+        let x = g.u.listAt(lst, j)
+        let xk = g.u.nk(x)
+        if xk == ir.S_CASE || xk == ir.S_DEFAULT {
+            let l = g.a.newLabel()
+            g.caseL.put(x, l)
+            if xk == ir.S_DEFAULT {
+                deflt = l
+            } else {
+                let v = g.u.nodes[x].v
+                if x64.fits32(v) {
+                    g.a.aluI(x64.CMP, 8, RAX, v)
+                } else {
+                    g.a.movRI(RCX, v)
+                    g.a.alu(x64.CMP, 8, RAX, RCX)
+                }
+                g.a.jcc(x64.CC_E, l)
+            }
+        }
+    }
+    g.a.jmp(deflt)
+    append(mut &g.breakL, end)
+    g.stmt(body)
+    pop(mut &g.breakL)
+    g.a.bind(end)
+}
+
+// ---------------------------------------------------------------- memory
+
+// Copies n bytes from src to dst (bases other than rax for dst, r10, rsi, rdi, rcx).
+fn (g: mut &Gen) copyMem(dst: x64.Mem, src: x64.Mem, n: int) {
+    if n > 128 {
+        g.a.lea(RSI, src)
+        g.a.lea(RDI, dst)
+        g.a.movRI(RCX, n)
+        g.a.repMovsb()
+        return
+    }
+    var o = 0
+    for w in [8, 4, 2, 1] {
+        while n - o >= w {
+            g.a.load(w, R10, at(src, o))
+            g.a.store(w, at(dst, o), R10)
+            o += w
+        }
+    }
+}
+
+// Zeroes n bytes at rbp+s.
+fn (g: mut &Gen) zeroFrame(s: int, n: int) {
+    if n > 128 {
+        g.a.lea(RDI, rbp(s))
+        g.a.alu(x64.XOR, 4, RAX, RAX)
+        g.a.movRI(RCX, n)
+        g.a.repStosb()
+        return
+    }
+    var o = 0
+    for w in [8, 4, 2, 1] {
+        while n - o >= w {
+            g.a.storeI(w, rbp(s + o), 0)
+            o += w
+        }
+    }
+}
+
+// Normalizes rax (or r) to the integer kind k.
+fn (g: mut &Gen) normR(k: int, r: int) {
+    if k == ir.TY_BOOL || k == ir.TY_U8 {
+        g.a.zx(1, r, r)
+    } else if k == ir.TY_I8 {
+        g.a.sx(1, r, r)
+    } else if k == ir.TY_U16 {
+        g.a.zx(2, r, r)
+    } else if k == ir.TY_I16 {
+        g.a.sx(2, r, r)
+    } else if k == ir.TY_U32 {
+        g.a.zx(4, r, r)
+    } else if k == ir.TY_I32 {
+        g.a.sx(4, r, r)
+    }
+}
+
+fn (g: mut &Gen) norm(t: int) { g.normR(g.tk(t), RAX) }
+
+// Loads an integer or pointer of type t from m into r, normalized.
+fn (g: mut &Gen) loadInt(t: int, r: int, m: x64.Mem) {
+    let k = g.tk(t)
+    if k == ir.TY_BOOL || k == ir.TY_U8 {
+        g.a.loadZX(1, r, m)
+    } else if k == ir.TY_I8 {
+        g.a.loadSX(1, r, m)
+    } else if k == ir.TY_U16 {
+        g.a.loadZX(2, r, m)
+    } else if k == ir.TY_I16 {
+        g.a.loadSX(2, r, m)
+    } else if k == ir.TY_U32 {
+        g.a.loadZX(4, r, m)
+    } else if k == ir.TY_I32 {
+        g.a.loadSX(4, r, m)
+    } else {
+        g.a.load(8, r, m)
+    }
+}
+
+// Loads the value of type t at m into the value registers (an aggregate: its address).
+fn (g: mut &Gen) loadT(t: int, m: x64.Mem) {
+    if g.isAggr(t) {
+        g.a.lea(RAX, m)
+    } else if g.isF(t) {
+        g.a.movsdLoad(0, m)
+    } else if g.is128(t) {
+        if m.base == RAX || m.index == RAX {
+            g.a.load(8, RDX, at(m, 8))
+            g.a.load(8, RAX, m)
+        } else {
+            g.a.load(8, RAX, m)
+            g.a.load(8, RDX, at(m, 8))
+        }
+    } else {
+        g.loadInt(t, RAX, m)
+    }
+}
+
+// Stores the value in the value registers (an aggregate: from the address in rax) at m.
+fn (g: mut &Gen) storeT(t: int, m: x64.Mem) {
+    if g.isAggr(t) {
+        g.copyMem(m, x64.mem(RAX, 0), g.size(t))
+    } else if g.isF(t) {
+        g.a.movsdStore(m, 0)
+    } else if g.is128(t) {
+        g.a.store(8, m, RAX)
+        g.a.store(8, at(m, 8), RDX)
+    } else {
+        g.a.store(g.size(t), m, RAX)
+    }
+}
+
+// The memory of an lvalue that needs no code (a local or a member of one), or base -9.
+fn (g: &Gen) staticMem(e: int): x64.Mem {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_LOCAL { return rbp(g.slots[n.a]) }
+    if n.k == ir.E_MEMBER {
+        let m = g.staticMem(n.a)
+        if m.base != -9 { return at(m, n.v) }
+    }
+    return x64.mem(-9, 0)
+}
+
+// ---------------------------------------------------------------- initializers
+
+// Fills the n bytes at rbp+s from initializer entries (zero first).
+fn (g: mut &Gen) initEntries(s: int, n: int, ents: int) {
+    g.zeroFrame(s, n)
+    for j in 0..g.u.listLen(ents) {
+        let en = g.u.nodes[g.u.listAt(ents, j)]
+        let t = en.ty
+        let x = en.a
+        if g.u.nk(x) == ir.E_STR && g.tk(t) == ir.TY_ARR {
+            let str = g.u.nodes[x].s
+            var cnt = len(str) + 1
+            if cnt > g.size(t) { cnt = g.size(t) }
+            g.a.movRSym(RAX, g.symStr(str), 0)
+            g.copyMem(rbp(s + en.v), x64.mem(RAX, 0), cnt)
+        } else {
+            g.gen(x)
+            g.storeT(t, rbp(s + en.v))
+        }
+    }
+}
+
+// ---------------------------------------------------------------- expressions
+
+fn (g: mut &Gen) genAddr(e: int) {
+    let n = g.u.nodes[e]
+    let k = n.k
+    if k == ir.E_LOCAL {
+        g.a.lea(RAX, rbp(g.slots[n.a]))
+    } else if k == ir.E_GLOBAL {
+        g.a.movRSym(RAX, g.globalSym[n.a], 0)
+    } else if k == ir.E_FUNC {
+        g.a.movRSym(RAX, g.symFunc(n.a, e), 0)
+    } else if k == ir.E_STR {
+        g.a.movRSym(RAX, g.symStr(n.s), 0)
+    } else if k == ir.E_DEREF {
+        g.gen(n.a)
+    } else if k == ir.E_MEMBER {
+        let m = g.staticMem(e)
+        if m.base != -9 {
+            g.a.lea(RAX, m)
+        } else {
+            g.genAddr(n.a)
+            if n.v != 0 { g.a.lea(RAX, x64.mem(RAX, n.v)) }
+        }
+    } else if k == ir.E_CLIT {
+        let s = g.tempFor(n.ty)
+        g.initEntries(s, g.size(n.ty), n.b)
+        g.a.lea(RAX, rbp(s))
+    } else if g.isAggr(n.ty) {
+        g.gen(e)
+    } else {
+        g.fail(e, "the address of a non-lvalue")
+    }
+}
+
+// Whether e can be loaded into a register other than rax with no other register used.
+fn (g: &Gen) simple(e: int): bool {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_INT { return true }
+    if g.isAggr(n.ty) || g.isF(n.ty) || g.is128(n.ty) { return false }
+    return (n.k == ir.E_LOCAL || n.k == ir.E_MEMBER) && g.staticMem(e).base != -9
+}
+
+fn (g: mut &Gen) genInto(e: int, r: int) {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_INT {
+        g.a.movRI(r, n.v)
+    } else {
+        g.loadInt(n.ty, r, g.staticMem(e))
+    }
+}
+
+// a into rax, b into rcx (integers or pointers).
+fn (g: mut &Gen) pair(a: int, b: int) {
+    g.gen(a)
+    if g.simple(b) {
+        g.genInto(b, RCX)
+        return
+    }
+    let s = g.temp(8, 8)
+    g.a.store(8, rbp(s), RAX)
+    g.gen(b)
+    g.a.movRR(8, RCX, RAX)
+    g.a.load(8, RAX, rbp(s))
+}
+
+// a into rax:rdx, b into r8:r9 (128-bit).
+fn (g: mut &Gen) pair128(a: int, b: int) {
+    g.gen(a)
+    let s = g.temp(16, 16)
+    g.a.store(8, rbp(s), RAX)
+    g.a.store(8, rbp(s + 8), RDX)
+    g.gen(b)
+    g.a.movRR(8, R8, RAX)
+    g.a.movRR(8, R9, RDX)
+    g.a.load(8, RAX, rbp(s))
+    g.a.load(8, RDX, rbp(s + 8))
+}
+
+// a into xmm0, b into xmm1.
+fn (g: mut &Gen) pairF(a: int, b: int) {
+    g.gen(a)
+    let s = g.temp(8, 8)
+    g.a.movsdStore(rbp(s), 0)
+    g.gen(b)
+    g.a.sse(x64.MOVSD, 1, 0)
+    g.a.movsdLoad(0, rbp(s))
+}
+
+fn (g: mut &Gen) gen(e: int) {
+    let n = g.u.nodes[e]
+    let k = n.k
+    let t = n.ty
+    if k == ir.E_INT {
+        g.a.movRI(RAX, n.v)
+    } else if k == ir.E_FLT {
+        g.a.movRI(RAX, floatBits(n.f))
+        g.a.movqXR(0, RAX)
+    } else if k == ir.E_LOCAL || k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_GLOBAL || k == ir.E_STR ||
+        k == ir.E_FUNC {
+        if g.isAggr(t) || k == ir.E_FUNC {
+            g.genAddr(e)
+            return
+        }
+        let m = g.staticMem(e)
+        if m.base != -9 {
+            g.loadT(t, m)
+        } else if k == ir.E_MEMBER {
+            g.genAddr(n.a)
+            g.loadT(t, x64.mem(RAX, n.v))
+        } else {
+            g.genAddr(e)
+            g.loadT(t, x64.mem(RAX, 0))
+        }
+    } else if k == ir.E_ADDR || k == ir.E_DECAY {
+        g.genAddr(n.a)
+    } else if k == ir.E_CLIT {
+        g.genAddr(e)
+    } else if k == ir.E_CALL {
+        g.genCall(e)
+    } else if k == ir.E_CAST {
+        g.genCast(e)
+    } else if k == ir.E_BIN {
+        g.genBin(e)
+    } else if k == ir.E_NEG {
+        g.gen(n.a)
+        if g.isF(t) {
+            g.a.movRI(RCX, -9223372036854775807 - 1)
+            g.a.movqXR(1, RCX)
+            g.a.sse66(x64.XORPD, 0, 1)
+        } else if g.is128(t) {
+            g.a.unary(x64.NEG, 8, RAX)
+            g.a.aluI(x64.ADC, 8, RDX, 0)
+            g.a.unary(x64.NEG, 8, RDX)
+        } else {
+            g.a.unary(x64.NEG, 8, RAX)
+            g.norm(t)
+        }
+    } else if k == ir.E_BNOT {
+        g.gen(n.a)
+        g.a.unary(x64.NOT, 8, RAX)
+        if g.is128(t) {
+            g.a.unary(x64.NOT, 8, RDX)
+        } else {
+            g.norm(t)
+        }
+    } else if k == ir.E_LNOT {
+        g.genTest(n.a)
+        g.a.setcc(x64.CC_E, RAX)
+        g.a.zx(1, RAX, RAX)
+    } else if k == ir.E_LAND || k == ir.E_LOR {
+        let other = g.a.newLabel()
+        let end = g.a.newLabel()
+        let isAnd = k == ir.E_LAND
+        g.branch(n.a, other, !isAnd)
+        g.branch(n.b, other, !isAnd)
+        g.a.movRI(RAX, if isAnd { 1 } else { 0 })
+        g.a.jmp(end)
+        g.a.bind(other)
+        g.a.movRI(RAX, if isAnd { 0 } else { 1 })
+        g.a.bind(end)
+    } else if k == ir.E_COND {
+        let elseL = g.a.newLabel()
+        let end = g.a.newLabel()
+        g.branch(n.a, elseL, false)
+        g.gen(n.b)
+        g.a.jmp(end)
+        g.a.bind(elseL)
+        g.gen(n.c)
+        g.a.bind(end)
+    } else if k == ir.E_ASSIGN {
+        g.genAssign(e)
+    } else if k == ir.E_POSTINC {
+        var m = g.staticMem(n.a)
+        if m.base == -9 {
+            g.genAddr(n.a)
+            g.a.movRR(8, R11, RAX)
+            m = x64.mem(R11, 0)
+        }
+        g.loadInt(t, RAX, m)
+        g.a.lea(RCX, x64.mem(RAX, n.v))
+        g.a.store(g.size(t), m, RCX)
+    } else if k == ir.E_PADD {
+        let b = n.b
+        if g.u.nk(b) == ir.E_INT && x64.fits32(g.u.nodes[b].v * n.v) {
+            g.gen(n.a)
+            let d = g.u.nodes[b].v * n.v
+            if d != 0 { g.a.lea(RAX, x64.mem(RAX, d)) }
+        } else {
+            g.pair(n.a, b)
+            let sc = n.v
+            if sc == 1 || sc == 2 || sc == 4 || sc == 8 {
+                g.a.lea(RAX, x64.memx(RAX, RCX, sc, 0))
+            } else {
+                g.a.movRI(RDX, sc)
+                g.a.imul(8, RCX, RDX)
+                g.a.alu(x64.ADD, 8, RAX, RCX)
+            }
+        }
+    } else {
+        g.fail(e, "expression kind " + intToStr(k))
+    }
+}
+
+fn (g: mut &Gen) genAssign(e: int) {
+    let n = g.u.nodes[e]
+    let lhs = n.a
+    let t = n.ty
+    let m = g.staticMem(lhs)
+    if m.base != -9 {
+        g.gen(n.b)
+        g.storeT(t, m)
+        if g.isAggr(t) { g.a.lea(RAX, m) }
+        return
+    }
+    if g.u.nk(lhs) == ir.E_GLOBAL {
+        g.gen(n.b)
+        g.a.movRSym(R11, g.globalSym[g.u.nodes[lhs].a], 0)
+    } else {
+        g.genAddr(lhs)
+        let s = g.temp(8, 8)
+        g.a.store(8, rbp(s), RAX)
+        g.gen(n.b)
+        g.a.load(8, R11, rbp(s))
+    }
+    g.storeT(t, x64.mem(R11, 0))
+    if g.isAggr(t) { g.a.movRR(8, RAX, R11) }
+}
+
+fn (g: mut &Gen) callRt(name: str) { g.a.callSym(g.symRt(name)) }
+
+fn (g: mut &Gen) genCast(e: int) {
+    let n = g.u.nodes[e]
+    let t = n.ty
+    let s = g.u.nodes[n.a].ty
+    g.gen(n.a)
+    let tk = g.tk(t)
+    let sk = g.tk(s)
+    if tk == ir.TY_VOID || s == t { return }
+    if g.isAggr(t) || g.isAggr(s) { g.fail(e, "a cast of an aggregate") }
+    if tk == ir.TY_F64 {
+        if sk == ir.TY_F64 { return }
+        if sk == ir.TY_I128 || sk == ir.TY_U128 {
+            g.a.movRR(8, RDI, RAX)
+            g.a.movRR(8, RSI, RDX)
+            g.callRt(if sk == ir.TY_I128 { "rt_n_i128_to_double" } else { "rt_n_u128_to_double" })
+        } else if sk == ir.TY_U64 {
+            g.a.movRR(8, RDI, RAX)
+            g.callRt("rt_n_u64_to_double")
+        } else {
+            g.a.cvtsi2sd(0, RAX)
+        }
+        return
+    }
+    if sk == ir.TY_F64 {
+        if tk == ir.TY_BOOL {
+            g.a.sse66(x64.XORPD, 1, 1)
+            g.a.sse66(x64.UCOMISD, 0, 1)
+            g.a.setcc(x64.CC_NE, RAX)
+            g.a.setcc(x64.CC_P, RCX)
+            g.a.alu(x64.OR, 1, RAX, RCX)
+            g.a.zx(1, RAX, RAX)
+        } else if tk == ir.TY_I128 {
+            g.callRt("rt_n_double_to_i128")
+        } else if tk == ir.TY_U128 {
+            g.callRt("rt_n_double_to_u128")
+        } else if tk == ir.TY_U64 {
+            g.callRt("rt_n_double_to_u64")
+        } else {
+            g.a.cvttsd2si(RAX, 0)
+            g.norm(t)
+        }
+        return
+    }
+    let s128 = g.is128(s)
+    let t128 = g.is128(t)
+    if t128 && !s128 {
+        if g.u.isSigned(s) {
+            g.a.cqo()
+        } else {
+            g.a.alu(x64.XOR, 4, RDX, RDX)
+        }
+    } else if s128 && !t128 {
+        if tk == ir.TY_BOOL {
+            g.a.alu(x64.OR, 8, RAX, RDX)
+            g.a.setcc(x64.CC_NE, RAX)
+            g.a.zx(1, RAX, RAX)
+        } else {
+            g.norm(t)
+        }
+    } else if !s128 && !t128 {
+        if tk == ir.TY_BOOL {
+            if sk != ir.TY_BOOL {
+                g.a.test(8, RAX, RAX)
+                g.a.setcc(x64.CC_NE, RAX)
+                g.a.zx(1, RAX, RAX)
+            }
+        } else if g.size(t) < 8 {
+            g.norm(t)
+        }
+    }
+}
+
+fn isCmp(op: int): bool { return op >= ir.OP_EQ }
+
+fn (g: mut &Gen) genBin(e: int) {
+    let n = g.u.nodes[e]
+    let op = n.v
+    if isCmp(op) {
+        g.setFromCC(g.genCmp(e))
+        return
+    }
+    let c = n.c
+    let ck = g.tk(c)
+    if ck == ir.TY_F64 {
+        g.pairF(n.a, n.b)
+        let ops: []int = [x64.ADDSD, x64.SUBSD, x64.MULSD, x64.DIVSD]
+        if op > ir.OP_DIV { g.fail(e, "operator on double") }
+        g.a.sse(ops[op], 0, 1)
+        return
+    }
+    if g.is128(c) {
+        if op == ir.OP_SHL || op == ir.OP_SHR {
+            g.gen(n.a)
+            let s = g.temp(16, 16)
+            g.a.store(8, rbp(s), RAX)
+            g.a.store(8, rbp(s + 8), RDX)
+            g.gen(n.b)
+            g.a.movRR(8, RCX, RAX)
+            g.a.load(8, RAX, rbp(s))
+            g.a.load(8, RDX, rbp(s + 8))
+            g.shift128(op, ck == ir.TY_I128)
+            return
+        }
+        g.pair128(n.a, n.b)
+        if op == ir.OP_ADD {
+            g.a.alu(x64.ADD, 8, RAX, R8)
+            g.a.alu(x64.ADC, 8, RDX, R9)
+        } else if op == ir.OP_SUB {
+            g.a.alu(x64.SUB, 8, RAX, R8)
+            g.a.alu(x64.SBB, 8, RDX, R9)
+        } else if op == ir.OP_AND || op == ir.OP_OR || op == ir.OP_XOR {
+            let a = if op == ir.OP_AND { x64.AND } else if op == ir.OP_OR { x64.OR } else { x64.XOR }
+            g.a.alu(a, 8, RAX, R8)
+            g.a.alu(a, 8, RDX, R9)
+        } else if op == ir.OP_MUL {
+            g.a.movRR(8, R10, RDX)
+            g.a.imul(8, R10, R8)
+            g.a.movRR(8, R11, RAX)
+            g.a.imul(8, R11, R9)
+            g.a.alu(x64.ADD, 8, R10, R11)
+            g.a.unary(x64.MUL, 8, R8)
+            g.a.alu(x64.ADD, 8, RDX, R10)
+        } else {
+            g.a.movRR(8, RDI, RAX)
+            g.a.movRR(8, RSI, RDX)
+            g.a.movRR(8, RDX, R8)
+            g.a.movRR(8, RCX, R9)
+            let sgn = ck == ir.TY_I128
+            if op == ir.OP_DIV {
+                g.callRt(if sgn { "rt_n_sdiv128" } else { "rt_n_udiv128" })
+            } else {
+                g.callRt(if sgn { "rt_n_smod128" } else { "rt_n_umod128" })
+            }
+        }
+        return
+    }
+    g.pair(n.a, n.b)
+    let sz = if g.size(c) == 8 { 8 } else { 4 }
+    let sgn = g.u.isSigned(c)
+    if op == ir.OP_ADD {
+        g.a.alu(x64.ADD, sz, RAX, RCX)
+    } else if op == ir.OP_SUB {
+        g.a.alu(x64.SUB, sz, RAX, RCX)
+    } else if op == ir.OP_AND {
+        g.a.alu(x64.AND, sz, RAX, RCX)
+    } else if op == ir.OP_OR {
+        g.a.alu(x64.OR, sz, RAX, RCX)
+    } else if op == ir.OP_XOR {
+        g.a.alu(x64.XOR, sz, RAX, RCX)
+    } else if op == ir.OP_MUL {
+        g.a.imul(sz, RAX, RCX)
+    } else if op == ir.OP_DIV || op == ir.OP_REM {
+        if sgn {
+            if sz == 8 { g.a.cqo() } else { g.a.cdq() }
+            g.a.unary(x64.IDIV, sz, RCX)
+        } else {
+            g.a.alu(x64.XOR, 4, RDX, RDX)
+            g.a.unary(x64.DIV, sz, RCX)
+        }
+        if op == ir.OP_REM { g.a.movRR(8, RAX, RDX) }
+    } else if op == ir.OP_SHL {
+        g.a.shiftCL(x64.SHL, sz, RAX)
+    } else if op == ir.OP_SHR {
+        g.a.shiftCL(if sgn { x64.SAR } else { x64.SHR }, sz, RAX)
+    }
+    g.norm(c)
+}
+
+// rax:rdx shifted by cl (0 to 127).
+fn (g: mut &Gen) shift128(op: int, sgn: bool) {
+    let done = g.a.newLabel()
+    if op == ir.OP_SHL {
+        g.a.shldCL(RDX, RAX)
+        g.a.shiftCL(x64.SHL, 8, RAX)
+    } else {
+        g.a.shrdCL(RAX, RDX)
+        g.a.shiftCL(if sgn { x64.SAR } else { x64.SHR }, 8, RDX)
+    }
+    g.a.movRR(8, R10, RCX)
+    g.a.aluI(x64.AND, 4, R10, 64)
+    g.a.jcc(x64.CC_E, done)
+    if op == ir.OP_SHL {
+        g.a.movRR(8, RDX, RAX)
+        g.a.alu(x64.XOR, 4, RAX, RAX)
+    } else {
+        g.a.movRR(8, RAX, RDX)
+        if sgn {
+            g.a.shiftI(x64.SAR, 8, RDX, 63)
+        } else {
+            g.a.alu(x64.XOR, 4, RDX, RDX)
+        }
+    }
+    g.a.bind(done)
+}
+
+// Evaluates a comparison and sets the flags; the condition code that is true when the
+// comparison is (or CC_FEQ, CC_FNE).
+fn (g: mut &Gen) genCmp(e: int): int {
+    let n = g.u.nodes[e]
+    let op = n.v
+    let c = n.c
+    if g.isF(c) {
+        if op == ir.OP_LT || op == ir.OP_LE {
+            g.pairF(n.b, n.a)
+        } else {
+            g.pairF(n.a, n.b)
+        }
+        g.a.sse66(x64.UCOMISD, 0, 1)
+        if op == ir.OP_EQ { return CC_FEQ }
+        if op == ir.OP_NE { return CC_FNE }
+        if op == ir.OP_GT || op == ir.OP_LT { return x64.CC_A }
+        return x64.CC_AE
+    }
+    let sgn = g.u.isSigned(c)
+    if g.is128(c) {
+        g.pair128(n.a, n.b)
+        if op == ir.OP_EQ || op == ir.OP_NE {
+            g.a.alu(x64.XOR, 8, RAX, R8)
+            g.a.alu(x64.XOR, 8, RDX, R9)
+            g.a.alu(x64.OR, 8, RAX, RDX)
+            return if op == ir.OP_EQ { x64.CC_E } else { x64.CC_NE }
+        }
+        if op == ir.OP_LT || op == ir.OP_GE {
+            g.a.alu(x64.CMP, 8, RAX, R8)
+            g.a.alu(x64.SBB, 8, RDX, R9)
+        } else {
+            g.a.alu(x64.CMP, 8, R8, RAX)
+            g.a.alu(x64.SBB, 8, R9, RDX)
+        }
+        let lt = op == ir.OP_LT || op == ir.OP_GT
+        if sgn { return if lt { x64.CC_L } else { x64.CC_GE } }
+        return if lt { x64.CC_B } else { x64.CC_AE }
+    }
+    g.pair(n.a, n.b)
+    g.a.alu(x64.CMP, 8, RAX, RCX)
+    if op == ir.OP_EQ { return x64.CC_E }
+    if op == ir.OP_NE { return x64.CC_NE }
+    if op == ir.OP_LT { return if sgn { x64.CC_L } else { x64.CC_B } }
+    if op == ir.OP_LE { return if sgn { x64.CC_LE } else { x64.CC_BE } }
+    if op == ir.OP_GT { return if sgn { x64.CC_G } else { x64.CC_A } }
+    return if sgn { x64.CC_GE } else { x64.CC_AE }
+}
+
+fn (g: mut &Gen) setFromCC(cc: int) {
+    if cc == CC_FEQ {
+        g.a.setcc(x64.CC_E, RAX)
+        g.a.setcc(x64.CC_NP, RCX)
+        g.a.alu(x64.AND, 1, RAX, RCX)
+    } else if cc == CC_FNE {
+        g.a.setcc(x64.CC_NE, RAX)
+        g.a.setcc(x64.CC_P, RCX)
+        g.a.alu(x64.OR, 1, RAX, RCX)
+    } else {
+        g.a.setcc(cc, RAX)
+    }
+    g.a.zx(1, RAX, RAX)
+}
+
+fn (g: mut &Gen) jumpCC(cc: int, l: int, when: bool) {
+    if cc >= 0 {
+        g.a.jcc(if when { cc } else { cc ^ 1 }, l)
+        return
+    }
+    // equal: ZF and not PF
+    let eq = cc == CC_FEQ
+    if eq == when {
+        let skip = g.a.newLabel()
+        g.a.jcc(x64.CC_P, skip)
+        g.a.jcc(x64.CC_E, l)
+        g.a.bind(skip)
+    } else {
+        g.a.jcc(x64.CC_P, l)
+        g.a.jcc(x64.CC_NE, l)
+    }
+}
+
+// Evaluates a scalar and sets ZF when it is zero (false).
+fn (g: mut &Gen) genTest(e: int) {
+    let t = g.u.nodes[e].ty
+    g.gen(e)
+    if g.isF(t) {
+        g.a.sse66(x64.XORPD, 1, 1)
+        g.a.sse66(x64.UCOMISD, 0, 1)
+        g.a.setcc(x64.CC_NE, RAX)
+        g.a.setcc(x64.CC_P, RCX)
+        g.a.alu(x64.OR, 1, RAX, RCX)
+    } else if g.is128(t) {
+        g.a.movRR(8, RCX, RAX)
+        g.a.alu(x64.OR, 8, RCX, RDX)
+    } else {
+        g.a.test(8, RAX, RAX)
+    }
+}
+
+// Jumps to l when the truth of e is when.
+fn (g: mut &Gen) branch(e: int, l: int, when: bool) {
+    let n = g.u.nodes[e]
+    let k = n.k
+    if k == ir.E_INT {
+        if (n.v != 0) == when { g.a.jmp(l) }
+    } else if k == ir.E_LNOT {
+        g.branch(n.a, l, !when)
+    } else if k == ir.E_LAND || k == ir.E_LOR {
+        // a && b jumps when false if either is false; when true only if both are
+        let isAnd = k == ir.E_LAND
+        if isAnd != when {
+            g.branch(n.a, l, when)
+            g.branch(n.b, l, when)
+        } else {
+            let skip = g.a.newLabel()
+            g.branch(n.a, skip, !when)
+            g.branch(n.b, l, when)
+            g.a.bind(skip)
+        }
+    } else if k == ir.E_BIN && isCmp(n.v) {
+        g.jumpCC(g.genCmp(e), l, when)
+    } else {
+        g.genTest(e)
+        g.a.jcc(if when { x64.CC_NE } else { x64.CC_E }, l)
+    }
+}
+
+// ---------------------------------------------------------------- calls
+
+fn (g: mut &Gen) genCall(e: int) {
+    let n = g.u.nodes[e]
+    let ft = n.c
+    let rt = g.u.tys[ft].base
+    let pts = g.u.fnParams(ft)
+    let callee = n.a
+    var direct = -1
+    if g.u.nk(callee) == ir.E_DECAY && g.u.nk(g.u.nodes[callee].a) == ir.E_FUNC {
+        direct = g.u.nodes[g.u.nodes[callee].a].a
+    }
+    var calleeSlot = 0
+    if direct < 0 {
+        g.gen(callee)
+        calleeSlot = g.temp(8, 8)
+        g.a.store(8, rbp(calleeSlot), RAX)
+    }
+    let nargs = g.u.listLen(n.b)
+    var slots: []int = []
+    for j in 0..nargs {
+        let x = g.u.listAt(n.b, j)
+        let t = pts[j]
+        g.gen(x)
+        let s = g.tempFor(t)
+        if g.isAggr(t) {
+            g.copyMem(rbp(s), x64.mem(RAX, 0), g.size(t))
+        } else if g.isF(t) {
+            g.a.movsdStore(rbp(s), 0)
+        } else if g.is128(t) {
+            g.a.store(8, rbp(s), RAX)
+            g.a.store(8, rbp(s + 8), RDX)
+        } else {
+            g.a.store(8, rbp(s), RAX)
+        }
+        append(mut &slots, s)
+    }
+    var ni = 0
+    var nx = 0
+    var retSlot = 0
+    let aggrRet = g.isAggr(rt)
+    var rcls: []int = []
+    if aggrRet {
+        rcls = g.classify(rt)
+        retSlot = g.tempFor(rt)
+        if rcls[0] == CL_MEM { ni = 1 }
+    }
+    // where each argument goes: -1 registers, else its offset in the outgoing area
+    var place: []int = []
+    var stackOff = 0
+    var ti = ni
+    var tx = 0
+    for j in 0..nargs {
+        let t = pts[j]
+        let cls = g.classify(t)
+        let nInt = countCl(&cls, CL_INT)
+        let nSse = countCl(&cls, CL_SSE)
+        if cls[0] == CL_MEM || ti + nInt > 6 || tx + nSse > 8 {
+            stackOff = ir.alignUp(stackOff, if g.u.alignOf(t) > 8 { g.u.alignOf(t) } else { 8 })
+            append(mut &place, stackOff)
+            g.copyMem(x64.mem(RSP, stackOff), rbp(slots[j]), ir.alignUp(g.size(t), 8))
+            stackOff += ir.alignUp(g.size(t), 8)
+        } else {
+            append(mut &place, -1)
+            ti += nInt
+            tx += nSse
+        }
+    }
+    if stackOff > g.outArgs { g.outArgs = stackOff }
+    for j in 0..nargs {
+        if place[j] < 0 {
+            let cls = g.classify(pts[j])
+            for i in 0..len(cls) {
+                if cls[i] == CL_SSE {
+                    g.a.movsdLoad(nx, rbp(slots[j] + 8 * i))
+                    nx += 1
+                } else if cls[i] == CL_INT {
+                    g.a.load(8, INT_REGS[ni], rbp(slots[j] + 8 * i))
+                    ni += 1
+                }
+            }
+        }
+    }
+    if aggrRet && rcls[0] == CL_MEM { g.a.lea(RDI, rbp(retSlot)) }
+    if direct >= 0 {
+        g.a.callSym(g.symFunc(direct, e))
+    } else {
+        g.a.load(8, R11, rbp(calleeSlot))
+        g.a.callR(R11)
+    }
+    if aggrRet {
+        if rcls[0] != CL_MEM {
+            var ri = 0
+            var rx = 0
+            for i in 0..len(rcls) {
+                if rcls[i] == CL_SSE {
+                    g.a.movsdStore(rbp(retSlot + 8 * i), rx)
+                    rx += 1
+                } else if rcls[i] == CL_INT {
+                    g.a.store(8, rbp(retSlot + 8 * i), if ri == 0 { RAX } else { RDX })
+                    ri += 1
+                }
+            }
+        }
+        g.a.lea(RAX, rbp(retSlot))
+    } else if g.u.isInt(rt) && g.size(rt) < 8 {
+        g.norm(rt)
+    }
+}
+
+// ---------------------------------------------------------------- constants
+
+// The bits of a double (obx has no bit cast: the fields are found arithmetically, exactly).
+pub fn floatBits(f0: float): int {
+    if f0 == 0.0 { return 0 }
+    var f = f0
+    var sign = 0
+    if f < 0.0 {
+        sign = 1
+        f = -f
+    }
+    var e = 0
+    while f >= 2.0 {
+        f = f / 2.0
+        e += 1
+    }
+    while f < 1.0 && e > -1022 {
+        f = f * 2.0
+        e -= 1
+    }
+    if f < 1.0 { return (sign << 63) | int(f * 4503599627370496.0) }
+    return (sign << 63) | ((e + 1023) << 52) | int((f - 1.0) * 4503599627370496.0)
+}
+
+// A constant: a 128-bit value (lo, hi), plus the address of sym when sym >= 0.
+type K = value record {
+    lo: int
+    hi: int
+    sym: int
+}
+
+fn (g: mut &Gen) constOf(e: int): K {
+    let n = g.u.nodes[e]
+    let k = n.k
+    if k == ir.E_INT {
+        return K{lo: n.v, hi: if n.v < 0 && g.u.isSigned(n.ty) { -1 } else { 0 }, sym: -1}
+    }
+    if k == ir.E_FLT { return K{lo: floatBits(n.f), hi: 0, sym: -1} }
+    if k == ir.E_NEG && g.isF(n.ty) {
+        let x = g.constOf(n.a)
+        return K{lo: x.lo ^ (-9223372036854775807 - 1), hi: 0, sym: -1}
+    }
+    if k == ir.E_ADDR || k == ir.E_DECAY { return g.constAddr(n.a) }
+    if k == ir.E_CAST {
+        let x = g.constOf(n.a)
+        let st = g.u.nodes[n.a].ty
+        if g.isF(n.ty) || g.isF(st) {
+            if g.isF(n.ty) && g.isF(st) { return x }
+            g.fail(e, "a float conversion in a constant")
+        }
+        if g.is128(n.ty) {
+            if g.is128(st) { return x }
+            return K{lo: x.lo, hi: if x.lo < 0 && g.u.isSigned(st) { -1 } else { 0 }, sym: -1}
+        }
+        if x.sym >= 0 { return x }
+        let v = ir.truncTo(g.tk(n.ty), x.lo)
+        return K{lo: v, hi: if v < 0 && g.u.isSigned(n.ty) { -1 } else { 0 }, sym: -1}
+    }
+    if k == ir.E_BIN {
+        let a = g.constOf(n.a)
+        let b = g.constOf(n.b)
+        if a.sym < 0 && b.sym < 0 {
+            if n.v == ir.OP_OR { return K{lo: a.lo | b.lo, hi: a.hi | b.hi, sym: -1} }
+            if n.v == ir.OP_AND { return K{lo: a.lo & b.lo, hi: a.hi & b.hi, sym: -1} }
+            if n.v == ir.OP_SHL && g.is128(n.ty) && b.lo == 64 { return K{lo: 0, hi: a.lo, sym: -1} }
+            if n.v == ir.OP_SHL && g.is128(n.ty) && b.lo == 0 { return a }
+        }
+    }
+    g.fail(e, "a constant initializer of this form")
+}
+
+fn (g: mut &Gen) constAddr(e: int): K {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_GLOBAL { return K{lo: 0, hi: 0, sym: g.globalSym[n.a]} }
+    if n.k == ir.E_FUNC { return K{lo: 0, hi: 0, sym: g.symFunc(n.a, e)} }
+    if n.k == ir.E_STR { return K{lo: 0, hi: 0, sym: g.symStr(n.s)} }
+    if n.k == ir.E_MEMBER {
+        let x = g.constAddr(n.a)
+        return K{lo: x.lo + n.v, hi: 0, sym: x.sym}
+    }
+    g.fail(e, "an address constant of this form")
+}
+
+// ---------------------------------------------------------------- the link
+
+fn putN(buf: mut &[]byte, off: int, v: int, n: int) {
+    var x = v
+    for i in 0..n {
+        buf[off + i] = byte(x & 255)
+        x = x >> 8
+    }
+}
+
+fn growTo(buf: mut &[]byte, n: int) {
+    while len(buf) < n { append(buf, 0) }
+}
+
+fn chunks(parts: &[str], out: mut &[]byte) {
+    for p in parts {
+        for i in 0..len(p) { append(out, strByte(p, i)) }
+    }
+}
+
+// Writes the initializer entries of a global at off of buf.
+fn (g: mut &Gen) initData(buf: mut &[]byte, ro: bool, off: int, ents: int, relocs: mut &[]DataReloc) {
+    for j in 0..g.u.listLen(ents) {
+        let en = g.u.nodes[g.u.listAt(ents, j)]
+        let t = en.ty
+        let x = en.a
+        let o = off + en.v
+        if g.u.nk(x) == ir.E_STR && g.tk(t) == ir.TY_ARR {
+            let s = g.u.nodes[x].s
+            for i in 0..len(s) {
+                if i < g.size(t) { buf[o + i] = strByte(s, i) }
+            }
+        } else if g.isAggr(t) {
+            g.fail(x, "a global initialized from an aggregate value")
+        } else {
+            let c = g.constOf(x)
+            if c.sym >= 0 {
+                if g.size(t) != 8 { g.fail(x, "an address constant in a narrow field") }
+                append(relocs, DataReloc{ro: ro, off: o, sym: c.sym, addend: c.lo})
+            } else if g.size(t) == 16 {
+                putN(buf, o, c.lo, 8)
+                putN(buf, o + 8, c.hi, 8)
+            } else {
+                putN(buf, o, c.lo, g.size(t))
+            }
+        }
+    }
+}
+
+fn (g: mut &Gen) link(): []byte {
+    let codeBase = ir.alignUp(rtx.TEXT_ADDR + rtx.TEXT_SIZE, 16)
+    let roBase = ir.alignUp(codeBase + len(g.a.code), 16)
+    let dataBase = ir.alignUp(rtx.BSS_ADDR + rtx.BSS_SIZE, elf.PAGE)
+    var ro: []byte = []
+    var data: []byte = []
+    var relocs: []DataReloc = []
+    var gAddr: []int = []
+    // initialized globals (constant ones in rodata), then the bss
+    var bssList: []int = []
+    for i in 0..len(g.u.globals) {
+        append(mut &gAddr, 0)
+        let t = g.u.globals[i].ty
+        let init = g.u.globals[i].init
+        let isConst = g.u.globals[i].isConst
+        let al = g.u.alignOf(t)
+        if init < 0 && !isConst {
+            append(mut &bssList, i)
+        } else if isConst {
+            let off = ir.alignUp(len(ro), al)
+            growTo(mut &ro, off + g.size(t))
+            gAddr[i] = roBase + off
+            if init >= 0 { g.initData(mut &ro, true, off, init, mut &relocs) }
+        } else {
+            let off = ir.alignUp(len(data), al)
+            growTo(mut &data, off + g.size(t))
+            gAddr[i] = dataBase + off
+            g.initData(mut &data, false, off, init, mut &relocs)
+        }
+    }
+    // string literals (symStr may have been called by initData, so after the globals)
+    var sAddr: []int = []
+    for i in 0..len(g.strs) {
+        let s = g.strs[i]
+        append(mut &sAddr, roBase + len(ro))
+        for j in 0..len(s) { append(mut &ro, strByte(s, j)) }
+        append(mut &ro, 0)
+    }
+    var memEnd = ir.alignUp(len(data), 16)
+    for i in bssList {
+        let t = g.u.globals[i].ty
+        memEnd = ir.alignUp(memEnd, g.u.alignOf(t))
+        gAddr[i] = dataBase + memEnd
+        memEnd += g.size(t)
+    }
+    // symbol addresses
+    var addr: []int = []
+    for i in 0..len(g.syms) {
+        let s = g.syms[i]
+        if s.kind == SK_FUNC {
+            append(mut &addr, codeBase + g.funcPos[s.idx])
+        } else if s.kind == SK_GLOBAL {
+            append(mut &addr, gAddr[s.idx])
+        } else if s.kind == SK_STR {
+            append(mut &addr, sAddr[s.idx])
+        } else {
+            append(mut &addr, s.addr)
+        }
+    }
+    for i in 0..len(g.a.relocs) {
+        let r = g.a.relocs[i]
+        let v = addr[r.sym] + r.addend
+        if r.kind == x64.R_REL32 {
+            g.a.put32(r.at, v - (codeBase + r.at + 4))
+        } else if r.kind == x64.R_ABS32 {
+            g.a.put32(r.at, v)
+        } else {
+            panic("native: a 64-bit code relocation")
+        }
+    }
+    for r in relocs {
+        if r.ro {
+            putN(mut &ro, r.off, addr[r.sym] + r.addend, 8)
+        } else {
+            putN(mut &data, r.off, addr[r.sym] + r.addend, 8)
+        }
+    }
+    // the segments
+    var text: []byte = []
+    chunks(&rtx.TEXT, mut &text)
+    growTo(mut &text, codeBase - rtx.TEXT_ADDR)
+    for x in g.a.code { append(mut &text, x) }
+    growTo(mut &text, roBase - rtx.TEXT_ADDR)
+    for x in ro { append(mut &text, x) }
+    var rdata: []byte = []
+    chunks(&rtx.DATA, mut &rdata)
+    let rmem = rtx.BSS_ADDR + rtx.BSS_SIZE - rtx.DATA_ADDR
+    var segs: []elf.Seg = [elf.Seg{vaddr: rtx.TEXT_ADDR, flags: elf.PF_R | elf.PF_X, data: text, memsz: 0},
+        elf.Seg{vaddr: rtx.DATA_ADDR, flags: elf.PF_R | elf.PF_W, data: rdata, memsz: rmem}]
+    if memEnd == 0 { memEnd = 16 }
+    append(mut &segs, elf.Seg{vaddr: dataBase, flags: elf.PF_R | elf.PF_W, data: data, memsz: memEnd})
+    return elf.image(codeBase, &segs)
+}

@@ -1,0 +1,94 @@
+// elf: writes a static x86-64 Linux executable (ET_EXEC) from loadable segments
+// (design/native.md, "ELF layout"). The first segment is the code: it is mapped from the
+// start of the file, so the ELF header and the program headers are in its first page,
+// below its own bytes (which start at the second page: TEXT_BASE). Every other segment
+// starts on a page of the file of its own, at the offset that matches its address modulo
+// the page size.
+
+pub const PAGE = 4096
+pub const IMAGE_BASE = 0x400000
+pub const TEXT_BASE = 0x401000
+
+pub const PF_X = 1
+pub const PF_W = 2
+pub const PF_R = 4
+
+pub type Seg = record {
+    pub vaddr: int
+    pub flags: int
+    pub data: []byte
+    pub memsz: int          // at least len(data): the rest is zero (bss)
+}
+
+fn put(out: mut &[]byte, v: int, n: int) {
+    var x = v
+    for i in 0..n {
+        append(out, byte(x & 255))
+        x = x >> 8
+    }
+}
+
+fn pad(out: mut &[]byte, to: int) {
+    while len(out) < to { append(out, 0) }
+}
+
+pub fn alignUp(v: int, a: int): int { return (v + a - 1) / a * a }
+
+// The executable: segs[0] is the code at TEXT_BASE; entry is an address in it.
+pub fn image(entry: int, segs: &[]Seg): []byte {
+    let nph = len(segs) + 1         // and PT_GNU_STACK
+    var offs: []int = [0]
+    var end = TEXT_BASE - IMAGE_BASE + len(segs[0].data)
+    for i in 1..len(segs) {
+        let off = alignUp(end, PAGE) + segs[i].vaddr % PAGE
+        append(mut &offs, off)
+        end = off + len(segs[i].data)
+    }
+    var out: []byte = []
+    // ELF header
+    put(mut &out, 0x464c457f, 4)    // \x7fELF
+    put(mut &out, 2, 1)             // 64-bit
+    put(mut &out, 1, 1)             // little-endian
+    put(mut &out, 1, 1)             // version
+    put(mut &out, 0, 9)             // System V ABI, padding
+    put(mut &out, 2, 2)             // ET_EXEC
+    put(mut &out, 62, 2)            // x86-64
+    put(mut &out, 1, 4)
+    put(mut &out, entry, 8)
+    put(mut &out, 64, 8)            // program headers right after this header
+    put(mut &out, 0, 8)             // no section headers
+    put(mut &out, 0, 4)
+    put(mut &out, 64, 2)
+    put(mut &out, 56, 2)
+    put(mut &out, nph, 2)
+    put(mut &out, 64, 2)
+    put(mut &out, 0, 2)
+    put(mut &out, 0, 2)
+    for i in 0..len(segs) {
+        let first = i == 0
+        let off = if first { 0 } else { offs[i] }
+        let va = if first { IMAGE_BASE } else { segs[i].vaddr }
+        let extra = if first { TEXT_BASE - IMAGE_BASE } else { 0 }
+        let filesz = len(segs[i].data) + extra
+        let memsz = if segs[i].memsz > len(segs[i].data) { segs[i].memsz + extra } else { filesz }
+        put(mut &out, 1, 4)         // PT_LOAD
+        put(mut &out, segs[i].flags, 4)
+        put(mut &out, off, 8)
+        put(mut &out, va, 8)
+        put(mut &out, va, 8)
+        put(mut &out, filesz, 8)
+        put(mut &out, memsz, 8)
+        put(mut &out, PAGE, 8)
+    }
+    put(mut &out, 0x6474e551, 4)    // PT_GNU_STACK: read and write, not executable
+    put(mut &out, PF_R | PF_W, 4)
+    put(mut &out, 0, 8 * 5)
+    put(mut &out, 16, 8)
+    pad(mut &out, TEXT_BASE - IMAGE_BASE)
+    for x in segs[0].data { append(mut &out, x) }
+    for i in 1..len(segs) {
+        pad(mut &out, offs[i])
+        for x in segs[i].data { append(mut &out, x) }
+    }
+    return out
+}

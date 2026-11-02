@@ -2,6 +2,7 @@
 // program to C and builds it with gcc (or runs it, or prints the C).
 //
 //     obxc file.obx [-o out] [--run] [--emit-c] [-L libroot] [-- args...]
+//     obxc file.obx --native [-o out] [--run] [-- args...]   x86-64 ELF, no C compiler (design/native.md)
 //     obxc file.obx --emit-c-json          {"c": C text, "cmd": gcc command} for tools/cbuild.py
 //     obxc --emit-c file.obx file.obx...   the C of each program, in `== path` sections
 //     obxc --dump-ast file.obx...          the tree of each file (no imports)
@@ -22,11 +23,14 @@ import "./dump"
 import "./tdump"
 import "./check" as ck
 import "./emit"
+import "./x64"
+import "./cfront"
+import "./x64gen"
 
 extern "c" fn system(cmd: str): i32
 extern "c" fn mkdtemp(template: str): str
 
-const USAGE = "usage: obxc file.obx [-o out] [--run] [--emit-c] [-L libroot]\n"
+const USAGE = "usage: obxc file.obx [-o out] [--run] [--emit-c] [--native] [-L libroot]\n"
 
 fn usage(): never {
     writeFd(2, USAGE)
@@ -164,9 +168,10 @@ fn jsonStr(s: str): str {
     return b.toStr()
 }
 
-fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, json: bool, rest: &[]str): int {
+fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, json: bool, isNative: bool, rest: &[]str): int {
     var libs: []str = []
     let csrc = compileC(lib, roots, src, mut &libs)
+    if isNative { return buildNative(csrc, src, out, isRun, rest) }
     if emitc {
         writeFd(1, csrc)
         return 0
@@ -214,8 +219,42 @@ fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, 
     return st
 }
 
+// The native backend: the executable written directly (no gcc; design/native.md).
+fn buildNative(csrc: str, src: str, out: str, isRun: bool, rest: &[]str): int {
+    let img = x64gen.build(cfront.read(csrc))
+    var tmp = ""
+    var exe = out
+    if len(exe) == 0 {
+        if isRun {
+            tmp = mkdtemp(os.envOr("TMPDIR", "/tmp") + "/obxcXXXXXX")
+            if tmp == "" { sx.failText("obxc: cannot make a temporary directory") }
+            exe = tmp + "/prog"
+        } else {
+            exe = if endsWith(src, ".obx") { src[0..len(src) - 4] } else { src + ".out" }
+        }
+    }
+    fs.remove(exe)
+    match io.write(exe, strFromBytes(&img)) {
+        Ok(u) {}
+        Err(e) { sx.failText("obxc: cannot write " + exe + ": " + e.toStr()) }
+    }
+    fs.chmod(exe, 493)
+    if !isRun { return 0 }
+    var words: []str = [exe]
+    for a in rest { append(mut &words, a) }
+    let st = run(&words, "")
+    if len(tmp) > 0 { fs.removeAll(tmp) }
+    return st
+}
+
 fn main() {
     let argv = args()
+    if len(argv) == 3 && argv[1] == "--encode-test" {      // the x86-64 encoder test (tools/x64_encode_test.py)
+        var text = ""
+        if readFile(argv[2], mut &text) != 0 { sx.failText("cannot read " + argv[2]) }
+        writeFd(1, x64.runTest(text))
+        return
+    }
     if len(argv) >= 3 && (argv[1] == "--dump-ast" || argv[1] == "--dump-types" || argv[1] == "--emit-c") {
         let types = argv[1] == "--dump-types"
         let emitc = argv[1] == "--emit-c"
@@ -239,6 +278,7 @@ fn main() {
     var isRun = false
     var emitc = false
     var json = false
+    var isNative = false
     var roots: []str = []
     var src = ""
     var rest: []str = []
@@ -259,6 +299,8 @@ fn main() {
             emitc = true
         } else if a == "--emit-c-json" {
             json = true
+        } else if a == "--native" {
+            isNative = true
         } else if a == "-L" {
             i += 1
             if i >= len(argv) { usage() }
@@ -273,5 +315,5 @@ fn main() {
         i += 1
     }
     if src == "" { usage() }
-    exit(build(libDir(argv[0]), &roots, src, out, isRun, emitc, json, &rest))
+    exit(build(libDir(argv[0]), &roots, src, out, isRun, emitc, json, isNative, &rest))
 }
