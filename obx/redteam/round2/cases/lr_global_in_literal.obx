@@ -1,0 +1,8 @@
+// expect: 1 0
+type P = record { a: int; b: int }
+var g: int = 1
+fn f(): int { g = 9; return 0 }
+fn main() {
+    let p = P{a: g, b: f()}
+    println(p.a.toStr() + " " + p.b.toStr())
+}

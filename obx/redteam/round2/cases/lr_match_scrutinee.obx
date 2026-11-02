@@ -1,0 +1,14 @@
+// expect: 1
+// expect: 5
+fn f(i: mut &int): int { i = 5; return 1 }
+fn main() {
+    var i = 1
+    match i + 0 {
+        1 { println("1") }
+        else { println("other") }
+    }
+    match f(mut &i) {
+        1 { println(i.toStr()) }
+        else { println("x") }
+    }
+}

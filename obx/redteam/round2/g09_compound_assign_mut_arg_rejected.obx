@@ -1,0 +1,11 @@
+// SPEC 7.4: a += b means a = a + b with a evaluated once. n = n + f(mut &n)
+// compiles (the copy n is read first, prints 2), but n += f(mut &n) is
+// rejected: s_assign holds the target place as a mut borrow (binop
+// held=p) while b is evaluated, so f's mut &n conflicts.
+// expect: 2
+fn f(n: mut &int): int { n = 100; return 1 }
+fn main() {
+    var n = 1
+    n += f(mut &n)
+    println(n.toStr())
+}

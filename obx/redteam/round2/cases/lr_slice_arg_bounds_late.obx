@@ -1,0 +1,8 @@
+// expect: 3
+fn g(n: mut &int): int { n = 2; return 9 }
+fn cnt(p: &[int], v: int): int { return len(p) }
+fn main() {
+    let a: []int = [1, 2, 3]
+    var i = 0
+    println(cnt(a[i..], g(mut &i)).toStr())
+}

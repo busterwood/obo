@@ -1,0 +1,9 @@
+// A computed upper bound of -1 is out of range (exit 3), not "to the end".
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var n = 0
+    n -= 1
+    let s = xs[0..n]
+    println(len(s).toStr())
+}

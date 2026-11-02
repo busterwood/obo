@@ -1,0 +1,7 @@
+// expect: 3
+fn f(n: mut &int): int { n = 7; return 0 }
+fn main() {
+    var n = 3
+    let xs = array(n, f(mut &n))
+    println(len(xs).toStr())
+}

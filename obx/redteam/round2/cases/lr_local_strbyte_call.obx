@@ -1,0 +1,7 @@
+// expect: 120 0
+fn f(p: mut &str): int { p = "abc"; return 0 }
+fn two(a: byte, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var s = "x"
+    println(two(s[0], f(mut &s)))
+}

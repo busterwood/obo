@@ -1,0 +1,6 @@
+// expect: 255
+fn main() {
+    var b: byte = 0
+    let x = 255 - b
+    println(x.toStr())
+}

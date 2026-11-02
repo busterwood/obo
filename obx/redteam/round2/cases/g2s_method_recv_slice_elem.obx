@@ -1,0 +1,8 @@
+// error: borrow|held|overlap
+type B = record { s: str }
+fn (b: &B) get(n: int): str { return b.s }
+fn clear(g: mut &[]B): int { g = []; return 0 }
+fn main() {
+    var bs: []B = [B{s: "a" + "b"}]
+    println(bs[0..1][0].get(clear(mut &bs)))
+}

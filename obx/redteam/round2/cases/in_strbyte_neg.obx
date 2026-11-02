@@ -1,0 +1,7 @@
+// exit: 3
+fn main() {
+    let s = "abc"
+    var i = 0
+    i -= 1
+    println(strByte(s[1..], i).toStr())
+}

@@ -1,0 +1,12 @@
+// expect: ab
+type B = record { s: str }
+fn show(xs: &[Option[B]]) {
+    match xs[0] {
+        Some(b) { println(b.s) }
+        None {}
+    }
+}
+fn main() {
+    let xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    show(&xs)
+}

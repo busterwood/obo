@@ -1,0 +1,12 @@
+// error: borrowed
+fn main() {
+    var o: Option[[]int] = Some([1, 2])
+    match o {
+        Some(a) {
+            let s = a[0..1]
+            o = None
+            println(s[0].toStr())
+        }
+        None {}
+    }
+}

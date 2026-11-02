@@ -1,0 +1,7 @@
+// SPEC 5.2, 7.1: a constant expression that overflows is a compile error.
+// At run time MIN % -1 stops the program (rt_rem_int, exit 10), like
+// MIN / -1, but sema.fold folds it to 0 without an error.
+// error: overflow
+const A: int = -9223372036854775807 - 1
+const B: int = A % -1
+fn main() { println(B.toStr()) }

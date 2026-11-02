@@ -1,0 +1,9 @@
+// expect: 1
+type P = record { v: int }
+fn (p: &P) get(n: int): int { return p.v }
+fn g(n: mut &int): int { n = 1; return 0 }
+fn main() {
+    let ps: []P = [P{v: 1}, P{v: 2}]
+    var i = 0
+    println(ps[i].get(g(mut &i)).toStr())
+}

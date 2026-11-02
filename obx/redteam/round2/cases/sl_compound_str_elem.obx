@@ -1,0 +1,7 @@
+// expect: ab
+fn ext(xs: mut &[str]) { xs[0] += "b" }
+fn main() {
+    var xs: []str = ["a" + ""]
+    ext(mut &xs)
+    println(xs[0])
+}

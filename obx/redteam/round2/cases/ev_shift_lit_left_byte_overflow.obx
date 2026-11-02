@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    var n = 8
+    let x: byte = 1 << n
+    println(x.toStr())
+}

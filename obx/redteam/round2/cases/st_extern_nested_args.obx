@@ -1,0 +1,7 @@
+// expect: 3 2
+extern "c" fn strlen(s: str): u64
+fn two(a: u64, b: u64): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    let s = "12345" + ""
+    println(two(strlen(s[0..3]), strlen(s[1..3])))
+}

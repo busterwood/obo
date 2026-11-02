@@ -1,0 +1,6 @@
+// An index error is exit 3, not a stack overflow.
+// exit: 3
+fn main() {
+    let xs: []int = []
+    println(xs[0].toStr())
+}

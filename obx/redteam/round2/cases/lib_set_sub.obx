@@ -1,0 +1,10 @@
+// expect: 2
+import "collections"
+fn main() {
+    var s: collections.Set[str] = collections.newSet()
+    let t = "aaab" + ""
+    let x = s.add(t[0..1])
+    let y = s.add(t[1..2])
+    let z = s.add(t[3..])
+    println(s.size().toStr())
+}

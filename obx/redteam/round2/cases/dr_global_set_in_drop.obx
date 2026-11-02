@@ -1,0 +1,9 @@
+// A drop method that runs at the end of main stores into a global.
+// expect: done
+var last: str = ""
+type D = record { n: str }
+fn (d: mut &D) drop() { last = d.n }
+fn main() {
+    let d = D{n: "a" + "b"}
+    println("done")
+}

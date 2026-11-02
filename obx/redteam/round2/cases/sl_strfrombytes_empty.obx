@@ -1,0 +1,6 @@
+// expect: [] 0
+fn main() {
+    let b: []byte = []
+    let s = strFromBytes(&b)
+    println("[" + s + "] " + len(s).toStr())
+}

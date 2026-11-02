@@ -1,0 +1,6 @@
+// exit: 12
+import "collections"
+fn main() {
+    var xs: []str = ["a"]
+    collections.insert(mut &xs, -1, "b")
+}

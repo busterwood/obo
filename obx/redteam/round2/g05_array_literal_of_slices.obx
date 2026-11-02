@@ -1,0 +1,11 @@
+// SPEC 4.5, 10 rule 1: a borrow (a slice is one) cannot be stored in an
+// element. x_arrlit takes its element type from the first element, so
+// [xs[0..1]] is a []&[str] value that a var keeps after xs is freed (heap
+// use after free). The written type []&[str] is rejected.
+// error: borrow
+fn main() {
+    var xs: []str = ["a" + "b"]
+    var a = [xs[0..1]]
+    xs = []
+    println(a[0][0])
+}

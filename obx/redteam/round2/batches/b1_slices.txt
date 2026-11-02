@@ -1,0 +1,738 @@
+=== sl_neg_hi_runtime
+// A computed upper bound of -1 is out of range (exit 3), not "to the end".
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var n = 0
+    n -= 1
+    let s = xs[0..n]
+    println(len(s).toStr())
+}
+=== sl_neg_hi_literal
+// xs[1..-1] is out of range.
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let s = xs[1..-1]
+    println(len(s).toStr())
+}
+=== sl_neg_hi_slice_of_slice
+// exit: 3
+fn f(s: &[int], b: int): int { return len(s[0..b]) }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    println(f(&xs, -1).toStr())
+}
+=== sl_lo_gt_hi
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var a = 2
+    let s = xs[a..1]
+    println(len(s).toStr())
+}
+=== sl_hi_gt_len
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let s = xs[0..4]
+    println(len(s).toStr())
+}
+=== sl_lo_neg
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var a = 0
+    a -= 1
+    let s = xs[a..]
+    println(len(s).toStr())
+}
+=== sl_empty_at_len
+// expect: 0
+// expect: 0
+// expect: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let s = xs[3..]
+    println(len(s).toStr())
+    let e: []int = []
+    let t = e[..]
+    println(len(t).toStr())
+    let u = xs[..]
+    println(len(u).toStr())
+}
+=== sl_empty_index
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let s = xs[3..]
+    println(s[0].toStr())
+}
+=== sl_slice_of_slice_bounds
+// Re-slicing is relative to the slice and checked against its length.
+// expect: 3
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3, 4, 5]
+    let s = xs[1..3]
+    let t = s[1..2]
+    println(t[0].toStr())
+    let u = s[0..3]
+    println(len(u).toStr())
+}
+=== sl_index_beyond_slice
+// An index past the slice end but inside the array traps.
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3, 4, 5]
+    let s = xs[1..3]
+    println(s[2].toStr())
+}
+=== sl_let_freeze_append
+// error: borrowed
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let s = xs[0..2]
+    append(mut &xs, 4)
+    println(s[0].toStr())
+}
+=== sl_let_freeze_pop
+// error: borrowed
+fn main() {
+    var xs: []str = ["a", "b" + "c"]
+    let s = xs[0..2]
+    let p = pop(mut &xs)
+    println(s[1])
+}
+=== sl_let_freeze_assign_whole
+// error: borrowed
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let s = &xs[0..2]
+    xs = [9]
+    println(s[0].toStr())
+}
+=== sl_let_freeze_elem_assign
+// error: borrowed
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let s = xs[0..2]
+    xs[0] = 5
+    println(s[0].toStr())
+}
+=== sl_let_freeze_field
+// error: borrowed
+type R = record { items: []int }
+fn main() {
+    var r = R{items: [1, 2, 3]}
+    let s = &r.items[1..3]
+    r.items = []
+    println(s[0].toStr())
+}
+=== sl_let_freeze_field_append
+// error: borrowed
+type R = record { items: []int }
+fn main() {
+    var r = R{items: [1, 2, 3]}
+    let s = &r.items[1..3]
+    append(mut &r.items, 4)
+    println(s[0].toStr())
+}
+=== sl_let_freeze_move_root
+// error: borrowed|moved
+fn eat(xs: []int) {}
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let s = xs[..]
+    eat(move(xs))
+    println(s[0].toStr())
+}
+=== sl_let_grid_row
+// error: borrowed
+fn main() {
+    var g: [][]int = [[1, 2], [3, 4]]
+    let row = &g[0][..]
+    append(mut &g[0], 5)
+    println(row[0].toStr())
+}
+=== sl_let_grid_row_other
+// error: borrowed
+fn main() {
+    var g: [][]int = [[1, 2], [3, 4]]
+    let row = g[0][..]
+    g[0] = [7]
+    println(row[0].toStr())
+}
+=== sl_grid_row_ok
+// expect: 2 4
+fn main() {
+    var g: [][]int = [[1, 2], [3, 4]]
+    {
+        let row = g[0][..]
+        let col = g[1][1..]
+        println(row[1].toStr() + " " + col[0].toStr())
+    }
+    append(mut &g[0], 5)
+}
+=== sl_ret_rule5_then_change
+// error: borrowed
+fn mid(xs: &[]int): &[int] { return xs[1..3] }
+fn main() {
+    var xs: []int = [1, 2, 3, 4]
+    let m = mid(&xs)
+    append(mut &xs, 5)
+    println(m[0].toStr())
+}
+=== sl_ret_rule5_slice_param
+// error: borrowed
+fn mid(xs: &[int]): &[int] { return xs[1..3] }
+fn main() {
+    var xs: []int = [1, 2, 3, 4]
+    let m = mid(&xs)
+    xs = []
+    println(m[0].toStr())
+}
+=== sl_ret_rule5_ok
+// expect: 2 1
+fn mid(xs: &[int]): &[int] { return xs[1..3] }
+fn tail(xs: &[int]): &[int] { return xs[1..][0..1] }
+fn main() {
+    var xs: []int = [1, 2, 3, 4]
+    let m = mid(&xs)
+    let t = tail(m)
+    println(m[0].toStr() + " " + len(t).toStr())
+}
+=== sl_ret_local_array
+// error: cannot return a borrow|exactly one borrowed
+fn bad(): &[int] {
+    let xs: []int = [1, 2]
+    return xs[..]
+}
+fn main() { println(len(bad()).toStr()) }
+=== sl_ret_local_from_param_fn
+// error: cannot return a borrow|borrowed parameter|exactly one
+fn bad(xs: &[int]): &[int] {
+    let ys: []int = [1, 2]
+    return ys[0..1]
+}
+fn main() {
+    let xs: []int = [1]
+    println(len(bad(&xs)).toStr())
+}
+=== sl_ret_temp
+// error: temporary
+fn mk(): []int { return [1, 2, 3] }
+fn mid(xs: &[int]): &[int] { return xs[1..3] }
+fn main() {
+    let m = mid(&mk())
+    println(m[0].toStr())
+}
+=== sl_temp_in_call_ok
+// expect: 5
+fn mk(): []int { return [1, 2, 3] }
+fn sum(xs: &[int]): int { var s = 0; for x in xs { s += x }; return s }
+fn main() {
+    println(sum(mk()[1..]).toStr())
+}
+=== sl_temp_let
+// error: temporary
+fn mk(): []int { return [1, 2, 3] }
+fn main() {
+    let s = mk()[1..]
+    println(s[0].toStr())
+}
+=== sl_temp_let_typed
+// error: temporary
+fn mk(): []int { return [1, 2, 3] }
+fn main() {
+    let s: &[int] = &mk()
+    println(s[0].toStr())
+}
+=== sl_temp_lit_let
+// error: temporary
+fn main() {
+    let s = [1, 2, 3][1..]
+    println(s[0].toStr())
+}
+=== sl_call_hold_append
+// error: held|overlaps|enclosing|borrow
+fn f(s: &[int], n: int): int { return s[0] + n }
+fn g(xs: mut &[]int): int { append(xs, 1); append(xs, 1); append(xs, 1); append(xs, 1); append(xs, 1); return 1 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(f(xs[0..2], g(mut &xs)).toStr())
+}
+=== sl_call_hold_conv
+// error: held|overlaps|enclosing|borrow
+fn f(s: &[int], n: int): int { return s[0] + n }
+fn g(xs: mut &[]int): int { append(xs, 1); return 1 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(f(&xs, g(mut &xs)).toStr())
+}
+=== sl_index_hold
+// error: held|overlaps|enclosing|borrow
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(xs[0..2][g(mut &xs)].toStr())
+}
+=== sl_sub_bounds_hold
+// error: held|overlaps|enclosing|borrow
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let s = xs[g(mut &xs)..]
+    println(len(s).toStr())
+}
+=== sl_sub_elem_late_index
+// The element index is evaluated before the bounds: xs[i] is xs[0].
+// expect: 1
+fn bump(i: mut &int): int { i += 1; return 0 }
+fn main() {
+    let g: [][]int = [[1], [2]]
+    var i = 0
+    let s = g[i][bump(mut &i)..]
+    println(s[0].toStr())
+}
+=== idx_elem_late_index
+// g[i][bump(mut &i)] reads g[0], since g[i] is evaluated first.
+// expect: 1
+fn bump(i: mut &int): int { i += 1; return 0 }
+fn main() {
+    let g: [][]int = [[1], [2]]
+    var i = 0
+    println(g[i][bump(mut &i)].toStr())
+}
+=== idx_field_late_index
+// expect: 1
+type R = record { a: []int }
+fn bump(i: mut &int): int { i += 1; return 0 }
+fn main() {
+    let rs: []R = [R{a: [1]}, R{a: [2]}]
+    var i = 0
+    println(rs[i].a[bump(mut &i)].toStr())
+}
+=== sl_generic_owned_swap
+// expect: c b a
+fn rev[T](xs: mut &[T]) {
+    var i = 0
+    var j = len(xs) - 1
+    while i < j { swap(xs, i, j); i += 1; j -= 1 }
+}
+fn main() {
+    var xs: []str = ["a" + "", "b" + "", "c" + ""]
+    rev(mut &xs)
+    println(xs[0] + " " + xs[1] + " " + xs[2])
+}
+=== sl_generic_owned_records
+// expect: 3 2 1
+type B = record { v: int; s: str }
+fn rev[T](xs: mut &[T]) {
+    var i = 0
+    var j = len(xs) - 1
+    while i < j { swap(xs, i, j); i += 1; j -= 1 }
+}
+fn main() {
+    var xs: []B = [B{v: 1, s: "x" + "y"}, B{v: 2, s: "y"}, B{v: 3, s: "z" + "q"}]
+    rev(mut &xs[..])
+    println(xs[0].v.toStr() + " " + xs[1].v.toStr() + " " + xs[2].v.toStr())
+}
+=== sl_generic_move_out
+// error: cannot move
+fn first[T](xs: &[T]): T { return xs[0] }
+fn main() {
+    let xs: []str = ["a"]
+    println(first(&xs))
+}
+=== sl_generic_move_out_mut
+// error: cannot move
+fn first[T](xs: mut &[T]): T { let x = xs[0]; return x }
+fn main() {
+    var xs: []str = ["a"]
+    println(first(mut &xs))
+}
+=== sl_generic_replace
+// expect: new old
+fn put[T](xs: mut &[T], v: T): T { return replace(mut &xs[0], v) }
+fn main() {
+    var xs: []str = ["old" + "!"]
+    let o = put(mut &xs, "new" + "")
+    println(xs[0] + " " + o[0..3])
+}
+=== sl_generic_for_owned
+// expect: ab
+fn cat(xs: &[str]): str { var s = ""; for x in xs { s = s + x }; return s }
+fn main() {
+    var xs: []str = ["a" + "", "b" + "", "c"]
+    println(cat(xs[0..2]))
+}
+=== sl_generic_for_owned_t
+// expect: 2
+type B = record { v: int }
+fn cnt[T](xs: &[T]): int { var n = 0; for x in xs { n += 1 }; return n }
+fn main() {
+    var xs: []B = [B{v: 1}, B{v: 2}, B{v: 3}]
+    println(cnt(xs[1..]).toStr())
+}
+=== sl_assign_owned_elem
+// expect: z
+// expect: done
+fn set(xs: mut &[str]) { xs[1] = "z" + "" }
+fn main() {
+    var xs: []str = ["a" + "", "b" + ""]
+    set(mut &xs)
+    println(xs[1])
+    println("done")
+}
+=== sl_compound_assign
+// expect: 11 22 3
+fn bump(xs: mut &[int]) { xs[0] += 10; xs[1] *= 11 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    bump(mut &xs[0..2])
+    println(xs[0].toStr() + " " + xs[1].toStr() + " " + xs[2].toStr())
+}
+=== sl_compound_assign_shared
+// error: shared|mut
+fn bump(xs: &[int]) { xs[0] += 10 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    bump(&xs)
+}
+=== sl_compound_str_elem
+// expect: ab
+fn ext(xs: mut &[str]) { xs[0] += "b" }
+fn main() {
+    var xs: []str = ["a" + ""]
+    ext(mut &xs)
+    println(xs[0])
+}
+=== sl_mut_from_let
+// error: let|mut
+fn z(xs: mut &[int]) { xs[0] = 0 }
+fn main() {
+    let xs: []int = [1, 2]
+    z(mut &xs[0..1])
+}
+=== sl_mut_from_let_untyped
+// error: let|mut
+fn z(xs: mut &[int]) { xs[0] = 0 }
+fn main() {
+    let xs: []int = [1, 2]
+    z(xs[0..1])
+}
+=== sl_mut_from_shared_param
+// error: shared|mut
+fn z(xs: mut &[int]) { xs[0] = 0 }
+fn w(xs: &[]int) { z(xs[..]) }
+fn main() {
+    var xs: []int = [1, 2]
+    w(&xs)
+}
+=== sl_mut_from_shared_param2
+// error: shared|mut
+fn z(xs: mut &[int]) { xs[0] = 0 }
+fn w(xs: &[]int) { z(mut &xs[..]) }
+fn main() {
+    var xs: []int = [1, 2]
+    w(&xs)
+}
+=== sl_mut_from_shared_slice_conv
+// error: shared|mut
+fn z(xs: mut &[int]) { xs[0] = 0 }
+fn w(xs: &[int]) { z(xs) }
+fn main() {
+    var xs: []int = [1, 2]
+    w(&xs)
+}
+=== sl_swap_shared
+// error: shared|mut
+fn w(xs: &[int]) { swap(xs, 0, 1) }
+fn main() {
+    var xs: []int = [1, 2]
+    w(&xs)
+}
+=== sl_two_mut_disjoint
+// error: twice|overlap
+fn two(a: mut &[int], b: mut &[int]) { a[0] = b[0] }
+fn main() {
+    var xs: []int = [1, 2]
+    two(mut &xs[0..1], mut &xs[1..2])
+}
+=== sl_mut_and_shared
+// error: twice|overlap
+fn two(a: mut &[int], b: &[int]) { a[0] = b[0] }
+fn main() {
+    var xs: []int = [1, 2]
+    two(mut &xs[0..1], xs[1..2])
+}
+=== sl_mut_and_elem
+// error: twice|overlap
+fn two(a: mut &[int], b: &int) { a[0] = b }
+fn main() {
+    var xs: []int = [1, 2]
+    two(mut &xs[0..1], &xs[1])
+}
+=== sl_mut_let_then_read
+// error: borrowed
+fn main() {
+    var xs: []int = [1, 2]
+    let s: mut &[int] = mut &xs
+    println(xs[0].toStr())
+    s[0] = 3
+}
+=== sl_mut_let_write_through
+// expect: 9 2
+fn main() {
+    var xs: []int = [1, 2]
+    {
+        let s: mut &[int] = xs[..]
+        s[0] = 9
+    }
+    println(xs[0].toStr() + " " + xs[1].toStr())
+}
+=== sl_mut_let_via_mut_spelled
+// expect: 9
+fn main() {
+    var xs: []int = [1, 2]
+    {
+        let s = mut &xs[0..1]
+        s[0] = 9
+    }
+    println(xs[0].toStr())
+}
+=== sl_let_untyped_is_shared
+// error: shared|mut
+fn main() {
+    var xs: []int = [1, 2]
+    let s = xs[0..1]
+    s[0] = 9
+}
+=== sl_of_slice_mut_from_mut
+// expect: 0 2 0
+fn z(xs: mut &[int]) { xs[0] = 0; let t: mut &[int] = xs[2..]; t[0] = 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    z(mut &xs)
+    println(xs[0].toStr() + " " + xs[1].toStr() + " " + xs[2].toStr())
+}
+=== sl_conv_and_move_same_call
+// error: twice|moved|overlap|held
+fn f(s: &[str], xs: []str): int { return len(s) + len(xs) }
+fn main() {
+    var xs: []str = ["a"]
+    println(f(&xs, move(xs)).toStr())
+}
+=== sl_conv_and_move_same_call2
+// error: twice|moved|overlap|held
+fn f(xs: []str, s: &[str]): int { return len(s) + len(xs) }
+fn main() {
+    var xs: []str = ["a"]
+    println(f(move(xs), &xs).toStr())
+}
+=== sl_for_slice_append
+// error: borrowed
+fn main() {
+    var xs: []int = [1, 2]
+    for x in xs[0..2] { append(mut &xs, x) }
+}
+=== sl_for_slice_of_param_mutate
+// error: borrowed|shared|mut
+fn f(xs: mut &[]int) {
+    for x in xs[..] { append(xs, x) }
+}
+fn main() {
+    var xs: []int = [1, 2]
+    f(mut &xs)
+}
+=== sl_for_slice_owned_elem
+// expect: a
+// expect: b
+fn main() {
+    var xs: []str = ["a" + "", "b" + "", "c"]
+    for x in xs[0..2] { println(x) }
+}
+=== sl_slice_param_in_let_then_mutate_param
+// error: borrowed
+fn f(xs: mut &[]int) {
+    let s = xs[0..1]
+    append(xs, 1)
+    println(s[0].toStr())
+}
+fn main() {
+    var xs: []int = [1, 2]
+    f(mut &xs)
+}
+=== sl_slice_param_let_then_assign
+// error: borrowed
+fn f(xs: mut &[]int) {
+    let s = xs[0..1]
+    xs = []
+    println(s[0].toStr())
+}
+fn main() {
+    var xs: []int = [1, 2]
+    f(mut &xs)
+}
+=== sl_slice_param_let_then_reassign_elem_via_mut_slice
+// error: borrowed
+fn f(xs: mut &[str]) {
+    let s = xs[0..1]
+    xs[0] = "q"
+    println(s[0])
+}
+fn main() {
+    var xs: []str = ["a"]
+    f(mut &xs)
+}
+=== sl_borrow_elem_let_then_append
+// error: borrowed
+fn main() {
+    var xs: []int = [1, 2]
+    let s = xs[0..2]
+    let r = &s[0]
+    append(mut &xs, 3)
+    println(r.toStr())
+}
+=== sl_let_of_borrow_let
+// error: borrowed
+fn main() {
+    var xs: []int = [1, 2]
+    let a = mut &xs
+    let s = a[0..1]
+    append(a, 3)
+    println(s[0].toStr())
+}
+=== sl_let_of_shared_borrow_let_outer_mut
+// error: borrowed
+fn main() {
+    var xs: []int = [1, 2]
+    let a = &xs
+    let s = a[0..1]
+    append(mut &xs, 3)
+    println(s[0].toStr())
+}
+=== sl_ret_from_method
+// error: borrowed
+type R = record { xs: []int }
+fn (r: &R) head(): &[int] { return r.xs[0..1] }
+fn main() {
+    var r = R{xs: [1, 2]}
+    let h = r.head()
+    append(mut &r.xs, 3)
+    println(h[0].toStr())
+}
+=== sl_ret_from_method_ok
+// expect: 1
+type R = record { xs: []int }
+fn (r: &R) head(): &[int] { return r.xs[0..1] }
+fn main() {
+    var r = R{xs: [1, 2]}
+    {
+        let h = r.head()
+        println(h[0].toStr())
+    }
+    append(mut &r.xs, 3)
+}
+=== sl_mut_ret_then_write
+// expect: 5 2
+fn head(xs: mut &[]int): mut &[int] { return xs[0..1] }
+fn main() {
+    var xs: []int = [1, 2]
+    { let h = head(mut &xs); h[0] = 5 }
+    println(xs[0].toStr() + " " + xs[1].toStr())
+}
+=== sl_mut_ret_from_shared
+// error: mut
+fn head(xs: &[]int): mut &[int] { return xs[0..1] }
+fn main() {
+    var xs: []int = [1, 2]
+    let h = head(&xs)
+}
+=== sl_ret_mut_from_shared_slice_body
+// error: mut|shared
+fn head(xs: mut &[]int, ys: int): mut &[int] { let s = xs[0..1]; return s }
+fn main() {
+    var xs: []int = [1, 2]
+    let h = head(mut &xs, 1)
+    h[0] = 3
+}
+=== sl_strfrombytes
+// expect: bc
+fn main() {
+    let b: []byte = ['a', 'b', 'c', 'd']
+    println(strFromBytes(b[1..3]))
+}
+=== sl_strfrombytes_empty
+// expect: [] 0
+fn main() {
+    let b: []byte = []
+    let s = strFromBytes(&b)
+    println("[" + s + "] " + len(s).toStr())
+}
+=== sl_len_of_slice_expr
+// expect: 2
+fn main() {
+    let b: []int = [1, 2, 3]
+    println(len(b[1..]).toStr())
+}
+=== sl_pop_hold_same_stmt
+// Two pops in one expression: each call's borrow ends when it returns.
+// expect: 5
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let s = pop(mut &xs) + pop(mut &xs)
+    println(s.toStr())
+}
+=== sl_append_then_len_same_stmt
+// expect: 2
+fn f(a: int, b: int): int { return a + b }
+fn g(xs: mut &[]int): int { append(xs, 1); return 1 }
+fn main() {
+    var xs: []int = [1]
+    println(f(g(mut &xs), g(mut &xs)).toStr())
+}
+=== sl_swap_twice_same_stmt
+// expect: 2
+fn s2(xs: mut &[int]): int { swap(xs, 0, 1); return 1 }
+fn main() {
+    var xs: []int = [1, 2]
+    println((s2(mut &xs) + s2(mut &xs)).toStr())
+}
+=== sl_swap_index_effect
+// error: held|overlap|borrow
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn main() {
+    var xs: []int = [1, 2]
+    swap(mut &xs, 0, g(mut &xs))
+}
+=== sl_swap_slice_index_pop
+// error: held|overlap|borrow
+fn main() {
+    var xs: []str = ["a", "b"]
+    swap(xs[0..2], 0, len(pop(mut &xs)))
+}
+=== sl_replace_elem_slice_hold
+// error: held|overlap|borrow|moved
+fn g(xs: mut &[]str): str { xs = []; return "x" }
+fn main() {
+    var xs: []str = ["a", "b"]
+    let o = replace(mut &xs[0], g(mut &xs))
+}
+=== sl_sort_partial
+// expect: 5 1 2 3 4 0
+fn main() {
+    var xs: []int = [5, 4, 3, 2, 1, 0]
+    sort(mut &xs[1..5])
+    var s = ""
+    for x in xs { s = s + x.toStr() + " " }
+    println(s[0..len(s) - 1])
+}
+=== sl_sort_str_partial
+// expect: d a b c
+fn main() {
+    var xs: []str = ["d" + "", "c" + "", "b", "a" + ""]
+    sort(mut &xs[1..])
+    println(xs[0] + " " + xs[1] + " " + xs[2] + " " + xs[3])
+}

@@ -1,0 +1,7 @@
+// expect: done
+type N = record { l: Option[N]; r: Option[N]; s: str }
+fn main() {
+    var t: Option[N] = None
+    for i in 0..300000 { t = Some(N{l: move(t), r: None, s: "x" + ""}) }
+    println("done")
+}

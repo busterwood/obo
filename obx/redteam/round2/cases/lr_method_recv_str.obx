@@ -1,0 +1,6 @@
+// expect: 4
+fn f(s: mut &str): int { s = "zz"; return 0 }
+fn main() {
+    var s = "abcd" + ""
+    println((len(s) + f(mut &s)).toStr())
+}

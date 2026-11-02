@@ -1,0 +1,12 @@
+// expect: 1
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn cnt(xs: &[]str, n: int): Result[int, str] {
+    let s = xs[try get(n)..]
+    return Ok(len(s))
+}
+fn main() {
+    let xs: []str = ["a" + "", "b" + ""]
+    match cnt(&xs, 1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+    match cnt(&xs, -1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}

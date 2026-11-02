@@ -1,0 +1,18 @@
+// SPEC 9.4: dropping a long chain of boxed values does not use stack depth
+// proportional to its length. A drop method that detaches its child with
+// replace drops it at the end of the method: one nested rt_drun (C
+// recursion) per node, so a 300,000-node list overflows the stack (exit 4).
+// expect: 300000
+var count: int = 0
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() {
+    count += 1
+    let c = replace(mut &n.next, None)
+}
+fn main() {
+    {
+        var t: Option[N] = None
+        for i in 0..300000 { t = Some(N{v: i, next: move(t)}) }
+    }
+    println(count.toStr())
+}

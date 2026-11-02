@@ -1,0 +1,7 @@
+// expect: 2
+type Bag[T] = record { items: []T }
+fn (b: &Bag[T]) rest(): &[T] { return b.items[1..] }
+fn main() {
+    let b = Bag{items: ["a", "b", "c"]}
+    println(len(b.rest()).toStr())
+}

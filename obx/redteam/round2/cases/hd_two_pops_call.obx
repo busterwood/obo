@@ -1,0 +1,7 @@
+// Each pop's borrow ends when it returns.
+// expect: 3 2
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(two(pop(mut &xs), pop(mut &xs)))
+}

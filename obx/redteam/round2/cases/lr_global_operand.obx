@@ -1,0 +1,6 @@
+// expect: 6
+var g: int = 5
+fn f(): int { g = 100; return 1 }
+fn main() {
+    println((g + f()).toStr())
+}

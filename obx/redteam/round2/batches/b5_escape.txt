@@ -1,0 +1,205 @@
+=== es_arrlit_of_slice
+// error: borrow|second class|slice
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let a = [xs[0..2]]
+    xs = []
+    println(a[0][0].toStr())
+}
+=== es_arrlit_of_slice_typed
+// error: borrow|second class|slice
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let a: []&[int] = [xs[0..2]]
+    println(len(a).toStr())
+}
+=== es_arrlit_of_slice_param
+// error: borrow|second class|slice
+fn keep(s: &[int]): int {
+    let a = [s, s]
+    return len(a)
+}
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(keep(&xs).toStr())
+}
+=== es_arrlit_of_slice_return
+// error: borrow|second class|slice
+fn mk(xs: &[]int): int {
+    var a = [xs[0..1]]
+    append(mut &a, xs[1..2])
+    return len(a)
+}
+fn main() {
+    let xs: []int = [1, 2, 3]
+    println(mk(&xs).toStr())
+}
+=== es_arrlit_of_slice_append_uaf
+// error: borrow|second class|slice
+fn main() {
+    var xs: []str = ["a" + "b"]
+    var a = [xs[0..1]]
+    xs = []
+    println(a[0][0])
+}
+=== es_option_of_slice
+// error: borrow|second class|type argument
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let o = Some(xs[0..2])
+    xs = []
+}
+=== es_box_of_slice
+// error: borrow|second class|type argument
+type Box[T] = record { v: T }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let b = Box{v: xs[0..2]}
+    xs = []
+}
+=== es_generic_id_slice
+// error: borrow|second class|type argument
+fn wrap[T](v: T): []T { return [v] }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let b = wrap(xs[0..2])
+    xs = []
+}
+=== es_generic_fnvalue_slice
+// error: borrow|second class|type argument
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn apply[A, B](f: fn(A): B, a: A): B { return f(a) }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(len(apply(mid, xs[..])).toStr())
+}
+=== es_generic_fnvalue_slice_store
+// error: borrow|second class|type argument
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn collect[A, B](f: fn(A): B, a: A): []B { return [f(a)] }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let r = collect(mid, xs[..])
+    xs = []
+}
+=== es_fn_type_with_slice_ok
+// A function type may mention slices.
+// expect: 2
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn cnt(xs: &[int]): int { return len(xs) }
+fn main() {
+    let f: fn(&[int]): int = cnt
+    let xs: []int = [1, 2, 3]
+    println(f(mid(&xs)).toStr())
+}
+=== es_fn_value_returning_slice_call
+// A fn value that returns a slice: the result borrows the argument.
+// error: borrowed
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn main() {
+    let f: fn(&[int]): &[int] = mid
+    var xs: []int = [1, 2, 3]
+    let s = f(&xs)
+    xs = []
+    println(s[0].toStr())
+}
+=== es_fn_value_returning_ref_call
+// error: borrowed
+fn first(xs: &[]int): &int { return &xs[0] }
+fn main() {
+    let f: fn(&[]int): &int = first
+    var xs: []int = [1, 2, 3]
+    let s = f(&xs)
+    xs = []
+    println(s.toStr())
+}
+=== es_fn_value_returning_slice_hold
+// error: borrow|held|overlap
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn use2(s: &[int], n: int): int { return s[0] + n }
+fn main() {
+    let f: fn(&[int]): &[int] = mid
+    var xs: []int = [1, 2, 3]
+    println(use2(f(&xs), g(mut &xs)).toStr())
+}
+=== es_struct_field_fn_slice
+// error: borrow|second class
+type R = record { f: fn(&[int]): &[int] }
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn main() {
+    let r = R{f: mid}
+    var xs: []int = [1, 2, 3]
+    let s = r.f(&xs)
+    xs = []
+    println(s[0].toStr())
+}
+=== es_call_result_slice_index_hold
+// error: borrow|held|overlap
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(mid(&xs)[g(mut &xs)].toStr())
+}
+=== es_slice_let_index_hold
+// error: borrow|held|overlap
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(xs[..][g(mut &xs)].toStr())
+}
+=== es_slice_index_assign_hold
+// The left operand (a copy) is read before g runs, as for xs[0] + g(mut &xs).
+// expect: 1
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let k = xs[0..2][0] + g(mut &xs)
+    println(k.toStr())
+}
+=== es_slice_index_assign_target
+// error: borrow|held|overlap|assign
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    xs[0..2][g(mut &xs)] = 5
+}
+=== es_slice_index_compound
+// error: borrow|held|overlap|assign
+fn g(xs: mut &[]int): int { xs = [9]; return 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    xs[0..2][0] += g(mut &xs)
+}
+=== es_mutslice_index_elem_borrow
+// error: borrow|held|overlap
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn set(p: mut &int, v: int) { p = v }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    set(mut &xs[0..2][0], g(mut &xs))
+}
+=== es_slice_elem_ref_arg_hold
+// error: borrow|held|overlap
+fn g(xs: mut &[]str): int { xs = []; return 0 }
+fn rd(p: &str, n: int): int { return len(p) + n }
+fn main() {
+    var xs: []str = ["a" + "b"]
+    println(rd(&xs[0..1][0], g(mut &xs)).toStr())
+}
+=== es_slice_elem_owned_read
+// expect: ab
+fn g(xs: mut &[]str): str { xs = []; return "" }
+fn main() {
+    var xs: []str = ["a" + "b"]
+    println(xs[0..1][0] + g(mut &xs))
+}
+=== es_slice_for_body_ok
+// expect: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var n = 0
+    for x in xs[0..2] { n += x }
+    println(n.toStr())
+}

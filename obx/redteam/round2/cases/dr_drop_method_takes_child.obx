@@ -1,0 +1,13 @@
+// A drop method that detaches its child (replace) still drops everything once.
+// expect: 3
+// expect: 2
+// expect: 1
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() {
+    println(n.v.toStr())
+    let c = replace(mut &n.next, None)
+}
+fn main() {
+    var t: Option[N] = None
+    for i in 1..4 { t = Some(N{v: i, next: move(t)}) }
+}

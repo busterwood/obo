@@ -1,0 +1,12 @@
+// expect: 2 1 0
+fn main() {
+    var m: Map[str, int] = newMap()
+    let s = "foo bar foo" + ""
+    let k1 = s[0..3]
+    let k2 = s[4..7]
+    let k3 = s[8..]
+    m.put(k1, m.get(&k1).unwrapOr(0) + 1)
+    m.put(k2, m.get(&k2).unwrapOr(0) + 1)
+    m.put(k3, m.get(&k3).unwrapOr(0) + 1)
+    println(m.get(&"foo").unwrapOr(0).toStr() + " " + m.get(&"bar").unwrapOr(0).toStr() + " " + m.get(&"baz").unwrapOr(0).toStr())
+}

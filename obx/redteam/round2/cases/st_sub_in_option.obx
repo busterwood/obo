@@ -1,0 +1,11 @@
+// expect: bc
+fn f(): Option[str] {
+    let x = "abc" + ""
+    return Some(x[1..])
+}
+fn main() {
+    match f() {
+        Some(s) { println(s) }
+        None { println("none") }
+    }
+}

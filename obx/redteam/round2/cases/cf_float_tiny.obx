@@ -1,0 +1,3 @@
+// expect: 5e-324
+const F: float = 5e-324
+fn main() { println(F.toStr()) }

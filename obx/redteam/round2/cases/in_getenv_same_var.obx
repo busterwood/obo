@@ -1,0 +1,5 @@
+// expect: true
+fn main() {
+    var name = "PATH" + ""
+    println(getenv(name, mut &name).toStr())
+}

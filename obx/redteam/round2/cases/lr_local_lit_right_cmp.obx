@@ -1,0 +1,6 @@
+// expect: true
+fn f(n: mut &int): bool { n = 100; return true }
+fn main() {
+    var n = 1
+    println((n == 1 && f(mut &n)).toStr())
+}

@@ -1,0 +1,6 @@
+// expect: true
+fn ch(s: mut &str): str { s = "zz"; return "abc" }
+fn main() {
+    var s = "abc" + ""
+    println((s == ch(mut &s)).toStr())
+}

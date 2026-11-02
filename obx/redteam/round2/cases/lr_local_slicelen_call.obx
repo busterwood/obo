@@ -1,0 +1,8 @@
+// expect: 1 0
+fn f(p: mut &int): int { p = 3; return 0 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var n = 1
+    println(two(len(xs[0..n]), f(mut &n)))
+}

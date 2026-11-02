@@ -1,0 +1,6 @@
+// expect: 0
+fn main() {
+    let s = "/etc/hostnameXX" + ""
+    var out = ""
+    println(readFile(s[0..13], mut &out).toStr())
+}

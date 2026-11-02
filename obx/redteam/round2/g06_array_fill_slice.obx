@@ -1,0 +1,10 @@
+// SPEC 10 rule 1: array(n, v) with a slice v stores borrows in elements.
+// b_array only asks is_copy(v), which is true for a slice, so the result
+// outlives the array it views (heap use after free).
+// error: borrow
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let a = array(2, xs[0..2])
+    xs = []
+    println(a[1][0].toStr())
+}

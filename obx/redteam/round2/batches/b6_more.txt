@@ -1,0 +1,226 @@
+=== es_array_fill_slice
+// error: borrow|second class|slice|copy
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let a = array(2, xs[0..2])
+    xs = []
+    println(a[1][0].toStr())
+}
+=== es_nested_arrlit_slice
+// error: borrow|second class|slice
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let a = [[xs[0..2]]]
+    xs = []
+    println(a[0][0][0].toStr())
+}
+=== es_match_slice_elem_freeze
+// A match on an element of a slice binds a borrow; the array stays frozen in the arm.
+// error: borrowed
+type B = record { s: str }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    match xs[0..1][0] {
+        Some(b) {
+            xs = []
+            println(b.s)
+        }
+        None {}
+    }
+}
+=== es_match_call_slice_elem_freeze
+// error: borrowed
+type B = record { s: str }
+fn mid(xs: &[Option[B]]): &[Option[B]] { return xs[0..] }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    match mid(&xs)[0] {
+        Some(b) {
+            xs = []
+            println(b.s)
+        }
+        None {}
+    }
+}
+=== es_match_slice_param_elem
+// expect: ab
+type B = record { s: str }
+fn show(xs: &[Option[B]]) {
+    match xs[0] {
+        Some(b) { println(b.s) }
+        None {}
+    }
+}
+fn main() {
+    let xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    show(&xs)
+}
+=== es_let_ref_into_slice_elem
+// A borrow of an element of a slice of a variable's array is rooted at the variable.
+// expect: 2
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let r = &xs[1..][0]
+    println(r.toStr())
+}
+=== es_let_ref_into_slice_elem_mutate
+// error: borrowed
+fn main() {
+    var xs: []str = ["a" + "", "b" + ""]
+    let r = &xs[1..][0]
+    xs = []
+    println(r)
+}
+=== es_let_ref_call_slice_elem
+// expect: 2
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let r = &mid(&xs)[0]
+    println(r.toStr())
+}
+=== es_ret_ref_into_slice_elem
+// expect: 2
+fn second(xs: &[int]): &int { return &xs[1..][0] }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    println(second(&xs).toStr())
+}
+=== es_ret_ref_into_local_slice_elem
+// error: cannot return a borrow
+fn bad(xs: &[int]): &int {
+    let ys: []int = [5]
+    return &ys[0..1][0]
+}
+fn main() {
+    let xs: []int = [1, 2, 3]
+    println(bad(&xs).toStr())
+}
+=== es_ret_slice_of_local_via_index
+// error: cannot return a borrow
+fn bad(xs: &[int]): &[int] {
+    let ys: [][]int = [[5]]
+    return ys[0][0..1]
+}
+fn main() {
+    let xs: []int = [1, 2, 3]
+    println(len(bad(&xs)).toStr())
+}
+=== es_ret_ref_mut_via_shared_slice_elem
+// error: mut|shared
+fn bad(xs: mut &[]int): mut &int { return mut &xs[0..1][0] }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    { let r = bad(mut &xs); r = 5 }
+    println(xs[0].toStr())
+}
+=== es_slice_elem_mut_borrow_from_shared_sub
+// error: mut|shared|assign
+fn set(p: mut &int) { p = 9 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    set(mut &xs[0..2][0])
+}
+=== es_slice_elem_mut_borrow_from_mut_sub
+// expect: 9
+fn set(p: mut &int) { p = 9 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    set(mut &(mut &xs[0..2])[0])
+    println(xs[0].toStr())
+}
+=== es_two_slices_swap_args
+// error: twice|overlap
+fn two(a: mut &[int], b: mut &[int]) { swap(a, 0, 0) }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    two(mut &xs, xs[0..1])
+}
+=== es_slice_and_append_value_from_slice
+// expect: 4
+fn main() {
+    var xs: []int = [1, 2, 3]
+    append(mut &xs, xs[0..1][0] + 3)
+    println(xs[3].toStr())
+}
+=== es_append_owned_from_own_slice
+// str is a copy type: the element is copied before append runs.
+// expect: a
+fn main() {
+    var xs: []str = ["a" + ""]
+    append(mut &xs, xs[0..1][0])
+    println(xs[1])
+}
+=== es_append_owned_record_from_slice
+// error: move|borrow|held|overlap
+type B = record { s: str }
+fn main() {
+    var xs: []B = [B{s: "a"}]
+    append(mut &xs, xs[0..1][0])
+}
+=== es_append_copy_str_elem
+// expect: a
+fn main() {
+    var xs: []str = ["a" + ""]
+    append(mut &xs, xs[0])
+    xs[0] = "z"
+    println(xs[1])
+}
+=== es_append_slice_elem_str
+// A str element read through a slice is copied before append grows the array.
+// expect: a
+fn main() {
+    var xs: []str = ["a" + ""]
+    append(mut &xs, xs[..][0])
+    xs[0] = "z"
+    println(xs[1])
+}
+=== es_replace_with_slice_elem
+// expect: a
+fn main() {
+    var xs: []str = ["a" + "", "b"]
+    let o = replace(mut &xs[1], xs[0..1][0])
+    println(xs[1])
+}
+=== es_strfrombytes_hold
+// strFromBytes returns before g runs.
+// expect: ab
+fn g(b: mut &[]byte): int { b = []; return 0 }
+fn two(s: str, n: int): str { return s }
+fn main() {
+    var b: []byte = ['a', 'b']
+    println(two(strFromBytes(b[0..2]), g(mut &b)))
+}
+=== es_strfrombytes_later_mut
+// expect: ab0
+fn g(b: mut &[]byte): int { b = []; return 0 }
+fn main() {
+    var b: []byte = ['a', 'b']
+    println(strFromBytes(b[0..2]) + g(mut &b).toStr())
+}
+=== es_sort_slice_of_field_while_reading
+// error: held|overlap|borrow|twice
+type R = record { xs: []int }
+fn f(a: mut &[int], b: &R): int { return 0 }
+fn main() {
+    var r = R{xs: [3, 1, 2]}
+    println(f(mut &r.xs[0..2], &r).toStr())
+}
+=== es_disjoint_fields_slices_ok
+// Slices of two different fields do not overlap.
+// expect: 1 1
+type R = record { a: []int; b: []int }
+fn cp(d: mut &[int], s: &[int]) { d[0] = s[0] }
+fn main() {
+    var r = R{a: [1, 2], b: [3, 4]}
+    cp(mut &r.b[0..1], r.a[0..1])
+    println(r.a[0].toStr() + " " + r.b[0].toStr())
+}
+=== es_grid_rows_overlap
+// Two rows of one grid count as overlapping (any two indexes of one array overlap).
+// error: twice|overlap
+fn cp(d: mut &[int], s: &[int]) { d[0] = s[0] }
+fn main() {
+    var g: [][]int = [[1, 2], [3, 4]]
+    cp(mut &g[0][..], g[1][..])
+}

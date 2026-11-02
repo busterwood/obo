@@ -1,0 +1,8 @@
+// The substring is taken of the old (freed) string.
+// expect: abc
+var g: str = ""
+fn f(): int { g = "zz"; return 3 }
+fn main() {
+    g = "abc" + "def"
+    println(g[0..f()])
+}

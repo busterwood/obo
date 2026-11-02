@@ -1,0 +1,7 @@
+// error: mut|shared
+fn bad(xs: mut &[]int): mut &int { return mut &xs[0..1][0] }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    { let r = bad(mut &xs); r = 5 }
+    println(xs[0].toStr())
+}

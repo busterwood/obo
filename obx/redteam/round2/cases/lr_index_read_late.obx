@@ -1,0 +1,8 @@
+// xs[i] + f(mut &i): the left operand is read before f runs.
+// expect: 11
+fn f(i: mut &int): int { i = 1; return 10 }
+fn main() {
+    let xs: []int = [1, 2]
+    var i = 0
+    println((xs[i] + f(mut &i)).toStr())
+}

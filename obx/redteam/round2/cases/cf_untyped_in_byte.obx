@@ -1,0 +1,6 @@
+// error: fit|range
+const K = 300
+fn main() {
+    let b: byte = K
+    println(b.toStr())
+}

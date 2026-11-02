@@ -1,0 +1,6 @@
+// expect: true
+fn main() {
+    let s = "PATHXYZ" + ""
+    var out = ""
+    println(getenv(s[0..4], mut &out).toStr())
+}

@@ -1,0 +1,11 @@
+// expect: 2a
+// expect: outer
+// expect: 1a
+// expect: 1b
+type D = record { n: str; kids: []D }
+fn (d: mut &D) drop() { println(d.n) }
+fn main() {
+    let xs: []D = [D{n: "1a", kids: []}, D{n: "1b", kids: []}]
+    let o = D{n: "outer", kids: []}
+    let ys: []D = [D{n: "2a", kids: []}]
+}

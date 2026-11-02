@@ -1,0 +1,7 @@
+// exit: 10
+const B: byte = 255
+fn main() {
+    var x = B
+    x = x + 1
+    println(x.toStr())
+}

@@ -1,0 +1,6 @@
+// Bits shifted out of << are lost.
+// expect: -2147483648
+fn main() {
+    var a: i32 = 3
+    println((a << 31).toStr())
+}

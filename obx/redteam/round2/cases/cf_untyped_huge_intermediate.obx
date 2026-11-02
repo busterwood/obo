@@ -1,0 +1,4 @@
+// The intermediate does not fit any type, but the value does: exact integers.
+// expect: 1
+const K = (1 << 70) >> 70
+fn main() { println((K + 0).toStr()) }

@@ -1,0 +1,5 @@
+// expect: 2
+fn main() {
+    let b: []int = [1, 2, 3]
+    println(len(b[1..]).toStr())
+}

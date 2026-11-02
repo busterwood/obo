@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    var n = -9223372036854775807 - 1
+    let m = -n
+    println(m.toStr())
+}

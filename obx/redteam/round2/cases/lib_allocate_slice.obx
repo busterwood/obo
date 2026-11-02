@@ -1,0 +1,8 @@
+// expect: 3.34 3.33 3.33
+import "money"
+fn main() {
+    let a: money.Money[money.USD] = money.fromMinor(1000)
+    let ws: []int = [0, 1, 1, 1, 0]
+    let parts = a.allocateBy(ws[1..4])
+    println(parts[0].amount().toStr() + " " + parts[1].amount().toStr() + " " + parts[2].amount().toStr())
+}

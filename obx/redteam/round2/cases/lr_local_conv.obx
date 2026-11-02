@@ -1,0 +1,6 @@
+// expect: 1
+fn f(n: mut &int): int { n = 100; return 0 }
+fn main() {
+    var n = 1
+    println((i32(n) + i32(f(mut &n))).toStr())
+}

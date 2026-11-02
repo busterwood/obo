@@ -1,0 +1,6 @@
+// exit: 3
+fn f(s: &[int], b: int): int { return len(s[0..b]) }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    println(f(&xs, -1).toStr())
+}

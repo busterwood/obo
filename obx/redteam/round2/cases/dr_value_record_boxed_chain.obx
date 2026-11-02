@@ -1,0 +1,12 @@
+// expect: done
+type L = record { v: int; next: V }
+type V = value record { has: bool; s: str; l: []L }
+fn main() {
+    var v = V{has: false, s: "", l: []}
+    for i in 0..200000 {
+        var ls: []L = []
+        append(mut &ls, L{v: i, next: v})
+        v = V{has: true, s: "a" + "", l: move(ls)}
+    }
+    println("done")
+}

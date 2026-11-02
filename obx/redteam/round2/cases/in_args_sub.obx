@@ -1,0 +1,6 @@
+// expect: true
+fn main() {
+    let a = args()
+    let s = a[0][0..1]
+    println((len(s) == 1).toStr())
+}

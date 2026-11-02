@@ -1,0 +1,8 @@
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var a = 0
+    a -= 1
+    let s = xs[a..]
+    println(len(s).toStr())
+}

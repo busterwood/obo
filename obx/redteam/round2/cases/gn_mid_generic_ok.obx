@@ -1,0 +1,10 @@
+// expect: b 2
+type P = value record { a: int; b: str }
+fn mid[T](xs: &[T]): &[T] { return xs[1..len(xs) - 1] }
+fn main() {
+    let xs: []str = ["a", "b" + "", "c"]
+    let ps: []P = [P{a: 1, b: "x"}, P{a: 2, b: "y"}, P{a: 3, b: "z"}]
+    let m = mid(&xs)
+    let n = mid(&ps)
+    println(m[0] + " " + n[0].a.toStr())
+}

@@ -1,0 +1,152 @@
+=== g01_slice_hi_minus_one
+// SPEC 4.2a, 14: an out-of-range slice bound stops the program (exit 3).
+// xs[1..b] with b = -1 has b < a, but rt_sub takes hi == -1 as "to the end"
+// (the sentinel x_sub passes for a missing upper bound), so a computed -1
+// gives xs[1..3] and the program goes on.
+// exit: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var b = 0
+    b -= 1
+    let s = xs[1..b]
+    println(len(s).toStr())
+}
+=== g02_slice_index_root_lost
+// SPEC 10 rule 3: while xs[0..2][...] is evaluated, the slice (and so xs) is
+// held, so clear(mut &xs) in the index is an error. x_index turns the slice
+// value into a holdtmp, which drops its root, so nothing is held: the slice
+// is indexed after clear() freed the array (heap use after free).
+// error: borrow
+fn clear(xs: mut &[]int): int { xs = []; return 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    println(xs[0..2][clear(mut &xs)].toStr())
+}
+=== g03_match_slice_elem_no_freeze
+// SPEC 10: a match on a place binds owned fields as borrows and freezes the
+// place's root for the arm. Through an element of a slice, x_index loses the
+// root (holdtmp), so xs is not frozen: xs = [] frees the B that b points to
+// (heap use after free).
+// error: borrowed
+type B = record { s: str }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    match xs[0..1][0] {
+        Some(b) {
+            xs = []
+            println(b.s)
+        }
+        None {}
+    }
+}
+=== g04_slice_elem_borrow_rejected
+// SPEC 4.2a, 10: &xs[1..][0] borrows an element of xs, rooted at xs, so it
+// can be kept in a let and returned as a borrow of the borrowed parameter.
+// x_index loses the root of the slice, so s_let says "cannot borrow a
+// temporary" and s_return "a borrow of 'a temporary'".
+// expect: 2 2
+fn second(xs: &[int]): &int { return &xs[1..][0] }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let r = &xs[1..][0]
+    println(r.toStr() + " " + second(&xs).toStr())
+}
+=== g05_array_literal_of_slices
+// SPEC 4.5, 10 rule 1: a borrow (a slice is one) cannot be stored in an
+// element. x_arrlit takes its element type from the first element, so
+// [xs[0..1]] is a []&[str] value that a var keeps after xs is freed (heap
+// use after free). The written type []&[str] is rejected.
+// error: borrow
+fn main() {
+    var xs: []str = ["a" + "b"]
+    var a = [xs[0..1]]
+    xs = []
+    println(a[0][0])
+}
+=== g06_array_fill_slice
+// SPEC 10 rule 1: array(n, v) with a slice v stores borrows in elements.
+// b_array only asks is_copy(v), which is true for a slice, so the result
+// outlives the array it views (heap use after free).
+// error: borrow
+fn main() {
+    var xs: []int = [1, 2, 3]
+    let a = array(2, xs[0..2])
+    xs = []
+    println(a[1][0].toStr())
+}
+=== g07_str_concat_4gib
+// SPEC 4.1: making a str of 4 GiB or more stops the program (exit 2).
+// rt_str_concat computes a.len + b.len in uint32_t, so 2 GiB + 2 GiB wraps
+// to 0, rt_str_new(0) returns the static empty block, and 4 GiB are copied
+// into it (overwriting rt_stack_top and the rest of .data/.bss; the crash
+// is then misreported as "obx: stack overflow", exit 4).
+// Needs about 6 GiB of memory; best run without ASan.
+// exit: 2
+fn main() {
+    var s = "x"
+    for i in 0..31 { s = s + s }
+    let t = s + s
+    println(len(t).toStr())
+}
+=== g08_drop_method_drops_child
+// SPEC 9.4: dropping a long chain of boxed values does not use stack depth
+// proportional to its length. A drop method that detaches its child with
+// replace drops it at the end of the method: one nested rt_drun (C
+// recursion) per node, so a 300,000-node list overflows the stack (exit 4).
+// expect: 300000
+var count: int = 0
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() {
+    count += 1
+    let c = replace(mut &n.next, None)
+}
+fn main() {
+    {
+        var t: Option[N] = None
+        for i in 0..300000 { t = Some(N{v: i, next: move(t)}) }
+    }
+    println(count.toStr())
+}
+=== g09_compound_assign_mut_arg_rejected
+// SPEC 7.4: a += b means a = a + b with a evaluated once. n = n + f(mut &n)
+// compiles (the copy n is read first, prints 2), but n += f(mut &n) is
+// rejected: s_assign holds the target place as a mut borrow (binop
+// held=p) while b is evaluated, so f's mut &n conflicts.
+// expect: 2
+fn f(n: mut &int): int { n = 100; return 1 }
+fn main() {
+    var n = 1
+    n += f(mut &n)
+    println(n.toStr())
+}
+=== g10_const_min_rem
+// SPEC 5.2, 7.1: a constant expression that overflows is a compile error.
+// At run time MIN % -1 stops the program (rt_rem_int, exit 10), like
+// MIN / -1, but sema.fold folds it to 0 without an error.
+// error: overflow
+const A: int = -9223372036854775807 - 1
+const B: int = A % -1
+fn main() { println(B.toStr()) }
+=== g11_const_wrapping_ops
+// SPEC 5.2, 7.1: a constant is an operator expression over constants, and
+// +% -% *% are operators. sema.fold has no case for them ("not a constant
+// expression").
+// expect: -9223372036854775808 4294967295
+const A: int = 9223372036854775807 +% 1
+const B: u32 = 0 -% 1
+fn main() { println(A.toStr() + " " + B.toStr()) }
+=== g12_literal_left_operand_order
+// README choice 11: operands are evaluated left to right. With a literal
+// left operand, x_bin evaluates the right operand first (to type the
+// literal), so a fromFraction with an effect runs after f().
+// expect: lit
+// expect: f
+// expect: 3
+type Fx = value record { v: int }
+fn (Fx) fromFraction(units: int, scale: int): Fx { println("lit"); return Fx{v: units} }
+fn (a: Fx) add(b: Fx): Fx { return Fx{v: a.v + b.v} }
+fn f(): Fx { println("f"); return Fx{v: 1} }
+fn main() {
+    let x: Fx = 0.2 + f()
+    println(x.v.toStr())
+}

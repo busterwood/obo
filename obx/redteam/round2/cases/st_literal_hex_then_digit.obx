@@ -1,0 +1,5 @@
+// expect: 3 65 66
+fn main() {
+    let s = "\x41BC"
+    println(len(s).toStr() + " " + s[0].toStr() + " " + s[1].toStr())
+}

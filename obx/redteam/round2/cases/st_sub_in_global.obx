@@ -1,0 +1,14 @@
+// expect: lo
+// expect: lo
+var g: str = ""
+fn set() {
+    let s = "hel" + "lo"
+    g = s[3..]
+}
+fn main() {
+    set()
+    println(g)
+    let t = g
+    g = t[0..2]
+    println(g)
+}

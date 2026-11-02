@@ -1,0 +1,11 @@
+// expect: 1
+type R = record { xs: []int }
+fn (r: &R) head(): &[int] { return r.xs[0..1] }
+fn main() {
+    var r = R{xs: [1, 2]}
+    {
+        let h = r.head()
+        println(h[0].toStr())
+    }
+    append(mut &r.xs, 3)
+}

@@ -1,0 +1,10 @@
+// Globals are dropped in reverse declaration order after main.
+// expect: done
+type P = value record { s: str }
+var a: P = P{s: ""}
+var b: str = ""
+fn main() {
+    a = P{s: "x" + "y"}
+    b = a.s[1..]
+    println("done")
+}

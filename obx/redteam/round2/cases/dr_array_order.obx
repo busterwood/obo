@@ -1,0 +1,11 @@
+// Array elements are dropped first to last, fields last to first.
+// expect: b
+// expect: a1
+// expect: a2
+// expect: x
+type D = record { n: str }
+fn (d: mut &D) drop() { println(d.n) }
+type P = record { x: D; arr: []D; b: D }
+fn main() {
+    let p = P{x: D{n: "x"}, arr: [D{n: "a1"}, D{n: "a2"}], b: D{n: "b"}}
+}

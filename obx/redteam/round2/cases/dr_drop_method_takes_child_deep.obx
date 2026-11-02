@@ -1,0 +1,14 @@
+// expect: 100000
+var count: int = 0
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) drop() {
+    count += 1
+    let c = replace(mut &n.next, None)
+}
+fn main() {
+    {
+        var t: Option[N] = None
+        for i in 0..100000 { t = Some(N{v: i, next: move(t)}) }
+    }
+    println(count.toStr())
+}

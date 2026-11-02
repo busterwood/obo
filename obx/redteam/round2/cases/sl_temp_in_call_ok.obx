@@ -1,0 +1,6 @@
+// expect: 5
+fn mk(): []int { return [1, 2, 3] }
+fn sum(xs: &[int]): int { var s = 0; for x in xs { s += x }; return s }
+fn main() {
+    println(sum(mk()[1..]).toStr())
+}

@@ -1,0 +1,10 @@
+// expect: hi
+type V = value closed { A(str); B }
+var g: V = B
+fn main() {
+    g = A("h" + "i")
+    match g {
+        A(s) { g = B; println(s) }
+        B { println("b") }
+    }
+}

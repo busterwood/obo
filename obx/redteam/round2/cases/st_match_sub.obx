@@ -1,0 +1,8 @@
+// expect: yes
+fn main() {
+    let s = "xabc" + ""
+    match s[1..] {
+        "abc" { println("yes") }
+        else { println("no") }
+    }
+}

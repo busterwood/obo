@@ -1,0 +1,11 @@
+// SPEC 4.2a, 10: &xs[1..][0] borrows an element of xs, rooted at xs, so it
+// can be kept in a let and returned as a borrow of the borrowed parameter.
+// x_index loses the root of the slice, so s_let says "cannot borrow a
+// temporary" and s_return "a borrow of 'a temporary'".
+// expect: 2 2
+fn second(xs: &[int]): &int { return &xs[1..][0] }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let r = &xs[1..][0]
+    println(r.toStr() + " " + second(&xs).toStr())
+}

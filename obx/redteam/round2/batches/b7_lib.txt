@@ -1,0 +1,350 @@
+=== lib_allocate_slice
+// expect: 3.34 3.33 3.33
+import "money"
+fn main() {
+    let a: money.Money[money.USD] = money.fromMinor(1000)
+    let ws: []int = [0, 1, 1, 1, 0]
+    let parts = a.allocateBy(ws[1..4])
+    println(parts[0].amount().toStr() + " " + parts[1].amount().toStr() + " " + parts[2].amount().toStr())
+}
+=== lib_allocate_empty
+// exit: 12
+import "money"
+fn main() {
+    let a: money.Money[money.USD] = money.fromMinor(1000)
+    let ws: []int = [1, 2]
+    let parts = a.allocateBy(ws[1..1])
+    println(len(parts).toStr())
+}
+=== lib_money_sum_slice
+// expect: 0.30
+import "money"
+fn main() {
+    let xs: []money.Money[money.USD] = [money.fromMinor(10), money.fromMinor(20), money.fromMinor(30)]
+    println(money.sum(xs[0..2]).amount().toStr())
+}
+=== lib_sortby_strings_slice
+// expect: z a b c y
+import "collections"
+fn byStr(a: &str, b: &str): int { return a.cmp(b) }
+fn main() {
+    var xs: []str = ["z", "c" + "", "a" + "", "b", "y"]
+    collections.sortBy(mut &xs[1..4], byStr)
+    println(xs[0] + " " + xs[1] + " " + xs[2] + " " + xs[3] + " " + xs[4])
+}
+=== lib_sortstable_records
+// expect: 1a 1b 2a 3a
+import "collections"
+type P = record { k: int; s: str }
+fn (p: &P) cmp(o: &P): int { return p.k.cmp(&o.k) }
+fn main() {
+    var xs: []P = [P{k: 3, s: "3a"}, P{k: 1, s: "1a"}, P{k: 2, s: "2a"}, P{k: 1, s: "1b"}]
+    collections.sortStable(mut &xs)
+    println(xs[0].s + " " + xs[1].s + " " + xs[2].s + " " + xs[3].s)
+}
+=== lib_insert_neg
+// exit: 12
+import "collections"
+fn main() {
+    var xs: []str = ["a"]
+    collections.insert(mut &xs, -1, "b")
+}
+=== lib_insert_owned_mid
+// expect: a x b c
+import "collections"
+fn main() {
+    var xs: []str = ["a" + "", "b" + "", "c"]
+    collections.insert(mut &xs, 1, "x" + "")
+    println(xs[0] + " " + xs[1] + " " + xs[2] + " " + xs[3])
+}
+=== lib_removeat_owned
+// expect: b a c
+import "collections"
+fn main() {
+    var xs: []str = ["a" + "", "b" + "", "c"]
+    let r = collections.removeAt(mut &xs, 1)
+    println(r + " " + xs[0] + " " + xs[1])
+}
+=== lib_retain_owned
+// expect: 2 bb cc
+import "collections"
+fn long(s: &str): bool { return len(s) > 1 }
+fn main() {
+    var xs: []str = ["a", "bb" + "", "c", "cc" + ""]
+    collections.retain(mut &xs, long)
+    println(len(xs).toStr() + " " + xs[0] + " " + xs[1])
+}
+=== lib_dedup_strs
+// expect: a b c
+import "collections"
+fn main() {
+    var xs: []str = ["a", "a" + "", "b", "b", "b" + "", "c"]
+    collections.dedup(mut &xs)
+    var out = ""
+    for x in xs { out = out + x + " " }
+    println(out[0..len(out) - 1])
+}
+=== lib_rotate_slice_neg
+// expect: 1 4 2 3 5
+import "collections"
+fn main() {
+    var xs: []int = [1, 2, 3, 4, 5]
+    collections.rotateLeft(mut &xs[1..4], -1)
+    println(xs[0].toStr() + " " + xs[1].toStr() + " " + xs[2].toStr() + " " + xs[3].toStr() + " " + xs[4].toStr())
+}
+=== lib_rotate_empty
+// expect: ok
+import "collections"
+fn main() {
+    var xs: []int = [1]
+    collections.rotateLeft(mut &xs[1..], 3)
+    collections.reverse(mut &xs[0..0])
+    println("ok")
+}
+=== lib_binsearch_empty
+// expect: err 0
+import "collections"
+fn main() {
+    let xs: []int = []
+    match collections.binarySearch(&xs, &5) {
+        Ok(i) { println("ok " + i.toStr()) }
+        Err(i) { println("err " + i.toStr()) }
+    }
+}
+=== lib_binsearch_subslice
+// expect: ok 1
+import "collections"
+fn main() {
+    let xs: []int = [9, 1, 3, 5, 0]
+    match collections.binarySearch(xs[1..4], &3) {
+        Ok(i) { println("ok " + i.toStr()) }
+        Err(i) { println("err " + i.toStr()) }
+    }
+}
+=== lib_copyrange_bad
+// exit: 12
+import "collections"
+fn main() {
+    let xs: []int = [1, 2, 3]
+    let c = collections.copyRange(&xs, 2, 1)
+}
+=== lib_copyrange_neg_end
+// exit: 12
+import "collections"
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var b = 0
+    b -= 1
+    let c = collections.copyRange(&xs, 0, b)
+    println(len(c).toStr())
+}
+=== lib_extend_self
+// error: twice|overlap|borrow
+import "collections"
+fn main() {
+    var xs: []int = [1, 2]
+    collections.extend(mut &xs, &xs)
+}
+=== lib_extend_self_slice
+// error: twice|overlap|borrow
+import "collections"
+fn main() {
+    var xs: []int = [1, 2]
+    collections.extend(mut &xs, xs[0..1])
+}
+=== lib_extend_copy
+// expect: 4
+import "collections"
+fn main() {
+    var xs: []int = [1, 2]
+    let ys = collections.copyOf(&xs)
+    collections.extend(mut &xs, &ys)
+    println(len(xs).toStr())
+}
+=== lib_join_empty
+// expect: []
+import "strings"
+fn main() {
+    let xs: []str = []
+    println("[" + strings.join(&xs, ",") + "]")
+}
+=== lib_join_one_sub
+// expect: bc
+import "strings"
+fn main() {
+    let s = "abcd" + ""
+    let xs: []str = [s[1..3]]
+    println(strings.join(xs[0..1], ","))
+}
+=== lib_fromrunes_slice
+// expect: bc
+import "strings"
+fn main() {
+    let rs: []int = [97, 98, 99, 100]
+    println(strings.fromRunes(rs[1..3]))
+}
+=== lib_fromrunes_bad
+// An invalid code point becomes U+FFFD.
+// expect: �
+import "strings"
+fn main() {
+    let rs: []int = [-1]
+    println(strings.fromRunes(&rs))
+}
+=== lib_map_sub_remove
+// expect: 1 false
+fn main() {
+    var m: Map[str, int] = newMap()
+    let s = "keykey2" + ""
+    m.put(s[0..3], 1)
+    m.put(s[3..], 2)
+    let r = m.remove(&"key2")
+    println(m.size().toStr() + " " + m.has(&s[3..]).toStr())
+}
+=== lib_map_sub_overwrite
+// expect: 2 1
+fn main() {
+    var m: Map[str, int] = newMap()
+    let s = "abab" + ""
+    m.put(s[0..2], 1)
+    m.put(s[2..4], 2)
+    println(m.get(&"ab").unwrapOr(0).toStr() + " " + m.size().toStr())
+}
+=== lib_map_at_then_put
+// error: borrowed
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    let r = m.at("a")
+    m.put("b", 2)
+    println(r.toStr())
+}
+=== lib_map_atmut_then_get
+// error: borrowed
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    let r = m.atMut("a")
+    println(m.get(&"a").unwrapOr(0).toStr())
+    r = 5
+}
+=== lib_map_keyat_then_remove
+// error: borrowed
+fn main() {
+    var m: Map[str, str] = newMap()
+    m.put("a" + "", "x" + "")
+    let k = m.keyAt(0)
+    let r = m.remove(&"a")
+    println(k)
+}
+=== lib_map_at_arg_hold
+// error: held|overlap|borrow
+fn use2(v: &str, n: int): int { return len(v) + n }
+fn main() {
+    var m: Map[str, str] = newMap()
+    m.put("a" + "", "x" + "")
+    println(use2(m.at("a"), toInt(m.remove(&"a").isSome())).toStr())
+}
+fn toInt(b: bool): int { if b { return 1 }; return 0 }
+=== lib_map_at_arg_hold2
+// error: held|overlap|borrow
+fn use2(v: &str, n: bool): int { return len(v) }
+fn main() {
+    var m: Map[str, str] = newMap()
+    m.put("a" + "", "x" + "")
+    println(use2(m.at("a"), m.remove(&"a").isSome()).toStr())
+}
+=== lib_map_missing_at
+// exit: 12
+fn main() {
+    var m: Map[str, int] = newMap()
+    println(m.at("zz").toStr())
+}
+=== lib_map_many_sub_keys
+// expect: 1000
+fn main() {
+    var m: Map[str, int] = newMap()
+    let big = "0123456789abcdefghijklmnopqrstuvwxyz" + ""
+    for i in 0..1000 {
+        let k = big[i % 30..i % 30 + 5] + i.toStr()
+        m.put(k[0..len(k)], i)
+    }
+    println(m.size().toStr())
+}
+=== lib_set_sub
+// expect: 2
+import "collections"
+fn main() {
+    var s: collections.Set[str] = collections.newSet()
+    let t = "aaab" + ""
+    let x = s.add(t[0..1])
+    let y = s.add(t[1..2])
+    let z = s.add(t[3..])
+    println(s.size().toStr())
+}
+=== lib_heap_owned
+// expect: a b c
+import "collections"
+fn main() {
+    var h: collections.Heap[str] = collections.newHeap()
+    h.push("c" + "")
+    h.push("a" + "")
+    h.push("b")
+    var out = ""
+    while !h.isEmpty() {
+        match h.pop() { Some(x) { out = out + x + " " } None {} }
+    }
+    println(out[0..len(out) - 1])
+}
+=== lib_heap_peek_then_push
+// error: borrowed
+import "collections"
+fn main() {
+    var h: collections.Heap[str] = collections.newHeap()
+    h.push("c" + "")
+    let p = h.peek()
+    h.push("a")
+    println(p)
+}
+=== lib_strbuf_sub
+// expect: bcd
+fn main() {
+    var b = newStrBuf()
+    let s = "abcde" + ""
+    b.add(s[1..4])
+    println(b.toStr())
+}
+=== lib_strings_split_sub
+// expect: 4 b
+import "strings"
+fn main() {
+    let s = "xx,a,b,cyy" + ""
+    let parts = strings.splitOn(s[2..8], ",")
+    println(len(parts).toStr() + " " + parts[2][0..1])
+}
+=== lib_strings_trim_sub
+// expect: [a b]
+import "strings"
+fn main() {
+    let s = "x  a b  y" + ""
+    println("[" + strings.trimRight(strings.trimLeft(s[1..8])) + "]")
+}
+=== lib_parseint_sub
+// expect: 42
+import "strings"
+fn main() {
+    let s = "x42y" + ""
+    match strings.parseInt(s[1..3]) { Ok(v) { println(v.toStr()) } Err(e) { println(e.toStr()) } }
+}
+=== lib_decimal_parse_sub
+// expect: 1.25
+fn main() {
+    let s = "x1.25y" + ""
+    match Decimal.parse(s[1..5]) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}
+=== lib_sumdecimals_slice
+// expect: 3.5
+fn main() {
+    let xs: []Decimal = [Decimal.parse("1.5").unwrap(), Decimal.parse("2").unwrap(), Decimal.parse("9").unwrap()]
+    println(sumDecimals(xs[0..2]).toStr())
+}

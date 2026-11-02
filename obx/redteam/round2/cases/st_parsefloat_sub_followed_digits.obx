@@ -1,0 +1,7 @@
+// The substring is "1.5" even though "1.59" follows in the block.
+// expect: 1.5
+fn main() {
+    let s = "1.59"
+    var f: float = 0.0
+    if parseFloat(s[0..3], mut &f) { println(f.toStr()) }
+}

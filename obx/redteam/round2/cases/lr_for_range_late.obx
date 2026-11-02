@@ -1,0 +1,8 @@
+// expect: 3
+fn f(n: mut &int): int { n = 0; return 3 }
+fn main() {
+    var n = 0
+    var c = 0
+    for i in n..f(mut &n) { c += 1 }
+    println(c.toStr())
+}

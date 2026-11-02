@@ -1,0 +1,6 @@
+// expect: 100000
+fn main() {
+    var s = ""
+    for i in 0..100000 { s = s + "x"[0..1] }
+    println(len(s).toStr())
+}

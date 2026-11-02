@@ -1,0 +1,10 @@
+// expect: 1000
+fn main() {
+    var m: Map[str, int] = newMap()
+    let big = "0123456789abcdefghijklmnopqrstuvwxyz" + ""
+    for i in 0..1000 {
+        let k = big[i % 30..i % 30 + 5] + i.toStr()
+        m.put(k[0..len(k)], i)
+    }
+    println(m.size().toStr())
+}

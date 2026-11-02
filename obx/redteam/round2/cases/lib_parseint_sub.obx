@@ -1,0 +1,6 @@
+// expect: 42
+import "strings"
+fn main() {
+    let s = "x42y" + ""
+    match strings.parseInt(s[1..3]) { Ok(v) { println(v.toStr()) } Err(e) { println(e.toStr()) } }
+}

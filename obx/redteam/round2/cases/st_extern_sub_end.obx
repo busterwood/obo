@@ -1,0 +1,6 @@
+// expect: 3
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "hello" + "abc"
+    println(strlen(s[5..]).toStr())
+}

@@ -1,0 +1,10 @@
+// expect: 3000
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "abcdef" + ""
+    var n: u64 = 0
+    for i in 0..1000 {
+        n += strlen(s[1..4])
+    }
+    println(n.toStr())
+}

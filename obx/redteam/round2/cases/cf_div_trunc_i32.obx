@@ -1,0 +1,4 @@
+// expect: -3 -1
+const A: i32 = -7 / 2
+const B: i32 = -7 % 2
+fn main() { println(A.toStr() + " " + B.toStr()) }

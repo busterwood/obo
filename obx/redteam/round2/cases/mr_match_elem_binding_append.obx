@@ -1,0 +1,12 @@
+// error: borrowed
+type B = record { s: str }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    match xs[0] {
+        Some(b) {
+            append(mut &xs, None)
+            println(b.s)
+        }
+        None {}
+    }
+}

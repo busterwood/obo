@@ -1,0 +1,13 @@
+// error: cannot return a borrow
+type B = record { v: int }
+fn mk(): Option[B] { return Some(B{v: 1}) }
+fn bad(x: &B): &int {
+    match mk() {
+        Some(b) { return &b.v }
+        None { return &x.v }
+    }
+}
+fn main() {
+    let b = B{v: 2}
+    println(bad(&b).toStr())
+}

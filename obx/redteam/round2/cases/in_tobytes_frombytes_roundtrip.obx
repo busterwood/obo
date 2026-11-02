@@ -1,0 +1,6 @@
+// expect: true
+fn main() {
+    let s = "a\0b\xffc" + ""
+    let b = strToBytes(s[1..])
+    println((strFromBytes(&b) == s[1..]).toStr())
+}

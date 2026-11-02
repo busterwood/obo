@@ -1,0 +1,10 @@
+// expect: 2 4
+fn main() {
+    var g: [][]int = [[1, 2], [3, 4]]
+    {
+        let row = g[0][..]
+        let col = g[1][1..]
+        println(row[1].toStr() + " " + col[0].toStr())
+    }
+    append(mut &g[0], 5)
+}

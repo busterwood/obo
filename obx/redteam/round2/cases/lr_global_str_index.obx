@@ -1,0 +1,6 @@
+// expect: 97
+var g: str = "ab"
+fn f(): int { g = "zz"; return 0 }
+fn main() {
+    println(g[f()].toStr())
+}

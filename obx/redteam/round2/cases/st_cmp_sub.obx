@@ -1,0 +1,11 @@
+// expect: -1 -1 1
+fn main() {
+    let s = "abcab" + ""
+    let x = s[0..2]
+    let y = s[0..3]
+    let r1 = if0(x < y)
+    let r2 = if0(s[1..] > s[0..])
+    let r3 = if0(s[3..] < s[0..2])
+    println(r1.toStr() + " " + r2.toStr() + " " + r3.toStr())
+}
+fn if0(b: bool): int { if b { return -1 } ; return 1 }

@@ -1,0 +1,4 @@
+// expect: 4294967295 1
+const A: u32 = 0 -% 1
+const B: byte = 255 *% 255
+fn main() { println(A.toStr() + " " + B.toStr()) }

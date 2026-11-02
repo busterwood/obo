@@ -1,0 +1,9 @@
+// expect: 9
+fn main() {
+    var xs: []int = [1, 2]
+    {
+        let s = mut &xs[0..1]
+        s[0] = 9
+    }
+    println(xs[0].toStr())
+}

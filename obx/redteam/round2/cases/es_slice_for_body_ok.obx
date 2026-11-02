@@ -1,0 +1,7 @@
+// expect: 3
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var n = 0
+    for x in xs[0..2] { n += x }
+    println(n.toStr())
+}

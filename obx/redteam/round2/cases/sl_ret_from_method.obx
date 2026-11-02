@@ -1,0 +1,9 @@
+// error: borrowed
+type R = record { xs: []int }
+fn (r: &R) head(): &[int] { return r.xs[0..1] }
+fn main() {
+    var r = R{xs: [1, 2]}
+    let h = r.head()
+    append(mut &r.xs, 3)
+    println(h[0].toStr())
+}

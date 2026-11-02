@@ -1,0 +1,580 @@
+=== lr_compound_index_late
+// xs[i] += f(mut &i): the place xs[i] is evaluated once, before f runs.
+// expect: 11 2
+fn f(i: mut &int): int { i = 1; return 10 }
+fn main() {
+    var xs: []int = [1, 2]
+    var i = 0
+    xs[i] += f(mut &i)
+    println(xs[0].toStr() + " " + xs[1].toStr())
+}
+=== lr_compound_field_index_late
+// expect: 11 2
+type R = record { a: []int }
+fn f(i: mut &int): int { i = 1; return 10 }
+fn main() {
+    var r = R{a: [1, 2]}
+    var i = 0
+    r.a[i] += f(mut &i)
+    println(r.a[0].toStr() + " " + r.a[1].toStr())
+}
+=== lr_compound_index_late_str
+// expect: ax b
+fn f(i: mut &int): str { i = 1; return "x" }
+fn main() {
+    var xs: []str = ["a", "b"]
+    var i = 0
+    xs[i] += f(mut &i)
+    println(xs[0] + " " + xs[1])
+}
+=== lr_compound_slice_index_late
+// expect: 11 2
+fn f(i: mut &int): int { i = 1; return 10 }
+fn g(xs: mut &[int]) {
+    var i = 0
+    xs[i] += f(mut &i)
+}
+fn main() {
+    var xs: []int = [1, 2]
+    g(mut &xs)
+    println(xs[0].toStr() + " " + xs[1].toStr())
+}
+=== lr_index_read_late
+// xs[i] + f(mut &i): the left operand is read before f runs.
+// expect: 11
+fn f(i: mut &int): int { i = 1; return 10 }
+fn main() {
+    let xs: []int = [1, 2]
+    var i = 0
+    println((xs[i] + f(mut &i)).toStr())
+}
+=== lr_call_args_index
+// expect: 1 10
+fn f(i: mut &int): int { i = 1; return 10 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    let xs: []int = [1, 2]
+    var i = 0
+    println(two(xs[i], f(mut &i)))
+}
+=== lr_method_recv
+// The receiver xs[i] is evaluated before the argument.
+// expect: 1
+type P = value record { v: int }
+fn (p: P) plus(n: int): int { return p.v + n }
+fn f(i: mut &int): int { i = 1; return 0 }
+fn main() {
+    let xs: []P = [P{v: 1}, P{v: 2}]
+    var i = 0
+    println(xs[i].plus(f(mut &i)).toStr())
+}
+=== lr_method_recv_ref
+// expect: 1
+type P = value record { v: int }
+fn (p: &P) plus(n: int): int { return p.v + n }
+fn f(i: mut &int): int { i = 1; return 0 }
+fn main() {
+    let xs: []P = [P{v: 1}, P{v: 2}]
+    var i = 0
+    println(xs[i].plus(f(mut &i)).toStr())
+}
+=== lr_method_recv_str
+// expect: 4
+fn f(s: mut &str): int { s = "zz"; return 0 }
+fn main() {
+    var s = "abcd" + ""
+    println((len(s) + f(mut &s)).toStr())
+}
+=== lr_method_recv_str2
+// expect: abcd
+fn f(s: mut &str): str { s = "zz"; return "" }
+fn main() {
+    var s = "abcd" + ""
+    println(concat2(s, f(mut &s)))
+}
+fn concat2(s: str, t: str): str { return s + t }
+=== lr_match_scrutinee
+// expect: 1
+// expect: 5
+fn f(i: mut &int): int { i = 5; return 1 }
+fn main() {
+    var i = 1
+    match i + 0 {
+        1 { println("1") }
+        else { println("other") }
+    }
+    match f(mut &i) {
+        1 { println(i.toStr()) }
+        else { println("x") }
+    }
+}
+=== lr_swap_nested
+// swap(mut &xs, i, f(mut &i)): i is read before f runs.
+// expect: 2 1 3
+fn f(i: mut &int): int { i = 2; return 1 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    var i = 0
+    swap(mut &xs, i, f(mut &i))
+    println(xs[0].toStr() + " " + xs[1].toStr() + " " + xs[2].toStr())
+}
+=== lr_swap_slice_nested
+// expect: 2 1 3
+fn f(i: mut &int): int { i = 2; return 1 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    var i = 0
+    swap(xs[0..3], i, f(mut &i))
+    println(xs[0].toStr() + " " + xs[1].toStr() + " " + xs[2].toStr())
+}
+=== lr_swap_slice_bounds_late
+// The slice xs[i..] is made before f runs.
+// expect: 1 3 2
+fn f(i: mut &int): int { i = 0; return 1 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    var i = 1
+    swap(xs[i..], 0, f(mut &i))
+    println(xs[0].toStr() + " " + xs[1].toStr() + " " + xs[2].toStr())
+}
+=== lr_try_in_index
+// expect: 2
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn pick(xs: &[]int, n: int): Result[int, str] { return Ok(xs[try get(n)]) }
+fn main() {
+    let xs: []int = [1, 2]
+    match pick(&xs, 1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+    match pick(&xs, -1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}
+=== lr_try_in_index_owned
+// expect: b
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn pick(xs: &[]str, n: int): Result[str, str] { return Ok(xs[try get(n)] + "") }
+fn main() {
+    let xs: []str = ["a" + "", "b" + ""]
+    match pick(&xs, 1) { Ok(v) { println(v) } Err(e) { println("err") } }
+    match pick(&xs, -1) { Ok(v) { println(v) } Err(e) { println("err") } }
+}
+=== lr_try_in_slice_bounds
+// expect: 1
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn cnt(xs: &[]str, n: int): Result[int, str] {
+    let s = xs[try get(n)..]
+    return Ok(len(s))
+}
+fn main() {
+    let xs: []str = ["a" + "", "b" + ""]
+    match cnt(&xs, 1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+    match cnt(&xs, -1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}
+=== lr_try_in_str_sub
+// expect: bc
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn tail(s: str, n: int): Result[str, str] { return Ok(s[try get(n)..] + "") }
+fn main() {
+    let s = "abc" + ""
+    match tail(s, 1) { Ok(v) { println(v) } Err(e) { println("err") } }
+    match tail(s, -1) { Ok(v) { println(v) } Err(e) { println("err") } }
+}
+=== lr_try_compound
+// expect: 3
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn acc(n: int): Result[int, str] {
+    var xs: []str = ["a" + "", "b" + ""]
+    var t = 1
+    t += try get(n)
+    xs[0] += "q"
+    return Ok(t)
+}
+fn main() {
+    match acc(2) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+    match acc(-1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}
+=== lr_global_index
+// expect: 1
+var gi: int = 0
+fn f(): int { gi = 1; return 0 }
+fn main() {
+    let xs: []int = [1, 2]
+    println((xs[gi] + f()).toStr())
+}
+=== lr_global_operand
+// expect: 6
+var g: int = 5
+fn f(): int { g = 100; return 1 }
+fn main() {
+    println((g + f()).toStr())
+}
+=== lr_global_compound
+// expect: 6
+var g: int = 5
+fn f(): int { g = 100; return 1 }
+fn main() {
+    g += f()
+    println(g.toStr())
+}
+=== lr_global_str_operand
+// expect: abx
+var g: str = "ab"
+fn f(): str { g = "zz"; return "x" }
+fn main() {
+    println(g + f())
+}
+=== lr_global_str_index
+// expect: 97
+var g: str = "ab"
+fn f(): int { g = "zz"; return 0 }
+fn main() {
+    println(g[f()].toStr())
+}
+=== lr_global_str_sub
+// expect: ab
+var g: str = "ab"
+fn f(): int { g = "zz"; return 2 }
+fn main() {
+    println(g[0..f()])
+}
+=== lr_global_str_sub_heap
+// The substring is taken of the old (freed) string.
+// expect: abc
+var g: str = ""
+fn f(): int { g = "zz"; return 3 }
+fn main() {
+    g = "abc" + "def"
+    println(g[0..f()])
+}
+=== lr_global_str_method
+// expect: 2
+var g: str = ""
+fn f(): int { g = "zzzz"; return 0 }
+fn len2(s: str, n: int): int { return len(s) + n }
+fn main() {
+    g = "ab" + ""
+    println(len2(g, f()).toStr())
+}
+=== lr_global_str_ref_method
+// A &Self method on a global works on a copy taken before the argument runs.
+// expect: 0
+var g: str = ""
+fn f(): str { g = "zzzz" + "y"; return "ab" }
+fn main() {
+    g = "ab" + ""
+    println(g.cmp(&f()).toStr())
+}
+=== lr_global_str_extern
+// expect: 2
+var g: str = ""
+extern "c" fn strlen(s: str): u64
+fn f(): int { g = "zzzz" + "y"; return 0 }
+fn two(a: u64, b: int): u64 { return a }
+fn main() {
+    g = "ab" + ""
+    println(two(strlen(g), f()).toStr())
+}
+=== lr_global_value_record_field
+// expect: 1
+type P = value record { a: int; b: int }
+var g: P = P{a: 1, b: 2}
+fn f(): int { g = P{a: 9, b: 9}; return 0 }
+fn main() {
+    println((g.a + f()).toStr())
+}
+=== lr_global_in_literal
+// expect: 1 0
+type P = record { a: int; b: int }
+var g: int = 1
+fn f(): int { g = 9; return 0 }
+fn main() {
+    let p = P{a: g, b: f()}
+    println(p.a.toStr() + " " + p.b.toStr())
+}
+=== lr_global_in_array_lit
+// expect: 1 0
+var g: int = 1
+fn f(): int { g = 9; return 0 }
+fn main() {
+    let xs: []int = [g, f()]
+    println(xs[0].toStr() + " " + xs[1].toStr())
+}
+=== lr_global_in_variant
+// expect: 1
+var g: int = 1
+fn f(): int { g = 9; return 0 }
+type V = closed { A(int, int) }
+fn main() {
+    match A(g, f()) { A(x, y) { println(x.toStr()) } }
+}
+=== lr_global_cond_and
+// expect: ok
+var g: int = 1
+fn f(): bool { g = 9; return true }
+fn main() {
+    if g == 1 && f() { println("ok") }
+}
+=== lr_global_cmp
+// expect: true
+var g: int = 1
+fn f(): int { g = 9; return 1 }
+fn main() {
+    println((g == f()).toStr())
+}
+=== lr_global_shift
+// expect: 2
+var g: int = 1
+fn f(): int { g = 9; return 1 }
+fn main() {
+    println((g << f()).toStr())
+}
+=== lr_global_bitop
+// expect: 1
+var g: int = 1
+fn f(): int { g = 8; return 1 }
+fn main() {
+    println((g & f()).toStr())
+}
+=== lr_global_unary
+// expect: -1
+var g: int = 1
+fn f(): int { g = 8; return 0 }
+fn main() {
+    println((-g + f()).toStr())
+}
+=== lr_global_conv
+// expect: 1
+var g: int = 1
+fn f(): int { g = 8; return 0 }
+fn main() {
+    println((float(g) + float(f())).toStr())
+}
+=== lr_global_not
+// expect: false
+var g: bool = true
+fn f(): bool { g = false; return false }
+fn main() {
+    println((!g || f()).toStr())
+}
+=== lr_global_bitnot_and
+// expect: -2
+var g: int = 1
+fn f(): int { g = 8; return -1 }
+fn main() {
+    println((~g & f()).toStr())
+}
+=== lr_global_lit_operand
+// g + 1 + f(): g + 1 is computed first.
+// expect: 3
+var g: int = 1
+fn f(): int { g = 100; return 1 }
+fn main() {
+    println((g + 1 + f()).toStr())
+}
+=== lr_global_lit_left
+// 1 + g + f()
+// expect: 3
+var g: int = 1
+fn f(): int { g = 100; return 1 }
+fn main() {
+    println((1 + g + f()).toStr())
+}
+=== lr_global_lit_mul
+// expect: 3
+var g: int = 1
+fn f(): int { g = 100; return 1 }
+fn main() {
+    println((2 * g + f()).toStr())
+}
+=== lr_local_lit_left
+// expect: 3
+fn f(n: mut &int): int { n = 100; return 1 }
+fn main() {
+    var n = 1
+    println((1 + n + f(mut &n)).toStr())
+}
+=== lr_local_lit_right_cmp
+// expect: true
+fn f(n: mut &int): bool { n = 100; return true }
+fn main() {
+    var n = 1
+    println((n == 1 && f(mut &n)).toStr())
+}
+=== lr_local_conv
+// expect: 1
+fn f(n: mut &int): int { n = 100; return 0 }
+fn main() {
+    var n = 1
+    println((i32(n) + i32(f(mut &n))).toStr())
+}
+=== lr_local_conv_call
+// expect: 1 0
+fn f(n: mut &int): int { n = 100; return 0 }
+fn two(a: i32, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var n = 1
+    println(two(i32(n), f(mut &n)))
+}
+=== lr_local_unary_call
+// expect: -1 0
+fn f(n: mut &int): int { n = 100; return 0 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var n = 1
+    println(two(-n, f(mut &n)))
+}
+=== lr_local_not_call
+// expect: false 0
+fn f(n: mut &bool): int { n = false; return 0 }
+fn two(a: bool, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var n = true
+    println(two(!n, f(mut &n)))
+}
+=== lr_local_bitnot_call
+// expect: -2 0
+fn f(n: mut &int): int { n = 100; return 0 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var n = 1
+    println(two(~n, f(mut &n)))
+}
+=== lr_local_lit_add_call
+// expect: 2 0
+fn f(n: mut &int): int { n = 100; return 0 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var n = 1
+    println(two(n + 1, f(mut &n)))
+}
+=== lr_local_field_call
+// expect: 1 0
+type P = value record { a: int }
+fn f(p: mut &P): int { p.a = 100; return 0 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var p = P{a: 1}
+    println(two(p.a, f(mut &p)))
+}
+=== lr_local_len_call
+// expect: 1 0
+fn f(p: mut &[]int): int { append(p, 1); return 0 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var xs: []int = [1]
+    println(two(len(xs), f(mut &xs)))
+}
+=== lr_local_strlen_call
+// expect: 1 0
+fn f(p: mut &str): int { p = "abc"; return 0 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var s = "x"
+    println(two(len(s), f(mut &s)))
+}
+=== lr_local_strbyte_call
+// expect: 120 0
+fn f(p: mut &str): int { p = "abc"; return 0 }
+fn two(a: byte, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var s = "x"
+    println(two(s[0], f(mut &s)))
+}
+=== lr_local_slicelen_call
+// expect: 1 0
+fn f(p: mut &int): int { p = 3; return 0 }
+fn two(a: int, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    let xs: []int = [1, 2, 3]
+    var n = 1
+    println(two(len(xs[0..n]), f(mut &n)))
+}
+=== lr_local_isnull_call
+// expect: done
+fn main() { println("done") }
+=== lr_append_value_late
+// append(mut &xs, n) where n is changed later: no, append evaluates its value after the borrow.
+// expect: 1
+fn f(n: mut &int): int { n = 7; return 0 }
+fn main() {
+    var xs: []int = []
+    var n = 1
+    append(mut &xs, n + f(mut &n))
+    println(xs[0].toStr())
+}
+=== lr_array_builtin_late
+// expect: 3
+fn f(n: mut &int): int { n = 7; return 0 }
+fn main() {
+    var n = 3
+    let xs = array(n, f(mut &n))
+    println(len(xs).toStr())
+}
+=== lr_for_range_late
+// expect: 3
+fn f(n: mut &int): int { n = 0; return 3 }
+fn main() {
+    var n = 0
+    var c = 0
+    for i in n..f(mut &n) { c += 1 }
+    println(c.toStr())
+}
+=== lr_replace_late
+// expect: 1 5
+fn f(n: mut &int): int { n = 7; return 5 }
+fn main() {
+    var a: []int = [1, 2]
+    var i = 0
+    let o = replace(mut &a[i], f(mut &i))
+    println(o.toStr() + " " + a[0].toStr())
+}
+=== lr_replace_late_str
+// expect: a b
+fn f(n: mut &int): str { n = 1; return "b" }
+fn main() {
+    var a: []str = ["a", "x"]
+    var i = 0
+    let o = replace(mut &a[i], f(mut &i))
+    println(o + " " + a[0])
+}
+=== lr_mut_borrow_arg_late
+// f(mut &a[i], g(mut &i)): the borrow a[i] is taken first.
+// expect: 9 2
+fn g(n: mut &int): int { n = 1; return 9 }
+fn set(p: mut &int, v: int) { p = v }
+fn main() {
+    var a: []int = [1, 2]
+    var i = 0
+    set(mut &a[i], g(mut &i))
+    println(a[0].toStr() + " " + a[1].toStr())
+}
+=== lr_shared_borrow_arg_late
+// expect: 1
+fn g(n: mut &int): int { n = 1; return 9 }
+fn rd(p: &int, v: int): int { return p }
+fn main() {
+    let a: []int = [1, 2]
+    var i = 0
+    println(rd(&a[i], g(mut &i)).toStr())
+}
+=== lr_slice_arg_bounds_late
+// expect: 3
+fn g(n: mut &int): int { n = 2; return 9 }
+fn cnt(p: &[int], v: int): int { return len(p) }
+fn main() {
+    let a: []int = [1, 2, 3]
+    var i = 0
+    println(cnt(a[i..], g(mut &i)).toStr())
+}
+=== lr_field_borrow_recv_late
+// expect: 1
+type P = record { v: int }
+fn (p: &P) get(n: int): int { return p.v }
+fn g(n: mut &int): int { n = 1; return 0 }
+fn main() {
+    let ps: []P = [P{v: 1}, P{v: 2}]
+    var i = 0
+    println(ps[i].get(g(mut &i)).toStr())
+}

@@ -1,0 +1,10 @@
+// expect: a q c
+fn mid[T](xs: mut &[T]): mut &[T] { return xs[1..2] }
+fn main() {
+    var xs: []str = ["a", "b" + "", "c"]
+    {
+        let m = mid(mut &xs)
+        m[0] = "q" + ""
+    }
+    println(xs[0] + " " + xs[1] + " " + xs[2])
+}

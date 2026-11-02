@@ -1,0 +1,6 @@
+// error: cannot move
+fn first[T](xs: mut &[T]): T { let x = xs[0]; return x }
+fn main() {
+    var xs: []str = ["a"]
+    println(first(mut &xs))
+}

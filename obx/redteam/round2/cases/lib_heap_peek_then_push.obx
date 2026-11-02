@@ -1,0 +1,9 @@
+// error: borrowed
+import "collections"
+fn main() {
+    var h: collections.Heap[str] = collections.newHeap()
+    h.push("c" + "")
+    let p = h.peek()
+    h.push("a")
+    println(p)
+}

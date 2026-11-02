@@ -1,0 +1,10 @@
+// expect: b
+import "strings"
+fn main() {
+    var parts: []str = []
+    {
+        let s = "a,b,c" + ""
+        parts = strings.splitOn(s, ",")
+    }
+    println(parts[1])
+}

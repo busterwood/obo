@@ -1,0 +1,12 @@
+// expect: 3 2 1
+type B = record { v: int; s: str }
+fn rev[T](xs: mut &[T]) {
+    var i = 0
+    var j = len(xs) - 1
+    while i < j { swap(xs, i, j); i += 1; j -= 1 }
+}
+fn main() {
+    var xs: []B = [B{v: 1, s: "x" + "y"}, B{v: 2, s: "y"}, B{v: 3, s: "z" + "q"}]
+    rev(mut &xs[..])
+    println(xs[0].v.toStr() + " " + xs[1].v.toStr() + " " + xs[2].v.toStr())
+}

@@ -1,0 +1,6 @@
+// expect: ok
+var g: int = 1
+fn f(): bool { g = 9; return true }
+fn main() {
+    if g == 1 && f() { println("ok") }
+}

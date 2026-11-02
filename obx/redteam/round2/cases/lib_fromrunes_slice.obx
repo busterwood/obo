@@ -1,0 +1,6 @@
+// expect: bc
+import "strings"
+fn main() {
+    let rs: []int = [97, 98, 99, 100]
+    println(strings.fromRunes(rs[1..3]))
+}

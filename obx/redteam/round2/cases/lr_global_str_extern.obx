@@ -1,0 +1,9 @@
+// expect: 2
+var g: str = ""
+extern "c" fn strlen(s: str): u64
+fn f(): int { g = "zzzz" + "y"; return 0 }
+fn two(a: u64, b: int): u64 { return a }
+fn main() {
+    g = "ab" + ""
+    println(two(strlen(g), f()).toStr())
+}

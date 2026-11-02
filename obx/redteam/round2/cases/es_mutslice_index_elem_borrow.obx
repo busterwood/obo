@@ -1,0 +1,7 @@
+// error: borrow|held|overlap
+fn g(xs: mut &[]int): int { xs = []; return 0 }
+fn set(p: mut &int, v: int) { p = v }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    set(mut &xs[0..2][0], g(mut &xs))
+}

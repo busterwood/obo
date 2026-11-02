@@ -1,0 +1,200 @@
+=== mr_ret_slice_from_match_binding
+// expect: 2
+fn tail(o: &Option[[]int]): &[int] {
+    match o {
+        Some(a) { return a[1..] }
+        None { return o2(o) }
+    }
+}
+fn o2(o: &Option[[]int]): &[int] { panic("none") }
+fn main() {
+    let o: Option[[]int] = Some([1, 2])
+    println(tail(&o)[0].toStr())
+}
+=== mr_ret_slice_from_consumed_match
+// error: cannot return a borrow
+fn mk(): Option[[]int] { return Some([1, 2]) }
+fn bad(xs: &[int]): &[int] {
+    match mk() {
+        Some(a) { return a[0..1] }
+        None { return xs }
+    }
+}
+fn main() {
+    let xs: []int = [1]
+    println(bad(&xs)[0].toStr())
+}
+=== mr_ret_ref_from_consumed_match
+// error: cannot return a borrow
+type B = record { v: int }
+fn mk(): Option[B] { return Some(B{v: 1}) }
+fn bad(x: &B): &int {
+    match mk() {
+        Some(b) { return &b.v }
+        None { return &x.v }
+    }
+}
+fn main() {
+    let b = B{v: 2}
+    println(bad(&b).toStr())
+}
+=== mr_match_binding_slice_let_freeze
+// error: borrowed
+fn main() {
+    var o: Option[[]int] = Some([1, 2])
+    match o {
+        Some(a) {
+            let s = a[0..1]
+            o = None
+            println(s[0].toStr())
+        }
+        None {}
+    }
+}
+=== mr_match_binding_slice_call_hold
+// error: borrowed|held|overlap
+fn g(o: mut &Option[[]int]): int { o = None; return 0 }
+fn use2(s: &[int], n: int): int { return s[0] + n }
+fn main() {
+    var o: Option[[]int] = Some([1, 2])
+    match o {
+        Some(a) { println(use2(a[0..1], g(mut &o)).toStr()) }
+        None {}
+    }
+}
+=== mr_match_param_mut_binding_assign
+// error: borrowed
+type B = record { s: str }
+fn f(o: mut &Option[B]) {
+    match o {
+        Some(b) {
+            o = None
+            println(b.s)
+        }
+        None {}
+    }
+}
+fn main() {
+    var o: Option[B] = Some(B{s: "a" + "b"})
+    f(mut &o)
+}
+=== mr_match_elem_binding_append
+// error: borrowed
+type B = record { s: str }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    match xs[0] {
+        Some(b) {
+            append(mut &xs, None)
+            println(b.s)
+        }
+        None {}
+    }
+}
+=== mr_match_slice_param_elem_binding
+// error: borrowed|shared|assign
+type B = record { s: str }
+fn f(xs: mut &[Option[B]]) {
+    match xs[0] {
+        Some(b) {
+            xs[0] = None
+            println(b.s)
+        }
+        None {}
+    }
+}
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    f(mut &xs)
+}
+=== mr_match_slice_let_elem_binding
+// error: borrowed|shared|assign
+type B = record { s: str }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    {
+        let s: mut &[Option[B]] = mut &xs
+        match s[0] {
+            Some(b) {
+                s[0] = None
+                println(b.s)
+            }
+            None {}
+        }
+    }
+}
+=== mr_match_slice_elem_swap
+// error: borrowed|shared
+type B = record { s: str }
+fn f(xs: mut &[Option[B]]) {
+    match xs[0] {
+        Some(b) {
+            swap(xs, 0, 1)
+            println(b.s)
+        }
+        None {}
+    }
+}
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"}), None]
+    f(mut &xs)
+}
+=== mr_for_owned_slice_swap
+// error: borrowed
+type B = record { s: str }
+fn f(xs: mut &[B]) {
+    for b in xs {
+        swap(xs, 0, 1)
+        println(b.s)
+    }
+}
+fn main() {
+    var xs: []B = [B{s: "a"}, B{s: "b"}]
+    f(mut &xs)
+}
+=== mr_for_owned_slice_assign
+// error: borrowed
+type B = record { s: str }
+fn f(xs: mut &[B]) {
+    for b in xs[0..1] {
+        xs[0] = B{s: "z"}
+        println(b.s)
+    }
+}
+fn main() {
+    var xs: []B = [B{s: "a" + "b"}, B{s: "b"}]
+    f(mut &xs)
+}
+=== mr_for_slice_var_root
+// error: borrowed
+type B = record { s: str }
+fn main() {
+    var xs: []B = [B{s: "a" + "b"}, B{s: "b"}]
+    {
+        let s: mut &[B] = mut &xs
+        for b in s {
+            s[0] = B{s: "z"}
+            println(b.s)
+        }
+    }
+}
+=== mr_for_call_slice
+// error: borrowed
+type B = record { s: str }
+fn mid(xs: &[]B): &[B] { return xs[0..] }
+fn main() {
+    var xs: []B = [B{s: "a" + "b"}, B{s: "b"}]
+    for b in mid(&xs) {
+        xs = []
+        println(b.s)
+    }
+}
+=== mr_match_str_sub_scrutinee
+// expect: b
+fn main() {
+    var s = "abc" + ""
+    match s[1..2] {
+        "b" { s = "zz"; println("b") }
+        else { println("?") }
+    }
+}

@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    var z: float = 0.0
+    let f: float = z / z
+    println(int(f).toStr())
+}

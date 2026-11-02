@@ -1,0 +1,9 @@
+// expect: err 0
+import "collections"
+fn main() {
+    let xs: []int = []
+    match collections.binarySearch(&xs, &5) {
+        Ok(i) { println("ok " + i.toStr()) }
+        Err(i) { println("err " + i.toStr()) }
+    }
+}

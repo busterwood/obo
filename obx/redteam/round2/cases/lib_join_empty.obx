@@ -1,0 +1,6 @@
+// expect: []
+import "strings"
+fn main() {
+    let xs: []str = []
+    println("[" + strings.join(&xs, ",") + "]")
+}

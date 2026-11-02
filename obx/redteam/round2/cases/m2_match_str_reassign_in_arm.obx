@@ -1,0 +1,11 @@
+// expect: one
+// expect: zz
+fn main() {
+    var s = "on" + "e"
+    match s {
+        "one" { s = "zz"; println("one") }
+        "two" { println("two") }
+        else { println("?") }
+    }
+    println(s)
+}

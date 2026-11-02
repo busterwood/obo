@@ -1,0 +1,7 @@
+// error: borrowed
+fn main() {
+    var xs: []str = ["a" + "", "b" + ""]
+    let r = &xs[1..][0]
+    xs = []
+    println(r)
+}

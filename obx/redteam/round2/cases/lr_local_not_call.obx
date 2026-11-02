@@ -1,0 +1,7 @@
+// expect: false 0
+fn f(n: mut &bool): int { n = false; return 0 }
+fn two(a: bool, b: int): str { return a.toStr() + " " + b.toStr() }
+fn main() {
+    var n = true
+    println(two(!n, f(mut &n)))
+}

@@ -1,0 +1,8 @@
+// error: borrowed
+fn main() {
+    var m: Map[str, str] = newMap()
+    m.put("a" + "", "x" + "")
+    let k = m.keyAt(0)
+    let r = m.remove(&"a")
+    println(k)
+}

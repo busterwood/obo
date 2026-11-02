@@ -1,0 +1,7 @@
+// expect: abcd
+fn f(s: mut &str): str { s = "zz"; return "" }
+fn main() {
+    var s = "abcd" + ""
+    println(concat2(s, f(mut &s)))
+}
+fn concat2(s: str, t: str): str { return s + t }

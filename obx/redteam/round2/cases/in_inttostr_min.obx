@@ -1,0 +1,5 @@
+// expect: -9223372036854775808
+fn main() {
+    let n = -9223372036854775807 - 1
+    println(intToStr(n))
+}

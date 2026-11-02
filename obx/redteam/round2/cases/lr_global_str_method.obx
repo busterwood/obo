@@ -1,0 +1,8 @@
+// expect: 2
+var g: str = ""
+fn f(): int { g = "zzzz"; return 0 }
+fn len2(s: str, n: int): int { return len(s) + n }
+fn main() {
+    g = "ab" + ""
+    println(len2(g, f()).toStr())
+}

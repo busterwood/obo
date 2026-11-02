@@ -1,0 +1,10 @@
+// error: borrowed
+type Bag[T] = record { items: []T }
+fn (b: &Bag[T]) rest(): &[T] { return b.items[1..] }
+fn (b: mut &Bag[T]) add(x: T) { append(mut &b.items, x) }
+fn main() {
+    var b = Bag{items: ["a", "b" + "", "c"]}
+    let r = b.rest()
+    b.add("d")
+    println(r[0])
+}

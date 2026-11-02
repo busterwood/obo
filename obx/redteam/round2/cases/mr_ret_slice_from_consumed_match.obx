@@ -1,0 +1,12 @@
+// error: cannot return a borrow
+fn mk(): Option[[]int] { return Some([1, 2]) }
+fn bad(xs: &[int]): &[int] {
+    match mk() {
+        Some(a) { return a[0..1] }
+        None { return xs }
+    }
+}
+fn main() {
+    let xs: []int = [1]
+    println(bad(&xs)[0].toStr())
+}

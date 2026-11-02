@@ -1,0 +1,8 @@
+// strFromBytes returns before g runs.
+// expect: ab
+fn g(b: mut &[]byte): int { b = []; return 0 }
+fn two(s: str, n: int): str { return s }
+fn main() {
+    var b: []byte = ['a', 'b']
+    println(two(strFromBytes(b[0..2]), g(mut &b)))
+}

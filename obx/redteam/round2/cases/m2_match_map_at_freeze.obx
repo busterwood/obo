@@ -1,0 +1,10 @@
+// error: borrowed
+type B = record { s: str }
+fn main() {
+    var m: Map[str, Option[B]] = newMap()
+    m.put("k", Some(B{s: "a" + "b"}))
+    match m.at("k") {
+        Some(b) { m.clear(); println(b.s) }
+        None {}
+    }
+}

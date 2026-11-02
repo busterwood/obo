@@ -1,0 +1,6 @@
+// expect: [a b]
+import "strings"
+fn main() {
+    let s = "x  a b  y" + ""
+    println("[" + strings.trimRight(strings.trimLeft(s[1..8])) + "]")
+}

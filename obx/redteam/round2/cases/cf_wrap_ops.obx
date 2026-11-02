@@ -1,0 +1,5 @@
+// expect: -9223372036854775808 0 -2
+const A: int = 9223372036854775807 +% 1
+const B: u32 = 0 -% 0
+const C: int = 9223372036854775807 *% 2
+fn main() { println(A.toStr() + " " + B.toStr() + " " + C.toStr()) }

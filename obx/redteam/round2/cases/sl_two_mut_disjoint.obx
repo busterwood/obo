@@ -1,0 +1,6 @@
+// error: twice|overlap
+fn two(a: mut &[int], b: mut &[int]) { a[0] = b[0] }
+fn main() {
+    var xs: []int = [1, 2]
+    two(mut &xs[0..1], mut &xs[1..2])
+}

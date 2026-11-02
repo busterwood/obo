@@ -1,0 +1,7 @@
+// s[i] where the index call changes s: the old s is indexed.
+// expect: 97
+fn ch(s: mut &str): int { s = "zz"; return 0 }
+fn main() {
+    var s = "abc" + ""
+    println(s[ch(mut &s)].toStr())
+}

@@ -1,0 +1,7 @@
+// error: borrowed|temporary
+fn main() {
+    var g: [][]int = [[1, 2]]
+    let s = g[..][0][0..1]
+    g = []
+    println(s[0].toStr())
+}

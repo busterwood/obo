@@ -1,0 +1,8 @@
+// expect: done
+type A = closed { Nil; Cons(B) }
+type B = record { s: str; a: A }
+fn main() {
+    var a = Nil
+    for i in 0..300000 { a = Cons(B{s: i.toStr(), a: move(a)}) }
+    println("done")
+}

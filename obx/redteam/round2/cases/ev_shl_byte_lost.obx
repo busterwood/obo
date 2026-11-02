@@ -1,0 +1,5 @@
+// expect: 128
+fn main() {
+    var a: byte = 3
+    println((a << 7).toStr())
+}

@@ -1,0 +1,7 @@
+// 1 << n with an expected u32 result
+// expect: 2147483648
+fn main() {
+    var n = 31
+    let x: u32 = 1 << n
+    println(x.toStr())
+}

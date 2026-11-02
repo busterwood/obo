@@ -1,0 +1,7 @@
+// expect: yz
+type R = record { s: str }
+fn mk(): R {
+    let x = "xyz" + ""
+    return R{s: x[1..]}
+}
+fn main() { let r = mk(); println(r.s) }

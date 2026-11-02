@@ -1,0 +1,7 @@
+// error: borrow|held|overlap
+fn g(xs: mut &[]str): int { xs = []; return 0 }
+fn rd(p: &str, n: int): int { return len(p) + n }
+fn main() {
+    var xs: []str = ["a" + "b"]
+    println(rd(&xs[0..1][0], g(mut &xs)).toStr())
+}

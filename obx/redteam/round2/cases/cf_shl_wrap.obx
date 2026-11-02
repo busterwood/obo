@@ -1,0 +1,5 @@
+// expect: -9223372036854775808 -2147483648 0
+const A: int = 1 << 63
+const B: i32 = 1 << 31
+const C: byte = 128 << 1
+fn main() { println(A.toStr() + " " + B.toStr() + " " + C.toStr()) }

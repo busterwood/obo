@@ -1,0 +1,6 @@
+// expect: ab
+var g: str = "ab"
+fn f(): int { g = "zz"; return 2 }
+fn main() {
+    println(g[0..f()])
+}

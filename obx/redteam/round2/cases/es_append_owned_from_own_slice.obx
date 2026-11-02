@@ -1,0 +1,7 @@
+// str is a copy type: the element is copied before append runs.
+// expect: a
+fn main() {
+    var xs: []str = ["a" + ""]
+    append(mut &xs, xs[0..1][0])
+    println(xs[1])
+}

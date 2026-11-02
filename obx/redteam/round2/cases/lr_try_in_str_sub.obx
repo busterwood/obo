@@ -1,0 +1,9 @@
+// expect: bc
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn tail(s: str, n: int): Result[str, str] { return Ok(s[try get(n)..] + "") }
+fn main() {
+    let s = "abc" + ""
+    match tail(s, 1) { Ok(v) { println(v) } Err(e) { println("err") } }
+    match tail(s, -1) { Ok(v) { println(v) } Err(e) { println("err") } }
+}

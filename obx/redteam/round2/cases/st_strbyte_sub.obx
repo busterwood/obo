@@ -1,0 +1,5 @@
+// expect: 99
+fn main() {
+    let s = "abcd" + ""
+    println(strByte(s[1..], 1).toStr())
+}

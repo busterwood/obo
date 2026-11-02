@@ -1,0 +1,6 @@
+// expect: x x x
+fn id[T](v: T): T { return v }
+fn lit[T](v: T): str { return "x" }
+fn main() {
+    println(lit(1) + " " + lit("s") + " " + id("x"))
+}

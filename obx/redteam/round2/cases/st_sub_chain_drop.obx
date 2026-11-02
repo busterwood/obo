@@ -1,0 +1,12 @@
+// expect: done
+fn main() {
+    var keep: []str = []
+    for i in 0..100 {
+        let s = "abcdefghij" + i.toStr()
+        append(mut &keep, s[i % 5..i % 5 + 3])
+    }
+    var t: []str = []
+    for k in keep { append(mut &t, k[1..]) }
+    keep = []
+    println("done")
+}

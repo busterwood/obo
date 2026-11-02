@@ -1,0 +1,10 @@
+// error: borrow|second class
+type R = record { f: fn(&[int]): &[int] }
+fn mid(xs: &[int]): &[int] { return xs[1..] }
+fn main() {
+    let r = R{f: mid}
+    var xs: []int = [1, 2, 3]
+    let s = r.f(&xs)
+    xs = []
+    println(s[0].toStr())
+}

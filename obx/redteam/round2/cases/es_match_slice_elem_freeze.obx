@@ -1,0 +1,13 @@
+// A match on an element of a slice binds a borrow; the array stays frozen in the arm.
+// error: borrowed
+type B = record { s: str }
+fn main() {
+    var xs: []Option[B] = [Some(B{s: "a" + "b"})]
+    match xs[0..1][0] {
+        Some(b) {
+            xs = []
+            println(b.s)
+        }
+        None {}
+    }
+}

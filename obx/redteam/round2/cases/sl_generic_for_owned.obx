@@ -1,0 +1,6 @@
+// expect: ab
+fn cat(xs: &[str]): str { var s = ""; for x in xs { s = s + x }; return s }
+fn main() {
+    var xs: []str = ["a" + "", "b" + "", "c"]
+    println(cat(xs[0..2]))
+}

@@ -1,0 +1,7 @@
+// expect: a x b c
+import "collections"
+fn main() {
+    var xs: []str = ["a" + "", "b" + "", "c"]
+    collections.insert(mut &xs, 1, "x" + "")
+    println(xs[0] + " " + xs[1] + " " + xs[2] + " " + xs[3])
+}

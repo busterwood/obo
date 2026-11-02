@@ -1,0 +1,157 @@
+=== tp_try_in_temp_slice
+// expect: 1
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn mk(): []str { return ["a" + "", "b" + ""] }
+fn cnt(xs: &[str]): int { return len(xs) }
+fn f(n: int): Result[int, str] { return Ok(cnt(mk()[try get(n)..])) }
+fn main() {
+    match f(1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+    match f(-1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}
+=== tp_try_after_temp_str_sub
+// expect: bc
+// expect: err
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn two(a: str, b: int): str { return a }
+fn f(n: int): Result[str, str] {
+    let s = "abc" + ""
+    return Ok(two(s[1..], try get(n)))
+}
+fn main() {
+    match f(1) { Ok(v) { println(v) } Err(e) { println("err") } }
+    match f(-1) { Ok(v) { println(v) } Err(e) { println("err") } }
+}
+=== tp_try_extern_cfree
+// expect: 2
+// expect: err
+extern "c" fn strlen(s: str): u64
+fn get(n: int): Result[int, str] { if n < 0 { return Err("neg") }; return Ok(n) }
+fn two(a: u64, b: int): u64 { return a }
+fn f(n: int): Result[u64, str] {
+    let s = "abcd" + ""
+    return Ok(two(strlen(s[1..3]), try get(n)))
+}
+fn main() {
+    match f(1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+    match f(-1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}
+=== tp_try_extern_arg
+// expect: 2
+// expect: err
+extern "c" fn strncmp(a: str, b: str, n: u64): i32
+fn get(n: int): Result[u64, str] { if n < 0 { return Err("neg") }; return Ok(u64(n)) }
+fn f(n: int): Result[i32, str] {
+    let s = "abcdab" + ""
+    return Ok(strncmp(s[0..2], s[4..], try get(n)) + 2)
+}
+fn main() {
+    match f(2) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+    match f(-1) { Ok(v) { println(v.toStr()) } Err(e) { println("err") } }
+}
+=== tp_sub_of_temp_in_loop
+// expect: 1000
+fn mk(i: int): str { return "x" + i.toStr() }
+fn main() {
+    var n = 0
+    for i in 0..1000 {
+        let s = mk(i)[0..1]
+        n += len(s)
+    }
+    println(n.toStr())
+}
+=== tp_sub_of_call_dropped
+// expect: 1
+fn mk(): str { return "ab" + "c" }
+fn main() {
+    println(len(mk()[0..1]).toStr())
+}
+=== tp_concat_chain_subs
+// expect: abcabc
+fn main() {
+    let s = "abc" + ""
+    var t = ""
+    t = t + s[0..1] + s[1..2] + s[2..] + s + t
+    println(t)
+}
+=== tp_break_with_slice_let
+// expect: 2
+fn main() {
+    var xs: []str = ["a" + "", "b" + ""]
+    var n = 0
+    while true {
+        let s = xs[0..2]
+        n = len(s)
+        break
+    }
+    append(mut &xs, "c")
+    println(n.toStr())
+}
+=== tp_continue_with_slice_let
+// expect: 3
+fn main() {
+    var xs: []int = [1, 2, 3]
+    var n = 0
+    for i in 0..3 {
+        let s = xs[i..]
+        if len(s) > 1 { continue }
+        n = i + 1
+    }
+    append(mut &xs, 4)
+    println(n.toStr())
+}
+=== tp_return_inside_slice_scope
+// Rule 4 is lexical: s freezes xs to the end of the block.
+// error: borrowed
+fn f(xs: mut &[]str): int {
+    let s = xs[0..2]
+    if len(s) == 2 { return len(s) }
+    append(xs, "x")
+    return 0
+}
+fn main() {
+    var xs: []str = ["a" + "", "b" + ""]
+    println(f(mut &xs).toStr())
+}
+=== tp_match_arm_slice_let_then_after
+// expect: ok
+fn main() {
+    var xs: []int = [1]
+    let o: Option[int] = Some(1)
+    match o {
+        Some(v) { let s = xs[0..1]; println("ok") }
+        None {}
+    }
+    append(mut &xs, 2)
+}
+=== tp_nested_scopes_freeze_release
+// expect: 3
+fn main() {
+    var xs: []int = [1]
+    {
+        let a = xs[..]
+        {
+            let b = a[0..1]
+        }
+    }
+    append(mut &xs, 2)
+    append(mut &xs, 3)
+    println(len(xs).toStr())
+}
+=== tp_slice_let_in_if_then_append
+// error: borrowed
+fn main() {
+    var xs: []int = [1]
+    if true {
+        let a = xs[..]
+        append(mut &xs, 2)
+        println(a[0].toStr())
+    }
+}
+=== tp_slice_let_in_while_cond_scope
+// error: borrowed
+fn main() {
+    var xs: []int = [1]
+    let a = xs[..]
+    while len(a) < 3 { append(mut &xs, 2) }
+}

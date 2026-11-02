@@ -1,0 +1,12 @@
+// expect: 2
+fn main() {
+    var xs: []str = ["a" + "", "b" + ""]
+    var n = 0
+    while true {
+        let s = xs[0..2]
+        n = len(s)
+        break
+    }
+    append(mut &xs, "c")
+    println(n.toStr())
+}

@@ -1,0 +1,8 @@
+// expect: 3
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = "abcdef" + ""
+    var i = 0
+    while strlen(s[0..i]) < 3 { i += 1 }
+    println(i.toStr())
+}

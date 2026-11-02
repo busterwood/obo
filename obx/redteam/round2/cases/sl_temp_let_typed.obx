@@ -1,0 +1,6 @@
+// error: temporary
+fn mk(): []int { return [1, 2, 3] }
+fn main() {
+    let s: &[int] = &mk()
+    println(s[0].toStr())
+}

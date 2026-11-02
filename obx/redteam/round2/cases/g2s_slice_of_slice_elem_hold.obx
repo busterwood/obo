@@ -1,0 +1,7 @@
+// error: borrow|held|overlap
+fn clear(g: mut &[][]int): int { g = []; return 0 }
+fn cnt(s: &[int], n: int): int { return len(s) + n }
+fn main() {
+    var g: [][]int = [[1, 2]]
+    println(cnt(g[..][0][0..1], clear(mut &g)).toStr())
+}
