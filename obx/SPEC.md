@@ -544,7 +544,8 @@ receiver `p`, whose place `p` is made only of a local variable or parameter
 (a borrow one is dereferenced), fields and indexes into arrays, is *taken*
 when the call is made, after all its arguments have been evaluated. The index
 expressions in `p` still run in their position, left to right; when the call
-is made the place is found again and its indexes are checked again (exit 3).
+is made the place is found again and its indexes are checked again (exit 3),
+for several such borrows in the order of the arguments.
 So `p.node(K, p.block())` with `p: mut &Parser`, `xs[i].push(f(mut &xs))` and
 `c.emit(c.T(t) + ";")` are allowed. The same holds for the first argument of
 `append` and `replace`, taken after the value. A borrow reached through a
