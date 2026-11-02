@@ -82,10 +82,10 @@ pending, the round after the red-team fixes):
 
 Deferred (user, 2026-11-02):
 
-- Marking unchecked code. Any module can still declare its own extern (for
-  example C's `close`) or call the raw intrinsics (`writeFd` takes a bare
-  descriptor). A rule that only modules marked unchecked may do either, as Go's
-  `unsafe` import or Rust's `unsafe` do, is left for later.
+- Marking unchecked code: not planned. A module that declares its own extern
+  (for example C's `close`) or calls the raw intrinsics takes responsibility
+  for what happens (the user, 2026-11-02). The safety promise covers obx code
+  that uses no externs of its own.
 - Library resource types: a streaming file reader, a directory handle and seek,
   each an owned record with a private descriptor and a `drop` method, like
   `io.Writer`. Added when eza and fd need them.
