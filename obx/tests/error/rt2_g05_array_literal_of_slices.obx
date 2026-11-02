@@ -1,0 +1,9 @@
+// Red-team round 2, g05 (SPEC 4.5, 10 rule 1): a slice is a borrow and cannot
+// be stored in an element. [xs[0..1]] made a []&[str] that outlived xs.
+// error: borrow|second class
+fn main() {
+    var xs: []str = ["a" + "b"]
+    var a = [xs[0..1]]
+    xs = []
+    println(a[0][0])
+}

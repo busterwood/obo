@@ -278,9 +278,12 @@ class Checker:
         del self.ctx.pending[m:]
         return self.ctx.frames.pop()
 
-    def holdtmp(self, c, t):
+    def holdtmp(self, c, t, src=None):
+        """c evaluated now into a C variable; a slice keeps the root and path of src (SPEC 4.2a)."""
         n = self.ctx.fresh('t')
         self.emit(f"{self.T(t)} {n} = {c};")
+        if t[0] == 'slice' and src is not None:
+            return Val(n, t, 'rv', root=src.root, path=src.path)
         if is_pod(t):
             return Val(n, t, 'rv')
         tmp = Tmp(n, t)
@@ -450,7 +453,7 @@ class Checker:
     def snap_val(self, v):
         """Read a place (or compute a value) now, before later side effects in the statement."""
         if v.cat == 'rv' and v.t != VOID and v.t[0] != 'ref' and not v.c.replace('_', 'a').isalnum():
-            return self.holdtmp(v.c, v.t)
+            return self.holdtmp(v.c, v.t, v)
         if v.cat != 'place' or v.t[0] == 'ref' or not is_copy(v.t):
             return v
         return self.holdtmp(self.dup(v.c, v.t), v.t)
@@ -1363,7 +1366,7 @@ class Checker:
         if v.t[0] not in ('arr', 'slice'):
             self.err(f"cannot index a {tstr(v.t)}", e.where)
         if v.cat == 'rv':
-            v = self.holdtmp(v.c, v.t)
+            v = self.holdtmp(v.c, v.t, v)
         mark = len(self.ctx.pending)
         self.hold(v, False, object(), e.where)
         i = self.int_index(e.items[0])
@@ -1406,7 +1409,7 @@ class Checker:
         mark = len(self.ctx.pending)
         self.hold(v, False, object(), e.where)
         lo = self.int_index(e.lo) if e.lo is not None else '0'
-        hi = self.int_index(e.hi) if e.hi is not None else '-1'
+        hi = self.int_index(e.hi) if e.hi is not None else f"({base}).len"
         del self.ctx.pending[mark:]
         n = self.ctx.fresh('sv')
         self.emit(f"obx_slice {n} = rt_sub({base}, {lo}, {hi}, sizeof({self.T(v.t[1])}), {W});")
@@ -1724,15 +1727,22 @@ class Checker:
         sig.variant = None
         return self.call(sig, None, args, e.where, exp, fieldnames=names, order=self.init_order)
 
+    def elem_type(self, t, where):
+        """SPEC 10 rule 1: an element type inferred from a value may not be a borrow or a slice."""
+        if t[0] in ('ref', 'slice', 'clo'):
+            self.err(f"an array element cannot be a borrow, slice or closure ({tstr(t)}): they are second "
+                     "class", where)
+        return t
+
     def x_arrlit(self, e, exp):
         et = exp[1] if exp is not None and exp[0] == 'arr' else None
         vals = []
         for i, it in enumerate(e.items):
-            v = self.rd(self.expr(it, et)) if False else self.expr(it, et)
+            v = self.expr(it, et)
             if v.t[0] == 'ref':
                 v = self.deref(v)
             if et is None:
-                et = v.t
+                et = self.elem_type(v.t, it.where)
             if v.t != et:
                 self.err(f"array element is {tstr(v.t)}, not {tstr(et)}", it.where)
             if any(self.effects(x) for x in e.items[i + 1:]):
@@ -2188,6 +2198,7 @@ class Checker:
             n = self.snap_val(n)
         et = exp[1] if exp is not None and exp[0] == 'arr' else None
         v = self.rd(self.expr(e.args[1], et))
+        self.elem_type(v.t, e.args[1].where)
         if not is_copy(v.t):
             self.err(f"array needs a copy value, and {tstr(v.t)} is not a copy type", e.where)
         ctx = self.ctx

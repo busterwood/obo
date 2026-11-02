@@ -322,7 +322,6 @@ static void rt_swap(obx_slice a, int64_t i, int64_t j, size_t size, const char* 
 static inline obx_slice rt_as_slice(obx_arr* a) { return (obx_slice){a->data, a->len}; }
 /* s[lo..hi] (hi < 0: to the end), checked when it is made */
 static obx_slice rt_sub(obx_slice s, int64_t lo, int64_t hi, size_t size, const char* w) {
-    if (hi == -1) hi = s.len;
     if (lo < 0 || hi < lo || hi > s.len) rt_trap(3, "slice range out of bounds", w);
     return (obx_slice){(char*)s.data + (size_t)lo * size, hi - lo};
 }
