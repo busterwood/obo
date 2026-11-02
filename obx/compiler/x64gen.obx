@@ -607,6 +607,7 @@ fn (g: mut &Gen) simpList(l: int) {
             }
         }
         if g.u.nk(g.u.nodes[x].b) == ir.E_LOCAL { g.merge(l, j) }
+        if g.u.listAt(l, j) == x && j + 1 < cnt { g.intoAssign(l, j) }
     }
     // without the statements dropped (so that the fused pairs of stmt are next to each other)
     var n = 0
@@ -704,6 +705,24 @@ fn (g: mut &Gen) merge(l: int, j: int) {
     g.rename(l, j, t, s, m)
 }
 
+// (4) `T t = E; s = t;` with t named nowhere else and s a local of type T: `s = E;` (E is
+// evaluated, then stored, as before).
+fn (g: mut &Gen) intoAssign(l: int, j: int) {
+    let x = g.u.listAt(l, j)
+    let t = g.u.nodes[x].a
+    let y = g.u.listAt(l, j + 1)
+    if g.uses[t] != 2 || g.u.nk(y) != ir.S_EXPR { return }
+    let as1 = g.u.nodes[y].a
+    if g.u.nk(as1) != ir.E_ASSIGN { return }
+    let lhs = g.u.nodes[as1].a
+    let rhs = g.u.nodes[as1].b
+    if g.u.nk(lhs) != ir.E_LOCAL || g.u.nk(rhs) != ir.E_LOCAL || g.u.nodes[rhs].a != t { return }
+    if g.u.locals[g.u.nodes[lhs].a].ty != g.u.locals[t].ty || g.u.nodes[as1].ty != g.u.locals[t].ty { return }
+    g.u.nodes[as1].b = g.u.nodes[x].b
+    g.u.items[l + 1 + j] = g.emptyS
+    g.uses[t] = 0
+}
+
 // Names s for t in items j+1 up to end of list l, and drops t's declaration (item j).
 fn (g: mut &Gen) rename(l: int, j: int, t: int, s: int, end: int) {
     for m in j + 1..end { g.walk(g.u.listAt(l, m), 2, t, s) }
@@ -737,7 +756,9 @@ fn (g: mut &Gen) walk(x: int, op: int, l: int, to: int): int {
             if op == 1 && g.u.nodes[r].a == l { hit = 1 }
         }
     } else if op == 1 && (k == ir.E_ASSIGN || k == ir.E_POSTINC) {
-        if g.u.nk(n.a) == ir.E_LOCAL && g.u.nodes[n.a].a == l { hit = 1 }
+        var r = n.a
+        while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
+        if g.u.nk(r) == ir.E_LOCAL && g.u.nodes[r].a == l { hit = 1 }
     }
     if k == ir.E_CALL { return hit + g.walk(n.a, op, l, to) + g.walkList(n.b, op, l, to) }
     if k == ir.E_CLIT { return hit + g.walkList(n.b, op, l, to) }
@@ -943,14 +964,7 @@ fn (g: mut &Gen) stmt(s: int) {
             g.initEntries(s2, g.size(t), n.c)
         }
     } else if k == ir.S_EXPR {
-        let x = g.u.nodes[n.a]
-        if x.k == ir.E_ASSIGN && g.sameMem(x.a, x.b) {
-            // x = x: nothing
-        } else if x.k == ir.E_ASSIGN && g.regOf(x.a) >= 0 && g.simple(x.b) && g.u.nodes[x.b].ty == x.ty {
-            g.genInto(x.b, g.regOf(x.a))            // the value unused: straight into the register
-        } else {
-            g.gen(n.a)
-        }
+        g.genEffect(n.a)
     } else if k == ir.S_IF && n.c < 0 && g.jumpOnly(n.b) >= 0 {
         g.branch(n.a, g.jumpOnly(n.b), true)
     } else if k == ir.S_IF {
@@ -999,7 +1013,7 @@ fn (g: mut &Gen) stmt(s: int) {
         pop(mut &g.breakL)
         pop(mut &g.contL)
         g.a.bind(cont)
-        if n.c >= 0 { g.gen(n.c) }
+        if n.c >= 0 { g.genEffect(n.c) }
         g.loops -= 1
         g.a.jmp(top)
         g.a.bind(end)
@@ -1023,6 +1037,45 @@ fn (g: mut &Gen) stmt(s: int) {
     } else {
         g.fail(s, "statement kind " + intToStr(k))
     }
+}
+
+// The expression e for its effect only (its value unused).
+fn (g: mut &Gen) genEffect(e: int) {
+    let x = g.u.nodes[e]
+    if x.k != ir.E_ASSIGN {
+        g.gen(e)
+        return
+    }
+    let r = g.regOf(x.a)
+    if g.sameMem(x.a, x.b) {
+        // x = x: nothing
+    } else if r >= 0 && g.simple(x.b) && g.u.nodes[x.b].ty == x.ty {
+        g.genInto(x.b, r)                       // straight into the register
+    } else if r >= 0 && g.inPlace(r, x.b) {
+        // done
+    } else {
+        g.gen(e)
+    }
+}
+
+// r = rt_add_int(r, b) or rt_sub_int (checked or wrapping) for the register r of a local, with
+// b a constant, a register or a word in memory: the operation on r in place (when it traps,
+// r's value is never used), and true. Else false, nothing generated.
+fn (g: mut &Gen) inPlace(r: int, v: int): bool {
+    if g.u.nk(v) != ir.E_CALL { return false }
+    let ar = arOp(g.rtName(v))
+    let n = g.u.nodes[v]
+    if ar.k != ir.TY_I64 || ar.op == ir.OP_MUL || g.u.listLen(n.b) < 2 { return false }
+    if !ar.wrap && (g.u.listLen(n.b) != 3 || !g.isWhere(g.u.listAt(n.b, 2))) { return false }
+    let a = g.u.listAt(n.b, 0)
+    let b = g.u.listAt(n.b, 1)
+    let bn = g.u.nodes[b]
+    if g.regOf(a) != r || !((bn.k == ir.E_INT && x64.fits32(bn.v)) || g.regOf(b) >= 0 || g.memOperand(b)) {
+        return false
+    }
+    g.aluSrc(if ar.op == ir.OP_ADD { x64.ADD } else { x64.SUB }, 8, r, g.pairSrc(-1, b))
+    if !ar.wrap { g.a.jcc(x64.CC_O, g.stub(10, "integer overflow", g.u.listAt(n.b, 2))) }
+    return true
 }
 
 // `bool c = e; if (!c) ...` (the C of every loop condition) with c named nowhere else:
@@ -1471,6 +1524,11 @@ fn (g: mut &Gen) cmpPair(a: int, b: int) {
     let bn = g.u.nodes[b]
     if ra >= 0 && (g.regOf(b) >= 0 || (bn.k == ir.E_INT && x64.fits32(bn.v)) || g.memOperand(b)) {
         g.aluSrc(x64.CMP, 8, ra, g.pairSrc(-1, b))
+        return
+    }
+    if ra >= 0 && g.simple(b) {
+        g.genInto(b, RCX)
+        g.a.alu(x64.CMP, 8, ra, RCX)
         return
     }
     g.aluSrc(x64.CMP, 8, RAX, g.pairSrc(a, b))
@@ -2139,9 +2197,11 @@ fn (g: mut &Gen) genCall(e: int) {
         inRax = -1
     }
     var slots: []int = []
+    var dups: []int = []
     for j in 0..nargs {
         let x = g.u.listAt(n.b, j)
         let t = pts[j]
+        append(mut &dups, -1)
         if place[j] < 0 && g.argDirect(x, t) {
             append(mut &slots, 0)
             continue
@@ -2149,6 +2209,12 @@ fn (g: mut &Gen) genCall(e: int) {
         g.gen(x)
         if j == inRax {
             append(mut &slots, 1)
+            continue
+        }
+        if place[j] < 0 && g.dupArg(e, j) {
+            // its count incremented here, its bytes loaded from the str below (slot -1)
+            dups[j] = g.u.listAt(g.u.nodes[x].b, 0)
+            append(mut &slots, -1)
             continue
         }
         let s = g.tempFor(t)
@@ -2186,7 +2252,9 @@ fn (g: mut &Gen) genCall(e: int) {
                 ni += 1
                 continue
             }
-            let m = if slots[j] == 0 { g.staticMem(x) } else { rbp(slots[j]) }
+            let m = if slots[j] == 0 { g.staticMem(x) } else if slots[j] == -1 { g.staticMem(dups[j]) } else {
+                rbp(slots[j])
+            }
             for i in 0..len(cls) {
                 if cls[i] == CL_SSE {
                     g.a.movsdLoad(nx, at(m, 8 * i))
@@ -2238,6 +2306,25 @@ fn (g: &Gen) rtName(e: int): str {
     let f = g.u.nodes[g.u.nodes[c].a].a
     if g.u.funcs[f].body >= 0 || g.u.funcs[f].isExtern { return "" }
     return g.u.funcs[f].name
+}
+
+// Whether argument j of call e is rt_str_dup(s) of a str s in memory that needs no code (a
+// local or a member of one) whose bytes stay as they are until the call: the local's address is
+// never taken and the arguments after j assign nothing of it. Then s's bytes are the argument
+// (the count is incremented when the argument is evaluated, in order).
+fn (g: mut &Gen) dupArg(e: int, j: int): bool {
+    let l = g.u.nodes[e].b
+    let x = g.u.listAt(l, j)
+    if g.u.nk(x) != ir.E_CALL || g.rtName(x) != "rt_str_dup" || g.u.listLen(g.u.nodes[x].b) != 1 { return false }
+    let s = g.u.listAt(g.u.nodes[x].b, 0)
+    if g.staticMem(s).base == -9 { return false }
+    var r = s
+    while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
+    if g.u.nk(r) != ir.E_LOCAL || g.aTaken[g.u.nodes[r].a] { return false }
+    for k in j + 1..g.u.listLen(l) {
+        if g.walk(g.u.listAt(l, k), 1, g.u.nodes[r].a, -1) > 0 { return false }
+    }
+    return true
 }
 
 // Whether argument x (of type t, passed in registers) can be loaded into its registers at the
@@ -2651,9 +2738,14 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
     }
     if name == "rt_str_drop" && nargs == 1 {
         // if (b && b->rc > 0 && --b->rc == 0) rt_free(b)
-        g.gen(g.u.listAt(n.b, 0))
+        let m = g.staticMem(g.u.listAt(n.b, 0))
+        if m.base != -9 {
+            g.a.load(8, RDI, m)
+        } else {
+            g.gen(g.u.listAt(n.b, 0))
+            g.a.load(8, RDI, x64.mem(RAX, 0))
+        }
         let done = g.a.newLabel()
-        g.a.load(8, RDI, x64.mem(RAX, 0))
         g.a.test(8, RDI, RDI)
         g.a.jcc(x64.CC_E, done)
         g.a.load(8, RCX, x64.mem(RDI, 0))
