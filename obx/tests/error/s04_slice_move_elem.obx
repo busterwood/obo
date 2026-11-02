@@ -1,0 +1,14 @@
+// SPEC 4.2a: an owned element cannot be moved out through a slice.
+// error: move
+// line: 8
+
+type B = record { v: int }
+
+fn take(xs: mut &[B]): B {
+    return xs[0]
+}
+
+fn main() {
+    var a: []B = [B{v: 1}]
+    println(take(mut &a).v)
+}

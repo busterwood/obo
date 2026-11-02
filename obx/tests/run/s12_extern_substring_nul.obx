@@ -1,0 +1,13 @@
+// SPEC 12: a str with a NUL byte passed to C stops the program (exit 12),
+// also when the NUL is inside a substring.
+// expect: 1
+// exit: 12
+
+extern "c" fn strlen(s: str): u64
+
+fn main() {
+    let b: []byte = [97, 0, 98]
+    let s = strFromBytes(&b)
+    println(strlen(s[2..]).toStr())
+    println(strlen(s[0..2]).toStr())
+}

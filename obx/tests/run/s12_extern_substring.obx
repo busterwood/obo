@@ -1,0 +1,15 @@
+// SPEC 12: a substring passed to an extern str parameter gets a
+// NUL-terminated copy when no NUL follows its bytes; a substring at the end
+// of its string passes its own bytes.
+// expect: 5 3 11
+// expect: 3
+
+extern "c" fn strlen(s: str): u64
+extern "c" fn atoi(s: str): i32
+
+fn main() {
+    let s = "hello, world"
+    let n = "12345678"
+    println(strlen(s[0..5]).toStr() + " " + strlen(s[2..5]).toStr() + " " + strlen(s[1..]).toStr())
+    println(atoi(n[2..3]).toStr())
+}

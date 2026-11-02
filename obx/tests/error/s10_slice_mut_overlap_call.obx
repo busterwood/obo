@@ -1,0 +1,12 @@
+// SPEC 4.2a, 10 rule 3: a mut slice overlaps every other borrow of its
+// array in the same call, even of disjoint elements.
+// error: twice in one call
+// line: 10
+
+fn copyInto(dst: mut &[int], src: &[int]) { for i in 0..len(src) { dst[i] = src[i] } }
+
+fn main() {
+    var a: []int = [1, 2, 3, 4]
+    copyInto(mut &a[0..2], a[2..4])
+    println(a[0])
+}

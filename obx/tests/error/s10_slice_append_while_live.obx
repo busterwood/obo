@@ -1,0 +1,11 @@
+// SPEC 4.2a, 10: a slice borrows its array; the array cannot grow while the
+// slice is live.
+// error: borrowed
+// line: 9
+
+fn main() {
+    var a: []int = [1, 2, 3]
+    let s = a[0..2]
+    append(mut &a, 4)
+    println(s[0])
+}

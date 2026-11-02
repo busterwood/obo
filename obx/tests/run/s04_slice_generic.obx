@@ -1,0 +1,41 @@
+// SPEC 4.2a: generic functions over slices, slices of owned elements (read
+// through the slice, moved with swap), and a slice result rooted at the
+// slice parameter (section 10 rule 5).
+// expect: 2 b
+// expect: ccc
+// expect: [z] [y] [x]
+// expect: 2 3
+
+type Box = record { name: str }
+
+fn longest[T](xs: &[T], size: fn(&T): int): int {
+    var best = 0
+    for i in 1..len(xs) {
+        if size(&xs[i]) > size(&xs[best]) { best = i }
+    }
+    return best
+}
+
+fn boxLen(b: &Box): int { return len(b.name) }
+
+fn middle[T](xs: &[T]): &[T] { return xs[1..len(xs) - 1] }
+
+fn rotate[T](xs: mut &[T]) {
+    for i in 1..len(xs) { swap(xs, i - 1, i) }
+}
+
+fn main() {
+    var boxes: []Box = [Box{name: "a"}, Box{name: "b"}, Box{name: "ccc"}, Box{name: "dd"}]
+    let m = middle(&boxes)
+    println(len(m).toStr() + " " + m[0].name)
+    println(boxes[longest(&boxes, boxLen)].name)
+    var names: []Box = [Box{name: "x"}, Box{name: "y"}, Box{name: "z"}]
+    rotate(mut &names)
+    rotate(mut &names[0..2])
+    var line = ""
+    for b in names { line = line + "[" + b.name + "] " }
+    println(line[..len(line) - 1])
+    let ints: []int = [1, 2, 3, 4]
+    let mid = middle(&ints)
+    println(mid[0].toStr() + " " + mid[1].toStr())
+}

@@ -1,0 +1,10 @@
+// SPEC 10 rule 6: a mut slice needs a mutable array.
+// error: let
+// line: 9
+
+fn zero(xs: mut &[int]) { xs[0] = 0 }
+
+fn main() {
+    let a: []int = [1, 2, 3]
+    zero(mut &a[1..])
+}

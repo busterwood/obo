@@ -20,15 +20,15 @@ Run a program with `OBX_CHECK=1` to make a leak (live objects at exit) exit 5.
 
 | File | Lines | Role |
 |---|---:|---|
-| `syntax.py` | 790 | lexer (with the ASI rule) and parser to `N` nodes |
-| `sema.py` | 750 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, constants |
-| `check.py` | 1,890 | checks every function body once and writes it as a C template |
-| `emit.py` | 265 | renders templates once per instance, drop/dup glue, struct layouts |
-| `obxc.py` | 100 | driver |
-| `rt.h` | 300 | the C runtime: allocation counter, traps, str, arrays, checked integers |
+| `syntax.py` | 800 | lexer (with the ASI rule) and parser to `N` nodes |
+| `sema.py` | 805 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
+| `check.py` | 2,050 | checks every function body once and writes it as a C template |
+| `emit.py` | 300 | renders templates once per instance, drop/dup glue, struct layouts |
+| `obxc.py` | 105 | driver |
+| `rt.h` | 450 | the C runtime: allocation counter, traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
 | `../lib/std.obx` | 1,500 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
 
-Python total: about 3,800 lines.
+Python total: about 4,080 lines.
 
 **Checking once, rendering per instance (SPEC 6.2, 6.4).** `check.py` checks a
 function body exactly once, generic or not. A type parameter is an opaque type:
@@ -45,9 +45,16 @@ was taken at the definition, an instance cannot fail to type-check; the only
 render-time error is a non-terminating instantiation (type argument depth > 24).
 
 **C representation.** Every value is owned by one C variable. `str` is a
-pointer to a reference-counted `{rc, len, bytes, NUL}` (literals are static with
-`rc = -1`); copying a `str` increments the count. `[]T` is an inline
-`{data, len, cap}`. `record` and `closed` are pointers to heap structs; `value
+16-byte value `{block, offset, len}`: the block is a reference-counted
+`{rc, bytes..., NUL}` (literals are static blocks with `rc = -1`); copying a
+`str` increments the count, and `s[a..b]` is the same block with another
+offset and length (no allocation). So a str's bytes are not NUL-terminated in
+general, but a NUL always ends its block, so the byte after them can be read.
+Offsets and lengths are 32 bits: a str holds less than 4 GiB (making one
+longer stops the program like out of memory, exit 2). Sixteen bytes matter:
+a 24-byte str (block, pointer, 64-bit length) is passed in memory, and made
+gcc -O1 four times slower on the largest library test. `[]T` is an inline
+`{data, len, cap}`; a slice `&[T]` / `mut &[T]` is `{data, len}`. `record` and `closed` are pointers to heap structs; `value
 record` and `value closed` are inline structs (so `Option[Decimal]` never
 allocates); a closed type is `{tag, union}`. A borrow is a pointer. Function
 values are C function pointers. A `drop` method runs before the fields are
@@ -75,7 +82,29 @@ literals), generic functions, types and methods with constraints and
 inference (from arguments, then the expected type), interfaces with methods and
 associated functions, function values (including generic instances), `extern`
 functions, every built-in of section 11 and the intrinsics, and the runtime
-errors of section 14.
+errors of section 14. Slices (4.2a) and shared substrings (4.1) are below.
+
+**Slices.** `&[T]` and `mut &[T]` are borrows (section 4.5), with the same
+checks: a slice in a `let` freezes the viewed array's root for its scope, a
+slice parameter can root a slice result (rule 5), and a slice argument is held
+like any borrow, with the path of the whole array, so it overlaps every other
+borrow of that array and its elements (rule 3, as 4.2a says). `xs[a..b]`,
+`xs[a..]`, `xs[..b]` (and `xs[..]`) work on array places, through array
+borrows, and on slices; the bounds are checked when the slice is made (exit
+3). A range is a `mut` slice only where a `mut &[T]` is expected (a parameter,
+a typed `let`, `swap`) or when written `mut &xs[a..b]`; `mut` needs a mutable
+array (or a `mut` slice). `&xs` / `mut &xs` and values of type `&[]T` / `mut
+&[]T` convert to a slice where one is expected, including for generic
+parameters (`sort(mut &xs)` and `sort(mut &xs[2..10])`). `len`, indexing,
+element assignment, `swap`, `for x in s` and re-slicing take slices;
+`append` and `pop` do not, and a slice does not convert to `&[]T`.
+
+**Substrings.** `s[a..b]`, `s[a..]`, `s[..b]` share the bytes of `s`;
+`strSlice(s, a, b)` is the same operation. An `extern` call passes a str's own
+bytes when a NUL follows them (a literal, a whole string, a suffix) and
+otherwise a NUL-terminated `malloc` copy, freed right after the call; a NUL
+inside the bytes still stops the program (exit 12). `readFile`, `getenv` and
+`parseFloat` copy what they hand to C.
 
 **std.obx** (now `../lib/std.obx`, the prelude): `Option`, `Result`, `Unit`,
 `Eq`, `Ord`, `Hash`, `Show` and their implementations for the primitive types,
@@ -85,7 +114,7 @@ string helpers, `sort`, `Map`. The other library modules (`money`, `math`,
 is a default import root: `import "money"`. See `../lib/README.md`.
 
 **Intrinsics** (callable anywhere unless a module declares the same name):
-`strByte(s, i): byte`, `strSlice(s, from, to): str`, `strFromBytes(&[]byte)`,
+`strByte(s, i): byte`, `strSlice(s, from, to): str`, `strFromBytes(&[byte])`,
 `strToBytes(s): []byte`, `intToStr`, `i128ToStr`, `u128ToStr`, `u64ToStr`,
 `floatToStr` (shortest round-trip), `parseFloat(s, out: mut &float): bool`,
 `readFile(path, out: mut &str): int` (0, or the errno), `getenv(name, out: mut
@@ -118,11 +147,27 @@ is a default import root: `import "money"`. See `../lib/README.md`.
 8. Messages: `obx: panic: msg at file:line`, `obx: index out of range at
    file:line`, `obx: leak: N live objects at exit at runtime`.
 9. An untyped integer constant is folded with exact integers and range-checked
-   where it is used (a typed constant at its declaration).
+   where it is used (a typed constant at its declaration). A typed constant is
+   folded in its type: an out-of-range shift count, a division by zero (also
+   for floats) or a float overflow is a compile error, `<<` wraps and `~` is
+   masked as at run time.
+10. A statement after `return`, `break`, `continue`, `panic(...)` or `exit(...)`
+    in the same block is an error ("unreachable statement"). Other dead code
+    (after `while true {}` without `break`) is still checked, as if reachable.
+11. Operands and arguments are evaluated left to right; a place read early is
+    copied to a temporary when a later operand or argument could change it (a
+    call, `try`, an operator method), so `a[i] + f()` reads `a[i]` first.
+    Record and variant literals evaluate their fields in source order.
+12. Drop glue runs on an explicit stack (`rt_dpush`/`rt_drun`), not by C
+    recursion, so dropping a 10-million-node list does not overflow; the order
+    is still that of section 9.2. Deep recursion in user code is caught by a
+    SIGSEGV handler on an alternate stack: `obx: stack overflow`, exit 4.
+13. Slices: see above. A slice of a temporary array can be passed to a call
+    but not kept in a `let`. A slice of a global is an error (as a borrow of
+    a global is).
 
 ## Known gaps
 
-- No stack-depth check: deep recursion crashes (SIGSEGV) instead of a clean exit.
 - `extern` calls are unchecked, as the spec says; a wrong prototype is undefined behaviour.
 - Error recovery: the first error stops compilation.
 - The conformance tests `run/s04_array_of_arrays` (expects `len(g[0]) +

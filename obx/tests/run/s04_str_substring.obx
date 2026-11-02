@@ -1,0 +1,45 @@
+// SPEC 4.1: s[a..b] shares the bytes of s and is an ordinary str: a
+// substring of a substring, a substring that outlives the variable it was
+// taken from, substrings stored in arrays and as map keys, comparison and
+// concatenation, and strSlice.
+// expect: hello|world|or|w
+// expect: ell lo
+// expect: kept: middle
+// expect: 0 na ana
+// expect: 2 1
+// expect: true false
+// expect: [] 0b!
+
+fn cut(s: str): str {
+    let t = s + "!"
+    return t[1..]
+}
+
+fn main() {
+    let s = "hello, world"
+    let h = s[0..5]
+    let w = s[7..]
+    let o = w[1..3]
+    println(h + "|" + w + "|" + o + "|" + w[..1])
+    let e = h[1..4]
+    println(e + " " + e[2..] + h[4..])
+    var kept = ""
+    {
+        let tmp = "the middle part"
+        kept = tmp[4..10]
+    }
+    println("kept: " + kept)
+    let word = "banana"
+    var parts: []str = []
+    var i = 0
+    while i + 2 <= len(word) {
+        append(mut &parts, word[i..i + 2])
+        i += 2
+    }
+    var m: Map[str, int] = newMap()
+    for p in parts { m.put(p, m.getOr(&p, 0) + 1) }
+    println(m.getOr(&"an", 0).toStr() + " " + parts[1] + " " + word[1..4])
+    println(m.getOr(&"na", 0).toStr() + " " + m.getOr(&"ba", 0).toStr())
+    println((word[1..3] == word[3..5]).toStr() + " " + (word[0..2] < word[0..1]).toStr())
+    println("[" + word[3..3] + "] " + len(cut("x")[0..0]).toStr() + cut("ab"))
+}

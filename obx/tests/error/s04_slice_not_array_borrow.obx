@@ -1,0 +1,13 @@
+// SPEC 4.2a: a slice is not an array borrow: it cannot be passed where a
+// &[]T (which may be grown through mut) is expected.
+// error: 
+// line: 8
+
+fn total(xs: &[]int): int { return len(xs) }
+
+fn f(xs: &[int]): int { return total(xs) }
+
+fn main() {
+    let a: []int = [1]
+    println(f(&a))
+}

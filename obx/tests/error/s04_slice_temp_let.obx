@@ -1,0 +1,10 @@
+// SPEC 10: a slice of a temporary array cannot be kept in a let.
+// error: temporary
+// line: 8
+
+fn mk(): []int { return [1, 2, 3] }
+
+fn main() {
+    let s = mk()[0..2]
+    println(s[0])
+}

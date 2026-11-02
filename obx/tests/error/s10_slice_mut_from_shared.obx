@@ -1,0 +1,14 @@
+// SPEC 4.2a: a shared slice cannot be re-sliced into a mut slice.
+// error: mut slice
+// line: 8
+
+fn zero(xs: mut &[int]) { xs[0] = 0 }
+
+fn f(xs: &[int]) {
+    zero(xs[1..])
+}
+
+fn main() {
+    var a: []int = [1, 2, 3]
+    f(&a)
+}

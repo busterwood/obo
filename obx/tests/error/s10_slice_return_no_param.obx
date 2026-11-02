@@ -1,0 +1,11 @@
+// SPEC 10 rule 5: a function returning a slice needs exactly one borrowed
+// parameter for it to be rooted at.
+// error: borrow
+// line: 6
+
+fn pick(xs: &[int], ys: &[int]): &[int] { return xs }
+
+fn main() {
+    let a: []int = [4, 5, 6]
+    println(pick(&a, &a)[0])
+}

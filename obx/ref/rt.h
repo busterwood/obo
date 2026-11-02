@@ -14,8 +14,11 @@
 #include <sys/stat.h>
 #include <time.h>
 
-typedef struct { int64_t rc; int64_t len; char data[]; } obx_str;
+typedef struct { int64_t rc; char data[]; } obx_sblk;
+typedef struct { obx_sblk* b; uint32_t off, len; } obx_str;
+#define RT_SP(s) ((const char*)(s).b->data + (s).off)
 typedef struct { void* data; int64_t len, cap; } obx_arr;
+typedef struct { void* data; int64_t len; } obx_slice;
 typedef __int128 i128;
 typedef unsigned __int128 u128;
 
@@ -109,69 +112,98 @@ static void rt_finish(void) {
 }
 __attribute__((noreturn)) static void rt_exit(int64_t code) { rt_flush(); exit((int)code); }
 
-/* ---- strings */
+/* ---- strings
+   A str is {block, offset, len} (16 bytes, so it is passed in registers): the block is a
+   reference-counted allocation, or a static one (rc < 0) for literals. A substring shares the
+   block, so its bytes are not in general NUL-terminated; but every block ends with a NUL, so
+   RT_SP(s)[s.len] can always be read. Offsets and lengths are 32 bits: a str holds < 4 GiB. */
 
-static obx_str* rt_str_new(int64_t len) {
-    obx_str* s = rt_alloc(sizeof(obx_str) + (size_t)len + 1);
-    s->rc = 1; s->len = len;
+static struct { int64_t rc; char data[1]; } rt_empty = {-1, ""};
+static obx_str rt_str_new(int64_t len) {
+    if (len == 0) return (obx_str){(obx_sblk*)&rt_empty, 0, 0};
+    if (len > (int64_t)UINT32_MAX) rt_trap(2, "string too long (4 GiB or more)", "runtime");
+    obx_sblk* b = rt_alloc(sizeof(obx_sblk) + (size_t)len + 1);
+    b->rc = 1;
+    return (obx_str){b, 0, (uint32_t)len};
+}
+static obx_str rt_str_of(const char* p, int64_t len) {
+    obx_str s = rt_str_new(len);
+    if (len) memcpy(s.b->data, p, (size_t)len);
     return s;
 }
-static obx_str* rt_str_of(const char* p, int64_t len) {
-    obx_str* s = rt_str_new(len);
-    memcpy(s->data, p, (size_t)len);
-    return s;
+static obx_str rt_str_dup(obx_str s) { if (s.b && s.b->rc >= 0) s.b->rc++; return s; }
+static void rt_str_drop(obx_str s) { if (s.b && s.b->rc > 0 && --s.b->rc == 0) rt_free(s.b); }
+static bool rt_str_eq(obx_str a, obx_str b) {
+    return a.len == b.len && (RT_SP(a) == RT_SP(b) || memcmp(RT_SP(a), RT_SP(b), (size_t)a.len) == 0);
 }
-static obx_str* rt_str_dup(obx_str* s) { if (s->rc > 0) s->rc++; return s; }
-static void rt_str_drop(obx_str* s) { if (s->rc > 0 && --s->rc == 0) rt_free(s); }
-static bool rt_str_eq(obx_str* a, obx_str* b) {
-    return a->len == b->len && memcmp(a->data, b->data, (size_t)a->len) == 0;
-}
-static int rt_str_cmp(obx_str* a, obx_str* b) {
-    int64_t n = a->len < b->len ? a->len : b->len;
-    int c = memcmp(a->data, b->data, (size_t)n);
+static int rt_str_cmp(obx_str a, obx_str b) {
+    int64_t n = a.len < b.len ? a.len : b.len;
+    int c = memcmp(RT_SP(a), RT_SP(b), (size_t)n);
     if (c) return c < 0 ? -1 : 1;
-    return a->len < b->len ? -1 : a->len > b->len;
+    return a.len < b.len ? -1 : a.len > b.len;
 }
-static obx_str* rt_str_concat(obx_str* a, obx_str* b) {
-    obx_str* s = rt_str_new(a->len + b->len);
-    memcpy(s->data, a->data, (size_t)a->len);
-    memcpy(s->data + a->len, b->data, (size_t)b->len);
+static obx_str rt_str_concat(obx_str a, obx_str b) {
+    if (b.len == 0) return rt_str_dup(a);
+    if (a.len == 0) return rt_str_dup(b);
+    obx_str s = rt_str_new(a.len + b.len);
+    memcpy(s.b->data, RT_SP(a), (size_t)a.len);
+    memcpy(s.b->data + a.len, RT_SP(b), (size_t)b.len);
     return s;
 }
-static uint8_t rt_str_byte(obx_str* s, int64_t i, const char* w) {
-    if (i < 0 || i >= s->len) rt_trap(3, "string index out of range", w);
-    return (uint8_t)s->data[i];
+static uint8_t rt_str_byte(obx_str s, int64_t i, const char* w) {
+    if (i < 0 || i >= s.len) rt_trap(3, "string index out of range", w);
+    return (uint8_t)RT_SP(s)[i];
 }
-static obx_str* rt_str_slice(obx_str* s, int64_t a, int64_t b, const char* w) {
-    if (a < 0 || b < a || b > s->len) rt_trap(3, "string slice out of range", w);
-    return rt_str_of(s->data + a, b - a);
+/* s[a..b]: shares the bytes of s (a new reference to its block) */
+static obx_str rt_str_sub(obx_str s, int64_t a, int64_t b, const char* w) {
+    if (a < 0 || b < a || b > s.len) rt_trap(3, "string slice out of range", w);
+    return (obx_str){rt_str_dup(s).b, s.off + (uint32_t)a, (uint32_t)(b - a)};
 }
-static obx_str* rt_str_from_bytes(obx_arr* b) { return rt_str_of(b->data, b->len); }
-static obx_str* rt_str_from_c(void* p) {
+static obx_str rt_str_from_bytes(obx_slice b) { return rt_str_of(b.data, b.len); }
+static obx_str rt_str_from_c(void* p) {
     if (!p) return rt_str_new(0);
     return rt_str_of(p, (int64_t)strlen(p));
 }
-static const char* rt_cstr(obx_str* s, const char* w) {
-    if (memchr(s->data, 0, (size_t)s->len)) rt_trap(12, "a string passed to C contains a NUL byte", w);
-    return s->data;
+/* A NUL-terminated copy (malloc) or NULL when s contains a NUL byte. */
+static char* rt_cdup(obx_str s) {
+    if (memchr(RT_SP(s), 0, (size_t)s.len)) return 0;
+    char* c = malloc((size_t)s.len + 1);
+    if (!c) rt_trap(2, "out of memory", "runtime");
+    memcpy(c, RT_SP(s), (size_t)s.len);
+    c[s.len] = 0;
+    return c;
 }
-static obx_str* rt_u128_to_str(u128 v) {
+/* A str for a C call: its own bytes when a NUL follows them, else a copy freed by rt_cfree
+   after the call. */
+static char** rt_ctmp;
+static int64_t rt_nctmp, rt_cctmp;
+static const char* rt_cstr(obx_str s, const char* w) {
+    if (memchr(RT_SP(s), 0, (size_t)s.len)) rt_trap(12, "a string passed to C contains a NUL byte", w);
+    if (RT_SP(s)[s.len] == 0) return RT_SP(s);
+    if (rt_nctmp == rt_cctmp) {
+        rt_cctmp = rt_cctmp ? rt_cctmp * 2 : 8;
+        rt_ctmp = realloc(rt_ctmp, (size_t)rt_cctmp * sizeof *rt_ctmp);
+        if (!rt_ctmp) rt_trap(2, "out of memory", "runtime");
+    }
+    return rt_ctmp[rt_nctmp++] = rt_cdup(s);
+}
+static void rt_cfree(void) { while (rt_nctmp) free(rt_ctmp[--rt_nctmp]); }
+static obx_str rt_u128_to_str(u128 v) {
     char buf[48]; int n = 48;
     do { buf[--n] = (char)('0' + (int)(v % 10)); v /= 10; } while (v);
     return rt_str_of(buf + n, 48 - n);
 }
-static obx_str* rt_i128_to_str(i128 v) {
+static obx_str rt_i128_to_str(i128 v) {
     if (v >= 0) return rt_u128_to_str((u128)v);
-    obx_str* m = rt_u128_to_str((u128)0 - (u128)v);
-    obx_str* s = rt_str_new(m->len + 1);
-    s->data[0] = '-';
-    memcpy(s->data + 1, m->data, (size_t)m->len);
-    rt_str_drop(m);
-    return s;
+    char buf[48]; int n = 48;
+    u128 u = (u128)0 - (u128)v;
+    do { buf[--n] = (char)('0' + (int)(u % 10)); u /= 10; } while (u);
+    buf[--n] = '-';
+    return rt_str_of(buf + n, 48 - n);
 }
-static obx_str* rt_int_to_str(int64_t v) { return rt_i128_to_str(v); }
-static obx_str* rt_u64_to_str(uint64_t v) { return rt_u128_to_str(v); }
-static obx_str* rt_float_to_str(double d) {
+static obx_str rt_int_to_str(int64_t v) { return rt_i128_to_str(v); }
+static obx_str rt_u64_to_str(uint64_t v) { return rt_u128_to_str(v); }
+static obx_str rt_float_to_str(double d) {
     char buf[64];
     for (int p = 15; p <= 17; p++) {
         snprintf(buf, sizeof buf, "%.*g", p, d);
@@ -179,36 +211,41 @@ static obx_str* rt_float_to_str(double d) {
     }
     return rt_str_of(buf, (int64_t)strlen(buf));
 }
-static bool rt_parse_float(obx_str* s, double* out) {
-    if (s->len == 0 || s->len > 400 || memchr(s->data, 0, (size_t)s->len)) return false;
+static bool rt_parse_float(obx_str s, double* out) {
+    char buf[401];
+    if (s.len == 0 || s.len > 400 || memchr(RT_SP(s), 0, (size_t)s.len)) return false;
+    memcpy(buf, RT_SP(s), (size_t)s.len);
+    buf[s.len] = 0;
     char* end;
     errno = 0;
-    double d = strtod(s->data, &end);
-    if (end != s->data + s->len) return false;
+    double d = strtod(buf, &end);
+    if (end != buf + s.len) return false;
     *out = d;
     return true;
 }
-static int64_t rt_write_fd(int64_t fd, obx_str* s) {
+static int64_t rt_write_fd(int64_t fd, obx_str s) {
     if (fd == 1) {
-        if (rt_olen + (size_t)s->len > sizeof rt_obuf) rt_flush();
-        if ((size_t)s->len <= sizeof rt_obuf) {
-            memcpy(rt_obuf + rt_olen, s->data, (size_t)s->len);
-            rt_olen += (size_t)s->len;
-            return s->len;
+        if (rt_olen + (size_t)s.len > sizeof rt_obuf) rt_flush();
+        if ((size_t)s.len <= sizeof rt_obuf) {
+            memcpy(rt_obuf + rt_olen, RT_SP(s), (size_t)s.len);
+            rt_olen += (size_t)s.len;
+            return s.len;
         }
     }
     rt_flush();
     int64_t off = 0;
-    while (off < s->len) {
-        ssize_t n = write((int)fd, s->data + off, (size_t)(s->len - off));
+    while (off < s.len) {
+        ssize_t n = write((int)fd, RT_SP(s) + off, (size_t)(s.len - off));
         if (n <= 0) return -1;
         off += n;
     }
     return off;
 }
-static int64_t rt_read_file(obx_str* path, obx_str** out) {
-    if (memchr(path->data, 0, (size_t)path->len)) return EINVAL;
-    int fd = open(path->data, O_RDONLY);
+static int64_t rt_read_file(obx_str path, obx_str* out) {
+    char* cp = rt_cdup(path);
+    if (!cp) return EINVAL;
+    int fd = open(cp, O_RDONLY);
+    free(cp);
     if (fd < 0) return errno;
     size_t cap = 4096, len = 0;
     char* buf = malloc(cap);
@@ -221,23 +258,25 @@ static int64_t rt_read_file(obx_str* path, obx_str** out) {
         len += (size_t)n;
     }
     close(fd);
-    obx_str* s = rt_str_of(buf, (int64_t)len);
+    obx_str s = rt_str_of(buf, (int64_t)len);
     free(buf);
     rt_str_drop(*out);
     *out = s;
     return 0;
 }
-static bool rt_getenv(obx_str* name, obx_str** out) {
-    if (memchr(name->data, 0, (size_t)name->len)) return false;
-    const char* v = getenv(name->data);
+static bool rt_getenv(obx_str name, obx_str* out) {
+    char* cn = rt_cdup(name);
+    if (!cn) return false;
+    const char* v = getenv(cn);
+    free(cn);
     if (!v) return false;
     rt_str_drop(*out);
     *out = rt_str_of(v, (int64_t)strlen(v));
     return true;
 }
-__attribute__((noreturn)) static void rt_panic(obx_str* msg, const char* w) {
+__attribute__((noreturn)) static void rt_panic(obx_str msg, const char* w) {
     rt_flush();
-    fprintf(stderr, "obx: panic: %.*s at %s\n", (int)msg->len, msg->data, w);
+    fprintf(stderr, "obx: panic: %.*s at %s\n", (int)msg.len, RT_SP(msg), w);
     exit(12);
 }
 
@@ -272,22 +311,29 @@ static void* rt_arr_pop(obx_arr* a, size_t size, const char* w) {
     if (a->len == 0) rt_trap(3, "pop on an empty array", w);
     return (char*)a->data + (size_t)(--a->len) * size;
 }
-static void rt_arr_swap(obx_arr* a, int64_t i, int64_t j, size_t size, const char* w) {
-    rt_idx(i, a->len, w); rt_idx(j, a->len, w);
-    char tmp[size];
-    char* p = (char*)a->data + (size_t)i * size;
-    char* q = (char*)a->data + (size_t)j * size;
+static void rt_swap(obx_slice a, int64_t i, int64_t j, size_t size, const char* w) {
+    rt_idx(i, a.len, w); rt_idx(j, a.len, w);
+    char tmp[size + 1];
+    char* p = (char*)a.data + (size_t)i * size;
+    char* q = (char*)a.data + (size_t)j * size;
     memcpy(tmp, p, size); memcpy(p, q, size); memcpy(q, tmp, size);
 }
-static obx_arr rt_str_to_bytes(obx_str* s) {
-    obx_arr a = rt_arr_new(s->len, 1);
-    if (s->len) memcpy(a.data, s->data, (size_t)s->len);
+static inline obx_slice rt_as_slice(obx_arr* a) { return (obx_slice){a->data, a->len}; }
+/* s[lo..hi] (hi < 0: to the end), checked when it is made */
+static obx_slice rt_sub(obx_slice s, int64_t lo, int64_t hi, size_t size, const char* w) {
+    if (hi == -1) hi = s.len;
+    if (lo < 0 || hi < lo || hi > s.len) rt_trap(3, "slice range out of bounds", w);
+    return (obx_slice){(char*)s.data + (size_t)lo * size, hi - lo};
+}
+static obx_arr rt_str_to_bytes(obx_str s) {
+    obx_arr a = rt_arr_new(s.len, 1);
+    if (s.len) memcpy(a.data, RT_SP(s), (size_t)s.len);
     return a;
 }
 static obx_arr rt_args(void) {
-    obx_arr a = rt_arr_new(rt_argc, sizeof(obx_str*));
+    obx_arr a = rt_arr_new(rt_argc, sizeof(obx_str));
     for (int i = 0; i < rt_argc; i++)
-        ((obx_str**)a.data)[i] = rt_str_of(rt_argv[i], (int64_t)strlen(rt_argv[i]));
+        ((obx_str*)a.data)[i] = rt_str_of(rt_argv[i], (int64_t)strlen(rt_argv[i]));
     return a;
 }
 

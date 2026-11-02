@@ -1,0 +1,10 @@
+// SPEC 4.2a, 10 rule 3: two mut slices of one array in one call overlap.
+// error: twice in one call
+// line: 9
+
+fn swapAll(a: mut &[int], b: mut &[int]) { for i in 0..len(a) { swap(a, i, i) } }
+
+fn main() {
+    var a: []int = [1, 2, 3, 4]
+    swapAll(mut &a[0..2], mut &a[2..])
+}

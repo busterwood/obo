@@ -1,0 +1,14 @@
+// SPEC 10 rule 5: a slice result must be rooted at the borrowed parameter;
+// a slice of a local array cannot be returned.
+// error: cannot return a borrow
+// line: 8
+
+fn firstTwo(xs: &[int]): &[int] {
+    let mine: []int = [1, 2, 3]
+    return mine[0..2]
+}
+
+fn main() {
+    let a: []int = [4, 5, 6]
+    println(firstTwo(&a)[0])
+}

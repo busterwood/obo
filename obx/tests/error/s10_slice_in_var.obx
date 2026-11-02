@@ -1,0 +1,9 @@
+// SPEC 4.2a, 10: a slice is second class: it cannot be stored in a var.
+// error: second class
+// line: 7
+
+fn main() {
+    var a: []int = [1, 2, 3]
+    var s = a[0..2]
+    println(s[0])
+}

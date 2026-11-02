@@ -1,0 +1,12 @@
+// SPEC 4.2a: a slice cannot grow: append does not take one.
+// error: append
+// line: 6
+
+fn grow(xs: mut &[int]) {
+    append(xs, 1)
+}
+
+fn main() {
+    var a: []int = []
+    grow(mut &a)
+}

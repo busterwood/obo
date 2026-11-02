@@ -1,0 +1,46 @@
+// SPEC 4.2a: mut &[T]: element assignment, compound assignment and swap
+// through a mut slice; mut &xs and mut &xs[a..b] call the same function;
+// an array borrow (mut &[]T) passes as a mut slice.
+// expect: 1 2 3 40 50 60 7
+// expect: 7 60 50 40 3 2 1
+// expect: 8 61 50 40 3 2 1
+
+fn scale(xs: mut &[int], k: int) {
+    for i in 0..len(xs) { xs[i] *= k }
+}
+
+fn rev[T](xs: mut &[T]) {
+    var i = 0
+    var j = len(xs) - 1
+    while i < j {
+        swap(xs, i, j)
+        i += 1
+        j -= 1
+    }
+}
+
+fn bumpEnds(xs: mut &[]int) {
+    bumpFirst(xs)
+    bumpFirst(mut &xs[1..])
+}
+
+fn bumpFirst(xs: mut &[int]) { xs[0] += 1 }
+
+fn show(xs: &[int]) {
+    var line = ""
+    for x in xs {
+        if line != "" { line = line + " " }
+        line = line + x.toStr()
+    }
+    println(line)
+}
+
+fn main() {
+    var a: []int = [1, 2, 3, 4, 5, 6, 7]
+    scale(mut &a[3..6], 10)
+    show(&a)
+    rev(mut &a)
+    show(&a)
+    bumpEnds(mut &a)
+    show(&a)
+}

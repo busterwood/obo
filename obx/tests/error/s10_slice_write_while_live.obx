@@ -1,0 +1,11 @@
+// SPEC 4.2a, 10: an element of the array cannot be assigned while a shared
+// slice of it is live.
+// error: borrowed
+// line: 9
+
+fn main() {
+    var a: []int = [1, 2, 3]
+    let s = a[1..]
+    a[0] = 9
+    println(s[0])
+}

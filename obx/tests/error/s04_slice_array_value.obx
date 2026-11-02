@@ -1,0 +1,10 @@
+// SPEC 4.2a: an array is not a slice: pass &xs or a range.
+// error: slice
+// line: 9
+
+fn sum(xs: &[int]): int { return len(xs) }
+
+fn main() {
+    let a: []int = [1]
+    println(sum(a))
+}

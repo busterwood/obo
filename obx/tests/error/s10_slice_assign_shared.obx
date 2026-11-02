@@ -1,0 +1,12 @@
+// SPEC 4.2a: elements cannot be assigned through a shared slice.
+// error: shared
+// line: 6
+
+fn zero(xs: &[int]) {
+    xs[0] = 0
+}
+
+fn main() {
+    var a: []int = [1, 2, 3]
+    zero(&a)
+}

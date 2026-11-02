@@ -1,0 +1,7 @@
+// SPEC 4.2a, 10: a slice cannot be a record field.
+// error: 
+// line: 5
+
+type View = record { xs: &[int] }
+
+fn main() {}

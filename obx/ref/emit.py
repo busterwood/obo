@@ -17,7 +17,7 @@ def pod(t):
     k = t[0]
     if k == 'prim':
         return t[1] != 'str'
-    if k in ('fn', 'ref'):
+    if k in ('fn', 'ref', 'slice'):
         return True
     if k == 'arr':
         return False
@@ -32,8 +32,8 @@ class Emitter:
         self.structs = []        # inst types needing a struct definition
         self.fntypes = []        # C typedef lines for function types
         self.insts, self.work = {}, []
-        self.strs = {}
         self.glue, self.gluework = {}, []
+        self.strs = {}
         self.protos, self.bodies = [], []
 
     # ---- types
@@ -46,6 +46,8 @@ class Emitter:
             return 'obx_arr'
         if k == 'ref':
             return self.ctype(t[1]) + '*'
+        if k == 'slice':
+            return 'obx_slice'
         if k in ('tp', 'self'):
             raise CompileError(f"internal error: unsubstituted type {tstr(t)}")
         if t not in self.names:
@@ -175,10 +177,11 @@ class Emitter:
 
     # ---- holes
 
-    def strlit(self, b):
+    def strlit(self, b, glob=False):
         if b not in self.strs:
             self.strs[b] = f"sl{len(self.strs)}"
-        return f"((obx_str*)&{self.strs[b]})"
+        n = self.strs[b]
+        return f"{{(obx_sblk*)&{n}b, 0, {len(b)}}}" if glob else n
 
     def render(self, text, holes, env):
         return HOLE.sub(lambda m: self.hole(holes[int(m.group(1))], holes, env), text)
@@ -191,8 +194,8 @@ class Emitter:
             return self.drop_c(subst(h[1], env), self.render(h[2], holes, env))
         if k == 'dup':
             return self.dup_c(subst(h[1], env), self.render(h[2], holes, env))
-        if k == 'str':
-            return self.strlit(h[1])
+        if k in ('str', 'gstr'):
+            return self.strlit(h[1], k == 'gstr')
         if k == 'fn':
             return self.instance(h[1], tuple(subst(a, env) for a in h[2]))
         t = subst(h[1], env)
@@ -290,8 +293,8 @@ class Emitter:
         out += self.fntypes
         out += [self.struct_body(t) for t in order]
         for b, n in self.strs.items():
-            out.append(f"static struct {{ int64_t rc; int64_t len; char data[{len(b) + 1}]; }} {n} = "
-                       f"{{-1, {len(b)}, {cstr(b)}}};")
+            out.append(f"static struct {{ int64_t rc; char data[{len(b) + 1}]; }} {n}b = {{-1, {cstr(b)}}};")
+            out.append(f"static const obx_str {n} = {self.strlit(b, True)};")
         out += externs + globs + self.protos + self.bodies
         out.append(f"int main(int argc, char** argv) {{ rt_init(argc, argv); {entry}(); {' '.join(gdrops)} "
                    "rt_finish(); return 0; }")

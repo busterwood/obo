@@ -23,7 +23,7 @@ def is_pod(t):
     k = t[0]
     if k == 'prim':
         return t[1] != 'str'
-    if k in ('fn', 'ref'):
+    if k in ('fn', 'ref', 'slice'):
         return True
     if k in ('arr', 'tp', 'self'):
         return False
@@ -80,8 +80,8 @@ def fn_sig(fd, bind=None):
 
 INTRINSICS = {
     'strByte': (['s', INT], BYTE, 'rt_str_byte', True),
-    'strSlice': (['s', INT, INT], STR, 'rt_str_slice', True),
-    'strFromBytes': ([('ref', ('arr', BYTE), False)], STR, 'rt_str_from_bytes', False),
+    'strSlice': (['s', INT, INT], STR, 'rt_str_sub', True),
+    'strFromBytes': ([('slice', BYTE, False)], STR, 'rt_str_from_bytes', False),
     'strToBytes': (['s'], ('arr', BYTE), 'rt_str_to_bytes', False),
     'intToStr': ([INT], STR, 'rt_int_to_str', False),
     'i128ToStr': ([('prim', 'i128')], STR, 'rt_i128_to_str', False),
@@ -130,6 +130,8 @@ class Checker:
     def T(self, t):
         if t[0] == 'prim':
             return CTYPES[t[1]]
+        if t[0] == 'slice':
+            return 'obx_slice'
         return self.H('T', t)
 
     def emit(self, s):
@@ -352,6 +354,12 @@ class Checker:
 
     def borrow(self, v, mut, where, recv=False):
         """A borrow of the place, temporary or value v."""
+        if v.t[0] == 'slice':           # &s and mut &s are the slice s (SPEC 4.2a)
+            if mut and not v.t[2]:
+                self.err("cannot make a mut slice from a shared slice", where)
+            if mut:
+                self.frozen(v.root, 'mut', where)
+            return Val(v.c, ('slice', v.t[1], mut), 'rv', root=v.root, path=v.path)
         if v.t[0] == 'ref':
             if mut and not v.t[2]:
                 self.err(f"cannot mutably borrow through the shared borrow "
@@ -384,8 +392,11 @@ class Checker:
         r = v.root
         name = getattr(r, 'name', '?')
         if isinstance(r, Var):
-            if r.t[0] == 'ref' and not r.t[2]:
-                self.err(f"cannot {verb} through '{name}': it is a shared borrow (&), not mut &", where)
+            vb = verb[:-3] if verb.endswith(' to') else verb
+            if r.t[0] in ('ref', 'slice') and not r.t[2]:
+                self.err(f"cannot {vb} through '{name}': it is a shared borrow (&), not mut &", where)
+            if v.viaref and r.t[0] not in ('ref', 'slice'):
+                self.err(f"cannot {vb} through a shared borrow or slice of '{name}'", where)
             if r.kind == 'param':
                 self.err(f"cannot {verb} parameter '{name}': declare it `var {name}`", where)
             self.err(f"cannot {verb} '{name}': it is declared with let, not var", where)
@@ -441,7 +452,19 @@ class Checker:
                 return d
         if v.t[0] == 'ref' and t[0] == 'ref' and v.t[1] == t[1] and (v.t[2] or not t[2]):
             return Val(v.c, t, v.cat, root=v.root, path=v.path, var=v.var)
+        if t[0] == 'slice':
+            s = self.as_slice(v)
+            if s is not None and s.t[1] == t[1] and (s.t[2] or not t[2]):
+                return Val(s.c, t, s.cat, root=s.root, path=s.path)
         self.err(f"{what} is {tstr(v.t)}, not {tstr(t)}", where)
+
+    def as_slice(self, v):
+        """v as a slice: a slice, or a borrow of an array (&xs, &[]T) viewed whole; else None."""
+        if v.t[0] == 'slice':
+            return v
+        if v.t[0] == 'ref' and v.t[1][0] == 'arr':
+            return Val(f"rt_as_slice({v.c})", ('slice', v.t[1][1], v.t[2]), 'rv', root=v.root, path=v.path)
+        return None
 
     def s_let(self, s):
         ctx = self.ctx
@@ -451,7 +474,7 @@ class Checker:
         if v.t == VOID:
             self.err(f"the initializer of '{s.name}' has no value", s.where)
         cn = ctx.fresh(f"v_{s.name}_")
-        if (exp is None and v.t[0] == 'ref') or (exp is not None and exp[0] == 'ref'):
+        if (exp is None and v.t[0] in ('ref', 'slice')) or (exp is not None and exp[0] in ('ref', 'slice')):
             if exp is not None:
                 v = self.coerce(v, exp, s.where, f"the initializer of '{s.name}'")
             if s.mutable:
@@ -463,7 +486,7 @@ class Checker:
                          "the statement", s.where)
             var = Var(s.name, cn, v.t, False, 'local', s.where)
             var.broot = root
-            self.emit(f"{self.T(v.t[1])}* {cn} = {v.c};")
+            self.emit(f"{self.T(v.t[1])}* {cn} = {v.c};" if v.t[0] == 'ref' else f"obx_slice {cn} = {v.c};")
             self.declare(var)
             ctx.scopes[-1].freezes.append((root, v.t[2], f"'{s.name}'"))
             return
@@ -495,7 +518,7 @@ class Checker:
             b = self.place_type(e.e)
             if b and b[0] == 'ref':
                 b = b[1]
-            return b[1] if b and b[0] == 'arr' else None
+            return b[1] if b and b[0] in ('arr', 'slice') else None
         return None
 
     def self_in_drop(self, v, where):
@@ -700,18 +723,18 @@ class Checker:
         v = self.expr(s.a, None)
         if v.t[0] == 'ref':
             v = self.deref(v)
-        if v.t[0] != 'arr':
-            self.err(f"for ... in needs an array or a range a..b, not {tstr(v.t)}", s.where)
+        if v.t[0] not in ('arr', 'slice'):
+            self.err(f"for ... in needs an array, a slice or a range a..b, not {tstr(v.t)}", s.where)
         et = v.t[1]
         ap, i = ctx.fresh('ap'), ctx.fresh('i')
-        if v.cat == 'rv':
+        if v.cat == 'rv' and v.t[0] == 'arr':
             v = self.holdtmp(v.c, v.t)
         if v.cat == 'place' and v.glob is not None:
             self.err("cannot iterate over a global", s.where)
-        self.emit(f"obx_arr* {ap} = &{v.c};")
-        self.emit(f"for (int64_t {i} = 0; {i} < {ap}->len; {i}++) {{")
+        self.emit(f"obx_slice {ap} = {v.c if v.t[0] == 'slice' else f'rt_as_slice(&{v.c})'};")
+        self.emit(f"for (int64_t {i} = 0; {i} < {ap}.len; {i}++) {{")
         ctx.ind += 1
-        elem = f"(({self.T(et)}*){ap}->data)[{i}]"
+        elem = f"(({self.T(et)}*){ap}.data)[{i}]"
         xn = ctx.fresh(f"v_{s.name}_")
 
         def setup(sc):
@@ -742,8 +765,8 @@ class Checker:
             if ret == VOID:
                 self.err(f"{fd.label} returns nothing, but this return has a value", s.where)
             v = self.expr(s.e, ret)
-            if ret[0] == 'ref':
-                if v.t[0] != 'ref':
+            if ret[0] in ('ref', 'slice'):
+                if v.t[0] not in ('ref', 'slice'):
                     self.err(f"{fd.label} returns a borrow: write return &place", s.where)
                 v = self.coerce(v, ret, s.where, "the returned borrow")
                 r = v.root
@@ -1153,7 +1176,7 @@ class Checker:
                 v = self.snap_val(v)
             i = self.int_index(e.items[0])
             return Val(f"rt_str_byte({v.c}, {i}, {self.W(e.where)})", BYTE, 'rv')
-        if v.t[0] != 'arr':
+        if v.t[0] not in ('arr', 'slice'):
             self.err(f"cannot index a {tstr(v.t)}", e.where)
         if v.cat == 'rv':
             v = self.holdtmp(v.c, v.t)
@@ -1163,8 +1186,47 @@ class Checker:
         del self.ctx.pending[mark:]
         et = v.t[1]
         c = f"(({self.T(et)}*)({v.c}).data)[rt_idx({i}, ({v.c}).len, {self.W(e.where)})]"
+        if v.t[0] == 'slice':
+            return Val(c, et, 'place', root=v.root, path=v.path + ('[]',), mutable=v.t[2], viaref=True)
         return Val(c, et, 'place', root=v.root, path=v.path + ('[]',), mutable=v.mutable,
                    viaref=v.viaref, glob=v.glob)
+
+    def x_sub(self, e, exp):
+        """xs[a..b], xs[a..], xs[..b] of an array or slice (a slice, SPEC 4.2a) or of a str (a
+        substring sharing its bytes)."""
+        v = self.deref(self.expr(e.e, None))
+        W = self.W(e.where)
+        mut = exp is not None and exp[0] == 'slice' and exp[2]
+        if v.t == STR:
+            if self.effects(e.lo) or self.effects(e.hi):
+                v = self.snap_val(v)
+            lo = self.int_index(e.lo) if e.lo is not None else '0'
+            hi = self.int_index(e.hi) if e.hi is not None else f"({v.c}).len"
+            return self.holdtmp(f"rt_str_sub({v.c}, {lo}, {hi}, {W})", STR)
+        if v.t[0] not in ('arr', 'slice'):
+            self.err(f"cannot slice a {tstr(v.t)}", e.where)
+        if v.t[0] == 'arr':
+            if v.cat == 'rv':
+                v = self.holdtmp(v.c, v.t)
+            if v.glob is not None:
+                self.err(f"cannot slice global '{v.glob.name}'", e.where)
+            if mut and not v.mutable:
+                self.immutable(v, e.where, 'take a mut slice of')
+            if mut:
+                self.frozen(v.root, 'mut', e.where)
+            base = f"rt_as_slice(&{v.c})"
+        else:
+            if mut and not v.t[2]:
+                self.err("cannot make a mut slice from a shared slice", e.where)
+            base = v.c
+        mark = len(self.ctx.pending)
+        self.hold(v, False, object(), e.where)
+        lo = self.int_index(e.lo) if e.lo is not None else '0'
+        hi = self.int_index(e.hi) if e.hi is not None else '-1'
+        del self.ctx.pending[mark:]
+        n = self.ctx.fresh('sl')
+        self.emit(f"obx_slice {n} = rt_sub({base}, {lo}, {hi}, sizeof({self.T(v.t[1])}), {W});")
+        return Val(n, ('slice', v.t[1], mut), 'rv', root=v.root, path=v.path)
 
     def int_index(self, ie):
         i = self.rd(self.expr(ie, INT))
@@ -1177,7 +1239,12 @@ class Checker:
         return n
 
     def x_borrow(self, e, exp):
+        if e.e.kind == 'sub':                # &xs[a..b], mut &xs[a..b]: the slice itself
+            v = self.x_sub(e.e, ('slice', None, e.mut))
+            return v if v.t[0] == 'slice' else self.borrow(v, e.mut, e.where)
         inner_exp = exp[1] if exp is not None and exp[0] == 'ref' else None
+        if exp is not None and exp[0] == 'slice' and exp[1] is not None:
+            inner_exp = ('arr', exp[1])
         v = self.expr(e.e, inner_exp)
         return self.borrow(v, e.mut, e.where)
 
@@ -1665,8 +1732,20 @@ class Checker:
                 v = a
             else:
                 pe = subst(pt, bind)
-                v = self.expr(a, pe if not has_tp(pe, tps) else None)
-            if pt[0] == 'ref':
+                v = self.expr(a, pe if not has_tp(pe, tps) else ('slice', None, pe[2]) if pe[0] == 'slice' else None)
+            if pt[0] == 'slice':
+                sv = self.as_slice(v)
+                if sv is None:
+                    self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}: pass a slice or a borrow "
+                             f"({'mut &' if pt[2] else '&'}x)", where)
+                if pt[2] and not sv.t[2]:
+                    self.err(f"{what} needs a mut slice, not {tstr(sv.t)}", where)
+                v = Val(sv.c, ('slice', sv.t[1], pt[2]), 'rv', root=sv.root, path=sv.path)
+                if not unify(pt[1], v.t[1], bind, tps):
+                    self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)
+                self.hold(v, pt[2], cid, where)
+                vals[i] = ('b', v)
+            elif pt[0] == 'ref':
                 if v.t[0] != 'ref' and not isrecv:
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}: pass a borrow "
                              f"({'mut &' if pt[2] else '&'}x)", where)
@@ -1727,14 +1806,18 @@ class Checker:
             for (kind, v), c in zip(vals, cs):
                 cs2.append(f"rt_cstr({c}, {self.W(where)})" if v.t == STR else c)
             text = f"x_{sig.fd.name}({', '.join(cs2)})"
+            if STR in [v.t for _, v in vals]:       # free the NUL-terminated copies after the call
+                v = self.holdtmp(text, ret) if ret != VOID else self.emit(text + ';')
+                self.emit("rt_cfree();")
+                return v or Val('', VOID, 'rv')
         if ret == VOID:
             self.emit(text + ';')
             return Val('', VOID, 'rv')
-        if ret[0] == 'ref':
-            bi = [i for i, p in enumerate(sig.params) if p[0] == 'ref']
+        if ret[0] in ('ref', 'slice'):
+            bi = [i for i, p in enumerate(sig.params) if p[0] in ('ref', 'slice')]
             src = vals[bi[0]][1] if len(bi) == 1 else None
             n = ctx.fresh('b')
-            self.emit(f"{self.T(ret[1])}* {n} = {text};")
+            self.emit(f"{self.T(ret[1])}* {n} = {text};" if ret[0] == 'ref' else f"obx_slice {n} = {text};")
             root = src.root if src is not None else None
             path = src.path + ('*',) if src is not None else ()
             return Val(n, ret, 'rv', root=root, path=path)
@@ -1766,8 +1849,20 @@ class Checker:
         if len(e.args) != n:
             self.err(f"{e.fn.v} takes {n} argument{'s' if n != 1 else ''}, not {len(e.args)}", e.where)
 
-    def arr_arg(self, e, mut):
-        v = self.expr(e.args[0], None)
+    def arr_arg(self, e, mut, slices=False):
+        v = self.expr(e.args[0], ('slice', None, mut) if slices else None)
+        if slices and v.t[0] != 'slice':
+            s = self.as_slice(v) if v.t[0] == 'ref' and (v.t[2] or not mut) else None
+            if s is None:
+                self.err(f"{e.fn.v} needs a mut slice or mut &array as its first argument, not {tstr(v.t)}",
+                         e.where)
+            v = s
+        if slices:
+            if mut and not v.t[2]:
+                self.err(f"{e.fn.v} needs a mut slice, not {tstr(v.t)}", e.where)
+            v = self.borrow(v, mut, e.where)
+            self.hold(v, mut, object(), e.where)
+            return v
         if v.t[0] != 'ref' or (mut and not v.t[2]):
             self.err(f"{e.fn.v} needs {'mut &' if mut else '&'}array as its first argument, not "
                      f"{tstr(v.t)}", e.where)
@@ -1784,9 +1879,11 @@ class Checker:
         self.nargs(e, 1)
         v = self.deref(self.expr(e.args[0], None))
         if v.t == STR:
-            return Val(f"({v.c})->len", INT, 'rv')
+            return Val(f"((int64_t)({v.c}).len)", INT, 'rv')
+        if v.t[0] == 'slice':
+            return Val(f"({v.c}).len", INT, 'rv')
         if v.t[0] != 'arr':
-            self.err(f"len needs an array or a str, not {tstr(v.t)}", e.where)
+            self.err(f"len needs an array, a slice or a str, not {tstr(v.t)}", e.where)
         return Val(f"({v.c}).len", INT, 'rv')
 
     def b_isNull(self, e, exp):
@@ -1816,15 +1913,15 @@ class Checker:
 
     def b_swap(self, e, exp):
         self.nargs(e, 3)
-        a = self.arr_arg(e, True)
+        a = self.arr_arg(e, True, True)
         i = self.rd(self.expr(e.args[1], INT))
         if self.effects(e.args[2]):
             i = self.snap_val(i)
         j = self.rd(self.expr(e.args[2], INT))
         if i.t != INT or j.t != INT:
             self.err("swap needs int indexes", e.where)
-        et = a.t[1][1]
-        self.emit(f"rt_arr_swap({a.c}, {i.c}, {j.c}, sizeof({self.T(et)}), {self.W(e.where)});")
+        et = a.t[1]
+        self.emit(f"rt_swap({a.c}, {i.c}, {j.c}, sizeof({self.T(et)}), {self.W(e.where)});")
         return Val('', VOID, 'rv')
 
     def b_replace(self, e, exp):
@@ -1918,7 +2015,7 @@ class Checker:
         if t[0] == 'prim':
             v = self.prog.const_as(self.prog.fold(e, self.ctx.module, t), t, e.where)
             if t == STR:
-                return self.H('str', v)
+                return self.H('gstr', v)
             if t == BOOL:
                 return 'true' if v else 'false'
             return self.cint(v, t)
@@ -1951,4 +2048,4 @@ from sema import depth  # noqa: E402
 
 CTYPES = {'int': 'int64_t', 'i32': 'int32_t', 'u32': 'uint32_t', 'u64': 'uint64_t', 'byte': 'uint8_t',
           'i128': '__int128', 'u128': 'unsigned __int128', 'float': 'double', 'bool': 'bool',
-          'str': 'obx_str*', 'ptr': 'void*', 'void': 'void'}
+          'str': 'obx_str', 'ptr': 'void*', 'void': 'void'}

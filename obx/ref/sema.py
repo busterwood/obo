@@ -1,7 +1,7 @@
 """Declarations, types, modules and constraints (SPEC sections 4, 5, 6).
 
 A type is a tuple:
-  ('prim', name)  ('arr', T)  ('ref', T, mut)  ('fn', (params...), ret)
+  ('prim', name)  ('arr', T)  ('ref', T, mut)  ('slice', T, mut)  ('fn', (params...), ret)
   ('inst', TypeDecl, (args...))  ('tp', TParam)  ('self',) inside interfaces
 """
 import os
@@ -93,6 +93,8 @@ def tstr(t):
         return '[]' + tstr(t[1])
     if k == 'ref':
         return ('mut &' if t[2] else '&') + tstr(t[1])
+    if k == 'slice':
+        return ('mut &[' if t[2] else '&[') + tstr(t[1]) + ']'
     if k == 'fn':
         r = '' if t[2] == VOID else ': ' + tstr(t[2])
         return 'fn(' + ', '.join(tstr(p) for p in t[1]) + ')' + r
@@ -115,8 +117,8 @@ def subst(t, env):
         return t
     if k == 'arr':
         return ('arr', subst(t[1], env))
-    if k == 'ref':
-        return ('ref', subst(t[1], env), t[2])
+    if k in ('ref', 'slice'):
+        return (k, subst(t[1], env), t[2])
     if k == 'fn':
         return ('fn', tuple(subst(p, env) for p in t[1]), subst(t[2], env))
     return ('inst', t[1], tuple(subst(a, env) for a in t[2]))
@@ -128,7 +130,7 @@ def has_tp(t, tps=None):
         return tps is None or t[1] in tps
     if k in ('prim', 'self'):
         return False
-    if k in ('arr', 'ref'):
+    if k in ('arr', 'ref', 'slice'):
         return has_tp(t[1], tps)
     if k == 'fn':
         return any(has_tp(p, tps) for p in t[1]) or has_tp(t[2], tps)
@@ -137,7 +139,7 @@ def has_tp(t, tps=None):
 
 def depth(t):
     k = t[0]
-    if k in ('arr', 'ref'):
+    if k in ('arr', 'ref', 'slice'):
         return 1 + depth(t[1])
     if k == 'fn':
         return 1 + max([depth(p) for p in t[1]] + [depth(t[2])])
@@ -160,7 +162,7 @@ def unify(p, t, bind, tps):
         return p == t
     if k == 'arr':
         return unify(p[1], t[1], bind, tps)
-    if k == 'ref':
+    if k in ('ref', 'slice'):
         return p[2] == t[2] and unify(p[1], t[1], bind, tps)
     if k == 'fn':
         return (len(p[1]) == len(t[1]) and all(unify(a, b, bind, tps) for a, b in zip(p[1], t[1]))
@@ -182,7 +184,7 @@ def field_types(t):
 
 def is_copy(t):
     k = t[0]
-    if k in ('prim', 'fn', 'ref'):
+    if k in ('prim', 'fn', 'ref', 'slice'):
         return True
     if k == 'arr':
         return False
@@ -383,13 +385,13 @@ class Program:
 
     def resolve_type(self, a, mod, env, pos, where=None):
         k = a[0]
-        if k == 'ref':
+        if k in ('ref', 'slice'):
             if pos not in ('param', 'ret', 'let'):
                 what = {'field': 'a field', 'elem': 'an array element', 'targ': 'a type argument',
                         'var': 'the type of a var', 'global': 'the type of a global'}.get(pos, 'used here')
                 raise CompileError(f"a borrow type cannot be {what}: borrows are second class",
                                    where or self.type_where(a))
-            return ('ref', self.resolve_type(a[1], mod, env, 'inner', where), a[2])
+            return (k, self.resolve_type(a[1], mod, env, 'inner' if k == 'ref' else 'elem', where), a[2])
         if k == 'arr':
             return ('arr', self.resolve_type(a[1], mod, env, 'elem', where))
         if k == 'fnt':
@@ -438,7 +440,7 @@ class Program:
         return ('inst', d, targs)
 
     def type_where(self, a):
-        while a[0] in ('ref', 'arr'):
+        while a[0] in ('ref', 'arr', 'slice'):
             a = a[1]
         return a[3] if a[0] == 'name' else ''
 
@@ -553,7 +555,7 @@ class Program:
                 raise CompileError(f"parameter {n} is declared twice", w)
             names.add(n)
             t = self.resolve_type(pt, mod, env, 'param', w)
-            if isvar and t[0] == 'ref':
+            if isvar and t[0] in ('ref', 'slice'):
                 raise CompileError(f"var parameter {n} cannot be a borrow", w)
             fd.params.append((n, t, isvar, w))
         if a.ret:
@@ -564,8 +566,8 @@ class Program:
             if isinstance(fd.owner, str):
                 raise CompileError("primitive types cannot have a drop method", a.where)
             fd.owner.drop = fd
-        if fd.ret[0] == 'ref':
-            bs = [p for p in fd.params if p[1][0] == 'ref']
+        if fd.ret[0] in ('ref', 'slice'):
+            bs = [p for p in fd.params if p[1][0] in ('ref', 'slice')]
             if len(bs) != 1:
                 raise CompileError(f"{fd.label} returns a borrow, so it needs exactly one borrowed "
                                    f"parameter, not {len(bs)}", a.where)

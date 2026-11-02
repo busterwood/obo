@@ -461,13 +461,16 @@ class Parser:
         return ps
 
     def type(self):
-        if self.atsym('&'):
-            self.next()
-            return ('ref', self.type(), False)
-        if self.atkw('mut'):
-            self.next()
-            self.sym('&')
-            return ('ref', self.type(), True)
+        if self.atsym('&') or self.atkw('mut'):
+            mut = self.next().v == 'mut'
+            if mut:
+                self.sym('&')
+            if self.atsym('[') and self.peek(1).v != ']':
+                self.next()
+                t = self.type()
+                self.sym(']')
+                return ('slice', t, mut)
+            return ('ref', self.type(), mut)
         if self.atsym('['):
             self.next()
             self.sym(']')
@@ -692,13 +695,19 @@ class Parser:
             elif self.atsym('['):
                 self.next()
                 save, self.nolit = self.nolit, 0
-                items = [self.texpr()]
-                while self.atsym(','):
+                lo = None if self.atsym('..') else self.texpr()
+                if self.atsym('..'):
                     self.next()
-                    items.append(self.texpr())
+                    hi = None if self.atsym(']') else self.expr()
+                    e = N('sub', t.where, e=e, lo=lo, hi=hi)
+                else:
+                    items = [lo]
+                    while self.atsym(','):
+                        self.next()
+                        items.append(self.texpr())
+                    e = N('index', t.where, e=e, items=items)
                 self.nolit = save
                 self.sym(']')
-                e = N('index', t.where, e=e, items=items)
             elif self.atsym('('):
                 e = N('call', t.where, fn=e, args=self.args('(', ')'))
             elif self.atsym('{') and not self.nolit and self.namelike(e):

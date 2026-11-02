@@ -1,0 +1,14 @@
+// SPEC 4.2a: slice bounds are checked when the slice is made (exit 3), even
+// if it is never indexed.
+// expect: ok
+// exit: 3
+
+fn take(xs: &[int]): int { return 0 }
+
+fn main() {
+    let a: []int = [1, 2, 3]
+    if take(a[0..3]) == 0 && take(a[3..]) == 0 { println("ok") }
+    var hi = 4
+    take(a[2..hi])
+    println("not reached")
+}
