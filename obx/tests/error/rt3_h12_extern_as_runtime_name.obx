@@ -1,0 +1,5 @@
+// Red-team round 3, h12 (SPEC 12): an extern's C name may not be one the
+// runtime or the generated C defines (here the runtime's rt_alloc).
+// error: rt_alloc
+extern "c" fn f(n: int): ptr as "rt_alloc"
+fn main() {}

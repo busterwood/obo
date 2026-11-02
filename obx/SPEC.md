@@ -708,6 +708,12 @@ the module that declares it (`pub extern` is an error): a module that needs C
 exposes safe wrappers, such as an owned type with a `drop` method, never the
 raw C function. Two extern declarations in a program with the same C name must have
 the same parameter and result types; otherwise it is a compile error.
+The C name (given by `as`, or the obx name) may not be one the program's own
+C code defines: `main`, a name that starts with `rt_` or `obx_` (the runtime;
+its documented `obx_` helpers for the library, such as `obx_errno`, may be
+named), or a name of the form the compiler generates (`f1_x`, `g1_x`, `k1_x`,
+`gl1_x`, `S1_x`, `sl1`, `fn1`: a prefix, digits, and for the first five an
+underscore).
 
 Parameter and result types are limited to integers, `float`, `bool`, `ptr`,
 `mut &ptr`, `mut &int` and `str`. A `str` result copies a NUL-terminated
