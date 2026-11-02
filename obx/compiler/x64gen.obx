@@ -86,6 +86,16 @@ type Gen = record {
     weight: []int               // ... weighted by loop depth
     bad: []bool                 // ... whether it can't be in a register
     touched: []int              // the locals the scan of the function saw
+    seen: []int                 // per local: the stamp of the last scan that touched it
+    stamp: int
+    counting: bool              // the scan counts uses (once, before code generation)
+    scanStack: []int            // the functions whose bodies the scan is in, in place of calls
+    inlStack: []int             // the functions generated in place being generated
+    inlEnd: []int               // ... the labels after their code
+    inl: []int                  // per function: the size of its body if it can be generated in place
+                                // of calls, else INLINE_NODES + 1 (-1: not yet known)
+    loops: int                  // the loops the code generator is in (the scan's depth)
+    curFunc: int
     saved: []int                // the frame slots of the callee-saved registers the function uses
     frame: int
     maxFrame: int
@@ -120,12 +130,14 @@ fn newGen(u: ir.Ir): Gen {
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [],
-        saved: []}
+        saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
+        loops: 0}
     g.a.peep = true
     for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
     for i in 0..len(g.u.funcs) {
         append(mut &g.funcSym, -1)
         append(mut &g.funcPos, -1)
+        append(mut &g.inl, -1)
     }
     for i in 0..len(g.u.globals) {
         append(mut &g.syms, Sym{kind: SK_GLOBAL, idx: i, addr: 0})
@@ -137,7 +149,9 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.uses, 0)
         append(mut &g.weight, 0)
         append(mut &g.bad, false)
+        append(mut &g.seen, 0)
     }
+    g.countUses()
     return g
 }
 
@@ -397,6 +411,7 @@ fn (g: mut &Gen) genFunc(f: int) {
     let ft = g.u.funcs[f].ty
     g.retTy = g.u.tys[ft].base
     g.epiL = -1
+    g.curFunc = f
     g.allocRegs(f)
     var ni = 0
     var nx = 0
@@ -481,13 +496,7 @@ fn (g: mut &Gen) genFunc(f: int) {
 // loop (else saving the register costs what it saves); the heaviest uses (a use in a loop
 // counts 8 times one outside, nested loops more) win.
 fn (g: mut &Gen) allocRegs(f: int) {
-    let old = replace(mut &g.touched, [])
-    for l in old {
-        g.reg[l] = -1
-        g.uses[l] = 0
-        g.weight[l] = 0
-        g.bad[l] = false
-    }
+    g.resetScan()
     g.saved = []
     g.scan(g.u.funcs[f].body, 0)
     var cands: []int = []
@@ -506,6 +515,31 @@ fn (g: mut &Gen) allocRegs(f: int) {
     }
 }
 
+fn (g: mut &Gen) resetScan() {
+    let old = replace(mut &g.touched, [])
+    for l in old {
+        g.reg[l] = -1
+        g.weight[l] = 0
+        g.bad[l] = false
+    }
+    g.stamp += 1
+}
+
+// The uses of every local in its own function (inlined copies of a function name its locals
+// as often), for the fused declarations of stmt.
+fn (g: mut &Gen) countUses() {
+    g.counting = true
+    for f in 0..len(g.u.funcs) {
+        if g.u.funcs[f].body >= 0 {
+            g.curFunc = f
+            g.scan(g.u.funcs[f].body, 0)
+            g.resetScan()
+        }
+    }
+    g.counting = false
+    g.curFunc = -1
+}
+
 fn loopWeight(depth: int): int {
     var w = 1
     for i in 0..(if depth > 5 { 5 } else { depth }) { w *= 8 }
@@ -517,19 +551,27 @@ fn (g: mut &Gen) scanList(l: int, depth: int) {
     for j in 0..g.u.listLen(l) { g.scan(g.u.listAt(l, j), depth) }
 }
 
-// Counts the uses of locals in the tree x (at loop depth depth).
+fn (g: mut &Gen) touch(l: int) {
+    if g.seen[l] != g.stamp {
+        g.seen[l] = g.stamp
+        append(mut &g.touched, l)
+    }
+}
+
+// Weighs the uses of locals in the tree x (at loop depth depth), with the bodies of the calls
+// that are generated in place; when counting, counts the times x names each (uses).
 fn (g: mut &Gen) scan(x: int, depth: int) {
     if x < 0 { return }
     let n = g.u.nodes[x]
     let k = n.k
     if k == ir.E_LOCAL {
-        if g.uses[n.a] == 0 && g.weight[n.a] == 0 && !g.bad[n.a] { append(mut &g.touched, n.a) }
-        g.uses[n.a] += 1
+        g.touch(n.a)
+        if g.counting { g.uses[n.a] += 1 }
         g.weight[n.a] += loopWeight(depth)
     } else if k == ir.E_ADDR || k == ir.E_DECAY {
         if g.u.nk(n.a) == ir.E_LOCAL {
             let l = g.u.nodes[n.a].a
-            if g.uses[l] == 0 && g.weight[l] == 0 && !g.bad[l] { append(mut &g.touched, l) }
+            g.touch(l)
             g.bad[l] = true
         }
         g.scan(n.a, depth)
@@ -547,15 +589,27 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
     } else if k == ir.E_CALL {
         g.scan(n.a, depth)
         g.scanList(n.b, depth)
+        let f = if g.counting { -1 } else { g.inlineTarget(x, true, depth) }
+        if f >= 0 {
+            // the body as it is generated in place: its parameters are assigned at the call
+            for j in 0..len(g.u.funcs[f].params) {
+                let p = g.u.funcs[f].params[j]
+                g.touch(p)
+                g.weight[p] += loopWeight(depth)
+            }
+            append(mut &g.scanStack, f)
+            g.scan(g.u.funcs[f].body, depth)
+            pop(mut &g.scanStack)
+        }
     } else if k == ir.E_CLIT {
         g.scanList(n.b, depth)
     } else if k == ir.S_BLOCK {
         g.scanList(n.a, depth)
     } else if k == ir.S_DECL {
         let l = n.a
-        if g.uses[l] == 0 && g.weight[l] == 0 && !g.bad[l] { append(mut &g.touched, l) }
+        g.touch(l)
         if n.b >= 0 {
-            g.uses[l] += 1
+            if g.counting { g.uses[l] += 1 }
             g.weight[l] += loopWeight(depth)
         }
         if n.c >= 0 {
@@ -594,6 +648,10 @@ fn (g: &Gen) regOf(e: int): int {
 // function's one copy of the restores.
 fn (g: mut &Gen) epilogue() {
     if !g.a.reachable() { return }
+    if len(g.inlEnd) > 0 {
+        g.a.jmp(g.inlEnd[len(g.inlEnd) - 1])
+        return
+    }
     if len(g.saved) == 0 {
         g.leaveFrame()
         return
@@ -685,12 +743,14 @@ fn (g: mut &Gen) stmt(s: int) {
         let top = g.a.newLabel()
         let end = g.a.newLabel()
         g.a.bind(top)
+        g.loops += 1
         g.branch(n.a, end, false)
         append(mut &g.breakL, end)
         append(mut &g.contL, top)
         g.stmt(n.b)
         pop(mut &g.breakL)
         pop(mut &g.contL)
+        g.loops -= 1
         g.a.jmp(top)
         g.a.bind(end)
     } else if k == ir.S_FOR {
@@ -704,6 +764,7 @@ fn (g: mut &Gen) stmt(s: int) {
         let cont = g.a.newLabel()
         let end = g.a.newLabel()
         g.a.bind(top)
+        g.loops += 1
         if n.b >= 0 { g.branch(n.b, end, false) }
         append(mut &g.breakL, end)
         append(mut &g.contL, cont)
@@ -712,6 +773,7 @@ fn (g: mut &Gen) stmt(s: int) {
         pop(mut &g.contL)
         g.a.bind(cont)
         if n.c >= 0 { g.gen(n.c) }
+        g.loops -= 1
         g.a.jmp(top)
         g.a.bind(end)
         g.frame = mark
@@ -1797,6 +1859,11 @@ fn (g: mut &Gen) genCall(e: int) {
         g.inlineRt(e, g.u.funcs[direct].name) {
         return
     }
+    let inl = g.inlineTarget(e, false, g.loops)
+    if inl >= 0 {
+        g.genInline(inl, e)
+        return
+    }
     var calleeSlot = 0
     if direct < 0 {
         g.gen(callee)
@@ -1953,6 +2020,178 @@ fn (g: &Gen) argDirect(x: int, t: int): bool {
     if g.is128(t) { return false }
     if g.isAggr(t) || g.isF(t) { return g.staticMem(x).base != -9 }
     return g.simple(x)
+}
+
+// ---------------------------------------------------------------- functions generated in place
+
+// The size limits of a function generated in place of its calls (nodes of its body): anywhere,
+// and in loops; and the depth of such calls within each other.
+const INLINE_SMALL = 16
+const INLINE_NODES = 40
+const INLINE_DEPTH = 3
+
+// The function call e (in loops loops deep) calls, if it is generated in place: a small function
+// of the program (inlinable; within INLINE_SMALL nodes, or INLINE_NODES in a loop) that is not
+// the function being generated nor one being generated in place (the scan's stack of them when
+// inScan, else the code generator's). Else -1. The scan and the code generator ask the same.
+fn (g: mut &Gen) inlineTarget(e: int, inScan: bool, loops: int): int {
+    let c = g.u.nodes[e].a
+    if g.u.nk(c) != ir.E_DECAY || g.u.nk(g.u.nodes[c].a) != ir.E_FUNC { return -1 }
+    let f = g.u.nodes[g.u.nodes[c].a].a
+    if f == g.curFunc || !g.inlinable(f) { return -1 }
+    if loops == 0 && g.inl[f] > INLINE_SMALL { return -1 }
+    let depth = if inScan { len(g.scanStack) } else { len(g.inlStack) }
+    if depth >= INLINE_DEPTH { return -1 }
+    for i in 0..depth {
+        if (if inScan { g.scanStack[i] } else { g.inlStack[i] }) == f { return -1 }
+    }
+    return f
+}
+
+// Whether f can be generated in place of its calls: a function of the program with integer,
+// pointer or double parameters and result (or none), and a body of INLINE_NODES nodes or less.
+fn (g: mut &Gen) inlinable(f: int): bool {
+    if g.inl[f] >= 0 { return g.inl[f] <= INLINE_NODES }
+    g.inl[f] = INLINE_NODES + 1
+    if g.u.funcs[f].body < 0 || g.u.funcs[f].isExtern || g.u.funcs[f].name == "main" { return false }
+    let rt = g.u.tys[g.u.funcs[f].ty].base
+    if g.tk(rt) != ir.TY_VOID && (!g.u.isScalar(rt) || g.is128(rt)) { return false }
+    for p in g.u.funcs[f].params {
+        let t = g.u.locals[p].ty
+        if !g.u.isScalar(t) || g.is128(t) { return false }
+    }
+    var budget = INLINE_NODES
+    if !g.small(g.u.funcs[f].body, mut &budget) { return false }
+    g.inl[f] = INLINE_NODES - budget
+    return true
+}
+
+// Whether the tree x has no more nodes than budget (which it uses up).
+fn (g: &Gen) small(x: int, budget: mut &int): bool {
+    if x < 0 { return true }
+    budget -= 1
+    if budget < 0 { return false }
+    let n = g.u.nodes[x]
+    let k = n.k
+    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_FUNC ||
+        k == ir.S_BREAK || k == ir.S_CONTINUE || k == ir.S_CASE || k == ir.S_DEFAULT || k == ir.S_EMPTY {
+        return true
+    }
+    if k == ir.E_CALL { return g.small(n.a, budget) && g.smallList(n.b, budget) }
+    if k == ir.E_CLIT { return g.smallList(n.b, budget) }
+    if k == ir.S_BLOCK { return g.smallList(n.a, budget) }
+    if k == ir.S_DECL { return g.small(n.b, budget) && g.smallList(n.c, budget) }
+    if k == ir.S_FOR {
+        return g.small(n.a, budget) && g.small(n.b, budget) && g.small(n.c, budget) && g.small(n.d, budget)
+    }
+    if k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_CAST || k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_LNOT ||
+        k == ir.E_POSTINC || k == ir.E_IENT || k == ir.S_EXPR || k == ir.S_RETURN || k == ir.E_ADDR || k == ir.E_DECAY {
+        return g.small(n.a, budget)
+    }
+    if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD || k == ir.S_SWITCH ||
+        k == ir.S_WHILE {
+        return g.small(n.a, budget) && g.small(n.b, budget)
+    }
+    if k == ir.E_COND || k == ir.S_IF { return g.small(n.a, budget) && g.small(n.b, budget) && g.small(n.c, budget) }
+    return false
+}
+
+fn (g: &Gen) smallList(l: int, budget: mut &int): bool {
+    if l < 0 { return true }
+    for j in 0..g.u.listLen(l) {
+        if !g.small(g.u.listAt(l, j), budget) { return false }
+    }
+    return true
+}
+
+// The call e of f generated in place: the arguments evaluated as for a call (left to right;
+// the simple ones last) and assigned to f's parameters, then f's body, whose returns jump to
+// the end with the result in the value registers. f's locals live in this frame (slots, or
+// the registers the scan of the function gave them).
+fn (g: mut &Gen) genInline(f: int, e: int) {
+    let n = g.u.nodes[e]
+    var ps: []int = []
+    for p in g.u.funcs[f].params { append(mut &ps, p) }
+    let nargs = g.u.listLen(n.b)
+    var lastNon = -1
+    for j in 0..nargs {
+        if !g.inlineDirect(g.u.listAt(n.b, j), ps[j]) { lastNon = j }
+    }
+    // the others into temporaries (tmp: a frame slot, below 0), the last integer one in rax (1)
+    var tmp: []int = []
+    for j in 0..nargs {
+        let x = g.u.listAt(n.b, j)
+        let t = g.u.locals[ps[j]].ty
+        if g.inlineDirect(x, ps[j]) {
+            append(mut &tmp, 0)
+            continue
+        }
+        g.gen(x)
+        if !g.isF(t) && !g.normAs(g.u.nodes[x].ty, t) { g.normR(g.tk(t), RAX) }
+        if j == lastNon && !g.isF(t) {
+            append(mut &tmp, 1)
+            continue
+        }
+        let s = g.tempFor(t)
+        g.storeT(t, rbp(s))
+        append(mut &tmp, s)
+    }
+    for j in 0..nargs {
+        let p = ps[j]
+        let t = g.u.locals[p].ty
+        if tmp[j] == 1 {
+            if g.reg[p] >= 0 {
+                g.a.movRR(8, g.reg[p], RAX)
+            } else {
+                g.slots[p] = g.tempFor(t)
+                g.storeT(t, rbp(g.slots[p]))
+            }
+        }
+    }
+    for j in 0..nargs {
+        let p = ps[j]
+        let t = g.u.locals[p].ty
+        if tmp[j] < 0 {
+            if g.reg[p] >= 0 {
+                g.loadInt(t, g.reg[p], rbp(tmp[j]))
+            } else {
+                g.slots[p] = tmp[j]
+            }
+        }
+    }
+    for j in 0..nargs {
+        let p = ps[j]
+        let t = g.u.locals[p].ty
+        if tmp[j] == 0 {
+            let x = g.u.listAt(n.b, j)
+            if g.reg[p] >= 0 {
+                g.genInto(x, g.reg[p])
+            } else {
+                g.slots[p] = g.tempFor(t)
+                g.genInto(x, RAX)
+                g.a.store(g.size(t), rbp(g.slots[p]), RAX)
+            }
+        }
+    }
+    let saveRet = g.retTy
+    let saveDecl = g.declMark
+    g.retTy = g.u.tys[g.u.funcs[f].ty].base
+    let end = g.a.newLabel()
+    append(mut &g.inlStack, f)
+    append(mut &g.inlEnd, end)
+    g.stmt(g.u.funcs[f].body)
+    pop(mut &g.inlStack)
+    pop(mut &g.inlEnd)
+    g.a.bind(end)
+    g.retTy = saveRet
+    g.declMark = saveDecl
+}
+
+// Whether argument x for parameter p of a function generated in place is loaded straight into
+// it: a simple integer or pointer of p's type.
+fn (g: &Gen) inlineDirect(x: int, p: int): bool {
+    let t = g.u.locals[p].ty
+    return g.simple(x) && !g.isF(t) && g.normAs(g.u.nodes[x].ty, t)
 }
 
 // ---------------------------------------------------------------- inlined runtime functions
