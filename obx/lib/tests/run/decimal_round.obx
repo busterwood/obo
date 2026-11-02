@@ -59,16 +59,16 @@
 // expect: err 1
 // expect: 99999999999999999999999999999999999999
 
-fn modeName(m: RoundingMode): str {
+fn modeName(m: Rounding): str {
     match m {
-        HALF_EVEN { return "HALF_EVEN" }
-        HALF_AWAY { return "HALF_AWAY" }
-        HALF_TOWARD_ZERO { return "HALF_TOWARD_ZERO" }
-        TOWARD_ZERO { return "TOWARD_ZERO" }
-        AWAY { return "AWAY" }
-        FLOOR { return "FLOOR" }
-        CEILING { return "CEILING" }
-        UNNECESSARY { return "UNNECESSARY" }
+        Rounding.HALF_EVEN { return "HALF_EVEN" }
+        Rounding.HALF_AWAY { return "HALF_AWAY" }
+        Rounding.HALF_TOWARD_ZERO { return "HALF_TOWARD_ZERO" }
+        Rounding.TOWARD_ZERO { return "TOWARD_ZERO" }
+        Rounding.AWAY { return "AWAY" }
+        Rounding.FLOOR { return "FLOOR" }
+        Rounding.CEILING { return "CEILING" }
+        Rounding.UNNECESSARY { return "UNNECESSARY" }
     }
 }
 
@@ -104,7 +104,7 @@ fn d(s: str): Decimal { return Decimal.parse(s).unwrap() }
 
 fn main() {
     let xs = [5.5, 2.5, 1.6, 1.1, 1.0, -1.0, -1.1, -1.6, -2.5, -5.5]
-    let modes = [HALF_EVEN, HALF_AWAY, HALF_TOWARD_ZERO, TOWARD_ZERO, AWAY, FLOOR, CEILING, UNNECESSARY]
+    let modes = [Rounding.HALF_EVEN, Rounding.HALF_AWAY, Rounding.HALF_TOWARD_ZERO, Rounding.TOWARD_ZERO, Rounding.AWAY, Rounding.FLOOR, Rounding.CEILING, Rounding.UNNECESSARY]
     for m in modes {
         var line = modeName(m)
         for x in xs {
@@ -118,41 +118,41 @@ fn main() {
         println(line)
     }
 
-    show(1.00.div(2.0, 2, HALF_AWAY))
-    show(1.0.div(2.0, 1, HALF_AWAY))
-    show(1.0.div(2.0, 0, HALF_AWAY))
-    show(1.0.div(3.0, 6, HALF_AWAY))
-    show(2.0.div(3.0, 6, HALF_EVEN))
-    show(1.0.div(8.0, 3, HALF_AWAY))
-    show(1.0.div(0.0, 2, HALF_AWAY))
-    show(1.0.div(3.0, 2, UNNECESSARY))
-    show(1.0.div(3.0, 32769, HALF_AWAY))
-    show(1.0.div(3.0, -1, HALF_AWAY))
-    show(1.0.div(3.0, 32768, HALF_AWAY))
-    show(d("1e32767").div(d("1e-32768"), 0, HALF_AWAY))
+    show(1.00.div(2.0, 2, Rounding.HALF_AWAY))
+    show(1.0.div(2.0, 1, Rounding.HALF_AWAY))
+    show(1.0.div(2.0, 0, Rounding.HALF_AWAY))
+    show(1.0.div(3.0, 6, Rounding.HALF_AWAY))
+    show(2.0.div(3.0, 6, Rounding.HALF_EVEN))
+    show(1.0.div(8.0, 3, Rounding.HALF_AWAY))
+    show(1.0.div(0.0, 2, Rounding.HALF_AWAY))
+    show(1.0.div(3.0, 2, Rounding.UNNECESSARY))
+    show(1.0.div(3.0, 32769, Rounding.HALF_AWAY))
+    show(1.0.div(3.0, -1, Rounding.HALF_AWAY))
+    show(1.0.div(3.0, 32768, Rounding.HALF_AWAY))
+    show(d("1e32767").div(d("1e-32768"), 0, Rounding.HALF_AWAY))
 
-    show(1.235.quantize(2, HALF_AWAY))
-    show(1.245.quantize(2, HALF_EVEN))
-    show((-1.235).quantize(2, HALF_AWAY))
-    show((-1.235).quantize(2, TOWARD_ZERO))
-    show(1.234.quantize(2, UNNECESSARY))
-    show(1.230.quantize(2, UNNECESSARY))
-    show(0.00.quantize(4, HALF_AWAY))
-    show(1.0.quantize(32768, HALF_AWAY))
-    show(1.0.quantize(32769, HALF_AWAY))
-    show(1.23.quantize(4, UNNECESSARY))
+    show(1.235.quantize(2, Rounding.HALF_AWAY))
+    show(1.245.quantize(2, Rounding.HALF_EVEN))
+    show((-1.235).quantize(2, Rounding.HALF_AWAY))
+    show((-1.235).quantize(2, Rounding.TOWARD_ZERO))
+    show(1.234.quantize(2, Rounding.UNNECESSARY))
+    show(1.230.quantize(2, Rounding.UNNECESSARY))
+    show(0.00.quantize(4, Rounding.HALF_AWAY))
+    show(1.0.quantize(32768, Rounding.HALF_AWAY))
+    show(1.0.quantize(32769, Rounding.HALF_AWAY))
+    show(1.23.quantize(4, Rounding.UNNECESSARY))
 
-    showI(2.6.toInt(HALF_AWAY))
-    showI(2.5.toInt(HALF_EVEN))
-    showI(2.5.toInt(HALF_AWAY))
-    showI((-2.6).toInt(TOWARD_ZERO))
-    showI((-2.6).toInt(FLOOR))
-    showI((-2.6).toInt(CEILING))
-    showI(2.6.toInt(UNNECESSARY))
-    showI(d("1e30").toInt(HALF_AWAY))
-    showI(d("9223372036854775807").toInt(UNNECESSARY))
-    showI(d("-9223372036854775808").toInt(UNNECESSARY))
-    showI(d("9223372036854775808").toInt(UNNECESSARY))
+    showI(2.6.toInt(Rounding.HALF_AWAY))
+    showI(2.5.toInt(Rounding.HALF_EVEN))
+    showI(2.5.toInt(Rounding.HALF_AWAY))
+    showI((-2.6).toInt(Rounding.TOWARD_ZERO))
+    showI((-2.6).toInt(Rounding.FLOOR))
+    showI((-2.6).toInt(Rounding.CEILING))
+    showI(2.6.toInt(Rounding.UNNECESSARY))
+    showI(d("1e30").toInt(Rounding.HALF_AWAY))
+    showI(d("9223372036854775807").toInt(Rounding.UNNECESSARY))
+    showI(d("-9223372036854775808").toInt(Rounding.UNNECESSARY))
+    showI(d("9223372036854775808").toInt(Rounding.UNNECESSARY))
 
     // round, roundAway, floor, ceil, trunc at a scale
     let x = 1.23455
@@ -162,17 +162,17 @@ fn main() {
     show(x.trunc(4))
     show(x.ceil(4))
     // dropping far more digits than the coefficient has
-    show(d("1e-30").quantize(10, HALF_EVEN))
-    show(d("1e-30").quantize(10, CEILING))
+    show(d("1e-30").quantize(10, Rounding.HALF_EVEN))
+    show(d("1e-30").quantize(10, Rounding.CEILING))
     // long quotients
-    show(100.0.div(3.0, 34, HALF_EVEN))
-    show(d("1e37").div(3.0, 1, HALF_EVEN))
-    show(d("1e37").div(3.0, 2, HALF_EVEN))
-    show(1.0.div(7.0, 38, HALF_EVEN))
+    show(100.0.div(3.0, 34, Rounding.HALF_EVEN))
+    show(d("1e37").div(3.0, 1, Rounding.HALF_EVEN))
+    show(d("1e37").div(3.0, 2, Rounding.HALF_EVEN))
+    show(1.0.div(7.0, 38, Rounding.HALF_EVEN))
     // quotients next to 10^38
     let nines = d("99999999999999999999999999999999999999")
-    show(nines.div(10.0, 0, HALF_EVEN))
-    show(nines.div(d("0.99999999999999999999999999999999999999"), 0, HALF_EVEN))
-    show(nines.div(0.99, 0, HALF_EVEN))
-    show(nines.quantize(0, HALF_EVEN))
+    show(nines.div(10.0, 0, Rounding.HALF_EVEN))
+    show(nines.div(d("0.99999999999999999999999999999999999999"), 0, Rounding.HALF_EVEN))
+    show(nines.div(0.99, 0, Rounding.HALF_EVEN))
+    show(nines.quantize(0, Rounding.HALF_EVEN))
 }

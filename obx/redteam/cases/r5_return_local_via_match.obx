@@ -2,10 +2,10 @@
 type D = record { v: int }
 type O = value closed { S(D); N }
 fn f(o: &O): &D {
-    let loc = S(D{v: 1})
+    let loc = O.S(D{v: 1})
     match loc {
-        S(d) { return d }
-        N { panic("x") }
+        O.S(d) { return d }
+        O.N { panic("x") }
     }
 }
 fn main() {}

@@ -4,9 +4,9 @@ type D = record { id: int }
 fn (d: mut &D) drop() { println(d.id) }
 type Op = closed { Has(D); Nope }
 fn main() {
-    let o = Has(D{id: 6})
+    let o = Op.Has(D{id: 6})
     match move(o) {
-        Has(d) { println(d.id) }
-        Nope { }
+        Op.Has(d) { println(d.id) }
+        Op.Nope { }
     }
 }

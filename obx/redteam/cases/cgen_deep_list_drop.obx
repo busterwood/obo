@@ -2,7 +2,7 @@
 // expect: done
 type L = closed { Nil; Cons(int, L) }
 fn main() {
-    var l = Nil
-    for i in 0..300000 { l = Cons(i, move(l)) }
+    var l = L.Nil
+    for i in 0..300000 { l = L.Cons(i, move(l)) }
     println("done")
 }

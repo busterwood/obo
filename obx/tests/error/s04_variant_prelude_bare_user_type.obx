@@ -1,0 +1,9 @@
+// error: Mine.Ok
+type Mine = value closed { Ok(int); Err(str) }
+fn main() {
+    let m = Mine.Ok(1)
+    match m {
+        Ok(x) { println(x) }
+        Mine.Err(e) { println(e) }
+    }
+}

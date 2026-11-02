@@ -1,0 +1,46 @@
+// expect: 7
+// expect: none
+// expect: 8
+// expect: bad
+// expect: mine 5
+// expect: theirs
+type Mine = value closed { Ok(int); Err(str) }
+fn half(n: int): Mine {
+    if n % 2 != 0 { return Mine.Err("odd") }
+    return Mine.Ok(n / 2)
+}
+fn quarter(n: int): Mine {
+    let h = try half(n)
+    return half(h)
+}
+fn main() {
+    let a: Option[int] = Option.Some(7)
+    match a {
+        Option.Some(x) { println(x) }
+        None { println("none") }
+    }
+    let b: Option[int] = Option.None
+    match b {
+        Some(x) { println(x) }
+        Option.None { println("none") }
+    }
+    let r: Result[int, str] = Result.Ok(8)
+    match r {
+        Result.Ok(x) { println(x) }
+        Err(e) { println(e) }
+    }
+    let r2: Result[int, str] = Err("bad")
+    match r2 {
+        Ok(x) { println(x) }
+        Result.Err(e) { println(e) }
+    }
+    match quarter(20) {
+        Mine.Ok(x) { println("mine " + x.toStr()) }
+        Mine.Err(e) { println(e) }
+    }
+    let o = Option[str].Some("theirs")
+    match o {
+        Some(s) { println(s) }
+        None {}
+    }
+}

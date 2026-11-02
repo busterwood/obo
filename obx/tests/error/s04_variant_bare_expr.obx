@@ -1,0 +1,5 @@
+// error: Zork
+type Color = closed { Zork; Blue }
+fn main() {
+    let c = Zork
+}

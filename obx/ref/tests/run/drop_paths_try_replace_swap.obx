@@ -45,8 +45,8 @@ fn early(xs: []str): str {
 }
 fn consume(t: Tag): str {
     match t {
-        Name(s) { return s }
-        Num(n) { return n.toStr() }
+        Tag.Name(s) { return s }
+        Tag.Num(n) { return n.toStr() }
     }
 }
 fn main() {
@@ -62,7 +62,7 @@ fn main() {
     let p = Pair{a: "x" + "y", b: "z"}
     let q = p
     println(q.a + p.a)
-    var tags = [Name("n" + "1"), Num(2)]
+    var tags = [Tag.Name("n" + "1"), Tag.Num(2)]
     let t0 = tags[0]
     println(consume(t0))
     println(consume(tags[1]))

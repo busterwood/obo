@@ -3,13 +3,13 @@
 type Maybe[T] = value closed { Has(T); Nothing }
 fn show(m: &Maybe[int]) {
     match m {
-        Has(v) { println(v) }
-        Nothing { println("none") }
+        Maybe.Has(v) { println(v) }
+        Maybe.Nothing { println("none") }
     }
 }
 fn main() {
-    let a = Has(3)
-    let b: Maybe[int] = Nothing
+    let a = Maybe.Has(3)
+    let b: Maybe[int] = Maybe.Nothing
     show(&a)
     show(&b)
 }

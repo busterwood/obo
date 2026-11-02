@@ -2,9 +2,9 @@
 // line: 7
 type D = closed { A(int) }
 fn (d: mut &D) drop() {}
-fn mk(): D { return A(1) }
+fn mk(): D { return D.A(1) }
 fn main() {
     match mk() {
-        A(x) {}
+        D.A(x) {}
     }
 }

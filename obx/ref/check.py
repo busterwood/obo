@@ -824,9 +824,7 @@ class Checker:
                 has_else = True
                 self.emit("} else {" if not first else "{")
             else:
-                vr = next((x for x in d.variants if x.name == arm.variant), None)
-                if vr is None:
-                    self.err(f"{arm.variant} is not a variant of {tstr(base)}", arm.where)
+                vr = self.arm_variant(arm, d, base)
                 if vr.index in seen:
                     self.err(f"{arm.variant} is matched twice", arm.where)
                 seen.add(vr.index)
@@ -882,6 +880,19 @@ class Checker:
         if s.arms:
             self.emit("}")
         self.join(results, s.where)
+
+    def arm_variant(self, arm, d, base):
+        q = None
+        for p in arm.vpath:
+            q = N('name', arm.where, v=p) if q is None else N('field', arm.where, e=q, name=p)
+        st = self.static(q) if len(arm.vpath) > 1 or arm.variant in self.prog.prelude else None
+        vr = st[1] if st and isinstance(st[1], Variant) else None
+        if vr is None or vr.decl is not d:
+            if len(arm.vpath) == 1:
+                self.err(f"write {d.name}.{arm.variant}: a variant is qualified by its type (only Some, "
+                         "None, Ok and Err of the prelude may be written bare)", arm.where)
+            self.err(f"{'.'.join(arm.vpath)} is not a variant of {tstr(base)}", arm.where)
+        return vr
 
     def match_lits(self, s, v, t):
         ctx = self.ctx
@@ -1011,17 +1022,30 @@ class Checker:
                 return ('decl', d)
             if e.v in ctx.module.imports:
                 return ('module', ctx.module.imports[e.v])
+            if e.v in self.prog.prelude:
+                return ('decl', self.prog.prelude[e.v])
             return None
         if e.kind == 'field':
             b = self.static(e.e)
             if b and b[0] == 'module':
                 return ('decl', self.prog.lookup_in(ctx.module, b[1], e.name, e.where))
+            if b and b[0] == 'decl' and isinstance(b[1], TypeDecl) and b[1].form in ('closed', 'alias'):
+                return self.variant_of(b, e.name, e.where)
             return None
         if e.kind == 'index':
             b = self.static(e.e)
             if b and b[0] == 'decl' and isinstance(b[1], (TypeDecl, FnDecl, Variant)):
                 return ('decl', b[1], [self.texpr(x) for x in e.items])
             return None
+        return None
+
+    def variant_of(self, b, name, where):
+        """Type.Variant (SPEC 4.4): the variant, with the type's arguments when it has them."""
+        t = self.static_type(b, where)
+        if t and t[0] == 'inst' and t[1].form == 'closed':
+            vr = next((v for v in t[1].variants if v.name == name), None)
+            if vr is not None:
+                return ('decl', vr) if t[2] is None else ('decl', vr, t[2])
         return None
 
     def texpr(self, x):
@@ -1093,7 +1117,7 @@ class Checker:
             return Val(d.cname, d.ty, 'place', root=None, mutable=True, glob=d)
         if isinstance(d, Variant):
             if d.fields:
-                self.err(f"variant {d.name} has fields: write {d.name}(...)", e.where)
+                self.err(f"variant {d.name} has fields: write {d.decl.name}.{d.name}(...)", e.where)
             return self.construct_variant(d, [], e.where, exp, targs)
         if isinstance(d, FnDecl):
             if d.extern is not None:
@@ -1137,9 +1161,11 @@ class Checker:
     def x_field(self, e, exp):
         st = self.static_ns(e.e)
         if st is not None:
-            if st[0] == 'module':
-                d = self.prog.lookup_in(self.ctx.module, st[1], e.name, e.where)
-                return self.static_value(('decl', d), e, exp)
+            vst = self.static(e)
+            if vst is not None:
+                return self.static_value(vst, e, exp)
+            if st[0] == 'decl' and isinstance(st[1], TypeDecl) and st[1].form == 'closed':
+                self.err(f"{st[1].name} has no variant {e.name}", e.where)
             self.err(f"{e.name} on a type is an associated function: call it", e.where)
         v = self.expr(e.e, None)
         return self.field_of(v, e.name, e.where)
@@ -1467,7 +1493,8 @@ class Checker:
             if len(targs) != len(tps):
                 self.err(f"{d.name} takes {len(tps)} type arguments, not {len(targs)}", where)
             for tp, a in zip(tps, targs):
-                bind[tp] = self.prog.resolve_type(a, self.ctx.module, self.ctx.fd.env, 'targ', where)
+                bind[tp] = a if isinstance(targs, tuple) else \
+                    self.prog.resolve_type(a, self.ctx.module, self.ctx.fd.env, 'targ', where)
         elif exp is not None and exp[0] == 'inst' and exp[1] is d:
             bind = dict(zip(tps, exp[2]))
         fts = [f[1] for f in vr.fields]
@@ -1589,6 +1616,9 @@ class Checker:
             f = f.e
         if f.kind == 'field':
             st = self.static_ns(f.e)
+            vst = self.static(f) if st is not None and st[0] != 'module' else None
+            if vst is not None and isinstance(vst[1], Variant):
+                return self.construct_variant(vst[1], e.args, e.where, exp, vst[2] if len(vst) > 2 else None)
             if st is not None and st[0] != 'module':
                 t = self.static_type(st, f.where)
                 if t is None:

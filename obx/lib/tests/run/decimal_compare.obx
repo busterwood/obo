@@ -42,7 +42,7 @@ fn main() {
     for x in xs { line += " " + x.canonical() }
     println(substr(line, 1, len(line)))
 
-    // format is exact display text or DecInexact; toStr falls back to canonical
+    // format is exact display text or DecError.Inexact; toStr falls back to canonical
     match (1.20 * 1.2).format() {
         Ok(s) { println("ok " + s) }
         Err(e) { println("err") }

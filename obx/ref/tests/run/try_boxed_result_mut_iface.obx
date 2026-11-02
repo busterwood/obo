@@ -20,22 +20,22 @@ fn run[T: Counter](c: mut &T, k: int): int {
     return last
 }
 fn mk(i: int): R[D] {
-    if i < 0 { return Err("neg") }
-    return Ok(D{id: i})
+    if i < 0 { return R.Err("neg") }
+    return R.Ok(D{id: i})
 }
 fn twice(i: int): R[[]D] {
     let a = try mk(i)
     let b = try mk(i - 5)
-    return Ok([a, b])
+    return R.Ok([a, b])
 }
 fn main() {
     match twice(7) {
-        Ok(ds) { println(len(ds)) }
-        Err(e) { println(e) }
+        R.Ok(ds) { println(len(ds)) }
+        R.Err(e) { println(e) }
     }
     match twice(3) {
-        Ok(ds) { println(len(ds)) }
-        Err(e) { println(e) }
+        R.Ok(ds) { println(len(ds)) }
+        R.Err(e) { println(e) }
     }
     var c = C{n: 0}
     println(run(mut &c, 5))

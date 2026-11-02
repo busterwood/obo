@@ -585,10 +585,11 @@ class Parser:
                 self.next()
                 arms.append(N('arm', aw, variant=None, lits=None, binds=None, body=self.block()))
             elif self.peek().k == 'id':
-                vn = self.next().v
-                if self.atsym('.'):
+                vpath = [self.next().v]
+                while self.atsym('.'):
                     self.next()
-                    vn = self.ident()
+                    vpath.append(self.ident())
+                vn = vpath[-1]
                 binds = None
                 if self.atsym('('):
                     self.next()
@@ -598,7 +599,7 @@ class Parser:
                         if not self.atsym(')'):
                             self.sym(',')
                     self.next()
-                arms.append(N('arm', aw, variant=vn, lits=None, binds=binds, body=self.block()))
+                arms.append(N('arm', aw, variant=vn, vpath=vpath, lits=None, binds=binds, body=self.block()))
             else:
                 lits = [self.literal()]
                 while self.atsym(','):

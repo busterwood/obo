@@ -1,9 +1,9 @@
 // expect: 1
 type O = closed { S(int); N }
 fn main() {
-    var o = S(1)
+    var o = O.S(1)
     match o {
-        S(x) { o = N; println(x) }
-        N {}
+        O.S(x) { o = O.N; println(x) }
+        O.N {}
     }
 }

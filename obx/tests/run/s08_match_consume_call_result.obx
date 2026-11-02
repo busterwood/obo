@@ -3,10 +3,10 @@
 type D = record { id: int }
 fn (d: mut &D) drop() { println(d.id * 10) }
 type Op = closed { Has(D); Nope }
-fn make(n: int): Op { return Has(D{id: n}) }
+fn make(n: int): Op { return Op.Has(D{id: n}) }
 fn main() {
     match make(3) {
-        Has(d) { println(d.id) }
-        Nope { println(0) }
+        Op.Has(d) { println(d.id) }
+        Op.Nope { println(0) }
     }
 }

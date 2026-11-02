@@ -205,9 +205,9 @@ pub type ParseError = value closed {
 
 pub fn (e: ParseError) toStr(): str {
     match e {
-        Empty { return "no digits" }
-        Invalid(at) { return "invalid digit at " + intToStr(at) }
-        OutOfRange { return "out of range" }
+        ParseError.Empty { return "no digits" }
+        ParseError.Invalid(at) { return "invalid digit at " + intToStr(at) }
+        ParseError.OutOfRange { return "out of range" }
     }
 }
 
@@ -226,17 +226,17 @@ pub fn parseIntBase(s: str, base: int): Result[int, ParseError] {
         neg = strByte(s, 0) == '-'
         i = 1
     }
-    if i == len(s) { return Err(Empty) }
+    if i == len(s) { return Err(ParseError.Empty) }
     var n: i128 = 0
     while i < len(s) {
         let d = digitValue(strByte(s, i))
-        if d < 0 || d >= base { return Err(Invalid(i)) }
+        if d < 0 || d >= base { return Err(ParseError.Invalid(i)) }
         n = n * i128(base) + i128(d)
-        if n > 9223372036854775808 { return Err(OutOfRange) }
+        if n > 9223372036854775808 { return Err(ParseError.OutOfRange) }
         i += 1
     }
     if neg { n = -n }
-    if n > 9223372036854775807 { return Err(OutOfRange) }
+    if n > 9223372036854775807 { return Err(ParseError.OutOfRange) }
     return Ok(int(n))
 }
 

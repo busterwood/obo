@@ -13,11 +13,11 @@ type Expr = closed {
 }
 fn eval(e: &Expr): int {
     match e {
-        Num(n) { return n }
-        Add(a, b) { return eval(a) + eval(b) }
-        Mul(a, b) { return eval(a) * eval(b) }
-        Neg(a) { return -eval(a) }
-        Call(name, args) {
+        Expr.Num(n) { return n }
+        Expr.Add(a, b) { return eval(a) + eval(b) }
+        Expr.Mul(a, b) { return eval(a) * eval(b) }
+        Expr.Neg(a) { return -eval(a) }
+        Expr.Call(name, args) {
             var s = 0
             for x in args { s += eval(x) }
             return s
@@ -26,19 +26,19 @@ fn eval(e: &Expr): int {
 }
 fn show(e: Expr): str {
     match move(e) {
-        Num(n) { return n.toStr() }
-        Add(a, b) { return "(" + show(a) + " + " + show(b) + ")" }
-        Mul(a, _) { return "mul " + show(a) }
-        Neg(a) { return "-" + show(a) }
-        Call(name, _) { return name + "()" }
+        Expr.Num(n) { return n.toStr() }
+        Expr.Add(a, b) { return "(" + show(a) + " + " + show(b) + ")" }
+        Expr.Mul(a, _) { return "mul " + show(a) }
+        Expr.Neg(a) { return "-" + show(a) }
+        Expr.Call(name, _) { return name + "()" }
     }
 }
 fn main() {
-    let e = Add(Num(1), Mul(Num(2), Neg(Num(3))))
+    let e = Expr.Add(Expr.Num(1), Expr.Mul(Expr.Num(2), Expr.Neg(Expr.Num(3))))
     println(eval(&e))
     println(show(e))
-    let c = Call{name: "sum", args: [Num(1), Num(2), Num(39)]}
+    let c = Expr.Call{name: "sum", args: [Expr.Num(1), Expr.Num(2), Expr.Num(39)]}
     println(eval(&c))
     println(show(c))
-    println(show(Mul(Num(5), Call{name: "f", args: []})))
+    println(show(Expr.Mul(Expr.Num(5), Expr.Call{name: "f", args: []})))
 }

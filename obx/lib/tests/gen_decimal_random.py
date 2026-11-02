@@ -171,9 +171,9 @@ def write(cases):
         elif op == 'rem':
             e = f'(d("{a}") % d("{b}")).toStr()'
         elif op == 'div':
-            e = f'txt(d("{a}").div(d("{b}"), {scale}, {mode}))'
+            e = f'txt(d("{a}").div(d("{b}"), {scale}, Rounding.{mode}))'
         else:
-            e = f'txt(d("{a}").quantize({scale}, {mode}))'
+            e = f'txt(d("{a}").quantize({scale}, Rounding.{mode}))'
         out.append(f'    chk("{op} {a} {b} {scale} {mode}", {e}, "{want}")')
     out.append(f'    println(({len(cases)} - bad).toStr() + " cases ok")')
     out.append('}')

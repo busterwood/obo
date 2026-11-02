@@ -2,11 +2,11 @@
 type L[T] = closed { Nil; Cons(T, L[T]) }
 fn last[T](l: L[T], d: T): T {
     match move(l) {
-        Nil { return d }
-        Cons(x, rest) {
+        L.Nil { return d }
+        L.Cons(x, rest) {
             var done = false
             match rest {
-                Nil { done = true }
+                L.Nil { done = true }
                 else {}
             }
             if done { return x }
@@ -15,6 +15,6 @@ fn last[T](l: L[T], d: T): T {
     }
 }
 fn main() {
-    let l = Cons("a" + "", Cons("b" + "", Cons("c" + "", Nil)))
+    let l = L.Cons("a" + "", L.Cons("b" + "", L.Cons("c" + "", L.Nil)))
     println(last(l, "z"))
 }

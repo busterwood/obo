@@ -7,16 +7,16 @@ type Ast = closed {
 }
 fn show(a: &Ast) {
     match a {
-        Lit(n) { println(n) }
-        Call(name, args) {
+        Ast.Lit(n) { println(n) }
+        Ast.Call(name, args) {
             println(name)
             println(len(args))
         }
     }
 }
 fn main() {
-    let c = Call{name: "f", args: [Lit(1), Lit(2)]}
+    let c = Ast.Call{name: "f", args: [Ast.Lit(1), Ast.Lit(2)]}
     show(&c)
-    let l = Lit(5)
+    let l = Ast.Lit(5)
     show(&l)
 }

@@ -2,9 +2,9 @@
 // line: 6
 type C = closed { A; B; Cc }
 fn main() {
-    let c = A
+    let c = C.A
     match c {
-        A {}
-        B {}
+        C.A {}
+        C.B {}
     }
 }

@@ -2,11 +2,11 @@
 type L[T] = closed { Nil; Cons(T, L[T]) }
 fn count[T](l: &L[T]): int {
     match l {
-        Nil { return 0 }
-        Cons(_, rest) { return 1 + count(rest) }
+        L.Nil { return 0 }
+        L.Cons(_, rest) { return 1 + count(rest) }
     }
 }
 fn main() {
-    let l = Cons("a" + "", Cons("b" + "", Cons("c" + "", Nil)))
+    let l = L.Cons("a" + "", L.Cons("b" + "", L.Cons("c" + "", L.Nil)))
     println(count(&l))
 }

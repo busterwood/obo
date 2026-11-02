@@ -1,10 +1,10 @@
 // expect: a
 type V = value closed { A(str); B }
-var g: V = A("a")
-fn clear(): int { g = B; return 0 }
+var g: V = V.A("a")
+fn clear(): int { g = V.B; return 0 }
 fn main() {
     match g {
-        A(s) { let n = clear(); println(s) }
-        B {}
+        V.A(s) { let n = clear(); println(s) }
+        V.B {}
     }
 }

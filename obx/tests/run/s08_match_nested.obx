@@ -4,18 +4,18 @@ type Opt = value closed { Yes(int); No }
 type Wrap = value closed { W(Opt); Bare }
 fn f(w: &Wrap) {
     match w {
-        W(o) {
+        Wrap.W(o) {
             match o {
-                Yes(n) { println(n) }
-                No { println("no") }
+                Opt.Yes(n) { println(n) }
+                Opt.No { println("no") }
             }
         }
-        Bare { println("bare") }
+        Wrap.Bare { println("bare") }
     }
 }
 fn main() {
-    let a = W(Yes(4))
-    let b = W(No)
+    let a = Wrap.W(Opt.Yes(4))
+    let b = Wrap.W(Opt.No)
     f(&a)
     f(&b)
 }

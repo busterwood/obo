@@ -2,9 +2,9 @@
 type D = record { v: int }
 type O = closed { P(int, D); N }
 fn main() {
-    var o = P(1, D{v: 1})
+    var o = O.P(1, D{v: 1})
     match o {
-        P(n, d) { o = N; println(d.v) }
-        N {}
+        O.P(n, d) { o = O.N; println(d.v) }
+        O.N {}
     }
 }

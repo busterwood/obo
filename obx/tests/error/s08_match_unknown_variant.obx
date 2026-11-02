@@ -1,9 +1,9 @@
 // error: Purple
 type Color = value closed { Red; Green }
 fn main() {
-    let c = Red
+    let c = Color.Red
     match c {
-        Red { }
+        Color.Red { }
         Purple { }
         else { }
     }

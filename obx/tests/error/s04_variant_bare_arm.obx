@@ -1,0 +1,9 @@
+// error: Color.Zork
+// line: 6
+type Color = closed { Zork; Blue }
+fn main() {
+    match Color.Blue {
+        Zork { println("z") }
+        Color.Blue { println("b") }
+    }
+}

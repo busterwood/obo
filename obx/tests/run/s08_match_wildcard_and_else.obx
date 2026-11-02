@@ -4,15 +4,15 @@
 type Pair2 = value closed { Two(int, int); One(int); Zero }
 fn pick(p: &Pair2) {
     match p {
-        Two(_, b) { println(b) }
-        One(a) { println(a) }
+        Pair2.Two(_, b) { println(b) }
+        Pair2.One(a) { println(a) }
         else { println("none") }
     }
 }
 fn main() {
-    let a = Two(1, 3)
-    let b = One(7)
-    let c: Pair2 = Zero
+    let a = Pair2.Two(1, 3)
+    let b = Pair2.One(7)
+    let c: Pair2 = Pair2.Zero
     pick(&a)
     pick(&b)
     pick(&c)

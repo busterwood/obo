@@ -1,9 +1,9 @@
 // error: Blue|exhaust|cover|missing
 type Color = value closed { Red; Green; Blue }
 fn main() {
-    let c = Red
+    let c = Color.Red
     match c {
-        Red { println(1) }
-        Green { println(2) }
+        Color.Red { println(1) }
+        Color.Green { println(2) }
     }
 }

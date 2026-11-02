@@ -60,7 +60,7 @@ pub fn of[C: Currency](d: Decimal): Money[C] {
 }
 
 // d rounded with mode to C's minor unit.
-pub fn round[C: Currency](d: Decimal, mode: RoundingMode): Money[C] {
+pub fn round[C: Currency](d: Decimal, mode: Rounding): Money[C] {
     return Money{amt: check(d.quantize(C.scale(), mode))}
 }
 
@@ -71,7 +71,7 @@ pub fn fromMinor[C: Currency](units: int): Money[C] {
 
 pub fn zero[C: Currency](): Money[C] { return fromMinor(0) }
 
-// Decimal text ("12.5", "-3") as an amount of C; DecInexact if it has more
+// Decimal text ("12.5", "-3") as an amount of C; DecError.Inexact if it has more
 // fraction digits than the minor unit.
 pub fn parse[C: Currency](s: str): Result[Money[C], DecError] {
     let d = try Decimal.parse(s)
@@ -81,12 +81,12 @@ pub fn parse[C: Currency](s: str): Result[Money[C], DecError] {
 pub fn (m: Money[C]) amount(): Decimal { return m.amt }
 pub fn (m: Money[C]) code(): str { return C.code() }
 
-// The amount in minor units (cents); DecOverflow outside int.
+// The amount in minor units (cents); DecError.Overflow outside int.
 pub fn (m: Money[C]) toMinor(): Result[int, DecError] {
     var p = decimalOf(1)
     for i in 0..C.scale() { p = p * decimalOf(10) }
     let units = try m.amt.mulExact(p)
-    return units.toInt(UNNECESSARY)
+    return units.toInt(Rounding.UNNECESSARY)
 }
 
 pub fn (m: Money[C]) isZero(): bool { return m.amt.isZero() }
@@ -98,9 +98,9 @@ pub fn (a: Money[C]) sub(b: Money[C]): Money[C] { return Money{amt: a.amt - b.am
 pub fn (a: Money[C]) neg(): Money[C] { return Money{amt: -a.amt} }
 
 // The amount times rate, rounded to the minor unit with HALF_EVEN.
-pub fn (a: Money[C]) times(rate: Decimal): Money[C] { return a.timesWith(rate, HALF_EVEN) }
+pub fn (a: Money[C]) times(rate: Decimal): Money[C] { return a.timesWith(rate, Rounding.HALF_EVEN) }
 
-pub fn (a: Money[C]) timesWith(rate: Decimal, mode: RoundingMode): Money[C] {
+pub fn (a: Money[C]) timesWith(rate: Decimal, mode: Rounding): Money[C] {
     return Money{amt: check((a.amt * rate).quantize(C.scale(), mode))}
 }
 
@@ -123,8 +123,8 @@ fn unitOf[C: Currency](neg: bool): Decimal {
 
 // How many minor units d is (d is a small whole number of them).
 fn unitCount(d: Decimal, scale: int): int {
-    let u = check(d.abs().div(Decimal.fromUnits(1, scale), 0, UNNECESSARY))
-    match u.toInt(UNNECESSARY) {
+    let u = check(d.abs().div(Decimal.fromUnits(1, scale), 0, Rounding.UNNECESSARY))
+    match u.toInt(Rounding.UNNECESSARY) {
         Ok(n) { return n }
         Err(e) {
             stop(e)
@@ -138,7 +138,7 @@ fn unitCount(d: Decimal, scale: int): int {
 // 100.00 into 3 is 33.34, 33.33, 33.33; -100.00 is -33.34, -33.33, -33.33.
 pub fn (a: Money[C]) allocate(n: int): []Money[C] {
     if n <= 0 { panic("Money.allocate: the number of parts must be positive") }
-    let base = check(a.amt.div(decimalOf(n), C.scale(), TOWARD_ZERO))
+    let base = check(a.amt.div(decimalOf(n), C.scale(), Rounding.TOWARD_ZERO))
     let extra = unitCount(a.amt - base * decimalOf(n), C.scale())
     let step = unitOf[C](a.amt.isNeg())
     var out: []Money[C] = []
@@ -169,7 +169,7 @@ pub fn (a: Money[C]) allocateBy(weights: &[int]): []Money[C] {
     var sum = Decimal.zero()
     for w in weights {
         let share = a.amt * decimalOf(w)
-        let b = check(share.div(wt, C.scale(), TOWARD_ZERO))
+        let b = check(share.div(wt, C.scale(), Rounding.TOWARD_ZERO))
         append(mut &parts, b)
         append(mut &rems, (share - b * wt).abs())
         sum = sum + b

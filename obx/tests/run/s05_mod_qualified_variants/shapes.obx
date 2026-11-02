@@ -2,8 +2,8 @@ pub type Shape = closed { Circle(int); Square(int) }
 pub fn area(s: &Shape): int {
     var r = 0
     match s {
-        Circle(n) { r = 3 * n * n }
-        Square(n) { r = n * n }
+        Shape.Circle(n) { r = 3 * n * n }
+        Shape.Square(n) { r = n * n }
     }
     return r
 }

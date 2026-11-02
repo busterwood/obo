@@ -13,6 +13,7 @@ INT, BOOL, STR, FLOAT, BYTE, VOID = (('prim', n) for n in ('int', 'bool', 'str',
 SELF = ('self',)
 BITS = {'int': 64, 'i32': 32, 'u32': 32, 'u64': 64, 'byte': 8, 'i128': 128, 'u128': 128}
 RESERVED = {'len', 'append', 'pop', 'swap', 'replace', 'move', 'array', 'panic', 'assert', 'exit'}
+PRELUDE = ('Some', 'None', 'Ok', 'Err')
 RANGES = {'int': (-2**63, 2**63 - 1), 'i32': (-2**31, 2**31 - 1), 'u32': (0, 2**32 - 1),
           'u64': (0, 2**64 - 1), 'byte': (0, 255), 'i128': (-2**127, 2**127 - 1),
           'u128': (0, 2**128 - 1)}
@@ -207,6 +208,7 @@ class Program:
         self.prim_methods = {p: {} for p in PRIMS}
         self.pending_checks = []
         self.resolved = False
+        self.prelude = {}           # Some, None, Ok, Err: the variants that may be written bare
         self.std = self.load(std_path, None, 'std', True)
 
     # ---- loading
@@ -262,6 +264,9 @@ class Program:
                 raise CompileError(f"{name} is a primitive type and cannot be redeclared", where)
             if name in RESERVED:
                 raise CompileError(f"{name} is a built-in function; its name is reserved", where)
+            if name in PRELUDE and not mod.is_std:
+                raise CompileError(f"{name} is a prelude variant (std's {name}); no other module may "
+                                   "declare a top-level name that clashes with it", where)
             mod.scope[name] = d
         for a in decls:
             if a.kind == 'type':
@@ -271,7 +276,8 @@ class Program:
                     for i, (vn, fs, named, vw) in enumerate(a.variants):
                         v = Variant(vn, d, i, fs, named, vw)
                         d.variants.append(v)
-                        add(vn, v, vw)
+                        if mod.is_std and vn in PRELUDE:
+                            self.prelude[vn] = v
             elif a.kind == 'fn':
                 fd = FnDecl(a, mod)
                 mod.fns.append(fd)

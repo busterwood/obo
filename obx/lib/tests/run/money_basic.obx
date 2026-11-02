@@ -55,7 +55,7 @@ fn main() {
 
     // HALF_EVEN: 0.125 -> 0.12, but 0.1250000250 -> 0.13; HALF_AWAY: 0.125 -> 0.13
     let e: money.Money[EUR] = money.of(0.25)
-    println(e.times(0.5).toStr() + " " + e.times(0.5000001).toStr() + " " + e.timesWith(0.5, HALF_AWAY).toStr())
+    println(e.times(0.5).toStr() + " " + e.times(0.5000001).toStr() + " " + e.timesWith(0.5, Rounding.HALF_AWAY).toStr())
 
     let h: money.Money[USD] = money.of(100.00)
     println(line(&h.allocate(3)))
@@ -92,12 +92,12 @@ fn main() {
         Err(err) { println("err " + err.code().toStr()) }
     }
     let minus: money.Money[USD] = money.fromMinor(-300)
-    println(a.toMinor().unwrap().toStr() + " " + minus.amount().toInt(UNNECESSARY).unwrap().toStr())
-    println(money.round[USD](6.995, HALF_EVEN))
+    println(a.toMinor().unwrap().toStr() + " " + minus.amount().toInt(Rounding.UNNECESSARY).unwrap().toStr())
+    println(money.round[USD](6.995, Rounding.HALF_EVEN))
     println(a.code() + " " + money.of[EUR](12.5).toStr())
     println(a.timesInt(3))
     let base: money.Money[USD] = money.of(2.25)
-    println(base.times(0.5).toStr() + " " + base.timesWith(0.5, FLOOR).toStr())
+    println(base.times(0.5).toStr() + " " + base.timesWith(0.5, Rounding.FLOOR).toStr())
     let z: money.Money[USD] = money.zero()
     println(z.toStr() + " " + z.isZero().toStr())
 }

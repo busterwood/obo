@@ -24,24 +24,24 @@ fn pick(b: bool): fn(int): int {
 fn dbl(x: int): int { return x * 2 }
 fn sumList[T](l: &List[T], f: fn(&T): int): int {
     match l {
-        Cons(h, t) { return f(h) + sumList(t, f) }
-        Nil { return 0 }
+        List.Cons(h, t) { return f(h) + sumList(t, f) }
+        List.Nil { return 0 }
     }
 }
 fn val(x: &int): int { return x }
 fn insert(t: Tree, v: int): Tree {
     match move(t) {
-        Leaf { return Node{left: Leaf, val: v, right: Leaf} }
-        Node(l, x, r) {
-            if v < x { return Node{left: insert(l, v), val: x, right: r} }
-            return Node{left: l, val: x, right: insert(r, v)}
+        Tree.Leaf { return Tree.Node{left: Tree.Leaf, val: v, right: Tree.Leaf} }
+        Tree.Node(l, x, r) {
+            if v < x { return Tree.Node{left: insert(l, v), val: x, right: r} }
+            return Tree.Node{left: l, val: x, right: insert(r, v)}
         }
     }
 }
 fn walk(t: &Tree, out: mut &[]int) {
     match t {
-        Leaf {}
-        Node(l, x, r) {
+        Tree.Leaf {}
+        Tree.Node(l, x, r) {
             walk(l, out)
             append(out, x)
             walk(r, out)
@@ -51,11 +51,11 @@ fn walk(t: &Tree, out: mut &[]int) {
 fn main() {
     let e = E{}
     let ve = VE{}
-    let k = B
-    match k { A { println("a") } B { println("b") } }
-    let o = Only(3)
-    match o { Only(n) { println(n) } }
-    let l = Cons(1, Cons(2, Cons(3, Nil)))
+    let k = K.B
+    match k { K.A { println("a") } K.B { println("b") } }
+    let o = One.Only(3)
+    match o { One.Only(n) { println(n) } }
+    let l = List.Cons(1, List.Cons(2, List.Cons(3, List.Nil)))
     println(sumList(&l, val))
     let ops = [Ops{f: inc, name: "inc"}, Ops{f: dbl, name: "dbl"}]
     for op in ops { println(op.name + " " + op.f(10).toStr()) }
@@ -64,13 +64,13 @@ fn main() {
     var acc = b.v
     for f in b.fs { acc = f(acc) }
     println(acc)
-    var t: Tree = Leaf
+    var t: Tree = Tree.Leaf
     for x in [5, 2, 8, 1, 9, 3] { t = insert(move(t), x) }
     var out: []int = []
     walk(&t, mut &out)
     var s = ""
     for x in out { s += x.toStr() }
     println(s)
-    let ls = Cons("a", Nil)
-    match ls { Cons(h, _) { println(h) } Nil {} }
+    let ls = List.Cons("a", List.Nil)
+    match ls { List.Cons(h, _) { println(h) } List.Nil {} }
 }

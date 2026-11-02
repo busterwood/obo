@@ -1,0 +1,24 @@
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: 4
+type A = closed { Red; Green }
+type B = value closed { Red; Blue(int) }
+fn a(x: &A): int {
+    match x {
+        A.Red { return 1 }
+        A.Green { return 2 }
+    }
+}
+fn b(x: B): int {
+    match x {
+        B.Red { return 3 }
+        B.Blue(n) { return n }
+    }
+}
+fn main() {
+    println(a(&A.Red))
+    println(a(&A.Green))
+    println(b(B.Red))
+    println(b(B.Blue(4)))
+}

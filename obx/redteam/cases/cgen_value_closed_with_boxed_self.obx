@@ -2,9 +2,9 @@
 type L = closed { Nil; Cons(int, L) }
 type W = value closed { Has(L); Empty }
 fn len2(l: &L): int {
-    match l { Nil { return 0 } Cons(_, r) { return 1 + len2(r) } }
+    match l { L.Nil { return 0 } L.Cons(_, r) { return 1 + len2(r) } }
 }
 fn main() {
-    let w = Has(Cons(1, Cons(2, Nil)))
-    match w { Has(l) { println(len2(l)) } Empty {} }
+    let w = W.Has(L.Cons(1, L.Cons(2, L.Nil)))
+    match w { W.Has(l) { println(len2(l)) } W.Empty {} }
 }

@@ -1,0 +1,5 @@
+// error: Purple
+type Color = closed { Red; Blue }
+fn main() {
+    let c = Color.Purple
+}

@@ -25,7 +25,7 @@ fn (Cents) fromFraction(d: int, s: int): Cents {
 type Inner = value record { n: int; tags: []str }
 type Outer = record { i: Inner; o: Option[Inner] }
 type Lbl = value closed { Plain(str); Pair { a: str; b: str } }
-var LB: Lbl = Pair{a: "x", b: "y"}
+var LB: Lbl = Lbl.Pair{a: "x", b: "y"}
 const N: i32 = 5
 const BIG: u128 = 1 << 100
 const NAME = "obx"
@@ -61,8 +61,8 @@ fn main() {
         None {}
     }
     match LB {
-        Pair(a, b) { println(a + b) }
-        Plain(s) { println(s) }
+        Lbl.Pair(a, b) { println(a + b) }
+        Lbl.Plain(s) { println(s) }
     }
     let n: i32 = N * 2
     println(int(n))

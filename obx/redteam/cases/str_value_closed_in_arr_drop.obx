@@ -1,8 +1,8 @@
 // expect: 1
 type V = value closed { A(str); B(int) }
 fn main() {
-    var xs: []V = [A("x" + ""), B(1)]
-    xs[0] = B(2)
-    xs[1] = A("y" + "")
+    var xs: []V = [V.A("x" + ""), V.B(1)]
+    xs[0] = V.B(2)
+    xs[1] = V.A("y" + "")
     println(len(xs) - 1)
 }

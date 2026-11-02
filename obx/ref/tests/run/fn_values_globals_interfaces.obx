@@ -19,7 +19,7 @@ fn (p: P) sum(): int { return p.x + p.y }
 fn (p: &P) toStr(): str { return "P(" + p.x.toStr() + ", " + p.y.toStr() + ")" }
 type Color = value closed { Red; Green; Rgb(int, int, int) }
 var origin: P = P{x: 1, y: 2}
-var col: Color = Rgb(1, 2, 3)
+var col: Color = Color.Rgb(1, 2, 3)
 var name: str = "gl" + "obal"
 var counter: int = 10
 const K = 3 * 4
@@ -65,12 +65,12 @@ fn main() {
     println(counter)
     println(name)
     match col {
-        Rgb(r, g, b) { println(r + g + b) }
+        Color.Rgb(r, g, b) { println(r + g + b) }
         else { println("other") }
     }
-    col = Green
+    col = Color.Green
     match col {
-        Green { println("green") }
+        Color.Green { println("green") }
         else { println("other") }
     }
     println(bump(4))

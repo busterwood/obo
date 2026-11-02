@@ -3,11 +3,11 @@ type D = record { v: int }
 type O = closed { S(D); N }
 fn inner(o: &O): &D {
     match o {
-        S(d) { return d }
-        N { panic("none") }
+        O.S(d) { return d }
+        O.N { panic("none") }
     }
 }
 fn main() {
-    let o = S(D{v: 5})
+    let o = O.S(D{v: 5})
     println(inner(&o).v)
 }

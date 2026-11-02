@@ -2,9 +2,9 @@
 type D = record { v: int }
 type O = closed { S(D); N }
 fn main() {
-    var xs: []O = [S(D{v: 1})]
+    var xs: []O = [O.S(D{v: 1})]
     match xs[0] {
-        S(d) { append(mut &xs, N); println(d.v) }
-        N {}
+        O.S(d) { append(mut &xs, O.N); println(d.v) }
+        O.N {}
     }
 }

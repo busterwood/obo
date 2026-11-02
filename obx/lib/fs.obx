@@ -26,19 +26,19 @@ pub fn (k: Kind) eq(o: &Kind): bool { return k.code() == o.code() }
 
 fn (k: Kind) code(): int {
     match k {
-        File { return 0 }
-        Dir { return 1 }
-        Link { return 2 }
-        Other { return 3 }
+        Kind.File { return 0 }
+        Kind.Dir { return 1 }
+        Kind.Link { return 2 }
+        Kind.Other { return 3 }
     }
 }
 
 pub fn (k: Kind) toStr(): str {
     match k {
-        File { return "file" }
-        Dir { return "dir" }
-        Link { return "link" }
-        Other { return "other" }
+        Kind.File { return "file" }
+        Kind.Dir { return "dir" }
+        Kind.Link { return "link" }
+        Kind.Other { return "other" }
     }
 }
 
@@ -57,10 +57,10 @@ pub type Stat = value record {
 
 pub fn (s: Stat) kind(): Kind {
     let t = s.mode & 0xF000
-    if t == 0x8000 { return File }
-    if t == 0x4000 { return Dir }
-    if t == 0xA000 { return Link }
-    return Other
+    if t == 0x8000 { return Kind.File }
+    if t == 0x4000 { return Kind.Dir }
+    if t == 0xA000 { return Kind.Link }
+    return Kind.Other
 }
 
 pub fn (s: Stat) isDir(): bool { return s.mode & 0xF000 == 0x4000 }
@@ -137,10 +137,10 @@ pub fn listNames(path: str): Result[[]str, io.IoError] {
 }
 
 fn kindOfDirent(t: int): Kind {
-    if t == 8 { return File }    // DT_REG
-    if t == 4 { return Dir }     // DT_DIR
-    if t == 10 { return Link }   // DT_LNK
-    return Other
+    if t == 8 { return Kind.File }    // DT_REG
+    if t == 4 { return Kind.Dir }     // DT_DIR
+    if t == 10 { return Kind.Link }   // DT_LNK
+    return Kind.Other
 }
 
 // Creates the directory path (mode 0777 less umask).

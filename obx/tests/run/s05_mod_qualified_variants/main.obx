@@ -2,8 +2,8 @@
 // expect: 16
 import "shapes"
 fn main() {
-    let c = shapes.Circle(2)
-    let s = shapes.Square(4)
+    let c = shapes.Shape.Circle(2)
+    let s = shapes.Shape.Square(4)
     println(shapes.area(&c))
     println(shapes.area(&s))
 }

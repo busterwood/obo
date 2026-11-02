@@ -5,13 +5,13 @@ type D = record { id: int }
 fn (d: mut &D) drop() { println(d.id * 0) }
 type Op = closed { Has(D); Nope }
 fn main() {
-    let o = Has(D{id: 5})
+    let o = Op.Has(D{id: 5})
     match o {
-        Has(d) { println(d.id) }
-        Nope { println(1) }
+        Op.Has(d) { println(d.id) }
+        Op.Nope { println(1) }
     }
     match o {
-        Has(d) { println(d.id) }
-        Nope { println(1) }
+        Op.Has(d) { println(d.id) }
+        Op.Nope { println(1) }
     }
 }

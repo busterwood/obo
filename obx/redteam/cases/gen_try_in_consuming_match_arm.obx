@@ -8,7 +8,7 @@ fn bad(): Result[int, str] { return Err("err") }
 fn take(d: D) {}
 fn f(p: P): Result[int, str] {
     match move(p) {
-        Two(a, b) {
+        P.Two(a, b) {
             take(a)
             let n = try bad()
             take(b)
@@ -17,5 +17,5 @@ fn f(p: P): Result[int, str] {
     return Ok(0)
 }
 fn main() {
-    match f(Two(D{v: 1}, D{v: 2})) { Ok(n) {} Err(e) { println(e) } }
+    match f(P.Two(D{v: 1}, D{v: 2})) { Ok(n) {} Err(e) { println(e) } }
 }

@@ -32,8 +32,8 @@ type L = closed { Nil; Cons(D, L) }
 type T = closed { Leaf(D); Node(T, D, T) }
 fn main() {
     let r = R{x: D{v: 1}, vs: [V{a: D{v: 2}, s: "x" + "y", b: D{v: 3}}, V{a: D{v: 4}, s: "z", b: D{v: 5}}], y: D{v: 6}, o: Some(D{v: 7})}
-    var l = Nil
-    for i in 10..14 { l = Cons(D{v: i}, move(l)) }
-    let t = Node(Node(Leaf(D{v: 20}), D{v: 21}, Leaf(D{v: 22})), D{v: 23}, Leaf(D{v: 24}))
+    var l = L.Nil
+    for i in 10..14 { l = L.Cons(D{v: i}, move(l)) }
+    let t = T.Node(T.Node(T.Leaf(D{v: 20}), D{v: 21}, T.Leaf(D{v: 22})), D{v: 23}, T.Leaf(D{v: 24}))
     let ds = [[D{v: 30}, D{v: 31}], [D{v: 32}]]
 }

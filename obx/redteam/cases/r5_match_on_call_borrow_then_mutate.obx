@@ -4,9 +4,9 @@ type O = value closed { S(D); N }
 type H = record { o: O }
 fn (h: &H) get(): &O { return &h.o }
 fn main() {
-    var h = H{o: S(D{v: 1})}
+    var h = H{o: O.S(D{v: 1})}
     match h.get() {
-        S(d) { h.o = N; println(d.v) }
-        N {}
+        O.S(d) { h.o = O.N; println(d.v) }
+        O.N {}
     }
 }

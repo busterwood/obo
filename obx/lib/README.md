@@ -61,10 +61,10 @@ for leaks.
   scale (`0.50`), `format()` is the same as a Result (an error when the scale
   would drop digits), `canonical()` has no trailing zeros; `scale`, `exponent`,
   `coefficient`, `sign`, `isZero`, `isNeg`, `abs`, `neg`, `toFloat`,
-  `sumDecimals`. **RoundingMode**: `HALF_EVEN HALF_AWAY HALF_TOWARD_ZERO
+  `sumDecimals`. **Rounding**: `HALF_EVEN HALF_AWAY HALF_TOWARD_ZERO
   TOWARD_ZERO AWAY FLOOR CEILING UNNECESSARY`. **DecError** with obo's codes:
-  DecOverflow 1, DecInexact 3, DecInvalid 4, DecDivZero 5, DecRange 6,
-  DecPrecision 7, DecExponent 8, DecDisplay 9.
+  DecError.Overflow 1, DecError.Inexact 3, DecError.Invalid 4, DecError.DivZero 5, DecError.Range 6,
+  DecError.Precision 7, DecError.Exponent 8, DecError.Display 9.
 - **sort(xs: mut &[]T)** for `T: Ord`: heap sort, in place, not stable.
 - **Map[K: Eq + Hash, V]**: insertion-ordered entries plus an open-addressing
   index. `newMap`, `size`, `has(&k)`, `get(&k): Option[V]` and `getOr(&k, d)`
