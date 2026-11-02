@@ -75,9 +75,7 @@ pending, the round after the red-team fixes):
   [...]`, read-only static data seen as `&[T]`) and set-once globals
   (`var C: once Config`, `set`/`get`/`isSet`). Other mutable owned state is
   owned by `main` or a context record and passed down (5.2).
+- Imports: `./` and `../` paths are relative to the importing file; bare
+  paths are library modules only (5.1).
 
-Still open:
-
-| Item | Proposal |
-|---|---|
-| A local file can shadow a library module | keep (relative first), document |
+Nothing is open.

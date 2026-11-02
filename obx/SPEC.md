@@ -291,9 +291,11 @@ types are equal when their declarations and arguments are equal.
 ### 5.1 Modules
 
 A module is one source file. `import "path/name"` makes the public names of
-`name.obx` available as `name.x`; `as other` renames the qualifier. Paths are
-relative to the importing file, then to each library root given to the
-compiler. Imports may not form a cycle. The module `std` is imported into every
+`name.obx` available as `name.x`; `as other` renames the qualifier. A path that
+starts with `./` or `../` is relative to the importing file (`import "./ast"`).
+Any other path is looked up only in the library roots given to the compiler
+(`import "strings"`), so a local file never shadows a library module, and a
+library module never shadows a local one. Imports may not form a cycle. The module `std` is imported into every
 module implicitly and its public names are visible unqualified.
 
 Within a module the order of declarations does not matter. Every top-level
