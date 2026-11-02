@@ -586,6 +586,7 @@ fn (g: &Gen) sameMem(a: int, b: int): bool {
 fn (g: &Gen) regOf(e: int): int {
     let n = g.u.nodes[e]
     if n.k == ir.E_LOCAL { return g.reg[n.a] }
+    if g.noopCast(e) { return g.regOf(n.a) }
     return -1
 }
 
@@ -642,7 +643,7 @@ fn (g: mut &Gen) stmt(s: int) {
                 g.genInto(n.b, g.reg[l])
             } else if n.b >= 0 {
                 g.gen(n.b)
-                g.normR(g.tk(t), RAX)
+                if !g.normAs(g.u.nodes[n.b].ty, t) { g.normR(g.tk(t), RAX) }
                 g.a.movRR(8, g.reg[l], RAX)
             }
             return
@@ -1067,15 +1068,17 @@ fn (g: mut &Gen) genInto(e: int, r: int) {
     }
 }
 
-// Whether e is a conversion between 8-byte integers and pointers (no code).
+// Whether e is a conversion between integers or pointers that needs no code: the value of the
+// operand, normalized, is also normalized for the result type (normAs).
 fn (g: &Gen) noopCast(e: int): bool {
     let n = g.u.nodes[e]
     if n.k != ir.E_CAST { return false }
     let s = g.u.nodes[n.a].ty
-    let tk = g.tk(n.ty)
-    let sk = g.tk(s)
-    return g.size(n.ty) == 8 && g.size(s) == 8 && tk != ir.TY_F64 && sk != ir.TY_F64 && !g.isAggr(n.ty) &&
-        !g.isAggr(s)
+    if g.tk(n.ty) == ir.TY_VOID || g.isF(n.ty) || g.isF(s) || g.isAggr(n.ty) || g.isAggr(s) || g.is128(n.ty) ||
+        g.is128(s) {
+        return false
+    }
+    return g.normAs(s, n.ty)
 }
 
 // Whether evaluating x has no effect but its value or a trap (no assignments, and no calls
@@ -1089,7 +1092,7 @@ fn (g: &Gen) pure(x: int): bool {
         let c = n.a
         if g.u.nk(c) != ir.E_DECAY || g.u.nk(g.u.nodes[c].a) != ir.E_FUNC { return false }
         let name = g.u.funcs[g.u.nodes[g.u.nodes[c].a].a].name
-        if name != "rt_idx" && name != "rt_str_byte" && arOp(name).k < 0 { return false }
+        if name != "rt_idx" && name != "rt_str_byte" && arOp(name).k < 0 && divOp(name).k < 0 { return false }
         for j in 0..g.u.listLen(n.b) {
             if !g.pure(g.u.listAt(n.b, j)) { return false }
         }
@@ -1393,7 +1396,7 @@ fn (g: mut &Gen) genAssign(e: int) {
     let t = n.ty
     if g.regOf(lhs) >= 0 {
         g.gen(n.b)
-        g.normR(g.tk(t), RAX)
+        if !g.normAs(g.u.nodes[n.b].ty, t) { g.normR(g.tk(t), RAX) }
         g.a.movRR(8, g.regOf(lhs), RAX)
         return
     }
@@ -1495,10 +1498,23 @@ fn (g: mut &Gen) genCast(e: int) {
                 g.a.setcc(x64.CC_NE, RAX)
                 g.a.zx(1, RAX, RAX)
             }
-        } else if g.size(t) < 8 {
+        } else if !g.normAs(s, t) {
             g.norm(t)
         }
     }
+}
+
+// Whether an integer (or pointer) of type s, normalized, is also normalized as a t: a value of
+// 8 bytes needs nothing; a widening keeps the value unless it is from signed to unsigned.
+fn (g: &Gen) normAs(s: int, t: int): bool {
+    if g.isF(s) || g.isF(t) || g.isAggr(s) || g.isAggr(t) || g.is128(s) || g.is128(t) { return s == t }
+    let tk = g.tk(t)
+    if tk == ir.TY_BOOL { return g.tk(s) == ir.TY_BOOL }
+    if g.size(t) == 8 { return true }
+    let ss = g.u.isSigned(s)
+    let ts = g.u.isSigned(t)
+    if g.size(s) < g.size(t) { return !ss || ts }
+    return g.size(s) == g.size(t) && ss == ts
 }
 
 fn isCmp(op: int): bool { return op >= ir.OP_EQ }
@@ -1943,7 +1959,7 @@ fn (g: &Gen) argDirect(x: int, t: int): bool {
 
 // The label of a jump to rt_trap(code, msg, where) for the location string w (a node).
 fn (g: mut &Gen) stub(code: int, msg: str, w: int): int {
-    let key = intToStr(code) + " " + g.u.nodes[g.u.nodes[w].a].s
+    let key = intToStr(code) + " " + msg + "\n" + g.u.nodes[g.u.nodes[w].a].s
     let have = g.stubOf.getOr(&key, -1)
     if have >= 0 { return have }
     let l = g.a.newLabel()
@@ -1984,10 +2000,48 @@ fn arOp(name: str): ArOp {
     let op = if startsWith(rest, "add_") { ir.OP_ADD } else if startsWith(rest, "sub_") { ir.OP_SUB } else if
         startsWith(rest, "mul_") { ir.OP_MUL } else { -1 }
     if op < 0 { return none }
-    let ty = rest[4..len(rest)]
-    let k = if ty == "int" { ir.TY_I64 } else if ty == "i32" { ir.TY_I32 } else if ty == "u32" { ir.TY_U32 } else if
+    return ArOp{k: suffixKind(rest[4..len(rest)]), op: op, wrap: wrap}
+}
+
+// The integer kind of a runtime function's type suffix (int, i32, u32, u64, byte), or -1.
+fn suffixKind(ty: str): int {
+    return if ty == "int" { ir.TY_I64 } else if ty == "i32" { ir.TY_I32 } else if ty == "u32" { ir.TY_U32 } else if
         ty == "u64" { ir.TY_U64 } else if ty == "byte" { ir.TY_U8 } else { -1 }
-    return ArOp{k: k, op: op, wrap: wrap}
+}
+
+// The kind and operation of a checked division, remainder, negation or shift of the runtime
+// (rt_div_int, rt_shl_u32, ...): kind -1 when name is not one.
+fn divOp(name: str): ArOp {
+    let none = ArOp{k: -1, op: 0, wrap: false}
+    if !startsWith(name, "rt_") || len(name) < 8 || strByte(name, 6) != '_' { return none }
+    let o = name[3..6]
+    let op = if o == "div" { ir.OP_DIV } else if o == "rem" { ir.OP_REM } else if o == "shl" { ir.OP_SHL } else if
+        o == "shr" { ir.OP_SHR } else if o == "neg" { ir.OP_SUB } else { -1 }
+    if op < 0 { return none }
+    let k = suffixKind(name[7..len(name)])
+    if op == ir.OP_SUB && k != ir.TY_I64 && k != ir.TY_I32 { return none }
+    return ArOp{k: k, op: op, wrap: false}
+}
+
+// The range of the integer kind k (64 bits at most; u64's top is -1, read unsigned).
+fn kindMin(k: int): int {
+    if k == ir.TY_I8 { return -128 }
+    if k == ir.TY_I16 { return -32768 }
+    if k == ir.TY_I32 { return -2147483648 }
+    if k == ir.TY_I64 { return -9223372036854775807 - 1 }
+    return 0
+}
+
+fn kindMax(k: int): int {
+    if k == ir.TY_BOOL { return 1 }
+    if k == ir.TY_I8 { return 127 }
+    if k == ir.TY_U8 { return 255 }
+    if k == ir.TY_I16 { return 32767 }
+    if k == ir.TY_U16 { return 65535 }
+    if k == ir.TY_I32 { return 2147483647 }
+    if k == ir.TY_U32 { return 4294967295 }
+    if k == ir.TY_I64 { return 9223372036854775807 }
+    return -1
 }
 
 // Whether the location argument w is a string literal (the runtime functions' last argument).
@@ -2035,6 +2089,15 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
             }
         }
         g.normR(k, RAX)
+        return true
+    }
+    if (startsWith(name, "rt_cvs_") || startsWith(name, "rt_cvu_")) && nargs == 2 && g.isWhere(g.u.listAt(n.b, 1)) &&
+        g.inlineCv(name, g.u.listAt(n.b, 0), g.u.listAt(n.b, 1)) {
+        return true
+    }
+    let dv = divOp(name)
+    if dv.k >= 0 && nargs == (if dv.op == ir.OP_SUB { 2 } else { 3 }) && g.isWhere(g.u.listAt(n.b, nargs - 1)) {
+        g.inlineDiv(dv, e)
         return true
     }
     if name == "rt_idx" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
@@ -2138,6 +2201,106 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         return true
     }
     return false
+}
+
+// rt_cvs_N(v, w) and rt_cvu_N(v, w) (a conversion to the integer type N with a range check)
+// inline when v is an integer of 64 bits or less widened to 128 bits: the check, if the
+// range of v's type is not within N's, is a compare or two. False: not inlined, nothing emitted.
+fn (g: mut &Gen) inlineCv(name: str, v: int, w: int): bool {
+    let tk = suffixKind(name[7..len(name)])
+    let vn = g.u.nodes[v]
+    if tk < 0 || vn.k != ir.E_CAST || !g.is128(vn.ty) || !g.u.isInt(g.u.nodes[vn.a].ty) || g.is128(g.u.nodes[vn.a].ty) {
+        return false
+    }
+    let sk = g.tk(g.u.nodes[vn.a].ty)
+    g.gen(vn.a)
+    let ssgn = ir.isSignedK(sk)
+    let fitsLo = !ssgn || kindMin(sk) >= kindMin(tk)
+    let fitsHi = if ssgn { kindMax(tk) == -1 || kindMax(sk) <= kindMax(tk) } else {
+        kindMax(tk) == -1 || (kindMax(sk) != -1 && kindMax(sk) <= kindMax(tk)) }
+    if fitsLo && fitsHi { return true }
+    let l = g.stub(10, "conversion out of range", w)
+    if tk == ir.TY_I64 || tk == ir.TY_U64 {
+        // from signed to u64, or from u64 to int: the sign bit
+        g.a.test(8, RAX, RAX)
+        g.a.jcc(x64.CC_S, l)
+    } else if tk == ir.TY_U32 {
+        g.a.movRR(8, RCX, RAX)
+        g.a.shiftI(x64.SHR, 8, RCX, 32)
+        g.a.jcc(x64.CC_NE, l)
+    } else if tk == ir.TY_I32 && ssgn {
+        g.a.sx(4, RCX, RAX)
+        g.a.alu(x64.CMP, 8, RCX, RAX)
+        g.a.jcc(x64.CC_NE, l)
+    } else {
+        // to byte, or from unsigned to i32: compared unsigned (a negative value is above any)
+        g.a.aluI(x64.CMP, 8, RAX, kindMax(tk))
+        g.a.jcc(x64.CC_A, l)
+    }
+    return true
+}
+
+// A checked division, remainder, negation or shift of the runtime (divOp) inline: the same
+// checks, in the same order, and trap messages.
+fn (g: mut &Gen) inlineDiv(dv: ArOp, e: int) {
+    let n = g.u.nodes[e]
+    let k = dv.k
+    let sz = if k == ir.TY_I64 || k == ir.TY_U64 { 8 } else { 4 }
+    let sgn = k == ir.TY_I64 || k == ir.TY_I32
+    let a = g.u.listAt(n.b, 0)
+    if dv.op == ir.OP_SUB {
+        g.gen(a)
+        g.a.unary(x64.NEG, sz, RAX)
+        g.a.jcc(x64.CC_O, g.stub(10, "integer overflow", g.u.listAt(n.b, 1)))
+        g.normR(k, RAX)
+        return
+    }
+    let b = g.u.listAt(n.b, 1)
+    let w = g.u.listAt(n.b, 2)
+    let bn = g.u.nodes[b]
+    let bits = if k == ir.TY_U8 { 8 } else { sz * 8 }
+    if dv.op == ir.OP_SHL || dv.op == ir.OP_SHR {
+        let sop = if dv.op == ir.OP_SHL { x64.SHL } else if sgn { x64.SAR } else { x64.SHR }
+        if bn.k == ir.E_INT && bn.v >= 0 && bn.v < bits {
+            g.gen(a)
+            if bn.v != 0 { g.a.shiftI(sop, sz, RAX, bn.v) }
+        } else {
+            g.srcRCX(g.pairSrc(a, b))
+            g.a.aluI(x64.CMP, 8, RCX, bits - 1)
+            g.a.jcc(x64.CC_A, g.stub(10, "shift count out of range", w))
+            g.a.shiftCL(sop, sz, RAX)
+        }
+        g.normR(k, RAX)
+        return
+    }
+    let constB = bn.k == ir.E_INT && bn.v != 0 && bn.v != -1
+    g.srcRCX(g.pairSrc(a, b))
+    if !constB {
+        g.a.test(8, RCX, RCX)
+        g.a.jcc(x64.CC_E, g.stub(10, "division by zero", w))
+        if sgn {
+            let ok = g.a.newLabel()
+            g.a.aluI(x64.CMP, 8, RCX, -1)
+            g.a.jcc(x64.CC_NE, ok)
+            if sz == 8 {
+                g.a.movRI(RDX, kindMin(k))
+                g.a.alu(x64.CMP, 8, RAX, RDX)
+            } else {
+                g.a.aluI(x64.CMP, 4, RAX, kindMin(k))
+            }
+            g.a.jcc(x64.CC_E, g.stub(10, "integer overflow", w))
+            g.a.bind(ok)
+        }
+    }
+    if sgn {
+        if sz == 8 { g.a.cqo() } else { g.a.cdq() }
+        g.a.unary(x64.IDIV, sz, RCX)
+    } else {
+        g.a.alu(x64.XOR, 4, RDX, RDX)
+        g.a.unary(x64.DIV, sz, RCX)
+    }
+    if dv.op == ir.OP_REM { g.a.movRR(8, RAX, RDX) }
+    g.normR(k, RAX)
 }
 
 // ---------------------------------------------------------------- constants
