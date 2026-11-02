@@ -1,19 +1,23 @@
 # History
 
-This page records where obo came from and how it got here, including the
-per-stage release records. Start with [README.md](README.md) for the current
-state, build instructions and roadmap.
-The language reference and design records remain current, not historical:
-[obo/LANGUAGE.md](obo/LANGUAGE.md), [obo/FORK.md](obo/FORK.md) and
-[obo/design/README.md](obo/design/README.md).
+This page records where the project came from: mainline **obx** (the original
+garbage-collected dialect), the **obo** ownership fork and its per-stage release
+records. The current project is the new **obx** in [obx/](obx/README.md),
+obo's ownership model with generics; start with [README.md](README.md).
 
-obo grew out of **obx**, the original garbage-collected Oberon-derived dialect
-and compiler. obo began as an ownership fork of obx — originally
+obo grew out of mainline obx, the original garbage-collected Oberon-derived
+dialect and compiler. obo began as an ownership fork of obx — originally
 `obo-on-obx.obx`, a copy of `obx/src/obxc.obx` built by `obx/obxc` — proved the
-ownership model, became self-hosting, and is now a released 0.19 compiler (the
-0.19 seed is promoted) with modules,
-methods and first-class interfaces. obx remains in `obx/` as the historical
-reference; it is not the current compiler.
+ownership model, became self-hosting, and reached a released 0.19 compiler with
+modules, methods and first-class interfaces. On 2026-11-02 the project
+restarted as the new obx with generics, and obo 0.19 was retired.
+
+Both predecessors are archived: mainline obx in `archive/obx/`
+and obo in [archive/obo/](archive/obo/README.md) (its language reference
+[LANGUAGE.md](archive/obo/LANGUAGE.md), design record
+[FORK.md](archive/obo/FORK.md) and [design notes](archive/obo/design/README.md)).
+Paths below are as they were when written: mainline obx's `obx/...` is now
+`archive/obx/...`, and `obo/...` is `archive/obo/...`.
 
 ## OBX: mainline obx (the original dialect)
 
@@ -106,7 +110,7 @@ Implemented:
 
 obo later added `Result[T]`/`try`, incremental I/O, source modules,
 `.sym` symbol files, methods and interfaces. Those are current language features,
-documented in [obo/LANGUAGE.md](obo/LANGUAGE.md), not part of mainline obx.
+documented in [obo/LANGUAGE.md](archive/obo/LANGUAGE.md), not part of mainline obx.
 
 ### Safety checks at compile time
 
@@ -390,8 +394,8 @@ compile time only, and the 0.5 and 0.6 seeds built byte-identical benchmark and
 tool binaries, so the runtime rows still described 0.6. The compiler itself is
 now 0.8, but the timings below are the old runtime sample. They are historical,
 not the current measurement. The current sample is in
-[PERFORMANCE.md](PERFORMANCE.md) and
-[obo/bench/cli/README.md](obo/bench/cli/README.md).
+[PERFORMANCE.md](archive/obo/PERFORMANCE.md) and
+[obo/bench/cli/README.md](archive/obo/bench/cli/README.md).
 
 | Workload | obo | Comparison |
 |---|---:|---:|
