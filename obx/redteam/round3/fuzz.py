@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Mutation fuzzer: mutate test programs token-wise and report Python tracebacks
-from the compiler (front end only, no C build). usage: fuzz.py N seed"""
-import os, sys, random, re, glob, io, contextlib, traceback
+"""Mutation fuzzer: mutate test programs token-wise and report compiler crashes
+(`obxc --emit-c` under OBX_CHECK=1: any result but exit 0, or exit 1 with one `file:line: message`,
+is a crash or a leak; no C build unless FZGCC=1). usage: fuzz.py N seed
+The compiler is $OBXC, else compiler/out/obxc (until ref was retired this caught ref's Python
+tracebacks in-process; compiler/fuzz.py is the general mutant fuzzer)."""
+import os, sys, random, re, glob, subprocess
 HERE = os.path.dirname(os.path.abspath(__file__))
-REF = os.path.join(HERE, '..', '..', 'ref')
-sys.path.insert(0, REF)
-sys.setrecursionlimit(5000)
-from syntax import CompileError
-import obxc
+sys.path.insert(0, os.path.join(HERE, '..', '..', 'tools'))
+import cbuild
+MESSAGE = re.compile(r'^[^\n]+:\d+: [^\n]+\n?$')
 srcs = sorted(glob.glob(os.path.join(HERE, 'cases', '*.obx')))
 TOK = re.compile(r'\s+|//[^\n]*|"(?:\\.|[^"\\])*"|\w+|..?')
 EXTRA = ['&', 'mut &', 'move(', ')', '[', ']', '{', '}', 'try ', '-', '0', '..', '.', ',', ';', '\n', 'T', 'int',
@@ -37,31 +38,29 @@ def main():
         src = open(r.choice(srcs)).read()
         m = mutate(src, r)
         open(path, 'w').write(m)
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                csrc, _ = obxc.compile_c(path, [])
-            if GCC:
-                import subprocess
-                cf = path[:-4] + '.c'; open(cf, 'w').write(csrc)
-                g = subprocess.run(['gcc', '-fsyntax-only', '-w', '-std=gnu11', cf], capture_output=True, text=True)
-                if g.returncode:
-                    line = next((l for l in g.stderr.splitlines() if 'error' in l), '')
-                    key = ('CC', re.sub(r'[^a-z ]', '', line.split('error:')[-1])[:40])
-                    if key not in seen:
-                        seen[key] = m
-                        out = os.path.join(HERE, 'build', f'ccfail_{len(seen)}_{seed}.obx'); open(out, 'w').write(m)
-                        print(key, line[:150], '->', out, flush=True)
-        except CompileError:
-            pass
-        except RecursionError:
-            pass
-        except Exception as e:
-            tb = traceback.extract_tb(e.__traceback__)[-1]
-            key = (type(e).__name__, tb.name, tb.lineno)
+        c = subprocess.run(cbuild.obxc_argv() + [path, '--emit-c'], capture_output=True, text=True,
+                           errors='replace', env=dict(os.environ, OBX_CHECK='1'))
+        if c.returncode == 1 and MESSAGE.match(c.stderr):
+            continue
+        if c.returncode != 0 or c.stderr:
+            last = (c.stderr.strip().splitlines() or [''])[-1]
+            key = ('EXIT', c.returncode, re.sub(r'[^a-z ]', '', last)[:40])
             if key not in seen:
                 seen[key] = m
-                out = os.path.join(HERE, 'build', f'crash_{type(e).__name__}_{tb.name}_{tb.lineno}.obx')
+                out = os.path.join(HERE, 'build', f'crash_{c.returncode}_{len(seen)}_{seed}.obx')
                 open(out, 'w').write(m)
-                print(key, str(e)[:100], '->', out, flush=True)
+                print(key, last[:100], '->', out, flush=True)
+            continue
+        csrc = c.stdout
+        if GCC:
+            cf = path[:-4] + '.c'; open(cf, 'w').write(csrc)
+            g = subprocess.run(['gcc', '-fsyntax-only', '-w', '-std=gnu11', cf], capture_output=True, text=True)
+            if g.returncode:
+                line = next((l for l in g.stderr.splitlines() if 'error' in l), '')
+                key = ('CC', re.sub(r'[^a-z ]', '', line.split('error:')[-1])[:40])
+                if key not in seen:
+                    seen[key] = m
+                    out = os.path.join(HERE, 'build', f'ccfail_{len(seen)}_{seed}.obx'); open(out, 'w').write(m)
+                    print(key, line[:150], '->', out, flush=True)
     print('done', len(seen))
 main()

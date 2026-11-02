@@ -86,7 +86,7 @@ def run_test(kind, path, compiler):
     with tempfile.TemporaryDirectory(prefix='obxtest_') as tmp:
         out = os.path.join(tmp, 'out')
         try:
-            # cached builds through --emit-c-json (ref/obxc.py and the self-hosted obxc both have it)
+            # cached builds through --emit-c-json (tools/cbuild.py)
             c = subprocess.CompletedProcess([], *cbuild.build_obx(
                 path, out, obxc=os.path.abspath(compiler), timeout=COMPILE_TIMEOUT, cwd=tmp))
         except subprocess.TimeoutExpired:

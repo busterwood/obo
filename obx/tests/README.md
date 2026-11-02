@@ -1,38 +1,59 @@
 # obx conformance tests
 
 Black-box tests of the language in `../SPEC.md`. They only use the compiler
-driver, `python3 ../ref/obxc.py file.obx -o out`.
+driver, `obxc file.obx -o out`.
 
     python3 obx/tests/run.py [--compiler PATH] [-j N] [filters...]
+    python3 obx/tests/compiler/run_tests.py [--conformance] [filters...]
 
 A filter is a substring of the test path (`s10_`, `error/s06`, `trap`). The
-default compiler is `../ref/obxc.py` (a `.py` path is run with python3, anything
-else is executed directly). Compile timeout 20 s, run timeout 10 s. One line per
+default compiler is `$OBXC`, else `../compiler/out/obxc` (build it from the C
+seed with `obx/compiler/build.sh`; a `.py` path is run with python3, anything
+else is executed directly).
+
+`compiler/` holds the compiler tests: compiler choices and runtime limits
+rather than the spec (`run/`, `error/`, and `unit/`, run tests built with
+`// cflags:` such as `-DRT_STR_MAX=64`). They were the reference compiler's own
+tests until ref was retired (2026-11-02, `../../archive/obx-ref/`), and use the
+same format; `--conformance` runs this suite as well. Compile timeout 20 s, run timeout 10 s. One line per
 failure, then `N passed, M failed`; exit status 1 on any failure.
 
 ## Test tiers and the build cache
 
 Quick gate, after every change (`obx/tools/gate.sh quick`):
 
-    python3 obx/ref/run_tests.py --conformance
+    python3 obx/tools/seed_check.py           # builds compiler/out/obxc from the seed; seed fixed point
+    python3 obx/tests/run.py                  # conformance
+    python3 obx/tests/compiler/run_tests.py   # compiler tests
     python3 obx/lib/run_tests.py -j 8
-    python3 obx/compiler/run_compare.py --mode both
+    python3 obx/tests/run_native.py --lib     # native backend against the C backend
+    bash obx/tools/native_selfbuild.sh
+
+The seed check builds `compiler/out/obxc` from `compiler/seed/obxc.c`, has it
+compile the current sources (stage 2), stage 2 compile them again (stage 3),
+and requires the C of stages 2 and 3 to equal the seed; so a compiler change
+needs `compiler/reseed.sh` before the gate passes.
 
 Full gate, at the end of a fix round and before a merge (`obx/tools/gate.sh full`):
 the quick gate plus the red-team harnesses, rounds 1 to 4 (`obx/redteam/rt.py`,
-`round2/rt.py`, `round3/rt.py`, `round4/rt.py`) under ASan+UBSan. The script prints a
-summary with the time of each step and the total, and exits 1 on any failure.
+`round2/rt.py`, `round3/rt.py`, `round4/rt.py`) under ASan+UBSan, and the native
+backend on the red-team corpora. The script prints a summary with the time of each
+step and the total, and exits 1 on any failure.
 
-Every runner that builds a binary goes through `obx/tools/cbuild.py`: obxc.py emits the
+`python3 obx/compiler/fuzz.py [-n N] [--seed S] [--cc]` is a mutation fuzzer for the
+compiler, outside the gates: every mutant of a test program must compile or be rejected
+with one `file:line: message`, never crash or leak.
+
+Every runner that builds a binary goes through `obx/tools/cbuild.py`: obxc emits the
 C (`--emit-c-json`), and the binary is cached under the hash of the C text (rt.h is part
 of it), the exact C compiler command and the compiler's version. A test that did not
 change in C is not compiled again. The cache is `$OBX_CACHE` (default
 `~/.cache/obx-build`), trimmed to `$OBX_CACHE_MB` (default 2000) MB; `OBX_NOCACHE=1`
 turns it off. Compile errors produce no C and are never cached.
 
-`OBXC` chooses the compiler for every runner and both gates: `ref/obxc.py` by default,
-or a built compiler, e.g. `OBXC=obx/compiler/out/obxc obx/tools/gate.sh full` (the
-self-hosted compiler has `--emit-c-json` too, so its builds are cached the same way).
+`OBXC` chooses the compiler for every runner: `obx/compiler/out/obxc` by default, or
+another build, e.g. `OBXC=/tmp/obxc python3 obx/tests/run.py`. The gate's first step
+rebuilds `compiler/out/obxc` from the seed; run the gate with `OBXC` unset.
 
 ## Test format
 
@@ -193,5 +214,5 @@ Semantics
   rules stops a `ptr` local or field elsewhere.
 - `exit(code)` "without drops" contradicts `OBX_CHECK=1` leak checking unless
   the check is also skipped; section 14 does not say.
-- `Option` is `value closed { Some(T); None }` in 4.4 but `std.obx` in `ref/`
-  still uses named fields, so library and spec disagree until `ref/` is updated.
+- `Option` is `value closed { Some(T); None }` in 4.4 but `std.obx` once
+  used named fields (since resolved in the library).

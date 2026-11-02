@@ -8,7 +8,7 @@ import cbuild
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
-OBXC = cbuild.OBXC   # $OBXC, else the reference compiler
+OBXC = cbuild.OBXC   # $OBXC, else compiler/out/obxc
 CC = os.environ.get('CC', 'gcc')
 
 def build_run(path):
@@ -16,8 +16,8 @@ def build_run(path):
     os.makedirs(build, exist_ok=True)
     name = os.path.splitext(os.path.basename(path))[0]
     c = subprocess.run(cbuild.obxc_argv(OBXC) + [path, '--emit-c'], capture_output=True, text=True, timeout=60)
-    if 'Traceback' in c.stderr:
-        return ('CRASH', c.stderr.strip().splitlines()[-1])
+    if 'Traceback' in c.stderr or c.returncode not in (0, 1):
+        return ('CRASH', f'exit {c.returncode}: ' + (c.stderr.strip().splitlines() or [''])[-1])
     if c.returncode:
         return ('REJECT', re.sub(r'^\S+:\d+: ', '', c.stderr.strip()))
     cf, exe = os.path.join(build, name + '.c'), os.path.join(build, name)

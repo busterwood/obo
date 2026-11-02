@@ -1,13 +1,15 @@
 # obx benchmarks
 
 The obo benchmark programs (`obo/bench/*_obo.obx`) ported to obx, to get a
-performance baseline for the reference compiler (`obx/ref`: Python to C, then
-`gcc -O2`). The `*_gc.obx` variants are not ported: they test the old collector
+performance baseline for the reference compiler (`obx/ref`, now retired to
+`archive/obx-ref/`: Python to C, then `gcc -O2`). The self-hosted compiler
+writes the same C, so the results below hold for it. The `*_gc.obx` variants are not ported: they test the old collector
 dialect, and nothing in them that the `_obo` versions lack.
 
     python3 obx/bench/bench.py [-n RUNS] [--only NAME ...]
 
-For each program it builds the obx version (`obxc.py`, default flags) and the
+For each program it builds the obx version (`obx/compiler/out/obxc` or
+`$OBXC`, default flags) and the
 obo version with `obo/obo`. It checks that the outputs are equal and that the
 obx program is leak-free (`OBX_CHECK=1`), then reports the best wall time of N
 runs (default 5), `OBX_CHECK` unset. Programs: `fib`, `loop`, `array`, `alloc`,

@@ -4,7 +4,7 @@ compare to directives (// expect:, // exit:, // error:). Classify:
   OK        matches the directives
   ASAN      sanitizer report (memory error / UB)
   LEAK      exit 5 under OBX_CHECK (or LeakSanitizer)
-  CRASH     compiler traceback
+  CRASH     compiler crash (exit status other than 0 and 1, or a traceback)
   CCFAIL    generated C failed to compile
   REJECT    compile error but a run was expected
   ACCEPT    compiled but an error was expected
@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import cbuild
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
-OBXC = cbuild.OBXC   # $OBXC, else the reference compiler
+OBXC = cbuild.OBXC   # $OBXC, else compiler/out/obxc
 BUILD = os.path.join(HERE, 'build')
 DIRECTIVE = re.compile(r'^\s*//\s*(expect|exit|error):(.*)$')
 
@@ -42,8 +42,8 @@ def run1(path):
         c = subprocess.run(cbuild.obxc_argv(OBXC) + [path, '--emit-c'], capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
         return name, 'HANG', 'compiler did not finish in 30 s'
-    if 'Traceback' in c.stderr:
-        return name, 'CRASH', c.stderr.strip().splitlines()[-1]
+    if 'Traceback' in c.stderr or c.returncode not in (0, 1):
+        return name, 'CRASH', f'exit {c.returncode}: ' + (c.stderr.strip().splitlines() or [''])[-1]
     if c.returncode != 0:
         msg = c.stderr.strip()
         if d['error'] is not None:

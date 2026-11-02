@@ -8,7 +8,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 root="$here/../.."
 b="$here/build/selfhost"
 mkdir -p "$b"
-python3 "$root/ref/obxc.py" "$root/compiler/main.obx" --emit-c > "$b/obxc.c" || exit 1
+export OBX_LIB="$root/lib"
+"${OBXC:-$root/compiler/out/obxc}" "$root/compiler/main.obx" --emit-c > "$b/obxc.c" || exit 1
 ${CC:-gcc} -g -O0 -std=gnu11 -fsanitize=address,undefined -fno-sanitize-recover=undefined -w -o "$b/obxc" "$b/obxc.c" -lm || exit 1
 bad=0; n=0
 for f in $(find "$root/tests" "$root/redteam" "$root/compiler/tests" -path '*/build*' -prune -o -name '*.obx' -print | sort); do

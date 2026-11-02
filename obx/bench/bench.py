@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """obo vs obx benchmark table.
 
-For each program NAME it builds obx/bench/NAME.obx with the reference compiler
-(python3 obx/ref/obxc.py, gcc -O2) and obo/bench/NAME_obo.obx with the obo
+For each program NAME it builds obx/bench/NAME.obx with the compiler
+(obx/compiler/out/obxc, or $OBXC; gcc -O2) and obo/bench/NAME_obo.obx with the obo
 compiler (obo/obo, if it runs). It checks that the outputs are equal and that the
 obx program is leak free (OBX_CHECK=1), then prints the best wall time of N runs
 of each.
@@ -18,7 +18,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-OBXC = os.path.join(ROOT, 'obx', 'ref', 'obxc.py')
+OBXC = os.environ.get('OBXC') or os.path.join(ROOT, 'obx', 'compiler', 'out', 'obxc')
 OBO = os.path.join(ROOT, 'obo')
 OBO_SRC = os.path.join(OBO, 'bench')
 NAMES = ['fib', 'loop', 'array', 'alloc', 'lists', 'strings', 'trees', 'tokens']
@@ -51,7 +51,7 @@ def best(exe, name, n):
 
 def build_obx(name, tmp):
     exe = os.path.join(tmp, name + '_obx')
-    subprocess.run([sys.executable, OBXC, os.path.join(HERE, name + '.obx'), '-o', exe], check=True)
+    subprocess.run([OBXC, os.path.join(HERE, name + '.obx'), '-o', exe], check=True)
     return exe
 
 

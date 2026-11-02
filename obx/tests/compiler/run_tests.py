@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Runs the reference compiler's own tests (tests/run, tests/error) with the
-conformance runner (../tests/run.py, same directives); pass --conformance to
-run the conformance suite as well. Extra arguments are filters.
+"""Runs the compiler tests (run, error, unit here) with the conformance runner
+(../run.py, same directives); pass --conformance to run the conformance suite
+as well. Extra arguments are filters. The compiler is $OBXC, else
+compiler/out/obxc.
 
-tests/unit holds run tests that need C flags (`// cflags: -DRT_STR_MAX=64`
-lowers a runtime limit so that a test does not need gigabytes); they are built
-here through tools/cbuild.py (obxc.py --emit-c-json, extra flags, cached gcc)."""
+These were the reference compiler's own tests (compiler choices and runtime
+limits rather than the spec), kept when ref was retired (archive/obx-ref/).
+unit/ holds run tests that need C flags (`// cflags: -DRT_STR_MAX=64` lowers a
+runtime limit so that a test does not need gigabytes); they are built here
+through tools/cbuild.py (obxc --emit-c-json, extra flags, cached gcc)."""
 import importlib.util, os, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, '..', 'tools'))
+sys.path.insert(0, os.path.join(HERE, '..', '..', 'tools'))
 import cbuild  # noqa: E402
-spec = importlib.util.spec_from_file_location('conformance', os.path.join(HERE, '..', 'tests', 'run.py'))
+spec = importlib.util.spec_from_file_location('conformance', os.path.join(HERE, '..', 'run.py'))
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
@@ -33,20 +36,20 @@ def unit(path):
 
 args = [a for a in sys.argv[1:] if a != '--conformance']
 status = 0
-roots = [os.path.join(HERE, 'tests')] + ([runner.HERE] if '--conformance' in sys.argv else [])
+roots = [HERE] + ([runner.HERE] if '--conformance' in sys.argv else [])
 for root in roots:
     runner.HERE = root
     sys.argv = [sys.argv[0], '--compiler', cbuild.OBXC] + args
-    print(f"== {os.path.relpath(root, HERE)}")
+    print(f"== {os.path.relpath(root, os.path.join(HERE, '..', '..'))}")
     try:
         runner.main()
     except SystemExit as e:
         status = status or e.code
-udir = os.path.join(HERE, 'tests', 'unit')
+udir = os.path.join(HERE, 'unit')
 units = sorted(f for f in os.listdir(udir)
                if f.endswith('.obx') and (not args or any(a in 'unit/' + f for a in args)))
 bad = [(f, m) for f in units for m in [unit(os.path.join(udir, f))] if m]
 for f, m in bad:
     print(f"FAIL unit/{f}: {m}")
-print(f"== tests/unit: {len(units) - len(bad)} passed, {len(bad)} failed")
+print(f"== tests/compiler/unit: {len(units) - len(bad)} passed, {len(bad)} failed")
 sys.exit(status or (1 if bad else 0))

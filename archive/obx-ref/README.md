@@ -1,3 +1,24 @@
+# archive/obx-ref: the retired reference compiler
+
+This was `obx/ref/`, the Python reference compiler (obx to C, then gcc): stage 2
+of `obx/PLAN.md`, and the oracle the self-hosted compiler `obx/compiler/` was
+ported from and checked against (identical `--dump-ast`, `--dump-types` and C on
+every test file; `run_compare.py` here did the comparison). It was retired on
+2026-11-02, once the self-hosted compiler built itself to a fixed point from its
+C seed and passed every suite; since then `obx/compiler/` is the only obx
+compiler, and language changes are made there alone.
+
+It is kept for reference and no longer runs from here. What stayed in use moved
+out of it: its tests are `obx/tests/compiler/` (run by
+`obx/tests/compiler/run_tests.py`), the C runtime `rt.h` is
+`obx/compiler/rt.h`, and run_compare's mutant generator is
+`obx/compiler/fuzz.py`. To run ref itself, check out the commit before its
+retirement (`git log -- archive/obx-ref`) and use `obx/ref/` there.
+
+The rest of this file is ref's own README as it was at retirement.
+
+---
+
 # obx/ref: the reference compiler
 
 The draft-1 obx language (`../SPEC.md`, sections 1 to 12, 14, 15) compiled to C

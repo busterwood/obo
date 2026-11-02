@@ -14,9 +14,8 @@ The decision and the plan are in
   bodies of generic code.
 - Generic code is checked where it is written: `T` is owned unless `T: copy`,
   and its methods come only from its constraints.
-- A Python reference compiler settles the design first. The real compiler is
-  then written in obx, compiles itself, and emits native x86-64 ELF. C is a
-  stepping stone.
+- A Python reference compiler settled the design first. The real compiler is
+  written in obx, compiles itself, and emits C or native x86-64 ELF.
 
 obo 0.19 (`../obo/`) is frozen at bug fixes only. The original GC compiler that
 obo forked from is in `../archive/obx/`.
@@ -27,11 +26,26 @@ Source files use the `.obx` extension.
 
 | Path | Contents |
 |---|---|
-| `ref/` | the Python reference compiler (Python to C), grown from the gcore prototype |
+| [SPEC.md](SPEC.md) | the language |
+| [PLAN.md](PLAN.md) | the stages, their gates and state; the language backlog |
+| [compiler/](compiler/README.md) | the compiler, written in obx: obx to C, or `--native` to x86-64 ELF; its C seed |
+| [lib/](lib/README.md) | the library (std, collections, strings, fs, io, os, time, math, money, sqlite, postgres) |
+| [cmd/](cmd/README.md) | programs: eza |
+| [tests/](tests/README.md) | the conformance suite, the compiler tests, the native tests and their runners |
+| `redteam/` | the red-team corpora and harnesses (rounds 1 to 4) |
+| `tools/` | the gate (`gate.sh`), the build cache (`cbuild.py`), the seed check |
+| `design/` | design notes: the native backend, concurrency |
+| `bench/` | benchmarks against obo |
 
-## Status
+The Python reference compiler (`ref/`) was retired on 2026-11-02; it is in
+`../archive/obx-ref/`.
 
-Stage 1 (the core spec) is next. `ref/` is still the throwaway prototype:
+## Building and testing
 
-    python3 ref/gcore.py ref/examples/money.obx --run
-    python3 ref/run_tests.py
+    obx/compiler/build.sh                       # obx/compiler/out/obxc from the C seed (gcc only)
+    obx/compiler/out/obxc file.obx -o prog      # through C
+    obx/compiler/out/obxc file.obx --native -o prog
+    obx/tools/gate.sh quick                     # after every change
+    obx/tools/gate.sh full                      # before a merge
+
+See [tests/README.md](tests/README.md) for the suites and the gate.

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # usage: obx/tools/gate.sh quick|full
-# quick: ref + conformance + unit tests, library tests, self-hosted compiler comparison,
-#        native backend against the C backend (run + lib tests) and the native self-build.
+# quick: the C seed's fixed point (it also builds compiler/out/obxc from the seed, the compiler
+#        every later step uses), the conformance suite, the compiler tests, the library tests,
+#        the native backend against the C backend (run + lib tests) and the native self-build.
 # full:  quick, then the red-team harnesses (rounds 1-4) under ASan+UBSan, then the native
 #        backend on the red-team corpora.
 # Builds are cached (tools/cbuild.py; OBX_NOCACHE=1 disables, OBX_CACHE sets the directory).
@@ -11,9 +12,10 @@ case "$tier" in quick|full) ;; *) echo "usage: $0 quick|full" >&2; exit 2;; esac
 R=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$R"
 steps=(
-  "ref+conformance|python3 obx/ref/run_tests.py --conformance"
+  "seed fixed point|python3 obx/tools/seed_check.py"
+  "conformance|python3 obx/tests/run.py"
+  "compiler tests|python3 obx/tests/compiler/run_tests.py"
   "lib|python3 obx/lib/run_tests.py -j 8"
-  "compiler compare|python3 obx/compiler/run_compare.py --mode both"
   "native lib+run|python3 obx/tests/run_native.py --lib"
   "native selfbuild|bash obx/tools/native_selfbuild.sh"
 )

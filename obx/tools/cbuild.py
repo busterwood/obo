@@ -1,6 +1,6 @@
 """Content-hash build cache shared by the obx test runners.
 
-    build_obx(src, out, ...)  obx -> C (obxc.py --emit-c-json) -> binary, like `obxc.py src -o out`
+    build_obx(src, out, ...)  obx -> C (obxc --emit-c-json) -> binary, like `obxc src -o out`
     cc_build(csrc, cmd, out)  C text -> binary; cmd uses '@SRC@' and '@OUT@' placeholders
 
 The key is the hash of the C text (rt.h is embedded in it), the exact C compiler command
@@ -8,19 +8,24 @@ and the compiler's version string. A hit hard-links (or copies) the cached binar
 `out`; a miss builds into a temporary file in the cache and renames it (atomic, so
 parallel runners are safe). The cache is $OBX_CACHE or ~/.cache/obx-build and is trimmed
 to $OBX_CACHE_MB (default 2000) megabytes, oldest use first. OBX_NOCACHE=1 disables it:
-build_obx then runs obxc.py -o as before, and cc_build compiles every time.
-Compile errors from obxc.py produce no C and are never cached.
+build_obx then runs obxc -o as before, and cc_build compiles every time.
+Compile errors from obxc produce no C and are never cached.
+
+The compiler is $OBXC, else compiler/out/obxc (built from the C seed by compiler/build.sh).
 """
 import functools, hashlib, json, os, random, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REF = os.path.normpath(os.path.join(HERE, '..', 'ref', 'obxc.py'))
-# The compiler the runners use: $OBXC (obxc.py or a built obxc binary), default the reference.
-OBXC = os.path.abspath(os.environ['OBXC']) if os.environ.get('OBXC') else REF
+DEFAULT = os.path.normpath(os.path.join(HERE, '..', 'compiler', 'out', 'obxc'))
+# The compiler the runners use: $OBXC, default the self-hosted compiler's out/obxc.
+OBXC = os.path.abspath(os.environ['OBXC']) if os.environ.get('OBXC') else DEFAULT
 
 
 def obxc_argv(obxc=None):
     obxc = obxc or OBXC
+    if not os.path.exists(obxc):
+        sys.exit(f"{obxc} not found: build it with obx/compiler/build.sh" if obxc == DEFAULT
+                 else f"compiler {obxc} not found")
     return [sys.executable, obxc] if obxc.endswith('.py') else [obxc]
 
 
@@ -109,7 +114,7 @@ def cc_build(csrc, cmd, out, timeout=None):
 
 
 def build_obx(src, out, extra_args=(), cflags=(), obxc=None, cwd=None, timeout=None):
-    """Like `obxc.py src -o out [extra_args]`: returns (returncode, stdout, stderr).
+    """Like `obxc src -o out [extra_args]`: returns (returncode, stdout, stderr).
     cflags go before -o (they are part of the key)."""
     py = obxc_argv(obxc)
     if not enabled() and not cflags:

@@ -104,7 +104,7 @@ the extern NUL check; integer traps at every width; globals.
 ## Status after the fixes
 
 All 25 are fixed. Each `fNN` program moved into a test suite as `rt1_fNN_*`
-(`tests/run`, `tests/error`; F16 is the multi-file `ref/tests/run/rt1_f16_global_cname_clash`).
+(`tests/run`, `tests/error`; F16 is the multi-file `tests/compiler/run/rt1_f16_global_cname_clash`).
 `rt.py` reports all 222 cases OK under ASan, UBSan and `OBX_CHECK=1`. Five cases had
 expectations that contradict the decisions above; their headers were corrected (each
 says what it expected before): `const_byte_shl` (a shift count of 8 on a byte

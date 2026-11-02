@@ -223,7 +223,7 @@ C functions through `extern "c"`: libm (`sqrt cbrt pow exp log log2 log10 sin
 cos tan asin acos atan atan2 sinh cosh tanh floor ceil trunc round rint fabs
 fmod hypot copysign`), libc (`strerror close opendir readdir closedir mkdir
 rmdir unlink rename symlink chmod setenv unsetenv getpid chdir usleep`), and
-these helpers in `ref/rt.h` for what the language cannot express (a C struct,
+these helpers in `compiler/rt.h` for what the language cannot express (a C struct,
 errno, a static buffer):
 
 | Helper | Does |

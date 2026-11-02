@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Writes compiler/rt.obx: ref/rt.h (the C runtime) as an obx constant, one str per line.
+"""Writes compiler/rt.obx: rt.h (the C runtime) as an obx constant, one str per line.
 
-    python3 compiler/gen_rt.py          # run_compare.py's build runs it before compiling
+    python3 obx/compiler/gen_rt.py           # after changing rt.h; reseed.sh runs it too
+    python3 obx/compiler/gen_rt.py --check   # writes nothing; fails if rt.obx is not rt.h
 """
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, '..', 'ref', 'rt.h')
+SRC = os.path.join(HERE, 'rt.h')
 OUT = os.path.join(HERE, 'rt.obx')
 
 
@@ -28,6 +29,8 @@ def main():
     out += ["]", ""]
     text = '\n'.join(out)
     old = open(OUT).read() if os.path.exists(OUT) else None
+    if text != old and '--check' in sys.argv[1:]:
+        sys.exit("gen_rt.py: rt.obx is stale: run obx/compiler/gen_rt.py after changing rt.h")
     if text != old:
         with open(OUT, 'w') as f:
             f.write(text)

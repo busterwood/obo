@@ -2,7 +2,7 @@
 # Rebuilds seed/obxc.c from the current sources and checks the fixed point:
 # out/obxc builds stage 2, stage 2 builds stage 3, and the C of stages 2 and 3
 # must be identical. Run it after changing the compiler (build out/obxc first,
-# with build.sh, or with ref/obxc.py while ref is still the reference).
+# with build.sh). tools/seed_check.py checks the same without writing the seed.
 #     obx/compiler/reseed.sh
 set -e
 D=$(cd "$(dirname "$0")" && pwd)

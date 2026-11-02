@@ -6,8 +6,9 @@ program is built natively:
 
     obxc file.obx --native [-o out] [--run] [-- args]
 
-The C backend (`--emit-c`, gcc) stays as it is and stays byte-identical to
-`ref/`. The native backend is new modules beside it.
+The C backend (`--emit-c`, gcc) stays as it is (until 2026-11-02 it was kept
+byte-identical to the reference compiler `ref/`, now retired). The native
+backend is new modules beside it.
 
 ## 1. Input: the generated C, read into the IR
 
@@ -47,7 +48,8 @@ subset (with C's types, integer promotions and struct layout, which the
 backend needs anyway to match gcc's ABI). In exchange:
 
 - `check` and `emit` are untouched, so the byte-identity gate with `ref/`
-  (`run_compare.py`) cannot be disturbed by the backend, and the backend can
+  (`run_compare.py`, while ref was the reference) could not be disturbed by
+  the backend, and the backend can
   be developed and tested without touching the 5,000 lines that decide moves,
   drops and check order.
 - Every decision that is observable (when a value is dropped, which check
@@ -67,10 +69,11 @@ must keep `--emit-c` byte-identical to `ref/` while `ref/` is the reference.
 
 ## 1a. C as IR is a step, not the end state
 
-Once `ref/` is retired (after phase 4: the native self-build works, and native
-output can be checked against the C backend instead of against ref),
-`check.obx` will produce the IR directly, and both backends, C and x86-64,
-will be generated from it. The C reader then goes away.
+`ref/` was retired on 2026-11-02 (after phase 4: the native self-build works,
+and native output is checked against the C backend instead of against ref).
+That unblocks the next step, not started yet: `check.obx` produces the IR
+directly, and both backends, C and x86-64, are generated from it. The C reader
+then goes away.
 
 So `cfront.obx` stays a thin front end whose only job is to build the IR:
 
@@ -108,7 +111,7 @@ end.
 
 ## 2. Runtime
 
-`compiler/native/rt.c` is `ref/rt.h` without libc: freestanding C, raw
+`compiler/native/rt.c` is `compiler/rt.h` without libc: freestanding C, raw
 Linux syscalls. `gen_rtx.py` compiles it with gcc (`-ffreestanding
 -nostdlib -fno-pic`), links it with `ld` at fixed addresses
 (`native/rt.ld`) together with libgcc (128-bit division and conversions),
@@ -416,8 +419,8 @@ Next, in order:
    registers, `rt_str_concat` and `rt_str_eq` inline, a better choice of
    register locals (live ranges instead of counts). Measure with
    `OBX_NATIVE_MAP` and perf on the self-build.
-2. After ref is retired: check.obx produces the IR directly (section 1a) and
-   cfront goes away.
+2. check.obx produces the IR directly (section 1a) and cfront goes away;
+   unblocked since ref was retired (2026-11-02), not started.
 
 Phases:
 

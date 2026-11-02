@@ -9,9 +9,9 @@ and the self-hosted compiler first. Only then port the existing programs
 | Stage | Content | Gate | State |
 |---|---|---|---|
 | 1 | Core spec, [SPEC.md](SPEC.md) | about the size of obo's core guide | draft 1 written (about 580 lines) |
-| 2 | Reference compiler, `ref/` (Python to C) | under 5,000 lines; conformance suite passes with no leaks | done: 3,800 lines, 387 conformance + 77 own tests pass; soundness review next |
+| 2 | Reference compiler, `ref/` (Python to C) | under 5,000 lines; conformance suite passes with no leaks | done: 3,800 lines, 387 conformance + 77 own tests pass; retired 2026-11-02 to [archive/obx-ref/](../archive/obx-ref/README.md), its own tests kept as `tests/compiler/` |
 | 3 | Library: `lib/` | no compiler change except primitives | done: 9 modules, 3,300 lines, 25 library tests (OBX_CHECK=1); compiler changes: `lib/` import root, `obx_*` C helpers in rt.h; see [lib/README.md](lib/README.md) |
-| 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | done: identical AST, types and C to ref on all 2,427 test files; stage 2 == stage 3; C seed checked in (`compiler/seed/obxc.c`, `build.sh`, `reseed.sh`); full gate passes with the seed-built compiler; see [compiler/README.md](compiler/README.md) |
+| 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | done: identical AST, types and C to ref on all 2,427 test files; stage 2 == stage 3; C seed checked in (`compiler/seed/obxc.c`, `build.sh`, `reseed.sh`); full gate passes with the seed-built compiler; ref retired 2026-11-02, so `compiler/` is the only obx compiler; see [compiler/README.md](compiler/README.md) |
 | 5 | Native x86-64 ELF backend; then eza, SQLite, Postgres | eza shorter than obo's and as fast | native backend done; eza done: [cmd/eza.obx](cmd/eza.obx), 1,609 lines (1,335 without comments and blank lines) against obo's 3,482 (2,842) plus its library helpers; obo's golden suite passes with the native and the C build (482 cases, 72 live-only skipped, [cmd/README.md](cmd/README.md)); native time equal to obo's on `/usr/share` trees; SQLite and Postgres done: [lib/sqlite.obx](lib/sqlite.obx) 435 lines (307 without comments and blank lines) and [lib/postgres.obx](lib/postgres.obx) 372 (258), sharing [lib/sqldialect.obx](lib/sqldialect.obx) 257 (173), against obo's 747 (586) and 782 (595) plus its sqldialect (92), cbind files (359) and C shims (127); no C shim, six small byte and pointer helpers in rt.h; tests on both backends (lib/tests/run/sqlite_*, postgres_*; the live Postgres test is skipped without a server) |
 | 6 | Retire obo 0.19 | | |
 
@@ -47,17 +47,20 @@ generics), and a per-instance C emitter. The
 runtime C text is embedded. It is first compiled by `ref/`, then by itself;
 the generated C of stage 2 and stage 3 must be identical (fixed point). The
 generated C of the compiler is checked in as the seed, so a build needs only a
-C compiler. Then `ref/` is retired.
+C compiler. Then `ref/` is retired (done 2026-11-02: it is in
+`archive/obx-ref/`, and language changes are made in `compiler/` alone).
 
 The compiler needs no interface values: AST walks are `match`, and symbol
 tables are maps from names to indices. Closures (`&fn`) help with sorting and
 table walks.
 
-### How the port is checked
+### How the port was checked
 
-The self-hosted compiler is a port of `ref/`, module by module, with the same
-algorithms. Its gate is mechanical: for every program in the test suites
-(conformance, `ref/tests`, `lib/tests`, the red-team corpora) both compilers
+This is the record of the port; ref is retired, and the gate is now the seed's
+fixed point and the suites (`tools/gate.sh`). The self-hosted compiler is a
+port of `ref/`, module by module, with the same algorithms. Its gate was
+mechanical: for every program in the test suites (conformance, `ref/tests`,
+`lib/tests`, the red-team corpora) both compilers
 must produce **byte-identical C**, and identical error messages for rejected
 programs. That makes every step checkable without judgement, and catches a
 porting slip on the first program that reaches it.
@@ -88,8 +91,11 @@ the left operand is a fractional literal (to learn its type, red-team fix
 g12), which is exponential in deeply right-nested chains. The port should get
 the type from a cheaper type-only query and keep the C identical.
 
-5. Retire `ref/` once the seed build passes every suite. The conformance suite
-   and red-team corpora remain the acceptance tests.
+5. Retire `ref/` once the seed build passes every suite. Done 2026-11-02:
+   `ref/` is `archive/obx-ref/`, its own tests are `tests/compiler/`, its
+   runtime `rt.h` is `compiler/rt.h`, and the comparison's mutant generator is
+   `compiler/fuzz.py`. The conformance suite, the compiler tests and the
+   red-team corpora remain the acceptance tests.
 
 ## Language backlog
 

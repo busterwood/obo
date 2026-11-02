@@ -2,9 +2,10 @@
 
 Status: draft 1, 2026-11-02. This is the stage 1 document of
 [generic-core-rethink.md](../obo/design/generic-core-rethink.md). It defines
-the language that the reference compiler (`ref/`) implements and that the
-self-hosted compiler will implement. Where this document and a compiler
-disagree, this document wins until it is changed on purpose.
+the language that the compiler (`compiler/`) implements; the Python reference
+compiler that first implemented it was retired on 2026-11-02
+(`../archive/obx-ref/`). Where this document and the compiler disagree, this
+document wins until it is changed on purpose.
 
 Choices marked **(default)** were made while writing this draft without a
 separate decision from the user; they are the ones to revisit first.
