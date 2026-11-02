@@ -82,6 +82,11 @@ before the back end exists.
    1), stage 1 compiles it (stage 2), stage 2 compiles it (stage 3); the C of
    stages 2 and 3 must be identical. The generated C of the compiler is checked
    in as the seed, so a build needs only gcc.
+Notes for the port: `ref/` checks the right operand of an operator twice when
+the left operand is a fractional literal (to learn its type, red-team fix
+g12), which is exponential in deeply right-nested chains. The port should get
+the type from a cheaper type-only query and keep the C identical.
+
 5. Retire `ref/` once the seed build passes every suite. The conformance suite
    and red-team corpora remain the acceptance tests.
 
