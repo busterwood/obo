@@ -121,16 +121,16 @@ the comparison (the C output).
 
 | File | Lines | Role |
 |---|---:|---|
-| `syntax.py` | 881 | lexer (with the ASI rule) and parser to `N` nodes |
+| `syntax.py` | 915 | lexer (with the ASI rule) and parser to `N` nodes |
 | `sema.py` | 865 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
-| `check.py` | 2,359 | checks every function body once and writes it as a C template |
-| `emit.py` | 354 | renders templates once per instance, drop/dup glue, struct layouts |
+| `check.py` | 2,517 | checks every function body once and writes it as a C template |
+| `emit.py` | 424 | renders templates once per instance, drop/dup glue (direct, or a work list for chain types), struct layouts |
 | `obxc.py` | 149 | driver |
-| `dump.py` | 401 | `--dump-ast`, `--dump-types` |
-| `rt.h` | 460 | the C runtime: allocation counter, traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
+| `dump.py` | 410 | `--dump-ast`, `--dump-types` |
+| `rt.h` | 469 | the C runtime: allocation (live-object counter under `OBX_CHECK`), traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
 | `../lib/std.obx` | 1,400 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
 
-Python total: about 4,950 lines (with `run_tests.py`, 55).
+Python total: about 5,335 lines (with `run_tests.py`, 55).
 
 **Checking once, rendering per instance (SPEC 6.2, 6.4).** `check.py` checks a
 function body exactly once, generic or not. A type parameter is an opaque type:
