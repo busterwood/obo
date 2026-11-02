@@ -79,16 +79,17 @@ explicit checked string parser and returns `Result[float]`; malformed input is
 code 22 and overflow code 34, while underflow gives signed zero/subnormal.
 There is no `float -> int` conversion in this release.
 
-Float constants are raw binary64 bit patterns in `.sym`; format 6 requires
-exactly `0x` plus 16 lowercase hexadecimal digits. The format is float-specific;
-format 5 does not carry the float public grammar. `floatBits` is an internal test
-diagnostic, available only with `--test-float-bits`, not a public API.
+Float constants are raw binary64 bit patterns in `.sym`; the current format
+requires exactly `0x` plus 16 lowercase hexadecimal digits. `floatBits` is an
+internal test diagnostic, available only with `--test-float-bits`, not a public
+API. The symbol-file encoding is in [SYMFILE.md](../SYMFILE.md).
 
-### Decimal (0.12 release scalar tier)
+### Decimal
 
 `decimal` is an exact finite decimal value: a 128-bit coefficient (at most
-`10^38 - 1`), an `int16` exponent, a `uint16` display scale and a sign, in 24
-bytes. There is no NaN, infinity or negative zero. A bare fractional or
+`10^38 - 1`), a signed exponent, a display scale and a sign. It is 24 bytes and
+pointer-free; the word layout is in [ABI.md](../ABI.md). There is no NaN,
+infinity or negative zero. A bare fractional or
 exponent literal is decimal (`12.34`, `0.0011e3`, `1.2300`); an integer literal
 is still `int`; `f`/`F` still marks float. There is no `m`/`d` suffix. The
 written fractional digits are the display scale, so `1.2300` prints `1.2300`.
@@ -112,8 +113,9 @@ fn main() {
 `+`, `-`, `*` and `%` are exact; a result that is not exactly representable
 traps with exit 10 (codes 40-41), never silently rounds. `%` is the truncating
 remainder with the sign of the dividend; a zero divisor traps (code 42).
-Comparisons compare numeric value only, ignoring display scale. `/` and `/=` are
-compile errors; use `decimal::div(a, b, scale, mode)`, which returns
+Comparisons compare numeric value only, ignoring display scale: `1.0 == 1.00` is
+`true`, but printing still shows each value's own written scale. `/` and `/=`
+are compile errors; use `decimal::div(a, b, scale, mode)`, which returns
 `Result[decimal]` and requires an explicit scale `0..32768` and mode.
 `decimal::quantize(v, scale, mode)` rounds once at the target scale and
 `decimal::toInt(d, mode)` is the checked `Result[int]` conversion.
@@ -196,11 +198,11 @@ fn main() {
 fn main() { let x = 1.0 / 2.0 }
 ```
 
-In this tier decimals work as locals, parameters and returns (three-word
-by-value slots and a hidden destination pointer for returns), in
-`Result[decimal]`, and as record fields (0.16). A decimal field takes 24 bytes
-inline in its record or closed-variant payload, in declaration order and on an
-8-byte boundary; an omitted decimal field is zero. Reads, `=`, `+=`, `-=`, `*=`,
+Decimals work as locals, parameters and returns, in `Result[decimal]`, and as
+record fields. The call slots and the hidden return destination are in
+[ABI.md](../ABI.md). A decimal field takes 24 bytes inline in its record or
+closed-variant payload, in declaration order and on an 8-byte boundary; an
+omitted decimal field is zero. Reads, `=`, `+=`, `-=`, `*=`,
 `%=` and record literals work through a handle (`^T`) and through a `&T` or
 `mut &T` borrow. A compound assignment computes into a temporary and then copies
 it into the field. A decimal operand is read before the operand after it runs, as an
@@ -209,8 +211,8 @@ ran, even if `f` replaces the record or writes the field. The same holds for eac
 decimal or int argument of `decimal::div`, `quantize`, `toInt` and `check` that a later
 argument follows. Like an int field, a field may not be assigned from a call
 that might free its record (`cannot assign to a field or element across a
-call`). A decimal global works (0.16): it takes 24 bytes of the zero-initialised
-global data, so `var g: decimal` starts at zero, and
+call`). A decimal global takes 24 bytes of the zero-initialised global data, so
+`var g: decimal` starts at zero, and
 `var g = expr` takes any decimal expression, including a call or a product, and a
 record global may be built from a record literal with decimal fields: a global
 initializer may build values as a local may. Module
@@ -220,15 +222,12 @@ constant is a literal or a unary-minus literal (`const RATE = 0.0825`,
 `const NEG = -1.5`): arithmetic is not folded, so `const C = 1.0 + 2.0` is refused
 with `decimal constants must be a literal; arithmetic is not folded`. A constant
 takes no storage of its own; each use materialises its three words into a
-temporary. `-0.00` is positive zero and keeps its written display scale. Decimal
-methods and interface members work (0.18): a decimal is a method parameter and
-return value, including `Result[decimal]`, and a decimal-returning method is called
-directly or through an interface's vtable. A decimal is never a receiver, and a
-decimal member can be `pure`, plain, `mut` or `impure` like any other. Decimal
-function values and non-capturing lambdas work (0.19): a function type may take
-and return a decimal, a decimal-returning value call keeps the hidden
-destination at `16 + visible parameter bytes` and puts the value cell above it,
-and a captured decimal is a 24-byte value snapshot. `mut`/`move` captures,
+temporary. `-0.00` is positive zero and keeps its written display scale. A decimal is a method parameter and return value, including `Result[decimal]`,
+and a decimal-returning method is called directly or through an interface's
+vtable. A decimal is never a receiver, and a decimal member can be `pure`,
+plain, `mut` or `impure` like any other. A function type may take and return a
+decimal, a decimal-returning value call uses the same hidden destination as a
+direct call, and a captured decimal is a 24-byte value snapshot. `mut`/`move` captures,
 `&decimal`, stored closures and named function values remain out of scope. `?decimal`
 is not representable; there is no raw-bits access and no owned or mutable decimal.
 
@@ -245,7 +244,7 @@ fn main() {
 }
 ```
 
-A global and a constant (0.16):
+A global and a constant:
 
 ```obo
 // example: runs
@@ -259,7 +258,7 @@ fn main() {
 }
 ```
 
-A decimal method and an interface member (0.18):
+A decimal method and an interface member:
 
 ```obo
 // example: runs
@@ -278,7 +277,7 @@ fn main() {
 }
 ```
 
-`[]decimal` (0.16) is an array of decimals, stored inline at a 24-byte stride. It
+`[]decimal` is an array of decimals, stored inline at a 24-byte stride. It
 is created with `new []decimal(n)` (zero-filled) or `new []decimal(0)` and then
 `append`ed, and it works where other arrays do: locals, fields, elements of
 `[][]decimal`, parameters (`&[]decimal`, `mut &[]decimal`), returns, `Result` and

@@ -70,16 +70,10 @@ fn main() {
 }
 ```
 
-The value representation is one word: a pointer to an immutable cell whose word 0 is the code
-address. A call passes that cell as a hidden environment argument before the visible arguments,
-then dispatches indirectly through the cell. For a decimal-returning value call the cell is
-pushed **first**, then the hidden decimal destination, so the callee keeps reading its
-destination at `16 + visible parameter bytes` exactly as on a direct call and the cell sits
-above it at `24 + visible parameter bytes` (a `Result[decimal]` return is one word, not a
-decimal return, so its cell is at `16 + visible parameter bytes`). A direct, method or
-interface call has no cell. The environment is not a source name: a user
-global, local or parameter called `env` remains an ordinary name. The runtime and array ABI are
-unchanged.
+The value representation and frame layout are in [ABI.md](../ABI.md): a
+function value is one word, a call dispatches indirectly through its cell, and
+a decimal-returning value call keeps the hidden decimal destination where a
+direct call reads it.
 
 **Effects.** Every function value is pure in the compiler's existing predicate: its hidden body
 may allocate, write scalar globals, append to owned/global arrays, perform I/O builtins, take or
@@ -117,16 +111,10 @@ fn main() {
 
 Stored function values, owned or mutable captures, string/interface captures and impure
 callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
-interface handles `^I` remain later. `obo 0.19` is released as format 12/ABI 1
-(decimal function values and captures); the promoted seed at `ba02031` and the
-compiler are both 757,761 bytes (sha256 `8327ca50…`), and the image is the
-self-host fixed point. The pre-promotion `0.18` seed built it once, and the
-historical `0.15` seed built the 0.16 image. The released `0.11`
-seed (`01fa9ed3…`) also builds the older line. The historical `0.9` seed
-(`540,673` bytes, sha256 `3d369273…`) built the 0.10 compiler, and the historical `0.8` seed
-(`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
+interface handles `^I` remain later. The release record and seed
+history are in [HISTORY.md](../../HISTORY.md) and [FORK.md](../FORK.md).
 
-## 5d. Capturing lambdas (Stage B, 0.11/format 6/ABI 1; decimal captures 0.19/format 12)
+## 5d. Capturing lambdas
 
 A capturing lambda writes an explicit capture list: `fn [a, b](Params) [: Ret] { Body }`.
 Each name must resolve to a local or parameter of the immediately enclosing function; an
@@ -198,15 +186,12 @@ initializer. The callee may keep it in a local/parameter, copy it, forward it in
 chain, call it, or put it in a `defer`; it cannot store it beyond the call or return it. The
 creator's frame cell is plain stack memory: no heap allocation, no destructor, no escape.
 
-The hidden environment is **one read-only word**, a pointer to
-`[code][cap0]...[capN]` in the creator's frame; it is not one hidden parameter per capture and
-it is not a source name (a user `env` is ordinary). The visible parameter list is the only
-parameter list: the callee reads the cell at `16 + visible parameter bytes`, plus 8 when it
-returns a decimal (the destination sits below the cell). Each capture slot is 8 bytes except a
-decimal capture, which is 24; the byte offset of capture `i` is `8 + the sizes of the earlier
-slots`, not `8*i`, and the cell size is `8 + the sum of the slot sizes`. The decimal value ABI
-is unchanged (24-byte parameters and a hidden destination), symbol format 12 and ABI 1 apply:
-capture lists add grammar and a frame cell, not a new calling convention.
+The hidden environment is **one read-only word**, a pointer to the cell in
+the creator's frame; it is not one hidden parameter per capture and it is not a
+source name (a user `env` is ordinary). The visible parameter list is the only
+parameter list. The cell layout, slot sizes and byte offsets are in
+[ABI.md](../ABI.md); capture lists add grammar and a frame cell, not a new
+calling convention.
 
 The creating call holds the capture binding across later arguments exactly like a read-only
 reference argument. A later argument that moves/frees the captured root is refused; a `mut`

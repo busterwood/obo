@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Checks the examples in obo/LANGUAGE.md and obo/language/*.md against the
-compiler.
+"""Checks the examples in the language reference (obo/LANGUAGE.md,
+obo/ABI.md, obo/SYMFILE.md and obo/language/*.md) against the compiler.
 
 A ```obo block whose first line is "// example: runs" must compile and exit 0
 (or with the code given by "// exit: N"), printing the "// prints" lines.
@@ -21,7 +21,8 @@ import glob, os, re, subprocess, sys, tempfile, textwrap
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
 DOC = os.path.join(FORK, 'LANGUAGE.md')
-DOCS = [DOC] + sorted(glob.glob(os.path.join(FORK, 'language', '*.md')))
+DOCS = ([DOC, os.path.join(FORK, 'ABI.md'), os.path.join(FORK, 'SYMFILE.md')]
+        + sorted(glob.glob(os.path.join(FORK, 'language', '*.md'))))
 OBO = os.environ.get('OBO', os.path.join(FORK, 'obo'))
 RT = FORK
 entries = []

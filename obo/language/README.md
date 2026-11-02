@@ -23,6 +23,9 @@ to its file.
 | 10 | [errors.md](errors.md) | compile-error reference |
 | 11 | [obx.md](obx.md) | differences from obx |
 | 12 | [holes.md](holes.md) | known holes and planned changes |
+| — | [grammar.md](grammar.md) | an informative EBNF of the accepted syntax |
+| — | [ABI.md](../ABI.md) | value, call, vtable and capture layouts |
+| — | [SYMFILE.md](../SYMFILE.md) | `.sym` format, hashes and versions |
 
 Start with the core guide for the syntax, then read sections 2–4 for the
 ownership model, which is what makes obo different. The remaining chapters are

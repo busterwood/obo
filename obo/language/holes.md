@@ -2,22 +2,18 @@ Part of the obo language reference. Index and core syntax: [LANGUAGE.md](../LANG
 
 ## 12. Known holes and planned changes
 
-Decimal is the released minimum scalar tier at 0.12; record fields, `[]decimal`,
-globals and constants followed in 0.16, and methods and interface members in 0.18:
-decimal function values, lambda parameters/returns and captures followed in 0.19 (a
-capture is a 24-byte value snapshot; named function values, stored closures,
-`&decimal` and `mut`/`move` captures remain out of scope). No
-`format`/`parse` stdlib, database adapter, `decimal(p,s)` syntax, float interop
-or owned/mut decimal. Display scale is independent metadata, and a multiply
-caps the propagated display scale at the 38-digit rule without changing the
-value. The reviewed core keeps its strict quantize target limit of 32768. The
-0.11 seed built the 0.12 image once; the promotion makes `seed/obo` the same
-0.12 image. Underscore placement such as `1_.0` is not validated by the
-shared lexer; that is a pre-existing lexer-wide gap, not decimal-specific.
-`float` remains a separate pre-existing reserved-type-name gap; `decimal` is
-now reserved.
+Decimal is implemented as the exact 24-byte scalar, including fields,
+`[]decimal`, globals, constants, methods, interface members, function values,
+lambdas and 24-byte capture snapshots. Still out of scope: named function values,
+stored closures, `&decimal`, `mut`/`move` captures, `decimal(p,s)` syntax, float
+interop, owned or mutable decimal, and a typed database write path. Display scale
+is independent metadata, and a multiply caps the propagated display scale at the
+38-digit rule without changing the value. The quantize target limit is 32768.
+Underscore placement such as `1_.0` is not validated by the shared lexer; that is
+a lexer-wide gap, not decimal-specific. `float` remains a pre-existing
+reserved-type-name gap; `decimal` is reserved.
 
-Template literals are released in `0.15`. The v1 scope has no SQL parser or
+Template literals are implemented. The v1 scope has no SQL parser or
 identifier/`ORDER BY` allow-list API, no array expansion, no user-defined
 template tags or public domain registry, no generic `escape`, and no
 `string -> Sql`/`Html` conversion. HTML has no script/style/comment/unquoted or
@@ -28,10 +24,7 @@ type-enforced provenance check; direct `new Html{...}` is private to module
 renders `$n`/`?`/`@pN`/`:n`; the experimental PostgreSQL and SQLite packages
 provide the binding bridge, while SQL Server and Oracle adapters and
 `SqlArg.Float` binding (`SQL_ARG_FLOAT_UNSUPPORTED`, 1014) are later work.
-`DecimalText` is the lossless decimal transport. `obo 0.19` is released as
-format 12/ABI 1; the seed is promoted at `ba02031`, and `seed/obo` and the
-compiler are both 757,761 bytes (sha256 `8327ca50…`) at the self-host fixed
-point.
+`DecimalText` is the lossless decimal transport.
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target

@@ -322,6 +322,8 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `obo/seed/obo` | the trusted previous stage |
 | `obo/LANGUAGE.md` | the core language guide: syntax, literals, statements, `match` |
 | `obo/language/` | the reference chapters: types, ownership, references, handles, methods, interfaces, lambdas, modules, results, builtins, runtime, errors, known holes |
+| `obo/ABI.md` | value, call, vtable and capture layouts |
+| `obo/SYMFILE.md` | the `.sym` text format, hashes and version/trust model |
 | `obo/lib/` | the thirteen source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs`, `env`, `html`, `sqldialect` and `decimals` |
 | `obo/cmd/` | the tools: `cat`, `wc`, `sort`, `head`, `tail` and `eza`, with `README.md` and their subsets |
 | `obo/tests/` | obo's suite, mutants, the I/O, tools and eza gates |

@@ -37,6 +37,11 @@ compile, but is a known problem rather than a model of good code.
 | 10 | [errors.md](language/errors.md) | compile-error reference |
 | 11 | [obx.md](language/obx.md) | differences from the obx predecessor |
 | 12 | [holes.md](language/holes.md) | known holes and planned changes |
+| — | [grammar.md](language/grammar.md) | an informative EBNF of the accepted syntax |
+
+Two companions hold material that is not a language rule: [ABI.md](ABI.md) has
+the value, call, vtable and capture layouts, and [SYMFILE.md](SYMFILE.md) has
+the `.sym` text format, hashes and version/trust model.
 
 ## 0. The core language
 

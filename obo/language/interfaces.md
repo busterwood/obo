@@ -4,12 +4,8 @@ Part of the obo language reference. Index and core syntax: [LANGUAGE.md](../LANG
 
 An interface is a named set of methods that a record or closed type can implement. A value of interface type is
 either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I`); an interface is never a value
-of its own kind with fields or identity. Interfaces arrived in `0.8`; additive
-builtin/runtime extensions use patch releases such as the historical `0.8.1`.
-Lambdas are `0.9`, numeric floats are `0.10`/format 6, Stage B capture lists are
-`0.11`/format 6, the impure member tier is `0.17`/format 10, decimal members are
-`0.18`/format 11, decimal function values and captures are `0.19`/format 12,
-and handles to interfaces (`^I`) are a later phase.
+of its own kind with fields or identity. `^I` is a later phase. The box and pair
+layouts and the call slots are in [ABI.md](../ABI.md).
 
 ### Declarations and implementations
 
@@ -30,7 +26,7 @@ impl Shape for Square
 - `type I = interface { ... }` declares an interface; it needs at least one member, is never forward-declared,
   and a member is `[pure | impure] [mut] fn name(params)[: T]`. `pure`, `impure` and `mut` come before `fn`
   (`pure` and `impure` are mutually exclusive); `pub` is not allowed on a member (mark the interface type `pub`).
-  A member may take or return a decimal (0.18), and a decimal is never a receiver.
+  A member may take or return a decimal, and a decimal is never a receiver.
   A member cannot take or return a function value.
 - A member's receiver is parameter 0: borrowed for `fn`, mutable for `mut fn`; it is not written in the member.
   Explicit parameters are owned `p: T`, borrowed `p: &T`, or mutable borrowed `mut p: &T`. `mut p: T` is the
@@ -54,7 +50,7 @@ impl Shape for Square
 
 `I` is a box holding the object pointer and its vtable; `?I` is nil or a box. Converting a record or closed
 value into `I` at a typed destination allocates a box and **moves** the value into it. A variant uses its
-closed parent's implementation and vtable.
+closed parent's implementation and vtable. The layout is in [ABI.md](../ABI.md).
 
 ```obo
 // example: runs
@@ -181,7 +177,8 @@ A non-nil `&?I` narrows to `&I`; take a copied `&I` local with `let d: &I = o`.
 
 Any designator of type `I`, `&I` or a narrowed `&?I` can be a receiver: a local, parameter, field, element,
 global, `Result` value, or walk variable. A call through an interface is a direct call on the box's object
-(argument 0), with the object and vtable loaded before the explicit arguments. A `mut` member needs a writable
+(argument 0), with the object and vtable loaded before the explicit arguments;
+the exact slots are in [ABI.md](../ABI.md). A `mut` member needs a writable
 receiver. The caller uses the member's synthetic summary, not the implementation's:
 
 - `pure` means the member frees nothing and writes no owned value through a handle. It may still write scalars,
