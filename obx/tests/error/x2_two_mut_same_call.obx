@@ -1,0 +1,7 @@
+// error: twice in one call
+type D = record { v: int }
+fn (d: mut &D) with(e: mut &D) {}
+fn main() {
+    var zed = D{v: 1}
+    zed.with(mut &zed)
+}

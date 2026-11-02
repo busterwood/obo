@@ -1,0 +1,5 @@
+// error: expression
+fn main() {
+    let n = 3
+    let s = match n { 1 { let q = 1; q } else { 2 } }
+}

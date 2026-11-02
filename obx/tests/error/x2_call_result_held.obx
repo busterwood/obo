@@ -1,0 +1,8 @@
+// error: xs
+type D = record { v: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn use2(a: &D, b: D) {}
+fn main() {
+    var xs = [D{v: 1}, D{v: 2}]
+    use2(first(&xs), pop(mut &xs))
+}

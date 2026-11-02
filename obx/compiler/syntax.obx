@@ -731,13 +731,17 @@ pub const N_CALL = 52        // a fn, b args
 pub const N_LIT = 53         // a ty (an expression), b inits (N_INIT)
 pub const N_INIT = 54        // s name, a e
 pub const N_TARG = 55        // a ty: a type in an index or call bracket
+pub const N_IFX = 56         // a cond, b then, c els (an expression, or an N_IFX for else if)
+pub const N_MATCHX = 57      // a e, b arms (each arm's body an expression)
+pub const N_LNAME = 58       // arm item: a vpath (a constant or a variant); no line
 
 // ref's kind names.
 pub const KIND_NAMES: []str = ["import", "type", "fn", "const", "global", "tparam", "field", "variant",
     "member", "recv", "param", "copy", "ref", "slice", "arr", "never", "fnt", "name", "ident", "block",
     "let", "destructure", "fieldpat", "if", "while", "for", "return", "break", "continue", "match", "arm",
     "assign", "expr", "int", "char", "str", "int", "char", "frac", "str", "bool", "name", "arrlit",
-    "closure", "cparam", "bin", "un", "borrow", "try", "field", "sub", "index", "call", "lit", "init", "targ"]
+    "closure", "cparam", "bin", "un", "borrow", "try", "field", "sub", "index", "call", "lit", "init", "targ",
+    "ifx", "matchx", "name"]
 
 // Flags.
 pub const PUB = 1
@@ -1459,7 +1463,10 @@ fn (p: mut &Parser) stmt1(): int {
             p.next()
             return p.node(N_CONTINUE, w, "", -1, -1, -1)
         }
-        if op == K_MATCH { return p.matchstmt() }
+        if op == K_MATCH {
+            let mw = p.nextLine()
+            return p.matchstmt(mw, N_MATCH)
+        }
     }
     let e = p.expr0()
     if p.kind(0) == T_SYM {
@@ -1502,8 +1509,9 @@ fn (p: mut &Parser) destructure(w: int, mutable: bool): int {
     return n
 }
 
-fn (p: mut &Parser) matchstmt(): int {
-    let w = p.nextLine()
+// The arms of a match statement (kind N_MATCH, block bodies) or expression (N_MATCHX, one
+// expression each); the keyword is read. An arm of one name is a variant or a constant.
+fn (p: mut &Parser) matchstmt(w: int, kind: int): int {
     let scrut = p.cond()
     p.sym(S_LBRACE)
     p.skipsemi()
@@ -1513,17 +1521,10 @@ fn (p: mut &Parser) matchstmt(): int {
         let arm = p.node(N_ARM, aw, "", -1, -1, -1)
         if p.atKw(K_ELSE) {
             p.next()
-        } else if p.kind(0) == T_ID {
-            let first = p.nextText()
-            var vpath: []int = [p.node(N_IDENT, 0, first, -1, -1, -1)]
-            while p.atSym(S_DOT) {
-                p.next()
-                let part = p.ident()
-                append(mut &vpath, p.node(N_IDENT, 0, part, -1, -1, -1))
-            }
-            p.ast.nodes[arm].s = p.ast.nodes[vpath[len(vpath) - 1]].s
-            p.ast.nodes[arm].a = p.list(&vpath)
-            if p.atSym(S_LPAREN) {
+        } else {
+            let first = p.literal()
+            var lits: []int = [first]
+            if p.ast.nodes[first].kind == N_LNAME && p.atSym(S_LPAREN) {
                 p.next()
                 var binds: []int = []
                 while !p.atSym(S_RPAREN) {
@@ -1534,27 +1535,58 @@ fn (p: mut &Parser) matchstmt(): int {
                 p.next()
                 p.ast.nodes[arm].b = p.list(&binds)
             }
-        } else {
-            var lits: []int = [p.literal()]
-            while p.atSym(S_COMMA) {
+            while p.ast.nodes[arm].b < 0 && p.atSym(S_COMMA) {
                 p.next()
                 append(mut &lits, p.literal())
             }
-            p.ast.nodes[arm].c = p.list(&lits)
+            if len(lits) == 1 && p.ast.nodes[first].kind == N_LNAME {
+                let vpath = p.ast.nodes[first].a
+                p.ast.nodes[arm].s = p.ast.nodes[p.ast.item(vpath, p.ast.count(vpath) - 1)].s
+                p.ast.nodes[arm].a = vpath
+            } else {
+                p.ast.nodes[arm].c = p.list(&lits)
+            }
         }
-        let body = p.block()
+        var body = -1
+        if kind == N_MATCHX {
+            body = p.branch()
+        } else {
+            body = p.block()
+        }
         p.ast.nodes[arm].d = body
         append(mut &arms, arm)
         p.skipsemi()
     }
     p.sym(S_RBRACE)
     let l = p.list(&arms)
-    return p.node(N_MATCH, w, "", scrut, l, -1)
+    return p.node(kind, w, "", scrut, l, -1)
 }
 
+// { e }: a branch of an if or match expression, exactly one expression.
+fn (p: mut &Parser) branch(): int {
+    p.sym(S_LBRACE)
+    p.skipsemi()
+    let e = p.expr0()
+    p.skipsemi()
+    if !p.atSym(S_RBRACE) { p.err("a branch of an if or match expression is one expression in { }") }
+    p.next()
+    return e
+}
+
+// An item of a match arm: a literal, or a name or mod.name (a variant or a constant).
 fn (p: mut &Parser) literal(): int {
     let t = p.next()
     let k = p.toks[t].k
+    if k == T_ID {
+        var vpath: []int = [p.node(N_IDENT, 0, p.toks[t].s, -1, -1, -1)]
+        while p.atSym(S_DOT) {
+            p.next()
+            let part = p.ident()
+            append(mut &vpath, p.node(N_IDENT, 0, part, -1, -1, -1))
+        }
+        let l = p.list(&vpath)
+        return p.node(N_LNAME, 0, "", l, -1, -1)
+    }
     if k == T_SYM && p.toks[t].op == S_MINUS && p.kind(0) == T_INT {
         let digits = p.nextText()
         let n = p.node(N_LINT, 0, digits, -1, -1, -1)
@@ -1796,6 +1828,21 @@ fn (p: mut &Parser) primary(): int {
         let l = p.args(S_LBRACKET, S_RBRACKET)
         return p.node(N_ARRLIT, w, "", l, -1, -1)
     }
+    if k == T_KW && op == K_IF {          // a conditional expression (SPEC 7.8)
+        let c = p.cond()
+        let then = p.branch()
+        if p.atSym(S_SEMI) && p.isKw(1, K_ELSE) { p.next() }
+        if !p.atKw(K_ELSE) { p.err("an if expression needs an else branch") }
+        p.next()
+        var els = -1
+        if p.atKw(K_IF) {
+            els = p.primary()
+        } else {
+            els = p.branch()
+        }
+        return p.node(N_IFX, w, "", c, then, els)
+    }
+    if k == T_KW && op == K_MATCH { return p.matchstmt(w, N_MATCHX) }   // a match expression (SPEC 7.8)
     if k == T_KW && op == K_FN {          // a closure (SPEC 4.6)
         p.sym(S_LPAREN)
         var ps: []int = []

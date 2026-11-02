@@ -1,0 +1,28 @@
+// SPEC 7.8: only the chosen branch runs, and the temporaries of a branch are
+// dropped at the end of that branch, after its value is taken.
+// expect: then 1
+// expect: drop t1
+// expect: got 1
+// expect: else 2
+// expect: drop t2
+// expect: got 2
+// expect: then-str
+// expect: drop s
+// expect: x!
+// expect: end
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+fn mk(tag: str): D { return D{tag: tag} }
+fn val(msg: str, n: int): int { println(msg); return n }
+fn main() {
+    var i = 0
+    while i < 2 {
+        i += 1
+        let v = if i == 1 { len(mk("t1").tag) * 0 + val("then 1", 1) } else { len(mk("t2").tag) * 0 + val("else 2", 2) }
+        println("got " + v.toStr())
+    }
+    let s = if i == 2 { len(mk("s").tag) * 0 + val("then-str", 0) } else { val("never", 9) }
+    let t = if s == 0 { "x" + "!" } else { "y" }
+    println(t)
+    println("end")
+}

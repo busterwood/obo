@@ -1,0 +1,33 @@
+// SPEC 7.8: owned results (a record, a str), a variable moved by both branches,
+// try inside a branch (the early return drops what the statement built), and
+// a never branch, which takes the other's type.
+// expect: rec-a
+// expect: moved both
+// expect: 42
+// expect: err bad
+// expect: 5
+// expect: end
+// expect: drop m
+// expect: drop rec-a
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+fn mk(tag: str): D { return D{tag: tag} }
+fn parse(s: str): Result[int, str] { return if s == "42" { Ok(42) } else { Err(s) } }
+fn twice(s: str, c: bool): Result[int, str] {
+    let n = if c { try parse(s) } else { 0 }
+    return Ok(n)
+}
+fn main() {
+    let c = true
+    let r = if c { mk("rec-a") } else { mk("rec-b") }
+    println(r.tag)
+    let a = r
+    let m = mk("m")
+    let k = if len(a.tag) > 3 { m } else { m }
+    println("moved both")
+    match twice("42", true) { Ok(n) { println(n) } Err(e) { println("err " + e) } }
+    match twice("bad", true) { Ok(n) { println(n) } Err(e) { println("err " + e) } }
+    let n = if c { 5 } else { panic("not reached") }
+    println(n)
+    println("end")
+}

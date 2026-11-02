@@ -1,4 +1,4 @@
-// error: borrow
+// SPEC 7.5 (2026-11-02): the borrow is taken when the call is made, after the other arguments.
 type D = record { v: int }
 fn main() {
     var xs: []D = [D{v: 1}, D{v: 2}]

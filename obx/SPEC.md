@@ -103,12 +103,13 @@ stmt        = ( "let" | "var" ) IDENT [ ":" type ] "=" expr sep
             | "if" expr block [ "else" ( block | ifstmt ) ]
             | "while" expr block
             | "for" IDENT "in" expr [ ".." expr ] block
-            | "match" expr "{" { arm } [ "else" block ] "}"
+            | "match" expr "{" { arm(block) } [ "else" block ] "}"
             | "return" [ expr ] sep | "break" sep | "continue" sep
             | block
             | expr [ assignop expr ] sep ;
-arm         = qualname [ "(" pattern { "," pattern } ")" ] block
-            | literal { "," literal } block ;
+arm(B)      = qualname [ "(" pattern { "," pattern } ")" ] B
+            | item { "," item } B ;
+item        = literal | qualname ;                  (* a constant, section 8 *)
 pattern     = IDENT | "_" ;
 fieldpat    = IDENT [ ":" pattern ] ;
 assignop    = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "|=" | "&=" | "^=" ;
@@ -129,7 +130,11 @@ primary     = INT | FRACTION | CHAR | STRING | "true" | "false"
             | qualname [ targs ] [ "{" [ inits ] "}" ]
             | "[" [ args ] "]"
             | "(" expr ")"
+            | ifexpr
+            | "match" expr "{" { arm(branch) } [ "else" branch ] "}"
             | "fn" "(" [ lparam { "," lparam } ] ")" [ ":" type ] block ;  (* closure *)
+ifexpr      = "if" expr branch "else" ( branch | ifexpr ) ;
+branch      = "{" expr "}" ;
 lparam      = IDENT [ ":" type ] ;
 inits       = IDENT ":" expr { "," IDENT ":" expr } ;
 sep         = ";" | NEWLINE ;
@@ -139,6 +144,10 @@ The empty array literal is `[]`; it needs an expected type. `X{...}` after a nam
 of `if`, `while`, `for` and `match`, where `{` starts the block (wrap the
 literal in parentheses there). `&` is a borrow in unary position and bitwise
 and between operands. A comparison does not chain: `a < b < c` is an error.
+A statement that starts with `if` or `match` is the statement, not the
+expression of section 7.8. In an arm, a single `qualname` is a variant or a
+constant, and `arm(B)` with `B` = `block` or `branch` means the arm body is a
+block or one expression.
 
 ## 4. Types
 
@@ -527,6 +536,21 @@ may be passed where `&T` is expected. A copy-type argument is copied when it is
 evaluated, so `f(mut &n, n.v)` does not conflict (rule 10.3 concerns borrows
 and moves only).
 
+**Borrows are taken at the call.** A borrow argument `&p` or `mut &p` (or a
+borrow variable passed as it is), and the implicit borrow of a method
+receiver `p`, whose place `p` is made only of a local variable or parameter
+(a borrow one is dereferenced), fields and indexes into arrays, is *taken*
+when the call is made, after all its arguments have been evaluated. The index
+expressions in `p` still run in their position, left to right; when the call
+is made the place is found again and its indexes are checked again (exit 3).
+So `p.node(K, p.block())` with `p: mut &Parser`, `xs[i].push(f(mut &xs))` and
+`c.emit(c.T(t) + ";")` are allowed. The same holds for the first argument of
+`append` and `replace`, taken after the value. A borrow reached through a
+slice or through a borrow returned by a call, a slice argument and a closure
+argument are taken in their position, as before. A borrow taken at the call
+needs its root: if a later argument moved it, that is an error (use after
+move). Rule 3 of section 10 applies between the borrows as taken.
+
 ### 7.6 try
 
 `try e` requires `e` to have a closed type with variants `Ok(T)` and `Err(E)`
@@ -540,6 +564,30 @@ values already built for the statement are dropped before the return.
 A value produced inside a statement and not stored lives until the end of
 that statement and is then dropped: `println(makeBox(3).v)` is allowed.
 
+### 7.8 Conditional and match expressions
+
+```obx
+let sign = if x > 0 { 1 } else if x < 0 { -1 } else { 0 }
+let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" } }
+```
+
+- `if c { a } else { b }` in expression position is a value; `else` is
+  required and `else if` chains. `match e { ... }` in expression position is
+  a value; its arms cover the scrutinee as for the match statement (section
+  8). Each branch or arm body is exactly one expression.
+- Only the chosen branch or arm runs. Its temporaries are dropped when it
+  ends, after its value is taken; the value is a temporary of the statement.
+- All branches have the same type; the expected type flows into each, and an
+  integer literal branch takes the type of the others. A branch whose type is
+  `never` (a call to a `never` function) takes the type of the others.
+- Ownership is as for the statements: moves are joined across the branches
+  (section 9.1), and a match binds, borrows and consumes its scrutinee as in
+  section 9.3.
+- The result is a value, copy or owned; it may not be a borrow, a slice or a
+  closure. A borrow branch is read: `if c { r } else { 0 }` with `r: &int`
+  is an `int`, and a field bound as a borrow by a match arm can be read but
+  not be the result when it is owned (moving out of a borrow).
+
 ## 8. Statements
 
 - `let x = e` binds a name that cannot be assigned again or borrowed
@@ -552,7 +600,12 @@ that statement and is then dropped: `println(makeBox(3).v)` is allowed.
 - `match e { ... }` takes a closed value. An arm names a variant and binds its
   positional fields (`Expr.Add(l, r)`) or named fields in declaration order; `_`
   ignores one. Arms must cover every variant or end with `else`. `match` on an
-  integer, `byte` or `str` takes literal arms and requires `else`.
+  integer, `byte` or `str` takes literal arms and requires `else`. Such an arm
+  may also name a constant (`K` or `mod.K`, section 5.2), alone or in a list
+  with literals (`N_INT, N_FRAC, 7 { ... }`), when `x == K` would type-check:
+  the constant has the scrutinee's type, or is an untyped integer constant
+  that fits it. Constant tables and globals cannot be arms. Two arms or items
+  with the same value are an error.
 - `return e` returns. A function with a result type must return on every
   path; falling off the end is an error. A `match` or `if`/`else` whose every arm returns
   counts as returning.
@@ -646,7 +699,10 @@ following rules, all checked within one function at a time.
 3. **Calls.** While a call's arguments are evaluated, the places it has
    already borrowed, or will move, are held: a later argument, at any depth of
    nesting, may not mutably borrow, assign or move a place that overlaps a held
-   one. `use(first(&xs), pop(mut &xs))` is an error. A shared read of a place
+   one. `use(first(&xs), pop(mut &xs))` is an error. A borrow taken at the call
+   (section 7.5) is not held while the arguments run; when it is taken it is
+   held, and may not overlap another borrow or move of the same call unless
+   both are shared. A shared read of a place
    held by a mutable borrow of an enclosing call is allowed
    (`m.put(k, m.get(&k)...)`). Two places overlap when one is a prefix of the
    other; any two indexes into the same array overlap. The same holding covers

@@ -279,7 +279,7 @@ fn (d: mut &Dumper) node(a: &sx.Ast, depth: int, label: str, n: int) {
     } else if k == sx.N_RETURN {
         d.end()
         d.opt(a, x, "e", na)
-    } else if k == sx.N_MATCH {
+    } else if k == sx.N_MATCH || k == sx.N_MATCHX {
         d.end()
         d.node(a, x, "e", na)
         d.list(a, x, "arms", nb)
@@ -298,6 +298,14 @@ fn (d: mut &Dumper) node(a: &sx.Ast, depth: int, label: str, n: int) {
     } else if k == sx.N_EXPR || k == sx.N_TRY {
         d.end()
         d.node(a, x, "e", na)
+    } else if k == sx.N_IFX {
+        d.end()
+        d.node(a, x, "cond", na)
+        d.node(a, x, "then", nb)
+        d.node(a, x, "els", nc)
+    } else if k == sx.N_LNAME {
+        d.names(a, "v", na)
+        d.end()
     } else if k == sx.N_LINT {
         d.intValue(a, n)
         d.end()

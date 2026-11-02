@@ -1,0 +1,6 @@
+// error: 300
+const ZED = 300
+fn main() {
+    let n: byte = 3
+    match n { ZED { println(1) } else {} }
+}

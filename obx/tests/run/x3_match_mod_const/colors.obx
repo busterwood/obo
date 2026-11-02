@@ -1,0 +1,3 @@
+pub const RED = 1
+pub const GREEN = 2
+pub const BLUE = 3

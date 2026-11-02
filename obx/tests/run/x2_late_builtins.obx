@@ -1,0 +1,21 @@
+// SPEC 7.5: a borrow argument or receiver whose place is variables, fields and
+// array indexes is taken when the call is made, after the other arguments.
+// append and replace take their borrow after the value.
+// expect: 3
+// expect: 1
+// expect: a
+// expect: c
+type S = record { items: []int; next: int }
+fn (s: mut &S) step(): int { s.next += 1; return s.next }
+fn rev(xs: mut &[]str): str { let a = pop(mut &xs); append(mut &xs, a); return "c" }
+fn main() {
+    var s = S{items: [], next: 0}
+    append(mut &s.items, s.step())
+    append(mut &s.items, s.step() + 1)
+    println(s.items[1])
+    println(s.items[0])
+    var xs = ["a", "b"]
+    let old = replace(mut &xs[1], rev(mut &xs))
+    println(xs[0])
+    println(xs[1])
+}

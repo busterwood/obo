@@ -1,0 +1,9 @@
+// error: enclosing call
+type B = record { n: int }
+fn (b: &B) set(x: int) {}
+fn grow(xs: mut &[]B): int { append(mut &xs, B{n: 0}); return 1 }
+fn main() {
+    var xs = [B{n: 1}, B{n: 2}]
+    let k = 0
+    xs[0..2][k].set(grow(mut &xs))
+}

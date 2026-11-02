@@ -1,0 +1,17 @@
+// SPEC 8: a constant of another module, written mod.K, in a match arm.
+// expect: red
+// expect: green-or-blue
+// expect: none
+import "./colors"
+fn show(c: int): str {
+    match c {
+        colors.RED { return "red" }
+        colors.GREEN, colors.BLUE { return "green-or-blue" }
+        else { return "none" }
+    }
+}
+fn main() {
+    println(show(colors.RED))
+    println(show(3))
+    println(show(9))
+}

@@ -1,0 +1,8 @@
+// error: 'zed' was moved
+type D = record { v: int }
+fn take(d: D): int { return d.v }
+fn show(d: &D, n: int) {}
+fn main() {
+    let zed = D{v: 1}
+    show(&zed, take(zed))
+}

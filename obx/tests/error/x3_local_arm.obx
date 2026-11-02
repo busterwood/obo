@@ -1,0 +1,6 @@
+// error: zed
+fn main() {
+    let zed = 3
+    let n = 3
+    match n { zed { println(1) } else {} }
+}

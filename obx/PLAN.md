@@ -135,6 +135,12 @@ Pain points from writing the self-hosted front end (stage 4 step 1,
 5. Imported names are always qualified (`sx.` about 130 times in one file).
 6. No exceptions: the first error stops the program (fine for a compiler).
 
+Decided by the user on 2026-11-02 and implemented in ref (SPEC 7.5, 7.8, 8,
+10): borrow arguments and receivers whose place is variables, fields and array
+indexes are taken when the call is made (point 1; `p.toks[p.next()]`, an
+index, is unchanged); `if` and `match` expressions (point 4, the first half);
+constants as match arms (point 3).
+
 More from porting sema (stage 4 step 2, 2026-11-02):
 
 7. An element of an array of records cannot be read into a local without a

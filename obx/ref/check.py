@@ -307,6 +307,10 @@ class Checker:
         self.emit(f"{self.T(t)} {n} = {c};")
         if t[0] == 'slice' and src is not None:
             return Val(n, t, 'rv', root=src.root, path=src.path)
+        return self.tmpval(n, t)
+
+    def tmpval(self, n, t):
+        """The C variable n as a value of the statement: a temporary dropped at its end unless pod."""
         if is_pod(t):
             return Val(n, t, 'rv')
         tmp = Tmp(n, t)
@@ -915,14 +919,14 @@ class Checker:
             self.emit(f"return {rn};")
         ctx.dead = True
 
-    def s_match(self, s):
+    def s_match(self, s, body=None):
         ctx = self.ctx
         v = self.expr(s.e, None)
         base = v.t[1] if v.t[0] == 'ref' else v.t
         if base == VOID:
             self.err("match needs a value", s.where)
         if base[0] == 'prim' and base[1] in INTS + ('str',):
-            return self.match_lits(s, self.rd(v), base)
+            return self.match_lits(s, self.rd(v), base, body)
         if base[0] != 'inst' or base[1].form != 'closed':
             self.err(f"match needs a closed type, an integer, a byte or a str, not {tstr(base)}", s.where)
         d = base[1]
@@ -997,7 +1001,7 @@ class Checker:
                                 sc.freezes.append((root, False, f"the match binding '{bn}'"))
                 if not borrowing and not d.value:
                     self.emit(f"rt_free({acc});")
-            self.block(arm.body)
+            (body or self.block)(arm.body)
             ctx.scopes.pop()
             if not ctx.dead:
                 self.drop_scope(sc)
@@ -1023,44 +1027,70 @@ class Checker:
             self.err(f"{'.'.join(arm.vpath)} is not a variant of {tstr(base)}", arm.where)
         return vr
 
-    def match_lits(self, s, v, t):
+    def match_lits(self, s, v, t, body=None):
         ctx = self.ctx
         sv = ctx.fresh('sv')
         self.emit(f"{self.T(t)} {sv} = {v.c};")
         snap = self.snapshot()
-        results, first, has_else = [], True, False
+        results, first, has_else, seen = [], True, False, {}
         for arm in s.arms:
-            if arm.lits is None and arm.variant is not None:
-                self.err(f"a match on {tstr(t)} takes literal arms, not {arm.variant}", arm.where)
-            if arm.lits is None:
+            if arm.binds is not None:
+                self.err(f"a match on {tstr(t)} takes literals and constants, not {arm.variant}(...)", arm.where)
+            items = arm.lits if arm.variant is None else [('name', arm.vpath)]
+            if items is None:
                 has_else = True
                 self.emit("} else {" if not first else "{")
             else:
                 conds = []
-                for k, x in arm.lits:
+                for k, x in items:
+                    shown = '.'.join(x) if k == 'name' else None
+                    if k == 'name':
+                        k, x = self.arm_const(x, t, arm.where)
                     if t == STR:
                         if k != 'str':
-                            self.err("a match on str takes string literals", arm.where)
+                            self.err("a match on str takes string literals and constants", arm.where)
                         conds.append(f"rt_str_eq({sv}, {self.H('str', x)})")
                     else:
                         if k == 'str':
-                            self.err(f"a match on {tstr(t)} takes integer literals", arm.where)
+                            self.err(f"a match on {tstr(t)} takes integer literals and constants", arm.where)
                         lo, hi = RANGES[t[1]]
                         if not lo <= x <= hi:
                             self.err(f"literal {x} does not fit {tstr(t)}", arm.where)
                         conds.append(f"{sv} == {self.cint(x, t)}")
+                    val = f'"{x.decode("utf-8", "replace")}"' if t == STR else str(x)
+                    if x in seen:
+                        self.err(f"the value {val} is matched twice ({seen[x]} and {shown or val})", arm.where)
+                    seen[x] = shown or val
                 self.emit(("if" if first else "} else if") + f" ({' || '.join(conds)}) {{")
             first = False
             ctx.ind += 1
             self.restore(snap)
             ctx.dead = False
-            self.block(arm.body)
+            (body or self.block)(arm.body)
             ctx.ind -= 1
             results.append((self.snapshot(), ctx.dead))
         if not has_else:
             self.err(f"a match on {tstr(t)} needs an else arm (it is not exhaustive)", s.where)
         self.emit("}")
         self.join(results, s.where)
+
+    def arm_const(self, vpath, t, where):
+        """A constant named in a match arm (SPEC 8): its kind and value, if `x == K` would type-check."""
+        q = N('name', where, v=vpath[0])
+        for p in vpath[1:]:
+            q = N('field', where, e=q, name=p)
+        st = self.static(q)
+        name = '.'.join(vpath)
+        if st is None or not isinstance(st[1], Const):
+            self.err(f"{name} is not a constant: a match on {tstr(t)} takes literals and constants", where)
+        ty, x, kind = self.prog.const_value(st[1])
+        if kind == 'table':
+            self.err(f"{name} is a constant table: a match arm takes a constant of type {tstr(t)}", where)
+        if ty is None and kind == 'int' and t != STR:      # an untyped integer constant takes the type
+            ty = t
+        if ty != t:
+            self.err(f"constant {name} is {tstr(ty) if ty else 'a fractional constant'}, not {tstr(t)}", where)
+        return ('str' if t == STR else 'int'), x
 
     # ---------------------------------------------------------- expressions
 
@@ -1623,6 +1653,103 @@ class Checker:
         ctx.nomove.pop()
         return Val(ln, BOOL, 'rv')
 
+    def x_ifx(self, e, exp):
+        """if c { a } else { b } (SPEC 7.8): one branch runs; the branches join like an if statement.
+        (c ? a : b) when no branch emits a statement, else a result variable and a C if."""
+        ctx = self.ctx
+        c = self.rd(self.expr(e.cond, BOOL))
+        if c.t != BOOL:
+            self.err(f"a condition must be bool, not {tstr(c.t)}", e.cond.where)
+        if exp is not None and exp[0] in ('ref', 'slice', 'clo'):
+            self.err("an if expression cannot give a borrow, a slice or a closure", e.where)
+        snap, outer, r = self.snapshot(), ctx.lines, ctx.fresh('ifx')
+
+        def branch(x, want):
+            self.restore(snap)
+            ctx.lines, ctx.dead = [], False
+            ctx.ind += 1
+            self.push_frame()
+            v = self.expr(x, want)
+            if x.kind == 'borrow' or v.t[0] in ('slice', 'clo'):
+                self.err("an if expression cannot give a borrow, a slice or a closure", x.where)
+            v = self.rd(v)
+            fr = self.pop_frame()
+            if not v.noreturn:
+                v = Val(self.consume(v, x.where), v.t, 'rv')
+                if ctx.lines or any(tmp.live for tmp in fr):    # stored before the temporaries are dropped
+                    self.emit(f"{r} = {v.c};")
+                    v.c = r
+            self.drop_frame(fr)
+            ctx.ind -= 1
+            lines, ctx.lines = ctx.lines, outer
+            return v, lines, (self.snapshot(), v.noreturn)
+        a = branch(e.then, exp)
+        b = branch(e.els, exp or (None if a[0].noreturn or is_lit(e.then) else a[0].t))
+        if is_lit(e.then) and a[0].t != b[0].t and not b[0].noreturn:      # a literal takes the other's type
+            a = branch(e.then, b[0].t)
+        t = b[0].t if a[0].noreturn else a[0].t
+        if not a[0].noreturn and not b[0].noreturn and a[0].t != b[0].t:
+            self.err(f"the branches of an if expression have different types, {tstr(a[0].t)} and "
+                     f"{tstr(b[0].t)}", e.where)
+        self.join([a[2], b[2]], e.where)
+        if not a[1] and not b[1]:
+            text = f"({c.c} ? {a[0].c} : {b[0].c})"
+            return Val(text, t, 'rv') if is_pod(t) else self.holdtmp(text, t)
+        if not ctx.dead:
+            self.emit(f"{self.T(t)} {r};")
+        self.emit(f"if ({c.c}) {{")
+        for (v, lines, _), close in ((a, '} else {'), (b, '}')):
+            ctx.lines += lines
+            if not v.noreturn and v.c != r:
+                ctx.ind += 1
+                self.emit(f"{r} = {v.c};")
+                ctx.ind -= 1
+            self.emit(close)
+        if ctx.dead:
+            ctx.dead = False
+            return Val('', VOID, 'rv', noreturn=True)
+        return self.tmpval(r, t)
+
+    def x_matchx(self, e, exp):
+        """match x { Arm { e } ... } (SPEC 7.8): the match statement, each arm storing its value in r.
+        An integer literal arm seen before the type is known is written again once it is."""
+        ctx = self.ctx
+        if exp is not None and exp[0] in ('ref', 'slice', 'clo'):
+            self.err("a match expression cannot give a borrow, a slice or a closure", e.where)
+        r, at, st = ctx.fresh('mx'), len(ctx.lines), SimpleNamespace(t=exp, lits=[])
+
+        def body(x):
+            self.push_frame()
+            v = self.expr(x, st.t)
+            if x.kind == 'borrow' or v.t[0] in ('slice', 'clo'):
+                self.err("a match expression cannot give a borrow, a slice or a closure", x.where)
+            v = self.rd(v)
+            fr = self.pop_frame()
+            if v.noreturn:
+                ctx.dead = True
+            else:
+                if x.kind == 'int' and st.t is None:
+                    st.lits.append((len(ctx.lines), x))
+                elif st.t is None:
+                    st.t = v.t
+                elif v.t != st.t:
+                    self.err(f"the arms of a match expression have different types, {tstr(st.t)} and "
+                             f"{tstr(v.t)}", x.where)
+                self.emit(f"{r} = {self.consume(v, x.where)};")
+            self.drop_frame(fr)
+        self.s_match(e, body)
+        t = st.t or (INT if st.lits else None)
+        for i, x in st.lits:
+            v = self.x_int(x, t)
+            if v.t != t:
+                self.err(f"the arms of a match expression have different types, {tstr(t)} and int", x.where)
+            ctx.lines[i] = ctx.lines[i].split('=')[0] + f"= {v.c};"
+        if ctx.dead:
+            ctx.dead = False
+            return Val('', VOID, 'rv', noreturn=True)
+        ctx.lines.insert(at, '  ' * ctx.ind + f"{self.T(t)} {r};")
+        return self.tmpval(r, t)
+
     def x_try(self, e, exp):
         ctx = self.ctx
         v = self.expr(e.e, None)
@@ -1862,7 +1989,7 @@ class Checker:
                 if sig is None:
                     fv = self.field_of(recv, f.name, e.where)
                     return self.call_value(fv, e, exp)
-                return self.call(sig, recv, e.args, e.where, exp, targs=targs)
+                return self.call(sig, recv, e.args, e.where, exp, targs=targs, rast=f.e)
         st = self.static(f)
         if st is not None:
             if st[0] == 'type':
@@ -1980,8 +2107,28 @@ class Checker:
         unify(fd.recv_type, t, bind, set(fd.tps))
         return fn_sig(fd, bind)
 
+    def late(self, a):
+        """SPEC 7.5: whether the borrow argument a (&p, mut &p, a borrow variable, or a receiver p) is
+        taken when the call is made: p is a variable with fields and array indexes (no slice, no call)."""
+        if a is None or isinstance(a, Val):
+            return False
+        if a.kind == 'borrow':
+            a = a.e
+        while a.kind in ('field', 'index'):
+            if a.kind == 'index' and (self.place_type(a.e) or ('',))[0] != 'arr':
+                return False
+            a = a.e
+        return a.kind == 'name' and self.lookup_var(a.v) is not None
+
+    def take(self, v, mut, cid, where):
+        """Take a late borrow: its place must still be there; rule 3 then holds it."""
+        if isinstance(v.root, Var) and v.root.state != 'live':
+            self.err(f"'{v.root.name}' was moved and has no value here: a later argument moved it, and the "
+                     "borrow of it is taken when the call is made", where)
+        self.hold(v, mut, cid, where)
+
     def call(self, sig, recv, args, where, exp, targs=None, alltargs=False, op=False, fieldnames=None,
-             order=None):
+             order=None, rast=None):
         ctx = self.ctx
         tps = set(sig.tps)
         bind = dict(sig.bind)
@@ -1999,7 +2146,7 @@ class Checker:
         if len(allargs) != len(sig.params):
             n = len(sig.params) - (1 if recv is not None else 0)
             self.err(f"{sig.label} takes {n} arguments, not {len(args)}", where)
-        vals, cid, mark = [None] * len(allargs), object(), len(ctx.pending)
+        vals, cid, mark, late = [None] * len(allargs), object(), len(ctx.pending), []
         order = order or list(range(len(allargs)))      # evaluation order (source order of a literal)
         for pos, i in enumerate(order):
             a, pt = allargs[i], sig.params[i]
@@ -2041,7 +2188,10 @@ class Checker:
                 v = self.borrow(v, pt[2], where, recv=isrecv)
                 if not unify(pt[1], v.t[1], bind, tps):
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)
-                self.hold(v, pt[2], cid, where)
+                if self.late(rast if isrecv else a):
+                    late.append((v, pt[2]))
+                else:
+                    self.hold(v, pt[2], cid, where)
                 vals[i] = ('b', v)
             elif pt[0] == 'clo':
                 if v.t[0] == 'fn':
@@ -2063,6 +2213,8 @@ class Checker:
                 if v.cat == 'place' and not is_copy(v.t):
                     self.hold(v, None, cid, where)
                 vals[i] = ('v', v)
+        for v, m in late:               # SPEC 7.5: these borrows are taken now, after the arguments
+            self.take(v, m, cid, where)
         missing = [tp.name for tp in sig.tps if tp not in bind]
         if missing:
             self.err(f"cannot infer the type argument {', '.join(missing)} of {sig.label}; give it "
@@ -2167,11 +2319,13 @@ class Checker:
                      f"{tstr(v.t)}", e.where)
         if v.t[1][0] != 'arr':
             self.err(f"{e.fn.v} needs an array, not {tstr(v.t[1])}", e.where)
-        return self.builtin_borrow(v, mut, e.where)
+        return self.builtin_borrow(v, mut, e.where, e.args[0] if len(e.args) > 1 else None)
 
-    def builtin_borrow(self, v, mut, where):
+    def builtin_borrow(self, v, mut, where, ast=None):
         v = self.borrow(v, mut, where)
-        self.hold(v, mut, object(), where)
+        v.late = self.late(ast)         # append and replace: taken after the value (SPEC 7.5)
+        if not v.late:
+            self.hold(v, mut, object(), where)
         return v
 
     def b_len(self, e, exp):
@@ -2198,6 +2352,8 @@ class Checker:
         et = a.t[1][1]
         v = self.expr(e.args[1], et)
         v = self.coerce(v, et, e.where, "the appended value")
+        if a.late:
+            self.take(a, True, object(), e.where)
         c = self.consume(v, e.where)
         n = self.ctx.fresh('ap')
         self.emit(f"{self.T(et)} {n} = {c};")
@@ -2229,9 +2385,11 @@ class Checker:
         if p.t[0] != 'ref' or not p.t[2]:
             self.err(f"replace needs mut &place as its first argument, not {tstr(p.t)}", e.where)
         self.self_in_drop(p, e.where)
-        p = self.builtin_borrow(p, True, e.where)
+        p = self.builtin_borrow(p, True, e.where, e.args[0])
         t = p.t[1]
         v = self.coerce(self.expr(e.args[1], t), t, e.where, "the new value")
+        if p.late:
+            self.take(p, True, object(), e.where)
         c = self.consume(v, e.where)
         n = self.ctx.fresh('old')
         self.emit(f"{self.T(t)} {n} = *{p.c};")

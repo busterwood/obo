@@ -55,7 +55,12 @@ other byte `\xHH`) for string literals, import paths and extern names.
 
 The node kinds and their fields in order are those of `dump.py`. An index
 or call bracket argument that parses as a type is `targ`; a match arm's
-literals are `int`/`char`/`str` nodes with line `-`.
+literals are `int`/`char`/`str` nodes with line `-`, and a name in an arm list
+(a constant, SPEC 8) is `name - v=[mod,K]`; an arm of one name stays a variant
+arm (`variant=K vpath=[K]`), whether it names a variant or a constant. The
+expressions of SPEC 7.8 are `ifx` (fields `cond`, `then`, `els`; an `else if`
+is an `ifx` in `els`) and `matchx` (fields `e`, `arms`, as `match`, with each
+arm's `body` an expression instead of a block).
 
 ## Types dump
 
@@ -346,6 +351,35 @@ is a default import root: `import "money"`. See `../lib/README.md`.
     literal reaches Python's 4,300-digit `int`/`str` limit; a fractional
     literal's scale must fit an `int` (both checked in `syntax.lex` and
     `Checker.x_frac`).
+23. If and match expressions (SPEC 7.8): an if expression is `(c ? a : b)`
+    in C when neither branch emits a statement, else a result variable
+    declared before a C `if`; each branch stores to it before its own
+    temporaries are dropped. A match expression is the match statement
+    (`s_match`, `match_lits`) with an arm body that stores to a result
+    variable. An integer literal branch first typed as `int` is checked again
+    with the type of the other branches (the if: the then-branch is redone;
+    the match: the literal's store is rewritten). A branch that moves a
+    variable the other does not is an error, as for the statements; a
+    variable moved by every branch is moved after. Both are primaries, so
+    `if c { 1 } else { 2 } + 3` adds to the whole expression.
+24. Borrows taken at the call (SPEC 7.5): `Checker.late` decides from the
+    syntax of the argument (a local, possibly a borrow variable, then fields
+    and indexes whose base type is an array, not a slice); such a borrow is
+    not held while the later arguments run and is held (`take`, after
+    checking that its root was not moved) once they are. Nothing changes in
+    the C: an argument's place is a C expression evaluated with the call
+    (every call in an argument is already hoisted into a temporary, and an
+    index into an `ix` temporary), so it is found again then. Slice
+    parameters (`&[T]`, including `&xs` passed as one) are not late. Of the
+    built-ins, `append` and `replace` take their borrow after the value;
+    `pop` and `swap` are unchanged.
+25. Constants in match arms (SPEC 8): the arm is accepted when `x == K`
+    would type-check (an untyped integer constant takes the scrutinee's type
+    and is range-checked; a typed one must have exactly that type; a char
+    constant is a `byte`). Duplicate values are an error for literals and
+    constants alike ("the value 3 is matched twice (3 and K)"). The C stays an
+    `if`/`else if` chain, not a `switch`: a `break` in an arm must leave the
+    enclosing loop, and `__int128` values cannot be `case` labels.
 
 ## Known gaps
 

@@ -1,0 +1,37 @@
+// SPEC 7.8: the conditional expression. Literals take the expected type or the
+// other branch's type; else-if chains; nesting; in operands and arguments.
+// expect: 1
+// expect: 5
+// expect: small
+// expect: neg
+// expect: 30
+// expect: 7
+// expect: 12
+// expect: 3
+// expect: yes
+fn sign(x: int): str { return if x > 3 { "big" } else if x > 0 { "small" } else { "neg" } }
+fn twice(n: i32): i32 { return n * 2 }
+fn pick[T: copy](c: bool, a: T, b: T): T { return if c { a } else { b } }
+fn main() {
+    let c = true
+    let x = if c { 1 } else { 2 }
+    println(x)
+    let y: i32 = 5
+    let z = if !c { 0 } else { y }          // 0 takes i32 from the other branch
+    println(int(z))
+    println(sign(2))
+    println(sign(-4))
+    let w: u32 = if c { 10 } else { 20 }    // the expected type flows into both branches
+    println(int(w) + 2 * if c { 10 } else { 0 })
+    println(int(twice(if c { 3 } else { y }) + 1))
+    println(if x == 1 { if c { 12 } else { 13 } } else { 14 })
+    println(pick(false, 2, 3))
+    let b: byte = if c { 'y' } else { 'n' }
+    if b == 'y' {
+        println(if c {
+            "yes"
+        } else {
+            "no"
+        })
+    }
+}
