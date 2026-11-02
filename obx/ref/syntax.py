@@ -93,10 +93,11 @@ def lex(src, fname):
                 j = i + 2
                 while j < n and (isalnum(src[j]) or src[j] == '_'):
                     j += 1
-                try:
-                    v = int(src[i + 2:j].replace('_', ''), base)
-                except ValueError:
+                digits = src[i + 2:j].replace('_', '')
+                ok = '01' if base == 2 else '0123456789abcdefABCDEF'   # int() alone would accept 0x0x1f
+                if not digits or any(d not in ok for d in digits):
                     raise CompileError(f"bad integer literal {src[i:j]}", w)
+                v = int(digits, base)
                 toks.append(Tok('int', v, w))
                 i = j
                 continue

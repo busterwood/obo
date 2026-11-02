@@ -467,17 +467,9 @@ fn noUnderscores(s: str): str {
     return b.toStr()
 }
 
-// The decimal digits of the value of digits (valid in base), any size; "" when
-// the digits are not valid (Python's int(text, base) fails).
-fn toDecimal(text: str, base: int): str {
-    var t = text
-    // Python's int() accepts the base prefix again: int("0x1f", 16).
-    if len(t) >= 2 && strByte(t, 0) == '0' {
-        let p = strByte(t, 1)
-        if (base == 16 && (p == 'x' || p == 'X')) || (base == 2 && (p == 'b' || p == 'B')) {
-            t = t[2..]
-        }
-    }
+// The decimal digits of the value of t in base, any size; "" when t is empty
+// or has a byte that is not a digit in base.
+fn toDecimal(t: str, base: int): str {
     if len(t) == 0 { return "" }
     var acc: []int = [0]          // decimal digits, least significant first
     for i in 0..len(t) {

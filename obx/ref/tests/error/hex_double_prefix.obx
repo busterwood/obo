@@ -1,0 +1,4 @@
+// int(text, 16) accepted a second prefix: 0x0x1f was 31.
+// error: bad integer literal 0x0x1f
+// line: 4
+fn main() { let x = 0x0x1f }
