@@ -1,0 +1,5 @@
+// error: matched twice
+fn main() {
+    let n = 3
+    match n { 1, 2 { println(1) } 2 { println(2) } else {} }
+}

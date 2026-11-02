@@ -1,0 +1,6 @@
+// error: ZED
+const ZED = "a"
+fn main() {
+    let n = 3
+    match n { 1, ZED { println(1) } else {} }
+}

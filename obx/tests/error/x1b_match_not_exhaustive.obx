@@ -1,0 +1,6 @@
+// error: not exhaustive
+type E = closed { One; Two; Zork }
+fn main() {
+    let e = E.One
+    let n = match e { E.One { 1 } E.Two { 2 } }
+}

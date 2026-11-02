@@ -1,0 +1,6 @@
+// error: matched twice
+const ZED = 3
+fn main() {
+    let n = 3
+    match n { 3 { println(1) } ZED { println(2) } else {} }
+}

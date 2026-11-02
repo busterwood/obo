@@ -1,0 +1,7 @@
+// error: cannot give a borrow
+fn sum(s: &[int]): int { return 0 }
+fn main() {
+    let c = true
+    let xs = [1, 2, 3]
+    println(sum(if c { xs[0..1] } else { xs[1..2] }))
+}

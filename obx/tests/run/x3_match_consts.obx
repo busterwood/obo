@@ -1,0 +1,48 @@
+// SPEC 8: a match on an integer, byte or str value may name constants in its
+// arms, alone or in a list with literals.
+// expect: int
+// expect: frac
+// expect: other
+// expect: a-or-b
+// expect: z
+// expect: greeting
+// expect: bye
+// expect: big
+const N_INT = 1
+const N_FRAC: i32 = 2
+const N_OTHER = N_FRAC + 1
+const A: byte = 'a'
+const HELLO = "hello"
+const BYE: str = "bye"
+const LIMIT: u64 = 1_000_000
+fn name(k: i32): str {
+    match k {
+        N_INT { return "int" }
+        N_FRAC { return "frac" }
+        else { return "other" }
+    }
+}
+fn letter(b: byte): str {
+    match b {
+        A, 'b' { return "a-or-b" }
+        else { return "z" }
+    }
+}
+fn word(s: str): str {
+    match s {
+        HELLO, "hi" { return "greeting" }
+        BYE { return "bye" }
+        else { return "?" }
+    }
+}
+fn main() {
+    println(name(1))
+    println(name(N_FRAC))
+    println(name(N_OTHER))
+    println(letter('b'))
+    println(letter('z'))
+    println(word("hi"))
+    println(word(BYE))
+    let n: u64 = 1_000_000
+    match n { LIMIT { println("big") } 0 { println("zero") } else { println("other") } }
+}

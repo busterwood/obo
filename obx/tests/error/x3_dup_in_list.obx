@@ -1,0 +1,5 @@
+// error: matched twice
+fn main() {
+    let s = "a"
+    match s { "a", "a" { println(1) } else {} }
+}

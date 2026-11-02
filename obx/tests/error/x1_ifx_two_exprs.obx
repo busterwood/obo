@@ -1,0 +1,6 @@
+// error: one expression
+fn f() {}
+fn main() {
+    let c = true
+    let x = if c { f(); 1 } else { 2 }
+}

@@ -1,0 +1,8 @@
+// error: 'zed' is moved on one path
+type D = record { v: int }
+fn main() {
+    let c = true
+    let zed = D{v: 1}
+    let b = D{v: 2}
+    let r = if c { zed } else { b }
+}

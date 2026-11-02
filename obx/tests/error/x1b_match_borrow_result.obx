@@ -1,0 +1,7 @@
+// error: borrow
+type D = record { v: int }
+type E = closed { One(D); Two }
+fn main() {
+    let e = E.One(D{v: 1})
+    let d = match e { E.One(x) { x } E.Two { D{v: 2} } }
+}

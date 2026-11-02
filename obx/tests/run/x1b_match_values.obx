@@ -1,0 +1,27 @@
+// SPEC 7.8: match expressions on integers and strings, with literal and constant
+// arms; an integer literal arm takes the type of the others; a never arm.
+// expect: small
+// expect: k
+// expect: big
+// expect: 1
+// expect: 7
+// expect: 0
+// expect: one
+const K: i32 = 4
+fn kind(n: i32): str { return match n { 1, 2 { "small" } K { "k" } else { "big" } } }
+fn code(s: str): int {
+    return match s { "one" { 1 } "two" { 2 } else { panic("unknown " + s) } }
+}
+fn main() {
+    println(kind(2))
+    println(kind(K))
+    println(kind(9))
+    let w: u32 = match kind(9) { "big" { 1 } else { 2 } }
+    println(int(w))
+    let y: i32 = 7
+    let z = match y { 1 { 0 } 2 { 1 } else { y } }
+    println(int(z))
+    println(match code("one") { 1 { 0 } else { 1 } })
+    let o: Option[int] = Some(3)
+    println(match o { Some(n) { if n == 3 { "one" } else { "other" } } None { "none" } })
+}

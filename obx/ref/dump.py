@@ -218,11 +218,11 @@ class Dumper:
             self.put(d + 1, 'lits', '-')
         else:
             self.lst(d + 1, 'lits', a.lits, self.lit)
-        self.stmt(d + 1, 'body', a.body)
+        (self.stmt if a.body.kind == 'block' else self.expr)(d + 1, 'body', a.body)
 
     def lit(self, d, l, x):
         k, v = x
-        self.put(d, l, f"{k} - v={q(v) if k == 'str' else v}")
+        self.put(d, l, f"{k} - v={q(v) if k == 'str' else names(v) if k == 'name' else v}")
 
     # ---- expressions
 
@@ -277,6 +277,15 @@ class Dumper:
             self.put(d, l, f"lit {w}")
             self.expr(d + 1, 'ty', e.ty)
             self.lst(d + 1, 'inits', e.inits, self.init)
+        elif k == 'ifx':
+            self.put(d, l, f"ifx {w}")
+            self.expr(d + 1, 'cond', e.cond)
+            self.expr(d + 1, 'then', e.then)
+            self.expr(d + 1, 'els', e.els)
+        elif k == 'matchx':
+            self.put(d, l, f"matchx {w}")
+            self.expr(d + 1, 'e', e.e)
+            self.lst(d + 1, 'arms', e.arms, self.arm)
         elif k == 'type':
             self.put(d, l, f"targ {w}")
             self.ty(d + 1, 'ty', e.ty)

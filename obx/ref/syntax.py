@@ -625,7 +625,7 @@ class Parser:
                 self.next()
                 return N(t.v, w)
             if t.v == 'match':
-                return self.matchstmt()
+                return self.matchstmt(self.next().where, self.block, 'match')
         e = self.expr0()
         if self.peek().k == 'sym' and self.peek().v in ('=', '+=', '-=', '*=', '/=', '%=', '|=', '&=', '^='):
             op = self.next().v
@@ -651,8 +651,7 @@ class Parser:
         self.sym('=')
         return N('destructure', w, ty=ty, fields=fs, e=self.expr0(), mutable=mutable)
 
-    def matchstmt(self):
-        w = self.next().where
+    def matchstmt(self, w, body, kind):
         scrut = self.cond()
         self.sym('{')
         self.skipsemi()
@@ -661,15 +660,11 @@ class Parser:
             aw = self.peek().where
             if self.atkw('else'):
                 self.next()
-                arms.append(N('arm', aw, variant=None, lits=None, binds=None, body=self.block()))
-            elif self.peek().k == 'id':
-                vpath = [self.next().v]
-                while self.atsym('.'):
-                    self.next()
-                    vpath.append(self.ident())
-                vn = vpath[-1]
+                arms.append(N('arm', aw, variant=None, lits=None, binds=None, body=body()))
+            else:
+                lits = [self.literal()]
                 binds = None
-                if self.atsym('('):
+                if lits[0][0] == 'name' and self.atsym('('):
                     self.next()
                     binds = []
                     while not self.atsym(')'):
@@ -677,19 +672,27 @@ class Parser:
                         if not self.atsym(')'):
                             self.sym(',')
                     self.next()
-                arms.append(N('arm', aw, variant=vn, vpath=vpath, lits=None, binds=binds, body=self.block()))
-            else:
-                lits = [self.literal()]
-                while self.atsym(','):
+                while binds is None and self.atsym(','):
                     self.next()
                     lits.append(self.literal())
-                arms.append(N('arm', aw, variant=None, lits=lits, binds=None, body=self.block()))
+                if len(lits) == 1 and lits[0][0] == 'name':     # a variant or a constant: the checker decides
+                    arms.append(N('arm', aw, variant=lits[0][1][-1], vpath=lits[0][1], lits=None, binds=binds,
+                                  body=body()))
+                else:
+                    arms.append(N('arm', aw, variant=None, lits=lits, binds=None, body=body()))
             self.skipsemi()
         self.sym('}')
-        return N('match', w, e=scrut, arms=arms)
+        return N(kind, w, e=scrut, arms=arms)
 
     def literal(self):
+        """An item of a match arm: a literal, or a name or mod.name (a variant or a constant)."""
         t = self.next()
+        if t.k == 'id':
+            vpath = [t.v]
+            while self.atsym('.'):
+                self.next()
+                vpath.append(self.ident())
+            return ('name', vpath)
         if t.k == 'sym' and t.v == '-' and self.peek().k == 'int':
             return ('int', -self.next().v)
         if t.k in ('int', 'char', 'str'):
@@ -847,6 +850,18 @@ class Parser:
             return N('arrlit', w, items=self.args('[', ']'))
         if t.k == 'id':
             return N('name', w, v=t.v)
+        if t.k == 'kw' and t.v == 'if':          # a conditional expression (SPEC 7.8)
+            c = self.cond()
+            then = self.branch()
+            if self.atsym(';') and self.peek(1).k == 'kw' and self.peek(1).v == 'else':
+                self.next()
+            if not self.atkw('else'):
+                self.err("an if expression needs an else branch")
+            self.next()
+            els = self.primary() if self.atkw('if') else self.branch()
+            return N('ifx', w, cond=c, then=then, els=els)
+        if t.k == 'kw' and t.v == 'match':       # a match expression (SPEC 7.8)
+            return self.matchstmt(w, self.branch, 'matchx')
         if t.k == 'kw' and t.v == 'fn':          # a closure (SPEC 4.6)
             self.sym('(')
             ps = []
@@ -865,6 +880,17 @@ class Parser:
         if isinstance(found, bytes):
             found = 'a string'
         raise CompileError(f"expected an expression, found {found!r}", w)
+
+    def branch(self):
+        """{ e }: a branch of an if or match expression, exactly one expression."""
+        self.sym('{')
+        self.skipsemi()
+        e = self.expr0()
+        self.skipsemi()
+        if not self.atsym('}'):
+            self.err("a branch of an if or match expression is one expression in { }")
+        self.next()
+        return e
 
     def inits(self):
         self.sym('{')

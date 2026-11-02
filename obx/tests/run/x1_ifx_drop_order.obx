@@ -1,0 +1,16 @@
+// SPEC 7.8: a branch's own temporaries are dropped when the branch ends; the
+// result is a temporary of the statement, dropped at its end.
+// expect: drop arg
+// expect: use res
+// expect: drop res
+// expect: after
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+fn mk(tag: str): D { return D{tag: tag} }
+fn wrap(d: &D): D { return mk("res") }
+fn use(d: &D) { println("use " + d.tag) }
+fn main() {
+    let c = true
+    use(&if c { wrap(&mk("arg")) } else { mk("other") })
+    println("after")
+}

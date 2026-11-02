@@ -1,0 +1,28 @@
+// SPEC 7.8 and 9.3: a match expression on a place borrows it (owned fields are
+// read through borrows, copy fields copied); on a value it consumes it: the
+// unbound fields are dropped when the arm starts, the bound ones when it ends.
+// expect: 3
+// expect: ab
+// expect: nm
+// expect: drop q
+// expect: drop p
+// expect: p
+// expect: drop z
+// expect: y
+// expect: drop b
+// expect: drop a
+// expect: drop c
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+type E = closed { Num(int); Pair(D, D); Name { s: str; d: D } }
+fn main() {
+    let es: []E = [E.Num(3), E.Pair(D{tag: "a"}, D{tag: "b"}), E.Name{s: "nm", d: D{tag: "c"}}]
+    for e in es {
+        let s = match e { E.Num(n) { n.toStr() } E.Pair(x, y) { x.tag + y.tag } E.Name(s, _) { s } }
+        println(s)
+    }
+    let v = match E.Pair(D{tag: "p"}, D{tag: "q"}) { E.Pair(x, _) { x.tag } else { "none" } }
+    println(v)
+    let w = match (E.Name{s: "y", d: D{tag: "z"}}) { E.Name(s, _) { s } else { "-" } }
+    println(w)
+}

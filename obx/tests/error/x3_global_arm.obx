@@ -1,0 +1,6 @@
+// error: ZED
+var ZED: int = 3
+fn main() {
+    let n = 3
+    match n { ZED { println(1) } else {} }
+}
