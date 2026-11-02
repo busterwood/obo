@@ -1308,6 +1308,16 @@ pub fn (m: mut &Map[K, V]) atMut(k: K): mut &V {
     return mut &m.vals[p.entry]
 }
 
+// The value under k, mutably borrowed, after storing d there if k was
+// absent: `let n = counts.atOrPut(word, 0); n += 1`.
+pub fn (m: mut &Map[K, V]) atOrPut(k: K, d: V): mut &V {
+    let h = k.hash()
+    let p = m.find(&k, h)
+    if p.entry >= 0 { return mut &m.vals[p.entry] }
+    m.put(k, d)
+    return mut &m.vals[len(m.vals) - 1]
+}
+
 // Entry i in insertion order, 0 <= i < size().
 pub fn (m: &Map[K, V]) keyAt(i: int): &K { return &m.keys[i] }
 pub fn (m: &Map[K, V]) valAt(i: int): &V { return &m.vals[i] }
