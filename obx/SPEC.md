@@ -30,7 +30,8 @@ separate decision from the user; they are the ones to revisit first.
 - Identifiers: an ASCII letter or `_`, then ASCII letters, digits and `_`.
   Outside comments, string and character literals the source is ASCII.
 - A newline ends a statement when the last token on the line is an
-  identifier, a literal, `)`, `]`, `}`, or one of `return break continue`.
+  identifier, a literal, `)`, `]`, `}`, or one of `return break continue
+  never`.
   `;` also ends a statement. Inside `(` `)` and `[` `]` a newline never ends
   a statement, so arguments and array literals may span lines.
 - Integer literals: `123`, `1_000`, `0xff`, `0b1010`. A character literal
@@ -38,7 +39,9 @@ separate decision from the user; they are the ones to revisit first.
 - A fractional literal has a fraction, an exponent or both: `12.34`,
   `1.5e3`, `2e-7`, `6.02e23` (digits on both sides of a point; the exponent is
   `e` or `E`, an optional sign and digits). It is typed by context; see
-  section 7.3.
+  section 7.3. A point not followed by a digit is not part of a literal:
+  `5.toStr()` calls `toStr` on `5`.
+- A number literal longer than 1,000 characters is a compile error.
 - String literals `"..."` use the same escapes and may not span lines.
 
 Keywords:
@@ -477,7 +480,8 @@ after the point minus the exponent (so `1.50` is `(150, 2)`, `1.5e3` is
 `T.fromFraction(units, scale)` when the expected type `T` has an associated
 function `fromFraction(i128, int)`, and the call `fromFraction(units, scale)`
 of the function in scope otherwise (std's makes a `Decimal`, so `int(1.5)` is
-an error). A literal whose digits do not fit an `i128` is a compile error.
+an error). A literal whose digits do not fit an `i128`, or whose scale does
+not fit an `int`, is a compile error.
 This is one of the lang items.
 
 ### 7.4 Operators on other types

@@ -1,6 +1,7 @@
 // The literal is 10^-18446744073709551617, far below any Decimal: a compile
-// error or a stop (exit 10), never the value 0.1.
-// exit: 10
+// error or a stop (exit 10), never the value 0.1. Spec decision M1: a compile
+// error (the scale does not fit an int).
+// error: exponent|scale
 fn main() {
     let d = 1e-18446744073709551617
     println(d.toStr())

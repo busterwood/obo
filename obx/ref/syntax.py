@@ -59,8 +59,12 @@ def lex(src, fname):
             return False
         t = toks[-1]
         return (t.k in ('id', 'int', 'frac', 'str', 'char')
-                or (t.k == 'kw' and t.v in ('return', 'break', 'continue', 'true', 'false'))
+                or (t.k == 'kw' and t.v in ('return', 'break', 'continue', 'true', 'false', 'never'))
                 or (t.k == 'sym' and t.v in (')', ']', '}')))
+
+    def toolong(j):
+        if j - i > 1000:
+            raise CompileError(f"a literal longer than 1000 characters ({j - i}) is too long to read", w)
 
     def escape(j, w):
         c = src[j + 1] if j + 1 < n else ''
@@ -93,6 +97,7 @@ def lex(src, fname):
                 j = i + 2
                 while j < n and (isalnum(src[j]) or src[j] == '_'):
                     j += 1
+                toolong(j)
                 try:
                     v = int(src[i + 2:j].replace('_', ''), base)
                 except ValueError:
@@ -103,9 +108,7 @@ def lex(src, fname):
             while j < n and (isdigit(src[j]) or src[j] == '_'):
                 j += 1
             k = j
-            if j < n and src[j] == '.' and j + 1 < n and src[j + 1] != '.':
-                if not isdigit(src[j + 1]):
-                    raise CompileError("a fractional literal needs digits after the point", w)
+            if j < n and src[j] == '.' and j + 1 < n and isdigit(src[j + 1]):    # 5.toStr() is a call
                 k = j + 1
                 while k < n and (isdigit(src[k]) or src[k] == '_'):
                     k += 1
@@ -116,6 +119,7 @@ def lex(src, fname):
                 k = e
                 while k < n and isdigit(src[k]):
                     k += 1
+            toolong(k)
             if k > j:
                 if k < n and (isalnum(src[k]) or src[k] == '_'):
                     raise CompileError(f"bad fractional literal {src[i:k + 1]}", w)

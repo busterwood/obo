@@ -1,4 +1,5 @@
-// never is a keyword, so a newline after it does not end the statement (spec 2)
-// error: expected ;
-extern "c" fn abort(): never
-fn main() { abort() }
+// Spec decision L6: a line ending in never ends the statement (spec 2), so
+// the extern declaration is complete.
+// exit: 3
+extern "c" fn cexit(code: i32): never as "exit"
+fn main() { cexit(3) }

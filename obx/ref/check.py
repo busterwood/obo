@@ -1122,6 +1122,9 @@ class Checker:
         lo, hi = RANGES['i128']
         if not lo <= units <= hi:
             self.err(f"fractional literal {e.v} has too many digits: its units do not fit an i128", e.where)
+        if not RANGES['int'][0] <= scale <= RANGES['int'][1]:
+            self.err(f"the exponent of fractional literal {e.v} is out of range: its scale {scale} does not "
+                     "fit an int", e.where)
         args = [Val(self.cint(units, I128), I128, 'rv'), Val(f"{scale}LL", INT, 'rv')]
         if exp is not None:
             sig = self.assoc_sig(exp, 'fromFraction', e.where, quiet=True)
