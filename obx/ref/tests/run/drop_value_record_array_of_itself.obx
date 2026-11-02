@@ -1,0 +1,14 @@
+// A value record that holds an array of itself is a chain type (the array
+// can nest without bound). Its drop glue used to recurse forever in the
+// compiler ("the program is nested too deeply").
+// expect: built
+// expect: D 2
+// expect: D 3
+// expect: D 1
+type D = record { id: int }
+fn (d: mut &D) drop() { println("D " + d.id.toStr()) }
+type V = value record { d: D; kids: []V }
+fn main() {
+    let v = V{kids: [V{d: D{id: 2}, kids: []}, V{d: D{id: 3}, kids: []}], d: D{id: 1}}
+    println("built")
+}
