@@ -1419,6 +1419,9 @@ fn (c: mut &Checker) sAssign(s: int) {
     var fixed = tg
     while c.kind(fixed) == sx.N_FIELDX || c.kind(fixed) == sx.N_INDEX { fixed = c.nd(fixed).a }
     var r = c.binop(op, lv, Arg{isVal: false, n: n.b, v: lv}, n.line, p.t, c.kind(fixed) != sx.N_NAME, p)
+    // the value is stored to the place after b has run: b may have moved the place's variable
+    // (`x.v += take(x)`, or an if expression moving it on one path and dropping it on the others)
+    if p.root >= 0 && p.vvar < 0 && c.vars[p.root].moved { c.movedErr(p.root, n.line) }
     if c.effects(n.b, false) && checks(p.c) && c.pod(p.t) { r = c.seq(r) }
     let cc = c.consume(c.coerce(r, p.t, n.line, "the result"), n.line)
     let live = !(p.vvar >= 0 && c.vars[p.vvar].moved)
@@ -3917,7 +3920,14 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         if x.v.t == sema.T_STR { hasStr = true }
     }
     if sig.kind == SK_EXTERN && hasStr {
-        for k in 0..len(vals) { vals[k].v = c.seq(vals[k].v) }
+        for k in 0..len(vals) {
+            // a str read from a global is held by a copy for the call: a callback (SPEC 12) may
+            // assign the global while C still reads the bytes
+            if vals[k].v.t == sema.T_STR && vals[k].v.cat == CAT_PLACE && vals[k].v.gk >= 0 {
+                vals[k].v = c.snapVal(vals[k].v)
+            }
+            vals[k].v = c.seq(vals[k].v)
+        }
     }
     var cs: []str = []
     for x in vals {

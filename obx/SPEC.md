@@ -867,7 +867,8 @@ fractional literal is a `float`); C's default argument promotions apply
 `float` is a `double`); a `str` is a NUL-terminated copy as for a parameter.
 The C format string is not checked. `...` is allowed only in an extern
 declaration, after at least one parameter. obx's own output is buffered (and
-flushed at the end of `main`, before C's at exit): call `io.flushStdout()`
+flushed at the end of `main`, before C's at exit; output after that, from a
+callback C calls at exit, is written at once): call `io.flushStdout()`
 before C writes to stdout and `fflush` after, to keep the order of the lines.
 
 **Callbacks.** An extern parameter of type `extern fn(T1, ...): R` is a C
@@ -887,8 +888,10 @@ calls it with the C calling convention while the extern call runs (or later,
 if the C library keeps the pointer: a function value is valid for the whole
 run). User data travels as a `ptr` argument, for C APIs that take one. A
 callback may do anything a function may, call C included (the NUL-terminated
-copies of `str` arguments are per call); a `panic`, a runtime error or `exit`
-in it ends the program as anywhere else, without returning to C. A callback
+copies of `str` arguments are per call), and assign a global whose `str` the
+extern call was passed (the call holds that value until it returns); a
+`panic`, a runtime error or `exit` in it ends the program as anywhere else,
+without returning to C. A callback
 cannot reach the caller's locals: only arguments and globals, and a global
 cannot be borrowed (section 5.2).
 

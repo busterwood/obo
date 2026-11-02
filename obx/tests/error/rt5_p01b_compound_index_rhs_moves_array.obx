@@ -1,0 +1,9 @@
+// Red-team round 5, p01b: `xs[0] += take(xs)`, the element of an array the
+// right side moves.
+// error: moved
+// line: 8
+fn take(xs: []int): int { return 0 }
+fn main() {
+    var xs = [1, 2]
+    xs[0] += take(xs)
+}

@@ -30,6 +30,9 @@ static int rt_argc;
 static char** rt_argv;
 static char rt_obuf[1 << 16];
 static size_t rt_olen;
+/* Set as the program ends (main returned, exit, a trap): output from then on, by a callback C
+   calls at exit (SPEC 12), is written at once, since nothing flushes the buffer later. */
+static bool rt_ended;
 
 static int rt_oerr;                 /* the first failed write of rt_obuf (obxlib_flush_out) */
 static void rt_flush(void) {
@@ -44,6 +47,7 @@ static void rt_flush(void) {
 
 __attribute__((noreturn)) static void rt_trap(int code, const char* msg, const char* where) {
     rt_flush();
+    rt_ended = true;
     fprintf(stderr, "obx: %s at %s\n", msg, where);
     exit(code);
 }
@@ -120,12 +124,13 @@ static void rt_init(int argc, char** argv) {
 }
 static void rt_finish(void) {
     rt_flush();
+    rt_ended = true;
     if (rt_check && rt_live != 0) {
         fprintf(stderr, "obx: leak: %lld live objects at exit at runtime\n", (long long)rt_live);
         exit(5);
     }
 }
-__attribute__((noreturn)) static void rt_exit(int64_t code) { rt_flush(); exit((int)code); }
+__attribute__((noreturn)) static void rt_exit(int64_t code) { rt_flush(); rt_ended = true; exit((int)code); }
 
 /* ---- strings
    A str is {block, offset, len} (16 bytes, so it is passed in registers): the block is a
@@ -253,7 +258,7 @@ static bool rt_parse_float(obx_str s, double* out) {
     return true;
 }
 static int64_t rt_write_fd(int64_t fd, obx_str s) {
-    if (fd == 1) {
+    if (fd == 1 && !rt_ended) {
         if (rt_olen + (size_t)s.len > sizeof rt_obuf) rt_flush();
         if ((size_t)s.len <= sizeof rt_obuf) {
             memcpy(rt_obuf + rt_olen, RT_SP(s), (size_t)s.len);
@@ -305,6 +310,7 @@ static bool rt_getenv(obx_str name, obx_str* out) {
 }
 __attribute__((noreturn)) static void rt_panic(obx_str msg, const char* w) {
     rt_flush();
+    rt_ended = true;
     fprintf(stderr, "obx: panic: %.*s at %s\n", (int)msg.len, RT_SP(msg), w);
     exit(12);
 }

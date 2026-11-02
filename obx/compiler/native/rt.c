@@ -51,9 +51,13 @@ static i64 sysret(i64 r) {
 __attribute__((noreturn)) static void sys_exit(int code) {
     for (;;) SYS(S_EXIT_GROUP, code, 0, 0);
 }
+/* Set as the program ends: output from then on, by a callback libc calls at exit (SPEC 12), is
+   written at once, since nothing flushes the buffer later. */
+static int rt_ended;
 /* The end of the program (rt.h's exit): with libc, its exit runs the atexit handlers and
    flushes stdio, after the runtime has flushed its own buffer. */
 __attribute__((noreturn, noinline)) static void rt_quit(int code) {
+    rt_ended = 1;
     if (rt_n_libc[0]) ((void (*)(int))rt_n_libc[0])(code);
     sys_exit(code);
 }
@@ -400,6 +404,7 @@ void rt_n_start(int64_t* sp, void* mainf) {
 
 void rt_finish(void) {
     rt_flush();
+    rt_ended = 1;
     if (rt_check && rt_live != 0) {
         eputs("obx: leak: "); eputd(rt_live); eputs(" live objects at exit at runtime\n");
         eflush();
@@ -788,7 +793,7 @@ obx_str rt_float_to_str(double d) {
     return rt_str_of(buf, n);
 }
 int64_t rt_write_fd(int64_t fd, obx_str s) {
-    if (fd == 1) {
+    if (fd == 1 && !rt_ended) {
         if (rt_olen + (size_t)s.len > sizeof rt_obuf) rt_flush();
         if ((size_t)s.len <= sizeof rt_obuf) {
             memcpy(rt_obuf + rt_olen, RT_SP(s), (size_t)s.len);
