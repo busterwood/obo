@@ -30,6 +30,9 @@ for leaks.
 | `fs.obx` | 260 | stat/lstat, list, mkdirAll, remove/removeAll, rename, symlink, chmod, paths |
 | `os.obx` | 60 | arguments, environment, pid, working directory, quit |
 | `time.obx` | 160 | wall and monotonic clocks, sleep, UTC dates, ISO 8601 text |
+| `sqldialect.obx` | 260 | Value, DbError and its codes, SQL fragments with placeholders per dialect, exact decimal text and (p, s) checks |
+| `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
+| `postgres.obx` | 370 | PostgreSQL through libpq: Conn, Rows |
 
 ### std (prelude)
 
@@ -168,6 +171,47 @@ full disk). `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
   `daysOfDate`, `weekday`, `isLeapYear`, `daysInMonth`, `parseDate`,
   `isoDate`, `isoDateTime`.
 
+### sqldialect, sqlite, postgres
+
+Database adapters over the C client libraries (a program that imports one is
+dynamically linked to libsqlite3.so.0 or libpq.so.5; the tests that need one
+are skipped when it is not installed). Examples: `examples/sqlite_ledger.obx`,
+`examples/postgres_ledger.obx`.
+
+- **sqldialect** (shared): `Value` (`Null Int Float Bool Text Bytes Dec`,
+  `toStr` as an SQL literal), `DbError {code, state, msg}` (`"error 19:
+  UNIQUE constraint failed: t.id"`, `"error 7 (23505): duplicate key ..."`)
+  and the adapters' own codes `E_INPUT E_NULL E_TYPE E_NONFINITE E_INEXACT
+  E_DEC_*` (1000 and up, above every SQLite and libpq code); `Sql` fragments
+  (`sql(text)`, `add`, `arg(v)`, `of(parts, args)`, `render(dialect)` with
+  `?`, `$n`, `@pn`, `:n` placeholders); `parseDecimal`, `decimalText`,
+  `fitDecimal(d, p, s)`.
+- **sqlite**: `open(path)`, `openWith(path, flags)`; `Db`: `exec(script)`,
+  `prepare(sql)` (one statement), `query(sql, &args)`, `querySql(&sql)`,
+  `run(sql, &args)` (rows changed), `changes`, `lastInsertId`,
+  `inTransaction`, `transaction(&fn)`, `close()`. `Stmt`: `step(): bool`,
+  `reset`, `bind(i, v)`, `bindAll`, `bindDecimal(i, d, p, s)`,
+  `columnCount`, `columnName`, and per column `isNull int bool float text
+  bytes decimal decimalOrNull value`. Decimals are stored as exact TEXT.
+- **postgres**: `connect(conninfo)`, `libVersion()`; `Conn`: `exec(script)`,
+  `query(sql, &args)` (`PQexecParams`, text format, each parameter with
+  its type's OID: int8, float8, bool, text, bytea, numeric; NULL untyped),
+  `querySql`, `transaction`, `serverVersion`, `close()`;
+  `decimalParam(d, p, s)`. `Rows` (outlive their connection): `rowCount`,
+  `columnCount`, `affected`, `columnName`, `columnType` (OID),
+  `columnTypmod`, `decimalType` (numeric precision and scale), and per cell
+  `isNull int bool float text bytes decimal decimalOrNull value`. A failed
+  statement is an `Err` with the SQLSTATE in `state`.
+
+Every getter is exact or an error: no NULL becomes 0 or "" (`E_NULL`; use
+`isNull`, `value` or `decimalOrNull`), no REAL becomes an int or a decimal
+(`E_INEXACT`), and text is never parsed as a number it does not spell.
+Handles (`Db`, `Stmt`, `Conn`, `Rows`) own their C object and free it when
+dropped; `close()` consumes the handle, so there is no closed state to
+check, and `openHandles()` counts what is live (the tests end at 0). Text
+with a NUL byte cannot cross the C boundary and is refused with `E_INPUT`
+before any call; bytes travel as a blob (SQLite) or bytea hex (PostgreSQL).
+
 ## What the library uses
 
 Intrinsics: `strByte`, `strSlice`, `strFromBytes`, `strToBytes`, `intToStr`,
@@ -193,10 +237,17 @@ errno, a static buffer):
 | `obxlib_readlink(path)`, `obxlib_readlink_text()` | readlink into a static buffer; length or -errno, then the text |
 | `obxlib_flush_out()` | flush the runtime's stdout buffer; errno of the first failed write since the last call, or 0 |
 | `obxlib_isatty(fd)`, `obxlib_term_cols(fd)` | `isatty`; `TIOCGWINSZ` columns or 0 |
+| `obxlib_null()` | a null `ptr` (there is no literal for one) |
+| `obxlib_alloc(n)`, `obxlib_free(p)` | a C buffer from the runtime's allocator (counted by `OBX_CHECK=1`) |
+| `obxlib_cstr(s)` | a NUL-terminated copy of a str, for C that keeps the pointer past the call |
+| `obxlib_peek(p, i)`, `obxlib_poke(p, i, b)` | read or write byte `i` of a C buffer |
+| `obxlib_poke_i32(p, i, v)`, `obxlib_poke_ptr(p, i, q)` | write element `i` of a C `int[]` or `void*[]` |
 
 The `obxlib_` helpers are not `obx_` names because the compiler lets
 externs name only the `obx_` helpers it knows (sema's `cHelper`); any other
-name defined in both runtimes works, statically linked on the native backend.
+name defined in both runtimes works. The native backend always links the
+`obx_` and `obxlib_` names to its own runtime, also in a dynamically linked
+program; any other C name comes from the program's libraries.
 
 The self-hosted compiler's runtime needs the same helpers (or the language a
 way to read C structs).

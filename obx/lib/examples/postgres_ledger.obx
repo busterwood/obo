@@ -1,0 +1,66 @@
+// The ledger of sqlite_ledger.obx in PostgreSQL: numeric(12,2) balances read
+// back exactly (with the column's scale), transfers in a transaction, typed
+// parameters, and a server error (its SQLSTATE) from a CHECK constraint. It
+// uses a temporary table, so the database is left as it was:
+//
+//     out/obxc lib/examples/postgres_ledger.obx -o out/pgledger
+//     out/pgledger ["host=/var/run/postgresql dbname=postgres"]
+
+import "postgres"
+import "os"
+
+type V = postgres.Value
+type Error = postgres.Error
+
+type Move = record { from: str; to: str; amount: Decimal }
+
+fn transfer(c: &postgres.Conn, m: &Move): Result[Unit, Error] {
+    return c.transaction(fn(): Result[Unit, Error] {
+        let amount = try postgres.decimalParam(m.amount, 12, 2)
+        let out = try c.query("UPDATE account SET balance = balance - $1 WHERE name = $2", &[amount, V.Text(m.from)])
+        let into = try c.query("UPDATE account SET balance = balance + $1 WHERE name = $2", &[amount, V.Text(m.to)])
+        if out.affected() != 1 || into.affected() != 1 {
+            return Err(Error{code: 2000, state: "", msg: "no such account"})
+        }
+        try c.query("INSERT INTO entry(src, dst, amount) VALUES ($1, $2, $3)", &[V.Text(m.from), V.Text(m.to), amount])
+        return Ok(Unit{})
+    })
+}
+
+fn run(dsn: str): Result[Unit, Error] {
+    let conn = try postgres.connect(dsn)
+    let c = &conn
+    println("server " + c.serverVersion().toStr() + ", libpq " + postgres.libVersion().toStr())
+    try c.exec("CREATE TEMP TABLE account(name text PRIMARY KEY, balance numeric(12,2) NOT NULL CHECK (balance >= 0)); " +
+        "CREATE TEMP TABLE entry(id bigserial PRIMARY KEY, src text, dst text, amount numeric(12,2), at timestamptz DEFAULT now())")
+    try c.query("INSERT INTO account VALUES ('alice', $1), ('bob', $2), ('carol', $3)", &[V.Dec(100.00), V.Dec(20.50), V.Dec(0.00)])
+    let moves = [Move{from: "alice", to: "bob", amount: 30.25}, Move{from: "bob", to: "carol", amount: 60.00},
+        Move{from: "bob", to: "carol", amount: 50.75}, Move{from: "carol", to: "dave", amount: 1.00},
+        Move{from: "alice", to: "carol", amount: 0.001}]
+    for m in moves {
+        let what = m.from + " -> " + m.to + " " + m.amount.toStr()
+        match transfer(c, &m) {
+            Ok(_) { println(what + ": ok") }
+            Err(e) { println(what + ": refused (" + e.toStr() + ")") }
+        }
+    }
+    let rows = try c.query("SELECT name, balance, sum(balance) OVER () FROM account ORDER BY name", &[])
+    println("balances (numeric(" + (try rows.decimalType(1)).precision.toStr() + "," + (try rows.decimalType(1)).scale.toStr() + ")):")
+    for r in 0..rows.rowCount() { println("  " + try rows.text(r, 0) + ": " + (try rows.decimal(r, 1)).toStr()) }
+    if rows.rowCount() > 0 { println("  total: " + (try rows.decimal(0, 2)).toStr()) }
+    let n = try c.query("SELECT count(*) FROM entry", &[])
+    println((try n.int(0, 0)).toStr() + " entries")
+    return Ok(Unit{})
+}
+
+fn main() {
+    let argv = os.arguments()
+    let dsn = if len(argv) > 0 { argv[0] } else { "host=/var/run/postgresql dbname=postgres connect_timeout=3" }
+    match run(dsn) {
+        Ok(_) {}
+        Err(e) {
+            eprintln("pgledger: " + e.toStr())
+            exit(1)
+        }
+    }
+}

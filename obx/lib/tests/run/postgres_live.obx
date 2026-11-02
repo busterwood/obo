@@ -1,0 +1,195 @@
+// postgres against a live server ($OBX_PG_DSN, default the local socket; the
+// test exits 77, skipped, when it cannot connect): typed parameter OIDs,
+// NULLs, numeric exactness and typmods, floats, bytea, result metadata,
+// SQLSTATE errors, transactions, rows that outlive their connection,
+// fragments, and no handle left open.
+// needs: pq
+// expect: oids: bigint double precision boolean text bytea numeric | untyped NULL is NULL: true
+// expect: inserted 3, updated 2
+// expect: columns: id int8 20 -1 | name text 25 -1 | price numeric 1700 655366 | qty int4 23 -1 | ratio float8 701 -1 | data bytea 17 -1 | flag bool 16 -1 | note text 25 -1
+// expect: 1 | widget | 12.50 | 3 | 0.1 | x'00ff0a' | true | 'it''s'
+// expect: 2 | gadget | 0.00 | 0 | -0 | x'' | false | ''
+// expect: 3 | thing | NULL | NULL | NULL | NULL | NULL | NULL
+// expect: nulls: name 1001, price isNull true, decimalOrNull None, zero Some(0.00)
+// expect: price type: numeric(10, 2) constrained true | plain numeric: constrained false
+// expect: typmod scale: 1.0000 (scale 4) | unconstrained 1.0000 | numeric(2,-3) scale -3 reads 12000
+// expect: exact: 99999999999999999999999999999999999999 | -0.000000000000000000000000000000000001 | 1e-16383 has scale 16383
+// expect: arithmetic: 0.1 + 0.2 = 0.3 | sum 12.50
+// expect: decimal errors: NaN 1004 | Infinity 1004 | 39 digits 1007 | text column 1002
+// expect: checked param: 12.30 | scale 1010 | range 1011
+// expect: floats: 0.1 1e300 5e-324 -0 inf -inf NaN
+// expect: bytea: 256 bytes back exact: true
+// expect: undefined table: error 7 (42P01): relation "nope" does not exist
+// expect: syntax: error 7 (42601): syntax error at or near "SELEC"
+// expect: unique: error 7 (23505): duplicate key value violates unique constraint "items_pkey"
+// expect: not null: error 7 (23502): null value in column "name" of relation "items" violates not-null constraint
+// expect: division: error 7 (22012): division by zero | int4 range: error 7 (22003): integer out of range
+// expect: nul text: error 1000: text value contains a NUL byte | still usable: Ok(1)
+// expect: transaction: Ok(2) rows 5 | rolled back: error 7 (23505): duplicate key value violates unique constraint "items_pkey" rows 5
+// expect: fragment: SELECT $1 || $2 -> 'Robert''); DROP TABLE items;--?'
+// expect: outlives: 5 rows after close, first widget
+// expect: open handles 0
+
+import "postgres"
+import "sqldialect"
+import "os"
+
+type V = postgres.Value
+type Error = postgres.Error
+
+fn show[T: Show](r: Result[T, Error]): str {
+    match r {
+        Ok(v) { return "Ok(" + v.toStr() + ")" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn fails[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn code[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.code.toStr() }
+    }
+}
+
+fn one(c: &postgres.Conn, sql: str, args: &[V]): Result[V, Error] {
+    let rows = try c.query(sql, args)
+    return rows.value(0, 0)
+}
+
+fn dec(c: &postgres.Conn, sql: str): Result[Decimal, Error] {
+    let rows = try c.query(sql, &[])
+    return rows.decimal(0, 0)
+}
+
+fn count(c: &postgres.Conn): Result[int, Error] {
+    let rows = try c.query("SELECT count(*) FROM items", &[])
+    return rows.int(0, 0)
+}
+
+fn run(c: &postgres.Conn): Result[Unit, Error] {
+    let ty = try c.query("SELECT pg_typeof($1)::text, pg_typeof($2)::text, pg_typeof($3)::text, pg_typeof($4)::text, " +
+        "pg_typeof($5)::text, pg_typeof($6)::text, $7::int8 IS NULL",
+        &[V.Int(1), V.Float(1.5), V.Bool(true), V.Text("x"), V.Bytes("x"), V.Dec(1.5), V.Null])
+    var oids = "oids:"
+    for k in 0..6 { oids = oids + " " + try ty.text(0, k) }
+    println(oids + " | untyped NULL is NULL: " + (try ty.bool(0, 6)).toStr())
+
+    try c.exec("CREATE TEMP TABLE items(id int8 PRIMARY KEY, name text NOT NULL, price numeric(10,2), qty int4, " +
+        "ratio float8, data bytea, flag bool, note text)")
+    let ins = try c.query("INSERT INTO items VALUES ($1, $2, $3, $4, $5, $6, $7, $8), ($9, $10, $11, $12, $13, $14, $15, $16), " +
+        "(3, 'thing', NULL, NULL, NULL, NULL, NULL, NULL)",
+        &[V.Int(1), V.Text("widget"), V.Dec(12.5), V.Int(3), V.Float(0.1), V.Bytes("\x00\xff\n"), V.Bool(true), V.Text("it's"),
+          V.Int(2), V.Text("gadget"), V.Dec(Decimal.zero()), V.Int(0), V.Float(-0.0), V.Bytes(""), V.Bool(false), V.Text("")])
+    let upd = try c.query("UPDATE items SET qty = qty WHERE id <= $1", &[V.Int(2)])
+    println("inserted " + ins.affected().toStr() + ", updated " + upd.affected().toStr())
+
+    let rows = try c.query("SELECT * FROM items ORDER BY id", &[])
+    var cols = "columns:"
+    for k in 0..rows.columnCount() {
+        let tn = try one(c, "SELECT typname::text FROM pg_type WHERE oid = $1::int8::oid", &[V.Int(try rows.columnType(k))])
+        if k > 0 { cols = cols + " |" }
+        cols = cols + " " + try rows.columnName(k) + " " + (match tn { V.Text(s) { s } else { "?" } }) + " " +
+            (try rows.columnType(k)).toStr() + " " + (try rows.columnTypmod(k)).toStr()
+    }
+    println(cols)
+    for r in 0..rows.rowCount() {
+        var line = (try rows.value(r, 0)).toStr()
+        for k in 1..rows.columnCount() {
+            let v = try rows.value(r, k)
+            line = line + " | " + match v { V.Text(s) { if k == 1 { s } else { v.toStr() } } else { v.toStr() } }
+        }
+        println(line)
+    }
+    println("nulls: name " + code(rows.text(2, 7)) + ", price isNull " + (try rows.isNull(2, 2)).toStr() +
+        ", decimalOrNull " + (try rows.decimalOrNull(2, 2)).toStr() + ", zero " + (try rows.decimalOrNull(1, 2)).toStr())
+    let pt = try rows.decimalType(2)
+    let plain = try c.query("SELECT 1.5::numeric", &[])
+    println("price type: numeric(" + pt.precision.toStr() + ", " + pt.scale.toStr() + ") constrained " + pt.constrained.toStr() +
+        " | plain numeric: constrained " + (try plain.decimalType(0)).constrained.toStr())
+
+    let t4 = try dec(c, "SELECT 1::numeric(10,4)")
+    let neg = try c.query("SELECT 12345::numeric(2,-3)", &[])
+    println("typmod scale: " + t4.toStr() + " (scale " + t4.scale().toStr() + ") | unconstrained " +
+        (try dec(c, "SELECT 1.0000::numeric")).toStr() + " | numeric(2,-3) scale " + (try neg.decimalType(0)).scale.toStr() +
+        " reads " + (try neg.decimal(0, 0)).toStr())
+    let big = Decimal.parse("99999999999999999999999999999999999999").unwrap()
+    let small = Decimal.parse("-0.000000000000000000000000000000000001").unwrap()
+    let tiny = try dec(c, "SELECT 1e-16383::numeric")
+    println("exact: " + (try one(c, "SELECT $1", &[V.Dec(big)])).toStr() + " | " + (try one(c, "SELECT $1", &[V.Dec(small)])).toStr() +
+        " | " + tiny.canonical() + " has scale " + tiny.scale().toStr())
+    let sum = try c.query("SELECT $1 + $2, sum(price) FROM items", &[V.Dec(0.1), V.Dec(0.2)])
+    println("arithmetic: 0.1 + 0.2 = " + (try sum.decimal(0, 0)).toStr() + " | sum " + (try sum.decimal(0, 1)).toStr())
+    println("decimal errors: NaN " + code(dec(c, "SELECT 'NaN'::numeric")) + " | Infinity " +
+        code(dec(c, "SELECT 'Infinity'::numeric")) + " | 39 digits " + code(dec(c, "SELECT 999999999999999999999999999999999999999::numeric")) +
+        " | text column " + code(dec(c, "SELECT '1.5'::text")))
+    let checked = try postgres.decimalParam(12.3, 10, 2)
+    println("checked param: " + (try one(c, "SELECT $1", &[checked])).toStr() + " | scale " + code(postgres.decimalParam(1.234, 10, 2)) +
+        " | range " + code(postgres.decimalParam(decimalOf(123456789), 10, 2)))
+
+    var fl = "floats:"
+    let zero: float = 0.0
+    let floats: []float = [0.1, 1e300, 5e-324, -0.0, 1.0 / zero, -1.0 / zero, zero / zero]
+    for f in floats {
+        let back = try c.query("SELECT $1", &[V.Float(f)])
+        fl = fl + " " + (try back.float(0, 0)).toStr()
+    }
+    println(fl)
+    var all = array(256, byte(0))
+    for i in 0..256 { all[i] = byte(i) }
+    let bytes = strFromBytes(&all)
+    let bb = try c.query("SELECT $1", &[V.Bytes(bytes)])
+    let back = try bb.bytes(0, 0)
+    println("bytea: " + len(back).toStr() + " bytes back exact: " + (back == bytes).toStr())
+
+    println("undefined table: " + fails(c.query("SELECT * FROM nope", &[])))
+    println("syntax: " + fails(c.exec("SELEC 1")))
+    println("unique: " + fails(c.query("INSERT INTO items(id, name) VALUES ($1, $2)", &[V.Int(1), V.Text("again")])))
+    println("not null: " + fails(c.query("INSERT INTO items(id, name) VALUES ($1, $2)", &[V.Int(9), V.Null])))
+    println("division: " + fails(c.query("SELECT $1::int8 / 0", &[V.Int(1)])) + " | int4 range: " +
+        fails(c.query("SELECT $1::int4", &[V.Int(1099511627776)])))
+    println("nul text: " + fails(c.query("SELECT $1", &[V.Text("a\0b")])) + " | still usable: " + show(one(c, "SELECT 1", &[])))
+
+    let good = c.transaction(fn(): Result[int, Error] {
+        try c.query("INSERT INTO items(id, name) VALUES (4, 'a'), (5, 'b')", &[])
+        return Ok(2)
+    })
+    let bad = c.transaction(fn(): Result[int, Error] {
+        try c.query("INSERT INTO items(id, name) VALUES (6, 'c')", &[])
+        try c.query("INSERT INTO items(id, name) VALUES (1, 'dup')", &[])
+        return Ok(2)
+    })
+    let n1 = try count(c)
+    println("transaction: " + good.toStr() + " rows " + n1.toStr() + " | rolled back: " + fails(bad) + " rows " + (try count(c)).toStr())
+
+    var q = sqldialect.sql("SELECT ")
+    q.arg(V.Text("Robert'); DROP TABLE items;--"))
+    q.add(" || ")
+    q.arg(V.Text("?"))
+    let frag = try c.querySql(&q)
+    println("fragment: " + q.render(sqldialect.Dialect.Postgres) + " -> " + (try frag.value(0, 0)).toStr())
+    return Ok(Unit{})
+}
+
+fn main() {
+    let dsn = os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3")
+    let conn = match postgres.connect(dsn) {
+        Ok(c) { c }
+        Err(_) { exit(77) }
+    }
+    match run(&conn) {
+        Ok(_) {}
+        Err(e) { println("FAIL " + e.toStr()) }
+    }
+    let rows = conn.query("SELECT name FROM items ORDER BY id", &[]).unwrap()
+    conn.close()
+    println("outlives: " + rows.rowCount().toStr() + " rows after close, first " + rows.text(0, 0).unwrap())
+    rows.close()
+    println("open handles " + postgres.openHandles().toStr())
+}

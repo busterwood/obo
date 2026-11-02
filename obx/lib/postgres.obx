@@ -1,0 +1,372 @@
+// postgres: PostgreSQL through libpq (libpq.so.5; a program that uses it is
+// dynamically linked to it).
+//
+//     var conn = try postgres.connect("host=/var/run/postgresql dbname=app")
+//     try conn.exec("CREATE TEMP TABLE t(id int8, price numeric(10,2))")
+//     try conn.query("INSERT INTO t VALUES ($1, $2)", &[Value.Int(1), Value.Dec(2.50)])
+//     let rows = try conn.query("SELECT id, price FROM t WHERE id = $1", &[Value.Int(1)])
+//     for r in 0..rows.rowCount() {
+//         println((try rows.int(r, 0)).toStr() + " " + (try rows.decimal(r, 0)).toStr())
+//     }
+//
+// Resources: Conn and Rows own their libpq handle and release it when they
+// are dropped (PQfinish, PQclear). Conn.close() consumes the connection, so
+// there is no closed-handle state. Rows hold the whole result in client
+// memory and do not borrow their Conn: they stay readable after it closes.
+// openHandles() counts the live handles of both kinds, for tests.
+//
+// Parameters are $1, $2, ... with values from sqldialect.Value, sent in text
+// format with an explicit type OID each: NULL 0 (untyped: cast it in the SQL
+// where the server cannot infer a type, `$1::numeric`), Int int8 (20), Float
+// float8 (701, shortest round-trip text), Bool bool (16), Text text (25, no
+// NUL byte), Bytes bytea (17, hex), Dec numeric (1700, exact text). SQL is
+// never interpolated. Results come in text format, which is exact for every
+// type: numeric is never read through a float; bytea is decoded from hex.
+// Columns report their type OID and typmod; decimal() uses the typmod of a
+// numeric(p, s) column to restore its display scale and check the value.
+//
+// Errors are sqldialect.DbError. A failed statement is code
+// PGRES_FATAL_ERROR (7) with the server's SQLSTATE in `state` ("23505") and
+// its primary message; a failed connection CONNECTION_BAD (1); a connection
+// string libpq cannot parse E_INPUT.
+
+import "sqldialect"
+import "math"
+
+pub type Value = sqldialect.Value
+pub type Error = sqldialect.DbError
+type Sql = sqldialect.Sql
+
+pub const CONNECTION_OK = 0
+pub const CONNECTION_BAD = 1
+pub const PGRES_EMPTY_QUERY = 0
+pub const PGRES_COMMAND_OK = 1
+pub const PGRES_TUPLES_OK = 2
+pub const PGRES_FATAL_ERROR = 7
+
+pub const OID_BOOL = 16
+pub const OID_BYTEA = 17
+pub const OID_INT8 = 20
+pub const OID_INT2 = 21
+pub const OID_INT4 = 23
+pub const OID_TEXT = 25
+pub const OID_FLOAT4 = 700
+pub const OID_FLOAT8 = 701
+pub const OID_NUMERIC = 1700
+
+const DIAG_SQLSTATE = 67           // 'C'
+const DIAG_MESSAGE_PRIMARY = 77    // 'M'
+const MAX_DSCALE = 16383           // numeric's largest display scale
+
+extern "pq" fn PQlibVersion(): i32
+extern "pq" fn PQconninfoParse(conninfo: str, err: mut &ptr): ptr
+extern "pq" fn PQconninfoFree(opts: ptr)
+extern "pq" fn PQfreemem(p: ptr)
+extern "pq" fn PQconnectdb(conninfo: str): ptr
+extern "pq" fn PQstatus(c: ptr): i32
+extern "pq" fn PQerrorMessage(c: ptr): str
+extern "pq" fn PQserverVersion(c: ptr): i32
+extern "pq" fn PQfinish(c: ptr)
+extern "pq" fn PQexec(c: ptr, sql: str): ptr
+extern "pq" fn PQexecParams(c: ptr, sql: str, n: i32, types: ptr, values: ptr, lengths: ptr,
+                            formats: ptr, resultFormat: i32): ptr
+extern "pq" fn PQresultStatus(r: ptr): i32
+extern "pq" fn PQresultErrorMessage(r: ptr): str
+extern "pq" fn PQresultErrorField(r: ptr, field: i32): str
+extern "pq" fn PQclear(r: ptr)
+extern "pq" fn PQntuples(r: ptr): i32
+extern "pq" fn PQnfields(r: ptr): i32
+extern "pq" fn PQfname(r: ptr, col: i32): str
+extern "pq" fn PQftype(r: ptr, col: i32): u32
+extern "pq" fn PQfmod(r: ptr, col: i32): i32
+extern "pq" fn PQgetisnull(r: ptr, row: i32, col: i32): i32
+extern "pq" fn PQgetvalue(r: ptr, row: i32, col: i32): str
+extern "pq" fn PQcmdTuples(r: ptr): str
+
+extern "c" fn cnull(): ptr as "obxlib_null"
+extern "c" fn calloc(n: int): ptr as "obxlib_alloc"
+extern "c" fn cfree(p: ptr) as "obxlib_free"
+extern "c" fn cstr(s: str): ptr as "obxlib_cstr"
+extern "c" fn pokeI32(p: ptr, i: int, v: int) as "obxlib_poke_i32"
+extern "c" fn pokePtr(p: ptr, i: int, q: ptr) as "obxlib_poke_ptr"
+
+var OPEN: int = 0
+
+// The number of Conn and Rows handles not yet closed or dropped.
+pub fn openHandles(): int { return OPEN }
+
+// libpq's version: 160004 for 16.4.
+pub fn libVersion(): int { return int(PQlibVersion()) }
+
+fn chomp(s: str): str {
+    var n = len(s)
+    while n > 0 && isSpace(strByte(s, n - 1)) { n -= 1 }
+    return s[..n]
+}
+
+// -------------------------------------------------------------- connections
+
+pub type Conn = record { h: ptr }
+
+fn (c: mut &Conn) drop() {
+    if !isNull(c.h) {
+        PQfinish(c.h)
+        OPEN -= 1
+    }
+}
+
+// Connects with a libpq connection string ("host=... dbname=... user=...") or URI.
+pub fn connect(conninfo: str): Result[Conn, Error] {
+    try sqldialect.noNul(conninfo, "connection string")
+    var msg = cnull()
+    let opts = PQconninfoParse(conninfo, mut &msg)
+    if isNull(opts) {
+        let text = if isNull(msg) { "out of memory" } else { chomp(strFromC(msg)) }
+        PQfreemem(msg)
+        return Err(sqldialect.inputError(text))
+    }
+    PQconninfoFree(opts)
+    let h = PQconnectdb(conninfo)
+    if isNull(h) { return Err(sqldialect.dbError(CONNECTION_BAD, "out of memory")) }
+    OPEN += 1
+    let conn = Conn{h: h}             // finished when dropped, on the error path too
+    if int(PQstatus(h)) != CONNECTION_OK { return Err(sqldialect.dbError(CONNECTION_BAD, chomp(PQerrorMessage(h)))) }
+    return Ok(conn)
+}
+
+// Closes the connection (dropping it does the same).
+pub fn (c: Conn) close() {}
+
+// The server's version: 160015 for 16.15.
+pub fn (c: &Conn) serverVersion(): int { return int(PQserverVersion(c.h)) }
+
+// Runs a script of any number of statements, without parameters.
+pub fn (c: &Conn) exec(script: str): Result[Unit, Error] {
+    try sqldialect.noNul(script, "SQL text")
+    let r = try c.result(PQexec(c.h, script))
+    return Ok(Unit{})
+}
+
+// Runs one statement with $1, $2, ... bound to args, in order.
+pub fn (c: &Conn) query(sql: str, args: &[Value]): Result[Rows, Error] {
+    try sqldialect.noNul(sql, "SQL text")
+    if len(args) > 65535 { return Err(sqldialect.inputError("more than 65535 parameters")) }
+    var ps: []Param = []
+    for v in args { append(mut &ps, try param(v)) }
+    let n = len(ps)
+    let types = calloc(4 * n)
+    let values = calloc(8 * n)
+    var copies: []ptr = []
+    for i in 0..n {
+        pokeI32(types, i, ps[i].oid)
+        var p = cnull()
+        if !ps[i].null { p = cstr(ps[i].text) }
+        pokePtr(values, i, p)
+        append(mut &copies, p)
+    }
+    let r = PQexecParams(c.h, sql, i32(n), types, values, cnull(), cnull(), 0)
+    for p in copies { cfree(p) }
+    cfree(values)
+    cfree(types)
+    return c.result(r)
+}
+
+// Runs a fragment with $1, $2, ... placeholders and its arguments.
+pub fn (c: &Conn) querySql(q: &Sql): Result[Rows, Error] {
+    return c.query(q.render(sqldialect.Dialect.Postgres), q.args())
+}
+
+// Runs body in a transaction: BEGIN, then COMMIT when it returns Ok, ROLLBACK
+// when it returns Err (whose error is the result).
+pub fn (c: &Conn) transaction[T](body: &fn(): Result[T, Error]): Result[T, Error] {
+    try c.exec("BEGIN")
+    match body() {
+        Ok(v) {
+            try c.exec("COMMIT")
+            return Ok(v)
+        }
+        Err(e) {
+            c.exec("ROLLBACK")
+            return Err(e)
+        }
+    }
+}
+
+// Rows for a PGresult, or the error it reports (it is cleared then).
+fn (c: &Conn) result(r: ptr): Result[Rows, Error] {
+    if isNull(r) { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
+    OPEN += 1
+    let rows = Rows{h: r}
+    let st = int(PQresultStatus(r))
+    if st <= PGRES_TUPLES_OK { return Ok(rows) }
+    var msg = PQresultErrorField(r, DIAG_MESSAGE_PRIMARY)
+    if len(msg) == 0 { msg = chomp(PQresultErrorMessage(r)) }
+    if len(msg) == 0 { msg = "unsupported result status " + st.toStr() + " (COPY?)" }
+    return Err(Error{code: st, state: PQresultErrorField(r, DIAG_SQLSTATE), msg: msg})
+}
+
+// A parameter as sent: its type OID and text.
+type Param = value record { oid: int; null: bool; text: str }
+
+fn param(v: Value): Result[Param, Error] {
+    match v {
+        Value.Null { return Ok(Param{oid: 0, null: true, text: ""}) }
+        Value.Int(n) { return Ok(Param{oid: OID_INT8, null: false, text: n.toStr()}) }
+        Value.Float(f) { return Ok(Param{oid: OID_FLOAT8, null: false, text: floatText(f)}) }
+        Value.Bool(b) { return Ok(Param{oid: OID_BOOL, null: false, text: if b { "t" } else { "f" }}) }
+        Value.Text(s) {
+            try sqldialect.noNul(s, "text value")
+            return Ok(Param{oid: OID_TEXT, null: false, text: s})
+        }
+        Value.Bytes(b) { return Ok(Param{oid: OID_BYTEA, null: false, text: "\\x" + sqldialect.hex(b)}) }
+        Value.Dec(d) { return Ok(Param{oid: OID_NUMERIC, null: false, text: try sqldialect.decimalText(d, MAX_DSCALE)}) }
+    }
+}
+
+fn floatText(f: float): str {
+    if f.isNaN() { return "NaN" }
+    if f.isInf() { return if f > 0.0 { "Infinity" } else { "-Infinity" } }
+    return f.toStr()
+}
+
+// The Dec value for numeric(p, s), checked first (sqldialect.fitDecimal): the
+// server would round a value with more fraction digits instead of failing.
+pub fn decimalParam(d: Decimal, p: int, s: int): Result[Value, Error] {
+    return Ok(Value.Dec(try sqldialect.fitDecimal(d, p, s)))
+}
+
+// ------------------------------------------------------------------- rows
+
+pub type Rows = record { h: ptr }
+
+fn (r: mut &Rows) drop() {
+    PQclear(r.h)
+    OPEN -= 1
+}
+
+// Clears the result now (dropping it does the same).
+pub fn (r: Rows) close() {}
+
+pub fn (r: &Rows) rowCount(): int { return int(PQntuples(r.h)) }
+
+pub fn (r: &Rows) columnCount(): int { return int(PQnfields(r.h)) }
+
+// Rows inserted, updated, deleted, ... by the command (0 when it says none).
+pub fn (r: &Rows) affected(): int { return parseInt(PQcmdTuples(r.h)).unwrapOr(0) }
+
+fn (r: &Rows) col(col: int): Result[i32, Error] {
+    if col < 0 || col >= r.columnCount() {
+        return Err(sqldialect.inputError("column " + col.toStr() + " out of range (" + r.columnCount().toStr() + " columns)"))
+    }
+    return Ok(i32(col))
+}
+
+pub fn (r: &Rows) columnName(col: int): Result[str, Error] { return Ok(PQfname(r.h, try r.col(col))) }
+
+// The column's type OID (OID_INT8, OID_NUMERIC, ...).
+pub fn (r: &Rows) columnType(col: int): Result[int, Error] { return Ok(int(PQftype(r.h, try r.col(col)))) }
+
+// The column's type modifier; -1 when it has none (also a valid value).
+pub fn (r: &Rows) columnTypmod(col: int): Result[int, Error] { return Ok(int(PQfmod(r.h, try r.col(col)))) }
+
+// The precision and scale of a numeric column; constrained is false for a
+// plain numeric. E_TYPE for another type, E_DEC_METADATA for a typmod that
+// is not a numeric one.
+pub type DecimalType = value record { pub precision: int; pub scale: int; pub constrained: bool }
+
+pub fn (r: &Rows) decimalType(col: int): Result[DecimalType, Error] {
+    if try r.columnType(col) != OID_NUMERIC { return Err(typeError(col, "numeric")) }
+    let tm = try r.columnTypmod(col)
+    if tm == -1 { return Ok(DecimalType{precision: 0, scale: 0, constrained: false}) }
+    let t = tm - 4
+    let p = (t >> 16) & 0xffff
+    let s = ((t & 0x7ff) ^ 1024) - 1024
+    if tm < 4 || p < 1 || p > 1000 || s < -1000 || s > 1000 {
+        return Err(sqldialect.dbError(sqldialect.E_DEC_METADATA, "invalid numeric typmod " + tm.toStr()))
+    }
+    return Ok(DecimalType{precision: p, scale: s, constrained: true})
+}
+
+fn typeError(col: int, want: str): Error {
+    return sqldialect.dbError(sqldialect.E_TYPE, "column " + col.toStr() + " is not " + want)
+}
+
+pub fn (r: &Rows) isNull(row: int, col: int): Result[bool, Error] {
+    let c = try r.col(col)
+    if row < 0 || row >= r.rowCount() {
+        return Err(sqldialect.inputError("row " + row.toStr() + " out of range (" + r.rowCount().toStr() + " rows)"))
+    }
+    return Ok(PQgetisnull(r.h, i32(row), c) == 1)
+}
+
+// The value's text form, as the server sent it. E_NULL for NULL.
+pub fn (r: &Rows) text(row: int, col: int): Result[str, Error] {
+    if try r.isNull(row, col) { return Err(sqldialect.dbError(sqldialect.E_NULL, "column " + col.toStr() + " is NULL")) }
+    return Ok(PQgetvalue(r.h, i32(row), i32(col)))
+}
+
+// An int2, int4 or int8 value.
+pub fn (r: &Rows) int(row: int, col: int): Result[int, Error] {
+    let t = try r.text(row, col)
+    let oid = try r.columnType(col)
+    if oid != OID_INT8 && oid != OID_INT4 && oid != OID_INT2 { return Err(typeError(col, "an integer")) }
+    return Ok(parseInt(t).unwrap())
+}
+
+pub fn (r: &Rows) bool(row: int, col: int): Result[bool, Error] {
+    let t = try r.text(row, col)
+    if try r.columnType(col) != OID_BOOL { return Err(typeError(col, "a boolean")) }
+    return Ok(t == "t")
+}
+
+// A float4 or float8 value (exact: the server sends the shortest text that
+// reads back as the same value).
+pub fn (r: &Rows) float(row: int, col: int): Result[float, Error] {
+    let t = try r.text(row, col)
+    let oid = try r.columnType(col)
+    if oid != OID_FLOAT8 && oid != OID_FLOAT4 { return Err(typeError(col, "a float")) }
+    if t == "Infinity" { return Ok(math.inf()) }
+    if t == "-Infinity" { return Ok(-math.inf()) }
+    return Ok(math.parse(t).unwrap())
+}
+
+// A bytea's exact bytes, or the text of any other type.
+pub fn (r: &Rows) bytes(row: int, col: int): Result[str, Error] {
+    let t = try r.text(row, col)
+    if try r.columnType(col) != OID_BYTEA { return Ok(t) }
+    if len(t) < 2 || t[..2] != "\\x" { return Err(typeError(col, "bytea in hex format")) }
+    match sqldialect.unhex(t[2..]) {
+        Some(b) { return Ok(b) }
+        None { return Err(typeError(col, "bytea in hex format")) }
+    }
+}
+
+// A numeric value as an exact Decimal. For a numeric(p, s) column the display
+// scale is s (zeros are added, never rounded away) and the value is checked
+// against (p, s). E_TYPE for another type, E_NONFINITE for NaN and Infinity.
+pub fn (r: &Rows) decimal(row: int, col: int): Result[Decimal, Error] {
+    let t = try r.text(row, col)
+    let ty = try r.decimalType(col)
+    let d = try sqldialect.parseDecimal(t)
+    if ty.constrained && ty.scale >= 0 { return sqldialect.fitDecimal(d, ty.precision, ty.scale) }
+    return Ok(d)
+}
+
+// None for NULL (never zero), otherwise as decimal().
+pub fn (r: &Rows) decimalOrNull(row: int, col: int): Result[Option[Decimal], Error] {
+    if try r.isNull(row, col) { return Ok(None) }
+    return Ok(Some(try r.decimal(row, col)))
+}
+
+// The value by its column's type: Null, Bool, Int (int2/4/8), Float
+// (float4/8), Dec (numeric), Bytes (bytea), and Text for every other type.
+pub fn (r: &Rows) value(row: int, col: int): Result[Value, Error] {
+    if try r.isNull(row, col) { return Ok(Value.Null) }
+    let oid = try r.columnType(col)
+    if oid == OID_BOOL { return Ok(Value.Bool(try r.bool(row, col))) }
+    if oid == OID_INT8 || oid == OID_INT4 || oid == OID_INT2 { return Ok(Value.Int(try r.int(row, col))) }
+    if oid == OID_FLOAT8 || oid == OID_FLOAT4 { return Ok(Value.Float(try r.float(row, col))) }
+    if oid == OID_NUMERIC { return Ok(Value.Dec(try r.decimal(row, col))) }
+    if oid == OID_BYTEA { return Ok(Value.Bytes(try r.bytes(row, col))) }
+    return Ok(Value.Text(try r.text(row, col)))
+}
