@@ -121,6 +121,13 @@ moved over (qualified variants, `never` stop helpers, renamed externs, the
 - Imports: `./` and `../` paths are relative to the importing file; bare
   paths are library modules only (5.1).
 
+Small gaps noted by the round-3 fixes (2026-11-02), not yet decided:
+
+- A record literal through a generic alias needs written type arguments
+  (`P[int]{...}`); variants through one infer them.
+- At exit, copy globals (`str`) are dropped after every set-once global
+  instead of reverting to their initializer; equivalent for soundness.
+
 Deferred (user, 2026-11-02):
 
 - Marking unchecked code: not planned. A module that declares its own extern
