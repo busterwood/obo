@@ -13,7 +13,8 @@ and without OBX_CHECK=1, and compares stdout, stderr and the exit code. Each tes
   unsupported  the native backend refused it cleanly (`native: unsupported: ...`)
   differ       anything else: a different result, a crash, a failed native build
   skip         (red team) the C build fails too: a program meant to be rejected;
-               (tests/native) a library it needs is not installed
+               a library it needs (`// needs: name`) is not installed; or both builds
+               exit 77 (a live service the test needs is missing)
 Only differ fails (exit 1). -v lists the unsupported tests with their reasons.
 """
 import argparse, collections, glob, os, re, subprocess, sys, tempfile
@@ -99,7 +100,7 @@ def missing_lib(path):
 
 def one(path, obxc):
     rel = os.path.relpath(path, os.path.join(HERE, '..', '..'))
-    if path.startswith(NATIVE + os.sep) and missing_lib(path):
+    if missing_lib(path):
         return rel, 'skip', ''
     d = runpy.parse_directives(path)
     stdin = ''.join(l + '\n' for l in d['stdin'])
@@ -126,6 +127,8 @@ def one(path, obxc):
         for check in (False, True):
             a = execute(cexe, stdin, check, tmp)
             b = execute(nexe, stdin, check, tmp)
+            if a == b and a[0] == runpy.SKIP_EXIT and d['exit'] != runpy.SKIP_EXIT:
+                return rel, 'skip', ''       # both runs found a live service missing
             if a != b and want(d, b) and not want(d, a):
                 return rel, 'pass', 'note: the C build differs from the directives; native matches them'
             if a != b:

@@ -5,7 +5,7 @@ usage: run.py [--compiler PATH] [-v] [filters...]
 `// error: a|b` accepts either word; an empty `// error:` accepts any failure.
 A filter is a substring of the test's path relative to the tests directory.
 """
-import argparse, os, re, subprocess, sys, tempfile
+import argparse, glob, os, re, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
@@ -13,6 +13,20 @@ import cbuild  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIRECTIVE = re.compile(r'^\s*//\s*(expect|exit|stdin|error|line):(.*)$')
+NEEDS = re.compile(r'^\s*//\s*needs:\s*(\S+)')
+LIBDIRS = ['/usr/lib/x86_64-linux-gnu', '/lib/x86_64-linux-gnu', '/usr/lib64', '/usr/lib', '/usr/local/lib', '/lib']
+SKIP_EXIT = 77     # a run test that exits 77 (and does not expect it) is skipped: a live service is missing
+SKIP = 'skip'
+
+
+def missing_lib(path):
+    """The first `// needs: name` C library of a test that is not installed (no lib<name>.so*), or None."""
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            m = NEEDS.match(line)
+            if m and not any(glob.glob(os.path.join(d, 'lib%s.so*' % m.group(1))) for d in LIBDIRS):
+                return m.group(1)
+    return None
 COMPILE_TIMEOUT = 20
 RUN_TIMEOUT = 10
 
@@ -67,6 +81,8 @@ def compiler_cmd(compiler):
 def run_test(kind, path, compiler):
     rel = os.path.relpath(path, HERE)
     d = parse_directives(path)
+    if kind == 'run' and missing_lib(path):
+        return rel, SKIP
     with tempfile.TemporaryDirectory(prefix='obxtest_') as tmp:
         out = os.path.join(tmp, 'out')
         try:
@@ -98,6 +114,8 @@ def run_test(kind, path, compiler):
                                errors='replace', timeout=RUN_TIMEOUT, env=env, cwd=tmp)
         except subprocess.TimeoutExpired:
             return rel, 'run timeout'
+        if r.returncode == SKIP_EXIT and d['exit'] != SKIP_EXIT:
+            return rel, SKIP
         want = ''.join(l + '\n' for l in d['expect'])
         if r.stdout != want:
             return rel, 'stdout differs\n  want: %r\n  got:  %r\n  stderr: %s' % (
@@ -120,12 +138,15 @@ def main():
                  if any(f in os.path.relpath(t[1], HERE) for f in a.filters)]
     with ThreadPoolExecutor(max_workers=a.j) as ex:
         results = list(ex.map(lambda t: run_test(t[0], t[1], a.compiler), tests))
-    failed = 0
+    failed = skipped = 0
     for rel, err in results:
-        if err:
+        if err == SKIP:
+            skipped += 1
+        elif err:
             failed += 1
             print('FAIL %s: %s' % (rel, err))
-    print('%d passed, %d failed' % (len(results) - failed, failed))
+    print('%d passed, %d failed%s' % (len(results) - failed - skipped, failed,
+                                      ', %d skipped (a library or service missing)' % skipped if skipped else ''))
     sys.exit(1 if failed else 0)
 
 

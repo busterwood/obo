@@ -48,6 +48,10 @@ lines anywhere in the file:
 | `// stdin: text` | run | a line fed to stdin (unused so far) |
 | `// error: words` | error | compile must fail and the output must contain `words` (case-insensitive). `a\|b` accepts either; empty accepts any failure. Several lines must all match. |
 | `// line: N` | error | the output must contain `:N:` |
+| `// needs: name` | run | the test is skipped when no `lib<name>.so*` is installed (a C library its externs link) |
+
+A run test that exits with code 77 (and does not expect it) is reported as skipped:
+the library tests that need a live database server exit 77 when there is none.
 
 `run/` tests are run with `OBX_CHECK=1`, so a leaked object makes the exit
 code 5 and fails the test. Stdout is compared exactly. Stderr is not checked.
