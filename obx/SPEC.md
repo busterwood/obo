@@ -82,6 +82,7 @@ externdecl  = "extern" STRING "fn" IDENT "(" [ params ] ")" [ ":" type ]
               [ "as" STRING ] sep ;
 
 type        = "never" | "&" type | "mut" "&" type | "[]" type
+            | "&" "fn" "(" [ type { "," type } ] ")" [ ":" type ]  (* closure *)
             | "&" "[" type "]" | "mut" "&" "[" type "]"     (* slices *)
             | "fn" "(" [ type { "," type } ] ")" [ ":" type ]
             | qualname [ targs ] ;
@@ -120,7 +121,9 @@ args        = expr { "," expr } ;
 primary     = INT | FRACTION | CHAR | STRING | "true" | "false"
             | qualname [ targs ] [ "{" [ inits ] "}" ]
             | "[" [ args ] "]"
-            | "(" expr ")" ;
+            | "(" expr ")"
+            | "fn" "(" [ lparam { "," lparam } ] ")" [ ":" type ] block ;  (* closure *)
+lparam      = IDENT [ ":" type ] ;
 inits       = IDENT ":" expr { "," IDENT ":" expr } ;
 sep         = ";" | NEWLINE ;
 ```
@@ -238,7 +241,36 @@ a field or element reached through it.
 
 `fn(A, B): R` is the type of a pointer to a top-level, non-generic function or
 an instance of a generic one (`sortBy(xs, byAge)`, `apply(parse[int])`). It is a
-copy type. There are no closures in draft 1 (section 13).
+copy type. Inside generic code the instance may depend on the type parameters
+(`mergeBy[T]` inside `sortStable[T]`).
+
+`&fn(A, B): R` is the type of a **closure**: a function that may use the local
+variables around it. A closure is a borrow (section 4.5) and is second class
+in the same way: it can be a parameter or a `let`, and it cannot be stored,
+returned or used as a type argument. It costs no allocation.
+
+```obx
+fn sortBy[T](xs: mut &[T], cmp: &fn(&T, &T): int) { ... }
+
+let minAge = 18
+sortBy(mut &people, fn(a, b) { return a.age.cmp(&b.age) })
+let adults = count(&people, fn(p: &Person): bool { return p.age >= minAge })
+```
+
+- A closure expression `fn(params) { ... }` uses the enclosing function's
+  locals and parameters by borrow. A variable it assigns, or borrows mutably,
+  is captured mutably and must be a `var`; every other one is captured as a
+  shared borrow. A closure cannot move a captured variable, and cannot use a
+  global by borrow.
+- The parameter and result types may be left out when the expected type is a
+  closure type. `return` inside the closure returns from the closure.
+- The captures are borrows of their variables' roots for section 10: while the
+  closure is in scope (a `let`) or while its call runs (an argument), the
+  captured roots are frozen (rule 4), or held (rule 3) for an argument, with
+  mutable captures counted as `mut &`.
+- A plain function value or a named function converts to a closure type, so a
+  parameter of type `&fn(...)` accepts both.
+- A closure is called like a function: `cmp(&a, &b)`.
 
 ### 4.7 Copy types and owned types
 
@@ -624,7 +656,8 @@ Each of these is planned and is left out of draft 1 to keep the first
 compiler small. None of them needs a change to the rules above.
 
 - **Handles** (`^T`): generation-checked non-owning pointers, as in obo.
-- **Closures**: function values that capture.
+- **Escaping closures**: closures that can be stored and returned (with an
+  owned environment). They are to be designed together with interface values.
 - **Interface values** (`box I`, `&I`): dynamic dispatch.
 - **Effects**: per-function summaries of what a call may free, which allow
   owned globals and borrows of them.
