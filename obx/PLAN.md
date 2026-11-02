@@ -12,7 +12,7 @@ and the self-hosted compiler first. Only then port the existing programs
 | 2 | Reference compiler, `ref/` (Python to C) | under 5,000 lines; conformance suite passes with no leaks | done: 3,800 lines, 387 conformance + 77 own tests pass; soundness review next |
 | 3 | Library: `lib/` | no compiler change except primitives | done: 9 modules, 3,300 lines, 25 library tests (OBX_CHECK=1); compiler changes: `lib/` import root, `obx_*` C helpers in rt.h; see [lib/README.md](lib/README.md) |
 | 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | done: identical AST, types and C to ref on all 2,427 test files; stage 2 == stage 3; C seed checked in (`compiler/seed/obxc.c`, `build.sh`, `reseed.sh`); full gate passes with the seed-built compiler; see [compiler/README.md](compiler/README.md) |
-| 5 | Native x86-64 ELF backend; then eza, SQLite, Postgres | eza shorter than obo's and as fast | |
+| 5 | Native x86-64 ELF backend; then eza, SQLite, Postgres | eza shorter than obo's and as fast | native backend done; eza done: [cmd/eza.obx](cmd/eza.obx), 1,609 lines (1,335 without comments and blank lines) against obo's 3,482 (2,842) plus its library helpers; obo's golden suite passes with the native and the C build (482 cases, 72 live-only skipped, [cmd/README.md](cmd/README.md)); native time equal to obo's on `/usr/share` trees; SQLite and Postgres next |
 | 6 | Retire obo 0.19 | | |
 
 ## Stage 3: the library

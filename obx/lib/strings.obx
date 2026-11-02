@@ -418,9 +418,13 @@ pub fn runeCount(s: str): int {
 pub fn isValidUtf8(s: str): bool {
     var i = 0
     while i < len(s) {
-        let d = decodeAt(s, i)
-        if !d.ok { return false }
-        i += d.size
+        if strByte(s, i) < 0x80 {
+            i += 1
+        } else {
+            let d = decodeAt(s, i)
+            if !d.ok { return false }
+            i += d.size
+        }
     }
     return true
 }

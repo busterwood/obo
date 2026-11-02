@@ -1,0 +1,1609 @@
+// eza: lists a directory, a port of obo's eza (obo/cmd/eza.obx), the subset
+// of eza 0.23.3 that obo implements, byte for byte: the lines, grid, tree
+// and restricted long views, -a/-A, -d, -D/-f, the sort fields that need no
+// more than lstat, -r, directory grouping, quoting and --no-quotes, -F,
+// colour with the default theme and the LS_COLORS/EZA_COLORS subset, and
+// eza's errors and exit codes (0 ok, 1 write error, 2 bad path, 3 usage).
+// Other eza options parse and are then rejected with this build's message.
+//
+//     obxc cmd/eza.obx --native -o eza
+//
+// Output goes through one painter: each line is a run of styled pieces, and
+// with colour on the escapes between pieces are nu-ansi-term 0.50.1's
+// minimal differences; with colour off the pieces are just written.
+
+import "io"
+import "fs"
+import "os"
+import "strings"
+import "collections"
+import "time"
+
+type Kind = fs.Kind
+
+// eza takes any --width up to 2^64-1; a huge width lays every cell on one
+// line, so the width is capped where the grid arithmetic stays exact.
+const GRID_WIDTH_CAP = 1099511627776
+
+// ------------------------------------------------------------ command line
+
+type Arity = value closed { Flag; Value; Optional }
+
+// An option of eza 0.23.3 (0 for no short form). Every one of them parses;
+// those the deduction does not know are then rejected by name.
+type Spec = value record { short: byte; long: str; arity: Arity }
+
+const SPECS: []Spec = [
+    Spec{short: '?', long: "help", arity: Arity.Flag},
+    Spec{short: '1', long: "oneline", arity: Arity.Flag},
+    Spec{short: 'l', long: "long", arity: Arity.Flag},
+    Spec{short: 'a', long: "all", arity: Arity.Flag},
+    Spec{short: 'A', long: "almost-all", arity: Arity.Flag},
+    Spec{short: 'd', long: "treat-dirs-as-files", arity: Arity.Flag},
+    Spec{short: 0, long: "list-dirs", arity: Arity.Flag},
+    Spec{short: 'D', long: "only-dirs", arity: Arity.Flag},
+    Spec{short: 'f', long: "only-files", arity: Arity.Flag},
+    Spec{short: 'r', long: "reverse", arity: Arity.Flag},
+    Spec{short: 's', long: "sort", arity: Arity.Value},
+    Spec{short: 0, long: "group-directories-first", arity: Arity.Flag},
+    Spec{short: 0, long: "group-directories-last", arity: Arity.Flag},
+    Spec{short: 'F', long: "classify", arity: Arity.Optional},
+    Spec{short: 'B', long: "bytes", arity: Arity.Flag},
+    Spec{short: 'n', long: "numeric", arity: Arity.Flag},
+    Spec{short: 0, long: "no-user", arity: Arity.Flag},
+    Spec{short: 0, long: "no-permissions", arity: Arity.Flag},
+    Spec{short: 0, long: "no-filesize", arity: Arity.Flag},
+    Spec{short: 0, long: "no-time", arity: Arity.Flag},
+    Spec{short: 0, long: "time-style", arity: Arity.Value},
+    Spec{short: 0, long: "color", arity: Arity.Optional},
+    Spec{short: 0, long: "colour", arity: Arity.Optional},
+    Spec{short: 0, long: "icons", arity: Arity.Optional},
+    Spec{short: 'G', long: "grid", arity: Arity.Flag},
+    Spec{short: 'x', long: "across", arity: Arity.Flag},
+    Spec{short: 'R', long: "recurse", arity: Arity.Flag},
+    Spec{short: 'T', long: "tree", arity: Arity.Flag},
+    Spec{short: 'L', long: "level", arity: Arity.Value},
+    Spec{short: 'X', long: "dereference", arity: Arity.Flag},
+    Spec{short: 0, long: "follow-symlinks", arity: Arity.Flag},
+    Spec{short: 'w', long: "width", arity: Arity.Value},
+    Spec{short: 0, long: "no-quotes", arity: Arity.Flag},
+    Spec{short: 0, long: "absolute", arity: Arity.Optional},
+    Spec{short: 0, long: "color-scale", arity: Arity.Optional},
+    Spec{short: 0, long: "colour-scale", arity: Arity.Optional},
+    Spec{short: 0, long: "color-scale-mode", arity: Arity.Value},
+    Spec{short: 0, long: "colour-scale-mode", arity: Arity.Value},
+    Spec{short: 'I', long: "ignore-glob", arity: Arity.Value},
+    Spec{short: 0, long: "git-ignore", arity: Arity.Flag},
+    Spec{short: 0, long: "no-symlinks", arity: Arity.Flag},
+    Spec{short: 0, long: "show-symlinks", arity: Arity.Flag},
+    Spec{short: 'b', long: "binary", arity: Arity.Flag},
+    Spec{short: 'g', long: "group", arity: Arity.Flag},
+    Spec{short: 'h', long: "header", arity: Arity.Flag},
+    Spec{short: 'i', long: "inode", arity: Arity.Flag},
+    Spec{short: 'H', long: "links", arity: Arity.Flag},
+    Spec{short: 'm', long: "modified", arity: Arity.Flag},
+    Spec{short: 0, long: "changed", arity: Arity.Flag},
+    Spec{short: 'S', long: "blocksize", arity: Arity.Flag},
+    Spec{short: 0, long: "total-size", arity: Arity.Flag},
+    Spec{short: 't', long: "time", arity: Arity.Value},
+    Spec{short: 'u', long: "accessed", arity: Arity.Flag},
+    Spec{short: 'U', long: "created", arity: Arity.Flag},
+    Spec{short: 0, long: "hyperlink", arity: Arity.Flag},
+    Spec{short: 'M', long: "mounts", arity: Arity.Flag},
+    Spec{short: 0, long: "smart-group", arity: Arity.Flag},
+    Spec{short: 0, long: "git", arity: Arity.Flag},
+    Spec{short: 0, long: "no-git", arity: Arity.Flag},
+    Spec{short: 0, long: "git-repos", arity: Arity.Flag},
+    Spec{short: 0, long: "git-repos-no-status", arity: Arity.Flag},
+    Spec{short: '@', long: "extended", arity: Arity.Flag},
+    Spec{short: 'o', long: "octal-permissions", arity: Arity.Flag},
+    Spec{short: 'Z', long: "context", arity: Arity.Flag},
+    Spec{short: 0, long: "stdin", arity: Arity.Flag},
+    Spec{short: 'O', long: "flags", arity: Arity.Flag}
+]
+
+const SORT_CHOICES = "name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none"
+
+// The choices eza lists when the option's value is missing.
+fn choicesOf(long: str): str {
+    return match long {
+        "sort" { SORT_CHOICES }
+        "time-style" { "default, long-iso, full-iso, iso, relative" }
+        "color-scale-mode", "colour-scale-mode" { "fixed, gradient" }
+        "time" { "modified, changed, accessed, created" }
+        else { "" }
+    }
+}
+
+// The words an optional value takes from the next argument, and its value
+// when it has none.
+fn consumes(s: &Spec, v: str): bool {
+    let words = match s.long {
+        "classify", "color", "colour", "icons" { "always auto never" }
+        "color-scale", "colour-scale" { "all age size" }
+        "absolute" { "on follow off" }
+        else { "" }
+    }
+    for w in split(words, ' ') {
+        if w == v && w != "" { return true }
+    }
+    return false
+}
+
+fn defaultOf(s: &Spec): str {
+    return match s.long { "classify", "color", "colour", "icons" { "auto" } else { "" } }
+}
+
+// One option occurrence: its long name and its value ("" for a flag).
+type Opt = value record { long: str; value: str }
+
+type Command = record { opts: []Opt; operands: []str }
+
+// How the program fails: the message for stderr and the exit code.
+type Fail = value record { code: int; msg: str }
+
+fn usage(msg: str): Fail { return Fail{code: 3, msg: "eza: " + msg} }
+
+fn byLong(name: str, shown: str): Result[Spec, Fail] {
+    for s in SPECS {
+        if s.long == name { return Ok(s) }
+    }
+    return Err(usage("Unknown argument " + shown))
+}
+
+fn byShort(c: byte): Result[Spec, Fail] {
+    for s in SPECS {
+        if s.short == c && c != 0 { return Ok(s) }
+    }
+    return Err(usage("Unknown argument -" + strFromBytes(&[c])))
+}
+
+fn needsValue(shown: str, long: str): Fail {
+    let cs = choicesOf(long)
+    return usage("Flag " + shown + " needs a value" + if cs == "" { "" } else { " (choices: " + cs + ")" })
+}
+
+// eza's argument grammar: options and operands mix; "--" ends the options.
+// A long option or a cluster of short ones splits at its first '=' when a
+// name comes before it and a value after it; then only the last short
+// option of the cluster takes the value.
+fn parse(args: &[str]): Result[Command, Fail] {
+    var opts: []Opt = []
+    var operands: []str = []
+    var i = 0
+    while i < len(args) {
+        let a = args[i]
+        i += 1
+        if a == "--" {
+            while i < len(args) {
+                append(mut &operands, args[i])
+                i += 1
+            }
+        } else if len(a) > 2 && startsWith(a, "--") {
+            let eq = indexOf(a, "=", 2)
+            if eq > 2 && eq + 1 < len(a) {
+                let s = try byLong(a[2..eq], "--" + a[2..eq])
+                if !s.arity.takesValue() { return Err(usage("Flag --" + s.long + " cannot take a value")) }
+                append(mut &opts, Opt{long: s.long, value: a[eq + 1..]})
+            } else {
+                let s = try byLong(a[2..], a)
+                match s.arity {
+                    Arity.Flag { append(mut &opts, Opt{long: s.long, value: ""}) }
+                    Arity.Value {
+                        if i >= len(args) { return Err(needsValue("--" + s.long, s.long)) }
+                        append(mut &opts, Opt{long: s.long, value: args[i]})
+                        i += 1
+                    }
+                    Arity.Optional {
+                        if i < len(args) && consumes(&s, args[i]) {
+                            append(mut &opts, Opt{long: s.long, value: args[i]})
+                            i += 1
+                        } else {
+                            append(mut &opts, Opt{long: s.long, value: defaultOf(&s)})
+                        }
+                    }
+                }
+            }
+        } else if len(a) > 1 && strByte(a, 0) == '-' {
+            let eq = indexOf(a, "=", 1)
+            if eq > 1 && eq + 1 < len(a) {
+                for j in 1..eq {
+                    let c = strByte(a, j)
+                    let s = try byShort(c)
+                    let shown = "-" + a[j..j + 1]
+                    if j == eq - 1 {
+                        if !s.arity.takesValue() { return Err(usage("Flag " + shown + " cannot take a value")) }
+                        append(mut &opts, Opt{long: s.long, value: a[eq + 1..]})
+                    } else {
+                        match s.arity {
+                            Arity.Flag { append(mut &opts, Opt{long: s.long, value: ""}) }
+                            Arity.Optional { append(mut &opts, Opt{long: s.long, value: defaultOf(&s)}) }
+                            Arity.Value { return Err(needsValue(shown, s.long)) }
+                        }
+                    }
+                }
+            } else {
+                var j = 1
+                while j < len(a) {
+                    let s = try byShort(strByte(a, j))
+                    let shown = "-" + a[j..j + 1]
+                    j += 1
+                    var value = ""
+                    match s.arity {
+                        Arity.Flag {
+                            append(mut &opts, Opt{long: s.long, value: ""})
+                            continue
+                        }
+                        Arity.Value {
+                            if j < len(a) {
+                                value = a[j..]
+                            } else if i < len(args) {
+                                value = args[i]
+                                i += 1
+                            } else {
+                                return Err(needsValue(shown, s.long))
+                            }
+                        }
+                        Arity.Optional {
+                            if j < len(a) {
+                                if !consumes(&s, a[j..]) { return Err(usage("Flag " + shown + " cannot take a value")) }
+                                value = a[j..]
+                            } else if i < len(args) && consumes(&s, args[i]) {
+                                value = args[i]
+                                i += 1
+                            } else {
+                                value = defaultOf(&s)
+                            }
+                        }
+                    }
+                    append(mut &opts, Opt{long: s.long, value: value})
+                    break
+                }
+            }
+        } else {
+            append(mut &operands, a)
+        }
+    }
+    return Ok(Command{opts: opts, operands: operands})
+}
+
+fn (a: Arity) takesValue(): bool { return match a { Arity.Flag { false } else { true } } }
+
+// ---------------------------------------------------------------- deduction
+
+type Sort = value closed { Name; NameCase; Size; Modified; Ext; ExtCase; Type }
+
+fn (s: Sort) needsStat(): bool { return match s { Sort.Size { true } Sort.Modified { true } else { false } } }
+
+fn (s: Sort) byExt(): bool { return match s { Sort.Ext { true } Sort.ExtCase { true } else { false } } }
+
+// What the command line asks for, after eza's rules: the last occurrence of
+// an option counts.
+type Opts = value record {
+    all: int              // -a occurrences (two also list "." and "..")
+    almostAll: bool       // -A
+    dirsAsFiles: bool     // -d
+    reverse: bool
+    sort: Sort
+    groupFirst: bool
+    groupLast: bool
+    onlyDirs: bool
+    onlyFiles: bool
+    classify: bool        // -F adds markers on this run
+    long: bool
+    tree: bool
+    grid: bool
+    across: bool          // -x
+    width: Option[int]    // the console width, when known
+    level: Option[int]    // -L under -T
+    quote: bool           // quote names with spaces (no --no-quotes)
+    colour: bool
+    numeric: bool
+    noUser: bool
+    noPerms: bool
+    noSize: bool
+    noTime: bool
+}
+
+fn isWhen(v: str): bool { return v == "always" || v == "auto" || v == "never" || v == "automatic" }
+
+fn noSetting(label: str, value: str, choices: str): str {
+    return "Option " + label + " has no \"" + debugText(value, false) + "\" setting" +
+        if choices == "" { "" } else { " (choices: " + choices + ")" }
+}
+
+fn sortOf(v: str): Result[Sort, Fail] {
+    return match v {
+        "", "name", "filename" { Ok(Sort.Name) }
+        "Name", "Filename" { Ok(Sort.NameCase) }
+        "size", "filesize" { Ok(Sort.Size) }
+        "extension", "ext" { Ok(Sort.Ext) }
+        "Extension", "Ext" { Ok(Sort.ExtCase) }
+        "modified", "date", "time", "mod", "new", "newest" { Ok(Sort.Modified) }
+        "type" { Ok(Sort.Type) }
+        ".name", ".Name", ".filename", ".Filename", "changed", "ch", "accessed", "acc", "created", "cr", "inode",
+            "none", "age", "old", "oldest" { Err(usage("option '--sort=" + v + "' is not supported by this build")) }
+        else { Err(usage(noSetting("--sort (-s)", v, SORT_CHOICES))) }
+    }
+}
+
+// Rust's usize::from_str: an optional '+' and decimal digits. Values past
+// 2^63-1 (up to 2^64-1) saturate. The error is Rust's text.
+fn parseUsize(s: str): Result[int, str] {
+    if len(s) == 0 { return Err("cannot parse integer from empty string") }
+    var i = if strByte(s, 0) == '+' { 1 } else { 0 }
+    if i == len(s) { return Err("invalid digit found in string") }
+    for k in i..len(s) {
+        if !isDigit(strByte(s, k)) { return Err("invalid digit found in string") }
+    }
+    while i < len(s) - 1 && strByte(s, i) == '0' { i += 1 }
+    let digits = s[i..]
+    if len(digits) > 20 || (len(digits) == 20 && digits > "18446744073709551615") {
+        return Err("number too large to fit in target type")
+    }
+    var v = 0
+    for k in 0..len(digits) {
+        let d = int(strByte(digits, k)) - 48
+        if v > (9223372036854775807 - d) / 10 { return Ok(9223372036854775807) }
+        v = v * 10 + d
+    }
+    return Ok(v)
+}
+
+fn deduce(opts: &[Opt]): Result[Opts, Fail] {
+    var o = Opts{all: 0, almostAll: false, dirsAsFiles: false, reverse: false, sort: Sort.Name,
+        groupFirst: false, groupLast: false, onlyDirs: false, onlyFiles: false, classify: false,
+        long: false, tree: false, grid: false, across: false, width: None, level: None, quote: true,
+        colour: false, numeric: false, noUser: false, noPerms: false, noSize: false, noTime: false}
+    var view = ""          // the last of -l/-1/-T/-G
+    var gridOrTree = ""    // the last of -G/-T
+    var longSeen = false
+    var treeSeen = false
+    var bytes = false
+    var sort = ""
+    var classify = ""
+    var colour = ""
+    var icons = ""
+    var width: Option[str] = None
+    var level: Option[str] = None
+    var timeStyle: Option[str] = None
+    for x in opts {
+        match x.long {
+            "all" { o.all += 1 }
+            "almost-all" { o.almostAll = true }
+            "treat-dirs-as-files", "list-dirs" { o.dirsAsFiles = true }
+            "reverse" { o.reverse = true }
+            "sort" { sort = x.value }
+            "group-directories-first" { o.groupFirst = true }
+            "group-directories-last" { o.groupLast = true }
+            "classify" { classify = x.value }
+            "only-dirs" { o.onlyDirs = true }
+            "only-files" { o.onlyFiles = true }
+            "bytes" { bytes = true }
+            "numeric" { o.numeric = true }
+            "no-user" { o.noUser = true }
+            "no-permissions" { o.noPerms = true }
+            "no-filesize" { o.noSize = true }
+            "no-time" { o.noTime = true }
+            "time-style" { timeStyle = Some(x.value) }
+            "long" {
+                longSeen = true
+                view = "long"
+            }
+            "oneline" { view = "oneline" }
+            "tree" {
+                treeSeen = true
+                view = "tree"
+                gridOrTree = "tree"
+            }
+            "grid" {
+                view = "grid"
+                gridOrTree = "grid"
+            }
+            "across" { o.across = true }
+            "width" { width = Some(x.value) }
+            "level" { level = Some(x.value) }
+            "no-quotes" { o.quote = false }
+            "color", "colour" { colour = x.value }
+            "icons" { icons = x.value }
+            "help" {}
+            else {
+                let name = match x.long { "colour-scale" { "color-scale" } "colour-scale-mode" { "color-scale-mode" } else { x.long } }
+                return Err(usage("option '--" + name + "' is not supported by this build"))
+            }
+        }
+    }
+    // The console width: --width (0 means automatic), else COLUMNS (skipped
+    // when it is not UTF-8), else the terminal's.
+    var set: Option[int] = None
+    match width {
+        Some(t) {
+            let v = strings.lossy(t)
+            match parseUsize(v) {
+                Ok(n) { if n >= 1 { set = Some(n) } }
+                Err(why) { return Err(usage("Value \"" + debugText(v, false) + "\" not valid for option --width (-w): " + why)) }
+            }
+        }
+        None {
+            match os.env("COLUMNS") {
+                Some(c) {
+                    if strings.isValidUtf8(c) {
+                        match parseUsize(c) {
+                            Ok(n) { set = Some(n) }
+                            Err(why) {
+                                return Err(usage("Value \"" + debugText(c, false) + "\" not valid for environment variable COLUMNS: " + why))
+                            }
+                        }
+                    }
+                }
+                None {}
+            }
+        }
+    }
+    let tty = io.isTerminal(1)
+    let auto = if tty { io.terminalWidth(1) } else { None }
+    let terminalish = set.isSome() || auto.isSome()
+    o.width = match set { Some(n) { Some(min(n, GRID_WIDTH_CAP)) } None { auto } }
+    // A last -T or -G with any -l is a long view; -G then asks for eza's
+    // grid of long cells, which this build does not do.
+    o.long = view == "long" || ((view == "tree" || view == "grid") && longSeen)
+    let gridDetails = o.long && gridOrTree == "grid"
+    o.tree = treeSeen && (view == "tree" || (o.long && !gridDetails))
+    o.grid = !o.long && !o.tree && (view == "grid" || (view == "" && terminalish))
+    if treeSeen && o.all >= 2 { return Err(usage("Option --tree is useless given --all --all")) }
+    if gridDetails { return Err(usage("option '--grid' with -l is not supported by this build")) }
+    o.sort = try sortOf(sort)
+    if classify != "" && !isWhen(classify) { return Err(usage(noSetting("--classify (-F)", classify, ""))) }
+    o.classify = classify == "always" || ((classify == "auto" || classify == "automatic") && terminalish)
+    if colour != "" && !isWhen(colour) { return Err(usage(noSetting("--color", colour, ""))) }
+    if colour == "" { colour = if os.env("NO_COLOR").isSome() { "never" } else { "auto" } }
+    o.colour = colour == "always" || ((colour == "auto" || colour == "automatic") && tty)
+    if icons != "" && !isWhen(icons) { return Err(usage(noSetting("--icons", icons, ""))) }
+    if icons == "always" { return Err(usage("option '--icons=always' is not supported by this build")) }
+    match level {
+        Some(l) {
+            if o.tree {
+                match parseUsize(l) {
+                    Ok(n) { o.level = Some(n) }
+                    Err(why) { return Err(usage("Value \"" + debugText(l, false) + "\" not valid for option --level (-L): " + why)) }
+                }
+            }
+        }
+        None {}
+    }
+    let style = match timeStyle { Some(t) { t } None { "" } }
+    if o.long {
+        if timeStyle.isSome() && style != "long-iso" {
+            return Err(usage("--time-style=" + style + " is not supported with -l in this build"))
+        }
+        if timeStyle.isNone() || !bytes || !(o.numeric || o.noUser) {
+            return Err(usage("-l in this build requires --bytes, --time-style=long-iso and -n or --no-user"))
+        }
+    } else if timeStyle.isSome() && style != "long-iso" && style != "default" {
+        return Err(usage("--time-style=" + style + " is not supported in this build"))
+    }
+    return Ok(o)
+}
+
+// --------------------------------------------------------------- entries
+
+// A file to show.
+type Entry = value record {
+    name: str             // as read: readdir's bytes, "." or "..", or the operand
+    label: str            // name as eza shows it, invalid UTF-8 replaced
+    kind: Kind
+    dot: int              // 1 for the "." of -aa, 2 for its "..", else 0
+    st: Option[fs.Stat]   // lstat, when the options need it
+    link: Option[Target]  // a symlink's target, when readlink works
+}
+
+// The target of a symbolic link: its text, and stat of what it names (None
+// for a broken link).
+type Target = value record { raw: str; st: Option[fs.Stat] }
+
+fn entry(name: str, kind: Kind, dot: int): Entry {
+    return Entry{name: name, label: strings.lossy(name), kind: kind, dot: dot, st: None, link: None}
+}
+
+fn (e: &Entry) mode(): int { return match e.st { Some(s) { s.mode } None { 0 } } }
+
+// eza's points_to_directory: a directory or a link to one.
+fn (e: &Entry) toDir(): bool {
+    if e.kind == Kind.Link {
+        return match e.link {
+            Some(t) { match t.st { Some(s) { s.isDir() } None { false } } }
+            None { false }
+        }
+    }
+    return e.kind == Kind.Dir
+}
+
+fn (e: &Entry) broken(): bool {
+    return match e.link { Some(t) { t.st.isNone() } None { false } }
+}
+
+// Where entries come from: the listing of directory dir, or the operand dir
+// itself (single: shown with its parent). Link targets resolve against base.
+type Where = value record { single: bool; dir: str; base: str }
+
+fn listing(dir: str): Where { return Where{single: false, dir: dir, base: dir} }
+
+// The entries of directory path that the filters keep, with "." and ".."
+// first under -aa. In a tree, -f keeps everything (eza filters files only
+// at the top level).
+fn readDir(path: str, o: &Opts, tree: bool): Result[[]Entry, io.IoError] {
+    let found = try fs.list(path)
+    var es: []Entry = []
+    if !tree && o.all >= 2 {
+        for d in 1..3 {
+            var e = entry(if d == 1 { "." } else { ".." }, Kind.Other, d)
+            match fs.lstat(if d == 1 { path } else { fs.join(path, "..") }) {
+                Ok(s) {
+                    e.kind = s.kind()
+                    e.st = Some(s)
+                }
+                Err(_) {}
+            }
+            if keeps(o, e.kind, false) { append(mut &es, e) }
+        }
+    }
+    let hidden = o.all > 0 || o.almostAll
+    for f in found {
+        if (hidden || !startsWith(f.name, ".")) && keeps(o, f.kind, tree) {
+            append(mut &es, entry(f.name, f.kind, 0))
+        }
+    }
+    return Ok(es)
+}
+
+// -D keeps directories, -f regular files; both together keep everything.
+fn keeps(o: &Opts, k: Kind, tree: bool): bool {
+    if o.onlyDirs && !o.onlyFiles { return k == Kind.Dir }
+    if o.onlyFiles && !o.onlyDirs && !tree { return k == Kind.File }
+    return true
+}
+
+// Fills in what the options need: lstat, and every symlink's target.
+fn prepare(es: mut &[]Entry, at: &Where, o: &Opts) {
+    let wantStat = o.long || o.classify || o.colour || o.sort.needsStat()
+    for i in 0..len(es) {
+        let path = if at.single || es[i].dot == 1 { at.dir } else { fs.join(at.dir, es[i].name) }
+        if wantStat && es[i].st.isNone() { es[i].st = fs.lstat(path).ok() }
+        if es[i].kind == Kind.Link {
+            es[i].link = match fs.readlink(path) {
+                Ok(raw) { Some(Target{raw: raw, st: fs.stat(fs.join(at.base, raw)).ok()}) }
+                Err(_) { None }
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------- sorting
+
+// The order to show es in. Lines compare stably in the requested direction
+// (so -r keeps ties in readdir order); a tree sorts ascending and reverses
+// the result. Directory grouping is a last stable pass.
+fn order(es: &[]Entry, at: &Where, o: &Opts, tree: bool): []int {
+    var ids: []int = []
+    for i in 0..len(es) { append(mut &ids, i) }
+    var exts: []str = []
+    if o.sort.byExt() {
+        for e in es { append(mut &exts, extKey(&e, at)) }
+    }
+    let desc = o.reverse && !tree
+    let group = o.groupFirst || o.groupLast
+    collections.sortBy(mut &ids, fn(a, b) {
+        if group && !tree {
+            let g = groupRank(&es[a], o) - groupRank(&es[b], o)
+            if g != 0 { return g }
+        }
+        let c = compare(&es[a], &es[b], o.sort, &exts, a, b)
+        return if desc { -c } else { c }
+    })
+    if tree {
+        if o.reverse { collections.reverse(mut &ids) }
+        if group { collections.sortBy(mut &ids, fn(a, b) { return groupRank(&es[a], o) - groupRank(&es[b], o) }) }
+    }
+    return ids
+}
+
+fn groupRank(e: &Entry, o: &Opts): int {
+    return if e.toDir() == o.groupFirst { 0 } else { 1 }
+}
+
+fn compare(x: &Entry, y: &Entry, sort: Sort, exts: &[]str, a: int, b: int): int {
+    return match sort {
+        Sort.Name { natcmp(x.label, y.label, true) }
+        Sort.NameCase { natcmp(x.label, y.label, false) }
+        Sort.Size { sizeKey(x).cmp(&sizeKey(y)) }
+        Sort.Modified { timeKey(x).cmp(&timeKey(y)) }
+        Sort.Ext { thenNames(exts[a].cmp(&exts[b]), x, y, true) }
+        Sort.ExtCase { thenNames(exts[a].cmp(&exts[b]), x, y, false) }
+        Sort.Type { thenNames(typeRank(x.kind).cmp(&typeRank(y.kind)), x, y, false) }
+    }
+}
+
+fn thenNames(c: int, x: &Entry, y: &Entry, fold: bool): int {
+    return if c != 0 { c } else { natcmp(x.label, y.label, fold) }
+}
+
+fn sizeKey(e: &Entry): int { return match e.st { Some(s) { s.size } None { -1 } } }
+
+// A time before 1970 is no time, before every real one.
+fn timeKey(e: &Entry): i128 {
+    return match e.st {
+        Some(s) { if s.mtime >= 0 { i128(s.mtime) * 1000000000 + i128(s.mtimeNs) } else { -1 } }
+        None { -1 }
+    }
+}
+
+fn typeRank(k: Kind): int {
+    return match k {
+        Kind.Dir { 0 } Kind.File { 1 } Kind.Link { 2 } Kind.Fifo { 3 } Kind.Socket { 4 } Kind.CharDev { 5 }
+        Kind.BlockDev { 6 } Kind.Other { 7 }
+    }
+}
+
+// The extension sort key: "" for none (first), else "." and the lowercase
+// bytes after the name's last dot. "." takes the operand's name, ".." none.
+fn extKey(e: &Entry, at: &Where): str {
+    var name = e.label
+    if e.dot == 2 { return "" }
+    if e.dot == 1 {
+        name = splitPath(at.dir).last
+        if name == "." || name == ".." || name == "/" { return "" }
+        name = strings.lossy(name)
+    }
+    let dot = strings.lastIndexOf(name, ".")
+    return if dot < 0 { "" } else { "." + strings.toLower(name[dot + 1..]) }
+}
+
+// natord's comparison (natord-plus-plus 2.0): runs of ASCII digits compare
+// as numbers, right-aligned, or left-aligned when either run starts with
+// '0'; Unicode white space is skipped; fold compares simple lowercase.
+fn natcmp(a: str, b: str, fold: bool): int {
+    var i = 0
+    var j = 0
+    while true {
+        i = skipSpace(a, i)
+        j = skipSpace(b, j)
+        if i == len(a) { return if j == len(b) { 0 } else { -1 } }
+        if j == len(b) { return 1 }
+        let x = strByte(a, i)
+        let y = strByte(b, j)
+        if isDigit(x) && isDigit(y) {
+            let left = x == '0' || y == '0'
+            var last = 0
+            while i < len(a) && j < len(b) && isDigit(strByte(a, i)) && isDigit(strByte(b, j)) {
+                let c = strByte(a, i).cmp(&strByte(b, j))
+                if c != 0 && left { return c }
+                if last == 0 { last = c }
+                i += 1
+                j += 1
+            }
+            if i < len(a) && isDigit(strByte(a, i)) { return 1 }
+            if j < len(b) && isDigit(strByte(b, j)) { return -1 }
+            if last != 0 { return last }
+        } else if x < 0x80 && y < 0x80 {
+            // ASCII, the common case, without decoding
+            let c = if fold { lowerByte(x).cmp(&lowerByte(y)) } else { x.cmp(&y) }
+            if c != 0 { return c }
+            i += 1
+            j += 1
+        } else {
+            let p = strings.decodeAt(a, i)
+            let q = strings.decodeAt(b, j)
+            let c = if fold { lowerRune(p.rune).cmp(&lowerRune(q.rune)) } else { p.rune.cmp(&q.rune) }
+            if c != 0 { return c }
+            i += p.size
+            j += q.size
+        }
+    }
+}
+
+fn lowerByte(c: byte): byte { return if c >= 'A' && c <= 'Z' { c + 32 } else { c } }
+
+fn skipSpace(s: str, from: int): int {
+    var i = from
+    while i < len(s) {
+        let c = strByte(s, i)
+        if c < 0x80 {
+            if c != ' ' && (c < '\t' || c > '\r') { return i }
+            i += 1
+        } else {
+            let d = strings.decodeAt(s, i)
+            if !isSpaceRune(d.rune) { return i }
+            i += d.size
+        }
+    }
+    return i
+}
+
+// Rust's char::is_whitespace.
+fn isSpaceRune(r: int): bool {
+    return r == 0x20 || (r >= 0x09 && r <= 0x0D) || r == 0x85 || r == 0xA0 || r == 0x1680 ||
+        (r >= 0x2000 && r <= 0x200A) || r == 0x2028 || r == 0x2029 || r == 0x202F || r == 0x205F || r == 0x3000
+}
+
+// Simple lowercase for ASCII, Latin-1, Latin Extended-A, basic Greek and
+// Cyrillic and fullwidth A-Z (obo's table; other scripts compare as they
+// are).
+fn lowerRune(r: int): int {
+    if (r >= 0x41 && r <= 0x5A) || (r >= 0xC0 && r <= 0xD6) || (r >= 0xD8 && r <= 0xDE) { return r + 32 }
+    if r >= 0x100 && r <= 0x137 && r != 0x130 && r % 2 == 0 { return r + 1 }
+    if (r >= 0x139 && r <= 0x148 && r % 2 == 1) || (r >= 0x14A && r <= 0x177 && r % 2 == 0) { return r + 1 }
+    if r == 0x178 { return 0xFF }
+    if r >= 0x179 && r <= 0x17E && r % 2 == 1 { return r + 1 }
+    if r == 0x386 { return 0x3AC }
+    if r >= 0x388 && r <= 0x38A { return r + 37 }
+    if r == 0x38C { return 0x3CC }
+    if r >= 0x38E && r <= 0x38F { return r + 63 }
+    if (r >= 0x391 && r <= 0x3A1) || (r >= 0x3A3 && r <= 0x3AB) { return r + 32 }
+    if r == 0x3CF { return 0x3D7 }
+    if r >= 0x400 && r <= 0x40F { return r + 80 }
+    if (r >= 0x410 && r <= 0x42F) || (r >= 0xFF21 && r <= 0xFF3A) { return r + 32 }
+    return r
+}
+
+// ------------------------------------------------------------ paths, text
+
+// Rust's Path::parent and Path::file_name as eza uses them: "." components
+// are dropped except a leading one of a relative path; parent is a prefix
+// of p ("" for none), last is "/" for the root and "." for "".
+type PathSplit = value record { parent: str; last: str }
+
+fn splitPath(p: str): PathSplit {
+    let abs = len(p) > 0 && strByte(p, 0) == '/'
+    var bounds: []int = []   // start and end of each component
+    var i = 0
+    while i < len(p) {
+        while i < len(p) && strByte(p, i) == '/' { i += 1 }
+        if i == len(p) { break }
+        let start = i
+        while i < len(p) && strByte(p, i) != '/' { i += 1 }
+        if i - start != 1 || strByte(p, start) != '.' || (start == indexOfNot(p, '/') && !abs) {
+            append(mut &bounds, start)
+            append(mut &bounds, i)
+        }
+    }
+    let n = len(bounds)
+    if n == 0 { return PathSplit{parent: "", last: if abs { "/" } else { "." }} }
+    let parent = if n >= 4 { p[..bounds[n - 3]] } else if abs { "/" } else { "" }
+    return PathSplit{parent: parent, last: p[bounds[n - 2]..bounds[n - 1]]}
+}
+
+fn indexOfNot(s: str, c: byte): int {
+    var i = 0
+    while i < len(s) && strByte(s, i) == c { i += 1 }
+    return i
+}
+
+// eza's QuoteSpaces: a name with a space or a quote goes in quotes, double
+// ones when it has a single quote.
+fn quoteFor(s: str): str {
+    var needs = false
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c == '\'' { return "\"" }
+        if c == ' ' { needs = true }
+    }
+    return if needs { "'" } else { "" }
+}
+
+fn printable(c: byte): bool { return c >= ' ' && c != 127 }
+
+// A control character as eza escapes it in a name.
+fn escapeOf(c: byte): str {
+    return match c { '\t' { "\\t" } '\n' { "\\n" } '\r' { "\\r" } else { "\\u{" + strings.hex(int(c)) + "}" } }
+}
+
+// The columns a name takes once escaped and quoted.
+fn quotedWidth(s: str, quote: bool): int {
+    var w = if quote && quoteFor(s) != "" { 2 } else { 0 }
+    var i = 0
+    while i < len(s) {
+        let c = strByte(s, i)
+        if printable(c) && c < 0x80 {
+            w += 1
+            i += 1
+        } else if c < 0x80 {
+            w += len(escapeOf(c))
+            i += 1
+        } else {
+            let d = strings.decodeAt(s, i)
+            w += if d.ok { strings.runeWidth(d.rune) } else { 1 }
+            i += d.size
+        }
+    }
+    return w
+}
+
+// Rust's Debug form of a string (path: of a Path, which also escapes ').
+fn debugText(s: str, path: bool): str {
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        match c {
+            0 { b.add("\\0") }
+            '"' { b.add("\\\"") }
+            '\\' { b.add("\\\\") }
+            '\'' { b.add(if path { "\\'" } else { "'" }) }
+            else { if printable(c) { b.addByte(c) } else { b.add(escapeOf(c)) } }
+        }
+    }
+    return b.toStr()
+}
+
+// Rust's io::Error text.
+fn osError(errno: int): str { return io.errorText(errno) + " (os error " + errno.toStr() + ")" }
+
+// ------------------------------------------------------------------- colour
+
+// A style as nu-ansi-term keeps it: attributes (bit k is SGR ATTRS[k]) and a
+// background and foreground colour, 0 for none, else BASIC | code,
+// FIXED | n or RGB | rrggbb.
+type Style = value record { attrs: int; fg: int; bg: int }
+
+fn (a: Style) eq(b: &Style): bool { return a.attrs == b.attrs && a.fg == b.fg && a.bg == b.bg }
+
+fn (a: Style) isPlain(): bool { return a.attrs == 0 && a.fg == 0 && a.bg == 0 }
+
+const PLAIN: Style = Style{attrs: 0, fg: 0, bg: 0}
+const ATTRS: []str = ["1", "2", "3", "4", "5", "7", "8", "9"]
+const BASIC: int = 0x1000000
+const FIXED: int = 0x2000000
+const RGB: int = 0x3000000
+
+// Theme slots.
+const SC_NORMAL = 0
+const SC_DIR = 1
+const SC_LNK = 2
+const SC_PIPE = 3
+const SC_BLOCK = 4
+const SC_CHAR = 5
+const SC_SOCK = 6
+const SC_SPECIAL = 7
+const SC_EXE = 8
+const SC_PUNCT = 10
+const SC_SYMLINK_PATH = 11
+const SC_CONTROL = 12
+const SC_BROKEN = 13
+const SC_BROKEN_FILE = 14
+const SC_BROKEN_CONTROL = 15
+const SC_CRYPTO = 24
+const SC_TEMP = 27
+const SC_BUILD = 29
+
+// eza 0.23.3's default theme (src/theme/default_theme.rs) by slot, as SGR
+// parameters: normal, directory, symlink, pipe, block and character
+// device, socket, special, executable, mount point, punctuation, symlink
+// path, control character, broken link, its path and its controls, four
+// unused slots, then the file types: image, video, music, lossless, crypto,
+// document, compressed, temporary, compiled, build, source.
+const THEME: []str = ["", "1;34", "36", "33", "1;33", "1;33", "1;31", "33", "1;32", "1;4;34", "1;90", "36", "31",
+    "31", "4;31", "4;31", "", "", "", "", "35", "1;35", "36", "1;36", "1;32", "32", "31", "2", "33", "1;4;33", "1;33"]
+
+// The file types by extension (src/info/filetype.rs), slot first; an
+// extension takes the first type that lists it.
+type Types = value record { slot: int; words: str }
+
+const EXT_TYPES: []Types = [
+    Types{slot: 20, words: "arw avif bmp cbr cbz cr2 dvi eps fodg gif heic heif ico j2c j2k jfi jfif jif jp2 jpe jpeg jpf jpg jpx jxl kra krz nef odg orf pbm pgm png pnm ppm ps psd pxm qoi raw svg tif tiff webp xcf xpm"},
+    Types{slot: 21, words: "avi flv h264 heics m2ts m2v m4v mkv mov mp4 mpeg mpg ogm ogv video vob webm wmv"},
+    Types{slot: 22, words: "aac m4a mka mp2 mp3 ogg opus wma"},
+    Types{slot: 23, words: "aif aifc aiff alac ape flac pcm wav wv"},
+    Types{slot: 24, words: "age asc cer crt csr gpg kbx md5 p12 pem pfx pgp pub sha1 sha224 sha256 sha384 sha512 sig signature"},
+    Types{slot: 25, words: "djvu doc docx eml fodp fods fodt fotd gdoc key keynote numbers odp ods odt pages pdf ppt pptx rtf xls xlsm xlsx"},
+    Types{slot: 26, words: "7z ar arj br bz bz2 bz3 cpio deb dmg gz iso lz lz4 lzh lzma lzo phar qcow qcow2 rar rpm tar taz tbz tbz2 tc tgz tlz txz tz vdi vhd vhdx vmdk xz z zip zst"},
+    Types{slot: 27, words: "bak bk bkp crdownload download fcbak fcstd1 fdmdownload part swn swo swp tmp"},
+    Types{slot: 28, words: "a bundle class cma cmi cmo cmx dll dylib elc elf ko lib o obj pyc pyd pyo so zwc"},
+    Types{slot: 29, words: "ninja"},
+    Types{slot: 30, words: "applescript as asa awk c c++ c++m cabal cc ccm clj cp cpp cppm cr cs css csx cu cxx cxxm cypher d dart di dpr el elm erl ex exs f f90 fcmacro fcscript fnl for fs fsh fsi fsx gd go gradle groovy gvy h h++ hc hh hpp hs htc hxx inc inl ino ipynb ixx java jl js jsx kt kts kusto less lhs lisp ltx lua m malloy matlab ml mli mn nb p pas php pl pm pod pp prql ps1 psd1 psm1 purs py r rb rq rs sass scad scala scm scss sld sql ss swift tcl tex ts v vb vsh zig"}
+]
+
+const BUILD_NAMES = "BUILD BUILD.bazel Brewfile CMakeLists.txt Cargo.toml Containerfile Dockerfile Earthfile GNUmakefile Gemfile Gruntfile.coffee Gruntfile.js Justfile Makefile PKGBUILD Pipfile Podfile Procfile Rakefile RoboFile.php SConstruct Vagrantfile WORKSPACE bsconfig.json build.gradle build.sbt build.xml composer.json configure flake.nix jsconfig.json justfile makefile meson.build mix.exs package.json pom.xml pyproject.toml tsconfig.json webpack.config.cjs webpack.config.js"
+const CRYPTO_NAMES = "id_dsa id_ecdsa id_ecdsa_sk id_ed25519 id_ed25519_sk id_rsa"
+
+// A `*.key` colour from LS_COLORS or EZA_COLORS: an extension, or with a dot
+// in it a literal suffix.
+type Pattern = value record { key: str; dotted: bool; style: Style }
+
+type Palette = record {
+    styles: []Style
+    patterns: []Pattern
+    types: bool             // the file-type colours apply (not EZA_COLORS=reset)
+    exts: Map[str, int]     // extension -> slot
+    names: Map[str, int]    // file name -> slot
+}
+
+// The theme, with LS_COLORS and then EZA_COLORS (or EXA_COLORS) applied.
+fn palette(): Palette {
+    var p = Palette{styles: [], patterns: [], types: true, exts: newMap(), names: newMap()}
+    for t in THEME { append(mut &p.styles, parseStyle(t)) }
+    for t in EXT_TYPES {
+        for w in split(t.words, ' ') {
+            if !p.exts.has(&w) { p.exts.put(w, t.slot) }
+        }
+    }
+    for w in split(BUILD_NAMES, ' ') { p.names.put(w, SC_BUILD) }
+    for w in split(CRYPTO_NAMES, ' ') { p.names.put(w, SC_CRYPTO) }
+    match os.env("LS_COLORS") { Some(v) { p.apply(v) } None {} }
+    let eza = match os.env("EZA_COLORS") { Some(v) { Some(v) } None { os.env("EXA_COLORS") } }
+    match eza {
+        Some(v) {
+            if v == "reset" || startsWith(v, "reset:") { p.types = false }
+            p.apply(v)
+        }
+        None {}
+    }
+    return p
+}
+
+// The pairs of an LS_COLORS-style list this build knows: di, ln, ex, fi and
+// *.ext (not real globs); other keys are ignored.
+fn (p: mut &Palette) apply(list: str) {
+    for tok in split(list, ':') {
+        let eq = indexOf(tok, "=", 0)
+        if eq <= 0 || eq + 1 >= len(tok) || indexOf(tok, "=", eq + 1) >= 0 { continue }
+        let key = tok[..eq]
+        let style = parseStyle(tok[eq + 1..])
+        match key {
+            "di" { p.styles[SC_DIR] = style }
+            "ln" { p.styles[SC_LNK] = style }
+            "ex" { p.styles[SC_EXE] = style }
+            "fi" { p.styles[SC_NORMAL] = style }
+            else {
+                if startsWith(key, "*.") && !hasAny(key[2..], "?*[]") {
+                    append(mut &p.patterns, Pattern{key: key[2..], dotted: contains(key[2..], "."), style: style})
+                }
+            }
+        }
+    }
+}
+
+fn hasAny(s: str, set: str): bool {
+    for i in 0..len(set) {
+        if indexOf(s, set[i..i + 1], 0) >= 0 { return true }
+    }
+    return false
+}
+
+// eza's Pair::to_style: SGR parameters with leading zeros trimmed; unknown
+// ones are ignored.
+fn parseStyle(value: str): Style {
+    var s = PLAIN
+    let parts = split(value, ';')
+    var i = 0
+    while i < len(parts) {
+        let t = parts[i][indexOfNot(parts[i], '0')..]
+        let n = if t != "" && len(t) <= 3 && indexOfNotDigit(t) == len(t) { parseInt(t).unwrap() } else { -1 }
+        let bit = match n { 1 { 1 } 2 { 2 } 3 { 4 } 4 { 8 } 5 { 16 } 7 { 32 } 8 { 64 } 9 { 128 } else { 0 } }
+        s.attrs = s.attrs | bit
+        if (n >= 30 && n <= 37) || (n >= 90 && n <= 97) { s.fg = BASIC | n }
+        if (n >= 40 && n <= 47) || (n >= 100 && n <= 107) { s.bg = BASIC | n }
+        if n == 38 || n == 48 {
+            // 38;5;n is a fixed colour, 38;2;r;g;b an RGB one (48: background)
+            var c = -1
+            if i + 2 < len(parts) && parts[i + 1] == "5" {
+                let v = parseU8(parts[i + 2])
+                if v >= 0 { c = FIXED | v }
+                i += 2
+            } else if i + 1 < len(parts) && parts[i + 1] == "2" {
+                let r = if i + 2 < len(parts) { parseU8(parts[i + 2]) } else { -1 }
+                let g = if i + 3 < len(parts) { parseU8(parts[i + 3]) } else { -1 }
+                let b = if i + 4 < len(parts) { parseU8(parts[i + 4]) } else { -1 }
+                if r >= 0 && g >= 0 && b >= 0 { c = RGB | r << 16 | g << 8 | b }
+                i = min(i + 4, len(parts) - 1)
+            } else if i + 1 < len(parts) && parts[i + 1] == "5" {
+                i += 1
+            }
+            if c >= 0 {
+                if n == 38 { s.fg = c } else { s.bg = c }
+            }
+        }
+        i += 1
+    }
+    return s
+}
+
+fn indexOfNotDigit(s: str): int {
+    var i = 0
+    while i < len(s) && isDigit(strByte(s, i)) { i += 1 }
+    return i
+}
+
+// Rust's u8::from_str, or -1.
+fn parseU8(t: str): int {
+    let d = if startsWith(t, "+") { t[1..] } else { t }
+    if d == "" || indexOfNotDigit(d) != len(d) { return -1 }
+    var v = 0
+    for i in 0..len(d) {
+        v = v * 10 + int(strByte(d, i)) - 48
+        if v > 255 { return -1 }
+    }
+    return v
+}
+
+// The style of a regular file's name: executable, an LS_COLORS pattern (the
+// last that matches), then its type.
+fn (p: &Palette) fileStyle(name: str, mode: int): Style {
+    if mode & 0x40 != 0 { return p.styles[SC_EXE] }
+    let dot = strings.lastIndexOf(name, ".")
+    var i = len(p.patterns) - 1
+    while i >= 0 {
+        let k = p.patterns[i].key
+        if (p.patterns[i].dotted && len(name) > len(k) && strByte(name, len(name) - len(k) - 1) == '.' && endsWith(name, k)) ||
+            (!p.patterns[i].dotted && dot >= 0 && name[dot + 1..] == k) {
+            return p.patterns[i].style
+        }
+        i -= 1
+    }
+    return p.styles[p.typeOf(name, dot)]
+}
+
+fn (p: &Palette) typeOf(name: str, dot: int): int {
+    if !p.types { return SC_NORMAL }
+    if strings.toLower(name[..min(6, len(name))]) == "readme" { return SC_BUILD }
+    match p.names.get(&name) { Some(s) { return s } None {} }
+    if dot >= 0 {
+        match p.exts.get(&strings.toLower(name[dot + 1..])) { Some(s) { return s } None {} }
+    }
+    if endsWith(name, "~") || (startsWith(name, "#") && endsWith(name, "#")) { return SC_TEMP }
+    return SC_NORMAL
+}
+
+// The SGR sequence that sets s (nu-ansi-term's prefix order: attributes,
+// background, foreground); "" for plain.
+fn sgr(s: Style): str {
+    if s.isPlain() { return "" }
+    var parts: []str = []
+    for k in 0..8 {
+        if s.attrs & 1 << k != 0 { append(mut &parts, ATTRS[k]) }
+    }
+    if s.bg != 0 { append(mut &parts, colourCode(s.bg, "48")) }
+    if s.fg != 0 { append(mut &parts, colourCode(s.fg, "38")) }
+    return "\x1b[" + strings.join(&parts, ";") + "m"
+}
+
+fn colourCode(c: int, high: str): str {
+    let v = c & 0xFFFFFF
+    return match c & ~0xFFFFFF {
+        BASIC { v.toStr() }
+        FIXED { high + ";5;" + v.toStr() }
+        else { high + ";2;" + (v >> 16).toStr() + ";" + (v >> 8 & 255).toStr() + ";" + (v & 255).toStr() }
+    }
+}
+
+// ----------------------------------------------------------------- painting
+
+type Eza = record {
+    o: Opts
+    pal: Palette
+    w: io.Writer
+    open: bool     // a run of styled pieces has begun
+    prev: Style    // the style of the run's last piece
+}
+
+// Writes text in style s, as part of the current run. With colour on, the
+// escape before it is nu-ansi-term's difference from the previous piece: a
+// reset when an attribute or colour goes away, else only what is added.
+fn (z: mut &Eza) put(s: Style, text: str) {
+    if z.o.colour {
+        if !z.open {
+            z.w.write(sgr(s))
+            z.open = true
+        } else if s != z.prev {
+            let p = z.prev
+            if p.attrs & ~s.attrs != 0 || (p.fg != 0 && s.fg == 0) || (p.bg != 0 && s.bg == 0) {
+                z.w.write("\x1b[0m" + sgr(s))
+            } else {
+                z.w.write(sgr(Style{attrs: s.attrs ^ p.attrs, fg: if s.fg != p.fg { s.fg } else { 0 },
+                    bg: if s.bg != p.bg { s.bg } else { 0 }}))
+            }
+        }
+        z.prev = s
+    }
+    z.w.write(text)
+}
+
+fn (z: mut &Eza) plain(text: str) { z.put(PLAIN, text) }
+
+// Ends the run: a reset when its last piece is styled.
+fn (z: mut &Eza) endRun() {
+    if z.open && !z.prev.isPlain() { z.w.write("\x1b[0m") }
+    z.open = false
+}
+
+fn (z: mut &Eza) endLine() {
+    z.endRun()
+    z.w.write("\n")
+}
+
+fn (z: &Eza) slot(i: int): Style { return if z.o.colour { z.pal.styles[i] } else { PLAIN } }
+
+// The style of a file name by the file's kind (and for a regular file its
+// mode and name).
+fn (z: &Eza) nameStyle(k: Kind, mode: int, name: str): Style {
+    if !z.o.colour { return PLAIN }
+    if k == Kind.File { return z.pal.fileStyle(name, mode) }
+    return z.pal.styles[match k {
+        Kind.File { SC_NORMAL }
+        Kind.Dir { SC_DIR } Kind.Link { SC_LNK } Kind.Fifo { SC_PIPE } Kind.BlockDev { SC_BLOCK }
+        Kind.CharDev { SC_CHAR } Kind.Socket { SC_SOCK } Kind.Other { SC_SPECIAL }
+    }]
+}
+
+// s escaped (control characters in style bad) and quoted as eza does.
+fn (z: mut &Eza) escaped(good: Style, bad: Style, s: str, quote: bool) {
+    let q = if quote { quoteFor(s) } else { "" }
+    if q != "" { z.put(good, q) }
+    var i = 0
+    while i < len(s) {
+        let start = i
+        if printable(strByte(s, i)) {
+            while i < len(s) && printable(strByte(s, i)) { i += 1 }
+            z.put(good, s[start..i])
+        } else {
+            var esc = ""
+            while i < len(s) && !printable(strByte(s, i)) {
+                esc += escapeOf(strByte(s, i))
+                i += 1
+            }
+            z.put(bad, esc)
+        }
+    }
+    if q != "" { z.put(good, q) }
+}
+
+// The parent of an operand or link target, escaped as one name, then "/".
+fn (z: mut &Eza) parent(p: str) {
+    if p == "" { return }
+    if p != "/" { z.escaped(z.slot(SC_SYMLINK_PATH), z.slot(SC_CONTROL), p, z.o.quote) }
+    z.put(z.slot(SC_SYMLINK_PATH), "/")
+}
+
+// An entry's name: the operand with its parent, or the listed name. In a
+// grid a broken link's name is painted broken (there is no target).
+fn (z: mut &Eza) name(e: &Entry, at: &Where, grid: bool) {
+    var label = e.label
+    if at.single {
+        let sp = splitPath(at.dir)
+        z.parent(strings.lossy(sp.parent))
+        label = strings.lossy(sp.last)
+    }
+    let style = if grid && e.broken() { z.slot(SC_BROKEN) } else { z.nameStyle(e.kind, e.mode(), label) }
+    z.escaped(style, z.slot(SC_CONTROL), label, z.o.quote)
+}
+
+// A symlink's arrow and target, or the -F marker of anything else.
+fn (z: mut &Eza) target(e: &Entry) {
+    if e.kind != Kind.Link {
+        if z.o.classify { z.plain(marker(e.kind, e.mode())) }
+        return
+    }
+    match e.link {
+        Some(t) {
+            z.plain(" ")
+            match t.st {
+                Some(st) {
+                    z.put(z.slot(SC_PUNCT), "->")
+                    z.plain(" ")
+                    let sp = splitPath(t.raw)
+                    z.parent(strings.lossy(sp.parent))
+                    let name = strings.lossy(sp.last)
+                    z.escaped(z.nameStyle(st.kind(), st.mode, name), z.slot(SC_CONTROL), name, true)
+                    if z.o.classify { z.plain(marker(st.kind(), st.mode)) }
+                }
+                None {
+                    z.put(z.slot(SC_BROKEN), "->")
+                    z.plain(" ")
+                    z.escaped(z.slot(SC_BROKEN_FILE), z.slot(SC_BROKEN_CONTROL), strings.lossy(t.raw), z.o.quote)
+                }
+            }
+        }
+        None {}
+    }
+}
+
+// eza's -F marker: directory, executable, pipe, socket. Painting "" adds no
+// escape, as a run's pieces of equal style write none.
+fn marker(k: Kind, mode: int): str {
+    return match k {
+        Kind.Dir { "/" } Kind.File { if mode & 0x40 != 0 { "*" } else { "" } } Kind.Fifo { "|" } Kind.Socket { "=" }
+        else { "" }
+    }
+}
+
+// ------------------------------------------------------------- long view
+
+// The widths of the long columns over the rows shown.
+type Cols = value record { size: int; user: int; date: int }
+
+fn (c: mut &Cols) note(e: &Entry, o: &Opts) {
+    if !o.noSize { c.size = max(c.size, len(sizeText(e))) }
+    if o.numeric && !o.noUser { c.user = max(c.user, len(uid(e).toStr())) }
+    if !o.noTime { c.date = max(c.date, if timeKey(e) >= 0 { 16 } else { 1 }) }
+}
+
+fn sizeText(e: &Entry): str {
+    return match e.st { Some(s) { if s.kind() == Kind.File { s.size.toStr() } else { "-" } } None { "-" } }
+}
+
+fn uid(e: &Entry): int { return match e.st { Some(s) { s.uid } None { 0 } } }
+
+// The cells before the name: permissions, size, uid, date, each followed by
+// a space.
+fn (z: mut &Eza) cells(e: &Entry, c: &Cols) {
+    if !z.o.noPerms { z.plain(modeString(e.mode()) + " ") }
+    if !z.o.noSize {
+        let s = sizeText(e)
+        z.plain(spaces(c.size - len(s)) + s + " ")
+    }
+    if z.o.numeric && !z.o.noUser {
+        let u = uid(e).toStr()
+        z.plain(u + spaces(c.user - len(u)) + " ")
+    }
+    if !z.o.noTime {
+        let d = match e.st { Some(s) { if s.mtime >= 0 { longIso(s.mtime) } else { "-" } } None { "-" } }
+        z.plain(d + spaces(c.date - len(d)) + " ")
+    }
+}
+
+// The width of the cells (for an error row of a long tree).
+fn cellsWidth(o: &Opts, c: &Cols): int {
+    var w = 0
+    if !o.noPerms { w += 11 }
+    if !o.noSize { w += c.size + 1 }
+    if o.numeric && !o.noUser { w += c.user + 1 }
+    if !o.noTime { w += c.date + 1 }
+    return w
+}
+
+const RWX: []str = ["---", "--x", "-w-", "-wx", "r--", "r-x", "rw-", "rwx"]
+
+// eza's permissions: the type, then rwx for user, group and others, with
+// setuid, setgid and sticky shown in the x places.
+fn modeString(m: int): str {
+    let t = match m & 0xF000 {
+        0x1000 { "|" } 0x2000 { "c" } 0x4000 { "d" } 0x6000 { "b" } 0x8000 { "." } 0xA000 { "l" } 0xC000 { "s" }
+        else { "?" }
+    }
+    return t + rwx(m >> 6, m & 0x800 != 0, "s") + rwx(m >> 3, m & 0x400 != 0, "s") + rwx(m, m & 0x200 != 0, "t")
+}
+
+fn rwx(m: int, special: bool, s: str): str {
+    let p = RWX[m & 7]
+    if !special { return p }
+    return p[..2] + if m & 1 != 0 { s } else { strings.toUpper(s) }
+}
+
+// "2026-11-02 10:20" (UTC).
+fn longIso(sec: int): str {
+    let s = sec % 86400
+    return time.dateOf(sec).toStr() + " " + strings.zeroPad(s / 3600, 2) + ":" + strings.zeroPad(s / 60 % 60, 2)
+}
+
+const SPACES = "                                                                "
+
+fn spaces(n: int): str {
+    if n <= 0 { return "" }
+    return if n <= len(SPACES) { SPACES[..n] } else { repeat(" ", n) }
+}
+
+// ----------------------------------------------------------- lines, grid
+
+// One row of the lines, long or tree view (branch: the tree prefix).
+fn (z: mut &Eza) line(e: &Entry, at: &Where, c: &Cols, branch: str) {
+    if z.o.long { z.cells(e, c) }
+    if branch != "" { z.put(z.slot(SC_PUNCT), branch) }
+    z.name(e, at, false)
+    z.target(e)
+    z.endLine()
+}
+
+fn (z: mut &Eza) show(es: &[]Entry, ids: &[int], at: &Where) {
+    if z.o.grid {
+        z.grid(es, ids, at)
+        return
+    }
+    var c = Cols{size: 0, user: 0, date: 0}
+    for e in es { c.note(&e, &z.o) }
+    for i in ids { z.line(&es[i], at, &c, "") }
+}
+
+// A grid cell's marker: a link is "@" (a grid shows no targets).
+fn (z: &Eza) cellMarker(e: &Entry): str {
+    if !z.o.classify { return "" }
+    return if e.kind == Kind.Link { "@" } else { marker(e.kind, e.mode()) }
+}
+
+fn (z: &Eza) cellWidth(e: &Entry, at: &Where): int {
+    var w = if z.cellMarker(e) != "" { 1 } else { 0 }
+    if !at.single { return w + quotedWidth(e.label, z.o.quote) }
+    let sp = splitPath(at.dir)
+    if sp.parent != "" {
+        w += quotedWidth(strings.lossy(sp.parent), z.o.quote) + if sp.parent != "/" { 1 } else { 0 }
+    }
+    return w + quotedWidth(strings.lossy(sp.last), z.o.quote)
+}
+
+// uutils_term_grid 0.7's layout with two spaces between columns, top to
+// bottom (or across with -x); without a known width it is 80 columns.
+fn (z: mut &Eza) grid(es: &[]Entry, ids: &[int], at: &Where) {
+    let n = len(ids)
+    if n == 0 { return }
+    var ws: []int = []
+    for i in ids { append(mut &ws, z.cellWidth(&es[i], at)) }
+    let g = layout(&ws, match z.o.width { Some(w) { w } None { 80 } }, z.o.across)
+    for y in 0..g.rows {
+        for x in 0..g.cols {
+            let cur = if z.o.across { y * g.cols + x } else { y + g.rows * x }
+            if cur >= n { break }
+            z.name(&es[ids[cur]], at, true)
+            z.plain(z.cellMarker(&es[ids[cur]]))
+            z.endRun()
+            let next = if z.o.across { cur + 1 } else { cur + g.rows }
+            if x == g.cols - 1 || next >= n { break }
+            z.w.write(spaces(g.widths[x] - ws[cur] + 2))
+        }
+        z.w.write("\n")
+    }
+}
+
+type Grid = record { rows: int; cols: int; widths: []int }
+
+// The most columns that fit: start from what fits if every column were the
+// widest, then try more (ragged columns can be narrower); the last that
+// fits wins. A name wider than the screen gets one column.
+fn layout(ws: &[int], width: int, across: bool): Grid {
+    let n = len(ws)
+    var widest = 0
+    for w in ws { widest = max(widest, w) }
+    if n == 1 || widest + 2 > width { return Grid{rows: n, cols: 1, widths: [widest]} }
+    var cols = min(n, (width + 2) / (widest + 2))
+    if ceilDiv(n, cols) > 1 {
+        for more in (cols + 1)..n {
+            if (more - 1) * 2 > width { break }
+            var total = 0
+            for w in columnWidths(ws, ceilDiv(n, more), more, across) { total += w }
+            if total <= width - (more - 1) * 2 { cols = more }
+        }
+    }
+    return Grid{rows: ceilDiv(n, cols), cols: cols, widths: columnWidths(ws, ceilDiv(n, cols), cols, across)}
+}
+
+fn ceilDiv(a: int, b: int): int { return (a + b - 1) / b }
+
+fn columnWidths(ws: &[int], rows: int, cols: int, across: bool): []int {
+    var cw = array(cols, 0)
+    for i in 0..len(ws) {
+        let c = if across { i % cols } else { i / rows }
+        cw[c] = max(cw[c], ws[i])
+    }
+    return cw
+}
+
+// ---------------------------------------------------------------- tree view
+
+// A directory read for the tree: its entries in order, each with its own
+// entries (or the errno that stopped reading them).
+type Node = record { e: Entry; kids: []Node; err: int }
+
+const TEE = "\xE2\x94\x9C\xE2\x94\x80\xE2\x94\x80 "      // "├── "
+const CORNER = "\xE2\x94\x94\xE2\x94\x80\xE2\x94\x80 "   // "└── "
+const BAR = "\xE2\x94\x82   "                            // "│   "
+
+fn (z: &Eza) tooDeep(depth: int): bool {
+    return match z.o.level { Some(l) { l <= depth } None { false } }
+}
+
+// The entries of directory path at depth, and below them their own as far
+// as -L allows. Links are not followed.
+fn (z: &Eza) load(path: str, depth: int): Result[[]Node, int] {
+    let read = readDir(path, &z.o, true)
+    if read.isErr() { return Err(read.err().unwrap().errno) }
+    var es = read.unwrap()
+    let at = listing(path)
+    prepare(mut &es, &at, &z.o)
+    var nodes: []Node = []
+    for i in order(&es, &at, &z.o, true) {
+        var n = Node{e: es[i], kids: [], err: 0}
+        if n.e.kind == Kind.Dir && !z.tooDeep(depth) {
+            match z.load(fs.join(path, n.e.name), depth + 1) {
+                Ok(kids) { n.kids = kids }
+                Err(errno) { n.err = errno }
+            }
+        }
+        append(mut &nodes, n)
+    }
+    return Ok(nodes)
+}
+
+fn (c: mut &Cols) noteAll(nodes: &[]Node, o: &Opts) {
+    for n in nodes {
+        c.note(&n.e, o)
+        c.noteAll(&n.kids, o)
+    }
+}
+
+// The operand, then everything under it. With -f a directory operand shows
+// nothing (eza drops it from the files to show).
+fn (z: mut &Eza) tree(operand: str, st: fs.Stat) {
+    if z.o.onlyFiles && st.isDir() { return }
+    let at = Where{single: true, dir: operand, base: splitPath(operand).parent}
+    var root = [entry(operand, st.kind(), 0)]
+    prepare(mut &root, &at, &z.o)
+    var kids: []Node = []
+    var err = 0
+    if st.isDir() && !z.tooDeep(0) {
+        match z.load(operand, 1) { Ok(k) { kids = k } Err(errno) { err = errno } }
+    }
+    var c = Cols{size: 0, user: 0, date: 0}
+    if z.o.long {
+        c.note(&root[0], &z.o)
+        c.noteAll(&kids, &z.o)
+    }
+    z.line(&root[0], &at, &c, "")
+    z.branches(&kids, err, operand, "", &c)
+}
+
+fn (z: mut &Eza) branches(nodes: &[]Node, err: int, dir: str, indent: str, c: &Cols) {
+    if err != 0 {
+        if z.o.long { z.plain(spaces(cellsWidth(&z.o, c))) }
+        z.put(z.slot(SC_PUNCT), indent + CORNER)
+        z.put(z.slot(SC_BROKEN), "<" + osError(err) + ">")
+        z.endLine()
+        return
+    }
+    let at = listing(dir)
+    for k in 0..len(nodes) {
+        let last = k == len(nodes) - 1
+        z.line(&nodes[k].e, &at, c, indent + if last { CORNER } else { TEE })
+        z.branches(&nodes[k].kids, nodes[k].err, fs.join(dir, nodes[k].e.name), indent + if last { "    " } else { BAR }, c)
+    }
+}
+
+// -------------------------------------------------------------------- main
+
+const HELP: []str = [
+    "Usage:",
+    "  eza [options] [--] [PATH]",
+    "  eza -l --bytes --time-style=long-iso (-n | --no-user) [options] [--] [PATH]",
+    "",
+    "obo eza is a partial behavioural reimplementation of eza 0.23.3,",
+    "not a drop-in replacement. It lists one PATH (default \".\") and",
+    "implements only the options below. Options outside this subset are",
+    "rejected, never silently accepted.",
+    "",
+    "META OPTIONS",
+    "  -?, --help                 show this help and exit",
+    "",
+    "DISPLAY OPTIONS",
+    "  -1, --oneline              display one entry per line",
+    "  -l, --long                 restricted long view (see LONG VIEW)",
+    "  -G, --grid                 display entries as a grid",
+    "  -x, --across               fill grid rows left to right",
+    "  -T, --tree                 recurse into directories as a tree",
+    "  -L, --level DEPTH          limit tree depth (used only with -T)",
+    "  -w, --width COLS           set screen width in columns (0 = automatic)",
+    "  -F, --classify[=WHEN]      markers: always, auto/automatic, never",
+    "  --color, --colour[=WHEN]   colour: always, auto/automatic, never",
+    "  --icons[=WHEN]             auto/automatic/never accepted; no icons drawn",
+    "  --no-quotes                do not quote file names containing spaces",
+    "",
+    "FILTERING AND SORTING OPTIONS",
+    "  -a, --all                  show dot files; twice also adds \".\" and \"..\"",
+    "  -A, --almost-all           show dot files without \".\" and \"..\"",
+    "  -d, --treat-dirs-as-files, --list-dirs",
+    "                             list a directory operand as one entry",
+    "  -D, --only-dirs            list directories only",
+    "  -f, --only-files           list regular files only",
+    "  -r, --reverse              reverse the sort order",
+    "  -s, --sort FIELD           name/filename (default), Name/Filename,",
+    "                             size/filesize, extension/ext, Extension/Ext,",
+    "                             modified/date/time/mod/new/newest, type",
+    "                             Other eza sort fields are rejected.",
+    "  --group-directories-first  list directories before other entries",
+    "  --group-directories-last   list directories after other entries",
+    "",
+    "LONG VIEW OPTIONS",
+    "  The working long form in this build is:",
+    "    eza -l --bytes --time-style=long-iso -n PATH",
+    "    eza -l --bytes --time-style=long-iso --no-user PATH",
+    "  It prints permissions, a raw decimal byte size, user or numeric uid,",
+    "  a long-iso date, and the name. Plain \"eza -l\" is not supported.",
+    "  Human-readable sizes are NOT implemented: eza's default 1.0k/1.0M",
+    "  format and -b/--binary are unsupported. -h/--header is also",
+    "  unsupported. Those options are rejected, not silently accepted.",
+    "  -B, --bytes                show raw byte sizes (required with -l)",
+    "  -n, --numeric              show numeric user ids",
+    "  --no-user                  omit the user column",
+    "  --no-permissions           omit the permissions column",
+    "  --no-filesize              omit the size column",
+    "  --no-time                  omit the date column",
+    "  --time-style STYLE         long-iso with -l; default/long-iso otherwise",
+    "",
+    "EXAMPLES",
+    "  eza                        list the current directory",
+    "  eza -1 PATH                one entry per line",
+    "  eza -a PATH                include dot files",
+    "  eza -T -L 2 PATH           tree view to depth 2",
+    "  eza --sort=modified -r PATH",
+    "                             newest modification time first",
+    "  eza -l --bytes --time-style=long-iso --no-user PATH",
+    "                             the supported long view",
+    "",
+    "NOTES",
+    "  * At most one operand is supported; more is a usage error.",
+    "  * Zero operands mean \".\"; eza's stdin file-name mode is not supported.",
+    "  * -R, --follow-symlinks, --dereference, --absolute, -I, git options,",
+    "    --hyperlink, --stdin, -i, -H, -g, -b, -h, -t, -u, -U, --total-size,",
+    "    --octal-permissions and --context are among the rejected options.",
+    "  * --help wins over operands and supported options once argv parses;",
+    "    unknown options and missing values are still errors.",
+    "  * Exit status: 0 success, 1 write error, 2 path error, 3 usage error."
+]
+
+fn written(w: mut &io.Writer): Result[Unit, Fail] {
+    return match w.flush() { Ok(_) { Ok(Unit{}) } Err(e) { Err(Fail{code: 1, msg: osError(e.errno)}) } }
+}
+
+fn run(): Result[Unit, Fail] {
+    let cmd = try parse(&os.arguments())
+    for x in cmd.opts {
+        if x.long == "help" {
+            var w = io.stdout()
+            for l in HELP { w.writeln(l) }
+            return written(mut &w)
+        }
+    }
+    let o = try deduce(&cmd.opts)
+    if len(cmd.operands) > 1 { return Err(usage("this build supports at most one operand")) }
+    let operand = if len(cmd.operands) == 1 { cmd.operands[0] } else { "." }
+    let lst = fs.lstat(operand)
+    if lst.isErr() {
+        return Err(Fail{code: 2, msg: "\"" + debugText(operand, true) + "\": " + osError(lst.err().unwrap().errno)})
+    }
+    let st = lst.unwrap()
+    var z = Eza{o: o, pal: if o.colour { palette() } else { Palette{styles: [], patterns: [], types: false,
+        exts: newMap(), names: newMap()} }, w: io.stdout(), open: false, prev: PLAIN}
+    let toDir = st.isDir() || (st.isLink() && match fs.stat(operand) { Ok(t) { t.isDir() } Err(_) { false } })
+    if o.tree {
+        z.tree(operand, st)
+    } else if toDir && !o.dirsAsFiles {
+        match readDir(operand, &o, false) {
+            Ok(found) {
+                var es = found
+                let at = listing(operand)
+                prepare(mut &es, &at, &o)
+                z.show(&es, &order(&es, &at, &o, false), &at)
+            }
+            Err(e) {
+                if e.errno == 13 {
+                    eprintln("Permission denied: " + operand + " - code: 13")
+                    eprintln("")
+                    eprintln("Skipped 1 directories due to permission denied: ")
+                    eprintln("  " + operand)
+                } else {
+                    eprintln(operand + ": " + osError(e.errno))
+                }
+            }
+        }
+    } else {
+        let at = Where{single: true, dir: operand, base: splitPath(operand).parent}
+        var es = [entry(operand, st.kind(), 0)]
+        prepare(mut &es, &at, &o)
+        z.show(&es, &[0], &at)
+    }
+    return written(mut &z.w)
+}
+
+fn main() {
+    match run() {
+        Ok(_) {}
+        Err(f) {
+            eprintln(f.msg)
+            exit(f.code)
+        }
+    }
+}
