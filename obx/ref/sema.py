@@ -471,6 +471,10 @@ class Program:
     def check_targs(self, targs, tparams, mod, where):
         env = dict(zip(tparams, targs))
         for p, t in zip(tparams, targs):
+            if t in (VOID, NEVER):      # SPEC 6.1: written or inferred (from a function's result)
+                what = 'never' if t == NEVER else 'inferred as no result (nothing)'
+                raise CompileError(f"type parameter {p.name} cannot be {what}: never and no result are not "
+                                   "types, so they cannot be type arguments", where)
             if t[0] in ('ref', 'slice', 'clo'):
                 raise CompileError(f"a borrow type ({tstr(t)}) cannot be a type argument (type parameter "
                                    f"{p.name}): borrows are second class", where)
@@ -584,8 +588,8 @@ class Program:
                 raise CompileError(f"parameter {n} is declared twice", w)
             names.add(n)
             t = self.resolve_type(pt, mod, env, 'param', w)
-            if isvar and t[0] in ('ref', 'slice'):
-                raise CompileError(f"var parameter {n} cannot be a borrow", w)
+            if isvar and t[0] in ('ref', 'slice', 'clo'):
+                raise CompileError(f"var parameter {n} cannot be a borrow or a closure", w)
             fd.params.append((n, t, isvar, w))
         if a.ret:
             fd.ret = self.resolve_type(a.ret, mod, env, 'ret')

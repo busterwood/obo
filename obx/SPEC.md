@@ -387,6 +387,8 @@ fn (Decimal) parse(s: str): Result[Decimal, str] { ... }
   `never`) or a loop with no `break`. A call to a `never` function ends its
   path like `return` (section 8 and the joins of 9.1). `never` may appear only
   as a result type.
+- `var` on a borrow or closure parameter (`&T`, `&[T]`, `&fn()`) is an error:
+  a borrow is never rebound.
 
 ### 5.4 Interfaces
 
@@ -413,6 +415,11 @@ Satisfaction is structural: there is no `impl` declaration.
 Functions and types take type parameters: `fn max[T: Ord + copy](a: T, b: T): T`,
 `type Map[K: Eq + Hash, V] = record { ... }`. A constraint is an interface,
 possibly generic (`T: Into[str]`), or `copy`.
+
+A type argument is a type: `never` and "no result" are not, so neither can be
+a type argument, written or inferred (`call(fn(): never { exit(3) })` with
+`fn call[R](f: &fn(): R): R` is an error, and so is `call(hi)` with a `hi`
+that returns nothing).
 
 ### 6.2 Checking at the definition
 

@@ -1,4 +1,5 @@
-// expect: 0
+// Spec decision M2: never cannot be a type argument, written or inferred.
+// error: never
 type Box[T] = record { xs: []T }
 fn mk[T](f: &fn(): T): Box[T] { return Box{xs: []} }
 fn main() {
