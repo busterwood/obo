@@ -23,7 +23,8 @@ typedef struct { void* fn; void* env; } obx_clo;     // a closure: code and envi
 typedef __int128 i128;
 typedef unsigned __int128 u128;
 
-static int64_t rt_live;
+static int64_t rt_live;             /* live objects, counted only when rt_check */
+static bool rt_check;               /* OBX_CHECK=1: a leak at exit stops the program (exit 5) */
 static int rt_argc;
 static char** rt_argv;
 static char rt_obuf[1 << 16];
@@ -45,13 +46,15 @@ __attribute__((noreturn)) static void rt_trap(int code, const char* msg, const c
     exit(code);
 }
 
+/* Not zeroed: every caller stores each byte it later reads (all the fields of a record or of the
+   variant built, every array element, a str's bytes and its NUL). */
 static void* rt_alloc(size_t n) {
-    void* p = calloc(1, n ? n : 1);
+    void* p = malloc(n ? n : 1);
     if (!p) rt_trap(2, "out of memory", "runtime");
-    rt_live++;
+    if (rt_check) rt_live++;
     return p;
 }
-static void rt_free(void* p) { free(p); rt_live--; }
+static void rt_free(void* p) { free(p); if (rt_check) rt_live--; }
 
 /* Drop actions: drop glue pushes the parts of a value instead of recursing (SPEC 9.4). */
 typedef void (*rt_dfn)(void*);
@@ -100,6 +103,8 @@ static void rt_init(int argc, char** argv) {
     stack_t ss = {0};
     struct sigaction sa;
     struct rlimit rl;
+    const char* c = getenv("OBX_CHECK");
+    rt_check = c && c[0] == '1';
     rt_argc = argc; rt_argv = argv;
     rt_stack_top = __builtin_frame_address(0);
     rt_stack_max = getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY ? rl.rlim_cur : (size_t)1 << 30;
@@ -113,8 +118,7 @@ static void rt_init(int argc, char** argv) {
 }
 static void rt_finish(void) {
     rt_flush();
-    const char* c = getenv("OBX_CHECK");
-    if (c && c[0] == '1' && rt_live != 0) {
+    if (rt_check && rt_live != 0) {
         fprintf(stderr, "obx: leak: %lld live objects at exit at runtime\n", (long long)rt_live);
         exit(5);
     }
@@ -137,6 +141,7 @@ static obx_str rt_str_new(int64_t len) {
     if (len < 0 || len > (int64_t)RT_STR_MAX) rt_trap(2, "string too long (4 GiB or more)", "runtime");
     obx_sblk* b = rt_alloc(sizeof(obx_sblk) + (size_t)len + 1);
     b->rc = 1;
+    b->data[len] = 0;
     return (obx_str){b, 0, (uint32_t)len};
 }
 static obx_str rt_str_of(const char* p, int64_t len) {
@@ -315,7 +320,7 @@ static void* rt_arr_push(obx_arr* a, size_t size) {
         int64_t nc = a->cap ? a->cap * 2 : 4;
         void* d = realloc(a->data, (size_t)nc * size);
         if (!d) rt_trap(2, "out of memory", "runtime");
-        if (!a->data) rt_live++;
+        if (!a->data && rt_check) rt_live++;
         a->data = d; a->cap = nc;
     }
     return (char*)a->data + (size_t)(a->len++) * size;
