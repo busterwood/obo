@@ -96,6 +96,8 @@ type Gen = record {
                                 // of calls, else INLINE_NODES + 1 (-1: not yet known)
     loops: int                  // the loops the code generator is in (the scan's depth)
     curFunc: int
+    aTaken: []bool              // per local: its address (or a member's) is taken
+    emptyS: int                 // an S_EMPTY node
     saved: []int                // the frame slots of the callee-saved registers the function uses
     frame: int
     maxFrame: int
@@ -131,7 +133,7 @@ fn newGen(u: ir.Ir): Gen {
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
-        loops: 0}
+        loops: 0, aTaken: [], emptyS: -1}
     g.a.peep = true
     for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
     for i in 0..len(g.u.funcs) {
@@ -150,7 +152,11 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.weight, 0)
         append(mut &g.bad, false)
         append(mut &g.seen, 0)
+        append(mut &g.aTaken, false)
     }
+    g.countUses()
+    g.simplify()
+    for i in 0..len(g.u.locals) { g.uses[i] = 0 }
     g.countUses()
     return g
 }
@@ -538,6 +544,227 @@ fn (g: mut &Gen) countUses() {
     }
     g.counting = false
     g.curFunc = -1
+}
+
+// ---------------------------------------------------------------- simplification of the IR
+//
+// The C the emitter writes computes && and || into bool variables with ifs and copies values
+// into temporaries, and the code generator works on the tree as it is. So before generation,
+// in every function body (inner blocks first):
+//
+// (1) `bool b = A; if (b) { b = V; }`, or `if (b) { bool c = V; b = c; }`, becomes
+//     `bool b = A && V` (with `if (!b)`, A || V). The same evaluation: V only when A is true
+//     (false), and b the value of the last evaluated. b and c are named nowhere else there.
+// (2) `T t = s;` where s is a local declared earlier in the same block, named nowhere after
+//     this, and whose address (or a member's) is never taken: t is s. Nothing can read s after
+//     t's declaration, so the one variable holds t's values.
+// (3) `T t = s;` of scalars whose addresses are never taken, where the statements of the block
+//     that name t (the next 8 at most) assign neither t nor s: t is s. Both hold the same value
+//     wherever t is named.
+//
+// The C code is unchanged; only the native code generator sees the result.
+
+fn (g: mut &Gen) simplify() {
+    append(mut &g.u.nodes, ir.Node{k: ir.S_EMPTY, ty: 0, line: 0, a: -1, b: -1, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+    g.emptyS = len(g.u.nodes) - 1
+    for f in 0..len(g.u.funcs) {
+        if g.u.funcs[f].body >= 0 { g.walk(g.u.funcs[f].body, 3, -1, -1) }
+    }
+    for f in 0..len(g.u.funcs) {
+        if g.u.funcs[f].body >= 0 { g.simpStmt(g.u.funcs[f].body) }
+    }
+}
+
+fn (g: mut &Gen) simpStmt(s: int) {
+    if s < 0 { return }
+    let n = g.u.nodes[s]
+    let k = n.k
+    if k == ir.S_BLOCK {
+        for j in 0..g.u.listLen(n.a) { g.simpStmt(g.u.listAt(n.a, j)) }
+        g.simpList(n.a)
+    } else if k == ir.S_IF {
+        g.simpStmt(n.b)
+        g.simpStmt(n.c)
+    } else if k == ir.S_WHILE || k == ir.S_SWITCH {
+        g.simpStmt(n.b)
+    } else if k == ir.S_FOR {
+        g.simpStmt(n.a)
+        g.simpStmt(n.d)
+    }
+}
+
+fn (g: mut &Gen) simpList(l: int) {
+    let cnt = g.u.listLen(l)
+    for j in 0..cnt {
+        let x = g.u.listAt(l, j)
+        if g.u.nk(x) != ir.S_DECL || g.u.nodes[x].b < 0 || g.u.nodes[x].c >= 0 { continue }
+        let b = g.u.nodes[x].a
+        if j + 1 < cnt && g.tk(g.u.locals[b].ty) == ir.TY_BOOL {
+            let v = g.boolFold(x, g.u.listAt(l, j + 1))
+            if v >= 0 {
+                g.u.nodes[x].b = v
+                g.u.items[l + 2 + j] = g.emptyS
+            }
+        }
+        if g.u.nk(g.u.nodes[x].b) == ir.E_LOCAL { g.merge(l, j) }
+    }
+    // without the statements dropped (so that the fused pairs of stmt are next to each other)
+    var n = 0
+    for j in 0..cnt {
+        let x = g.u.listAt(l, j)
+        if x != g.emptyS {
+            g.u.items[l + 1 + n] = x
+            n += 1
+        }
+    }
+    g.u.items[l] = n
+}
+
+// (1) for the declaration d of a bool b and the statement s after it: the new initializer of b,
+// or -1.
+fn (g: mut &Gen) boolFold(d: int, s: int): int {
+    let b = g.u.nodes[d].a
+    let sn = g.u.nodes[s]
+    if sn.k != ir.S_IF || sn.c >= 0 { return -1 }
+    var cond = sn.a
+    var isAnd = true
+    if g.u.nk(cond) == ir.E_LNOT {
+        cond = g.u.nodes[cond].a
+        isAnd = false
+    }
+    if g.u.nk(cond) != ir.E_LOCAL || g.u.nodes[cond].a != b { return -1 }
+    // the statements of the then part, without the empty ones
+    var xs: []int = []
+    if g.u.nk(sn.b) == ir.S_BLOCK {
+        let l = g.u.nodes[sn.b].a
+        for j in 0..g.u.listLen(l) {
+            if g.u.nk(g.u.listAt(l, j)) != ir.S_EMPTY { append(mut &xs, g.u.listAt(l, j)) }
+        }
+    } else {
+        append(mut &xs, sn.b)
+    }
+    if len(xs) == 0 || len(xs) > 2 { return -1 }
+    let last = xs[len(xs) - 1]
+    if g.u.nk(last) != ir.S_EXPR { return -1 }
+    let as1 = g.u.nodes[last].a
+    if g.u.nk(as1) != ir.E_ASSIGN { return -1 }
+    let lhs = g.u.nodes[as1].a
+    if g.u.nk(lhs) != ir.E_LOCAL || g.u.nodes[lhs].a != b { return -1 }
+    var v = g.u.nodes[as1].b
+    if len(xs) == 2 {
+        let dn = g.u.nodes[xs[0]]
+        if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 { return -1 }
+        if g.u.nk(v) != ir.E_LOCAL || g.u.nodes[v].a != dn.a || g.u.locals[dn.a].ty != g.u.locals[b].ty { return -1 }
+        v = dn.b
+    }
+    if g.walk(v, 0, b, -1) > 0 { return -1 }
+    let a = g.u.nodes[d].b
+    append(mut &g.u.nodes, ir.Node{k: if isAnd { ir.E_LAND } else { ir.E_LOR }, ty: g.u.locals[b].ty,
+        line: g.u.nodes[a].line, a: a, b: v, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+    return len(g.u.nodes) - 1
+}
+
+// (2) and (3) for the declaration `T t = s;`, item j of list l.
+fn (g: mut &Gen) merge(l: int, j: int) {
+    let cnt = g.u.listLen(l)
+    let x = g.u.listAt(l, j)
+    let t = g.u.nodes[x].a
+    let s = g.u.nodes[g.u.nodes[x].b].a
+    if t == s || g.u.locals[t].ty != g.u.locals[s].ty { return }
+    // (2): s's declaration in the 16 items before, and all its names from there to here
+    if !g.aTaken[s] {
+        var i = j - 1
+        while i >= 0 && j - i <= 16 {
+            let y = g.u.listAt(l, i)
+            if g.u.nk(y) == ir.S_DECL && g.u.nodes[y].a == s { break }
+            i -= 1
+        }
+        if i >= 0 && j - i <= 16 {
+            let y = g.u.listAt(l, i)
+            var named = 0
+            for m in i..j + 1 { named += g.walk(g.u.listAt(l, m), 0, s, -1) }
+            let total = g.uses[s] - (if g.u.nodes[y].b >= 0 { 1 } else { 0 })
+            if named == total {
+                g.rename(l, j, t, s, cnt)
+                return
+            }
+        }
+    }
+    // (3)
+    if !g.u.isScalar(g.u.locals[t].ty) || g.aTaken[s] || g.aTaken[t] { return }
+    var need = g.uses[t] - 1
+    var m = j + 1
+    while need > 0 && m < cnt && m <= j + 8 {
+        let y = g.u.listAt(l, m)
+        if g.walk(y, 1, s, -1) > 0 || g.walk(y, 1, t, -1) > 0 { return }
+        need -= g.walk(y, 0, t, -1)
+        m += 1
+    }
+    if need != 0 { return }
+    g.rename(l, j, t, s, m)
+}
+
+// Names s for t in items j+1 up to end of list l, and drops t's declaration (item j).
+fn (g: mut &Gen) rename(l: int, j: int, t: int, s: int, end: int) {
+    for m in j + 1..end { g.walk(g.u.listAt(l, m), 2, t, s) }
+    g.u.items[l + 1 + j] = g.emptyS
+    g.uses[s] += g.uses[t] - 1
+    g.uses[t] = 0
+}
+
+// Over the tree x: op 0 counts the names of local l; 1 counts its assignments and the taking
+// of its address; 2 renames it to local to; 3 marks the locals whose addresses (or members')
+// are taken (aTaken).
+fn (g: mut &Gen) walk(x: int, op: int, l: int, to: int): int {
+    if x < 0 { return 0 }
+    let n = g.u.nodes[x]
+    let k = n.k
+    if k == ir.E_LOCAL {
+        if n.a != l { return 0 }
+        if op == 2 { g.u.nodes[x].a = to }
+        return if op == 1 { 0 } else { 1 }
+    }
+    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_GLOBAL || k == ir.E_FUNC ||
+        k == ir.S_BREAK || k == ir.S_CONTINUE || k == ir.S_CASE || k == ir.S_DEFAULT || k == ir.S_EMPTY {
+        return 0
+    }
+    var hit = 0
+    if k == ir.E_ADDR || k == ir.E_DECAY {
+        var r = n.a
+        while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
+        if g.u.nk(r) == ir.E_LOCAL {
+            if op == 3 { g.aTaken[g.u.nodes[r].a] = true }
+            if op == 1 && g.u.nodes[r].a == l { hit = 1 }
+        }
+    } else if op == 1 && (k == ir.E_ASSIGN || k == ir.E_POSTINC) {
+        if g.u.nk(n.a) == ir.E_LOCAL && g.u.nodes[n.a].a == l { hit = 1 }
+    }
+    if k == ir.E_CALL { return hit + g.walk(n.a, op, l, to) + g.walkList(n.b, op, l, to) }
+    if k == ir.E_CLIT { return hit + g.walkList(n.b, op, l, to) }
+    if k == ir.S_BLOCK { return hit + g.walkList(n.a, op, l, to) }
+    if k == ir.S_DECL { return hit + g.walk(n.b, op, l, to) + g.walkList(n.c, op, l, to) }
+    if k == ir.S_FOR {
+        return hit + g.walk(n.a, op, l, to) + g.walk(n.b, op, l, to) + g.walk(n.c, op, l, to) + g.walk(n.d, op, l, to)
+    }
+    if k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_CAST || k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_LNOT ||
+        k == ir.E_POSTINC || k == ir.E_IENT || k == ir.S_EXPR || k == ir.S_RETURN || k == ir.E_ADDR || k == ir.E_DECAY {
+        return hit + g.walk(n.a, op, l, to)
+    }
+    if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD || k == ir.S_SWITCH ||
+        k == ir.S_WHILE {
+        return hit + g.walk(n.a, op, l, to) + g.walk(n.b, op, l, to)
+    }
+    if k == ir.E_COND || k == ir.S_IF {
+        return hit + g.walk(n.a, op, l, to) + g.walk(n.b, op, l, to) + g.walk(n.c, op, l, to)
+    }
+    g.fail(x, "unknown node kind")
+}
+
+fn (g: mut &Gen) walkList(l: int, op: int, loc: int, to: int): int {
+    if l < 0 { return 0 }
+    var hit = 0
+    for j in 0..g.u.listLen(l) { hit += g.walk(g.u.listAt(l, j), op, loc, to) }
+    return hit
 }
 
 fn loopWeight(depth: int): int {
