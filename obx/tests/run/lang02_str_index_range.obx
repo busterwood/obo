@@ -1,0 +1,9 @@
+// SPEC 4.1: an index outside the string stops the program with exit 3.
+// expect: h
+// exit: 3
+fn main() {
+    let s = "hi"
+    println(s[0..1])
+    var i = 2
+    println(int(s[i]))
+}

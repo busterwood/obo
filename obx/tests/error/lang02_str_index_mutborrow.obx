@@ -1,0 +1,7 @@
+// SPEC 4.1: s[i] cannot be borrowed mut.
+// error: a str is immutable
+fn f(b: mut &byte) { }
+fn main() {
+    var s = "hello"
+    f(mut &s[0])
+}

@@ -1426,7 +1426,10 @@ fn (c: mut &Checker) place(e: int): Val {
         }
         v = c.deref(v)
     }
-    if v.cat != CAT_PLACE { c.err(line, "cannot assign to a value that is not a place") }
+    if v.cat != CAT_PLACE {
+        c.strByteRO(e, v, line)
+        c.err(line, "cannot assign to a value that is not a place")
+    }
     c.selfInDrop(v, line)
     if v.gk == sema.D_CONST { c.err(line, "cannot assign to constant " + c.pg.consts[v.gi].name) }
     if v.gk < 0 {
@@ -2536,7 +2539,15 @@ fn (c: mut &Checker) xBorrow(e: int, exp: int): Val {
     if ek == sema.TK_REF { inner = c.pg.ta(exp) }
     if ek == sema.TK_SLICE && exp >= 0 { inner = c.pg.mkArr(c.pg.ta(exp)) }
     let v = c.expr(n.a, inner)
+    if m { c.strByteRO(n.a, v, n.line) }
     return c.borrow(v, m, n.line, false)
+}
+
+// s[i] on a str is a byte read, not a place (SPEC 7.4): it cannot be assigned or borrowed mut.
+fn (c: &Checker) strByteRO(e: int, v: Val, line: int) {
+    if c.kind(e) == sx.N_INDEX && startsWith(v.c, "rt_str_byte(") {
+        c.err(line, "a str is immutable: its bytes cannot be assigned or borrowed mut")
+    }
 }
 
 fn (c: mut &Checker) xUn(e: int, exp: int): Val {

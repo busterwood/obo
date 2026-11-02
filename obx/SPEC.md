@@ -169,7 +169,10 @@ copy type: copying a string never copies its bytes, and it is freed with its
 last copy. Its bytes are not required to be UTF-8. `s[a..b]` is the substring
 of bytes `a` to `b - 1`; it shares the bytes of `s` (no copy, no allocation)
 and is itself an ordinary `str`. `s[a..]` and `s[..b]` run to the end and from
-the start. Out-of-range bounds stop the program (exit 3). A string is at most
+the start. `s[i]` is the byte at index `i` (a `byte`), on an owned or
+borrowed `str`; it is a value, not a place, so it cannot be assigned or
+borrowed `mut` (a string is immutable). Out-of-range indices and bounds stop
+the program (exit 3). A string is at most
 4 GiB − 1 bytes long; making a longer one stops the program (exit 2).
 
 All primitive types are copy types.

@@ -1,0 +1,6 @@
+// SPEC 4.1: s[i] is a byte, not an int.
+// error: byte
+fn main() {
+    let s = "hello"
+    let n: int = s[0]
+}
