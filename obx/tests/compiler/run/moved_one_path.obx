@@ -1,7 +1,7 @@
-// error: 'n' is moved on one path but not another
-// line: 7
+// SPEC 9.1: moved on one path only: the path that skips the if drops it.
+// expect: 1
 type Node = record { v: int }
-fn eat(n: Node) {}
+fn eat(n: Node) { println(n.v) }
 fn main() {
     let n = Node{v: 1}
     if n.v > 0 { eat(n) }

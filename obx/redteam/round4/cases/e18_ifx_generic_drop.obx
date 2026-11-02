@@ -1,5 +1,7 @@
-// by design: as e17
-// error: moved on one path
+// SPEC 9.1 (lang batch): as e17; the path that keeps a drops it
+// expect: drop a
+// expect: b
+// expect: drop b
 type D = record { s: str }
 fn (d: mut &D) drop() { println("drop " + d.s) }
 fn pick[T](c: bool, a: T, b: T): T { return if c { a } else { b } }

@@ -1,0 +1,9 @@
+// SPEC 9.1: after the join the variable is moved; the message names the join.
+// error: moved on some paths of the if or match at line 7
+type D = record { v: int }
+fn take(d: D) { }
+fn main() {
+    let x = D{v: 1}
+    if x.v > 0 { take(x) }
+    println(x.v)
+}

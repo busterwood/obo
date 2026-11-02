@@ -607,8 +607,11 @@ let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" 
   integer literal branch takes the type of the others. A branch whose type is
   `never` (a call to a `never` function) takes the type of the others.
 - Ownership is as for the statements: moves are joined across the branches
-  (section 9.1), and a match binds, borrows and consumes its scrutinee as in
-  section 9.3.
+  (section 9.1; a variable one branch moves is dropped by the others), and a
+  match binds, borrows and consumes its scrutinee as in section 9.3.
+  Operands to the left of an if or match expression are evaluated (and copy
+  values copied, section 7.5) before it runs, so none of them reads a variable
+  it drops.
 - A branch or arm may be `return`, `return e`, `break` or `continue` as its
   whole body (not inside a larger expression, and not followed by
   statements): `let n = match r { Ok(v) { v } Err(e) { return Err(e) } }`. Its
@@ -680,9 +683,17 @@ it. The source then has no value until it is assigned again.
 - Only a whole local variable or by-value parameter can be moved out of.
   Moving out of a field, an element, a borrow or a global is an error; use
   `replace`, `swap` or `pop`.
-- The state of every variable must agree where paths join: after `if`/`else`,
-  after `match`, and at the end of a loop body (for the next iteration and for
-  the code after the loop). A variable moved on one path only is an error.
+- Where the paths of an `if` (with or without `else`), a `match`, or an `if` or
+  `match` expression join, a variable moved on some of the paths that reach the
+  join but not on others is dropped at the end of each path that did not move
+  it (after that path's own variables, and in an expression after its value is
+  taken), and is moved after the join: using it before assigning it again is an
+  error. There are no runtime drop flags. For a type with a `drop` method this
+  runs the drop earlier than the end of the scope, on those paths.
+- The state of every variable must agree at the end of a loop body (for the
+  next iteration) and where a loop's `break`s and its exit join: a variable
+  declared outside a loop and moved in one iteration but not assigned again
+  before the next is an error, as is one moved before some `break`s only.
 - Moves are not allowed inside `&&` and `||` operands or a `while` condition.
 
 ### 9.2 Drops
@@ -703,7 +714,7 @@ the start of the arm, before its body runs; an arm naming several variants, like
 `else`, drops the whole value there.
 
 A path that ends in `return`, `break`, `continue`, `panic` or `exit` does not
-take part in the join of section 9.1.
+take part in the join of section 9.1 (it drops nothing there).
 
 ### 9.4 Destructors
 

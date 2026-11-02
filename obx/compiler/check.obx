@@ -157,6 +157,7 @@ type Var = value record {
     broot: int      // the root of a borrow variable, or -1
     cap: int        // a closure's capture: the captured variable, or -1
     capmut: bool
+    pjoin: int      // the line of the if or match after which it was dropped on the paths that kept it, or 0
 }
 
 type Tmp = value record {
@@ -716,7 +717,7 @@ fn (c: mut &Checker) lookupAt(lvl: int, name: str, capture: bool): int {
 
 fn (c: mut &Checker) newVar(name: str, cn: str, t: int, mutable: bool, kind: int, line: int): int {
     append(mut &c.vars, Var{name: name, c: cn, t: t, mutable: mutable, kind: kind, line: line, moved: false,
-        broot: -1, cap: -1, capmut: false})
+        broot: -1, cap: -1, capmut: false, pjoin: 0})
     return len(c.vars) - 1
 }
 
@@ -891,7 +892,7 @@ fn (c: mut &Checker) consume(v: Val, line: int): str {
     if c.isCopy(v.t) { return c.dup(v.c, v.t) }
     if v.vvar >= 0 && !v.viaref && len(v.path) == 0 && c.pg.tk(c.vars[v.vvar].t) != sema.TK_REF {
         let vx = v.vvar
-        if c.vars[vx].moved { c.err(line, "'" + c.vars[vx].name + "' was moved and has no value here") }
+        if c.vars[vx].moved { c.movedErr(vx, line) }
         if len(c.cx.nomove) > 0 {
             c.err(line, "cannot move '" + c.vars[vx].name + "' " + c.cx.nomove[len(c.cx.nomove) - 1])
         }
@@ -1009,6 +1010,9 @@ fn (c: mut &Checker) effects(e: int, traps: bool): bool {
         let d = c.pg.lookup(c.cx.mod, n.s)
         if d.k == sema.D_CONST && c.pg.constValue(d.i).kind == sema.CK_FRAC { return true }
     }
+    // an if or match expression may drop a variable that one of its paths moves (SPEC 9.1): what
+    // comes before it reads that variable first
+    if (k == sx.N_IFX || k == sx.N_MATCHX) && c.namesOwned(e) { return true }
     match k {
         sx.N_BIN, sx.N_SUB, sx.N_IF, sx.N_IFX, sx.N_WHILE, sx.N_FOR {
             if k == sx.N_FOR { return c.effects(n.a, traps) || c.effects(n.b, traps) || c.effects(n.c, traps) }
@@ -1372,7 +1376,7 @@ fn (c: mut &Checker) sAssign(s: int) {
             if d.k != sema.D_GLOBAL { c.err(n.line, "unknown name '" + tn.s + "'") }
         } else if c.pg.tk(c.vars[vx].t) != sema.TK_REF {
             let vn = c.vars[vx].name
-            if c.vars[vx].cap >= 0 && c.vars[vx].moved { c.err(n.line, "'" + vn + "' was moved and has no value here") }
+            if c.vars[vx].cap >= 0 && c.vars[vx].moved { c.movedErr(vx, n.line) }
             if !c.vars[vx].mutable {
                 if c.vars[vx].kind == VK_PARAM {
                     c.err(n.line, "cannot assign to parameter '" + vn + "': declare it `var " + vn + "`")
@@ -1388,6 +1392,7 @@ fn (c: mut &Checker) sAssign(s: int) {
                 p.vvar = vx
                 c.store(p, cc, !c.vars[vx].moved)
                 c.vars[vx].moved = false
+                c.vars[vx].pjoin = 0
                 return
             }
         }
@@ -1409,7 +1414,7 @@ fn (c: mut &Checker) sAssign(s: int) {
         return
     }
     let p = c.place(tg)
-    if p.vvar >= 0 && c.vars[p.vvar].moved { c.err(n.line, "'" + c.vars[p.vvar].name + "' was moved and has no value here") }
+    if p.vvar >= 0 && c.vars[p.vvar].moved { c.movedErr(p.vvar, n.line) }
     let lv = c.before1(p, n.b)
     var fixed = tg
     while c.kind(fixed) == sx.N_FIELDX || c.kind(fixed) == sx.N_INDEX { fixed = c.nd(fixed).a }
@@ -1418,7 +1423,10 @@ fn (c: mut &Checker) sAssign(s: int) {
     let cc = c.consume(c.coerce(r, p.t, n.line, "the result"), n.line)
     let live = !(p.vvar >= 0 && c.vars[p.vvar].moved)
     c.store(p, cc, live)
-    if p.vvar >= 0 { c.vars[p.vvar].moved = false }
+    if p.vvar >= 0 {
+        c.vars[p.vvar].moved = false
+        c.vars[p.vvar].pjoin = 0
+    }
 }
 
 // Evaluate an assignment target as a mutable place.
@@ -1471,6 +1479,96 @@ fn (c: mut &Checker) cond(e: int): str {
     return cn
 }
 
+fn (c: &Checker) movedErr(vx: int, line: int): never {
+    var m = "'" + c.vars[vx].name + "' was moved and has no value here"
+    if c.vars[vx].pjoin > 0 {
+        m = m + " (it is moved on some paths of the if or match at line " + intToStr(c.vars[vx].pjoin) +
+            ", and dropped at the end of the others)"
+    }
+    c.err(line, m)
+}
+
+// SPEC 9.1: where the live paths of an if or match join, a variable moved on some of them but not
+// all is dropped at the end of each path that kept it, and is moved after the join (there are no
+// drop flags). snaps: the state at the end of each live path. Returns, per path, the variables it
+// drops (in declaration order; they are dropped last to first).
+fn (c: mut &Checker) joinMoves(snaps: &[][]int, line: int): [][]int {
+    var out: [][]int = []
+    for k in 0..len(snaps) { append(mut &out, []) }
+    if len(snaps) == 0 {
+        c.cx.dead = true
+        return out
+    }
+    var partial: []int = []
+    var i = 0
+    while i < len(snaps[0]) {
+        let v = snaps[0][i]
+        var any = false
+        var all = true
+        for k in 0..len(snaps) {
+            let st = snapGet(&snaps[k], v)
+            if st == 1 { any = true }
+            if st == 0 { all = false }
+        }
+        if any && !all {
+            append(mut &partial, v)
+            for k in 0..len(snaps) {
+                if snapGet(&snaps[k], v) == 0 { append(mut &out[k], v) }
+            }
+        }
+        i += 2
+    }
+    c.restore(&snaps[0])
+    for v in partial {
+        c.vars[v].moved = true
+        c.vars[v].pjoin = line
+    }
+    c.cx.dead = false
+    return out
+}
+
+// The C lines that drop the variables vs (last to first) at indentation ind.
+fn (c: mut &Checker) joinDropLines(vs: &[]int, ind: int): []str {
+    var out: []str = []
+    var i = len(vs) - 1
+    while i >= 0 {
+        let v = vs[i]
+        if !c.pod(c.vars[v].t) {
+            var b = newStrBuf()
+            for k in 0..ind { b.add("  ") }
+            b.add(c.hole(mkHole(H_DROP, c.vars[v].t, c.vars[v].c)) + ";")
+            append(mut &out, b.toStr())
+        }
+        i -= 1
+    }
+    return out
+}
+
+// The end of a path of a statement if or match: the number of lines when it ended, and its
+// indentation. Drops placed there are added after its last line (inside its C block; a literal
+// arm of a match expression is still a placeholder line, so they go before it).
+type PathEnd = value record {
+    at: int
+    ind: int
+}
+
+fn (c: &Checker) pathEnd(): PathEnd { return PathEnd{at: len(c.cx.lines), ind: c.cx.ind + 1} }
+
+// join(), with the drops of joinMoves placed at the ends of the paths.
+fn (c: mut &Checker) joinAt(snaps: &[][]int, ends: &[]PathEnd, line: int) {
+    let drops = c.joinMoves(snaps, line)
+    for k in 0..len(drops) {
+        let ls = c.joinDropLines(&drops[k], ends[k].ind)
+        if len(ls) == 0 { continue }
+        var j = ends[k].at - 1
+        if c.cx.lines[j] == PLACEHOLDER { j -= 1 }
+        var b = newStrBuf()
+        b.add(c.cx.lines[j])
+        for x in ls { b.add("\n" + x) }
+        c.cx.lines[j] = b.toStr()
+    }
+}
+
 fn (c: mut &Checker) live(snaps: mut &[][]int) {
     if !c.cx.dead { append(snaps, c.snapshot()) }
 }
@@ -1484,6 +1582,8 @@ fn (c: mut &Checker) sIf(s: int) {
     c.block(n.b, true, false)
     c.cx.ind -= 1
     var snaps: [][]int = []
+    var ends: []PathEnd = []
+    if !c.cx.dead { append(mut &ends, c.pathEnd()) }
     c.live(mut &snaps)
     c.restore(&snap)
     c.cx.dead = false
@@ -1492,10 +1592,23 @@ fn (c: mut &Checker) sIf(s: int) {
         c.cx.ind += 1
         c.block(n.c, true, false)
         c.cx.ind -= 1
+        if !c.cx.dead { append(mut &ends, c.pathEnd()) }
+        c.live(mut &snaps)
+        c.emit("}")
+        c.joinAt(&snaps, &ends, n.line)
+        return
+    }
+    // no else: the path that skips the then block drops what the then block moved
+    c.live(mut &snaps)
+    let drops = c.joinMoves(&snaps, n.line)
+    if len(drops) == 2 && len(drops[1]) > 0 {
+        let ls = c.joinDropLines(&drops[1], c.cx.ind + 1)
+        if len(ls) > 0 {
+            c.emit("} else {")
+            for x in ls { append(mut &c.cx.lines, x) }
+        }
     }
     c.emit("}")
-    c.live(mut &snaps)
-    c.join(&snaps, n.line)
 }
 
 fn (c: mut &Checker) loopStart(entry: []int, infinite: bool) {
@@ -1756,6 +1869,7 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
     for i in 0..len(c.pg.types[d].variants) { append(mut &seen, false) }
     var nseen = 0
     var results: [][]int = []
+    var ends: []PathEnd = []
     var first = true
     var hasElse = false
     let arms = c.items(n.b)
@@ -1843,6 +1957,7 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
         let sc = pop(mut &c.cx.scopes)
         if !c.cx.dead { c.dropVars(&sc.vars) }
         c.cx.ind -= 1
+        if !c.cx.dead { append(mut &ends, c.pathEnd()) }
         c.live(mut &results)
     }
     if !hasElse && nseen != len(c.pg.types[d].variants) {
@@ -1858,7 +1973,7 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
         c.err(n.line, "match on " + c.tstr(base) + " is not exhaustive: missing " + b.toStr())
     }
     if len(arms) > 0 { c.emit("}") }
-    c.join(&results, n.line)
+    c.joinAt(&results, &ends, n.line)
 }
 
 fn (c: mut &Checker) armVariant(arm: int, d: int, base: int): int {
@@ -1892,6 +2007,7 @@ fn (c: mut &Checker) matchLits(s: int, v: Val, t: int, mx: bool) {
     c.emit(ct + " " + sv + " = " + v.c + ";")
     let snap = c.snapshot()
     var results: [][]int = []
+    var ends: []PathEnd = []
     var first = true
     var hasElse = false
     var seen: Map[str, str] = newMap()
@@ -1955,11 +2071,12 @@ fn (c: mut &Checker) matchLits(s: int, v: Val, t: int, mx: bool) {
         c.cx.dead = false
         c.armBody(an.d, mx)
         c.cx.ind -= 1
+        if !c.cx.dead { append(mut &ends, c.pathEnd()) }
         c.live(mut &results)
     }
     if !hasElse { c.err(n.line, "a match on " + c.tstr(t) + " needs an else arm (it is not exhaustive)") }
     c.emit("}")
-    c.join(&results, n.line)
+    c.joinAt(&results, &ends, n.line)
 }
 
 // A constant named in a match arm (SPEC 8): its value, if `x == K` would type-check.
@@ -2284,7 +2401,7 @@ fn (c: mut &Checker) xName(e: int, exp: int): Val {
     let n = c.nd(e)
     let vx = c.lookupVar(n.s, true)
     if vx >= 0 {
-        if c.vars[vx].moved { c.err(n.line, "'" + c.vars[vx].name + "' was moved and has no value here") }
+        if c.vars[vx].moved { c.movedErr(vx, n.line) }
         c.frozen(vx, FR_READ, n.line)
         var v = val(c.vars[vx].c, c.vars[vx].t, CAT_PLACE)
         v.root = vx
@@ -2952,7 +3069,14 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
     var snaps: [][]int = []
     if !a.v.noreturn { append(mut &snaps, copyInts(&a.snap)) }
     if !b.v.noreturn { append(mut &snaps, copyInts(&b.snap)) }
-    c.join(&snaps, n.line)
+    // SPEC 9.1: a branch drops what the other moved, after its value is stored in r
+    let drops = c.joinMoves(&snaps, n.line)
+    var k = 0
+    if !a.v.noreturn {
+        c.ifxDrops(mut &a, &drops[k], r)
+        k += 1
+    }
+    if !b.v.noreturn { c.ifxDrops(mut &b, &drops[k], r) }
     if len(a.lines) == 0 && len(b.lines) == 0 {
         let text = "(" + cv.c + " ? " + a.v.c + " : " + b.v.c + ")"
         return if c.pod(t) { rv(text, t) } else { c.holdtmp(text, t) }
@@ -2981,6 +3105,19 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
         return voidVal(true)
     }
     return c.tmpval(r, t)
+}
+
+fn (c: mut &Checker) ifxDrops(br: mut &Branch, vs: &[]int, r: str) {
+    let ls = c.joinDropLines(vs, c.cx.ind + 1)
+    if len(ls) == 0 { return }
+    if br.v.c != r {
+        var b = newStrBuf()
+        for i in 0..c.cx.ind + 1 { b.add("  ") }
+        b.add(r + " = " + br.v.c + ";")
+        append(mut &br.lines, b.toStr())
+        br.v.c = r
+    }
+    for x in ls { append(mut &br.lines, x) }
 }
 
 // match x { Arm { e } ... } (SPEC 7.8): the match statement, each arm storing its value in r.
@@ -3862,6 +3999,51 @@ fn joinStrs(xs: &[]str, from: int): str {
 fn (c: mut &Checker) argActs(hasRecv: bool, args: &[]Arg, i: int, traps: bool): bool {
     let n = c.argNode(hasRecv, args, i)
     return n >= 0 && c.effects(n, traps)
+}
+
+// Whether the expression e names a local variable of an owned type (outside closures, which
+// cannot move what they capture): a variable it could move.
+fn (c: mut &Checker) namesOwned(e: int): bool {
+    if e < 0 { return false }
+    let n = c.nd(e)
+    let k = n.kind
+    if k == sx.N_NAME {
+        let vx = c.lookupVar(n.s, true)
+        return vx >= 0 && c.pg.tk(c.vars[vx].t) != sema.TK_REF && !c.isCopy(c.vars[vx].t)
+    }
+    return match k {
+        sx.N_BIN, sx.N_SUB, sx.N_IFX { c.namesOwned(n.a) || c.namesOwned(n.b) || c.namesOwned(n.c) }
+        sx.N_UN, sx.N_BORROW, sx.N_TRY, sx.N_FIELDX, sx.N_RETURN { c.namesOwned(n.a) }
+        sx.N_INDEX, sx.N_CALL { c.namesOwned(n.a) || c.namesOwnedList(n.b) }
+        sx.N_ARRLIT { c.namesOwnedList(n.a) }
+        sx.N_LIT { c.namesOwnedInits(n.b) }
+        sx.N_MATCHX { c.namesOwned(n.a) || c.namesOwnedArms(n.b) }
+        else { false }
+    }
+}
+
+fn (c: mut &Checker) namesOwnedList(l: int): bool {
+    if l < 0 { return false }
+    for i in 0..c.count(l) {
+        if c.namesOwned(c.item(l, i)) { return true }
+    }
+    return false
+}
+
+fn (c: mut &Checker) namesOwnedInits(l: int): bool {
+    if l < 0 { return false }
+    for i in 0..c.count(l) {
+        if c.namesOwned(c.nd(c.item(l, i)).a) { return true }
+    }
+    return false
+}
+
+fn (c: mut &Checker) namesOwnedArms(l: int): bool {
+    if l < 0 { return false }
+    for i in 0..c.count(l) {
+        if c.namesOwned(c.nd(c.item(l, i)).d) { return true }
+    }
+    return false
 }
 
 fn (c: mut &Checker) convert(t: int, e: int): Val {

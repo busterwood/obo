@@ -604,14 +604,15 @@ typedef struct S90_check_Pend S90_check_Pend;
 typedef struct S91_check_Drop S91_check_Drop;
 typedef struct S92_check_Freeze S92_check_Freeze;
 typedef struct S93_check_Tmp S93_check_Tmp;
-typedef struct S94_check_Sig S94_check_Sig;
-typedef struct S95_check_CallOpts S95_check_CallOpts;
-typedef struct S96_check_CArg S96_check_CArg;
-typedef struct S97_check_Late S97_check_Late;
-typedef struct S98_check_Recheck S98_check_Recheck;
-typedef struct S99_check_Cap S99_check_Cap;
-typedef struct S100_check_OkErr S100_check_OkErr;
-typedef struct S101_check_Branch S101_check_Branch;
+typedef struct S94_check_PathEnd S94_check_PathEnd;
+typedef struct S95_check_Sig S95_check_Sig;
+typedef struct S96_check_CallOpts S96_check_CallOpts;
+typedef struct S97_check_CArg S97_check_CArg;
+typedef struct S98_check_Late S98_check_Late;
+typedef struct S99_check_Recheck S99_check_Recheck;
+typedef struct S100_check_Cap S100_check_Cap;
+typedef struct S101_check_OkErr S101_check_OkErr;
+typedef struct S102_check_Branch S102_check_Branch;
 struct S0_sema_Sym { int64_t f_k; int64_t f_i; };
 struct S1_check_St { int64_t f_k; int64_t f_dk; int64_t f_di; int64_t f_t; int64_t f_m; int64_t f_n; bool f_tres; int64_t f_targs; int64_t f_free; };
 struct S2_x64_Mem { int64_t f_base; int64_t f_index; int64_t f_scale; int64_t f_disp; };
@@ -698,7 +699,7 @@ struct S82_check_Tmpl { bool f_done; obx_arr f_lines; obx_arr f_holes; obx_arr f
 struct S87_check_Val { obx_str f_c; int64_t f_t; int64_t f_cat; int64_t f_tmp; int64_t f_root; obx_str f_path; bool f_mutable; bool f_viaref; int64_t f_vvar; int64_t f_gk; int64_t f_gi; bool f_noreturn; int64_t f_caps; bool f_late; };
 struct S83_check_Arg { bool f_isVal; int64_t f_n; S87_check_Val f_v; };
 struct S84_check_Ctx { int64_t f_fd; obx_str f_label; int64_t f_ret; obx_arr f_env; int64_t f_mod; bool f_closure; int64_t f_bvar; obx_arr f_lines; int64_t f_ind; obx_arr f_scopes; obx_arr f_frames; obx_arr f_loops; obx_arr f_pending; obx_arr f_pmarks; bool f_dead; obx_arr f_nomove; int64_t f_n; bool f_tailOn; obx_arr f_tail; obx_arr f_capNames; obx_arr f_capVars; obx_arr f_wconds; };
-struct S85_check_Var { obx_str f_name; obx_str f_c; int64_t f_t; bool f_mutable; int64_t f_kind; int64_t f_line; bool f_moved; int64_t f_broot; int64_t f_cap; bool f_capmut; };
+struct S85_check_Var { obx_str f_name; obx_str f_c; int64_t f_t; bool f_mutable; int64_t f_kind; int64_t f_line; bool f_moved; int64_t f_broot; int64_t f_cap; bool f_capmut; int64_t f_pjoin; };
 struct S86_check_Scope { obx_arr f_vars; obx_arr f_freezes; };
 struct S88_check_MatchX { obx_str f_r; int64_t f_t; obx_arr f_lits; };
 struct S89_check_Loop { int64_t f_nscopes; int64_t f_nframes; obx_arr f_entry; bool f_infinite; obx_arr f_breaks; };
@@ -706,14 +707,15 @@ struct S90_check_Pend { int64_t f_root; obx_str f_path; int64_t f_m; int64_t f_c
 struct S91_check_Drop { obx_str f_c; int64_t f_t; };
 struct S92_check_Freeze { int64_t f_root; bool f_m; obx_str f_by; };
 struct S93_check_Tmp { obx_str f_c; int64_t f_t; bool f_live; };
-struct S94_check_Sig { obx_str f_label; int64_t f_kind; obx_arr f_params; int64_t f_ret; obx_arr f_tps; int64_t f_recv; int64_t f_fd; obx_str f_c; int64_t f_tpt; obx_arr f_bind; int64_t f_nown; int64_t f_variant; bool f_loc; obx_str f_name; };
-struct S95_check_CallOpts { int64_t f_targs; bool f_alltargs; bool f_op; obx_arr f_fnames; obx_arr f_order; int64_t f_rast; };
-struct S96_check_CArg { bool f_b; S87_check_Val f_v; };
-struct S97_check_Late { S87_check_Val f_v; bool f_m; };
-struct S98_check_Recheck { int64_t f_pos; S87_check_Val f_v; };
-struct S99_check_Cap { int64_t f_v; bool f_m; };
-struct S100_check_OkErr { int64_t f_ok; int64_t f_okT; int64_t f_er; int64_t f_erT; };
-struct S101_check_Branch { S87_check_Val f_v; obx_arr f_lines; obx_arr f_snap; };
+struct S94_check_PathEnd { int64_t f_at; int64_t f_ind; };
+struct S95_check_Sig { obx_str f_label; int64_t f_kind; obx_arr f_params; int64_t f_ret; obx_arr f_tps; int64_t f_recv; int64_t f_fd; obx_str f_c; int64_t f_tpt; obx_arr f_bind; int64_t f_nown; int64_t f_variant; bool f_loc; obx_str f_name; };
+struct S96_check_CallOpts { int64_t f_targs; bool f_alltargs; bool f_op; obx_arr f_fnames; obx_arr f_order; int64_t f_rast; };
+struct S97_check_CArg { bool f_b; S87_check_Val f_v; };
+struct S98_check_Late { S87_check_Val f_v; bool f_m; };
+struct S99_check_Recheck { int64_t f_pos; S87_check_Val f_v; };
+struct S100_check_Cap { int64_t f_v; bool f_m; };
+struct S101_check_OkErr { int64_t f_ok; int64_t f_okT; int64_t f_er; int64_t f_erT; };
+struct S102_check_Branch { S87_check_Val f_v; obx_arr f_lines; obx_arr f_snap; };
 static struct { int64_t rc; char data[3]; } sl0b = {-1, "id"};
 static const obx_str sl0 = {(obx_sblk*)&sl0b, 0, 2};
 static struct { int64_t rc; char data[3]; } sl1b = {-1, "kw"};
@@ -5568,852 +5570,856 @@ static struct { int64_t rc; char data[10]; } sl2425b = {-1, "match on "};
 static const obx_str sl2425 = {(obx_sblk*)&sl2425b, 0, 9};
 static struct { int64_t rc; char data[29]; } sl2426b = {-1, " is not exhaustive: missing "};
 static const obx_str sl2426 = {(obx_sblk*)&sl2426b, 0, 28};
-static struct { int64_t rc; char data[39]; } sl2427b = {-1, "' is moved on one path but not another"};
-static const obx_str sl2427 = {(obx_sblk*)&sl2427b, 0, 38};
-static struct { int64_t rc; char data[2]; } sl2428b = {-1, "\000"};
-static const obx_str sl2428 = {(obx_sblk*)&sl2428b, 0, 1};
-static struct { int64_t rc; char data[62]; } sl2429b = {-1, "a match expression cannot give a borrow, a slice or a closure"};
-static const obx_str sl2429 = {(obx_sblk*)&sl2429b, 0, 61};
-static struct { int64_t rc; char data[54]; } sl2430b = {-1, "the arms of a match expression have different types, "};
+static struct { int64_t rc; char data[2]; } sl2427b = {-1, "\000"};
+static const obx_str sl2427 = {(obx_sblk*)&sl2427b, 0, 1};
+static struct { int64_t rc; char data[62]; } sl2428b = {-1, "a match expression cannot give a borrow, a slice or a closure"};
+static const obx_str sl2428 = {(obx_sblk*)&sl2428b, 0, 61};
+static struct { int64_t rc; char data[54]; } sl2429b = {-1, "the arms of a match expression have different types, "};
+static const obx_str sl2429 = {(obx_sblk*)&sl2429b, 0, 53};
+static struct { int64_t rc; char data[54]; } sl2430b = {-1, "' is already declared in this function (no shadowing)"};
 static const obx_str sl2430 = {(obx_sblk*)&sl2430b, 0, 53};
-static struct { int64_t rc; char data[54]; } sl2431b = {-1, "' is already declared in this function (no shadowing)"};
-static const obx_str sl2431 = {(obx_sblk*)&sl2431b, 0, 53};
-static struct { int64_t rc; char data[7]; } sl2432b = {-1, "write "};
-static const obx_str sl2432 = {(obx_sblk*)&sl2432b, 0, 6};
-static struct { int64_t rc; char data[50]; } sl2433b = {-1, ": a variant is qualified by its type (only Some, "};
-static const obx_str sl2433 = {(obx_sblk*)&sl2433b, 0, 49};
-static struct { int64_t rc; char data[53]; } sl2434b = {-1, "None, Ok and Err of the prelude may be written bare)"};
-static const obx_str sl2434 = {(obx_sblk*)&sl2434b, 0, 52};
-static struct { int64_t rc; char data[22]; } sl2435b = {-1, " is not a variant of "};
-static const obx_str sl2435 = {(obx_sblk*)&sl2435b, 0, 21};
-static struct { int64_t rc; char data[83]; } sl2436b = {-1, "a closure is second class: it can be passed as an argument or bound with let, but "};
-static const obx_str sl2436 = {(obx_sblk*)&sl2436b, 0, 82};
-static struct { int64_t rc; char data[31]; } sl2437b = {-1, "not stored, returned or copied"};
-static const obx_str sl2437 = {(obx_sblk*)&sl2437b, 0, 30};
-static struct { int64_t rc; char data[29]; } sl2438b = {-1, "this expression has no value"};
-static const obx_str sl2438 = {(obx_sblk*)&sl2438b, 0, 28};
-static struct { int64_t rc; char data[34]; } sl2439b = {-1, "' was moved and has no value here"};
-static const obx_str sl2439 = {(obx_sblk*)&sl2439b, 0, 33};
-static struct { int64_t rc; char data[14]; } sl2440b = {-1, "cannot move '"};
-static const obx_str sl2440 = {(obx_sblk*)&sl2440b, 0, 13};
-static struct { int64_t rc; char data[3]; } sl2441b = {-1, "' "};
-static const obx_str sl2441 = {(obx_sblk*)&sl2441b, 0, 2};
-static struct { int64_t rc; char data[15]; } sl2442b = {-1, "cannot move a "};
-static const obx_str sl2442 = {(obx_sblk*)&sl2442b, 0, 14};
-static struct { int64_t rc; char data[17]; } sl2443b = {-1, " out of a borrow"};
-static const obx_str sl2443 = {(obx_sblk*)&sl2443b, 0, 16};
-static struct { int64_t rc; char data[24]; } sl2444b = {-1, ": it is not a copy type"};
-static const obx_str sl2444 = {(obx_sblk*)&sl2444b, 0, 23};
-static struct { int64_t rc; char data[27]; } sl2445b = {-1, "cannot move out of global "};
+static struct { int64_t rc; char data[7]; } sl2431b = {-1, "write "};
+static const obx_str sl2431 = {(obx_sblk*)&sl2431b, 0, 6};
+static struct { int64_t rc; char data[50]; } sl2432b = {-1, ": a variant is qualified by its type (only Some, "};
+static const obx_str sl2432 = {(obx_sblk*)&sl2432b, 0, 49};
+static struct { int64_t rc; char data[53]; } sl2433b = {-1, "None, Ok and Err of the prelude may be written bare)"};
+static const obx_str sl2433 = {(obx_sblk*)&sl2433b, 0, 52};
+static struct { int64_t rc; char data[22]; } sl2434b = {-1, " is not a variant of "};
+static const obx_str sl2434 = {(obx_sblk*)&sl2434b, 0, 21};
+static struct { int64_t rc; char data[83]; } sl2435b = {-1, "a closure is second class: it can be passed as an argument or bound with let, but "};
+static const obx_str sl2435 = {(obx_sblk*)&sl2435b, 0, 82};
+static struct { int64_t rc; char data[31]; } sl2436b = {-1, "not stored, returned or copied"};
+static const obx_str sl2436 = {(obx_sblk*)&sl2436b, 0, 30};
+static struct { int64_t rc; char data[29]; } sl2437b = {-1, "this expression has no value"};
+static const obx_str sl2437 = {(obx_sblk*)&sl2437b, 0, 28};
+static struct { int64_t rc; char data[14]; } sl2438b = {-1, "cannot move '"};
+static const obx_str sl2438 = {(obx_sblk*)&sl2438b, 0, 13};
+static struct { int64_t rc; char data[3]; } sl2439b = {-1, "' "};
+static const obx_str sl2439 = {(obx_sblk*)&sl2439b, 0, 2};
+static struct { int64_t rc; char data[15]; } sl2440b = {-1, "cannot move a "};
+static const obx_str sl2440 = {(obx_sblk*)&sl2440b, 0, 14};
+static struct { int64_t rc; char data[17]; } sl2441b = {-1, " out of a borrow"};
+static const obx_str sl2441 = {(obx_sblk*)&sl2441b, 0, 16};
+static struct { int64_t rc; char data[24]; } sl2442b = {-1, ": it is not a copy type"};
+static const obx_str sl2442 = {(obx_sblk*)&sl2442b, 0, 23};
+static struct { int64_t rc; char data[27]; } sl2443b = {-1, "cannot move out of global "};
+static const obx_str sl2443 = {(obx_sblk*)&sl2443b, 0, 26};
+static struct { int64_t rc; char data[5]; } sl2444b = {-1, " of "};
+static const obx_str sl2444 = {(obx_sblk*)&sl2444b, 0, 4};
+static struct { int64_t rc; char data[27]; } sl2445b = {-1, " out of a field or element"};
 static const obx_str sl2445 = {(obx_sblk*)&sl2445b, 0, 26};
-static struct { int64_t rc; char data[5]; } sl2446b = {-1, " of "};
-static const obx_str sl2446 = {(obx_sblk*)&sl2446b, 0, 4};
-static struct { int64_t rc; char data[27]; } sl2447b = {-1, " out of a field or element"};
-static const obx_str sl2447 = {(obx_sblk*)&sl2447b, 0, 26};
-static struct { int64_t rc; char data[27]; } sl2448b = {-1, "; use replace, swap or pop"};
-static const obx_str sl2448 = {(obx_sblk*)&sl2448b, 0, 26};
-static struct { int64_t rc; char data[12]; } sl2449b = {-1, "a temporary"};
-static const obx_str sl2449 = {(obx_sblk*)&sl2449b, 0, 11};
-static struct { int64_t rc; char data[6]; } sl2450b = {-1, "moved"};
-static const obx_str sl2450 = {(obx_sblk*)&sl2450b, 0, 5};
-static struct { int64_t rc; char data[9]; } sl2451b = {-1, "assigned"};
-static const obx_str sl2451 = {(obx_sblk*)&sl2451b, 0, 8};
-static struct { int64_t rc; char data[13]; } sl2452b = {-1, "' cannot be "};
-static const obx_str sl2452 = {(obx_sblk*)&sl2452b, 0, 12};
-static struct { int64_t rc; char data[61]; } sl2453b = {-1, " here: it overlaps a borrow held by the call being evaluated"};
-static const obx_str sl2453 = {(obx_sblk*)&sl2453b, 0, 60};
-static struct { int64_t rc; char data[46]; } sl2454b = {-1, "a closure cannot move the captured variable '"};
-static const obx_str sl2454 = {(obx_sblk*)&sl2454b, 0, 45};
-static struct { int64_t rc; char data[17]; } sl2455b = {-1, "mutably borrowed"};
-static const obx_str sl2455 = {(obx_sblk*)&sl2455b, 0, 16};
-static struct { int64_t rc; char data[5]; } sl2456b = {-1, "used"};
-static const obx_str sl2456 = {(obx_sblk*)&sl2456b, 0, 4};
-static struct { int64_t rc; char data[18]; } sl2457b = {-1, "' is borrowed by "};
-static const obx_str sl2457 = {(obx_sblk*)&sl2457b, 0, 17};
-static struct { int64_t rc; char data[16]; } sl2458b = {-1, " and cannot be "};
-static const obx_str sl2458 = {(obx_sblk*)&sl2458b, 0, 15};
-static struct { int64_t rc; char data[31]; } sl2459b = {-1, " while that borrow is in scope"};
-static const obx_str sl2459 = {(obx_sblk*)&sl2459b, 0, 30};
-static struct { int64_t rc; char data[3]; } sl2460b = {-1, "sv"};
-static const obx_str sl2460 = {(obx_sblk*)&sl2460b, 0, 2};
-static struct { int64_t rc; char data[12]; } sl2461b = {-1, "a match on "};
-static const obx_str sl2461 = {(obx_sblk*)&sl2461b, 0, 11};
-static struct { int64_t rc; char data[36]; } sl2462b = {-1, " takes literals and constants, not "};
-static const obx_str sl2462 = {(obx_sblk*)&sl2462b, 0, 35};
-static struct { int64_t rc; char data[6]; } sl2463b = {-1, "(...)"};
-static const obx_str sl2463 = {(obx_sblk*)&sl2463b, 0, 5};
-static struct { int64_t rc; char data[51]; } sl2464b = {-1, "a match on str takes string literals and constants"};
-static const obx_str sl2464 = {(obx_sblk*)&sl2464b, 0, 50};
-static struct { int64_t rc; char data[11]; } sl2465b = {-1, "rt_str_eq("};
-static const obx_str sl2465 = {(obx_sblk*)&sl2465b, 0, 10};
-static struct { int64_t rc; char data[38]; } sl2466b = {-1, " takes integer literals and constants"};
-static const obx_str sl2466 = {(obx_sblk*)&sl2466b, 0, 37};
-static struct { int64_t rc; char data[61]; } sl2467b = {-1, "a char literal is a byte: it cannot be an arm of a match on "};
-static const obx_str sl2467 = {(obx_sblk*)&sl2467b, 0, 60};
-static struct { int64_t rc; char data[9]; } sl2468b = {-1, "literal "};
-static const obx_str sl2468 = {(obx_sblk*)&sl2468b, 0, 8};
-static struct { int64_t rc; char data[5]; } sl2469b = {-1, " == "};
-static const obx_str sl2469 = {(obx_sblk*)&sl2469b, 0, 4};
-static struct { int64_t rc; char data[2]; } sl2470b = {-1, "\042"};
-static const obx_str sl2470 = {(obx_sblk*)&sl2470b, 0, 1};
-static struct { int64_t rc; char data[11]; } sl2471b = {-1, "the value "};
-static const obx_str sl2471 = {(obx_sblk*)&sl2471b, 0, 10};
-static struct { int64_t rc; char data[20]; } sl2472b = {-1, " is matched twice ("};
-static const obx_str sl2472 = {(obx_sblk*)&sl2472b, 0, 19};
-static struct { int64_t rc; char data[42]; } sl2473b = {-1, " needs an else arm (it is not exhaustive)"};
-static const obx_str sl2473 = {(obx_sblk*)&sl2473b, 0, 41};
-static struct { int64_t rc; char data[32]; } sl2474b = {-1, " is not a constant: a match on "};
-static const obx_str sl2474 = {(obx_sblk*)&sl2474b, 0, 31};
-static struct { int64_t rc; char data[30]; } sl2475b = {-1, " takes literals and constants"};
-static const obx_str sl2475 = {(obx_sblk*)&sl2475b, 0, 29};
-static struct { int64_t rc; char data[60]; } sl2476b = {-1, " is a constant table: a match arm takes a constant of type "};
-static const obx_str sl2476 = {(obx_sblk*)&sl2476b, 0, 59};
-static struct { int64_t rc; char data[5]; } sl2477b = {-1, " is "};
-static const obx_str sl2477 = {(obx_sblk*)&sl2477b, 0, 4};
-static struct { int64_t rc; char data[22]; } sl2478b = {-1, "a fractional constant"};
-static const obx_str sl2478 = {(obx_sblk*)&sl2478b, 0, 21};
-static struct { int64_t rc; char data[7]; } sl2479b = {-1, ", not "};
-static const obx_str sl2479 = {(obx_sblk*)&sl2479b, 0, 6};
-static struct { int64_t rc; char data[10]; } sl2480b = {-1, "continue;"};
-static const obx_str sl2480 = {(obx_sblk*)&sl2480b, 0, 9};
-static struct { int64_t rc; char data[67]; } sl2481b = {-1, "' is moved inside the loop and not assigned again before the next "};
-static const obx_str sl2481 = {(obx_sblk*)&sl2481b, 0, 66};
-static struct { int64_t rc; char data[10]; } sl2482b = {-1, "iteration"};
-static const obx_str sl2482 = {(obx_sblk*)&sl2482b, 0, 9};
-static struct { int64_t rc; char data[16]; } sl2483b = {-1, " outside a loop"};
-static const obx_str sl2483 = {(obx_sblk*)&sl2483b, 0, 15};
-static struct { int64_t rc; char data[7]; } sl2484b = {-1, "break;"};
-static const obx_str sl2484 = {(obx_sblk*)&sl2484b, 0, 6};
-static struct { int64_t rc; char data[33]; } sl2485b = {-1, " returns never: it cannot return"};
-static const obx_str sl2485 = {(obx_sblk*)&sl2485b, 0, 32};
-static struct { int64_t rc; char data[16]; } sl2486b = {-1, "return needs a "};
-static const obx_str sl2486 = {(obx_sblk*)&sl2486b, 0, 15};
-static struct { int64_t rc; char data[11]; } sl2487b = {-1, " value in "};
-static const obx_str sl2487 = {(obx_sblk*)&sl2487b, 0, 10};
-static struct { int64_t rc; char data[8]; } sl2488b = {-1, "return;"};
-static const obx_str sl2488 = {(obx_sblk*)&sl2488b, 0, 7};
-static struct { int64_t rc; char data[46]; } sl2489b = {-1, " returns nothing, but this return has a value"};
-static const obx_str sl2489 = {(obx_sblk*)&sl2489b, 0, 45};
-static struct { int64_t rc; char data[39]; } sl2490b = {-1, " returns a borrow: write return &place"};
-static const obx_str sl2490 = {(obx_sblk*)&sl2490b, 0, 38};
-static struct { int64_t rc; char data[20]; } sl2491b = {-1, "the returned borrow"};
-static const obx_str sl2491 = {(obx_sblk*)&sl2491b, 0, 19};
-static struct { int64_t rc; char data[27]; } sl2492b = {-1, "cannot return a borrow of "};
-static const obx_str sl2492 = {(obx_sblk*)&sl2492b, 0, 26};
-static struct { int64_t rc; char data[41]; } sl2493b = {-1, ": a borrow result must be rooted at the "};
-static const obx_str sl2493 = {(obx_sblk*)&sl2493b, 0, 40};
-static struct { int64_t rc; char data[21]; } sl2494b = {-1, "borrowed parameter '"};
-static const obx_str sl2494 = {(obx_sblk*)&sl2494b, 0, 20};
-static struct { int64_t rc; char data[28]; } sl2495b = {-1, "', not a local or temporary"};
-static const obx_str sl2495 = {(obx_sblk*)&sl2495b, 0, 27};
-static struct { int64_t rc; char data[19]; } sl2496b = {-1, "the returned value"};
-static const obx_str sl2496 = {(obx_sblk*)&sl2496b, 0, 18};
-static struct { int64_t rc; char data[19]; } sl2497b = {-1, "((obx_clo){(void*)"};
+static struct { int64_t rc; char data[27]; } sl2446b = {-1, "; use replace, swap or pop"};
+static const obx_str sl2446 = {(obx_sblk*)&sl2446b, 0, 26};
+static struct { int64_t rc; char data[12]; } sl2447b = {-1, "a temporary"};
+static const obx_str sl2447 = {(obx_sblk*)&sl2447b, 0, 11};
+static struct { int64_t rc; char data[6]; } sl2448b = {-1, "moved"};
+static const obx_str sl2448 = {(obx_sblk*)&sl2448b, 0, 5};
+static struct { int64_t rc; char data[9]; } sl2449b = {-1, "assigned"};
+static const obx_str sl2449 = {(obx_sblk*)&sl2449b, 0, 8};
+static struct { int64_t rc; char data[13]; } sl2450b = {-1, "' cannot be "};
+static const obx_str sl2450 = {(obx_sblk*)&sl2450b, 0, 12};
+static struct { int64_t rc; char data[61]; } sl2451b = {-1, " here: it overlaps a borrow held by the call being evaluated"};
+static const obx_str sl2451 = {(obx_sblk*)&sl2451b, 0, 60};
+static struct { int64_t rc; char data[46]; } sl2452b = {-1, "a closure cannot move the captured variable '"};
+static const obx_str sl2452 = {(obx_sblk*)&sl2452b, 0, 45};
+static struct { int64_t rc; char data[17]; } sl2453b = {-1, "mutably borrowed"};
+static const obx_str sl2453 = {(obx_sblk*)&sl2453b, 0, 16};
+static struct { int64_t rc; char data[5]; } sl2454b = {-1, "used"};
+static const obx_str sl2454 = {(obx_sblk*)&sl2454b, 0, 4};
+static struct { int64_t rc; char data[18]; } sl2455b = {-1, "' is borrowed by "};
+static const obx_str sl2455 = {(obx_sblk*)&sl2455b, 0, 17};
+static struct { int64_t rc; char data[16]; } sl2456b = {-1, " and cannot be "};
+static const obx_str sl2456 = {(obx_sblk*)&sl2456b, 0, 15};
+static struct { int64_t rc; char data[31]; } sl2457b = {-1, " while that borrow is in scope"};
+static const obx_str sl2457 = {(obx_sblk*)&sl2457b, 0, 30};
+static struct { int64_t rc; char data[34]; } sl2458b = {-1, "' was moved and has no value here"};
+static const obx_str sl2458 = {(obx_sblk*)&sl2458b, 0, 33};
+static struct { int64_t rc; char data[56]; } sl2459b = {-1, " (it is moved on some paths of the if or match at line "};
+static const obx_str sl2459 = {(obx_sblk*)&sl2459b, 0, 55};
+static struct { int64_t rc; char data[40]; } sl2460b = {-1, ", and dropped at the end of the others)"};
+static const obx_str sl2460 = {(obx_sblk*)&sl2460b, 0, 39};
+static struct { int64_t rc; char data[3]; } sl2461b = {-1, "sv"};
+static const obx_str sl2461 = {(obx_sblk*)&sl2461b, 0, 2};
+static struct { int64_t rc; char data[12]; } sl2462b = {-1, "a match on "};
+static const obx_str sl2462 = {(obx_sblk*)&sl2462b, 0, 11};
+static struct { int64_t rc; char data[36]; } sl2463b = {-1, " takes literals and constants, not "};
+static const obx_str sl2463 = {(obx_sblk*)&sl2463b, 0, 35};
+static struct { int64_t rc; char data[6]; } sl2464b = {-1, "(...)"};
+static const obx_str sl2464 = {(obx_sblk*)&sl2464b, 0, 5};
+static struct { int64_t rc; char data[51]; } sl2465b = {-1, "a match on str takes string literals and constants"};
+static const obx_str sl2465 = {(obx_sblk*)&sl2465b, 0, 50};
+static struct { int64_t rc; char data[11]; } sl2466b = {-1, "rt_str_eq("};
+static const obx_str sl2466 = {(obx_sblk*)&sl2466b, 0, 10};
+static struct { int64_t rc; char data[38]; } sl2467b = {-1, " takes integer literals and constants"};
+static const obx_str sl2467 = {(obx_sblk*)&sl2467b, 0, 37};
+static struct { int64_t rc; char data[61]; } sl2468b = {-1, "a char literal is a byte: it cannot be an arm of a match on "};
+static const obx_str sl2468 = {(obx_sblk*)&sl2468b, 0, 60};
+static struct { int64_t rc; char data[9]; } sl2469b = {-1, "literal "};
+static const obx_str sl2469 = {(obx_sblk*)&sl2469b, 0, 8};
+static struct { int64_t rc; char data[5]; } sl2470b = {-1, " == "};
+static const obx_str sl2470 = {(obx_sblk*)&sl2470b, 0, 4};
+static struct { int64_t rc; char data[2]; } sl2471b = {-1, "\042"};
+static const obx_str sl2471 = {(obx_sblk*)&sl2471b, 0, 1};
+static struct { int64_t rc; char data[11]; } sl2472b = {-1, "the value "};
+static const obx_str sl2472 = {(obx_sblk*)&sl2472b, 0, 10};
+static struct { int64_t rc; char data[20]; } sl2473b = {-1, " is matched twice ("};
+static const obx_str sl2473 = {(obx_sblk*)&sl2473b, 0, 19};
+static struct { int64_t rc; char data[42]; } sl2474b = {-1, " needs an else arm (it is not exhaustive)"};
+static const obx_str sl2474 = {(obx_sblk*)&sl2474b, 0, 41};
+static struct { int64_t rc; char data[32]; } sl2475b = {-1, " is not a constant: a match on "};
+static const obx_str sl2475 = {(obx_sblk*)&sl2475b, 0, 31};
+static struct { int64_t rc; char data[30]; } sl2476b = {-1, " takes literals and constants"};
+static const obx_str sl2476 = {(obx_sblk*)&sl2476b, 0, 29};
+static struct { int64_t rc; char data[60]; } sl2477b = {-1, " is a constant table: a match arm takes a constant of type "};
+static const obx_str sl2477 = {(obx_sblk*)&sl2477b, 0, 59};
+static struct { int64_t rc; char data[5]; } sl2478b = {-1, " is "};
+static const obx_str sl2478 = {(obx_sblk*)&sl2478b, 0, 4};
+static struct { int64_t rc; char data[22]; } sl2479b = {-1, "a fractional constant"};
+static const obx_str sl2479 = {(obx_sblk*)&sl2479b, 0, 21};
+static struct { int64_t rc; char data[7]; } sl2480b = {-1, ", not "};
+static const obx_str sl2480 = {(obx_sblk*)&sl2480b, 0, 6};
+static struct { int64_t rc; char data[10]; } sl2481b = {-1, "continue;"};
+static const obx_str sl2481 = {(obx_sblk*)&sl2481b, 0, 9};
+static struct { int64_t rc; char data[67]; } sl2482b = {-1, "' is moved inside the loop and not assigned again before the next "};
+static const obx_str sl2482 = {(obx_sblk*)&sl2482b, 0, 66};
+static struct { int64_t rc; char data[10]; } sl2483b = {-1, "iteration"};
+static const obx_str sl2483 = {(obx_sblk*)&sl2483b, 0, 9};
+static struct { int64_t rc; char data[16]; } sl2484b = {-1, " outside a loop"};
+static const obx_str sl2484 = {(obx_sblk*)&sl2484b, 0, 15};
+static struct { int64_t rc; char data[7]; } sl2485b = {-1, "break;"};
+static const obx_str sl2485 = {(obx_sblk*)&sl2485b, 0, 6};
+static struct { int64_t rc; char data[33]; } sl2486b = {-1, " returns never: it cannot return"};
+static const obx_str sl2486 = {(obx_sblk*)&sl2486b, 0, 32};
+static struct { int64_t rc; char data[16]; } sl2487b = {-1, "return needs a "};
+static const obx_str sl2487 = {(obx_sblk*)&sl2487b, 0, 15};
+static struct { int64_t rc; char data[11]; } sl2488b = {-1, " value in "};
+static const obx_str sl2488 = {(obx_sblk*)&sl2488b, 0, 10};
+static struct { int64_t rc; char data[8]; } sl2489b = {-1, "return;"};
+static const obx_str sl2489 = {(obx_sblk*)&sl2489b, 0, 7};
+static struct { int64_t rc; char data[46]; } sl2490b = {-1, " returns nothing, but this return has a value"};
+static const obx_str sl2490 = {(obx_sblk*)&sl2490b, 0, 45};
+static struct { int64_t rc; char data[39]; } sl2491b = {-1, " returns a borrow: write return &place"};
+static const obx_str sl2491 = {(obx_sblk*)&sl2491b, 0, 38};
+static struct { int64_t rc; char data[20]; } sl2492b = {-1, "the returned borrow"};
+static const obx_str sl2492 = {(obx_sblk*)&sl2492b, 0, 19};
+static struct { int64_t rc; char data[27]; } sl2493b = {-1, "cannot return a borrow of "};
+static const obx_str sl2493 = {(obx_sblk*)&sl2493b, 0, 26};
+static struct { int64_t rc; char data[41]; } sl2494b = {-1, ": a borrow result must be rooted at the "};
+static const obx_str sl2494 = {(obx_sblk*)&sl2494b, 0, 40};
+static struct { int64_t rc; char data[21]; } sl2495b = {-1, "borrowed parameter '"};
+static const obx_str sl2495 = {(obx_sblk*)&sl2495b, 0, 20};
+static struct { int64_t rc; char data[28]; } sl2496b = {-1, "', not a local or temporary"};
+static const obx_str sl2496 = {(obx_sblk*)&sl2496b, 0, 27};
+static struct { int64_t rc; char data[19]; } sl2497b = {-1, "the returned value"};
 static const obx_str sl2497 = {(obx_sblk*)&sl2497b, 0, 18};
-static struct { int64_t rc; char data[10]; } sl2498b = {-1, ", (void*)"};
-static const obx_str sl2498 = {(obx_sblk*)&sl2498b, 0, 9};
-static struct { int64_t rc; char data[3]; } sl2499b = {-1, "})"};
-static const obx_str sl2499 = {(obx_sblk*)&sl2499b, 0, 2};
-static struct { int64_t rc; char data[13]; } sl2500b = {-1, "rt_as_slice("};
-static const obx_str sl2500 = {(obx_sblk*)&sl2500b, 0, 12};
-static struct { int64_t rc; char data[35]; } sl2501b = {-1, "a for range needs int bounds, not "};
-static const obx_str sl2501 = {(obx_sblk*)&sl2501b, 0, 34};
-static struct { int64_t rc; char data[4]; } sl2502b = {-1, "end"};
-static const obx_str sl2502 = {(obx_sblk*)&sl2502b, 0, 3};
-static struct { int64_t rc; char data[9]; } sl2503b = {-1, "int64_t "};
-static const obx_str sl2503 = {(obx_sblk*)&sl2503b, 0, 8};
-static struct { int64_t rc; char data[14]; } sl2504b = {-1, "for (int64_t "};
-static const obx_str sl2504 = {(obx_sblk*)&sl2504b, 0, 13};
-static struct { int64_t rc; char data[3]; } sl2505b = {-1, "; "};
-static const obx_str sl2505 = {(obx_sblk*)&sl2505b, 0, 2};
-static struct { int64_t rc; char data[4]; } sl2506b = {-1, " < "};
-static const obx_str sl2506 = {(obx_sblk*)&sl2506b, 0, 3};
-static struct { int64_t rc; char data[6]; } sl2507b = {-1, "++) {"};
-static const obx_str sl2507 = {(obx_sblk*)&sl2507b, 0, 5};
-static struct { int64_t rc; char data[57]; } sl2508b = {-1, "for ... in needs an array, a slice or a range a..b, not "};
-static const obx_str sl2508 = {(obx_sblk*)&sl2508b, 0, 56};
-static struct { int64_t rc; char data[3]; } sl2509b = {-1, "ap"};
-static const obx_str sl2509 = {(obx_sblk*)&sl2509b, 0, 2};
-static struct { int64_t rc; char data[2]; } sl2510b = {-1, "i"};
-static const obx_str sl2510 = {(obx_sblk*)&sl2510b, 0, 1};
-static struct { int64_t rc; char data[29]; } sl2511b = {-1, "cannot iterate over a global"};
-static const obx_str sl2511 = {(obx_sblk*)&sl2511b, 0, 28};
-static struct { int64_t rc; char data[11]; } sl2512b = {-1, "obx_slice "};
-static const obx_str sl2512 = {(obx_sblk*)&sl2512b, 0, 10};
-static struct { int64_t rc; char data[14]; } sl2513b = {-1, "rt_as_slice(&"};
-static const obx_str sl2513 = {(obx_sblk*)&sl2513b, 0, 13};
-static struct { int64_t rc; char data[7]; } sl2514b = {-1, " = 0; "};
-static const obx_str sl2514 = {(obx_sblk*)&sl2514b, 0, 6};
-static struct { int64_t rc; char data[7]; } sl2515b = {-1, ".len; "};
+static struct { int64_t rc; char data[19]; } sl2498b = {-1, "((obx_clo){(void*)"};
+static const obx_str sl2498 = {(obx_sblk*)&sl2498b, 0, 18};
+static struct { int64_t rc; char data[10]; } sl2499b = {-1, ", (void*)"};
+static const obx_str sl2499 = {(obx_sblk*)&sl2499b, 0, 9};
+static struct { int64_t rc; char data[3]; } sl2500b = {-1, "})"};
+static const obx_str sl2500 = {(obx_sblk*)&sl2500b, 0, 2};
+static struct { int64_t rc; char data[13]; } sl2501b = {-1, "rt_as_slice("};
+static const obx_str sl2501 = {(obx_sblk*)&sl2501b, 0, 12};
+static struct { int64_t rc; char data[35]; } sl2502b = {-1, "a for range needs int bounds, not "};
+static const obx_str sl2502 = {(obx_sblk*)&sl2502b, 0, 34};
+static struct { int64_t rc; char data[4]; } sl2503b = {-1, "end"};
+static const obx_str sl2503 = {(obx_sblk*)&sl2503b, 0, 3};
+static struct { int64_t rc; char data[9]; } sl2504b = {-1, "int64_t "};
+static const obx_str sl2504 = {(obx_sblk*)&sl2504b, 0, 8};
+static struct { int64_t rc; char data[14]; } sl2505b = {-1, "for (int64_t "};
+static const obx_str sl2505 = {(obx_sblk*)&sl2505b, 0, 13};
+static struct { int64_t rc; char data[3]; } sl2506b = {-1, "; "};
+static const obx_str sl2506 = {(obx_sblk*)&sl2506b, 0, 2};
+static struct { int64_t rc; char data[4]; } sl2507b = {-1, " < "};
+static const obx_str sl2507 = {(obx_sblk*)&sl2507b, 0, 3};
+static struct { int64_t rc; char data[6]; } sl2508b = {-1, "++) {"};
+static const obx_str sl2508 = {(obx_sblk*)&sl2508b, 0, 5};
+static struct { int64_t rc; char data[57]; } sl2509b = {-1, "for ... in needs an array, a slice or a range a..b, not "};
+static const obx_str sl2509 = {(obx_sblk*)&sl2509b, 0, 56};
+static struct { int64_t rc; char data[3]; } sl2510b = {-1, "ap"};
+static const obx_str sl2510 = {(obx_sblk*)&sl2510b, 0, 2};
+static struct { int64_t rc; char data[2]; } sl2511b = {-1, "i"};
+static const obx_str sl2511 = {(obx_sblk*)&sl2511b, 0, 1};
+static struct { int64_t rc; char data[29]; } sl2512b = {-1, "cannot iterate over a global"};
+static const obx_str sl2512 = {(obx_sblk*)&sl2512b, 0, 28};
+static struct { int64_t rc; char data[11]; } sl2513b = {-1, "obx_slice "};
+static const obx_str sl2513 = {(obx_sblk*)&sl2513b, 0, 10};
+static struct { int64_t rc; char data[14]; } sl2514b = {-1, "rt_as_slice(&"};
+static const obx_str sl2514 = {(obx_sblk*)&sl2514b, 0, 13};
+static struct { int64_t rc; char data[7]; } sl2515b = {-1, " = 0; "};
 static const obx_str sl2515 = {(obx_sblk*)&sl2515b, 0, 6};
-static struct { int64_t rc; char data[3]; } sl2516b = {-1, "*)"};
-static const obx_str sl2516 = {(obx_sblk*)&sl2516b, 0, 2};
-static struct { int64_t rc; char data[8]; } sl2517b = {-1, ".data)["};
-static const obx_str sl2517 = {(obx_sblk*)&sl2517b, 0, 7};
-static struct { int64_t rc; char data[13]; } sl2518b = {-1, "the for loop"};
-static const obx_str sl2518 = {(obx_sblk*)&sl2518b, 0, 12};
-static struct { int64_t rc; char data[27]; } sl2519b = {-1, "' is moved inside the loop"};
-static const obx_str sl2519 = {(obx_sblk*)&sl2519b, 0, 26};
-static struct { int64_t rc; char data[8]; } sl2520b = {-1, "(void)("};
-static const obx_str sl2520 = {(obx_sblk*)&sl2520b, 0, 7};
-static struct { int64_t rc; char data[12]; } sl2521b = {-1, "while (1) {"};
-static const obx_str sl2521 = {(obx_sblk*)&sl2521b, 0, 11};
-static struct { int64_t rc; char data[50]; } sl2522b = {-1, "in a while condition (it runs on every iteration)"};
-static const obx_str sl2522 = {(obx_sblk*)&sl2522b, 0, 49};
-static struct { int64_t rc; char data[6]; } sl2523b = {-1, "if (!"};
-static const obx_str sl2523 = {(obx_sblk*)&sl2523b, 0, 5};
-static struct { int64_t rc; char data[9]; } sl2524b = {-1, ") break;"};
-static const obx_str sl2524 = {(obx_sblk*)&sl2524b, 0, 8};
-static struct { int64_t rc; char data[31]; } sl2525b = {-1, "a condition must be bool, not "};
-static const obx_str sl2525 = {(obx_sblk*)&sl2525b, 0, 30};
-static struct { int64_t rc; char data[6]; } sl2526b = {-1, "bool "};
-static const obx_str sl2526 = {(obx_sblk*)&sl2526b, 0, 5};
-static struct { int64_t rc; char data[27]; } sl2527b = {-1, "cannot assign to constant "};
-static const obx_str sl2527 = {(obx_sblk*)&sl2527b, 0, 26};
-static struct { int64_t rc; char data[29]; } sl2528b = {-1, "cannot assign to parameter '"};
-static const obx_str sl2528 = {(obx_sblk*)&sl2528b, 0, 28};
-static struct { int64_t rc; char data[20]; } sl2529b = {-1, "': declare it `var "};
-static const obx_str sl2529 = {(obx_sblk*)&sl2529b, 0, 19};
-static struct { int64_t rc; char data[2]; } sl2530b = {-1, "`"};
-static const obx_str sl2530 = {(obx_sblk*)&sl2530b, 0, 1};
-static struct { int64_t rc; char data[19]; } sl2531b = {-1, "cannot assign to '"};
-static const obx_str sl2531 = {(obx_sblk*)&sl2531b, 0, 18};
-static struct { int64_t rc; char data[36]; } sl2532b = {-1, "': it is declared with let, not var"};
-static const obx_str sl2532 = {(obx_sblk*)&sl2532b, 0, 35};
-static struct { int64_t rc; char data[24]; } sl2533b = {-1, "the value assigned to '"};
-static const obx_str sl2533 = {(obx_sblk*)&sl2533b, 0, 23};
-static struct { int64_t rc; char data[33]; } sl2534b = {-1, "cannot assign to this expression"};
-static const obx_str sl2534 = {(obx_sblk*)&sl2534b, 0, 32};
-static struct { int64_t rc; char data[19]; } sl2535b = {-1, "the assigned value"};
-static const obx_str sl2535 = {(obx_sblk*)&sl2535b, 0, 18};
-static struct { int64_t rc; char data[11]; } sl2536b = {-1, "the result"};
-static const obx_str sl2536 = {(obx_sblk*)&sl2536b, 0, 10};
-static struct { int64_t rc; char data[47]; } sl2537b = {-1, " needs an integer and an int shift count, not "};
-static const obx_str sl2537 = {(obx_sblk*)&sl2537b, 0, 46};
-static struct { int64_t rc; char data[39]; } sl2538b = {-1, " needs operands of the same type, not "};
-static const obx_str sl2538 = {(obx_sblk*)&sl2538b, 0, 38};
-static struct { int64_t rc; char data[4]; } sl2539b = {-1, "rem"};
-static const obx_str sl2539 = {(obx_sblk*)&sl2539b, 0, 3};
-static struct { int64_t rc; char data[5]; } sl2540b = {-1, "rt_w"};
-static const obx_str sl2540 = {(obx_sblk*)&sl2540b, 0, 4};
-static struct { int64_t rc; char data[15]; } sl2541b = {-1, "rt_str_concat("};
-static const obx_str sl2541 = {(obx_sblk*)&sl2541b, 0, 14};
-static struct { int64_t rc; char data[13]; } sl2542b = {-1, "(rt_str_cmp("};
-static const obx_str sl2542 = {(obx_sblk*)&sl2542b, 0, 12};
-static struct { int64_t rc; char data[3]; } sl2543b = {-1, ") "};
-static const obx_str sl2543 = {(obx_sblk*)&sl2543b, 0, 2};
-static struct { int64_t rc; char data[4]; } sl2544b = {-1, " 0)"};
-static const obx_str sl2544 = {(obx_sblk*)&sl2544b, 0, 3};
-static struct { int64_t rc; char data[21]; } sl2545b = {-1, " is not defined for "};
-static const obx_str sl2545 = {(obx_sblk*)&sl2545b, 0, 20};
-static struct { int64_t rc; char data[5]; } sl2546b = {-1, "tag "};
-static const obx_str sl2546 = {(obx_sblk*)&sl2546b, 0, 4};
-static struct { int64_t rc; char data[5]; } sl2547b = {-1, "tag)"};
-static const obx_str sl2547 = {(obx_sblk*)&sl2547b, 0, 4};
-static struct { int64_t rc; char data[3]; } sl2548b = {-1, "eq"};
-static const obx_str sl2548 = {(obx_sblk*)&sl2548b, 0, 2};
-static struct { int64_t rc; char data[3]; } sl2549b = {-1, "(!"};
-static const obx_str sl2549 = {(obx_sblk*)&sl2549b, 0, 2};
-static struct { int64_t rc; char data[17]; } sl2550b = {-1, " needs a method "};
-static const obx_str sl2550 = {(obx_sblk*)&sl2550b, 0, 16};
-static struct { int64_t rc; char data[33]; } sl2551b = {-1, " (from a constraint such as Ord)"};
-static const obx_str sl2551 = {(obx_sblk*)&sl2551b, 0, 32};
-static struct { int64_t rc; char data[17]; } sl2552b = {-1, " arguments, not "};
+static struct { int64_t rc; char data[7]; } sl2516b = {-1, ".len; "};
+static const obx_str sl2516 = {(obx_sblk*)&sl2516b, 0, 6};
+static struct { int64_t rc; char data[3]; } sl2517b = {-1, "*)"};
+static const obx_str sl2517 = {(obx_sblk*)&sl2517b, 0, 2};
+static struct { int64_t rc; char data[8]; } sl2518b = {-1, ".data)["};
+static const obx_str sl2518 = {(obx_sblk*)&sl2518b, 0, 7};
+static struct { int64_t rc; char data[13]; } sl2519b = {-1, "the for loop"};
+static const obx_str sl2519 = {(obx_sblk*)&sl2519b, 0, 12};
+static struct { int64_t rc; char data[27]; } sl2520b = {-1, "' is moved inside the loop"};
+static const obx_str sl2520 = {(obx_sblk*)&sl2520b, 0, 26};
+static struct { int64_t rc; char data[39]; } sl2521b = {-1, "' is moved on one path but not another"};
+static const obx_str sl2521 = {(obx_sblk*)&sl2521b, 0, 38};
+static struct { int64_t rc; char data[8]; } sl2522b = {-1, "(void)("};
+static const obx_str sl2522 = {(obx_sblk*)&sl2522b, 0, 7};
+static struct { int64_t rc; char data[12]; } sl2523b = {-1, "while (1) {"};
+static const obx_str sl2523 = {(obx_sblk*)&sl2523b, 0, 11};
+static struct { int64_t rc; char data[50]; } sl2524b = {-1, "in a while condition (it runs on every iteration)"};
+static const obx_str sl2524 = {(obx_sblk*)&sl2524b, 0, 49};
+static struct { int64_t rc; char data[6]; } sl2525b = {-1, "if (!"};
+static const obx_str sl2525 = {(obx_sblk*)&sl2525b, 0, 5};
+static struct { int64_t rc; char data[9]; } sl2526b = {-1, ") break;"};
+static const obx_str sl2526 = {(obx_sblk*)&sl2526b, 0, 8};
+static struct { int64_t rc; char data[31]; } sl2527b = {-1, "a condition must be bool, not "};
+static const obx_str sl2527 = {(obx_sblk*)&sl2527b, 0, 30};
+static struct { int64_t rc; char data[6]; } sl2528b = {-1, "bool "};
+static const obx_str sl2528 = {(obx_sblk*)&sl2528b, 0, 5};
+static struct { int64_t rc; char data[27]; } sl2529b = {-1, "cannot assign to constant "};
+static const obx_str sl2529 = {(obx_sblk*)&sl2529b, 0, 26};
+static struct { int64_t rc; char data[29]; } sl2530b = {-1, "cannot assign to parameter '"};
+static const obx_str sl2530 = {(obx_sblk*)&sl2530b, 0, 28};
+static struct { int64_t rc; char data[20]; } sl2531b = {-1, "': declare it `var "};
+static const obx_str sl2531 = {(obx_sblk*)&sl2531b, 0, 19};
+static struct { int64_t rc; char data[2]; } sl2532b = {-1, "`"};
+static const obx_str sl2532 = {(obx_sblk*)&sl2532b, 0, 1};
+static struct { int64_t rc; char data[19]; } sl2533b = {-1, "cannot assign to '"};
+static const obx_str sl2533 = {(obx_sblk*)&sl2533b, 0, 18};
+static struct { int64_t rc; char data[36]; } sl2534b = {-1, "': it is declared with let, not var"};
+static const obx_str sl2534 = {(obx_sblk*)&sl2534b, 0, 35};
+static struct { int64_t rc; char data[24]; } sl2535b = {-1, "the value assigned to '"};
+static const obx_str sl2535 = {(obx_sblk*)&sl2535b, 0, 23};
+static struct { int64_t rc; char data[33]; } sl2536b = {-1, "cannot assign to this expression"};
+static const obx_str sl2536 = {(obx_sblk*)&sl2536b, 0, 32};
+static struct { int64_t rc; char data[19]; } sl2537b = {-1, "the assigned value"};
+static const obx_str sl2537 = {(obx_sblk*)&sl2537b, 0, 18};
+static struct { int64_t rc; char data[11]; } sl2538b = {-1, "the result"};
+static const obx_str sl2538 = {(obx_sblk*)&sl2538b, 0, 10};
+static struct { int64_t rc; char data[47]; } sl2539b = {-1, " needs an integer and an int shift count, not "};
+static const obx_str sl2539 = {(obx_sblk*)&sl2539b, 0, 46};
+static struct { int64_t rc; char data[39]; } sl2540b = {-1, " needs operands of the same type, not "};
+static const obx_str sl2540 = {(obx_sblk*)&sl2540b, 0, 38};
+static struct { int64_t rc; char data[4]; } sl2541b = {-1, "rem"};
+static const obx_str sl2541 = {(obx_sblk*)&sl2541b, 0, 3};
+static struct { int64_t rc; char data[5]; } sl2542b = {-1, "rt_w"};
+static const obx_str sl2542 = {(obx_sblk*)&sl2542b, 0, 4};
+static struct { int64_t rc; char data[15]; } sl2543b = {-1, "rt_str_concat("};
+static const obx_str sl2543 = {(obx_sblk*)&sl2543b, 0, 14};
+static struct { int64_t rc; char data[13]; } sl2544b = {-1, "(rt_str_cmp("};
+static const obx_str sl2544 = {(obx_sblk*)&sl2544b, 0, 12};
+static struct { int64_t rc; char data[3]; } sl2545b = {-1, ") "};
+static const obx_str sl2545 = {(obx_sblk*)&sl2545b, 0, 2};
+static struct { int64_t rc; char data[4]; } sl2546b = {-1, " 0)"};
+static const obx_str sl2546 = {(obx_sblk*)&sl2546b, 0, 3};
+static struct { int64_t rc; char data[21]; } sl2547b = {-1, " is not defined for "};
+static const obx_str sl2547 = {(obx_sblk*)&sl2547b, 0, 20};
+static struct { int64_t rc; char data[5]; } sl2548b = {-1, "tag "};
+static const obx_str sl2548 = {(obx_sblk*)&sl2548b, 0, 4};
+static struct { int64_t rc; char data[5]; } sl2549b = {-1, "tag)"};
+static const obx_str sl2549 = {(obx_sblk*)&sl2549b, 0, 4};
+static struct { int64_t rc; char data[3]; } sl2550b = {-1, "eq"};
+static const obx_str sl2550 = {(obx_sblk*)&sl2550b, 0, 2};
+static struct { int64_t rc; char data[3]; } sl2551b = {-1, "(!"};
+static const obx_str sl2551 = {(obx_sblk*)&sl2551b, 0, 2};
+static struct { int64_t rc; char data[17]; } sl2552b = {-1, " needs a method "};
 static const obx_str sl2552 = {(obx_sblk*)&sl2552b, 0, 16};
-static struct { int64_t rc; char data[17]; } sl2553b = {-1, "the receiver of "};
-static const obx_str sl2553 = {(obx_sblk*)&sl2553b, 0, 16};
-static struct { int64_t rc; char data[10]; } sl2554b = {-1, "argument "};
-static const obx_str sl2554 = {(obx_sblk*)&sl2554b, 0, 9};
-static struct { int64_t rc; char data[29]; } sl2555b = {-1, ": pass a slice or a borrow ("};
-static const obx_str sl2555 = {(obx_sblk*)&sl2555b, 0, 28};
-static struct { int64_t rc; char data[3]; } sl2556b = {-1, "x)"};
-static const obx_str sl2556 = {(obx_sblk*)&sl2556b, 0, 2};
-static struct { int64_t rc; char data[25]; } sl2557b = {-1, " needs a mut slice, not "};
-static const obx_str sl2557 = {(obx_sblk*)&sl2557b, 0, 24};
-static struct { int64_t rc; char data[18]; } sl2558b = {-1, ": pass a borrow ("};
-static const obx_str sl2558 = {(obx_sblk*)&sl2558b, 0, 17};
-static struct { int64_t rc; char data[4]; } sl2559b = {-1, " ('"};
-static const obx_str sl2559 = {(obx_sblk*)&sl2559b, 0, 3};
-static struct { int64_t rc; char data[22]; } sl2560b = {-1, "' is a shared borrow)"};
-static const obx_str sl2560 = {(obx_sblk*)&sl2560b, 0, 21};
-static struct { int64_t rc; char data[26]; } sl2561b = {-1, " needs a mut borrow, not "};
-static const obx_str sl2561 = {(obx_sblk*)&sl2561b, 0, 25};
-static struct { int64_t rc; char data[14]; } sl2562b = {-1, " has no value"};
-static const obx_str sl2562 = {(obx_sblk*)&sl2562b, 0, 13};
-static struct { int64_t rc; char data[32]; } sl2563b = {-1, "cannot infer the type argument "};
-static const obx_str sl2563 = {(obx_sblk*)&sl2563b, 0, 31};
-static struct { int64_t rc; char data[48]; } sl2564b = {-1, "; give it explicitly or declare the result type"};
-static const obx_str sl2564 = {(obx_sblk*)&sl2564b, 0, 47};
-static struct { int64_t rc; char data[6]; } sl2565b = {-1, ").env"};
-static const obx_str sl2565 = {(obx_sblk*)&sl2565b, 0, 5};
-static struct { int64_t rc; char data[7]; } sl2566b = {-1, ").fn)("};
-static const obx_str sl2566 = {(obx_sblk*)&sl2566b, 0, 6};
-static struct { int64_t rc; char data[9]; } sl2567b = {-1, "rt_cstr("};
-static const obx_str sl2567 = {(obx_sblk*)&sl2567b, 0, 8};
-static struct { int64_t rc; char data[3]; } sl2568b = {-1, "x_"};
-static const obx_str sl2568 = {(obx_sblk*)&sl2568b, 0, 2};
-static struct { int64_t rc; char data[22]; } sl2569b = {-1, "rt_str_from_c((void*)"};
-static const obx_str sl2569 = {(obx_sblk*)&sl2569b, 0, 21};
-static struct { int64_t rc; char data[12]; } sl2570b = {-1, "rt_cfree();"};
-static const obx_str sl2570 = {(obx_sblk*)&sl2570b, 0, 11};
-static struct { int64_t rc; char data[10]; } sl2571b = {-1, "){.tag = "};
-static const obx_str sl2571 = {(obx_sblk*)&sl2571b, 0, 9};
-static struct { int64_t rc; char data[4]; } sl2572b = {-1, "}})"};
-static const obx_str sl2572 = {(obx_sblk*)&sl2572b, 0, 3};
-static struct { int64_t rc; char data[3]; } sl2573b = {-1, "){"};
-static const obx_str sl2573 = {(obx_sblk*)&sl2573b, 0, 2};
-static struct { int64_t rc; char data[2]; } sl2574b = {-1, "o"};
-static const obx_str sl2574 = {(obx_sblk*)&sl2574b, 0, 1};
-static struct { int64_t rc; char data[21]; } sl2575b = {-1, " = rt_alloc(sizeof(*"};
-static const obx_str sl2575 = {(obx_sblk*)&sl2575b, 0, 20};
-static struct { int64_t rc; char data[4]; } sl2576b = {-1, "));"};
-static const obx_str sl2576 = {(obx_sblk*)&sl2576b, 0, 3};
-static struct { int64_t rc; char data[9]; } sl2577b = {-1, "->tag = "};
-static const obx_str sl2577 = {(obx_sblk*)&sl2577b, 0, 8};
-static struct { int64_t rc; char data[7]; } sl2578b = {-1, "->u.V_"};
-static const obx_str sl2578 = {(obx_sblk*)&sl2578b, 0, 6};
-static struct { int64_t rc; char data[71]; } sl2579b = {-1, "' was moved and has no value here: a later argument moved it, and the "};
-static const obx_str sl2579 = {(obx_sblk*)&sl2579b, 0, 70};
-static struct { int64_t rc; char data[44]; } sl2580b = {-1, "borrow of it is taken when the call is made"};
-static const obx_str sl2580 = {(obx_sblk*)&sl2580b, 0, 43};
-static struct { int64_t rc; char data[44]; } sl2581b = {-1, "cannot make a mut slice from a shared slice"};
-static const obx_str sl2581 = {(obx_sblk*)&sl2581b, 0, 43};
-static struct { int64_t rc; char data[50]; } sl2582b = {-1, "cannot mutably borrow through the shared borrow '"};
-static const obx_str sl2582 = {(obx_sblk*)&sl2582b, 0, 49};
-static struct { int64_t rc; char data[32]; } sl2583b = {-1, "cannot mutably borrow constant "};
-static const obx_str sl2583 = {(obx_sblk*)&sl2583b, 0, 31};
-static struct { int64_t rc; char data[23]; } sl2584b = {-1, "cannot borrow global '"};
-static const obx_str sl2584 = {(obx_sblk*)&sl2584b, 0, 22};
-static struct { int64_t rc; char data[15]; } sl2585b = {-1, "mutably borrow"};
-static const obx_str sl2585 = {(obx_sblk*)&sl2585b, 0, 14};
-static struct { int64_t rc; char data[3]; } sl2586b = {-1, "(&"};
-static const obx_str sl2586 = {(obx_sblk*)&sl2586b, 0, 2};
-static struct { int64_t rc; char data[4]; } sl2587b = {-1, " to"};
-static const obx_str sl2587 = {(obx_sblk*)&sl2587b, 0, 3};
-static struct { int64_t rc; char data[8]; } sl2588b = {-1, "cannot "};
-static const obx_str sl2588 = {(obx_sblk*)&sl2588b, 0, 7};
-static struct { int64_t rc; char data[11]; } sl2589b = {-1, " through '"};
-static const obx_str sl2589 = {(obx_sblk*)&sl2589b, 0, 10};
-static struct { int64_t rc; char data[40]; } sl2590b = {-1, "': it is a shared borrow (&), not mut &"};
-static const obx_str sl2590 = {(obx_sblk*)&sl2590b, 0, 39};
-static struct { int64_t rc; char data[39]; } sl2591b = {-1, " through a shared borrow or slice of '"};
-static const obx_str sl2591 = {(obx_sblk*)&sl2591b, 0, 38};
-static struct { int64_t rc; char data[13]; } sl2592b = {-1, " parameter '"};
-static const obx_str sl2592 = {(obx_sblk*)&sl2592b, 0, 12};
-static struct { int64_t rc; char data[3]; } sl2593b = {-1, " '"};
-static const obx_str sl2593 = {(obx_sblk*)&sl2593b, 0, 2};
-static struct { int64_t rc; char data[12]; } sl2594b = {-1, " this place"};
-static const obx_str sl2594 = {(obx_sblk*)&sl2594b, 0, 11};
-static struct { int64_t rc; char data[40]; } sl2595b = {-1, "a drop method cannot be called directly"};
-static const obx_str sl2595 = {(obx_sblk*)&sl2595b, 0, 39};
-static struct { int64_t rc; char data[17]; } sl2596b = {-1, " has no method '"};
-static const obx_str sl2596 = {(obx_sblk*)&sl2596b, 0, 16};
-static struct { int64_t rc; char data[38]; } sl2597b = {-1, "' (its constraints do not provide it)"};
-static const obx_str sl2597 = {(obx_sblk*)&sl2597b, 0, 37};
-static struct { int64_t rc; char data[40]; } sl2598b = {-1, " is an associated function: call it as "};
-static const obx_str sl2598 = {(obx_sblk*)&sl2598b, 0, 39};
-static struct { int64_t rc; char data[24]; } sl2599b = {-1, "cannot assign through '"};
-static const obx_str sl2599 = {(obx_sblk*)&sl2599b, 0, 23};
-static struct { int64_t rc; char data[45]; } sl2600b = {-1, "cannot assign to a value that is not a place"};
-static const obx_str sl2600 = {(obx_sblk*)&sl2600b, 0, 44};
-static struct { int64_t rc; char data[10]; } sl2601b = {-1, "assign to"};
-static const obx_str sl2601 = {(obx_sblk*)&sl2601b, 0, 9};
-static struct { int64_t rc; char data[66]; } sl2602b = {-1, "a drop method may not assign or replace the whole of its receiver"};
-static const obx_str sl2602 = {(obx_sblk*)&sl2602b, 0, 65};
-static struct { int64_t rc; char data[13]; } sl2603b = {-1, "rt_str_byte("};
-static const obx_str sl2603 = {(obx_sblk*)&sl2603b, 0, 12};
-static struct { int64_t rc; char data[65]; } sl2604b = {-1, "a str is immutable: its bytes cannot be assigned or borrowed mut"};
-static const obx_str sl2604 = {(obx_sblk*)&sl2604b, 0, 64};
-static struct { int64_t rc; char data[9]; } sl2605b = {-1, " mutably"};
-static const obx_str sl2605 = {(obx_sblk*)&sl2605b, 0, 8};
-static struct { int64_t rc; char data[14]; } sl2606b = {-1, "' is borrowed"};
-static const obx_str sl2606 = {(obx_sblk*)&sl2606b, 0, 13};
-static struct { int64_t rc; char data[21]; } sl2607b = {-1, " twice in one call: "};
-static const obx_str sl2607 = {(obx_sblk*)&sl2607b, 0, 20};
-static struct { int64_t rc; char data[68]; } sl2608b = {-1, "a mut & argument may not overlap another borrowed or moved argument"};
-static const obx_str sl2608 = {(obx_sblk*)&sl2608b, 0, 67};
-static struct { int64_t rc; char data[70]; } sl2609b = {-1, "' cannot be mutably borrowed here: an enclosing call already holds a "};
-static const obx_str sl2609 = {(obx_sblk*)&sl2609b, 0, 69};
-static struct { int64_t rc; char data[13]; } sl2610b = {-1, "borrow of it"};
-static const obx_str sl2610 = {(obx_sblk*)&sl2610b, 0, 12};
-static struct { int64_t rc; char data[3]; } sl2611b = {-1, "nw"};
-static const obx_str sl2611 = {(obx_sblk*)&sl2611b, 0, 2};
-static struct { int64_t rc; char data[3]; } sl2612b = {-1, "{ "};
-static const obx_str sl2612 = {(obx_sblk*)&sl2612b, 0, 2};
-static struct { int64_t rc; char data[4]; } sl2613b = {-1, "; }"};
-static const obx_str sl2613 = {(obx_sblk*)&sl2613b, 0, 3};
-static struct { int64_t rc; char data[56]; } sl2614b = {-1, " is not a record type: only a record can be taken apart"};
-static const obx_str sl2614 = {(obx_sblk*)&sl2614b, 0, 55};
-static struct { int64_t rc; char data[21]; } sl2615b = {-1, "cannot take apart a "};
-static const obx_str sl2615 = {(obx_sblk*)&sl2615b, 0, 20};
-static struct { int64_t rc; char data[23]; } sl2616b = {-1, ": it has a drop method"};
-static const obx_str sl2616 = {(obx_sblk*)&sl2616b, 0, 22};
-static struct { int64_t rc; char data[14]; } sl2617b = {-1, "the value is "};
-static const obx_str sl2617 = {(obx_sblk*)&sl2617b, 0, 13};
-static struct { int64_t rc; char data[9]; } sl2618b = {-1, ", not a "};
-static const obx_str sl2618 = {(obx_sblk*)&sl2618b, 0, 8};
-static struct { int64_t rc; char data[45]; } sl2619b = {-1, "cannot take apart a place of the owned type "};
-static const obx_str sl2619 = {(obx_sblk*)&sl2619b, 0, 44};
-static struct { int64_t rc; char data[27]; } sl2620b = {-1, ": the value must not be a "};
-static const obx_str sl2620 = {(obx_sblk*)&sl2620b, 0, 26};
-static struct { int64_t rc; char data[53]; } sl2621b = {-1, "variable, field or element (use move(x) for a local)"};
-static const obx_str sl2621 = {(obx_sblk*)&sl2621b, 0, 52};
-static struct { int64_t rc; char data[17]; } sl2622b = {-1, "' is named twice"};
-static const obx_str sl2622 = {(obx_sblk*)&sl2622b, 0, 16};
-static struct { int64_t rc; char data[23]; } sl2623b = {-1, " is private to module "};
-static const obx_str sl2623 = {(obx_sblk*)&sl2623b, 0, 22};
-static struct { int64_t rc; char data[3]; } sl2624b = {-1, "ds"};
-static const obx_str sl2624 = {(obx_sblk*)&sl2624b, 0, 2};
-static struct { int64_t rc; char data[21]; } sl2625b = {-1, "the initializer of '"};
-static const obx_str sl2625 = {(obx_sblk*)&sl2625b, 0, 20};
-static struct { int64_t rc; char data[15]; } sl2626b = {-1, "' has no value"};
-static const obx_str sl2626 = {(obx_sblk*)&sl2626b, 0, 14};
-static struct { int64_t rc; char data[36]; } sl2627b = {-1, "a closure cannot be stored in var '"};
-static const obx_str sl2627 = {(obx_sblk*)&sl2627b, 0, 35};
-static struct { int64_t rc; char data[39]; } sl2628b = {-1, "': closures are second class (use let)"};
-static const obx_str sl2628 = {(obx_sblk*)&sl2628b, 0, 38};
-static struct { int64_t rc; char data[9]; } sl2629b = {-1, "obx_clo "};
-static const obx_str sl2629 = {(obx_sblk*)&sl2629b, 0, 8};
-static struct { int64_t rc; char data[10]; } sl2630b = {-1, "closure '"};
-static const obx_str sl2630 = {(obx_sblk*)&sl2630b, 0, 9};
-static struct { int64_t rc; char data[35]; } sl2631b = {-1, "a borrow cannot be stored in var '"};
-static const obx_str sl2631 = {(obx_sblk*)&sl2631b, 0, 34};
-static struct { int64_t rc; char data[38]; } sl2632b = {-1, "': borrows are second class (use let)"};
-static const obx_str sl2632 = {(obx_sblk*)&sl2632b, 0, 37};
-static struct { int64_t rc; char data[37]; } sl2633b = {-1, "cannot borrow a temporary into let '"};
-static const obx_str sl2633 = {(obx_sblk*)&sl2633b, 0, 36};
-static struct { int64_t rc; char data[35]; } sl2634b = {-1, "': the temporary does not outlive "};
-static const obx_str sl2634 = {(obx_sblk*)&sl2634b, 0, 34};
-static struct { int64_t rc; char data[14]; } sl2635b = {-1, "the statement"};
-static const obx_str sl2635 = {(obx_sblk*)&sl2635b, 0, 13};
-static struct { int64_t rc; char data[11]; } sl2636b = {-1, "((uint8_t)"};
-static const obx_str sl2636 = {(obx_sblk*)&sl2636b, 0, 10};
-static struct { int64_t rc; char data[22]; } sl2637b = {-1, "a type is not a value"};
-static const obx_str sl2637 = {(obx_sblk*)&sl2637b, 0, 21};
-static struct { int64_t rc; char data[33]; } sl2638b = {-1, "internal error: expression kind "};
-static const obx_str sl2638 = {(obx_sblk*)&sl2638b, 0, 32};
-static struct { int64_t rc; char data[29]; } sl2639b = {-1, " has no associated function "};
-static const obx_str sl2639 = {(obx_sblk*)&sl2639b, 0, 28};
-static struct { int64_t rc; char data[13]; } sl2640b = {-1, " is a module"};
-static const obx_str sl2640 = {(obx_sblk*)&sl2640b, 0, 12};
-static struct { int64_t rc; char data[27]; } sl2641b = {-1, " is a type: build it with "};
-static const obx_str sl2641 = {(obx_sblk*)&sl2641b, 0, 26};
-static struct { int64_t rc; char data[6]; } sl2642b = {-1, "{...}"};
-static const obx_str sl2642 = {(obx_sblk*)&sl2642b, 0, 5};
-static struct { int64_t rc; char data[19]; } sl2643b = {-1, " is not a function"};
-static const obx_str sl2643 = {(obx_sblk*)&sl2643b, 0, 18};
-static struct { int64_t rc; char data[26]; } sl2644b = {-1, " is a module, not a value"};
-static const obx_str sl2644 = {(obx_sblk*)&sl2644b, 0, 25};
-static struct { int64_t rc; char data[24]; } sl2645b = {-1, " is a type, not a value"};
-static const obx_str sl2645 = {(obx_sblk*)&sl2645b, 0, 23};
-static struct { int64_t rc; char data[28]; } sl2646b = {-1, " is a set-once global: use "};
-static const obx_str sl2646 = {(obx_sblk*)&sl2646b, 0, 27};
-static struct { int64_t rc; char data[28]; } sl2647b = {-1, ".get(), .set(v) or .isSet()"};
-static const obx_str sl2647 = {(obx_sblk*)&sl2647b, 0, 27};
-static struct { int64_t rc; char data[20]; } sl2648b = {-1, " has fields: write "};
-static const obx_str sl2648 = {(obx_sblk*)&sl2648b, 0, 19};
-static struct { int64_t rc; char data[17]; } sl2649b = {-1, "extern function "};
-static const obx_str sl2649 = {(obx_sblk*)&sl2649b, 0, 16};
-static struct { int64_t rc; char data[27]; } sl2650b = {-1, " cannot be used as a value"};
-static const obx_str sl2650 = {(obx_sblk*)&sl2650b, 0, 26};
-static struct { int64_t rc; char data[36]; } sl2651b = {-1, "cannot infer the type arguments of "};
-static const obx_str sl2651 = {(obx_sblk*)&sl2651b, 0, 35};
-static struct { int64_t rc; char data[9]; } sl2652b = {-1, "; write "};
-static const obx_str sl2652 = {(obx_sblk*)&sl2652b, 0, 8};
-static struct { int64_t rc; char data[6]; } sl2653b = {-1, "[...]"};
-static const obx_str sl2653 = {(obx_sblk*)&sl2653b, 0, 5};
-static struct { int64_t rc; char data[34]; } sl2654b = {-1, " cannot be called as a conversion"};
-static const obx_str sl2654 = {(obx_sblk*)&sl2654b, 0, 33};
-static struct { int64_t rc; char data[16]; } sl2655b = {-1, "the conversion "};
-static const obx_str sl2655 = {(obx_sblk*)&sl2655b, 0, 15};
-static struct { int64_t rc; char data[23]; } sl2656b = {-1, "(x) takes one argument"};
-static const obx_str sl2656 = {(obx_sblk*)&sl2656b, 0, 22};
-static struct { int64_t rc; char data[16]; } sl2657b = {-1, "cannot convert "};
+static struct { int64_t rc; char data[33]; } sl2553b = {-1, " (from a constraint such as Ord)"};
+static const obx_str sl2553 = {(obx_sblk*)&sl2553b, 0, 32};
+static struct { int64_t rc; char data[17]; } sl2554b = {-1, " arguments, not "};
+static const obx_str sl2554 = {(obx_sblk*)&sl2554b, 0, 16};
+static struct { int64_t rc; char data[17]; } sl2555b = {-1, "the receiver of "};
+static const obx_str sl2555 = {(obx_sblk*)&sl2555b, 0, 16};
+static struct { int64_t rc; char data[10]; } sl2556b = {-1, "argument "};
+static const obx_str sl2556 = {(obx_sblk*)&sl2556b, 0, 9};
+static struct { int64_t rc; char data[29]; } sl2557b = {-1, ": pass a slice or a borrow ("};
+static const obx_str sl2557 = {(obx_sblk*)&sl2557b, 0, 28};
+static struct { int64_t rc; char data[3]; } sl2558b = {-1, "x)"};
+static const obx_str sl2558 = {(obx_sblk*)&sl2558b, 0, 2};
+static struct { int64_t rc; char data[25]; } sl2559b = {-1, " needs a mut slice, not "};
+static const obx_str sl2559 = {(obx_sblk*)&sl2559b, 0, 24};
+static struct { int64_t rc; char data[18]; } sl2560b = {-1, ": pass a borrow ("};
+static const obx_str sl2560 = {(obx_sblk*)&sl2560b, 0, 17};
+static struct { int64_t rc; char data[4]; } sl2561b = {-1, " ('"};
+static const obx_str sl2561 = {(obx_sblk*)&sl2561b, 0, 3};
+static struct { int64_t rc; char data[22]; } sl2562b = {-1, "' is a shared borrow)"};
+static const obx_str sl2562 = {(obx_sblk*)&sl2562b, 0, 21};
+static struct { int64_t rc; char data[26]; } sl2563b = {-1, " needs a mut borrow, not "};
+static const obx_str sl2563 = {(obx_sblk*)&sl2563b, 0, 25};
+static struct { int64_t rc; char data[14]; } sl2564b = {-1, " has no value"};
+static const obx_str sl2564 = {(obx_sblk*)&sl2564b, 0, 13};
+static struct { int64_t rc; char data[32]; } sl2565b = {-1, "cannot infer the type argument "};
+static const obx_str sl2565 = {(obx_sblk*)&sl2565b, 0, 31};
+static struct { int64_t rc; char data[48]; } sl2566b = {-1, "; give it explicitly or declare the result type"};
+static const obx_str sl2566 = {(obx_sblk*)&sl2566b, 0, 47};
+static struct { int64_t rc; char data[6]; } sl2567b = {-1, ").env"};
+static const obx_str sl2567 = {(obx_sblk*)&sl2567b, 0, 5};
+static struct { int64_t rc; char data[7]; } sl2568b = {-1, ").fn)("};
+static const obx_str sl2568 = {(obx_sblk*)&sl2568b, 0, 6};
+static struct { int64_t rc; char data[9]; } sl2569b = {-1, "rt_cstr("};
+static const obx_str sl2569 = {(obx_sblk*)&sl2569b, 0, 8};
+static struct { int64_t rc; char data[3]; } sl2570b = {-1, "x_"};
+static const obx_str sl2570 = {(obx_sblk*)&sl2570b, 0, 2};
+static struct { int64_t rc; char data[22]; } sl2571b = {-1, "rt_str_from_c((void*)"};
+static const obx_str sl2571 = {(obx_sblk*)&sl2571b, 0, 21};
+static struct { int64_t rc; char data[12]; } sl2572b = {-1, "rt_cfree();"};
+static const obx_str sl2572 = {(obx_sblk*)&sl2572b, 0, 11};
+static struct { int64_t rc; char data[10]; } sl2573b = {-1, "){.tag = "};
+static const obx_str sl2573 = {(obx_sblk*)&sl2573b, 0, 9};
+static struct { int64_t rc; char data[4]; } sl2574b = {-1, "}})"};
+static const obx_str sl2574 = {(obx_sblk*)&sl2574b, 0, 3};
+static struct { int64_t rc; char data[3]; } sl2575b = {-1, "){"};
+static const obx_str sl2575 = {(obx_sblk*)&sl2575b, 0, 2};
+static struct { int64_t rc; char data[2]; } sl2576b = {-1, "o"};
+static const obx_str sl2576 = {(obx_sblk*)&sl2576b, 0, 1};
+static struct { int64_t rc; char data[21]; } sl2577b = {-1, " = rt_alloc(sizeof(*"};
+static const obx_str sl2577 = {(obx_sblk*)&sl2577b, 0, 20};
+static struct { int64_t rc; char data[4]; } sl2578b = {-1, "));"};
+static const obx_str sl2578 = {(obx_sblk*)&sl2578b, 0, 3};
+static struct { int64_t rc; char data[9]; } sl2579b = {-1, "->tag = "};
+static const obx_str sl2579 = {(obx_sblk*)&sl2579b, 0, 8};
+static struct { int64_t rc; char data[7]; } sl2580b = {-1, "->u.V_"};
+static const obx_str sl2580 = {(obx_sblk*)&sl2580b, 0, 6};
+static struct { int64_t rc; char data[71]; } sl2581b = {-1, "' was moved and has no value here: a later argument moved it, and the "};
+static const obx_str sl2581 = {(obx_sblk*)&sl2581b, 0, 70};
+static struct { int64_t rc; char data[44]; } sl2582b = {-1, "borrow of it is taken when the call is made"};
+static const obx_str sl2582 = {(obx_sblk*)&sl2582b, 0, 43};
+static struct { int64_t rc; char data[44]; } sl2583b = {-1, "cannot make a mut slice from a shared slice"};
+static const obx_str sl2583 = {(obx_sblk*)&sl2583b, 0, 43};
+static struct { int64_t rc; char data[50]; } sl2584b = {-1, "cannot mutably borrow through the shared borrow '"};
+static const obx_str sl2584 = {(obx_sblk*)&sl2584b, 0, 49};
+static struct { int64_t rc; char data[32]; } sl2585b = {-1, "cannot mutably borrow constant "};
+static const obx_str sl2585 = {(obx_sblk*)&sl2585b, 0, 31};
+static struct { int64_t rc; char data[23]; } sl2586b = {-1, "cannot borrow global '"};
+static const obx_str sl2586 = {(obx_sblk*)&sl2586b, 0, 22};
+static struct { int64_t rc; char data[15]; } sl2587b = {-1, "mutably borrow"};
+static const obx_str sl2587 = {(obx_sblk*)&sl2587b, 0, 14};
+static struct { int64_t rc; char data[3]; } sl2588b = {-1, "(&"};
+static const obx_str sl2588 = {(obx_sblk*)&sl2588b, 0, 2};
+static struct { int64_t rc; char data[4]; } sl2589b = {-1, " to"};
+static const obx_str sl2589 = {(obx_sblk*)&sl2589b, 0, 3};
+static struct { int64_t rc; char data[8]; } sl2590b = {-1, "cannot "};
+static const obx_str sl2590 = {(obx_sblk*)&sl2590b, 0, 7};
+static struct { int64_t rc; char data[11]; } sl2591b = {-1, " through '"};
+static const obx_str sl2591 = {(obx_sblk*)&sl2591b, 0, 10};
+static struct { int64_t rc; char data[40]; } sl2592b = {-1, "': it is a shared borrow (&), not mut &"};
+static const obx_str sl2592 = {(obx_sblk*)&sl2592b, 0, 39};
+static struct { int64_t rc; char data[39]; } sl2593b = {-1, " through a shared borrow or slice of '"};
+static const obx_str sl2593 = {(obx_sblk*)&sl2593b, 0, 38};
+static struct { int64_t rc; char data[13]; } sl2594b = {-1, " parameter '"};
+static const obx_str sl2594 = {(obx_sblk*)&sl2594b, 0, 12};
+static struct { int64_t rc; char data[3]; } sl2595b = {-1, " '"};
+static const obx_str sl2595 = {(obx_sblk*)&sl2595b, 0, 2};
+static struct { int64_t rc; char data[12]; } sl2596b = {-1, " this place"};
+static const obx_str sl2596 = {(obx_sblk*)&sl2596b, 0, 11};
+static struct { int64_t rc; char data[40]; } sl2597b = {-1, "a drop method cannot be called directly"};
+static const obx_str sl2597 = {(obx_sblk*)&sl2597b, 0, 39};
+static struct { int64_t rc; char data[17]; } sl2598b = {-1, " has no method '"};
+static const obx_str sl2598 = {(obx_sblk*)&sl2598b, 0, 16};
+static struct { int64_t rc; char data[38]; } sl2599b = {-1, "' (its constraints do not provide it)"};
+static const obx_str sl2599 = {(obx_sblk*)&sl2599b, 0, 37};
+static struct { int64_t rc; char data[40]; } sl2600b = {-1, " is an associated function: call it as "};
+static const obx_str sl2600 = {(obx_sblk*)&sl2600b, 0, 39};
+static struct { int64_t rc; char data[24]; } sl2601b = {-1, "cannot assign through '"};
+static const obx_str sl2601 = {(obx_sblk*)&sl2601b, 0, 23};
+static struct { int64_t rc; char data[45]; } sl2602b = {-1, "cannot assign to a value that is not a place"};
+static const obx_str sl2602 = {(obx_sblk*)&sl2602b, 0, 44};
+static struct { int64_t rc; char data[10]; } sl2603b = {-1, "assign to"};
+static const obx_str sl2603 = {(obx_sblk*)&sl2603b, 0, 9};
+static struct { int64_t rc; char data[66]; } sl2604b = {-1, "a drop method may not assign or replace the whole of its receiver"};
+static const obx_str sl2604 = {(obx_sblk*)&sl2604b, 0, 65};
+static struct { int64_t rc; char data[13]; } sl2605b = {-1, "rt_str_byte("};
+static const obx_str sl2605 = {(obx_sblk*)&sl2605b, 0, 12};
+static struct { int64_t rc; char data[65]; } sl2606b = {-1, "a str is immutable: its bytes cannot be assigned or borrowed mut"};
+static const obx_str sl2606 = {(obx_sblk*)&sl2606b, 0, 64};
+static struct { int64_t rc; char data[9]; } sl2607b = {-1, " mutably"};
+static const obx_str sl2607 = {(obx_sblk*)&sl2607b, 0, 8};
+static struct { int64_t rc; char data[14]; } sl2608b = {-1, "' is borrowed"};
+static const obx_str sl2608 = {(obx_sblk*)&sl2608b, 0, 13};
+static struct { int64_t rc; char data[21]; } sl2609b = {-1, " twice in one call: "};
+static const obx_str sl2609 = {(obx_sblk*)&sl2609b, 0, 20};
+static struct { int64_t rc; char data[68]; } sl2610b = {-1, "a mut & argument may not overlap another borrowed or moved argument"};
+static const obx_str sl2610 = {(obx_sblk*)&sl2610b, 0, 67};
+static struct { int64_t rc; char data[70]; } sl2611b = {-1, "' cannot be mutably borrowed here: an enclosing call already holds a "};
+static const obx_str sl2611 = {(obx_sblk*)&sl2611b, 0, 69};
+static struct { int64_t rc; char data[13]; } sl2612b = {-1, "borrow of it"};
+static const obx_str sl2612 = {(obx_sblk*)&sl2612b, 0, 12};
+static struct { int64_t rc; char data[3]; } sl2613b = {-1, "nw"};
+static const obx_str sl2613 = {(obx_sblk*)&sl2613b, 0, 2};
+static struct { int64_t rc; char data[3]; } sl2614b = {-1, "{ "};
+static const obx_str sl2614 = {(obx_sblk*)&sl2614b, 0, 2};
+static struct { int64_t rc; char data[4]; } sl2615b = {-1, "; }"};
+static const obx_str sl2615 = {(obx_sblk*)&sl2615b, 0, 3};
+static struct { int64_t rc; char data[56]; } sl2616b = {-1, " is not a record type: only a record can be taken apart"};
+static const obx_str sl2616 = {(obx_sblk*)&sl2616b, 0, 55};
+static struct { int64_t rc; char data[21]; } sl2617b = {-1, "cannot take apart a "};
+static const obx_str sl2617 = {(obx_sblk*)&sl2617b, 0, 20};
+static struct { int64_t rc; char data[23]; } sl2618b = {-1, ": it has a drop method"};
+static const obx_str sl2618 = {(obx_sblk*)&sl2618b, 0, 22};
+static struct { int64_t rc; char data[14]; } sl2619b = {-1, "the value is "};
+static const obx_str sl2619 = {(obx_sblk*)&sl2619b, 0, 13};
+static struct { int64_t rc; char data[9]; } sl2620b = {-1, ", not a "};
+static const obx_str sl2620 = {(obx_sblk*)&sl2620b, 0, 8};
+static struct { int64_t rc; char data[45]; } sl2621b = {-1, "cannot take apart a place of the owned type "};
+static const obx_str sl2621 = {(obx_sblk*)&sl2621b, 0, 44};
+static struct { int64_t rc; char data[27]; } sl2622b = {-1, ": the value must not be a "};
+static const obx_str sl2622 = {(obx_sblk*)&sl2622b, 0, 26};
+static struct { int64_t rc; char data[53]; } sl2623b = {-1, "variable, field or element (use move(x) for a local)"};
+static const obx_str sl2623 = {(obx_sblk*)&sl2623b, 0, 52};
+static struct { int64_t rc; char data[17]; } sl2624b = {-1, "' is named twice"};
+static const obx_str sl2624 = {(obx_sblk*)&sl2624b, 0, 16};
+static struct { int64_t rc; char data[23]; } sl2625b = {-1, " is private to module "};
+static const obx_str sl2625 = {(obx_sblk*)&sl2625b, 0, 22};
+static struct { int64_t rc; char data[3]; } sl2626b = {-1, "ds"};
+static const obx_str sl2626 = {(obx_sblk*)&sl2626b, 0, 2};
+static struct { int64_t rc; char data[21]; } sl2627b = {-1, "the initializer of '"};
+static const obx_str sl2627 = {(obx_sblk*)&sl2627b, 0, 20};
+static struct { int64_t rc; char data[15]; } sl2628b = {-1, "' has no value"};
+static const obx_str sl2628 = {(obx_sblk*)&sl2628b, 0, 14};
+static struct { int64_t rc; char data[36]; } sl2629b = {-1, "a closure cannot be stored in var '"};
+static const obx_str sl2629 = {(obx_sblk*)&sl2629b, 0, 35};
+static struct { int64_t rc; char data[39]; } sl2630b = {-1, "': closures are second class (use let)"};
+static const obx_str sl2630 = {(obx_sblk*)&sl2630b, 0, 38};
+static struct { int64_t rc; char data[9]; } sl2631b = {-1, "obx_clo "};
+static const obx_str sl2631 = {(obx_sblk*)&sl2631b, 0, 8};
+static struct { int64_t rc; char data[10]; } sl2632b = {-1, "closure '"};
+static const obx_str sl2632 = {(obx_sblk*)&sl2632b, 0, 9};
+static struct { int64_t rc; char data[35]; } sl2633b = {-1, "a borrow cannot be stored in var '"};
+static const obx_str sl2633 = {(obx_sblk*)&sl2633b, 0, 34};
+static struct { int64_t rc; char data[38]; } sl2634b = {-1, "': borrows are second class (use let)"};
+static const obx_str sl2634 = {(obx_sblk*)&sl2634b, 0, 37};
+static struct { int64_t rc; char data[37]; } sl2635b = {-1, "cannot borrow a temporary into let '"};
+static const obx_str sl2635 = {(obx_sblk*)&sl2635b, 0, 36};
+static struct { int64_t rc; char data[35]; } sl2636b = {-1, "': the temporary does not outlive "};
+static const obx_str sl2636 = {(obx_sblk*)&sl2636b, 0, 34};
+static struct { int64_t rc; char data[14]; } sl2637b = {-1, "the statement"};
+static const obx_str sl2637 = {(obx_sblk*)&sl2637b, 0, 13};
+static struct { int64_t rc; char data[11]; } sl2638b = {-1, "((uint8_t)"};
+static const obx_str sl2638 = {(obx_sblk*)&sl2638b, 0, 10};
+static struct { int64_t rc; char data[22]; } sl2639b = {-1, "a type is not a value"};
+static const obx_str sl2639 = {(obx_sblk*)&sl2639b, 0, 21};
+static struct { int64_t rc; char data[33]; } sl2640b = {-1, "internal error: expression kind "};
+static const obx_str sl2640 = {(obx_sblk*)&sl2640b, 0, 32};
+static struct { int64_t rc; char data[29]; } sl2641b = {-1, " has no associated function "};
+static const obx_str sl2641 = {(obx_sblk*)&sl2641b, 0, 28};
+static struct { int64_t rc; char data[13]; } sl2642b = {-1, " is a module"};
+static const obx_str sl2642 = {(obx_sblk*)&sl2642b, 0, 12};
+static struct { int64_t rc; char data[27]; } sl2643b = {-1, " is a type: build it with "};
+static const obx_str sl2643 = {(obx_sblk*)&sl2643b, 0, 26};
+static struct { int64_t rc; char data[6]; } sl2644b = {-1, "{...}"};
+static const obx_str sl2644 = {(obx_sblk*)&sl2644b, 0, 5};
+static struct { int64_t rc; char data[19]; } sl2645b = {-1, " is not a function"};
+static const obx_str sl2645 = {(obx_sblk*)&sl2645b, 0, 18};
+static struct { int64_t rc; char data[26]; } sl2646b = {-1, " is a module, not a value"};
+static const obx_str sl2646 = {(obx_sblk*)&sl2646b, 0, 25};
+static struct { int64_t rc; char data[24]; } sl2647b = {-1, " is a type, not a value"};
+static const obx_str sl2647 = {(obx_sblk*)&sl2647b, 0, 23};
+static struct { int64_t rc; char data[28]; } sl2648b = {-1, " is a set-once global: use "};
+static const obx_str sl2648 = {(obx_sblk*)&sl2648b, 0, 27};
+static struct { int64_t rc; char data[28]; } sl2649b = {-1, ".get(), .set(v) or .isSet()"};
+static const obx_str sl2649 = {(obx_sblk*)&sl2649b, 0, 27};
+static struct { int64_t rc; char data[20]; } sl2650b = {-1, " has fields: write "};
+static const obx_str sl2650 = {(obx_sblk*)&sl2650b, 0, 19};
+static struct { int64_t rc; char data[17]; } sl2651b = {-1, "extern function "};
+static const obx_str sl2651 = {(obx_sblk*)&sl2651b, 0, 16};
+static struct { int64_t rc; char data[27]; } sl2652b = {-1, " cannot be used as a value"};
+static const obx_str sl2652 = {(obx_sblk*)&sl2652b, 0, 26};
+static struct { int64_t rc; char data[36]; } sl2653b = {-1, "cannot infer the type arguments of "};
+static const obx_str sl2653 = {(obx_sblk*)&sl2653b, 0, 35};
+static struct { int64_t rc; char data[9]; } sl2654b = {-1, "; write "};
+static const obx_str sl2654 = {(obx_sblk*)&sl2654b, 0, 8};
+static struct { int64_t rc; char data[6]; } sl2655b = {-1, "[...]"};
+static const obx_str sl2655 = {(obx_sblk*)&sl2655b, 0, 5};
+static struct { int64_t rc; char data[34]; } sl2656b = {-1, " cannot be called as a conversion"};
+static const obx_str sl2656 = {(obx_sblk*)&sl2656b, 0, 33};
+static struct { int64_t rc; char data[16]; } sl2657b = {-1, "the conversion "};
 static const obx_str sl2657 = {(obx_sblk*)&sl2657b, 0, 15};
-static struct { int64_t rc; char data[10]; } sl2658b = {-1, "((double)"};
-static const obx_str sl2658 = {(obx_sblk*)&sl2658b, 0, 9};
-static struct { int64_t rc; char data[8]; } sl2659b = {-1, "rt_cvf_"};
-static const obx_str sl2659 = {(obx_sblk*)&sl2659b, 0, 7};
-static struct { int64_t rc; char data[8]; } sl2660b = {-1, "rt_cvu_"};
-static const obx_str sl2660 = {(obx_sblk*)&sl2660b, 0, 7};
-static struct { int64_t rc; char data[8]; } sl2661b = {-1, "rt_cvs_"};
+static struct { int64_t rc; char data[23]; } sl2658b = {-1, "(x) takes one argument"};
+static const obx_str sl2658 = {(obx_sblk*)&sl2658b, 0, 22};
+static struct { int64_t rc; char data[16]; } sl2659b = {-1, "cannot convert "};
+static const obx_str sl2659 = {(obx_sblk*)&sl2659b, 0, 15};
+static struct { int64_t rc; char data[10]; } sl2660b = {-1, "((double)"};
+static const obx_str sl2660 = {(obx_sblk*)&sl2660b, 0, 9};
+static struct { int64_t rc; char data[8]; } sl2661b = {-1, "rt_cvf_"};
 static const obx_str sl2661 = {(obx_sblk*)&sl2661b, 0, 7};
-static struct { int64_t rc; char data[12]; } sl2662b = {-1, "((__int128)"};
-static const obx_str sl2662 = {(obx_sblk*)&sl2662b, 0, 11};
-static struct { int64_t rc; char data[15]; } sl2663b = {-1, "cannot call a "};
-static const obx_str sl2663 = {(obx_sblk*)&sl2663b, 0, 14};
-static struct { int64_t rc; char data[15]; } sl2664b = {-1, "function value"};
-static const obx_str sl2664 = {(obx_sblk*)&sl2664b, 0, 14};
-static struct { int64_t rc; char data[49]; } sl2665b = {-1, " is a closed type: use match to reach its fields"};
-static const obx_str sl2665 = {(obx_sblk*)&sl2665b, 0, 48};
-static struct { int64_t rc; char data[30]; } sl2666b = {-1, " has no associated function '"};
-static const obx_str sl2666 = {(obx_sblk*)&sl2666b, 0, 29};
-static struct { int64_t rc; char data[21]; } sl2667b = {-1, "' in its constraints"};
-static const obx_str sl2667 = {(obx_sblk*)&sl2667b, 0, 20};
-static struct { int64_t rc; char data[33]; } sl2668b = {-1, " is a method: call it on a value"};
-static const obx_str sl2668 = {(obx_sblk*)&sl2668b, 0, 32};
-static struct { int64_t rc; char data[15]; } sl2669b = {-1, " is not public"};
-static const obx_str sl2669 = {(obx_sblk*)&sl2669b, 0, 14};
-static struct { int64_t rc; char data[14]; } sl2670b = {-1, " values, not "};
-static const obx_str sl2670 = {(obx_sblk*)&sl2670b, 0, 13};
-static struct { int64_t rc; char data[17]; } sl2671b = {-1, "set-once global "};
-static const obx_str sl2671 = {(obx_sblk*)&sl2671b, 0, 16};
-static struct { int64_t rc; char data[4]; } sl2672b = {-1, "set"};
-static const obx_str sl2672 = {(obx_sblk*)&sl2672b, 0, 3};
-static struct { int64_t rc; char data[4]; } sl2673b = {-1, "get"};
-static const obx_str sl2673 = {(obx_sblk*)&sl2673b, 0, 3};
-static struct { int64_t rc; char data[6]; } sl2674b = {-1, "isSet"};
-static const obx_str sl2674 = {(obx_sblk*)&sl2674b, 0, 5};
-static struct { int64_t rc; char data[54]; } sl2675b = {-1, "a set-once global has set(v), get() and isSet(), not "};
-static const obx_str sl2675 = {(obx_sblk*)&sl2675b, 0, 53};
-static struct { int64_t rc; char data[7]; } sl2676b = {-1, " with "};
-static const obx_str sl2676 = {(obx_sblk*)&sl2676b, 0, 6};
-static struct { int64_t rc; char data[11]; } sl2677b = {-1, " arguments"};
-static const obx_str sl2677 = {(obx_sblk*)&sl2677b, 0, 10};
-static struct { int64_t rc; char data[11]; } sl2678b = {-1, "_set == 1)"};
-static const obx_str sl2678 = {(obx_sblk*)&sl2678b, 0, 10};
-static struct { int64_t rc; char data[24]; } sl2679b = {-1, "_set != 1) rt_trap(12, "};
-static const obx_str sl2679 = {(obx_sblk*)&sl2679b, 0, 23};
-static struct { int64_t rc; char data[8]; } sl2680b = {-1, "_set \077 "};
-static const obx_str sl2680 = {(obx_sblk*)&sl2680b, 0, 7};
-static struct { int64_t rc; char data[16]; } sl2681b = {-1, " is dropped\042 : "};
-static const obx_str sl2681 = {(obx_sblk*)&sl2681b, 0, 15};
-static struct { int64_t rc; char data[15]; } sl2682b = {-1, " is not set\042, "};
-static const obx_str sl2682 = {(obx_sblk*)&sl2682b, 0, 14};
-static struct { int64_t rc; char data[14]; } sl2683b = {-1, "the value of "};
-static const obx_str sl2683 = {(obx_sblk*)&sl2683b, 0, 13};
-static struct { int64_t rc; char data[19]; } sl2684b = {-1, "_set) rt_trap(12, "};
-static const obx_str sl2684 = {(obx_sblk*)&sl2684b, 0, 18};
-static struct { int64_t rc; char data[13]; } sl2685b = {-1, "_set == 2 \077 "};
-static const obx_str sl2685 = {(obx_sblk*)&sl2685b, 0, 12};
-static struct { int64_t rc; char data[17]; } sl2686b = {-1, " is set twice\042, "};
-static const obx_str sl2686 = {(obx_sblk*)&sl2686b, 0, 16};
-static struct { int64_t rc; char data[10]; } sl2687b = {-1, "_set = 1;"};
-static const obx_str sl2687 = {(obx_sblk*)&sl2687b, 0, 9};
-static struct { int64_t rc; char data[7]; } sl2688b = {-1, "isNull"};
-static const obx_str sl2688 = {(obx_sblk*)&sl2688b, 0, 6};
-static struct { int64_t rc; char data[8]; } sl2689b = {-1, "nullPtr"};
-static const obx_str sl2689 = {(obx_sblk*)&sl2689b, 0, 7};
-static struct { int64_t rc; char data[24]; } sl2690b = {-1, "exit needs an int, not "};
-static const obx_str sl2690 = {(obx_sblk*)&sl2690b, 0, 23};
-static struct { int64_t rc; char data[9]; } sl2691b = {-1, "rt_exit("};
-static const obx_str sl2691 = {(obx_sblk*)&sl2691b, 0, 8};
-static struct { int64_t rc; char data[10]; } sl2692b = {-1, " argument"};
-static const obx_str sl2692 = {(obx_sblk*)&sl2692b, 0, 9};
-static struct { int64_t rc; char data[26]; } sl2693b = {-1, "assert needs a bool, not "};
-static const obx_str sl2693 = {(obx_sblk*)&sl2693b, 0, 25};
-static struct { int64_t rc; char data[17]; } sl2694b = {-1, "assertion failed"};
-static const obx_str sl2694 = {(obx_sblk*)&sl2694b, 0, 16};
-static struct { int64_t rc; char data[7]; } sl2695b = {-1, "if (!("};
-static const obx_str sl2695 = {(obx_sblk*)&sl2695b, 0, 6};
-static struct { int64_t rc; char data[13]; } sl2696b = {-1, ")) rt_panic("};
-static const obx_str sl2696 = {(obx_sblk*)&sl2696b, 0, 12};
-static struct { int64_t rc; char data[24]; } sl2697b = {-1, "panic needs a str, not "};
-static const obx_str sl2697 = {(obx_sblk*)&sl2697b, 0, 23};
-static struct { int64_t rc; char data[10]; } sl2698b = {-1, "rt_panic("};
-static const obx_str sl2698 = {(obx_sblk*)&sl2698b, 0, 9};
-static struct { int64_t rc; char data[26]; } sl2699b = {-1, "array needs an int length"};
-static const obx_str sl2699 = {(obx_sblk*)&sl2699b, 0, 25};
-static struct { int64_t rc; char data[31]; } sl2700b = {-1, "array needs a copy value, and "};
-static const obx_str sl2700 = {(obx_sblk*)&sl2700b, 0, 30};
-static struct { int64_t rc; char data[5]; } sl2701b = {-1, "fill"};
-static const obx_str sl2701 = {(obx_sblk*)&sl2701b, 0, 4};
-static struct { int64_t rc; char data[9]; } sl2702b = {-1, "obx_arr "};
-static const obx_str sl2702 = {(obx_sblk*)&sl2702b, 0, 8};
-static struct { int64_t rc; char data[16]; } sl2703b = {-1, " = rt_arr_fill("};
-static const obx_str sl2703 = {(obx_sblk*)&sl2703b, 0, 15};
-static struct { int64_t rc; char data[4]; } sl2704b = {-1, "), "};
-static const obx_str sl2704 = {(obx_sblk*)&sl2704b, 0, 3};
-static struct { int64_t rc; char data[7]; } sl2705b = {-1, "++) (("};
-static const obx_str sl2705 = {(obx_sblk*)&sl2705b, 0, 6};
-static struct { int64_t rc; char data[5]; } sl2706b = {-1, "] = "};
-static const obx_str sl2706 = {(obx_sblk*)&sl2706b, 0, 4};
-static struct { int64_t rc; char data[56]; } sl2707b = {-1, "an array element cannot be a borrow, slice or closure ("};
-static const obx_str sl2707 = {(obx_sblk*)&sl2707b, 0, 55};
-static struct { int64_t rc; char data[25]; } sl2708b = {-1, "): they are second class"};
-static const obx_str sl2708 = {(obx_sblk*)&sl2708b, 0, 24};
-static struct { int64_t rc; char data[28]; } sl2709b = {-1, "move needs a local variable"};
-static const obx_str sl2709 = {(obx_sblk*)&sl2709b, 0, 27};
-static struct { int64_t rc; char data[25]; } sl2710b = {-1, "cannot move the borrow '"};
+static struct { int64_t rc; char data[8]; } sl2662b = {-1, "rt_cvu_"};
+static const obx_str sl2662 = {(obx_sblk*)&sl2662b, 0, 7};
+static struct { int64_t rc; char data[8]; } sl2663b = {-1, "rt_cvs_"};
+static const obx_str sl2663 = {(obx_sblk*)&sl2663b, 0, 7};
+static struct { int64_t rc; char data[12]; } sl2664b = {-1, "((__int128)"};
+static const obx_str sl2664 = {(obx_sblk*)&sl2664b, 0, 11};
+static struct { int64_t rc; char data[15]; } sl2665b = {-1, "cannot call a "};
+static const obx_str sl2665 = {(obx_sblk*)&sl2665b, 0, 14};
+static struct { int64_t rc; char data[15]; } sl2666b = {-1, "function value"};
+static const obx_str sl2666 = {(obx_sblk*)&sl2666b, 0, 14};
+static struct { int64_t rc; char data[49]; } sl2667b = {-1, " is a closed type: use match to reach its fields"};
+static const obx_str sl2667 = {(obx_sblk*)&sl2667b, 0, 48};
+static struct { int64_t rc; char data[30]; } sl2668b = {-1, " has no associated function '"};
+static const obx_str sl2668 = {(obx_sblk*)&sl2668b, 0, 29};
+static struct { int64_t rc; char data[21]; } sl2669b = {-1, "' in its constraints"};
+static const obx_str sl2669 = {(obx_sblk*)&sl2669b, 0, 20};
+static struct { int64_t rc; char data[33]; } sl2670b = {-1, " is a method: call it on a value"};
+static const obx_str sl2670 = {(obx_sblk*)&sl2670b, 0, 32};
+static struct { int64_t rc; char data[15]; } sl2671b = {-1, " is not public"};
+static const obx_str sl2671 = {(obx_sblk*)&sl2671b, 0, 14};
+static struct { int64_t rc; char data[14]; } sl2672b = {-1, " values, not "};
+static const obx_str sl2672 = {(obx_sblk*)&sl2672b, 0, 13};
+static struct { int64_t rc; char data[17]; } sl2673b = {-1, "set-once global "};
+static const obx_str sl2673 = {(obx_sblk*)&sl2673b, 0, 16};
+static struct { int64_t rc; char data[4]; } sl2674b = {-1, "set"};
+static const obx_str sl2674 = {(obx_sblk*)&sl2674b, 0, 3};
+static struct { int64_t rc; char data[4]; } sl2675b = {-1, "get"};
+static const obx_str sl2675 = {(obx_sblk*)&sl2675b, 0, 3};
+static struct { int64_t rc; char data[6]; } sl2676b = {-1, "isSet"};
+static const obx_str sl2676 = {(obx_sblk*)&sl2676b, 0, 5};
+static struct { int64_t rc; char data[54]; } sl2677b = {-1, "a set-once global has set(v), get() and isSet(), not "};
+static const obx_str sl2677 = {(obx_sblk*)&sl2677b, 0, 53};
+static struct { int64_t rc; char data[7]; } sl2678b = {-1, " with "};
+static const obx_str sl2678 = {(obx_sblk*)&sl2678b, 0, 6};
+static struct { int64_t rc; char data[11]; } sl2679b = {-1, " arguments"};
+static const obx_str sl2679 = {(obx_sblk*)&sl2679b, 0, 10};
+static struct { int64_t rc; char data[11]; } sl2680b = {-1, "_set == 1)"};
+static const obx_str sl2680 = {(obx_sblk*)&sl2680b, 0, 10};
+static struct { int64_t rc; char data[24]; } sl2681b = {-1, "_set != 1) rt_trap(12, "};
+static const obx_str sl2681 = {(obx_sblk*)&sl2681b, 0, 23};
+static struct { int64_t rc; char data[8]; } sl2682b = {-1, "_set \077 "};
+static const obx_str sl2682 = {(obx_sblk*)&sl2682b, 0, 7};
+static struct { int64_t rc; char data[16]; } sl2683b = {-1, " is dropped\042 : "};
+static const obx_str sl2683 = {(obx_sblk*)&sl2683b, 0, 15};
+static struct { int64_t rc; char data[15]; } sl2684b = {-1, " is not set\042, "};
+static const obx_str sl2684 = {(obx_sblk*)&sl2684b, 0, 14};
+static struct { int64_t rc; char data[14]; } sl2685b = {-1, "the value of "};
+static const obx_str sl2685 = {(obx_sblk*)&sl2685b, 0, 13};
+static struct { int64_t rc; char data[19]; } sl2686b = {-1, "_set) rt_trap(12, "};
+static const obx_str sl2686 = {(obx_sblk*)&sl2686b, 0, 18};
+static struct { int64_t rc; char data[13]; } sl2687b = {-1, "_set == 2 \077 "};
+static const obx_str sl2687 = {(obx_sblk*)&sl2687b, 0, 12};
+static struct { int64_t rc; char data[17]; } sl2688b = {-1, " is set twice\042, "};
+static const obx_str sl2688 = {(obx_sblk*)&sl2688b, 0, 16};
+static struct { int64_t rc; char data[10]; } sl2689b = {-1, "_set = 1;"};
+static const obx_str sl2689 = {(obx_sblk*)&sl2689b, 0, 9};
+static struct { int64_t rc; char data[7]; } sl2690b = {-1, "isNull"};
+static const obx_str sl2690 = {(obx_sblk*)&sl2690b, 0, 6};
+static struct { int64_t rc; char data[8]; } sl2691b = {-1, "nullPtr"};
+static const obx_str sl2691 = {(obx_sblk*)&sl2691b, 0, 7};
+static struct { int64_t rc; char data[24]; } sl2692b = {-1, "exit needs an int, not "};
+static const obx_str sl2692 = {(obx_sblk*)&sl2692b, 0, 23};
+static struct { int64_t rc; char data[9]; } sl2693b = {-1, "rt_exit("};
+static const obx_str sl2693 = {(obx_sblk*)&sl2693b, 0, 8};
+static struct { int64_t rc; char data[10]; } sl2694b = {-1, " argument"};
+static const obx_str sl2694 = {(obx_sblk*)&sl2694b, 0, 9};
+static struct { int64_t rc; char data[26]; } sl2695b = {-1, "assert needs a bool, not "};
+static const obx_str sl2695 = {(obx_sblk*)&sl2695b, 0, 25};
+static struct { int64_t rc; char data[17]; } sl2696b = {-1, "assertion failed"};
+static const obx_str sl2696 = {(obx_sblk*)&sl2696b, 0, 16};
+static struct { int64_t rc; char data[7]; } sl2697b = {-1, "if (!("};
+static const obx_str sl2697 = {(obx_sblk*)&sl2697b, 0, 6};
+static struct { int64_t rc; char data[13]; } sl2698b = {-1, ")) rt_panic("};
+static const obx_str sl2698 = {(obx_sblk*)&sl2698b, 0, 12};
+static struct { int64_t rc; char data[24]; } sl2699b = {-1, "panic needs a str, not "};
+static const obx_str sl2699 = {(obx_sblk*)&sl2699b, 0, 23};
+static struct { int64_t rc; char data[10]; } sl2700b = {-1, "rt_panic("};
+static const obx_str sl2700 = {(obx_sblk*)&sl2700b, 0, 9};
+static struct { int64_t rc; char data[26]; } sl2701b = {-1, "array needs an int length"};
+static const obx_str sl2701 = {(obx_sblk*)&sl2701b, 0, 25};
+static struct { int64_t rc; char data[31]; } sl2702b = {-1, "array needs a copy value, and "};
+static const obx_str sl2702 = {(obx_sblk*)&sl2702b, 0, 30};
+static struct { int64_t rc; char data[5]; } sl2703b = {-1, "fill"};
+static const obx_str sl2703 = {(obx_sblk*)&sl2703b, 0, 4};
+static struct { int64_t rc; char data[9]; } sl2704b = {-1, "obx_arr "};
+static const obx_str sl2704 = {(obx_sblk*)&sl2704b, 0, 8};
+static struct { int64_t rc; char data[16]; } sl2705b = {-1, " = rt_arr_fill("};
+static const obx_str sl2705 = {(obx_sblk*)&sl2705b, 0, 15};
+static struct { int64_t rc; char data[4]; } sl2706b = {-1, "), "};
+static const obx_str sl2706 = {(obx_sblk*)&sl2706b, 0, 3};
+static struct { int64_t rc; char data[7]; } sl2707b = {-1, "++) (("};
+static const obx_str sl2707 = {(obx_sblk*)&sl2707b, 0, 6};
+static struct { int64_t rc; char data[5]; } sl2708b = {-1, "] = "};
+static const obx_str sl2708 = {(obx_sblk*)&sl2708b, 0, 4};
+static struct { int64_t rc; char data[56]; } sl2709b = {-1, "an array element cannot be a borrow, slice or closure ("};
+static const obx_str sl2709 = {(obx_sblk*)&sl2709b, 0, 55};
+static struct { int64_t rc; char data[25]; } sl2710b = {-1, "): they are second class"};
 static const obx_str sl2710 = {(obx_sblk*)&sl2710b, 0, 24};
-static struct { int64_t rc; char data[53]; } sl2711b = {-1, "replace needs mut &place as its first argument, not "};
-static const obx_str sl2711 = {(obx_sblk*)&sl2711b, 0, 52};
-static struct { int64_t rc; char data[14]; } sl2712b = {-1, "the new value"};
-static const obx_str sl2712 = {(obx_sblk*)&sl2712b, 0, 13};
-static struct { int64_t rc; char data[4]; } sl2713b = {-1, "old"};
-static const obx_str sl2713 = {(obx_sblk*)&sl2713b, 0, 3};
-static struct { int64_t rc; char data[5]; } sl2714b = {-1, " = *"};
-static const obx_str sl2714 = {(obx_sblk*)&sl2714b, 0, 4};
-static struct { int64_t rc; char data[23]; } sl2715b = {-1, "swap needs int indexes"};
-static const obx_str sl2715 = {(obx_sblk*)&sl2715b, 0, 22};
-static struct { int64_t rc; char data[9]; } sl2716b = {-1, "rt_swap("};
-static const obx_str sl2716 = {(obx_sblk*)&sl2716b, 0, 8};
-static struct { int64_t rc; char data[61]; } sl2717b = {-1, " needs a mut slice or mut &array as its first argument, not "};
-static const obx_str sl2717 = {(obx_sblk*)&sl2717b, 0, 60};
-static struct { int64_t rc; char data[34]; } sl2718b = {-1, "array as its first argument, not "};
-static const obx_str sl2718 = {(obx_sblk*)&sl2718b, 0, 33};
-static struct { int64_t rc; char data[22]; } sl2719b = {-1, " needs an array, not "};
-static const obx_str sl2719 = {(obx_sblk*)&sl2719b, 0, 21};
-static struct { int64_t rc; char data[14]; } sl2720b = {-1, "*)rt_arr_pop("};
-static const obx_str sl2720 = {(obx_sblk*)&sl2720b, 0, 13};
-static struct { int64_t rc; char data[19]; } sl2721b = {-1, "the appended value"};
-static const obx_str sl2721 = {(obx_sblk*)&sl2721b, 0, 18};
-static struct { int64_t rc; char data[15]; } sl2722b = {-1, "*)rt_arr_push("};
-static const obx_str sl2722 = {(obx_sblk*)&sl2722b, 0, 14};
-static struct { int64_t rc; char data[6]; } sl2723b = {-1, ")) = "};
-static const obx_str sl2723 = {(obx_sblk*)&sl2723b, 0, 5};
-static struct { int64_t rc; char data[11]; } sl2724b = {-1, "((void*)0)"};
-static const obx_str sl2724 = {(obx_sblk*)&sl2724b, 0, 10};
-static struct { int64_t rc; char data[25]; } sl2725b = {-1, "isNull needs a ptr, not "};
-static const obx_str sl2725 = {(obx_sblk*)&sl2725b, 0, 24};
-static struct { int64_t rc; char data[7]; } sl2726b = {-1, " == 0)"};
-static const obx_str sl2726 = {(obx_sblk*)&sl2726b, 0, 6};
-static struct { int64_t rc; char data[12]; } sl2727b = {-1, "((int64_t)("};
-static const obx_str sl2727 = {(obx_sblk*)&sl2727b, 0, 11};
-static struct { int64_t rc; char data[7]; } sl2728b = {-1, ").len)"};
+static struct { int64_t rc; char data[28]; } sl2711b = {-1, "move needs a local variable"};
+static const obx_str sl2711 = {(obx_sblk*)&sl2711b, 0, 27};
+static struct { int64_t rc; char data[25]; } sl2712b = {-1, "cannot move the borrow '"};
+static const obx_str sl2712 = {(obx_sblk*)&sl2712b, 0, 24};
+static struct { int64_t rc; char data[53]; } sl2713b = {-1, "replace needs mut &place as its first argument, not "};
+static const obx_str sl2713 = {(obx_sblk*)&sl2713b, 0, 52};
+static struct { int64_t rc; char data[14]; } sl2714b = {-1, "the new value"};
+static const obx_str sl2714 = {(obx_sblk*)&sl2714b, 0, 13};
+static struct { int64_t rc; char data[4]; } sl2715b = {-1, "old"};
+static const obx_str sl2715 = {(obx_sblk*)&sl2715b, 0, 3};
+static struct { int64_t rc; char data[5]; } sl2716b = {-1, " = *"};
+static const obx_str sl2716 = {(obx_sblk*)&sl2716b, 0, 4};
+static struct { int64_t rc; char data[23]; } sl2717b = {-1, "swap needs int indexes"};
+static const obx_str sl2717 = {(obx_sblk*)&sl2717b, 0, 22};
+static struct { int64_t rc; char data[9]; } sl2718b = {-1, "rt_swap("};
+static const obx_str sl2718 = {(obx_sblk*)&sl2718b, 0, 8};
+static struct { int64_t rc; char data[61]; } sl2719b = {-1, " needs a mut slice or mut &array as its first argument, not "};
+static const obx_str sl2719 = {(obx_sblk*)&sl2719b, 0, 60};
+static struct { int64_t rc; char data[34]; } sl2720b = {-1, "array as its first argument, not "};
+static const obx_str sl2720 = {(obx_sblk*)&sl2720b, 0, 33};
+static struct { int64_t rc; char data[22]; } sl2721b = {-1, " needs an array, not "};
+static const obx_str sl2721 = {(obx_sblk*)&sl2721b, 0, 21};
+static struct { int64_t rc; char data[14]; } sl2722b = {-1, "*)rt_arr_pop("};
+static const obx_str sl2722 = {(obx_sblk*)&sl2722b, 0, 13};
+static struct { int64_t rc; char data[19]; } sl2723b = {-1, "the appended value"};
+static const obx_str sl2723 = {(obx_sblk*)&sl2723b, 0, 18};
+static struct { int64_t rc; char data[15]; } sl2724b = {-1, "*)rt_arr_push("};
+static const obx_str sl2724 = {(obx_sblk*)&sl2724b, 0, 14};
+static struct { int64_t rc; char data[6]; } sl2725b = {-1, ")) = "};
+static const obx_str sl2725 = {(obx_sblk*)&sl2725b, 0, 5};
+static struct { int64_t rc; char data[11]; } sl2726b = {-1, "((void*)0)"};
+static const obx_str sl2726 = {(obx_sblk*)&sl2726b, 0, 10};
+static struct { int64_t rc; char data[25]; } sl2727b = {-1, "isNull needs a ptr, not "};
+static const obx_str sl2727 = {(obx_sblk*)&sl2727b, 0, 24};
+static struct { int64_t rc; char data[7]; } sl2728b = {-1, " == 0)"};
 static const obx_str sl2728 = {(obx_sblk*)&sl2728b, 0, 6};
-static struct { int64_t rc; char data[43]; } sl2729b = {-1, "len needs an array, a slice or a str, not "};
-static const obx_str sl2729 = {(obx_sblk*)&sl2729b, 0, 42};
-static struct { int64_t rc; char data[6]; } sl2730b = {-1, ").len"};
-static const obx_str sl2730 = {(obx_sblk*)&sl2730b, 0, 5};
-static struct { int64_t rc; char data[18]; } sl2731b = {-1, "array element is "};
-static const obx_str sl2731 = {(obx_sblk*)&sl2731b, 0, 17};
-static struct { int64_t rc; char data[68]; } sl2732b = {-1, "cannot infer the element type of [] here: it needs an expected type"};
-static const obx_str sl2732 = {(obx_sblk*)&sl2732b, 0, 67};
-static struct { int64_t rc; char data[31]; } sl2733b = {-1, "an array element needs a value"};
-static const obx_str sl2733 = {(obx_sblk*)&sl2733b, 0, 30};
-static struct { int64_t rc; char data[15]; } sl2734b = {-1, " = rt_arr_new("};
-static const obx_str sl2734 = {(obx_sblk*)&sl2734b, 0, 14};
-static struct { int64_t rc; char data[28]; } sl2735b = {-1, " cannot be built with {...}"};
-static const obx_str sl2735 = {(obx_sblk*)&sl2735b, 0, 27};
-static struct { int64_t rc; char data[26]; } sl2736b = {-1, "unknown type in a literal"};
-static const obx_str sl2736 = {(obx_sblk*)&sl2736b, 0, 25};
-static struct { int64_t rc; char data[22]; } sl2737b = {-1, " is not a record type"};
-static const obx_str sl2737 = {(obx_sblk*)&sl2737b, 0, 21};
-static struct { int64_t rc; char data[28]; } sl2738b = {-1, ": build one of its variants"};
-static const obx_str sl2738 = {(obx_sblk*)&sl2738b, 0, 27};
-static struct { int64_t rc; char data[16]; } sl2739b = {-1, "cannot build a "};
-static const obx_str sl2739 = {(obx_sblk*)&sl2739b, 0, 15};
-static struct { int64_t rc; char data[15]; } sl2740b = {-1, " here: field '"};
-static const obx_str sl2740 = {(obx_sblk*)&sl2740b, 0, 14};
-static struct { int64_t rc; char data[24]; } sl2741b = {-1, "' is private to module "};
-static const obx_str sl2741 = {(obx_sblk*)&sl2741b, 0, 23};
-static struct { int64_t rc; char data[59]; } sl2742b = {-1, "internal error: return, break or continue as an expression"};
-static const obx_str sl2742 = {(obx_sblk*)&sl2742b, 0, 58};
-static struct { int64_t rc; char data[32]; } sl2743b = {-1, " cannot be in a while condition"};
-static const obx_str sl2743 = {(obx_sblk*)&sl2743b, 0, 31};
-static struct { int64_t rc; char data[39]; } sl2744b = {-1, "try needs an owned value, not a borrow"};
-static const obx_str sl2744 = {(obx_sblk*)&sl2744b, 0, 38};
-static struct { int64_t rc; char data[69]; } sl2745b = {-1, "try needs a closed type with variants Ok and Err (like Result), not "};
-static const obx_str sl2745 = {(obx_sblk*)&sl2745b, 0, 68};
-static struct { int64_t rc; char data[78]; } sl2746b = {-1, "try needs a function whose result type has an Err variant (like Result), and "};
-static const obx_str sl2746 = {(obx_sblk*)&sl2746b, 0, 77};
-static struct { int64_t rc; char data[10]; } sl2747b = {-1, " returns "};
-static const obx_str sl2747 = {(obx_sblk*)&sl2747b, 0, 9};
-static struct { int64_t rc; char data[21]; } sl2748b = {-1, "try: the error type "};
-static const obx_str sl2748 = {(obx_sblk*)&sl2748b, 0, 20};
-static struct { int64_t rc; char data[22]; } sl2749b = {-1, " is not the Err type "};
-static const obx_str sl2749 = {(obx_sblk*)&sl2749b, 0, 21};
-static struct { int64_t rc; char data[25]; } sl2750b = {-1, "try cannot take apart a "};
-static const obx_str sl2750 = {(obx_sblk*)&sl2750b, 0, 24};
-static struct { int64_t rc; char data[3]; } sl2751b = {-1, "tr"};
-static const obx_str sl2751 = {(obx_sblk*)&sl2751b, 0, 2};
-static struct { int64_t rc; char data[11]; } sl2752b = {-1, "u.V_Err.f_"};
-static const obx_str sl2752 = {(obx_sblk*)&sl2752b, 0, 10};
-static struct { int64_t rc; char data[10]; } sl2753b = {-1, "u.V_Ok.f_"};
-static const obx_str sl2753 = {(obx_sblk*)&sl2753b, 0, 9};
-static struct { int64_t rc; char data[3]; } sl2754b = {-1, "ok"};
-static const obx_str sl2754 = {(obx_sblk*)&sl2754b, 0, 2};
-static struct { int64_t rc; char data[3]; } sl2755b = {-1, "mx"};
-static const obx_str sl2755 = {(obx_sblk*)&sl2755b, 0, 2};
-static struct { int64_t rc; char data[60]; } sl2756b = {-1, "an if expression cannot give a borrow, a slice or a closure"};
-static const obx_str sl2756 = {(obx_sblk*)&sl2756b, 0, 59};
-static struct { int64_t rc; char data[56]; } sl2757b = {-1, "the branches of an if expression have different types, "};
-static const obx_str sl2757 = {(obx_sblk*)&sl2757b, 0, 55};
-static struct { int64_t rc; char data[4]; } sl2758b = {-1, " \077 "};
-static const obx_str sl2758 = {(obx_sblk*)&sl2758b, 0, 3};
-static struct { int64_t rc; char data[4]; } sl2759b = {-1, " : "};
-static const obx_str sl2759 = {(obx_sblk*)&sl2759b, 0, 3};
-static struct { int64_t rc; char data[16]; } sl2760b = {-1, "inside && or ||"};
-static const obx_str sl2760 = {(obx_sblk*)&sl2760b, 0, 15};
-static struct { int64_t rc; char data[27]; } sl2761b = {-1, " needs bool operands, not "};
-static const obx_str sl2761 = {(obx_sblk*)&sl2761b, 0, 26};
-static struct { int64_t rc; char data[21]; } sl2762b = {-1, "! needs a bool, not "};
-static const obx_str sl2762 = {(obx_sblk*)&sl2762b, 0, 20};
-static struct { int64_t rc; char data[25]; } sl2763b = {-1, "~ needs an integer, not "};
-static const obx_str sl2763 = {(obx_sblk*)&sl2763b, 0, 24};
-static struct { int64_t rc; char data[3]; } sl2764b = {-1, ")~"};
-static const obx_str sl2764 = {(obx_sblk*)&sl2764b, 0, 2};
-static struct { int64_t rc; char data[8]; } sl2765b = {-1, "rt_neg_"};
-static const obx_str sl2765 = {(obx_sblk*)&sl2765b, 0, 7};
-static struct { int64_t rc; char data[3]; } sl2766b = {-1, "(-"};
+static struct { int64_t rc; char data[12]; } sl2729b = {-1, "((int64_t)("};
+static const obx_str sl2729 = {(obx_sblk*)&sl2729b, 0, 11};
+static struct { int64_t rc; char data[7]; } sl2730b = {-1, ").len)"};
+static const obx_str sl2730 = {(obx_sblk*)&sl2730b, 0, 6};
+static struct { int64_t rc; char data[43]; } sl2731b = {-1, "len needs an array, a slice or a str, not "};
+static const obx_str sl2731 = {(obx_sblk*)&sl2731b, 0, 42};
+static struct { int64_t rc; char data[6]; } sl2732b = {-1, ").len"};
+static const obx_str sl2732 = {(obx_sblk*)&sl2732b, 0, 5};
+static struct { int64_t rc; char data[18]; } sl2733b = {-1, "array element is "};
+static const obx_str sl2733 = {(obx_sblk*)&sl2733b, 0, 17};
+static struct { int64_t rc; char data[68]; } sl2734b = {-1, "cannot infer the element type of [] here: it needs an expected type"};
+static const obx_str sl2734 = {(obx_sblk*)&sl2734b, 0, 67};
+static struct { int64_t rc; char data[31]; } sl2735b = {-1, "an array element needs a value"};
+static const obx_str sl2735 = {(obx_sblk*)&sl2735b, 0, 30};
+static struct { int64_t rc; char data[15]; } sl2736b = {-1, " = rt_arr_new("};
+static const obx_str sl2736 = {(obx_sblk*)&sl2736b, 0, 14};
+static struct { int64_t rc; char data[28]; } sl2737b = {-1, " cannot be built with {...}"};
+static const obx_str sl2737 = {(obx_sblk*)&sl2737b, 0, 27};
+static struct { int64_t rc; char data[26]; } sl2738b = {-1, "unknown type in a literal"};
+static const obx_str sl2738 = {(obx_sblk*)&sl2738b, 0, 25};
+static struct { int64_t rc; char data[22]; } sl2739b = {-1, " is not a record type"};
+static const obx_str sl2739 = {(obx_sblk*)&sl2739b, 0, 21};
+static struct { int64_t rc; char data[28]; } sl2740b = {-1, ": build one of its variants"};
+static const obx_str sl2740 = {(obx_sblk*)&sl2740b, 0, 27};
+static struct { int64_t rc; char data[16]; } sl2741b = {-1, "cannot build a "};
+static const obx_str sl2741 = {(obx_sblk*)&sl2741b, 0, 15};
+static struct { int64_t rc; char data[15]; } sl2742b = {-1, " here: field '"};
+static const obx_str sl2742 = {(obx_sblk*)&sl2742b, 0, 14};
+static struct { int64_t rc; char data[24]; } sl2743b = {-1, "' is private to module "};
+static const obx_str sl2743 = {(obx_sblk*)&sl2743b, 0, 23};
+static struct { int64_t rc; char data[59]; } sl2744b = {-1, "internal error: return, break or continue as an expression"};
+static const obx_str sl2744 = {(obx_sblk*)&sl2744b, 0, 58};
+static struct { int64_t rc; char data[32]; } sl2745b = {-1, " cannot be in a while condition"};
+static const obx_str sl2745 = {(obx_sblk*)&sl2745b, 0, 31};
+static struct { int64_t rc; char data[39]; } sl2746b = {-1, "try needs an owned value, not a borrow"};
+static const obx_str sl2746 = {(obx_sblk*)&sl2746b, 0, 38};
+static struct { int64_t rc; char data[69]; } sl2747b = {-1, "try needs a closed type with variants Ok and Err (like Result), not "};
+static const obx_str sl2747 = {(obx_sblk*)&sl2747b, 0, 68};
+static struct { int64_t rc; char data[78]; } sl2748b = {-1, "try needs a function whose result type has an Err variant (like Result), and "};
+static const obx_str sl2748 = {(obx_sblk*)&sl2748b, 0, 77};
+static struct { int64_t rc; char data[10]; } sl2749b = {-1, " returns "};
+static const obx_str sl2749 = {(obx_sblk*)&sl2749b, 0, 9};
+static struct { int64_t rc; char data[21]; } sl2750b = {-1, "try: the error type "};
+static const obx_str sl2750 = {(obx_sblk*)&sl2750b, 0, 20};
+static struct { int64_t rc; char data[22]; } sl2751b = {-1, " is not the Err type "};
+static const obx_str sl2751 = {(obx_sblk*)&sl2751b, 0, 21};
+static struct { int64_t rc; char data[25]; } sl2752b = {-1, "try cannot take apart a "};
+static const obx_str sl2752 = {(obx_sblk*)&sl2752b, 0, 24};
+static struct { int64_t rc; char data[3]; } sl2753b = {-1, "tr"};
+static const obx_str sl2753 = {(obx_sblk*)&sl2753b, 0, 2};
+static struct { int64_t rc; char data[11]; } sl2754b = {-1, "u.V_Err.f_"};
+static const obx_str sl2754 = {(obx_sblk*)&sl2754b, 0, 10};
+static struct { int64_t rc; char data[10]; } sl2755b = {-1, "u.V_Ok.f_"};
+static const obx_str sl2755 = {(obx_sblk*)&sl2755b, 0, 9};
+static struct { int64_t rc; char data[3]; } sl2756b = {-1, "ok"};
+static const obx_str sl2756 = {(obx_sblk*)&sl2756b, 0, 2};
+static struct { int64_t rc; char data[3]; } sl2757b = {-1, "mx"};
+static const obx_str sl2757 = {(obx_sblk*)&sl2757b, 0, 2};
+static struct { int64_t rc; char data[60]; } sl2758b = {-1, "an if expression cannot give a borrow, a slice or a closure"};
+static const obx_str sl2758 = {(obx_sblk*)&sl2758b, 0, 59};
+static struct { int64_t rc; char data[56]; } sl2759b = {-1, "the branches of an if expression have different types, "};
+static const obx_str sl2759 = {(obx_sblk*)&sl2759b, 0, 55};
+static struct { int64_t rc; char data[4]; } sl2760b = {-1, " \077 "};
+static const obx_str sl2760 = {(obx_sblk*)&sl2760b, 0, 3};
+static struct { int64_t rc; char data[4]; } sl2761b = {-1, " : "};
+static const obx_str sl2761 = {(obx_sblk*)&sl2761b, 0, 3};
+static struct { int64_t rc; char data[16]; } sl2762b = {-1, "inside && or ||"};
+static const obx_str sl2762 = {(obx_sblk*)&sl2762b, 0, 15};
+static struct { int64_t rc; char data[27]; } sl2763b = {-1, " needs bool operands, not "};
+static const obx_str sl2763 = {(obx_sblk*)&sl2763b, 0, 26};
+static struct { int64_t rc; char data[21]; } sl2764b = {-1, "! needs a bool, not "};
+static const obx_str sl2764 = {(obx_sblk*)&sl2764b, 0, 20};
+static struct { int64_t rc; char data[25]; } sl2765b = {-1, "~ needs an integer, not "};
+static const obx_str sl2765 = {(obx_sblk*)&sl2765b, 0, 24};
+static struct { int64_t rc; char data[3]; } sl2766b = {-1, ")~"};
 static const obx_str sl2766 = {(obx_sblk*)&sl2766b, 0, 2};
-static struct { int64_t rc; char data[28]; } sl2767b = {-1, "unary - is not defined for "};
-static const obx_str sl2767 = {(obx_sblk*)&sl2767b, 0, 27};
-static struct { int64_t rc; char data[30]; } sl2768b = {-1, "an index takes one expression"};
-static const obx_str sl2768 = {(obx_sblk*)&sl2768b, 0, 29};
-static struct { int64_t rc; char data[16]; } sl2769b = {-1, "cannot index a "};
-static const obx_str sl2769 = {(obx_sblk*)&sl2769b, 0, 15};
-static struct { int64_t rc; char data[4]; } sl2770b = {-1, "*)("};
-static const obx_str sl2770 = {(obx_sblk*)&sl2770b, 0, 3};
-static struct { int64_t rc; char data[16]; } sl2771b = {-1, ").data)[rt_idx("};
+static struct { int64_t rc; char data[8]; } sl2767b = {-1, "rt_neg_"};
+static const obx_str sl2767 = {(obx_sblk*)&sl2767b, 0, 7};
+static struct { int64_t rc; char data[3]; } sl2768b = {-1, "(-"};
+static const obx_str sl2768 = {(obx_sblk*)&sl2768b, 0, 2};
+static struct { int64_t rc; char data[28]; } sl2769b = {-1, "unary - is not defined for "};
+static const obx_str sl2769 = {(obx_sblk*)&sl2769b, 0, 27};
+static struct { int64_t rc; char data[30]; } sl2770b = {-1, "an index takes one expression"};
+static const obx_str sl2770 = {(obx_sblk*)&sl2770b, 0, 29};
+static struct { int64_t rc; char data[16]; } sl2771b = {-1, "cannot index a "};
 static const obx_str sl2771 = {(obx_sblk*)&sl2771b, 0, 15};
-static struct { int64_t rc; char data[4]; } sl2772b = {-1, ", ("};
+static struct { int64_t rc; char data[4]; } sl2772b = {-1, "*)("};
 static const obx_str sl2772 = {(obx_sblk*)&sl2772b, 0, 3};
-static struct { int64_t rc; char data[8]; } sl2773b = {-1, ").len, "};
-static const obx_str sl2773 = {(obx_sblk*)&sl2773b, 0, 7};
-static struct { int64_t rc; char data[3]; } sl2774b = {-1, ")]"};
-static const obx_str sl2774 = {(obx_sblk*)&sl2774b, 0, 2};
-static struct { int64_t rc; char data[30]; } sl2775b = {-1, "an index must be an int, not "};
-static const obx_str sl2775 = {(obx_sblk*)&sl2775b, 0, 29};
-static struct { int64_t rc; char data[3]; } sl2776b = {-1, "ix"};
+static struct { int64_t rc; char data[16]; } sl2773b = {-1, ").data)[rt_idx("};
+static const obx_str sl2773 = {(obx_sblk*)&sl2773b, 0, 15};
+static struct { int64_t rc; char data[4]; } sl2774b = {-1, ", ("};
+static const obx_str sl2774 = {(obx_sblk*)&sl2774b, 0, 3};
+static struct { int64_t rc; char data[8]; } sl2775b = {-1, ").len, "};
+static const obx_str sl2775 = {(obx_sblk*)&sl2775b, 0, 7};
+static struct { int64_t rc; char data[3]; } sl2776b = {-1, ")]"};
 static const obx_str sl2776 = {(obx_sblk*)&sl2776b, 0, 2};
-static struct { int64_t rc; char data[17]; } sl2777b = {-1, " has no variant "};
-static const obx_str sl2777 = {(obx_sblk*)&sl2777b, 0, 16};
-static struct { int64_t rc; char data[46]; } sl2778b = {-1, " on a type is an associated function: call it"};
-static const obx_str sl2778 = {(obx_sblk*)&sl2778b, 0, 45};
-static struct { int64_t rc; char data[19]; } sl2779b = {-1, "the closure takes "};
-static const obx_str sl2779 = {(obx_sblk*)&sl2779b, 0, 18};
-static struct { int64_t rc; char data[18]; } sl2780b = {-1, " parameters, but "};
-static const obx_str sl2780 = {(obx_sblk*)&sl2780b, 0, 17};
-static struct { int64_t rc; char data[13]; } sl2781b = {-1, " is expected"};
-static const obx_str sl2781 = {(obx_sblk*)&sl2781b, 0, 12};
-static struct { int64_t rc; char data[37]; } sl2782b = {-1, "give the type of closure parameter '"};
-static const obx_str sl2782 = {(obx_sblk*)&sl2782b, 0, 36};
-static struct { int64_t rc; char data[30]; } sl2783b = {-1, "': it cannot be inferred here"};
-static const obx_str sl2783 = {(obx_sblk*)&sl2783b, 0, 29};
-static struct { int64_t rc; char data[64]; } sl2784b = {-1, "give the result type of the closure: it cannot be inferred here"};
-static const obx_str sl2784 = {(obx_sblk*)&sl2784b, 0, 63};
-static struct { int64_t rc; char data[33]; } sl2785b = {-1, "a closure cannot return a borrow"};
-static const obx_str sl2785 = {(obx_sblk*)&sl2785b, 0, 32};
-static struct { int64_t rc; char data[12]; } sl2786b = {-1, "the closure"};
-static const obx_str sl2786 = {(obx_sblk*)&sl2786b, 0, 11};
-static struct { int64_t rc; char data[52]; } sl2787b = {-1, "the closure returns never, but it may reach its end"};
-static const obx_str sl2787 = {(obx_sblk*)&sl2787b, 0, 51};
-static struct { int64_t rc; char data[47]; } sl2788b = {-1, "the closure may reach its end without a return"};
-static const obx_str sl2788 = {(obx_sblk*)&sl2788b, 0, 46};
-static struct { int64_t rc; char data[3]; } sl2789b = {-1, "ce"};
-static const obx_str sl2789 = {(obx_sblk*)&sl2789b, 0, 2};
-static struct { int64_t rc; char data[7]; } sl2790b = {-1, "void* "};
-static const obx_str sl2790 = {(obx_sblk*)&sl2790b, 0, 6};
-static struct { int64_t rc; char data[9]; } sl2791b = {-1, "(void*)&"};
-static const obx_str sl2791 = {(obx_sblk*)&sl2791b, 0, 8};
-static struct { int64_t rc; char data[33]; } sl2792b = {-1, " is a built-in function; call it"};
-static const obx_str sl2792 = {(obx_sblk*)&sl2792b, 0, 32};
-static struct { int64_t rc; char data[20]; } sl2793b = {-1, "fractional literal "};
-static const obx_str sl2793 = {(obx_sblk*)&sl2793b, 0, 19};
-static struct { int64_t rc; char data[51]; } sl2794b = {-1, " has too many digits: its units do not fit an i128"};
-static const obx_str sl2794 = {(obx_sblk*)&sl2794b, 0, 50};
-static struct { int64_t rc; char data[36]; } sl2795b = {-1, "the exponent of fractional literal "};
-static const obx_str sl2795 = {(obx_sblk*)&sl2795b, 0, 35};
-static struct { int64_t rc; char data[29]; } sl2796b = {-1, " is out of range: its scale "};
-static const obx_str sl2796 = {(obx_sblk*)&sl2796b, 0, 28};
-static struct { int64_t rc; char data[21]; } sl2797b = {-1, " does not fit an int"};
-static const obx_str sl2797 = {(obx_sblk*)&sl2797b, 0, 20};
-static struct { int64_t rc; char data[13]; } sl2798b = {-1, "fromFraction"};
-static const obx_str sl2798 = {(obx_sblk*)&sl2798b, 0, 12};
-static struct { int64_t rc; char data[71]; } sl2799b = {-1, "a fractional literal needs a function fromFraction(i128, int) in scope"};
-static const obx_str sl2799 = {(obx_sblk*)&sl2799b, 0, 70};
-static struct { int64_t rc; char data[12]; } sl2800b = {-1, "rt_str_sub("};
-static const obx_str sl2800 = {(obx_sblk*)&sl2800b, 0, 11};
-static struct { int64_t rc; char data[16]; } sl2801b = {-1, "cannot slice a "};
-static const obx_str sl2801 = {(obx_sblk*)&sl2801b, 0, 15};
-static struct { int64_t rc; char data[22]; } sl2802b = {-1, "cannot slice global '"};
-static const obx_str sl2802 = {(obx_sblk*)&sl2802b, 0, 21};
-static struct { int64_t rc; char data[20]; } sl2803b = {-1, "take a mut slice of"};
-static const obx_str sl2803 = {(obx_sblk*)&sl2803b, 0, 19};
-static struct { int64_t rc; char data[11]; } sl2804b = {-1, " = rt_sub("};
-static const obx_str sl2804 = {(obx_sblk*)&sl2804b, 0, 10};
-static struct { int64_t rc; char data[17]; } sl2805b = {-1, "integer literal "};
-static const obx_str sl2805 = {(obx_sblk*)&sl2805b, 0, 16};
-static struct { int64_t rc; char data[16]; } sl2806b = {-1, " (out of range)"};
-static const obx_str sl2806 = {(obx_sblk*)&sl2806b, 0, 15};
-static struct { int64_t rc; char data[8]; } sl2807b = {-1, "OBX_LIB"};
-static const obx_str sl2807 = {(obx_sblk*)&sl2807b, 0, 7};
-static struct { int64_t rc; char data[8]; } sl2808b = {-1, "/../lib"};
-static const obx_str sl2808 = {(obx_sblk*)&sl2808b, 0, 7};
-static struct { int64_t rc; char data[4]; } sl2809b = {-1, "alu"};
-static const obx_str sl2809 = {(obx_sblk*)&sl2809b, 0, 3};
-static struct { int64_t rc; char data[5]; } sl2810b = {-1, "alui"};
-static const obx_str sl2810 = {(obx_sblk*)&sl2810b, 0, 4};
-static struct { int64_t rc; char data[5]; } sl2811b = {-1, "alum"};
-static const obx_str sl2811 = {(obx_sblk*)&sl2811b, 0, 4};
-static struct { int64_t rc; char data[5]; } sl2812b = {-1, "test"};
+static struct { int64_t rc; char data[30]; } sl2777b = {-1, "an index must be an int, not "};
+static const obx_str sl2777 = {(obx_sblk*)&sl2777b, 0, 29};
+static struct { int64_t rc; char data[3]; } sl2778b = {-1, "ix"};
+static const obx_str sl2778 = {(obx_sblk*)&sl2778b, 0, 2};
+static struct { int64_t rc; char data[17]; } sl2779b = {-1, " has no variant "};
+static const obx_str sl2779 = {(obx_sblk*)&sl2779b, 0, 16};
+static struct { int64_t rc; char data[46]; } sl2780b = {-1, " on a type is an associated function: call it"};
+static const obx_str sl2780 = {(obx_sblk*)&sl2780b, 0, 45};
+static struct { int64_t rc; char data[19]; } sl2781b = {-1, "the closure takes "};
+static const obx_str sl2781 = {(obx_sblk*)&sl2781b, 0, 18};
+static struct { int64_t rc; char data[18]; } sl2782b = {-1, " parameters, but "};
+static const obx_str sl2782 = {(obx_sblk*)&sl2782b, 0, 17};
+static struct { int64_t rc; char data[13]; } sl2783b = {-1, " is expected"};
+static const obx_str sl2783 = {(obx_sblk*)&sl2783b, 0, 12};
+static struct { int64_t rc; char data[37]; } sl2784b = {-1, "give the type of closure parameter '"};
+static const obx_str sl2784 = {(obx_sblk*)&sl2784b, 0, 36};
+static struct { int64_t rc; char data[30]; } sl2785b = {-1, "': it cannot be inferred here"};
+static const obx_str sl2785 = {(obx_sblk*)&sl2785b, 0, 29};
+static struct { int64_t rc; char data[64]; } sl2786b = {-1, "give the result type of the closure: it cannot be inferred here"};
+static const obx_str sl2786 = {(obx_sblk*)&sl2786b, 0, 63};
+static struct { int64_t rc; char data[33]; } sl2787b = {-1, "a closure cannot return a borrow"};
+static const obx_str sl2787 = {(obx_sblk*)&sl2787b, 0, 32};
+static struct { int64_t rc; char data[12]; } sl2788b = {-1, "the closure"};
+static const obx_str sl2788 = {(obx_sblk*)&sl2788b, 0, 11};
+static struct { int64_t rc; char data[52]; } sl2789b = {-1, "the closure returns never, but it may reach its end"};
+static const obx_str sl2789 = {(obx_sblk*)&sl2789b, 0, 51};
+static struct { int64_t rc; char data[47]; } sl2790b = {-1, "the closure may reach its end without a return"};
+static const obx_str sl2790 = {(obx_sblk*)&sl2790b, 0, 46};
+static struct { int64_t rc; char data[3]; } sl2791b = {-1, "ce"};
+static const obx_str sl2791 = {(obx_sblk*)&sl2791b, 0, 2};
+static struct { int64_t rc; char data[7]; } sl2792b = {-1, "void* "};
+static const obx_str sl2792 = {(obx_sblk*)&sl2792b, 0, 6};
+static struct { int64_t rc; char data[9]; } sl2793b = {-1, "(void*)&"};
+static const obx_str sl2793 = {(obx_sblk*)&sl2793b, 0, 8};
+static struct { int64_t rc; char data[33]; } sl2794b = {-1, " is a built-in function; call it"};
+static const obx_str sl2794 = {(obx_sblk*)&sl2794b, 0, 32};
+static struct { int64_t rc; char data[20]; } sl2795b = {-1, "fractional literal "};
+static const obx_str sl2795 = {(obx_sblk*)&sl2795b, 0, 19};
+static struct { int64_t rc; char data[51]; } sl2796b = {-1, " has too many digits: its units do not fit an i128"};
+static const obx_str sl2796 = {(obx_sblk*)&sl2796b, 0, 50};
+static struct { int64_t rc; char data[36]; } sl2797b = {-1, "the exponent of fractional literal "};
+static const obx_str sl2797 = {(obx_sblk*)&sl2797b, 0, 35};
+static struct { int64_t rc; char data[29]; } sl2798b = {-1, " is out of range: its scale "};
+static const obx_str sl2798 = {(obx_sblk*)&sl2798b, 0, 28};
+static struct { int64_t rc; char data[21]; } sl2799b = {-1, " does not fit an int"};
+static const obx_str sl2799 = {(obx_sblk*)&sl2799b, 0, 20};
+static struct { int64_t rc; char data[13]; } sl2800b = {-1, "fromFraction"};
+static const obx_str sl2800 = {(obx_sblk*)&sl2800b, 0, 12};
+static struct { int64_t rc; char data[71]; } sl2801b = {-1, "a fractional literal needs a function fromFraction(i128, int) in scope"};
+static const obx_str sl2801 = {(obx_sblk*)&sl2801b, 0, 70};
+static struct { int64_t rc; char data[12]; } sl2802b = {-1, "rt_str_sub("};
+static const obx_str sl2802 = {(obx_sblk*)&sl2802b, 0, 11};
+static struct { int64_t rc; char data[16]; } sl2803b = {-1, "cannot slice a "};
+static const obx_str sl2803 = {(obx_sblk*)&sl2803b, 0, 15};
+static struct { int64_t rc; char data[22]; } sl2804b = {-1, "cannot slice global '"};
+static const obx_str sl2804 = {(obx_sblk*)&sl2804b, 0, 21};
+static struct { int64_t rc; char data[20]; } sl2805b = {-1, "take a mut slice of"};
+static const obx_str sl2805 = {(obx_sblk*)&sl2805b, 0, 19};
+static struct { int64_t rc; char data[11]; } sl2806b = {-1, " = rt_sub("};
+static const obx_str sl2806 = {(obx_sblk*)&sl2806b, 0, 10};
+static struct { int64_t rc; char data[17]; } sl2807b = {-1, "integer literal "};
+static const obx_str sl2807 = {(obx_sblk*)&sl2807b, 0, 16};
+static struct { int64_t rc; char data[16]; } sl2808b = {-1, " (out of range)"};
+static const obx_str sl2808 = {(obx_sblk*)&sl2808b, 0, 15};
+static struct { int64_t rc; char data[8]; } sl2809b = {-1, "OBX_LIB"};
+static const obx_str sl2809 = {(obx_sblk*)&sl2809b, 0, 7};
+static struct { int64_t rc; char data[8]; } sl2810b = {-1, "/../lib"};
+static const obx_str sl2810 = {(obx_sblk*)&sl2810b, 0, 7};
+static struct { int64_t rc; char data[4]; } sl2811b = {-1, "alu"};
+static const obx_str sl2811 = {(obx_sblk*)&sl2811b, 0, 3};
+static struct { int64_t rc; char data[5]; } sl2812b = {-1, "alui"};
 static const obx_str sl2812 = {(obx_sblk*)&sl2812b, 0, 4};
-static struct { int64_t rc; char data[4]; } sl2813b = {-1, "mov"};
-static const obx_str sl2813 = {(obx_sblk*)&sl2813b, 0, 3};
-static struct { int64_t rc; char data[5]; } sl2814b = {-1, "load"};
+static struct { int64_t rc; char data[5]; } sl2813b = {-1, "alum"};
+static const obx_str sl2813 = {(obx_sblk*)&sl2813b, 0, 4};
+static struct { int64_t rc; char data[5]; } sl2814b = {-1, "test"};
 static const obx_str sl2814 = {(obx_sblk*)&sl2814b, 0, 4};
-static struct { int64_t rc; char data[6]; } sl2815b = {-1, "store"};
-static const obx_str sl2815 = {(obx_sblk*)&sl2815b, 0, 5};
-static struct { int64_t rc; char data[7]; } sl2816b = {-1, "storei"};
-static const obx_str sl2816 = {(obx_sblk*)&sl2816b, 0, 6};
-static struct { int64_t rc; char data[7]; } sl2817b = {-1, "loadzx"};
-static const obx_str sl2817 = {(obx_sblk*)&sl2817b, 0, 6};
-static struct { int64_t rc; char data[7]; } sl2818b = {-1, "loadsx"};
+static struct { int64_t rc; char data[4]; } sl2815b = {-1, "mov"};
+static const obx_str sl2815 = {(obx_sblk*)&sl2815b, 0, 3};
+static struct { int64_t rc; char data[5]; } sl2816b = {-1, "load"};
+static const obx_str sl2816 = {(obx_sblk*)&sl2816b, 0, 4};
+static struct { int64_t rc; char data[6]; } sl2817b = {-1, "store"};
+static const obx_str sl2817 = {(obx_sblk*)&sl2817b, 0, 5};
+static struct { int64_t rc; char data[7]; } sl2818b = {-1, "storei"};
 static const obx_str sl2818 = {(obx_sblk*)&sl2818b, 0, 6};
-static struct { int64_t rc; char data[3]; } sl2819b = {-1, "zx"};
-static const obx_str sl2819 = {(obx_sblk*)&sl2819b, 0, 2};
-static struct { int64_t rc; char data[3]; } sl2820b = {-1, "sx"};
-static const obx_str sl2820 = {(obx_sblk*)&sl2820b, 0, 2};
-static struct { int64_t rc; char data[4]; } sl2821b = {-1, "lea"};
-static const obx_str sl2821 = {(obx_sblk*)&sl2821b, 0, 3};
-static struct { int64_t rc; char data[6]; } sl2822b = {-1, "movri"};
-static const obx_str sl2822 = {(obx_sblk*)&sl2822b, 0, 5};
-static struct { int64_t rc; char data[6]; } sl2823b = {-1, "imuli"};
-static const obx_str sl2823 = {(obx_sblk*)&sl2823b, 0, 5};
-static struct { int64_t rc; char data[5]; } sl2824b = {-1, "shcl"};
-static const obx_str sl2824 = {(obx_sblk*)&sl2824b, 0, 4};
-static struct { int64_t rc; char data[4]; } sl2825b = {-1, "shi"};
-static const obx_str sl2825 = {(obx_sblk*)&sl2825b, 0, 3};
-static struct { int64_t rc; char data[5]; } sl2826b = {-1, "shld"};
+static struct { int64_t rc; char data[7]; } sl2819b = {-1, "loadzx"};
+static const obx_str sl2819 = {(obx_sblk*)&sl2819b, 0, 6};
+static struct { int64_t rc; char data[7]; } sl2820b = {-1, "loadsx"};
+static const obx_str sl2820 = {(obx_sblk*)&sl2820b, 0, 6};
+static struct { int64_t rc; char data[3]; } sl2821b = {-1, "zx"};
+static const obx_str sl2821 = {(obx_sblk*)&sl2821b, 0, 2};
+static struct { int64_t rc; char data[3]; } sl2822b = {-1, "sx"};
+static const obx_str sl2822 = {(obx_sblk*)&sl2822b, 0, 2};
+static struct { int64_t rc; char data[4]; } sl2823b = {-1, "lea"};
+static const obx_str sl2823 = {(obx_sblk*)&sl2823b, 0, 3};
+static struct { int64_t rc; char data[6]; } sl2824b = {-1, "movri"};
+static const obx_str sl2824 = {(obx_sblk*)&sl2824b, 0, 5};
+static struct { int64_t rc; char data[6]; } sl2825b = {-1, "imuli"};
+static const obx_str sl2825 = {(obx_sblk*)&sl2825b, 0, 5};
+static struct { int64_t rc; char data[5]; } sl2826b = {-1, "shcl"};
 static const obx_str sl2826 = {(obx_sblk*)&sl2826b, 0, 4};
-static struct { int64_t rc; char data[5]; } sl2827b = {-1, "shrd"};
-static const obx_str sl2827 = {(obx_sblk*)&sl2827b, 0, 4};
-static struct { int64_t rc; char data[6]; } sl2828b = {-1, "setcc"};
-static const obx_str sl2828 = {(obx_sblk*)&sl2828b, 0, 5};
-static struct { int64_t rc; char data[5]; } sl2829b = {-1, "cmov"};
+static struct { int64_t rc; char data[4]; } sl2827b = {-1, "shi"};
+static const obx_str sl2827 = {(obx_sblk*)&sl2827b, 0, 3};
+static struct { int64_t rc; char data[5]; } sl2828b = {-1, "shld"};
+static const obx_str sl2828 = {(obx_sblk*)&sl2828b, 0, 4};
+static struct { int64_t rc; char data[5]; } sl2829b = {-1, "shrd"};
 static const obx_str sl2829 = {(obx_sblk*)&sl2829b, 0, 4};
-static struct { int64_t rc; char data[5]; } sl2830b = {-1, "push"};
-static const obx_str sl2830 = {(obx_sblk*)&sl2830b, 0, 4};
-static struct { int64_t rc; char data[6]; } sl2831b = {-1, "callr"};
-static const obx_str sl2831 = {(obx_sblk*)&sl2831b, 0, 5};
-static struct { int64_t rc; char data[5]; } sl2832b = {-1, "jmpr"};
+static struct { int64_t rc; char data[6]; } sl2830b = {-1, "setcc"};
+static const obx_str sl2830 = {(obx_sblk*)&sl2830b, 0, 5};
+static struct { int64_t rc; char data[5]; } sl2831b = {-1, "cmov"};
+static const obx_str sl2831 = {(obx_sblk*)&sl2831b, 0, 4};
+static struct { int64_t rc; char data[5]; } sl2832b = {-1, "push"};
 static const obx_str sl2832 = {(obx_sblk*)&sl2832b, 0, 4};
-static struct { int64_t rc; char data[4]; } sl2833b = {-1, "cqo"};
-static const obx_str sl2833 = {(obx_sblk*)&sl2833b, 0, 3};
-static struct { int64_t rc; char data[4]; } sl2834b = {-1, "cdq"};
-static const obx_str sl2834 = {(obx_sblk*)&sl2834b, 0, 3};
-static struct { int64_t rc; char data[6]; } sl2835b = {-1, "movsb"};
-static const obx_str sl2835 = {(obx_sblk*)&sl2835b, 0, 5};
-static struct { int64_t rc; char data[6]; } sl2836b = {-1, "stosb"};
-static const obx_str sl2836 = {(obx_sblk*)&sl2836b, 0, 5};
-static struct { int64_t rc; char data[4]; } sl2837b = {-1, "ud2"};
-static const obx_str sl2837 = {(obx_sblk*)&sl2837b, 0, 3};
-static struct { int64_t rc; char data[4]; } sl2838b = {-1, "sse"};
-static const obx_str sl2838 = {(obx_sblk*)&sl2838b, 0, 3};
-static struct { int64_t rc; char data[8]; } sl2839b = {-1, "ucomisd"};
-static const obx_str sl2839 = {(obx_sblk*)&sl2839b, 0, 7};
-static struct { int64_t rc; char data[6]; } sl2840b = {-1, "xorpd"};
-static const obx_str sl2840 = {(obx_sblk*)&sl2840b, 0, 5};
-static struct { int64_t rc; char data[10]; } sl2841b = {-1, "movsdload"};
-static const obx_str sl2841 = {(obx_sblk*)&sl2841b, 0, 9};
-static struct { int64_t rc; char data[11]; } sl2842b = {-1, "movsdstore"};
-static const obx_str sl2842 = {(obx_sblk*)&sl2842b, 0, 10};
-static struct { int64_t rc; char data[7]; } sl2843b = {-1, "movqxr"};
-static const obx_str sl2843 = {(obx_sblk*)&sl2843b, 0, 6};
-static struct { int64_t rc; char data[7]; } sl2844b = {-1, "movqrx"};
-static const obx_str sl2844 = {(obx_sblk*)&sl2844b, 0, 6};
-static struct { int64_t rc; char data[9]; } sl2845b = {-1, "cvtsi2sd"};
-static const obx_str sl2845 = {(obx_sblk*)&sl2845b, 0, 8};
-static struct { int64_t rc; char data[10]; } sl2846b = {-1, "cvttsd2si"};
-static const obx_str sl2846 = {(obx_sblk*)&sl2846b, 0, 9};
-static struct { int64_t rc; char data[31]; } sl2847b = {-1, "x64 test: unknown instruction "};
-static const obx_str sl2847 = {(obx_sblk*)&sl2847b, 0, 30};
-static struct { int64_t rc; char data[24]; } sl2848b = {-1, "x64 test: unknown name "};
-static const obx_str sl2848 = {(obx_sblk*)&sl2848b, 0, 23};
-static struct { int64_t rc; char data[8]; } sl2849b = {-1, "error: "};
-static const obx_str sl2849 = {(obx_sblk*)&sl2849b, 0, 7};
+static struct { int64_t rc; char data[6]; } sl2833b = {-1, "callr"};
+static const obx_str sl2833 = {(obx_sblk*)&sl2833b, 0, 5};
+static struct { int64_t rc; char data[5]; } sl2834b = {-1, "jmpr"};
+static const obx_str sl2834 = {(obx_sblk*)&sl2834b, 0, 4};
+static struct { int64_t rc; char data[4]; } sl2835b = {-1, "cqo"};
+static const obx_str sl2835 = {(obx_sblk*)&sl2835b, 0, 3};
+static struct { int64_t rc; char data[4]; } sl2836b = {-1, "cdq"};
+static const obx_str sl2836 = {(obx_sblk*)&sl2836b, 0, 3};
+static struct { int64_t rc; char data[6]; } sl2837b = {-1, "movsb"};
+static const obx_str sl2837 = {(obx_sblk*)&sl2837b, 0, 5};
+static struct { int64_t rc; char data[6]; } sl2838b = {-1, "stosb"};
+static const obx_str sl2838 = {(obx_sblk*)&sl2838b, 0, 5};
+static struct { int64_t rc; char data[4]; } sl2839b = {-1, "ud2"};
+static const obx_str sl2839 = {(obx_sblk*)&sl2839b, 0, 3};
+static struct { int64_t rc; char data[4]; } sl2840b = {-1, "sse"};
+static const obx_str sl2840 = {(obx_sblk*)&sl2840b, 0, 3};
+static struct { int64_t rc; char data[8]; } sl2841b = {-1, "ucomisd"};
+static const obx_str sl2841 = {(obx_sblk*)&sl2841b, 0, 7};
+static struct { int64_t rc; char data[6]; } sl2842b = {-1, "xorpd"};
+static const obx_str sl2842 = {(obx_sblk*)&sl2842b, 0, 5};
+static struct { int64_t rc; char data[10]; } sl2843b = {-1, "movsdload"};
+static const obx_str sl2843 = {(obx_sblk*)&sl2843b, 0, 9};
+static struct { int64_t rc; char data[11]; } sl2844b = {-1, "movsdstore"};
+static const obx_str sl2844 = {(obx_sblk*)&sl2844b, 0, 10};
+static struct { int64_t rc; char data[7]; } sl2845b = {-1, "movqxr"};
+static const obx_str sl2845 = {(obx_sblk*)&sl2845b, 0, 6};
+static struct { int64_t rc; char data[7]; } sl2846b = {-1, "movqrx"};
+static const obx_str sl2846 = {(obx_sblk*)&sl2846b, 0, 6};
+static struct { int64_t rc; char data[9]; } sl2847b = {-1, "cvtsi2sd"};
+static const obx_str sl2847 = {(obx_sblk*)&sl2847b, 0, 8};
+static struct { int64_t rc; char data[10]; } sl2848b = {-1, "cvttsd2si"};
+static const obx_str sl2848 = {(obx_sblk*)&sl2848b, 0, 9};
+static struct { int64_t rc; char data[31]; } sl2849b = {-1, "x64 test: unknown instruction "};
+static const obx_str sl2849 = {(obx_sblk*)&sl2849b, 0, 30};
+static struct { int64_t rc; char data[24]; } sl2850b = {-1, "x64 test: unknown name "};
+static const obx_str sl2850 = {(obx_sblk*)&sl2850b, 0, 23};
+static struct { int64_t rc; char data[8]; } sl2851b = {-1, "error: "};
+static const obx_str sl2851 = {(obx_sblk*)&sl2851b, 0, 7};
 extern double x_sqrt(double) __asm__("sqrt");
 extern double x_cbrt(double) __asm__("cbrt");
 extern double x_pow(double, double) __asm__("pow");
@@ -7283,226 +7289,237 @@ static obx_arr f752_check_Checker_popFrame(S73_check_Checker** p_c);
 static void f753_check_Checker_cutPending(S73_check_Checker** p_c, int64_t p_m);
 static void f751_check_Checker_stmt(S73_check_Checker** p_c, int64_t p_s);
 static void f764_check_Checker_sMatch(S73_check_Checker** p_c, int64_t p_s, bool p_mx);
-static void f782_check_Checker_join(S73_check_Checker** p_c, obx_arr* p_snaps, int64_t p_line);
-static int64_t f783_check_snapGet(obx_arr* p_snap, int64_t p_v);
-static void f781_check_Checker_live(S73_check_Checker** p_c, obx_arr* p_snaps);
+static void f783_check_Checker_joinAt(S73_check_Checker** p_c, obx_arr* p_snaps, obx_arr* p_ends, int64_t p_line);
+static obx_arr f785_check_Checker_joinDropLines(S73_check_Checker** p_c, obx_arr* p_vs, int64_t p_ind);
+static obx_arr f784_check_Checker_joinMoves(S73_check_Checker** p_c, obx_arr* p_snaps, int64_t p_line);
+static int64_t f786_check_snapGet(obx_arr* p_snap, int64_t p_v);
+static void f782_check_Checker_live(S73_check_Checker** p_c, obx_arr* p_snaps);
+static S94_check_PathEnd f781_check_Checker_pathEnd(S73_check_Checker** p_c);
 static void f780_check_Checker_armBody(S73_check_Checker** p_c, int64_t p_body, bool p_mx);
-static void f784_check_Checker_mxArm(S73_check_Checker** p_c, int64_t p_x);
-static void f786_check_Checker_mxBody(S73_check_Checker** p_c, int64_t p_x);
-static bool f785_check_isLitNode(int64_t p_k);
+static void f787_check_Checker_mxArm(S73_check_Checker** p_c, int64_t p_x);
+static void f789_check_Checker_mxBody(S73_check_Checker** p_c, int64_t p_x);
+static bool f788_check_isLitNode(int64_t p_k);
 static void f779_check_Checker_freeze(S73_check_Checker** p_c, int64_t p_root, bool p_m, obx_str p_by);
 static bool f778_check_Checker_isCopy(S73_check_Checker** p_c, int64_t p_t);
 static void f777_check_Checker_declare(S73_check_Checker** p_c, int64_t p_v);
 static void f776_check_Checker_restore(S73_check_Checker** p_c, obx_arr* p_snap);
 static int64_t f775_check_Checker_armVariant(S73_check_Checker** p_c, int64_t p_arm, int64_t p_d, int64_t p_base);
 static int64_t f774_check_Checker_armVariantAt(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_line, int64_t p_d, int64_t p_base);
-static obx_str f788_check_Checker_vpathText(S73_check_Checker** p_c, int64_t p_vpath);
-static int64_t f787_check_Checker_vpathExpr(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_line);
+static obx_str f791_check_Checker_vpathText(S73_check_Checker** p_c, int64_t p_vpath);
+static int64_t f790_check_Checker_vpathExpr(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_line);
 static obx_arr f773_check_Checker_snapshot(S73_check_Checker** p_c);
 static obx_str f772_check_Checker_consume(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_line);
-static obx_str f792_check_Checker_gname(S73_check_Checker** p_c, int64_t p_gk, int64_t p_gi);
-static obx_str f791_check_Checker_rootName(S73_check_Checker** p_c, int64_t p_r, obx_str p_dflt);
-static void f790_check_Checker_checkPending(S73_check_Checker** p_c, int64_t p_root, obx_str p_path, int64_t p_line, bool p_move);
-static bool f793_check_overlap(obx_str p_a, obx_str p_b);
-static void f789_check_Checker_frozen(S73_check_Checker** p_c, int64_t p_root, int64_t p_kind, int64_t p_line);
+static obx_str f796_check_Checker_gname(S73_check_Checker** p_c, int64_t p_gk, int64_t p_gi);
+static obx_str f795_check_Checker_rootName(S73_check_Checker** p_c, int64_t p_r, obx_str p_dflt);
+static void f794_check_Checker_checkPending(S73_check_Checker** p_c, int64_t p_root, obx_str p_path, int64_t p_line, bool p_move);
+static bool f797_check_overlap(obx_str p_a, obx_str p_b);
+static void f793_check_Checker_frozen(S73_check_Checker** p_c, int64_t p_root, int64_t p_kind, int64_t p_line);
+static void f792_check_Checker_movedErr(S73_check_Checker** p_c, int64_t p_vx, int64_t p_line);
 static obx_str f771_check_Checker_fresh(S73_check_Checker** p_c, obx_str p_p);
 static S87_check_Val f770_check_Checker_holdtmp(S73_check_Checker** p_c, obx_str p_cc, int64_t p_t);
-static S87_check_Val f794_check_Checker_holdtmpSrc(S73_check_Checker** p_c, obx_str p_cc, int64_t p_t, bool p_hasSrc, S87_check_Val p_src);
-static S87_check_Val f796_check_Checker_tmpval(S73_check_Checker** p_c, obx_str p_n, int64_t p_t);
-static int64_t f798_check_tmpRoot(int64_t p_t);
-static int64_t f797_check_Checker_newTmp(S73_check_Checker** p_c, obx_str p_n, int64_t p_t);
-static S87_check_Val f795_check_rvAt(obx_str p_c, int64_t p_t, int64_t p_root, obx_str p_path);
+static S87_check_Val f798_check_Checker_holdtmpSrc(S73_check_Checker** p_c, obx_str p_cc, int64_t p_t, bool p_hasSrc, S87_check_Val p_src);
+static S87_check_Val f800_check_Checker_tmpval(S73_check_Checker** p_c, obx_str p_n, int64_t p_t);
+static int64_t f802_check_tmpRoot(int64_t p_t);
+static int64_t f801_check_Checker_newTmp(S73_check_Checker** p_c, obx_str p_n, int64_t p_t);
+static S87_check_Val f799_check_rvAt(obx_str p_c, int64_t p_t, int64_t p_root, obx_str p_path);
 static obx_str f769_check_Checker_dup(S73_check_Checker** p_c, obx_str p_cc, int64_t p_t);
 static S87_check_Val f768_check_Checker_deref(S73_check_Checker** p_c, S87_check_Val p_v);
 static obx_str f767_check_Checker_tstr(S73_check_Checker** p_c, int64_t p_t);
 static void f766_check_Checker_matchLits(S73_check_Checker** p_c, int64_t p_s, S87_check_Val p_v, int64_t p_t, bool p_mx);
-static bool f800_check_Checker_flag(S73_check_Checker** p_c, int64_t p_n, int64_t p_f);
-static S64_sema_CVal f799_check_Checker_armConst(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_t, int64_t p_line);
+static bool f804_check_Checker_flag(S73_check_Checker** p_c, int64_t p_n, int64_t p_f);
+static S64_sema_CVal f803_check_Checker_armConst(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_t, int64_t p_line);
 static S87_check_Val f765_check_Checker_rd(S73_check_Checker** p_c, S87_check_Val p_v);
 static void f763_check_Checker_sContinue(S73_check_Checker** p_c, int64_t p_s);
-static void f802_check_Checker_loopState(S73_check_Checker** p_c, int64_t p_line);
-static int64_t f801_check_Checker_curLoop(S73_check_Checker** p_c, int64_t p_s, obx_str p_what);
+static void f806_check_Checker_loopState(S73_check_Checker** p_c, int64_t p_line);
+static int64_t f805_check_Checker_curLoop(S73_check_Checker** p_c, int64_t p_s, obx_str p_what);
 static void f762_check_Checker_sBreak(S73_check_Checker** p_c, int64_t p_s);
 static void f761_check_Checker_sReturn(S73_check_Checker** p_c, int64_t p_s);
-static S87_check_Val f803_check_Checker_coerce(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_t, int64_t p_line, obx_str p_what);
-static S87_check_Val f805_check_Checker_asSlice(S73_check_Checker** p_c, S87_check_Val p_v);
-static bool f804_check_Checker_sameSig(S73_check_Checker** p_c, int64_t p_a, int64_t p_b);
+static S87_check_Val f807_check_Checker_coerce(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_t, int64_t p_line, obx_str p_what);
+static S87_check_Val f809_check_Checker_asSlice(S73_check_Checker** p_c, S87_check_Val p_v);
+static bool f808_check_Checker_sameSig(S73_check_Checker** p_c, int64_t p_a, int64_t p_b);
 static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s);
-static void f808_check_Checker_loopEnd(S73_check_Checker** p_c, int64_t p_body, int64_t p_line);
-static void f807_check_Checker_loopStart(S73_check_Checker** p_c, obx_arr p_entry, bool p_infinite);
-static S87_check_Val f806_check_Checker_before1(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_x);
-static S87_check_Val f809_check_Checker_before(S73_check_Checker** p_c, S87_check_Val p_v0, obx_arr* p_later);
-static S87_check_Val f813_check_Checker_seq(S73_check_Checker** p_c, S87_check_Val p_v);
-static bool f814_check_checks(obx_str p_c);
-static bool f812_check_Checker_acts(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f811_check_Checker_snapVal(S73_check_Checker** p_c, S87_check_Val p_v);
-static bool f815_check_isWordText(obx_str p_c);
-static bool f810_check_Checker_effects(S73_check_Checker** p_c, int64_t p_e, bool p_traps);
-static bool f820_check_Checker_effectsList(S73_check_Checker** p_c, int64_t p_l, bool p_traps);
-static bool f819_check_isTrapOp(obx_str p_op);
-static bool f818_check_isCmpOp(obx_str p_op);
-static bool f817_check_isArith(obx_str p_op);
-static bool f816_check_isLitKind(int64_t p_k);
+static void f812_check_Checker_loopEnd(S73_check_Checker** p_c, int64_t p_body, int64_t p_line);
+static void f813_check_Checker_join(S73_check_Checker** p_c, obx_arr* p_snaps, int64_t p_line);
+static void f811_check_Checker_loopStart(S73_check_Checker** p_c, obx_arr p_entry, bool p_infinite);
+static S87_check_Val f810_check_Checker_before1(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_x);
+static S87_check_Val f814_check_Checker_before(S73_check_Checker** p_c, S87_check_Val p_v0, obx_arr* p_later);
+static S87_check_Val f818_check_Checker_seq(S73_check_Checker** p_c, S87_check_Val p_v);
+static bool f819_check_checks(obx_str p_c);
+static bool f817_check_Checker_acts(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f816_check_Checker_snapVal(S73_check_Checker** p_c, S87_check_Val p_v);
+static bool f820_check_isWordText(obx_str p_c);
+static bool f815_check_Checker_effects(S73_check_Checker** p_c, int64_t p_e, bool p_traps);
+static bool f826_check_Checker_effectsList(S73_check_Checker** p_c, int64_t p_l, bool p_traps);
+static bool f825_check_Checker_namesOwned(S73_check_Checker** p_c, int64_t p_e);
+static bool f829_check_Checker_namesOwnedArms(S73_check_Checker** p_c, int64_t p_l);
+static bool f828_check_Checker_namesOwnedInits(S73_check_Checker** p_c, int64_t p_l);
+static bool f827_check_Checker_namesOwnedList(S73_check_Checker** p_c, int64_t p_l);
+static bool f824_check_isTrapOp(obx_str p_op);
+static bool f823_check_isCmpOp(obx_str p_op);
+static bool f822_check_isArith(obx_str p_op);
+static bool f821_check_isLitKind(int64_t p_k);
 static void f759_check_Checker_sWhile(S73_check_Checker** p_c, int64_t p_s);
-static obx_str f821_check_Checker_cond(S73_check_Checker** p_c, int64_t p_e);
+static obx_str f830_check_Checker_cond(S73_check_Checker** p_c, int64_t p_e);
 static void f758_check_Checker_sIf(S73_check_Checker** p_c, int64_t p_s);
 static void f757_check_Checker_sAssign(S73_check_Checker** p_c, int64_t p_s);
-static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p_op, S87_check_Val p_lv0, S83_check_Arg p_r, int64_t p_line, int64_t p_exp, bool p_hasHeld, S87_check_Val p_held);
-static bool f831_check_Checker_tagEq(S73_check_Checker** p_c, int64_t p_t);
-static S87_check_Val f830_check_Checker_opCall(S73_check_Checker** p_c, S87_check_Val p_recv, obx_str p_name, obx_arr* p_args, int64_t p_line, obx_str p_op);
-static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_Sig** p_sig, bool p_hasRecv, S87_check_Val p_recv, obx_arr* p_args, int64_t p_line, int64_t p_exp, S95_check_CallOpts** p_o);
-static obx_str f847_check_pathAdd(obx_str p_p, obx_str p_e);
-static obx_str f846_check_joinStrs(obx_arr* p_xs, int64_t p_from);
-static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, int64_t p_vr, obx_arr* p_cs);
-static bool f844_check_distinct(obx_arr* p_xs);
-static int64_t f843_check_bindGet(obx_arr* p_bind, int64_t p_tp);
-static void f842_check_Checker_take(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_m, int64_t p_cid, int64_t p_line);
-static bool f841_check_Checker_late(S73_check_Checker** p_c, int64_t p_a0);
-static int64_t f840_check_hm(bool p_m);
-static int64_t f839_check_Checker_argNode(S73_check_Checker** p_c, bool p_hasRecv, obx_arr* p_args, int64_t p_i);
-static bool f838_check_Checker_argActs(S73_check_Checker** p_c, bool p_hasRecv, obx_arr* p_args, int64_t p_i, bool p_traps);
-static bool f837_check_Checker_hasTpIn(S73_check_Checker** p_c, int64_t p_t, obx_arr* p_tps);
-static bool f848_sema_Program_hasTp(S53_sema_Program** p_pg, int64_t p_t, obx_arr* p_tps);
-static void f836_check_bindSet(obx_arr* p_bind, int64_t p_tp, int64_t p_t);
-static S95_check_CallOpts* f834_check_noOpts(void);
-static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_check_Val p_v0, bool p_m, int64_t p_line, bool p_recv);
-static void f849_check_Checker_immutable(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_line, obx_str p_verb);
-static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int64_t p_t, obx_str p_name, int64_t p_line, bool p_quiet);
-static S94_check_Sig* f853_check_Checker_fnSig(S73_check_Checker** p_c, int64_t p_f, obx_arr p_bind);
-static void f852_check_Checker_visible(S73_check_Checker** p_c, int64_t p_f, int64_t p_line);
-static S94_check_Sig* f851_check_noSig(void);
-static S94_check_Sig* f850_check_newSig(obx_str p_label, int64_t p_kind, obx_arr p_params, int64_t p_ret);
-static obx_str f829_check_Checker_W(S73_check_Checker** p_c, int64_t p_line);
-static S87_check_Val f827_check_Checker_place(S73_check_Checker** p_c, int64_t p_e);
-static void f855_check_Checker_selfInDrop(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_line);
-static void f854_check_Checker_strByteRO(S73_check_Checker** p_c, int64_t p_e, S87_check_Val p_v, int64_t p_line);
-static void f826_check_Checker_hold(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_m, int64_t p_cid, int64_t p_line);
-static int64_t f825_check_Checker_newCid(S73_check_Checker** p_c);
-static bool f824_check_Checker_placeActs(S73_check_Checker** p_c, int64_t p_e0);
-static int64_t f823_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e);
-static void f822_check_Checker_store(S73_check_Checker** p_c, S87_check_Val p_p, obx_str p_cc, bool p_dropOld);
+static S87_check_Val f837_check_Checker_binop(S73_check_Checker** p_c, obx_str p_op, S87_check_Val p_lv0, S83_check_Arg p_r, int64_t p_line, int64_t p_exp, bool p_hasHeld, S87_check_Val p_held);
+static bool f840_check_Checker_tagEq(S73_check_Checker** p_c, int64_t p_t);
+static S87_check_Val f839_check_Checker_opCall(S73_check_Checker** p_c, S87_check_Val p_recv, obx_str p_name, obx_arr* p_args, int64_t p_line, obx_str p_op);
+static S87_check_Val f844_check_Checker_call(S73_check_Checker** p_c, S95_check_Sig** p_sig, bool p_hasRecv, S87_check_Val p_recv, obx_arr* p_args, int64_t p_line, int64_t p_exp, S96_check_CallOpts** p_o);
+static obx_str f856_check_pathAdd(obx_str p_p, obx_str p_e);
+static obx_str f855_check_joinStrs(obx_arr* p_xs, int64_t p_from);
+static obx_str f854_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, int64_t p_vr, obx_arr* p_cs);
+static bool f853_check_distinct(obx_arr* p_xs);
+static int64_t f852_check_bindGet(obx_arr* p_bind, int64_t p_tp);
+static void f851_check_Checker_take(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_m, int64_t p_cid, int64_t p_line);
+static bool f850_check_Checker_late(S73_check_Checker** p_c, int64_t p_a0);
+static int64_t f849_check_hm(bool p_m);
+static int64_t f848_check_Checker_argNode(S73_check_Checker** p_c, bool p_hasRecv, obx_arr* p_args, int64_t p_i);
+static bool f847_check_Checker_argActs(S73_check_Checker** p_c, bool p_hasRecv, obx_arr* p_args, int64_t p_i, bool p_traps);
+static bool f846_check_Checker_hasTpIn(S73_check_Checker** p_c, int64_t p_t, obx_arr* p_tps);
+static bool f857_sema_Program_hasTp(S53_sema_Program** p_pg, int64_t p_t, obx_arr* p_tps);
+static void f845_check_bindSet(obx_arr* p_bind, int64_t p_tp, int64_t p_t);
+static S96_check_CallOpts* f843_check_noOpts(void);
+static S87_check_Val f842_check_Checker_borrow(S73_check_Checker** p_c, S87_check_Val p_v0, bool p_m, int64_t p_line, bool p_recv);
+static void f858_check_Checker_immutable(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_line, obx_str p_verb);
+static S95_check_Sig* f841_check_Checker_methodSig(S73_check_Checker** p_c, int64_t p_t, obx_str p_name, int64_t p_line, bool p_quiet);
+static S95_check_Sig* f862_check_Checker_fnSig(S73_check_Checker** p_c, int64_t p_f, obx_arr p_bind);
+static void f861_check_Checker_visible(S73_check_Checker** p_c, int64_t p_f, int64_t p_line);
+static S95_check_Sig* f860_check_noSig(void);
+static S95_check_Sig* f859_check_newSig(obx_str p_label, int64_t p_kind, obx_arr p_params, int64_t p_ret);
+static obx_str f838_check_Checker_W(S73_check_Checker** p_c, int64_t p_line);
+static S87_check_Val f836_check_Checker_place(S73_check_Checker** p_c, int64_t p_e);
+static void f864_check_Checker_selfInDrop(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_line);
+static void f863_check_Checker_strByteRO(S73_check_Checker** p_c, int64_t p_e, S87_check_Val p_v, int64_t p_line);
+static void f835_check_Checker_hold(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_m, int64_t p_cid, int64_t p_line);
+static int64_t f834_check_Checker_newCid(S73_check_Checker** p_c);
+static bool f833_check_Checker_placeActs(S73_check_Checker** p_c, int64_t p_e0);
+static int64_t f832_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e);
+static void f831_check_Checker_store(S73_check_Checker** p_c, S87_check_Val p_p, obx_str p_cc, bool p_dropOld);
 static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s);
-static int64_t f856_check_Checker_fieldIndex(S73_check_Checker** p_c, int64_t p_d, obx_str p_name);
+static int64_t f865_check_Checker_fieldIndex(S73_check_Checker** p_c, int64_t p_d, obx_str p_name);
 static void f755_check_Checker_sLet(S73_check_Checker** p_c, int64_t p_s);
 static S87_check_Val f754_check_Checker_expr(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f889_check_Checker_staticValue(S73_check_Checker** p_c, S1_check_St p_st, int64_t p_e, int64_t p_exp);
-static S87_check_Val f890_check_Checker_constVal(S73_check_Checker** p_c, int64_t p_k, int64_t p_exp, int64_t p_line);
-static int64_t f891_check_Checker_staticVar(S73_check_Checker** p_c, int64_t p_dk, int64_t p_di);
-static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t p_t, int64_t p_e);
-static S87_check_Val f887_check_Checker_callValue(S73_check_Checker** p_c, S87_check_Val p_fv0, int64_t p_e, int64_t p_exp);
-static S87_check_Val f886_check_Checker_fieldOf(S73_check_Checker** p_c, S87_check_Val p_v0, obx_str p_name, int64_t p_line);
-static S94_check_Sig* f885_check_Checker_assocSig(S73_check_Checker** p_c, int64_t p_t, obx_str p_name, int64_t p_line, bool p_quiet);
-static obx_str f884_check_Checker_declName(S73_check_Checker** p_c, S1_check_St p_st);
-static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c, S1_check_St p_st, obx_arr* p_args0, int64_t p_line, int64_t p_exp, int64_t p_named);
-static S87_check_Val f882_check_Checker_onceCall(S73_check_Checker** p_c, int64_t p_g, obx_str p_name, int64_t p_e);
-static bool f881_check_Checker_allTypeish(S73_check_Checker** p_c, int64_t p_l);
-static bool f892_check_Checker_typeish(S73_check_Checker** p_c, int64_t p_x);
-static S1_check_St f880_check_Checker_staticNs(S73_check_Checker** p_c, int64_t p_e);
-static S94_check_Sig* f879_check_Checker_intrSig(S73_check_Checker** p_c, int64_t p_i);
-static int64_t f878_check_intrinsic(obx_str p_name);
-static S87_check_Val f877_check_Checker_builtin(S73_check_Checker** p_c, obx_str p_name, int64_t p_e, int64_t p_exp);
-static S87_check_Val f904_check_Checker_bExit(S73_check_Checker** p_c, int64_t p_e);
-static int64_t f906_check_Checker_arg(S73_check_Checker** p_c, int64_t p_e, int64_t p_i);
-static void f905_check_Checker_nargs(S73_check_Checker** p_c, int64_t p_e, int64_t p_n);
-static obx_str f907_check_Checker_fname(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f903_check_Checker_bAssert(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f902_check_Checker_bPanic(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f901_check_Checker_bArray(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static int64_t f908_check_Checker_elemType(S73_check_Checker** p_c, int64_t p_t, int64_t p_line);
-static S87_check_Val f900_check_Checker_bMove(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f899_check_Checker_bReplace(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f909_check_Checker_builtinBorrow(S73_check_Checker** p_c, S87_check_Val p_v0, bool p_m, int64_t p_line, int64_t p_ast);
-static S87_check_Val f898_check_Checker_bSwap(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f910_check_Checker_arrArg(S73_check_Checker** p_c, int64_t p_e, bool p_m, bool p_slices);
-static S87_check_Val f897_check_Checker_bPop(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f896_check_Checker_bAppend(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f895_check_Checker_bNullPtr(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f894_check_Checker_bIsNull(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f893_check_Checker_bLen(S73_check_Checker** p_c, int64_t p_e);
-static bool f876_check_Checker_isBuiltinHere(S73_check_Checker** p_c, obx_str p_name);
-static bool f911_check_isBuiltin(obx_str p_name);
-static obx_arr f875_check_Checker_callArgs(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f873_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp0);
-static S87_check_Val f871_check_Checker_xExit(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S100_check_OkErr f912_check_Checker_okerr(S73_check_Checker** p_c, int64_t p_t);
-static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f868_check_Checker_xIfx(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S101_check_Branch* f913_check_Checker_ifBranch(S73_check_Checker** p_c, int64_t p_x, int64_t p_want, obx_arr* p_snap, obx_str p_r);
-static S87_check_Val f867_check_Checker_xBin(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static int64_t f915_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f914_check_Checker_logic(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f866_check_Checker_xUn(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f865_check_Checker_xBorrow(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f864_check_Checker_xIndex(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static obx_str f916_check_Checker_intIndex(S73_check_Checker** p_c, int64_t p_ie);
-static S87_check_Val f863_check_Checker_xField(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f861_check_Checker_xName(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
-static S87_check_Val f860_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p_text, int64_t p_line, int64_t p_exp);
-static S87_check_Val f917_check_Checker_fconst(S73_check_Checker** p_c, obx_str p_text, int64_t p_line);
-static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_e, bool p_mut1);
-static bool f919_check_Checker_actsOpt(S73_check_Checker** p_c, int64_t p_e);
-static S87_check_Val f918_check_Checker_beforeOpt(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_a, int64_t p_b);
-static int64_t f858_check_Checker_ek(S73_check_Checker** p_c, int64_t p_exp);
-static S87_check_Val f857_check_Checker_xInt(S73_check_Checker** p_c, S65_num_Big p_v, int64_t p_line, int64_t p_exp);
+static S87_check_Val f883_check_Checker_xCall(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S87_check_Val f898_check_Checker_staticValue(S73_check_Checker** p_c, S1_check_St p_st, int64_t p_e, int64_t p_exp);
+static S87_check_Val f899_check_Checker_constVal(S73_check_Checker** p_c, int64_t p_k, int64_t p_exp, int64_t p_line);
+static int64_t f900_check_Checker_staticVar(S73_check_Checker** p_c, int64_t p_dk, int64_t p_di);
+static S87_check_Val f897_check_Checker_convert(S73_check_Checker** p_c, int64_t p_t, int64_t p_e);
+static S87_check_Val f896_check_Checker_callValue(S73_check_Checker** p_c, S87_check_Val p_fv0, int64_t p_e, int64_t p_exp);
+static S87_check_Val f895_check_Checker_fieldOf(S73_check_Checker** p_c, S87_check_Val p_v0, obx_str p_name, int64_t p_line);
+static S95_check_Sig* f894_check_Checker_assocSig(S73_check_Checker** p_c, int64_t p_t, obx_str p_name, int64_t p_line, bool p_quiet);
+static obx_str f893_check_Checker_declName(S73_check_Checker** p_c, S1_check_St p_st);
+static S87_check_Val f892_check_Checker_constructVariant(S73_check_Checker** p_c, S1_check_St p_st, obx_arr* p_args0, int64_t p_line, int64_t p_exp, int64_t p_named);
+static S87_check_Val f891_check_Checker_onceCall(S73_check_Checker** p_c, int64_t p_g, obx_str p_name, int64_t p_e);
+static bool f890_check_Checker_allTypeish(S73_check_Checker** p_c, int64_t p_l);
+static bool f901_check_Checker_typeish(S73_check_Checker** p_c, int64_t p_x);
+static S1_check_St f889_check_Checker_staticNs(S73_check_Checker** p_c, int64_t p_e);
+static S95_check_Sig* f888_check_Checker_intrSig(S73_check_Checker** p_c, int64_t p_i);
+static int64_t f887_check_intrinsic(obx_str p_name);
+static S87_check_Val f886_check_Checker_builtin(S73_check_Checker** p_c, obx_str p_name, int64_t p_e, int64_t p_exp);
+static S87_check_Val f913_check_Checker_bExit(S73_check_Checker** p_c, int64_t p_e);
+static int64_t f915_check_Checker_arg(S73_check_Checker** p_c, int64_t p_e, int64_t p_i);
+static void f914_check_Checker_nargs(S73_check_Checker** p_c, int64_t p_e, int64_t p_n);
+static obx_str f916_check_Checker_fname(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f912_check_Checker_bAssert(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f911_check_Checker_bPanic(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f910_check_Checker_bArray(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static int64_t f917_check_Checker_elemType(S73_check_Checker** p_c, int64_t p_t, int64_t p_line);
+static S87_check_Val f909_check_Checker_bMove(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f908_check_Checker_bReplace(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f918_check_Checker_builtinBorrow(S73_check_Checker** p_c, S87_check_Val p_v0, bool p_m, int64_t p_line, int64_t p_ast);
+static S87_check_Val f907_check_Checker_bSwap(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f919_check_Checker_arrArg(S73_check_Checker** p_c, int64_t p_e, bool p_m, bool p_slices);
+static S87_check_Val f906_check_Checker_bPop(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f905_check_Checker_bAppend(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f904_check_Checker_bNullPtr(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f903_check_Checker_bIsNull(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f902_check_Checker_bLen(S73_check_Checker** p_c, int64_t p_e);
+static bool f885_check_Checker_isBuiltinHere(S73_check_Checker** p_c, obx_str p_name);
+static bool f920_check_isBuiltin(obx_str p_name);
+static obx_arr f884_check_Checker_callArgs(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f882_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S87_check_Val f881_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp0);
+static S87_check_Val f880_check_Checker_xExit(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f879_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S101_check_OkErr f921_check_Checker_okerr(S73_check_Checker** p_c, int64_t p_t);
+static S87_check_Val f878_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S87_check_Val f877_check_Checker_xIfx(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static void f923_check_Checker_ifxDrops(S73_check_Checker** p_c, S102_check_Branch** p_br, obx_arr* p_vs, obx_str p_r);
+static S102_check_Branch* f922_check_Checker_ifBranch(S73_check_Checker** p_c, int64_t p_x, int64_t p_want, obx_arr* p_snap, obx_str p_r);
+static S87_check_Val f876_check_Checker_xBin(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static int64_t f925_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S87_check_Val f924_check_Checker_logic(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f875_check_Checker_xUn(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S87_check_Val f874_check_Checker_xBorrow(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S87_check_Val f873_check_Checker_xIndex(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static obx_str f926_check_Checker_intIndex(S73_check_Checker** p_c, int64_t p_ie);
+static S87_check_Val f872_check_Checker_xField(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S87_check_Val f871_check_Checker_xClosure(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S87_check_Val f870_check_Checker_xName(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp);
+static S87_check_Val f869_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p_text, int64_t p_line, int64_t p_exp);
+static S87_check_Val f927_check_Checker_fconst(S73_check_Checker** p_c, obx_str p_text, int64_t p_line);
+static S87_check_Val f868_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_e, bool p_mut1);
+static bool f929_check_Checker_actsOpt(S73_check_Checker** p_c, int64_t p_e);
+static S87_check_Val f928_check_Checker_beforeOpt(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_a, int64_t p_b);
+static int64_t f867_check_Checker_ek(S73_check_Checker** p_c, int64_t p_exp);
+static S87_check_Val f866_check_Checker_xInt(S73_check_Checker** p_c, S65_num_Big p_v, int64_t p_line, int64_t p_exp);
 static void f750_check_Checker_pushFrame(S73_check_Checker** p_c);
 static void f749_check_Checker_pushScope(S73_check_Checker** p_c);
 static int64_t f738_check_Checker_newVar(S73_check_Checker** p_c, obx_str p_name, obx_str p_cn, int64_t p_t, bool p_mutable, int64_t p_kind, int64_t p_line);
 static obx_arr f696_check_copyInts(obx_arr* p_xs);
 static S73_check_Checker* f643_check_newChecker(S53_sema_Program* p_pg);
-static S75_check_GInit* f920_check_noInit(void);
+static S75_check_GInit* f930_check_noInit(void);
 static void f4_syntax_errorsToStdout(bool p_on);
 static obx_str f3_main_libDir(obx_str p_argv0);
 static obx_str f2_x64_runTest(obx_str p_text);
-static void f922_x64_Asm_testLine(S26_x64_Asm** p_a, obx_str p_l);
-static void f929_x64_Asm_movqRX(S26_x64_Asm** p_a, int64_t p_r, int64_t p_x);
-static void f928_x64_Asm_jmpR(S26_x64_Asm** p_a, int64_t p_r);
-static void f927_x64_Asm_cmov(S26_x64_Asm** p_a, int64_t p_cc, int64_t p_dst, int64_t p_src);
-static S2_x64_Mem f926_x64_memOf(obx_str p_s);
-static int64_t f925_x64_num(obx_str p_s);
-static int64_t f924_x64_nameIndex(obx_slice p_names, obx_str p_n);
-static obx_arr f923_x64_words(obx_str p_s);
-static obx_str f921_std_trim(obx_str p_s);
-static bool f930_std_isSpace(uint8_t p_c);
+static void f932_x64_Asm_testLine(S26_x64_Asm** p_a, obx_str p_l);
+static void f939_x64_Asm_movqRX(S26_x64_Asm** p_a, int64_t p_r, int64_t p_x);
+static void f938_x64_Asm_jmpR(S26_x64_Asm** p_a, int64_t p_r);
+static void f937_x64_Asm_cmov(S26_x64_Asm** p_a, int64_t p_cc, int64_t p_dst, int64_t p_src);
+static S2_x64_Mem f936_x64_memOf(obx_str p_s);
+static int64_t f935_x64_num(obx_str p_s);
+static int64_t f934_x64_nameIndex(obx_slice p_names, obx_str p_n);
+static obx_arr f933_x64_words(obx_str p_s);
+static obx_str f931_std_trim(obx_str p_s);
+static bool f940_std_isSpace(uint8_t p_c);
 static void f1_syntax_failText(obx_str p_text);
-static void gl98_drop(S26_x64_Asm* v);
-static void gl99_drop(obx_arr v);
-static void gl97_drop(S81_check_Lifted* v);
-static void gl96_drop(S101_check_Branch* v);
-static void gl95_drop(S88_check_MatchX* v);
+static void gl99_drop(S26_x64_Asm* v);
+static void gl100_drop(obx_arr v);
+static void gl98_drop(S81_check_Lifted* v);
+static void gl97_drop(S102_check_Branch* v);
+static void gl96_drop(S88_check_MatchX* v);
+static void gl95_drop(obx_arr v);
 static void gl94_drop(obx_arr v);
 static void gl93_drop(obx_arr v);
-static void gl92_drop(obx_arr v);
-static S96_check_CArg gl91_dup(S96_check_CArg v);
-static void gl90_drop(obx_arr v);
-static void gl89_drop(S97_check_Late v);
-static S97_check_Late gl88_dup(S97_check_Late v);
-static void gl87_drop(S98_check_Recheck v);
-static S98_check_Recheck gl86_dup(S98_check_Recheck v);
-static void gl85_drop(S96_check_CArg v);
-static void gl84_drop(S94_check_Sig* v);
-static void gl83_drop(S95_check_CallOpts* v);
-static void gl82_drop(obx_arr v);
-static void gl81_drop(S89_check_Loop* v);
-static void gl80_drop(S29_std_Map* v);
-static void gl79_drop(S92_check_Freeze v);
-static S92_check_Freeze gl78_dup(S92_check_Freeze v);
-static S90_check_Pend gl77_dup(S90_check_Pend v);
+static S97_check_CArg gl92_dup(S97_check_CArg v);
+static void gl91_drop(obx_arr v);
+static void gl90_drop(S98_check_Late v);
+static S98_check_Late gl89_dup(S98_check_Late v);
+static void gl88_drop(S99_check_Recheck v);
+static S99_check_Recheck gl87_dup(S99_check_Recheck v);
+static void gl86_drop(S97_check_CArg v);
+static void gl85_drop(S95_check_Sig* v);
+static void gl84_drop(S96_check_CallOpts* v);
+static void gl83_drop(obx_arr v);
+static void gl82_drop(S89_check_Loop* v);
+static void gl81_drop(S29_std_Map* v);
+static void gl80_drop(S92_check_Freeze v);
+static S92_check_Freeze gl79_dup(S92_check_Freeze v);
+static S90_check_Pend gl78_dup(S90_check_Pend v);
+static void gl77_drop(obx_arr v);
 static void gl76_drop(obx_arr v);
 static void gl75_drop(S90_check_Pend v);
 static void gl74_drop(S86_check_Scope* v);
-static void gl100_drop(obx_arr v);
+static void gl101_drop(obx_arr v);
 static void gl73_drop(obx_arr v);
-static void gl101_drop(S91_check_Drop v);
+static void gl102_drop(S91_check_Drop v);
 static void gl72_drop(obx_arr v);
 static void gl71_drop(obx_arr v);
 static void gl70_drop(obx_arr v);
 static void gl69_drop(S84_check_Ctx* v);
+static void gl104_drop(obx_arr v);
 static void gl103_drop(obx_arr v);
-static void gl102_drop(obx_arr v);
 static void gl68_drop(S87_check_Val v);
 static S87_check_Val gl67_dup(S87_check_Val v);
 static void gl66_drop(S85_check_Var v);
@@ -7519,23 +7536,23 @@ static void gl56_drop(obx_arr v);
 static void gl55_drop(S78_std_Map* v);
 static void gl54_drop(S75_check_GInit* v);
 static void gl53_drop(S74_emit_Emitter* v);
-static void gl107_drop(S73_check_Checker* v);
+static void gl108_drop(S73_check_Checker* v);
+static void gl113_drop(obx_arr v);
 static void gl112_drop(obx_arr v);
 static void gl111_drop(obx_arr v);
 static void gl110_drop(obx_arr v);
+static void gl114_drop(S93_check_Tmp v);
 static void gl109_drop(obx_arr v);
-static void gl113_drop(S93_check_Tmp v);
-static void gl108_drop(obx_arr v);
-static void gl114_drop(obx_arr v);
+static void gl115_drop(obx_arr v);
+static void gl107_drop(obx_arr v);
 static void gl106_drop(obx_arr v);
-static void gl105_drop(obx_arr v);
-static void gl104_drop(S36_std_Map* v);
+static void gl105_drop(S36_std_Map* v);
 static void gl52_drop(S72_num_QR v);
 static S49_syntax_Node gl51_dup(S49_syntax_Node v);
 static void gl50_drop(S70_sema_Wrap v);
 static void gl49_drop(S49_syntax_Node v);
 static void gl48_drop(obx_arr v);
-static void gl115_drop(S71_sema_Cand v);
+static void gl116_drop(S71_sema_Cand v);
 static void gl47_drop(obx_arr v);
 static void gl46_drop(S66_sema_Field v);
 static S66_sema_Field gl45_dup(S66_sema_Field v);
@@ -7547,49 +7564,49 @@ static void gl40_drop(S59_sema_Param v);
 static S59_sema_Param gl39_dup(S59_sema_Param v);
 static void gl38_drop(S54_tdump_TDumper* v);
 static void gl37_drop(S53_sema_Program* v);
+static void gl126_drop(obx_arr v);
+static void gl127_drop(S55_sema_Module v);
+static void gl128_drop(S68_std_Map* v);
+static void gl129_drop(obx_arr v);
 static void gl125_drop(obx_arr v);
-static void gl126_drop(S55_sema_Module v);
-static void gl127_drop(S68_std_Map* v);
-static void gl128_drop(obx_arr v);
-static void gl124_drop(obx_arr v);
-static void gl129_drop(S57_sema_TypeDecl v);
+static void gl130_drop(S57_sema_TypeDecl v);
+static void gl132_drop(obx_arr v);
 static void gl131_drop(obx_arr v);
-static void gl130_drop(obx_arr v);
-static void gl132_drop(S67_sema_Member v);
+static void gl133_drop(S67_sema_Member v);
+static void gl124_drop(obx_arr v);
+static void gl134_drop(S56_sema_Variant v);
 static void gl123_drop(obx_arr v);
-static void gl133_drop(S56_sema_Variant v);
+static void gl135_drop(S58_sema_FnDecl v);
+static void gl136_drop(obx_arr v);
 static void gl122_drop(obx_arr v);
-static void gl134_drop(S58_sema_FnDecl v);
-static void gl135_drop(obx_arr v);
+static void gl137_drop(S63_sema_Const v);
 static void gl121_drop(obx_arr v);
-static void gl136_drop(S63_sema_Const v);
+static void gl138_drop(S62_sema_Global v);
 static void gl120_drop(obx_arr v);
-static void gl137_drop(S62_sema_Global v);
+static void gl139_drop(S60_sema_TParam v);
 static void gl119_drop(obx_arr v);
-static void gl138_drop(S60_sema_TParam v);
 static void gl118_drop(obx_arr v);
 static void gl117_drop(obx_arr v);
-static void gl116_drop(obx_arr v);
 static void gl36_drop(obx_arr v);
-static void gl139_drop(S51_syntax_Tok v);
+static void gl140_drop(S51_syntax_Tok v);
 static void gl35_drop(S48_dump_Dumper* v);
 static void gl34_drop(S47_syntax_Ast* v);
-static void gl140_drop(obx_arr v);
+static void gl141_drop(obx_arr v);
 static void gl33_drop(obx_arr v);
 static void gl32_drop(S44_cfront_Decl v);
 static void gl31_drop(obx_arr v);
 static void gl30_drop(S42_cfront_Unit* v);
-static void gl141_drop(S13_ir_Ir* v);
+static void gl142_drop(S13_ir_Ir* v);
+static void gl148_drop(obx_arr v);
 static void gl147_drop(obx_arr v);
+static void gl149_drop(S39_ir_Struct* v);
 static void gl146_drop(obx_arr v);
-static void gl148_drop(S39_ir_Struct* v);
 static void gl145_drop(obx_arr v);
+static void gl150_drop(S17_ir_Func* v);
 static void gl144_drop(obx_arr v);
-static void gl149_drop(S17_ir_Func* v);
+static void gl151_drop(S19_ir_Global* v);
 static void gl143_drop(obx_arr v);
-static void gl150_drop(S19_ir_Global* v);
-static void gl142_drop(obx_arr v);
-static void gl151_drop(S34_ir_Local v);
+static void gl152_drop(S34_ir_Local v);
 static void gl29_drop(S41_std_Map* v);
 static void gl28_drop(S40_ir_Field v);
 static S40_ir_Field gl27_dup(S40_ir_Field v);
@@ -7606,20 +7623,20 @@ static void gl17_drop(S20_elf_Import v);
 static S20_elf_Import gl16_dup(S20_elf_Import v);
 static void gl15_drop(obx_arr v);
 static void gl14_drop(obx_arr v);
-static void gl152_drop(S25_elf_Seg* v);
+static void gl153_drop(S25_elf_Seg* v);
 static void gl13_drop(obx_arr v);
 static void gl12_drop(obx_arr v);
 static void gl11_drop(S23_elf_Dynamic* v);
 static void gl10_drop(S16_x64gen_Gen* v);
-static void gl153_drop(obx_arr v);
+static void gl154_drop(obx_arr v);
 static void gl9_drop(obx_arr v);
 static void gl8_drop(obx_arr v);
-static void gl154_drop(S14_elf_Lib* v);
+static void gl155_drop(S14_elf_Lib* v);
 static void gl7_drop(obx_arr v);
 static void gl6_drop(S15_std_Map* v);
 static void gl5_drop(S6_io_IoError v);
 static void gl4_drop(obx_arr v);
-static void gl155_drop(S10_fs_Entry* v);
+static void gl156_drop(S10_fs_Entry* v);
 static void gl3_drop(S4_std_Result v);
 static S6_io_IoError gl2_dup(S6_io_IoError v);
 static void gl1_drop(S3_std_StrBuf* v);
@@ -36556,10 +36573,10 @@ static bool f691_check_isPod(S53_sema_Program** p_pg, obx_arr* p_memo, int64_t p
     *(int64_t*)rt_arr_push(p_memo, sizeof(int64_t)) = ap2;
   }
   int64_t ix3 = p_t;
-  bool c4 = (((int64_t*)((*p_memo)).data)[rt_idx(ix3, ((*p_memo)).len, "check.obx:429")] >= 0LL);
+  bool c4 = (((int64_t*)((*p_memo)).data)[rt_idx(ix3, ((*p_memo)).len, "check.obx:430")] >= 0LL);
   if (c4) {
     int64_t ix5 = p_t;
-    bool r6 = (((int64_t*)((*p_memo)).data)[rt_idx(ix5, ((*p_memo)).len, "check.obx:429")] == 1LL);
+    bool r6 = (((int64_t*)((*p_memo)).data)[rt_idx(ix5, ((*p_memo)).len, "check.obx:430")] == 1LL);
     return r6;
   }
   int64_t t7 = f497_sema_Program_tk(p_pg, p_t);
@@ -36590,10 +36607,10 @@ static bool f691_check_isPod(S53_sema_Program** p_pg, obx_arr* p_memo, int64_t p
         int64_t t16 = f498_sema_Program_ta(p_pg, p_t);
         int64_t v_d_17 = t16;
         int64_t ix18 = v_d_17;
-        bool b19 = ((S57_sema_TypeDecl*)((*p_pg)->f_types).data)[rt_idx(ix18, ((*p_pg)->f_types).len, "check.obx:438")].f_value;
+        bool b19 = ((S57_sema_TypeDecl*)((*p_pg)->f_types).data)[rt_idx(ix18, ((*p_pg)->f_types).len, "check.obx:439")].f_value;
         if (b19) {
           int64_t ix20 = v_d_17;
-          b19 = (((S57_sema_TypeDecl*)((*p_pg)->f_types).data)[rt_idx(ix20, ((*p_pg)->f_types).len, "check.obx:438")].f_drop < 0LL);
+          b19 = (((S57_sema_TypeDecl*)((*p_pg)->f_types).data)[rt_idx(ix20, ((*p_pg)->f_types).len, "check.obx:439")].f_drop < 0LL);
         }
         bool c21 = b19;
         if (c21) {
@@ -36621,7 +36638,7 @@ static bool f691_check_isPod(S53_sema_Program** p_pg, obx_arr* p_memo, int64_t p
     *(int64_t*)rt_arr_push(p_memo, sizeof(int64_t)) = ap30;
   }
   int64_t ix32 = p_t;
-  ((int64_t*)((*p_memo)).data)[rt_idx(ix32, ((*p_memo)).len, "check.obx:447")] = (v_r_9 ? 1LL : 0LL);
+  ((int64_t*)((*p_memo)).data)[rt_idx(ix32, ((*p_memo)).len, "check.obx:448")] = (v_r_9 ? 1LL : 0LL);
   bool r33 = v_r_9;
   return r33;
 }
@@ -37112,13 +37129,13 @@ static void f644_check_Checker_checkAll(S73_check_Checker** p_c) {
   int64_t end1 = ((*p_c)->f_pg->f_mods).len;
   for (int64_t v_m_2 = 0LL; v_m_2 < end1; v_m_2++) {
     int64_t ix3 = v_m_2;
-    obx_arr t4 = f696_check_copyInts((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix3, ((*p_c)->f_pg->f_mods).len, "check.obx:4340")].f_fns));
+    obx_arr t4 = f696_check_copyInts((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix3, ((*p_c)->f_pg->f_mods).len, "check.obx:4522")].f_fns));
     obx_arr v_fs_5 = t4;
     obx_slice ap6 = rt_as_slice(&v_fs_5);
     for (int64_t i7 = 0; i7 < ap6.len; i7++) {
       int64_t v_f_8 = ((int64_t*)ap6.data)[i7];
       int64_t ix9 = v_f_8;
-      bool c10 = (!((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix9, ((*p_c)->f_pg->f_fns).len, "check.obx:4342")].f_isExtern);
+      bool c10 = (!((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix9, ((*p_c)->f_pg->f_fns).len, "check.obx:4524")].f_isExtern);
       if (c10) {
         f697_check_Checker_checkFn(p_c, v_f_8);
       }
@@ -37126,7 +37143,7 @@ static void f644_check_Checker_checkAll(S73_check_Checker** p_c) {
     obx_arr a11 = rt_arr_new(0, sizeof(obx_str));
     obx_arr v_names_12 = a11;
     int64_t ix13 = v_m_2;
-    obx_slice ap14 = rt_as_slice(&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix13, ((*p_c)->f_pg->f_mods).len, "check.obx:4345")].f_scopeNames);
+    obx_slice ap14 = rt_as_slice(&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix13, ((*p_c)->f_pg->f_mods).len, "check.obx:4527")].f_scopeNames);
     for (int64_t i15 = 0; i15 < ap14.len; i15++) {
       obx_str v_n_16 = rt_str_dup(((obx_str*)ap14.data)[i15]);
       obx_str ap17 = rt_str_dup(v_n_16);
@@ -37138,7 +37155,7 @@ static void f644_check_Checker_checkAll(S73_check_Checker** p_c) {
       obx_str v_n_20 = rt_str_dup(((obx_str*)ap18.data)[i19]);
       int64_t ix21 = v_m_2;
       S0_sema_Sym t22 = ((S0_sema_Sym){.f_k = -1LL, .f_i = -1LL});
-      S0_sema_Sym t23 = f528_std_Map_getOr((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix21, ((*p_c)->f_pg->f_mods).len, "check.obx:4347")].f_scope), (&v_n_20), t22);
+      S0_sema_Sym t23 = f528_std_Map_getOr((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix21, ((*p_c)->f_pg->f_mods).len, "check.obx:4529")].f_scope), (&v_n_20), t22);
       S0_sema_Sym v_s_24 = t23;
       bool c25 = (v_s_24.f_k == 3LL);
       if (c25) {
@@ -37166,37 +37183,37 @@ static void f698_check_Checker_globalInit(S73_check_Checker** p_c, int64_t p_dk,
   int64_t ifx2;
   if (v_isG_1) {
     int64_t ix3 = p_g;
-    ifx2 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix3, ((*p_c)->f_pg->f_globals).len, "check.obx:4359")].f_mod;
+    ifx2 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix3, ((*p_c)->f_pg->f_globals).len, "check.obx:4541")].f_mod;
   } else {
     int64_t ix4 = p_g;
-    ifx2 = ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix4, ((*p_c)->f_pg->f_consts).len, "check.obx:4359")].f_mod;
+    ifx2 = ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix4, ((*p_c)->f_pg->f_consts).len, "check.obx:4541")].f_mod;
   }
   int64_t v_m_5 = ifx2;
   obx_str ifx6;
   if (v_isG_1) {
     int64_t ix7 = p_g;
-    ifx6 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix7, ((*p_c)->f_pg->f_globals).len, "check.obx:4360")].f_name);
+    ifx6 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix7, ((*p_c)->f_pg->f_globals).len, "check.obx:4542")].f_name);
   } else {
     int64_t ix8 = p_g;
-    ifx6 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix8, ((*p_c)->f_pg->f_consts).len, "check.obx:4360")].f_name);
+    ifx6 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix8, ((*p_c)->f_pg->f_consts).len, "check.obx:4542")].f_name);
   }
   obx_str v_name_9 = ifx6;
   int64_t ifx10;
   if (v_isG_1) {
     int64_t ix11 = p_g;
-    ifx10 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix11, ((*p_c)->f_pg->f_globals).len, "check.obx:4361")].f_node;
+    ifx10 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix11, ((*p_c)->f_pg->f_globals).len, "check.obx:4543")].f_node;
   } else {
     int64_t ix12 = p_g;
-    ifx10 = ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix12, ((*p_c)->f_pg->f_consts).len, "check.obx:4361")].f_node;
+    ifx10 = ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix12, ((*p_c)->f_pg->f_consts).len, "check.obx:4543")].f_node;
   }
   int64_t v_node_13 = ifx10;
   int64_t ifx14;
   if (v_isG_1) {
     int64_t ix15 = p_g;
-    ifx14 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix15, ((*p_c)->f_pg->f_globals).len, "check.obx:4362")].f_ty;
+    ifx14 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix15, ((*p_c)->f_pg->f_globals).len, "check.obx:4544")].f_ty;
   } else {
     int64_t ix16 = p_g;
-    ifx14 = ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix16, ((*p_c)->f_pg->f_consts).len, "check.obx:4362")].f_table;
+    ifx14 = ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix16, ((*p_c)->f_pg->f_consts).len, "check.obx:4544")].f_table;
   }
   int64_t v_t_17 = ifx14;
   obx_arr a18 = rt_arr_new(0, sizeof(int64_t));
@@ -37279,13 +37296,13 @@ static void f698_check_Checker_globalInit(S73_check_Checker** p_c, int64_t p_dk,
   if (c57) {
     int64_t ix58 = p_g;
     { S75_check_GInit* nw59 = v_r_26;
-      gl54_drop(((S75_check_GInit**)((*p_c)->f_ginits).data)[rt_idx(ix58, ((*p_c)->f_ginits).len, "check.obx:4380")]);
-      ((S75_check_GInit**)((*p_c)->f_ginits).data)[rt_idx(ix58, ((*p_c)->f_ginits).len, "check.obx:4380")] = nw59; }
+      gl54_drop(((S75_check_GInit**)((*p_c)->f_ginits).data)[rt_idx(ix58, ((*p_c)->f_ginits).len, "check.obx:4562")]);
+      ((S75_check_GInit**)((*p_c)->f_ginits).data)[rt_idx(ix58, ((*p_c)->f_ginits).len, "check.obx:4562")] = nw59; }
   } else {
     int64_t ix60 = p_g;
     { S75_check_GInit* nw61 = v_r_26;
-      gl54_drop(((S75_check_GInit**)((*p_c)->f_cinits).data)[rt_idx(ix60, ((*p_c)->f_cinits).len, "check.obx:4380")]);
-      ((S75_check_GInit**)((*p_c)->f_cinits).data)[rt_idx(ix60, ((*p_c)->f_cinits).len, "check.obx:4380")] = nw61; }
+      gl54_drop(((S75_check_GInit**)((*p_c)->f_cinits).data)[rt_idx(ix60, ((*p_c)->f_cinits).len, "check.obx:4562")]);
+      ((S75_check_GInit**)((*p_c)->f_cinits).data)[rt_idx(ix60, ((*p_c)->f_cinits).len, "check.obx:4562")] = nw61; }
   }
   gl49_drop(v_n_20);
   rt_str_drop(v_name_9);
@@ -37338,7 +37355,7 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
   int64_t t27 = f700_check_Checker_kind(p_c, p_e);
   int64_t v_k_28 = t27;
   int64_t ix29 = v_d_24;
-  int64_t v_form_30 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix29, ((*p_c)->f_pg->f_types).len, "check.obx:4396")].f_form;
+  int64_t v_form_30 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix29, ((*p_c)->f_pg->f_types).len, "check.obx:4578")].f_form;
   bool b31 = (v_k_28 == 53LL);
   if (b31) {
     b31 = (v_form_30 == 0LL);
@@ -37348,7 +37365,7 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
     obx_arr a33 = rt_arr_new(0, sizeof(obx_str));
     obx_arr v_names_34 = a33;
     int64_t ix35 = v_d_24;
-    obx_slice ap36 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix35, ((*p_c)->f_pg->f_types).len, "check.obx:4399")].f_fields);
+    obx_slice ap36 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix35, ((*p_c)->f_pg->f_types).len, "check.obx:4581")].f_fields);
     for (int64_t i37 = 0; i37 < ap36.len; i37++) {
       S66_sema_Field v_f_38 = gl45_dup(((S66_sema_Field*)ap36.data)[i37]);
       obx_str ap39 = rt_str_dup(v_f_38.f_name);
@@ -37357,7 +37374,7 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
     }
     S49_syntax_Node t40 = f703_check_Checker_nd(p_c, p_e);
     int64_t ix41 = v_d_24;
-    obx_arr t42 = f709_check_Checker_orderInits(p_c, (&v_names_34), t40.f_b, rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix41, ((*p_c)->f_pg->f_types).len, "check.obx:4400")].f_name), v_line_2);
+    obx_arr t42 = f709_check_Checker_orderInits(p_c, (&v_names_34), t40.f_b, rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix41, ((*p_c)->f_pg->f_types).len, "check.obx:4582")].f_name), v_line_2);
     obx_arr v_args_43 = t42;
     gl49_drop(t40);
     S3_std_StrBuf* t44 = f13_std_newStrBuf();
@@ -37367,17 +37384,17 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
     for (int64_t v_i_47 = 0LL; v_i_47 < end46; v_i_47++) {
       int64_t ix48 = v_d_24;
       int64_t ix49 = v_i_47;
-      int64_t t50 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:4404")].f_fields).data)[rt_idx(ix49, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:4404")].f_fields).len, "check.obx:4404")].f_ty, (&v_env_26));
+      int64_t t50 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:4586")].f_fields).data)[rt_idx(ix49, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:4586")].f_fields).len, "check.obx:4586")].f_ty, (&v_env_26));
       int64_t v_ft_51 = t50;
       int64_t ix52 = v_i_47;
-      obx_str t53 = f705_check_Checker_constInit(p_c, ((S83_check_Arg*)(v_args_43).data)[rt_idx(ix52, (v_args_43).len, "check.obx:4405")].f_n, v_ft_51);
+      obx_str t53 = f705_check_Checker_constInit(p_c, ((S83_check_Arg*)(v_args_43).data)[rt_idx(ix52, (v_args_43).len, "check.obx:4587")].f_n, v_ft_51);
       obx_str v_cc_54 = t53;
       bool c55 = (v_i_47 > 0LL);
       if (c55) {
         f15_std_StrBuf_add((&v_b_45), sl1754);
       }
       int64_t ix56 = v_i_47;
-      obx_str t57 = rt_str_concat(sl2312, ((obx_str*)(v_names_34).data)[rt_idx(ix56, (v_names_34).len, "check.obx:4407")]);
+      obx_str t57 = rt_str_concat(sl2312, ((obx_str*)(v_names_34).data)[rt_idx(ix56, (v_names_34).len, "check.obx:4589")]);
       obx_str t58 = rt_str_concat(t57, sl2267);
       obx_str t59 = rt_str_concat(t58, v_cc_54);
       f15_std_StrBuf_add((&v_b_45), t59);
@@ -37422,7 +37439,7 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
     bool b71 = b70;
     if (b71) {
       int64_t ix72 = v_st_69.f_di;
-      b71 = (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix72, ((*p_c)->f_pg->f_variants).len, "check.obx:4415")].f_decl == v_d_24);
+      b71 = (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix72, ((*p_c)->f_pg->f_variants).len, "check.obx:4597")].f_decl == v_d_24);
     }
     bool c73 = b71;
     if (c73) {
@@ -37430,7 +37447,7 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
       obx_arr a75 = rt_arr_new(0, sizeof(obx_str));
       obx_arr v_names_76 = a75;
       int64_t ix77 = v_vr_74;
-      obx_slice ap78 = rt_as_slice(&((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix77, ((*p_c)->f_pg->f_variants).len, "check.obx:4418")].f_fields);
+      obx_slice ap78 = rt_as_slice(&((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix77, ((*p_c)->f_pg->f_variants).len, "check.obx:4600")].f_fields);
       for (int64_t i79 = 0; i79 < ap78.len; i79++) {
         S66_sema_Field v_f_80 = gl45_dup(((S66_sema_Field*)ap78.data)[i79]);
         obx_str ap81 = rt_str_dup(v_f_80.f_name);
@@ -37443,7 +37460,7 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
       if (c84) {
         S49_syntax_Node t85 = f703_check_Checker_nd(p_c, p_e);
         int64_t ix86 = v_vr_74;
-        obx_arr t87 = f709_check_Checker_orderInits(p_c, (&v_names_76), t85.f_b, rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix86, ((*p_c)->f_pg->f_variants).len, "check.obx:4421")].f_name), v_line_2);
+        obx_arr t87 = f709_check_Checker_orderInits(p_c, (&v_names_76), t85.f_b, rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix86, ((*p_c)->f_pg->f_variants).len, "check.obx:4603")].f_name), v_line_2);
         obx_arr v_ias_88 = t87;
         gl49_drop(t85);
         obx_slice ap89 = rt_as_slice(&v_ias_88);
@@ -37470,7 +37487,7 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
       if (c98) {
         int64_t t99 = v_line_2;
         int64_t ix100 = v_vr_74;
-        obx_str t101 = rt_str_concat(sl2372, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix100, ((*p_c)->f_pg->f_variants).len, "check.obx:4427")].f_name);
+        obx_str t101 = rt_str_concat(sl2372, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix100, ((*p_c)->f_pg->f_variants).len, "check.obx:4609")].f_name);
         obx_str t102 = rt_str_concat(t101, sl2159);
         obx_str t103 = rt_int_to_str((v_names_76).len);
         obx_str t104 = rt_str_concat(t102, t103);
@@ -37483,17 +37500,17 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
       for (int64_t v_i_109 = 0LL; v_i_109 < end108; v_i_109++) {
         int64_t ix110 = v_vr_74;
         int64_t ix111 = v_i_109;
-        int64_t t112 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix110, ((*p_c)->f_pg->f_variants).len, "check.obx:4431")].f_fields).data)[rt_idx(ix111, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix110, ((*p_c)->f_pg->f_variants).len, "check.obx:4431")].f_fields).len, "check.obx:4431")].f_ty, (&v_env_26));
+        int64_t t112 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix110, ((*p_c)->f_pg->f_variants).len, "check.obx:4613")].f_fields).data)[rt_idx(ix111, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix110, ((*p_c)->f_pg->f_variants).len, "check.obx:4613")].f_fields).len, "check.obx:4613")].f_ty, (&v_env_26));
         int64_t v_ft_113 = t112;
         int64_t ix114 = v_i_109;
-        obx_str t115 = f705_check_Checker_constInit(p_c, ((int64_t*)(v_args_83).data)[rt_idx(ix114, (v_args_83).len, "check.obx:4432")], v_ft_113);
+        obx_str t115 = f705_check_Checker_constInit(p_c, ((int64_t*)(v_args_83).data)[rt_idx(ix114, (v_args_83).len, "check.obx:4614")], v_ft_113);
         obx_str v_cc_116 = t115;
         bool c117 = (v_i_109 > 0LL);
         if (c117) {
           f15_std_StrBuf_add((&v_b_107), sl1754);
         }
         int64_t ix118 = v_i_109;
-        obx_str t119 = rt_str_concat(sl2312, ((obx_str*)(v_names_76).data)[rt_idx(ix118, (v_names_76).len, "check.obx:4434")]);
+        obx_str t119 = rt_str_concat(sl2312, ((obx_str*)(v_names_76).data)[rt_idx(ix118, (v_names_76).len, "check.obx:4616")]);
         obx_str t120 = rt_str_concat(t119, sl2267);
         obx_str t121 = rt_str_concat(t120, v_cc_116);
         f15_std_StrBuf_add((&v_b_107), t121);
@@ -37503,11 +37520,11 @@ static obx_str f705_check_Checker_constInit(S73_check_Checker** p_c, int64_t p_e
       }
       obx_str t122 = sl2374;
       int64_t ix123 = v_vr_74;
-      obx_str t124 = rt_int_to_str(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix123, ((*p_c)->f_pg->f_variants).len, "check.obx:4436")].f_index);
+      obx_str t124 = rt_int_to_str(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix123, ((*p_c)->f_pg->f_variants).len, "check.obx:4618")].f_index);
       obx_str t125 = rt_str_concat(t122, t124);
       obx_str t126 = rt_str_concat(t125, sl2375);
       int64_t ix127 = v_vr_74;
-      obx_str t128 = rt_str_concat(t126, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix127, ((*p_c)->f_pg->f_variants).len, "check.obx:4436")].f_name);
+      obx_str t128 = rt_str_concat(t126, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix127, ((*p_c)->f_pg->f_variants).len, "check.obx:4618")].f_name);
       obx_str t129 = rt_str_concat(t128, sl2376);
       obx_str t130 = f17_std_StrBuf_toStr((&v_b_107));
       obx_str t131 = rt_str_concat(t129, t130);
@@ -37612,10 +37629,10 @@ static S1_check_St f710_check_Checker_static(S73_check_Checker** p_c, int64_t p_
     bool b43 = b42;
     if (b43) {
       int64_t ix44 = v_b_37.f_di;
-      bool b45 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix44, ((*p_c)->f_pg->f_types).len, "check.obx:2162")].f_form == 1LL);
+      bool b45 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix44, ((*p_c)->f_pg->f_types).len, "check.obx:2279")].f_form == 1LL);
       if (!b45) {
         int64_t ix46 = v_b_37.f_di;
-        b45 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix46, ((*p_c)->f_pg->f_types).len, "check.obx:2162")].f_form == 3LL);
+        b45 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix46, ((*p_c)->f_pg->f_types).len, "check.obx:2279")].f_form == 3LL);
       }
       b43 = b45;
     }
@@ -37684,17 +37701,17 @@ static int64_t f716_check_Checker_texprs(S73_check_Checker** p_c, int64_t p_l) {
 static int64_t f720_check_Checker_synthList(S73_check_Checker** p_c, obx_arr* p_xs) {
   int64_t v_m_1 = (*p_c)->f_cx->f_mod;
   int64_t ix2 = v_m_1;
-  int64_t v_h_3 = (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix2, ((*p_c)->f_pg->f_mods).len, "check.obx:497")].f_ast->f_items).len;
+  int64_t v_h_3 = (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix2, ((*p_c)->f_pg->f_mods).len, "check.obx:498")].f_ast->f_items).len;
   int64_t ix4 = v_m_1;
-  (void)((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix4, ((*p_c)->f_pg->f_mods).len, "check.obx:498")].f_ast->f_items));
+  (void)((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix4, ((*p_c)->f_pg->f_mods).len, "check.obx:499")].f_ast->f_items));
   int64_t ap5 = ((*p_xs)).len;
-  *(int64_t*)rt_arr_push((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix4, ((*p_c)->f_pg->f_mods).len, "check.obx:498")].f_ast->f_items), sizeof(int64_t)) = ap5;
+  *(int64_t*)rt_arr_push((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix4, ((*p_c)->f_pg->f_mods).len, "check.obx:499")].f_ast->f_items), sizeof(int64_t)) = ap5;
   obx_slice ap6 = rt_as_slice(&(*p_xs));
   for (int64_t i7 = 0; i7 < ap6.len; i7++) {
     int64_t v_x_8 = ((int64_t*)ap6.data)[i7];
     int64_t ix9 = v_m_1;
     int64_t ap10 = v_x_8;
-    *(int64_t*)rt_arr_push((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix9, ((*p_c)->f_pg->f_mods).len, "check.obx:499")].f_ast->f_items), sizeof(int64_t)) = ap10;
+    *(int64_t*)rt_arr_push((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix9, ((*p_c)->f_pg->f_mods).len, "check.obx:500")].f_ast->f_items), sizeof(int64_t)) = ap10;
   }
   int64_t r11 = v_h_3;
   return r11;
@@ -37794,9 +37811,9 @@ static int64_t f722_check_Checker_synth(S73_check_Checker** p_c, int64_t p_kind,
   int64_t ix2 = v_m_1;
   S49_syntax_Node t3 = ((S49_syntax_Node){.f_kind = p_kind, .f_line = p_line, .f_flags = p_flags, .f_s = rt_str_dup(p_s), .f_t = sl183, .f_u = sl183, .f_a = p_a, .f_b = p_b, .f_c = -1LL, .f_d = -1LL, .f_e = -1LL});
   S49_syntax_Node ap4 = t3;
-  *(S49_syntax_Node*)rt_arr_push((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix2, ((*p_c)->f_pg->f_mods).len, "check.obx:490")].f_ast->f_nodes), sizeof(S49_syntax_Node)) = ap4;
+  *(S49_syntax_Node*)rt_arr_push((&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix2, ((*p_c)->f_pg->f_mods).len, "check.obx:491")].f_ast->f_nodes), sizeof(S49_syntax_Node)) = ap4;
   int64_t ix5 = v_m_1;
-  int64_t r6 = rt_sub_int((((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix5, ((*p_c)->f_pg->f_mods).len, "check.obx:492")].f_ast->f_nodes).len, 1LL, "check.obx:492");
+  int64_t r6 = rt_sub_int((((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix5, ((*p_c)->f_pg->f_mods).len, "check.obx:493")].f_ast->f_nodes).len, 1LL, "check.obx:493");
   rt_str_drop(p_s);
   return r6;
 }
@@ -37822,9 +37839,9 @@ static int64_t f721_check_Checker_synthTname(S73_check_Checker** p_c, obx_arr* p
 }
 static int64_t f718_check_Checker_item(S73_check_Checker** p_c, int64_t p_l, int64_t p_i) {
   int64_t ix1 = (*p_c)->f_cx->f_mod;
-  (void)(&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:479")].f_ast->f_items);
-  int64_t ix2 = rt_add_int(rt_add_int(p_l, 1LL, "check.obx:479"), p_i, "check.obx:479");
-  int64_t r3 = ((int64_t*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:479")].f_ast->f_items).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:479")].f_ast->f_items).len, "check.obx:479")];
+  (void)(&((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:480")].f_ast->f_items);
+  int64_t ix2 = rt_add_int(rt_add_int(p_l, 1LL, "check.obx:480"), p_i, "check.obx:480");
+  int64_t r3 = ((int64_t*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:480")].f_ast->f_items).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:480")].f_ast->f_items).len, "check.obx:480")];
   return r3;
 }
 static int64_t f717_check_Checker_count(S73_check_Checker** p_c, int64_t p_l) {
@@ -37834,7 +37851,7 @@ static int64_t f717_check_Checker_count(S73_check_Checker** p_c, int64_t p_l) {
   } else {
     int64_t ix2 = (*p_c)->f_cx->f_mod;
     int64_t ix3 = p_l;
-    ifx1 = ((int64_t*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix2, ((*p_c)->f_pg->f_mods).len, "check.obx:478")].f_ast->f_items).data)[rt_idx(ix3, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix2, ((*p_c)->f_pg->f_mods).len, "check.obx:478")].f_ast->f_items).len, "check.obx:478")];
+    ifx1 = ((int64_t*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix2, ((*p_c)->f_pg->f_mods).len, "check.obx:479")].f_ast->f_items).data)[rt_idx(ix3, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix2, ((*p_c)->f_pg->f_mods).len, "check.obx:479")].f_ast->f_items).len, "check.obx:479")];
   }
   int64_t r4 = ifx1;
   return r4;
@@ -37844,12 +37861,12 @@ static S1_check_St f715_check_Checker_variantOf(S73_check_Checker** p_c, S1_chec
   bool b2 = (p_b.f_n == 2LL);
   if (b2) {
     int64_t ix3 = v_d_1;
-    b2 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix3, ((*p_c)->f_pg->f_types).len, "check.obx:2190")].f_form == 3LL);
+    b2 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix3, ((*p_c)->f_pg->f_types).len, "check.obx:2307")].f_form == 3LL);
   }
   bool b4 = b2;
   if (b4) {
     int64_t ix5 = v_d_1;
-    b4 = ((((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix5, ((*p_c)->f_pg->f_types).len, "check.obx:2190")].f_tparams).len > 0LL);
+    b4 = ((((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix5, ((*p_c)->f_pg->f_types).len, "check.obx:2307")].f_tparams).len > 0LL);
   }
   bool v_free_6 = b4;
   int64_t ifx7;
@@ -37870,19 +37887,19 @@ static S1_check_St f715_check_Checker_variantOf(S73_check_Checker** p_c, S1_chec
   if (b13) {
     int64_t t14 = f498_sema_Program_ta((&(*p_c)->f_pg), v_t_10);
     int64_t ix15 = t14;
-    b13 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix15, ((*p_c)->f_pg->f_types).len, "check.obx:2192")].f_form == 1LL);
+    b13 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix15, ((*p_c)->f_pg->f_types).len, "check.obx:2309")].f_form == 1LL);
   }
   bool c16 = b13;
   if (c16) {
     int64_t t17 = f498_sema_Program_ta((&(*p_c)->f_pg), v_t_10);
     int64_t ix18 = t17;
-    obx_arr t19 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix18, ((*p_c)->f_pg->f_types).len, "check.obx:2193")].f_variants));
+    obx_arr t19 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix18, ((*p_c)->f_pg->f_types).len, "check.obx:2310")].f_variants));
     obx_arr v_vs_20 = t19;
     obx_slice ap21 = rt_as_slice(&v_vs_20);
     for (int64_t i22 = 0; i22 < ap21.len; i22++) {
       int64_t v_vr_23 = ((int64_t*)ap21.data)[i22];
       int64_t ix24 = v_vr_23;
-      bool c25 = (rt_str_eq(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix24, ((*p_c)->f_pg->f_variants).len, "check.obx:2195")].f_name, p_name));
+      bool c25 = (rt_str_eq(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix24, ((*p_c)->f_pg->f_variants).len, "check.obx:2312")].f_name, p_name));
       if (c25) {
         bool t26 = f724_sema_Program_isBare((&(*p_c)->f_pg), v_t_10);
         bool c27 = t26;
@@ -37945,12 +37962,12 @@ static int64_t f723_check_Checker_staticType(S73_check_Checker** p_c, S1_check_S
   bool b6 = (p_st.f_n == 2LL);
   if (b6) {
     int64_t ix7 = v_d_5;
-    b6 = ((((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix7, ((*p_c)->f_pg->f_types).len, "check.obx:2238")].f_tparams).len > 0LL);
+    b6 = ((((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix7, ((*p_c)->f_pg->f_types).len, "check.obx:2355")].f_tparams).len > 0LL);
   }
   bool b8 = b6;
   if (b8) {
     int64_t ix9 = v_d_5;
-    b8 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix9, ((*p_c)->f_pg->f_types).len, "check.obx:2238")].f_form != 3LL);
+    b8 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix9, ((*p_c)->f_pg->f_types).len, "check.obx:2355")].f_form != 3LL);
   }
   bool c10 = b8;
   if (c10) {
@@ -37969,7 +37986,7 @@ static int64_t f723_check_Checker_staticType(S73_check_Checker** p_c, S1_check_S
   }
   int64_t ix18 = v_d_5;
   obx_arr a19 = rt_arr_new(1, sizeof(obx_str));
-  ((obx_str*)a19.data)[0] = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix18, ((*p_c)->f_pg->f_types).len, "check.obx:2241")].f_name);
+  ((obx_str*)a19.data)[0] = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix18, ((*p_c)->f_pg->f_types).len, "check.obx:2358")].f_name);
   int64_t t20 = f721_check_Checker_synthTname(p_c, (&a19), (&v_args_14), p_line);
   int64_t v_a_21 = t20;
   gl0_drop(a19);
@@ -37981,10 +37998,10 @@ static int64_t f723_check_Checker_staticType(S73_check_Checker** p_c, S1_check_S
 static int64_t f727_check_Checker_resolveNamed(S73_check_Checker** p_c, int64_t p_d, int64_t p_a, int64_t p_line) {
   int64_t v_mod_1 = (*p_c)->f_cx->f_mod;
   int64_t ix2 = p_d;
-  S0_sema_Sym t3 = f579_sema_Program_lookup((&(*p_c)->f_pg), v_mod_1, rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix2, ((*p_c)->f_pg->f_types).len, "check.obx:2247")].f_name));
+  S0_sema_Sym t3 = f579_sema_Program_lookup((&(*p_c)->f_pg), v_mod_1, rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix2, ((*p_c)->f_pg->f_types).len, "check.obx:2364")].f_name));
   S0_sema_Sym v_l_4 = t3;
   int64_t ix5 = p_d;
-  bool b6 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix5, ((*p_c)->f_pg->f_types).len, "check.obx:2248")].f_mod != v_mod_1);
+  bool b6 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix5, ((*p_c)->f_pg->f_types).len, "check.obx:2365")].f_mod != v_mod_1);
   if (b6) {
     bool b7 = (v_l_4.f_k == 0LL);
     if (b7) {
@@ -38008,12 +38025,12 @@ static int64_t f727_check_Checker_resolveNamed(S73_check_Checker** p_c, int64_t 
       *(int64_t*)rt_arr_push((&v_args_10), sizeof(int64_t)) = ap18;
     }
     int64_t ix19 = p_d;
-    int64_t v_ntp_20 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix19, ((*p_c)->f_pg->f_types).len, "check.obx:2253")].f_tparams).len;
+    int64_t v_ntp_20 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix19, ((*p_c)->f_pg->f_types).len, "check.obx:2370")].f_tparams).len;
     bool c21 = ((v_args_10).len != v_ntp_20);
     if (c21) {
       int64_t t22 = p_line;
       int64_t ix23 = p_d;
-      obx_str t24 = rt_str_concat(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix23, ((*p_c)->f_pg->f_types).len, "check.obx:2255")].f_name, sl2159);
+      obx_str t24 = rt_str_concat(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix23, ((*p_c)->f_pg->f_types).len, "check.obx:2372")].f_name, sl2159);
       obx_str t25 = rt_int_to_str(v_ntp_20);
       obx_str t26 = rt_str_concat(t24, t25);
       obx_str t27 = rt_str_concat(t26, sl2160);
@@ -38022,7 +38039,7 @@ static int64_t f727_check_Checker_resolveNamed(S73_check_Checker** p_c, int64_t 
       f702_check_Checker_err(p_c, t22, t29);
     }
     int64_t ix30 = p_d;
-    bool c31 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix30, ((*p_c)->f_pg->f_types).len, "check.obx:2257")].f_form == 3LL);
+    bool c31 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix30, ((*p_c)->f_pg->f_types).len, "check.obx:2374")].f_form == 3LL);
     if (c31) {
       obx_arr a32 = rt_arr_new(0, sizeof(int64_t));
       obx_arr v_env_33 = a32;
@@ -38030,10 +38047,10 @@ static int64_t f727_check_Checker_resolveNamed(S73_check_Checker** p_c, int64_t 
       for (int64_t v_i_35 = 0LL; v_i_35 < end34; v_i_35++) {
         int64_t ix36 = p_d;
         int64_t ix37 = v_i_35;
-        int64_t ap38 = ((int64_t*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:2260")].f_tparams).data)[rt_idx(ix37, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:2260")].f_tparams).len, "check.obx:2260")];
+        int64_t ap38 = ((int64_t*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:2377")].f_tparams).data)[rt_idx(ix37, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:2377")].f_tparams).len, "check.obx:2377")];
         *(int64_t*)rt_arr_push((&v_env_33), sizeof(int64_t)) = ap38;
         int64_t ix39 = v_i_35;
-        int64_t ap40 = ((int64_t*)(v_args_10).data)[rt_idx(ix39, (v_args_10).len, "check.obx:2261")];
+        int64_t ap40 = ((int64_t*)(v_args_10).data)[rt_idx(ix39, (v_args_10).len, "check.obx:2378")];
         *(int64_t*)rt_arr_push((&v_env_33), sizeof(int64_t)) = ap40;
       }
       int64_t t41 = f613_sema_Program_aliasTarget((&(*p_c)->f_pg), p_d);
@@ -38044,7 +38061,7 @@ static int64_t f727_check_Checker_resolveNamed(S73_check_Checker** p_c, int64_t 
       return r43;
     }
     int64_t ix44 = p_d;
-    obx_arr t45 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix44, ((*p_c)->f_pg->f_types).len, "check.obx:2265")].f_tparams));
+    obx_arr t45 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix44, ((*p_c)->f_pg->f_types).len, "check.obx:2382")].f_tparams));
     obx_arr v_tps_46 = t45;
     f537_sema_Program_checkTargs((&(*p_c)->f_pg), (&v_args_10), (&v_tps_46), v_mod_1, p_line);
     int64_t t47 = f516_sema_Program_mkInst((&(*p_c)->f_pg), p_d, (&v_args_10));
@@ -38120,7 +38137,7 @@ static int64_t f729_check_Checker_lookupAt(S73_check_Checker** p_c, int64_t p_lv
     rt_str_drop(p_name);
     return r9;
   }
-  int64_t t10 = f729_check_Checker_lookupAt(p_c, rt_sub_int(p_lvl, 1LL, "check.obx:697"), rt_str_dup(p_name), p_capture);
+  int64_t t10 = f729_check_Checker_lookupAt(p_c, rt_sub_int(p_lvl, 1LL, "check.obx:698"), rt_str_dup(p_name), p_capture);
   int64_t v_o_11 = t10;
   bool b12 = (v_o_11 < 0LL);
   if (!b12) {
@@ -38138,14 +38155,14 @@ static int64_t f729_check_Checker_lookupAt(S73_check_Checker** p_c, int64_t p_lv
     ifx16 = ((*p_c)->f_cx->f_capNames).len;
   } else {
     int64_t ix17 = p_lvl;
-    ifx16 = (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix17, ((*p_c)->f_outers).len, "check.obx:699")]->f_capNames).len;
+    ifx16 = (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix17, ((*p_c)->f_outers).len, "check.obx:700")]->f_capNames).len;
   }
   int64_t v_ncaps_18 = ifx16;
   int64_t ix19 = v_o_11;
-  obx_str t20 = f732_check_Checker_T(p_c, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix19, ((*p_c)->f_vars).len, "check.obx:700")].f_t);
+  obx_str t20 = f732_check_Checker_T(p_c, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix19, ((*p_c)->f_vars).len, "check.obx:701")].f_t);
   obx_str v_ct_21 = t20;
   int64_t ix22 = v_o_11;
-  S85_check_Var v_p_23 = gl65_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix22, ((*p_c)->f_vars).len, "check.obx:701")]);
+  S85_check_Var v_p_23 = gl65_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix22, ((*p_c)->f_vars).len, "check.obx:702")]);
   obx_str t24 = rt_str_concat(sl2379, v_ct_21);
   obx_str t25 = rt_str_concat(t24, sl2380);
   obx_str t26 = rt_int_to_str(v_ncaps_18);
@@ -38162,7 +38179,7 @@ static int64_t f729_check_Checker_lookupAt(S73_check_Checker** p_c, int64_t p_lv
   v_p_23.f_capmut = false;
   S85_check_Var ap30 = gl65_dup(v_p_23);
   *(S85_check_Var*)rt_arr_push((&(*p_c)->f_vars), sizeof(S85_check_Var)) = ap30;
-  int64_t v_id_31 = rt_sub_int(((*p_c)->f_vars).len, 1LL, "check.obx:706");
+  int64_t v_id_31 = rt_sub_int(((*p_c)->f_vars).len, 1LL, "check.obx:707");
   int64_t t32 = p_lvl;
   bool c33 = (t32 == ((*p_c)->f_outers).len);
   if (c33) {
@@ -38173,10 +38190,10 @@ static int64_t f729_check_Checker_lookupAt(S73_check_Checker** p_c, int64_t p_lv
   } else {
     int64_t ix36 = p_lvl;
     obx_str ap37 = rt_str_dup(p_name);
-    *(obx_str*)rt_arr_push((&((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix36, ((*p_c)->f_outers).len, "check.obx:711")]->f_capNames), sizeof(obx_str)) = ap37;
+    *(obx_str*)rt_arr_push((&((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix36, ((*p_c)->f_outers).len, "check.obx:712")]->f_capNames), sizeof(obx_str)) = ap37;
     int64_t ix38 = p_lvl;
     int64_t ap39 = v_id_31;
-    *(int64_t*)rt_arr_push((&((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix38, ((*p_c)->f_outers).len, "check.obx:712")]->f_capVars), sizeof(int64_t)) = ap39;
+    *(int64_t*)rt_arr_push((&((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix38, ((*p_c)->f_outers).len, "check.obx:713")]->f_capVars), sizeof(int64_t)) = ap39;
   }
   int64_t r40 = v_id_31;
   gl66_drop(v_p_23);
@@ -38191,7 +38208,7 @@ static obx_str f732_check_Checker_T(S73_check_Checker** p_c, int64_t p_t) {
   if (c3) {
     obx_slice t4 = k5_check_CTYPES;
     int64_t ix5 = p_t;
-    obx_str r6 = rt_str_dup(((obx_str*)(t4).data)[rt_idx(ix5, (t4).len, "check.obx:420")]);
+    obx_str r6 = rt_str_dup(((obx_str*)(t4).data)[rt_idx(ix5, (t4).len, "check.obx:421")]);
     return r6;
   }
   bool c7 = (v_k_2 == 3LL);
@@ -38216,25 +38233,25 @@ static int64_t f731_check_Checker_capGet(S73_check_Checker** p_c, int64_t p_lvl,
     int64_t end3 = ((*p_c)->f_cx->f_capNames).len;
     for (int64_t v_i_4 = 0LL; v_i_4 < end3; v_i_4++) {
       int64_t ix5 = v_i_4;
-      bool c6 = (rt_str_eq(((obx_str*)((*p_c)->f_cx->f_capNames).data)[rt_idx(ix5, ((*p_c)->f_cx->f_capNames).len, "check.obx:678")], p_name));
+      bool c6 = (rt_str_eq(((obx_str*)((*p_c)->f_cx->f_capNames).data)[rt_idx(ix5, ((*p_c)->f_cx->f_capNames).len, "check.obx:679")], p_name));
       if (c6) {
         int64_t ix7 = v_i_4;
-        int64_t r8 = ((int64_t*)((*p_c)->f_cx->f_capVars).data)[rt_idx(ix7, ((*p_c)->f_cx->f_capVars).len, "check.obx:678")];
+        int64_t r8 = ((int64_t*)((*p_c)->f_cx->f_capVars).data)[rt_idx(ix7, ((*p_c)->f_cx->f_capVars).len, "check.obx:679")];
         rt_str_drop(p_name);
         return r8;
       }
     }
   } else {
     int64_t ix9 = p_lvl;
-    int64_t end10 = (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix9, ((*p_c)->f_outers).len, "check.obx:681")]->f_capNames).len;
+    int64_t end10 = (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix9, ((*p_c)->f_outers).len, "check.obx:682")]->f_capNames).len;
     for (int64_t v_i_11 = 0LL; v_i_11 < end10; v_i_11++) {
       int64_t ix12 = p_lvl;
       int64_t ix13 = v_i_11;
-      bool c14 = (rt_str_eq(((obx_str*)(((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix12, ((*p_c)->f_outers).len, "check.obx:682")]->f_capNames).data)[rt_idx(ix13, (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix12, ((*p_c)->f_outers).len, "check.obx:682")]->f_capNames).len, "check.obx:682")], p_name));
+      bool c14 = (rt_str_eq(((obx_str*)(((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix12, ((*p_c)->f_outers).len, "check.obx:683")]->f_capNames).data)[rt_idx(ix13, (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix12, ((*p_c)->f_outers).len, "check.obx:683")]->f_capNames).len, "check.obx:683")], p_name));
       if (c14) {
         int64_t ix15 = p_lvl;
         int64_t ix16 = v_i_11;
-        int64_t r17 = ((int64_t*)(((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix15, ((*p_c)->f_outers).len, "check.obx:682")]->f_capVars).data)[rt_idx(ix16, (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix15, ((*p_c)->f_outers).len, "check.obx:682")]->f_capVars).len, "check.obx:682")];
+        int64_t r17 = ((int64_t*)(((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix15, ((*p_c)->f_outers).len, "check.obx:683")]->f_capVars).data)[rt_idx(ix16, (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix15, ((*p_c)->f_outers).len, "check.obx:683")]->f_capVars).len, "check.obx:683")];
         rt_str_drop(p_name);
         return r17;
       }
@@ -38251,10 +38268,10 @@ static int64_t f730_check_Checker_findIn(S73_check_Checker** p_c, int64_t p_lvl,
     ifx2 = ((*p_c)->f_cx->f_scopes).len;
   } else {
     int64_t ix3 = p_lvl;
-    ifx2 = (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix3, ((*p_c)->f_outers).len, "check.obx:661")]->f_scopes).len;
+    ifx2 = (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix3, ((*p_c)->f_outers).len, "check.obx:662")]->f_scopes).len;
   }
   int64_t v_n_4 = ifx2;
-  int64_t v_i_5 = rt_sub_int(v_n_4, 1LL, "check.obx:662");
+  int64_t v_i_5 = rt_sub_int(v_n_4, 1LL, "check.obx:663");
   while (1) {
     bool c6 = (v_i_5 >= 0LL);
     if (!c6) break;
@@ -38262,32 +38279,32 @@ static int64_t f730_check_Checker_findIn(S73_check_Checker** p_c, int64_t p_lvl,
     obx_arr ifx8;
     if ((t7 == ((*p_c)->f_outers).len)) {
       int64_t ix9 = v_i_5;
-      obx_arr t10 = f696_check_copyInts((&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix9, ((*p_c)->f_cx->f_scopes).len, "check.obx:664")]->f_vars));
+      obx_arr t10 = f696_check_copyInts((&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix9, ((*p_c)->f_cx->f_scopes).len, "check.obx:665")]->f_vars));
       ifx8 = t10;
     } else {
       int64_t ix11 = p_lvl;
       int64_t ix12 = v_i_5;
-      obx_arr t13 = f696_check_copyInts((&((S86_check_Scope**)(((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix11, ((*p_c)->f_outers).len, "check.obx:664")]->f_scopes).data)[rt_idx(ix12, (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix11, ((*p_c)->f_outers).len, "check.obx:664")]->f_scopes).len, "check.obx:664")]->f_vars));
+      obx_arr t13 = f696_check_copyInts((&((S86_check_Scope**)(((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix11, ((*p_c)->f_outers).len, "check.obx:665")]->f_scopes).data)[rt_idx(ix12, (((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(ix11, ((*p_c)->f_outers).len, "check.obx:665")]->f_scopes).len, "check.obx:665")]->f_vars));
       ifx8 = t13;
     }
     obx_arr v_vs_14 = ifx8;
-    int64_t v_j_15 = rt_sub_int((v_vs_14).len, 1LL, "check.obx:665");
+    int64_t v_j_15 = rt_sub_int((v_vs_14).len, 1LL, "check.obx:666");
     while (1) {
       bool c16 = (v_j_15 >= 0LL);
       if (!c16) break;
       int64_t ix17 = v_j_15;
-      int64_t ix18 = ((int64_t*)(v_vs_14).data)[rt_idx(ix17, (v_vs_14).len, "check.obx:667")];
-      bool c19 = (rt_str_eq(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix18, ((*p_c)->f_vars).len, "check.obx:667")].f_name, p_name));
+      int64_t ix18 = ((int64_t*)(v_vs_14).data)[rt_idx(ix17, (v_vs_14).len, "check.obx:668")];
+      bool c19 = (rt_str_eq(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix18, ((*p_c)->f_vars).len, "check.obx:668")].f_name, p_name));
       if (c19) {
         int64_t ix20 = v_j_15;
-        int64_t r21 = ((int64_t*)(v_vs_14).data)[rt_idx(ix20, (v_vs_14).len, "check.obx:667")];
+        int64_t r21 = ((int64_t*)(v_vs_14).data)[rt_idx(ix20, (v_vs_14).len, "check.obx:668")];
         gl9_drop(v_vs_14);
         rt_str_drop(p_name);
         return r21;
       }
-      v_j_15 = rt_sub_int(v_j_15, 1LL, "check.obx:668");
+      v_j_15 = rt_sub_int(v_j_15, 1LL, "check.obx:669");
     }
-    v_i_5 = rt_sub_int(v_i_5, 1LL, "check.obx:670");
+    v_i_5 = rt_sub_int(v_i_5, 1LL, "check.obx:671");
     gl9_drop(v_vs_14);
   }
   int64_t r22 = -1LL;
@@ -38363,7 +38380,7 @@ static obx_arr f709_check_Checker_orderInits(S73_check_Checker** p_c, obx_arr* p
     int64_t end44 = ((*p_names)).len;
     for (int64_t v_i_45 = 0LL; v_i_45 < end44; v_i_45++) {
       int64_t ix46 = v_i_45;
-      bool c47 = (rt_str_eq(((obx_str*)((*p_names)).data)[rt_idx(ix46, ((*p_names)).len, "check.obx:3280")], v_n_43));
+      bool c47 = (rt_str_eq(((obx_str*)((*p_names)).data)[rt_idx(ix46, ((*p_names)).len, "check.obx:3417")], v_n_43));
       if (c47) {
         int64_t ap48 = v_i_45;
         *(int64_t*)rt_arr_push((&v_order_38), sizeof(int64_t)) = ap48;
@@ -38492,7 +38509,7 @@ static obx_str f736_check_cint(S65_num_Big p_v, int64_t p_t) {
   }
   obx_slice t35 = k5_check_CTYPES;
   int64_t ix36 = p_t;
-  obx_str t37 = rt_str_concat(sl2289, ((obx_str*)(t35).data)[rt_idx(ix36, (t35).len, "check.obx:2047")]);
+  obx_str t37 = rt_str_concat(sl2289, ((obx_str*)(t35).data)[rt_idx(ix36, (t35).len, "check.obx:2164")]);
   obx_str t38 = rt_str_concat(t37, sl31);
   obx_str t39 = f506_num_bigStr(gl43_dup(p_v));
   obx_str t40 = rt_str_concat(t38, t39);
@@ -38509,7 +38526,7 @@ static obx_str f707_check_Checker_hole(S73_check_Checker** p_c, S80_check_Hole p
   S80_check_Hole ap1 = gl59_dup(p_h);
   *(S80_check_Hole*)rt_arr_push((&(*p_c)->f_holes), sizeof(S80_check_Hole)) = ap1;
   obx_str t2 = sl2394;
-  obx_str t3 = rt_int_to_str(rt_sub_int(((*p_c)->f_holes).len, 1LL, "check.obx:412"));
+  obx_str t3 = rt_int_to_str(rt_sub_int(((*p_c)->f_holes).len, 1LL, "check.obx:413"));
   obx_str t4 = rt_str_concat(t2, t3);
   obx_str t5 = rt_str_concat(t4, sl2395);
   obx_str r6 = t5;
@@ -38541,7 +38558,7 @@ static obx_arr f704_check_Checker_items(S73_check_Checker** p_c, int64_t p_l) {
 static S49_syntax_Node f703_check_Checker_nd(S73_check_Checker** p_c, int64_t p_n) {
   int64_t ix1 = (*p_c)->f_cx->f_mod;
   int64_t ix2 = p_n;
-  S49_syntax_Node r3 = gl51_dup(((S49_syntax_Node*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:475")].f_ast->f_nodes).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:475")].f_ast->f_nodes).len, "check.obx:475")]);
+  S49_syntax_Node r3 = gl51_dup(((S49_syntax_Node*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:476")].f_ast->f_nodes).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:476")].f_ast->f_nodes).len, "check.obx:476")]);
   return r3;
 }
 static void f702_check_Checker_err(S73_check_Checker** p_c, int64_t p_line, obx_str p_msg) {
@@ -38550,13 +38567,13 @@ static void f702_check_Checker_err(S73_check_Checker** p_c, int64_t p_line, obx_
 static int64_t f701_check_Checker_line(S73_check_Checker** p_c, int64_t p_n) {
   int64_t ix1 = (*p_c)->f_cx->f_mod;
   int64_t ix2 = p_n;
-  int64_t r3 = ((S49_syntax_Node*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:477")].f_ast->f_nodes).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:477")].f_ast->f_nodes).len, "check.obx:477")].f_line;
+  int64_t r3 = ((S49_syntax_Node*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:478")].f_ast->f_nodes).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:478")].f_ast->f_nodes).len, "check.obx:478")].f_line;
   return r3;
 }
 static int64_t f700_check_Checker_kind(S73_check_Checker** p_c, int64_t p_n) {
   int64_t ix1 = (*p_c)->f_cx->f_mod;
   int64_t ix2 = p_n;
-  int64_t r3 = ((S49_syntax_Node*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:476")].f_ast->f_nodes).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:476")].f_ast->f_nodes).len, "check.obx:476")].f_kind;
+  int64_t r3 = ((S49_syntax_Node*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:477")].f_ast->f_nodes).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:477")].f_ast->f_nodes).len, "check.obx:477")].f_kind;
   return r3;
 }
 static void f699_check_Checker_startFn(S73_check_Checker** p_c, int64_t p_f, obx_str p_label, int64_t p_ret, obx_arr p_env, int64_t p_mod) {
@@ -38628,24 +38645,24 @@ static S84_check_Ctx* f737_check_newCtx(int64_t p_f, obx_str p_label, int64_t p_
 }
 static void f697_check_Checker_checkFn(S73_check_Checker** p_c, int64_t p_f) {
   int64_t ix1 = p_f;
-  int64_t v_m_2 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix1, ((*p_c)->f_pg->f_fns).len, "check.obx:4307")].f_mod;
+  int64_t v_m_2 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix1, ((*p_c)->f_pg->f_fns).len, "check.obx:4489")].f_mod;
   int64_t t3 = p_f;
   obx_str t4 = f490_sema_Program_label((&(*p_c)->f_pg), p_f);
   int64_t ix5 = p_f;
-  int64_t t6 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix5, ((*p_c)->f_pg->f_fns).len, "check.obx:4308")].f_ret;
+  int64_t t6 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix5, ((*p_c)->f_pg->f_fns).len, "check.obx:4490")].f_ret;
   int64_t ix7 = p_f;
-  obx_arr t8 = f696_check_copyInts((&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix7, ((*p_c)->f_pg->f_fns).len, "check.obx:4308")].f_tps));
+  obx_arr t8 = f696_check_copyInts((&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix7, ((*p_c)->f_pg->f_fns).len, "check.obx:4490")].f_tps));
   f699_check_Checker_startFn(p_c, t3, t4, t6, t8, v_m_2);
   obx_arr a9 = rt_arr_new(0, sizeof(int64_t));
   obx_arr v_vs_10 = a9;
   int64_t ix11 = p_f;
-  obx_str v_bp_12 = rt_str_dup(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix11, ((*p_c)->f_pg->f_fns).len, "check.obx:4310")].f_bparam);
+  obx_str v_bp_12 = rt_str_dup(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix11, ((*p_c)->f_pg->f_fns).len, "check.obx:4492")].f_bparam);
   int64_t ix13 = p_f;
-  int64_t end14 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix13, ((*p_c)->f_pg->f_fns).len, "check.obx:4311")].f_params).len;
+  int64_t end14 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix13, ((*p_c)->f_pg->f_fns).len, "check.obx:4493")].f_params).len;
   for (int64_t v_i_15 = 0LL; v_i_15 < end14; v_i_15++) {
     int64_t ix16 = p_f;
     int64_t ix17 = v_i_15;
-    S59_sema_Param v_p_18 = gl39_dup(((S59_sema_Param*)(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix16, ((*p_c)->f_pg->f_fns).len, "check.obx:4312")].f_params).data)[rt_idx(ix17, (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix16, ((*p_c)->f_pg->f_fns).len, "check.obx:4312")].f_params).len, "check.obx:4312")]);
+    S59_sema_Param v_p_18 = gl39_dup(((S59_sema_Param*)(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix16, ((*p_c)->f_pg->f_fns).len, "check.obx:4494")].f_params).data)[rt_idx(ix17, (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix16, ((*p_c)->f_pg->f_fns).len, "check.obx:4494")].f_params).len, "check.obx:4494")]);
     obx_str t19 = rt_str_concat(sl2396, v_p_18.f_name);
     int64_t t20 = f738_check_Checker_newVar(p_c, rt_str_dup(v_p_18.f_name), t19, v_p_18.f_ty, v_p_18.f_isVar, 0LL, v_p_18.f_line);
     int64_t v_v_21 = t20;
@@ -38665,12 +38682,12 @@ static void f697_check_Checker_checkFn(S73_check_Checker** p_c, int64_t p_f) {
   S86_check_Scope* ap27 = t26;
   *(S86_check_Scope**)rt_arr_push((&(*p_c)->f_cx->f_scopes), sizeof(S86_check_Scope*)) = ap27;
   int64_t ix28 = p_f;
-  int64_t v_line_29 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix28, ((*p_c)->f_pg->f_fns).len, "check.obx:4318")].f_line;
+  int64_t v_line_29 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix28, ((*p_c)->f_pg->f_fns).len, "check.obx:4500")].f_line;
   int64_t ix30 = p_f;
-  bool b31 = (rt_str_eq(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix30, ((*p_c)->f_pg->f_fns).len, "check.obx:4319")].f_name, sl1816));
+  bool b31 = (rt_str_eq(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix30, ((*p_c)->f_pg->f_fns).len, "check.obx:4501")].f_name, sl1816));
   if (b31) {
     int64_t ix32 = p_f;
-    b31 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix32, ((*p_c)->f_pg->f_fns).len, "check.obx:4319")].f_ownerKind == 0LL);
+    b31 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix32, ((*p_c)->f_pg->f_fns).len, "check.obx:4501")].f_ownerKind == 0LL);
   }
   bool b33 = b31;
   if (b33) {
@@ -38679,15 +38696,15 @@ static void f697_check_Checker_checkFn(S73_check_Checker** p_c, int64_t p_f) {
   bool c34 = b33;
   if (c34) {
     int64_t ix35 = p_f;
-    bool b36 = ((((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix35, ((*p_c)->f_pg->f_fns).len, "check.obx:4320")].f_params).len > 0LL);
+    bool b36 = ((((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix35, ((*p_c)->f_pg->f_fns).len, "check.obx:4502")].f_params).len > 0LL);
     if (!b36) {
       int64_t ix37 = p_f;
-      b36 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix37, ((*p_c)->f_pg->f_fns).len, "check.obx:4320")].f_ret != 11LL);
+      b36 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix37, ((*p_c)->f_pg->f_fns).len, "check.obx:4502")].f_ret != 11LL);
     }
     bool b38 = b36;
     if (!b38) {
       int64_t ix39 = p_f;
-      b38 = ((((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix39, ((*p_c)->f_pg->f_fns).len, "check.obx:4320")].f_tps).len > 0LL);
+      b38 = ((((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix39, ((*p_c)->f_pg->f_fns).len, "check.obx:4502")].f_tps).len > 0LL);
     }
     bool c40 = b38;
     if (c40) {
@@ -38695,13 +38712,13 @@ static void f697_check_Checker_checkFn(S73_check_Checker** p_c, int64_t p_f) {
     }
   }
   int64_t ix41 = p_f;
-  S49_syntax_Node t42 = f549_sema_Program_nd((&(*p_c)->f_pg), v_m_2, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix41, ((*p_c)->f_pg->f_fns).len, "check.obx:4324")].f_node);
+  S49_syntax_Node t42 = f549_sema_Program_nd((&(*p_c)->f_pg), v_m_2, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix41, ((*p_c)->f_pg->f_fns).len, "check.obx:4506")].f_node);
   f739_check_Checker_block(p_c, t42.f_e, false, true);
   gl49_drop(t42);
   bool c43 = (!(*p_c)->f_cx->f_dead);
   if (c43) {
     int64_t ix44 = p_f;
-    int64_t v_ret_45 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix44, ((*p_c)->f_pg->f_fns).len, "check.obx:4326")].f_ret;
+    int64_t v_ret_45 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix44, ((*p_c)->f_pg->f_fns).len, "check.obx:4508")].f_ret;
     bool c46 = (v_ret_45 == 12LL);
     if (c46) {
       obx_str t47 = rt_str_concat((*p_c)->f_cx->f_label, sl2398);
@@ -38732,8 +38749,8 @@ static void f697_check_Checker_checkFn(S73_check_Checker** p_c, int64_t p_f) {
   S82_check_Tmpl* t58 = o57;
   int64_t ix59 = p_f;
   { S82_check_Tmpl* nw60 = t58;
-    gl58_drop(((S82_check_Tmpl**)((*p_c)->f_tmpls).data)[rt_idx(ix59, ((*p_c)->f_tmpls).len, "check.obx:4334")]);
-    ((S82_check_Tmpl**)((*p_c)->f_tmpls).data)[rt_idx(ix59, ((*p_c)->f_tmpls).len, "check.obx:4334")] = nw60; }
+    gl58_drop(((S82_check_Tmpl**)((*p_c)->f_tmpls).data)[rt_idx(ix59, ((*p_c)->f_tmpls).len, "check.obx:4516")]);
+    ((S82_check_Tmpl**)((*p_c)->f_tmpls).data)[rt_idx(ix59, ((*p_c)->f_tmpls).len, "check.obx:4516")] = nw60; }
   rt_str_drop(v_bp_12);
 }
 static void f740_check_Checker_exitDrops(S73_check_Checker** p_c, bool p_whole) {
@@ -38760,19 +38777,19 @@ static void f740_check_Checker_exitDrops(S73_check_Checker** p_c, bool p_whole) 
   obx_arr old6 = *(&(*p_c)->f_cx->f_tail);
   *(&(*p_c)->f_cx->f_tail) = a5;
   obx_arr v_tail_7 = old6;
-  int64_t v_i_8 = rt_sub_int((v_tail_7).len, 1LL, "check.obx:559");
+  int64_t v_i_8 = rt_sub_int((v_tail_7).len, 1LL, "check.obx:560");
   while (1) {
     bool c9 = (v_i_8 >= 0LL);
     if (!c9) break;
     int64_t ix10 = v_i_8;
-    int64_t t11 = ((S91_check_Drop*)(v_tail_7).data)[rt_idx(ix10, (v_tail_7).len, "check.obx:561")].f_t;
+    int64_t t11 = ((S91_check_Drop*)(v_tail_7).data)[rt_idx(ix10, (v_tail_7).len, "check.obx:562")].f_t;
     int64_t ix12 = v_i_8;
-    S80_check_Hole t13 = f706_check_mkHole(2LL, t11, rt_str_dup(((S91_check_Drop*)(v_tail_7).data)[rt_idx(ix12, (v_tail_7).len, "check.obx:561")].f_c));
+    S80_check_Hole t13 = f706_check_mkHole(2LL, t11, rt_str_dup(((S91_check_Drop*)(v_tail_7).data)[rt_idx(ix12, (v_tail_7).len, "check.obx:562")].f_c));
     obx_str t14 = f707_check_Checker_hole(p_c, t13);
     obx_str v_h_15 = t14;
     obx_str t16 = rt_str_concat(v_h_15, sl36);
     f744_check_Checker_emit(p_c, t16);
-    v_i_8 = rt_sub_int(v_i_8, 1LL, "check.obx:563");
+    v_i_8 = rt_sub_int(v_i_8, 1LL, "check.obx:564");
     rt_str_drop(v_h_15);
   }
   gl73_drop(v_tail_7);
@@ -38793,33 +38810,33 @@ static void f744_check_Checker_emit(S73_check_Checker** p_c, obx_str p_s) {
 }
 static void f743_check_Checker_dropScope(S73_check_Checker** p_c, int64_t p_s) {
   int64_t ix1 = p_s;
-  obx_arr t2 = f696_check_copyInts((&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix1, ((*p_c)->f_cx->f_scopes).len, "check.obx:577")]->f_vars));
+  obx_arr t2 = f696_check_copyInts((&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix1, ((*p_c)->f_cx->f_scopes).len, "check.obx:578")]->f_vars));
   obx_arr v_vs_3 = t2;
   f745_check_Checker_dropVars(p_c, (&v_vs_3));
   gl9_drop(v_vs_3);
 }
 static void f745_check_Checker_dropVars(S73_check_Checker** p_c, obx_arr* p_vs) {
-  int64_t v_i_1 = rt_sub_int(((*p_vs)).len, 1LL, "check.obx:582");
+  int64_t v_i_1 = rt_sub_int(((*p_vs)).len, 1LL, "check.obx:583");
   while (1) {
     bool c2 = (v_i_1 >= 0LL);
     if (!c2) break;
     int64_t ix3 = v_i_1;
-    int64_t v_v_4 = ((int64_t*)((*p_vs)).data)[rt_idx(ix3, ((*p_vs)).len, "check.obx:584")];
+    int64_t v_v_4 = ((int64_t*)((*p_vs)).data)[rt_idx(ix3, ((*p_vs)).len, "check.obx:585")];
     int64_t ix5 = v_v_4;
-    bool b6 = (!((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix5, ((*p_c)->f_vars).len, "check.obx:585")].f_moved);
+    bool b6 = (!((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix5, ((*p_c)->f_vars).len, "check.obx:586")].f_moved);
     if (b6) {
       int64_t ix7 = v_v_4;
-      int64_t t8 = f497_sema_Program_tk((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix7, ((*p_c)->f_vars).len, "check.obx:585")].f_t);
+      int64_t t8 = f497_sema_Program_tk((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix7, ((*p_c)->f_vars).len, "check.obx:586")].f_t);
       b6 = (t8 != 2LL);
     }
     bool c9 = b6;
     if (c9) {
       int64_t ix10 = v_v_4;
-      obx_str t11 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix10, ((*p_c)->f_vars).len, "check.obx:585")].f_c);
+      obx_str t11 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix10, ((*p_c)->f_vars).len, "check.obx:586")].f_c);
       int64_t ix12 = v_v_4;
-      f746_check_Checker_dropc(p_c, t11, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix12, ((*p_c)->f_vars).len, "check.obx:585")].f_t);
+      f746_check_Checker_dropc(p_c, t11, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix12, ((*p_c)->f_vars).len, "check.obx:586")].f_t);
     }
-    v_i_1 = rt_sub_int(v_i_1, 1LL, "check.obx:586");
+    v_i_1 = rt_sub_int(v_i_1, 1LL, "check.obx:587");
   }
 }
 static void f746_check_Checker_dropc(S73_check_Checker** p_c, obx_str p_cc, int64_t p_t) {
@@ -38848,41 +38865,41 @@ static bool f747_check_Checker_pod(S73_check_Checker** p_c, int64_t p_t) {
   return r2;
 }
 static void f742_check_Checker_cleanup(S73_check_Checker** p_c, int64_t p_nscopes, int64_t p_nframes) {
-  int64_t v_i_1 = rt_sub_int(((*p_c)->f_cx->f_frames).len, 1LL, "check.obx:591");
+  int64_t v_i_1 = rt_sub_int(((*p_c)->f_cx->f_frames).len, 1LL, "check.obx:592");
   while (1) {
     bool c2 = (v_i_1 >= p_nframes);
     if (!c2) break;
     int64_t ix3 = v_i_1;
-    obx_arr t4 = f696_check_copyInts((&((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix3, ((*p_c)->f_cx->f_frames).len, "check.obx:593")]));
+    obx_arr t4 = f696_check_copyInts((&((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix3, ((*p_c)->f_cx->f_frames).len, "check.obx:594")]));
     obx_arr v_fr_5 = t4;
     f748_check_Checker_dropFrame(p_c, (&v_fr_5));
-    v_i_1 = rt_sub_int(v_i_1, 1LL, "check.obx:595");
+    v_i_1 = rt_sub_int(v_i_1, 1LL, "check.obx:596");
     gl9_drop(v_fr_5);
   }
-  v_i_1 = rt_sub_int(((*p_c)->f_cx->f_scopes).len, 1LL, "check.obx:597");
+  v_i_1 = rt_sub_int(((*p_c)->f_cx->f_scopes).len, 1LL, "check.obx:598");
   while (1) {
     bool c6 = (v_i_1 >= p_nscopes);
     if (!c6) break;
     f743_check_Checker_dropScope(p_c, v_i_1);
-    v_i_1 = rt_sub_int(v_i_1, 1LL, "check.obx:600");
+    v_i_1 = rt_sub_int(v_i_1, 1LL, "check.obx:601");
   }
 }
 static void f748_check_Checker_dropFrame(S73_check_Checker** p_c, obx_arr* p_fr) {
-  int64_t v_i_1 = rt_sub_int(((*p_fr)).len, 1LL, "check.obx:568");
+  int64_t v_i_1 = rt_sub_int(((*p_fr)).len, 1LL, "check.obx:569");
   while (1) {
     bool c2 = (v_i_1 >= 0LL);
     if (!c2) break;
     int64_t ix3 = v_i_1;
-    int64_t v_t_4 = ((int64_t*)((*p_fr)).data)[rt_idx(ix3, ((*p_fr)).len, "check.obx:570")];
+    int64_t v_t_4 = ((int64_t*)((*p_fr)).data)[rt_idx(ix3, ((*p_fr)).len, "check.obx:571")];
     int64_t ix5 = v_t_4;
-    bool c6 = ((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix5, ((*p_c)->f_tmps).len, "check.obx:571")].f_live;
+    bool c6 = ((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix5, ((*p_c)->f_tmps).len, "check.obx:572")].f_live;
     if (c6) {
       int64_t ix7 = v_t_4;
-      obx_str t8 = rt_str_dup(((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix7, ((*p_c)->f_tmps).len, "check.obx:571")].f_c);
+      obx_str t8 = rt_str_dup(((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix7, ((*p_c)->f_tmps).len, "check.obx:572")].f_c);
       int64_t ix9 = v_t_4;
-      f746_check_Checker_dropc(p_c, t8, ((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix9, ((*p_c)->f_tmps).len, "check.obx:571")].f_t);
+      f746_check_Checker_dropc(p_c, t8, ((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix9, ((*p_c)->f_tmps).len, "check.obx:572")].f_t);
     }
-    v_i_1 = rt_sub_int(v_i_1, 1LL, "check.obx:572");
+    v_i_1 = rt_sub_int(v_i_1, 1LL, "check.obx:573");
   }
 }
 static bool f741_check_Checker_inDrop(S73_check_Checker** p_c) {
@@ -38890,13 +38907,13 @@ static bool f741_check_Checker_inDrop(S73_check_Checker** p_c) {
   bool b2 = (v_f_1 >= 0LL);
   if (b2) {
     int64_t ix3 = v_f_1;
-    b2 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix3, ((*p_c)->f_pg->f_fns).len, "check.obx:471")].f_ownerKind == 2LL);
+    b2 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix3, ((*p_c)->f_pg->f_fns).len, "check.obx:472")].f_ownerKind == 2LL);
   }
   bool b4 = b2;
   if (b4) {
     int64_t ix5 = v_f_1;
-    int64_t ix6 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix5, ((*p_c)->f_pg->f_fns).len, "check.obx:471")].f_owner;
-    b4 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix6, ((*p_c)->f_pg->f_types).len, "check.obx:471")].f_drop == v_f_1);
+    int64_t ix6 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix5, ((*p_c)->f_pg->f_fns).len, "check.obx:472")].f_owner;
+    b4 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix6, ((*p_c)->f_pg->f_types).len, "check.obx:472")].f_drop == v_f_1);
   }
   bool r7 = b4;
   return r7;
@@ -38955,7 +38972,7 @@ static void f739_check_Checker_block(S73_check_Checker** p_c, int64_t p_b, bool 
     if (c24) {
       bool b25 = p_top;
       if (b25) {
-        b25 = (v_i_9 == rt_sub_int(v_n_7, 1LL, "check.obx:809"));
+        b25 = (v_i_9 == rt_sub_int(v_n_7, 1LL, "check.obx:810"));
       }
       bool b26 = b25;
       if (b26) {
@@ -38977,7 +38994,7 @@ static void f739_check_Checker_block(S73_check_Checker** p_c, int64_t p_b, bool 
   (*p_c)->f_cx->f_dead = b29;
   bool c30 = p_scope;
   if (c30) {
-    S86_check_Scope* t31 = *(S86_check_Scope**)rt_arr_pop((&(*p_c)->f_cx->f_scopes), sizeof(S86_check_Scope*), "check.obx:815");
+    S86_check_Scope* t31 = *(S86_check_Scope**)rt_arr_pop((&(*p_c)->f_cx->f_scopes), sizeof(S86_check_Scope*), "check.obx:816");
     S86_check_Scope* v_sc_32 = t31;
     bool c33 = (!(*p_c)->f_cx->f_dead);
     if (c33) {
@@ -38987,10 +39004,10 @@ static void f739_check_Checker_block(S73_check_Checker** p_c, int64_t p_b, bool 
   }
 }
 static obx_arr f752_check_Checker_popFrame(S73_check_Checker** p_c) {
-  int64_t t1 = *(int64_t*)rt_arr_pop((&(*p_c)->f_cx->f_pmarks), sizeof(int64_t), "check.obx:616");
+  int64_t t1 = *(int64_t*)rt_arr_pop((&(*p_c)->f_cx->f_pmarks), sizeof(int64_t), "check.obx:617");
   int64_t v_m_2 = t1;
   f753_check_Checker_cutPending(p_c, v_m_2);
-  obx_arr t3 = *(obx_arr*)rt_arr_pop((&(*p_c)->f_cx->f_frames), sizeof(obx_arr), "check.obx:618");
+  obx_arr t3 = *(obx_arr*)rt_arr_pop((&(*p_c)->f_cx->f_frames), sizeof(obx_arr), "check.obx:619");
   obx_arr r4 = t3;
   return r4;
 }
@@ -38998,7 +39015,7 @@ static void f753_check_Checker_cutPending(S73_check_Checker** p_c, int64_t p_m) 
   while (1) {
     bool c1 = (((*p_c)->f_cx->f_pending).len > p_m);
     if (!c1) break;
-    S90_check_Pend t2 = *(S90_check_Pend*)rt_arr_pop((&(*p_c)->f_cx->f_pending), sizeof(S90_check_Pend), "check.obx:622");
+    S90_check_Pend t2 = *(S90_check_Pend*)rt_arr_pop((&(*p_c)->f_cx->f_pending), sizeof(S90_check_Pend), "check.obx:623");
     gl75_drop(t2);
   }
 }
@@ -39082,7 +39099,7 @@ static void f764_check_Checker_sMatch(S73_check_Checker** p_c, int64_t p_s, bool
   if (!b15) {
     int64_t t16 = f498_sema_Program_ta((&(*p_c)->f_pg), v_base_8);
     int64_t ix17 = t16;
-    b15 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix17, ((*p_c)->f_pg->f_types).len, "check.obx:1729")].f_form != 1LL);
+    b15 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix17, ((*p_c)->f_pg->f_types).len, "check.obx:1842")].f_form != 1LL);
   }
   bool c18 = b15;
   if (c18) {
@@ -39103,7 +39120,7 @@ static void f764_check_Checker_sMatch(S73_check_Checker** p_c, int64_t p_s, bool
   }
   bool v_borrowing_29 = b28;
   int64_t ix30 = v_d_24;
-  obx_str t32 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix30, ((*p_c)->f_pg->f_types).len, "check.obx:1735")].f_value ? sl37 : sl1722);
+  obx_str t32 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix30, ((*p_c)->f_pg->f_types).len, "check.obx:1848")].f_value ? sl37 : sl1722);
   obx_str v_sep_33 = t32;
   obx_str v_acc_34 = sl183;
   int64_t v_root_35 = -1LL;
@@ -39145,10 +39162,10 @@ static void f764_check_Checker_sMatch(S73_check_Checker** p_c, int64_t p_s, bool
     gl68_drop(v_p_38);
   } else {
     int64_t ix55 = v_d_24;
-    bool c56 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix55, ((*p_c)->f_pg->f_types).len, "check.obx:1747")].f_drop >= 0LL);
+    bool c56 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix55, ((*p_c)->f_pg->f_types).len, "check.obx:1860")].f_drop >= 0LL);
     if (c56) {
       int64_t ix57 = v_d_24;
-      obx_str t58 = rt_str_concat(sl2410, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix57, ((*p_c)->f_pg->f_types).len, "check.obx:1748")].f_name);
+      obx_str t58 = rt_str_concat(sl2410, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix57, ((*p_c)->f_pg->f_types).len, "check.obx:1861")].f_name);
       obx_str t59 = rt_str_concat(t58, sl2411);
       f702_check_Checker_err(p_c, v_n_2.f_line, t59);
     }
@@ -39177,7 +39194,7 @@ static void f764_check_Checker_sMatch(S73_check_Checker** p_c, int64_t p_s, bool
   obx_arr a72 = rt_arr_new(0, sizeof(bool));
   obx_arr v_seen_73 = a72;
   int64_t ix74 = v_d_24;
-  int64_t end75 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix74, ((*p_c)->f_pg->f_types).len, "check.obx:1756")].f_variants).len;
+  int64_t end75 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix74, ((*p_c)->f_pg->f_types).len, "check.obx:1869")].f_variants).len;
   for (int64_t v_i_76 = 0LL; v_i_76 < end75; v_i_76++) {
     bool ap77 = false;
     *(bool*)rt_arr_push((&v_seen_73), sizeof(bool)) = ap77;
@@ -39185,352 +39202,361 @@ static void f764_check_Checker_sMatch(S73_check_Checker** p_c, int64_t p_s, bool
   int64_t v_nseen_78 = 0LL;
   obx_arr a79 = rt_arr_new(0, sizeof(obx_arr));
   obx_arr v_results_80 = a79;
-  bool v_first_81 = true;
-  bool v_hasElse_82 = false;
-  obx_arr t83 = f704_check_Checker_items(p_c, v_n_2.f_b);
-  obx_arr v_arms_84 = t83;
-  obx_slice ap85 = rt_as_slice(&v_arms_84);
-  for (int64_t i86 = 0; i86 < ap85.len; i86++) {
-    int64_t v_arm_87 = ((int64_t*)ap85.data)[i86];
-    S49_syntax_Node t88 = f703_check_Checker_nd(p_c, v_arm_87);
-    S49_syntax_Node v_an_89 = t88;
-    int64_t v_vr_90 = -1LL;
-    bool v_multi_91 = false;
-    bool c92 = (v_an_89.f_c >= 0LL);
-    if (c92) {
-      v_multi_91 = true;
-      S3_std_StrBuf* t93 = f13_std_newStrBuf();
-      S3_std_StrBuf* v_conds_94 = t93;
-      int64_t v_k_95 = 0LL;
-      obx_arr t96 = f704_check_Checker_items(p_c, v_an_89.f_c);
-      obx_slice ap97 = rt_as_slice(&t96);
-      for (int64_t i98 = 0; i98 < ap97.len; i98++) {
-        int64_t v_it_99 = ((int64_t*)ap97.data)[i98];
-        int64_t t100 = f700_check_Checker_kind(p_c, v_it_99);
-        bool c101 = (t100 != 58LL);
-        if (c101) {
-          f702_check_Checker_err(p_c, v_an_89.f_line, sl2413);
+  obx_arr a81 = rt_arr_new(0, sizeof(S94_check_PathEnd));
+  obx_arr v_ends_82 = a81;
+  bool v_first_83 = true;
+  bool v_hasElse_84 = false;
+  obx_arr t85 = f704_check_Checker_items(p_c, v_n_2.f_b);
+  obx_arr v_arms_86 = t85;
+  obx_slice ap87 = rt_as_slice(&v_arms_86);
+  for (int64_t i88 = 0; i88 < ap87.len; i88++) {
+    int64_t v_arm_89 = ((int64_t*)ap87.data)[i88];
+    S49_syntax_Node t90 = f703_check_Checker_nd(p_c, v_arm_89);
+    S49_syntax_Node v_an_91 = t90;
+    int64_t v_vr_92 = -1LL;
+    bool v_multi_93 = false;
+    bool c94 = (v_an_91.f_c >= 0LL);
+    if (c94) {
+      v_multi_93 = true;
+      S3_std_StrBuf* t95 = f13_std_newStrBuf();
+      S3_std_StrBuf* v_conds_96 = t95;
+      int64_t v_k_97 = 0LL;
+      obx_arr t98 = f704_check_Checker_items(p_c, v_an_91.f_c);
+      obx_slice ap99 = rt_as_slice(&t98);
+      for (int64_t i100 = 0; i100 < ap99.len; i100++) {
+        int64_t v_it_101 = ((int64_t*)ap99.data)[i100];
+        int64_t t102 = f700_check_Checker_kind(p_c, v_it_101);
+        bool c103 = (t102 != 58LL);
+        if (c103) {
+          f702_check_Checker_err(p_c, v_an_91.f_line, sl2413);
         }
-        S49_syntax_Node t102 = f703_check_Checker_nd(p_c, v_it_99);
-        int64_t t103 = f774_check_Checker_armVariantAt(p_c, t102.f_a, v_an_89.f_line, v_d_24, v_base_8);
-        int64_t v_ivr_104 = t103;
-        gl49_drop(t102);
-        int64_t ix105 = v_ivr_104;
-        int64_t v_idx_106 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix105, ((*p_c)->f_pg->f_variants).len, "check.obx:1774")].f_index;
-        int64_t ix107 = v_idx_106;
-        bool c108 = ((bool*)(v_seen_73).data)[rt_idx(ix107, (v_seen_73).len, "check.obx:1775")];
-        if (c108) {
-          int64_t ix109 = v_ivr_104;
-          obx_str t110 = rt_str_concat(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix109, ((*p_c)->f_pg->f_variants).len, "check.obx:1775")].f_name, sl2414);
-          f702_check_Checker_err(p_c, v_an_89.f_line, t110);
+        S49_syntax_Node t104 = f703_check_Checker_nd(p_c, v_it_101);
+        int64_t t105 = f774_check_Checker_armVariantAt(p_c, t104.f_a, v_an_91.f_line, v_d_24, v_base_8);
+        int64_t v_ivr_106 = t105;
+        gl49_drop(t104);
+        int64_t ix107 = v_ivr_106;
+        int64_t v_idx_108 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix107, ((*p_c)->f_pg->f_variants).len, "check.obx:1888")].f_index;
+        int64_t ix109 = v_idx_108;
+        bool c110 = ((bool*)(v_seen_73).data)[rt_idx(ix109, (v_seen_73).len, "check.obx:1889")];
+        if (c110) {
+          int64_t ix111 = v_ivr_106;
+          obx_str t112 = rt_str_concat(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix111, ((*p_c)->f_pg->f_variants).len, "check.obx:1889")].f_name, sl2414);
+          f702_check_Checker_err(p_c, v_an_91.f_line, t112);
         }
-        int64_t ix111 = v_idx_106;
-        ((bool*)(v_seen_73).data)[rt_idx(ix111, (v_seen_73).len, "check.obx:1776")] = true;
-        v_nseen_78 = rt_add_int(v_nseen_78, 1LL, "check.obx:1777");
-        bool c112 = (v_k_95 > 0LL);
-        if (c112) {
-          f15_std_StrBuf_add((&v_conds_94), sl2415);
+        int64_t ix113 = v_idx_108;
+        ((bool*)(v_seen_73).data)[rt_idx(ix113, (v_seen_73).len, "check.obx:1890")] = true;
+        v_nseen_78 = rt_add_int(v_nseen_78, 1LL, "check.obx:1891");
+        bool c114 = (v_k_97 > 0LL);
+        if (c114) {
+          f15_std_StrBuf_add((&v_conds_96), sl2415);
         }
-        obx_str t113 = rt_str_concat(v_acc_34, v_sep_33);
-        obx_str t114 = rt_str_concat(t113, sl2416);
-        obx_str t115 = rt_int_to_str(v_idx_106);
-        obx_str t116 = rt_str_concat(t114, t115);
-        f15_std_StrBuf_add((&v_conds_94), t116);
+        obx_str t115 = rt_str_concat(v_acc_34, v_sep_33);
+        obx_str t116 = rt_str_concat(t115, sl2416);
+        obx_str t117 = rt_int_to_str(v_idx_108);
+        obx_str t118 = rt_str_concat(t116, t117);
+        f15_std_StrBuf_add((&v_conds_96), t118);
+        rt_str_drop(t117);
+        rt_str_drop(t116);
         rt_str_drop(t115);
-        rt_str_drop(t114);
-        rt_str_drop(t113);
-        v_k_95 = rt_add_int(v_k_95, 1LL, "check.obx:1780");
+        v_k_97 = rt_add_int(v_k_97, 1LL, "check.obx:1894");
       }
-      gl9_drop(t96);
-      obx_str t118 = (v_first_81 ? sl61 : sl2417);
-      obx_str t119 = rt_str_concat(t118, sl1813);
-      obx_str t120 = f17_std_StrBuf_toStr((&v_conds_94));
-      obx_str t121 = rt_str_concat(t119, t120);
-      obx_str t122 = rt_str_concat(t121, sl2418);
-      f744_check_Checker_emit(p_c, t122);
+      gl9_drop(t98);
+      obx_str t120 = (v_first_83 ? sl61 : sl2417);
+      obx_str t121 = rt_str_concat(t120, sl1813);
+      obx_str t122 = f17_std_StrBuf_toStr((&v_conds_96));
+      obx_str t123 = rt_str_concat(t121, t122);
+      obx_str t124 = rt_str_concat(t123, sl2418);
+      f744_check_Checker_emit(p_c, t124);
+      rt_str_drop(t123);
+      rt_str_drop(t122);
       rt_str_drop(t121);
       rt_str_drop(t120);
-      rt_str_drop(t119);
-      rt_str_drop(t118);
-      gl1_drop(v_conds_94);
+      gl1_drop(v_conds_96);
     } else {
-      bool c123 = (rt_str_eq(v_an_89.f_s, sl183));
-      if (c123) {
-        v_hasElse_82 = true;
-        obx_str t125 = ((!v_first_81) ? sl2419 : sl28);
-        f744_check_Checker_emit(p_c, t125);
+      bool c125 = (rt_str_eq(v_an_91.f_s, sl183));
+      if (c125) {
+        v_hasElse_84 = true;
+        obx_str t127 = ((!v_first_83) ? sl2419 : sl28);
+        f744_check_Checker_emit(p_c, t127);
       } else {
-        int64_t t126 = f775_check_Checker_armVariant(p_c, v_arm_87, v_d_24, v_base_8);
-        v_vr_90 = t126;
-        int64_t ix127 = v_vr_90;
-        int64_t v_idx_128 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix127, ((*p_c)->f_pg->f_variants).len, "check.obx:1788")].f_index;
-        int64_t ix129 = v_idx_128;
-        bool c130 = ((bool*)(v_seen_73).data)[rt_idx(ix129, (v_seen_73).len, "check.obx:1789")];
-        if (c130) {
-          obx_str t131 = rt_str_concat(v_an_89.f_s, sl2414);
-          f702_check_Checker_err(p_c, v_an_89.f_line, t131);
+        int64_t t128 = f775_check_Checker_armVariant(p_c, v_arm_89, v_d_24, v_base_8);
+        v_vr_92 = t128;
+        int64_t ix129 = v_vr_92;
+        int64_t v_idx_130 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix129, ((*p_c)->f_pg->f_variants).len, "check.obx:1902")].f_index;
+        int64_t ix131 = v_idx_130;
+        bool c132 = ((bool*)(v_seen_73).data)[rt_idx(ix131, (v_seen_73).len, "check.obx:1903")];
+        if (c132) {
+          obx_str t133 = rt_str_concat(v_an_91.f_s, sl2414);
+          f702_check_Checker_err(p_c, v_an_91.f_line, t133);
         }
-        int64_t ix132 = v_idx_128;
-        ((bool*)(v_seen_73).data)[rt_idx(ix132, (v_seen_73).len, "check.obx:1790")] = true;
-        v_nseen_78 = rt_add_int(v_nseen_78, 1LL, "check.obx:1791");
-        obx_str t134 = (v_first_81 ? sl61 : sl2417);
-        obx_str t135 = rt_str_concat(t134, sl1813);
-        obx_str t136 = rt_str_concat(t135, v_acc_34);
-        obx_str t137 = rt_str_concat(t136, v_sep_33);
-        obx_str t138 = rt_str_concat(t137, sl2416);
-        obx_str t139 = rt_int_to_str(v_idx_128);
-        obx_str t140 = rt_str_concat(t138, t139);
-        obx_str t141 = rt_str_concat(t140, sl2418);
-        f744_check_Checker_emit(p_c, t141);
+        int64_t ix134 = v_idx_130;
+        ((bool*)(v_seen_73).data)[rt_idx(ix134, (v_seen_73).len, "check.obx:1904")] = true;
+        v_nseen_78 = rt_add_int(v_nseen_78, 1LL, "check.obx:1905");
+        obx_str t136 = (v_first_83 ? sl61 : sl2417);
+        obx_str t137 = rt_str_concat(t136, sl1813);
+        obx_str t138 = rt_str_concat(t137, v_acc_34);
+        obx_str t139 = rt_str_concat(t138, v_sep_33);
+        obx_str t140 = rt_str_concat(t139, sl2416);
+        obx_str t141 = rt_int_to_str(v_idx_130);
+        obx_str t142 = rt_str_concat(t140, t141);
+        obx_str t143 = rt_str_concat(t142, sl2418);
+        f744_check_Checker_emit(p_c, t143);
+        rt_str_drop(t142);
+        rt_str_drop(t141);
         rt_str_drop(t140);
         rt_str_drop(t139);
         rt_str_drop(t138);
         rt_str_drop(t137);
         rt_str_drop(t136);
-        rt_str_drop(t135);
-        rt_str_drop(t134);
       }
     }
-    v_first_81 = false;
-    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1795");
+    v_first_83 = false;
+    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1909");
     f776_check_Checker_restore(p_c, (&v_snap_71));
     (*p_c)->f_cx->f_dead = false;
     f749_check_Checker_pushScope(p_c);
-    bool b142 = (rt_str_eq(v_an_89.f_s, sl183));
-    if (!b142) {
-      b142 = v_multi_91;
+    bool b144 = (rt_str_eq(v_an_91.f_s, sl183));
+    if (!b144) {
+      b144 = v_multi_93;
     }
-    bool c143 = b142;
-    if (c143) {
-      bool c144 = (!v_borrowing_29);
-      if (c144) {
+    bool c145 = b144;
+    if (c145) {
+      bool c146 = (!v_borrowing_29);
+      if (c146) {
         f746_check_Checker_dropc(p_c, rt_str_dup(v_acc_34), v_base_8);
       }
     } else {
-      int64_t ix145 = v_vr_90;
-      obx_str v_vname_146 = rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix145, ((*p_c)->f_pg->f_variants).len, "check.obx:1802")].f_name);
-      int64_t ix147 = v_vr_90;
-      int64_t v_nf_148 = (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix147, ((*p_c)->f_pg->f_variants).len, "check.obx:1803")].f_fields).len;
-      bool b149 = (v_an_89.f_b >= 0LL);
-      if (b149) {
-        int64_t t150 = f717_check_Checker_count(p_c, v_an_89.f_b);
-        b149 = (t150 != v_nf_148);
+      int64_t ix147 = v_vr_92;
+      obx_str v_vname_148 = rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix147, ((*p_c)->f_pg->f_variants).len, "check.obx:1916")].f_name);
+      int64_t ix149 = v_vr_92;
+      int64_t v_nf_150 = (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix149, ((*p_c)->f_pg->f_variants).len, "check.obx:1917")].f_fields).len;
+      bool b151 = (v_an_91.f_b >= 0LL);
+      if (b151) {
+        int64_t t152 = f717_check_Checker_count(p_c, v_an_91.f_b);
+        b151 = (t152 != v_nf_150);
       }
-      bool c151 = b149;
-      if (c151) {
-        int64_t t152 = v_an_89.f_line;
-        obx_str t153 = rt_str_concat(v_vname_146, sl2420);
-        obx_str t154 = rt_int_to_str(v_nf_148);
-        obx_str t155 = rt_str_concat(t153, t154);
-        obx_str t156 = rt_str_concat(t155, sl2421);
-        int64_t t157 = f717_check_Checker_count(p_c, v_an_89.f_b);
-        obx_str t158 = rt_int_to_str(t157);
-        obx_str t159 = rt_str_concat(t156, t158);
-        f702_check_Checker_err(p_c, t152, t159);
+      bool c153 = b151;
+      if (c153) {
+        int64_t t154 = v_an_91.f_line;
+        obx_str t155 = rt_str_concat(v_vname_148, sl2420);
+        obx_str t156 = rt_int_to_str(v_nf_150);
+        obx_str t157 = rt_str_concat(t155, t156);
+        obx_str t158 = rt_str_concat(t157, sl2421);
+        int64_t t159 = f717_check_Checker_count(p_c, v_an_91.f_b);
+        obx_str t160 = rt_int_to_str(t159);
+        obx_str t161 = rt_str_concat(t158, t160);
+        f702_check_Checker_err(p_c, t154, t161);
       }
-      int64_t end160 = v_nf_148;
-      for (int64_t v_i_161 = 0LL; v_i_161 < end160; v_i_161++) {
-        int64_t ix162 = v_vr_90;
-        int64_t ix163 = v_i_161;
-        S66_sema_Field v_f_164 = gl45_dup(((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix162, ((*p_c)->f_pg->f_variants).len, "check.obx:1808")].f_fields).data)[rt_idx(ix163, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix162, ((*p_c)->f_pg->f_variants).len, "check.obx:1808")].f_fields).len, "check.obx:1808")]);
-        int64_t t165 = f523_sema_Program_subst((&(*p_c)->f_pg), v_f_164.f_ty, (&v_env_26));
-        int64_t v_ft_166 = t165;
-        obx_str t167 = rt_str_concat(v_acc_34, v_sep_33);
-        obx_str t168 = rt_str_concat(t167, sl2328);
-        obx_str t169 = rt_str_concat(t168, v_vname_146);
-        obx_str t170 = rt_str_concat(t169, sl2312);
-        obx_str t171 = rt_str_concat(t170, v_f_164.f_name);
-        obx_str v_fc_172 = t171;
+      int64_t end162 = v_nf_150;
+      for (int64_t v_i_163 = 0LL; v_i_163 < end162; v_i_163++) {
+        int64_t ix164 = v_vr_92;
+        int64_t ix165 = v_i_163;
+        S66_sema_Field v_f_166 = gl45_dup(((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix164, ((*p_c)->f_pg->f_variants).len, "check.obx:1922")].f_fields).data)[rt_idx(ix165, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix164, ((*p_c)->f_pg->f_variants).len, "check.obx:1922")].f_fields).len, "check.obx:1922")]);
+        int64_t t167 = f523_sema_Program_subst((&(*p_c)->f_pg), v_f_166.f_ty, (&v_env_26));
+        int64_t v_ft_168 = t167;
+        obx_str t169 = rt_str_concat(v_acc_34, v_sep_33);
+        obx_str t170 = rt_str_concat(t169, sl2328);
+        obx_str t171 = rt_str_concat(t170, v_vname_148);
+        obx_str t172 = rt_str_concat(t171, sl2312);
+        obx_str t173 = rt_str_concat(t172, v_f_166.f_name);
+        obx_str v_fc_174 = t173;
+        rt_str_drop(t172);
+        rt_str_drop(t171);
         rt_str_drop(t170);
         rt_str_drop(t169);
-        rt_str_drop(t168);
-        rt_str_drop(t167);
-        bool b173 = (v_an_89.f_b >= 0LL);
-        if (b173) {
-          int64_t t174 = f717_check_Checker_count(p_c, v_an_89.f_b);
-          b173 = (t174 > 0LL);
+        bool b175 = (v_an_91.f_b >= 0LL);
+        if (b175) {
+          int64_t t176 = f717_check_Checker_count(p_c, v_an_91.f_b);
+          b175 = (t176 > 0LL);
         }
-        obx_str ifx175;
-        if (b173) {
-          int64_t t176 = f718_check_Checker_item(p_c, v_an_89.f_b, v_i_161);
-          S49_syntax_Node t177 = f703_check_Checker_nd(p_c, t176);
-          ifx175 = rt_str_dup(t177.f_s);
-          gl49_drop(t177);
+        obx_str ifx177;
+        if (b175) {
+          int64_t t178 = f718_check_Checker_item(p_c, v_an_91.f_b, v_i_163);
+          S49_syntax_Node t179 = f703_check_Checker_nd(p_c, t178);
+          ifx177 = rt_str_dup(t179.f_s);
+          gl49_drop(t179);
         } else {
-          ifx175 = sl183;
+          ifx177 = sl183;
         }
-        obx_str v_bn_178 = ifx175;
-        bool c179 = (rt_str_eq(v_bn_178, sl2221));
-        if (c179) {
-          { obx_str nw180 = sl183;
-            rt_str_drop(v_bn_178);
-            v_bn_178 = nw180; }
+        obx_str v_bn_180 = ifx177;
+        bool c181 = (rt_str_eq(v_bn_180, sl2221));
+        if (c181) {
+          { obx_str nw182 = sl183;
+            rt_str_drop(v_bn_180);
+            v_bn_180 = nw182; }
         }
-        obx_str t182 = ((rt_str_eq(v_bn_178, sl183)) ? sl2223 : rt_str_dup(v_bn_178));
-        obx_str t183 = rt_str_concat(sl2422, t182);
-        obx_str t184 = rt_str_concat(t183, sl2221);
-        obx_str t185 = f771_check_Checker_fresh(p_c, t184);
-        obx_str v_cn_186 = t185;
-        rt_str_drop(t183);
-        rt_str_drop(t182);
-        bool c187 = (!v_borrowing_29);
-        if (c187) {
-          bool c188 = (!rt_str_eq(v_bn_178, sl183));
-          if (c188) {
-            obx_str t189 = f732_check_Checker_T(p_c, v_ft_166);
-            obx_str v_ct_190 = t189;
-            obx_str t191 = rt_str_concat(v_ct_190, sl1771);
-            obx_str t192 = rt_str_concat(t191, v_cn_186);
-            obx_str t193 = rt_str_concat(t192, sl2267);
-            obx_str t194 = rt_str_concat(t193, v_fc_172);
-            obx_str t195 = rt_str_concat(t194, sl36);
-            f744_check_Checker_emit(p_c, t195);
+        obx_str t184 = ((rt_str_eq(v_bn_180, sl183)) ? sl2223 : rt_str_dup(v_bn_180));
+        obx_str t185 = rt_str_concat(sl2422, t184);
+        obx_str t186 = rt_str_concat(t185, sl2221);
+        obx_str t187 = f771_check_Checker_fresh(p_c, t186);
+        obx_str v_cn_188 = t187;
+        rt_str_drop(t185);
+        rt_str_drop(t184);
+        bool c189 = (!v_borrowing_29);
+        if (c189) {
+          bool c190 = (!rt_str_eq(v_bn_180, sl183));
+          if (c190) {
+            obx_str t191 = f732_check_Checker_T(p_c, v_ft_168);
+            obx_str v_ct_192 = t191;
+            obx_str t193 = rt_str_concat(v_ct_192, sl1771);
+            obx_str t194 = rt_str_concat(t193, v_cn_188);
+            obx_str t195 = rt_str_concat(t194, sl2267);
+            obx_str t196 = rt_str_concat(t195, v_fc_174);
+            obx_str t197 = rt_str_concat(t196, sl36);
+            f744_check_Checker_emit(p_c, t197);
+            rt_str_drop(t196);
+            rt_str_drop(t195);
             rt_str_drop(t194);
             rt_str_drop(t193);
-            rt_str_drop(t192);
-            rt_str_drop(t191);
-            int64_t t196 = f738_check_Checker_newVar(p_c, rt_str_dup(v_bn_178), rt_str_dup(v_cn_186), v_ft_166, false, 1LL, v_an_89.f_line);
-            f777_check_Checker_declare(p_c, t196);
-            rt_str_drop(v_ct_190);
+            int64_t t198 = f738_check_Checker_newVar(p_c, rt_str_dup(v_bn_180), rt_str_dup(v_cn_188), v_ft_168, false, 1LL, v_an_91.f_line);
+            f777_check_Checker_declare(p_c, t198);
+            rt_str_drop(v_ct_192);
           } else {
-            f746_check_Checker_dropc(p_c, rt_str_dup(v_fc_172), v_ft_166);
+            f746_check_Checker_dropc(p_c, rt_str_dup(v_fc_174), v_ft_168);
           }
         } else {
-          bool c197 = (!rt_str_eq(v_bn_178, sl183));
-          if (c197) {
-            bool t198 = f778_check_Checker_isCopy(p_c, v_ft_166);
-            bool c199 = t198;
-            if (c199) {
-              obx_str t200 = f732_check_Checker_T(p_c, v_ft_166);
-              obx_str v_ct_201 = t200;
-              obx_str t202 = rt_str_concat(v_ct_201, sl1771);
-              obx_str t203 = rt_str_concat(t202, v_cn_186);
-              obx_str t204 = rt_str_concat(t203, sl2267);
-              obx_str t205 = f769_check_Checker_dup(p_c, rt_str_dup(v_fc_172), v_ft_166);
-              obx_str t206 = rt_str_concat(t204, t205);
-              obx_str t207 = rt_str_concat(t206, sl36);
-              f744_check_Checker_emit(p_c, t207);
+          bool c199 = (!rt_str_eq(v_bn_180, sl183));
+          if (c199) {
+            bool t200 = f778_check_Checker_isCopy(p_c, v_ft_168);
+            bool c201 = t200;
+            if (c201) {
+              obx_str t202 = f732_check_Checker_T(p_c, v_ft_168);
+              obx_str v_ct_203 = t202;
+              obx_str t204 = rt_str_concat(v_ct_203, sl1771);
+              obx_str t205 = rt_str_concat(t204, v_cn_188);
+              obx_str t206 = rt_str_concat(t205, sl2267);
+              obx_str t207 = f769_check_Checker_dup(p_c, rt_str_dup(v_fc_174), v_ft_168);
+              obx_str t208 = rt_str_concat(t206, t207);
+              obx_str t209 = rt_str_concat(t208, sl36);
+              f744_check_Checker_emit(p_c, t209);
+              rt_str_drop(t208);
+              rt_str_drop(t207);
               rt_str_drop(t206);
               rt_str_drop(t205);
               rt_str_drop(t204);
-              rt_str_drop(t203);
-              rt_str_drop(t202);
-              int64_t t208 = f738_check_Checker_newVar(p_c, rt_str_dup(v_bn_178), rt_str_dup(v_cn_186), v_ft_166, false, 1LL, v_an_89.f_line);
-              f777_check_Checker_declare(p_c, t208);
-              rt_str_drop(v_ct_201);
+              int64_t t210 = f738_check_Checker_newVar(p_c, rt_str_dup(v_bn_180), rt_str_dup(v_cn_188), v_ft_168, false, 1LL, v_an_91.f_line);
+              f777_check_Checker_declare(p_c, t210);
+              rt_str_drop(v_ct_203);
             } else {
-              obx_str t209 = f732_check_Checker_T(p_c, v_ft_166);
-              obx_str v_ct_210 = t209;
-              obx_str t211 = rt_str_concat(v_ct_210, sl2408);
-              obx_str t212 = rt_str_concat(t211, v_cn_186);
-              obx_str t213 = rt_str_concat(t212, sl2409);
-              obx_str t214 = rt_str_concat(t213, v_fc_172);
-              obx_str t215 = rt_str_concat(t214, sl36);
-              f744_check_Checker_emit(p_c, t215);
+              obx_str t211 = f732_check_Checker_T(p_c, v_ft_168);
+              obx_str v_ct_212 = t211;
+              obx_str t213 = rt_str_concat(v_ct_212, sl2408);
+              obx_str t214 = rt_str_concat(t213, v_cn_188);
+              obx_str t215 = rt_str_concat(t214, sl2409);
+              obx_str t216 = rt_str_concat(t215, v_fc_174);
+              obx_str t217 = rt_str_concat(t216, sl36);
+              f744_check_Checker_emit(p_c, t217);
+              rt_str_drop(t216);
+              rt_str_drop(t215);
               rt_str_drop(t214);
               rt_str_drop(t213);
-              rt_str_drop(t212);
-              rt_str_drop(t211);
-              obx_str t216 = rt_str_dup(v_bn_178);
-              obx_str t217 = rt_str_dup(v_cn_186);
-              int64_t t218 = f606_sema_Program_mkRef((&(*p_c)->f_pg), v_ft_166, false);
-              int64_t t219 = f738_check_Checker_newVar(p_c, t216, t217, t218, false, 1LL, v_an_89.f_line);
-              int64_t v_x_220 = t219;
-              int64_t ix222 = v_x_220;
-              ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix222, ((*p_c)->f_vars).len, "check.obx:1831")].f_broot = ((v_root_35 >= 0LL) ? v_root_35 : -1LL);
-              f777_check_Checker_declare(p_c, v_x_220);
-              int64_t v_sc_223 = rt_sub_int(((*p_c)->f_cx->f_scopes).len, 1LL, "check.obx:1833");
-              bool b224 = (v_root_35 >= 0LL);
-              if (b224) {
-                int64_t ix225 = v_sc_223;
-                b224 = ((((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix225, ((*p_c)->f_cx->f_scopes).len, "check.obx:1834")]->f_freezes).len == 0LL);
+              obx_str t218 = rt_str_dup(v_bn_180);
+              obx_str t219 = rt_str_dup(v_cn_188);
+              int64_t t220 = f606_sema_Program_mkRef((&(*p_c)->f_pg), v_ft_168, false);
+              int64_t t221 = f738_check_Checker_newVar(p_c, t218, t219, t220, false, 1LL, v_an_91.f_line);
+              int64_t v_x_222 = t221;
+              int64_t ix224 = v_x_222;
+              ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix224, ((*p_c)->f_vars).len, "check.obx:1945")].f_broot = ((v_root_35 >= 0LL) ? v_root_35 : -1LL);
+              f777_check_Checker_declare(p_c, v_x_222);
+              int64_t v_sc_225 = rt_sub_int(((*p_c)->f_cx->f_scopes).len, 1LL, "check.obx:1947");
+              bool b226 = (v_root_35 >= 0LL);
+              if (b226) {
+                int64_t ix227 = v_sc_225;
+                b226 = ((((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix227, ((*p_c)->f_cx->f_scopes).len, "check.obx:1948")]->f_freezes).len == 0LL);
               }
-              bool c226 = b224;
-              if (c226) {
-                obx_str t227 = rt_str_concat(sl2423, v_bn_178);
-                obx_str t228 = rt_str_concat(t227, sl1809);
-                f779_check_Checker_freeze(p_c, v_root_35, false, t228);
-                rt_str_drop(t227);
+              bool c228 = b226;
+              if (c228) {
+                obx_str t229 = rt_str_concat(sl2423, v_bn_180);
+                obx_str t230 = rt_str_concat(t229, sl1809);
+                f779_check_Checker_freeze(p_c, v_root_35, false, t230);
+                rt_str_drop(t229);
               }
-              rt_str_drop(v_ct_210);
+              rt_str_drop(v_ct_212);
             }
           }
         }
-        rt_str_drop(v_cn_186);
-        rt_str_drop(v_bn_178);
-        rt_str_drop(v_fc_172);
-        gl46_drop(v_f_164);
+        rt_str_drop(v_cn_188);
+        rt_str_drop(v_bn_180);
+        rt_str_drop(v_fc_174);
+        gl46_drop(v_f_166);
       }
-      bool b229 = (!v_borrowing_29);
-      if (b229) {
-        int64_t ix230 = v_d_24;
-        b229 = (!((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix230, ((*p_c)->f_pg->f_types).len, "check.obx:1840")].f_value);
+      bool b231 = (!v_borrowing_29);
+      if (b231) {
+        int64_t ix232 = v_d_24;
+        b231 = (!((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix232, ((*p_c)->f_pg->f_types).len, "check.obx:1954")].f_value);
       }
-      bool c231 = b229;
-      if (c231) {
-        obx_str t232 = rt_str_concat(sl2424, v_acc_34);
-        obx_str t233 = rt_str_concat(t232, sl2298);
-        f744_check_Checker_emit(p_c, t233);
-        rt_str_drop(t232);
+      bool c233 = b231;
+      if (c233) {
+        obx_str t234 = rt_str_concat(sl2424, v_acc_34);
+        obx_str t235 = rt_str_concat(t234, sl2298);
+        f744_check_Checker_emit(p_c, t235);
+        rt_str_drop(t234);
       }
-      rt_str_drop(v_vname_146);
+      rt_str_drop(v_vname_148);
     }
-    f780_check_Checker_armBody(p_c, v_an_89.f_d, p_mx);
-    S86_check_Scope* t234 = *(S86_check_Scope**)rt_arr_pop((&(*p_c)->f_cx->f_scopes), sizeof(S86_check_Scope*), "check.obx:1843");
-    S86_check_Scope* v_sc_235 = t234;
-    bool c236 = (!(*p_c)->f_cx->f_dead);
-    if (c236) {
-      f745_check_Checker_dropVars(p_c, (&v_sc_235->f_vars));
+    f780_check_Checker_armBody(p_c, v_an_91.f_d, p_mx);
+    S86_check_Scope* t236 = *(S86_check_Scope**)rt_arr_pop((&(*p_c)->f_cx->f_scopes), sizeof(S86_check_Scope*), "check.obx:1957");
+    S86_check_Scope* v_sc_237 = t236;
+    bool c238 = (!(*p_c)->f_cx->f_dead);
+    if (c238) {
+      f745_check_Checker_dropVars(p_c, (&v_sc_237->f_vars));
     }
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1845");
-    f781_check_Checker_live(p_c, (&v_results_80));
-    gl74_drop(v_sc_235);
-    gl49_drop(v_an_89);
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1959");
+    bool c239 = (!(*p_c)->f_cx->f_dead);
+    if (c239) {
+      S94_check_PathEnd t240 = f781_check_Checker_pathEnd(p_c);
+      S94_check_PathEnd ap241 = t240;
+      *(S94_check_PathEnd*)rt_arr_push((&v_ends_82), sizeof(S94_check_PathEnd)) = ap241;
+    }
+    f782_check_Checker_live(p_c, (&v_results_80));
+    gl74_drop(v_sc_237);
+    gl49_drop(v_an_91);
   }
-  bool b237 = (!v_hasElse_82);
-  if (b237) {
-    int64_t t238 = v_nseen_78;
-    int64_t ix239 = v_d_24;
-    b237 = (t238 != (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix239, ((*p_c)->f_pg->f_types).len, "check.obx:1848")].f_variants).len);
-  }
-  bool c240 = b237;
-  if (c240) {
-    S3_std_StrBuf* t241 = f13_std_newStrBuf();
-    S3_std_StrBuf* v_b_242 = t241;
-    int64_t v_k_243 = 0LL;
+  bool b242 = (!v_hasElse_84);
+  if (b242) {
+    int64_t t243 = v_nseen_78;
     int64_t ix244 = v_d_24;
-    obx_slice ap245 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix244, ((*p_c)->f_pg->f_types).len, "check.obx:1851")].f_variants);
-    for (int64_t i246 = 0; i246 < ap245.len; i246++) {
-      int64_t v_x_247 = ((int64_t*)ap245.data)[i246];
-      int64_t ix248 = v_x_247;
-      int64_t ix249 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix248, ((*p_c)->f_pg->f_variants).len, "check.obx:1852")].f_index;
-      bool c250 = (!((bool*)(v_seen_73).data)[rt_idx(ix249, (v_seen_73).len, "check.obx:1852")]);
-      if (c250) {
-        bool c251 = (v_k_243 > 0LL);
-        if (c251) {
-          f15_std_StrBuf_add((&v_b_242), sl1754);
+    b242 = (t243 != (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix244, ((*p_c)->f_pg->f_types).len, "check.obx:1963")].f_variants).len);
+  }
+  bool c245 = b242;
+  if (c245) {
+    S3_std_StrBuf* t246 = f13_std_newStrBuf();
+    S3_std_StrBuf* v_b_247 = t246;
+    int64_t v_k_248 = 0LL;
+    int64_t ix249 = v_d_24;
+    obx_slice ap250 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix249, ((*p_c)->f_pg->f_types).len, "check.obx:1966")].f_variants);
+    for (int64_t i251 = 0; i251 < ap250.len; i251++) {
+      int64_t v_x_252 = ((int64_t*)ap250.data)[i251];
+      int64_t ix253 = v_x_252;
+      int64_t ix254 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix253, ((*p_c)->f_pg->f_variants).len, "check.obx:1967")].f_index;
+      bool c255 = (!((bool*)(v_seen_73).data)[rt_idx(ix254, (v_seen_73).len, "check.obx:1967")]);
+      if (c255) {
+        bool c256 = (v_k_248 > 0LL);
+        if (c256) {
+          f15_std_StrBuf_add((&v_b_247), sl1754);
         }
-        int64_t ix252 = v_x_247;
-        f15_std_StrBuf_add((&v_b_242), rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix252, ((*p_c)->f_pg->f_variants).len, "check.obx:1854")].f_name));
-        v_k_243 = rt_add_int(v_k_243, 1LL, "check.obx:1855");
+        int64_t ix257 = v_x_252;
+        f15_std_StrBuf_add((&v_b_247), rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix257, ((*p_c)->f_pg->f_variants).len, "check.obx:1969")].f_name));
+        v_k_248 = rt_add_int(v_k_248, 1LL, "check.obx:1970");
       }
     }
-    int64_t t253 = v_n_2.f_line;
-    obx_str t254 = sl2425;
-    obx_str t255 = f767_check_Checker_tstr(p_c, v_base_8);
-    obx_str t256 = rt_str_concat(t254, t255);
-    obx_str t257 = rt_str_concat(t256, sl2426);
-    obx_str t258 = f17_std_StrBuf_toStr((&v_b_242));
-    obx_str t259 = rt_str_concat(t257, t258);
-    f702_check_Checker_err(p_c, t253, t259);
+    int64_t t258 = v_n_2.f_line;
+    obx_str t259 = sl2425;
+    obx_str t260 = f767_check_Checker_tstr(p_c, v_base_8);
+    obx_str t261 = rt_str_concat(t259, t260);
+    obx_str t262 = rt_str_concat(t261, sl2426);
+    obx_str t263 = f17_std_StrBuf_toStr((&v_b_247));
+    obx_str t264 = rt_str_concat(t262, t263);
+    f702_check_Checker_err(p_c, t258, t264);
   }
-  bool c260 = ((v_arms_84).len > 0LL);
-  if (c260) {
+  bool c265 = ((v_arms_86).len > 0LL);
+  if (c265) {
     f744_check_Checker_emit(p_c, sl29);
   }
-  f782_check_Checker_join(p_c, (&v_results_80), v_n_2.f_line);
-  gl9_drop(v_arms_84);
-  gl76_drop(v_results_80);
+  f783_check_Checker_joinAt(p_c, (&v_results_80), (&v_ends_82), v_n_2.f_line);
+  gl9_drop(v_arms_86);
+  gl76_drop(v_ends_82);
+  gl77_drop(v_results_80);
   gl19_drop(v_seen_73);
   gl9_drop(v_snap_71);
   rt_str_drop(v_acc_34);
@@ -39539,64 +39565,181 @@ static void f764_check_Checker_sMatch(S73_check_Checker** p_c, int64_t p_s, bool
   gl68_drop(v_v_4);
   gl49_drop(v_n_2);
 }
-static void f782_check_Checker_join(S73_check_Checker** p_c, obx_arr* p_snaps, int64_t p_line) {
-  bool c1 = (((*p_snaps)).len == 0LL);
-  if (c1) {
-    (*p_c)->f_cx->f_dead = true;
-    return;
-  }
-  int64_t end2 = ((*p_snaps)).len;
-  for (int64_t v_k_3 = 1LL; v_k_3 < end2; v_k_3++) {
-    int64_t v_i_4 = 0LL;
-    while (1) {
-      int64_t t5 = v_i_4;
-      int64_t ix6 = v_k_3;
-      bool c7 = (t5 < (((obx_arr*)((*p_snaps)).data)[rt_idx(ix6, ((*p_snaps)).len, "check.obx:775")]).len);
-      if (!c7) break;
-      int64_t ix8 = v_k_3;
-      int64_t ix9 = v_i_4;
-      int64_t v_v_10 = ((int64_t*)(((obx_arr*)((*p_snaps)).data)[rt_idx(ix8, ((*p_snaps)).len, "check.obx:776")]).data)[rt_idx(ix9, (((obx_arr*)((*p_snaps)).data)[rt_idx(ix8, ((*p_snaps)).len, "check.obx:776")]).len, "check.obx:776")];
-      int64_t t11 = f783_check_snapGet((&((obx_arr*)((*p_snaps)).data)[rt_idx(0LL, ((*p_snaps)).len, "check.obx:777")]), v_v_10);
-      int64_t v_s0_12 = t11;
-      bool b13 = (v_s0_12 >= 0LL);
-      if (b13) {
-        int64_t ix14 = v_k_3;
-        (void)(&((obx_arr*)((*p_snaps)).data)[rt_idx(ix14, ((*p_snaps)).len, "check.obx:778")]);
-        int64_t ix15 = rt_add_int(v_i_4, 1LL, "check.obx:778");
-        b13 = (v_s0_12 != ((int64_t*)(((obx_arr*)((*p_snaps)).data)[rt_idx(ix14, ((*p_snaps)).len, "check.obx:778")]).data)[rt_idx(ix15, (((obx_arr*)((*p_snaps)).data)[rt_idx(ix14, ((*p_snaps)).len, "check.obx:778")]).len, "check.obx:778")]);
-      }
-      bool c16 = b13;
-      if (c16) {
-        int64_t ix17 = v_v_10;
-        obx_str t18 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix17, ((*p_c)->f_vars).len, "check.obx:778")].f_name);
-        obx_str t19 = rt_str_concat(t18, sl2427);
-        f702_check_Checker_err(p_c, p_line, t19);
-      }
-      v_i_4 = rt_add_int(v_i_4, 2LL, "check.obx:779");
+static void f783_check_Checker_joinAt(S73_check_Checker** p_c, obx_arr* p_snaps, obx_arr* p_ends, int64_t p_line) {
+  obx_arr t1 = f784_check_Checker_joinMoves(p_c, p_snaps, p_line);
+  obx_arr v_drops_2 = t1;
+  int64_t end3 = (v_drops_2).len;
+  for (int64_t v_k_4 = 0LL; v_k_4 < end3; v_k_4++) {
+    int64_t ix5 = v_k_4;
+    (void)((&((obx_arr*)(v_drops_2).data)[rt_idx(ix5, (v_drops_2).len, "check.obx:1561")]));
+    int64_t ix6 = v_k_4;
+    obx_arr t7 = f785_check_Checker_joinDropLines(p_c, (&((obx_arr*)(v_drops_2).data)[rt_idx(ix5, (v_drops_2).len, "check.obx:1561")]), ((S94_check_PathEnd*)((*p_ends)).data)[rt_idx(ix6, ((*p_ends)).len, "check.obx:1561")].f_ind);
+    obx_arr v_ls_8 = t7;
+    bool c9 = ((v_ls_8).len == 0LL);
+    if (c9) {
+      gl0_drop(v_ls_8);
+      continue;
     }
+    int64_t ix10 = v_k_4;
+    int64_t v_j_11 = rt_sub_int(((S94_check_PathEnd*)((*p_ends)).data)[rt_idx(ix10, ((*p_ends)).len, "check.obx:1563")].f_at, 1LL, "check.obx:1563");
+    int64_t ix12 = v_j_11;
+    bool c13 = (rt_str_eq(((obx_str*)((*p_c)->f_cx->f_lines).data)[rt_idx(ix12, ((*p_c)->f_cx->f_lines).len, "check.obx:1564")], sl2427));
+    if (c13) {
+      v_j_11 = rt_sub_int(v_j_11, 1LL, "check.obx:1564");
+    }
+    S3_std_StrBuf* t14 = f13_std_newStrBuf();
+    S3_std_StrBuf* v_b_15 = t14;
+    int64_t ix16 = v_j_11;
+    f15_std_StrBuf_add((&v_b_15), rt_str_dup(((obx_str*)((*p_c)->f_cx->f_lines).data)[rt_idx(ix16, ((*p_c)->f_cx->f_lines).len, "check.obx:1566")]));
+    obx_slice ap17 = rt_as_slice(&v_ls_8);
+    for (int64_t i18 = 0; i18 < ap17.len; i18++) {
+      obx_str v_x_19 = rt_str_dup(((obx_str*)ap17.data)[i18]);
+      obx_str t20 = rt_str_concat(sl1744, v_x_19);
+      f15_std_StrBuf_add((&v_b_15), t20);
+      rt_str_drop(v_x_19);
+    }
+    obx_str t21 = f17_std_StrBuf_toStr((&v_b_15));
+    int64_t ix22 = v_j_11;
+    { obx_str nw23 = t21;
+      rt_str_drop(((obx_str*)((*p_c)->f_cx->f_lines).data)[rt_idx(ix22, ((*p_c)->f_cx->f_lines).len, "check.obx:1568")]);
+      ((obx_str*)((*p_c)->f_cx->f_lines).data)[rt_idx(ix22, ((*p_c)->f_cx->f_lines).len, "check.obx:1568")] = nw23; }
+    gl1_drop(v_b_15);
+    gl0_drop(v_ls_8);
   }
-  f776_check_Checker_restore(p_c, (&((obx_arr*)((*p_snaps)).data)[rt_idx(0LL, ((*p_snaps)).len, "check.obx:782")]));
-  (*p_c)->f_cx->f_dead = false;
+  gl77_drop(v_drops_2);
 }
-static int64_t f783_check_snapGet(obx_arr* p_snap, int64_t p_v) {
+static obx_arr f785_check_Checker_joinDropLines(S73_check_Checker** p_c, obx_arr* p_vs, int64_t p_ind) {
+  obx_arr a1 = rt_arr_new(0, sizeof(obx_str));
+  obx_arr v_out_2 = a1;
+  int64_t v_i_3 = rt_sub_int(((*p_vs)).len, 1LL, "check.obx:1533");
+  while (1) {
+    bool c4 = (v_i_3 >= 0LL);
+    if (!c4) break;
+    int64_t ix5 = v_i_3;
+    int64_t v_v_6 = ((int64_t*)((*p_vs)).data)[rt_idx(ix5, ((*p_vs)).len, "check.obx:1535")];
+    int64_t ix7 = v_v_6;
+    bool t8 = f747_check_Checker_pod(p_c, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix7, ((*p_c)->f_vars).len, "check.obx:1536")].f_t);
+    bool c9 = (!t8);
+    if (c9) {
+      S3_std_StrBuf* t10 = f13_std_newStrBuf();
+      S3_std_StrBuf* v_b_11 = t10;
+      int64_t end12 = p_ind;
+      for (int64_t v_k_13 = 0LL; v_k_13 < end12; v_k_13++) {
+        f15_std_StrBuf_add((&v_b_11), sl2401);
+      }
+      int64_t ix14 = v_v_6;
+      int64_t t15 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix14, ((*p_c)->f_vars).len, "check.obx:1539")].f_t;
+      int64_t ix16 = v_v_6;
+      S80_check_Hole t17 = f706_check_mkHole(1LL, t15, rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix16, ((*p_c)->f_vars).len, "check.obx:1539")].f_c));
+      obx_str t18 = f707_check_Checker_hole(p_c, t17);
+      obx_str t19 = rt_str_concat(t18, sl36);
+      f15_std_StrBuf_add((&v_b_11), t19);
+      rt_str_drop(t18);
+      obx_str t20 = f17_std_StrBuf_toStr((&v_b_11));
+      obx_str ap21 = t20;
+      *(obx_str*)rt_arr_push((&v_out_2), sizeof(obx_str)) = ap21;
+      gl1_drop(v_b_11);
+    }
+    v_i_3 = rt_sub_int(v_i_3, 1LL, "check.obx:1542");
+  }
+  obx_arr r22 = v_out_2;
+  return r22;
+}
+static obx_arr f784_check_Checker_joinMoves(S73_check_Checker** p_c, obx_arr* p_snaps, int64_t p_line) {
+  obx_arr a1 = rt_arr_new(0, sizeof(obx_arr));
+  obx_arr v_out_2 = a1;
+  int64_t end3 = ((*p_snaps)).len;
+  for (int64_t v_k_4 = 0LL; v_k_4 < end3; v_k_4++) {
+    obx_arr a5 = rt_arr_new(0, sizeof(int64_t));
+    obx_arr ap6 = a5;
+    *(obx_arr*)rt_arr_push((&v_out_2), sizeof(obx_arr)) = ap6;
+  }
+  bool c7 = (((*p_snaps)).len == 0LL);
+  if (c7) {
+    (*p_c)->f_cx->f_dead = true;
+    obx_arr r8 = v_out_2;
+    return r8;
+  }
+  obx_arr a9 = rt_arr_new(0, sizeof(int64_t));
+  obx_arr v_partial_10 = a9;
+  int64_t v_i_11 = 0LL;
+  while (1) {
+    int64_t t12 = v_i_11;
+    bool c13 = (t12 < (((obx_arr*)((*p_snaps)).data)[rt_idx(0LL, ((*p_snaps)).len, "check.obx:1504")]).len);
+    if (!c13) break;
+    int64_t ix14 = v_i_11;
+    int64_t v_v_15 = ((int64_t*)(((obx_arr*)((*p_snaps)).data)[rt_idx(0LL, ((*p_snaps)).len, "check.obx:1505")]).data)[rt_idx(ix14, (((obx_arr*)((*p_snaps)).data)[rt_idx(0LL, ((*p_snaps)).len, "check.obx:1505")]).len, "check.obx:1505")];
+    bool v_any_16 = false;
+    bool v_all_17 = true;
+    int64_t end18 = ((*p_snaps)).len;
+    for (int64_t v_k_19 = 0LL; v_k_19 < end18; v_k_19++) {
+      int64_t ix20 = v_k_19;
+      int64_t t21 = f786_check_snapGet((&((obx_arr*)((*p_snaps)).data)[rt_idx(ix20, ((*p_snaps)).len, "check.obx:1509")]), v_v_15);
+      int64_t v_st_22 = t21;
+      bool c23 = (v_st_22 == 1LL);
+      if (c23) {
+        v_any_16 = true;
+      }
+      bool c24 = (v_st_22 == 0LL);
+      if (c24) {
+        v_all_17 = false;
+      }
+    }
+    bool b25 = v_any_16;
+    if (b25) {
+      b25 = (!v_all_17);
+    }
+    bool c26 = b25;
+    if (c26) {
+      int64_t ap27 = v_v_15;
+      *(int64_t*)rt_arr_push((&v_partial_10), sizeof(int64_t)) = ap27;
+      int64_t end28 = ((*p_snaps)).len;
+      for (int64_t v_k_29 = 0LL; v_k_29 < end28; v_k_29++) {
+        int64_t ix30 = v_k_29;
+        int64_t t31 = f786_check_snapGet((&((obx_arr*)((*p_snaps)).data)[rt_idx(ix30, ((*p_snaps)).len, "check.obx:1516")]), v_v_15);
+        bool c32 = (t31 == 0LL);
+        if (c32) {
+          int64_t ix33 = v_k_29;
+          int64_t ap34 = v_v_15;
+          *(int64_t*)rt_arr_push((&((obx_arr*)(v_out_2).data)[rt_idx(ix33, (v_out_2).len, "check.obx:1516")]), sizeof(int64_t)) = ap34;
+        }
+      }
+    }
+    v_i_11 = rt_add_int(v_i_11, 2LL, "check.obx:1519");
+  }
+  f776_check_Checker_restore(p_c, (&((obx_arr*)((*p_snaps)).data)[rt_idx(0LL, ((*p_snaps)).len, "check.obx:1521")]));
+  obx_slice ap35 = rt_as_slice(&v_partial_10);
+  for (int64_t i36 = 0; i36 < ap35.len; i36++) {
+    int64_t v_v_37 = ((int64_t*)ap35.data)[i36];
+    int64_t ix38 = v_v_37;
+    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix38, ((*p_c)->f_vars).len, "check.obx:1523")].f_moved = true;
+    int64_t ix39 = v_v_37;
+    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix39, ((*p_c)->f_vars).len, "check.obx:1524")].f_pjoin = p_line;
+  }
+  (*p_c)->f_cx->f_dead = false;
+  obx_arr r40 = v_out_2;
+  gl9_drop(v_partial_10);
+  return r40;
+}
+static int64_t f786_check_snapGet(obx_arr* p_snap, int64_t p_v) {
   int64_t v_i_1 = 0LL;
   while (1) {
     int64_t t2 = v_i_1;
     bool c3 = (t2 < ((*p_snap)).len);
     if (!c3) break;
     int64_t ix4 = v_i_1;
-    bool c5 = (((int64_t*)((*p_snap)).data)[rt_idx(ix4, ((*p_snap)).len, "check.obx:761")] == p_v);
+    bool c5 = (((int64_t*)((*p_snap)).data)[rt_idx(ix4, ((*p_snap)).len, "check.obx:762")] == p_v);
     if (c5) {
-      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:761");
-      int64_t r7 = ((int64_t*)((*p_snap)).data)[rt_idx(ix6, ((*p_snap)).len, "check.obx:761")];
+      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:762");
+      int64_t r7 = ((int64_t*)((*p_snap)).data)[rt_idx(ix6, ((*p_snap)).len, "check.obx:762")];
       return r7;
     }
-    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:762");
+    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:763");
   }
   int64_t r8 = -1LL;
   return r8;
 }
-static void f781_check_Checker_live(S73_check_Checker** p_c, obx_arr* p_snaps) {
+static void f782_check_Checker_live(S73_check_Checker** p_c, obx_arr* p_snaps) {
   bool c1 = (!(*p_c)->f_cx->f_dead);
   if (c1) {
     obx_arr t2 = f773_check_Checker_snapshot(p_c);
@@ -39604,46 +39747,51 @@ static void f781_check_Checker_live(S73_check_Checker** p_c, obx_arr* p_snaps) {
     *(obx_arr*)rt_arr_push(p_snaps, sizeof(obx_arr)) = ap3;
   }
 }
+static S94_check_PathEnd f781_check_Checker_pathEnd(S73_check_Checker** p_c) {
+  S94_check_PathEnd t1 = ((S94_check_PathEnd){.f_at = ((*p_c)->f_cx->f_lines).len, .f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1555")});
+  S94_check_PathEnd r2 = t1;
+  return r2;
+}
 static void f780_check_Checker_armBody(S73_check_Checker** p_c, int64_t p_body, bool p_mx) {
   bool c1 = p_mx;
   if (c1) {
-    f784_check_Checker_mxArm(p_c, p_body);
+    f787_check_Checker_mxArm(p_c, p_body);
   } else {
     f739_check_Checker_block(p_c, p_body, true, false);
   }
 }
-static void f784_check_Checker_mxArm(S73_check_Checker** p_c, int64_t p_x) {
-  int64_t v_top_1 = rt_sub_int(((*p_c)->f_mxs).len, 1LL, "check.obx:3016");
+static void f787_check_Checker_mxArm(S73_check_Checker** p_c, int64_t p_x) {
+  int64_t v_top_1 = rt_sub_int(((*p_c)->f_mxs).len, 1LL, "check.obx:3153");
   int64_t t2 = f700_check_Checker_kind(p_c, p_x);
-  bool t3 = f785_check_isLitNode(t2);
+  bool t3 = f788_check_isLitNode(t2);
   bool b4 = t3;
   if (b4) {
     int64_t ix5 = v_top_1;
-    b4 = (((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix5, ((*p_c)->f_mxs).len, "check.obx:3017")]->f_t == -1LL);
+    b4 = (((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix5, ((*p_c)->f_mxs).len, "check.obx:3154")]->f_t == -1LL);
   }
   bool c6 = b4;
   if (c6) {
     int64_t ix7 = v_top_1;
-    (void)((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix7, ((*p_c)->f_mxs).len, "check.obx:3018")]->f_lits));
+    (void)((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix7, ((*p_c)->f_mxs).len, "check.obx:3155")]->f_lits));
     int64_t ap8 = ((*p_c)->f_cx->f_lines).len;
-    *(int64_t*)rt_arr_push((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix7, ((*p_c)->f_mxs).len, "check.obx:3018")]->f_lits), sizeof(int64_t)) = ap8;
+    *(int64_t*)rt_arr_push((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix7, ((*p_c)->f_mxs).len, "check.obx:3155")]->f_lits), sizeof(int64_t)) = ap8;
     int64_t ix9 = v_top_1;
     int64_t ap10 = p_x;
-    *(int64_t*)rt_arr_push((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix9, ((*p_c)->f_mxs).len, "check.obx:3019")]->f_lits), sizeof(int64_t)) = ap10;
+    *(int64_t*)rt_arr_push((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix9, ((*p_c)->f_mxs).len, "check.obx:3156")]->f_lits), sizeof(int64_t)) = ap10;
     int64_t ix11 = v_top_1;
     int64_t ap12 = (*p_c)->f_cx->f_ind;
-    *(int64_t*)rt_arr_push((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix11, ((*p_c)->f_mxs).len, "check.obx:3020")]->f_lits), sizeof(int64_t)) = ap12;
-    obx_str ap13 = sl2428;
+    *(int64_t*)rt_arr_push((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix11, ((*p_c)->f_mxs).len, "check.obx:3157")]->f_lits), sizeof(int64_t)) = ap12;
+    obx_str ap13 = sl2427;
     *(obx_str*)rt_arr_push((&(*p_c)->f_cx->f_lines), sizeof(obx_str)) = ap13;
   } else {
-    f786_check_Checker_mxBody(p_c, p_x);
+    f789_check_Checker_mxBody(p_c, p_x);
   }
 }
-static void f786_check_Checker_mxBody(S73_check_Checker** p_c, int64_t p_x) {
-  int64_t v_top_1 = rt_sub_int(((*p_c)->f_mxs).len, 1LL, "check.obx:2991");
+static void f789_check_Checker_mxBody(S73_check_Checker** p_c, int64_t p_x) {
+  int64_t v_top_1 = rt_sub_int(((*p_c)->f_mxs).len, 1LL, "check.obx:3128");
   f750_check_Checker_pushFrame(p_c);
   int64_t ix2 = v_top_1;
-  S87_check_Val t3 = f754_check_Checker_expr(p_c, p_x, ((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix2, ((*p_c)->f_mxs).len, "check.obx:2993")]->f_t);
+  S87_check_Val t3 = f754_check_Checker_expr(p_c, p_x, ((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix2, ((*p_c)->f_mxs).len, "check.obx:3130")]->f_t);
   S87_check_Val v_v_4 = t3;
   int64_t t5 = f497_sema_Program_tk((&(*p_c)->f_pg), v_v_4.f_t);
   int64_t v_k_6 = t5;
@@ -39659,7 +39807,7 @@ static void f786_check_Checker_mxBody(S73_check_Checker** p_c, int64_t p_x) {
   bool c10 = b9;
   if (c10) {
     int64_t t11 = f701_check_Checker_line(p_c, p_x);
-    f702_check_Checker_err(p_c, t11, sl2429);
+    f702_check_Checker_err(p_c, t11, sl2428);
   }
   S87_check_Val t12 = f765_check_Checker_rd(p_c, gl67_dup(v_v_4));
   { S87_check_Val nw13 = t12;
@@ -39672,18 +39820,18 @@ static void f786_check_Checker_mxBody(S73_check_Checker** p_c, int64_t p_x) {
     (*p_c)->f_cx->f_dead = true;
   } else {
     int64_t ix17 = v_top_1;
-    bool c18 = (((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix17, ((*p_c)->f_mxs).len, "check.obx:3003")]->f_t == -1LL);
+    bool c18 = (((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix17, ((*p_c)->f_mxs).len, "check.obx:3140")]->f_t == -1LL);
     if (c18) {
       int64_t ix19 = v_top_1;
-      ((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix19, ((*p_c)->f_mxs).len, "check.obx:3004")]->f_t = v_v_4.f_t;
+      ((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix19, ((*p_c)->f_mxs).len, "check.obx:3141")]->f_t = v_v_4.f_t;
     } else {
       int64_t ix20 = v_top_1;
-      bool c21 = (v_v_4.f_t != ((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix20, ((*p_c)->f_mxs).len, "check.obx:3005")]->f_t);
+      bool c21 = (v_v_4.f_t != ((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix20, ((*p_c)->f_mxs).len, "check.obx:3142")]->f_t);
       if (c21) {
         int64_t t22 = f701_check_Checker_line(p_c, p_x);
-        obx_str t23 = sl2430;
+        obx_str t23 = sl2429;
         int64_t ix24 = v_top_1;
-        obx_str t25 = f767_check_Checker_tstr(p_c, ((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix24, ((*p_c)->f_mxs).len, "check.obx:3006")]->f_t);
+        obx_str t25 = f767_check_Checker_tstr(p_c, ((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix24, ((*p_c)->f_mxs).len, "check.obx:3143")]->f_t);
         obx_str t26 = rt_str_concat(t23, t25);
         obx_str t27 = rt_str_concat(t26, sl1860);
         obx_str t28 = f767_check_Checker_tstr(p_c, v_v_4.f_t);
@@ -39696,7 +39844,7 @@ static void f786_check_Checker_mxBody(S73_check_Checker** p_c, int64_t p_x) {
     obx_str t32 = f772_check_Checker_consume(p_c, t30, t31);
     obx_str v_cc_33 = t32;
     int64_t ix34 = v_top_1;
-    obx_str t35 = rt_str_concat(((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix34, ((*p_c)->f_mxs).len, "check.obx:3010")]->f_r, sl2267);
+    obx_str t35 = rt_str_concat(((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix34, ((*p_c)->f_mxs).len, "check.obx:3147")]->f_r, sl2267);
     obx_str t36 = rt_str_concat(t35, v_cc_33);
     obx_str t37 = rt_str_concat(t36, sl36);
     f744_check_Checker_emit(p_c, t37);
@@ -39708,7 +39856,7 @@ static void f786_check_Checker_mxBody(S73_check_Checker** p_c, int64_t p_x) {
   gl9_drop(v_fr_15);
   gl68_drop(v_v_4);
 }
-static bool f785_check_isLitNode(int64_t p_k) {
+static bool f788_check_isLitNode(int64_t p_k) {
   bool b1 = (p_k == 36LL);
   if (!b1) {
     b1 = (p_k == 38LL);
@@ -39717,11 +39865,11 @@ static bool f785_check_isLitNode(int64_t p_k) {
   return r2;
 }
 static void f779_check_Checker_freeze(S73_check_Checker** p_c, int64_t p_root, bool p_m, obx_str p_by) {
-  int64_t v_s_1 = rt_sub_int(((*p_c)->f_cx->f_scopes).len, 1LL, "check.obx:734");
+  int64_t v_s_1 = rt_sub_int(((*p_c)->f_cx->f_scopes).len, 1LL, "check.obx:735");
   int64_t ix2 = v_s_1;
   S92_check_Freeze t3 = ((S92_check_Freeze){.f_root = p_root, .f_m = p_m, .f_by = rt_str_dup(p_by)});
   S92_check_Freeze ap4 = t3;
-  *(S92_check_Freeze*)rt_arr_push((&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix2, ((*p_c)->f_cx->f_scopes).len, "check.obx:735")]->f_freezes), sizeof(S92_check_Freeze)) = ap4;
+  *(S92_check_Freeze*)rt_arr_push((&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix2, ((*p_c)->f_cx->f_scopes).len, "check.obx:736")]->f_freezes), sizeof(S92_check_Freeze)) = ap4;
   rt_str_drop(p_by);
 }
 static bool f778_check_Checker_isCopy(S73_check_Checker** p_c, int64_t p_t) {
@@ -39732,7 +39880,7 @@ static bool f778_check_Checker_isCopy(S73_check_Checker** p_c, int64_t p_t) {
     *(int64_t*)rt_arr_push((&(*p_c)->f_copyMemo), sizeof(int64_t)) = ap2;
   }
   int64_t ix3 = p_t;
-  bool c4 = (((int64_t*)((*p_c)->f_copyMemo).data)[rt_idx(ix3, ((*p_c)->f_copyMemo).len, "check.obx:455")] < 0LL);
+  bool c4 = (((int64_t*)((*p_c)->f_copyMemo).data)[rt_idx(ix3, ((*p_c)->f_copyMemo).len, "check.obx:456")] < 0LL);
   if (c4) {
     bool t5 = f517_sema_Program_isCopy((&(*p_c)->f_pg), p_t);
     bool v_r_6 = t5;
@@ -39743,28 +39891,28 @@ static bool f778_check_Checker_isCopy(S73_check_Checker** p_c, int64_t p_t) {
       *(int64_t*)rt_arr_push((&(*p_c)->f_copyMemo), sizeof(int64_t)) = ap8;
     }
     int64_t ix10 = p_t;
-    ((int64_t*)((*p_c)->f_copyMemo).data)[rt_idx(ix10, ((*p_c)->f_copyMemo).len, "check.obx:458")] = (v_r_6 ? 1LL : 0LL);
+    ((int64_t*)((*p_c)->f_copyMemo).data)[rt_idx(ix10, ((*p_c)->f_copyMemo).len, "check.obx:459")] = (v_r_6 ? 1LL : 0LL);
   }
   int64_t ix11 = p_t;
-  bool r12 = (((int64_t*)((*p_c)->f_copyMemo).data)[rt_idx(ix11, ((*p_c)->f_copyMemo).len, "check.obx:460")] == 1LL);
+  bool r12 = (((int64_t*)((*p_c)->f_copyMemo).data)[rt_idx(ix11, ((*p_c)->f_copyMemo).len, "check.obx:461")] == 1LL);
   return r12;
 }
 static void f777_check_Checker_declare(S73_check_Checker** p_c, int64_t p_v) {
   int64_t ix1 = p_v;
-  int64_t t2 = f711_check_Checker_lookupVar(p_c, rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix1, ((*p_c)->f_vars).len, "check.obx:724")].f_name), false);
+  int64_t t2 = f711_check_Checker_lookupVar(p_c, rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix1, ((*p_c)->f_vars).len, "check.obx:725")].f_name), false);
   bool c3 = (t2 >= 0LL);
   if (c3) {
     int64_t ix4 = p_v;
-    int64_t t5 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix4, ((*p_c)->f_vars).len, "check.obx:725")].f_line;
+    int64_t t5 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix4, ((*p_c)->f_vars).len, "check.obx:726")].f_line;
     int64_t ix6 = p_v;
-    obx_str t7 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix6, ((*p_c)->f_vars).len, "check.obx:725")].f_name);
-    obx_str t8 = rt_str_concat(t7, sl2431);
+    obx_str t7 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix6, ((*p_c)->f_vars).len, "check.obx:726")].f_name);
+    obx_str t8 = rt_str_concat(t7, sl2430);
     f702_check_Checker_err(p_c, t5, t8);
   }
-  int64_t v_s_9 = rt_sub_int(((*p_c)->f_cx->f_scopes).len, 1LL, "check.obx:727");
+  int64_t v_s_9 = rt_sub_int(((*p_c)->f_cx->f_scopes).len, 1LL, "check.obx:728");
   int64_t ix10 = v_s_9;
   int64_t ap11 = p_v;
-  *(int64_t*)rt_arr_push((&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix10, ((*p_c)->f_cx->f_scopes).len, "check.obx:728")]->f_vars), sizeof(int64_t)) = ap11;
+  *(int64_t*)rt_arr_push((&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix10, ((*p_c)->f_cx->f_scopes).len, "check.obx:729")]->f_vars), sizeof(int64_t)) = ap11;
 }
 static void f776_check_Checker_restore(S73_check_Checker** p_c, obx_arr* p_snap) {
   int64_t v_i_1 = 0LL;
@@ -39772,12 +39920,12 @@ static void f776_check_Checker_restore(S73_check_Checker** p_c, obx_arr* p_snap)
     int64_t t2 = v_i_1;
     bool c3 = (t2 < ((*p_snap)).len);
     if (!c3) break;
-    int64_t ix4 = rt_add_int(v_i_1, 1LL, "check.obx:753");
-    bool t5 = (((int64_t*)((*p_snap)).data)[rt_idx(ix4, ((*p_snap)).len, "check.obx:753")] == 1LL);
+    int64_t ix4 = rt_add_int(v_i_1, 1LL, "check.obx:754");
+    bool t5 = (((int64_t*)((*p_snap)).data)[rt_idx(ix4, ((*p_snap)).len, "check.obx:754")] == 1LL);
     int64_t ix6 = v_i_1;
-    int64_t ix7 = ((int64_t*)((*p_snap)).data)[rt_idx(ix6, ((*p_snap)).len, "check.obx:753")];
-    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix7, ((*p_c)->f_vars).len, "check.obx:753")].f_moved = t5;
-    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:754");
+    int64_t ix7 = ((int64_t*)((*p_snap)).data)[rt_idx(ix6, ((*p_snap)).len, "check.obx:754")];
+    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix7, ((*p_c)->f_vars).len, "check.obx:754")].f_moved = t5;
+    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:755");
   }
 }
 static int64_t f775_check_Checker_armVariant(S73_check_Checker** p_c, int64_t p_arm, int64_t p_d, int64_t p_base) {
@@ -39791,7 +39939,7 @@ static int64_t f775_check_Checker_armVariant(S73_check_Checker** p_c, int64_t p_
 static int64_t f774_check_Checker_armVariantAt(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_line, int64_t p_d, int64_t p_base) {
   int64_t t1 = f717_check_Checker_count(p_c, p_vpath);
   int64_t v_np_2 = t1;
-  int64_t t3 = f718_check_Checker_item(p_c, p_vpath, rt_sub_int(v_np_2, 1LL, "check.obx:1872"));
+  int64_t t3 = f718_check_Checker_item(p_c, p_vpath, rt_sub_int(v_np_2, 1LL, "check.obx:1987"));
   S49_syntax_Node t4 = f703_check_Checker_nd(p_c, t3);
   obx_str v_last_5 = rt_str_dup(t4.f_s);
   gl49_drop(t4);
@@ -39803,7 +39951,7 @@ static int64_t f774_check_Checker_armVariantAt(S73_check_Checker** p_c, int64_t 
   }
   bool c9 = b7;
   if (c9) {
-    int64_t t10 = f787_check_Checker_vpathExpr(p_c, p_vpath, p_line);
+    int64_t t10 = f790_check_Checker_vpathExpr(p_c, p_vpath, p_line);
     S1_check_St t11 = f710_check_Checker_static(p_c, t10);
     S1_check_St v_st_12 = t11;
     bool b13 = (v_st_12.f_k == 1LL);
@@ -39818,7 +39966,7 @@ static int64_t f774_check_Checker_armVariantAt(S73_check_Checker** p_c, int64_t 
   bool b15 = (v_vr_6 < 0LL);
   if (!b15) {
     int64_t ix16 = v_vr_6;
-    b15 = (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix16, ((*p_c)->f_pg->f_variants).len, "check.obx:1878")].f_decl != p_d);
+    b15 = (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix16, ((*p_c)->f_pg->f_variants).len, "check.obx:1993")].f_decl != p_d);
   }
   bool c17 = b15;
   if (c17) {
@@ -39826,16 +39974,16 @@ static int64_t f774_check_Checker_armVariantAt(S73_check_Checker** p_c, int64_t 
     if (c18) {
       int64_t t19 = p_line;
       int64_t ix20 = p_d;
-      obx_str t21 = rt_str_concat(sl2432, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix20, ((*p_c)->f_pg->f_types).len, "check.obx:1880")].f_name);
+      obx_str t21 = rt_str_concat(sl2431, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix20, ((*p_c)->f_pg->f_types).len, "check.obx:1995")].f_name);
       obx_str t22 = rt_str_concat(t21, sl37);
       obx_str t23 = rt_str_concat(t22, v_last_5);
-      obx_str t24 = rt_str_concat(t23, sl2433);
-      obx_str t25 = rt_str_concat(t24, sl2434);
+      obx_str t24 = rt_str_concat(t23, sl2432);
+      obx_str t25 = rt_str_concat(t24, sl2433);
       f702_check_Checker_err(p_c, t19, t25);
     }
     int64_t t26 = p_line;
-    obx_str t27 = f788_check_Checker_vpathText(p_c, p_vpath);
-    obx_str t28 = rt_str_concat(t27, sl2435);
+    obx_str t27 = f791_check_Checker_vpathText(p_c, p_vpath);
+    obx_str t28 = rt_str_concat(t27, sl2434);
     obx_str t29 = f767_check_Checker_tstr(p_c, p_base);
     obx_str t30 = rt_str_concat(t28, t29);
     f702_check_Checker_err(p_c, t26, t30);
@@ -39844,7 +39992,7 @@ static int64_t f774_check_Checker_armVariantAt(S73_check_Checker** p_c, int64_t 
   rt_str_drop(v_last_5);
   return r31;
 }
-static obx_str f788_check_Checker_vpathText(S73_check_Checker** p_c, int64_t p_vpath) {
+static obx_str f791_check_Checker_vpathText(S73_check_Checker** p_c, int64_t p_vpath) {
   S3_std_StrBuf* t1 = f13_std_newStrBuf();
   S3_std_StrBuf* v_b_2 = t1;
   int64_t t3 = f717_check_Checker_count(p_c, p_vpath);
@@ -39864,7 +40012,7 @@ static obx_str f788_check_Checker_vpathText(S73_check_Checker** p_c, int64_t p_v
   gl1_drop(v_b_2);
   return r10;
 }
-static int64_t f787_check_Checker_vpathExpr(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_line) {
+static int64_t f790_check_Checker_vpathExpr(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_line) {
   int64_t v_q_1 = -1LL;
   int64_t t2 = f717_check_Checker_count(p_c, p_vpath);
   int64_t end3 = t2;
@@ -39893,13 +40041,13 @@ static obx_arr f773_check_Checker_snapshot(S73_check_Checker** p_c) {
   int64_t end3 = ((*p_c)->f_cx->f_scopes).len;
   for (int64_t v_s_4 = 0LL; v_s_4 < end3; v_s_4++) {
     int64_t ix5 = v_s_4;
-    obx_slice ap6 = rt_as_slice(&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix5, ((*p_c)->f_cx->f_scopes).len, "check.obx:742")]->f_vars);
+    obx_slice ap6 = rt_as_slice(&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix5, ((*p_c)->f_cx->f_scopes).len, "check.obx:743")]->f_vars);
     for (int64_t i7 = 0; i7 < ap6.len; i7++) {
       int64_t v_v_8 = ((int64_t*)ap6.data)[i7];
       int64_t ap9 = v_v_8;
       *(int64_t*)rt_arr_push((&v_out_2), sizeof(int64_t)) = ap9;
       int64_t ix10 = v_v_8;
-      int64_t ap12 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix10, ((*p_c)->f_vars).len, "check.obx:744")].f_moved ? 1LL : 0LL);
+      int64_t ap12 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix10, ((*p_c)->f_vars).len, "check.obx:745")].f_moved ? 1LL : 0LL);
       *(int64_t*)rt_arr_push((&v_out_2), sizeof(int64_t)) = ap12;
     }
   }
@@ -39910,17 +40058,17 @@ static obx_str f772_check_Checker_consume(S73_check_Checker** p_c, S87_check_Val
   int64_t t1 = f497_sema_Program_tk((&(*p_c)->f_pg), p_v.f_t);
   bool c2 = (t1 == 5LL);
   if (c2) {
-    obx_str t3 = rt_str_concat(sl2436, sl2437);
+    obx_str t3 = rt_str_concat(sl2435, sl2436);
     f702_check_Checker_err(p_c, p_line, t3);
   }
   bool c4 = (p_v.f_t == 11LL);
   if (c4) {
-    f702_check_Checker_err(p_c, p_line, sl2438);
+    f702_check_Checker_err(p_c, p_line, sl2437);
   }
   bool c5 = (p_v.f_cat == 1LL);
   if (c5) {
     int64_t ix6 = p_v.f_tmp;
-    ((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix6, ((*p_c)->f_tmps).len, "check.obx:887")].f_live = false;
+    ((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix6, ((*p_c)->f_tmps).len, "check.obx:888")].f_live = false;
     obx_str r7 = rt_str_dup(p_v.f_c);
     gl68_drop(p_v);
     return r7;
@@ -39950,121 +40098,118 @@ static obx_str f772_check_Checker_consume(S73_check_Checker** p_c, S87_check_Val
   bool b16 = b15;
   if (b16) {
     int64_t ix17 = p_v.f_vvar;
-    int64_t t18 = f497_sema_Program_tk((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix17, ((*p_c)->f_vars).len, "check.obx:892")].f_t);
+    int64_t t18 = f497_sema_Program_tk((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix17, ((*p_c)->f_vars).len, "check.obx:893")].f_t);
     b16 = (t18 != 2LL);
   }
   bool c19 = b16;
   if (c19) {
     int64_t v_vx_20 = p_v.f_vvar;
     int64_t ix21 = v_vx_20;
-    bool c22 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix21, ((*p_c)->f_vars).len, "check.obx:894")].f_moved;
+    bool c22 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix21, ((*p_c)->f_vars).len, "check.obx:895")].f_moved;
     if (c22) {
-      int64_t ix23 = v_vx_20;
-      obx_str t24 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix23, ((*p_c)->f_vars).len, "check.obx:894")].f_name);
-      obx_str t25 = rt_str_concat(t24, sl2439);
-      f702_check_Checker_err(p_c, p_line, t25);
+      f792_check_Checker_movedErr(p_c, v_vx_20, p_line);
     }
-    bool c26 = (((*p_c)->f_cx->f_nomove).len > 0LL);
-    if (c26) {
-      int64_t t27 = p_line;
-      int64_t ix28 = v_vx_20;
-      obx_str t29 = rt_str_concat(sl2440, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix28, ((*p_c)->f_vars).len, "check.obx:896")].f_name);
-      obx_str t30 = rt_str_concat(t29, sl2441);
-      int64_t ix31 = rt_sub_int(((*p_c)->f_cx->f_nomove).len, 1LL, "check.obx:896");
-      obx_str t32 = rt_str_concat(t30, ((obx_str*)((*p_c)->f_cx->f_nomove).data)[rt_idx(ix31, ((*p_c)->f_cx->f_nomove).len, "check.obx:896")]);
-      f702_check_Checker_err(p_c, t27, t32);
+    bool c23 = (((*p_c)->f_cx->f_nomove).len > 0LL);
+    if (c23) {
+      int64_t t24 = p_line;
+      int64_t ix25 = v_vx_20;
+      obx_str t26 = rt_str_concat(sl2438, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix25, ((*p_c)->f_vars).len, "check.obx:897")].f_name);
+      obx_str t27 = rt_str_concat(t26, sl2439);
+      int64_t ix28 = rt_sub_int(((*p_c)->f_cx->f_nomove).len, 1LL, "check.obx:897");
+      obx_str t29 = rt_str_concat(t27, ((obx_str*)((*p_c)->f_cx->f_nomove).data)[rt_idx(ix28, ((*p_c)->f_cx->f_nomove).len, "check.obx:897")]);
+      f702_check_Checker_err(p_c, t24, t29);
     }
-    f789_check_Checker_frozen(p_c, v_vx_20, 2LL, p_line);
-    f790_check_Checker_checkPending(p_c, v_vx_20, sl183, p_line, true);
-    int64_t ix33 = v_vx_20;
-    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix33, ((*p_c)->f_vars).len, "check.obx:900")].f_moved = true;
-    obx_str r34 = rt_str_dup(p_v.f_c);
+    f793_check_Checker_frozen(p_c, v_vx_20, 2LL, p_line);
+    f794_check_Checker_checkPending(p_c, v_vx_20, sl183, p_line, true);
+    int64_t ix30 = v_vx_20;
+    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix30, ((*p_c)->f_vars).len, "check.obx:901")].f_moved = true;
+    obx_str r31 = rt_str_dup(p_v.f_c);
     gl68_drop(p_v);
-    return r34;
+    return r31;
   }
-  bool b35 = (p_v.f_root >= 0LL);
-  if (!b35) {
-    b35 = (p_v.f_root <= -2LL);
+  bool b32 = (p_v.f_root >= 0LL);
+  if (!b32) {
+    b32 = (p_v.f_root <= -2LL);
   }
-  bool v_hasName_36 = b35;
-  obx_str t37 = f791_check_Checker_rootName(p_c, p_v.f_root, sl183);
-  obx_str v_name_38 = t37;
-  bool c39 = p_v.f_viaref;
-  if (c39) {
-    obx_str ifx40;
-    if (v_hasName_36) {
-      obx_str t41 = rt_str_concat(sl1813, v_name_38);
-      obx_str t42 = rt_str_concat(t41, sl31);
-      ifx40 = t42;
-      rt_str_drop(t41);
+  bool v_hasName_33 = b32;
+  obx_str t34 = f795_check_Checker_rootName(p_c, p_v.f_root, sl183);
+  obx_str v_name_35 = t34;
+  bool c36 = p_v.f_viaref;
+  if (c36) {
+    obx_str ifx37;
+    if (v_hasName_33) {
+      obx_str t38 = rt_str_concat(sl1813, v_name_35);
+      obx_str t39 = rt_str_concat(t38, sl31);
+      ifx37 = t39;
+      rt_str_drop(t38);
     } else {
-      ifx40 = sl183;
+      ifx37 = sl183;
     }
-    obx_str v_s_43 = ifx40;
-    int64_t t44 = p_line;
-    obx_str t45 = sl2442;
-    obx_str t46 = f767_check_Checker_tstr(p_c, p_v.f_t);
-    obx_str t47 = rt_str_concat(t45, t46);
-    obx_str t48 = rt_str_concat(t47, sl2443);
-    obx_str t49 = rt_str_concat(t48, v_s_43);
-    obx_str t50 = rt_str_concat(t49, sl2444);
-    f702_check_Checker_err(p_c, t44, t50);
+    obx_str v_s_40 = ifx37;
+    int64_t t41 = p_line;
+    obx_str t42 = sl2440;
+    obx_str t43 = f767_check_Checker_tstr(p_c, p_v.f_t);
+    obx_str t44 = rt_str_concat(t42, t43);
+    obx_str t45 = rt_str_concat(t44, sl2441);
+    obx_str t46 = rt_str_concat(t45, v_s_40);
+    obx_str t47 = rt_str_concat(t46, sl2442);
+    f702_check_Checker_err(p_c, t41, t47);
   }
-  bool c51 = (p_v.f_gk >= 0LL);
-  if (c51) {
-    int64_t t52 = p_line;
-    obx_str t53 = sl2445;
-    obx_str t54 = f792_check_Checker_gname(p_c, p_v.f_gk, p_v.f_gi);
-    obx_str t55 = rt_str_concat(t53, t54);
-    f702_check_Checker_err(p_c, t52, t55);
+  bool c48 = (p_v.f_gk >= 0LL);
+  if (c48) {
+    int64_t t49 = p_line;
+    obx_str t50 = sl2443;
+    obx_str t51 = f796_check_Checker_gname(p_c, p_v.f_gk, p_v.f_gi);
+    obx_str t52 = rt_str_concat(t50, t51);
+    f702_check_Checker_err(p_c, t49, t52);
   }
-  obx_str ifx56;
-  if (v_hasName_36) {
-    obx_str t57 = sl2446;
-    obx_str t58 = f405_syntax_pyRepr(rt_str_dup(v_name_38));
-    obx_str t59 = rt_str_concat(t57, t58);
-    ifx56 = t59;
-    rt_str_drop(t58);
-    rt_str_drop(t57);
+  obx_str ifx53;
+  if (v_hasName_33) {
+    obx_str t54 = sl2444;
+    obx_str t55 = f405_syntax_pyRepr(rt_str_dup(v_name_35));
+    obx_str t56 = rt_str_concat(t54, t55);
+    ifx53 = t56;
+    rt_str_drop(t55);
+    rt_str_drop(t54);
   } else {
-    ifx56 = sl183;
+    ifx53 = sl183;
   }
-  obx_str v_s_60 = ifx56;
-  int64_t t61 = p_line;
-  obx_str t62 = sl2442;
-  obx_str t63 = f767_check_Checker_tstr(p_c, p_v.f_t);
-  obx_str t64 = rt_str_concat(t62, t63);
-  obx_str t65 = rt_str_concat(t64, sl2447);
-  obx_str t66 = rt_str_concat(t65, v_s_60);
-  obx_str t67 = rt_str_concat(t66, sl2448);
-  f702_check_Checker_err(p_c, t61, t67);
+  obx_str v_s_57 = ifx53;
+  int64_t t58 = p_line;
+  obx_str t59 = sl2440;
+  obx_str t60 = f767_check_Checker_tstr(p_c, p_v.f_t);
+  obx_str t61 = rt_str_concat(t59, t60);
+  obx_str t62 = rt_str_concat(t61, sl2445);
+  obx_str t63 = rt_str_concat(t62, v_s_57);
+  obx_str t64 = rt_str_concat(t63, sl2446);
+  f702_check_Checker_err(p_c, t58, t64);
 }
-static obx_str f792_check_Checker_gname(S73_check_Checker** p_c, int64_t p_gk, int64_t p_gi) {
+static obx_str f796_check_Checker_gname(S73_check_Checker** p_c, int64_t p_gk, int64_t p_gi) {
   obx_str ifx1;
   if ((p_gk == 3LL)) {
     int64_t ix2 = p_gi;
-    ifx1 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix2, ((*p_c)->f_pg->f_globals).len, "check.obx:915")].f_name);
+    ifx1 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix2, ((*p_c)->f_pg->f_globals).len, "check.obx:916")].f_name);
   } else {
     int64_t ix3 = p_gi;
-    ifx1 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix3, ((*p_c)->f_pg->f_consts).len, "check.obx:915")].f_name);
+    ifx1 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix3, ((*p_c)->f_pg->f_consts).len, "check.obx:916")].f_name);
   }
   obx_str r4 = ifx1;
   return r4;
 }
-static obx_str f791_check_Checker_rootName(S73_check_Checker** p_c, int64_t p_r, obx_str p_dflt) {
+static obx_str f795_check_Checker_rootName(S73_check_Checker** p_c, int64_t p_r, obx_str p_dflt) {
   obx_str ifx1;
   if ((p_r >= 0LL)) {
     int64_t ix2 = p_r;
-    ifx1 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix2, ((*p_c)->f_vars).len, "check.obx:466")].f_name);
+    ifx1 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix2, ((*p_c)->f_vars).len, "check.obx:467")].f_name);
   } else {
-    obx_str t4 = ((p_r <= -2LL) ? sl2449 : rt_str_dup(p_dflt));
+    obx_str t4 = ((p_r <= -2LL) ? sl2447 : rt_str_dup(p_dflt));
     ifx1 = t4;
   }
   obx_str r5 = ifx1;
   rt_str_drop(p_dflt);
   return r5;
 }
-static void f790_check_Checker_checkPending(S73_check_Checker** p_c, int64_t p_root, obx_str p_path, int64_t p_line, bool p_move) {
+static void f794_check_Checker_checkPending(S73_check_Checker** p_c, int64_t p_root, obx_str p_path, int64_t p_line, bool p_move) {
   bool c1 = (p_root == -1LL);
   if (c1) {
     rt_str_drop(p_path);
@@ -40072,30 +40217,30 @@ static void f790_check_Checker_checkPending(S73_check_Checker** p_c, int64_t p_r
   }
   obx_slice ap2 = rt_as_slice(&(*p_c)->f_cx->f_pending);
   for (int64_t i3 = 0; i3 < ap2.len; i3++) {
-    S90_check_Pend v_p_4 = gl77_dup(((S90_check_Pend*)ap2.data)[i3]);
+    S90_check_Pend v_p_4 = gl78_dup(((S90_check_Pend*)ap2.data)[i3]);
     bool b5 = (v_p_4.f_root == p_root);
     if (b5) {
-      bool t6 = f793_check_overlap(rt_str_dup(v_p_4.f_path), rt_str_dup(p_path));
+      bool t6 = f797_check_overlap(rt_str_dup(v_p_4.f_path), rt_str_dup(p_path));
       b5 = t6;
     }
     bool c7 = b5;
     if (c7) {
-      obx_str t9 = (p_move ? sl2450 : sl2451);
+      obx_str t9 = (p_move ? sl2448 : sl2449);
       obx_str v_what_10 = t9;
       int64_t t11 = p_line;
       obx_str t12 = sl1809;
-      obx_str t13 = f791_check_Checker_rootName(p_c, p_root, sl2449);
+      obx_str t13 = f795_check_Checker_rootName(p_c, p_root, sl2447);
       obx_str t14 = rt_str_concat(t12, t13);
-      obx_str t15 = rt_str_concat(t14, sl2452);
+      obx_str t15 = rt_str_concat(t14, sl2450);
       obx_str t16 = rt_str_concat(t15, v_what_10);
-      obx_str t17 = rt_str_concat(t16, sl2453);
+      obx_str t17 = rt_str_concat(t16, sl2451);
       f702_check_Checker_err(p_c, t11, t17);
     }
     gl75_drop(v_p_4);
   }
   rt_str_drop(p_path);
 }
-static bool f793_check_overlap(obx_str p_a, obx_str p_b) {
+static bool f797_check_overlap(obx_str p_a, obx_str p_b) {
   int64_t v_i_1 = 0LL;
   int64_t v_j_2 = 0LL;
   while (1) {
@@ -40109,25 +40254,25 @@ static bool f793_check_overlap(obx_str p_a, obx_str p_b) {
     if (!c6) break;
     int64_t v_ie_7 = v_i_1;
     while (1) {
-      uint8_t t8 = rt_str_byte(p_a, v_ie_7, "check.obx:374");
+      uint8_t t8 = rt_str_byte(p_a, v_ie_7, "check.obx:375");
       bool c9 = (t8 != ((uint8_t)0));
       if (!c9) break;
-      v_ie_7 = rt_add_int(v_ie_7, 1LL, "check.obx:374");
+      v_ie_7 = rt_add_int(v_ie_7, 1LL, "check.obx:375");
     }
     int64_t v_je_10 = v_j_2;
     while (1) {
-      uint8_t t11 = rt_str_byte(p_b, v_je_10, "check.obx:376");
+      uint8_t t11 = rt_str_byte(p_b, v_je_10, "check.obx:377");
       bool c12 = (t11 != ((uint8_t)0));
       if (!c12) break;
-      v_je_10 = rt_add_int(v_je_10, 1LL, "check.obx:376");
+      v_je_10 = rt_add_int(v_je_10, 1LL, "check.obx:377");
     }
     int64_t ix13 = v_i_1;
     int64_t ix14 = v_ie_7;
-    obx_str t15 = rt_str_sub(p_a, ix13, ix14, "check.obx:377");
+    obx_str t15 = rt_str_sub(p_a, ix13, ix14, "check.obx:378");
     obx_str v_x_16 = t15;
     int64_t ix17 = v_j_2;
     int64_t ix18 = v_je_10;
-    obx_str t19 = rt_str_sub(p_b, ix17, ix18, "check.obx:378");
+    obx_str t19 = rt_str_sub(p_b, ix17, ix18, "check.obx:379");
     obx_str v_y_20 = t19;
     bool b21 = (rt_str_eq(v_x_16, sl44));
     if (!b21) {
@@ -40151,8 +40296,8 @@ static bool f793_check_overlap(obx_str p_a, obx_str p_b) {
       rt_str_drop(p_a);
       return r25;
     }
-    v_i_1 = rt_add_int(v_ie_7, 1LL, "check.obx:381");
-    v_j_2 = rt_add_int(v_je_10, 1LL, "check.obx:382");
+    v_i_1 = rt_add_int(v_ie_7, 1LL, "check.obx:382");
+    v_j_2 = rt_add_int(v_je_10, 1LL, "check.obx:383");
     rt_str_drop(v_y_20);
     rt_str_drop(v_x_16);
   }
@@ -40161,13 +40306,13 @@ static bool f793_check_overlap(obx_str p_a, obx_str p_b) {
   rt_str_drop(p_a);
   return r26;
 }
-static void f789_check_Checker_frozen(S73_check_Checker** p_c, int64_t p_root, int64_t p_kind, int64_t p_line) {
+static void f793_check_Checker_frozen(S73_check_Checker** p_c, int64_t p_root, int64_t p_kind, int64_t p_line) {
   bool c1 = (p_root < 0LL);
   if (c1) {
     return;
   }
   int64_t ix2 = p_root;
-  bool b3 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix2, ((*p_c)->f_vars).len, "check.obx:824")].f_cap >= 0LL);
+  bool b3 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix2, ((*p_c)->f_vars).len, "check.obx:825")].f_cap >= 0LL);
   if (b3) {
     b3 = (p_kind != 0LL);
   }
@@ -40176,19 +40321,19 @@ static void f789_check_Checker_frozen(S73_check_Checker** p_c, int64_t p_root, i
     bool c5 = (p_kind == 2LL);
     if (c5) {
       int64_t ix6 = p_root;
-      obx_str t7 = rt_str_concat(sl2454, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix6, ((*p_c)->f_vars).len, "check.obx:825")].f_name);
+      obx_str t7 = rt_str_concat(sl2452, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix6, ((*p_c)->f_vars).len, "check.obx:826")].f_name);
       obx_str t8 = rt_str_concat(t7, sl1809);
       f702_check_Checker_err(p_c, p_line, t8);
     }
     int64_t ix9 = p_root;
-    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix9, ((*p_c)->f_vars).len, "check.obx:826")].f_capmut = true;
+    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix9, ((*p_c)->f_vars).len, "check.obx:827")].f_capmut = true;
   }
   int64_t end10 = ((*p_c)->f_cx->f_scopes).len;
   for (int64_t v_s_11 = 0LL; v_s_11 < end10; v_s_11++) {
     int64_t ix12 = v_s_11;
-    obx_slice ap13 = rt_as_slice(&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix12, ((*p_c)->f_cx->f_scopes).len, "check.obx:829")]->f_freezes);
+    obx_slice ap13 = rt_as_slice(&((S86_check_Scope**)((*p_c)->f_cx->f_scopes).data)[rt_idx(ix12, ((*p_c)->f_cx->f_scopes).len, "check.obx:830")]->f_freezes);
     for (int64_t i14 = 0; i14 < ap13.len; i14++) {
-      S92_check_Freeze v_f_15 = gl78_dup(((S92_check_Freeze*)ap13.data)[i14]);
+      S92_check_Freeze v_f_15 = gl79_dup(((S92_check_Freeze*)ap13.data)[i14]);
       bool b16 = (v_f_15.f_root == p_root);
       if (b16) {
         bool b17 = (p_kind != 0LL);
@@ -40202,31 +40347,54 @@ static void f789_check_Checker_frozen(S73_check_Checker** p_c, int64_t p_root, i
         obx_str mx19;
         int64_t sv20 = p_kind;
         if (sv20 == 1LL) {
-          mx19 = sl2451;
+          mx19 = sl2449;
         } else if (sv20 == 2LL) {
-          mx19 = sl2450;
+          mx19 = sl2448;
         } else if (sv20 == 3LL) {
-          mx19 = sl2455;
+          mx19 = sl2453;
         } else {
-          mx19 = sl2456;
+          mx19 = sl2454;
         }
         obx_str v_verb_21 = mx19;
         int64_t t22 = p_line;
         int64_t ix23 = p_root;
-        obx_str t24 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix23, ((*p_c)->f_vars).len, "check.obx:832")].f_name);
-        obx_str t25 = rt_str_concat(t24, sl2457);
+        obx_str t24 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix23, ((*p_c)->f_vars).len, "check.obx:833")].f_name);
+        obx_str t25 = rt_str_concat(t24, sl2455);
         obx_str t26 = rt_str_concat(t25, v_f_15.f_by);
-        obx_str t27 = rt_str_concat(t26, sl2458);
+        obx_str t27 = rt_str_concat(t26, sl2456);
         obx_str t28 = rt_str_concat(t27, v_verb_21);
-        obx_str t29 = rt_str_concat(t28, sl2459);
+        obx_str t29 = rt_str_concat(t28, sl2457);
         f702_check_Checker_err(p_c, t22, t29);
       }
-      gl79_drop(v_f_15);
+      gl80_drop(v_f_15);
     }
   }
 }
+static void f792_check_Checker_movedErr(S73_check_Checker** p_c, int64_t p_vx, int64_t p_line) {
+  int64_t ix1 = p_vx;
+  obx_str t2 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix1, ((*p_c)->f_vars).len, "check.obx:1483")].f_name);
+  obx_str t3 = rt_str_concat(t2, sl2458);
+  obx_str v_m_4 = t3;
+  rt_str_drop(t2);
+  int64_t ix5 = p_vx;
+  bool c6 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix5, ((*p_c)->f_vars).len, "check.obx:1484")].f_pjoin > 0LL);
+  if (c6) {
+    obx_str t7 = rt_str_concat(v_m_4, sl2459);
+    int64_t ix8 = p_vx;
+    obx_str t9 = rt_int_to_str(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix8, ((*p_c)->f_vars).len, "check.obx:1485")].f_pjoin);
+    obx_str t10 = rt_str_concat(t7, t9);
+    obx_str t11 = rt_str_concat(t10, sl2460);
+    { obx_str nw12 = t11;
+      rt_str_drop(v_m_4);
+      v_m_4 = nw12; }
+    rt_str_drop(t10);
+    rt_str_drop(t9);
+    rt_str_drop(t7);
+  }
+  f702_check_Checker_err(p_c, p_line, rt_str_dup(v_m_4));
+}
 static obx_str f771_check_Checker_fresh(S73_check_Checker** p_c, obx_str p_p) {
-  (*p_c)->f_cx->f_n = rt_add_int((*p_c)->f_cx->f_n, 1LL, "check.obx:399");
+  (*p_c)->f_cx->f_n = rt_add_int((*p_c)->f_cx->f_n, 1LL, "check.obx:400");
   obx_str t1 = rt_str_dup(p_p);
   obx_str t2 = rt_int_to_str((*p_c)->f_cx->f_n);
   obx_str t3 = rt_str_concat(t1, t2);
@@ -40240,12 +40408,12 @@ static S87_check_Val f770_check_Checker_holdtmp(S73_check_Checker** p_c, obx_str
   obx_str t1 = rt_str_dup(p_cc);
   int64_t t2 = p_t;
   S87_check_Val t3 = f734_check_rv(sl183, p_t);
-  S87_check_Val t4 = f794_check_Checker_holdtmpSrc(p_c, t1, t2, false, t3);
+  S87_check_Val t4 = f798_check_Checker_holdtmpSrc(p_c, t1, t2, false, t3);
   S87_check_Val r5 = t4;
   rt_str_drop(p_cc);
   return r5;
 }
-static S87_check_Val f794_check_Checker_holdtmpSrc(S73_check_Checker** p_c, obx_str p_cc, int64_t p_t, bool p_hasSrc, S87_check_Val p_src) {
+static S87_check_Val f798_check_Checker_holdtmpSrc(S73_check_Checker** p_c, obx_str p_cc, int64_t p_t, bool p_hasSrc, S87_check_Val p_src) {
   obx_str t1 = f771_check_Checker_fresh(p_c, sl1966);
   obx_str v_n_2 = t1;
   obx_str t3 = f732_check_Checker_T(p_c, p_t);
@@ -40267,7 +40435,7 @@ static S87_check_Val f794_check_Checker_holdtmpSrc(S73_check_Checker** p_c, obx_
   }
   bool c12 = b11;
   if (c12) {
-    S87_check_Val t13 = f795_check_rvAt(rt_str_dup(v_n_2), p_t, p_src.f_root, rt_str_dup(p_src.f_path));
+    S87_check_Val t13 = f799_check_rvAt(rt_str_dup(v_n_2), p_t, p_src.f_root, rt_str_dup(p_src.f_path));
     S87_check_Val r14 = t13;
     rt_str_drop(v_ct_4);
     rt_str_drop(v_n_2);
@@ -40275,7 +40443,7 @@ static S87_check_Val f794_check_Checker_holdtmpSrc(S73_check_Checker** p_c, obx_
     rt_str_drop(p_cc);
     return r14;
   }
-  S87_check_Val t15 = f796_check_Checker_tmpval(p_c, rt_str_dup(v_n_2), p_t);
+  S87_check_Val t15 = f800_check_Checker_tmpval(p_c, rt_str_dup(v_n_2), p_t);
   S87_check_Val r16 = t15;
   rt_str_drop(v_ct_4);
   rt_str_drop(v_n_2);
@@ -40283,7 +40451,7 @@ static S87_check_Val f794_check_Checker_holdtmpSrc(S73_check_Checker** p_c, obx_
   rt_str_drop(p_cc);
   return r16;
 }
-static S87_check_Val f796_check_Checker_tmpval(S73_check_Checker** p_c, obx_str p_n, int64_t p_t) {
+static S87_check_Val f800_check_Checker_tmpval(S73_check_Checker** p_c, obx_str p_n, int64_t p_t) {
   bool t1 = f747_check_Checker_pod(p_c, p_t);
   bool c2 = t1;
   if (c2) {
@@ -40292,12 +40460,12 @@ static S87_check_Val f796_check_Checker_tmpval(S73_check_Checker** p_c, obx_str 
     rt_str_drop(p_n);
     return r4;
   }
-  int64_t t5 = f797_check_Checker_newTmp(p_c, rt_str_dup(p_n), p_t);
+  int64_t t5 = f801_check_Checker_newTmp(p_c, rt_str_dup(p_n), p_t);
   int64_t v_id_6 = t5;
   S87_check_Val t7 = f735_check_val(rt_str_dup(p_n), p_t, 1LL);
   S87_check_Val v_v_8 = t7;
   v_v_8.f_tmp = v_id_6;
-  int64_t t9 = f798_check_tmpRoot(v_id_6);
+  int64_t t9 = f802_check_tmpRoot(v_id_6);
   v_v_8.f_root = t9;
   v_v_8.f_mutable = true;
   S87_check_Val r10 = gl67_dup(v_v_8);
@@ -40305,24 +40473,24 @@ static S87_check_Val f796_check_Checker_tmpval(S73_check_Checker** p_c, obx_str 
   rt_str_drop(p_n);
   return r10;
 }
-static int64_t f798_check_tmpRoot(int64_t p_t) {
-  int64_t r1 = rt_sub_int(-2LL, p_t, "check.obx:366");
+static int64_t f802_check_tmpRoot(int64_t p_t) {
+  int64_t r1 = rt_sub_int(-2LL, p_t, "check.obx:367");
   return r1;
 }
-static int64_t f797_check_Checker_newTmp(S73_check_Checker** p_c, obx_str p_n, int64_t p_t) {
+static int64_t f801_check_Checker_newTmp(S73_check_Checker** p_c, obx_str p_n, int64_t p_t) {
   S93_check_Tmp t1 = ((S93_check_Tmp){.f_c = rt_str_dup(p_n), .f_t = p_t, .f_live = true});
   S93_check_Tmp ap2 = t1;
   *(S93_check_Tmp*)rt_arr_push((&(*p_c)->f_tmps), sizeof(S93_check_Tmp)) = ap2;
-  int64_t v_id_3 = rt_sub_int(((*p_c)->f_tmps).len, 1LL, "check.obx:627");
-  int64_t v_f_4 = rt_sub_int(((*p_c)->f_cx->f_frames).len, 1LL, "check.obx:628");
+  int64_t v_id_3 = rt_sub_int(((*p_c)->f_tmps).len, 1LL, "check.obx:628");
+  int64_t v_f_4 = rt_sub_int(((*p_c)->f_cx->f_frames).len, 1LL, "check.obx:629");
   int64_t ix5 = v_f_4;
   int64_t ap6 = v_id_3;
-  *(int64_t*)rt_arr_push((&((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix5, ((*p_c)->f_cx->f_frames).len, "check.obx:629")]), sizeof(int64_t)) = ap6;
+  *(int64_t*)rt_arr_push((&((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix5, ((*p_c)->f_cx->f_frames).len, "check.obx:630")]), sizeof(int64_t)) = ap6;
   int64_t r7 = v_id_3;
   rt_str_drop(p_n);
   return r7;
 }
-static S87_check_Val f795_check_rvAt(obx_str p_c, int64_t p_t, int64_t p_root, obx_str p_path) {
+static S87_check_Val f799_check_rvAt(obx_str p_c, int64_t p_t, int64_t p_root, obx_str p_path) {
   S87_check_Val t1 = f735_check_val(rt_str_dup(p_c), p_t, 0LL);
   S87_check_Val v_v_2 = t1;
   v_v_2.f_root = p_root;
@@ -40383,7 +40551,7 @@ static obx_str f767_check_Checker_tstr(S73_check_Checker** p_c, int64_t p_t) {
 static void f766_check_Checker_matchLits(S73_check_Checker** p_c, int64_t p_s, S87_check_Val p_v, int64_t p_t, bool p_mx) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_s);
   S49_syntax_Node v_n_2 = t1;
-  obx_str t3 = f771_check_Checker_fresh(p_c, sl2460);
+  obx_str t3 = f771_check_Checker_fresh(p_c, sl2461);
   obx_str v_sv_4 = t3;
   obx_str t5 = f732_check_Checker_T(p_c, p_t);
   obx_str v_ct_6 = t5;
@@ -40401,289 +40569,298 @@ static void f766_check_Checker_matchLits(S73_check_Checker** p_c, int64_t p_s, S
   obx_arr v_snap_13 = t12;
   obx_arr a14 = rt_arr_new(0, sizeof(obx_arr));
   obx_arr v_results_15 = a14;
-  bool v_first_16 = true;
-  bool v_hasElse_17 = false;
-  S29_std_Map* t18 = f259_std_newMap();
-  S29_std_Map* v_seen_19 = t18;
-  obx_arr t20 = f704_check_Checker_items(p_c, v_n_2.f_b);
-  obx_arr v_arms_21 = t20;
-  obx_slice ap22 = rt_as_slice(&v_arms_21);
-  for (int64_t i23 = 0; i23 < ap22.len; i23++) {
-    int64_t v_arm_24 = ((int64_t*)ap22.data)[i23];
-    S49_syntax_Node t25 = f703_check_Checker_nd(p_c, v_arm_24);
-    S49_syntax_Node v_an_26 = t25;
-    bool c27 = (v_an_26.f_b >= 0LL);
-    if (c27) {
-      int64_t t28 = v_an_26.f_line;
-      obx_str t29 = sl2461;
-      obx_str t30 = f767_check_Checker_tstr(p_c, p_t);
-      obx_str t31 = rt_str_concat(t29, t30);
-      obx_str t32 = rt_str_concat(t31, sl2462);
-      obx_str t33 = rt_str_concat(t32, v_an_26.f_s);
+  obx_arr a16 = rt_arr_new(0, sizeof(S94_check_PathEnd));
+  obx_arr v_ends_17 = a16;
+  bool v_first_18 = true;
+  bool v_hasElse_19 = false;
+  S29_std_Map* t20 = f259_std_newMap();
+  S29_std_Map* v_seen_21 = t20;
+  obx_arr t22 = f704_check_Checker_items(p_c, v_n_2.f_b);
+  obx_arr v_arms_23 = t22;
+  obx_slice ap24 = rt_as_slice(&v_arms_23);
+  for (int64_t i25 = 0; i25 < ap24.len; i25++) {
+    int64_t v_arm_26 = ((int64_t*)ap24.data)[i25];
+    S49_syntax_Node t27 = f703_check_Checker_nd(p_c, v_arm_26);
+    S49_syntax_Node v_an_28 = t27;
+    bool c29 = (v_an_28.f_b >= 0LL);
+    if (c29) {
+      int64_t t30 = v_an_28.f_line;
+      obx_str t31 = sl2462;
+      obx_str t32 = f767_check_Checker_tstr(p_c, p_t);
+      obx_str t33 = rt_str_concat(t31, t32);
       obx_str t34 = rt_str_concat(t33, sl2463);
-      f702_check_Checker_err(p_c, t28, t34);
+      obx_str t35 = rt_str_concat(t34, v_an_28.f_s);
+      obx_str t36 = rt_str_concat(t35, sl2464);
+      f702_check_Checker_err(p_c, t30, t36);
     }
-    bool b35 = (rt_str_eq(v_an_26.f_s, sl183));
-    if (b35) {
-      b35 = (v_an_26.f_c < 0LL);
+    bool b37 = (rt_str_eq(v_an_28.f_s, sl183));
+    if (b37) {
+      b37 = (v_an_28.f_c < 0LL);
     }
-    bool c36 = b35;
-    if (c36) {
-      v_hasElse_17 = true;
-      obx_str t38 = ((!v_first_16) ? sl2419 : sl28);
-      f744_check_Checker_emit(p_c, t38);
+    bool c38 = b37;
+    if (c38) {
+      v_hasElse_19 = true;
+      obx_str t40 = ((!v_first_18) ? sl2419 : sl28);
+      f744_check_Checker_emit(p_c, t40);
     } else {
-      obx_arr a39 = rt_arr_new(0, sizeof(int64_t));
-      obx_arr v_items_40 = a39;
-      bool c41 = (!rt_str_eq(v_an_26.f_s, sl183));
-      if (c41) {
-        int64_t ap42 = -1LL;
-        *(int64_t*)rt_arr_push((&v_items_40), sizeof(int64_t)) = ap42;
+      obx_arr a41 = rt_arr_new(0, sizeof(int64_t));
+      obx_arr v_items_42 = a41;
+      bool c43 = (!rt_str_eq(v_an_28.f_s, sl183));
+      if (c43) {
+        int64_t ap44 = -1LL;
+        *(int64_t*)rt_arr_push((&v_items_42), sizeof(int64_t)) = ap44;
       } else {
-        obx_arr t43 = f704_check_Checker_items(p_c, v_an_26.f_c);
-        { obx_arr nw44 = t43;
-          gl9_drop(v_items_40);
-          v_items_40 = nw44; }
+        obx_arr t45 = f704_check_Checker_items(p_c, v_an_28.f_c);
+        { obx_arr nw46 = t45;
+          gl9_drop(v_items_42);
+          v_items_42 = nw46; }
       }
-      S3_std_StrBuf* t45 = f13_std_newStrBuf();
-      S3_std_StrBuf* v_conds_46 = t45;
-      int64_t v_nc_47 = 0LL;
-      obx_slice ap48 = rt_as_slice(&v_items_40);
-      for (int64_t i49 = 0; i49 < ap48.len; i49++) {
-        int64_t v_it_50 = ((int64_t*)ap48.data)[i49];
-        int64_t v_k_51 = 0LL;
-        S65_num_Big t52 = f566_num_bigOf(0LL);
-        S65_num_Big v_x_53 = t52;
-        obx_str v_xs_54 = sl183;
-        obx_str v_shown_55 = sl183;
-        bool v_named_56 = false;
-        bool b57 = (v_it_50 < 0LL);
-        if (!b57) {
-          int64_t t58 = f700_check_Checker_kind(p_c, v_it_50);
-          b57 = (t58 == 58LL);
+      S3_std_StrBuf* t47 = f13_std_newStrBuf();
+      S3_std_StrBuf* v_conds_48 = t47;
+      int64_t v_nc_49 = 0LL;
+      obx_slice ap50 = rt_as_slice(&v_items_42);
+      for (int64_t i51 = 0; i51 < ap50.len; i51++) {
+        int64_t v_it_52 = ((int64_t*)ap50.data)[i51];
+        int64_t v_k_53 = 0LL;
+        S65_num_Big t54 = f566_num_bigOf(0LL);
+        S65_num_Big v_x_55 = t54;
+        obx_str v_xs_56 = sl183;
+        obx_str v_shown_57 = sl183;
+        bool v_named_58 = false;
+        bool b59 = (v_it_52 < 0LL);
+        if (!b59) {
+          int64_t t60 = f700_check_Checker_kind(p_c, v_it_52);
+          b59 = (t60 == 58LL);
         }
-        bool c59 = b57;
-        if (c59) {
-          int64_t ifx60;
-          if ((v_it_50 < 0LL)) {
-            ifx60 = v_an_26.f_a;
+        bool c61 = b59;
+        if (c61) {
+          int64_t ifx62;
+          if ((v_it_52 < 0LL)) {
+            ifx62 = v_an_28.f_a;
           } else {
-            S49_syntax_Node t61 = f703_check_Checker_nd(p_c, v_it_50);
-            ifx60 = t61.f_a;
-            gl49_drop(t61);
+            S49_syntax_Node t63 = f703_check_Checker_nd(p_c, v_it_52);
+            ifx62 = t63.f_a;
+            gl49_drop(t63);
           }
-          int64_t v_vpath_62 = ifx60;
-          obx_str t63 = f788_check_Checker_vpathText(p_c, v_vpath_62);
-          { obx_str nw64 = t63;
-            rt_str_drop(v_shown_55);
-            v_shown_55 = nw64; }
-          v_named_56 = true;
-          S64_sema_CVal t65 = f799_check_Checker_armConst(p_c, v_vpath_62, p_t, v_an_26.f_line);
-          S64_sema_CVal v_cv_66 = t65;
-          bool c67 = (p_t == 9LL);
-          if (c67) {
-            v_k_51 = 2LL;
-            { obx_str nw68 = rt_str_dup(v_cv_66.f_s);
-              rt_str_drop(v_xs_54);
-              v_xs_54 = nw68; }
+          int64_t v_vpath_64 = ifx62;
+          obx_str t65 = f791_check_Checker_vpathText(p_c, v_vpath_64);
+          { obx_str nw66 = t65;
+            rt_str_drop(v_shown_57);
+            v_shown_57 = nw66; }
+          v_named_58 = true;
+          S64_sema_CVal t67 = f803_check_Checker_armConst(p_c, v_vpath_64, p_t, v_an_28.f_line);
+          S64_sema_CVal v_cv_68 = t67;
+          bool c69 = (p_t == 9LL);
+          if (c69) {
+            v_k_53 = 2LL;
+            { obx_str nw70 = rt_str_dup(v_cv_68.f_s);
+              rt_str_drop(v_xs_56);
+              v_xs_56 = nw70; }
           } else {
-            { S65_num_Big nw69 = gl43_dup(v_cv_66.f_i);
-              gl44_drop(v_x_53);
-              v_x_53 = nw69; }
+            { S65_num_Big nw71 = gl43_dup(v_cv_68.f_i);
+              gl44_drop(v_x_55);
+              v_x_55 = nw71; }
           }
-          gl42_drop(v_cv_66);
+          gl42_drop(v_cv_68);
         } else {
-          int64_t t70 = f700_check_Checker_kind(p_c, v_it_50);
-          int64_t v_ik_71 = t70;
-          bool c72 = (v_ik_71 == 33LL);
-          if (c72) {
-            S49_syntax_Node t73 = f703_check_Checker_nd(p_c, v_it_50);
-            obx_str t74 = rt_str_dup(t73.f_s);
-            bool t75 = f800_check_Checker_flag(p_c, v_it_50, 256LL);
-            S65_num_Big t76 = f576_num_bigParse(t74, t75);
-            { S65_num_Big nw77 = t76;
-              gl44_drop(v_x_53);
-              v_x_53 = nw77; }
-            gl49_drop(t73);
+          int64_t t72 = f700_check_Checker_kind(p_c, v_it_52);
+          int64_t v_ik_73 = t72;
+          bool c74 = (v_ik_73 == 33LL);
+          if (c74) {
+            S49_syntax_Node t75 = f703_check_Checker_nd(p_c, v_it_52);
+            obx_str t76 = rt_str_dup(t75.f_s);
+            bool t77 = f804_check_Checker_flag(p_c, v_it_52, 256LL);
+            S65_num_Big t78 = f576_num_bigParse(t76, t77);
+            { S65_num_Big nw79 = t78;
+              gl44_drop(v_x_55);
+              v_x_55 = nw79; }
+            gl49_drop(t75);
           }
-          bool c78 = (v_ik_71 == 34LL);
-          if (c78) {
-            v_k_51 = 1LL;
-            S49_syntax_Node t79 = f703_check_Checker_nd(p_c, v_it_50);
-            S65_num_Big t80 = f566_num_bigOf(t79.f_a);
-            { S65_num_Big nw81 = t80;
-              gl44_drop(v_x_53);
-              v_x_53 = nw81; }
-            gl49_drop(t79);
+          bool c80 = (v_ik_73 == 34LL);
+          if (c80) {
+            v_k_53 = 1LL;
+            S49_syntax_Node t81 = f703_check_Checker_nd(p_c, v_it_52);
+            S65_num_Big t82 = f566_num_bigOf(t81.f_a);
+            { S65_num_Big nw83 = t82;
+              gl44_drop(v_x_55);
+              v_x_55 = nw83; }
+            gl49_drop(t81);
           }
-          bool c82 = (v_ik_71 == 35LL);
-          if (c82) {
-            v_k_51 = 2LL;
-            S49_syntax_Node t83 = f703_check_Checker_nd(p_c, v_it_50);
-            { obx_str nw84 = rt_str_dup(t83.f_s);
-              rt_str_drop(v_xs_54);
-              v_xs_54 = nw84; }
-            gl49_drop(t83);
+          bool c84 = (v_ik_73 == 35LL);
+          if (c84) {
+            v_k_53 = 2LL;
+            S49_syntax_Node t85 = f703_check_Checker_nd(p_c, v_it_52);
+            { obx_str nw86 = rt_str_dup(t85.f_s);
+              rt_str_drop(v_xs_56);
+              v_xs_56 = nw86; }
+            gl49_drop(t85);
           }
         }
-        bool c85 = (v_nc_47 > 0LL);
-        if (c85) {
-          f15_std_StrBuf_add((&v_conds_46), sl2415);
+        bool c87 = (v_nc_49 > 0LL);
+        if (c87) {
+          f15_std_StrBuf_add((&v_conds_48), sl2415);
         }
-        v_nc_47 = rt_add_int(v_nc_47, 1LL, "check.obx:1930");
-        bool c86 = (p_t == 9LL);
-        if (c86) {
-          bool c87 = (v_k_51 != 2LL);
-          if (c87) {
-            f702_check_Checker_err(p_c, v_an_26.f_line, sl2464);
+        v_nc_49 = rt_add_int(v_nc_49, 1LL, "check.obx:2046");
+        bool c88 = (p_t == 9LL);
+        if (c88) {
+          bool c89 = (v_k_53 != 2LL);
+          if (c89) {
+            f702_check_Checker_err(p_c, v_an_28.f_line, sl2465);
           }
-          obx_str t88 = rt_str_concat(sl2465, v_sv_4);
-          obx_str t89 = rt_str_concat(t88, sl1754);
-          S80_check_Hole t90 = f706_check_mkHole(4LL, -1LL, rt_str_dup(v_xs_54));
-          obx_str t91 = f707_check_Checker_hole(p_c, t90);
-          obx_str t92 = rt_str_concat(t89, t91);
-          obx_str t93 = rt_str_concat(t92, sl31);
-          f15_std_StrBuf_add((&v_conds_46), t93);
-          rt_str_drop(t92);
+          obx_str t90 = rt_str_concat(sl2466, v_sv_4);
+          obx_str t91 = rt_str_concat(t90, sl1754);
+          S80_check_Hole t92 = f706_check_mkHole(4LL, -1LL, rt_str_dup(v_xs_56));
+          obx_str t93 = f707_check_Checker_hole(p_c, t92);
+          obx_str t94 = rt_str_concat(t91, t93);
+          obx_str t95 = rt_str_concat(t94, sl31);
+          f15_std_StrBuf_add((&v_conds_48), t95);
+          rt_str_drop(t94);
+          rt_str_drop(t93);
           rt_str_drop(t91);
-          rt_str_drop(t89);
-          rt_str_drop(t88);
+          rt_str_drop(t90);
         } else {
-          bool c94 = (v_k_51 == 2LL);
-          if (c94) {
-            int64_t t95 = v_an_26.f_line;
-            obx_str t96 = sl2461;
-            obx_str t97 = f767_check_Checker_tstr(p_c, p_t);
-            obx_str t98 = rt_str_concat(t96, t97);
-            obx_str t99 = rt_str_concat(t98, sl2466);
-            f702_check_Checker_err(p_c, t95, t99);
+          bool c96 = (v_k_53 == 2LL);
+          if (c96) {
+            int64_t t97 = v_an_28.f_line;
+            obx_str t98 = sl2462;
+            obx_str t99 = f767_check_Checker_tstr(p_c, p_t);
+            obx_str t100 = rt_str_concat(t98, t99);
+            obx_str t101 = rt_str_concat(t100, sl2467);
+            f702_check_Checker_err(p_c, t97, t101);
           }
-          bool b100 = (v_k_51 == 1LL);
-          if (b100) {
-            b100 = (p_t != 4LL);
+          bool b102 = (v_k_53 == 1LL);
+          if (b102) {
+            b102 = (p_t != 4LL);
           }
-          bool c101 = b100;
-          if (c101) {
-            int64_t t102 = v_an_26.f_line;
-            obx_str t103 = sl2467;
-            obx_str t104 = f767_check_Checker_tstr(p_c, p_t);
-            obx_str t105 = rt_str_concat(t103, t104);
-            f702_check_Checker_err(p_c, t102, t105);
+          bool c103 = b102;
+          if (c103) {
+            int64_t t104 = v_an_28.f_line;
+            obx_str t105 = sl2468;
+            obx_str t106 = f767_check_Checker_tstr(p_c, p_t);
+            obx_str t107 = rt_str_concat(t105, t106);
+            f702_check_Checker_err(p_c, t104, t107);
           }
-          bool t106 = f561_sema_inRange(gl43_dup(v_x_53), p_t);
-          bool c107 = (!t106);
-          if (c107) {
-            int64_t t108 = v_an_26.f_line;
-            obx_str t109 = sl2468;
-            obx_str t110 = f506_num_bigStr(gl43_dup(v_x_53));
-            obx_str t111 = rt_str_concat(t109, t110);
-            obx_str t112 = rt_str_concat(t111, sl2128);
-            obx_str t113 = f767_check_Checker_tstr(p_c, p_t);
-            obx_str t114 = rt_str_concat(t112, t113);
-            f702_check_Checker_err(p_c, t108, t114);
+          bool t108 = f561_sema_inRange(gl43_dup(v_x_55), p_t);
+          bool c109 = (!t108);
+          if (c109) {
+            int64_t t110 = v_an_28.f_line;
+            obx_str t111 = sl2469;
+            obx_str t112 = f506_num_bigStr(gl43_dup(v_x_55));
+            obx_str t113 = rt_str_concat(t111, t112);
+            obx_str t114 = rt_str_concat(t113, sl2128);
+            obx_str t115 = f767_check_Checker_tstr(p_c, p_t);
+            obx_str t116 = rt_str_concat(t114, t115);
+            f702_check_Checker_err(p_c, t110, t116);
           }
-          obx_str t115 = rt_str_concat(v_sv_4, sl2469);
-          obx_str t116 = f708_check_Checker_cint(p_c, gl43_dup(v_x_53), p_t);
-          obx_str t117 = rt_str_concat(t115, t116);
-          f15_std_StrBuf_add((&v_conds_46), t117);
-          rt_str_drop(t116);
-          rt_str_drop(t115);
+          obx_str t117 = rt_str_concat(v_sv_4, sl2470);
+          obx_str t118 = f708_check_Checker_cint(p_c, gl43_dup(v_x_55), p_t);
+          obx_str t119 = rt_str_concat(t117, t118);
+          f15_std_StrBuf_add((&v_conds_48), t119);
+          rt_str_drop(t118);
+          rt_str_drop(t117);
         }
-        obx_str ifx118;
+        obx_str ifx120;
         if ((p_t == 9LL)) {
-          obx_str t119 = rt_str_concat(sl2470, v_xs_54);
-          obx_str t120 = rt_str_concat(t119, sl2470);
-          ifx118 = t120;
-          rt_str_drop(t119);
+          obx_str t121 = rt_str_concat(sl2471, v_xs_56);
+          obx_str t122 = rt_str_concat(t121, sl2471);
+          ifx120 = t122;
+          rt_str_drop(t121);
         } else {
-          obx_str t121 = f506_num_bigStr(gl43_dup(v_x_53));
-          ifx118 = t121;
+          obx_str t123 = f506_num_bigStr(gl43_dup(v_x_55));
+          ifx120 = t123;
         }
-        obx_str v_vs_122 = ifx118;
-        obx_str ifx123;
+        obx_str v_vs_124 = ifx120;
+        obx_str ifx125;
         if ((p_t == 9LL)) {
-          obx_str t124 = rt_str_concat(sl2412, v_xs_54);
-          ifx123 = t124;
+          obx_str t126 = rt_str_concat(sl2412, v_xs_56);
+          ifx125 = t126;
         } else {
-          obx_str t125 = f506_num_bigStr(gl43_dup(v_x_53));
-          ifx123 = t125;
+          obx_str t127 = f506_num_bigStr(gl43_dup(v_x_55));
+          ifx125 = t127;
         }
-        obx_str v_key_126 = ifx123;
-        bool t127 = f86_std_Map_has((&v_seen_19), (&v_key_126));
-        bool c128 = t127;
-        if (c128) {
-          int64_t t129 = v_an_26.f_line;
-          obx_str t130 = rt_str_concat(sl2471, v_vs_122);
-          obx_str t131 = rt_str_concat(t130, sl2472);
-          obx_str t132 = f88_std_Map_getOr((&v_seen_19), (&v_key_126), sl183);
-          obx_str t133 = rt_str_concat(t131, t132);
-          obx_str t134 = rt_str_concat(t133, sl1860);
-          obx_str t136 = (v_named_56 ? rt_str_dup(v_shown_55) : rt_str_dup(v_vs_122));
-          obx_str t137 = rt_str_concat(t134, t136);
-          obx_str t138 = rt_str_concat(t137, sl31);
-          f702_check_Checker_err(p_c, t129, t138);
+        obx_str v_key_128 = ifx125;
+        bool t129 = f86_std_Map_has((&v_seen_21), (&v_key_128));
+        bool c130 = t129;
+        if (c130) {
+          int64_t t131 = v_an_28.f_line;
+          obx_str t132 = rt_str_concat(sl2472, v_vs_124);
+          obx_str t133 = rt_str_concat(t132, sl2473);
+          obx_str t134 = f88_std_Map_getOr((&v_seen_21), (&v_key_128), sl183);
+          obx_str t135 = rt_str_concat(t133, t134);
+          obx_str t136 = rt_str_concat(t135, sl1860);
+          obx_str t138 = (v_named_58 ? rt_str_dup(v_shown_57) : rt_str_dup(v_vs_124));
+          obx_str t139 = rt_str_concat(t136, t138);
+          obx_str t140 = rt_str_concat(t139, sl31);
+          f702_check_Checker_err(p_c, t131, t140);
         }
-        obx_str t140 = (v_named_56 ? rt_str_dup(v_shown_55) : rt_str_dup(v_vs_122));
-        f266_std_Map_put((&v_seen_19), rt_str_dup(v_key_126), t140);
-        rt_str_drop(v_key_126);
-        rt_str_drop(v_vs_122);
-        rt_str_drop(v_shown_55);
-        rt_str_drop(v_xs_54);
-        gl44_drop(v_x_53);
+        obx_str t142 = (v_named_58 ? rt_str_dup(v_shown_57) : rt_str_dup(v_vs_124));
+        f266_std_Map_put((&v_seen_21), rt_str_dup(v_key_128), t142);
+        rt_str_drop(v_key_128);
+        rt_str_drop(v_vs_124);
+        rt_str_drop(v_shown_57);
+        rt_str_drop(v_xs_56);
+        gl44_drop(v_x_55);
       }
-      obx_str t142 = (v_first_16 ? sl61 : sl2417);
-      obx_str t143 = rt_str_concat(t142, sl1813);
-      obx_str t144 = f17_std_StrBuf_toStr((&v_conds_46));
-      obx_str t145 = rt_str_concat(t143, t144);
-      obx_str t146 = rt_str_concat(t145, sl2418);
-      f744_check_Checker_emit(p_c, t146);
+      obx_str t144 = (v_first_18 ? sl61 : sl2417);
+      obx_str t145 = rt_str_concat(t144, sl1813);
+      obx_str t146 = f17_std_StrBuf_toStr((&v_conds_48));
+      obx_str t147 = rt_str_concat(t145, t146);
+      obx_str t148 = rt_str_concat(t147, sl2418);
+      f744_check_Checker_emit(p_c, t148);
+      rt_str_drop(t147);
+      rt_str_drop(t146);
       rt_str_drop(t145);
       rt_str_drop(t144);
-      rt_str_drop(t143);
-      rt_str_drop(t142);
-      gl1_drop(v_conds_46);
-      gl9_drop(v_items_40);
+      gl1_drop(v_conds_48);
+      gl9_drop(v_items_42);
     }
-    v_first_16 = false;
-    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1953");
+    v_first_18 = false;
+    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2069");
     f776_check_Checker_restore(p_c, (&v_snap_13));
     (*p_c)->f_cx->f_dead = false;
-    f780_check_Checker_armBody(p_c, v_an_26.f_d, p_mx);
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1957");
-    f781_check_Checker_live(p_c, (&v_results_15));
-    gl49_drop(v_an_26);
+    f780_check_Checker_armBody(p_c, v_an_28.f_d, p_mx);
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2073");
+    bool c149 = (!(*p_c)->f_cx->f_dead);
+    if (c149) {
+      S94_check_PathEnd t150 = f781_check_Checker_pathEnd(p_c);
+      S94_check_PathEnd ap151 = t150;
+      *(S94_check_PathEnd*)rt_arr_push((&v_ends_17), sizeof(S94_check_PathEnd)) = ap151;
+    }
+    f782_check_Checker_live(p_c, (&v_results_15));
+    gl49_drop(v_an_28);
   }
-  bool c147 = (!v_hasElse_17);
-  if (c147) {
-    int64_t t148 = v_n_2.f_line;
-    obx_str t149 = sl2461;
-    obx_str t150 = f767_check_Checker_tstr(p_c, p_t);
-    obx_str t151 = rt_str_concat(t149, t150);
-    obx_str t152 = rt_str_concat(t151, sl2473);
-    f702_check_Checker_err(p_c, t148, t152);
+  bool c152 = (!v_hasElse_19);
+  if (c152) {
+    int64_t t153 = v_n_2.f_line;
+    obx_str t154 = sl2462;
+    obx_str t155 = f767_check_Checker_tstr(p_c, p_t);
+    obx_str t156 = rt_str_concat(t154, t155);
+    obx_str t157 = rt_str_concat(t156, sl2474);
+    f702_check_Checker_err(p_c, t153, t157);
   }
   f744_check_Checker_emit(p_c, sl29);
-  f782_check_Checker_join(p_c, (&v_results_15), v_n_2.f_line);
-  gl9_drop(v_arms_21);
-  gl80_drop(v_seen_19);
-  gl76_drop(v_results_15);
+  f783_check_Checker_joinAt(p_c, (&v_results_15), (&v_ends_17), v_n_2.f_line);
+  gl9_drop(v_arms_23);
+  gl81_drop(v_seen_21);
+  gl76_drop(v_ends_17);
+  gl77_drop(v_results_15);
   gl9_drop(v_snap_13);
   rt_str_drop(v_ct_6);
   rt_str_drop(v_sv_4);
   gl49_drop(v_n_2);
   gl68_drop(p_v);
 }
-static bool f800_check_Checker_flag(S73_check_Checker** p_c, int64_t p_n, int64_t p_f) {
+static bool f804_check_Checker_flag(S73_check_Checker** p_c, int64_t p_n, int64_t p_f) {
   int64_t ix1 = (*p_c)->f_cx->f_mod;
   int64_t ix2 = p_n;
-  bool r3 = (((int64_t)(((S49_syntax_Node*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:480")].f_ast->f_nodes).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:480")].f_ast->f_nodes).len, "check.obx:480")].f_flags & p_f)) != 0LL);
+  bool r3 = (((int64_t)(((S49_syntax_Node*)(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:481")].f_ast->f_nodes).data)[rt_idx(ix2, (((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:481")].f_ast->f_nodes).len, "check.obx:481")].f_flags & p_f)) != 0LL);
   return r3;
 }
-static S64_sema_CVal f799_check_Checker_armConst(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_t, int64_t p_line) {
-  int64_t t1 = f787_check_Checker_vpathExpr(p_c, p_vpath, p_line);
+static S64_sema_CVal f803_check_Checker_armConst(S73_check_Checker** p_c, int64_t p_vpath, int64_t p_t, int64_t p_line) {
+  int64_t t1 = f790_check_Checker_vpathExpr(p_c, p_vpath, p_line);
   S1_check_St t2 = f710_check_Checker_static(p_c, t1);
   S1_check_St v_st_3 = t2;
-  obx_str t4 = f788_check_Checker_vpathText(p_c, p_vpath);
+  obx_str t4 = f791_check_Checker_vpathText(p_c, p_vpath);
   obx_str v_name_5 = t4;
   bool b6 = (v_st_3.f_k != 1LL);
   if (!b6) {
@@ -40692,10 +40869,10 @@ static S64_sema_CVal f799_check_Checker_armConst(S73_check_Checker** p_c, int64_
   bool c7 = b6;
   if (c7) {
     int64_t t8 = p_line;
-    obx_str t9 = rt_str_concat(v_name_5, sl2474);
+    obx_str t9 = rt_str_concat(v_name_5, sl2475);
     obx_str t10 = f767_check_Checker_tstr(p_c, p_t);
     obx_str t11 = rt_str_concat(t9, t10);
-    obx_str t12 = rt_str_concat(t11, sl2475);
+    obx_str t12 = rt_str_concat(t11, sl2476);
     f702_check_Checker_err(p_c, t8, t12);
   }
   S64_sema_CVal t13 = f535_sema_Program_constValue((&(*p_c)->f_pg), v_st_3.f_di);
@@ -40703,7 +40880,7 @@ static S64_sema_CVal f799_check_Checker_armConst(S73_check_Checker** p_c, int64_
   bool c15 = (v_v_14.f_kind == 6LL);
   if (c15) {
     int64_t t16 = p_line;
-    obx_str t17 = rt_str_concat(v_name_5, sl2476);
+    obx_str t17 = rt_str_concat(v_name_5, sl2477);
     obx_str t18 = f767_check_Checker_tstr(p_c, p_t);
     obx_str t19 = rt_str_concat(t17, t18);
     f702_check_Checker_err(p_c, t16, t19);
@@ -40725,16 +40902,16 @@ static S64_sema_CVal f799_check_Checker_armConst(S73_check_Checker** p_c, int64_
   if (c24) {
     int64_t t25 = p_line;
     obx_str t26 = rt_str_concat(sl2120, v_name_5);
-    obx_str t27 = rt_str_concat(t26, sl2477);
+    obx_str t27 = rt_str_concat(t26, sl2478);
     obx_str ifx28;
     if ((v_ty_20 >= 0LL)) {
       obx_str t29 = f767_check_Checker_tstr(p_c, v_ty_20);
       ifx28 = t29;
     } else {
-      ifx28 = sl2478;
+      ifx28 = sl2479;
     }
     obx_str t30 = rt_str_concat(t27, ifx28);
-    obx_str t31 = rt_str_concat(t30, sl2479);
+    obx_str t31 = rt_str_concat(t30, sl2480);
     obx_str t32 = f767_check_Checker_tstr(p_c, p_t);
     obx_str t33 = rt_str_concat(t31, t32);
     f702_check_Checker_err(p_c, t25, t33);
@@ -40758,62 +40935,62 @@ static S87_check_Val f765_check_Checker_rd(S73_check_Checker** p_c, S87_check_Va
   return r4;
 }
 static void f763_check_Checker_sContinue(S73_check_Checker** p_c, int64_t p_s) {
-  int64_t t1 = f801_check_Checker_curLoop(p_c, p_s, sl55);
+  int64_t t1 = f805_check_Checker_curLoop(p_c, p_s, sl55);
   int64_t v_lp_2 = t1;
   int64_t ix3 = v_lp_2;
-  int64_t t4 = ((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix3, ((*p_c)->f_cx->f_loops).len, "check.obx:1613")]->f_nscopes;
+  int64_t t4 = ((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix3, ((*p_c)->f_cx->f_loops).len, "check.obx:1726")]->f_nscopes;
   int64_t ix5 = v_lp_2;
-  f742_check_Checker_cleanup(p_c, t4, ((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix5, ((*p_c)->f_cx->f_loops).len, "check.obx:1613")]->f_nframes);
+  f742_check_Checker_cleanup(p_c, t4, ((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix5, ((*p_c)->f_cx->f_loops).len, "check.obx:1726")]->f_nframes);
   int64_t t6 = f701_check_Checker_line(p_c, p_s);
-  f802_check_Checker_loopState(p_c, t6);
-  f744_check_Checker_emit(p_c, sl2480);
+  f806_check_Checker_loopState(p_c, t6);
+  f744_check_Checker_emit(p_c, sl2481);
   (*p_c)->f_cx->f_dead = true;
 }
-static void f802_check_Checker_loopState(S73_check_Checker** p_c, int64_t p_line) {
-  int64_t v_lp_1 = rt_sub_int(((*p_c)->f_cx->f_loops).len, 1LL, "check.obx:1533");
+static void f806_check_Checker_loopState(S73_check_Checker** p_c, int64_t p_line) {
+  int64_t v_lp_1 = rt_sub_int(((*p_c)->f_cx->f_loops).len, 1LL, "check.obx:1646");
   int64_t v_i_2 = 0LL;
   while (1) {
     int64_t t3 = v_i_2;
     int64_t ix4 = v_lp_1;
-    bool c5 = (t3 < (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix4, ((*p_c)->f_cx->f_loops).len, "check.obx:1535")]->f_entry).len);
+    bool c5 = (t3 < (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix4, ((*p_c)->f_cx->f_loops).len, "check.obx:1648")]->f_entry).len);
     if (!c5) break;
     int64_t ix6 = v_lp_1;
     int64_t ix7 = v_i_2;
-    int64_t v_v_8 = ((int64_t*)(((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix6, ((*p_c)->f_cx->f_loops).len, "check.obx:1536")]->f_entry).data)[rt_idx(ix7, (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix6, ((*p_c)->f_cx->f_loops).len, "check.obx:1536")]->f_entry).len, "check.obx:1536")];
+    int64_t v_v_8 = ((int64_t*)(((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix6, ((*p_c)->f_cx->f_loops).len, "check.obx:1649")]->f_entry).data)[rt_idx(ix7, (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix6, ((*p_c)->f_cx->f_loops).len, "check.obx:1649")]->f_entry).len, "check.obx:1649")];
     int64_t ix9 = v_v_8;
-    int64_t t11 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix9, ((*p_c)->f_vars).len, "check.obx:1537")].f_moved ? 1LL : 0LL);
+    int64_t t11 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix9, ((*p_c)->f_vars).len, "check.obx:1650")].f_moved ? 1LL : 0LL);
     int64_t ix12 = v_lp_1;
-    (void)(&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix12, ((*p_c)->f_cx->f_loops).len, "check.obx:1537")]->f_entry);
-    int64_t ix13 = rt_add_int(v_i_2, 1LL, "check.obx:1537");
-    bool c14 = (t11 != ((int64_t*)(((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix12, ((*p_c)->f_cx->f_loops).len, "check.obx:1537")]->f_entry).data)[rt_idx(ix13, (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix12, ((*p_c)->f_cx->f_loops).len, "check.obx:1537")]->f_entry).len, "check.obx:1537")]);
+    (void)(&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix12, ((*p_c)->f_cx->f_loops).len, "check.obx:1650")]->f_entry);
+    int64_t ix13 = rt_add_int(v_i_2, 1LL, "check.obx:1650");
+    bool c14 = (t11 != ((int64_t*)(((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix12, ((*p_c)->f_cx->f_loops).len, "check.obx:1650")]->f_entry).data)[rt_idx(ix13, (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix12, ((*p_c)->f_cx->f_loops).len, "check.obx:1650")]->f_entry).len, "check.obx:1650")]);
     if (c14) {
       int64_t ix15 = v_v_8;
-      obx_str t16 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix15, ((*p_c)->f_vars).len, "check.obx:1538")].f_name);
-      obx_str t17 = rt_str_concat(t16, sl2481);
-      obx_str t18 = rt_str_concat(t17, sl2482);
+      obx_str t16 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix15, ((*p_c)->f_vars).len, "check.obx:1651")].f_name);
+      obx_str t17 = rt_str_concat(t16, sl2482);
+      obx_str t18 = rt_str_concat(t17, sl2483);
       f702_check_Checker_err(p_c, p_line, t18);
     }
-    v_i_2 = rt_add_int(v_i_2, 2LL, "check.obx:1541");
+    v_i_2 = rt_add_int(v_i_2, 2LL, "check.obx:1654");
   }
 }
-static int64_t f801_check_Checker_curLoop(S73_check_Checker** p_c, int64_t p_s, obx_str p_what) {
+static int64_t f805_check_Checker_curLoop(S73_check_Checker** p_c, int64_t p_s, obx_str p_what) {
   bool c1 = (((*p_c)->f_cx->f_loops).len == 0LL);
   if (c1) {
     int64_t t2 = f701_check_Checker_line(p_c, p_s);
-    obx_str t3 = rt_str_concat(p_what, sl2483);
+    obx_str t3 = rt_str_concat(p_what, sl2484);
     f702_check_Checker_err(p_c, t2, t3);
   }
-  int64_t r4 = rt_sub_int(((*p_c)->f_cx->f_loops).len, 1LL, "check.obx:1590");
+  int64_t r4 = rt_sub_int(((*p_c)->f_cx->f_loops).len, 1LL, "check.obx:1703");
   rt_str_drop(p_what);
   return r4;
 }
 static void f762_check_Checker_sBreak(S73_check_Checker** p_c, int64_t p_s) {
-  int64_t t1 = f801_check_Checker_curLoop(p_c, p_s, sl52);
+  int64_t t1 = f805_check_Checker_curLoop(p_c, p_s, sl52);
   int64_t v_lp_2 = t1;
   int64_t ix3 = v_lp_2;
-  int64_t t4 = ((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix3, ((*p_c)->f_cx->f_loops).len, "check.obx:1595")]->f_nscopes;
+  int64_t t4 = ((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix3, ((*p_c)->f_cx->f_loops).len, "check.obx:1708")]->f_nscopes;
   int64_t ix5 = v_lp_2;
-  f742_check_Checker_cleanup(p_c, t4, ((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix5, ((*p_c)->f_cx->f_loops).len, "check.obx:1595")]->f_nframes);
+  f742_check_Checker_cleanup(p_c, t4, ((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix5, ((*p_c)->f_cx->f_loops).len, "check.obx:1708")]->f_nframes);
   obx_arr t6 = f773_check_Checker_snapshot(p_c);
   obx_arr v_snap_7 = t6;
   obx_arr a8 = rt_arr_new(0, sizeof(int64_t));
@@ -40824,24 +41001,24 @@ static void f762_check_Checker_sBreak(S73_check_Checker** p_c, int64_t p_s) {
     bool c12 = (t11 < (v_snap_7).len);
     if (!c12) break;
     int64_t ix13 = v_lp_2;
-    (void)((&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix13, ((*p_c)->f_cx->f_loops).len, "check.obx:1600")]->f_entry));
+    (void)((&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix13, ((*p_c)->f_cx->f_loops).len, "check.obx:1713")]->f_entry));
     int64_t ix14 = v_i_10;
-    int64_t t15 = f783_check_snapGet((&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix13, ((*p_c)->f_cx->f_loops).len, "check.obx:1600")]->f_entry), ((int64_t*)(v_snap_7).data)[rt_idx(ix14, (v_snap_7).len, "check.obx:1600")]);
+    int64_t t15 = f786_check_snapGet((&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix13, ((*p_c)->f_cx->f_loops).len, "check.obx:1713")]->f_entry), ((int64_t*)(v_snap_7).data)[rt_idx(ix14, (v_snap_7).len, "check.obx:1713")]);
     bool c16 = (t15 >= 0LL);
     if (c16) {
       int64_t ix17 = v_i_10;
-      int64_t ap18 = ((int64_t*)(v_snap_7).data)[rt_idx(ix17, (v_snap_7).len, "check.obx:1601")];
+      int64_t ap18 = ((int64_t*)(v_snap_7).data)[rt_idx(ix17, (v_snap_7).len, "check.obx:1714")];
       *(int64_t*)rt_arr_push((&v_b_9), sizeof(int64_t)) = ap18;
-      int64_t ix19 = rt_add_int(v_i_10, 1LL, "check.obx:1602");
-      int64_t ap20 = ((int64_t*)(v_snap_7).data)[rt_idx(ix19, (v_snap_7).len, "check.obx:1602")];
+      int64_t ix19 = rt_add_int(v_i_10, 1LL, "check.obx:1715");
+      int64_t ap20 = ((int64_t*)(v_snap_7).data)[rt_idx(ix19, (v_snap_7).len, "check.obx:1715")];
       *(int64_t*)rt_arr_push((&v_b_9), sizeof(int64_t)) = ap20;
     }
-    v_i_10 = rt_add_int(v_i_10, 2LL, "check.obx:1604");
+    v_i_10 = rt_add_int(v_i_10, 2LL, "check.obx:1717");
   }
   int64_t ix21 = v_lp_2;
   obx_arr ap22 = v_b_9;
-  *(obx_arr*)rt_arr_push((&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix21, ((*p_c)->f_cx->f_loops).len, "check.obx:1606")]->f_breaks), sizeof(obx_arr)) = ap22;
-  f744_check_Checker_emit(p_c, sl2484);
+  *(obx_arr*)rt_arr_push((&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix21, ((*p_c)->f_cx->f_loops).len, "check.obx:1719")]->f_breaks), sizeof(obx_arr)) = ap22;
+  f744_check_Checker_emit(p_c, sl2485);
   (*p_c)->f_cx->f_dead = true;
   gl9_drop(v_snap_7);
 }
@@ -40852,7 +41029,7 @@ static void f761_check_Checker_sReturn(S73_check_Checker** p_c, int64_t p_s) {
   obx_str v_label_4 = rt_str_dup((*p_c)->f_cx->f_label);
   bool c5 = (v_ret_3 == 12LL);
   if (c5) {
-    obx_str t6 = rt_str_concat(v_label_4, sl2485);
+    obx_str t6 = rt_str_concat(v_label_4, sl2486);
     f702_check_Checker_err(p_c, v_n_2.f_line, t6);
   }
   bool c7 = (v_n_2.f_a < 0LL);
@@ -40860,19 +41037,19 @@ static void f761_check_Checker_sReturn(S73_check_Checker** p_c, int64_t p_s) {
     bool c8 = (v_ret_3 != 11LL);
     if (c8) {
       int64_t t9 = v_n_2.f_line;
-      obx_str t10 = sl2486;
+      obx_str t10 = sl2487;
       obx_str t11 = f767_check_Checker_tstr(p_c, v_ret_3);
       obx_str t12 = rt_str_concat(t10, t11);
-      obx_str t13 = rt_str_concat(t12, sl2487);
+      obx_str t13 = rt_str_concat(t12, sl2488);
       obx_str t14 = rt_str_concat(t13, v_label_4);
       f702_check_Checker_err(p_c, t9, t14);
     }
     f740_check_Checker_exitDrops(p_c, true);
-    f744_check_Checker_emit(p_c, sl2488);
+    f744_check_Checker_emit(p_c, sl2489);
   } else {
     bool c15 = (v_ret_3 == 11LL);
     if (c15) {
-      obx_str t16 = rt_str_concat(v_label_4, sl2489);
+      obx_str t16 = rt_str_concat(v_label_4, sl2490);
       f702_check_Checker_err(p_c, v_n_2.f_line, t16);
     }
     S87_check_Val t17 = f754_check_Checker_expr(p_c, v_n_2.f_a, v_ret_3);
@@ -40884,10 +41061,10 @@ static void f761_check_Checker_sReturn(S73_check_Checker** p_c, int64_t p_s) {
       bool t22 = f621_sema_Program_isBorrow((&(*p_c)->f_pg), v_v_18.f_t);
       bool c23 = (!t22);
       if (c23) {
-        obx_str t24 = rt_str_concat(v_label_4, sl2490);
+        obx_str t24 = rt_str_concat(v_label_4, sl2491);
         f702_check_Checker_err(p_c, v_n_2.f_line, t24);
       }
-      S87_check_Val t25 = f803_check_Checker_coerce(p_c, gl67_dup(v_v_18), v_ret_3, v_n_2.f_line, sl2491);
+      S87_check_Val t25 = f807_check_Checker_coerce(p_c, gl67_dup(v_v_18), v_ret_3, v_n_2.f_line, sl2492);
       { S87_check_Val nw26 = t25;
         gl68_drop(v_v_18);
         v_v_18 = nw26; }
@@ -40896,40 +41073,40 @@ static void f761_check_Checker_sReturn(S73_check_Checker** p_c, int64_t p_s) {
         bool b28 = (v_r_27 >= 0LL);
         if (b28) {
           int64_t ix29 = v_r_27;
-          b28 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix29, ((*p_c)->f_vars).len, "check.obx:1692")].f_broot != -1LL);
+          b28 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix29, ((*p_c)->f_vars).len, "check.obx:1805")].f_broot != -1LL);
         }
         bool c30 = b28;
         if (!c30) break;
         int64_t ix31 = v_r_27;
-        v_r_27 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix31, ((*p_c)->f_vars).len, "check.obx:1692")].f_broot;
+        v_r_27 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix31, ((*p_c)->f_vars).len, "check.obx:1805")].f_broot;
       }
       bool c32 = (v_r_27 != (*p_c)->f_cx->f_bvar);
       if (c32) {
-        obx_str t33 = f791_check_Checker_rootName(p_c, v_v_18.f_root, sl2449);
+        obx_str t33 = f795_check_Checker_rootName(p_c, v_v_18.f_root, sl2447);
         obx_str v_name_34 = t33;
         obx_str ifx35;
         if (((*p_c)->f_cx->f_fd >= 0LL)) {
           int64_t ix36 = (*p_c)->f_cx->f_fd;
-          ifx35 = rt_str_dup(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix36, ((*p_c)->f_pg->f_fns).len, "check.obx:1695")].f_bparam);
+          ifx35 = rt_str_dup(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix36, ((*p_c)->f_pg->f_fns).len, "check.obx:1808")].f_bparam);
         } else {
           ifx35 = sl183;
         }
         obx_str v_bp_37 = ifx35;
         int64_t t38 = v_n_2.f_line;
-        obx_str t39 = sl2492;
+        obx_str t39 = sl2493;
         obx_str t40 = f405_syntax_pyRepr(rt_str_dup(v_name_34));
         obx_str t41 = rt_str_concat(t39, t40);
-        obx_str t42 = rt_str_concat(t41, sl2493);
-        obx_str t43 = rt_str_concat(t42, sl2494);
+        obx_str t42 = rt_str_concat(t41, sl2494);
+        obx_str t43 = rt_str_concat(t42, sl2495);
         obx_str t44 = rt_str_concat(t43, v_bp_37);
-        obx_str t45 = rt_str_concat(t44, sl2495);
+        obx_str t45 = rt_str_concat(t44, sl2496);
         f702_check_Checker_err(p_c, t38, t45);
       }
       { obx_str nw46 = rt_str_dup(v_v_18.f_c);
         rt_str_drop(v_cc_19);
         v_cc_19 = nw46; }
     } else {
-      S87_check_Val t47 = f803_check_Checker_coerce(p_c, gl67_dup(v_v_18), v_ret_3, v_n_2.f_line, sl2496);
+      S87_check_Val t47 = f807_check_Checker_coerce(p_c, gl67_dup(v_v_18), v_ret_3, v_n_2.f_line, sl2497);
       { S87_check_Val nw48 = t47;
         gl68_drop(v_v_18);
         v_v_18 = nw48; }
@@ -40966,7 +41143,7 @@ static void f761_check_Checker_sReturn(S73_check_Checker** p_c, int64_t p_s) {
   rt_str_drop(v_label_4);
   gl49_drop(v_n_2);
 }
-static S87_check_Val f803_check_Checker_coerce(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_t, int64_t p_line, obx_str p_what) {
+static S87_check_Val f807_check_Checker_coerce(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_t, int64_t p_line, obx_str p_what) {
   bool c1 = (p_v.f_t == p_t);
   if (c1) {
     S87_check_Val r2 = gl67_dup(p_v);
@@ -40984,7 +41161,7 @@ static S87_check_Val f803_check_Checker_coerce(S73_check_Checker** p_c, S87_chec
   }
   bool b8 = b7;
   if (b8) {
-    bool t9 = f804_check_Checker_sameSig(p_c, p_v.f_t, p_t);
+    bool t9 = f808_check_Checker_sameSig(p_c, p_v.f_t, p_t);
     b8 = t9;
   }
   bool c10 = b8;
@@ -40992,10 +41169,10 @@ static S87_check_Val f803_check_Checker_coerce(S73_check_Checker** p_c, S87_chec
     S80_check_Hole t11 = f706_check_mkHole(8LL, p_v.f_t, sl183);
     obx_str t12 = f707_check_Checker_hole(p_c, t11);
     obx_str v_h_13 = t12;
-    obx_str t14 = rt_str_concat(sl2497, v_h_13);
-    obx_str t15 = rt_str_concat(t14, sl2498);
+    obx_str t14 = rt_str_concat(sl2498, v_h_13);
+    obx_str t15 = rt_str_concat(t14, sl2499);
     obx_str t16 = rt_str_concat(t15, p_v.f_c);
-    obx_str t17 = rt_str_concat(t16, sl2499);
+    obx_str t17 = rt_str_concat(t16, sl2500);
     S87_check_Val t18 = f734_check_rv(t17, p_t);
     S87_check_Val r19 = t18;
     rt_str_drop(t16);
@@ -41061,7 +41238,7 @@ static S87_check_Val f803_check_Checker_coerce(S73_check_Checker** p_c, S87_chec
   }
   bool c39 = (v_k_6 == 3LL);
   if (c39) {
-    S87_check_Val t40 = f805_check_Checker_asSlice(p_c, gl67_dup(p_v));
+    S87_check_Val t40 = f809_check_Checker_asSlice(p_c, gl67_dup(p_v));
     S87_check_Val v_s_41 = t40;
     bool b42 = (v_s_41.f_t >= 0LL);
     if (b42) {
@@ -41097,15 +41274,15 @@ static S87_check_Val f803_check_Checker_coerce(S73_check_Checker** p_c, S87_chec
     gl68_drop(v_s_41);
   }
   int64_t t54 = p_line;
-  obx_str t55 = rt_str_concat(p_what, sl2477);
+  obx_str t55 = rt_str_concat(p_what, sl2478);
   obx_str t56 = f767_check_Checker_tstr(p_c, p_v.f_t);
   obx_str t57 = rt_str_concat(t55, t56);
-  obx_str t58 = rt_str_concat(t57, sl2479);
+  obx_str t58 = rt_str_concat(t57, sl2480);
   obx_str t59 = f767_check_Checker_tstr(p_c, p_t);
   obx_str t60 = rt_str_concat(t58, t59);
   f702_check_Checker_err(p_c, t54, t60);
 }
-static S87_check_Val f805_check_Checker_asSlice(S73_check_Checker** p_c, S87_check_Val p_v) {
+static S87_check_Val f809_check_Checker_asSlice(S73_check_Checker** p_c, S87_check_Val p_v) {
   int64_t t1 = f497_sema_Program_tk((&(*p_c)->f_pg), p_v.f_t);
   int64_t v_k_2 = t1;
   bool c3 = (v_k_2 == 3LL);
@@ -41122,13 +41299,13 @@ static S87_check_Val f805_check_Checker_asSlice(S73_check_Checker** p_c, S87_che
   }
   bool c8 = b5;
   if (c8) {
-    obx_str t9 = rt_str_concat(sl2500, p_v.f_c);
+    obx_str t9 = rt_str_concat(sl2501, p_v.f_c);
     obx_str t10 = rt_str_concat(t9, sl31);
     int64_t t11 = f498_sema_Program_ta((&(*p_c)->f_pg), p_v.f_t);
     int64_t t12 = f498_sema_Program_ta((&(*p_c)->f_pg), t11);
     bool t13 = f499_sema_Program_tm((&(*p_c)->f_pg), p_v.f_t);
     int64_t t14 = f607_sema_Program_mkSlice((&(*p_c)->f_pg), t12, t13);
-    S87_check_Val t15 = f795_check_rvAt(t10, t14, p_v.f_root, rt_str_dup(p_v.f_path));
+    S87_check_Val t15 = f799_check_rvAt(t10, t14, p_v.f_root, rt_str_dup(p_v.f_path));
     S87_check_Val r16 = t15;
     rt_str_drop(t9);
     gl68_drop(p_v);
@@ -41142,7 +41319,7 @@ static S87_check_Val f805_check_Checker_asSlice(S73_check_Checker** p_c, S87_che
   gl68_drop(p_v);
   return r19;
 }
-static bool f804_check_Checker_sameSig(S73_check_Checker** p_c, int64_t p_a, int64_t p_b) {
+static bool f808_check_Checker_sameSig(S73_check_Checker** p_c, int64_t p_a, int64_t p_b) {
   int64_t t1 = f502_sema_Program_tn((&(*p_c)->f_pg), p_a);
   int64_t t2 = f502_sema_Program_tn((&(*p_c)->f_pg), p_b);
   bool b3 = (t1 != t2);
@@ -41178,7 +41355,7 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
   if (c4) {
     S87_check_Val t5 = f754_check_Checker_expr(p_c, v_n_2.f_a, 0LL);
     S87_check_Val t6 = f765_check_Checker_rd(p_c, t5);
-    S87_check_Val t7 = f806_check_Checker_before1(p_c, t6, v_n_2.f_b);
+    S87_check_Val t7 = f810_check_Checker_before1(p_c, t6, v_n_2.f_b);
     S87_check_Val v_a_8 = t7;
     S87_check_Val t9 = f754_check_Checker_expr(p_c, v_n_2.f_b, 0LL);
     S87_check_Val t10 = f765_check_Checker_rd(p_c, t9);
@@ -41190,7 +41367,7 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
     bool c13 = b12;
     if (c13) {
       int64_t t14 = v_n_2.f_line;
-      obx_str t15 = sl2501;
+      obx_str t15 = sl2502;
       obx_str t16 = f767_check_Checker_tstr(p_c, v_a_8.f_t);
       obx_str t17 = rt_str_concat(t15, t16);
       obx_str t18 = rt_str_concat(t17, sl1860);
@@ -41198,9 +41375,9 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
       obx_str t20 = rt_str_concat(t18, t19);
       f702_check_Checker_err(p_c, t14, t20);
     }
-    obx_str t21 = f771_check_Checker_fresh(p_c, sl2502);
+    obx_str t21 = f771_check_Checker_fresh(p_c, sl2503);
     obx_str v_end_22 = t21;
-    obx_str t23 = rt_str_concat(sl2503, v_end_22);
+    obx_str t23 = rt_str_concat(sl2504, v_end_22);
     obx_str t24 = rt_str_concat(t23, sl2267);
     obx_str t25 = rt_str_concat(t24, v_b_11.f_c);
     obx_str t26 = rt_str_concat(t25, sl36);
@@ -41216,17 +41393,17 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
     int64_t v_iv_32 = t31;
     rt_str_drop(t28);
     int64_t ix33 = v_iv_32;
-    obx_str v_ivc_34 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix33, ((*p_c)->f_vars).len, "check.obx:1631")].f_c);
-    obx_str t35 = rt_str_concat(sl2504, v_ivc_34);
+    obx_str v_ivc_34 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix33, ((*p_c)->f_vars).len, "check.obx:1744")].f_c);
+    obx_str t35 = rt_str_concat(sl2505, v_ivc_34);
     obx_str t36 = rt_str_concat(t35, sl2267);
     obx_str t37 = rt_str_concat(t36, v_a_8.f_c);
-    obx_str t38 = rt_str_concat(t37, sl2505);
+    obx_str t38 = rt_str_concat(t37, sl2506);
     obx_str t39 = rt_str_concat(t38, v_ivc_34);
-    obx_str t40 = rt_str_concat(t39, sl2506);
+    obx_str t40 = rt_str_concat(t39, sl2507);
     obx_str t41 = rt_str_concat(t40, v_end_22);
-    obx_str t42 = rt_str_concat(t41, sl2505);
+    obx_str t42 = rt_str_concat(t41, sl2506);
     obx_str t43 = rt_str_concat(t42, v_ivc_34);
-    obx_str t44 = rt_str_concat(t43, sl2507);
+    obx_str t44 = rt_str_concat(t43, sl2508);
     f744_check_Checker_emit(p_c, t44);
     rt_str_drop(t43);
     rt_str_drop(t42);
@@ -41237,12 +41414,12 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
     rt_str_drop(t37);
     rt_str_drop(t36);
     rt_str_drop(t35);
-    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1633");
+    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1746");
     obx_arr t45 = f773_check_Checker_snapshot(p_c);
-    f807_check_Checker_loopStart(p_c, t45, false);
+    f811_check_Checker_loopStart(p_c, t45, false);
     f777_check_Checker_declare(p_c, v_iv_32);
-    f808_check_Checker_loopEnd(p_c, v_n_2.f_c, v_n_2.f_line);
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1637");
+    f812_check_Checker_loopEnd(p_c, v_n_2.f_c, v_n_2.f_line);
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1750");
     f744_check_Checker_emit(p_c, sl29);
     rt_str_drop(v_ivc_34);
     rt_str_drop(v_end_22);
@@ -41271,16 +41448,16 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
   bool c55 = b54;
   if (c55) {
     int64_t t56 = v_n_2.f_line;
-    obx_str t57 = sl2508;
+    obx_str t57 = sl2509;
     obx_str t58 = f767_check_Checker_tstr(p_c, v_v_47.f_t);
     obx_str t59 = rt_str_concat(t57, t58);
     f702_check_Checker_err(p_c, t56, t59);
   }
   int64_t t60 = f498_sema_Program_ta((&(*p_c)->f_pg), v_v_47.f_t);
   int64_t v_et_61 = t60;
-  obx_str t62 = f771_check_Checker_fresh(p_c, sl2509);
+  obx_str t62 = f771_check_Checker_fresh(p_c, sl2510);
   obx_str v_ap_63 = t62;
-  obx_str t64 = f771_check_Checker_fresh(p_c, sl2510);
+  obx_str t64 = f771_check_Checker_fresh(p_c, sl2511);
   obx_str v_i_65 = t64;
   bool b66 = (v_v_47.f_cat == 0LL);
   if (b66) {
@@ -41299,15 +41476,15 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
   }
   bool c71 = b70;
   if (c71) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2511);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2512);
   }
-  obx_str t72 = rt_str_concat(sl2512, v_ap_63);
+  obx_str t72 = rt_str_concat(sl2513, v_ap_63);
   obx_str t73 = rt_str_concat(t72, sl2267);
   obx_str ifx74;
   if ((v_k_53 == 3LL)) {
     ifx74 = rt_str_dup(v_v_47.f_c);
   } else {
-    obx_str t75 = rt_str_concat(sl2513, v_v_47.f_c);
+    obx_str t75 = rt_str_concat(sl2514, v_v_47.f_c);
     obx_str t76 = rt_str_concat(t75, sl31);
     ifx74 = t76;
     rt_str_drop(t75);
@@ -41319,14 +41496,14 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
   rt_str_drop(ifx74);
   rt_str_drop(t73);
   rt_str_drop(t72);
-  obx_str t79 = rt_str_concat(sl2504, v_i_65);
-  obx_str t80 = rt_str_concat(t79, sl2514);
+  obx_str t79 = rt_str_concat(sl2505, v_i_65);
+  obx_str t80 = rt_str_concat(t79, sl2515);
   obx_str t81 = rt_str_concat(t80, v_i_65);
-  obx_str t82 = rt_str_concat(t81, sl2506);
+  obx_str t82 = rt_str_concat(t81, sl2507);
   obx_str t83 = rt_str_concat(t82, v_ap_63);
-  obx_str t84 = rt_str_concat(t83, sl2515);
+  obx_str t84 = rt_str_concat(t83, sl2516);
   obx_str t85 = rt_str_concat(t84, v_i_65);
-  obx_str t86 = rt_str_concat(t85, sl2507);
+  obx_str t86 = rt_str_concat(t85, sl2508);
   f744_check_Checker_emit(p_c, t86);
   rt_str_drop(t85);
   rt_str_drop(t84);
@@ -41335,13 +41512,13 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
   rt_str_drop(t81);
   rt_str_drop(t80);
   rt_str_drop(t79);
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1654");
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1767");
   obx_str t87 = sl2289;
   obx_str t88 = f732_check_Checker_T(p_c, v_et_61);
   obx_str t89 = rt_str_concat(t87, t88);
-  obx_str t90 = rt_str_concat(t89, sl2516);
+  obx_str t90 = rt_str_concat(t89, sl2517);
   obx_str t91 = rt_str_concat(t90, v_ap_63);
-  obx_str t92 = rt_str_concat(t91, sl2517);
+  obx_str t92 = rt_str_concat(t91, sl2518);
   obx_str t93 = rt_str_concat(t92, v_i_65);
   obx_str t94 = rt_str_concat(t93, sl33);
   obx_str v_elem_95 = t94;
@@ -41358,10 +41535,10 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
   obx_str v_xn_99 = t98;
   rt_str_drop(t96);
   obx_arr t100 = f773_check_Checker_snapshot(p_c);
-  f807_check_Checker_loopStart(p_c, t100, false);
+  f811_check_Checker_loopStart(p_c, t100, false);
   bool c101 = (v_v_47.f_root >= 0LL);
   if (c101) {
-    f779_check_Checker_freeze(p_c, v_v_47.f_root, false, sl2518);
+    f779_check_Checker_freeze(p_c, v_v_47.f_root, false, sl2519);
   }
   bool t102 = f778_check_Checker_isCopy(p_c, v_et_61);
   bool c103 = t102;
@@ -41402,12 +41579,12 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
     int64_t t123 = f738_check_Checker_newVar(p_c, t120, t121, t122, false, 1LL, v_n_2.f_line);
     int64_t v_x_124 = t123;
     int64_t ix125 = v_x_124;
-    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix125, ((*p_c)->f_vars).len, "check.obx:1667")].f_broot = v_v_47.f_root;
+    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix125, ((*p_c)->f_vars).len, "check.obx:1780")].f_broot = v_v_47.f_root;
     f777_check_Checker_declare(p_c, v_x_124);
     rt_str_drop(v_ct_114);
   }
-  f808_check_Checker_loopEnd(p_c, v_n_2.f_c, v_n_2.f_line);
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1671");
+  f812_check_Checker_loopEnd(p_c, v_n_2.f_c, v_n_2.f_line);
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1784");
   f744_check_Checker_emit(p_c, sl29);
   rt_str_drop(v_xn_99);
   rt_str_drop(v_elem_95);
@@ -41417,21 +41594,21 @@ static void f760_check_Checker_sFor(S73_check_Checker** p_c, int64_t p_s) {
   rt_str_drop(v_name_3);
   gl49_drop(v_n_2);
 }
-static void f808_check_Checker_loopEnd(S73_check_Checker** p_c, int64_t p_body, int64_t p_line) {
+static void f812_check_Checker_loopEnd(S73_check_Checker** p_c, int64_t p_body, int64_t p_line) {
   f739_check_Checker_block(p_c, p_body, false, false);
-  S86_check_Scope* t1 = *(S86_check_Scope**)rt_arr_pop((&(*p_c)->f_cx->f_scopes), sizeof(S86_check_Scope*), "check.obx:1509");
+  S86_check_Scope* t1 = *(S86_check_Scope**)rt_arr_pop((&(*p_c)->f_cx->f_scopes), sizeof(S86_check_Scope*), "check.obx:1622");
   S86_check_Scope* v_sc_2 = t1;
   bool c3 = (!(*p_c)->f_cx->f_dead);
   if (c3) {
     f745_check_Checker_dropVars(p_c, (&v_sc_2->f_vars));
-    f802_check_Checker_loopState(p_c, p_line);
+    f806_check_Checker_loopState(p_c, p_line);
   }
-  S89_check_Loop* t4 = *(S89_check_Loop**)rt_arr_pop((&(*p_c)->f_cx->f_loops), sizeof(S89_check_Loop*), "check.obx:1514");
+  S89_check_Loop* t4 = *(S89_check_Loop**)rt_arr_pop((&(*p_c)->f_cx->f_loops), sizeof(S89_check_Loop*), "check.obx:1627");
   S89_check_Loop* v_lp_5 = t4;
   f776_check_Checker_restore(p_c, (&v_lp_5->f_entry));
   bool c6 = v_lp_5->f_infinite;
   if (c6) {
-    f782_check_Checker_join(p_c, (&v_lp_5->f_breaks), p_line);
+    f813_check_Checker_join(p_c, (&v_lp_5->f_breaks), p_line);
   } else {
     obx_slice ap7 = rt_as_slice(&v_lp_5->f_breaks);
     for (int64_t i8 = 0; i8 < ap7.len; i8++) {
@@ -41442,25 +41619,64 @@ static void f808_check_Checker_loopEnd(S73_check_Checker** p_c, int64_t p_body, 
         bool c12 = (t11 < (v_lp_5->f_entry).len);
         if (!c12) break;
         int64_t ix13 = v_i_10;
-        int64_t t14 = f783_check_snapGet(v_b_9, ((int64_t*)(v_lp_5->f_entry).data)[rt_idx(ix13, (v_lp_5->f_entry).len, "check.obx:1522")]);
-        int64_t ix15 = rt_add_int(v_i_10, 1LL, "check.obx:1522");
-        bool c16 = (t14 != ((int64_t*)(v_lp_5->f_entry).data)[rt_idx(ix15, (v_lp_5->f_entry).len, "check.obx:1522")]);
+        int64_t t14 = f786_check_snapGet(v_b_9, ((int64_t*)(v_lp_5->f_entry).data)[rt_idx(ix13, (v_lp_5->f_entry).len, "check.obx:1635")]);
+        int64_t ix15 = rt_add_int(v_i_10, 1LL, "check.obx:1635");
+        bool c16 = (t14 != ((int64_t*)(v_lp_5->f_entry).data)[rt_idx(ix15, (v_lp_5->f_entry).len, "check.obx:1635")]);
         if (c16) {
           int64_t ix17 = v_i_10;
-          int64_t ix18 = ((int64_t*)(v_lp_5->f_entry).data)[rt_idx(ix17, (v_lp_5->f_entry).len, "check.obx:1523")];
-          obx_str t19 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix18, ((*p_c)->f_vars).len, "check.obx:1523")].f_name);
-          obx_str t20 = rt_str_concat(t19, sl2519);
+          int64_t ix18 = ((int64_t*)(v_lp_5->f_entry).data)[rt_idx(ix17, (v_lp_5->f_entry).len, "check.obx:1636")];
+          obx_str t19 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix18, ((*p_c)->f_vars).len, "check.obx:1636")].f_name);
+          obx_str t20 = rt_str_concat(t19, sl2520);
           f702_check_Checker_err(p_c, p_line, t20);
         }
-        v_i_10 = rt_add_int(v_i_10, 2LL, "check.obx:1525");
+        v_i_10 = rt_add_int(v_i_10, 2LL, "check.obx:1638");
       }
     }
     (*p_c)->f_cx->f_dead = false;
   }
-  gl81_drop(v_lp_5);
+  gl82_drop(v_lp_5);
   gl74_drop(v_sc_2);
 }
-static void f807_check_Checker_loopStart(S73_check_Checker** p_c, obx_arr p_entry, bool p_infinite) {
+static void f813_check_Checker_join(S73_check_Checker** p_c, obx_arr* p_snaps, int64_t p_line) {
+  bool c1 = (((*p_snaps)).len == 0LL);
+  if (c1) {
+    (*p_c)->f_cx->f_dead = true;
+    return;
+  }
+  int64_t end2 = ((*p_snaps)).len;
+  for (int64_t v_k_3 = 1LL; v_k_3 < end2; v_k_3++) {
+    int64_t v_i_4 = 0LL;
+    while (1) {
+      int64_t t5 = v_i_4;
+      int64_t ix6 = v_k_3;
+      bool c7 = (t5 < (((obx_arr*)((*p_snaps)).data)[rt_idx(ix6, ((*p_snaps)).len, "check.obx:776")]).len);
+      if (!c7) break;
+      int64_t ix8 = v_k_3;
+      int64_t ix9 = v_i_4;
+      int64_t v_v_10 = ((int64_t*)(((obx_arr*)((*p_snaps)).data)[rt_idx(ix8, ((*p_snaps)).len, "check.obx:777")]).data)[rt_idx(ix9, (((obx_arr*)((*p_snaps)).data)[rt_idx(ix8, ((*p_snaps)).len, "check.obx:777")]).len, "check.obx:777")];
+      int64_t t11 = f786_check_snapGet((&((obx_arr*)((*p_snaps)).data)[rt_idx(0LL, ((*p_snaps)).len, "check.obx:778")]), v_v_10);
+      int64_t v_s0_12 = t11;
+      bool b13 = (v_s0_12 >= 0LL);
+      if (b13) {
+        int64_t ix14 = v_k_3;
+        (void)(&((obx_arr*)((*p_snaps)).data)[rt_idx(ix14, ((*p_snaps)).len, "check.obx:779")]);
+        int64_t ix15 = rt_add_int(v_i_4, 1LL, "check.obx:779");
+        b13 = (v_s0_12 != ((int64_t*)(((obx_arr*)((*p_snaps)).data)[rt_idx(ix14, ((*p_snaps)).len, "check.obx:779")]).data)[rt_idx(ix15, (((obx_arr*)((*p_snaps)).data)[rt_idx(ix14, ((*p_snaps)).len, "check.obx:779")]).len, "check.obx:779")]);
+      }
+      bool c16 = b13;
+      if (c16) {
+        int64_t ix17 = v_v_10;
+        obx_str t18 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix17, ((*p_c)->f_vars).len, "check.obx:779")].f_name);
+        obx_str t19 = rt_str_concat(t18, sl2521);
+        f702_check_Checker_err(p_c, p_line, t19);
+      }
+      v_i_4 = rt_add_int(v_i_4, 2LL, "check.obx:780");
+    }
+  }
+  f776_check_Checker_restore(p_c, (&((obx_arr*)((*p_snaps)).data)[rt_idx(0LL, ((*p_snaps)).len, "check.obx:783")]));
+  (*p_c)->f_cx->f_dead = false;
+}
+static void f811_check_Checker_loopStart(S73_check_Checker** p_c, obx_arr p_entry, bool p_infinite) {
   int64_t t1 = ((*p_c)->f_cx->f_scopes).len;
   obx_arr a2 = rt_arr_new(0, sizeof(obx_arr));
   S89_check_Loop* o3 = rt_alloc(sizeof(*o3));
@@ -41474,16 +41690,16 @@ static void f807_check_Checker_loopStart(S73_check_Checker** p_c, obx_arr p_entr
   *(S89_check_Loop**)rt_arr_push((&(*p_c)->f_cx->f_loops), sizeof(S89_check_Loop*)) = ap5;
   f749_check_Checker_pushScope(p_c);
 }
-static S87_check_Val f806_check_Checker_before1(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_x) {
+static S87_check_Val f810_check_Checker_before1(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_x) {
   obx_arr a1 = rt_arr_new(1, sizeof(int64_t));
   ((int64_t*)a1.data)[0] = p_x;
-  S87_check_Val t2 = f809_check_Checker_before(p_c, gl67_dup(p_v), (&a1));
+  S87_check_Val t2 = f814_check_Checker_before(p_c, gl67_dup(p_v), (&a1));
   S87_check_Val r3 = t2;
   gl9_drop(a1);
   gl68_drop(p_v);
   return r3;
 }
-static S87_check_Val f809_check_Checker_before(S73_check_Checker** p_c, S87_check_Val p_v0, obx_arr* p_later) {
+static S87_check_Val f814_check_Checker_before(S73_check_Checker** p_c, S87_check_Val p_v0, obx_arr* p_later) {
   S87_check_Val v_v_1 = gl67_dup(p_v0);
   bool v_eff_2 = false;
   obx_slice ap3 = rt_as_slice(&(*p_later));
@@ -41491,7 +41707,7 @@ static S87_check_Val f809_check_Checker_before(S73_check_Checker** p_c, S87_chec
     int64_t v_x_5 = ((int64_t*)ap3.data)[i4];
     bool b6 = (!v_eff_2);
     if (b6) {
-      bool t7 = f810_check_Checker_effects(p_c, v_x_5, false);
+      bool t7 = f815_check_Checker_effects(p_c, v_x_5, false);
       b6 = t7;
     }
     bool c8 = b6;
@@ -41501,7 +41717,7 @@ static S87_check_Val f809_check_Checker_before(S73_check_Checker** p_c, S87_chec
   }
   bool c9 = v_eff_2;
   if (c9) {
-    S87_check_Val t10 = f811_check_Checker_snapVal(p_c, gl67_dup(v_v_1));
+    S87_check_Val t10 = f816_check_Checker_snapVal(p_c, gl67_dup(v_v_1));
     { S87_check_Val nw11 = t10;
       gl68_drop(v_v_1);
       v_v_1 = nw11; }
@@ -41512,7 +41728,7 @@ static S87_check_Val f809_check_Checker_before(S73_check_Checker** p_c, S87_chec
     int64_t v_x_15 = ((int64_t*)ap13.data)[i14];
     bool b16 = (!v_act_12);
     if (b16) {
-      bool t17 = f812_check_Checker_acts(p_c, v_x_15);
+      bool t17 = f817_check_Checker_acts(p_c, v_x_15);
       b16 = t17;
     }
     bool c18 = b16;
@@ -41522,7 +41738,7 @@ static S87_check_Val f809_check_Checker_before(S73_check_Checker** p_c, S87_chec
   }
   S87_check_Val ifx19;
   if (v_act_12) {
-    S87_check_Val t20 = f813_check_Checker_seq(p_c, gl67_dup(v_v_1));
+    S87_check_Val t20 = f818_check_Checker_seq(p_c, gl67_dup(v_v_1));
     ifx19 = t20;
   } else {
     ifx19 = gl67_dup(v_v_1);
@@ -41532,8 +41748,8 @@ static S87_check_Val f809_check_Checker_before(S73_check_Checker** p_c, S87_chec
   gl68_drop(p_v0);
   return r21;
 }
-static S87_check_Val f813_check_Checker_seq(S73_check_Checker** p_c, S87_check_Val p_v) {
-  bool t1 = f814_check_checks(rt_str_dup(p_v.f_c));
+static S87_check_Val f818_check_Checker_seq(S73_check_Checker** p_c, S87_check_Val p_v) {
+  bool t1 = f819_check_checks(rt_str_dup(p_v.f_c));
   bool c2 = (!t1);
   if (c2) {
     S87_check_Val r3 = gl67_dup(p_v);
@@ -41557,7 +41773,7 @@ static S87_check_Val f813_check_Checker_seq(S73_check_Checker** p_c, S87_check_V
   }
   bool c10 = b7;
   if (c10) {
-    obx_str t11 = sl2520;
+    obx_str t11 = sl2522;
     obx_str ifx12;
     if ((p_v.f_cat != 2LL)) {
       ifx12 = rt_str_dup(p_v.f_c);
@@ -41575,12 +41791,12 @@ static S87_check_Val f813_check_Checker_seq(S73_check_Checker** p_c, S87_check_V
     gl68_drop(p_v);
     return r16;
   }
-  S87_check_Val t17 = f811_check_Checker_snapVal(p_c, gl67_dup(p_v));
+  S87_check_Val t17 = f816_check_Checker_snapVal(p_c, gl67_dup(p_v));
   S87_check_Val r18 = t17;
   gl68_drop(p_v);
   return r18;
 }
-static bool f814_check_checks(obx_str p_c) {
+static bool f819_check_checks(obx_str p_c) {
   int64_t end1 = ((int64_t)(p_c).len);
   for (int64_t v_i_2 = 0LL; v_i_2 < end1; v_i_2++) {
     uint8_t t3 = rt_str_byte(p_c, v_i_2, "check.obx:45");
@@ -41595,12 +41811,12 @@ static bool f814_check_checks(obx_str p_c) {
   rt_str_drop(p_c);
   return r6;
 }
-static bool f812_check_Checker_acts(S73_check_Checker** p_c, int64_t p_e) {
-  bool t1 = f810_check_Checker_effects(p_c, p_e, true);
+static bool f817_check_Checker_acts(S73_check_Checker** p_c, int64_t p_e) {
+  bool t1 = f815_check_Checker_effects(p_c, p_e, true);
   bool r2 = t1;
   return r2;
 }
-static S87_check_Val f811_check_Checker_snapVal(S73_check_Checker** p_c, S87_check_Val p_v) {
+static S87_check_Val f816_check_Checker_snapVal(S73_check_Checker** p_c, S87_check_Val p_v) {
   int64_t t1 = f497_sema_Program_tk((&(*p_c)->f_pg), p_v.f_t);
   int64_t v_k_2 = t1;
   bool b3 = (p_v.f_cat == 0LL);
@@ -41613,12 +41829,12 @@ static S87_check_Val f811_check_Checker_snapVal(S73_check_Checker** p_c, S87_che
   }
   bool b5 = b4;
   if (b5) {
-    bool t6 = f815_check_isWordText(rt_str_dup(p_v.f_c));
+    bool t6 = f820_check_isWordText(rt_str_dup(p_v.f_c));
     b5 = (!t6);
   }
   bool c7 = b5;
   if (c7) {
-    S87_check_Val t8 = f794_check_Checker_holdtmpSrc(p_c, rt_str_dup(p_v.f_c), p_v.f_t, true, gl67_dup(p_v));
+    S87_check_Val t8 = f798_check_Checker_holdtmpSrc(p_c, rt_str_dup(p_v.f_c), p_v.f_t, true, gl67_dup(p_v));
     S87_check_Val r9 = t8;
     gl68_drop(p_v);
     return r9;
@@ -41644,7 +41860,7 @@ static S87_check_Val f811_check_Checker_snapVal(S73_check_Checker** p_c, S87_che
   gl68_drop(p_v);
   return r17;
 }
-static bool f815_check_isWordText(obx_str p_c) {
+static bool f820_check_isWordText(obx_str p_c) {
   bool c1 = (((int64_t)(p_c).len) == 0LL);
   if (c1) {
     bool r2 = false;
@@ -41690,7 +41906,7 @@ static bool f815_check_isWordText(obx_str p_c) {
   rt_str_drop(p_c);
   return r15;
 }
-static bool f810_check_Checker_effects(S73_check_Checker** p_c, int64_t p_e, bool p_traps) {
+static bool f815_check_Checker_effects(S73_check_Checker** p_c, int64_t p_e, bool p_traps) {
   bool c1 = (p_e < 0LL);
   if (c1) {
     bool r2 = false;
@@ -41738,7 +41954,7 @@ static bool f810_check_Checker_effects(S73_check_Checker** p_c, int64_t p_e, boo
   bool b16 = b15;
   if (b16) {
     int64_t t17 = f700_check_Checker_kind(p_c, v_n_4.f_a);
-    bool t18 = f816_check_isLitKind(t17);
+    bool t18 = f821_check_isLitKind(t17);
     b16 = (!t18);
   }
   bool c19 = b16;
@@ -41749,10 +41965,10 @@ static bool f810_check_Checker_effects(S73_check_Checker** p_c, int64_t p_e, boo
   }
   bool b21 = (v_k_5 == 45LL);
   if (b21) {
-    bool t22 = f817_check_isArith(rt_str_dup(v_n_4.f_s));
+    bool t22 = f822_check_isArith(rt_str_dup(v_n_4.f_s));
     bool b23 = t22;
     if (!b23) {
-      bool t24 = f818_check_isCmpOp(rt_str_dup(v_n_4.f_s));
+      bool t24 = f823_check_isCmpOp(rt_str_dup(v_n_4.f_s));
       b23 = t24;
     }
     b21 = b23;
@@ -41760,13 +41976,13 @@ static bool f810_check_Checker_effects(S73_check_Checker** p_c, int64_t p_e, boo
   bool b25 = b21;
   if (b25) {
     int64_t t26 = f700_check_Checker_kind(p_c, v_n_4.f_a);
-    bool t27 = f816_check_isLitKind(t26);
+    bool t27 = f821_check_isLitKind(t26);
     b25 = (!t27);
   }
   bool b28 = b25;
   if (b28) {
     int64_t t29 = f700_check_Checker_kind(p_c, v_n_4.f_b);
-    bool t30 = f816_check_isLitKind(t29);
+    bool t30 = f821_check_isLitKind(t29);
     b28 = (!t30);
   }
   bool c31 = b28;
@@ -41785,7 +42001,7 @@ static bool f810_check_Checker_effects(S73_check_Checker** p_c, int64_t p_e, boo
     if (!b35) {
       bool b36 = (v_k_5 == 45LL);
       if (b36) {
-        bool t37 = f819_check_isTrapOp(rt_str_dup(v_n_4.f_s));
+        bool t37 = f824_check_isTrapOp(rt_str_dup(v_n_4.f_s));
         b36 = t37;
       }
       b35 = b36;
@@ -41820,139 +42036,154 @@ static bool f810_check_Checker_effects(S73_check_Checker** p_c, int64_t p_e, boo
       return r48;
     }
   }
-  int64_t sv49 = v_k_5;
-  if (sv49 == 45LL || sv49 == 50LL || sv49 == 23LL || sv49 == 56LL || sv49 == 24LL || sv49 == 25LL) {
-    bool c50 = (v_k_5 == 25LL);
-    if (c50) {
-      bool t51 = f810_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
-      bool b52 = t51;
-      if (!b52) {
-        bool t53 = f810_check_Checker_effects(p_c, v_n_4.f_b, p_traps);
-        b52 = t53;
+  bool b49 = (v_k_5 == 56LL);
+  if (!b49) {
+    b49 = (v_k_5 == 57LL);
+  }
+  bool b50 = b49;
+  if (b50) {
+    bool t51 = f825_check_Checker_namesOwned(p_c, p_e);
+    b50 = t51;
+  }
+  bool c52 = b50;
+  if (c52) {
+    bool r53 = true;
+    gl49_drop(v_n_4);
+    return r53;
+  }
+  int64_t sv54 = v_k_5;
+  if (sv54 == 45LL || sv54 == 50LL || sv54 == 23LL || sv54 == 56LL || sv54 == 24LL || sv54 == 25LL) {
+    bool c55 = (v_k_5 == 25LL);
+    if (c55) {
+      bool t56 = f815_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
+      bool b57 = t56;
+      if (!b57) {
+        bool t58 = f815_check_Checker_effects(p_c, v_n_4.f_b, p_traps);
+        b57 = t58;
       }
-      bool b54 = b52;
-      if (!b54) {
-        bool t55 = f810_check_Checker_effects(p_c, v_n_4.f_c, p_traps);
-        b54 = t55;
+      bool b59 = b57;
+      if (!b59) {
+        bool t60 = f815_check_Checker_effects(p_c, v_n_4.f_c, p_traps);
+        b59 = t60;
       }
-      bool r56 = b54;
+      bool r61 = b59;
       gl49_drop(v_n_4);
-      return r56;
+      return r61;
     }
-    bool t57 = f810_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
-    bool b58 = t57;
-    if (!b58) {
-      bool t59 = f810_check_Checker_effects(p_c, v_n_4.f_b, p_traps);
-      b58 = t59;
+    bool t62 = f815_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
+    bool b63 = t62;
+    if (!b63) {
+      bool t64 = f815_check_Checker_effects(p_c, v_n_4.f_b, p_traps);
+      b63 = t64;
     }
-    bool b60 = b58;
-    if (!b60) {
-      bool t61 = f810_check_Checker_effects(p_c, v_n_4.f_c, p_traps);
-      b60 = t61;
+    bool b65 = b63;
+    if (!b65) {
+      bool t66 = f815_check_Checker_effects(p_c, v_n_4.f_c, p_traps);
+      b65 = t66;
     }
-    bool r62 = b60;
+    bool r67 = b65;
     gl49_drop(v_n_4);
-    return r62;
-  } else if (sv49 == 46LL || sv49 == 47LL || sv49 == 48LL || sv49 == 49LL || sv49 == 26LL || sv49 == 32LL) {
-    bool t63 = f810_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
-    bool r64 = t63;
+    return r67;
+  } else if (sv54 == 46LL || sv54 == 47LL || sv54 == 48LL || sv54 == 49LL || sv54 == 26LL || sv54 == 32LL) {
+    bool t68 = f815_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
+    bool r69 = t68;
     gl49_drop(v_n_4);
-    return r64;
-  } else if (sv49 == 20LL) {
-    bool t65 = f810_check_Checker_effects(p_c, v_n_4.f_b, p_traps);
-    bool r66 = t65;
+    return r69;
+  } else if (sv54 == 20LL) {
+    bool t70 = f815_check_Checker_effects(p_c, v_n_4.f_b, p_traps);
+    bool r71 = t70;
     gl49_drop(v_n_4);
-    return r66;
-  } else if (sv49 == 31LL) {
-    bool t67 = f810_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
-    bool b68 = t67;
-    if (!b68) {
-      bool t69 = f810_check_Checker_effects(p_c, v_n_4.f_b, p_traps);
-      b68 = t69;
+    return r71;
+  } else if (sv54 == 31LL) {
+    bool t72 = f815_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
+    bool b73 = t72;
+    if (!b73) {
+      bool t74 = f815_check_Checker_effects(p_c, v_n_4.f_b, p_traps);
+      b73 = t74;
     }
-    bool r70 = b68;
+    bool r75 = b73;
     gl49_drop(v_n_4);
-    return r70;
-  } else if (sv49 == 21LL) {
-    bool t71 = f810_check_Checker_effects(p_c, v_n_4.f_c, p_traps);
-    bool r72 = t71;
+    return r75;
+  } else if (sv54 == 21LL) {
+    bool t76 = f815_check_Checker_effects(p_c, v_n_4.f_c, p_traps);
+    bool r77 = t76;
     gl49_drop(v_n_4);
-    return r72;
-  } else if (sv49 == 51LL || sv49 == 52LL) {
-    bool t73 = f810_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
-    bool b74 = t73;
-    if (!b74) {
-      bool t75 = f820_check_Checker_effectsList(p_c, v_n_4.f_b, p_traps);
-      b74 = t75;
+    return r77;
+  } else if (sv54 == 51LL || sv54 == 52LL) {
+    bool t78 = f815_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
+    bool b79 = t78;
+    if (!b79) {
+      bool t80 = f826_check_Checker_effectsList(p_c, v_n_4.f_b, p_traps);
+      b79 = t80;
     }
-    bool r76 = b74;
+    bool r81 = b79;
     gl49_drop(v_n_4);
-    return r76;
-  } else if (sv49 == 42LL || sv49 == 19LL) {
-    bool t77 = f820_check_Checker_effectsList(p_c, v_n_4.f_a, p_traps);
-    bool r78 = t77;
+    return r81;
+  } else if (sv54 == 42LL || sv54 == 19LL) {
+    bool t82 = f826_check_Checker_effectsList(p_c, v_n_4.f_a, p_traps);
+    bool r83 = t82;
     gl49_drop(v_n_4);
-    return r78;
-  } else if (sv49 == 53LL) {
-    int64_t t79 = f717_check_Checker_count(p_c, v_n_4.f_b);
-    int64_t end80 = t79;
-    for (int64_t v_i_81 = 0LL; v_i_81 < end80; v_i_81++) {
-      int64_t t82 = f718_check_Checker_item(p_c, v_n_4.f_b, v_i_81);
-      S49_syntax_Node t83 = f703_check_Checker_nd(p_c, t82);
-      bool t84 = f810_check_Checker_effects(p_c, t83.f_a, p_traps);
-      bool c85 = t84;
-      gl49_drop(t83);
-      if (c85) {
-        bool r86 = true;
+    return r83;
+  } else if (sv54 == 53LL) {
+    int64_t t84 = f717_check_Checker_count(p_c, v_n_4.f_b);
+    int64_t end85 = t84;
+    for (int64_t v_i_86 = 0LL; v_i_86 < end85; v_i_86++) {
+      int64_t t87 = f718_check_Checker_item(p_c, v_n_4.f_b, v_i_86);
+      S49_syntax_Node t88 = f703_check_Checker_nd(p_c, t87);
+      bool t89 = f815_check_Checker_effects(p_c, t88.f_a, p_traps);
+      bool c90 = t89;
+      gl49_drop(t88);
+      if (c90) {
+        bool r91 = true;
         gl49_drop(v_n_4);
-        return r86;
+        return r91;
       }
     }
-    bool r87 = false;
+    bool r92 = false;
     gl49_drop(v_n_4);
-    return r87;
-  } else if (sv49 == 43LL) {
-    bool t88 = f810_check_Checker_effects(p_c, v_n_4.f_c, p_traps);
-    bool r89 = t88;
+    return r92;
+  } else if (sv54 == 43LL) {
+    bool t93 = f815_check_Checker_effects(p_c, v_n_4.f_c, p_traps);
+    bool r94 = t93;
     gl49_drop(v_n_4);
-    return r89;
-  } else if (sv49 == 29LL || sv49 == 57LL) {
-    bool t90 = f810_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
-    bool c91 = t90;
-    if (c91) {
-      bool r92 = true;
+    return r94;
+  } else if (sv54 == 29LL || sv54 == 57LL) {
+    bool t95 = f815_check_Checker_effects(p_c, v_n_4.f_a, p_traps);
+    bool c96 = t95;
+    if (c96) {
+      bool r97 = true;
       gl49_drop(v_n_4);
-      return r92;
+      return r97;
     }
-    int64_t t93 = f717_check_Checker_count(p_c, v_n_4.f_b);
-    int64_t end94 = t93;
-    for (int64_t v_i_95 = 0LL; v_i_95 < end94; v_i_95++) {
-      int64_t t96 = f718_check_Checker_item(p_c, v_n_4.f_b, v_i_95);
-      S49_syntax_Node t97 = f703_check_Checker_nd(p_c, t96);
-      bool t98 = f810_check_Checker_effects(p_c, t97.f_d, p_traps);
-      bool c99 = t98;
-      gl49_drop(t97);
-      if (c99) {
-        bool r100 = true;
+    int64_t t98 = f717_check_Checker_count(p_c, v_n_4.f_b);
+    int64_t end99 = t98;
+    for (int64_t v_i_100 = 0LL; v_i_100 < end99; v_i_100++) {
+      int64_t t101 = f718_check_Checker_item(p_c, v_n_4.f_b, v_i_100);
+      S49_syntax_Node t102 = f703_check_Checker_nd(p_c, t101);
+      bool t103 = f815_check_Checker_effects(p_c, t102.f_d, p_traps);
+      bool c104 = t103;
+      gl49_drop(t102);
+      if (c104) {
+        bool r105 = true;
         gl49_drop(v_n_4);
-        return r100;
+        return r105;
       }
     }
-    bool r101 = false;
+    bool r106 = false;
     gl49_drop(v_n_4);
-    return r101;
+    return r106;
   } else {
-    bool r102 = false;
+    bool r107 = false;
     gl49_drop(v_n_4);
-    return r102;
+    return r107;
   }
 }
-static bool f820_check_Checker_effectsList(S73_check_Checker** p_c, int64_t p_l, bool p_traps) {
+static bool f826_check_Checker_effectsList(S73_check_Checker** p_c, int64_t p_l, bool p_traps) {
   int64_t t1 = f717_check_Checker_count(p_c, p_l);
   int64_t end2 = t1;
   for (int64_t v_i_3 = 0LL; v_i_3 < end2; v_i_3++) {
     int64_t t4 = f718_check_Checker_item(p_c, p_l, v_i_3);
-    bool t5 = f810_check_Checker_effects(p_c, t4, p_traps);
+    bool t5 = f815_check_Checker_effects(p_c, t4, p_traps);
     bool c6 = t5;
     if (c6) {
       bool r7 = true;
@@ -41962,7 +42193,147 @@ static bool f820_check_Checker_effectsList(S73_check_Checker** p_c, int64_t p_l,
   bool r8 = false;
   return r8;
 }
-static bool f819_check_isTrapOp(obx_str p_op) {
+static bool f825_check_Checker_namesOwned(S73_check_Checker** p_c, int64_t p_e) {
+  bool c1 = (p_e < 0LL);
+  if (c1) {
+    bool r2 = false;
+    return r2;
+  }
+  S49_syntax_Node t3 = f703_check_Checker_nd(p_c, p_e);
+  S49_syntax_Node v_n_4 = t3;
+  int64_t v_k_5 = v_n_4.f_kind;
+  bool c6 = (v_k_5 == 41LL);
+  if (c6) {
+    int64_t t7 = f711_check_Checker_lookupVar(p_c, rt_str_dup(v_n_4.f_s), true);
+    int64_t v_vx_8 = t7;
+    bool b9 = (v_vx_8 >= 0LL);
+    if (b9) {
+      int64_t ix10 = v_vx_8;
+      int64_t t11 = f497_sema_Program_tk((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix10, ((*p_c)->f_vars).len, "check.obx:4012")].f_t);
+      b9 = (t11 != 2LL);
+    }
+    bool b12 = b9;
+    if (b12) {
+      int64_t ix13 = v_vx_8;
+      bool t14 = f778_check_Checker_isCopy(p_c, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix13, ((*p_c)->f_vars).len, "check.obx:4012")].f_t);
+      b12 = (!t14);
+    }
+    bool r15 = b12;
+    gl49_drop(v_n_4);
+    return r15;
+  }
+  bool mx16;
+  int64_t sv17 = v_k_5;
+  if (sv17 == 45LL || sv17 == 50LL || sv17 == 56LL) {
+    bool t18 = f825_check_Checker_namesOwned(p_c, v_n_4.f_a);
+    bool b19 = t18;
+    if (!b19) {
+      bool t20 = f825_check_Checker_namesOwned(p_c, v_n_4.f_b);
+      b19 = t20;
+    }
+    bool b21 = b19;
+    if (!b21) {
+      bool t22 = f825_check_Checker_namesOwned(p_c, v_n_4.f_c);
+      b21 = t22;
+    }
+    mx16 = b21;
+  } else if (sv17 == 46LL || sv17 == 47LL || sv17 == 48LL || sv17 == 49LL || sv17 == 26LL) {
+    bool t23 = f825_check_Checker_namesOwned(p_c, v_n_4.f_a);
+    mx16 = t23;
+  } else if (sv17 == 51LL || sv17 == 52LL) {
+    bool t24 = f825_check_Checker_namesOwned(p_c, v_n_4.f_a);
+    bool b25 = t24;
+    if (!b25) {
+      bool t26 = f827_check_Checker_namesOwnedList(p_c, v_n_4.f_b);
+      b25 = t26;
+    }
+    mx16 = b25;
+  } else if (sv17 == 42LL) {
+    bool t27 = f827_check_Checker_namesOwnedList(p_c, v_n_4.f_a);
+    mx16 = t27;
+  } else if (sv17 == 53LL) {
+    bool t28 = f828_check_Checker_namesOwnedInits(p_c, v_n_4.f_b);
+    mx16 = t28;
+  } else if (sv17 == 57LL) {
+    bool t29 = f825_check_Checker_namesOwned(p_c, v_n_4.f_a);
+    bool b30 = t29;
+    if (!b30) {
+      bool t31 = f829_check_Checker_namesOwnedArms(p_c, v_n_4.f_b);
+      b30 = t31;
+    }
+    mx16 = b30;
+  } else {
+    mx16 = false;
+  }
+  bool r32 = mx16;
+  gl49_drop(v_n_4);
+  return r32;
+}
+static bool f829_check_Checker_namesOwnedArms(S73_check_Checker** p_c, int64_t p_l) {
+  bool c1 = (p_l < 0LL);
+  if (c1) {
+    bool r2 = false;
+    return r2;
+  }
+  int64_t t3 = f717_check_Checker_count(p_c, p_l);
+  int64_t end4 = t3;
+  for (int64_t v_i_5 = 0LL; v_i_5 < end4; v_i_5++) {
+    int64_t t6 = f718_check_Checker_item(p_c, p_l, v_i_5);
+    S49_syntax_Node t7 = f703_check_Checker_nd(p_c, t6);
+    bool t8 = f825_check_Checker_namesOwned(p_c, t7.f_d);
+    bool c9 = t8;
+    gl49_drop(t7);
+    if (c9) {
+      bool r10 = true;
+      return r10;
+    }
+  }
+  bool r11 = false;
+  return r11;
+}
+static bool f828_check_Checker_namesOwnedInits(S73_check_Checker** p_c, int64_t p_l) {
+  bool c1 = (p_l < 0LL);
+  if (c1) {
+    bool r2 = false;
+    return r2;
+  }
+  int64_t t3 = f717_check_Checker_count(p_c, p_l);
+  int64_t end4 = t3;
+  for (int64_t v_i_5 = 0LL; v_i_5 < end4; v_i_5++) {
+    int64_t t6 = f718_check_Checker_item(p_c, p_l, v_i_5);
+    S49_syntax_Node t7 = f703_check_Checker_nd(p_c, t6);
+    bool t8 = f825_check_Checker_namesOwned(p_c, t7.f_a);
+    bool c9 = t8;
+    gl49_drop(t7);
+    if (c9) {
+      bool r10 = true;
+      return r10;
+    }
+  }
+  bool r11 = false;
+  return r11;
+}
+static bool f827_check_Checker_namesOwnedList(S73_check_Checker** p_c, int64_t p_l) {
+  bool c1 = (p_l < 0LL);
+  if (c1) {
+    bool r2 = false;
+    return r2;
+  }
+  int64_t t3 = f717_check_Checker_count(p_c, p_l);
+  int64_t end4 = t3;
+  for (int64_t v_i_5 = 0LL; v_i_5 < end4; v_i_5++) {
+    int64_t t6 = f718_check_Checker_item(p_c, p_l, v_i_5);
+    bool t7 = f825_check_Checker_namesOwned(p_c, t6);
+    bool c8 = t7;
+    if (c8) {
+      bool r9 = true;
+      return r9;
+    }
+  }
+  bool r10 = false;
+  return r10;
+}
+static bool f824_check_isTrapOp(obx_str p_op) {
   bool b1 = (rt_str_eq(p_op, sl42));
   if (!b1) {
     b1 = (rt_str_eq(p_op, sl43));
@@ -41991,7 +42362,7 @@ static bool f819_check_isTrapOp(obx_str p_op) {
   rt_str_drop(p_op);
   return r7;
 }
-static bool f818_check_isCmpOp(obx_str p_op) {
+static bool f823_check_isCmpOp(obx_str p_op) {
   bool b1 = (rt_str_eq(p_op, sl22));
   if (!b1) {
     b1 = (rt_str_eq(p_op, sl23));
@@ -42016,7 +42387,7 @@ static bool f818_check_isCmpOp(obx_str p_op) {
   rt_str_drop(p_op);
   return r6;
 }
-static bool f817_check_isArith(obx_str p_op) {
+static bool f822_check_isArith(obx_str p_op) {
   bool b1 = (rt_str_eq(p_op, sl42));
   if (!b1) {
     b1 = (rt_str_eq(p_op, sl43));
@@ -42037,7 +42408,7 @@ static bool f817_check_isArith(obx_str p_op) {
   rt_str_drop(p_op);
   return r5;
 }
-static bool f816_check_isLitKind(int64_t p_k) {
+static bool f821_check_isLitKind(int64_t p_k) {
   bool b1 = (p_k == 36LL);
   if (!b1) {
     b1 = (p_k == 37LL);
@@ -42059,38 +42430,38 @@ static void f759_check_Checker_sWhile(S73_check_Checker** p_c, int64_t p_s) {
   int64_t t3 = f700_check_Checker_kind(p_c, v_n_2.f_a);
   bool b4 = (t3 == 40LL);
   if (b4) {
-    bool t5 = f800_check_Checker_flag(p_c, v_n_2.f_a, 1024LL);
+    bool t5 = f804_check_Checker_flag(p_c, v_n_2.f_a, 1024LL);
     b4 = t5;
   }
   bool v_infinite_6 = b4;
-  f744_check_Checker_emit(p_c, sl2521);
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1549");
+  f744_check_Checker_emit(p_c, sl2523);
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1662");
   obx_arr t7 = f773_check_Checker_snapshot(p_c);
   obx_arr v_entry_8 = t7;
   bool c9 = (!v_infinite_6);
   if (c9) {
-    obx_str ap10 = sl2522;
+    obx_str ap10 = sl2524;
     *(obx_str*)rt_arr_push((&(*p_c)->f_cx->f_nomove), sizeof(obx_str)) = ap10;
     int64_t ap11 = ((*p_c)->f_cx->f_loops).len;
     *(int64_t*)rt_arr_push((&(*p_c)->f_cx->f_wconds), sizeof(int64_t)) = ap11;
-    obx_str t12 = f821_check_Checker_cond(p_c, v_n_2.f_a);
+    obx_str t12 = f830_check_Checker_cond(p_c, v_n_2.f_a);
     obx_str v_cn_13 = t12;
-    int64_t t14 = *(int64_t*)rt_arr_pop((&(*p_c)->f_cx->f_wconds), sizeof(int64_t), "check.obx:1555");
-    obx_str t15 = *(obx_str*)rt_arr_pop((&(*p_c)->f_cx->f_nomove), sizeof(obx_str), "check.obx:1556");
+    int64_t t14 = *(int64_t*)rt_arr_pop((&(*p_c)->f_cx->f_wconds), sizeof(int64_t), "check.obx:1668");
+    obx_str t15 = *(obx_str*)rt_arr_pop((&(*p_c)->f_cx->f_nomove), sizeof(obx_str), "check.obx:1669");
     rt_str_drop(t15);
-    obx_str t16 = rt_str_concat(sl2523, v_cn_13);
-    obx_str t17 = rt_str_concat(t16, sl2524);
+    obx_str t16 = rt_str_concat(sl2525, v_cn_13);
+    obx_str t17 = rt_str_concat(t16, sl2526);
     f744_check_Checker_emit(p_c, t17);
     rt_str_drop(t16);
     rt_str_drop(v_cn_13);
   }
-  f807_check_Checker_loopStart(p_c, v_entry_8, v_infinite_6);
-  f808_check_Checker_loopEnd(p_c, v_n_2.f_b, v_n_2.f_line);
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1561");
+  f811_check_Checker_loopStart(p_c, v_entry_8, v_infinite_6);
+  f812_check_Checker_loopEnd(p_c, v_n_2.f_b, v_n_2.f_line);
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1674");
   f744_check_Checker_emit(p_c, sl29);
   gl49_drop(v_n_2);
 }
-static obx_str f821_check_Checker_cond(S73_check_Checker** p_c, int64_t p_e) {
+static obx_str f830_check_Checker_cond(S73_check_Checker** p_c, int64_t p_e) {
   f750_check_Checker_pushFrame(p_c);
   S87_check_Val t1 = f754_check_Checker_expr(p_c, p_e, 8LL);
   S87_check_Val v_v_2 = t1;
@@ -42105,14 +42476,14 @@ static obx_str f821_check_Checker_cond(S73_check_Checker** p_c, int64_t p_e) {
   bool c7 = (v_v_2.f_t != 8LL);
   if (c7) {
     int64_t t8 = f701_check_Checker_line(p_c, p_e);
-    obx_str t9 = sl2525;
+    obx_str t9 = sl2527;
     obx_str t10 = f767_check_Checker_tstr(p_c, v_v_2.f_t);
     obx_str t11 = rt_str_concat(t9, t10);
     f702_check_Checker_err(p_c, t8, t11);
   }
   obx_str t12 = f771_check_Checker_fresh(p_c, sl2251);
   obx_str v_cn_13 = t12;
-  obx_str t14 = rt_str_concat(sl2526, v_cn_13);
+  obx_str t14 = rt_str_concat(sl2528, v_cn_13);
   obx_str t15 = rt_str_concat(t14, sl2267);
   obx_str t16 = rt_str_concat(t15, v_v_2.f_c);
   obx_str t17 = rt_str_concat(t16, sl36);
@@ -42132,7 +42503,7 @@ static obx_str f821_check_Checker_cond(S73_check_Checker** p_c, int64_t p_e) {
 static void f758_check_Checker_sIf(S73_check_Checker** p_c, int64_t p_s) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_s);
   S49_syntax_Node v_n_2 = t1;
-  obx_str t3 = f821_check_Checker_cond(p_c, v_n_2.f_a);
+  obx_str t3 = f830_check_Checker_cond(p_c, v_n_2.f_a);
   obx_str v_cn_4 = t3;
   obx_arr t5 = f773_check_Checker_snapshot(p_c);
   obx_arr v_snap_6 = t5;
@@ -42140,25 +42511,73 @@ static void f758_check_Checker_sIf(S73_check_Checker** p_c, int64_t p_s) {
   obx_str t8 = rt_str_concat(t7, sl2418);
   f744_check_Checker_emit(p_c, t8);
   rt_str_drop(t7);
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1483");
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1581");
   f739_check_Checker_block(p_c, v_n_2.f_b, true, false);
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1485");
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1583");
   obx_arr a9 = rt_arr_new(0, sizeof(obx_arr));
   obx_arr v_snaps_10 = a9;
-  f781_check_Checker_live(p_c, (&v_snaps_10));
+  obx_arr a11 = rt_arr_new(0, sizeof(S94_check_PathEnd));
+  obx_arr v_ends_12 = a11;
+  bool c13 = (!(*p_c)->f_cx->f_dead);
+  if (c13) {
+    S94_check_PathEnd t14 = f781_check_Checker_pathEnd(p_c);
+    S94_check_PathEnd ap15 = t14;
+    *(S94_check_PathEnd*)rt_arr_push((&v_ends_12), sizeof(S94_check_PathEnd)) = ap15;
+  }
+  f782_check_Checker_live(p_c, (&v_snaps_10));
   f776_check_Checker_restore(p_c, (&v_snap_6));
   (*p_c)->f_cx->f_dead = false;
-  bool c11 = (v_n_2.f_c >= 0LL);
-  if (c11) {
+  bool c16 = (v_n_2.f_c >= 0LL);
+  if (c16) {
     f744_check_Checker_emit(p_c, sl2419);
-    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1492");
+    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1592");
     f739_check_Checker_block(p_c, v_n_2.f_c, true, false);
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1494");
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1594");
+    bool c17 = (!(*p_c)->f_cx->f_dead);
+    if (c17) {
+      S94_check_PathEnd t18 = f781_check_Checker_pathEnd(p_c);
+      S94_check_PathEnd ap19 = t18;
+      *(S94_check_PathEnd*)rt_arr_push((&v_ends_12), sizeof(S94_check_PathEnd)) = ap19;
+    }
+    f782_check_Checker_live(p_c, (&v_snaps_10));
+    f744_check_Checker_emit(p_c, sl29);
+    f783_check_Checker_joinAt(p_c, (&v_snaps_10), (&v_ends_12), v_n_2.f_line);
+    gl76_drop(v_ends_12);
+    gl77_drop(v_snaps_10);
+    gl9_drop(v_snap_6);
+    rt_str_drop(v_cn_4);
+    gl49_drop(v_n_2);
+    return;
+  }
+  f782_check_Checker_live(p_c, (&v_snaps_10));
+  obx_arr t20 = f784_check_Checker_joinMoves(p_c, (&v_snaps_10), v_n_2.f_line);
+  obx_arr v_drops_21 = t20;
+  bool b22 = ((v_drops_21).len == 2LL);
+  if (b22) {
+    b22 = ((((obx_arr*)(v_drops_21).data)[rt_idx(1LL, (v_drops_21).len, "check.obx:1604")]).len > 0LL);
+  }
+  bool c23 = b22;
+  if (c23) {
+    (void)((&((obx_arr*)(v_drops_21).data)[rt_idx(1LL, (v_drops_21).len, "check.obx:1605")]));
+    obx_arr t24 = f785_check_Checker_joinDropLines(p_c, (&((obx_arr*)(v_drops_21).data)[rt_idx(1LL, (v_drops_21).len, "check.obx:1605")]), rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1605"));
+    obx_arr v_ls_25 = t24;
+    bool c26 = ((v_ls_25).len > 0LL);
+    if (c26) {
+      f744_check_Checker_emit(p_c, sl2419);
+      obx_slice ap27 = rt_as_slice(&v_ls_25);
+      for (int64_t i28 = 0; i28 < ap27.len; i28++) {
+        obx_str v_x_29 = rt_str_dup(((obx_str*)ap27.data)[i28]);
+        obx_str ap30 = rt_str_dup(v_x_29);
+        *(obx_str*)rt_arr_push((&(*p_c)->f_cx->f_lines), sizeof(obx_str)) = ap30;
+        rt_str_drop(v_x_29);
+      }
+    }
+    gl0_drop(v_ls_25);
   }
   f744_check_Checker_emit(p_c, sl29);
-  f781_check_Checker_live(p_c, (&v_snaps_10));
-  f782_check_Checker_join(p_c, (&v_snaps_10), v_n_2.f_line);
-  gl76_drop(v_snaps_10);
+  gl77_drop(v_drops_21);
+  gl76_drop(v_ends_12);
+  gl77_drop(v_snaps_10);
   gl9_drop(v_snap_6);
   rt_str_drop(v_cn_4);
   gl49_drop(v_n_2);
@@ -42180,7 +42599,7 @@ static void f757_check_Checker_sAssign(S73_check_Checker** p_c, int64_t p_s) {
       S0_sema_Sym v_d_12 = t11;
       bool c13 = (v_d_12.f_k == 2LL);
       if (c13) {
-        obx_str t14 = rt_str_concat(sl2527, v_tn_5.f_s);
+        obx_str t14 = rt_str_concat(sl2529, v_tn_5.f_s);
         f702_check_Checker_err(p_c, v_n_2.f_line, t14);
       }
       bool c15 = (v_d_12.f_k != 3LL);
@@ -42191,64 +42610,64 @@ static void f757_check_Checker_sAssign(S73_check_Checker** p_c, int64_t p_s) {
       }
     } else {
       int64_t ix18 = v_vx_9;
-      int64_t t19 = f497_sema_Program_tk((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix18, ((*p_c)->f_vars).len, "check.obx:1373")].f_t);
+      int64_t t19 = f497_sema_Program_tk((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix18, ((*p_c)->f_vars).len, "check.obx:1377")].f_t);
       bool c20 = (t19 != 2LL);
       if (c20) {
         int64_t ix21 = v_vx_9;
-        obx_str v_vn_22 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix21, ((*p_c)->f_vars).len, "check.obx:1374")].f_name);
+        obx_str v_vn_22 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix21, ((*p_c)->f_vars).len, "check.obx:1378")].f_name);
         int64_t ix23 = v_vx_9;
-        bool b24 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix23, ((*p_c)->f_vars).len, "check.obx:1375")].f_cap >= 0LL);
+        bool b24 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix23, ((*p_c)->f_vars).len, "check.obx:1379")].f_cap >= 0LL);
         if (b24) {
           int64_t ix25 = v_vx_9;
-          b24 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix25, ((*p_c)->f_vars).len, "check.obx:1375")].f_moved;
+          b24 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix25, ((*p_c)->f_vars).len, "check.obx:1379")].f_moved;
         }
         bool c26 = b24;
         if (c26) {
-          obx_str t27 = rt_str_concat(sl1809, v_vn_22);
-          obx_str t28 = rt_str_concat(t27, sl2439);
-          f702_check_Checker_err(p_c, v_n_2.f_line, t28);
+          f792_check_Checker_movedErr(p_c, v_vx_9, v_n_2.f_line);
         }
-        int64_t ix29 = v_vx_9;
-        bool c30 = (!((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix29, ((*p_c)->f_vars).len, "check.obx:1376")].f_mutable);
-        if (c30) {
-          int64_t ix31 = v_vx_9;
-          bool c32 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix31, ((*p_c)->f_vars).len, "check.obx:1377")].f_kind == 0LL);
-          if (c32) {
-            int64_t t33 = v_n_2.f_line;
-            obx_str t34 = rt_str_concat(sl2528, v_vn_22);
-            obx_str t35 = rt_str_concat(t34, sl2529);
-            obx_str t36 = rt_str_concat(t35, v_vn_22);
-            obx_str t37 = rt_str_concat(t36, sl2530);
-            f702_check_Checker_err(p_c, t33, t37);
+        int64_t ix27 = v_vx_9;
+        bool c28 = (!((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix27, ((*p_c)->f_vars).len, "check.obx:1380")].f_mutable);
+        if (c28) {
+          int64_t ix29 = v_vx_9;
+          bool c30 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix29, ((*p_c)->f_vars).len, "check.obx:1381")].f_kind == 0LL);
+          if (c30) {
+            int64_t t31 = v_n_2.f_line;
+            obx_str t32 = rt_str_concat(sl2530, v_vn_22);
+            obx_str t33 = rt_str_concat(t32, sl2531);
+            obx_str t34 = rt_str_concat(t33, v_vn_22);
+            obx_str t35 = rt_str_concat(t34, sl2532);
+            f702_check_Checker_err(p_c, t31, t35);
           }
-          obx_str t38 = rt_str_concat(sl2531, v_vn_22);
-          obx_str t39 = rt_str_concat(t38, sl2532);
-          f702_check_Checker_err(p_c, v_n_2.f_line, t39);
+          obx_str t36 = rt_str_concat(sl2533, v_vn_22);
+          obx_str t37 = rt_str_concat(t36, sl2534);
+          f702_check_Checker_err(p_c, v_n_2.f_line, t37);
         }
-        f789_check_Checker_frozen(p_c, v_vx_9, 1LL, v_n_2.f_line);
-        bool c40 = (rt_str_eq(v_op_6, sl183));
-        if (c40) {
-          int64_t ix41 = v_vx_9;
-          int64_t v_vt_42 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix41, ((*p_c)->f_vars).len, "check.obx:1384")].f_t;
-          S87_check_Val t43 = f754_check_Checker_expr(p_c, v_n_2.f_b, v_vt_42);
-          obx_str t44 = rt_str_concat(sl2533, v_vn_22);
-          obx_str t45 = rt_str_concat(t44, sl1809);
-          S87_check_Val t46 = f803_check_Checker_coerce(p_c, t43, v_vt_42, v_n_2.f_line, t45);
-          S87_check_Val v_v_47 = t46;
-          rt_str_drop(t44);
-          obx_str t48 = f772_check_Checker_consume(p_c, gl67_dup(v_v_47), v_n_2.f_line);
-          obx_str v_cc_49 = t48;
-          int64_t ix50 = v_vx_9;
-          S87_check_Val t51 = f735_check_val(rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix50, ((*p_c)->f_vars).len, "check.obx:1387")].f_c), v_vt_42, 2LL);
-          S87_check_Val v_p_52 = t51;
-          v_p_52.f_vvar = v_vx_9;
+        f793_check_Checker_frozen(p_c, v_vx_9, 1LL, v_n_2.f_line);
+        bool c38 = (rt_str_eq(v_op_6, sl183));
+        if (c38) {
+          int64_t ix39 = v_vx_9;
+          int64_t v_vt_40 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix39, ((*p_c)->f_vars).len, "check.obx:1388")].f_t;
+          S87_check_Val t41 = f754_check_Checker_expr(p_c, v_n_2.f_b, v_vt_40);
+          obx_str t42 = rt_str_concat(sl2535, v_vn_22);
+          obx_str t43 = rt_str_concat(t42, sl1809);
+          S87_check_Val t44 = f807_check_Checker_coerce(p_c, t41, v_vt_40, v_n_2.f_line, t43);
+          S87_check_Val v_v_45 = t44;
+          rt_str_drop(t42);
+          obx_str t46 = f772_check_Checker_consume(p_c, gl67_dup(v_v_45), v_n_2.f_line);
+          obx_str v_cc_47 = t46;
+          int64_t ix48 = v_vx_9;
+          S87_check_Val t49 = f735_check_val(rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix48, ((*p_c)->f_vars).len, "check.obx:1391")].f_c), v_vt_40, 2LL);
+          S87_check_Val v_p_50 = t49;
+          v_p_50.f_vvar = v_vx_9;
+          int64_t ix51 = v_vx_9;
+          f831_check_Checker_store(p_c, gl67_dup(v_p_50), rt_str_dup(v_cc_47), (!((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix51, ((*p_c)->f_vars).len, "check.obx:1393")].f_moved));
+          int64_t ix52 = v_vx_9;
+          ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix52, ((*p_c)->f_vars).len, "check.obx:1394")].f_moved = false;
           int64_t ix53 = v_vx_9;
-          f822_check_Checker_store(p_c, gl67_dup(v_p_52), rt_str_dup(v_cc_49), (!((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix53, ((*p_c)->f_vars).len, "check.obx:1389")].f_moved));
-          int64_t ix54 = v_vx_9;
-          ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix54, ((*p_c)->f_vars).len, "check.obx:1390")].f_moved = false;
-          gl68_drop(v_p_52);
-          rt_str_drop(v_cc_49);
-          gl68_drop(v_v_47);
+          ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix53, ((*p_c)->f_vars).len, "check.obx:1395")].f_pjoin = 0LL;
+          gl68_drop(v_p_50);
+          rt_str_drop(v_cc_47);
+          gl68_drop(v_v_45);
           rt_str_drop(v_vn_22);
           rt_str_drop(v_op_6);
           gl49_drop(v_tn_5);
@@ -42259,160 +42678,159 @@ static void f757_check_Checker_sAssign(S73_check_Checker** p_c, int64_t p_s) {
       }
     }
   }
-  bool b55 = (v_tn_5.f_kind != 41LL);
+  bool b54 = (v_tn_5.f_kind != 41LL);
+  if (b54) {
+    b54 = (v_tn_5.f_kind != 49LL);
+  }
+  bool b55 = b54;
   if (b55) {
-    b55 = (v_tn_5.f_kind != 49LL);
+    b55 = (v_tn_5.f_kind != 51LL);
   }
-  bool b56 = b55;
-  if (b56) {
-    b56 = (v_tn_5.f_kind != 51LL);
+  bool c56 = b55;
+  if (c56) {
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2536);
   }
-  bool c57 = b56;
+  bool c57 = (rt_str_eq(v_op_6, sl183));
   if (c57) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2534);
-  }
-  bool c58 = (rt_str_eq(v_op_6, sl183));
-  if (c58) {
-    int64_t t59 = v_n_2.f_b;
-    int64_t t60 = f823_check_Checker_placeType(p_c, v_tg_3);
-    S87_check_Val t61 = f754_check_Checker_expr(p_c, t59, t60);
-    S87_check_Val v_v_62 = t61;
-    int64_t v_mark_63 = ((*p_c)->f_cx->f_pending).len;
-    bool t64 = f810_check_Checker_effects(p_c, v_tg_3, false);
-    bool c65 = t64;
-    if (c65) {
-      S87_check_Val t66 = f811_check_Checker_snapVal(p_c, gl67_dup(v_v_62));
-      { S87_check_Val nw67 = t66;
-        gl68_drop(v_v_62);
-        v_v_62 = nw67; }
+    int64_t t58 = v_n_2.f_b;
+    int64_t t59 = f832_check_Checker_placeType(p_c, v_tg_3);
+    S87_check_Val t60 = f754_check_Checker_expr(p_c, t58, t59);
+    S87_check_Val v_v_61 = t60;
+    int64_t v_mark_62 = ((*p_c)->f_cx->f_pending).len;
+    bool t63 = f815_check_Checker_effects(p_c, v_tg_3, false);
+    bool c64 = t63;
+    if (c64) {
+      S87_check_Val t65 = f816_check_Checker_snapVal(p_c, gl67_dup(v_v_61));
+      { S87_check_Val nw66 = t65;
+        gl68_drop(v_v_61);
+        v_v_61 = nw66; }
     }
-    bool t68 = f824_check_Checker_placeActs(p_c, v_tg_3);
-    bool b69 = t68;
-    if (!b69) {
-      bool t70 = f812_check_Checker_acts(p_c, v_tg_3);
-      bool b71 = t70;
-      if (b71) {
-        bool t72 = f747_check_Checker_pod(p_c, v_v_62.f_t);
-        b71 = t72;
+    bool t67 = f833_check_Checker_placeActs(p_c, v_tg_3);
+    bool b68 = t67;
+    if (!b68) {
+      bool t69 = f817_check_Checker_acts(p_c, v_tg_3);
+      bool b70 = t69;
+      if (b70) {
+        bool t71 = f747_check_Checker_pod(p_c, v_v_61.f_t);
+        b70 = t71;
       }
-      b69 = b71;
+      b68 = b70;
     }
-    bool c73 = b69;
-    if (c73) {
-      S87_check_Val t74 = f813_check_Checker_seq(p_c, gl67_dup(v_v_62));
-      { S87_check_Val nw75 = t74;
-        gl68_drop(v_v_62);
-        v_v_62 = nw75; }
+    bool c72 = b68;
+    if (c72) {
+      S87_check_Val t73 = f818_check_Checker_seq(p_c, gl67_dup(v_v_61));
+      { S87_check_Val nw74 = t73;
+        gl68_drop(v_v_61);
+        v_v_61 = nw74; }
     }
-    bool b76 = (v_v_62.f_cat == 2LL);
-    if (b76) {
-      bool t77 = f778_check_Checker_isCopy(p_c, v_v_62.f_t);
-      b76 = (!t77);
+    bool b75 = (v_v_61.f_cat == 2LL);
+    if (b75) {
+      bool t76 = f778_check_Checker_isCopy(p_c, v_v_61.f_t);
+      b75 = (!t76);
     }
-    bool c78 = b76;
-    if (c78) {
-      S87_check_Val t79 = gl67_dup(v_v_62);
-      int64_t t80 = f825_check_Checker_newCid(p_c);
-      f826_check_Checker_hold(p_c, t79, 2LL, t80, v_n_2.f_line);
+    bool c77 = b75;
+    if (c77) {
+      S87_check_Val t78 = gl67_dup(v_v_61);
+      int64_t t79 = f834_check_Checker_newCid(p_c);
+      f835_check_Checker_hold(p_c, t78, 2LL, t79, v_n_2.f_line);
     }
-    S87_check_Val t81 = f827_check_Checker_place(p_c, v_tg_3);
-    S87_check_Val v_p_82 = t81;
-    f753_check_Checker_cutPending(p_c, v_mark_63);
-    S87_check_Val t83 = f803_check_Checker_coerce(p_c, gl67_dup(v_v_62), v_p_82.f_t, v_n_2.f_line, sl2535);
-    { S87_check_Val nw84 = t83;
-      gl68_drop(v_v_62);
-      v_v_62 = nw84; }
-    obx_str t85 = f772_check_Checker_consume(p_c, gl67_dup(v_v_62), v_n_2.f_line);
-    obx_str v_cc_86 = t85;
-    f822_check_Checker_store(p_c, gl67_dup(v_p_82), rt_str_dup(v_cc_86), true);
-    rt_str_drop(v_cc_86);
-    gl68_drop(v_p_82);
-    gl68_drop(v_v_62);
+    S87_check_Val t80 = f836_check_Checker_place(p_c, v_tg_3);
+    S87_check_Val v_p_81 = t80;
+    f753_check_Checker_cutPending(p_c, v_mark_62);
+    S87_check_Val t82 = f807_check_Checker_coerce(p_c, gl67_dup(v_v_61), v_p_81.f_t, v_n_2.f_line, sl2537);
+    { S87_check_Val nw83 = t82;
+      gl68_drop(v_v_61);
+      v_v_61 = nw83; }
+    obx_str t84 = f772_check_Checker_consume(p_c, gl67_dup(v_v_61), v_n_2.f_line);
+    obx_str v_cc_85 = t84;
+    f831_check_Checker_store(p_c, gl67_dup(v_p_81), rt_str_dup(v_cc_85), true);
+    rt_str_drop(v_cc_85);
+    gl68_drop(v_p_81);
+    gl68_drop(v_v_61);
     rt_str_drop(v_op_6);
     gl49_drop(v_tn_5);
     gl49_drop(v_n_2);
     return;
   }
-  S87_check_Val t87 = f827_check_Checker_place(p_c, v_tg_3);
-  S87_check_Val v_p_88 = t87;
-  bool b89 = (v_p_88.f_vvar >= 0LL);
-  if (b89) {
-    int64_t ix90 = v_p_88.f_vvar;
-    b89 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix90, ((*p_c)->f_vars).len, "check.obx:1412")].f_moved;
+  S87_check_Val t86 = f836_check_Checker_place(p_c, v_tg_3);
+  S87_check_Val v_p_87 = t86;
+  bool b88 = (v_p_87.f_vvar >= 0LL);
+  if (b88) {
+    int64_t ix89 = v_p_87.f_vvar;
+    b88 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix89, ((*p_c)->f_vars).len, "check.obx:1417")].f_moved;
   }
-  bool c91 = b89;
-  if (c91) {
-    int64_t ix92 = v_p_88.f_vvar;
-    obx_str t93 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix92, ((*p_c)->f_vars).len, "check.obx:1412")].f_name);
-    obx_str t94 = rt_str_concat(t93, sl2439);
-    f702_check_Checker_err(p_c, v_n_2.f_line, t94);
+  bool c90 = b88;
+  if (c90) {
+    f792_check_Checker_movedErr(p_c, v_p_87.f_vvar, v_n_2.f_line);
   }
-  S87_check_Val t95 = f806_check_Checker_before1(p_c, gl67_dup(v_p_88), v_n_2.f_b);
-  S87_check_Val v_lv_96 = t95;
-  int64_t v_fixed_97 = v_tg_3;
+  S87_check_Val t91 = f810_check_Checker_before1(p_c, gl67_dup(v_p_87), v_n_2.f_b);
+  S87_check_Val v_lv_92 = t91;
+  int64_t v_fixed_93 = v_tg_3;
   while (1) {
-    int64_t t98 = f700_check_Checker_kind(p_c, v_fixed_97);
-    bool b99 = (t98 == 49LL);
-    if (!b99) {
-      int64_t t100 = f700_check_Checker_kind(p_c, v_fixed_97);
-      b99 = (t100 == 51LL);
+    int64_t t94 = f700_check_Checker_kind(p_c, v_fixed_93);
+    bool b95 = (t94 == 49LL);
+    if (!b95) {
+      int64_t t96 = f700_check_Checker_kind(p_c, v_fixed_93);
+      b95 = (t96 == 51LL);
     }
-    bool c101 = b99;
-    if (!c101) break;
-    S49_syntax_Node t102 = f703_check_Checker_nd(p_c, v_fixed_97);
-    v_fixed_97 = t102.f_a;
-    gl49_drop(t102);
+    bool c97 = b95;
+    if (!c97) break;
+    S49_syntax_Node t98 = f703_check_Checker_nd(p_c, v_fixed_93);
+    v_fixed_93 = t98.f_a;
+    gl49_drop(t98);
   }
-  obx_str t103 = rt_str_dup(v_op_6);
-  S87_check_Val t104 = gl67_dup(v_lv_96);
-  S83_check_Arg t105 = ((S83_check_Arg){.f_isVal = false, .f_n = v_n_2.f_b, .f_v = gl67_dup(v_lv_96)});
-  int64_t t106 = v_n_2.f_line;
-  int64_t t107 = v_p_88.f_t;
-  int64_t t108 = f700_check_Checker_kind(p_c, v_fixed_97);
-  S87_check_Val t109 = f828_check_Checker_binop(p_c, t103, t104, t105, t106, t107, (t108 != 41LL), gl67_dup(v_p_88));
-  S87_check_Val v_r_110 = t109;
-  bool t111 = f810_check_Checker_effects(p_c, v_n_2.f_b, false);
-  bool b112 = t111;
-  if (b112) {
-    bool t113 = f814_check_checks(rt_str_dup(v_p_88.f_c));
-    b112 = t113;
+  obx_str t99 = rt_str_dup(v_op_6);
+  S87_check_Val t100 = gl67_dup(v_lv_92);
+  S83_check_Arg t101 = ((S83_check_Arg){.f_isVal = false, .f_n = v_n_2.f_b, .f_v = gl67_dup(v_lv_92)});
+  int64_t t102 = v_n_2.f_line;
+  int64_t t103 = v_p_87.f_t;
+  int64_t t104 = f700_check_Checker_kind(p_c, v_fixed_93);
+  S87_check_Val t105 = f837_check_Checker_binop(p_c, t99, t100, t101, t102, t103, (t104 != 41LL), gl67_dup(v_p_87));
+  S87_check_Val v_r_106 = t105;
+  bool t107 = f815_check_Checker_effects(p_c, v_n_2.f_b, false);
+  bool b108 = t107;
+  if (b108) {
+    bool t109 = f819_check_checks(rt_str_dup(v_p_87.f_c));
+    b108 = t109;
   }
-  bool b114 = b112;
-  if (b114) {
-    bool t115 = f747_check_Checker_pod(p_c, v_p_88.f_t);
-    b114 = t115;
+  bool b110 = b108;
+  if (b110) {
+    bool t111 = f747_check_Checker_pod(p_c, v_p_87.f_t);
+    b110 = t111;
   }
-  bool c116 = b114;
-  if (c116) {
-    S87_check_Val t117 = f813_check_Checker_seq(p_c, gl67_dup(v_r_110));
-    { S87_check_Val nw118 = t117;
-      gl68_drop(v_r_110);
-      v_r_110 = nw118; }
+  bool c112 = b110;
+  if (c112) {
+    S87_check_Val t113 = f818_check_Checker_seq(p_c, gl67_dup(v_r_106));
+    { S87_check_Val nw114 = t113;
+      gl68_drop(v_r_106);
+      v_r_106 = nw114; }
   }
-  S87_check_Val t119 = f803_check_Checker_coerce(p_c, gl67_dup(v_r_110), v_p_88.f_t, v_n_2.f_line, sl2536);
-  obx_str t120 = f772_check_Checker_consume(p_c, t119, v_n_2.f_line);
-  obx_str v_cc_121 = t120;
-  bool b122 = (v_p_88.f_vvar >= 0LL);
-  if (b122) {
-    int64_t ix123 = v_p_88.f_vvar;
-    b122 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix123, ((*p_c)->f_vars).len, "check.obx:1419")].f_moved;
+  S87_check_Val t115 = f807_check_Checker_coerce(p_c, gl67_dup(v_r_106), v_p_87.f_t, v_n_2.f_line, sl2538);
+  obx_str t116 = f772_check_Checker_consume(p_c, t115, v_n_2.f_line);
+  obx_str v_cc_117 = t116;
+  bool b118 = (v_p_87.f_vvar >= 0LL);
+  if (b118) {
+    int64_t ix119 = v_p_87.f_vvar;
+    b118 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix119, ((*p_c)->f_vars).len, "check.obx:1424")].f_moved;
   }
-  bool v_live_124 = (!b122);
-  f822_check_Checker_store(p_c, gl67_dup(v_p_88), rt_str_dup(v_cc_121), v_live_124);
-  bool c125 = (v_p_88.f_vvar >= 0LL);
-  if (c125) {
-    int64_t ix126 = v_p_88.f_vvar;
-    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix126, ((*p_c)->f_vars).len, "check.obx:1421")].f_moved = false;
+  bool v_live_120 = (!b118);
+  f831_check_Checker_store(p_c, gl67_dup(v_p_87), rt_str_dup(v_cc_117), v_live_120);
+  bool c121 = (v_p_87.f_vvar >= 0LL);
+  if (c121) {
+    int64_t ix122 = v_p_87.f_vvar;
+    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix122, ((*p_c)->f_vars).len, "check.obx:1427")].f_moved = false;
+    int64_t ix123 = v_p_87.f_vvar;
+    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix123, ((*p_c)->f_vars).len, "check.obx:1428")].f_pjoin = 0LL;
   }
-  rt_str_drop(v_cc_121);
-  gl68_drop(v_r_110);
-  gl68_drop(v_lv_96);
-  gl68_drop(v_p_88);
+  rt_str_drop(v_cc_117);
+  gl68_drop(v_r_106);
+  gl68_drop(v_lv_92);
+  gl68_drop(v_p_87);
   rt_str_drop(v_op_6);
   gl49_drop(v_tn_5);
   gl49_drop(v_n_2);
 }
-static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p_op, S87_check_Val p_lv0, S83_check_Arg p_r, int64_t p_line, int64_t p_exp, bool p_hasHeld, S87_check_Val p_held) {
+static S87_check_Val f837_check_Checker_binop(S73_check_Checker** p_c, obx_str p_op, S87_check_Val p_lv0, S83_check_Arg p_r, int64_t p_line, int64_t p_exp, bool p_hasHeld, S87_check_Val p_held) {
   S87_check_Val t1 = f765_check_Checker_rd(p_c, gl67_dup(p_lv0));
   S87_check_Val v_lv_2 = t1;
   int64_t v_lt_3 = v_lv_2.f_t;
@@ -42430,8 +42848,8 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
     bool c13 = (v_h_12.f_cat == 2LL);
     if (c13) {
       S87_check_Val t14 = gl67_dup(v_h_12);
-      int64_t t15 = f825_check_Checker_newCid(p_c);
-      f826_check_Checker_hold(p_c, t14, 0LL, t15, p_line);
+      int64_t t15 = f834_check_Checker_newCid(p_c);
+      f835_check_Checker_hold(p_c, t14, 0LL, t15, p_line);
     }
     S87_check_Val t16 = f754_check_Checker_expr(p_c, p_r.f_n, v_rexp_8);
     { S87_check_Val nw17 = t16;
@@ -42443,9 +42861,9 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
   S87_check_Val t18 = f765_check_Checker_rd(p_c, gl67_dup(v_rv0_4));
   S87_check_Val v_rv1_19 = t18;
   int64_t v_rt_20 = v_rv1_19.f_t;
-  obx_str t21 = f829_check_Checker_W(p_c, p_line);
+  obx_str t21 = f838_check_Checker_W(p_c, p_line);
   obx_str v_W_22 = t21;
-  bool t23 = f818_check_isCmpOp(rt_str_dup(p_op));
+  bool t23 = f823_check_isCmpOp(rt_str_dup(p_op));
   bool v_cmp_24 = t23;
   int64_t t25 = f497_sema_Program_tk((&(*p_c)->f_pg), v_lt_3);
   bool b26 = (t25 == 0LL);
@@ -42457,7 +42875,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
   if (c28) {
     obx_slice t29 = k4_sema_PRIM_NAMES;
     int64_t ix30 = v_lt_3;
-    obx_str v_nm_31 = rt_str_dup(((obx_str*)(t29).data)[rt_idx(ix30, (t29).len, "check.obx:2794")]);
+    obx_str v_nm_31 = rt_str_dup(((obx_str*)(t29).data)[rt_idx(ix30, (t29).len, "check.obx:2911")]);
     bool b32 = (rt_str_eq(p_op, sl19));
     if (!b32) {
       b32 = (rt_str_eq(p_op, sl20));
@@ -42471,7 +42889,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
       bool c35 = b34;
       if (c35) {
         int64_t t36 = p_line;
-        obx_str t37 = rt_str_concat(p_op, sl2537);
+        obx_str t37 = rt_str_concat(p_op, sl2539);
         obx_str t38 = f767_check_Checker_tstr(p_c, v_lt_3);
         obx_str t39 = rt_str_concat(t37, t38);
         obx_str t40 = rt_str_concat(t39, sl1860);
@@ -42517,7 +42935,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
     if (c57) {
       int64_t t58 = p_line;
       obx_str t59 = rt_str_concat(sl1873, p_op);
-      obx_str t60 = rt_str_concat(t59, sl2538);
+      obx_str t60 = rt_str_concat(t59, sl2540);
       obx_str t61 = f767_check_Checker_tstr(p_c, v_lt_3);
       obx_str t62 = rt_str_concat(t60, t61);
       obx_str t63 = rt_str_concat(t62, sl1860);
@@ -42564,7 +42982,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
       } else if (rt_str_eq(sv77, sl45)) {
         mx76 = sl604;
       } else if (rt_str_eq(sv77, sl46)) {
-        mx76 = sl2539;
+        mx76 = sl2541;
       } else {
         mx76 = sl183;
       }
@@ -42618,7 +43036,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
       obx_str v_w_94 = mx92;
       bool c95 = (!rt_str_eq(v_w_94, sl183));
       if (c95) {
-        obx_str t96 = rt_str_concat(sl2540, v_w_94);
+        obx_str t96 = rt_str_concat(sl2542, v_w_94);
         obx_str t97 = rt_str_concat(t96, sl2221);
         obx_str t98 = rt_str_concat(t97, v_nm_31);
         obx_str t99 = rt_str_concat(t98, sl30);
@@ -42660,7 +43078,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
       if (c108) {
         obx_slice t109 = k5_check_CTYPES;
         int64_t ix110 = v_lt_3;
-        obx_str t111 = rt_str_concat(sl2289, ((obx_str*)(t109).data)[rt_idx(ix110, (t109).len, "check.obx:2811")]);
+        obx_str t111 = rt_str_concat(sl2289, ((obx_str*)(t109).data)[rt_idx(ix110, (t109).len, "check.obx:2928")]);
         obx_str t112 = rt_str_concat(t111, sl2357);
         obx_str t113 = rt_str_concat(t112, v_lv_2.f_c);
         obx_str t114 = rt_str_concat(t113, sl1771);
@@ -42802,7 +43220,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
           if (c155) {
             bool c156 = (rt_str_eq(p_op, sl42));
             if (c156) {
-              obx_str t157 = rt_str_concat(sl2541, v_lv_2.f_c);
+              obx_str t157 = rt_str_concat(sl2543, v_lv_2.f_c);
               obx_str t158 = rt_str_concat(t157, sl1754);
               obx_str t159 = rt_str_concat(t158, v_rv1_19.f_c);
               obx_str t160 = rt_str_concat(t159, sl31);
@@ -42830,7 +43248,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
             if (c164) {
               obx_str t166 = ((rt_str_eq(p_op, sl22)) ? sl183 : sl50);
               obx_str t167 = rt_str_concat(sl30, t166);
-              obx_str t168 = rt_str_concat(t167, sl2465);
+              obx_str t168 = rt_str_concat(t167, sl2466);
               obx_str t169 = rt_str_concat(t168, v_lv_2.f_c);
               obx_str t170 = rt_str_concat(t169, sl1754);
               obx_str t171 = rt_str_concat(t170, v_rv1_19.f_c);
@@ -42856,12 +43274,12 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
             }
             bool c175 = v_cmp_24;
             if (c175) {
-              obx_str t176 = rt_str_concat(sl2542, v_lv_2.f_c);
+              obx_str t176 = rt_str_concat(sl2544, v_lv_2.f_c);
               obx_str t177 = rt_str_concat(t176, sl1754);
               obx_str t178 = rt_str_concat(t177, v_rv1_19.f_c);
-              obx_str t179 = rt_str_concat(t178, sl2543);
+              obx_str t179 = rt_str_concat(t178, sl2545);
               obx_str t180 = rt_str_concat(t179, p_op);
-              obx_str t181 = rt_str_concat(t180, sl2544);
+              obx_str t181 = rt_str_concat(t180, sl2546);
               S87_check_Val t182 = f734_check_rv(t181, 8LL);
               S87_check_Val r183 = t182;
               rt_str_drop(t180);
@@ -42886,7 +43304,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
     }
     int64_t t184 = p_line;
     obx_str t185 = rt_str_concat(sl1873, p_op);
-    obx_str t186 = rt_str_concat(t185, sl2545);
+    obx_str t186 = rt_str_concat(t185, sl2547);
     obx_str t187 = f767_check_Checker_tstr(p_c, v_lt_3);
     obx_str t188 = rt_str_concat(t186, t187);
     f702_check_Checker_err(p_c, t184, t188);
@@ -42896,7 +43314,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
   if (c190) {
     int64_t t191 = p_line;
     obx_str t192 = rt_str_concat(sl1873, p_op);
-    obx_str t193 = rt_str_concat(t192, sl2538);
+    obx_str t193 = rt_str_concat(t192, sl2540);
     obx_str t194 = f767_check_Checker_tstr(p_c, v_lt_3);
     obx_str t195 = rt_str_concat(t193, t194);
     obx_str t196 = rt_str_concat(t195, sl1860);
@@ -42907,7 +43325,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
   obx_arr a199 = rt_arr_new(1, sizeof(S87_check_Val));
   ((S87_check_Val*)a199.data)[0] = gl67_dup(v_rv1_19);
   obx_arr v_args_200 = a199;
-  bool t201 = f817_check_isArith(rt_str_dup(p_op));
+  bool t201 = f822_check_isArith(rt_str_dup(p_op));
   bool c202 = t201;
   if (c202) {
     obx_str mx203;
@@ -42921,13 +43339,13 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
     } else if (rt_str_eq(sv204, sl45)) {
       mx203 = sl604;
     } else {
-      mx203 = sl2539;
+      mx203 = sl2541;
     }
     obx_str v_m_205 = mx203;
-    S87_check_Val t206 = f830_check_Checker_opCall(p_c, gl67_dup(v_lv_2), rt_str_dup(v_m_205), (&v_args_200), p_line, rt_str_dup(p_op));
+    S87_check_Val t206 = f839_check_Checker_opCall(p_c, gl67_dup(v_lv_2), rt_str_dup(v_m_205), (&v_args_200), p_line, rt_str_dup(p_op));
     S87_check_Val r207 = t206;
     rt_str_drop(v_m_205);
-    gl82_drop(v_args_200);
+    gl83_drop(v_args_200);
     rt_str_drop(v_W_22);
     gl68_drop(v_rv1_19);
     gl68_drop(v_rv0_4);
@@ -42944,7 +43362,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
   }
   bool b209 = b208;
   if (b209) {
-    bool t210 = f831_check_Checker_tagEq(p_c, v_lt_3);
+    bool t210 = f840_check_Checker_tagEq(p_c, v_lt_3);
     b209 = t210;
   }
   bool c211 = b209;
@@ -42953,7 +43371,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
     if (c212) {
       int64_t t213 = p_line;
       obx_str t214 = rt_str_concat(sl1873, p_op);
-      obx_str t215 = rt_str_concat(t214, sl2538);
+      obx_str t215 = rt_str_concat(t214, sl2540);
       obx_str t216 = f767_check_Checker_tstr(p_c, v_lt_3);
       obx_str t217 = rt_str_concat(t215, t216);
       obx_str t218 = rt_str_concat(t217, sl1860);
@@ -42963,7 +43381,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
     }
     int64_t t221 = f498_sema_Program_ta((&(*p_c)->f_pg), v_lt_3);
     int64_t ix222 = t221;
-    obx_str t224 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix222, ((*p_c)->f_pg->f_types).len, "check.obx:2840")].f_value ? sl37 : sl1722);
+    obx_str t224 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix222, ((*p_c)->f_pg->f_types).len, "check.obx:2957")].f_value ? sl37 : sl1722);
     obx_str v_sep_225 = t224;
     S87_check_Val v_a_226 = gl67_dup(v_lv_2);
     S87_check_Val v_b_227 = gl67_dup(v_rv1_19);
@@ -42994,13 +43412,13 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
     obx_str t238 = rt_str_concat(sl2289, v_a_226.f_c);
     obx_str t239 = rt_str_concat(t238, sl31);
     obx_str t240 = rt_str_concat(t239, v_sep_225);
-    obx_str t241 = rt_str_concat(t240, sl2546);
+    obx_str t241 = rt_str_concat(t240, sl2548);
     obx_str t242 = rt_str_concat(t241, p_op);
     obx_str t243 = rt_str_concat(t242, sl1813);
     obx_str t244 = rt_str_concat(t243, v_b_227.f_c);
     obx_str t245 = rt_str_concat(t244, sl31);
     obx_str t246 = rt_str_concat(t245, v_sep_225);
-    obx_str t247 = rt_str_concat(t246, sl2547);
+    obx_str t247 = rt_str_concat(t246, sl2549);
     S87_check_Val t248 = f734_check_rv(t247, 8LL);
     S87_check_Val r249 = t248;
     rt_str_drop(t246);
@@ -43015,7 +43433,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
     gl68_drop(v_b_227);
     gl68_drop(v_a_226);
     rt_str_drop(v_sep_225);
-    gl82_drop(v_args_200);
+    gl83_drop(v_args_200);
     rt_str_drop(v_W_22);
     gl68_drop(v_rv1_19);
     gl68_drop(v_rv0_4);
@@ -43032,13 +43450,13 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
   }
   bool c251 = b250;
   if (c251) {
-    S87_check_Val t252 = f830_check_Checker_opCall(p_c, gl67_dup(v_lv_2), sl2548, (&v_args_200), p_line, rt_str_dup(p_op));
+    S87_check_Val t252 = f839_check_Checker_opCall(p_c, gl67_dup(v_lv_2), sl2550, (&v_args_200), p_line, rt_str_dup(p_op));
     S87_check_Val v_r2_253 = t252;
     obx_str ifx254;
     if ((rt_str_eq(p_op, sl22))) {
       ifx254 = rt_str_dup(v_r2_253.f_c);
     } else {
-      obx_str t255 = rt_str_concat(sl2549, v_r2_253.f_c);
+      obx_str t255 = rt_str_concat(sl2551, v_r2_253.f_c);
       obx_str t256 = rt_str_concat(t255, sl31);
       ifx254 = t256;
       rt_str_drop(t255);
@@ -43046,7 +43464,7 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
     S87_check_Val t257 = f734_check_rv(ifx254, 8LL);
     S87_check_Val r258 = t257;
     gl68_drop(v_r2_253);
-    gl82_drop(v_args_200);
+    gl83_drop(v_args_200);
     rt_str_drop(v_W_22);
     gl68_drop(v_rv1_19);
     gl68_drop(v_rv0_4);
@@ -43059,19 +43477,19 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
   }
   bool c259 = v_cmp_24;
   if (c259) {
-    S87_check_Val t260 = f830_check_Checker_opCall(p_c, gl67_dup(v_lv_2), sl599, (&v_args_200), p_line, rt_str_dup(p_op));
+    S87_check_Val t260 = f839_check_Checker_opCall(p_c, gl67_dup(v_lv_2), sl599, (&v_args_200), p_line, rt_str_dup(p_op));
     S87_check_Val v_r2_261 = t260;
     obx_str t262 = rt_str_concat(sl30, v_r2_261.f_c);
     obx_str t263 = rt_str_concat(t262, sl1771);
     obx_str t264 = rt_str_concat(t263, p_op);
-    obx_str t265 = rt_str_concat(t264, sl2544);
+    obx_str t265 = rt_str_concat(t264, sl2546);
     S87_check_Val t266 = f734_check_rv(t265, 8LL);
     S87_check_Val r267 = t266;
     rt_str_drop(t264);
     rt_str_drop(t263);
     rt_str_drop(t262);
     gl68_drop(v_r2_261);
-    gl82_drop(v_args_200);
+    gl83_drop(v_args_200);
     rt_str_drop(v_W_22);
     gl68_drop(v_rv1_19);
     gl68_drop(v_rv0_4);
@@ -43084,12 +43502,12 @@ static S87_check_Val f828_check_Checker_binop(S73_check_Checker** p_c, obx_str p
   }
   int64_t t268 = p_line;
   obx_str t269 = rt_str_concat(sl1873, p_op);
-  obx_str t270 = rt_str_concat(t269, sl2545);
+  obx_str t270 = rt_str_concat(t269, sl2547);
   obx_str t271 = f767_check_Checker_tstr(p_c, v_lt_3);
   obx_str t272 = rt_str_concat(t270, t271);
   f702_check_Checker_err(p_c, t268, t272);
 }
-static bool f831_check_Checker_tagEq(S73_check_Checker** p_c, int64_t p_t) {
+static bool f840_check_Checker_tagEq(S73_check_Checker** p_c, int64_t p_t) {
   int64_t t1 = f497_sema_Program_tk((&(*p_c)->f_pg), p_t);
   bool c2 = (t1 != 6LL);
   if (c2) {
@@ -43099,29 +43517,29 @@ static bool f831_check_Checker_tagEq(S73_check_Checker** p_c, int64_t p_t) {
   int64_t t4 = f498_sema_Program_ta((&(*p_c)->f_pg), p_t);
   int64_t v_d_5 = t4;
   int64_t ix6 = v_d_5;
-  bool c7 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix6, ((*p_c)->f_pg->f_types).len, "check.obx:2863")].f_form != 1LL);
+  bool c7 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix6, ((*p_c)->f_pg->f_types).len, "check.obx:2980")].f_form != 1LL);
   if (c7) {
     bool r8 = false;
     return r8;
   }
   int64_t ix9 = v_d_5;
-  obx_slice ap10 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix9, ((*p_c)->f_pg->f_types).len, "check.obx:2864")].f_variants);
+  obx_slice ap10 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix9, ((*p_c)->f_pg->f_types).len, "check.obx:2981")].f_variants);
   for (int64_t i11 = 0; i11 < ap10.len; i11++) {
     int64_t v_x_12 = ((int64_t*)ap10.data)[i11];
     int64_t ix13 = v_x_12;
-    bool c14 = ((((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix13, ((*p_c)->f_pg->f_variants).len, "check.obx:2865")].f_fields).len > 0LL);
+    bool c14 = ((((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix13, ((*p_c)->f_pg->f_variants).len, "check.obx:2982")].f_fields).len > 0LL);
     if (c14) {
       bool r15 = false;
       return r15;
     }
   }
-  int64_t t16 = f545_sema_Program_methodOf((&(*p_c)->f_pg), p_t, sl2548);
+  int64_t t16 = f545_sema_Program_methodOf((&(*p_c)->f_pg), p_t, sl2550);
   bool r17 = (t16 < 0LL);
   return r17;
 }
-static S87_check_Val f830_check_Checker_opCall(S73_check_Checker** p_c, S87_check_Val p_recv, obx_str p_name, obx_arr* p_args, int64_t p_line, obx_str p_op) {
-  S94_check_Sig* t1 = f832_check_Checker_methodSig(p_c, p_recv.f_t, rt_str_dup(p_name), p_line, true);
-  S94_check_Sig* v_sig_2 = t1;
+static S87_check_Val f839_check_Checker_opCall(S73_check_Checker** p_c, S87_check_Val p_recv, obx_str p_name, obx_arr* p_args, int64_t p_line, obx_str p_op) {
+  S95_check_Sig* t1 = f841_check_Checker_methodSig(p_c, p_recv.f_t, rt_str_dup(p_name), p_line, true);
+  S95_check_Sig* v_sig_2 = t1;
   bool c3 = (v_sig_2->f_kind < 0LL);
   if (c3) {
     int64_t t4 = p_line;
@@ -43129,9 +43547,9 @@ static S87_check_Val f830_check_Checker_opCall(S73_check_Checker** p_c, S87_chec
     obx_str t6 = rt_str_concat(t5, sl1874);
     obx_str t7 = f767_check_Checker_tstr(p_c, p_recv.f_t);
     obx_str t8 = rt_str_concat(t6, t7);
-    obx_str t9 = rt_str_concat(t8, sl2550);
+    obx_str t9 = rt_str_concat(t8, sl2552);
     obx_str t10 = rt_str_concat(t9, p_name);
-    obx_str t12 = ((rt_str_eq(p_name, sl599)) ? sl2551 : sl183);
+    obx_str t12 = ((rt_str_eq(p_name, sl599)) ? sl2553 : sl183);
     obx_str t13 = rt_str_concat(t10, t12);
     f702_check_Checker_err(p_c, t4, t13);
   }
@@ -43140,13 +43558,13 @@ static S87_check_Val f830_check_Checker_opCall(S73_check_Checker** p_c, S87_chec
   int64_t v_off_17 = ((v_sig_2->f_recv != 0LL) ? 1LL : 0LL);
   int64_t end18 = ((*p_args)).len;
   for (int64_t v_i_19 = 0LL; v_i_19 < end18; v_i_19++) {
-    int64_t t20 = rt_add_int(v_i_19, v_off_17, "check.obx:2880");
+    int64_t t20 = rt_add_int(v_i_19, v_off_17, "check.obx:2997");
     bool c21 = (t20 < (v_sig_2->f_params).len);
     if (c21) {
-      int64_t ix22 = rt_add_int(v_i_19, v_off_17, "check.obx:2881");
-      int64_t v_p_23 = ((int64_t*)(v_sig_2->f_params).data)[rt_idx(ix22, (v_sig_2->f_params).len, "check.obx:2881")];
+      int64_t ix22 = rt_add_int(v_i_19, v_off_17, "check.obx:2998");
+      int64_t v_p_23 = ((int64_t*)(v_sig_2->f_params).data)[rt_idx(ix22, (v_sig_2->f_params).len, "check.obx:2998")];
       int64_t ix24 = v_i_19;
-      S87_check_Val v_a_25 = gl67_dup(((S87_check_Val*)((*p_args)).data)[rt_idx(ix24, ((*p_args)).len, "check.obx:2882")]);
+      S87_check_Val v_a_25 = gl67_dup(((S87_check_Val*)((*p_args)).data)[rt_idx(ix24, ((*p_args)).len, "check.obx:2999")]);
       int64_t t26 = f497_sema_Program_tk((&(*p_c)->f_pg), v_p_23);
       bool b27 = (t26 == 2LL);
       if (b27) {
@@ -43155,7 +43573,7 @@ static S87_check_Val f830_check_Checker_opCall(S73_check_Checker** p_c, S87_chec
       }
       S87_check_Val ifx29;
       if (b27) {
-        S87_check_Val t30 = f833_check_Checker_borrow(p_c, gl67_dup(v_a_25), false, p_line, false);
+        S87_check_Val t30 = f842_check_Checker_borrow(p_c, gl67_dup(v_a_25), false, p_line, false);
         ifx29 = t30;
       } else {
         ifx29 = gl67_dup(v_a_25);
@@ -43168,20 +43586,20 @@ static S87_check_Val f830_check_Checker_opCall(S73_check_Checker** p_c, S87_chec
       gl68_drop(v_a_25);
     }
   }
-  S95_check_CallOpts* t34 = f834_check_noOpts();
-  S95_check_CallOpts* v_o_35 = t34;
+  S96_check_CallOpts* t34 = f843_check_noOpts();
+  S96_check_CallOpts* v_o_35 = t34;
   v_o_35->f_op = true;
-  S87_check_Val t36 = f835_check_Checker_call(p_c, (&v_sig_2), true, gl67_dup(p_recv), (&v_conv_15), p_line, -1LL, (&v_o_35));
+  S87_check_Val t36 = f844_check_Checker_call(p_c, (&v_sig_2), true, gl67_dup(p_recv), (&v_conv_15), p_line, -1LL, (&v_o_35));
   S87_check_Val r37 = t36;
-  gl83_drop(v_o_35);
+  gl84_drop(v_o_35);
   gl62_drop(v_conv_15);
-  gl84_drop(v_sig_2);
+  gl85_drop(v_sig_2);
   rt_str_drop(p_op);
   rt_str_drop(p_name);
   gl68_drop(p_recv);
   return r37;
 }
-static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_Sig** p_sig, bool p_hasRecv, S87_check_Val p_recv, obx_arr* p_args, int64_t p_line, int64_t p_exp, S95_check_CallOpts** p_o) {
+static S87_check_Val f844_check_Checker_call(S73_check_Checker** p_c, S95_check_Sig** p_sig, bool p_hasRecv, S87_check_Val p_recv, obx_arr* p_args, int64_t p_line, int64_t p_exp, S96_check_CallOpts** p_o) {
   obx_arr t1 = f696_check_copyInts((&(*p_sig)->f_tps));
   obx_arr v_tps_2 = t1;
   obx_arr t3 = f696_check_copyInts((&(*p_sig)->f_bind));
@@ -43192,12 +43610,12 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     obx_arr v_ta_7 = t6;
     obx_arr a8 = rt_arr_new(0, sizeof(int64_t));
     obx_arr v_own_9 = a8;
-    int64_t v_from_11 = ((*p_o)->f_alltargs ? 0LL : rt_sub_int(((*p_sig)->f_tps).len, (*p_sig)->f_nown, "check.obx:3584"));
+    int64_t v_from_11 = ((*p_o)->f_alltargs ? 0LL : rt_sub_int(((*p_sig)->f_tps).len, (*p_sig)->f_nown, "check.obx:3721"));
     int64_t t12 = v_from_11;
     int64_t end13 = ((*p_sig)->f_tps).len;
     for (int64_t v_i_14 = t12; v_i_14 < end13; v_i_14++) {
       int64_t ix15 = v_i_14;
-      int64_t ap16 = ((int64_t*)((*p_sig)->f_tps).data)[rt_idx(ix15, ((*p_sig)->f_tps).len, "check.obx:3585")];
+      int64_t ap16 = ((int64_t*)((*p_sig)->f_tps).data)[rt_idx(ix15, ((*p_sig)->f_tps).len, "check.obx:3722")];
       *(int64_t*)rt_arr_push((&v_own_9), sizeof(int64_t)) = ap16;
     }
     int64_t t17 = (v_ta_7).len;
@@ -43215,10 +43633,10 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     int64_t end26 = (v_own_9).len;
     for (int64_t v_i_27 = 0LL; v_i_27 < end26; v_i_27++) {
       int64_t ix28 = v_i_27;
-      int64_t t29 = ((int64_t*)(v_own_9).data)[rt_idx(ix28, (v_own_9).len, "check.obx:3589")];
+      int64_t t29 = ((int64_t*)(v_own_9).data)[rt_idx(ix28, (v_own_9).len, "check.obx:3726")];
       int64_t ix30 = v_i_27;
-      int64_t t31 = f728_check_Checker_resolve(p_c, ((int64_t*)(v_ta_7).data)[rt_idx(ix30, (v_ta_7).len, "check.obx:3589")], 5LL, p_line);
-      f836_check_bindSet((&v_bind_4), t29, t31);
+      int64_t t31 = f728_check_Checker_resolve(p_c, ((int64_t*)(v_ta_7).data)[rt_idx(ix30, (v_ta_7).len, "check.obx:3726")], 5LL, p_line);
+      f845_check_bindSet((&v_bind_4), t29, t31);
     }
     gl9_drop(v_own_9);
     gl9_drop(v_ta_7);
@@ -43234,7 +43652,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
   }
   bool b35 = b33;
   if (b35) {
-    bool t36 = f837_check_Checker_hasTpIn(p_c, (*p_sig)->f_ret, (&v_tps_2));
+    bool t36 = f846_check_Checker_hasTpIn(p_c, (*p_sig)->f_ret, (&v_tps_2));
     b35 = t36;
   }
   bool c37 = b35;
@@ -43251,33 +43669,33 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     }
     gl9_drop(v_trial_39);
   }
-  int64_t v_nall_45 = rt_add_int(((*p_args)).len, (p_hasRecv ? 1LL : 0LL), "check.obx:3595");
+  int64_t v_nall_45 = rt_add_int(((*p_args)).len, (p_hasRecv ? 1LL : 0LL), "check.obx:3732");
   int64_t t46 = v_nall_45;
   bool c47 = (t46 != ((*p_sig)->f_params).len);
   if (c47) {
-    int64_t v_n_49 = rt_sub_int(((*p_sig)->f_params).len, (p_hasRecv ? 1LL : 0LL), "check.obx:3597");
+    int64_t v_n_49 = rt_sub_int(((*p_sig)->f_params).len, (p_hasRecv ? 1LL : 0LL), "check.obx:3734");
     int64_t t50 = p_line;
     obx_str t51 = rt_str_concat((*p_sig)->f_label, sl2159);
     obx_str t52 = rt_int_to_str(v_n_49);
     obx_str t53 = rt_str_concat(t51, t52);
-    obx_str t54 = rt_str_concat(t53, sl2552);
+    obx_str t54 = rt_str_concat(t53, sl2554);
     obx_str t55 = rt_int_to_str(((*p_args)).len);
     obx_str t56 = rt_str_concat(t54, t55);
     f702_check_Checker_err(p_c, t50, t56);
   }
-  obx_arr a57 = rt_arr_new(0, sizeof(S96_check_CArg));
+  obx_arr a57 = rt_arr_new(0, sizeof(S97_check_CArg));
   obx_arr v_vals_58 = a57;
   int64_t end59 = v_nall_45;
   for (int64_t v_i_60 = 0LL; v_i_60 < end59; v_i_60++) {
     S87_check_Val t61 = f733_check_voidVal(false);
-    S96_check_CArg t62 = ((S96_check_CArg){.f_b = false, .f_v = t61});
-    S96_check_CArg ap63 = t62;
-    *(S96_check_CArg*)rt_arr_push((&v_vals_58), sizeof(S96_check_CArg)) = ap63;
+    S97_check_CArg t62 = ((S97_check_CArg){.f_b = false, .f_v = t61});
+    S97_check_CArg ap63 = t62;
+    *(S97_check_CArg*)rt_arr_push((&v_vals_58), sizeof(S97_check_CArg)) = ap63;
   }
-  int64_t t64 = f825_check_Checker_newCid(p_c);
+  int64_t t64 = f834_check_Checker_newCid(p_c);
   int64_t v_cid_65 = t64;
   int64_t v_mark_66 = ((*p_c)->f_cx->f_pending).len;
-  obx_arr a67 = rt_arr_new(0, sizeof(S97_check_Late));
+  obx_arr a67 = rt_arr_new(0, sizeof(S98_check_Late));
   obx_arr v_lates_68 = a67;
   obx_arr a69 = rt_arr_new(0, sizeof(int64_t));
   obx_arr v_order_70 = a69;
@@ -43299,7 +43717,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
   obx_slice ap79 = rt_as_slice(&v_order_70);
   for (int64_t i80 = 0; i80 < ap79.len; i80++) {
     int64_t v_i_81 = ((int64_t*)ap79.data)[i80];
-    bool t82 = f838_check_Checker_argActs(p_c, p_hasRecv, p_args, v_i_81, true);
+    bool t82 = f847_check_Checker_argActs(p_c, p_hasRecv, p_args, v_i_81, true);
     bool ap83 = t82;
     *(bool*)rt_arr_push((&v_acts_78), sizeof(bool)) = ap83;
   }
@@ -43308,19 +43726,19 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
   obx_slice ap86 = rt_as_slice(&v_order_70);
   for (int64_t i87 = 0; i87 < ap86.len; i87++) {
     int64_t v_i_88 = ((int64_t*)ap86.data)[i87];
-    bool t89 = f838_check_Checker_argActs(p_c, p_hasRecv, p_args, v_i_88, false);
+    bool t89 = f847_check_Checker_argActs(p_c, p_hasRecv, p_args, v_i_88, false);
     bool ap90 = t89;
     *(bool*)rt_arr_push((&v_effs_85), sizeof(bool)) = ap90;
   }
-  obx_arr a91 = rt_arr_new(0, sizeof(S98_check_Recheck));
+  obx_arr a91 = rt_arr_new(0, sizeof(S99_check_Recheck));
   obx_arr v_rechecks_92 = a91;
   bool v_pend_93 = false;
   int64_t end94 = (v_order_70).len;
   for (int64_t v_pos_95 = 0LL; v_pos_95 < end94; v_pos_95++) {
     int64_t ix96 = v_pos_95;
-    int64_t v_i_97 = ((int64_t*)(v_order_70).data)[rt_idx(ix96, (v_order_70).len, "check.obx:3620")];
+    int64_t v_i_97 = ((int64_t*)(v_order_70).data)[rt_idx(ix96, (v_order_70).len, "check.obx:3757")];
     int64_t ix98 = v_i_97;
-    int64_t v_pt_99 = ((int64_t*)((*p_sig)->f_params).data)[rt_idx(ix98, ((*p_sig)->f_params).len, "check.obx:3621")];
+    int64_t v_pt_99 = ((int64_t*)((*p_sig)->f_params).data)[rt_idx(ix98, ((*p_sig)->f_params).len, "check.obx:3758")];
     bool b100 = p_hasRecv;
     if (b100) {
       b100 = (v_i_97 == 0LL);
@@ -43328,13 +43746,13 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     bool v_isrecv_101 = b100;
     obx_str ifx102;
     if (v_isrecv_101) {
-      obx_str t103 = rt_str_concat(sl2553, (*p_sig)->f_label);
+      obx_str t103 = rt_str_concat(sl2555, (*p_sig)->f_label);
       ifx102 = t103;
     } else {
-      obx_str t104 = sl2554;
-      obx_str t106 = rt_int_to_str(rt_add_int(v_i_97, (p_hasRecv ? 0LL : 1LL), "check.obx:3624"));
+      obx_str t104 = sl2556;
+      obx_str t106 = rt_int_to_str(rt_add_int(v_i_97, (p_hasRecv ? 0LL : 1LL), "check.obx:3761"));
       obx_str t107 = rt_str_concat(t104, t106);
-      obx_str t108 = rt_str_concat(t107, sl2446);
+      obx_str t108 = rt_str_concat(t107, sl2444);
       obx_str t109 = rt_str_concat(t108, (*p_sig)->f_label);
       ifx102 = t109;
       rt_str_drop(t108);
@@ -43346,7 +43764,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     bool c111 = (((*p_o)->f_fnames).len > 0LL);
     if (c111) {
       int64_t ix112 = v_i_97;
-      obx_str t113 = rt_str_concat(sl2383, ((obx_str*)((*p_o)->f_fnames).data)[rt_idx(ix112, ((*p_o)->f_fnames).len, "check.obx:3625")]);
+      obx_str t113 = rt_str_concat(sl2383, ((obx_str*)((*p_o)->f_fnames).data)[rt_idx(ix112, ((*p_o)->f_fnames).len, "check.obx:3762")]);
       obx_str t114 = rt_str_concat(t113, sl2385);
       obx_str t115 = rt_str_concat(t114, (*p_sig)->f_label);
       { obx_str nw116 = t115;
@@ -43357,7 +43775,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     }
     int64_t t117 = f523_sema_Program_subst((&(*p_c)->f_pg), v_pt_99, (&v_bind_4));
     int64_t v_pe_118 = t117;
-    int64_t t119 = f839_check_Checker_argNode(p_c, p_hasRecv, p_args, v_i_97);
+    int64_t t119 = f848_check_Checker_argNode(p_c, p_hasRecv, p_args, v_i_97);
     int64_t v_an_120 = t119;
     int64_t t121 = f497_sema_Program_tk((&(*p_c)->f_pg), v_pt_99);
     int64_t v_ptk_122 = t121;
@@ -43371,8 +43789,8 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     } else {
       bool c127 = (v_an_120 < 0LL);
       if (c127) {
-        int64_t ix129 = (p_hasRecv ? rt_sub_int(v_i_97, 1LL, "check.obx:3633") : v_i_97);
-        { S87_check_Val nw130 = gl67_dup(((S83_check_Arg*)((*p_args)).data)[rt_idx(ix129, ((*p_args)).len, "check.obx:3633")].f_v);
+        int64_t ix129 = (p_hasRecv ? rt_sub_int(v_i_97, 1LL, "check.obx:3770") : v_i_97);
+        { S87_check_Val nw130 = gl67_dup(((S83_check_Arg*)((*p_args)).data)[rt_idx(ix129, ((*p_args)).len, "check.obx:3770")].f_v);
           gl68_drop(v_v_124);
           v_v_124 = nw130; }
       } else {
@@ -43393,7 +43811,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
             (*p_c)->f_calleeTps = nw140; }
         } else {
           int64_t v_e2_141 = v_pe_118;
-          bool t142 = f837_check_Checker_hasTpIn(p_c, v_pe_118, (&v_tps_2));
+          bool t142 = f846_check_Checker_hasTpIn(p_c, v_pe_118, (&v_tps_2));
           bool c143 = t142;
           if (c143) {
             int64_t t144 = f497_sema_Program_tk((&(*p_c)->f_pg), v_pe_118);
@@ -43417,22 +43835,22 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     bool v_pm_151 = t150;
     bool c152 = (v_ptk_122 == 3LL);
     if (c152) {
-      S87_check_Val t153 = f805_check_Checker_asSlice(p_c, gl67_dup(v_v_124));
+      S87_check_Val t153 = f809_check_Checker_asSlice(p_c, gl67_dup(v_v_124));
       S87_check_Val v_sv_154 = t153;
       bool c155 = (v_sv_154.f_t < 0LL);
       if (c155) {
         int64_t t156 = p_line;
-        obx_str t157 = rt_str_concat(v_what_110, sl2477);
+        obx_str t157 = rt_str_concat(v_what_110, sl2478);
         int64_t t158 = f523_sema_Program_subst((&(*p_c)->f_pg), v_pt_99, (&v_bind_4));
         obx_str t159 = f767_check_Checker_tstr(p_c, t158);
         obx_str t160 = rt_str_concat(t157, t159);
-        obx_str t161 = rt_str_concat(t160, sl2479);
+        obx_str t161 = rt_str_concat(t160, sl2480);
         obx_str t162 = f767_check_Checker_tstr(p_c, v_v_124.f_t);
         obx_str t163 = rt_str_concat(t161, t162);
-        obx_str t164 = rt_str_concat(t163, sl2555);
+        obx_str t164 = rt_str_concat(t163, sl2557);
         obx_str t166 = (v_pm_151 ? sl2059 : sl38);
         obx_str t167 = rt_str_concat(t164, t166);
-        obx_str t168 = rt_str_concat(t167, sl2556);
+        obx_str t168 = rt_str_concat(t167, sl2558);
         f702_check_Checker_err(p_c, t156, t168);
       }
       bool b169 = v_pm_151;
@@ -43443,19 +43861,19 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
       bool c171 = b169;
       if (c171) {
         int64_t t172 = p_line;
-        obx_str t173 = rt_str_concat(v_what_110, sl2557);
+        obx_str t173 = rt_str_concat(v_what_110, sl2559);
         obx_str t174 = f767_check_Checker_tstr(p_c, v_sv_154.f_t);
         obx_str t175 = rt_str_concat(t173, t174);
         f702_check_Checker_err(p_c, t172, t175);
       }
       bool c176 = v_pm_151;
       if (c176) {
-        f789_check_Checker_frozen(p_c, v_sv_154.f_root, 3LL, p_line);
+        f793_check_Checker_frozen(p_c, v_sv_154.f_root, 3LL, p_line);
       }
       obx_str t177 = rt_str_dup(v_sv_154.f_c);
       int64_t t178 = f498_sema_Program_ta((&(*p_c)->f_pg), v_sv_154.f_t);
       int64_t t179 = f607_sema_Program_mkSlice((&(*p_c)->f_pg), t178, v_pm_151);
-      S87_check_Val t180 = f795_check_rvAt(t177, t179, v_sv_154.f_root, rt_str_dup(v_sv_154.f_path));
+      S87_check_Val t180 = f799_check_rvAt(t177, t179, v_sv_154.f_root, rt_str_dup(v_sv_154.f_path));
       { S87_check_Val nw181 = t180;
         gl68_drop(v_v_124);
         v_v_124 = nw181; }
@@ -43465,23 +43883,23 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
       bool c185 = (!t184);
       if (c185) {
         int64_t t186 = p_line;
-        obx_str t187 = rt_str_concat(v_what_110, sl2477);
+        obx_str t187 = rt_str_concat(v_what_110, sl2478);
         int64_t t188 = f523_sema_Program_subst((&(*p_c)->f_pg), v_pt_99, (&v_bind_4));
         obx_str t189 = f767_check_Checker_tstr(p_c, t188);
         obx_str t190 = rt_str_concat(t187, t189);
-        obx_str t191 = rt_str_concat(t190, sl2479);
+        obx_str t191 = rt_str_concat(t190, sl2480);
         obx_str t192 = f767_check_Checker_tstr(p_c, v_v_124.f_t);
         obx_str t193 = rt_str_concat(t191, t192);
         f702_check_Checker_err(p_c, t186, t193);
       }
       S87_check_Val t194 = gl67_dup(v_v_124);
-      int64_t t195 = f840_check_hm(v_pm_151);
-      f826_check_Checker_hold(p_c, t194, t195, v_cid_65, p_line);
-      S96_check_CArg t196 = ((S96_check_CArg){.f_b = true, .f_v = gl67_dup(v_v_124)});
+      int64_t t195 = f849_check_hm(v_pm_151);
+      f835_check_Checker_hold(p_c, t194, t195, v_cid_65, p_line);
+      S97_check_CArg t196 = ((S97_check_CArg){.f_b = true, .f_v = gl67_dup(v_v_124)});
       int64_t ix197 = v_i_97;
-      { S96_check_CArg nw198 = t196;
-        gl85_drop(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix197, (v_vals_58).len, "check.obx:3659")]);
-        ((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix197, (v_vals_58).len, "check.obx:3659")] = nw198; }
+      { S97_check_CArg nw198 = t196;
+        gl86_drop(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix197, (v_vals_58).len, "check.obx:3796")]);
+        ((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix197, (v_vals_58).len, "check.obx:3796")] = nw198; }
       gl68_drop(v_sv_154);
     } else {
       bool c199 = (v_ptk_122 == 2LL);
@@ -43494,17 +43912,17 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
         bool c202 = b201;
         if (c202) {
           int64_t t203 = p_line;
-          obx_str t204 = rt_str_concat(v_what_110, sl2477);
+          obx_str t204 = rt_str_concat(v_what_110, sl2478);
           int64_t t205 = f523_sema_Program_subst((&(*p_c)->f_pg), v_pt_99, (&v_bind_4));
           obx_str t206 = f767_check_Checker_tstr(p_c, t205);
           obx_str t207 = rt_str_concat(t204, t206);
-          obx_str t208 = rt_str_concat(t207, sl2479);
+          obx_str t208 = rt_str_concat(t207, sl2480);
           obx_str t209 = f767_check_Checker_tstr(p_c, v_v_124.f_t);
           obx_str t210 = rt_str_concat(t208, t209);
-          obx_str t211 = rt_str_concat(t210, sl2558);
+          obx_str t211 = rt_str_concat(t210, sl2560);
           obx_str t213 = (v_pm_151 ? sl2059 : sl38);
           obx_str t214 = rt_str_concat(t211, t213);
-          obx_str t215 = rt_str_concat(t214, sl2556);
+          obx_str t215 = rt_str_concat(t214, sl2558);
           f702_check_Checker_err(p_c, t203, t215);
         }
         bool b216 = v_pm_151;
@@ -43522,8 +43940,8 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
           obx_str ifx221;
           if ((v_v_124.f_root >= 0LL)) {
             int64_t ix222 = v_v_124.f_root;
-            obx_str t223 = rt_str_concat(sl2559, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix222, ((*p_c)->f_vars).len, "check.obx:3666")].f_name);
-            obx_str t224 = rt_str_concat(t223, sl2560);
+            obx_str t223 = rt_str_concat(sl2561, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix222, ((*p_c)->f_vars).len, "check.obx:3803")].f_name);
+            obx_str t224 = rt_str_concat(t223, sl2562);
             ifx221 = t224;
             rt_str_drop(t223);
           } else {
@@ -43531,13 +43949,13 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
           }
           obx_str v_nm_225 = ifx221;
           int64_t t226 = p_line;
-          obx_str t227 = rt_str_concat(v_what_110, sl2561);
+          obx_str t227 = rt_str_concat(v_what_110, sl2563);
           obx_str t228 = f767_check_Checker_tstr(p_c, v_v_124.f_t);
           obx_str t229 = rt_str_concat(t227, t228);
           obx_str t230 = rt_str_concat(t229, v_nm_225);
           f702_check_Checker_err(p_c, t226, t230);
         }
-        S87_check_Val t231 = f833_check_Checker_borrow(p_c, gl67_dup(v_v_124), v_pm_151, p_line, v_isrecv_101);
+        S87_check_Val t231 = f842_check_Checker_borrow(p_c, gl67_dup(v_v_124), v_pm_151, p_line, v_isrecv_101);
         { S87_check_Val nw232 = t231;
           gl68_drop(v_v_124);
           v_v_124 = nw232; }
@@ -43547,38 +43965,38 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
         bool c236 = (!t235);
         if (c236) {
           int64_t t237 = p_line;
-          obx_str t238 = rt_str_concat(v_what_110, sl2477);
+          obx_str t238 = rt_str_concat(v_what_110, sl2478);
           int64_t t239 = f523_sema_Program_subst((&(*p_c)->f_pg), v_pt_99, (&v_bind_4));
           obx_str t240 = f767_check_Checker_tstr(p_c, t239);
           obx_str t241 = rt_str_concat(t238, t240);
-          obx_str t242 = rt_str_concat(t241, sl2479);
+          obx_str t242 = rt_str_concat(t241, sl2480);
           obx_str t243 = f767_check_Checker_tstr(p_c, v_v_124.f_t);
           obx_str t244 = rt_str_concat(t242, t243);
           f702_check_Checker_err(p_c, t237, t244);
         }
-        bool t246 = f841_check_Checker_late(p_c, (v_isrecv_101 ? (*p_o)->f_rast : v_an_120));
+        bool t246 = f850_check_Checker_late(p_c, (v_isrecv_101 ? (*p_o)->f_rast : v_an_120));
         bool c247 = t246;
         if (c247) {
-          S97_check_Late t248 = ((S97_check_Late){.f_v = gl67_dup(v_v_124), .f_m = v_pm_151});
-          S97_check_Late ap249 = t248;
-          *(S97_check_Late*)rt_arr_push((&v_lates_68), sizeof(S97_check_Late)) = ap249;
-          bool t250 = f814_check_checks(rt_str_dup(v_v_124.f_c));
+          S98_check_Late t248 = ((S98_check_Late){.f_v = gl67_dup(v_v_124), .f_m = v_pm_151});
+          S98_check_Late ap249 = t248;
+          *(S98_check_Late*)rt_arr_push((&v_lates_68), sizeof(S98_check_Late)) = ap249;
+          bool t250 = f819_check_checks(rt_str_dup(v_v_124.f_c));
           bool c251 = t250;
           if (c251) {
-            S98_check_Recheck t252 = ((S98_check_Recheck){.f_pos = v_pos_95, .f_v = gl67_dup(v_v_124)});
-            S98_check_Recheck ap253 = t252;
-            *(S98_check_Recheck*)rt_arr_push((&v_rechecks_92), sizeof(S98_check_Recheck)) = ap253;
+            S99_check_Recheck t252 = ((S99_check_Recheck){.f_pos = v_pos_95, .f_v = gl67_dup(v_v_124)});
+            S99_check_Recheck ap253 = t252;
+            *(S99_check_Recheck*)rt_arr_push((&v_rechecks_92), sizeof(S99_check_Recheck)) = ap253;
           }
         } else {
           S87_check_Val t254 = gl67_dup(v_v_124);
-          int64_t t255 = f840_check_hm(v_pm_151);
-          f826_check_Checker_hold(p_c, t254, t255, v_cid_65, p_line);
+          int64_t t255 = f849_check_hm(v_pm_151);
+          f835_check_Checker_hold(p_c, t254, t255, v_cid_65, p_line);
         }
-        S96_check_CArg t256 = ((S96_check_CArg){.f_b = true, .f_v = gl67_dup(v_v_124)});
+        S97_check_CArg t256 = ((S97_check_CArg){.f_b = true, .f_v = gl67_dup(v_v_124)});
         int64_t ix257 = v_i_97;
-        { S96_check_CArg nw258 = t256;
-          gl85_drop(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix257, (v_vals_58).len, "check.obx:3679")]);
-          ((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix257, (v_vals_58).len, "check.obx:3679")] = nw258; }
+        { S97_check_CArg nw258 = t256;
+          gl86_drop(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix257, (v_vals_58).len, "check.obx:3816")]);
+          ((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix257, (v_vals_58).len, "check.obx:3816")] = nw258; }
       } else {
         bool c259 = (v_ptk_122 == 5LL);
         if (c259) {
@@ -43590,7 +44008,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
             S87_check_Val t264 = gl67_dup(v_v_124);
             int64_t t265 = f501_sema_Program_tb((&(*p_c)->f_pg), v_v_124.f_t);
             int64_t t266 = f604_sema_Program_mkClo((&(*p_c)->f_pg), (&v_ps_263), t265);
-            S87_check_Val t267 = f803_check_Checker_coerce(p_c, t264, t266, p_line, sl1950);
+            S87_check_Val t267 = f807_check_Checker_coerce(p_c, t264, t266, p_line, sl1950);
             { S87_check_Val nw268 = t267;
               gl68_drop(v_v_124);
               v_v_124 = nw268; }
@@ -43605,10 +44023,10 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
           bool c272 = b270;
           if (c272) {
             int64_t t273 = p_line;
-            obx_str t274 = rt_str_concat(v_what_110, sl2477);
+            obx_str t274 = rt_str_concat(v_what_110, sl2478);
             obx_str t275 = f767_check_Checker_tstr(p_c, v_pe_118);
             obx_str t276 = rt_str_concat(t274, t275);
-            obx_str t277 = rt_str_concat(t276, sl2479);
+            obx_str t277 = rt_str_concat(t276, sl2480);
             obx_str t278 = f767_check_Checker_tstr(p_c, v_v_124.f_t);
             obx_str t279 = rt_str_concat(t277, t278);
             f702_check_Checker_err(p_c, t273, t279);
@@ -43616,21 +44034,21 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
           bool c280 = (v_v_124.f_caps >= 0LL);
           if (c280) {
             int64_t ix281 = v_v_124.f_caps;
-            int64_t end282 = (((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix281, ((*p_c)->f_capl).len, "check.obx:3689")]).len;
+            int64_t end282 = (((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix281, ((*p_c)->f_capl).len, "check.obx:3826")]).len;
             for (int64_t v_k_283 = 0LL; v_k_283 < end282; v_k_283++) {
               int64_t ix284 = v_v_124.f_caps;
               int64_t ix285 = v_k_283;
-              S99_check_Cap v_cp_286 = ((S99_check_Cap*)(((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix284, ((*p_c)->f_capl).len, "check.obx:3690")]).data)[rt_idx(ix285, (((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix284, ((*p_c)->f_capl).len, "check.obx:3690")]).len, "check.obx:3690")];
-              S87_check_Val t287 = f795_check_rvAt(sl183, 11LL, v_cp_286.f_v, sl183);
-              int64_t t288 = f840_check_hm(v_cp_286.f_m);
-              f826_check_Checker_hold(p_c, t287, t288, v_cid_65, p_line);
+              S100_check_Cap v_cp_286 = ((S100_check_Cap*)(((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix284, ((*p_c)->f_capl).len, "check.obx:3827")]).data)[rt_idx(ix285, (((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix284, ((*p_c)->f_capl).len, "check.obx:3827")]).len, "check.obx:3827")];
+              S87_check_Val t287 = f799_check_rvAt(sl183, 11LL, v_cp_286.f_v, sl183);
+              int64_t t288 = f849_check_hm(v_cp_286.f_m);
+              f835_check_Checker_hold(p_c, t287, t288, v_cid_65, p_line);
             }
           }
-          S96_check_CArg t289 = ((S96_check_CArg){.f_b = true, .f_v = gl67_dup(v_v_124)});
+          S97_check_CArg t289 = ((S97_check_CArg){.f_b = true, .f_v = gl67_dup(v_v_124)});
           int64_t ix290 = v_i_97;
-          { S96_check_CArg nw291 = t289;
-            gl85_drop(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix290, (v_vals_58).len, "check.obx:3694")]);
-            ((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix290, (v_vals_58).len, "check.obx:3694")] = nw291; }
+          { S97_check_CArg nw291 = t289;
+            gl86_drop(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix290, (v_vals_58).len, "check.obx:3831")]);
+            ((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix290, (v_vals_58).len, "check.obx:3831")] = nw291; }
         } else {
           int64_t t292 = f497_sema_Program_tk((&(*p_c)->f_pg), v_v_124.f_t);
           bool c293 = (t292 == 2LL);
@@ -43642,35 +44060,35 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
           }
           bool c296 = (v_v_124.f_t == 11LL);
           if (c296) {
-            obx_str t297 = rt_str_concat(v_what_110, sl2562);
+            obx_str t297 = rt_str_concat(v_what_110, sl2564);
             f702_check_Checker_err(p_c, p_line, t297);
           }
           bool t298 = f546_sema_Program_unify((&(*p_c)->f_pg), v_pt_99, v_v_124.f_t, (&v_bind_4), (&v_tps_2));
           bool c299 = (!t298);
           if (c299) {
             int64_t t300 = p_line;
-            obx_str t301 = rt_str_concat(v_what_110, sl2477);
+            obx_str t301 = rt_str_concat(v_what_110, sl2478);
             int64_t t302 = f523_sema_Program_subst((&(*p_c)->f_pg), v_pt_99, (&v_bind_4));
             obx_str t303 = f767_check_Checker_tstr(p_c, t302);
             obx_str t304 = rt_str_concat(t301, t303);
-            obx_str t305 = rt_str_concat(t304, sl2479);
+            obx_str t305 = rt_str_concat(t304, sl2480);
             obx_str t306 = f767_check_Checker_tstr(p_c, v_v_124.f_t);
             obx_str t307 = rt_str_concat(t305, t306);
             f702_check_Checker_err(p_c, t300, t307);
           }
           bool v_later_308 = false;
-          int64_t t309 = rt_add_int(v_pos_95, 1LL, "check.obx:3702");
+          int64_t t309 = rt_add_int(v_pos_95, 1LL, "check.obx:3839");
           int64_t end310 = (v_effs_85).len;
           for (int64_t v_p_311 = t309; v_p_311 < end310; v_p_311++) {
             int64_t ix312 = v_p_311;
-            bool c313 = ((bool*)(v_effs_85).data)[rt_idx(ix312, (v_effs_85).len, "check.obx:3703")];
+            bool c313 = ((bool*)(v_effs_85).data)[rt_idx(ix312, (v_effs_85).len, "check.obx:3840")];
             if (c313) {
               v_later_308 = true;
             }
           }
           bool c314 = v_later_308;
           if (c314) {
-            S87_check_Val t315 = f811_check_Checker_snapVal(p_c, gl67_dup(v_v_124));
+            S87_check_Val t315 = f816_check_Checker_snapVal(p_c, gl67_dup(v_v_124));
             { S87_check_Val nw316 = t315;
               gl68_drop(v_v_124);
               v_v_124 = nw316; }
@@ -43682,30 +44100,30 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
           }
           bool c319 = b317;
           if (c319) {
-            f826_check_Checker_hold(p_c, gl67_dup(v_v_124), 2LL, v_cid_65, p_line);
+            f835_check_Checker_hold(p_c, gl67_dup(v_v_124), 2LL, v_cid_65, p_line);
           }
-          S96_check_CArg t320 = ((S96_check_CArg){.f_b = false, .f_v = gl67_dup(v_v_124)});
+          S97_check_CArg t320 = ((S97_check_CArg){.f_b = false, .f_v = gl67_dup(v_v_124)});
           int64_t ix321 = v_i_97;
-          { S96_check_CArg nw322 = t320;
-            gl85_drop(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix321, (v_vals_58).len, "check.obx:3707")]);
-            ((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix321, (v_vals_58).len, "check.obx:3707")] = nw322; }
+          { S97_check_CArg nw322 = t320;
+            gl86_drop(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix321, (v_vals_58).len, "check.obx:3844")]);
+            ((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix321, (v_vals_58).len, "check.obx:3844")] = nw322; }
         }
       }
     }
     bool v_rb_323 = false;
     obx_slice ap324 = rt_as_slice(&v_rechecks_92);
     for (int64_t i325 = 0; i325 < ap324.len; i325++) {
-      S98_check_Recheck v_r_326 = gl86_dup(((S98_check_Recheck*)ap324.data)[i325]);
+      S99_check_Recheck v_r_326 = gl87_dup(((S99_check_Recheck*)ap324.data)[i325]);
       bool c327 = (v_r_326.f_pos < v_pos_95);
       if (c327) {
         v_rb_323 = true;
       }
-      gl87_drop(v_r_326);
+      gl88_drop(v_r_326);
     }
     bool b328 = v_pend_93;
     if (!b328) {
       int64_t ix329 = v_pos_95;
-      bool b330 = ((bool*)(v_effs_85).data)[rt_idx(ix329, (v_effs_85).len, "check.obx:3713")];
+      bool b330 = ((bool*)(v_effs_85).data)[rt_idx(ix329, (v_effs_85).len, "check.obx:3850")];
       if (b330) {
         b330 = v_rb_323;
       }
@@ -43713,11 +44131,11 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     }
     v_pend_93 = b328;
     bool v_actLater_331 = false;
-    int64_t t332 = rt_add_int(v_pos_95, 1LL, "check.obx:3715");
+    int64_t t332 = rt_add_int(v_pos_95, 1LL, "check.obx:3852");
     int64_t end333 = (v_acts_78).len;
     for (int64_t v_p_334 = t332; v_p_334 < end333; v_p_334++) {
       int64_t ix335 = v_p_334;
-      bool c336 = ((bool*)(v_acts_78).data)[rt_idx(ix335, (v_acts_78).len, "check.obx:3716")];
+      bool c336 = ((bool*)(v_acts_78).data)[rt_idx(ix335, (v_acts_78).len, "check.obx:3853")];
       if (c336) {
         v_actLater_331 = true;
       }
@@ -43729,11 +44147,11 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     bool c338 = b337;
     if (c338) {
       int64_t ix339 = v_i_97;
-      S87_check_Val t340 = f813_check_Checker_seq(p_c, gl67_dup(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix339, (v_vals_58).len, "check.obx:3718")].f_v));
+      S87_check_Val t340 = f818_check_Checker_seq(p_c, gl67_dup(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix339, (v_vals_58).len, "check.obx:3855")].f_v));
       int64_t ix341 = v_i_97;
       { S87_check_Val nw342 = t340;
-        gl68_drop(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix341, (v_vals_58).len, "check.obx:3718")].f_v);
-        ((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix341, (v_vals_58).len, "check.obx:3718")].f_v = nw342; }
+        gl68_drop(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix341, (v_vals_58).len, "check.obx:3855")].f_v);
+        ((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix341, (v_vals_58).len, "check.obx:3855")].f_v = nw342; }
     }
     gl68_drop(v_v_124);
     rt_str_drop(v_what_110);
@@ -43742,8 +44160,8 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
   int64_t end344 = (v_order_70).len;
   for (int64_t v_pos_345 = 0LL; v_pos_345 < end344; v_pos_345++) {
     int64_t ix346 = v_pos_345;
-    int64_t ix347 = ((int64_t*)(v_order_70).data)[rt_idx(ix346, (v_order_70).len, "check.obx:3722")];
-    bool t348 = f814_check_checks(rt_str_dup(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix347, (v_vals_58).len, "check.obx:3722")].f_v.f_c));
+    int64_t ix347 = ((int64_t*)(v_order_70).data)[rt_idx(ix346, (v_order_70).len, "check.obx:3859")];
+    bool t348 = f819_check_checks(rt_str_dup(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix347, (v_vals_58).len, "check.obx:3859")].f_v.f_c));
     bool c349 = t348;
     if (c349) {
       v_last_343 = v_pos_345;
@@ -43751,13 +44169,13 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
   }
   obx_slice ap350 = rt_as_slice(&v_rechecks_92);
   for (int64_t i351 = 0; i351 < ap350.len; i351++) {
-    S98_check_Recheck v_r_352 = gl86_dup(((S98_check_Recheck*)ap350.data)[i351]);
+    S99_check_Recheck v_r_352 = gl87_dup(((S99_check_Recheck*)ap350.data)[i351]);
     bool v_later_353 = false;
-    int64_t t354 = rt_add_int(v_r_352.f_pos, 1LL, "check.obx:3726");
+    int64_t t354 = rt_add_int(v_r_352.f_pos, 1LL, "check.obx:3863");
     int64_t end355 = (v_effs_85).len;
     for (int64_t v_p_356 = t354; v_p_356 < end355; v_p_356++) {
       int64_t ix357 = v_p_356;
-      bool c358 = ((bool*)(v_effs_85).data)[rt_idx(ix357, (v_effs_85).len, "check.obx:3727")];
+      bool c358 = ((bool*)(v_effs_85).data)[rt_idx(ix357, (v_effs_85).len, "check.obx:3864")];
       if (c358) {
         v_later_353 = true;
       }
@@ -43768,20 +44186,20 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     }
     bool c360 = b359;
     if (c360) {
-      obx_str t361 = rt_str_concat(sl2520, v_r_352.f_v.f_c);
+      obx_str t361 = rt_str_concat(sl2522, v_r_352.f_v.f_c);
       obx_str t362 = rt_str_concat(t361, sl2298);
       f744_check_Checker_emit(p_c, t362);
       rt_str_drop(t361);
     }
-    gl87_drop(v_r_352);
+    gl88_drop(v_r_352);
   }
   obx_slice ap363 = rt_as_slice(&v_lates_68);
   for (int64_t i364 = 0; i364 < ap363.len; i364++) {
-    S97_check_Late v_l_365 = gl88_dup(((S97_check_Late*)ap363.data)[i364]);
+    S98_check_Late v_l_365 = gl89_dup(((S98_check_Late*)ap363.data)[i364]);
     S87_check_Val t366 = gl67_dup(v_l_365.f_v);
-    int64_t t367 = f840_check_hm(v_l_365.f_m);
-    f842_check_Checker_take(p_c, t366, t367, v_cid_65, p_line);
-    gl89_drop(v_l_365);
+    int64_t t367 = f849_check_hm(v_l_365.f_m);
+    f851_check_Checker_take(p_c, t366, t367, v_cid_65, p_line);
+    gl90_drop(v_l_365);
   }
   S3_std_StrBuf* t368 = f13_std_newStrBuf();
   S3_std_StrBuf* v_missing_369 = t368;
@@ -43789,7 +44207,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
   obx_slice ap371 = rt_as_slice(&(*p_sig)->f_tps);
   for (int64_t i372 = 0; i372 < ap371.len; i372++) {
     int64_t v_tp_373 = ((int64_t*)ap371.data)[i372];
-    int64_t t374 = f843_check_bindGet((&v_bind_4), v_tp_373);
+    int64_t t374 = f852_check_bindGet((&v_bind_4), v_tp_373);
     bool c375 = (t374 < 0LL);
     if (c375) {
       bool c376 = (v_nm_370 > 0LL);
@@ -43797,24 +44215,24 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
         f15_std_StrBuf_add((&v_missing_369), sl1754);
       }
       int64_t ix377 = v_tp_373;
-      f15_std_StrBuf_add((&v_missing_369), rt_str_dup(((S60_sema_TParam*)((*p_c)->f_pg->f_tparams).data)[rt_idx(ix377, ((*p_c)->f_pg->f_tparams).len, "check.obx:3737")].f_name));
-      v_nm_370 = rt_add_int(v_nm_370, 1LL, "check.obx:3738");
+      f15_std_StrBuf_add((&v_missing_369), rt_str_dup(((S60_sema_TParam*)((*p_c)->f_pg->f_tparams).data)[rt_idx(ix377, ((*p_c)->f_pg->f_tparams).len, "check.obx:3874")].f_name));
+      v_nm_370 = rt_add_int(v_nm_370, 1LL, "check.obx:3875");
     }
   }
   bool c378 = (v_nm_370 > 0LL);
   if (c378) {
     int64_t t379 = p_line;
-    obx_str t380 = sl2563;
+    obx_str t380 = sl2565;
     obx_str t381 = f17_std_StrBuf_toStr((&v_missing_369));
     obx_str t382 = rt_str_concat(t380, t381);
-    obx_str t383 = rt_str_concat(t382, sl2446);
+    obx_str t383 = rt_str_concat(t382, sl2444);
     obx_str t384 = rt_str_concat(t383, (*p_sig)->f_label);
-    obx_str t385 = rt_str_concat(t384, sl2564);
+    obx_str t385 = rt_str_concat(t384, sl2566);
     f702_check_Checker_err(p_c, t379, t385);
   }
   bool b386 = (((*p_sig)->f_tps).len > 0LL);
   if (b386) {
-    bool t387 = f844_check_distinct((&(*p_sig)->f_tps));
+    bool t387 = f853_check_distinct((&(*p_sig)->f_tps));
     b386 = t387;
   }
   bool c388 = b386;
@@ -43824,7 +44242,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     obx_slice ap391 = rt_as_slice(&(*p_sig)->f_tps);
     for (int64_t i392 = 0; i392 < ap391.len; i392++) {
       int64_t v_tp_393 = ((int64_t*)ap391.data)[i392];
-      int64_t t394 = f843_check_bindGet((&v_bind_4), v_tp_393);
+      int64_t t394 = f852_check_bindGet((&v_bind_4), v_tp_393);
       int64_t ap395 = t394;
       *(int64_t*)rt_arr_push((&v_ta_390), sizeof(int64_t)) = ap395;
     }
@@ -43836,30 +44254,30 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
   int64_t end398 = ((*p_c)->f_cx->f_pending).len;
   for (int64_t v_k_399 = 0LL; v_k_399 < end398; v_k_399++) {
     int64_t ix400 = v_k_399;
-    S90_check_Pend v_p_401 = gl77_dup(((S90_check_Pend*)((*p_c)->f_cx->f_pending).data)[rt_idx(ix400, ((*p_c)->f_cx->f_pending).len, "check.obx:3752")]);
+    S90_check_Pend v_p_401 = gl78_dup(((S90_check_Pend*)((*p_c)->f_cx->f_pending).data)[rt_idx(ix400, ((*p_c)->f_cx->f_pending).len, "check.obx:3889")]);
     bool b402 = (v_k_399 < v_mark_66);
     if (!b402) {
       b402 = (v_p_401.f_m != 2LL);
     }
     bool c403 = b402;
     if (c403) {
-      S90_check_Pend ap404 = gl77_dup(v_p_401);
+      S90_check_Pend ap404 = gl78_dup(v_p_401);
       *(S90_check_Pend*)rt_arr_push((&v_kept_397), sizeof(S90_check_Pend)) = ap404;
     }
     gl75_drop(v_p_401);
   }
   { obx_arr nw405 = v_kept_397;
-    gl90_drop((*p_c)->f_cx->f_pending);
+    gl91_drop((*p_c)->f_cx->f_pending);
     (*p_c)->f_cx->f_pending = nw405; }
   bool v_hasStr_406 = false;
   obx_slice ap407 = rt_as_slice(&v_vals_58);
   for (int64_t i408 = 0; i408 < ap407.len; i408++) {
-    S96_check_CArg v_x_409 = gl91_dup(((S96_check_CArg*)ap407.data)[i408]);
+    S97_check_CArg v_x_409 = gl92_dup(((S97_check_CArg*)ap407.data)[i408]);
     bool c410 = (v_x_409.f_v.f_t == 9LL);
     if (c410) {
       v_hasStr_406 = true;
     }
-    gl85_drop(v_x_409);
+    gl86_drop(v_x_409);
   }
   bool b411 = ((*p_sig)->f_kind == 1LL);
   if (b411) {
@@ -43870,18 +44288,18 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     int64_t end413 = (v_vals_58).len;
     for (int64_t v_k_414 = 0LL; v_k_414 < end413; v_k_414++) {
       int64_t ix415 = v_k_414;
-      S87_check_Val t416 = f813_check_Checker_seq(p_c, gl67_dup(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix415, (v_vals_58).len, "check.obx:3761")].f_v));
+      S87_check_Val t416 = f818_check_Checker_seq(p_c, gl67_dup(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix415, (v_vals_58).len, "check.obx:3898")].f_v));
       int64_t ix417 = v_k_414;
       { S87_check_Val nw418 = t416;
-        gl68_drop(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix417, (v_vals_58).len, "check.obx:3761")].f_v);
-        ((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix417, (v_vals_58).len, "check.obx:3761")].f_v = nw418; }
+        gl68_drop(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix417, (v_vals_58).len, "check.obx:3898")].f_v);
+        ((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix417, (v_vals_58).len, "check.obx:3898")].f_v = nw418; }
     }
   }
   obx_arr a419 = rt_arr_new(0, sizeof(obx_str));
   obx_arr v_cs_420 = a419;
   obx_slice ap421 = rt_as_slice(&v_vals_58);
   for (int64_t i422 = 0; i422 < ap421.len; i422++) {
-    S96_check_CArg v_x_423 = gl91_dup(((S96_check_CArg*)ap421.data)[i422]);
+    S97_check_CArg v_x_423 = gl92_dup(((S97_check_CArg*)ap421.data)[i422]);
     bool b424 = v_x_423.f_b;
     if (!b424) {
       b424 = ((*p_sig)->f_kind == 7LL);
@@ -43899,7 +44317,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
       obx_str ap429 = t428;
       *(obx_str*)rt_arr_push((&v_cs_420), sizeof(obx_str)) = ap429;
     }
-    gl85_drop(v_x_423);
+    gl86_drop(v_x_423);
   }
   f753_check_Checker_cutPending(p_c, v_mark_66);
   int64_t t430 = f523_sema_Program_subst((&(*p_c)->f_pg), (*p_sig)->f_ret, (&v_bind_4));
@@ -43907,18 +44325,18 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
   obx_str v_text_432 = sl183;
   bool c433 = ((*p_sig)->f_kind == 2LL);
   if (c433) {
-    obx_str t434 = f845_check_Checker_build(p_c, v_ret_431, (*p_sig)->f_variant, (&v_cs_420));
+    obx_str t434 = f854_check_Checker_build(p_c, v_ret_431, (*p_sig)->f_variant, (&v_cs_420));
     S87_check_Val t435 = f770_check_Checker_holdtmp(p_c, t434, v_ret_431);
     S87_check_Val r436 = t435;
     rt_str_drop(v_text_432);
     gl0_drop(v_cs_420);
     gl1_drop(v_missing_369);
-    gl92_drop(v_rechecks_92);
+    gl93_drop(v_rechecks_92);
     gl19_drop(v_effs_85);
     gl19_drop(v_acts_78);
     gl9_drop(v_order_70);
-    gl93_drop(v_lates_68);
-    gl94_drop(v_vals_58);
+    gl94_drop(v_lates_68);
+    gl95_drop(v_vals_58);
     gl9_drop(v_bind_4);
     gl9_drop(v_tps_2);
     gl68_drop(p_recv);
@@ -43931,7 +44349,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
       obx_slice ap440 = rt_as_slice(&(*p_sig)->f_tps);
       for (int64_t i441 = 0; i441 < ap440.len; i441++) {
         int64_t v_tp_442 = ((int64_t*)ap440.data)[i441];
-        int64_t t443 = f843_check_bindGet((&v_bind_4), v_tp_442);
+        int64_t t443 = f852_check_bindGet((&v_bind_4), v_tp_442);
         int64_t ap444 = t443;
         *(int64_t*)rt_arr_push((&v_ta_439), sizeof(int64_t)) = ap444;
       }
@@ -43941,7 +44359,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
       v_h_447.f_f = (*p_sig)->f_fd;
       obx_str t448 = f707_check_Checker_hole(p_c, gl59_dup(v_h_447));
       obx_str t449 = rt_str_concat(t448, sl30);
-      obx_str t450 = f846_check_joinStrs((&v_cs_420), 0LL);
+      obx_str t450 = f855_check_joinStrs((&v_cs_420), 0LL);
       obx_str t451 = rt_str_concat(t449, t450);
       obx_str t452 = rt_str_concat(t451, sl31);
       { obx_str nw453 = t452;
@@ -43965,14 +44383,14 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
             f37_std_StrBuf_addByte((&v_b_456), ((uint8_t)3));
           }
           int64_t ix460 = v_k_458;
-          f15_std_StrBuf_add((&v_b_456), rt_str_dup(((obx_str*)(v_cs_420).data)[rt_idx(ix460, (v_cs_420).len, "check.obx:3782")]));
+          f15_std_StrBuf_add((&v_b_456), rt_str_dup(((obx_str*)(v_cs_420).data)[rt_idx(ix460, (v_cs_420).len, "check.obx:3919")]));
         }
         int64_t t461 = (*p_sig)->f_tpt;
         int64_t t462 = (*p_sig)->f_recv;
         obx_str t463 = rt_str_dup((*p_sig)->f_name);
-        obx_str t464 = rt_str_dup(((obx_str*)(v_cs_420).data)[rt_idx(0LL, (v_cs_420).len, "check.obx:3784")]);
+        obx_str t464 = rt_str_dup(((obx_str*)(v_cs_420).data)[rt_idx(0LL, (v_cs_420).len, "check.obx:3921")]);
         obx_str t465 = f17_std_StrBuf_toStr((&v_b_456));
-        S80_check_Hole t466 = ((S80_check_Hole){.f_k = 9LL, .f_t = t461, .f_f = t462, .f_s = t463, .f_r = t464, .f_args = t465, .f_nargs = rt_sub_int((v_cs_420).len, 1LL, "check.obx:3784")});
+        S80_check_Hole t466 = ((S80_check_Hole){.f_k = 9LL, .f_t = t461, .f_f = t462, .f_s = t463, .f_r = t464, .f_args = t465, .f_nargs = rt_sub_int((v_cs_420).len, 1LL, "check.obx:3921")});
         obx_str t467 = f707_check_Checker_hole(p_c, t466);
         { obx_str nw468 = t467;
           rt_str_drop(v_text_432);
@@ -43984,7 +44402,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
           S80_check_Hole t470 = f706_check_mkHole(10LL, (*p_sig)->f_tpt, rt_str_dup((*p_sig)->f_name));
           obx_str t471 = f707_check_Checker_hole(p_c, t470);
           obx_str t472 = rt_str_concat(t471, sl30);
-          obx_str t473 = f846_check_joinStrs((&v_cs_420), 0LL);
+          obx_str t473 = f855_check_joinStrs((&v_cs_420), 0LL);
           obx_str t474 = rt_str_concat(t472, t473);
           obx_str t475 = rt_str_concat(t474, sl31);
           { obx_str nw476 = t475;
@@ -43999,7 +44417,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
           if (c477) {
             obx_str t478 = rt_str_concat(sl30, (*p_sig)->f_c);
             obx_str t479 = rt_str_concat(t478, sl2357);
-            obx_str t480 = f846_check_joinStrs((&v_cs_420), 0LL);
+            obx_str t480 = f855_check_joinStrs((&v_cs_420), 0LL);
             obx_str t481 = rt_str_concat(t479, t480);
             obx_str t482 = rt_str_concat(t481, sl31);
             { obx_str nw483 = t482;
@@ -44025,7 +44443,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
               obx_str t492 = f732_check_Checker_T(p_c, t491);
               obx_str v_ft_493 = t492;
               obx_str t494 = rt_str_concat(sl30, (*p_sig)->f_c);
-              obx_str t495 = rt_str_concat(t494, sl2565);
+              obx_str t495 = rt_str_concat(t494, sl2567);
               obx_arr a496 = rt_arr_new(1, sizeof(obx_str));
               ((obx_str*)a496.data)[0] = t495;
               obx_arr v_all_497 = a496;
@@ -44040,8 +44458,8 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
               obx_str t502 = rt_str_concat(sl2289, v_ft_493);
               obx_str t503 = rt_str_concat(t502, sl2357);
               obx_str t504 = rt_str_concat(t503, (*p_sig)->f_c);
-              obx_str t505 = rt_str_concat(t504, sl2566);
-              obx_str t506 = f846_check_joinStrs((&v_all_497), 0LL);
+              obx_str t505 = rt_str_concat(t504, sl2568);
+              obx_str t506 = f855_check_joinStrs((&v_all_497), 0LL);
               obx_str t507 = rt_str_concat(t505, t506);
               obx_str t508 = rt_str_concat(t507, sl31);
               { obx_str nw509 = t508;
@@ -44061,12 +44479,12 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
               if (c510) {
                 bool c511 = (*p_sig)->f_loc;
                 if (c511) {
-                  obx_str t512 = f829_check_Checker_W(p_c, p_line);
+                  obx_str t512 = f838_check_Checker_W(p_c, p_line);
                   obx_str ap513 = t512;
                   *(obx_str*)rt_arr_push((&v_cs_420), sizeof(obx_str)) = ap513;
                 }
                 obx_str t514 = rt_str_concat((*p_sig)->f_c, sl30);
-                obx_str t515 = f846_check_joinStrs((&v_cs_420), 0LL);
+                obx_str t515 = f855_check_joinStrs((&v_cs_420), 0LL);
                 obx_str t516 = rt_str_concat(t514, t515);
                 obx_str t517 = rt_str_concat(t516, sl31);
                 { obx_str nw518 = t517;
@@ -44082,11 +44500,11 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
                 for (int64_t v_k_522 = 0LL; v_k_522 < end521; v_k_522++) {
                   int64_t ix523 = v_k_522;
                   obx_str ifx524;
-                  if ((((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix523, (v_vals_58).len, "check.obx:3802")].f_v.f_t == 9LL)) {
+                  if ((((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix523, (v_vals_58).len, "check.obx:3939")].f_v.f_t == 9LL)) {
                     int64_t ix525 = v_k_522;
-                    obx_str t526 = rt_str_concat(sl2567, ((obx_str*)(v_cs_420).data)[rt_idx(ix525, (v_cs_420).len, "check.obx:3802")]);
+                    obx_str t526 = rt_str_concat(sl2569, ((obx_str*)(v_cs_420).data)[rt_idx(ix525, (v_cs_420).len, "check.obx:3939")]);
                     obx_str t527 = rt_str_concat(t526, sl1754);
-                    obx_str t528 = f829_check_Checker_W(p_c, p_line);
+                    obx_str t528 = f838_check_Checker_W(p_c, p_line);
                     obx_str t529 = rt_str_concat(t527, t528);
                     obx_str t530 = rt_str_concat(t529, sl31);
                     ifx524 = t530;
@@ -44096,15 +44514,15 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
                     rt_str_drop(t526);
                   } else {
                     int64_t ix531 = v_k_522;
-                    ifx524 = rt_str_dup(((obx_str*)(v_cs_420).data)[rt_idx(ix531, (v_cs_420).len, "check.obx:3802")]);
+                    ifx524 = rt_str_dup(((obx_str*)(v_cs_420).data)[rt_idx(ix531, (v_cs_420).len, "check.obx:3939")]);
                   }
                   obx_str ap532 = ifx524;
                   *(obx_str*)rt_arr_push((&v_cs2_520), sizeof(obx_str)) = ap532;
                 }
                 int64_t ix533 = (*p_sig)->f_fd;
-                obx_str t534 = rt_str_concat(sl2568, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix533, ((*p_c)->f_pg->f_fns).len, "check.obx:3804")].f_cname);
+                obx_str t534 = rt_str_concat(sl2570, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix533, ((*p_c)->f_pg->f_fns).len, "check.obx:3941")].f_cname);
                 obx_str t535 = rt_str_concat(t534, sl30);
-                obx_str t536 = f846_check_joinStrs((&v_cs2_520), 0LL);
+                obx_str t536 = f855_check_joinStrs((&v_cs2_520), 0LL);
                 obx_str t537 = rt_str_concat(t535, t536);
                 obx_str t538 = rt_str_concat(t537, sl31);
                 { obx_str nw539 = t538;
@@ -44116,7 +44534,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
                 rt_str_drop(t534);
                 bool c540 = (v_ret_431 == 9LL);
                 if (c540) {
-                  obx_str t541 = rt_str_concat(sl2569, v_text_432);
+                  obx_str t541 = rt_str_concat(sl2571, v_text_432);
                   obx_str t542 = rt_str_concat(t541, sl31);
                   { obx_str nw543 = t542;
                     rt_str_drop(v_text_432);
@@ -44133,19 +44551,19 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
                   if (c546) {
                     S87_check_Val t547 = f770_check_Checker_holdtmp(p_c, rt_str_dup(v_text_432), v_ret_431);
                     S87_check_Val v_v_548 = t547;
-                    f744_check_Checker_emit(p_c, sl2570);
+                    f744_check_Checker_emit(p_c, sl2572);
                     S87_check_Val r549 = gl67_dup(v_v_548);
                     gl68_drop(v_v_548);
                     gl0_drop(v_cs2_520);
                     rt_str_drop(v_text_432);
                     gl0_drop(v_cs_420);
                     gl1_drop(v_missing_369);
-                    gl92_drop(v_rechecks_92);
+                    gl93_drop(v_rechecks_92);
                     gl19_drop(v_effs_85);
                     gl19_drop(v_acts_78);
                     gl9_drop(v_order_70);
-                    gl93_drop(v_lates_68);
-                    gl94_drop(v_vals_58);
+                    gl94_drop(v_lates_68);
+                    gl95_drop(v_vals_58);
                     gl9_drop(v_bind_4);
                     gl9_drop(v_tps_2);
                     gl68_drop(p_recv);
@@ -44153,19 +44571,19 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
                   }
                   obx_str t550 = rt_str_concat(v_text_432, sl36);
                   f744_check_Checker_emit(p_c, t550);
-                  f744_check_Checker_emit(p_c, sl2570);
+                  f744_check_Checker_emit(p_c, sl2572);
                   S87_check_Val t551 = f733_check_voidVal((v_ret_431 == 12LL));
                   S87_check_Val r552 = t551;
                   gl0_drop(v_cs2_520);
                   rt_str_drop(v_text_432);
                   gl0_drop(v_cs_420);
                   gl1_drop(v_missing_369);
-                  gl92_drop(v_rechecks_92);
+                  gl93_drop(v_rechecks_92);
                   gl19_drop(v_effs_85);
                   gl19_drop(v_acts_78);
                   gl9_drop(v_order_70);
-                  gl93_drop(v_lates_68);
-                  gl94_drop(v_vals_58);
+                  gl94_drop(v_lates_68);
+                  gl95_drop(v_vals_58);
                   gl9_drop(v_bind_4);
                   gl9_drop(v_tps_2);
                   gl68_drop(p_recv);
@@ -44192,12 +44610,12 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     rt_str_drop(v_text_432);
     gl0_drop(v_cs_420);
     gl1_drop(v_missing_369);
-    gl92_drop(v_rechecks_92);
+    gl93_drop(v_rechecks_92);
     gl19_drop(v_effs_85);
     gl19_drop(v_acts_78);
     gl9_drop(v_order_70);
-    gl93_drop(v_lates_68);
-    gl94_drop(v_vals_58);
+    gl94_drop(v_lates_68);
+    gl95_drop(v_vals_58);
     gl9_drop(v_bind_4);
     gl9_drop(v_tps_2);
     gl68_drop(p_recv);
@@ -44211,14 +44629,14 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
     int64_t end562 = ((*p_sig)->f_params).len;
     for (int64_t v_k_563 = 0LL; v_k_563 < end562; v_k_563++) {
       int64_t ix564 = v_k_563;
-      bool t565 = f621_sema_Program_isBorrow((&(*p_c)->f_pg), ((int64_t*)((*p_sig)->f_params).data)[rt_idx(ix564, ((*p_sig)->f_params).len, "check.obx:3825")]);
+      bool t565 = f621_sema_Program_isBorrow((&(*p_c)->f_pg), ((int64_t*)((*p_sig)->f_params).data)[rt_idx(ix564, ((*p_sig)->f_params).len, "check.obx:3962")]);
       bool c566 = t565;
       if (c566) {
         bool c567 = (v_nb_561 == 0LL);
         if (c567) {
           v_bi_560 = v_k_563;
         }
-        v_nb_561 = rt_add_int(v_nb_561, 1LL, "check.obx:3827");
+        v_nb_561 = rt_add_int(v_nb_561, 1LL, "check.obx:3964");
       }
     }
     obx_str t568 = f771_check_Checker_fresh(p_c, sl1975);
@@ -44241,7 +44659,7 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
       rt_str_drop(t575);
       rt_str_drop(v_ct_574);
     } else {
-      obx_str t580 = rt_str_concat(sl2512, v_n_569);
+      obx_str t580 = rt_str_concat(sl2513, v_n_569);
       obx_str t581 = rt_str_concat(t580, sl2267);
       obx_str t582 = rt_str_concat(t581, v_text_432);
       obx_str t583 = rt_str_concat(t582, sl36);
@@ -44255,38 +44673,38 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
       obx_str t585 = rt_str_dup(v_n_569);
       int64_t t586 = v_ret_431;
       int64_t ix587 = v_bi_560;
-      int64_t t588 = ((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix587, (v_vals_58).len, "check.obx:3837")].f_v.f_root;
+      int64_t t588 = ((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix587, (v_vals_58).len, "check.obx:3974")].f_v.f_root;
       int64_t ix589 = v_bi_560;
-      obx_str t590 = f847_check_pathAdd(rt_str_dup(((S96_check_CArg*)(v_vals_58).data)[rt_idx(ix589, (v_vals_58).len, "check.obx:3837")].f_v.f_path), sl44);
-      S87_check_Val t591 = f795_check_rvAt(t585, t586, t588, t590);
+      obx_str t590 = f856_check_pathAdd(rt_str_dup(((S97_check_CArg*)(v_vals_58).data)[rt_idx(ix589, (v_vals_58).len, "check.obx:3974")].f_v.f_path), sl44);
+      S87_check_Val t591 = f799_check_rvAt(t585, t586, t588, t590);
       S87_check_Val r592 = t591;
       rt_str_drop(v_n_569);
       rt_str_drop(v_text_432);
       gl0_drop(v_cs_420);
       gl1_drop(v_missing_369);
-      gl92_drop(v_rechecks_92);
+      gl93_drop(v_rechecks_92);
       gl19_drop(v_effs_85);
       gl19_drop(v_acts_78);
       gl9_drop(v_order_70);
-      gl93_drop(v_lates_68);
-      gl94_drop(v_vals_58);
+      gl94_drop(v_lates_68);
+      gl95_drop(v_vals_58);
       gl9_drop(v_bind_4);
       gl9_drop(v_tps_2);
       gl68_drop(p_recv);
       return r592;
     }
-    S87_check_Val t593 = f795_check_rvAt(rt_str_dup(v_n_569), v_ret_431, -1LL, sl183);
+    S87_check_Val t593 = f799_check_rvAt(rt_str_dup(v_n_569), v_ret_431, -1LL, sl183);
     S87_check_Val r594 = t593;
     rt_str_drop(v_n_569);
     rt_str_drop(v_text_432);
     gl0_drop(v_cs_420);
     gl1_drop(v_missing_369);
-    gl92_drop(v_rechecks_92);
+    gl93_drop(v_rechecks_92);
     gl19_drop(v_effs_85);
     gl19_drop(v_acts_78);
     gl9_drop(v_order_70);
-    gl93_drop(v_lates_68);
-    gl94_drop(v_vals_58);
+    gl94_drop(v_lates_68);
+    gl95_drop(v_vals_58);
     gl9_drop(v_bind_4);
     gl9_drop(v_tps_2);
     gl68_drop(p_recv);
@@ -44297,27 +44715,27 @@ static S87_check_Val f835_check_Checker_call(S73_check_Checker** p_c, S94_check_
   rt_str_drop(v_text_432);
   gl0_drop(v_cs_420);
   gl1_drop(v_missing_369);
-  gl92_drop(v_rechecks_92);
+  gl93_drop(v_rechecks_92);
   gl19_drop(v_effs_85);
   gl19_drop(v_acts_78);
   gl9_drop(v_order_70);
-  gl93_drop(v_lates_68);
-  gl94_drop(v_vals_58);
+  gl94_drop(v_lates_68);
+  gl95_drop(v_vals_58);
   gl9_drop(v_bind_4);
   gl9_drop(v_tps_2);
   gl68_drop(p_recv);
   return r596;
 }
-static obx_str f847_check_pathAdd(obx_str p_p, obx_str p_e) {
+static obx_str f856_check_pathAdd(obx_str p_p, obx_str p_e) {
   obx_str t1 = rt_str_concat(p_p, p_e);
-  obx_str t2 = rt_str_concat(t1, sl2428);
+  obx_str t2 = rt_str_concat(t1, sl2427);
   obx_str r3 = t2;
   rt_str_drop(t1);
   rt_str_drop(p_e);
   rt_str_drop(p_p);
   return r3;
 }
-static obx_str f846_check_joinStrs(obx_arr* p_xs, int64_t p_from) {
+static obx_str f855_check_joinStrs(obx_arr* p_xs, int64_t p_from) {
   S3_std_StrBuf* t1 = f13_std_newStrBuf();
   S3_std_StrBuf* v_b_2 = t1;
   int64_t t3 = p_from;
@@ -44328,14 +44746,14 @@ static obx_str f846_check_joinStrs(obx_arr* p_xs, int64_t p_from) {
       f15_std_StrBuf_add((&v_b_2), sl1754);
     }
     int64_t ix7 = v_i_5;
-    f15_std_StrBuf_add((&v_b_2), rt_str_dup(((obx_str*)((*p_xs)).data)[rt_idx(ix7, ((*p_xs)).len, "check.obx:3856")]));
+    f15_std_StrBuf_add((&v_b_2), rt_str_dup(((obx_str*)((*p_xs)).data)[rt_idx(ix7, ((*p_xs)).len, "check.obx:3993")]));
   }
   obx_str t8 = f17_std_StrBuf_toStr((&v_b_2));
   obx_str r9 = t8;
   gl1_drop(v_b_2);
   return r9;
 }
-static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, int64_t p_vr, obx_arr* p_cs) {
+static obx_str f854_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, int64_t p_vr, obx_arr* p_cs) {
   int64_t t1 = f498_sema_Program_ta((&(*p_c)->f_pg), p_t);
   int64_t v_d_2 = t1;
   obx_arr a3 = rt_arr_new(0, sizeof(obx_str));
@@ -44343,7 +44761,7 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
   bool c5 = (p_vr >= 0LL);
   if (c5) {
     int64_t ix6 = p_vr;
-    obx_slice ap7 = rt_as_slice(&((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix6, ((*p_c)->f_pg->f_variants).len, "check.obx:3166")].f_fields);
+    obx_slice ap7 = rt_as_slice(&((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix6, ((*p_c)->f_pg->f_variants).len, "check.obx:3303")].f_fields);
     for (int64_t i8 = 0; i8 < ap7.len; i8++) {
       S66_sema_Field v_f_9 = gl45_dup(((S66_sema_Field*)ap7.data)[i8]);
       obx_str ap10 = rt_str_dup(v_f_9.f_name);
@@ -44352,7 +44770,7 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
     }
   } else {
     int64_t ix11 = v_d_2;
-    obx_slice ap12 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix11, ((*p_c)->f_pg->f_types).len, "check.obx:3168")].f_fields);
+    obx_slice ap12 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix11, ((*p_c)->f_pg->f_types).len, "check.obx:3305")].f_fields);
     for (int64_t i13 = 0; i13 < ap12.len; i13++) {
       S66_sema_Field v_f_14 = gl45_dup(((S66_sema_Field*)ap12.data)[i13]);
       obx_str ap15 = rt_str_dup(v_f_14.f_name);
@@ -44363,7 +44781,7 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
   int64_t t16 = (v_names_4).len;
   int64_t v_m_18 = ((t16 < ((*p_cs)).len) ? (v_names_4).len : ((*p_cs)).len);
   int64_t ix19 = v_d_2;
-  bool c20 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix19, ((*p_c)->f_pg->f_types).len, "check.obx:3171")].f_value;
+  bool c20 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix19, ((*p_c)->f_pg->f_types).len, "check.obx:3308")].f_value;
   if (c20) {
     S3_std_StrBuf* t21 = f13_std_newStrBuf();
     S3_std_StrBuf* v_b_22 = t21;
@@ -44374,10 +44792,10 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
         f15_std_StrBuf_add((&v_b_22), sl1754);
       }
       int64_t ix26 = v_i_24;
-      obx_str t27 = rt_str_concat(sl2312, ((obx_str*)(v_names_4).data)[rt_idx(ix26, (v_names_4).len, "check.obx:3175")]);
+      obx_str t27 = rt_str_concat(sl2312, ((obx_str*)(v_names_4).data)[rt_idx(ix26, (v_names_4).len, "check.obx:3312")]);
       obx_str t28 = rt_str_concat(t27, sl2267);
       int64_t ix29 = v_i_24;
-      obx_str t30 = rt_str_concat(t28, ((obx_str*)((*p_cs)).data)[rt_idx(ix29, ((*p_cs)).len, "check.obx:3175")]);
+      obx_str t30 = rt_str_concat(t28, ((obx_str*)((*p_cs)).data)[rt_idx(ix29, ((*p_cs)).len, "check.obx:3312")]);
       f15_std_StrBuf_add((&v_b_22), t30);
       rt_str_drop(t28);
       rt_str_drop(t27);
@@ -44387,17 +44805,17 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
     bool c33 = (p_vr >= 0LL);
     if (c33) {
       obx_str t34 = rt_str_concat(sl2289, v_ct_32);
-      obx_str t35 = rt_str_concat(t34, sl2571);
+      obx_str t35 = rt_str_concat(t34, sl2573);
       int64_t ix36 = p_vr;
-      obx_str t37 = rt_int_to_str(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix36, ((*p_c)->f_pg->f_variants).len, "check.obx:3179")].f_index);
+      obx_str t37 = rt_int_to_str(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix36, ((*p_c)->f_pg->f_variants).len, "check.obx:3316")].f_index);
       obx_str t38 = rt_str_concat(t35, t37);
       obx_str t39 = rt_str_concat(t38, sl2375);
       int64_t ix40 = p_vr;
-      obx_str t41 = rt_str_concat(t39, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix40, ((*p_c)->f_pg->f_variants).len, "check.obx:3179")].f_name);
+      obx_str t41 = rt_str_concat(t39, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix40, ((*p_c)->f_pg->f_variants).len, "check.obx:3316")].f_name);
       obx_str t42 = rt_str_concat(t41, sl2376);
       obx_str t43 = f17_std_StrBuf_toStr((&v_b_22));
       obx_str t44 = rt_str_concat(t42, t43);
-      obx_str t45 = rt_str_concat(t44, sl2572);
+      obx_str t45 = rt_str_concat(t44, sl2574);
       obx_str r46 = t45;
       rt_str_drop(t44);
       rt_str_drop(t43);
@@ -44422,9 +44840,9 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
     }
     obx_str v_inner_49 = ifx47;
     obx_str t50 = rt_str_concat(sl2289, v_ct_32);
-    obx_str t51 = rt_str_concat(t50, sl2573);
+    obx_str t51 = rt_str_concat(t50, sl2575);
     obx_str t52 = rt_str_concat(t51, v_inner_49);
-    obx_str t53 = rt_str_concat(t52, sl2499);
+    obx_str t53 = rt_str_concat(t52, sl2500);
     obx_str r54 = t53;
     rt_str_drop(t52);
     rt_str_drop(t51);
@@ -44435,15 +44853,15 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
     gl0_drop(v_names_4);
     return r54;
   }
-  obx_str t55 = f771_check_Checker_fresh(p_c, sl2574);
+  obx_str t55 = f771_check_Checker_fresh(p_c, sl2576);
   obx_str v_n_56 = t55;
   obx_str t57 = f732_check_Checker_T(p_c, p_t);
   obx_str v_ct_58 = t57;
   obx_str t59 = rt_str_concat(v_ct_58, sl1771);
   obx_str t60 = rt_str_concat(t59, v_n_56);
-  obx_str t61 = rt_str_concat(t60, sl2575);
+  obx_str t61 = rt_str_concat(t60, sl2577);
   obx_str t62 = rt_str_concat(t61, v_n_56);
-  obx_str t63 = rt_str_concat(t62, sl2576);
+  obx_str t63 = rt_str_concat(t62, sl2578);
   f744_check_Checker_emit(p_c, t63);
   rt_str_drop(t62);
   rt_str_drop(t61);
@@ -44451,9 +44869,9 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
   rt_str_drop(t59);
   bool c64 = (p_vr >= 0LL);
   if (c64) {
-    obx_str t65 = rt_str_concat(v_n_56, sl2577);
+    obx_str t65 = rt_str_concat(v_n_56, sl2579);
     int64_t ix66 = p_vr;
-    obx_str t67 = rt_int_to_str(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix66, ((*p_c)->f_pg->f_variants).len, "check.obx:3188")].f_index);
+    obx_str t67 = rt_int_to_str(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix66, ((*p_c)->f_pg->f_variants).len, "check.obx:3325")].f_index);
     obx_str t68 = rt_str_concat(t65, t67);
     obx_str t69 = rt_str_concat(t68, sl36);
     f744_check_Checker_emit(p_c, t69);
@@ -44463,9 +44881,9 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
   }
   obx_str ifx70;
   if ((p_vr >= 0LL)) {
-    obx_str t71 = rt_str_concat(v_n_56, sl2578);
+    obx_str t71 = rt_str_concat(v_n_56, sl2580);
     int64_t ix72 = p_vr;
-    obx_str t73 = rt_str_concat(t71, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix72, ((*p_c)->f_pg->f_variants).len, "check.obx:3189")].f_name);
+    obx_str t73 = rt_str_concat(t71, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix72, ((*p_c)->f_pg->f_variants).len, "check.obx:3326")].f_name);
     obx_str t74 = rt_str_concat(t73, sl37);
     ifx70 = t74;
     rt_str_drop(t73);
@@ -44479,10 +44897,10 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
   for (int64_t v_i_78 = 0LL; v_i_78 < end77; v_i_78++) {
     obx_str t79 = rt_str_concat(v_pre_76, sl2331);
     int64_t ix80 = v_i_78;
-    obx_str t81 = rt_str_concat(t79, ((obx_str*)(v_names_4).data)[rt_idx(ix80, (v_names_4).len, "check.obx:3190")]);
+    obx_str t81 = rt_str_concat(t79, ((obx_str*)(v_names_4).data)[rt_idx(ix80, (v_names_4).len, "check.obx:3327")]);
     obx_str t82 = rt_str_concat(t81, sl2267);
     int64_t ix83 = v_i_78;
-    obx_str t84 = rt_str_concat(t82, ((obx_str*)((*p_cs)).data)[rt_idx(ix83, ((*p_cs)).len, "check.obx:3190")]);
+    obx_str t84 = rt_str_concat(t82, ((obx_str*)((*p_cs)).data)[rt_idx(ix83, ((*p_cs)).len, "check.obx:3327")]);
     obx_str t85 = rt_str_concat(t84, sl36);
     f744_check_Checker_emit(p_c, t85);
     rt_str_drop(t84);
@@ -44497,16 +44915,16 @@ static obx_str f845_check_Checker_build(S73_check_Checker** p_c, int64_t p_t, in
   gl0_drop(v_names_4);
   return r86;
 }
-static bool f844_check_distinct(obx_arr* p_xs) {
+static bool f853_check_distinct(obx_arr* p_xs) {
   int64_t end1 = ((*p_xs)).len;
   for (int64_t v_i_2 = 0LL; v_i_2 < end1; v_i_2++) {
-    int64_t t3 = rt_add_int(v_i_2, 1LL, "check.obx:3845");
+    int64_t t3 = rt_add_int(v_i_2, 1LL, "check.obx:3982");
     int64_t end4 = ((*p_xs)).len;
     for (int64_t v_j_5 = t3; v_j_5 < end4; v_j_5++) {
       int64_t ix6 = v_i_2;
-      int64_t t7 = ((int64_t*)((*p_xs)).data)[rt_idx(ix6, ((*p_xs)).len, "check.obx:3846")];
+      int64_t t7 = ((int64_t*)((*p_xs)).data)[rt_idx(ix6, ((*p_xs)).len, "check.obx:3983")];
       int64_t ix8 = v_j_5;
-      bool c9 = (t7 == ((int64_t*)((*p_xs)).data)[rt_idx(ix8, ((*p_xs)).len, "check.obx:3846")]);
+      bool c9 = (t7 == ((int64_t*)((*p_xs)).data)[rt_idx(ix8, ((*p_xs)).len, "check.obx:3983")]);
       if (c9) {
         bool r10 = false;
         return r10;
@@ -44516,42 +44934,42 @@ static bool f844_check_distinct(obx_arr* p_xs) {
   bool r11 = true;
   return r11;
 }
-static int64_t f843_check_bindGet(obx_arr* p_bind, int64_t p_tp) {
+static int64_t f852_check_bindGet(obx_arr* p_bind, int64_t p_tp) {
   int64_t v_i_1 = 0LL;
   while (1) {
     int64_t t2 = v_i_1;
     bool c3 = (t2 < ((*p_bind)).len);
     if (!c3) break;
     int64_t ix4 = v_i_1;
-    bool c5 = (((int64_t*)((*p_bind)).data)[rt_idx(ix4, ((*p_bind)).len, "check.obx:2366")] == p_tp);
+    bool c5 = (((int64_t*)((*p_bind)).data)[rt_idx(ix4, ((*p_bind)).len, "check.obx:2483")] == p_tp);
     if (c5) {
-      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:2366");
-      int64_t r7 = ((int64_t*)((*p_bind)).data)[rt_idx(ix6, ((*p_bind)).len, "check.obx:2366")];
+      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:2483");
+      int64_t r7 = ((int64_t*)((*p_bind)).data)[rt_idx(ix6, ((*p_bind)).len, "check.obx:2483")];
       return r7;
     }
-    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:2367");
+    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:2484");
   }
   int64_t r8 = -1LL;
   return r8;
 }
-static void f842_check_Checker_take(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_m, int64_t p_cid, int64_t p_line) {
+static void f851_check_Checker_take(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_m, int64_t p_cid, int64_t p_line) {
   bool b1 = (p_v.f_root >= 0LL);
   if (b1) {
     int64_t ix2 = p_v.f_root;
-    b1 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix2, ((*p_c)->f_vars).len, "check.obx:3535")].f_moved;
+    b1 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix2, ((*p_c)->f_vars).len, "check.obx:3672")].f_moved;
   }
   bool c3 = b1;
   if (c3) {
     int64_t ix4 = p_v.f_root;
-    obx_str t5 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix4, ((*p_c)->f_vars).len, "check.obx:3536")].f_name);
-    obx_str t6 = rt_str_concat(t5, sl2579);
-    obx_str t7 = rt_str_concat(t6, sl2580);
+    obx_str t5 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix4, ((*p_c)->f_vars).len, "check.obx:3673")].f_name);
+    obx_str t6 = rt_str_concat(t5, sl2581);
+    obx_str t7 = rt_str_concat(t6, sl2582);
     f702_check_Checker_err(p_c, p_line, t7);
   }
-  f826_check_Checker_hold(p_c, gl67_dup(p_v), p_m, p_cid, p_line);
+  f835_check_Checker_hold(p_c, gl67_dup(p_v), p_m, p_cid, p_line);
   gl68_drop(p_v);
 }
-static bool f841_check_Checker_late(S73_check_Checker** p_c, int64_t p_a0) {
+static bool f850_check_Checker_late(S73_check_Checker** p_c, int64_t p_a0) {
   bool c1 = (p_a0 < 0LL);
   if (c1) {
     bool r2 = false;
@@ -44578,7 +44996,7 @@ static bool f841_check_Checker_late(S73_check_Checker** p_c, int64_t p_a0) {
     bool c12 = (t11 == 51LL);
     if (c12) {
       S49_syntax_Node t13 = f703_check_Checker_nd(p_c, v_a_3);
-      int64_t t14 = f823_check_Checker_placeType(p_c, t13.f_a);
+      int64_t t14 = f832_check_Checker_placeType(p_c, t13.f_a);
       int64_t v_pt_15 = t14;
       gl49_drop(t13);
       bool b16 = (v_pt_15 < 0LL);
@@ -44607,11 +45025,11 @@ static bool f841_check_Checker_late(S73_check_Checker** p_c, int64_t p_a0) {
   bool r25 = b22;
   return r25;
 }
-static int64_t f840_check_hm(bool p_m) {
+static int64_t f849_check_hm(bool p_m) {
   int64_t r2 = (p_m ? 1LL : 0LL);
   return r2;
 }
-static int64_t f839_check_Checker_argNode(S73_check_Checker** p_c, bool p_hasRecv, obx_arr* p_args, int64_t p_i) {
+static int64_t f848_check_Checker_argNode(S73_check_Checker** p_c, bool p_hasRecv, obx_arr* p_args, int64_t p_i) {
   bool c1 = p_hasRecv;
   if (c1) {
     bool c2 = (p_i == 0LL);
@@ -44619,49 +45037,49 @@ static int64_t f839_check_Checker_argNode(S73_check_Checker** p_c, bool p_hasRec
       int64_t r3 = -1LL;
       return r3;
     }
-    int64_t ix4 = rt_sub_int(p_i, 1LL, "check.obx:3573");
+    int64_t ix4 = rt_sub_int(p_i, 1LL, "check.obx:3710");
     int64_t ifx5;
-    if (((S83_check_Arg*)((*p_args)).data)[rt_idx(ix4, ((*p_args)).len, "check.obx:3573")].f_isVal) {
+    if (((S83_check_Arg*)((*p_args)).data)[rt_idx(ix4, ((*p_args)).len, "check.obx:3710")].f_isVal) {
       ifx5 = -1LL;
     } else {
-      int64_t ix6 = rt_sub_int(p_i, 1LL, "check.obx:3573");
-      ifx5 = ((S83_check_Arg*)((*p_args)).data)[rt_idx(ix6, ((*p_args)).len, "check.obx:3573")].f_n;
+      int64_t ix6 = rt_sub_int(p_i, 1LL, "check.obx:3710");
+      ifx5 = ((S83_check_Arg*)((*p_args)).data)[rt_idx(ix6, ((*p_args)).len, "check.obx:3710")].f_n;
     }
     int64_t r7 = ifx5;
     return r7;
   }
   int64_t ix8 = p_i;
   int64_t ifx9;
-  if (((S83_check_Arg*)((*p_args)).data)[rt_idx(ix8, ((*p_args)).len, "check.obx:3575")].f_isVal) {
+  if (((S83_check_Arg*)((*p_args)).data)[rt_idx(ix8, ((*p_args)).len, "check.obx:3712")].f_isVal) {
     ifx9 = -1LL;
   } else {
     int64_t ix10 = p_i;
-    ifx9 = ((S83_check_Arg*)((*p_args)).data)[rt_idx(ix10, ((*p_args)).len, "check.obx:3575")].f_n;
+    ifx9 = ((S83_check_Arg*)((*p_args)).data)[rt_idx(ix10, ((*p_args)).len, "check.obx:3712")].f_n;
   }
   int64_t r11 = ifx9;
   return r11;
 }
-static bool f838_check_Checker_argActs(S73_check_Checker** p_c, bool p_hasRecv, obx_arr* p_args, int64_t p_i, bool p_traps) {
-  int64_t t1 = f839_check_Checker_argNode(p_c, p_hasRecv, p_args, p_i);
+static bool f847_check_Checker_argActs(S73_check_Checker** p_c, bool p_hasRecv, obx_arr* p_args, int64_t p_i, bool p_traps) {
+  int64_t t1 = f848_check_Checker_argNode(p_c, p_hasRecv, p_args, p_i);
   int64_t v_n_2 = t1;
   bool b3 = (v_n_2 >= 0LL);
   if (b3) {
-    bool t4 = f810_check_Checker_effects(p_c, v_n_2, p_traps);
+    bool t4 = f815_check_Checker_effects(p_c, v_n_2, p_traps);
     b3 = t4;
   }
   bool r5 = b3;
   return r5;
 }
-static bool f837_check_Checker_hasTpIn(S73_check_Checker** p_c, int64_t p_t, obx_arr* p_tps) {
+static bool f846_check_Checker_hasTpIn(S73_check_Checker** p_c, int64_t p_t, obx_arr* p_tps) {
   bool b1 = (((*p_tps)).len > 0LL);
   if (b1) {
-    bool t2 = f848_sema_Program_hasTp((&(*p_c)->f_pg), p_t, p_tps);
+    bool t2 = f857_sema_Program_hasTp((&(*p_c)->f_pg), p_t, p_tps);
     b1 = t2;
   }
   bool r3 = b1;
   return r3;
 }
-static bool f848_sema_Program_hasTp(S53_sema_Program** p_pg, int64_t p_t, obx_arr* p_tps) {
+static bool f857_sema_Program_hasTp(S53_sema_Program** p_pg, int64_t p_t, obx_arr* p_tps) {
   int64_t t1 = f497_sema_Program_tk(p_pg, p_t);
   int64_t v_k_2 = t1;
   int64_t sv3 = v_k_2;
@@ -44679,7 +45097,7 @@ static bool f848_sema_Program_hasTp(S53_sema_Program** p_pg, int64_t p_t, obx_ar
     return r8;
   } else if (sv3 == 1LL || sv3 == 2LL || sv3 == 3LL) {
     int64_t t9 = f498_sema_Program_ta(p_pg, p_t);
-    bool t10 = f848_sema_Program_hasTp(p_pg, t9, p_tps);
+    bool t10 = f857_sema_Program_hasTp(p_pg, t9, p_tps);
     bool r11 = t10;
     return r11;
   } else {
@@ -44688,7 +45106,7 @@ static bool f848_sema_Program_hasTp(S53_sema_Program** p_pg, int64_t p_t, obx_ar
   int64_t end13 = t12;
   for (int64_t v_i_14 = 0LL; v_i_14 < end13; v_i_14++) {
     int64_t t15 = f503_sema_Program_ti(p_pg, p_t, v_i_14);
-    bool t16 = f848_sema_Program_hasTp(p_pg, t15, p_tps);
+    bool t16 = f857_sema_Program_hasTp(p_pg, t15, p_tps);
     bool c17 = t16;
     if (c17) {
       bool r18 = true;
@@ -44702,47 +45120,47 @@ static bool f848_sema_Program_hasTp(S53_sema_Program** p_pg, int64_t p_t, obx_ar
   bool b20 = b19;
   if (b20) {
     int64_t t21 = f501_sema_Program_tb(p_pg, p_t);
-    bool t22 = f848_sema_Program_hasTp(p_pg, t21, p_tps);
+    bool t22 = f857_sema_Program_hasTp(p_pg, t21, p_tps);
     b20 = t22;
   }
   bool r23 = b20;
   return r23;
 }
-static void f836_check_bindSet(obx_arr* p_bind, int64_t p_tp, int64_t p_t) {
+static void f845_check_bindSet(obx_arr* p_bind, int64_t p_tp, int64_t p_t) {
   int64_t v_i_1 = 0LL;
   while (1) {
     int64_t t2 = v_i_1;
     bool c3 = (t2 < ((*p_bind)).len);
     if (!c3) break;
     int64_t ix4 = v_i_1;
-    bool c5 = (((int64_t*)((*p_bind)).data)[rt_idx(ix4, ((*p_bind)).len, "check.obx:3545")] == p_tp);
+    bool c5 = (((int64_t*)((*p_bind)).data)[rt_idx(ix4, ((*p_bind)).len, "check.obx:3682")] == p_tp);
     if (c5) {
-      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:3546");
-      ((int64_t*)((*p_bind)).data)[rt_idx(ix6, ((*p_bind)).len, "check.obx:3546")] = p_t;
+      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:3683");
+      ((int64_t*)((*p_bind)).data)[rt_idx(ix6, ((*p_bind)).len, "check.obx:3683")] = p_t;
       return;
     }
-    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:3549");
+    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:3686");
   }
   int64_t ap7 = p_tp;
   *(int64_t*)rt_arr_push(p_bind, sizeof(int64_t)) = ap7;
   int64_t ap8 = p_t;
   *(int64_t*)rt_arr_push(p_bind, sizeof(int64_t)) = ap8;
 }
-static S95_check_CallOpts* f834_check_noOpts(void) {
+static S96_check_CallOpts* f843_check_noOpts(void) {
   obx_arr a1 = rt_arr_new(0, sizeof(obx_str));
   obx_arr a2 = rt_arr_new(0, sizeof(int64_t));
-  S95_check_CallOpts* o3 = rt_alloc(sizeof(*o3));
+  S96_check_CallOpts* o3 = rt_alloc(sizeof(*o3));
   o3->f_targs = -1LL;
   o3->f_alltargs = false;
   o3->f_op = false;
   o3->f_fnames = a1;
   o3->f_order = a2;
   o3->f_rast = -1LL;
-  S95_check_CallOpts* t4 = o3;
-  S95_check_CallOpts* r5 = t4;
+  S96_check_CallOpts* t4 = o3;
+  S96_check_CallOpts* r5 = t4;
   return r5;
 }
-static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_check_Val p_v0, bool p_m, int64_t p_line, bool p_recv) {
+static S87_check_Val f842_check_Checker_borrow(S73_check_Checker** p_c, S87_check_Val p_v0, bool p_m, int64_t p_line, bool p_recv) {
   S87_check_Val v_v_1 = gl67_dup(p_v0);
   int64_t t2 = f497_sema_Program_tk((&(*p_c)->f_pg), v_v_1.f_t);
   int64_t v_k_3 = t2;
@@ -44755,16 +45173,16 @@ static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_chec
     }
     bool c7 = b5;
     if (c7) {
-      f702_check_Checker_err(p_c, p_line, sl2581);
+      f702_check_Checker_err(p_c, p_line, sl2583);
     }
     bool c8 = p_m;
     if (c8) {
-      f789_check_Checker_frozen(p_c, v_v_1.f_root, 3LL, p_line);
+      f793_check_Checker_frozen(p_c, v_v_1.f_root, 3LL, p_line);
     }
     obx_str t9 = rt_str_dup(v_v_1.f_c);
     int64_t t10 = f498_sema_Program_ta((&(*p_c)->f_pg), v_v_1.f_t);
     int64_t t11 = f607_sema_Program_mkSlice((&(*p_c)->f_pg), t10, p_m);
-    S87_check_Val t12 = f795_check_rvAt(t9, t11, v_v_1.f_root, rt_str_dup(v_v_1.f_path));
+    S87_check_Val t12 = f799_check_rvAt(t9, t11, v_v_1.f_root, rt_str_dup(v_v_1.f_path));
     S87_check_Val r13 = t12;
     gl68_drop(v_v_1);
     gl68_drop(p_v0);
@@ -44780,20 +45198,20 @@ static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_chec
     bool c17 = b15;
     if (c17) {
       int64_t t18 = p_line;
-      obx_str t19 = sl2582;
-      obx_str t20 = f791_check_Checker_rootName(p_c, v_v_1.f_root, sl1725);
+      obx_str t19 = sl2584;
+      obx_str t20 = f795_check_Checker_rootName(p_c, v_v_1.f_root, sl1725);
       obx_str t21 = rt_str_concat(t19, t20);
       obx_str t22 = rt_str_concat(t21, sl1809);
       f702_check_Checker_err(p_c, t18, t22);
     }
     bool c23 = p_m;
     if (c23) {
-      f789_check_Checker_frozen(p_c, v_v_1.f_root, 3LL, p_line);
+      f793_check_Checker_frozen(p_c, v_v_1.f_root, 3LL, p_line);
     }
     obx_str t24 = rt_str_dup(v_v_1.f_c);
     int64_t t25 = f498_sema_Program_ta((&(*p_c)->f_pg), v_v_1.f_t);
     int64_t t26 = f606_sema_Program_mkRef((&(*p_c)->f_pg), t25, p_m);
-    S87_check_Val t27 = f795_check_rvAt(t24, t26, v_v_1.f_root, rt_str_dup(v_v_1.f_path));
+    S87_check_Val t27 = f799_check_rvAt(t24, t26, v_v_1.f_root, rt_str_dup(v_v_1.f_path));
     S87_check_Val r28 = t27;
     gl68_drop(v_v_1);
     gl68_drop(p_v0);
@@ -44801,7 +45219,7 @@ static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_chec
   }
   bool c29 = (v_v_1.f_t == 11LL);
   if (c29) {
-    f702_check_Checker_err(p_c, p_line, sl2438);
+    f702_check_Checker_err(p_c, p_line, sl2437);
   }
   obx_str v_cc_30 = sl183;
   bool c31 = (v_v_1.f_cat == 2LL);
@@ -44823,7 +45241,7 @@ static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_chec
         { S87_check_Val nw38 = t37;
           gl68_drop(v_v_1);
           v_v_1 = nw38; }
-        S87_check_Val t39 = f833_check_Checker_borrow(p_c, gl67_dup(v_v_1), p_m, p_line, false);
+        S87_check_Val t39 = f842_check_Checker_borrow(p_c, gl67_dup(v_v_1), p_m, p_line, false);
         S87_check_Val r40 = t39;
         rt_str_drop(v_cc_30);
         gl68_drop(v_v_1);
@@ -44833,14 +45251,14 @@ static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_chec
       bool c41 = (v_v_1.f_gk == 2LL);
       if (c41) {
         int64_t t42 = p_line;
-        obx_str t43 = sl2583;
-        obx_str t44 = f792_check_Checker_gname(p_c, v_v_1.f_gk, v_v_1.f_gi);
+        obx_str t43 = sl2585;
+        obx_str t44 = f796_check_Checker_gname(p_c, v_v_1.f_gk, v_v_1.f_gi);
         obx_str t45 = rt_str_concat(t43, t44);
         f702_check_Checker_err(p_c, t42, t45);
       }
       int64_t t46 = p_line;
-      obx_str t47 = sl2584;
-      obx_str t48 = f792_check_Checker_gname(p_c, v_v_1.f_gk, v_v_1.f_gi);
+      obx_str t47 = sl2586;
+      obx_str t48 = f796_check_Checker_gname(p_c, v_v_1.f_gk, v_v_1.f_gi);
       obx_str t49 = rt_str_concat(t47, t48);
       obx_str t50 = rt_str_concat(t49, sl1809);
       f702_check_Checker_err(p_c, t46, t50);
@@ -44849,11 +45267,11 @@ static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_chec
     if (c51) {
       bool c52 = (!v_v_1.f_mutable);
       if (c52) {
-        f849_check_Checker_immutable(p_c, gl67_dup(v_v_1), p_line, sl2585);
+        f858_check_Checker_immutable(p_c, gl67_dup(v_v_1), p_line, sl2587);
       }
-      f789_check_Checker_frozen(p_c, v_v_1.f_root, 3LL, p_line);
+      f793_check_Checker_frozen(p_c, v_v_1.f_root, 3LL, p_line);
     }
-    obx_str t53 = rt_str_concat(sl2586, v_v_1.f_c);
+    obx_str t53 = rt_str_concat(sl2588, v_v_1.f_c);
     obx_str t54 = rt_str_concat(t53, sl31);
     { obx_str nw55 = t54;
       rt_str_drop(v_cc_30);
@@ -44862,7 +45280,7 @@ static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_chec
   } else {
     bool c56 = (v_v_1.f_cat == 1LL);
     if (c56) {
-      obx_str t57 = rt_str_concat(sl2586, v_v_1.f_c);
+      obx_str t57 = rt_str_concat(sl2588, v_v_1.f_c);
       obx_str t58 = rt_str_concat(t57, sl31);
       { obx_str nw59 = t58;
         rt_str_drop(v_cc_30);
@@ -44883,7 +45301,7 @@ static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_chec
       rt_str_drop(t66);
       rt_str_drop(t65);
       rt_str_drop(t64);
-      obx_str t69 = rt_str_concat(sl2586, v_n_61);
+      obx_str t69 = rt_str_concat(sl2588, v_n_61);
       obx_str t70 = rt_str_concat(t69, sl31);
       { obx_str nw71 = t70;
         rt_str_drop(v_cc_30);
@@ -44895,25 +45313,25 @@ static S87_check_Val f833_check_Checker_borrow(S73_check_Checker** p_c, S87_chec
   }
   obx_str t72 = rt_str_dup(v_cc_30);
   int64_t t73 = f606_sema_Program_mkRef((&(*p_c)->f_pg), v_v_1.f_t, p_m);
-  S87_check_Val t74 = f795_check_rvAt(t72, t73, v_v_1.f_root, rt_str_dup(v_v_1.f_path));
+  S87_check_Val t74 = f799_check_rvAt(t72, t73, v_v_1.f_root, rt_str_dup(v_v_1.f_path));
   S87_check_Val r75 = t74;
   rt_str_drop(v_cc_30);
   gl68_drop(v_v_1);
   gl68_drop(p_v0);
   return r75;
 }
-static void f849_check_Checker_immutable(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_line, obx_str p_verb) {
+static void f858_check_Checker_immutable(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_line, obx_str p_verb) {
   int64_t v_r_1 = p_v.f_root;
   bool c2 = (v_r_1 >= 0LL);
   if (c2) {
     int64_t ix3 = v_r_1;
-    obx_str v_name_4 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix3, ((*p_c)->f_vars).len, "check.obx:975")].f_name);
-    bool t5 = f21_std_endsWith(rt_str_dup(p_verb), sl2587);
+    obx_str v_name_4 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix3, ((*p_c)->f_vars).len, "check.obx:976")].f_name);
+    bool t5 = f21_std_endsWith(rt_str_dup(p_verb), sl2589);
     obx_str ifx6;
     if (t5) {
       obx_str t7 = rt_str_dup(p_verb);
-      int64_t ix8 = rt_sub_int(((int64_t)(p_verb).len), 3LL, "check.obx:976");
-      obx_str t9 = rt_str_sub(t7, 0LL, ix8, "check.obx:976");
+      int64_t ix8 = rt_sub_int(((int64_t)(p_verb).len), 3LL, "check.obx:977");
+      obx_str t9 = rt_str_sub(t7, 0LL, ix8, "check.obx:977");
       ifx6 = t9;
       rt_str_drop(t7);
     } else {
@@ -44921,7 +45339,7 @@ static void f849_check_Checker_immutable(S73_check_Checker** p_c, S87_check_Val 
     }
     obx_str v_vb_10 = ifx6;
     int64_t ix11 = v_r_1;
-    int64_t t12 = f497_sema_Program_tk((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix11, ((*p_c)->f_vars).len, "check.obx:977")].f_t);
+    int64_t t12 = f497_sema_Program_tk((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix11, ((*p_c)->f_vars).len, "check.obx:978")].f_t);
     int64_t v_rk_13 = t12;
     bool b14 = (v_rk_13 == 2LL);
     if (!b14) {
@@ -44931,16 +45349,16 @@ static void f849_check_Checker_immutable(S73_check_Checker** p_c, S87_check_Val 
     bool b16 = v_isB_15;
     if (b16) {
       int64_t ix17 = v_r_1;
-      bool t18 = f499_sema_Program_tm((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix17, ((*p_c)->f_vars).len, "check.obx:979")].f_t);
+      bool t18 = f499_sema_Program_tm((&(*p_c)->f_pg), ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix17, ((*p_c)->f_vars).len, "check.obx:980")].f_t);
       b16 = (!t18);
     }
     bool c19 = b16;
     if (c19) {
       int64_t t20 = p_line;
-      obx_str t21 = rt_str_concat(sl2588, v_vb_10);
-      obx_str t22 = rt_str_concat(t21, sl2589);
+      obx_str t21 = rt_str_concat(sl2590, v_vb_10);
+      obx_str t22 = rt_str_concat(t21, sl2591);
       obx_str t23 = rt_str_concat(t22, v_name_4);
-      obx_str t24 = rt_str_concat(t23, sl2590);
+      obx_str t24 = rt_str_concat(t23, sl2592);
       f702_check_Checker_err(p_c, t20, t24);
     }
     bool b25 = p_v.f_viaref;
@@ -44950,36 +45368,36 @@ static void f849_check_Checker_immutable(S73_check_Checker** p_c, S87_check_Val 
     bool c26 = b25;
     if (c26) {
       int64_t t27 = p_line;
-      obx_str t28 = rt_str_concat(sl2588, v_vb_10);
-      obx_str t29 = rt_str_concat(t28, sl2591);
+      obx_str t28 = rt_str_concat(sl2590, v_vb_10);
+      obx_str t29 = rt_str_concat(t28, sl2593);
       obx_str t30 = rt_str_concat(t29, v_name_4);
       obx_str t31 = rt_str_concat(t30, sl1809);
       f702_check_Checker_err(p_c, t27, t31);
     }
     int64_t ix32 = v_r_1;
-    bool c33 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix32, ((*p_c)->f_vars).len, "check.obx:983")].f_kind == 0LL);
+    bool c33 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix32, ((*p_c)->f_vars).len, "check.obx:984")].f_kind == 0LL);
     if (c33) {
       int64_t t34 = p_line;
-      obx_str t35 = rt_str_concat(sl2588, p_verb);
-      obx_str t36 = rt_str_concat(t35, sl2592);
+      obx_str t35 = rt_str_concat(sl2590, p_verb);
+      obx_str t36 = rt_str_concat(t35, sl2594);
       obx_str t37 = rt_str_concat(t36, v_name_4);
-      obx_str t38 = rt_str_concat(t37, sl2529);
+      obx_str t38 = rt_str_concat(t37, sl2531);
       obx_str t39 = rt_str_concat(t38, v_name_4);
-      obx_str t40 = rt_str_concat(t39, sl2530);
+      obx_str t40 = rt_str_concat(t39, sl2532);
       f702_check_Checker_err(p_c, t34, t40);
     }
     int64_t t41 = p_line;
-    obx_str t42 = rt_str_concat(sl2588, p_verb);
-    obx_str t43 = rt_str_concat(t42, sl2593);
+    obx_str t42 = rt_str_concat(sl2590, p_verb);
+    obx_str t43 = rt_str_concat(t42, sl2595);
     obx_str t44 = rt_str_concat(t43, v_name_4);
-    obx_str t45 = rt_str_concat(t44, sl2532);
+    obx_str t45 = rt_str_concat(t44, sl2534);
     f702_check_Checker_err(p_c, t41, t45);
   }
-  obx_str t46 = rt_str_concat(sl2588, p_verb);
-  obx_str t47 = rt_str_concat(t46, sl2594);
+  obx_str t46 = rt_str_concat(sl2590, p_verb);
+  obx_str t47 = rt_str_concat(t46, sl2596);
   f702_check_Checker_err(p_c, p_line, t47);
 }
-static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int64_t p_t, obx_str p_name, int64_t p_line, bool p_quiet) {
+static S95_check_Sig* f841_check_Checker_methodSig(S73_check_Checker** p_c, int64_t p_t, obx_str p_name, int64_t p_line, bool p_quiet) {
   int64_t t1 = f497_sema_Program_tk((&(*p_c)->f_pg), p_t);
   bool v_isTp_2 = (t1 == 7LL);
   bool b3 = (rt_str_eq(p_name, sl588));
@@ -44994,7 +45412,7 @@ static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int6
   }
   bool c6 = b4;
   if (c6) {
-    f702_check_Checker_err(p_c, p_line, sl2595);
+    f702_check_Checker_err(p_c, p_line, sl2597);
   }
   bool c7 = v_isTp_2;
   if (c7) {
@@ -45026,8 +45444,8 @@ static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int6
         obx_str t24 = f767_check_Checker_tstr(p_c, p_t);
         obx_str t25 = rt_str_concat(t24, sl37);
         obx_str t26 = rt_str_concat(t25, p_name);
-        S94_check_Sig* t27 = f850_check_newSig(t26, 4LL, v_ps_19, (*v_m_12).f_ret);
-        S94_check_Sig* v_s_28 = t27;
+        S95_check_Sig* t27 = f859_check_newSig(t26, 4LL, v_ps_19, (*v_m_12).f_ret);
+        S95_check_Sig* v_s_28 = t27;
         rt_str_drop(t25);
         rt_str_drop(t24);
         v_s_28->f_recv = (*v_m_12).f_mode;
@@ -45035,7 +45453,7 @@ static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int6
         { obx_str nw29 = rt_str_dup(p_name);
           rt_str_drop(v_s_28->f_name);
           v_s_28->f_name = nw29; }
-        S94_check_Sig* r30 = v_s_28;
+        S95_check_Sig* r30 = v_s_28;
         gl48_drop(v_ms_9);
         rt_str_drop(p_name);
         return r30;
@@ -45043,17 +45461,17 @@ static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int6
     }
     bool c31 = p_quiet;
     if (c31) {
-      S94_check_Sig* t32 = f851_check_noSig();
-      S94_check_Sig* r33 = t32;
+      S95_check_Sig* t32 = f860_check_noSig();
+      S95_check_Sig* r33 = t32;
       gl48_drop(v_ms_9);
       rt_str_drop(p_name);
       return r33;
     }
     int64_t t34 = p_line;
     obx_str t35 = f767_check_Checker_tstr(p_c, p_t);
-    obx_str t36 = rt_str_concat(t35, sl2596);
+    obx_str t36 = rt_str_concat(t35, sl2598);
     obx_str t37 = rt_str_concat(t36, p_name);
-    obx_str t38 = rt_str_concat(t37, sl2597);
+    obx_str t38 = rt_str_concat(t37, sl2599);
     f702_check_Checker_err(p_c, t34, t38);
   }
   int64_t t39 = f545_sema_Program_methodOf((&(*p_c)->f_pg), p_t, rt_str_dup(p_name));
@@ -45061,7 +45479,7 @@ static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int6
   bool b41 = (v_f_40 < 0LL);
   if (!b41) {
     int64_t ix42 = v_f_40;
-    b41 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix42, ((*p_c)->f_pg->f_fns).len, "check.obx:3503")].f_recvMode == 4LL);
+    b41 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix42, ((*p_c)->f_pg->f_fns).len, "check.obx:3640")].f_recvMode == 4LL);
   }
   bool c43 = b41;
   if (c43) {
@@ -45071,8 +45489,8 @@ static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int6
     }
     bool c45 = b44;
     if (c45) {
-      S94_check_Sig* t46 = f851_check_noSig();
-      S94_check_Sig* r47 = t46;
+      S95_check_Sig* t46 = f860_check_noSig();
+      S95_check_Sig* r47 = t46;
       rt_str_drop(p_name);
       return r47;
     }
@@ -45080,17 +45498,17 @@ static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int6
     if (c48) {
       int64_t t49 = p_line;
       obx_str t50 = f490_sema_Program_label((&(*p_c)->f_pg), v_f_40);
-      obx_str t51 = rt_str_concat(t50, sl2598);
+      obx_str t51 = rt_str_concat(t50, sl2600);
       obx_str t52 = f767_check_Checker_tstr(p_c, p_t);
       obx_str t53 = rt_str_concat(t51, t52);
       obx_str t54 = rt_str_concat(t53, sl37);
       obx_str t55 = rt_str_concat(t54, p_name);
-      obx_str t56 = rt_str_concat(t55, sl2463);
+      obx_str t56 = rt_str_concat(t55, sl2464);
       f702_check_Checker_err(p_c, t49, t56);
     }
     int64_t t57 = p_line;
     obx_str t58 = f767_check_Checker_tstr(p_c, p_t);
-    obx_str t59 = rt_str_concat(t58, sl2596);
+    obx_str t59 = rt_str_concat(t58, sl2598);
     obx_str t60 = rt_str_concat(t59, p_name);
     obx_str t61 = rt_str_concat(t60, sl1809);
     f702_check_Checker_err(p_c, t57, t61);
@@ -45098,33 +45516,33 @@ static S94_check_Sig* f832_check_Checker_methodSig(S73_check_Checker** p_c, int6
   bool b62 = (rt_str_eq(p_name, sl588));
   if (b62) {
     int64_t ix63 = v_f_40;
-    b62 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix63, ((*p_c)->f_pg->f_fns).len, "check.obx:3508")].f_ownerKind == 2LL);
+    b62 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix63, ((*p_c)->f_pg->f_fns).len, "check.obx:3645")].f_ownerKind == 2LL);
   }
   bool b64 = b62;
   if (b64) {
     int64_t ix65 = v_f_40;
-    int64_t ix66 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix65, ((*p_c)->f_pg->f_fns).len, "check.obx:3508")].f_owner;
-    b64 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix66, ((*p_c)->f_pg->f_types).len, "check.obx:3508")].f_drop == v_f_40);
+    int64_t ix66 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix65, ((*p_c)->f_pg->f_fns).len, "check.obx:3645")].f_owner;
+    b64 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix66, ((*p_c)->f_pg->f_types).len, "check.obx:3645")].f_drop == v_f_40);
   }
   bool c67 = b64;
   if (c67) {
-    f702_check_Checker_err(p_c, p_line, sl2595);
+    f702_check_Checker_err(p_c, p_line, sl2597);
   }
-  f852_check_Checker_visible(p_c, v_f_40, p_line);
+  f861_check_Checker_visible(p_c, v_f_40, p_line);
   obx_arr a68 = rt_arr_new(0, sizeof(int64_t));
   obx_arr v_bind_69 = a68;
   int64_t ix70 = v_f_40;
-  int64_t t71 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix70, ((*p_c)->f_pg->f_fns).len, "check.obx:3513")].f_recvType;
+  int64_t t71 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix70, ((*p_c)->f_pg->f_fns).len, "check.obx:3650")].f_recvType;
   int64_t ix72 = v_f_40;
-  bool t73 = f546_sema_Program_unify((&(*p_c)->f_pg), t71, p_t, (&v_bind_69), (&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix72, ((*p_c)->f_pg->f_fns).len, "check.obx:3513")].f_tps));
-  S94_check_Sig* t74 = f853_check_Checker_fnSig(p_c, v_f_40, v_bind_69);
-  S94_check_Sig* r75 = t74;
+  bool t73 = f546_sema_Program_unify((&(*p_c)->f_pg), t71, p_t, (&v_bind_69), (&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix72, ((*p_c)->f_pg->f_fns).len, "check.obx:3650")].f_tps));
+  S95_check_Sig* t74 = f862_check_Checker_fnSig(p_c, v_f_40, v_bind_69);
+  S95_check_Sig* r75 = t74;
   rt_str_drop(p_name);
   return r75;
 }
-static S94_check_Sig* f853_check_Checker_fnSig(S73_check_Checker** p_c, int64_t p_f, obx_arr p_bind) {
+static S95_check_Sig* f862_check_Checker_fnSig(S73_check_Checker** p_c, int64_t p_f, obx_arr p_bind) {
   int64_t ix1 = p_f;
-  int64_t v_rm_2 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix1, ((*p_c)->f_pg->f_fns).len, "check.obx:3429")].f_recvMode;
+  int64_t v_rm_2 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix1, ((*p_c)->f_pg->f_fns).len, "check.obx:3566")].f_recvMode;
   bool b3 = (v_rm_2 == 1LL);
   if (!b3) {
     b3 = (v_rm_2 == 2LL);
@@ -45137,21 +45555,21 @@ static S94_check_Sig* f853_check_Checker_fnSig(S73_check_Checker** p_c, int64_t 
   obx_arr a7 = rt_arr_new(0, sizeof(int64_t));
   obx_arr v_ps_8 = a7;
   int64_t ix9 = p_f;
-  int64_t end10 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix9, ((*p_c)->f_pg->f_fns).len, "check.obx:3432")].f_params).len;
+  int64_t end10 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix9, ((*p_c)->f_pg->f_fns).len, "check.obx:3569")].f_params).len;
   for (int64_t v_i_11 = 0LL; v_i_11 < end10; v_i_11++) {
     int64_t ix12 = p_f;
     int64_t ix13 = v_i_11;
-    int64_t ap14 = ((S59_sema_Param*)(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix12, ((*p_c)->f_pg->f_fns).len, "check.obx:3432")].f_params).data)[rt_idx(ix13, (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix12, ((*p_c)->f_pg->f_fns).len, "check.obx:3432")].f_params).len, "check.obx:3432")].f_ty;
+    int64_t ap14 = ((S59_sema_Param*)(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix12, ((*p_c)->f_pg->f_fns).len, "check.obx:3569")].f_params).data)[rt_idx(ix13, (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix12, ((*p_c)->f_pg->f_fns).len, "check.obx:3569")].f_params).len, "check.obx:3569")].f_ty;
     *(int64_t*)rt_arr_push((&v_ps_8), sizeof(int64_t)) = ap14;
   }
   obx_str t15 = f490_sema_Program_label((&(*p_c)->f_pg), p_f);
   int64_t ix16 = p_f;
-  int64_t t18 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix16, ((*p_c)->f_pg->f_fns).len, "check.obx:3433")].f_isExtern ? 1LL : 0LL);
+  int64_t t18 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix16, ((*p_c)->f_pg->f_fns).len, "check.obx:3570")].f_isExtern ? 1LL : 0LL);
   int64_t ix19 = p_f;
-  S94_check_Sig* t20 = f850_check_newSig(t15, t18, v_ps_8, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix19, ((*p_c)->f_pg->f_fns).len, "check.obx:3433")].f_ret);
-  S94_check_Sig* v_s_21 = t20;
+  S95_check_Sig* t20 = f859_check_newSig(t15, t18, v_ps_8, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix19, ((*p_c)->f_pg->f_fns).len, "check.obx:3570")].f_ret);
+  S95_check_Sig* v_s_21 = t20;
   int64_t ix22 = p_f;
-  obx_arr t23 = f696_check_copyInts((&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix22, ((*p_c)->f_pg->f_fns).len, "check.obx:3434")].f_tps));
+  obx_arr t23 = f696_check_copyInts((&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix22, ((*p_c)->f_pg->f_fns).len, "check.obx:3571")].f_tps));
   { obx_arr nw24 = t23;
     gl9_drop(v_s_21->f_tps);
     v_s_21->f_tps = nw24; }
@@ -45161,9 +45579,9 @@ static S94_check_Sig* f853_check_Checker_fnSig(S73_check_Checker** p_c, int64_t 
     gl9_drop(v_s_21->f_bind);
     v_s_21->f_bind = nw25; }
   int64_t ix26 = p_f;
-  int64_t v_m_27 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix26, ((*p_c)->f_pg->f_fns).len, "check.obx:3438")].f_mod;
+  int64_t v_m_27 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix26, ((*p_c)->f_pg->f_fns).len, "check.obx:3575")].f_mod;
   int64_t ix28 = p_f;
-  S49_syntax_Node t29 = f549_sema_Program_nd((&(*p_c)->f_pg), v_m_27, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix28, ((*p_c)->f_pg->f_fns).len, "check.obx:3439")].f_node);
+  S49_syntax_Node t29 = f549_sema_Program_nd((&(*p_c)->f_pg), v_m_27, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix28, ((*p_c)->f_pg->f_fns).len, "check.obx:3576")].f_node);
   int64_t v_tl_30 = t29.f_b;
   gl49_drop(t29);
   int64_t ifx31;
@@ -45174,15 +45592,15 @@ static S94_check_Sig* f853_check_Checker_fnSig(S73_check_Checker** p_c, int64_t 
     ifx31 = 0LL;
   }
   v_s_21->f_nown = ifx31;
-  S94_check_Sig* r33 = v_s_21;
+  S95_check_Sig* r33 = v_s_21;
   return r33;
 }
-static void f852_check_Checker_visible(S73_check_Checker** p_c, int64_t p_f, int64_t p_line) {
+static void f861_check_Checker_visible(S73_check_Checker** p_c, int64_t p_f, int64_t p_line) {
   int64_t ix1 = p_f;
-  bool b2 = (!((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix1, ((*p_c)->f_pg->f_fns).len, "check.obx:3477")].f_isPub);
+  bool b2 = (!((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix1, ((*p_c)->f_pg->f_fns).len, "check.obx:3614")].f_isPub);
   if (b2) {
     int64_t ix3 = p_f;
-    b2 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix3, ((*p_c)->f_pg->f_fns).len, "check.obx:3477")].f_mod != (*p_c)->f_cx->f_mod);
+    b2 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix3, ((*p_c)->f_pg->f_fns).len, "check.obx:3614")].f_mod != (*p_c)->f_cx->f_mod);
   }
   bool c4 = b2;
   if (c4) {
@@ -45190,21 +45608,21 @@ static void f852_check_Checker_visible(S73_check_Checker** p_c, int64_t p_f, int
     obx_str t6 = f490_sema_Program_label((&(*p_c)->f_pg), p_f);
     obx_str t7 = rt_str_concat(t6, sl2145);
     int64_t ix8 = p_f;
-    int64_t ix9 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix8, ((*p_c)->f_pg->f_fns).len, "check.obx:3478")].f_mod;
-    obx_str t10 = rt_str_concat(t7, ((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix9, ((*p_c)->f_pg->f_mods).len, "check.obx:3478")].f_name);
+    int64_t ix9 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix8, ((*p_c)->f_pg->f_fns).len, "check.obx:3615")].f_mod;
+    obx_str t10 = rt_str_concat(t7, ((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix9, ((*p_c)->f_pg->f_mods).len, "check.obx:3615")].f_name);
     f702_check_Checker_err(p_c, t5, t10);
   }
 }
-static S94_check_Sig* f851_check_noSig(void) {
+static S95_check_Sig* f860_check_noSig(void) {
   obx_arr a1 = rt_arr_new(0, sizeof(int64_t));
-  S94_check_Sig* t2 = f850_check_newSig(sl183, -1LL, a1, -1LL);
-  S94_check_Sig* r3 = t2;
+  S95_check_Sig* t2 = f859_check_newSig(sl183, -1LL, a1, -1LL);
+  S95_check_Sig* r3 = t2;
   return r3;
 }
-static S94_check_Sig* f850_check_newSig(obx_str p_label, int64_t p_kind, obx_arr p_params, int64_t p_ret) {
+static S95_check_Sig* f859_check_newSig(obx_str p_label, int64_t p_kind, obx_arr p_params, int64_t p_ret) {
   obx_arr a1 = rt_arr_new(0, sizeof(int64_t));
   obx_arr a2 = rt_arr_new(0, sizeof(int64_t));
-  S94_check_Sig* o3 = rt_alloc(sizeof(*o3));
+  S95_check_Sig* o3 = rt_alloc(sizeof(*o3));
   o3->f_label = rt_str_dup(p_label);
   o3->f_kind = p_kind;
   o3->f_params = p_params;
@@ -45219,14 +45637,14 @@ static S94_check_Sig* f850_check_newSig(obx_str p_label, int64_t p_kind, obx_arr
   o3->f_variant = -1LL;
   o3->f_loc = false;
   o3->f_name = sl183;
-  S94_check_Sig* t4 = o3;
-  S94_check_Sig* r5 = t4;
+  S95_check_Sig* t4 = o3;
+  S95_check_Sig* r5 = t4;
   rt_str_drop(p_label);
   return r5;
 }
-static obx_str f829_check_Checker_W(S73_check_Checker** p_c, int64_t p_line) {
+static obx_str f838_check_Checker_W(S73_check_Checker** p_c, int64_t p_line) {
   int64_t ix1 = (*p_c)->f_cx->f_mod;
-  obx_str t2 = rt_str_concat(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:396")].f_fname, sl35);
+  obx_str t2 = rt_str_concat(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix1, ((*p_c)->f_pg->f_mods).len, "check.obx:397")].f_fname, sl35);
   obx_str t3 = rt_int_to_str(p_line);
   obx_str t4 = rt_str_concat(t2, t3);
   obx_str t5 = f663_check_cstr(t4);
@@ -45235,7 +45653,7 @@ static obx_str f829_check_Checker_W(S73_check_Checker** p_c, int64_t p_line) {
   rt_str_drop(t2);
   return r6;
 }
-static S87_check_Val f827_check_Checker_place(S73_check_Checker** p_c, int64_t p_e) {
+static S87_check_Val f836_check_Checker_place(S73_check_Checker** p_c, int64_t p_e) {
   S87_check_Val t1 = f754_check_Checker_expr(p_c, p_e, -1LL);
   S87_check_Val v_v_2 = t1;
   int64_t t3 = f701_check_Checker_line(p_c, p_e);
@@ -45247,10 +45665,10 @@ static S87_check_Val f827_check_Checker_place(S73_check_Checker** p_c, int64_t p
     bool c8 = (!t7);
     if (c8) {
       int64_t t9 = v_line_4;
-      obx_str t10 = sl2599;
-      obx_str t11 = f791_check_Checker_rootName(p_c, v_v_2.f_root, sl1725);
+      obx_str t10 = sl2601;
+      obx_str t11 = f795_check_Checker_rootName(p_c, v_v_2.f_root, sl1725);
       obx_str t12 = rt_str_concat(t10, t11);
-      obx_str t13 = rt_str_concat(t12, sl2590);
+      obx_str t13 = rt_str_concat(t12, sl2592);
       f702_check_Checker_err(p_c, t9, t13);
     }
     S87_check_Val t14 = f768_check_Checker_deref(p_c, gl67_dup(v_v_2));
@@ -45260,41 +45678,41 @@ static S87_check_Val f827_check_Checker_place(S73_check_Checker** p_c, int64_t p
   }
   bool c16 = (v_v_2.f_cat != 2LL);
   if (c16) {
-    f854_check_Checker_strByteRO(p_c, p_e, gl67_dup(v_v_2), v_line_4);
-    f702_check_Checker_err(p_c, v_line_4, sl2600);
+    f863_check_Checker_strByteRO(p_c, p_e, gl67_dup(v_v_2), v_line_4);
+    f702_check_Checker_err(p_c, v_line_4, sl2602);
   }
-  f855_check_Checker_selfInDrop(p_c, gl67_dup(v_v_2), v_line_4);
+  f864_check_Checker_selfInDrop(p_c, gl67_dup(v_v_2), v_line_4);
   bool c17 = (v_v_2.f_gk == 2LL);
   if (c17) {
     int64_t ix18 = v_v_2.f_gi;
-    obx_str t19 = rt_str_concat(sl2527, ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix18, ((*p_c)->f_pg->f_consts).len, "check.obx:1439")].f_name);
+    obx_str t19 = rt_str_concat(sl2529, ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix18, ((*p_c)->f_pg->f_consts).len, "check.obx:1447")].f_name);
     f702_check_Checker_err(p_c, v_line_4, t19);
   }
   bool c20 = (v_v_2.f_gk < 0LL);
   if (c20) {
     bool c21 = (!v_v_2.f_mutable);
     if (c21) {
-      f849_check_Checker_immutable(p_c, gl67_dup(v_v_2), v_line_4, sl2601);
+      f858_check_Checker_immutable(p_c, gl67_dup(v_v_2), v_line_4, sl2603);
     }
-    f789_check_Checker_frozen(p_c, v_v_2.f_root, 1LL, v_line_4);
-    f790_check_Checker_checkPending(p_c, v_v_2.f_root, rt_str_dup(v_v_2.f_path), v_line_4, false);
+    f793_check_Checker_frozen(p_c, v_v_2.f_root, 1LL, v_line_4);
+    f794_check_Checker_checkPending(p_c, v_v_2.f_root, rt_str_dup(v_v_2.f_path), v_line_4, false);
   }
   S87_check_Val r22 = gl67_dup(v_v_2);
   gl68_drop(v_v_2);
   return r22;
 }
-static void f855_check_Checker_selfInDrop(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_line) {
-  int64_t v_f_2 = ((((*p_c)->f_outers).len > 0LL) ? ((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(0LL, ((*p_c)->f_outers).len, "check.obx:1355")]->f_fd : (*p_c)->f_cx->f_fd);
+static void f864_check_Checker_selfInDrop(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_line) {
+  int64_t v_f_2 = ((((*p_c)->f_outers).len > 0LL) ? ((S84_check_Ctx**)((*p_c)->f_outers).data)[rt_idx(0LL, ((*p_c)->f_outers).len, "check.obx:1359")]->f_fd : (*p_c)->f_cx->f_fd);
   bool b3 = (v_f_2 >= 0LL);
   if (b3) {
     int64_t ix4 = v_f_2;
-    b3 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix4, ((*p_c)->f_pg->f_fns).len, "check.obx:1356")].f_ownerKind == 2LL);
+    b3 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix4, ((*p_c)->f_pg->f_fns).len, "check.obx:1360")].f_ownerKind == 2LL);
   }
   bool b5 = b3;
   if (b5) {
     int64_t ix6 = v_f_2;
-    int64_t ix7 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix6, ((*p_c)->f_pg->f_fns).len, "check.obx:1356")].f_owner;
-    b5 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix7, ((*p_c)->f_pg->f_types).len, "check.obx:1356")].f_drop == v_f_2);
+    int64_t ix7 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix6, ((*p_c)->f_pg->f_fns).len, "check.obx:1360")].f_owner;
+    b5 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix7, ((*p_c)->f_pg->f_types).len, "check.obx:1360")].f_drop == v_f_2);
   }
   bool b8 = b5;
   if (b8) {
@@ -45303,15 +45721,15 @@ static void f855_check_Checker_selfInDrop(S73_check_Checker** p_c, S87_check_Val
   bool b9 = b8;
   if (b9) {
     int64_t ix10 = p_v.f_root;
-    obx_str t11 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix10, ((*p_c)->f_vars).len, "check.obx:1357")].f_name);
+    obx_str t11 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix10, ((*p_c)->f_vars).len, "check.obx:1361")].f_name);
     int64_t ix12 = v_f_2;
-    b9 = (rt_str_eq(t11, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix12, ((*p_c)->f_pg->f_fns).len, "check.obx:1357")].f_recvName));
+    b9 = (rt_str_eq(t11, ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix12, ((*p_c)->f_pg->f_fns).len, "check.obx:1361")].f_recvName));
     rt_str_drop(t11);
   }
   bool b13 = b9;
   if (b13) {
     int64_t ix14 = p_v.f_root;
-    b13 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix14, ((*p_c)->f_vars).len, "check.obx:1357")].f_kind == 0LL);
+    b13 = (((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix14, ((*p_c)->f_vars).len, "check.obx:1361")].f_kind == 0LL);
   }
   bool b15 = b13;
   if (b15) {
@@ -45319,24 +45737,24 @@ static void f855_check_Checker_selfInDrop(S73_check_Checker** p_c, S87_check_Val
   }
   bool c16 = b15;
   if (c16) {
-    f702_check_Checker_err(p_c, p_line, sl2602);
-  }
-  gl68_drop(p_v);
-}
-static void f854_check_Checker_strByteRO(S73_check_Checker** p_c, int64_t p_e, S87_check_Val p_v, int64_t p_line) {
-  int64_t t1 = f700_check_Checker_kind(p_c, p_e);
-  bool b2 = (t1 == 51LL);
-  if (b2) {
-    bool t3 = f10_std_startsWith(rt_str_dup(p_v.f_c), sl2603);
-    b2 = t3;
-  }
-  bool c4 = b2;
-  if (c4) {
     f702_check_Checker_err(p_c, p_line, sl2604);
   }
   gl68_drop(p_v);
 }
-static void f826_check_Checker_hold(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_m, int64_t p_cid, int64_t p_line) {
+static void f863_check_Checker_strByteRO(S73_check_Checker** p_c, int64_t p_e, S87_check_Val p_v, int64_t p_line) {
+  int64_t t1 = f700_check_Checker_kind(p_c, p_e);
+  bool b2 = (t1 == 51LL);
+  if (b2) {
+    bool t3 = f10_std_startsWith(rt_str_dup(p_v.f_c), sl2605);
+    b2 = t3;
+  }
+  bool c4 = b2;
+  if (c4) {
+    f702_check_Checker_err(p_c, p_line, sl2606);
+  }
+  gl68_drop(p_v);
+}
+static void f835_check_Checker_hold(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_m, int64_t p_cid, int64_t p_line) {
   int64_t v_root_1 = p_v.f_root;
   bool b2 = (v_root_1 == -1LL);
   if (!b2) {
@@ -45350,11 +45768,11 @@ static void f826_check_Checker_hold(S73_check_Checker** p_c, S87_check_Val p_v, 
   bool v_mut1_4 = (p_m == 1LL);
   obx_slice ap5 = rt_as_slice(&(*p_c)->f_cx->f_pending);
   for (int64_t i6 = 0; i6 < ap5.len; i6++) {
-    S90_check_Pend v_p_7 = gl77_dup(((S90_check_Pend*)ap5.data)[i6]);
+    S90_check_Pend v_p_7 = gl78_dup(((S90_check_Pend*)ap5.data)[i6]);
     bool v_pm_8 = (v_p_7.f_m == 1LL);
     bool b9 = (v_p_7.f_root == v_root_1);
     if (b9) {
-      bool t10 = f793_check_overlap(rt_str_dup(v_p_7.f_path), rt_str_dup(p_v.f_path));
+      bool t10 = f797_check_overlap(rt_str_dup(v_p_7.f_path), rt_str_dup(p_v.f_path));
       b9 = t10;
     }
     bool b11 = b9;
@@ -45379,7 +45797,7 @@ static void f826_check_Checker_hold(S73_check_Checker** p_c, S87_check_Val p_v, 
     }
     bool c16 = b11;
     if (c16) {
-      obx_str t17 = f791_check_Checker_rootName(p_c, v_root_1, sl1725);
+      obx_str t17 = f795_check_Checker_rootName(p_c, v_root_1, sl1725);
       obx_str v_name_18 = t17;
       bool c19 = (v_p_7.f_cid == p_cid);
       if (c19) {
@@ -45387,19 +45805,19 @@ static void f826_check_Checker_hold(S73_check_Checker** p_c, S87_check_Val p_v, 
         if (!b20) {
           b20 = v_pm_8;
         }
-        obx_str t22 = (b20 ? sl2605 : sl183);
+        obx_str t22 = (b20 ? sl2607 : sl183);
         obx_str v_how_23 = t22;
         int64_t t24 = p_line;
         obx_str t25 = rt_str_concat(sl1809, v_name_18);
-        obx_str t26 = rt_str_concat(t25, sl2606);
+        obx_str t26 = rt_str_concat(t25, sl2608);
         obx_str t27 = rt_str_concat(t26, v_how_23);
-        obx_str t28 = rt_str_concat(t27, sl2607);
-        obx_str t29 = rt_str_concat(t28, sl2608);
+        obx_str t28 = rt_str_concat(t27, sl2609);
+        obx_str t29 = rt_str_concat(t28, sl2610);
         f702_check_Checker_err(p_c, t24, t29);
       }
       obx_str t30 = rt_str_concat(sl1809, v_name_18);
-      obx_str t31 = rt_str_concat(t30, sl2609);
-      obx_str t32 = rt_str_concat(t31, sl2610);
+      obx_str t31 = rt_str_concat(t30, sl2611);
+      obx_str t32 = rt_str_concat(t31, sl2612);
       f702_check_Checker_err(p_c, p_line, t32);
     }
     gl75_drop(v_p_7);
@@ -45409,12 +45827,12 @@ static void f826_check_Checker_hold(S73_check_Checker** p_c, S87_check_Val p_v, 
   *(S90_check_Pend*)rt_arr_push((&(*p_c)->f_cx->f_pending), sizeof(S90_check_Pend)) = ap34;
   gl68_drop(p_v);
 }
-static int64_t f825_check_Checker_newCid(S73_check_Checker** p_c) {
-  (*p_c)->f_cids = rt_add_int((*p_c)->f_cids, 1LL, "check.obx:852");
+static int64_t f834_check_Checker_newCid(S73_check_Checker** p_c) {
+  (*p_c)->f_cids = rt_add_int((*p_c)->f_cids, 1LL, "check.obx:853");
   int64_t r1 = (*p_c)->f_cids;
   return r1;
 }
-static bool f824_check_Checker_placeActs(S73_check_Checker** p_c, int64_t p_e0) {
+static bool f833_check_Checker_placeActs(S73_check_Checker** p_c, int64_t p_e0) {
   int64_t v_e_1 = p_e0;
   while (1) {
     int64_t t2 = f700_check_Checker_kind(p_c, v_e_1);
@@ -45435,7 +45853,7 @@ static bool f824_check_Checker_placeActs(S73_check_Checker** p_c, int64_t p_e0) 
       int64_t end11 = t10;
       for (int64_t v_i_12 = 0LL; v_i_12 < end11; v_i_12++) {
         int64_t t13 = f718_check_Checker_item(p_c, v_l_9, v_i_12);
-        bool t14 = f812_check_Checker_acts(p_c, t13);
+        bool t14 = f817_check_Checker_acts(p_c, t13);
         bool c15 = t14;
         if (c15) {
           bool r16 = true;
@@ -45447,11 +45865,11 @@ static bool f824_check_Checker_placeActs(S73_check_Checker** p_c, int64_t p_e0) 
     v_e_1 = t17.f_a;
     gl49_drop(t17);
   }
-  bool t18 = f812_check_Checker_acts(p_c, v_e_1);
+  bool t18 = f817_check_Checker_acts(p_c, v_e_1);
   bool r19 = t18;
   return r19;
 }
-static int64_t f823_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e) {
+static int64_t f832_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   int64_t v_k_3 = v_n_2.f_kind;
@@ -45462,7 +45880,7 @@ static int64_t f823_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e
     bool c7 = (v_v_6 >= 0LL);
     if (c7) {
       int64_t ix8 = v_v_6;
-      int64_t v_t_9 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix8, ((*p_c)->f_vars).len, "check.obx:1326")].f_t;
+      int64_t v_t_9 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix8, ((*p_c)->f_vars).len, "check.obx:1330")].f_t;
       int64_t t10 = f497_sema_Program_tk((&(*p_c)->f_pg), v_t_9);
       int64_t ifx11;
       if ((t10 == 2LL)) {
@@ -45480,7 +45898,7 @@ static int64_t f823_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e
     int64_t ifx16;
     if ((v_d_15.f_k == 3LL)) {
       int64_t ix17 = v_d_15.f_i;
-      ifx16 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix17, ((*p_c)->f_pg->f_globals).len, "check.obx:1330")].f_ty;
+      ifx16 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix17, ((*p_c)->f_pg->f_globals).len, "check.obx:1334")].f_ty;
     } else {
       ifx16 = -1LL;
     }
@@ -45490,7 +45908,7 @@ static int64_t f823_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e
   }
   bool c19 = (v_k_3 == 49LL);
   if (c19) {
-    int64_t t20 = f823_check_Checker_placeType(p_c, v_n_2.f_a);
+    int64_t t20 = f832_check_Checker_placeType(p_c, v_n_2.f_a);
     int64_t v_b_21 = t20;
     bool b22 = (v_b_21 >= 0LL);
     if (b22) {
@@ -45516,24 +45934,24 @@ static int64_t f823_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e
     if (b30) {
       int64_t t31 = f498_sema_Program_ta((&(*p_c)->f_pg), v_b_21);
       int64_t ix32 = t31;
-      b30 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix32, ((*p_c)->f_pg->f_types).len, "check.obx:1335")].f_form == 0LL);
+      b30 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix32, ((*p_c)->f_pg->f_types).len, "check.obx:1339")].f_form == 0LL);
     }
     bool c33 = b30;
     if (c33) {
       int64_t t34 = f498_sema_Program_ta((&(*p_c)->f_pg), v_b_21);
       int64_t v_d_35 = t34;
       int64_t ix36 = v_d_35;
-      int64_t end37 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:1337")].f_fields).len;
+      int64_t end37 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:1341")].f_fields).len;
       for (int64_t v_i_38 = 0LL; v_i_38 < end37; v_i_38++) {
         int64_t ix39 = v_d_35;
         int64_t ix40 = v_i_38;
-        bool c41 = (rt_str_eq(((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix39, ((*p_c)->f_pg->f_types).len, "check.obx:1338")].f_fields).data)[rt_idx(ix40, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix39, ((*p_c)->f_pg->f_types).len, "check.obx:1338")].f_fields).len, "check.obx:1338")].f_name, v_n_2.f_s));
+        bool c41 = (rt_str_eq(((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix39, ((*p_c)->f_pg->f_types).len, "check.obx:1342")].f_fields).data)[rt_idx(ix40, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix39, ((*p_c)->f_pg->f_types).len, "check.obx:1342")].f_fields).len, "check.obx:1342")].f_name, v_n_2.f_s));
         if (c41) {
           obx_arr t42 = f522_sema_Program_declEnv((&(*p_c)->f_pg), v_b_21);
           obx_arr v_env_43 = t42;
           int64_t ix44 = v_d_35;
           int64_t ix45 = v_i_38;
-          int64_t t46 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix44, ((*p_c)->f_pg->f_types).len, "check.obx:1340")].f_fields).data)[rt_idx(ix45, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix44, ((*p_c)->f_pg->f_types).len, "check.obx:1340")].f_fields).len, "check.obx:1340")].f_ty, (&v_env_43));
+          int64_t t46 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix44, ((*p_c)->f_pg->f_types).len, "check.obx:1344")].f_fields).data)[rt_idx(ix45, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix44, ((*p_c)->f_pg->f_types).len, "check.obx:1344")].f_fields).len, "check.obx:1344")].f_ty, (&v_env_43));
           int64_t r47 = t46;
           gl9_drop(v_env_43);
           gl49_drop(v_n_2);
@@ -45547,7 +45965,7 @@ static int64_t f823_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e
   }
   bool c49 = (v_k_3 == 51LL);
   if (c49) {
-    int64_t t50 = f823_check_Checker_placeType(p_c, v_n_2.f_a);
+    int64_t t50 = f832_check_Checker_placeType(p_c, v_n_2.f_a);
     int64_t v_b_51 = t50;
     bool b52 = (v_b_51 >= 0LL);
     if (b52) {
@@ -45584,7 +46002,7 @@ static int64_t f823_check_Checker_placeType(S73_check_Checker** p_c, int64_t p_e
   gl49_drop(v_n_2);
   return r63;
 }
-static void f822_check_Checker_store(S73_check_Checker** p_c, S87_check_Val p_p, obx_str p_cc, bool p_dropOld) {
+static void f831_check_Checker_store(S73_check_Checker** p_c, S87_check_Val p_p, obx_str p_cc, bool p_dropOld) {
   bool t1 = f747_check_Checker_pod(p_c, p_p.f_t);
   bool b2 = t1;
   if (!b2) {
@@ -45602,11 +46020,11 @@ static void f822_check_Checker_store(S73_check_Checker** p_c, S87_check_Val p_p,
     gl68_drop(p_p);
     return;
   }
-  obx_str t7 = f771_check_Checker_fresh(p_c, sl2611);
+  obx_str t7 = f771_check_Checker_fresh(p_c, sl2613);
   obx_str v_n_8 = t7;
   obx_str t9 = f732_check_Checker_T(p_c, p_p.f_t);
   obx_str v_ct_10 = t9;
-  obx_str t11 = rt_str_concat(sl2612, v_ct_10);
+  obx_str t11 = rt_str_concat(sl2614, v_ct_10);
   obx_str t12 = rt_str_concat(t11, sl1771);
   obx_str t13 = rt_str_concat(t12, v_n_8);
   obx_str t14 = rt_str_concat(t13, sl2267);
@@ -45618,15 +46036,15 @@ static void f822_check_Checker_store(S73_check_Checker** p_c, S87_check_Val p_p,
   rt_str_drop(t13);
   rt_str_drop(t12);
   rt_str_drop(t11);
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1456");
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1464");
   f746_check_Checker_dropc(p_c, rt_str_dup(p_p.f_c), p_p.f_t);
   obx_str t17 = rt_str_concat(p_p.f_c, sl2267);
   obx_str t18 = rt_str_concat(t17, v_n_8);
-  obx_str t19 = rt_str_concat(t18, sl2613);
+  obx_str t19 = rt_str_concat(t18, sl2615);
   f744_check_Checker_emit(p_c, t19);
   rt_str_drop(t18);
   rt_str_drop(t17);
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1459");
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:1467");
   rt_str_drop(v_ct_10);
   rt_str_drop(v_n_8);
   rt_str_drop(p_cc);
@@ -45681,7 +46099,7 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
     gl49_drop(t28);
     if (!b30) {
       int64_t ix31 = v_d_17.f_i;
-      b30 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix31, ((*p_c)->f_pg->f_types).len, "check.obx:1259")].f_form == 3LL);
+      b30 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix31, ((*p_c)->f_pg->f_types).len, "check.obx:1263")].f_form == 3LL);
     }
     b27 = b30;
   }
@@ -45704,7 +46122,7 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
   bool b39 = (v_d_17.f_k != 0LL);
   if (!b39) {
     int64_t ix40 = v_d_17.f_i;
-    b39 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix40, ((*p_c)->f_pg->f_types).len, "check.obx:1263")].f_form != 0LL);
+    b39 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix40, ((*p_c)->f_pg->f_types).len, "check.obx:1267")].f_form != 0LL);
   }
   bool c41 = b39;
   if (c41) {
@@ -45723,17 +46141,17 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
     }
     int64_t t49 = v_n_2.f_line;
     obx_str t50 = f17_std_StrBuf_toStr((&v_b_43));
-    obx_str t51 = rt_str_concat(t50, sl2614);
+    obx_str t51 = rt_str_concat(t50, sl2616);
     f702_check_Checker_err(p_c, t49, t51);
   }
   int64_t v_di_52 = v_d_17.f_i;
   int64_t ix53 = v_di_52;
-  obx_str v_dname_54 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix53, ((*p_c)->f_pg->f_types).len, "check.obx:1272")].f_name);
+  obx_str v_dname_54 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix53, ((*p_c)->f_pg->f_types).len, "check.obx:1276")].f_name);
   int64_t ix55 = v_di_52;
-  bool c56 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix55, ((*p_c)->f_pg->f_types).len, "check.obx:1273")].f_drop >= 0LL);
+  bool c56 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix55, ((*p_c)->f_pg->f_types).len, "check.obx:1277")].f_drop >= 0LL);
   if (c56) {
-    obx_str t57 = rt_str_concat(sl2615, v_dname_54);
-    obx_str t58 = rt_str_concat(t57, sl2616);
+    obx_str t57 = rt_str_concat(sl2617, v_dname_54);
+    obx_str t58 = rt_str_concat(t57, sl2618);
     f702_check_Checker_err(p_c, v_n_2.f_line, t58);
   }
   S87_check_Val t59 = f754_check_Checker_expr(p_c, v_n_2.f_c, v_exp_26);
@@ -45755,10 +46173,10 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
   bool c68 = b66;
   if (c68) {
     int64_t t69 = v_n_2.f_line;
-    obx_str t70 = sl2617;
+    obx_str t70 = sl2619;
     obx_str t71 = f767_check_Checker_tstr(p_c, v_v_60.f_t);
     obx_str t72 = rt_str_concat(t70, t71);
-    obx_str t73 = rt_str_concat(t72, sl2618);
+    obx_str t73 = rt_str_concat(t72, sl2620);
     obx_str t74 = rt_str_concat(t73, v_dname_54);
     f702_check_Checker_err(p_c, t69, t74);
   }
@@ -45770,11 +46188,11 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
   bool c77 = b75;
   if (c77) {
     int64_t t78 = v_n_2.f_line;
-    obx_str t79 = sl2619;
+    obx_str t79 = sl2621;
     obx_str t80 = f767_check_Checker_tstr(p_c, v_v_60.f_t);
     obx_str t81 = rt_str_concat(t79, t80);
-    obx_str t82 = rt_str_concat(t81, sl2620);
-    obx_str t83 = rt_str_concat(t82, sl2621);
+    obx_str t82 = rt_str_concat(t81, sl2622);
+    obx_str t83 = rt_str_concat(t82, sl2623);
     f702_check_Checker_err(p_c, t78, t83);
   }
   obx_arr t84 = f522_sema_Program_declEnv((&(*p_c)->f_pg), v_v_60.f_t);
@@ -45791,7 +46209,7 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
     gl49_drop(t93);
     int64_t t95 = f701_check_Checker_line(p_c, v_fp_92);
     int64_t v_fw_96 = t95;
-    int64_t t97 = f856_check_Checker_fieldIndex(p_c, v_di_52, rt_str_dup(v_f_94));
+    int64_t t97 = f865_check_Checker_fieldIndex(p_c, v_di_52, rt_str_dup(v_f_94));
     int64_t v_fi_98 = t97;
     bool c99 = (v_fi_98 < 0LL);
     if (c99) {
@@ -45805,15 +46223,15 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
     bool c105 = t104;
     if (c105) {
       obx_str t106 = rt_str_concat(sl2383, v_f_94);
-      obx_str t107 = rt_str_concat(t106, sl2622);
+      obx_str t107 = rt_str_concat(t106, sl2624);
       f702_check_Checker_err(p_c, v_fw_96, t107);
     }
     int64_t ix108 = v_di_52;
     int64_t ix109 = v_fi_98;
-    bool b110 = (!((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix108, ((*p_c)->f_pg->f_types).len, "check.obx:1290")].f_fields).data)[rt_idx(ix109, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix108, ((*p_c)->f_pg->f_types).len, "check.obx:1290")].f_fields).len, "check.obx:1290")].f_isPub);
+    bool b110 = (!((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix108, ((*p_c)->f_pg->f_types).len, "check.obx:1294")].f_fields).data)[rt_idx(ix109, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix108, ((*p_c)->f_pg->f_types).len, "check.obx:1294")].f_fields).len, "check.obx:1294")].f_isPub);
     if (b110) {
       int64_t ix111 = v_di_52;
-      b110 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix111, ((*p_c)->f_pg->f_types).len, "check.obx:1290")].f_mod != v_mod_3);
+      b110 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix111, ((*p_c)->f_pg->f_types).len, "check.obx:1294")].f_mod != v_mod_3);
     }
     bool c112 = b110;
     if (c112) {
@@ -45821,10 +46239,10 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
       obx_str t114 = rt_str_concat(sl2383, v_f_94);
       obx_str t115 = rt_str_concat(t114, sl2385);
       obx_str t116 = rt_str_concat(t115, v_dname_54);
-      obx_str t117 = rt_str_concat(t116, sl2623);
+      obx_str t117 = rt_str_concat(t116, sl2625);
       int64_t ix118 = v_di_52;
-      int64_t ix119 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix118, ((*p_c)->f_pg->f_types).len, "check.obx:1291")].f_mod;
-      obx_str t120 = rt_str_concat(t117, ((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix119, ((*p_c)->f_pg->f_mods).len, "check.obx:1291")].f_name);
+      int64_t ix119 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix118, ((*p_c)->f_pg->f_types).len, "check.obx:1295")].f_mod;
+      obx_str t120 = rt_str_concat(t117, ((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix119, ((*p_c)->f_pg->f_mods).len, "check.obx:1295")].f_name);
       f702_check_Checker_err(p_c, t113, t120);
     }
     obx_str t121 = rt_str_dup(v_f_94);
@@ -45833,7 +46251,7 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
     gl49_drop(t122);
     rt_str_drop(v_f_94);
   }
-  obx_str t123 = f771_check_Checker_fresh(p_c, sl2624);
+  obx_str t123 = f771_check_Checker_fresh(p_c, sl2626);
   obx_str v_acc_124 = t123;
   obx_str t125 = f732_check_Checker_T(p_c, v_v_60.f_t);
   obx_str v_ct_126 = t125;
@@ -45850,16 +46268,16 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
   rt_str_drop(t128);
   rt_str_drop(t127);
   int64_t ix133 = v_di_52;
-  obx_str t135 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix133, ((*p_c)->f_pg->f_types).len, "check.obx:1298")].f_value ? sl37 : sl1722);
+  obx_str t135 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix133, ((*p_c)->f_pg->f_types).len, "check.obx:1302")].f_value ? sl37 : sl1722);
   obx_str v_sep_136 = t135;
   int64_t ix137 = v_di_52;
-  int64_t v_i_138 = rt_sub_int((((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix137, ((*p_c)->f_pg->f_types).len, "check.obx:1299")].f_fields).len, 1LL, "check.obx:1299");
+  int64_t v_i_138 = rt_sub_int((((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix137, ((*p_c)->f_pg->f_types).len, "check.obx:1303")].f_fields).len, 1LL, "check.obx:1303");
   while (1) {
     bool c139 = (v_i_138 >= 0LL);
     if (!c139) break;
     int64_t ix140 = v_di_52;
     int64_t ix141 = v_i_138;
-    S66_sema_Field v_f_142 = gl45_dup(((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix140, ((*p_c)->f_pg->f_types).len, "check.obx:1301")].f_fields).data)[rt_idx(ix141, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix140, ((*p_c)->f_pg->f_types).len, "check.obx:1301")].f_fields).len, "check.obx:1301")]);
+    S66_sema_Field v_f_142 = gl45_dup(((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix140, ((*p_c)->f_pg->f_types).len, "check.obx:1305")].f_fields).data)[rt_idx(ix141, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix140, ((*p_c)->f_pg->f_types).len, "check.obx:1305")].f_fields).len, "check.obx:1305")]);
     obx_str t143 = f88_std_Map_getOr((&v_named_87), (&v_f_142.f_name), sl2221);
     bool c144 = (rt_str_eq(t143, sl2221));
     rt_str_drop(t143);
@@ -45872,7 +46290,7 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
       rt_str_drop(t146);
       rt_str_drop(t145);
     }
-    v_i_138 = rt_sub_int(v_i_138, 1LL, "check.obx:1303");
+    v_i_138 = rt_sub_int(v_i_138, 1LL, "check.obx:1307");
     gl46_drop(v_f_142);
   }
   obx_slice ap149 = rt_as_slice(&v_fps_89);
@@ -45887,10 +46305,10 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
     bool c156 = (!rt_str_eq(v_b_155, sl2221));
     if (c156) {
       int64_t ix157 = v_di_52;
-      (void)(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix157, ((*p_c)->f_pg->f_types).len, "check.obx:1309")].f_fields);
-      int64_t t158 = f856_check_Checker_fieldIndex(p_c, v_di_52, rt_str_dup(v_f_153));
+      (void)(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix157, ((*p_c)->f_pg->f_types).len, "check.obx:1313")].f_fields);
+      int64_t t158 = f865_check_Checker_fieldIndex(p_c, v_di_52, rt_str_dup(v_f_153));
       int64_t ix159 = t158;
-      int64_t t160 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix157, ((*p_c)->f_pg->f_types).len, "check.obx:1309")].f_fields).data)[rt_idx(ix159, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix157, ((*p_c)->f_pg->f_types).len, "check.obx:1309")].f_fields).len, "check.obx:1309")].f_ty, (&v_env_85));
+      int64_t t160 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix157, ((*p_c)->f_pg->f_types).len, "check.obx:1313")].f_fields).data)[rt_idx(ix159, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix157, ((*p_c)->f_pg->f_types).len, "check.obx:1313")].f_fields).len, "check.obx:1313")].f_ty, (&v_env_85));
       int64_t v_ft_161 = t160;
       obx_str t162 = rt_str_concat(sl2422, v_b_155);
       obx_str t163 = rt_str_concat(t162, sl2221);
@@ -45929,7 +46347,7 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
     rt_str_drop(v_f_153);
   }
   int64_t ix182 = v_di_52;
-  bool c183 = (!((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix182, ((*p_c)->f_pg->f_types).len, "check.obx:1316")].f_value);
+  bool c183 = (!((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix182, ((*p_c)->f_pg->f_types).len, "check.obx:1320")].f_value);
   if (c183) {
     obx_str t184 = rt_str_concat(sl2424, v_acc_124);
     obx_str t185 = rt_str_concat(t184, sl2298);
@@ -45940,20 +46358,20 @@ static void f756_check_Checker_sDestructure(S73_check_Checker** p_c, int64_t p_s
   rt_str_drop(v_ct_126);
   rt_str_drop(v_acc_124);
   gl9_drop(v_fps_89);
-  gl80_drop(v_named_87);
+  gl81_drop(v_named_87);
   gl9_drop(v_env_85);
   gl68_drop(v_v_60);
   rt_str_drop(v_dname_54);
   rt_str_drop(v_p0_13);
   gl49_drop(v_n_2);
 }
-static int64_t f856_check_Checker_fieldIndex(S73_check_Checker** p_c, int64_t p_d, obx_str p_name) {
+static int64_t f865_check_Checker_fieldIndex(S73_check_Checker** p_c, int64_t p_d, obx_str p_name) {
   int64_t ix1 = p_d;
-  int64_t end2 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix1, ((*p_c)->f_pg->f_types).len, "check.obx:1239")].f_fields).len;
+  int64_t end2 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix1, ((*p_c)->f_pg->f_types).len, "check.obx:1243")].f_fields).len;
   for (int64_t v_i_3 = 0LL; v_i_3 < end2; v_i_3++) {
     int64_t ix4 = p_d;
     int64_t ix5 = v_i_3;
-    bool c6 = (rt_str_eq(((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix4, ((*p_c)->f_pg->f_types).len, "check.obx:1240")].f_fields).data)[rt_idx(ix5, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix4, ((*p_c)->f_pg->f_types).len, "check.obx:1240")].f_fields).len, "check.obx:1240")].f_name, p_name));
+    bool c6 = (rt_str_eq(((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix4, ((*p_c)->f_pg->f_types).len, "check.obx:1244")].f_fields).data)[rt_idx(ix5, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix4, ((*p_c)->f_pg->f_types).len, "check.obx:1244")].f_fields).len, "check.obx:1244")].f_name, p_name));
     if (c6) {
       int64_t r7 = v_i_3;
       rt_str_drop(p_name);
@@ -45981,8 +46399,8 @@ static void f755_check_Checker_sLet(S73_check_Checker** p_c, int64_t p_s) {
   S87_check_Val v_v_10 = t9;
   bool c11 = (v_v_10.f_t == 11LL);
   if (c11) {
-    obx_str t12 = rt_str_concat(sl2625, v_name_3);
-    obx_str t13 = rt_str_concat(t12, sl2626);
+    obx_str t12 = rt_str_concat(sl2627, v_name_3);
+    obx_str t13 = rt_str_concat(t12, sl2628);
     f702_check_Checker_err(p_c, v_n_2.f_line, t13);
   }
   obx_str t14 = rt_str_concat(sl2422, v_name_3);
@@ -45991,24 +46409,24 @@ static void f755_check_Checker_sLet(S73_check_Checker** p_c, int64_t p_s) {
   obx_str v_cn_17 = t16;
   rt_str_drop(t14);
   int64_t v_et_19 = ((v_exp_8 >= 0LL) ? v_exp_8 : v_v_10.f_t);
-  obx_str t20 = rt_str_concat(sl2625, v_name_3);
+  obx_str t20 = rt_str_concat(sl2627, v_name_3);
   obx_str t21 = rt_str_concat(t20, sl1809);
   obx_str v_what_22 = t21;
   rt_str_drop(t20);
   int64_t t23 = f497_sema_Program_tk((&(*p_c)->f_pg), v_et_19);
   bool c24 = (t23 == 5LL);
   if (c24) {
-    S87_check_Val t25 = f803_check_Checker_coerce(p_c, gl67_dup(v_v_10), v_et_19, v_n_2.f_line, rt_str_dup(v_what_22));
+    S87_check_Val t25 = f807_check_Checker_coerce(p_c, gl67_dup(v_v_10), v_et_19, v_n_2.f_line, rt_str_dup(v_what_22));
     { S87_check_Val nw26 = t25;
       gl68_drop(v_v_10);
       v_v_10 = nw26; }
     bool c27 = v_mutable_4;
     if (c27) {
-      obx_str t28 = rt_str_concat(sl2627, v_name_3);
-      obx_str t29 = rt_str_concat(t28, sl2628);
+      obx_str t28 = rt_str_concat(sl2629, v_name_3);
+      obx_str t29 = rt_str_concat(t28, sl2630);
       f702_check_Checker_err(p_c, v_n_2.f_line, t29);
     }
-    obx_str t30 = rt_str_concat(sl2629, v_cn_17);
+    obx_str t30 = rt_str_concat(sl2631, v_cn_17);
     obx_str t31 = rt_str_concat(t30, sl2267);
     obx_str t32 = rt_str_concat(t31, v_v_10.f_c);
     obx_str t33 = rt_str_concat(t32, sl36);
@@ -46021,12 +46439,12 @@ static void f755_check_Checker_sLet(S73_check_Checker** p_c, int64_t p_s) {
     bool c35 = (v_v_10.f_caps >= 0LL);
     if (c35) {
       int64_t ix36 = v_v_10.f_caps;
-      int64_t end37 = (((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix36, ((*p_c)->f_capl).len, "check.obx:1201")]).len;
+      int64_t end37 = (((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix36, ((*p_c)->f_capl).len, "check.obx:1205")]).len;
       for (int64_t v_i_38 = 0LL; v_i_38 < end37; v_i_38++) {
         int64_t ix39 = v_v_10.f_caps;
         int64_t ix40 = v_i_38;
-        S99_check_Cap v_cp_41 = ((S99_check_Cap*)(((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix39, ((*p_c)->f_capl).len, "check.obx:1202")]).data)[rt_idx(ix40, (((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix39, ((*p_c)->f_capl).len, "check.obx:1202")]).len, "check.obx:1202")];
-        obx_str t42 = rt_str_concat(sl2630, v_name_3);
+        S100_check_Cap v_cp_41 = ((S100_check_Cap*)(((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix39, ((*p_c)->f_capl).len, "check.obx:1206")]).data)[rt_idx(ix40, (((obx_arr*)((*p_c)->f_capl).data)[rt_idx(ix39, ((*p_c)->f_capl).len, "check.obx:1206")]).len, "check.obx:1206")];
+        obx_str t42 = rt_str_concat(sl2632, v_name_3);
         obx_str t43 = rt_str_concat(t42, sl1809);
         f779_check_Checker_freeze(p_c, v_cp_41.f_v, v_cp_41.f_m, t43);
         rt_str_drop(t42);
@@ -46044,34 +46462,34 @@ static void f755_check_Checker_sLet(S73_check_Checker** p_c, int64_t p_s) {
   if (c45) {
     bool c46 = (v_exp_8 >= 0LL);
     if (c46) {
-      S87_check_Val t47 = f803_check_Checker_coerce(p_c, gl67_dup(v_v_10), v_exp_8, v_n_2.f_line, rt_str_dup(v_what_22));
+      S87_check_Val t47 = f807_check_Checker_coerce(p_c, gl67_dup(v_v_10), v_exp_8, v_n_2.f_line, rt_str_dup(v_what_22));
       { S87_check_Val nw48 = t47;
         gl68_drop(v_v_10);
         v_v_10 = nw48; }
     }
     bool c49 = v_mutable_4;
     if (c49) {
-      obx_str t50 = rt_str_concat(sl2631, v_name_3);
-      obx_str t51 = rt_str_concat(t50, sl2632);
+      obx_str t50 = rt_str_concat(sl2633, v_name_3);
+      obx_str t51 = rt_str_concat(t50, sl2634);
       f702_check_Checker_err(p_c, v_n_2.f_line, t51);
     }
     int64_t v_root_52 = v_v_10.f_root;
     bool c53 = (v_root_52 < 0LL);
     if (c53) {
-      obx_str t54 = rt_str_concat(sl2633, v_name_3);
-      obx_str t55 = rt_str_concat(t54, sl2634);
-      obx_str t56 = rt_str_concat(t55, sl2635);
+      obx_str t54 = rt_str_concat(sl2635, v_name_3);
+      obx_str t55 = rt_str_concat(t54, sl2636);
+      obx_str t56 = rt_str_concat(t55, sl2637);
       f702_check_Checker_err(p_c, v_n_2.f_line, t56);
     }
     bool t57 = f499_sema_Program_tm((&(*p_c)->f_pg), v_v_10.f_t);
     bool c58 = t57;
     if (c58) {
-      f789_check_Checker_frozen(p_c, v_root_52, 3LL, v_n_2.f_line);
+      f793_check_Checker_frozen(p_c, v_root_52, 3LL, v_n_2.f_line);
     }
     int64_t t59 = f738_check_Checker_newVar(p_c, rt_str_dup(v_name_3), rt_str_dup(v_cn_17), v_v_10.f_t, false, 1LL, v_n_2.f_line);
     int64_t v_vx_60 = t59;
     int64_t ix61 = v_vx_60;
-    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix61, ((*p_c)->f_vars).len, "check.obx:1220")].f_broot = v_root_52;
+    ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix61, ((*p_c)->f_vars).len, "check.obx:1224")].f_broot = v_root_52;
     int64_t t62 = f497_sema_Program_tk((&(*p_c)->f_pg), v_v_10.f_t);
     bool c63 = (t62 == 2LL);
     if (c63) {
@@ -46090,7 +46508,7 @@ static void f755_check_Checker_sLet(S73_check_Checker** p_c, int64_t p_s) {
       rt_str_drop(t67);
       rt_str_drop(v_ct_66);
     } else {
-      obx_str t72 = rt_str_concat(sl2512, v_cn_17);
+      obx_str t72 = rt_str_concat(sl2513, v_cn_17);
       obx_str t73 = rt_str_concat(t72, sl2267);
       obx_str t74 = rt_str_concat(t73, v_v_10.f_c);
       obx_str t75 = rt_str_concat(t74, sl36);
@@ -46115,7 +46533,7 @@ static void f755_check_Checker_sLet(S73_check_Checker** p_c, int64_t p_s) {
   }
   bool c80 = (v_exp_8 >= 0LL);
   if (c80) {
-    S87_check_Val t81 = f803_check_Checker_coerce(p_c, gl67_dup(v_v_10), v_exp_8, v_n_2.f_line, rt_str_dup(v_what_22));
+    S87_check_Val t81 = f807_check_Checker_coerce(p_c, gl67_dup(v_v_10), v_exp_8, v_n_2.f_line, rt_str_dup(v_what_22));
     { S87_check_Val nw82 = t81;
       gl68_drop(v_v_10);
       v_v_10 = nw82; }
@@ -46152,14 +46570,14 @@ static S87_check_Val f754_check_Checker_expr(S73_check_Checker** p_c, int64_t p_
     S49_syntax_Node t4 = f703_check_Checker_nd(p_c, p_e);
     S49_syntax_Node v_n_5 = t4;
     S65_num_Big t6 = f576_num_bigParse(rt_str_dup(v_n_5.f_s), (((int64_t)(v_n_5.f_flags & 256LL)) != 0LL));
-    S87_check_Val t7 = f857_check_Checker_xInt(p_c, t6, v_n_5.f_line, p_exp);
+    S87_check_Val t7 = f866_check_Checker_xInt(p_c, t6, v_n_5.f_line, p_exp);
     S87_check_Val r8 = t7;
     gl49_drop(v_n_5);
     return r8;
   }
   bool c9 = (v_k_2 == 50LL);
   if (c9) {
-    int64_t t10 = f858_check_Checker_ek(p_c, p_exp);
+    int64_t t10 = f867_check_Checker_ek(p_c, p_exp);
     bool b11 = (t10 == 3LL);
     if (b11) {
       bool b12 = (p_exp == -3LL);
@@ -46174,14 +46592,14 @@ static S87_check_Val f754_check_Checker_expr(S73_check_Checker** p_c, int64_t p_
       b11 = b12;
     }
     bool v_mut1_15 = b11;
-    S87_check_Val t16 = f859_check_Checker_xSub(p_c, p_e, v_mut1_15);
+    S87_check_Val t16 = f868_check_Checker_xSub(p_c, p_e, v_mut1_15);
     S87_check_Val r17 = t16;
     return r17;
   }
   S87_check_Val mx18;
   int64_t sv19 = v_k_2;
   if (sv19 == 37LL) {
-    obx_str t20 = sl2636;
+    obx_str t20 = sl2638;
     S49_syntax_Node t21 = f703_check_Checker_nd(p_c, p_e);
     obx_str t22 = rt_int_to_str(t21.f_a);
     obx_str t23 = rt_str_concat(t20, t22);
@@ -46201,65 +46619,65 @@ static S87_check_Val f754_check_Checker_expr(S73_check_Checker** p_c, int64_t p_
     mx18 = t30;
     gl49_drop(t27);
   } else if (sv19 == 40LL) {
-    bool t31 = f800_check_Checker_flag(p_c, p_e, 1024LL);
+    bool t31 = f804_check_Checker_flag(p_c, p_e, 1024LL);
     obx_str t33 = (t31 ? sl73 : sl58);
     S87_check_Val t34 = f734_check_rv(t33, 8LL);
     mx18 = t34;
   } else if (sv19 == 55LL) {
     int64_t t35 = f701_check_Checker_line(p_c, p_e);
-    f702_check_Checker_err(p_c, t35, sl2637);
+    f702_check_Checker_err(p_c, t35, sl2639);
   } else if (sv19 == 38LL) {
     S49_syntax_Node t36 = f703_check_Checker_nd(p_c, p_e);
     obx_str t37 = rt_str_dup(t36.f_s);
     int64_t t38 = f701_check_Checker_line(p_c, p_e);
-    S87_check_Val t39 = f860_check_Checker_xFrac(p_c, t37, t38, p_exp);
+    S87_check_Val t39 = f869_check_Checker_xFrac(p_c, t37, t38, p_exp);
     mx18 = t39;
     gl49_drop(t36);
   } else if (sv19 == 41LL) {
-    S87_check_Val t40 = f861_check_Checker_xName(p_c, p_e, p_exp);
+    S87_check_Val t40 = f870_check_Checker_xName(p_c, p_e, p_exp);
     mx18 = t40;
   } else if (sv19 == 43LL) {
-    S87_check_Val t41 = f862_check_Checker_xClosure(p_c, p_e, p_exp);
+    S87_check_Val t41 = f871_check_Checker_xClosure(p_c, p_e, p_exp);
     mx18 = t41;
   } else if (sv19 == 49LL) {
-    S87_check_Val t42 = f863_check_Checker_xField(p_c, p_e, p_exp);
+    S87_check_Val t42 = f872_check_Checker_xField(p_c, p_e, p_exp);
     mx18 = t42;
   } else if (sv19 == 51LL) {
-    S87_check_Val t43 = f864_check_Checker_xIndex(p_c, p_e, p_exp);
+    S87_check_Val t43 = f873_check_Checker_xIndex(p_c, p_e, p_exp);
     mx18 = t43;
   } else if (sv19 == 47LL) {
-    S87_check_Val t44 = f865_check_Checker_xBorrow(p_c, p_e, p_exp);
+    S87_check_Val t44 = f874_check_Checker_xBorrow(p_c, p_e, p_exp);
     mx18 = t44;
   } else if (sv19 == 46LL) {
-    S87_check_Val t45 = f866_check_Checker_xUn(p_c, p_e, p_exp);
+    S87_check_Val t45 = f875_check_Checker_xUn(p_c, p_e, p_exp);
     mx18 = t45;
   } else if (sv19 == 45LL) {
-    S87_check_Val t46 = f867_check_Checker_xBin(p_c, p_e, p_exp);
+    S87_check_Val t46 = f876_check_Checker_xBin(p_c, p_e, p_exp);
     mx18 = t46;
   } else if (sv19 == 56LL) {
-    S87_check_Val t47 = f868_check_Checker_xIfx(p_c, p_e, p_exp);
+    S87_check_Val t47 = f877_check_Checker_xIfx(p_c, p_e, p_exp);
     mx18 = t47;
   } else if (sv19 == 57LL) {
-    S87_check_Val t48 = f869_check_Checker_xMatchx(p_c, p_e, p_exp);
+    S87_check_Val t48 = f878_check_Checker_xMatchx(p_c, p_e, p_exp);
     mx18 = t48;
   } else if (sv19 == 48LL) {
-    S87_check_Val t49 = f870_check_Checker_xTry(p_c, p_e, p_exp);
+    S87_check_Val t49 = f879_check_Checker_xTry(p_c, p_e, p_exp);
     mx18 = t49;
   } else if (sv19 == 26LL || sv19 == 27LL || sv19 == 28LL) {
-    S87_check_Val t50 = f871_check_Checker_xExit(p_c, p_e);
+    S87_check_Val t50 = f880_check_Checker_xExit(p_c, p_e);
     mx18 = t50;
   } else if (sv19 == 53LL) {
-    S87_check_Val t51 = f872_check_Checker_xLit(p_c, p_e, p_exp);
+    S87_check_Val t51 = f881_check_Checker_xLit(p_c, p_e, p_exp);
     mx18 = t51;
   } else if (sv19 == 42LL) {
-    S87_check_Val t52 = f873_check_Checker_xArrlit(p_c, p_e, p_exp);
+    S87_check_Val t52 = f882_check_Checker_xArrlit(p_c, p_e, p_exp);
     mx18 = t52;
   } else if (sv19 == 52LL) {
-    S87_check_Val t53 = f874_check_Checker_xCall(p_c, p_e, p_exp);
+    S87_check_Val t53 = f883_check_Checker_xCall(p_c, p_e, p_exp);
     mx18 = t53;
   } else {
     int64_t t54 = f701_check_Checker_line(p_c, p_e);
-    obx_str t55 = sl2638;
+    obx_str t55 = sl2640;
     obx_str t56 = rt_int_to_str(v_k_2);
     obx_str t57 = rt_str_concat(t55, t56);
     f702_check_Checker_err(p_c, t54, t57);
@@ -46269,11 +46687,11 @@ static S87_check_Val f754_check_Checker_expr(S73_check_Checker** p_c, int64_t p_
   S87_check_Val r58 = mx18;
   return r58;
 }
-static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f883_check_Checker_xCall(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   int64_t v_f_3 = v_n_2.f_a;
-  obx_arr t4 = f875_check_Checker_callArgs(p_c, p_e);
+  obx_arr t4 = f884_check_Checker_callArgs(p_c, p_e);
   obx_arr v_args_5 = t4;
   int64_t t6 = f700_check_Checker_kind(p_c, v_f_3);
   bool b7 = (t6 == 41LL);
@@ -46288,11 +46706,11 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
     S49_syntax_Node t11 = f703_check_Checker_nd(p_c, v_f_3);
     obx_str v_fname_12 = rt_str_dup(t11.f_s);
     gl49_drop(t11);
-    bool t13 = f876_check_Checker_isBuiltinHere(p_c, rt_str_dup(v_fname_12));
+    bool t13 = f885_check_Checker_isBuiltinHere(p_c, rt_str_dup(v_fname_12));
     bool c14 = t13;
     if (c14) {
       int64_t v_mark_15 = ((*p_c)->f_cx->f_pending).len;
-      S87_check_Val t16 = f877_check_Checker_builtin(p_c, rt_str_dup(v_fname_12), p_e, p_exp);
+      S87_check_Val t16 = f886_check_Checker_builtin(p_c, rt_str_dup(v_fname_12), p_e, p_exp);
       S87_check_Val v_r_17 = t16;
       f753_check_Checker_cutPending(p_c, v_mark_15);
       S87_check_Val r18 = gl67_dup(v_r_17);
@@ -46302,7 +46720,7 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
       gl49_drop(v_n_2);
       return r18;
     }
-    int64_t t19 = f878_check_intrinsic(rt_str_dup(v_fname_12));
+    int64_t t19 = f887_check_intrinsic(rt_str_dup(v_fname_12));
     int64_t v_ii_20 = t19;
     bool b21 = (v_ii_20 >= 0LL);
     if (b21) {
@@ -46311,15 +46729,15 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
     }
     bool c23 = b21;
     if (c23) {
-      S94_check_Sig* t24 = f879_check_Checker_intrSig(p_c, v_ii_20);
-      S94_check_Sig* v_sig_25 = t24;
-      S95_check_CallOpts* t26 = f834_check_noOpts();
-      S95_check_CallOpts* v_o_27 = t26;
+      S95_check_Sig* t24 = f888_check_Checker_intrSig(p_c, v_ii_20);
+      S95_check_Sig* v_sig_25 = t24;
+      S96_check_CallOpts* t26 = f843_check_noOpts();
+      S96_check_CallOpts* v_o_27 = t26;
       S87_check_Val t28 = f733_check_voidVal(false);
-      S87_check_Val t29 = f835_check_Checker_call(p_c, (&v_sig_25), false, t28, (&v_args_5), v_n_2.f_line, p_exp, (&v_o_27));
+      S87_check_Val t29 = f844_check_Checker_call(p_c, (&v_sig_25), false, t28, (&v_args_5), v_n_2.f_line, p_exp, (&v_o_27));
       S87_check_Val r30 = t29;
-      gl83_drop(v_o_27);
-      gl84_drop(v_sig_25);
+      gl84_drop(v_o_27);
+      gl85_drop(v_sig_25);
       rt_str_drop(v_fname_12);
       gl62_drop(v_args_5);
       gl49_drop(v_n_2);
@@ -46340,7 +46758,7 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
   if (b36) {
     S49_syntax_Node t37 = f703_check_Checker_nd(p_c, v_f_3);
     S49_syntax_Node t38 = f703_check_Checker_nd(p_c, t37.f_a);
-    S1_check_St t39 = f880_check_Checker_staticNs(p_c, t38.f_a);
+    S1_check_St t39 = f889_check_Checker_staticNs(p_c, t38.f_a);
     b36 = (t39.f_k == 0LL);
     gl49_drop(t38);
     gl49_drop(t37);
@@ -46353,7 +46771,7 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
   bool b42 = b40;
   if (b42) {
     S49_syntax_Node t43 = f703_check_Checker_nd(p_c, v_f_3);
-    bool t44 = f881_check_Checker_allTypeish(p_c, t43.f_b);
+    bool t44 = f890_check_Checker_allTypeish(p_c, t43.f_b);
     b42 = t44;
     gl49_drop(t43);
   }
@@ -46381,18 +46799,18 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
     bool b56 = b55;
     if (b56) {
       int64_t ix57 = v_og_54.f_di;
-      b56 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix57, ((*p_c)->f_pg->f_globals).len, "check.obx:3962")].f_isOnce;
+      b56 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix57, ((*p_c)->f_pg->f_globals).len, "check.obx:4144")].f_isOnce;
     }
     bool c58 = b56;
     if (c58) {
-      S87_check_Val t59 = f882_check_Checker_onceCall(p_c, v_og_54.f_di, rt_str_dup(v_fn1_52.f_s), p_e);
+      S87_check_Val t59 = f891_check_Checker_onceCall(p_c, v_og_54.f_di, rt_str_dup(v_fn1_52.f_s), p_e);
       S87_check_Val r60 = t59;
       gl49_drop(v_fn1_52);
       gl62_drop(v_args_5);
       gl49_drop(v_n_2);
       return r60;
     }
-    S1_check_St t61 = f880_check_Checker_staticNs(p_c, v_fn1_52.f_a);
+    S1_check_St t61 = f889_check_Checker_staticNs(p_c, v_fn1_52.f_a);
     S1_check_St v_st_62 = t61;
     bool b63 = (v_st_62.f_k != 0LL);
     if (b63) {
@@ -46412,7 +46830,7 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
     }
     bool c68 = b67;
     if (c68) {
-      S87_check_Val t69 = f883_check_Checker_constructVariant(p_c, v_vst_66, (&v_args_5), v_n_2.f_line, p_exp, -1LL);
+      S87_check_Val t69 = f892_check_Checker_constructVariant(p_c, v_vst_66, (&v_args_5), v_n_2.f_line, p_exp, -1LL);
       S87_check_Val r70 = t69;
       gl49_drop(v_fn1_52);
       gl62_drop(v_args_5);
@@ -46433,24 +46851,24 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
         if ((v_st_62.f_k == 2LL)) {
           ifx76 = sl1725;
         } else {
-          obx_str t77 = f884_check_Checker_declName(p_c, v_st_62);
+          obx_str t77 = f893_check_Checker_declName(p_c, v_st_62);
           ifx76 = t77;
         }
         obx_str v_nm_78 = ifx76;
         int64_t t79 = v_fn1_52.f_line;
-        obx_str t80 = rt_str_concat(v_nm_78, sl2639);
+        obx_str t80 = rt_str_concat(v_nm_78, sl2641);
         obx_str t81 = rt_str_concat(t80, v_fn1_52.f_s);
         f702_check_Checker_err(p_c, t79, t81);
       }
-      S94_check_Sig* t82 = f885_check_Checker_assocSig(p_c, v_t_74, rt_str_dup(v_fn1_52.f_s), v_n_2.f_line, false);
-      S94_check_Sig* v_sig_83 = t82;
-      S95_check_CallOpts* t84 = f834_check_noOpts();
-      S95_check_CallOpts* v_o_85 = t84;
+      S95_check_Sig* t82 = f894_check_Checker_assocSig(p_c, v_t_74, rt_str_dup(v_fn1_52.f_s), v_n_2.f_line, false);
+      S95_check_Sig* v_sig_83 = t82;
+      S96_check_CallOpts* t84 = f843_check_noOpts();
+      S96_check_CallOpts* v_o_85 = t84;
       S87_check_Val t86 = f733_check_voidVal(false);
-      S87_check_Val t87 = f835_check_Checker_call(p_c, (&v_sig_83), false, t86, (&v_args_5), v_n_2.f_line, p_exp, (&v_o_85));
+      S87_check_Val t87 = f844_check_Checker_call(p_c, (&v_sig_83), false, t86, (&v_args_5), v_n_2.f_line, p_exp, (&v_o_85));
       S87_check_Val r88 = t87;
-      gl83_drop(v_o_85);
-      gl84_drop(v_sig_83);
+      gl84_drop(v_o_85);
+      gl85_drop(v_sig_83);
       gl49_drop(v_fn1_52);
       gl62_drop(v_args_5);
       gl49_drop(v_n_2);
@@ -46473,30 +46891,30 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
       obx_str t97 = rt_str_dup(v_fn1_52.f_s);
       int64_t t98 = v_n_2.f_line;
       int64_t t99 = f497_sema_Program_tk((&(*p_c)->f_pg), v_base_95);
-      S94_check_Sig* t100 = f832_check_Checker_methodSig(p_c, t96, t97, t98, (t99 == 6LL));
-      S94_check_Sig* v_sig_101 = t100;
+      S95_check_Sig* t100 = f841_check_Checker_methodSig(p_c, t96, t97, t98, (t99 == 6LL));
+      S95_check_Sig* v_sig_101 = t100;
       bool c102 = (v_sig_101->f_kind < 0LL);
       if (c102) {
-        S87_check_Val t103 = f886_check_Checker_fieldOf(p_c, gl67_dup(v_recv_91), rt_str_dup(v_fn1_52.f_s), v_n_2.f_line);
+        S87_check_Val t103 = f895_check_Checker_fieldOf(p_c, gl67_dup(v_recv_91), rt_str_dup(v_fn1_52.f_s), v_n_2.f_line);
         S87_check_Val v_fv_104 = t103;
-        S87_check_Val t105 = f887_check_Checker_callValue(p_c, gl67_dup(v_fv_104), p_e, p_exp);
+        S87_check_Val t105 = f896_check_Checker_callValue(p_c, gl67_dup(v_fv_104), p_e, p_exp);
         S87_check_Val r106 = t105;
         gl68_drop(v_fv_104);
-        gl84_drop(v_sig_101);
+        gl85_drop(v_sig_101);
         gl68_drop(v_recv_91);
         gl49_drop(v_fn1_52);
         gl62_drop(v_args_5);
         gl49_drop(v_n_2);
         return r106;
       }
-      S95_check_CallOpts* t107 = f834_check_noOpts();
-      S95_check_CallOpts* v_o_108 = t107;
+      S96_check_CallOpts* t107 = f843_check_noOpts();
+      S96_check_CallOpts* v_o_108 = t107;
       v_o_108->f_targs = v_targs_31;
       v_o_108->f_rast = v_fn1_52.f_a;
-      S87_check_Val t109 = f835_check_Checker_call(p_c, (&v_sig_101), true, gl67_dup(v_recv_91), (&v_args_5), v_n_2.f_line, p_exp, (&v_o_108));
+      S87_check_Val t109 = f844_check_Checker_call(p_c, (&v_sig_101), true, gl67_dup(v_recv_91), (&v_args_5), v_n_2.f_line, p_exp, (&v_o_108));
       S87_check_Val r110 = t109;
-      gl83_drop(v_o_108);
-      gl84_drop(v_sig_101);
+      gl84_drop(v_o_108);
+      gl85_drop(v_sig_101);
       gl68_drop(v_recv_91);
       gl49_drop(v_fn1_52);
       gl62_drop(v_args_5);
@@ -46511,7 +46929,7 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
   if (c113) {
     bool c114 = (v_st_112.f_k == 2LL);
     if (c114) {
-      S87_check_Val t115 = f888_check_Checker_convert(p_c, v_st_112.f_t, p_e);
+      S87_check_Val t115 = f897_check_Checker_convert(p_c, v_st_112.f_t, p_e);
       S87_check_Val r116 = t115;
       gl62_drop(v_args_5);
       gl49_drop(v_n_2);
@@ -46520,12 +46938,12 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
     bool c117 = (v_st_112.f_k == 3LL);
     if (c117) {
       int64_t ix118 = v_st_112.f_m;
-      obx_str t119 = rt_str_concat(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix118, ((*p_c)->f_pg->f_mods).len, "check.obx:3993")].f_name, sl2640);
+      obx_str t119 = rt_str_concat(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix118, ((*p_c)->f_pg->f_mods).len, "check.obx:4175")].f_name, sl2642);
       f702_check_Checker_err(p_c, v_n_2.f_line, t119);
     }
     bool c120 = (v_st_112.f_dk == 4LL);
     if (c120) {
-      S87_check_Val t121 = f883_check_Checker_constructVariant(p_c, v_st_112, (&v_args_5), v_n_2.f_line, p_exp, -1LL);
+      S87_check_Val t121 = f892_check_Checker_constructVariant(p_c, v_st_112, (&v_args_5), v_n_2.f_line, p_exp, -1LL);
       S87_check_Val r122 = t121;
       gl62_drop(v_args_5);
       gl49_drop(v_n_2);
@@ -46534,17 +46952,17 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
     bool c123 = (v_st_112.f_dk == 1LL);
     if (c123) {
       obx_arr a124 = rt_arr_new(0, sizeof(int64_t));
-      S94_check_Sig* t125 = f853_check_Checker_fnSig(p_c, v_st_112.f_di, a124);
-      S94_check_Sig* v_sig_126 = t125;
-      S95_check_CallOpts* t127 = f834_check_noOpts();
-      S95_check_CallOpts* v_o_128 = t127;
+      S95_check_Sig* t125 = f862_check_Checker_fnSig(p_c, v_st_112.f_di, a124);
+      S95_check_Sig* v_sig_126 = t125;
+      S96_check_CallOpts* t127 = f843_check_noOpts();
+      S96_check_CallOpts* v_o_128 = t127;
       v_o_128->f_targs = ((v_st_112.f_n > 2LL) ? v_st_112.f_targs : -1LL);
       v_o_128->f_alltargs = true;
       S87_check_Val t130 = f733_check_voidVal(false);
-      S87_check_Val t131 = f835_check_Checker_call(p_c, (&v_sig_126), false, t130, (&v_args_5), v_n_2.f_line, p_exp, (&v_o_128));
+      S87_check_Val t131 = f844_check_Checker_call(p_c, (&v_sig_126), false, t130, (&v_args_5), v_n_2.f_line, p_exp, (&v_o_128));
       S87_check_Val r132 = t131;
-      gl83_drop(v_o_128);
-      gl84_drop(v_sig_126);
+      gl84_drop(v_o_128);
+      gl85_drop(v_sig_126);
       gl62_drop(v_args_5);
       gl49_drop(v_n_2);
       return r132;
@@ -46552,14 +46970,14 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
     bool c133 = (v_st_112.f_dk == 0LL);
     if (c133) {
       int64_t ix134 = v_st_112.f_di;
-      bool c135 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix134, ((*p_c)->f_pg->f_types).len, "check.obx:4003")].f_form == 3LL);
+      bool c135 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix134, ((*p_c)->f_pg->f_types).len, "check.obx:4185")].f_form == 3LL);
       if (c135) {
         int64_t t136 = f723_check_Checker_staticType(p_c, v_st_112, v_n_2.f_line);
         int64_t v_t_137 = t136;
         int64_t t138 = f497_sema_Program_tk((&(*p_c)->f_pg), v_t_137);
         bool c139 = (t138 == 0LL);
         if (c139) {
-          S87_check_Val t140 = f888_check_Checker_convert(p_c, v_t_137, p_e);
+          S87_check_Val t140 = f897_check_Checker_convert(p_c, v_t_137, p_e);
           S87_check_Val r141 = t140;
           gl62_drop(v_args_5);
           gl49_drop(v_n_2);
@@ -46567,74 +46985,74 @@ static S87_check_Val f874_check_Checker_xCall(S73_check_Checker** p_c, int64_t p
         }
       }
       int64_t ix142 = v_st_112.f_di;
-      obx_str v_dn_143 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix142, ((*p_c)->f_pg->f_types).len, "check.obx:4007")].f_name);
+      obx_str v_dn_143 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix142, ((*p_c)->f_pg->f_types).len, "check.obx:4189")].f_name);
       int64_t t144 = v_n_2.f_line;
-      obx_str t145 = rt_str_concat(v_dn_143, sl2641);
+      obx_str t145 = rt_str_concat(v_dn_143, sl2643);
       obx_str t146 = rt_str_concat(t145, v_dn_143);
-      obx_str t147 = rt_str_concat(t146, sl2642);
+      obx_str t147 = rt_str_concat(t146, sl2644);
       f702_check_Checker_err(p_c, t144, t147);
     }
     bool c148 = (v_st_112.f_dk == 3LL);
     if (c148) {
-      S87_check_Val t149 = f889_check_Checker_staticValue(p_c, v_st_112, v_f_3, -1LL);
-      S87_check_Val t150 = f887_check_Checker_callValue(p_c, t149, p_e, p_exp);
+      S87_check_Val t149 = f898_check_Checker_staticValue(p_c, v_st_112, v_f_3, -1LL);
+      S87_check_Val t150 = f896_check_Checker_callValue(p_c, t149, p_e, p_exp);
       S87_check_Val r151 = t150;
       gl62_drop(v_args_5);
       gl49_drop(v_n_2);
       return r151;
     }
     int64_t t152 = v_n_2.f_line;
-    obx_str t153 = f884_check_Checker_declName(p_c, v_st_112);
-    obx_str t154 = rt_str_concat(t153, sl2643);
+    obx_str t153 = f893_check_Checker_declName(p_c, v_st_112);
+    obx_str t154 = rt_str_concat(t153, sl2645);
     f702_check_Checker_err(p_c, t152, t154);
   }
   S87_check_Val t155 = f754_check_Checker_expr(p_c, v_f_3, -1LL);
-  S87_check_Val t156 = f887_check_Checker_callValue(p_c, t155, p_e, p_exp);
+  S87_check_Val t156 = f896_check_Checker_callValue(p_c, t155, p_e, p_exp);
   S87_check_Val r157 = t156;
   gl62_drop(v_args_5);
   gl49_drop(v_n_2);
   return r157;
 }
-static S87_check_Val f889_check_Checker_staticValue(S73_check_Checker** p_c, S1_check_St p_st, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f898_check_Checker_staticValue(S73_check_Checker** p_c, S1_check_St p_st, int64_t p_e, int64_t p_exp) {
   int64_t t1 = f701_check_Checker_line(p_c, p_e);
   int64_t v_line_2 = t1;
   bool c3 = (p_st.f_k == 3LL);
   if (c3) {
     int64_t ix4 = p_st.f_m;
-    obx_str t5 = rt_str_concat(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix4, ((*p_c)->f_pg->f_mods).len, "check.obx:2303")].f_name, sl2644);
+    obx_str t5 = rt_str_concat(((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix4, ((*p_c)->f_pg->f_mods).len, "check.obx:2420")].f_name, sl2646);
     f702_check_Checker_err(p_c, v_line_2, t5);
   }
   bool c6 = (p_st.f_k == 2LL);
   if (c6) {
     int64_t t7 = v_line_2;
     obx_str t8 = f767_check_Checker_tstr(p_c, p_st.f_t);
-    obx_str t9 = rt_str_concat(t8, sl2645);
+    obx_str t9 = rt_str_concat(t8, sl2647);
     f702_check_Checker_err(p_c, t7, t9);
   }
   int64_t v_di_10 = p_st.f_di;
   bool c11 = (p_st.f_dk == 2LL);
   if (c11) {
-    S87_check_Val t12 = f890_check_Checker_constVal(p_c, v_di_10, p_exp, v_line_2);
+    S87_check_Val t12 = f899_check_Checker_constVal(p_c, v_di_10, p_exp, v_line_2);
     S87_check_Val r13 = t12;
     return r13;
   }
   bool c14 = (p_st.f_dk == 3LL);
   if (c14) {
     int64_t ix15 = v_di_10;
-    obx_str v_name_16 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix15, ((*p_c)->f_pg->f_globals).len, "check.obx:2308")].f_name);
+    obx_str v_name_16 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix15, ((*p_c)->f_pg->f_globals).len, "check.obx:2425")].f_name);
     int64_t ix17 = v_di_10;
-    bool c18 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix17, ((*p_c)->f_pg->f_globals).len, "check.obx:2309")].f_isOnce;
+    bool c18 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix17, ((*p_c)->f_pg->f_globals).len, "check.obx:2426")].f_isOnce;
     if (c18) {
       int64_t t19 = v_line_2;
-      obx_str t20 = rt_str_concat(v_name_16, sl2646);
+      obx_str t20 = rt_str_concat(v_name_16, sl2648);
       obx_str t21 = rt_str_concat(t20, v_name_16);
-      obx_str t22 = rt_str_concat(t21, sl2647);
+      obx_str t22 = rt_str_concat(t21, sl2649);
       f702_check_Checker_err(p_c, t19, t22);
     }
     int64_t ix23 = v_di_10;
-    obx_str t24 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix23, ((*p_c)->f_pg->f_globals).len, "check.obx:2312")].f_cname);
+    obx_str t24 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix23, ((*p_c)->f_pg->f_globals).len, "check.obx:2429")].f_cname);
     int64_t ix25 = v_di_10;
-    S87_check_Val t26 = f735_check_val(t24, ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix25, ((*p_c)->f_pg->f_globals).len, "check.obx:2312")].f_ty, 2LL);
+    S87_check_Val t26 = f735_check_val(t24, ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix25, ((*p_c)->f_pg->f_globals).len, "check.obx:2429")].f_ty, 2LL);
     S87_check_Val v_v_27 = t26;
     v_v_27.f_mutable = true;
     v_v_27.f_gk = 3LL;
@@ -46647,24 +47065,24 @@ static S87_check_Val f889_check_Checker_staticValue(S73_check_Checker** p_c, S1_
   bool c29 = (p_st.f_dk == 4LL);
   if (c29) {
     int64_t ix30 = v_di_10;
-    bool c31 = ((((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix30, ((*p_c)->f_pg->f_variants).len, "check.obx:2319")].f_fields).len > 0LL);
+    bool c31 = ((((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix30, ((*p_c)->f_pg->f_variants).len, "check.obx:2436")].f_fields).len > 0LL);
     if (c31) {
       int64_t t32 = v_line_2;
       int64_t ix33 = v_di_10;
-      obx_str t34 = rt_str_concat(sl2372, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix33, ((*p_c)->f_pg->f_variants).len, "check.obx:2320")].f_name);
-      obx_str t35 = rt_str_concat(t34, sl2648);
+      obx_str t34 = rt_str_concat(sl2372, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix33, ((*p_c)->f_pg->f_variants).len, "check.obx:2437")].f_name);
+      obx_str t35 = rt_str_concat(t34, sl2650);
       int64_t ix36 = v_di_10;
-      int64_t ix37 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix36, ((*p_c)->f_pg->f_variants).len, "check.obx:2321")].f_decl;
-      obx_str t38 = rt_str_concat(t35, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix37, ((*p_c)->f_pg->f_types).len, "check.obx:2321")].f_name);
+      int64_t ix37 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix36, ((*p_c)->f_pg->f_variants).len, "check.obx:2438")].f_decl;
+      obx_str t38 = rt_str_concat(t35, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix37, ((*p_c)->f_pg->f_types).len, "check.obx:2438")].f_name);
       obx_str t39 = rt_str_concat(t38, sl37);
       int64_t ix40 = v_di_10;
-      obx_str t41 = rt_str_concat(t39, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix40, ((*p_c)->f_pg->f_variants).len, "check.obx:2321")].f_name);
-      obx_str t42 = rt_str_concat(t41, sl2463);
+      obx_str t41 = rt_str_concat(t39, ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix40, ((*p_c)->f_pg->f_variants).len, "check.obx:2438")].f_name);
+      obx_str t42 = rt_str_concat(t41, sl2464);
       f702_check_Checker_err(p_c, t32, t42);
     }
     obx_arr a43 = rt_arr_new(0, sizeof(S83_check_Arg));
     obx_arr v_none_44 = a43;
-    S87_check_Val t45 = f883_check_Checker_constructVariant(p_c, p_st, (&v_none_44), v_line_2, p_exp, -1LL);
+    S87_check_Val t45 = f892_check_Checker_constructVariant(p_c, p_st, (&v_none_44), v_line_2, p_exp, -1LL);
     S87_check_Val r46 = t45;
     gl62_drop(v_none_44);
     return r46;
@@ -46672,15 +47090,15 @@ static S87_check_Val f889_check_Checker_staticValue(S73_check_Checker** p_c, S1_
   bool c47 = (p_st.f_dk == 1LL);
   if (c47) {
     int64_t ix48 = v_di_10;
-    obx_str v_fname_49 = rt_str_dup(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix48, ((*p_c)->f_pg->f_fns).len, "check.obx:2327")].f_name);
+    obx_str v_fname_49 = rt_str_dup(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix48, ((*p_c)->f_pg->f_fns).len, "check.obx:2444")].f_name);
     int64_t ix50 = v_di_10;
-    obx_arr t51 = f696_check_copyInts((&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix50, ((*p_c)->f_pg->f_fns).len, "check.obx:2328")].f_tps));
+    obx_arr t51 = f696_check_copyInts((&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix50, ((*p_c)->f_pg->f_fns).len, "check.obx:2445")].f_tps));
     obx_arr v_tps_52 = t51;
     int64_t ix53 = v_di_10;
-    bool c54 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix53, ((*p_c)->f_pg->f_fns).len, "check.obx:2329")].f_isExtern;
+    bool c54 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix53, ((*p_c)->f_pg->f_fns).len, "check.obx:2446")].f_isExtern;
     if (c54) {
-      obx_str t55 = rt_str_concat(sl2649, v_fname_49);
-      obx_str t56 = rt_str_concat(t55, sl2650);
+      obx_str t55 = rt_str_concat(sl2651, v_fname_49);
+      obx_str t56 = rt_str_concat(t55, sl2652);
       f702_check_Checker_err(p_c, v_line_2, t56);
     }
     obx_arr a57 = rt_arr_new(0, sizeof(int64_t));
@@ -46704,10 +47122,10 @@ static S87_check_Val f889_check_Checker_staticValue(S73_check_Checker** p_c, S1_
       int64_t end71 = (v_ta_61).len;
       for (int64_t v_i_72 = 0LL; v_i_72 < end71; v_i_72++) {
         int64_t ix73 = v_i_72;
-        int64_t ap74 = ((int64_t*)(v_tps_52).data)[rt_idx(ix73, (v_tps_52).len, "check.obx:2337")];
+        int64_t ap74 = ((int64_t*)(v_tps_52).data)[rt_idx(ix73, (v_tps_52).len, "check.obx:2454")];
         *(int64_t*)rt_arr_push((&v_bind_58), sizeof(int64_t)) = ap74;
         int64_t ix75 = v_i_72;
-        int64_t t76 = f728_check_Checker_resolve(p_c, ((int64_t*)(v_ta_61).data)[rt_idx(ix75, (v_ta_61).len, "check.obx:2338")], 5LL, v_line_2);
+        int64_t t76 = f728_check_Checker_resolve(p_c, ((int64_t*)(v_ta_61).data)[rt_idx(ix75, (v_ta_61).len, "check.obx:2455")], 5LL, v_line_2);
         int64_t ap77 = t76;
         *(int64_t*)rt_arr_push((&v_bind_58), sizeof(int64_t)) = ap77;
       }
@@ -46716,21 +47134,21 @@ static S87_check_Val f889_check_Checker_staticValue(S73_check_Checker** p_c, S1_
     obx_arr a78 = rt_arr_new(0, sizeof(int64_t));
     obx_arr v_ps_79 = a78;
     int64_t ix80 = v_di_10;
-    int64_t end81 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix80, ((*p_c)->f_pg->f_fns).len, "check.obx:2342")].f_params).len;
+    int64_t end81 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix80, ((*p_c)->f_pg->f_fns).len, "check.obx:2459")].f_params).len;
     for (int64_t v_i_82 = 0LL; v_i_82 < end81; v_i_82++) {
       int64_t ix83 = v_di_10;
       int64_t ix84 = v_i_82;
-      int64_t ap85 = ((S59_sema_Param*)(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix83, ((*p_c)->f_pg->f_fns).len, "check.obx:2342")].f_params).data)[rt_idx(ix84, (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix83, ((*p_c)->f_pg->f_fns).len, "check.obx:2342")].f_params).len, "check.obx:2342")].f_ty;
+      int64_t ap85 = ((S59_sema_Param*)(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix83, ((*p_c)->f_pg->f_fns).len, "check.obx:2459")].f_params).data)[rt_idx(ix84, (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix83, ((*p_c)->f_pg->f_fns).len, "check.obx:2459")].f_params).len, "check.obx:2459")].f_ty;
       *(int64_t*)rt_arr_push((&v_ps_79), sizeof(int64_t)) = ap85;
     }
     int64_t ix86 = v_di_10;
-    int64_t t87 = f610_sema_Program_mkFn((&(*p_c)->f_pg), (&v_ps_79), ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix86, ((*p_c)->f_pg->f_fns).len, "check.obx:2343")].f_ret);
+    int64_t t87 = f610_sema_Program_mkFn((&(*p_c)->f_pg), (&v_ps_79), ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix86, ((*p_c)->f_pg->f_fns).len, "check.obx:2460")].f_ret);
     int64_t v_ft_88 = t87;
-    int64_t t89 = f858_check_Checker_ek(p_c, p_exp);
+    int64_t t89 = f867_check_Checker_ek(p_c, p_exp);
     int64_t v_ek_90 = t89;
     bool b91 = ((v_tps_52).len > 0LL);
     if (b91) {
-      int64_t t92 = rt_div_int((v_bind_58).len, 2LL, "check.obx:2345");
+      int64_t t92 = rt_div_int((v_bind_58).len, 2LL, "check.obx:2462");
       b91 = (t92 < (v_tps_52).len);
     }
     bool b93 = b91;
@@ -46751,14 +47169,14 @@ static S87_check_Val f889_check_Checker_staticValue(S73_check_Checker** p_c, S1_
       bool t101 = f546_sema_Program_unify((&(*p_c)->f_pg), v_ft_88, v_et_100, (&v_bind_58), (&v_tps_52));
       gl9_drop(v_xs_97);
     }
-    int64_t t102 = rt_div_int((v_bind_58).len, 2LL, "check.obx:2350");
+    int64_t t102 = rt_div_int((v_bind_58).len, 2LL, "check.obx:2467");
     bool c103 = (t102 < (v_tps_52).len);
     if (c103) {
       int64_t t104 = v_line_2;
-      obx_str t105 = rt_str_concat(sl2651, v_fname_49);
-      obx_str t106 = rt_str_concat(t105, sl2652);
+      obx_str t105 = rt_str_concat(sl2653, v_fname_49);
+      obx_str t106 = rt_str_concat(t105, sl2654);
       obx_str t107 = rt_str_concat(t106, v_fname_49);
-      obx_str t108 = rt_str_concat(t107, sl2653);
+      obx_str t108 = rt_str_concat(t107, sl2655);
       f702_check_Checker_err(p_c, t104, t108);
     }
     obx_arr a109 = rt_arr_new(0, sizeof(int64_t));
@@ -46766,7 +47184,7 @@ static S87_check_Val f889_check_Checker_staticValue(S73_check_Checker** p_c, S1_
     obx_slice ap111 = rt_as_slice(&v_tps_52);
     for (int64_t i112 = 0; i112 < ap111.len; i112++) {
       int64_t v_tp_113 = ((int64_t*)ap111.data)[i112];
-      int64_t t114 = f843_check_bindGet((&v_bind_58), v_tp_113);
+      int64_t t114 = f852_check_bindGet((&v_bind_58), v_tp_113);
       int64_t ap115 = t114;
       *(int64_t*)rt_arr_push((&v_targs_110), sizeof(int64_t)) = ap115;
     }
@@ -46788,11 +47206,11 @@ static S87_check_Val f889_check_Checker_staticValue(S73_check_Checker** p_c, S1_
     return r122;
   }
   int64_t t123 = v_line_2;
-  obx_str t124 = f884_check_Checker_declName(p_c, p_st);
-  obx_str t125 = rt_str_concat(t124, sl2645);
+  obx_str t124 = f893_check_Checker_declName(p_c, p_st);
+  obx_str t125 = rt_str_concat(t124, sl2647);
   f702_check_Checker_err(p_c, t123, t125);
 }
-static S87_check_Val f890_check_Checker_constVal(S73_check_Checker** p_c, int64_t p_k, int64_t p_exp, int64_t p_line) {
+static S87_check_Val f899_check_Checker_constVal(S73_check_Checker** p_c, int64_t p_k, int64_t p_exp, int64_t p_line) {
   S64_sema_CVal t1 = f535_sema_Program_constValue((&(*p_c)->f_pg), p_k);
   S64_sema_CVal v_v_2 = t1;
   int64_t v_ty_3 = v_v_2.f_ty;
@@ -46803,17 +47221,17 @@ static S87_check_Val f890_check_Checker_constVal(S73_check_Checker** p_c, int64_
     bool c7 = (t6 == 1LL);
     if (c7) {
       int64_t ix8 = p_k;
-      obx_str t9 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix8, ((*p_c)->f_pg->f_consts).len, "check.obx:2402")].f_cname);
+      obx_str t9 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix8, ((*p_c)->f_pg->f_consts).len, "check.obx:2519")].f_cname);
       int64_t t10 = f498_sema_Program_ta((&(*p_c)->f_pg), v_ty_3);
       int64_t t11 = f607_sema_Program_mkSlice((&(*p_c)->f_pg), t10, false);
-      int64_t t12 = f891_check_Checker_staticVar(p_c, 2LL, p_k);
-      S87_check_Val t13 = f795_check_rvAt(t9, t11, t12, sl183);
+      int64_t t12 = f900_check_Checker_staticVar(p_c, 2LL, p_k);
+      S87_check_Val t13 = f799_check_rvAt(t9, t11, t12, sl183);
       S87_check_Val r14 = t13;
       gl42_drop(v_v_2);
       return r14;
     }
     int64_t ix15 = p_k;
-    S87_check_Val t16 = f735_check_val(rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix15, ((*p_c)->f_pg->f_consts).len, "check.obx:2404")].f_cname), v_ty_3, 2LL);
+    S87_check_Val t16 = f735_check_val(rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix15, ((*p_c)->f_pg->f_consts).len, "check.obx:2521")].f_cname), v_ty_3, 2LL);
     S87_check_Val v_r_17 = t16;
     v_r_17.f_gk = 2LL;
     v_r_17.f_gi = p_k;
@@ -46846,7 +47264,7 @@ static S87_check_Val f890_check_Checker_constVal(S73_check_Checker** p_c, int64_
   if (c29) {
     bool c30 = (v_ty_3 == 4LL);
     if (c30) {
-      obx_str t31 = sl2636;
+      obx_str t31 = sl2638;
       obx_str t32 = f506_num_bigStr(gl43_dup(v_v_2.f_i));
       obx_str t33 = rt_str_concat(t31, t32);
       obx_str t34 = rt_str_concat(t33, sl31);
@@ -46858,14 +47276,14 @@ static S87_check_Val f890_check_Checker_constVal(S73_check_Checker** p_c, int64_
       gl42_drop(v_v_2);
       return r36;
     }
-    S87_check_Val t37 = f857_check_Checker_xInt(p_c, gl43_dup(v_v_2.f_i), p_line, p_exp);
+    S87_check_Val t37 = f866_check_Checker_xInt(p_c, gl43_dup(v_v_2.f_i), p_line, p_exp);
     S87_check_Val r38 = t37;
     gl42_drop(v_v_2);
     return r38;
   }
   bool c39 = (v_kind_4 == 1LL);
   if (c39) {
-    S87_check_Val t40 = f860_check_Checker_xFrac(p_c, rt_str_dup(v_v_2.f_s), p_line, p_exp);
+    S87_check_Val t40 = f869_check_Checker_xFrac(p_c, rt_str_dup(v_v_2.f_s), p_line, p_exp);
     S87_check_Val r41 = t40;
     gl42_drop(v_v_2);
     return r41;
@@ -46893,7 +47311,7 @@ static S87_check_Val f890_check_Checker_constVal(S73_check_Checker** p_c, int64_
   gl42_drop(v_v_2);
   return r54;
 }
-static int64_t f891_check_Checker_staticVar(S73_check_Checker** p_c, int64_t p_dk, int64_t p_di) {
+static int64_t f900_check_Checker_staticVar(S73_check_Checker** p_c, int64_t p_dk, int64_t p_di) {
   obx_str t1 = rt_int_to_str(p_dk);
   obx_str t2 = rt_str_concat(t1, sl35);
   obx_str t3 = rt_int_to_str(p_di);
@@ -46913,19 +47331,19 @@ static int64_t f891_check_Checker_staticVar(S73_check_Checker** p_c, int64_t p_d
   int64_t ifx10;
   if ((p_dk == 2LL)) {
     int64_t ix11 = p_di;
-    obx_str t12 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix11, ((*p_c)->f_pg->f_consts).len, "check.obx:2388")].f_name);
+    obx_str t12 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix11, ((*p_c)->f_pg->f_consts).len, "check.obx:2505")].f_name);
     int64_t ix13 = p_di;
-    obx_str t14 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix13, ((*p_c)->f_pg->f_consts).len, "check.obx:2388")].f_cname);
+    obx_str t14 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix13, ((*p_c)->f_pg->f_consts).len, "check.obx:2505")].f_cname);
     int64_t ix15 = p_di;
-    int64_t t16 = f738_check_Checker_newVar(p_c, t12, t14, 11LL, false, 2LL, ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix15, ((*p_c)->f_pg->f_consts).len, "check.obx:2388")].f_line);
+    int64_t t16 = f738_check_Checker_newVar(p_c, t12, t14, 11LL, false, 2LL, ((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix15, ((*p_c)->f_pg->f_consts).len, "check.obx:2505")].f_line);
     ifx10 = t16;
   } else {
     int64_t ix17 = p_di;
-    obx_str t18 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix17, ((*p_c)->f_pg->f_globals).len, "check.obx:2390")].f_name);
+    obx_str t18 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix17, ((*p_c)->f_pg->f_globals).len, "check.obx:2507")].f_name);
     int64_t ix19 = p_di;
-    obx_str t20 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix19, ((*p_c)->f_pg->f_globals).len, "check.obx:2390")].f_cname);
+    obx_str t20 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix19, ((*p_c)->f_pg->f_globals).len, "check.obx:2507")].f_cname);
     int64_t ix21 = p_di;
-    int64_t t22 = f738_check_Checker_newVar(p_c, t18, t20, 11LL, false, 2LL, ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix21, ((*p_c)->f_pg->f_globals).len, "check.obx:2390")].f_line);
+    int64_t t22 = f738_check_Checker_newVar(p_c, t18, t20, 11LL, false, 2LL, ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix21, ((*p_c)->f_pg->f_globals).len, "check.obx:2507")].f_line);
     ifx10 = t22;
   }
   int64_t v_id_23 = ifx10;
@@ -46934,7 +47352,7 @@ static int64_t f891_check_Checker_staticVar(S73_check_Checker** p_c, int64_t p_d
   rt_str_drop(v_key_5);
   return r24;
 }
-static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t p_t, int64_t p_e) {
+static S87_check_Val f897_check_Checker_convert(S73_check_Checker** p_c, int64_t p_t, int64_t p_e) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   int64_t t3 = f497_sema_Program_tk((&(*p_c)->f_pg), p_t);
@@ -46954,7 +47372,7 @@ static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t
   if (c7) {
     int64_t t8 = v_n_2.f_line;
     obx_str t9 = f767_check_Checker_tstr(p_c, p_t);
-    obx_str t10 = rt_str_concat(t9, sl2654);
+    obx_str t10 = rt_str_concat(t9, sl2656);
     f702_check_Checker_err(p_c, t8, t10);
   }
   int64_t t11 = f717_check_Checker_count(p_c, v_n_2.f_b);
@@ -46962,8 +47380,8 @@ static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t
   if (c12) {
     obx_slice t13 = k4_sema_PRIM_NAMES;
     int64_t ix14 = p_t;
-    obx_str t15 = rt_str_concat(sl2655, ((obx_str*)(t13).data)[rt_idx(ix14, (t13).len, "check.obx:3872")]);
-    obx_str t16 = rt_str_concat(t15, sl2656);
+    obx_str t15 = rt_str_concat(sl2657, ((obx_str*)(t13).data)[rt_idx(ix14, (t13).len, "check.obx:4054")]);
+    obx_str t16 = rt_str_concat(t15, sl2658);
     f702_check_Checker_err(p_c, v_n_2.f_line, t16);
   }
   int64_t t17 = f718_check_Checker_item(p_c, v_n_2.f_b, 0LL);
@@ -46973,8 +47391,8 @@ static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t
   int64_t v_s_21 = v_v_20.f_t;
   obx_slice t22 = k4_sema_PRIM_NAMES;
   int64_t ix23 = p_t;
-  obx_str v_d_24 = rt_str_dup(((obx_str*)(t22).data)[rt_idx(ix23, (t22).len, "check.obx:3875")]);
-  obx_str t25 = f829_check_Checker_W(p_c, v_n_2.f_line);
+  obx_str v_d_24 = rt_str_dup(((obx_str*)(t22).data)[rt_idx(ix23, (t22).len, "check.obx:4057")]);
+  obx_str t25 = f838_check_Checker_W(p_c, v_n_2.f_line);
   obx_str v_W_26 = t25;
   bool b27 = (v_s_21 < 7LL);
   if (!b27) {
@@ -46983,7 +47401,7 @@ static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t
   bool c28 = (!b27);
   if (c28) {
     int64_t t29 = v_n_2.f_line;
-    obx_str t30 = sl2657;
+    obx_str t30 = sl2659;
     obx_str t31 = f767_check_Checker_tstr(p_c, v_s_21);
     obx_str t32 = rt_str_concat(t30, t31);
     obx_str t33 = rt_str_concat(t32, sl1862);
@@ -47001,7 +47419,7 @@ static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t
   }
   bool c37 = (p_t == 7LL);
   if (c37) {
-    obx_str t38 = rt_str_concat(sl2658, v_v_20.f_c);
+    obx_str t38 = rt_str_concat(sl2660, v_v_20.f_c);
     obx_str t39 = rt_str_concat(t38, sl31);
     S87_check_Val t40 = f734_check_rv(t39, p_t);
     S87_check_Val r41 = t40;
@@ -47014,7 +47432,7 @@ static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t
   }
   bool c42 = (v_s_21 == 7LL);
   if (c42) {
-    obx_str t43 = rt_str_concat(sl2659, v_d_24);
+    obx_str t43 = rt_str_concat(sl2661, v_d_24);
     obx_str t44 = rt_str_concat(t43, sl30);
     obx_str t45 = rt_str_concat(t44, v_v_20.f_c);
     obx_str t46 = rt_str_concat(t45, sl1754);
@@ -47035,7 +47453,7 @@ static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t
   }
   bool c51 = (v_s_21 == 6LL);
   if (c51) {
-    obx_str t52 = rt_str_concat(sl2660, v_d_24);
+    obx_str t52 = rt_str_concat(sl2662, v_d_24);
     obx_str t53 = rt_str_concat(t52, sl30);
     obx_str t54 = rt_str_concat(t53, v_v_20.f_c);
     obx_str t55 = rt_str_concat(t54, sl1754);
@@ -47054,8 +47472,8 @@ static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t
     gl49_drop(v_n_2);
     return r59;
   }
-  obx_str t60 = rt_str_concat(sl2661, v_d_24);
-  obx_str t61 = rt_str_concat(t60, sl2662);
+  obx_str t60 = rt_str_concat(sl2663, v_d_24);
+  obx_str t61 = rt_str_concat(t60, sl2664);
   obx_str t62 = rt_str_concat(t61, v_v_20.f_c);
   obx_str t63 = rt_str_concat(t62, sl1754);
   obx_str t64 = rt_str_concat(t63, v_W_26);
@@ -47073,7 +47491,7 @@ static S87_check_Val f888_check_Checker_convert(S73_check_Checker** p_c, int64_t
   gl49_drop(v_n_2);
   return r67;
 }
-static S87_check_Val f887_check_Checker_callValue(S73_check_Checker** p_c, S87_check_Val p_fv0, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f896_check_Checker_callValue(S73_check_Checker** p_c, S87_check_Val p_fv0, int64_t p_e, int64_t p_exp) {
   S87_check_Val t1 = f765_check_Checker_rd(p_c, gl67_dup(p_fv0));
   S87_check_Val v_fv_2 = t1;
   int64_t t3 = f497_sema_Program_tk((&(*p_c)->f_pg), v_fv_2.f_t);
@@ -47085,7 +47503,7 @@ static S87_check_Val f887_check_Checker_callValue(S73_check_Checker** p_c, S87_c
   bool c6 = b5;
   if (c6) {
     int64_t t7 = f701_check_Checker_line(p_c, p_e);
-    obx_str t8 = sl2663;
+    obx_str t8 = sl2665;
     obx_str t9 = f767_check_Checker_tstr(p_c, v_fv_2.f_t);
     obx_str t10 = rt_str_concat(t8, t9);
     f702_check_Checker_err(p_c, t7, t10);
@@ -47095,37 +47513,37 @@ static S87_check_Val f887_check_Checker_callValue(S73_check_Checker** p_c, S87_c
   gl49_drop(t11);
   S87_check_Val t13 = gl67_dup(v_fv_2);
   obx_arr t14 = f704_check_Checker_items(p_c, v_al_12);
-  S87_check_Val t15 = f809_check_Checker_before(p_c, t13, (&t14));
+  S87_check_Val t15 = f814_check_Checker_before(p_c, t13, (&t14));
   { S87_check_Val nw16 = t15;
     gl68_drop(v_fv_2);
     v_fv_2 = nw16; }
   gl9_drop(t14);
   bool v_isFn_17 = (v_k_4 == 4LL);
-  obx_str t19 = (v_isFn_17 ? sl2664 : sl100);
+  obx_str t19 = (v_isFn_17 ? sl2666 : sl100);
   int64_t t21 = (v_isFn_17 ? 5LL : 6LL);
   obx_arr t22 = f500_sema_Program_targs((&(*p_c)->f_pg), v_fv_2.f_t);
   int64_t t23 = f501_sema_Program_tb((&(*p_c)->f_pg), v_fv_2.f_t);
-  S94_check_Sig* t24 = f850_check_newSig(t19, t21, t22, t23);
-  S94_check_Sig* v_sig_25 = t24;
+  S95_check_Sig* t24 = f859_check_newSig(t19, t21, t22, t23);
+  S95_check_Sig* v_sig_25 = t24;
   { obx_str nw26 = rt_str_dup(v_fv_2.f_c);
     rt_str_drop(v_sig_25->f_c);
     v_sig_25->f_c = nw26; }
-  obx_arr t27 = f875_check_Checker_callArgs(p_c, p_e);
+  obx_arr t27 = f884_check_Checker_callArgs(p_c, p_e);
   obx_arr v_args_28 = t27;
-  S95_check_CallOpts* t29 = f834_check_noOpts();
-  S95_check_CallOpts* v_o_30 = t29;
+  S96_check_CallOpts* t29 = f843_check_noOpts();
+  S96_check_CallOpts* v_o_30 = t29;
   S87_check_Val t31 = f733_check_voidVal(false);
   int64_t t32 = f701_check_Checker_line(p_c, p_e);
-  S87_check_Val t33 = f835_check_Checker_call(p_c, (&v_sig_25), false, t31, (&v_args_28), t32, p_exp, (&v_o_30));
+  S87_check_Val t33 = f844_check_Checker_call(p_c, (&v_sig_25), false, t31, (&v_args_28), t32, p_exp, (&v_o_30));
   S87_check_Val r34 = t33;
-  gl83_drop(v_o_30);
+  gl84_drop(v_o_30);
   gl62_drop(v_args_28);
-  gl84_drop(v_sig_25);
+  gl85_drop(v_sig_25);
   gl68_drop(v_fv_2);
   gl68_drop(p_fv0);
   return r34;
 }
-static S87_check_Val f886_check_Checker_fieldOf(S73_check_Checker** p_c, S87_check_Val p_v0, obx_str p_name, int64_t p_line) {
+static S87_check_Val f895_check_Checker_fieldOf(S73_check_Checker** p_c, S87_check_Val p_v0, obx_str p_name, int64_t p_line) {
   S87_check_Val t1 = f768_check_Checker_deref(p_c, gl67_dup(p_v0));
   S87_check_Val v_v_2 = t1;
   int64_t v_t_3 = v_v_2.f_t;
@@ -47135,7 +47553,7 @@ static S87_check_Val f886_check_Checker_fieldOf(S73_check_Checker** p_c, S87_che
   if (!b6) {
     int64_t t7 = f498_sema_Program_ta((&(*p_c)->f_pg), v_t_3);
     int64_t ix8 = t7;
-    b6 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix8, ((*p_c)->f_pg->f_types).len, "check.obx:2443")].f_form != 0LL);
+    b6 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix8, ((*p_c)->f_pg->f_types).len, "check.obx:2560")].f_form != 0LL);
   }
   bool c9 = b6;
   if (c9) {
@@ -47143,13 +47561,13 @@ static S87_check_Val f886_check_Checker_fieldOf(S73_check_Checker** p_c, S87_che
     if (b10) {
       int64_t t11 = f498_sema_Program_ta((&(*p_c)->f_pg), v_t_3);
       int64_t ix12 = t11;
-      b10 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix12, ((*p_c)->f_pg->f_types).len, "check.obx:2444")].f_form == 1LL);
+      b10 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix12, ((*p_c)->f_pg->f_types).len, "check.obx:2561")].f_form == 1LL);
     }
     bool c13 = b10;
     if (c13) {
       int64_t t14 = p_line;
       obx_str t15 = f767_check_Checker_tstr(p_c, v_t_3);
-      obx_str t16 = rt_str_concat(t15, sl2665);
+      obx_str t16 = rt_str_concat(t15, sl2667);
       f702_check_Checker_err(p_c, t14, t16);
     }
     int64_t t17 = p_line;
@@ -47161,7 +47579,7 @@ static S87_check_Val f886_check_Checker_fieldOf(S73_check_Checker** p_c, S87_che
   }
   int64_t t22 = f498_sema_Program_ta((&(*p_c)->f_pg), v_t_3);
   int64_t v_d_23 = t22;
-  int64_t t24 = f856_check_Checker_fieldIndex(p_c, v_d_23, rt_str_dup(p_name));
+  int64_t t24 = f865_check_Checker_fieldIndex(p_c, v_d_23, rt_str_dup(p_name));
   int64_t v_fi_25 = t24;
   bool c26 = (v_fi_25 < 0LL);
   if (c26) {
@@ -47174,10 +47592,10 @@ static S87_check_Val f886_check_Checker_fieldOf(S73_check_Checker** p_c, S87_che
   }
   int64_t ix32 = v_d_23;
   int64_t ix33 = v_fi_25;
-  bool b34 = (!((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix32, ((*p_c)->f_pg->f_types).len, "check.obx:2452")].f_fields).data)[rt_idx(ix33, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix32, ((*p_c)->f_pg->f_types).len, "check.obx:2452")].f_fields).len, "check.obx:2452")].f_isPub);
+  bool b34 = (!((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix32, ((*p_c)->f_pg->f_types).len, "check.obx:2569")].f_fields).data)[rt_idx(ix33, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix32, ((*p_c)->f_pg->f_types).len, "check.obx:2569")].f_fields).len, "check.obx:2569")].f_isPub);
   if (b34) {
     int64_t ix35 = v_d_23;
-    b34 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix35, ((*p_c)->f_pg->f_types).len, "check.obx:2452")].f_mod != (*p_c)->f_cx->f_mod);
+    b34 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix35, ((*p_c)->f_pg->f_types).len, "check.obx:2569")].f_mod != (*p_c)->f_cx->f_mod);
   }
   bool c36 = b34;
   if (c36) {
@@ -47185,21 +47603,21 @@ static S87_check_Val f886_check_Checker_fieldOf(S73_check_Checker** p_c, S87_che
     obx_str t38 = rt_str_concat(sl2383, p_name);
     obx_str t39 = rt_str_concat(t38, sl2385);
     int64_t ix40 = v_d_23;
-    obx_str t41 = rt_str_concat(t39, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix40, ((*p_c)->f_pg->f_types).len, "check.obx:2453")].f_name);
-    obx_str t42 = rt_str_concat(t41, sl2623);
+    obx_str t41 = rt_str_concat(t39, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix40, ((*p_c)->f_pg->f_types).len, "check.obx:2570")].f_name);
+    obx_str t42 = rt_str_concat(t41, sl2625);
     int64_t ix43 = v_d_23;
-    int64_t ix44 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix43, ((*p_c)->f_pg->f_types).len, "check.obx:2453")].f_mod;
-    obx_str t45 = rt_str_concat(t42, ((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix44, ((*p_c)->f_pg->f_mods).len, "check.obx:2453")].f_name);
+    int64_t ix44 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix43, ((*p_c)->f_pg->f_types).len, "check.obx:2570")].f_mod;
+    obx_str t45 = rt_str_concat(t42, ((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix44, ((*p_c)->f_pg->f_mods).len, "check.obx:2570")].f_name);
     f702_check_Checker_err(p_c, t37, t45);
   }
   obx_arr t46 = f522_sema_Program_declEnv((&(*p_c)->f_pg), v_t_3);
   obx_arr v_env_47 = t46;
   int64_t ix48 = v_d_23;
   int64_t ix49 = v_fi_25;
-  int64_t t50 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:2456")].f_fields).data)[rt_idx(ix49, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:2456")].f_fields).len, "check.obx:2456")].f_ty, (&v_env_47));
+  int64_t t50 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:2573")].f_fields).data)[rt_idx(ix49, (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:2573")].f_fields).len, "check.obx:2573")].f_ty, (&v_env_47));
   int64_t v_ft_51 = t50;
   int64_t ix52 = v_d_23;
-  obx_str t54 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix52, ((*p_c)->f_pg->f_types).len, "check.obx:2457")].f_value ? sl37 : sl1722);
+  obx_str t54 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix52, ((*p_c)->f_pg->f_types).len, "check.obx:2574")].f_value ? sl37 : sl1722);
   obx_str v_sep_55 = t54;
   obx_str t56 = rt_str_concat(v_v_2.f_c, v_sep_55);
   obx_str t57 = rt_str_concat(t56, sl2331);
@@ -47210,7 +47628,7 @@ static S87_check_Val f886_check_Checker_fieldOf(S73_check_Checker** p_c, S87_che
   rt_str_drop(t57);
   rt_str_drop(t56);
   v_r_62.f_root = v_v_2.f_root;
-  obx_str t63 = f847_check_pathAdd(rt_str_dup(v_v_2.f_path), rt_str_dup(p_name));
+  obx_str t63 = f856_check_pathAdd(rt_str_dup(v_v_2.f_path), rt_str_dup(p_name));
   { obx_str nw64 = t63;
     rt_str_drop(v_r_62.f_path);
     v_r_62.f_path = nw64; }
@@ -47227,7 +47645,7 @@ static S87_check_Val f886_check_Checker_fieldOf(S73_check_Checker** p_c, S87_che
   gl68_drop(p_v0);
   return r65;
 }
-static S94_check_Sig* f885_check_Checker_assocSig(S73_check_Checker** p_c, int64_t p_t, obx_str p_name, int64_t p_line, bool p_quiet) {
+static S95_check_Sig* f894_check_Checker_assocSig(S73_check_Checker** p_c, int64_t p_t, obx_str p_name, int64_t p_line, bool p_quiet) {
   int64_t t1 = f497_sema_Program_tk((&(*p_c)->f_pg), p_t);
   bool c2 = (t1 == 7LL);
   if (c2) {
@@ -47242,15 +47660,15 @@ static S94_check_Sig* f885_check_Checker_assocSig(S73_check_Checker** p_c, int64
         obx_str t10 = rt_str_concat(t9, sl37);
         obx_str t11 = rt_str_concat(t10, p_name);
         obx_arr t12 = f696_check_copyInts((&(*v_m_7).f_params));
-        S94_check_Sig* t13 = f850_check_newSig(t11, 3LL, t12, (*v_m_7).f_ret);
-        S94_check_Sig* v_s_14 = t13;
+        S95_check_Sig* t13 = f859_check_newSig(t11, 3LL, t12, (*v_m_7).f_ret);
+        S95_check_Sig* v_s_14 = t13;
         rt_str_drop(t10);
         rt_str_drop(t9);
         v_s_14->f_tpt = p_t;
         { obx_str nw15 = rt_str_dup(p_name);
           rt_str_drop(v_s_14->f_name);
           v_s_14->f_name = nw15; }
-        S94_check_Sig* r16 = v_s_14;
+        S95_check_Sig* r16 = v_s_14;
         gl48_drop(v_ms_4);
         rt_str_drop(p_name);
         return r16;
@@ -47258,17 +47676,17 @@ static S94_check_Sig* f885_check_Checker_assocSig(S73_check_Checker** p_c, int64
     }
     bool c17 = p_quiet;
     if (c17) {
-      S94_check_Sig* t18 = f851_check_noSig();
-      S94_check_Sig* r19 = t18;
+      S95_check_Sig* t18 = f860_check_noSig();
+      S95_check_Sig* r19 = t18;
       gl48_drop(v_ms_4);
       rt_str_drop(p_name);
       return r19;
     }
     int64_t t20 = p_line;
     obx_str t21 = f767_check_Checker_tstr(p_c, p_t);
-    obx_str t22 = rt_str_concat(t21, sl2666);
+    obx_str t22 = rt_str_concat(t21, sl2668);
     obx_str t23 = rt_str_concat(t22, p_name);
-    obx_str t24 = rt_str_concat(t23, sl2667);
+    obx_str t24 = rt_str_concat(t23, sl2669);
     f702_check_Checker_err(p_c, t20, t24);
   }
   int64_t v_f_25 = -1LL;
@@ -47279,7 +47697,7 @@ static S94_check_Sig* f885_check_Checker_assocSig(S73_check_Checker** p_c, int64
   if (c29) {
     int64_t t30 = f498_sema_Program_ta((&(*p_c)->f_pg), p_t);
     int64_t ix31 = t30;
-    int64_t t32 = f67_std_Map_getOr((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix31, ((*p_c)->f_pg->f_types).len, "check.obx:3461")].f_methods), (&p_name), -1LL);
+    int64_t t32 = f67_std_Map_getOr((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix31, ((*p_c)->f_pg->f_types).len, "check.obx:3598")].f_methods), (&p_name), -1LL);
     v_f_25 = t32;
   } else {
     int64_t t33 = f545_sema_Program_methodOf((&(*p_c)->f_pg), p_t, rt_str_dup(p_name));
@@ -47287,22 +47705,22 @@ static S94_check_Sig* f885_check_Checker_assocSig(S73_check_Checker** p_c, int64
     bool c34 = (v_f_25 >= 0LL);
     if (c34) {
       int64_t ix35 = v_f_25;
-      int64_t t36 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix35, ((*p_c)->f_pg->f_fns).len, "check.obx:3464")].f_recvType;
+      int64_t t36 = ((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix35, ((*p_c)->f_pg->f_fns).len, "check.obx:3601")].f_recvType;
       int64_t ix37 = v_f_25;
-      bool t38 = f546_sema_Program_unify((&(*p_c)->f_pg), t36, p_t, (&v_bind_27), (&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix37, ((*p_c)->f_pg->f_fns).len, "check.obx:3464")].f_tps));
+      bool t38 = f546_sema_Program_unify((&(*p_c)->f_pg), t36, p_t, (&v_bind_27), (&((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix37, ((*p_c)->f_pg->f_fns).len, "check.obx:3601")].f_tps));
     }
   }
   bool b39 = (v_f_25 < 0LL);
   if (!b39) {
     int64_t ix40 = v_f_25;
-    b39 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix40, ((*p_c)->f_pg->f_fns).len, "check.obx:3466")].f_recvMode != 4LL);
+    b39 = (((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix40, ((*p_c)->f_pg->f_fns).len, "check.obx:3603")].f_recvMode != 4LL);
   }
   bool c41 = b39;
   if (c41) {
     bool c42 = p_quiet;
     if (c42) {
-      S94_check_Sig* t43 = f851_check_noSig();
-      S94_check_Sig* r44 = t43;
+      S95_check_Sig* t43 = f860_check_noSig();
+      S95_check_Sig* r44 = t43;
       gl9_drop(v_bind_27);
       rt_str_drop(p_name);
       return r44;
@@ -47311,7 +47729,7 @@ static S94_check_Sig* f885_check_Checker_assocSig(S73_check_Checker** p_c, int64
     if (c45) {
       int64_t t46 = p_line;
       obx_str t47 = f490_sema_Program_label((&(*p_c)->f_pg), v_f_25);
-      obx_str t48 = rt_str_concat(t47, sl2668);
+      obx_str t48 = rt_str_concat(t47, sl2670);
       f702_check_Checker_err(p_c, t46, t48);
     }
     bool t49 = f724_sema_Program_isBare((&(*p_c)->f_pg), p_t);
@@ -47319,65 +47737,65 @@ static S94_check_Sig* f885_check_Checker_assocSig(S73_check_Checker** p_c, int64
     if (t49) {
       int64_t t51 = f498_sema_Program_ta((&(*p_c)->f_pg), p_t);
       int64_t ix52 = t51;
-      ifx50 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix52, ((*p_c)->f_pg->f_types).len, "check.obx:3469")].f_name);
+      ifx50 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix52, ((*p_c)->f_pg->f_types).len, "check.obx:3606")].f_name);
     } else {
       obx_str t53 = f767_check_Checker_tstr(p_c, p_t);
       ifx50 = t53;
     }
     obx_str v_tn_54 = ifx50;
     int64_t t55 = p_line;
-    obx_str t56 = rt_str_concat(v_tn_54, sl2666);
+    obx_str t56 = rt_str_concat(v_tn_54, sl2668);
     obx_str t57 = rt_str_concat(t56, p_name);
     obx_str t58 = rt_str_concat(t57, sl1809);
     f702_check_Checker_err(p_c, t55, t58);
   }
-  f852_check_Checker_visible(p_c, v_f_25, p_line);
-  S94_check_Sig* t59 = f853_check_Checker_fnSig(p_c, v_f_25, v_bind_27);
-  S94_check_Sig* r60 = t59;
+  f861_check_Checker_visible(p_c, v_f_25, p_line);
+  S95_check_Sig* t59 = f862_check_Checker_fnSig(p_c, v_f_25, v_bind_27);
+  S95_check_Sig* r60 = t59;
   rt_str_drop(p_name);
   return r60;
 }
-static obx_str f884_check_Checker_declName(S73_check_Checker** p_c, S1_check_St p_st) {
+static obx_str f893_check_Checker_declName(S73_check_Checker** p_c, S1_check_St p_st) {
   obx_str mx1;
   int64_t sv2 = p_st.f_dk;
   if (sv2 == 0LL) {
     int64_t ix3 = p_st.f_di;
-    mx1 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix3, ((*p_c)->f_pg->f_types).len, "check.obx:2374")].f_name);
+    mx1 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix3, ((*p_c)->f_pg->f_types).len, "check.obx:2491")].f_name);
   } else if (sv2 == 1LL) {
     int64_t ix4 = p_st.f_di;
-    mx1 = rt_str_dup(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix4, ((*p_c)->f_pg->f_fns).len, "check.obx:2375")].f_name);
+    mx1 = rt_str_dup(((S58_sema_FnDecl*)((*p_c)->f_pg->f_fns).data)[rt_idx(ix4, ((*p_c)->f_pg->f_fns).len, "check.obx:2492")].f_name);
   } else if (sv2 == 2LL) {
     int64_t ix5 = p_st.f_di;
-    mx1 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix5, ((*p_c)->f_pg->f_consts).len, "check.obx:2376")].f_name);
+    mx1 = rt_str_dup(((S63_sema_Const*)((*p_c)->f_pg->f_consts).data)[rt_idx(ix5, ((*p_c)->f_pg->f_consts).len, "check.obx:2493")].f_name);
   } else if (sv2 == 3LL) {
     int64_t ix6 = p_st.f_di;
-    mx1 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix6, ((*p_c)->f_pg->f_globals).len, "check.obx:2377")].f_name);
+    mx1 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix6, ((*p_c)->f_pg->f_globals).len, "check.obx:2494")].f_name);
   } else {
     int64_t ix7 = p_st.f_di;
-    mx1 = rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix7, ((*p_c)->f_pg->f_variants).len, "check.obx:2378")].f_name);
+    mx1 = rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix7, ((*p_c)->f_pg->f_variants).len, "check.obx:2495")].f_name);
   }
   obx_str r8 = mx1;
   return r8;
 }
-static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c, S1_check_St p_st, obx_arr* p_args0, int64_t p_line, int64_t p_exp, int64_t p_named) {
+static S87_check_Val f892_check_Checker_constructVariant(S73_check_Checker** p_c, S1_check_St p_st, obx_arr* p_args0, int64_t p_line, int64_t p_exp, int64_t p_named) {
   int64_t v_vr_1 = p_st.f_di;
   int64_t ix2 = v_vr_1;
-  int64_t v_d_3 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix2, ((*p_c)->f_pg->f_variants).len, "check.obx:3196")].f_decl;
+  int64_t v_d_3 = ((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix2, ((*p_c)->f_pg->f_variants).len, "check.obx:3333")].f_decl;
   int64_t ix4 = v_vr_1;
-  obx_str v_vname_5 = rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix4, ((*p_c)->f_pg->f_variants).len, "check.obx:3197")].f_name);
+  obx_str v_vname_5 = rt_str_dup(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix4, ((*p_c)->f_pg->f_variants).len, "check.obx:3334")].f_name);
   int64_t ix6 = v_d_3;
-  bool b7 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix6, ((*p_c)->f_pg->f_types).len, "check.obx:3198")].f_mod != (*p_c)->f_cx->f_mod);
+  bool b7 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix6, ((*p_c)->f_pg->f_types).len, "check.obx:3335")].f_mod != (*p_c)->f_cx->f_mod);
   if (b7) {
     int64_t ix8 = v_d_3;
-    b7 = (!((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix8, ((*p_c)->f_pg->f_types).len, "check.obx:3198")].f_isPub);
+    b7 = (!((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix8, ((*p_c)->f_pg->f_types).len, "check.obx:3335")].f_isPub);
   }
   bool c9 = b7;
   if (c9) {
-    obx_str t10 = rt_str_concat(v_vname_5, sl2669);
+    obx_str t10 = rt_str_concat(v_vname_5, sl2671);
     f702_check_Checker_err(p_c, p_line, t10);
   }
   int64_t ix11 = v_d_3;
-  obx_arr t12 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix11, ((*p_c)->f_pg->f_types).len, "check.obx:3199")].f_tparams));
+  obx_arr t12 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix11, ((*p_c)->f_pg->f_types).len, "check.obx:3336")].f_tparams));
   obx_arr v_tps_13 = t12;
   obx_arr a14 = rt_arr_new(0, sizeof(int64_t));
   obx_arr v_bind_15 = a14;
@@ -47407,14 +47825,14 @@ static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c
     int64_t end30 = v_m_29;
     for (int64_t v_i_31 = 0LL; v_i_31 < end30; v_i_31++) {
       int64_t ix32 = v_i_31;
-      int64_t ap33 = ((int64_t*)(v_tps_13).data)[rt_idx(ix32, (v_tps_13).len, "check.obx:3208")];
+      int64_t ap33 = ((int64_t*)(v_tps_13).data)[rt_idx(ix32, (v_tps_13).len, "check.obx:3345")];
       *(int64_t*)rt_arr_push((&v_env_17), sizeof(int64_t)) = ap33;
       int64_t ix34 = v_i_31;
-      int64_t ap35 = ((int64_t*)(v_targs_20).data)[rt_idx(ix34, (v_targs_20).len, "check.obx:3209")];
+      int64_t ap35 = ((int64_t*)(v_targs_20).data)[rt_idx(ix34, (v_targs_20).len, "check.obx:3346")];
       *(int64_t*)rt_arr_push((&v_env_17), sizeof(int64_t)) = ap35;
     }
     int64_t ix36 = p_st.f_free;
-    obx_arr t37 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:3211")].f_tparams));
+    obx_arr t37 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:3348")].f_tparams));
     { obx_arr nw38 = t37;
       gl9_drop(v_tps_13);
       v_tps_13 = nw38; }
@@ -47426,7 +47844,7 @@ static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c
       if (c41) {
         int64_t t42 = p_line;
         int64_t ix43 = v_d_3;
-        obx_str t44 = rt_str_concat(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix43, ((*p_c)->f_pg->f_types).len, "check.obx:3214")].f_name, sl2159);
+        obx_str t44 = rt_str_concat(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix43, ((*p_c)->f_pg->f_types).len, "check.obx:3351")].f_name, sl2159);
         obx_str t45 = rt_int_to_str((v_tps_13).len);
         obx_str t46 = rt_str_concat(t44, t45);
         obx_str t47 = rt_str_concat(t46, sl2160);
@@ -47437,15 +47855,15 @@ static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c
       int64_t end50 = (v_tps_13).len;
       for (int64_t v_i_51 = 0LL; v_i_51 < end50; v_i_51++) {
         int64_t ix52 = v_i_51;
-        int64_t ap53 = ((int64_t*)(v_tps_13).data)[rt_idx(ix52, (v_tps_13).len, "check.obx:3217")];
+        int64_t ap53 = ((int64_t*)(v_tps_13).data)[rt_idx(ix52, (v_tps_13).len, "check.obx:3354")];
         *(int64_t*)rt_arr_push((&v_bind_15), sizeof(int64_t)) = ap53;
         int64_t ifx54;
         if (p_st.f_tres) {
           int64_t ix55 = v_i_51;
-          ifx54 = ((int64_t*)(v_targs_20).data)[rt_idx(ix55, (v_targs_20).len, "check.obx:3218")];
+          ifx54 = ((int64_t*)(v_targs_20).data)[rt_idx(ix55, (v_targs_20).len, "check.obx:3355")];
         } else {
           int64_t ix56 = v_i_51;
-          int64_t t57 = f728_check_Checker_resolve(p_c, ((int64_t*)(v_targs_20).data)[rt_idx(ix56, (v_targs_20).len, "check.obx:3218")], 5LL, p_line);
+          int64_t t57 = f728_check_Checker_resolve(p_c, ((int64_t*)(v_targs_20).data)[rt_idx(ix56, (v_targs_20).len, "check.obx:3355")], 5LL, p_line);
           ifx54 = t57;
         }
         int64_t ap58 = ifx54;
@@ -47471,7 +47889,7 @@ static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c
           bool c68 = (t66 < t67);
           if (c68) {
             int64_t ix69 = v_i_65;
-            int64_t ap70 = ((int64_t*)(v_tps_13).data)[rt_idx(ix69, (v_tps_13).len, "check.obx:3223")];
+            int64_t ap70 = ((int64_t*)(v_tps_13).data)[rt_idx(ix69, (v_tps_13).len, "check.obx:3360")];
             *(int64_t*)rt_arr_push((&v_bind_15), sizeof(int64_t)) = ap70;
             int64_t t71 = f503_sema_Program_ti((&(*p_c)->f_pg), p_exp, v_i_65);
             int64_t ap72 = t71;
@@ -47486,11 +47904,11 @@ static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c
   obx_arr a75 = rt_arr_new(0, sizeof(obx_str));
   obx_arr v_names_76 = a75;
   int64_t ix77 = v_vr_1;
-  int64_t end78 = (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix77, ((*p_c)->f_pg->f_variants).len, "check.obx:3230")].f_fields).len;
+  int64_t end78 = (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix77, ((*p_c)->f_pg->f_variants).len, "check.obx:3367")].f_fields).len;
   for (int64_t v_i_79 = 0LL; v_i_79 < end78; v_i_79++) {
     int64_t ix80 = v_vr_1;
     int64_t ix81 = v_i_79;
-    S66_sema_Field v_f_82 = gl45_dup(((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix80, ((*p_c)->f_pg->f_variants).len, "check.obx:3231")].f_fields).data)[rt_idx(ix81, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix80, ((*p_c)->f_pg->f_variants).len, "check.obx:3231")].f_fields).len, "check.obx:3231")]);
+    S66_sema_Field v_f_82 = gl45_dup(((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix80, ((*p_c)->f_pg->f_variants).len, "check.obx:3368")].f_fields).data)[rt_idx(ix81, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix80, ((*p_c)->f_pg->f_variants).len, "check.obx:3368")].f_fields).len, "check.obx:3368")]);
     int64_t t83 = f523_sema_Program_subst((&(*p_c)->f_pg), v_f_82.f_ty, (&v_env_17));
     int64_t ap84 = t83;
     *(int64_t*)rt_arr_push((&v_fts_74), sizeof(int64_t)) = ap84;
@@ -47498,8 +47916,8 @@ static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c
     *(obx_str*)rt_arr_push((&v_names_76), sizeof(obx_str)) = ap85;
     gl46_drop(v_f_82);
   }
-  S95_check_CallOpts* t86 = f834_check_noOpts();
-  S95_check_CallOpts* v_o_87 = t86;
+  S96_check_CallOpts* t86 = f843_check_noOpts();
+  S96_check_CallOpts* v_o_87 = t86;
   obx_arr a88 = rt_arr_new(0, sizeof(S83_check_Arg));
   obx_arr v_args_89 = a88;
   bool c90 = (p_named >= 0LL);
@@ -47529,7 +47947,7 @@ static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c
     obx_str t103 = rt_str_concat(t102, sl2159);
     obx_str t104 = rt_int_to_str((v_fts_74).len);
     obx_str t105 = rt_str_concat(t103, t104);
-    obx_str t106 = rt_str_concat(t105, sl2670);
+    obx_str t106 = rt_str_concat(t105, sl2672);
     obx_str t107 = rt_int_to_str((v_args_89).len);
     obx_str t108 = rt_str_concat(t106, t107);
     f702_check_Checker_err(p_c, t101, t108);
@@ -47553,8 +47971,8 @@ static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c
   }
   int64_t t119 = f516_sema_Program_mkInst((&(*p_c)->f_pg), v_d_3, (&v_rargs_110));
   int64_t v_ret_120 = t119;
-  S94_check_Sig* t121 = f850_check_newSig(rt_str_dup(v_vname_5), 2LL, v_fts_74, v_ret_120);
-  S94_check_Sig* v_sig_122 = t121;
+  S95_check_Sig* t121 = f859_check_newSig(rt_str_dup(v_vname_5), 2LL, v_fts_74, v_ret_120);
+  S95_check_Sig* v_sig_122 = t121;
   { obx_arr nw123 = v_tps_13;
     gl9_drop(v_sig_122->f_tps);
     v_sig_122->f_tps = nw123; }
@@ -47563,65 +47981,65 @@ static S87_check_Val f883_check_Checker_constructVariant(S73_check_Checker** p_c
     v_sig_122->f_bind = nw124; }
   v_sig_122->f_variant = v_vr_1;
   S87_check_Val t125 = f733_check_voidVal(false);
-  S87_check_Val t126 = f835_check_Checker_call(p_c, (&v_sig_122), false, t125, (&v_args_89), p_line, p_exp, (&v_o_87));
+  S87_check_Val t126 = f844_check_Checker_call(p_c, (&v_sig_122), false, t125, (&v_args_89), p_line, p_exp, (&v_o_87));
   S87_check_Val r127 = t126;
-  gl84_drop(v_sig_122);
+  gl85_drop(v_sig_122);
   gl9_drop(v_rargs_110);
   gl62_drop(v_args_89);
-  gl83_drop(v_o_87);
+  gl84_drop(v_o_87);
   gl0_drop(v_names_76);
   gl9_drop(v_targs_20);
   gl9_drop(v_env_17);
   rt_str_drop(v_vname_5);
   return r127;
 }
-static S87_check_Val f882_check_Checker_onceCall(S73_check_Checker** p_c, int64_t p_g, obx_str p_name, int64_t p_e) {
+static S87_check_Val f891_check_Checker_onceCall(S73_check_Checker** p_c, int64_t p_g, obx_str p_name, int64_t p_e) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
-  obx_str t3 = f829_check_Checker_W(p_c, v_n_2.f_line);
+  obx_str t3 = f838_check_Checker_W(p_c, v_n_2.f_line);
   obx_str v_W_4 = t3;
   int64_t ix5 = p_g;
-  obx_str v_gname_6 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix5, ((*p_c)->f_pg->f_globals).len, "check.obx:4027")].f_name);
+  obx_str v_gname_6 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix5, ((*p_c)->f_pg->f_globals).len, "check.obx:4209")].f_name);
   int64_t ix7 = p_g;
-  obx_str v_cn_8 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix7, ((*p_c)->f_pg->f_globals).len, "check.obx:4028")].f_cname);
+  obx_str v_cn_8 = rt_str_dup(((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix7, ((*p_c)->f_pg->f_globals).len, "check.obx:4210")].f_cname);
   int64_t ix9 = p_g;
-  int64_t v_gt_10 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix9, ((*p_c)->f_pg->f_globals).len, "check.obx:4029")].f_ty;
-  obx_str t11 = rt_str_concat(sl2671, v_gname_6);
+  int64_t v_gt_10 = ((S62_sema_Global*)((*p_c)->f_pg->f_globals).data)[rt_idx(ix9, ((*p_c)->f_pg->f_globals).len, "check.obx:4211")].f_ty;
+  obx_str t11 = rt_str_concat(sl2673, v_gname_6);
   obx_str t12 = f663_check_cstr(t11);
   obx_str v_msg0_13 = t12;
   obx_str t14 = rt_str_dup(v_msg0_13);
-  int64_t ix15 = rt_sub_int(((int64_t)(v_msg0_13).len), 1LL, "check.obx:4031");
-  obx_str t16 = rt_str_sub(t14, 0LL, ix15, "check.obx:4031");
+  int64_t ix15 = rt_sub_int(((int64_t)(v_msg0_13).len), 1LL, "check.obx:4213");
+  obx_str t16 = rt_str_sub(t14, 0LL, ix15, "check.obx:4213");
   obx_str v_msg_17 = t16;
   rt_str_drop(t14);
   int64_t t18 = f717_check_Checker_count(p_c, v_n_2.f_b);
   int64_t v_na_19 = t18;
-  bool b20 = (!rt_str_eq(p_name, sl2672));
+  bool b20 = (!rt_str_eq(p_name, sl2674));
   if (b20) {
-    b20 = (!rt_str_eq(p_name, sl2673));
+    b20 = (!rt_str_eq(p_name, sl2675));
   }
   bool b21 = b20;
   if (b21) {
-    b21 = (!rt_str_eq(p_name, sl2674));
+    b21 = (!rt_str_eq(p_name, sl2676));
   }
   bool b22 = b21;
   if (!b22) {
-    b22 = (v_na_19 != ((rt_str_eq(p_name, sl2672)) ? 1LL : 0LL));
+    b22 = (v_na_19 != ((rt_str_eq(p_name, sl2674)) ? 1LL : 0LL));
   }
   bool c24 = b22;
   if (c24) {
     int64_t t25 = v_n_2.f_line;
-    obx_str t26 = rt_str_concat(sl2675, p_name);
-    obx_str t27 = rt_str_concat(t26, sl2676);
+    obx_str t26 = rt_str_concat(sl2677, p_name);
+    obx_str t27 = rt_str_concat(t26, sl2678);
     obx_str t28 = rt_int_to_str(v_na_19);
     obx_str t29 = rt_str_concat(t27, t28);
-    obx_str t30 = rt_str_concat(t29, sl2677);
+    obx_str t30 = rt_str_concat(t29, sl2679);
     f702_check_Checker_err(p_c, t25, t30);
   }
-  bool c31 = (rt_str_eq(p_name, sl2674));
+  bool c31 = (rt_str_eq(p_name, sl2676));
   if (c31) {
     obx_str t32 = rt_str_concat(sl30, v_cn_8);
-    obx_str t33 = rt_str_concat(t32, sl2678);
+    obx_str t33 = rt_str_concat(t32, sl2680);
     S87_check_Val t34 = f734_check_rv(t33, 8LL);
     S87_check_Val r35 = t34;
     rt_str_drop(t32);
@@ -47634,16 +48052,16 @@ static S87_check_Val f882_check_Checker_onceCall(S73_check_Checker** p_c, int64_
     rt_str_drop(p_name);
     return r35;
   }
-  bool c36 = (rt_str_eq(p_name, sl2673));
+  bool c36 = (rt_str_eq(p_name, sl2675));
   if (c36) {
     obx_str t37 = rt_str_concat(sl2255, v_cn_8);
-    obx_str t38 = rt_str_concat(t37, sl2679);
+    obx_str t38 = rt_str_concat(t37, sl2681);
     obx_str t39 = rt_str_concat(t38, v_cn_8);
-    obx_str t40 = rt_str_concat(t39, sl2680);
+    obx_str t40 = rt_str_concat(t39, sl2682);
     obx_str t41 = rt_str_concat(t40, v_msg_17);
-    obx_str t42 = rt_str_concat(t41, sl2681);
+    obx_str t42 = rt_str_concat(t41, sl2683);
     obx_str t43 = rt_str_concat(t42, v_msg_17);
-    obx_str t44 = rt_str_concat(t43, sl2682);
+    obx_str t44 = rt_str_concat(t43, sl2684);
     obx_str t45 = rt_str_concat(t44, v_W_4);
     obx_str t46 = rt_str_concat(t45, sl2298);
     f744_check_Checker_emit(p_c, t46);
@@ -47656,11 +48074,11 @@ static S87_check_Val f882_check_Checker_onceCall(S73_check_Checker** p_c, int64_
     rt_str_drop(t39);
     rt_str_drop(t38);
     rt_str_drop(t37);
-    obx_str t47 = rt_str_concat(sl2586, v_cn_8);
+    obx_str t47 = rt_str_concat(sl2588, v_cn_8);
     obx_str t48 = rt_str_concat(t47, sl31);
     int64_t t49 = f606_sema_Program_mkRef((&(*p_c)->f_pg), v_gt_10, false);
-    int64_t t50 = f891_check_Checker_staticVar(p_c, 3LL, p_g);
-    S87_check_Val t51 = f795_check_rvAt(t48, t49, t50, sl183);
+    int64_t t50 = f900_check_Checker_staticVar(p_c, 3LL, p_g);
+    S87_check_Val t51 = f799_check_rvAt(t48, t49, t50, sl183);
     S87_check_Val r52 = t51;
     rt_str_drop(t47);
     rt_str_drop(v_msg_17);
@@ -47674,20 +48092,20 @@ static S87_check_Val f882_check_Checker_onceCall(S73_check_Checker** p_c, int64_
   }
   int64_t t53 = f718_check_Checker_item(p_c, v_n_2.f_b, 0LL);
   S87_check_Val t54 = f754_check_Checker_expr(p_c, t53, v_gt_10);
-  obx_str t55 = rt_str_concat(sl2683, v_gname_6);
-  S87_check_Val t56 = f803_check_Checker_coerce(p_c, t54, v_gt_10, v_n_2.f_line, t55);
-  S87_check_Val t57 = f813_check_Checker_seq(p_c, t56);
+  obx_str t55 = rt_str_concat(sl2685, v_gname_6);
+  S87_check_Val t56 = f807_check_Checker_coerce(p_c, t54, v_gt_10, v_n_2.f_line, t55);
+  S87_check_Val t57 = f818_check_Checker_seq(p_c, t56);
   S87_check_Val v_v_58 = t57;
   obx_str t59 = f772_check_Checker_consume(p_c, gl67_dup(v_v_58), v_n_2.f_line);
   obx_str v_cc_60 = t59;
   obx_str t61 = rt_str_concat(sl2255, v_cn_8);
-  obx_str t62 = rt_str_concat(t61, sl2684);
+  obx_str t62 = rt_str_concat(t61, sl2686);
   obx_str t63 = rt_str_concat(t62, v_cn_8);
-  obx_str t64 = rt_str_concat(t63, sl2685);
+  obx_str t64 = rt_str_concat(t63, sl2687);
   obx_str t65 = rt_str_concat(t64, v_msg_17);
-  obx_str t66 = rt_str_concat(t65, sl2681);
+  obx_str t66 = rt_str_concat(t65, sl2683);
   obx_str t67 = rt_str_concat(t66, v_msg_17);
-  obx_str t68 = rt_str_concat(t67, sl2686);
+  obx_str t68 = rt_str_concat(t67, sl2688);
   obx_str t69 = rt_str_concat(t68, v_W_4);
   obx_str t70 = rt_str_concat(t69, sl2298);
   f744_check_Checker_emit(p_c, t70);
@@ -47702,9 +48120,9 @@ static S87_check_Val f882_check_Checker_onceCall(S73_check_Checker** p_c, int64_
   rt_str_drop(t61);
   obx_str t71 = rt_str_concat(v_cn_8, sl2267);
   obx_str t72 = rt_str_concat(t71, v_cc_60);
-  obx_str t73 = rt_str_concat(t72, sl2505);
+  obx_str t73 = rt_str_concat(t72, sl2506);
   obx_str t74 = rt_str_concat(t73, v_cn_8);
-  obx_str t75 = rt_str_concat(t74, sl2687);
+  obx_str t75 = rt_str_concat(t74, sl2689);
   f744_check_Checker_emit(p_c, t75);
   rt_str_drop(t74);
   rt_str_drop(t73);
@@ -47723,12 +48141,12 @@ static S87_check_Val f882_check_Checker_onceCall(S73_check_Checker** p_c, int64_
   rt_str_drop(p_name);
   return r77;
 }
-static bool f881_check_Checker_allTypeish(S73_check_Checker** p_c, int64_t p_l) {
+static bool f890_check_Checker_allTypeish(S73_check_Checker** p_c, int64_t p_l) {
   int64_t t1 = f717_check_Checker_count(p_c, p_l);
   int64_t end2 = t1;
   for (int64_t v_i_3 = 0LL; v_i_3 < end2; v_i_3++) {
     int64_t t4 = f718_check_Checker_item(p_c, p_l, v_i_3);
-    bool t5 = f892_check_Checker_typeish(p_c, t4);
+    bool t5 = f901_check_Checker_typeish(p_c, t4);
     bool c6 = (!t5);
     if (c6) {
       bool r7 = false;
@@ -47738,7 +48156,7 @@ static bool f881_check_Checker_allTypeish(S73_check_Checker** p_c, int64_t p_l) 
   bool r8 = true;
   return r8;
 }
-static bool f892_check_Checker_typeish(S73_check_Checker** p_c, int64_t p_x) {
+static bool f901_check_Checker_typeish(S73_check_Checker** p_c, int64_t p_x) {
   int64_t t1 = f700_check_Checker_kind(p_c, p_x);
   int64_t v_k_2 = t1;
   bool c3 = (v_k_2 == 55LL);
@@ -47753,7 +48171,7 @@ static bool f892_check_Checker_typeish(S73_check_Checker** p_c, int64_t p_x) {
   bool c6 = b5;
   if (c6) {
     S49_syntax_Node t7 = f703_check_Checker_nd(p_c, p_x);
-    bool t8 = f892_check_Checker_typeish(p_c, t7.f_a);
+    bool t8 = f901_check_Checker_typeish(p_c, t7.f_a);
     bool r9 = t8;
     gl49_drop(t7);
     return r9;
@@ -47767,7 +48185,7 @@ static bool f892_check_Checker_typeish(S73_check_Checker** p_c, int64_t p_x) {
     bool r12 = false;
     return r12;
   }
-  S1_check_St t13 = f880_check_Checker_staticNs(p_c, p_x);
+  S1_check_St t13 = f889_check_Checker_staticNs(p_c, p_x);
   S1_check_St v_st_14 = t13;
   bool b15 = (v_st_14.f_k != 0LL);
   if (b15) {
@@ -47784,7 +48202,7 @@ static bool f892_check_Checker_typeish(S73_check_Checker** p_c, int64_t p_x) {
   bool r18 = b15;
   return r18;
 }
-static S1_check_St f880_check_Checker_staticNs(S73_check_Checker** p_c, int64_t p_e) {
+static S1_check_St f889_check_Checker_staticNs(S73_check_Checker** p_c, int64_t p_e) {
   S1_check_St t1 = f710_check_Checker_static(p_c, p_e);
   S1_check_St v_st_2 = t1;
   bool b3 = (v_st_2.f_k == 1LL);
@@ -47803,7 +48221,7 @@ static S1_check_St f880_check_Checker_staticNs(S73_check_Checker** p_c, int64_t 
   S1_check_St r7 = v_st_2;
   return r7;
 }
-static S94_check_Sig* f879_check_Checker_intrSig(S73_check_Checker** p_c, int64_t p_i) {
+static S95_check_Sig* f888_check_Checker_intrSig(S73_check_Checker** p_c, int64_t p_i) {
   int64_t v_S_1 = 9LL;
   int64_t v_I_2 = 0LL;
   obx_arr a3 = rt_arr_new(0, sizeof(int64_t));
@@ -47921,23 +48339,23 @@ static S94_check_Sig* f879_check_Checker_intrSig(S73_check_Checker** p_c, int64_
   }
   obx_slice t44 = k5_check_INTR_NAMES;
   int64_t ix45 = p_i;
-  S94_check_Sig* t46 = f850_check_newSig(rt_str_dup(((obx_str*)(t44).data)[rt_idx(ix45, (t44).len, "check.obx:3921")]), 7LL, v_ps_4, v_ret_5);
-  S94_check_Sig* v_s_47 = t46;
+  S95_check_Sig* t46 = f859_check_newSig(rt_str_dup(((obx_str*)(t44).data)[rt_idx(ix45, (t44).len, "check.obx:4103")]), 7LL, v_ps_4, v_ret_5);
+  S95_check_Sig* v_s_47 = t46;
   obx_slice t48 = k5_check_INTR_C;
   int64_t ix49 = p_i;
-  { obx_str nw50 = rt_str_dup(((obx_str*)(t48).data)[rt_idx(ix49, (t48).len, "check.obx:3922")]);
+  { obx_str nw50 = rt_str_dup(((obx_str*)(t48).data)[rt_idx(ix49, (t48).len, "check.obx:4104")]);
     rt_str_drop(v_s_47->f_c);
     v_s_47->f_c = nw50; }
   v_s_47->f_loc = (p_i <= 1LL);
-  S94_check_Sig* r51 = v_s_47;
+  S95_check_Sig* r51 = v_s_47;
   return r51;
 }
-static int64_t f878_check_intrinsic(obx_str p_name) {
+static int64_t f887_check_intrinsic(obx_str p_name) {
   int64_t end1 = (k5_check_INTR_NAMES).len;
   for (int64_t v_i_2 = 0LL; v_i_2 < end1; v_i_2++) {
     obx_slice t3 = k5_check_INTR_NAMES;
     int64_t ix4 = v_i_2;
-    bool c5 = (rt_str_eq(((obx_str*)(t3).data)[rt_idx(ix4, (t3).len, "check.obx:3894")], p_name));
+    bool c5 = (rt_str_eq(((obx_str*)(t3).data)[rt_idx(ix4, (t3).len, "check.obx:4076")], p_name));
     if (c5) {
       int64_t r6 = v_i_2;
       rt_str_drop(p_name);
@@ -47948,65 +48366,65 @@ static int64_t f878_check_intrinsic(obx_str p_name) {
   rt_str_drop(p_name);
   return r7;
 }
-static S87_check_Val f877_check_Checker_builtin(S73_check_Checker** p_c, obx_str p_name, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f886_check_Checker_builtin(S73_check_Checker** p_c, obx_str p_name, int64_t p_e, int64_t p_exp) {
   S87_check_Val mx1;
   obx_str sv2 = p_name;
   if (rt_str_eq(sv2, sl2231)) {
-    S87_check_Val t3 = f893_check_Checker_bLen(p_c, p_e);
+    S87_check_Val t3 = f902_check_Checker_bLen(p_c, p_e);
     mx1 = t3;
-  } else if (rt_str_eq(sv2, sl2688)) {
-    S87_check_Val t4 = f894_check_Checker_bIsNull(p_c, p_e);
+  } else if (rt_str_eq(sv2, sl2690)) {
+    S87_check_Val t4 = f903_check_Checker_bIsNull(p_c, p_e);
     mx1 = t4;
-  } else if (rt_str_eq(sv2, sl2689)) {
-    S87_check_Val t5 = f895_check_Checker_bNullPtr(p_c, p_e);
+  } else if (rt_str_eq(sv2, sl2691)) {
+    S87_check_Val t5 = f904_check_Checker_bNullPtr(p_c, p_e);
     mx1 = t5;
   } else if (rt_str_eq(sv2, sl2232)) {
-    S87_check_Val t6 = f896_check_Checker_bAppend(p_c, p_e);
+    S87_check_Val t6 = f905_check_Checker_bAppend(p_c, p_e);
     mx1 = t6;
   } else if (rt_str_eq(sv2, sl2233)) {
-    S87_check_Val t7 = f897_check_Checker_bPop(p_c, p_e);
+    S87_check_Val t7 = f906_check_Checker_bPop(p_c, p_e);
     mx1 = t7;
   } else if (rt_str_eq(sv2, sl2234)) {
-    S87_check_Val t8 = f898_check_Checker_bSwap(p_c, p_e);
+    S87_check_Val t8 = f907_check_Checker_bSwap(p_c, p_e);
     mx1 = t8;
   } else if (rt_str_eq(sv2, sl2235)) {
-    S87_check_Val t9 = f899_check_Checker_bReplace(p_c, p_e);
+    S87_check_Val t9 = f908_check_Checker_bReplace(p_c, p_e);
     mx1 = t9;
   } else if (rt_str_eq(sv2, sl2236)) {
-    S87_check_Val t10 = f900_check_Checker_bMove(p_c, p_e);
+    S87_check_Val t10 = f909_check_Checker_bMove(p_c, p_e);
     mx1 = t10;
   } else if (rt_str_eq(sv2, sl2237)) {
-    S87_check_Val t11 = f901_check_Checker_bArray(p_c, p_e, p_exp);
+    S87_check_Val t11 = f910_check_Checker_bArray(p_c, p_e, p_exp);
     mx1 = t11;
   } else if (rt_str_eq(sv2, sl2238)) {
-    S87_check_Val t12 = f902_check_Checker_bPanic(p_c, p_e);
+    S87_check_Val t12 = f911_check_Checker_bPanic(p_c, p_e);
     mx1 = t12;
   } else if (rt_str_eq(sv2, sl2239)) {
-    S87_check_Val t13 = f903_check_Checker_bAssert(p_c, p_e);
+    S87_check_Val t13 = f912_check_Checker_bAssert(p_c, p_e);
     mx1 = t13;
   } else {
-    S87_check_Val t14 = f904_check_Checker_bExit(p_c, p_e);
+    S87_check_Val t14 = f913_check_Checker_bExit(p_c, p_e);
     mx1 = t14;
   }
   S87_check_Val r15 = mx1;
   rt_str_drop(p_name);
   return r15;
 }
-static S87_check_Val f904_check_Checker_bExit(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 1LL);
-  int64_t t1 = f906_check_Checker_arg(p_c, p_e, 0LL);
+static S87_check_Val f913_check_Checker_bExit(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 1LL);
+  int64_t t1 = f915_check_Checker_arg(p_c, p_e, 0LL);
   S87_check_Val t2 = f754_check_Checker_expr(p_c, t1, 0LL);
   S87_check_Val t3 = f765_check_Checker_rd(p_c, t2);
   S87_check_Val v_v_4 = t3;
   bool c5 = (v_v_4.f_t != 0LL);
   if (c5) {
     int64_t t6 = f701_check_Checker_line(p_c, p_e);
-    obx_str t7 = sl2690;
+    obx_str t7 = sl2692;
     obx_str t8 = f767_check_Checker_tstr(p_c, v_v_4.f_t);
     obx_str t9 = rt_str_concat(t7, t8);
     f702_check_Checker_err(p_c, t6, t9);
   }
-  obx_str t10 = rt_str_concat(sl2691, v_v_4.f_c);
+  obx_str t10 = rt_str_concat(sl2693, v_v_4.f_c);
   obx_str t11 = rt_str_concat(t10, sl2298);
   f744_check_Checker_emit(p_c, t11);
   rt_str_drop(t10);
@@ -48015,14 +48433,14 @@ static S87_check_Val f904_check_Checker_bExit(S73_check_Checker** p_c, int64_t p
   gl68_drop(v_v_4);
   return r13;
 }
-static int64_t f906_check_Checker_arg(S73_check_Checker** p_c, int64_t p_e, int64_t p_i) {
+static int64_t f915_check_Checker_arg(S73_check_Checker** p_c, int64_t p_e, int64_t p_i) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   int64_t t2 = f718_check_Checker_item(p_c, t1.f_b, p_i);
   int64_t r3 = t2;
   gl49_drop(t1);
   return r3;
 }
-static void f905_check_Checker_nargs(S73_check_Checker** p_c, int64_t p_e, int64_t p_n) {
+static void f914_check_Checker_nargs(S73_check_Checker** p_c, int64_t p_e, int64_t p_n) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   int64_t t2 = f717_check_Checker_count(p_c, t1.f_b);
   int64_t v_k_3 = t2;
@@ -48030,20 +48448,20 @@ static void f905_check_Checker_nargs(S73_check_Checker** p_c, int64_t p_e, int64
   bool c4 = (v_k_3 != p_n);
   if (c4) {
     int64_t t5 = f701_check_Checker_line(p_c, p_e);
-    obx_str t6 = f907_check_Checker_fname(p_c, p_e);
+    obx_str t6 = f916_check_Checker_fname(p_c, p_e);
     obx_str t7 = rt_str_concat(t6, sl2159);
     obx_str t8 = rt_int_to_str(p_n);
     obx_str t9 = rt_str_concat(t7, t8);
-    obx_str t10 = rt_str_concat(t9, sl2692);
+    obx_str t10 = rt_str_concat(t9, sl2694);
     obx_str t12 = ((p_n != 1LL) ? sl2412 : sl183);
     obx_str t13 = rt_str_concat(t10, t12);
-    obx_str t14 = rt_str_concat(t13, sl2479);
+    obx_str t14 = rt_str_concat(t13, sl2480);
     obx_str t15 = rt_int_to_str(v_k_3);
     obx_str t16 = rt_str_concat(t14, t15);
     f702_check_Checker_err(p_c, t5, t16);
   }
 }
-static obx_str f907_check_Checker_fname(S73_check_Checker** p_c, int64_t p_e) {
+static obx_str f916_check_Checker_fname(S73_check_Checker** p_c, int64_t p_e) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node t2 = f703_check_Checker_nd(p_c, t1.f_a);
   obx_str r3 = rt_str_dup(t2.f_s);
@@ -48051,29 +48469,29 @@ static obx_str f907_check_Checker_fname(S73_check_Checker** p_c, int64_t p_e) {
   gl49_drop(t1);
   return r3;
 }
-static S87_check_Val f903_check_Checker_bAssert(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 1LL);
-  int64_t t1 = f906_check_Checker_arg(p_c, p_e, 0LL);
+static S87_check_Val f912_check_Checker_bAssert(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 1LL);
+  int64_t t1 = f915_check_Checker_arg(p_c, p_e, 0LL);
   S87_check_Val t2 = f754_check_Checker_expr(p_c, t1, 8LL);
   S87_check_Val t3 = f765_check_Checker_rd(p_c, t2);
   S87_check_Val v_v_4 = t3;
   bool c5 = (v_v_4.f_t != 8LL);
   if (c5) {
     int64_t t6 = f701_check_Checker_line(p_c, p_e);
-    obx_str t7 = sl2693;
+    obx_str t7 = sl2695;
     obx_str t8 = f767_check_Checker_tstr(p_c, v_v_4.f_t);
     obx_str t9 = rt_str_concat(t7, t8);
     f702_check_Checker_err(p_c, t6, t9);
   }
-  S80_check_Hole t10 = f706_check_mkHole(4LL, -1LL, sl2694);
+  S80_check_Hole t10 = f706_check_mkHole(4LL, -1LL, sl2696);
   obx_str t11 = f707_check_Checker_hole(p_c, t10);
   obx_str v_h_12 = t11;
-  obx_str t13 = rt_str_concat(sl2695, v_v_4.f_c);
-  obx_str t14 = rt_str_concat(t13, sl2696);
+  obx_str t13 = rt_str_concat(sl2697, v_v_4.f_c);
+  obx_str t14 = rt_str_concat(t13, sl2698);
   obx_str t15 = rt_str_concat(t14, v_h_12);
   obx_str t16 = rt_str_concat(t15, sl1754);
   int64_t t17 = f701_check_Checker_line(p_c, p_e);
-  obx_str t18 = f829_check_Checker_W(p_c, t17);
+  obx_str t18 = f838_check_Checker_W(p_c, t17);
   obx_str t19 = rt_str_concat(t16, t18);
   obx_str t20 = rt_str_concat(t19, sl2298);
   f744_check_Checker_emit(p_c, t20);
@@ -48089,24 +48507,24 @@ static S87_check_Val f903_check_Checker_bAssert(S73_check_Checker** p_c, int64_t
   gl68_drop(v_v_4);
   return r22;
 }
-static S87_check_Val f902_check_Checker_bPanic(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 1LL);
-  int64_t t1 = f906_check_Checker_arg(p_c, p_e, 0LL);
+static S87_check_Val f911_check_Checker_bPanic(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 1LL);
+  int64_t t1 = f915_check_Checker_arg(p_c, p_e, 0LL);
   S87_check_Val t2 = f754_check_Checker_expr(p_c, t1, 9LL);
   S87_check_Val t3 = f765_check_Checker_rd(p_c, t2);
   S87_check_Val v_v_4 = t3;
   bool c5 = (v_v_4.f_t != 9LL);
   if (c5) {
     int64_t t6 = f701_check_Checker_line(p_c, p_e);
-    obx_str t7 = sl2697;
+    obx_str t7 = sl2699;
     obx_str t8 = f767_check_Checker_tstr(p_c, v_v_4.f_t);
     obx_str t9 = rt_str_concat(t7, t8);
     f702_check_Checker_err(p_c, t6, t9);
   }
-  obx_str t10 = rt_str_concat(sl2698, v_v_4.f_c);
+  obx_str t10 = rt_str_concat(sl2700, v_v_4.f_c);
   obx_str t11 = rt_str_concat(t10, sl1754);
   int64_t t12 = f701_check_Checker_line(p_c, p_e);
-  obx_str t13 = f829_check_Checker_W(p_c, t12);
+  obx_str t13 = f838_check_Checker_W(p_c, t12);
   obx_str t14 = rt_str_concat(t11, t13);
   obx_str t15 = rt_str_concat(t14, sl2298);
   f744_check_Checker_emit(p_c, t15);
@@ -48119,25 +48537,25 @@ static S87_check_Val f902_check_Checker_bPanic(S73_check_Checker** p_c, int64_t 
   gl68_drop(v_v_4);
   return r17;
 }
-static S87_check_Val f901_check_Checker_bArray(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
-  f905_check_Checker_nargs(p_c, p_e, 2LL);
+static S87_check_Val f910_check_Checker_bArray(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+  f914_check_Checker_nargs(p_c, p_e, 2LL);
   int64_t t1 = f701_check_Checker_line(p_c, p_e);
   int64_t v_line_2 = t1;
-  int64_t t3 = f906_check_Checker_arg(p_c, p_e, 0LL);
+  int64_t t3 = f915_check_Checker_arg(p_c, p_e, 0LL);
   S87_check_Val t4 = f754_check_Checker_expr(p_c, t3, 0LL);
   S87_check_Val t5 = f765_check_Checker_rd(p_c, t4);
   S87_check_Val v_n_6 = t5;
   bool c7 = (v_n_6.f_t != 0LL);
   if (c7) {
-    f702_check_Checker_err(p_c, v_line_2, sl2699);
+    f702_check_Checker_err(p_c, v_line_2, sl2701);
   }
   S87_check_Val t8 = gl67_dup(v_n_6);
-  int64_t t9 = f906_check_Checker_arg(p_c, p_e, 1LL);
-  S87_check_Val t10 = f806_check_Checker_before1(p_c, t8, t9);
+  int64_t t9 = f915_check_Checker_arg(p_c, p_e, 1LL);
+  S87_check_Val t10 = f810_check_Checker_before1(p_c, t8, t9);
   { S87_check_Val nw11 = t10;
     gl68_drop(v_n_6);
     v_n_6 = nw11; }
-  int64_t t12 = f858_check_Checker_ek(p_c, p_exp);
+  int64_t t12 = f867_check_Checker_ek(p_c, p_exp);
   int64_t ifx13;
   if ((t12 == 1LL)) {
     int64_t t14 = f498_sema_Program_ta((&(*p_c)->f_pg), p_exp);
@@ -48146,29 +48564,29 @@ static S87_check_Val f901_check_Checker_bArray(S73_check_Checker** p_c, int64_t 
     ifx13 = -1LL;
   }
   int64_t v_et_15 = ifx13;
-  int64_t t16 = f906_check_Checker_arg(p_c, p_e, 1LL);
+  int64_t t16 = f915_check_Checker_arg(p_c, p_e, 1LL);
   S87_check_Val t17 = f754_check_Checker_expr(p_c, t16, v_et_15);
   S87_check_Val t18 = f765_check_Checker_rd(p_c, t17);
   S87_check_Val v_v_19 = t18;
   int64_t t20 = v_v_19.f_t;
-  int64_t t21 = f906_check_Checker_arg(p_c, p_e, 1LL);
+  int64_t t21 = f915_check_Checker_arg(p_c, p_e, 1LL);
   int64_t t22 = f701_check_Checker_line(p_c, t21);
-  int64_t t23 = f908_check_Checker_elemType(p_c, t20, t22);
+  int64_t t23 = f917_check_Checker_elemType(p_c, t20, t22);
   bool t24 = f778_check_Checker_isCopy(p_c, v_v_19.f_t);
   bool c25 = (!t24);
   if (c25) {
     int64_t t26 = v_line_2;
-    obx_str t27 = sl2700;
+    obx_str t27 = sl2702;
     obx_str t28 = f767_check_Checker_tstr(p_c, v_v_19.f_t);
     obx_str t29 = rt_str_concat(t27, t28);
     obx_str t30 = rt_str_concat(t29, sl2123);
     f702_check_Checker_err(p_c, t26, t30);
   }
-  obx_str t31 = f771_check_Checker_fresh(p_c, sl2701);
+  obx_str t31 = f771_check_Checker_fresh(p_c, sl2703);
   obx_str v_vn_32 = t31;
   obx_str t33 = f771_check_Checker_fresh(p_c, sl1974);
   obx_str v_an_34 = t33;
-  obx_str t35 = f771_check_Checker_fresh(p_c, sl2510);
+  obx_str t35 = f771_check_Checker_fresh(p_c, sl2511);
   obx_str v_i_36 = t35;
   obx_str t37 = f732_check_Checker_T(p_c, v_v_19.f_t);
   obx_str v_ct_38 = t37;
@@ -48186,13 +48604,13 @@ static S87_check_Val f901_check_Checker_bArray(S73_check_Checker** p_c, int64_t 
   rt_str_drop(t41);
   obx_str t46 = f732_check_Checker_T(p_c, v_v_19.f_t);
   obx_str v_ct2_47 = t46;
-  obx_str t48 = rt_str_concat(sl2702, v_an_34);
-  obx_str t49 = rt_str_concat(t48, sl2703);
+  obx_str t48 = rt_str_concat(sl2704, v_an_34);
+  obx_str t49 = rt_str_concat(t48, sl2705);
   obx_str t50 = rt_str_concat(t49, v_n_6.f_c);
   obx_str t51 = rt_str_concat(t50, sl2343);
   obx_str t52 = rt_str_concat(t51, v_ct2_47);
-  obx_str t53 = rt_str_concat(t52, sl2704);
-  obx_str t54 = f829_check_Checker_W(p_c, v_line_2);
+  obx_str t53 = rt_str_concat(t52, sl2706);
+  obx_str t54 = f838_check_Checker_W(p_c, v_line_2);
   obx_str t55 = rt_str_concat(t53, t54);
   obx_str t56 = rt_str_concat(t55, sl2298);
   f744_check_Checker_emit(p_c, t56);
@@ -48208,20 +48626,20 @@ static S87_check_Val f901_check_Checker_bArray(S73_check_Checker** p_c, int64_t 
   obx_str v_ct3_58 = t57;
   obx_str t59 = f769_check_Checker_dup(p_c, rt_str_dup(v_vn_32), v_v_19.f_t);
   obx_str v_d_60 = t59;
-  obx_str t61 = rt_str_concat(sl2504, v_i_36);
-  obx_str t62 = rt_str_concat(t61, sl2514);
+  obx_str t61 = rt_str_concat(sl2505, v_i_36);
+  obx_str t62 = rt_str_concat(t61, sl2515);
   obx_str t63 = rt_str_concat(t62, v_i_36);
-  obx_str t64 = rt_str_concat(t63, sl2506);
+  obx_str t64 = rt_str_concat(t63, sl2507);
   obx_str t65 = rt_str_concat(t64, v_an_34);
-  obx_str t66 = rt_str_concat(t65, sl2515);
+  obx_str t66 = rt_str_concat(t65, sl2516);
   obx_str t67 = rt_str_concat(t66, v_i_36);
-  obx_str t68 = rt_str_concat(t67, sl2705);
+  obx_str t68 = rt_str_concat(t67, sl2707);
   obx_str t69 = rt_str_concat(t68, v_ct3_58);
-  obx_str t70 = rt_str_concat(t69, sl2516);
+  obx_str t70 = rt_str_concat(t69, sl2517);
   obx_str t71 = rt_str_concat(t70, v_an_34);
-  obx_str t72 = rt_str_concat(t71, sl2517);
+  obx_str t72 = rt_str_concat(t71, sl2518);
   obx_str t73 = rt_str_concat(t72, v_i_36);
-  obx_str t74 = rt_str_concat(t73, sl2706);
+  obx_str t74 = rt_str_concat(t73, sl2708);
   obx_str t75 = rt_str_concat(t74, v_d_60);
   obx_str t76 = rt_str_concat(t75, sl36);
   f744_check_Checker_emit(p_c, t76);
@@ -48243,12 +48661,12 @@ static S87_check_Val f901_check_Checker_bArray(S73_check_Checker** p_c, int64_t 
   f746_check_Checker_dropc(p_c, rt_str_dup(v_vn_32), v_v_19.f_t);
   int64_t t77 = f525_sema_Program_mkArr((&(*p_c)->f_pg), v_v_19.f_t);
   int64_t v_at_78 = t77;
-  int64_t t79 = f797_check_Checker_newTmp(p_c, rt_str_dup(v_an_34), v_at_78);
+  int64_t t79 = f801_check_Checker_newTmp(p_c, rt_str_dup(v_an_34), v_at_78);
   int64_t v_id_80 = t79;
   S87_check_Val t81 = f735_check_val(rt_str_dup(v_an_34), v_at_78, 1LL);
   S87_check_Val v_r_82 = t81;
   v_r_82.f_tmp = v_id_80;
-  int64_t t83 = f798_check_tmpRoot(v_id_80);
+  int64_t t83 = f802_check_tmpRoot(v_id_80);
   v_r_82.f_root = t83;
   v_r_82.f_mutable = true;
   S87_check_Val r84 = gl67_dup(v_r_82);
@@ -48265,7 +48683,7 @@ static S87_check_Val f901_check_Checker_bArray(S73_check_Checker** p_c, int64_t 
   gl68_drop(v_n_6);
   return r84;
 }
-static int64_t f908_check_Checker_elemType(S73_check_Checker** p_c, int64_t p_t, int64_t p_line) {
+static int64_t f917_check_Checker_elemType(S73_check_Checker** p_c, int64_t p_t, int64_t p_line) {
   int64_t t1 = f497_sema_Program_tk((&(*p_c)->f_pg), p_t);
   int64_t v_k_2 = t1;
   bool b3 = (v_k_2 == 2LL);
@@ -48279,20 +48697,20 @@ static int64_t f908_check_Checker_elemType(S73_check_Checker** p_c, int64_t p_t,
   bool c5 = b4;
   if (c5) {
     int64_t t6 = p_line;
-    obx_str t7 = sl2707;
+    obx_str t7 = sl2709;
     obx_str t8 = f767_check_Checker_tstr(p_c, p_t);
     obx_str t9 = rt_str_concat(t7, t8);
-    obx_str t10 = rt_str_concat(t9, sl2708);
+    obx_str t10 = rt_str_concat(t9, sl2710);
     f702_check_Checker_err(p_c, t6, t10);
   }
   int64_t r11 = p_t;
   return r11;
 }
-static S87_check_Val f900_check_Checker_bMove(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 1LL);
+static S87_check_Val f909_check_Checker_bMove(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 1LL);
   int64_t t1 = f701_check_Checker_line(p_c, p_e);
   int64_t v_line_2 = t1;
-  int64_t t3 = f906_check_Checker_arg(p_c, p_e, 0LL);
+  int64_t t3 = f915_check_Checker_arg(p_c, p_e, 0LL);
   int64_t v_a_4 = t3;
   int64_t t5 = f700_check_Checker_kind(p_c, v_a_4);
   bool b6 = (t5 != 41LL);
@@ -48304,7 +48722,7 @@ static S87_check_Val f900_check_Checker_bMove(S73_check_Checker** p_c, int64_t p
   }
   bool c9 = b6;
   if (c9) {
-    f702_check_Checker_err(p_c, v_line_2, sl2709);
+    f702_check_Checker_err(p_c, v_line_2, sl2711);
   }
   S87_check_Val t10 = f754_check_Checker_expr(p_c, v_a_4, -1LL);
   S87_check_Val v_v_11 = t10;
@@ -48312,7 +48730,7 @@ static S87_check_Val f900_check_Checker_bMove(S73_check_Checker** p_c, int64_t p
   bool c13 = (t12 == 2LL);
   if (c13) {
     int64_t t14 = v_line_2;
-    obx_str t15 = sl2710;
+    obx_str t15 = sl2712;
     S49_syntax_Node t16 = f703_check_Checker_nd(p_c, v_a_4);
     obx_str t17 = rt_str_concat(t15, t16.f_s);
     obx_str t18 = rt_str_concat(t17, sl1809);
@@ -48326,11 +48744,11 @@ static S87_check_Val f900_check_Checker_bMove(S73_check_Checker** p_c, int64_t p
   gl68_drop(v_v_11);
   return r22;
 }
-static S87_check_Val f899_check_Checker_bReplace(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 2LL);
+static S87_check_Val f908_check_Checker_bReplace(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 2LL);
   int64_t t1 = f701_check_Checker_line(p_c, p_e);
   int64_t v_line_2 = t1;
-  int64_t t3 = f906_check_Checker_arg(p_c, p_e, 0LL);
+  int64_t t3 = f915_check_Checker_arg(p_c, p_e, 0LL);
   S87_check_Val t4 = f754_check_Checker_expr(p_c, t3, -1LL);
   S87_check_Val v_p_5 = t4;
   int64_t t6 = f497_sema_Program_tk((&(*p_c)->f_pg), v_p_5.f_t);
@@ -48342,35 +48760,35 @@ static S87_check_Val f899_check_Checker_bReplace(S73_check_Checker** p_c, int64_
   bool c9 = b7;
   if (c9) {
     int64_t t10 = v_line_2;
-    obx_str t11 = sl2711;
+    obx_str t11 = sl2713;
     obx_str t12 = f767_check_Checker_tstr(p_c, v_p_5.f_t);
     obx_str t13 = rt_str_concat(t11, t12);
     f702_check_Checker_err(p_c, t10, t13);
   }
-  f855_check_Checker_selfInDrop(p_c, gl67_dup(v_p_5), v_line_2);
+  f864_check_Checker_selfInDrop(p_c, gl67_dup(v_p_5), v_line_2);
   S87_check_Val t14 = gl67_dup(v_p_5);
   int64_t t15 = v_line_2;
-  int64_t t16 = f906_check_Checker_arg(p_c, p_e, 0LL);
-  S87_check_Val t17 = f909_check_Checker_builtinBorrow(p_c, t14, true, t15, t16);
+  int64_t t16 = f915_check_Checker_arg(p_c, p_e, 0LL);
+  S87_check_Val t17 = f918_check_Checker_builtinBorrow(p_c, t14, true, t15, t16);
   { S87_check_Val nw18 = t17;
     gl68_drop(v_p_5);
     v_p_5 = nw18; }
   int64_t t19 = f498_sema_Program_ta((&(*p_c)->f_pg), v_p_5.f_t);
   int64_t v_t_20 = t19;
   S87_check_Val t21 = gl67_dup(v_p_5);
-  int64_t t22 = f906_check_Checker_arg(p_c, p_e, 1LL);
-  S87_check_Val t23 = f806_check_Checker_before1(p_c, t21, t22);
+  int64_t t22 = f915_check_Checker_arg(p_c, p_e, 1LL);
+  S87_check_Val t23 = f810_check_Checker_before1(p_c, t21, t22);
   { S87_check_Val nw24 = t23;
     gl68_drop(v_p_5);
     v_p_5 = nw24; }
-  int64_t t25 = f906_check_Checker_arg(p_c, p_e, 1LL);
+  int64_t t25 = f915_check_Checker_arg(p_c, p_e, 1LL);
   S87_check_Val t26 = f754_check_Checker_expr(p_c, t25, v_t_20);
-  S87_check_Val t27 = f803_check_Checker_coerce(p_c, t26, v_t_20, v_line_2, sl2712);
+  S87_check_Val t27 = f807_check_Checker_coerce(p_c, t26, v_t_20, v_line_2, sl2714);
   S87_check_Val v_v_28 = t27;
-  bool t29 = f814_check_checks(rt_str_dup(v_p_5.f_c));
+  bool t29 = f819_check_checks(rt_str_dup(v_p_5.f_c));
   bool c30 = t29;
   if (c30) {
-    S87_check_Val t31 = f813_check_Checker_seq(p_c, gl67_dup(v_v_28));
+    S87_check_Val t31 = f818_check_Checker_seq(p_c, gl67_dup(v_v_28));
     { S87_check_Val nw32 = t31;
       gl68_drop(v_v_28);
       v_v_28 = nw32; }
@@ -48378,18 +48796,18 @@ static S87_check_Val f899_check_Checker_bReplace(S73_check_Checker** p_c, int64_
   bool c33 = v_p_5.f_late;
   if (c33) {
     S87_check_Val t34 = gl67_dup(v_p_5);
-    int64_t t35 = f825_check_Checker_newCid(p_c);
-    f842_check_Checker_take(p_c, t34, 1LL, t35, v_line_2);
+    int64_t t35 = f834_check_Checker_newCid(p_c);
+    f851_check_Checker_take(p_c, t34, 1LL, t35, v_line_2);
   }
   obx_str t36 = f772_check_Checker_consume(p_c, gl67_dup(v_v_28), v_line_2);
   obx_str v_cc_37 = t36;
-  obx_str t38 = f771_check_Checker_fresh(p_c, sl2713);
+  obx_str t38 = f771_check_Checker_fresh(p_c, sl2715);
   obx_str v_n_39 = t38;
   obx_str t40 = f732_check_Checker_T(p_c, v_t_20);
   obx_str v_ct_41 = t40;
   obx_str t42 = rt_str_concat(v_ct_41, sl1771);
   obx_str t43 = rt_str_concat(t42, v_n_39);
-  obx_str t44 = rt_str_concat(t43, sl2714);
+  obx_str t44 = rt_str_concat(t43, sl2716);
   obx_str t45 = rt_str_concat(t44, v_p_5.f_c);
   obx_str t46 = rt_str_concat(t45, sl36);
   f744_check_Checker_emit(p_c, t46);
@@ -48417,12 +48835,12 @@ static S87_check_Val f899_check_Checker_bReplace(S73_check_Checker** p_c, int64_
     gl68_drop(v_p_5);
     return r54;
   }
-  int64_t t55 = f797_check_Checker_newTmp(p_c, rt_str_dup(v_n_39), v_t_20);
+  int64_t t55 = f801_check_Checker_newTmp(p_c, rt_str_dup(v_n_39), v_t_20);
   int64_t v_id_56 = t55;
   S87_check_Val t57 = f735_check_val(rt_str_dup(v_n_39), v_t_20, 1LL);
   S87_check_Val v_r_58 = t57;
   v_r_58.f_tmp = v_id_56;
-  int64_t t59 = f798_check_tmpRoot(v_id_56);
+  int64_t t59 = f802_check_tmpRoot(v_id_56);
   v_r_58.f_root = t59;
   v_r_58.f_mutable = true;
   S87_check_Val r60 = gl67_dup(v_r_58);
@@ -48434,51 +48852,51 @@ static S87_check_Val f899_check_Checker_bReplace(S73_check_Checker** p_c, int64_
   gl68_drop(v_p_5);
   return r60;
 }
-static S87_check_Val f909_check_Checker_builtinBorrow(S73_check_Checker** p_c, S87_check_Val p_v0, bool p_m, int64_t p_line, int64_t p_ast) {
-  S87_check_Val t1 = f833_check_Checker_borrow(p_c, gl67_dup(p_v0), p_m, p_line, false);
+static S87_check_Val f918_check_Checker_builtinBorrow(S73_check_Checker** p_c, S87_check_Val p_v0, bool p_m, int64_t p_line, int64_t p_ast) {
+  S87_check_Val t1 = f842_check_Checker_borrow(p_c, gl67_dup(p_v0), p_m, p_line, false);
   S87_check_Val v_v_2 = t1;
-  bool t3 = f841_check_Checker_late(p_c, p_ast);
+  bool t3 = f850_check_Checker_late(p_c, p_ast);
   v_v_2.f_late = t3;
   bool c4 = (!v_v_2.f_late);
   if (c4) {
     S87_check_Val t5 = gl67_dup(v_v_2);
-    int64_t t6 = f840_check_hm(p_m);
-    int64_t t7 = f825_check_Checker_newCid(p_c);
-    f826_check_Checker_hold(p_c, t5, t6, t7, p_line);
+    int64_t t6 = f849_check_hm(p_m);
+    int64_t t7 = f834_check_Checker_newCid(p_c);
+    f835_check_Checker_hold(p_c, t5, t6, t7, p_line);
   }
   S87_check_Val r8 = gl67_dup(v_v_2);
   gl68_drop(v_v_2);
   gl68_drop(p_v0);
   return r8;
 }
-static S87_check_Val f898_check_Checker_bSwap(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 3LL);
+static S87_check_Val f907_check_Checker_bSwap(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 3LL);
   int64_t t1 = f701_check_Checker_line(p_c, p_e);
   int64_t v_line_2 = t1;
-  S87_check_Val t3 = f910_check_Checker_arrArg(p_c, p_e, true, true);
+  S87_check_Val t3 = f919_check_Checker_arrArg(p_c, p_e, true, true);
   S87_check_Val v_a_4 = t3;
-  int64_t t5 = f906_check_Checker_arg(p_c, p_e, 1LL);
-  bool t6 = f812_check_Checker_acts(p_c, t5);
+  int64_t t5 = f915_check_Checker_arg(p_c, p_e, 1LL);
+  bool t6 = f817_check_Checker_acts(p_c, t5);
   bool b7 = t6;
   if (!b7) {
-    int64_t t8 = f906_check_Checker_arg(p_c, p_e, 2LL);
-    bool t9 = f812_check_Checker_acts(p_c, t8);
+    int64_t t8 = f915_check_Checker_arg(p_c, p_e, 2LL);
+    bool t9 = f817_check_Checker_acts(p_c, t8);
     b7 = t9;
   }
   bool c10 = b7;
   if (c10) {
-    S87_check_Val t11 = f813_check_Checker_seq(p_c, gl67_dup(v_a_4));
+    S87_check_Val t11 = f818_check_Checker_seq(p_c, gl67_dup(v_a_4));
     { S87_check_Val nw12 = t11;
       gl68_drop(v_a_4);
       v_a_4 = nw12; }
   }
-  int64_t t13 = f906_check_Checker_arg(p_c, p_e, 1LL);
+  int64_t t13 = f915_check_Checker_arg(p_c, p_e, 1LL);
   S87_check_Val t14 = f754_check_Checker_expr(p_c, t13, 0LL);
   S87_check_Val t15 = f765_check_Checker_rd(p_c, t14);
-  int64_t t16 = f906_check_Checker_arg(p_c, p_e, 2LL);
-  S87_check_Val t17 = f806_check_Checker_before1(p_c, t15, t16);
+  int64_t t16 = f915_check_Checker_arg(p_c, p_e, 2LL);
+  S87_check_Val t17 = f810_check_Checker_before1(p_c, t15, t16);
   S87_check_Val v_i_18 = t17;
-  int64_t t19 = f906_check_Checker_arg(p_c, p_e, 2LL);
+  int64_t t19 = f915_check_Checker_arg(p_c, p_e, 2LL);
   S87_check_Val t20 = f754_check_Checker_expr(p_c, t19, 0LL);
   S87_check_Val t21 = f765_check_Checker_rd(p_c, t20);
   S87_check_Val v_j_22 = t21;
@@ -48488,21 +48906,21 @@ static S87_check_Val f898_check_Checker_bSwap(S73_check_Checker** p_c, int64_t p
   }
   bool c24 = b23;
   if (c24) {
-    f702_check_Checker_err(p_c, v_line_2, sl2715);
+    f702_check_Checker_err(p_c, v_line_2, sl2717);
   }
   int64_t t25 = f498_sema_Program_ta((&(*p_c)->f_pg), v_a_4.f_t);
   int64_t v_et_26 = t25;
   obx_str t27 = f732_check_Checker_T(p_c, v_et_26);
   obx_str v_ct_28 = t27;
-  obx_str t29 = rt_str_concat(sl2716, v_a_4.f_c);
+  obx_str t29 = rt_str_concat(sl2718, v_a_4.f_c);
   obx_str t30 = rt_str_concat(t29, sl1754);
   obx_str t31 = rt_str_concat(t30, v_i_18.f_c);
   obx_str t32 = rt_str_concat(t31, sl1754);
   obx_str t33 = rt_str_concat(t32, v_j_22.f_c);
   obx_str t34 = rt_str_concat(t33, sl2343);
   obx_str t35 = rt_str_concat(t34, v_ct_28);
-  obx_str t36 = rt_str_concat(t35, sl2704);
-  obx_str t37 = f829_check_Checker_W(p_c, v_line_2);
+  obx_str t36 = rt_str_concat(t35, sl2706);
+  obx_str t37 = f838_check_Checker_W(p_c, v_line_2);
   obx_str t38 = rt_str_concat(t36, t37);
   obx_str t39 = rt_str_concat(t38, sl2298);
   f744_check_Checker_emit(p_c, t39);
@@ -48524,10 +48942,10 @@ static S87_check_Val f898_check_Checker_bSwap(S73_check_Checker** p_c, int64_t p
   gl68_drop(v_a_4);
   return r41;
 }
-static S87_check_Val f910_check_Checker_arrArg(S73_check_Checker** p_c, int64_t p_e, bool p_m, bool p_slices) {
+static S87_check_Val f919_check_Checker_arrArg(S73_check_Checker** p_c, int64_t p_e, bool p_m, bool p_slices) {
   int64_t t1 = f701_check_Checker_line(p_c, p_e);
   int64_t v_line_2 = t1;
-  int64_t t3 = f906_check_Checker_arg(p_c, p_e, 0LL);
+  int64_t t3 = f915_check_Checker_arg(p_c, p_e, 0LL);
   S87_check_Val t6 = f754_check_Checker_expr(p_c, t3, (p_slices ? (p_m ? -3LL : -2LL) : -1LL));
   S87_check_Val v_v_7 = t6;
   bool b8 = p_slices;
@@ -48551,7 +48969,7 @@ static S87_check_Val f910_check_Checker_arrArg(S73_check_Checker** p_c, int64_t 
     }
     bool c17 = b14;
     if (c17) {
-      S87_check_Val t18 = f805_check_Checker_asSlice(p_c, gl67_dup(v_v_7));
+      S87_check_Val t18 = f809_check_Checker_asSlice(p_c, gl67_dup(v_v_7));
       { S87_check_Val nw19 = t18;
         gl68_drop(v_s_12);
         v_s_12 = nw19; }
@@ -48559,8 +48977,8 @@ static S87_check_Val f910_check_Checker_arrArg(S73_check_Checker** p_c, int64_t 
     bool c20 = (v_s_12.f_t < 0LL);
     if (c20) {
       int64_t t21 = v_line_2;
-      obx_str t22 = f907_check_Checker_fname(p_c, p_e);
-      obx_str t23 = rt_str_concat(t22, sl2717);
+      obx_str t22 = f916_check_Checker_fname(p_c, p_e);
+      obx_str t23 = rt_str_concat(t22, sl2719);
       obx_str t24 = f767_check_Checker_tstr(p_c, v_v_7.f_t);
       obx_str t25 = rt_str_concat(t23, t24);
       f702_check_Checker_err(p_c, t21, t25);
@@ -48580,20 +48998,20 @@ static S87_check_Val f910_check_Checker_arrArg(S73_check_Checker** p_c, int64_t 
     bool c30 = b28;
     if (c30) {
       int64_t t31 = v_line_2;
-      obx_str t32 = f907_check_Checker_fname(p_c, p_e);
-      obx_str t33 = rt_str_concat(t32, sl2557);
+      obx_str t32 = f916_check_Checker_fname(p_c, p_e);
+      obx_str t33 = rt_str_concat(t32, sl2559);
       obx_str t34 = f767_check_Checker_tstr(p_c, v_v_7.f_t);
       obx_str t35 = rt_str_concat(t33, t34);
       f702_check_Checker_err(p_c, t31, t35);
     }
-    S87_check_Val t36 = f833_check_Checker_borrow(p_c, gl67_dup(v_v_7), p_m, v_line_2, false);
+    S87_check_Val t36 = f842_check_Checker_borrow(p_c, gl67_dup(v_v_7), p_m, v_line_2, false);
     { S87_check_Val nw37 = t36;
       gl68_drop(v_v_7);
       v_v_7 = nw37; }
     S87_check_Val t38 = gl67_dup(v_v_7);
-    int64_t t39 = f840_check_hm(p_m);
-    int64_t t40 = f825_check_Checker_newCid(p_c);
-    f826_check_Checker_hold(p_c, t38, t39, t40, v_line_2);
+    int64_t t39 = f849_check_hm(p_m);
+    int64_t t40 = f834_check_Checker_newCid(p_c);
+    f835_check_Checker_hold(p_c, t38, t39, t40, v_line_2);
     S87_check_Val r41 = gl67_dup(v_v_7);
     gl68_drop(v_v_7);
     return r41;
@@ -48611,11 +49029,11 @@ static S87_check_Val f910_check_Checker_arrArg(S73_check_Checker** p_c, int64_t 
   bool c46 = b43;
   if (c46) {
     int64_t t47 = v_line_2;
-    obx_str t48 = f907_check_Checker_fname(p_c, p_e);
+    obx_str t48 = f916_check_Checker_fname(p_c, p_e);
     obx_str t49 = rt_str_concat(t48, sl2193);
     obx_str t51 = (p_m ? sl2059 : sl38);
     obx_str t52 = rt_str_concat(t49, t51);
-    obx_str t53 = rt_str_concat(t52, sl2718);
+    obx_str t53 = rt_str_concat(t52, sl2720);
     obx_str t54 = f767_check_Checker_tstr(p_c, v_v_7.f_t);
     obx_str t55 = rt_str_concat(t53, t54);
     f702_check_Checker_err(p_c, t47, t55);
@@ -48625,8 +49043,8 @@ static S87_check_Val f910_check_Checker_arrArg(S73_check_Checker** p_c, int64_t 
   bool c58 = (t57 != 1LL);
   if (c58) {
     int64_t t59 = v_line_2;
-    obx_str t60 = f907_check_Checker_fname(p_c, p_e);
-    obx_str t61 = rt_str_concat(t60, sl2719);
+    obx_str t60 = f916_check_Checker_fname(p_c, p_e);
+    obx_str t61 = rt_str_concat(t60, sl2721);
     int64_t t62 = f498_sema_Program_ta((&(*p_c)->f_pg), v_v_7.f_t);
     obx_str t63 = f767_check_Checker_tstr(p_c, t62);
     obx_str t64 = rt_str_concat(t61, t63);
@@ -48639,20 +49057,20 @@ static S87_check_Val f910_check_Checker_arrArg(S73_check_Checker** p_c, int64_t 
   int64_t t69 = f717_check_Checker_count(p_c, t68.f_b);
   int64_t ifx70;
   if ((t69 > 1LL)) {
-    int64_t t71 = f906_check_Checker_arg(p_c, p_e, 0LL);
+    int64_t t71 = f915_check_Checker_arg(p_c, p_e, 0LL);
     ifx70 = t71;
   } else {
     ifx70 = -1LL;
   }
-  S87_check_Val t72 = f909_check_Checker_builtinBorrow(p_c, t65, t66, t67, ifx70);
+  S87_check_Val t72 = f918_check_Checker_builtinBorrow(p_c, t65, t66, t67, ifx70);
   S87_check_Val r73 = t72;
   gl49_drop(t68);
   gl68_drop(v_v_7);
   return r73;
 }
-static S87_check_Val f897_check_Checker_bPop(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 1LL);
-  S87_check_Val t1 = f910_check_Checker_arrArg(p_c, p_e, true, false);
+static S87_check_Val f906_check_Checker_bPop(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 1LL);
+  S87_check_Val t1 = f919_check_Checker_arrArg(p_c, p_e, true, false);
   S87_check_Val v_a_2 = t1;
   int64_t t3 = f498_sema_Program_ta((&(*p_c)->f_pg), v_a_2.f_t);
   int64_t t4 = f498_sema_Program_ta((&(*p_c)->f_pg), t3);
@@ -48662,13 +49080,13 @@ static S87_check_Val f897_check_Checker_bPop(S73_check_Checker** p_c, int64_t p_
   obx_str t8 = f732_check_Checker_T(p_c, v_et_5);
   obx_str v_ct2_9 = t8;
   obx_str t10 = rt_str_concat(sl2294, v_ct_7);
-  obx_str t11 = rt_str_concat(t10, sl2720);
+  obx_str t11 = rt_str_concat(t10, sl2722);
   obx_str t12 = rt_str_concat(t11, v_a_2.f_c);
   obx_str t13 = rt_str_concat(t12, sl2343);
   obx_str t14 = rt_str_concat(t13, v_ct2_9);
-  obx_str t15 = rt_str_concat(t14, sl2704);
+  obx_str t15 = rt_str_concat(t14, sl2706);
   int64_t t16 = f701_check_Checker_line(p_c, p_e);
-  obx_str t17 = f829_check_Checker_W(p_c, t16);
+  obx_str t17 = f838_check_Checker_W(p_c, t16);
   obx_str t18 = rt_str_concat(t15, t17);
   obx_str t19 = rt_str_concat(t18, sl31);
   S87_check_Val t20 = f770_check_Checker_holdtmp(p_c, t19, v_et_5);
@@ -48686,37 +49104,37 @@ static S87_check_Val f897_check_Checker_bPop(S73_check_Checker** p_c, int64_t p_
   gl68_drop(v_a_2);
   return r21;
 }
-static S87_check_Val f896_check_Checker_bAppend(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 2LL);
+static S87_check_Val f905_check_Checker_bAppend(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 2LL);
   int64_t t1 = f701_check_Checker_line(p_c, p_e);
   int64_t v_line_2 = t1;
-  S87_check_Val t3 = f910_check_Checker_arrArg(p_c, p_e, true, false);
+  S87_check_Val t3 = f919_check_Checker_arrArg(p_c, p_e, true, false);
   S87_check_Val v_a_4 = t3;
   int64_t t5 = f498_sema_Program_ta((&(*p_c)->f_pg), v_a_4.f_t);
   int64_t t6 = f498_sema_Program_ta((&(*p_c)->f_pg), t5);
   int64_t v_et_7 = t6;
   S87_check_Val t8 = gl67_dup(v_a_4);
-  int64_t t9 = f906_check_Checker_arg(p_c, p_e, 1LL);
-  S87_check_Val t10 = f806_check_Checker_before1(p_c, t8, t9);
+  int64_t t9 = f915_check_Checker_arg(p_c, p_e, 1LL);
+  S87_check_Val t10 = f810_check_Checker_before1(p_c, t8, t9);
   { S87_check_Val nw11 = t10;
     gl68_drop(v_a_4);
     v_a_4 = nw11; }
-  int64_t t12 = f906_check_Checker_arg(p_c, p_e, 1LL);
+  int64_t t12 = f915_check_Checker_arg(p_c, p_e, 1LL);
   S87_check_Val t13 = f754_check_Checker_expr(p_c, t12, v_et_7);
   S87_check_Val v_v_14 = t13;
-  S87_check_Val t15 = f803_check_Checker_coerce(p_c, gl67_dup(v_v_14), v_et_7, v_line_2, sl2721);
+  S87_check_Val t15 = f807_check_Checker_coerce(p_c, gl67_dup(v_v_14), v_et_7, v_line_2, sl2723);
   { S87_check_Val nw16 = t15;
     gl68_drop(v_v_14);
     v_v_14 = nw16; }
   bool c17 = v_a_4.f_late;
   if (c17) {
     S87_check_Val t18 = gl67_dup(v_a_4);
-    int64_t t19 = f825_check_Checker_newCid(p_c);
-    f842_check_Checker_take(p_c, t18, 1LL, t19, v_line_2);
+    int64_t t19 = f834_check_Checker_newCid(p_c);
+    f851_check_Checker_take(p_c, t18, 1LL, t19, v_line_2);
   }
   obx_str t20 = f772_check_Checker_consume(p_c, gl67_dup(v_v_14), v_line_2);
   obx_str v_cc_21 = t20;
-  obx_str t22 = f771_check_Checker_fresh(p_c, sl2509);
+  obx_str t22 = f771_check_Checker_fresh(p_c, sl2510);
   obx_str v_n_23 = t22;
   obx_str t24 = f732_check_Checker_T(p_c, v_et_7);
   obx_str v_ct_25 = t24;
@@ -48735,11 +49153,11 @@ static S87_check_Val f896_check_Checker_bAppend(S73_check_Checker** p_c, int64_t
   obx_str t33 = f732_check_Checker_T(p_c, v_et_7);
   obx_str v_ct3_34 = t33;
   obx_str t35 = rt_str_concat(sl2294, v_ct2_32);
-  obx_str t36 = rt_str_concat(t35, sl2722);
+  obx_str t36 = rt_str_concat(t35, sl2724);
   obx_str t37 = rt_str_concat(t36, v_a_4.f_c);
   obx_str t38 = rt_str_concat(t37, sl2343);
   obx_str t39 = rt_str_concat(t38, v_ct3_34);
-  obx_str t40 = rt_str_concat(t39, sl2723);
+  obx_str t40 = rt_str_concat(t39, sl2725);
   obx_str t41 = rt_str_concat(t40, v_n_23);
   obx_str t42 = rt_str_concat(t41, sl36);
   f744_check_Checker_emit(p_c, t42);
@@ -48761,44 +49179,44 @@ static S87_check_Val f896_check_Checker_bAppend(S73_check_Checker** p_c, int64_t
   gl68_drop(v_a_4);
   return r44;
 }
-static S87_check_Val f895_check_Checker_bNullPtr(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 0LL);
-  S87_check_Val t1 = f734_check_rv(sl2724, 10LL);
+static S87_check_Val f904_check_Checker_bNullPtr(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 0LL);
+  S87_check_Val t1 = f734_check_rv(sl2726, 10LL);
   S87_check_Val r2 = t1;
   return r2;
 }
-static S87_check_Val f894_check_Checker_bIsNull(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 1LL);
-  int64_t t1 = f906_check_Checker_arg(p_c, p_e, 0LL);
+static S87_check_Val f903_check_Checker_bIsNull(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 1LL);
+  int64_t t1 = f915_check_Checker_arg(p_c, p_e, 0LL);
   S87_check_Val t2 = f754_check_Checker_expr(p_c, t1, -1LL);
   S87_check_Val t3 = f765_check_Checker_rd(p_c, t2);
   S87_check_Val v_v_4 = t3;
   bool c5 = (v_v_4.f_t != 10LL);
   if (c5) {
     int64_t t6 = f701_check_Checker_line(p_c, p_e);
-    obx_str t7 = sl2725;
+    obx_str t7 = sl2727;
     obx_str t8 = f767_check_Checker_tstr(p_c, v_v_4.f_t);
     obx_str t9 = rt_str_concat(t7, t8);
     f702_check_Checker_err(p_c, t6, t9);
   }
   obx_str t10 = rt_str_concat(sl30, v_v_4.f_c);
-  obx_str t11 = rt_str_concat(t10, sl2726);
+  obx_str t11 = rt_str_concat(t10, sl2728);
   S87_check_Val t12 = f734_check_rv(t11, 8LL);
   S87_check_Val r13 = t12;
   rt_str_drop(t10);
   gl68_drop(v_v_4);
   return r13;
 }
-static S87_check_Val f893_check_Checker_bLen(S73_check_Checker** p_c, int64_t p_e) {
-  f905_check_Checker_nargs(p_c, p_e, 1LL);
-  int64_t t1 = f906_check_Checker_arg(p_c, p_e, 0LL);
+static S87_check_Val f902_check_Checker_bLen(S73_check_Checker** p_c, int64_t p_e) {
+  f914_check_Checker_nargs(p_c, p_e, 1LL);
+  int64_t t1 = f915_check_Checker_arg(p_c, p_e, 0LL);
   S87_check_Val t2 = f754_check_Checker_expr(p_c, t1, -1LL);
   S87_check_Val t3 = f768_check_Checker_deref(p_c, t2);
   S87_check_Val v_v_4 = t3;
   bool c5 = (v_v_4.f_t == 9LL);
   if (c5) {
-    obx_str t6 = rt_str_concat(sl2727, v_v_4.f_c);
-    obx_str t7 = rt_str_concat(t6, sl2728);
+    obx_str t6 = rt_str_concat(sl2729, v_v_4.f_c);
+    obx_str t7 = rt_str_concat(t6, sl2730);
     S87_check_Val t8 = f734_check_rv(t7, 0LL);
     S87_check_Val r9 = t8;
     rt_str_drop(t6);
@@ -48814,26 +49232,26 @@ static S87_check_Val f893_check_Checker_bLen(S73_check_Checker** p_c, int64_t p_
   bool c13 = b12;
   if (c13) {
     int64_t t14 = f701_check_Checker_line(p_c, p_e);
-    obx_str t15 = sl2729;
+    obx_str t15 = sl2731;
     obx_str t16 = f767_check_Checker_tstr(p_c, v_v_4.f_t);
     obx_str t17 = rt_str_concat(t15, t16);
     f702_check_Checker_err(p_c, t14, t17);
   }
   obx_str t18 = rt_str_concat(sl30, v_v_4.f_c);
-  obx_str t19 = rt_str_concat(t18, sl2730);
+  obx_str t19 = rt_str_concat(t18, sl2732);
   S87_check_Val t20 = f734_check_rv(t19, 0LL);
   S87_check_Val r21 = t20;
   rt_str_drop(t18);
   gl68_drop(v_v_4);
   return r21;
 }
-static bool f876_check_Checker_isBuiltinHere(S73_check_Checker** p_c, obx_str p_name) {
-  bool t1 = f911_check_isBuiltin(rt_str_dup(p_name));
+static bool f885_check_Checker_isBuiltinHere(S73_check_Checker** p_c, obx_str p_name) {
+  bool t1 = f920_check_isBuiltin(rt_str_dup(p_name));
   bool b2 = t1;
   if (b2) {
-    bool b3 = (!rt_str_eq(p_name, sl2688));
+    bool b3 = (!rt_str_eq(p_name, sl2690));
     if (b3) {
-      b3 = (!rt_str_eq(p_name, sl2689));
+      b3 = (!rt_str_eq(p_name, sl2691));
     }
     bool b4 = b3;
     if (!b4) {
@@ -48846,7 +49264,7 @@ static bool f876_check_Checker_isBuiltinHere(S73_check_Checker** p_c, obx_str p_
   rt_str_drop(p_name);
   return r6;
 }
-static bool f911_check_isBuiltin(obx_str p_name) {
+static bool f920_check_isBuiltin(obx_str p_name) {
   bool b1 = (rt_str_eq(p_name, sl2231));
   if (!b1) {
     b1 = (rt_str_eq(p_name, sl2232));
@@ -48885,17 +49303,17 @@ static bool f911_check_isBuiltin(obx_str p_name) {
   }
   bool b10 = b9;
   if (!b10) {
-    b10 = (rt_str_eq(p_name, sl2688));
+    b10 = (rt_str_eq(p_name, sl2690));
   }
   bool b11 = b10;
   if (!b11) {
-    b11 = (rt_str_eq(p_name, sl2689));
+    b11 = (rt_str_eq(p_name, sl2691));
   }
   bool r12 = b11;
   rt_str_drop(p_name);
   return r12;
 }
-static obx_arr f875_check_Checker_callArgs(S73_check_Checker** p_c, int64_t p_e) {
+static obx_arr f884_check_Checker_callArgs(S73_check_Checker** p_c, int64_t p_e) {
   obx_arr a1 = rt_arr_new(0, sizeof(S83_check_Arg));
   obx_arr v_out_2 = a1;
   S49_syntax_Node t3 = f703_check_Checker_nd(p_c, p_e);
@@ -48913,10 +49331,10 @@ static obx_arr f875_check_Checker_callArgs(S73_check_Checker** p_c, int64_t p_e)
   obx_arr r12 = v_out_2;
   return r12;
 }
-static S87_check_Val f873_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f882_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
-  int64_t t3 = f858_check_Checker_ek(p_c, p_exp);
+  int64_t t3 = f867_check_Checker_ek(p_c, p_exp);
   int64_t ifx4;
   if ((t3 == 1LL)) {
     int64_t t5 = f498_sema_Program_ta((&(*p_c)->f_pg), p_exp);
@@ -48932,7 +49350,7 @@ static S87_check_Val f873_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t
   int64_t end11 = (v_items_10).len;
   for (int64_t v_i_12 = 0LL; v_i_12 < end11; v_i_12++) {
     int64_t ix13 = v_i_12;
-    int64_t v_it_14 = ((int64_t*)(v_items_10).data)[rt_idx(ix13, (v_items_10).len, "check.obx:3379")];
+    int64_t v_it_14 = ((int64_t*)(v_items_10).data)[rt_idx(ix13, (v_items_10).len, "check.obx:3516")];
     S87_check_Val t15 = f754_check_Checker_expr(p_c, v_it_14, v_et_6);
     S87_check_Val v_v_16 = t15;
     int64_t t17 = f497_sema_Program_tk((&(*p_c)->f_pg), v_v_16.f_t);
@@ -48947,30 +49365,30 @@ static S87_check_Val f873_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t
     if (c21) {
       int64_t t22 = v_v_16.f_t;
       int64_t t23 = f701_check_Checker_line(p_c, v_it_14);
-      int64_t t24 = f908_check_Checker_elemType(p_c, t22, t23);
+      int64_t t24 = f917_check_Checker_elemType(p_c, t22, t23);
       v_et_6 = t24;
     }
     bool c25 = (v_v_16.f_t != v_et_6);
     if (c25) {
       int64_t t26 = f701_check_Checker_line(p_c, v_it_14);
-      obx_str t27 = sl2731;
+      obx_str t27 = sl2733;
       obx_str t28 = f767_check_Checker_tstr(p_c, v_v_16.f_t);
       obx_str t29 = rt_str_concat(t27, t28);
-      obx_str t30 = rt_str_concat(t29, sl2479);
+      obx_str t30 = rt_str_concat(t29, sl2480);
       obx_str t31 = f767_check_Checker_tstr(p_c, v_et_6);
       obx_str t32 = rt_str_concat(t30, t31);
       f702_check_Checker_err(p_c, t26, t32);
     }
     obx_arr a33 = rt_arr_new(0, sizeof(int64_t));
     obx_arr v_later_34 = a33;
-    int64_t t35 = rt_add_int(v_i_12, 1LL, "check.obx:3385");
+    int64_t t35 = rt_add_int(v_i_12, 1LL, "check.obx:3522");
     int64_t end36 = (v_items_10).len;
     for (int64_t v_j_37 = t35; v_j_37 < end36; v_j_37++) {
       int64_t ix38 = v_j_37;
-      int64_t ap39 = ((int64_t*)(v_items_10).data)[rt_idx(ix38, (v_items_10).len, "check.obx:3385")];
+      int64_t ap39 = ((int64_t*)(v_items_10).data)[rt_idx(ix38, (v_items_10).len, "check.obx:3522")];
       *(int64_t*)rt_arr_push((&v_later_34), sizeof(int64_t)) = ap39;
     }
-    S87_check_Val t40 = f809_check_Checker_before(p_c, gl67_dup(v_v_16), (&v_later_34));
+    S87_check_Val t40 = f814_check_Checker_before(p_c, gl67_dup(v_v_16), (&v_later_34));
     S87_check_Val ap41 = t40;
     *(S87_check_Val*)rt_arr_push((&v_vals_8), sizeof(S87_check_Val)) = ap41;
     gl9_drop(v_later_34);
@@ -48978,11 +49396,11 @@ static S87_check_Val f873_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t
   }
   bool c42 = (v_et_6 == -1LL);
   if (c42) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2732);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2734);
   }
   bool c43 = (v_et_6 == 11LL);
   if (c43) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2733);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2735);
   }
   obx_arr a44 = rt_arr_new(0, sizeof(obx_str));
   obx_arr v_cs_45 = a44;
@@ -48998,13 +49416,13 @@ static S87_check_Val f873_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t
   obx_str v_an_52 = t51;
   obx_str t53 = f732_check_Checker_T(p_c, v_et_6);
   obx_str v_ct_54 = t53;
-  obx_str t55 = rt_str_concat(sl2702, v_an_52);
-  obx_str t56 = rt_str_concat(t55, sl2734);
+  obx_str t55 = rt_str_concat(sl2704, v_an_52);
+  obx_str t56 = rt_str_concat(t55, sl2736);
   obx_str t57 = rt_int_to_str((v_cs_45).len);
   obx_str t58 = rt_str_concat(t56, t57);
   obx_str t59 = rt_str_concat(t58, sl2343);
   obx_str t60 = rt_str_concat(t59, v_ct_54);
-  obx_str t61 = rt_str_concat(t60, sl2576);
+  obx_str t61 = rt_str_concat(t60, sl2578);
   f744_check_Checker_emit(p_c, t61);
   rt_str_drop(t60);
   rt_str_drop(t59);
@@ -49017,14 +49435,14 @@ static S87_check_Val f873_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t
     obx_str t64 = f732_check_Checker_T(p_c, v_et_6);
     obx_str v_ct2_65 = t64;
     obx_str t66 = rt_str_concat(sl2289, v_ct2_65);
-    obx_str t67 = rt_str_concat(t66, sl2516);
+    obx_str t67 = rt_str_concat(t66, sl2517);
     obx_str t68 = rt_str_concat(t67, v_an_52);
-    obx_str t69 = rt_str_concat(t68, sl2517);
+    obx_str t69 = rt_str_concat(t68, sl2518);
     obx_str t70 = rt_int_to_str(v_i_63);
     obx_str t71 = rt_str_concat(t69, t70);
-    obx_str t72 = rt_str_concat(t71, sl2706);
+    obx_str t72 = rt_str_concat(t71, sl2708);
     int64_t ix73 = v_i_63;
-    obx_str t74 = rt_str_concat(t72, ((obx_str*)(v_cs_45).data)[rt_idx(ix73, (v_cs_45).len, "check.obx:3397")]);
+    obx_str t74 = rt_str_concat(t72, ((obx_str*)(v_cs_45).data)[rt_idx(ix73, (v_cs_45).len, "check.obx:3534")]);
     obx_str t75 = rt_str_concat(t74, sl36);
     f744_check_Checker_emit(p_c, t75);
     rt_str_drop(t74);
@@ -49039,12 +49457,12 @@ static S87_check_Val f873_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t
   }
   int64_t t76 = f525_sema_Program_mkArr((&(*p_c)->f_pg), v_et_6);
   int64_t v_at_77 = t76;
-  int64_t t78 = f797_check_Checker_newTmp(p_c, rt_str_dup(v_an_52), v_at_77);
+  int64_t t78 = f801_check_Checker_newTmp(p_c, rt_str_dup(v_an_52), v_at_77);
   int64_t v_id_79 = t78;
   S87_check_Val t80 = f735_check_val(rt_str_dup(v_an_52), v_at_77, 1LL);
   S87_check_Val v_r_81 = t80;
   v_r_81.f_tmp = v_id_79;
-  int64_t t82 = f798_check_tmpRoot(v_id_79);
+  int64_t t82 = f802_check_tmpRoot(v_id_79);
   v_r_81.f_root = t82;
   v_r_81.f_mutable = true;
   S87_check_Val r83 = gl67_dup(v_r_81);
@@ -49053,11 +49471,11 @@ static S87_check_Val f873_check_Checker_xArrlit(S73_check_Checker** p_c, int64_t
   rt_str_drop(v_an_52);
   gl0_drop(v_cs_45);
   gl9_drop(v_items_10);
-  gl82_drop(v_vals_8);
+  gl83_drop(v_vals_8);
   gl49_drop(v_n_2);
   return r83;
 }
-static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp0) {
+static S87_check_Val f881_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp0) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   int64_t v_exp_3 = p_exp0;
@@ -49069,16 +49487,16 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
     if (c7) {
       int64_t t8 = v_n_2.f_line;
       obx_str t9 = f767_check_Checker_tstr(p_c, v_st_5.f_t);
-      obx_str t10 = rt_str_concat(t9, sl2735);
+      obx_str t10 = rt_str_concat(t9, sl2737);
       f702_check_Checker_err(p_c, t8, t10);
     }
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2736);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2738);
   }
   bool c11 = (v_st_5.f_dk == 4LL);
   if (c11) {
     obx_arr a12 = rt_arr_new(0, sizeof(S83_check_Arg));
     obx_arr v_none_13 = a12;
-    S87_check_Val t14 = f883_check_Checker_constructVariant(p_c, v_st_5, (&v_none_13), v_n_2.f_line, v_exp_3, v_n_2.f_b);
+    S87_check_Val t14 = f892_check_Checker_constructVariant(p_c, v_st_5, (&v_none_13), v_n_2.f_line, v_exp_3, v_n_2.f_b);
     S87_check_Val r15 = t14;
     gl62_drop(v_none_13);
     gl49_drop(v_n_2);
@@ -49087,14 +49505,14 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
   bool c16 = (v_st_5.f_dk != 0LL);
   if (c16) {
     int64_t t17 = v_n_2.f_line;
-    obx_str t18 = f884_check_Checker_declName(p_c, v_st_5);
-    obx_str t19 = rt_str_concat(t18, sl2737);
+    obx_str t18 = f893_check_Checker_declName(p_c, v_st_5);
+    obx_str t19 = rt_str_concat(t18, sl2739);
     f702_check_Checker_err(p_c, t17, t19);
   }
   int64_t v_d_20 = v_st_5.f_di;
   bool v_hasTargs_21 = (v_st_5.f_n > 2LL);
   int64_t ix22 = v_d_20;
-  bool c23 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix22, ((*p_c)->f_pg->f_types).len, "check.obx:3307")].f_form == 3LL);
+  bool c23 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix22, ((*p_c)->f_pg->f_types).len, "check.obx:3444")].f_form == 3LL);
   if (c23) {
     int64_t t24 = f723_check_Checker_staticType(p_c, v_st_5, v_n_2.f_line);
     int64_t v_t_25 = t24;
@@ -49102,7 +49520,7 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
     bool c27 = (t26 != 6LL);
     if (c27) {
       int64_t ix28 = v_d_20;
-      obx_str t29 = rt_str_concat(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix28, ((*p_c)->f_pg->f_types).len, "check.obx:3309")].f_name, sl2737);
+      obx_str t29 = rt_str_concat(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix28, ((*p_c)->f_pg->f_types).len, "check.obx:3446")].f_name, sl2739);
       f702_check_Checker_err(p_c, v_n_2.f_line, t29);
     }
     int64_t t30 = f498_sema_Program_ta((&(*p_c)->f_pg), v_t_25);
@@ -49124,41 +49542,41 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
     }
   }
   int64_t ix36 = v_d_20;
-  obx_str v_dname_37 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:3314")].f_name);
+  obx_str v_dname_37 = rt_str_dup(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:3451")].f_name);
   int64_t ix38 = v_d_20;
-  bool c39 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix38, ((*p_c)->f_pg->f_types).len, "check.obx:3315")].f_form != 0LL);
+  bool c39 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix38, ((*p_c)->f_pg->f_types).len, "check.obx:3452")].f_form != 0LL);
   if (c39) {
     int64_t t40 = v_n_2.f_line;
-    obx_str t41 = rt_str_concat(v_dname_37, sl2737);
+    obx_str t41 = rt_str_concat(v_dname_37, sl2739);
     int64_t ix42 = v_d_20;
-    obx_str t44 = ((((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix42, ((*p_c)->f_pg->f_types).len, "check.obx:3316")].f_form == 1LL) ? sl2738 : sl183);
+    obx_str t44 = ((((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix42, ((*p_c)->f_pg->f_types).len, "check.obx:3453")].f_form == 1LL) ? sl2740 : sl183);
     obx_str t45 = rt_str_concat(t41, t44);
     f702_check_Checker_err(p_c, t40, t45);
   }
   int64_t ix46 = v_d_20;
-  bool c47 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix46, ((*p_c)->f_pg->f_types).len, "check.obx:3318")].f_mod != (*p_c)->f_cx->f_mod);
+  bool c47 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix46, ((*p_c)->f_pg->f_types).len, "check.obx:3455")].f_mod != (*p_c)->f_cx->f_mod);
   if (c47) {
     int64_t ix48 = v_d_20;
-    obx_slice ap49 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:3319")].f_fields);
+    obx_slice ap49 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix48, ((*p_c)->f_pg->f_types).len, "check.obx:3456")].f_fields);
     for (int64_t i50 = 0; i50 < ap49.len; i50++) {
       S66_sema_Field v_f_51 = gl45_dup(((S66_sema_Field*)ap49.data)[i50]);
       bool c52 = (!v_f_51.f_isPub);
       if (c52) {
         int64_t t53 = v_n_2.f_line;
-        obx_str t54 = rt_str_concat(sl2739, v_dname_37);
-        obx_str t55 = rt_str_concat(t54, sl2740);
+        obx_str t54 = rt_str_concat(sl2741, v_dname_37);
+        obx_str t55 = rt_str_concat(t54, sl2742);
         obx_str t56 = rt_str_concat(t55, v_f_51.f_name);
-        obx_str t57 = rt_str_concat(t56, sl2741);
+        obx_str t57 = rt_str_concat(t56, sl2743);
         int64_t ix58 = v_d_20;
-        int64_t ix59 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix58, ((*p_c)->f_pg->f_types).len, "check.obx:3322")].f_mod;
-        obx_str t60 = rt_str_concat(t57, ((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix59, ((*p_c)->f_pg->f_mods).len, "check.obx:3322")].f_name);
+        int64_t ix59 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix58, ((*p_c)->f_pg->f_types).len, "check.obx:3459")].f_mod;
+        obx_str t60 = rt_str_concat(t57, ((S55_sema_Module*)((*p_c)->f_pg->f_mods).data)[rt_idx(ix59, ((*p_c)->f_pg->f_mods).len, "check.obx:3459")].f_name);
         f702_check_Checker_err(p_c, t53, t60);
       }
       gl46_drop(v_f_51);
     }
   }
   int64_t ix61 = v_d_20;
-  obx_arr t62 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix61, ((*p_c)->f_pg->f_types).len, "check.obx:3326")].f_tparams));
+  obx_arr t62 = f696_check_copyInts((&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix61, ((*p_c)->f_pg->f_types).len, "check.obx:3463")].f_tparams));
   obx_arr v_tps_63 = t62;
   obx_arr a64 = rt_arr_new(0, sizeof(int64_t));
   obx_arr v_bind_65 = a64;
@@ -49181,10 +49599,10 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
     int64_t end78 = (v_tps_63).len;
     for (int64_t v_i_79 = 0LL; v_i_79 < end78; v_i_79++) {
       int64_t ix80 = v_i_79;
-      int64_t ap81 = ((int64_t*)(v_tps_63).data)[rt_idx(ix80, (v_tps_63).len, "check.obx:3334")];
+      int64_t ap81 = ((int64_t*)(v_tps_63).data)[rt_idx(ix80, (v_tps_63).len, "check.obx:3471")];
       *(int64_t*)rt_arr_push((&v_bind_65), sizeof(int64_t)) = ap81;
       int64_t ix82 = v_i_79;
-      int64_t t83 = f728_check_Checker_resolve(p_c, ((int64_t*)(v_ta_68).data)[rt_idx(ix82, (v_ta_68).len, "check.obx:3335")], 5LL, v_n_2.f_line);
+      int64_t t83 = f728_check_Checker_resolve(p_c, ((int64_t*)(v_ta_68).data)[rt_idx(ix82, (v_ta_68).len, "check.obx:3472")], 5LL, v_n_2.f_line);
       int64_t ap84 = t83;
       *(int64_t*)rt_arr_push((&v_bind_65), sizeof(int64_t)) = ap84;
     }
@@ -49209,7 +49627,7 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
         bool c94 = (t92 < t93);
         if (c94) {
           int64_t ix95 = v_i_91;
-          int64_t ap96 = ((int64_t*)(v_tps_63).data)[rt_idx(ix95, (v_tps_63).len, "check.obx:3340")];
+          int64_t ap96 = ((int64_t*)(v_tps_63).data)[rt_idx(ix95, (v_tps_63).len, "check.obx:3477")];
           *(int64_t*)rt_arr_push((&v_bind_65), sizeof(int64_t)) = ap96;
           int64_t t97 = f503_sema_Program_ti((&(*p_c)->f_pg), v_exp_3, v_i_91);
           int64_t ap98 = t97;
@@ -49223,7 +49641,7 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
   obx_arr a101 = rt_arr_new(0, sizeof(int64_t));
   obx_arr v_fts_102 = a101;
   int64_t ix103 = v_d_20;
-  obx_slice ap104 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix103, ((*p_c)->f_pg->f_types).len, "check.obx:3347")].f_fields);
+  obx_slice ap104 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix103, ((*p_c)->f_pg->f_types).len, "check.obx:3484")].f_fields);
   for (int64_t i105 = 0; i105 < ap104.len; i105++) {
     S66_sema_Field v_f_106 = gl45_dup(((S66_sema_Field*)ap104.data)[i105]);
     obx_str ap107 = rt_str_dup(v_f_106.f_name);
@@ -49245,8 +49663,8 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
   }
   obx_str t118 = rt_str_dup(v_dname_37);
   int64_t t119 = f516_sema_Program_mkInst((&(*p_c)->f_pg), v_d_20, (&v_rargs_112));
-  S94_check_Sig* t120 = f850_check_newSig(t118, 2LL, v_fts_102, t119);
-  S94_check_Sig* v_sig_121 = t120;
+  S95_check_Sig* t120 = f859_check_newSig(t118, 2LL, v_fts_102, t119);
+  S95_check_Sig* v_sig_121 = t120;
   { obx_arr nw122 = v_tps_63;
     gl9_drop(v_sig_121->f_tps);
     v_sig_121->f_tps = nw122; }
@@ -49254,8 +49672,8 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
     gl9_drop(v_sig_121->f_bind);
     v_sig_121->f_bind = nw123; }
   v_sig_121->f_variant = -1LL;
-  S95_check_CallOpts* t124 = f834_check_noOpts();
-  S95_check_CallOpts* v_o_125 = t124;
+  S96_check_CallOpts* t124 = f843_check_noOpts();
+  S96_check_CallOpts* v_o_125 = t124;
   { obx_arr nw126 = v_names_100;
     gl0_drop(v_o_125->f_fnames);
     v_o_125->f_fnames = nw126; }
@@ -49264,24 +49682,24 @@ static S87_check_Val f872_check_Checker_xLit(S73_check_Checker** p_c, int64_t p_
     gl9_drop(v_o_125->f_order);
     v_o_125->f_order = nw128; }
   S87_check_Val t129 = f733_check_voidVal(false);
-  S87_check_Val t130 = f835_check_Checker_call(p_c, (&v_sig_121), false, t129, (&v_args_110), v_n_2.f_line, v_exp_3, (&v_o_125));
+  S87_check_Val t130 = f844_check_Checker_call(p_c, (&v_sig_121), false, t129, (&v_args_110), v_n_2.f_line, v_exp_3, (&v_o_125));
   S87_check_Val r131 = t130;
-  gl83_drop(v_o_125);
-  gl84_drop(v_sig_121);
+  gl84_drop(v_o_125);
+  gl85_drop(v_sig_121);
   gl9_drop(v_rargs_112);
   gl62_drop(v_args_110);
   rt_str_drop(v_dname_37);
   gl49_drop(v_n_2);
   return r131;
 }
-static S87_check_Val f871_check_Checker_xExit(S73_check_Checker** p_c, int64_t p_e) {
+static S87_check_Val f880_check_Checker_xExit(S73_check_Checker** p_c, int64_t p_e) {
   int64_t t1 = f700_check_Checker_kind(p_c, p_e);
   int64_t v_k_2 = t1;
-  bool t3 = f800_check_Checker_flag(p_c, p_e, 2048LL);
+  bool t3 = f804_check_Checker_flag(p_c, p_e, 2048LL);
   bool c4 = (!t3);
   if (c4) {
     int64_t t5 = f701_check_Checker_line(p_c, p_e);
-    f702_check_Checker_err(p_c, t5, sl2742);
+    f702_check_Checker_err(p_c, t5, sl2744);
   }
   bool b6 = (v_k_2 != 26LL);
   if (b6) {
@@ -49289,15 +49707,15 @@ static S87_check_Val f871_check_Checker_xExit(S73_check_Checker** p_c, int64_t p
   }
   bool b7 = b6;
   if (b7) {
-    int64_t ix8 = rt_sub_int(((*p_c)->f_cx->f_wconds).len, 1LL, "check.obx:1572");
-    int64_t t9 = ((int64_t*)((*p_c)->f_cx->f_wconds).data)[rt_idx(ix8, ((*p_c)->f_cx->f_wconds).len, "check.obx:1572")];
+    int64_t ix8 = rt_sub_int(((*p_c)->f_cx->f_wconds).len, 1LL, "check.obx:1685");
+    int64_t t9 = ((int64_t*)((*p_c)->f_cx->f_wconds).data)[rt_idx(ix8, ((*p_c)->f_cx->f_wconds).len, "check.obx:1685")];
     b7 = (t9 == ((*p_c)->f_cx->f_loops).len);
   }
   bool c10 = b7;
   if (c10) {
     int64_t t11 = f701_check_Checker_line(p_c, p_e);
     obx_str t13 = ((v_k_2 == 27LL) ? sl52 : sl55);
-    obx_str t14 = rt_str_concat(t13, sl2743);
+    obx_str t14 = rt_str_concat(t13, sl2745);
     f702_check_Checker_err(p_c, t11, t14);
   }
   obx_arr a15 = rt_arr_new(0, sizeof(obx_str));
@@ -49322,7 +49740,7 @@ static S87_check_Val f871_check_Checker_xExit(S73_check_Checker** p_c, int64_t p
   S87_check_Val r22 = t21;
   return r22;
 }
-static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f879_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   S87_check_Val t3 = f754_check_Checker_expr(p_c, v_n_2.f_a, -1LL);
@@ -49331,26 +49749,26 @@ static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_
   int64_t t6 = f497_sema_Program_tk((&(*p_c)->f_pg), v_t_5);
   bool c7 = (t6 == 2LL);
   if (c7) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2744);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2746);
   }
-  S100_check_OkErr t8 = f912_check_Checker_okerr(p_c, v_t_5);
-  S100_check_OkErr v_a_9 = t8;
+  S101_check_OkErr t8 = f921_check_Checker_okerr(p_c, v_t_5);
+  S101_check_OkErr v_a_9 = t8;
   bool c10 = (v_a_9.f_ok < 0LL);
   if (c10) {
     int64_t t11 = v_n_2.f_line;
-    obx_str t12 = sl2745;
+    obx_str t12 = sl2747;
     obx_str t13 = f767_check_Checker_tstr(p_c, v_t_5);
     obx_str t14 = rt_str_concat(t12, t13);
     f702_check_Checker_err(p_c, t11, t14);
   }
   int64_t v_ret_15 = (*p_c)->f_cx->f_ret;
-  S100_check_OkErr t16 = f912_check_Checker_okerr(p_c, v_ret_15);
-  S100_check_OkErr v_r_17 = t16;
+  S101_check_OkErr t16 = f921_check_Checker_okerr(p_c, v_ret_15);
+  S101_check_OkErr v_r_17 = t16;
   bool c18 = (v_r_17.f_ok < 0LL);
   if (c18) {
     int64_t t19 = v_n_2.f_line;
-    obx_str t20 = rt_str_concat(sl2746, (*p_c)->f_cx->f_label);
-    obx_str t21 = rt_str_concat(t20, sl2747);
+    obx_str t20 = rt_str_concat(sl2748, (*p_c)->f_cx->f_label);
+    obx_str t21 = rt_str_concat(t20, sl2749);
     obx_str t22 = f767_check_Checker_tstr(p_c, v_ret_15);
     obx_str t23 = rt_str_concat(t21, t22);
     f702_check_Checker_err(p_c, t19, t23);
@@ -49358,31 +49776,31 @@ static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_
   bool c24 = (v_a_9.f_erT != v_r_17.f_erT);
   if (c24) {
     int64_t t25 = v_n_2.f_line;
-    obx_str t26 = sl2748;
+    obx_str t26 = sl2750;
     obx_str t27 = f767_check_Checker_tstr(p_c, v_a_9.f_erT);
     obx_str t28 = rt_str_concat(t26, t27);
-    obx_str t29 = rt_str_concat(t28, sl2749);
+    obx_str t29 = rt_str_concat(t28, sl2751);
     obx_str t30 = f767_check_Checker_tstr(p_c, v_r_17.f_erT);
     obx_str t31 = rt_str_concat(t29, t30);
-    obx_str t32 = rt_str_concat(t31, sl2446);
+    obx_str t32 = rt_str_concat(t31, sl2444);
     obx_str t33 = rt_str_concat(t32, (*p_c)->f_cx->f_label);
     f702_check_Checker_err(p_c, t25, t33);
   }
   int64_t t34 = f498_sema_Program_ta((&(*p_c)->f_pg), v_t_5);
   int64_t v_d_35 = t34;
   int64_t ix36 = v_d_35;
-  bool c37 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:3128")].f_drop >= 0LL);
+  bool c37 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix36, ((*p_c)->f_pg->f_types).len, "check.obx:3265")].f_drop >= 0LL);
   if (c37) {
     int64_t ix38 = v_d_35;
-    obx_str t39 = rt_str_concat(sl2750, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix38, ((*p_c)->f_pg->f_types).len, "check.obx:3128")].f_name);
-    obx_str t40 = rt_str_concat(t39, sl2616);
+    obx_str t39 = rt_str_concat(sl2752, ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix38, ((*p_c)->f_pg->f_types).len, "check.obx:3265")].f_name);
+    obx_str t40 = rt_str_concat(t39, sl2618);
     f702_check_Checker_err(p_c, v_n_2.f_line, t40);
   }
   int64_t ix41 = v_d_35;
-  bool v_value_42 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix41, ((*p_c)->f_pg->f_types).len, "check.obx:3129")].f_value;
+  bool v_value_42 = ((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix41, ((*p_c)->f_pg->f_types).len, "check.obx:3266")].f_value;
   obx_str t44 = (v_value_42 ? sl37 : sl1722);
   obx_str v_sep_45 = t44;
-  obx_str t46 = f771_check_Checker_fresh(p_c, sl2751);
+  obx_str t46 = f771_check_Checker_fresh(p_c, sl2753);
   obx_str v_sn_47 = t46;
   obx_str t48 = f732_check_Checker_T(p_c, v_t_5);
   obx_str v_ct_49 = t48;
@@ -49402,7 +49820,7 @@ static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_
   obx_str t57 = rt_str_concat(t56, v_sep_45);
   obx_str t58 = rt_str_concat(t57, sl2416);
   int64_t ix59 = v_a_9.f_er;
-  obx_str t60 = rt_int_to_str(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix59, ((*p_c)->f_pg->f_variants).len, "check.obx:3134")].f_index);
+  obx_str t60 = rt_int_to_str(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix59, ((*p_c)->f_pg->f_variants).len, "check.obx:3271")].f_index);
   obx_str t61 = rt_str_concat(t58, t60);
   obx_str t62 = rt_str_concat(t61, sl2418);
   f744_check_Checker_emit(p_c, t62);
@@ -49411,7 +49829,7 @@ static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_
   rt_str_drop(t58);
   rt_str_drop(t57);
   rt_str_drop(t56);
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3135");
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3272");
   obx_str t63 = f771_check_Checker_fresh(p_c, sl1962);
   obx_str v_en_64 = t63;
   obx_str t65 = f732_check_Checker_T(p_c, v_a_9.f_erT);
@@ -49421,9 +49839,9 @@ static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_
   obx_str t69 = rt_str_concat(t68, sl2267);
   obx_str t70 = rt_str_concat(t69, v_sn_47);
   obx_str t71 = rt_str_concat(t70, v_sep_45);
-  obx_str t72 = rt_str_concat(t71, sl2752);
+  obx_str t72 = rt_str_concat(t71, sl2754);
   int64_t ix73 = v_a_9.f_er;
-  obx_str t74 = rt_str_concat(t72, ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix73, ((*p_c)->f_pg->f_variants).len, "check.obx:3138")].f_fields).data)[rt_idx(0LL, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix73, ((*p_c)->f_pg->f_variants).len, "check.obx:3138")].f_fields).len, "check.obx:3138")].f_name);
+  obx_str t74 = rt_str_concat(t72, ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix73, ((*p_c)->f_pg->f_variants).len, "check.obx:3275")].f_fields).data)[rt_idx(0LL, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix73, ((*p_c)->f_pg->f_variants).len, "check.obx:3275")].f_fields).len, "check.obx:3275")].f_name);
   obx_str t75 = rt_str_concat(t74, sl36);
   f744_check_Checker_emit(p_c, t75);
   rt_str_drop(t74);
@@ -49442,7 +49860,7 @@ static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_
   }
   obx_arr a79 = rt_arr_new(1, sizeof(obx_str));
   ((obx_str*)a79.data)[0] = rt_str_dup(v_en_64);
-  obx_str t80 = f845_check_Checker_build(p_c, v_ret_15, v_r_17.f_er, (&a79));
+  obx_str t80 = f854_check_Checker_build(p_c, v_ret_15, v_r_17.f_er, (&a79));
   obx_str v_rvc_81 = t80;
   gl0_drop(a79);
   obx_str t82 = f771_check_Checker_fresh(p_c, sl1985);
@@ -49464,18 +49882,18 @@ static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_
   obx_str t92 = rt_str_concat(t91, sl36);
   f744_check_Checker_emit(p_c, t92);
   rt_str_drop(t91);
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3146");
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3283");
   f744_check_Checker_emit(p_c, sl29);
   obx_str t93 = rt_str_concat(v_sn_47, v_sep_45);
-  obx_str t94 = rt_str_concat(t93, sl2753);
+  obx_str t94 = rt_str_concat(t93, sl2755);
   int64_t ix95 = v_a_9.f_ok;
-  obx_str t96 = rt_str_concat(t94, ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix95, ((*p_c)->f_pg->f_variants).len, "check.obx:3148")].f_fields).data)[rt_idx(0LL, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix95, ((*p_c)->f_pg->f_variants).len, "check.obx:3148")].f_fields).len, "check.obx:3148")].f_name);
+  obx_str t96 = rt_str_concat(t94, ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix95, ((*p_c)->f_pg->f_variants).len, "check.obx:3285")].f_fields).data)[rt_idx(0LL, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix95, ((*p_c)->f_pg->f_variants).len, "check.obx:3285")].f_fields).len, "check.obx:3285")].f_name);
   obx_str v_oc_97 = t96;
   rt_str_drop(t94);
   rt_str_drop(t93);
   bool c98 = (!v_value_42);
   if (c98) {
-    obx_str t99 = f771_check_Checker_fresh(p_c, sl2754);
+    obx_str t99 = f771_check_Checker_fresh(p_c, sl2756);
     obx_str v_on_100 = t99;
     obx_str t101 = f732_check_Checker_T(p_c, v_a_9.f_okT);
     obx_str v_ot_102 = t101;
@@ -49514,19 +49932,19 @@ static S87_check_Val f870_check_Checker_xTry(S73_check_Checker** p_c, int64_t p_
   gl49_drop(v_n_2);
   return r112;
 }
-static S100_check_OkErr f912_check_Checker_okerr(S73_check_Checker** p_c, int64_t p_t) {
-  S100_check_OkErr t1 = ((S100_check_OkErr){.f_ok = -1LL, .f_okT = -1LL, .f_er = -1LL, .f_erT = -1LL});
-  S100_check_OkErr v_r_2 = t1;
+static S101_check_OkErr f921_check_Checker_okerr(S73_check_Checker** p_c, int64_t p_t) {
+  S101_check_OkErr t1 = ((S101_check_OkErr){.f_ok = -1LL, .f_okT = -1LL, .f_er = -1LL, .f_erT = -1LL});
+  S101_check_OkErr v_r_2 = t1;
   int64_t t3 = f497_sema_Program_tk((&(*p_c)->f_pg), p_t);
   bool b4 = (t3 != 6LL);
   if (!b4) {
     int64_t t5 = f498_sema_Program_ta((&(*p_c)->f_pg), p_t);
     int64_t ix6 = t5;
-    b4 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix6, ((*p_c)->f_pg->f_types).len, "check.obx:3094")].f_form != 1LL);
+    b4 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix6, ((*p_c)->f_pg->f_types).len, "check.obx:3231")].f_form != 1LL);
   }
   bool c7 = b4;
   if (c7) {
-    S100_check_OkErr r8 = v_r_2;
+    S101_check_OkErr r8 = v_r_2;
     return r8;
   }
   int64_t t9 = f498_sema_Program_ta((&(*p_c)->f_pg), p_t);
@@ -49534,16 +49952,16 @@ static S100_check_OkErr f912_check_Checker_okerr(S73_check_Checker** p_c, int64_
   int64_t v_ok_11 = -1LL;
   int64_t v_er_12 = -1LL;
   int64_t ix13 = v_d_10;
-  obx_slice ap14 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix13, ((*p_c)->f_pg->f_types).len, "check.obx:3098")].f_variants);
+  obx_slice ap14 = rt_as_slice(&((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix13, ((*p_c)->f_pg->f_types).len, "check.obx:3235")].f_variants);
   for (int64_t i15 = 0; i15 < ap14.len; i15++) {
     int64_t v_v_16 = ((int64_t*)ap14.data)[i15];
     int64_t ix17 = v_v_16;
-    bool c18 = (rt_str_eq(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix17, ((*p_c)->f_pg->f_variants).len, "check.obx:3099")].f_name, sl2224));
+    bool c18 = (rt_str_eq(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix17, ((*p_c)->f_pg->f_variants).len, "check.obx:3236")].f_name, sl2224));
     if (c18) {
       v_ok_11 = v_v_16;
     }
     int64_t ix19 = v_v_16;
-    bool c20 = (rt_str_eq(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix19, ((*p_c)->f_pg->f_variants).len, "check.obx:3100")].f_name, sl2225));
+    bool c20 = (rt_str_eq(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix19, ((*p_c)->f_pg->f_variants).len, "check.obx:3237")].f_name, sl2225));
     if (c20) {
       v_er_12 = v_v_16;
     }
@@ -49555,36 +49973,36 @@ static S100_check_OkErr f912_check_Checker_okerr(S73_check_Checker** p_c, int64_
   bool b22 = b21;
   if (!b22) {
     int64_t ix23 = v_ok_11;
-    b22 = ((((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix23, ((*p_c)->f_pg->f_variants).len, "check.obx:3102")].f_fields).len != 1LL);
+    b22 = ((((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix23, ((*p_c)->f_pg->f_variants).len, "check.obx:3239")].f_fields).len != 1LL);
   }
   bool b24 = b22;
   if (!b24) {
     int64_t ix25 = v_er_12;
-    b24 = ((((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix25, ((*p_c)->f_pg->f_variants).len, "check.obx:3102")].f_fields).len != 1LL);
+    b24 = ((((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix25, ((*p_c)->f_pg->f_variants).len, "check.obx:3239")].f_fields).len != 1LL);
   }
   bool c26 = b24;
   if (c26) {
-    S100_check_OkErr r27 = v_r_2;
+    S101_check_OkErr r27 = v_r_2;
     return r27;
   }
   obx_arr t28 = f522_sema_Program_declEnv((&(*p_c)->f_pg), p_t);
   obx_arr v_env_29 = t28;
   v_r_2.f_ok = v_ok_11;
   int64_t ix30 = v_ok_11;
-  int64_t t31 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix30, ((*p_c)->f_pg->f_variants).len, "check.obx:3105")].f_fields).data)[rt_idx(0LL, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix30, ((*p_c)->f_pg->f_variants).len, "check.obx:3105")].f_fields).len, "check.obx:3105")].f_ty, (&v_env_29));
+  int64_t t31 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix30, ((*p_c)->f_pg->f_variants).len, "check.obx:3242")].f_fields).data)[rt_idx(0LL, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix30, ((*p_c)->f_pg->f_variants).len, "check.obx:3242")].f_fields).len, "check.obx:3242")].f_ty, (&v_env_29));
   v_r_2.f_okT = t31;
   v_r_2.f_er = v_er_12;
   int64_t ix32 = v_er_12;
-  int64_t t33 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix32, ((*p_c)->f_pg->f_variants).len, "check.obx:3107")].f_fields).data)[rt_idx(0LL, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix32, ((*p_c)->f_pg->f_variants).len, "check.obx:3107")].f_fields).len, "check.obx:3107")].f_ty, (&v_env_29));
+  int64_t t33 = f523_sema_Program_subst((&(*p_c)->f_pg), ((S66_sema_Field*)(((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix32, ((*p_c)->f_pg->f_variants).len, "check.obx:3244")].f_fields).data)[rt_idx(0LL, (((S56_sema_Variant*)((*p_c)->f_pg->f_variants).data)[rt_idx(ix32, ((*p_c)->f_pg->f_variants).len, "check.obx:3244")].f_fields).len, "check.obx:3244")].f_ty, (&v_env_29));
   v_r_2.f_erT = t33;
-  S100_check_OkErr r34 = v_r_2;
+  S101_check_OkErr r34 = v_r_2;
   gl9_drop(v_env_29);
   return r34;
 }
-static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f878_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
-  int64_t t3 = f858_check_Checker_ek(p_c, p_exp);
+  int64_t t3 = f867_check_Checker_ek(p_c, p_exp);
   int64_t v_ek_4 = t3;
   bool b5 = (v_ek_4 == 2LL);
   if (!b5) {
@@ -49596,9 +50014,9 @@ static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t
   }
   bool c7 = b6;
   if (c7) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2429);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2428);
   }
-  obx_str t8 = f771_check_Checker_fresh(p_c, sl2755);
+  obx_str t8 = f771_check_Checker_fresh(p_c, sl2757);
   obx_str v_r_9 = t8;
   int64_t v_at_10 = ((*p_c)->f_cx->f_lines).len;
   obx_arr a11 = rt_arr_new(0, sizeof(int64_t));
@@ -49610,9 +50028,9 @@ static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t
   S88_check_MatchX* ap14 = t13;
   *(S88_check_MatchX**)rt_arr_push((&(*p_c)->f_mxs), sizeof(S88_check_MatchX*)) = ap14;
   f764_check_Checker_sMatch(p_c, p_e, true);
-  int64_t v_top_15 = rt_sub_int(((*p_c)->f_mxs).len, 1LL, "check.obx:3037");
+  int64_t v_top_15 = rt_sub_int(((*p_c)->f_mxs).len, 1LL, "check.obx:3174");
   int64_t ix16 = v_top_15;
-  obx_arr t17 = f696_check_copyInts((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix16, ((*p_c)->f_mxs).len, "check.obx:3038")]->f_lits));
+  obx_arr t17 = f696_check_copyInts((&((S88_check_MatchX**)((*p_c)->f_mxs).data)[rt_idx(ix16, ((*p_c)->f_mxs).len, "check.obx:3175")]->f_lits));
   obx_arr v_lits_18 = t17;
   int64_t v_saved_19 = (*p_c)->f_cx->f_ind;
   obx_arr a20 = rt_arr_new(0, sizeof(obx_arr));
@@ -49624,22 +50042,22 @@ static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t
     int64_t t25 = v_i_24;
     bool c26 = (t25 < (v_lits_18).len);
     if (!c26) break;
-    int64_t ix27 = rt_add_int(v_i_24, 2LL, "check.obx:3044");
-    (*p_c)->f_cx->f_ind = ((int64_t*)(v_lits_18).data)[rt_idx(ix27, (v_lits_18).len, "check.obx:3044")];
+    int64_t ix27 = rt_add_int(v_i_24, 2LL, "check.obx:3181");
+    (*p_c)->f_cx->f_ind = ((int64_t*)(v_lits_18).data)[rt_idx(ix27, (v_lits_18).len, "check.obx:3181")];
     obx_arr a28 = rt_arr_new(0, sizeof(obx_str));
     obx_arr old29 = *(&(*p_c)->f_cx->f_lines);
     *(&(*p_c)->f_cx->f_lines) = a28;
     obx_arr v_keep_30 = old29;
-    int64_t ix31 = rt_add_int(v_i_24, 1LL, "check.obx:3046");
-    f786_check_Checker_mxBody(p_c, ((int64_t*)(v_lits_18).data)[rt_idx(ix31, (v_lits_18).len, "check.obx:3046")]);
+    int64_t ix31 = rt_add_int(v_i_24, 1LL, "check.obx:3183");
+    f789_check_Checker_mxBody(p_c, ((int64_t*)(v_lits_18).data)[rt_idx(ix31, (v_lits_18).len, "check.obx:3183")]);
     obx_arr old32 = *(&(*p_c)->f_cx->f_lines);
     *(&(*p_c)->f_cx->f_lines) = v_keep_30;
     obx_arr ap33 = old32;
     *(obx_arr*)rt_arr_push((&v_done_21), sizeof(obx_arr)) = ap33;
     int64_t ix34 = v_i_24;
-    int64_t ap35 = ((int64_t*)(v_lits_18).data)[rt_idx(ix34, (v_lits_18).len, "check.obx:3048")];
+    int64_t ap35 = ((int64_t*)(v_lits_18).data)[rt_idx(ix34, (v_lits_18).len, "check.obx:3185")];
     *(int64_t*)rt_arr_push((&v_at2_23), sizeof(int64_t)) = ap35;
-    v_i_24 = rt_add_int(v_i_24, 3LL, "check.obx:3049");
+    v_i_24 = rt_add_int(v_i_24, 3LL, "check.obx:3186");
   }
   (*p_c)->f_cx->f_ind = v_saved_19;
   bool c36 = ((v_done_21).len > 0LL);
@@ -49655,28 +50073,28 @@ static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t
       bool b44 = (t43 < (v_at2_23).len);
       if (b44) {
         int64_t ix45 = v_j_40;
-        b44 = (((int64_t*)(v_at2_23).data)[rt_idx(ix45, (v_at2_23).len, "check.obx:3056")] == v_li_42);
+        b44 = (((int64_t*)(v_at2_23).data)[rt_idx(ix45, (v_at2_23).len, "check.obx:3193")] == v_li_42);
       }
       bool c46 = b44;
       if (c46) {
         int64_t ix47 = v_j_40;
-        obx_slice ap48 = rt_as_slice(&((obx_arr*)(v_done_21).data)[rt_idx(ix47, (v_done_21).len, "check.obx:3057")]);
+        obx_slice ap48 = rt_as_slice(&((obx_arr*)(v_done_21).data)[rt_idx(ix47, (v_done_21).len, "check.obx:3194")]);
         for (int64_t i49 = 0; i49 < ap48.len; i49++) {
           obx_str v_x_50 = rt_str_dup(((obx_str*)ap48.data)[i49]);
           obx_str ap51 = rt_str_dup(v_x_50);
           *(obx_str*)rt_arr_push((&(*p_c)->f_cx->f_lines), sizeof(obx_str)) = ap51;
           rt_str_drop(v_x_50);
         }
-        v_j_40 = rt_add_int(v_j_40, 1LL, "check.obx:3058");
+        v_j_40 = rt_add_int(v_j_40, 1LL, "check.obx:3195");
       } else {
         int64_t ix52 = v_li_42;
-        obx_str ap53 = rt_str_dup(((obx_str*)(v_old_39).data)[rt_idx(ix52, (v_old_39).len, "check.obx:3060")]);
+        obx_str ap53 = rt_str_dup(((obx_str*)(v_old_39).data)[rt_idx(ix52, (v_old_39).len, "check.obx:3197")]);
         *(obx_str*)rt_arr_push((&(*p_c)->f_cx->f_lines), sizeof(obx_str)) = ap53;
       }
     }
     gl0_drop(v_old_39);
   }
-  S88_check_MatchX* t54 = *(S88_check_MatchX**)rt_arr_pop((&(*p_c)->f_mxs), sizeof(S88_check_MatchX*), "check.obx:3064");
+  S88_check_MatchX* t54 = *(S88_check_MatchX**)rt_arr_pop((&(*p_c)->f_mxs), sizeof(S88_check_MatchX*), "check.obx:3201");
   S88_check_MatchX* v_mx_55 = t54;
   int64_t v_t_56 = v_mx_55->f_t;
   bool c57 = (*p_c)->f_cx->f_dead;
@@ -49684,7 +50102,7 @@ static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t
     (*p_c)->f_cx->f_dead = false;
     S87_check_Val t58 = f733_check_voidVal(true);
     S87_check_Val r59 = t58;
-    gl95_drop(v_mx_55);
+    gl96_drop(v_mx_55);
     gl9_drop(v_at2_23);
     gl56_drop(v_done_21);
     gl9_drop(v_lits_18);
@@ -49717,7 +50135,7 @@ static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t
       *(obx_str*)rt_arr_push((&v_nl_70), sizeof(obx_str)) = ap75;
     }
     int64_t ix76 = v_li_72;
-    obx_str ap77 = rt_str_dup(((obx_str*)((*p_c)->f_cx->f_lines).data)[rt_idx(ix76, ((*p_c)->f_cx->f_lines).len, "check.obx:3077")]);
+    obx_str ap77 = rt_str_dup(((obx_str*)((*p_c)->f_cx->f_lines).data)[rt_idx(ix76, ((*p_c)->f_cx->f_lines).len, "check.obx:3214")]);
     *(obx_str*)rt_arr_push((&v_nl_70), sizeof(obx_str)) = ap77;
   }
   int64_t t78 = v_at_10;
@@ -49730,11 +50148,11 @@ static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t
   { obx_arr nw82 = v_nl_70;
     gl0_drop((*p_c)->f_cx->f_lines);
     (*p_c)->f_cx->f_lines = nw82; }
-  S87_check_Val t83 = f796_check_Checker_tmpval(p_c, rt_str_dup(v_r_9), v_t_56);
+  S87_check_Val t83 = f800_check_Checker_tmpval(p_c, rt_str_dup(v_r_9), v_t_56);
   S87_check_Val r84 = t83;
   rt_str_drop(v_ct_65);
   gl1_drop(v_b_61);
-  gl95_drop(v_mx_55);
+  gl96_drop(v_mx_55);
   gl9_drop(v_at2_23);
   gl56_drop(v_done_21);
   gl9_drop(v_lits_18);
@@ -49742,7 +50160,7 @@ static S87_check_Val f869_check_Checker_xMatchx(S73_check_Checker** p_c, int64_t
   gl49_drop(v_n_2);
   return r84;
 }
-static S87_check_Val f868_check_Checker_xIfx(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f877_check_Checker_xIfx(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   S87_check_Val t3 = f754_check_Checker_expr(p_c, v_n_2.f_a, 8LL);
@@ -49751,12 +50169,12 @@ static S87_check_Val f868_check_Checker_xIfx(S73_check_Checker** p_c, int64_t p_
   bool c6 = (v_cv_5.f_t != 8LL);
   if (c6) {
     int64_t t7 = f701_check_Checker_line(p_c, v_n_2.f_a);
-    obx_str t8 = sl2525;
+    obx_str t8 = sl2527;
     obx_str t9 = f767_check_Checker_tstr(p_c, v_cv_5.f_t);
     obx_str t10 = rt_str_concat(t8, t9);
     f702_check_Checker_err(p_c, t7, t10);
   }
-  int64_t t11 = f858_check_Checker_ek(p_c, p_exp);
+  int64_t t11 = f867_check_Checker_ek(p_c, p_exp);
   int64_t v_ek_12 = t11;
   bool b13 = (v_ek_12 == 2LL);
   if (!b13) {
@@ -49768,7 +50186,7 @@ static S87_check_Val f868_check_Checker_xIfx(S73_check_Checker** p_c, int64_t p_
   }
   bool c15 = b14;
   if (c15) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2756);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2758);
   }
   obx_arr t16 = f773_check_Checker_snapshot(p_c);
   obx_arr v_snap_17 = t16;
@@ -49777,221 +50195,280 @@ static S87_check_Val f868_check_Checker_xIfx(S73_check_Checker** p_c, int64_t p_
   S87_check_Val t20 = f733_check_voidVal(false);
   obx_arr a21 = rt_arr_new(0, sizeof(obx_str));
   obx_arr a22 = rt_arr_new(0, sizeof(int64_t));
-  S101_check_Branch* o23 = rt_alloc(sizeof(*o23));
+  S102_check_Branch* o23 = rt_alloc(sizeof(*o23));
   o23->f_v = t20;
   o23->f_lines = a21;
   o23->f_snap = a22;
-  S101_check_Branch* t24 = o23;
-  S101_check_Branch* v_a_25 = t24;
+  S102_check_Branch* t24 = o23;
+  S102_check_Branch* v_a_25 = t24;
   S87_check_Val t26 = f733_check_voidVal(false);
   obx_arr a27 = rt_arr_new(0, sizeof(obx_str));
   obx_arr a28 = rt_arr_new(0, sizeof(int64_t));
-  S101_check_Branch* o29 = rt_alloc(sizeof(*o29));
+  S102_check_Branch* o29 = rt_alloc(sizeof(*o29));
   o29->f_v = t26;
   o29->f_lines = a27;
   o29->f_snap = a28;
-  S101_check_Branch* t30 = o29;
-  S101_check_Branch* v_b_31 = t30;
+  S102_check_Branch* t30 = o29;
+  S102_check_Branch* v_b_31 = t30;
   bool b32 = (p_exp == -1LL);
   if (b32) {
     int64_t t33 = f700_check_Checker_kind(p_c, v_n_2.f_b);
-    bool t34 = f785_check_isLitNode(t33);
+    bool t34 = f788_check_isLitNode(t33);
     b32 = t34;
   }
   bool b35 = b32;
   if (b35) {
     int64_t t36 = f700_check_Checker_kind(p_c, v_n_2.f_c);
-    bool t37 = f785_check_isLitNode(t36);
+    bool t37 = f788_check_isLitNode(t36);
     b35 = (!t37);
   }
   bool c38 = b35;
   if (c38) {
-    S101_check_Branch* t39 = f913_check_Checker_ifBranch(p_c, v_n_2.f_c, -1LL, (&v_snap_17), rt_str_dup(v_r_19));
-    { S101_check_Branch* nw40 = t39;
-      gl96_drop(v_b_31);
+    S102_check_Branch* t39 = f922_check_Checker_ifBranch(p_c, v_n_2.f_c, -1LL, (&v_snap_17), rt_str_dup(v_r_19));
+    { S102_check_Branch* nw40 = t39;
+      gl97_drop(v_b_31);
       v_b_31 = nw40; }
-    S101_check_Branch* t42 = f913_check_Checker_ifBranch(p_c, v_n_2.f_b, (v_b_31->f_v.f_noreturn ? -1LL : v_b_31->f_v.f_t), (&v_snap_17), rt_str_dup(v_r_19));
-    { S101_check_Branch* nw43 = t42;
-      gl96_drop(v_a_25);
-      v_a_25 = nw43; }
+    int64_t t41 = v_n_2.f_b;
+    S102_check_Branch* t43 = f922_check_Checker_ifBranch(p_c, t41, (v_b_31->f_v.f_noreturn ? -1LL : v_b_31->f_v.f_t), (&v_snap_17), rt_str_dup(v_r_19));
+    { S102_check_Branch* nw44 = t43;
+      gl97_drop(v_a_25);
+      v_a_25 = nw44; }
   } else {
-    S101_check_Branch* t44 = f913_check_Checker_ifBranch(p_c, v_n_2.f_b, p_exp, (&v_snap_17), rt_str_dup(v_r_19));
-    { S101_check_Branch* nw45 = t44;
-      gl96_drop(v_a_25);
-      v_a_25 = nw45; }
-    S101_check_Branch* t48 = f913_check_Checker_ifBranch(p_c, v_n_2.f_c, ((p_exp != -1LL) ? p_exp : (v_a_25->f_v.f_noreturn ? -1LL : v_a_25->f_v.f_t)), (&v_snap_17), rt_str_dup(v_r_19));
-    { S101_check_Branch* nw49 = t48;
-      gl96_drop(v_b_31);
-      v_b_31 = nw49; }
+    S102_check_Branch* t45 = f922_check_Checker_ifBranch(p_c, v_n_2.f_b, p_exp, (&v_snap_17), rt_str_dup(v_r_19));
+    { S102_check_Branch* nw46 = t45;
+      gl97_drop(v_a_25);
+      v_a_25 = nw46; }
+    int64_t t47 = v_n_2.f_c;
+    S102_check_Branch* t50 = f922_check_Checker_ifBranch(p_c, t47, ((p_exp != -1LL) ? p_exp : (v_a_25->f_v.f_noreturn ? -1LL : v_a_25->f_v.f_t)), (&v_snap_17), rt_str_dup(v_r_19));
+    { S102_check_Branch* nw51 = t50;
+      gl97_drop(v_b_31);
+      v_b_31 = nw51; }
   }
-  int64_t v_t_51 = (v_a_25->f_v.f_noreturn ? v_b_31->f_v.f_t : v_a_25->f_v.f_t);
-  bool b52 = (!v_a_25->f_v.f_noreturn);
-  if (b52) {
-    b52 = (!v_b_31->f_v.f_noreturn);
+  int64_t v_t_53 = (v_a_25->f_v.f_noreturn ? v_b_31->f_v.f_t : v_a_25->f_v.f_t);
+  bool b54 = (!v_a_25->f_v.f_noreturn);
+  if (b54) {
+    b54 = (!v_b_31->f_v.f_noreturn);
   }
-  bool b53 = b52;
-  if (b53) {
-    b53 = (v_a_25->f_v.f_t != v_b_31->f_v.f_t);
+  bool b55 = b54;
+  if (b55) {
+    b55 = (v_a_25->f_v.f_t != v_b_31->f_v.f_t);
   }
-  bool c54 = b53;
-  if (c54) {
-    int64_t t55 = v_n_2.f_line;
-    obx_str t56 = sl2757;
-    obx_str t57 = f767_check_Checker_tstr(p_c, v_a_25->f_v.f_t);
-    obx_str t58 = rt_str_concat(t56, t57);
-    obx_str t59 = rt_str_concat(t58, sl1860);
-    obx_str t60 = f767_check_Checker_tstr(p_c, v_b_31->f_v.f_t);
-    obx_str t61 = rt_str_concat(t59, t60);
-    f702_check_Checker_err(p_c, t55, t61);
+  bool c56 = b55;
+  if (c56) {
+    int64_t t57 = v_n_2.f_line;
+    obx_str t58 = sl2759;
+    obx_str t59 = f767_check_Checker_tstr(p_c, v_a_25->f_v.f_t);
+    obx_str t60 = rt_str_concat(t58, t59);
+    obx_str t61 = rt_str_concat(t60, sl1860);
+    obx_str t62 = f767_check_Checker_tstr(p_c, v_b_31->f_v.f_t);
+    obx_str t63 = rt_str_concat(t61, t62);
+    f702_check_Checker_err(p_c, t57, t63);
   }
-  obx_arr a62 = rt_arr_new(0, sizeof(obx_arr));
-  obx_arr v_snaps_63 = a62;
-  bool c64 = (!v_a_25->f_v.f_noreturn);
-  if (c64) {
-    obx_arr t65 = f696_check_copyInts((&v_a_25->f_snap));
-    obx_arr ap66 = t65;
-    *(obx_arr*)rt_arr_push((&v_snaps_63), sizeof(obx_arr)) = ap66;
+  obx_arr a64 = rt_arr_new(0, sizeof(obx_arr));
+  obx_arr v_snaps_65 = a64;
+  bool c66 = (!v_a_25->f_v.f_noreturn);
+  if (c66) {
+    obx_arr t67 = f696_check_copyInts((&v_a_25->f_snap));
+    obx_arr ap68 = t67;
+    *(obx_arr*)rt_arr_push((&v_snaps_65), sizeof(obx_arr)) = ap68;
   }
-  bool c67 = (!v_b_31->f_v.f_noreturn);
-  if (c67) {
-    obx_arr t68 = f696_check_copyInts((&v_b_31->f_snap));
-    obx_arr ap69 = t68;
-    *(obx_arr*)rt_arr_push((&v_snaps_63), sizeof(obx_arr)) = ap69;
+  bool c69 = (!v_b_31->f_v.f_noreturn);
+  if (c69) {
+    obx_arr t70 = f696_check_copyInts((&v_b_31->f_snap));
+    obx_arr ap71 = t70;
+    *(obx_arr*)rt_arr_push((&v_snaps_65), sizeof(obx_arr)) = ap71;
   }
-  f782_check_Checker_join(p_c, (&v_snaps_63), v_n_2.f_line);
-  bool b70 = ((v_a_25->f_lines).len == 0LL);
-  if (b70) {
-    b70 = ((v_b_31->f_lines).len == 0LL);
+  obx_arr t72 = f784_check_Checker_joinMoves(p_c, (&v_snaps_65), v_n_2.f_line);
+  obx_arr v_drops_73 = t72;
+  int64_t v_k_74 = 0LL;
+  bool c75 = (!v_a_25->f_v.f_noreturn);
+  if (c75) {
+    int64_t ix76 = v_k_74;
+    f923_check_Checker_ifxDrops(p_c, (&v_a_25), (&((obx_arr*)(v_drops_73).data)[rt_idx(ix76, (v_drops_73).len, "check.obx:3076")]), rt_str_dup(v_r_19));
+    v_k_74 = rt_add_int(v_k_74, 1LL, "check.obx:3077");
   }
-  bool c71 = b70;
-  if (c71) {
-    obx_str t72 = rt_str_concat(sl30, v_cv_5.f_c);
-    obx_str t73 = rt_str_concat(t72, sl2758);
-    obx_str t74 = rt_str_concat(t73, v_a_25->f_v.f_c);
-    obx_str t75 = rt_str_concat(t74, sl2759);
-    obx_str t76 = rt_str_concat(t75, v_b_31->f_v.f_c);
-    obx_str t77 = rt_str_concat(t76, sl31);
-    obx_str v_text_78 = t77;
-    rt_str_drop(t76);
-    rt_str_drop(t75);
-    rt_str_drop(t74);
-    rt_str_drop(t73);
-    rt_str_drop(t72);
-    bool t79 = f747_check_Checker_pod(p_c, v_t_51);
-    S87_check_Val ifx80;
-    if (t79) {
-      S87_check_Val t81 = f734_check_rv(rt_str_dup(v_text_78), v_t_51);
-      ifx80 = t81;
+  bool c77 = (!v_b_31->f_v.f_noreturn);
+  if (c77) {
+    int64_t ix78 = v_k_74;
+    f923_check_Checker_ifxDrops(p_c, (&v_b_31), (&((obx_arr*)(v_drops_73).data)[rt_idx(ix78, (v_drops_73).len, "check.obx:3079")]), rt_str_dup(v_r_19));
+  }
+  bool b79 = ((v_a_25->f_lines).len == 0LL);
+  if (b79) {
+    b79 = ((v_b_31->f_lines).len == 0LL);
+  }
+  bool c80 = b79;
+  if (c80) {
+    obx_str t81 = rt_str_concat(sl30, v_cv_5.f_c);
+    obx_str t82 = rt_str_concat(t81, sl2760);
+    obx_str t83 = rt_str_concat(t82, v_a_25->f_v.f_c);
+    obx_str t84 = rt_str_concat(t83, sl2761);
+    obx_str t85 = rt_str_concat(t84, v_b_31->f_v.f_c);
+    obx_str t86 = rt_str_concat(t85, sl31);
+    obx_str v_text_87 = t86;
+    rt_str_drop(t85);
+    rt_str_drop(t84);
+    rt_str_drop(t83);
+    rt_str_drop(t82);
+    rt_str_drop(t81);
+    bool t88 = f747_check_Checker_pod(p_c, v_t_53);
+    S87_check_Val ifx89;
+    if (t88) {
+      S87_check_Val t90 = f734_check_rv(rt_str_dup(v_text_87), v_t_53);
+      ifx89 = t90;
     } else {
-      S87_check_Val t82 = f770_check_Checker_holdtmp(p_c, rt_str_dup(v_text_78), v_t_51);
-      ifx80 = t82;
+      S87_check_Val t91 = f770_check_Checker_holdtmp(p_c, rt_str_dup(v_text_87), v_t_53);
+      ifx89 = t91;
     }
-    S87_check_Val r83 = ifx80;
-    rt_str_drop(v_text_78);
-    gl76_drop(v_snaps_63);
-    gl96_drop(v_b_31);
-    gl96_drop(v_a_25);
+    S87_check_Val r92 = ifx89;
+    rt_str_drop(v_text_87);
+    gl77_drop(v_drops_73);
+    gl77_drop(v_snaps_65);
+    gl97_drop(v_b_31);
+    gl97_drop(v_a_25);
     rt_str_drop(v_r_19);
     gl9_drop(v_snap_17);
     gl68_drop(v_cv_5);
     gl49_drop(v_n_2);
-    return r83;
+    return r92;
   }
-  bool c84 = (!(*p_c)->f_cx->f_dead);
-  if (c84) {
-    obx_str t85 = f732_check_Checker_T(p_c, v_t_51);
-    obx_str v_ct_86 = t85;
-    obx_str t87 = rt_str_concat(v_ct_86, sl1771);
-    obx_str t88 = rt_str_concat(t87, v_r_19);
-    obx_str t89 = rt_str_concat(t88, sl36);
-    f744_check_Checker_emit(p_c, t89);
-    rt_str_drop(t88);
-    rt_str_drop(t87);
-    rt_str_drop(v_ct_86);
+  bool c93 = (!(*p_c)->f_cx->f_dead);
+  if (c93) {
+    obx_str t94 = f732_check_Checker_T(p_c, v_t_53);
+    obx_str v_ct_95 = t94;
+    obx_str t96 = rt_str_concat(v_ct_95, sl1771);
+    obx_str t97 = rt_str_concat(t96, v_r_19);
+    obx_str t98 = rt_str_concat(t97, sl36);
+    f744_check_Checker_emit(p_c, t98);
+    rt_str_drop(t97);
+    rt_str_drop(t96);
+    rt_str_drop(v_ct_95);
   }
-  obx_str t90 = rt_str_concat(sl2255, v_cv_5.f_c);
-  obx_str t91 = rt_str_concat(t90, sl2418);
-  f744_check_Checker_emit(p_c, t91);
-  rt_str_drop(t90);
-  obx_slice ap92 = rt_as_slice(&v_a_25->f_lines);
-  for (int64_t i93 = 0; i93 < ap92.len; i93++) {
-    obx_str v_x_94 = rt_str_dup(((obx_str*)ap92.data)[i93]);
-    obx_str ap95 = rt_str_dup(v_x_94);
-    *(obx_str*)rt_arr_push((&(*p_c)->f_cx->f_lines), sizeof(obx_str)) = ap95;
-    rt_str_drop(v_x_94);
-  }
-  bool b96 = (!v_a_25->f_v.f_noreturn);
-  if (b96) {
-    b96 = (!rt_str_eq(v_a_25->f_v.f_c, v_r_19));
-  }
-  bool c97 = b96;
-  if (c97) {
-    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2967");
-    obx_str t98 = rt_str_concat(v_r_19, sl2267);
-    obx_str t99 = rt_str_concat(t98, v_a_25->f_v.f_c);
-    obx_str t100 = rt_str_concat(t99, sl36);
-    f744_check_Checker_emit(p_c, t100);
-    rt_str_drop(t99);
-    rt_str_drop(t98);
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2969");
-  }
-  f744_check_Checker_emit(p_c, sl2419);
-  obx_slice ap101 = rt_as_slice(&v_b_31->f_lines);
+  obx_str t99 = rt_str_concat(sl2255, v_cv_5.f_c);
+  obx_str t100 = rt_str_concat(t99, sl2418);
+  f744_check_Checker_emit(p_c, t100);
+  rt_str_drop(t99);
+  obx_slice ap101 = rt_as_slice(&v_a_25->f_lines);
   for (int64_t i102 = 0; i102 < ap101.len; i102++) {
     obx_str v_x_103 = rt_str_dup(((obx_str*)ap101.data)[i102]);
     obx_str ap104 = rt_str_dup(v_x_103);
     *(obx_str*)rt_arr_push((&(*p_c)->f_cx->f_lines), sizeof(obx_str)) = ap104;
     rt_str_drop(v_x_103);
   }
-  bool b105 = (!v_b_31->f_v.f_noreturn);
+  bool b105 = (!v_a_25->f_v.f_noreturn);
   if (b105) {
-    b105 = (!rt_str_eq(v_b_31->f_v.f_c, v_r_19));
+    b105 = (!rt_str_eq(v_a_25->f_v.f_c, v_r_19));
   }
   bool c106 = b105;
   if (c106) {
-    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2974");
+    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3091");
     obx_str t107 = rt_str_concat(v_r_19, sl2267);
-    obx_str t108 = rt_str_concat(t107, v_b_31->f_v.f_c);
+    obx_str t108 = rt_str_concat(t107, v_a_25->f_v.f_c);
     obx_str t109 = rt_str_concat(t108, sl36);
     f744_check_Checker_emit(p_c, t109);
     rt_str_drop(t108);
     rt_str_drop(t107);
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2976");
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3093");
+  }
+  f744_check_Checker_emit(p_c, sl2419);
+  obx_slice ap110 = rt_as_slice(&v_b_31->f_lines);
+  for (int64_t i111 = 0; i111 < ap110.len; i111++) {
+    obx_str v_x_112 = rt_str_dup(((obx_str*)ap110.data)[i111]);
+    obx_str ap113 = rt_str_dup(v_x_112);
+    *(obx_str*)rt_arr_push((&(*p_c)->f_cx->f_lines), sizeof(obx_str)) = ap113;
+    rt_str_drop(v_x_112);
+  }
+  bool b114 = (!v_b_31->f_v.f_noreturn);
+  if (b114) {
+    b114 = (!rt_str_eq(v_b_31->f_v.f_c, v_r_19));
+  }
+  bool c115 = b114;
+  if (c115) {
+    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3098");
+    obx_str t116 = rt_str_concat(v_r_19, sl2267);
+    obx_str t117 = rt_str_concat(t116, v_b_31->f_v.f_c);
+    obx_str t118 = rt_str_concat(t117, sl36);
+    f744_check_Checker_emit(p_c, t118);
+    rt_str_drop(t117);
+    rt_str_drop(t116);
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3100");
   }
   f744_check_Checker_emit(p_c, sl29);
-  bool c110 = (*p_c)->f_cx->f_dead;
-  if (c110) {
+  bool c119 = (*p_c)->f_cx->f_dead;
+  if (c119) {
     (*p_c)->f_cx->f_dead = false;
-    S87_check_Val t111 = f733_check_voidVal(true);
-    S87_check_Val r112 = t111;
-    gl76_drop(v_snaps_63);
-    gl96_drop(v_b_31);
-    gl96_drop(v_a_25);
+    S87_check_Val t120 = f733_check_voidVal(true);
+    S87_check_Val r121 = t120;
+    gl77_drop(v_drops_73);
+    gl77_drop(v_snaps_65);
+    gl97_drop(v_b_31);
+    gl97_drop(v_a_25);
     rt_str_drop(v_r_19);
     gl9_drop(v_snap_17);
     gl68_drop(v_cv_5);
     gl49_drop(v_n_2);
-    return r112;
+    return r121;
   }
-  S87_check_Val t113 = f796_check_Checker_tmpval(p_c, rt_str_dup(v_r_19), v_t_51);
-  S87_check_Val r114 = t113;
-  gl76_drop(v_snaps_63);
-  gl96_drop(v_b_31);
-  gl96_drop(v_a_25);
+  S87_check_Val t122 = f800_check_Checker_tmpval(p_c, rt_str_dup(v_r_19), v_t_53);
+  S87_check_Val r123 = t122;
+  gl77_drop(v_drops_73);
+  gl77_drop(v_snaps_65);
+  gl97_drop(v_b_31);
+  gl97_drop(v_a_25);
   rt_str_drop(v_r_19);
   gl9_drop(v_snap_17);
   gl68_drop(v_cv_5);
   gl49_drop(v_n_2);
-  return r114;
+  return r123;
 }
-static S101_check_Branch* f913_check_Checker_ifBranch(S73_check_Checker** p_c, int64_t p_x, int64_t p_want, obx_arr* p_snap, obx_str p_r) {
+static void f923_check_Checker_ifxDrops(S73_check_Checker** p_c, S102_check_Branch** p_br, obx_arr* p_vs, obx_str p_r) {
+  obx_arr t1 = f785_check_Checker_joinDropLines(p_c, p_vs, rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3111"));
+  obx_arr v_ls_2 = t1;
+  bool c3 = ((v_ls_2).len == 0LL);
+  if (c3) {
+    gl0_drop(v_ls_2);
+    rt_str_drop(p_r);
+    return;
+  }
+  bool c4 = (!rt_str_eq((*p_br)->f_v.f_c, p_r));
+  if (c4) {
+    S3_std_StrBuf* t5 = f13_std_newStrBuf();
+    S3_std_StrBuf* v_b_6 = t5;
+    int64_t end7 = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3115");
+    for (int64_t v_i_8 = 0LL; v_i_8 < end7; v_i_8++) {
+      f15_std_StrBuf_add((&v_b_6), sl2401);
+    }
+    obx_str t9 = rt_str_concat(p_r, sl2267);
+    obx_str t10 = rt_str_concat(t9, (*p_br)->f_v.f_c);
+    obx_str t11 = rt_str_concat(t10, sl36);
+    f15_std_StrBuf_add((&v_b_6), t11);
+    rt_str_drop(t10);
+    rt_str_drop(t9);
+    obx_str t12 = f17_std_StrBuf_toStr((&v_b_6));
+    obx_str ap13 = t12;
+    *(obx_str*)rt_arr_push((&(*p_br)->f_lines), sizeof(obx_str)) = ap13;
+    { obx_str nw14 = rt_str_dup(p_r);
+      rt_str_drop((*p_br)->f_v.f_c);
+      (*p_br)->f_v.f_c = nw14; }
+    gl1_drop(v_b_6);
+  }
+  obx_slice ap15 = rt_as_slice(&v_ls_2);
+  for (int64_t i16 = 0; i16 < ap15.len; i16++) {
+    obx_str v_x_17 = rt_str_dup(((obx_str*)ap15.data)[i16]);
+    obx_str ap18 = rt_str_dup(v_x_17);
+    *(obx_str*)rt_arr_push((&(*p_br)->f_lines), sizeof(obx_str)) = ap18;
+    rt_str_drop(v_x_17);
+  }
+  gl0_drop(v_ls_2);
+  rt_str_drop(p_r);
+}
+static S102_check_Branch* f922_check_Checker_ifBranch(S73_check_Checker** p_c, int64_t p_x, int64_t p_want, obx_arr* p_snap, obx_str p_r) {
   f776_check_Checker_restore(p_c, p_snap);
   obx_arr a1 = rt_arr_new(0, sizeof(obx_str));
   obx_arr old2 = *(&(*p_c)->f_cx->f_lines);
   *(&(*p_c)->f_cx->f_lines) = a1;
   obx_arr v_saved_3 = old2;
   (*p_c)->f_cx->f_dead = false;
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2903");
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3020");
   f750_check_Checker_pushFrame(p_c);
   S87_check_Val t4 = f754_check_Checker_expr(p_c, p_x, p_want);
   S87_check_Val v_v_5 = t4;
@@ -50009,7 +50486,7 @@ static S101_check_Branch* f913_check_Checker_ifBranch(S73_check_Checker** p_c, i
   bool c11 = b10;
   if (c11) {
     int64_t t12 = f701_check_Checker_line(p_c, p_x);
-    f702_check_Checker_err(p_c, t12, sl2756);
+    f702_check_Checker_err(p_c, t12, sl2758);
   }
   S87_check_Val t13 = f765_check_Checker_rd(p_c, gl67_dup(v_v_5));
   { S87_check_Val nw14 = t13;
@@ -50031,7 +50508,7 @@ static S101_check_Branch* f913_check_Checker_ifBranch(S73_check_Checker** p_c, i
     for (int64_t i25 = 0; i25 < ap24.len; i25++) {
       int64_t v_t_26 = ((int64_t*)ap24.data)[i25];
       int64_t ix27 = v_t_26;
-      bool c28 = ((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix27, ((*p_c)->f_tmps).len, "check.obx:2916")].f_live;
+      bool c28 = ((S93_check_Tmp*)((*p_c)->f_tmps).data)[rt_idx(ix27, ((*p_c)->f_tmps).len, "check.obx:3033")].f_live;
       if (c28) {
         v_live_23 = true;
       }
@@ -50054,24 +50531,24 @@ static S101_check_Branch* f913_check_Checker_ifBranch(S73_check_Checker** p_c, i
     }
   }
   f748_check_Checker_dropFrame(p_c, (&v_fr_16));
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2924");
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3041");
   obx_arr old35 = *(&(*p_c)->f_cx->f_lines);
   *(&(*p_c)->f_cx->f_lines) = v_saved_3;
   obx_arr v_lines_36 = old35;
   S87_check_Val t37 = gl67_dup(v_v_5);
   obx_arr t38 = f773_check_Checker_snapshot(p_c);
-  S101_check_Branch* o39 = rt_alloc(sizeof(*o39));
+  S102_check_Branch* o39 = rt_alloc(sizeof(*o39));
   o39->f_v = t37;
   o39->f_lines = v_lines_36;
   o39->f_snap = t38;
-  S101_check_Branch* t40 = o39;
-  S101_check_Branch* r41 = t40;
+  S102_check_Branch* t40 = o39;
+  S102_check_Branch* r41 = t40;
   gl9_drop(v_fr_16);
   gl68_drop(v_v_5);
   rt_str_drop(p_r);
   return r41;
 }
-static S87_check_Val f867_check_Checker_xBin(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f876_check_Checker_xBin(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   obx_str v_op_3 = rt_str_dup(v_n_2.f_s);
@@ -50081,30 +50558,30 @@ static S87_check_Val f867_check_Checker_xBin(S73_check_Checker** p_c, int64_t p_
   }
   bool c5 = b4;
   if (c5) {
-    S87_check_Val t6 = f914_check_Checker_logic(p_c, p_e);
+    S87_check_Val t6 = f924_check_Checker_logic(p_c, p_e);
     S87_check_Val r7 = t6;
     rt_str_drop(v_op_3);
     gl49_drop(v_n_2);
     return r7;
   }
-  bool t8 = f818_check_isCmpOp(rt_str_dup(v_op_3));
+  bool t8 = f823_check_isCmpOp(rt_str_dup(v_op_3));
   bool v_cmp_9 = t8;
   int64_t v_nexp_11 = (v_cmp_9 ? -1LL : p_exp);
   int64_t t12 = f700_check_Checker_kind(p_c, v_n_2.f_a);
   bool b13 = (t12 == 38LL);
   if (b13) {
     int64_t t14 = f700_check_Checker_kind(p_c, v_n_2.f_b);
-    bool t15 = f785_check_isLitNode(t14);
+    bool t15 = f788_check_isLitNode(t14);
     b13 = (!t15);
   }
   bool c16 = b13;
   if (c16) {
     int64_t t17 = v_n_2.f_a;
-    int64_t t18 = f915_check_Checker_peekType(p_c, v_n_2.f_b, v_nexp_11);
+    int64_t t18 = f925_check_Checker_peekType(p_c, v_n_2.f_b, v_nexp_11);
     S87_check_Val t19 = f754_check_Checker_expr(p_c, t17, t18);
     S87_check_Val v_lv_20 = t19;
     S83_check_Arg t21 = ((S83_check_Arg){.f_isVal = false, .f_n = v_n_2.f_b, .f_v = gl67_dup(v_lv_20)});
-    S87_check_Val t22 = f828_check_Checker_binop(p_c, rt_str_dup(v_op_3), gl67_dup(v_lv_20), t21, v_n_2.f_line, p_exp, false, gl67_dup(v_lv_20));
+    S87_check_Val t22 = f837_check_Checker_binop(p_c, rt_str_dup(v_op_3), gl67_dup(v_lv_20), t21, v_n_2.f_line, p_exp, false, gl67_dup(v_lv_20));
     S87_check_Val r23 = t22;
     gl68_drop(v_lv_20);
     rt_str_drop(v_op_3);
@@ -50112,11 +50589,11 @@ static S87_check_Val f867_check_Checker_xBin(S73_check_Checker** p_c, int64_t p_
     return r23;
   }
   int64_t t24 = f700_check_Checker_kind(p_c, v_n_2.f_a);
-  bool t25 = f785_check_isLitNode(t24);
+  bool t25 = f788_check_isLitNode(t24);
   bool b26 = t25;
   if (b26) {
     int64_t t27 = f700_check_Checker_kind(p_c, v_n_2.f_b);
-    bool t28 = f785_check_isLitNode(t27);
+    bool t28 = f788_check_isLitNode(t27);
     b26 = (!t28);
   }
   bool c29 = b26;
@@ -50133,7 +50610,7 @@ static S87_check_Val f867_check_Checker_xBin(S73_check_Checker** p_c, int64_t p_
     S87_check_Val t37 = f765_check_Checker_rd(p_c, t36);
     S87_check_Val v_lv_38 = t37;
     S83_check_Arg t39 = ((S83_check_Arg){.f_isVal = true, .f_n = -1LL, .f_v = gl67_dup(v_r_32)});
-    S87_check_Val t40 = f828_check_Checker_binop(p_c, rt_str_dup(v_op_3), gl67_dup(v_lv_38), t39, v_n_2.f_line, p_exp, false, gl67_dup(v_lv_38));
+    S87_check_Val t40 = f837_check_Checker_binop(p_c, rt_str_dup(v_op_3), gl67_dup(v_lv_38), t39, v_n_2.f_line, p_exp, false, gl67_dup(v_lv_38));
     S87_check_Val r41 = t40;
     gl68_drop(v_lv_38);
     gl68_drop(v_r_32);
@@ -50153,17 +50630,17 @@ static S87_check_Val f867_check_Checker_xBin(S73_check_Checker** p_c, int64_t p_
   int64_t v_hint_46 = (b43 ? p_exp : -1LL);
   S87_check_Val t47 = f754_check_Checker_expr(p_c, v_n_2.f_a, v_hint_46);
   S87_check_Val t48 = f765_check_Checker_rd(p_c, t47);
-  S87_check_Val t49 = f806_check_Checker_before1(p_c, t48, v_n_2.f_b);
+  S87_check_Val t49 = f810_check_Checker_before1(p_c, t48, v_n_2.f_b);
   S87_check_Val v_lv_50 = t49;
   S83_check_Arg t51 = ((S83_check_Arg){.f_isVal = false, .f_n = v_n_2.f_b, .f_v = gl67_dup(v_lv_50)});
-  S87_check_Val t52 = f828_check_Checker_binop(p_c, rt_str_dup(v_op_3), gl67_dup(v_lv_50), t51, v_n_2.f_line, p_exp, false, gl67_dup(v_lv_50));
+  S87_check_Val t52 = f837_check_Checker_binop(p_c, rt_str_dup(v_op_3), gl67_dup(v_lv_50), t51, v_n_2.f_line, p_exp, false, gl67_dup(v_lv_50));
   S87_check_Val r53 = t52;
   gl68_drop(v_lv_50);
   rt_str_drop(v_op_3);
   gl49_drop(v_n_2);
   return r53;
 }
-static int64_t f915_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static int64_t f925_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   int64_t v_nlines_1 = ((*p_c)->f_cx->f_lines).len;
   int64_t v_nholes_2 = ((*p_c)->f_holes).len;
   int64_t v_nlifted_3 = ((*p_c)->f_lifted).len;
@@ -50171,8 +50648,8 @@ static int64_t f915_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e,
   obx_arr v_pending_5 = a4;
   obx_slice ap6 = rt_as_slice(&(*p_c)->f_cx->f_pending);
   for (int64_t i7 = 0; i7 < ap6.len; i7++) {
-    S90_check_Pend v_p_8 = gl77_dup(((S90_check_Pend*)ap6.data)[i7]);
-    S90_check_Pend ap9 = gl77_dup(v_p_8);
+    S90_check_Pend v_p_8 = gl78_dup(((S90_check_Pend*)ap6.data)[i7]);
+    S90_check_Pend ap9 = gl78_dup(v_p_8);
     *(S90_check_Pend*)rt_arr_push((&v_pending_5), sizeof(S90_check_Pend)) = ap9;
     gl75_drop(v_p_8);
   }
@@ -50182,7 +50659,7 @@ static int64_t f915_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e,
   int64_t end13 = ((*p_c)->f_cx->f_frames).len;
   for (int64_t v_f_14 = 0LL; v_f_14 < end13; v_f_14++) {
     int64_t ix15 = v_f_14;
-    int64_t ap16 = (((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix15, ((*p_c)->f_cx->f_frames).len, "check.obx:2645")]).len;
+    int64_t ap16 = (((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix15, ((*p_c)->f_cx->f_frames).len, "check.obx:2762")]).len;
     *(int64_t*)rt_arr_push((&v_frames_12), sizeof(int64_t)) = ap16;
   }
   obx_arr t17 = f773_check_Checker_snapshot(p_c);
@@ -50192,7 +50669,7 @@ static int64_t f915_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e,
   int64_t end21 = ((*p_c)->f_cx->f_loops).len;
   for (int64_t v_lp_22 = 0LL; v_lp_22 < end21; v_lp_22++) {
     int64_t ix23 = v_lp_22;
-    int64_t ap24 = (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix23, ((*p_c)->f_cx->f_loops).len, "check.obx:2648")]->f_breaks).len;
+    int64_t ap24 = (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix23, ((*p_c)->f_cx->f_loops).len, "check.obx:2765")]->f_breaks).len;
     *(int64_t*)rt_arr_push((&v_nbreaks_20), sizeof(int64_t)) = ap24;
   }
   bool v_dead_25 = (*p_c)->f_cx->f_dead;
@@ -50205,42 +50682,42 @@ static int64_t f915_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e,
   for (int64_t v_lp_30 = 0LL; v_lp_30 < end29; v_lp_30++) {
     while (1) {
       int64_t ix31 = v_lp_30;
-      int64_t t32 = (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix31, ((*p_c)->f_cx->f_loops).len, "check.obx:2653")]->f_breaks).len;
+      int64_t t32 = (((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix31, ((*p_c)->f_cx->f_loops).len, "check.obx:2770")]->f_breaks).len;
       int64_t ix33 = v_lp_30;
-      bool c34 = (t32 > ((int64_t*)(v_nbreaks_20).data)[rt_idx(ix33, (v_nbreaks_20).len, "check.obx:2653")]);
+      bool c34 = (t32 > ((int64_t*)(v_nbreaks_20).data)[rt_idx(ix33, (v_nbreaks_20).len, "check.obx:2770")]);
       if (!c34) break;
       int64_t ix35 = v_lp_30;
-      obx_arr t36 = *(obx_arr*)rt_arr_pop((&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix35, ((*p_c)->f_cx->f_loops).len, "check.obx:2653")]->f_breaks), sizeof(obx_arr), "check.obx:2653");
+      obx_arr t36 = *(obx_arr*)rt_arr_pop((&((S89_check_Loop**)((*p_c)->f_cx->f_loops).data)[rt_idx(ix35, ((*p_c)->f_cx->f_loops).len, "check.obx:2770")]->f_breaks), sizeof(obx_arr), "check.obx:2770");
       gl9_drop(t36);
     }
   }
   while (1) {
     bool c37 = (((*p_c)->f_cx->f_lines).len > v_nlines_1);
     if (!c37) break;
-    obx_str t38 = *(obx_str*)rt_arr_pop((&(*p_c)->f_cx->f_lines), sizeof(obx_str), "check.obx:2655");
+    obx_str t38 = *(obx_str*)rt_arr_pop((&(*p_c)->f_cx->f_lines), sizeof(obx_str), "check.obx:2772");
     rt_str_drop(t38);
   }
   while (1) {
     bool c39 = (((*p_c)->f_holes).len > v_nholes_2);
     if (!c39) break;
-    S80_check_Hole t40 = *(S80_check_Hole*)rt_arr_pop((&(*p_c)->f_holes), sizeof(S80_check_Hole), "check.obx:2656");
+    S80_check_Hole t40 = *(S80_check_Hole*)rt_arr_pop((&(*p_c)->f_holes), sizeof(S80_check_Hole), "check.obx:2773");
     gl60_drop(t40);
   }
   while (1) {
     bool c41 = (((*p_c)->f_lifted).len > v_nlifted_3);
     if (!c41) break;
-    S81_check_Lifted* t42 = *(S81_check_Lifted**)rt_arr_pop((&(*p_c)->f_lifted), sizeof(S81_check_Lifted*), "check.obx:2657");
-    gl97_drop(t42);
+    S81_check_Lifted* t42 = *(S81_check_Lifted**)rt_arr_pop((&(*p_c)->f_lifted), sizeof(S81_check_Lifted*), "check.obx:2774");
+    gl98_drop(t42);
   }
   { obx_arr nw43 = v_pending_5;
-    gl90_drop((*p_c)->f_cx->f_pending);
+    gl91_drop((*p_c)->f_cx->f_pending);
     (*p_c)->f_cx->f_pending = nw43; }
   while (1) {
     bool c44 = (((*p_c)->f_cx->f_capNames).len > v_ncaps_10);
     if (!c44) break;
-    obx_str t45 = *(obx_str*)rt_arr_pop((&(*p_c)->f_cx->f_capNames), sizeof(obx_str), "check.obx:2660");
+    obx_str t45 = *(obx_str*)rt_arr_pop((&(*p_c)->f_cx->f_capNames), sizeof(obx_str), "check.obx:2777");
     rt_str_drop(t45);
-    int64_t t46 = *(int64_t*)rt_arr_pop((&(*p_c)->f_cx->f_capVars), sizeof(int64_t), "check.obx:2661");
+    int64_t t46 = *(int64_t*)rt_arr_pop((&(*p_c)->f_cx->f_capVars), sizeof(int64_t), "check.obx:2778");
   }
   int64_t end47 = (v_frames_12).len;
   for (int64_t v_f_48 = 0LL; v_f_48 < end47; v_f_48++) {
@@ -50249,12 +50726,12 @@ static int64_t f915_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e,
     if (c50) {
       while (1) {
         int64_t ix51 = v_f_48;
-        int64_t t52 = (((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix51, ((*p_c)->f_cx->f_frames).len, "check.obx:2665")]).len;
+        int64_t t52 = (((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix51, ((*p_c)->f_cx->f_frames).len, "check.obx:2782")]).len;
         int64_t ix53 = v_f_48;
-        bool c54 = (t52 > ((int64_t*)(v_frames_12).data)[rt_idx(ix53, (v_frames_12).len, "check.obx:2665")]);
+        bool c54 = (t52 > ((int64_t*)(v_frames_12).data)[rt_idx(ix53, (v_frames_12).len, "check.obx:2782")]);
         if (!c54) break;
         int64_t ix55 = v_f_48;
-        int64_t t56 = *(int64_t*)rt_arr_pop((&((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix55, ((*p_c)->f_cx->f_frames).len, "check.obx:2665")]), sizeof(int64_t), "check.obx:2665");
+        int64_t t56 = *(int64_t*)rt_arr_pop((&((obx_arr*)((*p_c)->f_cx->f_frames).data)[rt_idx(ix55, ((*p_c)->f_cx->f_frames).len, "check.obx:2782")]), sizeof(int64_t), "check.obx:2782");
       }
     }
   }
@@ -50265,10 +50742,10 @@ static int64_t f915_check_Checker_peekType(S73_check_Checker** p_c, int64_t p_e,
   gl9_drop(v_frames_12);
   return r57;
 }
-static S87_check_Val f914_check_Checker_logic(S73_check_Checker** p_c, int64_t p_e) {
+static S87_check_Val f924_check_Checker_logic(S73_check_Checker** p_c, int64_t p_e) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
-  obx_str ap3 = sl2760;
+  obx_str ap3 = sl2762;
   *(obx_str*)rt_arr_push((&(*p_c)->f_cx->f_nomove), sizeof(obx_str)) = ap3;
   f750_check_Checker_pushFrame(p_c);
   S87_check_Val t4 = f754_check_Checker_expr(p_c, v_n_2.f_a, 8LL);
@@ -50277,14 +50754,14 @@ static S87_check_Val f914_check_Checker_logic(S73_check_Checker** p_c, int64_t p
   bool c7 = (v_lv_6.f_t != 8LL);
   if (c7) {
     int64_t t8 = v_n_2.f_line;
-    obx_str t9 = rt_str_concat(v_n_2.f_s, sl2761);
+    obx_str t9 = rt_str_concat(v_n_2.f_s, sl2763);
     obx_str t10 = f767_check_Checker_tstr(p_c, v_lv_6.f_t);
     obx_str t11 = rt_str_concat(t9, t10);
     f702_check_Checker_err(p_c, t8, t11);
   }
   obx_str t12 = f771_check_Checker_fresh(p_c, sl1975);
   obx_str v_ln_13 = t12;
-  obx_str t14 = rt_str_concat(sl2526, v_ln_13);
+  obx_str t14 = rt_str_concat(sl2528, v_ln_13);
   obx_str t15 = rt_str_concat(t14, sl2267);
   obx_str t16 = rt_str_concat(t15, v_lv_6.f_c);
   obx_str t17 = rt_str_concat(t16, sl36);
@@ -50303,7 +50780,7 @@ static S87_check_Val f914_check_Checker_logic(S73_check_Checker** p_c, int64_t p
   rt_str_drop(t23);
   rt_str_drop(t22);
   rt_str_drop(t21);
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2763");
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2880");
   f750_check_Checker_pushFrame(p_c);
   S87_check_Val t25 = f754_check_Checker_expr(p_c, v_n_2.f_b, 8LL);
   S87_check_Val t26 = f765_check_Checker_rd(p_c, t25);
@@ -50311,7 +50788,7 @@ static S87_check_Val f914_check_Checker_logic(S73_check_Checker** p_c, int64_t p
   bool c28 = (v_rv1_27.f_t != 8LL);
   if (c28) {
     int64_t t29 = v_n_2.f_line;
-    obx_str t30 = rt_str_concat(v_n_2.f_s, sl2761);
+    obx_str t30 = rt_str_concat(v_n_2.f_s, sl2763);
     obx_str t31 = f767_check_Checker_tstr(p_c, v_rv1_27.f_t);
     obx_str t32 = rt_str_concat(t30, t31);
     f702_check_Checker_err(p_c, t29, t32);
@@ -50325,9 +50802,9 @@ static S87_check_Val f914_check_Checker_logic(S73_check_Checker** p_c, int64_t p
   obx_arr t36 = f752_check_Checker_popFrame(p_c);
   obx_arr v_fr2_37 = t36;
   f748_check_Checker_dropFrame(p_c, (&v_fr2_37));
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2770");
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2887");
   f744_check_Checker_emit(p_c, sl29);
-  obx_str t38 = *(obx_str*)rt_arr_pop((&(*p_c)->f_cx->f_nomove), sizeof(obx_str), "check.obx:2772");
+  obx_str t38 = *(obx_str*)rt_arr_pop((&(*p_c)->f_cx->f_nomove), sizeof(obx_str), "check.obx:2889");
   rt_str_drop(t38);
   S87_check_Val t39 = f734_check_rv(rt_str_dup(v_ln_13), 8LL);
   S87_check_Val r40 = t39;
@@ -50339,7 +50816,7 @@ static S87_check_Val f914_check_Checker_logic(S73_check_Checker** p_c, int64_t p
   gl49_drop(v_n_2);
   return r40;
 }
-static S87_check_Val f866_check_Checker_xUn(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f875_check_Checker_xUn(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   S87_check_Val t3 = f754_check_Checker_expr(p_c, v_n_2.f_a, p_exp);
@@ -50351,12 +50828,12 @@ static S87_check_Val f866_check_Checker_xUn(S73_check_Checker** p_c, int64_t p_e
     bool c8 = (v_t_6 != 8LL);
     if (c8) {
       int64_t t9 = v_n_2.f_line;
-      obx_str t10 = sl2762;
+      obx_str t10 = sl2764;
       obx_str t11 = f767_check_Checker_tstr(p_c, v_t_6);
       obx_str t12 = rt_str_concat(t10, t11);
       f702_check_Checker_err(p_c, t9, t12);
     }
-    obx_str t13 = rt_str_concat(sl2549, v_v_5.f_c);
+    obx_str t13 = rt_str_concat(sl2551, v_v_5.f_c);
     obx_str t14 = rt_str_concat(t13, sl31);
     S87_check_Val t15 = f734_check_rv(t14, 8LL);
     S87_check_Val r16 = t15;
@@ -50370,15 +50847,15 @@ static S87_check_Val f866_check_Checker_xUn(S73_check_Checker** p_c, int64_t p_e
     bool c18 = (v_t_6 >= 7LL);
     if (c18) {
       int64_t t19 = v_n_2.f_line;
-      obx_str t20 = sl2763;
+      obx_str t20 = sl2765;
       obx_str t21 = f767_check_Checker_tstr(p_c, v_t_6);
       obx_str t22 = rt_str_concat(t20, t21);
       f702_check_Checker_err(p_c, t19, t22);
     }
     obx_slice t23 = k5_check_CTYPES;
     int64_t ix24 = v_t_6;
-    obx_str t25 = rt_str_concat(sl2289, ((obx_str*)(t23).data)[rt_idx(ix24, (t23).len, "check.obx:2600")]);
-    obx_str t26 = rt_str_concat(t25, sl2764);
+    obx_str t25 = rt_str_concat(sl2289, ((obx_str*)(t23).data)[rt_idx(ix24, (t23).len, "check.obx:2717")]);
+    obx_str t26 = rt_str_concat(t25, sl2766);
     obx_str t27 = rt_str_concat(t26, v_v_5.f_c);
     obx_str t28 = rt_str_concat(t27, sl31);
     S87_check_Val t29 = f734_check_rv(t28, v_t_6);
@@ -50397,11 +50874,11 @@ static S87_check_Val f866_check_Checker_xUn(S73_check_Checker** p_c, int64_t p_e
     if (c33) {
       obx_slice t34 = k4_sema_PRIM_NAMES;
       int64_t ix35 = v_t_6;
-      obx_str t36 = rt_str_concat(sl2765, ((obx_str*)(t34).data)[rt_idx(ix35, (t34).len, "check.obx:2603")]);
+      obx_str t36 = rt_str_concat(sl2767, ((obx_str*)(t34).data)[rt_idx(ix35, (t34).len, "check.obx:2720")]);
       obx_str t37 = rt_str_concat(t36, sl30);
       obx_str t38 = rt_str_concat(t37, v_v_5.f_c);
       obx_str t39 = rt_str_concat(t38, sl1754);
-      obx_str t40 = f829_check_Checker_W(p_c, v_n_2.f_line);
+      obx_str t40 = f838_check_Checker_W(p_c, v_n_2.f_line);
       obx_str t41 = rt_str_concat(t39, t40);
       obx_str t42 = rt_str_concat(t41, sl31);
       S87_check_Val t43 = f734_check_rv(t42, v_t_6);
@@ -50418,7 +50895,7 @@ static S87_check_Val f866_check_Checker_xUn(S73_check_Checker** p_c, int64_t p_e
     }
     bool c45 = (v_t_6 == 7LL);
     if (c45) {
-      obx_str t46 = rt_str_concat(sl2766, v_v_5.f_c);
+      obx_str t46 = rt_str_concat(sl2768, v_v_5.f_c);
       obx_str t47 = rt_str_concat(t46, sl31);
       S87_check_Val t48 = f734_check_rv(t47, v_t_6);
       S87_check_Val r49 = t48;
@@ -50428,35 +50905,35 @@ static S87_check_Val f866_check_Checker_xUn(S73_check_Checker** p_c, int64_t p_e
       return r49;
     }
     int64_t t50 = v_n_2.f_line;
-    obx_str t51 = sl2767;
+    obx_str t51 = sl2769;
     obx_str t52 = f767_check_Checker_tstr(p_c, v_t_6);
     obx_str t53 = rt_str_concat(t51, t52);
     f702_check_Checker_err(p_c, t50, t53);
   }
   obx_arr a54 = rt_arr_new(0, sizeof(S87_check_Val));
   obx_arr v_none_55 = a54;
-  S87_check_Val t56 = f830_check_Checker_opCall(p_c, gl67_dup(v_v_5), sl601, (&v_none_55), v_n_2.f_line, sl43);
+  S87_check_Val t56 = f839_check_Checker_opCall(p_c, gl67_dup(v_v_5), sl601, (&v_none_55), v_n_2.f_line, sl43);
   S87_check_Val r57 = t56;
-  gl82_drop(v_none_55);
+  gl83_drop(v_none_55);
   gl68_drop(v_v_5);
   gl49_drop(v_n_2);
   return r57;
 }
-static S87_check_Val f865_check_Checker_xBorrow(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f874_check_Checker_xBorrow(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   bool v_m_3 = (((int64_t)(v_n_2.f_flags & 64LL)) != 0LL);
   int64_t t4 = f700_check_Checker_kind(p_c, v_n_2.f_a);
   bool c5 = (t4 == 50LL);
   if (c5) {
-    S87_check_Val t6 = f859_check_Checker_xSub(p_c, v_n_2.f_a, v_m_3);
+    S87_check_Val t6 = f868_check_Checker_xSub(p_c, v_n_2.f_a, v_m_3);
     S87_check_Val v_v_7 = t6;
     int64_t t8 = f497_sema_Program_tk((&(*p_c)->f_pg), v_v_7.f_t);
     S87_check_Val ifx9;
     if ((t8 == 3LL)) {
       ifx9 = gl67_dup(v_v_7);
     } else {
-      S87_check_Val t10 = f833_check_Checker_borrow(p_c, gl67_dup(v_v_7), v_m_3, v_n_2.f_line, false);
+      S87_check_Val t10 = f842_check_Checker_borrow(p_c, gl67_dup(v_v_7), v_m_3, v_n_2.f_line, false);
       ifx9 = t10;
     }
     S87_check_Val r11 = ifx9;
@@ -50465,7 +50942,7 @@ static S87_check_Val f865_check_Checker_xBorrow(S73_check_Checker** p_c, int64_t
     return r11;
   }
   int64_t v_inner_12 = -1LL;
-  int64_t t13 = f858_check_Checker_ek(p_c, p_exp);
+  int64_t t13 = f867_check_Checker_ek(p_c, p_exp);
   int64_t v_ek_14 = t13;
   bool c15 = (v_ek_14 == 2LL);
   if (c15) {
@@ -50486,18 +50963,18 @@ static S87_check_Val f865_check_Checker_xBorrow(S73_check_Checker** p_c, int64_t
   S87_check_Val v_v_22 = t21;
   bool c23 = v_m_3;
   if (c23) {
-    f854_check_Checker_strByteRO(p_c, v_n_2.f_a, gl67_dup(v_v_22), v_n_2.f_line);
+    f863_check_Checker_strByteRO(p_c, v_n_2.f_a, gl67_dup(v_v_22), v_n_2.f_line);
   }
-  S87_check_Val t24 = f833_check_Checker_borrow(p_c, gl67_dup(v_v_22), v_m_3, v_n_2.f_line, false);
+  S87_check_Val t24 = f842_check_Checker_borrow(p_c, gl67_dup(v_v_22), v_m_3, v_n_2.f_line, false);
   S87_check_Val r25 = t24;
   gl68_drop(v_v_22);
   gl49_drop(v_n_2);
   return r25;
 }
-static S87_check_Val f864_check_Checker_xIndex(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f873_check_Checker_xIndex(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
-  S1_check_St t3 = f880_check_Checker_staticNs(p_c, v_n_2.f_a);
+  S1_check_St t3 = f889_check_Checker_staticNs(p_c, v_n_2.f_a);
   S1_check_St v_st_4 = t3;
   bool c5 = (v_st_4.f_k != 0LL);
   if (c5) {
@@ -50520,7 +50997,7 @@ static S87_check_Val f864_check_Checker_xIndex(S73_check_Checker** p_c, int64_t 
       int64_t t10 = f716_check_Checker_texprs(p_c, v_n_2.f_b);
       v_st_4.f_targs = t10;
     }
-    S87_check_Val t11 = f889_check_Checker_staticValue(p_c, v_st_4, p_e, p_exp);
+    S87_check_Val t11 = f898_check_Checker_staticValue(p_c, v_st_4, p_e, p_exp);
     S87_check_Val r12 = t11;
     gl49_drop(v_n_2);
     return r12;
@@ -50528,7 +51005,7 @@ static S87_check_Val f864_check_Checker_xIndex(S73_check_Checker** p_c, int64_t 
   int64_t t13 = f717_check_Checker_count(p_c, v_n_2.f_b);
   bool c14 = (t13 != 1LL);
   if (c14) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2768);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2770);
   }
   int64_t t15 = f718_check_Checker_item(p_c, v_n_2.f_b, 0LL);
   int64_t v_ix_16 = t15;
@@ -50537,17 +51014,17 @@ static S87_check_Val f864_check_Checker_xIndex(S73_check_Checker** p_c, int64_t 
   S87_check_Val v_v_19 = t18;
   bool c20 = (v_v_19.f_t == 9LL);
   if (c20) {
-    S87_check_Val t21 = f806_check_Checker_before1(p_c, gl67_dup(v_v_19), v_ix_16);
+    S87_check_Val t21 = f810_check_Checker_before1(p_c, gl67_dup(v_v_19), v_ix_16);
     { S87_check_Val nw22 = t21;
       gl68_drop(v_v_19);
       v_v_19 = nw22; }
-    obx_str t23 = f916_check_Checker_intIndex(p_c, v_ix_16);
+    obx_str t23 = f926_check_Checker_intIndex(p_c, v_ix_16);
     obx_str v_i_24 = t23;
-    obx_str t25 = rt_str_concat(sl2603, v_v_19.f_c);
+    obx_str t25 = rt_str_concat(sl2605, v_v_19.f_c);
     obx_str t26 = rt_str_concat(t25, sl1754);
     obx_str t27 = rt_str_concat(t26, v_i_24);
     obx_str t28 = rt_str_concat(t27, sl1754);
-    obx_str t29 = f829_check_Checker_W(p_c, v_n_2.f_line);
+    obx_str t29 = f838_check_Checker_W(p_c, v_n_2.f_line);
     obx_str t30 = rt_str_concat(t28, t29);
     obx_str t31 = rt_str_concat(t30, sl31);
     S87_check_Val t32 = f734_check_rv(t31, 4LL);
@@ -50572,31 +51049,31 @@ static S87_check_Val f864_check_Checker_xIndex(S73_check_Checker** p_c, int64_t 
   bool c37 = b36;
   if (c37) {
     int64_t t38 = v_n_2.f_line;
-    obx_str t39 = sl2769;
+    obx_str t39 = sl2771;
     obx_str t40 = f767_check_Checker_tstr(p_c, v_v_19.f_t);
     obx_str t41 = rt_str_concat(t39, t40);
     f702_check_Checker_err(p_c, t38, t41);
   }
   bool c42 = (v_v_19.f_cat == 0LL);
   if (c42) {
-    S87_check_Val t43 = f794_check_Checker_holdtmpSrc(p_c, rt_str_dup(v_v_19.f_c), v_v_19.f_t, true, gl67_dup(v_v_19));
+    S87_check_Val t43 = f798_check_Checker_holdtmpSrc(p_c, rt_str_dup(v_v_19.f_c), v_v_19.f_t, true, gl67_dup(v_v_19));
     { S87_check_Val nw44 = t43;
       gl68_drop(v_v_19);
       v_v_19 = nw44; }
   }
-  bool t45 = f812_check_Checker_acts(p_c, v_ix_16);
+  bool t45 = f817_check_Checker_acts(p_c, v_ix_16);
   bool c46 = t45;
   if (c46) {
-    S87_check_Val t47 = f813_check_Checker_seq(p_c, gl67_dup(v_v_19));
+    S87_check_Val t47 = f818_check_Checker_seq(p_c, gl67_dup(v_v_19));
     { S87_check_Val nw48 = t47;
       gl68_drop(v_v_19);
       v_v_19 = nw48; }
   }
   int64_t v_mark_49 = ((*p_c)->f_cx->f_pending).len;
   S87_check_Val t50 = gl67_dup(v_v_19);
-  int64_t t51 = f825_check_Checker_newCid(p_c);
-  f826_check_Checker_hold(p_c, t50, 0LL, t51, v_n_2.f_line);
-  obx_str t52 = f916_check_Checker_intIndex(p_c, v_ix_16);
+  int64_t t51 = f834_check_Checker_newCid(p_c);
+  f835_check_Checker_hold(p_c, t50, 0LL, t51, v_n_2.f_line);
+  obx_str t52 = f926_check_Checker_intIndex(p_c, v_ix_16);
   obx_str v_i_53 = t52;
   f753_check_Checker_cutPending(p_c, v_mark_49);
   int64_t t54 = f498_sema_Program_ta((&(*p_c)->f_pg), v_v_19.f_t);
@@ -50604,16 +51081,16 @@ static S87_check_Val f864_check_Checker_xIndex(S73_check_Checker** p_c, int64_t 
   obx_str t56 = sl2289;
   obx_str t57 = f732_check_Checker_T(p_c, v_et_55);
   obx_str t58 = rt_str_concat(t56, t57);
-  obx_str t59 = rt_str_concat(t58, sl2770);
+  obx_str t59 = rt_str_concat(t58, sl2772);
   obx_str t60 = rt_str_concat(t59, v_v_19.f_c);
-  obx_str t61 = rt_str_concat(t60, sl2771);
+  obx_str t61 = rt_str_concat(t60, sl2773);
   obx_str t62 = rt_str_concat(t61, v_i_53);
-  obx_str t63 = rt_str_concat(t62, sl2772);
+  obx_str t63 = rt_str_concat(t62, sl2774);
   obx_str t64 = rt_str_concat(t63, v_v_19.f_c);
-  obx_str t65 = rt_str_concat(t64, sl2773);
-  obx_str t66 = f829_check_Checker_W(p_c, v_n_2.f_line);
+  obx_str t65 = rt_str_concat(t64, sl2775);
+  obx_str t66 = f838_check_Checker_W(p_c, v_n_2.f_line);
   obx_str t67 = rt_str_concat(t65, t66);
-  obx_str t68 = rt_str_concat(t67, sl2774);
+  obx_str t68 = rt_str_concat(t67, sl2776);
   obx_str v_cc_69 = t68;
   rt_str_drop(t67);
   rt_str_drop(t66);
@@ -50630,7 +51107,7 @@ static S87_check_Val f864_check_Checker_xIndex(S73_check_Checker** p_c, int64_t 
   S87_check_Val t70 = f735_check_val(rt_str_dup(v_cc_69), v_et_55, 2LL);
   S87_check_Val v_r_71 = t70;
   v_r_71.f_root = v_v_19.f_root;
-  obx_str t72 = f847_check_pathAdd(rt_str_dup(v_v_19.f_path), sl2058);
+  obx_str t72 = f856_check_pathAdd(rt_str_dup(v_v_19.f_path), sl2058);
   { obx_str nw73 = t72;
     rt_str_drop(v_r_71.f_path);
     v_r_71.f_path = nw73; }
@@ -50659,14 +51136,14 @@ static S87_check_Val f864_check_Checker_xIndex(S73_check_Checker** p_c, int64_t 
   gl49_drop(v_n_2);
   return r77;
 }
-static obx_str f916_check_Checker_intIndex(S73_check_Checker** p_c, int64_t p_ie) {
+static obx_str f926_check_Checker_intIndex(S73_check_Checker** p_c, int64_t p_ie) {
   S87_check_Val t1 = f754_check_Checker_expr(p_c, p_ie, 0LL);
   S87_check_Val t2 = f765_check_Checker_rd(p_c, t1);
   S87_check_Val v_i_3 = t2;
   bool c4 = (v_i_3.f_t != 0LL);
   if (c4) {
     int64_t t5 = f701_check_Checker_line(p_c, p_ie);
-    obx_str t6 = sl2775;
+    obx_str t6 = sl2777;
     obx_str t7 = f767_check_Checker_tstr(p_c, v_i_3.f_t);
     obx_str t8 = rt_str_concat(t6, t7);
     f702_check_Checker_err(p_c, t5, t8);
@@ -50678,9 +51155,9 @@ static obx_str f916_check_Checker_intIndex(S73_check_Checker** p_c, int64_t p_ie
     gl68_drop(v_i_3);
     return r11;
   }
-  obx_str t12 = f771_check_Checker_fresh(p_c, sl2776);
+  obx_str t12 = f771_check_Checker_fresh(p_c, sl2778);
   obx_str v_n_13 = t12;
-  obx_str t14 = rt_str_concat(sl2503, v_n_13);
+  obx_str t14 = rt_str_concat(sl2504, v_n_13);
   obx_str t15 = rt_str_concat(t14, sl2267);
   obx_str t16 = rt_str_concat(t15, v_i_3.f_c);
   obx_str t17 = rt_str_concat(t16, sl36);
@@ -50693,10 +51170,10 @@ static obx_str f916_check_Checker_intIndex(S73_check_Checker** p_c, int64_t p_ie
   gl68_drop(v_i_3);
   return r18;
 }
-static S87_check_Val f863_check_Checker_xField(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f872_check_Checker_xField(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
-  S1_check_St t3 = f880_check_Checker_staticNs(p_c, v_n_2.f_a);
+  S1_check_St t3 = f889_check_Checker_staticNs(p_c, v_n_2.f_a);
   S1_check_St v_st_4 = t3;
   bool c5 = (v_st_4.f_k != 0LL);
   if (c5) {
@@ -50704,7 +51181,7 @@ static S87_check_Val f863_check_Checker_xField(S73_check_Checker** p_c, int64_t 
     S1_check_St v_vst_7 = t6;
     bool c8 = (v_vst_7.f_k != 0LL);
     if (c8) {
-      S87_check_Val t9 = f889_check_Checker_staticValue(p_c, v_vst_7, p_e, p_exp);
+      S87_check_Val t9 = f898_check_Checker_staticValue(p_c, v_vst_7, p_e, p_exp);
       S87_check_Val r10 = t9;
       gl49_drop(v_n_2);
       return r10;
@@ -50716,28 +51193,28 @@ static S87_check_Val f863_check_Checker_xField(S73_check_Checker** p_c, int64_t 
     bool b12 = b11;
     if (b12) {
       int64_t ix13 = v_st_4.f_di;
-      b12 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix13, ((*p_c)->f_pg->f_types).len, "check.obx:2430")].f_form == 1LL);
+      b12 = (((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix13, ((*p_c)->f_pg->f_types).len, "check.obx:2547")].f_form == 1LL);
     }
     bool c14 = b12;
     if (c14) {
       int64_t t15 = v_n_2.f_line;
       int64_t ix16 = v_st_4.f_di;
-      obx_str t17 = rt_str_concat(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix16, ((*p_c)->f_pg->f_types).len, "check.obx:2431")].f_name, sl2777);
+      obx_str t17 = rt_str_concat(((S57_sema_TypeDecl*)((*p_c)->f_pg->f_types).data)[rt_idx(ix16, ((*p_c)->f_pg->f_types).len, "check.obx:2548")].f_name, sl2779);
       obx_str t18 = rt_str_concat(t17, v_n_2.f_s);
       f702_check_Checker_err(p_c, t15, t18);
     }
-    obx_str t19 = rt_str_concat(v_n_2.f_s, sl2778);
+    obx_str t19 = rt_str_concat(v_n_2.f_s, sl2780);
     f702_check_Checker_err(p_c, v_n_2.f_line, t19);
   }
   S87_check_Val t20 = f754_check_Checker_expr(p_c, v_n_2.f_a, -1LL);
   S87_check_Val v_v_21 = t20;
-  S87_check_Val t22 = f886_check_Checker_fieldOf(p_c, gl67_dup(v_v_21), rt_str_dup(v_n_2.f_s), v_n_2.f_line);
+  S87_check_Val t22 = f895_check_Checker_fieldOf(p_c, gl67_dup(v_v_21), rt_str_dup(v_n_2.f_s), v_n_2.f_line);
   S87_check_Val r23 = t22;
   gl68_drop(v_v_21);
   gl49_drop(v_n_2);
   return r23;
 }
-static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f871_check_Checker_xClosure(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   int64_t v_mod_3 = (*p_c)->f_cx->f_mod;
@@ -50745,7 +51222,7 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
   obx_arr v_env_5 = t4;
   obx_arr t6 = f696_check_copyInts((&(*p_c)->f_calleeTps));
   obx_arr v_ctps_7 = t6;
-  int64_t t8 = f858_check_Checker_ek(p_c, p_exp);
+  int64_t t8 = f867_check_Checker_ek(p_c, p_exp);
   int64_t v_want_10 = ((t8 == 5LL) ? p_exp : -1LL);
   int64_t t11 = f717_check_Checker_count(p_c, v_n_2.f_a);
   int64_t v_np_12 = t11;
@@ -50757,13 +51234,13 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
   bool c15 = b13;
   if (c15) {
     int64_t t16 = v_n_2.f_line;
-    obx_str t17 = sl2779;
+    obx_str t17 = sl2781;
     obx_str t18 = rt_int_to_str(v_np_12);
     obx_str t19 = rt_str_concat(t17, t18);
-    obx_str t20 = rt_str_concat(t19, sl2780);
+    obx_str t20 = rt_str_concat(t19, sl2782);
     obx_str t21 = f767_check_Checker_tstr(p_c, v_want_10);
     obx_str t22 = rt_str_concat(t20, t21);
-    obx_str t23 = rt_str_concat(t22, sl2781);
+    obx_str t23 = rt_str_concat(t22, sl2783);
     f702_check_Checker_err(p_c, t16, t23);
   }
   obx_arr a24 = rt_arr_new(0, sizeof(obx_str));
@@ -50789,15 +51266,15 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
       bool b41 = (v_want_10 < 0LL);
       if (!b41) {
         int64_t t42 = f503_sema_Program_ti((&(*p_c)->f_pg), v_want_10, v_i_31);
-        bool t43 = f837_check_Checker_hasTpIn(p_c, t42, (&v_ctps_7));
+        bool t43 = f846_check_Checker_hasTpIn(p_c, t42, (&v_ctps_7));
         b41 = t43;
       }
       b40 = b41;
     }
     bool c44 = b40;
     if (c44) {
-      obx_str t45 = rt_str_concat(sl2782, v_pn_35);
-      obx_str t46 = rt_str_concat(t45, sl2783);
+      obx_str t45 = rt_str_concat(sl2784, v_pn_35);
+      obx_str t46 = rt_str_concat(t45, sl2785);
       f702_check_Checker_err(p_c, v_pw_37, t46);
     }
     int64_t ifx47;
@@ -50823,7 +51300,7 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
     bool c57 = v_dup_52;
     if (c57) {
       obx_str t58 = rt_str_concat(sl1809, v_pn_35);
-      obx_str t59 = rt_str_concat(t58, sl2431);
+      obx_str t59 = rt_str_concat(t58, sl2430);
       f702_check_Checker_err(p_c, v_pw_37, t59);
     }
     obx_str ap60 = rt_str_dup(v_pn_35);
@@ -50843,12 +51320,12 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
   bool b66 = b65;
   if (b66) {
     int64_t t67 = f501_sema_Program_tb((&(*p_c)->f_pg), v_want_10);
-    bool t68 = f837_check_Checker_hasTpIn(p_c, t67, (&v_ctps_7));
+    bool t68 = f846_check_Checker_hasTpIn(p_c, t67, (&v_ctps_7));
     b66 = t68;
   }
   bool c69 = b66;
   if (c69) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2784);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2786);
   }
   int64_t ifx70;
   if ((v_n_2.f_b >= 0LL)) {
@@ -50868,9 +51345,9 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
   bool t75 = f621_sema_Program_isBorrow((&(*p_c)->f_pg), v_ret_74);
   bool c76 = t75;
   if (c76) {
-    f702_check_Checker_err(p_c, v_n_2.f_line, sl2785);
+    f702_check_Checker_err(p_c, v_n_2.f_line, sl2787);
   }
-  S84_check_Ctx* t77 = f737_check_newCtx(-1LL, sl2786, v_ret_74, v_env_5, v_mod_3, true);
+  S84_check_Ctx* t77 = f737_check_newCtx(-1LL, sl2788, v_ret_74, v_env_5, v_mod_3, true);
   S84_check_Ctx* old78 = *(&(*p_c)->f_cx);
   *(&(*p_c)->f_cx) = t77;
   S84_check_Ctx* v_outer_79 = old78;
@@ -50888,15 +51365,15 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
   if (c85) {
     bool c86 = (v_ret_74 == 12LL);
     if (c86) {
-      f702_check_Checker_err(p_c, v_n_2.f_line, sl2787);
+      f702_check_Checker_err(p_c, v_n_2.f_line, sl2789);
     }
     bool c87 = (v_ret_74 != 11LL);
     if (c87) {
-      f702_check_Checker_err(p_c, v_n_2.f_line, sl2788);
+      f702_check_Checker_err(p_c, v_n_2.f_line, sl2790);
     }
     f743_check_Checker_dropScope(p_c, 0LL);
   }
-  S84_check_Ctx* t88 = *(S84_check_Ctx**)rt_arr_pop((&(*p_c)->f_outers), sizeof(S84_check_Ctx*), "check.obx:2721");
+  S84_check_Ctx* t88 = *(S84_check_Ctx**)rt_arr_pop((&(*p_c)->f_outers), sizeof(S84_check_Ctx*), "check.obx:2838");
   S84_check_Ctx* old89 = *(&(*p_c)->f_cx);
   *(&(*p_c)->f_cx) = t88;
   S84_check_Ctx* v_cx_90 = old89;
@@ -50926,30 +51403,30 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
   S81_check_Lifted* t105 = o104;
   S81_check_Lifted* ap106 = t105;
   *(S81_check_Lifted**)rt_arr_push((&(*p_c)->f_lifted), sizeof(S81_check_Lifted*)) = ap106;
-  obx_arr a107 = rt_arr_new(0, sizeof(S99_check_Cap));
+  obx_arr a107 = rt_arr_new(0, sizeof(S100_check_Cap));
   obx_arr v_caps_108 = a107;
   obx_slice ap109 = rt_as_slice(&v_cx_90->f_capVars);
   for (int64_t i110 = 0; i110 < ap109.len; i110++) {
     int64_t v_pv_111 = ((int64_t*)ap109.data)[i110];
     int64_t ix112 = v_pv_111;
-    int64_t v_cap_113 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix112, ((*p_c)->f_vars).len, "check.obx:2728")].f_cap;
+    int64_t v_cap_113 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix112, ((*p_c)->f_vars).len, "check.obx:2845")].f_cap;
     int64_t ix114 = v_pv_111;
-    bool v_cm_115 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix114, ((*p_c)->f_vars).len, "check.obx:2729")].f_capmut;
-    f789_check_Checker_frozen(p_c, v_cap_113, (v_cm_115 ? 3LL : 0LL), v_n_2.f_line);
-    S99_check_Cap t117 = ((S99_check_Cap){.f_v = v_cap_113, .f_m = v_cm_115});
-    S99_check_Cap ap118 = t117;
-    *(S99_check_Cap*)rt_arr_push((&v_caps_108), sizeof(S99_check_Cap)) = ap118;
+    bool v_cm_115 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix114, ((*p_c)->f_vars).len, "check.obx:2846")].f_capmut;
+    f793_check_Checker_frozen(p_c, v_cap_113, (v_cm_115 ? 3LL : 0LL), v_n_2.f_line);
+    S100_check_Cap t117 = ((S100_check_Cap){.f_v = v_cap_113, .f_m = v_cm_115});
+    S100_check_Cap ap118 = t117;
+    *(S100_check_Cap*)rt_arr_push((&v_caps_108), sizeof(S100_check_Cap)) = ap118;
   }
   obx_str v_en_119 = sl1884;
   bool c120 = ((v_caps_108).len > 0LL);
   if (c120) {
-    obx_str t121 = f771_check_Checker_fresh(p_c, sl2789);
+    obx_str t121 = f771_check_Checker_fresh(p_c, sl2791);
     { obx_str nw122 = t121;
       rt_str_drop(v_en_119);
       v_en_119 = nw122; }
     S3_std_StrBuf* t123 = f13_std_newStrBuf();
     S3_std_StrBuf* v_b_124 = t123;
-    obx_str t125 = rt_str_concat(sl2790, v_en_119);
+    obx_str t125 = rt_str_concat(sl2792, v_en_119);
     obx_str t126 = rt_str_concat(t125, sl32);
     obx_str t127 = rt_int_to_str((v_caps_108).len);
     obx_str t128 = rt_str_concat(t126, t127);
@@ -50966,8 +51443,8 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
         f15_std_StrBuf_add((&v_b_124), sl1754);
       }
       int64_t ix133 = v_i_131;
-      int64_t ix134 = ((S99_check_Cap*)(v_caps_108).data)[rt_idx(ix133, (v_caps_108).len, "check.obx:2740")].f_v;
-      obx_str t135 = rt_str_concat(sl2791, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix134, ((*p_c)->f_vars).len, "check.obx:2740")].f_c);
+      int64_t ix134 = ((S100_check_Cap*)(v_caps_108).data)[rt_idx(ix133, (v_caps_108).len, "check.obx:2857")].f_v;
+      obx_str t135 = rt_str_concat(sl2793, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix134, ((*p_c)->f_vars).len, "check.obx:2857")].f_c);
       f15_std_StrBuf_add((&v_b_124), t135);
     }
     f15_std_StrBuf_add((&v_b_124), sl2263);
@@ -50978,10 +51455,10 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
   S80_check_Hole t137 = ((S80_check_Hole){.f_k = 7LL, .f_t = -1LL, .f_f = v_k_91, .f_s = sl183, .f_r = sl183, .f_args = sl183, .f_nargs = 0LL});
   obx_str t138 = f707_check_Checker_hole(p_c, t137);
   obx_str v_h_139 = t138;
-  obx_str t140 = rt_str_concat(sl2497, v_h_139);
-  obx_str t141 = rt_str_concat(t140, sl2498);
+  obx_str t140 = rt_str_concat(sl2498, v_h_139);
+  obx_str t141 = rt_str_concat(t140, sl2499);
   obx_str t142 = rt_str_concat(t141, v_en_119);
-  obx_str t143 = rt_str_concat(t142, sl2499);
+  obx_str t143 = rt_str_concat(t142, sl2500);
   int64_t t144 = f604_sema_Program_mkClo((&(*p_c)->f_pg), (&v_ptys_27), v_ret_74);
   S87_check_Val t145 = f734_check_rv(t143, t144);
   S87_check_Val v_r_146 = t145;
@@ -50990,7 +51467,7 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
   rt_str_drop(t140);
   obx_arr ap147 = v_caps_108;
   *(obx_arr*)rt_arr_push((&(*p_c)->f_capl), sizeof(obx_arr)) = ap147;
-  v_r_146.f_caps = rt_sub_int(((*p_c)->f_capl).len, 1LL, "check.obx:2748");
+  v_r_146.f_caps = rt_sub_int(((*p_c)->f_capl).len, 1LL, "check.obx:2865");
   S87_check_Val r148 = gl67_dup(v_r_146);
   gl68_drop(v_r_146);
   rt_str_drop(v_h_139);
@@ -51002,7 +51479,7 @@ static S87_check_Val f862_check_Checker_xClosure(S73_check_Checker** p_c, int64_
   gl49_drop(v_n_2);
   return r148;
 }
-static S87_check_Val f861_check_Checker_xName(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
+static S87_check_Val f870_check_Checker_xName(S73_check_Checker** p_c, int64_t p_e, int64_t p_exp) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   int64_t t3 = f711_check_Checker_lookupVar(p_c, rt_str_dup(v_n_2.f_s), true);
@@ -51010,56 +51487,53 @@ static S87_check_Val f861_check_Checker_xName(S73_check_Checker** p_c, int64_t p
   bool c5 = (v_vx_4 >= 0LL);
   if (c5) {
     int64_t ix6 = v_vx_4;
-    bool c7 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix6, ((*p_c)->f_vars).len, "check.obx:2287")].f_moved;
+    bool c7 = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix6, ((*p_c)->f_vars).len, "check.obx:2404")].f_moved;
     if (c7) {
-      int64_t ix8 = v_vx_4;
-      obx_str t9 = rt_str_concat(sl1809, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix8, ((*p_c)->f_vars).len, "check.obx:2287")].f_name);
-      obx_str t10 = rt_str_concat(t9, sl2439);
-      f702_check_Checker_err(p_c, v_n_2.f_line, t10);
+      f792_check_Checker_movedErr(p_c, v_vx_4, v_n_2.f_line);
     }
-    f789_check_Checker_frozen(p_c, v_vx_4, 0LL, v_n_2.f_line);
-    int64_t ix11 = v_vx_4;
-    obx_str t12 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix11, ((*p_c)->f_vars).len, "check.obx:2289")].f_c);
+    f793_check_Checker_frozen(p_c, v_vx_4, 0LL, v_n_2.f_line);
+    int64_t ix8 = v_vx_4;
+    obx_str t9 = rt_str_dup(((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix8, ((*p_c)->f_vars).len, "check.obx:2406")].f_c);
+    int64_t ix10 = v_vx_4;
+    S87_check_Val t11 = f735_check_val(t9, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix10, ((*p_c)->f_vars).len, "check.obx:2406")].f_t, 2LL);
+    S87_check_Val v_v_12 = t11;
+    v_v_12.f_root = v_vx_4;
     int64_t ix13 = v_vx_4;
-    S87_check_Val t14 = f735_check_val(t12, ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix13, ((*p_c)->f_vars).len, "check.obx:2289")].f_t, 2LL);
-    S87_check_Val v_v_15 = t14;
-    v_v_15.f_root = v_vx_4;
-    int64_t ix16 = v_vx_4;
-    v_v_15.f_mutable = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix16, ((*p_c)->f_vars).len, "check.obx:2291")].f_mutable;
-    v_v_15.f_vvar = v_vx_4;
-    S87_check_Val r17 = gl67_dup(v_v_15);
-    gl68_drop(v_v_15);
+    v_v_12.f_mutable = ((S85_check_Var*)((*p_c)->f_vars).data)[rt_idx(ix13, ((*p_c)->f_vars).len, "check.obx:2408")].f_mutable;
+    v_v_12.f_vvar = v_vx_4;
+    S87_check_Val r14 = gl67_dup(v_v_12);
+    gl68_drop(v_v_12);
     gl49_drop(v_n_2);
-    return r17;
+    return r14;
   }
-  bool t18 = f876_check_Checker_isBuiltinHere(p_c, rt_str_dup(v_n_2.f_s));
-  bool b19 = t18;
-  if (!b19) {
-    int64_t t20 = f878_check_intrinsic(rt_str_dup(v_n_2.f_s));
-    b19 = (t20 >= 0LL);
+  bool t15 = f885_check_Checker_isBuiltinHere(p_c, rt_str_dup(v_n_2.f_s));
+  bool b16 = t15;
+  if (!b16) {
+    int64_t t17 = f887_check_intrinsic(rt_str_dup(v_n_2.f_s));
+    b16 = (t17 >= 0LL);
   }
-  bool c21 = b19;
-  if (c21) {
-    obx_str t22 = rt_str_concat(v_n_2.f_s, sl2792);
-    f702_check_Checker_err(p_c, v_n_2.f_line, t22);
+  bool c18 = b16;
+  if (c18) {
+    obx_str t19 = rt_str_concat(v_n_2.f_s, sl2794);
+    f702_check_Checker_err(p_c, v_n_2.f_line, t19);
   }
-  S1_check_St t23 = f710_check_Checker_static(p_c, p_e);
-  S1_check_St v_st_24 = t23;
-  bool c25 = (v_st_24.f_k == 0LL);
-  if (c25) {
-    obx_str t26 = rt_str_concat(sl1885, v_n_2.f_s);
-    obx_str t27 = rt_str_concat(t26, sl1809);
-    f702_check_Checker_err(p_c, v_n_2.f_line, t27);
+  S1_check_St t20 = f710_check_Checker_static(p_c, p_e);
+  S1_check_St v_st_21 = t20;
+  bool c22 = (v_st_21.f_k == 0LL);
+  if (c22) {
+    obx_str t23 = rt_str_concat(sl1885, v_n_2.f_s);
+    obx_str t24 = rt_str_concat(t23, sl1809);
+    f702_check_Checker_err(p_c, v_n_2.f_line, t24);
   }
-  S87_check_Val t28 = f889_check_Checker_staticValue(p_c, v_st_24, p_e, p_exp);
-  S87_check_Val r29 = t28;
+  S87_check_Val t25 = f898_check_Checker_staticValue(p_c, v_st_21, p_e, p_exp);
+  S87_check_Val r26 = t25;
   gl49_drop(v_n_2);
-  return r29;
+  return r26;
 }
-static S87_check_Val f860_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p_text, int64_t p_line, int64_t p_exp) {
+static S87_check_Val f869_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p_text, int64_t p_line, int64_t p_exp) {
   bool c1 = (p_exp == 7LL);
   if (c1) {
-    S87_check_Val t2 = f917_check_Checker_fconst(p_c, rt_str_dup(p_text), p_line);
+    S87_check_Val t2 = f927_check_Checker_fconst(p_c, rt_str_dup(p_text), p_line);
     S87_check_Val r3 = t2;
     rt_str_drop(p_text);
     return r3;
@@ -51078,7 +51552,7 @@ static S87_check_Val f860_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p
   int64_t t16 = (v_neg_5 ? 1LL : 0LL);
   int64_t end17 = ((int64_t)(p_text).len);
   for (int64_t v_i_18 = t16; v_i_18 < end17; v_i_18++) {
-    uint8_t t19 = rt_str_byte(p_text, v_i_18, "check.obx:2077");
+    uint8_t t19 = rt_str_byte(p_text, v_i_18, "check.obx:2194");
     uint8_t v_x_20 = t19;
     bool b21 = (v_x_20 >= ((uint8_t)65));
     if (b21) {
@@ -51086,7 +51560,7 @@ static S87_check_Val f860_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p
     }
     bool c22 = b21;
     if (c22) {
-      v_x_20 = rt_add_byte(v_x_20, ((uint8_t)32), "check.obx:2078");
+      v_x_20 = rt_add_byte(v_x_20, ((uint8_t)32), "check.obx:2195");
     }
     bool b23 = (v_part_14 == 0LL);
     if (b23) {
@@ -51140,17 +51614,17 @@ static S87_check_Val f860_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p
   S65_num_Big v_e_39 = t38;
   bool c40 = (((int64_t)(v_es_37).len) > 0LL);
   if (c40) {
-    uint8_t t41 = rt_str_byte(v_es_37, 0LL, "check.obx:2099");
+    uint8_t t41 = rt_str_byte(v_es_37, 0LL, "check.obx:2216");
     bool v_eneg_42 = (t41 == ((uint8_t)45));
-    uint8_t t43 = rt_str_byte(v_es_37, 0LL, "check.obx:2100");
+    uint8_t t43 = rt_str_byte(v_es_37, 0LL, "check.obx:2217");
     bool b44 = (t43 == ((uint8_t)45));
     if (!b44) {
-      uint8_t t45 = rt_str_byte(v_es_37, 0LL, "check.obx:2100");
+      uint8_t t45 = rt_str_byte(v_es_37, 0LL, "check.obx:2217");
       b44 = (t45 == ((uint8_t)43));
     }
     obx_str ifx46;
     if (b44) {
-      obx_str t47 = rt_str_sub(v_es_37, 1LL, (v_es_37).len, "check.obx:2100");
+      obx_str t47 = rt_str_sub(v_es_37, 1LL, (v_es_37).len, "check.obx:2217");
       ifx46 = t47;
     } else {
       ifx46 = rt_str_dup(v_es_37);
@@ -51169,19 +51643,19 @@ static S87_check_Val f860_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p
   bool t55 = f561_sema_inRange(gl43_dup(v_units_35), 5LL);
   bool c56 = (!t55);
   if (c56) {
-    obx_str t57 = rt_str_concat(sl2793, p_text);
-    obx_str t58 = rt_str_concat(t57, sl2794);
+    obx_str t57 = rt_str_concat(sl2795, p_text);
+    obx_str t58 = rt_str_concat(t57, sl2796);
     f702_check_Checker_err(p_c, p_line, t58);
   }
   bool t59 = f561_sema_inRange(gl43_dup(v_scale_54), 0LL);
   bool c60 = (!t59);
   if (c60) {
     int64_t t61 = p_line;
-    obx_str t62 = rt_str_concat(sl2795, p_text);
-    obx_str t63 = rt_str_concat(t62, sl2796);
+    obx_str t62 = rt_str_concat(sl2797, p_text);
+    obx_str t63 = rt_str_concat(t62, sl2798);
     obx_str t64 = f506_num_bigStr(gl43_dup(v_scale_54));
     obx_str t65 = rt_str_concat(t63, t64);
-    obx_str t66 = rt_str_concat(t65, sl2797);
+    obx_str t66 = rt_str_concat(t65, sl2799);
     f702_check_Checker_err(p_c, t61, t66);
   }
   obx_arr a67 = rt_arr_new(0, sizeof(S83_check_Arg));
@@ -51202,31 +51676,31 @@ static S87_check_Val f860_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p
   rt_str_drop(t75);
   bool c80 = (p_exp >= 0LL);
   if (c80) {
-    S94_check_Sig* t81 = f885_check_Checker_assocSig(p_c, p_exp, sl2798, p_line, true);
-    S94_check_Sig* v_sig_82 = t81;
+    S95_check_Sig* t81 = f894_check_Checker_assocSig(p_c, p_exp, sl2800, p_line, true);
+    S95_check_Sig* v_sig_82 = t81;
     bool b83 = (v_sig_82->f_kind >= 0LL);
     if (b83) {
       b83 = ((v_sig_82->f_params).len == 2LL);
     }
     bool b84 = b83;
     if (b84) {
-      int64_t t85 = f523_sema_Program_subst((&(*p_c)->f_pg), ((int64_t*)(v_sig_82->f_params).data)[rt_idx(0LL, (v_sig_82->f_params).len, "check.obx:2116")], (&v_sig_82->f_bind));
+      int64_t t85 = f523_sema_Program_subst((&(*p_c)->f_pg), ((int64_t*)(v_sig_82->f_params).data)[rt_idx(0LL, (v_sig_82->f_params).len, "check.obx:2233")], (&v_sig_82->f_bind));
       b84 = (t85 == 5LL);
     }
     bool b86 = b84;
     if (b86) {
-      int64_t t87 = f523_sema_Program_subst((&(*p_c)->f_pg), ((int64_t*)(v_sig_82->f_params).data)[rt_idx(1LL, (v_sig_82->f_params).len, "check.obx:2117")], (&v_sig_82->f_bind));
+      int64_t t87 = f523_sema_Program_subst((&(*p_c)->f_pg), ((int64_t*)(v_sig_82->f_params).data)[rt_idx(1LL, (v_sig_82->f_params).len, "check.obx:2234")], (&v_sig_82->f_bind));
       b86 = (t87 == 0LL);
     }
     bool c88 = b86;
     if (c88) {
-      S95_check_CallOpts* t89 = f834_check_noOpts();
-      S95_check_CallOpts* v_o_90 = t89;
+      S96_check_CallOpts* t89 = f843_check_noOpts();
+      S96_check_CallOpts* v_o_90 = t89;
       S87_check_Val t91 = f733_check_voidVal(false);
-      S87_check_Val t92 = f835_check_Checker_call(p_c, (&v_sig_82), false, t91, (&v_args_68), p_line, p_exp, (&v_o_90));
+      S87_check_Val t92 = f844_check_Checker_call(p_c, (&v_sig_82), false, t91, (&v_args_68), p_line, p_exp, (&v_o_90));
       S87_check_Val r93 = t92;
-      gl83_drop(v_o_90);
-      gl84_drop(v_sig_82);
+      gl84_drop(v_o_90);
+      gl85_drop(v_sig_82);
       gl62_drop(v_args_68);
       gl44_drop(v_scale_54);
       gl44_drop(v_e_39);
@@ -51239,24 +51713,24 @@ static S87_check_Val f860_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p
       rt_str_drop(p_text);
       return r93;
     }
-    gl84_drop(v_sig_82);
+    gl85_drop(v_sig_82);
   }
-  S0_sema_Sym t94 = f579_sema_Program_lookup((&(*p_c)->f_pg), (*p_c)->f_cx->f_mod, sl2798);
+  S0_sema_Sym t94 = f579_sema_Program_lookup((&(*p_c)->f_pg), (*p_c)->f_cx->f_mod, sl2800);
   S0_sema_Sym v_d_95 = t94;
   bool c96 = (v_d_95.f_k != 1LL);
   if (c96) {
-    f702_check_Checker_err(p_c, p_line, sl2799);
+    f702_check_Checker_err(p_c, p_line, sl2801);
   }
   obx_arr a97 = rt_arr_new(0, sizeof(int64_t));
-  S94_check_Sig* t98 = f853_check_Checker_fnSig(p_c, v_d_95.f_i, a97);
-  S94_check_Sig* v_sig_99 = t98;
-  S95_check_CallOpts* t100 = f834_check_noOpts();
-  S95_check_CallOpts* v_o_101 = t100;
+  S95_check_Sig* t98 = f862_check_Checker_fnSig(p_c, v_d_95.f_i, a97);
+  S95_check_Sig* v_sig_99 = t98;
+  S96_check_CallOpts* t100 = f843_check_noOpts();
+  S96_check_CallOpts* v_o_101 = t100;
   S87_check_Val t102 = f733_check_voidVal(false);
-  S87_check_Val t103 = f835_check_Checker_call(p_c, (&v_sig_99), false, t102, (&v_args_68), p_line, p_exp, (&v_o_101));
+  S87_check_Val t103 = f844_check_Checker_call(p_c, (&v_sig_99), false, t102, (&v_args_68), p_line, p_exp, (&v_o_101));
   S87_check_Val r104 = t103;
-  gl83_drop(v_o_101);
-  gl84_drop(v_sig_99);
+  gl84_drop(v_o_101);
+  gl85_drop(v_sig_99);
   gl62_drop(v_args_68);
   gl44_drop(v_scale_54);
   gl44_drop(v_e_39);
@@ -51269,7 +51743,7 @@ static S87_check_Val f860_check_Checker_xFrac(S73_check_Checker** p_c, obx_str p
   rt_str_drop(p_text);
   return r104;
 }
-static S87_check_Val f917_check_Checker_fconst(S73_check_Checker** p_c, obx_str p_text, int64_t p_line) {
+static S87_check_Val f927_check_Checker_fconst(S73_check_Checker** p_c, obx_str p_text, int64_t p_line) {
   double t1 = f575_num_floatOfText(rt_str_dup(p_text));
   double v_x_2 = t1;
   bool b3 = (v_x_2 != v_x_2);
@@ -51287,23 +51761,23 @@ static S87_check_Val f917_check_Checker_fconst(S73_check_Checker** p_c, obx_str 
   rt_str_drop(p_text);
   return r8;
 }
-static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_e, bool p_mut1) {
+static S87_check_Val f868_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_e, bool p_mut1) {
   S49_syntax_Node t1 = f703_check_Checker_nd(p_c, p_e);
   S49_syntax_Node v_n_2 = t1;
   S87_check_Val t3 = f754_check_Checker_expr(p_c, v_n_2.f_a, -1LL);
   S87_check_Val t4 = f768_check_Checker_deref(p_c, t3);
   S87_check_Val v_v_5 = t4;
-  obx_str t6 = f829_check_Checker_W(p_c, v_n_2.f_line);
+  obx_str t6 = f838_check_Checker_W(p_c, v_n_2.f_line);
   obx_str v_W_7 = t6;
   bool c8 = (v_v_5.f_t == 9LL);
   if (c8) {
-    S87_check_Val t9 = f918_check_Checker_beforeOpt(p_c, gl67_dup(v_v_5), v_n_2.f_b, v_n_2.f_c);
+    S87_check_Val t9 = f928_check_Checker_beforeOpt(p_c, gl67_dup(v_v_5), v_n_2.f_b, v_n_2.f_c);
     { S87_check_Val nw10 = t9;
       gl68_drop(v_v_5);
       v_v_5 = nw10; }
     obx_str ifx11;
     if ((v_n_2.f_b >= 0LL)) {
-      obx_str t12 = f916_check_Checker_intIndex(p_c, v_n_2.f_b);
+      obx_str t12 = f926_check_Checker_intIndex(p_c, v_n_2.f_b);
       ifx11 = t12;
     } else {
       ifx11 = sl1990;
@@ -51311,16 +51785,16 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
     obx_str v_lo_13 = ifx11;
     obx_str ifx14;
     if ((v_n_2.f_c >= 0LL)) {
-      obx_str t15 = f916_check_Checker_intIndex(p_c, v_n_2.f_c);
+      obx_str t15 = f926_check_Checker_intIndex(p_c, v_n_2.f_c);
       ifx14 = t15;
     } else {
       obx_str t16 = rt_str_concat(sl30, v_v_5.f_c);
-      obx_str t17 = rt_str_concat(t16, sl2730);
+      obx_str t17 = rt_str_concat(t16, sl2732);
       ifx14 = t17;
       rt_str_drop(t16);
     }
     obx_str v_hi_18 = ifx14;
-    obx_str t19 = rt_str_concat(sl2800, v_v_5.f_c);
+    obx_str t19 = rt_str_concat(sl2802, v_v_5.f_c);
     obx_str t20 = rt_str_concat(t19, sl1754);
     obx_str t21 = rt_str_concat(t20, v_lo_13);
     obx_str t22 = rt_str_concat(t21, sl1754);
@@ -51353,7 +51827,7 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
   bool c32 = b31;
   if (c32) {
     int64_t t33 = v_n_2.f_line;
-    obx_str t34 = sl2801;
+    obx_str t34 = sl2803;
     obx_str t35 = f767_check_Checker_tstr(p_c, v_v_5.f_t);
     obx_str t36 = rt_str_concat(t34, t35);
     f702_check_Checker_err(p_c, t33, t36);
@@ -51371,8 +51845,8 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
     bool c42 = (v_v_5.f_gk >= 0LL);
     if (c42) {
       int64_t t43 = v_n_2.f_line;
-      obx_str t44 = sl2802;
-      obx_str t45 = f792_check_Checker_gname(p_c, v_v_5.f_gk, v_v_5.f_gi);
+      obx_str t44 = sl2804;
+      obx_str t45 = f796_check_Checker_gname(p_c, v_v_5.f_gk, v_v_5.f_gi);
       obx_str t46 = rt_str_concat(t44, t45);
       obx_str t47 = rt_str_concat(t46, sl1809);
       f702_check_Checker_err(p_c, t43, t47);
@@ -51383,9 +51857,9 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
     }
     bool c49 = b48;
     if (c49) {
-      f849_check_Checker_immutable(p_c, gl67_dup(v_v_5), v_n_2.f_line, sl2803);
+      f858_check_Checker_immutable(p_c, gl67_dup(v_v_5), v_n_2.f_line, sl2805);
     }
-    obx_str t50 = rt_str_concat(sl2513, v_v_5.f_c);
+    obx_str t50 = rt_str_concat(sl2514, v_v_5.f_c);
     obx_str t51 = rt_str_concat(t50, sl31);
     { obx_str nw52 = t51;
       rt_str_drop(v_base_37);
@@ -51399,7 +51873,7 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
     }
     bool c55 = b53;
     if (c55) {
-      f702_check_Checker_err(p_c, v_n_2.f_line, sl2581);
+      f702_check_Checker_err(p_c, v_n_2.f_line, sl2583);
     }
     { obx_str nw56 = rt_str_dup(v_v_5.f_c);
       rt_str_drop(v_base_37);
@@ -51407,28 +51881,28 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
   }
   bool c57 = p_mut1;
   if (c57) {
-    f789_check_Checker_frozen(p_c, v_v_5.f_root, 3LL, v_n_2.f_line);
+    f793_check_Checker_frozen(p_c, v_v_5.f_root, 3LL, v_n_2.f_line);
   }
-  bool t58 = f919_check_Checker_actsOpt(p_c, v_n_2.f_b);
+  bool t58 = f929_check_Checker_actsOpt(p_c, v_n_2.f_b);
   bool b59 = t58;
   if (!b59) {
-    bool t60 = f919_check_Checker_actsOpt(p_c, v_n_2.f_c);
+    bool t60 = f929_check_Checker_actsOpt(p_c, v_n_2.f_c);
     b59 = t60;
   }
   bool c61 = b59;
   if (c61) {
-    S87_check_Val t62 = f813_check_Checker_seq(p_c, gl67_dup(v_v_5));
+    S87_check_Val t62 = f818_check_Checker_seq(p_c, gl67_dup(v_v_5));
     { S87_check_Val nw63 = t62;
       gl68_drop(v_v_5);
       v_v_5 = nw63; }
   }
   int64_t v_mark_64 = ((*p_c)->f_cx->f_pending).len;
   S87_check_Val t65 = gl67_dup(v_v_5);
-  int64_t t66 = f825_check_Checker_newCid(p_c);
-  f826_check_Checker_hold(p_c, t65, 0LL, t66, v_n_2.f_line);
+  int64_t t66 = f834_check_Checker_newCid(p_c);
+  f835_check_Checker_hold(p_c, t65, 0LL, t66, v_n_2.f_line);
   obx_str ifx67;
   if ((v_n_2.f_b >= 0LL)) {
-    obx_str t68 = f916_check_Checker_intIndex(p_c, v_n_2.f_b);
+    obx_str t68 = f926_check_Checker_intIndex(p_c, v_n_2.f_b);
     ifx67 = t68;
   } else {
     ifx67 = sl1990;
@@ -51436,23 +51910,23 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
   obx_str v_lo_69 = ifx67;
   obx_str ifx70;
   if ((v_n_2.f_c >= 0LL)) {
-    obx_str t71 = f916_check_Checker_intIndex(p_c, v_n_2.f_c);
+    obx_str t71 = f926_check_Checker_intIndex(p_c, v_n_2.f_c);
     ifx70 = t71;
   } else {
     obx_str t72 = rt_str_concat(sl30, v_base_37);
-    obx_str t73 = rt_str_concat(t72, sl2730);
+    obx_str t73 = rt_str_concat(t72, sl2732);
     ifx70 = t73;
     rt_str_drop(t72);
   }
   obx_str v_hi_74 = ifx70;
   f753_check_Checker_cutPending(p_c, v_mark_64);
-  obx_str t75 = f771_check_Checker_fresh(p_c, sl2460);
+  obx_str t75 = f771_check_Checker_fresh(p_c, sl2461);
   obx_str v_sv_76 = t75;
   int64_t t77 = f498_sema_Program_ta((&(*p_c)->f_pg), v_v_5.f_t);
   obx_str t78 = f732_check_Checker_T(p_c, t77);
   obx_str v_ct_79 = t78;
-  obx_str t80 = rt_str_concat(sl2512, v_sv_76);
-  obx_str t81 = rt_str_concat(t80, sl2804);
+  obx_str t80 = rt_str_concat(sl2513, v_sv_76);
+  obx_str t81 = rt_str_concat(t80, sl2806);
   obx_str t82 = rt_str_concat(t81, v_base_37);
   obx_str t83 = rt_str_concat(t82, sl1754);
   obx_str t84 = rt_str_concat(t83, v_lo_69);
@@ -51460,7 +51934,7 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
   obx_str t86 = rt_str_concat(t85, v_hi_74);
   obx_str t87 = rt_str_concat(t86, sl2343);
   obx_str t88 = rt_str_concat(t87, v_ct_79);
-  obx_str t89 = rt_str_concat(t88, sl2704);
+  obx_str t89 = rt_str_concat(t88, sl2706);
   obx_str t90 = rt_str_concat(t89, v_W_7);
   obx_str t91 = rt_str_concat(t90, sl2298);
   f744_check_Checker_emit(p_c, t91);
@@ -51478,7 +51952,7 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
   obx_str t92 = rt_str_dup(v_sv_76);
   int64_t t93 = f498_sema_Program_ta((&(*p_c)->f_pg), v_v_5.f_t);
   int64_t t94 = f607_sema_Program_mkSlice((&(*p_c)->f_pg), t93, p_mut1);
-  S87_check_Val t95 = f795_check_rvAt(t92, t94, v_v_5.f_root, rt_str_dup(v_v_5.f_path));
+  S87_check_Val t95 = f799_check_rvAt(t92, t94, v_v_5.f_root, rt_str_dup(v_v_5.f_path));
   S87_check_Val r96 = t95;
   rt_str_drop(v_ct_79);
   rt_str_drop(v_sv_76);
@@ -51490,16 +51964,16 @@ static S87_check_Val f859_check_Checker_xSub(S73_check_Checker** p_c, int64_t p_
   gl49_drop(v_n_2);
   return r96;
 }
-static bool f919_check_Checker_actsOpt(S73_check_Checker** p_c, int64_t p_e) {
+static bool f929_check_Checker_actsOpt(S73_check_Checker** p_c, int64_t p_e) {
   bool b1 = (p_e >= 0LL);
   if (b1) {
-    bool t2 = f812_check_Checker_acts(p_c, p_e);
+    bool t2 = f817_check_Checker_acts(p_c, p_e);
     b1 = t2;
   }
   bool r3 = b1;
   return r3;
 }
-static S87_check_Val f918_check_Checker_beforeOpt(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_a, int64_t p_b) {
+static S87_check_Val f928_check_Checker_beforeOpt(S73_check_Checker** p_c, S87_check_Val p_v, int64_t p_a, int64_t p_b) {
   obx_arr a1 = rt_arr_new(0, sizeof(int64_t));
   obx_arr v_later_2 = a1;
   bool c3 = (p_a >= 0LL);
@@ -51512,13 +51986,13 @@ static S87_check_Val f918_check_Checker_beforeOpt(S73_check_Checker** p_c, S87_c
     int64_t ap6 = p_b;
     *(int64_t*)rt_arr_push((&v_later_2), sizeof(int64_t)) = ap6;
   }
-  S87_check_Val t7 = f809_check_Checker_before(p_c, gl67_dup(p_v), (&v_later_2));
+  S87_check_Val t7 = f814_check_Checker_before(p_c, gl67_dup(p_v), (&v_later_2));
   S87_check_Val r8 = t7;
   gl9_drop(v_later_2);
   gl68_drop(p_v);
   return r8;
 }
-static int64_t f858_check_Checker_ek(S73_check_Checker** p_c, int64_t p_exp) {
+static int64_t f867_check_Checker_ek(S73_check_Checker** p_c, int64_t p_exp) {
   bool c1 = (p_exp == -1LL);
   if (c1) {
     int64_t r2 = -1LL;
@@ -51533,7 +52007,7 @@ static int64_t f858_check_Checker_ek(S73_check_Checker** p_c, int64_t p_exp) {
   int64_t r6 = t5;
   return r6;
 }
-static S87_check_Val f857_check_Checker_xInt(S73_check_Checker** p_c, S65_num_Big p_v, int64_t p_line, int64_t p_exp) {
+static S87_check_Val f866_check_Checker_xInt(S73_check_Checker** p_c, S65_num_Big p_v, int64_t p_line, int64_t p_exp) {
   bool b1 = (p_exp >= 0LL);
   if (b1) {
     bool b2 = (p_exp < 7LL);
@@ -51546,7 +52020,7 @@ static S87_check_Val f857_check_Checker_xInt(S73_check_Checker** p_c, S65_num_Bi
   bool c5 = (v_t_4 == 7LL);
   if (c5) {
     obx_str t6 = f506_num_bigStr(gl43_dup(p_v));
-    S87_check_Val t7 = f917_check_Checker_fconst(p_c, t6, p_line);
+    S87_check_Val t7 = f927_check_Checker_fconst(p_c, t6, p_line);
     S87_check_Val r8 = t7;
     gl44_drop(p_v);
     return r8;
@@ -51555,14 +52029,14 @@ static S87_check_Val f857_check_Checker_xInt(S73_check_Checker** p_c, S65_num_Bi
   bool c10 = (!t9);
   if (c10) {
     int64_t t11 = p_line;
-    obx_str t12 = sl2805;
+    obx_str t12 = sl2807;
     obx_str t13 = f506_num_bigStr(gl43_dup(p_v));
     obx_str t14 = rt_str_concat(t12, t13);
     obx_str t15 = rt_str_concat(t14, sl2128);
     obx_slice t16 = k4_sema_PRIM_NAMES;
     int64_t ix17 = v_t_4;
-    obx_str t18 = rt_str_concat(t15, ((obx_str*)(t16).data)[rt_idx(ix17, (t16).len, "check.obx:2056")]);
-    obx_str t19 = rt_str_concat(t18, sl2806);
+    obx_str t18 = rt_str_concat(t15, ((obx_str*)(t16).data)[rt_idx(ix17, (t16).len, "check.obx:2173")]);
+    obx_str t19 = rt_str_concat(t18, sl2808);
     f702_check_Checker_err(p_c, t11, t19);
   }
   obx_str t20 = f736_check_cint(gl43_dup(p_v), v_t_4);
@@ -51589,10 +52063,10 @@ static void f749_check_Checker_pushScope(S73_check_Checker** p_c) {
   *(S86_check_Scope**)rt_arr_push((&(*p_c)->f_cx->f_scopes), sizeof(S86_check_Scope*)) = ap5;
 }
 static int64_t f738_check_Checker_newVar(S73_check_Checker** p_c, obx_str p_name, obx_str p_cn, int64_t p_t, bool p_mutable, int64_t p_kind, int64_t p_line) {
-  S85_check_Var t1 = ((S85_check_Var){.f_name = rt_str_dup(p_name), .f_c = rt_str_dup(p_cn), .f_t = p_t, .f_mutable = p_mutable, .f_kind = p_kind, .f_line = p_line, .f_moved = false, .f_broot = -1LL, .f_cap = -1LL, .f_capmut = false});
+  S85_check_Var t1 = ((S85_check_Var){.f_name = rt_str_dup(p_name), .f_c = rt_str_dup(p_cn), .f_t = p_t, .f_mutable = p_mutable, .f_kind = p_kind, .f_line = p_line, .f_moved = false, .f_broot = -1LL, .f_cap = -1LL, .f_capmut = false, .f_pjoin = 0LL});
   S85_check_Var ap2 = t1;
   *(S85_check_Var*)rt_arr_push((&(*p_c)->f_vars), sizeof(S85_check_Var)) = ap2;
-  int64_t r3 = rt_sub_int(((*p_c)->f_vars).len, 1LL, "check.obx:720");
+  int64_t r3 = rt_sub_int(((*p_c)->f_vars).len, 1LL, "check.obx:721");
   rt_str_drop(p_cn);
   rt_str_drop(p_name);
   return r3;
@@ -51664,20 +52138,20 @@ static S73_check_Checker* f643_check_newChecker(S53_sema_Program* p_pg) {
   }
   int64_t end29 = (v_c_20->f_pg->f_globals).len;
   for (int64_t v_g_30 = 0LL; v_g_30 < end29; v_g_30++) {
-    S75_check_GInit* t31 = f920_check_noInit();
+    S75_check_GInit* t31 = f930_check_noInit();
     S75_check_GInit* ap32 = t31;
     *(S75_check_GInit**)rt_arr_push((&v_c_20->f_ginits), sizeof(S75_check_GInit*)) = ap32;
   }
   int64_t end33 = (v_c_20->f_pg->f_consts).len;
   for (int64_t v_k_34 = 0LL; v_k_34 < end33; v_k_34++) {
-    S75_check_GInit* t35 = f920_check_noInit();
+    S75_check_GInit* t35 = f930_check_noInit();
     S75_check_GInit* ap36 = t35;
     *(S75_check_GInit**)rt_arr_push((&v_c_20->f_cinits), sizeof(S75_check_GInit*)) = ap36;
   }
   S73_check_Checker* r37 = v_c_20;
   return r37;
 }
-static S75_check_GInit* f920_check_noInit(void) {
+static S75_check_GInit* f930_check_noInit(void) {
   obx_arr a1 = rt_arr_new(0, sizeof(obx_str));
   obx_arr a2 = rt_arr_new(0, sizeof(S80_check_Hole));
   S75_check_GInit* o3 = rt_alloc(sizeof(*o3));
@@ -51695,7 +52169,7 @@ static void f4_syntax_errorsToStdout(bool p_on) {
   g6_syntax_ERRORS_TO_STDOUT = p_on;
 }
 static obx_str f3_main_libDir(obx_str p_argv0) {
-  obx_str t1 = f18_os_envOr(sl2807, sl183);
+  obx_str t1 = f18_os_envOr(sl2809, sl183);
   obx_str v_env_2 = t1;
   bool c3 = (((int64_t)(v_env_2).len) > 0LL);
   if (c3) {
@@ -51708,7 +52182,7 @@ static obx_str f3_main_libDir(obx_str p_argv0) {
   obx_str t6 = f9_sema_absPath(rt_str_dup(p_argv0));
   obx_str t7 = f627_sema_dirName(t6);
   obx_str t8 = f627_sema_dirName(t7);
-  obx_str t9 = rt_str_concat(t8, sl2808);
+  obx_str t9 = rt_str_concat(t8, sl2810);
   obx_str t10 = f9_sema_absPath(t9);
   obx_str r11 = t10;
   rt_str_drop(t8);
@@ -51724,7 +52198,7 @@ static obx_str f2_x64_runTest(obx_str p_text) {
   obx_slice ap5 = rt_as_slice(&t4);
   for (int64_t i6 = 0; i6 < ap5.len; i6++) {
     obx_str v_l_7 = rt_str_dup(((obx_str*)ap5.data)[i6]);
-    obx_str t8 = f921_std_trim(rt_str_dup(v_l_7));
+    obx_str t8 = f931_std_trim(rt_str_dup(v_l_7));
     bool c9 = (((int64_t)(t8).len) == 0LL);
     rt_str_drop(t8);
     if (c9) {
@@ -51733,7 +52207,7 @@ static obx_str f2_x64_runTest(obx_str p_text) {
     }
     S26_x64_Asm* t10 = f257_x64_newAsm();
     S26_x64_Asm* v_a_11 = t10;
-    f922_x64_Asm_testLine((&v_a_11), rt_str_dup(v_l_7));
+    f932_x64_Asm_testLine((&v_a_11), rt_str_dup(v_l_7));
     obx_slice ap12 = rt_as_slice(&v_a_11->f_code);
     for (int64_t i13 = 0; i13 < ap12.len; i13++) {
       uint8_t v_x_14 = ((uint8_t*)ap12.data)[i13];
@@ -51747,7 +52221,7 @@ static obx_str f2_x64_runTest(obx_str p_text) {
       rt_str_drop(t17);
     }
     f37_std_StrBuf_addByte((&v_out_2), ((uint8_t)10));
-    gl98_drop(v_a_11);
+    gl99_drop(v_a_11);
     rt_str_drop(v_l_7);
   }
   gl0_drop(t4);
@@ -51758,8 +52232,8 @@ static obx_str f2_x64_runTest(obx_str p_text) {
   rt_str_drop(p_text);
   return r20;
 }
-static void f922_x64_Asm_testLine(S26_x64_Asm** p_a, obx_str p_l) {
-  obx_arr t1 = f923_x64_words(rt_str_dup(p_l));
+static void f932_x64_Asm_testLine(S26_x64_Asm** p_a, obx_str p_l) {
+  obx_arr t1 = f933_x64_words(rt_str_dup(p_l));
   obx_arr v_w_2 = t1;
   bool c3 = ((v_w_2).len == 0LL);
   if (c3) {
@@ -51768,270 +52242,270 @@ static void f922_x64_Asm_testLine(S26_x64_Asm** p_a, obx_str p_l) {
     return;
   }
   obx_str v_k_4 = rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(0LL, (v_w_2).len, "x64.obx:618")]);
-  bool c5 = (rt_str_eq(v_k_4, sl2809));
+  bool c5 = (rt_str_eq(v_k_4, sl2811));
   if (c5) {
-    int64_t t6 = f924_x64_nameIndex(k3_x64_ALU_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:620")]));
-    int64_t t7 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:620")]));
-    int64_t t8 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:620")]));
-    int64_t t9 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:620")]));
+    int64_t t6 = f934_x64_nameIndex(k3_x64_ALU_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:620")]));
+    int64_t t7 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:620")]));
+    int64_t t8 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:620")]));
+    int64_t t9 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:620")]));
     f112_x64_Asm_alu(p_a, t6, t7, t8, t9);
   } else {
-    bool c10 = (rt_str_eq(v_k_4, sl2810));
+    bool c10 = (rt_str_eq(v_k_4, sl2812));
     if (c10) {
-      int64_t t11 = f924_x64_nameIndex(k3_x64_ALU_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:622")]));
-      int64_t t12 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:622")]));
-      int64_t t13 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:622")]));
-      int64_t t14 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:622")]));
+      int64_t t11 = f934_x64_nameIndex(k3_x64_ALU_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:622")]));
+      int64_t t12 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:622")]));
+      int64_t t13 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:622")]));
+      int64_t t14 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:622")]));
       f115_x64_Asm_aluI(p_a, t11, t12, t13, t14);
     } else {
-      bool c15 = (rt_str_eq(v_k_4, sl2811));
+      bool c15 = (rt_str_eq(v_k_4, sl2813));
       if (c15) {
-        int64_t t16 = f924_x64_nameIndex(k3_x64_ALU_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:624")]));
-        int64_t t17 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:624")]));
-        int64_t t18 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:624")]));
-        S2_x64_Mem t19 = f926_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:624")]));
+        int64_t t16 = f934_x64_nameIndex(k3_x64_ALU_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:624")]));
+        int64_t t17 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:624")]));
+        int64_t t18 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:624")]));
+        S2_x64_Mem t19 = f936_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:624")]));
         f202_x64_Asm_aluRM(p_a, t16, t17, t18, t19);
       } else {
-        bool c20 = (rt_str_eq(v_k_4, sl2812));
+        bool c20 = (rt_str_eq(v_k_4, sl2814));
         if (c20) {
-          int64_t t21 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:626")]));
-          int64_t t22 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:626")]));
-          int64_t t23 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:626")]));
+          int64_t t21 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:626")]));
+          int64_t t22 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:626")]));
+          int64_t t23 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:626")]));
           f195_x64_Asm_test(p_a, t21, t22, t23);
         } else {
-          bool c24 = (rt_str_eq(v_k_4, sl2813));
+          bool c24 = (rt_str_eq(v_k_4, sl2815));
           if (c24) {
-            int64_t t25 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:628")]));
-            int64_t t26 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:628")]));
-            int64_t t27 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:628")]));
+            int64_t t25 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:628")]));
+            int64_t t26 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:628")]));
+            int64_t t27 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:628")]));
             f113_x64_Asm_movRR(p_a, t25, t26, t27);
           } else {
-            bool c28 = (rt_str_eq(v_k_4, sl2814));
+            bool c28 = (rt_str_eq(v_k_4, sl2816));
             if (c28) {
-              int64_t t29 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:630")]));
-              int64_t t30 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:630")]));
-              S2_x64_Mem t31 = f926_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:630")]));
+              int64_t t29 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:630")]));
+              int64_t t30 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:630")]));
+              S2_x64_Mem t31 = f936_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:630")]));
               f154_x64_Asm_load(p_a, t29, t30, t31);
             } else {
-              bool c32 = (rt_str_eq(v_k_4, sl2815));
+              bool c32 = (rt_str_eq(v_k_4, sl2817));
               if (c32) {
-                int64_t t33 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:632")]));
-                S2_x64_Mem t34 = f926_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:632")]));
-                int64_t t35 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:632")]));
+                int64_t t33 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:632")]));
+                S2_x64_Mem t34 = f936_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:632")]));
+                int64_t t35 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:632")]));
                 f137_x64_Asm_store(p_a, t33, t34, t35);
               } else {
-                bool c36 = (rt_str_eq(v_k_4, sl2816));
+                bool c36 = (rt_str_eq(v_k_4, sl2818));
                 if (c36) {
-                  int64_t t37 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:634")]));
-                  S2_x64_Mem t38 = f926_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:634")]));
-                  int64_t t39 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:634")]));
+                  int64_t t37 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:634")]));
+                  S2_x64_Mem t38 = f936_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:634")]));
+                  int64_t t39 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:634")]));
                   f131_x64_Asm_storeI(p_a, t37, t38, t39);
                 } else {
-                  bool c40 = (rt_str_eq(v_k_4, sl2817));
+                  bool c40 = (rt_str_eq(v_k_4, sl2819));
                   if (c40) {
-                    int64_t t41 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:636")]));
-                    int64_t t42 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:636")]));
-                    S2_x64_Mem t43 = f926_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:636")]));
+                    int64_t t41 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:636")]));
+                    int64_t t42 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:636")]));
+                    S2_x64_Mem t43 = f936_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:636")]));
                     f245_x64_Asm_loadZX(p_a, t41, t42, t43);
                   } else {
-                    bool c44 = (rt_str_eq(v_k_4, sl2818));
+                    bool c44 = (rt_str_eq(v_k_4, sl2820));
                     if (c44) {
-                      int64_t t45 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:638")]));
-                      int64_t t46 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:638")]));
-                      S2_x64_Mem t47 = f926_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:638")]));
+                      int64_t t45 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:638")]));
+                      int64_t t46 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:638")]));
+                      S2_x64_Mem t47 = f936_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:638")]));
                       f250_x64_Asm_loadSX(p_a, t45, t46, t47);
                     } else {
-                      bool c48 = (rt_str_eq(v_k_4, sl2819));
+                      bool c48 = (rt_str_eq(v_k_4, sl2821));
                       if (c48) {
-                        int64_t t49 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:640")]));
-                        int64_t t50 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:640")]));
-                        int64_t t51 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:640")]));
+                        int64_t t49 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:640")]));
+                        int64_t t50 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:640")]));
+                        int64_t t51 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:640")]));
                         f220_x64_Asm_zx(p_a, t49, t50, t51);
                       } else {
-                        bool c52 = (rt_str_eq(v_k_4, sl2820));
+                        bool c52 = (rt_str_eq(v_k_4, sl2822));
                         if (c52) {
-                          int64_t t53 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:642")]));
-                          int64_t t54 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:642")]));
-                          int64_t t55 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:642")]));
+                          int64_t t53 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:642")]));
+                          int64_t t54 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:642")]));
+                          int64_t t55 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:642")]));
                           f249_x64_Asm_sx(p_a, t53, t54, t55);
                         } else {
-                          bool c56 = (rt_str_eq(v_k_4, sl2821));
+                          bool c56 = (rt_str_eq(v_k_4, sl2823));
                           if (c56) {
-                            int64_t t57 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:644")]));
-                            S2_x64_Mem t58 = f926_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:644")]));
+                            int64_t t57 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:644")]));
+                            S2_x64_Mem t58 = f936_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:644")]));
                             f185_x64_Asm_lea(p_a, t57, t58);
                           } else {
-                            bool c59 = (rt_str_eq(v_k_4, sl2822));
+                            bool c59 = (rt_str_eq(v_k_4, sl2824));
                             if (c59) {
-                              int64_t t60 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:646")]));
-                              int64_t t61 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:646")]));
+                              int64_t t60 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:646")]));
+                              int64_t t61 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:646")]));
                               f146_x64_Asm_movRI(p_a, t60, t61);
                             } else {
                               bool c62 = (rt_str_eq(v_k_4, sl603));
                               if (c62) {
-                                int64_t t63 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:648")]));
-                                int64_t t64 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:648")]));
-                                int64_t t65 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:648")]));
+                                int64_t t63 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:648")]));
+                                int64_t t64 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:648")]));
+                                int64_t t65 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:648")]));
                                 f222_x64_Asm_imul(p_a, t63, t64, t65);
                               } else {
-                                bool c66 = (rt_str_eq(v_k_4, sl2823));
+                                bool c66 = (rt_str_eq(v_k_4, sl2825));
                                 if (c66) {
-                                  int64_t t67 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:650")]));
-                                  int64_t t68 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:650")]));
-                                  int64_t t69 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:650")]));
-                                  int64_t t70 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:650")]));
+                                  int64_t t67 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:650")]));
+                                  int64_t t68 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:650")]));
+                                  int64_t t69 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:650")]));
+                                  int64_t t70 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:650")]));
                                   f232_x64_Asm_imulI(p_a, t67, t68, t69, t70);
                                 } else {
                                   bool c71 = (rt_str_eq(v_k_4, sl103));
                                   if (c71) {
-                                    int64_t t72 = f924_x64_nameIndex(k3_x64_UN_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:652")]));
-                                    int64_t t73 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:652")]));
-                                    int64_t t74 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:652")]));
+                                    int64_t t72 = f934_x64_nameIndex(k3_x64_UN_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:652")]));
+                                    int64_t t73 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:652")]));
+                                    int64_t t74 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:652")]));
                                     f218_x64_Asm_unary(p_a, t72, t73, t74);
                                   } else {
-                                    bool c75 = (rt_str_eq(v_k_4, sl2824));
+                                    bool c75 = (rt_str_eq(v_k_4, sl2826));
                                     if (c75) {
-                                      int64_t t76 = f924_x64_nameIndex(k3_x64_SH_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:654")]));
-                                      int64_t t77 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:654")]));
-                                      int64_t t78 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:654")]));
+                                      int64_t t76 = f934_x64_nameIndex(k3_x64_SH_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:654")]));
+                                      int64_t t77 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:654")]));
+                                      int64_t t78 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:654")]));
                                       f231_x64_Asm_shiftCL(p_a, t76, t77, t78);
                                     } else {
-                                      bool c79 = (rt_str_eq(v_k_4, sl2825));
+                                      bool c79 = (rt_str_eq(v_k_4, sl2827));
                                       if (c79) {
-                                        int64_t t80 = f924_x64_nameIndex(k3_x64_SH_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:656")]));
-                                        int64_t t81 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:656")]));
-                                        int64_t t82 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:656")]));
-                                        int64_t t83 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:656")]));
+                                        int64_t t80 = f934_x64_nameIndex(k3_x64_SH_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:656")]));
+                                        int64_t t81 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:656")]));
+                                        int64_t t82 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:656")]));
+                                        int64_t t83 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(4LL, (v_w_2).len, "x64.obx:656")]));
                                         f227_x64_Asm_shiftI(p_a, t80, t81, t82, t83);
                                       } else {
-                                        bool c84 = (rt_str_eq(v_k_4, sl2826));
+                                        bool c84 = (rt_str_eq(v_k_4, sl2828));
                                         if (c84) {
-                                          int64_t t85 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:658")]));
-                                          int64_t t86 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:658")]));
+                                          int64_t t85 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:658")]));
+                                          int64_t t86 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:658")]));
                                           f233_x64_Asm_shldCL(p_a, t85, t86);
                                         } else {
-                                          bool c87 = (rt_str_eq(v_k_4, sl2827));
+                                          bool c87 = (rt_str_eq(v_k_4, sl2829));
                                           if (c87) {
-                                            int64_t t88 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:660")]));
-                                            int64_t t89 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:660")]));
+                                            int64_t t88 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:660")]));
+                                            int64_t t89 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:660")]));
                                             f234_x64_Asm_shrdCL(p_a, t88, t89);
                                           } else {
-                                            bool c90 = (rt_str_eq(v_k_4, sl2828));
+                                            bool c90 = (rt_str_eq(v_k_4, sl2830));
                                             if (c90) {
-                                              int64_t t91 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:662")]));
-                                              int64_t t92 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:662")]));
+                                              int64_t t91 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:662")]));
+                                              int64_t t92 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:662")]));
                                               f194_x64_Asm_setcc(p_a, t91, t92);
                                             } else {
-                                              bool c93 = (rt_str_eq(v_k_4, sl2829));
+                                              bool c93 = (rt_str_eq(v_k_4, sl2831));
                                               if (c93) {
-                                                int64_t t94 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:664")]));
-                                                int64_t t95 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:664")]));
-                                                int64_t t96 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:664")]));
-                                                f927_x64_Asm_cmov(p_a, t94, t95, t96);
+                                                int64_t t94 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:664")]));
+                                                int64_t t95 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:664")]));
+                                                int64_t t96 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:664")]));
+                                                f937_x64_Asm_cmov(p_a, t94, t95, t96);
                                               } else {
-                                                bool c97 = (rt_str_eq(v_k_4, sl2830));
+                                                bool c97 = (rt_str_eq(v_k_4, sl2832));
                                                 if (c97) {
-                                                  int64_t t98 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:666")]));
+                                                  int64_t t98 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:666")]));
                                                   f116_x64_Asm_push(p_a, t98);
                                                 } else {
                                                   bool c99 = (rt_str_eq(v_k_4, sl2233));
                                                   if (c99) {
-                                                    int64_t t100 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:668")]));
+                                                    int64_t t100 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:668")]));
                                                     f114_x64_Asm_pop(p_a, t100);
                                                   } else {
-                                                    bool c101 = (rt_str_eq(v_k_4, sl2831));
+                                                    bool c101 = (rt_str_eq(v_k_4, sl2833));
                                                     if (c101) {
-                                                      int64_t t102 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:670")]));
+                                                      int64_t t102 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:670")]));
                                                       f241_x64_Asm_callR(p_a, t102);
                                                     } else {
-                                                      bool c103 = (rt_str_eq(v_k_4, sl2832));
+                                                      bool c103 = (rt_str_eq(v_k_4, sl2834));
                                                       if (c103) {
-                                                        int64_t t104 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:672")]));
-                                                        f928_x64_Asm_jmpR(p_a, t104);
+                                                        int64_t t104 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:672")]));
+                                                        f938_x64_Asm_jmpR(p_a, t104);
                                                       } else {
                                                         bool c105 = (rt_str_eq(v_k_4, sl1959));
                                                         if (c105) {
                                                           f155_x64_Asm_ret(p_a);
                                                         } else {
-                                                          bool c106 = (rt_str_eq(v_k_4, sl2833));
+                                                          bool c106 = (rt_str_eq(v_k_4, sl2835));
                                                           if (c106) {
                                                             f229_x64_Asm_cqo(p_a);
                                                           } else {
-                                                            bool c107 = (rt_str_eq(v_k_4, sl2834));
+                                                            bool c107 = (rt_str_eq(v_k_4, sl2836));
                                                             if (c107) {
                                                               f230_x64_Asm_cdq(p_a);
                                                             } else {
-                                                              bool c108 = (rt_str_eq(v_k_4, sl2835));
+                                                              bool c108 = (rt_str_eq(v_k_4, sl2837));
                                                               if (c108) {
                                                                 f186_x64_Asm_repMovsb(p_a);
                                                               } else {
-                                                                bool c109 = (rt_str_eq(v_k_4, sl2836));
+                                                                bool c109 = (rt_str_eq(v_k_4, sl2838));
                                                                 if (c109) {
                                                                   f211_x64_Asm_repStosb(p_a);
                                                                 } else {
-                                                                  bool c110 = (rt_str_eq(v_k_4, sl2837));
+                                                                  bool c110 = (rt_str_eq(v_k_4, sl2839));
                                                                   if (c110) {
                                                                     f119_x64_Asm_ud2(p_a);
                                                                   } else {
-                                                                    bool c111 = (rt_str_eq(v_k_4, sl2838));
+                                                                    bool c111 = (rt_str_eq(v_k_4, sl2840));
                                                                     if (c111) {
                                                                       obx_slice t112 = k3_x64_SSE_OPS;
-                                                                      int64_t t113 = f924_x64_nameIndex(k3_x64_SSE_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:686")]));
+                                                                      int64_t t113 = f934_x64_nameIndex(k3_x64_SSE_NAMES, rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:686")]));
                                                                       int64_t ix114 = t113;
                                                                       int64_t t115 = ((int64_t*)(t112).data)[rt_idx(ix114, (t112).len, "x64.obx:686")];
-                                                                      int64_t t116 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:686")]));
-                                                                      int64_t t117 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:686")]));
+                                                                      int64_t t116 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:686")]));
+                                                                      int64_t t117 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(3LL, (v_w_2).len, "x64.obx:686")]));
                                                                       f209_x64_Asm_sse(p_a, t115, t116, t117);
                                                                     } else {
-                                                                      bool c118 = (rt_str_eq(v_k_4, sl2839));
+                                                                      bool c118 = (rt_str_eq(v_k_4, sl2841));
                                                                       if (c118) {
-                                                                        int64_t t119 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:688")]));
-                                                                        int64_t t120 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:688")]));
+                                                                        int64_t t119 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:688")]));
+                                                                        int64_t t120 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:688")]));
                                                                         f193_x64_Asm_sse66(p_a, 46LL, t119, t120);
                                                                       } else {
-                                                                        bool c121 = (rt_str_eq(v_k_4, sl2840));
+                                                                        bool c121 = (rt_str_eq(v_k_4, sl2842));
                                                                         if (c121) {
-                                                                          int64_t t122 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:690")]));
-                                                                          int64_t t123 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:690")]));
+                                                                          int64_t t122 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:690")]));
+                                                                          int64_t t123 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:690")]));
                                                                           f193_x64_Asm_sse66(p_a, 87LL, t122, t123);
                                                                         } else {
-                                                                          bool c124 = (rt_str_eq(v_k_4, sl2841));
+                                                                          bool c124 = (rt_str_eq(v_k_4, sl2843));
                                                                           if (c124) {
-                                                                            int64_t t125 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:692")]));
-                                                                            S2_x64_Mem t126 = f926_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:692")]));
+                                                                            int64_t t125 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:692")]));
+                                                                            S2_x64_Mem t126 = f936_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:692")]));
                                                                             f184_x64_Asm_movsdLoad(p_a, t125, t126);
                                                                           } else {
-                                                                            bool c127 = (rt_str_eq(v_k_4, sl2842));
+                                                                            bool c127 = (rt_str_eq(v_k_4, sl2844));
                                                                             if (c127) {
-                                                                              S2_x64_Mem t128 = f926_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:694")]));
-                                                                              int64_t t129 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:694")]));
+                                                                              S2_x64_Mem t128 = f936_x64_memOf(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:694")]));
+                                                                              int64_t t129 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:694")]));
                                                                               f142_x64_Asm_movsdStore(p_a, t128, t129);
                                                                             } else {
-                                                                              bool c130 = (rt_str_eq(v_k_4, sl2843));
+                                                                              bool c130 = (rt_str_eq(v_k_4, sl2845));
                                                                               if (c130) {
-                                                                                int64_t t131 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:696")]));
-                                                                                int64_t t132 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:696")]));
+                                                                                int64_t t131 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:696")]));
+                                                                                int64_t t132 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:696")]));
                                                                                 f212_x64_Asm_movqXR(p_a, t131, t132);
                                                                               } else {
-                                                                                bool c133 = (rt_str_eq(v_k_4, sl2844));
+                                                                                bool c133 = (rt_str_eq(v_k_4, sl2846));
                                                                                 if (c133) {
-                                                                                  int64_t t134 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:698")]));
-                                                                                  int64_t t135 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:698")]));
-                                                                                  f929_x64_Asm_movqRX(p_a, t134, t135);
+                                                                                  int64_t t134 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:698")]));
+                                                                                  int64_t t135 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:698")]));
+                                                                                  f939_x64_Asm_movqRX(p_a, t134, t135);
                                                                                 } else {
-                                                                                  bool c136 = (rt_str_eq(v_k_4, sl2845));
+                                                                                  bool c136 = (rt_str_eq(v_k_4, sl2847));
                                                                                   if (c136) {
-                                                                                    int64_t t137 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:700")]));
-                                                                                    int64_t t138 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:700")]));
+                                                                                    int64_t t137 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:700")]));
+                                                                                    int64_t t138 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:700")]));
                                                                                     f235_x64_Asm_cvtsi2sd(p_a, t137, t138);
                                                                                   } else {
-                                                                                    bool c139 = (rt_str_eq(v_k_4, sl2846));
+                                                                                    bool c139 = (rt_str_eq(v_k_4, sl2848));
                                                                                     if (c139) {
-                                                                                      int64_t t140 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:702")]));
-                                                                                      int64_t t141 = f925_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:702")]));
+                                                                                      int64_t t140 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(1LL, (v_w_2).len, "x64.obx:702")]));
+                                                                                      int64_t t141 = f935_x64_num(rt_str_dup(((obx_str*)(v_w_2).data)[rt_idx(2LL, (v_w_2).len, "x64.obx:702")]));
                                                                                       f236_x64_Asm_cvttsd2si(p_a, t140, t141);
                                                                                     } else {
-                                                                                      obx_str t142 = rt_str_concat(sl2847, v_k_4);
+                                                                                      obx_str t142 = rt_str_concat(sl2849, v_k_4);
                                                                                       rt_panic(t142, "x64.obx:704");
                                                                                     }
                                                                                   }
@@ -52079,16 +52553,16 @@ static void f922_x64_Asm_testLine(S26_x64_Asm** p_a, obx_str p_l) {
   gl0_drop(v_w_2);
   rt_str_drop(p_l);
 }
-static void f929_x64_Asm_movqRX(S26_x64_Asm** p_a, int64_t p_r, int64_t p_x) {
+static void f939_x64_Asm_movqRX(S26_x64_Asm** p_a, int64_t p_r, int64_t p_x) {
   f150_x64_Asm_rr(p_a, 102LL, true, 3966LL, p_x, p_r, false, false);
 }
-static void f928_x64_Asm_jmpR(S26_x64_Asm** p_a, int64_t p_r) {
+static void f938_x64_Asm_jmpR(S26_x64_Asm** p_a, int64_t p_r) {
   f150_x64_Asm_rr(p_a, 0LL, false, 255LL, 4LL, p_r, false, false);
 }
-static void f927_x64_Asm_cmov(S26_x64_Asm** p_a, int64_t p_cc, int64_t p_dst, int64_t p_src) {
+static void f937_x64_Asm_cmov(S26_x64_Asm** p_a, int64_t p_cc, int64_t p_dst, int64_t p_src) {
   f150_x64_Asm_rr(p_a, 0LL, true, rt_add_int(3904LL, p_cc, "x64.obx:421"), p_dst, p_src, false, false);
 }
-static S2_x64_Mem f926_x64_memOf(obx_str p_s) {
+static S2_x64_Mem f936_x64_memOf(obx_str p_s) {
   obx_arr a1 = rt_arr_new(0, sizeof(int64_t));
   obx_arr v_ps_2 = a1;
   int64_t v_start_3 = 2LL;
@@ -52105,7 +52579,7 @@ static S2_x64_Mem f926_x64_memOf(obx_str p_s) {
       int64_t ix10 = v_start_3;
       int64_t ix11 = v_i_5;
       obx_str t12 = rt_str_sub(p_s, ix10, ix11, "x64.obx:584");
-      int64_t t13 = f925_x64_num(t12);
+      int64_t t13 = f935_x64_num(t12);
       int64_t ap14 = t13;
       *(int64_t*)rt_arr_push((&v_ps_2), sizeof(int64_t)) = ap14;
       v_start_3 = rt_add_int(v_i_5, 1LL, "x64.obx:585");
@@ -52120,7 +52594,7 @@ static S2_x64_Mem f926_x64_memOf(obx_str p_s) {
   rt_str_drop(p_s);
   return r19;
 }
-static int64_t f925_x64_num(obx_str p_s) {
+static int64_t f935_x64_num(obx_str p_s) {
   int64_t v_i_1 = 0LL;
   bool v_neg_2 = false;
   uint8_t t3 = rt_str_byte(p_s, 0LL, "x64.obx:566");
@@ -52143,7 +52617,7 @@ static int64_t f925_x64_num(obx_str p_s) {
   rt_str_drop(p_s);
   return r11;
 }
-static int64_t f924_x64_nameIndex(obx_slice p_names, obx_str p_n) {
+static int64_t f934_x64_nameIndex(obx_slice p_names, obx_str p_n) {
   int64_t end1 = (p_names).len;
   for (int64_t v_i_2 = 0LL; v_i_2 < end1; v_i_2++) {
     int64_t ix3 = v_i_2;
@@ -52154,10 +52628,10 @@ static int64_t f924_x64_nameIndex(obx_slice p_names, obx_str p_n) {
       return r5;
     }
   }
-  obx_str t6 = rt_str_concat(sl2848, p_n);
+  obx_str t6 = rt_str_concat(sl2850, p_n);
   rt_panic(t6, "x64.obx:599");
 }
-static obx_arr f923_x64_words(obx_str p_s) {
+static obx_arr f933_x64_words(obx_str p_s) {
   obx_arr a1 = rt_arr_new(0, sizeof(obx_str));
   obx_arr v_out_2 = a1;
   int64_t v_start_3 = -1LL;
@@ -52197,14 +52671,14 @@ static obx_arr f923_x64_words(obx_str p_s) {
   rt_str_drop(p_s);
   return r18;
 }
-static obx_str f921_std_trim(obx_str p_s) {
+static obx_str f931_std_trim(obx_str p_s) {
   int64_t v_a_1 = 0LL;
   int64_t v_b_2 = ((int64_t)(p_s).len);
   while (1) {
     bool b3 = (v_a_1 < v_b_2);
     if (b3) {
       uint8_t t4 = rt_str_byte(p_s, v_a_1, "std.obx:561");
-      bool t5 = f930_std_isSpace(t4);
+      bool t5 = f940_std_isSpace(t4);
       b3 = t5;
     }
     bool c6 = b3;
@@ -52215,7 +52689,7 @@ static obx_str f921_std_trim(obx_str p_s) {
     bool b7 = (v_b_2 > v_a_1);
     if (b7) {
       uint8_t t8 = rt_str_byte(p_s, rt_sub_int(v_b_2, 1LL, "std.obx:562"), "std.obx:562");
-      bool t9 = f930_std_isSpace(t8);
+      bool t9 = f940_std_isSpace(t8);
       b7 = t9;
     }
     bool c10 = b7;
@@ -52227,7 +52701,7 @@ static obx_str f921_std_trim(obx_str p_s) {
   rt_str_drop(p_s);
   return r12;
 }
-static bool f930_std_isSpace(uint8_t p_c) {
+static bool f940_std_isSpace(uint8_t p_c) {
   bool b1 = (p_c == ((uint8_t)32));
   if (!b1) {
     b1 = (p_c == ((uint8_t)10));
@@ -52246,7 +52720,7 @@ static bool f930_std_isSpace(uint8_t p_c) {
 static void f1_syntax_failText(obx_str p_text) {
   bool c1 = g6_syntax_ERRORS_TO_STDOUT;
   if (c1) {
-    obx_str t2 = rt_str_concat(sl2849, p_text);
+    obx_str t2 = rt_str_concat(sl2851, p_text);
     obx_str t3 = rt_str_concat(t2, sl1744);
     int64_t t4 = rt_write_fd(1LL, t3);
     rt_str_drop(t3);
@@ -52258,74 +52732,74 @@ static void f1_syntax_failText(obx_str p_text) {
   }
   rt_exit(1LL);
 }
-static void gl98_drop(S26_x64_Asm* v) {
-  gl99_drop(v->f_relocs);
+static void gl99_drop(S26_x64_Asm* v) {
+  gl100_drop(v->f_relocs);
   gl22_drop(v->f_fixes);
   gl9_drop(v->f_labels);
   gl7_drop(v->f_code);
   rt_free(v);
 }
-static void gl99_drop(obx_arr v) {
+static void gl100_drop(obx_arr v) {
   rt_arr_free(v);
 }
-static void gl97_drop(S81_check_Lifted* v) {
+static void gl98_drop(S81_check_Lifted* v) {
   gl0_drop(v->f_lines);
   gl9_drop(v->f_ptys);
   gl0_drop(v->f_pnames);
   rt_free(v);
 }
-static void gl96_drop(S101_check_Branch* v) {
+static void gl97_drop(S102_check_Branch* v) {
   gl9_drop(v->f_snap);
   gl0_drop(v->f_lines);
   gl68_drop(v->f_v);
   rt_free(v);
 }
-static void gl95_drop(S88_check_MatchX* v) {
+static void gl96_drop(S88_check_MatchX* v) {
   gl9_drop(v->f_lits);
   rt_str_drop(v->f_r);
   rt_free(v);
 }
+static void gl95_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl86_drop(((S97_check_CArg*)v.data)[i]);
+  rt_arr_free(v);
+}
 static void gl94_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl85_drop(((S96_check_CArg*)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl90_drop(((S98_check_Late*)v.data)[i]);
   rt_arr_free(v);
 }
 static void gl93_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl89_drop(((S97_check_Late*)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl88_drop(((S99_check_Recheck*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl92_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl87_drop(((S98_check_Recheck*)v.data)[i]);
-  rt_arr_free(v);
-}
-static S96_check_CArg gl91_dup(S96_check_CArg v) {
+static S97_check_CArg gl92_dup(S97_check_CArg v) {
   v.f_b = v.f_b;
   v.f_v = gl67_dup(v.f_v);
   return v;
 }
-static void gl90_drop(obx_arr v) {
+static void gl91_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl75_drop(((S90_check_Pend*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl89_drop(S97_check_Late v) {
+static void gl90_drop(S98_check_Late v) {
   gl68_drop(v.f_v);
 }
-static S97_check_Late gl88_dup(S97_check_Late v) {
+static S98_check_Late gl89_dup(S98_check_Late v) {
   v.f_v = gl67_dup(v.f_v);
   v.f_m = v.f_m;
   return v;
 }
-static void gl87_drop(S98_check_Recheck v) {
+static void gl88_drop(S99_check_Recheck v) {
   gl68_drop(v.f_v);
 }
-static S98_check_Recheck gl86_dup(S98_check_Recheck v) {
+static S99_check_Recheck gl87_dup(S99_check_Recheck v) {
   v.f_pos = v.f_pos;
   v.f_v = gl67_dup(v.f_v);
   return v;
 }
-static void gl85_drop(S96_check_CArg v) {
+static void gl86_drop(S97_check_CArg v) {
   gl68_drop(v.f_v);
 }
-static void gl84_drop(S94_check_Sig* v) {
+static void gl85_drop(S95_check_Sig* v) {
   rt_str_drop(v->f_name);
   gl9_drop(v->f_bind);
   rt_str_drop(v->f_c);
@@ -52334,68 +52808,71 @@ static void gl84_drop(S94_check_Sig* v) {
   rt_str_drop(v->f_label);
   rt_free(v);
 }
-static void gl83_drop(S95_check_CallOpts* v) {
+static void gl84_drop(S96_check_CallOpts* v) {
   gl9_drop(v->f_order);
   gl0_drop(v->f_fnames);
   rt_free(v);
 }
-static void gl82_drop(obx_arr v) {
+static void gl83_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl68_drop(((S87_check_Val*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl81_drop(S89_check_Loop* v) {
-  gl76_drop(v->f_breaks);
+static void gl82_drop(S89_check_Loop* v) {
+  gl77_drop(v->f_breaks);
   gl9_drop(v->f_entry);
   rt_free(v);
 }
-static void gl80_drop(S29_std_Map* v) {
+static void gl81_drop(S29_std_Map* v) {
   gl9_drop(v->f_index);
   gl26_drop(v->f_hashes);
   gl0_drop(v->f_vals);
   gl0_drop(v->f_keys);
   rt_free(v);
 }
-static void gl79_drop(S92_check_Freeze v) {
+static void gl80_drop(S92_check_Freeze v) {
   rt_str_drop(v.f_by);
 }
-static S92_check_Freeze gl78_dup(S92_check_Freeze v) {
+static S92_check_Freeze gl79_dup(S92_check_Freeze v) {
   v.f_root = v.f_root;
   v.f_m = v.f_m;
   v.f_by = rt_str_dup(v.f_by);
   return v;
 }
-static S90_check_Pend gl77_dup(S90_check_Pend v) {
+static S90_check_Pend gl78_dup(S90_check_Pend v) {
   v.f_root = v.f_root;
   v.f_path = rt_str_dup(v.f_path);
   v.f_m = v.f_m;
   v.f_cid = v.f_cid;
   return v;
 }
-static void gl76_drop(obx_arr v) {
+static void gl77_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl9_drop(((obx_arr*)v.data)[i]);
+  rt_arr_free(v);
+}
+static void gl76_drop(obx_arr v) {
   rt_arr_free(v);
 }
 static void gl75_drop(S90_check_Pend v) {
   rt_str_drop(v.f_path);
 }
 static void gl74_drop(S86_check_Scope* v) {
-  gl100_drop(v->f_freezes);
+  gl101_drop(v->f_freezes);
   gl9_drop(v->f_vars);
   rt_free(v);
 }
-static void gl100_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl79_drop(((S92_check_Freeze*)v.data)[i]);
+static void gl101_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl80_drop(((S92_check_Freeze*)v.data)[i]);
   rt_arr_free(v);
 }
 static void gl73_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl101_drop(((S91_check_Drop*)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl102_drop(((S91_check_Drop*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl101_drop(S91_check_Drop v) {
+static void gl102_drop(S91_check_Drop v) {
   rt_str_drop(v.f_c);
 }
 static void gl72_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl95_drop(((S88_check_MatchX**)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl96_drop(((S88_check_MatchX**)v.data)[i]);
   rt_arr_free(v);
 }
 static void gl71_drop(obx_arr v) {
@@ -52403,7 +52880,7 @@ static void gl71_drop(obx_arr v) {
   rt_arr_free(v);
 }
 static void gl70_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl97_drop(((S81_check_Lifted**)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl98_drop(((S81_check_Lifted**)v.data)[i]);
   rt_arr_free(v);
 }
 static void gl69_drop(S84_check_Ctx* v) {
@@ -52413,21 +52890,21 @@ static void gl69_drop(S84_check_Ctx* v) {
   gl73_drop(v->f_tail);
   gl0_drop(v->f_nomove);
   gl9_drop(v->f_pmarks);
-  gl90_drop(v->f_pending);
-  gl102_drop(v->f_loops);
-  gl76_drop(v->f_frames);
-  gl103_drop(v->f_scopes);
+  gl91_drop(v->f_pending);
+  gl103_drop(v->f_loops);
+  gl77_drop(v->f_frames);
+  gl104_drop(v->f_scopes);
   gl0_drop(v->f_lines);
   gl9_drop(v->f_env);
   rt_str_drop(v->f_label);
   rt_free(v);
 }
-static void gl103_drop(obx_arr v) {
+static void gl104_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl74_drop(((S86_check_Scope**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl102_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl81_drop(((S89_check_Loop**)v.data)[i]);
+static void gl103_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl82_drop(((S89_check_Loop**)v.data)[i]);
   rt_arr_free(v);
 }
 static void gl68_drop(S87_check_Val v) {
@@ -52466,6 +52943,7 @@ static S85_check_Var gl65_dup(S85_check_Var v) {
   v.f_broot = v.f_broot;
   v.f_cap = v.f_cap;
   v.f_capmut = v.f_capmut;
+  v.f_pjoin = v.f_pjoin;
   return v;
 }
 static void gl64_drop(S83_check_Arg v) {
@@ -52532,20 +53010,20 @@ static void gl53_drop(S74_emit_Emitter* v) {
   gl0_drop(v->f_bodies);
   gl0_drop(v->f_protos);
   gl0_drop(v->f_strKeys);
-  gl80_drop(v->f_strs);
-  gl76_drop(v->f_reachSets);
-  gl104_drop(v->f_reachIdx);
-  gl105_drop(v->f_gluework);
+  gl81_drop(v->f_strs);
+  gl77_drop(v->f_reachSets);
+  gl105_drop(v->f_reachIdx);
+  gl106_drop(v->f_gluework);
   gl29_drop(v->f_glue);
-  gl106_drop(v->f_work);
-  gl80_drop(v->f_insts);
+  gl107_drop(v->f_work);
+  gl81_drop(v->f_insts);
   gl0_drop(v->f_fntypes);
   gl9_drop(v->f_structs);
   gl29_drop(v->f_names);
-  gl107_drop(v->f_c);
+  gl108_drop(v->f_c);
   rt_free(v);
 }
-static void gl107_drop(S73_check_Checker* v) {
+static void gl108_drop(S73_check_Checker* v) {
   gl72_drop(v->f_mxs);
   gl9_drop(v->f_initOrder);
   gl9_drop(v->f_calleeTps);
@@ -52556,48 +53034,48 @@ static void gl107_drop(S73_check_Checker* v) {
   gl9_drop(v->f_copyMemo);
   gl9_drop(v->f_podMemo);
   gl18_drop(v->f_statics);
-  gl108_drop(v->f_capl);
-  gl109_drop(v->f_tmps);
-  gl110_drop(v->f_vars);
-  gl111_drop(v->f_cinits);
-  gl111_drop(v->f_ginits);
-  gl112_drop(v->f_tmpls);
+  gl109_drop(v->f_capl);
+  gl110_drop(v->f_tmps);
+  gl111_drop(v->f_vars);
+  gl112_drop(v->f_cinits);
+  gl112_drop(v->f_ginits);
+  gl113_drop(v->f_tmpls);
   gl37_drop(v->f_pg);
   rt_free(v);
 }
-static void gl112_drop(obx_arr v) {
+static void gl113_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl58_drop(((S82_check_Tmpl**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl111_drop(obx_arr v) {
+static void gl112_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl54_drop(((S75_check_GInit**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl110_drop(obx_arr v) {
+static void gl111_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl66_drop(((S85_check_Var*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl109_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl113_drop(((S93_check_Tmp*)v.data)[i]);
+static void gl110_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl114_drop(((S93_check_Tmp*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl113_drop(S93_check_Tmp v) {
+static void gl114_drop(S93_check_Tmp v) {
   rt_str_drop(v.f_c);
 }
-static void gl108_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl114_drop(((obx_arr*)v.data)[i]);
+static void gl109_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl115_drop(((obx_arr*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl114_drop(obx_arr v) {
+static void gl115_drop(obx_arr v) {
+  rt_arr_free(v);
+}
+static void gl107_drop(obx_arr v) {
   rt_arr_free(v);
 }
 static void gl106_drop(obx_arr v) {
   rt_arr_free(v);
 }
-static void gl105_drop(obx_arr v) {
-  rt_arr_free(v);
-}
-static void gl104_drop(S36_std_Map* v) {
+static void gl105_drop(S36_std_Map* v) {
   gl9_drop(v->f_index);
   gl26_drop(v->f_hashes);
   gl9_drop(v->f_vals);
@@ -52631,10 +53109,10 @@ static void gl49_drop(S49_syntax_Node v) {
   rt_str_drop(v.f_s);
 }
 static void gl48_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl115_drop(((S71_sema_Cand*)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl116_drop(((S71_sema_Cand*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl115_drop(S71_sema_Cand v) {
+static void gl116_drop(S71_sema_Cand v) {
   gl9_drop(v.f_params);
 }
 static void gl47_drop(obx_arr v) {
@@ -52681,43 +53159,43 @@ static S59_sema_Param gl39_dup(S59_sema_Param v) {
   return v;
 }
 static void gl38_drop(S54_tdump_TDumper* v) {
-  gl104_drop(v->f_tpn);
+  gl105_drop(v->f_tpn);
   gl1_drop(v->f_b);
   rt_free(v);
 }
 static void gl37_drop(S53_sema_Program* v) {
   rt_str_drop(v->f_gwrap);
-  gl116_drop(v->f_wraps);
+  gl117_drop(v->f_wraps);
   gl47_drop(v->f_pending);
   gl0_drop(v->f_externNames);
   gl18_drop(v->f_externs);
   gl0_drop(v->f_preludeNames);
   gl18_drop(v->f_prelude);
   gl56_drop(v->f_primMethodNames);
-  gl117_drop(v->f_primMethods);
+  gl118_drop(v->f_primMethods);
   gl18_drop(v->f_tindex);
   gl9_drop(v->f_tlists);
-  gl118_drop(v->f_tys);
-  gl119_drop(v->f_tparams);
-  gl120_drop(v->f_globals);
-  gl121_drop(v->f_consts);
-  gl122_drop(v->f_fns);
-  gl123_drop(v->f_variants);
-  gl124_drop(v->f_types);
+  gl119_drop(v->f_tys);
+  gl120_drop(v->f_tparams);
+  gl121_drop(v->f_globals);
+  gl122_drop(v->f_consts);
+  gl123_drop(v->f_fns);
+  gl124_drop(v->f_variants);
+  gl125_drop(v->f_types);
   gl18_drop(v->f_modIndex);
-  gl125_drop(v->f_mods);
+  gl126_drop(v->f_mods);
   rt_str_drop(v->f_mainFile);
   gl0_drop(v->f_libroots);
   rt_free(v);
 }
-static void gl125_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl126_drop(((S55_sema_Module*)v.data)[i]);
+static void gl126_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl127_drop(((S55_sema_Module*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl126_drop(S55_sema_Module v) {
+static void gl127_drop(S55_sema_Module v) {
   gl9_drop(v.f_fns);
   gl0_drop(v.f_scopeNames);
-  gl127_drop(v.f_scope);
+  gl128_drop(v.f_scope);
   gl9_drop(v.f_importMods);
   gl0_drop(v.f_importNames);
   gl34_drop(v.f_ast);
@@ -52726,108 +53204,108 @@ static void gl126_drop(S55_sema_Module v) {
   rt_str_drop(v.f_name);
   rt_str_drop(v.f_path);
 }
-static void gl127_drop(S68_std_Map* v) {
+static void gl128_drop(S68_std_Map* v) {
   gl9_drop(v->f_index);
   gl26_drop(v->f_hashes);
-  gl128_drop(v->f_vals);
+  gl129_drop(v->f_vals);
   gl0_drop(v->f_keys);
   rt_free(v);
 }
-static void gl128_drop(obx_arr v) {
+static void gl129_drop(obx_arr v) {
   rt_arr_free(v);
 }
-static void gl124_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl129_drop(((S57_sema_TypeDecl*)v.data)[i]);
+static void gl125_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl130_drop(((S57_sema_TypeDecl*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl129_drop(S57_sema_TypeDecl v) {
+static void gl130_drop(S57_sema_TypeDecl v) {
   rt_str_drop(v.f_cname);
   gl0_drop(v.f_methodNames);
   gl18_drop(v.f_methods);
-  gl130_drop(v.f_members);
+  gl131_drop(v.f_members);
   gl9_drop(v.f_variants);
-  gl131_drop(v.f_fields);
+  gl132_drop(v.f_fields);
   gl9_drop(v.f_tparams);
   rt_str_drop(v.f_name);
 }
-static void gl131_drop(obx_arr v) {
+static void gl132_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl46_drop(((S66_sema_Field*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl130_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl132_drop(((S67_sema_Member*)v.data)[i]);
+static void gl131_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl133_drop(((S67_sema_Member*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl132_drop(S67_sema_Member v) {
+static void gl133_drop(S67_sema_Member v) {
   gl9_drop(v.f_params);
   rt_str_drop(v.f_name);
 }
-static void gl123_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl133_drop(((S56_sema_Variant*)v.data)[i]);
+static void gl124_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl134_drop(((S56_sema_Variant*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl133_drop(S56_sema_Variant v) {
-  gl131_drop(v.f_fields);
+static void gl134_drop(S56_sema_Variant v) {
+  gl132_drop(v.f_fields);
   rt_str_drop(v.f_name);
 }
-static void gl122_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl134_drop(((S58_sema_FnDecl*)v.data)[i]);
+static void gl123_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl135_drop(((S58_sema_FnDecl*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl134_drop(S58_sema_FnDecl v) {
+static void gl135_drop(S58_sema_FnDecl v) {
   rt_str_drop(v.f_bparam);
   rt_str_drop(v.f_recvName);
-  gl135_drop(v.f_params);
+  gl136_drop(v.f_params);
   gl9_drop(v.f_tps);
   rt_str_drop(v.f_cname);
   rt_str_drop(v.f_lib);
   rt_str_drop(v.f_name);
 }
-static void gl135_drop(obx_arr v) {
+static void gl136_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl40_drop(((S59_sema_Param*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl121_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl136_drop(((S63_sema_Const*)v.data)[i]);
+static void gl122_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl137_drop(((S63_sema_Const*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl136_drop(S63_sema_Const v) {
+static void gl137_drop(S63_sema_Const v) {
   gl42_drop(v.f_value);
   rt_str_drop(v.f_cname);
   rt_str_drop(v.f_name);
 }
-static void gl120_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl137_drop(((S62_sema_Global*)v.data)[i]);
+static void gl121_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl138_drop(((S62_sema_Global*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl137_drop(S62_sema_Global v) {
+static void gl138_drop(S62_sema_Global v) {
   rt_str_drop(v.f_cname);
   rt_str_drop(v.f_name);
 }
-static void gl119_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl138_drop(((S60_sema_TParam*)v.data)[i]);
+static void gl120_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl139_drop(((S60_sema_TParam*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl138_drop(S60_sema_TParam v) {
+static void gl139_drop(S60_sema_TParam v) {
   gl9_drop(v.f_cons);
   rt_str_drop(v.f_name);
 }
-static void gl118_drop(obx_arr v) {
+static void gl119_drop(obx_arr v) {
   rt_arr_free(v);
 }
-static void gl117_drop(obx_arr v) {
+static void gl118_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl18_drop(((S27_std_Map**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl116_drop(obx_arr v) {
+static void gl117_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl50_drop(((S70_sema_Wrap*)v.data)[i]);
   rt_arr_free(v);
 }
 static void gl36_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl139_drop(((S51_syntax_Tok*)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl140_drop(((S51_syntax_Tok*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl139_drop(S51_syntax_Tok v) {
+static void gl140_drop(S51_syntax_Tok v) {
   rt_str_drop(v.f_s);
 }
 static void gl35_drop(S48_dump_Dumper* v) {
@@ -52836,11 +53314,11 @@ static void gl35_drop(S48_dump_Dumper* v) {
 }
 static void gl34_drop(S47_syntax_Ast* v) {
   gl9_drop(v->f_items);
-  gl140_drop(v->f_nodes);
+  gl141_drop(v->f_nodes);
   rt_str_drop(v->f_fname);
   rt_free(v);
 }
-static void gl140_drop(obx_arr v) {
+static void gl141_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl49_drop(((S49_syntax_Node*)v.data)[i]);
   rt_arr_free(v);
 }
@@ -52867,59 +53345,59 @@ static void gl30_drop(S42_cfront_Unit* v) {
   gl18_drop(v->f_funcIdx);
   gl18_drop(v->f_tags);
   gl18_drop(v->f_typedefs);
-  gl141_drop(v->f_ir);
+  gl142_drop(v->f_ir);
   rt_free(v);
 }
-static void gl141_drop(S13_ir_Ir* v) {
-  gl104_drop(v->f_ptrOf);
-  gl142_drop(v->f_locals);
-  gl143_drop(v->f_globals);
-  gl144_drop(v->f_funcs);
+static void gl142_drop(S13_ir_Ir* v) {
+  gl105_drop(v->f_ptrOf);
+  gl143_drop(v->f_locals);
+  gl144_drop(v->f_globals);
+  gl145_drop(v->f_funcs);
   gl9_drop(v->f_items);
-  gl145_drop(v->f_nodes);
-  gl146_drop(v->f_structs);
-  gl147_drop(v->f_tys);
+  gl146_drop(v->f_nodes);
+  gl147_drop(v->f_structs);
+  gl148_drop(v->f_tys);
   rt_free(v);
+}
+static void gl148_drop(obx_arr v) {
+  rt_arr_free(v);
 }
 static void gl147_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl149_drop(((S39_ir_Struct**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl146_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl148_drop(((S39_ir_Struct**)v.data)[i]);
-  rt_arr_free(v);
-}
-static void gl148_drop(S39_ir_Struct* v) {
+static void gl149_drop(S39_ir_Struct* v) {
   gl33_drop(v->f_fields);
   rt_str_drop(v->f_name);
   rt_free(v);
 }
-static void gl145_drop(obx_arr v) {
+static void gl146_drop(obx_arr v) {
   for (int64_t i = 0; i < v.len; i++) gl21_drop(((S30_ir_Node*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl144_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl149_drop(((S17_ir_Func**)v.data)[i]);
+static void gl145_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl150_drop(((S17_ir_Func**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl149_drop(S17_ir_Func* v) {
+static void gl150_drop(S17_ir_Func* v) {
   rt_str_drop(v->f_asmName);
   gl9_drop(v->f_params);
   rt_str_drop(v->f_name);
   rt_free(v);
 }
-static void gl143_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl150_drop(((S19_ir_Global**)v.data)[i]);
+static void gl144_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl151_drop(((S19_ir_Global**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl150_drop(S19_ir_Global* v) {
+static void gl151_drop(S19_ir_Global* v) {
   rt_str_drop(v->f_name);
   rt_free(v);
 }
-static void gl142_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl151_drop(((S34_ir_Local*)v.data)[i]);
+static void gl143_drop(obx_arr v) {
+  for (int64_t i = 0; i < v.len; i++) gl152_drop(((S34_ir_Local*)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl151_drop(S34_ir_Local v) {
+static void gl152_drop(S34_ir_Local v) {
   rt_str_drop(v.f_name);
 }
 static void gl29_drop(S41_std_Map* v) {
@@ -52998,10 +53476,10 @@ static void gl15_drop(obx_arr v) {
   rt_arr_free(v);
 }
 static void gl14_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl152_drop(((S25_elf_Seg**)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl153_drop(((S25_elf_Seg**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl152_drop(S25_elf_Seg* v) {
+static void gl153_drop(S25_elf_Seg* v) {
   gl7_drop(v->f_data);
   rt_free(v);
 }
@@ -53023,7 +53501,7 @@ static void gl10_drop(S16_x64gen_Gen* v) {
   gl18_drop(v->f_importSym);
   gl0_drop(v->f_imports);
   gl8_drop(v->f_libs);
-  gl104_drop(v->f_caseL);
+  gl105_drop(v->f_caseL);
   gl9_drop(v->f_contL);
   gl9_drop(v->f_breakL);
   gl9_drop(v->f_saved);
@@ -53039,24 +53517,24 @@ static void gl10_drop(S16_x64gen_Gen* v) {
   gl9_drop(v->f_globalSym);
   gl9_drop(v->f_funcSym);
   gl18_drop(v->f_rtAddr);
-  gl153_drop(v->f_syms);
-  gl98_drop(v->f_a);
-  gl141_drop(v->f_u);
+  gl154_drop(v->f_syms);
+  gl99_drop(v->f_a);
+  gl142_drop(v->f_u);
   rt_free(v);
 }
-static void gl153_drop(obx_arr v) {
+static void gl154_drop(obx_arr v) {
   rt_arr_free(v);
 }
 static void gl9_drop(obx_arr v) {
   rt_arr_free(v);
 }
 static void gl8_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl154_drop(((S14_elf_Lib**)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl155_drop(((S14_elf_Lib**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl154_drop(S14_elf_Lib* v) {
+static void gl155_drop(S14_elf_Lib* v) {
   rt_str_drop(v->f_err);
-  gl80_drop(v->f_defs);
+  gl81_drop(v->f_defs);
   rt_str_drop(v->f_soname);
   rt_str_drop(v->f_path);
   rt_free(v);
@@ -53076,10 +53554,10 @@ static void gl5_drop(S6_io_IoError v) {
   rt_str_drop(v.f_op);
 }
 static void gl4_drop(obx_arr v) {
-  for (int64_t i = 0; i < v.len; i++) gl155_drop(((S10_fs_Entry**)v.data)[i]);
+  for (int64_t i = 0; i < v.len; i++) gl156_drop(((S10_fs_Entry**)v.data)[i]);
   rt_arr_free(v);
 }
-static void gl155_drop(S10_fs_Entry* v) {
+static void gl156_drop(S10_fs_Entry* v) {
   rt_str_drop(v->f_name);
   rt_free(v);
 }

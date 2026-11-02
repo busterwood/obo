@@ -1,0 +1,9 @@
+// SPEC 7.5, 9.1: a late borrow is taken after the arguments: the variable is moved by then.
+// error: was moved
+type D = record { v: int }
+fn both(a: &D, d: D): int { return a.v + d.v }
+fn main() {
+    let x = D{v: 1}
+    let y = D{v: 2}
+    println(both(&x, if x.v > 0 { x } else { y }))
+}

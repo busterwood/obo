@@ -1,0 +1,10 @@
+// SPEC 9.1: a variable captured by a live closure cannot be moved on a path.
+// error: borrowed by closure
+type D = record { v: int }
+fn take(d: D) { }
+fn main() {
+    let x = D{v: 1}
+    let f = fn(): int { return x.v }
+    if true { take(x) }
+    println(f())
+}

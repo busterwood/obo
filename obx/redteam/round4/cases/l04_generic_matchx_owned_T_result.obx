@@ -1,4 +1,7 @@
-// error: moved on one path
+// SPEC 9.1 (lang batch): as l03 with an owned T
+// expect: b
+// expect: drop a
+// expect: drop b
 type D = record { s: str }
 fn (d: mut &D) drop() { println("drop " + d.s) }
 type Opt[T] = closed { Has(T); Nope }

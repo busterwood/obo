@@ -1,0 +1,142 @@
+// SPEC 9.1: a variable moved on some paths of an if or match (statement or expression,
+// with or without else, literal or variant arms, nested, generic, with exit arms) is dropped
+// at the end of the paths that kept it, after their own variables and their value.
+// expect: take 1|drop 1|drop 2|after
+// expect: take 2|drop 2|drop 1|after
+// expect: take 3|drop 3|after
+// expect: inner|drop 30|drop 3|after
+// expect: take 4|drop 4|after 5
+// expect: drop 5|drop 4|after 10
+// expect: drop 5|drop 7|got 6|drop 6|
+// expect: drop 7|drop 6|got 8|drop 8|
+// expect: take 9|drop 9|after
+// expect: two|drop 9|after
+// expect: drop 10|x 11
+// expect: drop 11|drop 20|21
+// expect: drop 21|1
+// expect: drop 12|drop 13|13
+// expect: drop 12|12
+// expect: drop 17|0
+// expect: take 18|drop 18|0
+// expect: drop 19|1
+// expect: take 14|drop 14|take 15|drop 15|done
+// expect: x 14|drop 14|take 15|drop 15|done
+// expect: take 15|drop 15|drop 14|done
+// expect: drop 16|n 1
+// expect: take 16|drop 16|n 0
+type D = record { v: int }
+fn (d: mut &D) drop() { print("drop " + intToStr(d.v) + "|") }
+fn take(d: D): int {
+    print("take " + intToStr(d.v) + "|")
+    return 0
+}
+type E = closed { A; B; C }
+fn stmt(c: bool) {
+    let x = D{v: 1}
+    let y = D{v: 2}
+    if c { take(x) } else { take(y) }
+    println("after")
+}
+fn noelse(c: bool) {
+    let x = D{v: 3}
+    if c {
+        take(x)
+    } else {
+        let inner = D{v: 30}
+        print("inner|")
+    }
+    println("after")
+}
+fn expr(c: bool): int {
+    let x = D{v: 4}
+    let y = D{v: 5}
+    let n = if c { take(x) + y.v } else { y.v * 2 }
+    println("after " + intToStr(n))
+    return n
+}
+fn mexpr(e: E): int {
+    let x = D{v: 6}
+    let y = D{v: 7}
+    let r = match e {
+        E.A { x }
+        E.B { y }
+        E.C { D{v: 8} }
+    }
+    print("got " + intToStr(r.v) + "|")
+    return 0
+}
+fn mstmt(k: int) {
+    let x = D{v: 9}
+    match k {
+        1 { take(x) }
+        2 { print("two|") }
+        else { }
+    }
+    println("after")
+}
+fn reassign(c: bool) {
+    var x = D{v: 10}
+    if c { take(x) }
+    x = D{v: 11}
+    println("x " + intToStr(x.v))
+}
+fn pick[T](c: bool, a: T, b: T): T { return if c { a } else { b } }
+fn param(d: D, c: bool): int {
+    let e = if c { d } else { D{v: 13} }
+    return e.v
+}
+fn exits(d: D, k: int): int {
+    let n = match k {
+        0 { return 0 }
+        1 { take(d) }
+        else { 1 }
+    }
+    return n
+}
+fn nested(c: bool, k: bool) {
+    let x = D{v: 14}
+    let y = D{v: 15}
+    if c {
+        if k { take(x) } else { print("x " + intToStr(x.v) + "|") }
+        take(y)
+    } else {
+        take(y)
+    }
+    println("done")
+}
+fn lit(s: str) {
+    let x = D{v: 16}
+    let n = match s {
+        "a" { 1 }
+        "b" { take(x) }
+        else { 2 }
+    }
+    println("n " + intToStr(n))
+}
+fn main() {
+    stmt(true)
+    stmt(false)
+    noelse(true)
+    noelse(false)
+    expr(true)
+    expr(false)
+    mexpr(E.A)
+    println("")
+    mexpr(E.C)
+    println("")
+    mstmt(1)
+    mstmt(2)
+    reassign(false)
+    println(pick(false, D{v: 20}, D{v: 21}).v)
+    println(pick(true, 1, 2))
+    println(param(D{v: 12}, false))
+    println(param(D{v: 12}, true))
+    println(exits(D{v: 17}, 0))
+    println(exits(D{v: 18}, 1))
+    println(exits(D{v: 19}, 2))
+    nested(true, true)
+    nested(true, false)
+    nested(false, false)
+    lit("a")
+    lit("b")
+}

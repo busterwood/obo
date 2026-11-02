@@ -1,5 +1,6 @@
-// by design: the join after the if expression (9.1) rejects a variable moved in one branch only
-// error: moved on one path
+// SPEC 9.1 (lang batch): moved on one path only; the other path drops it (was an error)
+// expect: b
+// expect: 2
 fn pick[T](c: bool, a: T, b: T): T { return if c { a } else { b } }
 type D = record { s: str }
 fn main() {

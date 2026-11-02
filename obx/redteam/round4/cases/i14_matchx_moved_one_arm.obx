@@ -1,4 +1,4 @@
-// error: moved on one path
+// SPEC 9.1 (lang batch): the else arm drops x (was an error)
 type D = record { s: str }
 fn main() {
     var x = D{s: "a"}
