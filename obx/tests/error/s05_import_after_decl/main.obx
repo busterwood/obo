@@ -1,4 +1,4 @@
 // error:
 fn f() {}
-import "util"
+import "./util"
 fn main() {}

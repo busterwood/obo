@@ -1,2 +1,2 @@
-import "c"
+import "./c"
 pub fn f(): int { return c.base() + 2 }

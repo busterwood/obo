@@ -250,11 +250,14 @@ class Program:
         return mod
 
     def find_module(self, rel, here, where):
-        for root in [here] + self.libroots:
+        # SPEC 5.1: ./ and ../ are relative to the importing file; any other path is a library module.
+        local = rel.startswith(('./', '../'))
+        for root in [here] if local else self.libroots:
             p = os.path.abspath(os.path.join(root, rel + '.obx'))
             if os.path.isfile(p):
                 return p
-        raise CompileError(f"cannot find module {rel}", where)
+        raise CompileError(f"cannot find module {rel}" + ("" if local else " in the library roots (a local "
+                           f"module is imported as \"./{rel}\")"), where)
 
     def collect(self, mod, decls):
         def add(name, d, where):

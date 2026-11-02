@@ -1,7 +1,7 @@
 // expect: 42
 // expect: 15001
-import "lib/ast"
-import "lib/ast" as a2
+import "./lib/ast"
+import "./lib/ast" as a2
 fn fromFraction(d: int, s: int): int { return d * 1000 + s }
 fn eval(e: &ast.Expr, env: &ast.Env[int]): int {
     match e {

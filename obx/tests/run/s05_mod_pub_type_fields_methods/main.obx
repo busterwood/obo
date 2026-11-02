@@ -1,7 +1,7 @@
 // expect: 1
 // expect: 3
 // expect: 25
-import "geom"
+import "./geom"
 fn main() {
     let p = geom.P{x: 1, y: 2}
     println(p.x)

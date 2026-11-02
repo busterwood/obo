@@ -1,5 +1,5 @@
 // error: Hidden
-import "util"
+import "./util"
 fn main() {
     let p: util.Hidden = util.make()
 }

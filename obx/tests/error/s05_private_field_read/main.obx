@@ -1,5 +1,5 @@
 // error: secret
-import "util"
+import "./util"
 fn main() {
     let p = util.make()
     println(p.secret)

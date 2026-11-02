@@ -1,6 +1,6 @@
 // expect: 2
 // expect: 20
-import "container"
+import "./container"
 fn main() {
     var s: container.Stack[int] = container.newStack()
     s.push(10)

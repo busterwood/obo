@@ -1,6 +1,6 @@
 // expect: made
 // expect: 3
-import "res"
+import "./res"
 fn main() {
     let r = res.make(3)
     println("made")

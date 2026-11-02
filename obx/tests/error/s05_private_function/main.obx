@@ -1,5 +1,5 @@
 // error: hidden
-import "util"
+import "./util"
 fn main() {
     util.hidden()
 }

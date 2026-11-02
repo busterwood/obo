@@ -1,8 +1,8 @@
 // Globals of two modules whose C names collide (a_b.c and a.b_c).
 // expect: 1
 // expect: 2
-import "mods/a_b"
-import "mods/a"
+import "./mods/a_b"
+import "./mods/a"
 fn main() {
     println(a_b.getc())
     println(a.getbc())

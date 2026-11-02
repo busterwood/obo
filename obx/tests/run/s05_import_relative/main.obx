@@ -1,0 +1,7 @@
+// expect: 42
+// expect: 7
+import "./sub/a"
+fn main() {
+    println(a.answer())
+    println(a.viaParent())
+}

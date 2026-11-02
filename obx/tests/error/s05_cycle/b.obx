@@ -1,2 +1,2 @@
-import "a"
+import "./a"
 pub fn g() {}

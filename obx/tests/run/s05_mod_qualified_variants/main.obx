@@ -1,6 +1,6 @@
 // expect: 12
 // expect: 16
-import "shapes"
+import "./shapes"
 fn main() {
     let c = shapes.Shape.Circle(2)
     let s = shapes.Shape.Square(4)

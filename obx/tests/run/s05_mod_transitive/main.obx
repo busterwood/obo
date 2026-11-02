@@ -1,5 +1,5 @@
 // expect: 42
-import "a"
+import "./a"
 fn main() {
     println(a.get())
 }

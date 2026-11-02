@@ -1,0 +1,9 @@
+// expect: local
+// expect: a-b
+import "./strings" as mine
+import "strings"
+fn main() {
+    println(mine.hello())
+    var parts: []str = ["a", "b"]
+    println(strings.join(&parts, "-"))
+}

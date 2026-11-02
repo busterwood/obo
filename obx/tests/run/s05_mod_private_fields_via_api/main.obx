@@ -1,6 +1,6 @@
 // expect: 7
 // expect: 8
-import "acct"
+import "./acct"
 fn main() {
     var a = acct.open(7)
     println(a.balance())

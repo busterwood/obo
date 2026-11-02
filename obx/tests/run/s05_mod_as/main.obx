@@ -1,5 +1,5 @@
 // expect: 10
-import "util" as u
+import "./util" as u
 fn main() {
     println(u.double(5))
 }

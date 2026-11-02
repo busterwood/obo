@@ -1,5 +1,5 @@
 // error: deepmod
-import "a"
+import "./a"
 fn main() {
     deepmod.deep()
 }

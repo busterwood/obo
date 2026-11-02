@@ -1,8 +1,8 @@
 // Globals a_b.c and a.b_c both become the C name g_a_b_c: the C compiler fails.
 // expect: 1
 // expect: 2
-import "a_b"
-import "a"
+import "./a_b"
+import "./a"
 fn main() {
     println(a_b.getc())
     println(a.getbc())

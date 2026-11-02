@@ -1,5 +1,5 @@
 // expect: 2
-import "mods/shapes"
+import "./mods/shapes"
 fn main() {
     let s = shapes.Shape.Sq(2)
     match s {

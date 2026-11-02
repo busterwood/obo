@@ -1,5 +1,5 @@
 // expect: 9
-import "lib/util"
+import "./lib/util"
 fn main() {
     println(util.triple(3))
 }

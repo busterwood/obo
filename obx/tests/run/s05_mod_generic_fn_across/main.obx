@@ -1,6 +1,6 @@
 // expect: 5
 // expect: x
-import "util"
+import "./util"
 fn main() {
     println(util.ident(5))
     println(util.ident("x"))

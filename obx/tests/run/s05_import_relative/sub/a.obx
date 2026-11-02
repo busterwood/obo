@@ -1,0 +1,3 @@
+import "../b"
+pub fn answer(): int { return 42 }
+pub fn viaParent(): int { return b.seven() }
