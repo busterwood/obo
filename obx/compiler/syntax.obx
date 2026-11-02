@@ -1405,7 +1405,8 @@ fn (p: mut &Parser) matchstmt(w: int, kind: int): int {
     while !p.atSym(S_RBRACE) {
         let aw = p.line()
         let arm = p.node(N_ARM, aw, "", -1, -1, -1)
-        if p.atKw(K_ELSE) {
+        let isElse = p.atKw(K_ELSE)
+        if isElse {
             p.next()
         } else {
             let first = p.literal()
@@ -1435,6 +1436,7 @@ fn (p: mut &Parser) matchstmt(w: int, kind: int): int {
         p.ast.nodes[arm].d = if kind == N_MATCHX { p.branch() } else { p.block() }
         append(mut &arms, arm)
         p.skipsemi()
+        if isElse && !p.atSym(S_RBRACE) { p.err("else must be the last arm of a match") }
     }
     p.sym(S_RBRACE)
     return p.node(kind, w, "", scrut, p.list(&arms), -1)

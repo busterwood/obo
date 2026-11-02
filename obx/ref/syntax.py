@@ -661,6 +661,9 @@ class Parser:
             if self.atkw('else'):
                 self.next()
                 arms.append(N('arm', aw, variant=None, lits=None, binds=None, body=body()))
+                self.skipsemi()
+                if not self.atsym('}'):
+                    self.err("else must be the last arm of a match")
             else:
                 lits = [self.literal()]
                 binds = None

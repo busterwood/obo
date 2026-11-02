@@ -1,0 +1,7 @@
+// Red-team round 4, k03 (SPEC 3): the match statement takes else once, last.
+// error: else
+// line: 6
+fn main() {
+    let k = 2
+    match k { 1 { println("1") } else { println("e") } else { println("f") } }
+}
