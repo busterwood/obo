@@ -11,7 +11,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
-ROOT = os.path.join(os.path.dirname(FORK), 'archive', 'obx')
+ROOT = os.path.join(os.path.dirname(FORK), 'obx')
 INPUT = os.path.join(ROOT, 'src', 'obxc.obx')        # read by the tokens workload
 GC_CONFIGS = [('GC default', {}),
               ('GC tuned', {'OBX_GC_MIN_KB': '1024', 'OBX_GC_GROWTH': '100'}),

@@ -56,7 +56,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
-ROOT = os.path.join(os.path.dirname(FORK), 'archive', 'obx')
+ROOT = os.path.join(os.path.dirname(FORK), 'obx')
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
 import run  # noqa: E402

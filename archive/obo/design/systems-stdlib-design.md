@@ -149,7 +149,7 @@ also write the global `rt_entry_sp` (entry.S:110).
   fd tracker and output buffer are global. `rt_str_inc/dec` use ordinary
   loads/stores. `rt_collect` returns immediately; collector comments at the
   file head are historical.
-- [README.md](../../README.md):222–268: 4 GiB default arena, 64 GiB ceiling,
+- [README.md](../README.md):222–268: 4 GiB default arena, 64 GiB ceiling,
   one-object payload at most 4 GiB minus 32 bytes, separate metadata and native
   memory. mmap reserves virtual address space, not RAM. Free lists retain
   memory; `OBO_STATS` is not an RSS meter.

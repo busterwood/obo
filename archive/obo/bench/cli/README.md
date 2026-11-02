@@ -13,7 +13,7 @@ the obo side was built from that tree by `run.py`; the repo's own eza is the
 266,241-byte binary (sha256 `7a4e85f5…`). The pinned eza reference was not
 present on `PATH`, so that row was skipped and no reference binary was
 substituted. The historical 0.5 / 0.6 sample and its provenance are in
-[`HISTORY.md`](../../../HISTORY.md).
+[`HISTORY.md`](../../../../HISTORY.md).
 
 ## What it measures
 
@@ -174,7 +174,7 @@ previous 700,417-byte 0.15 image (`8ca8e59e…`) built it once; the 0.14 seed
 removed the disabled collector and `gc` builtins, so every obo binary is 4,096
 bytes smaller. The pinned eza reference was absent, so its timing row was
 skipped rather than substituted. The earlier 0.5 / 0.6 sample is preserved in
-[`HISTORY.md`](../../../HISTORY.md).
+[`HISTORY.md`](../../../../HISTORY.md).
 
 `--quick` changes the workload sizes as well as the repetition counts, so its
 absolute times are not comparable with default rows: `fib(30)`, a 10,000,000

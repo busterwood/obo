@@ -1,5 +1,9 @@
 # obo performance
 
+> Archived with obo on 2026-11-02 (it was the root `PERFORMANCE.md`). Paths
+> written `obo/...` are now `archive/obo/...`; obx's benchmarks are in
+> `obx/bench/README.md`.
+
 This page records the benchmark run of obo 0.15: the compiler, four small
 programs, and the `cat`, `wc`, `sort` and `eza` tools, compared with CPython
 3.12.3 and GNU coreutils 9.4. It was measured on 1 November 2026 at commit
@@ -62,7 +66,7 @@ about 20% between the two runs (see [Caveats](#caveats)).
   means the row is slower than obo; below 1 means it is faster.
 
 The full runner, fixture definitions and recorded sample are documented in
-[`obo/bench/cli/README.md`](obo/bench/cli/README.md).
+[`obo/bench/cli/README.md`](bench/cli/README.md).
 
 ## CPU and startup
 
@@ -254,7 +258,7 @@ workloads, with comparable times; it is faster on tokens and trees.
   `listdir + sorted` (17.2 ms) and GNU `ls -1` (6.99 ms). The eza headline is
   not raw listing speed: it is the 266,241-byte static binary, the roughly
   2.18 MB live peak at 10,000 entries, and the differential gates documented in
-  [`obo/cmd/README.md`](obo/cmd/README.md).
+  [`obo/cmd/README.md`](cmd/README.md).
 * **Dialect.** On these four workloads the obo compiler holds less memory than
   the historical obx collector at its default or tuned settings, and is faster
   on the token and tree workloads.
@@ -302,9 +306,9 @@ workloads, with comparable times; it is faster on tokens and trees.
 
 ## Further reading
 
-* [`obo/bench/cli/README.md`](obo/bench/cli/README.md): how to run the suite,
+* [`obo/bench/cli/README.md`](bench/cli/README.md): how to run the suite,
   the recorded sample, methodology and limitations.
-* [`obo/cmd/README.md`](obo/cmd/README.md): the supported tool subsets, their
+* [`obo/cmd/README.md`](cmd/README.md): the supported tool subsets, their
   behaviour and their differential gates.
-* [`HISTORY.md`](HISTORY.md): the earlier 0.5 / 0.6 benchmark sample and its
+* [`HISTORY.md`](../../HISTORY.md): the earlier 0.5 / 0.6 benchmark sample and its
   provenance, preserved as history rather than presented as current.

@@ -204,7 +204,7 @@ slightly behind Python's C `bytes.count` (77.3 ms) and behind GNU `wc -l`
 (12.2 ms, whose `memchr` loop is SIMD); `-lwc` measures 133.4 ms against
 Python's chunked counter (480.6 ms) and GNU `wc -lwc` (1,049 ms), beating both
 by 3.60x and 7.86x. Absolute times are fixture-dependent; see
-[`PERFORMANCE.md`](../../PERFORMANCE.md) for the current table and caveats.
+[`PERFORMANCE.md`](../PERFORMANCE.md) for the current table and caveats.
 
 ## sort
 
@@ -283,7 +283,7 @@ benchmark's fixed 8-digit fixture `-n` measures 216.6 ms against GNU
 `sort -n`'s 447.2 ms.
 Absolute times move with host load (the two default runs differed by about 20%
 on the sort rows) and depend on the fixture; see
-[`PERFORMANCE.md`](../../PERFORMANCE.md) for the current table and caveats.
+[`PERFORMANCE.md`](../PERFORMANCE.md) for the current table and caveats.
 
 ## tail
 
@@ -659,7 +659,7 @@ RSS in the recorded run; the UTF-8 width table is code, not per-entry heap).
 `tests/eza.py --memory` keeps the P4 `EZA_PEAK_MAX = 2,752,512` bytes and
 gates on no leak/double-close line. The pinned eza 0.23.3 reference was not
 present on this host, so no reference memory row was measured. See
-[`PERFORMANCE.md`](../../PERFORMANCE.md) for the current benchmark table.
+[`PERFORMANCE.md`](../PERFORMANCE.md) for the current benchmark table.
 
 ### E2: grid, width sources, UTF-8 and lossy names
 

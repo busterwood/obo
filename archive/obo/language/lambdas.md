@@ -112,7 +112,7 @@ fn main() {
 Stored function values, owned or mutable captures, string/interface captures and impure
 callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
 interface handles `^I` remain later. The release record and seed
-history are in [HISTORY.md](../../HISTORY.md) and [FORK.md](../FORK.md).
+history are in [HISTORY.md](../../../HISTORY.md) and [FORK.md](../FORK.md).
 
 ## 5d. Capturing lambdas
 

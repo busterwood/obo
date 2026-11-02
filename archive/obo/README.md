@@ -1,5 +1,14 @@
 # obo
 
+> **Archived.** obo 0.19 was retired on 2026-11-02, when the project moved on
+> to obx (`../../obx/`, see the [root README](../../README.md)): obx keeps
+> obo's ownership model and adds generics from day one, and its self-hosted
+> compiler is the only one under development. obo stays here as history, as it
+> was at retirement, and still builds and runs from this directory (`cd
+> archive/obo && make`). This was the root README; paths written `obo/...`
+> below are now `archive/obo/...`, and the eza golden suite obx uses was copied
+> to `obx/tests/eza.py` and `obx/tests/eza/`.
+
 obo is a small Oberon-derived language and compiler for Linux x86-64, built to
 answer one question: **can a language keep Oberon's simplicity and manage memory
 without a garbage collector, and without Rust's complications?**
@@ -13,7 +22,7 @@ written straight into a static ELF executable.
 
 **History:** obo grew out of **obx**, the original garbage-collected dialect and
 compiler. That compiler is kept in `archive/obx/` as the historical reference; the
-current compiler is `obo/src/obo.obo`. See [HISTORY.md](HISTORY.md) for the obx language,
+current compiler is `obo/src/obo.obo`. See [HISTORY.md](../../HISTORY.md) for the obx language,
 architecture and tests, the ownership fork, the milestone chronology, the release
 records for each stage and earlier measurements.
 
@@ -43,8 +52,8 @@ formats 6–11 are rejected, so rebuild old `.sym` files.
   construction. Compiler-known `sql`/`html` template literals type their bind
   parameters, compose fragments and escape HTML contextually.
   Interface handles `^I`, named function values and stored closures are not
-  implemented. The reference starts at [obo/LANGUAGE.md](obo/LANGUAGE.md), with
-  topic chapters in [obo/language/](obo/language/README.md).
+  implemented. The reference starts at [obo/LANGUAGE.md](LANGUAGE.md), with
+  topic chapters in [obo/language/](language/README.md).
 - **Compiler.** 17,233 lines / 659,375 bytes of obo source, single-pass with no
   AST or intermediate representation, emitting x86-64 into a static ELF image.
   It implements the language above, symbol format 12 and the full gate suite.
@@ -72,7 +81,7 @@ formats 6–11 are rejected, so rebuild old `.sym` files.
   separator byte. Each tool is a module root and imports only what it uses;
   `obo/tools/build_tools.py` compiles it directly with the ordinary compiler,
   with nothing concatenated. The exact subsets and caveats are in
-  [obo/cmd/README.md](obo/cmd/README.md).
+  [obo/cmd/README.md](cmd/README.md).
   The systems library is in `obo/experimental/sys`; its core phases P0–P3 are
   implemented. P1b adds rename/link/mkdir/chmod/sync, transactional
   `replaceAtomic`, `openBeneath`, RFC3339, environment snapshots and bounded
@@ -127,8 +136,8 @@ matching eza on `PATH`, for the optional pinned-eza row). The pinned eza 0.23.3
 reference was not on this host's `PATH`, so that row was skipped. The full
 tables, binary sizes, memory figures, methodology and caveats are in
 [PERFORMANCE.md](PERFORMANCE.md); how to run and read the suite is in
-[obo/bench/cli/README.md](obo/bench/cli/README.md). Earlier benchmark samples
-are in [HISTORY.md](HISTORY.md).
+[obo/bench/cli/README.md](bench/cli/README.md). Earlier benchmark samples
+are in [HISTORY.md](../../HISTORY.md).
 
 | Workload | obo | Comparison |
 |---|---:|---:|
@@ -218,8 +227,8 @@ global; async libpq and a deferred response follow it. After that come `^I`,
 named function values and stored closures. A typed database write path
 (`SqlArg.Decimal`/`decimal(p,s)`) and further containers are later work. The
 experimental packages remain probes, not a stable API. `^I`'s phase 2a design is
-in [obo/design/interface-handles-design.md](obo/design/interface-handles-design.md).
-The lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md).
+in [obo/design/interface-handles-design.md](design/interface-handles-design.md).
+The lambda design is in [obo/design/lambdas-design.md](design/lambdas-design.md).
 
 | Work | State |
 |---|---|
@@ -227,7 +236,7 @@ The lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design
 | `^I`, named function values, stored closures | not implemented; `^I` phase 2a design recorded |
 | Typed database write path | later: `SqlArg.Decimal`/`decimal(p,s)`; writes currently travel as exact `DecimalText` bytes |
 | Systems P2C compression | optional streaming-codec adapter, separate from the P0–P3 core |
-| Concurrency and TUI | threads are design-only and unapproved ([obo/design/systems-threads-design.md](obo/design/systems-threads-design.md)); TUI later |
+| Concurrency and TUI | threads are design-only and unapproved ([obo/design/systems-threads-design.md](design/systems-threads-design.md)); TUI later |
 | Peephole/optimizer audit | evidence-gated |
 | More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
 | Networking, TLS, HTTP | implemented in experimental packages only (HTTP/1.1 and HTTP/2 server cores, TLS 1.2/1.3 adapter, sockets/reactor), unstable and not a framework or stable API; no web framework, async runtime or process supervision |
@@ -235,7 +244,7 @@ The lambda design is in [obo/design/lambdas-design.md](obo/design/lambdas-design
 Also not yet done: generic modules (not planned), value records, `inout`
 parameters, a `>>>` logical shift, and debug info. Effect summaries for functions
 that call each other through forward headings remain a checker limit. Current
-design notes are indexed in [obo/design/README.md](obo/design/README.md); they are
+design notes are indexed in [obo/design/README.md](design/README.md); they are
 authoritative documents, not history.
 
 ## The model, in one page
@@ -343,41 +352,41 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `PERFORMANCE.md` | the full benchmark record: tables, methodology and caveats (the README holds the table and its provenance) |
 
 ```
-cd obo && make                           # obo: build from the committed seed
-cd obo && make tools                     # build/tools/{cat,wc,sort,head,tail}
-cd obo && make eza                       # build/eza/eza
-cd obo && python3 tests/doc_check.py     # language reference examples
-cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
-cd obo && python3 tests/elf_test.py      # the image: trimmed runtime-data segment
-cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
-cd obo && python3 tests/heap_test.py     # heap limits, allocation bounds, sparse 64 GiB
-cd obo && python3 tests/mutate_fork.py   # obo's mutants
-cd obo && python3 tests/mutate_io.py     # runtime/library mutants
-cd obo && python3 tests/mutate_harness_test.py  # the mutation harness's own tests (fake builders)
-cd obo && python3 tests/meta_test.py     # the metadata runtime and fs module
-cd obo && python3 tests/mutate_meta.py   # metadata runtime/entry.S and compiler mutants
-cd obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo
-cd obo && python3 tests/port_compare.py  # the port, stage B (everything), with the memory budget
-cd obo && python3 tests/mutate_port.py   # the port's mutants
-cd obo && python3 tests/sym_test.py      # symbol files: writer, reader, --check, staleness
-cd obo && python3 tests/sym_fuzz.py      # deterministic .sym corruption fuzzing
-cd obo && python3 tests/tools.py         # the tools vs GNU; models/goldens without it
-cd obo && python3 tests/tools.py --require-reference   # tools vs GNU coreutils (release checklist)
-cd obo && python3 tests/tools.py --memory              # the four pinned tool memory cases
-cd obo && python3 bench/bench.py         # memory and time against the collector
-cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
-cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.19 sym-format 12 abi 1 (seed and compiler are the same promoted image)
-cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
+cd archive/obo && make                           # obo: build from the committed seed
+cd archive/obo && make tools                     # build/tools/{cat,wc,sort,head,tail}
+cd archive/obo && make eza                       # build/eza/eza
+cd archive/obo && python3 tests/doc_check.py     # language reference examples
+cd archive/obo && python3 tests/run_fork.py      # obo's tests, leak check always on
+cd archive/obo && python3 tests/elf_test.py      # the image: trimmed runtime-data segment
+cd archive/obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
+cd archive/obo && python3 tests/heap_test.py     # heap limits, allocation bounds, sparse 64 GiB
+cd archive/obo && python3 tests/mutate_fork.py   # obo's mutants
+cd archive/obo && python3 tests/mutate_io.py     # runtime/library mutants
+cd archive/obo && python3 tests/mutate_harness_test.py  # the mutation harness's own tests (fake builders)
+cd archive/obo && python3 tests/meta_test.py     # the metadata runtime and fs module
+cd archive/obo && python3 tests/mutate_meta.py   # metadata runtime/entry.S and compiler mutants
+cd archive/obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo
+cd archive/obo && python3 tests/port_compare.py  # the port, stage B (everything), with the memory budget
+cd archive/obo && python3 tests/mutate_port.py   # the port's mutants
+cd archive/obo && python3 tests/sym_test.py      # symbol files: writer, reader, --check, staleness
+cd archive/obo && python3 tests/sym_fuzz.py      # deterministic .sym corruption fuzzing
+cd archive/obo && python3 tests/tools.py         # the tools vs GNU; models/goldens without it
+cd archive/obo && python3 tests/tools.py --require-reference   # tools vs GNU coreutils (release checklist)
+cd archive/obo && python3 tests/tools.py --memory              # the four pinned tool memory cases
+cd archive/obo && python3 bench/bench.py         # memory and time against the collector
+cd archive/obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
+cd archive/obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
+cd archive/obo && ./obo --version                # obo 0.19 sym-format 12 abi 1 (seed and compiler are the same promoted image)
+cd archive/obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 
 The historical obx build and test commands are in
-[HISTORY.md](HISTORY.md#building-obx).
+[HISTORY.md](../../HISTORY.md#building-obx).
 
 ## License
 
 obo is licensed under the Apache License, Version 2.0. The full text is in
-[LICENSE](LICENSE); [NOTICE](NOTICE) records the copyright. Unless a file says
+[LICENSE](../../LICENSE); [NOTICE](../../NOTICE) records the copyright. Unless a file says
 otherwise, the compiler, runtime, tools, tests and documentation are covered.
 
 Contributions are accepted under the same license; by contributing you agree that

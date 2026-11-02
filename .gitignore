@@ -3,21 +3,21 @@
 *.elf
 *.bin
 /archive/obx/obxc
-/obo/obo
-/obo/build/
-/obo/bench/peak
+/archive/obo/obo
+/archive/obo/build/
+/archive/obo/bench/peak
 .stage2
 .stage3
 
 # python
 __pycache__/
 *.pyc
-/obo/obo-noregs
-/obo/rt_io_test
-/obo/.noregs.obo
+/archive/obo/obo-noregs
+/archive/obo/rt_io_test
+/archive/obo/.noregs.obo
 
-# generated symbol files (the golden fixtures under obo/tests/modules/golden are committed)
-/obo/.obo/
+# generated symbol files (the golden fixtures under archive/obo/tests/modules/golden are committed)
+/archive/obo/.obo/
 **/.obo/sym/
 
 # local helper script
