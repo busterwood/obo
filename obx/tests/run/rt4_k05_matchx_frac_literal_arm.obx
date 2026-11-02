@@ -1,0 +1,15 @@
+// Red-team round 4, k05 (SPEC 7.8): a literal branch or arm takes the type of
+// the others, a fractional one too: both expressions below are floats. The
+// match arm 1.5 used to be made a Decimal first and the match was rejected.
+// expect: 2.5
+// expect: 2.5
+// expect: 1.5
+fn main() {
+    let f: float = 2.5
+    let k = 2
+    let c = false
+    println(if c { 1.5 } else { f }.toStr())
+    println(match k { 1 { 1.5 } else { f } }.toStr())
+    let g = match k { 1 { f } 2 { 1.5 } else { 0.5 } }
+    println(g.toStr())
+}

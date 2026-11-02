@@ -39,6 +39,15 @@ def is_lit(e):
     return e.kind in ('int', 'frac')
 
 
+def checks(c):
+    """Whether the C text c makes a run-time check (an index, a checked operator or conversion): each
+    one passes its location W(where), a C string, and nothing else in a value's text does."""
+    return '"' in c
+
+
+TRAPS = ('+', '-', '*', '/', '%', '<<', '>>')
+
+
 class Var:
     def __init__(self, name, c, t, mutable, kind, where):
         self.name, self.c, self.t, self.mutable, self.kind, self.where = name, c, t, mutable, kind, where
@@ -457,9 +466,10 @@ class Checker:
             self.err(f"cannot {verb} '{name}': it is declared with let, not var", where)
         self.err(f"cannot {verb} this place", where)
 
-    def effects(self, e):
+    def effects(self, e, traps=False):
         """Whether evaluating e may run code that changes a value read before it in the statement:
-        a call, try, an operator method or fromFraction. Conservative where types are unknown."""
+        a call, try, an operator method or fromFraction. Conservative where types are unknown.
+        With traps, also whether e makes a run-time check (acts)."""
         if not isinstance(e, N):
             return False
         k, lits = e.kind, ('int', 'char', 'str', 'bool')
@@ -467,15 +477,33 @@ class Checker:
             return True
         if k == 'bin' and (e.op in OPS or e.op in CMPS) and e.l.kind not in lits and e.r.kind not in lits:
             return True
+        if traps and (k in ('index', 'sub') or k == 'bin' and e.op in TRAPS):
+            return True
         if k == 'name' and self.lookup_var(e.v) is None:
             d = self.prog.lookup(self.ctx.module, e.v)
             if isinstance(d, Const) and self.prog.const_value(d)[2] == 'frac':
                 return True
-        for v in e.__dict__.values():
+        for key, v in e.__dict__.items():
+            if key == 'ty':             # a type (a literal's): no code
+                continue
             for x in (v if isinstance(v, list) else [v]):
-                if any(isinstance(y, N) and self.effects(y) for y in (x if isinstance(x, tuple) else [x])):
+                if any(isinstance(y, N) and self.effects(y, traps) for y in (x if isinstance(x, tuple) else [x])):
                     return True
         return False
+
+    def place_acts(self, e):
+        """Whether evaluating the place e runs code that acts (an index expression, a base that is not
+        a place) before the place is used, which makes its own checks."""
+        while e.kind in ('field', 'index'):
+            if e.kind == 'index' and any(self.acts(x) for x in e.items):
+                return True
+            e = e.e
+        return self.acts(e)
+
+    def acts(self, e):
+        """Whether evaluating e may do anything that a run-time check made before it must precede (SPEC
+        7: left to right): have effects, or stop the program itself."""
+        return self.effects(e, True)
 
     def snap_val(self, v):
         """Read a place (or compute a value) now, before later side effects in the statement."""
@@ -484,6 +512,24 @@ class Checker:
         if v.cat != 'place' or v.t[0] == 'ref' or not is_copy(v.t):
             return v
         return self.holdtmp(self.dup(v.c, v.t), v.t)
+
+    def seq(self, v):
+        """Make the run-time checks in v's C text now, in their position (SPEC 7), as v is used in a C
+        expression whose operands C does not order: a value is computed into a temporary; a borrow,
+        slice or owned place is checked now and found (and checked) again where it is used."""
+        if not checks(v.c):
+            return v
+        if v.t[0] in ('ref', 'slice') or v.cat == 'place' and not is_copy(v.t):
+            self.emit(f"(void)({v.c if v.cat != 'place' else '&' + v.c});")
+            return v
+        return self.snap_val(v)
+
+    def before(self, v, *later):
+        """v, used in C after the operands later (AST nodes) run: read now if they have effects,
+        checked now if they act."""
+        if any(self.effects(x) for x in later):
+            v = self.snap_val(v)
+        return self.seq(v) if any(self.acts(x) for x in later) else v
 
     # ---------------------------------------------------------- statements
 
@@ -682,6 +728,8 @@ class Checker:
             mark = len(ctx.pending)
             if self.effects(tg):
                 v = self.snap_val(v)
+            if self.place_acts(tg) or self.acts(tg) and is_pod(v.t):    # e's checks before p's (C does not
+                v = self.seq(v)                                         # order the operands of p = e)
             if v.cat == 'place' and not is_copy(v.t):
                 self.hold(v, None, object(), s.where)
             p = self.place(tg)
@@ -693,7 +741,7 @@ class Checker:
         p = self.place(tg)
         if p.var is not None and p.var.state != 'live':
             self.err(f"'{p.var.name}' was moved and has no value here", s.where)
-        lv = self.snap_val(self.rd(p)) if self.effects(s.e) else p
+        lv = self.before(p, s.e)
         # a += b is a = a + b with a evaluated once (SPEC 7.4). A place made of variables, fields
         # and indexes is found again when it is stored to, as in a = a + b; one reached through a
         # slice or a call result is held while b is evaluated (rule 3).
@@ -701,6 +749,8 @@ class Checker:
         while fixed.kind in ('field', 'index'):
             fixed = fixed.e
         r = self.binop(s.op, lv, s.e, s.where, p.t, held=None if fixed.kind == 'name' else p)
+        if self.effects(s.e) and checks(p.c) and is_pod(p.t):   # the result's checks, then p's again
+            r = self.seq(r)
         c = self.consume(self.coerce(r, p.t, s.where, "the result"), s.where)
         live = not (p.var is not None and p.var.state != 'live')
         self.store(p, c, live)
@@ -836,9 +886,7 @@ class Checker:
     def s_for(self, s):
         ctx = self.ctx
         if s.b is not None:
-            a = self.rd(self.expr(s.a, INT))
-            if self.effects(s.b):
-                a = self.snap_val(a)
+            a = self.before(self.rd(self.expr(s.a, INT)), s.b)
             b = self.rd(self.expr(s.b, INT))
             if a.t != INT or b.t != INT:
                 self.err(f"a for range needs int bounds, not {tstr(a.t)} and {tstr(b.t)}", s.where)
@@ -1053,6 +1101,9 @@ class Checker:
                     else:
                         if k == 'str':
                             self.err(f"a match on {tstr(t)} takes integer literals and constants", arm.where)
+                        if k == 'char' and t != BYTE:       # 'a' is a byte, as in x == 'a' (SPEC 2)
+                            self.err(f"a char literal is a byte: it cannot be an arm of a match on {tstr(t)}",
+                                     arm.where)
                         lo, hi = RANGES[t[1]]
                         if not lo <= x <= hi:
                             self.err(f"literal {x} does not fit {tstr(t)}", arm.where)
@@ -1425,14 +1476,14 @@ class Checker:
             self.err("an index takes one expression", e.where)
         v = self.deref(self.expr(e.e, None))
         if v.t == STR:
-            if self.effects(e.items[0]):
-                v = self.snap_val(v)
+            v = self.before(v, e.items[0])
             i = self.int_index(e.items[0])
             return Val(f"rt_str_byte({v.c}, {i}, {self.W(e.where)})", BYTE, 'rv')
         if v.t[0] not in ('arr', 'slice'):
             self.err(f"cannot index a {tstr(v.t)}", e.where)
         if v.cat == 'rv':
             v = self.holdtmp(v.c, v.t, v)
+        v = self.seq(v) if self.acts(e.items[0]) else v
         mark = len(self.ctx.pending)
         self.hold(v, False, object(), e.where)
         i = self.int_index(e.items[0])
@@ -1451,8 +1502,7 @@ class Checker:
         W = self.W(e.where)
         mut = exp is not None and exp[0] == 'slice' and exp[2]
         if v.t == STR:
-            if self.effects(e.lo) or self.effects(e.hi):
-                v = self.snap_val(v)
+            v = self.before(v, e.lo, e.hi)
             lo = self.int_index(e.lo) if e.lo is not None else '0'
             hi = self.int_index(e.hi) if e.hi is not None else f"({v.c}).len"
             return self.holdtmp(f"rt_str_sub({v.c}, {lo}, {hi}, {W})", STR)
@@ -1472,6 +1522,7 @@ class Checker:
             base = v.c
         if mut:                         # rule 4: a mut re-slice is a mut borrow of the root
             self.frozen(v.root, 'mut', e.where)
+        v = self.seq(v) if self.acts(e.lo) or self.acts(e.hi) else v
         mark = len(self.ctx.pending)
         self.hold(v, False, object(), e.where)
         lo = self.int_index(e.lo) if e.lo is not None else '0'
@@ -1534,9 +1585,7 @@ class Checker:
             lv = self.rd(self.expr(e.l, lt))
             return self.binop(e.op, lv, r, e.where, exp)
         hint = exp if e.op not in CMPS and exp is not None and exp[0] == 'prim' else None
-        lv = self.rd(self.expr(e.l, hint))
-        if self.effects(e.r):
-            lv = self.snap_val(lv)
+        lv = self.before(self.rd(self.expr(e.l, hint)), e.r)
         return self.binop(e.op, lv, e.r, e.where, exp)
 
     def peek_type(self, e, exp):
@@ -1683,10 +1732,12 @@ class Checker:
             ctx.ind -= 1
             lines, ctx.lines = ctx.lines, outer
             return v, lines, (self.snapshot(), v.noreturn)
-        a = branch(e.then, exp)
-        b = branch(e.els, exp or (None if a[0].noreturn or is_lit(e.then) else a[0].t))
-        if is_lit(e.then) and a[0].t != b[0].t and not b[0].noreturn:      # a literal takes the other's type
-            a = branch(e.then, b[0].t)
+        if exp is None and is_lit(e.then) and not is_lit(e.els):   # a literal takes the other's type
+            b = branch(e.els, None)
+            a = branch(e.then, None if b[0].noreturn else b[0].t)
+        else:
+            a = branch(e.then, exp)
+            b = branch(e.els, exp or (None if a[0].noreturn else a[0].t))
         t = b[0].t if a[0].noreturn else a[0].t
         if not a[0].noreturn and not b[0].noreturn and a[0].t != b[0].t:
             self.err(f"the branches of an if expression have different types, {tstr(a[0].t)} and "
@@ -1712,7 +1763,7 @@ class Checker:
 
     def x_matchx(self, e, exp):
         """match x { Arm { e } ... } (SPEC 7.8): the match statement, each arm storing its value in r.
-        An integer literal arm seen before the type is known is written again once it is."""
+        A literal arm seen before the type is known is written once the other arms give it."""
         ctx = self.ctx
         if exp is not None and exp[0] in ('ref', 'slice', 'clo'):
             self.err("a match expression cannot give a borrow, a slice or a closure", e.where)
@@ -1728,22 +1779,30 @@ class Checker:
             if v.noreturn:
                 ctx.dead = True
             else:
-                if x.kind == 'int' and st.t is None:
-                    st.lits.append((len(ctx.lines), x))
-                elif st.t is None:
+                if st.t is None:
                     st.t = v.t
                 elif v.t != st.t:
                     self.err(f"the arms of a match expression have different types, {tstr(st.t)} and "
                              f"{tstr(v.t)}", x.where)
                 self.emit(f"{r} = {self.consume(v, x.where)};")
             self.drop_frame(fr)
-        self.s_match(e, body)
-        t = st.t or (INT if st.lits else None)
-        for i, x in st.lits:
-            v = self.x_int(x, t)
-            if v.t != t:
-                self.err(f"the arms of a match expression have different types, {tstr(t)} and int", x.where)
-            ctx.lines[i] = ctx.lines[i].split('=')[0] + f"= {v.c};"
+
+        def arm(x):
+            if is_lit(x) and st.t is None:      # written once the other arms give the type
+                st.lits.append((len(ctx.lines), x, ctx.ind))
+                ctx.lines.append(None)
+            else:
+                body(x)
+        self.s_match(e, arm)
+        done, lines, saved = [], ctx.lines, ctx.ind
+        for i, x, ctx.ind in st.lits:
+            ctx.lines = []
+            body(x)
+            done.append((i, ctx.lines))
+        ctx.lines, ctx.ind = lines, saved
+        for i, new in reversed(done):
+            lines[i:i + 1] = new
+        t = st.t
         if ctx.dead:
             ctx.dead = False
             return Val('', VOID, 'rv', noreturn=True)
@@ -1931,9 +1990,7 @@ class Checker:
                 et = self.elem_type(v.t, it.where)
             if v.t != et:
                 self.err(f"array element is {tstr(v.t)}, not {tstr(et)}", it.where)
-            if any(self.effects(x) for x in e.items[i + 1:]):
-                v = self.snap_val(v)
-            vals.append(v)
+            vals.append(self.before(v, *e.items[i + 1:]))
         if et is None:
             self.err("cannot infer the element type of [] here: it needs an expected type", e.where)
         if et == VOID:
@@ -2025,7 +2082,7 @@ class Checker:
             self.emit(f"if ({g.cname}_set != 1) rt_trap(12, {g.cname}_set ? {msg} is dropped\" : {msg} is "
                       f"not set\", {W});")
             return Val(f"(&{g.cname})", ('ref', g.ty, False), 'rv', root=self.static_var(g))
-        v = self.coerce(self.expr(e.args[0], g.ty), g.ty, e.where, f"the value of {g.name}")
+        v = self.seq(self.coerce(self.expr(e.args[0], g.ty), g.ty, e.where, f"the value of {g.name}"))
         c = self.consume(v, e.where)
         self.emit(f"if ({g.cname}_set) rt_trap(12, {g.cname}_set == 2 ? {msg} is dropped\" : {msg} is set "
                   f"twice\", {W});")
@@ -2045,6 +2102,7 @@ class Checker:
         fv = self.rd(fv)
         if fv.t[0] not in ('fn', 'clo'):
             self.err(f"cannot call a {tstr(fv.t)}", e.where)
+        fv = self.before(fv, *e.args)
         sig = Sig('function value' if fv.t[0] == 'fn' else 'closure', 'fnval' if fv.t[0] == 'fn' else 'clo',
                   list(fv.t[1]), fv.t[2], c=fv.c)
         return self.call(sig, None, e.args, e.where, exp)
@@ -2148,6 +2206,11 @@ class Checker:
             self.err(f"{sig.label} takes {n} arguments, not {len(args)}", where)
         vals, cid, mark, late = [None] * len(allargs), object(), len(ctx.pending), []
         order = order or list(range(len(allargs)))      # evaluation order (source order of a literal)
+        # SPEC 7: an argument's checks come before what a later argument does; a late borrow's are made
+        # in position and again at the call, in order, when a later argument may have changed its place.
+        acts = [self.acts(allargs[i]) for i in order]
+        effs = [self.effects(allargs[i]) for i in order]
+        rechecks, pend = [], False
         for pos, i in enumerate(order):
             a, pt = allargs[i], sig.params[i]
             isrecv = recv is not None and i == 0
@@ -2190,6 +2253,8 @@ class Checker:
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)
                 if self.late(rast if isrecv else a):
                     late.append((v, pt[2]))
+                    if checks(v.c):
+                        rechecks.append((pos, v))
                 else:
                     self.hold(v, pt[2], cid, where)
                 vals[i] = ('b', v)
@@ -2208,11 +2273,18 @@ class Checker:
                     self.err(f"{what} has no value", where)
                 if not unify(pt, v.t, bind, tps):
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)
-                if any(self.effects(allargs[j]) for j in order[pos + 1:]):
+                if any(effs[pos + 1:]):
                     v = self.snap_val(v)
                 if v.cat == 'place' and not is_copy(v.t):
                     self.hold(v, None, cid, where)
                 vals[i] = ('v', v)
+            pend = pend or effs[pos] and any(p < pos for p, _ in rechecks)
+            if any(acts[pos + 1:]) or pend:
+                vals[i] = (vals[i][0], self.seq(vals[i][1]))
+        last = max((p for p, i in enumerate(order) if checks(vals[i][1].c)), default=None)
+        for pos, v in rechecks:         # the last check in the call's C text needs no statement
+            if pos != last and any(effs[pos + 1:]):
+                self.emit(f"(void)({v.c});")
         for v, m in late:               # SPEC 7.5: these borrows are taken now, after the arguments
             self.take(v, m, cid, where)
         missing = [tp.name for tp in sig.tps if tp not in bind]
@@ -2222,6 +2294,8 @@ class Checker:
         if sig.tps and len(set(sig.tps)) == len(sig.tps):
             self.prog.check_targs(tuple(bind[tp] for tp in sig.tps), sig.tps, ctx.module, where)
         ctx.pending[mark:] = [e for e in ctx.pending[mark:] if e[2] is not None]
+        if sig.kind == 'extern' and any(v.t == STR for _, v in vals):     # rt_cstr checks at the call
+            vals = [(k, self.seq(v)) for k, v in vals]
         cs = []
         for kind, v in vals:
             if kind == 'b' or sig.kind in ('intr', 'extern'):
@@ -2350,6 +2424,7 @@ class Checker:
         self.nargs(e, 2)
         a = self.arr_arg(e, True)
         et = a.t[1][1]
+        a = self.before(a, e.args[1])
         v = self.expr(e.args[1], et)
         v = self.coerce(v, et, e.where, "the appended value")
         if a.late:
@@ -2369,9 +2444,8 @@ class Checker:
     def b_swap(self, e, exp):
         self.nargs(e, 3)
         a = self.arr_arg(e, True, True)
-        i = self.rd(self.expr(e.args[1], INT))
-        if self.effects(e.args[2]):
-            i = self.snap_val(i)
+        a = self.seq(a) if self.acts(e.args[1]) or self.acts(e.args[2]) else a
+        i = self.before(self.rd(self.expr(e.args[1], INT)), e.args[2])
         j = self.rd(self.expr(e.args[2], INT))
         if i.t != INT or j.t != INT:
             self.err("swap needs int indexes", e.where)
@@ -2387,7 +2461,10 @@ class Checker:
         self.self_in_drop(p, e.where)
         p = self.builtin_borrow(p, True, e.where, e.args[0])
         t = p.t[1]
+        p = self.before(p, e.args[1])
         v = self.coerce(self.expr(e.args[1], t), t, e.where, "the new value")
+        if checks(p.c):                 # the value's checks, then the place's again
+            v = self.seq(v)
         if p.late:
             self.take(p, True, object(), e.where)
         c = self.consume(v, e.where)
@@ -2415,8 +2492,7 @@ class Checker:
         n = self.rd(self.expr(e.args[0], INT))
         if n.t != INT:
             self.err("array needs an int length", e.where)
-        if self.effects(e.args[1]):
-            n = self.snap_val(n)
+        n = self.before(n, e.args[1])
         et = exp[1] if exp is not None and exp[0] == 'arr' else None
         v = self.rd(self.expr(e.args[1], et))
         self.elem_type(v.t, e.args[1].where)

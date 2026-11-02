@@ -1,0 +1,11 @@
+// Red-team round 4, k02 (SPEC 7, 7.5): arguments are evaluated left to right,
+// so 10 / z stops the program first (exit 10), before xs[5] is checked. Both
+// used to be one C call whose argument order C leaves open (gcc checked the
+// index first and gave exit 3).
+// exit: 10
+fn f(a: int, b: int) { println(a + b) }
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    f(10 / z, xs[5])
+}

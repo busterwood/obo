@@ -1,0 +1,17 @@
+// Red-team round 4, k02 (SPEC 7.1, 7.8): operands are evaluated left to right
+// and an operator's check comes after both; 10 / z stops the program first
+// (exit 10). The checks before it pass, in an if expression and in operands
+// that print.
+// expect: 3
+// expect: a
+// expect: 7
+// exit: 10
+fn p(s: str, v: int): int { println(s); return v }
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    let c = true
+    println(xs[0] + if c { xs[1] } else { 10 / z })
+    println(p("a", 2) * 3 + xs[0])
+    println(10 / z + xs[5])
+}

@@ -63,8 +63,51 @@ temporaries, `try`, consuming matches, conditions, globals, once, externs);
 constant arms (u128/i128 limits, aliases, imports, private constants,
 shadowing, duplicates).
 
+## Status after the fixes (2026-11-02)
+
+All six are fixed; `k01`..`k06` moved to `../../tests/{run,error}` as
+`rt4_k01`..`rt4_k06` (with `rt4_k02b`..`k02f` and `rt4_k03b`).
+
+- **F1, F2** (`ref/check.py`): an operand whose C text makes a check
+  (`checks`: every check passes its location, a C string) and that C would
+  evaluate after a later operand that can act (`Checker.acts`: effects, or a
+  check of its own: an index, a slice, a checked operator) is sequenced
+  first (`Checker.seq`): a value is computed into a temporary; a borrow, a
+  slice or an owned place is checked by a `(void)(&p)` statement in position
+  and found again where it is used. In a call, a late borrow is checked again
+  by a statement after the arguments when a later argument has effects and
+  another check follows in the call's C, and an argument after such a borrow
+  is checked in position, so the checks at the call come in argument order.
+  This covers arguments and receivers, binary operands, `p = e` and
+  `a op= b`, array and record literals, index and slice bases, function
+  values, `append`, `replace` (its value before the place's second check),
+  `swap`, `array`, `for` ranges, `set`, and an extern's NUL checks. If and
+  match expressions are covered as operands (their branches were already
+  sequenced). Over the conformance suite the C grew by 0.01% (bytes and lines);
+  the self-hosted compiler's C by 0.2%. `cases/b05` lacked its `// exit: 3`.
+- **F3** (`ref/syntax.py`, `compiler/syntax.obx`): after an `else` arm the
+  next token must be `}` ("else must be the last arm of a match"), in the
+  statement and the expression; the self-hosted parser says the same.
+- **F4**: a char literal arm on a non-byte scrutinee is an error ("a char
+  literal is a byte").
+- **F5, F6**: an if expression whose then branch is a literal (and else
+  branch not) checks the else branch first; a match expression leaves a
+  placeholder for a literal arm (integer or fractional) seen before the type
+  is known and writes it after the match. The borderline nested case stays
+  rejected.
+
+New generator `gentrap.py OUT [n]` (then `diff.py OUT`; `OBXC=` picks another
+compiler): one statement whose operands may stop the program, print or empty
+an array, in one of 15 contexts (call arguments, late borrows, a receiver,
+`append`, `replace`, `swap`, `array`, `p = e`, `a op= b`, array and record
+literals, `for` ranges, nested indexes, operators, if and match expressions),
+against a twin that evaluates it one `let` at a time. 6,000 pairs (seeds 11
+and 23) under gcc: no difference; the compiler before the fixes differed on
+32 of 300.
+
 ## Harness
 
-`rt.py` (ASan+UBSan, `OBX_CHECK=1`; `CC=clang`), `split.py`, `gen.py OUT [2]`
-and `gen3.py OUT` then `J=12 diff.py OUT`, `fuzz.py`, `run1.sh`, `selfhost.sh`
-(self-hosted front end at -O0; -O1 gives false LSan reports on exit(1) paths).
+`rt.py` (ASan+UBSan, `OBX_CHECK=1`; `CC=clang`), `split.py`, `gen.py OUT [2]`,
+`gen3.py OUT` and `gentrap.py OUT [n]` then `J=12 diff.py OUT`, `fuzz.py`,
+`run1.sh`, `selfhost.sh` (self-hosted front end at -O0; -O1 gives false LSan
+reports on exit(1) paths).

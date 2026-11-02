@@ -121,16 +121,16 @@ the comparison (the C output).
 
 | File | Lines | Role |
 |---|---:|---|
-| `syntax.py` | 915 | lexer (with the ASI rule) and parser to `N` nodes |
+| `syntax.py` | 918 | lexer (with the ASI rule) and parser to `N` nodes |
 | `sema.py` | 865 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
-| `check.py` | 2,517 | checks every function body once and writes it as a C template |
+| `check.py` | 2,593 | checks every function body once and writes it as a C template |
 | `emit.py` | 424 | renders templates once per instance, drop/dup glue (direct, or a work list for chain types), struct layouts |
 | `obxc.py` | 149 | driver |
 | `dump.py` | 410 | `--dump-ast`, `--dump-types` |
 | `rt.h` | 469 | the C runtime: allocation (live-object counter under `OBX_CHECK`), traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
 | `../lib/std.obx` | 1,400 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
 
-Python total: about 5,335 lines (with `run_tests.py`, 55).
+Python total: about 5,414 lines (with `run_tests.py`, 55).
 
 **Checking once, rendering per instance (SPEC 6.2, 6.4).** `check.py` checks a
 function body exactly once, generic or not. A type parameter is an opaque type:
@@ -283,6 +283,21 @@ is a default import root: `import "money"`. See `../lib/README.md`.
    is found by checking that operand and discarding its code
    (`Checker.peek_type`), so the literal's `fromFraction` still runs first.
    An integer literal on the left has no code, so its order does not matter.
+   Run-time checks (an index, a checked operator or conversion) keep that
+   order too: an operand's checks come before anything a later operand does,
+   so of two operands that can stop the program the first one does (SPEC 7).
+   C leaves the order of a call's arguments and of an operator's (or `=`'s)
+   operands open, so when a later operand can act (`Checker.acts`: effects,
+   or a check of its own), an earlier operand whose C text makes a check
+   (`checks`: each check passes its location, a C string) is computed into a
+   temporary, or, for a borrow, a slice or an owned place, checked by a
+   `(void)(...)` statement in its position and found again where it is used
+   (`Checker.seq`). This covers arguments and receivers, operands, `p = e`
+   (e first) and `a op= b`, array and record literals, the base of an index
+   or a slice, function values, `append`, `replace`, `swap`, `array`, a `for`
+   range, `set`, and an extern's NUL checks (made after its arguments). An
+   operand alone, or one whose later operands neither act nor check, keeps
+   its C as before: over the conformance suite the C grew by 0.01%.
 12. Drop glue. A *chain type* is one on a cycle of the type graph (fields and
     elements, generic instances included: `Node` and `Option[Node]` in a
     list, `A` and `B` when each holds the other, `T` with a `[]T` field), so
@@ -372,9 +387,14 @@ is a default import root: `import "money"`. See `../lib/README.md`.
     declared before a C `if`; each branch stores to it before its own
     temporaries are dropped. A match expression is the match statement
     (`s_match`, `match_lits`) with an arm body that stores to a result
-    variable. An integer literal branch first typed as `int` is checked again
-    with the type of the other branches (the if: the then-branch is redone;
-    the match: the literal's store is rewritten). A branch that moves a
+    variable. A literal branch (integer or fractional) takes the type of the
+    other branches and is never first given its own default type: the if
+    checks its else branch first when only the then branch is a literal, and
+    the match writes a placeholder for a literal arm seen before the type is
+    known and fills it in after the match (`x_matchx`). When every branch is
+    a literal, the first decides. A nested `if` or `match` is not a literal:
+    `if c { if d { 1 } else { 2 } } else { u }` with `u: u64` is an error
+    (int and u64). A branch that moves a
     variable the other does not is an error, as for the statements; a
     variable moved by every branch is moved after. Both are primaries, so
     `if c { 1 } else { 2 } + 3` adds to the whole expression.
@@ -382,17 +402,23 @@ is a default import root: `import "money"`. See `../lib/README.md`.
     syntax of the argument (a local, possibly a borrow variable, then fields
     and indexes whose base type is an array, not a slice); such a borrow is
     not held while the later arguments run and is held (`take`, after
-    checking that its root was not moved) once they are. Nothing changes in
-    the C: an argument's place is a C expression evaluated with the call
-    (every call in an argument is already hoisted into a temporary, and an
-    index into an `ix` temporary), so it is found again then. Slice
-    parameters (`&[T]`, including `&xs` passed as one) are not late. Of the
-    built-ins, `append` and `replace` take their borrow after the value;
-    `pop` and `swap` are unchanged.
+    checking that its root was not moved) once they are. In the C, the
+    argument's place is a C expression evaluated with the call (every call in
+    an argument is already hoisted into a temporary, and an index into an
+    `ix` temporary), so it is found and checked again then. Its indexes are
+    also checked in position (`(void)(&p)`, see 11) when a later argument can
+    act, and once more by a statement after the arguments when a later
+    argument has effects (it may have changed the place) and the place is not
+    the last check of the call, so that the checks at the call come in
+    argument order. Slice parameters (`&[T]`, including `&xs` passed as one)
+    are not late. Of the built-ins, `append` and `replace` take their borrow
+    after the value (`replace` computes the value first when the place makes
+    a check); `pop` and `swap` are unchanged.
 25. Constants in match arms (SPEC 8): the arm is accepted when `x == K`
     would type-check (an untyped integer constant takes the scrutinee's type
     and is range-checked; a typed one must have exactly that type; a char
-    constant is a `byte`). Duplicate values are an error for literals and
+    constant is a `byte`, and so is a char literal arm). `else` is the last
+    arm and appears once (a syntax error otherwise). Duplicate values are an error for literals and
     constants alike ("the value 3 is matched twice (3 and K)"). The C stays an
     `if`/`else if` chain, not a `switch`: a `break` in an arm must leave the
     enclosing loop, and `__int128` values cannot be `case` labels.

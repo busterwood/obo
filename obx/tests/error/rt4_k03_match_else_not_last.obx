@@ -1,0 +1,11 @@
+// Red-team round 4, k03 (SPEC 3): `"match" expr "{" { arm } [ "else" block ]
+// "}"`: else is the last arm and appears at most once, in the match statement
+// and the match expression (SPEC 7.8) alike. It used to parse anywhere and
+// make C that did not compile.
+// error: else
+// line: 9
+fn main() {
+    let k = 2
+    let s = match k { else { "e" } 2 { "2" } }
+    println(s)
+}

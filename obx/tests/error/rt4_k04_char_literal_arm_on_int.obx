@@ -1,0 +1,8 @@
+// Red-team round 4, k04 (SPEC 2, 8): a char literal is a byte, so an arm 'a'
+// needs a byte scrutinee, as n == 'a' does ("operands of the same type").
+// error: byte
+// line: 7
+fn main() {
+    let n = 97
+    match n { 'a' { println("a") } else { println("?") } }
+}

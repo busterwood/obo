@@ -6,7 +6,7 @@ import os, re, subprocess, sys, glob
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
-OBXC = os.path.join(HERE, '..', '..', 'ref', 'obxc.py')
+OBXC = os.environ.get('OBXC') or os.path.join(HERE, '..', '..', 'ref', 'obxc.py')
 CC = os.environ.get('CC', 'gcc')
 
 def build_run(path):
