@@ -1,0 +1,8 @@
+// SPEC 5.2: the copy is a temporary: it cannot be kept in a let.
+// error: temporary
+type Style = value record { fg: int }
+const RED: Style = Style{fg: 7}
+fn main() {
+    let r = &RED
+    println(r.fg)
+}

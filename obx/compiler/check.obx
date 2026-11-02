@@ -944,10 +944,12 @@ fn (c: mut &Checker) borrow(v0: Val, m: bool, line: int, recv: bool): Val {
     var cc = ""
     if v.cat == CAT_PLACE {
         if v.gk >= 0 {
-            if recv && !m {
+            // a receiver, or a constant (SPEC 7.5): a borrow of a temporary copy
+            if (recv || v.gk == sema.D_CONST) && !m {
                 v = c.holdtmp(c.dup(v.c, v.t), v.t)
                 return c.borrow(v, m, line, false)
             }
+            if v.gk == sema.D_CONST { c.err(line, "cannot mutably borrow constant " + c.gname(v.gk, v.gi)) }
             c.err(line, "cannot borrow global '" + c.gname(v.gk, v.gi) + "'")
         }
         if m {

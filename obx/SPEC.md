@@ -359,7 +359,11 @@ value record or variant literal of constants, of a copy type:
 static data; it is never freed and never changes. Using its name gives a
 `&[T]` slice (section 4.2a), so `POW10[i]`, `len(POW10)` and `for p in POW10`
 work, and it can be passed wherever a `&[T]` is expected. It cannot be
-appended to or assigned.
+appended to or assigned. A shared borrow of a record or variant constant
+(`&PLAIN`, an argument to a `&T` parameter, `s == PLAIN` with an
+`eq(&Style)` method) borrows a temporary copy of it, which lives to the end of
+the statement (so `let r = &PLAIN` is an error, as for any temporary). A `mut`
+borrow of a constant is an error. Global `var`s keep the rule above.
 
 **Set-once globals.** `var CONFIG: once Config` declares a global of any type,
 owned or copy, that starts empty and is set at most once:
