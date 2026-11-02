@@ -1,0 +1,21 @@
+// break in the middle of an array literal inside a for over an array of owned values
+// expect: mk 10
+// expect: mk 11
+// expect: drop 11
+// expect: drop 10
+// expect: end 1
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn mk(v: int): D {
+    println("mk " + intToStr(v))
+    return D{v: v}
+}
+fn main() {
+    let names = ["a", "b", "c"]
+    var n = 0
+    for s in names {
+        let xs = [mk(10 + n), mk(11 + n), if s == "a" { break } else { mk(12) }]
+        n += len(xs)
+    }
+    println("end " + intToStr(n + 1))
+}

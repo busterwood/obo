@@ -1,0 +1,11 @@
+// return x as an exit arm after x was passed earlier in the same call
+// error: moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn pair(a: D, b: int): int { return a.v + b }
+fn f(c: bool): D {
+    let x = D{v: 1}
+    let n = pair(x, if c { return x } else { 1 })
+    return D{v: n}
+}
+fn main() { println(f(true).v) }

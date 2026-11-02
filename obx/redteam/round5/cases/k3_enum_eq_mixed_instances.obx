@@ -1,0 +1,8 @@
+// == between two instances of a fieldless generic closed type
+// error: same type
+type G[T] = closed { A; B }
+fn main() {
+    let x: G[str] = G[str].A
+    let y: G[int] = G[int].A
+    println(x == y)
+}

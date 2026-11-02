@@ -1,0 +1,10 @@
+// a newline after a raw string ends the statement; a raw string then an operator on the next line
+// expect: ab
+// expect: 2
+fn main() {
+    let s = `a`
+    let t = s + `b`
+    println(t)
+    let n = len(`xy`)
+    println(n)
+}

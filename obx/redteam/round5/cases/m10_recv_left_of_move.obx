@@ -1,0 +1,11 @@
+// x is the borrowed receiver of a call whose argument moves x on one path
+// error: moved|borrow
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn (d: &D) show(n: int) { println(d.v + n) }
+fn main() {
+    let c = true
+    let x = D{v: 1}
+    x.show(if c { take(x) } else { 5 })
+}

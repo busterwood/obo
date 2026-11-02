@@ -1,0 +1,14 @@
+// var receivers on a generic type and through an interface-constrained call
+// expect: 7
+// expect: 3
+type Cell[T] = record { v: T; n: int }
+fn (var c: Cell[T]) bumped(): int {
+    c.n += 7
+    return c.n
+}
+fn main() {
+    let c = Cell[str]{v: "a", n: 0}
+    println(c.bumped())
+    let d = Cell[int]{v: 1, n: 3}
+    println(d.n)
+}

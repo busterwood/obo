@@ -1,0 +1,17 @@
+// exit arms in an index and in slice bounds
+// expect: 20
+// expect: 1
+// expect: -1
+fn f(xs: &[]int, c: bool): int {
+    return xs[if c { return -1 } else { 1 }]
+}
+fn g(xs: &[]int, c: bool): int {
+    let s = &xs[0..(if c { return -1 } else { 1 })]
+    return len(s)
+}
+fn main() {
+    let xs = [10, 20, 30]
+    println(f(&xs, false))
+    println(g(&xs, false))
+    println(f(&xs, true))
+}

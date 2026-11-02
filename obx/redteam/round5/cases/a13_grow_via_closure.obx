@@ -1,0 +1,11 @@
+// an array passed to C and grown by a closure called in a later argument
+// error: borrow|captured|closure
+extern "c" fn strnlen(s: &[]byte, n: int): int
+fn main() {
+    var b = array(4, byte(0))
+    let g = fn(): int {
+        for i in 0..100 { append(mut &b, 1) }
+        return 4
+    }
+    println(strnlen(&b, g()))
+}

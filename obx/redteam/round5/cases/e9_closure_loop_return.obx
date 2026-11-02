@@ -1,0 +1,22 @@
+// return as an exit arm inside a closure called in a loop with break exit arms around it
+// expect: drop 5
+// expect: 1
+// expect: drop 5
+// expect: drop 5
+// expect: 2
+// expect: drop 5
+// expect: drop 5
+// expect: 9
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn g(d: &D, n: int): int { return d.v + n }
+fn main() {
+    let f = fn(x: int): int { return g(&D{v: 5}, if x == 3 { return 9 } else { x }) - 5 }
+    var t = 0
+    for i in 1..10 {
+        let r = if i == 3 { break } else { f(i) }
+        println(r)
+        t = f(3)
+    }
+    println(f(3))
+}

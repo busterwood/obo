@@ -1,0 +1,9 @@
+// ffi.alloc(0): a non-null pointer, every index out of range
+// expect: false
+// exit: 12
+import "ffi"
+fn main() {
+    var m = ffi.alloc(0)
+    println(isNull(m.ptr()))
+    m.set(0, 1)
+}

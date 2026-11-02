@@ -1,0 +1,13 @@
+// a raw string spanning lines with CRLF and a lone CR: each break is one LF
+// expect: 5
+// expect: 10
+// expect: 10
+// expect: ab
+fn main() {
+    let s = `a
+bc`
+    println(len(s))
+    println(s[1])
+    println(s[3])
+    println(s[0..1] + s[2..3])
+}

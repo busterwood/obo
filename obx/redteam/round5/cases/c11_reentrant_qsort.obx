@@ -1,0 +1,19 @@
+// a callback that calls qsort again (re-entering C with another callback) on its own array
+// expect: 1 2 3
+// expect: 6
+extern "c" fn qsort(base: mut &[]i32, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+extern "c" fn obxlib_peek_i32(p: ptr, i: int): int
+var inner: int = 0
+fn small(a: ptr, b: ptr): i32 { return i32(obxlib_peek_i32(a, 0) - obxlib_peek_i32(b, 0)) }
+fn big(a: ptr, b: ptr): i32 {
+    var ys: []i32 = [9, 8, 7]
+    qsort(mut &ys, 3, 4, small)
+    inner += 1
+    return i32(obxlib_peek_i32(a, 0) - obxlib_peek_i32(b, 0))
+}
+fn main() {
+    var xs: []i32 = [3, 1, 2]
+    qsort(mut &xs, 3, 4, big)
+    println(intToStr(int(xs[0])) + " " + intToStr(int(xs[1])) + " " + intToStr(int(xs[2])))
+    println(if inner > 0 { 6 } else { 0 })
+}

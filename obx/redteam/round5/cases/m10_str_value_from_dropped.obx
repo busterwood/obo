@@ -1,0 +1,20 @@
+// the else branch's value is a str field of x, and x is dropped at the end of that branch
+// expect: take 1
+// expect: drop 1
+// expect: t
+// expect: drop 2
+// expect: n2
+type D = record { v: int; name: str }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): str {
+    println("take " + intToStr(d.v))
+    return "t"
+}
+fn f(c: bool, k: int): str {
+    let x = D{v: k, name: "n" + intToStr(k)}
+    return if c { take(x) } else { x.name }
+}
+fn main() {
+    println(f(true, 1))
+    println(f(false, 2))
+}

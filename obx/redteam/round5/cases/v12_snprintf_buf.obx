@@ -1,0 +1,12 @@
+// snprintf into a mut byte array, then read it back
+// expect: n=42 s=hi f=0.25
+// expect: 16
+extern "c" fn snprintf(buf: mut &[]byte, n: int, fmt: str, ...): i32
+fn main() {
+    var buf = array(64, byte(0))
+    let k = snprintf(mut &buf, len(buf), "n=%d s=%s f=%.2f", i32(42), "hi", 0.25)
+    var out: []byte = []
+    for i in 0..int(k) { append(mut &out, buf[i]) }
+    println(strFromBytes(&out))
+    println(k)
+}

@@ -1,0 +1,11 @@
+// a borrow result rooted in a constant's temporary copy, used within the statement
+// expect: 1
+// expect: 2
+type Pair = value record { a: int; b: int }
+const P: Pair = Pair{a: 1, b: 2}
+fn first(p: &Pair): &int { return &p.a }
+fn (p: &Pair) second(): &int { return &p.b }
+fn main() {
+    println(first(&P))
+    println(P.second())
+}

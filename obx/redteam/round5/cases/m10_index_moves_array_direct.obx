@@ -1,0 +1,7 @@
+// the index of xs[...] moves xs (no if)
+// error: moved
+fn take(d: []int): int { return 0 }
+fn main() {
+    let xs = [10, 20]
+    println(xs[take(xs)])
+}

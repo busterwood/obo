@@ -1,0 +1,24 @@
+// moving the borrowed scrutinee inside an arm (no bindings used); the other arm drops it
+// expect: take
+// expect: drop 1
+// expect: 0
+// expect: drop 0
+// expect: 7
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+type E = closed { A(D); B(D) }
+fn take(e: E): int {
+    println("take")
+    return 0
+}
+fn f(k: int): int {
+    let e = if k == 1 { E.A(D{v: 1}) } else { E.B(D{v: 0}) }
+    return match e {
+        E.A(_) { take(e) }
+        E.B(_) { 7 }
+    }
+}
+fn main() {
+    println(f(1))
+    println(f(0))
+}

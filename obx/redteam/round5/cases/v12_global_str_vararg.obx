@@ -1,0 +1,12 @@
+import "io"
+// a global str as a C variadic argument (a NUL-terminated copy or its own bytes)
+// expect: [ab]
+extern "c" fn printf(fmt: str, ...): i32
+extern "c" fn fflush(p: ptr): i32
+var G: str = ""
+fn main() {
+    G = "a" + "b"
+    io.flushStdout()
+    printf("[%s]\n", G)
+    fflush(nullPtr())
+}

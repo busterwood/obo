@@ -1,0 +1,23 @@
+// a variant literal whose second payload exits after the first payload (a move of x) ran
+// expect: drop 1
+// expect: -1
+// expect: drop 5
+// expect: 7
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+type E = closed { A(D, int); B }
+fn val(e: E): int {
+    match e {
+        E.A(d, n) { return d.v + n }
+        E.B { return 0 }
+    }
+}
+fn f(v: int, c: bool): int {
+    let x = D{v: v}
+    let e = E.A(x, if c { return -1 } else { 2 })
+    return val(e)
+}
+fn main() {
+    println(f(1, true))
+    println(f(5, false))
+}

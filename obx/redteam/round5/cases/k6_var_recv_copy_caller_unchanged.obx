@@ -1,0 +1,12 @@
+// a var receiver of a copy type: the caller's value is unchanged
+// expect: 15 5
+type P = value record { x: int }
+fn (var p: P) plus(d: int): int {
+    p.x += d
+    return p.x
+}
+fn main() {
+    let a = P{x: 5}
+    let b = a.plus(10)
+    println(intToStr(b) + " " + intToStr(a.x))
+}

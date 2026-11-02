@@ -1,0 +1,20 @@
+// an exit arm inside a drop method (drops are deferred there)
+// expect: dropping 1
+// expect: inner 5
+// expect: x
+// expect: dropping 2
+// expect: inner 6
+type In = record { n: int }
+fn (i: mut &In) drop() { println("inner " + intToStr(i.n)) }
+type D = record { v: int; i: In }
+fn (d: mut &D) drop() {
+    println("dropping " + intToStr(d.v))
+    let k = if d.v == 2 { return } else { 1 }
+}
+fn main() {
+    {
+        let a = D{v: 1, i: In{n: 5}}
+    }
+    let b = D{v: 2, i: In{n: 6}}
+    println("x")
+}

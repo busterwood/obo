@@ -1,0 +1,11 @@
+// an empty raw string and one that is only a newline
+// expect: 0
+// expect: 1
+// expect: 10
+fn main() {
+    println(len(``))
+    let n = `
+`
+    println(len(n))
+    println(n[0])
+}

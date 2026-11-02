@@ -1,0 +1,11 @@
+// a fieldless closed type with a drop method: == compares, drops happen once
+// expect: true
+// expect: drop
+// expect: drop
+type S = closed { A; B }
+fn (s: mut &S) drop() { println("drop") }
+fn main() {
+    let a = S.A
+    let b = S.A
+    println(a == b)
+}

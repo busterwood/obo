@@ -1,0 +1,15 @@
+// a var receiver borrowed mut inside the body and moved out
+// expect: 3
+// expect: 1
+type P = record { xs: []int }
+fn push(p: mut &P, v: int) { append(mut &p.xs, v) }
+fn (var p: P) grown(): P {
+    push(mut &p, 3)
+    return p
+}
+fn main() {
+    let a = P{xs: []}
+    let b = a.grown()
+    println(b.xs[0])
+    println(len(b.xs))
+}

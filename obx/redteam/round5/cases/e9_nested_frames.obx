@@ -1,0 +1,30 @@
+// return from deep inside nested calls: each made temporary dropped once, in reverse order
+// expect: mk 1
+// expect: mk 2
+// expect: mk 3
+// expect: drop 3
+// expect: drop 2
+// expect: drop 1
+// expect: 0
+// expect: mk 1
+// expect: mk 2
+// expect: mk 3
+// expect: drop 3
+// expect: drop 2
+// expect: drop 1
+// expect: 7
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn mk(v: int): D {
+    println("mk " + intToStr(v))
+    return D{v: v}
+}
+fn g(a: D, b: D, n: int): int { return a.v + b.v + n }
+fn h(a: D, n: int): int { return a.v + n }
+fn f(c: bool): int {
+    return h(mk(1), g(mk(2), mk(3), if c { return 0 } else { 1 }))
+}
+fn main() {
+    println(f(true))
+    println(f(false))
+}

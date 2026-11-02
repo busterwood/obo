@@ -1,0 +1,22 @@
+// a temporary made only when the left operand of || is false, then an exit arm
+// expect: 0
+// expect: mk 1
+// expect: drop 1
+// expect: 0
+// expect: 1
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn mk(v: int): D {
+    println("mk " + intToStr(v))
+    return D{v: v}
+}
+fn pos(d: &D): bool { return d.v > 0 }
+fn f(a: bool, c: bool): int {
+    if (a || pos(&mk(1))) && (if c { return 0 } else { true }) { return 1 }
+    return 2
+}
+fn main() {
+    println(f(true, true))
+    println(f(false, true))
+    println(f(true, false))
+}

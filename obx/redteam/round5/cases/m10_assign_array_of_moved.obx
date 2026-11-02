@@ -1,0 +1,8 @@
+// assigning an element of an array that the right side moves on one path
+// error: moved
+fn take(d: []int): int { return 0 }
+fn main() {
+    let c = true
+    var xs = [1, 2]
+    xs[0] = if c { take(xs) } else { 5 }
+}

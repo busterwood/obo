@@ -1,0 +1,5 @@
+// a constant table passed to C as mut &[T]
+// error: mut|constant
+extern "c" fn memset(dst: mut &[byte], c: i32, n: int): ptr
+const T: []byte = [1, 2, 3, 0, 5]
+fn main() { memset(mut &T, 0, 5) }

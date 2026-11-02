@@ -1,0 +1,6 @@
+// an unterminated raw string
+// error: raw string|unterminated|backtick
+fn main() {
+    let s = `abc
+    println(s)
+}

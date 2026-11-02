@@ -1,0 +1,17 @@
+// s[i] on owned, borrowed, constant, global and substring str values; out of range at len
+// expect: 98 99 100 101 102
+// expect: 3
+// exit: 3
+type R = record { s: str }
+const K: str = "abcdef"
+var G: str = ""
+fn at(s: &str, i: int): byte { return s[i] }
+fn main() {
+    G = "xyzef"
+    let s = K[1..4]
+    let r = R{s: "de" + "f"}
+    println(intToStr(int(s[0])) + " " + intToStr(int(at(&s, 1))) + " " + intToStr(int(K[3])) + " " +
+        intToStr(int(r.s[1])) + " " + intToStr(int(G[4])))
+    println(len(s))
+    println(s[3])
+}

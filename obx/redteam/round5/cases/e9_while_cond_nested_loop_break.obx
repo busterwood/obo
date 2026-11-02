@@ -1,0 +1,13 @@
+// break in a closure body inside a while condition refers to the closure's own loop
+// expect: 3
+fn main() {
+    var i = 0
+    while (fn(): int {
+        var k = 0
+        while true { k += 1; let z = if k == 3 { break } else { 1 } }
+        return k
+    })() > i {
+        i += 1
+    }
+    println(i)
+}

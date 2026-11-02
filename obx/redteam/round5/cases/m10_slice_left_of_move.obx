@@ -1,0 +1,11 @@
+// a slice of a field of x to the left of an if expression that moves x on one path
+// error: moved|borrow
+type D = record { v: int; ys: []int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn show(d: &[int], n: int) { println(len(d) + n) }
+fn main() {
+    let c = false
+    let x = D{v: 1, ys: [1, 2]}
+    show(&x.ys[0..2], if c { take(x) } else { 5 })
+}

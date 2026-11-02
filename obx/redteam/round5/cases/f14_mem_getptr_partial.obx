@@ -1,0 +1,10 @@
+// getPtr on 12 bytes: index 1 would read bytes 8..16
+// expect: ok
+// exit: 12
+import "ffi"
+fn main() {
+    let m = ffi.alloc(12)
+    let p = m.getPtr(0)
+    println("ok")
+    let q = m.getPtr(1)
+}

@@ -1,0 +1,9 @@
+// x.v += take(x): the right side moves the variable whose field is assigned (a use after free
+// before round 5; predates the lang branch)
+// error: moved
+type D = record { v: int; ys: []int }
+fn take(d: D): int { return 0 }
+fn main() {
+    var x = D{v: 1, ys: [1]}
+    x.v += take(x)
+}

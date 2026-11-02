@@ -1,0 +1,7 @@
+// a borrow of s[i] is a borrow of a temporary
+// error: temporary
+fn main() {
+    let s = "abc"
+    let r = &s[1]
+    println(r)
+}

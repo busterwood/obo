@@ -1,0 +1,11 @@
+// a callback C calls at exit after obx's exit(7)
+// expect: main
+// expect: at exit 7
+// exit: 7
+extern "c" fn on_exit(f: extern fn(i32, ptr), arg: ptr): i32
+fn bye(code: i32, p: ptr) { println("at exit " + intToStr(int(code))) }
+fn main() {
+    on_exit(bye, nullPtr())
+    println("main")
+    exit(7)
+}

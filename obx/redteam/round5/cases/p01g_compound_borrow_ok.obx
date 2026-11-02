@@ -1,0 +1,13 @@
+// the right side only borrows the root: still allowed
+// expect: 3
+// expect: ab ab
+type D = record { v: int; s: str }
+fn rd(d: &D): int { return d.v }
+fn nm(d: &D): str { return d.s }
+fn main() {
+    var x = D{v: 1, s: "a" + "b"}
+    x.v += rd(&x) + 1
+    x.s += " " + nm(&x)
+    println(x.v)
+    println(x.s)
+}

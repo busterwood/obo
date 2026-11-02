@@ -1,0 +1,13 @@
+// all arms exit in a match expression of an owned type, consumed scrutinee
+// error: has no value
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+type E = closed { A(D); B }
+fn f(e: E): int {
+    let d: D = match e { E.A(x) { return 1 } E.B { return 2 } }
+    return d.v
+}
+fn main() {
+    println(f(E.A(D{v: 4})))
+    println(f(E.B))
+}

@@ -1,0 +1,11 @@
+// a while loop whose body moves x on some paths: rejected (moved in an earlier iteration)
+// error: moved
+type D = record { v: int }
+fn take(d: D): int { return d.v }
+fn main() {
+    let x = D{v: 1}
+    var i = 0
+    while i < 3 {
+        i += if i == 1 { take(x) } else { 1 }
+    }
+}

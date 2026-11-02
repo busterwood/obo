@@ -1,0 +1,13 @@
+// slices of a record's array field and of a str's bytes; mutation through C
+// expect: 0 7 7 0
+// expect: 2
+type R = record { buf: []byte; n: int }
+extern "c" fn memset(dst: mut &[byte], c: i32, n: int): ptr
+extern "c" fn strnlen(s: &[]byte, n: int): int
+fn main() {
+    var r = R{buf: array(4, byte(0)), n: 0}
+    memset(mut &r.buf[1..3], 7, 2)
+    println(intToStr(int(r.buf[0])) + " " + intToStr(int(r.buf[1])) + " " + intToStr(int(r.buf[2])) + " " + intToStr(int(r.buf[3])))
+    var z: []byte = [1, 2, 0, 4]
+    println(strnlen(&z, 4))
+}

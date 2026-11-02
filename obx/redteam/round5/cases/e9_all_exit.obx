@@ -1,0 +1,16 @@
+// all branches exit: the rest of the statement is never reached
+// error: has no value
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn mk(v: int): D {
+    println("mk " + intToStr(v))
+    return D{v: v}
+}
+fn g(a: D, b: int): int { return 0 }
+fn f(c: bool): int {
+    return g(mk(1), if c { return 1 } else { return 2 })
+}
+fn main() {
+    println(f(true))
+    println(f(false))
+}

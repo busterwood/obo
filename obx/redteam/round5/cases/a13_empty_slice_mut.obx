@@ -1,0 +1,9 @@
+// an empty slice at the end of an array: its data pointer is one past the end (valid, n = 0)
+// expect: ok
+extern "c" fn memset(dst: mut &[byte], c: i32, n: int): ptr
+extern "c" fn obxlib_peek(p: ptr, i: int): int
+fn main() {
+    var b = array(4, byte(0))
+    let p = memset(mut &b[4..4], 7, 0)
+    println(if isNull(p) { "null" } else { "ok" })
+}

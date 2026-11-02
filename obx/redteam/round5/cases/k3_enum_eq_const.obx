@@ -1,0 +1,12 @@
+// built-in == against a constant of a fieldless closed type, and a one-variant type
+// expect: true false
+// expect: true
+type S = value closed { Name; Size }
+type One = closed { A }
+const K: S = S.Size
+fn main() {
+    let a = S.Size
+    let b = S.Name
+    println((if a == K { "true" } else { "false" }) + " " + (if b == K { "true" } else { "false" }))
+    println(One.A == One.A)
+}

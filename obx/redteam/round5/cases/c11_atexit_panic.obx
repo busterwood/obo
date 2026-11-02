@@ -1,0 +1,11 @@
+// a callback C calls at exit after a panic
+// expect: main
+// expect: at exit 12
+// exit: 12
+extern "c" fn on_exit(f: extern fn(i32, ptr), arg: ptr): i32
+fn bye(code: i32, p: ptr) { println("at exit " + intToStr(int(code))) }
+fn main() {
+    on_exit(bye, nullPtr())
+    println("main")
+    panic("x")
+}

@@ -1,0 +1,11 @@
+// G + f() where f assigns G: the left operand is the old value
+// expect: abz
+var G: str = ""
+fn f(): str {
+    G = "q"
+    return "z"
+}
+fn main() {
+    G = "a" + "b"
+    println(G + f())
+}

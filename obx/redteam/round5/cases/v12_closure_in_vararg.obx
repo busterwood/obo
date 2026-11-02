@@ -1,0 +1,11 @@
+// a closure call inside a variadic argument (peeked: the closure is lifted twice?)
+// expect: 3
+import "io"
+extern "c" fn printf(fmt: str, ...): i32
+extern "c" fn fflush(p: ptr): i32
+fn main() {
+    let k = 2
+    io.flushStdout()
+    printf("%ld\n", (fn(): int { return k + 1 })())
+    fflush(nullPtr())
+}

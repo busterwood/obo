@@ -1,0 +1,14 @@
+// a callback C calls after main returns (on_exit): its output is written, not lost in obx's
+// buffer (which was flushed before); also after exit() and after a panic
+// expect: main
+// expect: at exit 3 0
+extern "c" fn on_exit(f: extern fn(i32, ptr), arg: ptr): i32
+var N: int = 3
+fn bye(code: i32, p: ptr) {
+    let s = "at exit " + intToStr(N) + " " + intToStr(int(code))
+    println(s)
+}
+fn main() {
+    on_exit(bye, nullPtr())
+    println("main")
+}

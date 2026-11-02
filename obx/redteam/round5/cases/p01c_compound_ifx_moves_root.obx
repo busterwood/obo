@@ -1,0 +1,9 @@
+// x.v += if c { take(x) } else { 5 }: moved on one path of the right side
+// error: moved
+type D = record { v: int; ys: []int }
+fn take(d: D): int { return 0 }
+fn f(c: bool) {
+    var x = D{v: 1, ys: [1]}
+    x.v += if c { take(x) } else { 5 }
+}
+fn main() { f(true) }

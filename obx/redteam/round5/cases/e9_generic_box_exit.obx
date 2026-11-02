@@ -1,0 +1,22 @@
+// a generic record literal holding a moved owned value, with an exit arm after it
+// expect: drop 3
+// expect: none
+// expect: 4
+// expect: drop 4
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+type Box[T] = record { x: T; n: int }
+fn f(v: int, c: bool): Option[Box[D]] {
+    let d = D{v: v}
+    return Option.Some(Box[D]{x: d, n: if c { return Option.None } else { 1 }})
+}
+fn main() {
+    match f(3, true) {
+        Option.Some(b) { println(b.x.v) }
+        Option.None { println("none") }
+    }
+    match f(4, false) {
+        Option.Some(b) { println(b.x.v) }
+        Option.None { println("none") }
+    }
+}

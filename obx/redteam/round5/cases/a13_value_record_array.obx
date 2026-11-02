@@ -1,0 +1,5 @@
+// an array of value records cannot go to C
+// error: extern parameter
+type P = value record { x: int; y: int }
+extern "c" fn f(a: &[]P)
+fn main() { }

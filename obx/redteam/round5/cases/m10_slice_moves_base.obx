@@ -1,0 +1,9 @@
+// a slice bound moves the sliced array on one path
+// error: moved
+fn take(d: []int): int { return 0 }
+fn sum(s: &[int]): int { return len(s) }
+fn main() {
+    let c = true
+    let xs = [10, 20]
+    println(sum(&xs[0..(if c { take(xs) } else { 1 })]))
+}

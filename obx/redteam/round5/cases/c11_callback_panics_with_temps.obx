@@ -1,0 +1,14 @@
+// a callback that panics while the outer obx frame has owned temporaries and C copies
+// expect: in
+// exit: 12
+extern "c" fn bsearch(key: str, base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32): ptr
+extern "c" fn obxlib_alloc(n: int): ptr
+fn cmp(a: ptr, b: ptr): i32 {
+    println("in")
+    panic("boom")
+}
+fn main() {
+    let p = obxlib_alloc(3)
+    let s = "abc"
+    let r = bsearch(s[0..1] + "z", p, 3, 1, cmp)
+}

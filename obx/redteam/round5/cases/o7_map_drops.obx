@@ -1,0 +1,52 @@
+// Option.map, Result.map/mapErr/unwrapErr/expectErr with owned payloads: each value dropped once
+// expect: f 1
+// expect: drop 1
+// expect: 2
+// expect: drop 2
+// expect: none
+// expect: g 3
+// expect: drop 3
+// expect: 4
+// expect: drop 4
+// expect: err 9
+// expect: drop 9
+// expect: e 5
+// expect: drop 5
+// expect: 6
+// expect: drop 6
+// expect: ok 7
+// expect: drop 7
+// expect: 8
+// expect: drop 8
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn main() {
+    let a = Some(D{v: 1}).map(fn(d: D): D {
+        println("f " + intToStr(d.v))
+        return D{v: d.v + 1}
+    })
+    println(a.unwrap().v)
+    let b: Option[D] = None
+    let b2 = b.map(fn(d: D): int { return d.v })
+    println(if b2.isNone() { "none" } else { "some" })
+    let r: Result[D, D] = Ok(D{v: 3})
+    let r2 = r.map(fn(d: D): D {
+        println("g " + intToStr(d.v))
+        return D{v: 4}
+    })
+    println(r2.unwrap().v)
+    let r3: Result[D, D] = Err(D{v: 9})
+    let r4 = r3.map(fn(d: D): int { return d.v })
+    println("err " + intToStr(r4.unwrapErr().v))
+    let r5: Result[int, D] = Err(D{v: 5})
+    let r6 = r5.mapErr(fn(d: D): D {
+        println("e " + intToStr(d.v))
+        return D{v: 6}
+    })
+    println(r6.expectErr("x").v)
+    let r7: Result[D, int] = Ok(D{v: 7})
+    let r8 = r7.mapErr(fn(e: int): str { return "s" })
+    println("ok " + intToStr(r8.unwrap().v))
+    let r9: Result[D, D] = Err(D{v: 8})
+    println(r9.unwrapErr().v)
+}

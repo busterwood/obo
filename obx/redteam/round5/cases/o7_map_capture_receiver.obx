@@ -1,0 +1,6 @@
+// the map closure captures the option being consumed
+// error: borrow|moved|captured|closure
+fn main() {
+    let o: Option[[]int] = Some([3])
+    let p = o.map(fn(x: []int): int { return len(x) + len(o.unwrapOr([])) })
+}

@@ -36,7 +36,7 @@ os.environ.setdefault('OBX_LIB', os.path.normpath(os.path.join(HERE, '..', 'lib'
 
 def redteam():
     out = []
-    for d in ('', 'round2', 'round3', 'round4'):
+    for d in ('', 'round2', 'round3', 'round4', 'round5'):
         root = os.path.join(REDTEAM, d)
         for sub in ('cases', ''):
             p = os.path.join(root, sub)

@@ -1,0 +1,4 @@
+// return in a constant
+// error: return|const|constant
+const K: int = if true { return 5 } else { 1 }
+fn main() { println(K) }

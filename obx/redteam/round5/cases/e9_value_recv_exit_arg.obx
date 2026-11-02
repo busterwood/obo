@@ -1,0 +1,17 @@
+// x.into(if c { return } else { n }): the value receiver x is moved at the call, so it is
+// dropped by the return when the arm exits
+// expect: drop 1
+// expect: -1
+// expect: drop 2
+// expect: 2
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn (d: D) into(n: int): int { return d.v + n }
+fn f(v: int, c: bool): int {
+    let x = D{v: v}
+    return x.into(if c { return -1 } else { 0 })
+}
+fn main() {
+    println(f(1, true))
+    println(f(2, false))
+}

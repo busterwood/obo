@@ -1,0 +1,20 @@
+// a callback declared with i32 parameters that C calls with pointers: it sees the low 32 bits
+// (the C ABI leaves the upper half of the register unspecified); both backends must agree
+// and an i32 must stay in range
+// expect: ok
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(i32, i32): i32)
+extern "c" fn obxlib_alloc(n: int): ptr
+extern "c" fn obxlib_free(p: ptr)
+var bad: int = 0
+fn cmp(a: i32, b: i32): i32 {
+    let x = int(a)
+    if x > 2147483647 || x < -2147483648 { bad += 1 }
+    let y = int(b) - int(b)
+    return i32(y)
+}
+fn main() {
+    let p = obxlib_alloc(64)
+    qsort(p, 8, 8, cmp)
+    println(if bad == 0 { "ok" } else { "bad" })
+    obxlib_free(p)
+}

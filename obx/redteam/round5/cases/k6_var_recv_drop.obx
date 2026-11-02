@@ -1,0 +1,24 @@
+// a var by-value receiver of a type with a drop method: changed in the body, dropped once
+// expect: in 1
+// expect: drop 11
+// expect: 1
+// expect: in 2
+// expect: kept 12
+// expect: drop 12
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn (var d: D) bump(): int {
+    println("in " + intToStr(d.v))
+    d.v += 10
+    return 1
+}
+fn (var d: D) keep(): D {
+    println("in " + intToStr(d.v))
+    d.v += 10
+    return d
+}
+fn main() {
+    println(D{v: 1}.bump())
+    let k = D{v: 2}.keep()
+    println("kept " + intToStr(k.v))
+}

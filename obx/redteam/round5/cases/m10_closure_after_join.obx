@@ -1,0 +1,12 @@
+// a closure created after the join captures the variable moved on some paths
+// error: moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn main() {
+    let c = true
+    let x = D{v: 1}
+    if c { take(x) }
+    let f = fn(): int { return x.v }
+    println(f())
+}

@@ -1,0 +1,12 @@
+// an array passed to C and grown by a later argument of the same call: the borrow is taken at
+// the call (SPEC 7.5), so C gets the grown buffer
+// expect: 0
+extern "c" fn strnlen(s: &[]byte, n: int): int
+fn grow(b: mut &[]byte): int {
+    for i in 0..100 { append(b, 1) }
+    return 4
+}
+fn main() {
+    var b = array(4, byte(0))
+    println(strnlen(&b, grow(mut &b)))
+}

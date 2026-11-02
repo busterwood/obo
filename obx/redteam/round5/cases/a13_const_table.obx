@@ -1,0 +1,5 @@
+// a constant table passed to C as &[T]; mut is an error
+// expect: 3
+extern "c" fn strnlen(s: &[byte], n: int): int
+const T: []byte = [1, 2, 3, 0, 5]
+fn main() { println(strnlen(T, 5)) }

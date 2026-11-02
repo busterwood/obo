@@ -1,0 +1,19 @@
+// an if expression: the kept path's value uses a temporary and x; x dropped after the value
+// expect: mk 9
+// expect: drop 9
+// expect: drop 1
+// expect: 10
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn mk(v: int): D {
+    println("mk " + intToStr(v))
+    return D{v: v}
+}
+fn sum(a: &D, b: &D): int { return a.v + b.v }
+fn main() {
+    let c = false
+    let x = D{v: 1}
+    let n = if c { take(x) } else { sum(&mk(9), &x) }
+    println(n)
+}

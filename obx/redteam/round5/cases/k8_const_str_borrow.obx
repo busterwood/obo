@@ -1,0 +1,14 @@
+// borrows of a str constant and a variant constant with a str field, many times in a loop
+// expect: 30
+const S: str = "abc"
+type V = value closed { A(str); B }
+const K: V = V.A("hello")
+fn n(s: &str): int { return len(s) }
+fn m(v: &V): int {
+    return match v { V.A(s) { len(s) } V.B { 0 } }
+}
+fn main() {
+    var t = 0
+    for i in 0..5 { t += n(&S) + m(&K) - 2 }
+    println(t)
+}

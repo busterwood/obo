@@ -1,0 +1,18 @@
+// return in the middle of a string concatenation chain of temporaries
+// expect: early
+// expect: a1b2c
+// expect: 0
+type D = record { v: int }
+fn s(n: int): str { return intToStr(n) }
+fn f(c: bool): str {
+    let x = "a" + s(1) + "b" + s(2) + (if c { return "early" } else { "c" }) + s(3)
+    return x
+}
+fn g(c: bool): str {
+    return "a" + s(1) + "b" + s(2) + (if c { return "a" + s(1) + "b" + s(2) + "c" } else { "c" })
+}
+fn main() {
+    println(f(true))
+    println(g(true))
+    println(0)
+}

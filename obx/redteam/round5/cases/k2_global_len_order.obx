@@ -1,0 +1,11 @@
+// len(G) + f() where f assigns G
+// expect: 3
+var G: str = ""
+fn f(): int {
+    G = "qqqqqq"
+    return 1
+}
+fn main() {
+    G = "a" + "b"
+    println(len(G) + f())
+}

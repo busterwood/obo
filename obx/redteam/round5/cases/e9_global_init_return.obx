@@ -1,0 +1,4 @@
+// return in a global initializer
+// error: return|global|outside
+var G: int = if true { return } else { 1 }
+fn main() { println(G) }

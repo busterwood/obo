@@ -1,0 +1,14 @@
+// continue as an exit arm after an earlier argument moved a variable declared outside the loop:
+// the next iteration would use the moved variable.
+// error: moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn pair(a: D, b: int): int { return a.v + b }
+fn main() {
+    var x = D{v: 1}
+    for i in 0..3 {
+        let n = pair(move(x), if i == 0 { continue } else { 1 })
+        x = D{v: 10 + i}
+        println(n)
+    }
+}

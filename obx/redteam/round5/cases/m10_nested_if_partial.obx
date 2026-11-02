@@ -1,0 +1,35 @@
+// nested ifs: inner moves on one path, outer on the other; each kept path drops once
+// expect: take 1
+// expect: drop 1
+// expect: drop 2
+// expect: -
+// expect: drop 1
+// expect: drop 2
+// expect: -
+// expect: take 2
+// expect: drop 2
+// expect: drop 1
+// expect: -
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int {
+    println("take " + intToStr(d.v))
+    return 0
+}
+fn f(a: bool, b: bool) {
+    let x = D{v: 1}
+    let y = D{v: 2}
+    if a {
+        if b { take(x) }
+    } else {
+        take(y)
+    }
+}
+fn main() {
+    f(true, true)
+    println("-")
+    f(true, false)
+    println("-")
+    f(false, false)
+    println("-")
+}

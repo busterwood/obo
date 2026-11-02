@@ -1,0 +1,5 @@
+// a type parameter instantiated with a fieldless closed type has no == without Eq
+// error: Eq|==
+type S = closed { A; B }
+fn f[T](a: T, b: T): bool { return a == b }
+fn main() { println(f(S.A, S.B)) }

@@ -1,0 +1,10 @@
+// the map closure mutates a captured counter
+// expect: 4 1
+fn main() {
+    var n = 0
+    let o = Some(3).map(fn(x: int): int {
+        n += 1
+        return x + 1
+    })
+    println(intToStr(o.unwrap()) + " " + intToStr(n))
+}

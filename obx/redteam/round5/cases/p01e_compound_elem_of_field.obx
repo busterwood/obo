@@ -1,0 +1,8 @@
+// x.ys[0] += take(x)
+// error: moved
+type D = record { ys: []int }
+fn take(d: D): int { return 0 }
+fn main() {
+    var x = D{ys: [1]}
+    x.ys[0] += take(x)
+}

@@ -1,0 +1,18 @@
+// a callback with byte and bool parameters called by C with pointers (low byte only)
+// expect: ok
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(byte, bool): i32)
+extern "c" fn obxlib_alloc(n: int): ptr
+extern "c" fn obxlib_free(p: ptr)
+var bad: int = 0
+fn cmp(a: byte, b: bool): i32 {
+    if int(a) > 255 { bad += 1 }
+    let k = if b { 1 } else { 0 }
+    if k != 0 && k != 1 { bad += 1 }
+    return 0
+}
+fn main() {
+    let p = obxlib_alloc(64)
+    qsort(p, 8, 8, cmp)
+    println(if bad == 0 { "ok" } else { "bad" })
+    obxlib_free(p)
+}

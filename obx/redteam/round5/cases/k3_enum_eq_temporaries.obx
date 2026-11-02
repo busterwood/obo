@@ -1,0 +1,9 @@
+// == on temporaries of a fieldless (non-value) closed type: both are dropped
+// expect: true
+// expect: false
+type S = closed { A; B }
+fn mk(k: int): S { return if k == 0 { S.A } else { S.B } }
+fn main() {
+    println(mk(0) == mk(0))
+    println(mk(0) == mk(1))
+}

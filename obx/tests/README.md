@@ -35,8 +35,8 @@ and requires the C of stages 2 and 3 to equal the seed; so a compiler change
 needs `compiler/reseed.sh` before the gate passes.
 
 Full gate, at the end of a fix round and before a merge (`obx/tools/gate.sh full`):
-the quick gate plus the red-team harnesses, rounds 1 to 4 (`obx/redteam/rt.py`,
-`round2/rt.py`, `round3/rt.py`, `round4/rt.py`) under ASan+UBSan, and the native
+the quick gate plus the red-team harnesses, rounds 1 to 5 (`obx/redteam/rt.py`,
+`round2/rt.py`, `round3/rt.py`, `round4/rt.py`, `round5/rt.py`) under ASan+UBSan, and the native
 backend on the red-team corpora. The script prints a summary with the time of each
 step and the total, and exits 1 on any failure.
 
