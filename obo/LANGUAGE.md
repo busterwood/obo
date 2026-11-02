@@ -4,12 +4,12 @@ obo is a small language in the Wirth tradition, with C-style braces. It has no
 garbage collector. Every owned value has exactly one owner, which frees it at a
 known point, and the compiler rejects any program that could read freed memory.
 
-This describes the language as the compiler in `obo/src/obo.obo`
-implements it. Syntax not covered here (declarations, `if`, `while`, `for`,
-`match`, `defer`, closed types, constants, literals, operators) is the same as
-obx; see [the obx language section of HISTORY.md](../HISTORY.md#the-obx-language).
-Rules that are planned rather than implemented are marked as such, and section
-12 lists known holes.
+This is the language reference for the compiler in `obo/src/obo.obo`. It is
+split into a core guide (this file) and topic chapters under
+[`obo/language/`](language/README.md). Section numbers are stable: the chapters
+keep the numbers they had when the reference was one file, and this file adds
+section 0. Rules that are planned rather than implemented are marked as such;
+[section 12](language/holes.md) lists the known holes.
 
 The examples are checked against the compiler. A block marked
 `// example: runs` is a complete program that must compile and exit 0, and each
@@ -18,996 +18,321 @@ expected exit code. A block marked `// example: error: TEXT` must be rejected
 with a message containing TEXT. A block marked `// example: compiles` must
 compile, but is a known problem rather than a model of good code.
 
-## 1. Types
+## Where to read next
 
-| Type | Meaning | Owned |
+| Chapter | File | Contents |
 |---|---|---|
-| `int`, `byte`, `bool` | numbers and booleans, copied by value | no |
-| `float` | IEEE 754 binary64, copied by value | no |
-| `decimal` | exact 38-digit decimal, 24 bytes, copied by value (v1 scalar tier) | no |
-| `string` | immutable bytes | yes (reference counted) |
-| `[]T` | growable array of `T` | yes |
-| `ref record { ... }` | a record, declared with `type` | yes |
-| `closed { ... }` | a variant type, declared with `type` | yes |
-| `?T` | a value that may be `nil`, for example `?Node` | as `T` |
-| `&T` | a borrowed reference (section 4) | no |
-| `^T` | a handle: a checked, non-owning link (section 5) | no |
-| `Result[T]` | success (`ok`) or failure with a message and a code (`err`) | yes (one cell; the payload follows `T`) |
+| 0 | this file | source form, literals, operators, declarations, statements, `match` |
+| 1 | [types.md](language/types.md) | the type table, records and fields, floats, decimals |
+| 2–3 | [memory.md](language/memory.md) | ownership, moves and the lifetime rules |
+| 4 | [references.md](language/references.md) | borrowed `&T`, invalidation, the one ownership rule |
+| 5 | [handles.md](language/handles.md) | checked `^T` handles for graphs and back-references |
+| 5a | [methods.md](language/methods.md) | receivers, method syntax, dispatch and ownership at the call |
+| 5b | [interfaces.md](language/interfaces.md) | first-class interfaces, tiers, dynamic dispatch |
+| 5c–5d | [lambdas.md](language/lambdas.md) | function types, lambdas and captures |
+| 6 | [modules.md](language/modules.md) | modules, imports, exports, `.sym` files and `--check` |
+| 7 | [results.md](language/results.md) | `Result[T]`, error values and `try` |
+| 8 | [builtins.md](language/builtins.md) | built-in functions, I/O, templates and metadata |
+| 9 | [runtime.md](language/runtime.md) | runtime checks and exit codes |
+| 10 | [errors.md](language/errors.md) | compile-error reference |
+| 11 | [obx.md](language/obx.md) | differences from the obx predecessor |
+| 12 | [holes.md](language/holes.md) | known holes and planned changes |
 
-Records and closed types are declared with `type`, and may refer to each other.
-A forward declaration `type Sym` lets them do so; the fields are only usable once
-the type is defined.
+## 0. The core language
 
-A record field is **private to its defining module by default**. `pub` before a
-field name makes that field part of the exported interface; it applies to every
-name in a comma group, and a mixed record spells the private and public fields as
-separate declarations:
+This section is enough to read and write ordinary obo programs. The chapters
+above give the exact ownership rules and the less common features.
+
+### 0.1 Source form
+
+A source file is a sequence of bytes, usually UTF-8. Identifiers are ASCII: a
+letter or `_`, followed by letters, digits or `_`. Outside string and character
+literals and comments, source text must be ASCII. Columns count bytes, not
+characters.
+
+A file starts with exactly one module declaration, and the file's basename must
+match it: `module main` lives in `main.obx`. Imports come after the module line
+and before any declaration (section 6).
+
+Whitespace separates tokens. Comments start with `//` and run to the end of the
+line; there are no block comments, and a `//` inside a string is text.
+
+A newline ends a statement after an identifier, a numeric, character or string
+literal, `true`, `false`, `nil`, `return`, `break`, `continue`, `)`, `]`, `}` or
+a template literal. A newline after an operator or `,` does not end the
+statement, so a long expression may be split across lines. A semicolon is
+optional wherever a newline already ends a statement, and is required to put two
+statements on one line:
 
 ```obo
 // example: runs
-// prints 12
+// prints 7
+// prints 8
 module main
 
-pub type Counter = ref record {
-    pub value: int          // public
-    step: int               // private to this module
-    pub label, unit: string // both public
-}
-
 fn main() {
-    var c = new Counter{value: 10, step: 2, label: "n", unit: "u"}
-    c.value += c.step
-    println(c.value)
+    let a = 3
+    let b = 4; println(a + b)
+    println(a +
+        b + 1)
 }
 ```
 
-Inside the defining module every field is accessible, whether `pub` or not.
-Importers may read, write, borrow, move, `take`, `replace` and name in
-`new T{...}` only public fields. External construction is allowed only when
-**every** field is public; otherwise the module must provide a constructor
-function. A field's type is not part of the interface when the field is private:
-a private field may use a private named type, and the export closure check skips
-it. A `pub` field of a private type is still the existing export error, because
-an importer must be able to name the field's type.
+### 0.2 Literals
 
-Closed-variant fields remain public in v1; `pub` on a variant field is rejected.
-An aliased imported type takes the underlying type's field visibility and owner.
-The `.sym` representation and the exact diagnostics are in section 6 and
-section 10.
+**Integers** are decimal or hexadecimal. `_` is ignored between digits, so
+`1_000_000` and `0xFFFF_FFFF` read as written. A decimal literal must fit a
+signed 64-bit `int`; a hexadecimal literal takes the low 64 bits, so
+`0xFFFF_FFFF_FFFF_FFFF` is `-1`. A decimal literal that is too large is a
+compile error.
 
-### Float
+**Characters** are one byte in single quotes with the escapes `\n`, `\t`, `\r`,
+`\\`, `\"`, `\'` and `\0`; a non-ASCII byte is rejected. Character literals have
+type `byte`, and `byte` widens to `int` in arithmetic.
 
-`float` is IEEE 754 binary64 in one 8-byte word. The `f`/`F` suffix marks a
-float literal (`1f`, `1.5f`, `1.5e3F`); a bare fractional or exponent literal is
-exact `decimal` (next section), so write the suffix in a float context. There is
-no implicit int/float or decimal/float conversion: use `float(i)`. Mixed
-float/int and float/decimal arithmetic and comparison are errors. Float is
-finite, infinite and NaN-capable IEEE data: runtime arithmetic
-uses IEEE overflow to infinity and standard NaN behavior; comparisons are
-unordered for NaN (`==` false, `!=` true, ordered comparisons false), and
-`+0 == -0`. A finite source literal whose exact value rounds beyond binary64 is
-a compile error, never an implicit infinity.
+**Strings** are double-quoted bytes with the same escapes. An unrecognised
+escape keeps the character after the backslash (`"\q"` is `"q"`), but an
+unrecognised escape in a character literal is an error. Strings are immutable
+and reference counted; section 1 covers indexing and concatenation.
 
-Float values are unowned one-word scalars and work in locals, parameters,
-returns, fields, arrays, globals, `Result[float]`, methods, interfaces and
-function types. Formatting is shortest round-trip with deterministic ties-to-even,
-using fixed notation for decimal exponents -6..20 and scientific `e±NN` outside
-it; special spellings are `nan`, `inf`, `-inf` and `-0`. `parseFloat(s)` is the
-explicit checked string parser and returns `Result[float]`; malformed input is
-code 22 and overflow code 34, while underflow gives signed zero/subnormal.
-There is no `float -> int` conversion in this release.
+**Booleans** are `true` and `false`. The **nil** literal is `nil`; it may only be
+used where an optional or reference type is expected, and only compared with
+`==` and `!=`.
 
-Float constants are raw binary64 bit patterns in `.sym`; format 6 requires
-exactly `0x` plus 16 lowercase hexadecimal digits. The format is float-specific;
-format 5 does not carry the float public grammar. `floatBits` is an internal test
-diagnostic, available only with `--test-float-bits`, not a public API.
+**Floats** are written with a fractional part or exponent and an `f` or `F`
+suffix: `1f`, `1.5f`, `1.5e3F`. The suffix is required, because a bare
+fractional literal is a decimal. Float literals convert exactly to binary64; a
+finite literal that would round to infinity is a compile error.
 
-### Decimal (0.12 release scalar tier)
-
-`decimal` is an exact finite decimal value: a 128-bit coefficient (at most
-`10^38 - 1`), an `int16` exponent, a `uint16` display scale and a sign, in 24
-bytes. There is no NaN, infinity or negative zero. A bare fractional or
-exponent literal is decimal (`12.34`, `0.0011e3`, `1.2300`); an integer literal
-is still `int`; `f`/`F` still marks float. There is no `m`/`d` suffix. The
-written fractional digits are the display scale, so `1.2300` prints `1.2300`.
-A literal needing more than 38 significant digits, or an exponent/display scale
-outside the representation, is a compile error.
+**Decimals** are bare fractional or exponent literals: `12.34`, `1.2300`,
+`0.0011e3`. There is no `m` or `d` suffix. An integer literal is always `int`,
+never `decimal`, and the written fractional digits are the display scale. A
+literal needing more than 38 significant digits, or an exponent outside the
+decimal range, is a compile error.
 
 ```obo
 // example: runs
-// prints 2.40
-// prints 1.440
-// prints 0.012300
-// prints true
-fn main() {
-    println(1.20 + 1.2)
-    println(1.20 * 1.2)
-    println(1.2300e-2)
-    println(1.0 == 1.00)
-}
-```
-
-`+`, `-`, `*` and `%` are exact; a result that is not exactly representable
-traps with exit 10 (codes 40-41), never silently rounds. `%` is the truncating
-remainder with the sign of the dividend; a zero divisor traps (code 42).
-Comparisons compare numeric value only, ignoring display scale. `/` and `/=` are
-compile errors; use `decimal::div(a, b, scale, mode)`, which returns
-`Result[decimal]` and requires an explicit scale `0..32768` and mode.
-`decimal::quantize(v, scale, mode)` rounds once at the target scale and
-`decimal::toInt(d, mode)` is the checked `Result[int]` conversion.
-
-```obo
-// example: runs
-// prints 0.50
-fn main() {
-    let r = decimal::div(1.00, 2.0, 2, HALF_AWAY)
-    match r {
-        ok(v) { println(v) }
-        err(m, c) { println("err ", c) }
-    }
-}
-```
-
-`decimal(i)` and `decimal::fromInt(i)` convert an int/byte exactly; there is no
-implicit int-to-decimal conversion. `int(d)` is a compile error pointing to
-`decimal::toInt`. Float-to-decimal and decimal-to-float conversions are not in
-v1. `print`/`println` preserve the display scale; if a capped multiply display
-scale would hide a nonzero fractional digit, they print the exact canonical
-form instead of rounding.
-
-The public text surface returns `Result` values:
-
-| Call | Result |
-|---|---|
-| `decimal::parse(s)` | `Result[decimal]`: strict text grammar, preserving display scale |
-| `decimal::format(d)` | `Result[string]`: fixed display text with exactly `dscale` digits |
-| `decimal::canonical(d)` | `Result[string]`: exact minimal value text, ignoring `dscale` |
-| `decimal::check(v, p, s)` | `Result[decimal]`: exact fit for declared precision/scale |
-| `decimal::exponent(d)` | normalised exponent as `int` |
-| `decimal::dscale(d)` | stored display scale as `int` |
-
-`parse` accepts an optional sign, mandatory integer digits, an optional
-fraction with at least one digit and an optional exponent, all ASCII; empty
-text, whitespace, grouping, underscores, NUL, non-ASCII, `.5`, `1.`, `NaN` and
-`Infinity` are invalid. `-0` is positive zero and the written display scale is
-preserved. `format` never rounds: a capped `dscale` that would drop a nonzero
-digit returns code 3. `canonical` is `0` for zero, fixed at or below 128 bytes
-of magnitude text and lowercase scientific above it. `check` requires
-`value*10^s` to be an integer with at most `p` digits, `p` 1..1000 and `s`
--1000..1000; it ignores `dscale` and never rounds. Text API error messages are
-exact and carry the core status as the `Result` code (3, 4, 6, 7, 8, 9 or 10).
-
-```obo
-// example: runs
-// prints 1 1
-// prints 1230.0
-// prints 1230
-// prints 4 obo: invalid decimal text
-// prints 3 obo: value does not fit the declared scale without rounding
-fn main() {
-    let p = decimal::parse("+1.2300e3")
-    match p {
-        ok(v) {
-            println(decimal::dscale(v), " ", decimal::exponent(v))
-            let f = decimal::format(v)
-            match f { ok(s) { println(s) } err(m, c) { println(c) } }
-            let c = decimal::canonical(v)
-            match c { ok(s) { println(s) } err(m, c) { println(c) } }
-        }
-        err(m, c) { println("err ", c) }
-    }
-    let bad = decimal::parse(".5")
-    match bad {
-        ok(v) { println("unexpected") }
-        err(m, c) { println(c, " ", m) }
-    }
-    let k = decimal::check(1.23456, 10, 4)
-    match k {
-        ok(v) { println("ok") }
-        err(m, c) { println(c, " ", m) }
-    }
-}
-```
-
-```obo
-// example: error: decimal division needs an explicit scale and mode
-fn main() { let x = 1.0 / 2.0 }
-```
-
-In this tier decimals work as locals, parameters and returns (three-word
-by-value slots and a hidden destination pointer for returns), in
-`Result[decimal]`, and as record fields (0.16). A decimal field takes 24 bytes
-inline in its record or closed-variant payload, in declaration order and on an
-8-byte boundary; an omitted decimal field is zero. Reads, `=`, `+=`, `-=`, `*=`,
-`%=` and record literals work through a handle (`^T`) and through a `&T` or
-`mut &T` borrow. A compound assignment computes into a temporary and then copies
-it into the field. A decimal operand is read before the operand after it runs, as an
-int operand is: in `r.inr.a * f(r)` the left value is the one `r.inr.a` had before `f`
-ran, even if `f` replaces the record or writes the field. The same holds for each
-decimal or int argument of `decimal::div`, `quantize`, `toInt` and `check` that a later
-argument follows. Like an int field, a field may not be assigned from a call
-that might free its record (`cannot assign to a field or element across a
-call`). A decimal global works (0.16): it takes 24 bytes of the zero-initialised
-global data, so `var g: decimal` starts at zero, and
-`var g = expr` takes any decimal expression, including a call or a product, and a
-record global may be built from a record literal with decimal fields: a global
-initializer may build values as a local may. Module
-initializers run in import order: a dependency's before its importer's, and
-declarations in source order. A decimal
-constant is a literal or a unary-minus literal (`const RATE = 0.0825`,
-`const NEG = -1.5`): arithmetic is not folded, so `const C = 1.0 + 2.0` is refused
-with `decimal constants must be a literal; arithmetic is not folded`. A constant
-takes no storage of its own; each use materialises its three words into a
-temporary. `-0.00` is positive zero and keeps its written display scale. Decimal
-methods and interface members work (0.18): a decimal is a method parameter and
-return value, including `Result[decimal]`, and a decimal-returning method is called
-directly or through an interface's vtable. A decimal is never a receiver, and a
-decimal member can be `pure`, plain, `mut` or `impure` like any other. Decimal
-function values and non-capturing lambdas work (0.19): a function type may take
-and return a decimal, a decimal-returning value call keeps the hidden
-destination at `16 + visible parameter bytes` and puts the value cell above it,
-and a captured decimal is a 24-byte value snapshot. `mut`/`move` captures,
-`&decimal`, stored closures and named function values remain out of scope. `?decimal`
-is not representable; there is no raw-bits access and no owned or mutable decimal.
-
-```obo
-// example: runs
-// prints 3.750 3.000
-type Line = ref record { qty: int; price: decimal; total: decimal }
+// prints 1000000 -1
+// prints 65 1
+// prints hi 2.5 12.3400
+module main
 
 fn main() {
-    let l = new Line{qty: 3, price: 1.25, total: 0.00}
-    l.total = l.price * 3.0
-    l.price += 0.25
-    println(l.total, " ", l.price * 2.0)
+    println(1_000_000, " ", 0xFFFF_FFFF_FFFF_FFFF)
+    let c = 'A'
+    println(c, " ", c - 'A' + 1)
+    let s = "hi"
+    println(s, " ", 1.5f + 1f, " ", 12.3400)
 }
 ```
 
-A global and a constant (0.16):
-
-```obo
-// example: runs
-// prints 0.0825 0 1.0825 0.00
-const RATE = 0.0825
-const NEG0 = -0.00
-var total: decimal
-
-fn main() {
-    println(RATE, " ", total, " ", RATE + 1.0, " ", NEG0)
-}
-```
-
-A decimal method and an interface member (0.18):
-
-```obo
-// example: runs
-// prints 13.30
-// prints 11.00
-type Account = ref record { v: decimal }
-fn (a: &Account) add(x: decimal, y: decimal): decimal { return a.v + x + y }
-type Ledger = interface { pure fn add(x: decimal, y: decimal): decimal }
-impl Ledger for Account
-
-fn main() {
-    let a = new Account{v: 10.00}
-    println(a.add(1.10, 2.20))
-    let l: Ledger = a
-    println(l.add(0.50, 0.50))
-}
-```
-
-`[]decimal` (0.16) is an array of decimals, stored inline at a 24-byte stride. It
-is created with `new []decimal(n)` (zero-filled) or `new []decimal(0)` and then
-`append`ed, and it works where other arrays do: locals, fields, elements of
-`[][]decimal`, parameters (`&[]decimal`, `mut &[]decimal`), returns, `Result` and
-optional payloads. An element reads and writes like a decimal local (`xs[i]`,
-`xs[i] = v`, `xs[i] += v`), and `for d in xs` copies each element. `len`,
-`truncate` and `append` work as for other arrays. An index outside the array traps
-with `index out of range` and exit code 3, read or write, and a negative index traps
-the same way. An `append` takes a decimal value; there is no implicit conversion from
-`int`. A `[]decimal` cannot be printed, converted with `string`, taken or replaced
-element by element, or borrowed element by element; a decimal element is not an owned
-value. The ordering rule for record fields applies to elements too: a decimal element
-or value is read before the operand after it runs. The call-ordering rules of section 12
-(`xs[f(xs)]`, `append(xs, f(xs))`) apply to `[]decimal` exactly as to `[]int`.
-
-An array of decimals is limited by the runtime's object size (under 4 GiB, 24 bytes
-an element). `new []decimal(n)` with n above 178,956,969 traps with
-`obx: allocation size overflow` and exit code 2, before any memory is taken. An
-`append` that must double an array already holding 134,217,728 decimals (2^27)
-traps the same way, so the append limit is lower than the `new` limit.
-
-```obo
-// example: runs
-// prints 3.75 2 0
-fn main() {
-    var xs = new []decimal(0)
-    append(xs, 1.5)
-    append(xs, 2.25)
-    xs[0] += xs[1]
-    let z = new []decimal(1)
-    println(xs[0], " ", len(xs), " ", z[0])
-}
-```
-
-## 2. Ownership
-
-Every owned value has one owner: a local variable, a parameter, a global, a field
-or an element. When the owner goes out of scope, the value is freed together with
-everything it owns. Assigning a new value to an owner frees the old one first.
-Scope exit runs after the scope's `defer` statements.
-
-```obo
-// example: runs
-// prints 2
-type Box = ref record { v: int }
-
-fn main() {
-    var b = new Box{v: 1}
-    b = new Box{v: 2}      // the first box is freed here
-    println(b.v)
-}                          // the second box is freed here
-```
-
-## 3. Moves
-
-Assigning an owned value to another variable, or passing it by value, moves it.
-The source then has no value until it is assigned again.
-
-```obo
-// example: error: 'a' was moved and has no value here
-type Box = ref record { v: int }
-
-fn eat(b: Box) {}
-
-fn main() {
-    let a = new Box{v: 1}
-    eat(a)
-    println(a.v)
-}
-```
-
-The rules for moves:
-
-- `take(x)` moves out of an optional variable, field or element and leaves `nil`
-  behind. Its result is still optional, so it must be checked before use.
-
-  ```obo
-  // example: runs
-  // prints empty
-  // prints 3
-  type Box = ref record { v: int }
-
-  fn main() {
-      var o: ?Box = new Box{v: 3}
-      let p = take(o)              // o is nil from here on
-      if o == nil { println("empty") }
-      if p != nil { println(p.v) }
-  }
-  ```
-
-- A plain assignment cannot move out of a field or element, or out of a global.
-  Use `take` on an optional one instead. A private field of an imported record
-  cannot be the operand of `take`, `replace` or a move at all: field resolution
-  reports the no-public-field error before the move is considered. The whole
-  record remains movable, passable, returnable, storable and droppable.
-- Both branches of an `if`, and every arm of a `match`, must leave each variable
-  in the same state. A variable moved on only one path is an error at the merge.
-
-  ```obo
-  // example: error: moved on one path but not another
-  type Box = ref record { v: int }
-
-  fn eat(b: Box) {}
-
-  fn main() {
-      let a = new Box{v: 1}
-      if a.v > 0 { eat(a) }
-      println(a.v)
-  }
-  ```
-
-- A loop must leave each variable as it found it, so a variable moved inside a
-  loop must get a value again before the loop repeats or exits.
-- A move is not allowed inside `&&` or `||`, or inside `defer`.
-- A temporary value must be stored in a variable before it is used, so that it
-  can be freed. `println(make().v)` is an error; write
-  `let m = make()` and then `println(m.v)`.
-
-## 4. References
-
-`&T` is the one reference type. A parameter declared `mut p: &T` may change the object
-it points to; one without `mut` may not.
-A reference borrows an owned value; it does not own it. A reference stays valid
-while nothing it may point into has been changed.
-
-- References are for parameters and local variables only. They cannot be stored
-  in fields, elements or globals, and cannot be returned.
-- A reference to an interface value (`&I`, `mut &I`) follows exactly these rules.
-  In particular it is a parameter or a local, never a field, element, global or
-  return type; the compiler refuses those positions with the same messages as
-  `&T`, because the spelling in the type position is what it rejects.
-- Passing an owned value to a reference parameter borrows it. The caller keeps
-  ownership:
-
-  ```obo
-  // example: runs
-  // prints 6
-  type Node = ref record { value: int; next: ?Node }
-
-  fn sum(list: &?Node): int {       // borrows the list
-      var t = 0
-      var p = list
-      while p != nil {
-          t += p.value
-          p = p.next
-      }
-      return t
-  }
-
-  fn main() {
-      let list = new Node{value: 1, next: new Node{value: 2, next: new Node{value: 3, next: nil}}}
-      println(sum(list))
-  }
-  ```
-
-- `&place` borrows explicitly: `let r = &items[0]`.
-- `&place` may borrow through a handle: `let items = &h.items` borrows what `h` names. Such
-  a reference may point into any object, so it is invalidated by any change to an owned
-  value or through a handle, and by any call that might free. A call might free unless it
-  frees no global, frees nothing below any of its `mut` arguments (writing a scalar or
-  appending is fine), writes no owned value through a handle, is compiled before the call, and is not recursive. The reference cannot be passed to
-  a call that might free. A `for` loop that walks it cannot change what it points into, but
-  `append` to the array it walks is accepted: an append is not a change, and a walk re-reads
-  the array's header each time.
-
-  ```obo
-  // example: runs
-  // prints 6
-  type Node = ref record { value: int }
-  type Bag = ref record { items: []Node }
-
-  fn total(xs: &[]Node): int {         // pure: changes nothing and calls nothing that frees
-      var t = 0
-      for x in xs { t += x.value }
-      return t
-  }
-
-  fn main() {
-      let bag = new Bag{items: new []Node(0)}
-      append(bag.items, new Node{value: 1})
-      append(bag.items, new Node{value: 2})
-      append(bag.items, new Node{value: 3})
-      let h = handle(bag)
-      let items = &h.items
-      println(total(items))
-  }
-  ```
-
-  ```obo
-  // example: error: cannot pass a reference that borrows through a handle to shrink
-  type Node = ref record { value: int }
-  type Bag = ref record { items: []Node }
-  var spare = new []Node(0)
-  fn shrink(xs: &[]Node): int {
-      spare = new []Node(0)            // frees what spare held, so a call to shrink might free
-      return len(xs)
-  }
-  fn main() {
-      let bag = new Bag{items: new []Node(0)}
-      let h = handle(bag)
-      let items = &h.items
-      println(shrink(items))
-  }
-  ```
-
-  ```obo
-  // example: error: 'items' may point to freed memory
-  type Node = ref record { value: int }
-  type Bag = ref record { items: []Node }
-  fn main() {
-      var bag = new Bag{items: new []Node(0)}
-      append(bag.items, new Node{value: 1})
-      let h = handle(bag)
-      let items = &h.items
-      bag.items = new []Node(0)        // frees the nodes items points into
-      println(len(items))
-  }
-  ```
-- A reference's binding is kept for each path. Where a reference is pointed at one place on one
-  path and at another on the other, it may point into either, so a change to either place
-  invalidates it on the paths where that is possible. A reference pointed at the same place on
-  every path is checked against that place alone. Where paths join, the binding is the union of
-  their places, so a change under any of them is seen, and a reference that may be writable on
-  one path only is read-only after the join. A defer body may not point a reference declared
-  before it at something else: the body runs where its block is left, which is not one of the
-  paths the binding is kept on, so the change would not be seen there.
-- A reference invalidated on one path only is invalid where the paths join, and a use of it is
-  refused: a read, a write through it, a pass to a call, a re-borrow, or a use by a defer. A
-  reference that is not used after the join is not an error, so an `if`, a `match` or a loop that
-  changes what a reference points into on some path is accepted when nothing reads the reference
-  afterwards. A re-point after the join makes it valid again. A loop's next pass starts where its
-  body ends, so a reference invalidated on the way round is refused where the loop reads it before
-  pointing it again, and after the loop if it is read there.
-
-  ```obo
-  // example: runs
-  // prints 1
-  type Item = ref record { v: int }
-  type Bag = ref record { items: []Item }
-  fn main() {
-      var bag = new Bag{items: new []Item(0)}
-      append(bag.items, new Item{v: 0})
-      let p = &bag.items[0]
-      if bag.items[0].v == 0 { bag.items = new []Item(0) }   // p is invalid on this path, and never read
-      println(1)
-  }
-  ```
-
-  ```obo
-  // example: error: 'p' may point to freed memory
-  type Item = ref record { v: int }
-  type Bag = ref record { items: []Item }
-  fn main() {
-      var bag = new Bag{items: new []Item(0)}
-      append(bag.items, new Item{v: 0})
-      let p = &bag.items[0]
-      if bag.items[0].v == 0 { bag.items = new []Item(0) }
-      println(p.v)                   // invalid on one path: refused here, at the read
-  }
-  ```
-- A defer body is checked where it is declared, but runs where its block is left. The references
-  declared outside the body that it uses (reads, writes through, passes to a call) must be as they
-  were at the declaration at each exit from the block: not pointed at another place since, and not
-  invalidated by a change since. The check is made at the normal end, at `break`, `continue` and
-  `return`, and a newer defer's frees count for an older one. A reference pointed at another place
-  is an error even if nothing is freed, since the defer would use the new target. Owned locals a
-  defer reads are covered by the rule that they may not be moved after the defer.
-
-  ```obo
-  // example: error: 'first' is used by a defer but may point to freed memory
-  type Item = ref record { v: int }
-  type Bag = ref record { items: []Item }
-  fn main() {
-      var bag = new Bag{items: new []Item(0)}
-      append(bag.items, new Item{v: 5})
-      let first = &bag.items[0]
-      {
-          defer println(first.v)
-          bag.items = new []Item(0)      // frees what first points to, before the defer runs
-      }
-  }
-  ```
-- A loop follows the frees on each way out of it (`break`, `continue`, a `while` condition) and on the
-  way back to its start, so a free made in a condition or on a `break` path is seen after the loop. A
-  free before the loop does not mark a reference inside it unless the loop frees what it points into.
-  A reference writable where a loop starts and read-only where it starts again is an error only when
-  it is written through before it is pointed again.
-- A defer body's frees happen where its block is left, at each exit from the block (normal end,
-  `break`, `continue`, `return`); its moves are not taken where it is declared. The frees are
-  applied as the body made them: through the same reference, so a reference the change was made
-  through, or derived from, stays valid (a deferred write to a child of `p` leaves `p` valid). A
-  defer body's re-point of a reference declared before it is still an error, as above.
-- A `mut` argument invalidates the references into the place it names only if its callee may free something
-  below it: the compiler keeps, for each function, which `mut` parameters it frees through (an assignment
-  of an owned value, `replace`, `take`, `truncate` of owned elements, a `mut` call that does, or a write
-  through a handle, a recursive call, or a heading not yet defined, which count as freeing anything). A
-  callee that only writes scalars, appends, or assigns strings leaves them valid.
-- A field of a reference parameter (`&p.ys`) is a place of its own: a change to `p.xs` does not reach it.
-  So is a place a reference local points at. With `var r = &a.ys`, a change through `r` (`r[0] = ...`,
-  `r = ...` is a re-point and changes nothing), a `mut` call given `r`, and a change to `a.ys` itself
-  reach a reference into `a.ys` and leave `&a.xs[0]` and `&a.zs` valid. A change through `r` is at the
-  place `r` points at plus the path written, so `s = &r.zs` is the place `a.ys.zs` and a change
-  through `s` leaves `&r.xs` valid. The rules for the place:
-  - Elements with different constant indexes are different places. An element with an index that is
-    not a constant is every element of the array (`&a.ys[i]` may be `&a.ys[0]`), and a constant
-    element is one of them: they overlap, and nothing beside the array does.
-  - A reference re-pointed has the place of the new target on that path. Where paths join (an `if`, a
-    `match`, the end of a loop), a reference may point into the places of both. The same place stays
-    one place; any two different places join to the whole root, and so does a reference to a whole
-    object (`&n`) joined with one inside it (`&n.kids[0]`): a change through it is then taken to
-    reach everything in the root. The places are not narrowed to a common prefix: that would miss a
-    change at one of them.
-  - A change that reaches the place by another route still reaches it: a change through a handle, a
-    `mut` call given the whole root, a function that frees a global the reference points into, and a
-    change through another reference parameter or a global, which may name the same object.
-  - A reference local that a loop has not pointed afresh since the loop began (it was declared
-    before the loop, and is not re-pointed on every path before the use) may be elsewhere on the next
-    iteration, and the body is checked once. A change through it, a reference made from it, or a
-    `mut` argument it is, inside that loop, is taken to reach the whole root. A reference declared
-    in the loop, or pointed afresh before the use, has its place. A copy of such a reference (`let s = r`)
-    is anywhere in the same roots. A known false rejection: `r[0] = replace(r[0], x)` through a reference
-    declared before the loop is refused inside it; point `r` in the loop, or name the element.
-- `replace` and `take` cannot name a reference local (`var r = &p.ys; replace(r, ...)`): a reference only
-  borrows, so the old value is not its to give back; name the field or element.
-- A mut argument, `append` and `truncate` write through the reference they are given, so a loop that
-  passes a reference to a mut parameter, or appends through it, is checked like an assignment: the
-  reference must be writable on every pass where it is written before it is pointed again.
-
-  ```obo
-  // example: error: 'k' may point to freed memory
-  type Item = ref record { v: int }
-  fn main() {
-      var a = new Item{v: 1}
-      var b = new Item{v: 2}
-      var k = &a
-      if a.v == 2 { k = &b }        // k points at b on one path only
-      a = new Item{v: 3}            // frees what k may still point to
-      println(k.v)
-  }
-  ```
-
-  ```obo
-  // example: runs
-  // prints 2
-  type Item = ref record { v: int }
-  fn main() {
-      var a = new Item{v: 1}
-      var b = new Item{v: 2}
-      var k = &a
-      if b.v == 2 { k = &b } else { k = &b }   // pointed at b on every path
-      a = new Item{v: 3}            // a is no longer pointed to: this is accepted
-      println(k.v)
-  }
-  ```
-- A call's arguments run left to right, and the callee gets all of them. A reference passed as an
-  argument (to a `&` or `mut` parameter, or the bytes of `writeFile`) is held while the later
-  arguments run, as a `let` reference to the same place would be: a later argument that moves,
-  frees, replaces or changes what it points into is an error at that argument. A later argument
-  that only reads, or changes a different place, is accepted, and so is one that frees something
-  after an earlier argument's own call has returned. A value passed by copy (an int, a handle) is
-  not held: a handle is checked where it is used.
-
-  ```obo
-  // example: error: argument 2 of two may free what argument 1 points into
-  type Node = ref record { v: int }
-  fn eat(a: []Node): int { return 1 }      // takes the array, and frees it
-  fn two(n: &Node, k: int): int { return n.v + k }
-  fn main() {
-      var xs = new []Node(0)
-      append(xs, new Node{v: 41})
-      println(two(&xs[0], eat(xs)))        // eat frees xs before two reads n
-  }
-  ```
-
-  ```obo
-  // example: runs
-  // prints 42
-  type Node = ref record { v: int }
-  fn eat(a: []Node): int { return 1 }
-  fn two(n: &Node, k: int): int { return n.v + k }
-  fn main() {
-      var xs = new []Node(0)
-      append(xs, new Node{v: 41})
-      let k = eat(xs)                      // the call first: xs is not borrowed yet
-      var ys = new []Node(0)
-      append(ys, new Node{v: 41})
-      println(two(&ys[0], k))
-  }
-  ```
-- Changing through a reference needs a `mut` parameter. Passing a read-only reference
-  to one is an error: `argument 1 of f needs a mut reference, but this one is read-only`.
-  `mut` belongs to the parameter, not the type: a local reference is changeable exactly
-  when the object it borrows is.
-- Several references may name the same object, whether mutable or not. A change
-  through one reference only invalidates references that may point *inside* what
-  changed, so references to the object itself stay valid.
-- A change reaches only the references that lie under the place it changed. A field
-  is a place, and so is an element at a constant index: changing `w.b` leaves a
-  reference to `w.a` valid, and changing `items[1]` leaves a reference to `items[0]`
-  valid. An element whose index is not a constant may be any element, so changing
-  `items[i]` invalidates references into all of them, and truncating the array
-  invalidates every reference into it. Appending does not invalidate references.
-
-  ```obo
-  // example: error: 'first' may point to freed memory
-  type Node = ref record { v: int }
-
-  fn main() {
-      var items = new []Node(0)
-      append(items, new Node{v: 1})
-      let first = &items[0]
-      items[0] = new Node{v: 2}     // frees the element 'first' points into
-      println(first.v)
-  }
-  ```
-
-  ```obo
-  // example: runs
-  // prints 1
-  // prints 1
-  type Node = ref record { v: int }
-
-  fn main() {
-      var items = new []Node(0)
-      append(items, new Node{v: 1})
-      let first = &items[0]
-      append(items, new Node{v: 2})  // growing the array keeps 'first' valid
-      println(first.v)
-      println(items[0].v)
-  }
-  ```
-
-  ```obo
-  // example: runs
-  // prints 3
-  // prints 7
-  type Node = ref record { v: int }
-
-  fn main() {
-      var items = new []Node(0)
-      append(items, new Node{v: 3})
-      append(items, new Node{v: 4})
-      let first = &items[0]
-      items[1] = new Node{v: 7}     // a different element: 'first' stays valid
-      println(first.v)
-      println(items[1].v)
-  }
-  ```
-
-## 5. Handles
-
-`handle(x)` makes a `^T` from a record or closed value held in a variable, field
-or element. A handle does not own its object, so it can link back to a parent,
-point into a shared arena, or form a graph.
-
-Every use of a handle checks that its object is still alive. If the object has
-been freed, the program stops with exit code 7 and the message
-`obo: the object this handle names has been freed`. `alive(h)` tells you without
-stopping.
-
-```obo
-// example: runs
-// prints root
-type Node = ref record { name: string; parent: ?^Node }
-
-fn main() {
-    let root = new Node{name: "root", parent: nil}
-    let kid = new Node{name: "kid", parent: handle(root)}
-    let p = kid.parent
-    if p != nil { println(p.name) }
-}
-```
-
-```obo
-// example: runs
-// exit: 7
-type Box = ref record { v: int }
-type Link = ref record { to: ^Box }
-
-fn main() {
-    var b = new Box{v: 1}
-    let l = new Link{to: handle(b)}
-    println(l.to.v)                // prints 1
-    b = new Box{v: 2}              // frees the first box
-    println(l.to.v)                // exits 7 here
-}
-```
-
-Where the compiler can see it, a use of a freed handle is an error instead. A
-handle made by `let h = handle(b)` from a whole owned local `b` names `b`'s
-object. Assigning over `b`, or `drop(b)`, frees that object, so after it a use
-through `h` (`h.v`, `h.v = 1`) is refused, on every path that the assignment may
-have run on. `alive(h)`, or a copy of `h`, is not a use; a handle that is not
-used again after the assignment is not an error. Make the handle again after the
-assignment to use the new object:
-
-```obo
-// example: error: handle 'h' may name a freed object: 'b' was assigned or dropped after the handle was made from it
-type Box = ref record { v: int }
-
-fn main() {
-    var b = new Box{v: 1}
-    let h = handle(b)
-    println(h.v)
-    b = new Box{v: 2}              // frees the first box
-    println(h.v)                   // refused: h names it
-}
-```
-
-Inside a loop, an assignment over the owner is refused when the handle was made
-before the loop and the loop uses the handle anywhere in its body, before or after
-the assignment in the text, since the next iteration would use the freed object:
-`cannot assign over the owner of handle 'h' inside a loop that uses the handle`
-(the same for a `drop` of the owner). A free that ends its block in a `break` or a `return`, with no
-`continue` in the block, is not followed by another iteration (a `break` leaves only the loop it is in, so a
-handle made outside an enclosing loop is still refused; a handle made in the scope directly outside the loop
-it leaves is not, since no iteration of that loop follows the break): the loop may use the handle, and a use
-after the loop is refused by the paths. `alive(h)`, as a bare name, does not count as the loop using the handle, and
-neither does a `let` copy of a handle that is already known to be dead there (the copy is dead too). A handle made
-inside the loop is fresh each iteration. A move of the owner (`var c = a`, passing it) on one path
-does not hide a later free of the owner on a path that did not move it: `if k { var d = a; return } else { a = nb() }
-use(h)` is refused, since the else path freed the object. A handle is safe after a free only if every path that
-reaches it moved the owner. The compiler does not
-know that two conditions agree, so `if k == 1 { c = a; a = nb(2) }  if k == 1 { a = nb(3) }  use(h)` is refused
-although it is safe (known false positive): put the move and the free in one arm. If the arm that frees the object ends in
-a `break` or a `continue`, a use of a handle made inside the loop after the `if`
-is accepted, since that code runs only on the paths that did not free it; a use
-after the loop is reached through the break, and is refused. A `defer` that uses
-the handle runs after the free, so a free of the owner after the defer is
-declared is refused: `cannot assign over 'b' while a defer declared earlier uses
-handle 'h' made from it` (and `cannot drop`). The rule covers `let` handles
-made from a whole local, and from a field or element of a local (below). A `var`
-handle, a copy kept in a `var` or a record, a handle made through a reference
-parameter, another handle or a global, and a handle parameter are checked at run
-time, as above.
-
-A `let` handle made from a field or element of an owned local (`handle(p.child)`,
-`handle(p.kids[2])`, `handle(xs[i])`) is tracked by its place. It is dead after the
-place, or any place above it, is assigned over, replaced, taken or truncated away,
-or the owner is assigned over or dropped; directly, through a reference that may
-point at or above the place, or by passing a `mut` argument that reaches the place
-to a function that frees below its parameter. A change to a sibling field, to
-another element with a constant index, to a scalar, or inside the object the handle
-names does not reach it, nor does `append` or a `truncate` with a constant count
-that keeps the element. A `mut` call frees only the places its callee frees below the
-parameter (a callee that sets `p.other` leaves a handle to `p.child` alone); a recursive
-or unknown callee, or one that frees many places, frees anywhere below the argument. An element with a variable index is reached by a change
-to the array or to any element. A move of the owner is a move, as for a whole
-owner. A write through a handle made from the whole owner is a change of the
-owner. A write through any other handle is not seen, and the use is checked at run
-time. Known false positives: the old value replaced (`replace`) and kept elsewhere, a
-`truncate` with a count that is not a constant, and a free on a path the program does
-not take.
-
-```obo
-// example: error: handle 'h' may name a freed object: a place in 'p'
-type Kid = ref record { n: int }
-type Par = ref record { child: Kid; other: Kid }
-
-fn main() {
-    var p = new Par{child: new Kid{n: 1}, other: new Kid{n: 2}}
-    let h = handle(p.child)
-    p.other = new Kid{n: 3}        // another place: h is still good
-    println(h.n)
-    p.child = new Kid{n: 4}        // frees the first child
-    println(h.n)                   // refused: h names it
-}
-```
-
-A test on `alive` narrows the handle: inside the block it guards, `h` is known to be live, so a use is
-accepted although the owner may have been freed on some path before. The guard forms are `if alive(h) { ... }`,
-`if alive(h) && cond { ... }` (and `cond` itself may use `h`), `if !alive(h) { ... } else { ... }` (the else
-arm is narrowed) and `if !alive(h) { exit }` where the block always ends in a `return`, `break` or `continue`
-(the code after the `if` is narrowed). `h` must be a bare name and `alive(h)` the first thing in the condition;
-`!alive(h)` must be the whole condition, and an `||` anywhere in a condition with `&&` turns the narrowing off.
-The narrowing ends at the next assignment over the owner or `drop` of it, which marks the handle dead again, and
-it does not outlive the block (or, for the early exit, the enclosing block): after `if alive(h) { ... }` the
-handle is as dead as it was before. Refused as before: `while alive(h)`, the else arm of `if alive(h)`,
-`alive(f(h))`, `alive(h) == true`, `alive(h) || c`, `!alive(h) && c`, a guard on a copy or another handle, and a
-loop that uses the handle and frees its owner anywhere in its body, guard or not.
-
-```obo
-// example: runs
-// prints 2
-type Box = ref record { v: int }
-
-fn main() {
-    var b = new Box{v: 1}
-    let h = handle(b)
-    var c = true
-    if c { b = new Box{v: 2} }     // may free the object h names
-    if alive(h) { println(h.v) } else { println(2) }
-}
-```
-
-Handles can be stored in fields and optional fields (`?^Node`), and they are
-checked for `nil` in the same way as other optionals. A handle needs a variable,
-field or element, and must name a record or closed type.
-
-## 5a. Methods
-
-A method is a function whose first, hidden parameter is a **receiver**. It is
-declared at top level with the receiver in parentheses after `fn`:
-
-```text
-fn (r: T) name(params) [: Ret]        // owned receiver
-fn (r: &T) name(params) [: Ret]       // read-only borrow
-fn (mut r: &T) name(params) [: Ret]   // mutable borrow
-```
-
-Exactly one receiver, with a name. `fn () name(...)` (no receiver), a second
-receiver name, and `fn (r: &T) (...)` (no method name) are errors. `mut` goes
-before the receiver's name, as for parameters; `mut r: T` and `&mut T` reuse the
-parameter errors. A receiver literally named `mut` cannot be spelled: the
-optional mode word is consumed first (the same lexical limitation parameters
-have).
-
-The receiver type must be a **record or closed type already defined in the same
-module**. Aliases to it are transparent, but an imported type, a variant, a
-built-in or derived type (`int`, `string`, `[]T`, `?T`, `^T`, `Result[T]`), and
-an incomplete forward type are refused. Methods are declared after the type's
-definition; a method needs a forward heading to be called before its body, like a
-function.
-
-```obo
-// example: runs
-// prints 2 b
-// prints 2
-type Builder = ref record { items: []string; n: int }
-type Frozen = ref record { items: []string; n: int }
-
-fn make(): Builder { return new Builder{items: new []string(0), n: 0} }
-fn (b: &Builder) count(): int { return b.n }
-fn (b: &Builder) at(i: int): string { return b.items[i] }
-fn (mut b: &Builder) add(s: string) {
-    append(b.items, s)
-    b.n += 1
-}
-fn (b: Builder) freeze(): Frozen {
-    let items = replace(b.items, new []string(0))
-    return new Frozen{items: items, n: b.n}
-}
-
-fn main() {
-    let b = make()
-    b.add("a")
-    b.add("b")
-    println(b.count(), " ", b.at(1))
-    let f = b.freeze()               // b is moved into the method and freed
-    println(f.n)
-}
-```
-
-Inside the body the receiver is an ordinary parameter:
-`r: &T` is read-only (`r.f = v`, `append(r.a, x)`, and `mut` method calls on it
-are refused); `mut r: &T` may change fields, append, and free below the receiver;
-`r: T` is owned and is freed at return unless returned, passed on or dropped. A
-field cannot be moved out of an owned receiver: use `replace(r.f, new ...)` or
-return `r` itself.
-
-A method body has module-level access to every field of its receiver type, so a
-`mut &T` method can maintain private state and a `&T` method can read it. A
-public method is the external surface for that state. An external call to a
-foreign **private field** used as a method (`x.privateName()`) does not leak the
-field: it reports the no-public-field-or-method message (section 10). A public
-field on a mixed record, and any field called as a method inside its own module,
-keeps the ordinary `has a field ..., not a method` message.
-
-### Calls
-
-A call is written `place.name(args...)`; the receiver is the designator before
-`.name(`. It may be a local or parameter, a global (`alias::g` too), a field, a
-constant- or variable-index element, a reference through any of these, or a value
-reached through a handle:
+String literals concatenate with `+`; there is no implicit conversion from
+numbers, so write `string(n)`. A string indexes to a `byte` with `s[i]`, and
+`len(s)` is its byte length. Sections 1 and 8 cover the rest.
+
+### 0.3 Operators and precedence
+
+Operators bind in the usual Go-like order, from tightest to loosest:
+
+| Level | Operators | Notes |
+|---|---|---|
+| unary | `!` `-` `~` `&` | `!` needs `bool`; `-`/`~` need `int` (and `-` also floats/decimals); `&place` borrows |
+| 2 | `*` `/` `%` `<<` `>>` `&` | `&` here is bitwise and |
+| 3 | `+` `-` `|` `^` | `+` also concatenates strings |
+| 4 | `<` `<=` `>` `>=` `==` `!=` | |
+| 5 | `&&` | short-circuit, `bool` only |
+| 6 | `||` | short-circuit, `bool` only |
+
+`&` is unary borrow or binary bitwise-and depending on position. `&&`, `||` and
+`!` work only on `bool`; `&&` and `||` evaluate the right operand only when
+needed. There is no logical `&`/`|` on bools.
+
+Integer arithmetic is 64-bit two's complement and wraps on overflow. `/`
+truncates toward zero and `%` takes the sign of the dividend; a zero divisor
+traps at run time (SIGFPE, section 9). Shift counts are taken modulo 64, and
+`>>` is arithmetic. `~` is bitwise complement.
+
+`+ - * %` also work on `decimal` (exact, with traps on inexactness), and
+`+ - * /` on `float`; `%` is not defined for floats, and decimal `/` is not an
+operator at all (use `decimal::div`). Mixing `int`, `float` and `decimal` in one
+operation or comparison is an error; convert explicitly with `float(i)` or
+`decimal(i)`. There is no float-to-int, decimal-to-int or decimal-to-float
+conversion in v1: use `int(x)`/`byte(x)` only on integers, `decimal::toInt` for a
+decimal, and `parseFloat` for text.
+
+Comparisons return `bool`. Strings compare with `==` and `!=` only; references
+and optionals compare for identity with `==` and `!=` (a handle is tested with
+`alive(h)`); interfaces and function values cannot be compared.
+
+Compound assignment `+=`, `-=` and `*=` works on `int`, and `+=`, `-=`, `*=`
+and `%=` on `decimal`. `/=` is not supported anywhere. Strings have no `+=`;
+write `s = s + t`.
+
+### 0.4 Declarations and scope
+
+A module body contains `import` lines followed by declarations, each optionally
+marked `pub` for export (section 6):
 
 ```obo
 // example: runs
 // prints 3
-// prints 8
-type Item = ref record { v: int }
-type Bag = ref record { first: Item; items: []Item }
+// prints 6
+module main
 
-fn (i: &Item) get(): int { return i.v }
-fn (mut i: &Item) bump() { i.v += 1 }
+const LIMIT = 2
+
+type Pair = ref record { first, second: int }
+
+var counter: int = 1
+
+fn add(a: int, b: int): int { return a + b }
 
 fn main() {
-    let bag = new Bag{first: new Item{v: 3}, items: new []Item(0)}
-    append(bag.items, new Item{v: 6})
-    println(bag.first.get())
-    bag.items[0].bump()
-    println(bag.items[0].get() + 1)
+    var total: int
+    total = add(LIMIT, counter)
+    let p = new Pair{first: total, second: total}
+    println(p.first)
+    println(p.first + p.second)
 }
 ```
 
-Dispatch is **static**, by the receiver's declared type: there is no dynamic
-dispatch or vtable, and no method value. `b.m` where `m` is a method is the
-error `method '<T>::<m>' cannot be used as a value: call it with '(' after its
-name`. Two types may have methods with the same name; a method and a top-level
-function may share a name (methods are a separate namespace, while a method and
-a field/variant of its own receiver type may not collide).
+- `const NAME = expr` requires a value known at compile time. Arithmetic on
+  constants is folded (`const N = 2 + 3` is `5`); a decimal constant must be a
+  literal or a unary-minus literal.
+- `type Name = ref record { ... }` declares a record; `type Name = closed { ... }`
+  declares a variant type; `type Name = Other` is an alias; `type Name`
+  forward-declares a record that is defined later (section 1).
+- `var name = expr`, `var name: T = expr`, `var name: T` and `let name = expr`
+  declare locals or globals. `var` is assignable; `let` is bound once. `let`
+  always needs a value. `var` without a value starts at zero (the empty string
+  for `string`) and `nil` for optionals; a non-optional record, closed value,
+  interface, handle, function value or array always needs a value.
+- A function is `fn name(params): T { ... }`; omit `: T` for a function that
+  returns nothing. A declaration with no body, `fn name(params): T` followed by
+  no `{`, is a forward heading for a function defined later in the file.
+- Parameters are `name: T` (moved or copied in), `name: &T` (read-only borrow)
+  and `mut name: &T` (mutable borrow). There are no default, named or variadic
+  parameters, and no overloading.
+- Local `var`/`let` declarations and parameters shadow an outer name; a block is
+  a new scope, and `defer` is block-scoped.
+- The program root must define `fn main()`; an imported module may not.
 
-A variant-typed value resolves the methods of its closed type (one parent step):
-a `Shape`-typed local and a `Circle`-typed value with static type `Circle` both
-call `Shape::area`:
+Methods and interfaces add declaration forms of their own; see sections 5a
+and 5b.
+
+### 0.5 Statements
+
+A function body is a block `{ ... }`. The statements are:
+
+- **Expression statement.** A call, or a `try` expression. A bare value is an
+  error ("this expression does nothing"), because it would be discarded.
+- **Assignment.** `place = expr`, or a compound form from section 0.3. A place
+  is a local, parameter, field, array element or a place reached through `&T` or
+  `^T`; assignment moves an owned value and frees the old one.
+- **`if cond { ... } else if cond { ... } else { ... }`.** The condition must be
+  `bool`; the braces are required; an `if` is a statement, not an expression.
+- **`while cond { ... }`.** The condition is checked before each iteration and
+  must be `bool`; `while true` is the usual infinite loop.
+- **`for i in start..end { ... }`.** `start` and `end` are `int` expressions,
+  evaluated once. The range is half-open: `0..3` runs for `0`, `1`, `2`. The
+  loop variable is a fresh `let` binding on each iteration.
+- **`for x in array { ... }`.** Walks a local array or an array parameter. An
+  owned element is borrowed for the iteration, not moved out; `x` is a read-only
+  binding of the element, so `x.field = v` changes the element but `x = ...`
+  does not compile. The array must be a local or parameter; write
+  `let items = &p.items` to borrow a field first.
+- **`break` and `continue`.** Leave or continue the innermost loop. Both are
+  errors outside a loop, and each runs the defers of the blocks it leaves.
+- **`return expr`** (or `return` in a void function). Runs the defers of the
+  function's blocks and returns. A value must be returned on every path. There
+  is no `return` from inside a `defer`.
+- **`defer statement` or `defer { ... }`.** Runs the statement when its block is
+  left, in reverse order for several defers, including on `return`, `break`,
+  `continue` and a propagated `try` error. A defer body may not return.
+- **`match`.** Section 0.6.
+- **A nested block `{ ... }`.** Introduces a scope and runs its defers at exit.
+
+```obo
+// example: runs
+// prints 0 1 2
+// prints 4
+// prints 10
+module main
+
+fn main() {
+    for i in 0..3 {
+        if i > 0 { print(" ") }
+        print(i)
+    }
+    println("")
+
+    var n = 0
+    while n < 10 {
+        n += 2
+        if n == 6 { continue }
+        if n == 8 { break }
+    }
+    println(n / 2)
+
+    let xs = new []int(0)
+    for i in 0..4 { append(xs, i * i) }
+    var total = 0
+    for x in xs { total += x }
+    println(total - 4)
+}
+```
+
+The braces around `if`, `while`, `for` and `match` bodies are mandatory. There
+is no `switch`, `do`, `goto` or labelled loop; use `match`, `while` and
+`break`/`continue`.
+
+### 0.6 Match
+
+`match` inspects an `int`, a `byte`, a `closed` type or a `Result`. The subject
+of a closed-type or `Result` match must be a whole local variable or parameter,
+not an arbitrary expression; an `int` match may use any expression.
+
+**Integer and byte matches** list constant expressions, separated by commas,
+one arm per list. Duplicate values are errors, and `else` is required and must
+be last:
+
+```obo
+// example: runs
+// prints low
+// prints other
+module main
+
+fn label(n: int) {
+    match n {
+        0, 1, 2 { println("low") }
+        3 { println("three") }
+        else { println("other") }
+    }
+}
+
+fn main() {
+    label(1)
+    label(9)
+}
+```
+
+**Closed-type matches** name variants without their module qualifier
+(`Circle { ... }`, not `Shape::Circle`); every variant must be covered or an
+`else` arm must be present, and `else` is last. The subject is narrowed to the
+variant inside the arm, so its fields are read directly:
 
 ```obo
 // example: runs
 // prints 12
-// prints 27
-type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+// prints 5
+module main
 
-fn (s: &Shape) area(): int {
+type Shape = closed {
+    Circle { r: int }
+    Rect { w, h: int }
+}
+
+fn area(s: Shape): int {
     match s {
         Circle { return 3 * s.r * s.r }
         Rect { return s.w * s.h }
@@ -1015,2151 +340,101 @@ fn (s: &Shape) area(): int {
 }
 
 fn main() {
-    let s: Shape = new Circle{r: 2}
-    println(s.area())
-    let c = new Circle{r: 3}
-    println(c.area())
+    let a: Shape = new Circle{r: 2}
+    let b: Shape = new Rect{w: 5, h: 1}
+    println(area(a))
+    println(area(b))
 }
 ```
 
-A method call **ends the designator**: `b.m().n` and `b.m()[0]` are syntax
-errors at the enclosing statement (`expected ';' or newline, found .`), not
-store-first errors. Store the result in a local to continue. A function-call
-result keeps its existing rules: `make().m()` with an owned record, array,
-optional or `Result` result is the store-first error before the member name; a
-handle-valued result (`mk().m()`) follows the handle rules.
-
-### Ownership at the call
-
-The receiver is argument 0 and is converted and checked exactly like an argument,
-before the explicit arguments run: it is moved for `r: T`, borrowed for
-`&`/`mut`, held while the later arguments run, and included in the aliasing and
-argument-order checks. So an owned receiver consumes a whole local; a field,
-element, global, reference or a whole handle dereference cannot be moved
-(`cannot move out of ...`), and an owned receiver that is the **whole object a
-handle names** is refused explicitly:
-
-```obo
-// example: error: cannot call a method that takes its receiver by value through a handle
-type Node = ref record { v: int }
-
-fn (n: Node) take(): int { return n.v }
-
-fn main() {
-    let n = new Node{v: 1}
-    let h = handle(n)
-    println(h.take())
-}
-```
-
-A field or element reached through a handle (`h.child.m()`) is a field/element
-move and takes that existing error. A `mut` receiver through a read-only binding
-reports `the receiver of method '<T>::<m>' needs a mut reference, but this one is
-read-only`. A method call on an optional needs the usual `!= nil` narrowing
-first; on a built-in or derived type it is `<t> has no methods`.
-
-### Modules, exports and symbol files
-
-Methods are private unless declared `pub`, and `pub` is sticky across a forward
-heading and its body. An exported method requires its receiver type to be
-exported (`exported '<T>::<m>' uses private type '<T>'; mark '<T>' pub too`).
-Importers call methods on values of the exported type: `let b = lib::make();
-b.push("x")`. A method name is never qualified as `lib::m`; only the receiver
-may be (`lib::g.m()`). A private method of an imported type is invisible in a
-full build and in `--check` alike, with the same
-`module '<m>' has no exported member '<T>::<m>' (only 'pub' declarations are
-visible)`. Transitive access is allowed: if module A's exported function returns
-a type defined in module L, a module that imports only A can call L's exported
-methods on the result.
-
-The `.sym` carries an exported method as a source-like function whose first
-parameter is the receiver (always `p0`), in a method group between the globals
-and the functions; the receiver's mode, type, name and summary are interface
-data, while parameter names are not. `--check` reconstructs methods from the
-symbol file and checks calls against them, including a source-less dependency.
-A method named `main` is allowed and is not the program entry: only the root's
-plain `fn main` is looked up.
-
-```obo
-// example: modules check
-// file: main.obx
-module main
-import "lib.obx"
-fn main() {
-    let b = lib::make()
-    println(b.count())
-}
-// file: lib.obx
-module lib
-pub type Builder = ref record { n: int }
-pub fn make(): Builder { return new Builder{n: 1} }
-pub fn (b: &Builder) count(): int { return b.n }
-// prints 1
-```
-
-The method diagnostics are in section 10; `T::m` (and `lib::T::m` for another
-module) is the spelling throughout.
-
-## 5b. Interfaces
-
-An interface is a named set of methods that a record or closed type can implement. A value of interface type is
-either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I`); an interface is never a value
-of its own kind with fields or identity. Interfaces arrived in `0.8`; additive
-builtin/runtime extensions use patch releases such as the historical `0.8.1`.
-Lambdas are `0.9`, numeric floats are `0.10`/format 6, Stage B capture lists are
-`0.11`/format 6, the impure member tier is `0.17`/format 10, decimal members are
-`0.18`/format 11, decimal function values and captures are `0.19`/format 12,
-and handles to interfaces (`^I`) are a later phase.
-
-### Declarations and implementations
-
-```text
-type Shape = interface {
-    pure fn area(): int
-    mut fn grow(k: int)
-    pure mut fn bump(): int
-}
-
-type Square = ref record { s: int }
-fn (q: &Square) area(): int { return q.s * q.s }
-fn (mut q: &Square) grow(k: int) { q.s += k }
-fn (mut q: &Square) bump(): int { q.s += 1; return q.s }
-impl Shape for Square
-```
-
-- `type I = interface { ... }` declares an interface; it needs at least one member, is never forward-declared,
-  and a member is `[pure | impure] [mut] fn name(params)[: T]`. `pure`, `impure` and `mut` come before `fn`
-  (`pure` and `impure` are mutually exclusive); `pub` is not allowed on a member (mark the interface type `pub`).
-  A member may take or return a decimal (0.18), and a decimal is never a receiver.
-  A member cannot take or return a function value.
-- A member's receiver is parameter 0: borrowed for `fn`, mutable for `mut fn`; it is not written in the member.
-  Explicit parameters are owned `p: T`, borrowed `p: &T`, or mutable borrowed `mut p: &T`. `mut p: T` is the
-  existing `mut needs a reference parameter` error. Interface types may appear as parameter and return types.
-- `impl I for T` is a conformance declaration with no body. `T` is a record or closed type defined in this
-  module, by its defining name, not a variant and not an alias; `I` is an interface (qualified `M::I` across
-  modules). Interfaces, implementations and methods are declared before use. A type may implement several
-  interfaces, and two interfaces may share member names.
-- The implementation must match every member exactly: receiver mode (`mut fn` needs `mut &T`, `fn` needs `&T`),
-  argument count, argument types, argument modes, and return type. A `pure` member needs a method that is pure.
-  A plain or `mut` member (the **local** tier) needs a method that writes no owned value through a handle, frees
-  no global, does not call an uncompiled function, and frees nothing below a parameter the member does not
-  declare `mut`. An `impure` member may be implemented by any method, including a pure or plain one: its summary
-  is the maximum, so every caller is conservatively invalidated. A method must be defined before its
-  implementation.
-- A `pub impl` is visible to importers; a private implementation is not. An imported private implementation
-  is reported as `module 'M' has no exported implementation of 'I' for 'T' (only 'pub' implementations are
-  visible)`.
-
-### Owned values, moves and conversions
-
-`I` is a box holding the object pointer and its vtable; `?I` is nil or a box. Converting a record or closed
-value into `I` at a typed destination allocates a box and **moves** the value into it. A variant uses its
-closed parent's implementation and vtable.
-
-```obo
-// example: runs
-// prints 25
-// prints 13
-// prints 25
-type Shape = interface {
-    pure fn area(): int
-    mut fn grow(k: int)
-}
-type Square = ref record { s: int }
-fn (q: &Square) area(): int { return q.s * q.s }
-fn (mut q: &Square) grow(k: int) { q.s += k }
-impl Shape for Square
-
-fn total(xs: &[]Shape): int {
-    var sum = 0
-    for s in xs { sum += s.area() }
-    return sum
-}
-
-fn main() {
-    let a: Shape = new Square{s: 3}
-    a.grow(2)
-    println(a.area())                       // 25
-    let xs = new []Shape(0)
-    append(xs, new Square{s: 2})
-    append(xs, new Square{s: 3})
-    println(total(&xs))                     // 13
-    let o: ?Shape = new Square{s: 5}
-    if o != nil { println(o.area()) }       // 25
-}
-```
-
-The typed destinations are `let`/`var` with a type, assignment to a typed place, a call argument, an
-`append` element, a `replace` value, a constructor field, `return`, and an `ok` payload that already has the
-interface type. Inference never creates an interface: `let e = &c` stays `&Circle` and `let e = c` stays `Circle`.
-
-Rules and refusals:
-
-- `T` or a variant that implements `I` moves into a box. A borrowed `T` cannot become owned: `cannot use a
-  borrowed 'T' as owned interface 'I': move the value in, or take the interface as '&I'`.
-- An owned `I` moves as a box, with no allocation; `I -> ?I` widens. An `&I` only borrows; moving out of it is
-  `cannot move out of a reference: a reference only borrows`.
-- `?T -> ?I` and `?T -> I` are not conversions in this version: `cannot use ?T as interface 'I' (it may be nil:
-  take it into a local, return if nil, then convert the local)`. Narrow a taken local and move that local:
-
-  ```obo
-  // example: runs
-  // prints 9
-  type Shape = interface { pure fn area(): int }
-  type Square = ref record { s: int }
-  fn (q: &Square) area(): int { return q.s * q.s }
-  impl Shape for Square
-  type Holder = ref record { o: ?Square }
-
-  fn main() {
-      let h = new Holder{o: new Square{s: 3}}
-      let t = take(h.o)
-      if t == nil { return }
-      let s: Shape = t
-      println(s.area())
-  }
-  ```
-
-  In an `if`/`else`, consume the local in both arms: `if t != nil { let s: Shape = t; append(out, s) } else {
-  drop(t) }`. A field cannot be narrowed directly; take it into a local first.
-- Another interface does not convert: `cannot use interface 'I2' as 'I': interface values do not convert`.
-  Arrays, strings, scalars and `Result[T]` are not records: `cannot use <t> as interface 'I'`. An `ok(new T)`
-  where `Result[I]` is wanted is refused with the store-first hint. A `^T` is not owned: `cannot use ^T as
-  interface 'I'`.
-- A conversion needs a visible implementation. A local missing one is `type 'T' does not implement interface
-  'I'`; a foreign one is `module 'M' has no exported implementation of 'I' for 'T' (only 'pub' implementations
-  are visible)`.
-
-Owned interface values follow the record ownership rules without exception. `let e = d` moves the box; a
-by-value parameter consumes it; assigning an `I` field frees the old box and its object; scope exit, `drop`,
-`truncate`, array/`Result` teardown and global teardown free boxes. `take` works only on optionals and returns
-an optional; `replace(place, new)` moves the old value out of a non-optional field, element or global and
-stores the new one. A plain `let` cannot move out of a field or element.
-
-### Borrowed interfaces
-
-`&I` is a pointer to a `{obj, vtable}` pair. It is second-class: parameters, locals and `for` walk variables
-only; never stored in a field, element or global, never returned. Every `&I` local owns its own pair slot, and
-`let`, `var` and re-point copy both words into it (the B1 rule), so a value saved from an earlier loop pass
-does not follow a later conversion. A concrete `&c` argument uses a frame cell for the call; an owned `I` place
-is borrowed without a cell by pointing at its box.
-
-```obo
-// example: runs
-// prints 16 16
-// prints 25
-type Shape = interface {
-    pure fn area(): int
-    mut fn grow(k: int)
-}
-type Square = ref record { s: int }
-fn (q: &Square) area(): int { return q.s * q.s }
-fn (mut q: &Square) grow(k: int) { q.s += k }
-impl Shape for Square
-
-fn describe(d: &Shape): int { return d.area() }
-fn bump(mut d: &Shape): int {
-    d.grow(1)
-    return d.area()
-}
-
-fn main() {
-    let c = new Square{s: 4}
-    let d: &Shape = &c
-    println(d.area(), " ", describe(&c))          // 16 16
-    println(bump(d))                              // 25
-}
-```
-
-An `&I` is a reference local, so the reference rules apply: a visible change that may free the target
-invalidates it, a loop must re-point it on every path or none, and it cannot be pointed elsewhere while a
-`defer` uses it. `&?I` is only a parameter or a walk variable (explicit and inferred locals are refused:
-`an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local`).
-A non-nil `&?I` narrows to `&I`; take a copied `&I` local with `let d: &I = o`.
-
-### Calls, effects and globals
-
-Any designator of type `I`, `&I` or a narrowed `&?I` can be a receiver: a local, parameter, field, element,
-global, `Result` value, or walk variable. A call through an interface is a direct call on the box's object
-(argument 0), with the object and vtable loaded before the explicit arguments. A `mut` member needs a writable
-receiver. The caller uses the member's synthetic summary, not the implementation's:
-
-- `pure` means the member frees nothing and writes no owned value through a handle. It may still write scalars,
-  globals and its receiver, so `pure` does **not** forbid those writes.
-- A plain or `mut` member may free only below its own `mut` parameters (the receiver for `mut fn`), so a call
-  invalidates references below those places. It never frees a global or writes through a handle.
-- An `impure` member has the maximum summary: it may free anything and write through a handle. A call through
-  it invalidates every live reference and handle, and a reference borrowed through a handle cannot be read
-  afterwards. The calling function inherits that maximum, so it is itself impure for later tier checks.
-
-A reference borrowed through a handle can be passed only to a member that cannot free; otherwise the message
-is `cannot pass a reference that borrows through a handle to interface method 'I::m': it might free what the
-handle names`. A later argument that may free the receiver is refused: `argument N of interface method 'I::m'
-may free what the receiver points into, and runs after it; compute it before the call`.
-
-Global initializers may contain owned conversions, borrowing an owned `I` global, and moving an owned `I` value
-into a global. A concrete-to-`&I` conversion that would need a cell is refused: `cannot create a borrowed
-interface value in a global initializer: pass the concrete value to a function that makes it`. An interface
-method call anywhere in a global initializer is refused: `an interface method cannot be called in a global
-initializer; call a function that does it, as in var G = initG()`.
-
-### Equality, handles and limits
-
-Interface values cannot be compared: `interface values cannot be compared; test an optional with '== nil' or
-'!= nil'`. `?I == nil` and `?I != nil` are allowed and narrow; `I == nil` keeps `cannot compare I with nil`.
-`handle` still names records and closed types only in this phase: `handles name records and closed types, not I`
-(and `not ?I` for an optional). `^I`, `alive` of an interface and a `pure mut` write through a handle are later
-work.
-
-Not in this phase: interface-to-interface conversion, structural typing, variance, superinterfaces, downcasts,
-type tests, owned-receiver members, method values, `?T -> ?I`, and `^I`. An interface
-member cannot take or return a function value; the lambda firewall is part of the lambda phase. An interface
-value cannot be `new`-ed, used as a constant, `match`ed, or printed: `new I` is `'I' is not a record type`,
-`new []I(n > 0)` starts as nil (use `[]?I` or start empty), and a missing initializer is the existing nil error.
-
-## 5c. Function types and non-capturing lambdas
-
-A **function type** is structural and is written `fn(ParamTypes): Ret`; an omitted return is
-`void`. Parameters are owned (no marker) or read-only `&`; `mut` is not allowed. Two function
-types are the same only when their parameter count, modes, types and return are the same. There
-is no variance, subtyping or inference.
-
-```obo
-// example: compiles
-type Item = ref record { n: int }
-type Cmp = fn(int, int): int
-type Pred = fn(&Item): bool
-type Mapping = fn(fn(int): int): int
-type DecFn = fn(decimal): decimal
-fn main() { println(0) }
-```
-
-Function types are allowed as function/method/lambda **parameter** types, local `let`/`var`
-variable types (with an initializer) and type aliases. A decimal parameter or return is
-allowed (`fn(decimal): decimal`, `fn(): decimal`); a `&decimal` is refused because a decimal
-cannot be borrowed. They are not allowed as returns, fields, globals, constants,
-array/optional/handle/`Result` components, references, interface members or receivers. An
-interface inside a function type is refused, including through a record or closed-type
-field.
-
-A **non-capturing lambda literal** is `fn (Params) [: Ret] { Body }`. It has no name and no
-capture list. The body is an ordinary function body and must return a value on every path when
-its return type is not `void`. Parameter names, `mut` rules and interface/return restrictions
-are checked at the header.
-
-```obo
-// example: runs
-// prints 3
-// prints 6
-// prints 8
-fn apply(x: int, f: fn(int): int): int { return f(x) }
-
-fn twice(x: int): int { return x * 2 }
-
-fn main() {
-    let inc = fn (x: int): int { return x + 1 }
-    println(apply(2, inc))
-    println(apply(3, fn (x: int): int { return x * 2 }))
-    println(apply(4, fn (x: int): int { return twice(x) }))
-}
-```
-
-A function value is **second-class**: it may be a parameter, a local (with an initializer) or
-a call argument, and may be copied or assigned. It is never owned, returned, stored in a field,
-array, global, constant, `Result`, optional, handle or interface, and cannot be compared with
-another function value or with `nil`. A function value is called by its bare local/parameter
-name with ordinary call syntax; the result ends the designator, so store a record/array result
-before using `.` or `[]`. A function value has no fields or methods.
-
-```obo
-// example: runs
-// prints 9
-// prints 9
-type Item = ref record { n: int }
-fn use(f: fn(&Item): int, x: &Item): int { return f(x) }
-
-fn main() {
-    let get = fn (x: &Item): int { return x.n }
-    let item = new Item{n: 9}
-    println(use(get, &item))
-    let add = fn (a: int, b: int): int { return a + b }
-    println(add(4, 5))
-}
-```
-
-The value representation is one word: a pointer to an immutable cell whose word 0 is the code
-address. A call passes that cell as a hidden environment argument before the visible arguments,
-then dispatches indirectly through the cell. For a decimal-returning value call the cell is
-pushed **first**, then the hidden decimal destination, so the callee keeps reading its
-destination at `16 + visible parameter bytes` exactly as on a direct call and the cell sits
-above it at `24 + visible parameter bytes` (a `Result[decimal]` return is one word, not a
-decimal return, so its cell is at `16 + visible parameter bytes`). A direct, method or
-interface call has no cell. The environment is not a source name: a user
-global, local or parameter called `env` remains an ordinary name. The runtime and array ABI are
-unchanged.
-
-**Effects.** Every function value is pure in the compiler's existing predicate: its hidden body
-may allocate, write scalar globals, append to owned/global arrays, perform I/O builtins, take or
-free its owned parameters and call pure functions or other function values. It may not free a
-global, free owned state through a handle, call an impure function, call a forward-headed
-function whose summary is not final, or call the function/method whose body is still being
-compiled. An indirect call is a pure call: it does not invalidate the caller's references,
-handles or globals, though its owned arguments are consumed and its owned/string/`Result`
-result is the caller's ordinary result. Purity here is the existing compiler predicate, not a
-referential-purity guarantee; ref-counted string writes follow their existing rules.
-
-A lambda body cannot use an enclosing local or parameter by implicit capture. A referenced
-outer local produces the capture-list diagnostic; capture lists are the Stage B feature
-described in section 5d. A lambda cannot appear in a `while` condition,
-a `defer` body, a global/constant initializer, or outside a function. A bare lambda is not a
-statement and cannot be invoked directly.
-
-```obo
-// example: error: is a local of the enclosing function
-fn main() {
-    let x = 1
-    let f = fn (): int { return x }
-    println(f())
-}
-```
-
-```obo
-// example: error: a lambda must be pure
-var xs: []int = new []int(0)
-fn main() {
-    let f = fn (): int { truncate(xs, 0); return 0 }
-    println(f())
-}
-```
-
-Stored function values, owned or mutable captures, string/interface captures and impure
-callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
-interface handles `^I` remain later. `obo 0.19` is released as format 12/ABI 1
-(decimal function values and captures); the promoted seed at `ba02031` and the
-compiler are both 757,761 bytes (sha256 `8327ca50…`), and the image is the
-self-host fixed point. The pre-promotion `0.18` seed built it once, and the
-historical `0.15` seed built the 0.16 image. The released `0.11`
-seed (`01fa9ed3…`) also builds the older line. The historical `0.9` seed
-(`540,673` bytes, sha256 `3d369273…`) built the 0.10 compiler, and the historical `0.8` seed
-(`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
-
-## 5d. Capturing lambdas (Stage B, 0.11/format 6/ABI 1; decimal captures 0.19/format 12)
-
-A capturing lambda writes an explicit capture list: `fn [a, b](Params) [: Ret] { Body }`.
-Each name must resolve to a local or parameter of the immediately enclosing function; an
-uncaptured enclosing local is an error, and module globals/functions are used directly.
-The list is resolved at the literal's source position and the cell is filled left to right.
-There is no `mut` or `move` capture syntax.
-
-A scalar `int`/`byte`/`bool`/`float` is captured by **value snapshot**. A float snapshot is
-its one raw binary64 word, exactly as stored in a local, parameter or field; no conversion,
-rounding or host-float path is involved. A **decimal** is captured by a 24-byte value
-snapshot: all three value words (coefficient, exponent, display scale and sign) are copied
-when the literal is evaluated, so a later write to the outer local cannot change the cell.
-A record, closed type, array, optional or `Result`
-is captured as a **read-only borrow of the whole local**. A `&T` reference copies its
-read-only binding; a `^T` handle copies its token (a tracked `let` handle also holds its
-origin owner); a function value copies its cell pointer. Float aliases and float parameters
-follow the scalar snapshot rule, and a record/closed/array/optional/`Result` that holds a
-float is allowed through the ordinary read-only borrow, so a float field, element or
-`Result[float]` payload is read in the body. A float constant or global is used directly,
-without a capture list, like any other global. A string or interface value is rejected, as
-is a record/closed/array/optional/`Result` whose type holds an interface value, even when it
-also holds a float; `mut`/`move` captures remain unsupported. A forward-declared type is
-reported as incomplete, not as interface-bearing: a direct shell and a shell reached through
-`?`/`[]`/`^`/`Result` or a record/closed field all report
-`<T> is declared but not yet defined`.
-
-The body may read fields/elements, narrow an optional with `if x != nil`, narrow an optional
-or `Result` payload in an arm, match a closed type or a `Result` non-consumingly, and call
-read-only methods. It may not write, move, drop, take, replace, truncate or append the
-captured owned value, point a captured reference elsewhere, or call a `mut` method through
-it; a captured scalar or decimal write is
-`cannot change captured 'x': captures are read-only; pass a mutable parameter instead`.
-
-```obo
-// example: runs
-// prints 8
-fn apply(x: int, f: fn(int): int): int { return f(x) }
-fn main() {
-    let n = 7
-    println(apply(1, fn [n](x: int): int { return x + n }))
-}
-```
-
-```obo
-// example: runs
-// prints 3.75
-fn apply(d: decimal, f: fn(decimal): decimal): decimal { return f(d) }
-fn main() {
-    let n = 2.5
-    println(apply(1.25, fn [n](x: decimal): decimal { return x + n }))
-}
-```
+**Result matches** are covered in [results.md](language/results.md): the
+non-consuming form narrows to `ok`/`err` (both arms required, no `else`), and
+the consuming form binds `ok(v)` / `err(m, c)` and moves the payload out.
+
+An arm's body is a block. A match is a statement, not an expression: an arm that
+needs to produce a value assigns it or returns.
+
+### 0.7 Expressions and places
+
+An expression is made of literals, names, calls, operators and these forms:
+
+- **Designator and place.** A designator is a name, a field access `p.field`, an
+  index `a[i]`, or the same reached through `&T` or `^T`. Those are places and
+  may be assigned; a call result is a value, not a place.
+- **Call.** `f(a, b)`, `p.method(a)`, `obj.member(a)` for interface values.
+  Arguments are evaluated left to right; there are no named or default
+  arguments. A call that might free what a reference points into is checked
+  against every live reference (section 4).
+- **`new T{field: value, ...}`** constructs a record or a closed variant. Every
+  non-optional reference or array field must be supplied; omitted scalars and
+  optionals start at zero/nil. `new []T(n)` makes an array of `n` zero
+  elements (`n >= 0`, checked at run time).
+- **`ok(v)` and `err(message, code)`** construct a `Result`; `try e` propagates
+  a failure (section 7).
+- **`take(o)`** moves the value out of an optional and leaves `nil`;
+  **`drop(x)`** frees an owned value early; **`replace(place, value)`** replaces
+  and returns the old value (section 8).
+- **`&place`** borrows an owned record, closed value or array instead of moving
+  it; the handle type `^T` is created with `handle(place)` (section 5).
+- **`fn [captures](params): T { ... }`** is a lambda (section 5c).
+- **`try`** may only be the value of a `let`/`var`/assignment or a statement,
+  and only in a function returning a `Result` (section 7).
+
+Function values, interfaces and methods are expressions too; their syntax is in
+sections 5a–5d.
+
+### 0.8 Optionals and nil
+
+An optional type `?T` holds a `T` or `nil`. An optional is the only place `nil`
+is allowed, and it must be checked before the payload is used: field access,
+indexing, a method call and a by-value use of a `?T` are errors until a check
+narrows it. The check may be an `if`/`while` condition, a `&&` operand, or an
+early `return`/`break`/`continue` after `== nil`:
 
 ```obo
 // example: runs
 // prints 6
-type Item = ref record { n: int }
-fn apply(x: int, f: fn(int): int): int { return f(x) }
-fn main() {
-    let item = new Item{n: 5}
-    println(apply(1, fn [item](x: int): int { return x + item.n }))
-}
-```
-
-A capturing literal may appear **only as a direct call argument**. It cannot be bound to a
-`let`/`var`, assigned, returned, stored in a field/array/global/`Result`/optional, wrapped in
-parentheses, or created in a `while` condition, a `defer` body or a global/constant
-initializer. The callee may keep it in a local/parameter, copy it, forward it inside the call
-chain, call it, or put it in a `defer`; it cannot store it beyond the call or return it. The
-creator's frame cell is plain stack memory: no heap allocation, no destructor, no escape.
-
-The hidden environment is **one read-only word**, a pointer to
-`[code][cap0]...[capN]` in the creator's frame; it is not one hidden parameter per capture and
-it is not a source name (a user `env` is ordinary). The visible parameter list is the only
-parameter list: the callee reads the cell at `16 + visible parameter bytes`, plus 8 when it
-returns a decimal (the destination sits below the cell). Each capture slot is 8 bytes except a
-decimal capture, which is 24; the byte offset of capture `i` is `8 + the sizes of the earlier
-slots`, not `8*i`, and the cell size is `8 + the sum of the slot sizes`. The decimal value ABI
-is unchanged (24-byte parameters and a hidden destination), symbol format 12 and ABI 1 apply:
-capture lists add grammar and a frame cell, not a new calling convention.
-
-The creating call holds the capture binding across later arguments exactly like a read-only
-reference argument. A later argument that moves/frees the captured root is refused; a `mut`
-argument that overlaps a **deep** capture is refused. A whole-object capture is accepted even
-by an impure callee; a deep capture needs a callee that does not write through a handle and
-whose body is known; a handle-rooted capture needs a handle-safe callee; a global-rooted
-capture needs a callee that cannot free that global. The check is made at the creating call;
-later forwarding relies on the first callee's complete effect summary.
-
-The lambda body itself is pure under the existing predicate: it may allocate, write scalar
-globals, append to owned/global arrays, use I/O builtins and call pure functions or function
-values, but may not free a global, free owned state through a handle, call an impure or
-forward-headed function, or call the function/method whose body is still being compiled. A
-receiving callee may still be impure for the per-kind capture rules above.
-
-```obo
-// example: error: a capturing lambda may only be passed directly as a call argument
-fn apply(x: int, f: fn(int): int): int { return f(x) }
-fn main() {
-    let n = 1
-    let f = fn [n](x: int): int { return x }
-    println(apply(1, f))
-}
-```
-
-```obo
-// example: error: cannot change captured 'n'
-fn apply(x: int, f: fn(int): int): int { return f(x) }
-fn main() {
-    let n = 1
-    println(apply(1, fn [n](x: int): int { n = 2; return x }))
-}
-```
-
-## 6. Modules
-
-Modules: one source file is one **module**, imported modules are compiled
-dependency-first into the same image, and importers reach exported declarations
-as `alias::name`. Each module also emits a text **symbol file** (`.sym`) holding
-its exported interface, hashes and versions; an importer reads that interface and
-`--check` can check a module against symbol files alone, including dependencies
-whose source is absent. A full build still compiles every module body from source:
-this is interface-level separate compilation, not object files or a linker. The
-compiler itself stays one file and uses no imports.
-
-### Headers, files and identity
-
-A file may start with `module Name` (comments and blank lines first are fine).
-An imported module **must** have a header, and its file must be named
-`Name.obx`; the command-line file is the root and is exempt from the naming rule.
-A headerless root is internally `_root`; `_root` is reserved and an imported
-module may not declare it. Module identity is the **lexically normalized
-resolved path**: repeated `/` collapse, `.` goes, `..` pops the previous
-segment, a leading `/` stays, and symlinks are not resolved. So `lib.obx` and
-`./lib.obx` are one module (compiled and initialized once), while two files
-declaring the same `module Name` are the duplicate-name error. Symlinks are not
-resolved: two spellings through different links are different identities, so if
-both are reached the duplicate-name check reports the same declared name at two
-paths. Use canonical module trees.
-
-### Imports and aliases
-
-```text
-import "path.obx"
-import "path.obx" as alias
-```
-
-The header comes first, then all imports, then declarations. An import after a
-declaration is an error. A path is resolved against the importing file's
-directory first, then each `-I DIR` in command-line order; an absolute path is
-used as written, and the missing-module error lists the paths tried. The import
-path must end in `.obx`, and its basename must match the declared module name.
-The default alias is the declared module name; `as` overrides it. Everything is
-qualified: there are no unqualified or selective imports and no re-exports.
-Duplicate imports are allowed (the module is compiled and initialized once; two
-aliases to it are fine). An alias may not repeat, clash with a top-level
-declaration, or be a built-in name; a local may have an alias's name, since
-`alias::` is always the module.
-
-Module aliases live in their own namespace. A qualified name resolves the alias
-to its module and then the member in that module's exports; a name that is not an
-import alias is the error `'<x>' is not a module`, even if a local, global or
-type has that name.
-
-### Qualified names
-
-`alias::name` reaches exported functions, types, variants, constants, globals and
-record constructors: `lib::make(1)`, `new lib::Node{...}`, `new []lib::Node(0)`,
-`?lib::Node`, `^lib::Node`, `Result[lib::Node]`, `lib::Limit`, `&lib::Cache`.
-`match` arms stay bare (`Circle { ... }`), because the subject's closed type
-names them; writing `lib::Circle` in an arm is refused with
-`match arms name a variant without its module: write Circle`.
-
-### Exports and privacy
-
-Everything is private unless marked `pub`; `pub` is allowed only on top-level
-`fn` (including a method), `type`, `const`, `var` and `let`. It is sticky across a forward heading and
-its definition: the symbol is exported if either declaration says `pub`.
-Importers see only the exports; reaching a private function, type, global or
-constant reports `module '<m>' has no exported member '<x>' (only 'pub'
-declarations are visible)`.
-
-Exporting a closed type exports its variants, so an importer may write
-`new lib::Circle{...}`. Exporting a record type exports only the type. A method
-is exported only if it is `pub`; exporting a method also requires its receiver
-type to be exported.
-
-Record fields have their own visibility, private by default: `pub` before a field
-name makes that field accessible to importers, and a mixed record may expose some
-fields and hide others. Inside the defining module all fields are ordinary.
-Outside it, a private field cannot be read, written, borrowed, moved, `take`n,
-`replace`d or named in `new T{...}`. External `new T{...}` is allowed only when
-**all** fields are public; a record with any private field requires a constructor
-function in its module. A zero-field record is vacuously all-public and may be
-constructed externally. Closed-variant fields stay public in v1; `pub` on one is
-the exact error in section 10.
-
-Field visibility is applied at the field designator, not at the spelling: a
-nested path is checked segment by segment, arrays follow their element type, and
-an alias or a global does not bypass the rule. A `pub` field of a private named
-type is still the closure error below; a **private** field may use any private
-named type because it is not part of the interface.
-
-An exported declaration may not mention a **private** named type of its own
-module, directly or through `[]`, `?`, `^`, `Result`, public record fields or a
-closed-type variant's fields. Private fields are skipped by this check:
-
-`exported 'Shape' uses private type 'Secret' (variant 'A'); mark 'Secret' pub too`
-
-A private type may mention exported types freely; imported types are fine
-because their own module exported them. Type aliases are transparent: `type A =
-lib::T` names the one object `lib::T`, and does not create or rename a type.
-
-### Initialization, main and teardown
-
-Imports are compiled at the import statement, before the importer's
-declarations. Initializers run dependency-first, depth-first in import order,
-once per module (a diamond runs the shared module once); the root's `main`
-runs after every initializer. Only the root may declare the plain `fn main`; a
-method named `main` is allowed and is not an entry point, and a dependency's
-plain `main` is refused (`module '<m>' may not declare 'main'; the program root
-provides it`). The root needs `fn main()` with no parameters or result.
-After `main` returns, every module's owned and string globals are freed in
-compile order (dependencies first), each exactly once, including a global of a
-type from another module; then the runtime finishes. `OBO_CHECK=1` therefore
-reports no leaks and no double frees across a module tree.
-
-An initializer may call functions declared earlier in its module or in a
-dependency, and read or write those modules' globals; it runs with no current
-function, so its calls add nothing to any function's effect summary (there is no
-caller to record them in).
-
-The P4 `cmd/eza.obx` is the first headed program root (`module eza`): its
-imports are the explicit `../lib/...` modules, the build writes an unread
-`eza.sym` into the private sym dir, and its `main` returns normally on success
-so the runtime's stats and leak checks run. Because `try` is not allowed in
-`main`, eza matches each `Result` and exits with the eza-shaped status; the
-library calls inside its helpers use `try` as usual.
-
-### Type identity
-
-A named type is one object for the whole compilation: the defining module's
-declaration creates it and every importer reuses that object, so `a::T` in B, in
-C and in A is the same type, and a record allocated in one module, freed or
-matched in another, uses one descriptor address. Two modules that declare
-structurally identical records have two different types; assigning one to the
-other is an error (`cannot use b::T as a::T`). A type alias is the underlying
-type for every rule; two aliases to one imported type, in one module or several,
-still denote one object and one descriptor.
-
-### Reserved type names and constants
-
-A type may not be named `int`, `byte`, `bool`, `string`, `void`, `nil`,
-`Result`, `decimal`, `Sql`, `SqlArg`, `Html`, `HtmlAttr` or `HtmlAttrs`
-(`cannot declare a type named '<name>'`), and `const` of `nil` is
-refused (`a constant cannot be nil; use a typed optional var or let`). A module
-alias may not use a built-in name.
-
-### The dependency scan: `--deps`
-
-`obo --deps SOURCE [-I DIR]...` reads module headers and import blocks only and
-prints the normalized source paths in depth-first post-order: dependencies
-before importers, the root last, one per line, deduplicated by normalized path.
-It writes nothing, rejects `-o`, and reports missing files (exit 2), cycles
-(exit 1), duplicate module names (exit 1), a missing imported header and the
-basename rule with the same messages as a build. `make` can use it for tool
-source prerequisites.
-
-### Symbol files, `--check` and `--sym-dir`
-
-Every module with a `module Name` header writes `Name.sym` after its declarations
-are compiled and its summaries are complete. The file lives in the **symbol
-directory**: `--sym-dir DIR`, or the root source's directory by default. The
-directory is a flat namespace by module name and must already exist (the runtime
-has no `mkdir`); a missing or unwritable directory is
-`obxc: symbol-file directory '<dir>' does not exist or is not writable` (exit 2).
-Two builds must not share a sym-dir: `writeFile` truncates in place and there is no
-atomic rename, so parallel builds and tests use private directories.
-
-The emission rule is one rule:
-
-- dependencies always write their `.sym` (the importer reads them);
-- a build with at least one import writes the root's `.sym` too when the root has a
-  header;
-- a single-file build writes no `.sym` unless `--emit-sym` is given;
-- `--check` always writes the checked module's `.sym`, and never an executable.
-
-`--emit-sym` is a flag on a normal build (it still writes the executable and still
-accepts `-o`); it requires a `module` header. `--check`, `--deps` and `--emit-sym`
-are mutually exclusive; `-o` is rejected with `--check` and `--deps`:
-`obxc: -o cannot be used with --check or --deps`.
-
-In a full build the importer binds the **live** interface (the defining module's
-types, globals, functions and descriptors) and reads and validates the dependency's
-`.sym` against it. `--check` instead reconstructs the interface from the `.sym`:
-imported functions get a known dummy address and imported globals unique dummy
-offsets, imported types have no descriptor, and the checked module's code is
-discarded. `--check` compiles and checks the body on every run; it is not a build
-cache. It does not require `main`: a checked module may have a private `main` (its
-`.sym` omits it) or an exported `main` (the `.sym` lists it, and an importer rejects
-it with `module '<m>' may not declare 'main'; the program root provides it`).
-
-For each dependency, `--check` looks for `<sym-dir>/<basename>.sym`, where the
-basename is the import path's file name without `.obx`; the `.sym`'s `module` line
-must equal that basename. A dependency's source, if present, is used only to
-validate its header (the basename rule) and its `source` hash; it is never
-compiled. A source-less dependency is allowed if its `.sym` is valid. A **full
-build** still requires every source; if only a `.sym` exists it reports
-`obxc: cannot read module '<m>' at <paths>; only --check may use a symbol file
-without source` (exit 2). The checked root is exempt from the basename rule (it is
-the root of its check graph), and its `.sym` is named by its declared module name.
-
-`--version` prints `obo 0.19 sym-format 12 abi 1`; the numbers are the `obosym`
-format, the compiled-program ABI and the compiler version, each checked exactly
-when a `.sym` is read. The historical `0.18` release printed
-`obo 0.18 sym-format 11 abi 1`, the `0.17` release printed
-`obo 0.17 sym-format 10 abi 1`, the `0.16` release printed
-`obo 0.16 sym-format 9 abi 1`, the `0.15` release printed
-`obo 0.15 sym-format 8 abi 1`, and the `0.14` release printed
-`obo 0.14 sym-format 7 abi 1`, `0.12` printed `obo 0.12 sym-format 6 abi 1`,
-and `0.8.1` printed
-`obo 0.8.1 sym-format 4 abi 1`. A format-6 file is rejected by the exact check;
-rebuild it. `--reemit-sym FILE` is a testing hook: it reads a symbol
-file with the reader and prints the canonical re-emission, which the symbol-file
-tests compare byte-for-byte.
-
-### The `.sym` format and hashes
-
-A `.sym` is text in a language-like declaration syntax, readable by the scanner:
-
-```text
-obosym 12
-abi 1
-compiler "0.19"
-source 0x0123456789abcdef
-dep io "io.obx"
-interface 0xfedcba9876543210
-module strings
-depiface io 0x1111111111111111
-type Builder uid 0x3333333333333333
-type Builder = ref record { pub items: []string; priv; pub count: int }
-type Node = ref record { pub value: int; pub next: ?Node }
-type Holder = ref record { priviface; pub id: int }
-type Shape = closed { Circle { pub r: int } Rect { pub w: int; pub h: int } }
-type Sized = interface { pure fn size(): int; mut fn fill(mut p0: &Builder) }
-type Text = []string
-const Limit: int = 0x000000000000000a
-const Empty: string = hex "6e6f6e65"
-var Cache: []Node
-let Default: int
-fn (p0: &Builder) length(): int
-fn (mut p0: &Builder) reset() pfree 0x1 pf 0 "=/items" frees 1 strings::scratch
-impl Sized for Builder
-fn split(p0: string, p1: string): []string
-fn apply(p0: decimal, p1: fn(decimal): decimal): decimal
-```
-
-- The first word is the single identifier `obosym` (not `obo-sym`), then the
-  format number; the reader requires exact `obosym`, `abi` and `compiler` lines.
-- `source` is the FNV-1a 64 hash of the module's source bytes exactly.
-- `dep` lines are the direct dependencies, one per unique module in first-import
-  order, with the path **as imported** (relative stays relative). They are
-  diagnostic and outside the interface hash.
-- `interface` is the FNV-1a 64 hash of the exact bytes after that line. The body
-  holds the module name, one `depiface <module> <hash>` per dependency in the same
-  order, then the exported declarations. A dependency's interface change therefore
-  changes every dependent's interface hash; a body-only change does not. Import
-  order is part of the hash because it determines initialization order.
-- Declarations are emitted in canonical groups: shells for exported record/closed
-  types (source order), their definitions (source order; an exported interface
-  has a definition line and no shell), aliases, constants, globals, methods
-  (declaration order), implementations (declaration order), functions. Private
-  declarations are skipped without reordering the exported ones. No address,
-  offset, descriptor, pointer, timestamp or absolute path appears.
-- A record definition lists its fields in declaration order (offsets are
-  recomputed: a field takes one 8-byte word, or 24 bytes for `decimal`, and each
-  field starts where the previous one ends). Every public field is written
-  explicitly as `pub name: Type`; a bare `name: Type` is malformed in format 9, so
-  a writer bug cannot silently publish a field. A private field is the single
-  token `priv`, or `priviface` when its hidden type contains an interface
-  (directly or through `[]`, `?`, `^`, `Result`, records or variants), or `priv24`
-  when its type is `decimal`. The slot is one word (`priv`, `priviface`) or 24
-  bytes (`priv24`) at the next offset; the private name and type are not written,
-  so the marker is the only thing that gives the slot its width. `pub priv: int` and
-  `pub priviface: int` are ordinary public fields named `priv`/`priviface` and
-  round-trip unchanged. A closed definition lists its variants in declaration
-  order; every variant field is written with `pub`, and `priv`/`priviface`/`priv24`
-  inside a variant is a malformed-symbol error. A public `decimal` field is written
-  `pub name: decimal`, and its width comes from its type. Every exported record/closed type has a
-  shell line first, so recursive and mutually recursive types resolve. Variants
-  are registered by the reader under `Module::Variant` and exported with their
-  closed type.
-- Field visibility is part of the interface body, so public↔private changes,
-  adding/removing/reordering a slot, and a `priv`↔`priviface` change all change
-  the interface hash. Renaming or retyping a private field does **not** change it
-  unless an exported callable's `pf`/`pfree` summary text changes: a private name
-  in a summary path is accepted and not redacted (`io::Reader::buf` is the
-  concrete example), so renaming that field changes the hash, `[]byte -> []int`
-  keeps it, and `[]byte -> int` changes it because the owned-field `pf` row
-  disappears. A retyped field whose summary text is identical also keeps it.
-- The reader creates a private slot as a nameless placeholder with the parsed
-  `priviface` bit and `int` as its type; an empty name never matches a source
-  identifier, so `fieldIndex` ignores it. `symCompareFields` compares the live
-  field's carrier answer (`containsIface` on its real type) with the parsed flag,
-  never a recomputation from the placeholder, so `--reemit-sym` keeps
-  `priviface`. Each per-field carrier query starts with a clean visited set.
-- An alias `type A = <typeExpr>` maps the name to the existing type; it never
-  re-declares it. Field and signature types are emitted as the underlying type, so
-  layout never depends on an alias.
-- Constants are primitive: `int`/`byte` as 16 hexadecimal digits (negative values
-  wrap), `bool` as `true`/`false`, `string` as `hex "<bytes>"` (including `hex ""`),
-  and `decimal` as `hex "<48 digits>"`: the 24 value bytes in memory order, each of
-  the three words little-endian, lowercase only. The reader refuses a text that is
-  not 48 digits, has an uppercase or non-hex character, a coefficient above 10^38-1,
-  a zero with sign 1 or a nonzero exponent, a sign other than 0 or 1, or bits 40 to 63
-  of the last word set.
-  The reader interns string bytes instead of carrying a rodata address.
-- Globals are `var Name: T` or `let Name: T`, with no initializer; a `let` is
-  read-only to importers and the defining module owns initialization. A `decimal`
-  global takes 24 bytes of zero-initialised global data; every other type takes one
-  word. In `--check` an imported global gets a unique dummy offset, also stepping by
-  the type's size, so two imported decimal globals never overlap.
-- Function headings reuse the source syntax for parameters, `&` and `mut`, but the
-  writer **always** emits the canonical names `p0`, `p1`, ...; parameter names are
-  syntax only, so renaming a source parameter changes the source hash but not the
-  interface hash. A method is a function heading with a source-like receiver
-  group, `fn ([mut ]p0: [&]T) name(...)`: the receiver is always parameter 0, so
-  `pfree` bit 0 and `pf 0 ...` are its summary; only exported methods are
-  emitted. `pfree` is the 62-bit mask of parameters below which the function may
-  free; `frees N key...` names the globals it may free (a private or transitive
-  `Module::name` key is allowed); `pf i "<event>"` records a precise free place,
-  with `=` (the value in the place) or `!` (what lies below it) and a path of
-  `/field`, `/[n]` and `/[]` segments. Summary items may be read in any order; the
-  writer emits `freesall`, `writeshandles`, `pfree`, `frees`, then `pf` rows by
-  parameter and insertion order.
-- An exported interface is one definition line, `type I = interface { ... }`,
-  with no shell line. Its members follow in declaration order, separated by `;`.
-  A member is `fn name(params): T` with an optional result, and its markers come
-  before `fn`: `pure` if the member is pure, then `mut` if its receiver is mutable,
-  as in `pure mut fn m(p0: int): T`. The receiver is not written (it is parameter 0,
-  borrowed for `fn` and mutable for `mut fn`). The explicit parameters are named
-  `p0`, `p1`, ... and carry their modes: `p0: T` (owned), `p0: &T` (borrowed) and
-  `mut p0: &T` (mutable). A member line has no summary items. The reader builds
-  each member's summary from its markers and modes: a `pure` member has an empty
-  summary, and any other member has a `pfree` bit on each mutable parameter (the
-  receiver included, for `mut fn`), with no flags and no globals.
-- An exported implementation is one line after the methods, `impl I for T`. `I` is
-  the interface, qualified as `M::I` when it belongs to another module. `T` is the
-  receiver's bare name: a record or closed type of this module, not an alias and
-  not a variant.
-- Only `pub` interfaces and `pub impl` lines are written. A private interface is
-  not in the file, and neither is a private `impl`, so an importer cannot name
-  either one.
-
-The reader validates hashes, versions, shells, field/variant structure, duplicate
-keys and exports, parameter modes, constants, `frees` counts and keys, the
-`pf`/`pfree` consistency, and the interface member markers, modes and `impl` lines
-before using any value. Malformed files are
-`obxc: <sympath>:<line>:<col>: symbol file: <detail>` (exit 2).
-
-### Versions and the trust model
-
-Three exact-match values version a `.sym`: `obosym` (format/grammar and meaning),
-`abi` (record layout, descriptor format, calling convention, global addressing,
-effect-summary meaning and initialization order), and `compiler` (`OBO_VERSION`).
-Bump `OBO_VERSION` with a compiler feature; bump `obosym` on a grammar or meaning
-change; bump `abi` on a layout/ABI/effect change. A mismatch is reported with the
-line that differs:
-
-- `obxc: symbol file '<p>' has format <n>; this compiler reads <m>; rebuild it`
-- `obxc: symbol file '<p>' has ABI <n>; this compiler uses <m>; rebuild it`
-- `obxc: symbol file '<p>' was built by compiler '<v>'; this is '<w>'; rebuild it`
-
-FNV-1a is a staleness and integrity check, **not** a cryptographic one. Symbol
-files are trusted build outputs: a forged but well-formed interface can make
-`--check` accept an unsound program (it can claim a callee frees nothing). Do not
-`--check` against untrusted symbol files, and do not treat a `.sym` as a security
-boundary. A full build re-reads and validates the freshly written interface, so a
-missed version bump only affects `--check` against stale artifacts.
-
-The reader rebuilds each interface member's summary from its markers and parameter
-modes, as above, so a caller's effect check uses the marker. It does not re-run the
-implementation checks (the signature and effect-tier checks of a method against
-its interface) on an `impl` line. A full build checks that the pair is the exported
-live implementation, which the defining module's own compile has already checked;
-`--check` accepts the line as written. A forged `pure` marker or `impl` line is
-therefore not caught by `--check`.
-
-Generated `.sym` files under the build convention (`.obo/sym`) are gitignored;
-an arbitrary `--sym-dir` is not automatically ignored. A build without
-`--sym-dir` writes next to the root source, so use `--sym-dir .obo/sym` in a
-checkout. `tests/modules/golden/expected/*.sym` are
-committed byte-goldens and are not ignored. The golden tests never rewrite a fixture in the gate; `sym_test.py
---update` is the explicit regeneration path.
-
-### A checked example
-
-The first file is the root; the second is compiled through `-I`.
-
-```obo
-// example: modules
-// file: main.obx
 module main
-import "lib.obx"
-fn main() {
-    let n = lib::make(4)
-    println(lib::value(n))
+
+type Node = ref record { value: int; next: ?Node }
+
+fn value(o: ?Node): int {
+    if o == nil { return 0 }
+    return o.value
 }
-// file: lib.obx
-module lib
-pub type Node = ref record { v: int }
-pub fn make(v: int): Node { return new Node{v: v} }
-pub fn value(n: Node): int { return n.v }
-// prints 4
-```
 
-A source-less check: the same tree is built, the dependency source is deleted, and
-`--check` reads only the symbol file.
-
-```obo
-// example: modules check
-// file: main.obx
-module main
-import "lib.obx"
 fn main() {
-    let n = lib::make(4)
-    println(lib::value(n))
+    let n = new Node{value: 6, next: nil}
+    println(value(n))
 }
-// file: lib.obx
-module lib
-pub type Node = ref record { v: int }
-pub fn make(v: int): Node { return new Node{v: v} }
-pub fn value(n: Node): int { return n.v }
-// prints 4
 ```
 
-```obo
-// example: modules error: module 'lib' has no exported member 'secret'
-// file: main.obx
-module main
-import "lib.obx"
-fn main() { println(lib::secret()) }
-// file: lib.obx
-module lib
-fn secret(): int { return 1 }
-```
+Narrowing is invalidated by assigning to the optional, and a defer body sees no
+narrowing from the code around it. `take(o)` moves the payload out of an
+optional and leaves `nil`; use it when the value itself is needed. A non-optional
+`T` can never be `nil`. Optional interfaces narrow to `&I` in their own way; see
+[interfaces.md](language/interfaces.md).
 
-### Module errors
+### 0.9 Type summary
 
-| Situation | Message | Exit |
+The type table, record and closed-type declarations, private fields and the
+float and decimal representations are in [section 1](language/types.md). The
+short version:
+
+| Type | Meaning | Owned |
 |---|---|---|
-| missing imported source | `obxc: cannot read module '<m>' at <paths tried>` | 2 |
-| imported file has no header | `imported module '<path>' needs a 'module Name' header` | 1 |
-| file/header name mismatch | `module '<m>' must be in a file named <m>.obx (found <path>)` | 1 |
-| import cycle | `import cycle: a.obx -> b.obx -> a.obx` | 1 |
-| duplicate module name | `module '<m>' is declared by both <path1> and <path2>` | 1 |
-| `module _root` in a dependency | `module '_root' is reserved for the program root` | 1 |
-| import after a declaration | `imports must come before declarations` | 1 |
-| repeated alias | `'<a>' is already used as an import alias` | 1 |
-| alias vs a declaration | `'<a>' clashes with a top-level declaration` | 1 |
-| alias is a built-in name | `cannot use '<a>' as an import alias: it is a built-in name` | 1 |
-| qualified name on a non-module | `'<x>' is not a module` | 1 |
-| unknown/private member | `module '<m>' has no exported member '<x>' (only 'pub' declarations are visible)` | 1 |
-| `pub` in a block | `'pub' is only allowed on top-level declarations` | 1 |
-| `pub import` | `'pub' applies to declarations, not imports` | 1 |
-| private type in an export | `exported '<x>' uses private type '<T>'; mark '<T>' pub too` | 1 |
-| `main` in a dependency | `module '<m>' may not declare 'main'; the program root provides it` | 1 |
-| qualified match arm | `match arms name a variant without its module: write Circle` | 1 |
-| reserved type name | `cannot declare a type named '<name>'` | 1 |
-| `const nil` | `a constant cannot be nil; use a typed optional var or let` | 1 |
-| import path not `.obx` | `import paths must end in .obx` | 1 |
-| missing `.sym` in `--check` | `obxc: no symbol file for module '<m>' in <dir>; run a build first` | 2 |
-| stale `.sym` | `obxc: symbol file '<p>' is stale: '<src>' changed since it was built; run a build` | 2 |
-| format mismatch | `obxc: symbol file '<p>' has format <n>; this compiler reads <m>; rebuild it` | 2 |
-| ABI mismatch | `obxc: symbol file '<p>' has ABI <n>; this compiler uses <m>; rebuild it` | 2 |
-| compiler mismatch | `obxc: symbol file '<p>' was built by compiler '<v>'; this is '<w>'; rebuild it` | 2 |
-| corrupt body hash | `obxc: symbol file '<p>' is corrupt (interface hash); rebuild it` | 2 |
-| dependency interface mismatch | `obxc: symbol file '<p>' depends on '<d>' with interface hash <h>, but '<d>' has <h2>; rebuild the dependent module` | 2 |
-| `.sym` vs a build's live interface | `obxc: symbol file '<p>' disagrees with the compiled interface of '<m>' for <decl>; rebuild it`, where `<decl>` is `interface 'I'`, `interface method 'I::m'`, `implementation 'I for T'` or an order such as `the implementation order` | 2 |
-| malformed `.sym` | `obxc: <sympath>:<line>:<col>: symbol file: <detail>` | 2 |
-| malformed interface member | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `'pure' and 'mut' come before 'fn'`, `expected a method name in the interface`, `duplicate interface method '<m>'`, `an interface needs at least one method` or `expected ';' or '}'` | 2 |
-| malformed interface parameter | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `expected a parameter name`, `expected ':' after the parameter name`, `mut needs a reference parameter: write mut p0: &T`, `only records, closed types and arrays can be borrowed, not <t>` or `expected ',' or ')', found <token>` (a `;` between parameters is refused with this one) | 2 |
-| malformed interface name | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `an interface cannot be forward-declared: '<I>' is already declared`, or `duplicate definition of type '<I>'` | 2 |
-| malformed `impl` line | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `expected a receiver type name`, `the receiver of an implementation must be the defining name of a type in this module`, `the receiver of an implementation must be a type defined in this module`, `an implementation's receiver cannot be a variant; use its closed type`, `type '<T>' is declared but not yet defined`, `'<t>' is not an interface type` or `duplicate implementation of '<I>' for '<T>'` | 2 |
-| source-less dependency in a build | `obxc: cannot read module '<m>' at <paths>; only --check may use a symbol file without source` | 2 |
-| sym-dir missing or unwritable | `obxc: symbol-file directory '<dir>' does not exist or is not writable` | 2 |
-| `-o` with `--check`/`--deps` | `obxc: -o cannot be used with --check or --deps` | 2 |
-
-Qualified names in diagnostics are `Module::name` with the declared module name
-(not the alias), and types keep the bare name inside their own module. An error
-about an imported value says `lib::split` or `lib::Cache`; an error about a
-value of an imported type says `a::T` or `[]a::T`. A local alias use may print
-the underlying type, because aliases are transparent.
-
-A full build needs every module's source. `--check` is the separate-checking
-mode: it needs the checked module's source and its dependencies' symbol files, not
-their sources. Symbol files are trusted build outputs, not a security boundary; see
-"The `.sym` format and hashes" below.
-
-## 7. Results and try
-
-`Result[T]` is the type of an operation that can fail with a reason. It is a
-built-in parameterized type: one owned cell holding one of two variants, `ok`
-(one field `value: T`) or `err` (fields `message: string` and `code: int`). The
-err variant and its descriptor are shared by every `Result[T]`, so an error cell
-made for one success type can be returned from a function whose success type is
-another. A result is always one allocated cell; the payload follows `T` (an owned
-pointer, a reference-counted string, or a copied scalar or handle).
-
-Construct with `ok(v)` and `err(message[, code])`; the code defaults to 0. `ok`
-takes ownership of its value and rejects `nil`, a void expression, a borrowed
-value and an error value (`ok(err(...))` has no payload type: type the error in a
-`Result` local first). A success with no value needs a typed optional
-(`let n: ?Node = nil; return ok(n)`) because `ok(nil)` has no type. `err` takes a
-reference to its message, so a heap message it is given is kept alive by the cell.
-
-A result is owned like a record: it is freed at scope exit, can be stored in
-fields, arrays, optionals and globals, and its payload or message is freed with
-it. `Result` is invariant: `Result[byte]` is not a `Result[int]`, because the ok
-tag belongs to the success type. `==` and `!=` compare result cells by identity,
-and both sides must be stored values, not `ok(...)`/`err(...)` temporaries;
-`nil` comparison is only for `?Result[T]`.
-
-```obo
-// example: runs
-// prints 3
-// prints bad 7
-fn get(n: int): Result[int] {
-    if n < 0 { return err("bad", 7) }
-    return ok(n)
-}
-
-fn main() {
-    let a = get(3)
-    match a {
-        ok { println(a.value) }
-        err { println(a.message, " ", a.code) }
-    }
-    let b = get(-1)
-    match b {
-        ok { println(b.value) }
-        err { println(b.message, " ", b.code) }
-    }
-}
-```
-
-`match` narrows the result to the variant, as for a closed type: `r.value` in the
-`ok` arm, `r.message` and `r.code` in the `err` arm. Both arms are required and
-`else` is not allowed. This match does not consume the result: scalars, handles
-and strings can be copied out (`let s = r.value` takes a string reference), and an
-optional payload can be `take`n; an owned record or array cannot be moved out,
-because the result still owns it.
-
-A consuming match binds the payload instead. Write `ok(v)` and `err(m, c)`; every
-arm must bind, or none may. The scrutinee must be a whole local or parameter, not
-a reference: it is moved, the shell is freed, and the bindings are ordinary locals
-of the arm, freed where the arm's block ends or its `return` leaves. A string
-binding owns the cell's reference; returning `err(m, c)` from an `err` arm builds
-a new cell from it.
-
-```obo
-// example: runs
-// prints 5
-// prints from 9
-type Node = ref record { v: int }
-
-fn get(n: int): Result[Node] {
-    if n < 0 { return err("no node", 9) }
-    return ok(new Node{v: n})
-}
-
-fn main() {
-    let r = get(5)
-    match r {
-        ok(n) { println(n.v) }
-        err(m, c) { println(m, " ", c) }
-    }
-    let e = get(-1)
-    match e {
-        ok(n) { println(n.v) }
-        err(m, c) { println("from ", c) }
-    }
-}
-```
-
-`try e` propagates a failure. Its operand must be an owned `Result`: a whole
-local or parameter, or a fresh call result. On ok, `try` moves the payload out and
-frees the empty cell; on err, it runs the function's defers, frees its live owned
-locals, and returns the error cell itself, so the caller sees the same message and
-code. The enclosing function must return a `Result` (of any success type); `main`
-does not, so it matches a helper's result instead of trying it.
-
-```obo
-// example: runs
-// prints 4
-// prints deeper 9
-fn bottom(n: int): Result[int] {
-    if n < 0 { return err("deeper", 9) }
-    return ok(n)
-}
-
-fn addOne(n: int): Result[int] {
-    let v = try bottom(n)
-    return ok(v + 1)
-}
-
-fn main() {
-    let a = addOne(3)
-    match a {
-        ok { println(a.value) }
-        err { println(a.message, " ", a.code) }
-    }
-    let b = addOne(-1)
-    match b {
-        ok { println(b.value) }
-        err { println(b.message, " ", b.code) }
-    }
-}
-```
-
-The tried result's success type need not be the enclosing function's: a
-`Result[[]byte]` error tried inside a `Result[int]` function returns the shared
-error cell, and the caller's `err` arm reads it. Nesting works the same way:
-`try try f()` with `f: Result[Result[int]]` unwraps both. `try` in a loop is fine
-with a fresh local per iteration; a local declared before the loop and moved by
-`try` is refused at the back edge, as for any move.
-
-`try` may appear only where its value is the first thing evaluated: the whole
-value of a `let` or `var` initializer, an assignment's right-hand side (an
-operator may follow on the left, as in `try f() + 1`), or a statement. It may not
-be an argument, a record field, an array length, an index, a condition, a return
-value, a match scrutinee, a `for` bound, a global initializer, or the right operand
-of an operator, because the early return would leave a half-built value or a
-pushed argument behind. It may not appear inside `defer`, whose body runs
-out of line and cannot return from the function. The rule is a designed
-restriction, not a hole: lifting it needs cleanup of live temporaries (drop glue).
-
-```obo
-// example: error: a try expression cannot be part of a larger expression
-fn get(n: int): Result[int] { return ok(n) }
-fn eat(n: int): int { return n }
-
-fn f(): Result[int] {
-    let v = eat(try get(1))
-    return ok(v)
-}
-
-fn main() {}
-```
-
-```obo
-// example: error: try needs a function that returns a Result; 'main' returns nothing
-fn get(n: int): Result[int] { return ok(n) }
-
-fn main() {
-    let v = try get(1)
-}
-```
-
-Other limits:
-
-- A result in a field, element or global cannot be moved out: use `replace` (or
-  `take` on an optional one) to get it into a local, then `try` that. `match` also
-  needs a whole local; inspect a field through a local reference (`match p`).
-- `obj.field = try f()` is refused when the call might free the object holding the
-  target (the assignment-target rule, section 12): compute the value in a local
-  first. A call that cannot free (a pure callee such as `get` above) is accepted:
-  `b.n = try get(3)` compiles.
-- Inside a non-consuming `ok` or `err` arm the scrutinee is narrowed to that
-  variant, so `try r` there is refused ("try needs a Result value, not ok"):
-  `try` the Result before the match.
-- A deferred cleanup cannot propagate its error; its result is discarded and
-  freed. Record the error and return it from the main path instead.
-- `?Result[T]` may be nil; check it with `!= nil` before `try`, which narrows it
-  to `Result[T]`. `try` on the optional itself is refused.
-- `Result` has no fields until a `match` arm narrows it, and a `Result` value can
-  never be `nil`.
-
-```obo
-// example: error: a Result match names the ok and err arms; 'else' is not needed
-fn get(n: int): Result[int] { return ok(n) }
-
-fn main() {
-    let r = get(1)
-    match r {
-        ok { println(r.value) }
-        err { println(r.message) }
-        else { }
-    }
-}
-```
-
-```obo
-// example: error: ok(nil) has no type
-type Node = ref record { v: int }
-
-fn f(): Result[?Node] {
-    return ok(nil)
-}
-
-fn main() {}
-```
-
-```obo
-// example: error: cannot use Result[byte] as Result[int]
-fn getb(): Result[byte] { return ok(byte(1)) }
-
-fn f(): Result[int] {
-    return getb()
-}
-
-fn main() {}
-```
-
-## 8. Built-in functions
-
-| Function | What it does |
-|---|---|
-| `print`, `println` | write values to standard output; `println` adds a newline |
-| `eprint`, `eprintln` | the same, to standard error |
-| `len(x)` | length of a string or array |
-| `append(a, x)` | add `x` to the end of array `a`; `x` is moved in |
-| `truncate(a, n)` | shorten `a` to `n` elements; the removed elements are freed |
-| `substr(s, from, to)` | part of a string |
-| `int(x)`, `byte(x)` | conversions |
-| `string(x)` | an int's digits, or the string made from a `[]byte` |
-| `readFile(path)` | `?[]byte`, or `nil` if the file cannot be read |
-| `writeFile(path, data, executable)` | write bytes; returns `bool` |
-| `openFile(path, mode)` | `Result[int]`: open `path` with mode `"r"`, `"w"` or `"a"`; the caller closes the descriptor |
-| `readFd(fd, max)` | `Result[?[]byte]`: one read of up to `max` bytes; `nil` is end of file |
-| `writeFd(fd, data)` | `Result[int]`: one write of the borrowed `[]byte`; a short count is success |
-| `closeFile(fd)` | `Result[bool]`: `ok(true)` on success |
-| `readDirFd(fd, max)` | `Result[?[]byte]`: one `getdents64` read of up to `max` bytes (at most 1 MiB); `nil` is end of directory |
-| `statPath(path)` | `Result[[]int]`: the 14 stat fields, following symlinks |
-| `lstatPath(path)` | `Result[[]int]`: the 14 lstat fields, not following symlinks |
-| `readLinkPath(path)` | `Result[[]byte]`: the raw symlink target bytes, no NUL |
-| `isatty(fd)` | `bool`: true when the descriptor is a terminal |
-| `getenv(name)` | `?[]byte`: the variable's value, copied; `nil` if absent or the name is invalid |
-| `terminalWidth(fd)` | `int`: the terminal's column count; 0 when the descriptor is not a terminal or the count is unknown |
-| `sleepMs(ms)` | `Result[bool]`: wait at least `ms` milliseconds (`0..2147483647`) |
-| `stdin()`, `stdout()`, `stderr()` | the standard descriptors, 0, 1 and 2 |
-| `args()` | the command-line arguments, as `[]string` |
-| `exit(code)` | stop with the given exit code |
-| `take(x)` | move out of an optional variable, field or element; leaves `nil` |
-| `drop(x)` | free a local variable now, rather than at scope exit |
-| `replace(place, value)` | store `value` in `place` and return the old value, which the caller owns |
-| `handle(x)` | make a handle to `x` (section 5) |
-| `ok(v)` | a `Result[T]` success holding `v`, which is moved in |
-| `err(message[, code])` | a `Result[T]` failure; code defaults to 0 |
-| `alive(h)` | `true` if the handle's object has not been freed |
-
-`drop` and `replace` need a local variable or a place holding an owned value:
-`drop(r.child)` is rejected.
-
-```obo
-// example: runs
-// prints 3 4
-// prints 1
-type E = ref record { v: int }
-
-fn main() {
-    var e = new E{v: 3}
-    let old = replace(e, new E{v: 4})
-    println(old.v, " ", e.v)
-    let d = new E{v: 1}
-    drop(d)                        // freed now
-    println(1)
-}
-```
-
-### Incremental I/O
-
-`openFile` returns `Result[int]`: the descriptor is a copied scalar with no
-owner, and the program closes it with `closeFile`, normally through `defer`.
-The modes are exactly `"r"`, `"w"` (`O_CREAT|O_TRUNC`) and `"a"` (`O_CREAT|
-O_APPEND`). A constant mode is checked at compile time; any other problem is a
-Result: `err("cannot open " + path, errno)`, with errno in `code` (2 for a
-missing file, 22 for an empty path or an embedded NUL, 36 for a path of 4096
-bytes or more). `readFd(fd, max)` makes one read: `ok(nil)` means end of file,
-a non-nil array of 1..max bytes is data, and a count that is zero or negative is
-`err("readFd needs a positive count", EINVAL)` before the max-sized array is
-allocated. `writeFd(fd, data)` borrows the array and makes one write; a short
-count is success, so the caller loops. `closeFile(0/1/2)` is refused with
-EINVAL, so a program cannot close the standard streams; `closeFile` on any other
-descriptor is a Result, and its error in a `defer` is discarded. A descriptor
-number can be reused after a close: the language does not track ownership of the
-number, so a stale `int` may read or close a file opened later under the same
-number.
-
-`exit(...)` runs no defers: a `defer closeFile(fd)` does not run, and the
-operating system reclaims the descriptor. Return from `main` instead when the
-`OBO_CHECK` oracles (a leaked fd exits 8; a double close or a use after close
-exits 9) should run.
-
-```obo
-// example: runs
-// prints 22
-// prints readFd needs a positive count
-fn main() {
-    let n = 0
-    let r = readFd(stdin(), n)          // computed: EINVAL, and stdin is not read
-    match r {
-        ok { println("unexpected ok") }
-        err { println(r.code); println(r.message) }
-    }
-}
-```
-
-```obo
-// example: runs
-// prints 0 1 2
-// prints HI
-// prints 2
-fn main() {
-    println(stdin(), " ", stdout(), " ", stderr())
-    let b = new []byte(2)
-    b[0] = 'H'
-    b[1] = 'I'
-    let r = writeFd(stdout(), b)        // the text above is flushed first
-    match r {
-        ok(n) { println(""); println(n) }
-        err(m, c) { println(m) }
-    }
-}
-```
-
-`obo/lib/io.obx` is a source module (`module io`) that builds buffered
-`Reader`/`Writer` types on these builtins (`fill`, `readLine`, `readN`,
-`readByte`, `takeChunk`, `flush`, `pump`, `count`), adds `writeByte` and,
-in P5a, `isTty`. Importers write `import "../lib/io.obx" as io` (or
-`"io.obx"` with `-I obo/lib`) and qualify the names (`io::newReader`,
-`io::flush`). Its own header documents the API and the fd-is-borrowed rule.
-The rest of the stdlib is a set of source
-modules under `obo/lib/`: `strings` (`cmp`, split/join, trim, natord and
-QuoteSpaces helpers), `paths`, `sort`, `time`, `cli`, `fmt` (`digits`,
-`appendPadded`, `writePadded`, `modeString`), `errors` (C-locale errno
-`text`, `osError`, `debugPath` and the eza-shaped `EXIT_*` constants), `fs`
-(directory iteration, stat/lstat and symlink targets; see "Metadata" below),
-`env` (`get`, `has`, `value`, `getOr`; see "Environment" below), `html` and
-`sqldialect`. P2 moved
-`writePadded` from `io` and the digit/padding helpers from `strings` into
-`fmt`, and removed the four P1 compatibility functions.
-
-`obo/lib/html.obx` is the builder API for the HTML template domain. `Html` is
-a record whose `text` field is **private to the module**; `raw` is the explicit
-trusted constructor, `escapeText` encodes text content, `escapeAttr` encodes one
-quoted attribute value (both quote types), `validateUrl` allow-lists relative,
-`http`, `https` and `mailto` URLs and attribute-encodes the result, `join`
-concatenates `Html` fragments without escaping them, and `toText` is the
-read-only rendering accessor. Direct `new html::Html{text: ...}` from an importer
-is not legal: it is refused as an external construction of a private-field
-record. Trust is a documented convention, not type enforcement: `raw` still
-accepts any string and is equivalent to the old direct construction. Escaping is
-one pass and not idempotent: an already-encoded string is encoded again, and
-`raw` must not be fed untrusted values. There is deliberately no API for
-script/style bodies, comments, unquoted attributes or dynamic tag/attribute
-names, and no sanitizer. The compiler-known `html` tag lowers literal chunks to
-trusted markup and holes to the same context policy; the builder API remains the
-explicit form and shares the nominal `Html` type. Its header documents the byte,
-control and URL policies.
-
-### Template literals (sql/html)
-
-Compiler-known backtick tags are values, not a user-extensible tag protocol.
-A tag name is followed by a backtick in source (whitespace between them is
-accepted):
-
-```text
-tag   := "sql" | "sqlRaw" | "html" | "htmlRaw"
-expr  := tag "`" (chunk | "${" expression "}")* "`"
-chunk := raw source bytes; only \` and \${ escape
-```
-
-The tags are contextual: `sql` and `html` are ordinary identifiers everywhere
-else, so a local or field named `sql`/`html` keeps its normal field access. The
-type names `Sql`, `SqlArg`, `Html`, `HtmlAttr` and `HtmlAttrs` are reserved. `sqlRaw` and `htmlRaw` take a literal with no holes. Chunks are raw, so
-backslashes, newlines and UTF-8 survive byte-for-byte. A `sql` literal chunk may
-not contain `$` followed by a digit because `$n` is reserved for parameters;
-`$tag$` quoting is still literal text. A template cannot be built in a global
-initializer.
-
-`sql` and `Sql` are ordinary public-field records: `text: []string` and
-`params: []SqlArg`. The text array alternates chunks and arguments, so rendering
-walks text, then `$1`, then text, and so on; a bound value is never interpolated
-into SQL text. Supported holes are `int`, `byte`, `bool`, `string`, `float`,
-`[]byte`, `decimal`, `SqlArg` and a `Sql` fragment. A string is always a
-parameter, even when it contains SQL syntax. `[]byte` is moved into a `Bytes`
-argument; use `sqlBytes(bytes)` for an explicit copy. A decimal is transported as
-exact text in `SqlArg.DecimalText` (display form, canonical only when the display
-scale was capped; never rounded). `sqlNull()` is an explicit NULL argument,
-distinct from an empty fragment. Splicing a `Sql` consumes it; `sql.copy(frag)`
-copies it first. `sqlJoin(parts, sep)` joins a `[]Sql` with a separator and
-`sqlWhere(parts)` returns empty for an empty array, otherwise
-`WHERE (p1) AND (p2)`: each predicate is parenthesized so an inner `OR` cannot
-capture its neighbour. `sqlJoin` holds its parts array across the separator
-expression and rejects a separator that moves, frees, replaces, appends to or
-truncates it; compute such a separator before the call. A `[]Sql` is never
-expanded implicitly. Literal chunks are preserved verbatim and are not parsed:
-a literal `?`, `:1`, `$1` or `@p1` in a chunk is still a placeholder for the
-target dialect, so quote such text or bind it as a value.
-
-`html` and `Html` are the claimed-safe content type. Its `text` field is private
-to module `html`; `html::toText` is the rendering accessor, `html::raw` is the
-explicit trusted constructor, and `html.copy(frag)` copies a fragment before a
-splice. Literal chunks are trusted markup. A hole in text content escapes
-`& < > " '` and ASCII controls; a hole in a quoted attribute escapes both quote
-characters and tab/LF/CR; a hole in a URL attribute (`href`, `src`, `action`,
-`formaction`, `cite`, `poster`, `background`, `longdesc`, `usemap`, `data`,
-`manifest`, `ping`, `profile`, `xlink:href`) also applies the scheme allow-list
-(relative references, `http`, `https`, `mailto`) and traps on any other scheme.
-URL values are validated as assembled attribute values: a scheme may not be
-split across holes, a URL attribute may contain only one hole, and a literal
-`&` next to a hole is rejected because it could be an HTML character reference
-(for example `&#58;`) that the browser decodes before URL parsing. Build and
-validate the whole string first if a dynamic URL is needed. `srcset` (a URL
-list) and `content` (for example a meta refresh target) are not URL-classified
-in v1: a hole there gets ordinary quoted-attribute escaping, not the URL scheme
-check, so treat those attributes as trusted literal markup or pre-validate the
-value. HTML whitespace is
-space, tab, LF, form feed (U+000C) and CR; form feed separates names and values
-exactly like the other whitespace bytes. An `Html` hole is inserted raw and is allowed only in text
-content; `[]Html` concatenates there. `Html` in an attribute is a compile error,
-and `HtmlAttrs`/`HtmlAttr` have no v1 hole. Holes are rejected at compile time in
-script/style bodies, comments, doctypes, unquoted attribute values, tag names,
-attribute names, and `srcdoc`/`style`/`on*` values (script, CSS and event-handler
-contexts need typed encoders, not attribute escaping). A fake `</scriptx>` or
-`</styley>` does not close a raw-text body; a closing tag needs a delimiter. There is no script/CSS encoder, dynamic tag or attribute name
-API, sanitizer, or generic `escape` entry point.
-
-```text
-let q = sql`SELECT * FROM account WHERE id = ${id} AND name = ${name}`
-let extra = sqlRaw`WHERE x = y`
-let q2 = sql`${q} ${extra}`                    // splice: q and extra are consumed
-let safe = html`<a href="/u/${id}" title="${name}">${name}</a>`
-let page = html`<article>${body}</article>`   // body: Html, inserted raw
-var states = new []Sql(0)
-append(states, sql`state = ${s}`)
-let inList = sql`state IN (${sqlJoin(states, sqlRaw`, `)})`
-```
-
-Ownership follows ordinary records: a template builder is a hidden owned local
-freed on every exit, the result is an owned `Sql`/`Html`, and splicing moves the
-fragment. `SqlArg` is a closed type (`Null`, `Int`, `Bool`, `Float`, `Str`,
-`Bytes`, `DecimalText`); direct `new Sql{...}`/`new Html{...}` construction is
-the explicit raw escape hatch, and `Html` is private to its module. The
-value/parameter pair is dialect-neutral. `obo/lib/sqldialect.obx` renders it
-without parsing or interpolation: `render(&s, dialect)` and
-`renderPostgres`/`renderSqlite`/`renderSqlServer`/`renderSqlServerOdbc`/
-`renderOracle` emit `$1..$n`, `?`, `@p1..`, `?` or `:1..`, validate
-`len(text) == len(params) + 1`, and preserve literal text. The experimental
-`postgres` package adds `execute_sql(&conn, &s)` and SQLite adds
-`prepare_sql(&conn, &s)`/`bind_sql(&stmt, &s)`, mapping the ordered arguments
-(including exact `DecimalText` and deep-copied `Bytes`) without interpolation.
-`SqlArg.Float` returns the explicit `SQL_ARG_FLOAT_UNSUPPORTED` (1014) error in
-both bridges; there is no binary64 parameter path. SQL Server and Oracle have
-renderer support only, not adapters. Identifier/`ORDER BY` allow-lists remain
-later work. Tests live in `tests/run/template_*.obx`,
-`tests/errors/template.obx` and `tests/stdlib/sqldialect_dialects.obx`.
-
-### Metadata
-
-`readDirFd(fd, max)` is one `getdents64` read into a fresh byte array. The
-checks run before that array is allocated, in this order: a `max` that is zero
-or negative is `err("readDirFd needs a positive count", EINVAL)`; a `max` over
-1 MiB (1048576) is `err("readDirFd count is too large", EINVAL)`; a negative
-descriptor is `err("cannot read dir fd N", EBADF)`; a tracked descriptor that
-was closed is `err(..., EBADF)`, or exits 9 under `OBO_CHECK=1` with no
-syscall. A constant count outside 1..1048576 is a compile error. The kernel
-returns whole `linux_dirent64` records; a short buffer is data and only a
-zero-byte read is end of directory, reported as `ok(nil)` (never an empty
-array). A descriptor for a regular file gives the kernel's `ENOTDIR`. The call
-flushes pending text output first, as `readFd` does.
-
-`statPath(path)` and `lstatPath(path)` return the 14 numbers of the x86-64
-Linux `struct stat` in this order, which is not the kernel's layout:
-
-| index | field | index | field |
-|---|---|---|---|
-| 0 | mode (`st_mode`, type bits included) | 7 | ino |
-| 1 | size (signed) | 8 | dev |
-| 2 | mtime seconds | 9 | rdev |
-| 3 | mtime nanoseconds | 10 | blksize |
-| 4 | uid | 11 | blocks |
-| 5 | gid | 12 | atime seconds |
-| 6 | nlink | 13 | ctime seconds |
-
-`statPath` follows a symlink; `lstatPath` does not. Both are path-based and
-resolve a relative path against the process cwd. A missing path is ENOENT (2),
-an empty path or an embedded NUL is EINVAL (22) before the syscall, and a path
-of 4096 bytes or more is ENAMETOOLONG (36). `readLinkPath(path)` returns the
-raw target bytes with no NUL: a dangling target still succeeds, a non-symlink
-is EINVAL, and the longest accepted target is 4095 bytes (a full 4096-byte
-target would be ENAMETOOLONG, never a silent truncation). `readlink` does not
-resolve the target; the caller decides how to join it.
-
-```obo
-// example: runs
-// prints 14 true
-fn main() {
-    let r = statPath(".")                  // the directory the check runs in
-    match r {
-        ok { println(len(r.value), " ", r.value[0] & 0xF000 == 0x4000) }
-        err { println(r.message) }
-    }
-}
-```
-
-The directory buffer is 32 KiB by default. `readDirFd`, `statPath`, `lstatPath`
-and `readLinkPath` retry `EINTR`; a test-only `OBO_META_FAULT=eintr` hook (inert
-unless `OBO_CHECK=1`) injects one synthetic `EINTR` per call kind.
-
-`obo/lib/fs.obx` builds the eza-facing surface on these builtins: the `STAT_*`
-and `KIND_*` constants, `Stat`/`DirEntry`/`Dir`, `open` (via `openFile "r"`),
-`next`, `close` (idempotent: a second close is `ok(false)` with no syscall),
-`statArray`/`stat`/`lstat`, `readlink`, `typeOf`, the type predicates and
-`sizeForLong`. **`fs::next` skips the records named exactly `.` and `..`**,
-because eza's Rust `read_dir` never yields them and the eza layer synthesizes
-them itself; every emitted name is a copy (`substr`) that survives refills and
-`close`, and `.`/`..` do not count against the iteration. The entry kind is the
-kernel's `d_type`; for `DT_UNKNOWN` `next` lazily lstats the entry path
-(`paths::join(dir.path, name)`) and uses `typeOf(mode)`, leaving the kind
-unknown/special when that lstat fails. A malformed record (a length below 20,
-a record past the buffer, or no NUL inside it) is
-`err("bad directory entry", EIO=5)` and the iterator does not advance.
-
-### Environment and terminal size
-
-`isatty(fd)` is `true` only when `ioctl(fd, TCGETS)` succeeds: a negative
-descriptor is `false` before any syscall, and a pipe, a regular file,
-`/dev/null`, a directory or a closed descriptor is `false` (`ENOTTY`/`EBADF`),
-never an fd-table trap. A tracked descriptor that was closed may have been
-reused by the kernel, and the ioctl then observes the reused one. There is no
-`Result` and no allocation; the ioctl retries `EINTR` under the same
-`OBO_META_FAULT=eintr` hook as the metadata calls.
-
-`getenv(name)` is `?[]byte`: `nil` when the name is invalid (empty, an
-embedded NUL, or containing `=`) or absent, and a non-nil empty array when the
-variable is present with an empty value. The name is matched as `name=`
-against `envp`; the first match wins, and the value is copied into an array
-the caller owns, so later changes to the environment cannot affect it. There
-is no `setenv` and no enumeration.
-
-```obo
-// example: runs
-// prints false true
-fn main() {
-    let missing = getenv("")          // an empty name is invalid
-    println(isatty(-1), " ", missing == nil)
-}
-```
-
-`terminalWidth(fd)` is the terminal's column count from
-`ioctl(fd, TIOCGWINSZ)`: `0` when the descriptor is not a terminal
-(`ENOTTY`), invalid (`EBADF`) or negative, and `0` when the terminal reports a
-zero column count (unknown; a fresh pty may do so). It never consults the fd
-table and allocates nothing, with the same closed/reused-descriptor caveat and
-`EINTR` retry as `isatty`. The descriptor is handed to the kernel as its 32-bit
-`int`, so a value outside 0..0xFFFFFFFF reaches the kernel as its low 32 bits;
-this is pre-existing and shared by `isatty` and the other fd builtins. Callers
-fall back to 80 for an unknown width.
-
-```obo
-// example: runs
-// prints 0 true
-fn main() {
-    let w = terminalWidth(-1)         // not a terminal: 0
-    println(w, " ", w == 0)
-}
-```
-
-`sleepMs(ms)` waits at least `ms` milliseconds and returns `ok(true)`. The
-accepted range is `0..2147483647` (about 24.8 days); a negative count is
-`err("sleepMs needs a non-negative count", EINVAL)` and a larger one is
-`err("sleepMs count is too large", ERANGE)`, both before any syscall. It uses
-`nanosleep` and retries `EINTR` with the kernel's remaining time; pending text
-output is flushed before the wait, so a prompt is visible. Zero returns without
-a syscall. The test-only `OBO_META_FAULT=eintr` hook injects one synthetic
-interruption.
-
-```obo
-// example: runs
-// prints true
-// prints 22
-fn main() {
-    let z = sleepMs(0)
-    match z {
-        ok(v) { println(v) }
-        err(m, c) { println(m) }
-    }
-    let n = sleepMs(-1)
-    match n {
-        ok(v) { println("unexpected") }
-        err(m, c) { println(c) }
-    }
-}
-```
-
-`obo/lib/env.obx` wraps `getenv`: `env::get` (the `?[]byte`), `env::has`
-(present, even when empty), `env::value` (a `string`, `""` when absent or
-empty) and `env::getOr(name, fallback)`. `obo/lib/io.obx` adds `io::isTty(fd)`
-and `io::termWidth(fd)`.
-
-## 9. Runtime checks and exit codes
-
-Decimal exact arithmetic traps with exit 10 and diagnostic ids 40-49: 40 is
-"not exactly representable", 41 overflow, 42 division by zero, 43 invalid, 44
-unsupported range, 45 precision overflow, 46 exponent range, 47 display range
-and 48 buffer too small; 49 is other. The ids are trap diagnostics only.
-
-`decimal::div`, `decimal::quantize` and `decimal::toInt` do not trap for value
-errors; their `Result` `err` code is the reviewed core status:
-
-| Result code | Core status | Meaning |
-|---:|---|---|
-| 1 | `DEC_OVERFLOW` | overflow / not representable in the 38-digit range |
-| 3 | `DEC_INEXACT` | `UNNECESSARY` would discard a nonzero digit, or `format` would drop a nonzero digit |
-| 4 | `DEC_INVALID` | invalid value, invalid text or rounding mode |
-| 5 | `DEC_DIV_ZERO` | zero divisor |
-| 6 | `DEC_UNSUPPORTED_RANGE` | request outside the API range (scale not 0..32768, or `check` metadata) |
-| 7 | `DEC_PRECISION_OVERFLOW` | too many significant digits for `parse`/`check` |
-| 8 | `DEC_EXPONENT_RANGE` | `parse` exponent outside `int16` |
-| 9 | `DEC_DISPLAY_RANGE` | `parse`/formatter text or display-scale bound |
-| 10 | `DEC_BUFFER_SMALL` | a text or `Result` cell could not be allocated |
-
-Core status 2 (`UNSUPPORTED_EXACT`) stays reserved. For the text APIs,
-`parse` produces 4/7/8/9/10, `format` 3/9/10, `canonical` 4/9/10 and `check`
-3/6/7/10; defensive 1/4/6 remaps are described in the design. Scale and mode
-are validated before the core is called: constant invalid values are compile
-errors, runtime values return 6 (scale) or 4 (mode). `decimal::check` metadata
-is data, so an out-of-range constant `p`/`s` returns 6 at run time.
-
-| Exit code | Cause |
-|---|---|
-| 2 | negative array length, or out of memory |
-| 3 | index out of range (array, string, `substr` or `truncate`), with the line |
-| 4 | an internal error, such as a misaligned stack in a runtime call |
-| 5 | with `OBO_CHECK=1`: the program ended with live objects (a leak) |
-| 6 | with `OBO_CHECK=1`: a double free |
-| 7 | a handle was used after its object was freed |
-| 8 | with `OBO_CHECK=1`: the program ended with file descriptors opened by `openFile` and never closed |
-| 9 | with `OBO_CHECK=1`: a tracked file descriptor was closed twice or used after it was closed |
-
-Division by zero stops the program with a hardware trap (SIGFPE).
-
-The `code` of an I/O `Result` is the OS errno, positive (0 means unspecified);
-the trap codes 2 to 9 are a different namespace and overlap numerically with
-errnos (ENOENT is 2, EBADF is 9), so a program must not do `exit(r.code)`:
-a missing input file would look like an out-of-memory trap. Print the message
-and choose the exit code deliberately.
-
-Environment variables:
-
-- `OBO_CHECK=1` counts allocations and frees, and makes leaks and double frees
-  exit with codes 5 and 6.
-- `OBX_GC=poison` overwrites freed memory, so a use of freed memory shows up as
-  garbage rather than as a value that happens to still be there.
-- `OBO_STATS=1` prints the exact live peak and total allocation at exit.
-- `OBO_HEAP_LIMIT` sets the runtime heap arena. The compiled default is 4 GiB
-  and the compiled ceiling is 64 GiB: 2^32 granules of 16 bytes, the full low
-  32-bit handle offset, with the final granule at 0xffffffff. The value is bytes
-  or bytes with an exact `KiB`, `MiB` or `GiB` suffix, a multiple of 16, at
-  least 64 KiB and at most the ceiling. Invalid or above-ceiling values print
-  `obo: invalid OBO_HEAP_LIMIT: <value>` and exit 2 before mapping; there is no
-  silent clamp. The limit controls the arena, not any single object: one
-  allocation's payload remains at most 4 GiB - 32 bytes. `MAP_NORESERVE` means
-  the arena is address space, not committed RAM; `RLIMIT_AS`, cgroups and host
-  overcommit still apply.
-
-## 10. Compile errors
-
-The messages below are the compiler's own text; the parts in angle brackets
-depend on the program.
-
-| Message | Meaning and fix |
-|---|---|
-| `'<x>' was moved and has no value here` | `<x>` was given away by a move. Assign it again before using it, or borrow it before the move. |
-| `'<x>' is moved on one path but not another` | a branch or match arm moves `<x>` and another does not. Move on both paths, or on neither. |
-| `'<x>' is moved inside the loop` | a loop moves `<x>` and does not give it back. |
-| `cannot move out of a field or element; use take() on an optional one` | use `take(...)`, or borrow with `&`. |
-| `cannot move out of global '<g>'; use take() on an optional one` | the same, for a global. |
-| `cannot move '<x>' inside && or \|\|` | move the value outside the condition. |
-| `cannot move '<x>' inside defer` | do the move in the body of the block. |
-| `a method needs a receiver, as in 'fn (r: &T) name(...)'` | `fn () name(...)`. |
-| `a method has exactly one receiver` | two names or types in the receiver group. |
-| `expected a method name after the receiver` | `fn (r: &T) (...)`; write `fn (r: &T) name(...)`. |
-| `expected a receiver name` | the receiver group is empty or starts with a type; a receiver named `mut` is also read as the mode word. |
-| `mut needs a reference parameter: write mut name: &T` | `mut r: T`; a `mut` receiver must be `mut r: &T`. |
-| `a method's receiver must be a record or closed type declared in this module, not <t>` | a built-in, array, optional, handle or `Result` receiver. |
-| `cannot declare a method on imported type '<M>::<T>'; declare it in the type's own module` | a method on a foreign type. |
-| `cannot declare a method on variant '<V>'; declare it on its closed type '<C>'` | a method on a variant. |
-| `<T> is declared but not yet defined` | a method on a forward type before its definition. |
-| `type '<T>' already has a field '<f>'; a method cannot have the same name` | a method/field name collision on its receiver type (also the closed-variant form `... in variant '<V>'`). |
-| `type '<C>' already has a variant '<V>'; a method cannot have the same name` | a method named like a variant of its closed receiver type. |
-| `method '<T>::<m>' is already defined` | a second body, or a heading after a body. |
-| `method '<T>::<m>' does not match its forward heading` | the definition differs from the heading (including the receiver mode). |
-| `method '<T>::<m>' has a forward heading but no body` | a heading with no definition at module end. |
-| `exported '<T>::<m>' uses private type '<T>'; mark '<T>' pub too` | a `pub` method on a private receiver type. |
-| `<t> has no methods` | a method call on `int`, `string`, `[]T`, `?T`, `^T` or `Result[T]`. |
-| `type '<T>' has no method '<m>' (declare it before use; use a forward heading for mutual recursion)` | no visible method of that name on the receiver's static type. |
-| `module '<m>' has no exported member '<T>::<m>' (only 'pub' declarations are visible)` | a private or unknown method of an imported type; the same message in a full build and in `--check`. |
-| `type '<T>' has a field '<f>', not a method; a field cannot be called` | `x.f(` where `f` is a field. On a foreign mixed record a **private** field instead reports `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)`, identical in a full build and `--check`. |
-| `type '<q>' has no public field '<f>' (only 'pub' fields are visible outside module '<m>'; mark '<f>' 'pub' or add an accessor)` | reading, writing, borrowing, moving, `take`ing or `replace`ing a private field of an imported record, or naming a missing field on such a record. The same message is used for all four source forms because field resolution fails first. Add `pub` in the defining module or an accessor. |
-| `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)` | `x.f(` where `f` is a private field or an absent member of a foreign mixed record, or a private method on such a record. A public field keeps the `has a field ..., not a method` message. |
-| `cannot construct '<q>' outside its module: it has private fields; add a constructor function in module '<m>'` | `new lib::T{...}` when any field of `T` is private, even if every private field is supplied or omitted. Only an all-public record (including a zero-field record) may be constructed externally. |
-| `'pub' is not allowed on a variant field; variant fields are always public` | a source `pub` in a closed variant's field list. |
-| `obxc: <p>:<line>:<col>: symbol file: expected 'pub', 'priv' or 'priviface' in a record field list` | a format-7 record field without a visibility marker, or an unknown marker. |
-| `obxc: <p>:<line>:<col>: symbol file: a private field has no name or type` | `priv`/`priviface` followed by a name or `:`. |
-| `obxc: <p>:<line>:<col>: symbol file: private fields are not allowed in a closed variant` | `priv`/`priviface`/`priv24` inside a closed definition. |
-| `exported '<T>' uses private type '<S>'; mark '<S>' pub too` | a **public** field of an exported record names a private type; private fields are skipped by the closure check and may use private types freely. |
-| `method '<T>::<m>' cannot be used as a value: call it with '(' after its name` | `x.m` without a call. |
-| `the receiver of method '<T>::<m>' needs a mut reference, but this one is read-only` | a `mut` receiver through a read-only binding. |
-| `cannot call a method that takes its receiver by value through a handle: the handle does not own the object; declare the method with '&' or 'mut &T', or call it on the owner` | an owned receiver that is a whole handle dereference. |
-| `argument <n> of method '<T>::<m>' may point inside the receiver, which is mut` (or `the receiver of method '<T>::<m>' may point inside argument <n>, which is mut`) | the receiver and an argument may overlap and one changes. |
-| `argument <n> of method '<T>::<m>' may free what the receiver points into, and runs after it; compute it before the call` | a later argument frees or moves what the receiver borrows. |
-| `store this value in a variable first: otherwise it would never be freed` | a temporary value is used directly; store it in a variable first. |
-| `store this value in a variable first: a reference cannot borrow from a temporary` | `&` needs a variable, field or element. |
-| `'<r>' may point to freed memory: something under what it points into was changed; point it again first` | a use of `<r>` (a read, a write, a call, a re-borrow, a defer) on a path where a change freed what `<r>` pointed into, including a change on an earlier pass of a loop, or on one path only. Point `<r>` again before the use, or borrow it again after the change. |
-| `argument <n> of <f> needs a mut reference, but this one is read-only` | the parameter is `mut`, but the argument was borrowed read-only. |
-| `argument <n> of <f> may point inside argument <m>, which is mut` | two arguments may overlap and one of them changes. |
-| `argument <n> of <f> may free what argument <m> points into, and runs after it; compute it before the call` | a later argument moves, frees or changes what an earlier reference argument points into; compute it into a local before the call. |
-| `argument <n> of <f> makes a recursive call that writes through a handle, which could free what argument <m> points into; compute it before the call` | the same, for a recursive call in a function that writes through a handle (reported at the end of the body). |
-| `'<x>' may be nil: check it with '!= nil' first` | check an optional before using its fields. |
-| `cannot pass a reference that borrows through a handle to <f>: it might free what the handle names` | a reference borrowed through a handle may go only to a call that cannot free anything; pass the handle instead, or make the call pure. |
-| `cannot pass a reference that points inside something to <f>: it writes through a handle, which could free it` | a reference inside a field or element may not go to a function that writes through a handle; pass a reference to the whole object, or the value. |
-| `cannot pass a reference that points inside something to <f>: its body is not known yet, so it is assumed to write through a handle, which could free it` | `<f>` is only declared so far: define it before the call, or pass a whole object. |
-| `'<r>' may point to freed memory: a recursive call writes through a handle, which could free what it points into` | a recursive call in a function that writes through a handle may free what `<r>` points into; borrow it again after the call. |
-| `a recursive call in this loop writes through a handle, which could free what a reference inside something points into on the next iteration` | a loop calls its own function, which writes through a handle; borrow the reference inside the loop, or move the call out of it. |
-| `cannot change what '<r>' points into while a for loop walks it` | a change, or a call that might free, while a loop walks `<r>`; make it after the loop. |
-| `cannot point '<r>' elsewhere in a defer: a defer body runs where its block is left, and the change would not be seen there` | a defer body points a reference declared before it at something else; do the change in the block, or declare the reference inside the defer body. |
-| `cannot point '<r>' elsewhere while a defer uses it: the defer runs where its block is left, and would use the new target` | a defer body uses `<r>` and the block points `<r>` at another place before it is left; point a different reference instead, or declare `<r>` after the defer. |
-| `'<r>' is used by a defer but may point to freed memory at the block's end: something under what it points into was changed` | a change after the defer statement freed what `<r>` points into, and the defer runs at the block's end; make the change after the block, or borrow `<r>` inside the defer. |
-| `'<r>' is used by a defer but may point to freed memory at the block's end: a recursive call writes through a handle` | the same, for a recursive call in a function that writes through a handle. |
-| `'<r>' is pointed somewhere new inside the loop, and read before it is pointed again; point it before the loop, or point it afresh before reading it in the loop` | a loop reads `<r>` before pointing it again, and a change in the loop may have freed what it points into, or it points somewhere the body was not checked with on the next iteration; point it afresh before reading it. |
-| `'<r>' is read-only where the loop starts again, and written before it is pointed again; point it afresh before writing it in the loop` | `<r>` is writable where the loop starts but read-only where it starts again, and is written before it is pointed again; point it afresh before writing it. |
-| `the references in this loop change too often to be checked; point them afresh in the loop` | the loop's references did not settle within the checker's passes; point the references afresh inside the loop. |
-| `take needs an optional variable, field or element holding an owned value` | `take` applies only to optional owned places. |
-| `replace needs a variable, field or element holding an owned value` | `replace` applies only to owned places. |
-| `drop needs a local variable holding an owned value` | `drop` applies only to local owned variables. |
-| `handles name records and closed types, not <t>` | `^T` is only for records and closed types. |
-| `handle '<h>' may name a freed object: '<x>' was assigned or dropped after the handle was made from it; make the handle again` | `let <h> = handle(<x>)`, then `<x>` was assigned over or dropped on some path, which freed the object `<h>` names, and `<h>` is used after it. Make the handle again after the assignment. |
-| `cannot assign over the owner of handle '<h>' inside a loop that uses the handle` | the loop uses `<h>` somewhere in its body, and the next iteration would use the freed object. Make the handle inside the loop, or assign after it. |
-| `cannot assign over '<x>' while a defer declared earlier uses handle '<h>' made from it` | the defer runs at the block's end, after the assignment (or `cannot drop`), and would use the freed object. |
-| `cannot move '<x>' inside a loop while handle '<h>' made from it is in scope` | a loop moves (or drops) `<x>` while a handle made from it before the loop is in scope. Make the handle inside the loop. |
-| `handle '<h>' was made from an owner that a loop moved: make the handle again` | a loop that did not name `<h>` moved its owner, so `<h>` may not be named after it (except in `alive`). |
-| `replace cannot change '<r>': it is a reference` (also `take`) | `<r>` is a reference local; replace or take the field or element it borrows. |
-| `try needs a function that returns a Result; '<f>' returns <t>` | `try` outside a function whose result is a `Result`; `main` returns nothing, so match a helper's result instead. |
-| `try needs a function that returns a Result; there is no function here` | `try` in a global initializer. |
-| `try needs a Result value, not <t>` | the operand of `try` is not a `Result`; the hint names `?Result[T]` (check it with `!= nil`) or `err(...)` (it has no success type). |
-| `a try expression may only be the value of a let, var or assignment, or a statement` | `try` in a condition, a return value, a match scrutinee or a `for` bound. |
-| `a try expression cannot be part of a larger expression; assign it to a local first` | `try` in an argument, a record field, an array length, an index or the right operand of an operator. |
-| `cannot use try in a defer: a deferred statement cannot return from the function` | `try` inside `defer`. |
-| `ok needs a value, not a void expression` | `ok` of a call that returns nothing. |
-| `ok(nil) has no type: give the payload a name first, as in 'let n: ?Node = nil; ok(n)'` | name the typed optional first. |
-| `ok cannot hold an error value: type it as a Result first, as in 'let inner: Result[int] = err(...); ok(inner)'` | `ok(err(...))`. |
-| `ok takes ownership of its value: it cannot hold a borrowed reference` | `ok(&x)`. |
-| `err needs a string message, not <t>` | the first argument of `err` is not a string. |
-| `err needs an int code, not <t>` | the second argument of `err` is not an int. |
-| `cannot infer a type for '<x>' from an error value; declare it as Result[T]` | `err(...)` needs a declared `Result` destination. |
-| `Result needs a type: write Result[T]` | `Result` without its type argument. |
-| `a Result match names the ok and err arms; 'else' is not needed` | `else` in a `Result` match. |
-| `a consuming match binds its value in every arm: write ok(v) and err(m, c)` | some arms bind and some do not. |
-| `a consuming match needs the Result itself, not a reference` | a consuming match on a reference; match the reference non-consumingly. |
-| `a consuming match needs a local variable or parameter holding an owned Result` | a consuming match on something that is not an owned result. |
-| `openFile needs a string path, not <t>` | the first argument of `openFile` is not a string. |
-| `openFile needs a string mode, not <t>` | the second argument of `openFile` is not a string. |
-| `unknown open mode '<m>': use "r", "w" or "a"` | a constant `openFile` mode is not one of the three. |
-| `readFd needs an int file descriptor, not <t>` | the first argument of `readFd` is not an int. |
-| `readFd needs an int count, not <t>` | the second argument of `readFd` is not an int. |
-| `readFd needs a positive count` | a constant `readFd` count is zero or negative. |
-| `writeFd needs an int file descriptor, not <t>` | the first argument of `writeFd` is not an int. |
-| `writeFd needs a []byte, not <t>` | the second argument of `writeFd` is not a `[]byte`. |
-| `closeFile needs an int file descriptor, not <t>` | the argument of `closeFile` is not an int. |
-| `readDirFd needs an int file descriptor, not <t>` | the first argument of `readDirFd` is not an int. |
-| `readDirFd needs an int count, not <t>` | the second argument of `readDirFd` is not an int. |
-| `readDirFd needs a positive count` | a constant `readDirFd` count is zero or negative. |
-| `readDirFd count is too large` | a constant `readDirFd` count is over 1048576 (1 MiB). |
-| `statPath needs a string path, not <t>` | the argument of `statPath` is not a string. |
-| `lstatPath needs a string path, not <t>` | the argument of `lstatPath` is not a string. |
-| `readLinkPath needs a string path, not <t>` | the argument of `readLinkPath` is not a string. |
-| `isatty needs an int file descriptor, not <t>` | the argument of `isatty` is not an int. |
-| `getenv needs a string name, not <t>` | the argument of `getenv` is not a string. |
-| `terminalWidth needs an int file descriptor, not <t>` | the argument of `terminalWidth` is not an int. |
-| `sleepMs needs an int millisecond count, not <t>` | the argument of `sleepMs` is not an int. |
-
-## 11. Differences from obx
-
-- There is no garbage collector. Memory is freed at scope exit, on reassignment,
-  or by `drop`, and the compiler checks the freeing.
-- References (`&T`) borrow owned values. They are checked by the
-  compiler rather than by runtime collection.
-- Handles (`^T`) are the way to write back-references and graphs. They are checked
-  at run time.
-- New built-ins: `take`, `drop`, `replace`, `handle`, `alive`, `ok`, `err`,
-  `openFile`, `readFd`, `writeFd`, `closeFile`, `readDirFd`, `statPath`,
-  `lstatPath`, `readLinkPath`, `isatty`, `getenv`, `terminalWidth`, `sleepMs`,
-  `stdin`, `stdout`, `stderr`, and
-  the prefix operator `try`.
-- `Result[T]` is a built-in parameterized type, inspected with `match` (including the
-  consuming `ok(v)`/`err(m, c)` form).
-- Modules are source imports: `module Name`, `import "Name.obx" [as alias]`,
-  `pub`, and `alias::name`. obx's `module`/`import`/`pub` tokens were accepted
-  but unimplemented; obo has no unqualified or selective imports and no
-  re-exports in Stage 1.
-- There is no collector and no `gc()`/`gcstats()` builtin.
-- Strings are reference counted rather than collected.
-
-## 12. Known holes and planned changes
-
-Decimal is the released minimum scalar tier at 0.12; record fields, `[]decimal`,
-globals and constants followed in 0.16, and methods and interface members in 0.18:
-decimal function values, lambda parameters/returns and captures followed in 0.19 (a
-capture is a 24-byte value snapshot; named function values, stored closures,
-`&decimal` and `mut`/`move` captures remain out of scope). No
-`format`/`parse` stdlib, database adapter, `decimal(p,s)` syntax, float interop
-or owned/mut decimal. Display scale is independent metadata, and a multiply
-caps the propagated display scale at the 38-digit rule without changing the
-value. The reviewed core keeps its strict quantize target limit of 32768. The
-0.11 seed built the 0.12 image once; the promotion makes `seed/obo` the same
-0.12 image. Underscore placement such as `1_.0` is not validated by the
-shared lexer; that is a pre-existing lexer-wide gap, not decimal-specific.
-`float` remains a separate pre-existing reserved-type-name gap; `decimal` is
-now reserved.
-
-Template literals are released in `0.15`. The v1 scope has no SQL parser or
-identifier/`ORDER BY` allow-list API, no array expansion, no user-defined
-template tags or public domain registry, no generic `escape`, and no
-`string -> Sql`/`Html` conversion. HTML has no script/style/comment/unquoted or
-dynamic name encoder and no sanitizer; `HtmlAttrs`/`HtmlAttr` exist as nominal
-types but have no v1 hole. `Html` is a claimed-safe convention, not a
-type-enforced provenance check; direct `new Html{...}` is private to module
-`html`, while `Sql`/`SqlArg` fields are public. `obo/lib/sqldialect.obx`
-renders `$n`/`?`/`@pN`/`:n`; the experimental PostgreSQL and SQLite packages
-provide the binding bridge, while SQL Server and Oracle adapters and
-`SqlArg.Float` binding (`SQL_ARG_FLOAT_UNSUPPORTED`, 1014) are later work.
-`DecimalText` is the lossless decimal transport. `obo 0.19` is released as
-format 12/ABI 1; the seed is promoted at `ba02031`, and `seed/obo` and the
-compiler are both 757,761 bytes (sha256 `8327ca50…`) at the self-host fixed
-point.
-
-**Assignment targets across calls (closed).** The target of an assignment is located
-before the right-hand side is evaluated, so a call on the right that frees the target
-would write into freed memory. The compiler rejects a field or element assignment
-whose right-hand side calls a function that might free something:
-
-```obo
-// example: error: cannot assign to a field or element across a call
-type Node = ref record { v: int; kids: []Node }
-
-fn replaceKids(mut n: &Node): Node {        // frees the array the target is in
-    n.kids = new []Node(0)
-    return new Node{v: 7, kids: new []Node(0)}
-}
-
-fn main() {
-    var n = new Node{v: 1, kids: new []Node(0)}
-    append(n.kids, new Node{v: 2, kids: new []Node(0)})
-    n.kids[0] = replaceKids(n)
-    println(n.kids[0].v)
-}
-```
-
-Compute the value first, then assign it:
-
-```obo
-// example: runs
-// prints 7
-type Node = ref record { v: int; kids: []Node }
-
-fn replaceKids(mut n: &Node): Node {
-    return new Node{v: 7, kids: new []Node(0)}
-}
-
-fn main() {
-    var n = new Node{v: 1, kids: new []Node(0)}
-    append(n.kids, new Node{v: 2, kids: new []Node(0)})
-    let fresh = replaceKids(n)
-    n.kids[0] = fresh
-    println(n.kids[0].v)
-}
-```
-
-The same rule covers every form that locates a target, or an array, before a call later in its
-own expression:
-
-- a compound assignment (`+=`, `-=`, `*=`) to a field, element, handle target or global field,
-  whose value calls a function that might free it;
-- `append`, `truncate` and `replace` whose array (or target) is a field, element, handle, global, or
-  reached through a reference parameter, when the value or count calls such a function;
-- an index whose index expression calls such a function, when the array is a field or element, is
-  reached through a handle or a global, or is a reference parameter. This covers reads, assignment
-  targets, `take`, and `&a[f()]`.
-
-A call that takes a value by value moves it, and the callee frees it when the callee returns. So an
-index, `append`, `truncate`, `replace` or assignment that holds an array while such a call moves the
-local the array lives in is rejected, whatever the array's place: a whole local (`xs[f(xs)]`,
-`append(xs, f(xs))`, `truncate(xs, f(xs))`, `replace(xs, f(xs))`), a field (`b.items[f(b)]`), an
-element (`xs[0].kids[f(xs)]`), a row of a grid (`g[0][f(g)]`), or a reference to any of these
-(`let r = &xs; r[f(xs)]`), when `f` takes that local by value. A record literal that moves the record
-in an index (`b.items[g(new Holder{bg: b})]`) is refused too. A call that only borrows (`&`) or takes
-a `mut` argument is accepted: a `mut` array parameter cannot be reassigned, so no such call can free
-the array's header. The fix is the same: compute the value, or the index, first.
-
-A call is only a problem if it might free. A callee that writes a scalar through a `mut` parameter, or
-appends to a `mut` array, does not make these checks refuse: an array is a header of its own that `append`
-updates in place when it grows, so `xs.items[grow(xs.items)]`, `h.items[bump(b)] = v` and
-`append(b.items, grow(b.items))` are accepted when `grow` and `bump` only append or write scalars. A callee
-that assigns over, `replace`s or `take`s something below a `mut` argument, truncates an array through it (a
-truncate counts as a free even for scalar elements), is not compiled yet, or calls itself, is refused as before,
-whichever of its arguments it frees below.
-
-A string is different: it is not an owned value, so assigning a new value over a string field or element frees
-nothing the checks can see, yet the old string is freed if that was its last reference. A string indexed by an
-expression that contains a call (`b.s[f(b)]`, `h.s[g(h)]`, `names[0][clear(names)]`) therefore holds a reference of
-its own while the index runs and gives it back after the byte is read, so the byte is that of the string as it was
-when the index began, and nothing is refused.
-
-```obo
-// example: error: cannot index 'xs' with an index that moves it
-type Node = ref record { v: int; kids: []Node }
-fn eat(a: []Node): int { return 0 }     // takes the array by value: it is moved and freed
-fn main() {
-    var xs = new []Node(0)
-    append(xs, new Node{v: 1, kids: new []Node(0)})
-    println(xs[eat(xs)].v)
-}
-```
-
-A free counts as a move. `replace` and `take` free the old value of the place they empty, so a value
-that a pure call consumes can free what the statement holds: `b.items[sinkArr(replace(b.items, new []Node(0)))]`,
-`xs[0].v += sinkI(replace(xs, new []Node(0)))` and `append(xs, sinkNode(replace(xs, new []Node(0))))` are refused.
-A handle's array indexed by a move of the object it names (`let h = handle(b); h.items[eat(b)]`) is refused too.
-A `replace` or `take` of an unrelated place, or of an element beside the array that is indexed, is accepted, and
-so is an assignment whose value takes its own target (`t.opt = pass(take(t.opt))`), since `take` leaves that
-place empty. A free of an ancestor of the target is still refused. A handle made by `let h = handle(b)` from a
-whole owned local names that local. A whole move of `b` (`var c = b`, through a call, into a field, `replace(b, ...)`, `take`) makes that handle name no local (an assignment over `b` does not: the handle keeps naming `b`, and is refused at its next use), so it is checked like a handle without an origin: an index through it that moves or frees something is refused. A move of `b` inside a loop that a live `let` handle from `b` was declared outside of is refused (`cannot move 'b' inside a loop while handle 'h' made from it is in scope`) if the loop names the handle anywhere; if it does not, the move is accepted and the handle may not be named again, even after the loop (`handle 'h' was made from an owner that a loop moved: make the handle again`), except in `alive(h)`. An assignment over `b`, or `drop(b)`, frees the object the handle names, so a use through the handle after it is refused (section 5). A temporary `handle(b)` names nothing afterwards. A handle without that
-origin (a handle parameter, or one made from a field or an element) may name any object: a move or a free through
-it is refused against anything it might name, and a free through it of another handle's place is compared by path
-only when it is the same handle.
-
-```obo
-// example: error: cannot index a field, element or reference with an index that calls a function
-type Item = ref record { v: int; kids: []Item }
-type Bag = ref record { items: []Item }
-fn cut(mut b: &Bag): int {
-    b.items = new []Item(0)     // frees the array the index is taken from
-    return 0
-}
-fn main() {
-    var b = new Bag{items: new []Item(0)}
-    append(b.items, new Item{v: 1, kids: new []Item(0)})
-    println(b.items[cut(b)].v)  // error: the index is computed after the array is loaded
-}
-```
-
-**Through references (closed, with limits).** A change made through a reference, such as `p.next = x`
-where `p` is a reference, is at the place the reference points at plus the path written (section 4), not
-anywhere in the root. What stays at the whole root: a change through a handle or through a reference
-borrowed through one, a reference local not pointed afresh in a loop, a join of two different places
-(including a whole object and a place inside it), and a `for` walk's variable.
-
-**Changes through a handle, and references inside something (closed).** A change through a
-handle, such as `h.items = ...`, `handle(p).items = ...` (a handle temporary, which has no name),
-or a call that makes one, frees the old owned children of the handle's target. So it may free what
-any reference points into, whatever that reference borrowed from. The rules:
-
-- A reference *inside something* points into a field or element, such as `&bag.items[0]`, or
-  `&h.items` through a handle. It is invalidated by a change through a handle, by a change through
-  a reference borrowed through a handle, and by a call that writes through a handle.
-- A reference to a whole object, such as `&bag` or a parameter, stays valid. Only owners free whole
-  objects, and a change through a handle frees only what is below its target.
-- A reference inside something may not be passed to a function that writes through a handle, since
-  the handle may name the object it is inside. A function that calls such a function writes through a
-  handle too, and a function with only a forward heading is assumed to.
-- A recursive call is judged when the function's body is complete, so that a recursive tree walk
-  stays accepted. If the function writes through a handle, passing a reference inside something to
-  the recursive call is an error, and so is using such a reference after the call. In a loop that
-  makes the call, a reference that is still suspect where the next iteration starts is an error if
-  the loop's condition or body reads it.
-- Suspicion is per path. A reference that a recursive call may have freed stays suspect on every path
-  where that is so: a join of an `if`, a `match` or a loop keeps the suspicion of each path, and a
-  reference re-pointed on one path is still suspect on the others. A loop's next iteration starts
-  where its body ends, and at each `continue`; a body that always leaves the loop carries nothing.
-- A deferred recursive call runs where its block ends, so the references that are live there become
-  suspect at that point. Reads in the block before its end are not affected.
-
-The change that used to compile and read freed memory is now an error:
-
-```obo
-// example: error: 'first' may point to freed memory
-type Item = ref record { v: int }
-type Bag = ref record { items: []Item }
-fn cut(h: ^Bag) {
-    h.items = new []Item(0)      // frees the items, which the reference below points into
-}
-fn main() {
-    var bag = new Bag{items: new []Item(0)}
-    append(bag.items, new Item{v: 1})
-    let h = handle(bag)
-    let first = &bag.items[0]
-    cut(h)
-    println(first.v)            // error: 'first' may point to freed memory
-}
-```
-
-A reference re-pointed on one branch is still suspect on the other, so this is an error:
-
-```obo
-// example: error: 'r' may point to freed memory
-type Item = ref record { v: int; kids: []Item }
-type Bag = ref record { items: []Item }
-fn rec(b: &Bag, h: ^Bag, d: int) {
-    var r = &b.items[0]
-    if d > 0 { rec(b, h, d - 1) }
-    if d == 5 { r = &b.items[0] }   // only one path points it afresh
-    println(r.v)                   // error: 'r' may point to freed memory
-    h.items = new []Item(0)
-}
-fn main() {}
-```
-
-A reference to the whole bag is still valid after the same change:
-
-```obo
-// example: runs
-// prints 0
-type Item = ref record { v: int }
-type Bag = ref record { items: []Item }
-fn cut(h: ^Bag) {
-    h.items = new []Item(0)      // frees the items, which are below the bag
-}
-fn main() {
-    var bag = new Bag{items: new []Item(0)}
-    append(bag.items, new Item{v: 1})
-    let whole = &bag
-    cut(handle(bag))
-    println(len(whole.items))
-}
-```
-
-**References re-pointed on one path (closed).** A reference's binding used to be one for the whole
-function, so a re-point on one branch hid the place it had before from the paths that did not take
-the branch: the change that freed that place compiled and read freed memory. Each path now keeps its
-own binding (section 4), and where paths join, a reference may point into the union of their places.
-Two places join as follows: the same place stays the same; any other two places join to the whole
-root, which is the most conservative. A rule that kept only the common prefix of the two places
-would miss a change at either one, and the lower of two nested places (an earlier version of this rule)
-is wrong for a change made through the reference, which is at the place plus the path written. A whole
-object and a place inside it stay two entries of the binding, so that a change through the reference is
-at each of them.
-
-A defer body may not re-point a reference declared before it (section 4). A loop is checked as well:
-where a change in the loop may have freed what a reference points into, while the reference was not
-pointed afresh on every path, a read of it on the next iteration is an error, unless the reference is
-pointed afresh after the change and before it is read again. A reference whose binding at the end of
-the body is not covered by the binding the body was checked with, or which is writable where the loop
-starts and read-only where it starts again, is also an error. The rule is per path, as the bindings
-are. A change made through a reference is at the place it names, not the whole root (section 4,
-"Through references"); a loop's reference that is not pointed afresh is the exception, and keeps the
-whole root.
-
-**Loop and defer frees (closed).** A free in a `while` condition, or on a `break` or `continue` path,
-was lost at the loop's exit, and a defer body's frees were applied where the body is declared. Both
-are applied where they happen now (section 4). Loop marks are kept to their loop, so a free before a
-loop does not reject a read inside it that the loop does not change, and a reference that is writable
-where a loop starts and read-only where it starts again is an error only when it is written before it
-is pointed again.
-
-**Defer uses (closed).** A defer body's reads and writes were checked where the body is declared, not
-where its block is left. `{ defer println(first.v); bag.items = new []Item(0) }` read a freed element
-at the block's end, and `var k = &a; { defer println(k.v); k = &b; b = new Item{...} }` printed a freed
-value. A body that wrote through a reference pointed elsewhere after the declaration freed what the
-reference named at the declaration, not what it named at the exit. The rule in section 4 closes these:
-the references a defer uses must have the same binding and be valid at each exit. It costs some
-strictness: a block that points a reference elsewhere after a defer that uses it is refused, even where
-the defer would be harmless.
-
-**Argument order (closed).** A call's argument was checked as if no later argument could change
-what it points into, so `use2(first, mk(h))`, where `mk` frees what `first` points into, and
-`two(&xs[0], eat(xs))` passed the callee freed memory. A reference argument is now held while the
-later arguments run (section 4).
-
-**A read after a re-point (closed).** A loop whose recursive call leaves a reference suspect where
-the next iteration starts is an error only if the loop reads that reference *before* pointing it
-afresh: a read that follows a re-point on every path to it sees the new binding. This program is valid
-and is accepted, since `k` is pointed afresh before each read; a read of `k` above the re-point, on
-one path only, in the condition, in an inner loop, or a walk of it, is still an error:
-
-```obo
-// example: compiles
-type Item = ref record { v: int; kids: []Item }
-type Bag = ref record { items: []Item }
-fn rec(n: &Item, h: ^Bag, d: int): int {
-    if d == 0 {
-        h.items = new []Item(0)
-        return 0
-    }
-    var k = &n.kids[0]
-    var i = 0
-    var s = 0
-    while i < 2 {
-        k = &n.kids[0]
-        s += k.v
-        s += rec(n, h, d - 1)
-        i += 1
-    }
-    return s
-}
-fn main() {}
-```
-
-A loop that reads nothing it left suspect before pointing it afresh is accepted, and so is one that
-points a reference afresh after each call before reading it on the next iteration. A loop that frees what a reference points
-into and points the reference afresh before it reads it again is accepted too (`run/ref_bindings.obx`,
-`loopCache`).
-
-**Planned.** The language features listed as not yet done in the root
-`README.md` also apply: generic modules, value records, `inout` parameters, and
-debug information. Lambdas Stage A and Stage B (sections 5c and 5d), methods
-(section 5a) and interfaces (section 5b) are implemented; `^I` remains later.
+| `int`, `byte`, `bool` | numbers and booleans, copied by value | no |
+| `float` | IEEE 754 binary64, copied by value | no |
+| `decimal` | exact 38-digit decimal, 24 bytes, copied by value | no |
+| `string` | immutable bytes | yes (reference counted) |
+| `[]T` | growable array of `T` | yes |
+| `ref record { ... }` | a record, declared with `type` | yes |
+| `closed { ... }` | a variant type, declared with `type` | yes |
+| `?T` | a value that may be `nil` | as `T` |
+| `&T` | a borrowed reference (section 4) | no |
+| `^T` | a checked, non-owning handle (section 5) | no |
+| `Result[T]` | success or a message and code (section 7) | yes |
+
+Records and closed types may refer to each other through a forward declaration
+`type Sym`; the fields become usable once the type is defined. A record field
+is private to its defining module unless declared `pub`.

@@ -43,7 +43,8 @@ formats 6–11 are rejected, so rebuild old `.sym` files.
   construction. Compiler-known `sql`/`html` template literals type their bind
   parameters, compose fragments and escape HTML contextually.
   Interface handles `^I`, named function values and stored closures are not
-  implemented. The full reference is [obo/LANGUAGE.md](obo/LANGUAGE.md).
+  implemented. The reference starts at [obo/LANGUAGE.md](obo/LANGUAGE.md), with
+  topic chapters in [obo/language/](obo/language/README.md).
 - **Compiler.** 17,233 lines / 659,375 bytes of obo source, single-pass with no
   AST or intermediate representation, emitting x86-64 into a static ELF image.
   It implements the language above, symbol format 12 and the full gate suite.
@@ -90,7 +91,7 @@ formats 6–11 are rejected, so rebuild old `.sym` files.
 | Total allocated | 58,005,840 bytes direct; 58,009,088 bytes port comparison |
 | Maximum resident set | 5,092 KB (measured on the 0.16 line on 1 November 2026, carried) |
 | Live-memory budget | 2,750,000 bytes: 159,504 spare direct / 159,520 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (currently measured at 53,984) |
-| obo suite | 1,884 `run_fork` tests; 151 `module_test`; `sym_test.py` 59/59; `sym_fuzz.py` 200/200; `port_test` 643/643 with 10 encoder groups; `port_compare` 1,859/1,859 default; promoted-seed comparison 1,655/1,655; 76 doc examples; 31/31 import checks; 24/24 stdlib roots |
+| obo suite | 1,884 `run_fork` tests; 151 `module_test`; `sym_test.py` 59/59; `sym_fuzz.py` 200/200; `port_test` 643/643 with 10 encoder groups; `port_compare` 1,859/1,859 default; promoted-seed comparison 1,655/1,655; 83 doc examples; 31/31 import checks; 24/24 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
 | Seed comparison | `OBO_REF=obo/seed/obo` against the promoted 0.19 seed is 1,655/1,655. The flat count omits the 204 module-tree, CLI, special, re-emit and `modules/tokens` checks the default comparison adds, so the default (self) comparison is 1,859/1,859 |
 | Mutation gates | `mutate_fork` 727/757 caught + 30 equivalent, 0 missed/stale/broken; `mutate_port` 540/540 caught, 0 missed/stale/broken; `mutate_meta` 71/82 caught + 11 equivalent, 0 missed/stale/broken (runtime/entry.S 50/52 + 2 equivalent; compiler 21/30 + 9 equivalent); `mutate_decimal` 117/118 caught + 1 equivalent (the by-address capture mutant), 0 missed/stale/broken, with an explicit baseline; `mutate_io` 36/36, 0 equivalent, 0 missed/stale/broken (including the self-host memory oracle, empty-array delta 53,984 bytes) |
@@ -319,7 +320,8 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 |---|---|
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
 | `obo/seed/obo` | the trusted previous stage |
-| `obo/LANGUAGE.md` | the current language reference, including known holes |
+| `obo/LANGUAGE.md` | the core language guide: syntax, literals, statements, `match` |
+| `obo/language/` | the reference chapters: types, ownership, references, handles, methods, interfaces, lambdas, modules, results, builtins, runtime, errors, known holes |
 | `obo/lib/` | the thirteen source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs`, `env`, `html`, `sqldialect` and `decimals` |
 | `obo/cmd/` | the tools: `cat`, `wc`, `sort`, `head`, `tail` and `eza`, with `README.md` and their subsets |
 | `obo/tests/` | obo's suite, mutants, the I/O, tools and eza gates |
@@ -341,7 +343,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 cd obo && make                           # obo: build from the committed seed
 cd obo && make tools                     # build/tools/{cat,wc,sort,head,tail}
 cd obo && make eza                       # build/eza/eza
-cd obo && python3 tests/doc_check.py     # LANGUAGE.md examples
+cd obo && python3 tests/doc_check.py     # language reference examples
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
 cd obo && python3 tests/elf_test.py      # the image: trimmed runtime-data segment
 cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs

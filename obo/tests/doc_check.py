@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Checks the examples in obo/LANGUAGE.md against the compiler.
+"""Checks the examples in obo/LANGUAGE.md and obo/language/*.md against the
+compiler.
 
 A ```obo block whose first line is "// example: runs" must compile and exit 0
 (or with the code given by "// exit: N"), printing the "// prints" lines.
@@ -16,17 +17,24 @@ text after "modules check error: TEXT").
 
     python3 obo/tests/doc_check.py
 """
-import os, re, subprocess, sys, tempfile, textwrap
+import glob, os, re, subprocess, sys, tempfile, textwrap
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
 DOC = os.path.join(FORK, 'LANGUAGE.md')
+DOCS = [DOC] + sorted(glob.glob(os.path.join(FORK, 'language', '*.md')))
 OBO = os.environ.get('OBO', os.path.join(FORK, 'obo'))
 RT = FORK
-text = open(DOC).read()
-blocks = [textwrap.dedent(b) for b in re.findall(r'^[ \t]*```obo\n(.*?)^[ \t]*```', text, re.S | re.M)]
+entries = []
+for doc in DOCS:
+    text = open(doc).read()
+    for b in re.findall(r'^[ \t]*```obo\n(.*?)^[ \t]*```', text, re.S | re.M):
+        entries.append((os.path.relpath(doc, FORK), textwrap.dedent(b)))
+blocks = [b for _, b in entries]
+where = [w for w, _ in entries]
 tmp = tempfile.mkdtemp(prefix='doccheck-')
 bad = 0
 for i, b in enumerate(blocks, 1):
+    at = where[i - 1]
     lines = b.splitlines()
     head = lines[0]
     check_mods = head.startswith('// example: modules check')
@@ -38,7 +46,7 @@ for i, b in enumerate(blocks, 1):
         m = re.match(r'// example: (runs|compiles|modules|error: (.*)|modules error: (.*))$', head)
         want = None
     if not m:
-        print(f"block {i}: no example marker"); bad += 1; continue
+        print(f"block {i} ({at}): no example marker"); bad += 1; continue
     kind = 'modules' if check_mods else ('error' if m.group(2) else m.group(1))
     if kind == 'modules' or (not check_mods and m.group(3)):
         if not check_mods:
@@ -52,7 +60,7 @@ for i, b in enumerate(blocks, 1):
             elif files:
                 files[-1][1].append(line)
         if not files:
-            print(f"block {i}: modules example with no // file: lines"); bad += 1; continue
+            print(f"block {i} ({at}): modules example with no // file: lines"); bad += 1; continue
         for name, body in files:
             fp = os.path.join(case, name)
             os.makedirs(os.path.dirname(fp), exist_ok=True)
@@ -65,14 +73,14 @@ for i, b in enumerate(blocks, 1):
                            capture_output=True, text=True)
         if want is not None:
             if c.returncode == 0:
-                print(f"block {i}: expected error '{want}', but it compiled"); bad += 1
+                print(f"block {i} ({at}): expected error '{want}', but it compiled"); bad += 1
             elif want not in c.stderr:
-                print(f"block {i}: error differs: wanted '{want}', got: {c.stderr.strip()}"); bad += 1
+                print(f"block {i} ({at}): error differs: wanted '{want}', got: {c.stderr.strip()}"); bad += 1
             else:
-                print(f"block {i}: ok (modules error '{want}')")
+                print(f"block {i} ({at}): ok (modules error '{want}')")
             continue
         if c.returncode != 0:
-            print(f"block {i}: modules did not compile: {c.stderr.strip()}"); bad += 1; continue
+            print(f"block {i} ({at}): modules did not compile: {c.stderr.strip()}"); bad += 1; continue
         if check_mods:
             # source-less checking: remove the dependency sources, keep the .sym files
             for name, _ in files[1:]:
@@ -81,22 +89,22 @@ for i, b in enumerate(blocks, 1):
                                  capture_output=True, text=True)
             if want is not None:
                 if chk.returncode == 0:
-                    print(f"block {i}: expected check error '{want}', but it passed"); bad += 1
+                    print(f"block {i} ({at}): expected check error '{want}', but it passed"); bad += 1
                 elif want not in chk.stderr:
-                    print(f"block {i}: check error differs: wanted '{want}', got: {chk.stderr.strip()}"); bad += 1
+                    print(f"block {i} ({at}): check error differs: wanted '{want}', got: {chk.stderr.strip()}"); bad += 1
                 else:
-                    print(f"block {i}: ok (modules check error '{want}')")
+                    print(f"block {i} ({at}): ok (modules check error '{want}')")
                 continue
             if chk.returncode != 0:
-                print(f"block {i}: modules --check failed: {chk.stderr.strip()}"); bad += 1; continue
+                print(f"block {i} ({at}): modules --check failed: {chk.stderr.strip()}"); bad += 1; continue
         exp_exit = next((int(re.search(r'// exit: (\d+)', l).group(1)) for l in lines if '// exit:' in l), 0)
         prints = [l[len('// prints '):] for l in lines if l.startswith('// prints ')]
         r = subprocess.run([out], capture_output=True, text=True, env=dict(os.environ, OBO_CHECK='1', OBX_GC='poison'))
         if r.returncode != exp_exit:
-            print(f"block {i}: exit {r.returncode}, expected {exp_exit}: {r.stderr.strip()}"); bad += 1; continue
+            print(f"block {i} ({at}): exit {r.returncode}, expected {exp_exit}: {r.stderr.strip()}"); bad += 1; continue
         if exp_exit == 0 and r.stdout.splitlines() != prints:
-            print(f"block {i}: output {r.stdout.splitlines()} expected {prints}"); bad += 1; continue
-        print(f"block {i}: ok (modules run, exit {exp_exit})")
+            print(f"block {i} ({at}): output {r.stdout.splitlines()} expected {prints}"); bad += 1; continue
+        print(f"block {i} ({at}): ok (modules run, exit {exp_exit})")
         continue
     src = '\n'.join(lines) + '\n'
     path = os.path.join(tmp, f'b{i}.obx')
@@ -105,23 +113,23 @@ for i, b in enumerate(blocks, 1):
     if kind == 'error':
         want = m.group(2)
         if c.returncode == 0:
-            print(f"block {i}: expected error '{want}', but it compiled"); bad += 1
+            print(f"block {i} ({at}): expected error '{want}', but it compiled"); bad += 1
         elif want not in c.stderr:
-            print(f"block {i}: error differs: wanted '{want}', got: {c.stderr.strip()}"); bad += 1
+            print(f"block {i} ({at}): error differs: wanted '{want}', got: {c.stderr.strip()}"); bad += 1
         else:
-            print(f"block {i}: ok (error '{want}')")
+            print(f"block {i} ({at}): ok (error '{want}')")
         continue
     if c.returncode != 0:
-        print(f"block {i}: did not compile: {c.stderr.strip()}"); bad += 1; continue
+        print(f"block {i} ({at}): did not compile: {c.stderr.strip()}"); bad += 1; continue
     if kind == 'compiles':
-        print(f"block {i}: ok (compiles)"); continue
+        print(f"block {i} ({at}): ok (compiles)"); continue
     exp_exit = next((int(re.search(r'// exit: (\d+)', l).group(1)) for l in lines if '// exit:' in l), 0)
     prints = [l[len('// prints '):] for l in lines if l.startswith('// prints ')]
     r = subprocess.run([path[:-4]], capture_output=True, text=True, env=dict(os.environ, OBO_CHECK='1', OBX_GC='poison'))
     if r.returncode != exp_exit:
-        print(f"block {i}: exit {r.returncode}, expected {exp_exit}: {r.stderr.strip()}"); bad += 1; continue
+        print(f"block {i} ({at}): exit {r.returncode}, expected {exp_exit}: {r.stderr.strip()}"); bad += 1; continue
     if exp_exit == 0 and r.stdout.splitlines() != prints:
-        print(f"block {i}: output {r.stdout.splitlines()} expected {prints}"); bad += 1; continue
-    print(f"block {i}: ok (runs, exit {exp_exit})")
+        print(f"block {i} ({at}): output {r.stdout.splitlines()} expected {prints}"); bad += 1; continue
+    print(f"block {i} ({at}): ok (runs, exit {exp_exit})")
 print(f"\n{len(blocks)} examples, {bad} problems")
 sys.exit(1 if bad else 0)
