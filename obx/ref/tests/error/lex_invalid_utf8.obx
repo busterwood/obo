@@ -1,0 +1,4 @@
+// Invalid UTF-8 is a compile error with its line (it was a Python traceback).
+// error: not valid UTF-8
+// line: 4
+fn main() { let s = "ÿ" }

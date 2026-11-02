@@ -1,4 +1,5 @@
 """obx lexer and parser: source text to an AST of N nodes (SPEC sections 2, 3)."""
+import os
 
 
 class CompileError(Exception):
@@ -14,6 +15,29 @@ SYMS = ['+=', '-=', '*=', '/=', '%=', '|=', '&=', '^=', '+%', '-%', '*%', '<<', 
         '==', '!=', '<=', '>=', '&&', '||', '{', '}', '(', ')', '[', ']', ',', ':', ';', '.',
         '&', '|', '^', '~', '+', '-', '*', '/', '%', '<', '>', '=', '!']
 ESC = {'n': 10, 't': 9, 'r': 13, '0': 0, '\\': 92, "'": 39, '"': 34}
+
+
+def isdigit(c):
+    return '0' <= c <= '9'
+
+
+def isalpha(c):
+    return 'a' <= c <= 'z' or 'A' <= c <= 'Z'
+
+
+def isalnum(c):
+    return isdigit(c) or isalpha(c)
+
+
+def read_source(path):
+    """The text of a source file; universal newlines, as open() reads it. Invalid UTF-8 is an error."""
+    with open(path, 'rb') as f:
+        data = f.read()
+    try:
+        return data.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
+    except UnicodeDecodeError as e:
+        line = data[:e.start].replace(b'\r\n', b'\n').replace(b'\r', b'\n').count(b'\n') + 1
+        raise CompileError("the source is not valid UTF-8", f"{os.path.basename(path)}:{line}")
 
 
 class Tok:
@@ -62,12 +86,12 @@ def lex(src, fname):
         elif src.startswith('//', i):
             while i < n and src[i] != '\n':
                 i += 1
-        elif c.isdigit():
+        elif isdigit(c):
             j = i
             if src.startswith(('0x', '0b'), i):
                 base = 16 if src[i + 1] == 'x' else 2
                 j = i + 2
-                while j < n and (src[j].isalnum() or src[j] == '_'):
+                while j < n and (isalnum(src[j]) or src[j] == '_'):
                     j += 1
                 try:
                     v = int(src[i + 2:j].replace('_', ''), base)
@@ -76,35 +100,35 @@ def lex(src, fname):
                 toks.append(Tok('int', v, w))
                 i = j
                 continue
-            while j < n and (src[j].isdigit() or src[j] == '_'):
+            while j < n and (isdigit(src[j]) or src[j] == '_'):
                 j += 1
             k = j
             if j < n and src[j] == '.' and j + 1 < n and src[j + 1] != '.':
-                if not src[j + 1].isdigit():
+                if not isdigit(src[j + 1]):
                     raise CompileError("a fractional literal needs digits after the point", w)
                 k = j + 1
-                while k < n and (src[k].isdigit() or src[k] == '_'):
+                while k < n and (isdigit(src[k]) or src[k] == '_'):
                     k += 1
             if k < n and src[k] in 'eE':        # an exponent: e or E, an optional sign, digits
                 e = k + 1 + (src[k + 1:k + 2] in ('+', '-'))
-                if not src[e:e + 1].isdigit():
+                if not isdigit(src[e:e + 1]):
                     raise CompileError("an exponent needs digits", w)
                 k = e
-                while k < n and src[k].isdigit():
+                while k < n and isdigit(src[k]):
                     k += 1
             if k > j:
-                if k < n and (src[k].isalnum() or src[k] == '_'):
+                if k < n and (isalnum(src[k]) or src[k] == '_'):
                     raise CompileError(f"bad fractional literal {src[i:k + 1]}", w)
                 toks.append(Tok('frac', src[i:k].replace('_', ''), w))
                 i = k
                 continue
-            if j < n and (src[j].isalpha() or src[j] == '_'):
+            if j < n and (isalpha(src[j]) or src[j] == '_'):
                 raise CompileError(f"bad integer literal {src[i:j + 1]}", w)
             toks.append(Tok('int', int(src[i:j].replace('_', '')), w))
             i = j
-        elif c.isalpha() or c == '_':
+        elif isalpha(c) or c == '_':
             j = i
-            while j < n and (src[j].isalnum() or src[j] == '_'):
+            while j < n and (isalnum(src[j]) or src[j] == '_'):
                 j += 1
             word = src[i:j]
             toks.append(Tok('kw' if word in KEYWORDS else 'id', word, w))
@@ -138,7 +162,7 @@ def lex(src, fname):
                 raise CompileError("unterminated character literal", w)
             toks.append(Tok('char', v, w))
             i = j + 1
-        elif c == '.' and i + 1 < n and src[i + 1].isdigit() and not (toks and toks[-1].k in ('id', 'int') or toks and toks[-1].v in (')', ']')):
+        elif c == '.' and i + 1 < n and isdigit(src[i + 1]) and not (toks and toks[-1].k in ('id', 'int') or toks and toks[-1].v in (')', ']')):
             raise CompileError("a fractional literal needs digits before the point", w)
         else:
             for s in SYMS:
@@ -151,7 +175,7 @@ def lex(src, fname):
                     i += len(s)
                     break
             else:
-                raise CompileError(f"unexpected character {c!r}", w)
+                raise CompileError(f"unexpected character {c!r}" if c < '\x80' else f"unexpected character U+{ord(c):04X}", w)
     w = f"{fname}:{line}"
     toks.append(Tok('sym', ';', w))
     toks.append(Tok('eof', '', w))
@@ -201,7 +225,7 @@ class Parser:
         if t.k != k or (v is not None and t.v != v):
             found = 'end of line' if t.v == ';' and t.k == 'sym' else (t.v if t.v != '' else t.k)
             if isinstance(found, bytes):
-                found = '"' + found.decode('utf-8', 'replace') + '"'
+                found = 'a string'
             what = v or {'id': 'a name'}.get(k, k)
             raise CompileError(f"expected {what}, found {found!r}", t.where)
         return t

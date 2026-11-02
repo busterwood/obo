@@ -25,8 +25,10 @@ separate decision from the user; they are the ones to revisit first.
 
 ## 2. Lexical structure
 
-- Source is UTF-8. Comments run from `//` to the end of the line.
-- Identifiers: a letter or `_`, then letters, digits and `_`.
+- Source is UTF-8 (invalid UTF-8 is a compile error). A line ends at LF, CRLF
+  or a lone CR. Comments run from `//` to the end of the line.
+- Identifiers: an ASCII letter or `_`, then ASCII letters, digits and `_`.
+  Outside comments, string and character literals the source is ASCII.
 - A newline ends a statement when the last token on the line is an
   identifier, a literal, `)`, `]`, `}`, or one of `return break continue`.
   `;` also ends a statement. Inside `(` `)` and `[` `]` a newline never ends

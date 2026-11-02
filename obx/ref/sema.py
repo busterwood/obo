@@ -6,7 +6,7 @@ A type is a tuple:
   ('inst', TypeDecl, (args...))  ('tp', TParam)  ('self',) inside interfaces
 """
 import os
-from syntax import CompileError, parse
+from syntax import CompileError, parse, read_source
 
 INTS = ('int', 'i32', 'u32', 'u64', 'byte', 'i128', 'u128')
 PRIMS = INTS + ('float', 'bool', 'str', 'ptr')
@@ -223,8 +223,7 @@ class Program:
             return self.modules[path]
         chain = (chain or []) + [path]
         try:
-            with open(path, encoding='utf-8') as f:
-                src = f.read()
+            src = read_source(path)
         except OSError:
             raise CompileError(f"cannot read {path}")
         fname = os.path.basename(path)

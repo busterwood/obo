@@ -1,0 +1,4 @@
+// A lone CR is a line break, as for Python text files: ASI ends the let.
+// error: expected an expression
+// line: 6
+fn main() { let x = }
