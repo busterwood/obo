@@ -39,6 +39,12 @@ for leaks.
   `ok()`, `err()`, `toStr`. **Unit**.
 - **Eq, Ord, Hash, Show** with implementations for `int i32 u32 u64 byte i128
   u128 float bool str` (float has no `hash`). `min`, `max` for `T: Ord + copy`.
+- **Checked arithmetic** on every integer type: `a.checkedAdd(b)`,
+  `checkedSub`, `checkedMul`, `checkedDiv`, `checkedRem` return `None` exactly
+  where the operator would stop the program (overflow, zero divisor,
+  `MIN / -1`). Use them where the operands come from input; the operators stop
+  on what would be a bug. Decimal has the same through `Result`: `addExact`,
+  `subExact`, `mulExact`, `remExact`, and `div`.
 - `print`, `println`, `eprint`, `eprintln` (one `Show` argument; stdout is
   buffered and flushed at exit and before stderr writes).
 - **float**: `toStr` is the shortest text that reads back as the same value

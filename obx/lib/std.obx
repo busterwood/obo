@@ -180,6 +180,95 @@ pub fn (a: u128) cmp(b: &u128): int { return cmpOf(a < b, a > b) }
 pub fn (a: u128) hash(): u64 { return (u64(a & M64) *% GOLDEN ^ u64(a >> 64)) *% GOLDEN }
 pub fn (a: u128) toStr(): str { return u128ToStr(a) }
 
+// ---- checked arithmetic
+
+// The integer operators stop the program on overflow, on a zero divisor and on
+// MIN / -1 (exit 10). Where those come from input rather than a bug, the
+// checked methods return None exactly where the operator would stop:
+// a.checkedAdd(b), checkedSub, checkedMul, checkedDiv, checkedRem.
+
+const I32_MIN: i128 = -2147483648
+const I32_MAX: i128 = 2147483647
+const I64_MIN: i128 = -9223372036854775808
+const I64_MAX: i128 = 9223372036854775807
+const U8_MAX: u128 = 255
+const U32_MAX: u128 = 4294967295
+const U64_MAX: u128 = 18446744073709551615
+const I128_MIN: i128 = -170141183460469231731687303715884105727 - 1
+
+fn fitI64(r: i128): Option[int] { return if r < I64_MIN || r > I64_MAX { None } else { Some(int(r)) } }
+pub fn (a: int) checkedAdd(b: int): Option[int] { return fitI64(i128(a) + i128(b)) }
+pub fn (a: int) checkedSub(b: int): Option[int] { return fitI64(i128(a) - i128(b)) }
+pub fn (a: int) checkedMul(b: int): Option[int] { return fitI64(i128(a) * i128(b)) }
+pub fn (a: int) checkedDiv(b: int): Option[int] { return if b == 0 { None } else { fitI64(i128(a) / i128(b)) } }
+pub fn (a: int) checkedRem(b: int): Option[int] {
+    return if b == 0 || (i128(a) == I64_MIN && b == -1) { None } else { Some(a % b) }
+}
+
+fn fitI32(r: i128): Option[i32] { return if r < I32_MIN || r > I32_MAX { None } else { Some(i32(r)) } }
+pub fn (a: i32) checkedAdd(b: i32): Option[i32] { return fitI32(i128(a) + i128(b)) }
+pub fn (a: i32) checkedSub(b: i32): Option[i32] { return fitI32(i128(a) - i128(b)) }
+pub fn (a: i32) checkedMul(b: i32): Option[i32] { return fitI32(i128(a) * i128(b)) }
+pub fn (a: i32) checkedDiv(b: i32): Option[i32] { return if b == 0 { None } else { fitI32(i128(a) / i128(b)) } }
+pub fn (a: i32) checkedRem(b: i32): Option[i32] {
+    return if b == 0 || (i128(a) == I32_MIN && b == -1) { None } else { Some(a % b) }
+}
+
+fn fitU32(r: u128): Option[u32] { return if r > U32_MAX { None } else { Some(u32(r)) } }
+pub fn (a: u32) checkedAdd(b: u32): Option[u32] { return fitU32(u128(a) + u128(b)) }
+pub fn (a: u32) checkedSub(b: u32): Option[u32] { return if a < b { None } else { Some(a - b) } }
+pub fn (a: u32) checkedMul(b: u32): Option[u32] { return fitU32(u128(a) * u128(b)) }
+pub fn (a: u32) checkedDiv(b: u32): Option[u32] { return if b == 0 { None } else { Some(a / b) } }
+pub fn (a: u32) checkedRem(b: u32): Option[u32] { return if b == 0 { None } else { Some(a % b) } }
+
+fn fitU64(r: u128): Option[u64] { return if r > U64_MAX { None } else { Some(u64(r)) } }
+pub fn (a: u64) checkedAdd(b: u64): Option[u64] { return fitU64(u128(a) + u128(b)) }
+pub fn (a: u64) checkedSub(b: u64): Option[u64] { return if a < b { None } else { Some(a - b) } }
+pub fn (a: u64) checkedMul(b: u64): Option[u64] { return fitU64(u128(a) * u128(b)) }
+pub fn (a: u64) checkedDiv(b: u64): Option[u64] { return if b == 0 { None } else { Some(a / b) } }
+pub fn (a: u64) checkedRem(b: u64): Option[u64] { return if b == 0 { None } else { Some(a % b) } }
+
+fn fitU8(r: u128): Option[byte] { return if r > U8_MAX { None } else { Some(byte(r)) } }
+pub fn (a: byte) checkedAdd(b: byte): Option[byte] { return fitU8(u128(a) + u128(b)) }
+pub fn (a: byte) checkedSub(b: byte): Option[byte] { return if a < b { None } else { Some(a - b) } }
+pub fn (a: byte) checkedMul(b: byte): Option[byte] { return fitU8(u128(a) * u128(b)) }
+pub fn (a: byte) checkedDiv(b: byte): Option[byte] { return if b == 0 { None } else { Some(a / b) } }
+pub fn (a: byte) checkedRem(b: byte): Option[byte] { return if b == 0 { None } else { Some(a % b) } }
+
+pub fn (a: i128) checkedAdd(b: i128): Option[i128] {
+    let r = a +% b
+    return if (a >= 0) == (b >= 0) && (r >= 0) != (a >= 0) { None } else { Some(r) }
+}
+pub fn (a: i128) checkedSub(b: i128): Option[i128] {
+    let r = a -% b
+    return if (a >= 0) != (b >= 0) && (r >= 0) != (a >= 0) { None } else { Some(r) }
+}
+pub fn (a: i128) checkedMul(b: i128): Option[i128] {
+    if a == 0 || b == 0 { return Some(0) }
+    if (a == -1 && b == I128_MIN) || (b == -1 && a == I128_MIN) { return None }
+    let r = a *% b
+    return if r / b != a { None } else { Some(r) }
+}
+pub fn (a: i128) checkedDiv(b: i128): Option[i128] {
+    return if b == 0 || (a == I128_MIN && b == -1) { None } else { Some(a / b) }
+}
+pub fn (a: i128) checkedRem(b: i128): Option[i128] {
+    return if b == 0 || (a == I128_MIN && b == -1) { None } else { Some(a % b) }
+}
+
+pub fn (a: u128) checkedAdd(b: u128): Option[u128] {
+    let r = a +% b
+    return if r < a { None } else { Some(r) }
+}
+pub fn (a: u128) checkedSub(b: u128): Option[u128] { return if a < b { None } else { Some(a - b) } }
+pub fn (a: u128) checkedMul(b: u128): Option[u128] {
+    if a == 0 { return Some(0) }
+    let r = a *% b
+    return if r / a != b { None } else { Some(r) }
+}
+pub fn (a: u128) checkedDiv(b: u128): Option[u128] { return if b == 0 { None } else { Some(a / b) } }
+pub fn (a: u128) checkedRem(b: u128): Option[u128] { return if b == 0 { None } else { Some(a % b) } }
+
 pub fn (a: float) eq(b: &float): bool { return a == b }
 pub fn (a: float) cmp(b: &float): int { return cmpOf(a < b, a > b) }
 // The shortest text that reads back as the same value: "0.1", "1e25",
@@ -706,6 +795,15 @@ pub fn (a: Decimal) mulExact(b: Decimal): Result[Decimal, DecError] {
     if r.coef != 0 { intd = max(0, digits(r.coef) + r.exp) }
     r.dscale = min(min(a.dscale + b.dscale, DSCALE_MAX), max(0, 38 - intd))
     return Ok(r)
+}
+
+// a - b; DecError.Inexact or DecError.Overflow where `-` would stop.
+pub fn (a: Decimal) subExact(b: Decimal): Result[Decimal, DecError] { return a.addExact(b.neg()) }
+
+// a % b; DecError.DivZero where `%` would stop on a zero divisor.
+pub fn (a: Decimal) remExact(b: Decimal): Result[Decimal, DecError] {
+    if b.coef == 0 { return Err(DecError.DivZero) }
+    return Ok(a.rem(b))
 }
 
 // The truncating remainder: a - trunc(a / b) * b, with the sign of a. Stops

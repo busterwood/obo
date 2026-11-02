@@ -472,6 +472,8 @@ generic function that instantiates itself with a larger type (`f[T]` calling
 - `+ - *` on integer types stop the program on overflow. `+% -% *%` wrap.
 - `/` and `%` stop the program when the divisor is zero, and on `MIN / -1`.
   Division truncates towards zero; `%` has the sign of the dividend.
+  The library's `checkedAdd` ... `checkedRem` methods return `None` where the
+  operator would stop, for operands that come from input.
 - `<< >>` take a shift count of type `int`; a count outside 0 to width-1
   stops the program. `>>` is arithmetic on signed types. Bits shifted out of
   `<<` are lost.

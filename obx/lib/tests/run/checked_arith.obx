@@ -1,0 +1,57 @@
+// The checked methods return None exactly where the operator would stop.
+// expect: Some(5) None None Some(-9223372036854775807)
+// expect: None None Some(-2) None Some(-1) Some(1) None
+// expect: Some(2147483647) None Some(-2147483648) None None
+// expect: Some(255) None None Some(0) Some(84)
+// expect: None Some(0) Some(4294967295) None
+// expect: None Some(18446744073709551614) None
+// expect: None None Some(-170141183460469231731687303715884105727) None None None Some(1) Some(-1)
+// expect: None Some(340282366920938463463374607431768211455) None None Some(0) Some(2)
+// expect: Some(1.25) Err(decimal division by zero) Some(0.5) Err(decimal division by zero)
+// expect: 7
+fn line(xs: &[]str) {
+    var b = newStrBuf()
+    for i in 0..len(xs) {
+        if i > 0 { b.add(" ") }
+        b.add(xs[i])
+    }
+    println(b.toStr())
+}
+
+fn main() {
+    let big = 9223372036854775807
+    let small = -big - 1
+    line(&[2.checkedAdd(3).toStr(), big.checkedAdd(1).toStr(), small.checkedSub(1).toStr(),
+        small.checkedAdd(1).toStr()])
+    line(&[big.checkedMul(2).toStr(), small.checkedMul(-1).toStr(), (-7).checkedDiv(3).toStr(),
+        7.checkedDiv(0).toStr(), (-7).checkedRem(-3).toStr(), 7.checkedRem(3).toStr(), small.checkedRem(-1).toStr()])
+    let i: i32 = 2147483646
+    let imin: i32 = -2147483647 - 1
+    line(&[i.checkedAdd(1).toStr(), i.checkedAdd(2).toStr(), imin.checkedDiv(1).toStr(),
+        imin.checkedDiv(-1).toStr(), imin.checkedRem(-1).toStr()])
+    let b: byte = 254
+    let z: byte = 0
+    line(&[b.checkedAdd(1).toStr(), b.checkedAdd(2).toStr(), z.checkedSub(1).toStr(),
+        b.checkedRem(2).toStr(), b.checkedDiv(3).toStr()])
+    let w: u32 = 4294967295
+    let one: u32 = 1
+    line(&[w.checkedAdd(one).toStr(), w.checkedRem(one).toStr(), w.checkedMul(one).toStr(),
+        one.checkedDiv(0).toStr()])
+    let q: u64 = 9223372036854775807
+    line(&[q.checkedMul(3).toStr(), q.checkedMul(2).toStr(), q.checkedSub(q + 1).toStr()])
+    let hmax: i128 = 170141183460469231731687303715884105727
+    let hmin: i128 = -hmax - 1
+    let m1: i128 = -1
+    line(&[hmax.checkedAdd(1).toStr(), hmin.checkedSub(1).toStr(), hmax.checkedMul(m1).toStr(),
+        hmin.checkedMul(m1).toStr(), m1.checkedMul(hmin).toStr(), hmin.checkedDiv(m1).toStr(),
+        hmin.checkedDiv(hmin).toStr(), m1.checkedRem(2).toStr()])
+    let umax: u128 = 340282366920938463463374607431768211455
+    let two: u128 = 2
+    line(&[umax.checkedAdd(1).toStr(), umax.checkedMul(1).toStr(), umax.checkedMul(two).toStr(),
+        two.checkedSub(umax).toStr(), umax.checkedRem(3).toStr(), two.checkedDiv(1).toStr()])
+    line(&[1.5.subExact(0.25).ok().toStr(), 1.0.remExact(0.0).toStr(), 1.5.remExact(1.0).ok().toStr(),
+        2.0.remExact(0.00).toStr()])
+    var total = 0
+    for x in [3, 4] { total = total.checkedAdd(x).unwrap() }
+    println(total.toStr())
+}
