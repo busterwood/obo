@@ -1,0 +1,12 @@
+// expect: 2
+const STOP = "stop"
+fn main() {
+    let ws = ["a", "b", "stop", "c"]
+    var n = 0
+    for w in ws {
+        let done = match w { STOP { true } else { false } }
+        if done { break }
+        n += 1
+    }
+    println(n)
+}

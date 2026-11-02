@@ -1,0 +1,8 @@
+// error: moved
+type D = record { s: str }
+fn eat(d: D): bool { return true }
+fn main() {
+    let d = D{s: "a"}
+    let r = if eat(d) { 1 } else { 2 }
+    println(d.s)
+}

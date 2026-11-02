@@ -1,0 +1,7 @@
+// expect: 2
+fn f(a: mut &int, b: int) { a += b }
+fn main() {
+    var xs = [1]
+    f(mut &xs[0], xs[0])
+    println(xs[0])
+}

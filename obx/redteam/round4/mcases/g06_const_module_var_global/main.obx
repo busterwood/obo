@@ -1,0 +1,6 @@
+// error: constant|global|G
+import "./k"
+fn main() {
+    let x = 1
+    match x { k.G { println("g") } else { println("?") } }
+}

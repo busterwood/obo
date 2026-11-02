@@ -1,0 +1,7 @@
+// exit: 3
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    var ys = [1, 2]
+    f(mut &xs[1], ys[9])
+}

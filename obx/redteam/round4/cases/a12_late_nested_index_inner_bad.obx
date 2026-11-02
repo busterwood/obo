@@ -1,0 +1,8 @@
+// exit: 3
+type R = record { ys: []int }
+fn g(): int { println("g"); return 10 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var rs = [R{ys: [1]}]
+    f(mut &rs[0].ys[4], g())
+}

@@ -1,0 +1,6 @@
+// expect: ?
+const E = 1
+fn main() {
+    let x = 2
+    match x { E { println("e") } else { println("?") } }
+}

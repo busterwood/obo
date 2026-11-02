@@ -1,0 +1,7 @@
+// error: moved|borrow
+type X = record { a: str }
+fn f(r: &str, x: X) { println(r) }
+fn main() {
+    let x = X{a: "a"}
+    f(&x.a, x)
+}

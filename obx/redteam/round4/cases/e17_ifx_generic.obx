@@ -1,0 +1,9 @@
+// by design: the join after the if expression (9.1) rejects a variable moved in one branch only
+// error: moved on one path
+fn pick[T](c: bool, a: T, b: T): T { return if c { a } else { b } }
+type D = record { s: str }
+fn main() {
+    let d = pick(false, D{s: "a"}, D{s: "b"})
+    println(d.s)
+    println(pick(false, 1, 2))
+}

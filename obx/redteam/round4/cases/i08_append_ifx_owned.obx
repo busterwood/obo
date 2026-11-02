@@ -1,0 +1,10 @@
+// expect: 1
+// expect: drop a
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn main() {
+    var xs: []D = []
+    let c = true
+    append(mut &xs, if c { D{s: "a"} } else { D{s: "b"} })
+    println(len(xs))
+}

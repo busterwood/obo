@@ -1,0 +1,6 @@
+// error: bool|match
+const T = true
+fn main() {
+    let x = 1
+    match x { T { println("f") } else { println("?") } }
+}

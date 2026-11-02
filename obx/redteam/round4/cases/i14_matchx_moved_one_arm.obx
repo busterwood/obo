@@ -1,0 +1,7 @@
+// error: moved on one path
+type D = record { s: str }
+fn main() {
+    var x = D{s: "a"}
+    let k = 1
+    let r = match k { 1 { move(x) } else { D{s: "b"} } }
+}

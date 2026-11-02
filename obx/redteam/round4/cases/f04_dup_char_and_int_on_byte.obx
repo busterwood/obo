@@ -1,0 +1,5 @@
+// error: twice
+fn main() {
+    let b: byte = 'a'
+    match b { 'a' { println("a") } 97 { println("97") } else { println("?") } }
+}

@@ -1,0 +1,9 @@
+// the index expression traps in position: g must not run
+// exit: 10
+fn g(): int { println("g"); return 10 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    let m = 9223372036854775807
+    f(mut &xs[m + 1], g())
+}

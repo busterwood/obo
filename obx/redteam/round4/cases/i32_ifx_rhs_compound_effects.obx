@@ -1,0 +1,10 @@
+// expect: 3
+// expect: 5
+fn clr(xs: mut &[]int): int { xs = [0]; return 1 }
+fn main() {
+    var xs = [2, 2]
+    let c = true
+    xs[0] += if c { clr(mut &xs) } else { 0 }
+    println(xs[0])
+    println(xs[0] + 2)
+}

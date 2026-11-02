@@ -1,0 +1,7 @@
+// expect: drop t
+// expect: 1
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn mk[T](x: &T): D { return D{s: "t"} }
+fn g[T](c: bool, x: T): int { return if c { len(mk(&x).s) } else { 0 } }
+fn main() { println(g(true, 5)) }

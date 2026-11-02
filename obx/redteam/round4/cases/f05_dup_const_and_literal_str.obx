@@ -1,0 +1,6 @@
+// error: twice
+const A = "a"
+fn main() {
+    let s = "a"
+    match s { A { println("A") } "a" { println("a") } else { println("?") } }
+}

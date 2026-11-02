@@ -1,0 +1,7 @@
+// by design: [] as the first branch has no expected type (the first branch sets the type)
+// error: expected type
+fn main() {
+    let c = false
+    let xs = if c { [] } else { [1, 2] }
+    println(len(xs) - 2)
+}

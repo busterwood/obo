@@ -1,0 +1,3 @@
+// error: expected|literal
+const K = 1
+fn main() { let k = 1; match k { K(a), 2 { } else { } } }

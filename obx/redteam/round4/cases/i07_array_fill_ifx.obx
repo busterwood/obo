@@ -1,0 +1,6 @@
+// expect: 3
+fn main() {
+    let c = true
+    let xs = array(3, if c { "x" } else { "y" })
+    println(len(xs))
+}

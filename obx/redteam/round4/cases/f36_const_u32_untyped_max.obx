@@ -1,0 +1,6 @@
+// expect: hit
+const M = 4294967295
+fn main() {
+    let x: u32 = 4294967295
+    match x { M { println("hit") } else { println("?") } }
+}

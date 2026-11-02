@@ -1,0 +1,6 @@
+// expect: 1
+fn main() {
+    let b: byte = 'x'
+    let n = match b { 'x', 'y' { 1 } 'z' { 2 } else { 3 } }
+    println(n)
+}

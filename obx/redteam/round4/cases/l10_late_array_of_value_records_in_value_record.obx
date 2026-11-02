@@ -1,0 +1,10 @@
+// expect: 12
+type In = value record { a: int }
+type Out = record { is: []In }
+fn (i: mut &In) add(k: int) { i.a += k }
+fn set(o: mut &Out): int { o.is = [In{a: 0}, In{a: 10}]; return 2 }
+fn main() {
+    var o = Out{is: [In{a: 1}, In{a: 1}]}
+    o.is[1].add(set(mut &o))
+    println(o.is[1].a)
+}

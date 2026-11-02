@@ -1,0 +1,9 @@
+// by design: as e17
+// error: moved on one path
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn pick[T](c: bool, a: T, b: T): T { return if c { a } else { b } }
+fn main() {
+    let d = pick(false, D{s: "a"}, D{s: "b"})
+    println(d.s)
+}

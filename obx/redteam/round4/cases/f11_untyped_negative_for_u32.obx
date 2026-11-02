@@ -1,0 +1,6 @@
+// error: fit
+const N = -1
+fn main() {
+    let x: u32 = 3
+    match x { N { println("n") } else { println("?") } }
+}

@@ -1,0 +1,7 @@
+// error: K|constant
+const K = 3
+fn main() {
+    let K = 5
+    let x = 5
+    match x { K, 9 { println("K") } else { println("other") } }
+}

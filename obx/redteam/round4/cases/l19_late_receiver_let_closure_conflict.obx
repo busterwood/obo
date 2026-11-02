@@ -1,0 +1,8 @@
+// error: borrowed|closure
+type C = record { n: int }
+fn (c: mut &C) add(k: int): int { c.n += k; return c.n }
+fn main() {
+    var c = C{n: 0}
+    let f = fn(): int { return c.add(1) }
+    println(c.add(f()))
+}

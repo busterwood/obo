@@ -1,0 +1,7 @@
+// SPEC 8: a char constant is a byte: x == C type-checks
+// expect: a
+const C = 'a'
+fn main() {
+    let b: byte = 'a'
+    match b { C { println("a") } else { println("?") } }
+}

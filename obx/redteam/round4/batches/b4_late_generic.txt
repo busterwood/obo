@@ -1,0 +1,247 @@
+=== d01_generic_elem_receiver_late
+// expect: 2
+// expect: 5
+type Pushy = interface { fn (mut &Self) push(v: int) }
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int) { append(mut &b.xs, v) }
+fn grow[T](ts: mut &[]T, t: T): int { append(mut &ts, t); return 5 }
+fn h[T: Pushy](ts: mut &[]T, extra: T) { ts[0].push(grow(ts, extra)) }
+fn main() {
+    var bs = [B{xs: [1]}]
+    h(mut &bs, B{xs: []})
+    println(len(bs[0].xs))
+    println(bs[0].xs[1])
+}
+=== d02_generic_elem_receiver_shrink
+// exit: 3
+type Pushy = interface { fn (mut &Self) push(v: int) }
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int) { append(mut &b.xs, v) }
+fn clear[T](ts: mut &[]T): int { ts = []; return 5 }
+fn h[T: Pushy](ts: mut &[]T) { ts[0].push(clear(ts)) }
+fn main() {
+    var bs = [B{xs: [1]}]
+    h(mut &bs)
+}
+=== d03_generic_record_field_late
+// expect: 3
+type Box[T] = record { items: []T; n: int }
+fn (b: mut &Box[T]) put(x: T) { append(mut &b.items, x) }
+fn (b: mut &Box[T]) bump(): int { b.n += 1; b.items = []; return b.n }
+fn main() {
+    var b = Box[int]{items: [1, 2], n: 2}
+    b.put(b.bump())
+    println(b.items[0])
+}
+=== d04_generic_late_alias
+// expect: 2
+type Ints = []int
+type W = record { xs: Ints }
+fn (w: mut &W) put(x: int) { append(mut &w.xs, x) }
+fn bump(w: mut &W): int { w.xs = [1]; return 2 }
+fn main() {
+    var ws: []W = [W{xs: []}]
+    ws[0].put(bump(mut &ws[0]))
+    println(ws[0].xs[1])
+}
+=== d05_slice_param_not_late
+// receiver through a slice: held from its position
+// error: borrowed|twice
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int) { append(mut &b.xs, v) }
+fn g(s: mut &[B]): int { return 1 }
+fn h(s: mut &[B]) { s[0].push(g(s)) }
+fn main() {
+    var bs = [B{xs: []}]
+    h(mut &bs)
+}
+=== d06_ref_to_array_param_late
+// expect: 1
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int) { append(mut &b.xs, v) }
+fn g(s: mut &[]B): int { append(mut &s, B{xs: []}); return 1 }
+fn h(s: mut &[]B) { s[0].push(g(s)) }
+fn main() {
+    var bs = [B{xs: []}]
+    h(mut &bs)
+    println(bs[0].xs[0])
+}
+=== d07_op_method_left_receiver
+// SPEC 7.4: a + b means a.add(b); add takes a by value: a is read first
+// expect: 3
+type D = value record { u: int }
+fn (a: D) add(b: D): D { return D{u: a.u + b.u} }
+fn bump(d: mut &D): D { d.u += 10; return D{u: 2} }
+fn main() {
+    var a = D{u: 1}
+    let s = a + bump(mut &a)
+    println(s.u)
+}
+=== d08_op_method_borrow_receiver
+// a == b means a.eq(&b): a borrowed; the call form a.eq(&f(mut &a)) would take a at the call
+// expect: true
+type D = value record { u: int }
+fn (a: &D) eq(b: &D): bool { return a.u == b.u }
+fn bump(d: mut &D): D { d.u += 10; return D{u: 11} }
+fn main() {
+    var a = D{u: 1}
+    println(a.eq(&bump(mut &a)))
+}
+=== d09_op_method_borrow_receiver_op_form
+// an operator's left operand is read first (ref README 24): a is copied before bump
+// expect: false
+type D = value record { u: int }
+fn (a: &D) eq(b: &D): bool { return a.u == b.u }
+fn bump(d: mut &D): D { d.u += 10; return D{u: 11} }
+fn main() {
+    var a = D{u: 1}
+    println(a == bump(mut &a))
+}
+=== d10_constraint_method_value_recv
+// expect: 4
+type Ord2 = interface { fn (&Self) cmp2(o: &Self): int }
+type M = value record { n: int }
+fn (a: M) cmp2(b: &M): int { return a.n - b.n }
+fn bump(m: mut &M): M { m.n = 10; return M{n: 6} }
+fn diff[T: Ord2](a: mut &T, f: fn(mut &T): T): int { return a.cmp2(&f(a)) }
+fn main() {
+    var m = M{n: 1}
+    println(diff(mut &m, bump))
+}
+=== d11_method_value_late
+// expect: 4
+type C = record { n: int }
+fn (c: mut &C) add(k: int): int { c.n += k; return c.n }
+fn main() {
+    var c = C{n: 0}
+    let r = c.add(c.add(c.add(1)))
+    println(r)
+}
+=== d12_late_generic_fn_two_params
+// expect: 3
+fn both[T](a: mut &[]T, b: T): int { append(mut &a, b); return len(a) }
+fn main() {
+    var xs = [1]
+    println(both(mut &xs, both(mut &xs, 5) * 0))
+}
+=== d14_generic_constraint_imeth_rebuild
+// expect: 1
+type Clear = interface { fn (mut &Self) clear(): int }
+type B = record { xs: []int }
+fn (b: mut &B) clear(): int { b.xs = []; return 0 }
+fn (b: mut &B) put(v: int) { append(mut &b.xs, v) }
+fn run[T: Clear](t: mut &T): int { return t.clear() + 1 }
+fn main() {
+    var b = B{xs: [1, 2, 3]}
+    b.put(run(mut &b))
+    println(len(b.xs))
+}
+=== d15_late_closure_param_call
+// a closure parameter called in a later argument mutates the root through its capture
+// the closure is an argument of apply only; put's index is checked again at the call
+// exit: 3
+fn put(x: mut &int, v: int) { x = v }
+fn apply(f: &fn(): int): int { return f() }
+fn main() {
+    var xs = [1, 2]
+    put(mut &xs[1], apply(fn(): int { xs = []; return 3 }))
+    println(len(xs))
+}
+=== d16_late_closure_call_through_var
+// error: borrowed|closure
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var xs = [1, 2]
+    let c = fn(): int { xs = []; return 3 }
+    put(mut &xs[1], c())
+}
+=== d17_late_inside_closure_body_capture
+// inside a closure, the captured variable is a late root
+// expect: 1
+// expect: 9
+fn shrink(xs: mut &[]int): int { xs = [0]; return 9 }
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var xs = [1, 2]
+    {
+        let c = fn() { put(mut &xs[0], shrink(mut &xs)) }
+        c()
+    }
+    println(len(xs))
+    println(xs[0])
+}
+=== d18_late_inside_closure_index_bad
+// exit: 3
+fn shrink(xs: mut &[]int): int { xs = [0]; return 9 }
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var xs = [1, 2]
+    let c = fn() { put(mut &xs[1], shrink(mut &xs)) }
+    c()
+}
+=== d19_ifx_branch_with_late_inside_arg
+// expect: 2
+// expect: 1
+fn add(xs: mut &[]int, v: int): int { append(mut &xs, v); return len(xs) }
+fn main() {
+    var xs: []int = []
+    let c = true
+    println(add(mut &xs, if c { add(mut &xs, 1) } else { 0 }) + 0)
+    println(xs[0])
+}
+=== d20_matchx_branch_with_late_inside_arg
+// expect: 2
+fn add(xs: mut &[]int, v: int): int { append(mut &xs, v); return len(xs) }
+fn main() {
+    var xs: []int = []
+    let k = 2
+    println(add(mut &xs, match k { 2 { add(mut &xs, 1) } else { 0 } }))
+}
+=== d21_matchx_binding_root_late
+// a match arm binds a borrow of a field of x; the arm's call mutates x: frozen
+// error: borrowed
+type E = closed { A([]int); B }
+fn clear(e: mut &E): int { e = E.B; return 0 }
+fn main() {
+    var e = E.A([1, 2])
+    let n = match e { E.A(v) { len(v) + clear(mut &e) } E.B { 0 } }
+    println(n)
+}
+=== d22_late_recv_under_matchx_binding
+// v binds a borrow of e's field; a late mut borrow of e in the arm conflicts
+// error: borrowed
+type E = closed { A([]int); B }
+fn (e: mut &E) clear(k: int): int { e = E.B; return k }
+fn main() {
+    var e = E.A([1, 2])
+    let n = match e { E.A(v) { e.clear(len(v)) } E.B { 0 } }
+    println(n)
+}
+=== d23_late_borrow_var_derefs_param
+// expect: 6
+type P = record { xs: []int }
+fn (p: mut &P) add(v: int): int { append(mut &p.xs, v); return len(p.xs) }
+fn go(p: mut &P): int { return p.add(p.add(p.add(1) + 1) + 1) }
+fn main() {
+    var p = P{xs: [1, 2, 3]}
+    println(go(mut &p))
+}
+=== d24_value_record_receiver_byval_after
+// a by-value receiver is copied in position (snapped): later changes do not reach it
+// expect: 1
+type P = value record { n: int }
+fn (p: P) show(k: int): int { return p.n }
+fn bump(p: mut &P): int { p.n = 50; return 0 }
+fn main() {
+    var p = P{n: 1}
+    println(p.show(bump(mut &p)))
+}
+=== d25_value_record_byval_from_array
+// expect: 1
+type P = value record { n: int }
+fn (p: P) show(k: int): int { return p.n }
+fn bump(ps: mut &[]P): int { ps = [P{n: 50}]; return 0 }
+fn main() {
+    var ps = [P{n: 1}]
+    println(ps[0].show(bump(mut &ps)))
+}

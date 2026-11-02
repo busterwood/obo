@@ -1,0 +1,14 @@
+// SPEC 7.5: arguments are evaluated left to right (and 7.4/3: operands left
+// to right). 10 / z traps first: division by zero, exit 10. The arguments are
+// emitted as one C call f(rt_div(10, z), xs.data[rt_idx(5, ...)]) whose
+// argument order C leaves unspecified; gcc (the default C compiler of obxc)
+// evaluates the index first and the program stops with exit 3. clang gives 10.
+// The same with a late borrow: f(mut &xs[5], 10 / z) gives 10 under gcc where
+// the spec says 3 (cases/a04, a05, a16; cases2/b01..b06 incl. 10 / z + xs[5]).
+// exit: 10
+fn f(a: int, b: int) { println(a + b) }
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    f(10 / z, xs[5])
+}

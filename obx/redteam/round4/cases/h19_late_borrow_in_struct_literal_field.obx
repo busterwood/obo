@@ -1,0 +1,9 @@
+// record literals take values: a borrow call inside a field value is an ordinary nested call
+// expect: 1
+type P = record { a: int; b: int }
+fn g(xs: mut &[]int, v: int): int { append(mut &xs, v); return len(xs) }
+fn main() {
+    var xs: []int = []
+    let p = P{b: g(mut &xs, 1), a: len(xs)}
+    println(p.a)
+}

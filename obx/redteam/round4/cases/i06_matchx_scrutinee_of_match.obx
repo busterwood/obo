@@ -1,0 +1,6 @@
+// expect: b
+type E = closed { A; B }
+fn main() {
+    let k = 2
+    match (match k { 1 { E.A } else { E.B } }) { E.A { println("a") } E.B { println("b") } }
+}

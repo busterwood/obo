@@ -1,0 +1,298 @@
+=== i03_ifx_for_range
+// expect: 3
+fn main() {
+    let c = true
+    var n = 0
+    for i in 0..(if c { 3 } else { 5 }) { n += 1 }
+    println(n)
+}
+=== i04_ifx_for_in_array
+// expect: 1
+// expect: 2
+fn main() {
+    let c = true
+    for x in (if c { [1, 2] } else { [3] }) { println(x) }
+}
+=== i05_ifx_for_in_owned_drops
+// expect: a
+// expect: drop a
+// expect: end
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn main() {
+    let c = true
+    for d in (if c { [D{s: "a"}] } else { [] }) { println(d.s) }
+    println("end")
+}
+=== i06_matchx_scrutinee_of_match
+// expect: b
+type E = closed { A; B }
+fn main() {
+    let k = 2
+    match (match k { 1 { E.A } else { E.B } }) { E.A { println("a") } E.B { println("b") } }
+}
+=== i07_array_fill_ifx
+// expect: 3
+fn main() {
+    let c = true
+    let xs = array(3, if c { "x" } else { "y" })
+    println(len(xs))
+}
+=== i08_append_ifx_owned
+// expect: 1
+// expect: drop a
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn main() {
+    var xs: []D = []
+    let c = true
+    append(mut &xs, if c { D{s: "a"} } else { D{s: "b"} })
+    println(len(xs))
+}
+=== i09_once_set_ifx
+// expect: y
+var G: once str
+fn main() {
+    let c = false
+    G.set(if c { "x" } else { "y" })
+    println(G.get())
+}
+=== i10_extern_str_arg_ifx
+// expect: 3
+extern "c" fn strlen(s: str): int
+fn main() {
+    let c = true
+    println(strlen(if c { "abc" } else { "de" }))
+}
+=== i11_ifx_in_drop_method
+// expect: drop big
+type D = record { n: int }
+fn (d: mut &D) drop() { println("drop " + if d.n > 5 { "big" } else { "small" }) }
+fn main() { let d = D{n: 9} }
+=== i13_matchx_moves_joined_both
+// error: moved
+type D = record { s: str }
+fn main() {
+    var x = D{s: "a"}
+    let k = 1
+    let r = match k { 1 { move(x) } else { move(x) } }
+    println(x.s)
+}
+=== i14_matchx_moved_one_arm
+// error: moved on one path
+type D = record { s: str }
+fn main() {
+    var x = D{s: "a"}
+    let k = 1
+    let r = match k { 1 { move(x) } else { D{s: "b"} } }
+}
+=== i15_ifx_move_one_never
+// a never branch: the variable moved by the other branch is moved after
+// error: moved
+type D = record { s: str }
+fn main() {
+    let x = D{s: "a"}
+    let c = true
+    let r = if c { x } else { panic("p") }
+    println(x.s)
+}
+=== i16_ifx_move_one_never_ok
+// expect: a
+type D = record { s: str }
+fn main() {
+    let x = D{s: "a"}
+    let c = true
+    let r = if c { x } else { panic("p") }
+    println(r.s)
+}
+=== i17_matchx_closure_arg
+// expect: 6
+fn ap(f: &fn(int): int, x: int): int { return f(x) }
+fn main() {
+    let k = 1
+    println(ap(fn(x: int): int { return match x { 3 { x * 2 } else { 0 } } }, 3))
+}
+=== i18_ifx_closure_result_rejected
+// error: closure
+fn main() {
+    let c = true
+    let f = if c { fn() { } } else { fn() { } }
+}
+=== i19_ifx_slice_rejected
+// error: slice
+fn main() {
+    let xs = [1, 2]
+    let c = true
+    let s = if c { xs[0..1] } else { xs[1..2] }
+}
+=== i20_ifx_borrow_via_ref_param_rejected
+// error: borrow
+fn f(r: &[]int) { }
+fn main() {
+    let xs = [1]
+    let c = true
+    f(if c { &xs } else { &xs })
+}
+=== i21_ifx_borrow_of_ifx
+// expect: 2
+fn f(r: &[]int) { println(len(r)) }
+fn main() {
+    let c = true
+    f(&(if c { [1, 2] } else { [] }))
+}
+=== i22_ifx_method_receiver
+// expect: 2
+type B = record { xs: []int }
+fn (b: &B) n(): int { return len(b.xs) }
+fn main() {
+    let c = true
+    println((if c { B{xs: [1, 2]} } else { B{xs: []} }).n())
+}
+=== i23_ifx_method_mut_receiver
+// expect: 3
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int): int { append(mut &b.xs, v); return len(b.xs) }
+fn main() {
+    let c = true
+    println((if c { B{xs: [1, 2]} } else { B{xs: []} }).push(1))
+}
+=== i24_ifx_postfix_field
+// expect: 2
+type B = record { xs: []int }
+fn main() {
+    let c = true
+    println(len(if c { B{xs: [1, 2]} } else { B{xs: []} }.xs))
+}
+=== i25_ifx_postfix_index
+// expect: 2
+fn main() {
+    let c = true
+    println(if c { [1, 2] } else { [3, 4] }[1])
+}
+=== i26_ifx_then_binary
+// expect: 13
+fn main() {
+    let c = true
+    println(if c { 10 } else { 20 } + 3)
+}
+=== i27_ifx_comparison_chain
+// expect: true
+fn main() {
+    let c = true
+    println(if c { 1 } else { 2 } == 1)
+}
+=== i28_ifx_nested_try_in_cond
+// expect: 1
+// expect: err
+fn p(s: str): Result[bool, str] { return if s == "t" { Ok(true) } else { Err(s) } }
+fn g(s: str): Result[int, str] { return Ok(if try p(s) { 1 } else { 0 }) }
+fn main() {
+    match g("t") { Ok(n) { println(n) } Err(e) { println("err") } }
+    match g("x") { Ok(n) { println(n) } Err(e) { println("err") } }
+}
+=== i29_matchx_try_scrutinee
+// expect: one
+// expect: err
+fn p(s: str): Result[int, str] { return if s == "1" { Ok(1) } else { Err(s) } }
+fn g(s: str): Result[str, str] { return Ok(match try p(s) { 1 { "one" } else { "other" } }) }
+fn main() {
+    match g("1") { Ok(n) { println(n) } Err(e) { println("err") } }
+    match g("x") { Ok(n) { println(n) } Err(e) { println("err") } }
+}
+=== i30_ifx_drop_value_unused_stmt
+// expect: drop a
+// expect: end
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn id(d: D): D { return d }
+fn main() {
+    let c = true
+    id(if c { D{s: "a"} } else { D{s: "b"} })
+    println("end")
+}
+=== i31_ifx_in_compound_target_index
+// expect: 5
+fn main() {
+    var xs = [0, 0]
+    let c = true
+    xs[if c { 1 } else { 0 }] += 5
+    println(xs[1])
+}
+=== i32_ifx_rhs_compound_effects
+// expect: 3
+// expect: 5
+fn clr(xs: mut &[]int): int { xs = [0]; return 1 }
+fn main() {
+    var xs = [2, 2]
+    let c = true
+    xs[0] += if c { clr(mut &xs) } else { 0 }
+    println(xs[0])
+    println(xs[0] + 2)
+}
+=== i33_ifx_rhs_compound_shrink_trap
+// exit: 3
+fn clr(xs: mut &[]int): int { xs = [0]; return 1 }
+fn main() {
+    var xs = [2, 2]
+    let c = true
+    xs[1] += if c { clr(mut &xs) } else { 0 }
+}
+=== i34_matchx_str_consts_in_loop_break
+// expect: 2
+const STOP = "stop"
+fn main() {
+    let ws = ["a", "b", "stop", "c"]
+    var n = 0
+    for w in ws {
+        let done = match w { STOP { true } else { false } }
+        if done { break }
+        n += 1
+    }
+    println(n)
+}
+=== i35_match_stmt_const_break
+// expect: 2
+const STOP = "stop"
+fn main() {
+    let ws = ["a", "b", "stop", "c"]
+    var n = 0
+    for w in ws {
+        match w { STOP { break } else { n += 1 } }
+    }
+    println(n)
+}
+=== i36_ifx_value_record_drop
+// expect: drop v
+// expect: end
+type V = value record { n: int }
+fn (v: mut &V) drop() { println("drop v") }
+fn main() {
+    let c = true
+    let k = (if c { V{n: 1} } else { V{n: 2} }).n
+    println("end")
+}
+=== i37_ifx_cond_moves
+// error: moved
+type D = record { s: str }
+fn eat(d: D): bool { return true }
+fn main() {
+    let d = D{s: "a"}
+    let r = if eat(d) { 1 } else { 2 }
+    println(d.s)
+}
+=== i38_ifx_match_in_assert
+// expect: ok
+fn main() {
+    let k = 1
+    assert(match k { 1 { true } else { false } })
+    println("ok")
+}
+=== i39_ifx_in_return_of_never_fn
+// exit: 7
+fn die(c: bool): never { exit(if c { 7 } else { 8 }) }
+fn main() { die(true) }
+=== i40_matchx_never_scrutinee
+// error: value
+fn main() {
+    let x = match exit(7) { 1 { 1 } else { 2 } }
+}

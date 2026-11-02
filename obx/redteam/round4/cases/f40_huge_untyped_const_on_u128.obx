@@ -1,0 +1,6 @@
+// error: constant
+const H = 1 << 128
+fn main() {
+    let x: u128 = 0
+    match x { H { println("h") } else { println("?") } }
+}

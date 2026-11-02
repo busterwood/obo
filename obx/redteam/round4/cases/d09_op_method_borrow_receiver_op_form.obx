@@ -1,0 +1,9 @@
+// an operator's left operand is read first (ref README 24): a is copied before bump
+// expect: false
+type D = value record { u: int }
+fn (a: &D) eq(b: &D): bool { return a.u == b.u }
+fn bump(d: mut &D): D { d.u += 10; return D{u: 11} }
+fn main() {
+    var a = D{u: 1}
+    println(a == bump(mut &a))
+}

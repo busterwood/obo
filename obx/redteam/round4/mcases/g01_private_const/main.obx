@@ -1,0 +1,7 @@
+// a private constant of another module cannot be an arm
+// error: private|SECRET|not public
+import "./k"
+fn main() {
+    let x = 4
+    match x { k.SECRET { println("s") } else { println("?") } }
+}

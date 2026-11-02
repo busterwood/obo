@@ -1,0 +1,15 @@
+// expect: 1
+// expect: 9
+type Y = record { ys: []int }
+fn grow(xs: mut &[]Y): int {
+    var i = 0
+    while i < 40 { append(mut &xs[0].ys, i); append(mut &xs, Y{ys: [i]}); i += 1 }
+    return 9
+}
+fn put(y: mut &int, v: int) { y = v }
+fn main() {
+    var xs = [Y{ys: [0, 0]}, Y{ys: [1, 1]}]
+    put(mut &xs[1].ys[1], grow(mut &xs))
+    println(xs[1].ys[0])
+    println(xs[1].ys[1])
+}

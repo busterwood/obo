@@ -1,0 +1,8 @@
+// the closure is held from its position: a later late borrow of x conflicts
+// error: borrowed|twice
+type X = record { v: []int }
+fn run2(f: &fn(), a: &[]int) { f(); println(a[0]) }
+fn main() {
+    var x = X{v: [5]}
+    run2(fn() { x = X{v: [1]} }, &x.v)
+}

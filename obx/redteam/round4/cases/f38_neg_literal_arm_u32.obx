@@ -1,0 +1,5 @@
+// error: fit
+fn main() {
+    let x: u32 = 3
+    match x { -1 { println("n") } else { println("?") } }
+}

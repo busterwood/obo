@@ -1,0 +1,6 @@
+// SPEC 8: x == 'a' with x: int does not type-check (operands int and byte); a literal arm should not either
+// error: byte|int|char
+fn main() {
+    let n = 97
+    match n { 'a' { println("a") } else { println("?") } }
+}

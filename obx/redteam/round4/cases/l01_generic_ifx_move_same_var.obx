@@ -1,0 +1,15 @@
+// expect: drop a
+// expect: end
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn keep[T](c: bool, a: T): T { var x = a; return if c { move(x) } else { move(x) } }
+fn main() {
+    let c = true
+    let d = keep(c, D{s: "a"})
+    let n = len(d.s)
+    let e = d
+    {
+        let f = e
+    }
+    println("end")
+}

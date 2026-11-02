@@ -1,0 +1,8 @@
+// expect: two
+const TWO = 2
+const THREE: int = 3
+fn main() {
+    let k = 2
+    let s = match k { TWO { "two" } THREE, 4 { "three" } else { "?" } }
+    println(s)
+}

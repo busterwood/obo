@@ -1,0 +1,8 @@
+// x is moved by the first argument; the borrow of x.a is taken at the call: overlap
+// error: moved|borrow
+type X = record { a: str }
+fn f(x: X, r: &str) { println(r) }
+fn main() {
+    let x = X{a: "a"}
+    f(x, &x.a)
+}

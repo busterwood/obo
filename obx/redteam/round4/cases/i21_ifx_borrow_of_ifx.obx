@@ -1,0 +1,6 @@
+// expect: 2
+fn f(r: &[]int) { println(len(r)) }
+fn main() {
+    let c = true
+    f(&(if c { [1, 2] } else { [] }))
+}

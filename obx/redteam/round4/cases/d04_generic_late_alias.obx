@@ -1,0 +1,10 @@
+// expect: 2
+type Ints = []int
+type W = record { xs: Ints }
+fn (w: mut &W) put(x: int) { append(mut &w.xs, x) }
+fn bump(w: mut &W): int { w.xs = [1]; return 2 }
+fn main() {
+    var ws: []W = [W{xs: []}]
+    ws[0].put(bump(mut &ws[0]))
+    println(ws[0].xs[1])
+}

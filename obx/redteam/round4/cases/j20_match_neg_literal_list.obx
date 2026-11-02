@@ -1,0 +1,5 @@
+// expect: neg
+fn main() {
+    let x = 0 - 2
+    match x { -1, -2 { println("neg") } else { println("?") } }
+}

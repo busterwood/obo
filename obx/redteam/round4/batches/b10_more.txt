@@ -1,0 +1,189 @@
+=== l01_generic_ifx_move_same_var
+// expect: drop a
+// expect: end
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn keep[T](c: bool, a: T): T { var x = a; return if c { move(x) } else { move(x) } }
+fn main() {
+    let c = true
+    let d = keep(c, D{s: "a"})
+    let n = len(d.s)
+    let e = d
+    {
+        let f = e
+    }
+    println("end")
+}
+=== l02_generic_ifx_temp_drop
+// expect: drop t
+// expect: 1
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn mk[T](x: &T): D { return D{s: "t"} }
+fn g[T](c: bool, x: T): int { return if c { len(mk(&x).s) } else { 0 } }
+fn main() { println(g(true, 5)) }
+=== l03_generic_matchx_T_result
+// SPEC 9.1: d moved by one arm only (by design; the statement form is the same)
+// error: moved on one path
+type Opt[T] = closed { Has(T); Nope }
+fn get[T](o: Opt[T], d: T): T { return match move(o) { Opt.Has(x) { x } Opt.Nope { d } } }
+fn main() {
+    println(get(Opt[int].Has(2), 7))
+}
+=== l04_generic_matchx_owned_T_result
+// error: moved on one path
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+type Opt[T] = closed { Has(T); Nope }
+fn get[T](o: Opt[T], d: T): T { return match move(o) { Opt.Has(x) { x } Opt.Nope { d } } }
+fn main() {
+    let r = get(Opt[D].Nope, D{s: "b"})
+    println(r.s)
+    let q = D{s: "a"}
+}
+=== l05_generic_matchx_unused_d_dropped
+// SPEC 9.1: d is moved on one path (the Nope arm) but not the other: an error
+// error: moved on one path
+type D = record { s: str }
+type Opt[T] = closed { Has(T); Nope }
+fn get[T](o: Opt[T], d: T): T { return match move(o) { Opt.Has(x) { x } Opt.Nope { d } } }
+fn main() { }
+=== l06_late_self_method_reassigns_self
+// expect: 1
+// expect: 2
+type P = record { xs: []int; k: int }
+fn (p: mut &P) reset(): int { p = P{xs: [1], k: 2}; return 9 }
+fn (p: mut &P) put(v: int) { append(mut &p.xs, v) }
+fn main() {
+    var p = P{xs: [5, 6, 7], k: 0}
+    p.put(p.reset())
+    println(p.xs[0])
+    println(len(p.xs))
+}
+=== l07_ifx_cond_late_receiver
+// expect: 2
+type C = record { n: int }
+fn (c: mut &C) inc(k: int): int { c.n += k; return c.n }
+fn main() {
+    var c = C{n: 0}
+    let r = c.inc(if c.inc(1) > 0 { 1 } else { 5 })
+    println(r)
+}
+=== l08_late_in_while_cond
+// expect: 3
+fn add(xs: mut &[]int, v: int): int { append(mut &xs, v); return len(xs) }
+fn main() {
+    var xs: []int = []
+    while add(mut &xs, add(mut &xs, 0) * 0) < 6 { }
+    println(len(xs) / 2)
+}
+=== l09_late_receiver_value_record_field_of_value_record
+// expect: 12
+type In = value record { a: int }
+type Out = value record { i: In; b: int }
+fn (i: mut &In) add(k: int) { i.a += k }
+fn set(o: mut &Out): int { o.i = In{a: 10}; return 2 }
+fn main() {
+    var o = Out{i: In{a: 1}, b: 0}
+    o.i.add(set(mut &o))
+    println(o.i.a)
+}
+=== l10_late_array_of_value_records_in_value_record
+// expect: 12
+type In = value record { a: int }
+type Out = record { is: []In }
+fn (i: mut &In) add(k: int) { i.a += k }
+fn set(o: mut &Out): int { o.is = [In{a: 0}, In{a: 10}]; return 2 }
+fn main() {
+    var o = Out{is: [In{a: 1}, In{a: 1}]}
+    o.is[1].add(set(mut &o))
+    println(o.is[1].a)
+}
+=== l11_late_nested_arrays_2d
+// expect: 9
+fn set(g: mut &[][]int): int { g = [[0, 0], [0, 0, 0]]; return 9 }
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var g = [[1], [2, 3]]
+    put(mut &g[1][1], set(mut &g))
+    println(g[1][1])
+}
+=== l12_late_nested_arrays_2d_shrink
+// exit: 3
+fn set(g: mut &[][]int): int { g = [[0, 0], [0]]; return 9 }
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var g = [[1], [2, 3]]
+    put(mut &g[1][1], set(mut &g))
+}
+=== l13_late_receiver_option_field_match
+// expect: 5
+type N = record { v: int; next: Option[N] }
+fn (n: mut &N) setv(k: int) { n.v = k }
+fn cut(n: mut &N): int { n.next = None; return 5 }
+fn main() {
+    var n = N{v: 1, next: Some(N{v: 2, next: None})}
+    n.setv(cut(mut &n))
+    println(n.v)
+}
+=== l14_two_late_shared_receiver_and_arg
+// expect: 2
+type B = record { xs: []int }
+fn (b: &B) cmp(o: &B, k: int): int { return len(b.xs) + len(o.xs) + k }
+fn grow(b: mut &B): int { append(mut &b.xs, 1); return 0 }
+fn main() {
+    var b = B{xs: []}
+    println(b.cmp(&b, grow(mut &b)))
+}
+=== l15_late_mut_receiver_shared_arg_same
+// error: twice|borrow
+type B = record { xs: []int }
+fn (b: mut &B) absorb(o: &B) { }
+fn main() {
+    var b = B{xs: []}
+    b.absorb(&b)
+}
+=== l16_late_borrow_after_try_return
+// expect: drop a
+// expect: err
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn p(): Result[int, str] { return Err("e") }
+fn use(d: mut &D, k: int) { }
+fn run(): Result[int, str] {
+    var d = D{s: "a"}
+    use(mut &d, try p())
+    return Ok(1)
+}
+fn main() { match run() { Ok(n) { println(n) } Err(e) { println("err") } } }
+=== l17_late_borrow_root_param_byvalue_var
+// expect: 2
+type X = record { a: []int }
+fn reset(x: mut &X): int { x = X{a: [1, 1]}; return 0 }
+fn f(var x: X): int { append(mut &x.a, reset(mut &x)); return len(x.a) - 1 }
+fn main() { println(f(X{a: []})) }
+=== l18_late_receiver_closure_capture_inside
+// expect: 3
+type C = record { n: int }
+fn (c: mut &C) add(k: int): int { c.n += k; return c.n }
+fn run(f: &fn(): int): int { return f() }
+fn main() {
+    var c = C{n: 0}
+    println(c.add(run(fn(): int { return c.add(1) + 1 })))
+}
+=== l19_late_receiver_let_closure_conflict
+// error: borrowed|closure
+type C = record { n: int }
+fn (c: mut &C) add(k: int): int { c.n += k; return c.n }
+fn main() {
+    var c = C{n: 0}
+    let f = fn(): int { return c.add(1) }
+    println(c.add(f()))
+}
+=== l20_ifx_matchx_dup_lits_bool_branch
+// expect: 1
+fn main() {
+    let b: byte = 'x'
+    let n = match b { 'x', 'y' { 1 } 'z' { 2 } else { 3 } }
+    println(n)
+}

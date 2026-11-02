@@ -1,0 +1,6 @@
+// expect: 6
+fn ap(f: &fn(int): int, x: int): int { return f(x) }
+fn main() {
+    let k = 1
+    println(ap(fn(x: int): int { return match x { 3 { x * 2 } else { 0 } } }, 3))
+}

@@ -1,0 +1,6 @@
+// error: twice|borrow
+fn f(r: mut &int, s: &[int]) { }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs[0], xs[0..2])
+}

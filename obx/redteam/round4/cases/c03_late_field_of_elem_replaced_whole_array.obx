@@ -1,0 +1,10 @@
+// expect: 1
+// expect: 42
+type R = record { v: []str }
+fn swapall(rs: mut &[]R): str { rs = [R{v: []}, R{v: []}]; return "42" }
+fn main() {
+    var rs = [R{v: ["a"]}, R{v: ["b"]}]
+    append(mut &rs[1].v, swapall(mut &rs))
+    println(len(rs[1].v))
+    println(rs[1].v[0])
+}

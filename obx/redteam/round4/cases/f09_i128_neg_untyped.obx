@@ -1,0 +1,6 @@
+// expect: neg
+const N = -(1 << 100)
+fn main() {
+    let x: i128 = -(1 << 100)
+    match x { N { println("neg") } else { println("?") } }
+}

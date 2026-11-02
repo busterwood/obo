@@ -1,0 +1,8 @@
+// expect: 5
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var xs = [0, 0]
+    let c = true
+    put(mut &xs[if c { 1 } else { 0 }], 5)
+    println(xs[1])
+}

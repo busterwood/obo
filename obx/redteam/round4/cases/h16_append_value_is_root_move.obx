@@ -1,0 +1,6 @@
+// error: moved|borrow
+type X = record { xs: []X }
+fn main() {
+    var x = X{xs: []}
+    append(mut &x.xs, x)
+}

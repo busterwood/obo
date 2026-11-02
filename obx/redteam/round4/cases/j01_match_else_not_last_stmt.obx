@@ -1,0 +1,6 @@
+// SPEC 3: else is the last arm. Accepted, then the C does not compile (internal error)
+// error: else
+fn main() {
+    let k = 2
+    match k { else { println("e") } 2 { println("2") } }
+}

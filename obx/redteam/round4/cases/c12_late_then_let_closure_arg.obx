@@ -1,0 +1,9 @@
+// a let closure passed as an argument: it captures x mutably and x is frozen while it lives
+// error: borrowed|closure
+type X = record { v: []int }
+fn run2(a: &[]int, f: &fn()) { f(); println(a[0]) }
+fn main() {
+    var x = X{v: [5]}
+    let c = fn() { x = X{v: [1]} }
+    run2(&x.v, c)
+}

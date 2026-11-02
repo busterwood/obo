@@ -1,0 +1,5 @@
+// error: else|exhaustive|value
+fn main() {
+    let k = 2
+    let s: int = match k { }
+}

@@ -1,0 +1,12 @@
+// the borrow is taken at the call: it sees the new x
+// expect: 107
+// expect: 7
+type X = record { a: []int; n: int }
+fn reset(x: mut &X): int { x = X{a: [100], n: 7}; return 7 }
+fn f(a: mut &[]int, k: int) { a[0] += k }
+fn main() {
+    var x = X{a: [1, 2, 3], n: 0}
+    f(mut &x.a, reset(mut &x))
+    println(x.a[0])
+    println(x.n)
+}

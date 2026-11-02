@@ -1,0 +1,9 @@
+// expect: old
+// expect: new!
+fn rep(xs: mut &[]str): str { let o = replace(mut &xs[0], "new"); return o }
+fn f(s: mut &str, t: str) { println(t); s = s + "!" }
+fn main() {
+    var xs = ["old"]
+    f(mut &xs[0], rep(mut &xs))
+    println(xs[0])
+}

@@ -1,0 +1,7 @@
+// expect: 1
+fn bump(n: mut &int): int { n += 10; return 0 }
+fn main() {
+    var n = 1
+    let c = true
+    println((if c { n } else { 0 }) + bump(mut &n))
+}

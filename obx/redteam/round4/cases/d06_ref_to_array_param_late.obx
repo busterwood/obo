@@ -1,0 +1,10 @@
+// expect: 1
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int) { append(mut &b.xs, v) }
+fn g(s: mut &[]B): int { append(mut &s, B{xs: []}); return 1 }
+fn h(s: mut &[]B) { s[0].push(g(s)) }
+fn main() {
+    var bs = [B{xs: []}]
+    h(mut &bs)
+    println(bs[0].xs[0])
+}

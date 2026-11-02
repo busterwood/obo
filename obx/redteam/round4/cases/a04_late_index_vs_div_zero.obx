@@ -1,0 +1,8 @@
+// SPEC 7.5: left to right: the index trap (exit 3) comes before the division (exit 10).
+// exit: 3
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    var z = 0
+    f(mut &xs[5], 10 / z)
+}

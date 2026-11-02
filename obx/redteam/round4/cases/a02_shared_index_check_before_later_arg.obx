@@ -1,0 +1,7 @@
+// exit: 3
+fn g(): int { println("g ran"); return 1 }
+fn f(x: &int, y: int) { println(x + y) }
+fn main() {
+    var xs = [1, 2]
+    f(&xs[5], g())
+}

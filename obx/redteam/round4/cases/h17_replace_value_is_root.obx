@@ -1,0 +1,6 @@
+// error: moved|borrow
+type X = record { o: Option[X] }
+fn main() {
+    var x = X{o: None}
+    let old = replace(mut &x.o, Some(x))
+}

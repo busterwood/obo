@@ -1,0 +1,9 @@
+// a closure argument holds its captures; the late borrow of x is taken after run returns
+// expect: 99
+type X = record { v: []int }
+fn run(f: &fn()): int { f(); return 1 }
+fn g(a: &[]int, k: int) { println(a[0] * 99 + k - 1) }
+fn main() {
+    var x = X{v: [5]}
+    g(&x.v, run(fn() { x = X{v: [1]} }))
+}

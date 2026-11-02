@@ -1,0 +1,6 @@
+// a constant named like a prelude variant
+// error: None|constant|variant
+fn main() {
+    let x = 1
+    match x { None { println("n") } else { println("?") } }
+}

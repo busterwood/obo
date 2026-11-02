@@ -1,0 +1,11 @@
+// a consuming match: the bound owned field is the result (moved out)
+// expect: drop y
+// expect: x
+// expect: drop x
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+type E = closed { P(D, D); Q }
+fn main() {
+    let d = match E.P(D{tag: "x"}, D{tag: "y"}) { E.P(a, b) { a } E.Q { D{tag: "q"} } }
+    println(d.tag)
+}

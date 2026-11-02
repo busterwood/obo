@@ -1,0 +1,10 @@
+// let q = mut &p: q is passed late; a later argument uses p: p is frozen by q
+// error: borrowed
+type P = record { n: int }
+fn bump(p: mut &P): int { p.n += 1; return p.n }
+fn f(a: mut &P, k: int) { a.n += k }
+fn main() {
+    var p = P{n: 0}
+    let q = mut &p
+    f(q, bump(mut &p))
+}

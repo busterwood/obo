@@ -1,0 +1,8 @@
+// SPEC 7.4: xs[i] += f(mut &xs) is allowed
+// expect: 11
+fn f(xs: mut &[]int): int { append(mut &xs, 0); return 10 }
+fn main() {
+    var xs = [1]
+    xs[0] += f(mut &xs)
+    println(xs[0])
+}

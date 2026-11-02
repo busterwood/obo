@@ -1,0 +1,11 @@
+// the scrutinee is a place: the arm (no bindings) replaces it
+// expect: 1
+// expect: b
+type E = closed { A(str); B(str) }
+fn set(e: mut &E): int { e = E.B("b"); return 1 }
+fn main() {
+    var e = E.A("a")
+    let n = match e { E.A(_) { set(mut &e) } E.B(_) { 2 } }
+    println(n)
+    match e { E.A(s) { println(s) } E.B(s) { println(s) } }
+}

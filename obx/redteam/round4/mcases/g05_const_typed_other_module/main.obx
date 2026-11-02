@@ -1,0 +1,6 @@
+// error: u32|int
+import "./k"
+fn main() {
+    let x = 7
+    match x { k.W { println("w") } else { println("?") } }
+}

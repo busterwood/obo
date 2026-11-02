@@ -1,0 +1,7 @@
+// exit: 3
+fn shrink(xs: mut &[]int): int { xs = []; return 1 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs[1], shrink(mut &xs))
+}

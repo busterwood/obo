@@ -1,0 +1,6 @@
+// expect: max
+const MAX: u64 = 18446744073709551615
+fn main() {
+    let x: u64 = 18446744073709551615
+    match x { MAX, 0 { println("max") } else { println("?") } }
+}

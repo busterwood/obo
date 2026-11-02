@@ -1,0 +1,6 @@
+// error: i32|int
+const N: i32 = 3
+fn main() {
+    let x = 3
+    match x { N { println("n") } else { println("?") } }
+}

@@ -1,0 +1,13 @@
+// expect: 3
+type B = record { v: []int }
+type W = record { b: B }
+fn (b: mut &B) push(k: int) { append(mut &b.v, k) }
+fn g(w: mut &W): int { w.b = B{v: [7, 7]}; return 1 }
+fn main() {
+    var w = W{b: B{v: []}}
+    {
+        let q = mut &w
+        q.b.push(g(q))
+    }
+    println(len(w.b.v))
+}

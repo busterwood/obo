@@ -1,0 +1,7 @@
+// expect: 2
+type P = value record { n: int }
+fn f(r: &P, p: P) { println(r.n + p.n) }
+fn main() {
+    let p = P{n: 1}
+    f(&p, p)
+}

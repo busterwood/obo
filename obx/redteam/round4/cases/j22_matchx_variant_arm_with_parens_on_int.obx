@@ -1,0 +1,6 @@
+// error: literal|constant
+const K = 1
+fn main() {
+    let x = 1
+    match x { K(a) { println("k") } else { println("?") } }
+}

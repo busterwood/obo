@@ -1,0 +1,2 @@
+// error: str
+fn main() { let s = "a"; match s { 'a' { } else { } } }

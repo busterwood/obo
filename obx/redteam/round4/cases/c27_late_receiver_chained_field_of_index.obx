@@ -1,0 +1,10 @@
+// expect: 3
+type K = record { m: []int }
+type A = record { ks: []K }
+fn (k: mut &K) add(v: int) { append(mut &k.m, v) }
+fn clear(a: mut &A): int { a.ks = [K{m: [1]}, K{m: [2]}]; return 3 }
+fn main() {
+    var a = A{ks: [K{m: []}, K{m: []}]}
+    a.ks[1].add(clear(mut &a))
+    println(a.ks[1].m[1])
+}

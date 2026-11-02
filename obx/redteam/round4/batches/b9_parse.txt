@@ -1,0 +1,175 @@
+=== j01_match_else_not_last_stmt
+// SPEC 3: else is the last arm. Accepted, then the C does not compile (internal error)
+// error: else
+fn main() {
+    let k = 2
+    match k { else { println("e") } 2 { println("2") } }
+}
+=== j02_matchx_else_not_last
+// error: else
+fn main() {
+    let k = 2
+    let s = match k { else { "e" } 2 { "2" } }
+    println(s)
+}
+=== j03_match_two_else
+// error: else
+fn main() {
+    let k = 2
+    let s = match k { 1 { "1" } else { "e" } else { "f" } }
+    println(s)
+}
+=== j04_match_closed_else_not_last
+// error: else
+type E = closed { A; B }
+fn main() {
+    let e = E.B
+    let s = match e { else { "e" } E.A { "a" } }
+    println(s)
+}
+=== j05_matchx_only_else
+// expect: e
+fn main() {
+    let k = 2
+    let s = match k { else { "e" } }
+    println(s)
+}
+=== j06_match_closed_only_else
+// expect: e
+type E = closed { A; B }
+fn main() {
+    let e = E.B
+    let s = match e { else { "e" } }
+    println(s)
+}
+=== j07_matchx_empty
+// error: else|exhaustive|value
+fn main() {
+    let k = 2
+    let s: int = match k { }
+}
+=== j08_match_closed_empty_expr
+// error: exhaustive|value
+type E = closed { A; B }
+fn main() {
+    let e = E.B
+    let s: int = match e { }
+}
+=== j09_match_empty_closed_type_expr
+// a closed type with no variants?
+// error: variant|closed|empty|value
+type E = closed { }
+fn f(e: E): int { return match e { } }
+fn main() { }
+=== j10_ifx_newline_before_else
+// expect: 2
+fn main() {
+    let c = false
+    let x = if c {
+        1
+    }
+    else {
+        2
+    }
+    println(x)
+}
+=== j11_ifx_else_if_newlines
+// expect: 3
+fn main() {
+    let c = false
+    let x = if c { 1 }
+    else if c { 2 }
+    else { 3 }
+    println(x)
+}
+=== j12_ifx_statement_start_is_stmt
+// error: expected|unreachable|value
+fn main() {
+    let c = true
+    if c { 1 } else { 2 } + 3
+}
+=== j13_matchx_arm_semicolons
+// expect: 2
+fn main() {
+    let k = 2
+    let x = match k {
+        1 { 1 };
+        2 { 2 };
+        else { 3 }
+    }
+    println(x)
+}
+=== j14_ifx_paren_arg_return
+// expect: 9
+fn f(): int { return (if true { 9 } else { 0 }) }
+fn main() { println(f()) }
+=== j15_ifx_in_match_arm_body_stmt
+// expect: big
+fn main() {
+    let k = 5
+    match k { 5 { println(if k > 3 { "big" } else { "small" }) } else { } }
+}
+=== j16_ifx_unary_minus
+// expect: -1
+fn main() {
+    let c = true
+    println(-if c { 1 } else { 2 })
+}
+=== j17_ifx_not
+// expect: false
+fn main() {
+    let c = true
+    println(!if c { true } else { false })
+}
+=== j18_ifx_borrow_of_ifx_mut
+// a mut borrow of a temporary (SPEC 7.5): a is copied into it, unchanged
+// expect: 1
+fn f(r: mut &int) { r += 1 }
+fn main() {
+    var a = 1
+    let c = true
+    f(mut &(if c { a } else { 2 }))
+    println(a)
+}
+=== j19_ifx_assign_target
+// error: assign|place
+fn main() {
+    var a = 1
+    var b = 2
+    let c = true
+    (if c { a } else { b }) = 5
+}
+=== j20_match_neg_literal_list
+// expect: neg
+fn main() {
+    let x = 0 - 2
+    match x { -1, -2 { println("neg") } else { println("?") } }
+}
+=== j21_match_dup_neg_literal_const
+// error: twice
+const M = -2
+fn main() {
+    let x = 0 - 2
+    match x { M, -2 { println("neg") } else { println("?") } }
+}
+=== j22_matchx_variant_arm_with_parens_on_int
+// error: literal|constant
+const K = 1
+fn main() {
+    let x = 1
+    match x { K(a) { println("k") } else { println("?") } }
+}
+=== j23_matchx_qualified_const_with_binds
+// error: literal|constant|variant
+type E = closed { A(int); B }
+fn main() {
+    let x = 1
+    match x { E.A(a) { println("k") } else { println("?") } }
+}
+=== j24_match_variant_on_int
+// error: literal|constant|variant
+type E = closed { A; B }
+fn main() {
+    let x = 1
+    match x { E.A { println("k") } else { println("?") } }
+}

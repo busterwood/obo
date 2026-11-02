@@ -1,0 +1,8 @@
+// a value record holding an array is not a copy type
+// error: moved|borrow
+type V = value record { xs: []int }
+fn f(v: V, r: &[]int) { println(len(r)) }
+fn main() {
+    let v = V{xs: [1]}
+    f(v, &v.xs)
+}

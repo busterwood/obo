@@ -1,0 +1,7 @@
+// expect: e
+type E = closed { A; B }
+fn main() {
+    let e = E.B
+    let s = match e { else { "e" } }
+    println(s)
+}

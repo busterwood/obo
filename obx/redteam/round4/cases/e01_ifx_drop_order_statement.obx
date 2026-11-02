@@ -1,0 +1,13 @@
+// SPEC 7.8: the branch's temporaries are dropped when it ends; the value is a temporary of the statement
+// expect: drop t1
+// expect: a!c
+// expect: drop c
+// expect: drop a
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+fn mk(t: str): D { return D{tag: t} }
+fn pick(c: bool): D { return if c { D{tag: sub(mk("t1").tag) + "a"} } else { mk("b") } }
+fn sub(s: str): str { return s[0..0] }
+fn main() {
+    println(pick(true).tag + "!" + mk("c").tag)
+}

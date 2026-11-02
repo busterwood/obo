@@ -1,0 +1,8 @@
+// error: moved
+type D = record { tag: str }
+fn main() {
+    let a = D{tag: "a"}
+    let c = true
+    let b = if c { a } else { a }
+    println(a.tag)
+}

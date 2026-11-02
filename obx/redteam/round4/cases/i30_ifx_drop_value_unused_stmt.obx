@@ -1,0 +1,10 @@
+// expect: drop a
+// expect: end
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn id(d: D): D { return d }
+fn main() {
+    let c = true
+    id(if c { D{s: "a"} } else { D{s: "b"} })
+    println("end")
+}

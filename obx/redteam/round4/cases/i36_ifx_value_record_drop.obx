@@ -1,0 +1,9 @@
+// expect: drop v
+// expect: end
+type V = value record { n: int }
+fn (v: mut &V) drop() { println("drop v") }
+fn main() {
+    let c = true
+    let k = (if c { V{n: 1} } else { V{n: 2} }).n
+    println("end")
+}

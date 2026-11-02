@@ -1,0 +1,7 @@
+// expect: 2
+fn add(xs: mut &[]int, v: int): int { append(mut &xs, v); return len(xs) }
+fn main() {
+    var xs: []int = []
+    let k = 2
+    println(add(mut &xs, match k { 2 { add(mut &xs, 1) } else { 0 } }))
+}

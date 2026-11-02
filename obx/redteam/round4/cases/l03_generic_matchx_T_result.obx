@@ -1,0 +1,7 @@
+// SPEC 9.1: d moved by one arm only (by design; the statement form is the same)
+// error: moved on one path
+type Opt[T] = closed { Has(T); Nope }
+fn get[T](o: Opt[T], d: T): T { return match move(o) { Opt.Has(x) { x } Opt.Nope { d } } }
+fn main() {
+    println(get(Opt[int].Has(2), 7))
+}

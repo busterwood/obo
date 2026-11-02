@@ -1,0 +1,10 @@
+// SPEC 7.4: a + b means a.add(b); add takes a by value: a is read first
+// expect: 3
+type D = value record { u: int }
+fn (a: D) add(b: D): D { return D{u: a.u + b.u} }
+fn bump(d: mut &D): D { d.u += 10; return D{u: 2} }
+fn main() {
+    var a = D{u: 1}
+    let s = a + bump(mut &a)
+    println(s.u)
+}

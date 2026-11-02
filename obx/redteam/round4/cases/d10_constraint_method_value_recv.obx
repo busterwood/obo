@@ -1,0 +1,10 @@
+// expect: 4
+type Ord2 = interface { fn (&Self) cmp2(o: &Self): int }
+type M = value record { n: int }
+fn (a: M) cmp2(b: &M): int { return a.n - b.n }
+fn bump(m: mut &M): M { m.n = 10; return M{n: 6} }
+fn diff[T: Ord2](a: mut &T, f: fn(mut &T): T): int { return a.cmp2(&f(a)) }
+fn main() {
+    var m = M{n: 1}
+    println(diff(mut &m, bump))
+}

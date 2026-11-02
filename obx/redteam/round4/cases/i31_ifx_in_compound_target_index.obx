@@ -1,0 +1,7 @@
+// expect: 5
+fn main() {
+    var xs = [0, 0]
+    let c = true
+    xs[if c { 1 } else { 0 }] += 5
+    println(xs[1])
+}

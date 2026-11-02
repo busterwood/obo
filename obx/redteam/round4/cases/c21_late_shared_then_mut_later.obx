@@ -1,0 +1,7 @@
+// &xs[0] late shared; mut &xs later as a normal argument: taken at the call: conflict
+// error: borrowed|twice
+fn f(a: &int, b: mut &[]int) { println(a) }
+fn main() {
+    var xs = [1]
+    f(&xs[0], mut &xs)
+}

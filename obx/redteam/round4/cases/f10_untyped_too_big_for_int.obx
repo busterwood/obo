@@ -1,0 +1,6 @@
+// error: fit
+const N = 1 << 70
+fn main() {
+    let x = 3
+    match x { N { println("n") } else { println("?") } }
+}

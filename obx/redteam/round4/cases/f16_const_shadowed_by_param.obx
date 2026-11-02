@@ -1,0 +1,6 @@
+// error: K|constant
+const K = 3
+fn f(K: int, x: int) {
+    match x { K { println("K") } else { println("other") } }
+}
+fn main() { f(5, 3) }

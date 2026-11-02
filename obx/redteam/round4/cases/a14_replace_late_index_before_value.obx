@@ -1,0 +1,6 @@
+// exit: 3
+fn g(): str { println("g"); return "x" }
+fn main() {
+    var xs = ["a"]
+    let o = replace(mut &xs[2], g())
+}

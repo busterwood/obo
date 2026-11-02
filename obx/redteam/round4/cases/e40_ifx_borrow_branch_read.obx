@@ -1,0 +1,8 @@
+// expect: 3
+fn main() {
+    let n = 3
+    let r = &n
+    let c = true
+    let m = if c { r } else { 0 }
+    println(m)
+}

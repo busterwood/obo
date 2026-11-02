@@ -1,0 +1,7 @@
+// expect: -1
+fn main() {
+    let x: i32 = 7
+    let c = true
+    let y = if c { -1 } else { x }
+    println(int(y))
+}

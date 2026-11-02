@@ -1,0 +1,7 @@
+// by design: as e05, for match
+// error: no value
+fn main() {
+    let k = 1
+    let x: int = match k { 1 { exit(4) } else { exit(5) } }
+    println(x)
+}

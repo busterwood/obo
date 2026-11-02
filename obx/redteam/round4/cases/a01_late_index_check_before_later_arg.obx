@@ -1,0 +1,10 @@
+// SPEC 7.5: the index expressions of a late place run in position; the index
+// is checked there (and again at the call). g must not run.
+// exit: 3
+fn g(): int { println("g ran"); return 1 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs[5], g())
+    println("not reached")
+}

@@ -1,0 +1,12 @@
+// the index expression runs once, in position
+// expect: idx
+// expect: g
+// expect: 12
+fn idx(): int { println("idx"); return 1 }
+fn g(): int { println("g"); return 10 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs[idx()], g())
+    println(xs[1])
+}

@@ -1,0 +1,8 @@
+// expect: 2
+type C = record { n: int }
+fn (c: mut &C) inc(k: int): int { c.n += k; return c.n }
+fn main() {
+    var c = C{n: 0}
+    let r = c.inc(if c.inc(1) > 0 { 1 } else { 5 })
+    println(r)
+}

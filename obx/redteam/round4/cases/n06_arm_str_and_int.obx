@@ -1,0 +1,2 @@
+// error: str|integer
+fn main() { let k = 1; match k { "a", 1 { } else { } } }

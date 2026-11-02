@@ -1,0 +1,7 @@
+// expect: 42
+fn main() {
+    let k = 2
+    let c = true
+    let y = match k { 1 { 0 } 2 { if c { match k { 2 { 42 } else { 1 } } } else { 3 } } else { 9 } }
+    println(y)
+}

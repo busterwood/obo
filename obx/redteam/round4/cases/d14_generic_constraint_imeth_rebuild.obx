@@ -1,0 +1,11 @@
+// expect: 1
+type Clear = interface { fn (mut &Self) clear(): int }
+type B = record { xs: []int }
+fn (b: mut &B) clear(): int { b.xs = []; return 0 }
+fn (b: mut &B) put(v: int) { append(mut &b.xs, v) }
+fn run[T: Clear](t: mut &T): int { return t.clear() + 1 }
+fn main() {
+    var b = B{xs: [1, 2, 3]}
+    b.put(run(mut &b))
+    println(len(b.xs))
+}

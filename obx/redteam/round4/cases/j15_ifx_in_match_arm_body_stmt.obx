@@ -1,0 +1,5 @@
+// expect: big
+fn main() {
+    let k = 5
+    match k { 5 { println(if k > 3 { "big" } else { "small" }) } else { } }
+}

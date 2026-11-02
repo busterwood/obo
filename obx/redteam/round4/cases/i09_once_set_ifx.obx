@@ -1,0 +1,7 @@
+// expect: y
+var G: once str
+fn main() {
+    let c = false
+    G.set(if c { "x" } else { "y" })
+    println(G.get())
+}

@@ -1,0 +1,9 @@
+// error: moved
+type X = record { v: []int }
+fn eat(x: X): int { return 1 }
+fn g(a: &[]int, k: int) { println(k) }
+fn main() {
+    let x = X{v: [5]}
+    let k = 1
+    g(&x.v, match k { 1 { eat(x) } else { eat(x) } })
+}

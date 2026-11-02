@@ -1,0 +1,8 @@
+// by design: an if expression whose branches all end in never has no value, like let x: int = exit(4)
+// error: no value
+fn main() {
+    println("start")
+    let c = true
+    let x: int = if c { exit(4) } else { panic("b") }
+    println(x)
+}

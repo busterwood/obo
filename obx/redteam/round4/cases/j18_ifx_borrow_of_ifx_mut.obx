@@ -1,0 +1,9 @@
+// a mut borrow of a temporary (SPEC 7.5): a is copied into it, unchanged
+// expect: 1
+fn f(r: mut &int) { r += 1 }
+fn main() {
+    var a = 1
+    let c = true
+    f(mut &(if c { a } else { 2 }))
+    println(a)
+}

@@ -1,0 +1,10 @@
+// expect: 1
+// expect: 0
+type E = closed { A(str); B }
+fn clr(xs: mut &[]E): int { xs = []; return 1 }
+fn main() {
+    var xs = [E.A("a")]
+    let n = match xs[0] { E.A(_) { clr(mut &xs) } E.B { 2 } }
+    println(n)
+    println(len(xs))
+}

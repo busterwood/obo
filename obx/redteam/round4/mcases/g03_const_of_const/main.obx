@@ -1,0 +1,7 @@
+// error: twice
+import "./k"
+const C = 2
+fn main() {
+    let x = 2
+    match x { k.B { println("b") } C { println("c") } else { println("?") } }
+}

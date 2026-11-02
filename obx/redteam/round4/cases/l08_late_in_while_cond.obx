@@ -1,0 +1,7 @@
+// expect: 3
+fn add(xs: mut &[]int, v: int): int { append(mut &xs, v); return len(xs) }
+fn main() {
+    var xs: []int = []
+    while add(mut &xs, add(mut &xs, 0) * 0) < 6 { }
+    println(len(xs) / 2)
+}

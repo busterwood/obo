@@ -1,0 +1,8 @@
+// exit: 3
+fn shrink(xs: mut &[]int): int { xs = [0]; return 9 }
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var xs = [1, 2]
+    let c = fn() { put(mut &xs[1], shrink(mut &xs)) }
+    c()
+}

@@ -1,0 +1,7 @@
+// exit: 3
+fn g(xs: mut &[]str): str { xs = []; return "new" }
+fn main() {
+    var xs = ["old"]
+    let o = replace(mut &xs[0], g(mut &xs))
+    println(o)
+}

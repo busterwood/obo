@@ -1,0 +1,6 @@
+// error: literal|constant|variant
+type E = closed { A(int); B }
+fn main() {
+    let x = 1
+    match x { E.A(a) { println("k") } else { println("?") } }
+}

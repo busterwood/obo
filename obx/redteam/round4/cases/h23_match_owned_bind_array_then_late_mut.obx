@@ -1,0 +1,8 @@
+// expect: 2
+type E = closed { A([]int); B }
+fn (e: mut &E) set(n: int) { e = E.A([n]) }
+fn main() {
+    var e = E.A([1, 2])
+    e.set(match e { E.A(v) { len(v) } E.B { 0 } })
+    match e { E.A(v) { println(v[0]) } E.B { println(0) } }
+}

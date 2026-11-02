@@ -1,0 +1,15 @@
+// expect: drop a
+// expect: err
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+fn mk(t: str): D { return D{tag: t} }
+fn parse(s: str): Result[int, str] { return if s == "1" { Ok(1) } else { Err(s) } }
+fn two(a: D, b: int): int { return b }
+fn run(): Result[int, str] {
+    let c = true
+    let n = two(mk("a"), if c { try parse("x") } else { 0 })
+    return Ok(n)
+}
+fn main() {
+    match run() { Ok(n) { println(n) } Err(e) { println("err") } }
+}

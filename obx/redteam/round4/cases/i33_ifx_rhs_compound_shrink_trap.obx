@@ -1,0 +1,7 @@
+// exit: 3
+fn clr(xs: mut &[]int): int { xs = [0]; return 1 }
+fn main() {
+    var xs = [2, 2]
+    let c = true
+    xs[1] += if c { clr(mut &xs) } else { 0 }
+}

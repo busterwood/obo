@@ -1,0 +1,3 @@
+// error: constant|variant|K
+const K = 1
+fn main() { let k = 1; match k { K.L.M { } else { } } }

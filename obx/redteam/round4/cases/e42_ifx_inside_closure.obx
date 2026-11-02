@@ -1,0 +1,6 @@
+// expect: 2
+fn main() {
+    let c = false
+    let f = fn(x: int): int { return if c { x } else { x * 2 } }
+    println(f(1))
+}

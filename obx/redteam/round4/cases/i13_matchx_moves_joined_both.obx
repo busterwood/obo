@@ -1,0 +1,8 @@
+// error: moved
+type D = record { s: str }
+fn main() {
+    var x = D{s: "a"}
+    let k = 1
+    let r = match k { 1 { move(x) } else { move(x) } }
+    println(x.s)
+}

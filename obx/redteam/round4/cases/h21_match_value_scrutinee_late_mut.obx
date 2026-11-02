@@ -1,0 +1,8 @@
+// expect: 2
+type E = closed { A(int); B }
+fn (e: mut &E) bump(k: int) { e = E.A(k) }
+fn main() {
+    var e = E.A(1)
+    e.bump(match e { E.A(n) { n + 1 } E.B { 0 } })
+    match e { E.A(n) { println(n) } E.B { println(0) } }
+}

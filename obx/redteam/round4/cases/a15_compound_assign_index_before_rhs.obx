@@ -1,0 +1,7 @@
+// SPEC 7.4: the index expressions run once, before b; checked again when stored
+// exit: 3
+fn g(): int { println("g"); return 10 }
+fn main() {
+    var xs = [1, 2]
+    xs[5] += g()
+}

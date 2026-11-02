@@ -1,0 +1,8 @@
+// error: k|constant
+import "./k"
+type R = record { A: int }
+fn main() {
+    let k = R{A: 1}
+    let x = 1
+    match x { k.A { println("a") } else { println("?") } }
+}

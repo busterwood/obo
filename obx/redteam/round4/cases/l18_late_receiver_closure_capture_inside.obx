@@ -1,0 +1,8 @@
+// expect: 3
+type C = record { n: int }
+fn (c: mut &C) add(k: int): int { c.n += k; return c.n }
+fn run(f: &fn(): int): int { return f() }
+fn main() {
+    var c = C{n: 0}
+    println(c.add(run(fn(): int { return c.add(1) + 1 })))
+}

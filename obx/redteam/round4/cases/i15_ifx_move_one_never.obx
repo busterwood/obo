@@ -1,0 +1,9 @@
+// a never branch: the variable moved by the other branch is moved after
+// error: moved
+type D = record { s: str }
+fn main() {
+    let x = D{s: "a"}
+    let c = true
+    let r = if c { x } else { panic("p") }
+    println(x.s)
+}

@@ -1,0 +1,7 @@
+// by design: as e47, for None
+// error: type argument
+fn main() {
+    let c = false
+    let o = if c { None } else { Some(1) }
+    match o { Some(x) { println(x) } None { println(0) } }
+}

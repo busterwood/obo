@@ -1,0 +1,8 @@
+// expect: 2
+type B = record { xs: []int }
+fn (b: &B) cmp(o: &B, k: int): int { return len(b.xs) + len(o.xs) + k }
+fn grow(b: mut &B): int { append(mut &b.xs, 1); return 0 }
+fn main() {
+    var b = B{xs: []}
+    println(b.cmp(&b, grow(mut &b)))
+}

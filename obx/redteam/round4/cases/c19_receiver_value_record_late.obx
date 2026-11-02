@@ -1,0 +1,11 @@
+// expect: 11
+// expect: 1
+type P = value record { x: int; y: int }
+fn (p: mut &P) addX(d: int) { p.x += d }
+fn reset(p: mut &P): int { p = P{x: 1, y: 1}; return 10 }
+fn main() {
+    var p = P{x: 100, y: 100}
+    p.addX(reset(mut &p))
+    println(p.x)
+    println(p.y)
+}

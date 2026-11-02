@@ -1,0 +1,9 @@
+// expect: 2
+// expect: 1
+fn f(a: mut &[]int, v: int) { append(mut &a, v) }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs, pop(mut &xs))
+    println(xs[1])
+    println(len(xs) - 1)
+}

@@ -1,0 +1,8 @@
+// error: borrow|move
+type D = record { s: str }
+fn main() {
+    let d = D{s: "a"}
+    let r = &d
+    let c = true
+    let m = if c { r } else { D{s: "b"} }
+}

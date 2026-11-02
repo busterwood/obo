@@ -1,0 +1,6 @@
+// SPEC 9.1: d is moved on one path (the Nope arm) but not the other: an error
+// error: moved on one path
+type D = record { s: str }
+type Opt[T] = closed { Has(T); Nope }
+fn get[T](o: Opt[T], d: T): T { return match move(o) { Opt.Has(x) { x } Opt.Nope { d } } }
+fn main() { }

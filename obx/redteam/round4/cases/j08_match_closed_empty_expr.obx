@@ -1,0 +1,6 @@
+// error: exhaustive|value
+type E = closed { A; B }
+fn main() {
+    let e = E.B
+    let s: int = match e { }
+}
