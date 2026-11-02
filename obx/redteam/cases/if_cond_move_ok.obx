@@ -1,0 +1,8 @@
+// expect: 1
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+fn take(d: D): bool { return false }
+fn main() {
+    let d = D{v: 1}
+    if take(d) { }
+}

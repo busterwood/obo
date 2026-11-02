@@ -1,0 +1,9 @@
+// error: borrow|move
+type D = record { v: int }
+fn first(d: &D): &int { return &d.v }
+fn take(d: D): int { return 0 }
+fn use(xs: []int, y: &int) { println(y) }
+fn main() {
+    let d = D{v: 1}
+    use([take(d)], first(&d))
+}

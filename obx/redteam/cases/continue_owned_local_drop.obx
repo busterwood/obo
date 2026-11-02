@@ -1,0 +1,13 @@
+// expect: 0
+// expect: 1
+// expect: end
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+fn main() {
+    for i in 0..2 {
+        let b = D{v: i}
+        if i < 5 { continue }
+        println(99)
+    }
+    println("end")
+}

@@ -1,0 +1,9 @@
+// expect: -1
+// expect: 1
+// expect: -2
+fn main() {
+    let a = -7
+    println(a % 3 + 0 - 0)
+    println(7 % -3)
+    println(a / 3)
+}

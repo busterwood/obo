@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    let a: u128 = 5
+    let z: u128 = 0
+    println(int(a / z))
+}

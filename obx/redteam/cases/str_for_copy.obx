@@ -1,0 +1,7 @@
+// expect: 3
+fn main() {
+    let xs: []str = ["a" + "", "b" + "", "c" + ""]
+    var n = 0
+    for x in xs { n += len(x) }
+    println(n)
+}

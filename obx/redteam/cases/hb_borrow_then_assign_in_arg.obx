@@ -1,0 +1,9 @@
+// error: borrow|assign
+type D = record { v: int; w: []int }
+fn first(d: &D): &[]int { return &d.w }
+fn setw(d: mut &D): int { d.w = [9]; return 0 }
+fn use(w: &[]int, n: int) { println(w[0]) }
+fn main() {
+    var d = D{v: 1, w: [1]}
+    use(first(&d), setw(mut &d))
+}

@@ -1,0 +1,9 @@
+// Field values of a record literal are evaluated in declaration order, not
+// left to right as written (spec silent; 7.5 says arguments go left to right).
+// expect: 1
+// expect: 2
+type P = record { a: int; b: int }
+fn show(n: int): int { println(n); return n }
+fn main() {
+    let p = P{b: show(1), a: show(2)}
+}

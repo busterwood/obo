@@ -1,0 +1,8 @@
+// error: borrow
+fn main() {
+    var m: Map[str, []int] = newMap()
+    m.put("a", [1, 2])
+    let r = m.at("a")
+    m.put("a", [3])
+    println(r[0])
+}

@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    let a: i128 = 170141183460469231731687303715884105727
+    let b: i128 = 2
+    if a * b > 0 { println(1) } else { println(0) }
+}

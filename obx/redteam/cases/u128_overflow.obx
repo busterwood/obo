@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    let m: u128 = 340282366920938463463374607431768211455
+    let n = m + 1
+    if n > m { println(1) } else { println(0) }
+}

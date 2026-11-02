@@ -1,0 +1,4 @@
+// Bits shifted out of << are lost (7.1).
+// expect: 0
+const C: byte = 1 << 8
+fn main() { println(int(C)) }

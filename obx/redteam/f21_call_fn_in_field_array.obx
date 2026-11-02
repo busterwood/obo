@@ -1,0 +1,9 @@
+// Calling a function value stored in an array field is rejected ("expected a
+// type"): x.f[i](...) is always parsed as explicit method type arguments.
+// expect: 4
+type H = record { fs: []fn(int): int }
+fn dbl(x: int): int { return x * 2 }
+fn main() {
+    let h = H{fs: [dbl]}
+    println(h.fs[0](2))
+}

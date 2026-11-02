@@ -1,0 +1,7 @@
+// error: borrow
+fn id[T](x: T): T { return x }
+fn main() {
+    let x = 1
+    let r: &int = id(&x)
+    println(r)
+}

@@ -1,0 +1,11 @@
+// error: borrow|local
+type D = record { v: int }
+type O = value closed { S(D); N }
+fn f(o: &O): &D {
+    let loc = S(D{v: 1})
+    match loc {
+        S(d) { return d }
+        N { panic("x") }
+    }
+}
+fn main() {}

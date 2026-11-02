@@ -1,0 +1,11 @@
+// 7.5: f(r) and f(&r) both pass the borrow r.
+// expect: 3
+// expect: 3
+type D = record { v: int }
+fn get(d: &D): int { return d.v }
+fn main() {
+    let d = D{v: 3}
+    let r = &d
+    println(get(r))
+    println(get(&r))
+}

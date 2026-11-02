@@ -1,0 +1,7 @@
+// error: borrow
+type D = record { v: int }
+fn (d: mut &D) both(e: &D) { d.v = e.v }
+fn main() {
+    var d = D{v: 1}
+    d.both(&d)
+}

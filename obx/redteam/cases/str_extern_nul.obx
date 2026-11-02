@@ -1,0 +1,6 @@
+// exit: 12
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = strFromBytes(&[byte(97), byte(0), byte(98)])
+    println(int(strlen(s)))
+}

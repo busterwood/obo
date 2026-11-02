@@ -1,0 +1,14 @@
+// p = e evaluates e first (8).
+// expect: 7
+type D = record { v: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn grow(xs: mut &[]D): int {
+    for i in 0..100 { append(xs, D{v: i}) }
+    return 0
+}
+fn main() {
+    var xs: []D = [D{v: 7}]
+    var ys: []int = [0]
+    ys[grow(mut &xs)] = first(&xs).v
+    println(ys[0])
+}

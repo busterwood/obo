@@ -1,0 +1,6 @@
+// expect: 1
+fn main() {
+    let one: i128 = 1
+    let x = one << 127
+    if x < 0 { println(1) } else { println(0) }
+}

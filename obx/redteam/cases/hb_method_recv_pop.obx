@@ -1,0 +1,9 @@
+// error: borrow
+type D = record { v: int }
+type L = record { xs: []D }
+fn (l: &L) first(): &D { return &l.xs[0] }
+fn (d: &D) show(e: D) { println(d.v) }
+fn main() {
+    var l = L{xs: [D{v: 1}]}
+    l.first().show(pop(mut &l.xs))
+}

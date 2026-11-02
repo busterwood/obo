@@ -1,0 +1,5 @@
+// exit: 10
+fn main() {
+    var n = 64
+    println(1 << n)
+}

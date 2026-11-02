@@ -1,0 +1,13 @@
+// SPEC 5.3: a drop method cannot be called directly. Through a constraint it
+// can, so the destructor runs twice (here a double free of a C buffer).
+// error: drop
+extern "c" fn malloc(n: int): ptr
+extern "c" fn free(p: ptr)
+type Dropper = interface { fn (mut &Self) drop() }
+type Buf = record { p: ptr }
+fn (b: mut &Buf) drop() { free(b.p) }
+fn kill[T: Dropper](x: mut &T) { x.drop() }
+fn main() {
+    var b = Buf{p: malloc(16)}
+    kill(mut &b)
+}

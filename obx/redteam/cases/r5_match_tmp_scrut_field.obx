@@ -1,0 +1,13 @@
+// expect: 1
+// expect: drop
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop") }
+type O = closed { S(D); N }
+type H = record { o: O }
+fn mk(): H { return H{o: S(D{v: 1})} }
+fn main() {
+    match mk().o {
+        S(d) { println(d.v) }
+        N {}
+    }
+}

@@ -1,0 +1,8 @@
+// expect: 1
+type D = record { v: int }
+fn main() {
+    var m: Map[int, D] = newMap()
+    for i in 0..50 { m.put(i, D{v: i}) }
+    m.put(1, D{v: 1})
+    println(m.at(1).v)
+}

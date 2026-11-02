@@ -1,0 +1,9 @@
+// expect: one
+var g: str = "a"
+fn bump(): int { g = "b" + "c"; return 1 }
+fn main() {
+    match g {
+        "a" { println("one") }
+        else { println("other") }
+    }
+}

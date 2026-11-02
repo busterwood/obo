@@ -1,0 +1,11 @@
+// error: borrow
+type D = record { v: int }
+type O = closed { S(D); N }
+type H = record { o: O }
+fn main() {
+    var h = H{o: S(D{v: 1})}
+    match h.o {
+        S(d) { h = H{o: N}; println(d.v) }
+        N {}
+    }
+}

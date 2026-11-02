@@ -1,0 +1,6 @@
+// expect: 5
+const C = 5
+fn main() {
+    let x: i32 = C
+    println(int(x))
+}

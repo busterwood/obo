@@ -1,0 +1,11 @@
+// error: move
+type D = record { v: int }
+type O = closed { S(D); N }
+fn main() {
+    var o = S(D{v: 1})
+    match move(o) {
+        S(d) { o = S(d) }
+        N { }
+    }
+    match o { S(d) { println(d.v) } N {} }
+}

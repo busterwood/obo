@@ -1,0 +1,11 @@
+// error: borrow
+type D = record { v: int }
+type L = record { xs: []D }
+fn (l: &L) first(): &D { return &l.xs[0] }
+fn (d: &D) val(): &int { return &d.v }
+fn main() {
+    var l = L{xs: [D{v: 1}]}
+    let r = l.first().val()
+    l.xs = []
+    println(r)
+}

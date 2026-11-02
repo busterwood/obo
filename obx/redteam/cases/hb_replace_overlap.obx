@@ -1,0 +1,6 @@
+// error: borrow
+type D = record { v: int }
+fn main() {
+    var xs: []D = [D{v: 1}, D{v: 2}]
+    let o = replace(mut &xs[0], pop(mut &xs))
+}

@@ -1,0 +1,13 @@
+// error: borrow
+type Y = record { v: int }
+type A = record { y: Y }
+type R = record { a: A }
+fn geta(r: &R): &A { return &r.a }
+fn f(a: mut &A, y: &Y) {
+    a = A{y: Y{v: 2}}
+    println(y.v)
+}
+fn main() {
+    var r = R{a: A{y: Y{v: 1}}}
+    f(mut &r.a, &geta(&r).y)
+}

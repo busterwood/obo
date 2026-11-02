@@ -1,0 +1,7 @@
+// expect: 2
+var g: str = "ab"
+fn main() {
+    g = g + ""
+    println(len(g))
+    g = ""
+}

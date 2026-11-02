@@ -1,0 +1,8 @@
+// expect: 5
+type A = value record { b: Option[B] }
+type B = value record { c: C }
+type C = value record { n: int }
+fn main() {
+    let a = A{b: Some(B{c: C{n: 5}})}
+    match a.b { Some(b) { println(b.c.n) } None {} }
+}

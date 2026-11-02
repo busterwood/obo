@@ -1,0 +1,7 @@
+// expect: 3
+type V = value record { n: int; f: fn(V): int }
+fn getn(v: V): int { return v.n }
+fn main() {
+    let v = V{n: 3, f: getn}
+    println(v.f(v))
+}

@@ -1,0 +1,6 @@
+// expect: ab
+fn f[T: Show](x: T): str { return x.toStr() }
+fn main() {
+    let s = "a" + "b"
+    println(f(s))
+}

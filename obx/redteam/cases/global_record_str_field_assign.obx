@@ -1,0 +1,8 @@
+// expect: hi
+type P = value record { s: str; n: int }
+var g: P = P{s: "a", n: 1}
+fn main() {
+    g.s = "h" + "i"
+    println(g.s)
+    g.s = "x"
+}

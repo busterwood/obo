@@ -1,0 +1,3 @@
+// expect: 1.25
+var g: Decimal = 1.25
+fn main() { println(g) }

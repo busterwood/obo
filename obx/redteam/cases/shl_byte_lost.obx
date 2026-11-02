@@ -1,0 +1,5 @@
+// expect: 0
+fn main() {
+    let b: byte = 128
+    println(int(b << 1))
+}

@@ -1,0 +1,5 @@
+// error: borrow|temporary
+type D = record { v: int; w: int }
+fn mk(): D { return D{v: 1, w: 2} }
+fn f(d: &D): &int { return &mk().v }
+fn main() {}

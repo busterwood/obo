@@ -1,0 +1,9 @@
+// expect: 1
+type D = record { v: int }
+type P = record { a: D; b: int }
+fn first(d: &D): &int { return &d.v }
+fn main() {
+    let d = D{v: 1}
+    let p = P{b: first(&d), a: d}
+    println(p.b)
+}

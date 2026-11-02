@@ -1,0 +1,15 @@
+// SPEC 10 rule 3/5: first(&xs) borrows somewhere inside xs, so &first(&xs).d
+// overlaps mut &xs[0]. Accepted today (the result path is taken as xs.d), and
+// f frees what b points to.
+// error: borrow
+type D = record { v: int }
+type E = record { d: D }
+fn first(xs: &[]E): &E { return &xs[0] }
+fn f(a: mut &E, b: &D) {
+    a = E{d: D{v: 2}}
+    println(b.v)
+}
+fn main() {
+    var xs: []E = [E{d: D{v: 1}}]
+    f(mut &xs[0], &first(&xs).d)
+}

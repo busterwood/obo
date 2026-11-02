@@ -1,0 +1,2 @@
+pub var c: int = 1
+pub fn getc(): int { return c }

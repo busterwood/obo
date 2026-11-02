@@ -1,0 +1,5 @@
+// error: global
+type P = value record { n: int }
+fn (p: mut &P) bump() { p.n += 1 }
+var g: P = P{n: 1}
+fn main() { g.bump() }

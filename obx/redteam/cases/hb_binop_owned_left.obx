@@ -1,0 +1,9 @@
+// error: borrow|held|overlap
+type B = record { v: int }
+fn (a: &B) add(b: &B): B { return B{v: a.v + b.v} }
+fn reset(b: mut &B): B { b.v = 0; return B{v: 5} }
+fn main() {
+    var x = B{v: 1}
+    let y = x + reset(mut &x)
+    println(y.v)
+}

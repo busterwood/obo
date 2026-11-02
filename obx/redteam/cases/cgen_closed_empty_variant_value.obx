@@ -1,0 +1,6 @@
+// expect: 1
+type E = value closed { A; B; C(int) }
+fn main() {
+    let e = B
+    match e { A {} B { println(1) } C(x) {} }
+}

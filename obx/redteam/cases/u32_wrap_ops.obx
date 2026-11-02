@@ -1,0 +1,8 @@
+// expect: 0
+// expect: 4294967295
+fn main() {
+    let a: u32 = 4294967295
+    let b: u32 = 1
+    println(int(a +% b))
+    println(int(b -% 2))
+}

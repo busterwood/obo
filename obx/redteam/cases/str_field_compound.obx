@@ -1,0 +1,8 @@
+// expect: abc
+type R = record { s: str }
+fn main() {
+    var r = R{s: "a" + ""}
+    r.s += "b"
+    r.s += "c"
+    println(r.s)
+}

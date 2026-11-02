@@ -1,0 +1,12 @@
+// expect: ab
+// expect: cd
+var g: str = "x"
+fn set(s: str) { g = s }
+fn main() {
+    set("a" + "b")
+    let s = g
+    set("c" + "d")
+    println(s)
+    println(g)
+    set("z")
+}

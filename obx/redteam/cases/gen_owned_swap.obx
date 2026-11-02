@@ -1,0 +1,6 @@
+type D = record { v: int }
+fn sw[T](a: mut &T, b: mut &T) {
+    let t = replace(a, replace(b, pop_none()))
+}
+fn pop_none[T](): T { panic("x") }
+fn main() {}

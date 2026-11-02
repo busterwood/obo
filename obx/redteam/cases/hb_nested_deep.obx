@@ -1,0 +1,10 @@
+// error: borrow
+type D = record { v: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn id(d: &D): &D { return d }
+fn clr(xs: mut &[]D): int { while len(xs) > 0 { pop(xs) } ; return 0 }
+fn use(d: &D, n: int) { println(d.v) }
+fn main() {
+    var xs: []D = [D{v: 1}]
+    use(id(id(first(&xs))), clr(mut &xs))
+}

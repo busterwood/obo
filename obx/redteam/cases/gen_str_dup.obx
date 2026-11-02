@@ -1,0 +1,9 @@
+// expect: ab
+// expect: ab
+fn two[T: copy](x: T): []T { return [x, x] }
+fn main() {
+    let s = "a" + "b"
+    let xs = two(s)
+    println(xs[0])
+    println(xs[1])
+}

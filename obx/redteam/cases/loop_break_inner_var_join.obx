@@ -1,0 +1,17 @@
+// A variable declared inside the loop is out of scope after it; its state at
+// the breaks does not take part in the join.
+// expect: 1
+// expect: end
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+fn take(d: D) {}
+fn main() {
+    var i = 0
+    while true {
+        let d = D{v: 1}
+        i += 1
+        if i == 1 { take(d); break }
+        break
+    }
+    println("end")
+}

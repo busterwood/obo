@@ -1,0 +1,21 @@
+// expect: 1
+// expect: 2
+// expect: err
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+type P = closed { Two(D, D) }
+fn bad(): Result[int, str] { return Err("err") }
+fn take(d: D) {}
+fn f(p: P): Result[int, str] {
+    match move(p) {
+        Two(a, b) {
+            take(a)
+            let n = try bad()
+            take(b)
+        }
+    }
+    return Ok(0)
+}
+fn main() {
+    match f(Two(D{v: 1}, D{v: 2})) { Ok(n) {} Err(e) { println(e) } }
+}

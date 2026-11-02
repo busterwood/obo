@@ -1,0 +1,4 @@
+// A top-level function may use a name that is a built-in; the module's declaration is visible.
+// expect: 7
+fn swap(a: int): int { return a + 6 }
+fn main() { println(swap(1)) }

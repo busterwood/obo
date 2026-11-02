@@ -1,0 +1,9 @@
+// expect: a
+// expect: b
+fn main() {
+    var xs: []str = ["a" + "", "b" + ""]
+    swap(mut &xs, 0, 1)
+    let b = pop(mut &xs)
+    println(b)
+    println(xs[0])
+}

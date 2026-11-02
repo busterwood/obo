@@ -1,0 +1,5 @@
+// expect: 1
+fn main() {
+    var s = "x" + ""
+    if readFile("/nonexistent/zz", mut &s) != 0 { println(1) }
+}

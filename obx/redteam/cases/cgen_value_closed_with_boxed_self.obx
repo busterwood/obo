@@ -1,0 +1,10 @@
+// expect: 2
+type L = closed { Nil; Cons(int, L) }
+type W = value closed { Has(L); Empty }
+fn len2(l: &L): int {
+    match l { Nil { return 0 } Cons(_, r) { return 1 + len2(r) } }
+}
+fn main() {
+    let w = Has(Cons(1, Cons(2, Nil)))
+    match w { Has(l) { println(len2(l)) } Empty {} }
+}

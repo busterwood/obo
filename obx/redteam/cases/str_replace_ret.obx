@@ -1,0 +1,8 @@
+// expect: a
+// expect: b
+fn main() {
+    var s = "a" + ""
+    let old = replace(mut &s, "b" + "")
+    println(old)
+    println(s)
+}

@@ -1,0 +1,5 @@
+// expect: 4
+extern "c" fn strlen(s: str): u64
+fn main() {
+    println(int(strlen("ab" + "cd")))
+}

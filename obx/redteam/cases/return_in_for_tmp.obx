@@ -1,0 +1,21 @@
+// expect: 1
+// expect: 2
+// expect: 5
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+fn mk(): []D {
+    var xs: []D = []
+    append(mut &xs, D{v: 1})
+    append(mut &xs, D{v: 2})
+    return xs
+}
+fn find(): int {
+    for x in mk() {
+        if x.v == 1 { return 5 }
+    }
+    return 0
+}
+fn main() {
+    let n = find()
+    println(n)
+}

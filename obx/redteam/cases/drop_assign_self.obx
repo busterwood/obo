@@ -1,0 +1,12 @@
+// A drop method that assigns a new value to self: the old value is dropped
+// (running drop again, forever). Should be rejected, or drop the old value
+// without running its destructor again.
+// error: drop
+type D = record { v: int }
+fn (d: mut &D) drop() {
+    println(d.v)
+    d = D{v: d.v + 1}
+}
+fn main() {
+    let d = D{v: 1}
+}

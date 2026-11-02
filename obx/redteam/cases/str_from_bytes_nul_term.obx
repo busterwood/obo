@@ -1,0 +1,7 @@
+// expect: 3
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let b: []byte = [byte(97), byte(98), byte(99)]
+    let s = strFromBytes(&b)
+    println(int(strlen(s)))
+}

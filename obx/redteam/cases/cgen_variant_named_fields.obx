@@ -1,0 +1,6 @@
+// expect: f
+type Ex = closed { Num(int); Call { name: str; args: []Ex } }
+fn main() {
+    let e = Call{name: "f", args: [Num(1)]}
+    match e { Num(n) {} Call(n, a) { println(n) } }
+}

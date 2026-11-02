@@ -1,0 +1,6 @@
+// expect: 3
+fn apply[T](f: fn(T): str, x: T): str { return f(x) }
+fn show[T: Show](x: T): str { return x.toStr() }
+fn main() {
+    println(len(apply(show[str], "abc")))
+}

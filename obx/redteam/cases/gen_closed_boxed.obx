@@ -1,0 +1,12 @@
+// expect: 3
+type L[T] = closed { Nil; Cons(T, L[T]) }
+fn count[T](l: &L[T]): int {
+    match l {
+        Nil { return 0 }
+        Cons(_, rest) { return 1 + count(rest) }
+    }
+}
+fn main() {
+    let l = Cons("a" + "", Cons("b" + "", Cons("c" + "", Nil)))
+    println(count(&l))
+}

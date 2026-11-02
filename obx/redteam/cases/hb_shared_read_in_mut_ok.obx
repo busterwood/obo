@@ -1,0 +1,7 @@
+// expect: 2
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    m.put("a", m.get(&"a").unwrapOr(0) + 1)
+    println(m.at("a"))
+}

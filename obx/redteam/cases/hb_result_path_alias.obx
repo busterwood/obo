@@ -1,0 +1,13 @@
+// Rule 3: the result of first(&xs) borrows xs (rule 5), so it overlaps xs[0].
+// error: borrow
+type D = record { v: int }
+type E = record { d: D }
+fn first(xs: &[]E): &E { return &xs[0] }
+fn f(a: mut &E, b: &D) {
+    a = E{d: D{v: 2}}
+    println(b.v)
+}
+fn main() {
+    var xs: []E = [E{d: D{v: 1}}]
+    f(mut &xs[0], &first(&xs).d)
+}

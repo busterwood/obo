@@ -1,0 +1,9 @@
+// expect: x!
+type Sh = interface { fn (&Self) show(): str }
+type P = value record { s: str }
+fn (p: P) show(): str { return p.s + "!" }
+fn f[T: Sh](x: &T): str { return x.show() }
+fn main() {
+    let p = P{s: "x" + ""}
+    println(f(&p))
+}

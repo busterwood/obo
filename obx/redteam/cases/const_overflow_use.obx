@@ -1,0 +1,3 @@
+// error: fit|overflow|range
+const C = 9223372036854775807 + 1
+fn main() { println(C) }

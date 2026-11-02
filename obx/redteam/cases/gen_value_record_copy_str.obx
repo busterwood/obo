@@ -1,0 +1,10 @@
+// expect: x
+// expect: x
+type W[T: copy] = value record { a: T }
+fn dupw[T: copy](w: W[T]): []W[T] { return [w, w] }
+fn main() {
+    let w = W{a: "x" + ""}
+    let xs = dupw(w)
+    println(xs[0].a)
+    println(xs[1].a)
+}

@@ -1,0 +1,12 @@
+// expect: b
+// expect: a
+type P = value record { s: str; n: int }
+fn main() {
+    var xs: []P = []
+    append(mut &xs, P{s: "a" + "", n: 1})
+    append(mut &xs, P{s: "b" + "", n: 2})
+    let p = xs[0]
+    xs[0] = xs[1]
+    println(xs[0].s)
+    println(p.s)
+}

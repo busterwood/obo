@@ -1,0 +1,8 @@
+// error: borrow|moved|assign
+type D = record { v: int }
+fn (d: &D) show(e: D) { println(d.v) }
+fn mk(xs: mut &[]D): D { return pop(xs) }
+fn main() {
+    var xs: []D = [D{v: 1}, D{v: 2}]
+    xs[0].show(mk(mut &xs))
+}

@@ -1,0 +1,6 @@
+// expect: abab
+fn main() {
+    var s = "ab" + ""
+    s = s + s
+    println(s)
+}

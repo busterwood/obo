@@ -1,0 +1,10 @@
+// Moves are not allowed in a while condition (9.1).
+// error: move
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+fn take(d: D): bool { return false }
+fn main() {
+    var d = D{v: 1}
+    while take(d) { d = D{v: 2} }
+    println(d.v)
+}

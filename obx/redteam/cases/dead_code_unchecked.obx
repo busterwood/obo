@@ -1,0 +1,7 @@
+// Statements after return are still checked (the spec has no unreachable-code exemption).
+// error: str|int
+fn f(): int {
+    return 1
+    let x: int = "no"
+}
+fn main() { println(f()) }

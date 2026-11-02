@@ -1,0 +1,2 @@
+pub var b_c: int = 2
+pub fn getbc(): int { return b_c }

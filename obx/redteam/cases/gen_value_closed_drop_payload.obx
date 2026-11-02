@@ -1,0 +1,8 @@
+// expect: 1
+// expect: 2
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+fn main() {
+    var o = Some(D{v: 1})
+    o = Some(D{v: 2})
+}

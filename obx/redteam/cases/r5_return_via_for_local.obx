@@ -1,0 +1,8 @@
+// error: borrow|local
+type D = record { v: int }
+fn f(o: &D): &D {
+    let xs: []D = [D{v: 1}]
+    for x in xs { return x }
+    panic("x")
+}
+fn main() {}

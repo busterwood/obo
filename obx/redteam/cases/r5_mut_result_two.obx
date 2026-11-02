@@ -1,0 +1,9 @@
+// error: borrow
+type D = record { v: int; w: int }
+fn (d: mut &D) vm(): mut &int { return mut &d.v }
+fn main() {
+    var d = D{v: 1, w: 2}
+    let r = d.vm()
+    let s = d.vm()
+    r = 9
+}

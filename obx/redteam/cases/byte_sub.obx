@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    let a: byte = 1
+    let b: byte = 2
+    println(int(a - b))
+}

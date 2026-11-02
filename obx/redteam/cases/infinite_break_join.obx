@@ -1,0 +1,11 @@
+// expect: 7
+type D = record { v: int }
+fn take(d: D) { }
+fn main() {
+    var d = D{v: 7}
+    while true {
+        println(d.v)
+        take(d)
+        break
+    }
+}

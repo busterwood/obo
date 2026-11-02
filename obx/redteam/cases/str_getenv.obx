@@ -1,0 +1,5 @@
+// expect: 1
+fn main() {
+    var s = "x" + ""
+    if getenv("HOME", mut &s) { println(1) }
+}

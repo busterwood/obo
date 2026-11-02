@@ -1,0 +1,6 @@
+// expect: 0
+extern "c" fn strlen(s: str): u64
+fn main() {
+    let s = strSlice("abcd", 1, 1)
+    println(int(strlen(s)))
+}

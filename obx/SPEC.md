@@ -188,7 +188,8 @@ type Node = record { name: str; kids: []Node }   // boxed, owned
   is moved like a record. A value record may not contain itself.
 
 Fields are private to the module unless marked `pub`. A record literal
-names every field: `Point{x: 1, y: 2}`.
+names every field: `Point{x: 1, y: 2}`. The field values are evaluated in the
+order they are written.
 
 ### 4.4 Closed types
 
@@ -259,7 +260,9 @@ name is visible throughout its module; `pub` makes it visible to importers.
 fractional literal, or an operator expression over constants. A global `var`
 has a copy type and a constant initializer (constants, and value record or
 variant literals of constants). A constant expression that overflows is a
-compile error. A global may not be borrowed
+compile error. A constant is folded in the arithmetic of its type: a typed
+constant that does not fit its type is an error, and `const C: u32 = ~0` is
+`0xffffffff`. A global may not be borrowed
 (`&g` is an error; a method call that needs a borrow of a global works on a
 temporary copy; a `mut &Self` method on a global is an error).
 
@@ -444,6 +447,8 @@ that statement and is then dropped: `println(makeBox(3).v)` is allowed.
   the same name is in scope (no shadowing within a function). It may shadow a
   top-level name.
 - `p = e` evaluates `e` first, then drops the old value at `p`, then stores.
+- A statement after `return`, `break`, `continue`, `panic(...)` or `exit(...)`
+  in the same block is an error: it cannot be reached.
 
 ## 9. Ownership
 
@@ -484,7 +489,13 @@ take part in the join of section 9.1.
 
 If a type has a `drop` method, dropping a value of that type first calls
 `drop` with a mutable borrow, then drops the fields. This is how a wrapper
-closes a C resource. A `drop` method may not move out of `self`.
+closes a C resource. A `drop` method may not move out of `self` or assign the
+whole of `self`, and no interface member can be satisfied by it.
+
+Dropping a long chain of boxed values (a linked list) does not use stack depth
+proportional to its length.
+
+Globals are dropped when `main` returns, in reverse order of declaration.
 
 ## 10. Borrows
 
@@ -529,7 +540,8 @@ until its last use. Use an inner block to end it sooner.
 
 ## 11. Built-in functions
 
-These are the only functions the compiler implements. Everything else,
+These are the only functions the compiler implements. Their names are
+reserved: declaring a top-level name that is one of them is an error. Everything else,
 including `print`, `println`, string formatting and parsing, is in `std`.
 
 | Function | Meaning |
@@ -548,7 +560,8 @@ including `print`, `println`, string formatting and parsing, is in `std`.
 String and runtime intrinsics used by `std` (`strByte`, `strSlice`,
 `strFromBytes`, `strToBytes`, `intToStr`, `floatToStr`, `parseFloat`,
 `writeFd`, `readFile`, `args`, `getenv`) are built-ins too; they are listed
-with `std`, not here, because ordinary code calls the `std` wrappers.
+with `std`, not here, because ordinary code calls the `std` wrappers. They are
+not reserved: a module's own declaration of the same name wins.
 
 ## 12. C interop
 
@@ -591,6 +604,7 @@ exits with:
 |---:|---|
 | 2 | out of memory, or a negative array length |
 | 3 | index out of range (array or string), or `pop` on an empty array |
+| 4 | stack overflow (too deep a recursion) |
 | 5 | with `OBX_CHECK=1`: live objects at exit (a leak) |
 | 10 | integer overflow, division by zero, bad shift count, lossy conversion |
 | 12 | `panic` or `assert` |

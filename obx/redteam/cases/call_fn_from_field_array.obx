@@ -1,0 +1,7 @@
+// expect: 4
+type H = record { fs: []fn(int): int }
+fn dbl(x: int): int { return x * 2 }
+fn main() {
+    let h = H{fs: [dbl]}
+    println(h.fs[0](2))
+}

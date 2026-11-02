@@ -1,0 +1,10 @@
+// error: borrow
+type D = record { v: int }
+fn val(d: &D): &int { return &d.v }
+fn wrap[T](f: fn(&D): T, d: &D): Option[T] { return Some(f(d)) }
+fn main() {
+    var d = D{v: 1}
+    let o = wrap(val, &d)
+    d = D{v: 2}
+    match o { Some(r) { println(r) } None {} }
+}

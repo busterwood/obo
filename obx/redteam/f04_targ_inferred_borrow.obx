@@ -1,0 +1,12 @@
+// SPEC 10 rule 1: a borrow cannot be a type argument. Inferred from a function
+// value, T becomes &D and the borrow escapes into an array that outlives xs.
+// error: borrow
+type D = record { v: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn collect[T](f: fn(&[]D): T, xs: &[]D): []T { return [f(xs)] }
+fn main() {
+    var xs: []D = [D{v: 1}]
+    let ys = collect(first, &xs)
+    xs = []
+    println(ys[0].v)
+}

@@ -1,0 +1,12 @@
+// expect: 3
+// expect: err
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+fn bad(): Result[D, str] { return Err("err") }
+fn f(): Result[int, str] {
+    let xs = [D{v: 3}, try bad()]
+    return Ok(0)
+}
+fn main() {
+    match f() { Ok(n) {} Err(e) { println(e) } }
+}

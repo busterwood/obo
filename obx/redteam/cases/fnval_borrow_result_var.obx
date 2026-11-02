@@ -1,0 +1,8 @@
+// expect: 1
+type D = record { v: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn main() {
+    var fs: []fn(&[]D): &D = [first]
+    var xs: []D = [D{v: 1}]
+    println(fs[0](&xs).v)
+}

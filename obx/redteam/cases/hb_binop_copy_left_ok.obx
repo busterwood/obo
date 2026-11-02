@@ -1,0 +1,7 @@
+// expect: 7
+fn bump(n: mut &int): int { n += 5; return 0 }
+fn main() {
+    var x = 1
+    let y = x + bump(mut &x) + x
+    println(y)
+}

@@ -1,0 +1,9 @@
+// expect: 2
+// expect: 0
+type E = record { n: int; xs: []int }
+fn main() {
+    var m: Map[int, E] = newMap()
+    m.put(1, E{n: 2, xs: [5]})
+    println(m.at(1).n)
+    println(len(m.at(1).xs) - 1 + m.at(1).n - 2 + 0 + 0 + 0 + 0 + 0 + 0 + 0)
+}

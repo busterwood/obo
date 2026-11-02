@@ -1,0 +1,10 @@
+// expect: 1
+// expect: 2
+// expect: 3
+type D = record { v: int }
+fn (a: &D) cmp(b: &D): int { return a.v - b.v }
+fn main() {
+    var xs: []D = [D{v: 3}, D{v: 1}, D{v: 2}]
+    sort(mut &xs)
+    for x in xs { println(x.v) }
+}

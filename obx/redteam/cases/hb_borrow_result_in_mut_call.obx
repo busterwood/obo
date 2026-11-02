@@ -1,0 +1,8 @@
+// error: borrow
+type D = record { v: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn put(xs: mut &[]D, d: &D) { append(xs, D{v: d.v}) }
+fn main() {
+    var xs: []D = [D{v: 1}]
+    put(mut &xs, first(&xs))
+}

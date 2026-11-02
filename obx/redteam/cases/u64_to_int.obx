@@ -1,0 +1,5 @@
+// exit: 10
+fn main() {
+    let a: u64 = 9223372036854775808
+    println(int(a))
+}

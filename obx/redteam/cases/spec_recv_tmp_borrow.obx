@@ -1,0 +1,6 @@
+// 7.5: a temporary lives to the end of the statement, so make().name() is allowed.
+// expect: 3
+type D = record { v: int }
+fn mk(): D { return D{v: 3} }
+fn (d: &D) get(): int { return d.v }
+fn main() { println(mk().get()) }

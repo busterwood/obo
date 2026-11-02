@@ -1,0 +1,8 @@
+// SPEC 4.1/5.2: str is a copy type and may be a global. The string left in the
+// global at exit is reported as a leak (exit 5 under OBX_CHECK=1).
+// expect: ab
+var g: str = "x"
+fn main() {
+    g = "a" + "b"
+    println(g)
+}

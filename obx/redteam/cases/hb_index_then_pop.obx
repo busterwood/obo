@@ -1,0 +1,7 @@
+// error: borrow
+type D = record { v: int }
+fn use(d: &D, e: D) { println(d.v) }
+fn main() {
+    var xs: []D = [D{v: 1}, D{v: 2}]
+    use(&xs[0], pop(mut &xs))
+}

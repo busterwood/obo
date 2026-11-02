@@ -1,0 +1,9 @@
+// expect: 3
+// expect: 3
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+fn main() {
+    let o = Some(D{v: 3})
+    let d = o.unwrap()
+    println(d.v)
+}

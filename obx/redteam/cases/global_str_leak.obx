@@ -1,0 +1,7 @@
+// A str global is a copy type; the value left in it at exit is not a leak.
+// expect: ab
+var g: str = "x"
+fn main() {
+    g = "a" + "b"
+    println(g)
+}

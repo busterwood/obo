@@ -1,0 +1,12 @@
+// error: borrow
+type D = record { v: int }
+type Getter = interface { fn (&Self) get(): &D }
+type H = record { d: D }
+fn (h: &H) get(): &D { return &h.d }
+fn f[T: Getter](h: T) {
+    var x = h
+    let r = x.get()
+    x = move(x)
+    println(r.v)
+}
+fn main() { f(H{d: D{v: 1}}) }

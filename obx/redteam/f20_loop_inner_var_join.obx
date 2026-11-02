@@ -1,0 +1,15 @@
+// SPEC 9.1: only variables that live after the loop take part in the join.
+// d is declared inside the loop, but its states at the two breaks are compared.
+// expect: end
+type D = record { v: int }
+fn take(d: D) {}
+fn main() {
+    var i = 0
+    while true {
+        let d = D{v: 1}
+        i += 1
+        if i == 1 { take(d); break }
+        break
+    }
+    println("end")
+}

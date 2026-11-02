@@ -1,0 +1,8 @@
+// expect: 7
+// expect: dropped
+type Box[T] = record { v: T }
+fn (b: mut &Box[T]) drop() { println("dropped") }
+fn main() {
+    let b = Box{v: 7}
+    println(b.v)
+}

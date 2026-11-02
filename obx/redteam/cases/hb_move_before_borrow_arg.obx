@@ -1,0 +1,8 @@
+// error: move
+type D = record { v: int }
+fn first(d: &D): &int { return &d.v }
+fn f(y: &int, var x: D) { x = D{v: 9}; println(y) }
+fn main() {
+    let d = D{v: 1}
+    f(first(&d), d)
+}

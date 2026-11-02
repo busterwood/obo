@@ -1,0 +1,15 @@
+// expect: bad
+fn p(s: str): Result[int, str] {
+    if s == "x" { return Err("bad" + "") }
+    return Ok(1)
+}
+fn q(s: str): Result[int, str] {
+    let n = try p(s)
+    return Ok(n + 1)
+}
+fn main() {
+    match q("x") {
+        Ok(n) { println(n) }
+        Err(e) { println(e) }
+    }
+}

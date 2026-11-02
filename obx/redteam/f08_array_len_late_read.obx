@@ -1,0 +1,13 @@
+// SPEC 7.5: array(n, v) evaluates n before v; n is read after v ran (use after free).
+// expect: 3
+type D = record { v: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn grow(xs: mut &[]D): int {
+    for i in 0..100 { append(xs, D{v: i}) }
+    return 0
+}
+fn main() {
+    var xs: []D = [D{v: 3}]
+    let ys = array(first(&xs).v, grow(mut &xs))
+    println(len(ys))
+}

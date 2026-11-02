@@ -1,0 +1,4 @@
+// expect: 3
+fn p(n: int): Result[int, str] { return Ok(n) }
+fn q(): Result[int, str] { return Ok(try p(1) + try p(2)) }
+fn main() { match q() { Ok(n) { println(n) } Err(e) {} } }

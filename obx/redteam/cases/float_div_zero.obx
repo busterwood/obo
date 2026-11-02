@@ -1,0 +1,6 @@
+// expect: inf
+fn main() {
+    let a: float = 1.0
+    let z: float = 0.0
+    println(a / z)
+}

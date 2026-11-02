@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    var n = 0
+    n -= 1
+    println(1 << n)
+}

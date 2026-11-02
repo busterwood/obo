@@ -1,0 +1,11 @@
+// SPEC 9.1: moves are not allowed in a while condition. Accepted today: the
+// last evaluation of the condition moves d, but d is treated as live after the
+// loop (use after free, then a double free).
+// error: move
+type D = record { v: int }
+fn take(d: D): bool { return false }
+fn main() {
+    var d = D{v: 1}
+    while take(d) { d = D{v: 2} }
+    println(d.v)
+}

@@ -1,0 +1,9 @@
+// expect: 1
+type O = closed { S(int); N }
+fn main() {
+    var o = S(1)
+    match o {
+        S(x) { o = N; println(x) }
+        N {}
+    }
+}

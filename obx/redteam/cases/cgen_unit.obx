@@ -1,0 +1,3 @@
+// expect: ok
+fn f(): Unit { return Unit{} }
+fn main() { let u = f(); println("ok") }

@@ -1,0 +1,9 @@
+// expect: 2
+import "mods/shapes"
+fn main() {
+    let s = shapes.Sq(2)
+    match s {
+        shapes.Sq(n) { println(n) }
+        shapes.Dot {}
+    }
+}

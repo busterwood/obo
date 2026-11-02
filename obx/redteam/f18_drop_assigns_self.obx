@@ -1,0 +1,8 @@
+// A drop method that assigns self: the old value's drop runs drop again,
+// forever (stack overflow). The spec forbids only moving out of self.
+// error: drop
+type D = record { v: int }
+fn (d: mut &D) drop() { d = D{v: d.v + 1} }
+fn main() {
+    let d = D{v: 1}
+}

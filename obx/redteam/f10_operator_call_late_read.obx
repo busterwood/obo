@@ -1,0 +1,11 @@
+// SPEC 7.5: g is copied when the first argument is evaluated. x + x calls the
+// method add, which changes g, but it is not treated as a call, so g is read late.
+// expect: 1
+type B = value record { v: int }
+var g: int = 1
+fn (a: B) add(b: B): B { g = 100; return B{v: a.v + b.v} }
+fn use(a: int, b: B) { println(a) }
+fn main() {
+    let x = B{v: 1}
+    use(g, x + x)
+}

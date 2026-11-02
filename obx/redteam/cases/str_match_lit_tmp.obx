@@ -1,0 +1,8 @@
+// expect: yes
+fn mk(): str { return "a" + "b" }
+fn main() {
+    match mk() {
+        "ab" { println("yes") }
+        else { println("no") }
+    }
+}

@@ -1,0 +1,6 @@
+// expect: 3
+fn fill[T: copy](n: int, x: T): []T { return array(n, x) }
+fn main() {
+    let xs = fill(3, "a" + "b")
+    println(len(xs))
+}

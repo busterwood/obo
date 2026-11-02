@@ -1,0 +1,10 @@
+// expect: 2
+type D = record { v: int }
+fn big(xs: &[]D): &D {
+    for x in xs { if x.v > 1 { return x } }
+    panic("x")
+}
+fn main() {
+    let xs: []D = [D{v: 1}, D{v: 2}]
+    println(big(&xs).v)
+}

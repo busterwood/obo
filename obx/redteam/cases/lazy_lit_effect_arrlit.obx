@@ -1,0 +1,13 @@
+// expect: 7
+type D = record { v: int }
+type P = record { n: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn grow(xs: mut &[]D): int {
+    for i in 0..100 { append(xs, D{v: i}) }
+    return 0
+}
+fn main() {
+    var xs: []D = [D{v: 7}]
+    let ys = [first(&xs).v, P{n: grow(mut &xs)}.n]
+    println(ys[0])
+}

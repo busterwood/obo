@@ -1,0 +1,8 @@
+// error: borrow
+type B = record { v: int }
+fn (a: &B) eq(b: &B): bool { return a.v == b.v }
+fn mk(b: mut &B): B { b.v = 2; return B{v: 2} }
+fn main() {
+    var x = B{v: 1}
+    if x == mk(mut &x) { println(1) }
+}

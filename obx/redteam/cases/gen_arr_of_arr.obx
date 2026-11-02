@@ -1,0 +1,10 @@
+// expect: 3
+fn flat[T: copy](xss: &[][]T): []T {
+    var out: []T = []
+    for xs in xss { for x in xs { append(mut &out, x) } }
+    return out
+}
+fn main() {
+    let a: [][]str = [["a"], ["b", "c"]]
+    println(len(flat(&a)))
+}

@@ -1,0 +1,14 @@
+// error: move
+type D = record { v: int }
+fn take(d: D) { }
+fn main() {
+    var d = D{v: 7}
+    while true {
+        for j in 0..3 {
+            take(d)
+            break
+        }
+        break
+    }
+    println(d.v)
+}

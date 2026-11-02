@@ -1,0 +1,7 @@
+// 8: a local may shadow a top-level name.
+// expect: 2
+fn f(): int { return 1 }
+fn main() {
+    let f = 2
+    println(f)
+}

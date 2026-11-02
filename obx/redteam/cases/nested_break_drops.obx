@@ -1,0 +1,19 @@
+// expect: 3
+// expect: 2
+// expect: end
+// expect: 1
+type D = record { v: int }
+fn (d: mut &D) drop() { println(d.v) }
+fn main() {
+    let a = D{v: 1}
+    while true {
+        let b = D{v: 2}
+        while true {
+            let c = D{v: 3}
+            break
+        }
+        break
+    }
+    let x = a
+    println("end")
+}

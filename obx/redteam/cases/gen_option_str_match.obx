@@ -1,0 +1,11 @@
+// expect: hi
+fn get[T: copy](o: &Option[T]): T {
+    match o {
+        Some(x) { return x }
+        None { panic("none") }
+    }
+}
+fn main() {
+    let o = Some("h" + "i")
+    println(get(&o))
+}

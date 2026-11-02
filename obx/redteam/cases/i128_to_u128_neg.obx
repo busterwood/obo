@@ -1,0 +1,5 @@
+// exit: 10
+fn main() {
+    let a: i128 = -1
+    if u128(a) > 0 { println(1) } else { println(0) }
+}

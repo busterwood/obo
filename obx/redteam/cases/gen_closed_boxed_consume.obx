@@ -1,0 +1,20 @@
+// expect: c
+type L[T] = closed { Nil; Cons(T, L[T]) }
+fn last[T](l: L[T], d: T): T {
+    match move(l) {
+        Nil { return d }
+        Cons(x, rest) {
+            var done = false
+            match rest {
+                Nil { done = true }
+                else {}
+            }
+            if done { return x }
+            return last(rest, d)
+        }
+    }
+}
+fn main() {
+    let l = Cons("a" + "", Cons("b" + "", Cons("c" + "", Nil)))
+    println(last(l, "z"))
+}

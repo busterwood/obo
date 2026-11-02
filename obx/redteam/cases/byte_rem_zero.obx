@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    let a: byte = 5
+    let z: byte = 0
+    println(int(a % z))
+}

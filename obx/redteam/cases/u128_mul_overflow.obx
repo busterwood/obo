@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    let m: u128 = 18446744073709551616
+    let n = m * m
+    if n > m { println(1) } else { println(0) }
+}

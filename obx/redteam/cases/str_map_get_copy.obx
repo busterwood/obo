@@ -1,0 +1,6 @@
+// expect: v
+fn main() {
+    var m: Map[str, str] = newMap()
+    m.put("k" + "", "v" + "")
+    match m.get(&"k") { Some(s) { println(s) } None {} }
+}

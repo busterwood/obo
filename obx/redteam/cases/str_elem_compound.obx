@@ -1,0 +1,6 @@
+// expect: ab
+fn main() {
+    var xs: []str = ["a" + ""]
+    xs[0] += "b"
+    println(xs[0])
+}

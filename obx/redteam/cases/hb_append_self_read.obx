@@ -1,0 +1,6 @@
+// expect: 3
+fn main() {
+    var xs: []str = ["a", "b"]
+    append(mut &xs, xs[0])
+    println(len(xs))
+}

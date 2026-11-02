@@ -1,0 +1,2 @@
+// exit: 3
+fn main() { println(strSlice("abc", 2, 4)) }

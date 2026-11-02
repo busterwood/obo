@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    let m: i32 = -2147483648
+    let d: i32 = -1
+    println(int(m / d))
+}

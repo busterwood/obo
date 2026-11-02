@@ -1,0 +1,15 @@
+// A borrow cannot be a type argument (10 rule 1), also not an inferred one.
+// error: borrow
+type D = record { v: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn collect[T](f: fn(&[]D): T, xs: &[]D): []T {
+    var out: []T = []
+    append(mut &out, f(xs))
+    return out
+}
+fn main() {
+    var xs: []D = [D{v: 1}]
+    let ys = collect(first, &xs)
+    xs = []
+    println(ys[0].v)
+}

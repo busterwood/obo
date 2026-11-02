@@ -1,0 +1,5 @@
+// expect: inf
+const A: float = 1.0
+const Z: float = 0.0
+const B: float = A / Z
+fn main() { println(B) }

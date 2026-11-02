@@ -1,0 +1,6 @@
+// exit: 10
+fn main() {
+    var x = 0
+    x -= 1
+    println(int(byte(x)))
+}

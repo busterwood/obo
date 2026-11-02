@@ -1,0 +1,7 @@
+// A generic type that names a larger instance of itself (6.4: instantiation must terminate).
+// error: terminate|instan
+type T[A] = record { next: Option[T[Option[A]]]; v: int }
+fn main() {
+    let t: T[int] = T{next: None, v: 1}
+    println(t.v)
+}

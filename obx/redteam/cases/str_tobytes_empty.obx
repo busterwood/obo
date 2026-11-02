@@ -1,0 +1,5 @@
+// expect: 0
+fn main() {
+    let b = strToBytes("")
+    println(len(b))
+}

@@ -1,0 +1,5 @@
+// expect: 0
+var g: Option[int] = None
+fn main() {
+    match g { Some(x) { println(x) } None { println(0) } }
+}

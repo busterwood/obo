@@ -1,0 +1,7 @@
+// error: move
+type D = record { v: int }
+fn take(d: D): bool { return false }
+fn main() {
+    var d = D{v: 1}
+    while take(move(d)) { d = D{v: 2} }
+}

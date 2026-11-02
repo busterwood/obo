@@ -1,0 +1,13 @@
+// expect: b
+fn f(xs: &[]str): str {
+    for x in xs {
+        if x == "a" { continue }
+        if x == "c" { break }
+        return x
+    }
+    return ""
+}
+fn main() {
+    let xs: []str = ["a" + "", "b" + "", "c" + ""]
+    println(f(&xs))
+}

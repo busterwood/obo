@@ -1,0 +1,5 @@
+// expect: a
+fn main() {
+    let b: byte = 'a'
+    match b { 'a' { println("a") } else { println("?") } }
+}

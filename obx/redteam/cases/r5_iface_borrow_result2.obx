@@ -1,0 +1,12 @@
+// error: borrow|move
+type D = record { v: int }
+type Getter = interface { fn (&Self) get(): &D }
+type H = record { d: D }
+fn (h: &H) get(): &D { return &h.d }
+fn sink[T](t: T) {}
+fn use(d: &D, n: int) { println(d.v) }
+fn ret0[T](t: T): int { return 0 }
+fn f[T: Getter](h: T) {
+    use(h.get(), ret0(h))
+}
+fn main() { f(H{d: D{v: 1}}) }

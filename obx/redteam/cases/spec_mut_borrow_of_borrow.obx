@@ -1,0 +1,9 @@
+// expect: 4
+type D = record { v: int }
+fn inc(d: mut &D) { d.v += 1 }
+fn twice(d: mut &D) { inc(mut &d) }
+fn main() {
+    var d = D{v: 3}
+    twice(mut &d)
+    println(d.v)
+}

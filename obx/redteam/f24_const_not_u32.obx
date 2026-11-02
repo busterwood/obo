@@ -1,0 +1,5 @@
+// A typed constant ~0 of u32 is folded as an unbounded -1 and rejected; at run
+// time ~x of a u32 0 is 4294967295.
+// expect: 4294967295
+const C: u32 = ~0
+fn main() { println(int(C)) }

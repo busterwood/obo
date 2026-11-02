@@ -1,0 +1,10 @@
+// expect: 2
+// expect: b
+fn main() {
+    var m: Map[str, str] = newMap()
+    for i in 0..40 { m.put(intToStr(i), "a" + intToStr(i)) }
+    m.put("k", "a")
+    m.put("k", "b")
+    println(m.size() - 39)
+    println(m.at("k"))
+}

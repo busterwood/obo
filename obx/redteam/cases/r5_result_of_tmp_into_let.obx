@@ -1,0 +1,8 @@
+// error: temporary
+type D = record { v: int }
+fn mk(): D { return D{v: 1} }
+fn (d: &D) val(): &int { return &d.v }
+fn main() {
+    let r = mk().val()
+    println(r)
+}
