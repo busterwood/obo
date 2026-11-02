@@ -155,6 +155,19 @@ More from porting sema (stage 4 step 2, 2026-11-02):
     interning types wants a structural key, so sema builds a string key per
     type instead.
 
+Performance, from the benchmark baseline (`bench/README.md`, 2026-11-02;
+obx is 0.5x to 2.2x obo's time). To do in `ref/` after the language-feature
+merge, so the port copies the result:
+
+- Build with `gcc -O2` instead of `-O1` (`loop` 446 to 275 ms).
+- Drop glue: free leaf and non-recursive types directly; use the work list
+  only for types that can form a chain (`trees`, `lists` spend ~5 indirect
+  calls per node now).
+- `rt_alloc`: `malloc` where zeroing is not needed, and count live objects
+  only under `OBX_CHECK`.
+- Language note: a borrow cannot be moved along a chain (`cur = &cur.next`),
+  so walking a list by borrow recurses. Worth a decision before eza.
+
 Small gaps noted by the round-3 fixes (2026-11-02), not yet decided:
 
 - A record literal through a generic alias needs written type arguments
