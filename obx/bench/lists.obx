@@ -1,0 +1,26 @@
+// Singly linked lists of owned boxed nodes, built by pushing on the front,
+// summed by recursion over borrows and dropped when the variable is reassigned.
+type Node = record { value: int; next: Option[Node] }
+
+fn push(list: Option[Node], v: int): Option[Node] {
+    return Some(Node{value: v, next: list})
+}
+
+fn sum(list: &Option[Node]): int {
+    match list {
+        Some(n) { return n.value + sum(&n.next) }
+        None { return 0 }
+    }
+}
+
+fn main() {
+    var keep: Option[Node] = None
+    for i in 0..1000 { keep = push(move(keep), i) }
+    var total = 0
+    for round in 0..300 {
+        var l: Option[Node] = None
+        for i in 0..10000 { l = push(move(l), i) }
+        total += sum(&l) % 7
+    }
+    println(total + sum(&keep))
+}

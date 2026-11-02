@@ -1,0 +1,67 @@
+// A compiler-like workload: tokenise a source file into token records, then
+// intern every identifier in a hash table of string buckets.
+type Token = record { kind: int; text: str; line: int }
+
+fn isLetter(c: byte): bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' }
+fn isDigit(c: byte): bool { return c >= '0' && c <= '9' }
+
+fn scan(src: str, toks: mut &[]Token) {
+    var i = 0
+    var line = 1
+    while i < len(src) {
+        let c = strByte(src, i)
+        if c == '\n' {
+            line += 1
+            i += 1
+        } else if isLetter(c) {
+            var b = newStrBuf()
+            while i < len(src) && (isLetter(strByte(src, i)) || isDigit(strByte(src, i))) {
+                b.addByte(strByte(src, i))
+                i += 1
+            }
+            append(toks, Token{kind: 1, text: b.toStr(), line: line})
+        } else if isDigit(c) {
+            while i < len(src) && isDigit(strByte(src, i)) { i += 1 }
+            append(toks, Token{kind: 2, text: "", line: line})
+        } else if c == ' ' || c == '\t' {
+            i += 1
+        } else {
+            append(toks, Token{kind: 3, text: "", line: line})
+            i += 1
+        }
+    }
+}
+
+fn hash(s: str): int {
+    var h = 5381
+    for i in 0..len(s) { h = (h * 33 + int(strByte(s, i))) & 0xFFFFFF }
+    return h
+}
+
+fn intern(table: mut &[][]str, s: str): bool {
+    let k = hash(s) % len(table)
+    for name in table[k] {
+        if name == s { return false }
+    }
+    append(mut &table[k], s)
+    return true
+}
+
+fn main() {
+    let a = args()
+    var data = ""
+    if readFile(a[1], mut &data) != 0 { exit(1) }
+    var tokens = 0
+    var unique = 0
+    for round in 0..10 {
+        var toks: []Token = []
+        scan(data, mut &toks)
+        var table: [][]str = []
+        for i in 0..1024 { append(mut &table, []) }
+        for t in toks {
+            if t.kind == 1 && intern(mut &table, t.text) { unique += 1 }
+        }
+        tokens += len(toks)
+    }
+    println(tokens.toStr() + " " + unique.toStr())
+}

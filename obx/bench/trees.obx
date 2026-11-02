@@ -1,0 +1,30 @@
+// Binary trees of owned boxed nodes: build, walk, drop.
+type Tree = record { left: Option[Tree]; right: Option[Tree] }
+
+fn build(d: int): Tree {
+    if d == 0 { return Tree{left: None, right: None} }
+    return Tree{left: Some(build(d - 1)), right: Some(build(d - 1))}
+}
+
+fn check(t: &Tree): int {
+    var n = 1
+    match &t.left {
+        Some(l) { n += check(l) }
+        None { }
+    }
+    match &t.right {
+        Some(r) { n += check(r) }
+        None { }
+    }
+    return n
+}
+
+fn main() {
+    let long = build(16)
+    var total = 0
+    for i in 0..40 {
+        let t = build(14)
+        total += check(&t)
+    }
+    println(total + check(&long))
+}

@@ -1,0 +1,14 @@
+// Allocation-heavy: a record is allocated and dropped on every iteration.
+type Cell = record { v: int; w: int }
+
+fn main() {
+    let n = 20000000
+    var total = 0
+    var i = 0
+    while i < n {
+        let c = Cell{v: i, w: 2}
+        total = total + c.v + c.w
+        i = i + 1
+    }
+    println(total)
+}

@@ -1,0 +1,12 @@
+// Building many short strings by concatenation and measuring them.
+fn main() {
+    var keep: []str = []
+    for i in 0..1000 { append(mut &keep, "k" + i.toStr()) }
+    var total = 0
+    for round in 0..200 {
+        var words: []str = []
+        for i in 0..5000 { append(mut &words, "word" + i.toStr() + "-" + round.toStr()) }
+        for w in words { total += len(w) }
+    }
+    println(total)
+}
