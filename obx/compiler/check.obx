@@ -2788,6 +2788,18 @@ fn (c: mut &Checker) binop(op: str, lv0: Val, r: Arg, line: int, exp: int, hasHe
         let m = match op { "+" { "add" } "-" { "sub" } "*" { "mul" } "/" { "div" } else { "rem" } }
         return c.opCall(lv, m, &args, line, op)
     }
+    if (op == "==" || op == "!=") && c.tagEq(lt) {
+        // a closed type whose variants have no fields, without an eq method: the tags (SPEC 7.4)
+        if lt != rt {
+            c.err(line, "operator " + op + " needs operands of the same type, not " + c.tstr(lt) + " and " + c.tstr(rt))
+        }
+        let sep = if c.pg.types[c.pg.ta(lt)].value { "." } else { "->" }
+        var a = lv
+        var b = rv1
+        if a.cat == CAT_RV && !c.isCopy(lt) { a = c.holdtmp(a.c, lt) }
+        if b.cat == CAT_RV && !c.isCopy(lt) { b = c.holdtmp(b.c, lt) }
+        return rv("((" + a.c + ")" + sep + "tag " + op + " (" + b.c + ")" + sep + "tag)", sema.T_BOOL)
+    }
     if op == "==" || op == "!=" {
         let r2 = c.opCall(lv, "eq", &args, line, op)
         return rv(if op == "==" { r2.c } else { "(!" + r2.c + ")" }, sema.T_BOOL)
@@ -2797,6 +2809,18 @@ fn (c: mut &Checker) binop(op: str, lv0: Val, r: Arg, line: int, exp: int, hasHe
         return rv("(" + r2.c + " " + op + " 0)", sema.T_BOOL)
     }
     c.err(line, "operator " + op + " is not defined for " + c.tstr(lt))
+}
+
+// Whether == and != on t compare tags: t is a closed type all of whose variants have no
+// fields, and it declares no eq method (an eq method wins).
+fn (c: mut &Checker) tagEq(t: int): bool {
+    if c.pg.tk(t) != sema.TK_INST { return false }
+    let d = c.pg.ta(t)
+    if c.pg.types[d].form != sx.F_CLOSED { return false }
+    for x in c.pg.types[d].variants {
+        if len(c.pg.variants[x].fields) > 0 { return false }
+    }
+    return c.pg.methodOf(t, "eq") < 0
 }
 
 fn (c: mut &Checker) opCall(recv: Val, name: str, args: &[]Val, line: int, op: str): Val {

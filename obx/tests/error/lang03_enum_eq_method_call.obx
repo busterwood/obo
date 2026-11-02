@@ -1,0 +1,7 @@
+// SPEC 7.4: the built-in comparison is not a method that can be called.
+// error: closed type
+type Sort = value closed { Name; Size }
+fn main() {
+    let s = Sort.Name
+    println(s.eq(&Sort.Size))
+}

@@ -521,7 +521,12 @@ For operands that are not primitive, an operator is a method call:
 | `a < b` etc. | `a.cmp(&b) < 0` etc. |
 
 `str` has built-in `+` (concatenation), `==` and the comparisons (bytewise).
-`bool` has `== != && || !`. A compound assignment `a += b` means `a = a + b`
+`bool` has `== != && || !`. A closed type all of whose variants have no fields
+(`type Sort = value closed { Name; Size }`) has built-in `==` and `!=`, which
+compare the variants, when it declares no `eq` method; when it declares one,
+`==` calls it. Both operands have that type (or are borrows of it). The
+built-in comparison is not a method: such a type satisfies `Eq` only by
+declaring `eq`, and `<` and the other comparisons still need `cmp`. A compound assignment `a += b` means `a = a + b`
 with `a` evaluated once: the index expressions in `a` run once, before `b`, and,
 as in `a = a + b`, the value is stored to the place they name after `b` has run
 (so `xs[i] += f(mut &xs)` is allowed, and `i` is checked again when it is
