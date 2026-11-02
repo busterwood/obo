@@ -189,10 +189,14 @@ fn hex(v: int): str {
 // native/rt.c), in the order of that table.
 const HOOKS: []str = ["exit", "getenv", "__errno_location"]
 
+// The runtime's C helpers for the library (rt.h's obx_ and obxlib_ functions): always the
+// runtime's own, in a dynamic program too.
+fn rtHelper(name: str): bool { return startsWith(name, "obx_") || startsWith(name, "obxlib_") }
+
 // The C functions a dynamically linked program imports (to be looked up in its libraries),
 // or none when the program can be static: when every C function it calls is in the native
-// runtime. A dynamic program imports every C function it calls (the obx_ helpers of the
-// runtime excepted), so that libc's errno, environment, heap and stdio are shared as in the
+// runtime. A dynamic program imports every C function it calls (the obx_ and obxlib_ helpers
+// of the runtime excepted), so that libc's errno, environment, heap and stdio are shared as in the
 // C backend, plus libc's entry and the runtime's HOOKS.
 pub fn dynNames(p: &ir.Ir): []str {
     var rt: Map[str, bool] = newMap()
@@ -207,7 +211,7 @@ pub fn dynNames(p: &ir.Ir): []str {
         let f = p.nodes[i].a
         if p.funcs[f].body >= 0 || !p.funcs[f].isExtern { continue }
         let name = p.funcs[f].asmName
-        if startsWith(name, "obx_") { continue }
+        if rtHelper(name) { continue }
         if !rt.has(&name) { need = true }
         if !seen.has(&name) {
             seen.put(name, true)
@@ -263,7 +267,7 @@ fn (g: mut &Gen) symFunc(f: int, e: int): int {
     if g.funcSym[f] >= 0 { return g.funcSym[f] }
     if g.u.funcs[f].body >= 0 {
         append(mut &g.syms, Sym{kind: SK_FUNC, idx: f, addr: 0})
-    } else if g.dyn && g.u.funcs[f].isExtern && !startsWith(g.u.funcs[f].asmName, "obx_") {
+    } else if g.dyn && g.u.funcs[f].isExtern && !rtHelper(g.u.funcs[f].asmName) {
         g.funcSym[f] = g.symImport(g.u.funcs[f].asmName)
         return g.funcSym[f]
     } else {

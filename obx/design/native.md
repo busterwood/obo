@@ -283,7 +283,8 @@ dynamically linked, and then imports every C function it calls from the
 libraries, also those the runtime has (`strlen`, `getenv`, `mkdir`, ...):
 errno, the environment, the heap (`strdup` and `free`) and stdio are then
 libc's, as in the C backend, and nothing the program sees mixes the two. Only
-the `obx_*` helpers (rt.h's functions, not libc's) stay the runtime's. The obx
+the `obx_*` and `obxlib_*` helpers (rt.h's functions, not libc's; x64gen's
+`rtHelper`) stay the runtime's. The obx
 heap stays the runtime's own; memory the C side allocates is the C side's.
 
 The libraries are those of the C backend: the `lib` names of the externs

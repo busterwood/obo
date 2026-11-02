@@ -1132,6 +1132,22 @@ int64_t obxlib_term_cols(int64_t fd) {
     if (SYS(S_IOCTL, fd, 0x5413, w) != 0 || w[0] == 0 || w[1] == 0) return 0;   /* TIOCGWINSZ */
     return w[1];
 }
+/* C memory for the database adapters (lib/sqlite, lib/postgres): a buffer from the runtime's
+   allocator (counted by OBX_CHECK), a NUL-terminated copy of a str, NULL, and byte, int32 and
+   pointer access by index, for what a C API takes or returns as a pointer to memory */
+void* obxlib_null(void) { return 0; }
+void* obxlib_alloc(int64_t n) { return rt_alloc(n > 0 ? (size_t)n : 1); }
+void obxlib_free(void* p) { if (p) rt_free(p); }
+void* obxlib_cstr(const char* s) {
+    size_t n = strlen(s);
+    char* p = rt_alloc(n + 1);
+    memcpy(p, s, n + 1);
+    return p;
+}
+int64_t obxlib_peek(const void* p, int64_t i) { return ((const uint8_t*)p)[i]; }
+void obxlib_poke(void* p, int64_t i, int64_t v) { ((uint8_t*)p)[i] = (uint8_t)v; }
+void obxlib_poke_i32(void* p, int64_t i, int64_t v) { ((int32_t*)p)[i] = (int32_t)v; }
+void obxlib_poke_ptr(void* p, int64_t i, void* q) { ((void**)p)[i] = q; }
 int64_t obx_clock_ns(int64_t which) {
     struct { i64 s, ns; } t;
     SYS(S_CLOCK_GETTIME, which ? 1 : 0, &t, 0);
