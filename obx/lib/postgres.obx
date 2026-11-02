@@ -94,7 +94,7 @@ pub fn libVersion(): int { return int(PQlibVersion()) }
 
 fn chomp(s: str): str {
     var n = len(s)
-    while n > 0 && isSpace(strByte(s, n - 1)) { n -= 1 }
+    while n > 0 && isSpace(s[n - 1]) { n -= 1 }
     return s[..n]
 }
 

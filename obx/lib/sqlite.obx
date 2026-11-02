@@ -138,11 +138,10 @@ pub fn openWith(path: str, flags: int): Result[Db, Error] {
 
 // Closes the connection. Statements that are still alive keep working; the
 // C connection goes when the last of them is finalized.
-pub fn (d: Db) close(): Result[Unit, Error] {
-    var me = d
-    let rc = int(sqlite3_close_v2(me.h))
-    if rc != SQLITE_OK { return Err(sqlError(me.h, rc)) }   // dropping me tries again
-    me.h = nullPtr()
+pub fn (var d: Db) close(): Result[Unit, Error] {
+    let rc = int(sqlite3_close_v2(d.h))
+    if rc != SQLITE_OK { return Err(sqlError(d.h, rc)) }   // dropping d tries again
+    d.h = nullPtr()
     OPEN -= 1
     return Ok(Unit{})
 }
