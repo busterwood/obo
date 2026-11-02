@@ -21,7 +21,7 @@ def unit(path):
     flags = [w for l in open(path) if l.startswith('// cflags:') for w in l.split(':', 1)[1].split()]
     with tempfile.TemporaryDirectory(prefix='obxunit_') as tmp:
         exe = os.path.join(tmp, 'p')
-        rc, _, err = cbuild.build_obx(path, exe, cflags=flags, obxc=os.path.join(HERE, 'obxc.py'))
+        rc, _, err = cbuild.build_obx(path, exe, cflags=flags)
         if rc:
             return f"build failed: {err.strip()[:300]}"
         r = subprocess.run([exe], capture_output=True, text=True, timeout=10,
@@ -36,7 +36,7 @@ status = 0
 roots = [os.path.join(HERE, 'tests')] + ([runner.HERE] if '--conformance' in sys.argv else [])
 for root in roots:
     runner.HERE = root
-    sys.argv = [sys.argv[0], '--compiler', os.path.join(HERE, 'obxc.py')] + args
+    sys.argv = [sys.argv[0], '--compiler', cbuild.OBXC] + args
     print(f"== {os.path.relpath(root, HERE)}")
     try:
         runner.main()

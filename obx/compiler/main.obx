@@ -2,6 +2,7 @@
 // program to C and builds it with gcc (or runs it, or prints the C).
 //
 //     obxc file.obx [-o out] [--run] [--emit-c] [-L libroot] [-- args...]
+//     obxc file.obx --emit-c-json          {"c": C text, "cmd": gcc command} for tools/cbuild.py
 //     obxc --emit-c file.obx file.obx...   the C of each program, in `== path` sections
 //     obxc --dump-ast file.obx...          the tree of each file (no imports)
 //     obxc --dump-types file.obx...        what sema computes for each program
@@ -128,11 +129,58 @@ fn run(words: &[]str, redirect: str): int {
     return (st >> 8) & 0xff
 }
 
-fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, rest: &[]str): int {
+// The gcc command of a normal build.
+fn gccCmd(exe: str, cfile: str, libs: &[]str): []str {
+    var cmd: []str = ["gcc", "-O2", "-w", "-std=gnu11", "-o", exe, cfile]
+    for f in libFlags(libs) { append(mut &cmd, f) }
+    append(mut &cmd, "-lm")
+    return cmd
+}
+
+// s as a JSON string.
+fn jsonStr(s: str): str {
+    var b = newStrBuf()
+    b.addByte('"')
+    for i in 0..len(s) {
+        let x = strByte(s, i)
+        match x {
+            '"' { b.add("\\\"") }
+            '\\' { b.add("\\\\") }
+            '\n' { b.add("\\n") }
+            '\t' { b.add("\\t") }
+            else {
+                if x < 32 || x == 127 {
+                    let hex = "0123456789abcdef"
+                    b.add("\\u00")
+                    b.addByte(strByte(hex, int(x) / 16))
+                    b.addByte(strByte(hex, int(x) % 16))
+                } else {
+                    b.addByte(x)
+                }
+            }
+        }
+    }
+    b.addByte('"')
+    return b.toStr()
+}
+
+fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, json: bool, rest: &[]str): int {
     var libs: []str = []
     let csrc = compileC(lib, roots, src, mut &libs)
     if emitc {
         writeFd(1, csrc)
+        return 0
+    }
+    if json {
+        var b = newStrBuf()
+        b.add("{\"c\": " + jsonStr(csrc) + ", \"cmd\": [")
+        let cmd = gccCmd("@OUT@", "@SRC@", &libs)
+        for i in 0..len(cmd) {
+            if i > 0 { b.add(", ") }
+            b.add(jsonStr(cmd[i]))
+        }
+        b.add("]}")
+        writeFd(1, b.toStr())
         return 0
     }
     let tmp = mkdtemp(os.envOr("TMPDIR", "/tmp") + "/obxcXXXXXX")
@@ -144,10 +192,7 @@ fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, 
     }
     let exe = if len(out) > 0 { out } else if isRun { tmp + "/prog" } else {
         if endsWith(src, ".obx") { src[0..len(src) - 4] } else { src } }
-    var cmd: []str = ["gcc", "-O2", "-w", "-std=gnu11", "-o", exe, cfile]
-    let fl = libFlags(&libs)
-    for f in fl { append(mut &cmd, f) }
-    append(mut &cmd, "-lm")
+    let cmd = gccCmd(exe, cfile, &libs)
     let errf = tmp + "/gcc.err"
     if run(&cmd, " >/dev/null 2>" + quote(errf)) != 0 {
         var msg = ""
@@ -193,6 +238,7 @@ fn main() {
     var out = ""
     var isRun = false
     var emitc = false
+    var json = false
     var roots: []str = []
     var src = ""
     var rest: []str = []
@@ -211,6 +257,8 @@ fn main() {
             isRun = true
         } else if a == "--emit-c" {
             emitc = true
+        } else if a == "--emit-c-json" {
+            json = true
         } else if a == "-L" {
             i += 1
             if i >= len(argv) { usage() }
@@ -225,5 +273,5 @@ fn main() {
         i += 1
     }
     if src == "" { usage() }
-    exit(build(libDir(argv[0]), &roots, src, out, isRun, emitc, &rest))
+    exit(build(libDir(argv[0]), &roots, src, out, isRun, emitc, json, &rest))
 }

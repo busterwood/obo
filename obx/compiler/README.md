@@ -212,4 +212,10 @@ first error, is compared; a difference names the C function where it starts.
 - Speed: all 1,969 test files in 0.15 s (ref: 1.0 s in one Python process);
   a 409,000-line file (12.9 MB, 2.7 million dump lines) in 1.4 s (ref:
   15.8 s).
-- Next: retiring ref and checking in a seed (the user decides).
+- Seed: `seed/obxc.c` is the compiler's own C at the fixed point (stage 2 and
+  stage 3 write the same C, which is also ref's C). `build.sh` builds
+  `out/obxc` from it with gcc alone; `reseed.sh` rebuilds the seed from the
+  sources with `out/obxc` and checks the fixed point. Run `reseed.sh` and
+  commit the seed with every compiler change. The full gate passes with the
+  seed-built compiler: `OBXC=obx/compiler/out/obxc obx/tools/gate.sh full`.
+- Next: retiring ref (the user decides).

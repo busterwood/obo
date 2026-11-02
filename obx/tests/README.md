@@ -30,6 +30,10 @@ change in C is not compiled again. The cache is `$OBX_CACHE` (default
 `~/.cache/obx-build`), trimmed to `$OBX_CACHE_MB` (default 2000) MB; `OBX_NOCACHE=1`
 turns it off. Compile errors produce no C and are never cached.
 
+`OBXC` chooses the compiler for every runner and both gates: `ref/obxc.py` by default,
+or a built compiler, e.g. `OBXC=obx/compiler/out/obxc obx/tools/gate.sh full` (the
+self-hosted compiler has `--emit-c-json` too, so its builds are cached the same way).
+
 ## Test format
 
 Every `*.obx` under `run/` and `error/` is one test, except that a directory

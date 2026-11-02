@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import cbuild
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
-OBXC = os.path.join(HERE, '..', '..', 'ref', 'obxc.py')
+OBXC = cbuild.OBXC   # $OBXC, else the reference compiler
 BUILD = os.path.join(HERE, 'build')
 DIRECTIVE = re.compile(r'^\s*//\s*(expect|exit|error):(.*)$')
 
@@ -39,7 +39,7 @@ def run1(path):
     if name == 'main':
         name = os.path.basename(os.path.dirname(path))
     try:
-        c = subprocess.run([sys.executable, OBXC, path, '--emit-c'], capture_output=True, text=True, timeout=30)
+        c = subprocess.run(cbuild.obxc_argv(OBXC) + [path, '--emit-c'], capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
         return name, 'HANG', 'compiler did not finish in 30 s'
     if 'Traceback' in c.stderr:

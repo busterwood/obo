@@ -14,7 +14,14 @@ Compile errors from obxc.py produce no C and are never cached.
 import functools, hashlib, json, os, random, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OBXC = os.path.normpath(os.path.join(HERE, '..', 'ref', 'obxc.py'))
+REF = os.path.normpath(os.path.join(HERE, '..', 'ref', 'obxc.py'))
+# The compiler the runners use: $OBXC (obxc.py or a built obxc binary), default the reference.
+OBXC = os.path.abspath(os.environ['OBXC']) if os.environ.get('OBXC') else REF
+
+
+def obxc_argv(obxc=None):
+    obxc = obxc or OBXC
+    return [sys.executable, obxc] if obxc.endswith('.py') else [obxc]
 
 
 def enabled():
@@ -101,10 +108,10 @@ def cc_build(csrc, cmd, out, timeout=None):
     return 0, ''
 
 
-def build_obx(src, out, extra_args=(), cflags=(), obxc=OBXC, cwd=None, timeout=None):
+def build_obx(src, out, extra_args=(), cflags=(), obxc=None, cwd=None, timeout=None):
     """Like `obxc.py src -o out [extra_args]`: returns (returncode, stdout, stderr).
     cflags go before -o (they are part of the key)."""
-    py = [sys.executable, obxc]
+    py = obxc_argv(obxc)
     if not enabled() and not cflags:
         r = subprocess.run(py + [src, '-o', out, *extra_args], capture_output=True, text=True,
                            errors='replace', timeout=timeout, cwd=cwd)

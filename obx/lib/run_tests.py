@@ -12,7 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location('conformance', os.path.join(HERE, '..', 'tests', 'run.py'))
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
-default = os.path.join(HERE, '..', 'ref', 'obxc.py')
+default = runner.cbuild.OBXC   # $OBXC, else ../ref/obxc.py
 runner.HERE = os.path.join(HERE, 'tests')
 if '--compiler' not in sys.argv:
     sys.argv[1:1] = ['--compiler', default]

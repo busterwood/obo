@@ -70,13 +70,9 @@ def run_test(kind, path, compiler):
     with tempfile.TemporaryDirectory(prefix='obxtest_') as tmp:
         out = os.path.join(tmp, 'out')
         try:
-            if os.path.basename(compiler) == 'obxc.py':     # the reference compiler: cached builds
-                c = subprocess.CompletedProcess([], *cbuild.build_obx(
-                    path, out, obxc=os.path.abspath(compiler), timeout=COMPILE_TIMEOUT, cwd=tmp))
-            else:
-                c = subprocess.run(compiler_cmd(compiler) + [path, '-o', out],
-                                   capture_output=True, text=True, errors='replace',
-                                   timeout=COMPILE_TIMEOUT, cwd=tmp)
+            # cached builds through --emit-c-json (ref/obxc.py and the self-hosted obxc both have it)
+            c = subprocess.CompletedProcess([], *cbuild.build_obx(
+                path, out, obxc=os.path.abspath(compiler), timeout=COMPILE_TIMEOUT, cwd=tmp))
         except subprocess.TimeoutExpired:
             return rel, 'compile timeout'
         except OSError as e:
@@ -114,7 +110,7 @@ def run_test(kind, path, compiler):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--compiler', default=os.path.join(HERE, '..', 'ref', 'obxc.py'))
+    ap.add_argument('--compiler', default=cbuild.OBXC)
     ap.add_argument('-j', type=int, default=os.cpu_count() or 4)
     ap.add_argument('filters', nargs='*')
     a = ap.parse_args()
