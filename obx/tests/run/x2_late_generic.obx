@@ -1,0 +1,23 @@
+// SPEC 7.5: a borrow argument or receiver whose place is variables, fields and
+// array indexes is taken when the call is made, after the other arguments.
+// expect: 3
+// expect: 2
+// expect: 30
+type Box[T] = record { items: []T }
+fn (b: mut &Box[T]) put(x: T) { append(mut &b.items, x) }
+fn (b: mut &Box[T]) take(): T { return pop(mut &b.items) }
+fn (b: &Box[T]) size(): int { return len(b.items) }
+fn refill[T](b: mut &Box[T]) { b.put(b.take()) }
+type P = value record { x: int; y: int }
+fn (p: mut &P) addX(d: int) { p.x += d }
+fn (p: mut &P) bumpY(): int { p.y += 1; return p.y * 10 }
+fn main() {
+    var b = Box[str]{items: ["a", "b", "c"]}
+    refill(mut &b)
+    b.put(b.take())
+    println(b.size())
+    var p = P{x: 0, y: 1}
+    p.addX(p.bumpY() / 10)                        // a value-record receiver
+    println(p.y)
+    println(p.x * 10 + p.y * 5)
+}

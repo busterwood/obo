@@ -1,4 +1,5 @@
-// error: held|overlap|borrow|moved
+// SPEC 7.5 (2026-11-02): the borrow is taken when the call is made; the index is checked again.
+// exit: 3
 fn g(xs: mut &[]str): str { xs = []; return "x" }
 fn main() {
     var xs: []str = ["a", "b"]

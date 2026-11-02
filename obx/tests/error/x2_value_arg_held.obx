@@ -1,0 +1,8 @@
+// error: zed
+type D = record { v: int }
+fn keep(d: D, n: int) {}
+fn poke(d: mut &D): int { d.v = 2; return 1 }
+fn main() {
+    var zed = D{v: 1}
+    keep(zed, poke(mut &zed))
+}

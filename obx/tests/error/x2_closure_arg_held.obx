@@ -1,0 +1,7 @@
+// error: zed
+fn run(f: &fn(): int, n: int): int { return n }
+fn poke(d: mut &int): int { d = 2; return 1 }
+fn main() {
+    var zed = 1
+    println(run(fn(): int { zed = 3; return zed }, poke(mut &zed)))
+}

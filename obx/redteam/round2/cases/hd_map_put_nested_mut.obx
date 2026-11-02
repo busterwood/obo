@@ -1,4 +1,4 @@
-// error: borrow|held
+// SPEC 7.5 (2026-11-02): the borrow is taken when the call is made, after the other arguments.
 fn main() {
     var m: Map[str, int] = newMap()
     m.put("a", 1)

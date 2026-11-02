@@ -1,0 +1,10 @@
+// error: zed
+type K = record { m: int }
+type A = record { kid: K }
+fn (a: mut &A) b(): mut &K { return mut &a.kid }
+fn (k: mut &K) c(x: int) { k.m = x }
+fn (a: mut &A) d(): int { a.kid = K{m: 0}; return 1 }
+fn main() {
+    var zed = A{kid: K{m: 1}}
+    zed.b().c(zed.d())
+}

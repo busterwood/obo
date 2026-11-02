@@ -1,4 +1,5 @@
-// error: borrow|moved|assign
+// SPEC 7.5 (2026-11-02): the borrow is taken when the call is made, after the other arguments.
+// expect: 1
 type D = record { v: int }
 fn (d: &D) show(e: D) { println(d.v) }
 fn mk(xs: mut &[]D): D { return pop(xs) }

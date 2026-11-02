@@ -1862,7 +1862,7 @@ class Checker:
                 if sig is None:
                     fv = self.field_of(recv, f.name, e.where)
                     return self.call_value(fv, e, exp)
-                return self.call(sig, recv, e.args, e.where, exp, targs=targs)
+                return self.call(sig, recv, e.args, e.where, exp, targs=targs, rast=f.e)
         st = self.static(f)
         if st is not None:
             if st[0] == 'type':
@@ -1980,8 +1980,28 @@ class Checker:
         unify(fd.recv_type, t, bind, set(fd.tps))
         return fn_sig(fd, bind)
 
+    def late(self, a):
+        """SPEC 7.5: whether the borrow argument a (&p, mut &p, a borrow variable, or a receiver p) is
+        taken when the call is made: p is a variable with fields and array indexes (no slice, no call)."""
+        if a is None or isinstance(a, Val):
+            return False
+        if a.kind == 'borrow':
+            a = a.e
+        while a.kind in ('field', 'index'):
+            if a.kind == 'index' and (self.place_type(a.e) or ('',))[0] != 'arr':
+                return False
+            a = a.e
+        return a.kind == 'name' and self.lookup_var(a.v) is not None
+
+    def take(self, v, mut, cid, where):
+        """Take a late borrow: its place must still be there; rule 3 then holds it."""
+        if isinstance(v.root, Var) and v.root.state != 'live':
+            self.err(f"'{v.root.name}' was moved and has no value here: a later argument moved it, and the "
+                     "borrow of it is taken when the call is made", where)
+        self.hold(v, mut, cid, where)
+
     def call(self, sig, recv, args, where, exp, targs=None, alltargs=False, op=False, fieldnames=None,
-             order=None):
+             order=None, rast=None):
         ctx = self.ctx
         tps = set(sig.tps)
         bind = dict(sig.bind)
@@ -1999,7 +2019,7 @@ class Checker:
         if len(allargs) != len(sig.params):
             n = len(sig.params) - (1 if recv is not None else 0)
             self.err(f"{sig.label} takes {n} arguments, not {len(args)}", where)
-        vals, cid, mark = [None] * len(allargs), object(), len(ctx.pending)
+        vals, cid, mark, late = [None] * len(allargs), object(), len(ctx.pending), []
         order = order or list(range(len(allargs)))      # evaluation order (source order of a literal)
         for pos, i in enumerate(order):
             a, pt = allargs[i], sig.params[i]
@@ -2041,7 +2061,10 @@ class Checker:
                 v = self.borrow(v, pt[2], where, recv=isrecv)
                 if not unify(pt[1], v.t[1], bind, tps):
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)
-                self.hold(v, pt[2], cid, where)
+                if self.late(rast if isrecv else a):
+                    late.append((v, pt[2]))
+                else:
+                    self.hold(v, pt[2], cid, where)
                 vals[i] = ('b', v)
             elif pt[0] == 'clo':
                 if v.t[0] == 'fn':
@@ -2063,6 +2086,8 @@ class Checker:
                 if v.cat == 'place' and not is_copy(v.t):
                     self.hold(v, None, cid, where)
                 vals[i] = ('v', v)
+        for v, m in late:               # SPEC 7.5: these borrows are taken now, after the arguments
+            self.take(v, m, cid, where)
         missing = [tp.name for tp in sig.tps if tp not in bind]
         if missing:
             self.err(f"cannot infer the type argument {', '.join(missing)} of {sig.label}; give it "
@@ -2167,11 +2192,13 @@ class Checker:
                      f"{tstr(v.t)}", e.where)
         if v.t[1][0] != 'arr':
             self.err(f"{e.fn.v} needs an array, not {tstr(v.t[1])}", e.where)
-        return self.builtin_borrow(v, mut, e.where)
+        return self.builtin_borrow(v, mut, e.where, e.args[0] if len(e.args) > 1 else None)
 
-    def builtin_borrow(self, v, mut, where):
+    def builtin_borrow(self, v, mut, where, ast=None):
         v = self.borrow(v, mut, where)
-        self.hold(v, mut, object(), where)
+        v.late = self.late(ast)         # append and replace: taken after the value (SPEC 7.5)
+        if not v.late:
+            self.hold(v, mut, object(), where)
         return v
 
     def b_len(self, e, exp):
@@ -2198,6 +2225,8 @@ class Checker:
         et = a.t[1][1]
         v = self.expr(e.args[1], et)
         v = self.coerce(v, et, e.where, "the appended value")
+        if a.late:
+            self.take(a, True, object(), e.where)
         c = self.consume(v, e.where)
         n = self.ctx.fresh('ap')
         self.emit(f"{self.T(et)} {n} = {c};")
@@ -2229,9 +2258,11 @@ class Checker:
         if p.t[0] != 'ref' or not p.t[2]:
             self.err(f"replace needs mut &place as its first argument, not {tstr(p.t)}", e.where)
         self.self_in_drop(p, e.where)
-        p = self.builtin_borrow(p, True, e.where)
+        p = self.builtin_borrow(p, True, e.where, e.args[0])
         t = p.t[1]
         v = self.coerce(self.expr(e.args[1], t), t, e.where, "the new value")
+        if p.late:
+            self.take(p, True, object(), e.where)
         c = self.consume(v, e.where)
         n = self.ctx.fresh('old')
         self.emit(f"{self.T(t)} {n} = *{p.c};")

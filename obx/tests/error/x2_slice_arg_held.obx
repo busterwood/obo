@@ -1,0 +1,7 @@
+// error: xs
+fn sum(s: &[int], n: int): int { return n }
+fn grow(xs: mut &[]int): int { append(mut &xs, 1); return 1 }
+fn main() {
+    var xs = [1, 2]
+    println(sum(&xs, grow(mut &xs)))
+}

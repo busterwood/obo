@@ -1,0 +1,27 @@
+// SPEC 7.5: a borrow argument or receiver whose place is variables, fields and
+// array indexes is taken when the call is made, after the other arguments.
+// The index runs in its position; the element is found again (and its index
+// checked again) when the call is made, after a later argument grew the array.
+// expect: 3
+// expect: 7
+// expect: 0
+// expect: 5
+type Buf = record { xs: []int }
+fn (b: mut &Buf) push(x: int) { append(mut &b.xs, x) }
+fn (b: &Buf) total(): int { var t = 0; for x in b.xs { t += x }; return t }
+fn grow(bs: mut &[]Buf): int {
+    var i = 0
+    while i < 100 { append(mut &bs, Buf{xs: []}); i += 1 }    // reallocates the array
+    return 7
+}
+fn bump(i: mut &int): int { i += 1; return 5 }
+fn main() {
+    var bs: []Buf = [Buf{xs: []}, Buf{xs: []}, Buf{xs: []}]
+    println(len(bs))
+    bs[1].push(grow(mut &bs))
+    println(bs[1].total())
+    var i = 0
+    bs[i].push(bump(mut &i))                     // i is read before bump changes it
+    println(bs[1].total() - 7)
+    println(bs[0].total())
+}

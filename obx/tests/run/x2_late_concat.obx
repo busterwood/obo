@@ -1,0 +1,15 @@
+// SPEC 7.5: a borrow argument or receiver whose place is variables, fields and
+// array indexes is taken when the call is made, after the other arguments.
+// expect: int x;
+// expect: str y;
+// expect: 2
+type Gen = record { lines: []str; n: int }
+fn (c: mut &Gen) emit(s: str) { append(mut &c.lines, s) }
+fn (c: mut &Gen) T(t: str): str { c.n += 1; return t }
+fn main() {
+    var c = Gen{lines: [], n: 0}
+    c.emit(c.T("int") + " x;")
+    c.emit(c.T("str") + " y;")
+    for l in c.lines { println(l) }
+    println(c.n)
+}

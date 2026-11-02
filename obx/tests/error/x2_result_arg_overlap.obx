@@ -1,0 +1,9 @@
+// error: twice in one call
+type K = record { m: int }
+type A = record { kid: K }
+fn (a: mut &A) b(): mut &K { return mut &a.kid }
+fn (a: mut &A) put(k: &K) {}
+fn main() {
+    var zed = A{kid: K{m: 1}}
+    zed.put(zed.b())
+}

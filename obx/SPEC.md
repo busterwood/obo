@@ -527,6 +527,21 @@ may be passed where `&T` is expected. A copy-type argument is copied when it is
 evaluated, so `f(mut &n, n.v)` does not conflict (rule 10.3 concerns borrows
 and moves only).
 
+**Borrows are taken at the call.** A borrow argument `&p` or `mut &p` (or a
+borrow variable passed as it is), and the implicit borrow of a method
+receiver `p`, whose place `p` is made only of a local variable or parameter
+(a borrow one is dereferenced), fields and indexes into arrays, is *taken*
+when the call is made, after all its arguments have been evaluated. The index
+expressions in `p` still run in their position, left to right; when the call
+is made the place is found again and its indexes are checked again (exit 3).
+So `p.node(K, p.block())` with `p: mut &Parser`, `xs[i].push(f(mut &xs))` and
+`c.emit(c.T(t) + ";")` are allowed. The same holds for the first argument of
+`append` and `replace`, taken after the value. A borrow reached through a
+slice or through a borrow returned by a call, a slice argument and a closure
+argument are taken in their position, as before. A borrow taken at the call
+needs its root: if a later argument moved it, that is an error (use after
+move). Rule 3 of section 10 applies between the borrows as taken.
+
 ### 7.6 try
 
 `try e` requires `e` to have a closed type with variants `Ok(T)` and `Err(E)`
@@ -646,7 +661,10 @@ following rules, all checked within one function at a time.
 3. **Calls.** While a call's arguments are evaluated, the places it has
    already borrowed, or will move, are held: a later argument, at any depth of
    nesting, may not mutably borrow, assign or move a place that overlaps a held
-   one. `use(first(&xs), pop(mut &xs))` is an error. A shared read of a place
+   one. `use(first(&xs), pop(mut &xs))` is an error. A borrow taken at the call
+   (section 7.5) is not held while the arguments run; when it is taken it is
+   held, and may not overlap another borrow or move of the same call unless
+   both are shared. A shared read of a place
    held by a mutable borrow of an enclosing call is allowed
    (`m.put(k, m.get(&k)...)`). Two places overlap when one is a prefix of the
    other; any two indexes into the same array overlap. The same holding covers

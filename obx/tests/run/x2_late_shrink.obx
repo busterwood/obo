@@ -1,0 +1,13 @@
+// SPEC 7.5: a borrow argument or receiver whose place is variables, fields and
+// array indexes is taken when the call is made, after the other arguments.
+// The index is checked again when the call is made: a later argument emptied
+// the array, so the receiver bs[2] is out of range.
+// exit: 3
+type Buf = record { xs: []int }
+fn (b: mut &Buf) push(x: int) { append(mut &b.xs, x) }
+fn shrink(bs: mut &[]Buf): int { bs = []; return 8 }
+fn main() {
+    var bs: []Buf = [Buf{xs: []}, Buf{xs: []}, Buf{xs: []}]
+    bs[2].push(shrink(mut &bs))
+    println("not reached")
+}

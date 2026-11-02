@@ -1,0 +1,26 @@
+// SPEC 7.5: a borrow argument or receiver whose place is variables, fields and
+// array indexes is taken when the call is made, after the other arguments.
+// expect: 2
+// expect: 901
+// expect: 101
+// expect: 3
+// expect: 4
+// expect: 7
+type Parser = record { pos: int; out: []int }
+fn (p: mut &Parser) next(): int { p.pos += 1; return p.pos }
+fn (p: mut &Parser) node(k: int, a: int): int { append(mut &p.out, k * 100 + a); return len(p.out) }
+fn (p: mut &Parser) block(): int { return p.node(9, p.next()) }   // p: mut &Parser, a borrow parameter
+fn node(p: mut &Parser, k: int, a: int): int { return p.node(k, a) }
+fn main() {
+    var p = Parser{pos: 0, out: []}
+    let r = p.node(1, p.block())                 // a local receiver
+    println(r)
+    println(p.out[0])
+    println(p.out[1])
+    println(node(mut &p, 3, p.next()))           // an explicit mut & argument
+    {
+        let q = mut &p
+        println(node(q, 4, q.next()))            // a borrow variable passed as it is
+    }
+    println(p.pos + p.next())                    // an operator's left operand is still read first
+}

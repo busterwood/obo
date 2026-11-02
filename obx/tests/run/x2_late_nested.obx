@@ -1,0 +1,21 @@
+// SPEC 7.5: a borrow argument or receiver whose place is variables, fields and
+// array indexes is taken when the call is made, after the other arguments.
+// Nested calls on one receiver, and a chained receiver whose inner call
+// only reads.
+// expect: 2
+// expect: 4
+// expect: 16
+// expect: 17
+type Acc = record { n: int; kid: Kid }
+type Kid = record { m: int }
+fn (a: mut &Acc) add(x: int): int { a.n += x; return a.n }
+fn (a: &Acc) get(): int { return a.n }
+fn (a: mut &Acc) k(): mut &Kid { return mut &a.kid }
+fn (k: mut &Kid) set(x: int): int { k.m = x; return x }
+fn main() {
+    var a = Acc{n: 0, kid: Kid{m: 0}}
+    println(a.add(a.add(a.add(1) - 1)))           // n: 1, then 1, then 2
+    println(a.add(a.get()))                       // 2 + 2
+    println(a.add(a.add(a.get())))                // 4 + 4, then 8 + 8
+    println(a.k().set(a.get() + 1))               // a shared read under a call-result borrow
+}
