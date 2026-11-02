@@ -1,0 +1,4332 @@
+// check: every function body is checked once, generic or not (SPEC 6.2).
+// Type parameters are opaque: a T is owned unless `T: copy`, and its methods
+// come only from its constraints. The checker decides every move, copy,
+// borrow and drop, and writes the function as a C template: C lines with
+// holes for whatever depends on the type arguments (C types, drop and dup
+// glue, callees), which emit.obx renders once per instance.
+//
+// A port of ref/check.py with the same algorithms, the same C and the same
+// messages. ref's objects become tables named by index: variables (Var),
+// temporaries (Tmp); a value (Val) is a copy record, and its root is an int
+// (a Var id, -2 - a Tmp id, or -1 for none); a place's path is a str of
+// elements each ended by a NUL byte (field names, "[]", "*").
+
+import "./syntax" as sx
+import "./sema"
+import "./num"
+
+// ---------------------------------------------------------------- C text
+
+pub const CTYPES: []str = ["int64_t", "int32_t", "uint32_t", "uint64_t", "uint8_t", "__int128",
+    "unsigned __int128", "double", "bool", "obx_str", "void*", "void", "void"]
+
+// ref's cstr: the bytes s as a C string literal (printable ASCII but " \ ?, else octal escapes).
+pub fn cstr(s: str): str {
+    var b = newStrBuf()
+    b.addByte('"')
+    for i in 0..len(s) {
+        let x = strByte(s, i)
+        if x >= 32 && x < 127 && x != 34 && x != 92 && x != 63 {
+            b.addByte(x)
+        } else {
+            b.addByte('\\')
+            b.addByte('0' + x / 64)
+            b.addByte('0' + x / 8 % 8)
+            b.addByte('0' + x % 8)
+        }
+    }
+    b.addByte('"')
+    return b.toStr()
+}
+
+// ref's checks(c): whether the C text makes a run-time check (each passes its location, a C string).
+fn checks(c: str): bool {
+    for i in 0..len(c) {
+        if strByte(c, i) == '"' { return true }
+    }
+    return false
+}
+
+// Python's c.replace('_', 'a').isalnum(): a C name or number.
+fn isWordText(c: str): bool {
+    if len(c) == 0 { return false }
+    for i in 0..len(c) {
+        let x = strByte(c, i)
+        if !((x >= '0' && x <= '9') || (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z') || x == '_') { return false }
+    }
+    return true
+}
+
+// ---------------------------------------------------------------- templates
+
+// Hole kinds. A hole is written \x01N\x02 in a template line; its fields by kind:
+// H_T t; H_DROP, H_DDROP, H_DUP t and the C text s (which may hold holes);
+// H_STR, H_GSTR the bytes s; H_FN the function f and its type arguments t (a
+// tuple: a fn type with them as parameters); H_CL the lifted closure f; H_TRAMP
+// the fn type t; H_IMETH the type parameter t, the method name s, the receiver
+// mode f, the receiver's C text r and the arguments' (args, joined by \x03);
+// H_IASSOC t and the name s.
+pub const H_T = 0
+pub const H_DROP = 1
+pub const H_DDROP = 2
+pub const H_DUP = 3
+pub const H_STR = 4
+pub const H_GSTR = 5
+pub const H_FN = 6
+pub const H_CL = 7
+pub const H_TRAMP = 8
+pub const H_IMETH = 9
+pub const H_IASSOC = 10
+
+pub type Hole = value record {
+    pub k: int
+    pub t: int
+    pub f: int
+    pub s: str
+    pub r: str
+    pub args: str
+    pub nargs: int
+}
+
+// A closure lifted out of its function: rendered as <instance>_c<k>.
+pub type Lifted = record {
+    pub k: int
+    pub ret: int
+    pub pnames: []str
+    pub ptys: []int
+    pub lines: []str
+}
+
+// A checked function: ref's fd.template and fd.lifted.
+pub type Tmpl = record {
+    pub done: bool
+    pub lines: []str
+    pub holes: []Hole
+    pub lifted: []Lifted
+}
+
+// A global's or constant table's initializer (ref's g.init): none for a
+// set-once global, items for a table, else one C text.
+pub type GInit = record {
+    pub has: bool
+    pub isOnce: bool
+    pub table: bool
+    pub items: []str
+    pub c: str
+    pub holes: []Hole
+}
+
+// ---------------------------------------------------------------- checker state
+
+const CAT_RV = 0
+const CAT_TMP = 1
+const CAT_PLACE = 2
+
+const VK_PARAM = 0
+const VK_LOCAL = 1
+const VK_STATIC = 2
+
+// The kinds of frozen(): a read, an assignment, a move, a mut borrow.
+const FR_READ = 0
+const FR_ASSIGN = 1
+const FR_MOVE = 2
+const FR_MUT = 3
+
+// The mut of a held place: a shared borrow, a mut borrow, a move (ref's None).
+const HM_SHARED = 0
+const HM_MUT = 1
+const HM_MOVE = 2
+
+// Declaration kinds of a Static beyond sema's D_*: a variant.
+const D_VARIANT = 4
+
+// What static() finds (ref's tuples): nothing, ('decl', d, ...), ('type', t), ('module', m).
+const ST_NONE = 0
+const ST_DECL = 1
+const ST_TYPE = 2
+const ST_MODULE = 3
+
+type Var = value record {
+    name: str
+    c: str
+    t: int
+    mutable: bool
+    kind: int
+    line: int
+    moved: bool
+    broot: int      // the root of a borrow variable, or -1
+    cap: int        // a closure's capture: the captured variable, or -1
+    capmut: bool
+}
+
+type Tmp = value record {
+    c: str
+    t: int
+    live: bool
+}
+
+type Val = value record {
+    c: str
+    t: int
+    cat: int
+    tmp: int        // a Tmp, or -1
+    root: int       // a Var id, -2 - a Tmp id, or -1
+    path: str
+    mutable: bool
+    viaref: bool
+    vvar: int       // a Var, or -1
+    gk: int         // the global (sema.D_GLOBAL) or constant table (sema.D_CONST) of a place, or -1
+    gi: int
+    noreturn: bool
+    caps: int       // a closure value's captures (Checker.capl), or -1
+    late: bool
+}
+
+type Cap = value record {
+    v: int
+    m: bool
+}
+
+type Freeze = value record {
+    root: int
+    m: bool
+    by: str
+}
+
+type Pend = value record {
+    root: int
+    path: str
+    m: int          // HM_*
+    cid: int
+}
+
+type Scope = record {
+    vars: []int
+    freezes: []Freeze
+}
+
+type Loop = record {
+    nscopes: int
+    nframes: int
+    entry: []int    // a snapshot: (var, moved) pairs
+    infinite: bool
+    breaks: [][]int
+}
+
+type Drop = value record {
+    c: str
+    t: int
+}
+
+// ref's Ctx: the function (or closure, or global initializer) being checked.
+type Ctx = record {
+    fd: int         // the FnDecl, or -1
+    label: str
+    ret: int
+    env: []int      // the type parameters in scope
+    mod: int
+    closure: bool
+    bvar: int       // the borrowed parameter's Var, or -1
+    lines: []str
+    ind: int
+    scopes: []Scope
+    frames: [][]int
+    loops: []Loop
+    pending: []Pend
+    pmarks: []int
+    dead: bool
+    nomove: []str
+    n: int
+    tailOn: bool
+    tail: []Drop
+    capNames: []str
+    capVars: []int
+}
+
+fn newCtx(f: int, label: str, ret: int, env: []int, mod: int, closure: bool): Ctx {
+    return Ctx{fd: f, label: label, ret: ret, env: env, mod: mod, closure: closure, bvar: -1, lines: [], ind: 1,
+        scopes: [], frames: [], loops: [], pending: [], pmarks: [], dead: false, nomove: [], n: 0, tailOn: false,
+        tail: [], capNames: [], capVars: []}
+}
+
+// What static() finds.
+type St = value record {
+    k: int
+    dk: int         // ST_DECL: sema.D_* or D_VARIANT
+    di: int
+    t: int          // ST_TYPE
+    m: int          // ST_MODULE
+    n: int          // ref's len(st): 2, 3 with type arguments, 4 with the free parameters of an alias
+    tres: bool      // the type arguments are types (ref's tuple), not type nodes
+    targs: int      // a tuple type of types, or a list of type nodes (in the current module)
+    free: int       // n == 4: the alias whose parameters are free
+}
+
+const NOST: St = St{k: 0, dk: -1, di: -1, t: -1, m: -1, n: 0, tres: false, targs: -1, free: -1}
+
+fn stDecl(dk: int, di: int): St { return St{k: ST_DECL, dk: dk, di: di, t: -1, m: -1, n: 2, tres: false, targs: -1, free: -1} }
+
+// ref's Sig: what a call calls.
+const SK_FN = 0
+const SK_EXTERN = 1
+const SK_CTOR = 2
+const SK_IASSOC = 3
+const SK_IMETH = 4
+const SK_FNVAL = 5
+const SK_CLO = 6
+const SK_INTR = 7
+
+type Sig = record {
+    label: str
+    kind: int
+    params: []int
+    ret: int
+    tps: []int
+    recv: int       // sema.RM_VAL, RM_REF, RM_MUT, or RM_NONE
+    fd: int
+    c: str
+    tpt: int
+    bind: []int
+    nown: int
+    variant: int    // a ctor's variant, or -1 (a record)
+    loc: bool
+    name: str       // imeth, iassoc: the member's name
+}
+
+// An argument of call(): an AST node, or a value already evaluated.
+type Arg = value record {
+    isVal: bool
+    n: int
+    v: Val
+}
+
+// A match expression in progress (ref's st in x_matchx).
+type MatchX = record {
+    r: str
+    t: int
+    lits: []int     // (line index, node, indent) triples
+}
+
+pub type Checker = record {
+    pub pg: sema.Program
+    pub tmpls: []Tmpl          // per FnDecl
+    pub ginits: []GInit        // per Global
+    pub cinits: []GInit        // per Const
+    vars: []Var
+    tmps: []Tmp
+    capl: [][]Cap
+    statics: Map[str, int]
+    podMemo: []int
+    copyMemo: []int
+    cids: int
+    holes: []Hole
+    lifted: []Lifted
+    cx: Ctx
+    outers: []Ctx
+    calleeTps: []int
+    initOrder: []int
+    mxs: []MatchX
+}
+
+pub fn newChecker(pg: sema.Program): Checker {
+    var c = Checker{pg: pg, tmpls: [], ginits: [], cinits: [], vars: [], tmps: [], capl: [], statics: newMap(),
+        podMemo: [], copyMemo: [], cids: 0, holes: [], lifted: [], cx: newCtx(-1, "", sema.T_VOID, [], 0, false),
+        outers: [], calleeTps: [], initOrder: [], mxs: []}
+    for f in 0..len(c.pg.fns) { append(mut &c.tmpls, Tmpl{done: false, lines: [], holes: [], lifted: []}) }
+    for g in 0..len(c.pg.globals) { append(mut &c.ginits, noInit()) }
+    for k in 0..len(c.pg.consts) { append(mut &c.cinits, noInit()) }
+    return c
+}
+
+fn noInit(): GInit { return GInit{has: false, isOnce: false, table: false, items: [], c: "", holes: []} }
+
+// ---------------------------------------------------------------- values
+
+fn val(c: str, t: int, cat: int): Val {
+    return Val{c: c, t: t, cat: cat, tmp: -1, root: -1, path: "", mutable: false, viaref: false, vvar: -1, gk: -1,
+        gi: -1, noreturn: false, caps: -1, late: false}
+}
+
+fn rv(c: str, t: int): Val { return val(c, t, CAT_RV) }
+
+fn rvAt(c: str, t: int, root: int, path: str): Val {
+    var v = val(c, t, CAT_RV)
+    v.root = root
+    v.path = path
+    return v
+}
+
+fn voidVal(noreturn: bool): Val {
+    var v = rv("", sema.T_VOID)
+    v.noreturn = noreturn
+    return v
+}
+
+fn tmpRoot(t: int): int { return -2 - t }
+
+// ref's overlap: two paths overlap when one is a prefix of the other ("*" matches anything below).
+fn overlap(a: str, b: str): bool {
+    var i = 0
+    var j = 0
+    while i < len(a) && j < len(b) {
+        var ie = i
+        while strByte(a, ie) != 0 { ie += 1 }
+        var je = j
+        while strByte(b, je) != 0 { je += 1 }
+        let x = a[i..ie]
+        let y = b[j..je]
+        if x == "*" || y == "*" { return true }
+        if x != y { return false }
+        i = ie + 1
+        j = je + 1
+    }
+    return true
+}
+
+fn pathAdd(p: str, e: str): str { return p + e + "\x00" }
+
+// ---------------------------------------------------------------- errors and small helpers
+
+fn (c: &Checker) err(line: int, msg: str): never { c.pg.err(c.cx.mod, line, msg) }
+
+fn (c: &Checker) tstr(t: int): str { return c.pg.tstr(t) }
+
+// ref's W(where): the location of a run-time check as a C string.
+fn (c: &Checker) W(line: int): str { return cstr(c.pg.mods[c.cx.mod].fname + ":" + intToStr(line)) }
+
+fn (c: mut &Checker) fresh(p: str): str {
+    c.cx.n += 1
+    return p + intToStr(c.cx.n)
+}
+
+fn (c: mut &Checker) emit(s: str) {
+    var b = newStrBuf()
+    for i in 0..c.cx.ind { b.add("  ") }
+    b.add(s)
+    append(mut &c.cx.lines, b.toStr())
+}
+
+fn (c: mut &Checker) hole(h: Hole): str {
+    append(mut &c.holes, h)
+    return "\x01" + intToStr(len(c.holes) - 1) + "\x02"
+}
+
+fn mkHole(k: int, t: int, s: str): Hole { return Hole{k: k, t: t, f: -1, s: s, r: "", args: "", nargs: 0} }
+
+// ref's T(t): the C type of t (a hole unless it is known now).
+fn (c: mut &Checker) T(t: int): str {
+    let k = c.pg.tk(t)
+    if k == sema.TK_PRIM { return CTYPES[t] }
+    if k == sema.TK_SLICE { return "obx_slice" }
+    if k == sema.TK_CLO { return "obx_clo" }
+    return c.hole(mkHole(H_T, t, ""))
+}
+
+// ref's is_pod: a value of t needs neither dup nor drop (decidable without type arguments).
+pub fn isPod(pg: mut &sema.Program, memo: mut &[]int, t: int): bool {
+    while len(memo) <= t { append(memo, -1) }
+    if memo[t] >= 0 { return memo[t] == 1 }
+    let k = pg.tk(t)
+    var r = false
+    if k == sema.TK_PRIM {
+        r = t != sema.T_STR
+    } else if k == sema.TK_FN || k == sema.TK_REF || k == sema.TK_SLICE || k == sema.TK_CLO {
+        r = true
+    } else if k == sema.TK_INST {
+        let d = pg.ta(t)
+        if pg.types[d].value && pg.types[d].drop < 0 {
+            r = true
+            let fts = pg.fieldTypes(t)
+            for ft in fts {
+                if !isPod(pg, memo, ft) { r = false }
+            }
+        }
+    }
+    while len(memo) <= t { append(memo, -1) }
+    memo[t] = if r { 1 } else { 0 }
+    return r
+}
+
+fn (c: mut &Checker) pod(t: int): bool { return isPod(mut &c.pg, mut &c.podMemo, t) }
+
+fn (c: mut &Checker) isCopy(t: int): bool {
+    while len(c.copyMemo) <= t { append(mut &c.copyMemo, -1) }
+    if c.copyMemo[t] < 0 {
+        let r = c.pg.isCopy(t)
+        while len(c.copyMemo) <= t { append(mut &c.copyMemo, -1) }
+        c.copyMemo[t] = if r { 1 } else { 0 }
+    }
+    return c.copyMemo[t] == 1
+}
+
+fn (c: mut &Checker) tuple(ts: &[]int): int { return c.pg.mkFn(ts, sema.T_VOID) }
+
+fn (c: &Checker) rootName(r: int, dflt: str): str {
+    return if r >= 0 { c.vars[r].name } else if r <= -2 { "a temporary" } else { dflt }
+}
+
+fn (c: &Checker) inDrop(): bool {
+    let f = c.cx.fd
+    return f >= 0 && c.pg.fns[f].ownerKind == sema.O_DECL && c.pg.types[c.pg.fns[f].owner].drop == f
+}
+
+// AST access in the current module.
+fn (c: &Checker) nd(n: int): sx.Node { return c.pg.mods[c.cx.mod].ast.nodes[n] }
+fn (c: &Checker) kind(n: int): int { return c.pg.mods[c.cx.mod].ast.nodes[n].kind }
+fn (c: &Checker) line(n: int): int { return c.pg.mods[c.cx.mod].ast.nodes[n].line }
+fn (c: &Checker) count(l: int): int { return if l < 0 { 0 } else { c.pg.mods[c.cx.mod].ast.items[l] } }
+fn (c: &Checker) item(l: int, i: int): int { return c.pg.mods[c.cx.mod].ast.items[l + 1 + i] }
+fn (c: &Checker) flag(n: int, f: int): bool { return c.pg.mods[c.cx.mod].ast.nodes[n].flags & f != 0 }
+fn (c: &Checker) items(l: int): []int {
+    var out: []int = []
+    for i in 0..c.count(l) { append(mut &out, c.item(l, i)) }
+    return out
+}
+
+// Nodes made by the checker (ref builds N nodes and type tuples on the fly).
+fn (c: mut &Checker) synth(kind: int, line: int, s: str, a: int, b: int, flags: int): int {
+    let m = c.cx.mod
+    append(mut &c.pg.mods[m].ast.nodes, sx.Node{kind: kind, line: line, flags: flags, s: s, t: "", u: "", a: a,
+        b: b, c: -1, d: -1, e: -1})
+    return len(c.pg.mods[m].ast.nodes) - 1
+}
+
+fn (c: mut &Checker) synthList(xs: &[]int): int {
+    let m = c.cx.mod
+    let h = len(c.pg.mods[m].ast.items)
+    append(mut &c.pg.mods[m].ast.items, len(xs))
+    for x in xs { append(mut &c.pg.mods[m].ast.items, x) }
+    return h
+}
+
+// A type node naming parts (one name, or module.name) with type argument nodes args.
+fn (c: mut &Checker) synthTname(parts: &[]str, args: &[]int, line: int): int {
+    var ps: []int = []
+    for p in parts { append(mut &ps, c.synth(sx.N_IDENT, 0, p, -1, -1, 0)) }
+    let pl = c.synthList(&ps)
+    let al = c.synthList(args)
+    return c.synth(sx.N_TNAME, line, "", pl, al, 0)
+}
+
+// The vpath of a match arm as a name or field chain (ref's N('name')/N('field') nodes).
+fn (c: mut &Checker) vpathExpr(vpath: int, line: int): int {
+    var q = -1
+    for i in 0..c.count(vpath) {
+        let p = c.nd(c.item(vpath, i)).s
+        q = if q < 0 { c.synth(sx.N_NAME, line, p, -1, -1, 0) } else { c.synth(sx.N_FIELDX, line, p, q, -1, 0) }
+    }
+    return q
+}
+
+fn (c: &Checker) vpathText(vpath: int): str {
+    var b = newStrBuf()
+    for i in 0..c.count(vpath) {
+        if i > 0 { b.addByte('.') }
+        b.add(c.nd(c.item(vpath, i)).s)
+    }
+    return b.toStr()
+}
+
+// ---------------------------------------------------------------- drops
+
+fn (c: mut &Checker) dropc(cc: str, t: int) {
+    if !c.pod(t) {
+        if c.cx.tailOn {
+            append(mut &c.cx.tail, Drop{c: cc, t: t})
+        } else {
+            let h = c.hole(mkHole(H_DROP, t, cc))
+            c.emit(h + ";")
+        }
+    }
+}
+
+fn (c: mut &Checker) dup(cc: str, t: int): str {
+    return if c.pod(t) { cc } else { c.hole(mkHole(H_DUP, t, cc)) }
+}
+
+// ref's exit_drops: the drops of leaving the function (whole: every scope and frame, else the
+// parameters' scope). In a drop method they are deferred onto the drop worklist (SPEC 9.4).
+fn (c: mut &Checker) exitDrops(whole: bool) {
+    if !c.inDrop() {
+        if whole { c.cleanup(0, 0) } else { c.dropScope(0) }
+        return
+    }
+    c.cx.tailOn = true
+    if whole { c.cleanup(0, 0) } else { c.dropScope(0) }
+    c.cx.tailOn = false
+    let tail = replace(mut &c.cx.tail, [])
+    var i = len(tail) - 1
+    while i >= 0 {
+        let h = c.hole(mkHole(H_DDROP, tail[i].t, tail[i].c))
+        c.emit(h + ";")
+        i -= 1
+    }
+}
+
+fn (c: mut &Checker) dropFrame(fr: &[]int) {
+    var i = len(fr) - 1
+    while i >= 0 {
+        let t = fr[i]
+        if c.tmps[t].live { c.dropc(c.tmps[t].c, c.tmps[t].t) }
+        i -= 1
+    }
+}
+
+fn (c: mut &Checker) dropScope(s: int) {
+    let vs = copyInts(&c.cx.scopes[s].vars)
+    c.dropVars(&vs)
+}
+
+fn (c: mut &Checker) dropVars(vs: &[]int) {
+    var i = len(vs) - 1
+    while i >= 0 {
+        let v = vs[i]
+        if !c.vars[v].moved && c.pg.tk(c.vars[v].t) != sema.TK_REF { c.dropc(c.vars[v].c, c.vars[v].t) }
+        i -= 1
+    }
+}
+
+fn (c: mut &Checker) cleanup(nscopes: int, nframes: int) {
+    var i = len(c.cx.frames) - 1
+    while i >= nframes {
+        let fr = copyInts(&c.cx.frames[i])
+        c.dropFrame(&fr)
+        i -= 1
+    }
+    i = len(c.cx.scopes) - 1
+    while i >= nscopes {
+        c.dropScope(i)
+        i -= 1
+    }
+}
+
+fn copyInts(xs: &[]int): []int {
+    var out: []int = []
+    for x in xs { append(mut &out, x) }
+    return out
+}
+
+fn (c: mut &Checker) pushFrame() {
+    append(mut &c.cx.frames, [])
+    append(mut &c.cx.pmarks, len(c.cx.pending))
+}
+
+fn (c: mut &Checker) popFrame(): []int {
+    let m = pop(mut &c.cx.pmarks)
+    c.cutPending(m)
+    return pop(mut &c.cx.frames)
+}
+
+fn (c: mut &Checker) cutPending(m: int) {
+    while len(c.cx.pending) > m { pop(mut &c.cx.pending) }
+}
+
+fn (c: mut &Checker) newTmp(n: str, t: int): int {
+    append(mut &c.tmps, Tmp{c: n, t: t, live: true})
+    let id = len(c.tmps) - 1
+    let f = len(c.cx.frames) - 1
+    append(mut &c.cx.frames[f], id)
+    return id
+}
+
+// ref's tmpval: the C variable n as a value of the statement, dropped at its end unless pod.
+fn (c: mut &Checker) tmpval(n: str, t: int): Val {
+    if c.pod(t) { return rv(n, t) }
+    let id = c.newTmp(n, t)
+    var v = val(n, t, CAT_TMP)
+    v.tmp = id
+    v.root = tmpRoot(id)
+    v.mutable = true
+    return v
+}
+
+// ref's holdtmp: cc evaluated now into a C variable; a slice keeps the root and path of src.
+fn (c: mut &Checker) holdtmp(cc: str, t: int): Val { return c.holdtmpSrc(cc, t, false, rv("", t)) }
+
+fn (c: mut &Checker) holdtmpSrc(cc: str, t: int, hasSrc: bool, src: Val): Val {
+    let n = c.fresh("t")
+    let ct = c.T(t)
+    c.emit(ct + " " + n + " = " + cc + ";")
+    if c.pg.tk(t) == sema.TK_SLICE && hasSrc { return rvAt(n, t, src.root, src.path) }
+    return c.tmpval(n, t)
+}
+
+// ---------------------------------------------------------------- variables
+
+// The context at level lvl of the chain: the enclosing ones (outers), then the current one.
+fn (c: &Checker) top(): int { return len(c.outers) }
+
+fn (c: &Checker) findIn(lvl: int, name: str): int {
+    let n = if lvl == len(c.outers) { len(c.cx.scopes) } else { len(c.outers[lvl].scopes) }
+    var i = n - 1
+    while i >= 0 {
+        let vs = if lvl == len(c.outers) { copyInts(&c.cx.scopes[i].vars) } else { copyInts(&c.outers[lvl].scopes[i].vars) }
+        var j = len(vs) - 1
+        while j >= 0 {
+            if c.vars[vs[j]].name == name { return vs[j] }
+            j -= 1
+        }
+        i -= 1
+    }
+    return -1
+}
+
+fn (c: &Checker) capGet(lvl: int, name: str): int {
+    if lvl == len(c.outers) {
+        for i in 0..len(c.cx.capNames) {
+            if c.cx.capNames[i] == name { return c.cx.capVars[i] }
+        }
+    } else {
+        for i in 0..len(c.outers[lvl].capNames) {
+            if c.outers[lvl].capNames[i] == name { return c.outers[lvl].capVars[i] }
+        }
+    }
+    return -1
+}
+
+// ref's lookup_var: a variable in scope, or -1. A closure uses an enclosing variable through a
+// pointer in its environment (a capture, made here unless capture is false).
+fn (c: mut &Checker) lookupVar(name: str, capture: bool): int { return c.lookupAt(len(c.outers), name, capture) }
+
+fn (c: mut &Checker) lookupAt(lvl: int, name: str, capture: bool): int {
+    let v = c.findIn(lvl, name)
+    if v >= 0 { return v }
+    let k = c.capGet(lvl, name)
+    if lvl == 0 || k >= 0 { return k }
+    let o = c.lookupAt(lvl - 1, name, capture)
+    if o < 0 || !capture { return o }
+    let ncaps = if lvl == len(c.outers) { len(c.cx.capNames) } else { len(c.outers[lvl].capNames) }
+    let ct = c.T(c.vars[o].t)
+    var p = c.vars[o]
+    p.c = "(*(" + ct + "*)ce_[" + intToStr(ncaps) + "])"
+    p.cap = o
+    p.capmut = false
+    append(mut &c.vars, p)
+    let id = len(c.vars) - 1
+    if lvl == len(c.outers) {
+        append(mut &c.cx.capNames, name)
+        append(mut &c.cx.capVars, id)
+    } else {
+        append(mut &c.outers[lvl].capNames, name)
+        append(mut &c.outers[lvl].capVars, id)
+    }
+    return id
+}
+
+fn (c: mut &Checker) newVar(name: str, cn: str, t: int, mutable: bool, kind: int, line: int): int {
+    append(mut &c.vars, Var{name: name, c: cn, t: t, mutable: mutable, kind: kind, line: line, moved: false,
+        broot: -1, cap: -1, capmut: false})
+    return len(c.vars) - 1
+}
+
+fn (c: mut &Checker) declare(v: int) {
+    if c.lookupVar(c.vars[v].name, false) >= 0 {
+        c.err(c.vars[v].line, "'" + c.vars[v].name + "' is already declared in this function (no shadowing)")
+    }
+    let s = len(c.cx.scopes) - 1
+    append(mut &c.cx.scopes[s].vars, v)
+}
+
+fn (c: mut &Checker) pushScope() { append(mut &c.cx.scopes, Scope{vars: [], freezes: []}) }
+
+fn (c: mut &Checker) freeze(root: int, m: bool, by: str) {
+    let s = len(c.cx.scopes) - 1
+    append(mut &c.cx.scopes[s].freezes, Freeze{root: root, m: m, by: by})
+}
+
+// A snapshot: the states of the variables in scope, as (var, moved) pairs.
+fn (c: &Checker) snapshot(): []int {
+    var out: []int = []
+    for s in 0..len(c.cx.scopes) {
+        for v in c.cx.scopes[s].vars {
+            append(mut &out, v)
+            append(mut &out, if c.vars[v].moved { 1 } else { 0 })
+        }
+    }
+    return out
+}
+
+fn (c: mut &Checker) restore(snap: &[]int) {
+    var i = 0
+    while i < len(snap) {
+        c.vars[snap[i]].moved = snap[i + 1] == 1
+        i += 2
+    }
+}
+
+fn snapGet(snap: &[]int, v: int): int {
+    var i = 0
+    while i < len(snap) {
+        if snap[i] == v { return snap[i + 1] }
+        i += 2
+    }
+    return -1
+}
+
+// ref's join: the states after paths meet; snaps holds the live paths' snapshots (none: dead).
+fn (c: mut &Checker) join(snaps: &[][]int, line: int) {
+    if len(snaps) == 0 {
+        c.cx.dead = true
+        return
+    }
+    for k in 1..len(snaps) {
+        var i = 0
+        while i < len(snaps[k]) {
+            let v = snaps[k][i]
+            let s0 = snapGet(&snaps[0], v)
+            if s0 >= 0 && s0 != snaps[k][i + 1] { c.err(line, "'" + c.vars[v].name + "' is moved on one path but not another") }
+            i += 2
+        }
+    }
+    c.restore(&snaps[0])
+    c.cx.dead = false
+}
+
+// ref's block: the statements of a block (top: a function's body).
+fn (c: mut &Checker) block(b: int, scope: bool, top: bool) {
+    if scope { c.pushScope() }
+    var stop = false
+    var unreachable = false
+    let stmts = c.nd(b).a
+    let n = c.count(stmts)
+    for i in 0..n {
+        let s = c.item(stmts, i)
+        if c.cx.dead {
+            if stop {
+                c.err(c.line(s), "unreachable statement: the statement before it always returns, breaks, " +
+                    "continues or stops the program")
+            }
+            unreachable = true
+            c.cx.dead = false
+        }
+        c.pushFrame()
+        c.stmt(s)
+        let k = c.kind(s)
+        stop = c.cx.dead && (k == sx.N_RETURN || k == sx.N_BREAK || k == sx.N_CONTINUE || k == sx.N_EXPR)
+        let fr = c.popFrame()
+        if !c.cx.dead {
+            if top && i == n - 1 && c.inDrop() { c.cx.tailOn = true }
+            c.dropFrame(&fr)
+        }
+    }
+    c.cx.dead = c.cx.dead || unreachable
+    if scope {
+        let sc = pop(mut &c.cx.scopes)
+        if !c.cx.dead { c.dropVars(&sc.vars) }
+    }
+}
+
+// ---------------------------------------------------------------- ownership checks
+
+fn (c: mut &Checker) frozen(root: int, kind: int, line: int) {
+    if root < 0 { return }
+    if c.vars[root].cap >= 0 && kind != FR_READ {
+        if kind == FR_MOVE { c.err(line, "a closure cannot move the captured variable '" + c.vars[root].name + "'") }
+        c.vars[root].capmut = true
+    }
+    for s in 0..len(c.cx.scopes) {
+        for f in c.cx.scopes[s].freezes {
+            if f.root == root && (kind != FR_READ || f.m) {
+                let verb = match kind { FR_ASSIGN { "assigned" } FR_MOVE { "moved" } FR_MUT { "mutably borrowed" } else { "used" } }
+                c.err(line, "'" + c.vars[root].name + "' is borrowed by " + f.by + " and cannot be " + verb +
+                    " while that borrow is in scope")
+            }
+        }
+    }
+}
+
+// A move or assignment may not touch a place held by a call (or operator) in progress.
+fn (c: mut &Checker) checkPending(root: int, path: str, line: int, move: bool) {
+    if root == -1 { return }
+    for p in c.cx.pending {
+        if p.root == root && overlap(p.path, path) {
+            let what = if move { "moved" } else { "assigned" }
+            c.err(line, "'" + c.rootName(root, "a temporary") + "' cannot be " + what +
+                " here: it overlaps a borrow held by the call being evaluated")
+        }
+    }
+}
+
+fn (c: mut &Checker) newCid(): int {
+    c.cids += 1
+    return c.cids
+}
+
+// Register a borrowed argument of call cid (SPEC 10 rule 3, and nested calls).
+fn (c: mut &Checker) hold(v: Val, m: int, cid: int, line: int) {
+    let root = v.root
+    if root == -1 || root <= -2 { return }
+    let mut1 = m == HM_MUT
+    for p in c.cx.pending {
+        let pm = p.m == HM_MUT
+        if p.root == root && overlap(p.path, v.path) && ((p.cid == cid && (mut1 || pm)) || (p.cid != cid && mut1)) {
+            let name = c.rootName(root, "?")
+            if p.cid == cid {
+                let how = if mut1 || pm { " mutably" } else { "" }
+                c.err(line, "'" + name + "' is borrowed" + how + " twice in one call: " +
+                    "a mut & argument may not overlap another borrowed or moved argument")
+            }
+            c.err(line, "'" + name + "' cannot be mutably borrowed here: an enclosing call already holds a " +
+                "borrow of it")
+        }
+    }
+    append(mut &c.cx.pending, Pend{root: root, path: v.path, m: m, cid: cid})
+}
+
+fn hm(m: bool): int { return if m { HM_MUT } else { HM_SHARED } }
+
+// Take ownership of the value of v: copy (dup) a copy type, move otherwise.
+fn (c: mut &Checker) consume(v: Val, line: int): str {
+    if c.pg.tk(v.t) == sema.TK_CLO {
+        c.err(line, "a closure is second class: it can be passed as an argument or bound with let, but " +
+            "not stored, returned or copied")
+    }
+    if v.t == sema.T_VOID { c.err(line, "this expression has no value") }
+    if v.cat == CAT_TMP {
+        c.tmps[v.tmp].live = false
+        return v.c
+    }
+    if v.cat == CAT_RV { return v.c }
+    if c.isCopy(v.t) { return c.dup(v.c, v.t) }
+    if v.vvar >= 0 && !v.viaref && len(v.path) == 0 && c.pg.tk(c.vars[v.vvar].t) != sema.TK_REF {
+        let vx = v.vvar
+        if c.vars[vx].moved { c.err(line, "'" + c.vars[vx].name + "' was moved and has no value here") }
+        if len(c.cx.nomove) > 0 {
+            c.err(line, "cannot move '" + c.vars[vx].name + "' " + c.cx.nomove[len(c.cx.nomove) - 1])
+        }
+        c.frozen(vx, FR_MOVE, line)
+        c.checkPending(vx, "", line, true)
+        c.vars[vx].moved = true
+        return v.c
+    }
+    let hasName = v.root >= 0 || v.root <= -2
+    let name = c.rootName(v.root, "")
+    if v.viaref {
+        let s = if hasName { " (" + name + ")" } else { "" }
+        c.err(line, "cannot move a " + c.tstr(v.t) + " out of a borrow" + s + ": it is not a copy type")
+    }
+    if v.gk >= 0 { c.err(line, "cannot move out of global " + c.gname(v.gk, v.gi)) }
+    let s = if hasName { " of " + sx.pyRepr(name) } else { "" }
+    c.err(line, "cannot move a " + c.tstr(v.t) + " out of a field or element" + s + "; use replace, swap or pop")
+}
+
+fn (c: &Checker) gname(gk: int, gi: int): str {
+    return if gk == sema.D_GLOBAL { c.pg.globals[gi].name } else { c.pg.consts[gi].name }
+}
+
+fn (c: mut &Checker) deref(v: Val): Val {
+    if c.pg.tk(v.t) != sema.TK_REF { return v }
+    var r = val("(*" + v.c + ")", c.pg.ta(v.t), CAT_PLACE)
+    r.root = v.root
+    r.path = v.path
+    r.mutable = c.pg.tm(v.t)
+    r.viaref = true
+    return r
+}
+
+// A borrow of the place, temporary or value v.
+fn (c: mut &Checker) borrow(v0: Val, m: bool, line: int, recv: bool): Val {
+    var v = v0
+    let k = c.pg.tk(v.t)
+    if k == sema.TK_SLICE {
+        if m && !c.pg.tm(v.t) { c.err(line, "cannot make a mut slice from a shared slice") }
+        if m { c.frozen(v.root, FR_MUT, line) }
+        return rvAt(v.c, c.pg.mkSlice(c.pg.ta(v.t), m), v.root, v.path)
+    }
+    if k == sema.TK_REF {
+        if m && !c.pg.tm(v.t) {
+            c.err(line, "cannot mutably borrow through the shared borrow '" + c.rootName(v.root, "?") + "'")
+        }
+        if m { c.frozen(v.root, FR_MUT, line) }
+        return rvAt(v.c, c.pg.mkRef(c.pg.ta(v.t), m), v.root, v.path)
+    }
+    if v.t == sema.T_VOID { c.err(line, "this expression has no value") }
+    var cc = ""
+    if v.cat == CAT_PLACE {
+        if v.gk >= 0 {
+            if recv && !m {
+                v = c.holdtmp(c.dup(v.c, v.t), v.t)
+                return c.borrow(v, m, line, false)
+            }
+            c.err(line, "cannot borrow global '" + c.gname(v.gk, v.gi) + "'")
+        }
+        if m {
+            if !v.mutable { c.immutable(v, line, "mutably borrow") }
+            c.frozen(v.root, FR_MUT, line)
+        }
+        cc = "(&" + v.c + ")"
+    } else if v.cat == CAT_TMP {
+        cc = "(&" + v.c + ")"
+    } else {
+        let n = c.fresh("m")
+        let ct = c.T(v.t)
+        c.emit(ct + " " + n + " = " + v.c + ";")
+        cc = "(&" + n + ")"
+    }
+    return rvAt(cc, c.pg.mkRef(v.t, m), v.root, v.path)
+}
+
+fn (c: mut &Checker) immutable(v: Val, line: int, verb: str): never {
+    let r = v.root
+    if r >= 0 {
+        let name = c.vars[r].name
+        let vb = if endsWith(verb, " to") { verb[0..len(verb) - 3] } else { verb }
+        let rk = c.pg.tk(c.vars[r].t)
+        let isB = rk == sema.TK_REF || rk == sema.TK_SLICE
+        if isB && !c.pg.tm(c.vars[r].t) {
+            c.err(line, "cannot " + vb + " through '" + name + "': it is a shared borrow (&), not mut &")
+        }
+        if v.viaref && !isB { c.err(line, "cannot " + vb + " through a shared borrow or slice of '" + name + "'") }
+        if c.vars[r].kind == VK_PARAM { c.err(line, "cannot " + verb + " parameter '" + name + "': declare it `var " + name + "`") }
+        c.err(line, "cannot " + verb + " '" + name + "': it is declared with let, not var")
+    }
+    c.err(line, "cannot " + verb + " this place")
+}
+
+fn isLitKind(k: int): bool { return k == sx.N_INT || k == sx.N_CHAR || k == sx.N_STR || k == sx.N_BOOL }
+
+fn isTrapOp(op: str): bool { return op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "<<" || op == ">>" }
+fn isArith(op: str): bool { return op == "+" || op == "-" || op == "*" || op == "/" || op == "%" }
+fn isCmpOp(op: str): bool { return op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" }
+
+// ref's effects: whether evaluating e may run code that changes a value read before it in the
+// statement (a call, try, an operator method or fromFraction); with traps, also whether it makes
+// a run-time check. The children are visited in ref's field order (lookups may make captures).
+fn (c: mut &Checker) effects(e: int, traps: bool): bool {
+    if e < 0 { return false }
+    let n = c.nd(e)
+    let k = n.kind
+    if k == sx.N_CALL || k == sx.N_TRY || k == sx.N_FRAC { return true }
+    if k == sx.N_UN && n.s == "-" && !isLitKind(c.kind(n.a)) { return true }
+    if k == sx.N_BIN && (isArith(n.s) || isCmpOp(n.s)) && !isLitKind(c.kind(n.a)) && !isLitKind(c.kind(n.b)) { return true }
+    if traps && (k == sx.N_INDEX || k == sx.N_SUB || (k == sx.N_BIN && isTrapOp(n.s))) { return true }
+    if k == sx.N_NAME && c.lookupVar(n.s, true) < 0 {
+        let d = c.pg.lookup(c.cx.mod, n.s)
+        if d.k == sema.D_CONST && c.pg.constValue(d.i).kind == sema.CK_FRAC { return true }
+    }
+    match k {
+        sx.N_BIN, sx.N_SUB, sx.N_IF, sx.N_IFX, sx.N_WHILE, sx.N_FOR {
+            if k == sx.N_FOR { return c.effects(n.a, traps) || c.effects(n.b, traps) || c.effects(n.c, traps) }
+            return c.effects(n.a, traps) || c.effects(n.b, traps) || c.effects(n.c, traps)
+        }
+        sx.N_UN, sx.N_BORROW, sx.N_TRY, sx.N_FIELDX, sx.N_RETURN, sx.N_EXPR { return c.effects(n.a, traps) }
+        sx.N_LET { return c.effects(n.b, traps) }
+        sx.N_ASSIGN { return c.effects(n.a, traps) || c.effects(n.b, traps) }
+        sx.N_DESTRUCTURE { return c.effects(n.c, traps) }
+        sx.N_INDEX, sx.N_CALL { return c.effects(n.a, traps) || c.effectsList(n.b, traps) }
+        sx.N_ARRLIT, sx.N_BLOCK { return c.effectsList(n.a, traps) }
+        sx.N_LIT {
+            for i in 0..c.count(n.b) {
+                if c.effects(c.nd(c.item(n.b, i)).a, traps) { return true }
+            }
+            return false
+        }
+        sx.N_CLOSURE { return c.effects(n.c, traps) }
+        sx.N_MATCH, sx.N_MATCHX {
+            if c.effects(n.a, traps) { return true }
+            for i in 0..c.count(n.b) {
+                if c.effects(c.nd(c.item(n.b, i)).d, traps) { return true }
+            }
+            return false
+        }
+        else { return false }
+    }
+}
+
+fn (c: mut &Checker) effectsList(l: int, traps: bool): bool {
+    for i in 0..c.count(l) {
+        if c.effects(c.item(l, i), traps) { return true }
+    }
+    return false
+}
+
+fn (c: mut &Checker) acts(e: int): bool { return c.effects(e, true) }
+
+// Whether evaluating the place e runs code that acts before the place is used.
+fn (c: mut &Checker) placeActs(e0: int): bool {
+    var e = e0
+    while c.kind(e) == sx.N_FIELDX || c.kind(e) == sx.N_INDEX {
+        if c.kind(e) == sx.N_INDEX {
+            let l = c.nd(e).b
+            for i in 0..c.count(l) {
+                if c.acts(c.item(l, i)) { return true }
+            }
+        }
+        e = c.nd(e).a
+    }
+    return c.acts(e)
+}
+
+// Read a place (or compute a value) now, before later side effects in the statement.
+fn (c: mut &Checker) snapVal(v: Val): Val {
+    let k = c.pg.tk(v.t)
+    if v.cat == CAT_RV && v.t != sema.T_VOID && k != sema.TK_REF && !isWordText(v.c) {
+        return c.holdtmpSrc(v.c, v.t, true, v)
+    }
+    if v.cat != CAT_PLACE || k == sema.TK_REF || !c.isCopy(v.t) { return v }
+    return c.holdtmp(c.dup(v.c, v.t), v.t)
+}
+
+// Make the run-time checks in v's C text now, in their position (SPEC 7).
+fn (c: mut &Checker) seq(v: Val): Val {
+    if !checks(v.c) { return v }
+    let k = c.pg.tk(v.t)
+    if k == sema.TK_REF || k == sema.TK_SLICE || (v.cat == CAT_PLACE && !c.isCopy(v.t)) {
+        c.emit("(void)(" + (if v.cat != CAT_PLACE { v.c } else { "&" + v.c }) + ");")
+        return v
+    }
+    return c.snapVal(v)
+}
+
+// v, used in C after the operands later (AST nodes) run.
+fn (c: mut &Checker) before(v0: Val, later: &[]int): Val {
+    var v = v0
+    var eff = false
+    for x in later {
+        if !eff && c.effects(x, false) { eff = true }
+    }
+    if eff { v = c.snapVal(v) }
+    var act = false
+    for x in later {
+        if !act && c.acts(x) { act = true }
+    }
+    return if act { c.seq(v) } else { v }
+}
+
+fn (c: mut &Checker) before1(v: Val, x: int): Val { return c.before(v, &[x]) }
+
+// ---------------------------------------------------------------- statements
+
+fn (c: mut &Checker) stmt(s: int) {
+    match c.kind(s) {
+        sx.N_BLOCK { c.block(s, true, false) }
+        sx.N_EXPR {
+            let v = c.expr(c.nd(s).a, -1)
+            if v.noreturn { c.cx.dead = true }
+        }
+        sx.N_LET { c.sLet(s) }
+        sx.N_DESTRUCTURE { c.sDestructure(s) }
+        sx.N_ASSIGN { c.sAssign(s) }
+        sx.N_IF { c.sIf(s) }
+        sx.N_WHILE { c.sWhile(s) }
+        sx.N_FOR { c.sFor(s) }
+        sx.N_RETURN { c.sReturn(s) }
+        sx.N_BREAK { c.sBreak(s) }
+        sx.N_CONTINUE { c.sContinue(s) }
+        sx.N_MATCH { c.sMatch(s, false) }
+        else { c.err(c.line(s), "internal error: statement kind " + intToStr(c.kind(s))) }
+    }
+}
+
+fn (c: mut &Checker) coerce(v: Val, t: int, line: int, what: str): Val {
+    if v.t == t { return v }
+    let vk = c.pg.tk(v.t)
+    let k = c.pg.tk(t)
+    if k == sema.TK_CLO && vk == sema.TK_FN && c.sameSig(v.t, t) {     // through a trampoline (emit)
+        let h = c.hole(mkHole(H_TRAMP, v.t, ""))
+        return rv("((obx_clo){(void*)" + h + ", (void*)" + v.c + "})", t)
+    }
+    if vk == sema.TK_REF && k != sema.TK_REF {
+        let d = c.deref(v)
+        if d.t == t { return d }
+    }
+    if vk == sema.TK_REF && k == sema.TK_REF && c.pg.ta(v.t) == c.pg.ta(t) && (c.pg.tm(v.t) || !c.pg.tm(t)) {
+        var r = val(v.c, t, v.cat)
+        r.root = v.root
+        r.path = v.path
+        r.vvar = v.vvar
+        return r
+    }
+    if k == sema.TK_SLICE {
+        let s = c.asSlice(v)
+        if s.t >= 0 && c.pg.ta(s.t) == c.pg.ta(t) && (c.pg.tm(s.t) || !c.pg.tm(t)) {
+            var r = val(s.c, t, s.cat)
+            r.root = s.root
+            r.path = s.path
+            return r
+        }
+    }
+    c.err(line, what + " is " + c.tstr(v.t) + ", not " + c.tstr(t))
+}
+
+// Two fn/clo types with the same parameters and result (ref's v.t[1:] == t[1:]).
+fn (c: &Checker) sameSig(a: int, b: int): bool {
+    if c.pg.tn(a) != c.pg.tn(b) || c.pg.tb(a) != c.pg.tb(b) { return false }
+    for i in 0..c.pg.tn(a) {
+        if c.pg.ti(a, i) != c.pg.ti(b, i) { return false }
+    }
+    return true
+}
+
+// v as a slice: a slice, or a borrow of an array viewed whole; else a value with t = -1.
+fn (c: mut &Checker) asSlice(v: Val): Val {
+    let k = c.pg.tk(v.t)
+    if k == sema.TK_SLICE { return v }
+    if k == sema.TK_REF && c.pg.tk(c.pg.ta(v.t)) == sema.TK_ARR {
+        return rvAt("rt_as_slice(" + v.c + ")", c.pg.mkSlice(c.pg.ta(c.pg.ta(v.t)), c.pg.tm(v.t)), v.root, v.path)
+    }
+    var r = rv("", 0)
+    r.t = -1
+    return r
+}
+
+fn (c: mut &Checker) resolve(a: int, pos: int, line: int): int {
+    let env = copyInts(&c.cx.env)
+    return c.pg.resolveType(a, c.cx.mod, &env, pos, line)
+}
+
+fn (c: mut &Checker) sLet(s: int) {
+    let n = c.nd(s)
+    let name = n.s
+    let mutable = n.flags & sx.MUTABLE != 0
+    let exp = if n.a >= 0 { c.resolve(n.a, if mutable { sema.P_VAR } else { sema.P_LET }, n.line) } else { -1 }
+    var v = c.expr(n.b, exp)
+    if v.t == sema.T_VOID { c.err(n.line, "the initializer of '" + name + "' has no value") }
+    let cn = c.fresh("v_" + name + "_")
+    let et = if exp >= 0 { exp } else { v.t }
+    let what = "the initializer of '" + name + "'"
+    if c.pg.tk(et) == sema.TK_CLO {
+        v = c.coerce(v, et, n.line, what)
+        if mutable {
+            c.err(n.line, "a closure cannot be stored in var '" + name + "': closures are second class (use let)")
+        }
+        c.emit("obx_clo " + cn + " = " + v.c + ";")
+        c.declare(c.newVar(name, cn, v.t, false, VK_LOCAL, n.line))
+        if v.caps >= 0 {
+            for i in 0..len(c.capl[v.caps]) {
+                let cp = c.capl[v.caps][i]
+                c.freeze(cp.v, cp.m, "closure '" + name + "'")
+            }
+        }
+        return
+    }
+    if c.pg.isBorrow(et) {
+        if exp >= 0 { v = c.coerce(v, exp, n.line, what) }
+        if mutable {
+            c.err(n.line, "a borrow cannot be stored in var '" + name + "': borrows are second class (use let)")
+        }
+        let root = v.root
+        if root < 0 {
+            c.err(n.line, "cannot borrow a temporary into let '" + name + "': the temporary does not outlive " +
+                "the statement")
+        }
+        if c.pg.tm(v.t) { c.frozen(root, FR_MUT, n.line) }
+        let vx = c.newVar(name, cn, v.t, false, VK_LOCAL, n.line)
+        c.vars[vx].broot = root
+        if c.pg.tk(v.t) == sema.TK_REF {
+            let ct = c.T(c.pg.ta(v.t))
+            c.emit(ct + "* " + cn + " = " + v.c + ";")
+        } else {
+            c.emit("obx_slice " + cn + " = " + v.c + ";")
+        }
+        c.declare(vx)
+        c.freeze(root, c.pg.tm(v.t), "'" + name + "'")
+        return
+    }
+    if exp >= 0 { v = c.coerce(v, exp, n.line, what) }
+    let cc = c.consume(v, n.line)
+    let ct = c.T(v.t)
+    c.emit(ct + " " + cn + " = " + cc + ";")
+    c.declare(c.newVar(name, cn, v.t, mutable, VK_LOCAL, n.line))
+}
+
+fn (c: &Checker) fieldIndex(d: int, name: str): int {
+    for i in 0..len(c.pg.types[d].fields) {
+        if c.pg.types[d].fields[i].name == name { return i }
+    }
+    return -1
+}
+
+// let P{a, b: x, c: _} = e (SPEC 9.1): move (or copy) fields into new variables.
+fn (c: mut &Checker) sDestructure(s: int) {
+    let n = c.nd(s)
+    let mod = c.cx.mod
+    let ty = n.a
+    let parts = c.nd(ty).a
+    let nparts = c.count(parts)
+    let w = c.line(ty)
+    let p0 = c.nd(c.item(parts, 0)).s
+    var d = if nparts == 1 { c.pg.lookup(mod, p0) } else { sema.Sym{k: -1, i: -1} }
+    if nparts > 1 && c.pg.importOf(mod, p0) >= 0 {
+        d = c.pg.lookupIn(mod, c.pg.importOf(mod, p0), c.nd(c.item(parts, 1)).s, w)
+    }
+    var exp = -1
+    if d.k == sema.D_TYPE && (c.count(c.nd(ty).b) > 0 || c.pg.types[d.i].form == sx.F_ALIAS) {
+        exp = c.resolve(ty, sema.P_LET, w)
+        d = if c.pg.tk(exp) == sema.TK_INST { sema.Sym{k: sema.D_TYPE, i: c.pg.ta(exp)} } else { sema.Sym{k: -1, i: -1} }
+    }
+    if d.k != sema.D_TYPE || c.pg.types[d.i].form != sx.F_RECORD {
+        var b = newStrBuf()
+        for i in 0..nparts {
+            if i > 0 { b.addByte('.') }
+            b.add(c.nd(c.item(parts, i)).s)
+        }
+        c.err(n.line, b.toStr() + " is not a record type: only a record can be taken apart")
+    }
+    let di = d.i
+    let dname = c.pg.types[di].name
+    if c.pg.types[di].drop >= 0 { c.err(n.line, "cannot take apart a " + dname + ": it has a drop method") }
+    var v = c.expr(n.c, exp)
+    if c.pg.tk(v.t) == sema.TK_REF { v = c.deref(v) }
+    if c.pg.tk(v.t) != sema.TK_INST || c.pg.ta(v.t) != di { c.err(n.line, "the value is " + c.tstr(v.t) + ", not a " + dname) }
+    if v.cat == CAT_PLACE && !c.isCopy(v.t) {
+        c.err(n.line, "cannot take apart a place of the owned type " + c.tstr(v.t) + ": the value must not be a " +
+            "variable, field or element (use move(x) for a local)")
+    }
+    let env = c.pg.declEnv(v.t)
+    var named: Map[str, str] = newMap()
+    let fps = c.items(n.b)
+    for fp in fps {
+        let f = c.nd(fp).s
+        let fw = c.line(fp)
+        let fi = c.fieldIndex(di, f)
+        if fi < 0 { c.err(fw, dname + " has no field '" + f + "'") }
+        if named.has(&f) { c.err(fw, "field '" + f + "' is named twice") }
+        if !c.pg.types[di].fields[fi].isPub && c.pg.types[di].mod != mod {
+            c.err(fw, "field '" + f + "' of " + dname + " is private to module " + c.pg.mods[c.pg.types[di].mod].name)
+        }
+        named.put(f, c.nd(fp).t)
+    }
+    let acc = c.fresh("ds")
+    let ct = c.T(v.t)
+    c.emit(ct + " " + acc + " = " + c.consume(v, n.line) + ";")
+    let sep = if c.pg.types[di].value { "." } else { "->" }
+    var i = len(c.pg.types[di].fields) - 1
+    while i >= 0 {
+        let f = c.pg.types[di].fields[i]
+        if named.getOr(&f.name, "_") == "_" { c.dropc(acc + sep + "f_" + f.name, c.pg.subst(f.ty, &env)) }
+        i -= 1
+    }
+    for fp in fps {
+        let f = c.nd(fp).s
+        let b = c.nd(fp).t
+        if b != "_" {
+            let ft = c.pg.subst(c.pg.types[di].fields[c.fieldIndex(di, f)].ty, &env)
+            let cn = c.fresh("v_" + b + "_")
+            let fct = c.T(ft)
+            c.emit(fct + " " + cn + " = " + acc + sep + "f_" + f + ";")
+            c.declare(c.newVar(b, cn, ft, n.flags & sx.MUTABLE != 0, VK_LOCAL, c.line(fp)))
+        }
+    }
+    if !c.pg.types[di].value { c.emit("rt_free(" + acc + ");") }
+}
+
+// The type of a place expression, without evaluating it (-1 if unknown).
+fn (c: mut &Checker) placeType(e: int): int {
+    let n = c.nd(e)
+    let k = n.kind
+    if k == sx.N_NAME {
+        let v = c.lookupVar(n.s, true)
+        if v >= 0 {
+            let t = c.vars[v].t
+            return if c.pg.tk(t) == sema.TK_REF { c.pg.ta(t) } else { t }
+        }
+        let d = c.pg.lookup(c.cx.mod, n.s)
+        return if d.k == sema.D_GLOBAL { c.pg.globals[d.i].ty } else { -1 }
+    }
+    if k == sx.N_FIELDX {
+        var b = c.placeType(n.a)
+        if b >= 0 && c.pg.tk(b) == sema.TK_REF { b = c.pg.ta(b) }
+        if b >= 0 && c.pg.tk(b) == sema.TK_INST && !c.pg.isBare(b) && c.pg.types[c.pg.ta(b)].form == sx.F_RECORD {
+            let d = c.pg.ta(b)
+            for i in 0..len(c.pg.types[d].fields) {
+                if c.pg.types[d].fields[i].name == n.s {
+                    let env = c.pg.declEnv(b)
+                    return c.pg.subst(c.pg.types[d].fields[i].ty, &env)
+                }
+            }
+        }
+        return -1
+    }
+    if k == sx.N_INDEX {
+        var b = c.placeType(n.a)
+        if b >= 0 && c.pg.tk(b) == sema.TK_REF { b = c.pg.ta(b) }
+        return if b >= 0 && (c.pg.tk(b) == sema.TK_ARR || c.pg.tk(b) == sema.TK_SLICE) { c.pg.ta(b) } else { -1 }
+    }
+    return -1
+}
+
+fn (c: &Checker) selfInDrop(v: Val, line: int) {
+    let f = if len(c.outers) > 0 { c.outers[0].fd } else { c.cx.fd }
+    if f >= 0 && c.pg.fns[f].ownerKind == sema.O_DECL && c.pg.types[c.pg.fns[f].owner].drop == f && v.root >= 0 &&
+        c.vars[v.root].name == c.pg.fns[f].recvName && c.vars[v.root].kind == VK_PARAM && len(v.path) == 0 {
+        c.err(line, "a drop method may not assign or replace the whole of its receiver")
+    }
+}
+
+fn (c: mut &Checker) sAssign(s: int) {
+    let n = c.nd(s)
+    let tg = n.a
+    let tn = c.nd(tg)
+    let op = n.s
+    if tn.kind == sx.N_NAME {
+        let vx = c.lookupVar(tn.s, true)
+        if vx < 0 {
+            let d = c.pg.lookup(c.cx.mod, tn.s)
+            if d.k == sema.D_CONST { c.err(n.line, "cannot assign to constant " + tn.s) }
+            if d.k != sema.D_GLOBAL { c.err(n.line, "unknown name '" + tn.s + "'") }
+        } else if c.pg.tk(c.vars[vx].t) != sema.TK_REF {
+            let vn = c.vars[vx].name
+            if c.vars[vx].cap >= 0 && c.vars[vx].moved { c.err(n.line, "'" + vn + "' was moved and has no value here") }
+            if !c.vars[vx].mutable {
+                if c.vars[vx].kind == VK_PARAM {
+                    c.err(n.line, "cannot assign to parameter '" + vn + "': declare it `var " + vn + "`")
+                }
+                c.err(n.line, "cannot assign to '" + vn + "': it is declared with let, not var")
+            }
+            c.frozen(vx, FR_ASSIGN, n.line)
+            if op == "" {
+                let vt = c.vars[vx].t
+                let v = c.coerce(c.expr(n.b, vt), vt, n.line, "the value assigned to '" + vn + "'")
+                let cc = c.consume(v, n.line)
+                var p = val(c.vars[vx].c, vt, CAT_PLACE)
+                p.vvar = vx
+                c.store(p, cc, !c.vars[vx].moved)
+                c.vars[vx].moved = false
+                return
+            }
+        }
+    }
+    if tn.kind != sx.N_NAME && tn.kind != sx.N_FIELDX && tn.kind != sx.N_INDEX {
+        c.err(n.line, "cannot assign to this expression")
+    }
+    if op == "" {
+        var v = c.expr(n.b, c.placeType(tg))
+        let mark = len(c.cx.pending)
+        if c.effects(tg, false) { v = c.snapVal(v) }
+        if c.placeActs(tg) || (c.acts(tg) && c.pod(v.t)) { v = c.seq(v) }
+        if v.cat == CAT_PLACE && !c.isCopy(v.t) { c.hold(v, HM_MOVE, c.newCid(), n.line) }
+        let p = c.place(tg)
+        c.cutPending(mark)
+        v = c.coerce(v, p.t, n.line, "the assigned value")
+        let cc = c.consume(v, n.line)
+        c.store(p, cc, true)
+        return
+    }
+    let p = c.place(tg)
+    if p.vvar >= 0 && c.vars[p.vvar].moved { c.err(n.line, "'" + c.vars[p.vvar].name + "' was moved and has no value here") }
+    let lv = c.before1(p, n.b)
+    var fixed = tg
+    while c.kind(fixed) == sx.N_FIELDX || c.kind(fixed) == sx.N_INDEX { fixed = c.nd(fixed).a }
+    var r = c.binop(op, lv, Arg{isVal: false, n: n.b, v: lv}, n.line, p.t, c.kind(fixed) != sx.N_NAME, p)
+    if c.effects(n.b, false) && checks(p.c) && c.pod(p.t) { r = c.seq(r) }
+    let cc = c.consume(c.coerce(r, p.t, n.line, "the result"), n.line)
+    let live = !(p.vvar >= 0 && c.vars[p.vvar].moved)
+    c.store(p, cc, live)
+    if p.vvar >= 0 { c.vars[p.vvar].moved = false }
+}
+
+// Evaluate an assignment target as a mutable place.
+fn (c: mut &Checker) place(e: int): Val {
+    var v = c.expr(e, -1)
+    let line = c.line(e)
+    if c.pg.tk(v.t) == sema.TK_REF {
+        if !c.pg.tm(v.t) {
+            c.err(line, "cannot assign through '" + c.rootName(v.root, "?") + "': it is a shared borrow (&), not mut &")
+        }
+        v = c.deref(v)
+    }
+    if v.cat != CAT_PLACE { c.err(line, "cannot assign to a value that is not a place") }
+    c.selfInDrop(v, line)
+    if v.gk == sema.D_CONST { c.err(line, "cannot assign to constant " + c.pg.consts[v.gi].name) }
+    if v.gk < 0 {
+        if !v.mutable { c.immutable(v, line, "assign to") }
+        c.frozen(v.root, FR_ASSIGN, line)
+        c.checkPending(v.root, v.path, line, false)
+    }
+    return v
+}
+
+fn (c: mut &Checker) store(p: Val, cc: str, dropOld: bool) {
+    if c.pod(p.t) || !dropOld {
+        c.emit(p.c + " = " + cc + ";")
+        return
+    }
+    let n = c.fresh("nw")
+    let ct = c.T(p.t)
+    c.emit("{ " + ct + " " + n + " = " + cc + ";")
+    c.cx.ind += 1
+    c.dropc(p.c, p.t)
+    c.emit(p.c + " = " + n + "; }")
+    c.cx.ind -= 1
+}
+
+fn (c: mut &Checker) cond(e: int): str {
+    c.pushFrame()
+    var v = c.expr(e, sema.T_BOOL)
+    if c.pg.tk(v.t) == sema.TK_REF { v = c.deref(v) }
+    if v.t != sema.T_BOOL { c.err(c.line(e), "a condition must be bool, not " + c.tstr(v.t)) }
+    let cn = c.fresh("c")
+    c.emit("bool " + cn + " = " + v.c + ";")
+    let fr = c.popFrame()
+    c.dropFrame(&fr)
+    return cn
+}
+
+fn (c: mut &Checker) live(snaps: mut &[][]int) {
+    if !c.cx.dead { append(snaps, c.snapshot()) }
+}
+
+fn (c: mut &Checker) sIf(s: int) {
+    let n = c.nd(s)
+    let cn = c.cond(n.a)
+    let snap = c.snapshot()
+    c.emit("if (" + cn + ") {")
+    c.cx.ind += 1
+    c.block(n.b, true, false)
+    c.cx.ind -= 1
+    var snaps: [][]int = []
+    c.live(mut &snaps)
+    c.restore(&snap)
+    c.cx.dead = false
+    if n.c >= 0 {
+        c.emit("} else {")
+        c.cx.ind += 1
+        c.block(n.c, true, false)
+        c.cx.ind -= 1
+    }
+    c.emit("}")
+    c.live(mut &snaps)
+    c.join(&snaps, n.line)
+}
+
+fn (c: mut &Checker) loopStart(entry: []int, infinite: bool) {
+    append(mut &c.cx.loops, Loop{nscopes: len(c.cx.scopes), nframes: len(c.cx.frames), entry: entry,
+        infinite: infinite, breaks: []})
+    c.pushScope()
+}
+
+fn (c: mut &Checker) loopEnd(body: int, line: int) {
+    c.block(body, false, false)
+    let sc = pop(mut &c.cx.scopes)
+    if !c.cx.dead {
+        c.dropVars(&sc.vars)
+        c.loopState(line)
+    }
+    let lp = pop(mut &c.cx.loops)
+    c.restore(&lp.entry)
+    if lp.infinite {
+        c.join(&lp.breaks, line)
+    } else {
+        for b in lp.breaks {
+            var i = 0
+            while i < len(lp.entry) {
+                if snapGet(&b, lp.entry[i]) != lp.entry[i + 1] {
+                    c.err(line, "'" + c.vars[lp.entry[i]].name + "' is moved inside the loop")
+                }
+                i += 2
+            }
+        }
+        c.cx.dead = false
+    }
+}
+
+fn (c: &Checker) loopState(line: int) {
+    let lp = len(c.cx.loops) - 1
+    var i = 0
+    while i < len(c.cx.loops[lp].entry) {
+        let v = c.cx.loops[lp].entry[i]
+        if (if c.vars[v].moved { 1 } else { 0 }) != c.cx.loops[lp].entry[i + 1] {
+            c.err(line, "'" + c.vars[v].name + "' is moved inside the loop and not assigned again before the next " +
+                "iteration")
+        }
+        i += 2
+    }
+}
+
+fn (c: mut &Checker) sWhile(s: int) {
+    let n = c.nd(s)
+    let infinite = c.kind(n.a) == sx.N_BOOL && c.flag(n.a, sx.TRUE)
+    c.emit("while (1) {")
+    c.cx.ind += 1
+    let entry = c.snapshot()
+    if !infinite {
+        append(mut &c.cx.nomove, "in a while condition (it runs on every iteration)")
+        let cn = c.cond(n.a)
+        pop(mut &c.cx.nomove)
+        c.emit("if (!" + cn + ") break;")
+    }
+    c.loopStart(entry, infinite)
+    c.loopEnd(n.b, n.line)
+    c.cx.ind -= 1
+    c.emit("}")
+}
+
+fn (c: mut &Checker) curLoop(s: int, what: str): int {
+    if len(c.cx.loops) == 0 { c.err(c.line(s), what + " outside a loop") }
+    return len(c.cx.loops) - 1
+}
+
+fn (c: mut &Checker) sBreak(s: int) {
+    let lp = c.curLoop(s, "break")
+    c.cleanup(c.cx.loops[lp].nscopes, c.cx.loops[lp].nframes)
+    let snap = c.snapshot()
+    var b: []int = []
+    var i = 0
+    while i < len(snap) {
+        if snapGet(&c.cx.loops[lp].entry, snap[i]) >= 0 {
+            append(mut &b, snap[i])
+            append(mut &b, snap[i + 1])
+        }
+        i += 2
+    }
+    append(mut &c.cx.loops[lp].breaks, b)
+    c.emit("break;")
+    c.cx.dead = true
+}
+
+fn (c: mut &Checker) sContinue(s: int) {
+    let lp = c.curLoop(s, "continue")
+    c.cleanup(c.cx.loops[lp].nscopes, c.cx.loops[lp].nframes)
+    c.loopState(c.line(s))
+    c.emit("continue;")
+    c.cx.dead = true
+}
+
+fn (c: mut &Checker) sFor(s: int) {
+    let n = c.nd(s)
+    let name = n.s
+    if n.b >= 0 {
+        let a = c.before1(c.rd(c.expr(n.a, sema.T_INT)), n.b)
+        let b = c.rd(c.expr(n.b, sema.T_INT))
+        if a.t != sema.T_INT || b.t != sema.T_INT {
+            c.err(n.line, "a for range needs int bounds, not " + c.tstr(a.t) + " and " + c.tstr(b.t))
+        }
+        let end = c.fresh("end")
+        c.emit("int64_t " + end + " = " + b.c + ";")
+        let iv = c.newVar(name, c.fresh("v_" + name + "_"), sema.T_INT, false, VK_LOCAL, n.line)
+        let ivc = c.vars[iv].c
+        c.emit("for (int64_t " + ivc + " = " + a.c + "; " + ivc + " < " + end + "; " + ivc + "++) {")
+        c.cx.ind += 1
+        c.loopStart(c.snapshot(), false)
+        c.declare(iv)
+        c.loopEnd(n.c, n.line)
+        c.cx.ind -= 1
+        c.emit("}")
+        return
+    }
+    var v = c.expr(n.a, -1)
+    if c.pg.tk(v.t) == sema.TK_REF { v = c.deref(v) }
+    let k = c.pg.tk(v.t)
+    if k != sema.TK_ARR && k != sema.TK_SLICE {
+        c.err(n.line, "for ... in needs an array, a slice or a range a..b, not " + c.tstr(v.t))
+    }
+    let et = c.pg.ta(v.t)
+    let ap = c.fresh("ap")
+    let i = c.fresh("i")
+    if v.cat == CAT_RV && k == sema.TK_ARR { v = c.holdtmp(v.c, v.t) }
+    if v.cat == CAT_PLACE && v.gk >= 0 { c.err(n.line, "cannot iterate over a global") }
+    c.emit("obx_slice " + ap + " = " + (if k == sema.TK_SLICE { v.c } else { "rt_as_slice(&" + v.c + ")" }) + ";")
+    c.emit("for (int64_t " + i + " = 0; " + i + " < " + ap + ".len; " + i + "++) {")
+    c.cx.ind += 1
+    let elem = "((" + c.T(et) + "*)" + ap + ".data)[" + i + "]"
+    let xn = c.fresh("v_" + name + "_")
+    c.loopStart(c.snapshot(), false)
+    if v.root >= 0 { c.freeze(v.root, false, "the for loop") }
+    if c.isCopy(et) {
+        let ct = c.T(et)
+        c.emit(ct + " " + xn + " = " + c.dup(elem, et) + ";")
+        c.declare(c.newVar(name, xn, et, false, VK_LOCAL, n.line))
+    } else {
+        let ct = c.T(et)
+        c.emit(ct + "* " + xn + " = &" + elem + ";")
+        let x = c.newVar(name, xn, c.pg.mkRef(et, false), false, VK_LOCAL, n.line)
+        c.vars[x].broot = v.root
+        c.declare(x)
+    }
+    c.loopEnd(n.c, n.line)
+    c.cx.ind -= 1
+    c.emit("}")
+}
+
+fn (c: mut &Checker) sReturn(s: int) {
+    let n = c.nd(s)
+    let ret = c.cx.ret
+    let label = c.cx.label
+    if ret == sema.T_NEVER { c.err(n.line, label + " returns never: it cannot return") }
+    if n.a < 0 {
+        if ret != sema.T_VOID { c.err(n.line, "return needs a " + c.tstr(ret) + " value in " + label) }
+        c.exitDrops(true)
+        c.emit("return;")
+    } else {
+        if ret == sema.T_VOID { c.err(n.line, label + " returns nothing, but this return has a value") }
+        var v = c.expr(n.a, ret)
+        var cc = ""
+        if c.pg.isBorrow(ret) {
+            if !c.pg.isBorrow(v.t) { c.err(n.line, label + " returns a borrow: write return &place") }
+            v = c.coerce(v, ret, n.line, "the returned borrow")
+            var r = v.root
+            while r >= 0 && c.vars[r].broot != -1 { r = c.vars[r].broot }
+            if r != c.cx.bvar {
+                let name = c.rootName(v.root, "a temporary")
+                let bp = if c.cx.fd >= 0 { c.pg.fns[c.cx.fd].bparam } else { "" }
+                c.err(n.line, "cannot return a borrow of " + sx.pyRepr(name) + ": a borrow result must be rooted at the " +
+                    "borrowed parameter '" + bp + "', not a local or temporary")
+            }
+            cc = v.c
+        } else {
+            v = c.coerce(v, ret, n.line, "the returned value")
+            cc = c.consume(v, n.line)
+        }
+        let rn = c.fresh("r")
+        let ct = c.T(ret)
+        c.emit(ct + " " + rn + " = " + cc + ";")
+        c.cleanup(0, 0)
+        c.emit("return " + rn + ";")
+    }
+    c.cx.dead = true
+}
+
+// ---------------------------------------------------------------- match
+
+fn (c: mut &Checker) armBody(body: int, mx: bool) {
+    if mx { c.mxArm(body) } else { c.block(body, true, false) }
+}
+
+// A match statement (mx: a match expression's arms, each one expression).
+fn (c: mut &Checker) sMatch(s: int, mx: bool) {
+    let n = c.nd(s)
+    let v = c.expr(n.a, -1)
+    let base = if c.pg.tk(v.t) == sema.TK_REF { c.pg.ta(v.t) } else { v.t }
+    if base == sema.T_VOID { c.err(n.line, "match needs a value") }
+    if base < sema.NINTS || base == sema.T_STR {
+        c.matchLits(s, c.rd(v), base, mx)
+        return
+    }
+    if c.pg.tk(base) != sema.TK_INST || c.pg.types[c.pg.ta(base)].form != sx.F_CLOSED {
+        c.err(n.line, "match needs a closed type, an integer, a byte or a str, not " + c.tstr(base))
+    }
+    let d = c.pg.ta(base)
+    let env = c.pg.declEnv(base)
+    let borrowing = c.pg.tk(v.t) == sema.TK_REF || v.cat == CAT_PLACE
+    let sep = if c.pg.types[d].value { "." } else { "->" }
+    var acc = ""
+    var root = -1
+    if borrowing {
+        var p = c.deref(v)
+        if p.gk >= 0 { p = c.holdtmp(c.dup(p.c, p.t), p.t) }
+        let sp = c.fresh("sp")
+        let ct = c.T(base)
+        c.emit(ct + "* " + sp + " = &" + p.c + ";")
+        acc = "(*" + sp + ")"
+        root = p.root
+    } else {
+        if c.pg.types[d].drop >= 0 {
+            c.err(n.line, "cannot destructure a " + c.pg.types[d].name + ": it has a drop method (match on a place instead)")
+        }
+        acc = c.fresh("s")
+        let ct = c.T(base)
+        c.emit(ct + " " + acc + " = " + c.consume(v, n.line) + ";")
+    }
+    let snap = c.snapshot()
+    var seen: []bool = []
+    for i in 0..len(c.pg.types[d].variants) { append(mut &seen, false) }
+    var nseen = 0
+    var results: [][]int = []
+    var first = true
+    var hasElse = false
+    let arms = c.items(n.b)
+    for arm in arms {
+        let an = c.nd(arm)
+        if an.c >= 0 { c.err(an.line, "literal arms need an integer, byte or str scrutinee") }
+        var vr = -1
+        if an.s == "" {
+            hasElse = true
+            c.emit(if !first { "} else {" } else { "{" })
+        } else {
+            vr = c.armVariant(arm, d, base)
+            let idx = c.pg.variants[vr].index
+            if seen[idx] { c.err(an.line, an.s + " is matched twice") }
+            seen[idx] = true
+            nseen += 1
+            c.emit((if first { "if" } else { "} else if" }) + " (" + acc + sep + "tag == " + intToStr(idx) + ") {")
+        }
+        first = false
+        c.cx.ind += 1
+        c.restore(&snap)
+        c.cx.dead = false
+        c.pushScope()
+        if an.s == "" {
+            if !borrowing { c.dropc(acc, base) }
+        } else {
+            let vname = c.pg.variants[vr].name
+            let nf = len(c.pg.variants[vr].fields)
+            if an.b >= 0 && c.count(an.b) != nf {
+                c.err(an.line, vname + " has " + intToStr(nf) + " fields, but the pattern binds " + intToStr(c.count(an.b)))
+            }
+            for i in 0..nf {
+                let f = c.pg.variants[vr].fields[i]
+                let ft = c.pg.subst(f.ty, &env)
+                let fc = acc + sep + "u.V_" + vname + ".f_" + f.name
+                var bn = if an.b >= 0 && c.count(an.b) > 0 { c.nd(c.item(an.b, i)).s } else { "" }
+                if bn == "_" { bn = "" }
+                let cn = c.fresh("v_" + (if bn == "" { "None" } else { bn }) + "_")
+                if !borrowing {
+                    if bn != "" {
+                        let ct = c.T(ft)
+                        c.emit(ct + " " + cn + " = " + fc + ";")
+                        c.declare(c.newVar(bn, cn, ft, false, VK_LOCAL, an.line))
+                    } else {
+                        c.dropc(fc, ft)
+                    }
+                } else if bn != "" {
+                    if c.isCopy(ft) {
+                        let ct = c.T(ft)
+                        c.emit(ct + " " + cn + " = " + c.dup(fc, ft) + ";")
+                        c.declare(c.newVar(bn, cn, ft, false, VK_LOCAL, an.line))
+                    } else {
+                        let ct = c.T(ft)
+                        c.emit(ct + "* " + cn + " = &" + fc + ";")
+                        let x = c.newVar(bn, cn, c.pg.mkRef(ft, false), false, VK_LOCAL, an.line)
+                        c.vars[x].broot = if root >= 0 { root } else { -1 }
+                        c.declare(x)
+                        let sc = len(c.cx.scopes) - 1
+                        if root >= 0 && len(c.cx.scopes[sc].freezes) == 0 {
+                            c.freeze(root, false, "the match binding '" + bn + "'")
+                        }
+                    }
+                }
+            }
+            if !borrowing && !c.pg.types[d].value { c.emit("rt_free(" + acc + ");") }
+        }
+        c.armBody(an.d, mx)
+        let sc = pop(mut &c.cx.scopes)
+        if !c.cx.dead { c.dropVars(&sc.vars) }
+        c.cx.ind -= 1
+        c.live(mut &results)
+    }
+    if !hasElse && nseen != len(c.pg.types[d].variants) {
+        var b = newStrBuf()
+        var k = 0
+        for x in c.pg.types[d].variants {
+            if !seen[c.pg.variants[x].index] {
+                if k > 0 { b.add(", ") }
+                b.add(c.pg.variants[x].name)
+                k += 1
+            }
+        }
+        c.err(n.line, "match on " + c.tstr(base) + " is not exhaustive: missing " + b.toStr())
+    }
+    if len(arms) > 0 { c.emit("}") }
+    c.join(&results, n.line)
+}
+
+fn (c: mut &Checker) armVariant(arm: int, d: int, base: int): int {
+    let an = c.nd(arm)
+    let np = c.count(an.a)
+    var vr = -1
+    if np > 1 || c.pg.prelude.has(&an.s) {
+        let st = c.static(c.vpathExpr(an.a, an.line))
+        if st.k == ST_DECL && st.dk == D_VARIANT { vr = st.di }
+    }
+    if vr < 0 || c.pg.variants[vr].decl != d {
+        if np == 1 {
+            c.err(an.line, "write " + c.pg.types[d].name + "." + an.s + ": a variant is qualified by its type (only Some, " +
+                "None, Ok and Err of the prelude may be written bare)")
+        }
+        c.err(an.line, c.vpathText(an.a) + " is not a variant of " + c.tstr(base))
+    }
+    return vr
+}
+
+fn (c: mut &Checker) matchLits(s: int, v: Val, t: int, mx: bool) {
+    let n = c.nd(s)
+    let sv = c.fresh("sv")
+    let ct = c.T(t)
+    c.emit(ct + " " + sv + " = " + v.c + ";")
+    let snap = c.snapshot()
+    var results: [][]int = []
+    var first = true
+    var hasElse = false
+    var seen: Map[str, str] = newMap()
+    let arms = c.items(n.b)
+    for arm in arms {
+        let an = c.nd(arm)
+        if an.b >= 0 { c.err(an.line, "a match on " + c.tstr(t) + " takes literals and constants, not " + an.s + "(...)") }
+        if an.s == "" && an.c < 0 {
+            hasElse = true
+            c.emit(if !first { "} else {" } else { "{" })
+        } else {
+            var items: []int = []
+            if an.s != "" { append(mut &items, -1) } else { items = c.items(an.c) }
+            var conds = newStrBuf()
+            var nc = 0
+            for it in items {
+                // k: 0 int, 1 char, 2 str; x or xs the value
+                var k = 0
+                var x = num.bigOf(0)
+                var xs = ""
+                var shown = ""
+                var named = false
+                if it < 0 || c.kind(it) == sx.N_LNAME {
+                    let vpath = if it < 0 { an.a } else { c.nd(it).a }
+                    shown = c.vpathText(vpath)
+                    named = true
+                    let cv = c.armConst(vpath, t, an.line)
+                    if t == sema.T_STR { k = 2; xs = cv.s } else { x = cv.i }
+                } else {
+                    let ik = c.kind(it)
+                    if ik == sx.N_LINT { x = num.bigParse(c.nd(it).s, c.flag(it, sx.MINUS)) }
+                    if ik == sx.N_LCHAR { k = 1; x = num.bigOf(c.nd(it).a) }
+                    if ik == sx.N_LSTR { k = 2; xs = c.nd(it).s }
+                }
+                if nc > 0 { conds.add(" || ") }
+                nc += 1
+                if t == sema.T_STR {
+                    if k != 2 { c.err(an.line, "a match on str takes string literals and constants") }
+                    conds.add("rt_str_eq(" + sv + ", " + c.hole(mkHole(H_STR, -1, xs)) + ")")
+                } else {
+                    if k == 2 { c.err(an.line, "a match on " + c.tstr(t) + " takes integer literals and constants") }
+                    if k == 1 && t != sema.T_BYTE {
+                        c.err(an.line, "a char literal is a byte: it cannot be an arm of a match on " + c.tstr(t))
+                    }
+                    if !sema.inRange(x, t) { c.err(an.line, "literal " + num.bigStr(x) + " does not fit " + c.tstr(t)) }
+                    conds.add(sv + " == " + c.cint(x, t))
+                }
+                let vs = if t == sema.T_STR { "\"" + xs + "\"" } else { num.bigStr(x) }
+                let key = if t == sema.T_STR { "s" + xs } else { num.bigStr(x) }
+                if seen.has(&key) {
+                    c.err(an.line, "the value " + vs + " is matched twice (" + seen.getOr(&key, "") + " and " +
+                        (if named { shown } else { vs }) + ")")
+                }
+                seen.put(key, if named { shown } else { vs })
+            }
+            c.emit((if first { "if" } else { "} else if" }) + " (" + conds.toStr() + ") {")
+        }
+        first = false
+        c.cx.ind += 1
+        c.restore(&snap)
+        c.cx.dead = false
+        c.armBody(an.d, mx)
+        c.cx.ind -= 1
+        c.live(mut &results)
+    }
+    if !hasElse { c.err(n.line, "a match on " + c.tstr(t) + " needs an else arm (it is not exhaustive)") }
+    c.emit("}")
+    c.join(&results, n.line)
+}
+
+// A constant named in a match arm (SPEC 8): its value, if `x == K` would type-check.
+fn (c: mut &Checker) armConst(vpath: int, t: int, line: int): sema.CVal {
+    let st = c.static(c.vpathExpr(vpath, line))
+    let name = c.vpathText(vpath)
+    if st.k != ST_DECL || st.dk != sema.D_CONST {
+        c.err(line, name + " is not a constant: a match on " + c.tstr(t) + " takes literals and constants")
+    }
+    let v = c.pg.constValue(st.di)
+    if v.kind == sema.CK_TABLE {
+        c.err(line, name + " is a constant table: a match arm takes a constant of type " + c.tstr(t))
+    }
+    var ty = v.ty
+    if ty < 0 && v.kind == sema.CK_INT && t != sema.T_STR { ty = t }
+    if ty != t {
+        c.err(line, "constant " + name + " is " + (if ty >= 0 { c.tstr(ty) } else { "a fractional constant" }) + ", not " + c.tstr(t))
+    }
+    return v
+}
+
+// ---------------------------------------------------------------- expressions
+
+// An expected type: a type, -1 (none), or a slice of an unknown element (ref's ('slice', None, mut)).
+const EXP_SLICE = -2
+const EXP_MUTSLICE = -3
+
+fn (c: &Checker) ek(exp: int): int {
+    if exp == -1 { return -1 }
+    if exp <= -2 { return sema.TK_SLICE }
+    return c.pg.tk(exp)
+}
+
+fn (c: mut &Checker) expr(e: int, exp: int): Val {
+    let k = c.kind(e)
+    if k == sx.N_INT {
+        let n = c.nd(e)
+        return c.xInt(num.bigParse(n.s, n.flags & sx.MINUS != 0), n.line, exp)
+    }
+    if k == sx.N_SUB {
+        let mut1 = c.ek(exp) == sema.TK_SLICE && (exp == EXP_MUTSLICE || (exp >= 0 && c.pg.tm(exp)))
+        return c.xSub(e, mut1)
+    }
+    return match k {
+        sx.N_CHAR { rv("((uint8_t)" + intToStr(c.nd(e).a) + ")", sema.T_BYTE) }
+        sx.N_STR { rv(c.hole(mkHole(H_STR, -1, c.nd(e).s)), sema.T_STR) }
+        sx.N_BOOL { rv(if c.flag(e, sx.TRUE) { "true" } else { "false" }, sema.T_BOOL) }
+        sx.N_TARG { c.err(c.line(e), "a type is not a value") }
+        sx.N_FRAC { c.xFrac(c.nd(e).s, c.line(e), exp) }
+        sx.N_NAME { c.xName(e, exp) }
+        sx.N_CLOSURE { c.xClosure(e, exp) }
+        sx.N_FIELDX { c.xField(e, exp) }
+        sx.N_INDEX { c.xIndex(e, exp) }
+        sx.N_BORROW { c.xBorrow(e, exp) }
+        sx.N_UN { c.xUn(e, exp) }
+        sx.N_BIN { c.xBin(e, exp) }
+        sx.N_IFX { c.xIfx(e, exp) }
+        sx.N_MATCHX { c.xMatchx(e, exp) }
+        sx.N_TRY { c.xTry(e, exp) }
+        sx.N_LIT { c.xLit(e, exp) }
+        sx.N_ARRLIT { c.xArrlit(e, exp) }
+        sx.N_CALL { c.xCall(e, exp) }
+        else { c.err(c.line(e), "internal error: expression kind " + intToStr(k)) }
+    }
+}
+
+// Read a value: a borrow of a copy type reads what it points to.
+fn (c: mut &Checker) rd(v: Val): Val { return if c.pg.tk(v.t) == sema.TK_REF { c.deref(v) } else { v } }
+
+pub fn cint(v: num.Big, t: int): str {
+    if t == sema.T_I128 || t == sema.T_U128 {
+        let ct = if t == sema.T_I128 { "__int128" } else { "unsigned __int128" }
+        let u = num.bigMask(v, 128)
+        let hi = num.bigShr(u, 64)
+        let lo = num.bigMask(u, 64)
+        return "((" + ct + ")(((unsigned __int128)" + num.bigStr(hi) + "ULL << 64) | " + num.bigStr(lo) + "ULL))"
+    }
+    if t == sema.T_INT {
+        let s = num.bigStr(v)
+        return if s == "-9223372036854775808" { "(-9223372036854775807LL-1)" } else { s + "LL" }
+    }
+    if t == sema.T_U64 { return num.bigStr(v) + "ULL" }
+    if t == sema.T_FLOAT { return num.pyFloatRepr(num.bigToFloat(v)) }
+    return "((" + CTYPES[t] + ")" + num.bigStr(v) + ")"
+}
+
+fn (c: mut &Checker) cint(v: num.Big, t: int): str { return cint(v, t) }
+
+fn (c: mut &Checker) xInt(v: num.Big, line: int, exp: int): Val {
+    let t = if exp >= 0 && (exp < sema.NINTS || exp == sema.T_FLOAT) { exp } else { sema.T_INT }
+    if t == sema.T_FLOAT { return c.fconst(num.bigStr(v), line) }
+    if !sema.inRange(v, t) {
+        c.err(line, "integer literal " + num.bigStr(v) + " does not fit " + sema.PRIM_NAMES[t] + " (out of range)")
+    }
+    return rv(cint(v, t), t)
+}
+
+fn (c: mut &Checker) fconst(text: str, line: int): Val {
+    let x = num.floatOfText(text)
+    if x != x || x - x != x - x { c.err(line, "float constant out of range (overflow)") }
+    return rv(num.pyFloatRepr(x), sema.T_FLOAT)
+}
+
+// SPEC 7.3: a float when float is expected, else fromFraction(units: i128, scale: int).
+fn (c: mut &Checker) xFrac(text: str, line: int, exp: int): Val {
+    if exp == sema.T_FLOAT { return c.fconst(text, line) }
+    let neg = startsWith(text, "-")
+    var b = newStrBuf()
+    var whole = newStrBuf()
+    var frac = newStrBuf()
+    var ex = newStrBuf()
+    var part = 0
+    for i in (if neg { 1 } else { 0 })..len(text) {
+        var x = strByte(text, i)
+        if x >= 'A' && x <= 'Z' { x = x + 32 }
+        if part == 0 && x == 'e' {
+            part = 2
+        } else if part == 0 && x == '.' {
+            part = 1
+        } else if part == 1 && x == 'e' {
+            part = 2
+        } else if part == 0 {
+            whole.addByte(x)
+        } else if part == 1 {
+            frac.addByte(x)
+        } else {
+            ex.addByte(x)
+        }
+    }
+    b.add(whole.toStr())
+    b.add(frac.toStr())
+    let units = num.bigParse(b.toStr(), neg)
+    let es = ex.toStr()
+    var e = num.bigOf(0)
+    if len(es) > 0 {
+        let eneg = strByte(es, 0) == '-'
+        let digits = if strByte(es, 0) == '-' || strByte(es, 0) == '+' { es[1..] } else { es }
+        e = num.bigParse(digits, eneg)
+    }
+    let scale = num.bigSub(num.bigOf(frac.size()), e)
+    if !sema.inRange(units, sema.T_I128) {
+        c.err(line, "fractional literal " + text + " has too many digits: its units do not fit an i128")
+    }
+    if !sema.inRange(scale, sema.T_INT) {
+        c.err(line, "the exponent of fractional literal " + text + " is out of range: its scale " + num.bigStr(scale) +
+            " does not fit an int")
+    }
+    var args: []Arg = []
+    append(mut &args, Arg{isVal: true, n: -1, v: rv(cint(units, sema.T_I128), sema.T_I128)})
+    append(mut &args, Arg{isVal: true, n: -1, v: rv(num.bigStr(scale) + "LL", sema.T_INT)})
+    if exp >= 0 {
+        let sig = c.assocSig(exp, "fromFraction", line, true)
+        if sig.kind >= 0 && len(sig.params) == 2 && c.pg.subst(sig.params[0], &sig.bind) == sema.T_I128 &&
+            c.pg.subst(sig.params[1], &sig.bind) == sema.T_INT {
+            let o = noOpts()
+            return c.call(&sig, false, voidVal(false), &args, line, exp, &o)
+        }
+    }
+    let d = c.pg.lookup(c.cx.mod, "fromFraction")
+    if d.k != sema.D_FN { c.err(line, "a fractional literal needs a function fromFraction(i128, int) in scope") }
+    let sig = c.fnSig(d.i, [])
+    let o = noOpts()
+    return c.call(&sig, false, voidVal(false), &args, line, exp, &o)
+}
+
+// ---- static names: modules, types, declarations
+
+fn (c: mut &Checker) staticNs(e: int): St {
+    let st = c.static(e)
+    if st.k == ST_DECL && (st.dk == sema.D_GLOBAL || st.dk == sema.D_CONST) { return NOST }
+    return st
+}
+
+fn stType(t: int): St { return St{k: ST_TYPE, dk: -1, di: -1, t: t, m: -1, n: 2, tres: false, targs: -1, free: -1} }
+
+fn stSym(s: sema.Sym): St { return if s.k < 0 { NOST } else { stDecl(s.k, s.i) } }
+
+// ref's static: e as a module, type or top-level declaration, if it is one.
+fn (c: mut &Checker) static(e: int): St {
+    let n = c.nd(e)
+    let mod = c.cx.mod
+    if n.kind == sx.N_NAME {
+        if c.lookupVar(n.s, true) >= 0 { return NOST }
+        let tp = c.pg.envLookup(&c.cx.env, n.s)
+        if tp >= 0 { return stType(c.pg.mkTp(tp)) }
+        let p = sema.primOf(n.s)
+        if p >= 0 { return stType(p) }
+        let d = c.pg.lookup(mod, n.s)
+        if d.k >= 0 { return stSym(d) }
+        let im = c.pg.importOf(mod, n.s)
+        if im >= 0 { return St{k: ST_MODULE, dk: -1, di: -1, t: -1, m: im, n: 2, tres: false, targs: -1, free: -1} }
+        if c.pg.prelude.has(&n.s) { return stDecl(D_VARIANT, c.pg.prelude.getOr(&n.s, -1)) }
+        return NOST
+    }
+    if n.kind == sx.N_FIELDX {
+        let b = c.static(n.a)
+        if b.k == ST_MODULE { return stSym(c.pg.lookupIn(mod, b.m, n.s, n.line)) }
+        if b.k == ST_DECL && b.dk == sema.D_TYPE &&
+            (c.pg.types[b.di].form == sx.F_CLOSED || c.pg.types[b.di].form == sx.F_ALIAS) {
+            return c.variantOf(b, n.s, n.line)
+        }
+        return NOST
+    }
+    if n.kind == sx.N_INDEX {
+        let b = c.static(n.a)
+        if b.k == ST_DECL && (b.dk == sema.D_TYPE || b.dk == sema.D_FN || b.dk == D_VARIANT) {
+            var r = stDecl(b.dk, b.di)
+            r.n = 3
+            r.targs = c.texprs(n.b)
+            return r
+        }
+        return NOST
+    }
+    return NOST
+}
+
+fn (c: mut &Checker) texprs(l: int): int {
+    var xs: []int = []
+    for i in 0..c.count(l) { append(mut &xs, c.texpr(c.item(l, i))) }
+    return c.synthList(&xs)
+}
+
+// Type.Variant (SPEC 4.4): the variant, with the type's arguments when it has them. Through a
+// generic alias without arguments (R.Ok), those mention R's parameters, which are inferred.
+fn (c: mut &Checker) variantOf(b: St, name: str, line: int): St {
+    let d = b.di
+    let free = b.n == 2 && c.pg.types[d].form == sx.F_ALIAS && len(c.pg.types[d].tparams) > 0
+    let t = if free { c.pg.aliasTarget(d) } else { c.staticType(b, line) }
+    if t >= 0 && c.pg.tk(t) == sema.TK_INST && c.pg.types[c.pg.ta(t)].form == sx.F_CLOSED {
+        let vs = copyInts(&c.pg.types[c.pg.ta(t)].variants)
+        for vr in vs {
+            if c.pg.variants[vr].name == name {
+                if c.pg.isBare(t) { return stDecl(D_VARIANT, vr) }
+                var r = stDecl(D_VARIANT, vr)
+                r.n = if free { 4 } else { 3 }
+                r.tres = true
+                let ta = c.pg.targs(t)
+                r.targs = c.tuple(&ta)
+                r.free = if free { d } else { -1 }
+                return r
+            }
+        }
+    }
+    return NOST
+}
+
+// ref's texpr: the expression x read as a type (a type node of the current module).
+fn (c: mut &Checker) texpr(x: int): int {
+    let n = c.nd(x)
+    let k = n.kind
+    if k == sx.N_TARG { return n.a }
+    if k == sx.N_NAME { return c.synthTname(&[n.s], &[], n.line) }
+    if k == sx.N_FIELDX && c.kind(n.a) == sx.N_NAME { return c.synthTname(&[c.nd(n.a).s, n.s], &[], n.line) }
+    if k == sx.N_INDEX {
+        let b = c.texpr(n.a)
+        if c.kind(b) == sx.N_TNAME && c.count(c.nd(b).b) == 0 {
+            var args: []int = []
+            for i in 0..c.count(n.b) { append(mut &args, c.texpr(c.item(n.b, i))) }
+            let al = c.synthList(&args)
+            return c.synth(sx.N_TNAME, n.line, "", c.nd(b).a, al, 0)
+        }
+    }
+    if k == sx.N_BORROW {
+        let inner = c.texpr(n.a)
+        return c.synth(sx.N_TREF, 0, "", inner, -1, n.flags & sx.MUT)
+    }
+    c.err(n.line, "expected a type")
+}
+
+// A type from a static ('decl', TypeDecl[, targs]) or ('type', t); -1 when it is not a type.
+fn (c: mut &Checker) staticType(st: St, line: int): int {
+    if st.k == ST_TYPE { return st.t }
+    if st.dk != sema.D_TYPE { return -1 }
+    let d = st.di
+    if st.n == 2 && len(c.pg.types[d].tparams) > 0 && c.pg.types[d].form != sx.F_ALIAS { return c.pg.mkBare(d) }
+    var args: []int = []
+    if st.n > 2 { args = c.items(st.targs) }
+    let a = c.synthTname(&[c.pg.types[d].name], &args, line)
+    return c.resolveNamed(d, a, line)
+}
+
+fn (c: mut &Checker) resolveNamed(d: int, a: int, line: int): int {
+    let mod = c.cx.mod
+    let l = c.pg.lookup(mod, c.pg.types[d].name)
+    if c.pg.types[d].mod != mod && !(l.k == sema.D_TYPE && l.i == d) {
+        // a qualified name: resolve it in its own module, then the args here
+        var args: []int = []
+        let al = c.nd(a).b
+        for i in 0..c.count(al) { append(mut &args, c.resolve(c.item(al, i), sema.P_TARG, line)) }
+        let ntp = len(c.pg.types[d].tparams)
+        if len(args) != ntp {
+            c.err(line, c.pg.types[d].name + " takes " + intToStr(ntp) + " type arguments, not " + intToStr(len(args)))
+        }
+        if c.pg.types[d].form == sx.F_ALIAS {
+            var env: []int = []
+            for i in 0..ntp {
+                append(mut &env, c.pg.types[d].tparams[i])
+                append(mut &env, args[i])
+            }
+            return c.pg.subst(c.pg.aliasTarget(d), &env)
+        }
+        let tps = copyInts(&c.pg.types[d].tparams)
+        c.pg.checkTargs(&args, &tps, mod, line)
+        return c.pg.mkInst(d, &args)
+    }
+    return c.resolve(a, sema.P_TARG, line)
+}
+
+fn isBuiltin(name: str): bool {
+    return name == "len" || name == "append" || name == "pop" || name == "swap" || name == "replace" ||
+        name == "move" || name == "array" || name == "panic" || name == "assert" || name == "exit" || name == "isNull"
+}
+
+fn (c: mut &Checker) xName(e: int, exp: int): Val {
+    let n = c.nd(e)
+    let vx = c.lookupVar(n.s, true)
+    if vx >= 0 {
+        if c.vars[vx].moved { c.err(n.line, "'" + c.vars[vx].name + "' was moved and has no value here") }
+        c.frozen(vx, FR_READ, n.line)
+        var v = val(c.vars[vx].c, c.vars[vx].t, CAT_PLACE)
+        v.root = vx
+        v.mutable = c.vars[vx].mutable
+        v.vvar = vx
+        return v
+    }
+    if isBuiltin(n.s) || intrinsic(n.s) >= 0 { c.err(n.line, n.s + " is a built-in function; call it") }
+    let st = c.static(e)
+    if st.k == ST_NONE { c.err(n.line, "unknown name '" + n.s + "'") }
+    return c.staticValue(st, e, exp)
+}
+
+fn (c: mut &Checker) staticValue(st: St, e: int, exp: int): Val {
+    let line = c.line(e)
+    if st.k == ST_MODULE { c.err(line, c.pg.mods[st.m].name + " is a module, not a value") }
+    if st.k == ST_TYPE { c.err(line, c.tstr(st.t) + " is a type, not a value") }
+    let di = st.di
+    if st.dk == sema.D_CONST { return c.constVal(di, exp, line) }
+    if st.dk == sema.D_GLOBAL {
+        let name = c.pg.globals[di].name
+        if c.pg.globals[di].isOnce {
+            c.err(line, name + " is a set-once global: use " + name + ".get(), .set(v) or .isSet()")
+        }
+        var v = val(c.pg.globals[di].cname, c.pg.globals[di].ty, CAT_PLACE)
+        v.mutable = true
+        v.gk = sema.D_GLOBAL
+        v.gi = di
+        return v
+    }
+    if st.dk == D_VARIANT {
+        if len(c.pg.variants[di].fields) > 0 {
+            c.err(line, "variant " + c.pg.variants[di].name + " has fields: write " +
+                c.pg.types[c.pg.variants[di].decl].name + "." + c.pg.variants[di].name + "(...)")
+        }
+        let none: []Arg = []
+        return c.constructVariant(st, &none, line, exp, -1)
+    }
+    if st.dk == sema.D_FN {
+        let fname = c.pg.fns[di].name
+        let tps = copyInts(&c.pg.fns[di].tps)
+        if c.pg.fns[di].isExtern { c.err(line, "extern function " + fname + " cannot be used as a value") }
+        var bind: []int = []
+        if st.n > 2 {
+            let ta = c.items(st.targs)
+            if len(ta) != len(tps) {
+                c.err(line, fname + " takes " + intToStr(len(tps)) + " type arguments, not " + intToStr(len(ta)))
+            }
+            for i in 0..len(ta) {
+                append(mut &bind, tps[i])
+                append(mut &bind, c.resolve(ta[i], sema.P_TARG, line))
+            }
+        }
+        var ps: []int = []
+        for i in 0..len(c.pg.fns[di].params) { append(mut &ps, c.pg.fns[di].params[i].ty) }
+        let ft = c.pg.mkFn(&ps, c.pg.fns[di].ret)
+        let ek = c.ek(exp)
+        if len(tps) > 0 && len(bind) / 2 < len(tps) && (ek == sema.TK_FN || ek == sema.TK_CLO) {
+            let xs = c.pg.targs(exp)
+            let et = c.pg.mkFn(&xs, c.pg.tb(exp))
+            c.pg.unify(ft, et, mut &bind, &tps)
+        }
+        if len(bind) / 2 < len(tps) {
+            c.err(line, "cannot infer the type arguments of " + fname + "; write " + fname + "[...]")
+        }
+        var targs: []int = []
+        for tp in tps { append(mut &targs, bindGet(&bind, tp)) }
+        c.pg.checkTargs(&targs, &tps, c.cx.mod, line)
+        var h = mkHole(H_FN, c.tuple(&targs), "")
+        h.f = di
+        return rv(c.hole(h), c.pg.subst(ft, &bind))
+    }
+    c.err(line, c.declName(st) + " is a type, not a value")
+}
+
+fn bindGet(bind: &[]int, tp: int): int {
+    var i = 0
+    while i < len(bind) {
+        if bind[i] == tp { return bind[i + 1] }
+        i += 2
+    }
+    return -1
+}
+
+fn (c: &Checker) declName(st: St): str {
+    return match st.dk {
+        sema.D_TYPE { c.pg.types[st.di].name }
+        sema.D_FN { c.pg.fns[st.di].name }
+        sema.D_CONST { c.pg.consts[st.di].name }
+        sema.D_GLOBAL { c.pg.globals[st.di].name }
+        else { c.pg.variants[st.di].name }
+    }
+}
+
+// The root of a borrow of static data (a constant table, a set-once global): never freed.
+fn (c: mut &Checker) staticVar(dk: int, di: int): int {
+    let key = intToStr(dk) + ":" + intToStr(di)
+    let v = c.statics.getOr(&key, -1)
+    if v >= 0 { return v }
+    let id = if dk == sema.D_CONST {
+        c.newVar(c.pg.consts[di].name, c.pg.consts[di].cname, sema.T_VOID, false, VK_STATIC, c.pg.consts[di].line)
+    } else {
+        c.newVar(c.pg.globals[di].name, c.pg.globals[di].cname, sema.T_VOID, false, VK_STATIC, c.pg.globals[di].line)
+    }
+    c.statics.put(key, id)
+    return id
+}
+
+fn (c: mut &Checker) constVal(k: int, exp: int, line: int): Val {
+    let v = c.pg.constValue(k)
+    let ty = v.ty
+    var kind = v.kind
+    if kind == sema.CK_TABLE {
+        if c.pg.tk(ty) == sema.TK_ARR {
+            return rvAt(c.pg.consts[k].cname, c.pg.mkSlice(c.pg.ta(ty), false), c.staticVar(sema.D_CONST, k), "")
+        }
+        var r = val(c.pg.consts[k].cname, ty, CAT_PLACE)
+        r.gk = sema.D_CONST
+        r.gi = k
+        return r
+    }
+    if kind == sema.CK_TYPED {
+        if ty < sema.NINTS { return rv(cint(v.i, ty), ty) }
+        if ty == sema.T_FLOAT { return rv(num.pyFloatRepr(v.f), sema.T_FLOAT) }
+        kind = if ty == sema.T_BOOL { sema.CK_BOOL } else { sema.CK_STR }
+    }
+    if kind == sema.CK_INT {
+        if ty == sema.T_BYTE { return rv("((uint8_t)" + num.bigStr(v.i) + ")", sema.T_BYTE) }
+        return c.xInt(v.i, line, exp)
+    }
+    if kind == sema.CK_FRAC { return c.xFrac(v.s, line, exp) }
+    if kind == sema.CK_FLOAT { return rv(num.pyFloatRepr(v.f), sema.T_FLOAT) }
+    if kind == sema.CK_BOOL { return rv(if v.b { "true" } else { "false" }, sema.T_BOOL) }
+    return rv(c.hole(mkHole(H_STR, -1, v.s)), sema.T_STR)
+}
+
+fn (c: mut &Checker) xField(e: int, exp: int): Val {
+    let n = c.nd(e)
+    let st = c.staticNs(n.a)
+    if st.k != ST_NONE {
+        let vst = c.static(e)
+        if vst.k != ST_NONE { return c.staticValue(vst, e, exp) }
+        if st.k == ST_DECL && st.dk == sema.D_TYPE && c.pg.types[st.di].form == sx.F_CLOSED {
+            c.err(n.line, c.pg.types[st.di].name + " has no variant " + n.s)
+        }
+        c.err(n.line, n.s + " on a type is an associated function: call it")
+    }
+    let v = c.expr(n.a, -1)
+    return c.fieldOf(v, n.s, n.line)
+}
+
+fn (c: mut &Checker) fieldOf(v0: Val, name: str, line: int): Val {
+    let v = c.deref(v0)
+    let t = v.t
+    let isInst = c.pg.tk(t) == sema.TK_INST
+    if !isInst || c.pg.types[c.pg.ta(t)].form != sx.F_RECORD {
+        if isInst && c.pg.types[c.pg.ta(t)].form == sx.F_CLOSED {
+            c.err(line, c.tstr(t) + " is a closed type: use match to reach its fields")
+        }
+        c.err(line, c.tstr(t) + " has no field '" + name + "'")
+    }
+    let d = c.pg.ta(t)
+    let fi = c.fieldIndex(d, name)
+    if fi < 0 { c.err(line, c.tstr(t) + " has no field '" + name + "'") }
+    if !c.pg.types[d].fields[fi].isPub && c.pg.types[d].mod != c.cx.mod {
+        c.err(line, "field '" + name + "' of " + c.pg.types[d].name + " is private to module " + c.pg.mods[c.pg.types[d].mod].name)
+    }
+    let env = c.pg.declEnv(t)
+    let ft = c.pg.subst(c.pg.types[d].fields[fi].ty, &env)
+    let sep = if c.pg.types[d].value { "." } else { "->" }
+    var r = val(v.c + sep + "f_" + name, ft, if v.cat != CAT_RV { CAT_PLACE } else { CAT_RV })
+    r.root = v.root
+    r.path = pathAdd(v.path, name)
+    r.mutable = v.mutable
+    r.viaref = v.viaref
+    r.gk = v.gk
+    r.gi = v.gi
+    return r
+}
+
+fn (c: mut &Checker) xIndex(e: int, exp: int): Val {
+    let n = c.nd(e)
+    var st = c.staticNs(n.a)
+    if st.k != ST_NONE {
+        if st.k == ST_DECL && st.n == 2 && (st.dk == sema.D_FN || st.dk == D_VARIANT) {
+            st.n = 3
+            st.tres = false
+            st.targs = c.texprs(n.b)
+        }
+        return c.staticValue(st, e, exp)
+    }
+    if c.count(n.b) != 1 { c.err(n.line, "an index takes one expression") }
+    let ix = c.item(n.b, 0)
+    var v = c.deref(c.expr(n.a, -1))
+    if v.t == sema.T_STR {
+        v = c.before1(v, ix)
+        let i = c.intIndex(ix)
+        return rv("rt_str_byte(" + v.c + ", " + i + ", " + c.W(n.line) + ")", sema.T_BYTE)
+    }
+    let k = c.pg.tk(v.t)
+    if k != sema.TK_ARR && k != sema.TK_SLICE { c.err(n.line, "cannot index a " + c.tstr(v.t)) }
+    if v.cat == CAT_RV { v = c.holdtmpSrc(v.c, v.t, true, v) }
+    if c.acts(ix) { v = c.seq(v) }
+    let mark = len(c.cx.pending)
+    c.hold(v, HM_SHARED, c.newCid(), n.line)
+    let i = c.intIndex(ix)
+    c.cutPending(mark)
+    let et = c.pg.ta(v.t)
+    let cc = "((" + c.T(et) + "*)(" + v.c + ").data)[rt_idx(" + i + ", (" + v.c + ").len, " + c.W(n.line) + ")]"
+    var r = val(cc, et, CAT_PLACE)
+    r.root = v.root
+    r.path = pathAdd(v.path, "[]")
+    r.viaref = true
+    if k == sema.TK_SLICE {
+        r.mutable = c.pg.tm(v.t)
+        return r
+    }
+    r.mutable = v.mutable
+    r.viaref = v.viaref
+    r.gk = v.gk
+    r.gi = v.gi
+    return r
+}
+
+// xs[a..b], xs[a..], xs[..b] of an array or slice (a slice, SPEC 4.2a) or of a str.
+fn (c: mut &Checker) xSub(e: int, mut1: bool): Val {
+    let n = c.nd(e)
+    var v = c.deref(c.expr(n.a, -1))
+    let W = c.W(n.line)
+    if v.t == sema.T_STR {
+        v = c.beforeOpt(v, n.b, n.c)
+        let lo = if n.b >= 0 { c.intIndex(n.b) } else { "0" }
+        let hi = if n.c >= 0 { c.intIndex(n.c) } else { "(" + v.c + ").len" }
+        return c.holdtmp("rt_str_sub(" + v.c + ", " + lo + ", " + hi + ", " + W + ")", sema.T_STR)
+    }
+    let k = c.pg.tk(v.t)
+    if k != sema.TK_ARR && k != sema.TK_SLICE { c.err(n.line, "cannot slice a " + c.tstr(v.t)) }
+    var base = ""
+    if k == sema.TK_ARR {
+        if v.cat == CAT_RV { v = c.holdtmp(v.c, v.t) }
+        if v.gk >= 0 { c.err(n.line, "cannot slice global '" + c.gname(v.gk, v.gi) + "'") }
+        if mut1 && !v.mutable { c.immutable(v, n.line, "take a mut slice of") }
+        base = "rt_as_slice(&" + v.c + ")"
+    } else {
+        if mut1 && !c.pg.tm(v.t) { c.err(n.line, "cannot make a mut slice from a shared slice") }
+        base = v.c
+    }
+    if mut1 { c.frozen(v.root, FR_MUT, n.line) }
+    if c.actsOpt(n.b) || c.actsOpt(n.c) { v = c.seq(v) }
+    let mark = len(c.cx.pending)
+    c.hold(v, HM_SHARED, c.newCid(), n.line)
+    let lo = if n.b >= 0 { c.intIndex(n.b) } else { "0" }
+    let hi = if n.c >= 0 { c.intIndex(n.c) } else { "(" + base + ").len" }
+    c.cutPending(mark)
+    let sv = c.fresh("sv")
+    let ct = c.T(c.pg.ta(v.t))
+    c.emit("obx_slice " + sv + " = rt_sub(" + base + ", " + lo + ", " + hi + ", sizeof(" + ct + "), " + W + ");")
+    return rvAt(sv, c.pg.mkSlice(c.pg.ta(v.t), mut1), v.root, v.path)
+}
+
+fn (c: mut &Checker) actsOpt(e: int): bool { return e >= 0 && c.acts(e) }
+
+// before(v, lo, hi) where either may be absent (ref passes None, which has no effects).
+fn (c: mut &Checker) beforeOpt(v: Val, a: int, b: int): Val {
+    var later: []int = []
+    if a >= 0 { append(mut &later, a) }
+    if b >= 0 { append(mut &later, b) }
+    return c.before(v, &later)
+}
+
+fn (c: mut &Checker) intIndex(ie: int): str {
+    let i = c.rd(c.expr(ie, sema.T_INT))
+    if i.t != sema.T_INT { c.err(c.line(ie), "an index must be an int, not " + c.tstr(i.t)) }
+    if c.kind(ie) == sx.N_INT { return i.c }
+    let n = c.fresh("ix")
+    c.emit("int64_t " + n + " = " + i.c + ";")
+    return n
+}
+
+fn (c: mut &Checker) xBorrow(e: int, exp: int): Val {
+    let n = c.nd(e)
+    let m = n.flags & sx.MUT != 0
+    if c.kind(n.a) == sx.N_SUB {           // &xs[a..b], mut &xs[a..b]: the slice itself
+        let v = c.xSub(n.a, m)
+        return if c.pg.tk(v.t) == sema.TK_SLICE { v } else { c.borrow(v, m, n.line, false) }
+    }
+    var inner = -1
+    let ek = c.ek(exp)
+    if ek == sema.TK_REF { inner = c.pg.ta(exp) }
+    if ek == sema.TK_SLICE && exp >= 0 { inner = c.pg.mkArr(c.pg.ta(exp)) }
+    let v = c.expr(n.a, inner)
+    return c.borrow(v, m, n.line, false)
+}
+
+fn (c: mut &Checker) xUn(e: int, exp: int): Val {
+    let n = c.nd(e)
+    let v = c.rd(c.expr(n.a, exp))
+    let t = v.t
+    if n.s == "!" {
+        if t != sema.T_BOOL { c.err(n.line, "! needs a bool, not " + c.tstr(t)) }
+        return rv("(!" + v.c + ")", sema.T_BOOL)
+    }
+    if n.s == "~" {
+        if t >= sema.NINTS { c.err(n.line, "~ needs an integer, not " + c.tstr(t)) }
+        return rv("((" + CTYPES[t] + ")~" + v.c + ")", t)
+    }
+    if c.pg.tk(t) == sema.TK_PRIM {
+        if t < sema.NINTS { return rv("rt_neg_" + sema.PRIM_NAMES[t] + "(" + v.c + ", " + c.W(n.line) + ")", t) }
+        if t == sema.T_FLOAT { return rv("(-" + v.c + ")", t) }
+        c.err(n.line, "unary - is not defined for " + c.tstr(t))
+    }
+    let none: []Val = []
+    return c.opCall(v, "neg", &none, n.line, "-")
+}
+
+fn isLitNode(k: int): bool { return k == sx.N_INT || k == sx.N_FRAC }
+
+fn (c: mut &Checker) xBin(e: int, exp: int): Val {
+    let n = c.nd(e)
+    let op = n.s
+    if op == "&&" || op == "||" { return c.logic(e) }
+    let cmp = isCmpOp(op)
+    let nexp = if cmp { -1 } else { exp }
+    if c.kind(n.a) == sx.N_FRAC && !isLitNode(c.kind(n.b)) {
+        // The literal takes the type of the right operand, but its fromFraction runs first
+        // (operands are evaluated left to right): find that type with a discarded check.
+        let lv = c.expr(n.a, c.peekType(n.b, nexp))
+        return c.binop(op, lv, Arg{isVal: false, n: n.b, v: lv}, n.line, exp, false, lv)
+    }
+    if isLitNode(c.kind(n.a)) && !isLitNode(c.kind(n.b)) {     // an integer literal: no code, so no order
+        let r = c.rd(c.expr(n.b, nexp))
+        let lt = if op != "<<" && op != ">>" { r.t } else { exp }
+        let lv = c.rd(c.expr(n.a, lt))
+        return c.binop(op, lv, Arg{isVal: true, n: -1, v: r}, n.line, exp, false, lv)
+    }
+    let hint = if !cmp && exp >= 0 && c.pg.tk(exp) == sema.TK_PRIM { exp } else { -1 }
+    let lv = c.before1(c.rd(c.expr(n.a, hint)), n.b)
+    return c.binop(op, lv, Arg{isVal: false, n: n.b, v: lv}, n.line, exp, false, lv)
+}
+
+// The type of e: e is checked, then its code and its effects on the checker are undone.
+fn (c: mut &Checker) peekType(e: int, exp: int): int {
+    let nlines = len(c.cx.lines)
+    let nholes = len(c.holes)
+    let nlifted = len(c.lifted)
+    var pending: []Pend = []
+    for p in c.cx.pending { append(mut &pending, p) }
+    let ncaps = len(c.cx.capNames)
+    var frames: []int = []
+    for f in 0..len(c.cx.frames) { append(mut &frames, len(c.cx.frames[f])) }
+    let states = c.snapshot()
+    let t = c.rd(c.expr(e, exp)).t
+    while len(c.cx.lines) > nlines { pop(mut &c.cx.lines) }
+    while len(c.holes) > nholes { pop(mut &c.holes) }
+    while len(c.lifted) > nlifted { pop(mut &c.lifted) }
+    c.cx.pending = pending
+    while len(c.cx.capNames) > ncaps {
+        pop(mut &c.cx.capNames)
+        pop(mut &c.cx.capVars)
+    }
+    for f in 0..len(frames) {
+        if f < len(c.cx.frames) {
+            while len(c.cx.frames[f]) > frames[f] { pop(mut &c.cx.frames[f]) }
+        }
+    }
+    c.restore(&states)
+    return t
+}
+
+fn (c: &Checker) hasTpIn(t: int, tps: &[]int): bool { return len(tps) > 0 && c.pg.hasTp(t, tps) }
+
+// fn(params) { ... } (SPEC 4.6): a function lifted out of the enclosing one, with an environment
+// of pointers to the variables it uses (in the enclosing frame: no allocation).
+fn (c: mut &Checker) xClosure(e: int, exp: int): Val {
+    let n = c.nd(e)
+    let mod = c.cx.mod
+    let env = copyInts(&c.cx.env)
+    let ctps = copyInts(&c.calleeTps)
+    let want = if c.ek(exp) == sema.TK_CLO { exp } else { -1 }
+    let np = c.count(n.a)
+    if want >= 0 && c.pg.tn(want) != np {
+        c.err(n.line, "the closure takes " + intToStr(np) + " parameters, but " + c.tstr(want) + " is expected")
+    }
+    var pnames: []str = []
+    var ptys: []int = []
+    var pvars: []int = []
+    for i in 0..np {
+        let p = c.item(n.a, i)
+        let pn = c.nd(p).s
+        let pw = c.line(p)
+        let ty = c.nd(p).a
+        if ty < 0 && (want < 0 || c.hasTpIn(c.pg.ti(want, i), &ctps)) {
+            c.err(pw, "give the type of closure parameter '" + pn + "': it cannot be inferred here")
+        }
+        let t = if ty >= 0 { c.pg.resolveType(ty, mod, &env, sema.P_PARAM, pw) } else { c.pg.ti(want, i) }
+        var dup = c.lookupVar(pn, false) >= 0
+        for x in pnames {
+            if x == pn { dup = true }
+        }
+        if dup { c.err(pw, "'" + pn + "' is already declared in this function (no shadowing)") }
+        append(mut &pnames, pn)
+        append(mut &ptys, t)
+        append(mut &pvars, c.newVar(pn, "p_" + pn, t, false, VK_PARAM, pw))
+    }
+    if n.b < 0 && want >= 0 && c.hasTpIn(c.pg.tb(want), &ctps) {
+        c.err(n.line, "give the result type of the closure: it cannot be inferred here")
+    }
+    let ret = if n.b >= 0 { c.pg.resolveType(n.b, mod, &env, sema.P_RET, n.line) } else if want >= 0 { c.pg.tb(want) } else { sema.T_VOID }
+    if c.pg.isBorrow(ret) { c.err(n.line, "a closure cannot return a borrow") }
+    let outer = replace(mut &c.cx, newCtx(-1, "the closure", ret, env, mod, true))
+    append(mut &c.outers, outer)
+    append(mut &c.cx.scopes, Scope{vars: pvars, freezes: []})
+    c.block(n.c, false, false)
+    if !c.cx.dead {
+        if ret == sema.T_NEVER { c.err(n.line, "the closure returns never, but it may reach its end") }
+        if ret != sema.T_VOID { c.err(n.line, "the closure may reach its end without a return") }
+        c.dropScope(0)
+    }
+    var cx = replace(mut &c.cx, pop(mut &c.outers))
+    let k = len(c.lifted)
+    var cps: []str = []
+    for pn in pnames { append(mut &cps, "p_" + pn) }
+    append(mut &c.lifted, Lifted{k: k, ret: ret, pnames: cps, ptys: copyInts(&ptys), lines: replace(mut &cx.lines, [])})
+    var caps: []Cap = []
+    for pv in cx.capVars {     // check the captures against the enclosing borrows
+        let cap = c.vars[pv].cap
+        let cm = c.vars[pv].capmut
+        c.frozen(cap, if cm { FR_MUT } else { FR_READ }, n.line)
+        append(mut &caps, Cap{v: cap, m: cm})
+    }
+    var en = "NULL"
+    if len(caps) > 0 {
+        en = c.fresh("ce")
+        var b = newStrBuf()
+        b.add("void* " + en + "[" + intToStr(len(caps)) + "] = {")
+        for i in 0..len(caps) {
+            if i > 0 { b.add(", ") }
+            b.add("(void*)&" + c.vars[caps[i].v].c)
+        }
+        b.add("};")
+        c.emit(b.toStr())
+    }
+    let h = c.hole(Hole{k: H_CL, t: -1, f: k, s: "", r: "", args: "", nargs: 0})
+    var r = rv("((obx_clo){(void*)" + h + ", (void*)" + en + "})", c.pg.mkClo(&ptys, ret))
+    append(mut &c.capl, caps)
+    r.caps = len(c.capl) - 1
+    return r
+}
+
+fn (c: mut &Checker) logic(e: int): Val {
+    let n = c.nd(e)
+    append(mut &c.cx.nomove, "inside && or ||")
+    c.pushFrame()
+    let lv = c.rd(c.expr(n.a, sema.T_BOOL))
+    if lv.t != sema.T_BOOL { c.err(n.line, n.s + " needs bool operands, not " + c.tstr(lv.t)) }
+    let ln = c.fresh("b")
+    c.emit("bool " + ln + " = " + lv.c + ";")
+    let fr = c.popFrame()
+    c.dropFrame(&fr)
+    c.emit("if (" + (if n.s == "&&" { "" } else { "!" }) + ln + ") {")
+    c.cx.ind += 1
+    c.pushFrame()
+    let rv1 = c.rd(c.expr(n.b, sema.T_BOOL))
+    if rv1.t != sema.T_BOOL { c.err(n.line, n.s + " needs bool operands, not " + c.tstr(rv1.t)) }
+    c.emit(ln + " = " + rv1.c + ";")
+    let fr2 = c.popFrame()
+    c.dropFrame(&fr2)
+    c.cx.ind -= 1
+    c.emit("}")
+    pop(mut &c.cx.nomove)
+    return rv(ln, sema.T_BOOL)
+}
+
+// lv: the evaluated left operand; r: the right operand (a node, or a value).
+fn (c: mut &Checker) binop(op: str, lv0: Val, r: Arg, line: int, exp: int, hasHeld: bool, held: Val): Val {
+    let lv = c.rd(lv0)
+    let lt = lv.t
+    var rv0 = r.v
+    if !r.isVal {
+        let rexp = if op == "<<" || op == ">>" { sema.T_INT } else { lt }
+        let mark = len(c.cx.pending)
+        let h = if hasHeld { held } else { lv }
+        if h.cat == CAT_PLACE { c.hold(h, HM_SHARED, c.newCid(), line) }
+        rv0 = c.expr(r.n, rexp)
+        c.cutPending(mark)
+    }
+    let rv1 = c.rd(rv0)
+    let rt = rv1.t
+    let W = c.W(line)
+    let cmp = isCmpOp(op)
+    if c.pg.tk(lt) == sema.TK_PRIM && c.pg.tk(rt) == sema.TK_PRIM {
+        let nm = sema.PRIM_NAMES[lt]
+        if op == "<<" || op == ">>" {
+            if lt >= sema.NINTS || rt != sema.T_INT {
+                c.err(line, op + " needs an integer and an int shift count, not " + c.tstr(lt) + " and " + c.tstr(rt))
+            }
+            return rv("rt_" + (if op == "<<" { "shl" } else { "shr" }) + "_" + nm + "(" + lv.c + ", " + rv1.c + ", " + W + ")", lt)
+        }
+        if lt != rt {
+            c.err(line, "operator " + op + " needs operands of the same type, not " + c.tstr(lt) + " and " + c.tstr(rt))
+        }
+        if lt < sema.NINTS {
+            if cmp { return rv("(" + lv.c + " " + op + " " + rv1.c + ")", sema.T_BOOL) }
+            let f = match op { "+" { "add" } "-" { "sub" } "*" { "mul" } "/" { "div" } "%" { "rem" } else { "" } }
+            if f != "" { return rv("rt_" + f + "_" + nm + "(" + lv.c + ", " + rv1.c + ", " + W + ")", lt) }
+            let w = match op { "+%" { "add" } "-%" { "sub" } "*%" { "mul" } else { "" } }
+            if w != "" { return rv("rt_w" + w + "_" + nm + "(" + lv.c + ", " + rv1.c + ")", lt) }
+            if op == "&" || op == "|" || op == "^" {
+                return rv("((" + CTYPES[lt] + ")(" + lv.c + " " + op + " " + rv1.c + "))", lt)
+            }
+        } else if lt == sema.T_FLOAT {
+            if cmp { return rv("(" + lv.c + " " + op + " " + rv1.c + ")", sema.T_BOOL) }
+            if op == "+" || op == "-" || op == "*" || op == "/" { return rv("(" + lv.c + " " + op + " " + rv1.c + ")", lt) }
+        } else if (lt == sema.T_BOOL || lt == sema.T_PTR) && (op == "==" || op == "!=") {
+            return rv("(" + lv.c + " " + op + " " + rv1.c + ")", sema.T_BOOL)
+        } else if lt == sema.T_STR {
+            if op == "+" { return c.holdtmp("rt_str_concat(" + lv.c + ", " + rv1.c + ")", sema.T_STR) }
+            if op == "==" || op == "!=" {
+                return rv("(" + (if op == "==" { "" } else { "!" }) + "rt_str_eq(" + lv.c + ", " + rv1.c + "))", sema.T_BOOL)
+            }
+            if cmp { return rv("(rt_str_cmp(" + lv.c + ", " + rv1.c + ") " + op + " 0)", sema.T_BOOL) }
+        }
+        c.err(line, "operator " + op + " is not defined for " + c.tstr(lt))
+    }
+    if c.pg.tk(lt) == sema.TK_PRIM {
+        c.err(line, "operator " + op + " needs operands of the same type, not " + c.tstr(lt) + " and " + c.tstr(rt))
+    }
+    let args = [rv1]
+    if isArith(op) {
+        let m = match op { "+" { "add" } "-" { "sub" } "*" { "mul" } "/" { "div" } else { "rem" } }
+        return c.opCall(lv, m, &args, line, op)
+    }
+    if op == "==" || op == "!=" {
+        let r2 = c.opCall(lv, "eq", &args, line, op)
+        return rv(if op == "==" { r2.c } else { "(!" + r2.c + ")" }, sema.T_BOOL)
+    }
+    if cmp {
+        let r2 = c.opCall(lv, "cmp", &args, line, op)
+        return rv("(" + r2.c + " " + op + " 0)", sema.T_BOOL)
+    }
+    c.err(line, "operator " + op + " is not defined for " + c.tstr(lt))
+}
+
+fn (c: mut &Checker) opCall(recv: Val, name: str, args: &[]Val, line: int, op: str): Val {
+    let sig = c.methodSig(recv.t, name, line, true)
+    if sig.kind < 0 {
+        c.err(line, "operator " + op + " on " + c.tstr(recv.t) + " needs a method " + name +
+            (if name == "cmp" { " (from a constraint such as Ord)" } else { "" }))
+    }
+    // The operand is passed as the method declares: borrowed for a & parameter.
+    var conv: []Arg = []
+    let off = if sig.recv != sema.RM_NONE { 1 } else { 0 }
+    for i in 0..len(args) {
+        if i + off < len(sig.params) {
+            let p = sig.params[i + off]
+            let a = args[i]
+            let v = if c.pg.tk(p) == sema.TK_REF && c.pg.tk(a.t) != sema.TK_REF { c.borrow(a, false, line, false) } else { a }
+            append(mut &conv, Arg{isVal: true, n: -1, v: v})
+        }
+    }
+    var o = noOpts()
+    o.op = true
+    return c.call(&sig, true, recv, &conv, line, -1, &o)
+}
+
+// if c { a } else { b } (SPEC 7.8): one branch runs; the branches join like an if statement.
+type Branch = record {
+    v: Val
+    lines: []str
+    snap: []int
+}
+
+fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: str): Branch {
+    c.restore(snap)
+    let saved = replace(mut &c.cx.lines, [])
+    c.cx.dead = false
+    c.cx.ind += 1
+    c.pushFrame()
+    var v = c.expr(x, want)
+    let k = c.pg.tk(v.t)
+    if c.kind(x) == sx.N_BORROW || k == sema.TK_SLICE || k == sema.TK_CLO {
+        c.err(c.line(x), "an if expression cannot give a borrow, a slice or a closure")
+    }
+    v = c.rd(v)
+    let fr = c.popFrame()
+    if !v.noreturn {
+        v = rv(c.consume(v, c.line(x)), v.t)
+        var live = false
+        for t in fr {
+            if c.tmps[t].live { live = true }
+        }
+        if len(c.cx.lines) > 0 || live {       // stored before the temporaries are dropped
+            c.emit(r + " = " + v.c + ";")
+            v.c = r
+        }
+    }
+    c.dropFrame(&fr)
+    c.cx.ind -= 1
+    let lines = replace(mut &c.cx.lines, saved)
+    return Branch{v: v, lines: lines, snap: c.snapshot()}
+}
+
+fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
+    let n = c.nd(e)
+    let cv = c.rd(c.expr(n.a, sema.T_BOOL))
+    if cv.t != sema.T_BOOL { c.err(c.line(n.a), "a condition must be bool, not " + c.tstr(cv.t)) }
+    let ek = c.ek(exp)
+    if ek == sema.TK_REF || ek == sema.TK_SLICE || ek == sema.TK_CLO {
+        c.err(n.line, "an if expression cannot give a borrow, a slice or a closure")
+    }
+    let snap = c.snapshot()
+    let r = c.fresh("ifx")
+    var a = Branch{v: voidVal(false), lines: [], snap: []}
+    var b = Branch{v: voidVal(false), lines: [], snap: []}
+    if exp == -1 && isLitNode(c.kind(n.b)) && !isLitNode(c.kind(n.c)) {     // a literal takes the other's type
+        b = c.ifBranch(n.c, -1, &snap, r)
+        a = c.ifBranch(n.b, if b.v.noreturn { -1 } else { b.v.t }, &snap, r)
+    } else {
+        a = c.ifBranch(n.b, exp, &snap, r)
+        b = c.ifBranch(n.c, if exp != -1 { exp } else if a.v.noreturn { -1 } else { a.v.t }, &snap, r)
+    }
+    let t = if a.v.noreturn { b.v.t } else { a.v.t }
+    if !a.v.noreturn && !b.v.noreturn && a.v.t != b.v.t {
+        c.err(n.line, "the branches of an if expression have different types, " + c.tstr(a.v.t) + " and " + c.tstr(b.v.t))
+    }
+    var snaps: [][]int = []
+    if !a.v.noreturn { append(mut &snaps, copyInts(&a.snap)) }
+    if !b.v.noreturn { append(mut &snaps, copyInts(&b.snap)) }
+    c.join(&snaps, n.line)
+    if len(a.lines) == 0 && len(b.lines) == 0 {
+        let text = "(" + cv.c + " ? " + a.v.c + " : " + b.v.c + ")"
+        return if c.pod(t) { rv(text, t) } else { c.holdtmp(text, t) }
+    }
+    if !c.cx.dead {
+        let ct = c.T(t)
+        c.emit(ct + " " + r + ";")
+    }
+    c.emit("if (" + cv.c + ") {")
+    for x in a.lines { append(mut &c.cx.lines, x) }
+    if !a.v.noreturn && a.v.c != r {
+        c.cx.ind += 1
+        c.emit(r + " = " + a.v.c + ";")
+        c.cx.ind -= 1
+    }
+    c.emit("} else {")
+    for x in b.lines { append(mut &c.cx.lines, x) }
+    if !b.v.noreturn && b.v.c != r {
+        c.cx.ind += 1
+        c.emit(r + " = " + b.v.c + ";")
+        c.cx.ind -= 1
+    }
+    c.emit("}")
+    if c.cx.dead {
+        c.cx.dead = false
+        return voidVal(true)
+    }
+    return c.tmpval(r, t)
+}
+
+// match x { Arm { e } ... } (SPEC 7.8): the match statement, each arm storing its value in r.
+// A literal arm seen before the type is known is written once the other arms give it.
+const PLACEHOLDER = "\x00"
+
+fn (c: mut &Checker) mxBody(x: int) {
+    let top = len(c.mxs) - 1
+    c.pushFrame()
+    var v = c.expr(x, c.mxs[top].t)
+    let k = c.pg.tk(v.t)
+    if c.kind(x) == sx.N_BORROW || k == sema.TK_SLICE || k == sema.TK_CLO {
+        c.err(c.line(x), "a match expression cannot give a borrow, a slice or a closure")
+    }
+    v = c.rd(v)
+    let fr = c.popFrame()
+    if v.noreturn {
+        c.cx.dead = true
+    } else {
+        if c.mxs[top].t == -1 {
+            c.mxs[top].t = v.t
+        } else if v.t != c.mxs[top].t {
+            c.err(c.line(x), "the arms of a match expression have different types, " + c.tstr(c.mxs[top].t) + " and " +
+                c.tstr(v.t))
+        }
+        let cc = c.consume(v, c.line(x))
+        c.emit(c.mxs[top].r + " = " + cc + ";")
+    }
+    c.dropFrame(&fr)
+}
+
+fn (c: mut &Checker) mxArm(x: int) {
+    let top = len(c.mxs) - 1
+    if isLitNode(c.kind(x)) && c.mxs[top].t == -1 {      // written once the other arms give the type
+        append(mut &c.mxs[top].lits, len(c.cx.lines))
+        append(mut &c.mxs[top].lits, x)
+        append(mut &c.mxs[top].lits, c.cx.ind)
+        append(mut &c.cx.lines, PLACEHOLDER)
+    } else {
+        c.mxBody(x)
+    }
+}
+
+fn (c: mut &Checker) xMatchx(e: int, exp: int): Val {
+    let n = c.nd(e)
+    let ek = c.ek(exp)
+    if ek == sema.TK_REF || ek == sema.TK_SLICE || ek == sema.TK_CLO {
+        c.err(n.line, "a match expression cannot give a borrow, a slice or a closure")
+    }
+    let r = c.fresh("mx")
+    let at = len(c.cx.lines)
+    append(mut &c.mxs, MatchX{r: r, t: exp, lits: []})
+    c.sMatch(e, true)
+    let top = len(c.mxs) - 1
+    let lits = copyInts(&c.mxs[top].lits)
+    let saved = c.cx.ind
+    var done: [][]str = []
+    var at2: []int = []
+    var i = 0
+    while i < len(lits) {
+        c.cx.ind = lits[i + 2]
+        let keep = replace(mut &c.cx.lines, [])
+        c.mxBody(lits[i + 1])
+        append(mut &done, replace(mut &c.cx.lines, keep))
+        append(mut &at2, lits[i])
+        i += 3
+    }
+    c.cx.ind = saved
+    if len(done) > 0 {
+        let old = replace(mut &c.cx.lines, [])
+        var j = 0
+        for li in 0..len(old) {
+            if j < len(at2) && at2[j] == li {
+                for x in done[j] { append(mut &c.cx.lines, x) }
+                j += 1
+            } else {
+                append(mut &c.cx.lines, old[li])
+            }
+        }
+    }
+    let mx = pop(mut &c.mxs)
+    let t = mx.t
+    if c.cx.dead {
+        c.cx.dead = false
+        return voidVal(true)
+    }
+    var b = newStrBuf()
+    for k in 0..c.cx.ind { b.add("  ") }
+    let ct = c.T(t)
+    b.add(ct + " " + r + ";")
+    var nl: []str = []
+    for li in 0..len(c.cx.lines) {
+        if li == at { append(mut &nl, b.toStr()) }
+        append(mut &nl, c.cx.lines[li])
+    }
+    if at == len(c.cx.lines) { append(mut &nl, b.toStr()) }
+    c.cx.lines = nl
+    return c.tmpval(r, t)
+}
+
+// ref's okerr: the Ok and Err variants of a closed type (and their types), or ok = -1.
+type OkErr = value record {
+    ok: int
+    okT: int
+    er: int
+    erT: int
+}
+
+fn (c: mut &Checker) okerr(t: int): OkErr {
+    var r = OkErr{ok: -1, okT: -1, er: -1, erT: -1}
+    if c.pg.tk(t) != sema.TK_INST || c.pg.types[c.pg.ta(t)].form != sx.F_CLOSED { return r }
+    let d = c.pg.ta(t)
+    var ok = -1
+    var er = -1
+    for v in c.pg.types[d].variants {
+        if c.pg.variants[v].name == "Ok" { ok = v }
+        if c.pg.variants[v].name == "Err" { er = v }
+    }
+    if ok < 0 || er < 0 || len(c.pg.variants[ok].fields) != 1 || len(c.pg.variants[er].fields) != 1 { return r }
+    let env = c.pg.declEnv(t)
+    r.ok = ok
+    r.okT = c.pg.subst(c.pg.variants[ok].fields[0].ty, &env)
+    r.er = er
+    r.erT = c.pg.subst(c.pg.variants[er].fields[0].ty, &env)
+    return r
+}
+
+fn (c: mut &Checker) xTry(e: int, exp: int): Val {
+    let n = c.nd(e)
+    let v = c.expr(n.a, -1)
+    let t = v.t
+    if c.pg.tk(t) == sema.TK_REF { c.err(n.line, "try needs an owned value, not a borrow") }
+    let a = c.okerr(t)
+    if a.ok < 0 { c.err(n.line, "try needs a closed type with variants Ok and Err (like Result), not " + c.tstr(t)) }
+    let ret = c.cx.ret
+    let r = c.okerr(ret)
+    if r.ok < 0 {
+        c.err(n.line, "try needs a function whose result type has an Err variant (like Result), and " + c.cx.label +
+            " returns " + c.tstr(ret))
+    }
+    if a.erT != r.erT {
+        c.err(n.line, "try: the error type " + c.tstr(a.erT) + " is not the Err type " + c.tstr(r.erT) + " of " + c.cx.label)
+    }
+    let d = c.pg.ta(t)
+    if c.pg.types[d].drop >= 0 { c.err(n.line, "try cannot take apart a " + c.pg.types[d].name + ": it has a drop method") }
+    let value = c.pg.types[d].value
+    let sep = if value { "." } else { "->" }
+    let sn = c.fresh("tr")
+    let ct = c.T(t)
+    c.emit(ct + " " + sn + " = " + c.consume(v, n.line) + ";")
+    c.emit("if (" + sn + sep + "tag == " + intToStr(c.pg.variants[a.er].index) + ") {")
+    c.cx.ind += 1
+    let en = c.fresh("e")
+    let et = c.T(a.erT)
+    c.emit(et + " " + en + " = " + sn + sep + "u.V_Err.f_" + c.pg.variants[a.er].fields[0].name + ";")
+    if !value { c.emit("rt_free(" + sn + ");") }
+    let rvc = c.build(ret, r.er, &[en])
+    let rn = c.fresh("r")
+    let rt = c.T(ret)
+    c.emit(rt + " " + rn + " = " + rvc + ";")
+    c.cleanup(0, 0)
+    c.emit("return " + rn + ";")
+    c.cx.ind -= 1
+    c.emit("}")
+    var oc = sn + sep + "u.V_Ok.f_" + c.pg.variants[a.ok].fields[0].name
+    if !value {
+        let on = c.fresh("ok")
+        let ot = c.T(a.okT)
+        c.emit(ot + " " + on + " = " + oc + ";")
+        c.emit("rt_free(" + sn + ");")
+        oc = on
+    }
+    return c.holdtmp(oc, a.okT)
+}
+
+// ---- literals and constructors
+
+// C text that builds a value of record or closed type t (variant vr, or -1) from field C texts.
+fn (c: mut &Checker) build(t: int, vr: int, cs: &[]str): str {
+    let d = c.pg.ta(t)
+    var names: []str = []
+    if vr >= 0 {
+        for f in c.pg.variants[vr].fields { append(mut &names, f.name) }
+    } else {
+        for f in c.pg.types[d].fields { append(mut &names, f.name) }
+    }
+    let m = if len(names) < len(cs) { len(names) } else { len(cs) }
+    if c.pg.types[d].value {
+        var b = newStrBuf()
+        for i in 0..m {
+            if i > 0 { b.add(", ") }
+            b.add(".f_" + names[i] + " = " + cs[i])
+        }
+        let ct = c.T(t)
+        if vr >= 0 {
+            return "((" + ct + "){.tag = " + intToStr(c.pg.variants[vr].index) + ", .u.V_" + c.pg.variants[vr].name +
+                " = {" + b.toStr() + "}})"
+        }
+        let inner = if m == 0 { "0" } else { b.toStr() }
+        return "((" + ct + "){" + inner + "})"
+    }
+    let n = c.fresh("o")
+    let ct = c.T(t)
+    c.emit(ct + " " + n + " = rt_alloc(sizeof(*" + n + "));")
+    if vr >= 0 { c.emit(n + "->tag = " + intToStr(c.pg.variants[vr].index) + ";") }
+    let pre = if vr >= 0 { n + "->u.V_" + c.pg.variants[vr].name + "." } else { n + "->" }
+    for i in 0..m { c.emit(pre + "f_" + names[i] + " = " + cs[i] + ";") }
+    return n
+}
+
+fn (c: mut &Checker) constructVariant(st: St, args0: &[]Arg, line: int, exp: int, named: int): Val {
+    let vr = st.di
+    let d = c.pg.variants[vr].decl
+    let vname = c.pg.variants[vr].name
+    if c.pg.types[d].mod != c.cx.mod && !c.pg.types[d].isPub { c.err(line, vname + " is not public") }
+    var tps = copyInts(&c.pg.types[d].tparams)
+    var bind: []int = []
+    var env: []int = []
+    let hasTargs = st.n > 2
+    var targs: []int = []
+    if hasTargs { targs = if st.tres { c.pg.targs(st.targs) } else { c.items(st.targs) } }
+    if st.n > 3 {                // through a generic alias: infer the alias's parameters
+        let m = if len(tps) < len(targs) { len(tps) } else { len(targs) }
+        for i in 0..m {
+            append(mut &env, tps[i])
+            append(mut &env, targs[i])
+        }
+        tps = copyInts(&c.pg.types[st.free].tparams)
+    } else if hasTargs {
+        if len(targs) != len(tps) {
+            c.err(line, c.pg.types[d].name + " takes " + intToStr(len(tps)) + " type arguments, not " + intToStr(len(targs)))
+        }
+        for i in 0..len(tps) {
+            append(mut &bind, tps[i])
+            append(mut &bind, if st.tres { targs[i] } else { c.resolve(targs[i], sema.P_TARG, line) })
+        }
+    } else if exp >= 0 && c.pg.tk(exp) == sema.TK_INST && c.pg.ta(exp) == d {
+        for i in 0..len(tps) {
+            if i < c.pg.tn(exp) {
+                append(mut &bind, tps[i])
+                append(mut &bind, c.pg.ti(exp, i))
+            }
+        }
+    }
+    var fts: []int = []
+    var names: []str = []
+    for i in 0..len(c.pg.variants[vr].fields) {
+        let f = c.pg.variants[vr].fields[i]
+        append(mut &fts, c.pg.subst(f.ty, &env))
+        append(mut &names, f.name)
+    }
+    var o = noOpts()
+    var args: []Arg = []
+    if named >= 0 {
+        args = c.orderInits(&names, named, vname, line)
+        o.order = copyInts(&c.initOrder)
+    } else {
+        for a in args0 { append(mut &args, a) }
+    }
+    if len(args) != len(fts) {
+        c.err(line, "variant " + vname + " takes " + intToStr(len(fts)) + " values, not " + intToStr(len(args)))
+    }
+    var rargs: []int = []
+    if len(env) > 0 {
+        rargs = copyInts(&targs)
+    } else {
+        for tp in tps { append(mut &rargs, c.pg.mkTp(tp)) }
+    }
+    let ret = c.pg.mkInst(d, &rargs)
+    var sig = newSig(vname, SK_CTOR, fts, ret)
+    sig.tps = tps
+    sig.bind = bind
+    sig.variant = vr
+    return c.call(&sig, false, voidVal(false), &args, line, exp, &o)
+}
+
+fn (c: mut &Checker) orderInits(names: &[]str, inits: int, tname: str, line: int): []Arg {
+    var given: Map[str, int] = newMap()
+    let its = c.items(inits)
+    for it in its {
+        let n = c.nd(it).s
+        var known = false
+        for x in names {
+            if x == n { known = true }
+        }
+        if !known { c.err(c.line(it), tname + " has no field '" + n + "'") }
+        if given.has(&n) { c.err(c.line(it), "field '" + n + "' is given twice") }
+        given.put(n, c.nd(it).a)
+    }
+    for n in names {
+        if !given.has(&n) { c.err(line, "field '" + n + "' of " + tname + " needs a value") }
+    }
+    var order: []int = []
+    for it in its {
+        let n = c.nd(it).s
+        for i in 0..len(names) {
+            if names[i] == n {
+                append(mut &order, i)
+                break
+            }
+        }
+    }
+    c.initOrder = order
+    var out: []Arg = []
+    for n in names { append(mut &out, Arg{isVal: false, n: given.getOr(&n, -1), v: voidVal(false)}) }
+    return out
+}
+
+fn (c: mut &Checker) xLit(e: int, exp0: int): Val {
+    let n = c.nd(e)
+    var exp = exp0
+    let st = c.static(n.a)
+    if st.k != ST_DECL {
+        if st.k == ST_TYPE { c.err(n.line, c.tstr(st.t) + " cannot be built with {...}") }
+        c.err(n.line, "unknown type in a literal")
+    }
+    if st.dk == D_VARIANT {
+        let none: []Arg = []
+        return c.constructVariant(st, &none, n.line, exp, n.b)
+    }
+    if st.dk != sema.D_TYPE { c.err(n.line, c.declName(st) + " is not a record type") }
+    var d = st.di
+    var hasTargs = st.n > 2
+    if c.pg.types[d].form == sx.F_ALIAS {
+        let t = c.staticType(st, n.line)
+        if c.pg.tk(t) != sema.TK_INST { c.err(n.line, c.pg.types[d].name + " is not a record type") }
+        d = c.pg.ta(t)
+        hasTargs = false
+        if exp < 0 || c.pg.tk(exp) != sema.TK_INST || c.pg.ta(exp) != d { exp = t }
+    }
+    let dname = c.pg.types[d].name
+    if c.pg.types[d].form != sx.F_RECORD {
+        c.err(n.line, dname + " is not a record type" + (if c.pg.types[d].form == sx.F_CLOSED { ": build one of its variants" } else { "" }))
+    }
+    if c.pg.types[d].mod != c.cx.mod {
+        for f in c.pg.types[d].fields {
+            if !f.isPub {
+                c.err(n.line, "cannot build a " + dname + " here: field '" + f.name + "' is private to module " +
+                    c.pg.mods[c.pg.types[d].mod].name)
+            }
+        }
+    }
+    let tps = copyInts(&c.pg.types[d].tparams)
+    var bind: []int = []
+    if hasTargs {
+        let ta = c.items(st.targs)
+        if len(ta) != len(tps) {
+            c.err(n.line, dname + " takes " + intToStr(len(tps)) + " type arguments, not " + intToStr(len(ta)))
+        }
+        for i in 0..len(tps) {
+            append(mut &bind, tps[i])
+            append(mut &bind, c.resolve(ta[i], sema.P_TARG, n.line))
+        }
+    } else if exp >= 0 && c.pg.tk(exp) == sema.TK_INST && c.pg.ta(exp) == d {
+        for i in 0..len(tps) {
+            if i < c.pg.tn(exp) {
+                append(mut &bind, tps[i])
+                append(mut &bind, c.pg.ti(exp, i))
+            }
+        }
+    }
+    var names: []str = []
+    var fts: []int = []
+    for f in c.pg.types[d].fields {
+        append(mut &names, f.name)
+        append(mut &fts, f.ty)
+    }
+    let args = c.orderInits(&names, n.b, dname, n.line)
+    var rargs: []int = []
+    for tp in tps { append(mut &rargs, c.pg.mkTp(tp)) }
+    var sig = newSig(dname, SK_CTOR, fts, c.pg.mkInst(d, &rargs))
+    sig.tps = tps
+    sig.bind = bind
+    sig.variant = -1
+    var o = noOpts()
+    o.fnames = names
+    o.order = copyInts(&c.initOrder)
+    return c.call(&sig, false, voidVal(false), &args, n.line, exp, &o)
+}
+
+// SPEC 10 rule 1: an element type inferred from a value may not be a borrow or a slice.
+fn (c: mut &Checker) elemType(t: int, line: int): int {
+    let k = c.pg.tk(t)
+    if k == sema.TK_REF || k == sema.TK_SLICE || k == sema.TK_CLO {
+        c.err(line, "an array element cannot be a borrow, slice or closure (" + c.tstr(t) + "): they are second class")
+    }
+    return t
+}
+
+fn (c: mut &Checker) xArrlit(e: int, exp: int): Val {
+    let n = c.nd(e)
+    var et = if c.ek(exp) == sema.TK_ARR { c.pg.ta(exp) } else { -1 }
+    var vals: []Val = []
+    let items = c.items(n.a)
+    for i in 0..len(items) {
+        let it = items[i]
+        var v = c.expr(it, et)
+        if c.pg.tk(v.t) == sema.TK_REF { v = c.deref(v) }
+        if et == -1 { et = c.elemType(v.t, c.line(it)) }
+        if v.t != et { c.err(c.line(it), "array element is " + c.tstr(v.t) + ", not " + c.tstr(et)) }
+        var later: []int = []
+        for j in i + 1..len(items) { append(mut &later, items[j]) }
+        append(mut &vals, c.before(v, &later))
+    }
+    if et == -1 { c.err(n.line, "cannot infer the element type of [] here: it needs an expected type") }
+    if et == sema.T_VOID { c.err(n.line, "an array element needs a value") }
+    var cs: []str = []
+    for v in vals { append(mut &cs, c.consume(v, n.line)) }
+    let an = c.fresh("a")
+    let ct = c.T(et)
+    c.emit("obx_arr " + an + " = rt_arr_new(" + intToStr(len(cs)) + ", sizeof(" + ct + "));")
+    for i in 0..len(cs) {
+        let ct2 = c.T(et)
+        c.emit("((" + ct2 + "*)" + an + ".data)[" + intToStr(i) + "] = " + cs[i] + ";")
+    }
+    let at = c.pg.mkArr(et)
+    let id = c.newTmp(an, at)
+    var r = val(an, at, CAT_TMP)
+    r.tmp = id
+    r.root = tmpRoot(id)
+    r.mutable = true
+    return r
+}
+
+// ---- calls
+
+fn newSig(label: str, kind: int, params: []int, ret: int): Sig {
+    return Sig{label: label, kind: kind, params: params, ret: ret, tps: [], recv: sema.RM_NONE, fd: -1, c: "",
+        tpt: -1, bind: [], nown: 0, variant: -1, loc: false, name: ""}
+}
+
+fn noSig(): Sig { return newSig("", -1, [], -1) }
+
+type CallOpts = record {
+    targs: int          // a list of type nodes, or -1
+    alltargs: bool
+    op: bool
+    fnames: []str       // a record literal's field names (messages), or empty
+    order: []int        // evaluation order (source order of a literal), or empty
+    rast: int           // the receiver's AST, or -1
+}
+
+fn noOpts(): CallOpts { return CallOpts{targs: -1, alltargs: false, op: false, fnames: [], order: [], rast: -1} }
+
+fn (c: mut &Checker) fnSig(f: int, bind: []int): Sig {
+    let rm = c.pg.fns[f].recvMode
+    let recv = if rm == sema.RM_VAL || rm == sema.RM_REF || rm == sema.RM_MUT { rm } else { sema.RM_NONE }
+    var ps: []int = []
+    for i in 0..len(c.pg.fns[f].params) { append(mut &ps, c.pg.fns[f].params[i].ty) }
+    var s = newSig(c.pg.label(f), if c.pg.fns[f].isExtern { SK_EXTERN } else { SK_FN }, ps, c.pg.fns[f].ret)
+    s.tps = copyInts(&c.pg.fns[f].tps)
+    s.recv = recv
+    s.fd = f
+    s.bind = bind
+    let m = c.pg.fns[f].mod
+    let tl = c.pg.nd(m, c.pg.fns[f].node).b
+    s.nown = if tl >= 0 { c.pg.count(m, tl) } else { 0 }
+    return s
+}
+
+fn (c: mut &Checker) assocSig(t: int, name: str, line: int, quiet: bool): Sig {
+    if c.pg.tk(t) == sema.TK_TP {
+        let ms = c.pg.ifaceMembers(t, name)
+        for m in ms {
+            if m.mode == sx.M_NONE {
+                var s = newSig(c.tstr(t) + "." + name, SK_IASSOC, copyInts(&m.params), m.ret)
+                s.tpt = t
+                s.name = name
+                return s
+            }
+        }
+        if quiet { return noSig() }
+        c.err(line, c.tstr(t) + " has no associated function '" + name + "' in its constraints")
+    }
+    var f = -1
+    var bind: []int = []
+    if c.pg.isBare(t) {
+        f = c.pg.types[c.pg.ta(t)].methods.getOr(&name, -1)
+    } else {
+        f = c.pg.methodOf(t, name)
+        if f >= 0 { c.pg.unify(c.pg.fns[f].recvType, t, mut &bind, &c.pg.fns[f].tps) }
+    }
+    if f < 0 || c.pg.fns[f].recvMode != sema.RM_ASSOC {
+        if quiet { return noSig() }
+        if f >= 0 { c.err(line, c.pg.label(f) + " is a method: call it on a value") }
+        let tn = if c.pg.isBare(t) { c.pg.types[c.pg.ta(t)].name } else { c.tstr(t) }
+        c.err(line, tn + " has no associated function '" + name + "'")
+    }
+    c.visible(f, line)
+    return c.fnSig(f, bind)
+}
+
+fn (c: &Checker) visible(f: int, line: int) {
+    if !c.pg.fns[f].isPub && c.pg.fns[f].mod != c.cx.mod {
+        c.err(line, c.pg.label(f) + " is not public in module " + c.pg.mods[c.pg.fns[f].mod].name)
+    }
+}
+
+fn (c: mut &Checker) methodSig(t: int, name: str, line: int, quiet: bool): Sig {
+    let isTp = c.pg.tk(t) == sema.TK_TP
+    if name == "drop" && isTp && len(c.pg.ifaceMembers(t, name)) > 0 { c.err(line, "a drop method cannot be called directly") }
+    if isTp {
+        let ms = c.pg.ifaceMembers(t, name)
+        for m in ms {
+            if m.mode != sx.M_NONE {
+                let rp = if m.mode == sx.M_VAL { t } else { c.pg.mkRef(t, m.mode == sx.M_MUT) }
+                var ps: []int = [rp]
+                for p in m.params { append(mut &ps, p) }
+                var s = newSig(c.tstr(t) + "." + name, SK_IMETH, ps, m.ret)
+                s.recv = m.mode
+                s.tpt = t
+                s.name = name
+                return s
+            }
+        }
+        if quiet { return noSig() }
+        c.err(line, c.tstr(t) + " has no method '" + name + "' (its constraints do not provide it)")
+    }
+    let f = c.pg.methodOf(t, name)
+    if f < 0 || c.pg.fns[f].recvMode == sema.RM_ASSOC {
+        if quiet && f < 0 { return noSig() }
+        if f >= 0 { c.err(line, c.pg.label(f) + " is an associated function: call it as " + c.tstr(t) + "." + name + "(...)") }
+        c.err(line, c.tstr(t) + " has no method '" + name + "'")
+    }
+    if name == "drop" && c.pg.fns[f].ownerKind == sema.O_DECL && c.pg.types[c.pg.fns[f].owner].drop == f {
+        c.err(line, "a drop method cannot be called directly")
+    }
+    c.visible(f, line)
+    var bind: []int = []
+    c.pg.unify(c.pg.fns[f].recvType, t, mut &bind, &c.pg.fns[f].tps)
+    return c.fnSig(f, bind)
+}
+
+// SPEC 7.5: whether the borrow argument a (&p, mut &p, a borrow variable, or a receiver p) is
+// taken when the call is made: p is a variable with fields and array indexes (no slice, no call).
+fn (c: mut &Checker) late(a0: int): bool {
+    if a0 < 0 { return false }
+    var a = a0
+    if c.kind(a) == sx.N_BORROW { a = c.nd(a).a }
+    while c.kind(a) == sx.N_FIELDX || c.kind(a) == sx.N_INDEX {
+        if c.kind(a) == sx.N_INDEX {
+            let pt = c.placeType(c.nd(a).a)
+            if pt < 0 || c.pg.tk(pt) != sema.TK_ARR { return false }
+        }
+        a = c.nd(a).a
+    }
+    return c.kind(a) == sx.N_NAME && c.lookupVar(c.nd(a).s, true) >= 0
+}
+
+// Take a late borrow: its place must still be there; rule 3 then holds it.
+fn (c: mut &Checker) take(v: Val, m: int, cid: int, line: int) {
+    if v.root >= 0 && c.vars[v.root].moved {
+        c.err(line, "'" + c.vars[v.root].name + "' was moved and has no value here: a later argument moved it, and the " +
+            "borrow of it is taken when the call is made")
+    }
+    c.hold(v, m, cid, line)
+}
+
+fn bindSet(bind: mut &[]int, tp: int, t: int) {
+    var i = 0
+    while i < len(bind) {
+        if bind[i] == tp {
+            bind[i + 1] = t
+            return
+        }
+        i += 2
+    }
+    append(bind, tp)
+    append(bind, t)
+}
+
+type CArg = value record {
+    b: bool         // ref's 'b' (a borrow, a slice, a closure), else 'v' (a value)
+    v: Val
+}
+
+type Late = value record {
+    v: Val
+    m: bool
+}
+
+type Recheck = value record {
+    pos: int
+    v: Val
+}
+
+fn (c: mut &Checker) argNode(hasRecv: bool, args: &[]Arg, i: int): int {
+    if hasRecv {
+        if i == 0 { return -1 }
+        return if args[i - 1].isVal { -1 } else { args[i - 1].n }
+    }
+    return if args[i].isVal { -1 } else { args[i].n }
+}
+
+fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, line: int, exp: int, o: &CallOpts): Val {
+    let tps = copyInts(&sig.tps)
+    var bind = copyInts(&sig.bind)
+    if o.targs >= 0 {
+        let ta = c.items(o.targs)
+        var own: []int = []
+        let from = if o.alltargs { 0 } else { len(sig.tps) - sig.nown }
+        for i in from..len(sig.tps) { append(mut &own, sig.tps[i]) }
+        if len(ta) != len(own) {
+            c.err(line, sig.label + " takes " + intToStr(len(own)) + " type arguments, not " + intToStr(len(ta)))
+        }
+        for i in 0..len(own) { bindSet(mut &bind, own[i], c.resolve(ta[i], sema.P_TARG, line)) }
+    }
+    if exp >= 0 && exp != sema.T_VOID && c.pg.tk(sig.ret) != sema.TK_REF && c.hasTpIn(sig.ret, &tps) {
+        var trial = copyInts(&bind)
+        if c.pg.unify(sig.ret, exp, mut &trial, &tps) { bind = copyInts(&trial) }
+    }
+    let nall = len(args) + (if hasRecv { 1 } else { 0 })
+    if nall != len(sig.params) {
+        let n = len(sig.params) - (if hasRecv { 1 } else { 0 })
+        c.err(line, sig.label + " takes " + intToStr(n) + " arguments, not " + intToStr(len(args)))
+    }
+    var vals: []CArg = []
+    for i in 0..nall { append(mut &vals, CArg{b: false, v: voidVal(false)}) }
+    let cid = c.newCid()
+    let mark = len(c.cx.pending)
+    var lates: []Late = []
+    var order: []int = []
+    if len(o.order) > 0 {
+        order = copyInts(&o.order)
+    } else {
+        for i in 0..nall { append(mut &order, i) }
+    }
+    // SPEC 7: an argument's checks come before what a later argument does; a late borrow's are made
+    // in position and again at the call, in order, when a later argument may have changed its place.
+    var acts: []bool = []
+    for i in order { append(mut &acts, c.argActs(hasRecv, args, i, true)) }
+    var effs: []bool = []
+    for i in order { append(mut &effs, c.argActs(hasRecv, args, i, false)) }
+    var rechecks: []Recheck = []
+    var pend = false
+    for pos in 0..len(order) {
+        let i = order[pos]
+        let pt = sig.params[i]
+        let isrecv = hasRecv && i == 0
+        var what = if isrecv { "the receiver of " + sig.label } else {
+            "argument " + intToStr(i + (if hasRecv { 0 } else { 1 })) + " of " + sig.label }
+        if len(o.fnames) > 0 { what = "field '" + o.fnames[i] + "' of " + sig.label }
+        let pe = c.pg.subst(pt, &bind)
+        let an = c.argNode(hasRecv, args, i)
+        let ptk = c.pg.tk(pt)
+        var v = voidVal(false)
+        if isrecv {
+            v = recv
+        } else if an < 0 {
+            v = args[if hasRecv { i - 1 } else { i }].v
+        } else if c.kind(an) == sx.N_CLOSURE {
+            let save = replace(mut &c.calleeTps, copyInts(&tps))
+            v = c.expr(an, if ptk == sema.TK_CLO { pe } else { -1 })
+            c.calleeTps = save
+        } else {
+            var e2 = pe
+            if c.hasTpIn(pe, &tps) {
+                e2 = if c.pg.tk(pe) == sema.TK_SLICE { (if c.pg.tm(pe) { EXP_MUTSLICE } else { EXP_SLICE }) } else { -1 }
+            }
+            v = c.expr(an, e2)
+        }
+        let pm = c.pg.tm(pt)
+        if ptk == sema.TK_SLICE {
+            let sv = c.asSlice(v)
+            if sv.t < 0 {
+                c.err(line, what + " is " + c.tstr(c.pg.subst(pt, &bind)) + ", not " + c.tstr(v.t) +
+                    ": pass a slice or a borrow (" + (if pm { "mut &" } else { "&" }) + "x)")
+            }
+            if pm && !c.pg.tm(sv.t) { c.err(line, what + " needs a mut slice, not " + c.tstr(sv.t)) }
+            if pm { c.frozen(sv.root, FR_MUT, line) }
+            v = rvAt(sv.c, c.pg.mkSlice(c.pg.ta(sv.t), pm), sv.root, sv.path)
+            if !c.pg.unify(c.pg.ta(pt), c.pg.ta(v.t), mut &bind, &tps) {
+                c.err(line, what + " is " + c.tstr(c.pg.subst(pt, &bind)) + ", not " + c.tstr(v.t))
+            }
+            c.hold(v, hm(pm), cid, line)
+            vals[i] = CArg{b: true, v: v}
+        } else if ptk == sema.TK_REF {
+            if c.pg.tk(v.t) != sema.TK_REF && !isrecv {
+                c.err(line, what + " is " + c.tstr(c.pg.subst(pt, &bind)) + ", not " + c.tstr(v.t) +
+                    ": pass a borrow (" + (if pm { "mut &" } else { "&" }) + "x)")
+            }
+            if pm && c.pg.tk(v.t) == sema.TK_REF && !c.pg.tm(v.t) {
+                let nm = if v.root >= 0 { " ('" + c.vars[v.root].name + "' is a shared borrow)" } else { "" }
+                c.err(line, what + " needs a mut borrow, not " + c.tstr(v.t) + nm)
+            }
+            v = c.borrow(v, pm, line, isrecv)
+            if !c.pg.unify(c.pg.ta(pt), c.pg.ta(v.t), mut &bind, &tps) {
+                c.err(line, what + " is " + c.tstr(c.pg.subst(pt, &bind)) + ", not " + c.tstr(v.t))
+            }
+            if c.late(if isrecv { o.rast } else { an }) {
+                append(mut &lates, Late{v: v, m: pm})
+                if checks(v.c) { append(mut &rechecks, Recheck{pos: pos, v: v}) }
+            } else {
+                c.hold(v, hm(pm), cid, line)
+            }
+            vals[i] = CArg{b: true, v: v}
+        } else if ptk == sema.TK_CLO {
+            if c.pg.tk(v.t) == sema.TK_FN {
+                let ps = c.pg.targs(v.t)
+                v = c.coerce(v, c.pg.mkClo(&ps, c.pg.tb(v.t)), line, "value")
+            }
+            if c.pg.tk(v.t) != sema.TK_CLO || !c.pg.unify(pt, v.t, mut &bind, &tps) {
+                c.err(line, what + " is " + c.tstr(pe) + ", not " + c.tstr(v.t))
+            }
+            if v.caps >= 0 {     // rule 3: captures are held while the call runs
+                for k in 0..len(c.capl[v.caps]) {
+                    let cp = c.capl[v.caps][k]
+                    c.hold(rvAt("", sema.T_VOID, cp.v, ""), hm(cp.m), cid, line)
+                }
+            }
+            vals[i] = CArg{b: true, v: v}
+        } else {
+            if c.pg.tk(v.t) == sema.TK_REF { v = c.deref(v) }
+            if v.t == sema.T_VOID { c.err(line, what + " has no value") }
+            if !c.pg.unify(pt, v.t, mut &bind, &tps) {
+                c.err(line, what + " is " + c.tstr(c.pg.subst(pt, &bind)) + ", not " + c.tstr(v.t))
+            }
+            var later = false
+            for p in pos + 1..len(effs) {
+                if effs[p] { later = true }
+            }
+            if later { v = c.snapVal(v) }
+            if v.cat == CAT_PLACE && !c.isCopy(v.t) { c.hold(v, HM_MOVE, cid, line) }
+            vals[i] = CArg{b: false, v: v}
+        }
+        var rb = false
+        for r in rechecks {
+            if r.pos < pos { rb = true }
+        }
+        pend = pend || (effs[pos] && rb)
+        var actLater = false
+        for p in pos + 1..len(acts) {
+            if acts[p] { actLater = true }
+        }
+        if actLater || pend { vals[i].v = c.seq(vals[i].v) }
+    }
+    var last = -1
+    for pos in 0..len(order) {
+        if checks(vals[order[pos]].v.c) { last = pos }
+    }
+    for r in rechecks {         // the last check in the call's C text needs no statement
+        var later = false
+        for p in r.pos + 1..len(effs) {
+            if effs[p] { later = true }
+        }
+        if r.pos != last && later { c.emit("(void)(" + r.v.c + ");") }
+    }
+    for l in lates { c.take(l.v, hm(l.m), cid, line) }    // SPEC 7.5: taken now, after the arguments
+    var missing = newStrBuf()
+    var nm = 0
+    for tp in sig.tps {
+        if bindGet(&bind, tp) < 0 {
+            if nm > 0 { missing.add(", ") }
+            missing.add(c.pg.tparams[tp].name)
+            nm += 1
+        }
+    }
+    if nm > 0 {
+        c.err(line, "cannot infer the type argument " + missing.toStr() + " of " + sig.label +
+            "; give it explicitly or declare the result type")
+    }
+    if len(sig.tps) > 0 && distinct(&sig.tps) {
+        var ta: []int = []
+        for tp in sig.tps { append(mut &ta, bindGet(&bind, tp)) }
+        c.pg.checkTargs(&ta, &sig.tps, c.cx.mod, line)
+    }
+    var kept: []Pend = []
+    for k in 0..len(c.cx.pending) {
+        let p = c.cx.pending[k]
+        if k < mark || p.m != HM_MOVE { append(mut &kept, p) }
+    }
+    c.cx.pending = kept
+    var hasStr = false
+    for x in vals {
+        if x.v.t == sema.T_STR { hasStr = true }
+    }
+    if sig.kind == SK_EXTERN && hasStr {
+        for k in 0..len(vals) { vals[k].v = c.seq(vals[k].v) }
+    }
+    var cs: []str = []
+    for x in vals {
+        if x.b || sig.kind == SK_INTR || sig.kind == SK_EXTERN { append(mut &cs, x.v.c) } else { append(mut &cs, c.consume(x.v, line)) }
+    }
+    c.cutPending(mark)
+    let ret = c.pg.subst(sig.ret, &bind)
+    var text = ""
+    if sig.kind == SK_CTOR {
+        return c.holdtmp(c.build(ret, sig.variant, &cs), ret)
+    } else if sig.kind == SK_FN {
+        var ta: []int = []
+        for tp in sig.tps { append(mut &ta, bindGet(&bind, tp)) }
+        var h = mkHole(H_FN, c.tuple(&ta), "")
+        h.f = sig.fd
+        text = c.hole(h) + "(" + joinStrs(&cs, 0) + ")"
+    } else if sig.kind == SK_IMETH {
+        var b = newStrBuf()
+        for k in 1..len(cs) {
+            if k > 1 { b.addByte(3) }
+            b.add(cs[k])
+        }
+        text = c.hole(Hole{k: H_IMETH, t: sig.tpt, f: sig.recv, s: sig.name, r: cs[0], args: b.toStr(), nargs: len(cs) - 1})
+    } else if sig.kind == SK_IASSOC {
+        text = c.hole(mkHole(H_IASSOC, sig.tpt, sig.name)) + "(" + joinStrs(&cs, 0) + ")"
+    } else if sig.kind == SK_FNVAL {
+        text = "(" + sig.c + ")(" + joinStrs(&cs, 0) + ")"
+    } else if sig.kind == SK_CLO {
+        var ps: []int = [sema.T_PTR]
+        for p in sig.params { append(mut &ps, p) }
+        let ft = c.T(c.pg.mkFn(&ps, sig.ret))
+        var all: []str = ["(" + sig.c + ").env"]
+        for x in cs { append(mut &all, x) }
+        text = "((" + ft + ")(" + sig.c + ").fn)(" + joinStrs(&all, 0) + ")"
+    } else if sig.kind == SK_INTR {
+        if sig.loc { append(mut &cs, c.W(line)) }
+        text = sig.c + "(" + joinStrs(&cs, 0) + ")"
+    } else {
+        var cs2: []str = []
+        for k in 0..len(vals) {
+            append(mut &cs2, if vals[k].v.t == sema.T_STR { "rt_cstr(" + cs[k] + ", " + c.W(line) + ")" } else { cs[k] })
+        }
+        text = "x_" + c.pg.fns[sig.fd].cname + "(" + joinStrs(&cs2, 0) + ")"
+        if ret == sema.T_STR { text = "rt_str_from_c((void*)" + text + ")" }
+        if hasStr {             // free the NUL-terminated copies after the call
+            if ret != sema.T_VOID && ret != sema.T_NEVER {
+                let v = c.holdtmp(text, ret)
+                c.emit("rt_cfree();")
+                return v
+            }
+            c.emit(text + ";")
+            c.emit("rt_cfree();")
+            return voidVal(ret == sema.T_NEVER)
+        }
+    }
+    if ret == sema.T_VOID || ret == sema.T_NEVER {
+        c.emit(text + ";")
+        return voidVal(ret == sema.T_NEVER)
+    }
+    if c.pg.isBorrow(ret) {
+        var bi = -1
+        var nb = 0
+        for k in 0..len(sig.params) {
+            if c.pg.isBorrow(sig.params[k]) {
+                if nb == 0 { bi = k }
+                nb += 1
+            }
+        }
+        let n = c.fresh("b")
+        if c.pg.tk(ret) == sema.TK_REF {
+            let ct = c.T(c.pg.ta(ret))
+            c.emit(ct + "* " + n + " = " + text + ";")
+        } else {
+            c.emit("obx_slice " + n + " = " + text + ";")
+        }
+        if nb == 1 { return rvAt(n, ret, vals[bi].v.root, pathAdd(vals[bi].v.path, "*")) }
+        return rvAt(n, ret, -1, "")
+    }
+    return c.holdtmp(text, ret)
+}
+
+fn distinct(xs: &[]int): bool {
+    for i in 0..len(xs) {
+        for j in i + 1..len(xs) {
+            if xs[i] == xs[j] { return false }
+        }
+    }
+    return true
+}
+
+fn joinStrs(xs: &[]str, from: int): str {
+    var b = newStrBuf()
+    for i in from..len(xs) {
+        if i > from { b.add(", ") }
+        b.add(xs[i])
+    }
+    return b.toStr()
+}
+
+// ref's acts/effects on an argument (a value already evaluated has neither).
+fn (c: mut &Checker) argActs(hasRecv: bool, args: &[]Arg, i: int, traps: bool): bool {
+    let n = c.argNode(hasRecv, args, i)
+    return n >= 0 && c.effects(n, traps)
+}
+
+fn (c: mut &Checker) convert(t: int, e: int): Val {
+    let n = c.nd(e)
+    if c.pg.tk(t) != sema.TK_PRIM || t == sema.T_BOOL || t == sema.T_STR || t == sema.T_PTR {
+        c.err(n.line, c.tstr(t) + " cannot be called as a conversion")
+    }
+    if c.count(n.b) != 1 { c.err(n.line, "the conversion " + sema.PRIM_NAMES[t] + "(x) takes one argument") }
+    let v = c.rd(c.expr(c.item(n.b, 0), -1))
+    let s = v.t
+    let d = sema.PRIM_NAMES[t]
+    let W = c.W(n.line)
+    if !(s < sema.NINTS || s == sema.T_FLOAT) { c.err(n.line, "cannot convert " + c.tstr(s) + " to " + d) }
+    if s == t { return v }
+    if t == sema.T_FLOAT { return rv("((double)" + v.c + ")", t) }
+    if s == sema.T_FLOAT { return rv("rt_cvf_" + d + "(" + v.c + ", " + W + ")", t) }
+    if s == sema.T_U128 { return rv("rt_cvu_" + d + "(" + v.c + ", " + W + ")", t) }
+    return rv("rt_cvs_" + d + "((__int128)" + v.c + ", " + W + ")", t)
+}
+
+// The intrinsics (ref's INTRINSICS): their index, or -1.
+const INTR_NAMES: []str = ["strByte", "strSlice", "strFromBytes", "strToBytes", "intToStr", "i128ToStr", "u128ToStr",
+    "u64ToStr", "floatToStr", "parseFloat", "writeFd", "readFile", "args", "getenv", "strFromC"]
+const INTR_C: []str = ["rt_str_byte", "rt_str_sub", "rt_str_from_bytes", "rt_str_to_bytes", "rt_int_to_str",
+    "rt_i128_to_str", "rt_u128_to_str", "rt_u64_to_str", "rt_float_to_str", "rt_parse_float", "rt_write_fd",
+    "rt_read_file", "rt_args", "rt_getenv", "rt_str_from_c"]
+
+fn intrinsic(name: str): int {
+    for i in 0..len(INTR_NAMES) {
+        if INTR_NAMES[i] == name { return i }
+    }
+    return -1
+}
+
+fn (c: mut &Checker) intrSig(i: int): Sig {
+    let S = sema.T_STR
+    let I = sema.T_INT
+    var ps: []int = []
+    var ret = S
+    match i {
+        0 { ps = [S, I]; ret = sema.T_BYTE }
+        1 { ps = [S, I, I] }
+        2 { ps = [c.pg.mkSlice(sema.T_BYTE, false)] }
+        3 { ps = [S]; ret = c.pg.mkArr(sema.T_BYTE) }
+        4 { ps = [I] }
+        5 { ps = [sema.T_I128] }
+        6 { ps = [sema.T_U128] }
+        7 { ps = [sema.T_U64] }
+        8 { ps = [sema.T_FLOAT] }
+        9 { ps = [S, c.pg.mkRef(sema.T_FLOAT, true)]; ret = sema.T_BOOL }
+        10 { ps = [I, S]; ret = I }
+        11 { ps = [S, c.pg.mkRef(S, true)]; ret = I }
+        12 { ret = c.pg.mkArr(S) }
+        13 { ps = [S, c.pg.mkRef(S, true)]; ret = sema.T_BOOL }
+        else { ps = [sema.T_PTR] }
+    }
+    var s = newSig(INTR_NAMES[i], SK_INTR, ps, ret)
+    s.c = INTR_C[i]
+    s.loc = i <= 1
+    return s
+}
+
+fn (c: mut &Checker) callArgs(e: int): []Arg {
+    var out: []Arg = []
+    let l = c.nd(e).b
+    for i in 0..c.count(l) { append(mut &out, Arg{isVal: false, n: c.item(l, i), v: voidVal(false)}) }
+    return out
+}
+
+fn (c: mut &Checker) xCall(e: int, exp: int): Val {
+    let n = c.nd(e)
+    var f = n.a
+    let args = c.callArgs(e)
+    if c.kind(f) == sx.N_NAME && c.lookupVar(c.nd(f).s, true) < 0 {
+        let fname = c.nd(f).s
+        if isBuiltin(fname) && (fname != "isNull" || c.pg.lookup(c.cx.mod, fname).k < 0) {
+            let mark = len(c.cx.pending)
+            let r = c.builtin(fname, e, exp)
+            c.cutPending(mark)
+            return r
+        }
+        let ii = intrinsic(fname)
+        if ii >= 0 && c.pg.lookup(c.cx.mod, fname).k < 0 {
+            let sig = c.intrSig(ii)
+            let o = noOpts()
+            return c.call(&sig, false, voidVal(false), &args, n.line, exp, &o)
+        }
+    }
+    var targs = -1
+    if c.kind(f) == sx.N_INDEX && c.kind(c.nd(f).a) == sx.N_FIELDX && c.staticNs(c.nd(c.nd(f).a).a).k == ST_NONE &&
+        c.static(f).k == ST_NONE && c.allTypeish(c.nd(f).b) {
+        targs = c.texprs(c.nd(f).b)
+        f = c.nd(f).a
+    }
+    if c.kind(f) == sx.N_FIELDX {
+        let fn1 = c.nd(f)
+        let og = c.static(fn1.a)
+        if og.k == ST_DECL && og.dk == sema.D_GLOBAL && c.pg.globals[og.di].isOnce { return c.onceCall(og.di, fn1.s, e) }
+        let st = c.staticNs(fn1.a)
+        let vst = if st.k != ST_NONE && st.k != ST_MODULE { c.static(f) } else { NOST }
+        if vst.k == ST_DECL && vst.dk == D_VARIANT { return c.constructVariant(vst, &args, n.line, exp, -1) }
+        if st.k != ST_NONE && st.k != ST_MODULE {
+            let t = c.staticType(st, fn1.line)
+            if t < 0 {
+                let nm = if st.k == ST_TYPE { "?" } else { c.declName(st) }
+                c.err(fn1.line, nm + " has no associated function " + fn1.s)
+            }
+            let sig = c.assocSig(t, fn1.s, n.line, false)
+            let o = noOpts()
+            return c.call(&sig, false, voidVal(false), &args, n.line, exp, &o)
+        }
+        if st.k == ST_NONE {
+            let recv = c.expr(fn1.a, -1)
+            let base = if c.pg.tk(recv.t) == sema.TK_REF { c.pg.ta(recv.t) } else { recv.t }
+            let sig = c.methodSig(base, fn1.s, n.line, c.pg.tk(base) == sema.TK_INST)
+            if sig.kind < 0 {
+                let fv = c.fieldOf(recv, fn1.s, n.line)
+                return c.callValue(fv, e, exp)
+            }
+            var o = noOpts()
+            o.targs = targs
+            o.rast = fn1.a
+            return c.call(&sig, true, recv, &args, n.line, exp, &o)
+        }
+    }
+    let st = c.static(f)
+    if st.k != ST_NONE {
+        if st.k == ST_TYPE { return c.convert(st.t, e) }
+        if st.k == ST_MODULE { c.err(n.line, c.pg.mods[st.m].name + " is a module") }
+        if st.dk == D_VARIANT { return c.constructVariant(st, &args, n.line, exp, -1) }
+        if st.dk == sema.D_FN {
+            let sig = c.fnSig(st.di, [])
+            var o = noOpts()
+            o.targs = if st.n > 2 { st.targs } else { -1 }
+            o.alltargs = true
+            return c.call(&sig, false, voidVal(false), &args, n.line, exp, &o)
+        }
+        if st.dk == sema.D_TYPE {
+            if c.pg.types[st.di].form == sx.F_ALIAS {
+                let t = c.staticType(st, n.line)
+                if c.pg.tk(t) == sema.TK_PRIM { return c.convert(t, e) }
+            }
+            let dn = c.pg.types[st.di].name
+            c.err(n.line, dn + " is a type: build it with " + dn + "{...}")
+        }
+        if st.dk == sema.D_GLOBAL { return c.callValue(c.staticValue(st, f, -1), e, exp) }
+        c.err(n.line, c.declName(st) + " is not a function")
+    }
+    return c.callValue(c.expr(f, -1), e, exp)
+}
+
+fn (c: mut &Checker) allTypeish(l: int): bool {
+    for i in 0..c.count(l) {
+        if !c.typeish(c.item(l, i)) { return false }
+    }
+    return true
+}
+
+// SPEC 5.2: set(v) once, get() a borrow valid everywhere, isSet().
+fn (c: mut &Checker) onceCall(g: int, name: str, e: int): Val {
+    let n = c.nd(e)
+    let W = c.W(n.line)
+    let gname = c.pg.globals[g].name
+    let cn = c.pg.globals[g].cname
+    let gt = c.pg.globals[g].ty
+    let msg0 = cstr("set-once global " + gname)
+    let msg = msg0[0..len(msg0) - 1]
+    let na = c.count(n.b)
+    if (name != "set" && name != "get" && name != "isSet") || na != (if name == "set" { 1 } else { 0 }) {
+        c.err(n.line, "a set-once global has set(v), get() and isSet(), not " + name + " with " + intToStr(na) + " arguments")
+    }
+    if name == "isSet" { return rv("(" + cn + "_set == 1)", sema.T_BOOL) }
+    if name == "get" {
+        c.emit("if (" + cn + "_set != 1) rt_trap(12, " + cn + "_set ? " + msg + " is dropped\" : " + msg + " is not set\", " + W + ");")
+        return rvAt("(&" + cn + ")", c.pg.mkRef(gt, false), c.staticVar(sema.D_GLOBAL, g), "")
+    }
+    let v = c.seq(c.coerce(c.expr(c.item(n.b, 0), gt), gt, n.line, "the value of " + gname))
+    let cc = c.consume(v, n.line)
+    c.emit("if (" + cn + "_set) rt_trap(12, " + cn + "_set == 2 ? " + msg + " is dropped\" : " + msg + " is set twice\", " + W + ");")
+    c.emit(cn + " = " + cc + "; " + cn + "_set = 1;")
+    return voidVal(false)
+}
+
+// Whether x (in x.m[...]) can be a type argument rather than an index.
+fn (c: mut &Checker) typeish(x: int): bool {
+    let k = c.kind(x)
+    if k == sx.N_TARG { return true }
+    if k == sx.N_BORROW || k == sx.N_INDEX { return c.typeish(c.nd(x).a) }
+    if k != sx.N_NAME && k != sx.N_FIELDX { return false }
+    let st = c.staticNs(x)
+    return st.k != ST_NONE && (st.k == ST_TYPE || (st.k == ST_DECL && st.dk == sema.D_TYPE))
+}
+
+fn (c: mut &Checker) callValue(fv0: Val, e: int, exp: int): Val {
+    var fv = c.rd(fv0)
+    let k = c.pg.tk(fv.t)
+    if k != sema.TK_FN && k != sema.TK_CLO { c.err(c.line(e), "cannot call a " + c.tstr(fv.t)) }
+    let al = c.nd(e).b
+    fv = c.before(fv, &c.items(al))
+    let isFn = k == sema.TK_FN
+    var sig = newSig(if isFn { "function value" } else { "closure" }, if isFn { SK_FNVAL } else { SK_CLO }, c.pg.targs(fv.t), c.pg.tb(fv.t))
+    sig.c = fv.c
+    let args = c.callArgs(e)
+    let o = noOpts()
+    return c.call(&sig, false, voidVal(false), &args, c.line(e), exp, &o)
+}
+
+// ---- built-in functions
+
+fn (c: mut &Checker) builtin(name: str, e: int, exp: int): Val {
+    return match name {
+        "len" { c.bLen(e) }
+        "isNull" { c.bIsNull(e) }
+        "append" { c.bAppend(e) }
+        "pop" { c.bPop(e) }
+        "swap" { c.bSwap(e) }
+        "replace" { c.bReplace(e) }
+        "move" { c.bMove(e) }
+        "array" { c.bArray(e, exp) }
+        "panic" { c.bPanic(e) }
+        "assert" { c.bAssert(e) }
+        else { c.bExit(e) }
+    }
+}
+
+fn (c: mut &Checker) fname(e: int): str { return c.nd(c.nd(e).a).s }
+
+fn (c: mut &Checker) nargs(e: int, n: int) {
+    let k = c.count(c.nd(e).b)
+    if k != n {
+        c.err(c.line(e), c.fname(e) + " takes " + intToStr(n) + " argument" + (if n != 1 { "s" } else { "" }) + ", not " +
+            intToStr(k))
+    }
+}
+
+fn (c: mut &Checker) arg(e: int, i: int): int { return c.item(c.nd(e).b, i) }
+
+fn (c: mut &Checker) arrArg(e: int, m: bool, slices: bool): Val {
+    let line = c.line(e)
+    var v = c.expr(c.arg(e, 0), if slices { (if m { EXP_MUTSLICE } else { EXP_SLICE }) } else { -1 })
+    if slices && c.pg.tk(v.t) != sema.TK_SLICE {
+        var s = rv("", -1)
+        if c.pg.tk(v.t) == sema.TK_REF && (c.pg.tm(v.t) || !m) { s = c.asSlice(v) }
+        if s.t < 0 {
+            c.err(line, c.fname(e) + " needs a mut slice or mut &array as its first argument, not " + c.tstr(v.t))
+        }
+        v = s
+    }
+    if slices {
+        if m && !c.pg.tm(v.t) { c.err(line, c.fname(e) + " needs a mut slice, not " + c.tstr(v.t)) }
+        v = c.borrow(v, m, line, false)
+        c.hold(v, hm(m), c.newCid(), line)
+        return v
+    }
+    if c.pg.tk(v.t) != sema.TK_REF || (m && !c.pg.tm(v.t)) {
+        c.err(line, c.fname(e) + " needs " + (if m { "mut &" } else { "&" }) + "array as its first argument, not " + c.tstr(v.t))
+    }
+    if c.pg.tk(c.pg.ta(v.t)) != sema.TK_ARR { c.err(line, c.fname(e) + " needs an array, not " + c.tstr(c.pg.ta(v.t))) }
+    return c.builtinBorrow(v, m, line, if c.count(c.nd(e).b) > 1 { c.arg(e, 0) } else { -1 })
+}
+
+fn (c: mut &Checker) builtinBorrow(v0: Val, m: bool, line: int, ast: int): Val {
+    var v = c.borrow(v0, m, line, false)
+    v.late = c.late(ast)        // append and replace: taken after the value (SPEC 7.5)
+    if !v.late { c.hold(v, hm(m), c.newCid(), line) }
+    return v
+}
+
+fn (c: mut &Checker) bLen(e: int): Val {
+    c.nargs(e, 1)
+    let v = c.deref(c.expr(c.arg(e, 0), -1))
+    if v.t == sema.T_STR { return rv("((int64_t)(" + v.c + ").len)", sema.T_INT) }
+    let k = c.pg.tk(v.t)
+    if k != sema.TK_SLICE && k != sema.TK_ARR {
+        c.err(c.line(e), "len needs an array, a slice or a str, not " + c.tstr(v.t))
+    }
+    return rv("(" + v.c + ").len", sema.T_INT)
+}
+
+fn (c: mut &Checker) bIsNull(e: int): Val {
+    c.nargs(e, 1)
+    let v = c.rd(c.expr(c.arg(e, 0), -1))
+    if v.t != sema.T_PTR { c.err(c.line(e), "isNull needs a ptr, not " + c.tstr(v.t)) }
+    return rv("(" + v.c + " == 0)", sema.T_BOOL)
+}
+
+fn (c: mut &Checker) bAppend(e: int): Val {
+    c.nargs(e, 2)
+    let line = c.line(e)
+    var a = c.arrArg(e, true, false)
+    let et = c.pg.ta(c.pg.ta(a.t))
+    a = c.before1(a, c.arg(e, 1))
+    var v = c.expr(c.arg(e, 1), et)
+    v = c.coerce(v, et, line, "the appended value")
+    if a.late { c.take(a, HM_MUT, c.newCid(), line) }
+    let cc = c.consume(v, line)
+    let n = c.fresh("ap")
+    let ct = c.T(et)
+    c.emit(ct + " " + n + " = " + cc + ";")
+    let ct2 = c.T(et)
+    let ct3 = c.T(et)
+    c.emit("*(" + ct2 + "*)rt_arr_push(" + a.c + ", sizeof(" + ct3 + ")) = " + n + ";")
+    return voidVal(false)
+}
+
+fn (c: mut &Checker) bPop(e: int): Val {
+    c.nargs(e, 1)
+    let a = c.arrArg(e, true, false)
+    let et = c.pg.ta(c.pg.ta(a.t))
+    let ct = c.T(et)
+    let ct2 = c.T(et)
+    return c.holdtmp("*(" + ct + "*)rt_arr_pop(" + a.c + ", sizeof(" + ct2 + "), " + c.W(c.line(e)) + ")", et)
+}
+
+fn (c: mut &Checker) bSwap(e: int): Val {
+    c.nargs(e, 3)
+    let line = c.line(e)
+    var a = c.arrArg(e, true, true)
+    if c.acts(c.arg(e, 1)) || c.acts(c.arg(e, 2)) { a = c.seq(a) }
+    let i = c.before1(c.rd(c.expr(c.arg(e, 1), sema.T_INT)), c.arg(e, 2))
+    let j = c.rd(c.expr(c.arg(e, 2), sema.T_INT))
+    if i.t != sema.T_INT || j.t != sema.T_INT { c.err(line, "swap needs int indexes") }
+    let et = c.pg.ta(a.t)
+    let ct = c.T(et)
+    c.emit("rt_swap(" + a.c + ", " + i.c + ", " + j.c + ", sizeof(" + ct + "), " + c.W(line) + ");")
+    return voidVal(false)
+}
+
+fn (c: mut &Checker) bReplace(e: int): Val {
+    c.nargs(e, 2)
+    let line = c.line(e)
+    var p = c.expr(c.arg(e, 0), -1)
+    if c.pg.tk(p.t) != sema.TK_REF || !c.pg.tm(p.t) {
+        c.err(line, "replace needs mut &place as its first argument, not " + c.tstr(p.t))
+    }
+    c.selfInDrop(p, line)
+    p = c.builtinBorrow(p, true, line, c.arg(e, 0))
+    let t = c.pg.ta(p.t)
+    p = c.before1(p, c.arg(e, 1))
+    var v = c.coerce(c.expr(c.arg(e, 1), t), t, line, "the new value")
+    if checks(p.c) { v = c.seq(v) }         // the value's checks, then the place's again
+    if p.late { c.take(p, HM_MUT, c.newCid(), line) }
+    let cc = c.consume(v, line)
+    let n = c.fresh("old")
+    let ct = c.T(t)
+    c.emit(ct + " " + n + " = *" + p.c + ";")
+    c.emit("*" + p.c + " = " + cc + ";")
+    if c.pod(t) { return rv(n, t) }
+    let id = c.newTmp(n, t)
+    var r = val(n, t, CAT_TMP)
+    r.tmp = id
+    r.root = tmpRoot(id)
+    r.mutable = true
+    return r
+}
+
+fn (c: mut &Checker) bMove(e: int): Val {
+    c.nargs(e, 1)
+    let line = c.line(e)
+    let a = c.arg(e, 0)
+    if c.kind(a) != sx.N_NAME || c.lookupVar(c.nd(a).s, true) < 0 { c.err(line, "move needs a local variable") }
+    let v = c.expr(a, -1)
+    if c.pg.tk(v.t) == sema.TK_REF { c.err(line, "cannot move the borrow '" + c.nd(a).s + "'") }
+    let cc = c.consume(v, line)
+    return c.holdtmp(cc, v.t)
+}
+
+fn (c: mut &Checker) bArray(e: int, exp: int): Val {
+    c.nargs(e, 2)
+    let line = c.line(e)
+    var n = c.rd(c.expr(c.arg(e, 0), sema.T_INT))
+    if n.t != sema.T_INT { c.err(line, "array needs an int length") }
+    n = c.before1(n, c.arg(e, 1))
+    let et = if c.ek(exp) == sema.TK_ARR { c.pg.ta(exp) } else { -1 }
+    let v = c.rd(c.expr(c.arg(e, 1), et))
+    c.elemType(v.t, c.line(c.arg(e, 1)))
+    if !c.isCopy(v.t) { c.err(line, "array needs a copy value, and " + c.tstr(v.t) + " is not a copy type") }
+    let vn = c.fresh("fill")
+    let an = c.fresh("a")
+    let i = c.fresh("i")
+    let ct = c.T(v.t)
+    let cc = c.consume(v, line)
+    c.emit(ct + " " + vn + " = " + cc + ";")
+    let ct2 = c.T(v.t)
+    c.emit("obx_arr " + an + " = rt_arr_fill(" + n.c + ", sizeof(" + ct2 + "), " + c.W(line) + ");")
+    let ct3 = c.T(v.t)
+    let d = c.dup(vn, v.t)
+    c.emit("for (int64_t " + i + " = 0; " + i + " < " + an + ".len; " + i + "++) ((" + ct3 + "*)" + an + ".data)[" + i +
+        "] = " + d + ";")
+    c.dropc(vn, v.t)
+    let at = c.pg.mkArr(v.t)
+    let id = c.newTmp(an, at)
+    var r = val(an, at, CAT_TMP)
+    r.tmp = id
+    r.root = tmpRoot(id)
+    r.mutable = true
+    return r
+}
+
+fn (c: mut &Checker) bPanic(e: int): Val {
+    c.nargs(e, 1)
+    let v = c.rd(c.expr(c.arg(e, 0), sema.T_STR))
+    if v.t != sema.T_STR { c.err(c.line(e), "panic needs a str, not " + c.tstr(v.t)) }
+    c.emit("rt_panic(" + v.c + ", " + c.W(c.line(e)) + ");")
+    return voidVal(true)
+}
+
+fn (c: mut &Checker) bAssert(e: int): Val {
+    c.nargs(e, 1)
+    let v = c.rd(c.expr(c.arg(e, 0), sema.T_BOOL))
+    if v.t != sema.T_BOOL { c.err(c.line(e), "assert needs a bool, not " + c.tstr(v.t)) }
+    let h = c.hole(mkHole(H_STR, -1, "assertion failed"))
+    c.emit("if (!(" + v.c + ")) rt_panic(" + h + ", " + c.W(c.line(e)) + ");")
+    return voidVal(false)
+}
+
+fn (c: mut &Checker) bExit(e: int): Val {
+    c.nargs(e, 1)
+    let v = c.rd(c.expr(c.arg(e, 0), sema.T_INT))
+    if v.t != sema.T_INT { c.err(c.line(e), "exit needs an int, not " + c.tstr(v.t)) }
+    c.emit("rt_exit(" + v.c + ");")
+    return voidVal(true)
+}
+
+// ---- functions and globals
+
+fn (c: mut &Checker) startFn(f: int, label: str, ret: int, env: []int, mod: int) {
+    c.cx = newCtx(f, label, ret, env, mod, false)
+    c.holes = []
+    c.lifted = []
+    c.outers = []
+    c.calleeTps = []
+    c.mxs = []
+}
+
+pub fn (c: mut &Checker) checkFn(f: int) {
+    let m = c.pg.fns[f].mod
+    c.startFn(f, c.pg.label(f), c.pg.fns[f].ret, copyInts(&c.pg.fns[f].tps), m)
+    var vs: []int = []
+    let bp = c.pg.fns[f].bparam
+    for i in 0..len(c.pg.fns[f].params) {
+        let p = c.pg.fns[f].params[i]
+        let v = c.newVar(p.name, "p_" + p.name, p.ty, p.isVar, VK_PARAM, p.line)
+        append(mut &vs, v)
+        if p.name == bp { c.cx.bvar = v }
+    }
+    append(mut &c.cx.scopes, Scope{vars: vs, freezes: []})
+    let line = c.pg.fns[f].line
+    if c.pg.fns[f].name == "main" && c.pg.fns[f].ownerKind == sema.O_NONE && m == c.pg.main {
+        if len(c.pg.fns[f].params) > 0 || c.pg.fns[f].ret != sema.T_VOID || len(c.pg.fns[f].tps) > 0 {
+            c.err(line, "main takes no parameters and returns nothing")
+        }
+    }
+    c.block(c.pg.nd(m, c.pg.fns[f].node).e, false, true)
+    if !c.cx.dead {
+        let ret = c.pg.fns[f].ret
+        if ret == sema.T_NEVER {
+            c.err(line, c.cx.label + " returns never, but it may reach its end: every path must end in a call to a never " +
+                "function or a loop without break")
+        }
+        if ret != sema.T_VOID { c.err(line, c.cx.label + " may reach its end without a return") }
+        c.exitDrops(false)
+    }
+    c.tmpls[f] = Tmpl{done: true, lines: replace(mut &c.cx.lines, []), holes: replace(mut &c.holes, []),
+        lifted: replace(mut &c.lifted, [])}
+}
+
+pub fn (c: mut &Checker) checkAll() {
+    for m in 0..len(c.pg.mods) {
+        let fs = copyInts(&c.pg.mods[m].fns)
+        for f in fs {
+            if !c.pg.fns[f].isExtern { c.checkFn(f) }
+        }
+        var names: []str = []
+        for n in c.pg.mods[m].scopeNames { append(mut &names, n) }
+        for n in names {
+            let s = c.pg.mods[m].scope.getOr(&n, sema.Sym{k: -1, i: -1})
+            if s.k == sema.D_GLOBAL {
+                c.globalInit(sema.D_GLOBAL, s.i)
+            } else if s.k == sema.D_CONST && c.pg.constValue(s.i).kind == sema.CK_TABLE {
+                c.globalInit(sema.D_CONST, s.i)
+            }
+        }
+    }
+}
+
+fn (c: mut &Checker) globalInit(dk: int, g: int) {
+    let isG = dk == sema.D_GLOBAL
+    let m = if isG { c.pg.globals[g].mod } else { c.pg.consts[g].mod }
+    let name = if isG { c.pg.globals[g].name } else { c.pg.consts[g].name }
+    let node = if isG { c.pg.globals[g].node } else { c.pg.consts[g].node }
+    let t = if isG { c.pg.globals[g].ty } else { c.pg.consts[g].table }
+    c.startFn(-1, "<global>", sema.T_VOID, [], m)
+    let n = c.pg.nd(m, node)
+    let e = n.b
+    var r = GInit{has: true, isOnce: false, table: false, items: [], c: "", holes: []}
+    c.pg.gwrap = "the initializer of " + (if isG { "global" } else { "const" }) + " " + name + " must be constant: "
+    if isG && n.flags & sx.ONCE != 0 {
+        r.isOnce = true
+    } else if c.pg.tk(t) == sema.TK_ARR {
+        if c.kind(e) != sx.N_ARRLIT { c.err(c.line(e), "a constant table is an array literal") }
+        r.table = true
+        let its = c.items(c.nd(e).a)
+        for x in its { append(mut &r.items, c.constInit(x, c.pg.ta(t))) }
+    } else {
+        r.c = c.constInit(e, t)
+    }
+    c.pg.gwrap = ""
+    r.holes = replace(mut &c.holes, [])
+    if isG { c.ginits[g] = r } else { c.cinits[g] = r }
+}
+
+fn (c: mut &Checker) constInit(e: int, t: int): str {
+    let line = c.line(e)
+    if c.pg.tk(t) == sema.TK_PRIM {
+        let v = c.pg.constAs(c.pg.fold(e, c.cx.mod, t), t, c.cx.mod, line)
+        if t == sema.T_STR { return c.hole(mkHole(H_GSTR, -1, v.s)) }
+        if t == sema.T_BOOL { return if v.b { "true" } else { "false" } }
+        if t == sema.T_FLOAT { return num.pyFloatRepr(v.f) }
+        return c.cint(v.i, t)
+    }
+    if c.pg.tk(t) != sema.TK_INST { c.err(line, "not a constant") }
+    let d = c.pg.ta(t)
+    let env = c.pg.declEnv(t)
+    let k = c.kind(e)
+    let form = c.pg.types[d].form
+    if k == sx.N_LIT && form == sx.F_RECORD {
+        var names: []str = []
+        for f in c.pg.types[d].fields { append(mut &names, f.name) }
+        let args = c.orderInits(&names, c.nd(e).b, c.pg.types[d].name, line)
+        var b = newStrBuf()
+        b.add("{")
+        for i in 0..len(names) {
+            let ft = c.pg.subst(c.pg.types[d].fields[i].ty, &env)
+            let cc = c.constInit(args[i].n, ft)
+            if i > 0 { b.add(", ") }
+            b.add(".f_" + names[i] + " = " + cc)
+        }
+        b.add("}")
+        return b.toStr()
+    }
+    if form == sx.F_CLOSED {
+        let fnode = if k == sx.N_CALL { c.nd(e).a } else if k == sx.N_LIT { c.nd(e).a } else { e }
+        let st = c.static(fnode)
+        if st.k == ST_DECL && st.dk == D_VARIANT && c.pg.variants[st.di].decl == d {
+            let vr = st.di
+            var names: []str = []
+            for f in c.pg.variants[vr].fields { append(mut &names, f.name) }
+            var args: []int = []
+            if k == sx.N_LIT {
+                let ias = c.orderInits(&names, c.nd(e).b, c.pg.variants[vr].name, line)
+                for a in ias { append(mut &args, a.n) }
+            } else if k == sx.N_CALL {
+                args = c.items(c.nd(e).b)
+            }
+            if len(args) != len(names) {
+                c.err(line, "variant " + c.pg.variants[vr].name + " takes " + intToStr(len(names)) + " values")
+            }
+            var b = newStrBuf()
+            for i in 0..len(names) {
+                let ft = c.pg.subst(c.pg.variants[vr].fields[i].ty, &env)
+                let cc = c.constInit(args[i], ft)
+                if i > 0 { b.add(", ") }
+                b.add(".f_" + names[i] + " = " + cc)
+            }
+            return "{.tag = " + intToStr(c.pg.variants[vr].index) + ", .u.V_" + c.pg.variants[vr].name + " = {" + b.toStr() + "}}"
+        }
+    }
+    c.err(line, "not a constant")
+}

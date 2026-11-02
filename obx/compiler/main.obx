@@ -1,23 +1,35 @@
-// obxc: the self-hosted obx compiler driver. For now (stage 4, steps 1 and 2)
-// it parses and resolves declarations: --dump-ast prints the tree of each file
-// given, --dump-types what sema computes for the program of each file, as
-// `python3 ref/obxc.py --dump-ast` and `--dump-types` do.
+// obxc: the self-hosted obx compiler driver, as ref/obxc.py: it compiles a
+// program to C and builds it with gcc (or runs it, or prints the C).
 //
-//     obxc --dump-ast file.obx...
-//     obxc --dump-types file.obx...
+//     obxc file.obx [-o out] [--run] [--emit-c] [-L libroot] [-- args...]
+//     obxc --emit-c file.obx file.obx...   the C of each program, in `== path` sections
+//     obxc --dump-ast file.obx...          the tree of each file (no imports)
+//     obxc --dump-types file.obx...        what sema computes for each program
+//
+// In the multi-file forms an error is written to stdout as `error: ...` and
+// ends the run (the first error stops the compiler, as in ref).
 //
 // The library is $OBX_LIB, or ../lib next to the directory of the executable
 // given as argv[0] (the compiler is built into obx/compiler/out/).
 
 import "os"
+import "io"
+import "fs"
 import "./syntax" as sx
 import "./sema"
 import "./dump"
 import "./tdump"
+import "./check" as ck
+import "./emit"
+
+extern "c" fn system(cmd: str): i32
+extern "c" fn mkdtemp(template: str): str
+
+const USAGE = "usage: obxc file.obx [-o out] [--run] [--emit-c] [-L libroot]\n"
 
 fn usage(): never {
-    writeFd(2, "usage: obxc --dump-ast|--dump-types file.obx...\n")
-    exit(2)
+    writeFd(2, USAGE)
+    exit(1)
 }
 
 fn dumpFile(path: str) {
@@ -42,19 +54,176 @@ fn typesFile(lib: str, path: str) {
     writeFd(1, tdump.dumpTypes(mut &pg))
 }
 
+// ref's compile_c: the C program of the file at path and the libraries its externs name.
+fn compileC(lib: str, roots: &[]str, path: str, libs: mut &[]str): str {
+    var rs: []str = []
+    for r in roots { append(mut &rs, r) }
+    append(mut &rs, lib)
+    var pg = sema.newProgram(lib + "/std.obx", rs, sema.baseName(path))
+    pg.loadMain(path)
+    pg.resolveAll()
+    var c = ck.newChecker(pg)
+    c.checkAll()
+    let m = c.pg.main
+    let s = c.pg.mods[m].scope.getOr(&"main", sema.Sym{k: -1, i: -1})
+    if s.k != sema.D_FN || c.pg.fns[s.i].isExtern { sx.fail(sema.baseName(path), 1, "the program has no function main") }
+    var e = emit.newEmitter(c)
+    return e.program(s.i, libs)
+}
+
+const LIBDIRS: []str = ["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib", "/usr/local/lib",
+    "/lib"]
+
+// ref's lib_flags: -l<lib> when lib<lib>.so is installed, else the first versioned file, else -l<lib>.
+fn libFlags(libs: &[]str): []str {
+    var out: []str = []
+    for l in libs {
+        var have = false
+        for d in LIBDIRS {
+            if fs.exists(d + "/lib" + l + ".so") { have = true }
+        }
+        if have {
+            append(mut &out, "-l" + l)
+            continue
+        }
+        var found: []str = []
+        let pre = "lib" + l + ".so."
+        for d in LIBDIRS {
+            match fs.listNames(d) {
+                Ok(ns) {
+                    for n in ns {
+                        if startsWith(n, pre) { append(mut &found, d + "/" + n) }
+                    }
+                }
+                Err(e) {}
+            }
+        }
+        sort(mut &found)
+        append(mut &out, if len(found) > 0 { found[0] } else { "-l" + l })
+    }
+    return out
+}
+
+// A word for /bin/sh.
+fn quote(s: str): str {
+    var b = newStrBuf()
+    b.addByte(39)
+    for i in 0..len(s) {
+        let x = strByte(s, i)
+        if x == 39 { b.add("'\\''") } else { b.addByte(x) }
+    }
+    b.addByte(39)
+    return b.toStr()
+}
+
+// Runs a command (words quoted); the exit status, or -signal as Python reports it.
+fn run(words: &[]str, redirect: str): int {
+    var b = newStrBuf()
+    b.add("exec")
+    for w in words { b.add(" " + quote(w)) }
+    b.add(redirect)
+    let st = int(system(b.toStr()))
+    if st < 0 { return 127 }
+    if st & 0x7f != 0 { return -(st & 0x7f) }
+    return (st >> 8) & 0xff
+}
+
+fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, rest: &[]str): int {
+    var libs: []str = []
+    let csrc = compileC(lib, roots, src, mut &libs)
+    if emitc {
+        writeFd(1, csrc)
+        return 0
+    }
+    let tmp = mkdtemp(os.envOr("TMPDIR", "/tmp") + "/obxcXXXXXX")
+    if tmp == "" { sx.failText("obxc: cannot make a temporary directory") }
+    let cfile = tmp + "/prog.c"
+    match io.write(cfile, csrc) {
+        Ok(u) {}
+        Err(e) { sx.failText("obxc: cannot write " + cfile + ": " + e.toStr()) }
+    }
+    let exe = if len(out) > 0 { out } else if isRun { tmp + "/prog" } else {
+        if endsWith(src, ".obx") { src[0..len(src) - 4] } else { src } }
+    var cmd: []str = ["gcc", "-O2", "-w", "-std=gnu11", "-o", exe, cfile]
+    let fl = libFlags(&libs)
+    for f in fl { append(mut &cmd, f) }
+    append(mut &cmd, "-lm")
+    let errf = tmp + "/gcc.err"
+    if run(&cmd, " >/dev/null 2>" + quote(errf)) != 0 {
+        var msg = ""
+        readFile(errf, mut &msg)
+        let m = if len(msg) > 4000 { msg[0..4000] } else { msg }
+        writeFd(2, "obxc: internal error: the C compiler failed (C kept in " + cfile + ")\n" + m + "\n")
+        return 3
+    }
+    fs.remove(cfile)
+    fs.remove(errf)
+    if !isRun {
+        fs.remove(tmp)
+        return 0
+    }
+    var words: []str = [exe]
+    for a in rest { append(mut &words, a) }
+    let st = run(&words, "")
+    if len(out) == 0 { fs.removeAll(tmp) }
+    return st
+}
+
 fn main() {
     let argv = args()
-    if len(argv) < 3 || (argv[1] != "--dump-ast" && argv[1] != "--dump-types") { usage() }
-    let types = argv[1] == "--dump-types"
-    let lib = if types { libDir(argv[0]) } else { "" }
-    let multi = len(argv) > 3
-    sx.errorsToStdout(multi)
-    for i in 2..len(argv) {
-        if multi { writeFd(1, "== " + argv[i] + "\n") }
-        if types {
-            typesFile(lib, argv[i])
-        } else {
-            dumpFile(argv[i])
+    if len(argv) >= 3 && (argv[1] == "--dump-ast" || argv[1] == "--dump-types" || argv[1] == "--emit-c") {
+        let types = argv[1] == "--dump-types"
+        let emitc = argv[1] == "--emit-c"
+        let lib = if types || emitc { libDir(argv[0]) } else { "" }
+        let multi = len(argv) > 3
+        sx.errorsToStdout(multi)
+        for i in 2..len(argv) {
+            if multi { writeFd(1, "== " + argv[i] + "\n") }
+            if emitc {
+                var libs: []str = []
+                writeFd(1, compileC(lib, &[], argv[i], mut &libs))
+            } else if types {
+                typesFile(lib, argv[i])
+            } else {
+                dumpFile(argv[i])
+            }
         }
+        return
     }
+    var out = ""
+    var isRun = false
+    var emitc = false
+    var roots: []str = []
+    var src = ""
+    var rest: []str = []
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if a == "--" {
+            for j in i + 1..len(argv) { append(mut &rest, argv[j]) }
+            break
+        }
+        if a == "-o" {
+            i += 1
+            if i >= len(argv) { usage() }
+            out = argv[i]
+        } else if a == "--run" {
+            isRun = true
+        } else if a == "--emit-c" {
+            emitc = true
+        } else if a == "-L" {
+            i += 1
+            if i >= len(argv) { usage() }
+            append(mut &roots, sema.absPath(argv[i]))
+        } else if startsWith(a, "-L") {
+            append(mut &roots, sema.absPath(a[2..len(a)]))
+        } else if src == "" {
+            src = a
+        } else {
+            usage()
+        }
+        i += 1
+    }
+    if src == "" { usage() }
+    exit(build(libDir(argv[0]), &roots, src, out, isRun, emitc, &rest))
 }

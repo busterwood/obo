@@ -280,6 +280,7 @@ pub type Program = record {
     pending: []Pending
     pub resolved: bool
     wraps: []Wrap
+    pub gwrap: str           // check's global initializers: "the initializer of global G must be constant: "
     pub std: int
     pub main: int
 }
@@ -300,6 +301,7 @@ pub fn (pg: &Program) err(m: int, line: int, msg: str): never {
         wl = pg.wraps[i].line
         i -= 1
     }
+    text = pg.gwrap + text
     if wl == 0 || wm < 0 { sx.failText(text) }
     sx.fail(pg.mods[wm].fname, wl, text)
 }
@@ -389,7 +391,7 @@ pub fn newProgram(stdPath: str, libroots: []str, mainFile: str): Program {
     var pg = Program{libroots: libroots, mainFile: mainFile, mods: [], modIndex: newMap(), types: [],
         variants: [], fns: [], consts: [], globals: [], tparams: [], tys: [], tlists: [], tindex: newMap(),
         primMethods: [], primMethodNames: [], prelude: newMap(), preludeNames: [], externs: newMap(),
-        externNames: [], pending: [], resolved: false, wraps: [], std: -1, main: -1}
+        externNames: [], pending: [], resolved: false, wraps: [], gwrap: "", std: -1, main: -1}
     let none: []int = []
     for p in 0..len(PRIM_NAMES) { pg.intern(TK_PRIM, p, 0, false, &none) }
     pg.intern(TK_SELF, 0, 0, false, &none)
@@ -439,6 +441,9 @@ pub fn (pg: mut &Program) mkFn(ps: &[]int, r: int): int { return pg.intern(TK_FN
 pub fn (pg: mut &Program) mkClo(ps: &[]int, r: int): int { return pg.intern(TK_CLO, 0, r, false, ps) }
 pub fn (pg: mut &Program) mkInst(d: int, args: &[]int): int { return pg.intern(TK_INST, d, 0, false, args) }
 pub fn (pg: mut &Program) mkTp(tp: int): int { return pg.intern(TK_TP, tp, 0, false, &[]) }
+// ref's ('inst', d, None): a generic type named without its arguments (check's static_type).
+pub fn (pg: mut &Program) mkBare(d: int): int { return pg.intern(TK_INST, d, 0, true, &[]) }
+pub fn (pg: &Program) isBare(t: int): bool { return pg.tys[t].k == TK_INST && pg.tys[t].m }
 
 pub fn (pg: &Program) tk(t: int): int { return pg.tys[t].k }
 pub fn (pg: &Program) ta(t: int): int { return pg.tys[t].a }
@@ -959,7 +964,11 @@ fn (pg: mut &Program) resolveCons(tp: int, m: int, cons: int, env: &[]int, skipC
             if !skipCopy { pg.tparams[tp].copy = true }
             continue
         }
-        append(mut &pg.tparams[tp].cons, pg.resolveType(c, m, env, P_CONSTRAINT, 0))
+        let t = pg.resolveType(c, m, env, P_CONSTRAINT, 0)
+        if pg.tk(t) != TK_INST {        // a primitive, a type parameter, an array, a fn type
+            pg.err(m, pg.typeWhere(m, c), pg.tstr(t) + " is not an interface")
+        }
+        append(mut &pg.tparams[tp].cons, t)
     }
 }
 
@@ -1509,7 +1518,7 @@ fn rangeHi(ty: int): num.Big {
     return num.bigSub(num.bigPow2(bits), num.bigOf(1))
 }
 
-fn inRange(x: num.Big, ty: int): bool { return num.bigCmp(rangeLo(ty), x) <= 0 && num.bigCmp(x, rangeHi(ty)) <= 0 }
+pub fn inRange(x: num.Big, ty: int): bool { return num.bigCmp(rangeLo(ty), x) <= 0 && num.bigCmp(x, rangeHi(ty)) <= 0 }
 
 // ref's cfit: a folded number must fit its type (an untyped integer: 128 bits).
 pub fn (pg: &Program) cfit(v: CVal, m: int, line: int): CVal {

@@ -1,0 +1,832 @@
+// emit: renders the checked templates once per instance, from main (SPEC 6.4).
+//
+// Holes in a template name what depends on type arguments; rendering
+// substitutes the instance's type arguments and asks for C types, drop and dup
+// glue and callee instances, which are themselves rendered later (a worklist).
+//
+// A port of ref/emit.py. Every C name is numbered in the order it is first
+// asked for (fn<n>/S<n>_ types, gl<n>_ glue, f<n>_ instances, sl<n> strings),
+// so the order of the calls below follows ref's evaluation order exactly.
+
+import "./syntax" as sx
+import "./sema"
+import "./check" as ck
+import "./rt"
+
+const MAX_DEPTH = 24
+const MAX_INSTANCES = 20000
+const DEEP = -1         // in reach(): a type too deep to follow (a non-terminating instantiation)
+
+// Glue kinds.
+const G_DROP = 0
+const G_ACT = 1
+const G_REST = 2
+const G_DUP = 3
+const G_TRAMP = 4
+const GLUE_NAMES: []str = ["drop", "act", "rest", "dup", "tramp"]
+
+type Inst = value record {
+    f: int
+    targs: int      // a tuple type (a fn type with the type arguments as parameters)
+}
+
+type Glue = value record {
+    kind: int
+    t: int
+}
+
+// Lines and whether pushed actions read the memory of the place (ref's (lines, refs) pairs).
+type Lines = record {
+    ls: []str
+    refs: bool
+}
+
+// What cases() does with the fields of a record or variant (ref passes a function).
+const CM_PARTS = 0      // push: each part
+const CM_DIRECT = 1     // direct: drop each, last to first
+const CM_SEQ = 2        // rest: push the parts up to the last chain field, drop the others
+
+pub type Emitter = record {
+    c: ck.Checker
+    names: Map[int, str]
+    nnames: int
+    structs: []int
+    fntypes: []str
+    insts: Map[str, str]
+    ninsts: int
+    work: []Inst
+    glue: Map[int, str]
+    nglue: int
+    gluework: []Glue
+    reachIdx: Map[int, int]
+    reachSets: [][]int
+    strs: Map[str, str]
+    strKeys: []str
+    protos: []str
+    bodies: []str
+    podMemo: []int
+}
+
+pub fn newEmitter(c: ck.Checker): Emitter {
+    return Emitter{c: c, names: newMap(), nnames: 0, structs: [], fntypes: [], insts: newMap(), ninsts: 0, work: [],
+        glue: newMap(), nglue: 0, gluework: [], reachIdx: newMap(), reachSets: [], strs: newMap(), strKeys: [],
+        protos: [], bodies: [], podMemo: []}
+}
+
+fn (e: mut &Emitter) pod(t: int): bool { return ck.isPod(mut &e.c.pg, mut &e.podMemo, t) }
+
+fn (e: &Emitter) tk(t: int): int { return e.c.pg.tk(t) }
+
+fn prefix(s: str, n: int): str { return if len(s) > n { s[0..n] } else { s } }
+
+fn join(xs: &[str], sep: str): str {
+    var b = newStrBuf()
+    for i in 0..len(xs) {
+        if i > 0 { b.add(sep) }
+        b.add(xs[i])
+    }
+    return b.toStr()
+}
+
+fn (e: &Emitter) fail(m: int, line: int, msg: str): never {
+    if m < 0 { sx.failText(msg) }
+    sx.fail(e.c.pg.mods[m].fname, line, msg)
+}
+
+// ---- types
+
+fn (e: mut &Emitter) ctype(t: int): str {
+    let k = e.tk(t)
+    if k == sema.TK_PRIM { return ck.CTYPES[t] }
+    if k == sema.TK_ARR { return "obx_arr" }
+    if k == sema.TK_REF { return e.ctype(e.c.pg.ta(t)) + "*" }
+    if k == sema.TK_SLICE { return "obx_slice" }
+    if k == sema.TK_CLO { return "obx_clo" }
+    if k == sema.TK_TP || k == sema.TK_SELF { sx.failText("internal error: unsubstituted type " + e.c.pg.tstr(t)) }
+    if !e.names.has(&t) {
+        if e.c.pg.depth(t) > MAX_DEPTH + 8 { e.tooDeep(t) }
+        var n = ""
+        if k == sema.TK_FN {
+            var ps: []str = []
+            for i in 0..e.c.pg.tn(t) { append(mut &ps, e.ctype(e.c.pg.ti(t, i))) }
+            let pt = if len(ps) == 0 { "void" } else { join(&ps, ", ") }
+            let r = e.ctype(e.c.pg.tb(t))
+            n = "fn" + intToStr(e.nnames)
+            append(mut &e.fntypes, "typedef " + r + " (*" + n + ")(" + pt + ");")
+        } else {
+            n = "S" + intToStr(e.nnames) + "_" + e.c.pg.types[e.c.pg.ta(t)].cname
+            append(mut &e.structs, t)
+        }
+        e.names.put(t, n)
+        e.nnames += 1
+    }
+    let n = e.names.getOr(&t, "")
+    return if k == sema.TK_FN || e.c.pg.types[e.c.pg.ta(t)].value { n } else { n + "*" }
+}
+
+fn (e: &Emitter) tooDeep(t: int): never {
+    var ds: []int = []
+    var x = t
+    while true {
+        let k = e.tk(x)
+        if !(k == sema.TK_INST || k == sema.TK_ARR || k == sema.TK_REF) || (k == sema.TK_INST && e.c.pg.tn(x) == 0) {
+            break
+        }
+        if k == sema.TK_INST {
+            append(mut &ds, e.c.pg.ta(x))
+            x = e.c.pg.ti(x, 0)
+        } else {
+            x = e.c.pg.ta(x)
+        }
+    }
+    var d = -1
+    for y in ds {
+        if d < 0 && !e.c.pg.mods[e.c.pg.types[y].mod].isStd { d = y }
+    }
+    if d < 0 && len(ds) > 0 { d = ds[0] }
+    let ts = e.c.pg.tstr(t)
+    let nm = if d >= 0 { e.c.pg.types[d].name } else { prefix(ts, 40) }
+    let msg = "instantiation of type " + nm + " does not terminate: its type arguments grow without bound (" +
+        prefix(ts, 80) + "...)"
+    if d < 0 { e.fail(-1, 0, msg) }
+    e.fail(e.c.pg.types[d].mod, e.c.pg.types[d].line, msg)
+}
+
+fn (e: mut &Emitter) fieldsText(t: int, vr: int, env: &[]int): str {
+    var b = newStrBuf()
+    let d = e.c.pg.ta(t)
+    let n = if vr >= 0 { len(e.c.pg.variants[vr].fields) } else { len(e.c.pg.types[d].fields) }
+    for i in 0..n {
+        let f = if vr >= 0 { e.c.pg.variants[vr].fields[i] } else { e.c.pg.types[d].fields[i] }
+        let ft = e.c.pg.subst(f.ty, env)
+        let ct = e.ctype(ft)
+        if i > 0 { b.add(" ") }
+        b.add(ct + " f_" + f.name + ";")
+    }
+    return if n == 0 { "char _e;" } else { b.toStr() }
+}
+
+fn (e: mut &Emitter) structBody(t: int): str {
+    let d = e.c.pg.ta(t)
+    let env = e.c.pg.declEnv(t)
+    let n = e.names.getOr(&t, "")
+    if e.c.pg.types[d].form == sx.F_RECORD { return "struct " + n + " { " + e.fieldsText(t, -1, &env) + " };" }
+    var b = newStrBuf()
+    let vs = copyInts(&e.c.pg.types[d].variants)
+    for i in 0..len(vs) {
+        if i > 0 { b.add(" ") }
+        b.add("struct { " + e.fieldsText(t, vs[i], &env) + " } V_" + e.c.pg.variants[vs[i]].name + ";")
+    }
+    return "struct " + n + " { int64_t tag; union { " + b.toStr() + " char _e; } u; };"
+}
+
+fn copyInts(xs: &[]int): []int {
+    var out: []int = []
+    for x in xs { append(mut &out, x) }
+    return out
+}
+
+// ---- glue
+
+fn (e: mut &Emitter) dropC(t: int, cc: str): str {
+    if e.pod(t) { return "((void)0)" }
+    if t == sema.T_STR { return "rt_str_drop(" + cc + ")" }
+    return e.glueFn(G_DROP, t) + "(" + cc + ")"
+}
+
+fn (e: mut &Emitter) dupC(t: int, cc: str): str {
+    if e.pod(t) { return cc }
+    if t == sema.T_STR { return "rt_str_dup(" + cc + ")" }
+    return e.glueFn(G_DUP, t) + "(" + cc + ")"
+}
+
+// Drop glue. A type is dropped by direct (recursive) C functions unless it is a chain type (it
+// lies on a cycle of the type graph of fields and elements, generic instances included, so its
+// values can nest without bound) or has a drop method. Those are dropped by actions on an
+// explicit stack (rt_dpush/rt_drun, SPEC 9.4); an action gets the object pointer of a boxed
+// value, the address of any other. The order is that of SPEC 9.2 either way.
+
+// The non-pod types reachable from the fields or elements of t (DEEP: too deep to tell).
+fn (e: mut &Emitter) reach(t: int): int {
+    let have = e.reachIdx.getOr(&t, -1)
+    if have >= 0 { return have }
+    var r: []int = []
+    var seen: Map[int, bool] = newMap()
+    var todo = e.kids(t)
+    while len(todo) > 0 {
+        let x = pop(mut &todo)
+        if !seen.has(&x) {
+            seen.put(x, true)
+            append(mut &r, x)
+            if x != DEEP {
+                if e.c.pg.depth(x) <= MAX_DEPTH + 8 {
+                    let ks = e.kids(x)
+                    for k in ks { append(mut &todo, k) }
+                } else {
+                    append(mut &todo, DEEP)
+                }
+            }
+        }
+    }
+    append(mut &e.reachSets, r)
+    e.reachIdx.put(t, len(e.reachSets) - 1)
+    return len(e.reachSets) - 1
+}
+
+fn (e: mut &Emitter) kids(t: int): []int {
+    var ks: []int = []
+    let k = e.tk(t)
+    if k == sema.TK_ARR {
+        append(mut &ks, e.c.pg.ta(t))
+    } else if k == sema.TK_INST {
+        ks = e.c.pg.fieldTypes(t)
+    }
+    var out: []int = []
+    for x in ks {
+        if !e.pod(x) { append(mut &out, x) }
+    }
+    return out
+}
+
+fn (e: mut &Emitter) inReach(t: int, x: int): bool {
+    let r = e.reach(t)
+    for y in e.reachSets[r] {
+        if y == x { return true }
+    }
+    return false
+}
+
+fn (e: mut &Emitter) chain(t: int): bool { return e.inReach(t, t) || e.inReach(t, DEEP) }
+
+fn (e: &Emitter) hasDrop(t: int): bool { return e.tk(t) == sema.TK_INST && e.c.pg.types[e.c.pg.ta(t)].drop >= 0 }
+
+// Dropping t runs no drop method and does not nest without bound: it may run at any time.
+fn (e: mut &Emitter) quiet(t: int): bool {
+    if e.chain(t) || e.hasDrop(t) { return false }
+    let r = e.reach(t)
+    for x in e.reachSets[r] {
+        if x != DEEP && e.hasDrop(x) { return false }
+    }
+    return true
+}
+
+fn (e: mut &Emitter) listed(t: int): bool { return e.chain(t) || e.hasDrop(t) }
+
+// The non-pod fields of the record t or a variant vr of it: types and C places.
+fn (e: mut &Emitter) us(t: int, vr: int, acc: str, pre: str, fts: mut &[]int, locs: mut &[]str) {
+    let d = e.c.pg.ta(t)
+    let env = e.c.pg.declEnv(t)
+    let n = if vr >= 0 { len(e.c.pg.variants[vr].fields) } else { len(e.c.pg.types[d].fields) }
+    for i in 0..n {
+        let f = if vr >= 0 { e.c.pg.variants[vr].fields[i] } else { e.c.pg.types[d].fields[i] }
+        let ft = e.c.pg.subst(f.ty, &env)
+        if !e.pod(ft) {
+            append(fts, ft)
+            append(locs, acc + pre + "f_" + f.name)
+        }
+    }
+}
+
+// f(fields) for the record t or each variant of the closed type t (in a switch on its tag).
+fn (e: mut &Emitter) cases(t: int, acc: str, mode: int, boxed: bool): Lines {
+    let d = e.c.pg.ta(t)
+    if e.c.pg.types[d].form == sx.F_RECORD {
+        var fts: []int = []
+        var locs: []str = []
+        e.us(t, -1, acc, "", mut &fts, mut &locs)
+        return e.caseBody(mode, &fts, &locs, boxed)
+    }
+    var out: []str = ["switch (" + acc + "tag) {"]
+    var refs = false
+    let vs = copyInts(&e.c.pg.types[d].variants)
+    for v in vs {
+        var fts: []int = []
+        var locs: []str = []
+        e.us(t, v, acc, "u.V_" + e.c.pg.variants[v].name + ".", mut &fts, mut &locs)
+        let r = e.caseBody(mode, &fts, &locs, boxed)
+        refs = refs || r.refs
+        append(mut &out, "case " + intToStr(e.c.pg.variants[v].index) + ": " + join(&r.ls, " ") + " break;")
+    }
+    append(mut &out, "}")
+    return Lines{ls: out, refs: refs}
+}
+
+fn (e: mut &Emitter) caseBody(mode: int, fts: &[]int, locs: &[]str, boxed: bool): Lines {
+    var out: []str = []
+    var refs = false
+    if mode == CM_PARTS {
+        for i in 0..len(fts) {
+            let p = e.part(fts[i], locs[i])
+            for x in p.ls { append(mut &out, x) }
+            refs = refs || p.refs
+        }
+    } else if mode == CM_DIRECT {
+        var i = len(fts) - 1
+        while i >= 0 {
+            append(mut &out, e.dropC(fts[i], locs[i]) + ";")
+            i -= 1
+        }
+    } else {
+        // a field after the last pushed one is dropped now (they run first), as is a quiet one
+        var k = 0
+        for i in 0..len(fts) {
+            if e.chain(fts[i]) { k = i + 1 }
+        }
+        for i in 0..k {
+            let p = e.part(fts[i], locs[i])
+            for x in p.ls { append(mut &out, x) }
+            refs = refs || p.refs
+        }
+        var i = len(fts) - 1
+        while i >= k {
+            append(mut &out, e.dropC(fts[i], locs[i]) + ";")
+            i -= 1
+        }
+        if boxed {
+            if refs {
+                var o2: []str = ["rt_dpush(rt_free_act, v);"]
+                for x in out { append(mut &o2, x) }
+                out = o2
+            } else {
+                append(mut &out, "rt_free(v);")
+            }
+        }
+    }
+    return Lines{ls: out, refs: refs}
+}
+
+// Lines that push the drop of the value at loc, and whether the actions read loc's memory: a
+// boxed value is pushed by pointer, a chain value type without a drop method by its parts.
+fn (e: mut &Emitter) push(t: int, loc: str): Lines {
+    let inst = e.tk(t) == sema.TK_INST
+    if inst && !e.c.pg.types[e.c.pg.ta(t)].value {
+        return Lines{ls: ["rt_dpush(" + e.glueFn(G_ACT, t) + ", " + loc + ");"], refs: false}
+    }
+    if inst && e.chain(t) && e.c.pg.types[e.c.pg.ta(t)].drop < 0 { return e.cases(t, loc + ".", CM_PARTS, false) }
+    return Lines{ls: ["rt_dpush(" + e.glueFn(G_ACT, t) + ", &" + loc + ");"], refs: true}
+}
+
+// In an action, before the last pushed part: a quiet drop now, any other pushed.
+fn (e: mut &Emitter) part(t: int, loc: str): Lines {
+    if e.quiet(t) { return Lines{ls: [e.dropC(t, loc) + ";"], refs: false} }
+    return e.push(t, loc)
+}
+
+// The body of a recursive drop of v (not a chain type, no drop method).
+fn (e: mut &Emitter) direct(t: int): []str {
+    if e.tk(t) == sema.TK_ARR {
+        let et = e.c.pg.ta(t)
+        let el = "((" + e.ctype(et) + "*)v.data)[i]"
+        var out: []str = []
+        let dc = e.dropC(et, el)
+        if !e.pod(et) { append(mut &out, "for (int64_t i = 0; i < v.len; i++) " + dc + ";") }
+        append(mut &out, "rt_arr_free(v);")
+        return out
+    }
+    let boxed = !e.c.pg.types[e.c.pg.ta(t)].value
+    var r = e.cases(t, if boxed { "v->" } else { "v." }, CM_DIRECT, boxed)
+    if boxed { append(mut &r.ls, "rt_free(v);") }
+    return replace(mut &r.ls, [])
+}
+
+// The body of an action that drops the fields or elements of t and frees its memory: what
+// must not nest is pushed (fields in declaration order, so that they run last to first;
+// elements last to first), the rest is dropped now; a container that a pushed action reads
+// is freed by an action pushed first.
+fn (e: mut &Emitter) rest(t: int): []str {
+    if e.tk(t) == sema.TK_ARR {
+        let et = e.c.pg.ta(t)
+        let ec = e.ctype(et)
+        let el = "((" + ec + "*)a->data)[i]"
+        if !e.chain(et) {
+            let dc = e.dropC(et, el)
+            return ["obx_arr* a = p;", "for (int64_t i = 0; i < a->len; i++) " + dc + ";", "rt_arr_free(*a);"]
+        }
+        let p = e.push(et, el)
+        let loop = "for (int64_t i = a->len - 1; i >= 0; i--) { " + join(&p.ls, " ") + " }"
+        if p.refs { return ["obx_arr* a = p;", "if (a->data) rt_dpush(rt_free_act, a->data);", loop] }
+        return ["obx_arr* a = p;", loop, "rt_arr_free(*a);"]
+    }
+    let boxed = !e.c.pg.types[e.c.pg.ta(t)].value
+    let ct = e.ctype(t)
+    var out: []str = [ct + (if boxed { "" } else { "*" }) + " v = p;"]
+    let r = e.cases(t, "v->", CM_SEQ, boxed)
+    for x in r.ls { append(mut &out, x) }
+    return out
+}
+
+fn (e: mut &Emitter) glueFn(kind: int, t: int): str {
+    let key = t * 8 + kind
+    if !e.glue.has(&key) {
+        e.glue.put(key, "gl" + intToStr(e.nglue) + "_" + GLUE_NAMES[kind])
+        e.nglue += 1
+        append(mut &e.gluework, Glue{kind: kind, t: t})
+    }
+    return e.glue.getOr(&key, "")
+}
+
+fn (e: mut &Emitter) makeGlue(kind: int, t: int) {
+    let key = t * 8 + kind
+    let n = e.glue.getOr(&key, "")
+    let ct = e.ctype(t)
+    if kind == G_TRAMP {        // a plain function seen as a closure: the environment is the function
+        var ps: []str = ["void* e"]
+        var avs: []str = []
+        for i in 0..e.c.pg.tn(t) {
+            let p = e.ctype(e.c.pg.ti(t, i))
+            append(mut &ps, p + " a" + intToStr(i))
+            append(mut &avs, "a" + intToStr(i))
+        }
+        let rc = e.ctype(e.c.pg.tb(t))
+        let head = "static " + rc + " " + n + "(" + join(&ps, ", ") + ")"
+        let ret = if e.ctype(e.c.pg.tb(t)) == "void" { "" } else { "return " }
+        append(mut &e.protos, head + ";")
+        append(mut &e.bodies, head + " { " + ret + "((" + ct + ")e)(" + join(&avs, ", ") + "); }")
+        return
+    }
+    if kind == G_DROP || kind == G_ACT || kind == G_REST {
+        let inst = e.tk(t) == sema.TK_INST
+        let boxed = inst && !e.c.pg.types[e.c.pg.ta(t)].value
+        var body: []str = []
+        if !e.listed(t) {
+            if kind != G_DROP { append(mut &body, ct + " v = " + (if boxed { "p" } else { "*(" + ct + "*)p" }) + ";") }
+            let ds = e.direct(t)
+            for x in ds { append(mut &body, x) }
+        } else if kind == G_DROP {
+            body = ["rt_drun(" + e.glueFn(G_ACT, t) + ", " + (if boxed { "v" } else { "&v" }) + ");"]
+        } else if kind == G_ACT && inst && e.c.pg.types[e.c.pg.ta(t)].drop >= 0 {
+            // The drop method runs first; the fields are dropped by a second action, pushed
+            // before the call, so that what the method defers (ddrop) is dropped before them.
+            append(mut &body, "rt_dpush(" + e.glueFn(G_REST, t) + ", p);")
+            if boxed { append(mut &body, ct + " v = p;") }
+            let ta = e.c.pg.targs(t)
+            let tu = e.c.pg.mkFn(&ta, sema.T_VOID)
+            let f = e.instance(e.c.pg.types[e.c.pg.ta(t)].drop, tu)
+            append(mut &body, f + "(" + (if boxed { "&v" } else { "(" + ct + "*)p" }) + ");")
+        } else {
+            body = e.rest(t)
+        }
+        let head = "static void " + n + "(" + (if kind == G_DROP { ct + " v" } else { "void* p" }) + ")"
+        append(mut &e.protos, head + ";")
+        append(mut &e.bodies, head + " {\n  " + join(&body, "\n  ") + "\n}")
+        return
+    }
+    append(mut &e.protos, "static " + ct + " " + n + "(" + ct + " v);")
+    let d = e.c.pg.ta(t)
+    let env = e.c.pg.declEnv(t)
+    var body: []str = []
+    if e.c.pg.types[d].form == sx.F_RECORD {
+        for i in 0..len(e.c.pg.types[d].fields) {
+            let f = e.c.pg.types[d].fields[i]
+            let ft = e.c.pg.subst(f.ty, &env)
+            append(mut &body, "v.f_" + f.name + " = " + e.dupC(ft, "v.f_" + f.name) + ";")
+        }
+    } else {
+        append(mut &body, "switch (v.tag) {")
+        let vs = copyInts(&e.c.pg.types[d].variants)
+        for v in vs {
+            var ds: []str = []
+            for i in 0..len(e.c.pg.variants[v].fields) {
+                let fd = e.c.pg.variants[v].fields[i]
+                let f = "v.u.V_" + e.c.pg.variants[v].name + ".f_" + fd.name
+                let ft = e.c.pg.subst(fd.ty, &env)
+                append(mut &ds, f + " = " + e.dupC(ft, f) + ";")
+            }
+            append(mut &body, "case " + intToStr(e.c.pg.variants[v].index) + ": " + join(&ds, " ") + " break;")
+        }
+        append(mut &body, "}")
+    }
+    append(mut &e.bodies, "static " + ct + " " + n + "(" + ct + " v) {\n  " + join(&body, "\n  ") + "\n  return v;\n}")
+}
+
+// ---- holes
+
+fn (e: mut &Emitter) strlit(b: str, glob: bool): str {
+    if !e.strs.has(&b) {
+        e.strs.put(b, "sl" + intToStr(len(e.strKeys)))
+        append(mut &e.strKeys, b)
+    }
+    let n = e.strs.getOr(&b, "")
+    return if glob { "{(obx_sblk*)&" + n + "b, 0, " + intToStr(len(b)) + "}" } else { n }
+}
+
+// The text with its holes rendered (env: the instance's type arguments; name: the instance).
+fn (e: mut &Emitter) render(text: str, holes: &[]ck.Hole, env: &[]int, name: str): str {
+    var b = newStrBuf()
+    var i = 0
+    let n = len(text)
+    var start = 0
+    while i < n {
+        if strByte(text, i) == 1 {
+            var j = i + 1
+            var k = 0
+            while j < n && strByte(text, j) >= '0' && strByte(text, j) <= '9' {
+                k = k * 10 + int(strByte(text, j) - '0')
+                j += 1
+            }
+            if j > i + 1 && j < n && strByte(text, j) == 2 {
+                b.add(text[start..i])
+                b.add(e.hole(k, holes, env, name))
+                i = j + 1
+                start = i
+            } else {
+                i += 1
+            }
+        } else {
+            i += 1
+        }
+    }
+    if start == 0 { return text }
+    b.add(text[start..n])
+    return b.toStr()
+}
+
+fn (e: mut &Emitter) hole(i: int, holes: &[]ck.Hole, env: &[]int, name: str): str {
+    let h = holes[i]
+    let k = h.k
+    if k == ck.H_T { return e.ctype(e.c.pg.subst(h.t, env)) }
+    if k == ck.H_DROP {
+        let t = e.c.pg.subst(h.t, env)
+        let cc = e.render(h.s, holes, env, name)
+        return e.dropC(t, cc)
+    }
+    if k == ck.H_DDROP {        // a drop when a drop method returns: onto the worklist (SPEC 9.4)
+        let t = e.c.pg.subst(h.t, env)
+        let cc = e.render(h.s, holes, env, name)
+        if e.pod(t) || e.quiet(t) { return e.dropC(t, cc) }
+        let p = e.push(t, cc)       // what reads cc's memory is pushed with a heap copy of cc
+        if p.refs { return "rt_ddefer(" + e.glueFn(G_ACT, t) + ", &" + cc + ", sizeof(" + cc + "))" }
+        return join(&p.ls, " ")
+    }
+    if k == ck.H_DUP {
+        let t = e.c.pg.subst(h.t, env)
+        let cc = e.render(h.s, holes, env, name)
+        return e.dupC(t, cc)
+    }
+    if k == ck.H_STR || k == ck.H_GSTR { return e.strlit(h.s, k == ck.H_GSTR) }
+    if k == ck.H_FN { return e.instance(h.f, e.c.pg.subst(h.t, env)) }
+    if k == ck.H_CL { return name + "_c" + intToStr(h.f) }
+    if k == ck.H_TRAMP { return e.glueFn(G_TRAMP, e.c.pg.subst(h.t, env)) }
+    let t = e.c.pg.subst(h.t, env)
+    let f = e.c.pg.methodOf(t, h.s)
+    var bind: []int = []
+    if f < 0 || !e.c.pg.unify(e.c.pg.fns[f].recvType, t, mut &bind, &e.c.pg.fns[f].tps) {
+        sx.failText("internal error: " + e.c.pg.tstr(t) + " has no method " + h.s)
+    }
+    var ta: []int = []
+    for tp in e.c.pg.fns[f].tps { append(mut &ta, envGet(&bind, tp)) }
+    let fname = e.instance(f, e.c.pg.mkFn(&ta, sema.T_VOID))
+    if k == ck.H_IASSOC { return fname }
+    var recv = e.render(h.r, holes, env, name)
+    if h.f == sema.RM_REF && e.c.pg.fns[f].recvMode == sema.RM_VAL { recv = e.dupC(t, "(*" + recv + ")") }
+    var b = newStrBuf()
+    b.add(fname + "(" + recv)
+    if h.nargs > 0 {
+        var s = 0
+        let a = h.args
+        for j in 0..len(a) + 1 {
+            if j == len(a) || strByte(a, j) == 3 {
+                b.add(", " + e.render(a[s..j], holes, env, name))
+                s = j + 1
+            }
+        }
+    }
+    b.add(")")
+    return b.toStr()
+}
+
+fn envGet(env: &[]int, tp: int): int {
+    var i = 0
+    while i < len(env) {
+        if env[i] == tp { return env[i + 1] }
+        i += 2
+    }
+    return -1
+}
+
+// ---- instances
+
+fn cident(s: str): str {
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        let x = strByte(s, i)
+        let w = (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z') || (x >= '0' && x <= '9') || x == '_' || x >= 128
+        b.addByte(if w { x } else { '_' })
+    }
+    return b.toStr()
+}
+
+fn (e: mut &Emitter) instance(f: int, targs: int): str {
+    let key = intToStr(f) + "," + intToStr(targs)
+    if !e.insts.has(&key) {
+        let label = e.c.pg.label(f)
+        let m = e.c.pg.fns[f].mod
+        let line = e.c.pg.fns[f].line
+        for i in 0..e.c.pg.tn(targs) {
+            let a = e.c.pg.ti(targs, i)
+            if e.c.pg.depth(a) > MAX_DEPTH {
+                e.fail(m, line, "instantiation of " + label + " does not terminate: its type arguments grow without " +
+                    "bound (" + prefix(e.c.pg.tstr(a), 80) + "...)")
+            }
+        }
+        if e.ninsts > MAX_INSTANCES {
+            e.fail(m, line, "too many instances (instantiation of " + label + " does not terminate)")
+        }
+        e.insts.put(key, "f" + intToStr(e.ninsts) + "_" + e.c.pg.mods[m].cprefix + "_" + cident(label))
+        e.ninsts += 1
+        append(mut &e.work, Inst{f: f, targs: targs})
+    }
+    return e.insts.getOr(&key, "")
+}
+
+fn (e: mut &Emitter) makeInstance(f: int, targs: int) {
+    let key = intToStr(f) + "," + intToStr(targs)
+    let name = e.insts.getOr(&key, "")
+    var env: []int = []
+    for i in 0..len(e.c.pg.fns[f].tps) {
+        append(mut &env, e.c.pg.fns[f].tps[i])
+        append(mut &env, e.c.pg.ti(targs, i))
+    }
+    var ps: []str = []
+    for i in 0..len(e.c.pg.fns[f].params) {
+        let p = e.c.pg.fns[f].params[i]
+        let ct = e.ctype(e.c.pg.subst(p.ty, &env))
+        append(mut &ps, ct + " p_" + p.name)
+    }
+    let pt = if len(ps) == 0 { "void" } else { join(&ps, ", ") }
+    let rc = e.ctype(e.c.pg.subst(e.c.pg.fns[f].ret, &env))
+    let head = "static " + rc + " " + name + "(" + pt + ")"
+    append(mut &e.protos, head + ";")
+    let tm = replace(mut &e.c.tmpls[f], ck.Tmpl{done: false, lines: [], holes: [], lifted: []})
+    var b = newStrBuf()
+    for i in 0..len(tm.lines) {
+        if i > 0 { b.addByte('\n') }
+        b.add(e.render(tm.lines[i], &tm.holes, &env, name))
+    }
+    append(mut &e.bodies, head + " {\n" + b.toStr() + "\n}")
+    for l in tm.lifted {        // its closures
+        var cps: []str = ["void* cv_"]
+        for j in 0..len(l.pnames) {
+            let ct = e.ctype(e.c.pg.subst(l.ptys[j], &env))
+            append(mut &cps, ct + " " + l.pnames[j])
+        }
+        let lrc = e.ctype(e.c.pg.subst(l.ret, &env))
+        let lhead = "static " + lrc + " " + name + "_c" + intToStr(l.k) + "(" + join(&cps, ", ") + ")"
+        append(mut &e.protos, lhead + ";")
+        var lb = newStrBuf()
+        for i in 0..len(l.lines) {
+            if i > 0 { lb.addByte('\n') }
+            lb.add(e.render(l.lines[i], &tm.holes, &env, name))
+        }
+        append(mut &e.bodies, lhead + " {\n  void** ce_ = cv_; (void)ce_;\n" + lb.toStr() + "\n}")
+    }
+    e.c.tmpls[f] = tm
+}
+
+fn (e: mut &Emitter) externC(t: int): str { return if t == sema.T_STR { "const char*" } else { e.ctype(t) } }
+
+// ---- the program
+
+// The C program whose entry is the function main (and the libraries its externs name, in libs).
+pub fn (e: mut &Emitter) program(main: int, libs: mut &[]str): str {
+    var externs: []str = []
+    var seen: Map[str, bool] = newMap()
+    for m in 0..len(e.c.pg.mods) {
+        let fs = copyInts(&e.c.pg.mods[m].fns)
+        for f in fs {
+            let cn = e.c.pg.fns[f].cname
+            if e.c.pg.fns[f].isExtern && cn != "" && !seen.has(&cn) {
+                seen.put(cn, true)
+                var ps: []str = []
+                for i in 0..len(e.c.pg.fns[f].params) { append(mut &ps, e.externC(e.c.pg.fns[f].params[i].ty)) }
+                let pt = if len(ps) == 0 { "void" } else { join(&ps, ", ") }
+                let rc = e.externC(e.c.pg.fns[f].ret)
+                append(mut &externs, "extern " + rc + " x_" + cn + "(" + pt + ") __asm__(\"" + cn + "\");")
+                let lib = e.c.pg.fns[f].lib
+                var known = lib == "c" || lib == ""
+                for l in libs {
+                    if l == lib { known = true }
+                }
+                if !known { append(libs, lib) }
+            }
+        }
+    }
+    let entry = e.instance(main, e.c.pg.mkFn(&[], sema.T_VOID))
+    // SPEC 5.2: at exit a module's set-once globals are dropped before those of the modules it
+    // imports, each module's in reverse declaration order; a dropped one is marked (state 2) first.
+    // Copy globals are dropped after them all (that runs no code), so no drop method sees them freed.
+    var globs: []str = []
+    var copies: []str = []
+    var post: []int = []
+    var visited: []bool = []
+    for m in 0..len(e.c.pg.mods) { append(mut &visited, false) }
+    e.visit(e.c.pg.std, mut &visited, mut &post)
+    for m in 0..len(e.c.pg.mods) { e.visit(m, mut &visited, mut &post) }
+    var onces: [][]str = []
+    for m in 0..len(e.c.pg.mods) { append(mut &onces, []) }
+    for m in post {
+        var names: []str = []
+        for n in e.c.pg.mods[m].scopeNames { append(mut &names, n) }
+        for n in names {
+            let s = e.c.pg.mods[m].scope.getOr(&n, sema.Sym{k: -1, i: -1})
+            let isG = s.k == sema.D_GLOBAL
+            if !isG && s.k != sema.D_CONST { continue }
+            let gi = if isG { replace(mut &e.c.ginits[s.i], noInit()) } else { replace(mut &e.c.cinits[s.i], noInit()) }
+            if !gi.has { continue }
+            let t = if isG { e.c.pg.globals[s.i].ty } else { e.c.pg.consts[s.i].table }
+            let cn = if isG { e.c.pg.globals[s.i].cname } else { e.c.pg.consts[s.i].cname }
+            if gi.isOnce {          // a set-once global: 0 empty, 1 set, 2 dropped
+                let ct = e.ctype(t)
+                append(mut &globs, "static " + ct + " " + cn + "; static uint8_t " + cn + "_set;")
+                var d = ""
+                if !e.pod(t) { d = "if (" + cn + "_set == 1) { " + cn + "_set = 2; " + e.dropC(t, cn) + "; } " }
+                var l: []str = [d + cn + "_set = 2;"]
+                for x in onces[m] { append(mut &l, x) }
+                onces[m] = l
+            } else if e.tk(t) == sema.TK_ARR {      // a constant table: read-only static data seen as a slice
+                var its: []str = []
+                for x in gi.items { append(mut &its, e.render(x, &gi.holes, &[], "")) }
+                let items = join(&its, ", ")
+                let ct = e.ctype(e.c.pg.ta(t))
+                let nn = if len(its) == 0 { 1 } else { len(its) }
+                append(mut &globs, "static const " + ct + " " + cn + "_d[" + intToStr(nn) + "] = {" +
+                    (if len(its) == 0 { "0" } else { items }) + "};")
+                append(mut &globs, "static const obx_slice " + cn + " = {(void*)" + cn + "_d, " + intToStr(len(its)) + "};")
+            } else {
+                let cq = if isG { "" } else { "const " }
+                let ct = e.ctype(t)
+                let init = e.render(gi.c, &gi.holes, &[], "")
+                append(mut &globs, "static " + cq + ct + " " + cn + " = " + init + ";")
+                if !e.pod(t) {
+                    var l: []str = [e.dropC(t, cn) + ";"]
+                    for x in copies { append(mut &l, x) }
+                    copies = l
+                }
+            }
+        }
+    }
+    var gdrops: []str = []
+    var pi = len(post) - 1
+    while pi >= 0 {
+        for x in onces[post[pi]] { append(mut &gdrops, x) }
+        pi -= 1
+    }
+    for x in copies { append(mut &gdrops, x) }
+    while len(e.work) > 0 || len(e.gluework) > 0 {
+        if len(e.work) > 0 {
+            let w = pop(mut &e.work)
+            e.makeInstance(w.f, w.targs)
+        } else {
+            let g = pop(mut &e.gluework)
+            e.makeGlue(g.kind, g.t)
+        }
+    }
+    var i = 0
+    while i < len(e.structs) {          // field types may name more types
+        e.structBody(e.structs[i])
+        i += 1
+    }
+    var order: []int = []
+    var done: Map[int, bool] = newMap()
+    let structs = copyInts(&e.structs)
+    for t in structs { e.visitStruct(t, mut &done, mut &order) }
+    var out = newStrBuf()
+    out.add(join(&rt.RT, "\n"))
+    for t in structs {
+        let n = e.names.getOr(&t, "")
+        out.add("\ntypedef struct " + n + " " + n + ";")
+    }
+    for x in e.fntypes { out.add("\n" + x) }
+    for t in order { out.add("\n" + e.structBody(t)) }
+    for b in e.strKeys {
+        let n = e.strs.getOr(&b, "")
+        out.add("\nstatic struct { int64_t rc; char data[" + intToStr(len(b) + 1) + "]; } " + n + "b = {-1, " + ck.cstr(b) + "};")
+        out.add("\nstatic const obx_str " + n + " = {(obx_sblk*)&" + n + "b, 0, " + intToStr(len(b)) + "};")
+    }
+    for x in externs { out.add("\n" + x) }
+    for x in globs { out.add("\n" + x) }
+    for x in e.protos { out.add("\n" + x) }
+    for x in e.bodies { out.add("\n" + x) }
+    out.add("\nint main(int argc, char** argv) { rt_init(argc, argv); " + entry + "(); " + join(&gdrops, " ") +
+        " rt_finish(); return 0; }\n")
+    return out.toStr()
+}
+
+fn noInit(): ck.GInit { return ck.GInit{has: false, isOnce: false, table: false, items: [], c: "", holes: []} }
+
+fn (e: &Emitter) visit(m: int, visited: mut &[]bool, post: mut &[]int) {
+    if visited[m] { return }
+    visited[m] = true
+    for sub in e.c.pg.mods[m].importMods { e.visit(sub, visited, post) }
+    append(post, m)
+}
+
+fn (e: mut &Emitter) visitStruct(t: int, done: mut &Map[int, bool], order: mut &[]int) {
+    if done.has(&t) { return }
+    done.put(t, true)
+    let fts = e.c.pg.fieldTypes(t)
+    for ft in fts {
+        if e.tk(ft) == sema.TK_INST && e.c.pg.types[e.c.pg.ta(ft)].value && !done.has(&ft) { e.visitStruct(ft, done, order) }
+    }
+    append(order, t)
+}

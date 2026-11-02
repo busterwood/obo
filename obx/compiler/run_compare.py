@@ -3,6 +3,7 @@
 
     python3 obx/compiler/run_compare.py                 # build, then compare --dump-ast and --dump-types
     python3 obx/compiler/run_compare.py --mode types    # only --dump-types (also: --mode ast)
+    python3 obx/compiler/run_compare.py --mode c        # only --emit-c: the C, or the error (also: all)
     python3 obx/compiler/run_compare.py --mutants 5000  # also on 5000 mutated programs (syntax and sema errors)
     python3 obx/compiler/run_compare.py --hashseed      # ref's C does not depend on PYTHONHASHSEED
 
@@ -13,6 +14,10 @@ in one process (`--dump-ast a b ...`; ref's --dump-types runs in parallel batche
 loads std again for every file); the obx compiler stops at the first error (as the
 compiler always does), so the run goes on from the next file. A file passes when the
 dump, or the error message, is the same text.
+
+--emit-c (--mode c) compares the whole C program of every file (or its first error, from
+the parser, sema or the body checker); ref compiles one file per process (in parallel). A
+difference names the C function where it starts.
 
 --dump-types runs only sema (loading, declarations, constants), never the body checks,
 so a program whose first error is in a body (a type error, a move) gives the full sema
@@ -43,6 +48,7 @@ def corpus():
 
 def build():
     os.makedirs(OUT, exist_ok=True)
+    subprocess.run([sys.executable, os.path.join(HERE, 'gen_rt.py')], check=True)
     exe = os.path.join(OUT, 'obxc')
     t = time.perf_counter()
     r = subprocess.run([sys.executable, REF, os.path.join(HERE, 'main.obx'), '-o', exe],
@@ -77,9 +83,20 @@ def multi(part):
     return part if len(part) > 1 else part + part
 
 
+def ref_c(f):
+    """ref's --emit-c of one file as the obx compiler's multi-file form writes it."""
+    r = subprocess.run([sys.executable, REF, f, '--emit-c'], capture_output=True, errors='replace', text=True)
+    if 'Traceback' in r.stderr:
+        return 'CRASH ref: ' + r.stderr.strip().splitlines()[-1] + '\n'
+    return r.stdout if r.returncode == 0 else 'error: ' + r.stderr
+
+
 def run_ref(files, mode):
     """{path: dump or 'error: ...'}; a Python traceback is reported as a crash of its file."""
     from concurrent.futures import ThreadPoolExecutor
+    if mode == '--emit-c':
+        with ThreadPoolExecutor(os.cpu_count() or 4) as ex:
+            return dict(zip(files, ex.map(ref_c, files)))
 
     def batch(part):
         res = {}
@@ -111,7 +128,7 @@ def run_obx(exe, files, mode):
     res, i = {}, 0
     env = dict(os.environ, OBX_CHECK='1')
     while i < len(files):
-        part = files[i:i + 2000]
+        part = files[i:i + (50 if mode == '--emit-c' else 2000)]
         r = subprocess.run([exe, mode] + multi(part), capture_output=True, env=env)
         got = sections(r.stdout.decode('utf-8', 'replace'))
         res.update(got)
@@ -133,7 +150,10 @@ def first_diff(a, b):
         x = al[k] if k < len(al) else '<end>'
         y = bl[k] if k < len(bl) else '<end>'
         if x != y:
-            return f"line {k + 1}: ref {x!r} / obx {y!r}"
+            fn = next((al[j] for j in range(min(k, len(al) - 1), -1, -1)
+                       if al[j].startswith('static ') and al[j].endswith('{')), None)
+            where = f" (in {fn[:-2]})" if fn else ''
+            return f"line {k + 1}{where}: ref {x[:300]!r} / obx {y[:300]!r}"
     return 'same lines'
 
 
@@ -292,14 +312,15 @@ def main():
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--hashseed', action='store_true')
     ap.add_argument('--no-build', action='store_true')
-    ap.add_argument('--mode', choices=['ast', 'types', 'both'], default='both')
+    ap.add_argument('--mode', choices=['ast', 'types', 'c', 'both', 'all'], default='both')
     ap.add_argument('files', nargs='*')
     a = ap.parse_args()
     files = [os.path.abspath(f) for f in a.files] or corpus()
     if a.hashseed:
         return hashseed([f for f in files if not f.startswith(HERE)])
     exe = os.path.join(OUT, 'obxc') if a.no_build else build()
-    modes = ['--dump-ast', '--dump-types'] if a.mode == 'both' else ['--dump-' + a.mode]
+    modes = {'both': ['--dump-ast', '--dump-types'], 'all': ['--dump-ast', '--dump-types', '--emit-c'],
+             'c': ['--emit-c']}.get(a.mode, ['--dump-' + a.mode])
     bad = 0
     for mode in modes:
         bad += compare(exe, files, 'test files', 1000, mode)
