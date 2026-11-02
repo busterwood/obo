@@ -79,6 +79,7 @@ globaldecl  = "var" IDENT ":" type "=" expr sep ;
 externdecl  = "extern" STRING "fn" IDENT "(" [ params ] ")" [ ":" type ] sep ;
 
 type        = "&" type | "mut" "&" type | "[]" type
+            | "&" "[" type "]" | "mut" "&" "[" type "]"     (* slices *)
             | "fn" "(" [ type { "," type } ] ")" [ ":" type ]
             | qualname [ targs ] ;
 targs       = "[" type { "," type } "]" ;
@@ -107,7 +108,8 @@ shiftexpr   = addexpr { ( "<<" | ">>" ) addexpr } ;
 addexpr     = mulexpr { ( "+" | "-" | "+%" | "-%" ) mulexpr } ;
 mulexpr     = unary { ( "*" | "/" | "%" | "*%" ) unary } ;
 unary       = ( "-" | "!" | "~" | "&" | "mut" "&" | "try" ) unary | postfix ;
-postfix     = primary { "." IDENT [ targs ] | "[" expr "]" | "(" [ args ] ")" } ;
+postfix     = primary { "." IDENT [ targs ] | "[" index "]" | "(" [ args ] ")" } ;
+index       = expr | [ expr ] ".." [ expr ] ;
 args        = expr { "," expr } ;
 primary     = INT | FRACTION | CHAR | STRING | "true" | "false"
             | qualname [ targs ] [ "{" [ inits ] "}" ]
@@ -138,7 +140,10 @@ and between operands. A comparison does not chain: `a < b < c` is an error.
 
 `str` is reference counted inside the runtime, so for the language it is a
 copy type: copying a string never copies its bytes, and it is freed with its
-last copy. Its bytes are not required to be UTF-8.
+last copy. Its bytes are not required to be UTF-8. `s[a..b]` is the substring
+of bytes `a` to `b - 1`; it shares the bytes of `s` (no copy, no allocation)
+and is itself an ordinary `str`. `s[a..]` and `s[..b]` run to the end and from
+the start. Out-of-range bounds stop the program (exit 3).
 
 All primitive types are copy types.
 
@@ -146,6 +151,28 @@ All primitive types are copy types.
 
 `[]T` is a growable array that owns its elements. It is an owned type for every
 `T`, including copy `T`. Elements are stored inline. Indexing is checked.
+
+### 4.2a Slices
+
+`&[T]` is a read-only view of a run of elements, and `mut &[T]` a writable one:
+a pointer and a length. A slice is a borrow (section 4.5), with the same second
+class rules; its root is the root of the array it views. It differs from
+`&[]T`/`mut &[]T`, which borrow the array itself: a slice cannot grow, and
+`append` and `pop` do not take one.
+
+- `xs[a..b]` on an array place or a slice makes a slice of elements `a` to
+  `b - 1` (`a..` and `..b` as for strings). It is `mut &[T]` when the place is
+  mutable (section 10, rule 6) and used where a `mut &[T]` is expected, and
+  `&[T]` otherwise. Bounds are checked when the slice is made (exit 3). As with
+  other borrows (section 7.5), `&xs[a..b]` and `mut &xs[a..b]` are the same
+  slice spelled explicitly.
+- An array borrow converts where a slice is expected: `&xs` or a `&[]T` passes
+  as `&[T]`, and `mut &xs` or a `mut &[]T` as `mut &[T]`. So
+  `sort(mut &xs)` and `sort(mut &xs[2..10])` call the same function.
+- A slice supports `len`, indexing (element places, checked), assignment to
+  elements and `swap` when it is `mut`, `for x in s`, and slicing again.
+- For rule 3 of section 10, a slice of an array overlaps every other borrow of
+  that array and of its elements.
 
 ### 4.3 Records
 
@@ -533,7 +560,8 @@ extern "c" fn getpid(): i32
 An `extern` declaration names a C function and the library that provides it
 (`"c"` for libc). Parameter and result types are limited to integers, `float`,
 `bool`, `ptr`, `mut &ptr`, `mut &int` and `str`; a `str` argument is passed as
-a NUL-terminated pointer valid for the call, and stops the program if it
+a NUL-terminated pointer valid for the call (the runtime copies the bytes
+when the string is a substring without a NUL after it), and stops the program if it
 contains a NUL byte (exit code 12). `strFromC(p: ptr): str` copies a
 NUL-terminated C string. `ptr` is an ordinary copy type (a wrapper record may
 hold one), but the only operations on it are `==`, `!=` and the built-in
