@@ -1,0 +1,42 @@
+// Path helpers, reading standard input, the Writer on stdout and stderr,
+// and program arguments.
+// stdin: first line
+// stdin: second line
+// expect: /a/b/c | a/b/c | /abs | x/y | /
+// expect: c c / . c
+// expect: /a/b . / / /a a
+// expect: .txt  .gz .
+// expect: 2 lines: first line / second line
+// expect: buffered 1
+// expect: buffered 2
+// expect: args 0, program set true
+import "fs"
+import "io"
+import "os"
+
+fn main() {
+    println(fs.join("/a/b", "c") + " | " + fs.join("a/b/", "c") + " | " + fs.join("a", "/abs") + " | " +
+        fs.join("", "x/y") + " | " + fs.join("/", ""))
+    println(fs.baseName("/a/b/c") + " " + fs.baseName("a/b/c/") + " " + fs.baseName("/") + " " +
+        fs.baseName("") + " " + fs.baseName("c"))
+    println(fs.dirName("/a/b/c") + " " + fs.dirName("c") + " " + fs.dirName("/c") + " " +
+        fs.dirName("//c") + " " + fs.dirName("/a//b") + " " + fs.dirName("a/b"))
+    println(fs.extension("a/b.txt") + " " + fs.extension(".bashrc") + " " + fs.extension("x.tar.gz") +
+        " " + fs.extension("a.") + fs.extension("noext"))
+    match io.readStdin() {
+        Ok(s) {
+            let ls = io.splitLines(s)
+            println(len(ls).toStr() + " lines: " + ls[0] + " / " + ls[1])
+        }
+        Err(e) { println(e.toStr()) }
+    }
+    var w = io.stdout()
+    w.writeln("buffered 1")
+    var e = io.stderr()
+    e.writeln("to stderr")
+    w.write("buffered ")
+    w.writeByte('2')
+    w.writeByte('\n')
+    w.flush()
+    println("args " + len(os.arguments()).toStr() + ", program set " + (len(os.argv()[0]) > 0).toStr())
+}

@@ -1,0 +1,1415 @@
+// std: the prelude, imported into every module; its public names are visible
+// unqualified. Everything here is ordinary obx code over the built-in
+// intrinsics (SPEC 11). The compiler knows two names from it: fractional
+// literals call fromFraction, and try needs the variants Ok and Err.
+//
+// Contents: Option, Result, Unit; Eq, Ord, Hash, Show and their primitive
+// implementations; print, println, eprintln; min, max; StrBuf and the basic
+// string helpers; Decimal (exact decimal arithmetic, the type of fractional
+// literals); sort; Map. The other library modules (lib/*.obx) build on these.
+
+// ---------------------------------------------------------------- core sums
+
+pub type Option[T] = value closed { Some(T); None }
+pub type Result[T, E] = value closed { Ok(T); Err(E) }
+pub type Unit = value record {}
+
+pub fn (o: &Option[T]) isSome(): bool {
+    match o {
+        Some(_) { return true }
+        None { return false }
+    }
+}
+
+pub fn (o: &Option[T]) isNone(): bool { return !o.isSome() }
+
+pub fn (o: Option[T]) unwrap(): T {
+    match move(o) {
+        Some(x) { return x }
+        None { panic("unwrap of None") }
+    }
+}
+
+// The value, or a panic with msg.
+pub fn (o: Option[T]) expect(msg: str): T {
+    match move(o) {
+        Some(x) { return x }
+        None { panic(msg) }
+    }
+}
+
+pub fn (o: Option[T]) unwrapOr(d: T): T {
+    match move(o) {
+        Some(x) { return x }
+        None { return d }
+    }
+}
+
+pub fn (a: &Option[T: Eq]) eq(b: &Option[T]): bool {
+    match a {
+        Some(x) {
+            match b {
+                Some(y) { return x == y }
+                None { return false }
+            }
+        }
+        None { return b.isNone() }
+    }
+}
+
+pub fn (o: &Option[T: Show]) toStr(): str {
+    match o {
+        Some(x) { return "Some(" + x.toStr() + ")" }
+        None { return "None" }
+    }
+}
+
+pub fn (r: &Result[T, E]) isOk(): bool {
+    match r {
+        Ok(_) { return true }
+        Err(_) { return false }
+    }
+}
+
+pub fn (r: &Result[T, E]) isErr(): bool { return !r.isOk() }
+
+// The Ok value; a panic on Err.
+pub fn (r: Result[T, E]) unwrap(): T {
+    match move(r) {
+        Ok(x) { return x }
+        Err(_) { panic("unwrap of Err") }
+    }
+}
+
+// The Ok value, or a panic with msg.
+pub fn (r: Result[T, E]) expect(msg: str): T {
+    match move(r) {
+        Ok(x) { return x }
+        Err(_) { panic(msg) }
+    }
+}
+
+pub fn (r: Result[T, E]) unwrapOr(d: T): T {
+    match move(r) {
+        Ok(x) { return x }
+        Err(_) { return d }
+    }
+}
+
+// The Ok value as an Option (the error is dropped).
+pub fn (r: Result[T, E]) ok(): Option[T] {
+    match move(r) {
+        Ok(x) { return Some(x) }
+        Err(_) { return None }
+    }
+}
+
+// The Err value as an Option (the value is dropped).
+pub fn (r: Result[T, E]) err(): Option[E] {
+    match move(r) {
+        Ok(_) { return None }
+        Err(e) { return Some(e) }
+    }
+}
+
+pub fn (r: &Result[T: Show, E: Show]) toStr(): str {
+    match r {
+        Ok(x) { return "Ok(" + x.toStr() + ")" }
+        Err(e) { return "Err(" + e.toStr() + ")" }
+    }
+}
+
+pub fn (u: Unit) eq(other: &Unit): bool { return true }
+pub fn (u: Unit) hash(): u64 { return 0 }
+pub fn (u: Unit) toStr(): str { return "()" }
+
+// ---------------------------------------------------------------- constraints
+
+pub type Eq = interface { fn (&Self) eq(other: &Self): bool }
+pub type Ord = interface { fn (&Self) cmp(other: &Self): int }
+pub type Hash = interface { fn (&Self) hash(): u64 }
+pub type Show = interface { fn (&Self) toStr(): str }
+
+fn b2i(b: bool): int {
+    if b { return 1 }
+    return 0
+}
+
+fn cmpOf(lt: bool, gt: bool): int {
+    if lt { return -1 }
+    if gt { return 1 }
+    return 0
+}
+
+const FNV_PRIME: u64 = 1099511628211
+const GOLDEN: u64 = 11400714819323198485
+const M64: u128 = 0xffffffffffffffff
+
+pub fn (a: int) eq(b: &int): bool { return a == b }
+pub fn (a: int) cmp(b: &int): int { return cmpOf(a < b, a > b) }
+pub fn (a: int) hash(): u64 { return (u64(a & 9223372036854775807) ^ u64(b2i(a < 0))) *% GOLDEN }
+pub fn (a: int) toStr(): str { return intToStr(a) }
+
+pub fn (a: i32) eq(b: &i32): bool { return a == b }
+pub fn (a: i32) cmp(b: &i32): int { return cmpOf(a < b, a > b) }
+pub fn (a: i32) hash(): u64 { return int(a).hash() }
+pub fn (a: i32) toStr(): str { return intToStr(int(a)) }
+
+pub fn (a: u32) eq(b: &u32): bool { return a == b }
+pub fn (a: u32) cmp(b: &u32): int { return cmpOf(a < b, a > b) }
+pub fn (a: u32) hash(): u64 { return int(a).hash() }
+pub fn (a: u32) toStr(): str { return intToStr(int(a)) }
+
+pub fn (a: u64) eq(b: &u64): bool { return a == b }
+pub fn (a: u64) cmp(b: &u64): int { return cmpOf(a < b, a > b) }
+pub fn (a: u64) hash(): u64 { return a *% GOLDEN }
+pub fn (a: u64) toStr(): str { return u64ToStr(a) }
+
+pub fn (a: byte) eq(b: &byte): bool { return a == b }
+pub fn (a: byte) cmp(b: &byte): int { return cmpOf(a < b, a > b) }
+pub fn (a: byte) hash(): u64 { return int(a).hash() }
+pub fn (a: byte) toStr(): str { return intToStr(int(a)) }
+
+pub fn (a: i128) eq(b: &i128): bool { return a == b }
+pub fn (a: i128) cmp(b: &i128): int { return cmpOf(a < b, a > b) }
+pub fn (a: i128) hash(): u64 { return u128(a & 170141183460469231731687303715884105727).hash() ^ u64(b2i(a < 0)) }
+pub fn (a: i128) toStr(): str { return i128ToStr(a) }
+
+pub fn (a: u128) eq(b: &u128): bool { return a == b }
+pub fn (a: u128) cmp(b: &u128): int { return cmpOf(a < b, a > b) }
+pub fn (a: u128) hash(): u64 { return (u64(a & M64) *% GOLDEN ^ u64(a >> 64)) *% GOLDEN }
+pub fn (a: u128) toStr(): str { return u128ToStr(a) }
+
+pub fn (a: float) eq(b: &float): bool { return a == b }
+pub fn (a: float) cmp(b: &float): int { return cmpOf(a < b, a > b) }
+// The shortest text that reads back as the same value: "0.1", "1e25",
+// "1.5e-7", "-0"; NaN, inf and -inf by name. Exponent form is used below
+// 1e-4 and from 1e17 (the %g rule at 17 digits).
+pub fn (a: float) toStr(): str {
+    if a != a { return "NaN" }
+    let s = floatToStr(a)
+    let e = indexOf(s, "e", 0)
+    if e < 0 { return s }
+    // floatToStr writes %g exponents ("e+25", "e-07"); drop "+" and zeros
+    var x = 0
+    var neg = false
+    for i in e + 1..len(s) {
+        let c = strByte(s, i)
+        if c == '-' { neg = true }
+        if isDigit(c) { x = x * 10 + int(c - '0') }
+    }
+    if neg { x = -x }
+    var mant = strSlice(s, 0, e)
+    // subnormals keep 15 digits from floatToStr; find the shortest one
+    if x <= -308 { mant = shortestMantissa(a, mant, x) }
+    return mant + "e" + intToStr(x)
+}
+
+// ------------------------------------------------------------ float math
+// libm, as methods on float (methods of a primitive live in std); the math
+// module adds constants, classification, parsing and fixed formatting.
+
+extern "c" fn sqrt(x: float): float
+extern "c" fn cbrt(x: float): float
+extern "c" fn pow(x: float, y: float): float
+extern "c" fn exp(x: float): float
+extern "c" fn log(x: float): float
+extern "c" fn log2(x: float): float
+extern "c" fn log10(x: float): float
+extern "c" fn sin(x: float): float
+extern "c" fn cos(x: float): float
+extern "c" fn tan(x: float): float
+extern "c" fn asin(x: float): float
+extern "c" fn acos(x: float): float
+extern "c" fn atan(x: float): float
+extern "c" fn atan2(y: float, x: float): float
+extern "c" fn sinh(x: float): float
+extern "c" fn cosh(x: float): float
+extern "c" fn tanh(x: float): float
+extern "c" fn floor(x: float): float
+extern "c" fn ceil(x: float): float
+extern "c" fn trunc(x: float): float
+extern "c" fn round(x: float): float
+extern "c" fn rint(x: float): float
+extern "c" fn fabs(x: float): float
+extern "c" fn fmod(x: float, y: float): float
+extern "c" fn hypot(x: float, y: float): float
+extern "c" fn copysign(x: float, y: float): float
+
+pub fn (x: float) sqrt(): float { return sqrt(x) }
+pub fn (x: float) cbrt(): float { return cbrt(x) }
+// x raised to y (C pow: 0^0 is 1, negative x needs an integral y).
+pub fn (x: float) pow(y: float): float { return pow(x, y) }
+pub fn (x: float) powi(n: int): float { return pow(x, float(n)) }
+pub fn (x: float) exp(): float { return exp(x) }
+// The natural logarithm.
+pub fn (x: float) ln(): float { return log(x) }
+pub fn (x: float) log2(): float { return log2(x) }
+pub fn (x: float) log10(): float { return log10(x) }
+pub fn (x: float) sin(): float { return sin(x) }
+pub fn (x: float) cos(): float { return cos(x) }
+pub fn (x: float) tan(): float { return tan(x) }
+pub fn (x: float) asin(): float { return asin(x) }
+pub fn (x: float) acos(): float { return acos(x) }
+pub fn (x: float) atan(): float { return atan(x) }
+// The angle of the point (x, y): y.atan2(x), like C atan2(y, x).
+pub fn (y: float) atan2(x: float): float { return atan2(y, x) }
+pub fn (x: float) sinh(): float { return sinh(x) }
+pub fn (x: float) cosh(): float { return cosh(x) }
+pub fn (x: float) tanh(): float { return tanh(x) }
+pub fn (x: float) floor(): float { return floor(x) }
+pub fn (x: float) ceil(): float { return ceil(x) }
+pub fn (x: float) trunc(): float { return trunc(x) }
+// To the nearest integer, halves away from zero (C round).
+pub fn (x: float) round(): float { return round(x) }
+// To the nearest integer, halves to even.
+pub fn (x: float) roundEven(): float { return rint(x) }
+pub fn (x: float) abs(): float { return fabs(x) }
+// The remainder of x / y with the sign of x (C fmod).
+pub fn (x: float) mod(y: float): float { return fmod(x, y) }
+pub fn (x: float) hypot(y: float): float { return hypot(x, y) }
+pub fn (x: float) copySign(y: float): float { return copysign(x, y) }
+pub fn (x: float) isNaN(): bool { return x != x }
+pub fn (x: float) isInf(): bool { return x == x && x - x != x - x }
+pub fn (x: float) isFinite(): bool { return x - x == x - x }
+
+// The mantissa with the fewest digits m such that m * 10^x reads back as a
+// (m is "-d.ddd" or "d.ddd", one digit before the point).
+fn shortestMantissa(a: float, mant: str, x: int): str {
+    var sign = ""
+    var digits = newStrBuf()
+    for i in 0..len(mant) {
+        let c = strByte(mant, i)
+        if c == '-' { sign = "-" }
+        if isDigit(c) { digits.addByte(c) }
+    }
+    let d = digits.toStr()
+    for k in 1..len(d) {
+        // d rounded half up to k digits; skip a carry out of the first digit
+        var bytes = strToBytes(strSlice(d, 0, k))
+        var carry = strByte(d, k) >= '5'
+        var i = k - 1
+        while carry && i >= 0 {
+            if bytes[i] == '9' {
+                bytes[i] = '0'
+                i -= 1
+            } else {
+                bytes[i] += 1
+                carry = false
+            }
+        }
+        if !carry {
+            let r = strFromBytes(&bytes)
+            var m = sign + strSlice(r, 0, 1)
+            if k > 1 { m += "." + strSlice(r, 1, k) }
+            var back: float = 0.0
+            if parseFloat(m + "e" + intToStr(x), mut &back) && back == a { return m }
+        }
+    }
+    return mant
+}
+
+pub fn (a: bool) eq(b: &bool): bool { return a == b }
+pub fn (a: bool) hash(): u64 {
+    if a { return GOLDEN }
+    return 0
+}
+pub fn (a: bool) toStr(): str {
+    if a { return "true" }
+    return "false"
+}
+
+pub fn (a: str) eq(b: &str): bool { return a == b }
+pub fn (a: str) cmp(b: &str): int { return cmpOf(a < b, a > b) }
+pub fn (a: str) toStr(): str { return a }
+// FNV-1a over the bytes.
+pub fn (s: str) hash(): u64 {
+    var h: u64 = 14695981039346656037
+    for i in 0..len(s) {
+        h = (h ^ u64(strByte(s, i))) *% FNV_PRIME
+    }
+    return h
+}
+
+pub fn min[T: Ord + copy](a: T, b: T): T {
+    if b < a { return b }
+    return a
+}
+
+pub fn max[T: Ord + copy](a: T, b: T): T {
+    if b > a { return b }
+    return a
+}
+
+// ---------------------------------------------------------------- output
+
+pub fn print[T: Show](x: T) { writeFd(1, x.toStr()) }
+pub fn println[T: Show](x: T) { writeFd(1, x.toStr() + "\n") }
+pub fn eprint[T: Show](x: T) { writeFd(2, x.toStr()) }
+pub fn eprintln[T: Show](x: T) { writeFd(2, x.toStr() + "\n") }
+
+// ---------------------------------------------------------------- strings
+
+// A string builder over a byte buffer: add pieces, then make the string once.
+pub type StrBuf = record { bytes: []byte }
+
+pub fn newStrBuf(): StrBuf { return StrBuf{bytes: []} }
+
+// slice: add(s) is a byte-run append; with slices it becomes one copy.
+pub fn (b: mut &StrBuf) add(s: str) {
+    for i in 0..len(s) { append(mut &b.bytes, strByte(s, i)) }
+}
+
+pub fn (b: mut &StrBuf) addByte(c: byte) { append(mut &b.bytes, c) }
+
+pub fn (b: mut &StrBuf) addInt(n: int) { b.add(intToStr(n)) }
+
+pub fn (b: mut &StrBuf) addLine(s: str) {
+    b.add(s)
+    append(mut &b.bytes, '\n')
+}
+
+// The number of bytes added so far.
+pub fn (b: &StrBuf) size(): int { return len(b.bytes) }
+
+pub fn (b: mut &StrBuf) clear() { replace(mut &b.bytes, []) }
+
+pub fn (b: &StrBuf) toStr(): str { return strFromBytes(&b.bytes) }
+
+pub fn substr(s: str, from: int, to: int): str { return strSlice(s, from, to) }
+
+// The first index of sub in s at or after from, or -1.
+pub fn indexOf(s: str, sub: str, from: int): int {
+    let n = len(sub)
+    if n == 0 {
+        if from <= len(s) { return from }
+        return -1
+    }
+    let first = strByte(sub, 0)
+    var i = from
+    while i + n <= len(s) {
+        if strByte(s, i) == first && matchAt(s, i, sub) { return i }
+        i += 1
+    }
+    return -1
+}
+
+// Whether sub occurs in s at byte offset at (which must leave room for it).
+fn matchAt(s: str, at: int, sub: str): bool {
+    for j in 0..len(sub) {
+        if strByte(s, at + j) != strByte(sub, j) { return false }
+    }
+    return true
+}
+
+pub fn startsWith(s: str, prefix: str): bool {
+    return len(prefix) <= len(s) && matchAt(s, 0, prefix)
+}
+
+pub fn endsWith(s: str, suffix: str): bool {
+    return len(suffix) <= len(s) && matchAt(s, len(s) - len(suffix), suffix)
+}
+
+pub fn contains(s: str, sub: str): bool { return indexOf(s, sub, 0) >= 0 }
+
+// The pieces of s between the bytes equal to sep ("" gives [""]).
+pub fn split(s: str, sep: byte): []str {
+    var out: []str = []
+    var start = 0
+    for i in 0..len(s) {
+        if strByte(s, i) == sep {
+            append(mut &out, strSlice(s, start, i))
+            start = i + 1
+        }
+    }
+    append(mut &out, strSlice(s, start, len(s)))
+    return out
+}
+
+// s without leading and trailing ASCII whitespace.
+pub fn trim(s: str): str {
+    var a = 0
+    var b = len(s)
+    while a < b && isSpace(strByte(s, a)) { a += 1 }
+    while b > a && isSpace(strByte(s, b - 1)) { b -= 1 }
+    return strSlice(s, a, b)
+}
+
+pub fn isSpace(c: byte): bool { return c == ' ' || c == '\n' || c == '\t' || c == '\r' }
+pub fn isDigit(c: byte): bool { return c >= '0' && c <= '9' }
+
+// A decimal int with an optional sign; None when s is not one or it overflows.
+// lib/strings has parseInt with a Result that says why.
+pub fn parseInt(s: str): Option[int] {
+    var i = 0
+    var neg = false
+    if len(s) > 0 && (strByte(s, 0) == '-' || strByte(s, 0) == '+') {
+        neg = strByte(s, 0) == '-'
+        i = 1
+    }
+    if i == len(s) { return None }
+    var n: i128 = 0
+    while i < len(s) {
+        let c = strByte(s, i)
+        if c < '0' || c > '9' { return None }
+        n = n * 10 + i128(c - '0')
+        if n > 9223372036854775808 { return None }
+        i += 1
+    }
+    if neg { n = -n }
+    if n > 9223372036854775807 { return None }
+    return Some(int(n))
+}
+
+pub fn repeat(s: str, n: int): str {
+    var b = newStrBuf()
+    for i in 0..n { b.add(s) }
+    return b.toStr()
+}
+
+// ---------------------------------------------------------------- Decimal
+//
+// An exact decimal number: sign, a coefficient of at most 38 digits
+// (0..10^38-1), a power-of-ten exponent and a display scale, as in obo
+// (design/decimal-language-design.md). The value is coef * 10^exp; the
+// display scale (0..65535) is how many fraction digits toStr shows and does
+// not take part in comparison: 1.0 == 1.00. Only finite values exist.
+//
+// The representation is canonical: the coefficient has no trailing zero
+// digit, and zero is positive with exponent 0. So eq and hash compare the
+// fields. The value range is obo's: a coefficient of at most 38 digits with
+// an exponent in -32768..32767.
+//
+// + - * and % are exact; a result that does not fit stops the program with
+// exit code 10 and "obx: decimal ..." on stderr, like integer overflow (this
+// library stop has no source position). div, quantize, round, toInt and parse
+// return a Result with a DecError instead. Display scale propagates as in obo:
+// + - and % take the larger scale, * the sum (capped so that integer digits
+// plus fraction digits stay within 38), div and quantize the requested scale.
+
+pub type Decimal = value record { coef: u128; exp: int; dscale: int; neg: bool }
+
+// The rounding modes of div, quantize and toInt.
+pub type RoundingMode = value closed {
+    HALF_EVEN          // to nearest, ties to the even neighbour (banker's)
+    HALF_AWAY          // to nearest, ties away from zero (school rounding)
+    HALF_TOWARD_ZERO   // to nearest, ties toward zero
+    TOWARD_ZERO        // truncate
+    AWAY               // away from zero when anything is dropped
+    FLOOR              // toward negative infinity
+    CEILING            // toward positive infinity
+    UNNECESSARY        // exact only: DecInexact if a nonzero digit is dropped
+}
+
+// Why a decimal operation failed; code() is obo's status number.
+pub type DecError = value closed {
+    DecOverflow    // 1: the result needs more than 38 digits at the scale, or its exponent is out of range
+    DecInexact     // 3: the exact result is not representable (UNNECESSARY, format)
+    DecInvalid     // 4: malformed decimal text
+    DecDivZero     // 5: division by zero
+    DecRange       // 6: a scale outside 0..32768
+    DecPrecision   // 7: decimal text with more than 38 significant digits
+    DecExponent    // 8: decimal text whose exponent is out of range
+    DecDisplay     // 9: decimal text whose display scale is outside 0..65535
+}
+
+pub fn (e: DecError) code(): int {
+    match e {
+        DecOverflow { return 1 }
+        DecInexact { return 3 }
+        DecInvalid { return 4 }
+        DecDivZero { return 5 }
+        DecRange { return 6 }
+        DecPrecision { return 7 }
+        DecExponent { return 8 }
+        DecDisplay { return 9 }
+    }
+}
+
+pub fn (e: DecError) toStr(): str {
+    match e {
+        DecOverflow { return "decimal overflow" }
+        DecInexact { return "decimal result is not exactly representable" }
+        DecInvalid { return "invalid decimal text" }
+        DecDivZero { return "decimal division by zero" }
+        DecRange { return "decimal scale is out of range" }
+        DecPrecision { return "decimal text has more than 38 significant digits" }
+        DecExponent { return "decimal exponent is out of range" }
+        DecDisplay { return "decimal display scale is out of range" }
+    }
+}
+
+pub fn (a: DecError) eq(b: &DecError): bool { return a.code() == b.code() }
+
+const COEF_MAX: u128 = 99999999999999999999999999999999999999
+const TEN38: u128 = 100000000000000000000000000000000000000
+const EXP_MIN = -32768
+const EXP_MAX = 32767
+const SCALE_MAX = 32768
+const DSCALE_MAX = 65535
+
+// Stops the program for a failed operator (exit code 10, as an arithmetic trap).
+fn decStop(e: DecError): Decimal {
+    writeFd(2, "obx: " + e.toStr() + "\n")
+    exit(10)
+}
+
+fn orStop(r: Result[Decimal, DecError]): Decimal {
+    match r {
+        Ok(d) { return d }
+        Err(e) { return decStop(e) }
+    }
+}
+
+fn zeroDec(dscale: int): Decimal { return Decimal{coef: 0, exp: 0, dscale: dscale, neg: false} }
+
+// The lang item: a fractional literal d.ddd with n digits after the point is
+// fromFraction(digits, n), with the written scale as display scale.
+pub fn fromFraction(digits: int, scale: int): Decimal {
+    return Decimal.fromUnits(digits, scale)
+}
+
+// units * 10^-scale with display scale `scale` (scale >= 0): fromUnits(1250, 2) is 12.50.
+pub fn (Decimal) fromUnits(units: int, scale: int): Decimal {
+    if scale < 0 || scale > DSCALE_MAX { return decStop(DecRange) }
+    var c = i128(units)
+    let neg = c < 0
+    if neg { c = -c }
+    return orStop(makeDec(neg, u256(u128(c)), -scale, scale))
+}
+
+pub fn (Decimal) fromInt(n: int): Decimal { return Decimal.fromUnits(n, 0) }
+
+pub fn decimalOf(n: int): Decimal { return Decimal.fromUnits(n, 0) }
+
+pub fn (Decimal) zero(): Decimal { return zeroDec(0) }
+
+// An i128 as a Decimal; DecOverflow if it has more than 38 digits.
+pub fn (Decimal) fromI128(n: i128): Result[Decimal, DecError] {
+    if n == -170141183460469231731687303715884105727 - 1 { return Err(DecOverflow) }
+    var c = n
+    let neg = c < 0
+    if neg { c = -c }
+    if u128(c) > COEF_MAX { return Err(DecOverflow) }
+    return makeDec(neg, u256(u128(c)), 0, 0)
+}
+
+// Builds a canonical Decimal from a 256-bit magnitude: strips trailing zeros,
+// then checks 38 digits (DecInexact) and the exponent range (DecOverflow).
+fn makeDec(neg: bool, c: U256, exp: int, dscale: int): Result[Decimal, DecError] {
+    if isZeroU(c) { return Ok(zeroDec(dscale)) }
+    var v = c
+    var e = exp
+    while v.hi != 0 {
+        let d = divSmall(v, 10)
+        if d.r != 0 { return Err(DecInexact) }
+        v = d.q
+        e += 1
+    }
+    var x = v.lo
+    while x % 10 == 0 {
+        x = x / 10
+        e += 1
+    }
+    if x > COEF_MAX { return Err(DecInexact) }
+    if e < EXP_MIN || e + digits(x) > EXP_MAX + 38 { return Err(DecOverflow) }
+    return Ok(Decimal{coef: x, exp: e, dscale: dscale, neg: neg})
+}
+
+// The number of decimal digits of x (0 for 0).
+fn digits(x: u128): int {
+    var n = 0
+    while n < 39 && x >= pow10(n) { n += 1 }
+    return n
+}
+
+// ---- accessors
+
+// The display scale: the number of fraction digits toStr shows.
+pub fn (d: Decimal) scale(): int { return d.dscale }
+// The exponent of the canonical form (the coefficient has no trailing zero).
+pub fn (d: Decimal) exponent(): int { return d.exp }
+// The canonical coefficient's magnitude.
+pub fn (d: Decimal) coefficient(): u128 { return d.coef }
+pub fn (d: Decimal) isZero(): bool { return d.coef == 0 }
+pub fn (d: Decimal) isNeg(): bool { return d.neg }
+// -1, 0 or 1.
+pub fn (d: Decimal) sign(): int {
+    if d.coef == 0 { return 0 }
+    if d.neg { return -1 }
+    return 1
+}
+
+// The same value with display scale s; DecInexact if it has more fraction
+// digits than s (use quantize to round), DecRange if s is outside 0..65535.
+pub fn (d: Decimal) withScale(s: int): Result[Decimal, DecError] {
+    if s < 0 || s > DSCALE_MAX { return Err(DecRange) }
+    if d.coef != 0 && d.exp + s < 0 { return Err(DecInexact) }
+    return Ok(Decimal{coef: d.coef, exp: d.exp, dscale: s, neg: d.neg})
+}
+
+// ---- arithmetic
+
+pub fn (a: Decimal) neg(): Decimal {
+    return Decimal{coef: a.coef, exp: a.exp, dscale: a.dscale, neg: a.coef != 0 && !a.neg}
+}
+
+pub fn (a: Decimal) abs(): Decimal {
+    return Decimal{coef: a.coef, exp: a.exp, dscale: a.dscale, neg: false}
+}
+
+pub fn (a: Decimal) add(b: Decimal): Decimal { return orStop(a.addExact(b)) }
+pub fn (a: Decimal) sub(b: Decimal): Decimal { return orStop(a.addExact(b.neg())) }
+pub fn (a: Decimal) mul(b: Decimal): Decimal { return orStop(a.mulExact(b)) }
+
+// Exact sum, DecInexact if it needs more than 38 digits, DecOverflow if the
+// exponent is out of range. Display scale: the larger of the two.
+pub fn (a: Decimal) addExact(b: Decimal): Result[Decimal, DecError] {
+    let ds = max(a.dscale, b.dscale)
+    if a.coef == 0 { return Ok(Decimal{coef: b.coef, exp: b.exp, dscale: ds, neg: b.neg}) }
+    if b.coef == 0 { return Ok(Decimal{coef: a.coef, exp: a.exp, dscale: ds, neg: a.neg}) }
+    let e = min(a.exp, b.exp)
+    let sa = a.exp - e
+    let sb = b.exp - e
+    // the operand below the other's last digit by more than 76 places makes
+    // the exact sum longer than 38 digits
+    if sa > 76 || sb > 76 { return Err(DecInexact) }
+    if sa + digits(a.coef) <= 38 && sb + digits(b.coef) <= 38 {
+        // both aligned coefficients are below 10^38, so u128 holds the sum
+        let x = a.coef * pow10(sa)
+        let y = b.coef * pow10(sb)
+        if a.neg == b.neg { return makeDec(a.neg, u256(x + y), e, ds) }
+        if x == y { return Ok(zeroDec(ds)) }
+        if x > y { return makeDec(a.neg, u256(x - y), e, ds) }
+        return makeDec(b.neg, u256(y - x), e, ds)
+    }
+    let x = try mulPow10(u256(a.coef), sa, DecInexact)
+    let y = try mulPow10(u256(b.coef), sb, DecInexact)
+    if a.neg == b.neg { return makeDec(a.neg, try addU(x, y, DecInexact), e, ds) }
+    let c = cmpU(x, y)
+    if c == 0 { return Ok(zeroDec(ds)) }
+    if c > 0 { return makeDec(a.neg, subU(x, y), e, ds) }
+    return makeDec(b.neg, subU(y, x), e, ds)
+}
+
+// Exact product. Display scale: the sum of the two, capped at 38 minus the
+// result's integer digits (the value is never rounded).
+pub fn (a: Decimal) mulExact(b: Decimal): Result[Decimal, DecError] {
+    var r = zeroDec(0)
+    if a.coef != 0 && b.coef != 0 {
+        r = try makeDec(a.neg != b.neg, mul128(a.coef, b.coef), a.exp + b.exp, 0)
+    }
+    var intd = 0
+    if r.coef != 0 { intd = max(0, digits(r.coef) + r.exp) }
+    r.dscale = min(min(a.dscale + b.dscale, DSCALE_MAX), max(0, 38 - intd))
+    return Ok(r)
+}
+
+// The truncating remainder: a - trunc(a / b) * b, with the sign of a. Stops
+// the program when b is zero. Display scale: the larger of the two.
+pub fn (a: Decimal) rem(b: Decimal): Decimal {
+    if b.coef == 0 { return decStop(DecDivZero) }
+    let ds = max(a.dscale, b.dscale)
+    if a.coef == 0 { return zeroDec(ds) }
+    let d = a.exp - b.exp
+    var r: u128 = a.coef
+    var exp = a.exp
+    if d >= 0 {
+        // a.coef * 10^d mod b.coef
+        r = mulMod(a.coef % b.coef, powMod10(d, b.coef), b.coef)
+        exp = b.exp
+    } else if -d < 38 {
+        let bb = mul128(b.coef, pow10(-d))
+        if bb.hi == 0 && a.coef >= bb.lo { r = a.coef % bb.lo }
+    }
+    return orStop(makeDec(a.neg, u256(r), exp, ds))
+}
+
+// a / b rounded with mode to `scale` fraction digits (0..32768), which is also
+// the display scale. DecDivZero, DecRange for a bad scale, DecOverflow if the
+// quotient needs more than 38 digits, DecInexact for UNNECESSARY.
+pub fn (a: Decimal) div(b: Decimal, scale: int, mode: RoundingMode): Result[Decimal, DecError] {
+    if scale < 0 || scale > SCALE_MAX { return Err(DecRange) }
+    if b.coef == 0 { return Err(DecDivZero) }
+    if a.coef == 0 { return Ok(zeroDec(scale)) }
+    let neg = a.neg != b.neg
+    // q = a.coef * 10^t / b.coef, t = a.exp - b.exp + scale
+    let t = a.exp - b.exp + scale
+    var n = u256(a.coef)
+    var d = u256(b.coef)
+    var q = u256(0)
+    var r = n
+    var half = -1
+    if t >= 0 {
+        n = try mulPow10(n, t, DecOverflow)
+        let qr = divModU(n, d)
+        q = qr.q
+        r = qr.r
+        half = cmpHalf(r, d)
+    } else {
+        match mulPow10(d, -t, DecOverflow) {
+            Ok(dd) {
+                let qr = divModU(n, dd)
+                q = qr.q
+                r = qr.r
+                half = cmpHalf(r, dd)
+            }
+            Err(_) {}   // the divisor exceeds 2^256: the quotient is 0 and the remainder below half
+        }
+    }
+    if q.hi != 0 || q.lo > TEN38 { return Err(DecOverflow) }
+    let inc = roundIncrement(mode, neg, half, !isZeroU(r), q.lo % 2 == 1)
+    if inc < 0 { return Err(DecInexact) }
+    var c = q.lo
+    if inc > 0 {
+        if c > COEF_MAX { return Err(DecOverflow) }
+        c += 1
+    }
+    return makeDec(neg, u256(c), -scale, scale)
+}
+
+// The value rounded with mode to `scale` fraction digits (0..32768), which is
+// also the display scale. DecOverflow if that needs more than 38 digits.
+pub fn (a: Decimal) quantize(scale: int, mode: RoundingMode): Result[Decimal, DecError] {
+    if scale < 0 || scale > SCALE_MAX { return Err(DecRange) }
+    if a.coef == 0 { return Ok(zeroDec(scale)) }
+    let shift = a.exp + scale
+    if shift >= 0 {
+        if digits(a.coef) + shift > 38 { return Err(DecOverflow) }
+        return Ok(Decimal{coef: a.coef, exp: a.exp, dscale: scale, neg: a.neg})
+    }
+    let k = -shift
+    var q: u128 = 0
+    var r = a.coef
+    var half = -1   // when k > 38, the coefficient is below a tenth of 10^k
+    if k <= 38 {
+        let p = pow10(k)
+        q = a.coef / p
+        r = a.coef % p
+        half = cmpOf(r * 2 < p, r * 2 > p)
+    }
+    let inc = roundIncrement(mode, a.neg, half, r != 0, q % 2 == 1)
+    if inc < 0 { return Err(DecInexact) }
+    if inc > 0 { q += 1 }
+    return makeDec(a.neg, u256(q), -scale, scale)
+}
+
+// Rounding at `scale` fraction digits: round is HALF_EVEN (2.5 -> 2,
+// 3.5 -> 4), roundAway HALF_AWAY (2.5 -> 3), floor FLOOR, ceil CEILING and
+// trunc TOWARD_ZERO. Errors as for quantize.
+pub fn (a: Decimal) round(scale: int): Result[Decimal, DecError] { return a.quantize(scale, HALF_EVEN) }
+pub fn (a: Decimal) roundAway(scale: int): Result[Decimal, DecError] { return a.quantize(scale, HALF_AWAY) }
+pub fn (a: Decimal) floor(scale: int): Result[Decimal, DecError] { return a.quantize(scale, FLOOR) }
+pub fn (a: Decimal) ceil(scale: int): Result[Decimal, DecError] { return a.quantize(scale, CEILING) }
+pub fn (a: Decimal) trunc(scale: int): Result[Decimal, DecError] { return a.quantize(scale, TOWARD_ZERO) }
+
+// The value rounded with mode to an int; DecOverflow outside int's range.
+pub fn (a: Decimal) toInt(mode: RoundingMode): Result[int, DecError] {
+    let q = try a.quantize(0, mode)
+    if q.coef == 0 { return Ok(0) }
+    if q.exp + digits(q.coef) > 19 { return Err(DecOverflow) }
+    var v = i128(q.coef) * i128(pow10(q.exp))
+    if q.neg { v = -v }
+    if v < -9223372036854775808 || v > 9223372036854775807 { return Err(DecOverflow) }
+    return Ok(int(v))
+}
+
+// The nearest float (lossy: binary floats cannot hold most decimals).
+pub fn (a: Decimal) toFloat(): float {
+    var f: float = 0.0
+    parseFloat(a.canonical(), mut &f)
+    return f
+}
+
+// 1 when the mode rounds the kept digits up by one unit, 0 when it keeps
+// them, -1 when UNNECESSARY would drop something. half compares the dropped
+// part with half a unit (-1, 0, 1).
+fn roundIncrement(mode: RoundingMode, neg: bool, half: int, dropped: bool, odd: bool): int {
+    match mode {
+        HALF_EVEN { return b2i(half > 0 || half == 0 && odd) }
+        HALF_AWAY { return b2i(half >= 0 && dropped) }
+        HALF_TOWARD_ZERO { return b2i(half > 0) }
+        TOWARD_ZERO { return 0 }
+        AWAY { return b2i(dropped) }
+        FLOOR { return b2i(neg && dropped) }
+        CEILING { return b2i(!neg && dropped) }
+        UNNECESSARY {
+            if dropped { return -1 }
+            return 0
+        }
+    }
+}
+
+// ---- comparison
+
+pub fn (a: Decimal) cmp(b: &Decimal): int {
+    if a.coef == 0 || b.coef == 0 || a.neg != b.neg {
+        return cmpOf(a.sign() < b.sign(), a.sign() > b.sign())
+    }
+    let da = digits(a.coef)
+    let db = digits(b.coef)
+    let ea = a.exp + da
+    let eb = b.exp + db
+    var mag = 0
+    if ea != eb {
+        mag = cmpOf(ea < eb, ea > eb)
+    } else {
+        // same leading digit position: pad the shorter coefficient to the same length
+        var x = a.coef
+        var y = b.coef
+        if da < db { x = x * pow10(db - da) } else { y = y * pow10(da - db) }
+        mag = cmpOf(x < y, x > y)
+    }
+    if a.neg { return -mag }
+    return mag
+}
+
+// Equal values are equal whatever their display scales (the form is canonical).
+pub fn (a: Decimal) eq(b: &Decimal): bool {
+    return a.coef == b.coef && a.exp == b.exp && a.neg == b.neg
+}
+
+pub fn (a: Decimal) hash(): u64 {
+    var h = a.coef.hash() ^ u64(a.exp + 100000) *% FNV_PRIME
+    if a.neg { h = h ^ GOLDEN }
+    return h *% GOLDEN
+}
+
+// ---- text
+
+// The display text: fixed notation with exactly scale() fraction digits.
+// When the value has more fraction digits than its display scale (after a
+// multiplication whose scale was capped) it is the canonical text instead.
+pub fn (d: Decimal) toStr(): str {
+    match d.format() {
+        Ok(s) { return s }
+        Err(_) { return d.canonical() }
+    }
+}
+
+// Fixed notation with exactly scale() fraction digits and no exponent;
+// DecInexact if that would drop a nonzero digit.
+pub fn (d: Decimal) format(): Result[str, DecError] {
+    let ds = d.dscale
+    if d.coef != 0 && d.exp + ds < 0 { return Err(DecInexact) }
+    let digs = u128ToStr(d.coef)
+    var n = len(digs)
+    if d.coef == 0 { n = 0 }
+    let pos = n + d.exp   // digits before the point
+    var intd = 1
+    if pos > 0 { intd = pos }
+    var size = intd
+    if ds > 0 { size += 1 + ds }
+    if d.neg { size += 1 }
+    var out = array(size, byte('0'))
+    var at = 0
+    if d.neg {
+        out[0] = '-'
+        at = 1
+    }
+    for j in 0..pos {
+        if j < n { out[at] = strByte(digs, j) }
+        at += 1
+    }
+    if pos <= 0 { at += 1 }   // the leading 0
+    if ds > 0 {
+        out[at] = '.'
+        at += 1
+        for j in 0..ds {
+            let idx = pos + j
+            if idx >= 0 && idx < n { out[at] = strByte(digs, idx) }
+            at += 1
+        }
+    }
+    return Ok(strFromBytes(&out))
+}
+
+// The shortest exact text: no trailing fraction zeros, plain notation unless
+// that is longer than 128 characters, then d.ddde[-]n. For keys and storage.
+pub fn (d: Decimal) canonical(): str {
+    if d.coef == 0 { return "0" }
+    let digs = u128ToStr(d.coef)
+    let n = len(digs)
+    let pos = n + d.exp
+    var sign = ""
+    if d.neg { sign = "-" }
+    var plain = 0
+    if pos <= 0 { plain = 2 - pos + n } else if pos >= n { plain = pos } else { plain = n + 1 }
+    if plain > 128 {
+        var m = strSlice(digs, 0, 1)
+        if n > 1 { m = m + "." + strSlice(digs, 1, n) }
+        return sign + m + "e" + intToStr(d.exp + n - 1)
+    }
+    if pos <= 0 { return sign + "0." + repeat("0", -pos) + digs }
+    if pos >= n { return sign + digs + repeat("0", pos - n) }
+    return sign + strSlice(digs, 0, pos) + "." + strSlice(digs, pos, n)
+}
+
+// Parses [+-]digits[.digits][(e|E)[+-]digits], keeping the written scale:
+// "1.50" has display scale 2, "1.5e3" is 1500 with scale 0, "1.2300e-2" is
+// 0.012300. Nothing else is accepted (no spaces, "_", ".5", "1." or NaN).
+// Errors, in this order: DecInvalid (syntax), DecPrecision (more than 38
+// significant digits), DecDisplay (scale above 65535), DecExponent.
+// slice: parse(s) can take a byte range of a larger text.
+pub fn (Decimal) parse(s: str): Result[Decimal, DecError] {
+    let n = len(s)
+    var i = 0
+    var neg = false
+    if n > 0 && (strByte(s, 0) == '+' || strByte(s, 0) == '-') {
+        neg = strByte(s, 0) == '-'
+        i = 1
+    }
+    var coef: u128 = 0
+    var sig = 0           // significant digits taken into coef
+    var extraZeros = 0    // zero digits after the 38th significant one
+    var tooLong = false
+    var frac = 0
+    let intStart = i
+    var inFrac = false
+    while i < n {
+        let c = strByte(s, i)
+        if c == '.' && !inFrac && i > intStart {
+            inFrac = true
+            i += 1
+            if i == n || !isDigit(strByte(s, i)) { return Err(DecInvalid) }
+            continue
+        }
+        if !isDigit(c) { break }
+        let v = u128(c - '0')
+        if sig == 0 {
+            if v != 0 {
+                coef = v
+                sig = 1
+            }
+        } else if sig < 38 {
+            coef = coef * 10 + v
+            sig += 1
+        } else if v != 0 {
+            tooLong = true
+        } else {
+            extraZeros += 1
+        }
+        if inFrac { frac += 1 }
+        i += 1
+    }
+    if i == intStart { return Err(DecInvalid) }
+    var exp = 0
+    if i < n && (strByte(s, i) == 'e' || strByte(s, i) == 'E') {
+        i += 1
+        var eneg = false
+        if i < n && (strByte(s, i) == '+' || strByte(s, i) == '-') {
+            eneg = strByte(s, i) == '-'
+            i += 1
+        }
+        if i == n || !isDigit(strByte(s, i)) { return Err(DecInvalid) }
+        while i < n && isDigit(strByte(s, i)) {
+            if exp < 1000000000000000 { exp = exp * 10 + int(strByte(s, i) - '0') }
+            i += 1
+        }
+        if eneg { exp = -exp }
+    }
+    if i != n { return Err(DecInvalid) }
+    if tooLong { return Err(DecPrecision) }
+    let ds = max(0, frac - exp)
+    if ds > DSCALE_MAX { return Err(DecDisplay) }
+    if coef == 0 { return Ok(zeroDec(ds)) }
+    var stripped = 0
+    while coef % 10 == 0 {
+        coef = coef / 10
+        stripped += 1
+    }
+    let e = exp - frac + stripped + extraZeros
+    if e < EXP_MIN || e + digits(coef) > EXP_MAX + 38 { return Err(DecExponent) }
+    return Ok(Decimal{coef: coef, exp: e, dscale: ds, neg: neg})
+}
+
+// The sum of xs (0 for none); stops the program on overflow like +.
+// slice: sum(xs) takes a &[Decimal].
+pub fn sumDecimals(xs: &[]Decimal): Decimal {
+    var s = zeroDec(0)
+    for x in xs { s = s + x }
+    return s
+}
+
+// ---- 256-bit magnitudes for the exact intermediates
+
+type U256 = value record { hi: u128; lo: u128 }
+type DivMod = value record { q: U256; r: U256 }
+type DivSmall = value record { q: U256; r: u128 }
+
+fn u256(x: u128): U256 { return U256{hi: 0, lo: x} }
+
+fn isZeroU(a: U256): bool { return a.hi == 0 && a.lo == 0 }
+
+fn cmpU(a: U256, b: U256): int {
+    if a.hi != b.hi { return cmpOf(a.hi < b.hi, a.hi > b.hi) }
+    return cmpOf(a.lo < b.lo, a.lo > b.lo)
+}
+
+fn addU(a: U256, b: U256, e: DecError): Result[U256, DecError] {
+    let lo = a.lo +% b.lo
+    var carry: u128 = 0
+    if lo < a.lo { carry = 1 }
+    let h1 = a.hi +% b.hi
+    let hi = h1 +% carry
+    if h1 < a.hi || hi < h1 { return Err(e) }
+    return Ok(U256{hi: hi, lo: lo})
+}
+
+// a - b for a >= b, or modulo 2^256 otherwise.
+fn subU(a: U256, b: U256): U256 {
+    var borrow: u128 = 0
+    if a.lo < b.lo { borrow = 1 }
+    return U256{hi: a.hi -% b.hi -% borrow, lo: a.lo -% b.lo}
+}
+
+// The full product of two 128-bit numbers, from 64-bit halves.
+fn mul128(a: u128, b: u128): U256 {
+    let a0 = a & M64
+    let a1 = a >> 64
+    let b0 = b & M64
+    let b1 = b >> 64
+    let p00 = a0 * b0
+    let p01 = a0 * b1
+    let p10 = a1 * b0
+    let p11 = a1 * b1
+    let mid = (p00 >> 64) + (p01 & M64) + (p10 & M64)
+    return U256{hi: p11 + (p01 >> 64) + (p10 >> 64) + (mid >> 64), lo: (p00 & M64) | (mid << 64)}
+}
+
+// a * m for m < 2^64; Err(e) on overflow.
+fn mulSmall(a: U256, m: u128, e: DecError): Result[U256, DecError] {
+    let t0 = (a.lo & M64) * m
+    let t1 = (a.lo >> 64) * m + (t0 >> 64)
+    let t2 = (a.hi & M64) * m + (t1 >> 64)
+    let t3 = (a.hi >> 64) * m + (t2 >> 64)
+    if t3 >> 64 != 0 { return Err(e) }
+    return Ok(U256{hi: (t2 & M64) | (t3 << 64), lo: (t0 & M64) | (t1 << 64)})
+}
+
+fn mulPow10(a: U256, k: int, e: DecError): Result[U256, DecError] {
+    var x = a
+    var left = k
+    while left > 0 {
+        let take = min(left, 19)
+        x = try mulSmall(x, pow10(take), e)
+        left -= take
+    }
+    return Ok(x)
+}
+
+// a / d and a % d for 0 < d < 2^64.
+fn divSmall(a: U256, d: u128): DivSmall {
+    let qh = a.hi / d
+    let x1 = ((a.hi % d) << 64) | (a.lo >> 64)
+    let x0 = ((x1 % d) << 64) | (a.lo & M64)
+    return DivSmall{q: U256{hi: qh, lo: ((x1 / d) << 64) | (x0 / d)}, r: x0 % d}
+}
+
+// Compares 2 * r with d: -1, 0 or 1.
+fn cmpHalf(r: U256, d: U256): int {
+    if r.hi >> 127 != 0 { return 1 }
+    return cmpU(U256{hi: (r.hi << 1) | (r.lo >> 127), lo: r.lo << 1}, d)
+}
+
+// n / d and n % d for d > 0: native when both fit 128 bits, else binary long division.
+fn divModU(n: U256, d: U256): DivMod {
+    if n.hi == 0 && d.hi == 0 {
+        return DivMod{q: u256(n.lo / d.lo), r: u256(n.lo % d.lo)}
+    }
+    if cmpU(n, d) < 0 { return DivMod{q: u256(0), r: n} }
+    if d.hi == 0 && d.lo >> 64 == 0 {
+        let s = divSmall(n, d.lo)
+        return DivMod{q: s.q, r: u256(s.r)}
+    }
+    var q = u256(0)
+    var r = u256(0)
+    var i = 255
+    while i >= 0 && bitU(n, i) == 0 { i -= 1 }
+    while i >= 0 {
+        let top = r.hi >> 127 != 0
+        r = U256{hi: (r.hi << 1) | (r.lo >> 127), lo: (r.lo << 1) | bitU(n, i)}
+        if top || cmpU(r, d) >= 0 {
+            r = subU(r, d)
+            if i >= 128 { q.hi = q.hi | (u128(1) << (i - 128)) } else { q.lo = q.lo | (u128(1) << i) }
+        }
+        i -= 1
+    }
+    return DivMod{q: q, r: r}
+}
+
+fn bitU(a: U256, i: int): u128 {
+    if i >= 128 { return (a.hi >> (i - 128)) & 1 }
+    return (a.lo >> i) & 1
+}
+
+// x * y mod m for x, y < m.
+fn mulMod(x: u128, y: u128, m: u128): u128 {
+    return divModU(mul128(x, y), u256(m)).r.lo
+}
+
+// 10^k mod m.
+fn powMod10(k: int, m: u128): u128 {
+    var base = 10 % m
+    var acc = 1 % m
+    var e = k
+    while e > 0 {
+        if e % 2 == 1 { acc = mulMod(acc, base, m) }
+        base = mulMod(base, base, m)
+        e = e / 2
+    }
+    return acc
+}
+
+fn pow10(k: int): u128 {
+    match k {
+        0 { return 1 }
+        1 { return 10 }
+        2 { return 100 }
+        3 { return 1000 }
+        4 { return 10000 }
+        5 { return 100000 }
+        6 { return 1000000 }
+        7 { return 10000000 }
+        8 { return 100000000 }
+        9 { return 1000000000 }
+        10 { return 10000000000 }
+        11 { return 100000000000 }
+        12 { return 1000000000000 }
+        13 { return 10000000000000 }
+        14 { return 100000000000000 }
+        15 { return 1000000000000000 }
+        16 { return 10000000000000000 }
+        17 { return 100000000000000000 }
+        18 { return 1000000000000000000 }
+        19 { return 10000000000000000000 }
+        20 { return 100000000000000000000 }
+        21 { return 1000000000000000000000 }
+        22 { return 10000000000000000000000 }
+        23 { return 100000000000000000000000 }
+        24 { return 1000000000000000000000000 }
+        25 { return 10000000000000000000000000 }
+        26 { return 100000000000000000000000000 }
+        27 { return 1000000000000000000000000000 }
+        28 { return 10000000000000000000000000000 }
+        29 { return 100000000000000000000000000000 }
+        30 { return 1000000000000000000000000000000 }
+        31 { return 10000000000000000000000000000000 }
+        32 { return 100000000000000000000000000000000 }
+        33 { return 1000000000000000000000000000000000 }
+        34 { return 10000000000000000000000000000000000 }
+        35 { return 100000000000000000000000000000000000 }
+        36 { return 1000000000000000000000000000000000000 }
+        37 { return 10000000000000000000000000000000000000 }
+        38 { return 100000000000000000000000000000000000000 }
+        else { panic("pow10: exponent out of range") }
+    }
+}
+
+// ---------------------------------------------------------------- sort
+
+// Heap sort: in place, O(n log n), no allocation, not stable (lib/collections
+// has the stable sortBy).
+// slice: sort(xs) takes a mut &[T].
+pub fn sort[T: Ord](xs: mut &[]T) {
+    let n = len(xs)
+    var i = n / 2
+    while i > 0 {
+        i -= 1
+        siftDown(xs, i, n)
+    }
+    var end = n
+    while end > 1 {
+        end -= 1
+        swap(xs, 0, end)
+        siftDown(xs, 0, end)
+    }
+}
+
+fn siftDown[T: Ord](xs: mut &[]T, start: int, end: int) {
+    var root = start
+    while true {
+        var child = root * 2 + 1
+        if child >= end { break }
+        if child + 1 < end && xs[child] < xs[child + 1] { child += 1 }
+        if xs[root] < xs[child] {
+            swap(xs, root, child)
+            root = child
+        } else {
+            break
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Map
+//
+// A hash map that keeps its entries in insertion order in three parallel
+// arrays (keys, values, hashes) and finds them through an open-addressing
+// index (linear probing, at most half full). keyAt(i)/valAt(i) for i in
+// 0..size() walk the entries in insertion order; remove moves the last entry
+// into the hole, so it changes that order.
+
+pub type Map[K: Eq + Hash, V] = record {
+    keys: []K
+    vals: []V
+    hashes: []u64
+    index: []int   // -1 or an entry number; the length is a power of two
+    shift: int     // 64 - log2(len(index))
+}
+
+type Probe = value record { slot: int; entry: int }
+
+pub fn newMap[K: Eq + Hash, V](): Map[K, V] {
+    return Map{keys: [], vals: [], hashes: [], index: array(8, -1), shift: 61}
+}
+
+fn (m: &Map[K, V]) home(h: u64): int { return int((h *% GOLDEN) >> m.shift) }
+
+// The slot holding k, or the empty slot where it would go (entry -1).
+fn (m: &Map[K, V]) find(k: &K, h: u64): Probe {
+    let mask = len(m.index) - 1
+    var i = m.home(h)
+    while true {
+        let e = m.index[i]
+        if e < 0 { return Probe{slot: i, entry: -1} }
+        if m.hashes[e] == h && m.keys[e] == k { return Probe{slot: i, entry: e} }
+        i = (i + 1) & mask
+    }
+    panic("Map: no free slot")
+}
+
+pub fn (m: &Map[K, V]) size(): int { return len(m.keys) }
+
+pub fn (m: &Map[K, V]) has(k: &K): bool { return m.find(k, k.hash()).entry >= 0 }
+
+pub fn (m: &Map[K, V: copy]) get(k: &K): Option[V] {
+    let p = m.find(k, k.hash())
+    if p.entry < 0 { return None }
+    return Some(m.vals[p.entry])
+}
+
+pub fn (m: &Map[K, V: copy]) getOr(k: &K, d: V): V {
+    let p = m.find(k, k.hash())
+    if p.entry < 0 { return d }
+    return m.vals[p.entry]
+}
+
+// The value stored under k, borrowed from the map; stops the program if absent.
+pub fn (m: &Map[K, V]) at(k: K): &V {
+    let p = m.find(&k, k.hash())
+    if p.entry < 0 { panic("Map.at: no such key") }
+    return &m.vals[p.entry]
+}
+
+// The value stored under k, mutably borrowed; stops the program if absent.
+pub fn (m: mut &Map[K, V]) atMut(k: K): mut &V {
+    let p = m.find(&k, k.hash())
+    if p.entry < 0 { panic("Map.atMut: no such key") }
+    return mut &m.vals[p.entry]
+}
+
+// The value under k, mutably borrowed, after storing d there if k was
+// absent: `let n = counts.atOrPut(word, 0); n += 1`.
+pub fn (m: mut &Map[K, V]) atOrPut(k: K, d: V): mut &V {
+    let h = k.hash()
+    let p = m.find(&k, h)
+    if p.entry >= 0 { return mut &m.vals[p.entry] }
+    m.put(k, d)
+    return mut &m.vals[len(m.vals) - 1]
+}
+
+// Entry i in insertion order, 0 <= i < size().
+pub fn (m: &Map[K, V]) keyAt(i: int): &K { return &m.keys[i] }
+pub fn (m: &Map[K, V]) valAt(i: int): &V { return &m.vals[i] }
+pub fn (m: mut &Map[K, V]) valAtMut(i: int): mut &V { return mut &m.vals[i] }
+
+// The keys (values) in insertion order.
+pub fn (m: &Map[K: copy, V]) keys(): []K {
+    var out: []K = []
+    for k in m.keys { append(mut &out, k) }
+    return out
+}
+
+pub fn (m: &Map[K, V: copy]) values(): []V {
+    var out: []V = []
+    for v in m.vals { append(mut &out, v) }
+    return out
+}
+
+// Stores v under k, replacing (and dropping) an older value.
+pub fn (m: mut &Map[K, V]) put(k: K, v: V) {
+    let h = k.hash()
+    let p = m.find(&k, h)
+    if p.entry >= 0 {
+        replace(mut &m.vals[p.entry], v)
+        return
+    }
+    m.index[p.slot] = len(m.keys)
+    append(mut &m.keys, k)
+    append(mut &m.vals, v)
+    append(mut &m.hashes, h)
+    if 2 * len(m.keys) > len(m.index) { m.grow() }
+}
+
+// Removes k and returns its value, if it was there.
+pub fn (m: mut &Map[K, V]) remove(k: &K): Option[V] {
+    let p = m.find(k, k.hash())
+    if p.entry < 0 { return None }
+    m.unlink(p.slot)
+    let last = len(m.keys) - 1
+    if p.entry != last {
+        // the last entry moves into the hole: repoint its slot
+        let s = m.slotOf(last)
+        m.index[s] = p.entry
+        swap(mut &m.keys, p.entry, last)
+        swap(mut &m.vals, p.entry, last)
+        swap(mut &m.hashes, p.entry, last)
+    }
+    pop(mut &m.keys)
+    pop(mut &m.hashes)
+    return Some(pop(mut &m.vals))
+}
+
+pub fn (m: mut &Map[K, V]) clear() {
+    replace(mut &m.keys, [])
+    replace(mut &m.vals, [])
+    replace(mut &m.hashes, [])
+    replace(mut &m.index, array(8, -1))
+    m.shift = 61
+}
+
+// The slot that points at entry e.
+fn (m: &Map[K, V]) slotOf(e: int): int {
+    let mask = len(m.index) - 1
+    var i = m.home(m.hashes[e])
+    while m.index[i] != e { i = (i + 1) & mask }
+    return i
+}
+
+// Empties slot s, shifting later entries of its probe run back (no tombstones).
+fn (m: mut &Map[K, V]) unlink(s: int) {
+    let mask = len(m.index) - 1
+    var hole = s
+    var j = (s + 1) & mask
+    while m.index[j] >= 0 {
+        let h = m.home(m.hashes[m.index[j]])
+        if (j - h) & mask >= (j - hole) & mask {
+            m.index[hole] = m.index[j]
+            hole = j
+        }
+        j = (j + 1) & mask
+    }
+    m.index[hole] = -1
+}
+
+fn (m: mut &Map[K, V]) grow() {
+    let n = len(m.index) * 2
+    replace(mut &m.index, array(n, -1))
+    m.shift -= 1
+    let mask = n - 1
+    for e in 0..len(m.keys) {
+        var i = m.home(m.hashes[e])
+        while m.index[i] >= 0 { i = (i + 1) & mask }
+        m.index[i] = e
+    }
+}

@@ -1,0 +1,129 @@
+// math: float constants, parsing, and formatting with a fixed number of
+// decimals. The libm functions are float methods in std: x.sqrt(),
+// x.pow(y), x.floor(), x.ln(), x.sin(), y.atan2(x), x.isNaN(), ...
+//
+// Floats print with x.toStr(), the shortest text that reads back as x.
+
+pub const PI: float = 3.141592653589793
+pub const TAU: float = 6.283185307179586
+pub const E: float = 2.718281828459045
+pub const SQRT2: float = 1.4142135623730951
+pub const LN2: float = 0.6931471805599453
+pub const LN10: float = 2.302585092994046
+
+pub fn inf(): float {
+    let one: float = 1.0
+    let zero: float = 0.0
+    return one / zero
+}
+
+pub fn nan(): float {
+    let zero: float = 0.0
+    return zero / zero
+}
+
+// The float s denotes: decimal ("2.5", "-1e-7", ".5"), hexadecimal ("0x1p3"),
+// "inf" or "nan" in any case; no spaces. None for anything else.
+pub fn parse(s: str): Option[float] {
+    var f: float = 0.0
+    if len(s) > 0 && !isSpace(strByte(s, 0)) && parseFloat(s, mut &f) { return Some(f) }
+    return None
+}
+
+// x with exactly places decimals ("3.14" for PI, 2), rounding the shortest
+// decimal form of x half to even: fixed(2.675, 2) is "2.68" (C's printf
+// gives 2.67, from the binary value 2.67499999...). NaN and infinities print
+// as by toStr; a negative result that rounds to zero has no sign.
+pub fn fixed(x: float, places: int): str {
+    if !x.isFinite() { return x.toStr() }
+    var p = places
+    if p < 0 { p = 0 }
+    let s = x.abs().toStr()
+    // s is digits with an optional point, then an optional exponent
+    var digits = newStrBuf()
+    var pow = 0
+    var afterPoint = false
+    var i = 0
+    while i < len(s) {
+        let c = strByte(s, i)
+        if c == 'e' {
+            pow += parseInt(strSlice(s, i + 1, len(s))).unwrap()
+            break
+        }
+        if c == '.' {
+            afterPoint = true
+        } else {
+            digits.addByte(c)
+            if afterPoint { pow -= 1 }
+        }
+        i += 1
+    }
+    // x = digits * 10^pow; the result is round(digits * 10^(pow + p)) / 10^p
+    var r = digits.toStr()
+    let shift = pow + p
+    if shift >= 0 {
+        r += repeat("0", shift)
+    } else {
+        r = roundOff(r, -shift)
+    }
+    while len(r) <= p { r = "0" + r }
+    var out = strSlice(r, 0, len(r) - p)
+    if p > 0 { out += "." + strSlice(r, len(r) - p, len(r)) }
+    if x < 0.0 && !allZero(r) { out = "-" + out }
+    return out
+}
+
+// The decimal integer d with its last n digits removed, rounded half to even.
+fn roundOff(d: str, n: int): str {
+    if n > len(d) { return "0" }
+    let keep = len(d) - n
+    var bytes = strToBytes(strSlice(d, 0, keep))
+    let first = strByte(d, keep)
+    var rest = false
+    for j in keep + 1..len(d) {
+        if strByte(d, j) != '0' { rest = true }
+    }
+    var lastOdd = false
+    if keep > 0 { lastOdd = int(strByte(d, keep - 1) - '0') % 2 == 1 }
+    if first > '5' || (first == '5' && (rest || lastOdd)) {
+        var k = keep - 1
+        var carry = true
+        while carry && k >= 0 {
+            if bytes[k] == '9' {
+                bytes[k] = '0'
+                k -= 1
+            } else {
+                bytes[k] += 1
+                carry = false
+            }
+        }
+        if carry { return "1" + strFromBytes(&bytes) }
+    }
+    if keep == 0 { return "0" }
+    return strFromBytes(&bytes)
+}
+
+fn allZero(s: str): bool {
+    for i in 0..len(s) {
+        if strByte(s, i) != '0' { return false }
+    }
+    return true
+}
+
+// x as an exact Decimal when x is finite and has at most 38 significant
+// digits in its shortest form (it always does: at most 17).
+pub fn toDecimal(x: float): Option[Decimal] {
+    if !x.isFinite() { return None }
+    match Decimal.parse(x.toStr()) {
+        Ok(d) { return Some(d) }
+        Err(_) { return None }
+    }
+}
+
+// Whether a and b differ by at most tol times the larger magnitude (or by
+// at most tol when both are near zero).
+pub fn near(a: float, b: float, tol: float): bool {
+    let d = (a - b).abs()
+    if d <= tol { return true }
+    return d <= tol * max(a.abs(), b.abs())
+}

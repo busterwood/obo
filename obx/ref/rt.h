@@ -10,6 +10,9 @@
 #include <math.h>
 #include <signal.h>
 #include <sys/resource.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <time.h>
 
 typedef struct { int64_t rc; int64_t len; char data[]; } obx_str;
 typedef struct { void* data; int64_t len, cap; } obx_arr;
@@ -346,3 +349,54 @@ RT_CV(u64, uint64_t, 0, UINT64_MAX)
 RT_CV(byte, uint8_t, 0, 255)
 RT_CV(i128, i128, I128_MIN, I128_MAX)
 RT_CV(u128, u128, 0, U128_MAX)
+
+/* ---- C helpers for the library (lib/io, fs, os, time), called through
+   `extern "c"` declarations; every name starts with obx_. They exist where a
+   libc call needs a struct, errno or a pointer the language cannot express. */
+
+int64_t obx_errno(void) { return errno; }
+void* obx_dirent_name(void* d) { return ((struct dirent*)d)->d_name; }
+int64_t obx_dirent_type(void* d) { return ((struct dirent*)d)->d_type; }
+
+static struct stat obx_st;
+/* stat (follow != 0) or lstat into a buffer read by obx_stat_field; 0 or errno */
+int64_t obx_stat(const char* path, int64_t follow) {
+    int r = follow ? stat(path, &obx_st) : lstat(path, &obx_st);
+    return r == 0 ? 0 : errno;
+}
+int64_t obx_stat_field(int64_t i) {
+    switch (i) {
+    case 0: return (int64_t)obx_st.st_size;
+    case 1: return (int64_t)obx_st.st_mode;
+    case 2: return (int64_t)obx_st.st_mtim.tv_sec;
+    case 3: return (int64_t)obx_st.st_mtim.tv_nsec;
+    case 4: return (int64_t)obx_st.st_nlink;
+    case 5: return (int64_t)obx_st.st_uid;
+    case 6: return (int64_t)obx_st.st_gid;
+    case 7: return (int64_t)obx_st.st_ino;
+    case 8: return (int64_t)obx_st.st_dev;
+    case 9: return (int64_t)obx_st.st_atim.tv_sec;
+    case 10: return (int64_t)obx_st.st_ctim.tv_sec;
+    case 11: return (int64_t)obx_st.st_blocks;
+    default: return 0;
+    }
+}
+/* how: 0 read, 1 write (create, truncate), 2 append (create), 3 create new
+   (fail if it exists); the fd, or -errno */
+int64_t obx_open(const char* path, int64_t how) {
+    static const int flags[4] = {O_RDONLY, O_WRONLY | O_CREAT | O_TRUNC,
+                                 O_WRONLY | O_CREAT | O_APPEND, O_WRONLY | O_CREAT | O_EXCL};
+    if (how < 0 || how > 3) return -EINVAL;
+    int fd = open(path, flags[how] | O_CLOEXEC, 0666);
+    return fd < 0 ? -(int64_t)errno : fd;
+}
+/* clock: 0 realtime, 1 monotonic; nanoseconds */
+int64_t obx_clock_ns(int64_t which) {
+    struct timespec t;
+    clock_gettime(which ? CLOCK_MONOTONIC : CLOCK_REALTIME, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+void* obx_getcwd(void) {
+    static char buf[4096];
+    return getcwd(buf, sizeof buf);
+}

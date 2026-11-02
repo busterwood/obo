@@ -1,0 +1,201 @@
+// money: amounts of one currency, Money[C: Currency], over std's Decimal.
+//
+// A currency is a type with two associated functions, code() (the ISO 4217
+// code) and scale() (the digits of its minor unit). USD, EUR, GBP, CHF and
+// JPY are here; any other type with the two functions works too. Amounts of
+// different currencies are different types, so adding them is a compile error.
+//
+// An amount always has exactly C.scale() fraction digits. Construction is
+// exact (of stops the program when the value has more digits than the minor
+// unit; use round to choose a rounding), add, sub and neg are exact, times
+// rounds the product to the minor unit with HALF_EVEN (banker's rounding, the
+// usual choice for money; timesWith takes a mode), and allocate/allocateBy
+// split an amount into parts that add up to it exactly. A result that does not
+// fit a Decimal (38 digits) stops the program with exit code 10, as the
+// Decimal operators do.
+
+pub type Currency = interface {
+    fn code(): str
+    fn scale(): int
+}
+
+pub type USD = value record {}
+pub fn (USD) code(): str { return "USD" }
+pub fn (USD) scale(): int { return 2 }
+
+pub type EUR = value record {}
+pub fn (EUR) code(): str { return "EUR" }
+pub fn (EUR) scale(): int { return 2 }
+
+pub type GBP = value record {}
+pub fn (GBP) code(): str { return "GBP" }
+pub fn (GBP) scale(): int { return 2 }
+
+pub type CHF = value record {}
+pub fn (CHF) code(): str { return "CHF" }
+pub fn (CHF) scale(): int { return 2 }
+
+pub type JPY = value record {}
+pub fn (JPY) code(): str { return "JPY" }
+pub fn (JPY) scale(): int { return 0 }
+
+pub type Money[C: Currency] = value record { amt: Decimal }
+
+fn stop(e: DecError): Decimal {
+    writeFd(2, "obx: " + e.toStr() + "\n")
+    exit(10)
+}
+
+fn check(r: Result[Decimal, DecError]): Decimal {
+    match r {
+        Ok(d) { return d }
+        Err(e) { return stop(e) }
+    }
+}
+
+// d as an amount of C, exactly; stops the program (exit 10) if d has more
+// fraction digits than C's minor unit.
+pub fn of[C: Currency](d: Decimal): Money[C] {
+    return Money{amt: check(d.withScale(C.scale()))}
+}
+
+// d rounded with mode to C's minor unit.
+pub fn round[C: Currency](d: Decimal, mode: RoundingMode): Money[C] {
+    return Money{amt: check(d.quantize(C.scale(), mode))}
+}
+
+// units of C's minor unit: fromMinor[USD](1250) is 12.50 USD.
+pub fn fromMinor[C: Currency](units: int): Money[C] {
+    return Money{amt: Decimal.fromUnits(units, C.scale())}
+}
+
+pub fn zero[C: Currency](): Money[C] { return fromMinor(0) }
+
+// Decimal text ("12.5", "-3") as an amount of C; DecInexact if it has more
+// fraction digits than the minor unit.
+pub fn parse[C: Currency](s: str): Result[Money[C], DecError] {
+    let d = try Decimal.parse(s)
+    return Ok(Money{amt: try d.withScale(C.scale())})
+}
+
+pub fn (m: Money[C]) amount(): Decimal { return m.amt }
+pub fn (m: Money[C]) code(): str { return C.code() }
+
+// The amount in minor units (cents); DecOverflow outside int.
+pub fn (m: Money[C]) toMinor(): Result[int, DecError] {
+    var p = decimalOf(1)
+    for i in 0..C.scale() { p = p * decimalOf(10) }
+    let units = try m.amt.mulExact(p)
+    return units.toInt(UNNECESSARY)
+}
+
+pub fn (m: Money[C]) isZero(): bool { return m.amt.isZero() }
+pub fn (m: Money[C]) isNeg(): bool { return m.amt.isNeg() }
+pub fn (m: Money[C]) abs(): Money[C] { return Money{amt: m.amt.abs()} }
+
+pub fn (a: Money[C]) add(b: Money[C]): Money[C] { return Money{amt: a.amt + b.amt} }
+pub fn (a: Money[C]) sub(b: Money[C]): Money[C] { return Money{amt: a.amt - b.amt} }
+pub fn (a: Money[C]) neg(): Money[C] { return Money{amt: -a.amt} }
+
+// The amount times rate, rounded to the minor unit with HALF_EVEN.
+pub fn (a: Money[C]) times(rate: Decimal): Money[C] { return a.timesWith(rate, HALF_EVEN) }
+
+pub fn (a: Money[C]) timesWith(rate: Decimal, mode: RoundingMode): Money[C] {
+    return Money{amt: check((a.amt * rate).quantize(C.scale(), mode))}
+}
+
+pub fn (a: Money[C]) timesInt(n: int): Money[C] {
+    return Money{amt: check((a.amt * decimalOf(n)).withScale(C.scale()))}
+}
+
+pub fn (a: Money[C]) cmp(b: &Money[C]): int { return a.amt.cmp(&b.amt) }
+pub fn (a: Money[C]) eq(b: &Money[C]): bool { return a.amt == b.amt }
+pub fn (a: Money[C]) hash(): u64 { return a.amt.hash() }
+
+// "12.50 USD"
+pub fn (a: Money[C]) toStr(): str { return a.amt.toStr() + " " + C.code() }
+
+// The smallest amount of C (0.01 USD, 1 JPY), with the sign of s.
+fn unitOf[C: Currency](neg: bool): Decimal {
+    if neg { return Decimal.fromUnits(-1, C.scale()) }
+    return Decimal.fromUnits(1, C.scale())
+}
+
+// How many minor units d is (d is a small whole number of them).
+fn unitCount(d: Decimal, scale: int): int {
+    let u = check(d.abs().div(Decimal.fromUnits(1, scale), 0, UNNECESSARY))
+    match u.toInt(UNNECESSARY) {
+        Ok(n) { return n }
+        Err(e) {
+            stop(e)
+            return 0
+        }
+    }
+}
+
+// n parts (n > 0) that add up to a exactly: each is a / n truncated to the
+// minor unit, and the leftover units go one each to the first parts.
+// 100.00 into 3 is 33.34, 33.33, 33.33; -100.00 is -33.34, -33.33, -33.33.
+pub fn (a: Money[C]) allocate(n: int): []Money[C] {
+    if n <= 0 { panic("Money.allocate: the number of parts must be positive") }
+    let base = check(a.amt.div(decimalOf(n), C.scale(), TOWARD_ZERO))
+    let extra = unitCount(a.amt - base * decimalOf(n), C.scale())
+    let step = unitOf[C](a.amt.isNeg())
+    var out: []Money[C] = []
+    for i in 0..n {
+        if i < extra {
+            append(mut &out, Money{amt: check((base + step).withScale(C.scale()))})
+        } else {
+            append(mut &out, Money{amt: base})
+        }
+    }
+    return out
+}
+
+// Parts in proportion to weights (all >= 0, not all 0) that add up to a
+// exactly: each is a * w / sum truncated to the minor unit, and the leftover
+// units go one each to the parts with the largest truncated remainders (the
+// earlier part on a tie). A zero weight gets zero.
+// slice: allocateBy(weights) takes a &[int].
+pub fn (a: Money[C]) allocateBy(weights: &[]int): []Money[C] {
+    var total = 0
+    for w in weights {
+        if w < 0 { panic("Money.allocateBy: a weight is negative") }
+        total += w
+    }
+    if total == 0 { panic("Money.allocateBy: the weights add up to zero") }
+    let wt = decimalOf(total)
+    var parts: []Decimal = []
+    var rems: []Decimal = []
+    var sum = Decimal.zero()
+    for w in weights {
+        let share = a.amt * decimalOf(w)
+        let b = check(share.div(wt, C.scale(), TOWARD_ZERO))
+        append(mut &parts, b)
+        append(mut &rems, (share - b * wt).abs())
+        sum = sum + b
+    }
+    var extra = unitCount(a.amt - sum, C.scale())
+    let step = unitOf[C](a.amt.isNeg())
+    var used = array(len(parts), false)
+    while extra > 0 {
+        var best = -1
+        for i in 0..len(parts) {
+            if !used[i] && weights[i] > 0 && (best < 0 || rems[i] > rems[best]) { best = i }
+        }
+        used[best] = true
+        parts[best] = parts[best] + step
+        extra -= 1
+    }
+    var out: []Money[C] = []
+    for p in parts { append(mut &out, Money{amt: check(p.withScale(C.scale()))}) }
+    return out
+}
+
+// The sum of xs (zero for none).
+// slice: sum(xs) takes a &[Money[C]].
+pub fn sum[C: Currency](xs: &[]Money[C]): Money[C] {
+    var s: Money[C] = zero()
+    for x in xs { s = s + x }
+    return s
+}

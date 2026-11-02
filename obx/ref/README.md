@@ -26,7 +26,7 @@ Run a program with `OBX_CHECK=1` to make a leak (live objects at exit) exit 5.
 | `emit.py` | 265 | renders templates once per instance, drop/dup glue, struct layouts |
 | `obxc.py` | 100 | driver |
 | `rt.h` | 300 | the C runtime: allocation counter, traps, str, arrays, checked integers |
-| `std.obx` | 400 | the prelude (ordinary obx code) |
+| `../lib/std.obx` | 1,500 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
 
 Python total: about 3,800 lines.
 
@@ -77,14 +77,12 @@ associated functions, function values (including generic instances), `extern`
 functions, every built-in of section 11 and the intrinsics, and the runtime
 errors of section 14.
 
-**std.obx**: `Option`, `Result`, `Unit`, `Eq`, `Ord`, `Hash`, `Show` and their
-implementations for the primitive types, `print`/`println`/`eprintln` (one
-argument, generic over `Show`), `Decimal` (i128 units and a scale; `+ - *`,
-negation, comparison, rounding `rescaled`, `toStr`), `Currency` and
-`Money[C: Currency]`, `sort[T: Ord](xs: mut &[]T)` (heap sort), `Map[K: Eq +
-Hash, V]` (`newMap`, `put`, `get(&k): Option[V]` when `V: copy`, `has(&k)`,
-`size`, borrow-returning `at(k): &V`), `StrBuf`, `split`, `trim`, `indexOf`,
-`startsWith`, `substr`, `repeat`, `parseInt`.
+**std.obx** (now `../lib/std.obx`, the prelude): `Option`, `Result`, `Unit`,
+`Eq`, `Ord`, `Hash`, `Show` and their implementations for the primitive types,
+`print`/`println`/`eprintln`, `Decimal`, float math methods, `StrBuf` and
+string helpers, `sort`, `Map`. The other library modules (`money`, `math`,
+`collections`, `strings`, `io`, `fs`, `os`, `time`) are in `../lib` too, which
+is a default import root: `import "money"`. See `../lib/README.md`.
 
 **Intrinsics** (callable anywhere unless a module declares the same name):
 `strByte(s, i): byte`, `strSlice(s, from, to): str`, `strFromBytes(&[]byte)`,

@@ -1,0 +1,34 @@
+// The largest coefficient, sums that just fit, cancellation at the limit,
+// operands far apart, and remainders of mixed exponents.
+// expect: 99999999999999999999999999999999999999
+// expect: 0
+// expect: -99999999999999999999999999999999999998
+// expect: 9999999999999999999999999999999999999.9
+// expect: 9.9999999999999999999999999999999999999e32804 ok
+// expect: 1e-32768
+// expect: 1.000000000000000000000000000000000001
+// expect: 0.2
+// expect: 0.0
+// expect: 1.5
+// expect: 4.0
+// expect: 0.00004
+// expect: 9801.00
+fn d(s: str): Decimal { return Decimal.parse(s).unwrap() }
+fn main() {
+    let nines = d("99999999999999999999999999999999999999")
+    println(nines - decimalOf(0))
+    println(nines - nines)
+    println(decimalOf(1) - nines)
+    println(nines * 0.1)
+    let top = d("99999999999999999999999999999999999999e32767")
+    if top > nines { println(top.canonical() + " ok") }
+    println(d("1e-32768").canonical())
+    // 1 + 1e-36 has 37 digits: exact
+    println(1.0 + d("1e-36"))
+    println(1.7 % 0.5)
+    println(1.5 % 0.5)
+    println(1.5 % d("1e10"))
+    println(d("1e40") % 6.0)
+    println(d("4e-5") % 1.0)
+    println(99.0 * 99.0)
+}

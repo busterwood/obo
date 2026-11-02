@@ -1,0 +1,486 @@
+// strings: searching, splitting, joining, replacing, trimming, case,
+// integer parsing and formatting, padding, and UTF-8.
+//
+// str is a byte string. Indexes and lengths are in bytes; the rune functions
+// decode UTF-8. Case functions change ASCII letters only. std already has
+// indexOf, startsWith, endsWith, contains, split (at a byte), trim, repeat,
+// isSpace, isDigit and StrBuf.
+
+// ------------------------------------------------------------ searching
+
+// The last index of sub in s, or -1.
+pub fn lastIndexOf(s: str, sub: str): int {
+    var i = len(s) - len(sub)
+    while i >= 0 {
+        if matches(s, i, sub) { return i }
+        i -= 1
+    }
+    return -1
+}
+
+// The first index of byte c in s at or after from, or -1.
+pub fn indexOfByte(s: str, c: byte, from: int): int {
+    for i in from..len(s) {
+        if strByte(s, i) == c { return i }
+    }
+    return -1
+}
+
+// The number of non-overlapping occurrences of sub (sub not empty).
+pub fn count(s: str, sub: str): int {
+    if len(sub) == 0 { panic("strings.count: empty sub") }
+    var n = 0
+    var i = indexOf(s, sub, 0)
+    while i >= 0 {
+        n += 1
+        i = indexOf(s, sub, i + len(sub))
+    }
+    return n
+}
+
+fn matches(s: str, at: int, sub: str): bool {
+    if at < 0 || at + len(sub) > len(s) { return false }
+    for j in 0..len(sub) {
+        if strByte(s, at + j) != strByte(sub, j) { return false }
+    }
+    return true
+}
+
+// Whether a and b are equal ignoring ASCII case.
+pub fn equalFold(a: str, b: str): bool {
+    if len(a) != len(b) { return false }
+    for i in 0..len(a) {
+        if lowerByte(strByte(a, i)) != lowerByte(strByte(b, i)) { return false }
+    }
+    return true
+}
+
+// ------------------------------------------------------------ splitting
+
+// The pieces of s between occurrences of sep (sep not empty); "" gives [""].
+pub fn splitOn(s: str, sep: str): []str {
+    if len(sep) == 0 { panic("strings.splitOn: empty separator") }
+    var out: []str = []
+    var start = 0
+    var i = indexOf(s, sep, 0)
+    while i >= 0 {
+        append(mut &out, strSlice(s, start, i))
+        start = i + len(sep)
+        i = indexOf(s, sep, start)
+    }
+    append(mut &out, strSlice(s, start, len(s)))
+    return out
+}
+
+// At most n pieces: the last one holds the rest of s.
+pub fn splitN(s: str, sep: str, n: int): []str {
+    if len(sep) == 0 { panic("strings.splitN: empty separator") }
+    var out: []str = []
+    var start = 0
+    var i = indexOf(s, sep, 0)
+    while i >= 0 && len(out) < n - 1 {
+        append(mut &out, strSlice(s, start, i))
+        start = i + len(sep)
+        i = indexOf(s, sep, start)
+    }
+    append(mut &out, strSlice(s, start, len(s)))
+    return out
+}
+
+// The words of s: the runs of non-space bytes.
+pub fn fields(s: str): []str {
+    var out: []str = []
+    var i = 0
+    while i < len(s) {
+        while i < len(s) && isSpace(strByte(s, i)) { i += 1 }
+        let start = i
+        while i < len(s) && !isSpace(strByte(s, i)) { i += 1 }
+        if i > start { append(mut &out, strSlice(s, start, i)) }
+    }
+    return out
+}
+
+// The text before and after the first sep, if s contains it.
+pub type Cut = value record {
+    pub before: str
+    pub after: str
+}
+
+pub fn cut(s: str, sep: str): Option[Cut] {
+    let i = indexOf(s, sep, 0)
+    if i < 0 { return None }
+    return Some(Cut{before: strSlice(s, 0, i), after: strSlice(s, i + len(sep), len(s))})
+}
+
+// The parts with sep between them.
+// slice: join(parts, sep) takes a &[str].
+pub fn join(parts: &[]str, sep: str): str {
+    var b = newStrBuf()
+    for i in 0..len(parts) {
+        if i > 0 { b.add(sep) }
+        b.add(parts[i])
+    }
+    return b.toStr()
+}
+
+// ------------------------------------------------------------ replacing
+
+// s with every occurrence of old (not empty) replaced by new.
+pub fn replaceAll(s: str, old: str, new: str): str { return replaceN(s, old, new, -1) }
+
+// s with the first n occurrences of old replaced (all when n < 0).
+pub fn replaceN(s: str, old: str, new: str, n: int): str {
+    if len(old) == 0 { panic("strings.replace: empty pattern") }
+    var b = newStrBuf()
+    var start = 0
+    var done = 0
+    var i = indexOf(s, old, 0)
+    while i >= 0 && (n < 0 || done < n) {
+        b.add(strSlice(s, start, i))
+        b.add(new)
+        start = i + len(old)
+        done += 1
+        i = indexOf(s, old, start)
+    }
+    if done == 0 { return s }
+    b.add(strSlice(s, start, len(s)))
+    return b.toStr()
+}
+
+// ------------------------------------------------------------ trimming
+
+pub fn trimLeft(s: str): str {
+    var a = 0
+    while a < len(s) && isSpace(strByte(s, a)) { a += 1 }
+    return strSlice(s, a, len(s))
+}
+
+pub fn trimRight(s: str): str {
+    var b = len(s)
+    while b > 0 && isSpace(strByte(s, b - 1)) { b -= 1 }
+    return strSlice(s, 0, b)
+}
+
+// s without prefix, if it starts with it (else s).
+pub fn trimPrefix(s: str, prefix: str): str {
+    if startsWith(s, prefix) { return strSlice(s, len(prefix), len(s)) }
+    return s
+}
+
+pub fn trimSuffix(s: str, suffix: str): str {
+    if endsWith(s, suffix) { return strSlice(s, 0, len(s) - len(suffix)) }
+    return s
+}
+
+// ------------------------------------------------------------ case
+
+pub fn toUpper(s: str): str {
+    var bs = strToBytes(s)
+    for i in 0..len(bs) {
+        if bs[i] >= 'a' && bs[i] <= 'z' { bs[i] -= 32 }
+    }
+    return strFromBytes(&bs)
+}
+
+pub fn toLower(s: str): str {
+    var bs = strToBytes(s)
+    for i in 0..len(bs) { bs[i] = lowerByte(bs[i]) }
+    return strFromBytes(&bs)
+}
+
+fn lowerByte(c: byte): byte {
+    if c >= 'A' && c <= 'Z' { return c + 32 }
+    return c
+}
+
+pub fn isLetter(c: byte): bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+pub fn isAlnum(c: byte): bool { return isLetter(c) || isDigit(c) }
+
+// ------------------------------------------------------------ integers
+
+pub type ParseError = value closed {
+    Empty           // no digits
+    Invalid(int)    // the byte offset of the first byte that is not a digit
+    OutOfRange      // does not fit in an int
+}
+
+pub fn (e: ParseError) toStr(): str {
+    match e {
+        Empty { return "no digits" }
+        Invalid(at) { return "invalid digit at " + intToStr(at) }
+        OutOfRange { return "out of range" }
+    }
+}
+
+pub fn (a: ParseError) eq(b: &ParseError): bool { return a.toStr() == b.toStr() }
+
+// A decimal int with an optional sign: "42", "-7", "+3".
+pub fn parseInt(s: str): Result[int, ParseError] { return parseIntBase(s, 10) }
+
+// An int in base 2..36 with an optional sign; letters in either case. No
+// prefix ("0x") is accepted: strip it first.
+pub fn parseIntBase(s: str, base: int): Result[int, ParseError] {
+    if base < 2 || base > 36 { panic("strings.parseIntBase: base must be 2..36") }
+    var i = 0
+    var neg = false
+    if len(s) > 0 && (strByte(s, 0) == '-' || strByte(s, 0) == '+') {
+        neg = strByte(s, 0) == '-'
+        i = 1
+    }
+    if i == len(s) { return Err(Empty) }
+    var n: i128 = 0
+    while i < len(s) {
+        let d = digitValue(strByte(s, i))
+        if d < 0 || d >= base { return Err(Invalid(i)) }
+        n = n * i128(base) + i128(d)
+        if n > 9223372036854775808 { return Err(OutOfRange) }
+        i += 1
+    }
+    if neg { n = -n }
+    if n > 9223372036854775807 { return Err(OutOfRange) }
+    return Ok(int(n))
+}
+
+fn digitValue(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'z' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'Z' { return int(c - 'A') + 10 }
+    return -1
+}
+
+// n in base 2..36, lower-case letters, "-" when negative.
+pub fn formatInt(n: int, base: int): str {
+    if base < 2 || base > 36 { panic("strings.formatInt: base must be 2..36") }
+    if n == 0 { return "0" }
+    let digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    var v = i128(n)
+    var neg = false
+    if v < 0 {
+        neg = true
+        v = -v
+    }
+    var bs: []byte = []
+    while v > 0 {
+        append(mut &bs, strByte(digits, int(v % i128(base))))
+        v = v / i128(base)
+    }
+    if neg { append(mut &bs, '-') }
+    reverseBytes(mut &bs)
+    return strFromBytes(&bs)
+}
+
+fn reverseBytes(bs: mut &[]byte) {
+    var i = 0
+    var j = len(bs) - 1
+    while i < j {
+        swap(bs, i, j)
+        i += 1
+        j -= 1
+    }
+}
+
+// n in lower-case hexadecimal ("ff"; "-1a" when negative).
+pub fn hex(n: int): str { return formatInt(n, 16) }
+
+// The 64 bits of n as hexadecimal, zero-padded to 16 digits.
+pub fn hex64(n: u64): str {
+    let digits = "0123456789abcdef"
+    var bs = array(16, '0')
+    var v = n
+    var i = 15
+    while v != 0 {
+        bs[i] = strByte(digits, int(v & 15))
+        v = v >> 4
+        i -= 1
+    }
+    return strFromBytes(&bs)
+}
+
+// n in decimal, at least width digits with leading zeros: zeroPad(7, 3) is
+// "007", zeroPad(-7, 3) is "-007".
+pub fn zeroPad(n: int, width: int): str {
+    var digits = intToStr(n)
+    var sign = ""
+    if n < 0 {
+        sign = "-"
+        digits = strSlice(digits, 1, len(digits))
+    }
+    return sign + padLeft(digits, width, '0')
+}
+
+// n with sep between groups of three digits: 1234567 is "1,234,567".
+pub fn groupDigits(n: int, sep: str): str {
+    let s = intToStr(n)
+    var start = 0
+    if n < 0 { start = 1 }
+    var b = newStrBuf()
+    b.add(strSlice(s, 0, start))
+    for i in start..len(s) {
+        if i > start && (len(s) - i) % 3 == 0 { b.add(sep) }
+        b.addByte(strByte(s, i))
+    }
+    return b.toStr()
+}
+
+// ------------------------------------------------------------ padding
+
+// s with fill bytes before it, to width bytes (s itself if it is as long).
+pub fn padLeft(s: str, width: int, fill: byte): str {
+    if len(s) >= width { return s }
+    return strFromBytes(&array(width - len(s), fill)) + s
+}
+
+pub fn padRight(s: str, width: int, fill: byte): str {
+    if len(s) >= width { return s }
+    return s + strFromBytes(&array(width - len(s), fill))
+}
+
+// s centred in width bytes; an odd fill byte goes on the right.
+pub fn center(s: str, width: int, fill: byte): str {
+    if len(s) >= width { return s }
+    let left = (width - len(s)) / 2
+    return padRight(padLeft(s, len(s) + left, fill), width, fill)
+}
+
+// ------------------------------------------------------------ UTF-8
+
+// A code point decoded from UTF-8 and the number of bytes it took. Invalid
+// input decodes as U+FFFD with size 1.
+pub type Decoded = value record {
+    pub rune: int
+    pub size: int
+}
+
+pub const REPLACEMENT = 0xFFFD
+
+// The code point starting at byte i of s (0 <= i < len(s)).
+pub fn decodeAt(s: str, i: int): Decoded {
+    let bad = Decoded{rune: REPLACEMENT, size: 1}
+    let c0 = int(strByte(s, i))
+    if c0 < 0x80 { return Decoded{rune: c0, size: 1} }
+    var n = 0
+    var r = 0
+    var lo = 0
+    if c0 >= 0xC2 && c0 <= 0xDF {
+        n = 2
+        r = c0 & 0x1F
+        lo = 0x80
+    } else if c0 >= 0xE0 && c0 <= 0xEF {
+        n = 3
+        r = c0 & 0x0F
+        lo = 0x800
+    } else if c0 >= 0xF0 && c0 <= 0xF4 {
+        n = 4
+        r = c0 & 0x07
+        lo = 0x10000
+    } else {
+        return bad
+    }
+    if i + n > len(s) { return bad }
+    for k in 1..n {
+        let c = int(strByte(s, i + k))
+        if c & 0xC0 != 0x80 { return bad }
+        r = (r << 6) | (c & 0x3F)
+    }
+    // overlong forms, surrogates and values past U+10FFFF are invalid
+    if r < lo || (r >= 0xD800 && r <= 0xDFFF) || r > 0x10FFFF { return bad }
+    return Decoded{rune: r, size: n}
+}
+
+// The code points of s.
+pub fn runes(s: str): []int {
+    var out: []int = []
+    var i = 0
+    while i < len(s) {
+        let d = decodeAt(s, i)
+        append(mut &out, d.rune)
+        i += d.size
+    }
+    return out
+}
+
+// The number of code points in s (each invalid byte counts as one).
+pub fn runeCount(s: str): int {
+    var n = 0
+    var i = 0
+    while i < len(s) {
+        i += decodeAt(s, i).size
+        n += 1
+    }
+    return n
+}
+
+// Whether s is valid UTF-8.
+pub fn isValidUtf8(s: str): bool {
+    var i = 0
+    while i < len(s) {
+        let d = decodeAt(s, i)
+        if d.rune == REPLACEMENT && d.size == 1 { return false }
+        i += d.size
+    }
+    return true
+}
+
+// Appends the UTF-8 encoding of r to b (U+FFFD for an invalid code point).
+pub fn addRune(b: mut &StrBuf, r: int) {
+    var c = r
+    if c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF) { c = REPLACEMENT }
+    if c < 0x80 {
+        b.addByte(byte(c))
+    } else if c < 0x800 {
+        b.addByte(byte(0xC0 | (c >> 6)))
+        b.addByte(byte(0x80 | (c & 0x3F)))
+    } else if c < 0x10000 {
+        b.addByte(byte(0xE0 | (c >> 12)))
+        b.addByte(byte(0x80 | ((c >> 6) & 0x3F)))
+        b.addByte(byte(0x80 | (c & 0x3F)))
+    } else {
+        b.addByte(byte(0xF0 | (c >> 18)))
+        b.addByte(byte(0x80 | ((c >> 12) & 0x3F)))
+        b.addByte(byte(0x80 | ((c >> 6) & 0x3F)))
+        b.addByte(byte(0x80 | (c & 0x3F)))
+    }
+}
+
+// The UTF-8 text of one code point.
+pub fn fromRune(r: int): str {
+    var b = newStrBuf()
+    addRune(mut &b, r)
+    return b.toStr()
+}
+
+// The UTF-8 text of code points.
+// slice: fromRunes(rs) takes a &[int].
+pub fn fromRunes(rs: &[]int): str {
+    var b = newStrBuf()
+    for r in rs { addRune(mut &b, r) }
+    return b.toStr()
+}
+
+// The display width of s in a terminal, roughly: code points, with East
+// Asian wide and fullwidth forms and most emoji counting 2 and combining
+// marks 0. Enough to align columns of names.
+pub fn displayWidth(s: str): int {
+    var w = 0
+    var i = 0
+    while i < len(s) {
+        let d = decodeAt(s, i)
+        w += runeWidth(d.rune)
+        i += d.size
+    }
+    return w
+}
+
+fn runeWidth(r: int): int {
+    if r == 0 { return 0 }
+    if (r >= 0x0300 && r <= 0x036F) || (r >= 0x200B && r <= 0x200F) || (r >= 0xFE00 && r <= 0xFE0F) {
+        return 0
+    }
+    if (r >= 0x1100 && r <= 0x115F) || (r >= 0x2E80 && r <= 0xA4CF) || (r >= 0xAC00 && r <= 0xD7A3) ||
+        (r >= 0xF900 && r <= 0xFAFF) || (r >= 0xFE30 && r <= 0xFE4F) || (r >= 0xFF00 && r <= 0xFF60) ||
+        (r >= 0xFFE0 && r <= 0xFFE6) || (r >= 0x1F300 && r <= 0x1F64F) || (r >= 0x1F900 && r <= 0x1F9FF) ||
+        (r >= 0x20000 && r <= 0x3FFFD) {
+        return 2
+    }
+    return 1
+}

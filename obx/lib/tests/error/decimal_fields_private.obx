@@ -1,0 +1,7 @@
+// The representation is private to std: build Decimals with literals,
+// fromUnits or parse.
+// error: coef
+fn main() {
+    let d = 1.5
+    println(d.coef.toStr())
+}

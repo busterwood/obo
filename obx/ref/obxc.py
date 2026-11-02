@@ -14,12 +14,14 @@ from sema import Program, FnDecl  # noqa: E402
 from check import Checker  # noqa: E402
 from emit import Emitter  # noqa: E402
 
+# The library: std.obx (the prelude) and the modules found by `import "name"`.
+LIB = os.path.normpath(os.path.join(HERE, '..', 'lib'))
 LIBDIRS = ['/usr/lib/x86_64-linux-gnu', '/lib/x86_64-linux-gnu', '/usr/lib64', '/usr/lib',
            '/usr/local/lib', '/lib']
 
 
 def compile_c(path, libroots):
-    prog = Program(os.path.join(HERE, 'std.obx'), libroots)
+    prog = Program(os.path.join(LIB, 'std.obx'), libroots + [LIB])
     name = os.path.splitext(os.path.basename(path))[0]
     prog.main = prog.load(path, None, name)
     prog.resolve_all()

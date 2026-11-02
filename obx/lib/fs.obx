@@ -1,0 +1,259 @@
+// fs: directories, file metadata, and creating, renaming and removing paths.
+//
+// Errors are io.IoError values (errno, operation, path). Paths are plain
+// strings; join and baseName/dirName handle "/" separators only.
+
+import "io"
+
+extern "c" fn opendir(path: str): ptr
+extern "c" fn readdir(d: ptr): ptr
+extern "c" fn closedir(d: ptr): i32
+extern "c" fn mkdir(path: str, mode: u32): i32
+extern "c" fn rmdir(path: str): i32
+extern "c" fn unlink(path: str): i32
+extern "c" fn rename(from: str, to: str): i32
+extern "c" fn symlink(target: str, path: str): i32
+extern "c" fn chmod(path: str, mode: u32): i32
+extern "c" fn obx_errno(): int
+extern "c" fn obx_dirent_name(d: ptr): ptr
+extern "c" fn obx_dirent_type(d: ptr): int
+extern "c" fn obx_stat(path: str, follow: int): int
+extern "c" fn obx_stat_field(i: int): int
+
+pub type Kind = value closed { File; Dir; Link; Other }
+
+pub fn (k: Kind) eq(o: &Kind): bool { return k.code() == o.code() }
+
+fn (k: Kind) code(): int {
+    match k {
+        File { return 0 }
+        Dir { return 1 }
+        Link { return 2 }
+        Other { return 3 }
+    }
+}
+
+pub fn (k: Kind) toStr(): str {
+    match k {
+        File { return "file" }
+        Dir { return "dir" }
+        Link { return "link" }
+        Other { return "other" }
+    }
+}
+
+// What stat (or lstat) says about a path.
+pub type Stat = value record {
+    pub size: int      // bytes
+    pub mode: int      // st_mode: type bits and permission bits
+    pub mtime: int     // last modification, Unix seconds
+    pub mtimeNs: int   // and nanoseconds
+    pub nlink: int
+    pub uid: int
+    pub gid: int
+    pub ino: int
+    pub blocks: int    // 512-byte blocks
+}
+
+pub fn (s: Stat) kind(): Kind {
+    let t = s.mode & 0xF000
+    if t == 0x8000 { return File }
+    if t == 0x4000 { return Dir }
+    if t == 0xA000 { return Link }
+    return Other
+}
+
+pub fn (s: Stat) isDir(): bool { return s.mode & 0xF000 == 0x4000 }
+pub fn (s: Stat) isFile(): bool { return s.mode & 0xF000 == 0x8000 }
+pub fn (s: Stat) isLink(): bool { return s.mode & 0xF000 == 0xA000 }
+
+// The permission bits, e.g. 0x1A4 (0644 octal).
+pub fn (s: Stat) perm(): int { return s.mode & 0xFFF }
+
+// Metadata of path, following a symbolic link.
+pub fn stat(path: str): Result[Stat, io.IoError] { return statHow(path, 1, "stat") }
+
+// Metadata of path itself, also when it is a symbolic link.
+pub fn lstat(path: str): Result[Stat, io.IoError] { return statHow(path, 0, "lstat") }
+
+fn statHow(path: str, follow: int, op: str): Result[Stat, io.IoError] {
+    let e = obx_stat(path, follow)
+    if e != 0 { return Err(io.ioError(e, op, path)) }
+    return Ok(Stat{
+        size: obx_stat_field(0), mode: obx_stat_field(1),
+        mtime: obx_stat_field(2), mtimeNs: obx_stat_field(3),
+        nlink: obx_stat_field(4), uid: obx_stat_field(5), gid: obx_stat_field(6),
+        ino: obx_stat_field(7), blocks: obx_stat_field(11)})
+}
+
+pub fn exists(path: str): bool { return obx_stat(path, 1) == 0 }
+
+pub fn isDir(path: str): bool {
+    match stat(path) {
+        Ok(s) { return s.isDir() }
+        Err(_) { return false }
+    }
+}
+
+pub fn isFile(path: str): bool {
+    match stat(path) {
+        Ok(s) { return s.isFile() }
+        Err(_) { return false }
+    }
+}
+
+// One directory entry. kind comes from readdir and is Other when the file
+// system does not say; lstat the path to be sure.
+pub type Entry = record {
+    pub name: str
+    pub kind: Kind
+}
+
+// The entries of the directory at path, without "." and "..", in the order
+// the file system gives them (sort them for a stable order).
+pub fn list(path: str): Result[[]Entry, io.IoError] {
+    let d = opendir(path)
+    if isNull(d) { return Err(io.ioError(obx_errno(), "opendir", path)) }
+    var out: []Entry = []
+    while true {
+        let e = readdir(d)
+        if isNull(e) { break }
+        let name = strFromC(obx_dirent_name(e))
+        if name != "." && name != ".." {
+            append(mut &out, Entry{name: name, kind: kindOfDirent(obx_dirent_type(e))})
+        }
+    }
+    closedir(d)
+    return Ok(out)
+}
+
+// The names in the directory at path, sorted.
+pub fn listNames(path: str): Result[[]str, io.IoError] {
+    let es = try list(path)
+    var names: []str = []
+    for e in es { append(mut &names, e.name) }
+    sort(mut &names)
+    return Ok(names)
+}
+
+fn kindOfDirent(t: int): Kind {
+    if t == 8 { return File }    // DT_REG
+    if t == 4 { return Dir }     // DT_DIR
+    if t == 10 { return Link }   // DT_LNK
+    return Other
+}
+
+// Creates the directory path (mode 0777 less umask).
+pub fn mkdirOne(path: str): Result[Unit, io.IoError] {
+    if mkdir(path, u32(0x1FF)) != 0 { return Err(io.ioError(obx_errno(), "mkdir", path)) }
+    return Ok(Unit{})
+}
+
+// Creates path and any missing parents; an existing directory is fine.
+pub fn mkdirAll(path: str): Result[Unit, io.IoError] {
+    if isDir(path) { return Ok(Unit{}) }
+    let parent = dirName(path)
+    if parent != path && parent != "." && parent != "/" { try mkdirAll(parent) }
+    if mkdir(path, u32(0x1FF)) != 0 {
+        let e = obx_errno()
+        if e == 17 && isDir(path) { return Ok(Unit{}) }   // EEXIST: made meanwhile
+        return Err(io.ioError(e, "mkdir", path))
+    }
+    return Ok(Unit{})
+}
+
+// Removes a file, a symbolic link or an empty directory.
+pub fn remove(path: str): Result[Unit, io.IoError] {
+    match lstat(path) {
+        Ok(s) {
+            if s.isDir() {
+                if rmdir(path) != 0 { return Err(io.ioError(obx_errno(), "rmdir", path)) }
+                return Ok(Unit{})
+            }
+        }
+        Err(e) { return Err(e) }
+    }
+    if unlink(path) != 0 { return Err(io.ioError(obx_errno(), "unlink", path)) }
+    return Ok(Unit{})
+}
+
+// Removes path and, when it is a directory, everything below it. Symbolic
+// links are removed, not followed.
+pub fn removeAll(path: str): Result[Unit, io.IoError] {
+    let s = try lstat(path)
+    if s.isDir() {
+        let es = try list(path)
+        for e in es { try removeAll(join(path, e.name)) }
+    }
+    return remove(path)
+}
+
+pub fn renamePath(from: str, to: str): Result[Unit, io.IoError] {
+    if rename(from, to) != 0 { return Err(io.ioError(obx_errno(), "rename", from)) }
+    return Ok(Unit{})
+}
+
+// Makes path a symbolic link to target.
+pub fn makeLink(target: str, path: str): Result[Unit, io.IoError] {
+    if symlink(target, path) != 0 { return Err(io.ioError(obx_errno(), "symlink", path)) }
+    return Ok(Unit{})
+}
+
+pub fn setPerm(path: str, perm: int): Result[Unit, io.IoError] {
+    if chmod(path, u32(perm)) != 0 { return Err(io.ioError(obx_errno(), "chmod", path)) }
+    return Ok(Unit{})
+}
+
+// ------------------------------------------------------------------ paths
+
+// a + "/" + b, without doubling a "/"; b when it is absolute.
+pub fn join(a: str, b: str): str {
+    if len(a) == 0 || (len(b) > 0 && strByte(b, 0) == '/') { return b }
+    if strByte(a, len(a) - 1) == '/' { return a + b }
+    return a + "/" + b
+}
+
+// The last element of path: "c" for "/a/b/c" and "a/b/c/".
+pub fn baseName(path: str): str {
+    let p = trimSlashes(path)
+    if len(p) == 0 {
+        if len(path) > 0 { return "/" }
+        return "."
+    }
+    var i = len(p)
+    while i > 0 && strByte(p, i - 1) != '/' { i -= 1 }
+    return strSlice(p, i, len(p))
+}
+
+// path without its last element: "/a/b" for "/a/b/c", "." for "c".
+pub fn dirName(path: str): str {
+    let p = trimSlashes(path)
+    var i = len(p)
+    while i > 0 && strByte(p, i - 1) != '/' { i -= 1 }
+    if i == 0 {
+        if len(path) > 0 && strByte(path, 0) == '/' { return "/" }
+        return "."
+    }
+    var j = i - 1   // the "/" before the last element; drop repeated ones
+    while j > 0 && strByte(p, j - 1) == '/' { j -= 1 }
+    if j == 0 { return "/" }
+    return strSlice(p, 0, j)
+}
+
+// The extension of the last element, with its dot: ".txt"; "" for none and
+// for names that start with their only dot (".bashrc").
+pub fn extension(path: str): str {
+    let b = baseName(path)
+    var i = len(b)
+    while i > 1 {
+        i -= 1
+        if strByte(b, i) == '.' { return strSlice(b, i, len(b)) }
+    }
+    return ""
+}
+
+fn trimSlashes(path: str): str {
+    var n = len(path)
+    while n > 0 && strByte(path, n - 1) == '/' { n -= 1 }
+    return strSlice(path, 0, n)
+}

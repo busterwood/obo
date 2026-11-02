@@ -12,6 +12,7 @@
 // expect: 9.99 USD
 // expect: 10.00 USD
 // expect: ada
+import "money"
 type USD = value record {}
 fn (USD) code(): str { return "USD" }
 fn (USD) scale(): int { return 2 }
@@ -61,7 +62,7 @@ fn main() {
     byName.put("ada", pop(mut &people))       // replaces: the old Person is freed
     println(byName.size().toStr() + " names")
 
-    var prices: []Money[USD] = [money(10.0), money(2.5), money(9.99)]
+    var prices: []money.Money[USD] = [money.of(10.0), money.of(2.5), money.of(9.99)]
     sort(mut &prices)
     for p in prices { println(p) }
     println(byName.at("ada").name)

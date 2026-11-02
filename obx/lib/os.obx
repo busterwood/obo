@@ -1,0 +1,59 @@
+// os: the program's arguments and environment, the process, the working
+// directory, and stopping.
+
+extern "c" fn setenv(name: str, value: str, overwrite: i32): i32
+extern "c" fn unsetenv(name: str): i32
+extern "c" fn getpid(): i32
+extern "c" fn chdir(path: str): i32
+extern "c" fn obx_getcwd(): ptr
+extern "c" fn obx_errno(): int
+
+// The command line: argv()[0] is the program, then its arguments.
+pub fn argv(): []str { return args() }
+
+// The arguments after the program name.
+pub fn arguments(): []str {
+    let all = args()
+    var out: []str = []
+    for i in 1..len(all) { append(mut &out, all[i]) }
+    return out
+}
+
+// The environment variable name, if it is set.
+pub fn env(name: str): Option[str] {
+    var v = ""
+    if getenv(name, mut &v) { return Some(v) }
+    return None
+}
+
+// The environment variable name, or d when it is not set.
+pub fn envOr(name: str, d: str): str {
+    var v = ""
+    if getenv(name, mut &v) { return v }
+    return d
+}
+
+// Sets an environment variable; the errno on failure.
+pub fn setEnv(name: str, value: str): Result[Unit, int] {
+    if setenv(name, value, 1) != 0 { return Err(obx_errno()) }
+    return Ok(Unit{})
+}
+
+pub fn unsetEnv(name: str): Result[Unit, int] {
+    if unsetenv(name) != 0 { return Err(obx_errno()) }
+    return Ok(Unit{})
+}
+
+pub fn pid(): int { return int(getpid()) }
+
+// The working directory ("" if it cannot be read).
+pub fn cwd(): str { return strFromC(obx_getcwd()) }
+
+pub fn setCwd(path: str): Result[Unit, int] {
+    if chdir(path) != 0 { return Err(obx_errno()) }
+    return Ok(Unit{})
+}
+
+// Stops the program with code after flushing standard output. Nothing is
+// dropped (and OBX_CHECK does not look for leaks).
+pub fn quit(code: int) { exit(code) }

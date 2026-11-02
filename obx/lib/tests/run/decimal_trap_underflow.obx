@@ -1,0 +1,6 @@
+// There is no underflow to zero: 1e-32768 * 0.1 is out of range.
+// exit: 10
+fn main() {
+    let x = Decimal.parse("1e-32768").unwrap()
+    println(x * 0.1)
+}

@@ -1,0 +1,24 @@
+// The obx_* C helpers in rt.h that the library (io, fs, os, time) calls
+// through extern "c": errno, stat fields, open modes, clocks, getcwd.
+// expect: stat / ok, is dir true
+// expect: stat missing: 2
+// expect: open missing: -2, bad mode: -22
+// expect: clocks ok
+// expect: cwd ok
+extern "c" fn obx_errno(): int
+extern "c" fn obx_stat(path: str, follow: int): int
+extern "c" fn obx_stat_field(i: int): int
+extern "c" fn obx_open(path: str, how: int): int
+extern "c" fn obx_clock_ns(which: int): int
+extern "c" fn obx_getcwd(): ptr
+
+fn main() {
+    let r = obx_stat("/", 1)
+    if r == 0 { println("stat / ok, is dir " + (obx_stat_field(1) & 0xF000 == 0x4000).toStr()) }
+    println("stat missing: " + obx_stat("/no/such/path", 0).toStr())
+    println("open missing: " + obx_open("/no/such/path", 0).toStr() + ", bad mode: " + obx_open("/", 7).toStr())
+    let a = obx_clock_ns(1)
+    let b = obx_clock_ns(1)
+    if b >= a && obx_clock_ns(0) > 1577836800000000000 { println("clocks ok") }
+    if len(strFromC(obx_getcwd())) > 0 { println("cwd ok") }
+}

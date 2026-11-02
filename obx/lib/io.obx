@@ -1,0 +1,159 @@
+// io: reading and writing files and the standard streams.
+//
+// read/write/append work on whole files and return Result[_, IoError];
+// Writer is a buffered writer for stdout, stderr or a file, flushed (and a
+// file closed) when it is dropped. Errors carry the errno, the operation and
+// the path. Reading is whole-file: readStdin reads standard input to its end.
+
+pub type IoError = value record {
+    pub errno: int   // the C errno, e.g. 2 for "no such file"
+    pub op: str      // "open", "read", "write", "close"
+    pub path: str
+}
+
+extern "c" fn strerror(e: i32): ptr
+extern "c" fn obx_errno(): int
+extern "c" fn obx_open(path: str, how: int): int
+extern "c" fn close(fd: i32): i32
+
+// "open nope.txt: No such file or directory"
+pub fn (e: IoError) toStr(): str {
+    return e.op + " " + e.path + ": " + errorText(e.errno)
+}
+
+pub fn (a: IoError) eq(b: &IoError): bool {
+    return a.errno == b.errno && a.op == b.op && a.path == b.path
+}
+
+// The C library's text for an errno.
+pub fn errorText(errno: int): str { return strFromC(strerror(i32(errno))) }
+
+// The errno of the last failed C call.
+pub fn lastErrno(): int { return obx_errno() }
+
+pub fn ioError(errno: int, op: str, path: str): IoError {
+    return IoError{errno: errno, op: op, path: path}
+}
+
+// The whole file at path.
+pub fn read(path: str): Result[str, IoError] {
+    var s = ""
+    let e = readFile(path, mut &s)
+    if e != 0 { return Err(ioError(e, "read", path)) }
+    return Ok(s)
+}
+
+// The lines of the file at path, without their "\n" (or "\r\n").
+pub fn readLines(path: str): Result[[]str, IoError] {
+    let text = try read(path)
+    return Ok(splitLines(text))
+}
+
+// Standard input up to its end.
+pub fn readStdin(): Result[str, IoError] { return read("/dev/stdin") }
+
+// The lines of s: split at "\n", a "\r" before it dropped, no empty last
+// line after a final "\n".
+pub fn splitLines(s: str): []str {
+    var out: []str = []
+    var start = 0
+    for i in 0..len(s) {
+        if strByte(s, i) == '\n' {
+            var end = i
+            if end > start && strByte(s, end - 1) == '\r' { end -= 1 }
+            append(mut &out, strSlice(s, start, end))
+            start = i + 1
+        }
+    }
+    if start < len(s) { append(mut &out, strSlice(s, start, len(s))) }
+    return out
+}
+
+// Replaces the file at path with data (creating it, mode 0666 less umask).
+pub fn write(path: str, data: str): Result[Unit, IoError] { return writeHow(path, data, 1) }
+
+// Adds data at the end of the file at path (creating it).
+pub fn appendTo(path: str, data: str): Result[Unit, IoError] { return writeHow(path, data, 2) }
+
+fn writeHow(path: str, data: str, how: int): Result[Unit, IoError] {
+    let fd = obx_open(path, how)
+    if fd < 0 { return Err(ioError(-fd, "open", path)) }
+    if writeFd(fd, data) != len(data) {
+        let e = obx_errno()
+        close(i32(fd))
+        return Err(ioError(e, "write", path))
+    }
+    if close(i32(fd)) != 0 { return Err(ioError(obx_errno(), "close", path)) }
+    return Ok(Unit{})
+}
+
+// ---------------------------------------------------------------- Writer
+
+// A buffered writer. The buffer is written out when it passes 64 KiB, on
+// flush, and when the writer is dropped; a file writer also closes its file
+// then. Errors on the implicit flushes are lost: call close() to see them.
+pub type Writer = record {
+    fd: int
+    path: str
+    buf: StrBuf
+    ownsFd: bool
+}
+
+const LIMIT = 65536
+
+pub fn stdout(): Writer { return Writer{fd: 1, path: "<stdout>", buf: newStrBuf(), ownsFd: false} }
+pub fn stderr(): Writer { return Writer{fd: 2, path: "<stderr>", buf: newStrBuf(), ownsFd: false} }
+
+// A writer to a new or emptied file.
+pub fn create(path: str): Result[Writer, IoError] { return openWriter(path, 1) }
+
+// A writer that adds to the end of a file (creating it).
+pub fn openAppend(path: str): Result[Writer, IoError] { return openWriter(path, 2) }
+
+fn openWriter(path: str, how: int): Result[Writer, IoError] {
+    let fd = obx_open(path, how)
+    if fd < 0 { return Err(ioError(-fd, "open", path)) }
+    return Ok(Writer{fd: fd, path: path, buf: newStrBuf(), ownsFd: true})
+}
+
+pub fn (w: mut &Writer) write(s: str) {
+    w.buf.add(s)
+    if w.buf.size() >= LIMIT { w.flush() }
+}
+
+pub fn (w: mut &Writer) writeln(s: str) {
+    w.buf.add(s)
+    w.buf.addByte('\n')
+    if w.buf.size() >= LIMIT { w.flush() }
+}
+
+pub fn (w: mut &Writer) writeByte(c: byte) {
+    w.buf.addByte(c)
+    if w.buf.size() >= LIMIT { w.flush() }
+}
+
+// Writes out the buffer.
+pub fn (w: mut &Writer) flush(): Result[Unit, IoError] {
+    if w.buf.size() == 0 { return Ok(Unit{}) }
+    let s = w.buf.toStr()
+    w.buf.clear()
+    if w.fd < 0 { return Err(ioError(9, "write", w.path)) }
+    if writeFd(w.fd, s) != len(s) { return Err(ioError(obx_errno(), "write", w.path)) }
+    return Ok(Unit{})
+}
+
+// Flushes, then closes a file writer; later writes fail with EBADF.
+pub fn (w: mut &Writer) close(): Result[Unit, IoError] {
+    try w.flush()
+    if w.ownsFd && w.fd >= 0 {
+        let fd = w.fd
+        w.fd = -1
+        if close(i32(fd)) != 0 { return Err(ioError(obx_errno(), "close", w.path)) }
+    }
+    return Ok(Unit{})
+}
+
+fn (w: mut &Writer) drop() {
+    w.flush()
+    if w.ownsFd && w.fd >= 0 { close(i32(w.fd)) }
+}

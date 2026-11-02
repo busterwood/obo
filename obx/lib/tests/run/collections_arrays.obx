@@ -1,0 +1,135 @@
+// Array algorithms: stable sortBy on owned records, sortStable, binary
+// search, reverse/rotate, insert/removeAt, retain, dedup, copies.
+// expect: ann:3 cy:3 bob:5 dee:5 eve:9
+// expect: eve:9 bob:5 dee:5 ann:3 cy:3
+// expect: stable ok, 0 bad of 300
+// expect: Ok(2) Err(0) Err(3) Err(6) Ok(0)
+// expect: 1 3 4 6
+// expect: 5 4 3 2 1 | 3 4 5 1 2 | 2 3 4 5 1
+// expect: x a b y c z
+// expect: removed b -> x a y c z, swapRemove x -> z a y c
+// expect: 2 4 6 8 | 1 2 3 4 | 3
+// expect: [3, 4] [1, 2, 3, 4, 5, 6] true false
+// expect: 1 4 9 | 3 | 1
+// expect: sorted true false
+import "collections"
+
+type Person = record { name: str; age: int }
+
+fn byAge(a: &Person, b: &Person): int { return a.age - b.age }
+fn byAgeDesc(a: &Person, b: &Person): int { return b.age - a.age }
+fn isEven(n: &int): bool { return n % 2 == 0 }
+fn isBig(n: &int): bool { return n > 3 }
+fn square(n: &int): int { return n * n }
+fn byKey(a: &Pair, b: &Pair): int { return a.k - b.k }
+
+type Pair = value record { k: int; seq: int }
+
+fn people(xs: &[]Person): str {
+    var s = ""
+    for p in xs {
+        if len(s) > 0 { s += " " }
+        s += p.name + ":" + p.age.toStr()
+    }
+    return s
+}
+
+fn ints(xs: &[]int): str {
+    var s = ""
+    for x in xs {
+        if len(s) > 0 { s += " " }
+        s += x.toStr()
+    }
+    return s
+}
+
+fn arr(xs: &[]int): str { return "[" + join(xs) + "]" }
+
+fn join(xs: &[]int): str {
+    var s = ""
+    for x in xs {
+        if len(s) > 0 { s += ", " }
+        s += x.toStr()
+    }
+    return s
+}
+
+fn main() {
+    var ps: []Person = []
+    append(mut &ps, Person{name: "bob", age: 5})
+    append(mut &ps, Person{name: "ann", age: 3})
+    append(mut &ps, Person{name: "eve", age: 9})
+    append(mut &ps, Person{name: "dee", age: 5})
+    append(mut &ps, Person{name: "cy", age: 3})
+    // ann before cy and bob before dee: their original order
+    collections.sortBy(mut &ps, byAge)
+    println(people(&ps))
+    collections.sortBy(mut &ps, byAgeDesc)
+    println(people(&ps))
+
+    // stability against a pseudo-random sequence of keys
+    var pairs: []Pair = []
+    var seed = 12345
+    for i in 0..300 {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        append(mut &pairs, Pair{k: seed % 17, seq: i})
+    }
+    collections.sortBy(mut &pairs, byKey)
+    var bad = 0
+    for i in 1..len(pairs) {
+        let a = pairs[i - 1]
+        let b = pairs[i]
+        if a.k > b.k || (a.k == b.k && a.seq > b.seq) { bad += 1 }
+    }
+    println("stable ok, " + bad.toStr() + " bad of " + len(pairs).toStr())
+
+    let sorted = [1, 3, 4, 6, 9, 11]
+    let small = [5]
+    println(collections.binarySearch(&sorted, &4).toStr() + " " + collections.binarySearch(&sorted, &0).toStr() + " " +
+        collections.binarySearch(&sorted, &5).toStr() + " " + collections.binarySearch(&sorted, &12).toStr() + " " +
+        collections.binarySearch(&small, &5).toStr())
+    var some = [6, 1, 4, 3]
+    collections.sortStable(mut &some)
+    println(ints(&some))
+
+    var r = [1, 2, 3, 4, 5]
+    collections.reverse(mut &r)
+    var line = ints(&r) + " | "
+    collections.reverse(mut &r)
+    collections.rotateLeft(mut &r, 2)
+    line += ints(&r) + " | "
+    collections.rotateLeft(mut &r, -1)
+    println(line + ints(&r))
+
+    var names = ["a", "b", "c"]
+    collections.insert(mut &names, 0, "x")
+    collections.insert(mut &names, 3, "y")
+    collections.insert(mut &names, 5, "z")
+    var ns = ""
+    for n in names { ns += n + " " }
+    println(trim(ns))
+    let b = collections.removeAt(mut &names, 2)
+    var after = ""
+    for n in names { after += n + " " }
+    let x = collections.swapRemove(mut &names, 0)
+    var after2 = ""
+    for n in names { after2 += n + " " }
+    println("removed " + b + " -> " + trim(after) + ", swapRemove " + x + " -> " + trim(after2))
+
+    var nums = [1, 2, 3, 4, 5, 6, 7, 8]
+    collections.retain(mut &nums, isEven)
+    var d = [1, 1, 2, 2, 2, 3, 4, 4]
+    collections.dedup(mut &d)
+    println(ints(&nums) + " | " + ints(&d) + " | " + collections.count(&nums, isBig).toStr())
+
+    let six = [1, 2, 3, 4, 5, 6]
+    var part = collections.copyRange(&six, 2, 4)
+    var whole = collections.copyOf(&[1, 2, 3])
+    collections.extend(mut &whole, &[4, 5, 6])
+    println(arr(&part) + " " + arr(&whole) + " " + collections.equal(&whole, &six).toStr() + " " +
+        collections.contains(&six, &7).toStr())
+    let sq = collections.mapTo(&[1, 2, 3], square)
+    println(ints(&sq) + " | " + collections.findBy(&[1, 3, 5, 6], isEven).toStr() + " | " +
+        collections.find(&six, &2).toStr())
+    println("sorted " + collections.isSorted(&six).toStr() + " " + collections.isSorted(&[2, 1]).toStr())
+}

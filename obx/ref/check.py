@@ -230,15 +230,20 @@ class Checker:
         ctx = self.ctx
         if scope:
             ctx.scopes.append(Scope())
+        stop = unreachable = False
         for s in b.stmts:
             if ctx.dead:
-                self.err("unreachable statement: the code before it always returns, breaks, continues "
-                         "or stops the program", s.where)
+                if stop:
+                    self.err("unreachable statement: the statement before it always returns, breaks, "
+                             "continues or stops the program", s.where)
+                unreachable, ctx.dead = True, False     # after a loop that never ends: checked anyway
             self.push_frame()
             self.stmt(s)
+            stop = ctx.dead and s.kind in ('return', 'break', 'continue', 'expr')
             fr = self.pop_frame()
             if not ctx.dead:
                 self.drop_frame(fr)
+        ctx.dead = ctx.dead or unreachable
         if scope:
             sc = ctx.scopes.pop()
             if not ctx.dead:

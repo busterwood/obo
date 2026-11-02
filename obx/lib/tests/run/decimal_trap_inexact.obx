@@ -1,0 +1,11 @@
+// An exact * whose result needs more than 38 significant digits stops the
+// program with exit code 10 (obx: decimal result is not exactly representable);
+// output before it is flushed.
+// expect: before
+// exit: 10
+fn main() {
+    println("before")
+    let x = Decimal.parse("99999999999999999999999999999999999999").unwrap()
+    println(x * 2.0)
+    println("not reached")
+}

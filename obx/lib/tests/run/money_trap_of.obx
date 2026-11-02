@@ -1,0 +1,8 @@
+// money.of is exact: 1.005 has more digits than a cent, so it stops the
+// program with exit code 10 (use money.round to choose a rounding).
+// exit: 10
+import "money"
+fn main() {
+    let m: money.Money[money.USD] = money.of(1.005)
+    println(m)
+}

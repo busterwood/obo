@@ -1,0 +1,66 @@
+// Calendar arithmetic (UTC), ISO formatting and parsing, and sane clocks.
+// expect: 1970-01-01T00:00:00Z
+// expect: 2000-02-29T23:59:59Z
+// expect: 1969-12-31T23:59:59Z
+// expect: 2026-11-02 1
+// expect: 0000-03-01 -0001-12-31
+// expect: round trip ok
+// expect: 2024-02-29 none none none
+// expect: leap 2000 true 1900 false 2024 true
+// expect: clocks ok
+// expect: addMillis 1970-01-01T00:00:01Z 1500 -1
+// expect: weekday 4 6
+import "time"
+
+fn main() {
+    println(time.isoDateTime(0))
+    println(time.isoDateTime(951868799))
+    println(time.isoDateTime(-1))
+    let d = time.Date{year: 2026, month: 11, day: 2}
+    println(d.toStr() + " " + time.weekday(d).toStr())
+    println(time.dateOfDays(time.daysOfDate(time.Date{year: 0, month: 3, day: 1})).toStr() + " " +
+        time.Date{year: -1, month: 12, day: 31}.toStr())
+
+    var ok = true
+    var day = -800000
+    while day < 800000 {
+        let back = time.daysOfDate(time.dateOfDays(day))
+        if back != day { ok = false }
+        day += 997
+    }
+    // consecutive days are consecutive dates
+    var prev = time.dateOfDays(-1000)
+    for i in -999..1000 {
+        let cur = time.dateOfDays(i)
+        if !(prev < cur) || time.daysOfDate(cur) - time.daysOfDate(prev) != 1 { ok = false }
+        prev = cur
+    }
+    if ok { println("round trip ok") }
+
+    var parsed = ""
+    for s in ["2024-02-29", "2023-02-29", "2024-13-01", "2024/01/01"] {
+        match time.parseDate(s) {
+            Some(x) { parsed += x.toStr() + " " }
+            None { parsed += "none " }
+        }
+    }
+    println(trim(parsed))
+    println("leap 2000 " + time.isLeapYear(2000).toStr() + " 1900 " + time.isLeapYear(1900).toStr() +
+        " 2024 " + time.isLeapYear(2024).toStr())
+
+    let t0 = time.monotonicNs()
+    time.sleepMs(2)
+    let t1 = time.monotonicNs()
+    let now = time.now()
+    // after 2020-01-01 and before 2200
+    if t1 - t0 >= 2000000 && now.sec > 1577836800 && now.sec < 7258118400 && now.nsec >= 0 &&
+        now.nsec < 1000000000 && time.unixSeconds() >= now.sec {
+        println("clocks ok")
+    }
+    let e = time.Time{sec: 0, nsec: 500000000}
+    let later = e.addMillis(1000)
+    println("addMillis " + later.toStr() + " " + e.millisUntil(e.addMillis(1500)).toStr() + " " +
+        e.millisUntil(time.Time{sec: 0, nsec: 499999999}).toStr())
+    println("weekday " + time.weekday(time.dateOf(0)).toStr() + " " +
+        time.weekday(time.Date{year: 2000, month: 1, day: 1}).toStr())
+}

@@ -1,5 +1,5 @@
-// Decimal and Money are library code (std.obx). The currencies are user types
-// that supply associated functions.
+// Decimal (std) and Money (lib/money) are library code. The currencies are
+// user types that supply associated functions.
 // expect: 12.50 USD
 // expect: 20.00 USD
 // expect: 32.50 USD
@@ -9,6 +9,8 @@
 // expect: true
 // expect: -1.5
 // expect: 0.05
+import "money"
+
 type USD = value record {}
 fn (USD) code(): str { return "USD" }
 fn (USD) scale(): int { return 2 }
@@ -18,15 +20,15 @@ fn (JPY) code(): str { return "JPY" }
 fn (JPY) scale(): int { return 0 }
 
 fn main() {
-    let a: Money[USD] = money(12.5)
-    let b: Money[USD] = money(20.00)
+    let a: money.Money[USD] = money.of(12.5)
+    let b: money.Money[USD] = money.of(20.00)
     println(a)
     println(b)
     let c = a + b
     println(c)
     let tax = c.times(0.0825)
     println(tax)
-    let y: Money[JPY] = money(decimalOf(1500))
+    let y: money.Money[JPY] = money.of(decimalOf(1500))
     println(y)
     let y2 = y.times(1.1)
     println(y2)

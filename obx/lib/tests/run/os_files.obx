@@ -1,0 +1,111 @@
+// io, fs and os together: write, append and read files, a buffered file
+// writer, directory listing, stat, links, errors with errno, removeAll.
+// expect: hello
+// expect: world!
+// expect: lines 3: a|b|c
+// expect: size 12 file true dir false
+// expect: a.txt b.txt link sub
+// expect: a.txt:file b.txt:file link:link sub:dir
+// expect: link -> a.txt: is link true, follows to a file true
+// expect: open nope/x.txt: No such file or directory
+// expect: errno 2 true
+// expect: rmdir: 39
+// expect: w: 20000 lines, 208890 bytes
+// expect: exists after removeAll: false
+// expect: env: unset ok, set ok
+// expect: cwd changed: true
+// expect: perm 1a4
+
+import "io"
+import "fs"
+import "os"
+
+fn check[T](r: Result[T, io.IoError]): T {
+    match move(r) {
+        Ok(v) { return v }
+        Err(e) {
+            eprintln("unexpected: " + e.toStr())
+            exit(1)
+        }
+    }
+}
+
+fn main() {
+    let dir = "/tmp/obx_lib_os_files_" + os.pid().toStr()
+    fs.removeAll(dir)
+    check(fs.mkdirAll(fs.join(dir, "sub/deeper")))
+    let a = fs.join(dir, "a.txt")
+    check(io.write(a, "hello\n"))
+    check(io.appendTo(a, "world!"))
+    for l in check(io.readLines(a)) { println(l) }
+    check(io.write(fs.join(dir, "b.txt"), "a\r\nb\nc\n"))
+    let ls = check(io.readLines(fs.join(dir, "b.txt")))
+    println("lines " + len(ls).toStr() + ": " + ls[0] + "|" + ls[1] + "|" + ls[2])
+    let st = check(fs.stat(a))
+    println("size " + st.size.toStr() + " file " + st.isFile().toStr() + " dir " + st.isDir().toStr())
+    check(fs.makeLink("a.txt", fs.join(dir, "link")))
+
+    var names = ""
+    for n in check(fs.listNames(dir)) { names += n + " " }
+    println(trim(names))
+    var es = check(fs.list(dir))
+    var kinds: []str = []
+    for e in es { append(mut &kinds, e.name + ":" + e.kind.toStr()) }
+    sort(mut &kinds)
+    var ks = ""
+    for k in kinds { ks += k + " " }
+    println(trim(ks))
+    let link = fs.join(dir, "link")
+    println("link -> a.txt: is link " + check(fs.lstat(link)).isLink().toStr() + ", follows to a file " + fs.isFile(link).toStr())
+
+    match io.read("nope/x.txt") {
+        Ok(_) { println("read nope?") }
+        Err(e) { println("open nope/x.txt: " + io.errorText(e.errno)) }
+    }
+    match fs.stat(fs.join(dir, "nope")) {
+        Ok(_) { println("stat nope?") }
+        Err(e) { println("errno " + e.errno.toStr() + " " + (e.op == "stat").toStr()) }
+    }
+    match fs.remove(fs.join(dir, "sub")) {
+        Ok(_) { println("removed a non-empty dir?") }
+        Err(e) { println(e.op + ": " + e.errno.toStr()) }
+    }
+
+    let wpath = fs.join(dir, "sub/deeper/w.txt")
+    var w = check(io.create(wpath))
+    for i in 0..20000 {
+        w.write("line ")
+        w.writeln(i.toStr())
+    }
+    check(w.close())
+    let text = check(io.read(wpath))
+    println("w: " + len(io.splitLines(text)).toStr() + " lines, " + len(text).toStr() + " bytes")
+
+    check(fs.setPerm(a, 0x1A4))
+    let perm = check(fs.stat(a)).perm()
+
+    check(fs.removeAll(dir))
+    println("exists after removeAll: " + fs.exists(dir).toStr())
+
+    os.unsetEnv("OBX_LIB_TEST_VAR")
+    let unset = os.env("OBX_LIB_TEST_VAR").isNone()
+    os.setEnv("OBX_LIB_TEST_VAR", "42")
+    let set = os.envOr("OBX_LIB_TEST_VAR", "?") == "42"
+    if unset && set { println("env: unset ok, set ok") }
+
+    let before = os.cwd()
+    os.setCwd("/")
+    println("cwd changed: " + (os.cwd() == "/" && before != "/").toStr())
+    println("perm " + hexOf(perm))
+}
+
+fn hexOf(n: int): str {
+    let digits = "0123456789abcdef"
+    var s = ""
+    var v = n
+    while v > 0 {
+        s = strSlice(digits, v % 16, v % 16 + 1) + s
+        v = v / 16
+    }
+    return s
+}
