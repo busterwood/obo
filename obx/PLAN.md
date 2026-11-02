@@ -52,3 +52,20 @@ C compiler. Then `ref/` is retired.
 Draft 1 of the language has no closures and no interface values. A compiler
 does not need either: AST walks are `match`, and symbol tables are maps from
 names to indices.
+
+## Language backlog
+
+Pain points found while writing the library (stage 3 report, 2026-11-02).
+Each needs a spec decision before the self-hosted compiler depends on it.
+
+| Item | Proposal |
+|---|---|
+| Moving fields out of a record | `let P{a, b} = e` destructures a consumed record (as a consuming `match` does for closed types). The compiler will want it for AST rewriting. |
+| No `never` result type | a `never` result for functions that do not return (`panic`, `exit`, stop helpers) |
+| Fractional literals limited to 18 digits, no exponent | let the literal carry an `i128` coefficient and allow `e`, so `fromFraction(units: i128, scale: int)` with a negative scale for large exponents |
+| Generic function values inside generic code; no closures | closures are planned (section 13 of the spec); until then `sortBy` takes a plain `fn` |
+| Owned globals banned | needs the effect rules (section 13); tables are matches or constants for now |
+| Externs cannot be `pub`, renamed or return `str` | `extern "c" fn name(...) = "c_name"`, and a `str` result copied from a NUL-terminated `char *` |
+| Two externs with the same C name and different signatures | should be a compile error (today the first wins silently) |
+| std variant names (`HALF_EVEN`, `DecOverflow`) are visible everywhere | qualify by type (`Rounding.HALF_EVEN`) or keep std's closed types few |
+| A local file can shadow a library module | keep (relative first), document |
