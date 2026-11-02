@@ -1,0 +1,203 @@
+// The gcore standard prelude. Everything here is ordinary library code: the
+// compiler has no special knowledge of any type in this file. It knows two
+// names only: a fractional literal calls fromFraction, and try needs the
+// variants Ok and Err.
+
+// ---------------------------------------------------------------- core sums
+
+type Option[T] = closed {
+    Some { value: T }
+    None {}
+}
+
+type Result[T, E] = closed {
+    Ok { value: T }
+    Err { error: E }
+}
+
+// ---------------------------------------------------------------- constraints
+
+type Eq = interface { fn eq(other: &Self): bool }
+type Ord = interface { fn cmp(other: &Self): int }
+type Show = interface { fn show() }
+
+fn (a: &int) eq(b: &int): bool { return a == b }
+fn (a: &int) cmp(b: &int): int {
+    if a < b { return 0 - 1 }
+    if a > b { return 1 }
+    return 0
+}
+fn (a: &int) show() { print(a) }
+fn (a: &str) eq(b: &str): bool { return streq(a, b) }
+fn (a: &str) show() { print(a) }
+
+fn maxInt(a: int, b: int): int {
+    if a > b { return a }
+    return b
+}
+
+fn pow10(n: int): int {
+    var r = 1
+    for i in 0..n {
+        r = r * 10
+    }
+    return r
+}
+
+// ---------------------------------------------------------------- Decimal
+//
+// An exact fixed-point decimal, written as a library value record. obo's real
+// decimal is a 128-bit coefficient with a display scale; this one is a 64-bit
+// coefficient, which is enough to show the shape. The operators are methods:
+// a + b calls add, a < b calls cmp.
+
+type Decimal = value record { units: int; scale: int }
+
+fn fromFraction(units: int, scale: int): Decimal {
+    return Decimal{units: units, scale: scale}
+}
+
+fn decimalOf(n: int): Decimal { return Decimal{units: n, scale: 0} }
+
+fn (a: Decimal) rescaled(s: int): Decimal {
+    if s <= a.scale { return a }
+    return Decimal{units: a.units * pow10(s - a.scale), scale: s}
+}
+
+fn (a: Decimal) add(b: Decimal): Decimal {
+    let s = maxInt(a.scale, b.scale)
+    return Decimal{units: a.rescaled(s).units + b.rescaled(s).units, scale: s}
+}
+
+fn (a: Decimal) sub(b: Decimal): Decimal {
+    let s = maxInt(a.scale, b.scale)
+    return Decimal{units: a.rescaled(s).units - b.rescaled(s).units, scale: s}
+}
+
+fn (a: Decimal) mul(b: Decimal): Decimal {
+    return Decimal{units: a.units * b.units, scale: a.scale + b.scale}
+}
+
+fn (a: Decimal) neg(): Decimal { return Decimal{units: 0 - a.units, scale: a.scale} }
+
+fn (a: Decimal) cmp(b: &Decimal): int {
+    let s = maxInt(a.scale, b.scale)
+    let x = a.rescaled(s).units
+    let y = b.rescaled(s).units
+    if x < y { return 0 - 1 }
+    if x > y { return 1 }
+    return 0
+}
+
+// Round half away from zero to s fractional digits.
+fn (a: Decimal) round(s: int): Decimal {
+    if s >= a.scale { return a.rescaled(s) }
+    let d = pow10(a.scale - s)
+    var q = a.units / d
+    let r = a.units % d
+    if r * 2 >= d { q = q + 1 }
+    if r * 2 <= 0 - d { q = q - 1 }
+    return Decimal{units: q, scale: s}
+}
+
+fn (a: &Decimal) show() {
+    var u = a.units
+    if u < 0 {
+        print("-")
+        u = 0 - u
+    }
+    let p = pow10(a.scale)
+    print(u / p)
+    if a.scale > 0 {
+        print(".")
+        let f = u % p
+        var w = p / 10
+        while w > 1 && f < w {
+            print("0")
+            w = w / 10
+        }
+        print(f)
+    }
+}
+
+// ---------------------------------------------------------------- Money
+//
+// Money is generic over its currency. The currency is a type that supplies
+// associated functions (its code and its minor-unit scale); it holds no data.
+// Adding dollars to yen is a type error, not a run-time check.
+
+type Currency = interface {
+    fn code(): str
+    fn scale(): int
+}
+
+type Money[C: Currency] = value record { amount: Decimal }
+
+fn (a: Money[C]) add(b: Money[C]): Money[C] {
+    return Money[C]{amount: a.amount + b.amount}
+}
+
+fn (a: Money[C]) sub(b: Money[C]): Money[C] {
+    return Money[C]{amount: a.amount - b.amount}
+}
+
+// Multiply by a rate and round to the currency's minor unit.
+fn (a: Money[C]) times(k: Decimal): Money[C] {
+    return Money[C]{amount: (a.amount * k).round(C.scale())}
+}
+
+fn (a: Money[C]) cmp(b: &Money[C]): int { return a.amount.cmp(&b.amount) }
+
+fn (m: &Money[C]) show() {
+    m.amount.rescaled(C.scale()).show()
+    print(" ")
+    print(C.code())
+}
+
+// ---------------------------------------------------------------- containers
+
+fn sort[T: Ord](xs: &[]T) {
+    for i in 1..len(xs) {
+        var j = i
+        while j > 0 && xs[j].cmp(&xs[j - 1]) < 0 {
+            swap(xs, j, j - 1)
+            j = j - 1
+        }
+    }
+}
+
+type Map[K: Eq, V] = record { keys: []K; vals: []V }
+
+fn newMap[K: Eq, V](): Map[K, V] {
+    return Map[K, V]{keys: []K{}, vals: []V{}}
+}
+
+fn (m: &Map[K, V]) find(k: &K): int {
+    for i in 0..len(m.keys) {
+        if k.eq(&m.keys[i]) { return i }
+    }
+    return 0 - 1
+}
+
+fn (m: &Map[K, V]) put(k: K, v: V) {
+    let i = m.find(&k)
+    if i < 0 {
+        append(m.keys, k)
+        append(m.vals, v)
+    } else {
+        m.vals[i] = v
+        drop(k)
+    }
+}
+
+fn (m: &Map[K, V]) has(k: &K): bool { return m.find(k) >= 0 }
+
+fn (m: &Map[K, V]) size(): int { return len(m.keys) }
+
+// get copies the value out, so it needs a copyable V. Map[str, Node].get is a
+// compile error at the instantiation; use has, or a method that borrows.
+fn (m: &Map[K, V]) get(k: &K): Option[V] {
+    let i = m.find(k)
+    if i < 0 { return None{} }
+    return Some{value: m.vals[i]}
+}

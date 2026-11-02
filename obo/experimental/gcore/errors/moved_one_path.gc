@@ -1,0 +1,7 @@
+// error: 'n' is moved on one path but not another
+type Node = record { v: int }
+fn eat(n: Node) {}
+fn main() {
+    let n = Node{v: 1}
+    if n.v > 0 { eat(n) }
+}

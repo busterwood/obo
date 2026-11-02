@@ -1,0 +1,7 @@
+// error: cannot move a Node out of a borrow (in Map.get[str, Node])
+type Node = record { v: int }
+fn main() {
+    var m: Map[str, Node] = newMap()
+    m.put("a", Node{v: 1})
+    let r = m.get(&"a")
+}

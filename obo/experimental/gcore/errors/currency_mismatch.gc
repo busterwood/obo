@@ -1,0 +1,12 @@
+// error: argument 1 of add is Money[USD], not Money[JPY]
+type USD = value record {}
+fn (USD) code(): str { return "USD" }
+fn (USD) scale(): int { return 2 }
+type JPY = value record {}
+fn (JPY) code(): str { return "JPY" }
+fn (JPY) scale(): int { return 0 }
+fn main() {
+    let a = Money[USD]{amount: 1.00}
+    let b = Money[JPY]{amount: decimalOf(100)}
+    let c = a + b
+}

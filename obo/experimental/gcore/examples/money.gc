@@ -1,0 +1,38 @@
+// Decimal and Money are library code (std.gc). The currencies are user types
+// that supply associated functions.
+// expect: 12.50 USD
+// expect: 20.00 USD
+// expect: 32.50 USD
+// expect: 2.68 USD
+// expect: 1500 JPY
+// expect: 1650 JPY
+// expect: true
+type USD = value record {}
+fn (USD) code(): str { return "USD" }
+fn (USD) scale(): int { return 2 }
+
+type JPY = value record {}
+fn (JPY) code(): str { return "JPY" }
+fn (JPY) scale(): int { return 0 }
+
+fn main() {
+    let a = Money[USD]{amount: 12.5}
+    let b = Money[USD]{amount: 20.00}
+    a.show()
+    println()
+    b.show()
+    println()
+    let c = a + b
+    c.show()
+    println()
+    let tax = c.times(0.0825)
+    tax.show()
+    println()
+    let y = Money[JPY]{amount: decimalOf(1500)}
+    y.show()
+    println()
+    let y2 = y.times(1.1)
+    y2.show()
+    println()
+    println(a < b)
+}

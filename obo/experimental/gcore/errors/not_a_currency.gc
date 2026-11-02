@@ -1,0 +1,6 @@
+// error: Euro does not satisfy Currency (type parameter C): it has no method 'scale'
+type Euro = value record {}
+fn (Euro) code(): str { return "EUR" }
+fn main() {
+    let a = Money[Euro]{amount: 1.00}
+}

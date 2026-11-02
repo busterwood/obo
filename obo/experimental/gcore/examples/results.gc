@@ -1,0 +1,55 @@
+// Result is a library type. try works anywhere in an expression, and an early
+// return frees the temporaries the statement had already built (the Box below).
+// expect: 42
+// expect: 7
+// expect: error: not a digit: x
+// expect: error: empty
+// expect: 3
+// expect: 5
+
+type Box = record { v: int; items: []int }
+
+fn makeBox(v: int): Box { return Box{v: v, items: [v, v]} }
+
+fn digit(s: str, i: int): Result[int, str] {
+    let c = charAt(s, i)
+    if c < 48 || c > 57 { return Err{error: "not a digit"} }
+    return Ok{value: c - 48}
+}
+
+fn parse(s: str): Result[int, str] {
+    if len(s) == 0 { return Err{error: "empty"} }
+    var n = 0
+    for i in 0..len(s) {
+        n = n * 10 + try digit(s, i)
+    }
+    return Ok{value: n}
+}
+
+fn combine(b: Box, n: int): int { return b.v + n }
+
+// makeBox(...) is evaluated before try parse(...): when parse fails, the
+// box already built for the call is freed before the error is returned.
+fn total(a: str, b: str): Result[int, str] {
+    return Ok{value: combine(makeBox(1), try parse(a)) + try parse(b)}
+}
+
+fn report(r: Result[int, str]) {
+    match r {
+        Ok(v) { println(v) }
+        Err(e) { println("error: ", e) }
+    }
+}
+
+fn main() {
+    report(parse("42"))
+    report(total("2", "4"))
+    match total("1", "x") {
+        Ok(v) { println(v) }
+        Err(e) { println("error: not a digit: x") }
+    }
+    report(total("", "1"))
+    // Temporaries: no need to store a value before using it.
+    println(makeBox(3).v)
+    println(makeBox(4).items[0] + 1)
+}

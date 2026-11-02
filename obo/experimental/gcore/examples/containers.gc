@@ -1,0 +1,71 @@
+// One generic sort and one generic Map, used with copyable and owned types.
+// The program ends with no live objects (the runtime checks), so drop glue
+// was generated correctly for every instantiation.
+// expect: 1 2 3 5 8
+// expect: apple 3
+// expect: pear 1
+// expect: kiwi missing
+// expect: ada 36
+// expect: bob 41
+// expect: cy 52
+// expect: 2 names
+// expect: 2.50 USD
+// expect: 9.99 USD
+// expect: 10.00 USD
+
+type USD = value record {}
+fn (USD) code(): str { return "USD" }
+fn (USD) scale(): int { return 2 }
+
+// An owned record: sorting moves the records (pointers), never copies them.
+type Person = record { name: str; age: int; tags: []str }
+fn (a: &Person) cmp(b: &Person): int { return a.age.cmp(&b.age) }
+
+fn person(name: str, age: int): Person {
+    return Person{name: name, age: age, tags: ["x", "y"]}
+}
+
+fn showCount(m: &Map[str, int], k: str) {
+    let r = m.get(&k)
+    match r {
+        Some(n) { println(k, " ", n) }
+        None { println(k, " missing") }
+    }
+}
+
+fn main() {
+    var xs = [5, 3, 8, 1, 2]
+    sort(&xs)
+    for i in 0..len(xs) {
+        print(xs[i])
+        if i < len(xs) - 1 { print(" ") }
+    }
+    println()
+
+    var m: Map[str, int] = newMap()
+    m.put("apple", 1)
+    m.put("pear", 1)
+    m.put("apple", 3)
+    showCount(&m, "apple")
+    showCount(&m, "pear")
+    showCount(&m, "kiwi")
+
+    var people = [person("cy", 52), person("ada", 36), person("bob", 41)]
+    sort(&people)
+    for i in 0..len(people) {
+        println(people[i].name, " ", people[i].age)
+    }
+
+    var byName: Map[str, Person] = newMap()
+    byName.put("ada", pop(people))
+    byName.put("bob", pop(people))
+    byName.put("ada", pop(people))       // replaces: the old Person is freed
+    println(byName.size(), " names")
+
+    var prices = [Money[USD]{amount: 10.0}, Money[USD]{amount: 2.5}, Money[USD]{amount: 9.99}]
+    sort(&prices)
+    for i in 0..len(prices) {
+        prices[i].show()
+        println()
+    }
+}
