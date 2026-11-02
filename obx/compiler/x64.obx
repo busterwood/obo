@@ -122,9 +122,19 @@ pub type Asm = record {
     labels: []int           // label -> position, -1 while unbound
     fixes: []Fix
     pub relocs: []Reloc
+    pub peep: bool          // the peephole below (off for the encoder test, which checks bytes)
+    stEnd: int              // the end of the last 8-byte store of a register, or -1
+    stMem: Mem
+    stReg: int
 }
 
-pub fn newAsm(): Asm { return Asm{code: [], labels: [], fixes: [], relocs: []} }
+pub fn newAsm(): Asm {
+    return Asm{code: [], labels: [], fixes: [], relocs: [], peep: false, stEnd: -1, stMem: mem(-1, 0), stReg: 0}
+}
+
+fn memEq(a: Mem, b: Mem): bool {
+    return a.base == b.base && a.index == b.index && a.disp == b.disp && (a.index < 0 || a.scale == b.scale)
+}
 
 pub fn (a: &Asm) pos(): int { return len(a.code) }
 
@@ -232,11 +242,21 @@ pub fn (a: mut &Asm) movRR(size: int, dst: int, src: int) {
 }
 
 pub fn (a: mut &Asm) load(size: int, dst: int, m: Mem) {
+    // peephole: a load of what the instruction before (no label between) stored
+    if a.peep && size == 8 && a.stEnd == a.pos() && memEq(m, a.stMem) && m.base != dst && m.index != dst {
+        if dst != a.stReg { a.movRR(8, dst, a.stReg) }
+        return
+    }
     a.rm(pfxOf(size), size == 8, if size == 1 { 0x8A } else { 0x8B }, dst, m, size == 1)
 }
 
 pub fn (a: mut &Asm) store(size: int, m: Mem, src: int) {
     a.rm(pfxOf(size), size == 8, if size == 1 { 0x88 } else { 0x89 }, src, m, size == 1)
+    if size == 8 && m.base != src && m.index != src && m.base != RIP {
+        a.stEnd = a.pos()
+        a.stMem = m
+        a.stReg = src
+    }
 }
 
 // A load of size bytes, zero- or sign-extended to 64 bits.
@@ -469,7 +489,10 @@ pub fn (a: mut &Asm) newLabel(): int {
     return len(a.labels) - 1
 }
 
-pub fn (a: mut &Asm) bind(l: int) { a.labels[l] = a.pos() }
+pub fn (a: mut &Asm) bind(l: int) {
+    a.labels[l] = a.pos()
+    a.stEnd = -1
+}
 
 pub fn (a: mut &Asm) jcc(cc: int, l: int) {
     a.b(0x0F)

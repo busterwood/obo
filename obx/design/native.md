@@ -125,6 +125,9 @@ rt.h; rt.c includes it, so gcc checks that the definitions match.
 
 Observable behaviour is that of rt.h:
 
+- `memcpy`/`memset` use `rep movsb`/`rep stosb` past 64 bytes, and a large
+  block (its own mapping) grows with `mremap`, so a growing buffer is not
+  copied;
 - stdout through the same 64 KiB buffer, flushed at exit, before a trap and
   before any write to another descriptor; stderr unbuffered;
 - traps print `obx: <msg> at <where>` on stderr and exit with the code
@@ -193,37 +196,64 @@ libraries. A value has the same bytes as in the C backend:
 
 ## 4. Code generation
 
-Phase 1 is simple and correct first (`x64gen.obx`):
+`x64gen.obx` is a one-pass tree walker over the IR, with a few local
+optimizations (stage 5, the performance step):
 
 - every local and parameter has a stack slot (`rbp`-relative); slots of a
   block are reused after it ends; temporaries are slots that live until the
   end of their statement;
+- except the integer and pointer locals and parameters whose address is not
+  taken (no `&x`, no initializer list): before a function is generated, a
+  scan counts the uses of each local, a use inside a loop 8 times one
+  outside (nested loops more), and the five heaviest that are named three
+  times or in a loop live in `rbx r12 r13 r14 r15` (callee-saved: saved to
+  frame slots in the prologue and restored in every epilogue, so calls keep
+  them); such a local holds its value normalized to 64 bits, like a load;
 - an expression is evaluated into `rax` (integers, pointers, bool), `rax:rdx`
   (128-bit), `xmm0` (double), or, for a struct, `rax` holds its address
   (a temporary slot for call results and compound literals);
-- a binary operator spills its left operand to a temporary slot (not when
-  the right one is a constant or a local, which is loaded into `rcx`); a call
-  evaluates its arguments left to right into temporary slots, then loads the
-  registers and copies the stack arguments; `rsp` stays fixed in the body
-  (the frame size and the outgoing-argument area are patched into the
-  prologue);
-- only caller-saved registers are used (`rax rcx rdx rsi rdi r8-r11`,
-  `xmm0-xmm7`), so no register is saved but `rbp`;
+- a binary operator spills its left operand to a temporary slot only when
+  both are complex: a constant (32 bits), a local in a register, an 8-byte
+  local or member in its slot are used as the instruction's operand
+  (immediate, register, memory), and a simple left operand is evaluated after
+  a right one that has no effect (no assignment, no call but the inlined
+  checks); compares of a register local are done in place;
+- a call evaluates its arguments left to right; constants, locals, members
+  of locals and addresses of strings and globals are loaded straight into
+  their registers at the call, the last other integer argument stays in
+  `rax`, the rest go through temporary slots; the stack arguments are
+  copied; `rsp` stays fixed in the body (the frame size and the
+  outgoing-argument area are patched into the prologue);
+- the runtime's hot helpers are generated inline, with the same results,
+  trap codes and messages: checked and wrapping arithmetic (`rt_add_int`,
+  `rt_wmul_u32`, ...: the operation and `jo`/`jc`/a range test), `rt_idx` and
+  `rt_str_byte` (an unsigned compare), `rt_str_dup` and `rt_str_drop` (the
+  reference count; `rt_free` at zero), `rt_arr_push` (the store when there is
+  room; the runtime grows the array). A failed check jumps to a stub after
+  the function that calls `rt_trap` (one stub per code and location);
+- conditions compile to jumps (`&&`, `||`, `!`, comparisons and conversions
+  to bool as branches); the C front end's `bool c = e; if (!c) break;` (every
+  loop condition) and `T r = e; return r;` are generated without the local
+  when it is named nowhere else, and an `if` whose body is only `break` or
+  `continue` is a single conditional jump; `x = x` (the copies of drop glue)
+  generates nothing;
+- the assembler's peephole drops a load of the slot the instruction just
+  before stored (no label between), or turns it into a register move;
 - the prologue touches the frame a page at a time from the top (a probe
   loop on `r11`), so that a frame larger than the guard gap faults at the
   guard page, which the runtime reports as `obx: stack overflow`, instead of
   jumping past it into other memory (the C build compiled by gcc without
   `-fstack-clash-protection` can do the latter: red-team `so_big_frames`);
-- conditions compile to jumps (`&&`, `||`, `!` and comparisons as branches);
-  128-bit add, sub, mul, shifts and compares are inline, 128-bit division and
+- 128-bit add, sub, mul, shifts and compares are inline, 128-bit division and
   the conversions between doubles and 64/128-bit unsigned or 128-bit integers
   call `rt_n_*` helpers;
 - constant initializers of globals are evaluated at build time (128-bit
   constants, addresses of globals, functions and strings as data
   relocations); `const` globals go to rodata.
 
-The code generator reads only the IR, so a register allocator and a peephole
-pass (phase 4/5) can be added without touching the front end.
+`OBX_NATIVE_MAP=file obxc --native ...` writes the address, size and name of
+every generated function (the format of perf's `/tmp/perf-PID.map`), for
+profiling and disassembly.
 
 ## 5. ELF layout
 
@@ -302,7 +332,7 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 | `compiler/rtx.obx` | generated: runtime bytes, symbols, header |
 | `compiler/ir.obx` | the IR (section 1b) |
 | `compiler/cfront.obx` | the C front end: lexer, parser, C's types and conversions, into the IR |
-| `compiler/x64gen.obx` | the x86-64 target: code generation, ABI, frames, the link |
+| `compiler/x64gen.obx` | the x86-64 target: code generation, register locals, inlined runtime checks, ABI, frames, the link |
 | `compiler/x64.obx` | the x86-64 encoder (`obxc --encode-test`) |
 | `compiler/elf.obx` | the ELF writer; the dynamic tables; reading a shared library's symbols |
 | `compiler/main.obx` | `--native`: `x64gen.build(cfront.read(c), libs)`, finds and reads the libraries, writes the file, `--run` |
@@ -329,10 +359,10 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 
 (kept current; the next agent starts here)
 
-2026-11-02, end of phase 5 (dynamic linking):
+2026-11-02, phase 5 (dynamic linking) and the first performance step:
 
 - `tools/x64_encode_test.py`: every encoder form identical to `as` (4 seeds
-  of 10,000 random instructions; now with `[rip+disp]` operands).
+  of 10,000 random instructions; `[rip+disp]` operands, `imul r, r, imm`).
 - `tests/run_native.py --lib`: 355 of 355 (the 346 run and library tests,
   `math_float` with `hypot` now among them, and the 9 of `tests/native/`).
   With `--redteam`: 1330 pass, 0 differ, 0 unsupported (516 red-team
@@ -345,13 +375,29 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
   `__libc_start_main` GLIBC_2.34). Programs without such calls, and the
   compiler itself, are static as before.
 - Native self-build (`tools/native_selfbuild.sh`, in the quick gate): stage 2
-  (2.7 MB static ELF) builds stage 3, identical; stage 2's `--emit-c` equals
-  out/obxc's. Stage 2 is about 2.4 times slower than the gcc -O2 build
-  (`--emit-c` of the compiler: 0.26 s against 0.11 s).
-- The runtime grew by 512 bytes of code (the `rt_n_libc` checks), so every
-  static executable's runtime part is that much larger.
-- Not done: `--emit-asm`; no optimization at all (code is about what
-  `gcc -O0` makes); no `PT_GNU_RELRO` and no section headers in dynamic
+  (2.4 MB static ELF) builds stage 3, identical; stage 2's `--emit-c` equals
+  out/obxc's.
+- Performance (section 4; best of 5, ms, gcc -O2 build of the same C against
+  native):
+
+  | | before | after | gcc -O2 |
+  |---|---|---|---|
+  | `--emit-c` of the compiler | 265 | 174 | 113 |
+  | bench fib | 1080 | 640 | 373 |
+  | bench loop | 3272 | 448 | 277 |
+  | bench array | 1595 | 301 | 106 |
+  | bench alloc | 162 | 86 | 127 |
+  | bench lists | 59 | 45 | 37 |
+  | bench strings | 72 | 56 | 82 |
+  | bench trees | 30 | 24 | 25 |
+  | bench tokens | 29 | 19 | 17 |
+
+  What is left is mostly what gcc gets from inlining the runtime's static
+  functions into the program (`rt_str_concat`, `rt_arr_push`'s slow path,
+  malloc) and from keeping temporaries in registers across a statement.
+- The runtime grew by 512 bytes of code for the `rt_n_libc` checks and by
+  1.9 KB for the faster `memcpy`/`memset` (inlined into their callers by gcc).
+- Not done: `--emit-asm`; no `PT_GNU_RELRO` and no section headers in dynamic
   executables; no lazy binding (not needed).
 - Language limits met by the tests (not changed): an extern cannot take a
   function (no `qsort` with an obx comparison: the C ABI has no closures and
@@ -362,9 +408,11 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 
 Next, in order:
 
-1. Performance: a peephole pass and register allocation for locals (the IR
-   already separates the code generator from the front end; keep both in the
-   target layer, section 1b).
+1. More performance, if wanted: temporaries in caller-saved registers within
+   a statement (`rsi rdi r8-r10` are free between calls), doubles in `xmm`
+   registers, `rt_str_concat` and `rt_str_eq` inline, a better choice of
+   register locals (live ranges instead of counts). Measure with
+   `OBX_NATIVE_MAP` and perf on the self-build.
 2. After ref is retired: check.obx produces the IR directly (section 1a) and
    cfront goes away.
 
@@ -378,3 +426,5 @@ Phases:
   builds itself; stage 2 == stage 3). Done (no performance work yet).
 - Phase 5: dynamic linking (GOT, `.dynamic`, symbol versions; libc, libm,
   libsqlite3, libpq externs). Done (section 5a).
+- Performance, first step: register locals, inlined runtime checks,
+  operand forms, a peephole. Done (section 4).

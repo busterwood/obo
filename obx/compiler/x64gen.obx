@@ -116,6 +116,7 @@ fn newGen(u: ir.Ir): Gen {
         caseL: newMap(), retPtr: 0, retTy: 0, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [],
         saved: []}
+    g.a.peep = true
     for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
     for i in 0..len(g.u.funcs) {
         append(mut &g.funcSym, -1)
@@ -557,6 +558,14 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
     }
 }
 
+// Whether a and b are the same lvalue in memory that needs no code (a local or a member).
+fn (g: &Gen) sameMem(a: int, b: int): bool {
+    if g.u.nodes[a].ty != g.u.nodes[b].ty { return false }
+    let ma = g.staticMem(a)
+    let mb = g.staticMem(b)
+    return ma.base != -9 && ma.base == mb.base && ma.index == mb.index && ma.disp == mb.disp
+}
+
 // The register of e if it is a local in one, else -1.
 fn (g: &Gen) regOf(e: int): int {
     let n = g.u.nodes[e]
@@ -622,7 +631,9 @@ fn (g: mut &Gen) stmt(s: int) {
         }
     } else if k == ir.S_EXPR {
         let x = g.u.nodes[n.a]
-        if x.k == ir.E_ASSIGN && g.regOf(x.a) >= 0 && g.simple(x.b) && g.u.nodes[x.b].ty == x.ty {
+        if x.k == ir.E_ASSIGN && g.sameMem(x.a, x.b) {
+            // x = x: nothing
+        } else if x.k == ir.E_ASSIGN && g.regOf(x.a) >= 0 && g.simple(x.b) && g.u.nodes[x.b].ty == x.ty {
             g.genInto(x.b, g.regOf(x.a))            // the value unused: straight into the register
         } else {
             g.gen(n.a)
@@ -1360,6 +1371,11 @@ fn (g: mut &Gen) genAssign(e: int) {
         return
     }
     let m = g.staticMem(lhs)
+    if m.base != -9 && g.u.nk(n.b) == ir.E_CALL && g.rtName(n.b) == "rt_str_dup" &&
+        g.sameMem(lhs, g.u.listAt(g.u.nodes[n.b].b, 0)) {
+        g.gen(n.b)                          // x = rt_str_dup(x): the count only
+        return
+    }
     if m.base != -9 {
         g.gen(n.b)
         g.storeT(t, m)
@@ -1878,6 +1894,15 @@ fn (g: mut &Gen) genCall(e: int) {
     }
 }
 
+// The name of the runtime function call e calls directly, or "".
+fn (g: &Gen) rtName(e: int): str {
+    let c = g.u.nodes[e].a
+    if g.u.nk(c) != ir.E_DECAY || g.u.nk(g.u.nodes[c].a) != ir.E_FUNC { return "" }
+    let f = g.u.nodes[g.u.nodes[c].a].a
+    if g.u.funcs[f].body >= 0 || g.u.funcs[f].isExtern { return "" }
+    return g.u.funcs[f].name
+}
+
 // Whether argument x (of type t, passed in registers) can be loaded into its registers at the
 // call with no other register used: a simple integer, or a double or aggregate in memory that
 // needs no code.
@@ -2014,13 +2039,21 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         return true
     }
     if name == "rt_str_dup" && nargs == 1 {
-        // if (b && b->rc >= 0) b->rc++; the result is the same str
-        let s = g.temp(16, 8)
-        g.gen(g.u.listAt(n.b, 0))
-        g.a.load(8, RCX, x64.mem(RAX, 0))
-        g.a.load(8, RDX, x64.mem(RAX, 8))
-        g.a.store(8, rbp(s), RCX)
-        g.a.store(8, rbp(s + 8), RDX)
+        // if (b && b->rc >= 0) b->rc++; the result is the same str: a local or a member of
+        // one is its own result (an aggregate value is the address of its bytes, used at once)
+        let x = g.u.listAt(n.b, 0)
+        let m = g.staticMem(x)
+        var s = 0
+        if m.base != -9 {
+            g.a.load(8, RCX, m)
+        } else {
+            s = g.temp(16, 8)
+            g.gen(x)
+            g.a.load(8, RCX, x64.mem(RAX, 0))
+            g.a.load(8, RDX, x64.mem(RAX, 8))
+            g.a.store(8, rbp(s), RCX)
+            g.a.store(8, rbp(s + 8), RDX)
+        }
         let done = g.a.newLabel()
         g.a.test(8, RCX, RCX)
         g.a.jcc(x64.CC_E, done)
@@ -2030,7 +2063,34 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         g.a.aluI(x64.ADD, 8, RDX, 1)
         g.a.store(8, x64.mem(RCX, 0), RDX)
         g.a.bind(done)
-        g.a.lea(RAX, rbp(s))
+        g.a.lea(RAX, if m.base != -9 { m } else { rbp(s) })
+        return true
+    }
+    if name == "rt_arr_push" && nargs == 2 && g.u.nk(g.u.listAt(n.b, 1)) == ir.E_INT &&
+        x64.fits32(g.u.nodes[g.u.listAt(n.b, 1)].v) {
+        // if (a->len == a->cap) the runtime grows it; then data + len++ * size
+        let size = g.u.nodes[g.u.listAt(n.b, 1)].v
+        g.gen(g.u.listAt(n.b, 0))
+        let slow = g.a.newLabel()
+        let done = g.a.newLabel()
+        g.a.load(8, RCX, x64.mem(RAX, 8))
+        g.a.aluRM(x64.CMP, 8, RCX, x64.mem(RAX, 16))
+        g.a.jcc(x64.CC_E, slow)
+        g.a.lea(RDX, x64.mem(RCX, 1))
+        g.a.store(8, x64.mem(RAX, 8), RDX)
+        g.a.load(8, RDX, x64.mem(RAX, 0))
+        if size == 1 || size == 2 || size == 4 || size == 8 {
+            g.a.lea(RAX, x64.memx(RDX, RCX, size, 0))
+        } else {
+            g.a.imulI(8, RCX, RCX, size)
+            g.a.lea(RAX, x64.memx(RDX, RCX, 1, 0))
+        }
+        g.a.jmp(done)
+        g.a.bind(slow)
+        g.a.movRR(8, RDI, RAX)
+        g.a.movRI(RSI, size)
+        g.callRt("rt_arr_push")
+        g.a.bind(done)
         return true
     }
     if name == "rt_str_drop" && nargs == 1 {
