@@ -1,0 +1,35 @@
+// The slice-taking library functions on parts of arrays and on substrings.
+// expect: 3 5 9 | 2 7 1
+// expect: 1 Err(1)
+// expect: 4 true false
+// expect: a-b 12.50
+
+import "collections"
+import "strings"
+
+fn show(xs: &[int]): str {
+    var b = newStrBuf()
+    for i in 0..len(xs) {
+        if i > 0 { b.add(" ") }
+        b.add(xs[i].toStr())
+    }
+    return b.toStr()
+}
+
+fn main() {
+    var a: []int = [5, 3, 9, 1, 7, 2]
+    sort(mut &a[0..3])
+    collections.reverse(mut &a[3..])
+    println(show(a[..3]) + " | " + show(a[3..]))
+    let r = collections.binarySearch(a[0..3], &4)
+    var e = ""
+    match r {
+        Ok(i) { e = "Ok(" + i.toStr() + ")" }
+        Err(i) { e = "Err(" + i.toStr() + ")" }
+    }
+    println(collections.binarySearch(a[0..3], &5).unwrapOr(-1).toStr() + " " + e)
+    println(len(collections.copyOf(a[2..])).toStr() + " " + collections.isSorted(a[0..3]).toStr() + " " +
+            collections.equal(a[0..2], a[1..3]).toStr())
+    let names: []str = ["a", "b", "c"]
+    println(strings.join(names[..2], "-") + " " + Decimal.parse("x12.50y"[1..6]).unwrap().toStr())
+}

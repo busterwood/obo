@@ -1224,7 +1224,7 @@ class Checker:
         lo = self.int_index(e.lo) if e.lo is not None else '0'
         hi = self.int_index(e.hi) if e.hi is not None else '-1'
         del self.ctx.pending[mark:]
-        n = self.ctx.fresh('sl')
+        n = self.ctx.fresh('sv')
         self.emit(f"obx_slice {n} = rt_sub({base}, {lo}, {hi}, sizeof({self.T(v.t[1])}), {W});")
         return Val(n, ('slice', v.t[1], mut), 'rv', root=v.root, path=v.path)
 
