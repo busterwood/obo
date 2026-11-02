@@ -173,6 +173,7 @@ fn (d: mut &Dumper) node(a: &sx.Ast, depth: int, label: str, n: int) {
         if a.has(n, sx.EXTERN) {
             d.quoted("extern", a.nodes[n].t)
             d.quoted("cname", a.nodes[n].u)
+            if a.has(n, sx.DOTS) { d.scalar("varargs", "true") }
         } else {
             d.add(" extern=- cname=-")
         }

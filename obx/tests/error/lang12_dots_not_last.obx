@@ -1,0 +1,4 @@
+// SPEC 12: ... comes last.
+// error: must be the last parameter
+extern "c" fn printf(..., fmt: str): i32
+fn main() { }

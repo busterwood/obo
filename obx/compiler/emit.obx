@@ -699,6 +699,7 @@ pub fn (e: mut &Emitter) program(main: int, libs: mut &[]str): str {
                 seen.put(cn, true)
                 var ps: []str = []
                 for i in 0..len(e.c.pg.fns[f].params) { append(mut &ps, e.externC(e.c.pg.fns[f].params[i].ty)) }
+                if e.c.pg.fns[f].varargs { append(mut &ps, "...") }
                 let pt = if len(ps) == 0 { "void" } else { join(&ps, ", ") }
                 let rc = e.externC(e.c.pg.fns[f].ret)
                 append(mut &externs, "extern " + rc + " x_" + cn + "(" + pt + ") __asm__(\"" + cn + "\");")

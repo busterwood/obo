@@ -169,6 +169,7 @@ pub type FnDecl = value record {
     pub isExtern: bool
     pub lib: str
     pub cname: str
+    pub varargs: bool  // an extern declared with ... (C varargs)
     pub tps: []int     // also ref's env: the type parameters in scope, by name
     pub params: []Param
     pub ret: int
@@ -826,7 +827,8 @@ fn (pg: mut &Program) collect(m: int) {
             }
             sx.N_FN {
                 append(mut &pg.fns, FnDecl{node: a, mod: m, name: n.s, line: n.line, isPub: isPub,
-                    isExtern: n.flags & sx.EXTERN != 0, lib: n.t, cname: n.u, tps: [], params: [], ret: T_VOID,
+                    isExtern: n.flags & sx.EXTERN != 0, lib: n.t, cname: n.u,
+                    varargs: n.flags & sx.DOTS != 0, tps: [], params: [], ret: T_VOID,
                     recvMode: RM_NONE, recvName: "", recvType: -1, ownerKind: O_NONE, owner: -1, bparam: ""})
                 let f = len(pg.fns) - 1
                 append(mut &pg.mods[m].fns, f)
@@ -1227,6 +1229,9 @@ fn (pg: mut &Program) resolveFn(f: int) {
             if !ok { pg.err(m, pn.line, "extern parameter " + pn.s + " cannot have type " + pg.tstr(t)) }
             append(mut &pg.fns[f].params, Param{name: pn.s, ty: t, isVar: false, line: pn.line})
         }
+        if pg.fns[f].varargs && len(pg.fns[f].params) == 0 {
+            pg.err(m, a.line, "a C variadic function needs a parameter before ...")
+        }
         if a.d >= 0 {
             let r = pg.resolveType(a.d, m, &env, P_RET, 0)
             pg.fns[f].ret = r
@@ -1407,6 +1412,7 @@ fn (pg: mut &Program) resolveFn(f: int) {
 // ref's comparison of extern signatures: the parameter types and the result.
 fn (pg: &Program) sameSig(f: int, g: int): bool {
     if pg.fns[f].ret != pg.fns[g].ret || len(pg.fns[f].params) != len(pg.fns[g].params) { return false }
+    if pg.fns[f].varargs != pg.fns[g].varargs { return false }
     for i in 0..len(pg.fns[f].params) {
         if pg.fns[f].params[i].ty != pg.fns[g].params[i].ty { return false }
     }

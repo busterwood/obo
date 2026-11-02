@@ -711,6 +711,7 @@ pub const MUTABLE = 128
 pub const MINUS = 256
 pub const NEG = 512
 pub const TRUE = 1024
+pub const DOTS = 4096       // N_FN (extern): C varargs after the parameters
 pub const ARM = 2048        // N_RETURN, N_BREAK, N_CONTINUE: the whole body of a branch or arm of an expression
 
 // Type forms and interface receiver modes.
@@ -758,12 +759,13 @@ pub type Parser = record {
     i: int
     nolit: int
     depth: int
+    dots: bool      // the last params() ended in ... (an extern's C varargs)
     ast: Ast
 }
 
 // The tree of a module, or the first syntax error (which stops the program).
 pub fn parse(src: str, fname: str): Ast {
-    var p = Parser{toks: lex(src, fname), i: 0, nolit: 0, depth: 0,
+    var p = Parser{toks: lex(src, fname), i: 0, nolit: 0, depth: 0, dots: false,
                    ast: Ast{fname: fname, nodes: [], items: [], imports: -1, decls: -1}}
     p.module()
     let Parser{ast} = move(p)
@@ -961,6 +963,7 @@ fn (p: mut &Parser) externdecl(isPub: bool): int {
     p.expect(T_KW, K_FN)
     let name = p.ident()
     let ps = p.params()
+    let dots = p.dots
     let ret = p.typeopt()
     var cname = name
     if p.atKw(K_AS) {
@@ -977,6 +980,7 @@ fn (p: mut &Parser) externdecl(isPub: bool): int {
     p.ast.nodes[d].t = lib
     p.ast.nodes[d].u = cname
     p.flag(d, EXTERN, true)
+    p.flag(d, DOTS, dots)
     p.sep()
     return d
 }
@@ -1108,7 +1112,7 @@ fn (p: mut &Parser) typedecl(): int {
                 p.next()
                 p.sym(S_RPAREN)
             }
-            append(mut &ms, p.node(N_MEMBER, mw, p.ident(), p.params(), p.typeopt(), mode))
+            append(mut &ms, p.node(N_MEMBER, mw, p.ident(), p.noDots(p.params()), p.typeopt(), mode))
             p.sep()
         }
         p.sym(S_RBRACE)
@@ -1164,7 +1168,7 @@ fn (p: mut &Parser) fndecl(): int {
         p.flag(recv, VAR, rvar)
         p.sym(S_RPAREN)
     }
-    let d = p.node(N_FN, w, p.ident(), recv, p.tparams(), p.params())
+    let d = p.node(N_FN, w, p.ident(), recv, p.tparams(), p.noDots(p.params()))
     p.ast.nodes[d].d = p.typeopt()
     p.ast.nodes[d].e = p.block()
     return d
@@ -1207,7 +1211,15 @@ fn (p: mut &Parser) recvtype(): int {
 fn (p: mut &Parser) params(): int {
     p.sym(S_LPAREN)
     var ps: []int = []
+    p.dots = false
     while !p.atSym(S_RPAREN) {
+        if p.atSym(S_DOTDOT) && p.isSym(1, S_DOT) {
+            p.next()
+            p.next()
+            p.dots = true
+            if !p.atSym(S_RPAREN) { p.err("... must be the last parameter") }
+            break
+        }
         var isvar = false
         if p.atKw(K_VAR) {
             p.next()
@@ -1223,6 +1235,11 @@ fn (p: mut &Parser) params(): int {
     }
     p.sym(S_RPAREN)
     return p.list(&ps)
+}
+
+fn (p: mut &Parser) noDots(ps: int): int {
+    if p.dots { p.fail(p.line(), "... (C varargs) is only allowed in an extern declaration") }
+    return ps
 }
 
 fn (p: mut &Parser) typ(): int {

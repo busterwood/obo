@@ -1,0 +1,4 @@
+// SPEC 12: no i128 extras.
+// error: cannot be i128
+extern "c" fn printf(fmt: str, ...): i32
+fn main() { printf("%d", i128(1)) }

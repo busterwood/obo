@@ -1,0 +1,4 @@
+// SPEC 12: a variadic extern needs a parameter before ...
+// error: needs a parameter before
+extern "c" fn printf(...): i32
+fn main() { }

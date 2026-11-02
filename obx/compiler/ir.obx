@@ -205,6 +205,14 @@ pub fn (p: mut &Ir) fnType(ret: int, params: &[]int): int {
     return len(p.tys) - 1
 }
 
+// A function type with ... after params (sid 1 marks it).
+pub fn (p: mut &Ir) varFnType(ret: int, params: &[]int): int {
+    append(mut &p.tys, Ty{k: TY_FN, size: 1, align: 1, base: ret, n: p.list(params), sid: 1})
+    return len(p.tys) - 1
+}
+
+pub fn (p: &Ir) isVarFn(t: int): bool { return p.tys[t].k == TY_FN && p.tys[t].sid == 1 }
+
 pub fn (p: &Ir) tk(t: int): int { return p.tys[t].k }
 
 pub fn (p: &Ir) isInt(t: int): bool { return p.tys[t].k >= TY_BOOL && p.tys[t].k <= TY_U128 }

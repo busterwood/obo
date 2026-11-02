@@ -1,0 +1,19 @@
+// SPEC 12: obx output and printf in order: io.flushStdout before C writes, fflush after; C's
+// unflushed output comes after obx's at exit (as tests/native/dyn_stdio.obx).
+// expect: obx 1
+// expect: C 1 flushed
+// expect: obx 2
+// expect: obx 3
+// expect: C 2 at exit
+import "io"
+extern "c" fn printf(fmt: str, ...): i32
+extern "c" fn fflush(f: ptr): i32
+fn main() {
+    println("obx 1")
+    io.flushStdout().unwrap()
+    printf("C %d %s\n", i32(1), "flushed")
+    fflush(nullPtr())
+    println("obx 2")
+    printf("C %d at exit\n", i32(2))
+    println("obx 3")
+}

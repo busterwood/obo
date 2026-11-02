@@ -538,7 +538,11 @@ fn (u: mut &Unit) suffixes(base: int, pnames: mut &[]str): int {
             u.next()
         } else if !u.isP(")") {
             while true {
-                if u.accept("...") { u.fail("variadic functions") }
+                if u.accept("...") {
+                    if len(pts) == 0 { u.fail("a variadic function without parameters") }
+                    u.expect(")")
+                    return u.ir.varFnType(u.suffixes(base, pnames), &pts)
+                }
                 let pb = u.declSpec()
                 let d = u.declarator(pb, false)
                 var pt = d.ty
@@ -1373,23 +1377,45 @@ fn (u: mut &Unit) postfix(e0: int): int {
     return e
 }
 
+// A variadic argument: C's default argument promotions (integers narrower than int to int;
+// the C the compiler emits has no float, only double); arrays and functions decay to pointers.
+fn (u: mut &Unit) varArg(a: int): int {
+    let e = u.rv(a)
+    let t = u.ir.nty(e)
+    if u.ir.isInt(t) { return u.promote(e) }
+    if u.ir.tk(t) == ir.TY_STRUCT { u.fail("a struct as a variadic argument") }
+    return e
+}
+
 fn (u: mut &Unit) call(callee0: int): int {
     let callee = u.rv(callee0)
     let ct = u.ir.nty(callee)
     if u.ir.tk(ct) != ir.TY_PTR || u.ir.tk(u.ir.tys[ct].base) != ir.TY_FN { u.fail("a call of a non-function") }
     let ft = u.ir.tys[ct].base
     let pts = u.ir.fnParams(ft)
+    let va = u.ir.isVarFn(ft)
     var args: []int = []
     if !u.accept(")") {
         while true {
             let a = u.assignExpr()
-            if len(args) >= len(pts) { u.fail("too many arguments") }
-            append(mut &args, u.convert(a, pts[len(args)]))
+            if len(args) >= len(pts) {
+                if !va { u.fail("too many arguments") }
+                append(mut &args, u.varArg(a))
+            } else {
+                append(mut &args, u.convert(a, pts[len(args)]))
+            }
             if !u.accept(",") { break }
         }
         u.expect(")")
     }
-    if len(args) != len(pts) { u.fail("too few arguments") }
+    if len(args) < len(pts) { u.fail("too few arguments") }
+    if va {     // this call's own (fixed) function type: the parameters, then the promoted extras
+        var all: []int = []
+        for p in pts { append(mut &all, p) }
+        for k in len(pts)..len(args) { append(mut &all, u.ir.nty(args[k])) }
+        let cft = u.ir.fnType(u.ir.tys[ft].base, &all)
+        return u.mk(ir.E_CALL, u.ir.tys[ft].base, callee, u.ir.list(&args), cft, 0)
+    }
     return u.mk(ir.E_CALL, u.ir.tys[ft].base, callee, u.ir.list(&args), ft, 0)
 }
 

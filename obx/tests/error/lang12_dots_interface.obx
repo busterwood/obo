@@ -1,0 +1,4 @@
+// SPEC 12: ... only in an extern declaration (not an interface member).
+// error: only allowed in an extern declaration
+type I = interface { fn f(a: int, ...) }
+fn main() { }

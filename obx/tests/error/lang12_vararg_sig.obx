@@ -1,0 +1,5 @@
+// SPEC 12: varargs are part of an extern's signature.
+// error: another signature
+extern "c" fn printf(fmt: str, ...): i32
+extern "c" fn pf(fmt: str): i32 as "printf"
+fn main() { }

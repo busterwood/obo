@@ -92,8 +92,8 @@ param       = [ "var" ] IDENT ":" type ;
 constdecl   = "const" IDENT [ ":" type ] "=" expr sep ;
 globaldecl  = "var" IDENT ":" type "=" expr sep
             | "var" IDENT ":" "once" type sep ;
-externdecl  = "extern" STRING "fn" IDENT "(" [ params ] ")" [ ":" type ]
-              [ "as" STRING ] sep ;
+externdecl  = "extern" STRING "fn" IDENT "(" [ params [ "," "..." ] ] ")"
+              [ ":" type ] [ "as" STRING ] sep ;
 
 type        = "never" | "&" type | "mut" "&" type | "[]" type
             | "&" "fn" "(" [ type { "," type } ] ")" [ ":" type ]  (* closure *)
@@ -844,6 +844,25 @@ the null pointer, create one. Neither `isNull` nor `nullPtr` is reserved: a
 module's own declaration of the name wins.
 Calls to extern functions are unchecked: wrap each in a function or a type
 with a `drop` method that makes its use safe.
+
+**Varargs.** `...` after the parameters declares a C variadic function:
+
+```obx
+extern "c" fn printf(fmt: str, ...): i32
+printf("%s has %d items, %.2f each\n", name, i32(n), 2.5)
+```
+
+A call passes the parameters, then any number of extra arguments of
+integer types (not `i128` or `u128`), `float`, `bool`, `ptr` or `str`; a
+borrow passes its value. An extra argument has its own type (an integer
+literal is an `int`, a 64-bit `long` to C, so `%d` needs `i32(n)`; a
+fractional literal is a `float`); C's default argument promotions apply
+(`byte`, `bool` and other integers narrower than `int` are passed as `int`,
+`float` is a `double`); a `str` is a NUL-terminated copy as for a parameter.
+The C format string is not checked. `...` is allowed only in an extern
+declaration, after at least one parameter. obx's own output is buffered (and
+flushed at the end of `main`, before C's at exit): call `io.flushStdout()`
+before C writes to stdout and `fflush` after, to keep the order of the lines.
 
 **Callbacks.** An extern parameter of type `extern fn(T1, ...): R` is a C
 function pointer:

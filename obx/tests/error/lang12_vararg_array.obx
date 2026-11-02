@@ -1,0 +1,4 @@
+// SPEC 12: no array extras.
+// error: cannot be []int
+extern "c" fn printf(fmt: str, ...): i32
+fn main() { let xs = [1]; printf("%d", xs) }

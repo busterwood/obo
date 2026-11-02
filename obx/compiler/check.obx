@@ -3712,6 +3712,23 @@ fn (c: mut &Checker) argNode(hasRecv: bool, args: &[]Arg, i: int): int {
     return if args[i].isVal { -1 } else { args[i].n }
 }
 
+// SPEC 12: the type of extra argument i of a call of a C variadic function (its own type, a
+// borrow's inner type): an integer but i128/u128, float, bool, ptr or str.
+fn (c: mut &Checker) varargType(args: &[]Arg, i: int, line: int): int {
+    var t = if args[i].isVal { args[i].v.t } else { c.peekType(args[i].n, -1) }
+    if c.pg.tk(t) == sema.TK_REF { t = c.pg.ta(t) }
+    if !args[i].isVal && !c.pg.isInt(t) && t != sema.T_FLOAT && c.peekType(args[i].n, sema.T_FLOAT) == sema.T_FLOAT {
+        t = sema.T_FLOAT        // a fractional literal: its expected type is float (SPEC 7.3)
+    }
+    let ok = (c.pg.isInt(t) && t != sema.T_I128 && t != sema.T_U128) || t == sema.T_FLOAT || t == sema.T_BOOL ||
+        t == sema.T_PTR || t == sema.T_STR
+    if !ok {
+        c.err(line, "argument " + intToStr(i + 1) + " (a C variadic argument) cannot be " + c.tstr(t) +
+            ": only integers (not i128 or u128), float, bool, ptr and str")
+    }
+    return t
+}
+
 fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, line: int, exp: int, o: &CallOpts): Val {
     let tps = copyInts(&sig.tps)
     var bind = copyInts(&sig.bind)
@@ -3730,9 +3747,14 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         if c.pg.unify(sig.ret, exp, mut &trial, &tps) { bind = copyInts(&trial) }
     }
     let nall = len(args) + (if hasRecv { 1 } else { 0 })
-    if nall != len(sig.params) {
-        let n = len(sig.params) - (if hasRecv { 1 } else { 0 })
-        c.err(line, sig.label + " takes " + intToStr(n) + " arguments, not " + intToStr(len(args)))
+    var params = copyInts(&sig.params)
+    if sig.kind == SK_EXTERN && c.pg.fns[sig.fd].varargs {
+        for i in len(params)..nall { append(mut &params, c.varargType(args, i, line)) }
+    }
+    if nall != len(params) {
+        let n = len(params) - (if hasRecv { 1 } else { 0 })
+        let least = if sig.kind == SK_EXTERN && c.pg.fns[sig.fd].varargs { "at least " } else { "" }
+        c.err(line, sig.label + " takes " + least + intToStr(n) + " arguments, not " + intToStr(len(args)))
     }
     var vals: []CArg = []
     for i in 0..nall { append(mut &vals, CArg{b: false, v: voidVal(false)}) }
@@ -3755,7 +3777,7 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
     var pend = false
     for pos in 0..len(order) {
         let i = order[pos]
-        let pt = sig.params[i]
+        let pt = params[i]
         let isrecv = hasRecv && i == 0
         var what = if isrecv { "the receiver of " + sig.label } else {
             "argument " + intToStr(i + (if hasRecv { 0 } else { 1 })) + " of " + sig.label }
@@ -3925,7 +3947,7 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         text = "(" + sig.c + ")(" + joinStrs(&cs, 0) + ")"
     } else if sig.kind == SK_CLO {
         var ps: []int = [sema.T_PTR]
-        for p in sig.params { append(mut &ps, p) }
+        for p in params { append(mut &ps, p) }
         let ft = c.T(c.pg.mkFn(&ps, sig.ret))
         var all: []str = ["(" + sig.c + ").env"]
         for x in cs { append(mut &all, x) }
@@ -3960,8 +3982,8 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
     if c.pg.isBorrow(ret) {
         var bi = -1
         var nb = 0
-        for k in 0..len(sig.params) {
-            if c.pg.isBorrow(sig.params[k]) {
+        for k in 0..len(params) {
+            if c.pg.isBorrow(params[k]) {
                 if nb == 0 { bi = k }
                 nb += 1
             }
