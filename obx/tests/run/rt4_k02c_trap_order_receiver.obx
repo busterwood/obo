@@ -1,0 +1,11 @@
+// Red-team round 4, k02 (SPEC 7.5): a receiver bs[4] is borrowed when the call
+// is made, but its index is checked in position, before the argument 10 / z
+// (exit 3, not 10).
+// exit: 3
+type B = record { v: int }
+fn (b: mut &B) add(n: int) { b.v += n }
+fn main() {
+    var bs = [B{v: 1}]
+    var z = 0
+    bs[4].add(10 / z)
+}

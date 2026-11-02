@@ -1,0 +1,21 @@
+// Red-team round 4, k01/k02 (SPEC 7.5, 11): built-ins evaluate their
+// arguments left to right; append and replace check the index of their place
+// in position and take it after the value. replace's value (10 / z) is
+// evaluated before its place is found again: exit 10, after cl ran.
+// expect: 2
+// expect: 21
+// expect: cl
+// exit: 10
+fn cl(xs: mut &[]int): int { println("cl"); xs = []; return 10 }
+fn main() {
+    var xs = [1, 2]
+    var xss = [[1], [2]]
+    var z = 0
+    var one = 1
+    append(mut &xss[0], xs[1] / one)
+    println(len(xss[0]))
+    swap(mut &xs, xs[0] - one, one * one)
+    println(xs[0] * 10 + xs[1])
+    let o = replace(mut &xs[1], cl(mut &xs) / z)
+    println(o)
+}

@@ -1,0 +1,13 @@
+// Red-team round 4, k01/k02 (SPEC 7.5): xs[1] is checked in position (it is
+// there), cl empties xs, then 10 / z stops the program (exit 10). The place
+// is found and checked again only when the call is made, which is not
+// reached: the check again (exit 3) must not come before the division.
+// expect: cl
+// exit: 10
+fn cl(xs: mut &[]int): int { println("cl"); xs = []; return 10 }
+fn h(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    var z = 0
+    h(mut &xs[1], cl(mut &xs) / z)
+}

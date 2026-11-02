@@ -1,0 +1,13 @@
+// Red-team round 4, k01 (SPEC 7.5): "The index expressions in p still run in
+// their position, left to right; when the call is made the place is found
+// again and its indexes are checked again (exit 3)." The index 5 is out of
+// range in its position, so the program stops there, before g runs (it used
+// to be checked only in the C call, after g had run and printed).
+// exit: 3
+fn g(): int { println("g ran"); return 1 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs[5], g())
+    println("not reached")
+}
