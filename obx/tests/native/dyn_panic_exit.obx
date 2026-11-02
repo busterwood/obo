@@ -1,0 +1,11 @@
+// exit() of std (rt_exit) and a C library in one program: obx output first, then C's.
+// expect: obx
+// expect: C
+// exit: 9
+extern "c" fn puts(s: str): i32
+
+fn main() {
+    println("obx")
+    puts("C")
+    exit(9)
+}

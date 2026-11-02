@@ -26,6 +26,7 @@ import "./emit"
 import "./x64"
 import "./cfront"
 import "./x64gen"
+import "./elf"
 
 extern "c" fn system(cmd: str): i32
 extern "c" fn mkdtemp(template: str): str
@@ -171,7 +172,7 @@ fn jsonStr(s: str): str {
 fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, json: bool, isNative: bool, rest: &[]str): int {
     var libs: []str = []
     let csrc = compileC(lib, roots, src, mut &libs)
-    if isNative { return buildNative(csrc, src, out, isRun, rest) }
+    if isNative { return buildNative(csrc, &libs, src, out, isRun, rest) }
     if emitc {
         writeFd(1, csrc)
         return 0
@@ -219,9 +220,74 @@ fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, 
     return st
 }
 
+// The shared library files of a dynamically linked native program, in link order: those the
+// externs name, found as libFlags finds them (lib<name>.so when it is an ELF file and not a
+// linker script, else the first versioned lib<name>.so.N), then libm and libc.
+fn libPaths(libs: &[]str): []str {
+    var out: []str = []
+    var names: []str = []
+    for l in libs {
+        if l != "m" { append(mut &names, l) }
+    }
+    for l in names {
+        var path = ""
+        for d in LIBDIRS {
+            let p = d + "/lib" + l + ".so"
+            if path == "" && fs.exists(p) && isElf(p) { path = p }
+        }
+        if path == "" {
+            var found: []str = []
+            let pre = "lib" + l + ".so."
+            for d in LIBDIRS {
+                match fs.listNames(d) {
+                    Ok(ns) {
+                        for n in ns {
+                            if startsWith(n, pre) { append(mut &found, d + "/" + n) }
+                        }
+                    }
+                    Err(e) {}
+                }
+            }
+            sort(mut &found)
+            if len(found) > 0 { path = found[0] }
+        }
+        if path == "" { sx.failText("native: cannot find the library '" + l + "' (lib" + l + ".so)") }
+        append(mut &out, path)
+    }
+    for so in ["libm.so.6", "libc.so.6"] {
+        var path = ""
+        for d in LIBDIRS {
+            if path == "" && fs.exists(d + "/" + so) { path = d + "/" + so }
+        }
+        if path == "" { sx.failText("native: cannot find " + so) }
+        append(mut &out, path)
+    }
+    return out
+}
+
+fn isElf(path: str): bool {
+    var data = ""
+    if readFile(path, mut &data) != 0 { return false }
+    return len(data) >= 4 && data[0..4] == "\x7fELF"
+}
+
 // The native backend: the executable written directly (no gcc; design/native.md).
-fn buildNative(csrc: str, src: str, out: str, isRun: bool, rest: &[]str): int {
-    let img = x64gen.build(cfront.read(csrc))
+fn buildNative(csrc: str, libs: &[]str, src: str, out: str, isRun: bool, rest: &[]str): int {
+    let p = cfront.read(csrc)
+    let names = x64gen.dynNames(&p)
+    var dl: []elf.Lib = []
+    if len(names) > 0 {
+        var wanted: Map[str, bool] = newMap()
+        for n in names { wanted.put(n, true) }
+        for path in libPaths(libs) {
+            var data = ""
+            if readFile(path, mut &data) != 0 { sx.failText("native: cannot read " + path) }
+            let l = elf.readLib(path, &data, &wanted)
+            if l.err != "" { sx.failText("native: " + path + ": " + l.err) }
+            append(mut &dl, l)
+        }
+    }
+    let img = x64gen.build(p, dl)
     var tmp = ""
     var exe = out
     if len(exe) == 0 {

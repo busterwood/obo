@@ -1,0 +1,58 @@
+// libc through dynamic linking: in a dynamically linked program every C function comes
+// from libc (not the native runtime's subset), so errno, the environment and the heap are
+// libc's, as in the C backend. Integer widths: i32 and u32 results are normalized.
+// expect: pid ok
+// expect: strlen 11 0
+// expect: abs 5 2147483647 atoi -42 labs 7
+// expect: htonl 16777216 2147483648 ntohl 1
+// expect: toupper 65
+// expect: getenv ok
+// expect: setenv: libc yes, std yes
+// expect: unsetenv: libc no, std no
+// expect: mkdir -1 errno 17 File exists
+// expect: time ok
+// expect: strdup hello
+extern "c" fn getpid(): i32
+extern "c" fn strlen(s: str): int
+extern "c" fn abs(n: i32): i32
+extern "c" fn atoi(s: str): i32
+extern "c" fn labs(n: int): int
+extern "c" fn htonl(x: u32): u32
+extern "c" fn ntohl(x: u32): u32
+extern "c" fn toupper(c: i32): i32
+extern "c" fn cGetenv(name: str): str as "getenv"
+extern "c" fn setenv(name: str, value: str, overwrite: i32): i32
+extern "c" fn unsetenv(name: str): i32
+extern "c" fn mkdir(path: str, mode: u32): i32
+extern "c" fn errno(): int as "obx_errno"
+extern "c" fn strerror(e: i32): str
+extern "c" fn time(t: mut &int): int
+extern "c" fn strdup(s: str): ptr
+extern "c" fn free(p: ptr)
+
+fn yes(b: bool): str { return if b { "yes" } else { "no" } }
+
+fn main() {
+    println(if getpid() > 0 { "pid ok" } else { "pid bad" })
+    println("strlen " + intToStr(strlen("hello world")) + " " + intToStr(strlen("")))
+    println("abs " + abs(-5).toStr() + " " + abs(-2147483647).toStr() + " atoi " + atoi("  -42x").toStr() +
+        " labs " + intToStr(labs(-7)))
+    println("htonl " + htonl(1).toStr() + " " + htonl(128).toStr() + " ntohl " + ntohl(16777216).toStr())
+    println("toupper " + toupper(97).toStr())
+    let path = cGetenv("PATH")
+    println(if len(path) > 0 { "getenv ok" } else { "getenv empty" })
+    setenv("OBX_NATIVE_DYN", "1", 1)
+    var v = ""
+    println("setenv: libc " + yes(cGetenv("OBX_NATIVE_DYN") == "1") + ", std " + yes(cGetenv("OBX_NATIVE_DYN") == "1" && getenv("OBX_NATIVE_DYN", mut &v) && v == "1"))
+    unsetenv("OBX_NATIVE_DYN")
+    println("unsetenv: libc " + yes(cGetenv("OBX_NATIVE_DYN") != "") + ", std " + yes(getenv("OBX_NATIVE_DYN", mut &v)))
+    let r = mkdir("/", 493)
+    let e = errno()
+    println("mkdir " + r.toStr() + " errno " + intToStr(e) + " " + strerror(i32(e)))
+    var t = 0
+    let t2 = time(mut &t)
+    println(if t == t2 && t > 1000000000 { "time ok" } else { "time bad" })
+    let p = strdup("hello")
+    println("strdup " + strFromC(p))
+    free(p)
+}

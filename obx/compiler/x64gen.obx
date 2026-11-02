@@ -3,8 +3,9 @@
 // runtime of rtx.obx. Its input is the IR (ir.obx); it emits machine code through the
 // encoder (x64.obx) and hands the segments to the executable writer (elf.obx).
 //
-// build(p) generates code for every function, lays out the data, links and returns the
-// bytes of a static ELF executable.
+// build(p, libs) generates code for every function, lays out the data, links and returns the
+// bytes of an ELF executable: a static one when libs is empty, else one dynamically linked
+// with those libraries (design/native.md, "Dynamic linking"; dynNames says which).
 //
 // Code generation is simple and correct first (section 4): every local has a stack slot
 // (rbp-relative); an expression's value is in rax (integers and pointers, normalized to 64
@@ -17,6 +18,7 @@ import "./ir"
 import "./x64"
 import "./elf"
 import "./rtx"
+import "strings"
 
 const RAX = 0
 const RCX = 1
@@ -37,6 +39,7 @@ const SK_FUNC = 0        // idx: a function with a body
 const SK_GLOBAL = 1      // idx: a global
 const SK_STR = 2         // idx: a string literal in rodata
 const SK_ABS = 3         // addr: a runtime symbol
+const SK_DYN = 4         // idx: an imported function (its GOT entry)
 
 type Sym = value record {
     kind: int
@@ -82,12 +85,16 @@ type Gen = record {
     retPtr: int
     retTy: int
     entrySym: int
+    dyn: bool                   // dynamically linked: every C function the program calls is imported
+    libs: []elf.Lib
+    imports: []str              // the imported functions, in dynamic symbol order
+    importSym: Map[str, int]
 }
 
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
-        caseL: newMap(), retPtr: 0, retTy: 0, entrySym: -1}
+        caseL: newMap(), retPtr: 0, retTy: 0, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap()}
     for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
     for i in 0..len(g.u.funcs) {
         append(mut &g.funcSym, -1)
@@ -105,22 +112,75 @@ fn (g: &Gen) fail(e: int, msg: str): never { ir.failAt("C line", g.u.nodes[e].li
 
 // ---------------------------------------------------------------- the build
 
-// The executable for the program p.
-pub fn build(p: ir.Ir): []byte {
+// The executable for the program p, linked with libs (static when there are none).
+pub fn build(p: ir.Ir, libs: []elf.Lib): []byte {
     var g = newGen(p)
+    g.dyn = len(libs) > 0
+    g.libs = libs
     g.genAll()
     return g.link()
+}
+
+// The libc functions the runtime calls in a dynamically linked program (rt_n_libc in
+// native/rt.c), in the order of that table.
+const HOOKS: []str = ["exit", "getenv", "__errno_location"]
+
+// The C functions a dynamically linked program imports (to be looked up in its libraries),
+// or none when the program can be static: when every C function it calls is in the native
+// runtime. A dynamic program imports every C function it calls (the obx_ helpers of the
+// runtime excepted), so that libc's errno, environment, heap and stdio are shared as in the
+// C backend, plus libc's entry and the runtime's HOOKS.
+pub fn dynNames(p: &ir.Ir): []str {
+    var rt: Map[str, bool] = newMap()
+    for n in rtx.SYM_NAMES { rt.put(n, true) }
+    var need = false
+    var seen: Map[str, bool] = newMap()
+    var out: []str = ["__libc_start_main"]
+    for h in HOOKS { append(mut &out, h) }
+    for n in out { seen.put(n, true) }
+    for i in 0..len(p.nodes) {
+        if p.nodes[i].k != ir.E_FUNC { continue }
+        let f = p.nodes[i].a
+        if p.funcs[f].body >= 0 || !p.funcs[f].isExtern { continue }
+        let name = p.funcs[f].asmName
+        if startsWith(name, "obx_") { continue }
+        if !rt.has(&name) { need = true }
+        if !seen.has(&name) {
+            seen.put(name, true)
+            append(mut &out, name)
+        }
+    }
+    if !need { return [] }
+    return out
 }
 
 fn (g: mut &Gen) genAll() {
     let main = g.findFunc("main")
     if main < 0 { ir.failAt("C line", 1, "no main function") }
-    // the entry: rt_n_start(sp, main)
-    g.a.movRR(8, RDI, RSP)
-    g.a.movRSym(RSI, g.symFunc(main, -1), 0)
-    g.a.aluI(x64.AND, 8, RSP, -16)
-    g.a.callSym(g.symRt("rt_n_start"))
-    g.a.ud2()
+    if g.dyn {
+        // the entry, as crt1's _start: __libc_start_main(main, argc, argv, 0, 0, rtld_fini, sp),
+        // which calls main and then libc's exit with its result
+        g.a.alu(x64.XOR, 4, RBP, RBP)
+        g.a.movRR(8, R9, RDX)
+        g.a.pop(RSI)
+        g.a.movRR(8, RDX, RSP)
+        g.a.aluI(x64.AND, 8, RSP, -16)
+        g.a.push(RAX)
+        g.a.push(RSP)
+        g.a.alu(x64.XOR, 4, R8, R8)
+        g.a.alu(x64.XOR, 4, RCX, RCX)
+        g.a.movRSym(RDI, g.symFunc(main, -1), 0)
+        g.a.callAt(g.symImport("__libc_start_main"))
+        g.a.ud2()
+        for h in HOOKS { g.symImport(h) }
+    } else {
+        // the entry: rt_n_start(sp, main)
+        g.a.movRR(8, RDI, RSP)
+        g.a.movRSym(RSI, g.symFunc(main, -1), 0)
+        g.a.aluI(x64.AND, 8, RSP, -16)
+        g.a.callSym(g.symRt("rt_n_start"))
+        g.a.ud2()
+    }
     for f in 0..len(g.u.funcs) {
         if g.u.funcs[f].body >= 0 { g.genFunc(f) }
     }
@@ -138,6 +198,9 @@ fn (g: mut &Gen) symFunc(f: int, e: int): int {
     if g.funcSym[f] >= 0 { return g.funcSym[f] }
     if g.u.funcs[f].body >= 0 {
         append(mut &g.syms, Sym{kind: SK_FUNC, idx: f, addr: 0})
+    } else if g.dyn && g.u.funcs[f].isExtern && !startsWith(g.u.funcs[f].asmName, "obx_") {
+        g.funcSym[f] = g.symImport(g.u.funcs[f].asmName)
+        return g.funcSym[f]
     } else {
         let name = g.u.funcs[f].asmName
         let addr = g.rtAddr.getOr(&name, -1)
@@ -150,6 +213,16 @@ fn (g: mut &Gen) symFunc(f: int, e: int): int {
         append(mut &g.syms, Sym{kind: SK_ABS, idx: -1, addr: addr})
     }
     g.funcSym[f] = len(g.syms) - 1
+    return len(g.syms) - 1
+}
+
+// The symbol of the GOT entry of an imported function.
+fn (g: mut &Gen) symImport(name: str): int {
+    let have = g.importSym.getOr(&name, -1)
+    if have >= 0 { return have }
+    append(mut &g.imports, name)
+    append(mut &g.syms, Sym{kind: SK_DYN, idx: len(g.imports) - 1, addr: 0})
+    g.importSym.put(name, len(g.syms) - 1)
     return len(g.syms) - 1
 }
 
@@ -641,7 +714,8 @@ fn (g: mut &Gen) genAddr(e: int) {
     } else if k == ir.E_GLOBAL {
         g.a.movRSym(RAX, g.globalSym[n.a], 0)
     } else if k == ir.E_FUNC {
-        g.a.movRSym(RAX, g.symFunc(n.a, e), 0)
+        let s = g.symFunc(n.a, e)
+        if g.syms[s].kind == SK_DYN { g.a.loadAt(RAX, s) } else { g.a.movRSym(RAX, s, 0) }
     } else if k == ir.E_STR {
         g.a.movRSym(RAX, g.symStr(n.s), 0)
     } else if k == ir.E_DEREF {
@@ -1268,7 +1342,13 @@ fn (g: mut &Gen) genCall(e: int) {
     }
     if aggrRet && rcls[0] == CL_MEM { g.a.lea(RDI, rbp(retSlot)) }
     if direct >= 0 {
-        g.a.callSym(g.symFunc(direct, e))
+        let s = g.symFunc(direct, e)
+        if g.syms[s].kind == SK_DYN {
+            g.a.movRI(RAX, nx)          // for a variadic C function: the vector registers used
+            g.a.callAt(s)
+        } else {
+            g.a.callSym(s)
+        }
     } else {
         g.a.load(8, R11, rbp(calleeSlot))
         g.a.callR(R11)
@@ -1367,7 +1447,11 @@ fn (g: mut &Gen) constOf(e: int): K {
 fn (g: mut &Gen) constAddr(e: int): K {
     let n = g.u.nodes[e]
     if n.k == ir.E_GLOBAL { return K{lo: 0, hi: 0, sym: g.globalSym[n.a]} }
-    if n.k == ir.E_FUNC { return K{lo: 0, hi: 0, sym: g.symFunc(n.a, e)} }
+    if n.k == ir.E_FUNC {
+        let s = g.symFunc(n.a, e)
+        if g.syms[s].kind == SK_DYN { g.fail(e, "the address of a C library function in a constant") }
+        return K{lo: 0, hi: 0, sym: s}
+    }
     if n.k == ir.E_STR { return K{lo: 0, hi: 0, sym: g.symStr(n.s)} }
     if n.k == ir.E_MEMBER {
         let x = g.constAddr(n.a)
@@ -1463,6 +1547,39 @@ fn (g: mut &Gen) link(): []byte {
         for j in 0..len(s) { append(mut &ro, strByte(s, j)) }
         append(mut &ro, 0)
     }
+    // dynamic linking: the dynamic section and the GOT at the end of the data, the tables at
+    // the end of the rodata
+    var dynAt = 0
+    var dynLen = 0
+    var gotAt = 0
+    if g.dyn {
+        var needed: []str = []
+        var ims: []elf.Import = []
+        g.resolve(mut &needed, mut &ims)
+        let dynOff = ir.alignUp(len(data), 8)
+        dynLen = elf.dynSize(len(needed))
+        growTo(mut &data, dynOff + dynLen)
+        let gotOff = len(data)
+        growTo(mut &data, gotOff + 8 * len(g.imports))
+        dynAt = dataBase + dynOff
+        gotAt = dataBase + gotOff
+        var rels: []elf.DynRel = []
+        for i in 0..len(g.imports) {
+            append(mut &rels, elf.DynRel{at: gotAt + 8 * i, sym: i + 1, kind: elf.R_X86_64_GLOB_DAT, addend: 0})
+        }
+        let hooks = g.rtAddr.getOr(&"rt_n_libc", -1)
+        if hooks < 0 { panic("native: the runtime has no rt_n_libc") }
+        for k in 0..len(HOOKS) {
+            let h = HOOKS[k]
+            let im = g.syms[g.importSym.getOr(&h, -1)].idx
+            append(mut &rels, elf.DynRel{at: hooks + 8 * k, sym: im + 1, kind: elf.R_X86_64_GLOB_DAT, addend: 0})
+        }
+        let tabOff = ir.alignUp(len(ro), 8)
+        growTo(mut &ro, tabOff)
+        let d = elf.dynamic(&needed, &ims, &rels, roBase + tabOff)
+        for x in d.tables { append(mut &ro, x) }
+        for i in 0..len(d.dyn) { data[dynOff + i] = d.dyn[i] }
+    }
     var memEnd = ir.alignUp(len(data), 16)
     for i in bssList {
         let t = g.u.globals[i].ty
@@ -1480,6 +1597,8 @@ fn (g: mut &Gen) link(): []byte {
             append(mut &addr, gAddr[s.idx])
         } else if s.kind == SK_STR {
             append(mut &addr, sAddr[s.idx])
+        } else if s.kind == SK_DYN {
+            append(mut &addr, gotAt + 8 * s.idx)
         } else {
             append(mut &addr, s.addr)
         }
@@ -1516,5 +1635,37 @@ fn (g: mut &Gen) link(): []byte {
         elf.Seg{vaddr: rtx.DATA_ADDR, flags: elf.PF_R | elf.PF_W, data: rdata, memsz: rmem}]
     if memEnd == 0 { memEnd = 16 }
     append(mut &segs, elf.Seg{vaddr: dataBase, flags: elf.PF_R | elf.PF_W, data: data, memsz: memEnd})
-    return elf.image(codeBase, &segs)
+    return elf.image(codeBase, &segs, dynAt, dynLen)
+}
+
+// Finds the library of every import (the first of libs that defines it, as a linker searches
+// its libraries in order); needed: the SONAMEs of the libraries that define one (as with
+// --as-needed), in the order of libs.
+fn (g: mut &Gen) resolve(needed: mut &[]str, ims: mut &[]elf.Import) {
+    var libOf: []int = []
+    var used: []bool = []
+    for l in g.libs { append(mut &used, false) }
+    for name in g.imports {
+        var found = -1
+        for li in 0..len(g.libs) {
+            if found < 0 && g.libs[li].defs.has(&name) { found = li }
+        }
+        if found < 0 {
+            var names: []str = []
+            for l in g.libs { append(mut &names, l.soname) }
+            writeFd(2, "native: undefined C function '" + name + "' (not in " + strings.join(&names, ", ") + ")\n")
+            exit(1)
+        }
+        used[found] = true
+        append(mut &libOf, found)
+    }
+    var index: []int = []
+    for li in 0..len(g.libs) {
+        append(mut &index, len(needed))
+        if used[li] { append(needed, g.libs[li].soname) }
+    }
+    for i in 0..len(g.imports) {
+        let li = libOf[i]
+        append(ims, elf.Import{name: g.imports[i], lib: index[li], ver: g.libs[li].defs.getOr(&g.imports[i], "")})
+    }
 }

@@ -1,0 +1,14 @@
+// A trap in a dynamically linked program: the runtime flushes its buffer, writes the
+// message to stderr, then ends through libc's exit (which flushes C's stdout), as rt.h does.
+// expect: obx before
+// expect: C line
+// exit: 3
+extern "c" fn puts(s: str): i32
+
+fn main() {
+    println("obx before")
+    puts("C line")
+    let a = [1, 2, 3]
+    var i = len(a)
+    println(intToStr(a[i]))
+}

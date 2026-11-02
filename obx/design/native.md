@@ -151,10 +151,9 @@ malloc free strdup strlen strcmp strncmp strchr strrchr strstr abs labs atoi
 toupper exit abort` and the `obx_*` helpers of rt.h (`obx_errno`, `obx_stat`,
 `obx_open`, ...). `strerror` has glibc's texts. Of libm it has the functions
 whose result is exact, so they match glibc bit for bit: `fabs copysign sqrt
-trunc floor ceil round rint fmod`. A program that calls any other extern
+trunc floor ceil round rint fmod`. A program that calls any other C function
 (libm's `pow`, `exp`, `sin`, `hypot`, ..., or any library but `"c"`) is
-refused in static mode: `native: unsupported: extern C function 'hypot'
-needs dynamic linking`. Phase 5 adds dynamic linking for those.
+dynamically linked (section 5a), and then uses libc's versions of all of them.
 
 Floats: `rt_float_to_str` (`%.15g`, `%.16g` or `%.17g`, the first that reads
 back, as rt.h) and `rt_parse_float` (`strtod` over the whole string) are exact
@@ -163,6 +162,16 @@ overflow to inf, hex floats, inf/nan words), our own code in rt.c. They were
 checked against glibc's `printf`/`strtod` on 300,000 random doubles (all
 bit patterns, near-1 exponents, subnormals) and decimal strings, and the libm
 subset on 2,000,000 random inputs each, with a throwaway harness.
+
+In a dynamically linked program (section 5a) the runtime is the same bytes, but
+the dynamic linker fills `rt_n_libc` with libc's `exit`, `getenv` and
+`__errno_location`: the runtime then ends the process through libc's `exit`
+(after flushing its own buffer, as rt.h's `exit(code)` does), reads the
+environment through libc and keeps errno in libc's. In a static program the
+table is zero and the runtime's own versions serve. Every exit of rt.h goes
+through `rt_quit` (trap, panic, leak report, `rt_exit`, the end of main); the
+stack-overflow handler, `abort` and a failed `exec` in `system` exit directly
+(`_exit`), as in rt.h.
 
 ## 3. ABI
 
@@ -218,7 +227,8 @@ pass (phase 4/5) can be added without touching the front end.
 
 ## 5. ELF layout
 
-A static `ET_EXEC`, no interpreter, no dynamic section:
+A static `ET_EXEC`, no interpreter, no dynamic section (a dynamically linked
+program adds those: section 5a):
 
 | Segment | Address | Contents |
 |---|---|---|
@@ -232,6 +242,56 @@ rt_n_start`. All addresses are below 2 GiB, so an address is an `imm32`. `rt_n_s
 initial stack, calls the C `main` (which calls `rt_init`, the obx main, the
 global drops and `rt_finish`) and exits with its result.
 
+## 5a. Dynamic linking
+
+A program whose C functions are all in the runtime (section 2), or that has
+none, is a static executable as above. A program that calls any other C
+function (libm's `pow`, `hypot`, ..., any function of another library) is
+dynamically linked, and then imports every C function it calls from the
+libraries, also those the runtime has (`strlen`, `getenv`, `mkdir`, ...):
+errno, the environment, the heap (`strdup` and `free`) and stdio are then
+libc's, as in the C backend, and nothing the program sees mixes the two. Only
+the `obx_*` helpers (rt.h's functions, not libc's) stay the runtime's. The obx
+heap stays the runtime's own; memory the C side allocates is the C side's.
+
+The libraries are those of the C backend: the `lib` names of the externs
+(emit's `libs` list), found as `main.obx`'s `libFlags` finds them
+(`lib<name>.so` when it is an ELF file, else the first versioned
+`lib<name>.so.N`), then libm and libc. Each is read (`elf.readLib`: its
+section headers, `.dynsym`, the version definitions and the `DT_SONAME`);
+each import is bound to the first library that defines it, with that
+library's default version (`hypot@@GLIBC_2.35`, `exp@@GLIBC_2.29`: what a
+new link with gcc gets; without version information ld.so would bind the
+oldest version). `DT_NEEDED` lists the libraries that define an import, in
+that order (as `--as-needed`, Ubuntu's default). A function no library
+defines is an error at build time (`native: undefined C function`), as the
+link with gcc fails.
+
+The executable then has (`elf.dynamic`, `x64gen.link`):
+
+| Part | Where |
+|---|---|
+| `PT_PHDR`, `PT_INTERP` (`/lib64/ld-linux-x86-64.so.2`) | the first page, after the program headers |
+| `.dynsym`, `.dynstr`, `DT_HASH` (one bucket), `.gnu.version`, `.gnu.version_r`, `.rela.dyn` | after the program rodata (R+X) |
+| `.dynamic` (`PT_DYNAMIC`) and the GOT | after the program data (RW) |
+
+`.dynamic` has `DT_NEEDED`s, `DT_HASH`, `DT_STRTAB`, `DT_SYMTAB`,
+`DT_STRSZ`, `DT_SYMENT`, `DT_RELA*`, `DT_DEBUG`, `DT_BIND_NOW`,
+`DT_FLAGS`=`DF_BIND_NOW`, `DT_FLAGS_1`=`DF_1_NOW` and the version tags. All
+relocations are `R_X86_64_GLOB_DAT`, bound eagerly: one GOT entry per import,
+and the runtime's `rt_n_libc` slots (in its bss). There is no PLT: a call is
+`mov eax, <vector registers used>; call [rip+GOT]` (the `al` count makes a
+call to a variadic function such as `printf` correct). No section headers,
+no `PT_GNU_RELRO` (the GOT stays writable, a hardening gap; the hooks live in
+the runtime's bss, outside any page that could be made read-only).
+
+The entry is crt1's `_start`: `__libc_start_main(main, argc, argv, 0, 0,
+rtld_fini, sp)`, which initializes libc, calls the C `main` and then libc's
+`exit` with its result, so the order at exit is the C backend's: the obx
+buffer is flushed (by `rt_finish`), then the atexit handlers run and stdio is
+flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
+(installed with raw syscalls, as in a static program) behave as in rt.h.
+
 ## 6. Modules
 
 | File | Contents |
@@ -244,15 +304,18 @@ global drops and `rt_finish`) and exits with its result.
 | `compiler/cfront.obx` | the C front end: lexer, parser, C's types and conversions, into the IR |
 | `compiler/x64gen.obx` | the x86-64 target: code generation, ABI, frames, the link |
 | `compiler/x64.obx` | the x86-64 encoder (`obxc --encode-test`) |
-| `compiler/elf.obx` | the ELF writer |
-| `compiler/main.obx` | `--native`: `x64gen.build(cfront.read(c))`, writes the file, `--run` |
+| `compiler/elf.obx` | the ELF writer; the dynamic tables; reading a shared library's symbols |
+| `compiler/main.obx` | `--native`: `x64gen.build(cfront.read(c), libs)`, finds and reads the libraries, writes the file, `--run` |
 
 ## 7. Tests
 
 - `tools/x64_encode_test.py`: random instructions through the encoder
   (`obxc --encode-test`) and through `as`; the bytes must be equal.
 - `tests/run_native.py [--lib] [--redteam]`: the differential runner. For every run test
-  (with `--lib` the library tests too, with `--redteam` the programs of
+  and every test of `tests/native/` (C libraries through dynamic linking: libm,
+  libc, stdio and exit order, traps and stack overflow in a dynamic program,
+  libsqlite3, libpq; `// needs: sqlite3` skips a test when the library is not
+  installed), with `--lib` the library tests too, with `--redteam` the programs of
   redteam/, rounds 1-4, that the compiler accepts) it builds the program
   with the C backend (cached by `tools/cbuild.py`) and natively, runs both
   with the same stdin and arguments, with and without `OBX_CHECK=1`, and
@@ -266,32 +329,43 @@ global drops and `rt_finish`) and exits with its result.
 
 (kept current; the next agent starts here)
 
-2026-11-02, end of phase 1 and of phase 2 (and most of phase 3):
+2026-11-02, end of phase 5 (dynamic linking):
 
 - `tools/x64_encode_test.py`: every encoder form identical to `as` (4 seeds
-  of 10,000 random instructions).
-- `tests/run_native.py --lib --redteam`: 1320 pass, 0 differ, 1 unsupported
-  of 1321 (all run tests, library tests and accepted red-team programs; 516
-  red-team programs are rejected by the compiler and skipped). The one
-  unsupported calls libm's `hypot` (phase 5). Without `--redteam`: 346 of 346.
-  The whole run takes about 25 s on 16 cores; `--lib` alone about 3 s.
-- Native self-build (`tools/native_selfbuild.sh`, 1.5 s): `out/obxc
-  main.obx --native` builds stage 2 (2.6 MB static ELF, 0.3 s), stage 2
-  builds stage 3 natively, and the two are byte-identical (stage 4 too);
-  stage 2's `--emit-c` equals out/obxc's. With stage 2 as `OBXC`,
-  `tests/run.py` passes 629 of 629 and `run_native.py --lib` 345/0/1.
-  Stage 2 is about 2.4 times slower than the gcc -O2 build (`--emit-c` of the
-  compiler: 0.26 s against 0.11 s).
+  of 10,000 random instructions; now with `[rip+disp]` operands).
+- `tests/run_native.py --lib`: 355 of 355 (the 346 run and library tests,
+  `math_float` with `hypot` now among them, and the 9 of `tests/native/`).
+  With `--redteam`: 1330 pass, 0 differ, 0 unsupported (516 red-team
+  programs are rejected by the compiler and skipped). `--lib` takes about
+  3 s, with `--redteam` about 17 s on 16 cores.
+- Dynamic programs checked with `readelf -d`/`ldd`/`LD_DEBUG=bindings`: the
+  same `DT_NEEDED` list as gcc's build of the same C (`libsqlite3.so.0` +
+  `libc.so.6`; `libpq.so.5` + `libc.so.6`; `libm.so.6` + `libc.so.6`), symbols
+  bound to the default versions (`hypot` GLIBC_2.35, `exp` GLIBC_2.29,
+  `__libc_start_main` GLIBC_2.34). Programs without such calls, and the
+  compiler itself, are static as before.
+- Native self-build (`tools/native_selfbuild.sh`, in the quick gate): stage 2
+  (2.7 MB static ELF) builds stage 3, identical; stage 2's `--emit-c` equals
+  out/obxc's. Stage 2 is about 2.4 times slower than the gcc -O2 build
+  (`--emit-c` of the compiler: 0.26 s against 0.11 s).
+- The runtime grew by 512 bytes of code (the `rt_n_libc` checks), so every
+  static executable's runtime part is that much larger.
 - Not done: `--emit-asm`; no optimization at all (code is about what
-  `gcc -O0` makes); `native_selfbuild.sh` is not in `gate.sh` yet.
+  `gcc -O0` makes); no `PT_GNU_RELRO` and no section headers in dynamic
+  executables; no lazy binding (not needed).
+- Language limits met by the tests (not changed): an extern cannot take a
+  function (no `qsort` with an obx comparison: the C ABI has no closures and
+  SPEC 12 allows no function types), cannot be variadic (`printf` is declared
+  with a fixed list per program, and one C name has one signature per
+  program), and there is no null `ptr` literal (the tests get one from
+  `strchr("", 1)`).
 
 Next, in order:
 
 1. Performance: a peephole pass and register allocation for locals (the IR
-   already separates the code generator from the front end).
-2. Phase 5: dynamic linking for the rest of libm (`hypot`, `pow`, `exp`,
-   ...) and other C libraries (sqlite3, pq).
-3. After ref is retired: check.obx produces the IR directly (section 1a) and
+   already separates the code generator from the front end; keep both in the
+   target layer, section 1b).
+2. After ref is retired: check.obx produces the IR directly (section 1a) and
    cfront goes away.
 
 Phases:
@@ -299,8 +373,8 @@ Phases:
 - Phase 1: foundation and first programs. Done.
 - Phase 2: integers, control flow, calls: all scalar tests. Done.
 - Phase 3: records, arrays, str, drop glue, closures, generic instances,
-  interfaces. Passing in the run and library tests.
+  interfaces. Done.
 - Phase 4: the whole suite; native self-build (the natively built compiler
   builds itself; stage 2 == stage 3). Done (no performance work yet).
-- Phase 5: dynamic linking (PLT/GOT, `.dynamic`; libc, libm, libsqlite3,
-  libpq externs).
+- Phase 5: dynamic linking (GOT, `.dynamic`, symbol versions; libc, libm,
+  libsqlite3, libpq externs). Done (section 5a).

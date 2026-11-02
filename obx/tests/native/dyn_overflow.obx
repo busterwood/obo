@@ -1,0 +1,16 @@
+// Stack overflow in a dynamically linked program: the runtime's SIGSEGV handler on its
+// alternate stack reports it (exit 4) without running libc's exit.
+// expect: start
+// exit: 4
+extern "c" fn puts(s: str): i32
+
+fn down(n: int): int {
+    if n == 0 { return 0 }
+    return down(n - 1) + 1
+}
+
+fn main() {
+    println("start")
+    puts("C line, never flushed")
+    println(intToStr(down(100000000)))
+}

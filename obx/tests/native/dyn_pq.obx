@@ -1,0 +1,34 @@
+// libpq (libpq.so.5, which pulls in libssl, libcrypto, libgssapi, ...; their atexit
+// handlers run at libc's exit). The version always; a query when the local server accepts
+// a connection without a password, else one line saying so (the same in both backends).
+// needs: pq
+// (no expect lines: the output depends on the server; with it, as here: libpq ok, status 2
+// rows 3 fields 3, 42 hello 5, error status 7)
+extern "pq" fn PQlibVersion(): i32
+extern "pq" fn PQconnectdb(conninfo: str): ptr
+extern "pq" fn PQstatus(c: ptr): i32
+extern "pq" fn PQexec(c: ptr, q: str): ptr
+extern "pq" fn PQresultStatus(r: ptr): i32
+extern "pq" fn PQntuples(r: ptr): i32
+extern "pq" fn PQnfields(r: ptr): i32
+extern "pq" fn PQgetvalue(r: ptr, row: i32, col: i32): str
+extern "pq" fn PQclear(r: ptr)
+extern "pq" fn PQfinish(c: ptr)
+
+fn main() {
+    println(if PQlibVersion() >= 100000 { "libpq ok" } else { "libpq too old" })
+    let c = PQconnectdb("host=/var/run/postgresql dbname=postgres connect_timeout=3")
+    if PQstatus(c) != 0 {
+        println("no server")
+        PQfinish(c)
+        return
+    }
+    let r = PQexec(c, "SELECT 6 * 7, 'hello'::text, 2.5::float8 * 2 FROM generate_series(1, 3) ORDER BY 1")
+    println("status " + PQresultStatus(r).toStr() + " rows " + PQntuples(r).toStr() + " fields " + PQnfields(r).toStr())
+    println(PQgetvalue(r, 0, 0) + " " + PQgetvalue(r, 0, 1) + " " + PQgetvalue(r, 2, 2))
+    PQclear(r)
+    let r2 = PQexec(c, "SELECT nope")
+    println("error status " + PQresultStatus(r2).toStr())
+    PQclear(r2)
+    PQfinish(c)
+}

@@ -1,9 +1,12 @@
-// elf: writes a static x86-64 Linux executable (ET_EXEC) from loadable segments
-// (design/native.md, "ELF layout"). The first segment is the code: it is mapped from the
-// start of the file, so the ELF header and the program headers are in its first page,
-// below its own bytes (which start at the second page: TEXT_BASE). Every other segment
-// starts on a page of the file of its own, at the offset that matches its address modulo
-// the page size.
+// elf: writes an x86-64 Linux executable (ET_EXEC) from loadable segments (design/native.md,
+// "ELF layout"). The first segment is the code: it is mapped from the start of the file, so
+// the ELF header and the program headers are in its first page, below its own bytes (which
+// start at the second page: TEXT_BASE). Every other segment starts on a page of the file of
+// its own, at the offset that matches its address modulo the page size.
+//
+// A dynamically linked executable ("Dynamic linking") also has an interpreter (the dynamic
+// linker's path, in the first page after the program headers) and a dynamic section; its
+// tables are built by dynamic(). readLib reads what the link needs of a shared library.
 
 pub const PAGE = 4096
 pub const IMAGE_BASE = 0x400000
@@ -34,9 +37,13 @@ fn pad(out: mut &[]byte, to: int) {
 
 pub fn alignUp(v: int, a: int): int { return (v + a - 1) / a * a }
 
-// The executable: segs[0] is the code at TEXT_BASE; entry is an address in it.
-pub fn image(entry: int, segs: &[]Seg): []byte {
-    let nph = len(segs) + 1         // and PT_GNU_STACK
+// The executable: segs[0] is the code at TEXT_BASE; entry is an address in it. dynAt is the
+// address of the dynamic section (dynSize bytes, in one of the segments), or 0 for a static
+// executable.
+pub fn image(entry: int, segs: &[]Seg, dynAt: int, dynSize: int): []byte {
+    let isDyn = dynAt != 0
+    let nph = len(segs) + (if isDyn { 4 } else { 1 })    // PT_GNU_STACK; PT_PHDR, PT_INTERP, PT_DYNAMIC
+    let interpAt = 64 + 56 * nph
     var offs: []int = [0]
     var end = TEXT_BASE - IMAGE_BASE + len(segs[0].data)
     for i in 1..len(segs) {
@@ -64,6 +71,10 @@ pub fn image(entry: int, segs: &[]Seg): []byte {
     put(mut &out, 64, 2)
     put(mut &out, 0, 2)
     put(mut &out, 0, 2)
+    if isDyn {
+        phdr(mut &out, PT_PHDR, PF_R, 64, IMAGE_BASE + 64, 56 * nph, 8)
+        phdr(mut &out, PT_INTERP, PF_R, interpAt, IMAGE_BASE + interpAt, len(INTERP) + 1, 1)
+    }
     for i in 0..len(segs) {
         let first = i == 0
         let off = if first { 0 } else { offs[i] }
@@ -80,10 +91,25 @@ pub fn image(entry: int, segs: &[]Seg): []byte {
         put(mut &out, memsz, 8)
         put(mut &out, PAGE, 8)
     }
+    if isDyn {
+        var off = -1
+        for i in 1..len(segs) {
+            if dynAt >= segs[i].vaddr && dynAt + dynSize <= segs[i].vaddr + len(segs[i].data) {
+                off = offs[i] + dynAt - segs[i].vaddr
+            }
+        }
+        if off < 0 { panic("elf: the dynamic section is in no segment's file bytes") }
+        phdr(mut &out, PT_DYNAMIC, PF_R | PF_W, off, dynAt, dynSize, 8)
+    }
     put(mut &out, 0x6474e551, 4)    // PT_GNU_STACK: read and write, not executable
     put(mut &out, PF_R | PF_W, 4)
     put(mut &out, 0, 8 * 5)
     put(mut &out, 16, 8)
+    if isDyn {
+        for i in 0..len(INTERP) { append(mut &out, strByte(INTERP, i)) }
+        append(mut &out, 0)
+    }
+    if len(out) > TEXT_BASE - IMAGE_BASE { panic("elf: the headers do not fit in the first page") }
     pad(mut &out, TEXT_BASE - IMAGE_BASE)
     for x in segs[0].data { append(mut &out, x) }
     for i in 1..len(segs) {
@@ -91,4 +117,293 @@ pub fn image(entry: int, segs: &[]Seg): []byte {
         for x in segs[i].data { append(mut &out, x) }
     }
     return out
+}
+
+const PT_DYNAMIC = 2
+const PT_INTERP = 3
+const PT_PHDR = 6
+
+fn phdr(out: mut &[]byte, kind: int, flags: int, off: int, va: int, size: int, align: int) {
+    put(out, kind, 4)
+    put(out, flags, 4)
+    put(out, off, 8)
+    put(out, va, 8)
+    put(out, va, 8)
+    put(out, size, 8)
+    put(out, size, 8)
+    put(out, align, 8)
+}
+
+// ---------------------------------------------------------------- dynamic linking
+
+pub const INTERP = "/lib64/ld-linux-x86-64.so.2"
+
+// Relocation types.
+pub const R_X86_64_64 = 1
+pub const R_X86_64_GLOB_DAT = 6
+
+// A function the program imports: its name, the library that defines it (an index in the
+// needed list) and the version it binds to ("" when the library does not version it).
+pub type Import = value record {
+    pub name: str
+    pub lib: int
+    pub ver: str
+}
+
+// A relocation the dynamic linker applies: the 8 bytes at at become the address of import
+// sym (plus addend for R_X86_64_64).
+pub type DynRel = value record {
+    pub at: int
+    pub sym: int
+    pub kind: int
+    pub addend: int
+}
+
+// The dynamic linking tables: tables (dynsym, dynstr, hash, versym, verneed, rela) go at the
+// address given to dynamic(), dyn (the dynamic section, dynSize(len(needed)) bytes) at its
+// own address in a writable segment.
+pub type Dynamic = record {
+    pub tables: []byte
+    pub dyn: []byte
+}
+
+pub fn dynSize(nNeeded: int): int { return 16 * (nNeeded + 17) }
+
+// The ELF (SysV) hash of a name, as vna_hash and DT_HASH use it.
+pub fn elfHash(s: str): int {
+    var h = 0
+    for i in 0..len(s) {
+        h = ((h << 4) + int(strByte(s, i))) & 0xffffffff
+        let g = h & 0xf0000000
+        if g != 0 { h = h ^ (g >> 24) }
+        h = h & 0x0fffffff
+    }
+    return h
+}
+
+fn addStr(strs: mut &[]byte, at: mut &Map[str, int], s: str): int {
+    let have = at.getOr(&s, -1)
+    if have >= 0 { return have }
+    let off = len(strs)
+    for i in 0..len(s) { append(strs, strByte(s, i)) }
+    append(strs, 0)
+    at.put(s, off)
+    return off
+}
+
+// The tables for the libraries needed (their SONAMEs, in DT_NEEDED order), the imports
+// (dynamic symbols 1..) and the relocations; tables are placed at addr.
+pub fn dynamic(needed: &[]str, imports: &[]Import, rels: &[]DynRel, addr: int): Dynamic {
+    var strs: []byte = [0]
+    var strAt: Map[str, int] = newMap()
+    var neededOff: []int = []
+    for n in needed { append(mut &neededOff, addStr(mut &strs, mut &strAt, n)) }
+    let nsym = len(imports) + 1
+    // version indexes (2..) per library and version name, in the order first used
+    var verLib: []int = []
+    var verName: []str = []
+    var symVer: []int = [0]
+    for im in imports {
+        if im.ver == "" {
+            append(mut &symVer, 1)
+            continue
+        }
+        var v = -1
+        for j in 0..len(verName) {
+            if verLib[j] == im.lib && verName[j] == im.ver { v = j }
+        }
+        if v < 0 {
+            append(mut &verLib, im.lib)
+            append(mut &verName, im.ver)
+            v = len(verName) - 1
+        }
+        append(mut &symVer, v + 2)
+    }
+    var t: []byte = []
+    // dynsym
+    let symtab = 0
+    put(mut &t, 0, 24)
+    for im in imports {
+        put(mut &t, addStr(mut &strs, mut &strAt, im.name), 4)
+        put(mut &t, 0x12, 1)            // STB_GLOBAL, STT_FUNC
+        put(mut &t, 0, 1)
+        put(mut &t, 0, 2)               // undefined
+        put(mut &t, 0, 16)
+    }
+    // hash: one bucket, every symbol on its chain
+    let hash = len(t)
+    put(mut &t, 1, 4)
+    put(mut &t, nsym, 4)
+    put(mut &t, nsym - 1, 4)
+    for i in 0..nsym { put(mut &t, if i == 0 { 0 } else { i - 1 }, 4) }
+    // versym
+    let versym = len(t)
+    for v in symVer { put(mut &t, v, 2) }
+    pad(mut &t, alignUp(len(t), 8))
+    // verneed: one entry per library with versioned imports, one aux per version
+    let verneed = len(t)
+    var nVerneed = 0
+    for li in 0..len(needed) {
+        var cnt = 0
+        for j in 0..len(verName) {
+            if verLib[j] == li { cnt += 1 }
+        }
+        if cnt > 0 { nVerneed += 1 }
+    }
+    var done = 0
+    for li in 0..len(needed) {
+        var vs: []int = []
+        for j in 0..len(verName) {
+            if verLib[j] == li { append(mut &vs, j) }
+        }
+        if len(vs) == 0 { continue }
+        done += 1
+        put(mut &t, 1, 2)                       // vn_version
+        put(mut &t, len(vs), 2)
+        put(mut &t, neededOff[li], 4)
+        put(mut &t, 16, 4)                      // vn_aux: right after
+        put(mut &t, if done < nVerneed { 16 + 16 * len(vs) } else { 0 }, 4)
+        for k in 0..len(vs) {
+            let j = vs[k]
+            put(mut &t, elfHash(verName[j]), 4)
+            put(mut &t, 0, 2)                   // vna_flags
+            put(mut &t, j + 2, 2)               // vna_other: the version index
+            put(mut &t, addStr(mut &strs, mut &strAt, verName[j]), 4)
+            put(mut &t, if k + 1 < len(vs) { 16 } else { 0 }, 4)
+        }
+    }
+    // rela
+    let rela = len(t)
+    for r in rels {
+        put(mut &t, r.at, 8)
+        put(mut &t, (r.sym << 32) | r.kind, 8)
+        put(mut &t, r.addend, 8)
+    }
+    let relasz = len(t) - rela
+    let strtab = len(t)
+    for x in strs { append(mut &t, x) }
+    // the dynamic section
+    var d: []byte = []
+    for o in neededOff {
+        put(mut &d, 1, 8)                       // DT_NEEDED
+        put(mut &d, o, 8)
+    }
+    let ents: []int = [4, addr + hash, 5, addr + strtab, 6, addr + symtab, 10, len(strs), 11, 24,
+        7, addr + rela, 8, relasz, 9, 24, 21, 0, 24, 0, 30, 8, 0x6ffffffb, 1]
+    for x in ents { put(mut &d, x, 8) }
+    if nVerneed > 0 {
+        let vents: []int = [0x6ffffff0, addr + versym, 0x6ffffffe, addr + verneed, 0x6fffffff, nVerneed]
+        for x in vents { put(mut &d, x, 8) }
+    }
+    pad(mut &d, dynSize(len(needed)))           // the rest DT_NULL
+    return Dynamic{tables: t, dyn: d}
+}
+
+// ---------------------------------------------------------------- shared libraries
+
+// What the link needs of a shared library: its SONAME (the DT_NEEDED name) and, of the
+// names asked for, the functions it defines, each with the version a new link binds to
+// (the default version; "" when unversioned). err is set when the file cannot be read.
+pub type Lib = record {
+    pub path: str
+    pub soname: str
+    pub defs: Map[str, str]
+    pub err: str
+}
+
+fn rd(s: &str, off: int, n: int): int {
+    var v = 0
+    var i = n - 1
+    while i >= 0 {
+        v = (v << 8) | int(strByte(s, off + i))
+        i -= 1
+    }
+    return v
+}
+
+fn cstrAt(s: &str, off: int): str {
+    var e = off
+    while strByte(s, e) != 0 { e += 1 }
+    return s[off..e]
+}
+
+// The library in data (the bytes of the file at path); wanted: the names to look for.
+pub fn readLib(path: str, data: &str, wanted: &Map[str, bool]): Lib {
+    var lib = Lib{path: path, soname: "", defs: newMap(), err: ""}
+    if len(data) < 64 || rd(data, 0, 4) != 0x464c457f || strByte(data, 4) != 2 || rd(data, 16, 2) != 3 ||
+        rd(data, 18, 2) != 62 {
+        lib.err = "not an x86-64 shared library"
+        return lib
+    }
+    let shoff = rd(data, 0x28, 8)
+    let shsz = rd(data, 0x3A, 2)
+    let shnum = rd(data, 0x3C, 2)
+    if shoff <= 0 || shoff + shnum * shsz > len(data) {
+        lib.err = "no section headers"
+        return lib
+    }
+    var dynsym = -1
+    var versym = -1
+    var verdef = -1
+    var dynamicH = -1
+    for i in 0..shnum {
+        let h = shoff + i * shsz
+        let ty = rd(data, h + 4, 4)
+        if ty == 11 { dynsym = h } else if ty == 0x6fffffff { versym = h } else if ty == 0x6ffffffd { verdef = h } else if
+            ty == 6 { dynamicH = h }
+    }
+    if dynsym < 0 {
+        lib.err = "no dynamic symbols"
+        return lib
+    }
+    // version names by index
+    var vnames: Map[int, str] = newMap()
+    if verdef >= 0 {
+        let vstr = rd(data, shoff + rd(data, verdef + 40, 4) * shsz + 24, 8)
+        var off = rd(data, verdef + 24, 8)
+        for j in 0..rd(data, verdef + 44, 4) {
+            let aux = off + rd(data, off + 12, 4)
+            vnames.put(rd(data, off + 4, 2), cstrAt(data, vstr + rd(data, aux, 4)))
+            off += rd(data, off + 16, 4)
+        }
+    }
+    let strOff = rd(data, shoff + rd(data, dynsym + 40, 4) * shsz + 24, 8)
+    let symOff = rd(data, dynsym + 24, 8)
+    let nsym = rd(data, dynsym + 32, 8) / 24
+    let vsOff = if versym >= 0 { rd(data, versym + 24, 8) } else { -1 }
+    for i in 1..nsym {
+        let e = symOff + i * 24
+        if rd(data, e + 6, 2) == 0 { continue }                 // undefined here
+        let info = int(strByte(data, e + 4))
+        let bind = info >> 4
+        let ty = info & 15
+        if bind != 1 && bind != 2 { continue }                  // global or weak
+        if ty != 2 && ty != 10 { continue }                     // a function or an ifunc
+        let vis = int(strByte(data, e + 5)) & 3
+        if vis == 1 || vis == 2 { continue }                    // internal or hidden
+        let name = cstrAt(data, strOff + rd(data, e, 4))
+        if !wanted.has(&name) || lib.defs.has(&name) { continue }
+        var ver = ""
+        if vsOff >= 0 {
+            let v = rd(data, vsOff + 2 * i, 2)
+            if v & 0x8000 != 0 { continue }                     // an older version, not the default
+            if v >= 2 { ver = vnames.getOr(&v, "") }
+        }
+        lib.defs.put(name, ver)
+    }
+    if dynamicH >= 0 {
+        let dstr = rd(data, shoff + rd(data, dynamicH + 40, 4) * shsz + 24, 8)
+        var off = rd(data, dynamicH + 24, 8)
+        let end = off + rd(data, dynamicH + 32, 8)
+        while off < end && rd(data, off, 8) != 0 {
+            if rd(data, off, 8) == 14 { lib.soname = cstrAt(data, dstr + rd(data, off + 8, 8)) }
+            off += 16
+        }
+    }
+    if lib.soname == "" {
+        var b = len(path)
+        while b > 0 && strByte(path, b - 1) != '/' { b -= 1 }
+        lib.soname = path[b..len(path)]
+    }
+    return lib
 }

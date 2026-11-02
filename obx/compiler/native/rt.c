@@ -34,7 +34,14 @@ enum { S_READ = 0, S_WRITE = 1, S_OPEN = 2, S_CLOSE = 3, S_MMAP = 9, S_MUNMAP = 
        S_CHMOD = 90, S_GETRLIMIT = 97, S_SIGALTSTACK = 131, S_GETDENTS64 = 217,
        S_CLOCK_GETTIME = 228, S_EXIT_GROUP = 231, S_NEWFSTATAT = 262, S_GETRANDOM = 318 };
 
-static int rt_errno;
+/* In a dynamically linked program (design/native.md, "Dynamic linking") the dynamic linker
+   fills these with libc's exit, getenv and __errno_location, so that the runtime ends the
+   process, reads the environment and reports errors through libc, as the C backend does; in
+   a static program they stay zero and the runtime's own versions serve. */
+void* rt_n_libc[3];
+static int rt_errno_v;
+__attribute__((noinline)) static int* rt_errno_at(void) { return rt_n_libc[2] ? ((int* (*)(void))rt_n_libc[2])() : &rt_errno_v; }
+#define rt_errno (*rt_errno_at())
 /* a syscall result as libc returns it: -1 with errno set on failure */
 static i64 sysret(i64 r) {
     if (r < 0 && r > -4096) { rt_errno = (int)-r; return -1; }
@@ -42,6 +49,12 @@ static i64 sysret(i64 r) {
 }
 __attribute__((noreturn)) static void sys_exit(int code) {
     for (;;) SYS(S_EXIT_GROUP, code, 0, 0);
+}
+/* The end of the program (rt.h's exit): with libc, its exit runs the atexit handlers and
+   flushes stdio, after the runtime has flushed its own buffer. */
+__attribute__((noreturn, noinline)) static void rt_quit(int code) {
+    if (rt_n_libc[0]) ((void (*)(int))rt_n_libc[0])(code);
+    sys_exit(code);
 }
 
 /* ---- what gcc may call even in freestanding code, and the string basics */
@@ -223,7 +236,7 @@ __attribute__((noreturn)) void rt_trap(int code, const char* msg, const char* wh
     rt_flush();
     eputs("obx: "); eputs(msg); eputs(" at "); eputs(where); eputs("\n");
     eflush();
-    sys_exit(code);
+    rt_quit(code);
 }
 
 /* Not zeroed: every caller stores each byte it later reads. */
@@ -263,6 +276,7 @@ void rt_ddefer(rt_dfn f, void* p, size_t n) {
 /* ---- environment */
 
 char* getenv(const char* name) {
+    if (rt_n_libc[1]) return ((char* (*)(const char*))rt_n_libc[1])(name);
     size_t n = strlen(name);
     if (!rt_environ) return 0;
     for (char** e = rt_environ; *e; e++)
@@ -358,7 +372,7 @@ void rt_n_start(int64_t* sp, void* mainf) {
     char** argv = (char**)(sp + 1);
     rt_environ = argv + argc + 1;
     int r = ((int (*)(int, char**))mainf)(argc, argv);
-    sys_exit(r);
+    rt_quit(r);
 }
 
 void rt_finish(void) {
@@ -366,10 +380,10 @@ void rt_finish(void) {
     if (rt_check && rt_live != 0) {
         eputs("obx: leak: "); eputd(rt_live); eputs(" live objects at exit at runtime\n");
         eflush();
-        sys_exit(5);
+        rt_quit(5);
     }
 }
-__attribute__((noreturn)) void rt_exit(int64_t code) { rt_flush(); sys_exit((int)code); }
+__attribute__((noreturn)) void rt_exit(int64_t code) { rt_flush(); rt_quit((int)code); }
 __attribute__((noreturn)) void exit(int code) { sys_exit(code); }
 
 /* ---- strings (see rt.h) */
@@ -802,7 +816,7 @@ __attribute__((noreturn)) void rt_panic(obx_str msg, const char* w) {
     rt_flush();
     eputs("obx: panic: "); eput(RT_SP(msg), msg.len); eputs(" at "); eputs(w); eputs("\n");
     eflush();
-    sys_exit(12);
+    rt_quit(12);
 }
 
 /* ---- arrays */

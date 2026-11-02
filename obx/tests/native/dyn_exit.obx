@@ -1,0 +1,12 @@
+// libc's exit called by the program: it runs the atexit handlers and flushes C's stdio,
+// but not the obx runtime's buffer (as in the C backend), so the obx line is lost.
+// expect: C line
+// exit: 7
+extern "c" fn puts(s: str): i32
+extern "c" fn cExit(code: i32) as "exit"
+
+fn main() {
+    println("obx line, never flushed")
+    puts("C line")
+    cExit(7)
+}

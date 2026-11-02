@@ -1,0 +1,20 @@
+// C's stdio next to obx's output buffer: obx output is buffered by the runtime and flushed
+// at the end of main, then libc's exit flushes stdout's buffer (stdout is a pipe in the
+// tests, so fully buffered). So every obx line comes first, then the C lines.
+// expect: obx 1
+// expect: obx 2
+// expect: obx 3
+// expect: C puts 1
+// expect: C printf 42 str
+// expect: C puts 2
+extern "c" fn puts(s: str): i32
+extern "c" fn printf(fmt: str, n: int, s: str): i32
+
+fn main() {
+    println("obx 1")
+    puts("C puts 1")
+    println("obx 2")
+    printf("C printf %ld %s\n", 42, "str")
+    puts("C puts 2")
+    println("obx 3")
+}

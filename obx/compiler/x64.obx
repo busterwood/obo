@@ -85,7 +85,7 @@ pub const R_ABS32 = 1
 pub const R_ABS64 = 2
 
 // A memory operand [base + index*scale + disp]; base -1 with index -1 is an absolute
-// address (disp), encoded with a SIB byte and no base.
+// address (disp), encoded with a SIB byte and no base; base -2 (RIP) is [rip + disp].
 pub type Mem = value record {
     pub base: int
     pub index: int
@@ -100,6 +100,10 @@ pub fn memx(base: int, index: int, scale: int, disp: int): Mem {
 }
 
 pub fn absMem(addr: int): Mem { return Mem{base: -1, index: -1, scale: 1, disp: addr} }
+
+pub const RIP = -2
+
+pub fn ripMem(disp: int): Mem { return Mem{base: RIP, index: -1, scale: 1, disp: disp} }
 
 type Fix = value record {
     at: int         // the rel32 field
@@ -178,6 +182,11 @@ pub fn (a: mut &Asm) rm(pfx: int, w: bool, opc: int, reg: int, m: Mem, breg: boo
     let x = if m.index >= 0 { m.index } else { 0 }
     let bs = if m.base >= 0 { m.base } else { 0 }
     a.head(pfx, w, opc, reg, x, bs, breg && lowByte(reg))
+    if m.base == RIP {
+        a.b(0x05 | ((reg & 7) << 3))
+        a.d32(m.disp)
+        return
+    }
     if m.base < 0 && m.index < 0 {
         a.b(0x04 | ((reg & 7) << 3))
         a.b(0x25)
@@ -469,6 +478,18 @@ pub fn (a: mut &Asm) callSym(sym: int) {
     a.b(0xE8)
     append(mut &a.relocs, Reloc{at: a.pos(), sym: sym, kind: R_REL32, addend: 0})
     a.d32(0)
+}
+
+// call [rip + sym]: an indirect call through the 8-byte slot sym (a GOT entry).
+pub fn (a: mut &Asm) callAt(sym: int) {
+    a.rm(0, false, 0xFF, 2, ripMem(0), false)
+    append(mut &a.relocs, Reloc{at: a.pos() - 4, sym: sym, kind: R_REL32, addend: 0})
+}
+
+// mov r, [rip + sym]: the 8 bytes of the slot sym.
+pub fn (a: mut &Asm) loadAt(r: int, sym: int) {
+    a.load(8, r, ripMem(0))
+    append(mut &a.relocs, Reloc{at: a.pos() - 4, sym: sym, kind: R_REL32, addend: 0})
 }
 
 // A 32-bit absolute-address field for sym + addend at the current position (the disp32 of

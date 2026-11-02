@@ -43,6 +43,8 @@ def rnd_mem(r):
     disp = r.choice([0, 0, 8, -8, 127, -128, 128, 4096, -4096, r.randint(-2**31, 2**31 - 1)])
     if k < 0.08:
         return (-1, -1, 1, r.randint(0, 2**31 - 1))
+    if k < 0.12:
+        return (-2, -1, 1, disp)
     base = r.randint(0, 15)
     if k < 0.55:
         return (base, -1, 1, disp)
@@ -55,6 +57,8 @@ def rnd_mem(r):
 
 def mem_text(m):
     b, i, s, d = m
+    if b == -2:
+        return f'm:{b},{i},{s},{d}', f'[rip{d:+d}]'
     if b < 0 and i < 0:
         return f'm:-1,-1,1,{d}', f'[{d}]'
     parts = []

@@ -3,17 +3,20 @@
 
 usage: run_native.py [--compiler PATH] [--lib] [--redteam] [-j N] [-v] [filters...]
 
-For every run test (with --lib also lib/tests/run, with --redteam the red-team programs
-that are meant to compile), builds the program with the C backend
+For every run test and every test of tests/native (C libraries through dynamic linking; a
+test with `// needs: name` is skipped when lib<name>.so* is not installed), with --lib also
+lib/tests/run, with --redteam the red-team programs that are meant to compile, builds the
+program with the C backend
 (cached by tools/cbuild.py) and with `obxc --native`, runs both with the test's stdin, with
 and without OBX_CHECK=1, and compares stdout, stderr and the exit code. Each test is
   pass         identical in both runs
   unsupported  the native backend refused it cleanly (`native: unsupported: ...`)
   differ       anything else: a different result, a crash, a failed native build
-  skip         (red team) the C build fails too: a program meant to be rejected
+  skip         (red team) the C build fails too: a program meant to be rejected;
+               (tests/native) a library it needs is not installed
 Only differ fails (exit 1). -v lists the unsupported tests with their reasons.
 """
-import argparse, collections, os, subprocess, sys, tempfile
+import argparse, collections, glob, os, re, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +27,8 @@ import run as runpy  # noqa: E402  (tests/run.py: test discovery and directives)
 OBXC = os.path.normpath(os.path.join(HERE, '..', 'compiler', 'out', 'obxc'))
 LIB_TESTS = os.path.normpath(os.path.join(HERE, '..', 'lib', 'tests', 'run'))
 REDTEAM = os.path.normpath(os.path.join(HERE, '..', 'redteam'))
+NATIVE = os.path.join(HERE, 'native')
+LIBDIRS = ['/usr/lib/x86_64-linux-gnu', '/lib/x86_64-linux-gnu', '/usr/lib64', '/usr/lib', '/usr/local/lib', '/lib']
 TIMEOUT = 10
 os.environ.setdefault('OBX_LIB', os.path.normpath(os.path.join(HERE, '..', 'lib')))   # for compilers outside out/
 
@@ -46,6 +51,7 @@ def redteam():
 
 def find(lib, red):
     tests = [p for k, p in runpy.find_tests() if k == 'run']
+    tests += [os.path.join(NATIVE, f) for f in sorted(os.listdir(NATIVE)) if f.endswith('.obx')]
     if red:
         tests += redteam()
     if lib:
@@ -81,8 +87,20 @@ def short(b):
     return repr(s if len(s) < 300 else s[:300] + '...')
 
 
+def missing_lib(path):
+    """The first `// needs: name` library of a test that is not installed, or None."""
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            m = re.match(r'\s*//\s*needs:\s*(\S+)', line)
+            if m and not any(glob.glob(os.path.join(d, 'lib%s.so*' % m.group(1))) for d in LIBDIRS):
+                return m.group(1)
+    return None
+
+
 def one(path, obxc):
     rel = os.path.relpath(path, os.path.join(HERE, '..', '..'))
+    if path.startswith(NATIVE + os.sep) and missing_lib(path):
+        return rel, 'skip', ''
     d = runpy.parse_directives(path)
     stdin = ''.join(l + '\n' for l in d['stdin'])
     with tempfile.TemporaryDirectory(prefix='obxnat_') as tmp:
@@ -151,7 +169,7 @@ def main():
             print('  %4d  %s' % (n, why))
     print('native: %d pass, %d differ, %d unsupported, %d total%s' % (
         count['pass'], count['differ'], count['unsupported'], len(results) - count['skip'],
-        ' (%d skipped: rejected by the compiler)' % count['skip'] if count['skip'] else ''))
+        ' (%d skipped: rejected by the compiler or a library missing)' % count['skip'] if count['skip'] else ''))
     sys.exit(1 if count['differ'] else 0)
 
 
