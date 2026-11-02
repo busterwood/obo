@@ -121,6 +121,20 @@ moved over (qualified variants, `never` stop helpers, renamed externs, the
 - Imports: `./` and `../` paths are relative to the importing file; bare
   paths are library modules only (5.1).
 
+Pain points from writing the self-hosted front end (stage 4 step 1,
+2026-11-02), for the user to decide; the most pressing is the first, since
+`check` is full of `self.f(..., self.g())`:
+
+1. Rule 3 rejects nested mutating calls on one receiver, `p.node(K,
+   p.expr())`, `p.toks[p.next()]`; about 45 calls became `let`s. A two-step
+   receiver borrow (the receiver is only reserved while the arguments run,
+   like Rust's two-phase borrows) would accept them.
+2. `type`, `mut`, `pub`, `once` are keywords, so they cannot be names.
+3. `match` arms cannot be named constants; kinds are compared with if-chains.
+4. No conditional expression; no tuples or multiple results (out-parameters).
+5. Imported names are always qualified (`sx.` about 130 times in one file).
+6. No exceptions: the first error stops the program (fine for a compiler).
+
 Small gaps noted by the round-3 fixes (2026-11-02), not yet decided:
 
 - A record literal through a generic alias needs written type arguments
