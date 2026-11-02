@@ -1,0 +1,62 @@
+// ffi: owned Mem (cstr, alloc, copyBytes, checked accessors) passed to C, and the unchecked
+// peek/poke/bytes on memory C returns; qsort/bsearch over a Mem of int32s; every Mem freed.
+// expect: 13
+// expect: 12
+// expect: , world
+// expect: 32
+// expect: false
+// expect: 10 20 30 40 
+// expect: 30
+// expect: hello, world null
+// expect: 3
+// expect: true
+// expect: true
+// expect: 255
+// expect: 7
+// expect: -5
+// expect: true
+import "ffi"
+extern "c" fn strlen(p: ptr): int
+extern "c" fn strchr(p: ptr, c: i32): ptr
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+extern "c" fn bsearch(key: ptr, base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32): ptr
+fn cmp(a: ptr, b: ptr): i32 {
+    let x = ffi.peekI32(a, 0)
+    let y = ffi.peekI32(b, 0)
+    return if x < y { -1 } else if x > y { 1 } else { 0 }
+}
+fn main() {
+    let s = ffi.cstr("hello, world")
+    println(s.size())
+    println(strlen(s.ptr()))
+    let comma = strchr(s.ptr(), 44)
+    println(strFromC(comma))
+    println(ffi.peek(comma, 1))
+    let z = ffi.alloc(0)
+    println(isNull(z.ptr()))
+    var m = ffi.alloc(16)
+    for i in 0..4 { m.setI32(i, i32(40 - 10 * i)) }
+    qsort(m.ptr(), 4, 4, cmp)
+    for i in 0..4 { print(intToStr(int(m.getI32(i))) + " ") }
+    println("")
+    var key = ffi.alloc(4)
+    key.setI32(0, 30)
+    let hit = bsearch(key.ptr(), m.ptr(), 4, 4, cmp)
+    println(ffi.peekI32(hit, 0))
+    var ptrs = ffi.alloc(16)
+    ptrs.setPtr(0, s.ptr())
+    ptrs.setPtr(1, nullPtr())
+    println(strFromC(ptrs.getPtr(0)) + " " + (if isNull(ptrs.getPtr(1)) { "null" } else { "?" }))
+    let blob = ffi.copyBytes("a\x00b")
+    println(len(blob.toStr()))
+    println(ffi.bytes(blob.ptr(), 3) == "a\x00b")
+    println(ffi.bytes(nullPtr(), 0) == "")
+    ffi.poke(m.ptr(), 0, 255)
+    println(m.get(0))
+    m.set(15, 7)
+    println(ffi.peek(m.ptr(), 15))
+    ffi.pokeI32(key.ptr(), 0, -5)
+    println(key.getI32(0))
+    ffi.pokePtr(ptrs.ptr(), 1, m.ptr())
+    println(ffi.peekPtr(ptrs.ptr(), 1) == m.ptr())
+}

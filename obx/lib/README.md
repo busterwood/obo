@@ -31,6 +31,7 @@ for leaks.
 | `os.obx` | 60 | arguments, environment, pid, working directory, quit |
 | `time.obx` | 160 | wall and monotonic clocks, sleep, UTC dates, ISO 8601 text |
 | `sqldialect.obx` | 260 | Value, DbError and its codes, SQL fragments with placeholders per dialect, exact decimal text and (p, s) checks |
+| `ffi.obx` | 140 | C memory for modules that call C: owned `Mem` (alloc, cstr, copyBytes), unchecked peek/poke/bytes |
 | `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
 | `postgres.obx` | 370 | PostgreSQL through libpq: Conn, Rows |
 
@@ -173,6 +174,20 @@ full disk). `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
   `daysOfDate`, `weekday`, `isLeapYear`, `daysInMonth`, `parseDate`,
   `isoDate`, `isoDateTime`.
 
+### ffi
+
+C memory for modules that declare externs (SPEC 12), used by sqlite and
+postgres. `Mem` is owned memory C may use, freed when dropped:
+`alloc(n)` (zeroed, never a null pointer), `cstr(s)` (the bytes and a NUL),
+`copyBytes(s)`; `ptr()`, `size()`, index-checked `get`/`set` (bytes),
+`getI32`/`setI32`, `getPtr`/`setPtr`, `toStr()`. For memory C owns, at a
+pointer C returned: `peek`/`poke`, `peekI32`/`pokeI32`,
+`peekPtr`/`pokePtr` (element `i`) and `bytes(p, n)` (a copy); these are as
+unchecked as an extern call, so wrap them like one. A null pointer is the
+built-in `nullPtr()`; arrays and slices of integers, `float` and `ptr` can
+be passed to C directly (`&[]T`, `mut &[]T` extern parameters), as postgres
+does for `PQexecParams`'s types and values.
+
 ### sqldialect, sqlite, postgres
 
 Database adapters over the C client libraries (a program that imports one is
@@ -239,11 +254,10 @@ errno, a static buffer):
 | `obxlib_readlink(path)`, `obxlib_readlink_text()` | readlink into a static buffer; length or -errno, then the text |
 | `obxlib_flush_out()` | flush the runtime's stdout buffer; errno of the first failed write since the last call, or 0 |
 | `obxlib_isatty(fd)`, `obxlib_term_cols(fd)` | `isatty`; `TIOCGWINSZ` columns or 0 |
-| `obxlib_null()` | a null `ptr` (there is no literal for one) |
-| `obxlib_alloc(n)`, `obxlib_free(p)` | a C buffer from the runtime's allocator (counted by `OBX_CHECK=1`) |
-| `obxlib_cstr(s)` | a NUL-terminated copy of a str, for C that keeps the pointer past the call |
-| `obxlib_peek(p, i)`, `obxlib_poke(p, i, b)` | read or write byte `i` of a C buffer |
-| `obxlib_poke_i32(p, i, v)`, `obxlib_poke_ptr(p, i, q)` | write element `i` of a C `int[]` or `void*[]` |
+| `obxlib_alloc(n)`, `obxlib_free(p)` | a zeroed C buffer from the runtime's allocator (counted by `OBX_CHECK=1`); for `ffi` |
+| `obxlib_peek(p, i)`, `obxlib_poke(p, i, b)` | read or write byte `i` of C memory; for `ffi` |
+| `obxlib_peek_i32`, `obxlib_poke_i32`, `obxlib_peek_ptr`, `obxlib_poke_ptr` | element `i` of a C `int32_t[]` or `void*[]`; for `ffi` |
+| `obxlib_copy_in(dst, at, src, n)`, `obxlib_copy_out(dst, src, at, n)` | `memcpy` between C memory and an obx byte array; for `ffi` |
 
 The `obxlib_` helpers are not `obx_` names because the compiler lets
 externs name only the `obx_` helpers it knows (sema's `cHelper`); any other
