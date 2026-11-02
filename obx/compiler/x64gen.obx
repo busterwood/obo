@@ -96,6 +96,9 @@ type Gen = record {
                                 // of calls, else INLINE_NODES + 1 (-1: not yet known)
     loops: int                  // the loops the code generator is in (the scan's depth)
     curFunc: int
+    callDest: x64.Mem           // for the next genCall: where its aggregate result goes (or base -9)
+    callFresh: bool             // ... a new local (it may be the hidden result pointer)
+    destUsed: bool              // genCall put the result there
     aTaken: []bool              // per local: its address (or a member's) is taken
     emptyS: int                 // an S_EMPTY node
     saved: []int                // the frame slots of the callee-saved registers the function uses
@@ -133,7 +136,7 @@ fn newGen(u: ir.Ir): Gen {
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
-        loops: 0, aTaken: [], emptyS: -1}
+        loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false}
     g.a.peep = true
     for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
     for i in 0..len(g.u.funcs) {
@@ -957,7 +960,15 @@ fn (g: mut &Gen) stmt(s: int) {
         let s2 = g.temp(ir.alignUp(g.size(t), 8), g.u.alignOf(t))
         g.slots[l] = s2
         g.declMark = g.frame
-        if n.b >= 0 {
+        if n.b >= 0 && g.isAggr(t) && g.u.nk(n.b) == ir.E_CALL && g.u.nodes[n.b].ty == t {
+            // the result stored (or written by the callee) in the slot (whole words: the slot
+            // is rounded up to them)
+            g.callDest = rbp(s2)
+            g.callFresh = true
+            g.destUsed = false
+            g.gen(n.b)
+            if !g.destUsed { g.storeT(t, rbp(s2)) }
+        } else if n.b >= 0 {
             g.gen(n.b)
             g.storeT(t, rbp(s2))
         } else if n.c >= 0 {
@@ -1753,6 +1764,17 @@ fn (g: mut &Gen) genAssign(e: int) {
         g.gen(n.b)                          // x = rt_str_dup(x): the count only
         return
     }
+    if m.base != -9 && g.isAggr(t) && g.u.nk(lhs) == ir.E_LOCAL && g.u.nk(n.b) == ir.E_CALL && g.u.nodes[n.b].ty == t {
+        // a result in registers stored in the local after the call (whole words: its slot is
+        // rounded up to them)
+        g.callDest = m
+        g.callFresh = false
+        g.destUsed = false
+        g.gen(n.b)
+        if !g.destUsed { g.storeT(t, m) }
+        g.a.lea(RAX, m)
+        return
+    }
     if m.base != -9 {
         g.gen(n.b)
         g.storeT(t, m)
@@ -2131,6 +2153,12 @@ fn (g: mut &Gen) branch(e: int, l: int, when: bool) {
 // ---------------------------------------------------------------- calls
 
 fn (g: mut &Gen) genCall(e: int) {
+    // where the aggregate result goes, if the caller said (callDest), and whether it may be
+    // the hidden result pointer (the place is new: nothing reads it during the call)
+    let dest = g.callDest
+    let fresh = g.callFresh
+    g.callDest = NO_MEM
+    g.callFresh = false
     let n = g.u.nodes[e]
     let ft = n.c
     let rt = g.u.tys[ft].base
@@ -2230,7 +2258,16 @@ fn (g: mut &Gen) genCall(e: int) {
         }
         append(mut &slots, s)
     }
-    if aggrRet { retSlot = g.tempFor(rt) }
+    var rm = NO_MEM
+    if aggrRet {
+        if dest.base != -9 && (fresh || rcls[0] != CL_MEM) {
+            rm = dest
+            g.destUsed = true
+        } else {
+            retSlot = g.tempFor(rt)
+            rm = rbp(retSlot)
+        }
+    }
     for j in 0..nargs {
         if place[j] >= 0 {
             let t = pts[j]
@@ -2266,7 +2303,7 @@ fn (g: mut &Gen) genCall(e: int) {
             }
         }
     }
-    if aggrRet && rcls[0] == CL_MEM { g.a.lea(RDI, rbp(retSlot)) }
+    if aggrRet && rcls[0] == CL_MEM { g.a.lea(RDI, rm) }
     if direct >= 0 {
         let s = g.symFunc(direct, e)
         if g.syms[s].kind == SK_DYN {
@@ -2285,15 +2322,15 @@ fn (g: mut &Gen) genCall(e: int) {
             var rx = 0
             for i in 0..len(rcls) {
                 if rcls[i] == CL_SSE {
-                    g.a.movsdStore(rbp(retSlot + 8 * i), rx)
+                    g.a.movsdStore(at(rm, 8 * i), rx)
                     rx += 1
                 } else if rcls[i] == CL_INT {
-                    g.a.store(8, rbp(retSlot + 8 * i), if ri == 0 { RAX } else { RDX })
+                    g.a.store(8, at(rm, 8 * i), if ri == 0 { RAX } else { RDX })
                     ri += 1
                 }
             }
         }
-        g.a.lea(RAX, rbp(retSlot))
+        g.a.lea(RAX, rm)
     } else if g.u.isInt(rt) && g.size(rt) < 8 {
         g.norm(rt)
     }
