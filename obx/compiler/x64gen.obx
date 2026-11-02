@@ -597,31 +597,39 @@ fn (g: mut &Gen) simpStmt(s: int) {
 }
 
 fn (g: mut &Gen) simpList(l: int) {
-    let cnt = g.u.listLen(l)
-    for j in 0..cnt {
-        let x = g.u.listAt(l, j)
-        if g.u.nk(x) != ir.S_DECL || g.u.nodes[x].b < 0 || g.u.nodes[x].c >= 0 { continue }
-        let b = g.u.nodes[x].a
-        if j + 1 < cnt && g.tk(g.u.locals[b].ty) == ir.TY_BOOL {
-            let v = g.boolFold(x, g.u.listAt(l, j + 1))
-            if v >= 0 {
-                g.u.nodes[x].b = v
-                g.u.items[l + 2 + j] = g.emptyS
+    // again while statements drop out (a merge can bring a declaration next to its if)
+    var pass = 0
+    while pass < 4 {
+        let cnt = g.u.listLen(l)
+        for j in 0..cnt {
+            let x = g.u.listAt(l, j)
+            if g.u.nk(x) != ir.S_DECL || g.u.nodes[x].b < 0 || g.u.nodes[x].c >= 0 { continue }
+            let b = g.u.nodes[x].a
+            if j + 1 < cnt && g.tk(g.u.locals[b].ty) == ir.TY_BOOL {
+                let v = g.boolFold(x, g.u.listAt(l, j + 1))
+                if v >= 0 {
+                    g.u.nodes[x].b = v
+                    g.u.items[l + 2 + j] = g.emptyS
+                    g.uses[b] -= 2                  // the if's condition and assignment
+                }
+            }
+            if g.u.nk(g.u.nodes[x].b) == ir.E_LOCAL { g.merge(l, j) }
+            if g.u.listAt(l, j) == x && j + 1 < cnt { g.intoAssign(l, j) }
+            if g.u.listAt(l, j) == x && j + 1 < cnt { g.intoReturn(l, j) }
+        }
+        // without the statements dropped (so that the fused pairs of stmt are next to each other)
+        var n = 0
+        for j in 0..cnt {
+            let x = g.u.listAt(l, j)
+            if x != g.emptyS {
+                g.u.items[l + 1 + n] = x
+                n += 1
             }
         }
-        if g.u.nk(g.u.nodes[x].b) == ir.E_LOCAL { g.merge(l, j) }
-        if g.u.listAt(l, j) == x && j + 1 < cnt { g.intoAssign(l, j) }
+        g.u.items[l] = n
+        if n == cnt { return }
+        pass += 1
     }
-    // without the statements dropped (so that the fused pairs of stmt are next to each other)
-    var n = 0
-    for j in 0..cnt {
-        let x = g.u.listAt(l, j)
-        if x != g.emptyS {
-            g.u.items[l + 1 + n] = x
-            n += 1
-        }
-    }
-    g.u.items[l] = n
 }
 
 // (1) for the declaration d of a bool b and the statement s after it: the new initializer of b,
@@ -726,11 +734,26 @@ fn (g: mut &Gen) intoAssign(l: int, j: int) {
     g.uses[t] = 0
 }
 
+// (5) `T t = E; return t;` with t named nowhere else, T a scalar: `return E;`.
+fn (g: mut &Gen) intoReturn(l: int, j: int) {
+    let x = g.u.listAt(l, j)
+    let t = g.u.nodes[x].a
+    let y = g.u.listAt(l, j + 1)
+    if g.uses[t] != 2 || g.u.nk(y) != ir.S_RETURN || !g.u.isScalar(g.u.locals[t].ty) { return }
+    let r = g.u.nodes[y].a
+    if r < 0 || g.u.nk(r) != ir.E_LOCAL || g.u.nodes[r].a != t { return }
+    let v = g.u.nodes[x].b
+    if g.u.nodes[r].ty != g.u.locals[t].ty || g.u.nodes[v].ty != g.u.locals[t].ty { return }
+    g.u.nodes[y].a = v
+    g.u.items[l + 1 + j] = g.emptyS
+    g.uses[t] = 0
+}
+
 // Names s for t in items j+1 up to end of list l, and drops t's declaration (item j).
 fn (g: mut &Gen) rename(l: int, j: int, t: int, s: int, end: int) {
     for m in j + 1..end { g.walk(g.u.listAt(l, m), 2, t, s) }
     g.u.items[l + 1 + j] = g.emptyS
-    g.uses[s] += g.uses[t] - 1
+    g.uses[s] += g.uses[t] - 2           // t's names but its declaration; not s in it
     g.uses[t] = 0
 }
 
@@ -970,7 +993,7 @@ fn (g: mut &Gen) stmt(s: int) {
             if !g.destUsed { g.storeT(t, rbp(s2)) }
         } else if n.b >= 0 {
             g.gen(n.b)
-            g.storeT(t, rbp(s2))
+            g.storeFrom(g.u.nodes[n.b].ty, t, rbp(s2))
         } else if n.c >= 0 {
             g.initEntries(s2, g.size(t), n.c)
         }
@@ -1053,6 +1076,13 @@ fn (g: mut &Gen) stmt(s: int) {
 // The expression e for its effect only (its value unused).
 fn (g: mut &Gen) genEffect(e: int) {
     let x = g.u.nodes[e]
+    if x.k == ir.E_POSTINC && g.regOf(x.a) >= 0 && x64.fits32(x.v) {
+        // r++ (the value unused): in place, then normalized as gen does
+        let r = g.regOf(x.a)
+        g.a.aluI(x64.ADD, 8, r, x.v)
+        g.normR(g.tk(x.ty), r)
+        return
+    }
     if x.k != ir.E_ASSIGN {
         g.gen(e)
         return
@@ -1291,6 +1321,12 @@ fn (g: mut &Gen) norm(t: int) { g.normR(g.tk(t), RAX) }
 
 // Loads an integer or pointer of type t from m into r, normalized.
 fn (g: mut &Gen) loadInt(t: int, r: int, m: x64.Mem) {
+    let src = g.a.storedTag(m, t)
+    if src >= 0 {
+        // the value of type t the instruction before stored there, normalized in src
+        if src != r { g.a.movRR(8, r, src) }
+        return
+    }
     let k = g.tk(t)
     if k == ir.TY_BOOL || k == ir.TY_U8 {
         g.a.loadZX(1, r, m)
@@ -1329,6 +1365,16 @@ fn (g: mut &Gen) loadT(t: int, m: x64.Mem) {
 }
 
 // Stores the value in the value registers (an aggregate: from the address in rax) at m.
+// storeT of rax holding a value of type s (converted to t): when that is normalized for t and
+// narrower than 8 bytes, a store loadInt can see (it holds t's value normalized).
+fn (g: mut &Gen) storeFrom(s: int, t: int, m: x64.Mem) {
+    if g.u.isScalar(t) && !g.isF(t) && !g.is128(t) && g.size(t) < 8 && g.normAs(s, t) {
+        g.a.storeTag(g.size(t), m, RAX, t)
+        return
+    }
+    g.storeT(t, m)
+}
+
 fn (g: mut &Gen) storeT(t: int, m: x64.Mem) {
     if g.isAggr(t) {
         g.copyMem(m, x64.mem(RAX, 0), g.size(t))
@@ -1794,7 +1840,7 @@ fn (g: mut &Gen) genAssign(e: int) {
     }
     if m.base != -9 {
         g.gen(n.b)
-        g.storeT(t, m)
+        g.storeFrom(g.u.nodes[n.b].ty, t, m)
         if g.isAggr(t) { g.a.lea(RAX, m) }
         return
     }
@@ -2157,6 +2203,8 @@ fn (g: mut &Gen) branch(e: int, l: int, when: bool) {
             g.branch(n.b, l, when)
             g.a.bind(skip)
         }
+    } else if k == ir.E_CALL && g.branchInline(e, l, when) {
+        // done
     } else if k == ir.E_BIN && isCmp(n.v) {
         g.jumpCC(g.genCmp(e), l, when)
     } else if k == ir.E_CAST && g.tk(n.ty) == ir.TY_BOOL && !g.is128(g.u.nodes[n.a].ty) {
@@ -2487,11 +2535,10 @@ fn (g: &Gen) smallList(l: int, budget: mut &int): bool {
     return true
 }
 
-// The call e of f generated in place: the arguments evaluated as for a call (left to right;
-// the simple ones last) and assigned to f's parameters, then f's body, whose returns jump to
-// the end with the result in the value registers. f's locals live in this frame (slots, or
-// the registers the scan of the function gave them).
-fn (g: mut &Gen) genInline(f: int, e: int) {
+// The arguments of the call e of f generated in place, evaluated as for a call (left to right;
+// the simple ones last) and assigned to f's parameters. f's locals live in this frame (slots,
+// or the registers the scan of the function gave them).
+fn (g: mut &Gen) inlineArgs(f: int, e: int) {
     let n = g.u.nodes[e]
     var ps: []int = []
     for p in g.u.funcs[f].params { append(mut &ps, p) }
@@ -2556,6 +2603,12 @@ fn (g: mut &Gen) genInline(f: int, e: int) {
             }
         }
     }
+}
+
+// The call e of f generated in place: the arguments into the parameters, then f's body, whose
+// returns jump to the end with the result in the value registers.
+fn (g: mut &Gen) genInline(f: int, e: int) {
+    g.inlineArgs(f, e)
     let saveRet = g.retTy
     let saveDecl = g.declMark
     g.retTy = g.u.tys[g.u.funcs[f].ty].base
@@ -2568,6 +2621,29 @@ fn (g: mut &Gen) genInline(f: int, e: int) {
     g.a.bind(end)
     g.retTy = saveRet
     g.declMark = saveDecl
+}
+
+// A call e of a function generated in place whose body is `return x;`, as a condition: the
+// arguments into the parameters, then a jump to l on x (when). Else false, nothing generated.
+fn (g: mut &Gen) branchInline(e: int, l: int, when: bool): bool {
+    let f = g.inlineTarget(e, false, g.loops)
+    if f < 0 { return false }
+    let x = g.onlyReturn(f)
+    if x < 0 || g.u.nodes[x].ty != g.u.tys[g.u.funcs[f].ty].base { return false }
+    g.inlineArgs(f, e)
+    append(mut &g.inlStack, f)
+    g.branch(x, l, when)
+    pop(mut &g.inlStack)
+    return true
+}
+
+// The value a function generated in place is only a return of (its body is `return x;`), or -1.
+fn (g: &Gen) onlyReturn(f: int): int {
+    let body = g.u.funcs[f].body
+    if g.u.nk(body) != ir.S_BLOCK || g.u.listLen(g.u.nodes[body].a) != 1 { return -1 }
+    let s = g.u.listAt(g.u.nodes[body].a, 0)
+    if g.u.nk(s) != ir.S_RETURN { return -1 }
+    return g.u.nodes[s].a
 }
 
 // Whether argument x for parameter p of a function generated in place is loaded straight into

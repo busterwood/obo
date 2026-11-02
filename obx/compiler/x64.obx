@@ -124,6 +124,10 @@ pub type Asm = record {
     pub relocs: []Reloc
     pub peep: bool          // the peephole below (off for the encoder test, which checks bytes)
     stEnd: int              // the end of the last 8-byte store of a register, or -1
+    nsEnd: int              // the end of the last narrower store of a tagged value (storeTag), or -1
+    nsMem: Mem
+    nsReg: int
+    nsTag: int
     stMem: Mem
     stReg: int
     jmpEnd: int             // the end of the last jmp to a label (no label bound since), or -1
@@ -133,7 +137,7 @@ pub type Asm = record {
 
 pub fn newAsm(): Asm {
     return Asm{code: [], labels: [], fixes: [], relocs: [], peep: false, stEnd: -1, stMem: mem(-1, 0), stReg: 0,
-        jmpEnd: -1, jmpLabel: -1, termEnd: -1}
+        jmpEnd: -1, jmpLabel: -1, termEnd: -1, nsEnd: -1, nsMem: mem(-1, 0), nsReg: 0, nsTag: -1}
 }
 
 fn memEq(a: Mem, b: Mem): bool {
@@ -252,6 +256,26 @@ pub fn (a: mut &Asm) load(size: int, dst: int, m: Mem) {
         return
     }
     a.rm(pfxOf(size), size == 8, if size == 1 { 0x8A } else { 0x8B }, dst, m, size == 1)
+}
+
+// A store of size bytes (1, 2 or 4) of register src, which holds tag (for the code generator:
+// a type whose values it holds normalized to 64 bits). storedTag finds it when the next
+// instruction would load it back.
+pub fn (a: mut &Asm) storeTag(size: int, m: Mem, src: int, tag: int) {
+    a.store(size, m, src)
+    if size < 8 && m.base != src && m.index != src && m.base != RIP {
+        a.nsEnd = a.pos()
+        a.nsMem = m
+        a.nsReg = src
+        a.nsTag = tag
+    }
+}
+
+// The register that the instruction before (no label between) stored with storeTag at m with
+// tag, or -1.
+pub fn (a: &Asm) storedTag(m: Mem, tag: int): int {
+    if a.peep && a.nsEnd == a.pos() && memEq(m, a.nsMem) && a.nsTag == tag { return a.nsReg }
+    return -1
 }
 
 pub fn (a: mut &Asm) store(size: int, m: Mem, src: int) {
@@ -508,6 +532,7 @@ pub fn (a: mut &Asm) bind(l: int) {
     a.termEnd = -1
     a.labels[l] = a.pos()
     a.stEnd = -1
+    a.nsEnd = -1
 }
 
 pub fn (a: &Asm) labelCount(): int { return len(a.labels) }
@@ -540,6 +565,7 @@ pub fn (a: mut &Asm) insert(at: int, bytes: &[]byte, first: int) {
         k -= 1
     }
     a.stEnd = -1
+    a.nsEnd = -1
     a.jmpEnd = -1
     a.termEnd = -1
 }
