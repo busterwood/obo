@@ -805,7 +805,9 @@ when the string is a substring without a NUL after it), and stops the program if
 contains a NUL byte (exit code 12). `strFromC(p: ptr): str` copies a
 NUL-terminated C string. `ptr` is an ordinary copy type (a wrapper record may
 hold one), but the only operations on it are `==`, `!=` and the built-in
-`isNull(p)`; only extern functions create one.
+`isNull(p)`; only extern functions and the built-in `nullPtr()`, which gives
+the null pointer, create one. Neither `isNull` nor `nullPtr` is reserved: a
+module's own declaration of the name wins.
 Calls to extern functions are unchecked: wrap each in a function or a type
 with a `drop` method that makes its use safe.
 

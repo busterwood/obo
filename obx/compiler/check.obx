@@ -2240,7 +2240,13 @@ fn (c: mut &Checker) resolveNamed(d: int, a: int, line: int): int {
 
 fn isBuiltin(name: str): bool {
     return name == "len" || name == "append" || name == "pop" || name == "swap" || name == "replace" ||
-        name == "move" || name == "array" || name == "panic" || name == "assert" || name == "exit" || name == "isNull"
+        name == "move" || name == "array" || name == "panic" || name == "assert" || name == "exit" || name == "isNull" ||
+        name == "nullPtr"
+}
+
+// isNull and nullPtr are not reserved (SPEC 12): a module's own declaration of the name wins.
+fn (c: &Checker) isBuiltinHere(name: str): bool {
+    return isBuiltin(name) && (name != "isNull" && name != "nullPtr" || c.pg.lookup(c.cx.mod, name).k < 0)
 }
 
 fn (c: mut &Checker) xName(e: int, exp: int): Val {
@@ -2255,7 +2261,7 @@ fn (c: mut &Checker) xName(e: int, exp: int): Val {
         v.vvar = vx
         return v
     }
-    if isBuiltin(n.s) || intrinsic(n.s) >= 0 { c.err(n.line, n.s + " is a built-in function; call it") }
+    if c.isBuiltinHere(n.s) || intrinsic(n.s) >= 0 { c.err(n.line, n.s + " is a built-in function; call it") }
     let st = c.static(e)
     if st.k == ST_NONE { c.err(n.line, "unknown name '" + n.s + "'") }
     return c.staticValue(st, e, exp)
@@ -3893,7 +3899,7 @@ fn (c: mut &Checker) xCall(e: int, exp: int): Val {
     let args = c.callArgs(e)
     if c.kind(f) == sx.N_NAME && c.lookupVar(c.nd(f).s, true) < 0 {
         let fname = c.nd(f).s
-        if isBuiltin(fname) && (fname != "isNull" || c.pg.lookup(c.cx.mod, fname).k < 0) {
+        if c.isBuiltinHere(fname) {
             let mark = len(c.cx.pending)
             let r = c.builtin(fname, e, exp)
             c.cutPending(mark)
@@ -4031,6 +4037,7 @@ fn (c: mut &Checker) builtin(name: str, e: int, exp: int): Val {
     return match name {
         "len" { c.bLen(e) }
         "isNull" { c.bIsNull(e) }
+        "nullPtr" { c.bNullPtr(e) }
         "append" { c.bAppend(e) }
         "pop" { c.bPop(e) }
         "swap" { c.bSwap(e) }
@@ -4095,6 +4102,11 @@ fn (c: mut &Checker) bLen(e: int): Val {
         c.err(c.line(e), "len needs an array, a slice or a str, not " + c.tstr(v.t))
     }
     return rv("(" + v.c + ").len", sema.T_INT)
+}
+
+fn (c: mut &Checker) bNullPtr(e: int): Val {
+    c.nargs(e, 0)
+    return rv("((void*)0)", sema.T_PTR)
 }
 
 fn (c: mut &Checker) bIsNull(e: int): Val {
