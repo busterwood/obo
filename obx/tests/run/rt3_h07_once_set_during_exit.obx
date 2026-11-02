@@ -1,0 +1,16 @@
+// Red-team round 3, h07 (SPEC 5.2): a set-once global that was dropped (here
+// never set, then dropped at exit) cannot be set by a later drop method: the
+// set stops the program instead of leaking the value.
+// expect: drop b
+// exit: 12
+type A = record { s: str }
+type B = record { n: int }
+fn (b: mut &B) drop() {
+    println("drop b")
+    if !GA.isSet() { GA.set(A{s: "late" + ""}) }
+}
+var GB: once B
+var GA: once A
+fn main() {
+    GB.set(B{n: 1})
+}

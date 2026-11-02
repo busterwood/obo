@@ -1,5 +1,5 @@
 // expect: set
-// expect: drop b a
+// exit: 12
 type A = record { s: str }
 type B = record { n: int }
 fn (b: mut &B) drop() { println("drop b " + GA.get().s) }

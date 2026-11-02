@@ -1884,13 +1884,15 @@ class Checker:
             self.err(f"a set-once global has set(v), get() and isSet(), not {name} with {len(e.args)} "
                      "arguments", e.where)
         if name == 'isSet':
-            return Val(f"{g.cname}_set", BOOL, 'rv')
+            return Val(f"({g.cname}_set == 1)", BOOL, 'rv')
         if name == 'get':
-            self.emit(f"if (!{g.cname}_set) rt_trap(12, {msg} is not set\", {W});")
+            self.emit(f"if ({g.cname}_set != 1) rt_trap(12, {g.cname}_set ? {msg} is dropped\" : {msg} is "
+                      f"not set\", {W});")
             return Val(f"(&{g.cname})", ('ref', g.ty, False), 'rv', root=self.static_var(g))
         v = self.coerce(self.expr(e.args[0], g.ty), g.ty, e.where, f"the value of {g.name}")
         c = self.consume(v, e.where)
-        self.emit(f"if ({g.cname}_set) rt_trap(12, {msg} is set twice\", {W});")
+        self.emit(f"if ({g.cname}_set) rt_trap(12, {g.cname}_set == 2 ? {msg} is dropped\" : {msg} is set "
+                  f"twice\", {W});")
         self.emit(f"{g.cname} = {c}; {g.cname}_set = 1;")
         return Val('', VOID, 'rv')
 

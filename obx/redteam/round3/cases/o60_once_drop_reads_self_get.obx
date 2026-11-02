@@ -1,4 +1,6 @@
-// expect: drop 5
+// GB is marked dropped before its drop runs (a field's drop could otherwise
+// reach freed fields through get()), so get() in the drop stops the program.
+// exit: 12
 type B = record { n: int }
 fn (b: mut &B) drop() { println("drop " + GB.get().n.toStr()) }
 var GB: once B

@@ -1,4 +1,5 @@
 // expect: drop b
+// exit: 12
 type A = record { s: str }
 type B = record { n: int }
 fn (b: mut &B) drop() {

@@ -1,0 +1,10 @@
+// Red-team round 3, h05 (SPEC 9.4): a module's set-once globals are dropped
+// before those of the modules it imports, so b's GB (whose drop calls
+// a.get()) is dropped while a's GA is still set.
+// expect: ok
+// expect: drop b a
+import "./b"
+fn main() {
+    b.init()
+    println("ok")
+}

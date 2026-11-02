@@ -1,0 +1,12 @@
+// Red-team round 3, h06 (SPEC 9.4): copy globals are dropped after every
+// set-once global, so a drop method that reads (or assigns) a str global sees
+// its value and nothing leaks.
+// expect: drop ab
+type B = record { n: int }
+fn (b: mut &B) drop() { println("drop " + S); S = "x" + "y" }
+var GB: once B
+var S: str = ""
+fn main() {
+    S = "a" + "b"
+    GB.set(B{n: 1})
+}

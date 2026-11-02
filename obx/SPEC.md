@@ -345,6 +345,10 @@ owned or copy, that starts empty and is set at most once:
   stops the program (exit 12). `CONFIG.isSet()` tells which.
 - Once set, the value never changes and is not freed until the program ends,
   so a borrow from `get()` is valid everywhere and freezes nothing.
+- When `main` returns, the set-once globals are dropped (section 9.4). Each
+  is first marked dropped, which makes it empty again: `isSet()` is false, and
+  `get()` or `set(v)` from then on (in a drop method, including its own) stops
+  the program (exit 12).
 
 **Globals of owned types** are otherwise not allowed. Mutable state that owns
 heap data belongs to `main` (or a context record it creates) and is passed down
@@ -606,7 +610,12 @@ its last statement (in an inner block, or by passing it to another function
 that drops it): the rest of its body must run after that drop, so each node
 needs a stack frame, and a long enough chain overflows the stack (exit 4).
 
-Globals are dropped when `main` returns, in reverse order of declaration.
+Globals are dropped when `main` returns (not after `exit`). The set-once
+globals of a module are dropped before those of the modules it imports
+(directly or not; `std` last), and within a module in reverse order of
+declaration; each is marked dropped before its value is dropped (section 5.2).
+Copy globals are dropped after all of them, which runs no code (a copy type
+has no `drop` method), so a drop method never reads a freed global.
 
 ## 10. Borrows
 

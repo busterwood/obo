@@ -1,0 +1,8 @@
+// Red-team round 3, h07 (SPEC 5.2): a set-once global is marked dropped
+// before its own drop runs, so get() on it there stops the program.
+// expect: in drop
+// exit: 12
+type B = record { n: int }
+fn (b: mut &B) drop() { println("in drop"); println(GB.get().n) }
+var GB: once B
+fn main() { GB.set(B{n: 5}) }
