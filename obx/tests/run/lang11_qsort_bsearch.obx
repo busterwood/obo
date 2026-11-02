@@ -1,0 +1,40 @@
+// SPEC 12: an obx function passed as a C function pointer (extern fn) to qsort and bsearch.
+// expect: -3 0 2 5 7 9 true
+// expect: found 9
+// expect: no 4
+extern "c" fn obxlib_alloc(n: int): ptr
+extern "c" fn obxlib_free(p: ptr)
+extern "c" fn obxlib_peek(p: ptr, i: int): int
+extern "c" fn obxlib_poke_i32(p: ptr, i: int, v: int)
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+extern "c" fn bsearch(key: ptr, base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32): ptr
+
+fn i32At(p: ptr, i: int): int {
+    var v = 0
+    for k in 0..4 { v = v | (obxlib_peek(p, 4 * i + k) << (8 * k)) }
+    return if v >= 0x80000000 { v - 0x100000000 } else { v }
+}
+var calls: int = 0
+fn cmp(a: ptr, b: ptr): i32 {
+    calls += 1
+    let x = i32At(a, 0)
+    let y = i32At(b, 0)
+    return if x < y { -1 } else if x > y { 1 } else { 0 }
+}
+fn main() {
+    let xs = [5, -3, 9, 0, 2, 7]
+    let n = len(xs)
+    let p = obxlib_alloc(4 * n)
+    for i in 0..n { obxlib_poke_i32(p, i, xs[i]) }
+    qsort(p, n, 4, cmp)
+    for i in 0..n { print(intToStr(i32At(p, i)) + " ") }
+    println(calls > 0)
+    let key = obxlib_alloc(4)
+    for k in [9, 4] {
+        obxlib_poke_i32(key, 0, k)
+        let r = bsearch(key, p, n, 4, cmp)
+        if isNull(r) { println("no " + intToStr(k)) } else { println("found " + intToStr(i32At(r, 0))) }
+    }
+    obxlib_free(key)
+    obxlib_free(p)
+}

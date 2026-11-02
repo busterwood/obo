@@ -647,7 +647,7 @@ pub const N_TREF = 12        // a t; MUT; no line
 pub const N_TSLICE = 13      // a t; MUT; no line
 pub const N_TARR = 14        // a t; no line
 pub const N_TNEVER = 15
-pub const N_TFN = 16         // a params, b ret
+pub const N_TFN = 16         // a params, b ret; EXTERN (a C function pointer)
 pub const N_TNAME = 17       // a parts (N_IDENT), b args
 pub const N_IDENT = 18       // s name (an element of a name list); no line
 pub const N_BLOCK = 19       // a stmts
@@ -1255,7 +1255,9 @@ fn (p: mut &Parser) type1(): int {
         p.sym(S_RBRACKET)
         return p.node(N_TARR, 0, "", p.typ(), -1, -1)
     }
-    if p.atKw(K_FN) {
+    if p.atKw(K_FN) || (p.atKw(K_EXTERN) && p.isKw(1, K_FN)) {
+        let isExt = p.atKw(K_EXTERN)
+        if isExt { p.next() }
         let fw = p.nextLine()
         p.sym(S_LPAREN)
         var ps: []int = []
@@ -1264,7 +1266,9 @@ fn (p: mut &Parser) type1(): int {
             if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
         }
         p.sym(S_RPAREN)
-        return p.node(N_TFN, fw, "", p.list(&ps), p.typeopt(), -1)
+        let f = p.node(N_TFN, fw, "", p.list(&ps), p.typeopt(), -1)
+        p.flag(f, EXTERN, isExt)
+        return f
     }
     return p.namedtype()
 }

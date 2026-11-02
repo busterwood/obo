@@ -1,0 +1,5 @@
+// SPEC 12: the function's types must be the extern fn's.
+// error: not fn(ptr, ptr): int
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+fn cmp(a: ptr, b: ptr): int { return 0 }
+fn main() { qsort(nullPtr(), 0, 1, cmp) }

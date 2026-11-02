@@ -236,6 +236,7 @@ fn (d: mut &Dumper) node(a: &sx.Ast, depth: int, label: str, n: int) {
         d.end()
         d.node(a, x, "t", na)
     } else if k == sx.N_TFN {
+        if a.has(n, sx.EXTERN) { d.flag(a, n, "extern", sx.EXTERN) }
         d.end()
         d.list(a, x, "params", na)
         d.opt(a, x, "ret", nb)

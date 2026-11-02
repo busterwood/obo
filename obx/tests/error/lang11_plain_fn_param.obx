@@ -1,0 +1,4 @@
+// SPEC 12: a C function pointer parameter is written extern fn.
+// error: is written extern fn
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: fn(ptr, ptr): i32)
+fn main() { }

@@ -3940,14 +3940,16 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         }
         text = "x_" + c.pg.fns[sig.fd].cname + "(" + joinStrs(&cs2, 0) + ")"
         if ret == sema.T_STR { text = "rt_str_from_c((void*)" + text + ")" }
-        if hasStr {             // free the NUL-terminated copies after the call
+        if hasStr {             // free the NUL-terminated copies made for this call after it
+            let mk = c.fresh("cm")
+            c.emit("int64_t " + mk + " = rt_cmark();")
             if ret != sema.T_VOID && ret != sema.T_NEVER {
                 let v = c.holdtmp(text, ret)
-                c.emit("rt_cfree();")
+                c.emit("rt_cfree(" + mk + ");")
                 return v
             }
             c.emit(text + ";")
-            c.emit("rt_cfree();")
+            c.emit("rt_cfree(" + mk + ");")
             return voidVal(ret == sema.T_NEVER)
         }
     }

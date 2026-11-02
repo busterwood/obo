@@ -98,8 +98,8 @@ externdecl  = "extern" STRING "fn" IDENT "(" [ params ] ")" [ ":" type ]
 type        = "never" | "&" type | "mut" "&" type | "[]" type
             | "&" "fn" "(" [ type { "," type } ] ")" [ ":" type ]  (* closure *)
             | "&" "[" type "]" | "mut" "&" "[" type "]"     (* slices *)
-            | "fn" "(" [ type { "," type } ] ")" [ ":" type ]
-            | qualname [ targs ] ;
+            | [ "extern" ] "fn" "(" [ type { "," type } ] ")" [ ":" type ]
+            | qualname [ targs ] ;                  (* extern fn: section 12 *)
 targs       = "[" type { "," type } "]" ;
 qualname    = IDENT { "." IDENT } ;
 
@@ -844,6 +844,28 @@ the null pointer, create one. Neither `isNull` nor `nullPtr` is reserved: a
 module's own declaration of the name wins.
 Calls to extern functions are unchecked: wrap each in a function or a type
 with a `drop` method that makes its use safe.
+
+**Callbacks.** An extern parameter of type `extern fn(T1, ...): R` is a C
+function pointer:
+
+```obx
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+fn byByte(a: ptr, b: ptr): i32 { ... }
+qsort(buf, n, 1, byByte)
+```
+
+Its parameter and result types are integers, `float`, `bool` and `ptr` (the
+result may be left out); `extern fn` is allowed nowhere else. The argument is a
+function value of type `fn(T1, ...): R`, the same types: a top-level
+function (or a generic one's instance), not a closure and not an extern. C
+calls it with the C calling convention while the extern call runs (or later,
+if the C library keeps the pointer: a function value is valid for the whole
+run). User data travels as a `ptr` argument, for C APIs that take one. A
+callback may do anything a function may, call C included (the NUL-terminated
+copies of `str` arguments are per call); a `panic`, a runtime error or `exit`
+in it ends the program as anywhere else, without returning to C. A callback
+cannot reach the caller's locals: only arguments and globals, and a global
+cannot be borrowed (section 5.2).
 
 ## 13. Not in draft 1
 

@@ -1,0 +1,4 @@
+// SPEC 12: a callback's parameters are C scalars.
+// error: cannot have type str
+extern "c" fn twalk(root: ptr, act: extern fn(str, i32))
+fn main() { }

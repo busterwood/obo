@@ -1,0 +1,16 @@
+// SPEC 12: exit in a callback ends the program without returning to C.
+// expect: in callback
+// exit: 3
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+extern "c" fn obxlib_alloc(n: int): ptr
+extern "c" fn obxlib_poke(p: ptr, i: int, v: int)
+fn stop(a: ptr, b: ptr): i32 {
+    println("in callback")
+    exit(3)
+}
+fn main() {
+    let names = ["a", "b"]
+    let p = obxlib_alloc(4)
+    qsort(p, 4, 1, stop)
+    println("not reached")
+}

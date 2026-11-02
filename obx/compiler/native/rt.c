@@ -479,7 +479,8 @@ const char* rt_cstr(obx_str s, const char* w) {
     }
     return rt_ctmp[rt_nctmp++] = rt_cdup(s);
 }
-void rt_cfree(void) { while (rt_nctmp) free(rt_ctmp[--rt_nctmp]); }
+int64_t rt_cmark(void) { return rt_nctmp; }
+void rt_cfree(int64_t m) { while (rt_nctmp > m) free(rt_ctmp[--rt_nctmp]); }
 static char* rt_digits(char* end, u128 v) {
     for (; v > UINT64_MAX; v /= 10) *--end = (char)('0' + (int)(v % 10));
     uint64_t w = (uint64_t)v;

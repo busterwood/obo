@@ -1,0 +1,28 @@
+// SPEC 12: a callback that calls C with copied str arguments frees only its own copies; the
+// outer call's key (a copy: a substring) stays valid for bsearch's later comparisons.
+// expect: found
+// expect: 6
+extern "c" fn bsearch(key: str, base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32): ptr
+extern "c" fn strlen(s: str): int
+extern "c" fn obxlib_alloc(n: int): ptr
+extern "c" fn obxlib_free(p: ptr)
+extern "c" fn obxlib_peek(p: ptr, i: int): int
+extern "c" fn obxlib_poke(p: ptr, i: int, v: int)
+var calls: int = 0
+fn cmp(a: ptr, b: ptr): i32 {
+    let key = strFromC(a)
+    let long = key + "-" + key
+    calls += strlen(long[0..3])
+    let x = strByte(key, 0)
+    let y = obxlib_peek(b, 0)
+    return i32(if int(x) < y { -1 } else if int(x) > y { 1 } else { 0 })
+}
+fn main() {
+    let p = obxlib_alloc(3)
+    for i in 0..3 { obxlib_poke(p, i, 97 + 2 * i) }
+    let s = "xex"
+    let r = bsearch(s[1..2], p, 3, 1, cmp)
+    println(if isNull(r) { "no" } else { "found" })
+    println(calls)
+    obxlib_free(p)
+}

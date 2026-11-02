@@ -1,0 +1,4 @@
+// SPEC 12: a callback's parameters are C scalars, not borrows.
+// error: cannot have type &int
+extern "c" fn g(cb: extern fn(&int))
+fn main() { }

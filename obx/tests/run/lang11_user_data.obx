@@ -1,0 +1,49 @@
+// SPEC 12: user data as a ptr (qsort_r), a callback with an i32 parameter (signal, run by raise).
+// expect: signal 10 home set yes
+// expect: 9
+// expect: 10
+// expect: 4 3 2 1 0 
+// expect: 0 1 2 3 4 
+extern "c" fn qsort_r(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr, ptr): i32, ud: ptr)
+extern "c" fn signal(sig: i32, h: extern fn(i32)): ptr
+extern "c" fn raise(sig: i32): i32
+extern "c" fn obxlib_alloc(n: int): ptr
+extern "c" fn obxlib_free(p: ptr)
+extern "c" fn obxlib_peek(p: ptr, i: int): int
+extern "c" fn obxlib_poke(p: ptr, i: int, v: int)
+extern "c" fn strlen(s: str): int
+extern "c" fn getenv(s: str): str
+
+var seen: i32 = 0
+fn onSig(s: i32) {
+    seen = s
+    println("signal " + intToStr(int(s)) + " home set " + (if getenv("HOME") != "" { "yes" } else { "no" }))
+}
+// the user data is a one-byte flag: 1 sorts descending
+fn byFlag(a: ptr, b: ptr, ud: ptr): i32 {
+    let x = obxlib_peek(a, 0)
+    let y = obxlib_peek(b, 0)
+    let d = if x < y { -1 } else if x > y { 1 } else { 0 }
+    return i32(if obxlib_peek(ud, 0) == 1 { -d } else { d })
+}
+fn show(p: ptr, n: int) {
+    for i in 0..n { print(intToStr(obxlib_peek(p, i)) + " ") }
+    println("")
+}
+fn main() {
+    let words = ["alpha", "be"]
+    signal(10, onSig)
+    println(strlen(words[0] + "x") + int(raise(10)) + strlen("xyz"))
+    println(seen)
+    let p = obxlib_alloc(5)
+    for i in 0..5 { obxlib_poke(p, i, (i * 7) % 5) }
+    let ud = obxlib_alloc(1)
+    obxlib_poke(ud, 0, 1)
+    qsort_r(p, 5, 1, byFlag, ud)
+    show(p, 5)
+    obxlib_poke(ud, 0, 0)
+    qsort_r(p, 5, 1, byFlag, ud)
+    show(p, 5)
+    obxlib_free(p)
+    obxlib_free(ud)
+}
