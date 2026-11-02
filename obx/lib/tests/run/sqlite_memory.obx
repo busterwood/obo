@@ -1,0 +1,223 @@
+// sqlite in memory: exec, prepare, bind (int, float, bool, text, blob with
+// NUL, NULL, decimal), step, typed and exact column reads, NULL vs empty,
+// errors and their codes, constraint violations, reset and rebinding,
+// transactions, statements that outlive their connection, fragments, and
+// every handle released (openHandles 0, and no leak under OBX_CHECK=1).
+// needs: sqlite3
+// expect: version 3: true
+// expect: inserted 1 1, rowid 2
+// expect: 1 | alice | -9223372036854775807 | 0.1 | true | NULL | x'00ff41' | 12.50
+// expect: 2 | bob | 9223372036854775807 | 1e300 | false | '' | x'' | -0.001
+// expect: types: Int Text Int Float Int Null Bytes Text
+// expect: name alice: id name score f ok note blob price
+// expect: null: isNull true, text error 1001: column 5 is NULL, decimalOrNull None
+// expect: empty: isNull false, text '' len 0, bytes len 0
+// expect: blob: 3 bytes, NUL at 0: true, as text: error 1002: column 0 is BLOB, not text
+// expect: exact: int of REAL: error 1002: column 3 is REAL, not an integer | float of INTEGER 2 | text of INTEGER -9223372036854775807
+// expect: decimal 12.50 scale 2 | decimal of INTEGER 7 | decimal of REAL error 1005 | decimal of BLOB error 1002
+// expect: syntax: error 1: near "SELEC": syntax error
+// expect: no table: error 1: no such table: nope
+// expect: unique: error 19: UNIQUE constraint failed: t.id
+// expect: not null: error 19: NOT NULL constraint failed: t.name
+// expect: range: error 25: column index out of range | error 25: column index out of range
+// expect: arity: error 1000: 1 arguments for 2 parameters
+// expect: nul sql: error 1000: SQL text contains a NUL byte | nul text: error 1000: text value contains a NUL byte
+// expect: two statements: error 1000: prepare takes one statement; use exec for a script
+// expect: trailing comment ok: 1 | empty: error 1000: no SQL statement in the text
+// expect: column range: error 1000: column 9 out of range (1 columns) | before step: error 1000: no current row
+// expect: after done: error 1000: no current row
+// expect: reuse: 10 11 12 | after reset: 3 rows
+// expect: step error then reset: error 19, then ok 1
+// expect: rollback: in transaction true, rows 0 | commit: rows 1
+// expect: transaction ok: Ok(2), rows 3 | transaction err: error 19: UNIQUE constraint failed: u.k, rows 3, open false
+// expect: changes: 3, last id 4
+// expect: fragment: SELECT ? || ?, 'x' -> 'Robert''); DROP TABLE t;--?'
+// expect: tables: t u
+// expect: orphan: close Ok(()), step true, value 1
+// expect: open handles 0
+
+import "sqlite"
+import "sqldialect"
+
+type V = sqlite.Value
+type Error = sqlite.Error
+
+fn kind(v: V): str {
+    match v {
+        V.Null { return "Null" }
+        V.Int(_) { return "Int" }
+        V.Float(_) { return "Float" }
+        V.Bool(_) { return "Bool" }
+        V.Text(_) { return "Text" }
+        V.Bytes(_) { return "Bytes" }
+        V.Dec(_) { return "Dec" }
+    }
+}
+
+fn show[T: Show](r: Result[T, Error]): str {
+    match r {
+        Ok(v) { return v.toStr() }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn fails[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn code[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() }
+    }
+}
+
+fn count(db: &sqlite.Db, table: str): Result[int, Error] {
+    var st = try db.query("SELECT count(*) FROM " + table, &[])
+    try st.step()
+    return st.int(0)
+}
+
+fn run(): Result[Unit, Error] {
+    println("version 3: " + startsWith(sqlite.version(), "3.").toStr())
+    var db = try sqlite.open(":memory:")
+    try db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT NOT NULL, score INTEGER, f REAL, ok INTEGER, " +
+        "note TEXT, blob BLOB, price TEXT); CREATE TABLE u(k INTEGER PRIMARY KEY)")
+    let sql = "INSERT INTO t(id, name, score, f, ok, note, blob, price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    let a = try db.run(sql, &[V.Int(1), V.Text("alice"), V.Int(-9223372036854775807), V.Float(0.1), V.Bool(true),
+        V.Null, V.Bytes("\x00\xffA"), V.Dec(12.50)])
+    let b = try db.run(sql, &[V.Int(2), V.Text("bob"), V.Int(9223372036854775807), V.Float(1e300), V.Bool(false),
+        V.Text(""), V.Bytes(""), V.Dec(-0.001)])
+    println("inserted " + a.toStr() + " " + b.toStr() + ", rowid " + db.lastInsertId().toStr())
+
+    var st = try db.query("SELECT id, name, score, f, ok, note, blob, price FROM t ORDER BY id", &[])
+    while try st.step() {
+        println((try st.int(0)).toStr() + " | " + try st.text(1) + " | " + (try st.int(2)).toStr() + " | " +
+            (try st.float(3)).toStr() + " | " + (try st.bool(4)).toStr() + " | " + (try st.value(5)).toStr() + " | " +
+            (try st.value(6)).toStr() + " | " + (try st.decimal(7)).toStr())
+    }
+    st.reset()
+    try st.step()
+    var types = "types:"
+    for i in 0..st.columnCount() { types = types + " " + kind(try st.value(i)) }
+    println(types)
+    var names = "name " + try st.text(1) + ":"
+    for i in 0..st.columnCount() { names = names + " " + try st.columnName(i) }
+    println(names)
+    println("null: isNull " + (try st.isNull(5)).toStr() + ", text " + show(st.text(5)) + ", decimalOrNull " +
+        (try st.decimalOrNull(5)).toStr())
+    let blob = try st.bytes(6)
+    try st.step()
+    let empty = try st.text(5)
+    println("empty: isNull " + (try st.isNull(5)).toStr() + ", text '" + empty + "' len " + len(empty).toStr() +
+        ", bytes len " + len(try st.bytes(6)).toStr())
+    println("blob: " + len(blob).toStr() + " bytes, NUL at 0: " + (strByte(blob, 0) == 0).toStr() + ", as text: " +
+        show(stepped(db.query("SELECT blob FROM t WHERE id = 1", &[]).unwrap()).text(0)))
+    println("exact: int of REAL: " + show(st.int(3)) + " | float of INTEGER " + (try st.float(0)).toStr() +
+        " | text of INTEGER " + show(stepped(db.query("SELECT score FROM t WHERE id = 1", &[]).unwrap()).text(0)))
+    var d = try db.query("SELECT price, 7, 1.5, x'00' FROM t WHERE id = 1", &[])
+    try d.step()
+    let price = try d.decimal(0)
+    println("decimal " + price.toStr() + " scale " + price.scale().toStr() + " | decimal of INTEGER " +
+        (try d.decimal(1)).toStr() + " | decimal of REAL " + code(d.decimal(2)) + " | decimal of BLOB " + code(d.decimal(3)))
+
+    // errors carry SQLite's code and message
+    println("syntax: " + fails(db.prepare("SELEC 1")))
+    println("no table: " + show(db.exec("SELECT * FROM nope")))
+    println("unique: " + show(db.run("INSERT INTO t(id, name) VALUES (1, 'again')", &[])))
+    println("not null: " + show(db.run("INSERT INTO t(id, name) VALUES (?, ?)", &[V.Int(9), V.Null])))
+    var two = try db.prepare("SELECT ?, ?")
+    println("range: " + show(two.bind(0, V.Int(1))) + " | " + show(two.bind(3, V.Int(1))))
+    println("arity: " + show(two.bindAll(&[V.Int(1)])))
+    println("nul sql: " + show(db.exec("SELECT 1;\0")) + " | nul text: " + show(two.bind(1, V.Text("a\0b"))))
+    println("two statements: " + fails(db.prepare("SELECT 1; SELECT 2")))
+    var one = try db.prepare("SELECT 1; -- a comment\n  /* another */ ;")
+    try one.step()
+    println("trailing comment ok: " + (try one.int(0)).toStr() + " | empty: " + fails(db.prepare("  -- nothing")))
+    println("column range: " + show(one.text(9)) + " | before step: " + show(two.text(0)))
+    try one.step()
+    println("after done: " + show(one.int(0)))
+
+    // a statement is reset and bound again
+    var ins = try db.prepare("INSERT INTO u(k) VALUES (?)")
+    var keys = "reuse:"
+    for k in 10..13 {
+        try ins.bind(1, V.Int(k))
+        try ins.step()
+        ins.reset()
+        keys = keys + " " + k.toStr()
+    }
+    println(keys + " | after reset: " + (try count(&db, "u")).toStr() + " rows")
+    try ins.bind(1, V.Int(10))
+    let failed = code(ins.step())
+    ins.reset()
+    try ins.bind(1, V.Int(99))
+    try ins.step()
+    ins.reset()
+    try db.run("DELETE FROM u WHERE k = 99", &[])
+    println("step error then reset: " + failed + ", then ok " + db.changes().toStr())
+
+    // transactions
+    try db.exec("DELETE FROM u")
+    try db.exec("BEGIN")
+    try db.run("INSERT INTO u(k) VALUES (1)", &[])
+    let inside = db.inTransaction()
+    try db.exec("ROLLBACK")
+    let rolled = try count(&db, "u")
+    try db.exec("BEGIN; INSERT INTO u(k) VALUES (1); COMMIT")
+    println("rollback: in transaction " + inside.toStr() + ", rows " + rolled.toStr() + " | commit: rows " +
+        (try count(&db, "u")).toStr())
+    let good = db.transaction(fn(): Result[int, Error] {
+        try db.run("INSERT INTO u(k) VALUES (2)", &[])
+        try db.run("INSERT INTO u(k) VALUES (3)", &[])
+        return Ok(2)
+    })
+    let bad = db.transaction(fn(): Result[int, Error] {
+        try db.run("INSERT INTO u(k) VALUES (4)", &[])
+        try db.run("INSERT INTO u(k) VALUES (1)", &[])
+        return Ok(2)
+    })
+    println("transaction ok: " + good.toStr() + ", rows " + (try count(&db, "u")).toStr() + " | transaction err: " +
+        show(bad) + ", rows " + (try count(&db, "u")).toStr() + ", open " + db.inTransaction().toStr())
+    try db.run("UPDATE u SET k = k + 100", &[])
+    println("changes: " + db.changes().toStr() + ", last id " + db.lastInsertId().toStr())
+
+    // a fragment: the value stays data, never SQL
+    var q = sqldialect.sql("SELECT ")
+    q.arg(V.Text("Robert'); DROP TABLE t;--"))
+    q.add(" || ")
+    q.arg(V.Text("?"))
+    q.add(", 'x'")
+    var frag = try db.querySql(&q)
+    try frag.step()
+    println("fragment: " + q.render(sqldialect.Dialect.Sqlite) + " -> " + (try frag.value(0)).toStr())
+    var tables = try db.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name", &[])
+    var tl = "tables:"
+    while try tables.step() { tl = tl + " " + try tables.text(0) }
+    println(tl)
+
+    // closing a connection with a live statement: the statement still works
+    var orphan = try db.prepare("SELECT 1")
+    let shut = db.close()
+    let row = try orphan.step()
+    println("orphan: close " + shut.toStr() + ", step " + row.toStr() + ", value " + (try orphan.int(0)).toStr())
+    return Ok(Unit{})
+}
+
+// Steps a statement once (for a one-line test of a read).
+fn stepped(s: sqlite.Stmt): sqlite.Stmt {
+    var me = s
+    me.step().unwrap()
+    return me
+}
+
+fn main() {
+    match run() {
+        Ok(_) {}
+        Err(e) { println("FAIL " + e.toStr()) }
+    }
+    println("open handles " + sqlite.openHandles().toStr())
+}

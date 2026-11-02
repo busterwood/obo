@@ -1,0 +1,117 @@
+// sqlite and exact decimals: TEXT keeps the exact value and display scale,
+// the NUMERIC and INTEGER affinity traps, NULL vs zero, the checked binder,
+// text that is not a decimal, and the 38-digit and display-scale limits.
+// needs: sqlite3
+// expect: text: 12.50 0.000 -0.001 99999999999999999999999999999999999999 0.00000015 -> 12.50 0.000 -0.001 99999999999999999999999999999999999999 0.00000015
+// expect: storage: text text text text text
+// expect: numeric affinity: 1.00 -> integer 1 (scale 0) | 1.50 -> real error 1005
+// expect: integer affinity: 2.0 -> integer 2 | text column keeps 2.0
+// expect: null: decimalOrNull None, decimal error 1001 | zero: Some(0.00)
+// expect: checked: 12.30 | scale error 1010 | range error 1011 | metadata error 1012
+// expect: not decimal: '' error 1006 | 'abc' error 1006 | ' 1' error 1006 | 'NaN' error 1004 | 'Infinity' error 1004 | NUL error 1006 | blob error 1002
+// expect: limits: 38 digits ok | 39 digits error 1007 | exponent error 1008 | scale 65535 ok | scale 65536 error 1009
+// expect: leading zeros: 100001 chars -> 1
+// expect: sum 30.25 from 3 rows
+// expect: open handles 0
+
+import "sqlite"
+import "sqldialect"
+
+type V = sqlite.Value
+type Error = sqlite.Error
+
+fn code[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() }
+    }
+}
+
+// The decimal read back from a TEXT cell holding `text`.
+fn readBack(db: &sqlite.Db, text: str): Result[Decimal, Error] {
+    var st = try db.query("SELECT ?", &[V.Text(text)])
+    try st.step()
+    return st.decimal(0)
+}
+
+fn run(): Result[Unit, Error] {
+    var db = try sqlite.open(":memory:")
+    try db.exec("CREATE TABLE m(id INTEGER PRIMARY KEY, amount TEXT, n NUMERIC, i INTEGER)")
+    let values = [12.50, 0.000, -0.001, Decimal.parse("99999999999999999999999999999999999999").unwrap(), 1.5e-7]
+    var line = "text:"
+    for v in values {
+        line = line + " " + v.toStr()
+        try db.run("INSERT INTO m(amount) VALUES (?)", &[V.Dec(v)])
+    }
+    line = line + " ->"
+    var st = try db.query("SELECT amount, typeof(amount) FROM m ORDER BY id", &[])
+    var kinds = "storage:"
+    while try st.step() {
+        line = line + " " + (try st.decimal(0)).toStr()
+        kinds = kinds + " " + try st.text(1)
+    }
+    println(line)
+    println(kinds)
+
+    try db.run("DELETE FROM m", &[])
+    try db.run("INSERT INTO m(id, n) VALUES (1, ?), (2, ?)", &[V.Dec(1.00), V.Dec(1.50)])
+    var aff = try db.query("SELECT n, typeof(n) FROM m ORDER BY id", &[])
+    try aff.step()
+    let one = try aff.decimal(0)
+    let t1 = try aff.text(1)
+    try aff.step()
+    println("numeric affinity: 1.00 -> " + t1 + " " + one.toStr() + " (scale " + one.scale().toStr() + ") | 1.50 -> " +
+        try aff.text(1) + " " + code(aff.decimal(0)))
+    try db.run("INSERT INTO m(id, i, amount) VALUES (3, ?, ?)", &[V.Dec(2.0), V.Dec(2.0)])
+    var ia = try db.query("SELECT i, typeof(i), amount FROM m WHERE id = 3", &[])
+    try ia.step()
+    println("integer affinity: 2.0 -> " + try ia.text(1) + " " + (try ia.decimal(0)).toStr() + " | text column keeps " +
+        (try ia.decimal(2)).toStr())
+
+    var nz = try db.query("SELECT NULL, ?", &[V.Dec(0.00)])
+    try nz.step()
+    println("null: decimalOrNull " + (try nz.decimalOrNull(0)).toStr() + ", decimal " + code(nz.decimal(0)) +
+        " | zero: " + (try nz.decimalOrNull(1)).toStr())
+
+    var ck = try db.prepare("SELECT ?")
+    try ck.bindDecimal(1, 12.3, 5, 2)
+    try ck.step()
+    let checked = try ck.decimal(0)
+    ck.reset()
+    println("checked: " + checked.toStr() + " | scale " + code(ck.bindDecimal(1, 1.234, 5, 2)) + " | range " +
+        code(ck.bindDecimal(1, 1234.5, 5, 2)) + " | metadata " + code(ck.bindDecimal(1, 1.5, 0, 0)))
+
+    var bad = "not decimal:"
+    for t in ["", "abc", " 1", "NaN", "Infinity"] { bad = bad + " '" + t + "' " + code(readBack(&db, t)) + " |" }
+    var nul = try db.query("SELECT CAST(x'310032' AS TEXT), x'31'", &[])
+    try nul.step()
+    println(bad + " NUL " + code(nul.decimal(0)) + " | blob " + code(nul.decimal(1)))
+
+    let d38 = "99999999999999999999999999999999999999"
+    let z = "0." + repeat("0", 65535)
+    println("limits: 38 digits " + code(readBack(&db, d38)) + " | 39 digits " + code(readBack(&db, d38 + "9")) +
+        " | exponent " + code(readBack(&db, "1e40000")) + " | scale 65535 " + code(readBack(&db, z)) +
+        " | scale 65536 " + code(readBack(&db, z + "0")))
+    let long = repeat("0", 100000) + "1"
+    println("leading zeros: " + len(long).toStr() + " chars -> " + (try readBack(&db, long)).toStr())
+
+    try db.exec("DELETE FROM m")
+    try db.run("INSERT INTO m(amount) VALUES (?), (?), (?)", &[V.Dec(10.25), V.Dec(19.99), V.Dec(0.01)])
+    var sum = Decimal.zero()
+    var rows = 0
+    var all = try db.query("SELECT amount FROM m", &[])
+    while try all.step() {
+        sum = sum + try all.decimal(0)
+        rows += 1
+    }
+    println("sum " + sum.toStr() + " from " + rows.toStr() + " rows")
+    return Ok(Unit{})
+}
+
+fn main() {
+    match run() {
+        Ok(_) {}
+        Err(e) { println("FAIL " + e.toStr()) }
+    }
+    println("open handles " + sqlite.openHandles().toStr())
+}

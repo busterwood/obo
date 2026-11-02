@@ -1,0 +1,435 @@
+// sqlite: SQLite 3 through libsqlite3 (libsqlite3.so.0; a program that uses
+// it is dynamically linked to it).
+//
+//     var db = try sqlite.open(":memory:")
+//     try db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT, price TEXT)")
+//     try db.run("INSERT INTO t(name, price) VALUES (?, ?)", &[Value.Text("tea"), Value.Dec(2.50)])
+//     var st = try db.query("SELECT id, name, price FROM t WHERE id > ?", &[Value.Int(0)])
+//     while try st.step() {
+//         println((try st.int(0)).toStr() + " " + try st.text(1) + " " + (try st.decimal(2)).toStr())
+//     }
+//
+// Resources: Db and Stmt own their C handle and release it when they are
+// dropped (sqlite3_close_v2, sqlite3_finalize), so nothing leaks on an early
+// return or a `try`. Db.close() consumes the Db and reports the close's
+// error; after it the Db cannot be used, so there is no closed-handle state
+// to check. A Stmt does not borrow its Db: with sqlite3_close_v2 a closed
+// (or dropped) Db stays alive in C until its last statement is finalized, so
+// statements and connections can be dropped in any order. openHandles()
+// counts the live handles of both kinds, for tests.
+//
+// Values: parameters are bound from sqldialect.Value, never interpolated into
+// SQL. Text with a NUL byte is refused (E_INPUT); Bytes keep every byte. A
+// Decimal is stored as exact TEXT: declare decimal columns TEXT, because
+// NUMERIC or INTEGER affinity turns "1.50" into 1.5 (REAL, E_INEXACT when read
+// as a decimal) or "1.00" into 1 (display scale lost), and SQLite enforces no
+// (p, s): bindDecimal checks it. Reads are exact: int() only from INTEGER,
+// text() from TEXT or INTEGER, bytes() from TEXT or BLOB, float() from REAL
+// (or an INTEGER that a float holds exactly); a NULL is E_NULL there, and
+// isNull, value and decimalOrNull tell NULL apart without an error.
+//
+// Errors are sqldialect.DbError: an SQLite result code (SQLITE_CONSTRAINT,
+// ...) and sqlite3_errmsg's text, or one of the E_* codes of sqldialect.
+
+import "sqldialect"
+
+pub type Value = sqldialect.Value
+pub type Error = sqldialect.DbError
+type Sql = sqldialect.Sql
+
+pub const SQLITE_OK = 0
+pub const SQLITE_ERROR = 1
+pub const SQLITE_BUSY = 5
+pub const SQLITE_LOCKED = 6
+pub const SQLITE_NOMEM = 7
+pub const SQLITE_READONLY = 8
+pub const SQLITE_CANTOPEN = 14
+pub const SQLITE_CONSTRAINT = 19
+pub const SQLITE_MISMATCH = 20
+pub const SQLITE_MISUSE = 21
+pub const SQLITE_RANGE = 25
+pub const SQLITE_ROW = 100
+pub const SQLITE_DONE = 101
+
+pub const OPEN_READONLY = 0x01
+pub const OPEN_READWRITE = 0x02
+pub const OPEN_CREATE = 0x04
+pub const OPEN_URI = 0x40
+
+const INTEGER = 1
+const REAL = 2
+const TEXT = 3
+const BLOB = 4
+const NULL = 5
+const TRANSIENT = -1     // SQLITE_TRANSIENT: SQLite copies a bound text or blob
+
+extern "sqlite3" fn sqlite3_libversion(): str
+extern "sqlite3" fn sqlite3_open_v2(path: str, db: mut &ptr, flags: i32, vfs: ptr): i32
+extern "sqlite3" fn sqlite3_close_v2(db: ptr): i32
+extern "sqlite3" fn sqlite3_errmsg(db: ptr): str
+extern "sqlite3" fn sqlite3_errstr(rc: i32): str
+extern "sqlite3" fn sqlite3_exec(db: ptr, sql: str, cb: ptr, arg: ptr, err: mut &ptr): i32
+extern "sqlite3" fn sqlite3_free(p: ptr)
+extern "sqlite3" fn sqlite3_changes(db: ptr): i32
+extern "sqlite3" fn sqlite3_last_insert_rowid(db: ptr): int
+extern "sqlite3" fn sqlite3_get_autocommit(db: ptr): i32
+extern "sqlite3" fn sqlite3_prepare_v2(db: ptr, sql: ptr, n: i32, st: mut &ptr, tail: mut &ptr): i32
+extern "sqlite3" fn sqlite3_finalize(st: ptr): i32
+extern "sqlite3" fn sqlite3_step(st: ptr): i32
+extern "sqlite3" fn sqlite3_reset(st: ptr): i32
+extern "sqlite3" fn sqlite3_bind_parameter_count(st: ptr): i32
+extern "sqlite3" fn sqlite3_bind_null(st: ptr, i: i32): i32
+extern "sqlite3" fn sqlite3_bind_int64(st: ptr, i: i32, v: int): i32
+extern "sqlite3" fn sqlite3_bind_double(st: ptr, i: i32, v: float): i32
+extern "sqlite3" fn sqlite3_bind_text(st: ptr, i: i32, s: str, n: i32, destructor: int): i32
+extern "sqlite3" fn sqlite3_bind_blob64(st: ptr, i: i32, p: ptr, n: u64, destructor: int): i32
+extern "sqlite3" fn sqlite3_column_count(st: ptr): i32
+extern "sqlite3" fn sqlite3_column_name(st: ptr, i: i32): str
+extern "sqlite3" fn sqlite3_column_type(st: ptr, i: i32): i32
+extern "sqlite3" fn sqlite3_column_int64(st: ptr, i: i32): int
+extern "sqlite3" fn sqlite3_column_double(st: ptr, i: i32): float
+extern "sqlite3" fn sqlite3_column_text(st: ptr, i: i32): ptr
+extern "sqlite3" fn sqlite3_column_bytes(st: ptr, i: i32): i32
+
+extern "c" fn cnull(): ptr as "obxlib_null"
+extern "c" fn calloc(n: int): ptr as "obxlib_alloc"
+extern "c" fn cfree(p: ptr) as "obxlib_free"
+extern "c" fn cstr(s: str): ptr as "obxlib_cstr"
+extern "c" fn peek(p: ptr, i: int): int as "obxlib_peek"
+extern "c" fn poke(p: ptr, i: int, v: int) as "obxlib_poke"
+
+var OPEN: int = 0
+
+// The number of Db and Stmt handles not yet closed or dropped.
+pub fn openHandles(): int { return OPEN }
+
+// The SQLite library's version, "3.45.1".
+pub fn version(): str { return sqlite3_libversion() }
+
+// The text of an SQLite result code: "constraint failed" for 19.
+pub fn errorText(code: int): str { return sqlite3_errstr(i32(code)) }
+
+fn sqlError(db: ptr, rc: int): Error {
+    return sqldialect.dbError(rc, if isNull(db) { sqlite3_errstr(i32(rc)) } else { sqlite3_errmsg(db) })
+}
+
+// -------------------------------------------------------------- connections
+
+pub type Db = record { h: ptr }
+
+fn (d: mut &Db) drop() {
+    if !isNull(d.h) {
+        sqlite3_close_v2(d.h)
+        OPEN -= 1
+    }
+}
+
+// Opens (creating) the database at path, ":memory:" for a private in-memory
+// one, or a file: URI.
+pub fn open(path: str): Result[Db, Error] { return openWith(path, OPEN_READWRITE | OPEN_CREATE | OPEN_URI) }
+
+// Opens with sqlite3_open_v2's flags (OPEN_READONLY, ...).
+pub fn openWith(path: str, flags: int): Result[Db, Error] {
+    try sqldialect.noNul(path, "database path")
+    var h = cnull()
+    let rc = int(sqlite3_open_v2(path, mut &h, i32(flags), cnull()))
+    if rc != SQLITE_OK {
+        let e = sqlError(h, rc)
+        sqlite3_close_v2(h)           // a no-op for NULL
+        return Err(e)
+    }
+    OPEN += 1
+    return Ok(Db{h: h})
+}
+
+// Closes the connection. Statements that are still alive keep working; the
+// C connection goes when the last of them is finalized.
+pub fn (d: Db) close(): Result[Unit, Error] {
+    var me = d
+    let rc = int(sqlite3_close_v2(me.h))
+    if rc != SQLITE_OK { return Err(sqlError(me.h, rc)) }   // dropping me tries again
+    me.h = cnull()
+    OPEN -= 1
+    return Ok(Unit{})
+}
+
+// Runs a script of any number of statements, without parameters or results.
+pub fn (d: &Db) exec(script: str): Result[Unit, Error] {
+    try sqldialect.noNul(script, "SQL text")
+    var msg = cnull()
+    let rc = int(sqlite3_exec(d.h, script, cnull(), cnull(), mut &msg))
+    if rc == SQLITE_OK { return Ok(Unit{}) }
+    let text = if isNull(msg) { sqlite3_errstr(i32(rc)) } else { strFromC(msg) }
+    sqlite3_free(msg)
+    return Err(sqldialect.dbError(rc, text))
+}
+
+// Compiles one statement. Text after it other than spaces and comments is an
+// error: use exec for a script.
+pub fn (d: &Db) prepare(sql: str): Result[Stmt, Error] {
+    try sqldialect.noNul(sql, "SQL text")
+    let text = cstr(sql)              // our copy, so that the tail points into live memory
+    var st = cnull()
+    var tail = cnull()
+    let rc = int(sqlite3_prepare_v2(d.h, text, -1, mut &st, mut &tail))
+    if rc != SQLITE_OK {
+        cfree(text)
+        return Err(sqlError(d.h, rc))
+    }
+    OPEN += 1
+    let s = Stmt{h: st, db: d.h, row: false}   // finalized when dropped, on every path below
+    if isNull(st) {
+        cfree(text)
+        return Err(sqldialect.inputError("no SQL statement in the text"))
+    }
+    var more = false
+    if len(trim(strFromC(tail))) > 0 {
+        var next = cnull()
+        var rest = cnull()
+        let rc2 = sqlite3_prepare_v2(d.h, tail, -1, mut &next, mut &rest)
+        more = rc2 != 0 || !isNull(next)
+        sqlite3_finalize(next)
+    }
+    cfree(text)
+    if more { return Err(sqldialect.inputError("prepare takes one statement; use exec for a script")) }
+    return Ok(s)
+}
+
+// Prepares sql and binds args to its parameters, in order.
+pub fn (d: &Db) query(sql: str, args: &[Value]): Result[Stmt, Error] {
+    var st = try d.prepare(sql)
+    try st.bindAll(args)
+    return Ok(st)
+}
+
+// Prepares a fragment with `?` placeholders and binds its arguments.
+pub fn (d: &Db) querySql(q: &Sql): Result[Stmt, Error] {
+    return d.query(q.render(sqldialect.Dialect.Sqlite), q.args())
+}
+
+// Runs one statement with args to its end; the number of rows it changed.
+pub fn (d: &Db) run(sql: str, args: &[Value]): Result[int, Error] {
+    var st = try d.query(sql, args)
+    while try st.step() {}
+    return Ok(d.changes())
+}
+
+// Rows changed by the last INSERT, UPDATE or DELETE.
+pub fn (d: &Db) changes(): int { return int(sqlite3_changes(d.h)) }
+
+pub fn (d: &Db) lastInsertId(): int { return sqlite3_last_insert_rowid(d.h) }
+
+// Whether a transaction is open (the connection is not in autocommit mode).
+pub fn (d: &Db) inTransaction(): bool { return sqlite3_get_autocommit(d.h) == 0 }
+
+// Runs body in a transaction: BEGIN, then COMMIT when it returns Ok, ROLLBACK
+// when it returns Err (whose error is the result).
+pub fn (d: &Db) transaction[T](body: &fn(): Result[T, Error]): Result[T, Error] {
+    try d.exec("BEGIN")
+    match body() {
+        Ok(v) {
+            try d.exec("COMMIT")
+            return Ok(v)
+        }
+        Err(e) {
+            d.exec("ROLLBACK")
+            return Err(e)
+        }
+    }
+}
+
+// ------------------------------------------------------------- statements
+
+pub type Stmt = record {
+    h: ptr
+    db: ptr       // for sqlite3_errmsg; alive while h is (sqlite3_close_v2)
+    row: bool     // the last step returned a row
+}
+
+fn (s: mut &Stmt) drop() {
+    sqlite3_finalize(s.h)
+    OPEN -= 1
+}
+
+// Finalizes the statement now (dropping it does the same).
+pub fn (s: Stmt) close() {}
+
+// Runs the statement to its next row: true when there is one to read, false
+// when it is done.
+pub fn (s: mut &Stmt) step(): Result[bool, Error] {
+    let rc = int(sqlite3_step(s.h))
+    s.row = rc == SQLITE_ROW
+    if rc == SQLITE_ROW || rc == SQLITE_DONE { return Ok(s.row) }
+    return Err(sqlError(s.db, rc))
+}
+
+// Rewinds the statement to run again; its bindings stay. (sqlite3_reset
+// reports the last step's error, which step already returned.)
+pub fn (s: mut &Stmt) reset() {
+    sqlite3_reset(s.h)
+    s.row = false
+}
+
+pub fn (s: &Stmt) paramCount(): int { return int(sqlite3_bind_parameter_count(s.h)) }
+
+// Binds v to parameter i (from 1). SQLITE_RANGE when there is no such parameter.
+pub fn (s: mut &Stmt) bind(i: int, v: Value): Result[Unit, Error] {
+    if i < 1 || i > 2147483647 { return Err(sqlError(cnull(), SQLITE_RANGE)) }
+    let n = i32(i)
+    var rc = SQLITE_OK
+    match v {
+        Value.Null { rc = int(sqlite3_bind_null(s.h, n)) }
+        Value.Int(x) { rc = int(sqlite3_bind_int64(s.h, n, x)) }
+        Value.Float(f) { rc = int(sqlite3_bind_double(s.h, n, f)) }
+        Value.Bool(b) { rc = int(sqlite3_bind_int64(s.h, n, if b { 1 } else { 0 })) }
+        Value.Text(t) {
+            try sqldialect.noNul(t, "text value")
+            if len(t) > 2147483647 { return Err(sqldialect.inputError("text value is too long")) }
+            rc = int(sqlite3_bind_text(s.h, n, t, i32(len(t)), TRANSIENT))
+        }
+        Value.Bytes(b) {
+            let p = cBytes(b)
+            rc = int(sqlite3_bind_blob64(s.h, n, p, u64(len(b)), TRANSIENT))
+            cfree(p)
+        }
+        Value.Dec(d) {
+            let t = try sqldialect.decimalText(d, 65535)
+            rc = int(sqlite3_bind_text(s.h, n, t, i32(len(t)), TRANSIENT))
+        }
+    }
+    if rc != SQLITE_OK { return Err(sqlError(s.db, rc)) }
+    return Ok(Unit{})
+}
+
+// A C copy of the bytes of b, NULs included.
+fn cBytes(b: str): ptr {
+    if sqldialect.noNul(b, "").isOk() { return cstr(b) }
+    let p = calloc(len(b))
+    for i in 0..len(b) { poke(p, i, int(strByte(b, i))) }
+    return p
+}
+
+// Binds args to parameters 1, 2, ...; there must be one for each parameter.
+pub fn (s: mut &Stmt) bindAll(args: &[Value]): Result[Unit, Error] {
+    if len(args) != s.paramCount() {
+        return Err(sqldialect.inputError(len(args).toStr() + " arguments for " + s.paramCount().toStr() + " parameters"))
+    }
+    for i in 0..len(args) { try s.bind(i + 1, args[i]) }
+    return Ok(Unit{})
+}
+
+// Checks a decimal against numeric(p, s) (sqldialect.fitDecimal) and binds
+// it as exact text with display scale s. SQLite would store anything.
+pub fn (s: mut &Stmt) bindDecimal(i: int, d: Decimal, p: int, sc: int): Result[Unit, Error] {
+    let v = try sqldialect.fitDecimal(d, p, sc)
+    return s.bind(i, Value.Dec(v))
+}
+
+// ---------------------------------------------------------------- columns
+
+pub fn (s: &Stmt) columnCount(): int { return int(sqlite3_column_count(s.h)) }
+
+pub fn (s: &Stmt) columnName(col: int): Result[str, Error] {
+    try s.check(col, false)
+    return Ok(sqlite3_column_name(s.h, i32(col)))
+}
+
+// The storage class of col in the current row (INTEGER ... NULL).
+fn (s: &Stmt) check(col: int, needRow: bool): Result[int, Error] {
+    if col < 0 || col >= s.columnCount() {
+        return Err(sqldialect.inputError("column " + col.toStr() + " out of range (" + s.columnCount().toStr() + " columns)"))
+    }
+    if needRow && !s.row { return Err(sqldialect.inputError("no current row")) }
+    return Ok(if needRow { int(sqlite3_column_type(s.h, i32(col))) } else { 0 })
+}
+
+fn (s: &Stmt) kind(col: int): Result[int, Error] {
+    let t = try s.check(col, true)
+    if t == NULL { return Err(sqldialect.dbError(sqldialect.E_NULL, "column " + col.toStr() + " is NULL")) }
+    return Ok(t)
+}
+
+fn typeError(col: int, want: str, t: int): Error {
+    let names = ["", "INTEGER", "REAL", "TEXT", "BLOB", "NULL"]
+    return sqldialect.dbError(sqldialect.E_TYPE, "column " + col.toStr() + " is " + names[t] + ", not " + want)
+}
+
+pub fn (s: &Stmt) isNull(col: int): Result[bool, Error] { return Ok(try s.check(col, true) == NULL) }
+
+pub fn (s: &Stmt) int(col: int): Result[int, Error] {
+    let t = try s.kind(col)
+    if t != INTEGER { return Err(typeError(col, "an integer", t)) }
+    return Ok(sqlite3_column_int64(s.h, i32(col)))
+}
+
+pub fn (s: &Stmt) bool(col: int): Result[bool, Error] {
+    let t = try s.kind(col)
+    let n = sqlite3_column_int64(s.h, i32(col))
+    if t != INTEGER || (n != 0 && n != 1) { return Err(typeError(col, "a 0 or 1 boolean", t)) }
+    return Ok(n == 1)
+}
+
+// REAL, or an INTEGER that converts to a float exactly.
+pub fn (s: &Stmt) float(col: int): Result[float, Error] {
+    let t = try s.kind(col)
+    if t == REAL { return Ok(sqlite3_column_double(s.h, i32(col))) }
+    let n = sqlite3_column_int64(s.h, i32(col))
+    if t != INTEGER || n > 9007199254740992 || n < -9007199254740992 { return Err(typeError(col, "a float", t)) }
+    return Ok(float(n))
+}
+
+// TEXT exactly as stored (NUL bytes included), or an INTEGER's decimal digits.
+pub fn (s: &Stmt) text(col: int): Result[str, Error] {
+    let t = try s.kind(col)
+    if t == INTEGER { return Ok(sqlite3_column_int64(s.h, i32(col)).toStr()) }
+    if t != TEXT { return Err(typeError(col, "text", t)) }
+    return Ok(s.raw(col))
+}
+
+// The exact bytes of a TEXT or BLOB value.
+pub fn (s: &Stmt) bytes(col: int): Result[str, Error] {
+    let t = try s.kind(col)
+    if t != TEXT && t != BLOB { return Err(typeError(col, "text or a blob", t)) }
+    return Ok(s.raw(col))
+}
+
+// The bytes of a TEXT or BLOB column: sqlite3_column_text NUL-terminates
+// both, so one copy does unless the value itself contains a NUL.
+fn (s: &Stmt) raw(col: int): str {
+    let p = sqlite3_column_text(s.h, i32(col))
+    let n = int(sqlite3_column_bytes(s.h, i32(col)))
+    if n == 0 || isNull(p) { return "" }
+    let fast = strFromC(p)
+    if len(fast) == n { return fast }
+    var b = array(n, byte(0))
+    for i in 0..n { b[i] = byte(peek(p, i)) }
+    return strFromBytes(&b)
+}
+
+// TEXT parsed as an exact decimal (display scale kept), or an INTEGER (scale
+// 0). E_INEXACT for REAL, E_TYPE for BLOB, E_DEC_* for text that is not a
+// decimal, E_NONFINITE for NaN and Infinity.
+pub fn (s: &Stmt) decimal(col: int): Result[Decimal, Error] {
+    let t = try s.kind(col)
+    if t == INTEGER { return Ok(decimalOf(sqlite3_column_int64(s.h, i32(col)))) }
+    if t == REAL { return Err(sqldialect.dbError(sqldialect.E_INEXACT, "column " + col.toStr() + " is REAL, not an exact decimal")) }
+    if t != TEXT { return Err(typeError(col, "a decimal", t)) }
+    return sqldialect.parseDecimal(s.raw(col))
+}
+
+// None for NULL (never zero), otherwise as decimal().
+pub fn (s: &Stmt) decimalOrNull(col: int): Result[Option[Decimal], Error] {
+    if try s.isNull(col) { return Ok(None) }
+    return Ok(Some(try s.decimal(col)))
+}
+
+// The value as stored: Null, Int, Float, Text or Bytes.
+pub fn (s: &Stmt) value(col: int): Result[Value, Error] {
+    let t = try s.check(col, true)
+    let c = i32(col)
+    if t == INTEGER { return Ok(Value.Int(sqlite3_column_int64(s.h, c))) }
+    if t == REAL { return Ok(Value.Float(sqlite3_column_double(s.h, c))) }
+    if t == TEXT { return Ok(Value.Text(s.raw(col))) }
+    if t == BLOB { return Ok(Value.Bytes(s.raw(col))) }
+    return Ok(Value.Null)
+}

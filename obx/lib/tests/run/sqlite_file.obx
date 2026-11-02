@@ -1,0 +1,93 @@
+// sqlite on a file (in the current directory, removed at the end): data
+// survives close and reopen with exact types, a second connection sees
+// committed data and gets SQLITE_BUSY while the first holds the write lock,
+// read-only opens (flag and URI), open errors, and every handle released.
+// needs: sqlite3
+// expect: created: 3 rows, closed Ok(())
+// expect: reopened: 1 integer 10 | 2 text 'ten' | 3 blob x'000a' | 4 null NULL | 5 real 2.5 | 6 text '10.50'
+// expect: second connection sees 6 rows
+// expect: busy: error 5: database is locked | after commit: Ok(1)
+// expect: read-only flag: error 8: attempt to write a readonly database
+// expect: read-only URI: error 8: attempt to write a readonly database, reads 7 rows
+// expect: cannot open: error 14: unable to open database file
+// expect: nul path: error 1000: database path contains a NUL byte
+// expect: removed: true, open handles 0
+
+import "sqlite"
+import "fs"
+
+type V = sqlite.Value
+type Error = sqlite.Error
+
+const PATH = "obx_sqlite_file_test.db"
+
+fn show[T: Show](r: Result[T, Error]): str {
+    match r {
+        Ok(v) { return "Ok(" + v.toStr() + ")" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn fails[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn count(db: &sqlite.Db): Result[int, Error] {
+    var st = try db.query("SELECT count(*) FROM t", &[])
+    try st.step()
+    return st.int(0)
+}
+
+fn run(): Result[Unit, Error] {
+    fs.remove(PATH)
+    var db = try sqlite.open(PATH)
+    try db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, v)")
+    var ins = try db.prepare("INSERT INTO t(v) VALUES (?)")
+    for v in [V.Int(10), V.Text("ten"), V.Bytes("\x00\n")] {
+        try ins.bind(1, v)
+        try ins.step()
+        ins.reset()
+    }
+    ins.close()
+    let n = try count(&db)
+    println("created: " + n.toStr() + " rows, closed " + db.close().toStr())
+
+    var again = try sqlite.open(PATH)
+    try again.run("INSERT INTO t(v) VALUES (?), (?), (?)", &[V.Null, V.Float(2.5), V.Dec(10.50)])
+    var st = try again.query("SELECT id, typeof(v), v FROM t ORDER BY id", &[])
+    var line = "reopened:"
+    while try st.step() {
+        if line != "reopened:" { line = line + " |" }
+        line = line + " " + (try st.int(0)).toStr() + " " + try st.text(1) + " " + (try st.value(2)).toStr()
+    }
+    println(line)
+
+    var other = try sqlite.open(PATH)
+    println("second connection sees " + (try count(&other)).toStr() + " rows")
+    try again.exec("BEGIN IMMEDIATE")
+    try again.run("INSERT INTO t(v) VALUES (7)", &[])
+    let busy = fails(other.run("INSERT INTO t(v) VALUES (8)", &[]))
+    try again.exec("COMMIT")
+    println("busy: " + busy + " | after commit: " + show(other.run("INSERT INTO t(v) VALUES (8)", &[])))
+    try other.run("DELETE FROM t WHERE v = 8", &[])
+
+    var ro = try sqlite.openWith(PATH, sqlite.OPEN_READONLY)
+    println("read-only flag: " + fails(ro.run("DELETE FROM t", &[])))
+    var uri = try sqlite.open("file:" + PATH + "?mode=ro")
+    println("read-only URI: " + fails(uri.exec("DELETE FROM t")) + ", reads " + (try count(&uri)).toStr() + " rows")
+    println("cannot open: " + fails(sqlite.open("no/such/dir/x.db")))
+    println("nul path: " + fails(sqlite.open("x\0.db")))
+    return Ok(Unit{})
+}
+
+fn main() {
+    match run() {
+        Ok(_) {}
+        Err(e) { println("FAIL " + e.toStr()) }
+    }
+    let gone = fs.remove(PATH).isOk() && !fs.exists(PATH)
+    println("removed: " + gone.toStr() + ", open handles " + sqlite.openHandles().toStr())
+}

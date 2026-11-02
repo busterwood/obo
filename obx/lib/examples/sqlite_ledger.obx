@@ -1,0 +1,87 @@
+// A small ledger in SQLite: accounts with exact decimal balances (stored as
+// TEXT), transfers inside a transaction that rolls back on an overdraft or a
+// missing account, and a report. The database is in memory unless a path is
+// given:
+//
+//     out/obxc lib/examples/sqlite_ledger.obx -o out/ledger && out/ledger [ledger.db]
+
+import "sqlite"
+import "os"
+
+type V = sqlite.Value
+type Error = sqlite.Error
+
+const OVERDRAWN = 2000      // an application error code, outside SQLite's and sqldialect's
+
+fn balance(db: &sqlite.Db, name: str): Result[Decimal, Error] {
+    var st = try db.query("SELECT balance FROM account WHERE name = ?", &[V.Text(name)])
+    if !try st.step() { return Err(Error{code: sqlite.SQLITE_ERROR, state: "", msg: "no account " + name}) }
+    return st.decimal(0)
+}
+
+fn setBalance(db: &sqlite.Db, name: str, amount: Decimal): Result[Unit, Error] {
+    var st = try db.prepare("UPDATE account SET balance = ? WHERE name = ?")
+    try st.bindDecimal(1, amount, 12, 2)
+    try st.bind(2, V.Text(name))
+    try st.step()
+    return Ok(Unit{})
+}
+
+// Moves `amount` from one account to another, all or nothing.
+fn transfer(db: &sqlite.Db, from: str, to: str, amount: Decimal): Result[Unit, Error] {
+    return db.transaction(fn(): Result[Unit, Error] {
+        let a = try balance(db, from)
+        let b = try balance(db, to)
+        if a < amount { return Err(Error{code: OVERDRAWN, state: "", msg: from + " has only " + a.toStr()}) }
+        try setBalance(db, from, a - amount)
+        try setBalance(db, to, b + amount)
+        try db.run("INSERT INTO entry(src, dst, amount) VALUES (?, ?, ?)", &[V.Text(from), V.Text(to), V.Dec(amount)])
+        return Ok(Unit{})
+    })
+}
+
+fn report(db: &sqlite.Db): Result[Unit, Error] {
+    var st = try db.query("SELECT name, balance FROM account ORDER BY name", &[])
+    var total = Decimal.zero()
+    while try st.step() {
+        let b = try st.decimal(1)
+        println("  " + try st.text(0) + ": " + b.toStr())
+        total = total + b
+    }
+    println("  total: " + total.toStr())
+    return Ok(Unit{})
+}
+
+type Move = record { from: str; to: str; amount: Decimal }
+
+fn run(path: str): Result[Unit, Error] {
+    var db = try sqlite.open(path)
+    try db.exec("CREATE TABLE IF NOT EXISTS account(name TEXT PRIMARY KEY, balance TEXT NOT NULL); " +
+        "CREATE TABLE IF NOT EXISTS entry(id INTEGER PRIMARY KEY, src TEXT, dst TEXT, amount TEXT)")
+    try db.run("INSERT OR IGNORE INTO account VALUES ('alice', ?), ('bob', ?), ('carol', ?)",
+        &[V.Dec(100.00), V.Dec(20.50), V.Dec(0.00)])
+    let moves = [Move{from: "alice", to: "bob", amount: 30.25}, Move{from: "bob", to: "carol", amount: 60.00},
+        Move{from: "bob", to: "carol", amount: 50.75}, Move{from: "carol", to: "dave", amount: 1.00}]
+    for m in moves {
+        let what = m.from + " -> " + m.to + " " + m.amount.toStr()
+        match transfer(&db, m.from, m.to, m.amount) {
+            Ok(_) { println(what + ": ok") }
+            Err(e) { println(what + ": refused (" + e.msg + ")") }
+        }
+    }
+    println("balances:")
+    try report(&db)
+    return db.close()
+}
+
+fn main() {
+    let argv = os.arguments()
+    let path = if len(argv) > 0 { argv[0] } else { ":memory:" }
+    match run(path) {
+        Ok(_) {}
+        Err(e) {
+            eprintln("ledger: " + e.toStr())
+            exit(1)
+        }
+    }
+}
