@@ -1,0 +1,9 @@
+// error: 'd' was moved and has no value here
+// line: 8
+type D = record { v: int }
+fn take(d: D) {}
+fn main() {
+    let d = D{v: 1}
+    take(d)
+    println(d.v)
+}

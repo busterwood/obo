@@ -1,0 +1,8 @@
+// error: 'd' is moved inside the loop and not assigned again before the next iteration
+// line: 7
+type D = record { v: int }
+fn take(d: D) {}
+fn main() {
+    let d = D{v: 1}
+    for i in 0..3 { take(d) }
+}

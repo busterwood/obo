@@ -1,0 +1,12 @@
+// expect: 255
+// expect: 0
+// expect: 88
+// expect: 240
+fn main() {
+    let b: byte = 255
+    println(int(b))
+    println(int(b +% 1))
+    let c: byte = 200
+    println(int(c *% 3))
+    println(int(~byte(15)))
+}

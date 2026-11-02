@@ -1,0 +1,4 @@
+// error: move|copy
+type Cell[T] = record { v: T }
+fn (c: &Cell[T]) get(): T { return c.v }
+fn main() {}

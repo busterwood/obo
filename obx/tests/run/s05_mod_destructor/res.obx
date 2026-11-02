@@ -1,0 +1,3 @@
+pub type R = record { id: int }
+fn (r: mut &R) drop() { println(r.id) }
+pub fn make(id: int): R { return R{id: id} }

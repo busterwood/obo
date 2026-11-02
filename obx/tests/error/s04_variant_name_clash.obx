@@ -1,0 +1,4 @@
+// error: Red
+type A = closed { Red; Green }
+type B = closed { Red; Blue }
+fn main() {}

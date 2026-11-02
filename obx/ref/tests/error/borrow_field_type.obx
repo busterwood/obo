@@ -1,0 +1,4 @@
+// error: a borrow type cannot be a field: borrows are second class
+// line: 3
+type R = record { p: &int }
+fn main() {}

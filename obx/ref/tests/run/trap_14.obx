@@ -1,0 +1,4 @@
+// exit: 12
+fn main() {
+    assert(1 == 2)
+}

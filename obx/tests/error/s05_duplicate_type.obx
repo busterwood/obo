@@ -1,0 +1,4 @@
+// error: Twice
+type Twice = record { a: int }
+type Twice = record { b: int }
+fn main() {}

@@ -1,0 +1,13 @@
+// expect: 0
+// expect: 12
+type Meters = value record { n: int }
+type Parse = interface { fn parse(s: str): Self }
+fn (Meters) parse(s: str): Meters { return Meters{n: 12} }
+fn read[T: Parse](s: str): T { return T.parse(s) }
+fn empty[T](): []T { return [] }
+fn main() {
+    let a = empty[str]()
+    println(len(a))
+    let m = read[Meters]("12")
+    println(m.n)
+}

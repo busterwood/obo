@@ -1,0 +1,12 @@
+// expect: 2
+type C = record { n: int }
+fn (c: mut &C) inc() { c.n += 1 }
+fn twice(c: mut &C) {
+    c.inc()
+    c.inc()
+}
+fn main() {
+    var c = C{n: 0}
+    twice(mut &c)
+    println(c.n)
+}

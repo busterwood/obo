@@ -1,0 +1,13 @@
+// expect: 2
+// expect: 12
+type P = record { x: int; y: int }
+fn bump2(a: mut &int, b: mut &int) {
+    a += 1
+    b += 10
+}
+fn main() {
+    var p = P{x: 1, y: 2}
+    bump2(mut &p.x, mut &p.y)
+    println(p.x)
+    println(p.y)
+}

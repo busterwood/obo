@@ -1,0 +1,3 @@
+// exit: 10
+fn neg(a: int): int { return -a }
+fn main() { println(neg(-9223372036854775807 - 1)) }

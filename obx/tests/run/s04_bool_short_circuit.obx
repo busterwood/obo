@@ -1,0 +1,10 @@
+// expect: f
+// expect: f
+// expect: t
+// expect: done
+fn f(): bool { println("f"); return false }
+fn t(): bool { println("t"); return true }
+fn main() {
+    if f() && t() { println("no") }
+    if f() || t() { println("done") }
+}

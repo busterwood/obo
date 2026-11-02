@@ -1,0 +1,4 @@
+// error: gx|constant|global
+fn f(): int { return 1 }
+var gx: int = f()
+fn main() {}

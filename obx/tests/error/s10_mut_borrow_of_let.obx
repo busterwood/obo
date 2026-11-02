@@ -1,0 +1,6 @@
+// error: cc
+type C = record { n: int }
+fn main() {
+    let cc = C{n: 0}
+    let r = mut &cc
+}

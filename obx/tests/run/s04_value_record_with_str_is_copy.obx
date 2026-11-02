@@ -1,0 +1,9 @@
+// expect: ann
+// expect: ann
+type N = value record { name: str; age: int }
+fn main() {
+    let a = N{name: "ann", age: 3}
+    let b = a
+    println(a.name)
+    println(b.name)
+}

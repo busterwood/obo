@@ -1,0 +1,11 @@
+// expect: 6
+fn main() {
+    var c = 0
+    for i in 0..3 {
+        for j in 0..10 {
+            if j == 2 { break }
+            c += 1
+        }
+    }
+    println(c)
+}

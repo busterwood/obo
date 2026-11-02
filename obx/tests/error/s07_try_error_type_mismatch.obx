@@ -1,0 +1,7 @@
+// error: Err|str|int|try
+fn g(): Result[int, str] { return Ok(1) }
+fn f(): Result[int, int] {
+    let v = try g()
+    return Ok(v)
+}
+fn main() {}

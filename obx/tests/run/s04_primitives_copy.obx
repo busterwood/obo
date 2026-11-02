@@ -1,0 +1,14 @@
+// expect: 1
+// expect: 1
+// expect: x
+// expect: x
+fn main() {
+    let a = 1
+    let b = a
+    println(a)
+    println(b)
+    let s = "x"
+    let t = s
+    println(s)
+    println(t)
+}

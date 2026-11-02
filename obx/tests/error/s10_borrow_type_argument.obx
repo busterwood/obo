@@ -1,0 +1,3 @@
+// error: borrow|second|type argument
+fn f(o: Option[&int]) {}
+fn main() {}

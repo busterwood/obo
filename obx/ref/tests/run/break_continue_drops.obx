@@ -1,0 +1,24 @@
+// expect: drop 0
+// expect: body 2
+// expect: drop 1
+// expect: drop 2
+// expect: drop 10
+// expect: drop 10
+// expect: end
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop " + d.id.toStr()) }
+fn main() {
+    var i = 0
+    while true {
+        let s = D{id: i}
+        i += 1
+        if i > 2 { break }
+        if i == 1 { continue }
+        println("body " + i.toStr())
+    }
+    for x in ["a", "b", "c"] {
+        let t = D{id: 10}
+        if x == "b" { break }
+    }
+    println("end")
+}

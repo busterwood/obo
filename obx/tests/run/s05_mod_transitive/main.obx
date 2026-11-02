@@ -1,0 +1,5 @@
+// expect: 42
+import "a"
+fn main() {
+    println(a.get())
+}

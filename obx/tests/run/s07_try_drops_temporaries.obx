@@ -1,0 +1,17 @@
+// expect: 1
+// expect: bad
+type D = record { id: int }
+fn (d: mut &D) drop() { println(d.id) }
+fn mk(id: int): D { return D{id: id} }
+fn fail(): Result[int, str] { return Err("bad") }
+fn combine(d: D, n: int): int { return d.id + n }
+fn run(): Result[int, str] {
+    let x = combine(mk(1), try fail())
+    return Ok(x)
+}
+fn main() {
+    match run() {
+        Ok(v) { println(v) }
+        Err(e) { println(e) }
+    }
+}

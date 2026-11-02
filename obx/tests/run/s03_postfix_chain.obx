@@ -1,0 +1,9 @@
+// expect: 7
+// expect: 3
+type In = value record { v: int }
+type Out = record { i: In; xs: []In }
+fn main() {
+    let o = Out{i: In{v: 7}, xs: [In{v: 3}]}
+    println(o.i.v)
+    println(o.xs[0].v)
+}

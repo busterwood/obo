@@ -1,0 +1,8 @@
+// expect: 0
+// expect: 1
+fn main() {
+    var xs: []int = []
+    println(len(xs))
+    append(mut &xs, 5)
+    println(len(xs))
+}

@@ -1,0 +1,12 @@
+// expect: 3
+// expect: 6
+fn main() {
+    var n = 3
+    var count = 0
+    for i in 0..n {
+        n += 1
+        count += 1
+    }
+    println(count)
+    println(n)
+}

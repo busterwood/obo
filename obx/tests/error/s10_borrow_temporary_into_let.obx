@@ -1,0 +1,6 @@
+// error: temporar|borrow
+type D = record { id: int }
+fn mk(): D { return D{id: 1} }
+fn main() {
+    let r = &mk()
+}

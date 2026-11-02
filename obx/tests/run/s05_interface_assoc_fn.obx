@@ -1,0 +1,15 @@
+// expect: USD
+// expect: 2
+type Currency = interface {
+    fn code(): str
+    fn scale(): int
+}
+type USD = value record {}
+fn (USD) code(): str { return "USD" }
+fn (USD) scale(): int { return 2 }
+fn label[C: Currency](): str { return C.code() }
+fn digits[C: Currency](): int { return C.scale() }
+fn main() {
+    println(label[USD]())
+    println(digits[USD]())
+}

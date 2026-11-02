@@ -1,0 +1,4 @@
+// error: move|copy|borrow
+type Wrap[T] = record { v: T }
+fn get[T](p: &Wrap[T]): T { return p.v }
+fn main() {}

@@ -1,0 +1,8 @@
+// error: a drop method cannot be called directly
+// line: 7
+type D = record { v: int }
+fn (d: mut &D) drop() {}
+fn main() {
+    var d = D{v: 1}
+    d.drop()
+}

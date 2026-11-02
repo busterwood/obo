@@ -1,0 +1,12 @@
+// expect: 1000
+// expect: 255
+// expect: 10
+// expect: 1000000
+// expect: 0
+fn main() {
+    println(1_000)
+    println(0xff)
+    println(0b1010)
+    println(1_000_000)
+    println(0)
+}

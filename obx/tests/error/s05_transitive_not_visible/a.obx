@@ -1,0 +1,2 @@
+import "deepmod"
+pub fn get(): int { return deepmod.deep() }

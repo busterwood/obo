@@ -1,0 +1,5 @@
+// error: cannot borrow global 'g'
+// line: 5
+var g: int = 1
+fn f(p: &int) {}
+fn main() { f(&g) }

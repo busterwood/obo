@@ -1,0 +1,16 @@
+// expect: 14
+// expect: 20
+// expect: 3
+// expect: 2
+// expect: 2
+// expect: -6
+// expect: 4
+fn main() {
+    println(2 + 3 * 4)
+    println((2 + 3) * 4)
+    println(10 - 4 - 3)
+    println(100 / 10 / 5)
+    println(2 * 3 % 4)
+    println(-2 * 3)
+    println(-(-4))
+}

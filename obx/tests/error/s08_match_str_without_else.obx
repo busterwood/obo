@@ -1,0 +1,6 @@
+// error: else|exhaust
+fn main() {
+    match "a" {
+        "a" { println(1) }
+    }
+}

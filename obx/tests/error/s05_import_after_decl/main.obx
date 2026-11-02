@@ -1,0 +1,4 @@
+// error:
+fn f() {}
+import "util"
+fn main() {}

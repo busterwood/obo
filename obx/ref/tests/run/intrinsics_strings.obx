@@ -1,0 +1,44 @@
+// expect: 2
+// expect: line2
+// expect: true
+// expect: 1
+// expect: false
+// expect: 5
+// expect: false
+// expect: zbc
+// expect: raw
+// expect: 4
+// expect: -122
+// expect: false
+// expect: 4
+// expect: true
+// expect: ababab
+// expect: el
+fn main() {
+    let text = " line1\nline2\n"
+    let lines = split(trim(text), '\n')
+    println(len(lines))
+    println(lines[1])
+    var missing = ""
+    println(readFile("nope.txt", mut &missing) != 0)
+    let a = args()
+    println(len(a))
+    var home = ""
+    println(getenv("OBX_SURELY_UNSET_VARIABLE", mut &home))
+    var f: float = 0.0
+    if parseFloat("2.5", mut &f) { println(f * 2.0) }
+    println(parseFloat("x", mut &f))
+    var bs = strToBytes("abc")
+    bs[0] = 'z'
+    println(strFromBytes(&bs))
+    println(writeFd(1, "raw\n"))
+    match parseInt("-123") {
+        Some(n) { println(n + 1) }
+        None {}
+    }
+    println(parseInt("9223372036854775808").isSome())
+    println(indexOf("hello world", "o w", 0))
+    println(startsWith("hello", "he"))
+    println(repeat("ab", 3))
+    println(substr("hello", 1, 3))
+}

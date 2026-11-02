@@ -1,0 +1,7 @@
+// error: move
+type N = record { v: int }
+fn main() {
+    let a = N{v: 1}
+    let b = a
+    println(a.v)
+}

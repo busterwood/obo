@@ -1,0 +1,26 @@
+// expect: 97
+// expect: 10
+// expect: 9
+// expect: 13
+// expect: 0
+// expect: 92
+// expect: 39
+// expect: 34
+// expect: 65
+// expect: 65
+// expect: 1
+fn main() {
+    let a: byte = 'a'
+    println(int(a))
+    println(int('\n'))
+    println(int('\t'))
+    println(int('\r'))
+    println(int('\0'))
+    println(int('\\'))
+    println(int('\''))
+    println(int('\"'))
+    println(int('\x41'))
+    println(int('A'))
+    let b = 'b'
+    println(int(b) - int(a))
+}

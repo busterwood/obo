@@ -1,0 +1,7 @@
+// error: move
+type D = record { id: int }
+fn two(a: D, b: D) {}
+fn main() {
+    let a = D{id: 1}
+    two(a, a)
+}

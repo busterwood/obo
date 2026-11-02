@@ -1,0 +1,7 @@
+// error: A|B
+type A = value record { x: int }
+type B = value record { x: int }
+fn f(a: A) {}
+fn main() {
+    f(B{x: 1})
+}

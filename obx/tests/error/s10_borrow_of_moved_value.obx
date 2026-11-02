@@ -1,0 +1,7 @@
+// error: move
+type D = record { id: int }
+fn main() {
+    let a = D{id: 1}
+    let b = a
+    let r = &a
+}

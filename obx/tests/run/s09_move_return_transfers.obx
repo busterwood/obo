@@ -1,0 +1,9 @@
+// expect: 0
+// expect: 1
+type D = record { id: int }
+fn (d: mut &D) drop() { println(d.id) }
+fn pass(d: D): D { return d }
+fn main() {
+    let a = pass(D{id: 1})
+    println(0)
+}

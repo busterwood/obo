@@ -1,0 +1,7 @@
+// error: Id
+import "a"
+import "b"
+fn main() {
+    let x = b.make()
+    println(a.get(x))
+}

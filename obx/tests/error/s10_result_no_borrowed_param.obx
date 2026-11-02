@@ -1,0 +1,4 @@
+// error: borrow|nopick
+type D = record { id: int }
+fn nopick(a: D): &D { return &a }
+fn main() {}

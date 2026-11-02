@@ -1,0 +1,8 @@
+// expect: 3
+fn bump(c: mut &int) { c += 1 }
+fn main() {
+    var n = 1
+    bump(mut &n)
+    bump(mut &n)
+    println(n)
+}

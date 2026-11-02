@@ -1,0 +1,4 @@
+// error: int
+fn main() {
+    let a: int = "str"
+}

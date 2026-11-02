@@ -1,0 +1,7 @@
+// error: Dec|int
+type Dec = value record { u: int }
+fn (a: Dec) add(b: Dec): Dec { return Dec{u: a.u + b.u} }
+fn main() {
+    let a = Dec{u: 1}
+    let c = a + 1
+}

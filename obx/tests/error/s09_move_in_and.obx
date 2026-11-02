@@ -1,0 +1,8 @@
+// error: move
+type D = record { id: int }
+fn take(d: D): bool { return true }
+fn main() {
+    let n = D{id: 1}
+    let c = true
+    if c && take(n) { }
+}

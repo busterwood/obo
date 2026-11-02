@@ -1,0 +1,10 @@
+// expect: 2
+// expect: 3
+// expect: 4
+// expect: done
+fn main() {
+    for i in 2..5 { println(i) }
+    for i in 5..2 { println(99) }
+    for i in 3..3 { println(98) }
+    println("done")
+}

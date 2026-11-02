@@ -1,0 +1,11 @@
+// expect: 1
+// expect: 0
+// expect: 3
+type D = record { id: int }
+fn (d: mut &D) drop() { println(d.id) }
+type R = record { d: D }
+fn main() {
+    var r = R{d: D{id: 1}}
+    r.d = D{id: 3}
+    println(0)
+}

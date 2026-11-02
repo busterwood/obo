@@ -1,0 +1,22 @@
+// expect: 7
+// expect: 3
+type Expr = closed {
+    Num(int)
+    Add(Expr, Expr)
+    Neg(Expr)
+}
+fn (e: &Expr) eval(): int {
+    var r = 0
+    match e {
+        Num(n) { r = n }
+        Add(l, x) { r = l.eval() + x.eval() }
+        Neg(i) { r = 0 - i.eval() }
+    }
+    return r
+}
+fn main() {
+    let e = Add(Num(3), Add(Num(1), Num(3)))
+    println(e.eval())
+    let f = Add(Num(6), Neg(Num(3)))
+    println(f.eval())
+}

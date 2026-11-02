@@ -1,0 +1,4 @@
+// error: constkx|const
+fn f(): int { return 1 }
+const constkx = f()
+fn main() {}

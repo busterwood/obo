@@ -1,0 +1,10 @@
+// expect: 2
+// expect: ok
+fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
+fn main() {
+    let n = 5
+    let h: float = 2.5
+    println(int(float(n) * h) / 6)
+    let five: float = 5.0
+    check(float(n) == five)
+}

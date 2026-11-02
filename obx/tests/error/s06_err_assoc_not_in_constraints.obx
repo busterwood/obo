@@ -1,0 +1,3 @@
+// error: zeroish
+fn make[T](): T { return T.zeroish() }
+fn main() {}

@@ -1,0 +1,13 @@
+// expect: 10
+// expect: 2
+type D = record { id: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn main() {
+    var xs = [D{id: 10}]
+    {
+        let r = first(&xs)
+        println(r.id)
+    }
+    append(mut &xs, D{id: 20})
+    println(len(xs))
+}

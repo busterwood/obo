@@ -1,0 +1,5 @@
+// error: secret
+import "util"
+fn main() {
+    let p = util.P{secret: 1}
+}

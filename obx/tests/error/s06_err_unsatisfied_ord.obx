@@ -1,0 +1,9 @@
+// error: Ord
+type Plain = value record { x: int }
+fn maxOf[T: Ord + copy](a: T, b: T): T {
+    if a < b { return b }
+    return a
+}
+fn main() {
+    let p = maxOf(Plain{x: 1}, Plain{x: 2})
+}

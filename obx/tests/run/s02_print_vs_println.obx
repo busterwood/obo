@@ -1,0 +1,9 @@
+// expect: ab
+// expect: cd
+fn main() {
+    print("a")
+    println("b")
+    print("c")
+    print("d")
+    println("")
+}

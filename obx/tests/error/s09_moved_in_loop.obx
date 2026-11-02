@@ -1,0 +1,11 @@
+// error: move
+type D = record { id: int }
+fn eat(d: D) {}
+fn main() {
+    let n = D{id: 1}
+    var i = 0
+    while i < 2 {
+        eat(n)
+        i += 1
+    }
+}

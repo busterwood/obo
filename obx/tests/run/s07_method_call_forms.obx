@@ -1,0 +1,14 @@
+// expect: 25
+// expect: 5
+// expect: 9
+type P = value record { x: int; y: int }
+fn (p: &P) norm2(): int { return p.x * p.x + p.y * p.y }
+fn (p: mut &P) shift(d: int) { p.x += d }
+fn (p: P) sum(): int { return p.x + p.y }
+fn main() {
+    var p = P{x: 3, y: 4}
+    println(p.norm2())
+    println(P{x: 2, y: 3}.sum())
+    p.shift(2)
+    println(p.sum())
+}

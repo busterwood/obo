@@ -1,0 +1,11 @@
+// expect: 9
+type C = record { n: int }
+fn (c: mut &C) inc() { c.n += 1 }
+fn run(var c: C): int {
+    c.inc()
+    c.n += 8
+    return c.n
+}
+fn main() {
+    println(run(C{n: 0}))
+}

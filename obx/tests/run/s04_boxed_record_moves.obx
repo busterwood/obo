@@ -1,0 +1,10 @@
+// expect: 1
+// expect: 9
+type N = record { v: int }
+fn bump(n: N): N { return N{v: n.v + 8} }
+fn main() {
+    let a = N{v: 1}
+    println(a.v)
+    let b = bump(a)
+    println(b.v)
+}

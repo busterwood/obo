@@ -1,0 +1,4 @@
+// error:
+fn main() {
+    for i in "a".."b" { }
+}

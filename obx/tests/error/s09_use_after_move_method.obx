@@ -1,0 +1,8 @@
+// error: move
+type D = record { id: int }
+fn (d: D) consume() {}
+fn main() {
+    let a = D{id: 1}
+    a.consume()
+    println(a.id)
+}

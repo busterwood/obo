@@ -1,0 +1,4 @@
+// error: infer|type
+fn main() {
+    let a = None
+}

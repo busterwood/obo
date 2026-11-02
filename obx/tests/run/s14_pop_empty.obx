@@ -1,0 +1,5 @@
+// exit: 3
+fn main() {
+    var xs: []int = []
+    println(pop(mut &xs))
+}

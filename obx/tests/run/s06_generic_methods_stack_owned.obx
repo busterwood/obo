@@ -1,0 +1,21 @@
+// expect: 2
+// expect: 20
+// expect: 10
+type D = record { id: int }
+fn (d: mut &D) drop() { println(d.id * 10) }
+type Stack[T] = record { items: []T }
+fn newStack[T](): Stack[T] { return Stack[T]{items: []} }
+fn (s: mut &Stack[T]) push(v: T) { append(mut &s.items, v) }
+fn (s: mut &Stack[T]) take(): Option[T] {
+    if len(s.items) == 0 { return None }
+    return Some(pop(mut &s.items))
+}
+fn main() {
+    var s: Stack[D] = newStack()
+    s.push(D{id: 1})
+    s.push(D{id: 2})
+    match s.take() {
+        Some(d) { println(d.id) }
+        None { println(0) }
+    }
+}

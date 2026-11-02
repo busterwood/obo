@@ -1,0 +1,4 @@
+// error: borrow|second|element|array
+fn main() {
+    var xs: []&int = []
+}

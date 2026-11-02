@@ -1,0 +1,23 @@
+// expect: 6
+// expect: neg
+fn check(n: int): Result[int, str] {
+    if n < 0 { return Err("neg") }
+    return Ok(n)
+}
+fn sum(xs: &[]int): Result[int, str] {
+    var t = 0
+    for x in xs { t += try check(x) }
+    return Ok(t)
+}
+fn show(r: Result[int, str]) {
+    match r {
+        Ok(v) { println(v) }
+        Err(e) { println(e) }
+    }
+}
+fn main() {
+    let a = [1, 2, 3]
+    let b = [1, -2, 3]
+    show(sum(&a))
+    show(sum(&b))
+}

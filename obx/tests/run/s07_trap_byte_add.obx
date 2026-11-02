@@ -1,0 +1,3 @@
+// exit: 10
+fn add(a: byte, b: byte): byte { return a + b }
+fn main() { println(int(add(200, 100))) }

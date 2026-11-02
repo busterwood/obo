@@ -1,0 +1,6 @@
+// error: pp|overlap|borrow
+fn two(a: mut &int, b: mut &int) {}
+fn main() {
+    var pp = 1
+    two(mut &pp, mut &pp)
+}

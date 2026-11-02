@@ -1,0 +1,9 @@
+// expect: 5
+// expect: x
+// expect: 6
+fn ident[T](v: T): T { return v }
+fn main() {
+    println(ident(5))
+    println(ident("x"))
+    println(ident[int](6))
+}

@@ -1,0 +1,7 @@
+// expect: before
+// exit: 7
+fn main() {
+    println("before")
+    exit(7)
+    println("after")
+}

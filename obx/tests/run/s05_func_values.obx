@@ -1,0 +1,17 @@
+// expect: 8
+// expect: 9
+// expect: 16
+// expect: 3
+fn dbl(n: int): int { return n * 2 }
+fn sq(n: int): int { return n * n }
+fn apply(f: fn(int): int, v: int): int { return f(v) }
+fn main() {
+    let f = dbl
+    println(f(4))
+    println(apply(sq, 3) )
+    var g: fn(int): int = dbl
+    g = sq
+    println(g(4))
+    let fs = [dbl, sq]
+    println(fs[1](3) - fs[0](3))
+}

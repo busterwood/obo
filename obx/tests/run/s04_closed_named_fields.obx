@@ -1,0 +1,22 @@
+// expect: f
+// expect: 2
+// expect: 5
+type Ast = closed {
+    Lit(int)
+    Call { name: str; args: []Ast }
+}
+fn show(a: &Ast) {
+    match a {
+        Lit(n) { println(n) }
+        Call(name, args) {
+            println(name)
+            println(len(args))
+        }
+    }
+}
+fn main() {
+    let c = Call{name: "f", args: [Lit(1), Lit(2)]}
+    show(&c)
+    let l = Lit(5)
+    show(&l)
+}

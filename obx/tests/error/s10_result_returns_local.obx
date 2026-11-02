@@ -1,0 +1,7 @@
+// error: tmpv|borrow|root|local
+type D = record { id: int }
+fn f(a: &D): &D {
+    let tmpv = D{id: 1}
+    return &tmpv
+}
+fn main() {}

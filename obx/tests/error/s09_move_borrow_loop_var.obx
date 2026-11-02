@@ -1,0 +1,7 @@
+// error: move|borrow
+type D = record { id: int }
+fn eat(d: D) {}
+fn main() {
+    let ds = [D{id: 1}]
+    for d in ds { eat(d) }
+}

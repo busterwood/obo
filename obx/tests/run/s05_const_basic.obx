@@ -1,0 +1,18 @@
+// expect: 7
+// expect: hi
+// expect: 5
+// expect: yes
+// expect: 3
+const A = 2
+const B = A * 3 + 1
+const S = "hi"
+const N: i32 = 5
+const T = true
+const F: float = 3.5
+fn main() {
+    println(B)
+    println(S)
+    println(int(N))
+    if T { println("yes") }
+    println(int(F))
+}

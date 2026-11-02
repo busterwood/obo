@@ -1,0 +1,4 @@
+// error: operator < on T needs a method cmp (from a constraint such as Ord)
+// line: 3
+fn mx[T](a: T, b: T): bool { return a < b }
+fn main() {}

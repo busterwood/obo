@@ -1,0 +1,17 @@
+// expect: small
+// expect: small
+// expect: three
+// expect: other
+fn name(n: int) {
+    match n {
+        1, 2 { println("small") }
+        3 { println("three") }
+        else { println("other") }
+    }
+}
+fn main() {
+    name(1)
+    name(2)
+    name(3)
+    name(40)
+}

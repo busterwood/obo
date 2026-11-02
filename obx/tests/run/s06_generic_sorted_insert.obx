@@ -1,0 +1,23 @@
+// expect: 1
+// expect: 3
+// expect: 5
+// expect: 8
+type Sorted[T: Ord + copy] = record { items: []T }
+fn (s: mut &Sorted[T]) insert(v: T) {
+    var i = 0
+    while i < len(s.items) && s.items[i] < v { i += 1 }
+    append(mut &s.items, v)
+    var j = len(s.items) - 1
+    while j > i {
+        swap(mut &s.items, j, j - 1)
+        j -= 1
+    }
+}
+fn main() {
+    var s = Sorted[int]{items: []}
+    s.insert(5)
+    s.insert(1)
+    s.insert(8)
+    s.insert(3)
+    for x in s.items { println(x) }
+}

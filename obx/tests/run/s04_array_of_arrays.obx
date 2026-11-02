@@ -1,0 +1,10 @@
+// expect: 2
+// expect: 5
+// expect: 4
+fn main() {
+    var g: [][]int = [[1, 2], [3]]
+    println(g[0][1])
+    println(len(g[0]) + g[1][0])
+    append(mut &g[1], 4)
+    println(g[1][1])
+}

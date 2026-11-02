@@ -1,0 +1,11 @@
+// expect: 1
+// expect: 3
+// expect: 25
+import "geom"
+fn main() {
+    let p = geom.P{x: 1, y: 2}
+    println(p.x)
+    println(p.sum())
+    let q = geom.P{x: 3, y: 4}
+    println(q.norm2())
+}

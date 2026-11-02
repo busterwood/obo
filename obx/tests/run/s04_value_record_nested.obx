@@ -1,0 +1,11 @@
+// expect: 3
+// expect: 8
+type P = value record { x: int; y: int }
+type L = value record { a: P; b: P }
+fn main() {
+    var l = L{a: P{x: 1, y: 2}, b: P{x: 3, y: 4}}
+    let m = l
+    l.b.x = 8
+    println(m.b.x)
+    println(l.b.x)
+}

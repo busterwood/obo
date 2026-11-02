@@ -1,0 +1,3 @@
+// exit: 10
+fn sh(a: byte, n: int): byte { return a << n }
+fn main() { println(int(sh(1, 8))) }

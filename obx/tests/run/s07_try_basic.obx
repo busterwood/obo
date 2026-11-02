@@ -1,0 +1,23 @@
+// expect: 2
+// expect: odd
+// expect: odd
+fn half(n: int): Result[int, str] {
+    if n % 2 != 0 { return Err("odd") }
+    return Ok(n / 2)
+}
+fn quarter(n: int): Result[int, str] {
+    let h = try half(n)
+    let q = try half(h)
+    return Ok(q)
+}
+fn show(r: Result[int, str]) {
+    match r {
+        Ok(v) { println(v) }
+        Err(e) { println(e) }
+    }
+}
+fn main() {
+    show(quarter(8))
+    show(quarter(6))
+    show(quarter(5))
+}

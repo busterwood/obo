@@ -1,0 +1,10 @@
+// error: cannot destructure a D: it has a drop method (match on a place instead)
+// line: 7
+type D = closed { A(int) }
+fn (d: mut &D) drop() {}
+fn mk(): D { return A(1) }
+fn main() {
+    match mk() {
+        A(x) {}
+    }
+}

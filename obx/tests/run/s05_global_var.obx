@@ -1,0 +1,14 @@
+// expect: 10
+// expect: 12
+// expect: hello
+const BASE = 10
+var counter: int = BASE
+var greeting: str = "hello"
+fn bump() { counter += 1 }
+fn main() {
+    println(counter)
+    bump()
+    bump()
+    println(counter)
+    println(greeting)
+}

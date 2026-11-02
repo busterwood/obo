@@ -1,0 +1,5 @@
+// error: str|int
+fn ident[T](v: T): T { return v }
+fn main() {
+    let a = ident[int]("x")
+}

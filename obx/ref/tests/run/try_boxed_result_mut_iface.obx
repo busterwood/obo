@@ -1,0 +1,45 @@
+// expect: 2
+// expect: drop 7
+// expect: drop 2
+// expect: drop 3
+// expect: neg
+// expect: 5
+// expect: 5
+// expect: D9
+// expect: drop 9
+type R[T] = closed { Ok(T); Err(str) }
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop " + d.id.toStr()) }
+fn (d: &D) toStr(): str { return "D" + d.id.toStr() }
+type Counter = interface { fn (mut &Self) tick(): int }
+type C = value record { n: int }
+fn (c: mut &C) tick(): int { c.n += 1; return c.n }
+fn run[T: Counter](c: mut &T, k: int): int {
+    var last = 0
+    for i in 0..k { last = c.tick() }
+    return last
+}
+fn mk(i: int): R[D] {
+    if i < 0 { return Err("neg") }
+    return Ok(D{id: i})
+}
+fn twice(i: int): R[[]D] {
+    let a = try mk(i)
+    let b = try mk(i - 5)
+    return Ok([a, b])
+}
+fn main() {
+    match twice(7) {
+        Ok(ds) { println(len(ds)) }
+        Err(e) { println(e) }
+    }
+    match twice(3) {
+        Ok(ds) { println(len(ds)) }
+        Err(e) { println(e) }
+    }
+    var c = C{n: 0}
+    println(run(mut &c, 5))
+    println(c.n)
+    let d = D{id: 9}
+    println(d)
+}

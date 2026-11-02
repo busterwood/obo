@@ -1,0 +1,7 @@
+// expect: 9223372036854775807
+// expect: 0
+fn main() {
+    let m: u64 = 18446744073709551615
+    println(int(m / 2))
+    println(int(m +% 1))
+}

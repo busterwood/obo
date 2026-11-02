@@ -1,0 +1,9 @@
+// expect: abc
+// expect: abc
+type S = record { s: str; xs: []str }
+fn main() {
+    let a = S{s: "abc", xs: ["abc"]}
+    let t = a.s
+    println(t)
+    println(a.xs[0])
+}

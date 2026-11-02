@@ -1,0 +1,25 @@
+// expect: 1024
+// expect: -4
+// expect: ok
+// expect: -1
+// expect: 240
+// expect: 1
+// expect: 1
+// expect: 5
+// expect: -4
+fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
+fn sh(a: int, n: int): int { return a << n }
+fn main() {
+    println(1 << 10)
+    println(-16 >> 2)
+    check(sh(1, 63) < 0)
+    println(sh(1, 63) >> 63)
+    let b: byte = 255
+    println(int(b << 4))
+    let u: u32 = 4294967295
+    println(int(u >> 31))
+    println(1 << 0)
+    println(5 >> 0)
+    let i: i32 = -8
+    println(int(i >> 1))
+}

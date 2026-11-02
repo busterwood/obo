@@ -1,0 +1,7 @@
+// error: instantiation of grow does not terminate: its type arguments grow without bound (Option[Option[Option[Option[Option[Option[Option[Option[Option[Option[Option[Opt...)
+// line: 3
+fn grow[T](x: T, n: int): int {
+    if n == 0 { return 0 }
+    return grow(Some(x), n - 1)
+}
+fn main() { println(grow(1, 3)) }

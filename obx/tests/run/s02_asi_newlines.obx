@@ -1,0 +1,8 @@
+// expect: 3
+// expect: 7
+fn main() {
+    let a = 1
+    let b = 2
+    println(a + b)
+    let c = 3; let d = 4; println(c + d)
+}

@@ -1,0 +1,10 @@
+// expect: 1
+// expect: 2
+import "a"
+import "b"
+fn helper(): int { return 3 }
+fn main() {
+    println(a.helper())
+    println(b.helper())
+    if helper() == 3 { }
+}

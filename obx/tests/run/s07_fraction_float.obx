@@ -1,0 +1,11 @@
+// expect: 3
+// expect: 1
+fn half(f: float): float {
+    let two: float = 2.0
+    return f / two
+}
+fn main() {
+    let x: float = 3.25
+    println(int(x))
+    println(int(half(3.0)) )
+}

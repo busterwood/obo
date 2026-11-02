@@ -1,0 +1,4 @@
+// error: break
+fn main() {
+    break
+}

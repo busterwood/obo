@@ -1,0 +1,5 @@
+// error: return
+fn f(c: bool): int {
+    if c { return 1 }
+}
+fn main() { println(f(true)) }

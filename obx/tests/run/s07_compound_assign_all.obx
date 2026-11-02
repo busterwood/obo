@@ -1,0 +1,27 @@
+// expect: 8
+// expect: 6
+// expect: 12
+// expect: 4
+// expect: 1
+// expect: 15
+// expect: 3
+// expect: 12
+fn main() {
+    var x = 5
+    x += 3
+    println(x)
+    x -= 2
+    println(x)
+    x *= 2
+    println(x)
+    x /= 3
+    println(x)
+    x %= 3
+    println(x)
+    x |= 14
+    println(x)
+    x &= 3
+    println(x)
+    x ^= 15
+    println(x)
+}

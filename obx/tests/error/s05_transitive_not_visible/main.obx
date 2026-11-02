@@ -1,0 +1,5 @@
+// error: deepmod
+import "a"
+fn main() {
+    deepmod.deep()
+}

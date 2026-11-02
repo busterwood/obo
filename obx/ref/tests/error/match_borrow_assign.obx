@@ -1,0 +1,10 @@
+// error: 'o' is borrowed by the match binding 'd' and cannot be assigned while that borrow is in scope
+// line: 7
+type D = record { v: int }
+fn main() {
+    var o: Option[D] = Some(D{v: 1})
+    match o {
+        Some(d) { o = None }
+        None {}
+    }
+}

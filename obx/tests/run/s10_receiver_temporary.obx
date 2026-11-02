@@ -1,0 +1,8 @@
+// expect: 1
+// A borrowed receiver may be a temporary (SPEC 7.5): it lives to the end of the statement.
+type D = record { id: int }
+fn (d: &D) get(): int { return d.id }
+fn mk(): D { return D{id: 1} }
+fn main() {
+    println(mk().get())
+}

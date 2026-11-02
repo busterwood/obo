@@ -1,0 +1,5 @@
+// exit: 10
+fn main() {
+    let z = 0
+    println(5 % z)
+}

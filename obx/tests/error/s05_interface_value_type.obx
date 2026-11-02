@@ -1,0 +1,4 @@
+// error: Shape|interface
+type Shape = interface { fn (&Self) area(): int }
+fn f(s: Shape) {}
+fn main() {}

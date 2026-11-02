@@ -1,0 +1,7 @@
+// exit: 3
+fn main() {
+    let g: [][]int = [[1], [2]]
+    let i = 1
+    let j = 1
+    println(g[i][j])
+}

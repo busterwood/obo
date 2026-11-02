@@ -1,0 +1,6 @@
+// expect: a19
+fn main() {
+    var xs = ["a"]
+    for i in 0..20 { append(mut &xs, xs[0] + i.toStr()) }
+    println(xs[20])
+}

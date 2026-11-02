@@ -1,0 +1,7 @@
+// expect: 5
+// expect: 0
+extern "c" fn strlen(s: str): int
+fn main() {
+    println(strlen("hello"))
+    println(strlen(""))
+}

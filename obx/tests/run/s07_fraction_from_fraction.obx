@@ -1,0 +1,26 @@
+// expect: 1234
+// expect: 2
+// expect: 150
+// expect: 5
+// expect: 2
+// expect: 7500
+// expect: 2
+type Fx = value record { units: int; scale: int }
+fn (Fx) fromFraction(units: int, scale: int): Fx {
+    return Fx{units: units, scale: scale}
+}
+type Holder = record { price: Fx }
+fn want(f: Fx): int { return f.units }
+fn give(): Fx { return 75.00 }
+fn main() {
+    let x: Fx = 12.34
+    println(x.units)
+    println(x.scale)
+    println(want(1.50))
+    let h = Holder{price: 0.05}
+    println(h.price.units)
+    println(h.price.scale)
+    let g = give()
+    println(g.units)
+    println(g.scale)
+}

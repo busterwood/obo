@@ -1,0 +1,3 @@
+// error: contain|recurs|infinite|cycl|itself|List
+type List = value closed { Cons(int, List); Nil }
+fn main() {}

@@ -1,0 +1,8 @@
+// error: 'd' is moved inside the loop
+// line: 7
+type D = record { v: int }
+fn take(d: D): bool { return false }
+fn main() {
+    let d = D{v: 1}
+    while take(d) {}
+}

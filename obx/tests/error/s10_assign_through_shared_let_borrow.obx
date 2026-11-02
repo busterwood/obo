@@ -1,0 +1,7 @@
+// error: rr
+type D = record { id: int }
+fn main() {
+    var a = D{id: 1}
+    let rr = &a
+    rr.id = 2
+}

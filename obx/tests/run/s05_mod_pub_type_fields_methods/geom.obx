@@ -1,0 +1,3 @@
+pub type P = value record { pub x: int; pub y: int }
+pub fn (p: &P) sum(): int { return p.x + p.y }
+pub fn (p: &P) norm2(): int { return p.x * p.x + p.y * p.y }

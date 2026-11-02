@@ -1,0 +1,5 @@
+// error: borrow|second|var
+fn main() {
+    let a = 1
+    var r = &a
+}

@@ -1,0 +1,5 @@
+// error: fn|int|str
+fn dbl(n: int): int { return n * 2 }
+fn main() {
+    let f: fn(str): int = dbl
+}

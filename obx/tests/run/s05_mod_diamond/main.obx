@@ -1,0 +1,8 @@
+// expect: 11
+// expect: 12
+import "a"
+import "b"
+fn main() {
+    println(a.f())
+    println(b.f())
+}

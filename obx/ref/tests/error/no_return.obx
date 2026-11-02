@@ -1,0 +1,6 @@
+// error: f may reach its end without a return
+// line: 3
+fn f(x: int): int {
+    if x > 0 { return 1 }
+}
+fn main() {}

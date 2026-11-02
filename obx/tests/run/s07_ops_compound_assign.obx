@@ -1,0 +1,13 @@
+// expect: 10
+// expect: 7
+type Dec = value record { u: int }
+fn (a: Dec) add(b: Dec): Dec { return Dec{u: a.u + b.u} }
+fn (a: Dec) sub(b: Dec): Dec { return Dec{u: a.u - b.u} }
+fn main() {
+    var a = Dec{u: 4}
+    let b = Dec{u: 6}
+    a += b
+    println(a.u)
+    a -= Dec{u: 3}
+    println(a.u)
+}

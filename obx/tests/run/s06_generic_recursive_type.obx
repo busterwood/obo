@@ -1,0 +1,16 @@
+// expect: 2
+type List[T] = closed { Cons(T, List[T]); Nil }
+fn (l: &List[T]) length(): int {
+    var r = 0
+    match l {
+        Cons(_, rest) { r = 1 + rest.length() }
+        Nil { }
+    }
+    return r
+}
+fn main() {
+    let nil: List[int] = Nil
+    let l = Cons(2, nil)
+    let l2 = Cons(1, l)
+    println(l2.length())
+}

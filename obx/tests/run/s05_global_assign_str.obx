@@ -1,0 +1,8 @@
+// expect: a
+// expect: b
+var g: str = "a"
+fn main() {
+    println(g)
+    g = "b"
+    println(g)
+}

@@ -1,0 +1,5 @@
+pub type Stack[T: copy] = record { items: []T }
+pub fn newStack[T: copy](): Stack[T] { return Stack[T]{items: []} }
+pub fn (s: mut &Stack[T]) push(v: T) { append(mut &s.items, v) }
+pub fn (s: &Stack[T]) size(): int { return len(s.items) }
+pub fn (s: &Stack[T]) top(): T { return s.items[len(s.items) - 1] }

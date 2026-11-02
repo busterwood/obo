@@ -1,0 +1,12 @@
+// expect: 1
+// expect: 5
+type D = record { id: int }
+fn main() {
+    var a = D{id: 1}
+    {
+        let r = &a
+        println(r.id)
+    }
+    a.id = 5
+    println(a.id)
+}

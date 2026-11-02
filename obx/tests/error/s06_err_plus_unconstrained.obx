@@ -1,0 +1,3 @@
+// error: add|operator|+
+fn inc[T](a: T): T { return a + a }
+fn main() {}

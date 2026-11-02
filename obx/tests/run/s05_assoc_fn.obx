@@ -1,0 +1,11 @@
+// expect: 0
+// expect: 3
+type Pt = value record { x: int; y: int }
+fn (Pt) origin(): Pt { return Pt{x: 0, y: 0} }
+fn (Pt) of(x: int, y: int): Pt { return Pt{x: x, y: y} }
+fn main() {
+    let o = Pt.origin()
+    println(o.x)
+    let p = Pt.of(1, 2)
+    println(p.x + p.y)
+}

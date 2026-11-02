@@ -1,203 +1,398 @@
-// The gcore standard prelude. Everything here is ordinary library code: the
-// compiler has no special knowledge of any type in this file. It knows two
-// names only: a fractional literal calls fromFraction, and try needs the
-// variants Ok and Err.
+// std: the prelude, imported into every module; its public names are visible
+// unqualified. Everything here is ordinary obx code over the built-in
+// intrinsics (SPEC 11). The compiler knows two names from it: fractional
+// literals call fromFraction, and try needs the variants Ok and Err.
 
 // ---------------------------------------------------------------- core sums
 
-type Option[T] = closed {
-    Some { value: T }
-    None {}
+pub type Option[T] = value closed { Some(T); None }
+pub type Result[T, E] = value closed { Ok(T); Err(E) }
+pub type Unit = value record {}
+
+pub fn (o: &Option[T]) isSome(): bool {
+    match o {
+        Some(_) { return true }
+        None { return false }
+    }
 }
 
-type Result[T, E] = closed {
-    Ok { value: T }
-    Err { error: E }
+pub fn (o: Option[T]) unwrap(): T {
+    match move(o) {
+        Some(x) { return x }
+        None { panic("unwrap of None") }
+    }
+}
+
+pub fn (o: Option[T]) unwrapOr(d: T): T {
+    match move(o) {
+        Some(x) { return x }
+        None { return d }
+    }
+}
+
+pub fn (r: &Result[T, E]) isOk(): bool {
+    match r {
+        Ok(_) { return true }
+        Err(_) { return false }
+    }
 }
 
 // ---------------------------------------------------------------- constraints
 
-type Eq = interface { fn eq(other: &Self): bool }
-type Ord = interface { fn cmp(other: &Self): int }
-type Show = interface { fn show() }
+pub type Eq = interface { fn (&Self) eq(other: &Self): bool }
+pub type Ord = interface { fn (&Self) cmp(other: &Self): int }
+pub type Hash = interface { fn (&Self) hash(): u64 }
+pub type Show = interface { fn (&Self) toStr(): str }
 
-fn (a: &int) eq(b: &int): bool { return a == b }
-fn (a: &int) cmp(b: &int): int {
-    if a < b { return 0 - 1 }
-    if a > b { return 1 }
+fn cmpOf(lt: bool, gt: bool): int {
+    if lt { return -1 }
+    if gt { return 1 }
     return 0
 }
-fn (a: &int) show() { print(a) }
-fn (a: &str) eq(b: &str): bool { return streq(a, b) }
-fn (a: &str) show() { print(a) }
+
+const FNV_PRIME: u64 = 1099511628211
+
+pub fn (a: int) eq(b: &int): bool { return a == b }
+pub fn (a: int) cmp(b: &int): int { return cmpOf(a < b, a > b) }
+pub fn (a: int) hash(): u64 { return u64(a & 9223372036854775807) *% 11400714819323198485 }
+pub fn (a: int) toStr(): str { return intToStr(a) }
+
+pub fn (a: i32) eq(b: &i32): bool { return a == b }
+pub fn (a: i32) cmp(b: &i32): int { return cmpOf(a < b, a > b) }
+pub fn (a: i32) hash(): u64 { return int(a).hash() }
+pub fn (a: i32) toStr(): str { return intToStr(int(a)) }
+
+pub fn (a: u32) eq(b: &u32): bool { return a == b }
+pub fn (a: u32) cmp(b: &u32): int { return cmpOf(a < b, a > b) }
+pub fn (a: u32) hash(): u64 { return int(a).hash() }
+pub fn (a: u32) toStr(): str { return intToStr(int(a)) }
+
+pub fn (a: u64) eq(b: &u64): bool { return a == b }
+pub fn (a: u64) cmp(b: &u64): int { return cmpOf(a < b, a > b) }
+pub fn (a: u64) hash(): u64 { return a *% 11400714819323198485 }
+pub fn (a: u64) toStr(): str { return u64ToStr(a) }
+
+pub fn (a: byte) eq(b: &byte): bool { return a == b }
+pub fn (a: byte) cmp(b: &byte): int { return cmpOf(a < b, a > b) }
+pub fn (a: byte) hash(): u64 { return int(a).hash() }
+pub fn (a: byte) toStr(): str { return intToStr(int(a)) }
+
+pub fn (a: i128) eq(b: &i128): bool { return a == b }
+pub fn (a: i128) cmp(b: &i128): int { return cmpOf(a < b, a > b) }
+pub fn (a: i128) toStr(): str { return i128ToStr(a) }
+
+pub fn (a: u128) eq(b: &u128): bool { return a == b }
+pub fn (a: u128) cmp(b: &u128): int { return cmpOf(a < b, a > b) }
+pub fn (a: u128) toStr(): str { return u128ToStr(a) }
+
+pub fn (a: float) eq(b: &float): bool { return a == b }
+pub fn (a: float) cmp(b: &float): int { return cmpOf(a < b, a > b) }
+pub fn (a: float) toStr(): str { return floatToStr(a) }
+
+pub fn (a: bool) eq(b: &bool): bool { return a == b }
+pub fn (a: bool) toStr(): str {
+    if a { return "true" }
+    return "false"
+}
+
+pub fn (a: str) eq(b: &str): bool { return a == b }
+pub fn (a: str) cmp(b: &str): int { return cmpOf(a < b, a > b) }
+pub fn (a: str) toStr(): str { return a }
+pub fn (s: str) hash(): u64 {
+    var h: u64 = 14695981039346656037
+    for i in 0..len(s) {
+        h = (h ^ u64(strByte(s, i))) *% FNV_PRIME
+    }
+    return h
+}
+
+// ---------------------------------------------------------------- output
+
+pub fn print[T: Show](x: T) { writeFd(1, x.toStr()) }
+pub fn println[T: Show](x: T) { writeFd(1, x.toStr() + "\n") }
+pub fn eprintln[T: Show](x: T) { writeFd(2, x.toStr() + "\n") }
+
+// ---------------------------------------------------------------- strings
+
+pub fn substr(s: str, from: int, to: int): str { return strSlice(s, from, to) }
+
+pub fn indexOf(s: str, sub: str, from: int): int {
+    var i = from
+    while i + len(sub) <= len(s) {
+        if strSlice(s, i, i + len(sub)) == sub { return i }
+        i += 1
+    }
+    return -1
+}
+
+pub fn startsWith(s: str, prefix: str): bool {
+    return len(prefix) <= len(s) && strSlice(s, 0, len(prefix)) == prefix
+}
+
+pub fn split(s: str, sep: byte): []str {
+    var out: []str = []
+    var start = 0
+    for i in 0..len(s) {
+        if strByte(s, i) == sep {
+            append(mut &out, strSlice(s, start, i))
+            start = i + 1
+        }
+    }
+    append(mut &out, strSlice(s, start, len(s)))
+    return out
+}
+
+pub fn trim(s: str): str {
+    var a = 0
+    var b = len(s)
+    while a < b && isSpace(strByte(s, a)) { a += 1 }
+    while b > a && isSpace(strByte(s, b - 1)) { b -= 1 }
+    return strSlice(s, a, b)
+}
+
+fn isSpace(c: byte): bool { return c == ' ' || c == '\n' || c == '\t' || c == '\r' }
+
+pub fn parseInt(s: str): Option[int] {
+    var i = 0
+    var neg = false
+    if len(s) > 0 && (strByte(s, 0) == '-' || strByte(s, 0) == '+') {
+        neg = strByte(s, 0) == '-'
+        i = 1
+    }
+    if i == len(s) { return None }
+    var n: i128 = 0
+    while i < len(s) {
+        let c = strByte(s, i)
+        if c < '0' || c > '9' { return None }
+        n = n * 10 + i128(c - '0')
+        if n > 9223372036854775808 { return None }
+        i += 1
+    }
+    if neg { n = -n }
+    if n > 9223372036854775807 { return None }
+    return Some(int(n))
+}
+
+pub fn repeat(s: str, n: int): str {
+    var b = newStrBuf()
+    for i in 0..n { b.add(s) }
+    return b.toStr()
+}
+
+// A string builder: add pieces, then join them once.
+pub type StrBuf = record { parts: []str; size: int }
+
+pub fn newStrBuf(): StrBuf { return StrBuf{parts: [], size: 0} }
+
+pub fn (b: mut &StrBuf) add(s: str) {
+    b.size += len(s)
+    append(mut &b.parts, s)
+}
+
+pub fn (b: &StrBuf) toStr(): str {
+    var bytes = array(b.size, byte(0))
+    var at = 0
+    for p in b.parts {
+        for i in 0..len(p) {
+            bytes[at] = strByte(p, i)
+            at += 1
+        }
+    }
+    return strFromBytes(&bytes)
+}
+
+// ---------------------------------------------------------------- Decimal
+//
+// An exact fixed-point decimal: an i128 coefficient and a scale (the number of
+// digits after the point). Operators are its methods: a + b calls add.
+
+pub type Decimal = value record { pub units: i128; pub scale: int }
+
+pub fn fromFraction(digits: int, scale: int): Decimal {
+    return Decimal{units: i128(digits), scale: scale}
+}
+
+pub fn decimalOf(n: int): Decimal { return Decimal{units: i128(n), scale: 0} }
+
+fn pow10(n: int): i128 {
+    var r: i128 = 1
+    for i in 0..n { r = r * 10 }
+    return r
+}
 
 fn maxInt(a: int, b: int): int {
     if a > b { return a }
     return b
 }
 
-fn pow10(n: int): int {
-    var r = 1
-    for i in 0..n {
-        r = r * 10
-    }
-    return r
+pub fn (a: Decimal) rescaled(s: int): Decimal {
+    if s >= a.scale { return Decimal{units: a.units * pow10(s - a.scale), scale: s} }
+    let p = pow10(a.scale - s)
+    var q = a.units / p
+    let r = a.units % p
+    // round half away from zero
+    if r * 2 >= p { q += 1 }
+    if r * 2 <= -p { q -= 1 }
+    return Decimal{units: q, scale: s}
 }
 
-// ---------------------------------------------------------------- Decimal
-//
-// An exact fixed-point decimal, written as a library value record. obo's real
-// decimal is a 128-bit coefficient with a display scale; this one is a 64-bit
-// coefficient, which is enough to show the shape. The operators are methods:
-// a + b calls add, a < b calls cmp.
-
-type Decimal = value record { units: int; scale: int }
-
-fn fromFraction(units: int, scale: int): Decimal {
-    return Decimal{units: units, scale: scale}
-}
-
-fn decimalOf(n: int): Decimal { return Decimal{units: n, scale: 0} }
-
-fn (a: Decimal) rescaled(s: int): Decimal {
-    if s <= a.scale { return a }
-    return Decimal{units: a.units * pow10(s - a.scale), scale: s}
-}
-
-fn (a: Decimal) add(b: Decimal): Decimal {
+pub fn (a: Decimal) add(b: Decimal): Decimal {
     let s = maxInt(a.scale, b.scale)
     return Decimal{units: a.rescaled(s).units + b.rescaled(s).units, scale: s}
 }
 
-fn (a: Decimal) sub(b: Decimal): Decimal {
+pub fn (a: Decimal) sub(b: Decimal): Decimal {
     let s = maxInt(a.scale, b.scale)
     return Decimal{units: a.rescaled(s).units - b.rescaled(s).units, scale: s}
 }
 
-fn (a: Decimal) mul(b: Decimal): Decimal {
+pub fn (a: Decimal) mul(b: Decimal): Decimal {
     return Decimal{units: a.units * b.units, scale: a.scale + b.scale}
 }
 
-fn (a: Decimal) neg(): Decimal { return Decimal{units: 0 - a.units, scale: a.scale} }
+pub fn (a: Decimal) neg(): Decimal { return Decimal{units: -a.units, scale: a.scale} }
 
-fn (a: Decimal) cmp(b: &Decimal): int {
+pub fn (a: Decimal) cmp(b: &Decimal): int {
     let s = maxInt(a.scale, b.scale)
     let x = a.rescaled(s).units
     let y = b.rescaled(s).units
-    if x < y { return 0 - 1 }
-    if x > y { return 1 }
-    return 0
+    return cmpOf(x < y, x > y)
 }
 
-// Round half away from zero to s fractional digits.
-fn (a: Decimal) round(s: int): Decimal {
-    if s >= a.scale { return a.rescaled(s) }
-    let d = pow10(a.scale - s)
-    var q = a.units / d
-    let r = a.units % d
-    if r * 2 >= d { q = q + 1 }
-    if r * 2 <= 0 - d { q = q - 1 }
-    return Decimal{units: q, scale: s}
-}
+pub fn (a: Decimal) eq(b: &Decimal): bool { return a.cmp(b) == 0 }
 
-fn (a: &Decimal) show() {
-    var u = a.units
-    if u < 0 {
-        print("-")
-        u = 0 - u
+pub fn (d: Decimal) toStr(): str {
+    var u = d.units
+    let neg = u < 0
+    if neg { u = -u }
+    var s = i128ToStr(u)
+    if d.scale > 0 {
+        while len(s) <= d.scale { s = "0" + s }
+        let n = len(s)
+        s = strSlice(s, 0, n - d.scale) + "." + strSlice(s, n - d.scale, n)
     }
-    let p = pow10(a.scale)
-    print(u / p)
-    if a.scale > 0 {
-        print(".")
-        let f = u % p
-        var w = p / 10
-        while w > 1 && f < w {
-            print("0")
-            w = w / 10
-        }
-        print(f)
-    }
+    if neg { s = "-" + s }
+    return s
 }
 
 // ---------------------------------------------------------------- Money
-//
-// Money is generic over its currency. The currency is a type that supplies
-// associated functions (its code and its minor-unit scale); it holds no data.
-// Adding dollars to yen is a type error, not a run-time check.
 
-type Currency = interface {
-    fn code(): str
-    fn scale(): int
+pub type Currency = interface { fn code(): str; fn scale(): int }
+
+pub type Money[C: Currency] = value record { pub amount: Decimal }
+
+pub fn money[C: Currency](d: Decimal): Money[C] { return Money{amount: d.rescaled(C.scale())} }
+
+pub fn (a: Money[C]) add(b: Money[C]): Money[C] { return Money{amount: a.amount + b.amount} }
+pub fn (a: Money[C]) sub(b: Money[C]): Money[C] { return Money{amount: a.amount - b.amount} }
+pub fn (a: Money[C]) times(n: Decimal): Money[C] {
+    return Money{amount: (a.amount * n).rescaled(C.scale())}
+}
+pub fn (a: Money[C]) cmp(b: &Money[C]): int { return a.amount.cmp(&b.amount) }
+pub fn (a: Money[C]) eq(b: &Money[C]): bool { return a.amount.cmp(&b.amount) == 0 }
+pub fn (a: Money[C]) toStr(): str { return a.amount.toStr() + " " + C.code() }
+
+// ---------------------------------------------------------------- sort
+
+// Heap sort: in place, O(n log n), no allocation.
+pub fn sort[T: Ord](xs: mut &[]T) {
+    let n = len(xs)
+    var i = n / 2
+    while i > 0 {
+        i -= 1
+        siftDown(xs, i, n)
+    }
+    var end = n
+    while end > 1 {
+        end -= 1
+        swap(xs, 0, end)
+        siftDown(xs, 0, end)
+    }
 }
 
-type Money[C: Currency] = value record { amount: Decimal }
-
-fn (a: Money[C]) add(b: Money[C]): Money[C] {
-    return Money[C]{amount: a.amount + b.amount}
-}
-
-fn (a: Money[C]) sub(b: Money[C]): Money[C] {
-    return Money[C]{amount: a.amount - b.amount}
-}
-
-// Multiply by a rate and round to the currency's minor unit.
-fn (a: Money[C]) times(k: Decimal): Money[C] {
-    return Money[C]{amount: (a.amount * k).round(C.scale())}
-}
-
-fn (a: Money[C]) cmp(b: &Money[C]): int { return a.amount.cmp(&b.amount) }
-
-fn (m: &Money[C]) show() {
-    m.amount.rescaled(C.scale()).show()
-    print(" ")
-    print(C.code())
-}
-
-// ---------------------------------------------------------------- containers
-
-fn sort[T: Ord](xs: &[]T) {
-    for i in 1..len(xs) {
-        var j = i
-        while j > 0 && xs[j].cmp(&xs[j - 1]) < 0 {
-            swap(xs, j, j - 1)
-            j = j - 1
+fn siftDown[T: Ord](xs: mut &[]T, start: int, end: int) {
+    var root = start
+    while true {
+        var child = root * 2 + 1
+        if child >= end { break }
+        if child + 1 < end && xs[child] < xs[child + 1] { child += 1 }
+        if xs[root] < xs[child] {
+            swap(xs, root, child)
+            root = child
+        } else {
+            break
         }
     }
 }
 
-type Map[K: Eq, V] = record { keys: []K; vals: []V }
+// ---------------------------------------------------------------- Map
 
-fn newMap[K: Eq, V](): Map[K, V] {
-    return Map[K, V]{keys: []K{}, vals: []V{}}
+type Entry[K, V] = value record { key: K; val: V }
+
+// A hash map with separate chaining.
+pub type Map[K: Eq + Hash, V] = record { buckets: [][]Entry[K, V]; count: int }
+
+pub fn newMap[K: Eq + Hash, V](): Map[K, V] {
+    return Map{buckets: emptyBuckets(8), count: 0}
 }
 
-fn (m: &Map[K, V]) find(k: &K): int {
-    for i in 0..len(m.keys) {
-        if k.eq(&m.keys[i]) { return i }
+fn emptyBuckets[K, V](n: int): [][]Entry[K, V] {
+    var b: [][]Entry[K, V] = []
+    for i in 0..n { append(mut &b, []) }
+    return b
+}
+
+fn (m: &Map[K, V]) slot(k: &K): int { return int(k.hash() % u64(len(m.buckets))) }
+
+pub fn (m: &Map[K, V]) size(): int { return m.count }
+
+pub fn (m: &Map[K, V]) has(k: &K): bool {
+    let i = m.slot(k)
+    for j in 0..len(m.buckets[i]) {
+        if m.buckets[i][j].key == k { return true }
     }
-    return 0 - 1
+    return false
 }
 
-fn (m: &Map[K, V]) put(k: K, v: V) {
-    let i = m.find(&k)
-    if i < 0 {
-        append(m.keys, k)
-        append(m.vals, v)
-    } else {
-        m.vals[i] = v
-        drop(k)
+pub fn (m: &Map[K, V: copy]) get(k: &K): Option[V] {
+    let i = m.slot(k)
+    for j in 0..len(m.buckets[i]) {
+        if m.buckets[i][j].key == k { return Some(m.buckets[i][j].val) }
     }
+    return None
 }
 
-fn (m: &Map[K, V]) has(k: &K): bool { return m.find(k) >= 0 }
+// The value stored under k, borrowed from the map; stops the program if absent.
+pub fn (m: &Map[K, V]) at(k: K): &V {
+    let i = m.slot(&k)
+    for j in 0..len(m.buckets[i]) {
+        if m.buckets[i][j].key == k { return &m.buckets[i][j].val }
+    }
+    panic("Map.at: no such key")
+}
 
-fn (m: &Map[K, V]) size(): int { return len(m.keys) }
+pub fn (m: mut &Map[K, V]) put(k: K, v: V) {
+    let i = m.slot(&k)
+    for j in 0..len(m.buckets[i]) {
+        if m.buckets[i][j].key == k {
+            replace(mut &m.buckets[i][j].val, v)
+            return
+        }
+    }
+    append(mut &m.buckets[i], Entry{key: k, val: v})
+    m.count += 1
+    if m.count > 2 * len(m.buckets) { m.grow() }
+}
 
-// get copies the value out, so it needs a copyable V. Map[str, Node].get is a
-// compile error at the instantiation; use has, or a method that borrows.
-fn (m: &Map[K, V]) get(k: &K): Option[V] {
-    let i = m.find(k)
-    if i < 0 { return None{} }
-    return Some{value: m.vals[i]}
+fn (m: mut &Map[K, V]) grow() {
+    let n = len(m.buckets) * 2
+    var old = replace(mut &m.buckets, emptyBuckets(n))
+    while len(old) > 0 {
+        var bucket = pop(mut &old)
+        while len(bucket) > 0 {
+            let e = pop(mut &bucket)
+            let i = int(e.key.hash() % u64(n))
+            append(mut &m.buckets[i], e)
+        }
+    }
 }

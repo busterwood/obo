@@ -1,0 +1,7 @@
+// expect: 6
+fn main() {
+    let _x = 1
+    let x_1 = 2
+    let Ab2 = 3
+    println(_x + x_1 + Ab2)
+}

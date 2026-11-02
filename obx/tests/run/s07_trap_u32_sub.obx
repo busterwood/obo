@@ -1,0 +1,3 @@
+// exit: 10
+fn sub(a: u32, b: u32): u32 { return a - b }
+fn main() { println(int(sub(0, 1))) }

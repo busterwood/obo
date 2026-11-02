@@ -1,0 +1,20 @@
+// expect: 3
+// expect: -2
+// expect: 7
+// expect: ok
+// expect: ok
+fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
+fn main() {
+    let two: float = 2.0
+    let a = float(7) / two
+    println(int(a))
+    let b: float = -2.7
+    println(int(b))
+    let c: float = 3.5
+    println(int(c + c))
+    check(a > c - 0.25)
+    let x: float = 0.1
+    let y: float = 0.2
+    let z: float = 0.3
+    check(x + y != z)
+}

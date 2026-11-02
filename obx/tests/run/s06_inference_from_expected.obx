@@ -1,0 +1,16 @@
+// expect: 0
+// expect: 1
+// expect: 0
+fn empty[T](): []T { return [] }
+fn main() {
+    let a: []int = empty()
+    println(len(a))
+    var b: []str = empty()
+    append(mut &b, "x")
+    println(len(b))
+    let o: Option[int] = None
+    match o {
+        Some(v) { println(v) }
+        None { println(0) }
+    }
+}

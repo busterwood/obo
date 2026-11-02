@@ -1,0 +1,19 @@
+// expect: 20
+// expect: 10
+// expect: bad
+type D = record { id: int }
+fn (d: mut &D) drop() { println(d.id) }
+fn mk(id: int): D { return D{id: id} }
+fn fail(): Result[int, str] { return Err("bad") }
+fn run(): Result[int, str] {
+    let a = mk(10)
+    let b = mk(20)
+    let v = try fail()
+    return Ok(v + a.id + b.id)
+}
+fn main() {
+    match run() {
+        Ok(v) { println(v) }
+        Err(e) { println(e) }
+    }
+}

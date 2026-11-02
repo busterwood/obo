@@ -1,0 +1,20 @@
+// expect: 42
+// expect: 15001
+import "lib/ast"
+import "lib/ast" as a2
+fn fromFraction(d: int, s: int): int { return d * 1000 + s }
+fn eval(e: &ast.Expr, env: &ast.Env[int]): int {
+    match e {
+        ast.Num(n) { return n }
+        ast.Add(l, r) { return eval(l, env) + eval(r, env) }
+        ast.Var(nm) { return env.find(nm) }
+    }
+}
+fn main() {
+    var env: ast.Env[int] = ast.newEnv()
+    env.bind("x", 40)
+    let e = ast.Add(ast.Var{name: "x"}, a2.Num(2))
+    println(eval(&e, &env))
+    let f = 1.5
+    println(f)
+}

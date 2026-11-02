@@ -1,0 +1,6 @@
+// error: counter
+var counter: int = 0
+fn bump(c: mut &int) { c += 1 }
+fn main() {
+    bump(mut &counter)
+}

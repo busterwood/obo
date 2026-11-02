@@ -1,0 +1,12 @@
+// expect: 3
+// expect: 5
+// expect: 9
+// expect: 2
+fn main() {
+    var xs = [7, 8]
+    println(len("abc"))
+    append(mut &xs, 9)
+    println(len(xs) + 2)
+    println(pop(mut &xs))
+    println(len(xs))
+}

@@ -1,0 +1,8 @@
+// error: xs|borrow
+type D = record { id: int }
+fn main() {
+    var xs = [D{id: 1}]
+    for d in xs {
+        xs = []
+    }
+}

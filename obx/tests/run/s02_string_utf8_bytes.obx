@@ -1,0 +1,6 @@
+// expect: 2
+// expect: 3
+fn main() {
+    println(len("é"))
+    println(len("€"))
+}

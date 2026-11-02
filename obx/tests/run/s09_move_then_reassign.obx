@@ -1,0 +1,13 @@
+// expect: 100
+// expect: 1
+// expect: 2
+// expect: 2
+type D = record { id: int }
+fn (d: mut &D) drop() { println(d.id) }
+fn eat(d: D) { println(100) }
+fn main() {
+    var a = D{id: 1}
+    eat(a)
+    a = D{id: 2}
+    println(a.id)
+}

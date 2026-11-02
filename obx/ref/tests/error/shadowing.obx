@@ -1,0 +1,6 @@
+// error: 'x' is already declared in this function (no shadowing)
+// line: 5
+fn main() {
+    let x = 1
+    if true { let x = 2 }
+}

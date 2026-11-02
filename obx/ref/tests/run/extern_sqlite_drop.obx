@@ -1,0 +1,36 @@
+// expect: true
+// expect: 5
+// expect: 0
+// expect: closed
+extern "sqlite3" fn sqlite3_libversion_number(): i32
+extern "sqlite3" fn sqlite3_open(path: str, out: mut &ptr): i32
+extern "sqlite3" fn sqlite3_close(db: ptr): i32
+extern "sqlite3" fn sqlite3_exec(db: ptr, sql: str, cb: ptr, arg: ptr, err: ptr): i32
+extern "c" fn strlen(s: str): int
+
+type Db = record { h: ptr }
+fn (d: mut &Db) drop() {
+    sqlite3_close(d.h)
+    println("closed")
+}
+fn open(path: str): Result[Db, int] {
+    var h: ptr = nullPtr()
+    let rc = sqlite3_open(path, mut &h)
+    if rc != 0 { return Err(int(rc)) }
+    return Ok(Db{h: h})
+}
+extern "c" fn getenv(name: str): ptr
+fn nullPtr(): ptr { return getenv("OBX_SURELY_UNSET_VAR") }
+
+fn main() {
+    println(int(sqlite3_libversion_number()) > 3000000)
+    println(strlen("hello"))
+    match open(":memory:") {
+        Ok(db) {
+            let n = null()
+            println(int(sqlite3_exec(db.h, "create table t(x)", n, n, n)))
+        }
+        Err(e) { println(e) }
+    }
+}
+fn null(): ptr { return nullPtr() }

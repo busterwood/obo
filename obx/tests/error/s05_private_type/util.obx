@@ -1,0 +1,2 @@
+type Hidden = record { v: int }
+pub fn make(): Hidden { return Hidden{v: 1} }

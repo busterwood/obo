@@ -1,0 +1,8 @@
+// error: 'a' is borrowed by 'b' and cannot be mutably borrowed while that borrow is in scope
+// line: 7
+fn main() {
+    var xs = [1, 2]
+    let a = mut &xs
+    let b = &a[0]
+    append(a, 3)
+}

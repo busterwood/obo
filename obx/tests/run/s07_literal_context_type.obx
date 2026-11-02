@@ -1,0 +1,12 @@
+// expect: 6
+// expect: 255
+// expect: 3
+fn main() {
+    let x: i32 = 5
+    let y = x + 1
+    println(int(y))
+    let b: byte = 254
+    println(int(b + 1))
+    let u: u64 = 1
+    println(int(u + 2))
+}

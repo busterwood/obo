@@ -1,0 +1,5 @@
+// error:
+fn main() {
+    let s = "a\qb"
+    println(s)
+}

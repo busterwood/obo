@@ -1,0 +1,10 @@
+// expect: 5
+// expect: 7
+extern "c" fn abs(n: i32): i32
+extern "c" fn labs(n: int): int
+fn main() {
+    let n: i32 = -5
+    println(int(abs(n)))
+    let m = -7
+    println(labs(m))
+}

@@ -1,0 +1,9 @@
+// expect: 9
+type Into[T] = interface { fn (&Self) into(): T }
+type Nine = value record {}
+fn (n: &Nine) into(): int { return 9 }
+fn conv[X: Into[int]](x: &X): int { return x.into() }
+fn main() {
+    let n = Nine{}
+    println(conv(&n))
+}

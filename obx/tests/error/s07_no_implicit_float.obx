@@ -1,0 +1,5 @@
+// error: float
+fn main() {
+    let a: int = 1
+    let b: float = a
+}

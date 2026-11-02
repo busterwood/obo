@@ -1,0 +1,6 @@
+// error: copy
+type D = record { id: int }
+fn dup[T: copy](x: T): []T { return [x, x] }
+fn main() {
+    let a = dup(D{id: 1})
+}

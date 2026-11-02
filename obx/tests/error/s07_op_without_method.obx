@@ -1,0 +1,7 @@
+// error: add
+type P = value record { x: int }
+fn main() {
+    let a = P{x: 1}
+    let b = P{x: 2}
+    let c = a + b
+}

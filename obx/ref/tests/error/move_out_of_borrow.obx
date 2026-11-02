@@ -1,0 +1,6 @@
+// error: cannot move a D out of a borrow (d): it is not a copy type
+// line: 5
+type D = record { v: int }
+fn take(d: D) {}
+fn f(d: &D) { take(d) }
+fn main() {}

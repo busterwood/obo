@@ -1,0 +1,6 @@
+// error: xs|overlap|borrow
+fn two(a: mut &[]int, b: &[]int) {}
+fn main() {
+    var xs = [1]
+    two(mut &xs, &xs)
+}

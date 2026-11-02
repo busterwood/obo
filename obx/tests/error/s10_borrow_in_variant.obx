@@ -1,0 +1,3 @@
+// error: borrow|second|field
+type V = closed { Ref(&int) }
+fn main() {}

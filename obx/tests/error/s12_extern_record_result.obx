@@ -1,0 +1,4 @@
+// error: badfn|extern|type
+type R = value record { x: int }
+extern "c" fn badfn(): R
+fn main() {}

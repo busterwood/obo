@@ -1,0 +1,5 @@
+// error: try needs a function whose result type has an Err variant (like Result), and f returns int
+// line: 4
+fn p(): Result[int, str] { return Ok(1) }
+fn f(): int { return try p() }
+fn main() {}

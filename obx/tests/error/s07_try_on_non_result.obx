@@ -1,0 +1,6 @@
+// error: try|Ok|Err|Result
+fn f(): Result[int, str] {
+    let v = try 5
+    return Ok(v)
+}
+fn main() {}

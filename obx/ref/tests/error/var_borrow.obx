@@ -1,0 +1,6 @@
+// error: a borrow cannot be stored in var 'r': borrows are second class (use let)
+// line: 5
+fn main() {
+    var x = 1
+    var r = &x
+}

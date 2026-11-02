@@ -1,0 +1,10 @@
+// expect: 0
+// expect: 1
+// expect: 2
+// expect: 3
+type D = record { id: int }
+fn (d: mut &D) drop() { println(d.id) }
+fn main() {
+    let xs = [D{id: 1}, D{id: 2}, D{id: 3}]
+    println(0)
+}

@@ -1,0 +1,15 @@
+// expect: idx
+// expect: 25
+// expect: 2
+fn idx(): int {
+    println("idx")
+    return 1
+}
+fn main() {
+    var xs = [10, 20]
+    xs[idx()] += 5
+    println(xs[1])
+    var y = 7
+    y %= 5
+    println(y)
+}

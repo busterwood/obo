@@ -1,0 +1,10 @@
+// expect: 4
+// expect: 4
+type Pair[A, B] = value record { a: A; b: B }
+fn pairUp[T: copy](x: T): Pair[T, T] { return Pair{a: x, b: x} }
+fn sum(p: Pair[int, int]): int { return p.a + p.b }
+fn twice[T: copy](x: T): Pair[T, T] { return pairUp(x) }
+fn main() {
+    println(sum(pairUp(2)))
+    println(sum(twice(2)))
+}

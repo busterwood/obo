@@ -1,0 +1,12 @@
+// expect: 16
+fn main() {
+    var i = 0
+    var s = 0
+    while true {
+        i += 1
+        if i % 2 == 0 { continue }
+        if i > 7 { break }
+        s += i
+    }
+    println(s)
+}

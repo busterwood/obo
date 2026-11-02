@@ -1,0 +1,7 @@
+// error: drop
+type D = record { id: int }
+fn (d: mut &D) drop() { }
+fn main() {
+    var a = D{id: 1}
+    a.drop()
+}

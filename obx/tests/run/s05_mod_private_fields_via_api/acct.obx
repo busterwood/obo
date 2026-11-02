@@ -1,0 +1,4 @@
+pub type Acct = record { cents: int }
+pub fn open(c: int): Acct { return Acct{cents: c} }
+pub fn (a: &Acct) balance(): int { return a.cents }
+pub fn (a: mut &Acct) deposit(c: int) { a.cents += c }

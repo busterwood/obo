@@ -1,0 +1,4 @@
+// error: byte
+fn main() {
+    let b: byte = 256
+}

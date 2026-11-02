@@ -1,7 +1,0 @@
-// error: cannot move 'n' while another argument borrows it
-type Node = record { v: int }
-fn both(a: &Node, b: Node) {}
-fn main() {
-    let n = Node{v: 1}
-    both(&n, n)
-}

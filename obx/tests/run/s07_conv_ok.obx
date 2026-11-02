@@ -1,0 +1,19 @@
+// expect: 200
+// expect: 7
+// expect: 7
+// expect: 3
+// expect: -3
+// expect: 255
+// expect: -5
+fn main() {
+    let n = 200
+    println(int(byte(n)))
+    println(int(i32(7)))
+    println(int(u32(7)))
+    let f: float = 3.99
+    println(int(f))
+    let g: float = -3.99
+    println(int(g))
+    println(int(u32(255)))
+    println(int(i128(-5)))
+}

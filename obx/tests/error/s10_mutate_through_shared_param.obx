@@ -1,0 +1,4 @@
+// error: dd
+type D = record { id: int }
+fn f(dd: &D) { dd.id = 1 }
+fn main() {}

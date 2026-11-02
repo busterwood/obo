@@ -1,0 +1,5 @@
+// error: str
+type P = value record { x: int }
+fn main() {
+    let p = P{x: "no"}
+}

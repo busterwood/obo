@@ -1,0 +1,7 @@
+// error: sizeof
+type Named = interface { fn (&Self) name(): str }
+type Thing = record { n: int }
+fn (t: &Thing) name(): str { return "x" }
+fn (t: &Thing) sizeof(): int { return 1 }
+fn f[T: Named](x: &T): int { return x.sizeof() }
+fn main() {}

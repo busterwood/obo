@@ -1,0 +1,14 @@
+// expect: made
+// expect: freed
+extern "c" fn malloc(n: int): ptr
+extern "c" fn free(p: ptr)
+type Buf = record { p: ptr }
+fn (b: mut &Buf) drop() {
+    free(b.p)
+    println("freed")
+}
+fn newBuf(n: int): Buf { return Buf{p: malloc(n)} }
+fn main() {
+    let b = newBuf(16)
+    println("made")
+}

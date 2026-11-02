@@ -1,0 +1,11 @@
+// expect: -5
+// expect: -6
+// expect: 5
+// expect: ok
+fn main() {
+    let x = 5
+    println(-x)
+    println(~x)
+    println(- -x)
+    if !(x == 4) { println("ok") }
+}

@@ -1,0 +1,5 @@
+// error: infer
+fn empty[T](): []T { return [] }
+fn main() {
+    let a = empty()
+}

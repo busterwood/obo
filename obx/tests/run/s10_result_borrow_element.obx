@@ -1,0 +1,8 @@
+// expect: 10
+type D = record { id: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn main() {
+    let xs = [D{id: 10}, D{id: 20}]
+    let r = first(&xs)
+    println(r.id)
+}

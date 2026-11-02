@@ -1,0 +1,22 @@
+// expect: 12
+// expect: 6
+// expect: 0
+type Shape = value closed { Rect(int, int); Sq(int); Empty }
+fn (s: &Shape) area(): int {
+    var r = 0
+    match s {
+        Rect(w, h) { r = w * h }
+        Sq(n) { r = n * n }
+        Empty { r = 0 }
+    }
+    return r
+}
+fn main() {
+    let a = Rect(3, 4)
+    let b = a
+    println(a.area())
+    let c = Rect(2, 3)
+    println(c.area())
+    let e: Shape = Empty
+    println(e.area())
+}

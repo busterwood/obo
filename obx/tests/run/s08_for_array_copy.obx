@@ -1,0 +1,7 @@
+// expect: 60
+fn main() {
+    let xs = [10, 20, 30]
+    var s = 0
+    for x in xs { s += x }
+    println(s)
+}

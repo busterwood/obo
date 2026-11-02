@@ -1,0 +1,89 @@
+// expect: 42
+// expect: 5
+// expect: 6
+// expect: 6
+// expect: 3
+// expect: P(1, 2)
+// expect: P(10, 2)
+// expect: 22
+// expect: global
+// expect: 6
+// expect: green
+// expect: 5
+// expect: 21
+// expect: 5
+// expect: sq 4
+// expect: 7
+type P = value record { x: int; y: int }
+fn (p: P) sum(): int { return p.x + p.y }
+fn (p: &P) toStr(): str { return "P(" + p.x.toStr() + ", " + p.y.toStr() + ")" }
+type Color = value closed { Red; Green; Rgb(int, int, int) }
+var origin: P = P{x: 1, y: 2}
+var col: Color = Rgb(1, 2, 3)
+var name: str = "gl" + "obal"
+var counter: int = 10
+const K = 3 * 4
+
+fn double(x: int): int { return x * 2 }
+fn apply(f: fn(int): int, x: int): int { return f(x) }
+fn ident[T](x: T): T { return x }
+fn mapAll(xs: &[]int, f: fn(int): int): []int {
+    var out: []int = []
+    for x in xs { append(mut &out, f(x)) }
+    return out
+}
+fn bump(var n: int): int {
+    n += 1
+    return n
+}
+fn at(xs: mut &[]int, i: int): mut &int { return mut &xs[i] }
+fn biggest(xs: &[]P): &P {
+    var bi = 0
+    for i in 0..len(xs) {
+        if xs[i].sum() > xs[bi].sum() { bi = i }
+    }
+    return &xs[bi]
+}
+type Shape = interface { fn area(): int; fn (&Self) name(): str }
+type Sq = value record { s: int }
+fn (Sq) area(): int { return 4 }
+fn (q: &Sq) name(): str { return "sq" }
+fn describe[T: Shape](x: &T): str { return x.name() + " " + T.area().toStr() }
+
+fn main() {
+    println(apply(double, 21))
+    println(apply(ident[int], 5))
+    let f: fn(int): int = ident
+    println(f(6))
+    let ys = mapAll(&[1, 2, 3], double)
+    println(ys[2])
+    println(origin.sum())
+    println(origin)
+    origin.x = 10
+    println(origin.toStr())
+    counter += K
+    println(counter)
+    println(name)
+    match col {
+        Rgb(r, g, b) { println(r + g + b) }
+        else { println("other") }
+    }
+    col = Green
+    match col {
+        Green { println("green") }
+        else { println("other") }
+    }
+    println(bump(4))
+    var xs = [1, 2, 3]
+    {
+        let r = at(mut &xs, 1)
+        r = 20
+        r += 1
+    }
+    println(xs[1])
+    let ps = [P{x: 1, y: 1}, P{x: 5, y: 5}, P{x: 2, y: 0}]
+    let b = biggest(&ps)
+    println(b.x)
+    println(describe(&Sq{s: 2}))
+    println(P{x: 3, y: 4}.sum())
+}

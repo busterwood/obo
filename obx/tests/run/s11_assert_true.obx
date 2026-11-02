@@ -1,0 +1,5 @@
+// expect: ok
+fn main() {
+    assert(1 + 1 == 2)
+    println("ok")
+}

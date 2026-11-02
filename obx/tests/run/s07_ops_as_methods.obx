@@ -1,0 +1,48 @@
+// expect: 7
+// expect: -1
+// expect: 12
+// expect: 3
+// expect: 1
+// expect: -4
+// expect: ok
+// expect: ok
+// expect: ok
+// expect: ok
+// expect: ok
+// expect: ok
+type Dec = value record { u: int }
+fn (a: Dec) add(b: Dec): Dec { return Dec{u: a.u + b.u} }
+fn (a: Dec) sub(b: Dec): Dec { return Dec{u: a.u - b.u} }
+fn (a: Dec) mul(b: Dec): Dec { return Dec{u: a.u * b.u} }
+fn (a: Dec) div(b: Dec): Dec { return Dec{u: a.u / b.u} }
+fn (a: Dec) rem(b: Dec): Dec { return Dec{u: a.u % b.u} }
+fn (a: Dec) neg(): Dec { return Dec{u: 0 - a.u} }
+fn (a: &Dec) eq(b: &Dec): bool { return a.u == b.u }
+fn (a: &Dec) cmp(b: &Dec): int {
+    if a.u < b.u { return -1 }
+    if a.u > b.u { return 1 }
+    return 0
+}
+fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
+fn main() {
+    let a = Dec{u: 3}
+    let b = Dec{u: 4}
+    let s = a + b
+    println(s.u)
+    let d = a - b
+    println(d.u)
+    let m = a * b
+    println(m.u)
+    let q = m / b
+    println(q.u)
+    let r = b % a
+    println(r.u)
+    let n = -b
+    println(n.u)
+    check(a == a)
+    check(a != b)
+    check(a < b)
+    check(a <= a)
+    check(b > a)
+    check(b >= a)
+}

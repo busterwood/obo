@@ -1,0 +1,7 @@
+// error: cc
+type C = record { n: int }
+fn (c: mut &C) inc() { c.n += 1 }
+fn main() {
+    let cc = C{n: 0}
+    cc.inc()
+}

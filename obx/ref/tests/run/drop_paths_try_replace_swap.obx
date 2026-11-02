@@ -1,0 +1,89 @@
+// expect: drop 100
+// expect: drop 200
+// expect: 301
+// expect: drop 101
+// expect: drop 201
+// expect: bad 2
+// expect: b!
+// expect: xyxy
+// expect: n1
+// expect: 2
+// expect: drop 1
+// expect: 3
+// expect: 6
+// expect: drop 5
+// expect: st
+// expect: drop 8
+// expect: end
+// expect: drop 9
+// expect: drop 10
+// expect: drop 6
+// expect: drop 7
+// expect: drop 3
+// expect: drop 4
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop " + d.id.toStr()) }
+type Pair = value record { a: str; b: str }
+type Tag = value closed { Name(str); Num(int) }
+type Holder = value record { d: D; n: int }
+
+fn mk(i: int): D { return D{id: i} }
+fn f(d: D, n: int): int { return d.id + n }
+fn fails(i: int): Result[int, str] {
+    if i > 1 { return Err("bad " + i.toStr()) }
+    return Ok(i)
+}
+fn chain(i: int): Result[int, str] {
+    let x = f(mk(100 + i), try fails(i)) + f(mk(200 + i), try fails(i + 1))
+    return Ok(x)
+}
+fn early(xs: []str): str {
+    for s in xs {
+        if s == "b" { return s + "!" }
+    }
+    return "none"
+}
+fn consume(t: Tag): str {
+    match t {
+        Name(s) { return s }
+        Num(n) { return n.toStr() }
+    }
+}
+fn main() {
+    match chain(0) {
+        Ok(v) { println(v) }
+        Err(e) { println(e) }
+    }
+    match chain(1) {
+        Ok(v) { println(v) }
+        Err(e) { println(e) }
+    }
+    println(early(["a", "b", "c"]))
+    let p = Pair{a: "x" + "y", b: "z"}
+    let q = p
+    println(q.a + p.a)
+    var tags = [Name("n" + "1"), Num(2)]
+    let t0 = tags[0]
+    println(consume(t0))
+    println(consume(tags[1]))
+    var h = Holder{d: mk(1), n: 2}
+    h.d = mk(3)
+    let old = replace(mut &h.d, mk(4))
+    println(old.id)
+    var ds = [mk(5), mk(6)]
+    swap(mut &ds, 0, 1)
+    println(ds[0].id)
+    ds[1] = mk(7)
+    var o: Option[str] = Some("s" + "t")
+    let o2 = o
+    o = None
+    match o2 {
+        Some(s) { println(s) }
+        None {}
+    }
+    var dd = mk(8)
+    dd = mk(9)
+    let moved = move(dd)
+    dd = mk(10)
+    println("end")
+}

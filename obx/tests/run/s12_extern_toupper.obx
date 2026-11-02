@@ -1,0 +1,5 @@
+// expect: 65
+extern "c" fn toupper(c: i32): i32
+fn main() {
+    println(int(toupper(i32(97))))
+}

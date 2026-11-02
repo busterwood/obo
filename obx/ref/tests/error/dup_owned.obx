@@ -1,0 +1,5 @@
+// error: 'x' was moved and has no value here
+// line: 4
+type Node = record { v: int }
+fn dup[T](x: T): []T { return [x, x] }
+fn main() {}

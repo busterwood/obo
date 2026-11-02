@@ -1,0 +1,9 @@
+// expect: 5
+// expect: 2
+type P = value record { x: int; y: int }
+fn main() {
+    var ps = [P{x: 1, y: 2}, P{x: 3, y: 4}]
+    ps[0].x = 5
+    println(ps[0].x)
+    println(ps[0].y)
+}

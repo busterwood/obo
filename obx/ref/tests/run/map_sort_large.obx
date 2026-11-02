@@ -1,0 +1,28 @@
+// expect: 28572
+// expect: 0
+// expect: 100002
+// expect: 50000
+// expect: 20000
+fn main() {
+    var m: Map[int, int] = newMap()
+    for i in 0..200000 { m.put(i * 7, i) }
+    var hits = 0
+    for i in 0..200000 {
+        match m.get(&i) {
+            Some(v) { hits += 1 }
+            None {}
+        }
+    }
+    println(hits)
+    var xs: []int = []
+    for i in 0..200000 { append(mut &xs, (i * 7919) % 100003) }
+    sort(mut &xs)
+    println(xs[0])
+    println(xs[199999])
+    var sm: Map[str, int] = newMap()
+    for i in 0..50000 { sm.put("k" + i.toStr(), i) }
+    println(sm.size())
+    var b = newStrBuf()
+    for i in 0..10000 { b.add("ab") }
+    println(len(b.toStr()))
+}

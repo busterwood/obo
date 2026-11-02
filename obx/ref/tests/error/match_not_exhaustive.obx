@@ -1,0 +1,10 @@
+// error: match on C is not exhaustive: missing Cc
+// line: 6
+type C = closed { A; B; Cc }
+fn main() {
+    let c = A
+    match c {
+        A {}
+        B {}
+    }
+}

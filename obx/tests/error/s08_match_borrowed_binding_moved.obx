@@ -1,0 +1,11 @@
+// error: move|borrow
+type D = record { id: int }
+type Op = closed { Has(D); Nope }
+fn eat(d: D) {}
+fn main() {
+    let o = Has(D{id: 1})
+    match o {
+        Has(d) { eat(d) }
+        Nope { }
+    }
+}

@@ -1,0 +1,6 @@
+// error: i32
+fn main() {
+    let a: int = 1
+    let b: i32 = 2
+    let c = a + b
+}

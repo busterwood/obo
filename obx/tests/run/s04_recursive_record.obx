@@ -1,0 +1,14 @@
+// expect: 6
+type Tree = record { v: int; kids: []Tree }
+fn (t: &Tree) sum(): int {
+    var s = t.v
+    for k in t.kids { s += k.sum() }
+    return s
+}
+fn main() {
+    var root = Tree{v: 1, kids: []}
+    append(mut &root.kids, Tree{v: 2, kids: []})
+    var c = Tree{v: 3, kids: []}
+    append(mut &root.kids, c)
+    println(root.sum())
+}

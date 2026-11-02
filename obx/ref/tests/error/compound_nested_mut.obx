@@ -1,0 +1,7 @@
+// error: 'xs' cannot be mutably borrowed here: an enclosing call already holds a borrow of it
+// line: 6
+fn f(xs: mut &[]int): int { return pop(xs) }
+fn main() {
+    var xs = [1, 2, 3]
+    xs[0] += f(mut &xs)
+}

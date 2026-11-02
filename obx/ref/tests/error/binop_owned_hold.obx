@@ -1,0 +1,10 @@
+// error: 'xs' cannot be mutably borrowed here: an enclosing call already holds a borrow of it
+// line: 9
+type B = record { v: int }
+fn (a: &B) add(b: &B): B { return B{v: a.v + b.v} }
+fn first(xs: &[]B): &B { return &xs[0] }
+fn popv(xs: mut &[]B): B { return pop(xs) }
+fn main() {
+    var xs = [B{v: 1}, B{v: 2}]
+    let c = xs[0] + popv(mut &xs)
+}

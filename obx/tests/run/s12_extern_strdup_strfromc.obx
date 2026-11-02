@@ -1,0 +1,11 @@
+// expect: hi there
+// expect: 8
+extern "c" fn strdup(s: str): ptr
+extern "c" fn free(p: ptr)
+fn main() {
+    let p = strdup("hi there")
+    let s = strFromC(p)
+    free(p)
+    println(s)
+    println(len(s))
+}

@@ -1,0 +1,4 @@
+// error: borrow|pick
+type D = record { id: int }
+fn pick(a: &D, b: &D): &D { return &a }
+fn main() {}

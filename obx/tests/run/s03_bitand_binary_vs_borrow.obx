@@ -1,0 +1,10 @@
+// expect: 2
+// expect: 5
+fn len2(a: &[]int): int { return len(a) }
+fn main() {
+    let a = 6
+    let b = 3
+    var xs = [1, 2]
+    println(a & b)
+    println(len2(&xs) + (a & b) + 1)
+}

@@ -1,0 +1,5 @@
+// error: Hidden
+import "util"
+fn main() {
+    let p: util.Hidden = util.make()
+}

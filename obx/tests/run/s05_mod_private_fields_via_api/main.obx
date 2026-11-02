@@ -1,0 +1,9 @@
+// expect: 7
+// expect: 8
+import "acct"
+fn main() {
+    var a = acct.open(7)
+    println(a.balance())
+    a.deposit(1)
+    println(a.balance())
+}

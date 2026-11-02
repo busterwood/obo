@@ -1,0 +1,61 @@
+// expect: b
+// expect: ab
+// expect: b
+// expect: c5
+// expect: 1C2C
+// expect: 9
+// expect: zz
+// expect: <<5>>
+// expect: 1
+type Into[U] = interface { fn (&Self) into(): U }
+type Stack[T] = record { items: []T }
+fn (Stack[T]) new(): Stack[T] { return Stack{items: []} }
+fn (s: mut &Stack[T]) push(v: T) { append(mut &s.items, v) }
+fn (s: mut &Stack[T]) pop(): Option[T] {
+    if len(s.items) == 0 { return None }
+    return Some(pop(mut &s.items))
+}
+fn (s: &Stack[T]) peek(): &T { return &s.items[len(s.items) - 1] }
+fn (s: &Stack[T: Show]) dump(): str {
+    var b = newStrBuf()
+    for x in s.items { b.add(x.toStr()) }
+    return b.toStr()
+}
+type Celsius = value record { c: int }
+fn (x: &Celsius) into(): str { return x.c.toStr() + "C" }
+fn (x: Celsius) toStr(): str { return "c" + x.c.toStr() }
+fn render[T: Into[str]](xs: &[]T): str {
+    var s = ""
+    for x in xs { s += x.into() }
+    return s
+}
+fn biggest[T: Ord + copy](xs: &[]T): T {
+    var m = xs[0]
+    for x in xs { if x > m { m = x } }
+    return m
+}
+type Wrap[T: Show] = value record { v: T }
+fn (w: &Wrap[T]) toStr(): str { return "<" + w.v.toStr() + ">" }
+
+fn main() {
+    var s = Stack[str].new()
+    s.push("a")
+    s.push("b")
+    println(s.peek())
+    println(s.dump())
+    match s.pop() {
+        Some(x) { println(x) }
+        None {}
+    }
+    var t: Stack[Celsius] = Stack.new()
+    t.push(Celsius{c: 5})
+    println(t.dump())
+    println(render(&[Celsius{c: 1}, Celsius{c: 2}]))
+    println(biggest(&[3, 9, 2]))
+    println(biggest(&["x", "zz", "y"]))
+    let w = Wrap{v: Wrap{v: 5}}
+    println(w)
+    var st2: Stack[Stack[int]] = Stack.new()
+    st2.push(Stack.new())
+    println(len(st2.items))
+}

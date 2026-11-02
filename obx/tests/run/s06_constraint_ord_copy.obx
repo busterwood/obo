@@ -1,0 +1,18 @@
+// expect: 9
+// expect: 5
+// expect: b
+type Pt = value record { x: int }
+fn (a: &Pt) cmp(b: &Pt): int {
+    if a.x < b.x { return -1 }
+    if a.x > b.x { return 1 }
+    return 0
+}
+fn maxOf[T: Ord + copy](a: T, b: T): T {
+    if a < b { return b }
+    return a
+}
+fn main() {
+    println(maxOf(3, 9))
+    println(maxOf(Pt{x: 1}, Pt{x: 5}).x)
+    println(maxOf("a", "b"))
+}

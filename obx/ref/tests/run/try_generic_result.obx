@@ -1,0 +1,21 @@
+// expect: 4
+// expect: drop 4
+// expect: e
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop " + d.id.toStr()) }
+fn pass[T](r: Result[T, str]): Result[T, str] {
+    let x = try r
+    return Ok(x)
+}
+fn main() {
+    let p: Result[D, str] = Ok(D{id: 4})
+    match pass(p) {
+        Ok(x) { println(x.id) }
+        Err(e) {}
+    }
+    let q: Result[D, str] = Err("e")
+    match pass(q) {
+        Ok(x) {}
+        Err(e) { println(e) }
+    }
+}

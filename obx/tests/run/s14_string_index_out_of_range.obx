@@ -1,0 +1,6 @@
+// exit: 3
+fn main() {
+    let s = "abc"
+    let i = 5
+    println(int(strByte(s, i)))
+}

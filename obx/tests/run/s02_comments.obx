@@ -1,0 +1,7 @@
+// expect: 8
+// expect: 1
+// a comment line
+fn main() { // trailing comment
+    println(len("http://x")) // not a comment inside a string
+    println(1) // another
+}

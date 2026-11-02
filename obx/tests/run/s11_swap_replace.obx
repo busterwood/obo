@@ -1,0 +1,14 @@
+// expect: 3
+// expect: 1
+// expect: 9
+// expect: 2
+fn main() {
+    var xs = [1, 2, 3]
+    swap(mut &xs, 0, 2)
+    println(xs[0])
+    println(xs[2])
+    var n = 2
+    let old = replace(mut &n, 9)
+    println(n)
+    println(old)
+}

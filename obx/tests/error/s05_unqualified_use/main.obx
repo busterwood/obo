@@ -1,0 +1,5 @@
+// error: double
+import "util"
+fn main() {
+    println(double(4))
+}

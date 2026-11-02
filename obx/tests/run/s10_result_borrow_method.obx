@@ -1,0 +1,9 @@
+// expect: 4
+type D = record { id: int }
+type Outer = record { d: D; n: int }
+fn (o: &Outer) dref(): &D { return &o.d }
+fn main() {
+    let o = Outer{d: D{id: 4}, n: 1}
+    let r = o.dref()
+    println(r.id)
+}

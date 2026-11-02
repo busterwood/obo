@@ -1,0 +1,7 @@
+// error: Weighted
+type Weighted = interface { fn (&Self) weight(): int }
+type Plain = record { x: int }
+type Bag[T: Weighted] = record { items: []T }
+fn main() {
+    let b: Bag[Plain] = Bag[Plain]{items: []}
+}

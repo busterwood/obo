@@ -1,0 +1,9 @@
+// error: Sized
+type Sized = interface { fn (&Self) size(): int }
+type Box = record { n: int }
+fn (b: &Box) size(): str { return "x" }
+fn total[T: Sized](x: &T): int { return 1 }
+fn main() {
+    let b = Box{n: 1}
+    println(total(&b))
+}

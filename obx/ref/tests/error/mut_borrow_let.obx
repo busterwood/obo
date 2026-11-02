@@ -1,0 +1,7 @@
+// error: cannot mutably borrow 'x': it is declared with let, not var
+// line: 6
+fn f(x: mut &int) {}
+fn main() {
+    let x = 1
+    f(mut &x)
+}

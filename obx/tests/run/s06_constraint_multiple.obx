@@ -1,0 +1,15 @@
+// expect: bob
+// expect: 3
+type Named = interface { fn (&Self) name(): str }
+type Sized = interface { fn (&Self) size(): int }
+type Thing = record { n: int }
+fn (t: &Thing) name(): str { return "bob" }
+fn (t: &Thing) size(): int { return t.n }
+fn describe[T: Named + Sized](x: &T): int {
+    println(x.name())
+    return x.size()
+}
+fn main() {
+    let t = Thing{n: 3}
+    println(describe(&t))
+}

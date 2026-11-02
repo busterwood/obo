@@ -1,0 +1,12 @@
+// expect: 0
+// expect: 0
+type Meters = value record { n: int }
+type Zero = interface { fn zero(): Self }
+fn (Meters) zero(): Meters { return Meters{n: 0} }
+fn zeroOf[T: Zero](): T { return T.zero() }
+fn main() {
+    let m: Meters = zeroOf()
+    println(m.n)
+    let k = zeroOf[Meters]()
+    println(k.n)
+}

@@ -1,0 +1,14 @@
+pub type Expr = closed { Num(int); Add(Expr, Expr); Var { pub name: str } }
+pub type Env[V] = record { names: []str; vals: []V }
+pub fn newEnv[V](): Env[V] { return Env{names: [], vals: []} }
+pub fn (e: mut &Env[V]) bind(n: str, v: V) {
+    append(mut &e.names, n)
+    append(mut &e.vals, v)
+}
+pub fn (e: &Env[V]) find(n: str): &V {
+    for i in 0..len(e.names) {
+        if e.names[i] == n { return &e.vals[i] }
+    }
+    panic("unbound " + n)
+}
+fn secretHelper(): int { return 1 }

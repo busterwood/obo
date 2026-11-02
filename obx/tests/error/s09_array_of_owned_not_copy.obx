@@ -1,0 +1,5 @@
+// error: copy
+type D = record { id: int }
+fn main() {
+    let xs = array(2, D{id: 1})
+}

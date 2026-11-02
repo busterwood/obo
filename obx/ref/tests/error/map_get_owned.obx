@@ -1,0 +1,9 @@
+// error: Node is not a copy type (type parameter V needs copy)
+// line: 8
+type Node = record { v: int }
+fn main() {
+    var m: Map[str, Node] = newMap()
+    m.put("a", Node{v: 1})
+    let k = "a"
+    let r = m.get(&k)
+}

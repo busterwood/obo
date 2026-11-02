@@ -1,0 +1,19 @@
+// expect: 6
+// expect: odd
+fn half(n: int): Result[int, str] {
+    if n % 2 != 0 { return Err("odd") }
+    return Ok(n / 2)
+}
+fn both(a: int, b: int): Result[int, str] {
+    return Ok(try half(a) + try half(b))
+}
+fn show(r: Result[int, str]) {
+    match r {
+        Ok(v) { println(v) }
+        Err(e) { println(e) }
+    }
+}
+fn main() {
+    show(both(4, 8))
+    show(both(4, 3))
+}

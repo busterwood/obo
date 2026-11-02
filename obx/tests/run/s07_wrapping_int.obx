@@ -1,0 +1,16 @@
+// expect: ok
+// expect: ok
+// expect: 0
+// expect: -2
+// expect: ok
+fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
+fn main() {
+    let mx = 9223372036854775807
+    let mn = -9223372036854775807 - 1
+    check(mx +% 1 == mn)
+    check(mn -% 1 == mx)
+    println(4611686018427387904 *% 4)
+    let m32: i32 = 2147483647
+    println(int(m32 *% 2))
+    check(0 -% 1 == -1)
+}

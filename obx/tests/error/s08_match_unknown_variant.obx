@@ -1,0 +1,10 @@
+// error: Purple
+type Color = value closed { Red; Green }
+fn main() {
+    let c = Red
+    match c {
+        Red { }
+        Purple { }
+        else { }
+    }
+}

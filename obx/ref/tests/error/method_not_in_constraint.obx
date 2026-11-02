@@ -1,0 +1,4 @@
+// error: T has no method 'hash' (its constraints do not provide it)
+// line: 3
+fn f[T: Eq](a: &T): u64 { return a.hash() }
+fn main() {}

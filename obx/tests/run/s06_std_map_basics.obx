@@ -1,0 +1,19 @@
+// expect: 2
+// expect: 3
+// expect: no
+// expect: yes
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    m.put("b", 2)
+    m.put("a", 3)
+    println(m.size())
+    let k = "a"
+    match m.get(&k) {
+        Some(v) { println(v) }
+        None { println(-1) }
+    }
+    let z = "z"
+    if m.has(&z) { println("yes") } else { println("no") }
+    if m.has(&k) { println("yes") } else { println("no") }
+}

@@ -1,0 +1,5 @@
+// error: prm
+fn f(prm: int) {
+    prm = 2
+}
+fn main() { f(1) }

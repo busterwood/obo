@@ -1,0 +1,7 @@
+// error: Pair|int|str
+type Pair[A, B] = value record { a: A; b: B }
+fn want(p: Pair[int, int]) {}
+fn main() {
+    let p = Pair{a: 1, b: "x"}
+    want(p)
+}

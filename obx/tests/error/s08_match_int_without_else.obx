@@ -1,0 +1,8 @@
+// error: else|exhaust
+fn main() {
+    let n = 1
+    match n {
+        1 { println(1) }
+        2 { println(2) }
+    }
+}

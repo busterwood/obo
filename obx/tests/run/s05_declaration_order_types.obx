@@ -1,0 +1,7 @@
+// expect: 3
+fn main() {
+    let o = Outer{i: Inner{v: 3}}
+    println(o.i.v)
+}
+type Outer = record { i: Inner }
+type Inner = value record { v: int }

@@ -1,0 +1,7 @@
+// expect: 4
+type D = record { id: int }
+fn peek(d: &D): int { return d.id }
+fn main() {
+    let a = D{id: 4}
+    println(peek(&a))
+}

@@ -1,0 +1,44 @@
+// expect: -5
+// expect: (1 + mul 2)
+// expect: 42
+// expect: sum()
+// expect: mul 5
+// boxed recursive closed type, borrowing and consuming match
+type Expr = closed {
+    Num(int)
+    Add(Expr, Expr)
+    Mul(Expr, Expr)
+    Neg(Expr)
+    Call { name: str; args: []Expr }
+}
+fn eval(e: &Expr): int {
+    match e {
+        Num(n) { return n }
+        Add(a, b) { return eval(a) + eval(b) }
+        Mul(a, b) { return eval(a) * eval(b) }
+        Neg(a) { return -eval(a) }
+        Call(name, args) {
+            var s = 0
+            for x in args { s += eval(x) }
+            return s
+        }
+    }
+}
+fn show(e: Expr): str {
+    match move(e) {
+        Num(n) { return n.toStr() }
+        Add(a, b) { return "(" + show(a) + " + " + show(b) + ")" }
+        Mul(a, _) { return "mul " + show(a) }
+        Neg(a) { return "-" + show(a) }
+        Call(name, _) { return name + "()" }
+    }
+}
+fn main() {
+    let e = Add(Num(1), Mul(Num(2), Neg(Num(3))))
+    println(eval(&e))
+    println(show(e))
+    let c = Call{name: "sum", args: [Num(1), Num(2), Num(39)]}
+    println(eval(&c))
+    println(show(c))
+    println(show(Mul(Num(5), Call{name: "f", args: []})))
+}

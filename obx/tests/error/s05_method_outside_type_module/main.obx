@@ -1,0 +1,4 @@
+// error: method|module|declare|receiver
+import "geom"
+fn (p: &geom.P) extra(): int { return 1 }
+fn main() {}

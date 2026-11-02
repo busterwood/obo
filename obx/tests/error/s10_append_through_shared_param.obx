@@ -1,0 +1,3 @@
+// error: xs
+fn f(xs: &[]int) { append(mut &xs, 1) }
+fn main() {}

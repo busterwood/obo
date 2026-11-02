@@ -1,0 +1,14 @@
+// error: move
+type D = record { id: int }
+type Op = closed { Has(D); Nope }
+fn main() {
+    let o = Has(D{id: 1})
+    match move(o) {
+        Has(d) { }
+        Nope { }
+    }
+    match o {
+        Has(d) { }
+        Nope { }
+    }
+}

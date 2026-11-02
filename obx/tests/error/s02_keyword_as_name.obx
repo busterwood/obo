@@ -1,0 +1,4 @@
+// error: match
+fn main() {
+    let match = 1
+}

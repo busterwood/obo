@@ -1,0 +1,5 @@
+// error: fixedvar
+fn main() {
+    let fixedvar = 1
+    fixedvar = 2
+}

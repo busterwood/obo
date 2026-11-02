@@ -1,0 +1,9 @@
+// expect: 4611686018427387904
+// expect: ok
+fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
+fn main() {
+    let a = i128(4611686018427387904)
+    let big = a * i128(4)
+    println(int(big / i128(4)))
+    check(big > a)
+}

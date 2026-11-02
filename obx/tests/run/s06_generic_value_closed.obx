@@ -1,0 +1,15 @@
+// expect: 3
+// expect: none
+type Maybe[T] = value closed { Has(T); Nothing }
+fn show(m: &Maybe[int]) {
+    match m {
+        Has(v) { println(v) }
+        Nothing { println("none") }
+    }
+}
+fn main() {
+    let a = Has(3)
+    let b: Maybe[int] = Nothing
+    show(&a)
+    show(&b)
+}

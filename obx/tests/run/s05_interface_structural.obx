@@ -1,0 +1,14 @@
+// expect: 12
+// expect: 6
+type Sized = interface { fn (&Self) size(): int }
+type Box = record { n: int }
+fn (b: &Box) size(): int { return b.n * 2 }
+type Tag = value record { n: int }
+fn (t: Tag) size(): int { return t.n }
+fn total[T: Sized](x: &T): int { return x.size() }
+fn main() {
+    let b = Box{n: 6}
+    println(total(&b))
+    let t = Tag{n: 6}
+    println(total(&t))
+}

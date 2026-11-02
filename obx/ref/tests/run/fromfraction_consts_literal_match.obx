@@ -1,0 +1,99 @@
+// expect: 150
+// expect: 12
+// expect: 2
+// expect: t!new
+// expect: 2
+// expect: xy
+// expect: 10
+// expect: 1267650600228229401496703205376
+// expect: obx!
+// expect: 3
+// expect: 201
+// expect: 10
+// expect: none
+// expect: A
+// expect: five
+// expect: 1
+type Cents = value record { c: int }
+fn (Cents) fromFraction(d: int, s: int): Cents {
+    var c = d
+    var k = s
+    while k < 2 { c *= 10; k += 1 }
+    while k > 2 { c /= 10; k -= 1 }
+    return Cents{c: c}
+}
+type Inner = value record { n: int; tags: []str }
+type Outer = record { i: Inner; o: Option[Inner] }
+type Lbl = value closed { Plain(str); Pair { a: str; b: str } }
+var LB: Lbl = Pair{a: "x", b: "y"}
+const N: i32 = 5
+const BIG: u128 = 1 << 100
+const NAME = "obx"
+const F: float = 1.5
+
+fn classify(s: str): int {
+    match s {
+        "a", "b" { return 1 }
+        "" { return 0 }
+        else { return 2 }
+    }
+}
+fn bump(o: mut &Outer) {
+    o.i.n += 1
+    o.i.tags[0] += "!"
+    append(mut &o.i.tags, "new")
+}
+fn mkOpt(n: int): Option[[]int] {
+    if n == 0 { return None }
+    return Some(array(n, 7))
+}
+fn main() {
+    let c: Cents = 1.5
+    println(c.c)
+    let d: Cents = 0.125
+    println(d.c)
+    var o = Outer{i: Inner{n: 1, tags: ["t"]}, o: Some(Inner{n: 2, tags: []})}
+    bump(mut &o)
+    println(o.i.n)
+    println(o.i.tags[0] + o.i.tags[1])
+    match o.o {
+        Some(inner) { println(inner.n) }
+        None {}
+    }
+    match LB {
+        Pair(a, b) { println(a + b) }
+        Plain(s) { println(s) }
+    }
+    let n: i32 = N * 2
+    println(int(n))
+    println(BIG.toStr())
+    println(NAME + "!")
+    let f: float = F * 2.0
+    println(f.toStr())
+    println(classify("b") + classify("") * 10 + classify("zz") * 100)
+    match mkOpt(3) {
+        Some(xs) { println(len(xs) + xs[2]) }
+        None {}
+    }
+    match mkOpt(0) {
+        Some(xs) {}
+        None { println("none") }
+    }
+    let b: byte = 'A'
+    match b {
+        'A' { println("A") }
+        else {}
+    }
+    let u: u128 = 5
+    match u {
+        5 { println("five") }
+        else {}
+    }
+    for i in 0..3 {
+        match i {
+            0 { continue }
+            2 { break }
+            else { println(i) }
+        }
+    }
+}

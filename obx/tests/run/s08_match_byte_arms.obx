@@ -1,0 +1,12 @@
+// expect: vowel
+// expect: other
+fn kind(c: byte) {
+    match c {
+        'a', 'e', 'i', 'o', 'u' { println("vowel") }
+        else { println("other") }
+    }
+}
+fn main() {
+    kind('e')
+    kind('x')
+}

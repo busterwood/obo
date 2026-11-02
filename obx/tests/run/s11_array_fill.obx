@@ -1,0 +1,14 @@
+// expect: 4
+// expect: 0
+// expect: 0
+// expect: 5
+// expect: 0
+fn main() {
+    var xs = array(4, 0)
+    println(len(xs))
+    println(xs[0])
+    println(xs[3])
+    xs[2] = 5
+    println(xs[2])
+    println(len(array(0, 1)))
+}

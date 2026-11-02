@@ -1,0 +1,8 @@
+// expect: 25
+type P = value record { x: int; y: int }
+fn (p: &P) norm2(): int { return p.x * p.x + p.y * p.y }
+fn via(q: &P): int { return q.norm2() }
+fn main() {
+    let p = P{x: 3, y: 4}
+    println(via(&p))
+}

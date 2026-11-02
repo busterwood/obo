@@ -1,0 +1,7 @@
+// error: move
+type V = value record { xs: []int }
+fn main() {
+    let a = V{xs: [1]}
+    let b = a
+    println(len(a.xs))
+}

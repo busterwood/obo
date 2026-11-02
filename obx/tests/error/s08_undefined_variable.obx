@@ -1,0 +1,4 @@
+// error: nosuchvar
+fn main() {
+    println(nosuchvar)
+}

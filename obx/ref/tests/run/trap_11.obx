@@ -1,0 +1,6 @@
+// exit: 3
+fn main() {
+    let xs = [1]
+    let i = 1
+    println(xs[i])
+}

@@ -1,0 +1,8 @@
+// expect: 12
+// expect: 3
+const K = 4
+fn main() {
+    let xs = array(3, K)
+    println(xs[0] + xs[1] + xs[2])
+    println(len(xs))
+}

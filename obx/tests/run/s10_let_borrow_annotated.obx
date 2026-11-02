@@ -1,0 +1,7 @@
+// expect: 4
+type D = record { id: int }
+fn main() {
+    let a = D{id: 4}
+    let r: &D = &a
+    println(r.id)
+}

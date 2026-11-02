@@ -1,0 +1,9 @@
+// expect: 60
+// expect: 6
+type D = record { id: int }
+fn (d: mut &D) drop() { println(d.id * 10) }
+fn mk(id: int): D { return D{id: id} }
+fn main() {
+    let n = mk(6).id
+    println(n)
+}

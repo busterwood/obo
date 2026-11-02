@@ -1,0 +1,6 @@
+// error: move
+type D = record { id: int }
+type W = record { d: D }
+fn eat(d: D) {}
+fn (w: mut &W) drop() { eat(w.d) }
+fn main() {}

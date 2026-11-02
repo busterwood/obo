@@ -1,0 +1,5 @@
+// expect: 43
+extern "c" fn atoi(s: str): i32
+fn main() {
+    println(int(atoi("42")) + 1)
+}

@@ -1,0 +1,21 @@
+// expect: 4
+// expect: no
+type Opt = value closed { Yes(int); No }
+type Wrap = value closed { W(Opt); Bare }
+fn f(w: &Wrap) {
+    match w {
+        W(o) {
+            match o {
+                Yes(n) { println(n) }
+                No { println("no") }
+            }
+        }
+        Bare { println("bare") }
+    }
+}
+fn main() {
+    let a = W(Yes(4))
+    let b = W(No)
+    f(&a)
+    f(&b)
+}

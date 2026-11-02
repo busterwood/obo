@@ -1,0 +1,5 @@
+// error:
+fn main() {
+    let x: int
+    println(1)
+}

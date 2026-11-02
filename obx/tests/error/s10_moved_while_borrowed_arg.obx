@@ -1,0 +1,7 @@
+// error: zed
+type D = record { id: int }
+fn both(a: &D, b: D) {}
+fn main() {
+    let zed = D{id: 1}
+    both(&zed, zed)
+}

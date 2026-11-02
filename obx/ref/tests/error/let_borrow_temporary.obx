@@ -1,0 +1,7 @@
+// error: cannot borrow a temporary into let 'r': the temporary does not outlive the statement
+// line: 6
+type D = record { v: int }
+fn mk(): D { return D{v: 1} }
+fn main() {
+    let r = &mk()
+}

@@ -1,0 +1,5 @@
+// exit: 10
+fn main() {
+    let b: byte = 255
+    println(int(b + 1))
+}

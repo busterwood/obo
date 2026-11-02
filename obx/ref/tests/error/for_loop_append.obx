@@ -1,0 +1,6 @@
+// error: 'xs' is borrowed by the for loop and cannot be mutably borrowed while that borrow is in scope
+// line: 5
+fn main() {
+    var xs = [1, 2]
+    for x in xs { append(mut &xs, x) }
+}

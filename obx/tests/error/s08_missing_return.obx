@@ -1,0 +1,5 @@
+// error: return
+fn f(): int {
+    let a = 1
+}
+fn main() { println(f()) }

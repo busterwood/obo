@@ -1,0 +1,17 @@
+// expect: neg
+// expect: zero
+// expect: pos
+fn kind(n: int) {
+    if n < 0 {
+        println("neg")
+    } else if n == 0 {
+        println("zero")
+    } else {
+        println("pos")
+    }
+}
+fn main() {
+    kind(-5)
+    kind(0)
+    kind(9)
+}

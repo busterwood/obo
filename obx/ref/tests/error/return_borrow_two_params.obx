@@ -1,0 +1,4 @@
+// error: f returns a borrow, so it needs exactly one borrowed parameter, not 2
+// line: 3
+fn f(a: &int, b: &int): &int { return a }
+fn main() {}

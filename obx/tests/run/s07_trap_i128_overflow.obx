@@ -1,0 +1,8 @@
+// exit: 10
+fn mul(a: i128, b: i128): i128 { return a * b }
+fn main() {
+    let big = mul(i128(4611686018427387904), i128(4611686018427387904))
+    let huge = mul(big, big)
+    let huger = mul(huge, big)
+    println(int(huger))
+}

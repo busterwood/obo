@@ -1,0 +1,7 @@
+// error: cannot return a borrow of 'xs': a borrow result must be rooted at the borrowed parameter 'p', not a local or temporary
+// line: 5
+fn f(p: &[]int): &int {
+    let xs = [1]
+    return &xs[0]
+}
+fn main() {}

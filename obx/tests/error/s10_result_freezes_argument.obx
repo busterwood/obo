@@ -1,0 +1,9 @@
+// error: xs|borrow
+type D = record { id: int }
+fn first(xs: &[]D): &D { return &xs[0] }
+fn main() {
+    var xs = [D{id: 1}]
+    let r = first(&xs)
+    append(mut &xs, D{id: 2})
+    println(r.id)
+}

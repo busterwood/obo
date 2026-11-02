@@ -1,0 +1,13 @@
+// expect: 1
+// expect: x
+// expect: 2
+// expect: y
+type Pair[A, B] = record { a: A; b: B }
+fn main() {
+    let p = Pair{a: 1, b: "x"}
+    println(p.a)
+    println(p.b)
+    let q = Pair[int, str]{a: 2, b: "y"}
+    println(q.a)
+    println(q.b)
+}

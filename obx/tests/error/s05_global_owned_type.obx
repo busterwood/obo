@@ -1,0 +1,3 @@
+// error: bigList|global|owned
+var bigList: []int = []
+fn main() {}

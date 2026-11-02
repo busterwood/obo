@@ -1,0 +1,76 @@
+// expect: b
+// expect: 3
+// expect: 6
+// expect: inc 11
+// expect: dbl 20
+// expect: 14
+// expect: 6
+// expect: 123589
+// expect: a
+type E = record {}
+type VE = value record {}
+type K = value closed { A; B }
+type One = closed { Only(int) }
+type List[T] = closed { Cons(T, List[T]); Nil }
+type Ops = value record { f: fn(int): int; name: str }
+type Box[T] = record { v: T; fs: []fn(T): T }
+type Tree = closed { Leaf; Node { left: Tree; val: int; right: Tree } }
+
+fn inc(x: int): int { return x + 1 }
+fn pick(b: bool): fn(int): int {
+    if b { return inc }
+    return dbl
+}
+fn dbl(x: int): int { return x * 2 }
+fn sumList[T](l: &List[T], f: fn(&T): int): int {
+    match l {
+        Cons(h, t) { return f(h) + sumList(t, f) }
+        Nil { return 0 }
+    }
+}
+fn val(x: &int): int { return x }
+fn insert(t: Tree, v: int): Tree {
+    match move(t) {
+        Leaf { return Node{left: Leaf, val: v, right: Leaf} }
+        Node(l, x, r) {
+            if v < x { return Node{left: insert(l, v), val: x, right: r} }
+            return Node{left: l, val: x, right: insert(r, v)}
+        }
+    }
+}
+fn walk(t: &Tree, out: mut &[]int) {
+    match t {
+        Leaf {}
+        Node(l, x, r) {
+            walk(l, out)
+            append(out, x)
+            walk(r, out)
+        }
+    }
+}
+fn main() {
+    let e = E{}
+    let ve = VE{}
+    let k = B
+    match k { A { println("a") } B { println("b") } }
+    let o = Only(3)
+    match o { Only(n) { println(n) } }
+    let l = Cons(1, Cons(2, Cons(3, Nil)))
+    println(sumList(&l, val))
+    let ops = [Ops{f: inc, name: "inc"}, Ops{f: dbl, name: "dbl"}]
+    for op in ops { println(op.name + " " + op.f(10).toStr()) }
+    println(pick(false)(7))
+    let b = Box{v: 2, fs: [inc, dbl]}
+    var acc = b.v
+    for f in b.fs { acc = f(acc) }
+    println(acc)
+    var t: Tree = Leaf
+    for x in [5, 2, 8, 1, 9, 3] { t = insert(move(t), x) }
+    var out: []int = []
+    walk(&t, mut &out)
+    var s = ""
+    for x in out { s += x.toStr() }
+    println(s)
+    let ls = Cons("a", Nil)
+    match ls { Cons(h, _) { println(h) } Nil {} }
+}

@@ -1,0 +1,19 @@
+// expect: 20
+// expect: none
+fn find(xs: &[]int, v: int): Option[int] {
+    for i in 0..len(xs) {
+        if xs[i] == v { return Some(i * 10) }
+    }
+    return None
+}
+fn show(o: Option[int]) {
+    match o {
+        Some(n) { println(n) }
+        None { println("none") }
+    }
+}
+fn main() {
+    let xs = [5, 6, 7]
+    show(find(&xs, 7))
+    show(find(&xs, 9))
+}

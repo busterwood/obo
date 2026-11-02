@@ -1,0 +1,5 @@
+// error: infer|ident|type argument
+fn ident[T](v: T): T { return v }
+fn main() {
+    let f = ident
+}

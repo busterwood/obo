@@ -1,0 +1,9 @@
+// error: Two|binding|field|pattern|arity
+type P = value closed { Two(int, int); None2 }
+fn main() {
+    let c = Two(1, 2)
+    match c {
+        Two(a) { }
+        None2 { }
+    }
+}

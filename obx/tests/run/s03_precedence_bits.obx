@@ -1,0 +1,17 @@
+// expect: ok
+// expect: ok
+// expect: 8
+// expect: 10
+// expect: 0
+// expect: 6
+// expect: 24
+fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
+fn main() {
+    check(5 & 1 == 1)
+    check(3 | 4 == 7)
+    println(1 << 2 + 1)
+    println(6 & 3 | 8)
+    println(1 | 2 ^ 3)
+    println(4 | 2)
+    println(3 << 2 << 1)
+}

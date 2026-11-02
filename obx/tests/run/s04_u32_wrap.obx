@@ -1,0 +1,10 @@
+// expect: 4294967295
+// expect: 0
+// expect: 1
+fn main() {
+    let z: u32 = 0
+    let m = z -% 1
+    println(int(m))
+    println(int(m +% 1))
+    println(int(m >> 31))
+}

@@ -1,0 +1,7 @@
+// error: pp|overlap|borrow
+type P = record { x: int; y: int }
+fn two(a: mut &int, b: mut &int) {}
+fn main() {
+    var pp = P{x: 1, y: 2}
+    two(mut &pp.x, mut &pp.x)
+}

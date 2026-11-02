@@ -1,0 +1,10 @@
+// expect: one
+// expect: zero
+fn main() {
+    for i in 3..5 {
+        match i % 2 {
+            0 { println("zero") }
+            else { println("one") }
+        }
+    }
+}

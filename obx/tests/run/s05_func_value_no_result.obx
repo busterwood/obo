@@ -1,0 +1,4 @@
+// expect: hi
+fn say(s: str) { println(s) }
+fn run(f: fn(str), s: str) { f(s) }
+fn main() { run(say, "hi") }

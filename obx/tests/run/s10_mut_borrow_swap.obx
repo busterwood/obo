@@ -1,0 +1,14 @@
+// expect: 2
+// expect: 1
+fn swp(a: mut &int, b: mut &int) {
+    let t: int = a
+    a = b
+    b = t
+}
+fn main() {
+    var x = 1
+    var y = 2
+    swp(mut &x, mut &y)
+    println(x)
+    println(y)
+}

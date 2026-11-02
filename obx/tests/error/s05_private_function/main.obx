@@ -1,0 +1,5 @@
+// error: hidden
+import "util"
+fn main() {
+    util.hidden()
+}

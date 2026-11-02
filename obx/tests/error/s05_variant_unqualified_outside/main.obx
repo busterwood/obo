@@ -1,0 +1,5 @@
+// error: Circle
+import "shapes"
+fn main() {
+    let c = Circle(2)
+}

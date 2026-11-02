@@ -1,0 +1,2 @@
+pub type Id = value record { pub n: int }
+pub fn get(i: Id): int { return i.n }

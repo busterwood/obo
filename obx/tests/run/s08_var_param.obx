@@ -1,0 +1,11 @@
+// expect: 10
+// expect: 5
+fn dbl(var n: int): int {
+    n = n * 2
+    return n
+}
+fn main() {
+    let a = 5
+    println(dbl(a))
+    println(a)
+}

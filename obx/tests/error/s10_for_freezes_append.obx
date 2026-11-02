@@ -1,0 +1,7 @@
+// error: xs|borrow
+fn main() {
+    var xs = [1, 2]
+    for x in xs {
+        append(mut &xs, 3)
+    }
+}

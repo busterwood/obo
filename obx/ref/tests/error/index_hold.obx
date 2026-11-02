@@ -1,0 +1,9 @@
+// error: 'xs' cannot be mutably borrowed here: an enclosing call already holds a borrow of it
+// line: 8
+fn first(xs: &[][]int): &[]int { return &xs[0] }
+fn f(xs: mut &[][]int): int { let a = pop(xs)
+ return 0 }
+fn main() {
+    var xs = [[1], [2]]
+    println(first(&xs)[f(mut &xs)])
+}

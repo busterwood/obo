@@ -1,8 +1,0 @@
-// error: 'x' was moved and has no value here (in dup[Node])
-// dup[int] is fine; the same body is an error for an owned T.
-type Node = record { v: int }
-fn dup[T](x: T): []T { return [x, x] }
-fn main() {
-    let a = dup(1)
-    let b = dup(Node{v: 1})
-}

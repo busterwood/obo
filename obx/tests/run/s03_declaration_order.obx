@@ -1,0 +1,9 @@
+// expect: 12
+fn main() {
+    let t = Later{a: 3}
+    println(useLater(t) + CONST_B)
+}
+const CONST_B = LATER_BASE + 3
+const LATER_BASE = 3
+fn useLater(t: Later): int { return t.a * 2 }
+type Later = value record { a: int }

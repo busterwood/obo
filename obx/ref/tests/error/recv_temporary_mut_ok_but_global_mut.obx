@@ -1,0 +1,6 @@
+// error: cannot borrow global 'g'
+// line: 6
+type C = value record { n: int }
+fn (c: mut &C) inc() { c.n += 1 }
+var g: C = C{n: 0}
+fn main() { g.inc() }

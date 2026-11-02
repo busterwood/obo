@@ -1,0 +1,4 @@
+// error: move|borrow
+type D = record { id: int }
+fn f(d: &D): D { return d }
+fn main() {}

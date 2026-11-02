@@ -1,0 +1,8 @@
+// error: cannot move 'd' inside && or ||
+// line: 7
+type D = record { v: int }
+fn take(d: D): bool { return true }
+fn main() {
+    let d = D{v: 1}
+    if true && take(d) { }
+}

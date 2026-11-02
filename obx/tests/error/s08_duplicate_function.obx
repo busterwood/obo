@@ -1,0 +1,4 @@
+// error: dupfn
+fn dupfn() {}
+fn dupfn() {}
+fn main() {}

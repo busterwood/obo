@@ -1,0 +1,7 @@
+// expect: 8
+type D = record { id: int }
+fn both(a: &D, b: &D): int { return a.id + b.id }
+fn main() {
+    let a = D{id: 4}
+    println(both(&a, &a))
+}

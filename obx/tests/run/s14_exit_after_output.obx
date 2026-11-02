@@ -1,0 +1,6 @@
+// expect: before
+// exit: 12
+fn main() {
+    println("before")
+    panic("later")
+}

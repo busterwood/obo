@@ -1,0 +1,9 @@
+// error: Grow
+type Grow = interface { fn (mut &Self) grow() }
+type Box = record { n: int }
+fn (b: &Box) grow() { }
+fn need[T: Grow](x: &T) {}
+fn main() {
+    let b = Box{n: 1}
+    need(&b)
+}

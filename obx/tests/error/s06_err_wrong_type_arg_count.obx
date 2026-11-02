@@ -1,0 +1,5 @@
+// error: Pair
+type Pair[A, B] = value record { a: A; b: B }
+fn main() {
+    let p: Pair[int] = Pair[int]{a: 1, b: 2}
+}

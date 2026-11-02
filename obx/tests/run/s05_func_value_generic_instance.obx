@@ -1,0 +1,9 @@
+// expect: 5
+// expect: x
+fn ident[T](v: T): T { return v }
+fn apply(f: fn(int): int, v: int): int { return f(v) }
+fn main() {
+    println(apply(ident[int], 5))
+    let g = ident[str]
+    println(g("x"))
+}

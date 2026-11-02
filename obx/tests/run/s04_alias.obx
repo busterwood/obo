@@ -1,0 +1,17 @@
+// expect: 5
+// expect: 6
+// expect: 3
+type Meters = int
+type Ints = []int
+type Pair2 = Pair[int, int]
+type Pair[A, B] = value record { a: A; b: B }
+fn m(x: Meters): int { return x + 1 }
+fn main() {
+    let a: Meters = 4
+    let b: int = a
+    println(m(b))
+    var xs: Ints = [1, 2]
+    println(xs[0] + 5)
+    let p = Pair2{a: 1, b: 2}
+    println(p.a + p.b)
+}

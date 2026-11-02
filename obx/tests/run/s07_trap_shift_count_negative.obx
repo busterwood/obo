@@ -1,0 +1,3 @@
+// exit: 10
+fn sh(a: int, n: int): int { return a >> n }
+fn main() { println(sh(1, -1)) }

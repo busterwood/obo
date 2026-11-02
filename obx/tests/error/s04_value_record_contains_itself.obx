@@ -1,0 +1,3 @@
+// error: contain|recurs|infinite|cycl|itself
+type V = value record { v: V }
+fn main() {}

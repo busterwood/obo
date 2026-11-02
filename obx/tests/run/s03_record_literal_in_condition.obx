@@ -1,0 +1,9 @@
+// expect: yes
+// expect: 2
+type P = value record { x: int; y: int }
+fn main() {
+    if (P{x: 1, y: 2}).x == 1 { println("yes") }
+    let n = 0
+    while (P{x: n, y: 0}).x < 2 { break }
+    println(P{x: 1, y: 2}.y)
+}

@@ -1,0 +1,6 @@
+// exit: 2
+fn main() {
+    let n = -1
+    let xs = array(n, 0)
+    println(len(xs))
+}

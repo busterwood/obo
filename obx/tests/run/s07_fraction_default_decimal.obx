@@ -1,0 +1,6 @@
+// expect: ok
+fn main() {
+    let d = 1.25
+    let e = d
+    println("ok")
+}

@@ -1,0 +1,5 @@
+// error: CONSTX
+const CONSTX = 1
+fn main() {
+    CONSTX = 2
+}

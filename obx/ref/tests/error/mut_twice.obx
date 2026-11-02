@@ -1,0 +1,8 @@
+// error: 'n' is borrowed mutably twice in one call: a mut & argument may not overlap another borrowed or moved argument
+// line: 7
+type Node = record { v: int }
+fn both(a: mut &Node, b: &Node) {}
+fn main() {
+    var n = Node{v: 1}
+    both(mut &n, &n)
+}

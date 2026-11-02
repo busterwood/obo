@@ -1,0 +1,61 @@
+// expect: 1
+// expect: y
+// expect: 1
+// expect: 3
+// expect: 9
+// expect: 2
+// expect: got 3
+// expect: drop 3
+// expect: end
+// expect: drop 2
+// expect: drop 1
+// generics: owned T, nested Option, drop glue per instance
+type Node = record { name: str; kids: []Node }
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop " + d.id.toStr()) }
+
+fn wrap[T](x: T): Option[T] { return Some(x) }
+fn twice[T](x: T): []T {
+    var out: []T = []
+    append(mut &out, x)
+    return out
+}
+fn firstOr[T: copy](xs: &[]T, d: T): T {
+    if len(xs) == 0 { return d }
+    return xs[0]
+}
+fn count[T](o: &Option[T]): int {
+    match o {
+        Some(_) { return 1 }
+        None { return 0 }
+    }
+}
+fn main() {
+    let a = wrap(Node{name: "n", kids: [Node{name: "k", kids: []}]})
+    println(count(&a))
+    let b: Option[Option[[]str]] = Some(Some(["x", "y"]))
+    match b {
+        Some(inner) {
+            match inner {
+                Some(xs) { println(xs[1]) }
+                None {}
+            }
+        }
+        None {}
+    }
+    let c = twice(D{id: 1})
+    println(len(c))
+    println(firstOr(&[3, 4], 0))
+    let e: []int = []
+    println(firstOr(&e, 9))
+    let o = wrap(D{id: 2})
+    match o {
+        Some(d) { println(d.id) }
+        None {}
+    }
+    match wrap(D{id: 3}) {
+        Some(d) { println("got " + d.id.toStr()) }
+        None {}
+    }
+    println("end")
+}

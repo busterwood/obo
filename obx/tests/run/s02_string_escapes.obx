@@ -1,0 +1,18 @@
+// expect: 5
+// expect: AB
+// expect: say "hi"
+// expect: a\b
+// expect: 3
+// expect: 0
+// expect: Hi
+// expect: it's
+fn main() {
+    println(len("a\tb\n\\"))
+    println("\x41\x42")
+    println("say \"hi\"")
+    println("a\\b")
+    println(len("a\0b"))
+    println(len(""))
+    println("\x48i")
+    println("it\'s")
+}

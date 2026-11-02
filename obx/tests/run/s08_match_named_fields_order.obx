@@ -1,0 +1,12 @@
+// expect: 1
+// expect: 2
+type R = closed { Pt { x: int; y: int } }
+fn main() {
+    let r = Pt{x: 1, y: 2}
+    match r {
+        Pt(a, b) {
+            println(a)
+            println(b)
+        }
+    }
+}

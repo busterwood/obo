@@ -1,0 +1,6 @@
+// expect: 5
+fn main() {
+    let a: int = 5
+    var b: int = a
+    println(b)
+}

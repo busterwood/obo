@@ -1,0 +1,12 @@
+// expect: 8
+// expect: 14
+// expect: 6
+// expect: -1
+// expect: -13
+fn main() {
+    println(12 & 10)
+    println(12 | 10)
+    println(12 ^ 10)
+    println(~0)
+    println(~12)
+}

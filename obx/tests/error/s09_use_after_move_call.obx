@@ -1,0 +1,8 @@
+// error: move
+type D = record { id: int }
+fn eat(d: D) {}
+fn main() {
+    let a = D{id: 1}
+    eat(a)
+    eat(a)
+}

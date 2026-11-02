@@ -1,0 +1,9 @@
+// error: move
+type D = record { id: int }
+fn eat(d: D) {}
+fn main() {
+    var n = D{id: 1}
+    for i in 0..3 {
+        if i == 1 { eat(n) }
+    }
+}

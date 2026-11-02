@@ -1,0 +1,11 @@
+// expect: a
+// expect: b
+// expect: c
+// expect: 6
+fn a(): int { println("a"); return 1 }
+fn b(): int { println("b"); return 2 }
+fn c(): int { println("c"); return 3 }
+fn sum3(x: int, y: int, z: int): int { return x + y + z }
+fn main() {
+    println(sum3(a(), b(), c()))
+}

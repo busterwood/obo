@@ -1,0 +1,11 @@
+// expect: hello
+// expect: hello
+// expect: hello world
+fn main() {
+    let a = "hello"
+    var b = a
+    println(a)
+    println(b)
+    b = b + " world"
+    println(b)
+}

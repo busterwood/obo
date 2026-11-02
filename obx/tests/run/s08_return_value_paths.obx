@@ -1,0 +1,13 @@
+// expect: 1
+// expect: 2
+// expect: 3
+fn f(n: int): int {
+    if n == 0 { return 1 }
+    if n == 1 { return 2 }
+    return 3
+}
+fn main() {
+    println(f(0))
+    println(f(1))
+    println(f(2))
+}

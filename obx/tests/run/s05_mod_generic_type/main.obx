@@ -1,0 +1,10 @@
+// expect: 2
+// expect: 20
+import "container"
+fn main() {
+    var s: container.Stack[int] = container.newStack()
+    s.push(10)
+    s.push(20)
+    println(s.size())
+    println(s.top())
+}

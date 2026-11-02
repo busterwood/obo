@@ -1,0 +1,10 @@
+// expect: 4
+type M = value record { n: int }
+fn (a: M) cmp(b: &M): int { return a.n - b.n }
+fn smaller[T: Ord + copy](a: T, b: T): T {
+    if a < b { return a }
+    return b
+}
+fn main() {
+    println(smaller(M{n: 4}, M{n: 8}).n)
+}

@@ -1,0 +1,8 @@
+// error: zed
+type D = record { id: int }
+fn main() {
+    var zed = D{id: 1}
+    let r = &zed
+    zed.id = 2
+    println(r.id)
+}

@@ -1,0 +1,5 @@
+// expect: ok
+extern "c" fn getpid(): i32
+fn main() {
+    if int(getpid()) > 0 { println("ok") } else { println("FAIL") }
+}

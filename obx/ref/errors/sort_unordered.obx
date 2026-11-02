@@ -1,6 +1,0 @@
-// error: Point does not satisfy Ord (type parameter T): it has no method 'cmp'
-type Point = record { x: int; y: int }
-fn main() {
-    var ps = [Point{x: 1, y: 2}]
-    sort(&ps)
-}

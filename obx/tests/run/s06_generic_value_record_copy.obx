@@ -1,0 +1,10 @@
+// expect: 1
+// expect: 9
+type Pair[A, B] = value record { a: A; b: B }
+fn main() {
+    var p = Pair{a: 1, b: 2}
+    var q = p
+    q.a = 9
+    println(p.a)
+    println(q.a)
+}

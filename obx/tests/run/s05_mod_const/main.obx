@@ -1,0 +1,5 @@
+// expect: 11
+import "cfg"
+fn main() {
+    println(cfg.LIMIT + 1)
+}

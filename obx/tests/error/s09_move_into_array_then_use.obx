@@ -1,0 +1,8 @@
+// error: move
+type D = record { id: int }
+fn main() {
+    let d = D{id: 1}
+    var xs: []D = []
+    append(mut &xs, d)
+    println(d.id)
+}

@@ -1,0 +1,5 @@
+// error:
+fn f() {}
+fn main() {
+    let x = f()
+}

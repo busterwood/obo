@@ -1,0 +1,9 @@
+// error: cannot move a D out of a field or element of 'w'; use replace, swap or pop
+// line: 8
+type D = record { v: int }
+type W = record { d: D }
+fn take(d: D) {}
+fn main() {
+    let w = W{d: D{v: 1}}
+    take(w.d)
+}

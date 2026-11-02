@@ -1,0 +1,11 @@
+// expect: ok
+// expect: ok
+// expect: ok
+// expect: ok
+fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
+fn main() {
+    check(true || false && false)
+    check(!false && true)
+    check(!(true && false))
+    check(1 + 1 == 2 && 2 * 2 == 4)
+}

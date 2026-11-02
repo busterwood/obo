@@ -1,0 +1,10 @@
+// expect: 6
+// expect: 2
+type Pt = value record { x: int }
+fn dup[T: copy](x: T): []T { return [x, x] }
+fn main() {
+    let a = dup(3)
+    println(a[0] + a[1])
+    let b = dup(Pt{x: 1})
+    println(b[0].x + b[1].x)
+}

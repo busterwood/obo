@@ -1,0 +1,20 @@
+// expect: 3
+// expect: 20
+// expect: 4
+// expect: 9
+// expect: 4
+// expect: 9
+// expect: 2
+fn main() {
+    var xs = [10, 20, 30]
+    println(len(xs))
+    println(xs[1])
+    append(mut &xs, 40)
+    println(len(xs))
+    xs[0] = 9
+    println(xs[0])
+    println(len(xs))
+    println(pop(mut &xs) - 31)
+    swap(mut &xs, 0, 1)
+    println(xs[1] / 4)
+}

@@ -1,0 +1,2 @@
+pub type P = record { secret: int }
+pub fn make(): P { return P{secret: 1} }
