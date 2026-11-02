@@ -1,0 +1,8 @@
+// error: move
+type Cfg = record { xs: []int }
+var C: once Cfg
+fn keep(c: Cfg) {}
+fn main() {
+    C.set(Cfg{xs: []})
+    keep(C.get())
+}

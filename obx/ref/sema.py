@@ -69,7 +69,8 @@ class FnDecl:
 class Const:
     def __init__(self, ast, mod):
         self.ast, self.module, self.name, self.where, self.pub = ast, mod, ast.name, ast.where, ast.pub
-        self.value, self.busy = None, False
+        self.value, self.busy, self.table = None, False, None
+        self.cname = f"k{len(mod.cprefix)}_{mod.cprefix}_{self.name}"
 
 
 class Global:
@@ -599,9 +600,9 @@ class Program:
     def resolve_global(self, g):
         a = g.ast
         g.ty = self.resolve_type(a.ty, g.module, {}, 'global', a.where)
-        if not is_copy(g.ty):
+        if not is_copy(g.ty) and not a.once:
             raise CompileError(f"global {g.name} has the owned type {tstr(g.ty)}; globals must have "
-                               "copy types", a.where)
+                               f"copy types (or be set-once: var {g.name}: once {tstr(g.ty)})", a.where)
 
     # ---- constants
 
@@ -611,6 +612,14 @@ class Program:
                 raise CompileError(f"constant {c.name} refers to itself", c.where)
             c.busy = True
             t = self.resolve_type(c.ast.ty, c.module, {}, 'global', c.where) if c.ast.ty else None
+            if t is not None and t[0] in ('arr', 'inst'):     # a constant table, or a record/variant constant
+                et = t[1] if t[0] == 'arr' else t
+                if not is_copy(et):
+                    raise CompileError(f"const {c.name}: {tstr(et)} is not a copy type", c.where)
+                c.table, c.value, c.busy = t, (t, None, 'table'), False
+                return c.value
+            if t is None and c.ast.e.kind in ('arrlit', 'lit'):
+                raise CompileError(f"const {c.name} needs a declared type", c.where)
             try:
                 v = self.fold(c.ast.e, c.module, t)
             except CompileError as e:
@@ -680,6 +689,8 @@ class Program:
             if not isinstance(d, Const):
                 raise CompileError(f"{e.v if k == 'name' else e.name} is not a constant", e.where)
             v = self.const_value(d)
+            if v[2] == 'table':
+                raise CompileError(f"{d.name} is a constant table", e.where)
             if v[2] == 'typed':
                 return (v[0], v[1], 'float' if v[0] == FLOAT else 'int' if v[0][1] in INTS else v[0][1])
             return self.cto(v, t, e.where) if t and v[2] in ('int', 'frac') else v

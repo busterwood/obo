@@ -1,0 +1,7 @@
+// error: borrow|assign
+type Cfg = record { n: int }
+var C: once Cfg
+fn main() {
+    C.set(Cfg{n: 1})
+    C.get().n = 2
+}

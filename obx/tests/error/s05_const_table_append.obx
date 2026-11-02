@@ -1,0 +1,5 @@
+// error: append|array
+const TBL: []int = [1, 2]
+fn main() {
+    append(mut &TBL, 3)
+}

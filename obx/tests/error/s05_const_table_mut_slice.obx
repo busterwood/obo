@@ -1,0 +1,6 @@
+// error: mut
+const TBL: []int = [1, 2]
+fn zero(xs: mut &[int]) { xs[0] = 0 }
+fn main() {
+    zero(mut &TBL[0..1])
+}

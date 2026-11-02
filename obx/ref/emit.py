@@ -118,7 +118,7 @@ class Emitter:
     def glue_fn(self, kind, t):
         key = (kind, t)
         if key not in self.glue:
-            self.glue[key] = f"{kind}{len(self.glue)}"
+            self.glue[key] = f"gl{len(self.glue)}_{kind}"
             self.gluework.append(key)
         return self.glue[key]
 
@@ -262,11 +262,23 @@ class Emitter:
         globs, gdrops = [], []
         for m in self.prog.modules.values():
             for g in m.scope.values():
-                if g.__class__.__name__ == 'Global':
-                    c, holes = g.init
-                    globs.append(f"static {self.ctype(g.ty)} {g.cname} = {self.render(c, holes, {})};")
-                    if not pod(g.ty):
-                        gdrops.insert(0, self.drop_c(g.ty, g.cname) + ';')
+                if not hasattr(g, 'init'):
+                    continue
+                c, holes = g.init
+                t = getattr(g, 'ty', None) or g.table
+                if c is None:           # a set-once global: empty until set, dropped at exit if set
+                    globs.append(f"static {self.ctype(t)} {g.cname}; static bool {g.cname}_set;")
+                    if not pod(t):
+                        gdrops.insert(0, f"if ({g.cname}_set) {self.drop_c(t, g.cname)};")
+                elif t[0] == 'arr':     # a constant table: read-only static data seen as a slice
+                    items = ', '.join(self.render(x, holes, {}) for x in c)
+                    globs.append(f"static const {self.ctype(t[1])} {g.cname}_d[{len(c) or 1}] = {{{items or '0'}}};")
+                    globs.append(f"static const obx_slice {g.cname} = {{(void*){g.cname}_d, {len(c)}}};")
+                else:
+                    cq = 'const ' if hasattr(g, 'table') else ''
+                    globs.append(f"static {cq}{self.ctype(t)} {g.cname} = {self.render(c, holes, {})};")
+                    if not pod(t):
+                        gdrops.insert(0, self.drop_c(t, g.cname) + ';')
         while self.work or self.gluework:
             if self.work:
                 self.make_instance(*self.work.pop())

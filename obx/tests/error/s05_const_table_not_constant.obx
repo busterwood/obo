@@ -1,0 +1,4 @@
+// error: constant
+fn f(): int { return 1 }
+const TBL: []int = [1, f()]
+fn main() {}

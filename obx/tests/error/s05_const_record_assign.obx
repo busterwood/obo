@@ -1,0 +1,6 @@
+// error: constant
+type Pt = value record { x: int; y: int }
+const ORIGIN: Pt = Pt{x: 0, y: 0}
+fn main() {
+    ORIGIN.x = 1
+}

@@ -1,0 +1,22 @@
+// expect: false
+// expect: true
+// expect: cfg
+// expect: 2
+// expect: 5
+// expect: drop cfg
+type Cfg = record { name: str; xs: []int }
+fn (c: mut &Cfg) drop() { println("drop " + c.name) }
+var CONFIG: once Cfg
+var N: once int
+var UNUSED: once Cfg
+fn name(): str { return CONFIG.get().name }
+fn main() {
+    if CONFIG.isSet() { println("true") } else { println("false") }
+    CONFIG.set(Cfg{name: "cfg", xs: [1, 2]})
+    if CONFIG.isSet() { println("true") } else { println("false") }
+    let c = CONFIG.get()
+    println(name())
+    println(len(c.xs))
+    N.set(5)
+    println(N.get())
+}

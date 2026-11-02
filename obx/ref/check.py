@@ -158,7 +158,7 @@ class Checker:
                 if fd.extern is None:
                     self.check_fn(fd)
             for d in m.scope.values():
-                if isinstance(d, Global):
+                if isinstance(d, Global) or isinstance(d, Const) and self.prog.const_value(d)[2] == 'table':
                     self.global_init(d)
 
     def check_fn(self, fd):
@@ -644,6 +644,8 @@ class Checker:
         if v.cat != 'place':
             self.err("cannot assign to a value that is not a place", e.where)
         self.self_in_drop(v, e.where)
+        if isinstance(v.glob, Const):
+            self.err(f"cannot assign to constant {v.glob.name}", e.where)
         if v.glob is None:
             if not v.mutable:
                 self.immutable(v, e.where, 'assign to')
@@ -1172,6 +1174,8 @@ class Checker:
         if isinstance(d, Const):
             return self.const_val(d, exp, e.where)
         if isinstance(d, Global):
+            if d.ast.once:
+                self.err(f"{d.name} is a set-once global: use {d.name}.get(), .set(v) or .isSet()", e.where)
             return Val(d.cname, d.ty, 'place', root=None, mutable=True, glob=d)
         if isinstance(d, Variant):
             if d.fields:
@@ -1196,8 +1200,18 @@ class Checker:
             return Val(self.H('fn', d, targs), subst(ft, bind), 'rv')
         self.err(f"{d.name} is a type, not a value", e.where)
 
+    def static_var(self, d):
+        """The root of a borrow of static data (a constant table, a set-once global): never freed."""
+        if not hasattr(d, 'var'):
+            d.var = Var(d.name, d.cname, VOID, False, 'static', d.where)
+        return d.var
+
     def const_val(self, c, exp, where):
         ty, x, kind = self.prog.const_value(c)
+        if kind == 'table':
+            if ty[0] == 'arr':
+                return Val(c.cname, ('slice', ty[1], False), 'rv', root=self.static_var(c))
+            return Val(c.cname, ty, 'place', glob=c)
         if kind == 'typed':
             if ty[0] == 'prim' and ty[1] in INTS:
                 return Val(self.cint(x, ty), ty, 'rv')
@@ -1673,6 +1687,9 @@ class Checker:
             targs = [self.texpr(x) for x in f.items]
             f = f.e
         if f.kind == 'field':
+            og = self.static(f.e)
+            if og and isinstance(og[1], Global) and og[1].ast.once:
+                return self.once_call(og[1], f.name, e)
             st = self.static_ns(f.e)
             vst = self.static(f) if st is not None and st[0] != 'module' else None
             if vst is not None and isinstance(vst[1], Variant):
@@ -1713,6 +1730,23 @@ class Checker:
                 return self.call_value(self.static_value(st, f, None), e, exp)
             self.err(f"{d.name} is not a function", e.where)
         return self.call_value(self.expr(f, None), e, exp)
+
+    def once_call(self, g, name, e):
+        """SPEC 5.2: set(v) once, get() a borrow valid everywhere, isSet()."""
+        W, msg = self.W(e.where), cstr(f"set-once global {g.name}")[:-1]
+        if name not in ('set', 'get', 'isSet') or len(e.args) != (name == 'set'):
+            self.err(f"a set-once global has set(v), get() and isSet(), not {name} with {len(e.args)} "
+                     "arguments", e.where)
+        if name == 'isSet':
+            return Val(f"{g.cname}_set", BOOL, 'rv')
+        if name == 'get':
+            self.emit(f"if (!{g.cname}_set) rt_trap(12, {msg} is not set\", {W});")
+            return Val(f"(&{g.cname})", ('ref', g.ty, False), 'rv', root=self.static_var(g))
+        v = self.coerce(self.expr(e.args[0], g.ty), g.ty, e.where, f"the value of {g.name}")
+        c = self.consume(v, e.where)
+        self.emit(f"if ({g.cname}_set) rt_trap(12, {msg} is set twice\", {W});")
+        self.emit(f"{g.cname} = {c}; {g.cname}_set = 1;")
+        return Val('', VOID, 'rv')
 
     def typeish(self, x):
         """Whether x (in x.m[...]) can be a type argument rather than an index."""
@@ -2094,10 +2128,18 @@ class Checker:
     def global_init(self, g):
         self.ctx = Ctx(FnDecl(N('fn', g.where, name='<global>', pub=False, extern=None, tparams=[]), g.module))
         self.ctx.fd.env = {}
+        t, e = getattr(g, 'ty', None) or g.table, g.ast.e
         try:
-            c = self.const_init(g.ast.e, g.ty)
-        except CompileError as e:
-            raise CompileError(f"the initializer of global {g.name} must be constant: {e.msg}", e.where)
+            if g.ast.kind == 'global' and g.ast.once:
+                c = None
+            elif t[0] == 'arr':
+                if e.kind != 'arrlit':
+                    self.err("a constant table is an array literal", e.where)
+                c = [self.const_init(x, t[1]) for x in e.items]
+            else:
+                c = self.const_init(e, t)
+        except CompileError as x:
+            raise CompileError(f"the initializer of {g.ast.kind} {g.name} must be constant: {x.msg}", x.where)
         g.init = (c, self.ctx.holes)
         self.ctx = None
 

@@ -1,0 +1,5 @@
+// error: assign
+const TBL: []int = [1, 2]
+fn main() {
+    TBL[0] = 5
+}

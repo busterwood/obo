@@ -1,0 +1,9 @@
+// expect: one
+// exit: 12
+var NAME: once str
+fn main() {
+    NAME.set("one")
+    println(NAME.get())
+    NAME.set("two")
+    println("not reached")
+}

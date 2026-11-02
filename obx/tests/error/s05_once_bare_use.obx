@@ -1,0 +1,5 @@
+// error: CONFIGZ
+var CONFIGZ: once int
+fn main() {
+    let x = CONFIGZ
+}

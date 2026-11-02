@@ -1,0 +1,17 @@
+// expect: o
+// expect: 3
+// expect: 7
+type Pt = value record { x: int; y: int; name: str }
+type Shape = value closed { Dot; Box(int, int) }
+const ORIGIN: Pt = Pt{x: 0, y: 3, name: "o"}
+const UNIT: Shape = Shape.Box(3, 4)
+fn (p: &Pt) total(): int { return p.x + p.y }
+fn main() {
+    println(ORIGIN.name)
+    let o = ORIGIN
+    println(o.total())
+    match UNIT {
+        Shape.Box(a, b) { println(a + b) }
+        Shape.Dot { println(0) }
+    }
+}

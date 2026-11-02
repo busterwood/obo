@@ -257,9 +257,10 @@ class Parser:
                 w = self.next().where
                 name = self.ident()
                 self.sym(':')
+                once = self.atkw('once') and self.next() is not None
                 ty = self.type()
-                self.sym('=')
-                d = N('global', w, name=name, ty=ty, e=self.expr0())
+                e = None if once else (self.sym('='), self.expr0())[1]
+                d = N('global', w, name=name, ty=ty, e=e, once=once)
                 self.sep()
             elif t.k == 'kw' and t.v == 'extern':
                 w = self.next().where
