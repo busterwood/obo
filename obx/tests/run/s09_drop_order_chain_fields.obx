@@ -1,0 +1,50 @@
+// SPEC 9.2 in a chain type (one that can nest without bound, so that its glue
+// uses the drop worklist of 9.4): fields in reverse declaration order, array
+// elements first to last, whether a field comes before or after the link to
+// the rest of the chain, holds a drop method, or is a value type.
+// expect: holder
+// expect: y 9
+// expect: w 1
+// expect: vs 11
+// expect: vs 12
+// expect: b 1
+// expect: w 2
+// expect: vs 21
+// expect: vs 22
+// expect: b 2
+// expect: a 2
+// expect: a 1
+// expect: x 8
+// expect: array
+// expect: w 4
+// expect: b 4
+// expect: a 4
+// expect: second 7
+// expect: first 7
+// expect: w 3
+// expect: b 3
+// expect: a 3
+type D = record { s: str; id: int }
+fn (d: mut &D) drop() { println(d.s + " " + d.id.toStr()) }
+type V = value record { id: int }
+fn (v: mut &V) drop() { println("w " + v.id.toStr()) }
+type C = record { a: D; next: Option[C]; b: D; vs: []D; w: V }
+type Pair[T] = record { first: T; second: T }
+type Holder = record { x: D; list: Option[C]; y: D }
+fn c(i: int, next: Option[C]): C {
+    return C{a: D{s: "a", id: i}, next: next, b: D{s: "b", id: i},
+             vs: [D{s: "vs", id: 10 * i + 1}, D{s: "vs", id: 10 * i + 2}], w: V{id: i}}
+}
+fn main() {
+    {
+        let h = Holder{x: D{s: "x", id: 8}, list: Some(c(1, Some(c(2, None)))), y: D{s: "y", id: 9}}
+        println("holder")
+    }
+    {
+        let xs: []Option[C] = [Some(C{a: D{s: "a", id: 3}, next: None, b: D{s: "b", id: 3}, vs: [], w: V{id: 3}}),
+                               None]
+        let p = Pair{first: D{s: "first", id: 7}, second: D{s: "second", id: 7}}
+        let ys = [Some(C{a: D{s: "a", id: 4}, next: None, b: D{s: "b", id: 4}, vs: [], w: V{id: 4}})]
+        println("array")
+    }
+}

@@ -11,6 +11,7 @@ from check import CTYPES, cstr
 
 HOLE = re.compile('\x01(\\d+)\x02')
 MAX_DEPTH, MAX_INSTANCES = 24, 20000
+DEEP = ('deep',)        # in Emitter.reach: a type too deep to follow (a non-terminating instantiation)
 
 
 def pod(t):
@@ -33,6 +34,7 @@ class Emitter:
         self.fntypes = []        # C typedef lines for function types
         self.insts, self.work = {}, []
         self.glue, self.gluework = {}, []
+        self.reaches = {}
         self.strs = {}
         self.protos, self.bodies = [], []
 
@@ -100,20 +102,100 @@ class Emitter:
             return f"rt_str_dup({c})"
         return f"{self.glue_fn('dup', t)}({c})"
 
-    def flat(self, t):
-        """Dropping t frees memory only (no drop method, no boxed value): it may run inline."""
-        if t[0] != 'inst':
-            return t[0] != 'arr' or self.flat(t[1])
-        return t[1].value and t[1].drop is None and all(self.flat(ft) for _, ft in field_types(t))
+    # Drop glue. A type is dropped by direct (recursive) C functions unless it is a chain type (it
+    # lies on a cycle of the type graph of fields and elements, generic instances included, so its
+    # values can nest without bound) or has a drop method. Those are dropped by actions on an
+    # explicit stack (rt_dpush/rt_drun, SPEC 9.4); an action gets the object pointer of a boxed
+    # value, the address of any other. The order is that of SPEC 9.2 either way.
 
-    def fdrop(self, t, loc):
-        """Drop the field or element at loc inside a dbody action: now if flat, else pushed."""
-        if pod(t):
-            return ''
-        if t == STR:
-            return f"rt_str_drop({loc});"
-        b = self.glue_fn('dbody', t)
-        return f"{b}(&{loc});" if self.flat(t) else f"rt_dpush({b}, &{loc});"
+    def reach(self, t):
+        """The non-pod types reachable from the fields or elements of t (DEEP: too deep to tell)."""
+        r = self.reaches.get(t)
+        if r is None:
+            r, todo = set(), self.kids(t)
+            while todo:
+                x = todo.pop()
+                if x not in r:
+                    r.add(x)
+                    todo += self.kids(x) if depth(x) <= MAX_DEPTH + 8 else [DEEP]
+            self.reaches[t] = r
+        return r
+
+    def kids(self, t):
+        ks = [t[1]] if t[0] == 'arr' else [ft for _, ft in field_types(t)] if t[0] == 'inst' else []
+        return [k for k in ks if not pod(k)]
+
+    def chain(self, t):
+        r = self.reach(t)
+        return t in r or DEEP in r
+
+    def quiet(self, t):
+        """Dropping t runs no drop method and does not nest without bound: it may run at any time."""
+        return not self.chain(t) and not any(x[0] == 'inst' and x[1].drop for x in self.reach(t) | {t})
+
+    def listed(self, t):
+        return self.chain(t) or t[0] == 'inst' and t[1].drop is not None
+
+    def cases(self, t, acc, f):
+        """f(fields) for the record t or each variant of the closed type t (in a switch on its tag);
+        fields: (type, C place) pairs, pod ones left out, in declaration order."""
+        d, env = t[1], decl_env(t)
+
+        def us(fs, pre):
+            return [(ft, f"{acc}{pre}f_{n}") for n, ft in ((n, subst(ft, env)) for n, ft, _ in fs) if not pod(ft)]
+        if d.form == 'record':
+            return f(us(d.fields, ''))
+        return ([f"switch ({acc}tag) {{"] + [f"case {v.index}: {' '.join(f(us(v.fields, f'u.V_{v.name}.')))} break;"
+                                            for v in d.variants] + ["}"])
+
+    def push(self, t, loc):
+        """Lines that push the drop of the value at loc, and whether the actions read loc's memory: a
+        boxed value is pushed by pointer, a chain value type without a drop method by its parts."""
+        if t[0] == 'inst' and not t[1].value:
+            return [f"rt_dpush({self.glue_fn('act', t)}, {loc});"], False
+        if t[0] == 'inst' and self.chain(t) and t[1].drop is None:
+            refs = []
+
+            def parts(fs):
+                out = []
+                for ft, l in fs:
+                    ls, r = ([self.drop_c(ft, l) + ';'], False) if self.quiet(ft) else self.push(ft, l)
+                    out += ls
+                    refs.append(r)
+                return out
+            return self.cases(t, loc + '.', parts), any(refs)
+        return [f"rt_dpush({self.glue_fn('act', t)}, &{loc});"], True
+
+    def rest(self, t):
+        """The body of an action that drops the fields or elements of t and frees its memory: what
+        must not nest is pushed (fields in declaration order, so that they run last to first;
+        elements last to first), the rest is dropped now; a container that a pushed action reads
+        is freed by an action pushed first."""
+        if t[0] == 'arr':
+            et, ec = t[1], self.ctype(t[1])
+            el = f"(({ec}*)a->data)[i]"
+            if not self.chain(et):
+                return ["obx_arr* a = p;", f"for (int64_t i = 0; i < a->len; i++) {self.drop_c(et, el)};",
+                        "rt_arr_free(*a);"]
+            ls, refs = self.push(et, el)
+            loop = f"for (int64_t i = a->len - 1; i >= 0; i--) {{ {' '.join(ls)} }}"
+            return ["obx_arr* a = p;"] + (["if (a->data) rt_dpush(rt_free_act, a->data);", loop] if refs
+                                          else [loop, "rt_arr_free(*a);"])
+        boxed, ct = not t[1].value, self.ctype(t)
+
+        def seq(fs):
+            # a field after the last pushed one is dropped now (they run first), as is a quiet one
+            k = max([i + 1 for i, (ft, _) in enumerate(fs) if self.chain(ft)] + [0])
+            out, refs = [], False
+            for ft, loc in fs[:k]:
+                ls, r = ([self.drop_c(ft, loc) + ';'], False) if self.quiet(ft) else self.push(ft, loc)
+                out += ls
+                refs |= r
+            out += [self.drop_c(ft, loc) + ';' for ft, loc in reversed(fs[k:])]
+            if boxed:
+                out = ["rt_dpush(rt_free_act, v);"] + out if refs else out + ["rt_free(v);"]
+            return out
+        return [f"{ct}{'' if boxed else '*'} v = p;"] + self.cases(t, 'v->', seq)
 
     def glue_fn(self, kind, t):
         key = (kind, t)
@@ -133,41 +215,32 @@ class Emitter:
             self.bodies.append(f"{head} {{ {ret}(({ct})e)({', '.join(f'a{i}' for i in range(len(ps)))}); }}")
             return
         if kind == 'drop':
-            self.protos.append(f"static void {n}({ct} v);")
-            self.bodies.append(f"static void {n}({ct} v) {{ rt_drun({self.glue_fn('dbody', t)}, &v); }}")
-            return
-        if kind in ('dbody', 'drest'):
-            # Drop as actions on an explicit stack (rt_drun): no C recursion per boxed value, and
-            # the order of SPEC 9.2 is kept (fields last to first, elements first to last).
-            self.protos.append(f"static void {n}(void* p);")
-            if t[0] == 'arr':
-                et, ec = t[1], self.ctype(t[1])
-                body = ["obx_arr* a = p;", "if (a->data) rt_dpush(rt_free_act, a->data);"]
-                if not pod(et):
-                    if self.flat(et):
-                        body.append(f"for (int64_t i = 0; i < a->len; i++) {self.fdrop(et, f'(({ec}*)a->data)[i]')}")
-                    else:
-                        body.append(f"for (int64_t i = a->len - 1; i >= 0; i--) "
-                                    f"rt_dpush({self.glue_fn('dbody', et)}, &(({ec}*)a->data)[i]);")
-            elif t[1].drop is not None and kind == 'dbody':
-                # The drop method runs first; the fields are dropped by a second action, pushed
-                # before the call, so that what the method defers (rt_ddefer) is dropped before them.
-                body = [f"rt_dpush({self.glue_fn('drest', t)}, p);",
-                        f"{self.instance(t[1].drop, t[2])}(({ct}*)p);"]
+            boxed = t[0] == 'inst' and not t[1].value
+            if self.listed(t):
+                body = [f"rt_drun({self.glue_fn('act', t)}, {'v' if boxed else '&v'});"]
+            elif t[0] == 'arr':
+                el = f"(({self.ctype(t[1])}*)v.data)[i]"
+                body = [f"for (int64_t i = 0; i < v.len; i++) {self.drop_c(t[1], el)};"] * (not pod(t[1]))
+                body.append("rt_arr_free(v);")
             else:
-                d, env = t[1], decl_env(t)
-                if d.value:
-                    body = [f"{ct}* v = p;"]
-                else:
-                    body = [f"{ct} v = *({ct}*)p;", "rt_dpush(rt_free_act, v);"]
-                if d.form == 'record':
-                    body += [self.fdrop(ft, f"v->f_{fn}") for fn, ft in field_types(t)]
-                else:
-                    body.append("switch (v->tag) {")
-                    for vr in d.variants:
-                        ds = [self.fdrop(subst(ft, env), f"v->u.V_{vr.name}.f_{fn}") for fn, ft, _ in vr.fields]
-                        body.append(f"case {vr.index}: {' '.join(ds)} break;")
-                    body.append("}")
+                body = self.cases(t, 'v->' if boxed else 'v.',
+                                  lambda fs: [self.drop_c(ft, loc) + ';' for ft, loc in reversed(fs)])
+                body += ["rt_free(v);"] if boxed else []
+            self.protos.append(f"static void {n}({ct} v);")
+            self.bodies.append(f"static void {n}({ct} v) {{\n  " + '\n  '.join(body) + "\n}")
+            return
+        if kind in ('act', 'rest'):
+            boxed = t[0] == 'inst' and not t[1].value
+            self.protos.append(f"static void {n}(void* p);")
+            if not self.listed(t):
+                body = [f"{self.glue_fn('drop', t)}({'p' if boxed else f'*({ct}*)p'});"]
+            elif kind == 'act' and t[0] == 'inst' and t[1].drop is not None:
+                # The drop method runs first; the fields are dropped by a second action, pushed
+                # before the call, so that what the method defers (ddrop) is dropped before them.
+                body = [f"rt_dpush({self.glue_fn('rest', t)}, p);"] + ([f"{ct} v = p;"] if boxed else []) + \
+                       [f"{self.instance(t[1].drop, t[2])}({'&v' if boxed else f'({ct}*)p'});"]
+            else:
+                body = self.rest(t)
             self.bodies.append(f"static void {n}(void* p) {{\n  " + '\n  '.join(body) + "\n}")
             return
         self.protos.append(f"static {ct} {n}({ct} v);")
@@ -205,9 +278,10 @@ class Emitter:
             return self.drop_c(subst(h[1], env), self.render(h[2], holes, env))
         if k == 'ddrop':        # a drop when a drop method returns: onto the worklist (SPEC 9.4)
             t, c = subst(h[1], env), self.render(h[2], holes, env)
-            if pod(t) or t == STR or self.flat(t):
+            if pod(t) or self.quiet(t):
                 return self.drop_c(t, c)
-            return f"rt_ddefer({self.glue_fn('dbody', t)}, &{c}, sizeof({c}))"
+            ls, refs = self.push(t, c)      # what reads c's memory is pushed with a heap copy of c
+            return f"rt_ddefer({self.glue_fn('act', t)}, &{c}, sizeof({c}))" if refs else ' '.join(ls)
         if k == 'dup':
             return self.dup_c(subst(h[1], env), self.render(h[2], holes, env))
         if k in ('str', 'gstr'):

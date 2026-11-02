@@ -1,0 +1,30 @@
+// SPEC 9.4: dropping a long chain does not use stack depth proportional to
+// its length, also when the chain alternates between two types that hold each
+// other (A holds a B, B an A), and when one of the two has a drop method that
+// detaches the rest of the chain into a local (P holds a Q, Q a P). A million
+// nodes in each chain.
+// expect: A B
+// expect: 500000
+// expect: done
+var drops: int = 0
+type A = record { b: Option[B]; s: str }
+type B = record { n: int; a: Option[A] }
+type P = record { q: Option[Q] }
+type Q = closed { End; More(int, P) }
+fn (p: mut &P) drop() {
+    drops += 1
+    let rest = replace(mut &p.q, None)
+}
+fn main() {
+    {
+        var a: Option[A] = None
+        for i in 0..500000 { a = Some(A{b: Some(B{n: i, a: move(a)}), s: "a"}) }
+        println("A B")
+    }
+    {
+        var p = P{q: Some(Q.End)}
+        for i in 0..499999 { p = P{q: Some(Q.More(i, move(p)))} }
+    }
+    println(drops)
+    println("done")
+}

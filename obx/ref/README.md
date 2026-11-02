@@ -18,7 +18,8 @@ gcc runs with `-O2 -w` (`-O1` until 2026-11-02: `-O2` builds the largest
 program, the self-hosted compiler, in 3.9 s instead of 1.6 s, and runs
 `bench/loop` 1.6x faster). An `extern "lib"` links `-llib`, or the library by
 its full path when only `libX.so.N` exists (no dev symlink); `"c"` adds nothing.
-Run a program with `OBX_CHECK=1` to make a leak (live objects at exit) exit 5.
+Run a program with `OBX_CHECK=1` to make a leak (live objects at exit) exit 5;
+live objects are counted only then (`rt_init` reads the variable once).
 
 ## AST dump
 
@@ -282,16 +283,29 @@ is a default import root: `import "money"`. See `../lib/README.md`.
    is found by checking that operand and discarding its code
    (`Checker.peek_type`), so the literal's `fromFraction` still runs first.
    An integer literal on the left has no code, so its order does not matter.
-12. Drop glue runs on an explicit stack (`rt_dpush`/`rt_drun`), not by C
-    recursion, so dropping a 10-million-node list does not overflow; the order
-    is still that of section 9.2. For a type with a `drop` method, the glue
-    pushes the field drops first, then calls the method; what the method still
-    owns when it returns (its locals and the last statement's temporaries) is
-    copied to the heap and pushed (`rt_ddefer`), so it is dropped after the
-    method and before the fields without nesting (SPEC 9.4): a method that
-    detaches its child does not recurse. One that drops a child before its last
-    statement does, and overflows the stack on a long enough chain (exit 4). Deep recursion in user code is caught by a
-    SIGSEGV handler on an alternate stack: `obx: stack overflow`, exit 4.
+12. Drop glue. A *chain type* is one on a cycle of the type graph (fields and
+    elements, generic instances included: `Node` and `Option[Node]` in a
+    list, `A` and `B` when each holds the other, `T` with a `[]T` field), so
+    its values can nest without bound. Every other type is dropped by plain
+    recursive C functions (bounded by the type graph): a leaf record is one
+    `free`. A chain type, or a type with a `drop` method, is dropped by
+    actions on an explicit stack (`rt_dpush`/`rt_drun`), so dropping a
+    10-million-node list does not overflow. An action gets the object pointer
+    of a boxed value (the address of any other); it pushes what must not nest
+    (fields in declaration order, so they run last to first), drops the rest
+    at once, and frees its node at the end when no pushed action reads it: a
+    list or tree node is one action, one indirect call. A field after the last
+    pushed one, or one whose drop is quiet (no drop method in it, bounded), is
+    dropped at once; the order is still that of section 9.2. For a type with
+    a `drop` method, the glue pushes the field drops first, then calls the
+    method; what the method still owns when it returns (its locals and the
+    last statement's temporaries) is pushed too (by pointer or by parts, or
+    as a heap copy, `rt_ddefer`, when an action would read the local), so it
+    is dropped after the method and before the fields without nesting (SPEC
+    9.4): a method that detaches its child does not recurse. One that drops a
+    child before its last statement does, and overflows the stack on a long
+    enough chain (exit 4). Deep recursion in user code is caught by a SIGSEGV
+    handler on an alternate stack: `obx: stack overflow`, exit 4.
 13. Slices: see above. A slice of a temporary array can be passed to a call
     but not kept in a `let`. A slice of a global is an error (as a borrow of
     a global is).

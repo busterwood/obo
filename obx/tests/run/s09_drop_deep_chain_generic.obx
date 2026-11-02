@@ -1,0 +1,30 @@
+// SPEC 9.4: dropping a long chain does not use stack depth proportional to
+// its length, also when the cycle in the types goes through a generic type
+// (Wrap[N], List[T]) or through an array. A million nodes in each chain.
+// expect: Wrap
+// expect: List
+// expect: Tree
+// expect: done
+type Wrap[T] = record { item: T; tag: str }
+type N = record { next: Option[Wrap[N]] }
+type List[T] = closed { Nil; Cons(T, List[T]) }
+type Tree = record { kids: []Tree }
+fn main() {
+    let n = 1000000
+    {
+        var c: Option[Wrap[N]] = None
+        for i in 0..n { c = Some(Wrap{item: N{next: move(c)}, tag: "w"}) }
+        println("Wrap")
+    }
+    {
+        var l: List[str] = List.Nil
+        for i in 0..n { l = List.Cons("x", move(l)) }
+        println("List")
+    }
+    {
+        var t = Tree{kids: []}
+        for i in 0..n { t = Tree{kids: [move(t)]} }
+        println("Tree")
+    }
+    println("done")
+}
