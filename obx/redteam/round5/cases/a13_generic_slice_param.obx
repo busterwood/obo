@@ -1,0 +1,12 @@
+// an array of i32 from a generic instance passed to C
+// expect: 1 2 3
+extern "c" fn qsort(base: mut &[]i32, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+extern "c" fn obxlib_peek_i32(p: ptr, i: int): int
+fn up(a: ptr, b: ptr): i32 { return i32(obxlib_peek_i32(a, 0) - obxlib_peek_i32(b, 0)) }
+type Box[T] = record { items: []T }
+fn sortIt(b: mut &Box[i32]) { qsort(mut &b.items, len(b.items), 4, up) }
+fn main() {
+    var b = Box[i32]{items: [3, 2, 1]}
+    sortIt(mut &b)
+    println(intToStr(int(b.items[0])) + " " + intToStr(int(b.items[1])) + " " + intToStr(int(b.items[2])))
+}

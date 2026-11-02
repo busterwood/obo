@@ -1,0 +1,20 @@
+// the returned value reads a temporary made earlier in the statement (not possible by name),
+// and a variable borrowed by an earlier argument
+// expect: mk 1
+// expect: drop 1
+// expect: drop 2
+// expect: 3
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn mk(v: int): D {
+    println("mk " + intToStr(v))
+    return D{v: v}
+}
+fn g(a: &D, b: &D, n: int): int { return 0 }
+fn f(c: bool): int {
+    let x = D{v: 2}
+    return g(&mk(1), &x, if c { return x.v + 1 } else { 0 })
+}
+fn main() {
+    println(f(true))
+}

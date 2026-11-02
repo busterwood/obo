@@ -1,0 +1,8 @@
+// raw strings: backslashes, quotes, C comment and trigraph text, percent signs, braces
+// expect: a\nb "q" ??/ */ /* %d {x} \
+// expect: 27
+fn main() {
+    let s = `a\nb "q" ??/ */ /* %d {x} \`
+    println(s)
+    println(len(s))
+}

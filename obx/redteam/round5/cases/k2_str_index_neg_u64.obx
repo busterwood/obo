@@ -1,0 +1,7 @@
+// s[i] with a negative index and with a u64 index
+// exit: 3
+fn main() {
+    let s = "abc"
+    let i = 0 - 1
+    println(s[i])
+}

@@ -1,0 +1,6 @@
+// SPEC 5.2: a mut borrow of a constant is an error.
+// error: cannot mutably borrow constant RED
+type Style = value record { fg: int }
+const RED: Style = Style{fg: 7}
+fn set(s: mut &Style) { s.fg = 1 }
+fn main() { set(mut &RED) }

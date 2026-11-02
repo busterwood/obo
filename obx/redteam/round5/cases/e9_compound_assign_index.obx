@@ -1,0 +1,10 @@
+// xs[i] += exit arm: the index is evaluated, then the arm leaves
+// expect: 1 12 3
+type D = record { v: int }
+fn main() {
+    var xs = [1, 2, 3]
+    for k in 0..2 {
+        xs[1] += if k == 0 { continue } else { 10 }
+    }
+    println(intToStr(xs[0]) + " " + intToStr(xs[1]) + " " + intToStr(xs[2]))
+}

@@ -1,0 +1,5 @@
+// SPEC 5.3: var on a borrow receiver is an error.
+// error: var receiver p cannot be a borrow
+type P = value record { x: int }
+fn (var p: &P) get(): int { return p.x }
+fn main() { }

@@ -1,0 +1,10 @@
+// the condition of a second if expression reads x after the first moved it on one path
+// error: moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn main() {
+    let c = true
+    let x = D{v: 1}
+    let n = (if c { take(x) } else { 1 }) + (if x.v > 0 { 1 } else { 2 })
+}

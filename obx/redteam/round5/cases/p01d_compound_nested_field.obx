@@ -1,0 +1,9 @@
+// x.a.v += take(x): a nested field of the moved root
+// error: moved
+type I = record { v: int; s: str }
+type D = record { a: I }
+fn take(d: D): int { return 0 }
+fn main() {
+    var x = D{a: I{v: 1, s: "s"}}
+    x.a.v += take(x)
+}

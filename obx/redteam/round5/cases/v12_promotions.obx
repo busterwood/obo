@@ -1,0 +1,14 @@
+// default promotions: negative i32, byte 255, bool, u32 max, i64 min, float
+// expect: -5 255 1 0 4294967295 -9223372036854775808 2.500000 x
+import "io"
+extern "c" fn printf(fmt: str, ...): i32
+extern "c" fn fflush(p: ptr): i32
+fn main() {
+    let a = i32(-5)
+    let c = byte(255)
+    let u = u32(4294967295)
+    let m = -9223372036854775807 - 1
+    io.flushStdout()
+    printf("%d %d %d %d %u %ld %f %s\n", a, c, true, false, u, m, 2.5, "x")
+    fflush(nullPtr())
+}

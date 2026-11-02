@@ -1,0 +1,15 @@
+// x.v += if c { return } else { take(y) }: the exit arm leaves x alive; allowed
+// expect: 1
+// expect: 3
+type D = record { v: int }
+fn take(d: D): int { return d.v }
+fn f(c: bool): int {
+    var x = D{v: 1}
+    let y = D{v: 2}
+    x.v += if c { return x.v } else { take(y) }
+    return x.v
+}
+fn main() {
+    println(f(true))
+    println(f(false))
+}

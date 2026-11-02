@@ -1,0 +1,11 @@
+// reading a field of x in an argument after an earlier one... (x read after move on one path)
+// error: moved
+type D = record { v: int }
+fn (d: mut &D) drop() { }
+fn take(d: D): int { return 0 }
+fn two(a: int, b: int): int { return a + b }
+fn main() {
+    let c = true
+    let x = D{v: 1}
+    println(two(if c { take(x) } else { 1 }, x.v))
+}

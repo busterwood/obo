@@ -1,0 +1,19 @@
+// a generic function moves a T on one path; instances with an owned and a copy T
+// expect: took
+// expect: drop 1
+// expect: kept
+// expect: drop 2
+// expect: took
+// expect: kept
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn sink[T](x: T) { println("took") }
+fn f[T](c: bool, x: T) {
+    if c { sink(x) } else { println("kept") }
+}
+fn main() {
+    f(true, D{v: 1})
+    f(false, D{v: 2})
+    f(true, 5)
+    f(false, 6)
+}

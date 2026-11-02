@@ -1,0 +1,129 @@
+// ffi: C memory for modules that call C through extern (SPEC 12).
+//
+// Mem is a block of memory obx owns and C may use: a zeroed buffer
+// (alloc), or a NUL-terminated copy of a str (cstr); it is freed when
+// dropped, and its accessors check their index. Pass m.ptr() to C, for a
+// call or for as long as the Mem lives (a C API that keeps a pointer, a
+// parameter array that holds the pointers of other Mems).
+//
+// peek/poke and bytes read and write memory C owns, at a pointer C gave:
+// like an extern call they are unchecked (a wrong pointer or index is
+// undefined behaviour), so wrap them in a safe API as for extern. A null
+// pointer is nullPtr(); arrays of integers, float and ptr can also be
+// passed to C directly (an extern parameter &[]T or mut &[]T).
+
+extern "c" fn cAlloc(n: int): ptr as "obxlib_alloc"
+extern "c" fn cFree(p: ptr) as "obxlib_free"
+extern "c" fn cPeek(p: ptr, i: int): int as "obxlib_peek"
+extern "c" fn cPoke(p: ptr, i: int, v: int) as "obxlib_poke"
+extern "c" fn cPeekI32(p: ptr, i: int): int as "obxlib_peek_i32"
+extern "c" fn cPokeI32(p: ptr, i: int, v: int) as "obxlib_poke_i32"
+extern "c" fn cPeekPtr(p: ptr, i: int): ptr as "obxlib_peek_ptr"
+extern "c" fn cPokePtr(p: ptr, i: int, q: ptr) as "obxlib_poke_ptr"
+extern "c" fn copyIn(dst: ptr, at: int, src: &[byte], n: int) as "obxlib_copy_in"
+extern "c" fn copyOut(dst: mut &[byte], src: ptr, at: int, n: int) as "obxlib_copy_out"
+
+// A block of size() bytes owned by obx (from the runtime's allocator, so
+// OBX_CHECK=1 counts it), freed when dropped.
+pub type Mem = record {
+    p: ptr
+    n: int
+}
+
+pub fn (m: mut &Mem) drop() {
+    cFree(m.p)
+    m.p = nullPtr()
+}
+
+// n zero bytes (n >= 0; the pointer is never null, even for 0).
+pub fn alloc(n: int): Mem {
+    if n < 0 { panic("ffi.alloc: negative size " + intToStr(n)) }
+    return Mem{p: cAlloc(n), n: n}
+}
+
+// The bytes of s and a NUL after them (size len(s) + 1). A NUL inside s is
+// copied too: C that reads up to a NUL sees s up to the first.
+pub fn cstr(s: str): Mem {
+    var m = alloc(len(s) + 1)
+    let b = strToBytes(s)
+    copyIn(m.p, 0, &b, len(b))
+    return m
+}
+
+// The bytes of s as a C buffer (size len(s), NULs kept).
+pub fn copyBytes(s: str): Mem {
+    var m = alloc(len(s))
+    let b = strToBytes(s)
+    copyIn(m.p, 0, &b, len(b))
+    return m
+}
+
+pub fn (m: &Mem) ptr(): ptr { return m.p }
+pub fn (m: &Mem) size(): int { return m.n }
+
+fn (m: &Mem) check(i: int, w: int, what: str) {
+    if i < 0 || i >= m.n / w {
+        panic("ffi.Mem." + what + ": index " + intToStr(i) + " out of range for " + intToStr(m.n) + " bytes")
+    }
+}
+
+// Byte i.
+pub fn (m: &Mem) get(i: int): byte {
+    m.check(i, 1, "get")
+    return byte(cPeek(m.p, i))
+}
+
+pub fn (m: mut &Mem) set(i: int, v: byte) {
+    m.check(i, 1, "set")
+    cPoke(m.p, i, int(v))
+}
+
+// Element i of the block as a C int32_t array.
+pub fn (m: &Mem) getI32(i: int): i32 {
+    m.check(i, 4, "getI32")
+    return i32(cPeekI32(m.p, i))
+}
+
+pub fn (m: mut &Mem) setI32(i: int, v: i32) {
+    m.check(i, 4, "setI32")
+    cPokeI32(m.p, i, int(v))
+}
+
+// Element i of the block as a C void* array.
+pub fn (m: &Mem) getPtr(i: int): ptr {
+    m.check(i, 8, "getPtr")
+    return cPeekPtr(m.p, i)
+}
+
+pub fn (m: mut &Mem) setPtr(i: int, q: ptr) {
+    m.check(i, 8, "setPtr")
+    cPokePtr(m.p, i, q)
+}
+
+// The whole block as a str.
+pub fn (m: &Mem) toStr(): str { return bytes(m.p, m.n) }
+
+// ---- memory C owns (unchecked)
+
+// Byte i at p.
+pub fn peek(p: ptr, i: int): byte { return byte(cPeek(p, i)) }
+
+pub fn poke(p: ptr, i: int, v: byte) { cPoke(p, i, int(v)) }
+
+// Element i of the C int32_t array at p.
+pub fn peekI32(p: ptr, i: int): i32 { return i32(cPeekI32(p, i)) }
+
+pub fn pokeI32(p: ptr, i: int, v: i32) { cPokeI32(p, i, int(v)) }
+
+// Element i of the C void* array at p.
+pub fn peekPtr(p: ptr, i: int): ptr { return cPeekPtr(p, i) }
+
+pub fn pokePtr(p: ptr, i: int, q: ptr) { cPokePtr(p, i, q) }
+
+// A copy of the n bytes at p (NULs kept; "" for n <= 0, without reading p).
+pub fn bytes(p: ptr, n: int): str {
+    if n <= 0 { return "" }
+    var b = array(n, byte(0))
+    copyOut(mut &b, p, 0, n)
+    return strFromBytes(&b)
+}

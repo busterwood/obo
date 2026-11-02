@@ -1,0 +1,8 @@
+// x.s += name(x): str compound assignment whose right side moves the root
+// error: moved
+type D = record { s: str }
+fn name(d: D): str { return d.s }
+fn main() {
+    var x = D{s: "a" + "b"}
+    x.s += name(x)
+}

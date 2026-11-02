@@ -1,0 +1,17 @@
+// ffi.Mem: alloc, set/get in range, out of range panics; cstr to C; bytes copy
+// expect: 3
+// expect: 7 0
+// expect: hi
+// exit: 12
+import "ffi"
+extern "c" fn strlen(p: ptr): int
+fn main() {
+    let c = ffi.cstr("abc")
+    println(strlen(c.ptr()))
+    var m = ffi.alloc(8)
+    m.setI32(1, i32(7))
+    println(intToStr(int(m.getI32(1))) + " " + intToStr(int(m.getI32(0))))
+    let h = ffi.cstr("hi")
+    println(ffi.bytes(h.ptr(), 2))
+    m.setI32(2, i32(1))
+}

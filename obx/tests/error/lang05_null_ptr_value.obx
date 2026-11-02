@@ -1,0 +1,5 @@
+// SPEC 12: nullPtr is a built-in function, not a value.
+// error: built-in function
+fn main() {
+    let f = nullPtr
+}

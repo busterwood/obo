@@ -32,6 +32,7 @@
 
 import "sqldialect"
 import "math"
+import "ffi"
 
 pub type Value = sqldialect.Value
 pub type Error = sqldialect.DbError
@@ -68,7 +69,7 @@ extern "pq" fn PQerrorMessage(c: ptr): str
 extern "pq" fn PQserverVersion(c: ptr): i32
 extern "pq" fn PQfinish(c: ptr)
 extern "pq" fn PQexec(c: ptr, sql: str): ptr
-extern "pq" fn PQexecParams(c: ptr, sql: str, n: i32, types: ptr, values: ptr, lengths: ptr,
+extern "pq" fn PQexecParams(c: ptr, sql: str, n: i32, types: &[]u32, values: &[]ptr, lengths: ptr,
                             formats: ptr, resultFormat: i32): ptr
 extern "pq" fn PQresultStatus(r: ptr): i32
 extern "pq" fn PQresultErrorMessage(r: ptr): str
@@ -83,13 +84,6 @@ extern "pq" fn PQgetisnull(r: ptr, row: i32, col: i32): i32
 extern "pq" fn PQgetvalue(r: ptr, row: i32, col: i32): str
 extern "pq" fn PQcmdTuples(r: ptr): str
 
-extern "c" fn cnull(): ptr as "obxlib_null"
-extern "c" fn calloc(n: int): ptr as "obxlib_alloc"
-extern "c" fn cfree(p: ptr) as "obxlib_free"
-extern "c" fn cstr(s: str): ptr as "obxlib_cstr"
-extern "c" fn pokeI32(p: ptr, i: int, v: int) as "obxlib_poke_i32"
-extern "c" fn pokePtr(p: ptr, i: int, q: ptr) as "obxlib_poke_ptr"
-
 var OPEN: int = 0
 
 // The number of Conn and Rows handles not yet closed or dropped.
@@ -100,7 +94,7 @@ pub fn libVersion(): int { return int(PQlibVersion()) }
 
 fn chomp(s: str): str {
     var n = len(s)
-    while n > 0 && isSpace(strByte(s, n - 1)) { n -= 1 }
+    while n > 0 && isSpace(s[n - 1]) { n -= 1 }
     return s[..n]
 }
 
@@ -118,7 +112,7 @@ fn (c: mut &Conn) drop() {
 // Connects with a libpq connection string ("host=... dbname=... user=...") or URI.
 pub fn connect(conninfo: str): Result[Conn, Error] {
     try sqldialect.noNul(conninfo, "connection string")
-    var msg = cnull()
+    var msg = nullPtr()
     let opts = PQconninfoParse(conninfo, mut &msg)
     if isNull(opts) {
         let text = if isNull(msg) { "out of memory" } else { chomp(strFromC(msg)) }
@@ -153,21 +147,19 @@ pub fn (c: &Conn) query(sql: str, args: &[Value]): Result[Rows, Error] {
     if len(args) > 65535 { return Err(sqldialect.inputError("more than 65535 parameters")) }
     var ps: []Param = []
     for v in args { append(mut &ps, try param(v)) }
-    let n = len(ps)
-    let types = calloc(4 * n)
-    let values = calloc(8 * n)
-    var copies: []ptr = []
-    for i in 0..n {
-        pokeI32(types, i, ps[i].oid)
-        var p = cnull()
-        if !ps[i].null { p = cstr(ps[i].text) }
-        pokePtr(values, i, p)
-        append(mut &copies, p)
+    var types: []u32 = []
+    var values: []ptr = []
+    var copies: []ffi.Mem = []          // the NUL-terminated texts, freed when this returns
+    for p in ps {
+        append(mut &types, u32(p.oid))
+        if p.null {
+            append(mut &values, nullPtr())
+        } else {
+            append(mut &copies, ffi.cstr(p.text))
+            append(mut &values, copies[len(copies) - 1].ptr())
+        }
     }
-    let r = PQexecParams(c.h, sql, i32(n), types, values, cnull(), cnull(), 0)
-    for p in copies { cfree(p) }
-    cfree(values)
-    cfree(types)
+    let r = PQexecParams(c.h, sql, i32(len(ps)), &types, &values, nullPtr(), nullPtr(), 0)
     return c.result(r)
 }
 

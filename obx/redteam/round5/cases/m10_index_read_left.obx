@@ -1,0 +1,20 @@
+// an index expression on the left reads x.ys, the right operand moves x on one path
+// expect: take 1
+// expect: drop 1
+// expect: 10
+// expect: drop 1
+// expect: 15
+type D = record { v: int; ys: []int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int {
+    println("take " + intToStr(d.v))
+    return 0
+}
+fn f(c: bool) {
+    let x = D{v: 1, ys: [10, 20]}
+    println(x.ys[0] + (if c { take(x) } else { 5 }))
+}
+fn main() {
+    f(true)
+    f(false)
+}

@@ -1,0 +1,15 @@
+// SPEC 12: nullPtr() is the null ptr; C receives NULL.
+// expect: true
+// expect: true
+// expect: 0
+extern "c" fn free(p: ptr)
+extern "c" fn strtol(s: str, end: ptr, base: i32): int
+type H = record { p: ptr }
+fn main() {
+    let p = nullPtr()
+    println(isNull(p))
+    free(nullPtr())
+    let h = H{p: nullPtr()}
+    println(h.p == p)
+    println(strtol("zz", nullPtr(), 10))
+}

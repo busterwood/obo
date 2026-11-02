@@ -1,0 +1,9 @@
+// SPEC 7.8: an arm with several variants binds no fields.
+// error: binds no fields
+type Shape = closed { Dot; Line(int) }
+fn main() {
+    let s = Shape.Dot
+    match s {
+        Shape.Dot, Shape.Line(n) { println("a") }
+    }
+}

@@ -1,0 +1,23 @@
+// x = if c { take(x) ... }: the old value is moved on one path, dropped on the other
+// expect: take 1
+// expect: drop 1
+// expect: 2
+// expect: drop 2
+// expect: drop 1
+// expect: 3
+// expect: drop 3
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int {
+    println("take " + intToStr(d.v))
+    return 0
+}
+fn f(c: bool) {
+    var x = D{v: 1}
+    x = if c { D{v: take(x) + 2} } else { D{v: 3} }
+    println(x.v)
+}
+fn main() {
+    f(true)
+    f(false)
+}

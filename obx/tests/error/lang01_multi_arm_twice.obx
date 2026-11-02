@@ -1,0 +1,11 @@
+// SPEC 7.8: a variant may appear in one arm only, whether alone or in a list.
+// error: Size is matched twice
+type Sort = closed { Name; Size; Modified }
+fn main() {
+    let s = Sort.Name
+    match s {
+        Sort.Size { println("a") }
+        Sort.Modified, Sort.Size { println("b") }
+        else { }
+    }
+}

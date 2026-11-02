@@ -1,0 +1,13 @@
+// SPEC 9.1: a match expression moving a variable in one arm (an error before): the
+// other arms drop it.
+// expect: drop 1
+// expect: 2
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return d.v }
+fn main() {
+    let zed = D{v: 1}
+    let n = 3
+    let s = match n { 1 { take(zed) } else { 2 } }
+    println(s)
+}

@@ -1,0 +1,6 @@
+// SPEC 7.4: only == and != are built in; < needs cmp.
+// error: needs a method cmp
+type Sort = value closed { Name; Size }
+fn main() {
+    println(Sort.Name < Sort.Size)
+}

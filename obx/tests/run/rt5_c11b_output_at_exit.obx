@@ -1,0 +1,11 @@
+// Red-team round 5, c11b (SPEC 12): output written by a callback that C calls
+// as the program ends (on_exit) is written, not left in the runtime's buffer,
+// which was flushed before.
+// expect: main
+// expect: at exit 0
+extern "c" fn on_exit(f: extern fn(i32, ptr), arg: ptr): i32
+fn bye(code: i32, p: ptr) { println("at exit " + intToStr(int(code))) }
+fn main() {
+    on_exit(bye, nullPtr())
+    println("main")
+}

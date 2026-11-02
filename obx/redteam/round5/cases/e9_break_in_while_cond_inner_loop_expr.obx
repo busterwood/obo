@@ -1,0 +1,9 @@
+// break inside a while condition of an inner loop, written inside the body of an outer one
+// error: while condition
+fn main() {
+    var i = 0
+    while i < 3 {
+        while (if i == 1 { break } else { true }) { i += 1 }
+        i += 1
+    }
+}

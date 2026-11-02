@@ -1,0 +1,9 @@
+// unwrapErr on Ok panics; the payload is dropped first (exit 12)
+// expect: drop 1
+// exit: 12
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn main() {
+    let r: Result[D, int] = Ok(D{v: 1})
+    println(r.unwrapErr())
+}

@@ -1,0 +1,4 @@
+// SPEC 12: C may not write bool elements.
+// error: cannot have type mut &[]bool
+extern "c" fn f(a: mut &[]bool)
+fn main() { }

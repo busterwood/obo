@@ -1,0 +1,19 @@
+// declared outside a loop, moved on one path and assigned again after the join
+// expect: take 1
+// expect: drop 1
+// expect: drop 10
+// expect: drop 11
+// expect: drop 12
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int {
+    println("take " + intToStr(d.v))
+    return 0
+}
+fn main() {
+    var x = D{v: 1}
+    for i in 0..3 {
+        if i == 0 { take(x) }
+        x = D{v: 10 + i}
+    }
+}

@@ -1,0 +1,11 @@
+// return x as an exit arm after x is the consumed receiver of the same call
+// error: moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn (d: D) plus(n: int): int { return d.v + n }
+fn f(c: bool): D {
+    let x = D{v: 1}
+    let n = x.plus(if c { return x } else { 1 })
+    return D{v: n}
+}
+fn main() { println(f(true).v) }

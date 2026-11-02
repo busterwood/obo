@@ -1,0 +1,34 @@
+// SPEC 7.4: == and != on a closed type whose variants have no fields compare the
+// variants, for value and boxed types, places, borrows and temporaries; a declared
+// eq method wins.
+// expect: true true true
+// expect: true false
+// expect: true true true
+// expect: false true
+// expect: true
+// expect: 2
+type Sort = value closed { Name; Size; Modified }
+type B = closed { X; Y }
+type E = closed { P; Q }
+type G[T] = closed { GA; GB }
+fn (e: &E) eq(o: &E): bool { return true }
+fn mkb(y: bool): B { return if y { B.Y } else { B.X } }
+fn pick(r: &Sort): bool { return r == Sort.Modified }
+fn bs(x: bool): str { return if x { "true" } else { "false" } }
+fn main() {
+    let s = Sort.Size
+    let r = &s
+    println(bs(s == Sort.Size) + " " + bs(s != Sort.Name) + " " + bs(r == Sort.Size))
+    println(bs(pick(&Sort.Modified)) + " " + bs(Sort.Name == Sort.Size))
+    let b = B.X
+    println(bs(b == B.X) + " " + bs(mkb(true) == B.Y) + " " + bs(mkb(true) != mkb(false)))
+    let g: G[str] = G[str].GA
+    println(bs(g == G[str].GB) + " " + bs(g == G[str].GA))
+    println(E.P == E.Q)
+    let xs: []Sort = [Sort.Name, Sort.Size, Sort.Size]
+    var n = 0
+    for x in xs {
+        if x == Sort.Size { n += 1 }
+    }
+    println(n)
+}

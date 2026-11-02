@@ -25,6 +25,7 @@ if [ "$tier" = full ]; then
     "redteam round 2|python3 obx/redteam/round2/rt.py"
     "redteam round 3|python3 obx/redteam/round3/rt.py"
     "redteam round 4|python3 obx/redteam/round4/rt.py"
+    "redteam round 5|python3 obx/redteam/round5/rt.py"
     "native redteam|python3 obx/tests/run_native.py --lib --redteam"
   )
 fi

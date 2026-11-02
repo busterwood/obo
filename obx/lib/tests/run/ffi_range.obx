@@ -1,0 +1,10 @@
+// ffi: Mem's accessors check the index against the size (setI32 needs 4 bytes from 4 * i).
+// expect: 0
+// exit: 12
+import "ffi"
+fn main() {
+    var m = ffi.alloc(6)
+    println(m.get(5))
+    m.setI32(1, i32(7))
+    println(m.getI32(1))
+}

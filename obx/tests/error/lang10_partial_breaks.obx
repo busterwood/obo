@@ -1,0 +1,14 @@
+// SPEC 9.1: the breaks of a loop still have to agree.
+// error: moved inside the loop
+type D = record { v: int }
+fn take(d: D) { }
+fn main() {
+    let x = D{v: 1}
+    for i in 0..3 {
+        if i == 1 {
+            take(x)
+            break
+        }
+        if i == 2 { break }
+    }
+}

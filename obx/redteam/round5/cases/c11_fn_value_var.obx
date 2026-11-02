@@ -1,0 +1,22 @@
+// a fn value held in a variable, a record field and a generic instance as callbacks
+// expect: 1 2 3
+// expect: 3 2 1
+// expect: 1 2 3
+extern "c" fn qsort(base: mut &[]i32, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+extern "c" fn obxlib_peek_i32(p: ptr, i: int): int
+fn up(a: ptr, b: ptr): i32 { return i32(obxlib_peek_i32(a, 0) - obxlib_peek_i32(b, 0)) }
+fn down(a: ptr, b: ptr): i32 { return i32(obxlib_peek_i32(b, 0) - obxlib_peek_i32(a, 0)) }
+fn gen[T](a: ptr, b: ptr): i32 { return i32(obxlib_peek_i32(a, 0) - obxlib_peek_i32(b, 0)) }
+type S = record { f: fn(ptr, ptr): i32 }
+fn show(xs: &[]i32) { println(intToStr(int(xs[0])) + " " + intToStr(int(xs[1])) + " " + intToStr(int(xs[2]))) }
+fn main() {
+    var xs: []i32 = [3, 1, 2]
+    let f = up
+    qsort(mut &xs, 3, 4, f)
+    show(&xs)
+    let s = S{f: down}
+    qsort(mut &xs, 3, 4, s.f)
+    show(&xs)
+    qsort(mut &xs, 3, 4, gen[str])
+    show(&xs)
+}

@@ -1,0 +1,28 @@
+// a copy field of x as a by-value receiver, and the argument moves x on one path
+// expect: take 1
+// expect: drop 1
+// expect: 1
+// expect: drop 1
+// expect: 6
+type D = record { v: int; name: str }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int {
+    println("take " + intToStr(d.v))
+    return 0
+}
+type N = value record { n: int }
+fn (a: N) plus(b: int): int { return a.n + b }
+type W = record { v: int; m: N }
+fn (d: mut &W) drop() { println("drop " + intToStr(d.v)) }
+fn tw(d: W): int {
+    println("take " + intToStr(d.v))
+    return 0
+}
+fn f(c: bool) {
+    let x = W{v: 1, m: N{n: 1}}
+    println(x.m.plus(if c { tw(x) } else { 5 }))
+}
+fn main() {
+    f(true)
+    f(false)
+}

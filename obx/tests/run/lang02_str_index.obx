@@ -1,0 +1,31 @@
+// SPEC 4.1: s[i] on a str (owned, borrowed, a field, a call result) is the byte at i.
+// expect: 101
+// expect: true
+// expect: 2
+// expect: 99
+// expect: 2
+// expect: el
+type R = record { name: str }
+fn first(s: &str): byte { return s[0] }
+fn mk(): str { return "abc" }
+fn idx(n: mut &int): int {
+    n += 1
+    return n
+}
+fn main() {
+    let s = "hello"
+    let b: byte = s[1]
+    println(int(b))
+    println(first(&s) == 'h')
+    var n = 0
+    for i in 0..len(s) {
+        if s[i] == 'l' { n += 1 }
+    }
+    println(n)
+    let r = R{name: mk()}
+    println(int(r.name[2]))
+    var k = 0
+    let x = s[idx(mut &k)] + mk()[idx(mut &k)]
+    println(k + int(x) - int(x))
+    println(s[1..3])
+}

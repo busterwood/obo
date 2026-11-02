@@ -1,0 +1,4 @@
+// SPEC 12: no closure extras.
+// error: cannot be &fn(): int
+extern "c" fn printf(fmt: str, ...): i32
+fn main() { let k = 3; let f = fn(): int { return k }; printf("%d", f) }

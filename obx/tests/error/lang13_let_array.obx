@@ -1,0 +1,4 @@
+// SPEC 12: C writes only into a var's array.
+// error: declared with let
+extern "c" fn f(a: mut &[]byte)
+fn main() { let a = array(4, byte(1)); f(mut &a) }

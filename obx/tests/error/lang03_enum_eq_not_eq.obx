@@ -1,0 +1,7 @@
+// SPEC 7.4: the built-in == is not a method: the type does not satisfy Eq.
+// error: does not satisfy Eq
+type Sort = value closed { Name; Size }
+fn same[T: Eq](a: &T, b: &T): bool { return a == b }
+fn main() {
+    println(same(&Sort.Name, &Sort.Name))
+}

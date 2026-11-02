@@ -1,0 +1,6 @@
+// SPEC 5.2: a global var still cannot be borrowed.
+// error: cannot borrow global 'G'
+type Style = value record { fg: int }
+var G: Style = Style{fg: 7}
+fn show(s: &Style): int { return s.fg }
+fn main() { println(show(&G)) }

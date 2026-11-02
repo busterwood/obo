@@ -1,0 +1,8 @@
+// an array passed to C and moved by a later argument of the same call
+// error: moved|borrow
+extern "c" fn memset(dst: mut &[]byte, c: i32, n: int): ptr
+fn take(b: []byte): int { return 0 }
+fn main() {
+    var b = array(4, byte(0))
+    memset(mut &b, 1, take(b))
+}

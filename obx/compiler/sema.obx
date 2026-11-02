@@ -169,6 +169,7 @@ pub type FnDecl = value record {
     pub isExtern: bool
     pub lib: str
     pub cname: str
+    pub varargs: bool  // an extern declared with ... (C varargs)
     pub tps: []int     // also ref's env: the type parameters in scope, by name
     pub params: []Param
     pub ret: int
@@ -826,7 +827,8 @@ fn (pg: mut &Program) collect(m: int) {
             }
             sx.N_FN {
                 append(mut &pg.fns, FnDecl{node: a, mod: m, name: n.s, line: n.line, isPub: isPub,
-                    isExtern: n.flags & sx.EXTERN != 0, lib: n.t, cname: n.u, tps: [], params: [], ret: T_VOID,
+                    isExtern: n.flags & sx.EXTERN != 0, lib: n.t, cname: n.u,
+                    varargs: n.flags & sx.DOTS != 0, tps: [], params: [], ret: T_VOID,
                     recvMode: RM_NONE, recvName: "", recvType: -1, ownerKind: O_NONE, owner: -1, bparam: ""})
                 let f = len(pg.fns) - 1
                 append(mut &pg.mods[m].fns, f)
@@ -1094,6 +1096,9 @@ pub fn (pg: mut &Program) resolveType(a: int, m: int, env: &[]int, pos: int, whe
         }
         sx.N_TARR { return pg.mkArr(pg.resolveType(n.a, m, env, P_ELEM, where)) }
         sx.N_TFN {
+            if n.flags & sx.EXTERN != 0 {
+                pg.err(m, n.line, "an extern fn type can only be the type of a parameter of an extern function")
+            }
             var ps: []int = []
             for i in 0..pg.count(m, n.a) { append(mut &ps, pg.resolveType(pg.item(m, n.a, i), m, env, P_PARAM, where)) }
             return pg.mkFn(&ps, if n.b >= 0 { pg.resolveType(n.b, m, env, P_RET, where) } else { T_VOID })
@@ -1207,14 +1212,33 @@ fn (pg: mut &Program) resolveFn(f: int) {
     if pg.fns[f].isExtern {
         for i in 0..pg.count(m, a.c) {
             let pn = pg.nd(m, pg.item(m, a.c, i))
+            if pg.kind(m, pn.a) == sx.N_TFN && pg.nd(m, pn.a).flags & sx.EXTERN != 0 {
+                append(mut &pg.fns[f].params, Param{name: pn.s, ty: pg.cfnType(m, pn.a, &pn), isVar: false, line: pn.line})
+                continue
+            }
             let t = pg.resolveType(pn.a, m, &env, P_PARAM, pn.line)
             var ok = pg.tk(t) == TK_PRIM && t != T_VOID
             if !ok && pg.tk(t) == TK_REF && pg.tm(t) {
                 let inner = pg.ta(t)
                 ok = pg.isInt(inner) || inner == T_PTR || inner == T_FLOAT
             }
+            if !ok && (pg.tk(t) == TK_SLICE || (pg.tk(t) == TK_REF && pg.tk(pg.ta(t)) == TK_ARR)) {
+                let el = if pg.tk(t) == TK_SLICE { pg.ta(t) } else { pg.ta(pg.ta(t)) }
+                ok = pg.isInt(el) || el == T_FLOAT || el == T_PTR || (el == T_BOOL && !pg.tm(t))
+                if !ok {
+                    pg.err(m, pn.line, "extern parameter " + pn.s + " cannot have type " + pg.tstr(t) +
+                        " (the elements of an array passed to C are integers, float or ptr, or bool read-only)")
+                }
+            }
+            if !ok && pg.tk(t) == TK_FN {
+                pg.err(m, pn.line, "extern parameter " + pn.s + " cannot have type " + pg.tstr(t) +
+                    " (a C function pointer is written extern fn(...))")
+            }
             if !ok { pg.err(m, pn.line, "extern parameter " + pn.s + " cannot have type " + pg.tstr(t)) }
             append(mut &pg.fns[f].params, Param{name: pn.s, ty: t, isVar: false, line: pn.line})
+        }
+        if pg.fns[f].varargs && len(pg.fns[f].params) == 0 {
+            pg.err(m, a.line, "a C variadic function needs a parameter before ...")
         }
         if a.d >= 0 {
             let r = pg.resolveType(a.d, m, &env, P_RET, 0)
@@ -1342,9 +1366,11 @@ fn (pg: mut &Program) resolveFn(f: int) {
     pg.fns[f].tps = copyInts(&env)
     var names: []str = []
     let mode = pg.fns[f].recvMode
+    let rvar = a.a >= 0 && pg.nd(m, a.a).flags & sx.VAR != 0
+    if rvar && mode != RM_VAL { pg.err(m, a.line, "var receiver " + pg.fns[f].recvName + " cannot be a borrow") }
     if mode == RM_VAL || mode == RM_REF || mode == RM_MUT {
         let rt = if mode == RM_VAL { pg.fns[f].recvType } else { pg.mkRef(pg.fns[f].recvType, mode == RM_MUT) }
-        append(mut &pg.fns[f].params, Param{name: pg.fns[f].recvName, ty: rt, isVar: false, line: a.line})
+        append(mut &pg.fns[f].params, Param{name: pg.fns[f].recvName, ty: rt, isVar: rvar, line: a.line})
         append(mut &names, pg.fns[f].recvName)
     }
     for i in 0..pg.count(m, a.c) {
@@ -1394,6 +1420,7 @@ fn (pg: mut &Program) resolveFn(f: int) {
 // ref's comparison of extern signatures: the parameter types and the result.
 fn (pg: &Program) sameSig(f: int, g: int): bool {
     if pg.fns[f].ret != pg.fns[g].ret || len(pg.fns[f].params) != len(pg.fns[g].params) { return false }
+    if pg.fns[f].varargs != pg.fns[g].varargs { return false }
     for i in 0..len(pg.fns[f].params) {
         if pg.fns[f].params[i].ty != pg.fns[g].params[i].ty { return false }
     }
@@ -1421,6 +1448,33 @@ fn cReserved(s: str): bool {
 }
 
 // ref's CHELPERS: rt.h's obx_ helpers that the library's externs may name.
+// SPEC 12: extern fn(...) as the type of extern parameter pn (type node x): a C function
+// pointer. Its parameters and result are integers, float, bool or ptr (the result may be
+// left out); the type is the fn type with them, so any fn value of that type can be passed.
+fn (pg: mut &Program) cfnType(m: int, x: int, pn: &sx.Node): int {
+    let n = pg.nd(m, x)
+    var ps: []int = []
+    for i in 0..pg.count(m, n.a) {
+        let t = pg.resolveType(pg.item(m, n.a, i), m, &[], P_PARAM, pn.line)
+        if !pg.cScalar(t) {
+            pg.err(m, pn.line, "a parameter of the C function pointer " + pn.s + " cannot have type " + pg.tstr(t) +
+                " (only integers, float, bool and ptr)")
+        }
+        append(mut &ps, t)
+    }
+    var r = T_VOID
+    if n.b >= 0 {
+        r = pg.resolveType(n.b, m, &[], P_RET, pn.line)
+        if !pg.cScalar(r) {
+            pg.err(m, pn.line, "the C function pointer " + pn.s + " cannot return " + pg.tstr(r) +
+                " (only integers, float, bool and ptr)")
+        }
+    }
+    return pg.mkFn(&ps, r)
+}
+
+fn (pg: &Program) cScalar(t: int): bool { return pg.isInt(t) || t == T_FLOAT || t == T_BOOL || t == T_PTR }
+
 fn cHelper(s: str): bool {
     return s == "obx_errno" || s == "obx_dirent_name" || s == "obx_dirent_type" || s == "obx_stat" ||
         s == "obx_stat_field" || s == "obx_open" || s == "obx_clock_ns" || s == "obx_getcwd"

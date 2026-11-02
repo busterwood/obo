@@ -1,0 +1,5 @@
+// SPEC 12: nullPtr() is a ptr, not an int.
+// error: ptr
+fn main() {
+    let n: int = nullPtr()
+}

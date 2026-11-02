@@ -24,9 +24,7 @@ extern "c" fn readlinkText(): str as "obxlib_readlink_text"
 
 // The type of a file: regular, directory, symbolic link, named pipe, Unix
 // socket, character or block device, or Other (not known).
-pub type Kind = value closed { File; Dir; Link; Fifo; Socket; CharDev; BlockDev; Other }
-
-pub fn (k: Kind) eq(o: &Kind): bool { return k.code() == o.code() }
+pub type Kind = value closed { File; Dir; Link; Fifo; Socket; CharDev; BlockDev; Other }   // == and != built in
 
 // The S_IFMT bits of the kind's mode (0 for Other).
 pub fn (k: Kind) code(): int {

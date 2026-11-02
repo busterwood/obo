@@ -1,0 +1,4 @@
+// SPEC 12, 7.3: a Decimal variable is not a C double.
+// error: cannot be Decimal
+extern "c" fn printf(fmt: str, ...): i32
+fn main() { let d = 1.5; printf("%f", d) }

@@ -1,0 +1,8 @@
+// the index of xs[...] moves xs on one path
+// error: moved
+fn take(d: []int): int { return 0 }
+fn main() {
+    let c = true
+    let xs = [10, 20]
+    println(xs[if c { take(xs) } else { 1 }])
+}

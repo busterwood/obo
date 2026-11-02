@@ -1,0 +1,15 @@
+// substrings (copied) and temporaries as variadic arguments, many of them, in a loop
+// expect: b|cd|e3|x
+// expect: b|cd|e3|x
+// expect: b|cd|e3|x
+import "io"
+extern "c" fn printf(fmt: str, ...): i32
+extern "c" fn fflush(p: ptr): i32
+fn main() {
+    let s = "abcdef"
+    for i in 0..3 {
+        io.flushStdout()
+        printf("%s|%s|%s|%s\n", s[1..2], s[2..4], s[4..5] + intToStr(3), if i >= 0 { "x" } else { s })
+        fflush(nullPtr())
+    }
+}

@@ -1,0 +1,16 @@
+// all branches exit in a let with an owned type
+// error: has no value
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn mk(v: int): D {
+    println("mk " + intToStr(v))
+    return D{v: v}
+}
+fn f(c: bool): int {
+    let a = mk(1)
+    let d: D = if c { return 1 } else { return 2 }
+    return d.v
+}
+fn main() {
+    println(f(true))
+}

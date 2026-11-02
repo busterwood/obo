@@ -1,0 +1,17 @@
+// a variadic argument that moves a variable (peeked, then evaluated)
+// expect: take
+// expect: 0
+import "io"
+type D = record { v: int }
+fn (d: mut &D) drop() { }
+fn take(d: D): int {
+    println("take")
+    return 0
+}
+extern "c" fn printf(fmt: str, ...): i32
+extern "c" fn fflush(p: ptr): i32
+fn main() {
+    let d = D{v: 1}
+    let n = printf("", take(d))
+    println(n)
+}

@@ -1,0 +1,11 @@
+// the index of x.ys[...] moves x on one path (and drops it on the other): x is moved when the
+// element is read
+// error: moved
+type D = record { v: int; ys: []int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn main() {
+    let c = true
+    let x = D{v: 1, ys: [10, 20]}
+    println(x.ys[if c { take(x) } else { 1 }])
+}

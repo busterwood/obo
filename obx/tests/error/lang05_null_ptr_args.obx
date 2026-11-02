@@ -1,0 +1,5 @@
+// SPEC 12: nullPtr takes no arguments.
+// error: takes 0 arguments|argument
+fn main() {
+    let p = nullPtr(1)
+}

@@ -1,0 +1,13 @@
+// moving the borrowed scrutinee inside an arm that binds a borrow of its field
+// error: borrow|moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+type E = closed { A(D); B }
+fn take(e: E): int { return 0 }
+fn main() {
+    let e = E.A(D{v: 1})
+    let n = match e {
+        E.A(d) { take(e) + d.v }
+        E.B { 0 }
+    }
+}

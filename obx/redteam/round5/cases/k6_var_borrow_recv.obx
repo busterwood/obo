@@ -1,0 +1,5 @@
+// var on a borrow receiver
+// error: var
+type P = record { x: int }
+fn (var p: &P) f() { }
+fn main() { }

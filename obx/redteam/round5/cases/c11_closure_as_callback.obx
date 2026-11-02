@@ -1,0 +1,8 @@
+// a closure cannot be a C callback
+// error: argument 4
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+fn main() {
+    let k = 1
+    let f = fn(a: ptr, b: ptr): i32 { return i32(k) }
+    qsort(nullPtr(), 0, 1, f)
+}

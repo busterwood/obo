@@ -1,0 +1,9 @@
+// a fieldless closed type that declares eq: == calls it (here: always true)
+// expect: true
+// expect: false
+type S = closed { A; B }
+fn (a: &S) eq(b: &S): bool { return true }
+fn main() {
+    println(S.A == S.B)
+    println(S.A != S.B)
+}

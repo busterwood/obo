@@ -1,0 +1,19 @@
+// the index of the assigned place reads x, which the right side moves on one path: p = e
+// evaluates e first (SPEC 9.1), so the place reads a moved variable
+// error: moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int {
+    println("take " + intToStr(d.v))
+    return 0
+}
+fn f(c: bool) {
+    var ys = [9, 9]
+    let x = D{v: 1}
+    ys[x.v] = if c { take(x) } else { 5 }
+    println(intToStr(ys[0]) + " " + intToStr(ys[1]))
+}
+fn main() {
+    f(true)
+    f(false)
+}

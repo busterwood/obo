@@ -1,0 +1,9 @@
+// an array reached through a borrow parameter, passed to C mut
+// expect: 9 9 0
+extern "c" fn memset(dst: mut &[]byte, c: i32, n: int): ptr
+fn fill(b: mut &[]byte) { memset(b, 9, 2) }
+fn main() {
+    var b = array(3, byte(0))
+    fill(mut &b)
+    println(intToStr(int(b[0])) + " " + intToStr(int(b[1])) + " " + intToStr(int(b[2])))
+}

@@ -1,0 +1,8 @@
+// break in a closure body cannot leave a loop of the enclosing function
+// error: outside a loop
+fn main() {
+    for i in 0..3 {
+        let f = fn(): int { return if i == 1 { break } else { 2 } }
+        println(f())
+    }
+}

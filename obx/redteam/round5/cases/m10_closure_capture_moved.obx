@@ -1,0 +1,12 @@
+// a closure captures x, declared before an if that moves x on one path; the closure is in scope
+// error: moved|borrow|closure
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn main() {
+    let c = true
+    let x = D{v: 1}
+    let f = fn(): int { return x.v }
+    if c { take(x) }
+    println(f())
+}

@@ -1,0 +1,7 @@
+// xs[0] += take(xs): the right side moves the array whose element is assigned
+// error: moved
+fn take(d: []int): int { return 0 }
+fn main() {
+    var xs = [1, 2]
+    xs[0] += take(xs)
+}

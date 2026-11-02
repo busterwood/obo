@@ -1,0 +1,7 @@
+// ffi: Mem's pointer is private (only ptr() reads it; nothing can replace it).
+// error: private to module ffi
+import "ffi"
+fn main() {
+    let m = ffi.alloc(4)
+    let p = m.p
+}

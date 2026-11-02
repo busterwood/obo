@@ -1,0 +1,19 @@
+// try on a local inside a branch: moves it on that path
+// expect: drop 2
+// expect: 7
+// expect: drop 2
+// expect: e
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn f(c: bool, r: Result[int, str]): Result[int, str] {
+    let x = D{v: 2}
+    let n = if c { try r } else { 7 }
+    return Ok(n)
+}
+fn main() {
+    println(f(false, Ok(1)).unwrapOr(-1))
+    match f(true, Err("e")) {
+        Ok(v) { println(v) }
+        Err(e) { println(e) }
+    }
+}

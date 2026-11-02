@@ -1,8 +1,0 @@
-// error: 'zed' is moved on one path
-type D = record { v: int }
-fn take(d: D): int { return d.v }
-fn main() {
-    let zed = D{v: 1}
-    let n = 3
-    let s = match n { 1 { take(zed) } else { 2 } }
-}

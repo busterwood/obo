@@ -1,0 +1,5 @@
+// SPEC 12: an extern function is not passed as a callback.
+// error: cannot be used as a value
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+extern "c" fn strcmp(a: ptr, b: ptr): i32
+fn main() { qsort(nullPtr(), 0, 1, strcmp) }

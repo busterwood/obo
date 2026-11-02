@@ -1,0 +1,12 @@
+// the index of x.name[...] moves x on one path: a str is a copy type, so x.name is copied
+// before the index runs (no use after free)
+// expect: drop 1
+// expect: 97
+type D = record { v: int; name: str }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn main() {
+    let c = true
+    let x = D{v: 1, name: "a" + "b"}
+    println(x.name[if c { take(x) } else { 1 }])
+}

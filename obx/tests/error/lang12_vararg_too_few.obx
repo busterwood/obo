@@ -1,0 +1,4 @@
+// SPEC 12: the parameters before ... are required.
+// error: takes at least 1 arguments
+extern "c" fn printf(fmt: str, ...): i32
+fn main() { printf() }

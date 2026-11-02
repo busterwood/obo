@@ -1,0 +1,11 @@
+// SPEC 9.1: a variable declared outside a loop and moved on one path of an if inside it
+// is still an error at the end of the body.
+// error: moved inside the loop
+type D = record { v: int }
+fn take(d: D) { }
+fn main() {
+    let x = D{v: 1}
+    for i in 0..3 {
+        if i == 1 { take(x) }
+    }
+}

@@ -1,0 +1,13 @@
+// a raw string literal arm of a match expression typed later (placeholder written afterwards)
+// expect: a\b
+// expect: q
+fn f(k: int): str {
+    return match k {
+        1 { `a\b` }
+        else { "q" }
+    }
+}
+fn main() {
+    println(f(1))
+    println(f(2))
+}

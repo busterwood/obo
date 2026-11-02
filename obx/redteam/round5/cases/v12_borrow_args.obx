@@ -1,0 +1,14 @@
+// borrows as variadic arguments pass their values: &int, &str, &float
+// expect: 7 hey 1.500000
+import "io"
+extern "c" fn printf(fmt: str, ...): i32
+extern "c" fn fflush(p: ptr): i32
+fn show(n: &int, s: &str, f: &float) {
+    io.flushStdout()
+    printf("%ld %s %f\n", n, s, f)
+    fflush(nullPtr())
+}
+fn main() {
+    let s = "he" + "y"
+    show(&7, &s, &1.5)
+}

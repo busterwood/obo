@@ -1,0 +1,11 @@
+// built-in == on a fieldless generic closed type
+// expect: true
+// expect: false
+type G[T] = closed { A; B }
+fn main() {
+    let x: G[str] = G[str].A
+    let y: G[str] = G[str].A
+    let z: G[str] = G[str].B
+    println(x == y)
+    println(x == z)
+}

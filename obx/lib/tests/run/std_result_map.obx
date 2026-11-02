@@ -1,0 +1,33 @@
+// std: Option.map, Result.map, mapErr, unwrapErr, expectErr; owned values move through.
+// expect: 2
+// expect: bad x
+// expect: 2
+// expect: bad q
+// expect: 9
+// expect: 11
+// expect: kept
+// expect: None
+type Error = record { msg: str }
+fn parse(s: str): Result[int, str] {
+    if s == "1" { return Ok(1) }
+    return Err("bad " + s)
+}
+fn toError(m: str): Error { return Error{msg: m} }
+fn wrap(s: str): Result[int, Error] {
+    let n = try parse(s).mapErr(toError)
+    return Ok(n * 2)
+}
+fn main() {
+    println(wrap("1").unwrap())
+    println(wrap("x").unwrapErr().msg)
+    println(parse("1").map(fn(n: int): str { return intToStr(n + 1) }).unwrap())
+    println(parse("q").expectErr("no"))
+    let o: Option[int] = Some(3)
+    println(o.map(fn(n: int): int { return n * 3 }).unwrap())
+    let k = 10
+    println(parse("1").map(fn(n: int): int { return n + k }).unwrapOr(0))
+    let e: Result[str, Error] = Ok("kept")
+    println(e.mapErr(fn(x: Error): str { return x.msg }).unwrap())
+    let none: Option[Error] = None
+    println(none.map(fn(x: Error): str { return x.msg }).toStr())
+}

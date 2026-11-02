@@ -1,0 +1,11 @@
+// Red-team round 5, p01c (SPEC 9.1): the right side moves the root on one path
+// of an if expression; after the join it is moved, so the store is rejected.
+// error: moved
+// line: 9
+type D = record { v: int; ys: []int }
+fn take(d: D): int { return 0 }
+fn f(c: bool) {
+    var x = D{v: 1, ys: [1]}
+    x.v += if c { take(x) } else { 5 }
+}
+fn main() { f(true) }

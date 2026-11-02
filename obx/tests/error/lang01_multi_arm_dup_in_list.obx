@@ -1,0 +1,10 @@
+// SPEC 7.8: a variant named twice in one arm is matched twice.
+// error: Name is matched twice
+type Sort = closed { Name; Size }
+fn main() {
+    let s = Sort.Name
+    match s {
+        Sort.Name, Sort.Name { println("a") }
+        Sort.Size { }
+    }
+}

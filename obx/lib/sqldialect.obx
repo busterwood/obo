@@ -46,7 +46,7 @@ pub fn (v: Value) toStr(): str {
 fn replaceQuotes(s: str): str {
     var b = newStrBuf()
     for i in 0..len(s) {
-        let c = strByte(s, i)
+        let c = s[i]
         if c == '\'' { b.addByte(c) }
         b.addByte(c)
     }
@@ -59,9 +59,9 @@ const HEX = "0123456789abcdef"
 pub fn hex(b: str): str {
     var out = array(2 * len(b), byte(0))
     for i in 0..len(b) {
-        let c = int(strByte(b, i))
-        out[2 * i] = strByte(HEX, c >> 4)
-        out[2 * i + 1] = strByte(HEX, c & 15)
+        let c = int(b[i])
+        out[2 * i] = HEX[c >> 4]
+        out[2 * i + 1] = HEX[c & 15]
     }
     return strFromBytes(&out)
 }
@@ -72,8 +72,8 @@ pub fn unhex(s: str): Option[str] {
     if len(s) % 2 != 0 { return None }
     var out = array(len(s) / 2, byte(0))
     for i in 0..len(out) {
-        let hi = hexDigit(strByte(s, 2 * i))
-        let lo = hexDigit(strByte(s, 2 * i + 1))
+        let hi = hexDigit(s[2 * i])
+        let lo = hexDigit(s[2 * i + 1])
         if hi < 0 || lo < 0 { return None }
         out[i] = byte(hi * 16 + lo)
     }
@@ -127,7 +127,7 @@ pub fn inputError(msg: str): DbError { return dbError(E_INPUT, msg) }
 // and the runtime stops a program that passes one to C.
 pub fn noNul(s: str, what: str): Result[Unit, DbError] {
     for i in 0..len(s) {
-        if strByte(s, i) == 0 { return Err(inputError(what + " contains a NUL byte")) }
+        if s[i] == 0 { return Err(inputError(what + " contains a NUL byte")) }
     }
     return Ok(Unit{})
 }
@@ -151,10 +151,7 @@ pub fn parseDecimal(text: str): Result[Decimal, DbError] {
     if text == "NaN" || text == "Infinity" || text == "-Infinity" || text == "+Infinity" {
         return Err(dbError(E_NONFINITE, "non-finite numeric is not a decimal"))
     }
-    match Decimal.parse(text) {
-        Ok(d) { return Ok(d) }
-        Err(e) { return Err(decError(e)) }
-    }
+    return Decimal.parse(text).mapErr(decError)
 }
 
 // The exact text to send for d: its display form ("12.50") when its scale is
@@ -183,11 +180,10 @@ pub fn fitDecimal(d: Decimal, p: int, s: int): Result[Decimal, DbError] {
     if p < 1 || p > 1000 || s < 0 || s > 1000 {
         return Err(dbError(E_DEC_METADATA, "invalid numeric(" + p.toStr() + ", " + s.toStr() + ")"))
     }
-    let fit = d.withScale(s)
-    if fit.isErr() {
-        return Err(dbError(E_DEC_SCALE, d.toStr() + " does not fit scale " + s.toStr() + " without rounding"))
+    let r = match d.withScale(s) {
+        Ok(r) { r }
+        Err(_) { return Err(dbError(E_DEC_SCALE, d.toStr() + " does not fit scale " + s.toStr() + " without rounding")) }
     }
-    let r = fit.unwrap()
     if !r.isZero() && len(r.coefficient().toStr()) + r.exponent() + s > p {
         return Err(dbError(E_DEC_RANGE, d.toStr() + " exceeds numeric(" + p.toStr() + ", " + s.toStr() + ")"))
     }
@@ -209,7 +205,7 @@ pub fn (d: Dialect) placeholder(n: int): str {
         Dialect.Postgres { return "$" + n.toStr() }
         Dialect.SqlServer { return "@p" + n.toStr() }
         Dialect.Oracle { return ":" + n.toStr() }
-        else { return "?" }
+        Dialect.Sqlite, Dialect.SqlServerOdbc { return "?" }
     }
 }
 

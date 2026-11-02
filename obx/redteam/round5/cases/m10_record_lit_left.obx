@@ -1,0 +1,22 @@
+// a record literal: an earlier field reads x (a str), a later one moves x on one path
+// expect: take 1
+// expect: drop 1
+// expect: abc 0
+// expect: drop 1
+// expect: abc 4
+type D = record { v: int; name: str }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+type R = record { s: str; n: int }
+fn take(d: D): int {
+    println("take " + intToStr(d.v))
+    return 0
+}
+fn f(c: bool) {
+    let x = D{v: 1, name: "ab" + "c"}
+    let r = R{s: x.name, n: if c { take(x) } else { 4 }}
+    println(r.s + " " + intToStr(r.n))
+}
+fn main() {
+    f(true)
+    f(false)
+}

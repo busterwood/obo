@@ -1,0 +1,10 @@
+// SPEC 2: every line break in a raw string is one LF (CRLF and a lone CR included).
+// expect: 5
+// expect: 97 10 98 10 99 
+fn main() {
+    let s = `a
+bc`
+    println(len(s))
+    for i in 0..len(s) { print(intToStr(int(s[i])) + " ") }
+    println("")
+}

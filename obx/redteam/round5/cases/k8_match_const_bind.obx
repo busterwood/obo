@@ -1,0 +1,13 @@
+// a match on a constant of a closed type binds its fields from the temporary copy
+// expect: 3 x
+// expect: 3
+type V = value closed { A(int, str); B }
+const K: V = V.A(3, "x")
+fn main() {
+    match K {
+        V.A(n, s) { println(intToStr(n) + " " + s) }
+        V.B { println("b") }
+    }
+    let n = match K { V.A(n, _) { n } V.B { 0 } }
+    println(n)
+}

@@ -1,0 +1,12 @@
+// SPEC 12, 14: a runtime error in a callback stops the program as anywhere else.
+// exit: 3
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+extern "c" fn obxlib_alloc(n: int): ptr
+fn bad(a: ptr, b: ptr): i32 {
+    let xs = [1]
+    return i32(xs[5])
+}
+fn main() {
+    let p = obxlib_alloc(4)
+    qsort(p, 4, 1, bad)
+}

@@ -1,0 +1,7 @@
+// SPEC 4.1: a negative index stops the program with exit 3.
+// exit: 3
+fn main() {
+    let s = "hi"
+    let i = -1
+    println(int(s[i]))
+}

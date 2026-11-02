@@ -1,0 +1,10 @@
+// SPEC 7.8: earlier moves in the statement hold on the return path.
+// error: was moved
+type D = record { v: int }
+fn pair(a: D, b: int): int { return a.v + b }
+fn f(c: bool): D {
+    let d = D{v: 1}
+    let n = pair(move(d), if c { return d } else { 1 })
+    return D{v: n}
+}
+fn main() { println(f(true).v) }

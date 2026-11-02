@@ -30,6 +30,9 @@ static int rt_argc;
 static char** rt_argv;
 static char rt_obuf[1 << 16];
 static size_t rt_olen;
+/* Set as the program ends (main returned, exit, a trap): output from then on, by a callback C
+   calls at exit (SPEC 12), is written at once, since nothing flushes the buffer later. */
+static bool rt_ended;
 
 static int rt_oerr;                 /* the first failed write of rt_obuf (obxlib_flush_out) */
 static void rt_flush(void) {
@@ -44,6 +47,7 @@ static void rt_flush(void) {
 
 __attribute__((noreturn)) static void rt_trap(int code, const char* msg, const char* where) {
     rt_flush();
+    rt_ended = true;
     fprintf(stderr, "obx: %s at %s\n", msg, where);
     exit(code);
 }
@@ -120,12 +124,13 @@ static void rt_init(int argc, char** argv) {
 }
 static void rt_finish(void) {
     rt_flush();
+    rt_ended = true;
     if (rt_check && rt_live != 0) {
         fprintf(stderr, "obx: leak: %lld live objects at exit at runtime\n", (long long)rt_live);
         exit(5);
     }
 }
-__attribute__((noreturn)) static void rt_exit(int64_t code) { rt_flush(); exit((int)code); }
+__attribute__((noreturn)) static void rt_exit(int64_t code) { rt_flush(); rt_ended = true; exit((int)code); }
 
 /* ---- strings
    A str is {block, offset, len} (16 bytes, so it is passed in registers): the block is a
@@ -194,7 +199,8 @@ static char* rt_cdup(obx_str s) {
     return c;
 }
 /* A str for a C call: its own bytes when a NUL follows them, else a copy freed by rt_cfree
-   after the call. */
+   after the call. rt_cfree frees the copies made since the call's rt_cmark, so a callback
+   (an obx function C calls during the call) that calls C itself frees only its own. */
 static char** rt_ctmp;
 static int64_t rt_nctmp, rt_cctmp;
 static const char* rt_cstr(obx_str s, const char* w) {
@@ -207,7 +213,11 @@ static const char* rt_cstr(obx_str s, const char* w) {
     }
     return rt_ctmp[rt_nctmp++] = rt_cdup(s);
 }
-static void rt_cfree(void) { while (rt_nctmp) free(rt_ctmp[--rt_nctmp]); }
+static int64_t rt_cmark(void) { return rt_nctmp; }
+/* An array's elements for a C call: an empty array (no buffer) passes a pointer to a byte */
+static char rt_cempty;
+static void* rt_cdata(void* p) { return p ? p : &rt_cempty; }
+static void rt_cfree(int64_t m) { while (rt_nctmp > m) free(rt_ctmp[--rt_nctmp]); }
 /* The decimal digits of v, written backwards before end; returns the first. 64-bit division as
    soon as v fits (a 128-bit one is a libgcc call). */
 static char* rt_digits(char* end, u128 v) {
@@ -248,7 +258,7 @@ static bool rt_parse_float(obx_str s, double* out) {
     return true;
 }
 static int64_t rt_write_fd(int64_t fd, obx_str s) {
-    if (fd == 1) {
+    if (fd == 1 && !rt_ended) {
         if (rt_olen + (size_t)s.len > sizeof rt_obuf) rt_flush();
         if ((size_t)s.len <= sizeof rt_obuf) {
             memcpy(rt_obuf + rt_olen, RT_SP(s), (size_t)s.len);
@@ -300,6 +310,7 @@ static bool rt_getenv(obx_str name, obx_str* out) {
 }
 __attribute__((noreturn)) static void rt_panic(obx_str msg, const char* w) {
     rt_flush();
+    rt_ended = true;
     fprintf(stderr, "obx: panic: %.*s at %s\n", (int)msg.len, RT_SP(msg), w);
     exit(12);
 }
@@ -483,22 +494,24 @@ int64_t obxlib_term_cols(int64_t fd) {
     if (ioctl((int)fd, TIOCGWINSZ, &w) != 0 || w.ws_col == 0 || w.ws_row == 0) return 0;
     return w.ws_col;
 }
-/* C memory for the database adapters (lib/sqlite, lib/postgres): a buffer from the runtime's
-   allocator (counted by OBX_CHECK), a NUL-terminated copy of a str, NULL, and byte, int32 and
-   pointer access by index, for what a C API takes or returns as a pointer to memory */
-void* obxlib_null(void) { return 0; }
-void* obxlib_alloc(int64_t n) { return rt_alloc(n > 0 ? (size_t)n : 1); }
-void obxlib_free(void* p) { if (p) rt_free(p); }
-void* obxlib_cstr(const char* s) {
-    size_t n = strlen(s);
-    char* p = rt_alloc(n + 1);
-    memcpy(p, s, n + 1);
+/* C memory for lib/ffi (and through it the database adapters): a zeroed buffer from the runtime's
+   allocator (counted by OBX_CHECK), byte, int32 and pointer access by index, and copies between
+   obx byte arrays and C memory */
+void* obxlib_alloc(int64_t n) {
+    size_t k = n > 0 ? (size_t)n : 1;
+    void* p = rt_alloc(k);
+    memset(p, 0, k);
     return p;
 }
+void obxlib_free(void* p) { if (p) rt_free(p); }
 int64_t obxlib_peek(const void* p, int64_t i) { return ((const uint8_t*)p)[i]; }
 void obxlib_poke(void* p, int64_t i, int64_t v) { ((uint8_t*)p)[i] = (uint8_t)v; }
+int64_t obxlib_peek_i32(const void* p, int64_t i) { return ((const int32_t*)p)[i]; }
 void obxlib_poke_i32(void* p, int64_t i, int64_t v) { ((int32_t*)p)[i] = (int32_t)v; }
+void* obxlib_peek_ptr(const void* p, int64_t i) { return ((void* const*)p)[i]; }
 void obxlib_poke_ptr(void* p, int64_t i, void* q) { ((void**)p)[i] = q; }
+void obxlib_copy_in(void* dst, int64_t at, const void* src, int64_t n) { memcpy((char*)dst + at, src, (size_t)n); }
+void obxlib_copy_out(void* dst, const void* src, int64_t at, int64_t n) { memcpy(dst, (const char*)src + at, (size_t)n); }
 /* clock: 0 realtime, 1 monotonic; nanoseconds */
 int64_t obx_clock_ns(int64_t which) {
     struct timespec t;

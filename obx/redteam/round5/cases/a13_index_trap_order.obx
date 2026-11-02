@@ -1,0 +1,11 @@
+// a slice argument out of range traps before the C call
+// expect: before
+// exit: 3
+import "io"
+extern "c" fn memset(dst: mut &[byte], c: i32, n: int): ptr
+fn main() {
+    var b = array(4, byte(0))
+    println("before")
+    memset(mut &b[2..9], 7, 7)
+    println("after")
+}

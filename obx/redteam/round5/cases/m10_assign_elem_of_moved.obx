@@ -1,0 +1,9 @@
+// assigning an element of x's array from an if expression that moves x on one path
+// error: moved
+type D = record { ys: []int }
+fn take(d: D): int { return 0 }
+fn main() {
+    let c = true
+    var x = D{ys: [1, 2]}
+    x.ys[0] = if c { take(x) } else { 5 }
+}

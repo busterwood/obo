@@ -1,0 +1,6 @@
+// SPEC 4.1: s[i] is not a place.
+// error: a str is immutable
+fn main() {
+    var s = "hello"
+    s[0] += 1
+}

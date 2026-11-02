@@ -1,0 +1,13 @@
+// built-in == on a fieldless closed type that is not a value type, and on borrows of it
+// expect: true false true true
+// expect: false
+type S = closed { Name; Size; Time }
+fn same(a: &S, b: &S): bool { return a == b }
+fn main() {
+    let a = S.Size
+    let b = S.Time
+    let c = S.Size
+    println((if a == c { "true" } else { "false" }) + " " + (if a == b { "true" } else { "false" }) + " " +
+        (if same(&a, &c) { "true" } else { "false" }) + " " + (if a != b { "true" } else { "false" }))
+    println(same(&a, &b))
+}

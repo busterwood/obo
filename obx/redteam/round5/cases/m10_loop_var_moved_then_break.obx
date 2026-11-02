@@ -1,0 +1,11 @@
+// moved then break on one path; the loop's other exit keeps it
+// error: moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn main() {
+    let x = D{v: 1}
+    for i in 0..3 {
+        if i == 1 { take(x); break }
+    }
+}

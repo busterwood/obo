@@ -1,0 +1,4 @@
+// SPEC 12: the element type must match.
+// error: not &[]int
+extern "c" fn f(a: &[]byte)
+fn main() { let a = [1, 2]; f(&a) }

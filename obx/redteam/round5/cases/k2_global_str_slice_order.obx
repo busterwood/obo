@@ -1,0 +1,11 @@
+// a substring of a global str whose bound assigns the global: the old value is sliced
+// expect: bc
+var G: str = ""
+fn shrink(): int {
+    G = "z"
+    return 3
+}
+fn main() {
+    G = "a" + "bcd"
+    println(G[1..shrink()])
+}

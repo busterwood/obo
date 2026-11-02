@@ -1,0 +1,4 @@
+// SPEC 12: extern fn is only an extern parameter's type (not a field).
+// error: can only be the type of a parameter of an extern function
+type R = record { f: extern fn(int) }
+fn main() { }

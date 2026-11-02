@@ -1,0 +1,9 @@
+// the index is a match expression that moves the array on one arm
+// error: moved
+type E = closed { A; B }
+fn take(d: []int): int { return 0 }
+fn main() {
+    let e = E.A
+    let xs = [10, 20]
+    println(xs[match e { E.A { take(xs) } E.B { 0 } }])
+}

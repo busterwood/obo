@@ -1,0 +1,15 @@
+// SPEC 7.5, 7.8: &d is taken when the call is made, after the later arguments, so a return
+// branch may move d: on that path the call is never made.
+// expect: 1
+// expect: 3
+type D = record { v: int }
+fn both(a: &D, b: int): int { return a.v + b }
+fn f(c: bool): D {
+    let d = D{v: 1}
+    let n = both(&d, if c { return d } else { 2 })
+    return D{v: n}
+}
+fn main() {
+    println(f(true).v)
+    println(f(false).v)
+}

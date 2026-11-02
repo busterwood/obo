@@ -1,0 +1,11 @@
+// Red-team round 5, p01 (SPEC 7.3, 9.1): in `p op= e` the value is stored to p
+// after e has run, so e may not move p's variable. `x.v += take(x)` used to be
+// accepted and wrote into the record take had freed (a use after free).
+// error: moved
+// line: 10
+type D = record { v: int; ys: []int }
+fn take(d: D): int { return 0 }
+fn main() {
+    var x = D{v: 1, ys: [1]}
+    x.v += take(x)
+}

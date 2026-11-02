@@ -1,0 +1,31 @@
+// SPEC 5.2: a shared borrow of a record or variant constant borrows a temporary copy:
+// == through an eq(&T) method on either side, &CONST arguments, receivers.
+// expect: true true false
+// expect: 7 7
+// expect: 3
+// expect: wide
+type Style = value record { bold: bool; fg: int }
+fn (a: &Style) eq(b: &Style): bool { return a.bold == b.bold && a.fg == b.fg }
+fn (a: &Style) fgOf(): int { return a.fg }
+type Mode = value closed { Narrow; Wide(int) }
+const PLAIN: Style = Style{bold: false, fg: 0}
+const RED: Style = Style{bold: true, fg: 7}
+const WIDE: Mode = Mode.Wide(3)
+fn show(s: &Style): int { return s.fg }
+fn width(m: &Mode): int {
+    return match m {
+        Mode.Narrow { 1 }
+        Mode.Wide(n) { n }
+    }
+}
+fn bs(x: bool): str { return if x { "true" } else { "false" } }
+fn main() {
+    let s = Style{bold: false, fg: 0}
+    println(bs(s == PLAIN) + " " + bs(PLAIN == s) + " " + bs(RED == PLAIN))
+    println(intToStr(show(&RED)) + " " + intToStr(RED.fgOf()))
+    println(width(&WIDE))
+    match &WIDE {
+        Mode.Narrow { println("narrow") }
+        Mode.Wide(_) { println("wide") }
+    }
+}

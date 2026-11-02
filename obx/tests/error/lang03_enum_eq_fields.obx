@@ -1,0 +1,6 @@
+// SPEC 7.4: a closed type with a variant that has fields has no built-in ==.
+// error: needs a method eq
+type S = value closed { Name; Size(int) }
+fn main() {
+    println(S.Name == S.Name)
+}

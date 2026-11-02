@@ -493,6 +493,16 @@ fn (lx: mut &Lexer) run() {
             i = j
         } else if c == '"' {
             i = lx.string(i)
+        } else if c == '`' {
+            // a raw string (SPEC 2): no escapes; the source's line breaks are already LF
+            var j = i + 1
+            while j < n && strByte(src, j) != '`' {
+                if strByte(src, j) == '\n' { lx.line += 1 }
+                j += 1
+            }
+            if j >= n { lx.fail(line, "unterminated raw string literal") }
+            lx.push(T_STR, -1, src[i + 1..j], 0, line)
+            i = j + 1
         } else if c == '\'' {
             var v = 0
             var j = 0
@@ -630,14 +640,14 @@ pub const N_TPARAM = 5       // s name, a constraints (types and N_COPY)
 pub const N_FIELD = 6        // s name, a ty; PUB; no line
 pub const N_VARIANT = 7      // s name, a fields; NAMED
 pub const N_MEMBER = 8       // s name, a params, b ret, c mode (M_*)
-pub const N_RECV = 9         // s name ("" none), a ty; no line
+pub const N_RECV = 9         // s name ("" none), a ty; no line; VAR
 pub const N_PARAM = 10       // s name, a ty; VAR
 pub const N_COPY = 11        // the constraint copy; no line
 pub const N_TREF = 12        // a t; MUT; no line
 pub const N_TSLICE = 13      // a t; MUT; no line
 pub const N_TARR = 14        // a t; no line
 pub const N_TNEVER = 15
-pub const N_TFN = 16         // a params, b ret
+pub const N_TFN = 16         // a params, b ret; EXTERN (a C function pointer)
 pub const N_TNAME = 17       // a parts (N_IDENT), b args
 pub const N_IDENT = 18       // s name (an element of a name list); no line
 pub const N_BLOCK = 19       // a stmts
@@ -701,6 +711,8 @@ pub const MUTABLE = 128
 pub const MINUS = 256
 pub const NEG = 512
 pub const TRUE = 1024
+pub const DOTS = 4096       // N_FN (extern): C varargs after the parameters
+pub const ARM = 2048        // N_RETURN, N_BREAK, N_CONTINUE: the whole body of a branch or arm of an expression
 
 // Type forms and interface receiver modes.
 pub const F_RECORD = 0
@@ -747,12 +759,13 @@ pub type Parser = record {
     i: int
     nolit: int
     depth: int
+    dots: bool      // the last params() ended in ... (an extern's C varargs)
     ast: Ast
 }
 
 // The tree of a module, or the first syntax error (which stops the program).
 pub fn parse(src: str, fname: str): Ast {
-    var p = Parser{toks: lex(src, fname), i: 0, nolit: 0, depth: 0,
+    var p = Parser{toks: lex(src, fname), i: 0, nolit: 0, depth: 0, dots: false,
                    ast: Ast{fname: fname, nodes: [], items: [], imports: -1, decls: -1}}
     p.module()
     let Parser{ast} = move(p)
@@ -950,6 +963,7 @@ fn (p: mut &Parser) externdecl(isPub: bool): int {
     p.expect(T_KW, K_FN)
     let name = p.ident()
     let ps = p.params()
+    let dots = p.dots
     let ret = p.typeopt()
     var cname = name
     if p.atKw(K_AS) {
@@ -966,6 +980,7 @@ fn (p: mut &Parser) externdecl(isPub: bool): int {
     p.ast.nodes[d].t = lib
     p.ast.nodes[d].u = cname
     p.flag(d, EXTERN, true)
+    p.flag(d, DOTS, dots)
     p.sep()
     return d
 }
@@ -1097,7 +1112,7 @@ fn (p: mut &Parser) typedecl(): int {
                 p.next()
                 p.sym(S_RPAREN)
             }
-            append(mut &ms, p.node(N_MEMBER, mw, p.ident(), p.params(), p.typeopt(), mode))
+            append(mut &ms, p.node(N_MEMBER, mw, p.ident(), p.noDots(p.params()), p.typeopt(), mode))
             p.sep()
         }
         p.sym(S_RBRACE)
@@ -1140,14 +1155,20 @@ fn (p: mut &Parser) fndecl(): int {
     if p.atSym(S_LPAREN) {
         p.next()
         var rn = ""
-        if p.kind(0) == T_ID && p.isSym(1, S_COLON) {
+        let rvar = p.atKw(K_VAR)
+        if rvar {
+            p.next()
+            rn = p.ident()
+            p.sym(S_COLON)
+        } else if p.kind(0) == T_ID && p.isSym(1, S_COLON) {
             rn = p.nextText()
             p.next()
         }
         recv = p.node(N_RECV, 0, rn, p.recvtype(), -1, -1)
+        p.flag(recv, VAR, rvar)
         p.sym(S_RPAREN)
     }
-    let d = p.node(N_FN, w, p.ident(), recv, p.tparams(), p.params())
+    let d = p.node(N_FN, w, p.ident(), recv, p.tparams(), p.noDots(p.params()))
     p.ast.nodes[d].d = p.typeopt()
     p.ast.nodes[d].e = p.block()
     return d
@@ -1190,7 +1211,15 @@ fn (p: mut &Parser) recvtype(): int {
 fn (p: mut &Parser) params(): int {
     p.sym(S_LPAREN)
     var ps: []int = []
+    p.dots = false
     while !p.atSym(S_RPAREN) {
+        if p.atSym(S_DOTDOT) && p.isSym(1, S_DOT) {
+            p.next()
+            p.next()
+            p.dots = true
+            if !p.atSym(S_RPAREN) { p.err("... must be the last parameter") }
+            break
+        }
         var isvar = false
         if p.atKw(K_VAR) {
             p.next()
@@ -1206,6 +1235,11 @@ fn (p: mut &Parser) params(): int {
     }
     p.sym(S_RPAREN)
     return p.list(&ps)
+}
+
+fn (p: mut &Parser) noDots(ps: int): int {
+    if p.dots { p.fail(p.line(), "... (C varargs) is only allowed in an extern declaration") }
+    return ps
 }
 
 fn (p: mut &Parser) typ(): int {
@@ -1238,7 +1272,9 @@ fn (p: mut &Parser) type1(): int {
         p.sym(S_RBRACKET)
         return p.node(N_TARR, 0, "", p.typ(), -1, -1)
     }
-    if p.atKw(K_FN) {
+    if p.atKw(K_FN) || (p.atKw(K_EXTERN) && p.isKw(1, K_FN)) {
+        let isExt = p.atKw(K_EXTERN)
+        if isExt { p.next() }
         let fw = p.nextLine()
         p.sym(S_LPAREN)
         var ps: []int = []
@@ -1247,7 +1283,9 @@ fn (p: mut &Parser) type1(): int {
             if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
         }
         p.sym(S_RPAREN)
-        return p.node(N_TFN, fw, "", p.list(&ps), p.typeopt(), -1)
+        let f = p.node(N_TFN, fw, "", p.list(&ps), p.typeopt(), -1)
+        p.flag(f, EXTERN, isExt)
+        return f
     }
     return p.namedtype()
 }
@@ -1421,9 +1459,13 @@ fn (p: mut &Parser) matchstmt(w: int, kind: int): int {
                 p.next()
                 p.ast.nodes[arm].b = p.list(&binds)
             }
+            if p.ast.nodes[arm].b >= 0 && p.atSym(S_COMMA) {
+                p.err("an arm with several variants binds no fields")
+            }
             while p.ast.nodes[arm].b < 0 && p.atSym(S_COMMA) {
                 p.next()
                 append(mut &lits, p.literal())
+                if p.atSym(S_LPAREN) { p.err("an arm with several variants binds no fields") }
             }
             if len(lits) == 1 && p.ast.nodes[first].kind == N_LNAME {
                 let vpath = p.ast.nodes[first].a
@@ -1446,7 +1488,23 @@ fn (p: mut &Parser) matchstmt(w: int, kind: int): int {
 fn (p: mut &Parser) branch(): int {
     p.sym(S_LBRACE)
     p.skipsemi()
-    let e = p.expr0()
+    var e = -1
+    if p.atKw(K_RETURN) || p.atKw(K_BREAK) || p.atKw(K_CONTINUE) {
+        // return, break or continue as the whole branch (SPEC 7.8)
+        let w = p.line()
+        let isRet = p.atKw(K_RETURN)
+        let isBreak = p.atKw(K_BREAK)
+        p.next()
+        if isRet {
+            let v = if p.atSym(S_SEMI) || p.atSym(S_RBRACE) { -1 } else { p.expr0() }
+            e = p.node(N_RETURN, w, "", v, -1, -1)
+        } else {
+            e = p.node(if isBreak { N_BREAK } else { N_CONTINUE }, w, "", -1, -1, -1)
+        }
+        p.flag(e, ARM, true)
+    } else {
+        e = p.expr0()
+    }
     p.skipsemi()
     if !p.atSym(S_RBRACE) { p.err("a branch of an if or match expression is one expression in { }") }
     p.next()

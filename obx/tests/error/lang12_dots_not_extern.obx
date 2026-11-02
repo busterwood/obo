@@ -1,0 +1,4 @@
+// SPEC 12: ... only in an extern declaration.
+// error: only allowed in an extern declaration
+fn f(a: int, ...) { }
+fn main() { }

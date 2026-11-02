@@ -1,0 +1,7 @@
+// SPEC 7.8: return without a value in a function with a result.
+// error: return needs a int value
+fn f(c: bool): int {
+    let y = if c { return } else { 1 }
+    return y
+}
+fn main() { println(f(true)) }

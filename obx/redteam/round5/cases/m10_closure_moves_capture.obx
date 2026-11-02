@@ -1,0 +1,10 @@
+// a closure body moves a captured variable on one path
+// error: closure cannot move|moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn main() {
+    let x = D{v: 1}
+    let f = fn(c: bool) { if c { take(x) } }
+    f(true)
+}

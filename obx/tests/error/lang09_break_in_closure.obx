@@ -1,0 +1,8 @@
+// SPEC 7.8: a closure body is not inside the loop around it.
+// error: continue outside a loop
+fn app(f: &fn(int): int): int { return f(1) }
+fn main() {
+    for i in 0..3 {
+        println(app(fn(x: int): int { return if x > 0 { continue } else { x } }))
+    }
+}

@@ -1,0 +1,13 @@
+// a constant borrowed into generic and interface-constrained parameters
+// expect: 1,2
+// expect: true
+type Pair = value record { a: int; b: int }
+fn (p: &Pair) toStr(): str { return intToStr(p.a) + "," + intToStr(p.b) }
+fn (p: &Pair) eq(q: &Pair): bool { return p.a == q.a && p.b == q.b }
+const P: Pair = Pair{a: 1, b: 2}
+fn show[T: Show](x: &T): str { return x.toStr() }
+fn same[T: Eq](x: &T, y: &T): bool { return x == y }
+fn main() {
+    println(show(&P))
+    println(same(&P, &P))
+}

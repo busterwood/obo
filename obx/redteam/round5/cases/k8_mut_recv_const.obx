@@ -1,0 +1,8 @@
+// a mut & receiver on a constant
+// error: constant
+type Pair = value record { a: int; b: int }
+const P: Pair = Pair{a: 1, b: 2}
+fn (p: mut &Pair) bump() { p.a += 1 }
+fn main() {
+    P.bump()
+}

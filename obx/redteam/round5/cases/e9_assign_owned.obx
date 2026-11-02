@@ -1,0 +1,18 @@
+// assigning an owned variable from an if with an exit arm: the old value stays (dropped once
+// by the scope on the exit path)
+// expect: drop 1
+// expect: early
+// expect: drop 1
+// expect: drop 2
+// expect: late
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn f(c: bool): str {
+    var x = D{v: 1}
+    x = if c { return "early" } else { D{v: 2} }
+    return "late"
+}
+fn main() {
+    println(f(true))
+    println(f(false))
+}

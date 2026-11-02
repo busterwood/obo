@@ -1,0 +1,7 @@
+// SPEC 7.4: both operands of the built-in == have the same type.
+// error: needs operands of the same type
+type Sort = value closed { Name; Size }
+type Other = value closed { Name; Size }
+fn main() {
+    println(Sort.Name == Other.Name)
+}

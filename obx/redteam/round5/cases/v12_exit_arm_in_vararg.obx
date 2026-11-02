@@ -1,0 +1,28 @@
+// an exit arm inside a variadic argument (peeked for its type, then evaluated)
+// expect: mk
+// expect: drop
+// expect: 1
+// expect: mk
+// expect: 5 7
+// expect: drop
+// expect: 0
+import "io"
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop") }
+fn mk(): D {
+    println("mk")
+    return D{v: 5}
+}
+extern "c" fn printf(fmt: str, ...): i32
+extern "c" fn fflush(p: ptr): i32
+fn f(c: bool): int {
+    let d = mk()
+    io.flushStdout()
+    printf("%ld %ld\n", d.v, if c { return 1 } else { 7 })
+    fflush(nullPtr())
+    return 0
+}
+fn main() {
+    println(f(true))
+    println(f(false))
+}

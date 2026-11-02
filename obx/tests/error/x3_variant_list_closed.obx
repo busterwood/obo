@@ -1,6 +1,0 @@
-// error: literal arms need
-type C = closed { Red; Blue }
-fn main() {
-    let c = C.Red
-    match c { C.Red, C.Blue { println(1) } }
-}

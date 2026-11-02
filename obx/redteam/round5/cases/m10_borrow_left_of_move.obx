@@ -1,0 +1,11 @@
+// a borrow of x to the left of an if expression that moves x on one path
+// error: moved|borrow
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int { return 0 }
+fn show(d: &D, n: int) { println(d.v + n) }
+fn main() {
+    let c = true
+    let x = D{v: 1}
+    show(&x, if c { take(x) } else { 5 })
+}

@@ -1,0 +1,14 @@
+// s[i] on a global str whose index expression assigns the global: the str is read first
+// (operands left to right), so the old value is indexed
+// expect: 98
+// expect: 0
+var G: str = ""
+fn shrink(): int {
+    G = ""
+    return 1
+}
+fn main() {
+    G = "a" + "bc"
+    println(G[shrink()])
+    println(len(G))
+}

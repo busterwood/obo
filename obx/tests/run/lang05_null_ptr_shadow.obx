@@ -1,0 +1,6 @@
+// SPEC 12: nullPtr is not reserved: a module's own function of that name wins.
+// expect: 7
+fn nullPtr(): int { return 7 }
+fn main() {
+    println(nullPtr())
+}

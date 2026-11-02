@@ -1,0 +1,21 @@
+// a str field of x read to the left of an if expression that moves x on one path
+// expect: take 1
+// expect: drop 1
+// expect: name-1 0
+// expect: drop 1
+// expect: name-1 5
+type D = record { v: int; name: str }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn take(d: D): int {
+    println("take " + intToStr(d.v))
+    return 0
+}
+fn show(s: str, n: int) { println(s + " " + intToStr(n)) }
+fn f(c: bool) {
+    let x = D{v: 1, name: "name-" + intToStr(1)}
+    show(x.name, if c { take(x) } else { 5 })
+}
+fn main() {
+    f(true)
+    f(false)
+}

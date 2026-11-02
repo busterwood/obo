@@ -1,0 +1,8 @@
+// SPEC 2: a newline after a raw string ends the statement, so + starts a new one.
+// error: expected
+// line: 7
+fn main() {
+    let s = `one
+two` 
+        + "x"
+}

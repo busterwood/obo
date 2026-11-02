@@ -1,0 +1,9 @@
+// SPEC 9.1: a later operand of the same statement sees the variable as moved.
+// error: was moved
+type D = record { v: int }
+fn two(d: D, n: int): int { return n }
+fn main() {
+    let x = D{v: 1}
+    let y = D{v: 2}
+    println(two(if x.v > 0 { x } else { y }, x.v))
+}

@@ -1,0 +1,9 @@
+// SPEC 9.1: a variable borrowed earlier in the statement cannot be moved by a branch.
+// error: borrow
+type D = record { v: int; s: []int }
+fn both(a: &[]int, d: D): int { return len(a) + d.v }
+fn main() {
+    let x = D{v: 1, s: [1]}
+    let y = D{v: 2, s: [2]}
+    println(both(&x.s, if x.v > 0 { x } else { y }))
+}

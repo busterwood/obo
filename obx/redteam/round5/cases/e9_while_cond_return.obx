@@ -1,0 +1,23 @@
+// return in a while condition (allowed; break and continue are not)
+// expect: mk 0
+// expect: drop 0
+// expect: mk 1
+// expect: drop 1
+// expect: mk 2
+// expect: drop 2
+// expect: 2
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn mk(v: int): D {
+    println("mk " + intToStr(v))
+    return D{v: v}
+}
+fn v(d: D, n: int): int { return d.v + n }
+fn f(): int {
+    var i = 0
+    while v(mk(i), if i == 2 { return i } else { 0 }) < 10 {
+        i += 1
+    }
+    return -1
+}
+fn main() { println(f()) }

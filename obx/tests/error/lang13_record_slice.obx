@@ -1,0 +1,5 @@
+// SPEC 12: no slices of records.
+// error: cannot have type &[D]
+type D = record { a: int }
+extern "c" fn f(a: &[D])
+fn main() { }

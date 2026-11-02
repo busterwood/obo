@@ -1,0 +1,5 @@
+// SPEC 12: no record extras.
+// error: cannot be R
+extern "c" fn printf(fmt: str, ...): i32
+type R = record { a: int }
+fn main() { printf("%d", R{a: 1}) }

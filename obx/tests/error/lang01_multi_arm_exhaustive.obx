@@ -1,0 +1,11 @@
+// SPEC 7.8: the variants of a list arm count toward exhaustiveness; others are missing.
+// error: not exhaustive: missing Kind
+type Sort = closed { Name; Size; Modified; Kind }
+fn main() {
+    let s = Sort.Name
+    let w = match s {
+        Sort.Size, Sort.Modified { 1 }
+        Sort.Name { 2 }
+    }
+    println(w)
+}

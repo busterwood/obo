@@ -51,9 +51,13 @@ static i64 sysret(i64 r) {
 __attribute__((noreturn)) static void sys_exit(int code) {
     for (;;) SYS(S_EXIT_GROUP, code, 0, 0);
 }
+/* Set as the program ends: output from then on, by a callback libc calls at exit (SPEC 12), is
+   written at once, since nothing flushes the buffer later. */
+static int rt_ended;
 /* The end of the program (rt.h's exit): with libc, its exit runs the atexit handlers and
    flushes stdio, after the runtime has flushed its own buffer. */
 __attribute__((noreturn, noinline)) static void rt_quit(int code) {
+    rt_ended = 1;
     if (rt_n_libc[0]) ((void (*)(int))rt_n_libc[0])(code);
     sys_exit(code);
 }
@@ -400,6 +404,7 @@ void rt_n_start(int64_t* sp, void* mainf) {
 
 void rt_finish(void) {
     rt_flush();
+    rt_ended = 1;
     if (rt_check && rt_live != 0) {
         eputs("obx: leak: "); eputd(rt_live); eputs(" live objects at exit at runtime\n");
         eflush();
@@ -479,7 +484,10 @@ const char* rt_cstr(obx_str s, const char* w) {
     }
     return rt_ctmp[rt_nctmp++] = rt_cdup(s);
 }
-void rt_cfree(void) { while (rt_nctmp) free(rt_ctmp[--rt_nctmp]); }
+int64_t rt_cmark(void) { return rt_nctmp; }
+static char rt_cempty;
+void* rt_cdata(void* p) { return p ? p : &rt_cempty; }
+void rt_cfree(int64_t m) { while (rt_nctmp > m) free(rt_ctmp[--rt_nctmp]); }
 static char* rt_digits(char* end, u128 v) {
     for (; v > UINT64_MAX; v /= 10) *--end = (char)('0' + (int)(v % 10));
     uint64_t w = (uint64_t)v;
@@ -785,7 +793,7 @@ obx_str rt_float_to_str(double d) {
     return rt_str_of(buf, n);
 }
 int64_t rt_write_fd(int64_t fd, obx_str s) {
-    if (fd == 1) {
+    if (fd == 1 && !rt_ended) {
         if (rt_olen + (size_t)s.len > sizeof rt_obuf) rt_flush();
         if ((size_t)s.len <= sizeof rt_obuf) {
             memcpy(rt_obuf + rt_olen, RT_SP(s), (size_t)s.len);
@@ -1132,22 +1140,24 @@ int64_t obxlib_term_cols(int64_t fd) {
     if (SYS(S_IOCTL, fd, 0x5413, w) != 0 || w[0] == 0 || w[1] == 0) return 0;   /* TIOCGWINSZ */
     return w[1];
 }
-/* C memory for the database adapters (lib/sqlite, lib/postgres): a buffer from the runtime's
-   allocator (counted by OBX_CHECK), a NUL-terminated copy of a str, NULL, and byte, int32 and
-   pointer access by index, for what a C API takes or returns as a pointer to memory */
-void* obxlib_null(void) { return 0; }
-void* obxlib_alloc(int64_t n) { return rt_alloc(n > 0 ? (size_t)n : 1); }
-void obxlib_free(void* p) { if (p) rt_free(p); }
-void* obxlib_cstr(const char* s) {
-    size_t n = strlen(s);
-    char* p = rt_alloc(n + 1);
-    memcpy(p, s, n + 1);
+/* C memory for lib/ffi (and through it the database adapters): a zeroed buffer from the runtime's
+   allocator (counted by OBX_CHECK), byte, int32 and pointer access by index, and copies between
+   obx byte arrays and C memory */
+void* obxlib_alloc(int64_t n) {
+    size_t k = n > 0 ? (size_t)n : 1;
+    void* p = rt_alloc(k);
+    memset(p, 0, k);
     return p;
 }
+void obxlib_free(void* p) { if (p) rt_free(p); }
 int64_t obxlib_peek(const void* p, int64_t i) { return ((const uint8_t*)p)[i]; }
 void obxlib_poke(void* p, int64_t i, int64_t v) { ((uint8_t*)p)[i] = (uint8_t)v; }
+int64_t obxlib_peek_i32(const void* p, int64_t i) { return ((const int32_t*)p)[i]; }
 void obxlib_poke_i32(void* p, int64_t i, int64_t v) { ((int32_t*)p)[i] = (int32_t)v; }
+void* obxlib_peek_ptr(const void* p, int64_t i) { return ((void* const*)p)[i]; }
 void obxlib_poke_ptr(void* p, int64_t i, void* q) { ((void**)p)[i] = q; }
+void obxlib_copy_in(void* dst, int64_t at, const void* src, int64_t n) { memcpy((char*)dst + at, src, (size_t)n); }
+void obxlib_copy_out(void* dst, const void* src, int64_t at, int64_t n) { memcpy(dst, (const char*)src + at, (size_t)n); }
 int64_t obx_clock_ns(int64_t which) {
     struct { i64 s, ns; } t;
     SYS(S_CLOCK_GETTIME, which ? 1 : 0, &t, 0);

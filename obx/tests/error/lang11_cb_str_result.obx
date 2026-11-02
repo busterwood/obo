@@ -1,0 +1,4 @@
+// SPEC 12: a callback's result is a C scalar.
+// error: cannot return str
+extern "c" fn g(cb: extern fn(): str)
+fn main() { }

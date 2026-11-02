@@ -1,0 +1,16 @@
+// the same with an infinite loop (whose breaks are joined).
+// error: moved
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn pair(a: D, b: int): int { return a.v + b }
+fn main() {
+    var x = D{v: 1}
+    var i = 0
+    while true {
+        i += 1
+        let n = pair(move(x), if i == 2 { break } else { 1 })
+        x = D{v: 10 + i}
+        println(n)
+    }
+    println(x.v)
+}

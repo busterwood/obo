@@ -1,0 +1,12 @@
+// a raw string as a match arm and a constant; matched against an escaped literal
+// expect: hit
+// expect: 2
+const K: str = `x\y`
+fn main() {
+    let s = "x\\y"
+    match s {
+        `x\y` { println("hit") }
+        else { println("miss") }
+    }
+    println(if s == K { 2 } else { 0 })
+}

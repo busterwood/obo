@@ -44,6 +44,12 @@ separate decision from the user; they are the ones to revisit first.
   `5.toStr()` calls `toStr` on `5`.
 - A number literal longer than 1,000 characters is a compile error.
 - String literals `"..."` use the same escapes and may not span lines.
+- Raw string literals `` `...` `` have no escapes: every byte up to the next
+  backtick is part of the string, and they may span lines. A raw string cannot
+  contain a backtick. Each line break inside one is a single LF byte whatever
+  the source uses (LF, CRLF or a lone CR), so a raw string never contains a CR.
+  It is a `str` like any string literal, and a newline after its closing
+  backtick ends a statement.
 
 Keywords:
 
@@ -79,21 +85,21 @@ constraint  = "copy" | qualname [ targs ] ;
 
 fndecl      = "fn" [ receiver ] IDENT [ tparams ] "(" [ params ] ")"
               [ ":" type ] block ;
-receiver    = "(" [ IDENT ":" ] type ")" ;       (* no name: associated fn *)
+receiver    = "(" [ [ "var" ] IDENT ":" ] type ")" ;   (* no name: associated fn *)
 params      = param { "," param } ;
 param       = [ "var" ] IDENT ":" type ;
 
 constdecl   = "const" IDENT [ ":" type ] "=" expr sep ;
 globaldecl  = "var" IDENT ":" type "=" expr sep
             | "var" IDENT ":" "once" type sep ;
-externdecl  = "extern" STRING "fn" IDENT "(" [ params ] ")" [ ":" type ]
-              [ "as" STRING ] sep ;
+externdecl  = "extern" STRING "fn" IDENT "(" [ params [ "," "..." ] ] ")"
+              [ ":" type ] [ "as" STRING ] sep ;
 
 type        = "never" | "&" type | "mut" "&" type | "[]" type
             | "&" "fn" "(" [ type { "," type } ] ")" [ ":" type ]  (* closure *)
             | "&" "[" type "]" | "mut" "&" "[" type "]"     (* slices *)
-            | "fn" "(" [ type { "," type } ] ")" [ ":" type ]
-            | qualname [ targs ] ;
+            | [ "extern" ] "fn" "(" [ type { "," type } ] ")" [ ":" type ]
+            | qualname [ targs ] ;                  (* extern fn: section 12 *)
 targs       = "[" type { "," type } "]" ;
 qualname    = IDENT { "." IDENT } ;
 
@@ -127,7 +133,7 @@ unary       = ( "-" | "!" | "~" | "&" | "mut" "&" | "try" ) unary | postfix ;
 postfix     = primary { "." IDENT [ targs ] | "[" index "]" | "(" [ args ] ")" } ;
 index       = expr | [ expr ] ".." [ expr ] ;
 args        = expr { "," expr } ;
-primary     = INT | FRACTION | CHAR | STRING | "true" | "false"
+primary     = INT | FRACTION | CHAR | STRING | RAWSTRING | "true" | "false"
             | qualname [ targs ] [ "{" [ inits ] "}" ]
             | "[" [ args ] "]"
             | "(" expr ")"
@@ -135,7 +141,7 @@ primary     = INT | FRACTION | CHAR | STRING | "true" | "false"
             | "match" expr "{" { arm(branch) } [ "else" branch ] "}"
             | "fn" "(" [ lparam { "," lparam } ] ")" [ ":" type ] block ;  (* closure *)
 ifexpr      = "if" expr branch "else" ( branch | ifexpr ) ;
-branch      = "{" expr "}" ;
+branch      = "{" ( expr | "return" [ expr ] | "break" | "continue" ) "}" ;
 lparam      = IDENT [ ":" type ] ;
 inits       = IDENT ":" expr { "," IDENT ":" expr } ;
 sep         = ";" | NEWLINE ;
@@ -169,7 +175,10 @@ copy type: copying a string never copies its bytes, and it is freed with its
 last copy. Its bytes are not required to be UTF-8. `s[a..b]` is the substring
 of bytes `a` to `b - 1`; it shares the bytes of `s` (no copy, no allocation)
 and is itself an ordinary `str`. `s[a..]` and `s[..b]` run to the end and from
-the start. Out-of-range bounds stop the program (exit 3). A string is at most
+the start. `s[i]` is the byte at index `i` (a `byte`), on an owned or
+borrowed `str`; it is a value, not a place, so it cannot be assigned or
+borrowed `mut` (a string is immutable). Out-of-range indices and bounds stop
+the program (exit 3). A string is at most
 4 GiB − 1 bytes long; making a longer one stops the program (exit 2).
 
 All primitive types are copy types.
@@ -350,7 +359,11 @@ value record or variant literal of constants, of a copy type:
 static data; it is never freed and never changes. Using its name gives a
 `&[T]` slice (section 4.2a), so `POW10[i]`, `len(POW10)` and `for p in POW10`
 work, and it can be passed wherever a `&[T]` is expected. It cannot be
-appended to or assigned.
+appended to or assigned. A shared borrow of a record or variant constant
+(`&PLAIN`, an argument to a `&T` parameter, `s == PLAIN` with an
+`eq(&Style)` method) borrows a temporary copy of it, which lives to the end of
+the statement (so `let r = &PLAIN` is an error, as for any temporary). A `mut`
+borrow of a constant is an error. Global `var`s keep the rule above.
 
 **Set-once globals.** `var CONFIG: once Config` declares a global of any type,
 owned or copy, that starts empty and is set at most once:
@@ -391,7 +404,11 @@ fn (Decimal) parse(s: str): Result[Decimal, str] { ... }
   exists only on instances whose `V` is a copy type.
 - Methods may be declared only in the module that declares the type. `std`
   declares the methods of the primitive types.
-- `var` before a by-value parameter makes it assignable in the body.
+- `var` before a by-value parameter or a by-value receiver
+  (`fn (var p: Point) moved(dx: int): Point`) makes it assignable, and mutably
+  borrowable, in the body; it changes nothing for the caller, which passes a
+  copy or moves the argument as usual. `var` on a borrow parameter or receiver,
+  a slice or a closure parameter is an error.
 - A method named `drop`, with receiver `mut &T` and no other parameters, is
   the type's destructor (section 9.4). It cannot be called directly.
 - A function without a result type returns nothing.
@@ -518,7 +535,12 @@ For operands that are not primitive, an operator is a method call:
 | `a < b` etc. | `a.cmp(&b) < 0` etc. |
 
 `str` has built-in `+` (concatenation), `==` and the comparisons (bytewise).
-`bool` has `== != && || !`. A compound assignment `a += b` means `a = a + b`
+`bool` has `== != && || !`. A closed type all of whose variants have no fields
+(`type Sort = value closed { Name; Size }`) has built-in `==` and `!=`, which
+compare the variants, when it declares no `eq` method; when it declares one,
+`==` calls it. Both operands have that type (or are borrows of it). The
+built-in comparison is not a method: such a type satisfies `Eq` only by
+declaring `eq`, and `<` and the other comparisons still need `cmp`. A compound assignment `a += b` means `a = a + b`
 with `a` evaluated once: the index expressions in `a` run once, before `b`, and,
 as in `a = a + b`, the value is stored to the place they name after `b` has run
 (so `xs[i] += f(mut &xs)` is allowed, and `i` is checked again when it is
@@ -585,8 +607,26 @@ let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" 
   integer literal branch takes the type of the others. A branch whose type is
   `never` (a call to a `never` function) takes the type of the others.
 - Ownership is as for the statements: moves are joined across the branches
-  (section 9.1), and a match binds, borrows and consumes its scrutinee as in
-  section 9.3.
+  (section 9.1; a variable one branch moves is dropped by the others), and a
+  match binds, borrows and consumes its scrutinee as in section 9.3.
+  Operands to the left of an if or match expression are evaluated (and copy
+  values copied, section 7.5) before it runs, so none of them reads a variable
+  it drops.
+- A branch or arm may be `return`, `return e`, `break` or `continue` as its
+  whole body (not inside a larger expression, and not followed by
+  statements): `let n = match r { Ok(v) { v } Err(e) { return Err(e) } }`. Its
+  type is `never`, so it takes the type of the others; it does what the
+  statement does, in the middle of the enclosing statement. The parts of the
+  statement evaluated before it (operands to its left, earlier arguments, record
+  fields and array items, a consumed scrutinee) are evaluated first, and on that
+  path every temporary they made is dropped once, values not yet moved stay
+  with their variables (which are dropped as for the statement), and nothing
+  after it is evaluated: the call, record or array being built is never made.
+  Moves made earlier in the statement hold (`f(move(x), if c { return x }
+  else { 0 })` is an error). `break` and `continue` refer to the innermost
+  loop around the statement and cannot appear in a `while` condition; in a
+  closure, `return` leaves the closure. A move on such a path is allowed even
+  inside `&&`, `||` or a `while` condition, since the path leaves.
 - The result is a value, copy or owned; it may not be a borrow, a slice or a
   closure. A borrow branch is read: `if c { r } else { 0 }` with `r: &int`
   is an `int`, and a field bound as a borrow by a match arm can be read but
@@ -603,7 +643,10 @@ let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" 
   borrowed for the whole loop.
 - `match e { ... }` takes a closed value. An arm names a variant and binds its
   positional fields (`Expr.Add(l, r)`) or named fields in declaration order; `_`
-  ignores one. Arms must cover every variant or end with `else`. `match` on an
+  ignores one. An arm may instead name several variants of the type, binding
+  no fields (`Sort.Size, Sort.Modified { ... }`); it is taken when the value is
+  any of them. A variant may be named once in the whole match, alone or in a
+  list. Arms must cover every variant or end with `else`. `match` on an
   integer, `byte` or `str` takes literal arms and requires `else`. Such an arm
   may also name a constant (`K` or `mod.K`, section 5.2), alone or in a list
   with literals (`N_INT, N_FRAC, 7 { ... }`), when `x == K` would type-check:
@@ -640,9 +683,17 @@ it. The source then has no value until it is assigned again.
 - Only a whole local variable or by-value parameter can be moved out of.
   Moving out of a field, an element, a borrow or a global is an error; use
   `replace`, `swap` or `pop`.
-- The state of every variable must agree where paths join: after `if`/`else`,
-  after `match`, and at the end of a loop body (for the next iteration and for
-  the code after the loop). A variable moved on one path only is an error.
+- Where the paths of an `if` (with or without `else`), a `match`, or an `if` or
+  `match` expression join, a variable moved on some of the paths that reach the
+  join but not on others is dropped at the end of each path that did not move
+  it (after that path's own variables, and in an expression after its value is
+  taken), and is moved after the join: using it before assigning it again is an
+  error. There are no runtime drop flags. For a type with a `drop` method this
+  runs the drop earlier than the end of the scope, on those paths.
+- The state of every variable must agree at the end of a loop body (for the
+  next iteration) and where a loop's `break`s and its exit join: a variable
+  declared outside a loop and moved in one iteration but not assigned again
+  before the next is an error, as is one moved before some `break`s only.
 - Moves are not allowed inside `&&` and `||` operands or a `while` condition.
 
 ### 9.2 Drops
@@ -659,10 +710,11 @@ from first to last.
 or named fields of owned types are bound as `&T`, and of copy types as copies.
 `match` on any other expression (a call result, `move(x)`) consumes it: the
 bindings own the fields, and fields not bound (or bound to `_`) are dropped at
-the start of the arm, before its body runs.
+the start of the arm, before its body runs; an arm naming several variants, like
+`else`, drops the whole value there.
 
 A path that ends in `return`, `break`, `continue`, `panic` or `exit` does not
-take part in the join of section 9.1.
+take part in the join of section 9.1 (it drops nothing there).
 
 ### 9.4 Destructors
 
@@ -779,7 +831,13 @@ named), or a name of the form the compiler generates (`f1_x`, `g1_x`, `k1_x`,
 underscore).
 
 Parameter and result types are limited to integers, `float`, `bool`, `ptr`,
-`mut &ptr`, `mut &int` and `str`. A `str` result copies a NUL-terminated
+`mut &ptr`, `mut &int` and `str`; a parameter may also be an array or a slice
+of integers, `float` or `ptr` (`&[]T`, `mut &[]T`, `&[T]`, `mut &[T]`; `bool`
+elements read-only), passed as a pointer to the elements and borrowed as for
+any call (section 10): the pointer is valid during the call only, C gets no
+length (pass `len(a)` as another argument), and with `mut` C may write the
+elements. An empty array or slice passes a valid pointer, never NULL, to no
+elements. A `str` result copies a NUL-terminated
 `char *` the C function returns (a NULL result gives `""`); the C memory is
 not freed. A `str` argument is passed as
 a NUL-terminated pointer valid for the call (the runtime copies the bytes
@@ -787,9 +845,55 @@ when the string is a substring without a NUL after it), and stops the program if
 contains a NUL byte (exit code 12). `strFromC(p: ptr): str` copies a
 NUL-terminated C string. `ptr` is an ordinary copy type (a wrapper record may
 hold one), but the only operations on it are `==`, `!=` and the built-in
-`isNull(p)`; only extern functions create one.
+`isNull(p)`; only extern functions and the built-in `nullPtr()`, which gives
+the null pointer, create one. Neither `isNull` nor `nullPtr` is reserved: a
+module's own declaration of the name wins.
 Calls to extern functions are unchecked: wrap each in a function or a type
 with a `drop` method that makes its use safe.
+
+**Varargs.** `...` after the parameters declares a C variadic function:
+
+```obx
+extern "c" fn printf(fmt: str, ...): i32
+printf("%s has %d items, %.2f each\n", name, i32(n), 2.5)
+```
+
+A call passes the parameters, then any number of extra arguments of
+integer types (not `i128` or `u128`), `float`, `bool`, `ptr` or `str`; a
+borrow passes its value. An extra argument has its own type (an integer
+literal is an `int`, a 64-bit `long` to C, so `%d` needs `i32(n)`; a
+fractional literal is a `float`); C's default argument promotions apply
+(`byte`, `bool` and other integers narrower than `int` are passed as `int`,
+`float` is a `double`); a `str` is a NUL-terminated copy as for a parameter.
+The C format string is not checked. `...` is allowed only in an extern
+declaration, after at least one parameter. obx's own output is buffered (and
+flushed at the end of `main`, before C's at exit; output after that, from a
+callback C calls at exit, is written at once): call `io.flushStdout()`
+before C writes to stdout and `fflush` after, to keep the order of the lines.
+
+**Callbacks.** An extern parameter of type `extern fn(T1, ...): R` is a C
+function pointer:
+
+```obx
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+fn byByte(a: ptr, b: ptr): i32 { ... }
+qsort(buf, n, 1, byByte)
+```
+
+Its parameter and result types are integers, `float`, `bool` and `ptr` (the
+result may be left out); `extern fn` is allowed nowhere else. The argument is a
+function value of type `fn(T1, ...): R`, the same types: a top-level
+function (or a generic one's instance), not a closure and not an extern. C
+calls it with the C calling convention while the extern call runs (or later,
+if the C library keeps the pointer: a function value is valid for the whole
+run). User data travels as a `ptr` argument, for C APIs that take one. A
+callback may do anything a function may, call C included (the NUL-terminated
+copies of `str` arguments are per call), and assign a global whose `str` the
+extern call was passed (the call holds that value until it returns); a
+`panic`, a runtime error or `exit` in it ends the program as anywhere else,
+without returning to C. A callback
+cannot reach the caller's locals: only arguments and globals, and a global
+cannot be borrowed (section 5.2).
 
 ## 13. Not in draft 1
 

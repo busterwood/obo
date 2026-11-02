@@ -1,0 +1,4 @@
+// a raw string passed to C (a NUL-terminated pointer to its bytes)
+// expect: 4
+extern "c" fn strlen(s: str): int
+fn main() { println(strlen(`a\nb`)) }

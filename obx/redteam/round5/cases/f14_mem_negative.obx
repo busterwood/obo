@@ -1,0 +1,6 @@
+// ffi.alloc of a negative size panics
+// exit: 12
+import "ffi"
+fn main() {
+    let m = ffi.alloc(-1)
+}

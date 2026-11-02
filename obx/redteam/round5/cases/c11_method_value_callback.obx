@@ -1,0 +1,9 @@
+// a method or associated function value as a callback
+// error: associated function
+extern "c" fn qsort(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32)
+type K = record { }
+fn (K) cmp(a: ptr, b: ptr): i32 { return 0 }
+fn main() {
+    qsort(nullPtr(), 0, 1, K.cmp)
+    println(0)
+}

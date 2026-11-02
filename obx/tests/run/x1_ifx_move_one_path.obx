@@ -1,0 +1,14 @@
+// SPEC 9.1: an if expression moving a different variable on each path (an error
+// before): each path drops the variable the other moved.
+// expect: drop 2
+// expect: 1
+// expect: drop 1
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+fn main() {
+    let c = true
+    let zed = D{v: 1}
+    let b = D{v: 2}
+    let r = if c { zed } else { b }
+    println(r.v)
+}

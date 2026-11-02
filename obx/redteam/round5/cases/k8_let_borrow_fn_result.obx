@@ -1,0 +1,9 @@
+// a borrow result rooted in the temporary copy of a constant cannot outlive the statement
+// error: temporary
+type Pair = value record { a: int; b: int }
+const P: Pair = Pair{a: 1, b: 2}
+fn first(p: &Pair): &int { return &p.a }
+fn main() {
+    let r = first(&P)
+    println(r)
+}

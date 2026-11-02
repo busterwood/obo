@@ -204,11 +204,11 @@ fn parse(args: &[str]): Result[Command, Fail] {
                     }
                 }
             }
-        } else if len(a) > 1 && strByte(a, 0) == '-' {
+        } else if len(a) > 1 && a[0] == '-' {
             let eq = indexOf(a, "=", 1)
             if eq > 1 && eq + 1 < len(a) {
                 for j in 1..eq {
-                    let c = strByte(a, j)
+                    let c = a[j]
                     let s = try byShort(c)
                     let shown = "-" + a[j..j + 1]
                     if j == eq - 1 {
@@ -216,8 +216,7 @@ fn parse(args: &[str]): Result[Command, Fail] {
                         append(mut &opts, Opt{long: s.long, value: a[eq + 1..]})
                     } else {
                         match s.arity {
-                            Arity.Flag { append(mut &opts, Opt{long: s.long, value: ""}) }
-                            Arity.Optional { append(mut &opts, Opt{long: s.long, value: defaultOf(&s)}) }
+                            Arity.Flag, Arity.Optional { append(mut &opts, Opt{long: s.long, value: defaultOf(&s)}) }
                             Arity.Value { return Err(needsValue(shown, s.long)) }
                         }
                     }
@@ -225,7 +224,7 @@ fn parse(args: &[str]): Result[Command, Fail] {
             } else {
                 var j = 1
                 while j < len(a) {
-                    let s = try byShort(strByte(a, j))
+                    let s = try byShort(a[j])
                     let shown = "-" + a[j..j + 1]
                     j += 1
                     var value = ""
@@ -267,15 +266,15 @@ fn parse(args: &[str]): Result[Command, Fail] {
     return Ok(Command{opts: opts, operands: operands})
 }
 
-fn (a: Arity) takesValue(): bool { return match a { Arity.Flag { false } else { true } } }
+fn (a: Arity) takesValue(): bool { return a != Arity.Flag }
 
 // ---------------------------------------------------------------- deduction
 
 type Sort = value closed { Name; NameCase; Size; Modified; Ext; ExtCase; Type }
 
-fn (s: Sort) needsStat(): bool { return match s { Sort.Size { true } Sort.Modified { true } else { false } } }
+fn (s: Sort) needsStat(): bool { return s == Sort.Size || s == Sort.Modified }
 
-fn (s: Sort) byExt(): bool { return match s { Sort.Ext { true } Sort.ExtCase { true } else { false } } }
+fn (s: Sort) byExt(): bool { return s == Sort.Ext || s == Sort.ExtCase }
 
 // What the command line asks for, after eza's rules: the last occurrence of
 // an option counts.
@@ -331,19 +330,19 @@ fn sortOf(v: str): Result[Sort, Fail] {
 // 2^63-1 (up to 2^64-1) saturate. The error is Rust's text.
 fn parseUsize(s: str): Result[int, str] {
     if len(s) == 0 { return Err("cannot parse integer from empty string") }
-    var i = if strByte(s, 0) == '+' { 1 } else { 0 }
+    var i = if s[0] == '+' { 1 } else { 0 }
     if i == len(s) { return Err("invalid digit found in string") }
     for k in i..len(s) {
-        if !isDigit(strByte(s, k)) { return Err("invalid digit found in string") }
+        if !isDigit(s[k]) { return Err("invalid digit found in string") }
     }
-    while i < len(s) - 1 && strByte(s, i) == '0' { i += 1 }
+    while i < len(s) - 1 && s[i] == '0' { i += 1 }
     let digits = s[i..]
     if len(digits) > 20 || (len(digits) == 20 && digits > "18446744073709551615") {
         return Err("number too large to fit in target type")
     }
     var v = 0
     for k in 0..len(digits) {
-        let d = int(strByte(digits, k)) - 48
+        let d = int(digits[k]) - 48
         if v > (9223372036854775807 - d) / 10 { return Ok(9223372036854775807) }
         v = v * 10 + d
     }
@@ -613,12 +612,10 @@ fn groupRank(e: &Entry, o: &Opts): int {
 
 fn compare(x: &Entry, y: &Entry, sort: Sort, exts: &[]str, a: int, b: int): int {
     return match sort {
-        Sort.Name { natcmp(x.label, y.label, true) }
-        Sort.NameCase { natcmp(x.label, y.label, false) }
+        Sort.Name, Sort.NameCase { natcmp(x.label, y.label, sort == Sort.Name) }
         Sort.Size { sizeKey(x).cmp(&sizeKey(y)) }
         Sort.Modified { timeKey(x).cmp(&timeKey(y)) }
-        Sort.Ext { thenNames(exts[a].cmp(&exts[b]), x, y, true) }
-        Sort.ExtCase { thenNames(exts[a].cmp(&exts[b]), x, y, false) }
+        Sort.Ext, Sort.ExtCase { thenNames(exts[a].cmp(&exts[b]), x, y, sort == Sort.Ext) }
         Sort.Type { thenNames(typeRank(x.kind).cmp(&typeRank(y.kind)), x, y, false) }
     }
 }
@@ -669,20 +666,20 @@ fn natcmp(a: str, b: str, fold: bool): int {
         j = skipSpace(b, j)
         if i == len(a) { return if j == len(b) { 0 } else { -1 } }
         if j == len(b) { return 1 }
-        let x = strByte(a, i)
-        let y = strByte(b, j)
+        let x = a[i]
+        let y = b[j]
         if isDigit(x) && isDigit(y) {
             let left = x == '0' || y == '0'
             var last = 0
-            while i < len(a) && j < len(b) && isDigit(strByte(a, i)) && isDigit(strByte(b, j)) {
-                let c = strByte(a, i).cmp(&strByte(b, j))
+            while i < len(a) && j < len(b) && isDigit(a[i]) && isDigit(b[j]) {
+                let c = a[i].cmp(&b[j])
                 if c != 0 && left { return c }
                 if last == 0 { last = c }
                 i += 1
                 j += 1
             }
-            if i < len(a) && isDigit(strByte(a, i)) { return 1 }
-            if j < len(b) && isDigit(strByte(b, j)) { return -1 }
+            if i < len(a) && isDigit(a[i]) { return 1 }
+            if j < len(b) && isDigit(b[j]) { return -1 }
             if last != 0 { return last }
         } else if x < 0x80 && y < 0x80 {
             // ASCII, the common case, without decoding
@@ -703,10 +700,9 @@ fn natcmp(a: str, b: str, fold: bool): int {
 
 fn lowerByte(c: byte): byte { return if c >= 'A' && c <= 'Z' { c + 32 } else { c } }
 
-fn skipSpace(s: str, from: int): int {
-    var i = from
+fn skipSpace(s: str, var i: int): int {
     while i < len(s) {
-        let c = strByte(s, i)
+        let c = s[i]
         if c < 0x80 {
             if c != ' ' && (c < '\t' || c > '\r') { return i }
             i += 1
@@ -753,15 +749,15 @@ fn lowerRune(r: int): int {
 type PathSplit = value record { parent: str; last: str }
 
 fn splitPath(p: str): PathSplit {
-    let abs = len(p) > 0 && strByte(p, 0) == '/'
+    let abs = len(p) > 0 && p[0] == '/'
     var bounds: []int = []   // start and end of each component
     var i = 0
     while i < len(p) {
-        while i < len(p) && strByte(p, i) == '/' { i += 1 }
+        while i < len(p) && p[i] == '/' { i += 1 }
         if i == len(p) { break }
         let start = i
-        while i < len(p) && strByte(p, i) != '/' { i += 1 }
-        if i - start != 1 || strByte(p, start) != '.' || (start == indexOfNot(p, '/') && !abs) {
+        while i < len(p) && p[i] != '/' { i += 1 }
+        if i - start != 1 || p[start] != '.' || (start == indexOfNot(p, '/') && !abs) {
             append(mut &bounds, start)
             append(mut &bounds, i)
         }
@@ -774,7 +770,7 @@ fn splitPath(p: str): PathSplit {
 
 fn indexOfNot(s: str, c: byte): int {
     var i = 0
-    while i < len(s) && strByte(s, i) == c { i += 1 }
+    while i < len(s) && s[i] == c { i += 1 }
     return i
 }
 
@@ -783,7 +779,7 @@ fn indexOfNot(s: str, c: byte): int {
 fn quoteFor(s: str): str {
     var needs = false
     for i in 0..len(s) {
-        let c = strByte(s, i)
+        let c = s[i]
         if c == '\'' { return "\"" }
         if c == ' ' { needs = true }
     }
@@ -802,7 +798,7 @@ fn quotedWidth(s: str, quote: bool): int {
     var w = if quote && quoteFor(s) != "" { 2 } else { 0 }
     var i = 0
     while i < len(s) {
-        let c = strByte(s, i)
+        let c = s[i]
         if printable(c) && c < 0x80 {
             w += 1
             i += 1
@@ -822,7 +818,7 @@ fn quotedWidth(s: str, quote: bool): int {
 fn debugText(s: str, path: bool): str {
     var b = newStrBuf()
     for i in 0..len(s) {
-        let c = strByte(s, i)
+        let c = s[i]
         match c {
             0 { b.add("\\0") }
             '"' { b.add("\\\"") }
@@ -845,8 +841,6 @@ fn osError(errno: int): str { return io.errorText(errno) + " (os error " + errno
 type Style = value record { attrs: int; fg: int; bg: int }
 
 fn (a: Style) eq(b: &Style): bool { return a.attrs == b.attrs && a.fg == b.fg && a.bg == b.bg }
-
-fn (a: Style) isPlain(): bool { return a.attrs == 0 && a.fg == 0 && a.bg == 0 }
 
 const PLAIN: Style = Style{attrs: 0, fg: 0, bg: 0}
 const ATTRS: []str = ["1", "2", "3", "4", "5", "7", "8", "9"]
@@ -1008,7 +1002,7 @@ fn parseStyle(value: str): Style {
 
 fn indexOfNotDigit(s: str): int {
     var i = 0
-    while i < len(s) && isDigit(strByte(s, i)) { i += 1 }
+    while i < len(s) && isDigit(s[i]) { i += 1 }
     return i
 }
 
@@ -1018,7 +1012,7 @@ fn parseU8(t: str): int {
     if d == "" || indexOfNotDigit(d) != len(d) { return -1 }
     var v = 0
     for i in 0..len(d) {
-        v = v * 10 + int(strByte(d, i)) - 48
+        v = v * 10 + int(d[i]) - 48
         if v > 255 { return -1 }
     }
     return v
@@ -1032,7 +1026,7 @@ fn (p: &Palette) fileStyle(name: str, mode: int): Style {
     var i = len(p.patterns) - 1
     while i >= 0 {
         let k = p.patterns[i].key
-        if (p.patterns[i].dotted && len(name) > len(k) && strByte(name, len(name) - len(k) - 1) == '.' && endsWith(name, k)) ||
+        if (p.patterns[i].dotted && len(name) > len(k) && name[len(name) - len(k) - 1] == '.' && endsWith(name, k)) ||
             (!p.patterns[i].dotted && dot >= 0 && name[dot + 1..] == k) {
             return p.patterns[i].style
         }
@@ -1055,7 +1049,7 @@ fn (p: &Palette) typeOf(name: str, dot: int): int {
 // The SGR sequence that sets s (nu-ansi-term's prefix order: attributes,
 // background, foreground); "" for plain.
 fn sgr(s: Style): str {
-    if s.isPlain() { return "" }
+    if s == PLAIN { return "" }
     var parts: []str = []
     for k in 0..8 {
         if s.attrs & 1 << k != 0 { append(mut &parts, ATTRS[k]) }
@@ -1110,7 +1104,7 @@ fn (z: mut &Eza) plain(text: str) { z.put(PLAIN, text) }
 
 // Ends the run: a reset when its last piece is styled.
 fn (z: mut &Eza) endRun() {
-    if z.open && !z.prev.isPlain() { z.w.write("\x1b[0m") }
+    if z.open && z.prev != PLAIN { z.w.write("\x1b[0m") }
     z.open = false
 }
 
@@ -1140,13 +1134,13 @@ fn (z: mut &Eza) escaped(good: Style, bad: Style, s: str, quote: bool) {
     var i = 0
     while i < len(s) {
         let start = i
-        if printable(strByte(s, i)) {
-            while i < len(s) && printable(strByte(s, i)) { i += 1 }
+        if printable(s[i]) {
+            while i < len(s) && printable(s[i]) { i += 1 }
             z.put(good, s[start..i])
         } else {
             var esc = ""
-            while i < len(s) && !printable(strByte(s, i)) {
-                esc += escapeOf(strByte(s, i))
+            while i < len(s) && !printable(s[i]) {
+                esc += escapeOf(s[i])
                 i += 1
             }
             z.put(bad, esc)
@@ -1400,9 +1394,7 @@ fn (z: &Eza) tooDeep(depth: int): bool {
 // The entries of directory path at depth, and below them their own as far
 // as -L allows. Links are not followed.
 fn (z: &Eza) load(path: str, depth: int): Result[[]Node, int] {
-    let read = readDir(path, &z.o, true)
-    if read.isErr() { return Err(read.err().unwrap().errno) }
-    var es = read.unwrap()
+    var es = match readDir(path, &z.o, true) { Ok(es) { es } Err(e) { return Err(e.errno) } }
     let at = listing(path)
     prepare(mut &es, &at, &z.o)
     var nodes: []Node = []
@@ -1560,11 +1552,10 @@ fn run(): Result[Unit, Fail] {
     let o = try deduce(&cmd.opts)
     if len(cmd.operands) > 1 { return Err(usage("this build supports at most one operand")) }
     let operand = if len(cmd.operands) == 1 { cmd.operands[0] } else { "." }
-    let lst = fs.lstat(operand)
-    if lst.isErr() {
-        return Err(Fail{code: 2, msg: "\"" + debugText(operand, true) + "\": " + osError(lst.err().unwrap().errno)})
+    let st = match fs.lstat(operand) {
+        Ok(st) { st }
+        Err(e) { return Err(Fail{code: 2, msg: "\"" + debugText(operand, true) + "\": " + osError(e.errno)}) }
     }
-    let st = lst.unwrap()
     var z = Eza{o: o, pal: if o.colour { palette() } else { Palette{styles: [], patterns: [], types: false,
         exts: newMap(), names: newMap()} }, w: io.stdout(), open: false, prev: PLAIN}
     let toDir = st.isDir() || (st.isLink() && match fs.stat(operand) { Ok(t) { t.isDir() } Err(_) { false } })
