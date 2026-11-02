@@ -1,0 +1,8 @@
+// SPEC 5.3: without var a by-value receiver is not assignable.
+// error: cannot assign|immutable|not var|let
+type P = value record { x: int }
+fn (p: P) bump(): int {
+    p.x += 1
+    return p.x
+}
+fn main() { }

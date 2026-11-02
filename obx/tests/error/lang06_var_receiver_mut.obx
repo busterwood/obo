@@ -1,0 +1,5 @@
+// SPEC 5.3: var on a mut borrow receiver is an error.
+// error: var receiver p cannot be a borrow
+type P = value record { x: int }
+fn (var p: mut &P) set() { p.x = 1 }
+fn main() { }

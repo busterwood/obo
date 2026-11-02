@@ -218,6 +218,7 @@ fn (d: mut &Dumper) node(a: &sx.Ast, depth: int, label: str, n: int) {
         d.opt(a, x, "ret", nb)
     } else if k == sx.N_RECV {
         d.optName("name", a.nodes[n].s)
+        if a.has(n, sx.VAR) { d.scalar("var", "true") }
         d.end()
         d.node(a, x, "ty", na)
     } else if k == sx.N_PARAM {

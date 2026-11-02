@@ -85,7 +85,7 @@ constraint  = "copy" | qualname [ targs ] ;
 
 fndecl      = "fn" [ receiver ] IDENT [ tparams ] "(" [ params ] ")"
               [ ":" type ] block ;
-receiver    = "(" [ IDENT ":" ] type ")" ;       (* no name: associated fn *)
+receiver    = "(" [ [ "var" ] IDENT ":" ] type ")" ;   (* no name: associated fn *)
 params      = param { "," param } ;
 param       = [ "var" ] IDENT ":" type ;
 
@@ -400,7 +400,11 @@ fn (Decimal) parse(s: str): Result[Decimal, str] { ... }
   exists only on instances whose `V` is a copy type.
 - Methods may be declared only in the module that declares the type. `std`
   declares the methods of the primitive types.
-- `var` before a by-value parameter makes it assignable in the body.
+- `var` before a by-value parameter or a by-value receiver
+  (`fn (var p: Point) moved(dx: int): Point`) makes it assignable, and mutably
+  borrowable, in the body; it changes nothing for the caller, which passes a
+  copy or moves the argument as usual. `var` on a borrow parameter or receiver,
+  a slice or a closure parameter is an error.
 - A method named `drop`, with receiver `mut &T` and no other parameters, is
   the type's destructor (section 9.4). It cannot be called directly.
 - A function without a result type returns nothing.

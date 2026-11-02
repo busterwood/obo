@@ -1,0 +1,4 @@
+// SPEC 5.3: var on a borrow parameter is an error.
+// error: cannot be a borrow
+fn f(var n: &int) { }
+fn main() { }

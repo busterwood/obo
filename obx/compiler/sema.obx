@@ -1342,9 +1342,11 @@ fn (pg: mut &Program) resolveFn(f: int) {
     pg.fns[f].tps = copyInts(&env)
     var names: []str = []
     let mode = pg.fns[f].recvMode
+    let rvar = a.a >= 0 && pg.nd(m, a.a).flags & sx.VAR != 0
+    if rvar && mode != RM_VAL { pg.err(m, a.line, "var receiver " + pg.fns[f].recvName + " cannot be a borrow") }
     if mode == RM_VAL || mode == RM_REF || mode == RM_MUT {
         let rt = if mode == RM_VAL { pg.fns[f].recvType } else { pg.mkRef(pg.fns[f].recvType, mode == RM_MUT) }
-        append(mut &pg.fns[f].params, Param{name: pg.fns[f].recvName, ty: rt, isVar: false, line: a.line})
+        append(mut &pg.fns[f].params, Param{name: pg.fns[f].recvName, ty: rt, isVar: rvar, line: a.line})
         append(mut &names, pg.fns[f].recvName)
     }
     for i in 0..pg.count(m, a.c) {

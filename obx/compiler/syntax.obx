@@ -640,7 +640,7 @@ pub const N_TPARAM = 5       // s name, a constraints (types and N_COPY)
 pub const N_FIELD = 6        // s name, a ty; PUB; no line
 pub const N_VARIANT = 7      // s name, a fields; NAMED
 pub const N_MEMBER = 8       // s name, a params, b ret, c mode (M_*)
-pub const N_RECV = 9         // s name ("" none), a ty; no line
+pub const N_RECV = 9         // s name ("" none), a ty; no line; VAR
 pub const N_PARAM = 10       // s name, a ty; VAR
 pub const N_COPY = 11        // the constraint copy; no line
 pub const N_TREF = 12        // a t; MUT; no line
@@ -1150,11 +1150,17 @@ fn (p: mut &Parser) fndecl(): int {
     if p.atSym(S_LPAREN) {
         p.next()
         var rn = ""
-        if p.kind(0) == T_ID && p.isSym(1, S_COLON) {
+        let rvar = p.atKw(K_VAR)
+        if rvar {
+            p.next()
+            rn = p.ident()
+            p.sym(S_COLON)
+        } else if p.kind(0) == T_ID && p.isSym(1, S_COLON) {
             rn = p.nextText()
             p.next()
         }
         recv = p.node(N_RECV, 0, rn, p.recvtype(), -1, -1)
+        p.flag(recv, VAR, rvar)
         p.sym(S_RPAREN)
     }
     let d = p.node(N_FN, w, p.ident(), recv, p.tparams(), p.params())
