@@ -1,7 +1,7 @@
 // expect: done
 type T = closed { Leaf; Node(T, T) }
 fn main() {
-    var t = Leaf
-    for i in 0..500000 { t = Node(Leaf, move(t)) }
+    var t = T.Leaf
+    for i in 0..500000 { t = T.Node(T.Leaf, move(t)) }
     println("done")
 }

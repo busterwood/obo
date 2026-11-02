@@ -2,8 +2,8 @@
 type L = closed { Nil; Cons(int, L) }
 type O = record { n: int }
 fn (o: mut &O) drop() {
-    var l = Nil
-    for i in 0..100000 { l = Cons(i, move(l)) }
+    var l = L.Nil
+    for i in 0..100000 { l = L.Cons(i, move(l)) }
 }
 fn main() {
     var xs: []O = []
