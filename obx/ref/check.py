@@ -1463,7 +1463,12 @@ class Checker:
     def x_bin(self, e, exp):
         if e.op in ('&&', '||'):
             return self.logic(e)
-        if is_lit(e.l) and not is_lit(e.r):
+        if e.l.kind == 'frac' and not is_lit(e.r):
+            # The literal takes the type of the right operand, but its fromFraction runs first
+            # (operands are evaluated left to right): find that type with a discarded check.
+            lv = self.expr(e.l, self.peek_type(e.r, exp if e.op not in CMPS else None))
+            return self.binop(e.op, lv, e.r, e.where, exp)
+        if is_lit(e.l) and not is_lit(e.r):         # an integer literal: no code, so no order
             r = self.rd(self.expr(e.r, exp if e.op not in CMPS else None))
             lt = r.t if e.op not in ('<<', '>>') else exp
             lv = self.rd(self.expr(e.l, lt))
@@ -1473,6 +1478,20 @@ class Checker:
         if self.effects(e.r):
             lv = self.snap_val(lv)
         return self.binop(e.op, lv, e.r, e.where, exp)
+
+    def peek_type(self, e, exp):
+        """The type of e: e is checked, then its code and its effects on the checker are undone."""
+        ctx = self.ctx
+        lines, holes, lifted, pending = len(ctx.lines), len(ctx.holes), len(ctx.lifted), list(ctx.pending)
+        frames, states, caps = [list(f) for f in ctx.frames], self.snapshot(), dict(ctx.caps)
+        try:
+            return self.rd(self.expr(e, exp)).t
+        finally:
+            del ctx.lines[lines:], ctx.holes[holes:], ctx.lifted[lifted:]
+            ctx.pending[:], ctx.caps = pending, caps
+            for f, saved in zip(ctx.frames, frames):
+                f[:] = saved
+            self.restore(states)
 
     def binop(self, op, lv, r, where, exp, held=None):
         """lv: the evaluated left operand; r: the right operand (an AST node or a Val)."""

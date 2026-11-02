@@ -1,0 +1,20 @@
+// Red-team round 2, g12 (README choice 11): operands are evaluated left to
+// right. A fractional literal takes the type of the right operand, which was
+// therefore evaluated first: a fromFraction with an effect ran after f().
+// expect: lit
+// expect: f
+// expect: 3
+// expect: lit
+// expect: f
+// expect: lit
+type Fx = value record { v: int }
+fn (Fx) fromFraction(units: i128, scale: int): Fx { println("lit"); return Fx{v: int(units)} }
+fn (a: Fx) add(b: Fx): Fx { return Fx{v: a.v + b.v} }
+fn (a: &Fx) cmp(b: &Fx): int { return a.v - b.v }
+fn f(): Fx { println("f"); return Fx{v: 1} }
+fn main() {
+    let x: Fx = 0.2 + f()
+    println(x.v.toStr())
+    if 0.5 < f() { println(".5 < f") }
+    let y = 1.5 + Fx{v: 0}
+}
