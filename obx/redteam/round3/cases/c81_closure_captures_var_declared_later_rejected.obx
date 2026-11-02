@@ -1,0 +1,6 @@
+// error: unknown|zed
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    let r = call(fn(): int { return zed })
+    let zed = 1
+}

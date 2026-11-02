@@ -1,0 +1,3 @@
+// error: name|reserved|clash
+extern "c" fn f(n: int): ptr as "rt_alloc"
+fn main() {}

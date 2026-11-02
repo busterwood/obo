@@ -1,0 +1,10 @@
+// expect: x
+// exit: 12
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop") }
+fn fail(): never { panic("x") }
+fn main() {
+    let d = D{id: 1}
+    println("x")
+    fail()
+}

@@ -1,0 +1,9 @@
+// expect: 6
+type A = record { xs: []int }
+var GA: once A
+fn main() {
+    GA.set(A{xs: [1, 2, 3]})
+    var t = 0
+    for x in GA.get().xs { t += x }
+    println(t)
+}

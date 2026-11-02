@@ -1,0 +1,2 @@
+import "../y"
+pub fn mk(): y.P { return y.P{a: 1} }

@@ -1,0 +1,7 @@
+// error: move|place
+type B = record { v: int; w: []int }
+fn call(f: &fn()) { f() }
+fn main() {
+    var b = B{v: 1, w: []}
+    call(fn() { let B{v, w} = move(b) })
+}

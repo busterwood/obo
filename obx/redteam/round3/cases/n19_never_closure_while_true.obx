@@ -1,0 +1,8 @@
+// expect: start
+// exit: 5
+fn app(f: &fn(): never): int { f() }
+fn main() {
+    println("start")
+    var i = 0
+    println(app(fn(): never { while true { i += 1; if i > 3 { exit(5) } } }).toStr())
+}

@@ -1,0 +1,7 @@
+// error: borrowed|twice
+fn run(f: &fn(), x: &int) { f(); println(x) }
+fn main() {
+    var xs = [[1], [2]]
+    let r = mut &xs
+    run(fn() { r[0] = [] }, &r[0][0])
+}

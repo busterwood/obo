@@ -1,0 +1,10 @@
+// expect: 1
+fn stop(): never {
+    var i = 0
+    while true {
+        i += 1
+        if i > 5 { exit(0) }
+        continue
+    }
+}
+fn main() { println(1) }

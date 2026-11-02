@@ -1,0 +1,11 @@
+// expect: 3
+fn mk[T](n: int, f: &fn(int): T): []T {
+    var out: []T = []
+    for i in 0..n { append(mut &out, f(i)) }
+    return out
+}
+type B = record { s: str }
+fn main() {
+    let bs = mk(3, fn(i: int): B { return B{s: i.toStr()} })
+    println(len(bs))
+}

@@ -1,0 +1,4 @@
+// error: infer|result|nothing|value
+fn call[R](f: &fn(): R): R { return f() }
+fn hi() { println("x") }
+fn main() { call(hi) }

@@ -1,0 +1,8 @@
+// expect: 2
+import "collections"
+fn main() {
+    var xs = [1, 5, 2, 8]
+    let lim = 4
+    collections.retain(mut &xs, fn(x: &int): bool { return x < lim })
+    println(len(xs))
+}

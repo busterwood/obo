@@ -1,0 +1,4 @@
+// Red-team round 3, h12 (SPEC 12): `as "main"` would bind the program's own main.
+// error: reserved
+extern "c" fn cmain(): int as "main"
+fn main() {}

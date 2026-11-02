@@ -1,0 +1,8 @@
+// expect: 5
+type R = closed { Ok(int); Err(str) }
+fn g(): R { return R.Ok(5) }
+fn f(): R {
+    let v = try g()
+    return R.Ok(v)
+}
+fn main() { match f() { R.Ok(v) { println(v) } R.Err(e) {} } }

@@ -1,0 +1,6 @@
+// error: mut|borrow
+var M: once Map[str, int]
+fn main() {
+    M.set(newMap())
+    M.get().put("a", 1)
+}

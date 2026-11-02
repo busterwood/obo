@@ -1,0 +1,7 @@
+// error: moved|held|overlaps
+type B = record { v: int }
+fn run(f: &fn(): int, b: B) { println(f()) }
+fn main() {
+    let b = B{v: 1}
+    run(fn(): int { return b.v }, b)
+}

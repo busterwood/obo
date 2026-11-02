@@ -1,0 +1,7 @@
+// expect: ok
+fn fail(): never { panic("x") }
+fn g(c: bool): Result[int, str] {
+    if c { return Ok(1) }
+    fail()
+}
+fn main() { match g(true) { Ok(v) { println("ok") } Err(e) {} } }

@@ -1,0 +1,9 @@
+// expect: 2
+type B = record { v: int }
+fn eat(b: B) {}
+fn call(f: &fn()) { f() }
+fn main() {
+    var b = B{v: 1}
+    call(fn() { b = B{v: 2} })
+    println(b.v)
+}

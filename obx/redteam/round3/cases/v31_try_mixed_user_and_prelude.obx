@@ -1,0 +1,8 @@
+// expect: bad
+type R = closed { Ok(int); Err(str) }
+fn g(): Result[int, str] { return Err("bad") }
+fn f(): R {
+    let v = try g()
+    return R.Ok(v)
+}
+fn main() { match f() { R.Ok(v) {} R.Err(e) { println(e) } } }

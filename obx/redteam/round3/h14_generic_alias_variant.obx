@@ -1,0 +1,11 @@
+// Round 3 L (wrong reject / spec gap). A variant may be qualified by its
+// generic type without type arguments (`Option.Some(5)`, `Box.Full(x)`), and
+// by a generic alias with arguments (`R[int].Ok(3)`), but `R.Ok(3)` through
+// the generic alias is rejected with "R takes 1 type arguments, not 0".
+// The alias names the same type (spec 4.8), so it should behave as Result.
+// expect: 3
+type R[T] = Result[T, str]
+fn f(): R[int] { return R.Ok(3) }
+fn main() {
+    match f() { R.Ok(v) { println(v) } R.Err(e) {} }
+}

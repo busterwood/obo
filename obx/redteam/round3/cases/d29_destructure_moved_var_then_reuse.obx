@@ -1,0 +1,7 @@
+// error: moved
+type P = record { a: []int }
+fn main() {
+    let p = P{a: [1]}
+    let P{a} = move(p)
+    println(len(p.a))
+}

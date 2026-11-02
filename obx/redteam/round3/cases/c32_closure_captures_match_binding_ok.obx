@@ -1,0 +1,10 @@
+// expect: 7
+type B = record { v: int }
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    let o: Option[B] = Some(B{v: 7})
+    match o {
+        Some(b) { println(call(fn(): int { return b.v })) }
+        None {}
+    }
+}

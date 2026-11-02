@@ -1,0 +1,142 @@
+=== s01_closure_stmt_alone
+// expect: ok
+fn main() {
+    fn() {}
+    println("ok")
+}
+=== s02_closure_called_stmt
+// expect: hi
+fn main() {
+    fn() { println("hi") }()
+}
+=== s03_closure_no_params_paren
+// error:
+fn main() { let f = fn { } }
+=== s04_closure_missing_body
+// error:
+fn main() { let f = fn() }
+=== s05_closure_param_borrow_type_infer
+// expect: 3
+fn app(f: &fn(&[]int): int): int { return f(&[1, 2, 3]) }
+fn main() { println(app(fn(xs) { return len(xs) })) }
+=== s06_closure_nested_type
+// expect: 2
+fn app(f: &fn(&fn(int): int): int): int { return f(fn(x: int): int { return x + 1 }) }
+fn main() { println(app(fn(g) { return g(1) })) }
+=== s07_closure_type_in_let_annot
+// expect: 4
+fn main() {
+    let f: &fn(int): int = fn(x) { return x * 2 }
+    println(f(2))
+}
+=== s08_closure_let_annot_wrong
+// error: int|str|closure
+fn main() { let f: &fn(int): int = fn(x: str): int { return 1 } }
+=== s09_closure_let_from_fn_name
+// expect: 5
+fn five(): int { return 5 }
+fn main() {
+    let f: &fn(): int = five
+    println(f())
+}
+=== s10_closure_let_mut_fn_type
+// error: mut
+fn main() { let f: mut &fn() = fn() {} }
+=== s11_closure_index_arg_gap
+// error:
+fn main() {
+    let xs = [1, 2]
+    println(xs[fn(): int { return 0 }()])
+}
+=== s12_closure_in_record_literal_field
+// error: closure|second class|fn
+type R = record { f: fn() }
+fn main() {
+    let r = R{f: fn() {}}
+}
+=== s13_closure_as_fn_typed_let
+// error: closure|fn
+fn main() {
+    let x = 1
+    let f: fn(): int = fn(): int { return x }
+}
+=== s14_never_closure_type_in_param
+// exit: 2
+fn app(f: &fn(int): never) { f(2) }
+fn main() { app(fn(c: int): never { exit(c) }) }
+=== s15_closure_return_never_call_dead
+// expect: x
+fn app(f: &fn(): int): int { return f() }
+fn main() {
+    println("x")
+    let v = app(fn(): int { exit(0) })
+}
+=== s16_closure_unreachable_after_return
+// error: unreachable
+fn app(f: &fn(): int): int { return f() }
+fn main() { let v = app(fn(): int { return 1; return 2 }) }
+=== s17_frac_dot_dot
+// expect: 1
+fn main() {
+    let xs = [1, 2, 3]
+    let s = xs[0..1]
+    println(len(s))
+}
+=== s18_frac_method_on_int_literal
+// The lexer reads "5." as the start of a fractional literal (pre-existing; spec 2
+// says a fractional literal has digits on both sides of the point).
+// error: digits after the point
+fn main() { println(5.toStr()) }
+=== s19_frac_method_on_frac
+// expect: 1.5
+fn main() { println(1.5.toStr()) }
+=== s20_frac_exp_method
+// expect: 1500
+fn main() { println(1.5e3.toStr()) }
+=== s21_frac_e_identifier_after_int
+// error:
+fn main() { let x = 1e }
+=== s22_frac_hex_exponent
+// error:
+fn main() { let x = 0x1e5.5 }
+=== s23_extern_never_newline
+// never is a keyword, so a newline after it does not end the statement (spec 2)
+// error: expected ;
+extern "c" fn abort(): never
+fn main() { abort() }
+=== s24_once_newline_type
+// expect: 3
+var N: once
+    int
+fn main() { N.set(3); println(N.get()) }
+=== s25_destructure_trailing_comma
+// error:
+type P = record { a: int; b: int }
+fn main() { let P{a, b,} = P{a: 1, b: 2} }
+=== s26_destructure_empty
+// error:
+type P = record { a: int }
+fn main() { let P{} = P{a: 1} }
+=== s27_destructure_qualified_generic_args
+// expect: 3
+type Pair[A, B] = record { a: A; b: B }
+fn main() {
+    let Pair[int, int]{a, b} = Pair{a: 1, b: 2}
+    println(a + b)
+}
+=== s28_destructure_in_if_cond_position
+// expect: 1
+type P = record { a: int }
+fn main() {
+    if true { let P{a} = P{a: 1}; println(a) }
+}
+=== s29_variant_qualified_deep_module_missing
+// error: unknown|module|zmod
+fn main() { let x = zmod.T.V(1) }
+=== s30_const_table_neg_index
+// exit: 3
+const T: []int = [1, 2]
+fn main() {
+    let i = -1
+    println(T[i])
+}

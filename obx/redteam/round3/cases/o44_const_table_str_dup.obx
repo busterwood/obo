@@ -1,0 +1,7 @@
+// expect: ab
+const T: []str = ["a", "b"]
+fn main() {
+    var s = ""
+    for x in T { s += x }
+    println(s)
+}

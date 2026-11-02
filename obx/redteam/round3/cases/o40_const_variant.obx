@@ -1,0 +1,5 @@
+// expect: 4
+const O: Option[int] = Some(4)
+fn main() {
+    match O { Some(x) { println(x) } None {} }
+}

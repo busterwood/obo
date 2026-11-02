@@ -1,0 +1,2 @@
+// exit: 10
+fn main() { println((1e-70000).toStr()) }

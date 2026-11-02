@@ -1,0 +1,7 @@
+// expect: 5
+type B = record { v: int }
+fn call(f: &fn(): int): int { return f() }
+fn g(b: &B): int { return call(fn(): int { return b.v }) }
+fn main() {
+    println(g(&B{v: 5}))
+}

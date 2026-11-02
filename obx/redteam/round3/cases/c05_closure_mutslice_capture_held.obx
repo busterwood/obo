@@ -1,0 +1,11 @@
+// error: borrowed|twice
+type B = record { v: int }
+fn reset(s: mut &[B]) { s[0] = B{v: 9} }
+fn run(f: &fn(), b: &B) { f(); println(b.v) }
+fn g(s: mut &[B]) {
+    run(fn() { reset(s) }, &s[0])
+}
+fn main() {
+    var xs = [B{v: 1}, B{v: 2}]
+    g(mut &xs)
+}

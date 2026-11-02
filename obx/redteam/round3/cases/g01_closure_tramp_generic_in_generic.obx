@@ -1,0 +1,5 @@
+// expect: 4
+fn idt[T](x: T): T { return x }
+fn app[T](f: &fn(T): T, x: T): T { return f(x) }
+fn twice[T](x: T): T { return app(idt[T], x) }
+fn main() { println(twice(4)) }

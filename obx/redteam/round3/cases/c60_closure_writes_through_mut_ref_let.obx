@@ -1,0 +1,10 @@
+// expect: 9
+fn call(f: &fn()) { f() }
+fn main() {
+    var xs = [1, 2]
+    {
+        let r = mut &xs
+        call(fn() { r[0] = 9 })
+    }
+    println(xs[0])
+}

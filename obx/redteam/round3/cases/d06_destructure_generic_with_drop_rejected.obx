@@ -1,0 +1,4 @@
+// error: drop
+type W[T] = record { v: T }
+fn (w: mut &W[T]) drop() { println("drop") }
+fn main() { let W{v} = W{v: 1} }

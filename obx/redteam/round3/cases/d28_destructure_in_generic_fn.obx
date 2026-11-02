@@ -1,0 +1,7 @@
+// expect: 1
+type Pair[A, B] = record { a: A; b: B }
+fn fst[A, B](p: Pair[A, B]): A {
+    let Pair{a, b: _} = move(p)
+    return a
+}
+fn main() { println(len(fst(Pair{a: [1], b: "s"}))) }

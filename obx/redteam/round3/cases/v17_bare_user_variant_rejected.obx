@@ -1,0 +1,3 @@
+// error: qualified|Circle
+type Shape = closed { Circle(int); Sq(int) }
+fn main() { let s = Circle(1) }

@@ -1,0 +1,11 @@
+// Red-team round 3, L6 (SPEC 2): 5.toStr() is a method call on 5 (a
+// fractional literal needs a digit after the point), and a line ending in
+// never ends the statement.
+// expect: 5
+// expect: 1.5
+extern "c" fn cexit(code: i32): never as "exit"
+fn main() {
+    println(5.toStr())
+    println(1.5.toStr())
+    if false { cexit(3) }
+}

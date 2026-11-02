@@ -1,0 +1,9 @@
+// expect: 5
+var GO: once Option[[]int]
+fn main() {
+    GO.set(Some([5]))
+    match GO.get() {
+        Some(xs) { println(xs[0]) }
+        None {}
+    }
+}

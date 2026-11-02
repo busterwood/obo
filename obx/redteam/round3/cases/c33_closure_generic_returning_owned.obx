@@ -1,0 +1,10 @@
+// expect: ab
+// expect: 2
+fn mk[T](f: &fn(): T): T { return f() }
+type B = record { s: str; xs: []int }
+fn main() {
+    let p = "a"
+    let b = mk(fn(): B { return B{s: p + "b", xs: [1, 2]} })
+    println(b.s)
+    println(len(b.xs))
+}

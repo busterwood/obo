@@ -1,0 +1,6 @@
+// error: borrowed|twice
+fn run(f: &fn(), x: &str) { f(); println(x) }
+fn main() {
+    var xs = ["a" + "b", "c" + "d"]
+    run(fn() { swap(mut &xs, 0, 1) }, &xs[0])
+}

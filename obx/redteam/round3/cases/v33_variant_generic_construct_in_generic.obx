@@ -1,0 +1,4 @@
+// expect: 1
+type Box[T] = closed { Full(T); Empty }
+fn wrap[T](x: T): Box[T] { return Box.Full(x) }
+fn main() { match wrap("a") { Box.Full(s) { println(len(s)) } Box.Empty {} } }

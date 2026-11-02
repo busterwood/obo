@@ -1,0 +1,4 @@
+// error: const|assign
+type P = value record { a: int; b: int }
+const P0: P = P{a: 1, b: 2}
+fn main() { P0.a = 5 }

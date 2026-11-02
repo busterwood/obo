@@ -1,0 +1,4 @@
+// expect: hi
+fn main() {
+    fn() { println("hi") }()
+}

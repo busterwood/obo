@@ -1,0 +1,7 @@
+// expect: 2
+const T: []int = [1, 2, 3]
+fn at(xs: &[int], i: int): &int { return &xs[i] }
+fn main() {
+    let r = at(T, 1)
+    println(r)
+}

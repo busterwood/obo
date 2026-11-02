@@ -1,0 +1,11 @@
+// expect: drop 3
+// expect: drop 1
+// expect: body
+// expect: drop 2
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop " + d.id.toStr()) }
+type P = record { a: D; b: D; c: D }
+fn main() {
+    let P{b} = P{a: D{id: 1}, b: D{id: 2}, c: D{id: 3}}
+    println("body")
+}

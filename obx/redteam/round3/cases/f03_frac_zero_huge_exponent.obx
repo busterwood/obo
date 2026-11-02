@@ -1,0 +1,7 @@
+// Spec decision M1: the scale -99999999999999999999 does not fit an int, so
+// this is a compile error even though the value is 0.
+// error: exponent|scale
+fn main() {
+    let d = 0e99999999999999999999
+    println(d.toStr())
+}

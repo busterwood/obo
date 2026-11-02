@@ -1,0 +1,6 @@
+// error: type argument|second class|closure
+fn first[T](x: &T): &T { return x }
+fn main() {
+    let f = fn(): int { return 1 }
+    let g = first(&f)
+}

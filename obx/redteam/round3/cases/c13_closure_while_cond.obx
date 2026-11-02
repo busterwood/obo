@@ -1,0 +1,16 @@
+// expect: 3
+fn any(xs: &[]int, p: &fn(int): bool): bool {
+    for x in xs { if p(x) { return true } }
+    return false
+}
+fn main() {
+    var xs = [1, 2, 3, 10]
+    let lim = 5
+    var n = 0
+    while any(&xs, fn(x: int): bool { return x > lim }) {
+        let _ = pop(mut &xs)
+        n += 1
+        if n > 10 { break }
+    }
+    println(len(xs))
+}

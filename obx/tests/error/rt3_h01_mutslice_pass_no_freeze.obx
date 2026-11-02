@@ -1,0 +1,15 @@
+// Red-team round 3, h01 (SPEC 10 rules 3 and 4): passing a mut &[T] on to a
+// mut &[T] parameter borrows its root mutably, so it is an error while r
+// borrows an element (reset frees what r points to).
+// error: borrowed
+type B = record { v: []int }
+fn reset(s: mut &[B]) { s[0] = B{v: [9]} }
+fn f(s: mut &[B]) {
+    let r = &s[0].v[0]
+    reset(s)
+    println(r)
+}
+fn main() {
+    var xs = [B{v: [1]}]
+    f(mut &xs)
+}

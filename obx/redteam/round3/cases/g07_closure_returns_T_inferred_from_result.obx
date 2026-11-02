@@ -1,0 +1,6 @@
+// expect: 7
+fn mk[T](f: &fn(): T): T { return f() }
+fn main() {
+    let x: int = mk(fn() { return 7 })
+    println(x)
+}

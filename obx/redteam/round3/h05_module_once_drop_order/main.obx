@@ -1,0 +1,11 @@
+// Round 3 H2 (modules). main imports only b; b imports a. At exit a's
+// set-once global GA is freed before b's GB, whose drop calls a.get() and
+// reads the freed GA (heap-use-after-free under ASan). A module's globals
+// must outlive the globals of the modules that import it.
+// expect: ok
+// expect: drop b a
+import "./b"
+fn main() {
+    b.init()
+    println("ok")
+}

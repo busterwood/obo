@@ -1,0 +1,4 @@
+// expect: 3
+extern "c" fn cabs(x: i32): i32 as "abs"
+fn abs2(x: int): int { return int(cabs(i32(x))) }
+fn main() { println(abs2(-3)) }

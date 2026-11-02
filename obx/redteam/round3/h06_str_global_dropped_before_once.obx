@@ -1,0 +1,12 @@
+// Round 3 H2 (plain global). The str global S is freed at exit before the
+// set-once GB is dropped, and GB's drop reads S (heap-use-after-free under
+// ASan). Must print "drop ab".
+// expect: drop ab
+type B = record { n: int }
+fn (b: mut &B) drop() { println("drop " + S) }
+var GB: once B
+var S: str = ""
+fn main() {
+    S = "a" + "b"
+    GB.set(B{n: 1})
+}

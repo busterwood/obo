@@ -1,0 +1,6 @@
+// expect: x 2
+type Pair[A, B] = record { a: A; b: B }
+fn main() {
+    let Pair{a, b} = Pair{a: "x", b: [1, 2]}
+    println(a + " " + len(b).toStr())
+}

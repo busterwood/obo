@@ -1,0 +1,9 @@
+// expect: drop 2
+type W[T] = record { xs: []T }
+fn each[T](xs: &[T], f: &fn(&T)) { for x in xs { f(x) } }
+fn (w: mut &W[T]) drop() {
+    var n = 0
+    each(&w.xs, fn(x: &T) { n += 1 })
+    println("drop " + n.toStr())
+}
+fn main() { let w = W{xs: ["a", "b"]} }

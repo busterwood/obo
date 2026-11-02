@@ -1,0 +1,6 @@
+// Red-team round 3, h11 (SPEC 6.1): a function that returns nothing cannot
+// make a type argument either.
+// error: no result
+fn call[R](f: &fn(): R): R { return f() }
+fn hi() { println("x") }
+fn main() { call(hi) }

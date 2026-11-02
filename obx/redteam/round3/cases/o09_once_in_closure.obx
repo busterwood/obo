@@ -1,0 +1,8 @@
+// expect: 7
+type A = record { n: int }
+var GA: once A
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    GA.set(A{n: 7})
+    println(call(fn(): int { return GA.get().n }))
+}

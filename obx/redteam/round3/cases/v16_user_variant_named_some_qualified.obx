@@ -1,0 +1,6 @@
+// expect: 1
+type M = closed { Some(int); Nothing }
+fn main() {
+    let m = M.Some(1)
+    match m { M.Some(x) { println(x) } M.Nothing {} }
+}

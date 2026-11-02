@@ -1,0 +1,7 @@
+// expect: 3
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    var t = 0
+    for i in 0..3 { t += call(fn(): int { return 1 }) }
+    println(t)
+}

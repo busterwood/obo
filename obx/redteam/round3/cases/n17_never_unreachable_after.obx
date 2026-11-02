@@ -1,0 +1,6 @@
+// error: unreachable
+fn fail(): never { panic("x") }
+fn main() {
+    fail()
+    println(1)
+}

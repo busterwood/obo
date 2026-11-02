@@ -1,0 +1,2 @@
+pub type P = record { pub a: int; b: int }
+pub fn mk(): P { return P{a: 1, b: 2} }

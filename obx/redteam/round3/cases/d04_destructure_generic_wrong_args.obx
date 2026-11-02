@@ -1,0 +1,6 @@
+// error: Pair|not
+type Pair[A, B] = record { a: A; b: B }
+fn main() {
+    let Pair[int, str]{a, b} = Pair{a: "x", b: 5}
+    println(a)
+}

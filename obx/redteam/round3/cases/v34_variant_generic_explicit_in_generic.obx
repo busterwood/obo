@@ -1,0 +1,4 @@
+// expect: 1
+type Box[T] = closed { Full(T); Empty }
+fn empty[T](): Box[T] { return Box[T].Empty }
+fn main() { match empty[int]() { Box.Full(s) {} Box.Empty { println(1) } } }

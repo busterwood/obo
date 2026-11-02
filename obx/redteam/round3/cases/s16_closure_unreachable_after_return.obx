@@ -1,0 +1,3 @@
+// error: unreachable
+fn app(f: &fn(): int): int { return f() }
+fn main() { let v = app(fn(): int { return 1; return 2 }) }

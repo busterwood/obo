@@ -1,0 +1,10 @@
+// error: borrowed
+fn call(f: &fn()) { f() }
+fn main() {
+    var xs = [1]
+    call(fn() {
+        let g = fn(): int { return xs[0] }
+        xs = []
+        println(g())
+    })
+}

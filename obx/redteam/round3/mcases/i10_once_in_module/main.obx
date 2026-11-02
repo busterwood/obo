@@ -1,0 +1,7 @@
+// expect: cfg
+// expect: drop
+import "./cfg"
+fn main() {
+    cfg.init()
+    println(cfg.name())
+}

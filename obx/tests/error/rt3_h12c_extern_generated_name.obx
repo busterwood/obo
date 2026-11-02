@@ -1,0 +1,5 @@
+// Red-team round 3, h12 (SPEC 12): names of the form the compiler generates
+// (here a function instance f1_...) are reserved too, also without `as`.
+// error: reserved
+extern "c" fn f1_main(): int
+fn main() {}

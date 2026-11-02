@@ -1,0 +1,17 @@
+// Red-team round 3, h04: declared the other way round, GB is dropped first
+// and GA is still set while GB's drop runs; isSet() is false once GA is
+// dropped.
+// expect: set
+// expect: drop b a
+// expect: drop a
+type A = record { s: str }
+type B = record { n: int }
+fn (a: mut &A) drop() { println("drop a"); if GA.isSet() { println("still set") } }
+fn (b: mut &B) drop() { println("drop b " + GA.get().s) }
+var GA: once A
+var GB: once B
+fn main() {
+    GB.set(B{n: 1})
+    GA.set(A{s: "a" + ""})
+    println("set")
+}

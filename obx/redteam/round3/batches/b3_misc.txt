@@ -1,0 +1,441 @@
+=== o71_once_drop_reads_str_global
+// expect: drop ab
+type B = record { n: int }
+fn (b: mut &B) drop() { println("drop " + S) }
+var GB: once B
+var S: str = ""
+fn main() {
+    S = "a" + "b"
+    GB.set(B{n: 1})
+}
+=== d01_destructure_try
+// expect: 1 x
+type P = record { a: int; s: str }
+fn mk(ok: bool): Result[P, str] { if ok { return Ok(P{a: 1, s: "x"}) } return Err("e") }
+fn g(): Result[int, str] {
+    let P{a, s} = try mk(true)
+    println(a.toStr() + " " + s)
+    let P{a: b, s: _} = try mk(false)
+    return Ok(b)
+}
+fn main() { match g() { Ok(v) {} Err(e) {} } }
+=== d02_destructure_try_owned_partial
+// expect: e
+type D = record { id: int }
+type P = record { a: D; b: []int }
+fn mk(ok: bool): Result[P, str] { if ok { return Ok(P{a: D{id: 1}, b: [1]}) } return Err("e") }
+fn g(): Result[int, str] {
+    let P{a, b} = try mk(true)
+    let P{a: a2, b: _} = try mk(false)
+    return Ok(a.id + a2.id)
+}
+fn main() { match g() { Ok(v) { println(v) } Err(e) { println(e) } } }
+=== d03_destructure_generic
+// expect: x 2
+type Pair[A, B] = record { a: A; b: B }
+fn main() {
+    let Pair{a, b} = Pair{a: "x", b: [1, 2]}
+    println(a + " " + len(b).toStr())
+}
+=== d04_destructure_generic_wrong_args
+// error: Pair|not
+type Pair[A, B] = record { a: A; b: B }
+fn main() {
+    let Pair[int, str]{a, b} = Pair{a: "x", b: 5}
+    println(a)
+}
+=== d05_destructure_drop_type_rejected
+// error: drop
+type D = record { n: int }
+fn (d: mut &D) drop() {}
+fn main() { let D{n} = D{n: 1} }
+=== d06_destructure_generic_with_drop_rejected
+// error: drop
+type W[T] = record { v: T }
+fn (w: mut &W[T]) drop() { println("drop") }
+fn main() { let W{v} = W{v: 1} }
+=== d09_destructure_place_rejected
+// error: place|move
+type P = record { a: []int; b: int }
+fn main() {
+    let p = P{a: [1], b: 2}
+    let P{a, b} = p
+}
+=== d10_destructure_move_ok
+// expect: 1 2
+type P = record { a: []int; b: int }
+fn main() {
+    let p = P{a: [1], b: 2}
+    let P{a, b} = move(p)
+    println(len(a).toStr() + " " + b.toStr())
+}
+=== d11_destructure_field_place_rejected
+// error: place|move
+type P = record { a: []int; b: int }
+type Q = record { p: P }
+fn main() {
+    let q = Q{p: P{a: [1], b: 2}}
+    let P{a, b} = q.p
+}
+=== d12_destructure_borrow_owned_rejected
+// error: place|move|borrow
+type P = record { a: []int; b: int }
+fn f(p: &P) { let P{a, b} = p }
+fn main() {}
+=== d13_destructure_copy_via_borrow
+// expect: 3
+type P = value record { a: int; b: int }
+fn f(p: &P): int { let P{a, b} = p; return a + b }
+fn main() { println(f(&P{a: 1, b: 2})) }
+=== d14_destructure_var_assignable
+// expect: 5
+type P = record { a: int; b: []int }
+fn main() {
+    var P{a, b} = P{a: 1, b: []}
+    a = 5
+    append(mut &b, 1)
+    println(a)
+}
+=== d15_destructure_let_not_assignable
+// error: let|var
+type P = record { a: int; b: []int }
+fn main() {
+    let P{a, b} = P{a: 1, b: []}
+    a = 5
+}
+=== d16_destructure_alias
+// expect: 3
+type P = record { a: int; b: int }
+type Q = P
+fn main() {
+    let Q{a, b} = P{a: 1, b: 2}
+    println(a + b)
+}
+=== d17_destructure_shadow
+// error: declared|shadow
+type P = record { a: int; b: int }
+fn main() {
+    let a = 1
+    let P{a, b} = P{a: 1, b: 2}
+}
+=== d18_destructure_dup_binding
+// error: declared|twice
+type P = record { a: int; b: int }
+fn main() {
+    let P{a: x, b: x} = P{a: 1, b: 2}
+}
+=== d19_destructure_order_drop
+// expect: drop 3
+// expect: drop 1
+// expect: body
+// expect: drop 2
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop " + d.id.toStr()) }
+type P = record { a: D; b: D; c: D }
+fn main() {
+    let P{b} = P{a: D{id: 1}, b: D{id: 2}, c: D{id: 3}}
+    println("body")
+}
+=== d20_destructure_value_record_owned
+// expect: 2 x
+type P = value record { a: []int; s: str }
+fn mk(): P { return P{a: [1, 2], s: "x"} }
+fn main() {
+    let P{a, s} = mk()
+    println(len(a).toStr() + " " + s)
+}
+=== d21_destructure_closed_rejected
+// error: record
+fn main() { let Option{x} = Some(1) }
+=== d22_destructure_in_loop_break
+// expect: 3
+type P = record { a: []int; b: []int }
+fn main() {
+    var n = 0
+    for i in 0..3 {
+        let P{a, b} = P{a: [i], b: [i, i]}
+        n += 1
+        if i == 1 { continue }
+        if i == 2 { break }
+    }
+    println(n)
+}
+=== d23_destructure_early_return
+// expect: 1
+type P = record { a: []int; b: []int }
+fn f(): int {
+    let P{a, b: _} = P{a: [1], b: [2, 3]}
+    if len(a) == 1 { return 1 }
+    return 0
+}
+fn main() { println(f()) }
+=== d24_destructure_try_in_field_init
+// expect: e
+type P = record { a: []int; b: []int }
+fn e(): Result[[]int, str] { return Err("e") }
+fn g(): Result[int, str] {
+    let P{a, b} = P{a: [1], b: try e()}
+    return Ok(len(a))
+}
+fn main() { match g() { Ok(v) { println(v) } Err(x) { println(x) } } }
+=== d25_destructure_nested_record
+// expect: 4
+type In = record { xs: []int }
+type Out = record { i: In; n: int }
+fn main() {
+    let Out{i, n} = Out{i: In{xs: [1, 2, 3]}, n: 1}
+    let In{xs} = move(i)
+    println(len(xs) + n)
+}
+=== d26_destructure_unknown_field
+// error: field|zed
+type P = record { a: int }
+fn main() { let P{zed} = P{a: 1} }
+=== d27_destructure_generic_drop_field
+// expect: drop
+// expect: x
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop") }
+type Pair[A, B] = record { a: A; b: B }
+fn main() {
+    let Pair{b} = Pair{a: D{id: 1}, b: "x"}
+    println(b)
+}
+=== d28_destructure_in_generic_fn
+// expect: 1
+type Pair[A, B] = record { a: A; b: B }
+fn fst[A, B](p: Pair[A, B]): A {
+    let Pair{a, b: _} = move(p)
+    return a
+}
+fn main() { println(len(fst(Pair{a: [1], b: "s"}))) }
+=== d29_destructure_moved_var_then_reuse
+// error: moved
+type P = record { a: []int }
+fn main() {
+    let p = P{a: [1]}
+    let P{a} = move(p)
+    println(len(p.a))
+}
+=== d30_destructure_once_value_owned_record
+// error: place|owned|move
+type P = value record { a: []int }
+var G: once P
+fn main() {
+    G.set(P{a: [1]})
+    let P{a} = G.get()
+}
+=== d31_destructure_const_record
+// expect: 3
+type P = value record { a: int; b: int }
+const P0: P = P{a: 1, b: 2}
+fn main() {
+    let P{a, b} = P0
+    println(a + b)
+}
+=== d32_destructure_moved_in_loop_break
+// expect: 1
+type P = record { a: []int }
+fn main() {
+    var p = P{a: [1]}
+    while true {
+        let P{a} = move(p)
+        println(len(a))
+        break
+    }
+}
+=== n01_never_loop_break_nested
+// expect: 1
+fn stop(): never {
+    while true {
+        while true { break }
+    }
+}
+fn main() { println(1) }
+=== n02_never_loop_break_outer
+// error: never|end
+fn stop(): never {
+    var i = 0
+    while true {
+        i += 1
+        if i > 3 { break }
+    }
+}
+fn main() {}
+=== n03_never_break_in_for_inside
+// error: never|end
+fn stop(): never {
+    while true {
+        for i in 0..3 { if i == 1 { break } }
+        return
+    }
+}
+fn main() {}
+=== n04_never_for_loop
+// error: never|end
+fn stop(): never {
+    for i in 0..3 { panic("x") }
+}
+fn main() {}
+=== n05_never_match_all_arms
+// exit: 12
+fn stop(o: Option[int]): never {
+    match o {
+        Some(x) { panic("a") }
+        None { exit(12) }
+    }
+}
+fn main() { stop(Some(1)) }
+=== n06_never_match_one_arm_returns
+// error: never|end
+fn stop(o: Option[int]): never {
+    match o {
+        Some(x) { panic("a") }
+        None {}
+    }
+}
+fn main() {}
+=== n07_never_if_without_else
+// error: never|end
+fn stop(c: bool): never {
+    if c { panic("a") }
+}
+fn main() {}
+=== n08_never_in_join_moves
+// expect: 1
+type B = record { v: []int }
+fn eat(b: B) {}
+fn fail(): never { panic("x") }
+fn main() {
+    let b = B{v: [1]}
+    if len(b.v) == 1 {
+        eat(b)
+    } else {
+        fail()
+    }
+    println(1)
+}
+=== n09_never_moved_used_after
+// error: moved
+type B = record { v: []int }
+fn eat(b: B) {}
+fn fine() {}
+fn main() {
+    let b = B{v: [1]}
+    if len(b.v) == 1 { eat(b) } else { fine() }
+    println(len(b.v))
+}
+=== n10_never_method
+// exit: 12
+type B = record { v: int }
+fn (b: &B) die(): never { panic("die") }
+fn f(b: &B): int { b.die() }
+fn main() { println(f(&B{v: 1})) }
+=== n11_never_iface_method
+// exit: 12
+type Dies = interface { fn (&Self) die(): never }
+type B = record { v: int }
+fn (b: &B) die(): never { panic("die") }
+fn f[T: Dies](b: &T): int { b.die() }
+fn main() { println(f(&B{v: 1})) }
+=== n12_never_fnvalue
+// exit: 7
+fn bye(): never { exit(7) }
+fn f(g: fn(): never): int { g() }
+fn main() { println(f(bye)) }
+=== n13_never_return_stmt
+// error: never|return
+fn stop(): never { return }
+fn main() {}
+=== n14_never_param_type
+// error: never
+fn f(x: never) {}
+fn main() {}
+=== n15_never_field
+// error: never
+type R = record { x: never }
+fn main() {}
+=== n16_never_typearg
+// error: never
+fn main() { let x: Option[never] = None }
+=== n17_never_unreachable_after
+// error: unreachable
+fn fail(): never { panic("x") }
+fn main() {
+    fail()
+    println(1)
+}
+=== n18_never_closure_returns
+// error: never|end|return
+fn app(f: &fn(): never) { f() }
+fn main() { app(fn(): never { println("x") }) }
+=== n19_never_closure_while_true
+// expect: start
+// exit: 5
+fn app(f: &fn(): never): int { f() }
+fn main() {
+    println("start")
+    var i = 0
+    println(app(fn(): never { while true { i += 1; if i > 3 { exit(5) } } }).toStr())
+}
+=== n20_never_drops_before_call
+// expect: x
+// exit: 12
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop") }
+fn fail(): never { panic("x") }
+fn main() {
+    let d = D{id: 1}
+    println("x")
+    fail()
+}
+=== n21_never_owned_temp_leak
+// exit: 3
+fn stop(xs: []int): never { exit(3) }
+fn main() { stop([1, 2]) }
+=== n22_never_in_try_fn
+// expect: ok
+fn fail(): never { panic("x") }
+fn g(c: bool): Result[int, str] {
+    if c { return Ok(1) }
+    fail()
+}
+fn main() { match g(true) { Ok(v) { println("ok") } Err(e) {} } }
+=== n23_never_in_while_cond_infinite
+// expect: 1
+fn stop(): never {
+    var i = 0
+    while true {
+        i += 1
+        if i > 5 { exit(0) }
+        continue
+    }
+}
+fn main() { println(1) }
+=== n24_never_extern
+// exit: -6
+extern "c" fn abort(): never;
+fn f(): int { abort() }
+fn main() { println(f()) }
+=== n25_never_as_value_expr
+// error: value
+fn fail(): never { panic("x") }
+fn main() { let x = fail() }
+=== n26_never_loop_with_break_in_closure
+// expect: 1
+fn each(f: &fn()) { f() }
+fn spin(): never {
+    while true {
+        each(fn() { var k = 0; while k < 2 { k += 1; if k == 1 { break } } })
+    }
+}
+fn main() { println(1) }
+=== n27_never_generic
+// exit: 12
+fn failT[T](x: T): never { panic("x") }
+fn f(): int { failT("s") }
+fn main() { println(f()) }
+=== n28_never_closure_return_stmt
+// error: never|return
+fn app(f: &fn(): never) { f() }
+fn main() { app(fn(): never { return }) }

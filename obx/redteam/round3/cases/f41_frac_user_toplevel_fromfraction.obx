@@ -1,0 +1,7 @@
+// expect: 25 1
+type Fx = value record { u: i128; s: int }
+fn fromFraction(u: i128, s: int): Fx { return Fx{u: u, s: s} }
+fn main() {
+    let x = 2.5
+    println(int(x.u).toStr() + " " + x.s.toStr())
+}

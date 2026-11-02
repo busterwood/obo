@@ -30,7 +30,8 @@ separate decision from the user; they are the ones to revisit first.
 - Identifiers: an ASCII letter or `_`, then ASCII letters, digits and `_`.
   Outside comments, string and character literals the source is ASCII.
 - A newline ends a statement when the last token on the line is an
-  identifier, a literal, `)`, `]`, `}`, or one of `return break continue`.
+  identifier, a literal, `)`, `]`, `}`, or one of `return break continue
+  never`.
   `;` also ends a statement. Inside `(` `)` and `[` `]` a newline never ends
   a statement, so arguments and array literals may span lines.
 - Integer literals: `123`, `1_000`, `0xff`, `0b1010`. A character literal
@@ -38,7 +39,9 @@ separate decision from the user; they are the ones to revisit first.
 - A fractional literal has a fraction, an exponent or both: `12.34`,
   `1.5e3`, `2e-7`, `6.02e23` (digits on both sides of a point; the exponent is
   `e` or `E`, an optional sign and digits). It is typed by context; see
-  section 7.3.
+  section 7.3. A point not followed by a digit is not part of a literal:
+  `5.toStr()` calls `toStr` on `5`.
+- A number literal longer than 1,000 characters is a compile error.
 - String literals `"..."` use the same escapes and may not span lines.
 
 Keywords:
@@ -233,7 +236,10 @@ types may use the same variant names. The one exception is the prelude:
 `Some`, `None`, `Ok` and `Err` may be written bare (and also qualified, as
 `Option.Some`), and no other module may declare a top-level name that clashes
 with them. A user type may have variants with those names; they are always
-written qualified.
+written qualified. An alias names the variants of the type it aliases, and a
+generic one may leave out its type arguments, which are then inferred like
+the type's own: with `type R[T] = Result[T, str]`, `R.Ok(3)` is
+`Result[int, str].Ok(3)`, and `R.Ok(v)` is a `match` arm.
 
 A variant with positional fields is built like a call, `Expr.Num(3)`,
 `Option.None` or `None`; one with named fields like a record,
@@ -345,6 +351,10 @@ owned or copy, that starts empty and is set at most once:
   stops the program (exit 12). `CONFIG.isSet()` tells which.
 - Once set, the value never changes and is not freed until the program ends,
   so a borrow from `get()` is valid everywhere and freezes nothing.
+- When `main` returns, the set-once globals are dropped (section 9.4). Each
+  is first marked dropped, which makes it empty again: `isSet()` is false, and
+  `get()` or `set(v)` from then on (in a drop method, including its own) stops
+  the program (exit 12).
 
 **Globals of owned types** are otherwise not allowed. Mutable state that owns
 heap data belongs to `main` (or a context record it creates) and is passed down
@@ -380,6 +390,8 @@ fn (Decimal) parse(s: str): Result[Decimal, str] { ... }
   `never`) or a loop with no `break`. A call to a `never` function ends its
   path like `return` (section 8 and the joins of 9.1). `never` may appear only
   as a result type.
+- `var` on a borrow or closure parameter (`&T`, `&[T]`, `&fn()`) is an error:
+  a borrow is never rebound.
 
 ### 5.4 Interfaces
 
@@ -406,6 +418,11 @@ Satisfaction is structural: there is no `impl` declaration.
 Functions and types take type parameters: `fn max[T: Ord + copy](a: T, b: T): T`,
 `type Map[K: Eq + Hash, V] = record { ... }`. A constraint is an interface,
 possibly generic (`T: Into[str]`), or `copy`.
+
+A type argument is a type: `never` and "no result" are not, so neither can be
+a type argument, written or inferred (`call(fn(): never { exit(3) })` with
+`fn call[R](f: &fn(): R): R` is an error, and so is `call(hi)` with a `hi`
+that returns nothing).
 
 ### 6.2 Checking at the definition
 
@@ -473,7 +490,8 @@ after the point minus the exponent (so `1.50` is `(150, 2)`, `1.5e3` is
 `T.fromFraction(units, scale)` when the expected type `T` has an associated
 function `fromFraction(i128, int)`, and the call `fromFraction(units, scale)`
 of the function in scope otherwise (std's makes a `Decimal`, so `int(1.5)` is
-an error). A literal whose digits do not fit an `i128` is a compile error.
+an error). A literal whose digits do not fit an `i128`, or whose scale does
+not fit an `int`, is a compile error.
 This is one of the lang items.
 
 ### 7.4 Operators on other types
@@ -606,7 +624,12 @@ its last statement (in an inner block, or by passing it to another function
 that drops it): the rest of its body must run after that drop, so each node
 needs a stack frame, and a long enough chain overflows the stack (exit 4).
 
-Globals are dropped when `main` returns, in reverse order of declaration.
+Globals are dropped when `main` returns (not after `exit`). The set-once
+globals of a module are dropped before those of the modules it imports
+(directly or not; `std` last), and within a module in reverse order of
+declaration; each is marked dropped before its value is dropped (section 5.2).
+Copy globals are dropped after all of them, which runs no code (a copy type
+has no `drop` method), so a drop method never reads a freed global.
 
 ## 10. Borrows
 
@@ -688,6 +711,12 @@ the module that declares it (`pub extern` is an error): a module that needs C
 exposes safe wrappers, such as an owned type with a `drop` method, never the
 raw C function. Two extern declarations in a program with the same C name must have
 the same parameter and result types; otherwise it is a compile error.
+The C name (given by `as`, or the obx name) may not be one the program's own
+C code defines: `main`, a name that starts with `rt_` or `obx_` (the runtime;
+its documented `obx_` helpers for the library, such as `obx_errno`, may be
+named), or a name of the form the compiler generates (`f1_x`, `g1_x`, `k1_x`,
+`gl1_x`, `S1_x`, `sl1`, `fn1`: a prefix, digits, and for the first five an
+underscore).
 
 Parameter and result types are limited to integers, `float`, `bool`, `ptr`,
 `mut &ptr`, `mut &int` and `str`. A `str` result copies a NUL-terminated

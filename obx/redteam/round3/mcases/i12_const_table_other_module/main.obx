@@ -1,0 +1,7 @@
+// expect: 6
+import "./t"
+fn main() {
+    var s = 0
+    for x in t.T { s += x }
+    println(s)
+}

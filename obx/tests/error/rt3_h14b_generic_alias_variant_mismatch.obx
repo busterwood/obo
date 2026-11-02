@@ -1,0 +1,5 @@
+// Red-team round 3, h14 (SPEC 4.4): R.Ok infers R's type argument, so a value
+// that is not an Option[T] does not fit Q's Ok.
+// error: Option
+type Q[T] = Result[Option[T], str]
+fn main() { let x = Q.Ok(3) }

@@ -1,0 +1,9 @@
+// expect: 4
+fn g(var n: int): int {
+    {
+        let f = fn() { n += 3 }
+        f()
+    }
+    return n
+}
+fn main() { println(g(1)) }

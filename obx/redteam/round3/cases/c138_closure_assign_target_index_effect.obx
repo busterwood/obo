@@ -1,0 +1,6 @@
+// exit: 3
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    var xs = [1, 2]
+    xs[1] = call(fn(): int { xs = [9]; return 0 })
+}

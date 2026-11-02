@@ -1,0 +1,9 @@
+// expect: a1b2
+fn call(f: &fn(): str): str { return f() }
+fn main() {
+    let a = "a"
+    let n = 1
+    let b = "b"
+    let m = 2
+    println(call(fn(): str { return a + n.toStr() + b + m.toStr() }))
+}

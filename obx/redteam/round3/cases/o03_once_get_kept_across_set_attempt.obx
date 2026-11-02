@@ -1,0 +1,11 @@
+// expect: a
+// exit: 12
+type A = record { s: str }
+var GA: once A
+fn main() {
+    GA.set(A{s: "a" + ""})
+    let r = GA.get()
+    println(r.s)
+    GA.set(A{s: "b" + ""})
+    println(r.s)
+}

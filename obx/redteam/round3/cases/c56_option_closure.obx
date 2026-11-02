@@ -1,0 +1,5 @@
+// error: closure|second class
+fn main() {
+    let f = fn(): int { return 1 }
+    let o = Some(f)
+}

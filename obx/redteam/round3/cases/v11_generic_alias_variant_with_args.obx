@@ -1,0 +1,6 @@
+// expect: 3
+type R[T] = Result[T, str]
+fn main() {
+    let r = R[int].Ok(3)
+    match r { Ok(v) { println(v) } Err(e) {} }
+}

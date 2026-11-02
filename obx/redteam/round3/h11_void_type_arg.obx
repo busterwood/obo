@@ -1,0 +1,8 @@
+// Round 3 M. A named function that returns nothing binds R to void; the
+// compiler accepts the call and the C compiler rejects `void t1 = ...`.
+// (A closure literal without a result type is rejected correctly: "give the
+// result type of the closure".) Must be a compile error.
+// error: nothing|value|infer|result
+fn call[R](f: &fn(): R): R { return f() }
+fn hi() { println("x") }
+fn main() { call(hi) }

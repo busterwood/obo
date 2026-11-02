@@ -1,0 +1,4 @@
+// expect: xy
+fn cat(a: str, b: str): str { return a + b }
+fn app(f: &fn(str, str): str): str { return f("x", "y") }
+fn main() { println(app(cat)) }

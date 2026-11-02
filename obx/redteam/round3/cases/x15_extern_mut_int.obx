@@ -1,0 +1,7 @@
+// expect: ok
+extern "c" fn time(t: mut &int): int
+fn main() {
+    var t = 0
+    let r = time(mut &t)
+    if r == t { println("ok") }
+}

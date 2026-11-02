@@ -1,0 +1,5 @@
+// error:
+fn main() {
+    let xs = [1, 2]
+    println(xs[fn(): int { return 0 }()])
+}

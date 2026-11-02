@@ -1,0 +1,9 @@
+// error: moved
+type B = record { v: []int }
+fn eat(b: B) {}
+fn fine() {}
+fn main() {
+    let b = B{v: [1]}
+    if len(b.v) == 1 { eat(b) } else { fine() }
+    println(len(b.v))
+}

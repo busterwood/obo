@@ -547,6 +547,8 @@ class Checker:
             if not isinstance(root, Var):
                 self.err(f"cannot borrow a temporary into let '{s.name}': the temporary does not outlive "
                          "the statement", s.where)
+            if v.t[2]:
+                self.frozen(root, 'mut', s.where)
             var = Var(s.name, cn, v.t, False, 'local', s.where)
             var.broot = root
             self.emit(f"{self.T(v.t[1])}* {cn} = {v.c};" if v.t[0] == 'ref' else f"obx_slice {cn} = {v.c};")
@@ -1120,6 +1122,9 @@ class Checker:
         lo, hi = RANGES['i128']
         if not lo <= units <= hi:
             self.err(f"fractional literal {e.v} has too many digits: its units do not fit an i128", e.where)
+        if not RANGES['int'][0] <= scale <= RANGES['int'][1]:
+            self.err(f"the exponent of fractional literal {e.v} is out of range: its scale {scale} does not "
+                     "fit an int", e.where)
         args = [Val(self.cint(units, I128), I128, 'rv'), Val(f"{scale}LL", INT, 'rv')]
         if exp is not None:
             sig = self.assoc_sig(exp, 'fromFraction', e.where, quiet=True)
@@ -1168,12 +1173,14 @@ class Checker:
         return None
 
     def variant_of(self, b, name, where):
-        """Type.Variant (SPEC 4.4): the variant, with the type's arguments when it has them."""
-        t = self.static_type(b, where)
+        """Type.Variant (SPEC 4.4): the variant, with the type's arguments when it has them. Through a generic
+        alias without arguments (R.Ok), those mention R's parameters, which are inferred (4th item)."""
+        free = (b[1].tparams,) if len(b) == 2 and b[1].form == 'alias' and b[1].tparams else ()
+        t = self.prog.alias_target(b[1]) if free else self.static_type(b, where)
         if t and t[0] == 'inst' and t[1].form == 'closed':
             vr = next((v for v in t[1].variants if v.name == name), None)
             if vr is not None:
-                return ('decl', vr) if t[2] is None else ('decl', vr, t[2])
+                return ('decl', vr) if t[2] is None else ('decl', vr, t[2]) + free
         return None
 
     def texpr(self, x):
@@ -1248,7 +1255,7 @@ class Checker:
         if isinstance(d, Variant):
             if d.fields:
                 self.err(f"variant {d.name} has fields: write {d.decl.name}.{d.name}(...)", e.where)
-            return self.construct_variant(d, [], e.where, exp, targs)
+            return self.construct_variant(st, [], e.where, exp)
         if isinstance(d, FnDecl):
             if d.extern is not None:
                 self.err(f"extern function {d.name} cannot be used as a value", e.where)
@@ -1428,13 +1435,13 @@ class Checker:
                 self.err(f"cannot slice global '{v.glob.name}'", e.where)
             if mut and not v.mutable:
                 self.immutable(v, e.where, 'take a mut slice of')
-            if mut:
-                self.frozen(v.root, 'mut', e.where)
             base = f"rt_as_slice(&{v.c})"
         else:
             if mut and not v.t[2]:
                 self.err("cannot make a mut slice from a shared slice", e.where)
             base = v.c
+        if mut:                         # rule 4: a mut re-slice is a mut borrow of the root
+            self.frozen(v.root, 'mut', e.where)
         mark = len(self.ctx.pending)
         self.hold(v, False, object(), e.where)
         lo = self.int_index(e.lo) if e.lo is not None else '0'
@@ -1692,13 +1699,16 @@ class Checker:
             self.emit(f"{pre}f_{f[0]} = {c};")
         return n
 
-    def construct_variant(self, vr, args, where, exp, targs, named=None):
+    def construct_variant(self, st, args, where, exp, named=None):
+        vr, targs, env = st[1], st[2] if len(st) > 2 else None, {}
         d = vr.decl
         if d.module is not self.ctx.module and not d.pub:
             self.err(f"{vr.name} is not public", where)
         tps = d.tparams
         bind = {}
-        if targs is not None:
+        if len(st) > 3:                 # through a generic alias: infer the alias's parameters
+            env, tps = dict(zip(tps, targs)), st[3]
+        elif targs is not None:
             if len(targs) != len(tps):
                 self.err(f"{d.name} takes {len(tps)} type arguments, not {len(targs)}", where)
             for tp, a in zip(tps, targs):
@@ -1706,7 +1716,7 @@ class Checker:
                     self.prog.resolve_type(a, self.ctx.module, self.ctx.fd.env, 'targ', where)
         elif exp is not None and exp[0] == 'inst' and exp[1] is d:
             bind = dict(zip(tps, exp[2]))
-        fts = [f[1] for f in vr.fields]
+        fts = [subst(f[1], env) for f in vr.fields]
         names = [f[0] for f in vr.fields]
         order = None
         if named is not None:
@@ -1714,7 +1724,8 @@ class Checker:
             order = self.init_order
         if len(args) != len(fts):
             self.err(f"variant {vr.name} takes {len(fts)} values, not {len(args)}", where)
-        sig = Sig(vr.name, 'ctor', fts, ('inst', d, tuple(('tp', p) for p in tps)), tps, bind=bind)
+        sig = Sig(vr.name, 'ctor', fts, ('inst', d, targs if env else tuple(('tp', p) for p in tps)), tps,
+                  bind=bind)
         sig.variant = vr
         return self.call(sig, None, args, where, exp, order=order)
 
@@ -1741,7 +1752,7 @@ class Checker:
         d = st[1]
         targs = st[2] if len(st) > 2 else None
         if isinstance(d, Variant):
-            return self.construct_variant(d, None, e.where, exp, targs, named=e.inits)
+            return self.construct_variant(st, None, e.where, exp, named=e.inits)
         if not isinstance(d, TypeDecl):
             self.err(f"{d.name} is not a record type", e.where)
         if d.form == 'alias':
@@ -1837,7 +1848,7 @@ class Checker:
             st = self.static_ns(f.e)
             vst = self.static(f) if st is not None and st[0] != 'module' else None
             if vst is not None and isinstance(vst[1], Variant):
-                return self.construct_variant(vst[1], e.args, e.where, exp, vst[2] if len(vst) > 2 else None)
+                return self.construct_variant(vst, e.args, e.where, exp)
             if st is not None and st[0] != 'module':
                 t = self.static_type(st, f.where)
                 if t is None:
@@ -1861,7 +1872,7 @@ class Checker:
             d = st[1]
             ta = st[2] if len(st) > 2 else None
             if isinstance(d, Variant):
-                return self.construct_variant(d, e.args, e.where, exp, ta)
+                return self.construct_variant(st, e.args, e.where, exp)
             if isinstance(d, FnDecl):
                 return self.call(fn_sig(d), None, e.args, e.where, exp, targs=ta, alltargs=True)
             if isinstance(d, TypeDecl):
@@ -1882,13 +1893,15 @@ class Checker:
             self.err(f"a set-once global has set(v), get() and isSet(), not {name} with {len(e.args)} "
                      "arguments", e.where)
         if name == 'isSet':
-            return Val(f"{g.cname}_set", BOOL, 'rv')
+            return Val(f"({g.cname}_set == 1)", BOOL, 'rv')
         if name == 'get':
-            self.emit(f"if (!{g.cname}_set) rt_trap(12, {msg} is not set\", {W});")
+            self.emit(f"if ({g.cname}_set != 1) rt_trap(12, {g.cname}_set ? {msg} is dropped\" : {msg} is "
+                      f"not set\", {W});")
             return Val(f"(&{g.cname})", ('ref', g.ty, False), 'rv', root=self.static_var(g))
         v = self.coerce(self.expr(e.args[0], g.ty), g.ty, e.where, f"the value of {g.name}")
         c = self.consume(v, e.where)
-        self.emit(f"if ({g.cname}_set) rt_trap(12, {msg} is set twice\", {W});")
+        self.emit(f"if ({g.cname}_set) rt_trap(12, {g.cname}_set == 2 ? {msg} is dropped\" : {msg} is set "
+                  f"twice\", {W});")
         self.emit(f"{g.cname} = {c}; {g.cname}_set = 1;")
         return Val('', VOID, 'rv')
 
@@ -2011,6 +2024,8 @@ class Checker:
                              f"({'mut &' if pt[2] else '&'}x)", where)
                 if pt[2] and not sv.t[2]:
                     self.err(f"{what} needs a mut slice, not {tstr(sv.t)}", where)
+                if pt[2]:               # passing a mut slice on borrows its root mutably (rule 4)
+                    self.frozen(sv.root, 'mut', where)
                 v = Val(sv.c, ('slice', sv.t[1], pt[2]), 'rv', root=sv.root, path=sv.path)
                 if not unify(pt[1], v.t[1], bind, tps):
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)

@@ -1,0 +1,4 @@
+// expect: blue
+type Color = value closed { Red; Blue }
+fn name(c: Color): str { match c { Color.Red { return "red" } Color.Blue { return "blue" } } }
+fn main() { println(name(Color.Blue)) }

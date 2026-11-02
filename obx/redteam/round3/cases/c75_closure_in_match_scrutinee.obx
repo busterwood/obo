@@ -1,0 +1,5 @@
+// expect: 4
+fn call(f: &fn(): Option[int]): Option[int] { return f() }
+fn main() {
+    match call(fn(): Option[int] { return Some(4) }) { Some(x) { println(x) } None {} }
+}

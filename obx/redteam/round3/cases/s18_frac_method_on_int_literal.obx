@@ -1,0 +1,4 @@
+// Spec decision L6: a fractional literal needs a digit after the point, so
+// "5." followed by a name is a method call on 5.
+// expect: 5
+fn main() { println(5.toStr()) }

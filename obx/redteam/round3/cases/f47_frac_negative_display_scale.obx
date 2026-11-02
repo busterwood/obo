@@ -1,0 +1,2 @@
+// expect: 1000000
+fn main() { println((1e6).toStr()) }

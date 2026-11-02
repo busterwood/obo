@@ -1,0 +1,12 @@
+// expect: 1
+type A = record { n: int }
+var GA: once A
+fn main() {
+    var r2 = 0
+    {
+        GA.set(A{n: 1})
+        let r = GA.get()
+        r2 = r.n
+    }
+    println(r2)
+}

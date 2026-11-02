@@ -1,0 +1,11 @@
+// expect: 3
+type W[T] = record { xs: []T }
+fn (w: &W[T]) fold(z: int, f: &fn(int, &T): int): int {
+    var acc = z
+    for x in w.xs { acc = f(acc, x) }
+    return acc
+}
+fn main() {
+    let w = W{xs: ["a", "bb"]}
+    println(w.fold(0, fn(a, s) { return a + len(s) }))
+}

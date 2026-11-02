@@ -1,0 +1,7 @@
+// error: once|set|borrow|move|copy
+type A = record { n: int }
+var GA: once A
+fn main() {
+    GA.set(A{n: 1})
+    GA.set(GA.get())
+}

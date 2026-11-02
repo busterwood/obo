@@ -1,0 +1,231 @@
+=== v10_alias_instance_variant
+// expect: 3 e
+type IR = Result[int, str]
+fn f(c: bool): IR {
+    if c { return IR.Ok(3) }
+    return IR.Err("e")
+}
+fn main() {
+    var a = ""
+    match f(true) { IR.Ok(v) { a = v.toStr() } IR.Err(e) { a = e } }
+    match f(false) { IR.Ok(v) { a = a + " " + v.toStr() } IR.Err(e) { a = a + " " + e } }
+    println(a)
+}
+=== v11_generic_alias_variant_with_args
+// expect: 3
+type R[T] = Result[T, str]
+fn main() {
+    let r = R[int].Ok(3)
+    match r { Ok(v) { println(v) } Err(e) {} }
+}
+=== v12_generic_alias_variant_no_args
+// expect: 3
+type R[T] = Result[T, str]
+fn f(): R[int] { return R.Ok(3) }
+fn main() {
+    match f() { R.Ok(v) { println(v) } R.Err(e) {} }
+}
+=== v13_generic_type_variant_explicit_args
+// expect: 5
+fn main() {
+    let o = Option[int].Some(5)
+    match o { Option.Some(v) { println(v) } Option.None {} }
+}
+=== v14_generic_type_variant_wrong_args
+// error: Option|str|int
+fn main() {
+    let o: Option[int] = Option[str].Some("x")
+}
+=== v15_user_variant_named_some_bare_match
+// error: qualified|M.Some|variant
+type M = closed { Some(int); Nothing }
+fn main() {
+    let m = M.Some(1)
+    match m { Some(x) { println(x) } M.Nothing {} }
+}
+=== v16_user_variant_named_some_qualified
+// expect: 1
+type M = closed { Some(int); Nothing }
+fn main() {
+    let m = M.Some(1)
+    match m { M.Some(x) { println(x) } M.Nothing {} }
+}
+=== v17_bare_user_variant_rejected
+// error: qualified|Circle
+type Shape = closed { Circle(int); Sq(int) }
+fn main() { let s = Circle(1) }
+=== v18_bare_user_variant_match_rejected
+// error: qualified|Circle
+type Shape = closed { Circle(int); Sq(int) }
+fn main() {
+    let s = Shape.Circle(1)
+    match s { Circle(r) {} Shape.Sq(x) {} }
+}
+=== v19_local_shadows_type_then_variant
+// expect: 1
+type Shape = closed { Circle(int); Sq(int) }
+fn main() {
+    let s = Shape.Circle(1)
+    let Shape2 = 3
+    match s { Shape.Circle(r) { println(r) } Shape.Sq(x) {} }
+}
+=== v21_named_field_variant_qualified
+// expect: f 0
+type E = closed { Call { name: str; args: []int }; Num(int) }
+fn main() {
+    let e = E.Call{name: "f", args: []}
+    match e { E.Call(n, a) { println(n + " " + len(a).toStr()) } E.Num(x) {} }
+}
+=== v22_variant_const_qualified
+// expect: 2
+type Shape = value closed { Circle(int); Sq(int) }
+const S: Shape = Shape.Sq(2)
+fn main() { match S { Shape.Circle(r) {} Shape.Sq(x) { println(x) } } }
+=== v23_variant_const_table_qualified
+// expect: 7
+type Shape = value closed { Circle(int); Sq(int) }
+const T: []Shape = [Shape.Circle(3), Shape.Sq(4)]
+fn main() {
+    var t = 0
+    for s in T { match s { Shape.Circle(r) { t += r } Shape.Sq(x) { t += x } } }
+    println(t)
+}
+=== v24_variant_const_bare_rejected
+// error: qualified|constant|Circle
+type Shape = value closed { Circle(int); Sq(int) }
+const S: Shape = Circle(2)
+fn main() {}
+=== v25_variant_no_fields_qualified_value
+// expect: blue
+type Color = value closed { Red; Blue }
+fn name(c: Color): str { match c { Color.Red { return "red" } Color.Blue { return "blue" } } }
+fn main() { println(name(Color.Blue)) }
+=== v26_variant_field_on_value
+// error: Shape|Circle|field|variant
+type Shape = closed { Circle(int); Sq(int) }
+fn main() {
+    let s = Shape.Circle(1)
+    let t = s.Circle
+}
+=== v27_variant_through_alias_alias
+// expect: 9
+type Shape = closed { Circle(int); Sq(int) }
+type S1 = Shape
+type S2 = S1
+fn main() { match S2.Sq(9) { S1.Sq(x) { println(x) } Shape.Circle(r) {} } }
+=== v28_prelude_qualified_result
+// expect: 1
+fn main() {
+    let r: Result[int, str] = Result.Ok(1)
+    match r { Result.Ok(v) { println(v) } Result.Err(e) {} }
+}
+=== v29_try_on_user_type_with_ok_err
+// expect: 5
+type R = closed { Ok(int); Err(str) }
+fn g(): R { return R.Ok(5) }
+fn f(): R {
+    let v = try g()
+    return R.Ok(v)
+}
+fn main() { match f() { R.Ok(v) { println(v) } R.Err(e) {} } }
+=== v30_try_user_type_err_build
+// expect: bad
+type R = closed { Ok(int); Err(str) }
+fn g(): R { return R.Err("bad") }
+fn f(): R {
+    let v = try g()
+    return R.Ok(v)
+}
+fn main() { match f() { R.Ok(v) {} R.Err(e) { println(e) } } }
+=== v31_try_mixed_user_and_prelude
+// expect: bad
+type R = closed { Ok(int); Err(str) }
+fn g(): Result[int, str] { return Err("bad") }
+fn f(): R {
+    let v = try g()
+    return R.Ok(v)
+}
+fn main() { match f() { R.Ok(v) {} R.Err(e) { println(e) } } }
+=== v32_variant_value_in_generic
+// expect: 2
+type Box[T] = closed { Full(T); Empty }
+fn count[T](bs: &[]Box[T]): int {
+    var n = 0
+    for b in bs { match b { Box.Full(x) { n += 1 } Box.Empty {} } }
+    return n
+}
+fn main() { println(count(&[Box.Full(1), Box.Empty, Box.Full(3)])) }
+=== v33_variant_generic_construct_in_generic
+// expect: 1
+type Box[T] = closed { Full(T); Empty }
+fn wrap[T](x: T): Box[T] { return Box.Full(x) }
+fn main() { match wrap("a") { Box.Full(s) { println(len(s)) } Box.Empty {} } }
+=== v34_variant_generic_explicit_in_generic
+// expect: 1
+type Box[T] = closed { Full(T); Empty }
+fn empty[T](): Box[T] { return Box[T].Empty }
+fn main() { match empty[int]() { Box.Full(s) {} Box.Empty { println(1) } } }
+=== g01_closure_tramp_generic_in_generic
+// expect: 4
+fn idt[T](x: T): T { return x }
+fn app[T](f: &fn(T): T, x: T): T { return f(x) }
+fn twice[T](x: T): T { return app(idt[T], x) }
+fn main() { println(twice(4)) }
+=== g02_closure_generic_fnvalue_param
+// expect: 6
+fn app[T](f: &fn(T, T): T, a: T, b: T): T { return f(a, b) }
+fn add(a: int, b: int): int { return a + b }
+fn main() { println(app(add, 2, 4)) }
+=== g03_closure_infer_after_args
+// expect: 3
+fn app[T](x: T, f: &fn(T): int): int { return f(x) }
+fn main() { println(app("abc", fn(s) { return len(s) })) }
+=== g04_closure_infer_before_args_rejected
+// error: infer|type
+fn app[T](f: &fn(T): int, x: T): int { return f(x) }
+fn main() { println(app(fn(s) { return len(s) }, "abc")) }
+=== g05_closure_typed_before_args
+// expect: 3
+fn app[T](f: &fn(T): int, x: T): int { return f(x) }
+fn main() { println(app(fn(s: str): int { return len(s) }, "abc")) }
+=== g06_closure_typed_conflicting_args
+// error: str|int|argument
+fn app[T](f: &fn(T): int, x: T): int { return f(x) }
+fn main() { println(app(fn(s: str): int { return len(s) }, 5)) }
+=== g07_closure_returns_T_inferred_from_result
+// expect: 7
+fn mk[T](f: &fn(): T): T { return f() }
+fn main() {
+    let x: int = mk(fn() { return 7 })
+    println(x)
+}
+=== g08_closure_returns_owned_generic_record
+// expect: 2
+type Box[T] = record { v: T }
+fn mk[T](f: &fn(): Box[T]): T {
+    let b = f()
+    let Box{v} = move(b)
+    return v
+}
+fn main() { println(len(mk(fn(): Box[[]int] { return Box{v: [1, 2]} }))) }
+=== g09_closure_generic_method_receiver_tp
+// expect: 3
+type W[T] = record { xs: []T }
+fn (w: &W[T]) fold(z: int, f: &fn(int, &T): int): int {
+    var acc = z
+    for x in w.xs { acc = f(acc, x) }
+    return acc
+}
+fn main() {
+    let w = W{xs: ["a", "bb"]}
+    println(w.fold(0, fn(a, s) { return a + len(s) }))
+}
+=== g10_closure_iface_generic
+// expect: 2
+fn cnt[T: Eq](xs: &[T], v: &T): int {
+    var n = 0
+    let eqv = fn(x: &T): bool { return x == v }
+    for x in xs { if eqv(x) { n += 1 } }
+    return n
+}
+fn main() { println(cnt(&["a", "b", "a"], &"a")) }

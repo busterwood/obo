@@ -1,0 +1,4 @@
+// expect: 5
+const K = 5
+const T: []int = [K, K * 2]
+fn main() { println(T[0]) }

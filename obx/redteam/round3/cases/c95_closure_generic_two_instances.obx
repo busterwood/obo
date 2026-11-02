@@ -1,0 +1,7 @@
+// expect: 1 x
+fn call[R](f: &fn(): R): R { return f() }
+fn main() {
+    let a = call(fn(): int { return 1 })
+    let b = call(fn(): str { return "x" })
+    println(a.toStr() + " " + b)
+}

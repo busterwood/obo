@@ -1,0 +1,6 @@
+// expect: 4
+import "./t"
+fn main() {
+    t.G.set(4)
+    println(t.G.get())
+}

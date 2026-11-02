@@ -1,0 +1,9 @@
+// Round 3 M. The scale of 1e-18446744073709551617 (2^64 + 1) is emitted as a
+// C literal without a range check; gcc truncates it to 1 and the program
+// prints 0.1 (clang refuses the C file). The value is far below any Decimal:
+// the compiler must reject it (or the program must stop with exit 10).
+// error: exponent|scale|range|fit
+fn main() {
+    let d = 1e-18446744073709551617
+    println(d.toStr())
+}

@@ -1,0 +1,13 @@
+// expect: 1
+type B = record { v: []int }
+fn eat(b: B) {}
+fn fail(): never { panic("x") }
+fn main() {
+    let b = B{v: [1]}
+    if len(b.v) == 1 {
+        eat(b)
+    } else {
+        fail()
+    }
+    println(1)
+}

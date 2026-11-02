@@ -1,0 +1,8 @@
+// expect: 7
+type Shape = value closed { Circle(int); Sq(int) }
+const T: []Shape = [Shape.Circle(3), Shape.Sq(4)]
+fn main() {
+    var t = 0
+    for s in T { match s { Shape.Circle(r) { t += r } Shape.Sq(x) { t += x } } }
+    println(t)
+}

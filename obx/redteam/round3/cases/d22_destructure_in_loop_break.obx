@@ -1,0 +1,12 @@
+// expect: 3
+type P = record { a: []int; b: []int }
+fn main() {
+    var n = 0
+    for i in 0..3 {
+        let P{a, b} = P{a: [i], b: [i, i]}
+        n += 1
+        if i == 1 { continue }
+        if i == 2 { break }
+    }
+    println(n)
+}

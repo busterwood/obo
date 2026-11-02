@@ -1,0 +1,4 @@
+// The closure returns nothing, so R cannot be inferred: a compile error.
+// error: infer|result|nothing|value
+fn call[R](f: &fn(): R): R { return f() }
+fn main() { call(fn() { println("x") }) }

@@ -1,0 +1,4 @@
+// error: place|move|borrow
+type P = record { a: []int; b: int }
+fn f(p: &P) { let P{a, b} = p }
+fn main() {}

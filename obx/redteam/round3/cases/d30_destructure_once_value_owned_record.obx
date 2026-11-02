@@ -1,0 +1,7 @@
+// error: place|owned|move
+type P = value record { a: []int }
+var G: once P
+fn main() {
+    G.set(P{a: [1]})
+    let P{a} = G.get()
+}

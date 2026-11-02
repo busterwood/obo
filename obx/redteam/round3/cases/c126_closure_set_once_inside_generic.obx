@@ -1,0 +1,7 @@
+// expect: 3
+var N: once int
+fn call[T](x: T, f: &fn(T)) { f(x) }
+fn main() {
+    call(3, fn(x: int) { N.set(x) })
+    println(N.get())
+}

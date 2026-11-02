@@ -1,0 +1,4 @@
+// expect: 1
+import "collections"
+const T: []int = [5, 3, 9]
+fn main() { println(collections.findBy(T, fn(x: &int): bool { return x == 3 })) }

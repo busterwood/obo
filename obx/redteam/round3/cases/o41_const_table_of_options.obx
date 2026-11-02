@@ -1,0 +1,9 @@
+// expect: 1 0
+const T: []Option[int] = [Some(1), None]
+fn main() {
+    var a = 0
+    var b = 0
+    match T[0] { Some(x) { a = x } None {} }
+    match T[1] { Some(x) { b = 1 } None { b = 0 } }
+    println(a.toStr() + " " + b.toStr())
+}

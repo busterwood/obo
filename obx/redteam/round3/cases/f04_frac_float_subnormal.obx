@@ -1,0 +1,6 @@
+// expect: ok
+fn main() {
+    let f: float = 5e-324
+    let g: float = 4.9406564584124654e-324
+    if f == g && f > 0.0 { println("ok") }
+}

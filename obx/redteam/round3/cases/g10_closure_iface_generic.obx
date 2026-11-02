@@ -1,0 +1,8 @@
+// expect: 2
+fn cnt[T: Eq](xs: &[T], v: &T): int {
+    var n = 0
+    let eqv = fn(x: &T): bool { return x == v }
+    for x in xs { if eqv(x) { n += 1 } }
+    return n
+}
+fn main() { println(cnt(&["a", "b", "a"], &"a")) }

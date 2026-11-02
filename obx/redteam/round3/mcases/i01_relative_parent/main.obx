@@ -1,0 +1,3 @@
+// expect: 7
+import "./sub/x"
+fn main() { println(x.f()) }

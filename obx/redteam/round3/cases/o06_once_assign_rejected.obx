@@ -1,0 +1,6 @@
+// error: once|set-once
+type A = record { s: str }
+var GA: once A
+fn main() {
+    GA = A{s: "x"}
+}

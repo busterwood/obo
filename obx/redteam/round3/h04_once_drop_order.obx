@@ -1,0 +1,19 @@
+// Round 3 H2. At exit the globals are dropped in reverse declaration order,
+// so GA (declared later) is freed before GB's drop runs, and GA.get() then
+// returns the freed record (heap-use-after-free under ASan). The spec says a
+// set-once value is not freed until the program ends and get() is valid
+// everywhere, so the drop must see "a".
+// Fixed (spec decision H2): GA is dropped first (reverse declaration order) and
+// marked dropped, so GA.get() in GB's drop stops the program (exit 12).
+// expect: set
+// exit: 12
+type A = record { s: str }
+type B = record { n: int }
+fn (b: mut &B) drop() { println("drop b " + GA.get().s) }
+var GB: once B
+var GA: once A
+fn main() {
+    GB.set(B{n: 1})
+    GA.set(A{s: "a" + ""})
+    println("set")
+}

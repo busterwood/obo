@@ -1,0 +1,4 @@
+// expect: no
+type A = record { n: int }
+var GA: once A
+fn main() { if GA.isSet() { println("yes") } else { println("no") } }

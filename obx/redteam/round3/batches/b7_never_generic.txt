@@ -1,0 +1,56 @@
+=== n30_never_inferred_type_arg_return
+// The type argument R is inferred as never; either a compile error or the
+// program stops with exit 3 (it must not fail in the C compiler).
+// expect: in
+// exit: 3
+fn call[R](f: &fn(): R): R { return f() }
+fn main() {
+    call(fn(): never { println("in"); exit(3) })
+}
+=== n31_never_inferred_option
+// expect: none
+fn none[T](f: &fn(): T): Option[T] { return None }
+fn main() {
+    let o = none(fn(): never { exit(3) })
+    match o { Some(x) {} None { println("none") } }
+}
+=== n32_never_inferred_array
+// expect: 0
+fn empty[T](f: &fn(): T): []T { return [] }
+fn main() {
+    let xs = empty(fn(): never { exit(3) })
+    println(len(xs))
+}
+=== n33_never_fn_value_typearg
+// expect: 1
+fn keep[T](x: T): []T { return [x] }
+fn bye(): never { exit(3) }
+fn main() {
+    let xs = keep(bye)
+    println(len(xs))
+}
+=== n34_never_explicit_typearg_rejected
+// error: never
+fn none[T](): Option[T] { return None }
+fn main() { let o = none[never]() }
+=== n35_never_generic_record_field
+// expect: 0
+type Box[T] = record { xs: []T }
+fn mk[T](f: &fn(): T): Box[T] { return Box{xs: []} }
+fn main() {
+    let b = mk(fn(): never { exit(3) })
+    println(len(b.xs))
+}
+=== n36_never_let_from_generic
+// error: value
+fn call[R](f: &fn(): R): R { return f() }
+fn main() {
+    let x = call(fn(): never { exit(3) })
+}
+=== n37_never_generic_ret_dead_code
+// exit: 4
+fn call[R](f: &fn(): R): R { return f() }
+fn g(): int {
+    call(fn(): never { exit(4) })
+}
+fn main() { println(g()) }

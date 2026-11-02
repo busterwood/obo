@@ -1,0 +1,9 @@
+// expect: 3
+fn main() {
+    var t = 0
+    for i in 0..3 {
+        let add = fn() { t += 1 }
+        add()
+    }
+    println(t)
+}

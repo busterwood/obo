@@ -1,0 +1,8 @@
+// Red-team round 3, h08 (SPEC 7.3): the scale of 1e-18446744073709551617
+// (2^64 + 1) does not fit an int, so the literal is a compile error (it was
+// emitted as a C literal and wrapped to 0.1).
+// error: scale
+fn main() {
+    let d = 1e-18446744073709551617
+    println(d.toStr())
+}

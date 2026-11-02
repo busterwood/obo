@@ -1,0 +1,2 @@
+// error: unknown|module|zmod
+fn main() { let x = zmod.T.V(1) }

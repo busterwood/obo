@@ -1,0 +1,6 @@
+// expect: 1
+fn main() {
+    let xs = [1, 2, 3]
+    let s = xs[0..1]
+    println(len(s))
+}

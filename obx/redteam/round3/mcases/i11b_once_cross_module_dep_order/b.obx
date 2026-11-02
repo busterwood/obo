@@ -1,0 +1,8 @@
+import "./a"
+type B = record { n: int }
+fn (x: mut &B) drop() { println("drop b " + a.get()) }
+var GB: once B
+pub fn init() {
+    a.init()
+    GB.set(B{n: 1})
+}

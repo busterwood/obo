@@ -1,0 +1,9 @@
+// Round 3 M. Inference binds the type parameter R to never (from the
+// closure's result type), although never may appear only as a result type
+// (spec 5.3). The compiler accepts the call and emits `void t1 = ...`, which
+// the C compiler rejects. Must be a compile error (or work and exit 3).
+// error: never
+fn call[R](f: &fn(): R): R { return f() }
+fn main() {
+    call(fn(): never { exit(3) })
+}

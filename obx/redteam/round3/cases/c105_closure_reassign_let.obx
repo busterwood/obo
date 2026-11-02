@@ -1,0 +1,5 @@
+// error: assign|let
+fn main() {
+    let f = fn() {}
+    f = fn() {}
+}

@@ -1,0 +1,6 @@
+// expect: t
+fn call(f: &fn(): bool): bool { return f() }
+fn main() {
+    let a = true
+    if a && call(fn(): bool { return a }) { println("t") }
+}

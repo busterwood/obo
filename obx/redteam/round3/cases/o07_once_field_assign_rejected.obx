@@ -1,0 +1,7 @@
+// error: once|set-once|borrow|assign
+type A = value record { n: int }
+var GA: once A
+fn main() {
+    GA.set(A{n: 1})
+    GA.get().n = 5
+}

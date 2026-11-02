@@ -1,0 +1,11 @@
+// error: moved
+type B = record { v: int }
+fn eat(b: B) {}
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    var b = B{v: 1}
+    for i in 0..2 {
+        println(call(fn(): int { return b.v }))
+        eat(b)
+    }
+}

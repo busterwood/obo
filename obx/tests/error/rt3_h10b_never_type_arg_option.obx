@@ -1,0 +1,6 @@
+// Red-team round 3, h10: never is not inferred for T in Option[T] either.
+// error: never
+fn none[T](f: &fn(): T): Option[T] { return None }
+fn main() {
+    let o = none(fn(): never { exit(3) })
+}

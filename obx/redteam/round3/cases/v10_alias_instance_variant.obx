@@ -1,0 +1,12 @@
+// expect: 3 e
+type IR = Result[int, str]
+fn f(c: bool): IR {
+    if c { return IR.Ok(3) }
+    return IR.Err("e")
+}
+fn main() {
+    var a = ""
+    match f(true) { IR.Ok(v) { a = v.toStr() } IR.Err(e) { a = e } }
+    match f(false) { IR.Ok(v) { a = a + " " + v.toStr() } IR.Err(e) { a = a + " " + e } }
+    println(a)
+}

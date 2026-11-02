@@ -1,0 +1,12 @@
+// expect: 1 2
+import "./a"
+import "./b"
+fn main() {
+    let x = a.T.V(1)
+    let y = b.T.V(2)
+    var p = 0
+    var q = 0
+    match x { a.T.V(n) { p = n } }
+    match y { b.T.V(n) { q = n } }
+    println(p.toStr() + " " + q.toStr())
+}

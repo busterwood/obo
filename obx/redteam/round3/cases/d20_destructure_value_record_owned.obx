@@ -1,0 +1,7 @@
+// expect: 2 x
+type P = value record { a: []int; s: str }
+fn mk(): P { return P{a: [1, 2], s: "x"} }
+fn main() {
+    let P{a, s} = mk()
+    println(len(a).toStr() + " " + s)
+}

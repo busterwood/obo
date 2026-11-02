@@ -1,0 +1,8 @@
+// expect: 4
+type In = record { xs: []int }
+type Out = record { i: In; n: int }
+fn main() {
+    let Out{i, n} = Out{i: In{xs: [1, 2, 3]}, n: 1}
+    let In{xs} = move(i)
+    println(len(xs) + n)
+}

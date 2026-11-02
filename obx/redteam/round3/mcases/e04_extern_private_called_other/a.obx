@@ -1,0 +1,2 @@
+extern "c" fn abs(x: i32): i32
+pub fn f(): int { return 1 }

@@ -1,0 +1,6 @@
+// expect: 2 3
+const T: []int = [1, 2, 3]
+fn main() {
+    let s = T[1..]
+    println(s[0].toStr() + " " + s[1].toStr())
+}

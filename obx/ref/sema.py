@@ -6,6 +6,7 @@ A type is a tuple:
   ('inst', TypeDecl, (args...))  ('tp', TParam)  ('self',) inside interfaces
 """
 import os
+import re
 from syntax import CompileError, parse, read_source
 
 INTS = ('int', 'i32', 'u32', 'u64', 'byte', 'i128', 'u128')
@@ -16,6 +17,11 @@ SELF = ('self',)
 BITS = {'int': 64, 'i32': 32, 'u32': 32, 'u64': 64, 'byte': 8, 'i128': 128, 'u128': 128}
 RESERVED = {'len', 'append', 'pop', 'swap', 'replace', 'move', 'array', 'panic', 'assert', 'exit'}
 PRELUDE = ('Some', 'None', 'Ok', 'Err')
+# SPEC 12: C names that rt.h or the generated C defines (functions f1_, globals g1_, constants k1_, glue
+# gl1_, structs S1_, string literals sl1, function types fn1); rt.h's obx_ library helpers stay callable.
+CRESERVED = re.compile(r'(main|rt_\w*|obx_\w*|(f|g|k|gl|S)\d+_\w*|(sl|fn)\d+\w*)$')
+CHELPERS = {'obx_errno', 'obx_dirent_name', 'obx_dirent_type', 'obx_stat', 'obx_stat_field', 'obx_open',
+            'obx_clock_ns', 'obx_getcwd'}
 RANGES = {'int': (-2**63, 2**63 - 1), 'i32': (-2**31, 2**31 - 1), 'u32': (0, 2**32 - 1),
           'u64': (0, 2**64 - 1), 'byte': (0, 255), 'i128': (-2**127, 2**127 - 1),
           'u128': (0, 2**128 - 1)}
@@ -471,6 +477,10 @@ class Program:
     def check_targs(self, targs, tparams, mod, where):
         env = dict(zip(tparams, targs))
         for p, t in zip(tparams, targs):
+            if t in (VOID, NEVER):      # SPEC 6.1: written or inferred (from a function's result)
+                what = 'never' if t == NEVER else 'inferred as no result (nothing)'
+                raise CompileError(f"type parameter {p.name} cannot be {what}: never and no result are not "
+                                   "types, so they cannot be type arguments", where)
             if t[0] in ('ref', 'slice', 'clo'):
                 raise CompileError(f"a borrow type ({tstr(t)}) cannot be a type argument (type parameter "
                                    f"{p.name}): borrows are second class", where)
@@ -499,6 +509,9 @@ class Program:
                 fd.ret = self.resolve_type(a.ret, mod, env, 'ret')
                 if fd.ret[0] != 'prim':
                     raise CompileError(f"an extern function cannot return {tstr(fd.ret)}", a.where)
+            if CRESERVED.match(a.cname) and a.cname not in CHELPERS:
+                raise CompileError(f"the C name {a.cname} is reserved: an extern cannot name main, rt_*, obx_* "
+                                   "or a name the compiler generates", a.where)
             sig = ([t for _, t, _, _ in fd.params], fd.ret)
             other = self.externs.setdefault(a.cname, (sig, fd))
             if other[0] != sig:
@@ -584,8 +597,8 @@ class Program:
                 raise CompileError(f"parameter {n} is declared twice", w)
             names.add(n)
             t = self.resolve_type(pt, mod, env, 'param', w)
-            if isvar and t[0] in ('ref', 'slice'):
-                raise CompileError(f"var parameter {n} cannot be a borrow", w)
+            if isvar and t[0] in ('ref', 'slice', 'clo'):
+                raise CompileError(f"var parameter {n} cannot be a borrow or a closure", w)
             fd.params.append((n, t, isvar, w))
         if a.ret:
             fd.ret = self.resolve_type(a.ret, mod, env, 'ret')

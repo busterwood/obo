@@ -1,0 +1,11 @@
+// expect: 3
+fn main() {
+    var n = 1
+    {
+        let inc = fn() { n += 1 }
+        let g = inc
+        g()
+        inc()
+    }
+    println(n)
+}

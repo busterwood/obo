@@ -1,0 +1,6 @@
+// expect: 1
+import "./dm"
+fn main() {
+    let dm.P{a} = dm.mk()
+    println(a)
+}

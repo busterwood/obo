@@ -1,0 +1,7 @@
+// expect: 3
+const T: []int = [1, 2]
+fn main() {
+    var t = 0
+    for x in T { t += x }
+    println(t)
+}

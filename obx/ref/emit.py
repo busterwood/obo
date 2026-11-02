@@ -286,17 +286,29 @@ class Emitter:
                     if fd.extern not in ('c', '') and fd.extern not in libs:
                         libs.append(fd.extern)
         entry = self.instance(main, ())
-        globs, gdrops = [], []
-        for m in self.prog.modules.values():
+        # SPEC 5.2: at exit a module's set-once globals are dropped before those of the modules it
+        # imports, each module's in reverse declaration order; a dropped one is marked (state 2) first.
+        # Copy globals are dropped after them all (that runs no code), so no drop method sees them freed.
+        globs, onces, copies, post = [], {}, [], []
+
+        def visit(m):
+            if m not in onces:
+                onces[m] = []
+                for sub in m.imports.values():
+                    visit(sub)
+                post.append(m)
+        for m in [self.prog.std] + list(self.prog.modules.values()):
+            visit(m)
+        for m in post:
             for g in m.scope.values():
                 if not hasattr(g, 'init'):
                     continue
                 c, holes = g.init
                 t = getattr(g, 'ty', None) or g.table
-                if c is None:           # a set-once global: empty until set, dropped at exit if set
-                    globs.append(f"static {self.ctype(t)} {g.cname}; static bool {g.cname}_set;")
-                    if not pod(t):
-                        gdrops.insert(0, f"if ({g.cname}_set) {self.drop_c(t, g.cname)};")
+                if c is None:           # a set-once global: 0 empty, 1 set, 2 dropped
+                    globs.append(f"static {self.ctype(t)} {g.cname}; static uint8_t {g.cname}_set;")
+                    d = '' if pod(t) else f"if ({g.cname}_set == 1) {{ {g.cname}_set = 2; {self.drop_c(t, g.cname)}; }} "
+                    onces[m].insert(0, f"{d}{g.cname}_set = 2;")
                 elif t[0] == 'arr':     # a constant table: read-only static data seen as a slice
                     items = ', '.join(self.render(x, holes, {}) for x in c)
                     globs.append(f"static const {self.ctype(t[1])} {g.cname}_d[{len(c) or 1}] = {{{items or '0'}}};")
@@ -305,7 +317,8 @@ class Emitter:
                     cq = 'const ' if hasattr(g, 'table') else ''
                     globs.append(f"static {cq}{self.ctype(t)} {g.cname} = {self.render(c, holes, {})};")
                     if not pod(t):
-                        gdrops.insert(0, self.drop_c(t, g.cname) + ';')
+                        copies.insert(0, self.drop_c(t, g.cname) + ';')
+        gdrops = [x for m in reversed(post) for x in onces[m]] + copies
         while self.work or self.gluework:
             if self.work:
                 self.make_instance(*self.work.pop())

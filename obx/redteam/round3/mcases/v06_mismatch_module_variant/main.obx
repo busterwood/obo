@@ -1,0 +1,7 @@
+// error: not a variant|variant
+import "./a"
+import "./b"
+fn main() {
+    let x = a.T.V(1)
+    match x { b.T.V(n) { println(n) } }
+}

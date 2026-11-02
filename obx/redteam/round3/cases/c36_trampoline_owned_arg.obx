@@ -1,0 +1,4 @@
+// expect: 3
+fn sum(xs: []int): int { var t = 0; for x in xs { t += x }; return t }
+fn app(f: &fn([]int): int): int { return f([1, 2]) }
+fn main() { println(app(sum)) }

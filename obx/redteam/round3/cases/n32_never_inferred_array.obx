@@ -1,0 +1,7 @@
+// Spec decision M2: never cannot be a type argument, written or inferred.
+// error: never
+fn empty[T](f: &fn(): T): []T { return [] }
+fn main() {
+    let xs = empty(fn(): never { exit(3) })
+    println(len(xs))
+}

@@ -1,0 +1,3 @@
+// error: cycle
+import "./a"
+fn main() {}

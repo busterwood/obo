@@ -1,0 +1,7 @@
+// expect: 3
+var N: once int
+fn call(f: &fn()) { f() }
+fn main() {
+    call(fn() { N.set(3) })
+    println(N.get())
+}

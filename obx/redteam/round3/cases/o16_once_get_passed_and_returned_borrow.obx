@@ -1,0 +1,9 @@
+// expect: 4
+type A = record { xs: []int }
+var GA: once A
+fn first(a: &A): &int { return &a.xs[0] }
+fn main() {
+    GA.set(A{xs: [4]})
+    let r = first(GA.get())
+    println(r)
+}

@@ -1,0 +1,5 @@
+// error: drop|assign|receiver
+type D = record { xs: []int }
+fn call(f: &fn()) { f() }
+fn (d: mut &D) drop() { call(fn() { call(fn() { d = D{xs: []} }) }) }
+fn main() {}

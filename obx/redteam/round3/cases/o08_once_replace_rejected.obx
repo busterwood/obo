@@ -1,0 +1,7 @@
+// error: mut|borrow|once
+type A = record { xs: []int }
+var GA: once A
+fn main() {
+    GA.set(A{xs: [1]})
+    let o = replace(mut &GA.get().xs, [])
+}

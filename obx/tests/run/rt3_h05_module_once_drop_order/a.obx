@@ -1,0 +1,4 @@
+pub type A = record { pub s: str }
+var GA: once A
+pub fn init() { GA.set(A{s: "a" + ""}) }
+pub fn get(): str { return GA.get().s }

@@ -1,0 +1,11 @@
+// expect: 12
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 5)
+    m.put("b", 6)
+    var add = 1
+    m.eachMut(fn(k: &str, v: mut &int) { v += add })
+    var t = 0
+    m.each(fn(k: &str, v: &int) { t += v })
+    println(t - 1)
+}

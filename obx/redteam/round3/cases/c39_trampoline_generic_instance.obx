@@ -1,0 +1,4 @@
+// expect: 9
+fn idt[T](x: T): T { return x }
+fn app(f: &fn(int): int): int { return f(9) }
+fn main() { println(app(idt[int])) }

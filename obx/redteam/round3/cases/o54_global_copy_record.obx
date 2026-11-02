@@ -1,0 +1,7 @@
+// expect: 3
+type P = value record { a: int; b: int }
+var G: P = P{a: 1, b: 2}
+fn main() {
+    G.a = 2
+    println(G.a + 1)
+}

@@ -1,0 +1,20 @@
+// Red-team round 3, h14 (SPEC 4.4): a generic alias names the variants of the
+// type it aliases without type arguments; they are inferred from the values
+// and the expected type, in expressions and match arms.
+// expect: 3
+// expect: bad
+// expect: 5
+// expect: none
+type R[T] = Result[T, str]
+type O[T] = Option[T]
+type Q[T] = R[Option[T]]
+fn f(): R[int] { return R.Ok(3) }
+fn g[T](x: T): Q[T] { return Q.Ok(Some(x)) }
+fn main() {
+    match f() { R.Ok(v) { println(v) } R.Err(e) {} }
+    let e: R[int] = R.Err("bad")
+    match e { R.Ok(v) {} R.Err(s) { println(s) } }
+    match g(5) { Q.Ok(o) { match o { Some(v) { println(v) } None {} } } Q.Err(s) {} }
+    let n: O[int] = O.None
+    match n { O.Some(v) {} O.None { println("none") } }
+}

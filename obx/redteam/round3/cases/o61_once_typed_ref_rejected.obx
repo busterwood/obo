@@ -1,0 +1,3 @@
+// error: borrow
+var G: once &int
+fn main() {}

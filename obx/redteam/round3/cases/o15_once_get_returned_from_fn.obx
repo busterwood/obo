@@ -1,0 +1,5 @@
+// error: borrow
+type A = record { n: int }
+var GA: once A
+fn cfg(): &A { return GA.get() }
+fn main() {}

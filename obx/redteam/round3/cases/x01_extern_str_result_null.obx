@@ -1,0 +1,3 @@
+// expect: []
+extern "c" fn getenv(name: str): str
+fn main() { println("[" + getenv("OBX_SURELY_UNSET_VAR_X") + "]") }

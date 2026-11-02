@@ -1,0 +1,4 @@
+// expect: 3
+import "./a"
+import "./sub/a" as a2
+fn main() { println(a.G + a2.G) }

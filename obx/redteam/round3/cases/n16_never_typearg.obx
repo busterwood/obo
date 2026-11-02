@@ -1,0 +1,2 @@
+// error: never
+fn main() { let x: Option[never] = None }

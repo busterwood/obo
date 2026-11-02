@@ -1,0 +1,14 @@
+// Red-team round 3, h02: let t: mut &[T] = s (or s[0..1]) borrows s mutably,
+// so it is an error while r borrows an element.
+// error: borrowed
+type B = record { v: []int }
+fn f(s: mut &[B]) {
+    let r = &s[0].v[0]
+    let t: mut &[B] = s
+    t[0] = B{v: [9]}
+    println(r)
+}
+fn main() {
+    var xs = [B{v: [1]}]
+    f(mut &xs)
+}

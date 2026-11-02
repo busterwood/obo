@@ -1,0 +1,5 @@
+// expect: 5
+fn main() {
+    let o = Option[int].Some(5)
+    match o { Option.Some(v) { println(v) } Option.None {} }
+}

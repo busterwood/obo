@@ -1,0 +1,8 @@
+// expect: hi 3
+type P = value record { s: str; n: int }
+fn mk(f: &fn(int): P): P { return f(3) }
+fn main() {
+    let h = "h"
+    let p = mk(fn(n: int): P { return P{s: h + "i", n: n} })
+    println(p.s + " " + p.n.toStr())
+}

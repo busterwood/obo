@@ -1,0 +1,5 @@
+// error: closure|second class|fn
+type R = record { f: fn() }
+fn main() {
+    let r = R{f: fn() {}}
+}

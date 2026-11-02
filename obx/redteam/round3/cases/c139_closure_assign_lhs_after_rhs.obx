@@ -1,0 +1,9 @@
+// expect: 3
+type P = record { n: int }
+fn call(f: &fn(): int): int { return f() }
+fn main() {
+    var p = P{n: 1}
+    var q = P{n: 2}
+    p.n = call(fn(): int { p = P{n: 0}; return 3 })
+    println(p.n)
+}

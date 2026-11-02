@@ -1,0 +1,9 @@
+// expect: drop ab
+type B = record { n: int }
+fn (b: mut &B) drop() { println("drop " + S) }
+var GB: once B
+var S: str = ""
+fn main() {
+    S = "a" + "b"
+    GB.set(B{n: 1})
+}

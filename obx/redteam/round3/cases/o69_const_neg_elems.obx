@@ -1,0 +1,3 @@
+// expect: -5
+const T: []int = [-5, 3]
+fn main() { println(T[0]) }

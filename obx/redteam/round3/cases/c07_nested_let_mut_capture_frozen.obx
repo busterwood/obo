@@ -1,0 +1,11 @@
+// error: borrowed
+fn main() {
+    var xs = [1, 2]
+    let f = fn() {
+        let g = fn() { append(mut &xs, 3) }
+        g()
+    }
+    let r = &xs[0]
+    f()
+    println(r)
+}

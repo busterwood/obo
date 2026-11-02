@@ -1,0 +1,8 @@
+// error: borrowed
+fn first(xs: &[]str): &str { return &xs[0] }
+fn call(f: &fn()): int { f(); return 1 }
+fn use2(x: &str, n: int) { println(x) }
+fn main() {
+    var xs = ["a" + "b"]
+    use2(first(&xs), call(fn() { xs = [] }))
+}

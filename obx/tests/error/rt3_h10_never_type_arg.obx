@@ -1,0 +1,7 @@
+// Red-team round 3, h10 (SPEC 5.3, 6.1): never is not a type, so it cannot be
+// inferred as a type argument (from the closure's result type).
+// error: never
+fn call[R](f: &fn(): R): R { return f() }
+fn main() {
+    call(fn(): never { exit(3) })
+}

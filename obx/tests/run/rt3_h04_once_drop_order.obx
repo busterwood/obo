@@ -1,0 +1,16 @@
+// Red-team round 3, h04 (SPEC 5.2, 9.4): set-once globals are dropped in
+// reverse declaration order, each marked dropped first: GA is dropped before
+// GB, so GA.get() in GB's drop stops the program instead of reading freed
+// memory.
+// expect: set
+// exit: 12
+type A = record { s: str }
+type B = record { n: int }
+fn (b: mut &B) drop() { println("drop b " + GA.get().s) }
+var GB: once B
+var GA: once A
+fn main() {
+    GB.set(B{n: 1})
+    GA.set(A{s: "a" + ""})
+    println("set")
+}

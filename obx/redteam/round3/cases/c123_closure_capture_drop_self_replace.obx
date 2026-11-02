@@ -1,0 +1,5 @@
+// error: drop|replace|receiver
+type D = record { xs: []int }
+fn call(f: &fn()) { f() }
+fn (d: mut &D) drop() { call(fn() { let o = replace(d, D{xs: []}) }) }
+fn main() {}

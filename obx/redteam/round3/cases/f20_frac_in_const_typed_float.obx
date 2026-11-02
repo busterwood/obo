@@ -1,0 +1,3 @@
+// expect: ok
+const F: float = 2.5e-3
+fn main() { if F == 0.0025 { println("ok") } }

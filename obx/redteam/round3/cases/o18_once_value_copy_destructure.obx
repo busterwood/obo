@@ -1,0 +1,8 @@
+// expect: 3 4
+type P = value record { a: int; b: int }
+var GP: once P
+fn main() {
+    GP.set(P{a: 3, b: 4})
+    let P{a, b} = GP.get()
+    println(a.toStr() + " " + b.toStr())
+}

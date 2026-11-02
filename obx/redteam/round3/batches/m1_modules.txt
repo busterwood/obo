@@ -1,0 +1,282 @@
+=== d07_private/main
+// error: private
+import "./dm"
+fn main() { let dm.P{a, b} = dm.mk() }
+=== d07_private/dm
+pub type P = record { pub a: int; b: int }
+pub fn mk(): P { return P{a: 1, b: 2} }
+=== d08_unnamed_private/main
+// expect: 1
+import "./dm"
+fn main() {
+    let dm.P{a} = dm.mk()
+    println(a)
+}
+=== d08_unnamed_private/dm
+pub type P = record { pub a: int; b: []int }
+pub fn mk(): P { return P{a: 1, b: [2]} }
+=== d09_private_drop_other/main
+// error: drop
+import "./dm"
+fn main() { let dm.P{a} = dm.mk() }
+=== d09_private_drop_other/dm
+pub type P = record { pub a: int }
+fn (p: mut &P) drop() {}
+pub fn mk(): P { return P{a: 1} }
+=== d10_alias_other_module/main
+// expect: 3
+import "./dm"
+fn main() {
+    let dm.Q{a, b} = dm.mk()
+    println(a + b)
+}
+=== d10_alias_other_module/dm
+pub type P = record { pub a: int; pub b: int }
+pub type Q = P
+pub fn mk(): P { return P{a: 1, b: 2} }
+=== v01_variant_through_module/main
+// expect: 3
+import "./shapes"
+fn main() {
+    let s = shapes.Shape.Circle(3)
+    match s {
+        shapes.Shape.Circle(r) { println(r) }
+        shapes.Shape.Square(x) { println(0) }
+    }
+}
+=== v01_variant_through_module/shapes
+pub type Shape = closed { Circle(int); Square(int) }
+=== v02_variant_module_alias/main
+// expect: 2
+import "./shapes" as sh
+fn main() {
+    let s = sh.Shape.Square(2)
+    match s {
+        sh.Shape.Circle(r) { println(r) }
+        sh.Shape.Square(x) { println(x) }
+    }
+}
+=== v02_variant_module_alias/shapes
+pub type Shape = closed { Circle(int); Square(int) }
+=== v03_variant_private_type/main
+// error: public|private|not
+import "./shapes"
+fn main() {
+    let s = shapes.Shape.Circle(3)
+}
+=== v03_variant_private_type/shapes
+type Shape = closed { Circle(int); Square(int) }
+pub fn mk(): int { return 1 }
+=== v04_variant_type_alias_other_module/main
+// expect: 4
+import "./shapes"
+fn main() {
+    let s = shapes.Sh.Circle(4)
+    match s {
+        shapes.Sh.Circle(r) { println(r) }
+        else { println(0) }
+    }
+}
+=== v04_variant_type_alias_other_module/shapes
+pub type Shape = closed { Circle(int); Square(int) }
+pub type Sh = Shape
+=== v05_same_variant_names_two_modules/main
+// expect: 1 2
+import "./a"
+import "./b"
+fn main() {
+    let x = a.T.V(1)
+    let y = b.T.V(2)
+    var p = 0
+    var q = 0
+    match x { a.T.V(n) { p = n } }
+    match y { b.T.V(n) { q = n } }
+    println(p.toStr() + " " + q.toStr())
+}
+=== v05_same_variant_names_two_modules/a
+pub type T = closed { V(int) }
+=== v05_same_variant_names_two_modules/b
+pub type T = closed { V(int) }
+=== v06_mismatch_module_variant/main
+// error: not a variant|variant
+import "./a"
+import "./b"
+fn main() {
+    let x = a.T.V(1)
+    match x { b.T.V(n) { println(n) } }
+}
+=== v06_mismatch_module_variant/a
+pub type T = closed { V(int) }
+=== v06_mismatch_module_variant/b
+pub type T = closed { V(int) }
+=== i01_relative_parent/main
+// expect: 7
+import "./sub/x"
+fn main() { println(x.f()) }
+=== i01_relative_parent/sub/x
+import "../y"
+pub fn f(): int { return y.g() + 2 }
+=== i01_relative_parent/y
+pub fn g(): int { return 5 }
+=== i02_same_file_two_paths/main
+// expect: 2
+import "./sub/x"
+import "./y"
+fn main() { println(x.f() + y.g() - 5) }
+=== i02_same_file_two_paths/sub/x
+import "../y"
+pub fn f(): int { return y.g() - 3 }
+=== i02_same_file_two_paths/y
+pub fn g(): int { return 5 }
+=== i03_type_identity_two_paths/main
+// expect: 1
+import "./sub/x"
+import "./y"
+fn main() {
+    let p: y.P = x.mk()
+    println(p.a)
+}
+=== i03_type_identity_two_paths/sub/x
+import "../y"
+pub fn mk(): y.P { return y.P{a: 1} }
+=== i03_type_identity_two_paths/y
+pub type P = record { pub a: int }
+=== i04_local_named_like_lib/main
+// expect: local
+// expect: AB
+import "./strings" as mine
+import "strings"
+fn main() {
+    println(mine.f())
+    println(strings.toUpper("ab"))
+}
+=== i04_local_named_like_lib/strings
+pub fn f(): str { return "local" }
+=== i05_bare_local_rejected/main
+// error: ./
+import "helper"
+fn main() {}
+=== i05_bare_local_rejected/helper
+pub fn f(): int { return 1 }
+=== i06_cycle/main
+// error: cycle
+import "./a"
+fn main() {}
+=== i06_cycle/a
+import "./b"
+pub fn f(): int { return 1 }
+=== i06_cycle/b
+import "./a"
+pub fn g(): int { return 1 }
+=== i07_import_main_itself/main
+// error: cycle|main
+import "./main"
+fn main() {}
+=== i08_import_same_name_twice/main
+// error: twice
+import "./a"
+import "./sub/a"
+fn main() {}
+=== i08_import_same_name_twice/a
+pub fn f(): int { return 1 }
+=== i08_import_same_name_twice/sub/a
+pub fn f(): int { return 2 }
+=== i09_two_same_basename_globals/main
+// expect: 3
+import "./a"
+import "./sub/a" as a2
+fn main() { println(a.G + a2.G) }
+=== i09_two_same_basename_globals/a
+pub var G: int = 1
+=== i09_two_same_basename_globals/sub/a
+pub var G: int = 2
+=== i10_once_in_module/main
+// expect: cfg
+// expect: drop
+import "./cfg"
+fn main() {
+    cfg.init()
+    println(cfg.name())
+}
+=== i10_once_in_module/cfg
+type C = record { n: str }
+fn (c: mut &C) drop() { println("drop") }
+var G: once C
+pub fn init() { G.set(C{n: "cfg"}) }
+pub fn name(): str { return G.get().n }
+=== i11_once_cross_module_drop_order/main
+// expect: ok
+// expect: drop b a
+import "./a"
+import "./b"
+fn main() {
+    a.init()
+    b.init()
+    println("ok")
+}
+=== i11_once_cross_module_drop_order/a
+pub type A = record { pub s: str }
+var GA: once A
+pub fn init() { GA.set(A{s: "a" + ""}) }
+pub fn get(): str { return GA.get().s }
+=== i11_once_cross_module_drop_order/b
+import "./a"
+type B = record { n: int }
+fn (x: mut &B) drop() { println("drop b " + a.get()) }
+var GB: once B
+pub fn init() { GB.set(B{n: 1}) }
+=== i12_const_table_other_module/main
+// expect: 6
+import "./t"
+fn main() {
+    var s = 0
+    for x in t.T { s += x }
+    println(s)
+}
+=== i12_const_table_other_module/t
+pub const T: []int = [1, 2, 3]
+=== i13_once_other_module_direct/main
+// error: public|private|not
+import "./t"
+fn main() { t.G.set(1) }
+=== i13_once_other_module_direct/t
+var G: once int
+pub fn f(): int { return 1 }
+=== i14_pub_once_other_module/main
+// expect: 4
+import "./t"
+fn main() {
+    t.G.set(4)
+    println(t.G.get())
+}
+=== i14_pub_once_other_module/t
+pub var G: once int
+=== e01_extern_same_c_two_modules/main
+// expect: 5 6
+import "./a"
+extern "c" fn abs(x: i32): i32
+fn main() { println(int(abs(i32(-5))).toStr() + " " + a.f().toStr()) }
+=== e01_extern_same_c_two_modules/a
+extern "c" fn myAbs(v: i32): i32 as "abs"
+pub fn f(): int { return int(myAbs(i32(-6))) }
+=== e02_extern_clash_two_modules/main
+// error: signature
+import "./a"
+extern "c" fn abs(x: i32): i32
+fn main() {}
+=== e02_extern_clash_two_modules/a
+extern "c" fn abs(x: int): int
+pub fn f(): int { return 1 }
+=== e03_extern_pub_other_module/main
+// error: pub
+import "./a"
+fn main() {}
+=== e03_extern_pub_other_module/a
+pub extern "c" fn abs(x: i32): i32
+=== e04_extern_private_called_other/main
+// error: public|private|not
+import "./a"
+fn main() { println(int(a.abs(i32(1)))) }
+=== e04_extern_private_called_other/a
+extern "c" fn abs(x: i32): i32
+pub fn f(): int { return 1 }

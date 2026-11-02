@@ -1,0 +1,3 @@
+// error:
+type P = record { a: int; b: int }
+fn main() { let P{a, b,} = P{a: 1, b: 2} }

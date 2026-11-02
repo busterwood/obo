@@ -1,0 +1,4 @@
+// error: table|constant
+const A: []int = [1]
+const T: []int = [A[0]]
+fn main() {}

@@ -1,0 +1,3 @@
+// expect: 0
+const T: []int = []
+fn main() { println(len(T)) }

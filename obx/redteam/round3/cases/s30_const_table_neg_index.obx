@@ -1,0 +1,6 @@
+// exit: 3
+const T: []int = [1, 2]
+fn main() {
+    let i = -1
+    println(T[i])
+}

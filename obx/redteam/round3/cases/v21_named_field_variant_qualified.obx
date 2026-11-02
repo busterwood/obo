@@ -1,0 +1,6 @@
+// expect: f 0
+type E = closed { Call { name: str; args: []int }; Num(int) }
+fn main() {
+    let e = E.Call{name: "f", args: []}
+    match e { E.Call(n, a) { println(n + " " + len(a).toStr()) } E.Num(x) {} }
+}

@@ -1,0 +1,10 @@
+// expect: x
+// exit: 3
+type D = record { id: int }
+fn (d: mut &D) drop() { println("drop") }
+var G: once D
+fn main() {
+    G.set(D{id: 1})
+    println("x")
+    exit(3)
+}

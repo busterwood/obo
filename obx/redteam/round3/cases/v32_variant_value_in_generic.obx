@@ -1,0 +1,8 @@
+// expect: 2
+type Box[T] = closed { Full(T); Empty }
+fn count[T](bs: &[]Box[T]): int {
+    var n = 0
+    for b in bs { match b { Box.Full(x) { n += 1 } Box.Empty {} } }
+    return n
+}
+fn main() { println(count(&[Box.Full(1), Box.Empty, Box.Full(3)])) }

@@ -1,0 +1,3 @@
+// error: public|private|not
+import "./a"
+fn main() { println(int(a.abs(i32(1)))) }
