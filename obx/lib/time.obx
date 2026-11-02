@@ -1,0 +1,156 @@
+// time: the wall clock, a monotonic clock, and UTC calendar dates.
+//
+// Wall-clock times are Unix times (seconds since 1970-01-01T00:00:00Z, plus
+// nanoseconds); dates are in the proleptic Gregorian calendar, UTC only.
+
+extern "c" fn obx_clock_ns(which: int): int
+extern "c" fn usleep(us: u32): i32
+
+pub type Time = value record {
+    pub sec: int    // seconds since the Unix epoch
+    pub nsec: int   // 0..999999999
+}
+
+pub type Date = value record {
+    pub year: int
+    pub month: int   // 1..12
+    pub day: int     // 1..31
+}
+
+// The current wall-clock time.
+pub fn now(): Time { return fromNanos(obx_clock_ns(0)) }
+
+// The time ns nanoseconds after the epoch.
+pub fn fromNanos(ns: int): Time {
+    return Time{sec: floorDiv(ns, 1000000000), nsec: floorMod(ns, 1000000000)}
+}
+
+pub fn unixSeconds(): int { return floorDiv(obx_clock_ns(0), 1000000000) }
+pub fn unixMillis(): int { return floorDiv(obx_clock_ns(0), 1000000) }
+
+// Nanoseconds of a clock that never goes back; only differences mean anything.
+pub fn monotonicNs(): int { return obx_clock_ns(1) }
+
+pub fn sleepMs(ms: int) {
+    var left = ms
+    while left > 0 {
+        let step = min(left, 1000)
+        usleep(u32(step * 1000))
+        left -= step
+    }
+}
+
+pub fn (t: Time) cmp(o: &Time): int {
+    if t.sec != o.sec { return t.sec.cmp(&o.sec) }
+    return t.nsec.cmp(&o.nsec)
+}
+
+pub fn (t: Time) eq(o: &Time): bool { return t.sec == o.sec && t.nsec == o.nsec }
+
+// "2026-11-02T10:20:30Z"
+pub fn (t: Time) toStr(): str { return isoDateTime(t.sec) }
+
+// The time ms milliseconds later (earlier when ms < 0).
+pub fn (t: Time) addMillis(ms: int): Time {
+    return fromNanos(t.sec * 1000000000 + t.nsec + ms * 1000000)
+}
+
+// Whole milliseconds from t to o, rounded down (negative when o is earlier).
+pub fn (t: Time) millisUntil(o: Time): int {
+    return floorDiv((o.sec - t.sec) * 1000000000 + o.nsec - t.nsec, 1000000)
+}
+
+fn floorDiv(a: int, b: int): int {
+    let q = a / b
+    if a % b != 0 && (a < 0) != (b < 0) { return q - 1 }
+    return q
+}
+
+fn floorMod(a: int, b: int): int { return a - floorDiv(a, b) * b }
+
+// The date of day number days (days since 1970-01-01), after Howard
+// Hinnant's civil_from_days.
+pub fn dateOfDays(days: int): Date {
+    let z = days + 719468
+    let era = floorDiv(z, 146097)
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    var m = mp + 3
+    if mp >= 10 { m = mp - 9 }
+    var y = yoe + era * 400
+    if m <= 2 { y += 1 }
+    return Date{year: y, month: m, day: d}
+}
+
+// The day number (days since 1970-01-01) of a date.
+pub fn daysOfDate(d: Date): int {
+    var y = d.year
+    if d.month <= 2 { y -= 1 }
+    let era = floorDiv(y, 400)
+    let yoe = y - era * 400
+    var mp = d.month - 3
+    if d.month <= 2 { mp = d.month + 9 }
+    let doy = (153 * mp + 2) / 5 + d.day - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+
+// The UTC date of a Unix time.
+pub fn dateOf(sec: int): Date { return dateOfDays(floorDiv(sec, 86400)) }
+
+// 0 = Sunday .. 6 = Saturday.
+pub fn weekday(d: Date): int { return floorMod(daysOfDate(d) + 4, 7) }
+
+pub fn isLeapYear(y: int): bool { return y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) }
+
+pub fn daysInMonth(y: int, m: int): int {
+    if m == 2 {
+        if isLeapYear(y) { return 29 }
+        return 28
+    }
+    if m == 4 || m == 6 || m == 9 || m == 11 { return 30 }
+    return 31
+}
+
+pub fn (d: Date) eq(o: &Date): bool { return d.year == o.year && d.month == o.month && d.day == o.day }
+
+pub fn (d: Date) cmp(o: &Date): int { return daysOfDate(d).cmp(&daysOfDate(o)) }
+
+// "2026-11-02"
+pub fn (d: Date) toStr(): str {
+    var y = pad(d.year, 4)
+    if d.year < 0 { y = "-" + pad(-d.year, 4) }
+    return y + "-" + pad(d.month, 2) + "-" + pad(d.day, 2)
+}
+
+// "2026-11-02" for a Unix time.
+pub fn isoDate(sec: int): str { return dateOf(sec).toStr() }
+
+// "2026-11-02T10:20:30Z" for a Unix time.
+pub fn isoDateTime(sec: int): str {
+    let s = floorMod(sec, 86400)
+    return isoDate(sec) + "T" + pad(s / 3600, 2) + ":" + pad(s / 60 % 60, 2) + ":" + pad(s % 60, 2) + "Z"
+}
+
+// Parses "YYYY-MM-DD" (a valid date).
+pub fn parseDate(s: str): Option[Date] {
+    if len(s) != 10 || strByte(s, 4) != '-' || strByte(s, 7) != '-' { return None }
+    let y = parseInt(strSlice(s, 0, 4))
+    let m = parseInt(strSlice(s, 5, 7))
+    let d = parseInt(strSlice(s, 8, 10))
+    if y.isNone() || m.isNone() || d.isNone() { return None }
+    let date = Date{year: y.unwrap(), month: m.unwrap(), day: d.unwrap()}
+    if date.month < 1 || date.month > 12 || date.day < 1 || date.day > daysInMonth(date.year, date.month) {
+        return None
+    }
+    return Some(date)
+}
+
+fn pad(n: int, width: int): str {
+    var s = intToStr(n)
+    while len(s) < width { s = "0" + s }
+    return s
+}
