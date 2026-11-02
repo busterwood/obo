@@ -1,0 +1,5 @@
+// An import path made of escapes that are not UTF-8 is an error (it was a traceback).
+// error: valid UTF-8
+// line: 4
+import "\xff"
+fn main() {}

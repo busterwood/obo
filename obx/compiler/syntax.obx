@@ -27,21 +27,19 @@ pub fn failText(text: str): never {
 }
 
 // Python's repr of a str (ASCII escapes; other bytes pass through as they are).
-pub fn pyRepr(s: str): str {
-    var b = newStrBuf()
-    reprInto(mut &b, s, false)
-    return b.toStr()
-}
+pub fn pyRepr(s: str): str { return reprOf(s, R_STR) }
 
 // Python's repr of a bytes value: b'...'.
-pub fn pyBytesRepr(s: str): str {
-    var b = newStrBuf()
-    b.addByte('b')
-    reprInto(mut &b, s, true)
-    return b.toStr()
-}
+pub fn pyBytesRepr(s: str): str { return reprOf(s, R_BYTES) }
 
-fn reprInto(b: mut &StrBuf, s: str, isBytes: bool) {
+// Python's ascii() of a str (valid UTF-8): repr with every non-ASCII code point escaped.
+pub fn pyAscii(s: str): str { return reprOf(s, R_ASCII) }
+
+const R_STR = 0
+const R_BYTES = 1
+const R_ASCII = 2
+
+fn reprOf(s: str, mode: int): str {
     var hasSingle = false
     var hasDouble = false
     for i in 0..len(s) {
@@ -51,8 +49,11 @@ fn reprInto(b: mut &StrBuf, s: str, isBytes: bool) {
     }
     var q: byte = '\''
     if hasSingle && !hasDouble { q = '"' }
+    var b = newStrBuf()
+    if mode == R_BYTES { b.addByte('b') }
     b.addByte(q)
-    for i in 0..len(s) {
+    var i = 0
+    while i < len(s) {
         let c = strByte(s, i)
         if c == q || c == '\\' {
             b.addByte('\\')
@@ -63,20 +64,45 @@ fn reprInto(b: mut &StrBuf, s: str, isBytes: bool) {
             b.add("\\n")
         } else if c == '\r' {
             b.add("\\r")
-        } else if c < ' ' || c == 127 || (isBytes && c > 127) {
+        } else if c < ' ' || c == 127 || (mode == R_BYTES && c > 127) {
             b.add("\\x")
-            addHex2(b, c)
+            addHex(mut &b, int(c), 2)
+        } else if mode == R_ASCII && c > 127 {
+            let cp = codePoint(s, i)
+            if cp < 256 {
+                b.add("\\x")
+                addHex(mut &b, cp, 2)
+            } else if cp < 65536 {
+                b.add("\\u")
+                addHex(mut &b, cp, 4)
+            } else {
+                b.add("\\U")
+                addHex(mut &b, cp, 8)
+            }
+            i += seqLen(c) - 1
         } else {
             b.addByte(c)
         }
+        i += 1
     }
     b.addByte(q)
+    return b.toStr()
 }
 
-pub fn addHex2(b: mut &StrBuf, c: byte) {
+// n in lowercase hex, at least width digits.
+fn addHex(b: mut &StrBuf, n: int, width: int) {
     let digits = "0123456789abcdef"
-    b.addByte(strByte(digits, int(c >> 4)))
-    b.addByte(strByte(digits, int(c & 15)))
+    var out: []byte = []
+    var v = n
+    while v > 0 || len(out) < width {
+        append(mut &out, strByte(digits, v % 16))
+        v = v / 16
+    }
+    var k = len(out) - 1
+    while k >= 0 {
+        b.addByte(out[k])
+        k -= 1
+    }
 }
 
 // ---------------------------------------------------------------- tokens
@@ -328,16 +354,22 @@ fn seqLen(c: byte): int {
     return 4
 }
 
-// "U+00E9" for the UTF-8 sequence at s[i].
-fn codePoint(s: str, i: int): str {
+// The code point of the UTF-8 sequence at s[i] (valid UTF-8).
+fn codePoint(s: str, i: int): int {
     let c = strByte(s, i)
     let n = seqLen(c)
-    var cp = 0
+    var cp = int(c)
     if n == 2 { cp = int(c & 31) }
     if n == 3 { cp = int(c & 15) }
     if n == 4 { cp = int(c & 7) }
     for k in 1..n { cp = cp * 64 + int(strByte(s, i + k) & 63) }
+    return cp
+}
+
+// "U+00E9": the code point at s[i], as ref's unexpected-character message names it.
+fn codePointName(s: str, i: int): str {
     let digits = "0123456789ABCDEF"
+    var cp = codePoint(s, i)
     var out = ""
     while cp > 0 || len(out) < 4 {
         out = digits[cp % 16..cp % 16 + 1] + out
@@ -543,7 +575,7 @@ fn (lx: mut &Lexer) run() {
             if i + 1 < n { op = sym2(c, strByte(src, i + 1)) }
             if op < 0 { op = sym1(c) }
             if op < 0 {
-                if c >= 128 { lx.fail(line, "unexpected character " + codePoint(src, i)) }
+                if c >= 128 { lx.fail(line, "unexpected character " + codePointName(src, i)) }
                 lx.fail(line, "unexpected character " + pyRepr(src[i..i + 1]))
             }
             if op == S_LPAREN || op == S_LBRACKET || op == S_LBRACE {
@@ -864,6 +896,13 @@ fn (p: mut &Parser) expectText(k: int, op: int): str {
     return p.toks[t].s
 }
 
+// A string literal that names a file or a C symbol: it must be UTF-8.
+fn (p: mut &Parser) text(): str {
+    let t = p.expect(T_STR, -1)
+    if utf8Error(p.toks[t].s) >= 0 { p.fail(p.toks[t].line, "this string must be valid UTF-8") }
+    return p.toks[t].s
+}
+
 fn (p: mut &Parser) nextLine(): int {
     let t = p.next()
     return p.toks[t].line
@@ -902,7 +941,7 @@ fn (p: mut &Parser) module() {
     p.skipsemi()
     while p.atKw(K_IMPORT) {
         let w = p.nextLine()
-        let path = p.expectText(T_STR, -1)
+        let path = p.text()
         var alias = ""
         if p.atKw(K_AS) {
             p.next()
@@ -964,7 +1003,7 @@ fn (p: mut &Parser) module() {
 
 fn (p: mut &Parser) externdecl(isPub: bool): int {
     let w = p.nextLine()
-    let lib = p.expectText(T_STR, -1)
+    let lib = p.text()
     p.expect(T_KW, K_FN)
     let name = p.ident()
     let ps = p.params()
@@ -972,8 +1011,8 @@ fn (p: mut &Parser) externdecl(isPub: bool): int {
     var cname = name
     if p.atKw(K_AS) {
         p.next()
-        cname = p.expectText(T_STR, -1)
-        if !isCName(cname) { p.err(pyRepr(cname) + " is not a C function name") }
+        cname = p.text()
+        if !isCName(cname) { p.err(pyAscii(cname) + " is not a C function name") }
     }
     if isPub {
         p.fail(w, "extern " + name + " cannot be pub: an extern is always private to its module " +

@@ -1,0 +1,5 @@
+// A C name that is not an ASCII identifier, shown with escapes.
+// error: '\xe9' is not a C function name
+// line: 4
+extern "c" fn f(): int as "\xc3\xa9"
+fn main() {}

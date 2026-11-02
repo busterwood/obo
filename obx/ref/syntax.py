@@ -230,6 +230,13 @@ class Parser:
             raise CompileError(f"expected {what}, found {found!r}", t.where)
         return t
 
+    def text(self, t):
+        """A string literal that names a file or a C symbol: it must be UTF-8."""
+        try:
+            return t.v.decode('utf-8')
+        except UnicodeDecodeError:
+            raise CompileError("this string must be valid UTF-8", t.where)
+
     def sym(self, v):
         return self.expect('sym', v)
 
@@ -253,7 +260,7 @@ class Parser:
         self.skipsemi()
         while self.atkw('import'):
             w = self.next().where
-            path = self.expect('str').v.decode('utf-8')
+            path = self.text(self.expect('str'))
             alias = None
             if self.atkw('as'):
                 self.next()
@@ -288,7 +295,7 @@ class Parser:
                 self.sep()
             elif t.k == 'kw' and t.v == 'extern':
                 w = self.next().where
-                lib = self.expect('str').v.decode('utf-8')
+                lib = self.text(self.expect('str'))
                 self.expect('kw', 'fn')
                 name = self.ident()
                 ps = self.params()
@@ -296,9 +303,9 @@ class Parser:
                 cname = name
                 if self.atkw('as'):
                     self.next()
-                    cname = self.expect('str').v.decode('utf-8')
+                    cname = self.text(self.expect('str'))
                     if not cname.isidentifier() or not cname.isascii():
-                        self.err(f"{cname!r} is not a C function name")
+                        self.err(f"{ascii(cname)} is not a C function name")
                 if pub:
                     raise CompileError(f"extern {name} cannot be pub: an extern is always private to its "
                                        "module (export a safe wrapper instead)", w)
