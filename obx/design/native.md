@@ -147,16 +147,22 @@ header, so blocks are 16-byte aligned as glibc's are.
 The runtime also provides the part of libc that `lib/` and the tests declare
 as externs: `close opendir readdir closedir mkdir rmdir unlink rename symlink
 chmod chdir getpid getenv setenv unsetenv usleep time strerror system mkdtemp
-malloc free strdup strlen abs labs atoi toupper exit` and the `obx_*` helpers
-of rt.h (`obx_errno`, `obx_stat`, `obx_open`, ...). `strerror` has glibc's
-texts. A program that calls any other extern (libm's `round`, `fmod`,
-`hypot`, ..., or any library but `"c"`) is refused in static mode:
-`native: unsupported: extern C function 'round' needs dynamic linking`.
-Phase 5 adds dynamic linking for those.
+malloc free strdup strlen strcmp strncmp strchr strrchr strstr abs labs atoi
+toupper exit abort` and the `obx_*` helpers of rt.h (`obx_errno`, `obx_stat`,
+`obx_open`, ...). `strerror` has glibc's texts. Of libm it has the functions
+whose result is exact, so they match glibc bit for bit: `fabs copysign sqrt
+trunc floor ceil round rint fmod`. A program that calls any other extern
+(libm's `pow`, `exp`, `sin`, `hypot`, ..., or any library but `"c"`) is
+refused in static mode: `native: unsupported: extern C function 'hypot'
+needs dynamic linking`. Phase 5 adds dynamic linking for those.
 
-Not yet in the runtime (a program that uses them is refused):
-`rt_float_to_str` and `rt_parse_float` (exact `%.17g` and `strtod`; obo's
-runtime has an exact big-integer converter to borrow).
+Floats: `rt_float_to_str` (`%.15g`, `%.16g` or `%.17g`, the first that reads
+back, as rt.h) and `rt_parse_float` (`strtod` over the whole string) are exact
+conversions with big integers of 32-bit words (round half to even, subnormals,
+overflow to inf, hex floats, inf/nan words), our own code in rt.c. They were
+checked against glibc's `printf`/`strtod` on 300,000 random doubles (all
+bit patterns, near-1 exponents, subnormals) and decimal strings, and the libm
+subset on 2,000,000 random inputs each, with a throwaway harness.
 
 ## 3. ABI
 
@@ -194,6 +200,11 @@ Phase 1 is simple and correct first (`x64gen.obx`):
   prologue);
 - only caller-saved registers are used (`rax rcx rdx rsi rdi r8-r11`,
   `xmm0-xmm7`), so no register is saved but `rbp`;
+- the prologue touches the frame a page at a time from the top (a probe
+  loop on `r11`), so that a frame larger than the guard gap faults at the
+  guard page, which the runtime reports as `obx: stack overflow`, instead of
+  jumping past it into other memory (the C build compiled by gcc without
+  `-fstack-clash-protection` can do the latter: red-team `so_big_frames`);
 - conditions compile to jumps (`&&`, `||`, `!` and comparisons as branches);
   128-bit add, sub, mul, shifts and compares are inline, 128-bit division and
   the conversions between doubles and 64/128-bit unsigned or 128-bit integers
@@ -240,46 +251,46 @@ global drops and `rt_finish`) and exits with its result.
 
 - `tools/x64_encode_test.py`: random instructions through the encoder
   (`obxc --encode-test`) and through `as`; the bytes must be equal.
-- `tests/run_native.py [--lib]`: the differential runner. For every run test
-  (with `--lib` the library tests too; later the red-team corpora) it builds the program
+- `tests/run_native.py [--lib] [--redteam]`: the differential runner. For every run test
+  (with `--lib` the library tests too, with `--redteam` the programs of
+  redteam/, rounds 1-4, that the compiler accepts) it builds the program
   with the C backend (cached by `tools/cbuild.py`) and natively, runs both
   with the same stdin and arguments, with and without `OBX_CHECK=1`, and
   compares stdout, stderr and the exit code. It reports pass, differ and
   unsupported (a clean refusal by the native backend); in the early phases
-  unsupported is not a failure, a difference or a crash is.
+  unsupported is not a failure, a difference or a crash is. When the two
+  differ but only the native run matches the test's directives, the test
+  passes with a note (the C build is the one that is wrong).
 
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
 
-2026-11-02, end of phase 1 (and most of phases 2 and 3):
+2026-11-02, end of phase 1 and of phase 2 (and most of phase 3):
 
 - `tools/x64_encode_test.py`: every encoder form identical to `as` (4 seeds
   of 10,000 random instructions).
-- `tests/run_native.py --lib`: 343 pass, 0 differ, 3 unsupported of 346
-  (all run tests and library tests). The 3 unsupported print floats
-  (`rt_float_to_str`); `rt_parse_float` is missing as well.
-- Not done: `--emit-asm`; the red-team corpora in the runner; no optimization
-  at all (code is about what `gcc -O0` makes).
+- `tests/run_native.py --lib --redteam`: 1320 pass, 0 differ, 1 unsupported
+  of 1321 (all run tests, library tests and accepted red-team programs; 516
+  red-team programs are rejected by the compiler and skipped). The one
+  unsupported calls libm's `hypot` (phase 5). Without `--redteam`: 346 of 346.
+  The whole run takes about 25 s on 16 cores; `--lib` alone about 3 s.
+- Not done: `--emit-asm`; no optimization at all (code is about what
+  `gcc -O0` makes).
 
 Next, in order:
 
-1. Phase 2/3 remainder: `rt_float_to_str` (`%.17g`, shortest round trip as
-   rt.h prints it) and `rt_parse_float` (exact `strtod`; obo's runtime has a
-   big-integer converter, `obo/runtime/runtime.c` `rt_f_parse`) in
-   `native/rt.c`; then `gen_rtx.py`.
-2. The red-team corpora (redteam/round1-4 programs) through the runner, for
-   more coverage of traps and drops.
-3. Phase 4: the native self-build. The compiler needs `parseFloat` (item 1),
-   `system` and `mkdtemp` (in the runtime); then
-   `obxc main.obx --native` builds stage 2, stage 2 builds stage 3, compare.
-4. Then performance: a peephole pass and register allocation for locals.
+1. Phase 4: the native self-build. The compiler needs `system` and `mkdtemp`
+   (in the runtime already) and `parseFloat` (done); try
+   `obxc main.obx --native` and fix what it refuses or gets wrong; then stage
+   2 builds stage 3, compare.
+2. Then performance: a peephole pass and register allocation for locals.
+3. Phase 5: dynamic linking for the rest of libm and other C libraries.
 
 Phases:
 
 - Phase 1: foundation and first programs. Done.
-- Phase 2: integers, control flow, calls: all scalar tests. Done but floats
-  printing/parsing.
+- Phase 2: integers, control flow, calls: all scalar tests. Done.
 - Phase 3: records, arrays, str, drop glue, closures, generic instances,
   interfaces. Passing in the run and library tests.
 - Phase 4: the whole suite; native self-build (the natively built compiler

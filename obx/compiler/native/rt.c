@@ -29,7 +29,7 @@ static i64 sys6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) {
 #define SYS4(n, a, b, c, d) sys6(n, (i64)(a), (i64)(b), (i64)(c), (i64)(d), 0, 0)
 
 enum { S_READ = 0, S_WRITE = 1, S_OPEN = 2, S_CLOSE = 3, S_MMAP = 9, S_MUNMAP = 11, S_RT_SIGACTION = 13,
-       S_NANOSLEEP = 35, S_GETPID = 39, S_FORK = 57, S_EXECVE = 59, S_WAIT4 = 61, S_GETCWD = 79,
+       S_NANOSLEEP = 35, S_GETPID = 39, S_FORK = 57, S_EXECVE = 59, S_WAIT4 = 61, S_KILL = 62, S_GETCWD = 79,
        S_CHDIR = 80, S_RENAME = 82, S_MKDIR = 83, S_RMDIR = 84, S_UNLINK = 87, S_SYMLINK = 88,
        S_CHMOD = 90, S_GETRLIMIT = 97, S_SIGALTSTACK = 131, S_GETDENTS64 = 217,
        S_CLOCK_GETTIME = 228, S_EXIT_GROUP = 231, S_NEWFSTATAT = 262, S_GETRANDOM = 318 };
@@ -460,6 +460,293 @@ obx_str rt_i128_to_str(i128 v) {
 }
 obx_str rt_int_to_str(int64_t v) { return rt_i128_to_str(v); }
 obx_str rt_u64_to_str(uint64_t v) { return rt_u128_to_str(v); }
+
+/* ------------------------------------------------------------ floats
+   Exact conversions between doubles and decimal text, as glibc's printf("%.*g") and
+   strtod (round half to even), with big integers of 32-bit words. */
+typedef struct { int n; uint32_t w[240]; } rt_big;
+static void big_set(rt_big* a, uint64_t v) { a->n = 0; while (v) { a->w[a->n++] = (uint32_t)v; v >>= 32; } }
+static void big_trim(rt_big* a) { while (a->n > 0 && a->w[a->n - 1] == 0) a->n--; }
+static void big_mul_small(rt_big* a, uint32_t m) {
+    uint64_t c = 0;
+    for (int i = 0; i < a->n; i++) { uint64_t t = (uint64_t)a->w[i] * m + c; a->w[i] = (uint32_t)t; c = t >> 32; }
+    if (c) a->w[a->n++] = (uint32_t)c;
+}
+static void big_add_small(rt_big* a, uint32_t d) {
+    uint64_t c = d;
+    for (int i = 0; i < a->n && c; i++) { uint64_t t = (uint64_t)a->w[i] + c; a->w[i] = (uint32_t)t; c = t >> 32; }
+    if (c) a->w[a->n++] = (uint32_t)c;
+}
+static void big_pow5(rt_big* a, int k) {
+    for (; k >= 13; k -= 13) big_mul_small(a, 1220703125u);
+    uint32_t m = 1;
+    while (k-- > 0) m *= 5;
+    big_mul_small(a, m);
+}
+static int big_bits(const rt_big* a) { return a->n ? 32 * (a->n - 1) + 32 - __builtin_clz(a->w[a->n - 1]) : 0; }
+static int big_bit(const rt_big* a, int i) { return i / 32 < a->n ? (a->w[i / 32] >> (i % 32)) & 1 : 0; }
+static void big_shl(rt_big* out, const rt_big* a, int s) {
+    int ws = s / 32, bs = s % 32;
+    if (!a->n) { out->n = 0; return; }
+    out->n = a->n + ws + 1;
+    for (int i = 0; i < out->n; i++) out->w[i] = 0;
+    for (int i = 0; i < a->n; i++) {
+        uint64_t v = (uint64_t)a->w[i] << bs;
+        out->w[i + ws] |= (uint32_t)v;
+        out->w[i + ws + 1] |= (uint32_t)(v >> 32);
+    }
+    big_trim(out);
+}
+static int big_cmp(const rt_big* a, const rt_big* b) {
+    if (a->n != b->n) return a->n < b->n ? -1 : 1;
+    for (int i = a->n - 1; i >= 0; i--) if (a->w[i] != b->w[i]) return a->w[i] < b->w[i] ? -1 : 1;
+    return 0;
+}
+static void big_sub(rt_big* a, const rt_big* b) {     /* a -= b, a >= b */
+    int64_t br = 0;
+    for (int i = 0; i < a->n; i++) {
+        int64_t t = (int64_t)a->w[i] - (i < b->n ? b->w[i] : 0) - br;
+        br = t < 0;
+        a->w[i] = (uint32_t)(t + (br ? ((int64_t)1 << 32) : 0));
+    }
+    big_trim(a);
+}
+static uint32_t big_div_small(rt_big* a, uint32_t d) {
+    uint64_t r = 0;
+    for (int i = a->n - 1; i >= 0; i--) { uint64_t t = (r << 32) | a->w[i]; a->w[i] = (uint32_t)(t / d); r = t % d; }
+    big_trim(a);
+    return (uint32_t)r;
+}
+/* The top 64 bits of a as q, with *drop the bits below them and *sticky whether any is set. */
+static uint64_t big_top(const rt_big* a, int* drop, int* sticky) {
+    int L = big_bits(a), lo = L > 64 ? L - 64 : 0;
+    uint64_t q = 0;
+    for (int i = L - 1; i >= lo; i--) q = q << 1 | (uint64_t)big_bit(a, i);
+    *sticky = 0;
+    for (int i = 0; i < lo / 32 && i < a->n; i++) if (a->w[i]) *sticky = 1;
+    for (int i = lo / 32 * 32; i < lo; i++) if (big_bit(a, i)) *sticky = 1;
+    *drop = lo;
+    return q;
+}
+/* The double nearest (q + a fraction, nonzero when sticky) * 2^e2. */
+static uint64_t flt_round(uint64_t q, int sticky, int e2, int neg) {
+    uint64_t sign = (uint64_t)neg << 63;
+    if (q == 0) return sign;
+    int L = 64 - __builtin_clzll(q);
+    int exp = L - 1 + e2;
+    int drop = exp >= -1022 ? L - 53 : -1074 - e2;
+    uint64_t m;
+    if (drop <= 0) {
+        m = q << -drop;
+    } else if (drop > 64) {
+        m = 0;
+    } else {
+        uint64_t rest = drop == 64 ? q : q & (((uint64_t)1 << drop) - 1);
+        uint64_t half = (uint64_t)1 << (drop - 1);
+        m = drop == 64 ? 0 : q >> drop;
+        if (rest > half || (rest == half && (sticky || (m & 1)))) m++;
+    }
+    int lsb = e2 + drop;
+    if (m >= ((uint64_t)1 << 53)) { m >>= 1; lsb++; }
+    if (m >= ((uint64_t)1 << 52)) {
+        int biased = lsb + 52 + 1023;
+        if (biased >= 2047) return sign | 0x7ff0000000000000ULL;
+        return sign | (uint64_t)biased << 52 | (m & 0xfffffffffffffULL);
+    }
+    return sign | m;
+}
+static double flt_of_bits(uint64_t b) { union { uint64_t b; double d; } u; u.b = b; return u.d; }
+static uint64_t flt_bits(double d) { union { uint64_t b; double d; } u; u.d = d; return u.b; }
+static int flt_lower(char c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+static int flt_word(const char* p, const char* e, const char* w) {
+    int n = 0;
+    for (; w[n]; n++) if (p + n >= e || flt_lower(p[n]) != w[n]) return 0;
+    return n;
+}
+static int flt_hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    c = (char)flt_lower(c);
+    return c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+}
+/* strtod over [p, e): the end of the longest prefix that is a number (p when none). */
+static const char* flt_parse(const char* p, const char* e, double* out) {
+    const char* s = p;
+    while (s < e && (*s == ' ' || (*s >= '\t' && *s <= '\r'))) s++;
+    int neg = 0;
+    if (s < e && (*s == '+' || *s == '-')) neg = *s++ == '-';
+    int n;
+    if ((n = flt_word(s, e, "infinity")) || (n = flt_word(s, e, "inf"))) {
+        *out = flt_of_bits((uint64_t)neg << 63 | 0x7ff0000000000000ULL);
+        return s + n;
+    }
+    if ((n = flt_word(s, e, "nan"))) {
+        s += n;
+        const char* t = s;
+        if (t < e && *t == '(') {
+            t++;
+            while (t < e && (flt_hex(*t) >= 0 || (*t >= 'g' && *t <= 'z') || (*t >= 'G' && *t <= 'Z') || *t == '_' ||
+                             (*t >= '0' && *t <= '9'))) t++;
+            if (t < e && *t == ')') s = t + 1;
+        }
+        *out = flt_of_bits((uint64_t)neg << 63 | 0x7ff8000000000000ULL);
+        return s;
+    }
+    static rt_big m, d, r, t;
+    big_set(&m, 0);
+    int digits = 0, k = 0, any = 0;
+    if (e - s >= 3 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') &&
+        (flt_hex(s[2]) >= 0 || (s[2] == '.' && e - s >= 4 && flt_hex(s[3]) >= 0))) {
+        s += 2;
+        int frac = 0;
+        for (; s < e; s++) {
+            if (*s == '.' && !frac) { frac = 1; continue; }
+            int h = flt_hex(*s);
+            if (h < 0) break;
+            if (m.n || h) { big_mul_small(&m, 16); big_add_small(&m, (uint32_t)h); }
+            if (frac) k -= 4;
+        }
+        if (s < e && (*s == 'p' || *s == 'P')) {
+            const char* q = s + 1;
+            int en = 0;
+            if (q < e && (*q == '+' || *q == '-')) en = *q++ == '-';
+            if (q < e && *q >= '0' && *q <= '9') {
+                int x = 0;
+                for (; q < e && *q >= '0' && *q <= '9'; q++) if (x < 100000) x = x * 10 + (*q - '0');
+                k += en ? -x : x;
+                s = q;
+            }
+        }
+        int drop, sticky;
+        uint64_t q = big_top(&m, &drop, &sticky);
+        if (q && drop + k + big_bits(&m) - drop > 1100) { *out = flt_of_bits((uint64_t)neg << 63 | 0x7ff0000000000000ULL); return s; }
+        if (q && drop + k + 64 < -1200) { *out = flt_of_bits((uint64_t)neg << 63); return s; }
+        *out = flt_of_bits(flt_round(q, sticky, drop + k, neg));
+        return s;
+    }
+    int frac = 0;
+    for (; s < e; s++) {
+        if (*s == '.' && !frac) { frac = 1; continue; }
+        if (*s < '0' || *s > '9') break;
+        any = 1;
+        if (m.n || *s != '0') { big_mul_small(&m, 10); big_add_small(&m, (uint32_t)(*s - '0')); digits++; }
+        if (frac) k--;
+    }
+    if (!any) return p;
+    if (s < e && (*s == 'e' || *s == 'E')) {
+        const char* q = s + 1;
+        int en = 0;
+        if (q < e && (*q == '+' || *q == '-')) en = *q++ == '-';
+        if (q < e && *q >= '0' && *q <= '9') {
+            int x = 0;
+            for (; q < e && *q >= '0' && *q <= '9'; q++) if (x < 100000) x = x * 10 + (*q - '0');
+            k += en ? -x : x;
+            s = q;
+        }
+    }
+    if (!m.n) { *out = flt_of_bits((uint64_t)neg << 63); return s; }
+    if (digits + k > 310) { *out = flt_of_bits((uint64_t)neg << 63 | 0x7ff0000000000000ULL); return s; }
+    if (digits + k < -330) { *out = flt_of_bits((uint64_t)neg << 63); return s; }
+    int drop, sticky;
+    uint64_t q;
+    if (k >= 0) {
+        big_pow5(&m, k);
+        q = big_top(&m, &drop, &sticky);
+        *out = flt_of_bits(flt_round(q, sticky, drop + k, neg));
+        return s;
+    }
+    big_set(&d, 1);
+    big_pow5(&d, -k);
+    int sh = big_bits(&d) - big_bits(&m) + 63;
+    if (sh >= 0) { big_shl(&r, &m, sh); } else { r = m; t = d; big_shl(&d, &t, -sh); }
+    q = 0;
+    for (int i = 63; i >= 0; i--) {
+        big_shl(&t, &d, i);
+        if (big_cmp(&r, &t) >= 0) { big_sub(&r, &t); q |= (uint64_t)1 << i; }
+    }
+    *out = flt_of_bits(flt_round(q, r.n != 0, k - sh, neg));
+    return s;
+}
+bool rt_parse_float(obx_str s, double* out) {
+    if (s.len == 0 || s.len > 400 || memchr(RT_SP(s), 0, (size_t)s.len)) return false;
+    double d;
+    if (flt_parse(RT_SP(s), RT_SP(s) + s.len, &d) != RT_SP(s) + s.len) return false;
+    *out = d;
+    return true;
+}
+/* printf("%.*g", p, d) into b. */
+static int flt_fmt(double d, int p, char* b) {
+    uint64_t bits = flt_bits(d);
+    int neg = (int)(bits >> 63), n = 0;
+    int ex = (int)(bits >> 52 & 0x7ff);
+    uint64_t mant = bits & 0xfffffffffffffULL;
+    if (neg) b[n++] = '-';
+    if (ex == 0x7ff) { const char* w = mant ? "nan" : "inf"; for (int i = 0; i < 3; i++) b[n++] = w[i]; return n; }
+    if (ex == 0 && mant == 0) { b[n++] = '0'; return n; }
+    uint64_t m = ex ? mant | (uint64_t)1 << 52 : mant;
+    int e2 = ex ? ex - 1075 : -1074;
+    static rt_big a, t;
+    static char dg[800];
+    big_set(&a, m);
+    int dexp = 0;
+    if (e2 >= 0) { t = a; big_shl(&a, &t, e2); } else { big_pow5(&a, -e2); dexp = e2; }
+    /* the decimal digits of a, most significant first */
+    int nd = 0;
+    char rev[800];
+    while (a.n) {
+        uint32_t c = big_div_small(&a, 1000000000u);
+        for (int i = 0; i < 9; i++) { rev[nd++] = (char)('0' + c % 10); c /= 10; }
+    }
+    while (nd > 1 && rev[nd - 1] == '0') nd--;
+    for (int i = 0; i < nd; i++) dg[i] = rev[nd - 1 - i];
+    int X = nd - 1 + dexp;
+    if (nd > p) {
+        int up = 0;
+        if (dg[p] > '5') up = 1;
+        else if (dg[p] == '5') {
+            int rest = 0;
+            for (int i = p + 1; i < nd; i++) if (dg[i] != '0') rest = 1;
+            up = rest || ((dg[p - 1] - '0') & 1);
+        }
+        nd = p;
+        if (up) {
+            int i = p - 1;
+            while (i >= 0 && dg[i] == '9') dg[i--] = '0';
+            if (i >= 0) dg[i]++;
+            else { dg[0] = '1'; for (int j = 1; j < p; j++) dg[j] = '0'; X++; }
+        }
+    }
+    while (nd > 1 && dg[nd - 1] == '0') nd--;
+    if (X < -4 || X >= p) {
+        b[n++] = dg[0];
+        if (nd > 1) { b[n++] = '.'; for (int i = 1; i < nd; i++) b[n++] = dg[i]; }
+        b[n++] = 'e';
+        b[n++] = X < 0 ? '-' : '+';
+        int x = X < 0 ? -X : X;
+        if (x >= 100) b[n++] = (char)('0' + x / 100);
+        b[n++] = (char)('0' + x / 10 % 10);
+        b[n++] = (char)('0' + x % 10);
+    } else if (X >= 0) {
+        for (int i = 0; i <= X; i++) b[n++] = i < nd ? dg[i] : '0';
+        if (nd > X + 1) { b[n++] = '.'; for (int i = X + 1; i < nd; i++) b[n++] = dg[i]; }
+    } else {
+        b[n++] = '0';
+        b[n++] = '.';
+        for (int i = 0; i < -X - 1; i++) b[n++] = '0';
+        for (int i = 0; i < nd; i++) b[n++] = dg[i];
+    }
+    return n;
+}
+obx_str rt_float_to_str(double d) {
+    char buf[64];
+    int n = 0;
+    for (int p = 15; p <= 17; p++) {
+        n = flt_fmt(d, p, buf);
+        double back = 0;
+        flt_parse(buf, buf + n, &back);
+        if (back == d || d != d) break;
+    }
+    return rt_str_of(buf, n);
+}
 int64_t rt_write_fd(int64_t fd, obx_str s) {
     if (fd == 1) {
         if (rt_olen + (size_t)s.len > sizeof rt_obuf) rt_flush();
@@ -793,4 +1080,119 @@ int64_t obx_clock_ns(int64_t which) {
 void* obx_getcwd(void) {
     static char buf[4096];
     return sysret(SYS(S_GETCWD, buf, sizeof buf, 0)) < 0 ? 0 : buf;
+}
+
+/* ------------------------------------------------------------ the exact part of libm
+   The functions of std's libm externs whose result is exact (correctly rounded), so that
+   they match glibc bit for bit. The others (pow, exp, log, sin, ...) need the real libm
+   (dynamic linking, a later phase). */
+static double m_of(uint64_t b) { union { uint64_t b; double d; } u; u.b = b; return u.d; }
+static uint64_t m_bits(double d) { union { uint64_t b; double d; } u; u.d = d; return u.b; }
+double fabs(double x) { return m_of(m_bits(x) & ~((uint64_t)1 << 63)); }
+double copysign(double x, double y) {
+    return m_of((m_bits(x) & ~((uint64_t)1 << 63)) | (m_bits(y) & ((uint64_t)1 << 63)));
+}
+double sqrt(double x) {
+    double r;
+    __asm__("sqrtsd %1, %0" : "=x"(r) : "x"(x));
+    return r;
+}
+double trunc(double x) {
+    uint64_t b = m_bits(x);
+    int e = (int)(b >> 52 & 0x7ff) - 1023;
+    if (e >= 52) return x + 0.0 == x ? x : x + x;     /* integral, inf, or nan (quieted) */
+    if (e < 0) return m_of(b & ((uint64_t)1 << 63));
+    return m_of(b & ~(((uint64_t)1 << (52 - e)) - 1));
+}
+double floor(double x) {
+    double t = trunc(x);
+    return t > x ? t - 1.0 : t;
+}
+double ceil(double x) {
+    double t = trunc(x);
+    if (t < x) t += 1.0;
+    return t == 0 ? copysign(0.0, x) : t;
+}
+double round(double x) {
+    double t = trunc(x);
+    if (fabs(x - t) >= 0.5) t += copysign(1.0, x);
+    return t;
+}
+double rint(double x) {
+    if (!(fabs(x) < 4503599627370496.0)) return x + 0.0 == x ? x : x + x;
+    volatile double big = x < 0 ? -4503599627370496.0 : 4503599627370496.0;
+    double r = (x + big) - big;
+    return r == 0 ? copysign(0.0, x) : r;
+}
+double fmod(double x, double y) {
+    uint64_t ux = m_bits(x), uy = m_bits(y), i;
+    int ex = (int)(ux >> 52 & 0x7ff), ey = (int)(uy >> 52 & 0x7ff), sx = (int)(ux >> 63);
+    if (uy << 1 == 0 || y != y || ex == 0x7ff) return (x * y) / (x * y);
+    if (ux << 1 <= uy << 1) return ux << 1 == uy << 1 ? 0 * x : x;
+    if (!ex) {
+        for (i = ux << 12; i >> 63 == 0; ex--, i <<= 1) {}
+        ux <<= -ex + 1;
+    } else {
+        ux &= (uint64_t)-1 >> 12;
+        ux |= (uint64_t)1 << 52;
+    }
+    if (!ey) {
+        for (i = uy << 12; i >> 63 == 0; ey--, i <<= 1) {}
+        uy <<= -ey + 1;
+    } else {
+        uy &= (uint64_t)-1 >> 12;
+        uy |= (uint64_t)1 << 52;
+    }
+    for (; ex > ey; ex--) {
+        i = ux - uy;
+        if (i >> 63 == 0) {
+            if (i == 0) return 0 * x;
+            ux = i;
+        }
+        ux <<= 1;
+    }
+    i = ux - uy;
+    if (i >> 63 == 0) {
+        if (i == 0) return 0 * x;
+        ux = i;
+    }
+    for (; ux >> 52 == 0; ux <<= 1, ex--) {}
+    if (ex > 0) {
+        ux -= (uint64_t)1 << 52;
+        ux |= (uint64_t)ex << 52;
+    } else {
+        ux >>= -ex + 1;
+    }
+    return m_of(ux | (uint64_t)sx << 63);
+}
+
+/* ------------------------------------------------------------ more of libc
+   C functions that programs declare with `extern "c"` and that need no dynamic linking. */
+int strcmp(const char* a, const char* b) {
+    while (*a && *a == *b) { a++; b++; }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+int strncmp(const char* a, const char* b, size_t n) {
+    for (; n; n--, a++, b++) if (*a != *b || !*a) return (unsigned char)*a - (unsigned char)*b;
+    return 0;
+}
+char* strchr(const char* s, int c) {
+    for (;; s++) { if (*s == (char)c) return (char*)s; if (!*s) return 0; }
+}
+char* strrchr(const char* s, int c) {
+    const char* r = 0;
+    for (;; s++) { if (*s == (char)c) r = s; if (!*s) return (char*)r; }
+}
+char* strstr(const char* h, const char* n) {
+    size_t k = strlen(n);
+    for (; *h; h++) if (!strncmp(h, n, k)) return (char*)h;
+    return k ? 0 : (char*)h;
+}
+__attribute__((noreturn)) void abort(void) {
+    struct { void* h; unsigned long flags; void* restorer; unsigned long mask; } sa = {0, 0, 0, 0};
+    SYS4(S_RT_SIGACTION, 6, &sa, 0, 8);            /* SIGABRT back to the default: terminate */
+    unsigned long set = 1ul << 5;
+    SYS4(14, 1, &set, 0, 8);                        /* rt_sigprocmask: unblock it */
+    SYS(S_KILL, SYS(S_GETPID, 0, 0, 0), 6, 0);
+    sys_exit(127);
 }

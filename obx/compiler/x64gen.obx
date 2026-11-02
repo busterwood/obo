@@ -254,6 +254,18 @@ fn (g: mut &Gen) genFunc(f: int) {
     g.a.b(0xEC)
     let patch = g.a.pos()
     g.a.d32(0)
+    // touch the frame a page at a time from the top, so that a stack overflow faults at
+    // the guard page (rt_segv reports it) and never skips past it
+    let probe = g.a.newLabel()
+    let probed = g.a.newLabel()
+    g.a.movRR(8, R11, RBP)
+    g.a.bind(probe)
+    g.a.aluI(x64.SUB, 8, R11, 4096)
+    g.a.alu(x64.CMP, 8, R11, RSP)
+    g.a.jcc(x64.CC_B, probed)
+    g.a.storeI(1, x64.mem(R11, 0), 0)
+    g.a.jmp(probe)
+    g.a.bind(probed)
     var ni = 0
     var nx = 0
     g.retPtr = 0

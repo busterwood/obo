@@ -48,6 +48,8 @@ obx_str rt_u128_to_str(u128 v);
 obx_str rt_i128_to_str(i128 v);
 obx_str rt_int_to_str(int64_t v);
 obx_str rt_u64_to_str(uint64_t v);
+obx_str rt_float_to_str(double d);
+bool rt_parse_float(obx_str s, double* out);
 int64_t rt_write_fd(int64_t fd, obx_str s);
 int64_t rt_read_file(obx_str path, obx_str* out);
 bool rt_getenv(obx_str name, obx_str* out);

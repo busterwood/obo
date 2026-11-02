@@ -835,7 +835,9 @@ fn (u: mut &Unit) initializer(ty: mut &int, off: int, out: mut &[]int, top: bool
     let e = u.assignExpr()
     if k == ir.TY_STRUCT {
         if u.ir.nty(e) != t {
-            // the first field of the struct, from the expression (brace elision)
+            // the first field of the struct, from the expression (brace elision); {0}
+            // zeroes the whole struct, which the object already is
+            if u.ir.nk(e) == ir.E_INT && u.ir.nodes[e].v == 0 { return }
             let sid = u.ir.tys[t].sid
             if len(u.ir.structs[sid].fields) == 0 { u.fail("initializing an empty struct") }
             let f = u.ir.structs[sid].fields[0]
@@ -980,10 +982,8 @@ fn (u: mut &Unit) intLit(t: Tok): int {
         ty = ir.TY_U32
     } else if v <= 0x7FFFFFFFFFFFFFFF {
         ty = ir.TY_I64
-    } else if hex || uns {
-        ty = ir.TY_U64
     } else {
-        u.fail("a decimal literal over the range of long")
+        ty = ir.TY_U64        // a decimal too large for long: unsigned, as gcc makes it (with a warning)
     }
     if longs > 0 && ty == ir.TY_I32 { ty = ir.TY_I64 }
     let iv = if v > 0x7FFFFFFFFFFFFFFF { int(i128(v) - 18446744073709551616) } else { int(v) }

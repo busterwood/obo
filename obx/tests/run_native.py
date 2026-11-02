@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Differential test of the native backend (design/native.md, section 7).
 
-usage: run_native.py [--compiler PATH] [--lib] [-j N] [-v] [filters...]
+usage: run_native.py [--compiler PATH] [--lib] [--redteam] [-j N] [-v] [filters...]
 
-For every run test (with --lib also lib/tests/run), builds the program with the C backend
+For every run test (with --lib also lib/tests/run, with --redteam the red-team programs
+that are meant to compile), builds the program with the C backend
 (cached by tools/cbuild.py) and with `obxc --native`, runs both with the test's stdin, with
 and without OBX_CHECK=1, and compares stdout, stderr and the exit code. Each test is
   pass         identical in both runs
   unsupported  the native backend refused it cleanly (`native: unsupported: ...`)
   differ       anything else: a different result, a crash, a failed native build
+  skip         (red team) the C build fails too: a program meant to be rejected
 Only differ fails (exit 1). -v lists the unsupported tests with their reasons.
 """
 import argparse, collections, os, subprocess, sys, tempfile
@@ -21,11 +23,31 @@ import run as runpy  # noqa: E402  (tests/run.py: test discovery and directives)
 
 OBXC = os.path.normpath(os.path.join(HERE, '..', 'compiler', 'out', 'obxc'))
 LIB_TESTS = os.path.normpath(os.path.join(HERE, '..', 'lib', 'tests', 'run'))
+REDTEAM = os.path.normpath(os.path.join(HERE, '..', 'redteam'))
 TIMEOUT = 10
+os.environ.setdefault('OBX_LIB', os.path.normpath(os.path.join(HERE, '..', 'lib')))   # for compilers outside out/
 
 
-def find(lib):
+def redteam():
+    out = []
+    for d in ('', 'round2', 'round3', 'round4'):
+        root = os.path.join(REDTEAM, d)
+        for sub in ('cases', ''):
+            p = os.path.join(root, sub)
+            if os.path.isdir(p):
+                out += [os.path.join(p, f) for f in sorted(os.listdir(p)) if f.endswith('.obx')]
+        for dirpath, dirnames, filenames in sorted(os.walk(root)):
+            dirnames[:] = sorted(x for x in dirnames if x != 'build')
+            if 'main.obx' in filenames:
+                out.append(os.path.join(dirpath, 'main.obx'))
+                dirnames[:] = []
+    return sorted(set(out))
+
+
+def find(lib, red):
     tests = [p for k, p in runpy.find_tests() if k == 'run']
+    if red:
+        tests += redteam()
     if lib:
         for dirpath, dirnames, filenames in sorted(os.walk(LIB_TESTS)):
             dirnames.sort()
@@ -49,6 +71,11 @@ def execute(exe, stdin, check, cwd):
         return 'timeout', b'', b''
 
 
+def want(d, r):
+    """Whether a run's (exit, stdout, stderr) matches the test's directives."""
+    return r[0] == d['exit'] and r[1] == ''.join(l + '\n' for l in d['expect']).encode()
+
+
 def short(b):
     s = b.decode('utf-8', 'replace') if isinstance(b, bytes) else str(b)
     return repr(s if len(s) < 300 else s[:300] + '...')
@@ -66,6 +93,8 @@ def one(path, obxc):
         except subprocess.TimeoutExpired:
             return rel, 'differ', 'C build timeout'
         if rc != 0:
+            if REDTEAM in path:
+                return rel, 'skip', ''
             return rel, 'differ', 'C build failed: ' + (out + err)[:300]
         try:
             r = subprocess.run([obxc, path, '--native', '-o', nexe], capture_output=True, text=True, timeout=60, cwd=tmp)
@@ -79,6 +108,8 @@ def one(path, obxc):
         for check in (False, True):
             a = execute(cexe, stdin, check, tmp)
             b = execute(nexe, stdin, check, tmp)
+            if a != b and want(d, b) and not want(d, a):
+                return rel, 'pass', 'note: the C build differs from the directives; native matches them'
             if a != b:
                 why = []
                 for name, x, y in zip(('exit', 'stdout', 'stderr'), a, b):
@@ -92,12 +123,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--compiler', default=OBXC)
     ap.add_argument('--lib', action='store_true', help='also the library tests')
+    ap.add_argument('--redteam', action='store_true', help='also the red-team programs')
     ap.add_argument('-j', type=int, default=os.cpu_count() or 4)
     ap.add_argument('-v', action='store_true')
     ap.add_argument('filters', nargs='*')
     a = ap.parse_args()
     obxc = os.path.abspath(a.compiler)
-    tests = find(a.lib)
+    tests = find(a.lib, a.redteam)
     if a.filters:
         tests = [t for t in tests if any(f in t for f in a.filters)]
     with ThreadPoolExecutor(max_workers=a.j) as ex:
@@ -105,6 +137,8 @@ def main():
     count = collections.Counter(r[1] for r in results)
     reasons = collections.Counter()
     for rel, kind, why in results:
+        if kind == 'pass' and why:
+            print('%s: %s' % (rel, why))
         if kind == 'differ':
             print('DIFFER %s: %s' % (rel, why))
         elif kind == 'unsupported':
@@ -115,8 +149,9 @@ def main():
         print('unsupported, by reason:')
         for why, n in reasons.most_common(15):
             print('  %4d  %s' % (n, why))
-    print('native: %d pass, %d differ, %d unsupported, %d total' % (
-        count['pass'], count['differ'], count['unsupported'], len(results)))
+    print('native: %d pass, %d differ, %d unsupported, %d total%s' % (
+        count['pass'], count['differ'], count['unsupported'], len(results) - count['skip'],
+        ' (%d skipped: rejected by the compiler)' % count['skip'] if count['skip'] else ''))
     sys.exit(1 if count['differ'] else 0)
 
 
