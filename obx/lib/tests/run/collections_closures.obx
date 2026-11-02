@@ -1,0 +1,80 @@
+// Closures (&fn) with the library: sortBy with a captured key order,
+// predicates with captured bounds, Map.each/eachMut, Set.each/filter.
+// expect: cy ann dee bob eve
+// expect: 3 | true false | true true
+// expect: 6 8 | 2 4
+// expect: one=1 two=2 three=3 | 6
+// expect: one=10 two=20 three=30
+// expect: set 2 4 6 | 2
+// expect: plain 4 | mutated 13
+import "collections"
+
+type Person = record { name: str; age: int }
+
+fn ints(xs: &[int]): str {
+    var s = ""
+    for x in xs { s += x.toStr() + " " }
+    return trim(s)
+}
+
+fn isOdd(x: &int): bool { return x % 2 == 1 }
+
+fn main() {
+    var ps = [Person{name: "bob", age: 5}, Person{name: "ann", age: 3}, Person{name: "eve", age: 9},
+        Person{name: "dee", age: 5}, Person{name: "cy", age: 3}]
+    let desc = false
+    collections.sortBy(mut &ps, fn(a, b) {
+        if a.age != b.age {
+            if desc { return b.age.cmp(&a.age) }
+            return a.age.cmp(&b.age)
+        }
+        return b.name.cmp(&a.name)
+    })
+    var line = ""
+    for p in ps { line += p.name + " " }
+    println(trim(line))
+
+    let xs = [1, 2, 3, 4, 5, 6, 7, 8]
+    let lo = 5
+    let n = collections.count(&xs, fn(x) { return x > lo })
+    println(n.toStr() + " | " + collections.any(&xs, fn(x) { return x == lo }).toStr() + " " +
+        collections.all(&xs, fn(x) { return x > lo }).toStr() + " | " +
+        collections.all(&xs[5..8], fn(x) { return x > lo }).toStr() + " " +
+        collections.any(&xs, isOdd).toStr())
+
+    var ys = collections.copyOf(&xs)
+    collections.retain(mut &ys, fn(y) { return y > lo && y % 2 == 0 })
+    let evens = collections.filter(&xs[0..4], fn(x) { return x % 2 == 0 })
+    println(ints(&ys) + " | " + ints(&evens))
+
+    var m: Map[str, int] = newMap()
+    m.put("one", 1)
+    m.put("two", 2)
+    m.put("three", 3)
+    var out = ""
+    var sum = 0
+    m.each(fn(k, v) {
+        out += k + "=" + v.toStr() + " "
+        sum += v
+    })
+    println(trim(out) + " | " + sum.toStr())
+    let factor = 10
+    m.eachMut(fn(k, v) { v = v * factor })
+    out = ""
+    m.each(fn(k, v) { out += k + "=" + v.toStr() + " " })
+    println(trim(out))
+
+    let s = collections.setOf(&[1, 2, 3, 4, 5, 6])
+    let even = s.filter(fn(x) { return x % 2 == 0 })
+    var es = ""
+    even.each(fn(x) { es += x.toStr() + " " })
+    println("set " + trim(es) + " | " + s.minus(&even).intersect(&collections.setOf(&[3, 5, 7])).size().toStr())
+
+    var calls = 0
+    let bump = fn(x: int): int {
+        calls += 1
+        return x + calls
+    }
+    println("plain " + collections.mapTo(&[1, 2], fn(x): int { return x * 2 })[1].toStr() + " | mutated " +
+        (bump(10) + bump(0) - 0).toStr())
+}

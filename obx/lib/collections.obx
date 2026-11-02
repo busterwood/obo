@@ -12,7 +12,7 @@
 // positive: b before a). Merge sort over indices, then the elements are
 // permuted in place with swaps, so T may be owned. O(n log n) time, O(n)
 // extra ints.
-pub fn sortBy[T](xs: mut &[T], cmp: fn(&T, &T): int) {
+pub fn sortBy[T](xs: mut &[T], cmp: &fn(&T, &T): int) {
     let n = len(xs)
     if n < 2 { return }
     var idx = identity(n)
@@ -43,37 +43,8 @@ pub fn sortBy[T](xs: mut &[T], cmp: fn(&T, &T): int) {
     permute(xs, mut &idx)
 }
 
-// Stable sort by the natural order (the same merge sort as sortBy: a
-// generic function cannot be passed as a fn value).
-pub fn sortStable[T: Ord](xs: mut &[T]) {
-    let n = len(xs)
-    if n < 2 { return }
-    var idx = identity(n)
-    var tmp = array(n, 0)
-    var width = 1
-    while width < n {
-        var lo = 0
-        while lo < n - width {
-            let mid = lo + width
-            let hi = min(lo + 2 * width, n)
-            var i = lo
-            var j = mid
-            for k in lo..hi {
-                if j >= hi || (i < mid && !(xs[idx[j]] < xs[idx[i]])) {
-                    tmp[k] = idx[i]
-                    i += 1
-                } else {
-                    tmp[k] = idx[j]
-                    j += 1
-                }
-            }
-            for c in lo..hi { idx[c] = tmp[c] }
-            lo += 2 * width
-        }
-        width *= 2
-    }
-    permute(xs, mut &idx)
-}
+// Stable sort by the natural order (cmp).
+pub fn sortStable[T: Ord](xs: mut &[T]) { sortBy(xs, fn(a, b) { return a.cmp(b) }) }
 
 fn identity(n: int): []int {
     var idx: []int = []
@@ -155,7 +126,7 @@ pub fn find[T: Eq](xs: &[T], x: &T): int {
 }
 
 // The first index whose element satisfies pred, or -1.
-pub fn findBy[T](xs: &[T], pred: fn(&T): bool): int {
+pub fn findBy[T](xs: &[T], pred: &fn(&T): bool): int {
     for i in 0..len(xs) {
         if pred(&xs[i]) { return i }
     }
@@ -163,12 +134,20 @@ pub fn findBy[T](xs: &[T], pred: fn(&T): bool): int {
 }
 
 // How many elements satisfy pred.
-pub fn count[T](xs: &[T], pred: fn(&T): bool): int {
+pub fn count[T](xs: &[T], pred: &fn(&T): bool): int {
     var n = 0
-    for i in 0..len(xs) {
-        if pred(&xs[i]) { n += 1 }
+    for x in xs {
+        if pred(x) { n += 1 }
     }
     return n
+}
+
+// Whether some element satisfies pred (false for an empty xs).
+pub fn any[T](xs: &[T], pred: &fn(&T): bool): bool { return findBy(xs, pred) >= 0 }
+
+// Whether every element satisfies pred (true for an empty xs).
+pub fn all[T](xs: &[T], pred: &fn(&T): bool): bool {
+    return findBy(xs, fn(x) { return !pred(x) }) < 0
 }
 
 pub fn equal[T: Eq](a: &[T], b: &[T]): bool {
@@ -228,7 +207,7 @@ pub fn swapRemove[T](xs: mut &[]T, i: int): T {
 }
 
 // Keeps the elements that satisfy pred, in order.
-pub fn retain[T](xs: mut &[]T, pred: fn(&T): bool) {
+pub fn retain[T](xs: mut &[]T, pred: &fn(&T): bool) {
     var keep = 0
     for i in 0..len(xs) {
         if pred(&xs[i]) {
@@ -273,7 +252,7 @@ pub fn extend[T: copy](xs: mut &[]T, ys: &[T]) {
 }
 
 // The elements of xs for which pred holds, copied.
-pub fn filter[T: copy](xs: &[T], pred: fn(&T): bool): []T {
+pub fn filter[T: copy](xs: &[T], pred: &fn(&T): bool): []T {
     var out: []T = []
     for x in xs {
         if pred(&x) { append(mut &out, x) }
@@ -282,7 +261,7 @@ pub fn filter[T: copy](xs: &[T], pred: fn(&T): bool): []T {
 }
 
 // f of each element.
-pub fn mapTo[T, U](xs: &[T], f: fn(&T): U): []U {
+pub fn mapTo[T, U](xs: &[T], f: &fn(&T): U): []U {
     var out: []U = []
     for i in 0..len(xs) { append(mut &out, f(&xs[i])) }
     return out
@@ -324,6 +303,9 @@ pub fn (s: mut &Set[T]) clear() { s.m.clear() }
 // Element i, 0 <= i < size(), for walking the set.
 pub fn (s: &Set[T]) at(i: int): &T { return s.m.keyAt(i) }
 
+// Calls f on each element, in the set's order.
+pub fn (s: &Set[T]) each(f: &fn(&T)) { s.m.each(fn(k, u) { f(k) }) }
+
 // The elements, in the set's order.
 pub fn (s: &Set[T: copy]) items(): []T { return s.m.keys() }
 
@@ -336,24 +318,19 @@ pub fn (s: &Set[T: Ord + copy]) sorted(): []T {
 
 pub fn (a: &Set[T: copy]) union(b: &Set[T]): Set[T] {
     var out: Set[T] = newSet()
-    for i in 0..a.size() { out.add(a.at(i)) }
-    for i in 0..b.size() { out.add(b.at(i)) }
+    a.each(fn(x) { out.add(x) })
+    b.each(fn(x) { out.add(x) })
     return out
 }
 
-pub fn (a: &Set[T: copy]) intersect(b: &Set[T]): Set[T] {
-    var out: Set[T] = newSet()
-    for i in 0..a.size() {
-        if b.has(a.at(i)) { out.add(a.at(i)) }
-    }
-    return out
-}
+pub fn (a: &Set[T: copy]) intersect(b: &Set[T]): Set[T] { return a.filter(fn(x) { return b.has(x) }) }
 
-pub fn (a: &Set[T: copy]) minus(b: &Set[T]): Set[T] {
+pub fn (a: &Set[T: copy]) minus(b: &Set[T]): Set[T] { return a.filter(fn(x) { return !b.has(x) }) }
+
+// The elements that satisfy pred, as a new set.
+pub fn (a: &Set[T: copy]) filter(pred: &fn(&T): bool): Set[T] {
     var out: Set[T] = newSet()
-    for i in 0..a.size() {
-        if !b.has(a.at(i)) { out.add(a.at(i)) }
-    }
+    a.each(fn(x) { if pred(x) { out.add(x) } })
     return out
 }
 

@@ -1,0 +1,42 @@
+// expect: 2
+// expect: 1 2 3 9
+// expect: 1
+// Closures in generic code, and a generic function's instance as a function
+// value inside generic code (cmpOrd[T] inside sortAll[T]).
+type Bag[T] = record { xs: []T }
+fn each[T](xs: &[T], f: &fn(&T)) { for x in xs { f(x) } }
+fn (b: &Bag[T: Eq]) countEq(v: &T): int {
+    var n = 0
+    each(&b.xs, fn(x) { if x == v { n += 1 } })
+    return n
+}
+fn cmpOrd[T: Ord](a: &T, b: &T): int { return a.cmp(b) }
+fn sortBy[T](xs: mut &[T], cmp: &fn(&T, &T): int) {
+    for i in 1..len(xs) {
+        var j = i
+        while j > 0 && cmp(&xs[j - 1], &xs[j]) > 0 {
+            swap(xs, j - 1, j)
+            j -= 1
+        }
+    }
+}
+fn sortAll[T: Ord](xs: mut &[T]) {
+    let f: fn(&T, &T): int = cmpOrd[T]
+    sortBy(xs, f)
+}
+fn best[T: Ord](xs: &[T]): int {
+    var bi = 0
+    let better = fn(i: int, j: int): bool { return cmpOrd(&xs[i], &xs[j]) > 0 }
+    for i in 1..len(xs) { if better(i, bi) { bi = i } }
+    return bi
+}
+fn main() {
+    let b = Bag{xs: ["a", "b", "a"]}
+    println(b.countEq(&"a"))
+    var xs = [9, 2, 1, 3]
+    sortAll(mut &xs)
+    var s = ""
+    for x in xs { s += x.toStr() + " " }
+    println(trim(s))
+    println(best(&[3, 9, 2]))
+}

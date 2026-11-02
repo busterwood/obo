@@ -1,0 +1,7 @@
+// error: borrowed by closure
+fn main() {
+    var n = 1
+    let show = fn() { println(n) }
+    n = 2
+    show()
+}

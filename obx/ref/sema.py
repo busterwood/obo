@@ -2,6 +2,7 @@
 
 A type is a tuple:
   ('prim', name)  ('arr', T)  ('ref', T, mut)  ('slice', T, mut)  ('fn', (params...), ret)
+  ('clo', (params...), ret): a closure &fn(...) (SPEC 4.6), second class like a borrow
   ('inst', TypeDecl, (args...))  ('tp', TParam)  ('self',) inside interfaces
 """
 import os
@@ -98,9 +99,9 @@ def tstr(t):
         return ('mut &' if t[2] else '&') + tstr(t[1])
     if k == 'slice':
         return ('mut &[' if t[2] else '&[') + tstr(t[1]) + ']'
-    if k == 'fn':
+    if k in ('fn', 'clo'):
         r = '' if t[2] == VOID else ': ' + tstr(t[2])
-        return 'fn(' + ', '.join(tstr(p) for p in t[1]) + ')' + r
+        return ('&' if k == 'clo' else '') + 'fn(' + ', '.join(tstr(p) for p in t[1]) + ')' + r
     if k == 'tp':
         return t[1].name
     if k == 'self':
@@ -122,8 +123,8 @@ def subst(t, env):
         return ('arr', subst(t[1], env))
     if k in ('ref', 'slice'):
         return (k, subst(t[1], env), t[2])
-    if k == 'fn':
-        return ('fn', tuple(subst(p, env) for p in t[1]), subst(t[2], env))
+    if k in ('fn', 'clo'):
+        return (k, tuple(subst(p, env) for p in t[1]), subst(t[2], env))
     return ('inst', t[1], tuple(subst(a, env) for a in t[2]))
 
 
@@ -135,7 +136,7 @@ def has_tp(t, tps=None):
         return False
     if k in ('arr', 'ref', 'slice'):
         return has_tp(t[1], tps)
-    if k == 'fn':
+    if k in ('fn', 'clo'):
         return any(has_tp(p, tps) for p in t[1]) or has_tp(t[2], tps)
     return any(has_tp(a, tps) for a in t[2])
 
@@ -144,7 +145,7 @@ def depth(t):
     k = t[0]
     if k in ('arr', 'ref', 'slice'):
         return 1 + depth(t[1])
-    if k == 'fn':
+    if k in ('fn', 'clo'):
         return 1 + max([depth(p) for p in t[1]] + [depth(t[2])])
     if k == 'inst':
         return 1 + max([depth(a) for a in t[2]] + [0])
@@ -167,7 +168,7 @@ def unify(p, t, bind, tps):
         return unify(p[1], t[1], bind, tps)
     if k in ('ref', 'slice'):
         return p[2] == t[2] and unify(p[1], t[1], bind, tps)
-    if k == 'fn':
+    if k in ('fn', 'clo'):
         return (len(p[1]) == len(t[1]) and all(unify(a, b, bind, tps) for a, b in zip(p[1], t[1]))
                 and unify(p[2], t[2], bind, tps))
     return p[1] is t[1] and all(unify(a, b, bind, tps) for a, b in zip(p[2], t[2]))
@@ -187,7 +188,7 @@ def field_types(t):
 
 def is_copy(t):
     k = t[0]
-    if k in ('prim', 'fn', 'ref', 'slice'):
+    if k in ('prim', 'fn', 'ref', 'slice', 'clo'):
         return True
     if k == 'arr':
         return False
@@ -397,6 +398,14 @@ class Program:
 
     def resolve_type(self, a, mod, env, pos, where=None):
         k = a[0]
+        if k == 'ref' and a[1][0] == 'fnt':        # &fn(...): a closure, a parameter or a let only
+            if a[2] or pos not in ('param', 'let'):
+                raise CompileError("mut &fn is not a type: a closure is &fn(...)" if a[2] else
+                                   f"a closure type cannot be {'a result' if pos == 'ret' else 'stored'}: "
+                                   "closures are second class (a parameter or a let)",
+                                   where or self.type_where(a))
+            f = self.resolve_type(a[1], mod, env, pos, where)
+            return ('clo', f[1], f[2])
         if k in ('ref', 'slice'):
             if pos not in ('param', 'ret', 'let'):
                 what = {'field': 'a field', 'elem': 'an array element', 'targ': 'a type argument',
@@ -458,12 +467,12 @@ class Program:
     def type_where(self, a):
         while a[0] in ('ref', 'arr', 'slice'):
             a = a[1]
-        return a[3] if a[0] == 'name' else ''
+        return a[3] if a[0] in ('name', 'fnt') else ''
 
     def check_targs(self, targs, tparams, mod, where):
         env = dict(zip(tparams, targs))
         for p, t in zip(tparams, targs):
-            if t[0] in ('ref', 'slice'):
+            if t[0] in ('ref', 'slice', 'clo'):
                 raise CompileError(f"a borrow type ({tstr(t)}) cannot be a type argument (type parameter "
                                    f"{p.name}): borrows are second class", where)
             if p.copy and not is_copy(t):

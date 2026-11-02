@@ -1,0 +1,6 @@
+// error: declared with let
+fn each(n: int, f: &fn(int)) { for i in 0..n { f(i) } }
+fn main() {
+    let total = 0
+    each(3, fn(i) { total += i })
+}

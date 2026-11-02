@@ -1,0 +1,19 @@
+// expect: in closure
+// expect: drop tmp
+// expect: drop arg
+// expect: got 2
+// expect: drop kept
+// A closure owns its locals and its by-value arguments and drops them when it
+// returns; the captured variables stay with the enclosing function.
+type Noisy = record { name: str }
+fn (n: mut &Noisy) drop() { println("drop " + n.name) }
+fn call(f: &fn(Noisy): int): int { return f(Noisy{name: "arg"}) }
+fn main() {
+    let kept = Noisy{name: "kept"}
+    let r = call(fn(a) {
+        let t = Noisy{name: "tmp"}
+        println("in closure")
+        return len(a.name) + len(t.name) - len(kept.name)
+    })
+    println("got " + r.toStr())
+}

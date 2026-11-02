@@ -1296,6 +1296,16 @@ pub fn (m: &Map[K, V]) keyAt(i: int): &K { return &m.keys[i] }
 pub fn (m: &Map[K, V]) valAt(i: int): &V { return &m.vals[i] }
 pub fn (m: mut &Map[K, V]) valAtMut(i: int): mut &V { return mut &m.vals[i] }
 
+// Calls f on each entry, in insertion order.
+pub fn (m: &Map[K, V]) each(f: &fn(&K, &V)) {
+    for i in 0..len(m.keys) { f(&m.keys[i], &m.vals[i]) }
+}
+
+// Calls f on each entry with a mutable value, in insertion order.
+pub fn (m: mut &Map[K, V]) eachMut(f: &fn(&K, mut &V)) {
+    for i in 0..len(m.keys) { f(&m.keys[i], mut &m.vals[i]) }
+}
+
 // The keys (values) in insertion order.
 pub fn (m: &Map[K: copy, V]) keys(): []K {
     var out: []K = []

@@ -1,0 +1,29 @@
+// expect: 6
+// expect: -1
+// expect: 3
+// `return` and `try` inside a closure return from the closure, not from the
+// enclosing function.
+fn parse(s: &str): Result[int, str] {
+    if s == "x" { return Err("bad") }
+    return Ok(len(s))
+}
+fn orMinus(f: &fn(&str): Result[int, str], s: &str): int {
+    match f(s) {
+        Ok(v) { return v }
+        Err(e) { return -1 }
+    }
+}
+fn each(xs: &[str], f: &fn(&str)) { for x in xs { f(&x) } }
+fn main() {
+    println(orMinus(fn(s) {
+        let n = try parse(s)
+        return Ok(n * 2)
+    }, &"abc"))
+    println(orMinus(parse, &"x"))
+    var n = 0
+    each(&["a", "x", "bb"], fn(s) {
+        if s == "x" { return }
+        n += len(s)
+    })
+    println(n)
+}

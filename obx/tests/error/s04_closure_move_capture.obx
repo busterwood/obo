@@ -1,0 +1,7 @@
+// error: cannot move the captured
+fn run(f: &fn()) { f() }
+fn take(xs: []int) {}
+fn main() {
+    var xs = [1]
+    run(fn() { take(xs) })
+}

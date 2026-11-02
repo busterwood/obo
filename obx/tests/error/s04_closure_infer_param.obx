@@ -1,0 +1,4 @@
+// error: give the type of closure parameter
+fn main() {
+    let c = fn(x) { }
+}

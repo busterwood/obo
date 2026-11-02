@@ -1,0 +1,7 @@
+// error: borrowed by closure
+fn main() {
+    var xs = [1]
+    let push = fn(i: int) { append(mut &xs, i) }
+    println(len(xs))
+    push(2)
+}

@@ -1,0 +1,6 @@
+// error: type argument
+fn id[T](x: T): T { return x }
+fn main() {
+    let c = fn(x: int) { }
+    id(c)
+}

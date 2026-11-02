@@ -17,7 +17,7 @@ def pod(t):
     k = t[0]
     if k == 'prim':
         return t[1] != 'str'
-    if k in ('fn', 'ref', 'slice'):
+    if k in ('fn', 'ref', 'slice', 'clo'):
         return True
     if k == 'arr':
         return False
@@ -46,8 +46,8 @@ class Emitter:
             return 'obx_arr'
         if k == 'ref':
             return self.ctype(t[1]) + '*'
-        if k == 'slice':
-            return 'obx_slice'
+        if k in ('slice', 'clo'):
+            return 'obx_slice' if k == 'slice' else 'obx_clo'
         if k in ('tp', 'self'):
             raise CompileError(f"internal error: unsubstituted type {tstr(t)}")
         if t not in self.names:
@@ -125,6 +125,13 @@ class Emitter:
     def make_glue(self, kind, t):
         n, ct = self.glue[(kind, t)], self.ctype(t)
         body = []
+        if kind == 'tramp':     # a plain function seen as a closure: the environment is the function
+            ps = [self.ctype(p) for p in t[1]]
+            head = f"static {self.ctype(t[2])} {n}({', '.join(['void* e'] + [f'{p} a{i}' for i, p in enumerate(ps)])})"
+            ret = '' if self.ctype(t[2]) == 'void' else 'return '
+            self.protos.append(head + ';')
+            self.bodies.append(f"{head} {{ {ret}(({ct})e)({', '.join(f'a{i}' for i in range(len(ps)))}); }}")
+            return
         if kind == 'drop':
             self.protos.append(f"static void {n}({ct} v);")
             self.bodies.append(f"static void {n}({ct} v) {{ rt_drun({self.glue_fn('dbody', t)}, &v); }}")
@@ -198,6 +205,10 @@ class Emitter:
             return self.strlit(h[1], k == 'gstr')
         if k == 'fn':
             return self.instance(h[1], tuple(subst(a, env) for a in h[2]))
+        if k == 'cl':
+            return f"{env['@']}_c{h[1]}"
+        if k == 'tramp':
+            return self.glue_fn('tramp', subst(h[1], env))
         t = subst(h[1], env)
         fd = self.prog.methods_of(t).get(h[2])
         bind = {}
@@ -232,12 +243,19 @@ class Emitter:
     def make_instance(self, fd, targs):
         name = self.insts[(fd, targs)]
         env = dict(zip(fd.tps, targs))
+        env['@'] = name
         ps = ', '.join(f"{self.ctype(subst(t, env))} p_{n}" for n, t, _, _ in fd.params) or 'void'
         head = f"static {self.ctype(subst(fd.ret, env))} {name}({ps})"
         self.protos.append(head + ';')
         lines, holes = fd.template
         body = '\n'.join(self.render(l, holes, env) for l in lines)
         self.bodies.append(f"{head} {{\n{body}\n}}")
+        for k, ret, cps, ls in fd.lifted:      # its closures
+            ps = ', '.join(['void* cv_'] + [f"{self.ctype(subst(t, env))} {c}" for c, t in cps])
+            head = f"static {self.ctype(subst(ret, env))} {name}_c{k}({ps})"
+            self.protos.append(head + ';')
+            body = '\n'.join(self.render(l, holes, env) for l in ls)
+            self.bodies.append(f"{head} {{\n  void** ce_ = cv_; (void)ce_;\n{body}\n}}")
 
     def extern_c(self, t):
         if t == STR:

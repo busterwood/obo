@@ -4,8 +4,10 @@ The standard library, written as ordinary obx code over a few intrinsics.
 `std.obx` is the prelude: every program sees its `pub` names unqualified.
 The other modules are imported by name, `import "strings"`, and used
 qualified, `strings.join(...)`; this directory is a default import root of
-the reference compiler (after the importing file's directory and any `-L`
-roots, so a local `money.obx` shadows the library's).
+the reference compiler, as are any `-L` roots. A bare import path names a
+library module only: a program's own modules are imported with `./` or `../`
+(`import "./money"`), relative to the importing file, so a local file never
+shadows a library module.
 
     python3 obx/lib/run_tests.py -j 8        # the library tests (OBX_CHECK=1)
     python3 obx/lib/tests/gen_decimal_random.py   # regenerate decimal_random.obx
@@ -19,10 +21,10 @@ for leaks.
 
 | Module | Lines | Contents |
 |---|---:|---|
-| `std.obx` | 1,420 | Option, Result, Unit; Eq/Ord/Hash/Show for the primitives; print/println/eprint/eprintln; min/max; float text and math methods; StrBuf and basic string helpers; Decimal; sort; Map |
+| `std.obx` | 1,400 | Option, Result, Unit; Eq/Ord/Hash/Show for the primitives; print/println/eprint/eprintln; min/max; float text and math methods; StrBuf and basic string helpers; Decimal; sort; Map |
 | `money.obx` | 200 | Currency, USD/EUR/GBP/JPY/CHF, Money[C] |
 | `math.obx` | 130 | float constants, parse, fixed, toDecimal, near |
-| `collections.obx` | 440 | stable sorts, searching, rearranging, copying, Set, Heap |
+| `collections.obx` | 390 | stable sorts, searching, rearranging, copying, Set, Heap |
 | `strings.obx` | 490 | search, split/join, replace, trim, case, int parse/format, padding, UTF-8 |
 | `io.obx` | 160 | IoError, whole-file read/write/append, readLines, readStdin, buffered Writer |
 | `fs.obx` | 260 | stat/lstat, list, mkdirAll, remove/removeAll, rename, symlink, chmod, paths |
@@ -61,8 +63,11 @@ for leaks.
   scale (`0.50`), `format()` is the same as a Result (an error when the scale
   would drop digits), `canonical()` has no trailing zeros; `scale`, `exponent`,
   `coefficient`, `sign`, `isZero`, `isNeg`, `abs`, `neg`, `toFloat`,
-  `sumDecimals`. **Rounding**: `HALF_EVEN HALF_AWAY HALF_TOWARD_ZERO
-  TOWARD_ZERO AWAY FLOOR CEILING UNNECESSARY`. **DecError** with obo's codes:
+  `sumDecimals`. **Rounding** (written qualified, `Rounding.HALF_EVEN`):
+  `HALF_EVEN HALF_AWAY HALF_TOWARD_ZERO TOWARD_ZERO AWAY FLOOR CEILING
+  UNNECESSARY`. A fractional literal is `fromFraction(units: i128, scale:
+  int)` (`1.5e3` is units 15, scale -2); a scale over 38 stops with
+  DecError.Range. The stop helpers (`orStop`, money's `stop`) return `never`. **DecError** with obo's codes:
   DecError.Overflow 1, DecError.Inexact 3, DecError.Invalid 4, DecError.DivZero 5, DecError.Range 6,
   DecError.Precision 7, DecError.Exponent 8, DecError.Display 9.
 - **sort(xs: mut &[]T)** for `T: Ord`: heap sort, in place, not stable.
@@ -70,8 +75,11 @@ for leaks.
   index. `newMap`, `size`, `has(&k)`, `get(&k): Option[V]` and `getOr(&k, d)`
   (V: copy), `at(k): &V`, `atMut(k): mut &V`, `atOrPut(k, d): mut &V`,
   `put(k, v)`, `remove(&k): Option[V]`, `clear`, `keyAt(i)`, `valAt(i)`,
-  `valAtMut(i)` for walking, `keys()`/`values()` (copy types). `remove` moves
-  the last entry into the hole.
+  `valAtMut(i)` for walking, `each(fn(k, v) {...})` and `eachMut(fn(k, v)
+  {...})` (v is `mut &V`) in insertion order, `keys()`/`values()` (copy
+  types). `remove` moves the last entry into the hole.
+- Powers of ten for Decimal come from `POW10`, a constant table (read-only
+  static data) instead of a 39-arm match.
 
 ### money
 
@@ -94,16 +102,19 @@ tol)`.
 
 ### collections
 
-`sortBy(xs, cmp: fn(&T, &T): int)` and `sortStable(xs)`: stable merge sorts
-over an index array followed by an in-place permutation, so owned elements
-work. `isSorted`, `binarySearch(xs, &x): Result[int, int]` (Ok index or Err
+`sortBy(xs, cmp: &fn(&T, &T): int)` and `sortStable(xs)` (sortBy with
+`cmp`): a stable merge sort over an index array followed by an in-place
+permutation, so owned elements work. Every predicate and callback is a
+closure type (`&fn`), so it may use the caller's locals:
+`count(&xs, fn(x) { return x > lo })`; a named function also works. `isSorted`, `binarySearch(xs, &x): Result[int, int]` (Ok index or Err
 insertion point), `lowerBound`, `upperBound`, `find`, `findBy`, `contains`,
-`count(xs, pred)`, `equal`, `reverse`, `rotateLeft`, `insert(xs, i, x)`,
+`count(xs, pred)`, `any(xs, pred)`, `all(xs, pred)`, `equal`, `reverse`, `rotateLeft`, `insert(xs, i, x)`,
 `removeAt(xs, i): T`, `swapRemove`, `retain(xs, pred)`, `dedup`,
 `copyRange(xs, a, b)`, `copyOf`, `extend`, `filter`, `mapTo`.
 **Set[T: Eq + Hash]** (a Map to Unit): `newSet`, `setOf(&xs)`, `size`,
 `isEmpty`, `has`, `add(x): bool`, `remove(&x): bool`, `clear`, `at(i)`,
-`items()`, `sorted()`, `union`, `intersect`, `minus`, `isSubset`, `eq`.
+`each(f)`, `filter(pred): Set[T]`, `items()`, `sorted()`, `union`,
+`intersect`, `minus`, `isSubset`, `eq`.
 **Heap[T: Ord]** (min-heap): `newHeap`, `push`, `pop(): Option[T]`, `peek`,
 `size`, `isEmpty`.
 
@@ -177,7 +188,7 @@ array:
 
 - std: `sort` (and its `siftDown`), `sumDecimals`.
 - collections: `sortBy`, `sortStable`, `isSorted`, `binarySearch`,
-  `lowerBound`, `upperBound`, `contains`, `find`, `findBy`, `count`, `equal`,
+  `lowerBound`, `upperBound`, `contains`, `find`, `findBy`, `count`, `any`, `all`, `equal`,
   `reverse`, `rotateLeft` (which reverses subslices), `copyOf` (`copyRange(xs,
   a, b)` is `copyOf(xs[a..b])`), `extend` (its `ys`), `filter`, `mapTo`,
   `setOf`.

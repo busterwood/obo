@@ -1,0 +1,6 @@
+// error: twice in one call
+fn run(xs: mut &[]int, f: &fn()) { f() }
+fn main() {
+    var xs = [1]
+    run(mut &xs, fn() { println(xs[0]) })
+}

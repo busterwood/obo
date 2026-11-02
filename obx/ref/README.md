@@ -20,15 +20,15 @@ Run a program with `OBX_CHECK=1` to make a leak (live objects at exit) exit 5.
 
 | File | Lines | Role |
 |---|---:|---|
-| `syntax.py` | 800 | lexer (with the ASI rule) and parser to `N` nodes |
-| `sema.py` | 805 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
-| `check.py` | 2,050 | checks every function body once and writes it as a C template |
-| `emit.py` | 300 | renders templates once per instance, drop/dup glue, struct layouts |
+| `syntax.py` | 855 | lexer (with the ASI rule) and parser to `N` nodes |
+| `sema.py` | 845 | modules, imports, scopes, types, type parameters and constraints, `satisfies`, typed constant folding |
+| `check.py` | 2,285 | checks every function body once and writes it as a C template |
+| `emit.py` | 330 | renders templates once per instance, drop/dup glue, struct layouts |
 | `obxc.py` | 105 | driver |
 | `rt.h` | 450 | the C runtime: allocation counter, traps, str, arrays and slices, checked integers, drop stack, stack-overflow handler |
-| `../lib/std.obx` | 1,500 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
+| `../lib/std.obx` | 1,400 | the prelude (ordinary obx code; moved to `lib/` in stage 3) |
 
-Python total: about 4,080 lines.
+Python total: about 4,440 lines.
 
 **Checking once, rendering per instance (SPEC 6.2, 6.4).** `check.py` checks a
 function body exactly once, generic or not. A type parameter is an opaque type:
@@ -57,7 +57,13 @@ gcc -O1 four times slower on the largest library test. `[]T` is an inline
 `{data, len, cap}`; a slice `&[T]` / `mut &[T]` is `{data, len}`. `record` and `closed` are pointers to heap structs; `value
 record` and `value closed` are inline structs (so `Option[Decimal]` never
 allocates); a closed type is `{tag, union}`. A borrow is a pointer. Function
-values are C function pointers. A `drop` method runs before the fields are
+values are C function pointers. A closure `&fn(...)` is `{code, env}`: its
+body is lifted into a C function `<instance>_cN(void* env, params...)`
+rendered with the enclosing instance, and `env` is an array of pointers to
+the captured variables in the enclosing frame (no allocation). A plain
+function passed as a closure gets a trampoline whose `env` is the function
+pointer. A constant table is a `static const` C array viewed as a slice; a
+set-once global is a static plus an `is set` flag. A `drop` method runs before the fields are
 dropped (in reverse declaration order, array elements first to last).
 
 **Ownership and borrows.** Variable states (live/moved) are tracked per path
@@ -78,11 +84,15 @@ closed types (boxed and recursive, or inline), aliases, modules (`import`,
 `as`, `pub`, qualified names and match arms, std prelude, cycle detection,
 methods only in the type's module), constants with folding, globals with
 copy types and constant initializers (including value record and variant
-literals), generic functions, types and methods with constraints and
+literals), constant tables and record/variant constants, set-once globals
+(`var C: once T`), generic functions, types and methods with constraints and
 inference (from arguments, then the expected type), interfaces with methods and
-associated functions, function values (including generic instances), `extern`
-functions, every built-in of section 11 and the intrinsics, and the runtime
-errors of section 14. Slices (4.2a) and shared substrings (4.1) are below.
+associated functions, function values (including generic instances, also
+inside generic code), non-escaping closures (4.6), record destructuring (9.1),
+`never` results (5.3), qualified variants (4.4), relative imports (5.1),
+fractional literals with exponents (7.3), `extern` functions with `as "c_name"`
+and `str` results (12), every built-in of section 11 and the intrinsics, and
+the runtime errors of section 14. Slices (4.2a) and shared substrings (4.1) are below.
 
 **Slices.** `&[T]` and `mut &[T]` are borrows (section 4.5), with the same
 checks: a slice in a `let` freezes the viewed array's root for its scope, a
@@ -165,10 +175,37 @@ is a default import root: `import "money"`. See `../lib/README.md`.
 13. Slices: see above. A slice of a temporary array can be passed to a call
     but not kept in a `let`. A slice of a global is an error (as a borrow of
     a global is).
+14. Destructuring `let P{a, c: _} = e` drops the fields that are not bound
+    (`_` or not named) right away, in reverse declaration order, then
+    declares the bindings in pattern order. A place of an owned type cannot be
+    taken apart (it would move out of it); `move(x)` a local first.
+15. Variants: a user type may not declare a top-level name that is a prelude
+    variant (`Some`, `None`, `Ok`, `Err`); a user variant with such a name is
+    still allowed but must be qualified, including in match arms
+    (`R.Ok(v)`). `Type.Variant` also works through an alias and a module
+    (`m.Shape.Circle(1)`).
+16. Imports: `./x` and `../x` are relative to the importing file; a bare
+    `x` is looked up only in the library roots (`../lib`, `-L`), and the
+    error for a bare path that exists next to the file suggests `"./x"`.
+17. Closures: a closure's parameters and locals may not shadow the enclosing
+    function's variables (the no-shadowing rule covers the whole function).
+    A closure may not return a borrow. Its captures are found by use: a
+    variable is captured mutably when the closure assigns it, borrows it
+    `mut`, or (for a `mut &` borrow variable) writes through it. A closure
+    argument holds its captures for the call (rule 3, `mut` for mutable
+    captures); a `let` closure freezes them for its scope (rule 4).
+    Parameter and result types are inferred only from the callee's parameter
+    type once its type arguments are known from earlier arguments; otherwise
+    they must be written.
+18. A set-once global's `get()` is a shared borrow rooted at static data:
+    it can be kept in a `let` and freezes nothing. A global of an owned type
+    must be `once` (or a constant table).
 
 ## Known gaps
 
 - `extern` calls are unchecked, as the spec says; a wrong prototype is undefined behaviour.
+- A closure literal cannot be an index argument (`x[fn() {...}]`): there `fn`
+  starts a type argument.
 - Error recovery: the first error stops compilation.
 - The conformance tests `run/s04_array_of_arrays` (expects `len(g[0]) +
   g[1][0]` to be 3; it is 2 + 3 = 5) and `run/s05_mod_generic_type`

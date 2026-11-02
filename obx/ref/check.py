@@ -6,6 +6,7 @@ drop, and writes the function as a C template: C text with holes for whatever
 depends on the type arguments (C types, drop and dup glue, callees). The
 emitter renders the template once per instance (emit.py).
 """
+from types import SimpleNamespace
 from syntax import CompileError, N
 from sema import (INTS, PRIMS, INT, BOOL, STR, FLOAT, BYTE, VOID, NEVER, RANGES, TypeDecl, Variant, FnDecl,
                   Const, Global, tstr, subst, has_tp, unify, decl_env, is_copy, field_types)
@@ -23,7 +24,7 @@ def is_pod(t):
     k = t[0]
     if k == 'prim':
         return t[1] != 'str'
-    if k in ('fn', 'ref', 'slice'):
+    if k in ('fn', 'ref', 'slice', 'clo'):
         return True
     if k in ('arr', 'tp', 'self'):
         return False
@@ -31,7 +32,7 @@ def is_pod(t):
     return d.value and d.drop is None and all(is_pod(ft) for _, ft in field_types(t))
 
 
-I128 = ('prim', 'i128')
+I128, PTR = ('prim', 'i128'), ('prim', 'ptr')
 
 
 def is_lit(e):
@@ -110,6 +111,7 @@ class Ctx:
         self.scopes, self.frames, self.loops, self.pending = [], [], [], []
         self.dead, self.nomove, self.n = False, [], 0
         self.module = fd.module
+        self.outer, self.caps, self.lifted = None, {}, []     # closures (SPEC 4.6)
 
     def fresh(self, p='t'):
         self.n += 1
@@ -133,8 +135,8 @@ class Checker:
     def T(self, t):
         if t[0] == 'prim':
             return CTYPES[t[1]]
-        if t[0] == 'slice':
-            return 'obx_slice'
+        if t[0] in ('slice', 'clo'):
+            return 'obx_slice' if t[0] == 'slice' else 'obx_clo'
         return self.H('T', t)
 
     def emit(self, s):
@@ -181,20 +183,30 @@ class Checker:
             if fd.ret != VOID:
                 self.err(f"{fd.label} may reach its end without a return", fd.where)
             self.drop_scope(sc)
-        fd.template = (ctx.lines, ctx.holes)
+        fd.template, fd.lifted = (ctx.lines, ctx.holes), ctx.lifted
         self.ctx = None
 
     # ---------------------------------------------------------- scopes and drops
 
-    def lookup_var(self, name):
-        for sc in reversed(self.ctx.scopes):
+    def lookup_var(self, name, ctx=None, capture=True):
+        ctx = ctx or self.ctx
+        for sc in reversed(ctx.scopes):
             for v in reversed(sc.vars):
                 if v.name == name:
                     return v
-        return None
+        if ctx.outer is None or name in ctx.caps:
+            return ctx.caps.get(name)
+        v = self.lookup_var(name, ctx.outer, capture)
+        if v is None or not capture:
+            return v
+        # A closure uses an enclosing variable through a pointer in its environment.
+        p = Var(v.name, f"(*({self.T(v.t)}*)ce_[{len(ctx.caps)}])", v.t, v.mutable, v.kind, v.where)
+        p.state, p.broot, p.cap, p.capmut = v.state, v.broot, v, False
+        ctx.caps[name] = p
+        return p
 
     def declare(self, v):
-        if self.lookup_var(v.name) is not None:
+        if self.lookup_var(v.name, capture=False) is not None:
             self.err(f"'{v.name}' is already declared in this function (no shadowing)", v.where)
         self.ctx.scopes[-1].vars.append(v)
 
@@ -280,6 +292,10 @@ class Checker:
     def frozen(self, root, kind, where):
         if not isinstance(root, Var):
             return
+        if getattr(root, 'cap', None) is not None and kind != 'read':
+            if kind == 'move':
+                self.err(f"a closure cannot move the captured variable '{root.name}'", where)
+            root.capmut = True
         for sc in self.ctx.scopes:
             for r, mut, by in sc.freezes:
                 if r is root and (kind != 'read' or mut):
@@ -325,6 +341,9 @@ class Checker:
 
     def consume(self, v, where):
         """Take ownership of the value of v: copy (dup) a copy type, move otherwise."""
+        if v.t[0] == 'clo':
+            self.err("a closure is second class: it can be passed as an argument or bound with let, but "
+                     "not stored, returned or copied", where)
         if v.t == VOID:
             self.err("this expression has no value", where)
         if v.cat == 'tmp':
@@ -452,6 +471,8 @@ class Checker:
     def coerce(self, v, t, where, what='value'):
         if v.t == t:
             return v
+        if t[0] == 'clo' and v.t[0] == 'fn' and v.t[1:] == t[1:]:     # through a trampoline (emit.py)
+            return Val(f"((obx_clo){{(void*){self.H('tramp', v.t)}, (void*){v.c}}})", t, 'rv')
         if v.t[0] == 'ref' and t[0] != 'ref':
             d = self.deref(v)
             if d.t == t:
@@ -480,6 +501,16 @@ class Checker:
         if v.t == VOID:
             self.err(f"the initializer of '{s.name}' has no value", s.where)
         cn = ctx.fresh(f"v_{s.name}_")
+        if (exp or v.t)[0] == 'clo':
+            v = self.coerce(v, exp or v.t, s.where, f"the initializer of '{s.name}'")
+            if s.mutable:
+                self.err(f"a closure cannot be stored in var '{s.name}': closures are second class (use let)",
+                         s.where)
+            self.emit(f"obx_clo {cn} = {v.c};")
+            self.declare(Var(s.name, cn, v.t, False, 'local', s.where))
+            for r, m in getattr(v, 'caps', ()):     # rule 4: the captured roots, while the closure lives
+                ctx.scopes[-1].freezes.append((r, m, f"closure '{s.name}'"))
+            return
         if (exp is None and v.t[0] in ('ref', 'slice')) or (exp is not None and exp[0] in ('ref', 'slice')):
             if exp is not None:
                 v = self.coerce(v, exp, s.where, f"the initializer of '{s.name}'")
@@ -577,7 +608,10 @@ class Checker:
         return None
 
     def self_in_drop(self, v, where):
-        fd = self.ctx.fd
+        c = self.ctx
+        while c.outer is not None:
+            c = c.outer
+        fd = c.fd
         if isinstance(fd.owner, TypeDecl) and fd.owner.drop is fd and isinstance(v.root, Var) \
                 and v.root.name == fd.recv_name and v.root.kind == 'param' and not v.path:
             self.err("a drop method may not assign or replace the whole of its receiver", where)
@@ -594,6 +628,8 @@ class Checker:
                 if not isinstance(d, Global):
                     self.err(f"unknown name '{tg.v}'", s.where)
             elif var.t[0] != 'ref':
+                if getattr(var, 'cap', None) is not None and var.state != 'live':
+                    self.err(f"'{var.name}' was moved and has no value here", s.where)
                 if not var.mutable:
                     if var.kind == 'param':
                         self.err(f"cannot assign to parameter '{var.name}': declare it `var {var.name}`",
@@ -1191,14 +1227,64 @@ class Checker:
                 for tp, a in zip(d.tps, targs):
                     bind[tp] = self.prog.resolve_type(a, self.ctx.module, self.ctx.fd.env, 'targ', e.where)
             ft = ('fn', tuple(p[1] for p in d.params), d.ret)
-            if d.tps and len(bind) < len(d.tps) and exp is not None and exp[0] == 'fn':
-                unify(ft, exp, bind, set(d.tps))
+            if d.tps and len(bind) < len(d.tps) and exp is not None and exp[0] in ('fn', 'clo'):
+                unify(ft, ('fn',) + exp[1:], bind, set(d.tps))
             if len(bind) < len(d.tps):
                 self.err(f"cannot infer the type arguments of {d.name}; write {d.name}[...]", e.where)
             targs = tuple(bind[tp] for tp in d.tps)
             self.prog.check_targs(targs, d.tps, self.ctx.module, e.where)
             return Val(self.H('fn', d, targs), subst(ft, bind), 'rv')
         self.err(f"{d.name} is a type, not a value", e.where)
+
+    def x_closure(self, e, exp):
+        """fn(params) { ... } (SPEC 4.6): a function lifted out of the enclosing one, with an environment
+        of pointers to the variables it uses (in the enclosing frame: no allocation)."""
+        outer, mod, env = self.ctx, self.ctx.module, self.ctx.fd.env
+        ctps, want = getattr(self, 'callee_tps', set()), exp if exp is not None and exp[0] == 'clo' else None
+        if want and len(want[1]) != len(e.params):
+            self.err(f"the closure takes {len(e.params)} parameters, but {tstr(want)} is expected", e.where)
+        ps, sc = [], Scope()
+        for i, (n, ty, w) in enumerate(e.params):
+            if ty is None and (want is None or has_tp(want[1][i], ctps)):
+                self.err(f"give the type of closure parameter '{n}': it cannot be inferred here", w)
+            t = self.prog.resolve_type(ty, mod, env, 'param', w) if ty else want[1][i]
+            if self.lookup_var(n, capture=False) is not None or n in [p[0] for p in ps]:
+                self.err(f"'{n}' is already declared in this function (no shadowing)", w)
+            ps.append((n, t))
+            sc.vars.append(Var(n, 'p_' + n, t, False, 'param', w))
+        if e.ret is None and want is not None and has_tp(want[2], ctps):
+            self.err("give the result type of the closure: it cannot be inferred here", e.where)
+        ret = self.prog.resolve_type(e.ret, mod, env, 'ret', e.where) if e.ret else want[2] if want else VOID
+        if ret[0] in ('ref', 'slice'):
+            self.err("a closure cannot return a borrow", e.where)
+        cfd = SimpleNamespace(label='the closure', name='closure', ret=ret, env=env, module=mod, tps=outer.fd.tps)
+        cx = self.ctx = Ctx(cfd)
+        cx.holes, cx.outer, cx.lifted = outer.holes, outer, outer.lifted
+        cx.scopes.append(sc)
+        try:
+            self.block(e.body, scope=False)
+            if not cx.dead:
+                if ret == NEVER:
+                    self.err("the closure returns never, but it may reach its end", e.where)
+                if ret != VOID:
+                    self.err("the closure may reach its end without a return", e.where)
+                self.drop_scope(sc)
+        finally:
+            self.ctx = outer
+        k = len(cx.lifted)
+        cx.lifted.append((k, ret, [('p_' + n, t) for n, t in ps], cx.lines))
+        caps = []
+        for p in cx.caps.values():          # check the captures against the enclosing borrows
+            self.frozen(p.cap, 'mut' if p.capmut else 'read', e.where)
+            caps.append((p.cap, p.capmut))
+        en = 'NULL'
+        if caps:
+            en = outer.fresh('ce')
+            self.emit(f"void* {en}[{len(caps)}] = {{{', '.join(f'(void*)&{v.c}' for v, _ in caps)}}};")
+        r = Val(f"((obx_clo){{(void*){self.H('cl', k)}, (void*){en}}})", ('clo', tuple(t for _, t in ps), ret),
+                'rv')
+        r.caps = caps
+        return r
 
     def static_var(self, d):
         """The root of a borrow of static data (a constant table, a set-once global): never freed."""
@@ -1759,9 +1845,10 @@ class Checker:
 
     def call_value(self, fv, e, exp):
         fv = self.rd(fv)
-        if fv.t[0] != 'fn':
+        if fv.t[0] not in ('fn', 'clo'):
             self.err(f"cannot call a {tstr(fv.t)}", e.where)
-        sig = Sig('function value', 'fnval', list(fv.t[1]), fv.t[2], c=fv.c)
+        sig = Sig('function value' if fv.t[0] == 'fn' else 'closure', 'fnval' if fv.t[0] == 'fn' else 'clo',
+                  list(fv.t[1]), fv.t[2], c=fv.c)
         return self.call(sig, None, e.args, e.where, exp)
 
     def assoc_sig(self, t, name, where, quiet=False):
@@ -1850,10 +1937,14 @@ class Checker:
                 f"argument {i + (0 if recv is not None else 1)} of {sig.label}"
             if fieldnames is not None:
                 what = f"field '{fieldnames[i]}' of {sig.label}"
+            pe = subst(pt, bind)
             if isinstance(a, Val):
                 v = a
+            elif a.kind == 'closure':
+                save, self.callee_tps = getattr(self, 'callee_tps', set()), tps
+                v = self.expr(a, pe if pt[0] == 'clo' else None)
+                self.callee_tps = save
             else:
-                pe = subst(pt, bind)
                 v = self.expr(a, pe if not has_tp(pe, tps) else ('slice', None, pe[2]) if pe[0] == 'slice' else None)
             if pt[0] == 'slice':
                 sv = self.as_slice(v)
@@ -1878,6 +1969,14 @@ class Checker:
                 if not unify(pt[1], v.t[1], bind, tps):
                     self.err(f"{what} is {tstr(subst(pt, bind))}, not {tstr(v.t)}", where)
                 self.hold(v, pt[2], cid, where)
+                vals[i] = ('b', v)
+            elif pt[0] == 'clo':
+                if v.t[0] == 'fn':
+                    v = self.coerce(v, ('clo',) + v.t[1:], where)
+                if v.t[0] != 'clo' or not unify(pt, v.t, bind, tps):
+                    self.err(f"{what} is {tstr(pe)}, not {tstr(v.t)}", where)
+                for r, m in getattr(v, 'caps', ()):     # rule 3: captures are held while the call runs
+                    self.hold(Val('', VOID, 'rv', root=r), m, cid, where)
                 vals[i] = ('b', v)
             else:
                 if v.t[0] == 'ref':
@@ -1919,6 +2018,9 @@ class Checker:
             text = f"{self.H('iassoc', sig.tpt, sig.label.split('.')[-1])}({', '.join(cs)})"
         elif sig.kind == 'fnval':
             text = f"({sig.c})({', '.join(cs)})"
+        elif sig.kind == 'clo':
+            ft = self.T(('fn', (PTR,) + tuple(sig.params), sig.ret))
+            text = f"(({ft})({sig.c}).fn)({', '.join([f'({sig.c}).env'] + cs)})"
         elif sig.kind == 'intr':
             if sig.loc:
                 cs.append(self.W(where))

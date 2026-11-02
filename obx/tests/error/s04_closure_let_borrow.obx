@@ -1,0 +1,8 @@
+// error: borrowed by
+fn run(f: &fn()) { f() }
+fn main() {
+    var xs = [1, 2]
+    let first = &xs[0]
+    run(fn() { xs[1] = 5 })
+    println(first)
+}

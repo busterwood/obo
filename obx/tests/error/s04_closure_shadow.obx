@@ -1,0 +1,5 @@
+// error: no shadowing
+fn main() {
+    let x = 1
+    let c = fn(x: int) { }
+}

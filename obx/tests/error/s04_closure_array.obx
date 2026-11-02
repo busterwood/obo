@@ -1,0 +1,5 @@
+// error: second class
+fn main() {
+    let c = fn(x: int) { }
+    let a = [c]
+}

@@ -19,6 +19,7 @@ typedef struct { obx_sblk* b; uint32_t off, len; } obx_str;
 #define RT_SP(s) ((const char*)(s).b->data + (s).off)
 typedef struct { void* data; int64_t len, cap; } obx_arr;
 typedef struct { void* data; int64_t len; } obx_slice;
+typedef struct { void* fn; void* env; } obx_clo;     // a closure: code and environment
 typedef __int128 i128;
 typedef unsigned __int128 u128;
 

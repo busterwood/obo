@@ -1,0 +1,37 @@
+// expect: 3
+// expect: 10
+// expect: 2
+// expect: 7
+// expect: 12
+// expect: first big 4
+// A closure uses the enclosing locals by borrow: shared, or mutable for a var
+// it assigns. Parameter and result types come from the expected closure type;
+// a named function and a fn value convert to a closure type.
+fn countIf(xs: &[int], pred: &fn(&int): bool): int {
+    var n = 0
+    for x in xs { if pred(&x) { n += 1 } }
+    return n
+}
+fn each(n: int, f: &fn(int)) { for i in 0..n { f(i) } }
+fn twice(f: &fn(int): int, x: int): int { return f(f(x)) }
+fn isEven(x: &int): bool { return x % 2 == 0 }
+fn inc(x: int): int { return x + 1 }
+fn main() {
+    let xs = [1, 2, 3, 4, 5]
+    let lim = 2
+    println(countIf(&xs, fn(x) { return x > lim }))
+    var total = 0
+    each(5, fn(i) { total += i })
+    println(total)
+    println(countIf(&xs, isEven))
+    let f: fn(int): int = inc
+    println(twice(f, 5))
+    let add = fn(x: int): int { return x + lim * 2 + 1 }
+    println(twice(add, 2))
+    var found = -1
+    each(5, fn(i) {
+        if found >= 0 { return }
+        if xs[i] > 3 { found = xs[i] }
+    })
+    println("first big " + found.toStr())
+}

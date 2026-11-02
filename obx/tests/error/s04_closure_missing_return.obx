@@ -1,0 +1,4 @@
+// error: may reach its end without a return
+fn main() {
+    let c = fn(): int { }
+}

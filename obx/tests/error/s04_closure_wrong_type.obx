@@ -1,0 +1,5 @@
+// error: not &fn
+fn run(f: &fn(int): int) { }
+fn main() {
+    run(fn(a: str): int { return 1 })
+}

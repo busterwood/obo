@@ -168,7 +168,7 @@ class N:
         return f"N({self.kind})"
 
 
-# Type syntax: ('ref', T, mut) ('arr', T) ('fnt', [T], R|None) ('name', [parts], [targs], where)
+# Type syntax: ('ref', T, mut) ('arr', T) ('fnt', [T], R|None, where) ('name', [parts], [targs], where)
 
 class Parser:
     def __init__(self, toks):
@@ -497,7 +497,7 @@ class Parser:
             self.sym(']')
             return ('arr', self.type())
         if self.atkw('fn'):
-            self.next()
+            fw = self.next().where
             self.sym('(')
             ps = []
             while not self.atsym(')'):
@@ -505,7 +505,7 @@ class Parser:
                 if not self.atsym(')'):
                     self.sym(',')
             self.sym(')')
-            return ('fnt', ps, self.typeopt())
+            return ('fnt', ps, self.typeopt(), fw)
         return self.namedtype()
 
     def namedtype(self):
@@ -811,6 +811,20 @@ class Parser:
             return N('arrlit', w, items=self.args('[', ']'))
         if t.k == 'id':
             return N('name', w, v=t.v)
+        if t.k == 'kw' and t.v == 'fn':          # a closure (SPEC 4.6)
+            self.sym('(')
+            ps = []
+            while not self.atsym(')'):
+                pw = self.peek().where
+                ps.append((self.ident(), self.typeopt(), pw))
+                if not self.atsym(')'):
+                    self.sym(',')
+            self.sym(')')
+            ret = self.typeopt()
+            save, self.nolit = self.nolit, 0
+            body = self.block()
+            self.nolit = save
+            return N('closure', w, params=ps, ret=ret, body=body)
         found = t.v if t.v not in ('', ';') else ('end of line' if t.v == ';' else t.k)
         if isinstance(found, bytes):
             found = 'a string'

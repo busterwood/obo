@@ -1,0 +1,5 @@
+// error: var
+fn main() {
+    let c = fn(x: int) { }
+    var d = c
+}

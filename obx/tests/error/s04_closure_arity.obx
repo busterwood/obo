@@ -1,0 +1,5 @@
+// error: takes 1 parameters
+fn run(f: &fn(int, int)) { }
+fn main() {
+    run(fn(a) { })
+}

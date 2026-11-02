@@ -1,0 +1,6 @@
+// error: twice in one call
+fn run(f: &fn(), xs: &[]int) { f() }
+fn main() {
+    var xs = [1]
+    run(fn() { append(mut &xs, 2) }, &xs)
+}

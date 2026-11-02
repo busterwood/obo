@@ -1,0 +1,20 @@
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: 13
+// A let closure keeps its captures borrowed while it is in scope; after its
+// block ends the variable is free again.
+fn main() {
+    var n = 0
+    {
+        let next = fn(): int {
+            n += 1
+            return n
+        }
+        println(next())
+        println(next())
+        println(next())
+    }
+    n += 10
+    println(n)
+}

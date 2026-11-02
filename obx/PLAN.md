@@ -56,8 +56,10 @@ names to indices.
 
 Pain points found while writing the library (stage 3 report, 2026-11-02).
 
-Decided by the user on 2026-11-02 and written into SPEC.md (compiler work
-pending, the round after the red-team fixes):
+Decided by the user on 2026-11-02 and written into SPEC.md; all implemented
+in the reference compiler (compiler round 2, 2026-11-02), with the library
+moved over (qualified variants, `never` stop helpers, renamed externs, the
+`POW10` constant table, `&fn` predicates, `Map.each`):
 
 - Records can be taken apart: `let P{a, b: x, c: _} = e` (9.1).
 - A `never` result type (5.3).

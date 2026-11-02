@@ -1,0 +1,23 @@
+// expect: 28
+// expect: ab
+// expect: 3
+// A closure inside a closure reaches the outer function's variables; a
+// closure parameter can itself be captured.
+fn each(n: int, f: &fn(int)) { for i in 0..n { f(i) } }
+fn apply(f: &fn(int): int, x: int): int {
+    var r = 0
+    each(1, fn(i) { r = f(x + i) })
+    return r
+}
+fn main() {
+    var total = 6
+    each(2, fn(i) {
+        each(2, fn(j) { total += i * 10 + j })
+    })
+    println(total)
+    var s = ""
+    let parts = ["a", "b"]
+    each(2, fn(i) { each(1, fn(j) { s += parts[i] }) })
+    println(s)
+    println(apply(fn(x) { return x + 2 }, 1))
+}

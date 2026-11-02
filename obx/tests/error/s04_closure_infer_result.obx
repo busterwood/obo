@@ -1,0 +1,5 @@
+// error: give the result type
+fn mapTo[T, U](xs: &[T], f: &fn(&T): U): []U { return [] }
+fn main() {
+    let ys = mapTo(&[1], fn(x) { return x })
+}

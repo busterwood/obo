@@ -1,0 +1,8 @@
+// error: was moved
+fn run(f: &fn()) { f() }
+fn take(xs: []int) {}
+fn main() {
+    var xs = [1]
+    take(xs)
+    run(fn() { xs = [2] })
+}

@@ -1,0 +1,7 @@
+// error: is fn(), not &fn()
+// A closure does not convert to a plain function value: it cannot be stored.
+type R = record { f: fn() }
+fn main() {
+    let c = fn() { }
+    let r = R{f: c}
+}
