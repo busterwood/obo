@@ -1,0 +1,7 @@
+// error: moved|borrow
+type X = record { a: []int }
+fn (x: &X) look(y: X) { println(len(x.a)) }
+fn main() {
+    let x = X{a: []}
+    x.look(x)
+}

@@ -1,0 +1,6 @@
+// error: twice
+const M = -2
+fn main() {
+    let x = 0 - 2
+    match x { M, -2 { println("neg") } else { println("?") } }
+}

@@ -1,0 +1,4 @@
+// error: value
+fn main() {
+    let x = match exit(7) { 1 { 1 } else { 2 } }
+}

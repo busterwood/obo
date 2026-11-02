@@ -1,0 +1,10 @@
+// expect: ab
+// expect: a
+fn main() {
+    var s = "a"
+    let c = true
+    let t = if c { s } else { "z" }
+    s = s + "b"
+    println(s)
+    println(t)
+}

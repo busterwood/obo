@@ -1,0 +1,8 @@
+// expect: ab
+// expect: other
+import "./k"
+fn name(x: int): str { return match x { k.A, k.B { "ab" } else { "other" } } }
+fn main() {
+    println(name(2))
+    println(name(3))
+}

@@ -1,0 +1,5 @@
+// error: closure
+fn main() {
+    let c = true
+    let f = if c { fn() { } } else { fn() { } }
+}

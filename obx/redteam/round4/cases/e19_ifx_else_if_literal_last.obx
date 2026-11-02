@@ -1,0 +1,9 @@
+// SPEC 7.8: an integer literal branch takes the type of the others
+// expect: 7
+fn main() {
+    let x: i32 = 7
+    let c = false
+    let d = true
+    let y = if c { 1 } else if d { x } else { 2 }
+    println(int(y))
+}

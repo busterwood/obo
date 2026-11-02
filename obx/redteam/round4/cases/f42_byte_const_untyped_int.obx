@@ -1,0 +1,6 @@
+// expect: ok
+const N = 200
+fn main() {
+    let b: byte = 200
+    match b { N { println("ok") } else { println("?") } }
+}

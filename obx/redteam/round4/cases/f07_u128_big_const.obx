@@ -1,0 +1,10 @@
+// expect: big
+// expect: max
+const BIG = 1 << 100
+const MAX: u128 = 340282366920938463463374607431768211455
+fn main() {
+    let x: u128 = 1 << 100
+    match x { BIG { println("big") } MAX { println("max") } else { println("?") } }
+    let y: u128 = MAX
+    match y { BIG { println("big") } MAX { println("max") } else { println("?") } }
+}

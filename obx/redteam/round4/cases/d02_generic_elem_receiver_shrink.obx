@@ -1,0 +1,10 @@
+// exit: 3
+type Pushy = interface { fn (mut &Self) push(v: int) }
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int) { append(mut &b.xs, v) }
+fn clear[T](ts: mut &[]T): int { ts = []; return 5 }
+fn h[T: Pushy](ts: mut &[]T) { ts[0].push(clear(ts)) }
+fn main() {
+    var bs = [B{xs: [1]}]
+    h(mut &bs)
+}

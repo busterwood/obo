@@ -1,0 +1,50 @@
+=== b01_value_args_trap_order
+// arguments left to right: the division traps first (exit 10)
+// exit: 10
+fn f(a: int, b: int) { println(a + b) }
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    f(10 / z, xs[5])
+}
+=== b02_operands_trap_order
+// operands left to right: the division traps first (exit 10)
+// exit: 10
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    println(10 / z + xs[5])
+}
+=== b03_value_args_trap_order_rev
+// exit: 3
+fn f(a: int, b: int) { println(a + b) }
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    f(xs[5], 10 / z)
+}
+=== b04_operands_trap_order_rev
+// exit: 3
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    println(xs[5] + 10 / z)
+}
+=== b05_late_receiver_vs_value_trap
+// receiver first: exit 3
+type B = record { v: int }
+fn (b: mut &B) add(n: int) { b.v += n }
+fn main() {
+    var bs = [B{v: 1}]
+    var z = 0
+    bs[4].add(10 / z)
+}
+=== b06_ifx_ternary_trap_order
+// exit: 10
+fn f(a: int, b: int) { println(a + b) }
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    let c = true
+    f(if c { 10 / z } else { 0 }, xs[5])
+}

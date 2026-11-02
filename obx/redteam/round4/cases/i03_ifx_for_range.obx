@@ -1,0 +1,7 @@
+// expect: 3
+fn main() {
+    let c = true
+    var n = 0
+    for i in 0..(if c { 3 } else { 5 }) { n += 1 }
+    println(n)
+}

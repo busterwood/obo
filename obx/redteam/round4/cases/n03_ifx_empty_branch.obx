@@ -1,0 +1,2 @@
+// error: expected|expression
+fn main() { let c = true; let x = if c { } else { 1 } }

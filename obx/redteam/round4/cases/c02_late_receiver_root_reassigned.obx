@@ -1,0 +1,11 @@
+// expect: 2
+// expect: 9
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int) { append(mut &b.xs, v) }
+fn reset(b: mut &B): int { b = B{xs: [1]}; return 9 }
+fn main() {
+    var b = B{xs: [5, 6, 7]}
+    b.push(reset(mut &b))
+    println(len(b.xs))
+    println(b.xs[1])
+}

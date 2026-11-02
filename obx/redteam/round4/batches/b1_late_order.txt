@@ -1,0 +1,179 @@
+=== a01_late_index_check_before_later_arg
+// SPEC 7.5: the index expressions of a late place run in position; the index
+// is checked there (and again at the call). g must not run.
+// exit: 3
+fn g(): int { println("g ran"); return 1 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs[5], g())
+    println("not reached")
+}
+=== a02_shared_index_check_before_later_arg
+// exit: 3
+fn g(): int { println("g ran"); return 1 }
+fn f(x: &int, y: int) { println(x + y) }
+fn main() {
+    var xs = [1, 2]
+    f(&xs[5], g())
+}
+=== a03_receiver_index_check_before_arg
+// exit: 3
+type B = record { v: int }
+fn (b: mut &B) add(n: int) { b.v += n }
+fn g(): int { println("g ran"); return 1 }
+fn main() {
+    var bs = [B{v: 1}]
+    bs[3].add(g())
+}
+=== a04_late_index_vs_div_zero
+// SPEC 7.5: left to right: the index trap (exit 3) comes before the division (exit 10).
+// exit: 3
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    var z = 0
+    f(mut &xs[5], 10 / z)
+}
+=== a05_div_zero_vs_late_index
+// left to right: the division traps first (exit 10)
+// exit: 10
+fn f(y: int, x: mut &int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    var z = 0
+    f(10 / z, mut &xs[5])
+}
+=== a06_two_late_indexes_both_bad
+// two late places: the first one's index traps first; the trap message names its position
+// exit: 3
+fn f(x: &int, y: &int) { println(x + y) }
+fn main() {
+    let xs = [1, 2]
+    let ys = [1]
+    f(&xs[7], &ys[9])
+}
+=== a07_value_arg_index_vs_late
+// exit: 3
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    var ys = [1, 2]
+    f(mut &xs[1], ys[9])
+}
+=== a08_late_index_rechecked_after_shrink
+// exit: 3
+fn shrink(xs: mut &[]int): int { xs = []; return 1 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs[1], shrink(mut &xs))
+}
+=== a09_late_index_side_effect_once
+// the index expression runs once, in position
+// expect: idx
+// expect: g
+// expect: 12
+fn idx(): int { println("idx"); return 1 }
+fn g(): int { println("g"); return 10 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs[idx()], g())
+    println(xs[1])
+}
+=== a10_late_index_overflow_in_index
+// the index expression traps in position: g must not run
+// exit: 10
+fn g(): int { println("g"); return 10 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    let m = 9223372036854775807
+    f(mut &xs[m + 1], g())
+}
+=== a11_late_neg_index
+// exit: 3
+fn g(): int { println("g"); return 10 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    var i = 0 - 1
+    f(mut &xs[i], g())
+}
+=== a12_late_nested_index_inner_bad
+// exit: 3
+type R = record { ys: []int }
+fn g(): int { println("g"); return 10 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var rs = [R{ys: [1]}]
+    f(mut &rs[0].ys[4], g())
+}
+=== a13_append_late_index_before_value
+// SPEC 7.5: append takes its borrow after the value; the index still runs (and is checked) first
+// exit: 3
+type R = record { v: []int }
+fn g(): int { println("g"); return 10 }
+fn main() {
+    var rs = [R{v: []}]
+    append(mut &rs[3].v, g())
+}
+=== a14_replace_late_index_before_value
+// exit: 3
+fn g(): str { println("g"); return "x" }
+fn main() {
+    var xs = ["a"]
+    let o = replace(mut &xs[2], g())
+}
+=== a15_compound_assign_index_before_rhs
+// SPEC 7.4: the index expressions run once, before b; checked again when stored
+// exit: 3
+fn g(): int { println("g"); return 10 }
+fn main() {
+    var xs = [1, 2]
+    xs[5] += g()
+}
+=== a16_late_then_trap_in_value_c_order
+// index first, left to right, then the overflowing negation
+// exit: 3
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    let m = 0 - 9223372036854775807 - 1
+    f(mut &xs[2], -m)
+}
+=== a17_two_late_order_output
+// expect: 3
+// expect: 1
+fn f(a: mut &int, b: mut &int) { a += 2; println(a); println(b) }
+fn main() {
+    var x = 1
+    var y = 1
+    f(mut &x, mut &y)
+}
+=== a18_late_index_var_changed_after
+// SPEC 7.5: i is read in position (1); bump changes i to 2 afterwards
+// expect: 0
+// expect: 5
+// expect: 0
+fn bump(i: mut &int): int { i += 1; return 5 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [0, 0, 0]
+    var i = 1
+    f(mut &xs[i], bump(mut &i))
+    println(xs[0])
+    println(xs[1])
+    println(xs[2])
+}
+=== a19_late_index_var_changed_after_shrink
+// i read as 1 in position; shrink leaves len 1: checked again -> exit 3
+// exit: 3
+fn shrink(xs: mut &[]int, i: mut &int): int { xs = [7]; i = 0; return 5 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [0, 0, 0]
+    var i = 1
+    f(mut &xs[i], shrink(mut &xs, mut &i))
+}

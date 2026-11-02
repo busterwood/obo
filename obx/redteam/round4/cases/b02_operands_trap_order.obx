@@ -1,0 +1,7 @@
+// operands left to right: the division traps first (exit 10)
+// exit: 10
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    println(10 / z + xs[5])
+}

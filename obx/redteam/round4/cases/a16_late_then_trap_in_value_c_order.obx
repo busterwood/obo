@@ -1,0 +1,8 @@
+// index first, left to right, then the overflowing negation
+// exit: 3
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    let m = 0 - 9223372036854775807 - 1
+    f(mut &xs[2], -m)
+}

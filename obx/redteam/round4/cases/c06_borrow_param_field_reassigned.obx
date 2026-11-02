@@ -1,0 +1,14 @@
+// p is a borrow parameter; p.f.g is late; a later argument replaces p.f
+// expect: 10
+// expect: 1
+type G = record { g: []int }
+type F = record { f: G }
+fn re(p: mut &F): int { p.f = G{g: [0]}; return 10 }
+fn add(g: mut &[]int, v: int) { g[0] += v }
+fn work(p: mut &F) { add(mut &p.f.g, re(p)) }
+fn main() {
+    var x = F{f: G{g: [5, 5, 5]}}
+    work(mut &x)
+    println(x.f.g[0])
+    println(len(x.f.g))
+}

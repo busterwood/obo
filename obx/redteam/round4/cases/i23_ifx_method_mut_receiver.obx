@@ -1,0 +1,7 @@
+// expect: 3
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int): int { append(mut &b.xs, v); return len(b.xs) }
+fn main() {
+    let c = true
+    println((if c { B{xs: [1, 2]} } else { B{xs: []} }).push(1))
+}

@@ -1,0 +1,14 @@
+// inside a closure, the captured variable is a late root
+// expect: 1
+// expect: 9
+fn shrink(xs: mut &[]int): int { xs = [0]; return 9 }
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var xs = [1, 2]
+    {
+        let c = fn() { put(mut &xs[0], shrink(mut &xs)) }
+        c()
+    }
+    println(len(xs))
+    println(xs[0])
+}

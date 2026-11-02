@@ -1,0 +1,11 @@
+// expect: 2
+fn main() {
+    let c = false
+    let x = if c {
+        1
+    }
+    else {
+        2
+    }
+    println(x)
+}

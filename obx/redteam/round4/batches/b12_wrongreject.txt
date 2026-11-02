@@ -1,0 +1,87 @@
+=== o01_paren_receiver_late
+// SPEC 7.5: the receiver place (xs[0]) is a local with an index: taken at the call
+// expect: 2
+type B = record { v: []int }
+fn (b: mut &B) push(k: int) { append(mut &b.v, k) }
+fn g(xs: mut &[]B): int { append(mut &xs, B{v: []}); return 1 }
+fn main() {
+    var xs = [B{v: [0]}]
+    (xs[0]).push(g(mut &xs))
+    println(len(xs[0].v))
+}
+=== o02_paren_borrow_arg_late
+// expect: 2
+type B = record { v: []int }
+fn put(b: mut &B, k: int) { append(mut &b.v, k) }
+fn g(xs: mut &[]B): int { append(mut &xs, B{v: []}); return 1 }
+fn main() {
+    var xs = [B{v: [0]}]
+    put(mut &(xs[0]), g(mut &xs))
+    println(len(xs[0].v))
+}
+=== o03_borrow_var_index_late
+// q is a borrow variable of an array; q[0] is a place of a local with an index
+// expect: 2
+type B = record { v: []int }
+fn (b: mut &B) push(k: int) { append(mut &b.v, k) }
+fn g(xs: mut &[]B): int { append(mut &xs, B{v: []}); return 1 }
+fn main() {
+    var xs = [B{v: [0]}]
+    {
+        let q = mut &xs
+        q[0].push(g(q))
+    }
+    println(len(xs[0].v))
+}
+=== o04_receiver_through_field_of_borrow_var
+// expect: 3
+type B = record { v: []int }
+type W = record { b: B }
+fn (b: mut &B) push(k: int) { append(mut &b.v, k) }
+fn g(w: mut &W): int { w.b = B{v: [7, 7]}; return 1 }
+fn main() {
+    var w = W{b: B{v: []}}
+    {
+        let q = mut &w
+        q.b.push(g(q))
+    }
+    println(len(w.b.v))
+}
+=== o05_compound_assign_late_style
+// SPEC 7.4: xs[i] += f(mut &xs) is allowed
+// expect: 11
+fn f(xs: mut &[]int): int { append(mut &xs, 0); return 10 }
+fn main() {
+    var xs = [1]
+    xs[0] += f(mut &xs)
+    println(xs[0])
+}
+=== o06_compound_field_of_borrow_param
+// expect: 11
+type P = record { n: int; xs: []int }
+fn f(p: mut &P): int { p.xs = []; return 10 }
+fn g(p: mut &P) { p.n += f(p) }
+fn main() {
+    var p = P{n: 1, xs: [1]}
+    g(mut &p)
+    println(p.n)
+}
+=== o07_late_receiver_from_ifx_index
+// expect: 2
+type B = record { v: []int }
+fn (b: mut &B) push(k: int) { append(mut &b.v, k) }
+fn g(xs: mut &[]B): int { append(mut &xs, B{v: []}); return 1 }
+fn main() {
+    var xs = [B{v: [0]}]
+    let c = true
+    xs[if c { 0 } else { 1 }].push(g(mut &xs))
+    println(len(xs[0].v))
+}
+=== o08_late_value_record_self_method_chain
+// expect: 21
+type P = value record { x: int }
+fn (p: mut &P) add(k: int): int { p.x += k; return p.x }
+fn main() {
+    var ps = [P{x: 0}]
+    println(ps[0].add(ps[0].add(ps[0].add(1) * 10) - 1))
+}

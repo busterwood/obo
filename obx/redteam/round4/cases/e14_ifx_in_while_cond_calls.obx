@@ -1,0 +1,10 @@
+// expect: drop 3
+// expect: 3
+type D = record { n: int }
+fn (d: mut &D) drop() { if d.n == 3 { println("drop 3") } }
+fn mk(n: int): D { return D{n: n} }
+fn main() {
+    var i = 0
+    while (if i < 3 { mk(i).n < 3 } else { mk(i).n < 0 }) { i += 1 }
+    println(i)
+}

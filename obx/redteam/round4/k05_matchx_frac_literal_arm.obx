@@ -1,0 +1,16 @@
+// SPEC 7.8: the expected type flows into each branch, and a literal branch
+// takes the type of the others. x_ifx re-checks a fractional literal branch
+// with the other branch's type (is_lit covers 'frac'), so
+// `if c { 1.5 } else { f }` is a float. x_matchx re-types only integer
+// literal arms: the arm 1.5 is first made a Decimal (std's fromFraction) and
+// the match is rejected ("the arms of a match expression have different
+// types, Decimal and float").
+// expect: 2.5
+// expect: 2.5
+fn main() {
+    let f: float = 2.5
+    let k = 2
+    let c = false
+    println(if c { 1.5 } else { f })
+    println(match k { 1 { 1.5 } else { f } })
+}

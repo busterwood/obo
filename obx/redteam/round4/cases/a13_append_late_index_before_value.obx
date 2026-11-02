@@ -1,0 +1,8 @@
+// SPEC 7.5: append takes its borrow after the value; the index still runs (and is checked) first
+// exit: 3
+type R = record { v: []int }
+fn g(): int { println("g"); return 10 }
+fn main() {
+    var rs = [R{v: []}]
+    append(mut &rs[3].v, g())
+}

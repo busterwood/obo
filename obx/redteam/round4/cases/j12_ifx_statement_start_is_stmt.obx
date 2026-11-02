@@ -1,0 +1,5 @@
+// error: expected|unreachable|value
+fn main() {
+    let c = true
+    if c { 1 } else { 2 } + 3
+}

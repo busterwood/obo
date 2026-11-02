@@ -1,0 +1,6 @@
+// expect: min
+const MIN: i128 = -170141183460469231731687303715884105728
+fn main() {
+    let x: i128 = MIN
+    match x { MIN { println("min") } 0 { println("0") } else { println("?") } }
+}

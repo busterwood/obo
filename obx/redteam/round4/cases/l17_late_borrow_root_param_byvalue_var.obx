@@ -1,0 +1,5 @@
+// expect: 2
+type X = record { a: []int }
+fn reset(x: mut &X): int { x = X{a: [1, 1]}; return 0 }
+fn f(var x: X): int { append(mut &x.a, reset(mut &x)); return len(x.a) - 1 }
+fn main() { println(f(X{a: []})) }

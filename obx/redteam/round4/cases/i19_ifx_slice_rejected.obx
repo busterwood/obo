@@ -1,0 +1,6 @@
+// error: slice
+fn main() {
+    let xs = [1, 2]
+    let c = true
+    let s = if c { xs[0..1] } else { xs[1..2] }
+}

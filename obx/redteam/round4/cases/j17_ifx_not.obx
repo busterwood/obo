@@ -1,0 +1,5 @@
+// expect: false
+fn main() {
+    let c = true
+    println(!if c { true } else { false })
+}

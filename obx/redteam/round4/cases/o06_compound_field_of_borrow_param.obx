@@ -1,0 +1,9 @@
+// expect: 11
+type P = record { n: int; xs: []int }
+fn f(p: mut &P): int { p.xs = []; return 10 }
+fn g(p: mut &P) { p.n += f(p) }
+fn main() {
+    var p = P{n: 1, xs: [1]}
+    g(mut &p)
+    println(p.n)
+}

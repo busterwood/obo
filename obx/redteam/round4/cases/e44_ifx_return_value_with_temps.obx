@@ -1,0 +1,6 @@
+// expect: drop t
+// expect: tx
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn g(c: bool): str { return if c { (D{s: "t"}).s + "x" } else { "n" } }
+fn main() { println(g(true)) }

@@ -1,0 +1,8 @@
+// SPEC 8: a local may shadow a top-level name; then K names the local, not a constant
+// error: K|constant
+const K = 3
+fn main() {
+    let K = 5
+    let x = 5
+    match x { K { println("K") } else { println("other") } }
+}

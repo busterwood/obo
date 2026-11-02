@@ -1,0 +1,6 @@
+// error: fit
+fn main() {
+    let x: byte = 3
+    let k = 3
+    let y = match k { 1 { 300 } else { x } }
+}

@@ -1,0 +1,7 @@
+// expect: 2
+type B = record { xs: []int }
+fn (b: &B) n(): int { return len(b.xs) }
+fn main() {
+    let c = true
+    println((if c { B{xs: [1, 2]} } else { B{xs: []} }).n())
+}

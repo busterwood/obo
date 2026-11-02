@@ -1,0 +1,9 @@
+// expect: 1
+type X = record { xs: []int }
+fn main() {
+    var x = X{xs: []}
+    let ys = [1]
+    var zs: [][]int = []
+    append(mut &zs, ys)
+    println(len(zs))
+}

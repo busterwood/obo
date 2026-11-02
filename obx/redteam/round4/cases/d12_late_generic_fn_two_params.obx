@@ -1,0 +1,6 @@
+// expect: 3
+fn both[T](a: mut &[]T, b: T): int { append(mut &a, b); return len(a) }
+fn main() {
+    var xs = [1]
+    println(both(mut &xs, both(mut &xs, 5) * 0))
+}

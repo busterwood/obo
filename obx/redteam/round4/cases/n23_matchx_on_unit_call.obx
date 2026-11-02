@@ -1,0 +1,3 @@
+// error: value|match
+fn g() { }
+fn main() { let x = match g() { 1 { 1 } else { 2 } } }

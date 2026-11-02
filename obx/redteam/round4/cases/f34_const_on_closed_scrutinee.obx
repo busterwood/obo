@@ -1,0 +1,8 @@
+// a single name on a closed scrutinee is a variant: a constant is an error
+// error: variant|constant
+const K = 1
+type E = closed { A; B }
+fn main() {
+    let e = E.A
+    match e { K { println("k") } else { println("?") } }
+}

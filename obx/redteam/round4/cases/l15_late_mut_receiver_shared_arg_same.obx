@@ -1,0 +1,7 @@
+// error: twice|borrow
+type B = record { xs: []int }
+fn (b: mut &B) absorb(o: &B) { }
+fn main() {
+    var b = B{xs: []}
+    b.absorb(&b)
+}

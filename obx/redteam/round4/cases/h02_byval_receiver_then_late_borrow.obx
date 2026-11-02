@@ -1,0 +1,7 @@
+// error: moved|borrow
+type X = record { a: str }
+fn (x: X) eat(r: &str) { println(r) }
+fn main() {
+    let x = X{a: "a"}
+    x.eat(&x.a)
+}

@@ -1,0 +1,11 @@
+// expect: got a
+// expect: drop a
+// expect: end
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+fn take(d: D) { println("got " + d.tag) }
+fn main() {
+    let c = true
+    take(if c { D{tag: "a"} } else { D{tag: "b"} })
+    println("end")
+}

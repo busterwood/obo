@@ -1,0 +1,8 @@
+// left to right: the division traps first (exit 10)
+// exit: 10
+fn f(y: int, x: mut &int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    var z = 0
+    f(10 / z, mut &xs[5])
+}

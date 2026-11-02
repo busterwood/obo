@@ -1,0 +1,8 @@
+// SPEC 7.5: a copy-type argument is copied when it is evaluated, so f(mut &n, n.v) does not conflict
+// expect: 2
+type P = value record { n: int }
+fn f(r: mut &P, p: P) { r.n += p.n; println(r.n) }
+fn main() {
+    var p = P{n: 1}
+    f(mut &p, p)
+}

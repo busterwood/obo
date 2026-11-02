@@ -1,0 +1,10 @@
+// error: moved on one path
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+type Opt[T] = closed { Has(T); Nope }
+fn get[T](o: Opt[T], d: T): T { return match move(o) { Opt.Has(x) { x } Opt.Nope { d } } }
+fn main() {
+    let r = get(Opt[D].Nope, D{s: "b"})
+    println(r.s)
+    let q = D{s: "a"}
+}

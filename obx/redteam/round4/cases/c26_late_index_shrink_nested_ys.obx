@@ -1,0 +1,8 @@
+// exit: 3
+type Y = record { ys: []int }
+fn shrink(xs: mut &[]Y): int { xs[1].ys = [1]; return 9 }
+fn put(y: mut &int, v: int) { y = v }
+fn main() {
+    var xs = [Y{ys: [0, 0]}, Y{ys: [1, 1]}]
+    put(mut &xs[1].ys[1], shrink(mut &xs))
+}

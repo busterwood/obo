@@ -1,0 +1,13 @@
+// expect: 2
+// expect: 5
+type Pushy = interface { fn (mut &Self) push(v: int) }
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int) { append(mut &b.xs, v) }
+fn grow[T](ts: mut &[]T, t: T): int { append(mut &ts, t); return 5 }
+fn h[T: Pushy](ts: mut &[]T, extra: T) { ts[0].push(grow(ts, extra)) }
+fn main() {
+    var bs = [B{xs: [1]}]
+    h(mut &bs, B{xs: []})
+    println(len(bs[0].xs))
+    println(bs[0].xs[1])
+}

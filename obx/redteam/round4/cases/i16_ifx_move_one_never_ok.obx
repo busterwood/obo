@@ -1,0 +1,8 @@
+// expect: a
+type D = record { s: str }
+fn main() {
+    let x = D{s: "a"}
+    let c = true
+    let r = if c { x } else { panic("p") }
+    println(r.s)
+}

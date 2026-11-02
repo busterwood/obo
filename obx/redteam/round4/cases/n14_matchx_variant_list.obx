@@ -1,0 +1,3 @@
+// error: variant|literal|closed
+type E = closed { A; B }
+fn main() { let e = E.A; let x = match e { E.A, E.B { 1 } } }

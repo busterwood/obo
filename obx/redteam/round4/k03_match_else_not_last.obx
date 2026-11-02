@@ -1,0 +1,11 @@
+// SPEC 3: `"match" expr "{" { arm } [ "else" block ] "}"`: else is the last
+// arm, at most once. The parser takes else anywhere (and twice); the checker
+// emits `{ ... } else if (...)` and the C compiler fails: "obxc: internal
+// error: the C compiler failed". Pre-existing for the statement; the match
+// expression (SPEC 7.8) inherits it: match k { else { "e" } 2 { "2" } }.
+// error: else
+fn main() {
+    let k = 2
+    let s = match k { else { "e" } 2 { "2" } }
+    println(s)
+}

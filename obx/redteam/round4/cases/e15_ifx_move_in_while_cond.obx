@@ -1,0 +1,8 @@
+// error: move|while
+type D = record { n: int }
+fn eat(d: D): bool { return false }
+fn main() {
+    let d = D{n: 1}
+    let c = true
+    while if c { eat(d) } else { eat(d) } { }
+}

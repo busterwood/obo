@@ -1,0 +1,8 @@
+// expect: 6
+type P = record { xs: []int }
+fn (p: mut &P) add(v: int): int { append(mut &p.xs, v); return len(p.xs) }
+fn go(p: mut &P): int { return p.add(p.add(p.add(1) + 1) + 1) }
+fn main() {
+    var p = P{xs: [1, 2, 3]}
+    println(go(mut &p))
+}

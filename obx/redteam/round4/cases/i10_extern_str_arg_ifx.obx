@@ -1,0 +1,6 @@
+// expect: 3
+extern "c" fn strlen(s: str): int
+fn main() {
+    let c = true
+    println(strlen(if c { "abc" } else { "de" }))
+}

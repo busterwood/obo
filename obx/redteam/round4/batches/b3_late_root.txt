@@ -1,0 +1,352 @@
+=== c01_late_root_reassigned_by_later_arg
+// the borrow is taken at the call: it sees the new x
+// expect: 107
+// expect: 7
+type X = record { a: []int; n: int }
+fn reset(x: mut &X): int { x = X{a: [100], n: 7}; return 7 }
+fn f(a: mut &[]int, k: int) { a[0] += k }
+fn main() {
+    var x = X{a: [1, 2, 3], n: 0}
+    f(mut &x.a, reset(mut &x))
+    println(x.a[0])
+    println(x.n)
+}
+=== c02_late_receiver_root_reassigned
+// expect: 2
+// expect: 9
+type B = record { xs: []int }
+fn (b: mut &B) push(v: int) { append(mut &b.xs, v) }
+fn reset(b: mut &B): int { b = B{xs: [1]}; return 9 }
+fn main() {
+    var b = B{xs: [5, 6, 7]}
+    b.push(reset(mut &b))
+    println(len(b.xs))
+    println(b.xs[1])
+}
+=== c03_late_field_of_elem_replaced_whole_array
+// expect: 1
+// expect: 42
+type R = record { v: []str }
+fn swapall(rs: mut &[]R): str { rs = [R{v: []}, R{v: []}]; return "42" }
+fn main() {
+    var rs = [R{v: ["a"]}, R{v: ["b"]}]
+    append(mut &rs[1].v, swapall(mut &rs))
+    println(len(rs[1].v))
+    println(rs[1].v[0])
+}
+=== c04_late_elem_replaced_by_replace
+// expect: old
+// expect: new!
+fn rep(xs: mut &[]str): str { let o = replace(mut &xs[0], "new"); return o }
+fn f(s: mut &str, t: str) { println(t); s = s + "!" }
+fn main() {
+    var xs = ["old"]
+    f(mut &xs[0], rep(mut &xs))
+    println(xs[0])
+}
+=== c05_late_nested_field_swap
+// expect: 4
+// expect: 1
+type In = record { ys: []int }
+type Out = record { a: In; b: In }
+fn sw(o: mut &Out): int { let t = replace(mut &o.a, In{ys: [7, 7, 7]}); o.b = t; return 3 }
+fn f(ys: mut &[]int, k: int) { append(mut &ys, k) }
+fn main() {
+    var o = Out{a: In{ys: [1]}, b: In{ys: [2, 2]}}
+    f(mut &o.a.ys, sw(mut &o))
+    println(len(o.a.ys))
+    println(len(o.b.ys))
+}
+=== c06_borrow_param_field_reassigned
+// p is a borrow parameter; p.f.g is late; a later argument replaces p.f
+// expect: 10
+// expect: 1
+type G = record { g: []int }
+type F = record { f: G }
+fn re(p: mut &F): int { p.f = G{g: [0]}; return 10 }
+fn add(g: mut &[]int, v: int) { g[0] += v }
+fn work(p: mut &F) { add(mut &p.f.g, re(p)) }
+fn main() {
+    var x = F{f: G{g: [5, 5, 5]}}
+    work(mut &x)
+    println(x.f.g[0])
+    println(len(x.f.g))
+}
+=== c07_borrow_var_passed_later_uses_root
+// let q = mut &p: q is passed late; a later argument uses p: p is frozen by q
+// error: borrowed
+type P = record { n: int }
+fn bump(p: mut &P): int { p.n += 1; return p.n }
+fn f(a: mut &P, k: int) { a.n += k }
+fn main() {
+    var p = P{n: 0}
+    let q = mut &p
+    f(q, bump(mut &p))
+}
+=== c08_borrow_var_passed_later_uses_q
+// expect: 2
+type P = record { n: int }
+fn bump(p: mut &P): int { p.n += 1; return p.n }
+fn f(a: mut &P, k: int) { a.n += k }
+fn main() {
+    var p = P{n: 0}
+    {
+        let q = mut &p
+        f(q, bump(q))
+    }
+    println(p.n)
+}
+=== c09_closure_assigns_root_later_arg
+// a closure argument holds its captures; the late borrow of x is taken after run returns
+// expect: 99
+type X = record { v: []int }
+fn run(f: &fn()): int { f(); return 1 }
+fn g(a: &[]int, k: int) { println(a[0] * 99 + k - 1) }
+fn main() {
+    var x = X{v: [5]}
+    g(&x.v, run(fn() { x = X{v: [1]} }))
+}
+=== c10_closure_arg_before_late
+// the closure is held from its position: a later late borrow of x conflicts
+// error: borrowed|twice
+type X = record { v: []int }
+fn run2(f: &fn(), a: &[]int) { f(); println(a[0]) }
+fn main() {
+    var x = X{v: [5]}
+    run2(fn() { x = X{v: [1]} }, &x.v)
+}
+=== c11_late_then_closure_arg_conflict
+// the closure argument (taken in position) mutably captures x; the late borrow is taken at the call: conflict
+// error: borrowed|twice
+type X = record { v: []int }
+fn run2(a: &[]int, f: &fn()) { f(); println(a[0]) }
+fn main() {
+    var x = X{v: [5]}
+    run2(&x.v, fn() { x = X{v: [1]} })
+}
+=== c12_late_then_let_closure_arg
+// a let closure passed as an argument: it captures x mutably and x is frozen while it lives
+// error: borrowed|closure
+type X = record { v: []int }
+fn run2(a: &[]int, f: &fn()) { f(); println(a[0]) }
+fn main() {
+    var x = X{v: [5]}
+    let c = fn() { x = X{v: [1]} }
+    run2(&x.v, c)
+}
+=== c13_late_root_moved_later
+// error: moved
+type X = record { v: []int }
+fn eat(x: X): int { return 1 }
+fn g(a: &[]int, k: int) { println(k) }
+fn main() {
+    let x = X{v: [5]}
+    g(&x.v, eat(x))
+}
+=== c14_late_root_moved_in_ifx
+// error: moved
+type X = record { v: []int }
+fn eat(x: X): int { return 1 }
+fn g(a: &[]int, k: int) { println(k) }
+fn main() {
+    let x = X{v: [5]}
+    let c = true
+    g(&x.v, if c { eat(x) } else { eat(x) })
+}
+=== c15_late_root_moved_in_matchx
+// error: moved
+type X = record { v: []int }
+fn eat(x: X): int { return 1 }
+fn g(a: &[]int, k: int) { println(k) }
+fn main() {
+    let x = X{v: [5]}
+    let k = 1
+    g(&x.v, match k { 1 { eat(x) } else { eat(x) } })
+}
+=== c16_late_root_moved_consuming_match
+// error: moved
+type E = closed { A([]int); B }
+fn g(a: &E, k: int) { println(k) }
+fn main() {
+    let e = E.A([1])
+    g(&e, match move(e) { E.A(v) { len(v) } E.B { 0 } })
+}
+=== c17_late_root_moved_by_move_builtin
+// error: moved
+type X = record { v: []int }
+fn eat(x: X): int { return 1 }
+fn g(a: &[]int, k: int) { println(k) }
+fn main() {
+    var x = X{v: [5]}
+    g(&x.v, eat(move(x)))
+}
+=== c18_late_root_moved_reassigned_in_closure
+// a closure cannot assign a moved variable... x is moved by eat then assigned by run: is the borrow sound?
+// error: moved
+type X = record { v: []int }
+fn eat(x: X): int { return 1 }
+fn run(f: &fn()): int { f(); return 2 }
+fn g(a: &[]int, k: int, j: int) { println(a[0]) }
+fn main() {
+    var x = X{v: [5]}
+    g(&x.v, eat(move(x)), run(fn() { x = X{v: [7]} }))
+}
+=== c19_receiver_value_record_late
+// expect: 11
+// expect: 1
+type P = value record { x: int; y: int }
+fn (p: mut &P) addX(d: int) { p.x += d }
+fn reset(p: mut &P): int { p = P{x: 1, y: 1}; return 10 }
+fn main() {
+    var p = P{x: 100, y: 100}
+    p.addX(reset(mut &p))
+    println(p.x)
+    println(p.y)
+}
+=== c20_value_record_in_array_receiver
+// expect: 2
+// expect: 7
+type P = value record { x: int }
+fn (p: mut &P) addX(d: int) { p.x += d }
+fn grow(ps: mut &[]P): int { var i = 0; while i < 50 { append(mut &ps, P{x: 0}); i += 1 }; return 7 }
+fn main() {
+    var ps = [P{x: 0}, P{x: 0}]
+    ps[1].addX(grow(mut &ps))
+    println(len(ps) - 50)
+    println(ps[1].x)
+}
+=== c21_late_shared_then_mut_later
+// &xs[0] late shared; mut &xs later as a normal argument: taken at the call: conflict
+// error: borrowed|twice
+fn f(a: &int, b: mut &[]int) { println(a) }
+fn main() {
+    var xs = [1]
+    f(&xs[0], mut &xs)
+}
+=== c22_late_mut_then_shared_value
+// expect: 2
+fn f(a: mut &int, b: int) { a += b }
+fn main() {
+    var xs = [1]
+    f(mut &xs[0], xs[0])
+    println(xs[0])
+}
+=== c23_two_late_shared_same
+// expect: 2
+fn f(a: &int, b: &int) { println(a + b) }
+fn main() {
+    let xs = [1]
+    f(&xs[0], &xs[0])
+}
+=== c24_late_disjoint_fields
+// expect: 3
+type P = record { a: int; b: int }
+fn f(a: mut &int, b: mut &int) { a = 1; b = 2; println(a + b) }
+fn main() {
+    var p = P{a: 0, b: 0}
+    f(mut &p.a, mut &p.b)
+}
+=== c25_late_index_grow_nested_ys
+// expect: 1
+// expect: 9
+type Y = record { ys: []int }
+fn grow(xs: mut &[]Y): int {
+    var i = 0
+    while i < 40 { append(mut &xs[0].ys, i); append(mut &xs, Y{ys: [i]}); i += 1 }
+    return 9
+}
+fn put(y: mut &int, v: int) { y = v }
+fn main() {
+    var xs = [Y{ys: [0, 0]}, Y{ys: [1, 1]}]
+    put(mut &xs[1].ys[1], grow(mut &xs))
+    println(xs[1].ys[0])
+    println(xs[1].ys[1])
+}
+=== c26_late_index_shrink_nested_ys
+// exit: 3
+type Y = record { ys: []int }
+fn shrink(xs: mut &[]Y): int { xs[1].ys = [1]; return 9 }
+fn put(y: mut &int, v: int) { y = v }
+fn main() {
+    var xs = [Y{ys: [0, 0]}, Y{ys: [1, 1]}]
+    put(mut &xs[1].ys[1], shrink(mut &xs))
+}
+=== c27_late_receiver_chained_field_of_index
+// expect: 3
+type K = record { m: []int }
+type A = record { ks: []K }
+fn (k: mut &K) add(v: int) { append(mut &k.m, v) }
+fn clear(a: mut &A): int { a.ks = [K{m: [1]}, K{m: [2]}]; return 3 }
+fn main() {
+    var a = A{ks: [K{m: []}, K{m: []}]}
+    a.ks[1].add(clear(mut &a))
+    println(a.ks[1].m[1])
+}
+=== c28_append_late_value_grows_same_array
+// expect: 3
+// expect: 7
+fn g(xs: mut &[]int): int { append(mut &xs, 1); append(mut &xs, 2); return 7 }
+fn main() {
+    var xs: []int = []
+    append(mut &xs, g(mut &xs))
+    println(len(xs))
+    println(xs[2])
+}
+=== c29_append_late_nested_value
+// expect: 1
+// expect: 2
+type R = record { v: []int }
+fn g(rs: mut &[]R): int { var i = 0; while i < 30 { append(mut &rs, R{v: []}); i += 1 }; return 2 }
+fn main() {
+    var rs = [R{v: []}, R{v: [1]}]
+    append(mut &rs[1].v, g(mut &rs))
+    println(rs[1].v[0])
+    println(rs[1].v[1])
+}
+=== c30_replace_late_value_drops_target
+// expect: new
+// expect: old2
+fn g(xs: mut &[]str): str { xs[0] = "old2"; return "new" }
+fn main() {
+    var xs = ["old"]
+    let o = replace(mut &xs[0], g(mut &xs))
+    println(xs[0])
+    println(o)
+}
+=== c31_replace_late_value_clears_array
+// exit: 3
+fn g(xs: mut &[]str): str { xs = []; return "new" }
+fn main() {
+    var xs = ["old"]
+    let o = replace(mut &xs[0], g(mut &xs))
+    println(o)
+}
+=== c32_replace_whole_root_late
+// expect: b
+// expect: x
+type B = record { s: str }
+fn g(b: mut &B): B { let o = replace(mut &b, B{s: "x"}); return B{s: "b"} }
+fn main() {
+    var b = B{s: "a"}
+    let o = replace(mut &b, g(mut &b))
+    println(b.s)
+    println(o.s)
+}
+=== c33_pop_mixed_late
+// expect: 2
+// expect: 1
+fn f(a: mut &[]int, v: int) { append(mut &a, v) }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs, pop(mut &xs))
+    println(xs[1])
+    println(len(xs) - 1)
+}
+=== c35_swap_call_later_arg
+// expect: b
+fn sw(xs: mut &[]str): int { swap(mut &xs, 0, 1); return 1 }
+fn f(a: mut &str, t: int) { println(a) }
+fn main() {
+    var xs = ["a", "b"]
+    f(mut &xs[0], sw(mut &xs))
+}

@@ -1,0 +1,8 @@
+// expect: drop c
+// expect: yes
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn main() {
+    let r = if (D{s: "c"}).s == "c" { "yes" } else { "no" }
+    println(r)
+}

@@ -1,0 +1,14 @@
+// SPEC 7.5: i is read in position (1); bump changes i to 2 afterwards
+// expect: 0
+// expect: 5
+// expect: 0
+fn bump(i: mut &int): int { i += 1; return 5 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [0, 0, 0]
+    var i = 1
+    f(mut &xs[i], bump(mut &i))
+    println(xs[0])
+    println(xs[1])
+    println(xs[2])
+}

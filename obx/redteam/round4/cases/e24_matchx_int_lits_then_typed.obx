@@ -1,0 +1,7 @@
+// expect: 300
+fn main() {
+    let x: u32 = 300
+    let k = 3
+    let y = match k { 1 { 1 } 2 { 2 } else { x } }
+    println(int(y))
+}

@@ -1,0 +1,2 @@
+// error: expected|literal|true
+fn main() { let k = 1; match k { true { } else { } } }

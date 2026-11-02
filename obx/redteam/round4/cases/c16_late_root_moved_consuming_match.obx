@@ -1,0 +1,7 @@
+// error: moved
+type E = closed { A([]int); B }
+fn g(a: &E, k: int) { println(k) }
+fn main() {
+    let e = E.A([1])
+    g(&e, match move(e) { E.A(v) { len(v) } E.B { 0 } })
+}

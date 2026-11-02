@@ -1,0 +1,7 @@
+// error: constant|record|table
+type P = value record { x: int }
+const Q: P = P{x: 1}
+fn main() {
+    let x = 1
+    match x { Q { println("q") } else { println("?") } }
+}

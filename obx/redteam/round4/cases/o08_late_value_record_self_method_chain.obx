@@ -1,0 +1,7 @@
+// expect: 21
+type P = value record { x: int }
+fn (p: mut &P) add(k: int): int { p.x += k; return p.x }
+fn main() {
+    var ps = [P{x: 0}]
+    println(ps[0].add(ps[0].add(ps[0].add(1) * 10) - 1))
+}

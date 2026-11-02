@@ -1,0 +1,312 @@
+=== f01_untyped_char_const_byte
+// SPEC 8: a char constant is a byte: x == C type-checks
+// expect: a
+const C = 'a'
+fn main() {
+    let b: byte = 'a'
+    match b { C { println("a") } else { println("?") } }
+}
+=== f02_char_const_on_int_rejected
+// a char constant is a byte; x == C with x: int does not type-check
+// error: byte|int
+const C = 'a'
+fn main() {
+    let n = 97
+    match n { C { println("a") } else { println("?") } }
+}
+=== f03_char_literal_on_int
+// SPEC 8: x == 'a' with x: int does not type-check (operands int and byte); a literal arm should not either
+// error: byte|int|char
+fn main() {
+    let n = 97
+    match n { 'a' { println("a") } else { println("?") } }
+}
+=== f04_dup_char_and_int_on_byte
+// error: twice
+fn main() {
+    let b: byte = 'a'
+    match b { 'a' { println("a") } 97 { println("97") } else { println("?") } }
+}
+=== f05_dup_const_and_literal_str
+// error: twice
+const A = "a"
+fn main() {
+    let s = "a"
+    match s { A { println("A") } "a" { println("a") } else { println("?") } }
+}
+=== f06_dup_str_escape
+// error: twice
+const A = "\x41"
+fn main() {
+    let s = "A"
+    match s { A, "A" { println("A") } else { println("?") } }
+}
+=== f07_u128_big_const
+// expect: big
+// expect: max
+const BIG = 1 << 100
+const MAX: u128 = 340282366920938463463374607431768211455
+fn main() {
+    let x: u128 = 1 << 100
+    match x { BIG { println("big") } MAX { println("max") } else { println("?") } }
+    let y: u128 = MAX
+    match y { BIG { println("big") } MAX { println("max") } else { println("?") } }
+}
+=== f08_i128_min_const
+// expect: min
+const MIN: i128 = -170141183460469231731687303715884105728
+fn main() {
+    let x: i128 = MIN
+    match x { MIN { println("min") } 0 { println("0") } else { println("?") } }
+}
+=== f09_i128_neg_untyped
+// expect: neg
+const N = -(1 << 100)
+fn main() {
+    let x: i128 = -(1 << 100)
+    match x { N { println("neg") } else { println("?") } }
+}
+=== f10_untyped_too_big_for_int
+// error: fit
+const N = 1 << 70
+fn main() {
+    let x = 3
+    match x { N { println("n") } else { println("?") } }
+}
+=== f11_untyped_negative_for_u32
+// error: fit
+const N = -1
+fn main() {
+    let x: u32 = 3
+    match x { N { println("n") } else { println("?") } }
+}
+=== f12_typed_wrong_width
+// error: i32|int
+const N: i32 = 3
+fn main() {
+    let x = 3
+    match x { N { println("n") } else { println("?") } }
+}
+=== f13_int_min_const
+// expect: min
+const MIN = -9223372036854775808
+fn main() {
+    let x = 0 - 9223372036854775807 - 1
+    match x { MIN { println("min") } else { println("?") } }
+}
+=== f14_u64_max_const
+// expect: max
+const MAX: u64 = 18446744073709551615
+fn main() {
+    let x: u64 = 18446744073709551615
+    match x { MAX, 0 { println("max") } else { println("?") } }
+}
+=== f15_const_shadowed_by_local
+// SPEC 8: a local may shadow a top-level name; then K names the local, not a constant
+// error: K|constant
+const K = 3
+fn main() {
+    let K = 5
+    let x = 5
+    match x { K { println("K") } else { println("other") } }
+}
+=== f16_const_shadowed_by_param
+// error: K|constant
+const K = 3
+fn f(K: int, x: int) {
+    match x { K { println("K") } else { println("other") } }
+}
+fn main() { f(5, 3) }
+=== f17_const_shadowed_in_list
+// error: K|constant
+const K = 3
+fn main() {
+    let K = 5
+    let x = 5
+    match x { K, 9 { println("K") } else { println("other") } }
+}
+=== f18_const_in_closure_shadow
+// error: K|constant
+const K = 3
+fn main() {
+    let K = 5
+    let f = fn(x: int) { match x { K { println("K") } else { println("other") } } }
+    f(3)
+}
+=== f19_const_expr_folded
+// expect: hit
+const A = 2
+const B = A * 3 + 1
+fn main() {
+    let x = 7
+    match x { B { println("hit") } A { println("a") } else { println("?") } }
+}
+=== f20_dup_const_folded_values
+// error: twice
+const A = 2
+const B = 4 - 2
+fn main() {
+    let x = 7
+    match x { A { println("a") } B { println("b") } else { println("?") } }
+}
+=== f21_const_str_concat
+// expect: ab
+const S = "a" + "b"
+fn main() {
+    let s = "ab"
+    match s { S { println("ab") } else { println("?") } }
+}
+=== f22_const_str_nul
+// expect: nul
+const S = "a\x00b"
+fn main() {
+    let s = "a\x00b"
+    match s { "a" { println("a") } S { println("nul") } else { println("?") } }
+}
+=== f23_const_byte_typed_on_byte
+// expect: ok
+const B: byte = 255
+fn main() {
+    let b: byte = 255
+    match b { B { println("ok") } else { println("?") } }
+}
+=== f24_dup_byte_const_literal
+// error: twice
+const B: byte = 255
+fn main() {
+    let b: byte = 255
+    match b { B { println("ok") } 255 { println("x") } else { println("?") } }
+}
+=== f25_variant_name_const_clash
+// a constant named like a prelude variant
+// error: None|constant|variant
+fn main() {
+    let x = 1
+    match x { None { println("n") } else { println("?") } }
+}
+=== f26_const_table_arm
+// error: table
+const T: []int = [1, 2]
+fn main() {
+    let x = 1
+    match x { T { println("t") } else { println("?") } }
+}
+=== f27_frac_const_arm
+// error: constant|frac
+const F = 1.5
+fn main() {
+    let x = 1
+    match x { F { println("f") } else { println("?") } }
+}
+=== f28_float_const_arm_on_int
+// error: float|int
+const F: float = 1.0
+fn main() {
+    let x = 1
+    match x { F { println("f") } else { println("?") } }
+}
+=== f29_bool_const_arm
+// error: bool|match
+const T = true
+fn main() {
+    let x = 1
+    match x { T { println("f") } else { println("?") } }
+}
+=== f30_matchx_with_consts
+// expect: two
+const TWO = 2
+const THREE: int = 3
+fn main() {
+    let k = 2
+    let s = match k { TWO { "two" } THREE, 4 { "three" } else { "?" } }
+    println(s)
+}
+=== f31_const_in_list_dup_within
+// error: twice
+const A = 1
+fn main() {
+    let k = 2
+    match k { A, 1 { println("a") } else { println("?") } }
+}
+=== f32_const_type_alias
+// expect: ok
+type Code = i32
+const OK: Code = 7
+fn main() {
+    let c: i32 = 7
+    match c { OK { println("ok") } else { println("?") } }
+}
+=== f33_const_record_arm
+// error: constant|record|table
+type P = value record { x: int }
+const Q: P = P{x: 1}
+fn main() {
+    let x = 1
+    match x { Q { println("q") } else { println("?") } }
+}
+=== f34_const_on_closed_scrutinee
+// a single name on a closed scrutinee is a variant: a constant is an error
+// error: variant|constant
+const K = 1
+type E = closed { A; B }
+fn main() {
+    let e = E.A
+    match e { K { println("k") } else { println("?") } }
+}
+=== f35_const_list_on_closed
+// error: literal|closed|constant
+const K = 1
+type E = closed { A; B }
+fn main() {
+    let e = E.A
+    match e { K, 2 { println("k") } else { println("?") } }
+}
+=== f36_const_u32_untyped_max
+// expect: hit
+const M = 4294967295
+fn main() {
+    let x: u32 = 4294967295
+    match x { M { println("hit") } else { println("?") } }
+}
+=== f37_const_bitnot
+// expect: hit
+const M: u32 = ~0
+fn main() {
+    let x: u32 = 4294967295
+    match x { M { println("hit") } else { println("?") } }
+}
+=== f38_neg_literal_arm_u32
+// error: fit
+fn main() {
+    let x: u32 = 3
+    match x { -1 { println("n") } else { println("?") } }
+}
+=== f39_const_name_same_as_type
+// expect: ?
+const E = 1
+fn main() {
+    let x = 2
+    match x { E { println("e") } else { println("?") } }
+}
+=== f40_huge_untyped_const_on_u128
+// error: constant
+const H = 1 << 128
+fn main() {
+    let x: u128 = 0
+    match x { H { println("h") } else { println("?") } }
+}
+=== f41_dup_i128_vs_u128_wrap
+// distinct values on i128: -1 and a big positive constant
+// expect: neg
+const BIG: i128 = 170141183460469231731687303715884105727
+fn main() {
+    let x: i128 = -1
+    match x { BIG { println("big") } -1 { println("neg") } else { println("?") } }
+}
+=== f42_byte_const_untyped_int
+// expect: ok
+const N = 200
+fn main() {
+    let b: byte = 200
+    match b { N { println("ok") } else { println("?") } }
+}

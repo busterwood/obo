@@ -1,0 +1,3 @@
+// expect: min
+const K = -170141183460469231731687303715884105728
+fn main() { let k: i128 = K; match k { K { println("min") } else { } } }

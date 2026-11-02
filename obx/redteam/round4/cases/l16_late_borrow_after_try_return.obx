@@ -1,0 +1,12 @@
+// expect: drop a
+// expect: err
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn p(): Result[int, str] { return Err("e") }
+fn use(d: mut &D, k: int) { }
+fn run(): Result[int, str] {
+    var d = D{s: "a"}
+    use(mut &d, try p())
+    return Ok(1)
+}
+fn main() { match run() { Ok(n) { println(n) } Err(e) { println("err") } } }

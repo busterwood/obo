@@ -1,0 +1,10 @@
+// expect: 1
+// expect: 2
+type R = record { v: []int }
+fn g(rs: mut &[]R): int { var i = 0; while i < 30 { append(mut &rs, R{v: []}); i += 1 }; return 2 }
+fn main() {
+    var rs = [R{v: []}, R{v: [1]}]
+    append(mut &rs[1].v, g(mut &rs))
+    println(rs[1].v[0])
+    println(rs[1].v[1])
+}

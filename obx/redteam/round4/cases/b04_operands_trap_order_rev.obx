@@ -1,0 +1,6 @@
+// exit: 3
+fn main() {
+    let xs = [1, 2]
+    var z = 0
+    println(xs[5] + 10 / z)
+}

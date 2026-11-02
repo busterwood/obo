@@ -1,0 +1,9 @@
+// a by-value receiver is copied in position (snapped): later changes do not reach it
+// expect: 1
+type P = value record { n: int }
+fn (p: P) show(k: int): int { return p.n }
+fn bump(p: mut &P): int { p.n = 50; return 0 }
+fn main() {
+    var p = P{n: 1}
+    println(p.show(bump(mut &p)))
+}

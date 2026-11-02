@@ -1,0 +1,9 @@
+// expect: 3
+// expect: 7
+fn g(xs: mut &[]int): int { append(mut &xs, 1); append(mut &xs, 2); return 7 }
+fn main() {
+    var xs: []int = []
+    append(mut &xs, g(mut &xs))
+    println(len(xs))
+    println(xs[2])
+}

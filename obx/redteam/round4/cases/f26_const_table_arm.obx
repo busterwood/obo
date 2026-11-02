@@ -1,0 +1,6 @@
+// error: table
+const T: []int = [1, 2]
+fn main() {
+    let x = 1
+    match x { T { println("t") } else { println("?") } }
+}

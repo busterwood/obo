@@ -1,0 +1,6 @@
+// expect: ok
+fn main() {
+    let k = 1
+    assert(match k { 1 { true } else { false } })
+    println("ok")
+}

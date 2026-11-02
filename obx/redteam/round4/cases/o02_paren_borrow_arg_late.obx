@@ -1,0 +1,9 @@
+// expect: 2
+type B = record { v: []int }
+fn put(b: mut &B, k: int) { append(mut &b.v, k) }
+fn g(xs: mut &[]B): int { append(mut &xs, B{v: []}); return 1 }
+fn main() {
+    var xs = [B{v: [0]}]
+    put(mut &(xs[0]), g(mut &xs))
+    println(len(xs[0].v))
+}

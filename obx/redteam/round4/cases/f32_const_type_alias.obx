@@ -1,0 +1,7 @@
+// expect: ok
+type Code = i32
+const OK: Code = 7
+fn main() {
+    let c: i32 = 7
+    match c { OK { println("ok") } else { println("?") } }
+}

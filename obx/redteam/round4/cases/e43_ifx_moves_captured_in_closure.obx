@@ -1,0 +1,8 @@
+// error: closure|move
+type D = record { s: str }
+fn eat(d: D): int { return 1 }
+fn main() {
+    let d = D{s: "a"}
+    let c = true
+    let f = fn(): int { return if c { eat(d) } else { 0 } }
+}

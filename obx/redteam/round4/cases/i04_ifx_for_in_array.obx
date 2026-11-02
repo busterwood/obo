@@ -1,0 +1,6 @@
+// expect: 1
+// expect: 2
+fn main() {
+    let c = true
+    for x in (if c { [1, 2] } else { [3] }) { println(x) }
+}

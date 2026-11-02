@@ -1,0 +1,7 @@
+// error: borrow
+fn f(r: &[]int) { }
+fn main() {
+    let xs = [1]
+    let c = true
+    f(if c { &xs } else { &xs })
+}

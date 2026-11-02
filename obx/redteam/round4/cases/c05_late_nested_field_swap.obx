@@ -1,0 +1,12 @@
+// expect: 4
+// expect: 1
+type In = record { ys: []int }
+type Out = record { a: In; b: In }
+fn sw(o: mut &Out): int { let t = replace(mut &o.a, In{ys: [7, 7, 7]}); o.b = t; return 3 }
+fn f(ys: mut &[]int, k: int) { append(mut &ys, k) }
+fn main() {
+    var o = Out{a: In{ys: [1]}, b: In{ys: [2, 2]}}
+    f(mut &o.a.ys, sw(mut &o))
+    println(len(o.a.ys))
+    println(len(o.b.ys))
+}

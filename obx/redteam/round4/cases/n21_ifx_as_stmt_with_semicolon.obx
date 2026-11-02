@@ -1,0 +1,2 @@
+// expect: ok
+fn main() { let c = true; if c { println("ok") } else { println("no") }; }

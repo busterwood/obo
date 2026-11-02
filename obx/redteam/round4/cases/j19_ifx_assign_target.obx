@@ -1,0 +1,7 @@
+// error: assign|place
+fn main() {
+    var a = 1
+    var b = 2
+    let c = true
+    (if c { a } else { b }) = 5
+}

@@ -1,0 +1,11 @@
+// expect: 2
+// expect: 7
+type P = value record { x: int }
+fn (p: mut &P) addX(d: int) { p.x += d }
+fn grow(ps: mut &[]P): int { var i = 0; while i < 50 { append(mut &ps, P{x: 0}); i += 1 }; return 7 }
+fn main() {
+    var ps = [P{x: 0}, P{x: 0}]
+    ps[1].addX(grow(mut &ps))
+    println(len(ps) - 50)
+    println(ps[1].x)
+}

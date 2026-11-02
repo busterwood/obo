@@ -1,0 +1,9 @@
+// i read as 1 in position; shrink leaves len 1: checked again -> exit 3
+// exit: 3
+fn shrink(xs: mut &[]int, i: mut &int): int { xs = [7]; i = 0; return 5 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [0, 0, 0]
+    var i = 1
+    f(mut &xs[i], shrink(mut &xs, mut &i))
+}

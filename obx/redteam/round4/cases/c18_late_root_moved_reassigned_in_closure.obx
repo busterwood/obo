@@ -1,0 +1,10 @@
+// a closure cannot assign a moved variable... x is moved by eat then assigned by run: is the borrow sound?
+// error: moved
+type X = record { v: []int }
+fn eat(x: X): int { return 1 }
+fn run(f: &fn()): int { f(); return 2 }
+fn g(a: &[]int, k: int, j: int) { println(a[0]) }
+fn main() {
+    var x = X{v: [5]}
+    g(&x.v, eat(move(x)), run(fn() { x = X{v: [7]} }))
+}

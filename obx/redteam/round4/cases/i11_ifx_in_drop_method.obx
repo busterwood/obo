@@ -1,0 +1,4 @@
+// expect: drop big
+type D = record { n: int }
+fn (d: mut &D) drop() { println("drop " + if d.n > 5 { "big" } else { "small" }) }
+fn main() { let d = D{n: 9} }

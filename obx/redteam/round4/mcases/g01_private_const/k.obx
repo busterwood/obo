@@ -1,0 +1,2 @@
+const SECRET = 4
+pub const OPEN = 5

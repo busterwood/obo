@@ -1,0 +1,8 @@
+// expect: 3
+// expect: 1
+fn f(a: mut &int, b: mut &int) { a += 2; println(a); println(b) }
+fn main() {
+    var x = 1
+    var y = 1
+    f(mut &x, mut &y)
+}

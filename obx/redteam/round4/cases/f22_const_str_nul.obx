@@ -1,0 +1,6 @@
+// expect: nul
+const S = "a\x00b"
+fn main() {
+    let s = "a\x00b"
+    match s { "a" { println("a") } S { println("nul") } else { println("?") } }
+}

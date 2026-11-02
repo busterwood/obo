@@ -1,0 +1,7 @@
+// error: borrowed|closure
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var xs = [1, 2]
+    let c = fn(): int { xs = []; return 3 }
+    put(mut &xs[1], c())
+}

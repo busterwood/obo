@@ -1,0 +1,9 @@
+// expect: 3
+type Box[T] = record { items: []T; n: int }
+fn (b: mut &Box[T]) put(x: T) { append(mut &b.items, x) }
+fn (b: mut &Box[T]) bump(): int { b.n += 1; b.items = []; return b.n }
+fn main() {
+    var b = Box[int]{items: [1, 2], n: 2}
+    b.put(b.bump())
+    println(b.items[0])
+}

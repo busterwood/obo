@@ -1,0 +1,7 @@
+// a char constant is a byte; x == C with x: int does not type-check
+// error: byte|int
+const C = 'a'
+fn main() {
+    let n = 97
+    match n { C { println("a") } else { println("?") } }
+}

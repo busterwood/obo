@@ -1,0 +1,6 @@
+// expect: min
+const MIN = -9223372036854775808
+fn main() {
+    let x = 0 - 9223372036854775807 - 1
+    match x { MIN { println("min") } else { println("?") } }
+}

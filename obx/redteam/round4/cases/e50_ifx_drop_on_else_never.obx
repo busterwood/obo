@@ -1,0 +1,9 @@
+// expect: drop a
+// expect: 1
+type D = record { s: str }
+fn (d: mut &D) drop() { println("drop " + d.s) }
+fn main() {
+    let c = true
+    let n = if c { len((D{s: "a"}).s) } else { panic("no") }
+    println(n)
+}

@@ -1,0 +1,8 @@
+// two late places: the first one's index traps first; the trap message names its position
+// exit: 3
+fn f(x: &int, y: &int) { println(x + y) }
+fn main() {
+    let xs = [1, 2]
+    let ys = [1]
+    f(&xs[7], &ys[9])
+}

@@ -1,0 +1,8 @@
+// receiver first: exit 3
+type B = record { v: int }
+fn (b: mut &B) add(n: int) { b.v += n }
+fn main() {
+    var bs = [B{v: 1}]
+    var z = 0
+    bs[4].add(10 / z)
+}

@@ -1,0 +1,8 @@
+// expect: 1
+type P = value record { n: int }
+fn (p: P) show(k: int): int { return p.n }
+fn bump(ps: mut &[]P): int { ps = [P{n: 50}]; return 0 }
+fn main() {
+    var ps = [P{n: 1}]
+    println(ps[0].show(bump(mut &ps)))
+}

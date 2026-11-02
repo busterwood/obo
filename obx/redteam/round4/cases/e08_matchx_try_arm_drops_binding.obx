@@ -1,0 +1,13 @@
+// expect: drop p
+// expect: err
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+type E = closed { A(D); B }
+fn parse(s: str): Result[int, str] { return if s == "1" { Ok(1) } else { Err(s) } }
+fn run(e: E): Result[int, str] {
+    let n = match e { E.A(d) { try parse(d.tag) } E.B { 0 } }
+    return Ok(n)
+}
+fn main() {
+    match run(E.A(D{tag: "p"})) { Ok(n) { println(n) } Err(e) { println("err") } }
+}

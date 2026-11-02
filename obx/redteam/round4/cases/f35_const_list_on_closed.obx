@@ -1,0 +1,7 @@
+// error: literal|closed|constant
+const K = 1
+type E = closed { A; B }
+fn main() {
+    let e = E.A
+    match e { K, 2 { println("k") } else { println("?") } }
+}

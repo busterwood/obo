@@ -1,0 +1,8 @@
+// expect: 1
+// expect: err
+fn p(s: str): Result[bool, str] { return if s == "t" { Ok(true) } else { Err(s) } }
+fn g(s: str): Result[int, str] { return Ok(if try p(s) { 1 } else { 0 }) }
+fn main() {
+    match g("t") { Ok(n) { println(n) } Err(e) { println("err") } }
+    match g("x") { Ok(n) { println(n) } Err(e) { println("err") } }
+}

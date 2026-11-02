@@ -1,0 +1,7 @@
+// expect: b
+fn sw(xs: mut &[]str): int { swap(mut &xs, 0, 1); return 1 }
+fn f(a: mut &str, t: int) { println(a) }
+fn main() {
+    var xs = ["a", "b"]
+    f(mut &xs[0], sw(mut &xs))
+}

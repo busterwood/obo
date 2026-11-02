@@ -1,0 +1,8 @@
+// expect: 9
+fn set(g: mut &[][]int): int { g = [[0, 0], [0, 0, 0]]; return 9 }
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var g = [[1], [2, 3]]
+    put(mut &g[1][1], set(mut &g))
+    println(g[1][1])
+}

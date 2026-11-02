@@ -1,0 +1,4 @@
+// error: value|void
+fn g() { }
+fn h(x: int) { }
+fn main() { let k = 1; h(match k { 1 { g() } else { g() } }) }

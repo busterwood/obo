@@ -1,0 +1,5 @@
+// a closed type with no variants?
+// error: variant|closed|empty|value
+type E = closed { }
+fn f(e: E): int { return match e { } }
+fn main() { }

@@ -1,0 +1,9 @@
+// a match arm binds a borrow of a field of x; the arm's call mutates x: frozen
+// error: borrowed
+type E = closed { A([]int); B }
+fn clear(e: mut &E): int { e = E.B; return 0 }
+fn main() {
+    var e = E.A([1, 2])
+    let n = match e { E.A(v) { len(v) + clear(mut &e) } E.B { 0 } }
+    println(n)
+}

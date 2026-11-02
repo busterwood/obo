@@ -1,0 +1,12 @@
+// expect: 0
+// expect: 5
+fn bump(i: mut &int): int { i += 1; return 5 }
+fn put(x: mut &int, v: int) { x = v }
+fn main() {
+    var xs = [0, 0, 0]
+    var i = 0
+    let k = 1
+    put(mut &xs[match k { 1 { i } else { 2 } }], bump(mut &i))
+    println(xs[1])
+    println(xs[0])
+}

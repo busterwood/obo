@@ -1,0 +1,12 @@
+// expect: 2
+type P = record { n: int }
+fn bump(p: mut &P): int { p.n += 1; return p.n }
+fn f(a: mut &P, k: int) { a.n += k }
+fn main() {
+    var p = P{n: 0}
+    {
+        let q = mut &p
+        f(q, bump(q))
+    }
+    println(p.n)
+}

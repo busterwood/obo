@@ -1,0 +1,10 @@
+// SPEC 7.5: the receiver place (xs[0]) is a local with an index: taken at the call
+// expect: 2
+type B = record { v: []int }
+fn (b: mut &B) push(k: int) { append(mut &b.v, k) }
+fn g(xs: mut &[]B): int { append(mut &xs, B{v: []}); return 1 }
+fn main() {
+    var xs = [B{v: [0]}]
+    (xs[0]).push(g(mut &xs))
+    println(len(xs[0].v))
+}

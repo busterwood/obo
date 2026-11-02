@@ -1,0 +1,6 @@
+// expect: e
+fn main() {
+    let k = 2
+    let s = match k { else { "e" } }
+    println(s)
+}

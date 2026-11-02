@@ -1,0 +1,195 @@
+=== h01_move_then_late_borrow_same_call
+// x is moved by the first argument; the borrow of x.a is taken at the call: overlap
+// error: moved|borrow
+type X = record { a: str }
+fn f(x: X, r: &str) { println(r) }
+fn main() {
+    let x = X{a: "a"}
+    f(x, &x.a)
+}
+=== h02_byval_receiver_then_late_borrow
+// error: moved|borrow
+type X = record { a: str }
+fn (x: X) eat(r: &str) { println(r) }
+fn main() {
+    let x = X{a: "a"}
+    x.eat(&x.a)
+}
+=== h03_late_borrow_then_move_same_call
+// error: moved|borrow
+type X = record { a: str }
+fn f(r: &str, x: X) { println(r) }
+fn main() {
+    let x = X{a: "a"}
+    f(&x.a, x)
+}
+=== h04_late_mut_then_move_whole
+// error: moved|borrow
+type X = record { a: []int }
+fn f(r: mut &[]int, x: X) { append(mut &r, 1) }
+fn main() {
+    let x = X{a: []}
+    f(mut &x.a, x)
+}
+=== h05_late_receiver_byref_moved_arg
+// error: moved|borrow
+type X = record { a: []int }
+fn (x: &X) look(y: X) { println(len(x.a)) }
+fn main() {
+    let x = X{a: []}
+    x.look(x)
+}
+=== h06_move_via_move_builtin_then_late
+// error: moved|borrow
+type X = record { a: str }
+fn f(x: X, r: &str) { println(r) }
+fn main() {
+    var x = X{a: "a"}
+    f(move(x), &x.a)
+}
+=== h07_late_borrow_var_and_move_root
+// error: borrowed|moved
+type X = record { a: str }
+fn f(r: &X, x: X) { println(r.a) }
+fn main() {
+    let x = X{a: "a"}
+    let q = &x
+    f(q, x)
+}
+=== h08_two_late_mut_overlap
+// error: twice
+type X = record { a: []int; b: int }
+fn f(r: mut &X, s: mut &[]int) { }
+fn main() {
+    var x = X{a: [], b: 0}
+    f(mut &x, mut &x.a)
+}
+=== h09_late_mut_vs_slice_arg
+// error: twice|borrow
+fn f(r: mut &int, s: &[int]) { }
+fn main() {
+    var xs = [1, 2]
+    f(mut &xs[0], xs[0..2])
+}
+=== h10_late_mut_vs_value_copy_ok
+// expect: 3
+type P = value record { n: int }
+fn f(r: mut &P, p: P) { r.n += p.n; println(r.n) }
+fn main() {
+    var p = P{n: 1}
+    p.n = 1
+    f(mut &p, P{n: 2})
+}
+=== h11_late_shared_vs_value_copy_same
+// expect: 2
+type P = value record { n: int }
+fn f(r: &P, p: P) { println(r.n + p.n) }
+fn main() {
+    let p = P{n: 1}
+    f(&p, p)
+}
+=== h12_late_mut_vs_value_copy_same
+// SPEC 7.5: a copy-type argument is copied when it is evaluated, so f(mut &n, n.v) does not conflict
+// expect: 2
+type P = value record { n: int }
+fn f(r: mut &P, p: P) { r.n += p.n; println(r.n) }
+fn main() {
+    var p = P{n: 1}
+    f(mut &p, p)
+}
+=== h13_late_mut_vs_str_copy_same
+// expect: ab
+// expect: a
+fn f(r: mut &str, s: str) { r = r + "b"; println(r); println(s) }
+fn main() {
+    var s = "a"
+    f(mut &s, s)
+}
+=== h14_value_record_with_owned_moved_and_borrowed
+// a value record holding an array is not a copy type
+// error: moved|borrow
+type V = value record { xs: []int }
+fn f(v: V, r: &[]int) { println(len(r)) }
+fn main() {
+    let v = V{xs: [1]}
+    f(v, &v.xs)
+}
+=== h15_byval_receiver_generic_then_late
+// error: moved|borrow
+type X[T] = record { a: T }
+fn (x: X[T]) eat(r: &T) { }
+fn main() {
+    let x = X[str]{a: "a"}
+    x.eat(&x.a)
+}
+=== h16_append_value_is_root_move
+// error: moved|borrow
+type X = record { xs: []X }
+fn main() {
+    var x = X{xs: []}
+    append(mut &x.xs, x)
+}
+=== h17_replace_value_is_root
+// error: moved|borrow
+type X = record { o: Option[X] }
+fn main() {
+    var x = X{o: None}
+    let old = replace(mut &x.o, Some(x))
+}
+=== h18_append_value_moves_other_then_late_ok
+// expect: 1
+type X = record { xs: []int }
+fn main() {
+    var x = X{xs: []}
+    let ys = [1]
+    var zs: [][]int = []
+    append(mut &zs, ys)
+    println(len(zs))
+}
+=== h19_late_borrow_in_struct_literal_field
+// record literals take values: a borrow call inside a field value is an ordinary nested call
+// expect: 1
+type P = record { a: int; b: int }
+fn g(xs: mut &[]int, v: int): int { append(mut &xs, v); return len(xs) }
+fn main() {
+    var xs: []int = []
+    let p = P{b: g(mut &xs, 1), a: len(xs)}
+    println(p.a)
+}
+=== h20_ifx_borrow_branch_held
+// expect: 1
+fn f(a: &[]int, b: int) { println(len(a)) }
+fn clear(xs: mut &[]int): int { xs = [9]; return 0 }
+fn main() {
+    var xs = [1, 2]
+    let c = true
+    f(&xs, if c { clear(mut &xs) } else { 1 })
+}
+=== h21_match_value_scrutinee_late_mut
+// expect: 2
+type E = closed { A(int); B }
+fn (e: mut &E) bump(k: int) { e = E.A(k) }
+fn main() {
+    var e = E.A(1)
+    e.bump(match e { E.A(n) { n + 1 } E.B { 0 } })
+    match e { E.A(n) { println(n) } E.B { println(0) } }
+}
+=== h22_match_owned_bind_then_late_mut
+// the arm binds a borrow of e's str field... str is copy: copied
+// expect: xy
+type E = closed { A(str); B }
+fn (e: mut &E) set(s: str) { e = E.A(s) }
+fn main() {
+    var e = E.A("x")
+    e.set(match e { E.A(s) { s + "y" } E.B { "" } })
+    match e { E.A(s) { println(s) } E.B { println("b") } }
+}
+=== h23_match_owned_bind_array_then_late_mut
+// expect: 2
+type E = closed { A([]int); B }
+fn (e: mut &E) set(n: int) { e = E.A([n]) }
+fn main() {
+    var e = E.A([1, 2])
+    e.set(match e { E.A(v) { len(v) } E.B { 0 } })
+    match e { E.A(v) { println(v[0]) } E.B { println(0) } }
+}

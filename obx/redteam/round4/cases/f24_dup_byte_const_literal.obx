@@ -1,0 +1,6 @@
+// error: twice
+const B: byte = 255
+fn main() {
+    let b: byte = 255
+    match b { B { println("ok") } 255 { println("x") } else { println("?") } }
+}

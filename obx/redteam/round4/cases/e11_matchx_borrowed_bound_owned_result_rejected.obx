@@ -1,0 +1,7 @@
+// error: borrow|move
+type D = record { tag: str }
+type E = closed { P(D); Q }
+fn main() {
+    let e = E.P(D{tag: "x"})
+    let d = match e { E.P(a) { a } E.Q { D{tag: "q"} } }
+}

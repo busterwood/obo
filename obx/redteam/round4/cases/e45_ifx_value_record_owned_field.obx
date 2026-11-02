@@ -1,0 +1,8 @@
+// expect: hi
+type V = value record { s: str; n: int }
+fn main() {
+    let a = V{s: "hi", n: 1}
+    let c = true
+    let b = if c { a } else { V{s: "x", n: 2} }
+    println(b.s)
+}

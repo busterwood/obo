@@ -1,0 +1,11 @@
+// expect: a
+// expect: b
+// expect: s
+import "./k" as q
+fn main() {
+    let x = 1
+    match x { q.A { println("a") } else { println("?") } }
+    let y: i32 = 2
+    match y { q.A { println("a") } q.B { println("b") } else { println("?") } }
+    match "s" { q.S { println("s") } else { println("?") } }
+}

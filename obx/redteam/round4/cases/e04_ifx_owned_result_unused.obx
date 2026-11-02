@@ -1,0 +1,9 @@
+// expect: drop a
+// expect: end
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+fn main() {
+    let c = true
+    let n = len((if c { D{tag: "a"} } else { D{tag: "b"} }).tag)
+    println("end")
+}

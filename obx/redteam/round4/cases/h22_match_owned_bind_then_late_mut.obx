@@ -1,0 +1,9 @@
+// the arm binds a borrow of e's str field... str is copy: copied
+// expect: xy
+type E = closed { A(str); B }
+fn (e: mut &E) set(s: str) { e = E.A(s) }
+fn main() {
+    var e = E.A("x")
+    e.set(match e { E.A(s) { s + "y" } E.B { "" } })
+    match e { E.A(s) { println(s) } E.B { println("b") } }
+}

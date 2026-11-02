@@ -1,0 +1,8 @@
+// exit: 3
+fn g(): int { println("g"); return 10 }
+fn f(x: mut &int, y: int) { x += y }
+fn main() {
+    var xs = [1, 2]
+    var i = 0 - 1
+    f(mut &xs[i], g())
+}

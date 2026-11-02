@@ -1,0 +1,98 @@
+=== n01_arm_trailing_comma
+// error: expected
+fn main() { let k = 1; match k { 1, { } else { } } }
+=== n02_arm_leading_comma
+// error: expected
+fn main() { let k = 1; match k { , 1 { } else { } } }
+=== n03_ifx_empty_branch
+// error: expected|expression
+fn main() { let c = true; let x = if c { } else { 1 } }
+=== n04_arm_three_part_path
+// error: constant|variant|K
+const K = 1
+fn main() { let k = 1; match k { K.L.M { } else { } } }
+=== n05_arm_frac_literal
+// error: literal|expected|fraction
+fn main() { let k = 1; match k { 1.5 { } else { } } }
+=== n06_arm_str_and_int
+// error: str|integer
+fn main() { let k = 1; match k { "a", 1 { } else { } } }
+=== n07_arm_char_on_str
+// error: str
+fn main() { let s = "a"; match s { 'a' { } else { } } }
+=== n08_arm_bool
+// error: expected|literal|true
+fn main() { let k = 1; match k { true { } else { } } }
+=== n09_arm_neg_name
+// error: expected
+const K = 1
+fn main() { let k = 1; match k { -K { } else { } } }
+=== n10_arm_neg_space
+// expect: m
+fn main() { let k = 0 - 1; match k { - 1 { println("m") } else { } } }
+=== n11_matchx_block_body
+// error: one expression|expected
+fn main() { let k = 1; let x = match k { 1 { let y = 2; y } else { 0 } } }
+=== n12_ifx_without_else_in_arg
+// error: else
+fn f(x: int) { }
+fn main() { let c = true; f(if c { 1 }) }
+=== n13_matchx_binds_on_const_list
+// error: expected|literal
+const K = 1
+fn main() { let k = 1; match k { K(a), 2 { } else { } } }
+=== n14_matchx_variant_list
+// error: variant|literal|closed
+type E = closed { A; B }
+fn main() { let e = E.A; let x = match e { E.A, E.B { 1 } } }
+=== n15_arm_huge_literal
+// error: fit
+fn main() { let k = 1; match k { 99999999999999999999999999999999999999999999 { } else { } } }
+=== n16_arm_huge_const_u128_overflow
+// error: fit|overflow
+const K = 340282366920938463463374607431768211456
+fn main() { let k: u128 = 1; match k { K { } else { } } }
+=== n17_arm_const_i128_min_untyped
+// expect: min
+const K = -170141183460469231731687303715884105728
+fn main() { let k: i128 = K; match k { K { println("min") } else { } } }
+=== n18_arm_const_below_i128_min
+// error: fit|overflow
+const K = -170141183460469231731687303715884105729
+fn main() { let k: i128 = 1; match k { K { } else { } } }
+=== n19_ifx_cond_record_literal
+// expect: 1
+type P = record { x: int }
+fn main() { let n = if (P{x: 1}).x == 1 { 1 } else { 0 }; println(n) }
+=== n20_matchx_scrutinee_record_literal
+// expect: 1
+type P = value record { x: int }
+fn main() { let n = match (P{x: 1}).x { 1 { 1 } else { 0 } }; println(n) }
+=== n21_ifx_as_stmt_with_semicolon
+// expect: ok
+fn main() { let c = true; if c { println("ok") } else { println("no") }; }
+=== n22_ifx_value_discarded_call
+// expect: f
+fn f(): int { println("f"); return 1 }
+fn main() { let c = true; let _x = if c { f() } else { 2 } }
+=== n23_matchx_on_unit_call
+// error: value|match
+fn g() { }
+fn main() { let x = match g() { 1 { 1 } else { 2 } } }
+=== n24_ifx_branch_void_call
+// error: value
+fn g() { }
+fn main() { let c = true; let x = if c { g() } else { g() } }
+=== n25_ifx_void_and_int
+// error: value|type|differ
+fn g() { }
+fn main() { let c = true; let x = if c { g() } else { 1 } }
+=== n26_matchx_void_arms_as_arg
+// error: value|void
+fn g() { }
+fn h(x: int) { }
+fn main() { let k = 1; h(match k { 1 { g() } else { g() } }) }
+=== n27_ifx_never_and_void
+// error: value
+fn g() { }
+fn main() { let c = true; let x = if c { g() } else { panic("x") } }

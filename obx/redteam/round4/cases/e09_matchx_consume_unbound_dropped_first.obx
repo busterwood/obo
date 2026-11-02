@@ -1,0 +1,10 @@
+// expect: drop y
+// expect: drop x
+// expect: x
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+type E = closed { P(D, D); Q }
+fn main() {
+    let s = match E.P(D{tag: "x"}, D{tag: "y"}) { E.P(a, _) { a.tag } E.Q { "q" } }
+    println(s)
+}

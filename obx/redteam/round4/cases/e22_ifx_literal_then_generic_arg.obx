@@ -1,0 +1,8 @@
+// the literal takes byte from the other branch: 300 does not fit
+// error: fit
+fn id[T](x: T): T { return x }
+fn main() {
+    let x: byte = 5
+    let c = false
+    println(int(id(if c { 300 } else { x })))
+}

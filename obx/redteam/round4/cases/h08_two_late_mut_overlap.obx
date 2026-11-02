@@ -1,0 +1,7 @@
+// error: twice
+type X = record { a: []int; b: int }
+fn f(r: mut &X, s: mut &[]int) { }
+fn main() {
+    var x = X{a: [], b: 0}
+    f(mut &x, mut &x.a)
+}

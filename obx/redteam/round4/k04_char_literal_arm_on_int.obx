@@ -1,0 +1,10 @@
+// SPEC 8: a constant arm is accepted "when x == K would type-check", and a
+// char constant is a byte, so `const C = 'a'` on an int scrutinee is an error.
+// The char literal 'a' itself is accepted on an int (and i32, u64, i128...)
+// scrutinee, although n == 'a' is an error ("operands of the same type, not
+// int and byte", SPEC 2: 'a' is a byte). match_lits checks only k != 'str'.
+// error: byte
+fn main() {
+    let n = 97
+    match n { 'a' { println("a") } else { println("?") } }
+}

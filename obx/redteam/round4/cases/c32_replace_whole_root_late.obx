@@ -1,0 +1,10 @@
+// expect: b
+// expect: x
+type B = record { s: str }
+fn g(b: mut &B): B { let o = replace(mut &b, B{s: "x"}); return B{s: "b"} }
+fn main() {
+    var b = B{s: "a"}
+    let o = replace(mut &b, g(mut &b))
+    println(b.s)
+    println(o.s)
+}

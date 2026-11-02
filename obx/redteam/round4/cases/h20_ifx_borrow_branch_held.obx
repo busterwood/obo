@@ -1,0 +1,8 @@
+// expect: 1
+fn f(a: &[]int, b: int) { println(len(a)) }
+fn clear(xs: mut &[]int): int { xs = [9]; return 0 }
+fn main() {
+    var xs = [1, 2]
+    let c = true
+    f(&xs, if c { clear(mut &xs) } else { 1 })
+}

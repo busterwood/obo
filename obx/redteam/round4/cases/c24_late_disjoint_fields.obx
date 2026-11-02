@@ -1,0 +1,7 @@
+// expect: 3
+type P = record { a: int; b: int }
+fn f(a: mut &int, b: mut &int) { a = 1; b = 2; println(a + b) }
+fn main() {
+    var p = P{a: 0, b: 0}
+    f(mut &p.a, mut &p.b)
+}

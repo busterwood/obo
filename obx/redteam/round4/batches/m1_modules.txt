@@ -1,0 +1,79 @@
+=== g01_private_const/k
+const SECRET = 4
+pub const OPEN = 5
+=== g01_private_const/main
+// a private constant of another module cannot be an arm
+// error: private|SECRET|not public
+import "./k"
+fn main() {
+    let x = 4
+    match x { k.SECRET { println("s") } else { println("?") } }
+}
+=== g02_alias_const/k
+pub const A = 1
+pub const B: i32 = 2
+pub const S = "s"
+=== g02_alias_const/main
+// expect: a
+// expect: b
+// expect: s
+import "./k" as q
+fn main() {
+    let x = 1
+    match x { q.A { println("a") } else { println("?") } }
+    let y: i32 = 2
+    match y { q.A { println("a") } q.B { println("b") } else { println("?") } }
+    match "s" { q.S { println("s") } else { println("?") } }
+}
+=== g03_const_of_const/k
+pub const A = 1
+pub const B = A + 1
+=== g03_const_of_const/main
+// error: twice
+import "./k"
+const C = 2
+fn main() {
+    let x = 2
+    match x { k.B { println("b") } C { println("c") } else { println("?") } }
+}
+=== g04_module_shadowed_by_local/k
+pub const A = 1
+=== g04_module_shadowed_by_local/main
+// error: k|constant
+import "./k"
+type R = record { A: int }
+fn main() {
+    let k = R{A: 1}
+    let x = 1
+    match x { k.A { println("a") } else { println("?") } }
+}
+=== g05_const_typed_other_module/k
+pub const W: u32 = 7
+=== g05_const_typed_other_module/main
+// error: u32|int
+import "./k"
+fn main() {
+    let x = 7
+    match x { k.W { println("w") } else { println("?") } }
+}
+=== g06_const_module_var_global/k
+pub var G: int = 1
+=== g06_const_module_var_global/main
+// error: constant|global|G
+import "./k"
+fn main() {
+    let x = 1
+    match x { k.G { println("g") } else { println("?") } }
+}
+=== g07_matchx_module_const_list/k
+pub const A = 1
+pub const B = 2
+=== g07_matchx_module_const_list/main
+// expect: ab
+// expect: other
+import "./k"
+fn name(x: int): str { return match x { k.A, k.B { "ab" } else { "other" } } }
+fn main() {
+    println(name(2))
+    println(name(3))
+}

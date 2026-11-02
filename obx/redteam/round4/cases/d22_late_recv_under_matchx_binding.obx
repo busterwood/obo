@@ -1,0 +1,9 @@
+// v binds a borrow of e's field; a late mut borrow of e in the arm conflicts
+// error: borrowed
+type E = closed { A([]int); B }
+fn (e: mut &E) clear(k: int): int { e = E.B; return k }
+fn main() {
+    var e = E.A([1, 2])
+    let n = match e { E.A(v) { e.clear(len(v)) } E.B { 0 } }
+    println(n)
+}

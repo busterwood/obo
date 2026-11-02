@@ -1,0 +1,12 @@
+// expect: drop t
+// expect: t1
+// expect: drop x
+type D = record { tag: str }
+fn (d: mut &D) drop() { println("drop " + d.tag) }
+fn mk(t: str): D { return D{tag: t} }
+fn main() {
+    let c = true
+    let s = if c { mk("t").tag + "1" } else { "no" }
+    println(s)
+    let x = mk("x")
+}

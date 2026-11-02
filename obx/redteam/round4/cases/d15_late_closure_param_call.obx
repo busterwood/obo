@@ -1,0 +1,10 @@
+// a closure parameter called in a later argument mutates the root through its capture
+// the closure is an argument of apply only; put's index is checked again at the call
+// exit: 3
+fn put(x: mut &int, v: int) { x = v }
+fn apply(f: &fn(): int): int { return f() }
+fn main() {
+    var xs = [1, 2]
+    put(mut &xs[1], apply(fn(): int { xs = []; return 3 }))
+    println(len(xs))
+}

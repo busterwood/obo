@@ -1,0 +1,7 @@
+// error: twice
+const A = 2
+const B = 4 - 2
+fn main() {
+    let x = 7
+    match x { A { println("a") } B { println("b") } else { println("?") } }
+}

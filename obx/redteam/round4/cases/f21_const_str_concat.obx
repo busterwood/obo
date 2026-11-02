@@ -1,0 +1,6 @@
+// expect: ab
+const S = "a" + "b"
+fn main() {
+    let s = "ab"
+    match s { S { println("ab") } else { println("?") } }
+}
