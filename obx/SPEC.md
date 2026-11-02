@@ -141,7 +141,7 @@ primary     = INT | FRACTION | CHAR | STRING | RAWSTRING | "true" | "false"
             | "match" expr "{" { arm(branch) } [ "else" branch ] "}"
             | "fn" "(" [ lparam { "," lparam } ] ")" [ ":" type ] block ;  (* closure *)
 ifexpr      = "if" expr branch "else" ( branch | ifexpr ) ;
-branch      = "{" expr "}" ;
+branch      = "{" ( expr | "return" [ expr ] | "break" | "continue" ) "}" ;
 lparam      = IDENT [ ":" type ] ;
 inits       = IDENT ":" expr { "," IDENT ":" expr } ;
 sep         = ";" | NEWLINE ;
@@ -609,6 +609,21 @@ let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" 
 - Ownership is as for the statements: moves are joined across the branches
   (section 9.1), and a match binds, borrows and consumes its scrutinee as in
   section 9.3.
+- A branch or arm may be `return`, `return e`, `break` or `continue` as its
+  whole body (not inside a larger expression, and not followed by
+  statements): `let n = match r { Ok(v) { v } Err(e) { return Err(e) } }`. Its
+  type is `never`, so it takes the type of the others; it does what the
+  statement does, in the middle of the enclosing statement. The parts of the
+  statement evaluated before it (operands to its left, earlier arguments, record
+  fields and array items, a consumed scrutinee) are evaluated first, and on that
+  path every temporary they made is dropped once, values not yet moved stay
+  with their variables (which are dropped as for the statement), and nothing
+  after it is evaluated: the call, record or array being built is never made.
+  Moves made earlier in the statement hold (`f(move(x), if c { return x }
+  else { 0 })` is an error). `break` and `continue` refer to the innermost
+  loop around the statement and cannot appear in a `while` condition; in a
+  closure, `return` leaves the closure. A move on such a path is allowed even
+  inside `&&`, `||` or a `while` condition, since the path leaves.
 - The result is a value, copy or owned; it may not be a borrow, a slice or a
   closure. A borrow branch is read: `if c { r } else { 0 }` with `r: &int`
   is an `int`, and a field bound as a borrow by a match arm can be read but

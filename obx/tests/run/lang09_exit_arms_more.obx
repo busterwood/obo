@@ -1,0 +1,62 @@
+// SPEC 7.8: exit arms in closures (return leaves the closure), with try, in && operands,
+// in a while body, in a for range bound (break leaves the enclosing loop) and in a
+// match on a str; a void return; a borrow return.
+// expect: 1 2
+// expect: early
+// expect: 4
+// expect: and 0
+// expect: 8
+// expect: 2
+// expect: void
+// expect: 7
+type D = record { v: int }
+fn (d: mut &D) drop() { }
+fn parse(s: str): Result[int, str] {
+    if s == "1" { return Ok(1) }
+    return Err("bad")
+}
+fn both(s: str, c: bool): Result[int, str] {
+    let n = try parse(s) + (if c { return Ok(-1) } else { 1 })
+    return Ok(n)
+}
+fn bigFirst(xs: &[]D): &D {
+    let i = if xs[0].v > 5 { return &xs[0] } else { 1 }
+    return &xs[i]
+}
+fn cond(c: bool, d: D): int {
+    if c && (if d.v > 0 { return 0 } else { true }) { return 1 }
+    return 2
+}
+fn ranges(): int {
+    var t = 0
+    for k in 0..3 {
+        for i in 0..(if k == 2 { break } else { 2 }) { t += 1 }
+        t += 1
+    }
+    return t
+}
+fn word(s: str): int {
+    return match s {
+        "a" { 1 }
+        "b" { return 2 }
+        else { 3 }
+    }
+}
+fn v(c: bool) {
+    let x = if c { return } else { 1 }
+    println(x)
+}
+fn main() {
+    let f = fn(x: int): int { return if x > 0 { return 1 } else { 2 } }
+    println(intToStr(f(5)) + " " + intToStr(f(-5)))
+    let e = both("1", true)
+    println(if e.unwrap() == -1 { "early" } else { "late" })
+    println(both("2", false).unwrapOr(4))
+    println("and " + intToStr(cond(true, D{v: 3})))
+    println(ranges() + 2)
+    println(word("b"))
+    v(true)
+    println("void")
+    let xs = [D{v: 7}, D{v: 1}]
+    println(bigFirst(&xs).v)
+}

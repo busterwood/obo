@@ -1,0 +1,146 @@
+// SPEC 7.8: return, break and continue as the whole branch of an if or match expression.
+// What the statement built before the branch is dropped exactly once; what comes after is
+// never made. Partially built calls, records, arrays, nested matches, receivers, loops.
+// expect: mk 1
+// expect: drop 1
+// expect: 0
+// expect: mk 1
+// expect: mk 3
+// expect: drop 3
+// expect: drop 1
+// expect: 2
+// expect: mk 1
+// expect: drop 1
+// expect: 0
+// expect: mk 1
+// expect: mk 2
+// expect: mk 3
+// expect: drop 1
+// expect: drop 2
+// expect: drop 3
+// expect: 3
+// expect: mk 1
+// expect: mk 2
+// expect: drop 2
+// expect: drop 1
+// expect: 5
+// expect: mk 1
+// expect: drop 1
+// expect: 9
+// expect: mk 1
+// expect: drop 1
+// expect: 9
+// expect: tick 1
+// expect: tick 2
+// expect: 0
+// expect: mk 4
+// expect: drop 4
+// expect: 1
+// expect: mk 5
+// expect: drop 5
+// expect: 3
+// expect: mk 1
+// expect: mk 11
+// expect: drop 11
+// expect: drop 1
+// expect: mk 2
+// expect: mk 12
+// expect: drop 12
+// expect: drop 2
+// expect: mk 3
+// expect: mk 13
+// expect: drop 13
+// expect: drop 3
+// expect: 12
+// expect: tick 7
+// expect: early
+// expect: tick 7
+// expect: a7b
+// expect: 3
+type D = record { v: int }
+fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
+type R = record { a: D; b: int; c: D }
+type E = closed { A(D); B }
+fn mk(v: int): D {
+    println("mk " + intToStr(v))
+    return D{v: v}
+}
+fn (d: &D) plus(n: int): int { return d.v + n }
+fn pair(a: D, b: int): int { return a.v + b }
+fn tick(n: int): int {
+    println("tick " + intToStr(n))
+    return n
+}
+fn rec(c: bool): int {
+    let r = R{a: mk(1), b: if c { return 0 } else { 2 }, c: mk(3)}
+    return r.b
+}
+fn arr(c: bool): int {
+    let xs = [mk(1), if c { return 0 } else { mk(2) }, mk(3)]
+    return len(xs)
+}
+fn nested(c: bool, k: int): int {
+    return pair(mk(1), match k {
+        0 { pair(mk(2), if c { return 5 } else { 1 }) }
+        else { 2 }
+    })
+}
+fn moved(c: bool): int {
+    let d = mk(1)
+    return pair(move(d), if c { return 9 } else { 1 })
+}
+fn local(c: bool): int {
+    let d = mk(1)
+    return pair(d, if c { return 9 } else { 1 })
+}
+fn order(c: bool): int {
+    return tick(1) + tick(2) + (if c { return 0 } else { tick(3) })
+}
+fn recv(c: bool): int {
+    return mk(4).plus(if c { return 1 } else { 2 })
+}
+fn scrut(c: bool): int {
+    let e = E.A(mk(5))
+    return match move(e) {
+        E.A(d) { pair(d, if c { return 3 } else { 4 }) }
+        E.B { 0 }
+    }
+}
+fn loops(): int {
+    var i = 0
+    var t = 0
+    while true {
+        i += 1
+        let d = mk(i)
+        let n = pair(mk(10 + i), if i == 2 { continue } else if i == 3 { break } else { 1 })
+        t += n
+    }
+    return t
+}
+fn strs(c: bool): str {
+    let s = "a" + intToStr(tick(7)) + (if c { return "early" } else { "b" })
+    return s
+}
+fn bang(xs: &[]int): int {
+    var n = 0
+    for x in xs {
+        n += if x > 2 { break } else { x }
+    }
+    return n
+}
+fn main() {
+    println(rec(true))
+    println(rec(false))
+    println(arr(true))
+    println(arr(false))
+    println(nested(true, 0))
+    println(moved(true))
+    println(local(true))
+    println(order(true))
+    println(recv(true))
+    println(scrut(true))
+    println(loops())
+    println(strs(true))
+    println(strs(false))
+    println(bang(&[1, 2, 3, 4]))
+}

@@ -1,0 +1,11 @@
+// SPEC 9.1: continue as a branch checks the loop state like the statement.
+// error: moved inside the loop
+type D = record { v: int }
+fn take(d: D): int { return d.v }
+fn main() {
+    var d = D{v: 1}
+    for i in 0..3 {
+        let n = take(move(d)) + (if i == 1 { continue } else { 1 })
+        d = D{v: n}
+    }
+}

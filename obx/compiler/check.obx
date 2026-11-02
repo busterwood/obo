@@ -241,12 +241,13 @@ type Ctx = record {
     tail: []Drop
     capNames: []str
     capVars: []int
+    wconds: []int   // the number of loops around each while condition being checked
 }
 
 fn newCtx(f: int, label: str, ret: int, env: []int, mod: int, closure: bool): Ctx {
     return Ctx{fd: f, label: label, ret: ret, env: env, mod: mod, closure: closure, bvar: -1, lines: [], ind: 1,
         scopes: [], frames: [], loops: [], pending: [], pmarks: [], dead: false, nomove: [], n: 0, tailOn: false,
-        tail: [], capNames: [], capVars: []}
+        tail: [], capNames: [], capVars: [], wconds: []}
 }
 
 // What static() finds.
@@ -999,6 +1000,8 @@ fn (c: mut &Checker) effects(e: int, traps: bool): bool {
     let n = c.nd(e)
     let k = n.kind
     if k == sx.N_CALL || k == sx.N_TRY || k == sx.N_FRAC { return true }
+    // return, break or continue as a branch: what comes before is evaluated first (SPEC 7.8)
+    if (k == sx.N_RETURN || k == sx.N_BREAK || k == sx.N_CONTINUE) && n.flags & sx.ARM != 0 { return true }
     if k == sx.N_UN && n.s == "-" && !isLitKind(c.kind(n.a)) { return true }
     if k == sx.N_BIN && (isArith(n.s) || isCmpOp(n.s)) && !isLitKind(c.kind(n.a)) && !isLitKind(c.kind(n.b)) { return true }
     if traps && (k == sx.N_INDEX || k == sx.N_SUB || (k == sx.N_BIN && isTrapOp(n.s))) { return true }
@@ -1547,7 +1550,9 @@ fn (c: mut &Checker) sWhile(s: int) {
     let entry = c.snapshot()
     if !infinite {
         append(mut &c.cx.nomove, "in a while condition (it runs on every iteration)")
+        append(mut &c.cx.wconds, len(c.cx.loops))
         let cn = c.cond(n.a)
+        pop(mut &c.cx.wconds)
         pop(mut &c.cx.nomove)
         c.emit("if (!" + cn + ") break;")
     }
@@ -1555,6 +1560,29 @@ fn (c: mut &Checker) sWhile(s: int) {
     c.loopEnd(n.b, n.line)
     c.cx.ind -= 1
     c.emit("}")
+}
+
+// return, break or continue as the whole branch of an if or match expression (SPEC 7.8): the
+// statement, in the middle of the enclosing statement. Its value is never (the branch takes the
+// type of the others). What the statement made so far is dropped by cleanup: its temporaries are
+// in the frames, and values not yet moved are still owned by their variables.
+fn (c: mut &Checker) xExit(e: int): Val {
+    let k = c.kind(e)
+    if !c.flag(e, sx.ARM) { c.err(c.line(e), "internal error: return, break or continue as an expression") }
+    if k != sx.N_RETURN && len(c.cx.wconds) > 0 && c.cx.wconds[len(c.cx.wconds) - 1] == len(c.cx.loops) {
+        c.err(c.line(e), (if k == sx.N_BREAK { "break" } else { "continue" }) + " cannot be in a while condition")
+    }
+    // the path leaves the statement: a move on it is not a move inside && or a while condition
+    let nm = replace(mut &c.cx.nomove, [])
+    if k == sx.N_RETURN {
+        c.sReturn(e)
+    } else if k == sx.N_BREAK {
+        c.sBreak(e)
+    } else {
+        c.sContinue(e)
+    }
+    c.cx.nomove = nm
+    return voidVal(true)
 }
 
 fn (c: mut &Checker) curLoop(s: int, what: str): int {
@@ -1991,6 +2019,7 @@ fn (c: mut &Checker) expr(e: int, exp: int): Val {
         sx.N_IFX { c.xIfx(e, exp) }
         sx.N_MATCHX { c.xMatchx(e, exp) }
         sx.N_TRY { c.xTry(e, exp) }
+        sx.N_RETURN, sx.N_BREAK, sx.N_CONTINUE { c.xExit(e) }
         sx.N_LIT { c.xLit(e, exp) }
         sx.N_ARRLIT { c.xArrlit(e, exp) }
         sx.N_CALL { c.xCall(e, exp) }
@@ -2615,7 +2644,14 @@ fn (c: mut &Checker) peekType(e: int, exp: int): int {
     var frames: []int = []
     for f in 0..len(c.cx.frames) { append(mut &frames, len(c.cx.frames[f])) }
     let states = c.snapshot()
+    var nbreaks: []int = []
+    for lp in 0..len(c.cx.loops) { append(mut &nbreaks, len(c.cx.loops[lp].breaks)) }
+    let dead = c.cx.dead
     let t = c.rd(c.expr(e, exp)).t
+    c.cx.dead = dead
+    for lp in 0..len(nbreaks) {
+        while len(c.cx.loops[lp].breaks) > nbreaks[lp] { pop(mut &c.cx.loops[lp].breaks) }
+    }
     while len(c.cx.lines) > nlines { pop(mut &c.cx.lines) }
     while len(c.holes) > nholes { pop(mut &c.holes) }
     while len(c.lifted) > nlifted { pop(mut &c.lifted) }

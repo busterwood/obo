@@ -1,0 +1,6 @@
+// SPEC 7.8: an if expression whose branches all leave has no value.
+// error: has no value
+fn f(c: bool): int {
+    let x = if c { return 1 } else { return 2 }
+}
+fn main() { println(f(true)) }

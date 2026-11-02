@@ -1,0 +1,6 @@
+// SPEC 7.8: break and continue cannot be in a while condition.
+// error: break cannot be in a while condition
+fn main() {
+    var i = 0
+    while (if i > 5 { break } else { i < 9 }) { i += 1 }
+}

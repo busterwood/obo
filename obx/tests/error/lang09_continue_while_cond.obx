@@ -1,0 +1,9 @@
+// SPEC 7.8: break and continue cannot be in a while condition (even in a match).
+// error: continue cannot be in a while condition
+fn main() {
+    var i = 0
+    while true {
+        while match i { 3 { continue } else { i < 9 } } { i += 1 }
+        i += 1
+    }
+}

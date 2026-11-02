@@ -711,6 +711,7 @@ pub const MUTABLE = 128
 pub const MINUS = 256
 pub const NEG = 512
 pub const TRUE = 1024
+pub const ARM = 2048        // N_RETURN, N_BREAK, N_CONTINUE: the whole body of a branch or arm of an expression
 
 // Type forms and interface receiver modes.
 pub const F_RECORD = 0
@@ -1466,7 +1467,23 @@ fn (p: mut &Parser) matchstmt(w: int, kind: int): int {
 fn (p: mut &Parser) branch(): int {
     p.sym(S_LBRACE)
     p.skipsemi()
-    let e = p.expr0()
+    var e = -1
+    if p.atKw(K_RETURN) || p.atKw(K_BREAK) || p.atKw(K_CONTINUE) {
+        // return, break or continue as the whole branch (SPEC 7.8)
+        let w = p.line()
+        let isRet = p.atKw(K_RETURN)
+        let isBreak = p.atKw(K_BREAK)
+        p.next()
+        if isRet {
+            let v = if p.atSym(S_SEMI) || p.atSym(S_RBRACE) { -1 } else { p.expr0() }
+            e = p.node(N_RETURN, w, "", v, -1, -1)
+        } else {
+            e = p.node(if isBreak { N_BREAK } else { N_CONTINUE }, w, "", -1, -1, -1)
+        }
+        p.flag(e, ARM, true)
+    } else {
+        e = p.expr0()
+    }
     p.skipsemi()
     if !p.atSym(S_RBRACE) { p.err("a branch of an if or match expression is one expression in { }") }
     p.next()

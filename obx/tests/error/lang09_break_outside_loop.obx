@@ -1,0 +1,5 @@
+// SPEC 7.8: break as a branch needs a loop.
+// error: break outside a loop
+fn main() {
+    let y = if true { break } else { 1 }
+}

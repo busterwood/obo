@@ -1,0 +1,7 @@
+// SPEC 7.8: return is a branch only as the whole branch, not inside an expression.
+// error: expected an expression
+fn f(c: bool): int {
+    let x = if c { 1 + return 2 } else { 3 }
+    return x
+}
+fn main() { println(f(true)) }
