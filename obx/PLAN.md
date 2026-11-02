@@ -11,7 +11,7 @@ and the self-hosted compiler first. Only then port the existing programs
 | 1 | Core spec, [SPEC.md](SPEC.md) | about the size of obo's core guide | draft 1 written (about 580 lines) |
 | 2 | Reference compiler, `ref/` (Python to C) | under 5,000 lines; conformance suite passes with no leaks | done: 3,800 lines, 387 conformance + 77 own tests pass; soundness review next |
 | 3 | Library: `lib/` | no compiler change except primitives | done: 9 modules, 3,300 lines, 25 library tests (OBX_CHECK=1); compiler changes: `lib/` import root, `obx_*` C helpers in rt.h; see [lib/README.md](lib/README.md) |
-| 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | step 1 done: lexer and parser, identical `--dump-ast` on all 1,448 test files and 65,000 mutants; see [compiler/README.md](compiler/README.md) |
+| 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | step 1 done: lexer and parser, identical `--dump-ast` on all 1,969 test files and 90,000 mutants; see [compiler/README.md](compiler/README.md) |
 | 5 | Native x86-64 ELF backend; then eza, SQLite, Postgres | eza shorter than obo's and as fast | |
 | 6 | Retire obo 0.19 | | |
 

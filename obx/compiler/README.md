@@ -15,12 +15,12 @@ parses for now.
 
 | File | Lines | Ports | Contents |
 |---|---:|---|---|
-| `syntax.obx` | 1,810 | `ref/syntax.py` (877) | errors, tokens, source text (UTF-8 check, newlines), lexer with the ASI rule, the AST arena, the parser |
-| `dump.obx` | 390 | `ref/dump.py` (298) | `--dump-ast` |
-| `main.obx` | 65 | `ref/obxc.py` (`--dump-ast` only) | driver |
+| `syntax.obx` | 1,840 | `ref/syntax.py` (889) | errors, tokens, source text (UTF-8 check, newlines), lexer with the ASI rule, the AST arena, the parser |
+| `dump.obx` | 388 | `ref/dump.py` (298) | `--dump-ast` |
+| `main.obx` | 63 | `ref/obxc.py` (`--dump-ast` only) | driver |
 | `run_compare.py` | 256 | | build and compare with ref; mutant generator; hash-seed check |
 
-The obx code is about twice as many lines as the Python it replaces (1,630
+The obx code is about twice as many lines as the Python it replaces (1,660
 against 800 lines without comments and blank lines for the parser). The
 difference is mostly what obx does not have: tuples and list comprehensions
 (the AST tuples become nodes; lists are built in a local array and copied),
@@ -80,8 +80,8 @@ agree between those depths; no test is that deep.
 ## How the port is checked
 
 `run_compare.py` builds the compiler with ref, then dumps every `.obx` file
-under `tests/`, `ref/tests/`, `lib/`, `redteam/` and `compiler/` (1,448 files,
-26 of them syntax errors) with both compilers, each in one process, and
+under `tests/`, `ref/tests/`, `lib/`, `redteam/` and `compiler/` (1,969 files,
+44 of them syntax errors) with both compilers, each in one process, and
 compares the text. The syntax-error files are also run one at a time, where
 the message goes to stderr, and exit status and stderr must match. The
 compiler runs with `OBX_CHECK=1`, so a leak fails the run.
@@ -94,11 +94,13 @@ covering every lexer and parser message.
 
 ## Status
 
-- `--dump-ast`: identical for all 1,448 test files and for 65,000 mutants
-  (seeds 1 to 4; 57,000 of them syntax errors), in both the many-file and the
-  one-file form. No leaks.
-- Speed: all 1,448 test files in 0.11 s (ref: 0.8 s in one Python process);
+- `--dump-ast`: identical for all 1,969 test files and for 25,000 mutants
+  after the round-3 lexer changes (22,000 of them syntax errors; 65,000
+  more before them), in both the many-file and the one-file form. No leaks.
+- Speed: all 1,969 test files in 0.15 s (ref: 1.0 s in one Python process);
   a 409,000-line file (12.9 MB, 2.7 million dump lines) in 1.4 s (ref:
   15.8 s).
 - Next: `sema.obx` (`--dump-types`), then `check.obx` and `emit.obx`
-  (identical C), then the bootstrap (PLAN.md, stage 4, "Order").
+  (identical C), then the bootstrap (PLAN.md, stage 4, "Order"). sema needs
+  ref's `CRESERVED` pattern and `CHELPERS` list (the `obx_` helpers an extern
+  may name) word for word.

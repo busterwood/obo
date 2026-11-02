@@ -33,12 +33,12 @@ def corpus():
 def build():
     os.makedirs(OUT, exist_ok=True)
     exe = os.path.join(OUT, 'obxc')
-    t = time.time()
+    t = time.perf_counter()
     r = subprocess.run([sys.executable, REF, os.path.join(HERE, 'main.obx'), '-o', exe],
                        capture_output=True, text=True)
     if r.returncode:
         sys.exit(f"building the compiler failed:\n{r.stderr}")
-    print(f"built {os.path.relpath(exe, OBX)} in {time.time() - t:.1f}s")
+    print(f"built {os.path.relpath(exe, OBX)} in {time.perf_counter() - t:.1f}s")
     return exe
 
 
@@ -206,11 +206,11 @@ def single(exe, files):
 
 
 def compare(exe, files, label, nsingle):
-    t0 = time.time()
+    t0 = time.perf_counter()
     ref = run_ref(files)
-    t1 = time.time()
+    t1 = time.perf_counter()
     obx = run_obx(exe, files)
-    t2 = time.time()
+    t2 = time.perf_counter()
     bad = 0
     errors = 0
     for f in files:

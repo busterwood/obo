@@ -393,7 +393,7 @@ fn (lx: mut &Lexer) push(k: int, op: int, s: str, v: int, line: int) {
 }
 
 // The ASI rule: a newline ends a statement after a name, a literal, ) ] }, or
-// return break continue true false, except inside ( ) and [ ].
+// return break continue true false never, except inside ( ) and [ ].
 fn (lx: &Lexer) endsStmt(): bool {
     let nt = len(lx.toks)
     if nt == 0 { return false }
@@ -403,7 +403,7 @@ fn (lx: &Lexer) endsStmt(): bool {
     let op = lx.toks[nt - 1].op
     if k == T_ID || k == T_INT || k == T_FRAC || k == T_STR || k == T_CHAR { return true }
     if k == T_KW {
-        return op == K_RETURN || op == K_BREAK || op == K_CONTINUE || op == K_TRUE || op == K_FALSE
+        return op == K_RETURN || op == K_BREAK || op == K_CONTINUE || op == K_TRUE || op == K_FALSE || op == K_NEVER
     }
     return k == T_SYM && (op == S_RPAREN || op == S_RBRACKET || op == S_RBRACE)
 }
@@ -592,6 +592,12 @@ fn (lx: &Lexer) afterOperand(): bool {
 }
 
 // A number at src[i]; returns the offset after it.
+fn (lx: &Lexer) tooLong(i: int, j: int) {
+    if j - i > 1000 {
+        lx.fail(lx.line, "a literal longer than 1000 characters (" + intToStr(j - i) + ") is too long to read")
+    }
+}
+
 fn (lx: mut &Lexer) number(i: int): int {
     let src = lx.src
     let n = len(src)
@@ -602,6 +608,7 @@ fn (lx: mut &Lexer) number(i: int): int {
         if strByte(src, i + 1) == 'x' { base = 16 }
         j = i + 2
         while j < n && isWord(strByte(src, j)) { j += 1 }
+        lx.tooLong(i, j)
         let v = toDecimal(noUnderscores(src[i + 2..j]), base)
         if len(v) == 0 { lx.fail(line, "bad integer literal " + src[i..j]) }
         lx.push(T_INT, -1, v, 0, line)
@@ -609,8 +616,7 @@ fn (lx: mut &Lexer) number(i: int): int {
     }
     while j < n && (isDig(strByte(src, j)) || strByte(src, j) == '_') { j += 1 }
     var k = j
-    if j < n && strByte(src, j) == '.' && j + 1 < n && strByte(src, j + 1) != '.' {
-        if !isDig(strByte(src, j + 1)) { lx.fail(line, "a fractional literal needs digits after the point") }
+    if j < n && strByte(src, j) == '.' && j + 1 < n && isDig(strByte(src, j + 1)) {    // 5.toStr() is a call
         k = j + 1
         while k < n && (isDig(strByte(src, k)) || strByte(src, k) == '_') { k += 1 }
     }
@@ -621,6 +627,7 @@ fn (lx: mut &Lexer) number(i: int): int {
         k = e
         while k < n && isDig(strByte(src, k)) { k += 1 }
     }
+    lx.tooLong(i, k)
     if k > j {
         if k < n && isWord(strByte(src, k)) { lx.fail(line, "bad fractional literal " + src[i..k + 1]) }
         lx.push(T_FRAC, -1, noUnderscores(src[i..k]), 0, line)
