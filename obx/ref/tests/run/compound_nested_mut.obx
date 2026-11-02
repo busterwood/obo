@@ -1,0 +1,11 @@
+// SPEC 7.4: a += b is a = a + b with a evaluated once (its index before b), so
+// b may change the array, as in the expanded form; the store finds the element
+// again (and checks the index again). Before red-team round 2 (g09) this was
+// rejected as a held borrow.
+// expect: 4 2
+fn f(xs: mut &[]int): int { return pop(xs) }
+fn main() {
+    var xs = [1, 2, 3]
+    xs[0] += f(mut &xs)
+    println(xs[0].toStr() + " " + len(xs).toStr())
+}

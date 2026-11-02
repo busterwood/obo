@@ -487,7 +487,10 @@ For operands that are not primitive, an operator is a method call:
 
 `str` has built-in `+` (concatenation), `==` and the comparisons (bytewise).
 `bool` has `== != && || !`. A compound assignment `a += b` means `a = a + b`
-with `a` evaluated once.
+with `a` evaluated once: the index expressions in `a` run once, before `b`, and,
+as in `a = a + b`, the value is stored to the place they name after `b` has run
+(so `xs[i] += f(mut &xs)` is allowed, and `i` is checked again when it is
+stored to).
 
 ### 7.5 Calls and method calls
 

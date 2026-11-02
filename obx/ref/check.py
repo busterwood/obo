@@ -665,7 +665,13 @@ class Checker:
         if p.var is not None and p.var.state != 'live':
             self.err(f"'{p.var.name}' was moved and has no value here", s.where)
         lv = self.snap_val(self.rd(p)) if self.effects(s.e) else p
-        r = self.binop(s.op, lv, s.e, s.where, p.t, held=p)
+        # a += b is a = a + b with a evaluated once (SPEC 7.4). A place made of variables, fields
+        # and indexes is found again when it is stored to, as in a = a + b; one reached through a
+        # slice or a call result is held while b is evaluated (rule 3).
+        fixed = tg
+        while fixed.kind in ('field', 'index'):
+            fixed = fixed.e
+        r = self.binop(s.op, lv, s.e, s.where, p.t, held=None if fixed.kind == 'name' else p)
         c = self.consume(self.coerce(r, p.t, s.where, "the result"), s.where)
         live = not (p.var is not None and p.var.state != 'live')
         self.store(p, c, live)

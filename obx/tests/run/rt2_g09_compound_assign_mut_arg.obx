@@ -1,0 +1,15 @@
+// Red-team round 2, g09 (SPEC 7.4): a += b means a = a + b with a evaluated
+// once. n = n + f(mut &n) reads the copy n first; n += f(mut &n) was rejected
+// because the target was held as a borrow while f(mut &n) was evaluated.
+// expect: 2
+// expect: abcx
+fn f(n: mut &int): int { n = 100; return 1 }
+fn ch(s: mut &str): str { s = "zz"; return "x" }
+fn main() {
+    var n = 1
+    n += f(mut &n)
+    println(n)
+    var s = "abc" + ""
+    s += ch(mut &s)
+    println(s)
+}

@@ -1,0 +1,10 @@
+// Red-team round 2, g09: a compound assignment to an element reached through
+// a slice still holds the array while the right side is evaluated (the slice
+// would point into freed memory when the result is stored).
+// error: xs
+// error: borrow|held|overlap
+fn g(xs: mut &[]int): int { xs = [9]; return 0 }
+fn main() {
+    var xs: []int = [1, 2, 3]
+    xs[0..2][0] += g(mut &xs)
+}
