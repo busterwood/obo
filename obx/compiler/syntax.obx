@@ -47,8 +47,7 @@ fn reprOf(s: str, mode: int): str {
         if c == '\'' { hasSingle = true }
         if c == '"' { hasDouble = true }
     }
-    var q: byte = '\''
-    if hasSingle && !hasDouble { q = '"' }
+    let q: byte = if hasSingle && !hasDouble { '"' } else { '\'' }
     var b = newStrBuf()
     if mode == R_BYTES { b.addByte('b') }
     b.addByte(q)
@@ -224,34 +223,14 @@ fn isHex(c: byte): bool { return isDig(c) || (c >= 'a' && c <= 'f') || (c >= 'A'
 // The code of the two-byte symbol c d, or -1.
 fn sym2(c: byte, d: byte): int {
     if d == '=' {
-        if c == '+' { return 0 }
-        if c == '-' { return 1 }
-        if c == '*' { return 2 }
-        if c == '/' { return 3 }
-        if c == '%' { return 4 }
-        if c == '|' { return 5 }
-        if c == '&' { return 6 }
-        if c == '^' { return 7 }
-        if c == '=' { return S_EQ }
-        if c == '!' { return S_NE }
-        if c == '<' { return S_LE }
-        if c == '>' { return S_GE }
-        return -1
+        return match c {
+            '+' { 0 } '-' { 1 } '*' { 2 } '/' { 3 } '%' { 4 } '|' { 5 } '&' { 6 } '^' { 7 }
+            '=' { S_EQ } '!' { S_NE } '<' { S_LE } '>' { S_GE } else { -1 }
+        }
     }
-    if d == '%' {
-        if c == '+' { return S_WADD }
-        if c == '-' { return S_WSUB }
-        if c == '*' { return S_WMUL }
-        return -1
-    }
-    if c == d {
-        if c == '<' { return S_SHL }
-        if c == '>' { return S_SHR }
-        if c == '.' { return S_DOTDOT }
-        if c == '&' { return S_ANDAND }
-        if c == '|' { return S_OROR }
-    }
-    return -1
+    if d == '%' { return match c { '+' { S_WADD } '-' { S_WSUB } '*' { S_WMUL } else { -1 } } }
+    if c != d { return -1 }
+    return match c { '<' { S_SHL } '>' { S_SHR } '.' { S_DOTDOT } '&' { S_ANDAND } '|' { S_OROR } else { -1 } }
 }
 
 // The code of the one-byte symbol c, or -1.
@@ -348,20 +327,14 @@ fn utf8Error(s: str): int {
 
 // The length of the UTF-8 sequence that starts with c (valid input).
 fn seqLen(c: byte): int {
-    if c < 128 { return 1 }
-    if c < 224 { return 2 }
-    if c < 240 { return 3 }
-    return 4
+    return if c < 128 { 1 } else if c < 224 { 2 } else if c < 240 { 3 } else { 4 }
 }
 
 // The code point of the UTF-8 sequence at s[i] (valid UTF-8).
 fn codePoint(s: str, i: int): int {
     let c = strByte(s, i)
     let n = seqLen(c)
-    var cp = int(c)
-    if n == 2 { cp = int(c & 31) }
-    if n == 3 { cp = int(c & 15) }
-    if n == 4 { cp = int(c & 7) }
+    var cp = match n { 2 { int(c & 31) } 3 { int(c & 15) } 4 { int(c & 7) } else { int(c) } }
     for k in 1..n { cp = cp * 64 + int(strByte(s, i + k) & 63) }
     return cp
 }
@@ -399,13 +372,13 @@ fn (lx: &Lexer) endsStmt(): bool {
     if nt == 0 { return false }
     let nn = len(lx.nest)
     if nn > 0 && lx.nest[nn - 1] != '{' { return false }
-    let k = lx.toks[nt - 1].k
     let op = lx.toks[nt - 1].op
-    if k == T_ID || k == T_INT || k == T_FRAC || k == T_STR || k == T_CHAR { return true }
-    if k == T_KW {
-        return op == K_RETURN || op == K_BREAK || op == K_CONTINUE || op == K_TRUE || op == K_FALSE || op == K_NEVER
+    return match lx.toks[nt - 1].k {
+        T_ID, T_INT, T_FRAC, T_STR, T_CHAR { true }
+        T_KW { op == K_RETURN || op == K_BREAK || op == K_CONTINUE || op == K_TRUE || op == K_FALSE || op == K_NEVER }
+        T_SYM { op == S_RPAREN || op == S_RBRACKET || op == S_RBRACE }
+        else { false }
     }
-    return k == T_SYM && (op == S_RPAREN || op == S_RBRACKET || op == S_RBRACE)
 }
 
 fn (lx: &Lexer) fail(line: int, msg: str): never { fail(lx.fname, line, msg) }
@@ -423,30 +396,15 @@ fn (lx: &Lexer) escape(j: int, line: int, out: mut &int): int {
         out = hexVal(strByte(src, j + 2)) * 16 + hexVal(strByte(src, j + 3))
         return j + 4
     }
-    if c == 'n' {
-        out = 10
-    } else if c == 't' {
-        out = 9
-    } else if c == 'r' {
-        out = 13
-    } else if c == '0' {
-        out = 0
-    } else if c == '\\' {
-        out = 92
-    } else if c == '\'' {
-        out = 39
-    } else if c == '"' {
-        out = 34
-    } else {
-        lx.fail(line, "unknown escape \\" + src[j + 1..j + 1 + seqLen(c)])
+    out = match c {
+        'n' { 10 } 't' { 9 } 'r' { 13 } '0' { 0 } '\\' { 92 } '\'' { 39 } '"' { 34 }
+        else { lx.fail(line, "unknown escape \\" + src[j + 1..j + 1 + seqLen(c)]) }
     }
     return j + 2
 }
 
 fn hexVal(c: byte): int {
-    if isDig(c) { return int(c - '0') }
-    if c >= 'a' { return int(c - 'a') + 10 }
-    return int(c - 'A') + 10
+    return if isDig(c) { int(c - '0') } else if c >= 'a' { int(c - 'a') + 10 } else { int(c - 'A') + 10 }
 }
 
 // s without '_' (shares the bytes when there is none).
@@ -474,14 +432,8 @@ fn toDecimal(t: str, base: int): str {
     var acc: []int = [0]          // decimal digits, least significant first
     for i in 0..len(t) {
         let c = strByte(t, i)
-        var d = 99
-        if isDig(c) {
-            d = int(c - '0')
-        } else if c >= 'a' && c <= 'z' {
-            d = int(c - 'a') + 10
-        } else if c >= 'A' && c <= 'Z' {
-            d = int(c - 'A') + 10
-        }
+        let d = if isDig(c) { int(c - '0') } else if c >= 'a' && c <= 'z' { int(c - 'a') + 10 }
+            else if c >= 'A' && c <= 'Z' { int(c - 'A') + 10 } else { 99 }
         if d >= base { return "" }
         var carry = d
         for k in 0..len(acc) {
@@ -537,11 +489,7 @@ fn (lx: mut &Lexer) run() {
             while j < n && isWord(strByte(src, j)) { j += 1 }
             let word = src[i..j]
             let kw = keyword(word)
-            if kw >= 0 {
-                lx.push(T_KW, kw, KEYWORDS[kw], 0, line)
-            } else {
-                lx.push(T_ID, -1, word, 0, line)
-            }
+            lx.push(if kw >= 0 { T_KW } else { T_ID }, kw, word, 0, line)
             i = j
         } else if c == '"' {
             i = lx.string(i)
@@ -563,8 +511,7 @@ fn (lx: mut &Lexer) run() {
         } else if c == '.' && i + 1 < n && isDig(strByte(src, i + 1)) && !lx.afterOperand() {
             lx.fail(line, "a fractional literal needs digits before the point")
         } else {
-            var op = -1
-            if i + 1 < n { op = sym2(c, strByte(src, i + 1)) }
+            var op = if i + 1 < n { sym2(c, strByte(src, i + 1)) } else { -1 }
             if op < 0 { op = sym1(c) }
             if op < 0 {
                 if c >= 128 { lx.fail(line, "unexpected character " + codePointName(src, i)) }
@@ -604,8 +551,7 @@ fn (lx: mut &Lexer) number(i: int): int {
     let line = lx.line
     var j = i
     if i + 1 < n && strByte(src, i) == '0' && (strByte(src, i + 1) == 'x' || strByte(src, i + 1) == 'b') {
-        var base = 2
-        if strByte(src, i + 1) == 'x' { base = 16 }
+        let base = if strByte(src, i + 1) == 'x' { 16 } else { 2 }
         j = i + 2
         while j < n && isWord(strByte(src, j)) { j += 1 }
         lx.tooLong(i, j)
@@ -859,31 +805,26 @@ fn (p: &Parser) err(msg: str): never { p.fail(p.line(), msg) }
 
 // What ref's expect() and primary() say they found (Python's repr of a value).
 fn (p: &Parser) foundRepr(t: int): str {
-    let k = p.toks[t].k
-    if k == T_SYM && p.toks[t].op == S_SEMI { return "'end of line'" }
-    if k == T_INT { return p.toks[t].s }
-    if k == T_CHAR { return intToStr(p.toks[t].v) }
-    if k == T_STR { return "'a string'" }
-    if k == T_EOF { return "'eof'" }
-    return pyRepr(p.toks[t].s)
+    return match p.toks[t].k {
+        T_INT { p.toks[t].s } T_CHAR { intToStr(p.toks[t].v) } T_STR { "'a string'" } T_EOF { "'eof'" }
+        T_SYM { if p.toks[t].op == S_SEMI { "'end of line'" } else { pyRepr(p.toks[t].s) } }
+        else { pyRepr(p.toks[t].s) }
+    }
 }
 
 // The repr of a token's raw value (ref's {t.v!r}).
 fn (p: &Parser) valueRepr(t: int): str {
-    let k = p.toks[t].k
-    if k == T_INT { return p.toks[t].s }
-    if k == T_CHAR { return intToStr(p.toks[t].v) }
-    if k == T_STR { return pyBytesRepr(p.toks[t].s) }
-    return pyRepr(p.toks[t].s)
+    return match p.toks[t].k {
+        T_INT { p.toks[t].s } T_CHAR { intToStr(p.toks[t].v) } T_STR { pyBytesRepr(p.toks[t].s) }
+        else { pyRepr(p.toks[t].s) }
+    }
 }
 
 fn (p: mut &Parser) expect(k: int, op: int): int {
     let t = p.next()
     if p.toks[t].k != k || (op >= 0 && p.toks[t].op != op) {
-        var what = TOKEN_KINDS[k]
-        if k == T_SYM && op >= 0 { what = SYMS[op] }
-        if k == T_KW && op >= 0 { what = KEYWORDS[op] }
-        if k == T_ID { what = "a name" }
+        let what = if k == T_SYM && op >= 0 { SYMS[op] } else if k == T_KW && op >= 0 { KEYWORDS[op] }
+            else if k == T_ID { "a name" } else { TOKEN_KINDS[k] }
         p.fail(p.toks[t].line, "expected " + what + ", found " + p.foundRepr(t))
     }
     return t
@@ -971,8 +912,7 @@ fn (p: mut &Parser) module() {
             let name = p.ident()
             let ty = p.typeopt()
             p.sym(S_ASSIGN)
-            let e = p.expr0()
-            d = p.node(N_CONST, w, name, ty, e, -1)
+            d = p.node(N_CONST, w, name, ty, p.expr0(), -1)
             p.sep()
         } else if p.atKw(K_VAR) {
             let w = p.nextLine()
@@ -1021,8 +961,7 @@ fn (p: mut &Parser) externdecl(isPub: bool): int {
         p.fail(w, "extern " + name + " cannot be pub: an extern is always private to its module " +
             "(export a safe wrapper instead)")
     }
-    let none = p.list(&[])
-    let d = p.node(N_FN, w, name, -1, none, ps)
+    let d = p.node(N_FN, w, name, -1, p.list(&[]), ps)
     p.ast.nodes[d].d = ret
     p.ast.nodes[d].t = lib
     p.ast.nodes[d].u = cname
@@ -1074,8 +1013,7 @@ fn (p: mut &Parser) tparam(): int {
             append(mut &cons, p.constraint())
         }
     }
-    let l = p.list(&cons)
-    return p.node(N_TPARAM, w, name, l, -1, -1)
+    return p.node(N_TPARAM, w, name, p.list(&cons), -1, -1)
 }
 
 fn (p: mut &Parser) constraint(): int {
@@ -1098,8 +1036,7 @@ fn (p: mut &Parser) typedecl(): int {
     }
     if p.atKw(K_RECORD) {
         p.next()
-        let fs = p.fields()
-        let d = p.node(N_TYPE, w, name, tps, F_RECORD, fs)
+        let d = p.node(N_TYPE, w, name, tps, F_RECORD, p.fields())
         p.flag(d, VALUE, value)
         return d
     }
@@ -1115,29 +1052,24 @@ fn (p: mut &Parser) typedecl(): int {
                 p.next()
                 var fs: []int = []
                 while !p.atSym(S_RPAREN) {
-                    let t = p.typ()
-                    let f = p.node(N_FIELD, 0, intToStr(len(fs)), t, -1, -1)
+                    let f = p.node(N_FIELD, 0, intToStr(len(fs)), p.typ(), -1, -1)
                     p.flag(f, PUB, true)
                     append(mut &fs, f)
                     if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
                 }
                 p.next()
-                let l = p.list(&fs)
-                append(mut &vs, p.node(N_VARIANT, vw, vn, l, -1, -1))
+                append(mut &vs, p.node(N_VARIANT, vw, vn, p.list(&fs), -1, -1))
             } else if p.atSym(S_LBRACE) {
-                let fs = p.fields()
-                let v = p.node(N_VARIANT, vw, vn, fs, -1, -1)
+                let v = p.node(N_VARIANT, vw, vn, p.fields(), -1, -1)
                 p.flag(v, NAMED, true)
                 append(mut &vs, v)
             } else {
-                let l = p.list(&[])
-                append(mut &vs, p.node(N_VARIANT, vw, vn, l, -1, -1))
+                append(mut &vs, p.node(N_VARIANT, vw, vn, p.list(&[]), -1, -1))
             }
             p.sep()
         }
         p.sym(S_RBRACE)
-        let l = p.list(&vs)
-        let d = p.node(N_TYPE, w, name, tps, F_CLOSED, l)
+        let d = p.node(N_TYPE, w, name, tps, F_CLOSED, p.list(&vs))
         p.flag(d, VALUE, value)
         return d
     }
@@ -1165,18 +1097,13 @@ fn (p: mut &Parser) typedecl(): int {
                 p.next()
                 p.sym(S_RPAREN)
             }
-            let mname = p.ident()
-            let ps = p.params()
-            let ret = p.typeopt()
-            append(mut &ms, p.node(N_MEMBER, mw, mname, ps, ret, mode))
+            append(mut &ms, p.node(N_MEMBER, mw, p.ident(), p.params(), p.typeopt(), mode))
             p.sep()
         }
         p.sym(S_RBRACE)
-        let l = p.list(&ms)
-        return p.node(N_TYPE, w, name, tps, F_INTERFACE, l)
+        return p.node(N_TYPE, w, name, tps, F_INTERFACE, p.list(&ms))
     }
-    let target = p.typ()
-    return p.node(N_TYPE, w, name, tps, F_ALIAS, target)
+    return p.node(N_TYPE, w, name, tps, F_ALIAS, p.typ())
 }
 
 fn (p: mut &Parser) fields(): int {
@@ -1217,18 +1144,12 @@ fn (p: mut &Parser) fndecl(): int {
             rn = p.nextText()
             p.next()
         }
-        let rt = p.recvtype()
-        recv = p.node(N_RECV, 0, rn, rt, -1, -1)
+        recv = p.node(N_RECV, 0, rn, p.recvtype(), -1, -1)
         p.sym(S_RPAREN)
     }
-    let name = p.ident()
-    let tps = p.tparams()
-    let ps = p.params()
-    let ret = p.typeopt()
-    let d = p.node(N_FN, w, name, recv, tps, ps)
-    p.ast.nodes[d].d = ret
-    let body = p.block()
-    p.ast.nodes[d].e = body
+    let d = p.node(N_FN, w, p.ident(), recv, p.tparams(), p.params())
+    p.ast.nodes[d].d = p.typeopt()
+    p.ast.nodes[d].e = p.block()
     return d
 }
 
@@ -1237,42 +1158,33 @@ fn (p: mut &Parser) fndecl(): int {
 fn (p: mut &Parser) recvtype(): int {
     if p.atSym(S_AMP) {
         p.next()
-        let t = p.recvtype()
-        return p.node(N_TREF, 0, "", t, -1, -1)
+        return p.node(N_TREF, 0, "", p.recvtype(), -1, -1)
     }
     if p.atKw(K_MUT) {
         p.next()
         p.sym(S_AMP)
-        let t = p.recvtype()
-        let r = p.node(N_TREF, 0, "", t, -1, -1)
+        let r = p.node(N_TREF, 0, "", p.recvtype(), -1, -1)
         p.flag(r, MUT, true)
         return r
     }
     let w = p.line()
-    let first = p.ident()
-    var parts: []int = [p.node(N_IDENT, 0, first, -1, -1, -1)]
+    var parts: []int = [p.node(N_IDENT, 0, p.ident(), -1, -1, -1)]
     if p.atSym(S_DOT) {
         p.next()
-        let part = p.ident()
-        append(mut &parts, p.node(N_IDENT, 0, part, -1, -1, -1))
+        append(mut &parts, p.node(N_IDENT, 0, p.ident(), -1, -1, -1))
     }
     var args: []int = []
     if p.atSym(S_LBRACKET) {
         p.next()
         while true {
-            if p.kind(0) == T_ID && (p.isSym(1, S_COLON) || p.isSym(1, S_COMMA) || p.isSym(1, S_RBRACKET)) {
-                append(mut &args, p.tparam())
-            } else {
-                append(mut &args, p.typ())
-            }
+            let tp = p.kind(0) == T_ID && (p.isSym(1, S_COLON) || p.isSym(1, S_COMMA) || p.isSym(1, S_RBRACKET))
+            append(mut &args, if tp { p.tparam() } else { p.typ() })
             if !p.atSym(S_COMMA) { break }
             p.next()
         }
         p.sym(S_RBRACKET)
     }
-    let lp = p.list(&parts)
-    let la = p.list(&args)
-    return p.node(N_TNAME, w, "", lp, la, -1)
+    return p.node(N_TNAME, w, "", p.list(&parts), p.list(&args), -1)
 }
 
 fn (p: mut &Parser) params(): int {
@@ -1287,8 +1199,7 @@ fn (p: mut &Parser) params(): int {
         let w = p.line()
         let n = p.ident()
         p.sym(S_COLON)
-        let t = p.typ()
-        let q = p.node(N_PARAM, w, n, t, -1, -1)
+        let q = p.node(N_PARAM, w, n, p.typ(), -1, -1)
         p.flag(q, VAR, isvar)
         append(mut &ps, q)
         if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
@@ -1317,20 +1228,15 @@ fn (p: mut &Parser) type1(): int {
             p.flag(s, MUT, isMut)
             return s
         }
-        let t = p.typ()
-        let r = p.node(N_TREF, 0, "", t, -1, -1)
+        let r = p.node(N_TREF, 0, "", p.typ(), -1, -1)
         p.flag(r, MUT, isMut)
         return r
     }
-    if p.atKw(K_NEVER) {
-        let w = p.nextLine()
-        return p.node(N_TNEVER, w, "", -1, -1, -1)
-    }
+    if p.atKw(K_NEVER) { return p.node(N_TNEVER, p.nextLine(), "", -1, -1, -1) }
     if p.atSym(S_LBRACKET) {
         p.next()
         p.sym(S_RBRACKET)
-        let t = p.typ()
-        return p.node(N_TARR, 0, "", t, -1, -1)
+        return p.node(N_TARR, 0, "", p.typ(), -1, -1)
     }
     if p.atKw(K_FN) {
         let fw = p.nextLine()
@@ -1341,21 +1247,17 @@ fn (p: mut &Parser) type1(): int {
             if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
         }
         p.sym(S_RPAREN)
-        let l = p.list(&ps)
-        let ret = p.typeopt()
-        return p.node(N_TFN, fw, "", l, ret, -1)
+        return p.node(N_TFN, fw, "", p.list(&ps), p.typeopt(), -1)
     }
     return p.namedtype()
 }
 
 fn (p: mut &Parser) namedtype(): int {
     let w = p.line()
-    let first = p.ident()
-    var parts: []int = [p.node(N_IDENT, 0, first, -1, -1, -1)]
+    var parts: []int = [p.node(N_IDENT, 0, p.ident(), -1, -1, -1)]
     if p.atSym(S_DOT) {
         p.next()
-        let part = p.ident()
-        append(mut &parts, p.node(N_IDENT, 0, part, -1, -1, -1))
+        append(mut &parts, p.node(N_IDENT, 0, p.ident(), -1, -1, -1))
     }
     var args: []int = []
     if p.atSym(S_LBRACKET) {
@@ -1367,9 +1269,7 @@ fn (p: mut &Parser) namedtype(): int {
         }
         p.sym(S_RBRACKET)
     }
-    let lp = p.list(&parts)
-    let la = p.list(&args)
-    return p.node(N_TNAME, w, "", lp, la, -1)
+    return p.node(N_TNAME, w, "", p.list(&parts), p.list(&args), -1)
 }
 
 // ---- statements
@@ -1389,8 +1289,7 @@ fn (p: mut &Parser) block(): int {
         }
     }
     p.sym(S_RBRACE)
-    let l = p.list(&ss)
-    return p.node(N_BLOCK, w, "", l, -1, -1)
+    return p.node(N_BLOCK, w, "", p.list(&ss), -1, -1)
 }
 
 fn (p: &Parser) prevBrace(): bool {
@@ -1416,56 +1315,47 @@ fn (p: mut &Parser) stmt1(): int {
     if p.atSym(S_LBRACE) { return p.block() }
     if p.kind(0) == T_KW {
         let op = p.toks[p.i].op
-        if op == K_LET || op == K_VAR {
-            p.next()
-            if p.kind(0) == T_ID && (p.isSym(1, S_DOT) || p.isSym(1, S_LBRACE) || p.isSym(1, S_LBRACKET)) {
-                return p.destructure(w, op == K_VAR)
-            }
-            let name = p.ident()
-            let ty = p.typeopt()
-            p.sym(S_ASSIGN)
-            let e = p.expr0()
-            let n = p.node(N_LET, w, name, ty, e, -1)
-            p.flag(n, MUTABLE, op == K_VAR)
-            return n
-        }
-        if op == K_IF { return p.ifstmt() }
-        if op == K_WHILE {
-            p.next()
-            let c = p.cond()
-            let body = p.block()
-            return p.node(N_WHILE, w, "", c, body, -1)
-        }
-        if op == K_FOR {
-            p.next()
-            let name = p.ident()
-            p.expect(T_KW, K_IN)
-            let a = p.cond()
-            var b = -1
-            if p.atSym(S_DOTDOT) {
+        match op {
+            K_LET, K_VAR {
                 p.next()
-                b = p.cond()
+                if p.kind(0) == T_ID && (p.isSym(1, S_DOT) || p.isSym(1, S_LBRACE) || p.isSym(1, S_LBRACKET)) {
+                    return p.destructure(w, op == K_VAR)
+                }
+                let name = p.ident()
+                let ty = p.typeopt()
+                p.sym(S_ASSIGN)
+                let n = p.node(N_LET, w, name, ty, p.expr0(), -1)
+                p.flag(n, MUTABLE, op == K_VAR)
+                return n
             }
-            let body = p.block()
-            return p.node(N_FOR, w, name, a, b, body)
-        }
-        if op == K_RETURN {
-            p.next()
-            if p.atSym(S_SEMI) || p.atSym(S_RBRACE) { return p.node(N_RETURN, w, "", -1, -1, -1) }
-            let e = p.expr0()
-            return p.node(N_RETURN, w, "", e, -1, -1)
-        }
-        if op == K_BREAK {
-            p.next()
-            return p.node(N_BREAK, w, "", -1, -1, -1)
-        }
-        if op == K_CONTINUE {
-            p.next()
-            return p.node(N_CONTINUE, w, "", -1, -1, -1)
-        }
-        if op == K_MATCH {
-            let mw = p.nextLine()
-            return p.matchstmt(mw, N_MATCH)
+            K_IF { return p.ifstmt() }
+            K_WHILE {
+                p.next()
+                return p.node(N_WHILE, w, "", p.cond(), p.block(), -1)
+            }
+            K_FOR {
+                p.next()
+                let name = p.ident()
+                p.expect(T_KW, K_IN)
+                let a = p.cond()
+                var b = -1
+                if p.atSym(S_DOTDOT) {
+                    p.next()
+                    b = p.cond()
+                }
+                return p.node(N_FOR, w, name, a, b, p.block())
+            }
+            K_RETURN {
+                p.next()
+                if p.atSym(S_SEMI) || p.atSym(S_RBRACE) { return p.node(N_RETURN, w, "", -1, -1, -1) }
+                return p.node(N_RETURN, w, "", p.expr0(), -1, -1)
+            }
+            K_BREAK, K_CONTINUE {
+                p.next()
+                return p.node(if op == K_BREAK { N_BREAK } else { N_CONTINUE }, w, "", -1, -1, -1)
+            }
+            K_MATCH { return p.matchstmt(p.nextLine(), N_MATCH) }
+            else {}
         }
     }
     let e = p.expr0()
@@ -1473,10 +1363,8 @@ fn (p: mut &Parser) stmt1(): int {
         let op = p.toks[p.i].op
         if op == S_ASSIGN || (op >= S_ADDEQ && op <= S_XOREQ) {
             p.next()
-            var o = ""
-            if op != S_ASSIGN { o = SYMS[op][0..1] }
-            let rhs = p.expr0()
-            return p.node(N_ASSIGN, w, o, e, rhs, -1)
+            let o = if op == S_ASSIGN { "" } else { SYMS[op][0..1] }
+            return p.node(N_ASSIGN, w, o, e, p.expr0(), -1)
         }
     }
     return p.node(N_EXPR, w, "", e, -1, -1)
@@ -1502,9 +1390,7 @@ fn (p: mut &Parser) destructure(w: int, mutable: bool): int {
     }
     p.sym(S_RBRACE)
     p.sym(S_ASSIGN)
-    let l = p.list(&fs)
-    let e = p.expr0()
-    let n = p.node(N_DESTRUCTURE, w, "", ty, l, e)
+    let n = p.node(N_DESTRUCTURE, w, "", ty, p.list(&fs), p.expr0())
     p.flag(n, MUTABLE, mutable)
     return n
 }
@@ -1528,8 +1414,7 @@ fn (p: mut &Parser) matchstmt(w: int, kind: int): int {
                 p.next()
                 var binds: []int = []
                 while !p.atSym(S_RPAREN) {
-                    let bind = p.ident()
-                    append(mut &binds, p.node(N_IDENT, 0, bind, -1, -1, -1))
+                    append(mut &binds, p.node(N_IDENT, 0, p.ident(), -1, -1, -1))
                     if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
                 }
                 p.next()
@@ -1547,19 +1432,12 @@ fn (p: mut &Parser) matchstmt(w: int, kind: int): int {
                 p.ast.nodes[arm].c = p.list(&lits)
             }
         }
-        var body = -1
-        if kind == N_MATCHX {
-            body = p.branch()
-        } else {
-            body = p.block()
-        }
-        p.ast.nodes[arm].d = body
+        p.ast.nodes[arm].d = if kind == N_MATCHX { p.branch() } else { p.block() }
         append(mut &arms, arm)
         p.skipsemi()
     }
     p.sym(S_RBRACE)
-    let l = p.list(&arms)
-    return p.node(kind, w, "", scrut, l, -1)
+    return p.node(kind, w, "", scrut, p.list(&arms), -1)
 }
 
 // { e }: a branch of an if or match expression, exactly one expression.
@@ -1581,22 +1459,21 @@ fn (p: mut &Parser) literal(): int {
         var vpath: []int = [p.node(N_IDENT, 0, p.toks[t].s, -1, -1, -1)]
         while p.atSym(S_DOT) {
             p.next()
-            let part = p.ident()
-            append(mut &vpath, p.node(N_IDENT, 0, part, -1, -1, -1))
+            append(mut &vpath, p.node(N_IDENT, 0, p.ident(), -1, -1, -1))
         }
-        let l = p.list(&vpath)
-        return p.node(N_LNAME, 0, "", l, -1, -1)
+        return p.node(N_LNAME, 0, "", p.list(&vpath), -1, -1)
     }
     if k == T_SYM && p.toks[t].op == S_MINUS && p.kind(0) == T_INT {
-        let digits = p.nextText()
-        let n = p.node(N_LINT, 0, digits, -1, -1, -1)
+        let n = p.node(N_LINT, 0, p.nextText(), -1, -1, -1)
         p.flag(n, MINUS, true)
         return n
     }
-    if k == T_INT { return p.node(N_LINT, 0, p.toks[t].s, -1, -1, -1) }
-    if k == T_CHAR { return p.node(N_LCHAR, 0, "", p.toks[t].v, -1, -1) }
-    if k == T_STR { return p.node(N_LSTR, 0, p.toks[t].s, -1, -1, -1) }
-    p.fail(p.toks[t].line, "expected a variant name or a literal, found " + p.valueRepr(t))
+    return match k {
+        T_INT { p.node(N_LINT, 0, p.toks[t].s, -1, -1, -1) }
+        T_CHAR { p.node(N_LCHAR, 0, "", p.toks[t].v, -1, -1) }
+        T_STR { p.node(N_LSTR, 0, p.toks[t].s, -1, -1, -1) }
+        else { p.fail(p.toks[t].line, "expected a variant name or a literal, found " + p.valueRepr(t)) }
+    }
 }
 
 fn (p: mut &Parser) ifstmt(): int {
@@ -1607,14 +1484,7 @@ fn (p: mut &Parser) ifstmt(): int {
     if p.atSym(S_SEMI) && p.isKw(1, K_ELSE) { p.next() }
     if p.atKw(K_ELSE) {
         p.next()
-        if p.atKw(K_IF) {
-            let bw = p.line()
-            let inner = p.ifstmt()
-            let l = p.list(&[inner])
-            els = p.node(N_BLOCK, bw, "", l, -1, -1)
-        } else {
-            els = p.block()
-        }
+        els = if p.atKw(K_IF) { p.node(N_BLOCK, p.line(), "", p.list(&[p.ifstmt()]), -1, -1) } else { p.block() }
     }
     return p.node(N_IF, w, "", c, then, els)
 }
@@ -1655,16 +1525,14 @@ fn (p: mut &Parser) binary(lvl: int): int {
     if lvl == 2 {
         if p.atLevel(2) {
             let op = p.next()
-            let right = p.binary(3)
-            left = p.node(N_BIN, p.toks[op].line, p.toks[op].s, left, right, -1)
+            left = p.node(N_BIN, p.toks[op].line, p.toks[op].s, left, p.binary(3), -1)
             if p.atLevel(2) { p.err("comparisons do not chain") }
         }
         return left
     }
     while p.atLevel(lvl) {
         let op = p.next()
-        let right = p.binary(lvl + 1)
-        left = p.node(N_BIN, p.toks[op].line, p.toks[op].s, left, right, -1)
+        left = p.node(N_BIN, p.toks[op].line, p.toks[op].s, left, p.binary(lvl + 1), -1)
     }
     return left
 }
@@ -1692,8 +1560,7 @@ fn (p: mut &Parser) unary(): int {
         p.next()
         p.sym(S_AMP)
         p.enter()
-        let e = p.unary()
-        let n = p.node(N_BORROW, w, "", e, -1, -1)
+        let n = p.node(N_BORROW, w, "", p.unary(), -1, -1)
         p.depth -= 1
         p.flag(n, MUT, true)
         return n
@@ -1701,13 +1568,11 @@ fn (p: mut &Parser) unary(): int {
     if p.atKw(K_TRY) {
         p.next()
         p.enter()
-        let e = p.unary()
-        let n = p.node(N_TRY, w, "", e, -1, -1)
+        let n = p.node(N_TRY, w, "", p.unary(), -1, -1)
         p.depth -= 1
         return n
     }
-    let e = p.primary()
-    return p.postfix(e)
+    return p.postfix(p.primary())
 }
 
 fn (p: &Parser) namelike(e: int): bool {
@@ -1721,36 +1586,29 @@ fn (p: mut &Parser) postfix(start: int): int {
         let w = p.line()
         if p.atSym(S_DOT) {
             p.next()
-            let name = p.ident()
-            e = p.node(N_FIELDX, w, name, e, -1, -1)
+            e = p.node(N_FIELDX, w, p.ident(), e, -1, -1)
         } else if p.atSym(S_LBRACKET) {
             p.next()
             let save = p.nolit
             p.nolit = 0
-            var lo = -1
-            if !p.atSym(S_DOTDOT) { lo = p.texpr() }
+            let lo = if p.atSym(S_DOTDOT) { -1 } else { p.texpr() }
             if p.atSym(S_DOTDOT) {
                 p.next()
-                var hi = -1
-                if !p.atSym(S_RBRACKET) { hi = p.expr() }
-                e = p.node(N_SUB, w, "", e, lo, hi)
+                e = p.node(N_SUB, w, "", e, lo, if p.atSym(S_RBRACKET) { -1 } else { p.expr() })
             } else {
                 var items: []int = [lo]
                 while p.atSym(S_COMMA) {
                     p.next()
                     append(mut &items, p.texpr())
                 }
-                let l = p.list(&items)
-                e = p.node(N_INDEX, w, "", e, l, -1)
+                e = p.node(N_INDEX, w, "", e, p.list(&items), -1)
             }
             p.nolit = save
             p.sym(S_RBRACKET)
         } else if p.atSym(S_LPAREN) {
-            let l = p.args(S_LPAREN, S_RPAREN)
-            e = p.node(N_CALL, w, "", e, l, -1)
+            e = p.node(N_CALL, w, "", e, p.args(S_LPAREN, S_RPAREN), -1)
         } else if p.atSym(S_LBRACE) && p.nolit == 0 && p.namelike(e) {
-            let l = p.inits()
-            e = p.node(N_LIT, w, "", e, l, -1)
+            e = p.node(N_LIT, w, "", e, p.inits(), -1)
         } else {
             return e
         }
@@ -1762,8 +1620,7 @@ fn (p: mut &Parser) postfix(start: int): int {
 fn (p: mut &Parser) texpr(): int {
     let w = p.line()
     if (p.atSym(S_LBRACKET) && p.isSym(1, S_RBRACKET)) || p.atKw(K_FN) {
-        let t = p.typ()
-        return p.node(N_TARG, w, "", t, -1, -1)
+        return p.node(N_TARG, w, "", p.typ(), -1, -1)
     }
     if p.atSym(S_AMP) || p.atKw(K_MUT) {
         let isMut = p.atKw(K_MUT)
@@ -1825,8 +1682,7 @@ fn (p: mut &Parser) primary(): int {
     }
     if k == T_SYM && op == S_LBRACKET {
         p.i -= 1
-        let l = p.args(S_LBRACKET, S_RBRACKET)
-        return p.node(N_ARRLIT, w, "", l, -1, -1)
+        return p.node(N_ARRLIT, w, "", p.args(S_LBRACKET, S_RBRACKET), -1, -1)
     }
     if k == T_KW && op == K_IF {          // a conditional expression (SPEC 7.8)
         let c = p.cond()
@@ -1834,13 +1690,7 @@ fn (p: mut &Parser) primary(): int {
         if p.atSym(S_SEMI) && p.isKw(1, K_ELSE) { p.next() }
         if !p.atKw(K_ELSE) { p.err("an if expression needs an else branch") }
         p.next()
-        var els = -1
-        if p.atKw(K_IF) {
-            els = p.primary()
-        } else {
-            els = p.branch()
-        }
-        return p.node(N_IFX, w, "", c, then, els)
+        return p.node(N_IFX, w, "", c, then, if p.atKw(K_IF) { p.primary() } else { p.branch() })
     }
     if k == T_KW && op == K_MATCH { return p.matchstmt(w, N_MATCHX) }   // a match expression (SPEC 7.8)
     if k == T_KW && op == K_FN {          // a closure (SPEC 4.6)
@@ -1848,9 +1698,7 @@ fn (p: mut &Parser) primary(): int {
         var ps: []int = []
         while !p.atSym(S_RPAREN) {
             let pw = p.line()
-            let name = p.ident()
-            let pt = p.typeopt()
-            append(mut &ps, p.node(N_CPARAM, pw, name, pt, -1, -1))
+            append(mut &ps, p.node(N_CPARAM, pw, p.ident(), p.typeopt(), -1, -1))
             if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
         }
         p.sym(S_RPAREN)
@@ -1859,8 +1707,7 @@ fn (p: mut &Parser) primary(): int {
         p.nolit = 0
         let body = p.block()
         p.nolit = save
-        let l = p.list(&ps)
-        return p.node(N_CLOSURE, w, "", l, ret, body)
+        return p.node(N_CLOSURE, w, "", p.list(&ps), ret, body)
     }
     p.fail(w, "expected an expression, found " + p.foundRepr(t))
 }
@@ -1875,8 +1722,7 @@ fn (p: mut &Parser) inits(): int {
         let w = p.line()
         let n = p.ident()
         p.sym(S_COLON)
-        let e = p.expr()
-        append(mut &fs, p.node(N_INIT, w, n, e, -1, -1))
+        append(mut &fs, p.node(N_INIT, w, n, p.expr(), -1, -1))
         p.skipsemi()
         if !p.atSym(S_RBRACE) {
             p.sym(S_COMMA)
