@@ -182,10 +182,131 @@ pub fn (a: u128) toStr(): str { return u128ToStr(a) }
 
 pub fn (a: float) eq(b: &float): bool { return a == b }
 pub fn (a: float) cmp(b: &float): int { return cmpOf(a < b, a > b) }
-// Shortest text that reads back as the same value; NaN, inf and -inf by name.
+// The shortest text that reads back as the same value: "0.1", "1e25",
+// "1.5e-7", "-0"; NaN, inf and -inf by name. Exponent form is used below
+// 1e-4 and from 1e17 (the %g rule at 17 digits).
 pub fn (a: float) toStr(): str {
     if a != a { return "NaN" }
-    return floatToStr(a)
+    let s = floatToStr(a)
+    let e = indexOf(s, "e", 0)
+    if e < 0 { return s }
+    // floatToStr writes %g exponents ("e+25", "e-07"); drop "+" and zeros
+    var x = 0
+    var neg = false
+    for i in e + 1..len(s) {
+        let c = strByte(s, i)
+        if c == '-' { neg = true }
+        if isDigit(c) { x = x * 10 + int(c - '0') }
+    }
+    if neg { x = -x }
+    var mant = strSlice(s, 0, e)
+    // subnormals keep 15 digits from floatToStr; find the shortest one
+    if x <= -308 { mant = shortestMantissa(a, mant, x) }
+    return mant + "e" + intToStr(x)
+}
+
+// ------------------------------------------------------------ float math
+// libm, as methods on float (methods of a primitive live in std); the math
+// module adds constants, classification, parsing and fixed formatting.
+
+extern "c" fn sqrt(x: float): float
+extern "c" fn cbrt(x: float): float
+extern "c" fn pow(x: float, y: float): float
+extern "c" fn exp(x: float): float
+extern "c" fn log(x: float): float
+extern "c" fn log2(x: float): float
+extern "c" fn log10(x: float): float
+extern "c" fn sin(x: float): float
+extern "c" fn cos(x: float): float
+extern "c" fn tan(x: float): float
+extern "c" fn asin(x: float): float
+extern "c" fn acos(x: float): float
+extern "c" fn atan(x: float): float
+extern "c" fn atan2(y: float, x: float): float
+extern "c" fn sinh(x: float): float
+extern "c" fn cosh(x: float): float
+extern "c" fn tanh(x: float): float
+extern "c" fn floor(x: float): float
+extern "c" fn ceil(x: float): float
+extern "c" fn trunc(x: float): float
+extern "c" fn round(x: float): float
+extern "c" fn rint(x: float): float
+extern "c" fn fabs(x: float): float
+extern "c" fn fmod(x: float, y: float): float
+extern "c" fn hypot(x: float, y: float): float
+extern "c" fn copysign(x: float, y: float): float
+
+pub fn (x: float) sqrt(): float { return sqrt(x) }
+pub fn (x: float) cbrt(): float { return cbrt(x) }
+// x raised to y (C pow: 0^0 is 1, negative x needs an integral y).
+pub fn (x: float) pow(y: float): float { return pow(x, y) }
+pub fn (x: float) powi(n: int): float { return pow(x, float(n)) }
+pub fn (x: float) exp(): float { return exp(x) }
+// The natural logarithm.
+pub fn (x: float) ln(): float { return log(x) }
+pub fn (x: float) log2(): float { return log2(x) }
+pub fn (x: float) log10(): float { return log10(x) }
+pub fn (x: float) sin(): float { return sin(x) }
+pub fn (x: float) cos(): float { return cos(x) }
+pub fn (x: float) tan(): float { return tan(x) }
+pub fn (x: float) asin(): float { return asin(x) }
+pub fn (x: float) acos(): float { return acos(x) }
+pub fn (x: float) atan(): float { return atan(x) }
+// The angle of the point (x, y): y.atan2(x), like C atan2(y, x).
+pub fn (y: float) atan2(x: float): float { return atan2(y, x) }
+pub fn (x: float) sinh(): float { return sinh(x) }
+pub fn (x: float) cosh(): float { return cosh(x) }
+pub fn (x: float) tanh(): float { return tanh(x) }
+pub fn (x: float) floor(): float { return floor(x) }
+pub fn (x: float) ceil(): float { return ceil(x) }
+pub fn (x: float) trunc(): float { return trunc(x) }
+// To the nearest integer, halves away from zero (C round).
+pub fn (x: float) round(): float { return round(x) }
+// To the nearest integer, halves to even.
+pub fn (x: float) roundEven(): float { return rint(x) }
+pub fn (x: float) abs(): float { return fabs(x) }
+// The remainder of x / y with the sign of x (C fmod).
+pub fn (x: float) mod(y: float): float { return fmod(x, y) }
+pub fn (x: float) hypot(y: float): float { return hypot(x, y) }
+pub fn (x: float) copySign(y: float): float { return copysign(x, y) }
+pub fn (x: float) isNaN(): bool { return x != x }
+pub fn (x: float) isInf(): bool { return x == x && x - x != x - x }
+pub fn (x: float) isFinite(): bool { return x - x == x - x }
+
+// The mantissa with the fewest digits m such that m * 10^x reads back as a
+// (m is "-d.ddd" or "d.ddd", one digit before the point).
+fn shortestMantissa(a: float, mant: str, x: int): str {
+    var sign = ""
+    var digits = newStrBuf()
+    for i in 0..len(mant) {
+        let c = strByte(mant, i)
+        if c == '-' { sign = "-" }
+        if isDigit(c) { digits.addByte(c) }
+    }
+    let d = digits.toStr()
+    for k in 1..len(d) {
+        // d rounded half up to k digits; skip a carry out of the first digit
+        var bytes = strToBytes(strSlice(d, 0, k))
+        var carry = strByte(d, k) >= '5'
+        var i = k - 1
+        while carry && i >= 0 {
+            if bytes[i] == '9' {
+                bytes[i] = '0'
+                i -= 1
+            } else {
+                bytes[i] += 1
+                carry = false
+            }
+        }
+        if !carry {
+            let r = strFromBytes(&bytes)
+            var m = sign + strSlice(r, 0, 1)
+            if k > 1 { m += "." + strSlice(r, 1, k) }
+            var back: float = 0.0
+            if parseFloat(m + "e" + intToStr(x), mut &back) && back == a { return m }
+        }
+    }
+    return mant
 }
 
 pub fn (a: bool) eq(b: &bool): bool { return a == b }
