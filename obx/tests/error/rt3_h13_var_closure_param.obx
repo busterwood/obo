@@ -1,0 +1,5 @@
+// Red-team round 3, h13 (SPEC 5.3): var on a closure parameter is an error,
+// as on any borrow parameter (a borrow is never rebound).
+// error: var parameter f
+fn app(var f: &fn()) { f() }
+fn main() {}
