@@ -1,0 +1,1804 @@
+// syntax: the lexer (with the ASI rule), the AST and the parser of obx
+// (SPEC sections 2 and 3). A port of ref/syntax.py: the same tokens, the same
+// tree (compare with --dump-ast) and the same error messages.
+//
+// The AST is an arena: every node is a Node in Ast.nodes and is named by its
+// index; a list is an index into Ast.items (see Ast). compiler/README.md says
+// why this is not a tree of boxed closed types.
+
+// ---------------------------------------------------------------- errors
+
+// Where errors go: stderr (one file), or stdout as "error: msg" (several
+// files, so that the dump and its error stay in order).
+var ERRORS_TO_STDOUT: bool = false
+
+pub fn errorsToStdout(on: bool) { ERRORS_TO_STDOUT = on }
+
+// The first error stops the compiler, as in ref (there it is an exception).
+pub fn fail(fname: str, line: int, msg: str): never { failText(fname + ":" + intToStr(line) + ": " + msg) }
+
+pub fn failText(text: str): never {
+    if ERRORS_TO_STDOUT {
+        writeFd(1, "error: " + text + "\n")
+    } else {
+        writeFd(2, text + "\n")
+    }
+    exit(1)
+}
+
+// Python's repr of a str (ASCII escapes; other bytes pass through as they are).
+pub fn pyRepr(s: str): str {
+    var b = newStrBuf()
+    reprInto(mut &b, s, false)
+    return b.toStr()
+}
+
+// Python's repr of a bytes value: b'...'.
+pub fn pyBytesRepr(s: str): str {
+    var b = newStrBuf()
+    b.addByte('b')
+    reprInto(mut &b, s, true)
+    return b.toStr()
+}
+
+fn reprInto(b: mut &StrBuf, s: str, isBytes: bool) {
+    var hasSingle = false
+    var hasDouble = false
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c == '\'' { hasSingle = true }
+        if c == '"' { hasDouble = true }
+    }
+    var q: byte = '\''
+    if hasSingle && !hasDouble { q = '"' }
+    b.addByte(q)
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c == q || c == '\\' {
+            b.addByte('\\')
+            b.addByte(c)
+        } else if c == '\t' {
+            b.add("\\t")
+        } else if c == '\n' {
+            b.add("\\n")
+        } else if c == '\r' {
+            b.add("\\r")
+        } else if c < ' ' || c == 127 || (isBytes && c > 127) {
+            b.add("\\x")
+            addHex2(b, c)
+        } else {
+            b.addByte(c)
+        }
+    }
+    b.addByte(q)
+}
+
+pub fn addHex2(b: mut &StrBuf, c: byte) {
+    let digits = "0123456789abcdef"
+    b.addByte(strByte(digits, int(c >> 4)))
+    b.addByte(strByte(digits, int(c & 15)))
+}
+
+// ---------------------------------------------------------------- tokens
+
+pub const T_ID = 0
+pub const T_KW = 1
+pub const T_INT = 2
+pub const T_FRAC = 3
+pub const T_STR = 4
+pub const T_CHAR = 5
+pub const T_SYM = 6
+pub const T_EOF = 7
+
+// Python's token kind names, used in messages ("expected str, found 'eof'").
+const TOKEN_KINDS: []str = ["id", "kw", "int", "frac", "str", "char", "sym", "eof"]
+
+// Symbols, in ref's SYMS order; the code of a symbol is its index.
+pub const SYMS: []str = ["+=", "-=", "*=", "/=", "%=", "|=", "&=", "^=", "+%", "-%", "*%", "<<", ">>", "..",
+    "==", "!=", "<=", ">=", "&&", "||", "{", "}", "(", ")", "[", "]", ",", ":", ";", ".",
+    "&", "|", "^", "~", "+", "-", "*", "/", "%", "<", ">", "=", "!"]
+pub const S_ADDEQ = 0
+pub const S_XOREQ = 7
+pub const S_WADD = 8
+pub const S_WSUB = 9
+pub const S_WMUL = 10
+pub const S_SHL = 11
+pub const S_SHR = 12
+pub const S_DOTDOT = 13
+pub const S_EQ = 14
+pub const S_NE = 15
+pub const S_LE = 16
+pub const S_GE = 17
+pub const S_ANDAND = 18
+pub const S_OROR = 19
+pub const S_LBRACE = 20
+pub const S_RBRACE = 21
+pub const S_LPAREN = 22
+pub const S_RPAREN = 23
+pub const S_LBRACKET = 24
+pub const S_RBRACKET = 25
+pub const S_COMMA = 26
+pub const S_COLON = 27
+pub const S_SEMI = 28
+pub const S_DOT = 29
+pub const S_AMP = 30
+pub const S_BAR = 31
+pub const S_CARET = 32
+pub const S_TILDE = 33
+pub const S_PLUS = 34
+pub const S_MINUS = 35
+pub const S_STAR = 36
+pub const S_SLASH = 37
+pub const S_PERCENT = 38
+pub const S_LT = 39
+pub const S_GT = 40
+pub const S_ASSIGN = 41
+pub const S_BANG = 42
+
+// Keywords; the code of a keyword is its index.
+pub const KEYWORDS: []str = ["as", "break", "closed", "const", "continue", "else", "extern", "false", "fn",
+    "for", "if", "import", "in", "interface", "let", "match", "mut", "never", "once", "pub", "record",
+    "return", "true", "try", "type", "var", "while"]
+pub const K_AS = 0
+pub const K_BREAK = 1
+pub const K_CLOSED = 2
+pub const K_CONST = 3
+pub const K_CONTINUE = 4
+pub const K_ELSE = 5
+pub const K_EXTERN = 6
+pub const K_FALSE = 7
+pub const K_FN = 8
+pub const K_FOR = 9
+pub const K_IF = 10
+pub const K_IMPORT = 11
+pub const K_IN = 12
+pub const K_INTERFACE = 13
+pub const K_LET = 14
+pub const K_MATCH = 15
+pub const K_MUT = 16
+pub const K_NEVER = 17
+pub const K_ONCE = 18
+pub const K_PUB = 19
+pub const K_RECORD = 20
+pub const K_RETURN = 21
+pub const K_TRUE = 22
+pub const K_TRY = 23
+pub const K_TYPE = 24
+pub const K_VAR = 25
+pub const K_WHILE = 26
+
+// A token. s is the text of a name, keyword, symbol or fractional literal, the
+// bytes of a string literal, or the decimal digits of an integer literal (its
+// value, which may exceed u128); op is the code of a keyword or symbol; v is
+// the value of a character literal.
+pub type Tok = value record {
+    pub k: int
+    pub op: int
+    pub line: int
+    pub s: str
+    pub v: int
+}
+
+fn keyword(w: str): int {
+    // A first-byte switch, then a comparison: most names are not keywords.
+    let c = strByte(w, 0)
+    if c < 'a' || c > 'w' { return -1 }
+    for k in 0..len(KEYWORDS) {
+        if KEYWORDS[k] == w { return k }
+    }
+    return -1
+}
+
+fn isDig(c: byte): bool { return c >= '0' && c <= '9' }
+fn isAlpha(c: byte): bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+fn isAlnum(c: byte): bool { return isDig(c) || isAlpha(c) }
+fn isWord(c: byte): bool { return isAlnum(c) || c == '_' }
+fn isHex(c: byte): bool { return isDig(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') }
+
+// The code of the two-byte symbol c d, or -1.
+fn sym2(c: byte, d: byte): int {
+    if d == '=' {
+        if c == '+' { return 0 }
+        if c == '-' { return 1 }
+        if c == '*' { return 2 }
+        if c == '/' { return 3 }
+        if c == '%' { return 4 }
+        if c == '|' { return 5 }
+        if c == '&' { return 6 }
+        if c == '^' { return 7 }
+        if c == '=' { return S_EQ }
+        if c == '!' { return S_NE }
+        if c == '<' { return S_LE }
+        if c == '>' { return S_GE }
+        return -1
+    }
+    if d == '%' {
+        if c == '+' { return S_WADD }
+        if c == '-' { return S_WSUB }
+        if c == '*' { return S_WMUL }
+        return -1
+    }
+    if c == d {
+        if c == '<' { return S_SHL }
+        if c == '>' { return S_SHR }
+        if c == '.' { return S_DOTDOT }
+        if c == '&' { return S_ANDAND }
+        if c == '|' { return S_OROR }
+    }
+    return -1
+}
+
+// The code of the one-byte symbol c, or -1.
+fn sym1(c: byte): int {
+    for k in S_LBRACE..len(SYMS) {
+        if strByte(SYMS[k], 0) == c { return k }
+    }
+    return -1
+}
+
+// ---------------------------------------------------------------- source text
+
+// The source as ref reads it: invalid UTF-8 is an error at its line, and CRLF
+// and lone CR become LF (Python's universal newlines).
+pub fn sourceText(data: str, fname: str): str {
+    let bad = utf8Error(data)
+    if bad >= 0 {
+        fail(fname, countLines(data, bad) + 1, "the source is not valid UTF-8")
+    }
+    var hasCR = false
+    for i in 0..len(data) {
+        if strByte(data, i) == '\r' {
+            hasCR = true
+            break
+        }
+    }
+    if !hasCR { return data }
+    var b = newStrBuf()
+    var i = 0
+    while i < len(data) {
+        let c = strByte(data, i)
+        if c == '\r' {
+            b.addByte('\n')
+            if i + 1 < len(data) && strByte(data, i + 1) == '\n' { i += 1 }
+        } else {
+            b.addByte(c)
+        }
+        i += 1
+    }
+    return b.toStr()
+}
+
+// Line breaks (LF, CRLF, CR) in data[0..end].
+fn countLines(data: str, end: int): int {
+    var n = 0
+    for i in 0..end {
+        let c = strByte(data, i)
+        if c == '\n' {
+            n += 1
+        } else if c == '\r' && !(i + 1 < end && strByte(data, i + 1) == '\n') {
+            n += 1
+        }
+    }
+    return n
+}
+
+// The offset of the first sequence that is not UTF-8 by Python's strict
+// decoder (no overlongs, surrogates or code points above U+10FFFF), or -1.
+fn utf8Error(s: str): int {
+    let n = len(s)
+    var i = 0
+    while i < n {
+        let c = strByte(s, i)
+        if c < 128 {
+            i += 1
+            continue
+        }
+        var need = 0
+        var lo: byte = 128
+        var hi: byte = 191
+        if c >= 194 && c <= 223 {
+            need = 1
+        } else if c >= 224 && c <= 239 {
+            need = 2
+            if c == 224 { lo = 160 }
+            if c == 237 { hi = 159 }
+        } else if c >= 240 && c <= 244 {
+            need = 3
+            if c == 240 { lo = 144 }
+            if c == 244 { hi = 143 }
+        } else {
+            return i
+        }
+        for k in 1..need + 1 {
+            if i + k >= n { return i }
+            let d = strByte(s, i + k)
+            if k == 1 && (d < lo || d > hi) { return i }
+            if k > 1 && (d < 128 || d > 191) { return i }
+        }
+        i += need + 1
+    }
+    return -1
+}
+
+// The length of the UTF-8 sequence that starts with c (valid input).
+fn seqLen(c: byte): int {
+    if c < 128 { return 1 }
+    if c < 224 { return 2 }
+    if c < 240 { return 3 }
+    return 4
+}
+
+// "U+00E9" for the UTF-8 sequence at s[i].
+fn codePoint(s: str, i: int): str {
+    let c = strByte(s, i)
+    let n = seqLen(c)
+    var cp = 0
+    if n == 2 { cp = int(c & 31) }
+    if n == 3 { cp = int(c & 15) }
+    if n == 4 { cp = int(c & 7) }
+    for k in 1..n { cp = cp * 64 + int(strByte(s, i + k) & 63) }
+    let digits = "0123456789ABCDEF"
+    var out = ""
+    while cp > 0 || len(out) < 4 {
+        out = digits[cp % 16..cp % 16 + 1] + out
+        cp = cp / 16
+    }
+    return "U+" + out
+}
+
+// ---------------------------------------------------------------- lexer
+
+pub type Lexer = record {
+    src: str
+    fname: str
+    toks: []Tok
+    nest: []byte
+    line: int
+}
+
+fn (lx: mut &Lexer) push(k: int, op: int, s: str, v: int, line: int) {
+    append(mut &lx.toks, Tok{k: k, op: op, line: line, s: s, v: v})
+}
+
+// The ASI rule: a newline ends a statement after a name, a literal, ) ] }, or
+// return break continue true false, except inside ( ) and [ ].
+fn (lx: &Lexer) endsStmt(): bool {
+    let nt = len(lx.toks)
+    if nt == 0 { return false }
+    let nn = len(lx.nest)
+    if nn > 0 && lx.nest[nn - 1] != '{' { return false }
+    let k = lx.toks[nt - 1].k
+    let op = lx.toks[nt - 1].op
+    if k == T_ID || k == T_INT || k == T_FRAC || k == T_STR || k == T_CHAR { return true }
+    if k == T_KW {
+        return op == K_RETURN || op == K_BREAK || op == K_CONTINUE || op == K_TRUE || op == K_FALSE
+    }
+    return k == T_SYM && (op == S_RPAREN || op == S_RBRACKET || op == S_RBRACE)
+}
+
+fn (lx: &Lexer) fail(line: int, msg: str): never { fail(lx.fname, line, msg) }
+
+// An escape at src[j] (a backslash): its byte value and the next offset.
+fn (lx: &Lexer) escape(j: int, line: int, out: mut &int): int {
+    let src = lx.src
+    let n = len(src)
+    if j + 1 >= n { lx.fail(line, "unknown escape \\") }
+    let c = strByte(src, j + 1)
+    if c == 'x' {
+        if j + 3 >= n || !isHex(strByte(src, j + 2)) || !isHex(strByte(src, j + 3)) {
+            lx.fail(line, "bad \\x escape")
+        }
+        out = hexVal(strByte(src, j + 2)) * 16 + hexVal(strByte(src, j + 3))
+        return j + 4
+    }
+    if c == 'n' {
+        out = 10
+    } else if c == 't' {
+        out = 9
+    } else if c == 'r' {
+        out = 13
+    } else if c == '0' {
+        out = 0
+    } else if c == '\\' {
+        out = 92
+    } else if c == '\'' {
+        out = 39
+    } else if c == '"' {
+        out = 34
+    } else {
+        lx.fail(line, "unknown escape \\" + src[j + 1..j + 1 + seqLen(c)])
+    }
+    return j + 2
+}
+
+fn hexVal(c: byte): int {
+    if isDig(c) { return int(c - '0') }
+    if c >= 'a' { return int(c - 'a') + 10 }
+    return int(c - 'A') + 10
+}
+
+// s without '_' (shares the bytes when there is none).
+fn noUnderscores(s: str): str {
+    var has = false
+    for i in 0..len(s) {
+        if strByte(s, i) == '_' {
+            has = true
+            break
+        }
+    }
+    if !has { return s }
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c != '_' { b.addByte(c) }
+    }
+    return b.toStr()
+}
+
+// The decimal digits of the value of digits (valid in base), any size; "" when
+// the digits are not valid (Python's int(text, base) fails).
+fn toDecimal(text: str, base: int): str {
+    var t = text
+    // Python's int() accepts the base prefix again: int("0x1f", 16).
+    if len(t) >= 2 && strByte(t, 0) == '0' {
+        let p = strByte(t, 1)
+        if (base == 16 && (p == 'x' || p == 'X')) || (base == 2 && (p == 'b' || p == 'B')) {
+            t = t[2..]
+        }
+    }
+    if len(t) == 0 { return "" }
+    var acc: []int = [0]          // decimal digits, least significant first
+    for i in 0..len(t) {
+        let c = strByte(t, i)
+        var d = 99
+        if isDig(c) {
+            d = int(c - '0')
+        } else if c >= 'a' && c <= 'z' {
+            d = int(c - 'a') + 10
+        } else if c >= 'A' && c <= 'Z' {
+            d = int(c - 'A') + 10
+        }
+        if d >= base { return "" }
+        var carry = d
+        for k in 0..len(acc) {
+            let x = acc[k] * base + carry
+            acc[k] = x % 10
+            carry = x / 10
+        }
+        while carry > 0 {
+            append(mut &acc, carry % 10)
+            carry = carry / 10
+        }
+    }
+    var top = len(acc) - 1
+    while top > 0 && acc[top] == 0 { top -= 1 }
+    var b = newStrBuf()
+    var k = top
+    while k >= 0 {
+        b.addByte(byte(acc[k]) + '0')
+        k -= 1
+    }
+    return b.toStr()
+}
+
+pub fn lex(src: str, fname: str): []Tok {
+    var lx = Lexer{src: src, fname: fname, toks: [], nest: [], line: 1}
+    lx.run()
+    let line = lx.line
+    lx.push(T_SYM, S_SEMI, ";", 0, line)
+    lx.push(T_EOF, -1, "", 0, line)
+    let Lexer{toks} = move(lx)
+    return toks
+}
+
+fn (lx: mut &Lexer) run() {
+    let src = lx.src
+    let n = len(src)
+    var i = 0
+    while i < n {
+        let c = strByte(src, i)
+        let line = lx.line
+        if c == '\n' {
+            if lx.endsStmt() { lx.push(T_SYM, S_SEMI, ";", 0, line) }
+            lx.line += 1
+            i += 1
+        } else if c == ' ' || c == '\t' || c == '\r' {
+            i += 1
+        } else if c == '/' && i + 1 < n && strByte(src, i + 1) == '/' {
+            while i < n && strByte(src, i) != '\n' { i += 1 }
+        } else if isDig(c) {
+            i = lx.number(i)
+        } else if isAlpha(c) || c == '_' {
+            var j = i
+            while j < n && isWord(strByte(src, j)) { j += 1 }
+            let word = src[i..j]
+            let kw = keyword(word)
+            if kw >= 0 {
+                lx.push(T_KW, kw, KEYWORDS[kw], 0, line)
+            } else {
+                lx.push(T_ID, -1, word, 0, line)
+            }
+            i = j
+        } else if c == '"' {
+            i = lx.string(i)
+        } else if c == '\'' {
+            var v = 0
+            var j = 0
+            if i + 1 < n && strByte(src, i + 1) == '\\' {
+                j = lx.escape(i + 1, line, mut &v)
+            } else if i + 1 < n && strByte(src, i + 1) != '\'' && strByte(src, i + 1) != '\n' {
+                if strByte(src, i + 1) >= 128 { lx.fail(line, "a character literal must be one byte") }
+                v = int(strByte(src, i + 1))
+                j = i + 2
+            } else {
+                lx.fail(line, "bad character literal")
+            }
+            if j >= n || strByte(src, j) != '\'' { lx.fail(line, "unterminated character literal") }
+            lx.push(T_CHAR, -1, "", v, line)
+            i = j + 1
+        } else if c == '.' && i + 1 < n && isDig(strByte(src, i + 1)) && !lx.afterOperand() {
+            lx.fail(line, "a fractional literal needs digits before the point")
+        } else {
+            var op = -1
+            if i + 1 < n { op = sym2(c, strByte(src, i + 1)) }
+            if op < 0 { op = sym1(c) }
+            if op < 0 {
+                if c >= 128 { lx.fail(line, "unexpected character " + codePoint(src, i)) }
+                lx.fail(line, "unexpected character " + pyRepr(src[i..i + 1]))
+            }
+            if op == S_LPAREN || op == S_LBRACKET || op == S_LBRACE {
+                append(mut &lx.nest, c)
+            } else if (op == S_RPAREN || op == S_RBRACKET || op == S_RBRACE) && len(lx.nest) > 0 {
+                pop(mut &lx.nest)
+            }
+            lx.push(T_SYM, op, SYMS[op], 0, line)
+            i += len(SYMS[op])
+        }
+    }
+}
+
+// Whether the last token is a name, an integer, ) or ] (then .5 is not a
+// fractional literal missing its digits).
+fn (lx: &Lexer) afterOperand(): bool {
+    let nt = len(lx.toks)
+    if nt == 0 { return false }
+    let k = lx.toks[nt - 1].k
+    let op = lx.toks[nt - 1].op
+    return k == T_ID || k == T_INT || (k == T_SYM && (op == S_RPAREN || op == S_RBRACKET))
+}
+
+// A number at src[i]; returns the offset after it.
+fn (lx: mut &Lexer) number(i: int): int {
+    let src = lx.src
+    let n = len(src)
+    let line = lx.line
+    var j = i
+    if i + 1 < n && strByte(src, i) == '0' && (strByte(src, i + 1) == 'x' || strByte(src, i + 1) == 'b') {
+        var base = 2
+        if strByte(src, i + 1) == 'x' { base = 16 }
+        j = i + 2
+        while j < n && isWord(strByte(src, j)) { j += 1 }
+        let v = toDecimal(noUnderscores(src[i + 2..j]), base)
+        if len(v) == 0 { lx.fail(line, "bad integer literal " + src[i..j]) }
+        lx.push(T_INT, -1, v, 0, line)
+        return j
+    }
+    while j < n && (isDig(strByte(src, j)) || strByte(src, j) == '_') { j += 1 }
+    var k = j
+    if j < n && strByte(src, j) == '.' && j + 1 < n && strByte(src, j + 1) != '.' {
+        if !isDig(strByte(src, j + 1)) { lx.fail(line, "a fractional literal needs digits after the point") }
+        k = j + 1
+        while k < n && (isDig(strByte(src, k)) || strByte(src, k) == '_') { k += 1 }
+    }
+    if k < n && (strByte(src, k) == 'e' || strByte(src, k) == 'E') {
+        var e = k + 1
+        if e < n && (strByte(src, e) == '+' || strByte(src, e) == '-') { e += 1 }
+        if !(e < n && isDig(strByte(src, e))) { lx.fail(line, "an exponent needs digits") }
+        k = e
+        while k < n && isDig(strByte(src, k)) { k += 1 }
+    }
+    if k > j {
+        if k < n && isWord(strByte(src, k)) { lx.fail(line, "bad fractional literal " + src[i..k + 1]) }
+        lx.push(T_FRAC, -1, noUnderscores(src[i..k]), 0, line)
+        return k
+    }
+    if j < n && (isAlpha(strByte(src, j)) || strByte(src, j) == '_') {
+        lx.fail(line, "bad integer literal " + src[i..j + 1])
+    }
+    lx.push(T_INT, -1, toDecimal(noUnderscores(src[i..j]), 10), 0, line)
+    return j
+}
+
+// A string literal at src[i]; returns the offset after it.
+fn (lx: mut &Lexer) string(i: int): int {
+    let src = lx.src
+    let n = len(src)
+    let line = lx.line
+    var j = i + 1
+    // Without escapes the token shares the source's bytes.
+    while j < n && strByte(src, j) != '"' && strByte(src, j) != '\\' && strByte(src, j) != '\n' { j += 1 }
+    if j < n && strByte(src, j) == '"' {
+        lx.push(T_STR, -1, src[i + 1..j], 0, line)
+        return j + 1
+    }
+    var b = newStrBuf()
+    b.add(src[i + 1..j])
+    while true {
+        if j >= n || strByte(src, j) == '\n' { lx.fail(line, "unterminated string literal") }
+        let c = strByte(src, j)
+        if c == '"' { break }
+        if c == '\\' {
+            var v = 0
+            j = lx.escape(j, line, mut &v)
+            b.addByte(byte(v))
+        } else {
+            b.addByte(c)
+            j += 1
+        }
+    }
+    lx.push(T_STR, -1, b.toStr(), 0, line)
+    return j + 1
+}
+
+// ---------------------------------------------------------------- AST
+
+// Node kinds. Each kind's use of the Node fields is listed; a child or list
+// field holds -1 when absent. Lists are Ast.items handles (see Ast.list).
+pub const N_IMPORT = 0       // s path, t alias ("" none)
+pub const N_TYPE = 1         // s name, a tparams, b form (F_*), c fields | variants | members (list) or target (type); PUB VALUE
+pub const N_FN = 2           // s name, t extern lib, u C name; a recv, b tparams, c params, d ret, e body; PUB EXTERN
+pub const N_CONST = 3        // s name, a ty, b e; PUB
+pub const N_GLOBAL = 4       // s name, a ty, b e; PUB ONCE
+pub const N_TPARAM = 5       // s name, a constraints (types and N_COPY)
+pub const N_FIELD = 6        // s name, a ty; PUB; no line
+pub const N_VARIANT = 7      // s name, a fields; NAMED
+pub const N_MEMBER = 8       // s name, a params, b ret, c mode (M_*)
+pub const N_RECV = 9         // s name ("" none), a ty; no line
+pub const N_PARAM = 10       // s name, a ty; VAR
+pub const N_COPY = 11        // the constraint copy; no line
+pub const N_TREF = 12        // a t; MUT; no line
+pub const N_TSLICE = 13      // a t; MUT; no line
+pub const N_TARR = 14        // a t; no line
+pub const N_TNEVER = 15
+pub const N_TFN = 16         // a params, b ret
+pub const N_TNAME = 17       // a parts (N_IDENT), b args
+pub const N_IDENT = 18       // s name (an element of a name list); no line
+pub const N_BLOCK = 19       // a stmts
+pub const N_LET = 20         // s name, a ty, b e; MUTABLE
+pub const N_DESTRUCTURE = 21 // a ty, b fieldpats, c e; MUTABLE
+pub const N_FIELDPAT = 22    // s field, t binding
+pub const N_IF = 23          // a cond, b then, c els
+pub const N_WHILE = 24       // a cond, b body
+pub const N_FOR = 25         // s name, a from, b to, c body
+pub const N_RETURN = 26      // a e
+pub const N_BREAK = 27
+pub const N_CONTINUE = 28
+pub const N_MATCH = 29       // a e, b arms
+pub const N_ARM = 30         // s variant ("" none), a vpath, b binds, c lits (lists or -1), d body
+pub const N_ASSIGN = 31      // s op ("" for =, else + - ...), a target, b e
+pub const N_EXPR = 32        // a e
+pub const N_LINT = 33        // arm literal: s digits; MINUS; no line
+pub const N_LCHAR = 34       // arm literal: a value; no line
+pub const N_LSTR = 35        // arm literal: s bytes; no line
+pub const N_INT = 36         // s digits; MINUS (the value is negative), NEG (ref's neg: a negated literal)
+pub const N_CHAR = 37        // a value
+pub const N_FRAC = 38        // s text
+pub const N_STR = 39         // s bytes
+pub const N_BOOL = 40        // TRUE
+pub const N_NAME = 41        // s name
+pub const N_ARRLIT = 42      // a items
+pub const N_CLOSURE = 43     // a params (N_CPARAM), b ret, c body
+pub const N_CPARAM = 44      // s name, a ty
+pub const N_BIN = 45         // s op, a left, b right
+pub const N_UN = 46          // s op, a e
+pub const N_BORROW = 47      // a e; MUT
+pub const N_TRY = 48         // a e
+pub const N_FIELDX = 49      // s name, a e
+pub const N_SUB = 50         // a e, b lo, c hi
+pub const N_INDEX = 51       // a e, b items
+pub const N_CALL = 52        // a fn, b args
+pub const N_LIT = 53         // a ty (an expression), b inits (N_INIT)
+pub const N_INIT = 54        // s name, a e
+pub const N_TARG = 55        // a ty: a type in an index or call bracket
+
+// ref's kind names.
+pub const KIND_NAMES: []str = ["import", "type", "fn", "const", "global", "tparam", "field", "variant",
+    "member", "recv", "param", "copy", "ref", "slice", "arr", "never", "fnt", "name", "ident", "block",
+    "let", "destructure", "fieldpat", "if", "while", "for", "return", "break", "continue", "match", "arm",
+    "assign", "expr", "int", "char", "str", "int", "char", "frac", "str", "bool", "name", "arrlit",
+    "closure", "cparam", "bin", "un", "borrow", "try", "field", "sub", "index", "call", "lit", "init", "targ"]
+
+// Flags.
+pub const PUB = 1
+pub const VALUE = 2
+pub const EXTERN = 4
+pub const ONCE = 8
+pub const NAMED = 16
+pub const VAR = 32
+pub const MUT = 64
+pub const MUTABLE = 128
+pub const MINUS = 256
+pub const NEG = 512
+pub const TRUE = 1024
+
+// Type forms and interface receiver modes.
+pub const F_RECORD = 0
+pub const F_CLOSED = 1
+pub const F_INTERFACE = 2
+pub const F_ALIAS = 3
+pub const M_NONE = 0
+pub const M_VAL = 1
+pub const M_REF = 2
+pub const M_MUT = 3
+
+pub type Node = value record {
+    pub kind: int
+    pub line: int     // 0: none
+    pub flags: int
+    pub s: str
+    pub t: str
+    pub u: str
+    pub a: int
+    pub b: int
+    pub c: int
+    pub d: int
+    pub e: int
+}
+
+// The nodes of one module. A list is a handle h into items: items[h] is its
+// length and its elements follow.
+pub type Ast = record {
+    pub fname: str
+    pub nodes: []Node
+    pub items: []int
+    pub imports: int   // list of N_IMPORT
+    pub decls: int     // list of declarations
+}
+
+pub fn (a: &Ast) has(n: int, flag: int): bool { return a.nodes[n].flags & flag != 0 }
+pub fn (a: &Ast) count(list: int): int { return a.items[list] }
+pub fn (a: &Ast) item(list: int, i: int): int { return a.items[list + 1 + i] }
+
+// ---------------------------------------------------------------- parser
+
+pub type Parser = record {
+    toks: []Tok
+    i: int
+    nolit: int
+    depth: int
+    ast: Ast
+}
+
+// The tree of a module, or the first syntax error (which stops the program).
+pub fn parse(src: str, fname: str): Ast {
+    var p = Parser{toks: lex(src, fname), i: 0, nolit: 0, depth: 0,
+                   ast: Ast{fname: fname, nodes: [], items: [], imports: -1, decls: -1}}
+    p.module()
+    let Parser{ast} = move(p)
+    return ast
+}
+
+// ---- nodes
+
+fn (p: mut &Parser) node(kind: int, line: int, s: str, a: int, b: int, c: int): int {
+    append(mut &p.ast.nodes, Node{kind: kind, line: line, flags: 0, s: s, t: "", u: "", a: a, b: b, c: c, d: -1, e: -1})
+    return len(p.ast.nodes) - 1
+}
+
+fn (p: mut &Parser) flag(n: int, f: int, on: bool) {
+    if on { p.ast.nodes[n].flags = p.ast.nodes[n].flags | f }
+}
+
+fn (p: mut &Parser) list(xs: &[]int): int {
+    let h = len(p.ast.items)
+    append(mut &p.ast.items, len(xs))
+    for x in xs { append(mut &p.ast.items, x) }
+    return h
+}
+
+// ---- tokens
+
+fn (p: &Parser) at(o: int): int {
+    let j = p.i + o
+    if j < len(p.toks) { return j }
+    return len(p.toks) - 1
+}
+
+fn (p: &Parser) kind(o: int): int { return p.toks[p.at(o)].k }
+fn (p: &Parser) line(): int { return p.toks[p.at(0)].line }
+fn (p: &Parser) isSym(o: int, op: int): bool { let t = p.at(o); return p.toks[t].k == T_SYM && p.toks[t].op == op }
+fn (p: &Parser) isKw(o: int, op: int): bool { let t = p.at(o); return p.toks[t].k == T_KW && p.toks[t].op == op }
+fn (p: &Parser) atSym(op: int): bool { return p.isSym(0, op) }
+fn (p: &Parser) atKw(op: int): bool { return p.isKw(0, op) }
+fn (p: &Parser) atId(name: str): bool { let t = p.at(0); return p.toks[t].k == T_ID && p.toks[t].s == name }
+
+// Consumes a token; returns its index.
+fn (p: mut &Parser) next(): int {
+    let t = p.at(0)
+    p.i += 1
+    return t
+}
+
+fn (p: &Parser) fail(line: int, msg: str): never { fail(p.ast.fname, line, msg) }
+fn (p: &Parser) err(msg: str): never { p.fail(p.line(), msg) }
+
+// What ref's expect() and primary() say they found (Python's repr of a value).
+fn (p: &Parser) foundRepr(t: int): str {
+    let k = p.toks[t].k
+    if k == T_SYM && p.toks[t].op == S_SEMI { return "'end of line'" }
+    if k == T_INT { return p.toks[t].s }
+    if k == T_CHAR { return intToStr(p.toks[t].v) }
+    if k == T_STR { return "'a string'" }
+    if k == T_EOF { return "'eof'" }
+    return pyRepr(p.toks[t].s)
+}
+
+// The repr of a token's raw value (ref's {t.v!r}).
+fn (p: &Parser) valueRepr(t: int): str {
+    let k = p.toks[t].k
+    if k == T_INT { return p.toks[t].s }
+    if k == T_CHAR { return intToStr(p.toks[t].v) }
+    if k == T_STR { return pyBytesRepr(p.toks[t].s) }
+    return pyRepr(p.toks[t].s)
+}
+
+fn (p: mut &Parser) expect(k: int, op: int): int {
+    let t = p.next()
+    if p.toks[t].k != k || (op >= 0 && p.toks[t].op != op) {
+        var what = TOKEN_KINDS[k]
+        if k == T_SYM && op >= 0 { what = SYMS[op] }
+        if k == T_KW && op >= 0 { what = KEYWORDS[op] }
+        if k == T_ID { what = "a name" }
+        p.fail(p.toks[t].line, "expected " + what + ", found " + p.foundRepr(t))
+    }
+    return t
+}
+
+fn (p: mut &Parser) expectLine(k: int, op: int): int {
+    let t = p.expect(k, op)
+    return p.toks[t].line
+}
+
+fn (p: mut &Parser) expectText(k: int, op: int): str {
+    let t = p.expect(k, op)
+    return p.toks[t].s
+}
+
+fn (p: mut &Parser) nextLine(): int {
+    let t = p.next()
+    return p.toks[t].line
+}
+
+fn (p: mut &Parser) nextText(): str {
+    let t = p.next()
+    return p.toks[t].s
+}
+
+fn (p: mut &Parser) sym(op: int): int { return p.expect(T_SYM, op) }
+fn (p: mut &Parser) ident(): str { return p.expectText(T_ID, -1) }
+
+fn (p: mut &Parser) skipsemi() {
+    while p.atSym(S_SEMI) { p.i += 1 }
+}
+
+fn (p: mut &Parser) sep() {
+    if p.atSym(S_RBRACE) { return }
+    p.sym(S_SEMI)
+    p.skipsemi()
+}
+
+// Deep nesting: ref stops at Python's recursion limit with this message; here
+// the limit is a depth count (the two need not agree on where it is).
+fn (p: mut &Parser) enter() {
+    p.depth += 1
+    if p.depth > 3000 { failText(p.ast.fname + ":1: the program is nested too deeply") }
+}
+
+// ---- declarations
+
+fn (p: mut &Parser) module() {
+    var imports: []int = []
+    var decls: []int = []
+    p.skipsemi()
+    while p.atKw(K_IMPORT) {
+        let w = p.nextLine()
+        let path = p.expectText(T_STR, -1)
+        var alias = ""
+        if p.atKw(K_AS) {
+            p.next()
+            alias = p.ident()
+        }
+        let n = p.node(N_IMPORT, w, path, -1, -1, -1)
+        p.ast.nodes[n].t = alias
+        append(mut &imports, n)
+        p.sep()
+    }
+    while p.kind(0) != T_EOF {
+        var isPub = false
+        if p.atKw(K_PUB) {
+            p.next()
+            isPub = true
+        }
+        var d = -1
+        if p.atKw(K_TYPE) {
+            d = p.typedecl()
+        } else if p.atKw(K_FN) {
+            d = p.fndecl()
+        } else if p.atKw(K_CONST) {
+            let w = p.nextLine()
+            let name = p.ident()
+            let ty = p.typeopt()
+            p.sym(S_ASSIGN)
+            let e = p.expr0()
+            d = p.node(N_CONST, w, name, ty, e, -1)
+            p.sep()
+        } else if p.atKw(K_VAR) {
+            let w = p.nextLine()
+            let name = p.ident()
+            p.sym(S_COLON)
+            let isOnce = p.atKw(K_ONCE)
+            if isOnce { p.next() }
+            let ty = p.typ()
+            var e = -1
+            if !isOnce {
+                p.sym(S_ASSIGN)
+                e = p.expr0()
+            }
+            d = p.node(N_GLOBAL, w, name, ty, e, -1)
+            p.flag(d, ONCE, isOnce)
+            p.sep()
+        } else if p.atKw(K_EXTERN) {
+            d = p.externdecl(isPub)
+        } else if p.atKw(K_IMPORT) {
+            p.err("imports must come before the declarations")
+        } else {
+            p.err("expected a declaration, found " + p.valueRepr(p.at(0)))
+        }
+        p.flag(d, PUB, isPub)
+        append(mut &decls, d)
+        p.skipsemi()
+    }
+    p.ast.imports = p.list(&imports)
+    p.ast.decls = p.list(&decls)
+}
+
+fn (p: mut &Parser) externdecl(isPub: bool): int {
+    let w = p.nextLine()
+    let lib = p.expectText(T_STR, -1)
+    p.expect(T_KW, K_FN)
+    let name = p.ident()
+    let ps = p.params()
+    let ret = p.typeopt()
+    var cname = name
+    if p.atKw(K_AS) {
+        p.next()
+        cname = p.expectText(T_STR, -1)
+        if !isCName(cname) { p.err(pyRepr(cname) + " is not a C function name") }
+    }
+    if isPub {
+        p.fail(w, "extern " + name + " cannot be pub: an extern is always private to its module " +
+            "(export a safe wrapper instead)")
+    }
+    let none = p.list(&[])
+    let d = p.node(N_FN, w, name, -1, none, ps)
+    p.ast.nodes[d].d = ret
+    p.ast.nodes[d].t = lib
+    p.ast.nodes[d].u = cname
+    p.flag(d, EXTERN, true)
+    p.sep()
+    return d
+}
+
+// Python's str.isidentifier() and isascii().
+fn isCName(s: str): bool {
+    if len(s) == 0 || isDig(strByte(s, 0)) { return false }
+    for i in 0..len(s) {
+        if !isWord(strByte(s, i)) { return false }
+    }
+    return true
+}
+
+fn (p: mut &Parser) typeopt(): int {
+    if p.atSym(S_COLON) {
+        p.next()
+        return p.typ()
+    }
+    return -1
+}
+
+fn (p: mut &Parser) tparams(): int {
+    var ps: []int = []
+    if p.atSym(S_LBRACKET) {
+        p.next()
+        while true {
+            append(mut &ps, p.tparam())
+            if !p.atSym(S_COMMA) { break }
+            p.next()
+        }
+        p.sym(S_RBRACKET)
+    }
+    return p.list(&ps)
+}
+
+fn (p: mut &Parser) tparam(): int {
+    let w = p.line()
+    let name = p.ident()
+    var cons: []int = []
+    if p.atSym(S_COLON) {
+        p.next()
+        append(mut &cons, p.constraint())
+        while p.atSym(S_PLUS) {
+            p.next()
+            append(mut &cons, p.constraint())
+        }
+    }
+    let l = p.list(&cons)
+    return p.node(N_TPARAM, w, name, l, -1, -1)
+}
+
+fn (p: mut &Parser) constraint(): int {
+    if p.atId("copy") {
+        p.next()
+        return p.node(N_COPY, 0, "", -1, -1, -1)
+    }
+    return p.namedtype()
+}
+
+fn (p: mut &Parser) typedecl(): int {
+    let w = p.nextLine()
+    let name = p.ident()
+    let tps = p.tparams()
+    p.sym(S_ASSIGN)
+    var value = false
+    if p.atId("value") && (p.isKw(1, K_RECORD) || p.isKw(1, K_CLOSED)) {
+        p.next()
+        value = true
+    }
+    if p.atKw(K_RECORD) {
+        p.next()
+        let fs = p.fields()
+        let d = p.node(N_TYPE, w, name, tps, F_RECORD, fs)
+        p.flag(d, VALUE, value)
+        return d
+    }
+    if p.atKw(K_CLOSED) {
+        p.next()
+        p.sym(S_LBRACE)
+        p.skipsemi()
+        var vs: []int = []
+        while !p.atSym(S_RBRACE) {
+            let vw = p.line()
+            let vn = p.ident()
+            if p.atSym(S_LPAREN) {
+                p.next()
+                var fs: []int = []
+                while !p.atSym(S_RPAREN) {
+                    let t = p.typ()
+                    let f = p.node(N_FIELD, 0, intToStr(len(fs)), t, -1, -1)
+                    p.flag(f, PUB, true)
+                    append(mut &fs, f)
+                    if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
+                }
+                p.next()
+                let l = p.list(&fs)
+                append(mut &vs, p.node(N_VARIANT, vw, vn, l, -1, -1))
+            } else if p.atSym(S_LBRACE) {
+                let fs = p.fields()
+                let v = p.node(N_VARIANT, vw, vn, fs, -1, -1)
+                p.flag(v, NAMED, true)
+                append(mut &vs, v)
+            } else {
+                let l = p.list(&[])
+                append(mut &vs, p.node(N_VARIANT, vw, vn, l, -1, -1))
+            }
+            p.sep()
+        }
+        p.sym(S_RBRACE)
+        let l = p.list(&vs)
+        let d = p.node(N_TYPE, w, name, tps, F_CLOSED, l)
+        p.flag(d, VALUE, value)
+        return d
+    }
+    if p.atKw(K_INTERFACE) {
+        p.next()
+        p.sym(S_LBRACE)
+        p.skipsemi()
+        var ms: []int = []
+        while !p.atSym(S_RBRACE) {
+            let mw = p.expectLine(T_KW, K_FN)
+            var mode = M_NONE
+            if p.atSym(S_LPAREN) {
+                p.next()
+                if p.atSym(S_AMP) {
+                    p.next()
+                    mode = M_REF
+                } else if p.atKw(K_MUT) {
+                    p.next()
+                    p.sym(S_AMP)
+                    mode = M_MUT
+                } else {
+                    mode = M_VAL
+                }
+                if !p.atId("Self") { p.err("an interface receiver is Self, &Self or mut &Self") }
+                p.next()
+                p.sym(S_RPAREN)
+            }
+            let mname = p.ident()
+            let ps = p.params()
+            let ret = p.typeopt()
+            append(mut &ms, p.node(N_MEMBER, mw, mname, ps, ret, mode))
+            p.sep()
+        }
+        p.sym(S_RBRACE)
+        let l = p.list(&ms)
+        return p.node(N_TYPE, w, name, tps, F_INTERFACE, l)
+    }
+    let target = p.typ()
+    return p.node(N_TYPE, w, name, tps, F_ALIAS, target)
+}
+
+fn (p: mut &Parser) fields(): int {
+    p.sym(S_LBRACE)
+    p.skipsemi()
+    var fs: []int = []
+    while !p.atSym(S_RBRACE) {
+        var isPub = false
+        if p.atKw(K_PUB) {
+            p.next()
+            isPub = true
+        }
+        var names: []str = [p.ident()]
+        while p.atSym(S_COMMA) {
+            p.next()
+            append(mut &names, p.ident())
+        }
+        p.sym(S_COLON)
+        let t = p.typ()
+        for n in names {
+            let f = p.node(N_FIELD, 0, n, t, -1, -1)
+            p.flag(f, PUB, isPub)
+            append(mut &fs, f)
+        }
+        p.sep()
+    }
+    p.sym(S_RBRACE)
+    return p.list(&fs)
+}
+
+fn (p: mut &Parser) fndecl(): int {
+    let w = p.nextLine()
+    var recv = -1
+    if p.atSym(S_LPAREN) {
+        p.next()
+        var rn = ""
+        if p.kind(0) == T_ID && p.isSym(1, S_COLON) {
+            rn = p.nextText()
+            p.next()
+        }
+        let rt = p.recvtype()
+        recv = p.node(N_RECV, 0, rn, rt, -1, -1)
+        p.sym(S_RPAREN)
+    }
+    let name = p.ident()
+    let tps = p.tparams()
+    let ps = p.params()
+    let ret = p.typeopt()
+    let d = p.node(N_FN, w, name, recv, tps, ps)
+    p.ast.nodes[d].d = ret
+    let body = p.block()
+    p.ast.nodes[d].e = body
+    return d
+}
+
+// A receiver type: its type arguments declare the method's type parameters
+// and may carry extra constraints (`Map[K, V: copy]`).
+fn (p: mut &Parser) recvtype(): int {
+    if p.atSym(S_AMP) {
+        p.next()
+        let t = p.recvtype()
+        return p.node(N_TREF, 0, "", t, -1, -1)
+    }
+    if p.atKw(K_MUT) {
+        p.next()
+        p.sym(S_AMP)
+        let t = p.recvtype()
+        let r = p.node(N_TREF, 0, "", t, -1, -1)
+        p.flag(r, MUT, true)
+        return r
+    }
+    let w = p.line()
+    let first = p.ident()
+    var parts: []int = [p.node(N_IDENT, 0, first, -1, -1, -1)]
+    if p.atSym(S_DOT) {
+        p.next()
+        let part = p.ident()
+        append(mut &parts, p.node(N_IDENT, 0, part, -1, -1, -1))
+    }
+    var args: []int = []
+    if p.atSym(S_LBRACKET) {
+        p.next()
+        while true {
+            if p.kind(0) == T_ID && (p.isSym(1, S_COLON) || p.isSym(1, S_COMMA) || p.isSym(1, S_RBRACKET)) {
+                append(mut &args, p.tparam())
+            } else {
+                append(mut &args, p.typ())
+            }
+            if !p.atSym(S_COMMA) { break }
+            p.next()
+        }
+        p.sym(S_RBRACKET)
+    }
+    let lp = p.list(&parts)
+    let la = p.list(&args)
+    return p.node(N_TNAME, w, "", lp, la, -1)
+}
+
+fn (p: mut &Parser) params(): int {
+    p.sym(S_LPAREN)
+    var ps: []int = []
+    while !p.atSym(S_RPAREN) {
+        var isvar = false
+        if p.atKw(K_VAR) {
+            p.next()
+            isvar = true
+        }
+        let w = p.line()
+        let n = p.ident()
+        p.sym(S_COLON)
+        let t = p.typ()
+        let q = p.node(N_PARAM, w, n, t, -1, -1)
+        p.flag(q, VAR, isvar)
+        append(mut &ps, q)
+        if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
+    }
+    p.sym(S_RPAREN)
+    return p.list(&ps)
+}
+
+fn (p: mut &Parser) typ(): int {
+    p.enter()
+    let t = p.type1()
+    p.depth -= 1
+    return t
+}
+
+fn (p: mut &Parser) type1(): int {
+    if p.atSym(S_AMP) || p.atKw(K_MUT) {
+        let isMut = p.atKw(K_MUT)
+        p.next()
+        if isMut { p.sym(S_AMP) }
+        if p.atSym(S_LBRACKET) && !p.isSym(1, S_RBRACKET) {
+            p.next()
+            let t = p.typ()
+            p.sym(S_RBRACKET)
+            let s = p.node(N_TSLICE, 0, "", t, -1, -1)
+            p.flag(s, MUT, isMut)
+            return s
+        }
+        let t = p.typ()
+        let r = p.node(N_TREF, 0, "", t, -1, -1)
+        p.flag(r, MUT, isMut)
+        return r
+    }
+    if p.atKw(K_NEVER) {
+        let w = p.nextLine()
+        return p.node(N_TNEVER, w, "", -1, -1, -1)
+    }
+    if p.atSym(S_LBRACKET) {
+        p.next()
+        p.sym(S_RBRACKET)
+        let t = p.typ()
+        return p.node(N_TARR, 0, "", t, -1, -1)
+    }
+    if p.atKw(K_FN) {
+        let fw = p.nextLine()
+        p.sym(S_LPAREN)
+        var ps: []int = []
+        while !p.atSym(S_RPAREN) {
+            append(mut &ps, p.typ())
+            if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
+        }
+        p.sym(S_RPAREN)
+        let l = p.list(&ps)
+        let ret = p.typeopt()
+        return p.node(N_TFN, fw, "", l, ret, -1)
+    }
+    return p.namedtype()
+}
+
+fn (p: mut &Parser) namedtype(): int {
+    let w = p.line()
+    let first = p.ident()
+    var parts: []int = [p.node(N_IDENT, 0, first, -1, -1, -1)]
+    if p.atSym(S_DOT) {
+        p.next()
+        let part = p.ident()
+        append(mut &parts, p.node(N_IDENT, 0, part, -1, -1, -1))
+    }
+    var args: []int = []
+    if p.atSym(S_LBRACKET) {
+        p.next()
+        append(mut &args, p.typ())
+        while p.atSym(S_COMMA) {
+            p.next()
+            append(mut &args, p.typ())
+        }
+        p.sym(S_RBRACKET)
+    }
+    let lp = p.list(&parts)
+    let la = p.list(&args)
+    return p.node(N_TNAME, w, "", lp, la, -1)
+}
+
+// ---- statements
+
+fn (p: mut &Parser) block(): int {
+    let w = p.expectLine(T_SYM, S_LBRACE)
+    p.skipsemi()
+    var ss: []int = []
+    while !p.atSym(S_RBRACE) {
+        let st = p.stmt()
+        append(mut &ss, st)
+        let k = p.ast.nodes[st].kind
+        if (k == N_IF || k == N_WHILE || k == N_FOR || k == N_MATCH || k == N_BLOCK) && p.prevBrace() {
+            p.skipsemi()
+        } else {
+            p.sep()
+        }
+    }
+    p.sym(S_RBRACE)
+    let l = p.list(&ss)
+    return p.node(N_BLOCK, w, "", l, -1, -1)
+}
+
+fn (p: &Parser) prevBrace(): bool {
+    return p.toks[p.i - 1].k == T_SYM && p.toks[p.i - 1].op == S_RBRACE
+}
+
+fn (p: mut &Parser) cond(): int {
+    p.nolit += 1
+    let e = p.expr()
+    p.nolit -= 1
+    return e
+}
+
+fn (p: mut &Parser) stmt(): int {
+    p.enter()
+    let s = p.stmt1()
+    p.depth -= 1
+    return s
+}
+
+fn (p: mut &Parser) stmt1(): int {
+    let w = p.line()
+    if p.atSym(S_LBRACE) { return p.block() }
+    if p.kind(0) == T_KW {
+        let op = p.toks[p.i].op
+        if op == K_LET || op == K_VAR {
+            p.next()
+            if p.kind(0) == T_ID && (p.isSym(1, S_DOT) || p.isSym(1, S_LBRACE) || p.isSym(1, S_LBRACKET)) {
+                return p.destructure(w, op == K_VAR)
+            }
+            let name = p.ident()
+            let ty = p.typeopt()
+            p.sym(S_ASSIGN)
+            let e = p.expr0()
+            let n = p.node(N_LET, w, name, ty, e, -1)
+            p.flag(n, MUTABLE, op == K_VAR)
+            return n
+        }
+        if op == K_IF { return p.ifstmt() }
+        if op == K_WHILE {
+            p.next()
+            let c = p.cond()
+            let body = p.block()
+            return p.node(N_WHILE, w, "", c, body, -1)
+        }
+        if op == K_FOR {
+            p.next()
+            let name = p.ident()
+            p.expect(T_KW, K_IN)
+            let a = p.cond()
+            var b = -1
+            if p.atSym(S_DOTDOT) {
+                p.next()
+                b = p.cond()
+            }
+            let body = p.block()
+            return p.node(N_FOR, w, name, a, b, body)
+        }
+        if op == K_RETURN {
+            p.next()
+            if p.atSym(S_SEMI) || p.atSym(S_RBRACE) { return p.node(N_RETURN, w, "", -1, -1, -1) }
+            let e = p.expr0()
+            return p.node(N_RETURN, w, "", e, -1, -1)
+        }
+        if op == K_BREAK {
+            p.next()
+            return p.node(N_BREAK, w, "", -1, -1, -1)
+        }
+        if op == K_CONTINUE {
+            p.next()
+            return p.node(N_CONTINUE, w, "", -1, -1, -1)
+        }
+        if op == K_MATCH { return p.matchstmt() }
+    }
+    let e = p.expr0()
+    if p.kind(0) == T_SYM {
+        let op = p.toks[p.i].op
+        if op == S_ASSIGN || (op >= S_ADDEQ && op <= S_XOREQ) {
+            p.next()
+            var o = ""
+            if op != S_ASSIGN { o = SYMS[op][0..1] }
+            let rhs = p.expr0()
+            return p.node(N_ASSIGN, w, o, e, rhs, -1)
+        }
+    }
+    return p.node(N_EXPR, w, "", e, -1, -1)
+}
+
+fn (p: mut &Parser) destructure(w: int, mutable: bool): int {
+    let ty = p.namedtype()
+    p.sym(S_LBRACE)
+    var fs: []int = []
+    while true {
+        let fw = p.line()
+        let f = p.ident()
+        var b = f
+        if p.atSym(S_COLON) {
+            p.next()
+            b = p.ident()
+        }
+        let n = p.node(N_FIELDPAT, fw, f, -1, -1, -1)
+        p.ast.nodes[n].t = b
+        append(mut &fs, n)
+        if !p.atSym(S_COMMA) { break }
+        p.next()
+    }
+    p.sym(S_RBRACE)
+    p.sym(S_ASSIGN)
+    let l = p.list(&fs)
+    let e = p.expr0()
+    let n = p.node(N_DESTRUCTURE, w, "", ty, l, e)
+    p.flag(n, MUTABLE, mutable)
+    return n
+}
+
+fn (p: mut &Parser) matchstmt(): int {
+    let w = p.nextLine()
+    let scrut = p.cond()
+    p.sym(S_LBRACE)
+    p.skipsemi()
+    var arms: []int = []
+    while !p.atSym(S_RBRACE) {
+        let aw = p.line()
+        let arm = p.node(N_ARM, aw, "", -1, -1, -1)
+        if p.atKw(K_ELSE) {
+            p.next()
+        } else if p.kind(0) == T_ID {
+            let first = p.nextText()
+            var vpath: []int = [p.node(N_IDENT, 0, first, -1, -1, -1)]
+            while p.atSym(S_DOT) {
+                p.next()
+                let part = p.ident()
+                append(mut &vpath, p.node(N_IDENT, 0, part, -1, -1, -1))
+            }
+            p.ast.nodes[arm].s = p.ast.nodes[vpath[len(vpath) - 1]].s
+            p.ast.nodes[arm].a = p.list(&vpath)
+            if p.atSym(S_LPAREN) {
+                p.next()
+                var binds: []int = []
+                while !p.atSym(S_RPAREN) {
+                    let bind = p.ident()
+                    append(mut &binds, p.node(N_IDENT, 0, bind, -1, -1, -1))
+                    if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
+                }
+                p.next()
+                p.ast.nodes[arm].b = p.list(&binds)
+            }
+        } else {
+            var lits: []int = [p.literal()]
+            while p.atSym(S_COMMA) {
+                p.next()
+                append(mut &lits, p.literal())
+            }
+            p.ast.nodes[arm].c = p.list(&lits)
+        }
+        let body = p.block()
+        p.ast.nodes[arm].d = body
+        append(mut &arms, arm)
+        p.skipsemi()
+    }
+    p.sym(S_RBRACE)
+    let l = p.list(&arms)
+    return p.node(N_MATCH, w, "", scrut, l, -1)
+}
+
+fn (p: mut &Parser) literal(): int {
+    let t = p.next()
+    let k = p.toks[t].k
+    if k == T_SYM && p.toks[t].op == S_MINUS && p.kind(0) == T_INT {
+        let digits = p.nextText()
+        let n = p.node(N_LINT, 0, digits, -1, -1, -1)
+        p.flag(n, MINUS, true)
+        return n
+    }
+    if k == T_INT { return p.node(N_LINT, 0, p.toks[t].s, -1, -1, -1) }
+    if k == T_CHAR { return p.node(N_LCHAR, 0, "", p.toks[t].v, -1, -1) }
+    if k == T_STR { return p.node(N_LSTR, 0, p.toks[t].s, -1, -1, -1) }
+    p.fail(p.toks[t].line, "expected a variant name or a literal, found " + p.valueRepr(t))
+}
+
+fn (p: mut &Parser) ifstmt(): int {
+    let w = p.nextLine()
+    let c = p.cond()
+    let then = p.block()
+    var els = -1
+    if p.atSym(S_SEMI) && p.isKw(1, K_ELSE) { p.next() }
+    if p.atKw(K_ELSE) {
+        p.next()
+        if p.atKw(K_IF) {
+            let bw = p.line()
+            let inner = p.ifstmt()
+            let l = p.list(&[inner])
+            els = p.node(N_BLOCK, bw, "", l, -1, -1)
+        } else {
+            els = p.block()
+        }
+    }
+    return p.node(N_IF, w, "", c, then, els)
+}
+
+// ---- expressions
+
+fn (p: mut &Parser) expr0(): int {
+    let save = p.nolit
+    p.nolit = 0
+    let e = p.expr()
+    p.nolit = save
+    return e
+}
+
+fn (p: mut &Parser) expr(): int {
+    p.enter()
+    let e = p.binary(0)
+    p.depth -= 1
+    return e
+}
+
+// Whether the current token is a binary operator of level lvl (ref's LEVELS).
+fn (p: &Parser) atLevel(lvl: int): bool {
+    if p.kind(0) != T_SYM { return false }
+    let op = p.toks[p.i].op
+    if lvl == 0 { return op == S_OROR }
+    if lvl == 1 { return op == S_ANDAND }
+    if lvl == 2 { return op == S_EQ || op == S_NE || op == S_LT || op == S_LE || op == S_GT || op == S_GE }
+    if lvl == 3 { return op == S_BAR || op == S_CARET || op == S_AMP }
+    if lvl == 4 { return op == S_SHL || op == S_SHR }
+    if lvl == 5 { return op == S_PLUS || op == S_MINUS || op == S_WADD || op == S_WSUB }
+    return op == S_STAR || op == S_SLASH || op == S_PERCENT || op == S_WMUL
+}
+
+fn (p: mut &Parser) binary(lvl: int): int {
+    if lvl == 7 { return p.unary() }
+    var left = p.binary(lvl + 1)
+    if lvl == 2 {
+        if p.atLevel(2) {
+            let op = p.next()
+            let right = p.binary(3)
+            left = p.node(N_BIN, p.toks[op].line, p.toks[op].s, left, right, -1)
+            if p.atLevel(2) { p.err("comparisons do not chain") }
+        }
+        return left
+    }
+    while p.atLevel(lvl) {
+        let op = p.next()
+        let right = p.binary(lvl + 1)
+        left = p.node(N_BIN, p.toks[op].line, p.toks[op].s, left, right, -1)
+    }
+    return left
+}
+
+fn (p: mut &Parser) unary(): int {
+    let t = p.i
+    let w = p.line()
+    if p.kind(0) == T_SYM {
+        let op = p.toks[t].op
+        if op == S_MINUS || op == S_BANG || op == S_TILDE || op == S_AMP {
+            p.next()
+            p.enter()
+            let e = p.unary()
+            p.depth -= 1
+            if op == S_MINUS && p.ast.nodes[e].kind == N_INT && !p.ast.has(e, NEG) {
+                let n = p.node(N_INT, w, p.ast.nodes[e].s, -1, -1, -1)
+                p.flag(n, MINUS | NEG, true)
+                return n
+            }
+            if op == S_AMP { return p.node(N_BORROW, w, "", e, -1, -1) }
+            return p.node(N_UN, w, SYMS[op], e, -1, -1)
+        }
+    }
+    if p.atKw(K_MUT) {
+        p.next()
+        p.sym(S_AMP)
+        p.enter()
+        let e = p.unary()
+        let n = p.node(N_BORROW, w, "", e, -1, -1)
+        p.depth -= 1
+        p.flag(n, MUT, true)
+        return n
+    }
+    if p.atKw(K_TRY) {
+        p.next()
+        p.enter()
+        let e = p.unary()
+        let n = p.node(N_TRY, w, "", e, -1, -1)
+        p.depth -= 1
+        return n
+    }
+    let e = p.primary()
+    return p.postfix(e)
+}
+
+fn (p: &Parser) namelike(e: int): bool {
+    let k = p.ast.nodes[e].kind
+    return k == N_NAME || ((k == N_FIELDX || k == N_INDEX) && p.namelike(p.ast.nodes[e].a))
+}
+
+fn (p: mut &Parser) postfix(start: int): int {
+    var e = start
+    while true {
+        let w = p.line()
+        if p.atSym(S_DOT) {
+            p.next()
+            let name = p.ident()
+            e = p.node(N_FIELDX, w, name, e, -1, -1)
+        } else if p.atSym(S_LBRACKET) {
+            p.next()
+            let save = p.nolit
+            p.nolit = 0
+            var lo = -1
+            if !p.atSym(S_DOTDOT) { lo = p.texpr() }
+            if p.atSym(S_DOTDOT) {
+                p.next()
+                var hi = -1
+                if !p.atSym(S_RBRACKET) { hi = p.expr() }
+                e = p.node(N_SUB, w, "", e, lo, hi)
+            } else {
+                var items: []int = [lo]
+                while p.atSym(S_COMMA) {
+                    p.next()
+                    append(mut &items, p.texpr())
+                }
+                let l = p.list(&items)
+                e = p.node(N_INDEX, w, "", e, l, -1)
+            }
+            p.nolit = save
+            p.sym(S_RBRACKET)
+        } else if p.atSym(S_LPAREN) {
+            let l = p.args(S_LPAREN, S_RPAREN)
+            e = p.node(N_CALL, w, "", e, l, -1)
+        } else if p.atSym(S_LBRACE) && p.nolit == 0 && p.namelike(e) {
+            let l = p.inits()
+            e = p.node(N_LIT, w, "", e, l, -1)
+        } else {
+            return e
+        }
+    }
+    return e
+}
+
+// A type argument or an index expression; the checker decides which.
+fn (p: mut &Parser) texpr(): int {
+    let w = p.line()
+    if (p.atSym(S_LBRACKET) && p.isSym(1, S_RBRACKET)) || p.atKw(K_FN) {
+        let t = p.typ()
+        return p.node(N_TARG, w, "", t, -1, -1)
+    }
+    if p.atSym(S_AMP) || p.atKw(K_MUT) {
+        let isMut = p.atKw(K_MUT)
+        p.next()
+        if isMut { p.sym(S_AMP) }
+        p.enter()
+        let inner = p.texpr()
+        p.depth -= 1
+        if p.ast.nodes[inner].kind == N_TARG {
+            let r = p.node(N_TREF, 0, "", p.ast.nodes[inner].a, -1, -1)
+            p.flag(r, MUT, isMut)
+            return p.node(N_TARG, w, "", r, -1, -1)
+        }
+        let b = p.node(N_BORROW, w, "", inner, -1, -1)
+        p.flag(b, MUT, isMut)
+        return b
+    }
+    return p.expr()
+}
+
+fn (p: mut &Parser) args(open: int, close: int): int {
+    p.sym(open)
+    let save = p.nolit
+    p.nolit = 0
+    var a: []int = []
+    p.skipsemi()
+    while !p.atSym(close) {
+        append(mut &a, p.expr())
+        p.skipsemi()
+        if !p.atSym(close) {
+            p.sym(S_COMMA)
+            p.skipsemi()
+        }
+    }
+    p.sym(close)
+    p.nolit = save
+    return p.list(&a)
+}
+
+fn (p: mut &Parser) primary(): int {
+    let t = p.next()
+    let w = p.toks[t].line
+    let k = p.toks[t].k
+    if k == T_INT { return p.node(N_INT, w, p.toks[t].s, -1, -1, -1) }
+    if k == T_CHAR { return p.node(N_CHAR, w, "", p.toks[t].v, -1, -1) }
+    if k == T_FRAC { return p.node(N_FRAC, w, p.toks[t].s, -1, -1, -1) }
+    if k == T_STR { return p.node(N_STR, w, p.toks[t].s, -1, -1, -1) }
+    if k == T_ID { return p.node(N_NAME, w, p.toks[t].s, -1, -1, -1) }
+    let op = p.toks[t].op
+    if k == T_KW && (op == K_TRUE || op == K_FALSE) {
+        let n = p.node(N_BOOL, w, "", -1, -1, -1)
+        p.flag(n, TRUE, op == K_TRUE)
+        return n
+    }
+    if k == T_SYM && op == S_LPAREN {
+        let e = p.expr0()
+        p.sym(S_RPAREN)
+        return e
+    }
+    if k == T_SYM && op == S_LBRACKET {
+        p.i -= 1
+        let l = p.args(S_LBRACKET, S_RBRACKET)
+        return p.node(N_ARRLIT, w, "", l, -1, -1)
+    }
+    if k == T_KW && op == K_FN {          // a closure (SPEC 4.6)
+        p.sym(S_LPAREN)
+        var ps: []int = []
+        while !p.atSym(S_RPAREN) {
+            let pw = p.line()
+            let name = p.ident()
+            let pt = p.typeopt()
+            append(mut &ps, p.node(N_CPARAM, pw, name, pt, -1, -1))
+            if !p.atSym(S_RPAREN) { p.sym(S_COMMA) }
+        }
+        p.sym(S_RPAREN)
+        let ret = p.typeopt()
+        let save = p.nolit
+        p.nolit = 0
+        let body = p.block()
+        p.nolit = save
+        let l = p.list(&ps)
+        return p.node(N_CLOSURE, w, "", l, ret, body)
+    }
+    p.fail(w, "expected an expression, found " + p.foundRepr(t))
+}
+
+fn (p: mut &Parser) inits(): int {
+    p.sym(S_LBRACE)
+    let save = p.nolit
+    p.nolit = 0
+    p.skipsemi()
+    var fs: []int = []
+    while !p.atSym(S_RBRACE) {
+        let w = p.line()
+        let n = p.ident()
+        p.sym(S_COLON)
+        let e = p.expr()
+        append(mut &fs, p.node(N_INIT, w, n, e, -1, -1))
+        p.skipsemi()
+        if !p.atSym(S_RBRACE) {
+            p.sym(S_COMMA)
+            p.skipsemi()
+        }
+    }
+    p.sym(S_RBRACE)
+    p.nolit = save
+    return p.list(&fs)
+}

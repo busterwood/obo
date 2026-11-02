@@ -11,7 +11,7 @@ and the self-hosted compiler first. Only then port the existing programs
 | 1 | Core spec, [SPEC.md](SPEC.md) | about the size of obo's core guide | draft 1 written (about 580 lines) |
 | 2 | Reference compiler, `ref/` (Python to C) | under 5,000 lines; conformance suite passes with no leaks | done: 3,800 lines, 387 conformance + 77 own tests pass; soundness review next |
 | 3 | Library: `lib/` | no compiler change except primitives | done: 9 modules, 3,300 lines, 25 library tests (OBX_CHECK=1); compiler changes: `lib/` import root, `obx_*` C helpers in rt.h; see [lib/README.md](lib/README.md) |
-| 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | |
+| 4 | Self-hosted compiler, `compiler/` (obx to C) | compiles itself to a fixed point; passes the suite | step 1 done: lexer and parser, identical `--dump-ast` on all 1,448 test files and 65,000 mutants; see [compiler/README.md](compiler/README.md) |
 | 5 | Native x86-64 ELF backend; then eza, SQLite, Postgres | eza shorter than obo's and as fast | |
 | 6 | Retire obo 0.19 | | |
 
@@ -41,8 +41,9 @@ All of it is ordinary obx code over a small set of built-in intrinsics.
 ## Stage 4: the self-hosted compiler
 
 The compiler is written in obx, structured like the reference compiler:
-lexer, parser to an AST (boxed closed types), declaration collection, the
-checker (definition-time for generics), and a per-instance C emitter. The
+lexer, parser to an AST (an arena of nodes named by index; compiler/README.md
+says why), declaration collection, the checker (definition-time for
+generics), and a per-instance C emitter. The
 runtime C text is embedded. It is first compiled by `ref/`, then by itself;
 the generated C of stage 2 and stage 3 must be identical (fixed point). The
 generated C of the compiler is checked in as the seed, so a build needs only a
@@ -69,7 +70,7 @@ before the back end exists.
 
 ### Order
 
-1. `compiler/syntax.obx` (lexer, AST as boxed closed types, parser). Gate:
+1. `compiler/syntax.obx` (lexer, AST arena, parser). Gate:
    identical `--dump-ast` on every test file.
 2. `compiler/sema.obx` (modules, imports, declarations, types, constraints,
    constant folding). Gate: identical `--dump-types` and identical errors for
