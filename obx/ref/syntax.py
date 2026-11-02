@@ -78,14 +78,23 @@ def lex(src, fname):
                 continue
             while j < n and (src[j].isdigit() or src[j] == '_'):
                 j += 1
+            k = j
             if j < n and src[j] == '.' and j + 1 < n and src[j + 1] != '.':
                 if not src[j + 1].isdigit():
                     raise CompileError("a fractional literal needs digits after the point", w)
                 k = j + 1
                 while k < n and (src[k].isdigit() or src[k] == '_'):
                     k += 1
-                if k < n and (src[k].isalpha() or src[k] == '_'):
-                    raise CompileError("a fractional literal may not have an exponent or suffix", w)
+            if k < n and src[k] in 'eE':        # an exponent: e or E, an optional sign, digits
+                e = k + 1 + (src[k + 1:k + 2] in ('+', '-'))
+                if not src[e:e + 1].isdigit():
+                    raise CompileError("an exponent needs digits", w)
+                k = e
+                while k < n and src[k].isdigit():
+                    k += 1
+            if k > j:
+                if k < n and (src[k].isalnum() or src[k] == '_'):
+                    raise CompileError(f"bad fractional literal {src[i:k + 1]}", w)
                 toks.append(Tok('frac', src[i:k].replace('_', ''), w))
                 i = k
                 continue

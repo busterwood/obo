@@ -1,0 +1,6 @@
+// error: i128|digits
+type Fx = value record { units: i128; scale: int }
+fn (Fx) fromFraction(units: i128, scale: int): Fx { return Fx{units: units, scale: scale} }
+fn main() {
+    let f: Fx = 1.70141183460469231731687303715884105728
+}

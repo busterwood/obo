@@ -6,8 +6,8 @@
 // expect: 7500
 // expect: 2
 type Fx = value record { units: int; scale: int }
-fn (Fx) fromFraction(units: int, scale: int): Fx {
-    return Fx{units: units, scale: scale}
+fn (Fx) fromFraction(units: i128, scale: int): Fx {
+    return Fx{units: int(units), scale: scale}
 }
 type Holder = record { price: Fx }
 fn want(f: Fx): int { return f.units }

@@ -1,0 +1,20 @@
+// expect: 150 2
+// expect: 15 -2
+// expect: 2 7
+// expect: 125 -1
+// expect: 70 0
+// expect: 170141183460469231731687303715884105727 38
+// expect: -25 1
+type Fx = value record { units: i128; scale: int }
+fn (Fx) fromFraction(units: i128, scale: int): Fx { return Fx{units: units, scale: scale} }
+fn (f: Fx) neg(): Fx { return Fx{units: -f.units, scale: f.scale} }
+fn show(f: Fx) { println(i128ToStr(f.units) + " " + intToStr(f.scale)) }
+fn main() {
+    show(1.50)
+    show(1.5e3)
+    show(2e-7)
+    show(12.5E+2)
+    show(7.0e1)
+    show(1.70141183460469231731687303715884105727)
+    show(-2.5)
+}

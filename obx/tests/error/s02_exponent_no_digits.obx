@@ -1,0 +1,4 @@
+// error: exponent
+fn main() {
+    let f: float = 1.5e+
+}

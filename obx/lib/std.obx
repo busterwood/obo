@@ -562,19 +562,23 @@ fn orStop(r: Result[Decimal, DecError]): Decimal {
 
 fn zeroDec(dscale: int): Decimal { return Decimal{coef: 0, exp: 0, dscale: dscale, neg: false} }
 
-// The lang item: a fractional literal d.ddd with n digits after the point is
-// fromFraction(digits, n), with the written scale as display scale.
-pub fn fromFraction(digits: int, scale: int): Decimal {
-    return Decimal.fromUnits(digits, scale)
+// The fromFraction lang item (SPEC 7.3): the literal 12.50 is fromFraction(1250, 2),
+// 1.5e3 is fromFraction(15, -2) and 2e-7 is fromFraction(2, 7). The value is
+// units * 10^-scale; the display scale is the written one (never below 0), so
+// 12.50 shows as "12.50" and 1.5e3 as "1500". Up to 38 significant digits are
+// exact; a literal that is not representable stops the program.
+pub fn fromFraction(units: i128, scale: int): Decimal {
+    if scale > DSCALE_MAX { return decStop(DecError.Range) }
+    let neg = units < 0
+    var m = u128(0)
+    if neg { m = u128(-(units + 1)) + 1 } else { m = u128(units) }
+    return orStop(makeDec(neg, u256(m), -scale, max(scale, 0)))
 }
 
 // units * 10^-scale with display scale `scale` (scale >= 0): fromUnits(1250, 2) is 12.50.
 pub fn (Decimal) fromUnits(units: int, scale: int): Decimal {
-    if scale < 0 || scale > DSCALE_MAX { return decStop(DecError.Range) }
-    var c = i128(units)
-    let neg = c < 0
-    if neg { c = -c }
-    return orStop(makeDec(neg, u256(u128(c)), -scale, scale))
+    if scale < 0 { return decStop(DecError.Range) }
+    return fromFraction(i128(units), scale)
 }
 
 pub fn (Decimal) fromInt(n: int): Decimal { return Decimal.fromUnits(n, 0) }

@@ -1,4 +1,0 @@
-// error:
-fn main() {
-    let x: float = 1.5e3
-}

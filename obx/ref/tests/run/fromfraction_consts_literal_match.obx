@@ -15,8 +15,8 @@
 // expect: five
 // expect: 1
 type Cents = value record { c: int }
-fn (Cents) fromFraction(d: int, s: int): Cents {
-    var c = d
+fn (Cents) fromFraction(d: i128, s: int): Cents {
+    var c = int(d)
     var k = s
     while k < 2 { c *= 10; k += 1 }
     while k > 2 { c /= 10; k -= 1 }

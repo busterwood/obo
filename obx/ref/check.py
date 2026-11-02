@@ -31,6 +31,9 @@ def is_pod(t):
     return d.value and d.drop is None and all(is_pod(ft) for _, ft in field_types(t))
 
 
+I128 = ('prim', 'i128')
+
+
 def is_lit(e):
     return e.kind in ('int', 'frac')
 
@@ -984,22 +987,23 @@ class Checker:
         self.err("a type is not a value", e.where)
 
     def x_frac(self, e, exp):
-        neg = e.v.startswith('-')
-        whole, frac = e.v.lstrip('-').split('.')
+        """SPEC 7.3: a float when float is expected, else fromFraction(units: i128, scale: int)."""
         if exp == FLOAT:
             return self.fconst(e.v, e.where)
-        digits = int(whole + frac) * (-1 if neg else 1)
-        lo, hi = RANGES['int']
-        if not lo <= digits <= hi:
-            self.err(f"fractional literal {e.v} has too many digits", e.where)
-        args = [Val(f"{digits}LL", INT, 'rv'), Val(f"{len(frac)}LL", INT, 'rv')]
+        m, _, ex = e.v.lstrip('-').lower().partition('e')
+        whole, _, frac = m.partition('.')
+        units, scale = int(whole + frac) * (-1 if e.v.startswith('-') else 1), len(frac) - int(ex or 0)
+        lo, hi = RANGES['i128']
+        if not lo <= units <= hi:
+            self.err(f"fractional literal {e.v} has too many digits: its units do not fit an i128", e.where)
+        args = [Val(self.cint(units, I128), I128, 'rv'), Val(f"{scale}LL", INT, 'rv')]
         if exp is not None:
             sig = self.assoc_sig(exp, 'fromFraction', e.where, quiet=True)
-            if sig is not None and [subst(p, sig.bind) for p in sig.params] == [INT, INT]:
+            if sig is not None and [subst(p, sig.bind) for p in sig.params] == [I128, INT]:
                 return self.call(sig, None, args, e.where, exp)
         d = self.prog.lookup(self.ctx.module, 'fromFraction')
         if not isinstance(d, FnDecl):
-            self.err("a fractional literal needs a function fromFraction(int, int) in scope", e.where)
+            self.err("a fractional literal needs a function fromFraction(i128, int) in scope", e.where)
         return self.call(fn_sig(d), None, args, e.where, exp)
 
     def static_ns(self, e):

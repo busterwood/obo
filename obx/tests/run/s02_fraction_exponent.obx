@@ -1,0 +1,17 @@
+// expect: 1500
+// expect: ok
+// expect: ok
+// expect: ok
+// expect: 1200
+fn main() {
+    let x: float = 1.5e3
+    println(int(x))
+    let a: float = 6.02e23
+    if a == 602000000000000000000000.0 { println("ok") }
+    let b: float = 2e-7
+    if b == 0.0000002 { println("ok") }
+    let c: float = 1_0.0E+2
+    if c == 1000.0 { println("ok") }
+    let d: float = 12e2
+    println(int(d))
+}

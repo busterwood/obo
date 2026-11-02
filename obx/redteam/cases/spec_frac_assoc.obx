@@ -1,6 +1,6 @@
 // expect: 125
 type M = value record { u: int }
-fn (M) fromFraction(d: int, s: int): M { return M{u: d} }
+fn (M) fromFraction(d: i128, s: int): M { return M{u: int(d)} }
 fn main() {
     let m: M = 1.25
     println(m.u)
