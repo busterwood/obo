@@ -1,0 +1,8 @@
+// Amounts of different currencies are different types.
+// error: Money[USD]|Money[EUR]
+import "money"
+fn main() {
+    let a: money.Money[money.USD] = money.of(1.00)
+    let b: money.Money[money.EUR] = money.of(1.00)
+    let c = a + b
+}

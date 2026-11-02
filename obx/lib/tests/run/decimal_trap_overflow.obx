@@ -1,0 +1,6 @@
+// A product whose exponent is out of range stops the program (decimal overflow).
+// exit: 10
+fn main() {
+    let x = Decimal.parse("1e32767").unwrap()
+    println(x * x)
+}

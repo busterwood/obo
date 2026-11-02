@@ -1,0 +1,103 @@
+// Money over Decimal: exact construction, arithmetic, HALF_EVEN times,
+// allocation without losing cents, parsing, minor units, sums.
+// expect: 12.50 USD
+// expect: 32.50 USD
+// expect: 2.68 USD
+// expect: 1500 JPY
+// expect: 1650 JPY
+// expect: true
+// expect: -12.50 USD
+// expect: 0.12 EUR 0.13 EUR 0.13 EUR
+// expect: 33.34 USD 33.33 USD 33.33 USD
+// expect: -33.34 USD -33.33 USD -33.33 USD
+// expect: 0.01 USD 0.00 USD 0.00 USD
+// expect: 34 JPY 33 JPY 33 JPY
+// expect: 50.00 GBP 30.00 GBP 20.00 GBP
+// expect: 33.34 USD 33.33 USD 0.00 USD 33.33 USD
+// expect: 0.01 CHF 0.01 CHF 0.00 CHF
+// expect: total 100.00 USD
+// expect: 19.99 EUR
+// expect: err 3
+// expect: err 4
+// expect: 1250 -3
+// expect: 7.00 USD
+// expect: USD 12.50 EUR
+// expect: 37.50 USD
+// expect: 1.12 USD 1.12 USD
+// expect: 0.00 USD true
+
+import "money"
+
+type USD = money.USD
+type EUR = money.EUR
+
+fn line(xs: &[]money.Money[USD]): str {
+    var s = ""
+    for x in xs {
+        if len(s) > 0 { s += " " }
+        s += x.toStr()
+    }
+    return s
+}
+
+fn main() {
+    let a: money.Money[USD] = money.of(12.5)
+    let b: money.Money[USD] = money.of(20.00)
+    println(a)
+    let c = a + b
+    println(c)
+    println(c.times(0.0825))
+    let y: money.Money[money.JPY] = money.of(decimalOf(1500))
+    println(y)
+    println(y.times(1.1))
+    println(a < b)
+    println(-a)
+
+    // HALF_EVEN: 0.125 -> 0.12, but 0.1250000250 -> 0.13; HALF_AWAY: 0.125 -> 0.13
+    let e: money.Money[EUR] = money.of(0.25)
+    println(e.times(0.5).toStr() + " " + e.times(0.5000001).toStr() + " " + e.timesWith(0.5, HALF_AWAY).toStr())
+
+    let h: money.Money[USD] = money.of(100.00)
+    println(line(&h.allocate(3)))
+    println(line(&(-h).allocate(3)))
+    let cent: money.Money[USD] = money.of(0.01)
+    println(line(&cent.allocate(3)))
+    let yen: money.Money[money.JPY] = money.of(decimalOf(100))
+    var ys = ""
+    for p in yen.allocate(3) { ys += p.toStr() + " " }
+    println(trim(ys))
+    let g: money.Money[money.GBP] = money.of(100.0)
+    var gs = ""
+    for p in g.allocateBy(&[5, 3, 2]) { gs += p.toStr() + " " }
+    println(trim(gs))
+    let parts = h.allocateBy(&[1, 1, 0, 1])
+    println(line(&parts))
+    let two: money.Money[money.CHF] = money.of(0.02)
+    var cs = ""
+    for p in two.allocateBy(&[1, 1, 1]) { cs += p.toStr() + " " }
+    // equal remainders: the leftover cents go to the earlier parts
+    println(trim(cs))
+    println("total " + money.sum(&parts).toStr())
+
+    match money.parse[EUR]("19.99") {
+        Ok(m) { println(m) }
+        Err(err) { println("err " + err.code().toStr()) }
+    }
+    match money.parse[EUR]("19.999") {
+        Ok(m) { println(m) }
+        Err(err) { println("err " + err.code().toStr()) }
+    }
+    match money.parse[EUR]("19,99") {
+        Ok(m) { println(m) }
+        Err(err) { println("err " + err.code().toStr()) }
+    }
+    let minus: money.Money[USD] = money.fromMinor(-300)
+    println(a.toMinor().unwrap().toStr() + " " + minus.amount().toInt(UNNECESSARY).unwrap().toStr())
+    println(money.round[USD](6.995, HALF_EVEN))
+    println(a.code() + " " + money.of[EUR](12.5).toStr())
+    println(a.timesInt(3))
+    let base: money.Money[USD] = money.of(2.25)
+    println(base.times(0.5).toStr() + " " + base.timesWith(0.5, FLOOR).toStr())
+    let z: money.Money[USD] = money.zero()
+    println(z.toStr() + " " + z.isZero().toStr())
+}

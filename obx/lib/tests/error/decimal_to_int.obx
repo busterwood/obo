@@ -1,0 +1,5 @@
+// There is no implicit Decimal to int conversion; use toInt(mode).
+// error: Decimal
+fn main() {
+    let n: int = 2.5
+}

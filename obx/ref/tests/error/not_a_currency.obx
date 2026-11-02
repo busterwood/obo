@@ -1,7 +1,8 @@
 // error: Euro does not satisfy Currency (type parameter C): it has no method 'scale'
-// line: 6
+// line: 7
+import "money"
 type Euro = value record {}
 fn (Euro) code(): str { return "EUR" }
 fn main() {
-    let a: Money[Euro] = money(1.00)
+    let a: money.Money[Euro] = money.of(1.00)
 }

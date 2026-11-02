@@ -1,0 +1,178 @@
+// The eight rounding modes on the classic table (5.5 2.5 1.6 1.1 1.0 -1.0
+// -1.1 -1.6 -2.5 -5.5 to an integer), through quantize, div and toInt, which
+// must agree; then obo's decimal_div, decimal_quantize, decimal_conversions
+// and decimal_result_codes cases.
+// expect: HALF_EVEN 6 2 2 1 1 -1 -1 -2 -2 -6
+// expect: HALF_AWAY 6 3 2 1 1 -1 -1 -2 -3 -6
+// expect: HALF_TOWARD_ZERO 5 2 2 1 1 -1 -1 -2 -2 -5
+// expect: TOWARD_ZERO 5 2 1 1 1 -1 -1 -1 -2 -5
+// expect: AWAY 6 3 2 2 1 -1 -2 -2 -3 -6
+// expect: FLOOR 5 2 1 1 1 -1 -2 -2 -3 -6
+// expect: CEILING 6 3 2 2 1 -1 -1 -1 -2 -5
+// expect: UNNECESSARY e3 e3 e3 e3 1 -1 e3 e3 e3 e3
+// expect: 0.50
+// expect: 0.5
+// expect: 1
+// expect: 0.333333
+// expect: 0.666667
+// expect: 0.125
+// expect: err 5
+// expect: err 3
+// expect: err 6
+// expect: err 6
+// expect: err 1
+// expect: err 1
+// expect: 1.24
+// expect: 1.24
+// expect: -1.24
+// expect: -1.23
+// expect: err 3
+// expect: 1.23
+// expect: 0.0000
+// expect: err 1
+// expect: err 6
+// expect: 1.2300
+// expect: 3
+// expect: 2
+// expect: 3
+// expect: -2
+// expect: -3
+// expect: -2
+// expect: err 3
+// expect: err 1
+// expect: 9223372036854775807
+// expect: -9223372036854775808
+// expect: err 1
+// expect: 1.2346
+// expect: 1.2346
+// expect: 1.2345
+// expect: 1.2345
+// expect: 1.2346
+// expect: 0.0000000000
+// expect: 0.0000000001
+// expect: 33.3333333333333333333333333333333333
+// expect: 3333333333333333333333333333333333333.3
+// expect: err 1
+// expect: 0.14285714285714285714285714285714285714
+// expect: 10000000000000000000000000000000000000
+// expect: 100000000000000000000000000000000000000
+// expect: err 1
+// expect: 99999999999999999999999999999999999999
+
+fn modeName(m: RoundingMode): str {
+    match m {
+        HALF_EVEN { return "HALF_EVEN" }
+        HALF_AWAY { return "HALF_AWAY" }
+        HALF_TOWARD_ZERO { return "HALF_TOWARD_ZERO" }
+        TOWARD_ZERO { return "TOWARD_ZERO" }
+        AWAY { return "AWAY" }
+        FLOOR { return "FLOOR" }
+        CEILING { return "CEILING" }
+        UNNECESSARY { return "UNNECESSARY" }
+    }
+}
+
+fn cell(r: Result[Decimal, DecError]): str {
+    match r {
+        Ok(v) { return v.toStr() }
+        Err(e) { return "e" + e.code().toStr() }
+    }
+}
+
+fn icell(r: Result[int, DecError]): str {
+    match r {
+        Ok(v) { return v.toStr() }
+        Err(e) { return "e" + e.code().toStr() }
+    }
+}
+
+fn show(r: Result[Decimal, DecError]) {
+    match r {
+        Ok(v) { println(v) }
+        Err(e) { println("err " + e.code().toStr()) }
+    }
+}
+
+fn showI(r: Result[int, DecError]) {
+    match r {
+        Ok(v) { println(v) }
+        Err(e) { println("err " + e.code().toStr()) }
+    }
+}
+
+fn d(s: str): Decimal { return Decimal.parse(s).unwrap() }
+
+fn main() {
+    let xs = [5.5, 2.5, 1.6, 1.1, 1.0, -1.0, -1.1, -1.6, -2.5, -5.5]
+    let modes = [HALF_EVEN, HALF_AWAY, HALF_TOWARD_ZERO, TOWARD_ZERO, AWAY, FLOOR, CEILING, UNNECESSARY]
+    for m in modes {
+        var line = modeName(m)
+        for x in xs {
+            let q = cell(x.quantize(0, m))
+            // the same rounding as a division by 10 of ten times the value
+            let v = cell((x * decimalOf(10)).div(decimalOf(10), 0, m))
+            let t = icell(x.toInt(m))
+            if q != v || q != t { println("MISMATCH " + modeName(m) + " " + x.toStr() + ": " + q + " " + v + " " + t) }
+            line += " " + q
+        }
+        println(line)
+    }
+
+    show(1.00.div(2.0, 2, HALF_AWAY))
+    show(1.0.div(2.0, 1, HALF_AWAY))
+    show(1.0.div(2.0, 0, HALF_AWAY))
+    show(1.0.div(3.0, 6, HALF_AWAY))
+    show(2.0.div(3.0, 6, HALF_EVEN))
+    show(1.0.div(8.0, 3, HALF_AWAY))
+    show(1.0.div(0.0, 2, HALF_AWAY))
+    show(1.0.div(3.0, 2, UNNECESSARY))
+    show(1.0.div(3.0, 32769, HALF_AWAY))
+    show(1.0.div(3.0, -1, HALF_AWAY))
+    show(1.0.div(3.0, 32768, HALF_AWAY))
+    show(d("1e32767").div(d("1e-32768"), 0, HALF_AWAY))
+
+    show(1.235.quantize(2, HALF_AWAY))
+    show(1.245.quantize(2, HALF_EVEN))
+    show((-1.235).quantize(2, HALF_AWAY))
+    show((-1.235).quantize(2, TOWARD_ZERO))
+    show(1.234.quantize(2, UNNECESSARY))
+    show(1.230.quantize(2, UNNECESSARY))
+    show(0.00.quantize(4, HALF_AWAY))
+    show(1.0.quantize(32768, HALF_AWAY))
+    show(1.0.quantize(32769, HALF_AWAY))
+    show(1.23.quantize(4, UNNECESSARY))
+
+    showI(2.6.toInt(HALF_AWAY))
+    showI(2.5.toInt(HALF_EVEN))
+    showI(2.5.toInt(HALF_AWAY))
+    showI((-2.6).toInt(TOWARD_ZERO))
+    showI((-2.6).toInt(FLOOR))
+    showI((-2.6).toInt(CEILING))
+    showI(2.6.toInt(UNNECESSARY))
+    showI(d("1e30").toInt(HALF_AWAY))
+    showI(d("9223372036854775807").toInt(UNNECESSARY))
+    showI(d("-9223372036854775808").toInt(UNNECESSARY))
+    showI(d("9223372036854775808").toInt(UNNECESSARY))
+
+    // round, roundAway, floor, ceil, trunc at a scale
+    let x = 1.23455
+    show(x.round(4))
+    show(x.roundAway(4))
+    show(x.floor(4))
+    show(x.trunc(4))
+    show(x.ceil(4))
+    // dropping far more digits than the coefficient has
+    show(d("1e-30").quantize(10, HALF_EVEN))
+    show(d("1e-30").quantize(10, CEILING))
+    // long quotients
+    show(100.0.div(3.0, 34, HALF_EVEN))
+    show(d("1e37").div(3.0, 1, HALF_EVEN))
+    show(d("1e37").div(3.0, 2, HALF_EVEN))
+    show(1.0.div(7.0, 38, HALF_EVEN))
+    // quotients next to 10^38
+    let nines = d("99999999999999999999999999999999999999")
+    show(nines.div(10.0, 0, HALF_EVEN))
+    show(nines.div(d("0.99999999999999999999999999999999999999"), 0, HALF_EVEN))
+    show(nines.div(0.99, 0, HALF_EVEN))
+    show(nines.quantize(0, HALF_EVEN))
+}

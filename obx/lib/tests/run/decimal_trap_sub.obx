@@ -1,0 +1,6 @@
+// - is checked like +: -99999999999999999999999999999999999999 - 0.1 needs 39 digits.
+// exit: 10
+fn main() {
+    let x = Decimal.parse("-99999999999999999999999999999999999999").unwrap()
+    println(x - 0.1)
+}
