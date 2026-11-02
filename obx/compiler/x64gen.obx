@@ -755,6 +755,7 @@ fn (g: mut &Gen) rename(l: int, j: int, t: int, s: int, end: int) {
     g.u.items[l + 1 + j] = g.emptyS
     g.uses[s] += g.uses[t] - 2           // t's names but its declaration; not s in it
     g.uses[t] = 0
+    if g.aTaken[t] { g.aTaken[s] = true } // s now stands where t's address was taken
 }
 
 // Over the tree x: op 0 counts the names of local l; 1 counts its assignments and the taking

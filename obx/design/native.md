@@ -202,8 +202,35 @@ libraries. A value has the same bytes as in the C backend:
 ## 4. Code generation
 
 `x64gen.obx` is a one-pass tree walker over the IR, with a few local
-optimizations (stage 5, the performance step):
+optimizations (stage 5, the performance steps). Before a function is
+generated, its body is simplified in place (only the native backend sees
+the IR; the C is unchanged), repeated on a block while statements drop out:
 
+- `bool b = A; if (b) { [bool c = V;] b = c; }` (the C front end's `&&`;
+  `||` with `!b`) becomes `bool b = A && V`, which then compiles to jumps;
+- `T t = s;` renames t to s when s is declared earlier in the same block
+  (within 16 statements), never address-taken and not named after t's
+  statements; for a scalar, also when neither is address-taken and the
+  statements (at most 8) naming t assign neither;
+- `T t = E; s = t;` and `T t = E; return t;` with t named nowhere else
+  become `s = E` and `return E` (scalar T for the return);
+- use counts (static, per function) are kept exact through these rewrites;
+  a walk that meets a node kind it does not know leaves the function as it
+  is.
+
+Then:
+
+- small functions of the program (scalar, non-128-bit parameters and
+  result, not `main`, not extern) are generated in place of direct calls:
+  bodies of up to 16 IR nodes anywhere, up to 40 inside loops, never the
+  function being generated or one already being generated in place
+  (recursion), at most 3 deep. The arguments are evaluated as for a call and
+  assigned to the callee's parameters, which (with its locals) get
+  registers or slots of the caller's frame (the register scan follows the
+  same calls); `return` jumps to the end of the body. Trap stubs keep the
+  callee's messages and `where` strings. A call of such a function whose body
+  is only `return x;` used as a condition is generated as a branch on x
+  (`isDigit(c)` in an `if` is two compares);
 - every local and parameter has a stack slot (`rbp`-relative); slots of a
   block are reused after it ends; temporaries are slots that live until the
   end of their statement;
@@ -229,13 +256,32 @@ optimizations (stage 5, the performance step):
   `rax`, the rest go through temporary slots; the stack arguments are
   copied; `rsp` stays fixed in the body (the frame size and the
   outgoing-argument area are patched into the prologue);
+- a record result goes straight to where it is wanted: `T t = f(...)` and an
+  aggregate argument that is a call get it in t's slot or the argument's
+  temporary (stored from registers, or written by the callee through the
+  hidden pointer: the place is new, so nothing reads it during the call);
+  `t = f(...)` for an existing local stores a result in registers into t
+  after the call. A returned record of whole eightbytes is loaded into
+  `rax`/`rdx` from the value itself;
+- `str` arguments that are `rt_str_dup(s)` of a local or member whose address
+  is never taken and which the later arguments do not assign increment the
+  count in order and load the registers from s, without a temporary copy;
+- `r = rt_add_int(r, b)` (and sub, checked or wrapping) for a register local
+  with its value unused is `add r, b` + `jo` to the same trap stub; `r++` so
+  is `add r, 1`;
+- a cast between integers needs no code when the operand's normalized value
+  is also normalized for the result; a declaration or assignment does not
+  normalize a value of its own type again;
 - the runtime's hot helpers are generated inline, with the same results,
   trap codes and messages: checked and wrapping arithmetic (`rt_add_int`,
-  `rt_wmul_u32`, ...: the operation and `jo`/`jc`/a range test), `rt_idx` and
+  `rt_wmul_u32`, ...: the operation and `jo`/`jc`/a range test), the
+  checked conversions `rt_cvs_*`/`rt_cvu_*` of 64-bit-or-narrower values,
+  `rt_div`/`rem`/`shl`/`shr`/`neg_*`, `rt_idx` and
   `rt_str_byte` (an unsigned compare), `rt_str_dup` and `rt_str_drop` (the
   reference count; `rt_free` at zero), `rt_arr_push` (the store when there is
   room; the runtime grows the array). A failed check jumps to a stub after
-  the function that calls `rt_trap` (one stub per code and location);
+  the function that calls `rt_trap` (one stub per code, message and
+  location);
 - conditions compile to jumps (`&&`, `||`, `!`, comparisons and conversions
   to bool as branches); the C front end's `bool c = e; if (!c) break;` (every
   loop condition) and `T r = e; return r;` are generated without the local
@@ -243,8 +289,16 @@ optimizations (stage 5, the performance step):
   `continue` is a single conditional jump; `x = x` (the copies of drop glue)
   generates nothing;
 - the assembler's peephole drops a load of the slot the instruction just
-  before stored (no label between), or turns it into a register move;
-- the prologue touches the frame a page at a time from the top (a probe
+  before stored (no label between), or turns it into a register move; a
+  narrow store of a normalized value followed by a load of the same type
+  from the same place is a register move too (no store-forwarding stall);
+  it drops a `jmp` to the label bound right after it and a `jmp` right after
+  a `ret` or `jmp`;
+- the prologue is inserted after the body, when the frame size is known:
+  only the callee-saved registers in use are saved, `sub rsp` takes the
+  short immediate when it fits, and returns leave with `leave` (a function
+  that restores registers jumps to one copy of the restores);
+- a frame over 2 KiB is touched a page at a time from the top (a probe
   loop on `r11`), so that a frame larger than the guard gap faults at the
   guard page, which the runtime reports as `obx: stack overflow`, instead of
   jumping past it into other memory (the C build compiled by gcc without
@@ -365,6 +419,65 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 
 (kept current; the next agent starts here)
 
+2026-11-02, the second performance step (branch `perf`, section 4: the IR
+simplification, small functions in place, record results into their
+destinations, inline conversions and division, the prologue after the
+body, narrow store-reload). Best of 5 (7 for the self-build), ms; "main"
+is main's backend and "perf" this one, both building the same sources;
+eza on `/usr/share` against the archived obo binary (`archive/obo/build/eza/eza`):
+
+| | main | perf | obo |
+|---|---|---|---|
+| native compiler size (bytes) | 2,501,369 | 2,083,577 | |
+| `--emit-c` of the compiler | 181 | 152 | |
+| bench fib | 627 | 482 | |
+| bench loop | 436 | 440 | |
+| bench array | 289 | 270 | |
+| bench alloc | 85 | 72 | |
+| bench lists | 46 | 38 | |
+| bench strings | 55 | 49 | |
+| bench trees | 23 | 23 | |
+| bench tokens | 17 | 13 | |
+| eza size (bytes) | 335,832 | 282,584 | |
+| eza `-T` | 151 | 129 | 147 |
+| eza `-T -l` | 256 | 222 | 440 |
+
+User-mode instructions of the self-build went from about 2020M to 1690M. eza's
+output equals obo's (42,060 lines of `-T -l`). The gcc -O2 build of the same
+C is still ahead (eza `-T`: about 185M cycles against 270M): what is left is
+register pressure in loops with many locals (eza's `natcmp` keeps bytes in
+slots), temporaries in slots, and gcc's inlining of the runtime (malloc,
+`rt_str_concat`). An O(1) size class in the runtime's malloc gained 0.4%
+and was not kept.
+
+The rewrites rest on these arguments (none changes the C):
+
+- simplification: only declarations with an initializer and no
+  initializer list are touched; renames need equal types; the
+  address-taken marks (computed before, and carried through a rename) keep
+  any local reachable through a pointer out of case 3 and out of the
+  argument shortcuts; use counts are static over the function, so "named
+  nowhere else" is exact, and the walk refuses node kinds it does not know;
+- record results into their destination: the destination is either new
+  (a declaration or the argument's own temporary, which nothing can read
+  during the call) or, for an existing local, written only after the call
+  returns from registers (a result in memory still goes through the
+  temporary, since the callee may read the local);
+- `rt_str_dup(s)` arguments: the count is still incremented at the
+  argument's place in the order; the bytes are loaded from s at the call,
+  which is the same value because s's address is never taken and no later
+  argument assigns s (or a member of it);
+- in-place `add`/`sub`: only when the statement's value is unused, with the
+  same overflow test and trap stub; the register then holds the wrapped
+  value only on the trapping path, which does not return;
+- functions in place: no recursion (the stack of functions being
+  generated), scalar parameters only (no drop glue at the end), the
+  callee's own trap messages and `where` strings.
+
+Gates at the end of the step: `run_native.py --lib` 361 of 361, with
+`--redteam` 1336 of 1336; `gate.sh full` PASS; `x64_encode_test.py`
+identical; `cmd/eza_gate.py -j 8` 482 passed, 0 failed.
+
 2026-11-02, phase 5 (dynamic linking) and the first performance step:
 
 - `tools/x64_encode_test.py`: every encoder form identical to `as` (4 seeds
@@ -414,11 +527,14 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 
 Next, in order:
 
-1. More performance, if wanted: temporaries in caller-saved registers within
-   a statement (`rsi rdi r8-r10` are free between calls), doubles in `xmm`
-   registers, `rt_str_concat` and `rt_str_eq` inline, a better choice of
-   register locals (live ranges instead of counts). Measure with
-   `OBX_NATIVE_MAP` and perf on the self-build.
+1. More performance, if wanted: a better choice of register locals (live
+   ranges instead of counts; byte locals in registers in loops such as
+   eza's `natcmp`), temporaries in caller-saved registers within a
+   statement (`rsi rdi r8-r10` are free between calls), doubles in `xmm`
+   registers, `rt_str_concat` and `rt_str_eq` inline, eliding `str` count
+   increments and decrements across a statement (needs an argument that
+   no alias drops the value). Measure with `OBX_NATIVE_MAP` and perf on
+   the self-build.
 2. check.obx produces the IR directly (section 1a) and cfront goes away;
    unblocked since ref was retired (2026-11-02), not started.
 
@@ -434,3 +550,6 @@ Phases:
   libsqlite3, libpq externs). Done (section 5a).
 - Performance, first step: register locals, inlined runtime checks,
   operand forms, a peephole. Done (section 4).
+- Performance, second step: IR simplification, small functions in place,
+  record results into their destinations, inline conversions. Done
+  (section 4).
