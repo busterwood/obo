@@ -46,8 +46,7 @@ fn main() {
     let argv = args()
     if len(argv) < 3 || (argv[1] != "--dump-ast" && argv[1] != "--dump-types") { usage() }
     let types = argv[1] == "--dump-types"
-    var lib = ""
-    if types { lib = libDir(argv[0]) }
+    let lib = if types { libDir(argv[0]) } else { "" }
     let multi = len(argv) > 3
     sx.errorsToStdout(multi)
     for i in 2..len(argv) {

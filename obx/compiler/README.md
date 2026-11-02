@@ -17,31 +17,31 @@ driver parses and resolves declarations for now.
 
 | File | Lines | Ports | Contents |
 |---|---:|---|---|
-| `syntax.obx` | 1,840 | `ref/syntax.py` (889) | errors, tokens, source text (UTF-8 check, newlines), lexer with the ASI rule, the AST arena, the parser |
-| `sema.obx` | 2,010 | `ref/sema.py` (865) | paths, module loading and imports, scopes, the type table, type resolution, constraints and `satisfies`, signatures, constant folding |
-| `num.obx` | 523 | (Python's `int`, `float`, `repr`) | big integers for constant folding; float parsing and Python's float `repr` |
-| `dump.obx` | 388 | `ref/dump.py` (298) | `--dump-ast` |
-| `tdump.obx` | 269 | `ref/dump.py` `dump_types` (99) | `--dump-types` |
-| `main.obx` | 61 | `ref/obxc.py` (the dump modes) | driver |
+| `syntax.obx` | 1,735 | `ref/syntax.py` (915) | errors, tokens, source text (UTF-8 check, newlines), lexer with the ASI rule, the AST arena, the parser |
+| `sema.obx` | 1,857 | `ref/sema.py` (865) | paths, module loading and imports, scopes, the type table, type resolution, constraints and `satisfies`, signatures, constant folding |
+| `num.obx` | 492 | (Python's `int`, `float`, `repr`) | big integers for constant folding; float parsing and Python's float `repr` |
+| `dump.obx` | 396 | `ref/dump.py` (311) | `--dump-ast` |
+| `tdump.obx` | 216 | `ref/dump.py` `dump_types` (99) | `--dump-types` |
+| `main.obx` | 60 | `ref/obxc.py` (the dump modes) | driver |
 | `run_compare.py` | 320 | | build and compare with ref; mutant generators; hash-seed check |
 | `tests/types/` | | | programs that cover the dump (constant folding, generics, two modules with one name) |
 
-The obx code is about twice as many lines as the Python it replaces (1,660
-against 800 lines without comments and blank lines for the parser). The
+The obx code is about twice as many lines as the Python it replaces (1,540
+against 830 lines without comments and blank lines for the parser). The
 difference is mostly what obx does not have: tuples and list comprehensions
 (the AST tuples become nodes; lists are built in a local array and copied),
-a conditional expression, exceptions (an error is a `never` function), and
-Python's `repr`, `int(text, base)` and UTF-8 decoder, which ref's messages and
-literals depend on and which are written out here (about 200 lines).
+exceptions (an error is a `never` function), and Python's `repr`,
+`int(text, base)` and UTF-8 decoder, which ref's messages and literals depend
+on and which are written out here (about 200 lines).
 
-sema is 2.25 times its Python (1,770 lines against 785 without comments and
-blank lines), plus 450 lines of `num.obx` for what Python's numbers give ref
+sema is 2.1 times its Python (1,620 lines against 785 without comments and
+blank lines), plus 420 lines of `num.obx` for what Python's numbers give ref
 for free: constant folding uses unbounded integers (a literal may have 1,000
 digits, and a message prints the exact out-of-range value) and prints floats
 with Python's `repr`. The rest of the growth is tables instead of objects
-(`pg.types[d].tparams[i]` for `d.tparams[i]`), copies of a list before a
-loop that mutates the program (rule 4: a `for` over `pg.x` freezes `pg`), and
-the `let`s rule 3 asks for (PLAN.md, pain points).
+(`pg.types[d].tparams[i]` for `d.tparams[i]`) and copies of a list before a
+loop or a call that mutates the program (rule 4: a `for` over `pg.x` freezes
+`pg`; rule 3: `&pg.x` cannot be passed to a `mut &` method of `pg`).
 
 ## Design
 

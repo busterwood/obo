@@ -21,15 +21,9 @@ fn join(xs: &[]str, sep: str): str {
     return b.toStr()
 }
 
-fn flag(x: bool): str {
-    if x { return "true" }
-    return "false"
-}
+fn flag(x: bool): str { return if x { "true" } else { "false" } }
 
-fn opt(s: str): str {
-    if len(s) == 0 { return "-" }
-    return s
-}
+fn opt(s: str): str { return if len(s) == 0 { "-" } else { s } }
 
 // ref's q: a quoted string, printable ASCII as is except \ and ", other bytes as \xHH.
 fn quote(s: str): str {
@@ -74,26 +68,19 @@ fn (d: mut &TDumper) list(pg: &sema.Program, ts: &[]int): str {
 
 fn (d: mut &TDumper) ts(pg: &sema.Program, t: int): str {
     let k = pg.tk(t)
-    if k == sema.TK_PRIM { return sema.PRIM_NAMES[t] }
-    if k == sema.TK_ARR { return "[]" + d.ts(pg, pg.ta(t)) }
-    if k == sema.TK_REF {
-        let inner = d.ts(pg, pg.ta(t))
-        if pg.tm(t) { return "mut &" + inner }
-        return "&" + inner
+    match k {
+        sema.TK_PRIM { return sema.PRIM_NAMES[t] }
+        sema.TK_ARR { return "[]" + d.ts(pg, pg.ta(t)) }
+        sema.TK_REF { return (if pg.tm(t) { "mut &" } else { "&" }) + d.ts(pg, pg.ta(t)) }
+        sema.TK_SLICE { return (if pg.tm(t) { "mut &[" } else { "&[" }) + d.ts(pg, pg.ta(t)) + "]" }
+        sema.TK_TP { return d.tp(pg, pg.ta(t)) }
+        sema.TK_SELF { return "Self" }
+        else {}
     }
-    if k == sema.TK_SLICE {
-        let inner = d.ts(pg, pg.ta(t))
-        if pg.tm(t) { return "mut &[" + inner + "]" }
-        return "&[" + inner + "]"
-    }
-    if k == sema.TK_TP { return d.tp(pg, pg.ta(t)) }
-    if k == sema.TK_SELF { return "Self" }
     let args = pg.targs(t)
     if k == sema.TK_FN || k == sema.TK_CLO {
-        var s = "fn(" + d.list(pg, &args) + ")"
-        if k == sema.TK_CLO { s = "&" + s }
-        if pg.tb(t) != sema.T_VOID { s = s + ": " + d.ts(pg, pg.tb(t)) }
-        return s
+        let s = (if k == sema.TK_CLO { "&fn(" } else { "fn(" }) + d.list(pg, &args) + ")"
+        return if pg.tb(t) != sema.T_VOID { s + ": " + d.ts(pg, pg.tb(t)) } else { s }
     }
     if len(args) == 0 { return pg.types[pg.ta(t)].cname }
     return pg.types[pg.ta(t)].cname + "[" + d.list(pg, &args) + "]"
@@ -113,27 +100,13 @@ fn (d: mut &TDumper) tparam(pg: &sema.Program, ind: str, p: int) {
 // ref's val: a folded constant value.
 fn (d: mut &TDumper) value(pg: &sema.Program, v: sema.CVal): str {
     if v.kind == sema.CK_TABLE { return "table " + d.ts(pg, v.ty) }
-    var k = v.kind
-    if k == sema.CK_TYPED {
-        k = sema.CK_INT
-        if v.ty == sema.T_FLOAT { k = sema.CK_FLOAT }
-        if v.ty == sema.T_STR { k = sema.CK_STR }
-        if v.ty == sema.T_BOOL { k = sema.CK_BOOL }
+    let k = if v.kind != sema.CK_TYPED { v.kind } else if v.ty == sema.T_FLOAT { sema.CK_FLOAT }
+        else if v.ty == sema.T_STR { sema.CK_STR } else if v.ty == sema.T_BOOL { sema.CK_BOOL } else { sema.CK_INT }
+    let s = match k {
+        sema.CK_FLOAT { num.pyFloatRepr(v.f) } sema.CK_FRAC { v.s } sema.CK_STR { quote(v.s) }
+        sema.CK_BOOL { flag(v.b) } else { num.bigStr(v.i) }
     }
-    var s = ""
-    if k == sema.CK_FLOAT {
-        s = num.pyFloatRepr(v.f)
-    } else if k == sema.CK_FRAC {
-        s = v.s
-    } else if k == sema.CK_STR {
-        s = quote(v.s)
-    } else if k == sema.CK_BOOL {
-        s = flag(v.b)
-    } else {
-        s = num.bigStr(v.i)
-    }
-    var ty = "-"
-    if v.ty >= 0 { ty = d.ts(pg, v.ty) }
+    let ty = if v.ty >= 0 { d.ts(pg, v.ty) } else { "-" }
     return sema.CK_NAMES[v.kind] + " " + ty + " " + s
 }
 
@@ -143,12 +116,8 @@ fn (d: mut &TDumper) typeDecl(pg: mut &sema.Program, t: int) {
     let form = pg.types[t].form
     if form == sx.F_RECORD || form == sx.F_CLOSED {
         var args: []int = []
-        for i in 0..len(pg.types[t].tparams) {
-            let x = pg.mkTp(pg.types[t].tparams[i])
-            append(mut &args, x)
-        }
-        let it = pg.mkInst(t, &args)
-        cp = flag(pg.isCopy(it))
+        for i in 0..len(pg.types[t].tparams) { append(mut &args, pg.mkTp(pg.types[t].tparams[i])) }
+        cp = flag(pg.isCopy(pg.mkInst(t, &args)))
         if pg.types[t].drop >= 0 { drop = pg.label(pg.types[t].drop) }
     }
     d.typeBody(pg, t, cp, drop)
@@ -159,52 +128,34 @@ fn (d: mut &TDumper) typeBody(pg: &sema.Program, t: int, cp: str, drop: str) {
     d.line("  type " + td.name + " " + intToStr(td.line) + " pub=" + flag(td.isPub) + " form=" +
         FORMS[td.form] + " value=" + flag(td.value) + " cname=" + td.cname + " copy=" + cp + " drop=" + drop)
     for p in td.tparams { d.tparam(pg, "    ", p) }
-    for f in td.fields {
-        let ft = d.ts(pg, f.ty)
-        d.line("    field " + f.name + " pub=" + flag(f.isPub) + " " + ft)
-    }
+    for f in td.fields { d.line("    field " + f.name + " pub=" + flag(f.isPub) + " " + d.ts(pg, f.ty)) }
     for v in td.variants {
         let vr = &pg.variants[v]
         d.line("    variant " + intToStr(vr.index) + " " + vr.name + " " + intToStr(vr.line) + " named=" +
             flag(vr.named))
-        for f in vr.fields {
-            let ft = d.ts(pg, f.ty)
-            d.line("      field " + f.name + " " + ft)
-        }
+        for f in vr.fields { d.line("      field " + f.name + " " + d.ts(pg, f.ty)) }
     }
     for mb in td.members {
-        var mode = "-"
-        if mb.mode != sx.M_NONE { mode = sema.RM_NAMES[mb.mode] }
-        let ps = d.list(pg, &mb.params)
-        let r = d.ts(pg, mb.ret)
-        d.line("    member " + mb.name + " " + intToStr(mb.line) + " mode=" + mode + " params=[" + ps + "] ret=" + r)
+        let mode = if mb.mode != sx.M_NONE { sema.RM_NAMES[mb.mode] } else { "-" }
+        d.line("    member " + mb.name + " " + intToStr(mb.line) + " mode=" + mode + " params=[" +
+            d.list(pg, &mb.params) + "] ret=" + d.ts(pg, mb.ret))
     }
-    if td.form == sx.F_ALIAS {
-        let tt = d.ts(pg, td.target)
-        d.line("    target " + tt)
-    }
+    if td.form == sx.F_ALIAS { d.line("    target " + d.ts(pg, td.target)) }
     if len(td.methodNames) > 0 { d.line("    methods " + join(&td.methodNames, " ")) }
 }
 
 fn (d: mut &TDumper) fnDecl(pg: &sema.Program, f: int) {
     let fd = &pg.fns[f]
-    var ext = "-"
-    var cname = "-"
-    if fd.isExtern {
-        ext = quote(fd.lib)
-        cname = quote(fd.cname)
-    }
-    var rt = "-"
-    if fd.recvType >= 0 { rt = d.ts(pg, fd.recvType) }
+    let ext = if fd.isExtern { quote(fd.lib) } else { "-" }
+    let cname = if fd.isExtern { quote(fd.cname) } else { "-" }
+    let rt = if fd.recvType >= 0 { d.ts(pg, fd.recvType) } else { "-" }
     d.line("  fn " + pg.label(f) + " " + intToStr(fd.line) + " pub=" + flag(fd.isPub) + " extern=" + ext + " cname=" +
         cname + " recv=" + sema.RM_NAMES[fd.recvMode] + " recvname=" + opt(fd.recvName) + " recvtype=" + rt)
     for p in fd.tps { d.tparam(pg, "    ", p) }
     for p in fd.params {
-        let pt = d.ts(pg, p.ty)
-        d.line("    param " + p.name + " " + intToStr(p.line) + " var=" + flag(p.isVar) + " " + pt)
+        d.line("    param " + p.name + " " + intToStr(p.line) + " var=" + flag(p.isVar) + " " + d.ts(pg, p.ty))
     }
-    let r = d.ts(pg, fd.ret)
-    d.line("    ret " + r + " bparam=" + opt(fd.bparam))
+    d.line("    ret " + d.ts(pg, fd.ret) + " bparam=" + opt(fd.bparam))
 }
 
 fn (d: mut &TDumper) header(pg: &sema.Program, m: int) {
@@ -225,15 +176,14 @@ fn (d: mut &TDumper) header(pg: &sema.Program, m: int) {
 
 fn (d: mut &TDumper) constDecl(pg: &sema.Program, i: int) {
     let c = &pg.consts[i]
-    let v = d.value(pg, c.value)
-    d.line("  const " + c.name + " " + intToStr(c.line) + " pub=" + flag(c.isPub) + " cname=" + c.cname + " " + v)
+    d.line("  const " + c.name + " " + intToStr(c.line) + " pub=" + flag(c.isPub) + " cname=" + c.cname + " " +
+        d.value(pg, c.value))
 }
 
 fn (d: mut &TDumper) globalDecl(pg: &sema.Program, i: int) {
     let g = &pg.globals[i]
-    let gt = d.ts(pg, g.ty)
     d.line("  global " + g.name + " " + intToStr(g.line) + " pub=" + flag(g.isPub) + " once=" + flag(g.isOnce) +
-        " cname=" + g.cname + " type=" + gt)
+        " cname=" + g.cname + " type=" + d.ts(pg, g.ty))
 }
 
 pub fn dumpTypes(pg: mut &sema.Program): str {
@@ -242,12 +192,9 @@ pub fn dumpTypes(pg: mut &sema.Program): str {
         d.header(pg, m)
         for k in 0..len(pg.mods[m].scopeNames) {
             let s = pg.scopeGet(m, pg.mods[m].scopeNames[k])
-            if s.k == sema.D_TYPE {
-                d.typeDecl(pg, s.i)
-            } else if s.k == sema.D_CONST {
-                d.constDecl(pg, s.i)
-            } else if s.k == sema.D_GLOBAL {
-                d.globalDecl(pg, s.i)
+            match s.k {
+                sema.D_TYPE { d.typeDecl(pg, s.i) } sema.D_CONST { d.constDecl(pg, s.i) }
+                sema.D_GLOBAL { d.globalDecl(pg, s.i) } else {}
             }
         }
         for k in 0..len(pg.mods[m].fns) { d.fnDecl(pg, pg.mods[m].fns[k]) }
