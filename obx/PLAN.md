@@ -168,10 +168,11 @@ now 0.25x to 1.33x obo's time. Left:
 
 - Language note: a borrow cannot be moved along a chain (`cur = &cur.next`),
   so walking a list by borrow recurses. Worth a decision before eza.
-- Possible: one block for a `str` concatenation chain `a + b + c` (now n-1
-  blocks, n-2 of them temporaries; it changes how `check.py` holds the
-  operands), and a size-class free list in `rt_alloc` (half of `lists` and
-  `trees` is `malloc`/`free`).
+- Deferred to the native backend (the user, 2026-11-02: matching obo is not
+  needed while the compiler emits C): one block for a `str` concatenation
+  chain `a + b + c` (now n-1 blocks, n-2 of them temporaries), and a
+  size-class free list in `rt_alloc` (half of `lists` and `trees` is
+  `malloc`/`free`).
 
 Small gaps noted by the round-3 fixes (2026-11-02), not yet decided:
 
