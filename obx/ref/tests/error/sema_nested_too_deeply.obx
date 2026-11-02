@@ -1,0 +1,5 @@
+// error: the program is nested too deeply
+// line: 1
+type V = value record { v: V }
+var g: V = V{v: g}
+fn main() {}

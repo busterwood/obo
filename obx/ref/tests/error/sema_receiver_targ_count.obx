@@ -1,0 +1,5 @@
+// error: the receiver P needs 1 type arguments
+// line: 4
+type P[T] = record { v: T }
+fn (p: &P) f() {}
+fn main() {}

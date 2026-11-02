@@ -1,0 +1,5 @@
+// error: T is a constant table
+// line: 4
+const T: []int = [1]
+const C = T + 1
+fn main() {}

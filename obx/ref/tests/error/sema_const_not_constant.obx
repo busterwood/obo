@@ -1,0 +1,4 @@
+// error: main is not a constant
+// line: 3
+const C = main
+fn main() {}

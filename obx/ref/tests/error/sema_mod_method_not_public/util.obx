@@ -1,0 +1,2 @@
+pub type R = record { v: int }
+fn (r: &R) size(): int { return r.v }

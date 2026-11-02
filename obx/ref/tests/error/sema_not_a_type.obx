@@ -1,0 +1,5 @@
+// error: g is not a type
+// line: 4
+fn g() {}
+fn f(x: g) {}
+fn main() {}

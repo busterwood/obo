@@ -1,0 +1,4 @@
+// error: field v is declared twice
+// line: 3
+type R = record { v: int; v: str }
+fn main() {}

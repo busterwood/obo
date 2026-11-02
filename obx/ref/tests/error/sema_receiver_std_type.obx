@@ -1,0 +1,4 @@
+// error: methods of StrBuf can only be declared in its module std
+// line: 3
+fn (b: &StrBuf) f() {}
+fn main() {}

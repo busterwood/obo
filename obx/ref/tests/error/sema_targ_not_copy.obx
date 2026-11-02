@@ -1,0 +1,5 @@
+// error: []int is not a copy type (type parameter T needs copy)
+// line: 4
+type C[T: copy] = record { v: T }
+fn f(x: C[[]int]) {}
+fn main() {}

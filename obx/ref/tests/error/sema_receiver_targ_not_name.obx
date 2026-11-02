@@ -1,0 +1,5 @@
+// error: the type arguments of a receiver must be type parameter names
+// line: 4
+type P[T] = record { v: T }
+fn (p: &P[[]int]) f() {}
+fn main() {}

@@ -1,0 +1,5 @@
+// error: the initializer of const A is not constant (the initializer of const B is not constant (constant A refers to itself))
+// line: 3
+const A = B
+const B = A
+fn main() {}

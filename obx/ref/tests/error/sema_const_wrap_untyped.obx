@@ -1,0 +1,4 @@
+// error: +% in a constant needs a typed operand
+// line: 3
+const C = 1 +% 2
+fn main() {}

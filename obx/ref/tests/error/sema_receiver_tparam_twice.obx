@@ -1,0 +1,5 @@
+// error: type parameter T is declared twice
+// line: 4
+type Q[A, B] = record { a: A; b: B }
+fn (q: &Q[T, T]) f() {}
+fn main() {}

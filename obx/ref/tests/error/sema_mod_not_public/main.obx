@@ -1,0 +1,5 @@
+// error: Hidden is not public in module util
+// line: 4
+import "./util"
+fn f(x: util.Hidden) {}
+fn main() {}

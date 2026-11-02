@@ -1,0 +1,4 @@
+// error: type alias A refers to itself
+// line: 3
+type A = []A
+fn main() {}

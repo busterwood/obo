@@ -1,0 +1,4 @@
+// error: unknown module nosuch
+// line: 3
+fn f(x: nosuch.T) {}
+fn main() {}

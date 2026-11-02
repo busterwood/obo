@@ -1,0 +1,1 @@
+pub type R = record { v: int }

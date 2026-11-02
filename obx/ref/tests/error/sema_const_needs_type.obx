@@ -1,0 +1,4 @@
+// error: const T needs a declared type
+// line: 3
+const T = [1, 2]
+fn main() {}

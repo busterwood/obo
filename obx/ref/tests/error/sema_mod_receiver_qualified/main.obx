@@ -1,0 +1,5 @@
+// error: a method receiver must be a record or closed type declared in this module, not util.R
+// line: 4
+import "./util"
+fn (r: &util.R) f() {}
+fn main() {}

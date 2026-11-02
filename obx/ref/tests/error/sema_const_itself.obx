@@ -1,0 +1,4 @@
+// error: constant A refers to itself
+// line: 3
+const A: int = A + 1
+fn main() {}

@@ -1,0 +1,5 @@
+// error: the initializer of const C is not constant (K is not public in module util)
+// line: 4
+import "./util"
+const C = util.K + 1
+fn main() {}

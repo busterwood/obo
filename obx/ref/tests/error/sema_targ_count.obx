@@ -1,0 +1,4 @@
+// error: Option takes 1 type arguments, not 2
+// line: 3
+fn f(x: Option[int, int]) {}
+fn main() {}

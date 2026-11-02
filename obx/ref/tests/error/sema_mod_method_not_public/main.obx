@@ -1,0 +1,7 @@
+// error: R does not satisfy I (type parameter T): its method 'size' is not public
+// line: 6
+import "./util"
+type I = interface { fn (&Self) size(): int }
+type H[T: I] = record { v: T }
+fn f(x: H[util.R]) {}
+fn main() {}

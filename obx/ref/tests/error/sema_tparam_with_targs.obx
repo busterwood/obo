@@ -1,0 +1,4 @@
+// error: type parameter T takes no type arguments
+// line: 3
+fn f[T](x: T[int]) {}
+fn main() {}

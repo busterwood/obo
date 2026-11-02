@@ -1,0 +1,6 @@
+// error: a receiver must name the type itself, not an alias
+// line: 5
+type R = record { v: int }
+type A = R
+fn (a: A) f() {}
+fn main() {}

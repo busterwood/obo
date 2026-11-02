@@ -1,0 +1,4 @@
+// error: << needs integer constants
+// line: 3
+const C = 1.5 << 2
+fn main() {}

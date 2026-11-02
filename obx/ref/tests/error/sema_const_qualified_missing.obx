@@ -1,0 +1,5 @@
+// error: module fs has no NOPE
+// line: 4
+import "fs"
+const C = fs.NOPE
+fn main() {}

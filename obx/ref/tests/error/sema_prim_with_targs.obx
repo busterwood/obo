@@ -1,0 +1,4 @@
+// error: int takes no type arguments
+// line: 3
+fn f(x: int[str]) {}
+fn main() {}

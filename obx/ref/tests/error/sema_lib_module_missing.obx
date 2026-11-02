@@ -1,0 +1,4 @@
+// error: cannot find module nosuchmodule in the library roots
+// line: 3
+import "nosuchmodule"
+fn main() {}

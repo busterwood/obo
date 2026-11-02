@@ -1,0 +1,5 @@
+// error: R is not an interface
+// line: 4
+type R = record { v: int }
+fn f[T: R](x: T) {}
+fn main() {}

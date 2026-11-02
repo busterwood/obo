@@ -1,0 +1,4 @@
+// error: type parameter T is declared twice
+// line: 3
+type P[T, T] = record { a: T }
+fn main() {}

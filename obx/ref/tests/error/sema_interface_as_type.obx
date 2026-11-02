@@ -1,0 +1,5 @@
+// error: I is an interface: it can only constrain a type parameter
+// line: 4
+type I = interface { fn (&Self) size(): int }
+fn f(x: I) {}
+fn main() {}

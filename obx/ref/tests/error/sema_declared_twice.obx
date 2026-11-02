@@ -1,0 +1,5 @@
+// error: f is declared twice
+// line: 4
+fn f() {}
+const f = 1
+fn main() {}

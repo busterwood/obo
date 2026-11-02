@@ -1,0 +1,5 @@
+// error: a drop method takes `mut &` receiver and nothing else
+// line: 4
+type R = record { v: int }
+fn (r: &R) drop() {}
+fn main() {}

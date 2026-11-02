@@ -1,0 +1,5 @@
+// error: an associated function has no receiver to borrow
+// line: 4
+type R = record { v: int }
+fn (&R) make(): R { return R{v: 1} }
+fn main() {}

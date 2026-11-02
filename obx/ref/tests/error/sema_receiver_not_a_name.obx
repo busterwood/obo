@@ -1,0 +1,5 @@
+// error: a receiver must name a type
+// line: 4
+type R = record { v: int }
+fn (x: & &R) f() {}
+fn main() {}

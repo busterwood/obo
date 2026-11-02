@@ -1,0 +1,4 @@
+// error: int is a primitive type and cannot be redeclared
+// line: 3
+type int = record { v: i32 }
+fn main() {}

@@ -1,0 +1,6 @@
+// error: int does not satisfy I (type parameter T): it has no method 'size'
+// line: 5
+type I = interface { fn (&Self) size(): int }
+type H[T: I] = record { v: T }
+fn f(x: H[int]) {}
+fn main() {}

@@ -1,0 +1,4 @@
+// error: type parameter T is declared twice
+// line: 3
+fn f[T, T](x: T) {}
+fn main() {}

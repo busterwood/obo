@@ -1,0 +1,8 @@
+// error: R does not satisfy I (type parameter T): its method 'size' has the wrong receiver mode
+// line: 7
+type I = interface { fn (mut &Self) size(): int }
+type R = record { v: []int }
+fn (r: &R) size(): int { return len(r.v) }
+type H[T: I] = record { v: T }
+fn f(x: H[R]) {}
+fn main() {}

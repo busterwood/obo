@@ -1,0 +1,4 @@
+// error: never can only be a result type
+// line: 3
+fn f(x: never) {}
+fn main() {}
