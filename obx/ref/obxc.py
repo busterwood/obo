@@ -5,7 +5,7 @@
     python3 obxc.py --dump-ast file.obx...
     python3 obxc.py --dump-types file.obx...
 """
-import glob, os, subprocess, sys, tempfile
+import glob, json, os, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -45,6 +45,11 @@ def lib_flags(libs):
         found = sorted(p for d in LIBDIRS for p in glob.glob(os.path.join(d, f"lib{lib}.so.*")))
         out.append(found[0] if found else '-l' + lib)
     return out
+
+
+def gcc_cmd(exe, cfile, libs):
+    """The C compiler command of a normal build."""
+    return ['gcc', '-O2', '-w', '-std=gnu11', '-o', exe, cfile] + lib_flags(libs) + ['-lm']
 
 
 def sema_only(path):
@@ -91,7 +96,7 @@ def main(argv):
         return dump_ast(argv[1:])
     if argv[:1] == ['--dump-types']:
         return dump_ast(argv[1:], types=True)
-    out, run, emit_c, roots, src, rest = None, False, False, [], None, []
+    out, run, emit_c, emit_json, roots, src, rest = None, False, False, False, [], None, []
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -105,6 +110,8 @@ def main(argv):
             run = True
         elif a == '--emit-c':
             emit_c = True
+        elif a == '--emit-c-json':      # for tools/cbuild.py: the C text and the gcc command
+            emit_json = True
         elif a == '-L':
             i += 1
             roots.append(os.path.abspath(argv[i]))
@@ -125,6 +132,9 @@ def main(argv):
     except RecursionError:
         print(f"{os.path.basename(src)}:1: the program is nested too deeply", file=sys.stderr)
         return 1
+    if emit_json:
+        json.dump({'c': csrc, 'cmd': gcc_cmd('@OUT@', '@SRC@', libs)}, sys.stdout)
+        return 0
     if emit_c:
         sys.stdout.write(csrc)
         return 0
@@ -133,7 +143,7 @@ def main(argv):
     with open(cfile, 'w') as f:
         f.write(csrc)
     exe = out or (os.path.join(tmp, 'prog') if run else os.path.splitext(src)[0])
-    r = subprocess.run(['gcc', '-O2', '-w', '-std=gnu11', '-o', exe, cfile] + lib_flags(libs) + ['-lm'],
+    r = subprocess.run(gcc_cmd(exe, cfile, libs),
                        capture_output=True, text=True)
     if r.returncode != 0:
         print(f"obxc: internal error: the C compiler failed (C kept in {cfile})\n{r.stderr[:4000]}",

@@ -3,6 +3,8 @@
 Reports A's sanitizer/leak/crash/C-compile failures, A rejected while B is accepted (grouped by
 message), and output or exit differences between A and B. CC=clang to use clang."""
 import os, re, subprocess, sys, glob
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
+import cbuild
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,10 +23,10 @@ def build_run(path):
     cf, exe = os.path.join(build, name + '.c'), os.path.join(build, name)
     open(cf, 'w').write(c.stdout)
     san = 'address,undefined'
-    g = subprocess.run([CC, '-g', '-O0', '-std=gnu11', '-fsanitize=' + san, '-fno-sanitize-recover=undefined', '-w',
-                        '-o', exe, cf, '-lm'], capture_output=True, text=True)
-    if g.returncode:
-        return ('CCFAIL', g.stderr[:300])
+    grc, gerr = cbuild.cc_build(c.stdout, [CC, '-g', '-O0', '-std=gnu11', '-fsanitize=' + san, '-fno-sanitize-recover=undefined', '-w',
+                        '-o', '@OUT@', '@SRC@', '-lm'], exe)
+    if grc:
+        return ('CCFAIL', gerr[:300])
     env = dict(os.environ, OBX_CHECK='1', ASAN_OPTIONS='detect_leaks=1:exitcode=99',
                UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1:exitcode=98')
     try:

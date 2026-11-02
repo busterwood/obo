@@ -10,6 +10,26 @@ default compiler is `../ref/obxc.py` (a `.py` path is run with python3, anything
 else is executed directly). Compile timeout 20 s, run timeout 10 s. One line per
 failure, then `N passed, M failed`; exit status 1 on any failure.
 
+## Test tiers and the build cache
+
+Quick gate, after every change (`obx/tools/gate.sh quick`):
+
+    python3 obx/ref/run_tests.py --conformance
+    python3 obx/lib/run_tests.py -j 8
+    python3 obx/compiler/run_compare.py --mode both
+
+Full gate, at the end of a fix round and before a merge (`obx/tools/gate.sh full`):
+the quick gate plus the red-team harnesses, rounds 1 to 4 (`obx/redteam/rt.py`,
+`round2/rt.py`, `round3/rt.py`, `round4/rt.py`) under ASan+UBSan. The script prints a
+summary with the time of each step and the total, and exits 1 on any failure.
+
+Every runner that builds a binary goes through `obx/tools/cbuild.py`: obxc.py emits the
+C (`--emit-c-json`), and the binary is cached under the hash of the C text (rt.h is part
+of it), the exact C compiler command and the compiler's version. A test that did not
+change in C is not compiled again. The cache is `$OBX_CACHE` (default
+`~/.cache/obx-build`), trimmed to `$OBX_CACHE_MB` (default 2000) MB; `OBX_NOCACHE=1`
+turns it off. Compile errors produce no C and are never cached.
+
 ## Test format
 
 Every `*.obx` under `run/` and `error/` is one test, except that a directory

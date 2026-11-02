@@ -13,6 +13,8 @@ usage: rt.py [--probe] [files or dirs...]  (--probe: build and run even cases th
         (default: cases/, mcases/*/main.obx and k*.obx)
 """
 import os, re, subprocess, sys, glob
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
+import cbuild
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 OBXC = os.path.join(HERE, '..', '..', 'ref', 'obxc.py')
@@ -54,11 +56,10 @@ def run1(path):
     open(cfile, 'w').write(c.stdout)
     cc = os.environ.get('CC', 'gcc')
     san = 'address,undefined' + (',function' if 'clang' in cc else '')
-    g = subprocess.run([cc, '-g', '-O0', '-std=gnu11', '-fsanitize=' + san,
-                        '-fno-sanitize-recover=undefined', '-w', '-o', exe, cfile, '-lm'],
-                       capture_output=True, text=True)
-    if g.returncode != 0:
-        return name, 'CCFAIL', g.stderr[:600]
+    grc, gerr = cbuild.cc_build(c.stdout, [cc, '-g', '-O0', '-std=gnu11', '-fsanitize=' + san,
+                        '-fno-sanitize-recover=undefined', '-w', '-o', '@OUT@', '@SRC@', '-lm'], exe)
+    if grc != 0:
+        return name, 'CCFAIL', gerr[:600]
     env = dict(os.environ, OBX_CHECK='1', ASAN_OPTIONS='detect_leaks=1:abort_on_error=0:exitcode=99',
                UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1:exitcode=98')
     try:

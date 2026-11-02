@@ -8,6 +8,9 @@ A filter is a substring of the test's path relative to the tests directory.
 import argparse, os, re, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
+import cbuild  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIRECTIVE = re.compile(r'^\s*//\s*(expect|exit|stdin|error|line):(.*)$')
 COMPILE_TIMEOUT = 20
@@ -67,9 +70,13 @@ def run_test(kind, path, compiler):
     with tempfile.TemporaryDirectory(prefix='obxtest_') as tmp:
         out = os.path.join(tmp, 'out')
         try:
-            c = subprocess.run(compiler_cmd(compiler) + [path, '-o', out],
-                               capture_output=True, text=True, errors='replace',
-                               timeout=COMPILE_TIMEOUT, cwd=tmp)
+            if os.path.basename(compiler) == 'obxc.py':     # the reference compiler: cached builds
+                c = subprocess.CompletedProcess([], *cbuild.build_obx(
+                    path, out, obxc=os.path.abspath(compiler), timeout=COMPILE_TIMEOUT, cwd=tmp))
+            else:
+                c = subprocess.run(compiler_cmd(compiler) + [path, '-o', out],
+                                   capture_output=True, text=True, errors='replace',
+                                   timeout=COMPILE_TIMEOUT, cwd=tmp)
         except subprocess.TimeoutExpired:
             return rel, 'compile timeout'
         except OSError as e:
