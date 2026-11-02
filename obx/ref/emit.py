@@ -157,14 +157,25 @@ class Emitter:
             refs = []
 
             def parts(fs):
-                out = []
-                for ft, l in fs:
-                    ls, r = ([self.drop_c(ft, l) + ';'], False) if self.quiet(ft) else self.push(ft, l)
-                    out += ls
-                    refs.append(r)
-                return out
+                ps = [self.part(ft, l) for ft, l in fs]
+                refs.extend(r for _, r in ps)
+                return [x for ls, _ in ps for x in ls]
             return self.cases(t, loc + '.', parts), any(refs)
         return [f"rt_dpush({self.glue_fn('act', t)}, &{loc});"], True
+
+    def part(self, t, loc):
+        """In an action, before the last pushed part: a quiet drop now, any other pushed."""
+        return ([self.drop_c(t, loc) + ';'], False) if self.quiet(t) else self.push(t, loc)
+
+    def direct(self, t):
+        """The body of a recursive drop of v (not a chain type, no drop method)."""
+        if t[0] == 'arr':
+            el = f"(({self.ctype(t[1])}*)v.data)[i]"
+            return [f"for (int64_t i = 0; i < v.len; i++) {self.drop_c(t[1], el)};"] * (not pod(t[1])) + \
+                ["rt_arr_free(v);"]
+        boxed = not t[1].value
+        return self.cases(t, 'v->' if boxed else 'v.',
+                          lambda fs: [self.drop_c(ft, l) + ';' for ft, l in reversed(fs)]) + ["rt_free(v);"] * boxed
 
     def rest(self, t):
         """The body of an action that drops the fields or elements of t and frees its memory: what
@@ -186,11 +197,8 @@ class Emitter:
         def seq(fs):
             # a field after the last pushed one is dropped now (they run first), as is a quiet one
             k = max([i + 1 for i, (ft, _) in enumerate(fs) if self.chain(ft)] + [0])
-            out, refs = [], False
-            for ft, loc in fs[:k]:
-                ls, r = ([self.drop_c(ft, loc) + ';'], False) if self.quiet(ft) else self.push(ft, loc)
-                out += ls
-                refs |= r
+            ps = [self.part(ft, loc) for ft, loc in fs[:k]]
+            out, refs = [x for ls, _ in ps for x in ls], any(r for _, r in ps)
             out += [self.drop_c(ft, loc) + ';' for ft, loc in reversed(fs[k:])]
             if boxed:
                 out = ["rt_dpush(rt_free_act, v);"] + out if refs else out + ["rt_free(v);"]
@@ -214,34 +222,22 @@ class Emitter:
             self.protos.append(head + ';')
             self.bodies.append(f"{head} {{ {ret}(({ct})e)({', '.join(f'a{i}' for i in range(len(ps)))}); }}")
             return
-        if kind == 'drop':
+        if kind in ('drop', 'act', 'rest'):
             boxed = t[0] == 'inst' and not t[1].value
-            if self.listed(t):
-                body = [f"rt_drun({self.glue_fn('act', t)}, {'v' if boxed else '&v'});"]
-            elif t[0] == 'arr':
-                el = f"(({self.ctype(t[1])}*)v.data)[i]"
-                body = [f"for (int64_t i = 0; i < v.len; i++) {self.drop_c(t[1], el)};"] * (not pod(t[1]))
-                body.append("rt_arr_free(v);")
-            else:
-                body = self.cases(t, 'v->' if boxed else 'v.',
-                                  lambda fs: [self.drop_c(ft, loc) + ';' for ft, loc in reversed(fs)])
-                body += ["rt_free(v);"] if boxed else []
-            self.protos.append(f"static void {n}({ct} v);")
-            self.bodies.append(f"static void {n}({ct} v) {{\n  " + '\n  '.join(body) + "\n}")
-            return
-        if kind in ('act', 'rest'):
-            boxed = t[0] == 'inst' and not t[1].value
-            self.protos.append(f"static void {n}(void* p);")
             if not self.listed(t):
-                body = [f"{self.glue_fn('drop', t)}({'p' if boxed else f'*({ct}*)p'});"]
+                body = ([] if kind == 'drop' else [f"{ct} v = {'p' if boxed else f'*({ct}*)p'};"]) + self.direct(t)
+            elif kind == 'drop':
+                body = [f"rt_drun({self.glue_fn('act', t)}, {'v' if boxed else '&v'});"]
             elif kind == 'act' and t[0] == 'inst' and t[1].drop is not None:
                 # The drop method runs first; the fields are dropped by a second action, pushed
                 # before the call, so that what the method defers (ddrop) is dropped before them.
-                body = [f"rt_dpush({self.glue_fn('rest', t)}, p);"] + ([f"{ct} v = p;"] if boxed else []) + \
+                body = [f"rt_dpush({self.glue_fn('rest', t)}, p);"] + [f"{ct} v = p;"] * boxed + \
                        [f"{self.instance(t[1].drop, t[2])}({'&v' if boxed else f'({ct}*)p'});"]
             else:
                 body = self.rest(t)
-            self.bodies.append(f"static void {n}(void* p) {{\n  " + '\n  '.join(body) + "\n}")
+            head = f"static void {n}({f'{ct} v' if kind == 'drop' else 'void* p'})"
+            self.protos.append(head + ';')
+            self.bodies.append(head + " {\n  " + '\n  '.join(body) + "\n}")
             return
         self.protos.append(f"static {ct} {n}({ct} v);")
         d = t[1]
