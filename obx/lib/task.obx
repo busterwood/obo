@@ -197,7 +197,11 @@ pub fn any[T](var fs: []Future[T], w: Where): Result[T, Cancelled] {
 
 // Lets the other runnable tasks run first; Err when this task is cancelled
 // or its deadline has passed.
-pub fn yield(w: Where): Result[Unit, Cancelled] { return unitOr(rtYield(w.cstr())) }
+pub fn yield(w: Where): Result[Unit, Cancelled] {
+    let r = rtYield(w.cstr())
+    if r != 0 { return Err(waitError(r)) }
+    return Ok(Unit{})
+}
 
 // The error of a runtime wait's code: 1 cancelled, 2 abandoned, 3 timeout.
 fn waitError(r: int): Cancelled {

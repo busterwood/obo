@@ -26,7 +26,7 @@ for leaks.
 | `math.obx` | 130 | float constants, parse, fixed, toDecimal, near |
 | `collections.obx` | 390 | stable sorts, searching, rearranging, copying, Set, Heap |
 | `strings.obx` | 490 | search, split/join, replace, trim, case, int parse/format, padding, UTF-8 |
-| `io.obx` | 160 | IoError, whole-file read/write/append, readLines, readStdin, buffered Writer |
+| `io.obx` | 210 | IoError, whole-file read/write/append, readLines, readStdin, buffered Writer |
 | `fs.obx` | 260 | stat/lstat, list, mkdirAll, remove/removeAll, rename, symlink, chmod, paths |
 | `os.obx` | 60 | arguments, environment, pid, working directory, quit |
 | `time.obx` | 160 | wall and monotonic clocks, sleep, UTC dates, ISO 8601 text |
@@ -34,7 +34,8 @@ for leaks.
 | `ffi.obx` | 140 | C memory for modules that call C: owned `Mem` (alloc, cstr, copyBytes), unchecked peek/poke/bytes |
 | `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
 | `postgres.obx` | 370 | PostgreSQL through libpq: Conn, Rows |
-| `task.obx` | 220 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation |
+| `task.obx` | 270 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation, sleep, deadlines |
+| `net.obx` | 440 | TCP over IPv4 and IPv6 for tasks: listen, accept, connect, read, write |
 
 ### std (prelude)
 
@@ -156,7 +157,8 @@ combining marks, format and control characters 0).
 ### io, fs, os, time
 
 - **io**: `IoError {errno, op, path}` with `toStr` (`"open x: No such file or
-  directory"`), `errorText(errno)`, `read(path): Result[str, IoError]`,
+  directory"`), `isCancelled()` and `isTimeout()` (`ECANCELED`, `ETIMEDOUT`:
+  a `net` call cut short by `task`), `errorText(errno)`, `read(path): Result[str, IoError]`,
   `readLines`, `readStdin`, `splitLines`, `write(path, data)`,
   `appendTo(path, data)`. `Writer` (`stdout()`, `stderr()`, `create(path)`,
   `openAppend(path)`): `write`, `writeln`, `writeByte`, `flush(): Result`,
@@ -177,7 +179,8 @@ full disk). `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
   `setEnv`, `unsetEnv`, `pid`, `cwd`, `setCwd`, `quit(code)`.
 - **time**: `Time {sec, nsec}` (`now`, `fromNanos`, `cmp`, `eq`, `toStr`,
   `addMillis`, `millisUntil`), `unixSeconds`, `unixMillis`, `monotonicNs`,
-  `sleepMs`; `Date {year, month, day}`: `dateOf(sec)`, `dateOfDays`,
+  `sleepMs` (blocks the thread, every task with it: in tasks use
+  `task.sleep`); `Date {year, month, day}`: `dateOf(sec)`, `dateOfDays`,
   `daysOfDate`, `weekday`, `isLeapYear`, `daysInMonth`, `parseDate`,
   `isoDate`, `isoDateTime`.
 
@@ -197,12 +200,12 @@ does for `PQexecParams`'s types and values.
 
 ### task
 
-Concurrent tasks on one thread (SPEC 16; design/concurrency.md, stage
-C1a): stackful coroutines, scheduled cooperatively, no I/O yet (C1b adds
-sockets and timers).
+Concurrent tasks on one thread (SPEC 16; design/concurrency.md, stages
+C1a and C1b): stackful coroutines, scheduled cooperatively, with one epoll
+loop for the sockets of `net` and the timers.
 
 Every function below that can park (`scope`, `scoped`, `wait`, `all`, `any`,
-`yield`) and `with` has a last parameter `w: Where`, the caller's location,
+`yield`, `sleep`) and `with` has a last parameter `w: Where`, the caller's location,
 which a call leaves out (SPEC 15): it is not shown in the signatures here. A
 call through a function value passes it (`here()`), and so does a function
 of the program that wants its own caller's line reported (`fn waitAt(f:
@@ -213,6 +216,10 @@ task.Future[int], w: Where)` calls `f.wait(w)`).
   R` is the same for an `f` with a result.
 - `s.start[A, T](f: fn(A): T, arg: A): Future[T]` (on `s: mut &Scope`)
   starts `f(arg)`. `f` is a plain function value and `arg` is moved in.
+  `s.spawn[A, T](f, arg)` starts it with no future: nobody waits for it, its
+  result is dropped, and it is not cancelled until the scope's task is (an
+  accept loop's connections; dropping the futures of `start` would cancel
+  them). The scope waits for it either way.
 - `Future[T]` (owned): `wait(): Result[T, Cancelled]` consumes it and parks
   until the task has finished. Dropped without waiting, it cancels its task.
 - `all[T](fs: []Future[T]): Result[[]T, Cancelled]` waits for each in
@@ -227,7 +234,20 @@ task.Future[int], w: Where)` calls `f.wait(w)`).
   `Err(Cancelled.Abandoned)`.
 - `yield(): Result[Unit, Cancelled]` lets the other runnable tasks run;
   `cancelled(): bool` tells whether the running task has been cancelled.
-- `Cancelled` is `value closed { Cancelled; Abandoned }` (`eq`, `toStr`).
+- `sleep(ms: int): Result[Unit, Cancelled]` parks for `ms` milliseconds
+  (none when `ms <= 0`); `Err(Cancelled)` when the task is cancelled (at
+  once, or while it sleeps), `Err(Timeout)` when the deadline of an
+  enclosing `within` comes first.
+- `within[R](ms: int, f: &fn(): R): R` runs `f` with a deadline `ms`
+  milliseconds from now; the earlier one wins when nested, and tasks started
+  during `f` inherit it. Every call that can park in them returns
+  `Err(Timeout)` (`ETIMEDOUT` from `net`) once it has passed, so `f` ends
+  through its `Result`s: `task.within(500, fn(): Result[int, io.IoError] {
+  return c.read(mut &buf) })` is a read with a timeout, and a deadline
+  around several calls bounds them together. `f` returns a value (a closure
+  with no result cannot give `R`); `within` itself never parks.
+- `Cancelled` is `value closed { Cancelled; Abandoned; Timeout }` (`eq`,
+  `toStr`).
 - `shared[T](v: T): Shared[T]`: a counted copy handle (a lang item, SPEC 15);
   `sh.with(f: &fn(mut &T))` is the only access. Parking inside `with`, or a
   `with` on a value whose `with` is open, is exit 13. If every task is
@@ -236,6 +256,50 @@ task.Future[int], w: Where)` calls `f.wait(w)`).
   at a.obx:37) at a.obx:41`, `obx: Shared.with on a value whose with is
   already open (the with at a.obx:30) at a.obx:35`, `obx: deadlock: every
   task is parked at a.obx:41`.
+
+The scheduler waits in `epoll_wait` only when no task is runnable, and checks
+sockets and timers every 64 switches otherwise. A task parked in `sleep` or on
+a socket is never a deadlock; a program whose tasks all wait on futures
+nobody will complete still is (exit 14).
+
+### net
+
+TCP over IPv4 and IPv6 for tasks (SPEC 16; design/concurrency.md, stage C1b).
+Sockets are non-blocking and registered with the runtime's epoll loop; a call
+that would block parks the task until the socket is ready, so other tasks run
+meanwhile, and a plain program (its main task) uses the same calls.
+
+- Addresses are text: `"127.0.0.1:8080"`, `"[::1]:8080"`, `":8080"` and
+  `"0.0.0.0:8080"` (every IPv4 interface), `"localhost:8080"` (127.0.0.1),
+  port 0 for any free port. Only numeric addresses and `localhost`: a name
+  lookup (`getaddrinfo`) blocks the thread, so it waits for the helper pool
+  of stage C1c. `canonicalAddr(addr): Option[str]` checks and normalizes one
+  (IPv6 in RFC 5952 form). A malformed address is `EINVAL`.
+- `listen(addr): Result[Listener, IoError]` (`SO_REUSEADDR`, backlog 4096);
+  `Listener`: `localAddr(): str`, `accept(): Result[Conn, IoError]`,
+  `close()`.
+- `connect(addr): Result[Conn, IoError]`: a non-blocking connect that parks
+  until it is done (`ECONNREFUSED` and the like come from it).
+- `Conn`: `read(buf: mut &[byte]): Result[int, IoError]` (0: the peer has
+  closed), `write(data: &[byte]): Result[Unit, IoError]` (all of it, parking
+  while the socket's buffer is full), `writeStr(s)`, `closeWrite()`
+  (shutdown of the write side: the peer reads the end), `setNoDelay(on)`
+  (`TCP_NODELAY`), `localAddr()`, `peerAddr()`, `close()`.
+- Errors are `io.IoError {errno, op, path}`: `op` is `listen`, `accept`,
+  `connect`, `read`, `write`, ...; `path` is the address (the peer's for a
+  `Conn`). A call made by a cancelled task, or past the deadline of a
+  `task.within`, does nothing and returns `ECANCELED` or `ETIMEDOUT`
+  (`isCancelled()`, `isTimeout()`); so does a call parked when that happens.
+  A write to a peer that has closed is `EPIPE` or `ECONNRESET`, never
+  `SIGPIPE`.
+- `Listener` and `Conn` are owned: dropping one (or `close()`) closes its
+  socket and never parks, so it may happen inside `Shared.with`. The calls
+  that can park take a last `w: Where` like `task`'s, and stop the program
+  inside `with` (exit 13).
+
+A `Conn` is used by one task at a time (it is owned; a split into read and
+write halves is not there yet). `cmd/httpd.obx` is an HTTP/1.1 server built
+on it, and `cmd/httpload.obx` a load client.
 
 `both` and `forEach` (concurrent children that borrow the parent's locals)
 are not there yet: a task's function is a plain `fn`, and passing borrows
@@ -315,9 +379,14 @@ errno, a static buffer):
 | `obxlib_copy_in(dst, at, src, n)`, `obxlib_copy_out(dst, src, at, n)` | `memcpy` between C memory and an obx byte array; for `ffi` |
 | `obxlib_task_scope_open()`, `obxlib_task_scope_close(s, w)` | open a scope; park until its tasks have finished; for `task` (`w`: the caller's `"file:line"`, reported by a trap, here and below) |
 | `obxlib_task_start(s, run, job, resdrop)` | a task on a stack from the free list that runs `run(job)`; for `task` |
-| `obxlib_task_wait(t, w)`, `obxlib_task_wait_any(ts, n, w)`, `obxlib_task_take(t)` | park until done (0), cancelled (1) or abandoned (2); the first done of n; the result box |
-| `obxlib_task_forget(t)`, `obxlib_task_join(t, w)` | a dropped future (cancel, drop the result when there is one); cancel and park until finished |
-| `obxlib_task_yield(w)`, `obxlib_task_cancelled()` | yield to the run queue; whether the running task is cancelled |
+| `obxlib_task_wait(t, w)`, `obxlib_task_wait_any(ts, n, w)`, `obxlib_task_take(t)` | park until done (0), cancelled (1), abandoned (2) or past the deadline (3); the first done of n (-1 cancelled, -2 deadline); the result box |
+| `obxlib_task_forget(t)`, `obxlib_task_join(t, w)`, `obxlib_task_detach(t)` | a dropped future (cancel, drop the result when there is one); cancel and park until finished; `spawn`'s future, given up without cancelling |
+| `obxlib_task_yield(w)`, `obxlib_task_cancelled()`, `obxlib_task_check(w)` | yield to the run queue (also polls sockets and timers every 64 calls); whether the running task is cancelled; the checks before an operation that can park: exit 13 inside `with`, then cancelled (1) or past the deadline (3) |
+| `obxlib_task_sleep(ms, w)`, `obxlib_task_within(ms)`, `obxlib_task_restore(old)` | park on a timer; set the running task's deadline (the earlier wins), giving the old one; put it back |
+| `obxlib_net_listen(fam, addr, port, backlog)`, `obxlib_net_connect(fam, addr, port, &pending)`, `obxlib_net_accept(fd)` | non-blocking sockets registered with epoll (edge-triggered, once); fd or -errno (`pending`: the connect is in progress) |
+| `obxlib_net_read(fd, b, n)`, `obxlib_net_write(fd, b, n)` | `read`, `send` with `MSG_NOSIGNAL`; count or -errno (`-EAGAIN`: park) |
+| `obxlib_net_wait(fd, dir, w)` | park until the socket is readable (0) or writable (1): 0, or 1 cancelled, 3 past the deadline |
+| `obxlib_net_addr(fd, peer, out)`, `obxlib_net_nodelay(fd, on)`, `obxlib_net_soerror(fd)`, `obxlib_net_shutdown(fd, how)`, `obxlib_net_close(fd)` | the local or peer address (family, port, 16 address bytes); `TCP_NODELAY`; `SO_ERROR`; `shutdown`; close (and forget the fd's waiters) |
 | `obxlib_task_promise(resdrop)`, `obxlib_task_complete(t, r)`, `obxlib_task_abandon(t)` | promises |
 | `obxlib_sh_new(box, drop)`, `obxlib_sh_enter(s, w)`, `obxlib_sh_leave(s, box)` | a `Shared` block; lend its box to `with` (exit 13 when already lent; `w` is kept for the messages while the `with` is open) and take it back |
 
