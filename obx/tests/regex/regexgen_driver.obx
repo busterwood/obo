@@ -1,0 +1,113 @@
+// The obx side of obx/tests/regexgen.py: reads the generated cases and
+// writes what the regex library does with them, in the format of
+// regexgen_driver.go (see there). Every text also runs under the Pike VM and
+// the backtracker forced; a line "D ..." reports a matcher that disagrees
+// with the one compile picks.
+//
+// usage: regexgen_driver CASES
+
+import "regex"
+import "io"
+import "os"
+
+const DIGITS: str = "0123456789abcdef"
+
+fn hexVal(c: byte): int {
+    let x = int(c)
+    if x >= 48 && x <= 57 { return x - 48 }
+    return x - 87
+}
+
+fn unhex(s: str): str {
+    var b = newStrBuf()
+    var i = 0
+    while i + 1 < len(s) {
+        b.addByte(byte(hexVal(s[i]) * 16 + hexVal(s[i + 1])))
+        i += 2
+    }
+    return b.toStr()
+}
+
+fn hx(s: str): str {
+    var b = newStrBuf()
+    b.add("h")
+    for i in 0..len(s) {
+        let c = int(s[i])
+        b.addByte(DIGITS[c / 16])
+        b.addByte(DIGITS[c % 16])
+    }
+    return b.toStr()
+}
+
+fn ints(a: &[]int): str {
+    var s = newStrBuf()
+    for i in 0..len(a) {
+        if i > 0 { s.add(",") }
+        s.addInt(a[i])
+    }
+    return s.toStr()
+}
+
+fn all(m: &[][]int): str {
+    if len(m) == 0 { return "-" }
+    var s = newStrBuf()
+    for i in 0..len(m) {
+        if i > 0 { s.add(";") }
+        s.add(ints(&m[i]))
+    }
+    return s.toStr()
+}
+
+type Res = record {
+    re: regex.Regex
+    longest: regex.Regex
+}
+
+fn main() {
+    let args = os.arguments()
+    let lines = io.readLines(args[0]).unwrap()
+    var out = io.stdout()
+    var res: []Res = []
+    var pattern = ""
+    for line in lines {
+        if len(line) < 2 { continue }
+        let s = unhex(line[2..])
+        if line[0] == byte(80) {   // 'P'
+            pattern = s
+            out.writeln("P " + hx(s))
+            res = []
+            match regex.compile(s) {
+                Ok(re) {}
+                Err(e) {
+                    out.writeln("E " + hx(e.message()))
+                    continue
+                }
+            }
+            for m in ["", "pike", "backtrack"] {
+                append(mut &res, Res {
+                    re: regex.compileForcing(s, false, m).unwrap(),
+                    longest: regex.compileForcing(s, true, m).unwrap(),
+                })
+            }
+            continue
+        }
+        if len(res) == 0 { continue }
+        let first = all(&res[0].re.allSubmatchIndex(s, -1))
+        let longest = all(&res[0].longest.allSubmatchIndex(s, -1))
+        for k in 1..len(res) {
+            let f = all(&res[k].re.allSubmatchIndex(s, -1))
+            let l = all(&res[k].longest.allSubmatchIndex(s, -1))
+            if f != first || l != longest {
+                out.writeln("D matcher " + k.toStr() + " " + hx(s) + " " + f + " " + l)
+            }
+        }
+        var sp = newStrBuf()
+        let pieces = res[0].re.split(s)
+        for i in 0..len(pieces) {
+            if i > 0 { sp.add(",") }
+            sp.add(hx(pieces[i]))
+        }
+        out.writeln("T " + hx(s) + " " + first + " " + longest + " " + hx(res[0].re.replaceAll(s, "<$1|${n0}|$0>")) + " " + sp.toStr())
+    }
+    out.flush().unwrap()
+}

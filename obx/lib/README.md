@@ -37,6 +37,9 @@ for leaks.
 | `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
 | `task.obx` | 596 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
 | `net.obx` | 461 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write |
+| `regex.obx` | 1,640 | regular expressions (RE2 syntax, linear time; a port of Go's regexp): compile, find, findAll, captures, replace, split, quote |
+| `regex_syntax.obx` | 3,030 | the regex parser, simplifier and compiler to a program (Go's regexp/syntax) |
+| `regex_unicode.obx` | 2,020 | generated (`gen_regex_unicode.py`): Unicode 15.0.0 categories, scripts and simple case folding |
 
 ### std (prelude)
 
@@ -380,6 +383,90 @@ WORKERS`), and `cmd/httpload.obx` a load client.
 are not there yet: a task's function is a plain `fn`, and passing borrows
 into a task needs the checker's help (design/concurrency.md, section 5).
 
+### regex
+
+Regular expressions with RE2's syntax, matched in time linear in the size of
+the text whatever the pattern (design/regex.md, phase R1). A port of Go's
+`regexp` and `regexp/syntax` (BSD-3-Clause; see `NOTICE`): the same parser,
+errors and limits, the same program, the same three matchers, and the same
+results, checked against Go's own tests and against Go on random patterns.
+
+```obx
+import "regex"
+
+let re = try regex.compile("(?P<y>\\d{4})-(?P<m>\\d{2})-(?P<d>\\d{2})")
+if re.isMatch("on 2026-11-03") { ... }
+match re.find(text) { Some(m) { m.start; m.end; m.text } None {} }
+for m in re.findAll(text) { ... }
+match re.captures(text) {
+    Some(c) { let y = c.name("y").unwrap().text }
+    None {}
+}
+let s = re.replaceAll(text, "$d/$m/$y")     // "${d}x" when a letter follows
+let parts = re.split(text)
+```
+
+- **Compiling.** `compile(pattern): Result[Regex, Error]` (leftmost-first,
+  Perl's syntax, as Go's `Compile`); `compileLongest` (leftmost-longest);
+  `compilePosix` (POSIX syntax: no `\d` and the like, leftmost-longest);
+  `mustCompile` (panics on an error: for constant patterns);
+  `isMatchStr(pattern, text): Result[bool, Error]`. A `Regex` is immutable
+  once compiled; each call has its own matching state.
+- **Error** `{code: ErrorCode, expr, pos}`: `message()` is Go's text
+  (`error parsing regexp: missing closing ): `(abc``), `toStr()` adds a
+  hint for the refused features below.
+- **Searching.** `isMatch(text)`; `find(text): Option[Match]` and
+  `findFrom(text, from)`; `findIndex(text): Option[Span]`; `findAll`,
+  `findN(text, n)`, `findAllIndex`, `findAllIndexN`. `Match {start, end,
+  text}` and `Span {start, end}` are value records; offsets are byte offsets.
+  A search with `n < 0` finds all; as in Go, an empty match right after the
+  previous match is skipped.
+- **Groups.** `captures(text): Option[Captures]`, `capturesAll`,
+  `capturesN`; `Captures`: `count()` (groups plus one), `get(i):
+  Option[Match]` (None for a group that did not take part), `whole()`,
+  `name(n): Option[Match]`, `str(i)` (`""` if unset), `indexes()`. The index
+  forms are `submatchIndex(text): []int` (2 slots per group, -1 unset; empty
+  when there is no match) and `allSubmatchIndex(text, n): [][]int`.
+  `numGroups()`, `groupNames()` (`""` for group 0 and unnamed groups),
+  `groupIndex(name)` (-1 if none).
+- **Replacing.** `replaceAll(text, template)`, `replace` (the first match),
+  `replaceN`; in the template `$1`, `$name`, `${name}` and `${1}` expand to
+  the group (empty if unset or unknown), `$$` is `$`; the longest name is
+  taken, so `$1x` is the group `1x`: write `${1}x`. `expand(template,
+  &Captures)` expands one template. `replaceAllLiteral` (no expansion),
+  `replaceAllFunc(text, f: &fn(str): str)`.
+- **Others.** `split(text)`, `splitN(text, n)` (Go's semantics, n < 0 for
+  all); `quote(s)` escapes ``\.+*?()|[]{}^$``; `literalPrefix(): Prefix
+  {text, complete}`; `pattern()`; `isLongest()`; `matcherFor(n)` (which
+  matcher a search of n bytes uses: `onepass`, `backtrack` or `pike`).
+
+**Syntax.** RE2's, as Go: literals and escapes (`\x41`, `\x{263a}`, `\Q...\E`,
+`\a \f \t \n \r \v`, octal); `.`; classes `[...]`, `[^...]`, `[[:alpha:]]`
+and the other POSIX classes; `\d \w \s \D \W \S` (ASCII); `\pL`, `\p{Lu}`,
+`\p{Greek}`, `\PL`, `\p{^L}` (the general categories, scripts and Go's
+category aliases, Unicode 15.0.0); `* + ? {n} {n,} {n,m}` and their lazy forms
+(`*?`); `|`; `(...)`, `(?:...)`, `(?P<name>...)` and `(?<name>...)`; flags
+`i m s U` as `(?i)` or `(?i:...)` (and `(?-i)`); `^ $ \A \z \b \B`. Patterns
+and texts are UTF-8 and matched by code point; an invalid byte in the text
+reads as U+FFFD, one byte wide, which only `.` and negated classes match.
+`(?i)` uses Unicode's simple case folding (`k` matches `K` and the Kelvin
+sign).
+
+**Refused** (an error, with a hint saying why): backreferences (`\1`),
+lookaround (`(?=`, `(?!`, `(?<=`, `(?<!`) and possessive repeats (`a++`):
+they are what makes backtracking engines take exponential time, and an
+engine with them cannot promise linear time. Also refused as in Go: `\C`,
+`\Z`, a repeat count above 1000, nesting deeper than 1000, and a pattern
+whose program would be too large, so a pattern cannot exhaust memory.
+
+**Matching.** Go's choice per search: the one-pass matcher when the
+pattern allows it (anchored, every step one choice), the bounded
+backtracker for small programs on short texts (a visited bitmap: each
+instruction at each position once), and the Pike VM (an NFA simulation)
+otherwise. A literal prefix is searched for first. Speed:
+`PERFORMANCE.md` (via C about Go's; natively 2 to 3 times Go's time). The
+literal prefilter and lazy DFA of R2 are not there yet.
+
 ### sqldialect, sqlite, postgres, mssql
 
 Database adapters over the C client libraries (a program that imports one is
@@ -604,6 +691,9 @@ them and a NUL-terminated temporary copy otherwise (freed after the call).
   `realpath`.
 - `time` is UTC only (no time zones), with millisecond helpers only.
 - `strings` case mapping is ASCII only.
+- `regex`: no literal prefilter or DFA yet (R2), so a search runs the Pike VM
+  over the whole text; no Unicode blocks, full case folding, `RegexSet` or
+  byte-oriented matching (R3).
 - No `Deque`, no `BTreeMap`/ordered map; `Set` iterates in insertion order
   until a remove.
 - Errors are errno ints in `os` (setEnv, setCwd) but `IoError` in `io` and

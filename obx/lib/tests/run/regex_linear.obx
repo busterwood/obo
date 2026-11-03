@@ -1,0 +1,63 @@
+// regex: patterns that take exponential time in a backtracking engine run in
+// time linear in the text here, under the Pike VM and the bounded backtracker
+// (it never visits a state twice): 100,000 bytes take about ten times as long
+// as 10,000 (the bound allows 40 times, plus 20 ms of noise), with and without
+// a match at the end.
+// expect: (a*)*b ok
+// expect: (x+x+)+y ok
+// expect: (a|a)*b ok
+// expect: (?:a+)+$ ok
+// expect: (.*)*z ok
+
+import "regex"
+import "time"
+
+const PATTERNS: []str = ["(a*)*b", "(x+x+)+y", "(a|a)*b", "(?:a+)+$", "(.*)*z"]
+const FILL: []str = ["a", "x", "a", "a", "a"]
+const LAST: []str = ["b", "y", "b", "a", "z"]
+const MATCHERS: []str = ["pike", "backtrack"]
+
+// The time of a search for re in s, in nanoseconds; the result must be want.
+fn timed(re: &regex.Regex, s: str, want: bool, ok: mut &bool): int {
+    let t0 = time.monotonicNs()
+    let got = re.isMatch(s)
+    let t1 = time.monotonicNs()
+    if got != want {
+        println("wrong answer for /" + re.pattern() + "/ on " + len(s).toStr() + " bytes")
+        ok = false
+    }
+    return t1 - t0
+}
+
+fn main() {
+    for i in 0..len(PATTERNS) {
+        var ok = true
+        let small = repeat(FILL[i], 10000)
+        let large = repeat(FILL[i], 100000)
+        // (?:a+)+$ matches the all-a text; the others need the last byte.
+        let wantPlain = LAST[i] == FILL[i]
+        for m in MATCHERS {
+            let re = regex.compileForcing(PATTERNS[i], false, m).unwrap()
+            for withLast in [false, true] {
+                let a = if withLast { small + LAST[i] } else { small }
+                let b = if withLast { large + LAST[i] } else { large }
+                let want = withLast || wantPlain
+                let ts = timed(&re, a, want, mut &ok)
+                let tl = timed(&re, b, want, mut &ok)
+                if tl > 40 * ts + 20000000 {
+                    println("/" + PATTERNS[i] + "/ " + m + ": " + (ts / 1000).toStr() + " us for 10k, " + (tl / 1000).toStr() +
+                        " us for 100k: not linear")
+                    ok = false
+                }
+            }
+        }
+        // compile's own choice (the Pike VM for this size) finds the match.
+        let re = regex.mustCompile(PATTERNS[i])
+        let s = large + LAST[i]
+        match re.find(s) {
+            Some(m) { if m.end != len(s) { ok = false } }
+            None { ok = false }
+        }
+        println(PATTERNS[i] + (if ok { " ok" } else { " FAILED" }))
+    }
+}

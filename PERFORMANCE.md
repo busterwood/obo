@@ -90,6 +90,56 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
   grew. The native runtime and gcc's builds of programs now put functions
   at multiples of 64 (`-falign-functions=64`), which restored both.
 
+## Regex
+
+`python3 obx/bench/regex/bench.py -n 7` ([obx/bench/regex/](obx/bench/regex/bench.py)),
+the benchmark set of [design/regex.md](obx/design/regex.md) section 4, at
+the end of phase R1 (branch `r1`, 3 November 2026). The corpus is 3.2 MB
+written by `gen_corpus.py` from a fixed seed (prose with the names the
+patterns look for, a log, C-like source; ASCII). Each driver times its own
+searches after reading the file: the best of 5 searches, best of 7 runs, in
+ms. "Matches" is the same for every driver (the script checks); `(a*)*b`
+runs over 100,000 `a`s. Go is go1.26.4's `regexp`, Rust the `regex` crate
+1.12.3 (built offline from the cargo cache), and rg is ripgrep 14.1.1
+counting matches as a whole process, start-up and file reading included: a
+reference point, not a like-for-like figure.
+
+| pattern | matches | obx native | obx via C | Go | Rust | rg |
+|---|---:|---:|---:|---:|---:|---:|
+| `Sherlock Holmes` | 926 | 2.96 | 1.50 | 0.50 | 0.10 | 2.5 |
+| `Sherlock\|Holmes\|Watson\|Irene` | 7,350 | 282.91 | 134.09 | 139.06 | 0.52 | 3.8 |
+| `\w+` (all matches) | 669,532 | 253.49 | 136.81 | 141.82 | 23.05 | 66.7 |
+| `(?i)sherlock` | 4,280 | 181.89 | 91.43 | 72.49 | 0.58 | 4.8 |
+| `[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}` | 848 | 182.48 | 94.19 | 79.23 | 0.13 | 3.2 |
+| `(?m)^ERROR .*timeout$` | 197 | 67.05 | 35.00 | 32.28 | 0.70 | 3.2 |
+| `(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})` (captures) | 10,755 | 212.32 | 104.03 | 72.53 | 1.76 | 11.9 |
+| `(a*)*b` over 100,000 `a`s | 0 | 6.82 | 3.48 | 3.40 | 0.00 | 2.4 |
+
+- **obx and Go.** The engine is Go's, so the comparison is like for like.
+  Built through C, obx is level with Go on the Pike VM patterns (the
+  alternation, `\w+`) and up to 1.45 times its time on the others (the
+  captures, `(?i)`); the native build takes 2.0 to 2.9 times Go's time.
+  The literal is a prefix search: Go's `strings.Index` uses SIMD, obx a
+  byte loop (3 times Go via C, 6 times natively).
+- **Native and C.** The same library code runs about twice as fast through
+  gcc. The profile is the Pike VM's `add` and `step` (85% of the native
+  time on the alternation): short loops over the fields of a `mut &`
+  record's arrays, each access with its bounds check and each index sum
+  with its overflow check. gcc keeps the arrays' addresses in registers and
+  drops most of the checks; the native backend reloads them. This is a
+  native-backend matter (the code generator, not the language) and is left
+  for a later performance step. In the library, allocating the Pike VM's
+  arrays once at their full size (no `append` or `pop` in the loop) and
+  decoding ASCII inline took about 20% off the native times; moving the
+  arrays into locals for the loop made both builds slower and was dropped.
+- **Rust and rg.** Rust's literal prefilters (memchr, Teddy) and lazy DFA
+  find these matches 100 to 1,000 times faster than a Pike VM; `\w+`,
+  with 670,000 matches, is where the DFA gains least. That is phase R2.
+- **Linear time.** `(a*)*b` over 100,000 bytes takes 3 to 7 ms on every
+  build. The library test `regex_linear` checks that 100,000 bytes take
+  about ten times as long as 10,000 for five such patterns under the Pike
+  VM and the backtracker.
+
 ## eza
 
 [obx/cmd/eza.obx](obx/cmd/eza.obx), a 1,600-line implementation of the
