@@ -44,6 +44,13 @@ step and the total, and exits 1 on any failure.
 suite for `cmd/eza.obx`, outside the gates (about 2.5 minutes; see
 [../cmd/README.md](../cmd/README.md)).
 
+`OBX_PREV=old/obxc python3 obx/tests/run_prev.py [--native] [--lib] [--redteam] [--gen N]
+[--eza]` compares the compiler against a previous build, outside the gates. Both compilers
+build every run and error test, plus the library tests, the red-team rounds 1 to 5, N
+fresh round-5 programs and eza. The two builds must fail alike, or the two programs must
+print and exit alike under OBX_CHECK=1. Use it when a compiler change is meant to keep
+every program's behaviour.
+
 `python3 obx/compiler/fuzz.py [-n N] [--seed S] [--cc]` is a mutation fuzzer for the
 compiler, outside the gates: every mutant of a test program must compile or be rejected
 with one `file:line: message`, never crash or leak.
