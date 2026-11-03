@@ -664,7 +664,6 @@ extern "c" fn rtRelease(fd: int) as "obxlib_net_release"
 extern "c" fn rtHangup(fd: int, mode: int): int as "obxlib_net_hangup"
 extern "c" fn rtDefer(fd: int, secs: int): int as "obxlib_net_defer"
 extern "c" fn rtSpare(): int as "obxlib_net_spare"
-extern "c" fn rtShed(lfd: int, spare: int): int as "obxlib_net_shed"
 
 const EMFILE = 24
 const ENFILE = 23
@@ -868,10 +867,19 @@ pub fn spare(): Result[Spare, io.IoError] {
 // After accept failed for want of descriptors: frees the spare, accepts
 // one waiting connection and closes it at once (its client sees the close
 // instead of waiting while the accept loop spins), and reserves the spare
-// again (Err when it cannot: the spare is then gone).
-pub fn (l: &Listener) shed(s: mut &Spare): Result[Unit, io.IoError] {
-    let fd = rtShed(l.fd, s.fd)
-    s.fd = if fd >= 0 { fd } else { -1 }
+// again. Ok(true) when a connection was closed, Ok(false) when none was
+// waiting: Linux's accept takes a descriptor before it looks at the queue,
+// so at the limit it fails with EMFILE even when nothing is waiting, and
+// the caller should then wait (for a new connection, or a descriptor
+// freed) rather than try again at once. Err when the spare cannot be
+// reserved again (it is then gone).
+pub fn (l: &Listener) shed(s: mut &Spare): Result[bool, io.IoError] {
+    if s.fd >= 0 { rtClose(s.fd) }
+    s.fd = -1
+    let c = rtAccept(l.fd)
+    if c >= 0 { rtClose(c) }
+    let fd = rtSpare()
     if fd < 0 { return Err(io.ioError(-fd, "open", "/dev/null")) }
-    return Ok(Unit{})
+    s.fd = fd
+    return Ok(c >= 0)
 }

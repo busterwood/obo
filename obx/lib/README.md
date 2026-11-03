@@ -438,7 +438,12 @@ For servers (stage S1 of design/http-server.md):
   descriptor (`/dev/null`) and `l.shed(mut &spare)`, after `accept`
   failed with `outOfDescriptors(&e)` (`EMFILE`, `ENFILE`), frees it,
   accepts and closes one waiting connection, and reserves it again, so the
-  queue drains instead of the accept loop spinning.
+  queue drains and its clients see a close instead of waiting. It gives
+  `Ok(true)` when it closed a connection and `Ok(false)` when none was
+  waiting. Linux's `accept` takes a descriptor before it looks at the
+  queue, so at the limit it fails even with an empty queue; after
+  `Ok(false)` the caller should wait (for a new connection or a freed
+  descriptor) instead of calling `accept` again at once.
 
 A `Conn` is used by one task at a time (it is owned). `httpserver` is an
 HTTP/1.1 server built on it, `cmd/httpd.obx` an example program on that
@@ -702,7 +707,9 @@ starting with a single `/`, or an http(s) URL whose host is in
 | `logFd` | 1 | where `accessLog` writes (-1: nowhere) |
 
 On `EMFILE`/`ENFILE` the accept loop uses the spare descriptor to accept
-and close one waiting connection (`shed`). A connection's task yields after
+and close one waiting connection (`shed`, counted in `Stats.shed`); when
+none was waiting, it sleeps 10 ms before trying again, so a server at its
+descriptor limit does not spin. A connection's task yields after
 each request and every 64 KiB of body copy, so a client that pipelines
 without pause does not starve the others. After a reply that ends the
 connection, the server shuts down its side and reads and drops what the
@@ -731,7 +738,7 @@ WebSockets, forms.
 
 Tests: `tests/run/http_server_*.obx` (the parsing corpus, routing, limits,
 slow clients, hangup cancellation with Postgres and SQLite, drain, the
-access log; through `tests/support/srvtest.obx` and `srvrun.obx`),
+access log, an accept flood, running out of descriptors; through `tests/support/srvtest.obx` and `srvrun.obx`),
 `task_workers_ready.obx`, and `tests/httpsrvgen.py`, which checks the
 parsing against Go's net/http and Node's llhttp on generated request
 streams (`gate.sh full`).

@@ -2329,23 +2329,30 @@ fn acceptLoop[A: copy](s: mut &task.Scope, lst: mut &Option[net.Listener], spare
                         if e.isCancelled() {
                             stop = true
                         } else if net.outOfDescriptors(&e) {
-                            var shed = false
+                            // shed one waiting connection with the spare; when none
+                            // was waiting (accept fails at the limit regardless) or
+                            // the spare is gone, wait a little: a descriptor may be
+                            // freed meanwhile
+                            var took = false
                             let taken = replace(spare, None)
                             match move(taken) {
                                 Some(x) {
                                     var sp = x
-                                    if l.shed(mut &sp).isOk() {
-                                        shed = true
-                                        spare = Some(sp)
+                                    match l.shed(mut &sp) {
+                                        Ok(c) {
+                                            took = c
+                                            spare = Some(sp)
+                                        }
+                                        Err(_) {}
                                     }
                                 }
                                 None {}
                             }
-                            if !shed {
-                                spare = None
-                                if task.sleep(10).isErr() { stop = true }
+                            if took {
+                                st.with(fn(x: mut &State) { x.stats.shed += 1 })
+                            } else {
+                                if task.sleep(TICK / 10).isErr() { stop = true }
                             }
-                            st.with(fn(x: mut &State) { x.stats.shed += 1 })
                         } else if e.isTimeout() {
                             // the tick's own deadline, or an enclosing within's: that ends serve
                             if time.monotonicNs() >= old { stop = true }

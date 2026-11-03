@@ -2503,12 +2503,6 @@ int64_t obxlib_net_defer(int64_t fd, int64_t secs) {
 int64_t obxlib_net_spare(void) {
     return SYS(S_OPEN, "/dev/null", K_O_CLOEXEC, 0);              /* O_RDONLY */
 }
-int64_t obxlib_net_shed(int64_t lfd, int64_t spare) {
-    if (spare >= 0) SYS(S_CLOSE, spare, 0, 0);
-    i64 c = SYS4(S_ACCEPT4, lfd, 0, 0, K_O_CLOEXEC);
-    if (c >= 0) SYS(S_CLOSE, c, 0, 0);
-    return obxlib_net_spare();
-}
 int64_t obxlib_random(uint8_t* b, int64_t n) {
     int64_t k = 0;
     while (k < n) {
