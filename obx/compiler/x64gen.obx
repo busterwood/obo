@@ -1538,6 +1538,9 @@ fn (g: mut &Gen) stmt(s: int) {
         g.genEffect(n.a)
     } else if k == ir.S_IF && n.c < 0 && g.jumpOnly(n.b) >= 0 {
         g.branch(n.a, g.jumpOnly(n.b), true)
+    } else if k == ir.S_IF && n.c < 0 && g.incIf(if g.u.nk(n.a) == ir.E_LNOT { g.u.nodes[n.a].a } else { n.a },
+        g.u.nk(n.a) == ir.E_LNOT, n.b) {
+        // done: a count without a branch
     } else if k == ir.S_IF {
         let elseL = g.a.newLabel()
         g.branch(n.a, elseL, false)
@@ -1852,6 +1855,50 @@ fn (g: mut &Gen) inPlace(r: int, v: int): bool {
     return true
 }
 
+// `if (e) x = x + 1;` (or `if (!e)`), no else, with x the register of a local and the addition
+// rt_add_int(x, 1, w) or rt_wadd_int(x, 1), e an integer, bool or pointer: a count without a
+// branch, as gcc makes it, and true (e a loaded value or a local: a comparison keeps its branch). `cmp e, 1` borrows (CF) exactly when e is 0, so
+// `sbb x, -1` adds 1 exactly when e is not 0 (`adc x, 0` when it is, for `!e`). The overflow flag
+// of sbb and adc is that of the whole operation: it is set exactly when the addition that happens
+// overflows (never when nothing is added), so the checked form's `jo` traps when and where the
+// branch's `add x, 1; jo` did, after the same evaluation of e. Else false, nothing generated.
+fn (g: mut &Gen) incIf(cond0: int, neg0: bool, body: int): bool {
+    var cond = cond0
+    var neg = neg0
+    while g.u.nk(cond) == ir.E_LNOT || g.u.nk(cond) == ir.E_CAST && g.tk(g.u.nodes[cond].ty) == ir.TY_BOOL {
+        // !e, or (bool)e, which is as true as e (an integer, bool or pointer: checked below)
+        if g.u.nk(cond) == ir.E_LNOT { neg = !neg }
+        cond = g.u.nodes[cond].a
+    }
+    var b = body
+    while g.u.nk(b) == ir.S_BLOCK && g.u.listLen(g.u.nodes[b].a) == 1 { b = g.u.listAt(g.u.nodes[b].a, 0) }
+    if g.u.nk(b) != ir.S_EXPR { return false }
+    let x = g.u.nodes[b].a
+    if g.u.nk(x) != ir.E_ASSIGN || g.tk(g.u.nodes[x].ty) != ir.TY_I64 { return false }
+    let r = g.regOf(g.u.nodes[x].a)
+    let v = g.u.nodes[x].b
+    if r < 0 || g.u.nk(v) != ir.E_CALL || g.u.nodes[v].ty != g.u.nodes[x].ty { return false }
+    let ar = arOp(g.rtName(v))
+    let n = g.u.nodes[v]
+    if ar.k != ir.TY_I64 || ar.op != ir.OP_ADD || g.u.listLen(n.b) < 2 { return false }
+    if !ar.wrap && (g.u.listLen(n.b) != 3 || !g.isWhere(g.u.listAt(n.b, 2))) { return false }
+    let one = g.u.listAt(n.b, 1)
+    if g.regOf(g.u.listAt(n.b, 0)) != r || g.u.nk(one) != ir.E_INT || g.u.nodes[one].v != 1 { return false }
+    let t = g.u.nodes[cond].ty
+    let k = g.tk(t)
+    if k != ir.TY_PTR && (k < ir.TY_BOOL || k > ir.TY_U64) { return false }
+    if g.u.nk(cond) != ir.E_DEREF && g.u.nk(cond) != ir.E_LOCAL { return false }   // a value, not a compare
+    if g.u.nk(cond) == ir.E_DEREF {
+        g.a.aluMI(x64.CMP, g.size(t), g.place(cond), 1)     // cmp byte [p + i], 1
+    } else {
+        g.gen(cond)
+        g.a.aluI(x64.CMP, 8, RAX, 1)
+    }
+    if neg { g.a.aluI(x64.ADC, 8, r, 0) } else { g.a.aluI(x64.SBB, 8, r, -1) }
+    if !ar.wrap { g.a.jcc(x64.CC_O, g.stub(10, "integer overflow", g.u.listAt(n.b, 2))) }
+    return true
+}
+
 // `bool c = e; if (!c) ...` (the C of every loop condition) with c named nowhere else:
 // generates the if with e for its condition and no c, and true. Else false, nothing generated.
 fn (g: mut &Gen) fusedIf(d: int, s: int): bool {
@@ -1866,6 +1913,7 @@ fn (g: mut &Gen) fusedIf(d: int, s: int): bool {
         neg = true
     }
     if g.u.nk(cond) != ir.E_LOCAL || g.u.nodes[cond].a != dn.a { return false }
+    if sn.c < 0 && g.incIf(dn.b, neg, sn.b) { return true }
     let jl = g.jumpOnly(sn.b)
     if jl >= 0 && sn.c < 0 {
         g.branch(dn.b, jl, !neg)
