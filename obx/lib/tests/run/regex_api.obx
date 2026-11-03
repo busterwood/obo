@@ -770,6 +770,8 @@ const ML_LEN: []int = [
     0, 1, 2, 3, 3, 1, 2, 3, 1, 6, 1, 3,
 ]
 
+const MATCHERS: []str = ["", "dfa", "prefilter", "dfatiny"]
+
 fn fail(fails: mut &int, what: str, got: str, want: str) {
     fails += 1
     println("FAIL " + what + "\n  got  " + got + "\n  want " + want)
@@ -813,17 +815,35 @@ fn main() {
             Err(e) { if e.message() != BAD_MSG[i] { fail(mut &fails, "bad " + BAD[i], e.message(), BAD_MSG[i]) } }
         }
     }
-    for i in 0..len(R_PAT) {
-        let re = regex.mustCompile(R_PAT[i])
-        let got = re.replaceAll(R_IN[i], R_REPL[i])
-        if got != R_OUT[i] { fail(mut &fails, "replaceAll /" + R_PAT[i] + "/ " + R_REPL[i] + " " + R_IN[i], got, R_OUT[i]) }
-        let lit = re.replaceAllLiteral(R_IN[i], R_REPL[i])
-        if lit != R_OUT_LITERAL[i] { fail(mut &fails, "replaceAllLiteral /" + R_PAT[i] + "/ " + R_REPL[i] + " " + R_IN[i], lit, R_OUT_LITERAL[i]) }
-    }
-    for i in 0..len(RF_PAT) {
-        let re = regex.mustCompile(RF_PAT[i])
-        let got = re.replaceAllFunc(RF_IN[i], fn(s: str): str { return "x" + s + "y" })
-        if got != RF_OUT[i] { fail(mut &fails, "replaceAllFunc /" + RF_PAT[i] + "/", got, RF_OUT[i]) }
+    // The searches run under compile's choice and the lazy DFA forced.
+    for m in MATCHERS {
+        for i in 0..len(R_PAT) {
+            let re = regex.compileForcing(R_PAT[i], false, m).unwrap()
+            let got = re.replaceAll(R_IN[i], R_REPL[i])
+            if got != R_OUT[i] { fail(mut &fails, m + " replaceAll /" + R_PAT[i] + "/ " + R_REPL[i] + " " + R_IN[i], got, R_OUT[i]) }
+            let lit = re.replaceAllLiteral(R_IN[i], R_REPL[i])
+            if lit != R_OUT_LITERAL[i] { fail(mut &fails, m + " replaceAllLiteral /" + R_PAT[i] + "/ " + R_REPL[i] + " " + R_IN[i], lit, R_OUT_LITERAL[i]) }
+        }
+        for i in 0..len(RF_PAT) {
+            let re = regex.compileForcing(RF_PAT[i], false, m).unwrap()
+            let got = re.replaceAllFunc(RF_IN[i], fn(s: str): str { return "x" + s + "y" })
+            if got != RF_OUT[i] { fail(mut &fails, m + " replaceAllFunc /" + RF_PAT[i] + "/", got, RF_OUT[i]) }
+        }
+        for i in 0..len(SP_PAT) {
+            let re = regex.compileForcing(SP_PAT[i], false, m).unwrap()
+            let ps = re.splitN(SP_TEXT[i], SP_N[i])
+            var got = ""
+            for k in 0..len(ps) {
+                if k > 0 { got = got + "|" }
+                got = got + "[" + ps[k] + "]"
+            }
+            if len(ps) == 0 { got = "(none)" }
+            if got != SP_OUT[i] { fail(mut &fails, m + " split " + SP_TEXT[i] + " /" + SP_PAT[i] + "/ " + SP_N[i].toStr(), got, SP_OUT[i]) }
+            if SP_N[i] == -1 {
+                let ps2 = re.split(SP_TEXT[i])
+                if len(ps2) != len(ps) { fail(mut &fails, m + " split -1 " + SP_PAT[i], len(ps2).toStr(), len(ps).toStr()) }
+            }
+        }
     }
     for i in 0..len(M_PAT) {
         let q = regex.quote(M_PAT[i])
@@ -834,10 +854,12 @@ fn main() {
             fail(mut &fails, "literalPrefix " + M_PAT[i], pre.text + " " + pre.complete.toStr(), M_PREFIX[i])
         }
         // A quoted pattern matches the text itself.
-        let qre = regex.mustCompile(q)
-        match qre.find(M_PAT[i]) {
-            Some(m) { if m.start != 0 || m.end != len(M_PAT[i]) { fail(mut &fails, "quote match " + M_PAT[i], m.text, M_PAT[i]) } }
-            None { fail(mut &fails, "quote match " + M_PAT[i], "None", M_PAT[i]) }
+        for mm in MATCHERS {
+            let qre = regex.compileForcing(q, false, mm).unwrap()
+            match qre.find(M_PAT[i]) {
+                Some(m) { if m.start != 0 || m.end != len(M_PAT[i]) { fail(mut &fails, mm + " quote match " + M_PAT[i], m.text, M_PAT[i]) } }
+                None { fail(mut &fails, mm + " quote match " + M_PAT[i], "None", M_PAT[i]) }
+            }
         }
     }
     for i in 0..len(SE_PAT) {
@@ -855,21 +877,6 @@ fn main() {
             let name = kv[0..eq]
             let want = parseInt(kv[eq + 1..]).unwrap()
             if re.groupIndex(name) != want { fail(mut &fails, "groupIndex " + SE_PAT[i] + " " + name, re.groupIndex(name).toStr(), want.toStr()) }
-        }
-    }
-    for i in 0..len(SP_PAT) {
-        let re = regex.mustCompile(SP_PAT[i])
-        let ps = re.splitN(SP_TEXT[i], SP_N[i])
-        var got = ""
-        for k in 0..len(ps) {
-            if k > 0 { got = got + "|" }
-            got = got + "[" + ps[k] + "]"
-        }
-        if len(ps) == 0 { got = "(none)" }
-        if got != SP_OUT[i] { fail(mut &fails, "split " + SP_TEXT[i] + " /" + SP_PAT[i] + "/ " + SP_N[i].toStr(), got, SP_OUT[i]) }
-        if SP_N[i] == -1 {
-            let ps2 = re.split(SP_TEXT[i])
-            if len(ps2) != len(ps) { fail(mut &fails, "split -1 " + SP_PAT[i], len(ps2).toStr(), len(ps).toStr()) }
         }
     }
     for i in 0..len(OP_PAT) {

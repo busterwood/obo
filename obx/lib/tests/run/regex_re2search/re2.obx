@@ -3,7 +3,9 @@
 // BSD-3-Clause, Copyright 2009 The Go Authors). Each regexp runs on each
 // string in four ways (full match \A(?:re)\z and partial, leftmost-first and
 // leftmost-longest) and under each matcher (the one compile picks, the Pike
-// VM, the backtracker); the submatch indexes and isMatch must equal RE2's.
+// VM, the backtracker, the lazy DFA without and with every literal search,
+// the DFA in a tiny cache); the submatch indexes and isMatch must equal
+// RE2's.
 //
 // The lines come with each quoted string replaced by h:HEX (the bytes).
 // Used by main.obx here and by obx/tests/regex/re2_exhaustive.obx.
@@ -75,7 +77,7 @@ fn same(a: &[]int, b: &[]int): bool {
     return true
 }
 
-const MATCHERS: []str = ["", "pike", "backtrack"]
+const MATCHERS: []str = ["", "pike", "backtrack", "dfa", "prefilter", "dfatiny"]
 const MODES: []str = ["[full]", "", "[full,longest]", "[longest]"]
 
 // The four regexes of one pattern under one matcher: full, partial, full
