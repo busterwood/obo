@@ -55,7 +55,7 @@ pub const MAX_HEAD = 65536         // bytes of a reply head (status line and hea
 pub const MAX_HEADERS = 100        // header lines of a head, or trailer lines
 const MAX_INTERIM = 8              // 1xx replies skipped before the real one
 const MAX_LINE = 4096              // a chunk-size line
-const BUF = 16384                  // a connection's read buffer (grows for a long head)
+const BUF = 4096                   // a connection's read buffer (grows for a long head)
 const SMALL_BODY = 16384           // a request body up to this is sent with the head, in one write
 const CHECK_IDLE_NS = 100000000    // a connection idle longer than 100 ms is checked before reuse
 const DRAIN = 65536                // a redirect's body up to this is read, so its connection is reused
@@ -190,11 +190,36 @@ pub fn (h: &Headers) copy(): Headers {
 // token, without case.
 pub fn (h: &Headers) hasToken(name: str, token: str): bool {
     for x in h.list {
-        if equalFold(x.name, name) {
-            for t in split(x.value, ',') {
-                if equalFold(trimOws(t), token) { return true }
+        if equalFold(x.name, name) && hasTokenIn(x.value, token) { return true }
+    }
+    return false
+}
+
+// Whether the comma-separated list v has token, without case.
+fn hasTokenIn(v: str, token: str): bool {
+    var i = 0
+    while i <= len(v) {
+        var j = i
+        while j < len(v) && v[j] != ',' { j += 1 }
+        var a = i
+        var b = j
+        while a < b && (v[a] == ' ' || v[a] == '\t') { a += 1 }
+        while b > a && (v[b - 1] == ' ' || v[b - 1] == '\t') { b -= 1 }
+        if b - a == len(token) {
+            var same = true
+            for k in 0..len(token) {
+                var x = v[a + k]
+                var y = token[k]
+                if x >= 'A' && x <= 'Z' { x += byte(32) }
+                if y >= 'A' && y <= 'Z' { y += byte(32) }
+                if x != y {
+                    same = false
+                    break
+                }
             }
+            if same { return true }
         }
+        i = j + 1
     }
     return false
 }
@@ -293,17 +318,25 @@ pub fn parseFields(head: str, at: int, h: mut &Headers, max: int): Result[Unit, 
 pub fn contentLength(h: &Headers): Result[int, str] {
     var n = -1
     for x in h.list {
-        if equalFold(x.name, "Content-Length") {
-            for part in split(x.value, ',') {
-                let v = trimOws(part)
-                if len(v) == 0 || len(v) > 18 { return Err("an invalid Content-Length") }
+        if len(x.name) == 14 && equalFold(x.name, "Content-Length") {
+            let v = x.value
+            var i = 0
+            while i <= len(v) {
+                var j = i
+                while j < len(v) && v[j] != ',' { j += 1 }
+                var a = i
+                var b = j
+                while a < b && (v[a] == ' ' || v[a] == '\t') { a += 1 }
+                while b > a && (v[b - 1] == ' ' || v[b - 1] == '\t') { b -= 1 }
+                if a == b || b - a > 18 { return Err("an invalid Content-Length") }
                 var k = 0
-                for i in 0..len(v) {
-                    if v[i] < '0' || v[i] > '9' { return Err("an invalid Content-Length") }
-                    k = k * 10 + int(v[i] - '0')
+                for d in a..b {
+                    if v[d] < '0' || v[d] > '9' { return Err("an invalid Content-Length") }
+                    k = k * 10 + int(v[d] - '0')
                 }
                 if n >= 0 && k != n { return Err("two different Content-Lengths") }
                 n = k
+                i = j + 1
             }
         }
     }
@@ -464,6 +497,8 @@ pub type Stats = value record {
 
 type PoolState = record {
     opts: Options
+    lastText: str          // the URL of the last request, as given, and parsed: a client
+    last: url.Url          // often sends to one URL again
     hosts: Map[str, Host]
     nextId: int
     dials: int
@@ -486,7 +521,8 @@ pub fn newClient(o: Options): Client {
     if opts.maxPerHost < 1 { opts.maxPerHost = 1 }
     if opts.maxRedirects < 0 { opts.maxRedirects = 0 }
     if opts.maxBody < 0 { opts.maxBody = 0 }
-    let st = PoolState{opts: opts, hosts: newMap(), nextId: 0, dials: 0, reuses: 0, retries: 0}
+    let none = url.Url{scheme: "", host: "", port: 0, path: "", query: "", hasQuery: false, fragment: "", hasFragment: false}
+    let st = PoolState{opts: opts, lastText: "", last: none, hosts: newMap(), nextId: 0, dials: 0, reuses: 0, retries: 0}
     return Client{sh: task.shared(st), pid: os.pid()}
 }
 
@@ -540,6 +576,13 @@ fn (s: &Stream) read(b: mut &[byte], w: Where): Result[int, io.IoError] {
     }
 }
 
+fn (s: &Stream) write(data: &[byte], w: Where): Result[Unit, io.IoError] {
+    match s {
+        Stream.Tcp(c) { return c.write(data, w) }
+        Stream.Gone { return Err(io.ioError(EBADF, "write", "")) }
+    }
+}
+
 fn (s: &Stream) writeStr(data: str, w: Where): Result[Unit, io.IoError] {
     match s {
         Stream.Tcp(c) { return c.writeStr(data, w) }
@@ -571,9 +614,10 @@ type Conn = value record {
     w: int
     idleSince: int         // monotonic ns when it went idle
     idleUntil: int         // monotonic ns after which it is not reused
+    check: bool            // idle long enough to be checked before reuse
 }
 
-fn gone(): Conn { return Conn{s: Stream.Gone, buf: [], r: 0, w: 0, idleSince: 0, idleUntil: 0} }
+fn gone(): Conn { return Conn{s: Stream.Gone, buf: [], r: 0, w: 0, idleSince: 0, idleUntil: 0, check: false} }
 
 fn (c: &Conn) isGone(): bool {
     match c.s {
@@ -582,17 +626,17 @@ fn (c: &Conn) isGone(): bool {
     }
 }
 
-fn dialConn(u: &url.Url, w: Where): Result[Conn, Error] {
-    if u.scheme == "https" { return Err(err(Kind.Tls, "https is not supported yet (plain http only)", u.toStr())) }
+fn dialConn(u: &url.Url, us: str, w: Where): Result[Conn, Error] {
+    if u.scheme == "https" { return Err(err(Kind.Tls, "https is not supported yet (plain http only)", us)) }
     let nc = match net.dial(u.hostPort(), w) {
         Ok(x) { x }
-        Err(e) { return Err(ioErr(e, true, u.toStr())) }
+        Err(e) { return Err(ioErr(e, true, us)) }
     }
     match nc.setNoDelay(true) {
         Ok(_) {}
-        Err(e) { return Err(ioErr(e, true, u.toStr())) }
+        Err(e) { return Err(ioErr(e, true, us)) }
     }
-    return Ok(Conn{s: Stream.Tcp(nc), buf: array(BUF, byte(0)), r: 0, w: 0, idleSince: 0, idleUntil: 0})
+    return Ok(Conn{s: Stream.Tcp(nc), buf: array(BUF, byte(0)), r: 0, w: 0, idleSince: 0, idleUntil: 0, check: false})
 }
 
 // Makes room after buf[w] for more input: moves the unread bytes to the
@@ -708,7 +752,6 @@ fn acquire(sh: &task.Shared[PoolState], key: str, u: str, w: Where): Result[Opti
     var got: Option[Conn] = None
     var wait: Option[task.Future[Option[Conn]]] = None
     var id = 0
-    let now = time.monotonicNs()
     sh.with(fn(st: mut &PoolState) {
         let max = st.opts.maxPerHost
         id = st.nextId
@@ -717,21 +760,31 @@ fn acquire(sh: &task.Shared[PoolState], key: str, u: str, w: Where): Result[Opti
         var reused = false
         {
             let h = st.hosts.atMut(key)
-            // the oldest idle connections whose time is up are closed
-            while len(h.idle) > 0 && h.idle[0].idleUntil <= now {
-                for j in 0..len(h.idle) - 1 { swap(mut &h.idle, j, j + 1) }
-                let old = pop(mut &h.idle)
-                h.open -= 1
-            }
             if len(h.idle) > 0 {
-                got = Some(pop(mut &h.idle))
-                reused = true
-            } else if h.open < max {
-                h.open += 1
-            } else {
-                let task.Handoff{promise: pr, future: f} = task.promise[Option[Conn]]()
-                append(mut &h.waiters, Waiter{id: id, p: pr})
-                wait = Some(f)
+                // the oldest idle connections whose time is up are closed
+                let now = time.monotonicNs()
+                var k = 0
+                while k < len(h.idle) && h.idle[k].idleUntil <= now { k += 1 }
+                if k > 0 {
+                    for j in 0..len(h.idle) - k { swap(mut &h.idle, j, j + k) }
+                    for j in 0..k { let old = pop(mut &h.idle) }
+                    h.open -= k
+                }
+                if len(h.idle) > 0 {
+                    var c = pop(mut &h.idle)
+                    c.check = now - c.idleSince > CHECK_IDLE_NS
+                    got = Some(c)
+                    reused = true
+                }
+            }
+            if !reused {
+                if h.open < max {
+                    h.open += 1
+                } else {
+                    let task.Handoff{promise: pr, future: f} = task.promise[Option[Conn]]()
+                    append(mut &h.waiters, Waiter{id: id, p: pr})
+                    wait = Some(f)
+                }
             }
         }
         if reused { st.reuses += 1 }
@@ -825,11 +878,12 @@ pub type Response = record {
     pub minor: int                // 1 for HTTP/1.1, 0 for HTTP/1.0
     pub headers: Headers
     pub url: url.Url              // the URL that answered (after redirects)
+    us: str                       // url as text, for errors
     conn: Conn
     sh: task.Shared[PoolState]
     key: str                      // the pool's key for the connection's server
-    held: bool                    // a place in the pool is held (conn, or one being opened)
     framing: int
+    length: int                   // Content-Length, or -1
     left: int                     // F_LENGTH: bytes to come; chunked: of the current chunk
     chunk: int                    // chunked: C_SIZE, C_DATA or C_CRLF
     done: bool                    // the body has been read to the end
@@ -848,29 +902,27 @@ pub fn (r: &Response) header(name: str): Option[str] { return r.headers.get(name
 
 // The length the server announced (Content-Length), or -1: chunked, until
 // the connection closes, or no body.
-pub fn (r: &Response) contentLength(): int { return if r.framing == F_LENGTH { r.left } else { -1 } }
+pub fn (r: &Response) contentLength(): int { return r.length }
 
 fn (r: mut &Response) drop() {
-    if r.held {
-        if !r.done && r.framing == F_LENGTH && r.conn.w - r.conn.r >= r.left {
-            r.conn.r += r.left              // the rest of the body is here already: it counts as read
-            r.left = 0
-            r.done = true
-        }
-        let c = replace(mut &r.conn, gone())
-        if r.done && r.keep && c.r == c.w && !c.isGone() {
-            var k = c
-            let now = time.monotonicNs()
-            k.r = 0
-            k.w = 0
-            k.idleSince = now
-            var ms = r.idleMs
-            if r.keepMs >= 0 && r.keepMs < ms { ms = r.keepMs }
-            k.idleUntil = now + ms * 1000000
-            release(&r.sh, r.key, Some(k))
-        } else {
-            release(&r.sh, r.key, None)
-        }
+    if !r.done && r.framing == F_LENGTH && r.conn.w - r.conn.r >= r.left {
+        r.conn.r += r.left              // the rest of the body is here already: it counts as read
+        r.left = 0
+        r.done = true
+    }
+    let c = replace(mut &r.conn, gone())
+    if r.done && r.keep && c.r == c.w && !c.isGone() {
+        var k = c
+        let now = time.monotonicNs()
+        k.r = 0
+        k.w = 0
+        k.idleSince = now
+        var ms = r.idleMs
+        if r.keepMs >= 0 && r.keepMs < ms { ms = r.keepMs }
+        k.idleUntil = now + ms * 1000000
+        release(&r.sh, r.key, Some(k))
+    } else {
+        release(&r.sh, r.key, None)
     }
 }
 
@@ -893,12 +945,12 @@ pub fn (r: mut &Response) read(buf: mut &[byte], w: Where): Result[int, Error] {
     if r.done || len(buf) == 0 { return Ok(0) }
     let ms = r.msLeft()
     if ms < 0 { return r.readBody(buf, w) }
-    if ms == 0 { return Err(err(Kind.Timeout, "deadline passed (read)", r.url.toStr())) }
+    if ms == 0 { return Err(err(Kind.Timeout, "deadline passed (read)", r.us)) }
     return task.within(ms, fn(): Result[int, Error] { return r.readBody(buf, w) })
 }
 
 fn (r: mut &Response) readBody(buf: mut &[byte], w: Where): Result[int, Error] {
-    let u = r.url.toStr()
+    let u = r.us
     if r.framing == F_LENGTH {
         let want = min(len(buf), r.left)
         let n = match r.conn.take(mut &buf[0..want], w) {
@@ -1044,13 +1096,13 @@ pub fn (var r: Response) discard(limit: int, w: Where): Result[Unit, Error] {
         let n = try r.read(mut &buf, w)
         if n == 0 { break }
         total += n
-        if total > limit { return Err(err(Kind.TooLarge, "a body over " + intToStr(limit) + " bytes", r.url.toStr())) }
+        if total > limit { return Err(err(Kind.TooLarge, "a body over " + intToStr(limit) + " bytes", r.us)) }
     }
     return Ok(Unit{})
 }
 
 fn (r: mut &Response) readAll(w: Where): Result[str, Error] {
-    let u = r.url.toStr()
+    let u = r.us
     if r.done { return Ok("") }
     if r.framing == F_LENGTH {
         if r.left > r.maxBody { return Err(err(Kind.TooLarge, "a body of " + intToStr(r.left) + " bytes, over maxBody", u)) }
@@ -1088,20 +1140,28 @@ fn (r: mut &Response) readAll(w: Where): Result[str, Error] {
 
 // ---------------------------------------------------------------- one exchange
 
-// The request's head and body, checked and written out.
+// The request's head (with the body when it is small) as bytes, and the
+// body when it is not.
 type Wire = record {
     method: str
-    head: str
+    head: []byte
     body: str
 }
 
-// Writes the request and reads the reply's head into r (status, headers,
-// framing), skipping interim 1xx replies.
-fn (r: mut &Response) roundTrip(wire: &Wire, first: bool, w: Where): Result[Unit, Fail] {
-    let u = r.url.toStr()
-    let sent = if len(wire.body) <= SMALL_BODY { r.conn.s.writeStr(wire.head + wire.body, w) } else {
-        match r.conn.s.writeStr(wire.head, w) {
-            Ok(_) { r.conn.s.writeStr(wire.body, w) }
+// A reply's status line and headers.
+type Head = record {
+    status: int
+    reason: str
+    minor: int
+    headers: Headers
+}
+
+// Writes the request and reads the reply's head, skipping interim 1xx
+// replies. first: the connection was kept from an earlier request.
+fn (c: mut &Conn) roundTrip(wire: &Wire, first: bool, u: str, w: Where): Result[Head, Fail] {
+    let sent = if len(wire.body) == 0 { c.s.write(&wire.head, w) } else {
+        match c.s.write(&wire.head, w) {
+            Ok(_) { c.s.writeStr(wire.body, w) }
             Err(e) { Err(e) }
         }
     }
@@ -1110,13 +1170,12 @@ fn (r: mut &Response) roundTrip(wire: &Wire, first: bool, w: Where): Result[Unit
         Err(e) { return Err(Fail{e: ioErr(e, false, u), stale: first && (e.errno == EPIPE || e.errno == ECONNRESET)}) }
     }
     var interim = 0
-    var head = ""
     while true {
-        head = try r.conn.readHead(u, first && interim == 0, w)
+        let head = try c.readHead(u, first && interim == 0, w)
         var e = 0
         while e < len(head) && head[e] != '\r' && head[e] != '\n' { e += 1 }
         let st = match parseStatus(head[..e]) {
-            Ok(s) { s }
+            Ok(x) { x }
             Err(m) { return Err(failed(err(Kind.Protocol, m, u))) }
         }
         var h = newHeaders()
@@ -1126,131 +1185,141 @@ fn (r: mut &Response) roundTrip(wire: &Wire, first: bool, w: Where): Result[Unit
                 Err(m) { return Err(failed(err(Kind.Protocol, m, u))) }
             }
         }
-        if st.code >= 200 {
-            r.status = st.code
-            r.reason = st.reason
-            r.minor = st.minor
-            r.headers = h
-            break
-        }
+        if st.code >= 200 { return Ok(Head{status: st.code, reason: st.reason, minor: st.minor, headers: h}) }
         if st.code == 101 { return Err(failed(err(Kind.Protocol, "101 Switching Protocols, which was not asked for", u))) }
         interim += 1
         if interim > MAX_INTERIM { return Err(failed(err(Kind.Protocol, "more than 8 interim (1xx) replies", u))) }
     }
-    match r.frame(wire.method) {
-        Ok(_) {}
-        Err(m) { return Err(failed(err(Kind.Protocol, m, u))) }
-    }
-    return Ok(Unit{})
+    return Err(failed(err(Kind.Protocol, "unreachable", u)))
 }
 
-// The body's framing (RFC 9112 section 6.3) and whether the connection is
-// kept after it.
-fn (r: mut &Response) frame(method: str): Result[Unit, str] {
-    let cl = try contentLength(&r.headers)
-    let te = r.headers.values("Transfer-Encoding")
-    let closing = r.headers.hasToken("Connection", "close")
-    r.keep = !closing && (r.minor == 1 || r.headers.hasToken("Connection", "keep-alive"))
-    if method == "HEAD" || r.status == 204 || r.status == 304 {
-        r.framing = F_EMPTY
-        r.done = true
-        r.keepAlive()
-        return Ok(Unit{})
+// How a reply's body is framed (RFC 9112 section 6.3), and whether the
+// connection is kept after it.
+type Framing = value record {
+    framing: int
+    length: int           // Content-Length, or -1
+    keep: bool
+    keepMs: int           // Keep-Alive: timeout, in ms, or -1
+}
+
+fn framingOf(h: &Head, method: str): Result[Framing, str] {
+    let cl = try contentLength(&h.headers)
+    var te = ""                       // the Transfer-Encoding lines, joined by ", "
+    var tes = 0
+    var closing = false
+    var keepAsked = false
+    var keepMs = -1
+    for x in h.headers.list {
+        let n = len(x.name)
+        if n == 17 && equalFold(x.name, "Transfer-Encoding") {
+            te = if tes == 0 { x.value } else { te + ", " + x.value }
+            tes += 1
+        } else if n == 10 && equalFold(x.name, "Connection") {
+            if hasTokenIn(x.value, "close") { closing = true }
+            if hasTokenIn(x.value, "keep-alive") { keepAsked = true }
+        } else if n == 10 && equalFold(x.name, "Keep-Alive") {
+            let t = keepAliveMs(x.value)
+            if t >= 0 { keepMs = t }
+        }
     }
-    if len(te) > 0 {
+    let keep = !closing && (h.minor == 1 || keepAsked)
+    if method == "HEAD" || h.status == 204 || h.status == 304 {
+        return Ok(Framing{framing: F_EMPTY, length: cl, keep: keep, keepMs: keepMs})
+    }
+    if tes > 0 {
         if cl >= 0 { return Err("both Content-Length and Transfer-Encoding") }
-        if r.minor == 0 { return Err("Transfer-Encoding in an HTTP/1.0 reply") }
-        var codings: []str = []
-        for v in te {
-            for t in split(v, ',') { append(mut &codings, trimOws(t)) }
-        }
-        if len(codings) != 1 || !equalFold(codings[0], "chunked") {
-            return Err("an unsupported transfer coding: " + te[0])
-        }
-        r.framing = F_CHUNKED
-        r.chunk = C_SIZE
-    } else if cl >= 0 {
-        r.framing = F_LENGTH
-        r.left = cl
-        if cl == 0 { r.done = true }
-    } else {
-        r.framing = F_CLOSE
-        r.keep = false
+        if h.minor == 0 { return Err("Transfer-Encoding in an HTTP/1.0 reply") }
+        if !equalFold(trimOws(te), "chunked") { return Err("an unsupported transfer coding: " + te) }
+        return Ok(Framing{framing: F_CHUNKED, length: -1, keep: keep, keepMs: keepMs})
     }
-    r.keepAlive()
-    return Ok(Unit{})
+    if cl >= 0 { return Ok(Framing{framing: F_LENGTH, length: cl, keep: keep, keepMs: keepMs}) }
+    return Ok(Framing{framing: F_CLOSE, length: -1, keep: false, keepMs: keepMs})
 }
 
 // Keep-Alive: timeout=N: the server closes the connection after N seconds
-// idle, so it is not reused after N - 1.
-fn (r: mut &Response) keepAlive() {
-    match r.headers.get("Keep-Alive") {
-        Some(v) {
-            for part in split(v, ',') {
-                let p = trimOws(part)
-                if len(p) > 8 && equalFold(p[..8], "timeout=") {
-                    match parseInt(trimOws(p[8..])) {
-                        Some(n) { if n >= 0 && n < 100000000 { r.keepMs = if n >= 1 { (n - 1) * 1000 } else { 0 } } }
-                        None {}
-                    }
-                }
+// idle, so it is not reused after N - 1; -1 when the header has no timeout.
+fn keepAliveMs(v: str): int {
+    for part in split(v, ',') {
+        let p = trimOws(part)
+        if len(p) > 8 && equalFold(p[..8], "timeout=") {
+            match parseInt(trimOws(p[8..])) {
+                Some(n) { if n >= 0 && n < 100000000 { return if n >= 1 { (n - 1) * 1000 } else { 0 } } }
+                None {}
             }
         }
-        None {}
+    }
+    return -1
+}
+
+// A new connection for a place held in the pool; on an error the place is
+// given back.
+fn dialHeld(c: &Client, key: str, u: &url.Url, us: str, w: Where): Result[Conn, Error] {
+    match dialConn(u, us, w) {
+        Ok(x) { return Ok(x) }
+        Err(e) {
+            release(&c.sh, key, None)
+            return Err(e)
+        }
     }
 }
 
 // One request on one connection of the pool, sent once more on a new
 // connection when a kept-alive one turns out closed before any of the reply
-// came, if the method is idempotent.
-fn exchange(c: &Client, opts: &Options, u: &url.Url, wire: &Wire, deadline: int, w: Where): Result[Response, Error] {
-    let key = u.origin()
-    let us = u.toStr()
-    var r = Response{status: 0, reason: "", minor: 1, headers: newHeaders(), url: u, conn: gone(), sh: c.sh, key: key,
-                     held: false, framing: F_EMPTY, left: 0, chunk: C_SIZE, done: false, keep: false, keepMs: -1,
-                     maxBody: opts.maxBody, idleMs: opts.idleTimeoutMs, deadline: deadline}
-    var reused = false
-    match try acquire(&c.sh, key, us, w) {
-        Some(conn) {
-            r.conn = conn
-            reused = true
-        }
-        None {}
-    }
-    r.held = true
-    if reused && time.monotonicNs() - r.conn.idleSince > CHECK_IDLE_NS && !r.conn.s.quiet() {
-        r.conn = gone()                  // closed by the server meanwhile (or it sent something): a new one
-        reused = false
+// came, if the method is idempotent. The place in the pool that acquire
+// gives is the Response's; on an error it is given back here.
+fn exchange(c: &Client, opts: &Options, u: &url.Url, us: str, key: str, wire: &Wire, deadline: int, w: Where): Result[Response, Error] {
+    let got = try acquire(&c.sh, key, us, w)
+    var reused = got.isSome()
+    var conn = match move(got) {
+        Some(x) { x }
+        None { try dialHeld(c, key, u, us, w) }
     }
     if !reused {
-        r.conn = try dialConn(u, w)
+        count(&c.sh, true)
+    } else if conn.check && !conn.s.quiet() {
+        reused = false                   // closed by the server meanwhile (or it sent something): a new one
+        conn = try dialHeld(c, key, u, us, w)
         count(&c.sh, true)
     }
-    match r.roundTrip(wire, reused, w) {
-        Ok(_) { return Ok(r) }
-        Err(f) {
-            if !(f.stale && reused && idempotent(wire.method)) { return Err(f.e) }
+    var first = conn.roundTrip(wire, reused, us, w)
+    if first.isErr() {
+        let f = first.unwrapErr()
+        if !(f.stale && reused && idempotent(wire.method)) {
+            release(&c.sh, key, None)
+            return Err(f.e)
+        }
+        conn = try dialHeld(c, key, u, us, w)
+        count(&c.sh, true)
+        count(&c.sh, false)
+        first = conn.roundTrip(wire, false, us, w)
+        if first.isErr() {
+            release(&c.sh, key, None)
+            return Err(first.unwrapErr().e)
         }
     }
-    r.conn = gone()
-    r.conn = try dialConn(u, w)
-    count(&c.sh, true)
-    count(&c.sh, false)
-    match r.roundTrip(wire, false, w) {
-        Ok(_) { return Ok(r) }
-        Err(f) { return Err(f.e) }
+    let head = first.unwrap()
+    let framed = framingOf(&head, wire.method)
+    if framed.isErr() {
+        release(&c.sh, key, None)
+        return Err(err(Kind.Protocol, framed.unwrapErr(), us))
     }
+    let fr = framed.unwrap()
+    let done = fr.framing == F_EMPTY || (fr.framing == F_LENGTH && fr.length == 0)
+    let Head{status: status, reason: reason, minor: minor, headers: headers} = move(head)
+    return Ok(Response{status: status, reason: reason, minor: minor, headers: headers, url: u, us: us, conn: conn, sh: c.sh,
+                       key: key, framing: fr.framing, length: fr.length, left: if fr.framing == F_LENGTH { fr.length } else { 0 },
+                       chunk: C_SIZE, done: done, keep: fr.keep, keepMs: fr.keepMs, maxBody: opts.maxBody,
+                       idleMs: opts.idleTimeoutMs, deadline: deadline})
 }
 
 // The wire form of a request to u: its head (request line, Host,
-// User-Agent, the request's headers, Content-Length) and body.
-fn wireOf(method: str, u: &url.Url, h: &Headers, body: str, ua: str): Result[Wire, Error] {
-    let us = u.toStr()
+// User-Agent, the request's headers, Content-Length), and its body, in the
+// same bytes when it is small. auth: u.authority().
+fn wireOf(method: str, u: &url.Url, us: str, auth: str, h: &Headers, body: str, ua: str): Result[Wire, Error] {
     if !isToken(method) { return Err(err(Kind.Invalid, "an invalid method '" + method + "'", us)) }
     var hasHost = false
     var hasUa = false
     var hasLen = false
-    var s = method + " " + u.target() + " HTTP/1.1\r\n"
     for x in h.list {
         if !isToken(x.name) { return Err(err(Kind.Invalid, "an invalid header name '" + x.name + "'", us)) }
         if !isFieldValue(x.value) { return Err(err(Kind.Invalid, "a control character in the header " + x.name, us)) }
@@ -1264,11 +1333,61 @@ fn wireOf(method: str, u: &url.Url, h: &Headers, body: str, ua: str): Result[Wir
             hasLen = true
         }
     }
-    if !hasHost { s = s + "Host: " + u.authority() + "\r\n" }
-    if !hasUa && len(ua) > 0 { s = s + "User-Agent: " + ua + "\r\n" }
-    for x in h.list { s = s + x.name + ": " + x.value + "\r\n" }
-    if !hasLen && (len(body) > 0 || bodyMethod(method)) { s = s + "Content-Length: " + intToStr(len(body)) + "\r\n" }
-    return Ok(Wire{method: method, head: s + "\r\n", body: body})
+    let path = if len(u.path) == 0 { "/" } else { u.path }
+    let withUa = !hasUa && len(ua) > 0
+    let clen = if !hasLen && (len(body) > 0 || bodyMethod(method)) { intToStr(len(body)) } else { "" }
+    let inline = len(body) <= SMALL_BODY
+    var n = len(method) + 1 + len(path) + 11
+    if u.hasQuery { n += 1 + len(u.query) }
+    if !hasHost { n += 8 + len(auth) }
+    if withUa { n += 14 + len(ua) }
+    for x in h.list { n += len(x.name) + len(x.value) + 4 }
+    if len(clen) > 0 { n += 18 + len(clen) }
+    n += 2
+    if inline { n += len(body) }
+    var b = array(n, byte(0))
+    var at = 0
+    at = putStr(mut &b, at, method)
+    at = putStr(mut &b, at, " ")
+    at = putStr(mut &b, at, path)
+    if u.hasQuery {
+        at = putStr(mut &b, at, "?")
+        at = putStr(mut &b, at, u.query)
+    }
+    at = putStr(mut &b, at, " HTTP/1.1\r\n")
+    if !hasHost {
+        at = putStr(mut &b, at, "Host: ")
+        at = putStr(mut &b, at, auth)
+        at = putStr(mut &b, at, "\r\n")
+    }
+    if withUa {
+        at = putStr(mut &b, at, "User-Agent: ")
+        at = putStr(mut &b, at, ua)
+        at = putStr(mut &b, at, "\r\n")
+    }
+    for x in h.list {
+        at = putStr(mut &b, at, x.name)
+        at = putStr(mut &b, at, ": ")
+        at = putStr(mut &b, at, x.value)
+        at = putStr(mut &b, at, "\r\n")
+    }
+    if len(clen) > 0 {
+        at = putStr(mut &b, at, "Content-Length: ")
+        at = putStr(mut &b, at, clen)
+        at = putStr(mut &b, at, "\r\n")
+    }
+    at = putStr(mut &b, at, "\r\n")
+    if inline {
+        at = putStr(mut &b, at, body)
+        return Ok(Wire{method: method, head: b, body: ""})
+    }
+    return Ok(Wire{method: method, head: b, body: body})
+}
+
+// Copies the bytes of s into b from at; where they end.
+fn putStr(b: mut &[byte], at: int, s: str): int {
+    for i in 0..len(s) { b[at + i] = s[i] }
+    return at + len(s)
 }
 
 // ---------------------------------------------------------------- sending
@@ -1285,14 +1404,33 @@ pub fn (c: &Client) send(rq: &Request, w: Where): Result[Response, Error] {
     if os.pid() != c.pid {
         return Err(err(Kind.Process, "a client used in another process than the one that made it (make one per worker)", rq.url))
     }
-    let u = match url.parse(rq.url) {
-        Ok(x) { x }
-        Err(e) { return Err(err(Kind.Url, e.msg, rq.url)) }
+    var opts = defaults()
+    var cached: Option[url.Url] = None
+    c.sh.with(fn(st: mut &PoolState) {
+        opts = st.opts
+        if len(st.lastText) > 0 && st.lastText == rq.url { cached = Some(st.last) }
+    })
+    let u = match cached {
+        Some(x) { x }
+        None { try c.parseUrl(rq.url) }
     }
-    let opts = c.options()
     if opts.timeoutMs <= 0 { return c.follow(&opts, rq, u, 0, w) }
     let deadline = time.monotonicNs() + opts.timeoutMs * 1000000
     return task.within(opts.timeoutMs, fn(): Result[Response, Error] { return c.follow(&opts, rq, u, deadline, w) })
+}
+
+// The request's URL parsed, and kept as the client's last one.
+fn (c: &Client) parseUrl(text: str): Result[url.Url, Error] {
+    match url.parse(text) {
+        Ok(x) {
+            c.sh.with(fn(st: mut &PoolState) {
+                st.lastText = text
+                st.last = x
+            })
+            return Ok(x)
+        }
+        Err(e) { return Err(err(Kind.Url, e.msg, text)) }
+    }
 }
 
 fn isRedirect(s: int): bool { return s == 301 || s == 302 || s == 303 || s == 307 || s == 308 }
@@ -1300,48 +1438,54 @@ fn isRedirect(s: int): bool { return s == 301 || s == 302 || s == 303 || s == 30
 fn (c: &Client) follow(opts: &Options, rq: &Request, first: url.Url, deadline: int, w: Where): Result[Response, Error] {
     var method = rq.method
     var body = rq.body
-    var h = rq.headers.copy()
+    var h = newHeaders()              // the request's headers as redirects change them (after the first hop)
     var u = first
+    var us = rq.url
     var hops = 0
     while true {
-        let wire = try wireOf(method, &u, &h, body, opts.userAgent)
-        let r = try exchange(c, opts, &u, &wire, deadline, w)
+        let auth = u.authority()
+        let wire = if hops == 0 { try wireOf(method, &u, us, auth, &rq.headers, body, opts.userAgent) } else {
+            try wireOf(method, &u, us, auth, &h, body, opts.userAgent)
+        }
+        let r = try exchange(c, opts, &u, us, u.scheme + "://" + auth, &wire, deadline, w)
         if !opts.redirects || !isRedirect(r.status) { return Ok(r) }
         let loc = match r.headers.get("Location") {
             Some(l) { l }
             None { return Ok(r) }
         }
         if hops >= opts.maxRedirects {
-            return Err(err(Kind.Redirects, "more than " + intToStr(opts.maxRedirects) + " redirects", u.toStr()))
+            return Err(err(Kind.Redirects, "more than " + intToStr(opts.maxRedirects) + " redirects", us))
         }
         var next = match u.resolve(loc) {
             Ok(x) { x }
-            Err(e) { return Err(err(Kind.Protocol, "a redirect to a bad URL: " + e.toStr(), u.toStr())) }
+            Err(e) { return Err(err(Kind.Protocol, "a redirect to a bad URL: " + e.toStr(), us)) }
         }
         if !next.hasFragment && u.hasFragment {
             next.fragment = u.fragment
             next.hasFragment = true
         }
         if u.scheme == "https" && next.scheme == "http" && !opts.allowHttpsToHttp {
-            return Err(err(Kind.Redirects, "a redirect from https to http: " + next.toStr(), u.toStr()))
+            return Err(err(Kind.Redirects, "a redirect from https to http: " + next.toStr(), us))
         }
+        if hops == 0 { h = rq.headers.copy() }
         if r.status == 303 && method != "HEAD" || (r.status == 301 || r.status == 302) && method == "POST" {
             method = "GET"
             body = ""
             h.remove("Content-Length")
             h.remove("Content-Type")
         }
-        if next.origin() != u.origin() {
+        if next.scheme != u.scheme || next.host != u.host || next.port != u.port {
             h.remove("Authorization")
             h.remove("Cookie")
             h.remove("Proxy-Authorization")
             h.remove("Host")
         }
         let d = r.discard(DRAIN, w)      // read so its connection is reused; an error only closes it
+        us = next.toStr()
         u = next
         hops += 1
     }
-    return Err(err(Kind.Redirects, "unreachable", u.toStr()))
+    return Err(err(Kind.Redirects, "unreachable", us))
 }
 
 // GET u.

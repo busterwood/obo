@@ -14,7 +14,7 @@
 // expect: CL empty: protocol: an invalid Content-Length
 // expect: CL huge: protocol: an invalid Content-Length
 // expect: TE gzip: protocol: an unsupported transfer coding: gzip, chunked
-// expect: TE twice: protocol: an unsupported transfer coding: chunked
+// expect: TE twice: protocol: an unsupported transfer coding: chunked, chunked
 // expect: TE identity: protocol: an unsupported transfer coding: identity
 // expect: TE in 1.0: protocol: Transfer-Encoding in an HTTP/1.0 reply
 // expect: folded: protocol: a header line folded onto the next (obs-fold)

@@ -100,7 +100,7 @@ fn checkPart(s: str, what: str, extra: str, input: str): Result[Unit, Error] {
             i += 3
             continue
         }
-        if !isUnreserved(c) && !isSubDelim(c) && c != ':' && c != '@' && indexOf(extra, strFromBytes(&[c]), 0) < 0 {
+        if !isUnreserved(c) && !isSubDelim(c) && c != ':' && c != '@' && c != '/' && !(c == '?' && len(extra) > 1) {
             return fail("invalid character " + show(c) + " in the " + what, input)
         }
         i += 1
@@ -159,6 +159,23 @@ fn components(s: str): Parts {
     return p
 }
 
+// s in lower case (ASCII); s itself when it has no capital letter.
+fn lower(s: str): str {
+    var caps = false
+    for i in 0..len(s) {
+        if s[i] >= 'A' && s[i] <= 'Z' {
+            caps = true
+            break
+        }
+    }
+    if !caps { return s }
+    var b = strToBytes(s)
+    for i in 0..len(b) {
+        if b[i] >= 'A' && b[i] <= 'Z' { b[i] += byte(32) }
+    }
+    return strFromBytes(&b)
+}
+
 // The host part of an authority, checked and normalized.
 fn checkHost(h: str, input: str): Result[str, Error] {
     if len(h) == 0 { return fail("empty host", input) }
@@ -171,37 +188,31 @@ fn checkHost(h: str, input: str): Result[str, Error] {
             None { return fail("invalid IPv6 address", input) }
         }
     }
-    var b = newStrBuf()
     for i in 0..len(h) {
         let c = h[i]
         if c >= byte(0x80) { return fail("a host that is not ASCII (IDNA is not supported)", input) }
         if c == '%' { return fail("a percent-encoded host is not supported", input) }
-        if c >= 'A' && c <= 'Z' {
-            b.addByte(c + byte(32))
-        } else if isAlpha(c) || isDigit(c) || c == '-' || c == '.' || c == '_' {
-            b.addByte(c)
-        } else {
+        if !(isAlpha(c) || isDigit(c) || c == '-' || c == '.' || c == '_') {
             return fail("invalid character " + show(c) + " in the host", input)
         }
     }
-    let host = b.toStr()
+    let host = lower(h)
     let name = if host[len(host) - 1] == '.' { host[..len(host) - 1] } else { host }
     if len(name) == 0 || len(name) > 253 { return fail("invalid host name", input) }
     var start = 0
-    var last = ""
+    var last = 0                      // where the last label starts
     for i in 0..len(name) + 1 {
         if i == len(name) || name[i] == '.' {
-            let label = name[start..i]
-            if len(label) == 0 || len(label) > 63 { return fail("invalid host name", input) }
-            last = label
+            if i == start || i - start > 63 { return fail("invalid host name", input) }
+            last = start
             start = i + 1
         }
     }
     var numeric = true
-    for i in 0..len(last) {
-        if !isDigit(last[i]) { numeric = false }
+    for i in last..len(name) {
+        if !isDigit(name[i]) { numeric = false }
     }
-    if numeric || (len(last) > 1 && last[0] == '0' && last[1] == 'x') {
+    if numeric || (len(name) - last > 1 && name[last] == '0' && name[last + 1] == 'x') {
         if host != name || !dottedQuad(name) { return fail("invalid IPv4 address", input) }
     }
     return Ok(host)
@@ -209,32 +220,36 @@ fn checkHost(h: str, input: str): Result[str, Error] {
 
 // "a.b.c.d", each 0 to 255 in decimal without leading zeros.
 fn dottedQuad(s: str): bool {
-    let parts = split(s, '.')
-    if len(parts) != 4 { return false }
-    for p in parts {
-        if len(p) == 0 || len(p) > 3 || (len(p) > 1 && p[0] == '0') { return false }
-        var v = 0
-        for i in 0..len(p) {
-            if !isDigit(p[i]) { return false }
-            v = v * 10 + int(p[i] - '0')
+    var parts = 0
+    var start = 0
+    for i in 0..len(s) + 1 {
+        if i == len(s) || s[i] == '.' {
+            let n = i - start
+            if n == 0 || n > 3 || (n > 1 && s[start] == '0') { return false }
+            var v = 0
+            for k in start..i {
+                if !isDigit(s[k]) { return false }
+                v = v * 10 + int(s[k] - '0')
+            }
+            if v > 255 { return false }
+            parts += 1
+            start = i + 1
         }
-        if v > 255 { return false }
     }
-    return true
+    return parts == 4
 }
 
 
 
 // The URL of checked parts (with a scheme and an authority).
 fn build(p: &Parts, input: str): Result[Url, Error] {
-    var scheme = ""
     for i in 0..len(p.scheme) {
         let c = p.scheme[i]
         if !(isAlpha(c) || (i > 0 && (isDigit(c) || c == '+' || c == '-' || c == '.'))) {
             return fail("invalid scheme", input)
         }
-        scheme = scheme + strFromBytes(&[if c >= 'A' && c <= 'Z' { c + byte(32) } else { c }])
     }
+    let scheme = lower(p.scheme)
     if defaultPort(scheme) == 0 { return fail("unsupported scheme '" + scheme + "' (http and https only)", input) }
     if !p.hasAuthority { return fail("no authority (\"//host\") after the scheme", input) }
     let a = p.authority
