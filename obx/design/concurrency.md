@@ -17,8 +17,12 @@ Future work: after the self-hosted compiler (stage 4) and the native backend
   error later**, when the compiler has effect summaries (SPEC 13). Not a lock:
   a lock held across a park brings back deadlocks and latency.
 
-The other questions of section 8 are still open, with the recommendations
-given there.
+- **Q1, Q3 to Q8 as recommended** (section 8): processes are the only way to
+  use several cores for now; every task is started from a scope; scheduling
+  is cooperative with `task.yield()`, yield checks later as an IR pass if
+  needed; a panic stops the worker; threads (C3) are deferred; blocking C
+  calls are marked `blocking` on the extern; C1a starts after the `ir` and
+  `perf2` branches merge and the docs pass.
 
 Related: obo's [systems-threads-design.md](../../archive/obo/design/systems-threads-design.md)
 reached a similar verdict for obo 0.12: one reactor per process first, then
@@ -434,8 +438,8 @@ neither parks. No locks and no server task.
 
 ## 8. Open questions
 
-Decided 2026-11-03: Q2 (futures, section 0) and Q9 (trap now). The
-recommendations below are not yet decided.
+All decided 2026-11-03 (section 0): Q2 and Q9 as written below, the others
+as recommended.
 
 1. Are processes acceptable as the only way to use several cores for the
    foreseeable future (C2), giving up a shared in-process cache?
