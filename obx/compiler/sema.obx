@@ -233,6 +233,7 @@ pub type Module = value record {
     pub fname: str
     pub cprefix: str
     pub isStd: bool
+    pub isLib: bool          // loaded from a library root (std and bare imports): may use the library intrinsics
     pub ast: sx.Ast
     pub importNames: []str   // ref's imports dict: alias -> module, in order
     pub importMods: []int
@@ -283,6 +284,7 @@ pub type Program = record {
     wraps: []Wrap
     pub gwrap: str           // check's global initializers: "the initializer of global G must be constant: "
     pub std: int
+    pub shared: int          // the TypeDecl of task.Shared (a lang item, SPEC 15), or -1
     pub main: int
 }
 
@@ -392,7 +394,7 @@ pub fn newProgram(stdPath: str, libroots: []str, mainFile: str): Program {
     var pg = Program{libroots: libroots, mainFile: mainFile, mods: [], modIndex: newMap(), types: [],
         variants: [], fns: [], consts: [], globals: [], tparams: [], tys: [], tlists: [], tindex: newMap(),
         primMethods: [], primMethodNames: [], prelude: newMap(), preludeNames: [], externs: newMap(),
-        externNames: [], pending: [], resolved: false, wraps: [], gwrap: "", std: -1, main: -1}
+        externNames: [], pending: [], resolved: false, wraps: [], gwrap: "", std: -1, shared: -1, main: -1}
     let none: []int = []
     for p in 0..len(PRIM_NAMES) { pg.intern(TK_PRIM, p, 0, false, &none) }
     pg.intern(TK_SELF, 0, 0, false, &none)
@@ -400,13 +402,13 @@ pub fn newProgram(stdPath: str, libroots: []str, mainFile: str): Program {
         append(mut &pg.primMethods, newMap())
         append(mut &pg.primMethodNames, [])
     }
-    pg.std = pg.load(stdPath, &[], "std", true)
+    pg.std = pg.load(stdPath, &[], "std", true, true)
     return pg
 }
 
 // The main module: ref's prog.main = prog.load(path, None, name).
 pub fn (pg: mut &Program) loadMain(path: str) {
-    pg.main = pg.load(path, &[], stripExt(baseName(path)), false)
+    pg.main = pg.load(path, &[], stripExt(baseName(path)), false, false)
 }
 
 // ---- type table
@@ -671,7 +673,7 @@ pub fn (pg: &Program) has(m: int, n: int, flag: int): bool { return pg.mods[m].a
 
 // ---------------------------------------------------------------- loading
 
-fn (pg: mut &Program) load(path0: str, chain0: &[]str, name: str, isStd: bool): int {
+fn (pg: mut &Program) load(path0: str, chain0: &[]str, name: str, isStd: bool, isLib: bool): int {
     let path = absPath(path0)
     let known = pg.modIndex.getOr(&path, -1)
     if known >= 0 { return known }
@@ -695,8 +697,8 @@ fn (pg: mut &Program) load(path0: str, chain0: &[]str, name: str, isStd: bool): 
         n += 1
         cp = bs + intToStr(n)
     }
-    append(mut &pg.mods, Module{path: path, name: name, fname: fname, cprefix: cp, isStd: isStd, ast: ast,
-        importNames: [], importMods: [], scope: newMap(), scopeNames: [], fns: [], loading: true})
+    append(mut &pg.mods, Module{path: path, name: name, fname: fname, cprefix: cp, isStd: isStd, isLib: isLib,
+        ast: ast, importNames: [], importMods: [], scope: newMap(), scopeNames: [], fns: [], loading: true})
     let m = len(pg.mods) - 1
     pg.modIndex.put(path, m)
     let imps = pg.mods[m].ast.imports
@@ -721,7 +723,8 @@ fn (pg: mut &Program) load(path0: str, chain0: &[]str, name: str, isStd: bool): 
             }
             pg.err(m, imp.line, "import cycle: " + names)
         }
-        let sub = pg.load(target, &chain, baseName(imp.s), false)
+        let lib = !startsWith(imp.s, "./") && !startsWith(imp.s, "../")
+        let sub = pg.load(target, &chain, baseName(imp.s), false, lib)
         let alias = if len(imp.t) == 0 { baseName(imp.s) } else { imp.t }
         for a in pg.mods[m].importNames {
             if a == alias { pg.err(m, imp.line, "module name " + alias + " is imported twice") }
@@ -810,6 +813,11 @@ fn (pg: mut &Program) collect(m: int) {
                     cname: cp + "_" + n.s})
                 let d = len(pg.types) - 1
                 pg.add(m, n.s, Sym{k: D_TYPE, i: d}, n.line)
+                // SPEC 15: task.Shared, a value record { p: ptr }, is a counted handle
+                if pg.mods[m].isLib && pg.mods[m].name == "task" && n.s == "Shared" && n.b == sx.F_RECORD &&
+                    pg.types[d].value {
+                    pg.shared = d
+                }
                 if n.b == sx.F_CLOSED {
                     for i in 0..pg.count(m, n.c) {
                         let vn = pg.item(m, n.c, i)

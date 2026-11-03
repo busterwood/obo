@@ -1,0 +1,121 @@
+// The costs of lib/task (design/concurrency.md, section 7): ns per operation.
+// Not part of bench.py (obo has no tasks): run it with both backends,
+//     obx/compiler/out/obxc obx/bench/tasks.obx -o t && ./t
+//     obx/compiler/out/obxc --native obx/bench/tasks.obx -o tn && ./tn
+// and take the best of a few runs. Each figure is the time of a loop divided
+// by its count; the loops' own overhead is included (a few ns).
+import "task"
+import "time"
+
+const N = 1000000
+const BATCH = 50
+
+fn spin(n: int): int {
+    for i in 0..n { task.yield().unwrap() }
+    return n
+}
+
+fn nop(n: int): int { return n }
+
+fn report(name: str, ns: int, n: int) {
+    let tenths = ns * 10 / n
+    println(name + ": " + intToStr(tenths / 10) + "." + intToStr(tenths % 10) + " ns")
+}
+
+// a task switch: two tasks yield to each other
+fn switches() {
+    let t0 = time.monotonicNs()
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(spin, N)
+        let b = s.start(spin, N)
+        let r = a.wait().unwrap() + b.wait().unwrap()
+    })
+    report("task switch (yield)", time.monotonicNs() - t0, 2 * N)
+}
+
+// start with a stack from the free list: batches of starts, run between them
+fn starts() {
+    var ns = 0
+    task.scope(fn(s: mut &task.Scope) {
+        for k in 0..N / BATCH {
+            var fs: []task.Future[int] = []
+            let t0 = time.monotonicNs()
+            for i in 0..BATCH { append(mut &fs, s.start(nop, i)) }
+            ns += time.monotonicNs() - t0
+            let r = task.all(fs).unwrap()
+        }
+    })
+    report("start (reused stack)", ns, N)
+}
+
+// start then wait: the wait parks, the task runs and ends, the waiter resumes
+fn startWait() {
+    let t0 = time.monotonicNs()
+    task.scope(fn(s: mut &task.Scope) {
+        for i in 0..N {
+            let f = s.start(nop, i)
+            let r = f.wait().unwrap()
+        }
+    })
+    report("start + wait that parks (round trip)", time.monotonicNs() - t0, N)
+}
+
+// a wait that does not park (the task has finished)
+fn readyWait() {
+    var ns = 0
+    task.scope(fn(s: mut &task.Scope) {
+        for k in 0..N / BATCH {
+            var fs: []task.Future[int] = []
+            for i in 0..BATCH { append(mut &fs, s.start(nop, i)) }
+            task.yield().unwrap()
+            let t0 = time.monotonicNs()
+            while len(fs) > 0 {
+                let f = pop(mut &fs)
+                let r = f.wait().unwrap()
+            }
+            ns += time.monotonicNs() - t0
+        }
+    })
+    report("wait, finished task", ns, N)
+}
+
+fn completes() {
+    var ns = 0
+    for k in 0..N / BATCH {
+        var ps: []task.Promise[int] = []
+        var fs: []task.Future[int] = []
+        for i in 0..BATCH {
+            let task.Pair{promise: p, future: f} = task.promise[int]()
+            append(mut &ps, p)
+            append(mut &fs, f)
+        }
+        let t0 = time.monotonicNs()
+        var i = 0
+        while len(ps) > 0 {
+            let p = pop(mut &ps)
+            p.complete(i)
+            i += 1
+        }
+        ns += time.monotonicNs() - t0
+        let r = task.all(fs).unwrap()
+    }
+    report("promise complete", ns, N)
+}
+
+fn withs() {
+    let sh = task.shared(0)
+    let t0 = time.monotonicNs()
+    for i in 0..N { sh.with(fn(x: mut &int) { x += 1 }) }
+    let dt = time.monotonicNs() - t0
+    sh.with(fn(x: mut &int) { assert(x == N) })
+    report("Shared.with", dt, N)
+}
+
+fn main() {
+    switches()
+    starts()
+    startWait()
+    readyWait()
+    completes()
+    withs()
+}

@@ -127,7 +127,16 @@ Observable behaviour is that of rt.h:
 - stack overflow: an alternate signal stack and a `SIGSEGV` handler
   installed with `rt_sigaction` (with `SA_RESTORER` and a restorer that calls
   `rt_sigreturn`); a fault within the stack limit (+1 MiB) of the stack top
-  prints `obx: stack overflow` and exits 4;
+  prints `obx: stack overflow` and exits 4, and so does a fault in the
+  guard page of the running task's stack;
+- tasks (`lib/task`, SPEC 16): the same code as rt.h's, without the ASan
+  annotations. `rt_ctx_swap` (top-level asm) saves the callee-saved
+  registers, the MXCSR and x87 control words and `rsp`; stacks are 256 KiB
+  `mmap`s with a `PROT_NONE` guard page below (syscalls 9, 10, 11), 64 kept
+  for reuse; the drop-action stack and the C string copies are switched per
+  task. The code generator's stack probes (frames over 2 KiB, page by page)
+  make a task's guard page as safe as the main stack's guard gap. In a
+  dynamically linked program a task may call C code on its 256 KiB stack;
 - args and environment from the initial stack (`rt_n_start`).
 
 The heap is the runtime's own: size classes (16-byte steps to 128, then

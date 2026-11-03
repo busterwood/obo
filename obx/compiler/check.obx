@@ -441,7 +441,7 @@ pub fn isPod(pg: mut &sema.Program, memo: mut &[]int, t: int): bool {
         r = true
     } else if k == sema.TK_INST {
         let d = pg.ta(t)
-        if pg.types[d].value && pg.types[d].drop < 0 {
+        if pg.types[d].value && pg.types[d].drop < 0 && d != pg.shared {     // Shared: a counted handle
             r = true
             let fts = pg.fieldTypes(t)
             for ft in fts {
@@ -4188,6 +4188,9 @@ fn (c: mut &Checker) xCall(e: int, exp: int): Val {
             c.cutPending(mark)
             return r
         }
+        if (fname == "intoPtr" || fname == "fromPtr") && c.pg.mods[c.cx.mod].isLib && c.pg.lookup(c.cx.mod, fname).k < 0 {
+            return c.rawPtr(fname, e, exp)
+        }
         let ii = intrinsic(fname)
         if ii >= 0 && c.pg.lookup(c.cx.mod, fname).k < 0 {
             let sig = c.intrSig(ii)
@@ -4256,6 +4259,29 @@ fn (c: mut &Checker) xCall(e: int, exp: int): Val {
         c.err(n.line, c.declName(st) + " is not a function")
     }
     return c.callValue(c.expr(f, -1), e, exp)
+}
+
+// The library intrinsics (SPEC 11): intoPtr(r) gives up the boxed record r as its pointer, and
+// fromPtr(p), whose expected type R is a boxed record type, takes ownership of the R at p. They
+// are unchecked, like an extern call, and exist only in modules loaded from a library root
+// (lib/task keeps a task's argument and result, and a Shared value, in runtime structures).
+fn (c: mut &Checker) rawPtr(name: str, e: int, exp: int): Val {
+    c.nargs(e, 1)
+    let line = c.line(e)
+    if name == "intoPtr" {
+        let v = c.expr(c.arg(e, 0), -1)
+        if c.pg.tk(v.t) != sema.TK_INST || c.pg.types[c.pg.ta(v.t)].value {
+            c.err(line, "intoPtr needs a boxed record or closed type, not " + c.tstr(v.t))
+        }
+        let cc = c.consume(v, line)
+        return rv(c.x.pcast(c.ct("void*"), cc), sema.T_PTR)
+    }
+    if exp < 0 || c.pg.tk(exp) != sema.TK_INST || c.pg.types[c.pg.ta(exp)].value {
+        c.err(line, "fromPtr needs a boxed record or closed type as its expected type (let r: R = fromPtr(p))")
+    }
+    let p = c.rd(c.expr(c.arg(e, 0), sema.T_PTR))
+    if p.t != sema.T_PTR { c.err(line, "fromPtr needs a ptr, not " + c.tstr(p.t)) }
+    return c.holdtmp(c.x.pcast(c.T(exp), p.c), exp)
 }
 
 fn (c: mut &Checker) allTypeish(l: int): bool {

@@ -1,8 +1,9 @@
 # Concurrency for obx
 
 Status: research note, 2026-11-02; first decisions 2026-11-03 (section 0).
-Future work: after the self-hosted compiler (stage 4) and the native backend
-(stage 5), both done. Nothing here changes SPEC.md draft 1 yet.
+Stage C1a is done (2026-11-03): `lib/task.obx`, the runtime in `rt.h` and
+`native/rt.c`, SPEC 16; the measured costs replace the estimates in
+section 5. C1b (epoll, `net`, timers) and C1c (the helper pool) are next.
 
 ## 0. Decisions
 
@@ -271,10 +272,33 @@ Channels are not built in. If a streaming program needs one (a producer and
 a consumer with backpressure), `Chan[T]` is library code: a bounded queue in
 a `Shared`, with promises for the tasks waiting on it.
 
-Estimated costs, to be replaced by benchmarks: `start` with a reused stack
-50–150 ns (a fresh `mmap` 2,000–5,000 ns, first use only); `wait` that parks
-and resumes 10–30 ns; a task switch 3–10 ns; `complete` 3–8 ns; `with` 2–5
-ns; `task.all` about 10 ns per future.
+Measured costs (`obx/bench/tasks.obx`, best of 5, WSL2, gcc 13 -O2 for the C
+backend, 2026-11-03), in ns per operation, each including its obx wrapper
+(the `Result` it returns, the boxing of argument and result):
+
+| operation | C backend | native |
+|---|---:|---:|
+| task switch (`task.yield()` between two tasks) | 6.4 | 17.7 |
+| `start` with a stack from the free list | 35 | 26 |
+| `start`, then a `wait` that parks: the task runs and ends, the waiter resumes | 86 | 71 |
+| `wait` on a finished task (no park) | 21 | 21 |
+| promise `complete` | 11 | 16 |
+| `Shared.with` (a closure adding 1) | 2.6 | 5.2 |
+
+The switch itself (`rt_ctx_swap`) is 22 instructions; the native backend's
+switch figure is mostly its unoptimized `yield().unwrap()` wrapper. A fresh
+stack is an `mmap` and an `mprotect` (first use only; 64 stacks are kept
+for reuse).
+
+C1a as built (`lib/task.obx`; SPEC 16). Deviations from the plan above:
+`task.promise` returns a `task.Pair[T]` record (obx has no tuples);
+`task.scoped[R]` is `scope` for a function with a result (no "no result"
+type argument); the error type is `task.Cancelled`, a closed type with the
+variants `Cancelled` and `Abandoned` (written `Cancelled.Abandoned`); the
+exit 13 and 14 messages say `at runtime`, not a source line, since the
+runtime does not know the caller's line; `start` has no stack-size
+argument; `both` and `forEach` are not built (they need borrows into tasks).
+A deadlock is exit 14.
 
 Library (`task`, `net`, `time`):
 

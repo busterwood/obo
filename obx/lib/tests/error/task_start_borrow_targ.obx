@@ -1,0 +1,12 @@
+// task: a borrow cannot be start's argument type even when written out.
+// error: borrow type cannot be a type argument
+import "task"
+
+fn total(xs: &[]int): int { return len(xs) }
+
+fn main() {
+    let zedlist = [1, 2, 3]
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start[&[]int, int](total, &zedlist)
+    })
+}

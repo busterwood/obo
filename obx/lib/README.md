@@ -34,6 +34,7 @@ for leaks.
 | `ffi.obx` | 140 | C memory for modules that call C: owned `Mem` (alloc, cstr, copyBytes), unchecked peek/poke/bytes |
 | `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
 | `postgres.obx` | 370 | PostgreSQL through libpq: Conn, Rows |
+| `task.obx` | 220 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation |
 
 ### std (prelude)
 
@@ -188,6 +189,41 @@ built-in `nullPtr()`; arrays and slices of integers, `float` and `ptr` can
 be passed to C directly (`&[]T`, `mut &[]T` extern parameters), as postgres
 does for `PQexecParams`'s types and values.
 
+### task
+
+Concurrent tasks on one thread (SPEC 16; design/concurrency.md, stage
+C1a): stackful coroutines, scheduled cooperatively, no I/O yet (C1b adds
+sockets and timers).
+
+- `scope(f: &fn(mut &Scope))` runs `f` with a new scope and returns when
+  every task started on it has finished; `scoped[R](f: &fn(mut &Scope): R):
+  R` is the same for an `f` with a result.
+- `s.start[A, T](f: fn(A): T, arg: A): Future[T]` (on `s: mut &Scope`)
+  starts `f(arg)`. `f` is a plain function value and `arg` is moved in.
+- `Future[T]` (owned): `wait(): Result[T, Cancelled]` consumes it and parks
+  until the task has finished. Dropped without waiting, it cancels its task.
+- `all[T](fs: []Future[T]): Result[[]T, Cancelled]` waits for each in
+  order; on an error the rest are dropped (cancelled).
+  `any[T](fs: []Future[T]): Result[T, Cancelled]` gives the first result,
+  cancels the others and waits until they have finished (`fs` must not be
+  empty).
+- `promise[T](): Pair[T]`: `Pair { promise: Promise[T]; future: Future[T] }`
+  (obx has no tuples: `let task.Pair{promise: p, future: f} =
+  task.promise[int]()`). `p.complete(v: T)` consumes the promise and never
+  parks; a promise dropped without it makes `wait` give
+  `Err(Cancelled.Abandoned)`.
+- `yield(): Result[Unit, Cancelled]` lets the other runnable tasks run;
+  `cancelled(): bool` tells whether the running task has been cancelled.
+- `Cancelled` is `value closed { Cancelled; Abandoned }` (`eq`, `toStr`).
+- `shared[T](v: T): Shared[T]`: a counted copy handle (a lang item, SPEC 15);
+  `sh.with(f: &fn(mut &T))` is the only access. Parking inside `with`, or a
+  `with` on a value whose `with` is open, is exit 13. If every task is
+  parked the program stops with exit 14 (deadlock).
+
+`both` and `forEach` (concurrent children that borrow the parent's locals)
+are not there yet: a task's function is a plain `fn`, and passing borrows
+into a task needs the checker's help (design/concurrency.md, section 5).
+
 ### sqldialect, sqlite, postgres
 
 Database adapters over the C client libraries (a program that imports one is
@@ -234,7 +270,9 @@ before any call; bytes travel as a blob (SQLite) or bytea hex (PostgreSQL).
 Intrinsics: `strByte`, `strSlice`, `strFromBytes`, `strToBytes`, `intToStr`,
 `i128ToStr`, `u128ToStr`, `u64ToStr`, `floatToStr`, `parseFloat`, `writeFd`,
 `readFile`, `args`, `getenv`, `strFromC`, and the built-ins `isNull`, `exit`,
-`panic`. No new intrinsic was added.
+`panic`. `task` also uses the library-only intrinsics `intoPtr` and
+`fromPtr` (SPEC 15), to keep a task's argument and result and a `Shared`
+value in the runtime's structures.
 
 C functions through `extern "c"`: libm (`sqrt cbrt pow exp log log2 log10 sin
 cos tan asin acos atan atan2 sinh cosh tanh floor ceil trunc round rint fabs
@@ -258,6 +296,13 @@ errno, a static buffer):
 | `obxlib_peek(p, i)`, `obxlib_poke(p, i, b)` | read or write byte `i` of C memory; for `ffi` |
 | `obxlib_peek_i32`, `obxlib_poke_i32`, `obxlib_peek_ptr`, `obxlib_poke_ptr` | element `i` of a C `int32_t[]` or `void*[]`; for `ffi` |
 | `obxlib_copy_in(dst, at, src, n)`, `obxlib_copy_out(dst, src, at, n)` | `memcpy` between C memory and an obx byte array; for `ffi` |
+| `obxlib_task_scope_open()`, `obxlib_task_scope_close(s)` | open a scope; park until its tasks have finished; for `task` |
+| `obxlib_task_start(s, run, job, resdrop)` | a task on a stack from the free list that runs `run(job)`; for `task` |
+| `obxlib_task_wait(t)`, `obxlib_task_wait_any(ts, n)`, `obxlib_task_take(t)` | park until done (0), cancelled (1) or abandoned (2); the first done of n; the result box |
+| `obxlib_task_forget(t)`, `obxlib_task_join(t)` | a dropped future (cancel, drop the result when there is one); cancel and park until finished |
+| `obxlib_task_yield()`, `obxlib_task_cancelled()` | yield to the run queue; whether the running task is cancelled |
+| `obxlib_task_promise(resdrop)`, `obxlib_task_complete(t, r)`, `obxlib_task_abandon(t)` | promises |
+| `obxlib_sh_new(box, drop)`, `obxlib_sh_enter(s)`, `obxlib_sh_leave(s, box)` | a `Shared` block; lend its box to `with` (exit 13 when already lent) and take it back |
 
 The `obxlib_` helpers are not `obx_` names because the compiler lets
 externs name only the `obx_` helpers it knows (sema's `cHelper`); any other

@@ -1,0 +1,13 @@
+// task: a Future is owned, not copy: one place waits for it.
+// error: zedf
+import "task"
+
+fn sq(x: int): int { return x * x }
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let zedf = s.start(sq, 3)
+        let g = zedf
+        let r = zedf.wait()
+    })
+}

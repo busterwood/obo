@@ -1,0 +1,20 @@
+// task: a task that parks inside Shared.with stops the program (exit 13),
+// even when the wait would not have parked.
+// exit: 13
+// expect: inside
+import "task"
+
+fn sq(x: int): int { return x * x }
+
+fn main() {
+    let sh = task.shared(1)
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(sq, 3)
+        sh.with(fn(x: mut &int) {
+            println("inside")
+            let r = task.yield()
+            println("not reached")
+        })
+        let r = f.wait()
+    })
+}

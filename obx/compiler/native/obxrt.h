@@ -30,6 +30,10 @@ void rt_drun(rt_dfn f, void* p);
 void rt_free_act(void* p);
 void rt_ddefer(rt_dfn f, void* p, size_t n);
 
+/* the handle of lib/task's Shared[T] (its dup and drop glue) */
+void rt_sh_dup(void* p);
+void rt_sh_drop(void* p);
+
 /* strings */
 obx_str rt_str_new(int64_t len);
 obx_str rt_str_of(const char* p, int64_t len);

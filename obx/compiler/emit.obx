@@ -481,6 +481,7 @@ fn (e: mut &Emitter) direct(t: int): []int {
         append(mut &out, e.callS("rt_arr_free", [e.nm("v")]))
         return out
     }
+    if e.c.pg.ta(t) == e.c.pg.shared { return [e.callS("rt_sh_drop", [e.c.x.dot(e.nm("v"), "f_p")])] }
     let boxed = !e.c.pg.types[e.c.pg.ta(t)].value
     var r = e.cases(t, e.nm("v"), if boxed { "->" } else { "." }, CM_DIRECT, boxed)
     if boxed { append(mut &r.ls, e.callS("rt_free", [e.nm("v")])) }
@@ -594,7 +595,9 @@ fn (e: mut &Emitter) makeGlue(kind: int, t: int) {
     let d = e.c.pg.ta(t)
     let env = e.c.pg.declEnv(t)
     var body: []int = []
-    if e.c.pg.types[d].form == sx.F_RECORD {
+    if d == e.c.pg.shared {
+        append(mut &body, e.callS("rt_sh_dup", [e.c.x.dot(e.nm("v"), "f_p")]))
+    } else if e.c.pg.types[d].form == sx.F_RECORD {
         for i in 0..len(e.c.pg.types[d].fields) {
             let f = e.c.pg.types[d].fields[i]
             let ft = e.c.pg.subst(f.ty, &env)

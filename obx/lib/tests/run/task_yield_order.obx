@@ -1,0 +1,59 @@
+// task: the run queue is first in, first out; yield puts the running task at
+// its end; a task started inside a task joins the queue behind the others.
+// expect: a0
+// expect: b0
+// expect: c0
+// expect: a1
+// expect: b1
+// expect: c1
+// expect: a2
+// expect: inner
+// expect: c2
+// expect: inner done
+// expect: b2
+// expect: done 3 7 3
+// expect: main alone: ok
+import "task"
+
+fn step(name: str): int {
+    for i in 0..3 {
+        println(name + intToStr(i))
+        task.yield().unwrap()
+    }
+    return 3
+}
+
+fn withInner(name: str): int {
+    println(name + "0")
+    task.yield().unwrap()
+    println(name + "1")
+    let r = task.scoped(fn(s: mut &task.Scope): int {
+        let f = s.start(inner, 4)
+        task.yield().unwrap()
+        return f.wait().unwrap()
+    })
+    println(name + "2")
+    return r + 3
+}
+
+fn inner(n: int): int {
+    println("inner")
+    task.yield().unwrap()
+    task.yield().unwrap()
+    println("inner done")
+    return n
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(step, "a")
+        let b = s.start(withInner, "b")
+        let c = s.start(step, "c")
+        let x = a.wait().unwrap()
+        let y = b.wait().unwrap()
+        let z = c.wait().unwrap()
+        println("done " + intToStr(x) + " " + intToStr(y) + " " + intToStr(z))
+    })
+    // with no other task, yield returns at once
+    if task.yield().isOk() && !task.cancelled() { println("main alone: ok") }
+}

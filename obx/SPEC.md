@@ -807,7 +807,8 @@ String and runtime intrinsics used by `std` (`strByte`, `strSlice`,
 `strFromBytes`, `strToBytes`, `intToStr`, `floatToStr`, `parseFloat`,
 `writeFd`, `readFile`, `args`, `getenv`) are built-ins too; they are listed
 with `std`, not here, because ordinary code calls the `std` wrappers. They are
-not reserved: a module's own declaration of the same name wins.
+not reserved: a module's own declaration of the same name wins. The two
+library-only intrinsics, `intoPtr` and `fromPtr`, are in section 15.
 
 ## 12. C interop
 
@@ -925,10 +926,76 @@ exits with:
 | 5 | with `OBX_CHECK=1`: live objects at exit (a leak) |
 | 10 | integer overflow, division by zero, bad shift count, lossy conversion |
 | 12 | `panic` or `assert` |
+| 13 | a task parked inside `Shared.with`, or a nested `with` on the same value (section 16) |
+| 14 | deadlock: every task is parked (section 16) |
+
+The runtime detects codes 13 and 14 without knowing a source line: their
+location is `runtime`, and the message names the operation (`obx: a task
+parked inside Shared.with (Future.wait) at runtime`).
 
 ## 15. Lang items
 
 The compiler knows these names from the library: `fromFraction` (section
 7.3), the variant names `Ok` and `Err` (section 7.6), and the four prelude
 variants that may be written bare (`Some`, `None`, `Ok`, `Err`, section 4.4).
-It knows no type from the library.
+It knows one type from the library: `Shared` in the library module `task`
+(section 16), declared there as `value record { p: ptr }`. A value of an
+instance of it is not plain data: copying it calls the runtime's `rt_sh_dup`
+on `p`, and dropping it `rt_sh_drop`, so that the handle is counted like a
+`str`. Everything else about tasks is library code.
+
+Two intrinsics exist only in modules loaded from a library root (`std` and
+modules imported by a bare name, not `./` or `../`); elsewhere their names
+are ordinary identifiers, and a call of them is an error. Like an extern call
+they are unchecked:
+
+| Intrinsic | Meaning |
+|---|---|
+| `intoPtr(r)` | gives up the boxed record or closed value `r` (moved) as its pointer, a `ptr` |
+| `fromPtr(p)` | takes ownership of the boxed value at `p`; its type is the expected type, a boxed record or closed type (`let c: Cell[T] = fromPtr(p)`) |
+
+`task` keeps a task's argument and result and a `Shared` value in runtime
+structures with them.
+
+## 16. Tasks
+
+The library module `task` (`lib/task.obx`; `lib/README.md` lists its API)
+runs concurrent tasks on one thread, as stackful coroutines scheduled
+cooperatively (design/concurrency.md, stage C1a). The rules the language
+relies on:
+
+- Every task is started on a `task.Scope`, and `task.scope(f)` returns only
+  when every task started on its scope has finished. `main` itself is the
+  first task; no task outlives the call that opened its scope.
+- `s.start(f, arg)` takes a plain function value `f: fn(A): T` and an owned
+  argument `arg: A`. A `&fn` (a closure) and a borrow are rejected by the
+  ordinary rules: a closure is not a `fn` value (section 4.6), and a borrow
+  type is not a type argument. So a task reaches nothing of its starter's
+  but what was moved into it, and `Shared` values.
+- A task runs until it parks: it waits for an unfinished future (`wait`,
+  `task.all`, `task.any`), calls `task.yield()`, or ends a scope with tasks
+  still running. Then the next runnable task runs, first in, first out. A
+  started task is runnable at once; it first runs when its starter parks.
+- `Future[T]` is owned (one place waits for it). Dropping it without
+  waiting cancels its task; its scope still waits for the task to finish,
+  and its result is dropped then.
+- Cancellation is cooperative. A cancelled task runs on until it next parks
+  or waits: every wait then gives `Err(Cancelled.Cancelled)` (`yield`
+  included) unless what it waits for has already finished. Cancelling a task
+  cancels the tasks of the scopes it has open, and a task started by a
+  cancelled task starts cancelled. Ending a scope is not cancellable: it
+  waits for its tasks. A task is never stopped from outside, so its drops
+  always run.
+- A `Promise[T]` dropped without `complete` makes its future's `wait` give
+  `Err(Cancelled.Abandoned)`. `complete` never parks.
+- `Shared[T]` is a copy handle to one value, which is dropped with the last
+  handle. `sh.with(f)` lends the value to `f` as `mut &T`, and is the only
+  access. No other task runs during `with`: an operation that can park,
+  called while any `with` is open, stops the program with exit 13 (the check
+  is made whether or not the call would have parked), and so does a `with`
+  on a value whose `with` is already open. `with` on different values may
+  nest.
+- A panic or any other runtime error in a task stops the program, as in
+  `main`. Stack overflow in a task is exit 4: each task has its own 256 KiB
+  stack with a guard page. If every task is parked, nothing can wake any of
+  them: the program stops with a deadlock report, exit 14.

@@ -1,0 +1,48 @@
+// task: start and wait; tasks run in start order once main parks; results of
+// several types; a future dropped without waiting; a scope with a result.
+// expect: started
+// expect: sq 3
+// expect: sq 4
+// expect: name 5
+// expect: 25
+// expect: n5
+// expect: sq 6
+// expect: sq 7
+// expect: 11
+import "task"
+
+fn sq(x: int): int {
+    println("sq " + intToStr(x))
+    return x * x
+}
+
+fn name(x: int): str {
+    println("name " + intToStr(x))
+    return "n" + intToStr(x)
+}
+
+fn words(n: int): []str {
+    var out: []str = []
+    for i in 0..n { append(mut &out, "w" + intToStr(i)) }
+    return out
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(sq, 3)
+        let b = s.start(sq, 4)
+        let c = s.start(name, 5)
+        println("started")
+        println(intToStr(a.wait().unwrap() + b.wait().unwrap()))
+        println(c.wait().unwrap())
+        let d = s.start(words, 3)    // dropped: cancelled, and still finished by the scope
+    })
+    let n = task.scoped(fn(s: mut &task.Scope): int {
+        let a = s.start(sq, 6)
+        let b = s.start(sq, 7)
+        let w = s.start(words, 2)
+        let ws = w.wait().unwrap()
+        return len(ws) + a.wait().unwrap() - b.wait().unwrap() + 22
+    })
+    println(intToStr(n))
+}

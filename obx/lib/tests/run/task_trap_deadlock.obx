@@ -1,0 +1,31 @@
+// task: when every task is parked, nothing can wake any of them: the program
+// stops with a deadlock report (exit 14). Here two tasks wait for each
+// other's promise.
+// exit: 14
+// expect: a waits
+// expect: b waits
+import "task"
+
+type Pair2 = record {
+    mine: task.Promise[int]
+    theirs: task.Future[int]
+    name: str
+}
+
+fn wait2(p: Pair2): int {
+    let Pair2{mine: m, theirs: t, name: n} = move(p)
+    println(n + " waits")
+    let v = t.wait().unwrap()
+    m.complete(v)
+    return v
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let task.Pair{promise: pa, future: fa} = task.promise[int]()
+        let task.Pair{promise: pb, future: fb} = task.promise[int]()
+        let a = s.start(wait2, Pair2{mine: pa, theirs: fb, name: "a"})
+        let b = s.start(wait2, Pair2{mine: pb, theirs: fa, name: "b"})
+        let r = a.wait()
+    })
+}

@@ -1,0 +1,216 @@
+// task: concurrent tasks on one thread (SPEC 16; design/concurrency.md, stage C1a).
+//
+// A task is a function run on its own stack. Tasks are started on a scope and
+// scheduled cooperatively: one runs at a time, until it parks (waits for a
+// future, yields, or ends a scope with tasks still running). There are no
+// threads, so a value is never touched by two tasks at once.
+//
+//     task.scope(fn(s: mut &task.Scope) {
+//         let a = s.start(fetch, 1)
+//         let b = s.start(fetch, 2)
+//         println(a.wait().unwrap() + b.wait().unwrap())
+//     })
+//
+// Every task belongs to a scope, and a scope ends only when all its tasks
+// have finished, so no task outlives the call that started it (or main).
+// A Future is owned: one place waits for it. Dropping it without waiting
+// cancels its task, and the scope still waits for that task to finish.
+//
+// Cancellation is cooperative: a cancelled task runs on until it next parks,
+// where the wait returns Err(Cancelled.Cancelled), and then unwinds with its
+// drops. Cancelling a task also cancels the tasks of the scopes it has open,
+// and a task started by a cancelled task starts cancelled.
+//
+// A Shared[T] is one value several tasks reach; with(f) is the only access.
+// No task may park inside with (exit 13), so a with block is a critical
+// section without a lock. If every task is parked, nothing can wake any of
+// them, and the program stops with exit 14 (a deadlock).
+
+extern "c" fn rtScopeOpen(): ptr as "obxlib_task_scope_open"
+extern "c" fn rtScopeClose(s: ptr) as "obxlib_task_scope_close"
+extern "c" fn rtStart(s: ptr, run: extern fn(ptr): ptr, job: ptr, resdrop: extern fn(ptr)): ptr as "obxlib_task_start"
+extern "c" fn rtWait(t: ptr): int as "obxlib_task_wait"
+extern "c" fn rtWaitAny(ts: &[]ptr, n: int): int as "obxlib_task_wait_any"
+extern "c" fn rtForget(t: ptr) as "obxlib_task_forget"
+extern "c" fn rtJoin(t: ptr) as "obxlib_task_join"
+extern "c" fn rtTake(t: ptr): ptr as "obxlib_task_take"
+extern "c" fn rtYield(): int as "obxlib_task_yield"
+extern "c" fn rtCancelled(): int as "obxlib_task_cancelled"
+extern "c" fn rtPromise(resdrop: extern fn(ptr)): ptr as "obxlib_task_promise"
+extern "c" fn rtComplete(t: ptr, res: ptr) as "obxlib_task_complete"
+extern "c" fn rtAbandon(t: ptr) as "obxlib_task_abandon"
+extern "c" fn rtShNew(box: ptr, drop: extern fn(ptr)): ptr as "obxlib_sh_new"
+extern "c" fn rtShEnter(s: ptr): ptr as "obxlib_sh_enter"
+extern "c" fn rtShLeave(s: ptr, box: ptr) as "obxlib_sh_leave"
+
+// Why a wait has no value: the waiting task was cancelled, or the future's
+// promise was dropped without being completed.
+pub type Cancelled = value closed { Cancelled; Abandoned }
+
+pub fn (c: Cancelled) eq(other: &Cancelled): bool { return c.toStr() == other.toStr() }
+
+pub fn (c: Cancelled) toStr(): str {
+    match c {
+        Cancelled.Cancelled { return "cancelled" }
+        Cancelled.Abandoned { return "abandoned" }
+    }
+}
+
+// The tasks started in one call of scope.
+pub type Scope = record { p: ptr }
+
+// The result of a task or a promise, once there is one.
+pub type Future[T] = record { t: ptr }
+
+// A future completed by hand.
+pub type Promise[T] = record { t: ptr }
+
+// promise's result: obx has no tuples.
+pub type Pair[T] = record {
+    pub promise: Promise[T]
+    pub future: Future[T]
+}
+
+// A counted handle to one value: a copy type; the value is dropped with the
+// last handle.
+pub type Shared[T] = value record { p: ptr }
+
+// What a task runs (boxed until it starts), and the box of a result or a
+// Shared value.
+type Job[A, T] = record {
+    f: fn(A): T
+    arg: A
+}
+
+type Cell[T] = record { v: T }
+
+fn run[A, T](p: ptr): ptr {
+    let j: Job[A, T] = fromPtr(p)
+    let Job{f: f, arg: a} = move(j)
+    return intoPtr(Cell[T]{v: f(a)})
+}
+
+fn dropCell[T](p: ptr) {
+    let c: Cell[T] = fromPtr(p)
+}
+
+fn unbox[T](p: ptr): T {
+    let c: Cell[T] = fromPtr(p)
+    let Cell{v: v} = move(c)
+    return v
+}
+
+// ---- scopes
+
+// Runs f with a new scope, then parks until every task started on it has
+// finished (cancelled ones included).
+pub fn scope(f: &fn(mut &Scope)) {
+    var s = Scope{p: rtScopeOpen()}
+    f(mut &s)
+    rtScopeClose(s.p)
+}
+
+// scope for an f with a result.
+pub fn scoped[R](f: &fn(mut &Scope): R): R {
+    var s = Scope{p: rtScopeOpen()}
+    let r = f(mut &s)
+    rtScopeClose(s.p)
+    return r
+}
+
+// Starts f(arg) as a task of the scope. It runs once the current task parks.
+pub fn (s: mut &Scope) start[A, T](f: fn(A): T, arg: A): Future[T] {
+    let j = Job[A, T]{f: f, arg: arg}
+    return Future[T]{t: rtStart(s.p, run[A, T], intoPtr(j), dropCell[T])}
+}
+
+// ---- futures
+
+// Parks until the task has finished, and gives its result.
+pub fn (var f: Future[T]) wait(): Result[T, Cancelled] {
+    let t = replace(mut &f.t, nullPtr())
+    let r = rtWait(t)
+    if r != 0 {
+        rtForget(t)
+        return Err(if r == 1 { Cancelled.Cancelled } else { Cancelled.Abandoned })
+    }
+    return Ok(unbox[T](rtTake(t)))
+}
+
+pub fn (f: mut &Future[T]) drop() {
+    if !isNull(f.t) { rtForget(f.t) }
+}
+
+// Waits for every future, in order; the results in the same order. On an
+// error the futures not yet waited for are dropped (their tasks cancelled).
+pub fn all[T](var fs: []Future[T]): Result[[]T, Cancelled] {
+    var out: []T = []
+    for i in 0..len(fs) {
+        let f = replace(mut &fs[i], Future[T]{t: nullPtr()})
+        match f.wait() {
+            Ok(v) { append(mut &out, v) }
+            Err(e) { return Err(e) }
+        }
+    }
+    return Ok(out)
+}
+
+// The result of the first future to finish. The other tasks are cancelled,
+// and any returns once they have finished. fs must not be empty.
+pub fn any[T](var fs: []Future[T]): Result[T, Cancelled] {
+    if len(fs) == 0 { panic("task.any: no futures") }
+    var ts: []ptr = []
+    for i in 0..len(fs) { append(mut &ts, fs[i].t) }
+    let w = rtWaitAny(&ts, len(ts))
+    for i in 0..len(fs) {
+        if i != w {
+            fs[i].t = nullPtr()
+            rtJoin(ts[i])
+        }
+    }
+    if w < 0 { return Err(Cancelled.Cancelled) }
+    let f = replace(mut &fs[w], Future[T]{t: nullPtr()})
+    return f.wait()
+}
+
+// Lets the other runnable tasks run first; Err when this task is cancelled.
+pub fn yield(): Result[Unit, Cancelled] {
+    if rtYield() != 0 { return Err(Cancelled.Cancelled) }
+    return Ok(Unit{})
+}
+
+// Whether the running task has been cancelled.
+pub fn cancelled(): bool { return rtCancelled() != 0 }
+
+// ---- promises
+
+// A promise and the future it completes.
+pub fn promise[T](): Pair[T] {
+    let t = rtPromise(dropCell[T])
+    return Pair[T]{promise: Promise[T]{t: t}, future: Future[T]{t: t}}
+}
+
+// Completes the future with v (never parks).
+pub fn (var p: Promise[T]) complete(v: T) {
+    let t = replace(mut &p.t, nullPtr())
+    rtComplete(t, intoPtr(Cell[T]{v: v}))
+}
+
+// A promise dropped without complete: its future's wait gives Err(Cancelled.Abandoned).
+pub fn (p: mut &Promise[T]) drop() {
+    if !isNull(p.t) { rtAbandon(p.t) }
+}
+
+// ---- shared values
+
+pub fn shared[T](v: T): Shared[T] {
+    return Shared[T]{p: rtShNew(intoPtr(Cell[T]{v: v}), dropCell[T])}
+}
+
+// Runs f on the value. f must not park (exit 13), and a with on the same
+// value inside f stops the program (exit 13).
+pub fn (s: &Shared[T]) with(f: &fn(mut &T)) {
+    var c: Cell[T] = fromPtr(rtShEnter(s.p))
+    f(mut &c.v)
+    rtShLeave(s.p, intoPtr(c))
+}

@@ -1,0 +1,22 @@
+// task: too deep a recursion inside a task hits its stack's guard page: a
+// stack overflow (exit 4), as on the main stack.
+// exit: 4
+// expect: deep
+import "task"
+
+fn down(n: int): int {
+    if n == 0 { return 0 }
+    return down(n - 1) + 1
+}
+
+fn deep(n: int): int {
+    println("deep")
+    return down(n)
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(deep, 100000000)
+        let r = f.wait()
+    })
+}
