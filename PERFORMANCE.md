@@ -176,28 +176,32 @@ The cost of the concurrency primitives (`lib/task.obx`, `lib/net.obx`, SPEC
 
 | operation | via C | native |
 |---|---:|---:|
-| task switch (`task.yield`) | 6.5 | 12.8 |
-| start a task (stack reused) | 36 | 26 |
-| start plus a wait that parks (round trip) | 95 | 78 |
-| the same inside `task.within` (a timer set and removed) | 108 | 339 |
-| wait on a finished task | 23 | 19 |
-| promise complete | 11 | 16 |
+| task switch (`task.yield`) | 6.5 | 12.5 |
+| start a task (stack reused) | 36 | 21 |
+| start plus a wait that parks (round trip) | 95 | 75 |
+| the same inside `task.within` (a timer set and removed) | 108 | 90 |
+| wait on a finished task | 23 | 14 |
+| promise complete | 11 | 11 |
 | `Shared.with` | 3.4 | 6.4 |
-| a `task.sleep(1)` that fires, beyond a yield | 46–153 | 131–321 |
-| a socket read that finds data (no park) | 699 | 683 |
-| a one-byte round trip between two tasks over loopback TCP | 193,000 | 171,000 |
+| a `task.sleep(1)` that fires, beyond a yield | 46–153 | 37–74 |
+| a socket read that finds data (no park) | 699 | 692 |
+| a one-byte round trip between two tasks over loopback TCP | 193,000 | 183,000 |
 
 The task operations are far below a system call. The event loop added about
 6 ns to a native park (the deadline and timer checks) and nothing measurable
-to C's. The native runtime has no vDSO (it is static and makes raw system
-calls), so the `clock_gettime` behind every timer is a real system call of
-about 250 ns: native timers cost that much more. The `sleep` row is noisy:
-the 1 ms sleep's overshoot is divided among 10,000 tasks. The round trip is
+to C's. The native runtime reads the clock through the vDSO, as libc does
+(design/native.md, section 2): about 18 ns a read, against 240 ns for the
+`clock_gettime` system call it made until 2026-11-03, when the timed wait
+was 339 ns natively; the batched rows (start, wait on a finished task,
+promise complete) also lost the two system calls per 50 operations of the
+benchmark's own clock reads, 4 to 5 ns each. The `sleep` row is noisy:
+the 1 ms sleep's overshoot is divided among 10,000 tasks (natively from
+−220 to 286 over 9 runs, C from −105 to 134). The round trip is
 this machine's loopback: a Python ping-pong over loopback TCP takes
 190,000 ns with two blocking threads and 205,000 ns with epoll on one
 thread. The native switch is slower than C's because it goes through more
 of the generic task code; the fifth pass's inlining took it from 17.6 to
-12.8 ns, and it has not been tuned otherwise.
+12.8 ns (12.5 to 14.5 from run to run), and it has not been tuned otherwise.
 
 ## HTTP server
 

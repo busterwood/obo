@@ -139,7 +139,23 @@ Observable behaviour is that of rt.h:
   task. The code generator's stack probes (frames over 2 KiB, page by page)
   make a task's guard page as safe as the main stack's guard gap. In a
   dynamically linked program a task may call C code on its 256 KiB stack;
-- args and environment from the initial stack (`rt_n_start`).
+- args and environment from the initial stack (`rt_n_start`);
+- the clock through the vDSO: `rt_init` finds it from the auxiliary vector
+  (`AT_SYSINFO_EHDR`, after the environment on the initial stack, which
+  `main`'s `argv` points into in a static and a dynamically linked program
+  alike), checks it is a 64-bit x86-64 ELF, reads its dynamic symbols
+  (`DT_HASH`, or `DT_GNU_HASH` without it; `DT_VERSYM`/`DT_VERDEF`) and
+  keeps `__vdso_clock_gettime` of version `LINUX_2.6` if a first call
+  succeeds. Every clock read (`time`, `obx_clock_ns` for lib/time, the event
+  loop's timers and deadlines) goes through `rt_clock`: the vDSO function if
+  found, else the `clock_gettime` system call (228). Any surprise (no vDSO,
+  as with `vdso=0`; another ELF; a symbol or version missing; a failing first
+  call) leaves the system call; `OBX_NO_VDSO=1` forces it (for tests; the C
+  runtime ignores it). The vDSO code is plain SysV ABI code: it realigns the
+  stack itself, uses under 64 bytes of it (also on a task's 256 KiB stack)
+  and makes no system call unless the kernel's clocksource cannot be read
+  from user space, where it makes the same one. A read costs about 18 ns
+  against 240 for the system call (WSL2, clocksource `tsc`).
 
 The heap is the runtime's own: size classes (16-byte steps to 128, then
 +25% steps to 64 KiB) carved from 1 MiB `mmap` chunks with one free list per
@@ -601,6 +617,19 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
+
+2026-11-03, the clock through the vDSO (branch `vdso`, section 2): the
+native runtime reads `clock_gettime` through the vDSO, with the system call
+as fallback (`OBX_NO_VDSO=1`). `time.monotonicNs()` in a tight loop: 242 ns
+before, 18 ns after (C: 19 ns). `bench/tasks.obx`, best of 3, native: a wait
+that parks with a deadline 339 to 90 ns (C 109); the batched rows were
+paying two clock reads per 50 operations, so start 26.7 to 21.5, wait on a
+finished task 19.3 to 13.8, promise complete 16.2 to 11.1; the switch
+unchanged (the same cycles; `rt_expired` is kept in line and `rt_mono` out
+of line, so a path without a deadline has no call: with both left to gcc, a
+yield took 5 more instructions). bench.py unchanged (best of 11). Test:
+`lib/tests/run/time_clock.obx` (monotonic, 50 ms sleeps, `date` and an
+`OBX_NO_VDSO=1` child agree).
 
 2026-11-03, the sixth performance step (branch `perf6`, section 4: loops
 rotated and aligned, `loops.obx`: array headers out of loops, checks proved
@@ -1521,3 +1550,5 @@ Phases:
 - Performance, sixth step: loops rotated and aligned, array headers out of
   loops, bounds and overflow checks proved, stored elements forwarded
   (`loops.obx`). Done (sections 4 and 8).
+- The clock through the vDSO (no system call per timer). Done (sections 2
+  and 8).
