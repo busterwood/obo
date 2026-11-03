@@ -488,7 +488,9 @@ Then:
 
 `OBX_NATIVE_MAP=file obxc --native ...` writes the address, size and name of
 every generated function (the format of perf's `/tmp/perf-PID.map`), for
-profiling and disassembly.
+profiling and disassembly. `OBX_NATIVE_IR=file obxc --native ...` writes the
+IR the native backend would compile, after `opt.obx` and `loops.obx`, printed
+as C (for reading: which checks remain, what was hoisted), and builds nothing.
 
 ## 5. ELF layout
 

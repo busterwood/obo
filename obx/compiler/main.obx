@@ -300,7 +300,17 @@ fn buildNative(p: ir.Ir, libs: &[]str, src: str, out: str, isRun: bool, rest: &[
         }
     }
     var symMap = ""
-    let img = x64gen.buildMap(loops.optimize(opt.optimize(p)), dl, mut &symMap)
+    let q = loops.optimize(opt.optimize(p))
+    let irFile = os.envOr("OBX_NATIVE_IR", "")
+    if irFile != "" {
+        // the IR the native backend would compile, printed as C (for reading; nothing is built)
+        match io.write(irFile, cgen.print(q, "")) {
+            Ok(u) {}
+            Err(e) { sx.failText("obxc: cannot write " + irFile + ": " + e.toStr()) }
+        }
+        return 0
+    }
+    let img = x64gen.buildMap(q, dl, mut &symMap)
     let mapFile = os.envOr("OBX_NATIVE_MAP", "")
     if mapFile != "" {
         match io.write(mapFile, symMap) {
