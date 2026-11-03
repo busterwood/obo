@@ -1,9 +1,13 @@
 # Example: an HTTP server that queries PostgreSQL
 
 `cmd/httpd.obx` is a small HTTP/1.1 server on one thread with one task per
-connection (or several worker processes: [Several cores](#several-cores)). Given a pool size, it answers `GET /db` with a query through a
-pool of PostgreSQL connections. The whole server is under 300 lines, and
-the database part is about 20 of them. The rest is in
+connection (or several worker processes: [Several cores](#several-cores)).
+Given a pool size, it answers `GET /db` with a query through a pool of
+PostgreSQL connections. The whole program is about 230 lines, and the
+database part is about 20 of them. The HTTP side is the server library,
+[`lib/httpserver.obx`](../lib/httpserver.obx) (the router, the request
+parsing and its limits, the graceful stop; see
+[../design/http-server.md](../design/http-server.md)). The rest is in
 [`lib/postgres.obx`](../lib/postgres.obx) (the pool and the non-blocking
 queries) and the task runtime (`lib/task.obx`, `lib/net.obx`; see
 [../design/concurrency.md](../design/concurrency.md)).
@@ -47,24 +51,37 @@ let db: Option[postgres.Pool] =
     if size > 0 { Some(postgres.newPool(os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres"), size)) } else { None }
 ```
 
-**The route.**
+**The route.** Every handler gets the application value (here `App`, which
+holds the pool), the request and the response. The router sends `GET /db`
+to this one:
 
 ```obx
-if rq.path == "/db" {
-    match db {
+fn db(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    match app.db {
         Some(pool) {
-            match query(&pool, n) {
-                Ok(v) { return Reply{status: "200 OK", body: "db " + intToStr(v) + "\n", close: false} }
-                Err(e) { return Reply{status: "503 Service Unavailable", body: e.toStr() + "\n", close: false} }
+            match query(&pool, rq.serverStats().requests) {
+                Ok(v) { return w.text("db " + intToStr(v) + "\n") }
+                Err(e) {
+                    w.status(503)
+                    return w.text(e.toStr() + "\n")
+                }
             }
         }
-        None { return Reply{status: "503 Service Unavailable", body: "no database\n", close: false} }
+        None {
+            w.status(503)
+            return w.text("no database\n")
+        }
     }
 }
 ```
 
-**The query.** `n` is the request's number, so the answer is the request
-count plus one.
+```obx
+var r = http.router[App]()
+r.handle("GET /db", db)
+```
+
+**The query.** Its argument is the server's request count, so the answer is
+that count plus one.
 
 ```obx
 // One query on a connection of the pool, given back when the lease drops.
@@ -81,16 +98,13 @@ make it concurrent.
 
 ## What happens on one `GET /db`
 
-**1. A task for the connection.** The accept loop starts one task per
-connection:
-
-```obx
-s.spawn(serve, Job{c: c, st: sv.st, db: sv.db})
-```
-
-`session` loops reading requests. When the socket has no data, `c.read`
-parks the task, and the event loop (epoll) wakes it when bytes arrive.
-10,000 idle connections are 10,000 parked tasks of about 13 KB each.
+**1. A task for the connection.** `http.serve`'s accept loop starts one
+task per connection. The task reads requests in a loop; when the socket has
+no data, the read parks the task, and the event loop (epoll) wakes it when
+bytes arrive. 10,000 idle connections are 10,000 parked tasks of about
+15.5 KB each. The task parses the request (and refuses it, with a 4xx and
+the connection closed, if it is malformed or over a limit), then the router
+picks `db` and calls it.
 
 **2. `pool.acquire()` gets a connection.** The pool's state is a
 `task.Shared[PoolState]`: the open count, the idle connections, and a queue
@@ -138,8 +152,9 @@ wakes that task, or puts the connection on the idle list. Because the
 return is tied to `drop`, a connection cannot leak, even on an early `try`
 return or an error. A connection in a bad state is closed, not reused.
 
-**5. The reply** is added to the output buffer and written. The task goes
-back to waiting for the next request on the kept-alive connection.
+**5. The reply.** `w.text` sets the body, its length and type; when the
+handler returns, the server writes the reply. The task goes back to waiting
+for the next request on the kept-alive connection.
 
 ## What the code does not show
 
@@ -162,6 +177,12 @@ connection is idle again, and returns `E_TIMEOUT`. A task cancelled
 meanwhile gets `E_CANCELLED`. A task still waiting in the pool's queue
 just leaves it.
 
+The server gives every request such a budget: `Config.deadlineMs` (30 s
+by default), or a route's own (`http.routeOpts()` and `r.handleWith`). It
+also cancels the handler's task when the client hangs up while the handler
+runs, so a query nobody will read is cancelled on the server too
+(`lib/tests/run/http_server_pg_cancel.obx` checks both).
+
 **Helper threads are not used for queries.** Queries go through epoll on
 the connection's socket. Only the parts of libpq that cannot avoid blocking
 run on the helper pool (the `blocking` externs of SPEC section 12): name
@@ -169,11 +190,14 @@ lookup and TLS while connecting, and `PQcancel`. SQLite's steps and SQL
 Server's calls, which have no non-blocking API, use the helper pool for
 everything.
 
-**Shutdown.** `GET /shutdown` completes a promise that `main` waits on.
-`main`'s scope then ends, which cancels the accept loop and every
-connection's task. Each parked read returns "cancelled", the leases drop,
-the connections go back to the pool, and the program prints its counters
-(`pool open N idle N waiting 0`). It ends with no leaks under `OBX_CHECK=1`.
+**Shutdown.** `GET /shutdown` calls `rq.stopServer()`, and the server
+stops gracefully: it closes the listener at once (new connections are
+refused) and the idle keep-alive connections, and lets the requests in
+flight finish (their replies say `Connection: close`). A request still
+running after `Config.drainMs` (30 s) is cancelled. Then `http.serve`
+returns its counters, the leases have all dropped, the connections are back
+in the pool, and the program prints `pool open N idle N waiting 0`. It ends
+with no leaks under `OBX_CHECK=1`. `SIGTERM` and `SIGINT` do the same.
 
 ## How fast
 
@@ -252,10 +276,14 @@ stopped: worker 0 (pid 4711): exit 0, drained
 ```
 
 **A worker that dies** (a panic, a signal) is started again after a short
-backoff (100 ms at first). The connections it held are lost, with the one
-request in flight on each; the others, and new connections waiting in the
-shared queue, are not affected. If workers keep dying (more than 5 times in
-10 s) the supervisor stops them all and the server exits with status 1.
+backoff (100 ms at first, doubling for a worker that keeps dying, up to
+5 s). The connections it held are lost, with the one request in flight on
+each; the others, and new connections waiting in the shared queue, are not
+affected. The supervisor gives up (it stops them all and the server exits
+with status 1) only if workers keep dying before they are ready (more than
+5 times in 10 s): a bad configuration, say. `http.serve` marks its worker
+ready (`task.workerReady`) once it accepts, so a request that kills a
+worker cannot stop the server, however often it is sent.
 
 How fast, with the load on four other cores (`cmd/http_gate.py --workers
 1,2,4,8 --db 4`, 256 connections):

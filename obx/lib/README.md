@@ -38,7 +38,8 @@ for leaks.
 | `task.obx` | 596 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
 | `net.obx` | 630 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write; name lookup and dial |
 | `url.obx` | 550 | URLs for http and https (RFC 3986): parse, resolve, percent-encoding, queries |
-| `http.obx` | 1,550 | an HTTP/1.1 client (pool, strict framing, redirects, retries, deadlines) and the head parsing httpd shares |
+| `http.obx` | 1,550 | an HTTP/1.1 client (pool, strict framing, redirects, retries, deadlines) and the head parsing the server shares |
+| `httpserver.obx` | 2,940 | an HTTP/1.1 server: Go 1.22 routing, middleware, streaming bodies, strict parsing, every limit and timeout, cancellation on hangup, request ids, access log, graceful drain |
 | `regex.obx` | 1,640 | regular expressions (RE2 syntax, linear time; a port of Go's regexp): compile, find, findAll, captures, replace, split, quote |
 | `regex_syntax.obx` | 3,030 | the regex parser, simplifier and compiler to a program (Go's regexp/syntax) |
 | `regex_unicode.obx` | 2,020 | generated (`gen_regex_unicode.py`): Unicode 15.0.0 categories, scripts and simple case folding |
@@ -278,7 +279,20 @@ through the pool costs about 0.4 us (C backend) to 0.8 us (native) while the
 helpers and the event loop spin for each other (50 us each, not when the
 process may use only one CPU: then about 6 us). The library's blocking
 calls: sqlite's `sqlite3_step` and `sqlite3_exec`; postgres's
-`PQconnectStart`, `PQconnectPoll` and `PQcancel`.
+`PQconnectStart`, `PQconnectPoll` and `PQcancel`; mssql's ODBC calls.
+
+A blocking call is not cut short by itself when its task is cancelled or
+its deadline passes: the task sees that at its next call that can park.
+`onCancelCall(f: fn(ptr), arg: ptr): CancelCall` registers a C function
+that makes the call return early; while the guard lives, if the task is
+cancelled or a `within` deadline passes while it is parked in a blocking
+call, the runtime calls `f(arg)` once, on the program's thread, while the
+call goes on running on its helper. `f` must be safe to call at the same
+time as the call: `sqlite` registers `sqlite3_interrupt` around its steps
+(the step returns `SQLITE_INTERRUPT`, error 9) and `mssql` `SQLCancel` around
+statement calls. With a registration and a deadline a blocking call always
+runs on a helper, so that the deadline is seen. Registrations nest; the
+innermost counts.
 
 **Signals** (SPEC 16, stage C2). A watched signal is an event of the loop
 instead of its default action (for `SIGTERM` and `SIGINT`, the end of the
@@ -305,7 +319,7 @@ gets a copy), then:
   `workersWith(n, p: WorkerPolicy, f)` with a policy of its own.
 - The supervisor restarts a crashed worker (a signal or an exit code other
   than 0) after a backoff, gives up after more than `p.maxCrashes` crashes
-  within `p.windowMs` (sends the others `SIGTERM`, then `Err(GaveUp)`),
+  of workers that were not yet ready (`workerReady`) within `p.windowMs` (sends the others `SIGTERM`, then `Err(GaveUp)`),
   forwards `SIGTERM` and `SIGINT` to every worker (a drain: no restarts;
   after `p.drainMs`, when it is more than 0, or a second signal from
   outside, `SIGKILL`), and returns when all have ended.
@@ -316,6 +330,13 @@ gets a copy), then:
 - `WorkerEnd {index, pid, code, signal, drained, restarts}` (`toStr`: `worker
   2 (pid 4711): exit 0, drained, 1 restart`): the last process of each
   worker; `code` is -1 when `signal` ended it. `GaveUp {crashes, ends}`.
+- `workerReady(): bool` (in a worker) marks the worker ready: it has set
+  itself up and serves. A crash after that is restarted with the policy's
+  backoff but never counts toward giving up, so only crashes before ready
+  (a bad configuration, a missing file) can stop the supervisor, and a
+  request that kills a worker cannot stop the server however often it is
+  sent. False outside a worker. `httpserver.serve` calls it once it
+  accepts.
 - `stopWorkers(): bool` (in a worker) asks the supervisor for the drain
   (every worker gets `SIGTERM`, this one too); asking again, or from
   several workers, is one request. False outside a worker.
@@ -393,10 +414,36 @@ meanwhile, and a plain program (its main task) uses the same calls.
   that can park take a last `w: Where` like `task`'s, and stop the program
   inside `with` (exit 13).
 
-A `Conn` is used by one task at a time (it is owned; a split into read and
-write halves is not there yet). `cmd/httpd.obx` is an HTTP/1.1 server built
-on it (with worker processes and a shared listener: `httpd ADDR POOL
-WORKERS`), `cmd/httpload.obx` a load client, and `http` an HTTP client.
+For servers (stage S1 of design/http-server.md):
+
+- `c.split(): Halves` (`Halves {read: ReadHalf, write: WriteHalf}`) gives
+  the two sides of a connection as owned values, so a request and a
+  response can each hold one; the socket is closed when both have been
+  dropped. `ReadHalf`: `read`, `readNow`, `peerAddr`, `remote` (the
+  address `accept` saw, with no system call), `localAddr`, `writeInterim`
+  (a short interim reply the reader owes, such as `100 Continue`) and
+  `cancelOnHangup(halfClose): HangupGuard`. `WriteHalf`: `write`,
+  `writeStr`, `writeStalled(data, stallMs)` (`ETIMEDOUT` when the peer
+  takes nothing for `stallMs`; no limit on the whole write),
+  `closeWrite`, `setNoDelay`, `peerAddr`.
+- `cancelOnHangup` cancels the running task, as dropping its future does,
+  when the peer resets the connection or (with `halfClose`) ends its
+  stream, until the guard is dropped. It is not a read: data that arrives
+  stays for the reader (`EPOLLRDHUP` in the event loop). A reset already
+  seen cancels at once; an end of stream already pending when it is armed
+  does not count, so a client that sends its request and shuts down its
+  side still gets the reply.
+- `l.setDeferAccept(secs)` (`TCP_DEFER_ACCEPT`: a connection reaches
+  `accept` only once it has sent something); `spare()` reserves a spare
+  descriptor (`/dev/null`) and `l.shed(mut &spare)`, after `accept`
+  failed with `outOfDescriptors(&e)` (`EMFILE`, `ENFILE`), frees it,
+  accepts and closes one waiting connection, and reserves it again, so the
+  queue drains instead of the accept loop spinning.
+
+A `Conn` is used by one task at a time (it is owned). `httpserver` is an
+HTTP/1.1 server built on it, `cmd/httpd.obx` an example program on that
+(with worker processes and a shared listener: `httpd ADDR POOL WORKERS`),
+`cmd/httpload.obx` a load client, and `http` an HTTP client.
 
 ### url
 
@@ -492,7 +539,7 @@ let r = try c.send(&rq)
   fork) refuses with `Process`: make clients inside each worker.
 - https is refused with `Tls` until H2 (the connection's stream is a sum
   with one TCP case now, the place a TLS case goes).
-- Shared parsing, used by `cmd/httpd.obx`: `headEnd`, `parseFields`,
+- Shared parsing, used by `httpserver`: `headEnd`, `parseFields`,
   `contentLength`, `parseRequest` (`RequestHead {method, target, minor,
   headers}`, `keepAlive()`, `bodyLength()`), `equalFold`, `isToken`,
   `isFieldValue`, `Headers` (`get`, `has`, `values`, `add`, `set`,
@@ -506,6 +553,188 @@ generates reply framings and checks every body on both backends.
 `both` and `forEach` (concurrent children that borrow the parent's locals)
 are not there yet: a task's function is a plain `fn`, and passing borrows
 into a task needs the checker's help (design/concurrency.md, section 5).
+
+### httpserver
+
+An HTTP/1.1 server for tasks (design/http-server.md, stage S1). A module of
+its own: the client in `http` already has a `Request`, `Response`, `Error`
+and `defaults`, so a program that has both imports `"http"` and
+`"httpserver" as hs`. The handler API is meant to stay the same for
+HTTP/2 (S3).
+
+```
+import "httpserver" as http
+
+type App = value record { db: postgres.Pool }      // a copy type: handles only
+
+fn account(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let id = try rq.paramInt("id")                          // 400 when not an integer
+    let c = try http.check(app.db.acquire(), 503)           // any error as a 503
+    let rows = try http.check(c.query("SELECT name FROM account WHERE id = $1", &[postgres.Value.Int(id)]), 500)
+    if rows.rowCount() == 0 { return w.fail(404) }
+    return w.json(toJson(&rows))
+}
+
+var r = http.router[App]()
+r.use(http.requestId[App])
+r.use(http.accessLog[App])
+r.handle("GET /accounts/{id}", account)
+let st = try http.serve(net.listen(":8080").expect("listen"), app, r, http.defaults())
+```
+
+- `serve[A: copy](ln, app: A, r: Router[A], cfg: Config): Result[Stats,
+  Error]` serves until `rq.stopServer()`, or `SIGTERM`/`SIGINT` when
+  `cfg.signals`. Then it drains: it closes the listener (new connections are
+  refused) and the idle connections, lets the requests in flight finish
+  (their replies say `Connection: close`) for up to `drainMs`, cancels the
+  rest, and returns its counters. One task per connection, keep-alive,
+  pipelined requests answered in order. Each handler gets `&app`, a copy per
+  connection. `Err` (kind `Config`) before anything is accepted when a
+  pattern is invalid or two conflict, or when `RLIMIT_NOFILE` (raised as
+  far as the hard limit allows) or `vm.max_map_count` is too low for
+  `maxConns`. In a worker it marks the worker ready (`task.workerReady`);
+  `workerPolicy()` is task's with a 35 s drain.
+- `Handler[A] = fn(&A, mut &Request, mut &Response): Result[Unit, Error]`.
+  `router[A]()`; `r.handle(pattern, h)`; `r.handleWith(pattern, h,
+  RouteOpts{deadlineMs, maxBody})` (`routeOpts()` gives -1 for both: the
+  Config's; `deadlineMs` 0 is none, for server-sent events).
+- Patterns are Go 1.22's: `"[METHOD ][HOST]/[PATH]"`, `{name}` one
+  segment, `{name...}` the rest, `{$}` the end of a path ending in `/`, a
+  pattern ending in `/` matches everything under it. GET also answers HEAD
+  (no body sent). The most specific pattern wins; a path that matches with
+  another method gets 405 with `Allow`; `/dir` is redirected (301) to
+  `/dir/` when only the subtree pattern matches; otherwise 404.
+- Middleware: `Middleware[A] = fn(&A, mut &Request, mut &Response,
+  Next[A]): Result[Unit, Error]`; `next.run(app, rq, w)` runs the rest.
+  `r.use(m)` for every request (404s and 405s too), `r.useUnder(prefix,
+  m)` for paths under prefix; the first added runs outermost. In the
+  library: `requestId` (16 random bytes in hex, or a trusted proxy's
+  `X-Request-Id` of 1 to 64 token characters; sent back as
+  `X-Request-Id`), `accessLog` (below) and `securityHeaders`
+  (`Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`,
+  `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy:
+  same-origin`).
+- `Request`: `method`, `path` (decoded once), `host` (validated,
+  lowercase), `proto`, `headers` (`http.Headers`), `peer`, `id`, `pattern`;
+  `param(name)`, `paramInt(name)`, `query(name)` (decoded), `header(name)`,
+  `rawTarget()`, `rawQuery()`, `client()` (the peer, or for a trusted proxy
+  the rightmost untrusted `X-Forwarded-For` address), `note(key, value)`
+  (a field for the access log), `serverStats()`, `stopServer()`. The body:
+  `read(mut &buf)` (streams; 0 at the end), `bytes(limit)` and
+  `text(limit)` (413 past the limit or the route's `maxBody`; 400 when the
+  text is not UTF-8), `bodyRead()`, `trailers()`. With `Expect:
+  100-continue` the 100 is sent at the first read; a body nobody read is
+  read and dropped up to `maxDrain`, else the connection closes.
+- `Response`: `status(code)`, `header(name, value)` (replaces),
+  `addHeader` (adds: `Set-Cookie`), `trailer(name, value)`, `write(data)`,
+  `writeStr(s)`, `flush()`, `text(s)`, `json(s)`, `fail(code)` (the
+  library's fixed body: the status line and the request id),
+  `redirect(code, location)`, `startEvents()` and `event(name, data)`
+  (server-sent events), `statusCode()`, `headWritten()`, `bodyBytes()`.
+  Nothing is sent before the handler returns, `flush` is called, or 32 KiB
+  of body is buffered; a finished reply whose head was not yet written gets
+  a `Content-Length`, others are chunked (until the close for HTTP/1.0). A
+  `Response` that is not written to answers 200 with an empty body.
+- `Error {status, kind, msg}` (`ErrorKind`: `Client`, `Server`, `Gone`,
+  `Timeout`, `Limit`, `Protocol`, `Config`); `error(status, msg)`;
+  `check(r, status)` turns any `Result[T, E: Show]` into one. A handler's
+  `Err` before the head is written answers `status` with the fixed body
+  (headers it had set are dropped; `msg` goes to the log, never to the
+  client); after the head is written, the connection is closed short of the
+  body's end, so the client sees a truncated reply.
+- The route's deadline (`deadlineMs`, 30 s) is a `task.within` around the
+  middleware and the handler; past it, a reply not yet started is 503.
+  While the handler runs, a client that hangs up (a reset, or with
+  `cancelOnHalfClose` also a half-close) cancels the connection's task:
+  the handler's next call that can park returns `Cancelled`, a Postgres
+  query is cancelled on the server (`PQcancel`), a SQLite step is
+  interrupted, an ODBC call gets `SQLCancel`.
+- `Stats {accepted, requests, open, rejected, timeouts, gone, errors, shed,
+  idleClosed, c2xx, c3xx, c4xx, c5xx, logDropped}` (`toStr`: the first
+  seven).
+
+**Parsing** is strict (design/http-server.md section 3.1–3.3): anything
+two parsers could read differently gets a 4xx and the connection closed.
+Refused: `Content-Length` with `Transfer-Encoding`, differing or listed
+lengths, a coding other than `chunked`, obsolete line folding, whitespace
+before a colon, a bare CR or LF, NUL and controls in a field, a bad
+request line or version (`HTTP/2.0` and the h2 preface: 505), a bad chunk
+size (more than 16 hex digits) or extension, a missing or repeated Host
+(400) or one not in `hosts` (421), an absolute-form target whose host is
+not the Host, dot segments (raw or encoded), encoded `/` or NUL, invalid
+UTF-8 in the decoded path, `Expect` other than `100-continue` (417). Up to
+two empty lines before a request are skipped. Response headers are checked
+too: a name that is not a token or a value with CR, LF, NUL or other
+controls fails the response (500, the header named in the log), and no
+byte of it is sent. Every response has `Date` and `X-Content-Type-Options:
+nosniff`; error responses `Cache-Control: no-store`; a body without a
+`Content-Type` is `application/octet-stream`. `redirect` takes a path
+starting with a single `/`, or an http(s) URL whose host is in
+`redirectHosts`; anything else is a 500, never an open redirect.
+
+**Limits and timeouts** (`Config`, `defaults()`):
+
+| Field | Default | What happens past it |
+|---|---:|---|
+| `headerTimeoutMs` | 10,000 | the whole head from its first byte: 408 and close |
+| `idleTimeoutMs` | 60,000 | a keep-alive connection waiting for its next request is closed |
+| `idlePressureMs` | 5,000 | the idle timeout from 80 % of `maxConns` on |
+| `bodyGraceMs`, `bodyMinRate` | 10,000, 1,024 bytes/s | a body: any rate for the grace, then at least the rate (credit at most 5 s ahead): 408 and close |
+| `writeStallMs` | 30,000 | a write that makes no progress this long: the reply fails and the connection closes (no limit on a whole write) |
+| `deadlineMs` | 30,000 | the route's deadline: 503 if nothing was written |
+| `drainMs` | 30,000 | requests still running after a stop are cancelled |
+| `maxConns` | 10,000 | the accept loop waits; new connections wait in the kernel's queue |
+| `maxConnsPerIp` | 0 (off) | per worker: 503 and close |
+| `maxRequestsPerConn` | 1,000 | `Connection: close` on the last |
+| `maxHeadBytes`, `maxHeaders`, `maxLineBytes` | 16,384, 100, 8,192 | 431 and close |
+| `maxTargetBytes` | 8,192 | 414 and close |
+| `maxBody` | 1 MiB | 413 (a declared length over it before any byte is read) |
+| `maxDrain` | 256 KiB | an unread body larger than this closes the connection |
+| `maxParams` | 1,000 | 400 |
+| `maxTrailerBytes`, `maxTrailers` | 8,192, 32 | 431 and close |
+| `memBudget` | 512 MiB | buffered bytes in the worker: new requests get 503 and close |
+| `fdMargin` | 64 | descriptors kept free beyond `maxConns`, checked at start |
+| `acceptBatch` | 16 | the accept loop yields after this many accepts |
+| `deferAccept` | true | `TCP_DEFER_ACCEPT` with the head timeout |
+| `cancelOnHalfClose` | true | a half-close cancels the running handler, as a reset does |
+| `signals` | true | `SIGTERM`/`SIGINT` drain the server |
+| `hosts`, `redirectHosts`, `trustedProxies` | empty | Hosts served (others 421); redirect targets; proxies believed |
+| `logFd` | 1 | where `accessLog` writes (-1: nowhere) |
+
+On `EMFILE`/`ENFILE` the accept loop uses the spare descriptor to accept
+and close one waiting connection (`shed`). A connection's task yields after
+each request and every 64 KiB of body copy, so a client that pipelines
+without pause does not starve the others. After a reply that ends the
+connection, the server shuts down its side and reads and drops what the
+client still sends for up to 500 ms (256 KiB), so the client's unread
+request bytes do not turn the close into a reset that loses the reply. An
+idle connection costs about 15.5 KB (its task's stack pages, a 4 KiB read
+buffer and a 512-byte output buffer, which grows as replies need).
+
+**The access log** (`accessLog`) is one logfmt line per request, written by
+the server through a `blocking` `write` (every 100 ms or 64 KiB; past
+4 MiB unwritten, lines are dropped and counted in `logDropped`), never by
+the request's task, so a slow reader of the log does not stall requests:
+
+    time=2026-11-03T10:20:30Z id=1f0c... pid=4711 peer=10.0.0.7:51234 method=GET route="GET /accounts/{id}" path=/accounts/7 status=200 in=0 out=13 us=180 outcome=ok
+
+Values from input are escaped (controls, quotes, backslashes and bytes past
+0x7e as `\xHH`) and cut at 256 bytes. The query, `Authorization` and
+`Cookie` are not logged; `rq.note` adds fields.
+
+The router and middleware are held in a `task.Shared` and looked up once
+per request (to move to `task.Frozen`, a read-only shared handle, when it
+lands). Not there yet (S2 to S4): TLS, HTTP/2, `w.hint` (103), full duplex,
+a `Cookie` type, `traceparent`, a JSON log, SSE keep-alive comments,
+`maxBlocking`, per-IP limits across workers, static files, compression,
+WebSockets, forms.
+
+Tests: `tests/run/http_server_*.obx` (the parsing corpus, routing, limits,
+slow clients, hangup cancellation with Postgres and SQLite, drain, the
+access log; through `tests/support/srvtest.obx` and `srvrun.obx`),
+`task_workers_ready.obx`, and `tests/httpsrvgen.py`, which checks the
+parsing against Go's net/http and Node's llhttp on generated request
+streams (`gate.sh full`).
 
 ### regex
 
