@@ -144,6 +144,7 @@ type Gen = record {
     epiL: int                   // the label of the function's restores and return, or -1
     epiJmps: []int              // ... the positions of the jumps to it
     loopTops: []int             // the labels of the rotated loops' bodies, reached only by jumps
+    loopEnds: []int             // and of their ends (right after the back branch)
     entrySym: int
     dyn: bool                   // dynamically linked: every C function the program calls is imported
     libs: []elf.Lib
@@ -171,7 +172,7 @@ type Stub = value record {
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
-        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
+        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], loopEnds: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
@@ -475,6 +476,7 @@ fn (g: mut &Gen) genFunc(f: int) {
     g.epiL = -1
     g.epiJmps = []
     g.loopTops = []
+    g.loopEnds = []
     g.curFunc = f
     g.allocRegs(f)
     g.nLocalRegs = len(g.saved)
@@ -597,9 +599,13 @@ fn (g: mut &Gen) genFunc(f: int) {
 
 // Inserts the prologue pro at start and, in the same pass, nops before the body of each rotated
 // loop, as gcc pads (to a multiple of 16 when that takes at most 10 bytes, else of 8): a loop's
-// back branch then fetches a whole block. The pads follow the jump to the loop's test, so they
-// never run (code reaches the body only by jumps). Functions start at multiples of 16, so the
-// positions here are the addresses' remainders.
+// back branch then fetches a whole block. An innermost loop of 64 bytes or less is moved further,
+// to a multiple of 16 from which it does not cross a 64-byte boundary, so that each iteration
+// runs from one line of the instruction cache (and one of the op cache): the sieve's inner loop,
+// 17 bytes from 48 bytes into a line, ran at about 1.5 times the cycles. The pads follow the jump
+// to the loop's test, so they never run (code reaches the body only by jumps). The code starts at
+// a multiple of 64 and the positions here are final within it, so their remainders are the
+// addresses'.
 fn (g: mut &Gen) placeCode(start: int, pro: &[]byte, firstLabel: int) {
     var ats: []int = [start]
     var ns: []int = [len(pro)]
@@ -613,6 +619,12 @@ fn (g: mut &Gen) placeCode(start: int, pro: &[]byte, firstLabel: int) {
         let now = at + shift
         var pad = (16 - now % 16) % 16
         if pad > 10 { pad = (8 - now % 8) % 8 }
+        let size = g.a.labelPos(g.loopEnds[j]) - at
+        let inner = j + 1 == len(g.loopTops) || g.a.labelPos(g.loopTops[j + 1]) >= at + size
+        if inner && size <= 64 && (now + pad) % 64 + size > 64 {
+            pad = (16 - now % 16) % 16
+            while (now + pad) % 64 + size > 64 { pad += 16 }
+        }
         if pad == 0 { continue }
         append(mut &ats, at)
         append(mut &ns, pad)
@@ -1557,6 +1569,27 @@ fn (g: mut &Gen) stmt(s: int) {
         g.a.bind(end)
     } else if k == ir.S_FOR {
         let mark = g.frame
+        let fill = g.fillLoop(s)
+        var fillEnd = -1
+        if fill >= 0 {
+            // the loop stores one value into elements 0 to n - 1 in order: from 64 elements on,
+            // rep stos writes the same elements (rdi kept in r11; rax, rcx and r11 hold nothing
+            // between statements)
+            let small = g.a.newLabel()
+            fillEnd = g.a.newLabel()
+            let st = g.u.nodes[g.u.nodes[fill].a]           // the store's place, *(p + i * size)
+            g.genInto(g.u.nodes[g.forCond(s)].b, RCX)
+            g.a.aluI(x64.CMP, 8, RCX, 64)
+            g.a.jcc(x64.CC_L, small)
+            let cv = g.intConst(g.u.nodes[fill].b, g.u.nodes[fill].ty)
+            if cv.c == 0 { g.a.movRI(RAX, cv.v) } else { g.genInto(g.u.nodes[fill].b, RAX) }
+            g.a.movRR(8, R11, RDI)
+            g.genInto(g.fillBase(st.a), RDI)
+            g.a.repStos(g.u.nodes[st.a].v)
+            g.a.movRR(8, RDI, R11)
+            g.a.jmp(fillEnd)
+            g.a.bind(small)
+        }
         if n.a >= 0 {
             let before = g.frame
             g.stmt(n.a)
@@ -1571,6 +1604,7 @@ fn (g: mut &Gen) stmt(s: int) {
         if n.b >= 0 {
             g.a.jmp(test)
             append(mut &g.loopTops, top)
+            append(mut &g.loopEnds, end)
         }
         g.a.bind(top)
         g.loops += 1
@@ -1585,6 +1619,7 @@ fn (g: mut &Gen) stmt(s: int) {
         if n.b >= 0 { g.branch(n.b, top, true) } else { g.a.jmp(top) }
         g.loops -= 1
         g.a.bind(end)
+        if fillEnd >= 0 { g.a.bind(fillEnd) }
         g.frame = mark
     } else if k == ir.S_BREAK {
         if len(g.breakL) == 0 { g.fail(s, "break outside a loop") }
@@ -1633,6 +1668,81 @@ fn (g: &Gen) breakIf(s: int): bool {
     return g.u.nk(b) == ir.S_BREAK
 }
 
+// The condition of the for s without its conversion to bool.
+fn (g: &Gen) forCond(s: int): int {
+    var b = g.u.nodes[s].b
+    if g.u.nk(b) == ir.E_CAST && g.tk(g.u.nodes[b].ty) == ir.TY_BOOL { b = g.u.nodes[b].a }
+    return b
+}
+
+// The pointer local (or constant address) under the conversions of the pointer p, or -1.
+fn (g: &Gen) fillBase(p: int): int {
+    var x = g.u.nodes[p].a
+    while g.u.nk(x) == ir.E_CAST && g.tk(g.u.nodes[x].ty) == ir.TY_PTR { x = g.u.nodes[x].a }
+    return x
+}
+
+// Whether e is a value that no store through a pointer can change: an integer constant, or a
+// local whose address is never taken (perhaps converted between integers or pointers).
+fn (g: &Gen) fixedVal(e: int): bool {
+    var x = e
+    while g.u.nk(x) == ir.E_CAST && (g.tk(g.u.nodes[x].ty) == ir.TY_PTR || g.tk(g.u.nodes[x].ty) >= ir.TY_BOOL &&
+        g.tk(g.u.nodes[x].ty) <= ir.TY_U64) {
+        x = g.u.nodes[x].a
+    }
+    let k = g.u.nk(x)
+    let t = g.tk(g.u.nodes[x].ty)
+    if t != ir.TY_PTR && (t < ir.TY_BOOL || t > ir.TY_U64) { return false }
+    return k == ir.E_INT || k == ir.E_LOCAL && !g.aTaken[g.u.nodes[x].a]
+}
+
+// The for s as `for (T i = 0; i < n; i++) { *((E*)p + i) = v; }`, a fill: the assignment, else -1.
+// i, n, p and v are locals whose addresses are never taken (n and v may be constants), so only
+// the loop's own writes change them, and it writes i and the elements; E is an integer type
+// (or bool) of 1, 2, 4 or 8 bytes. The elements p[0] to p[n - 1] then get v in order, and the
+// loop ends with i = n (unused after it: i is declared by the loop), which is what rep stos
+// writes: n elements of v from p up.
+fn (g: &Gen) fillLoop(s: int): int {
+    let n = g.u.nodes[s]
+    if n.a < 0 || n.b < 0 || n.c < 0 || n.d < 0 { return -1 }
+    // T i = 0;
+    let d = g.u.nodes[n.a]
+    if d.k != ir.S_DECL || d.b < 0 || d.c >= 0 || g.u.nk(d.b) != ir.E_INT || g.u.nodes[d.b].v != 0 { return -1 }
+    let i = d.a
+    let it = g.tk(g.u.locals[i].ty)
+    if g.aTaken[i] || it < ir.TY_I8 || it > ir.TY_U64 || g.size(g.u.locals[i].ty) != 8 { return -1 }
+    // i < n (signed)
+    let c = g.u.nodes[g.forCond(s)]
+    if c.k != ir.E_BIN || c.v != ir.OP_LT || g.u.nk(c.a) != ir.E_LOCAL || g.u.nodes[c.a].a != i || !g.fixedVal(c.b) {
+        return -1
+    }
+    if !g.u.isSigned(g.u.nodes[c.a].ty) || g.size(g.u.nodes[c.b].ty) != 8 || g.u.nk(c.b) != ir.E_LOCAL && g.u.nk(c.b) != ir.E_INT {
+        return -1
+    }
+    if g.u.nk(c.b) == ir.E_LOCAL && g.u.nodes[c.b].a == i { return -1 }
+    // i++
+    let st = g.u.nodes[n.c]
+    if st.k != ir.E_POSTINC || st.v != 1 || g.u.nk(st.a) != ir.E_LOCAL || g.u.nodes[st.a].a != i { return -1 }
+    // { *((E*)p + i) = v; }
+    var b = n.d
+    while g.u.nk(b) == ir.S_BLOCK && g.u.listLen(g.u.nodes[b].a) == 1 { b = g.u.listAt(g.u.nodes[b].a, 0) }
+    if g.u.nk(b) != ir.S_EXPR { return -1 }
+    let e = g.u.nodes[b].a
+    let sa = g.u.nodes[e]
+    if sa.k != ir.E_ASSIGN || g.u.nk(sa.a) != ir.E_DEREF { return -1 }
+    let pa = g.u.nodes[sa.a].a
+    let p = g.u.nodes[pa]
+    let et = g.tk(sa.ty)
+    if p.k != ir.E_PADD || p.v != g.size(sa.ty) || et < ir.TY_BOOL || et > ir.TY_U64 { return -1 }
+    if g.u.nk(p.b) != ir.E_LOCAL || g.u.nodes[p.b].a != i { return -1 }
+    let base = g.fillBase(pa)
+    if g.u.nk(base) != ir.E_LOCAL || !g.fixedVal(base) || g.u.nodes[base].a == i || !g.fixedVal(sa.b) { return -1 }
+    var vx = sa.b
+    while g.u.nk(vx) == ir.E_CAST { vx = g.u.nodes[vx].a }
+    if g.u.nk(vx) == ir.E_LOCAL && g.u.nodes[vx].a == i { return -1 }
+    return e
+}
+
 // The while loop s (`while (1) { [bool c = E;] if (!c) break; ... }`, the C of every obx loop,
 // or `while (E) ...`) with its test at the bottom: the number of statements of the body that
 // make the test (0: the loop's own condition is it), or -1 when it is not generated rotated.
@@ -1660,6 +1770,7 @@ fn (g: mut &Gen) rotated(s: int) {
     let end = g.a.newLabel()
     g.a.jmp(test)
     append(mut &g.loopTops, top)
+    append(mut &g.loopEnds, end)
     g.a.bind(top)
     g.loops += 1
     append(mut &g.breakL, end)
@@ -2690,6 +2801,11 @@ fn (g: mut &Gen) genAssign(e: int) {
         // through a pointer: the place as an operand (in rax, rcx and registers of locals),
         // then the value
         let pm = g.place(lhs)
+        let cv = g.intConst(n.b, t)
+        if cv.c == 0 && unused {
+            g.a.storeI(g.size(t), pm, cv.v)       // mov byte [p + i], 0
+            return
+        }
         var r = g.regOf(n.b)
         if r < 0 || g.u.nodes[n.b].ty != t {
             g.genInto(n.b, RDX)
@@ -2719,6 +2835,42 @@ fn (g: mut &Gen) genAssign(e: int) {
 }
 
 fn (g: mut &Gen) callRt(name: str) { g.a.callSym(g.symRt(name)) }
+
+// The value of e as stored into an integer place of type t when e is an integer constant (perhaps
+// converted between integer types) that a store's 32-bit immediate holds: c 0 and v the value;
+// else c 1.
+fn (g: &Gen) intConst(e: int, t: int): IntK {
+    let k = g.tk(t)
+    if k < ir.TY_BOOL || k > ir.TY_U64 { return IntK{v: 0, c: 1} }
+    var x = e
+    while g.u.nk(x) == ir.E_CAST {
+        let ck = g.tk(g.u.nodes[x].ty)
+        if ck < ir.TY_BOOL || ck > ir.TY_U64 { return IntK{v: 0, c: 1} }
+        x = g.u.nodes[x].a
+    }
+    if g.u.nk(x) != ir.E_INT { return IntK{v: 0, c: 1} }
+    // the conversions in order, innermost first
+    var v = g.u.nodes[x].v
+    var y = e
+    var chain: []int = []
+    while g.u.nk(y) == ir.E_CAST {
+        append(mut &chain, g.tk(g.u.nodes[y].ty))
+        y = g.u.nodes[y].a
+    }
+    var j = len(chain) - 1
+    while j >= 0 {
+        v = ir.truncTo(chain[j], v)
+        j -= 1
+    }
+    v = ir.truncTo(k, v)
+    if g.size(t) == 8 && !x64.fits32(v) { return IntK{v: 0, c: 1} }
+    return IntK{v: v, c: 0}
+}
+
+type IntK = value record {
+    v: int
+    c: int
+}
 
 fn (g: mut &Gen) genCast(e: int) {
     let n = g.u.nodes[e]
@@ -3025,6 +3177,11 @@ fn (g: mut &Gen) jumpCC(cc: int, l: int, when: bool) {
 // Evaluates a scalar and sets ZF when it is zero (false).
 fn (g: mut &Gen) genTest(e: int) {
     let t = g.u.nodes[e].ty
+    let k = g.tk(t)
+    if g.u.nk(e) == ir.E_DEREF && (k == ir.TY_PTR || k >= ir.TY_BOOL && k <= ir.TY_U64) {
+        g.a.aluMI(x64.CMP, g.size(t), g.place(e), 0)     // cmp byte [p + i], 0
+        return
+    }
     g.gen(e)
     if g.isF(t) {
         g.a.sse66(x64.XORPD, 1, 1)
