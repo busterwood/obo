@@ -386,16 +386,19 @@ connection of section 7 is not built); no `io.Reader`/`Writer` interfaces
 (the language has no interface values yet).
 
 Measured (`bench/tasks.obx`, ns per operation, C / native): a wait that
-parks with a deadline (timer set and removed) 107 / 316, against 91 / 80
-without; a `sleep(1)` that fires, beyond a yield, about 20–260 / 180–260
+parks with a deadline (timer set and removed) 108 / 90, against 95 / 75
+without; a `sleep(1)` that fires, beyond a yield, about 20–260 / 40–290
 (noisy: the 1 ms sleep's overshoot is spread over 10,000 tasks); a socket
 read that finds data 650 / 710; a one-byte round trip between two tasks
 over loopback TCP 180,000–210,000 / 205,000, which is this machine's
 loopback (WSL2: a Python ping-pong, threads or epoll, takes 190,000–205,000
-too). The native runtime calls `clock_gettime` as a system call (no vDSO in
-a static program), about 250 ns, once per timer set, so its timers cost
-more. The gate (`cmd/http_gate.py`, one core for the server, one for the
-load client): 10,000 idle keep-alive connections at 13.0 KB of RSS each
+too). Both runtimes read the clock through the vDSO (libc's
+`clock_gettime`; the native runtime finds `__vdso_clock_gettime` itself,
+design/native.md section 2), about 20 ns a read, once per timer set; until
+2026-11-03 the native runtime made the system call (about 250 ns) and its
+timed wait cost 316–339 ns. The gate (`cmd/http_gate.py`, one core for
+the server, one for the load client): 10,000 idle keep-alive connections
+at 13.0 KB of RSS each
 (native; 12.7 KB through C): two touched stack pages, the 4 KiB read buffer
 and the task; 4,900 / 38,900 / 69,400 requests per second with 1 / 10 / 100
 clients while they stay open (p99 0.33 / 0.37 / 1.9 ms), the same through C
