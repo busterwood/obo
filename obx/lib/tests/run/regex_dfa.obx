@@ -79,7 +79,7 @@ fn hostile(): bool {
 }
 
 const TINY: []str = ["(a|b)*a(a|b){5}", "\\b\\w+\\b", "(?m)^a.*b$", "a+|b+|(ab)+", "(?i)k\\B", "[^a]*a", "x*", "(a|ab)(c|bcd)(d*)",
-    "\\Ba+\\b", "(?s).+$", "^$|a"]
+    "\\Ba+\\b", "(?s).+$", "^$|a", "(\\b|a)*", "(\\b| *a)*", "(?:$|a)*b?", "(\\B|b)+?a?", "(?m)(^|a)*"]
 
 fn tiny(): bool {
     var ok = true
@@ -89,7 +89,7 @@ fn tiny(): bool {
             let pike = regex.compileForcing(p, longest, "pike").unwrap()
             let re = regex.compileForcing(p, longest, "dfatiny").unwrap()
             for t in texts {
-                if subs(&re, t) != subs(&pike, t) || re.isMatch(t) != pike.isMatch(t) {
+                if subs(&re, t) != subs(&pike, t) || spans(&re, t) != spans(&pike, t) || re.isMatch(t) != pike.isMatch(t) {
                     println("tiny /" + p + "/ longest " + longest.toStr() + " differs")
                     ok = false
                 }
@@ -155,7 +155,7 @@ fn utf8(): bool {
                             ok = false
                         }
                     }
-                    if subs(&re, t) != subs(&pike, t) {
+                    if subs(&re, t) != subs(&pike, t) || spans(&re, t) != spans(&pike, t) {
                         println("utf8 /" + p + "/ " + m + " all differ")
                         ok = false
                     }

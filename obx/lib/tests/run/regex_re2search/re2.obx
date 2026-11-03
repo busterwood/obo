@@ -4,8 +4,8 @@
 // string in four ways (full match \A(?:re)\z and partial, leftmost-first and
 // leftmost-longest) and under each matcher (the one compile picks, the Pike
 // VM, the backtracker, the lazy DFA without and with every literal search,
-// the DFA in a tiny cache); the submatch indexes and isMatch must equal
-// RE2's.
+// the DFA in a tiny cache); the submatch indexes, isMatch and findIndex
+// must equal RE2's.
 //
 // The lines come with each quoted string replaced by h:HEX (the bytes).
 // Used by main.obx here and by obx/tests/regex/re2_exhaustive.obx.
@@ -166,6 +166,13 @@ pub fn run(lines: &[str], maxFails: int): Summary {
                     let got = re.submatchIndex(text)
                     var bad = !same(&got, &want)
                     if !bad && re.isMatch(text) != (len(want) > 0) { bad = true }
+                    // The span alone takes another path (no captures).
+                    if !bad {
+                        match re.findIndex(text) {
+                            Some(sp) { bad = len(want) == 0 || sp.start != want[0] || sp.end != want[1] }
+                            None { bad = len(want) > 0 }
+                        }
+                    }
                     if bad {
                         sum.fails += 1
                         if sum.fails <= maxFails {

@@ -237,6 +237,8 @@ pub type Cache = record {
     starts: []int         // the start state per context, or -1
     budget: int
     bail: bool
+    paths: bool           // record the path entries (leftmost-first)
+    leaves: int           // the queue's entries that are not marks or paths
     pub clears: int
     resetAt: int
     pos: int              // where the search is (for bailing out)
@@ -264,7 +266,7 @@ pub type Cache = record {
 
 pub fn newCache(): Cache {
     return Cache{stride: 0, sflag: [], slo: [], sn: [], shash: [], sinst: [], nstates: 0, trans: [], htab: [], hmask: 0,
-        starts: [], budget: 0, bail: true, clears: 0, resetAt: 0, pos: 0, reach: 0, vsparse: [], vdense: [], vn: 0, items: [],
+        starts: [], budget: 0, bail: true, paths: false, leaves: 0, clears: 0, resetAt: 0, pos: 0, reach: 0, vsparse: [], vdense: [], vn: 0, items: [],
         ni: 0, lastMark: true, cur: [], stack: [], tmp: [], tn: 0, tflag: 0, save: [], pfFrom: -1, pfCand: -1, pfCalls: 0,
         pfSkip: 0, pfOff: false}
 }
@@ -276,6 +278,7 @@ pub fn (c: mut &Cache) setup(d: &Dfa, budget: int, bail: bool) {
     c.stride = d.cls.n + 1
     c.budget = budget
     c.bail = bail
+    c.paths = !d.longest
     let n = d.ninst
     c.vsparse = array(n, 0)
     c.vdense = array(n, 0)
@@ -295,6 +298,7 @@ pub fn (c: &Cache) ready(): bool { return c.stride != 0 }
 fn (c: mut &Cache) qclear() {
     c.vn = 0
     c.ni = 0
+    c.leaves = 0
     c.lastMark = true
 }
 
@@ -309,7 +313,31 @@ fn (c: mut &Cache) mark() {
 // Adds id and what it leads to without reading a rune, under the
 // empty-width conditions flag, to the queue: depth first, Out before Arg
 // (the priority order). Rune and match instructions, and empty-width tests
-// that do not hold, go in the list (RE2's AddToQueue).
+// that do not hold, go in the list (RE2's AddToQueue). In leftmost-first
+// mode the instructions passed through go in too, as path entries
+// (-(id + 2)): when a waiting test later holds, the closure is redone in
+// this order with them marked as visited where they were, which is the
+// order Go's Pike VM gets with the test known from the start (re-adding
+// only the test would put the threads it leads to after ones Go puts them
+// before, as in (\b|s)* on "s", which Go compiles as (x+)?).
+fn (c: mut &Cache) visit(id: int) {
+    c.vsparse[id] = c.vn
+    c.vdense[c.vn] = id
+    c.vn += 1
+}
+
+fn (c: &Cache) visited(id: int): bool {
+    let j = c.vsparse[id]
+    return j < c.vn && c.vdense[j] == id
+}
+
+fn (c: mut &Cache) path(id: int) {
+    if c.paths {
+        c.items[c.ni] = -(id + 2)
+        c.ni += 1
+    }
+}
+
 fn (c: mut &Cache) add(p: &syn.Prog, id0: int, flag: int) {
     var sp = 1
     c.stack[0] = id0
@@ -317,25 +345,26 @@ fn (c: mut &Cache) add(p: &syn.Prog, id0: int, flag: int) {
         sp -= 1
         var id = c.stack[sp]
         while id != 0 {
-            let j = c.vsparse[id]
-            if j < c.vn && c.vdense[j] == id { break }
-            c.vsparse[id] = c.vn
-            c.vdense[c.vn] = id
-            c.vn += 1
+            if c.visited(id) { break }
+            c.visit(id)
             let i = &p.inst[id]
             let op = i.op
             if op == syn.I_ALT || op == syn.I_ALT_MATCH {
+                c.path(id)
                 c.stack[sp] = i.arg
                 sp += 1
                 id = i.out
             } else if op == syn.I_NOP || op == syn.I_CAPTURE {
+                c.path(id)
                 id = i.out
             } else if op == syn.I_EMPTY_WIDTH {
                 if i.arg & ~flag == 0 {
+                    c.path(id)
                     id = i.out
                 } else {
                     c.items[c.ni] = id
                     c.ni += 1
+                    c.leaves += 1
                     c.lastMark = false
                     break
                 }
@@ -344,6 +373,7 @@ fn (c: mut &Cache) add(p: &syn.Prog, id0: int, flag: int) {
             } else {
                 c.items[c.ni] = id
                 c.ni += 1
+                c.leaves += 1
                 c.lastMark = false
                 break
             }
@@ -372,6 +402,7 @@ fn (c: mut &Cache) toState(d: &Dfa, p: &syn.Prog, flag0: int, force: bool): int 
         }
         c.tmp[n] = id
         n += 1
+        if id < MARK { continue }
         let op = p.inst[id].op
         if op == syn.I_EMPTY_WIDTH {
             need = need | p.inst[id].arg
@@ -380,6 +411,17 @@ fn (c: mut &Cache) toState(d: &Dfa, p: &syn.Prog, flag0: int, force: bool): int 
         }
     }
     if n > 0 && c.tmp[n - 1] == MARK { n -= 1 }
+    if need == 0 {
+        // No test waits: the path entries are not needed.
+        var m = 0
+        for j in 0..n {
+            if c.tmp[j] >= MARK {
+                c.tmp[m] = c.tmp[j]
+                m += 1
+            }
+        }
+        n = m
+    }
     if sawmatch { flag = flag & ~(F_U | F_START) }
     if need == 0 { flag = flag & F_KEEP }
     if n == 0 && flag == 0 { return T_DEAD }
@@ -525,7 +567,14 @@ fn (c: mut &Cache) next(d: &Dfa, p: &syn.Prog, s: int, k: int): int {
         c.qclear()
         for j in 0..ncur {
             let id = c.cur[j]
-            if id == MARK { c.mark() } else { c.add(p, id, before) }
+            if id == MARK {
+                c.mark()
+            } else if id < MARK {
+                let x = -id - 2
+                if !c.visited(x) { c.visit(x) }
+            } else {
+                c.add(p, id, before)
+            }
         }
         ncur = c.ni
         for j in 0..ncur { c.cur[j] = c.items[j] }
@@ -539,6 +588,7 @@ fn (c: mut &Cache) next(d: &Dfa, p: &syn.Prog, s: int, k: int): int {
             c.mark()
             continue
         }
+        if id < MARK { continue }
         let i = &p.inst[id]
         let op = i.op
         if op == syn.I_MATCH {
@@ -564,7 +614,7 @@ fn (c: mut &Cache) next(d: &Dfa, p: &syn.Prog, s: int, k: int): int {
     if isword { nflag = nflag | F_LASTWORD }
     if flag & F_U != 0 && !ismatch && !eot {
         // New threads start here, after the others.
-        if c.ni == 0 { nflag = nflag | F_START }
+        if c.leaves == 0 { nflag = nflag | F_START }
         if d.longest { c.mark() }
         c.add(p, p.start, after)
         nflag = nflag | F_U
