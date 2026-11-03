@@ -603,7 +603,8 @@ fn (g: mut &Gen) genFunc(f: int) {
 // loops more) choose first: a range with no loud statement (no call, no 128-bit operation,
 // ...: the code there leaves rsi, rdi, r8 and r9 alone) can take one of those; else one of
 // the callee-saved registers, which are saved in the prologue: a new one only for a local
-// named three times or in a loop (else saving it costs what it saves).
+// named three times or in a loop, or twice with a loud statement in its range (else saving it
+// costs what it saves).
 fn (g: mut &Gen) allocRegs(f: int) {
     g.resetScan()
     g.saved = []
