@@ -34,7 +34,8 @@
 // Int is bigint, Float float (shortest text, exact), Bool bit, Text
 // nvarchar (UTF-16; NUL characters allowed), Bytes varbinary, Dec decimal(p,
 // s) from its exact text (p and s from the value; at most 38 digits), NULL
-// an nvarchar NULL. Results: bigint/int/smallint/tinyint/bit are int,
+// of the parameter's type as the server describes it (SQLDescribeParam;
+// else nvarchar). Results: bigint/int/smallint/tinyint/bit are int,
 // float/real float (read as the C double, exact), decimal/numeric/money/
 // smallmoney exact Decimals with the column's scale, binary types bytes,
 // and every other type text (nvarchar, varchar, date and time types,
@@ -52,9 +53,10 @@
 //
 // Concurrency: ODBC calls block the thread. The calls that can take long
 // (SQLDriverConnectW, SQLExecDirectW, SQLExecute, SQLFetch, SQLGetData,
-// SQLMoreResults, SQLEndTran, SQLDisconnect) each have one call site, outside
-// any Shared.with, so that they can be marked `blocking` (run on the helper
-// pool while the task parks, design/concurrency.md, C1c) when that exists.
+// SQLMoreResults, SQLDescribeParam, SQLEndTran, SQLDisconnect) each have one
+// call site, outside any Shared.with, so that they can be marked `blocking`
+// (run on the helper pool while the task parks, design/concurrency.md, C1c)
+// when that exists.
 // No MARS: one open result set per connection at a time (reset() or drop the
 // Stmt to free the connection; another statement's call meanwhile is the
 // driver's "Connection is busy" error).
@@ -377,13 +379,15 @@ fn shutdown(st: &task.Shared[ConnState]): Result[Unit, Error] {
     if !alive { return Ok(Unit{}) }
     for h in stmts { SQLFreeHandle(i32(H_STMT), h) }
     if inTx { endTran(dbc, ROLLBACK) }
-    var r = rc(SQLDisconnect(dbc))
-    if !ok(r) && endTran(dbc, ROLLBACK) == SQL_SUCCESS { r = rc(SQLDisconnect(dbc)) }
+    var r = disconnect(dbc)
+    if !ok(r) && endTran(dbc, ROLLBACK) == SQL_SUCCESS { r = disconnect(dbc) }
     let res: Result[Unit, Error] = if ok(r) { Ok(Unit{}) } else { Err(fail(H_DBC, dbc, r, "disconnect")) }
     SQLFreeHandle(i32(H_DBC), dbc)
     SQLFreeHandle(i32(H_ENV), env)
     return res
 }
+
+fn disconnect(dbc: ptr): int { return rc(SQLDisconnect(dbc)) }
 
 fn endTran(dbc: ptr, how: int): int { return rc(SQLEndTran(i32(H_DBC), dbc, i32(how))) }
 

@@ -447,6 +447,14 @@ already private to their module, so the wrapper module makes the choice. A
 an `extern fn` accepts any obx function of the matching type, and a callback
 would run obx code on the helper thread.
 
+lib/mssql.obx (SQL Server through ODBC) has no non-blocking API to park on,
+so its long calls are the third kind: SQLDriverConnectW, SQLExecDirectW,
+SQLExecute, SQLFetch, SQLGetData, SQLMoreResults, SQLDescribeParam,
+SQLEndTran and SQLDisconnect are to be marked `blocking` when C1c merges.
+Each has a single call site, outside any `Shared.with`, and its buffers are
+owned by the Stmt (or are arrays that live for the call), so marking them
+changes no code around them.
+
 Gate: an HTTP/1.1 server on one core that holds 10,000 idle keep-alive
 connections and serves a Postgres query per request through a pool, with no
 leaks under `OBX_CHECK=1` after a graceful shutdown.

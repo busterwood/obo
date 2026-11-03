@@ -34,6 +34,7 @@ for leaks.
 | `ffi.obx` | 140 | C memory for modules that call C: owned `Mem` (alloc, cstr, copyBytes), unchecked peek/poke/bytes |
 | `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
 | `postgres.obx` | 370 | PostgreSQL through libpq: Conn, Rows |
+| `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
 | `task.obx` | 270 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation, sleep, deadlines |
 | `net.obx` | 440 | TCP over IPv4 and IPv6 for tasks: listen, accept, connect, read, write |
 
@@ -186,10 +187,10 @@ full disk). `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
 
 ### ffi
 
-C memory for modules that declare externs (SPEC 12), used by sqlite and
-postgres. `Mem` is owned memory C may use, freed when dropped:
-`alloc(n)` (zeroed, never a null pointer), `cstr(s)` (the bytes and a NUL),
-`copyBytes(s)`; `ptr()`, `size()`, index-checked `get`/`set` (bytes),
+C memory for modules that declare externs (SPEC 12), used by sqlite,
+postgres and mssql (its bound parameters). `Mem` is owned memory C may
+use, freed when dropped: `alloc(n)` (zeroed, never a null pointer),
+`cstr(s)` (the bytes and a NUL), `copyBytes(s)`; `ptr()`, `size()`, index-checked `get`/`set` (bytes),
 `getI32`/`setI32`, `getPtr`/`setPtr`, `toStr()`. For memory C owns, at a
 pointer C returned: `peek`/`poke`, `peekI32`/`pokeI32`,
 `peekPtr`/`pokePtr` (element `i`) and `bytes(p, n)` (a copy); these are as
@@ -305,20 +306,20 @@ on it, and `cmd/httpload.obx` a load client.
 are not there yet: a task's function is a plain `fn`, and passing borrows
 into a task needs the checker's help (design/concurrency.md, section 5).
 
-### sqldialect, sqlite, postgres
+### sqldialect, sqlite, postgres, mssql
 
 Database adapters over the C client libraries (a program that imports one is
-dynamically linked to libsqlite3.so.0 or libpq.so.5; the tests that need one
-are skipped when it is not installed). Examples: `examples/sqlite_ledger.obx`,
-`examples/postgres_ledger.obx`.
+dynamically linked to libsqlite3.so.0, libpq.so.5 or libodbc.so.2; the tests
+that need one are skipped when it is not installed). Examples:
+`examples/sqlite_ledger.obx`, `examples/postgres_ledger.obx`.
 
 - **sqldialect** (shared): `Value` (`Null Int Float Bool Text Bytes Dec`,
   `toStr` as an SQL literal), `DbError {code, state, msg}` (`"error 19:
   UNIQUE constraint failed: t.id"`, `"error 7 (23505): duplicate key ..."`)
   and the adapters' own codes `E_INPUT E_NULL E_TYPE E_NONFINITE E_INEXACT
-  E_DEC_*` (1000 and up, above every SQLite and libpq code); `Sql` fragments
-  (`sql(text)`, `add`, `arg(v)`, `of(parts, args)`, `render(dialect)` with
-  `?`, `$n`, `@pn`, `:n` placeholders); `parseDecimal`, `decimalText`,
+  E_DEC_* E_CLOSED E_LIMIT` (1000 and up, above every SQLite and libpq
+  code); `Sql` fragments (`sql(text)`, `add`, `arg(v)`, `of(parts, args)`,
+  `render(dialect)` with `?`, `$n`, `@pn`, `:n` placeholders); `parseDecimal`, `decimalText`,
   `fitDecimal(d, p, s)`.
 - **sqlite**: `open(path)`, `openWith(path, flags)`; `Db`: `exec(script)`,
   `prepare(sql)` (one statement), `query(sql, &args)`, `querySql(&sql)`,
@@ -336,6 +337,58 @@ are skipped when it is not installed). Examples: `examples/sqlite_ledger.obx`,
   `columnTypmod`, `decimalType` (numeric precision and scale), and per cell
   `isNull int bool float text bytes decimal decimalOrNull value`. A failed
   statement is an `Err` with the SQLSTATE in `state`.
+- **mssql**: `connect(connStr)` (an ODBC connection string, for example
+  `Driver={ODBC Driver 18 for SQL Server};Server=...;UID=...;PWD=...`).
+  `Conn`: `exec(batch)` (every result read), `prepare(sql)`, `query(sql,
+  &args)`, `querySql`, `run(sql, &args)` (rows changed), `transaction(&fn)`
+  (autocommit off, COMMIT or ROLLBACK; no nesting), `inTransaction`,
+  `diagnostics()` (connect's 01000 records), `close()`. `Stmt` (a cursor on
+  the server; one open result per connection, no MARS): `bind(i, v)`,
+  `bindAll`, `bindDecimal(i, d, p, s)`, `bindParam(i, Param)`, `paramCount`,
+  `execute`, `step(): bool`, `nextResult(): bool` (batches), `affected`,
+  `reset` (frees the connection for the next statement), `diagnostics()`
+  (PRINT and other informational records), `setMaxValue(n)`,
+  `columnCount`, `columnName`, `columnType` (the SQL_* code), `columnSize`,
+  `decimalType`, and per column of the current row `isNull int bool float
+  text bytes decimal decimalOrNull value`. Also `paramOf(v): Param`,
+  `decimalParam(d, p, s)`, `toUtf16`, `fromUtf16`, `floatOfBits`,
+  `errorOf`.
+
+  Types: bigint, int, smallint, tinyint and bit are ints (`bool` reads bit);
+  decimal, numeric, money and smallmoney exact Decimals at the column's
+  scale (read as text, never through a float); float and real floats (the C
+  double's bits, so real gives its exact value 0.10000000149011612); binary
+  types bytes; everything else text in the driver's format ((n)varchar,
+  (n)char, text, date, time, datetime2, datetimeoffset, uniqueidentifier,
+  xml). Parameters: Int bigint, Bool bit, Float float (NaN and infinities
+  are `E_NONFINITE`), Text nvarchar, Bytes varbinary, Dec decimal(p, s) from
+  its exact digits, NULL typed by `SQLDescribeParam` (so it fits a varbinary
+  column). Text crosses the boundary as UTF-16 with a strict converter in
+  obx (no locale, no C): invalid UTF-8 in a parameter or SQL text is
+  `E_INPUT` before any call, a lone surrogate from the server `E_TYPE`;
+  NUL characters inside text values are kept. NULL is never "" or 0.
+
+  Long values are read in chunks with SQLGetData (a buffer that grows to 1
+  MiB) up to the Stmt's maxValue, 16 MiB of driver bytes by default (UTF-16
+  for text); a longer value is read past and is `E_LIMIT`, and the columns
+  after it stay readable. Columns can be read in any order (the skipped ones
+  are kept). Errors: a failed call's first diagnostic record that is not a
+  warning gives `code` (SQL Server's error number), `state` (SQLSTATE) and
+  `msg`: `"error 208 (42S02): [Microsoft][ODBC Driver 18 for SQL
+  Server][SQL Server]Invalid object name 'nope'."`. A `Stmt` belongs to its
+  `Conn`: after the connection is closed or dropped, every call on the
+  statement is `E_CLOSED` (the statement handles are freed before the
+  disconnect), and dropping it frees nothing twice. Each bound value lives
+  in C memory the `Stmt` owns until the parameter is bound again or the
+  statement is dropped, so the driver reads it at `execute`.
+
+  Live tests (`lib/tests/run/mssql_live_*.obx`) read an ODBC connection
+  string from `$MSSQL_TEST_DSN`, else from `~/.obo-mssql-dsn` (one line,
+  mode 600), never print it, use only `#temp` tables, and exit 77 (skipped)
+  when neither is there. For example, with the Microsoft driver installed:
+
+      export MSSQL_TEST_DSN='Driver={ODBC Driver 18 for SQL Server};Server=localhost;UID=<user>;PWD=<password>;TrustServerCertificate=yes'
+      python3 lib/run_tests.py mssql_
 
 Every getter is exact or an error: no NULL becomes 0 or "" (`E_NULL`; use
 `isNull`, `value` or `decimalOrNull`), no REAL becomes an int or a decimal
@@ -441,3 +494,8 @@ them and a NUL-terminated temporary copy otherwise (freed after the call).
   until a remove.
 - Errors are errno ints in `os` (setEnv, setCwd) but `IoError` in `io` and
   `fs`.
+- `mssql`: no MARS (one open result per connection), no output or
+  table-valued parameters, no bulk copy, no streaming of a long value (it
+  is read whole, up to maxValue); a NULL parameter costs a server round trip
+  (SQLDescribeParam) to learn its type; date and time columns are text, not
+  `time` values.
