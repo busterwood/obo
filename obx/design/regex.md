@@ -1,6 +1,7 @@
 # A regex engine for obx
 
-Status: R1 built, 2026-11-03 (branch `r1`; "R1 as built" in section 3).
+Status: R1 built, 2026-11-03 (branch `r1`; "R1 as built" in section 3);
+R2 built, 2026-11-03 (branch `r2`; "R2 as built" in section 3).
 R2 and R3 are plans. No language change was needed.
 
 ## 0. Goal and choice
@@ -201,6 +202,144 @@ the Pike VM's loops (the same code runs twice as fast through gcc).
 
 Gate: within a small factor of Rust's `regex` on the benchmark set, and the
 tests and the generator still agree with Go.
+
+### R2 as built
+
+Branch `r2`, 3 November 2026. About 1,250 lines of obx in a new module,
+`lib/regex_dfa.obx`, 300 in `lib/regex.obx`, 50 in `lib/regex_syntax.obx`,
+and four memory-search intrinsics in both runtimes.
+
+**Memory search** (`compiler/rt.h`, `compiler/native/rt.c`; SSE2, 16 bytes
+a step, with a byte loop elsewhere): `strFindByte` (memchr), `strFindAny`
+(the first byte of a set of up to 16 bytes, by comparisons), `strFind`
+(memmem as Rust's memchr crate does it: the two rarest bytes of the needle
+by a fixed frequency rank, compared at their offsets, a candidate checked
+with memcmp) and `strFindPair` (a position p with `s[p+i1]` in one set of
+up to 4 bytes and `s[p+i2]` in another). They are intrinsics, as `strByte`
+is: the regex code is obx and calls them. Teddy (Rust's SIMD multi-literal
+search) was not ported: `strFindPair` on the two rarest positions of a few
+literals does the alternation's job, with a byte check for the rest.
+
+**Literal extraction** (after Rust's `regex-syntax` `hir::literal`): from
+the tree, a finite set of literals, each exact or a prefix of a match, with
+the limits 250 literals, 32 runes, classes of at most 10 runes; `(?i)`
+expands to the case orbit (`k`, `K`, the Kelvin sign); U+FFFD has no
+literal (it matches every invalid byte). Literals another literal begins
+are dropped. The same code run on the reversed tree gives suffix literals,
+and on a tail of the top concatenation the "inner" literals. A literal set
+becomes a **prefilter**: one literal (`strFind`), two bytes at two offsets
+(`strFindPair`, picked as the rarest pair from a byte-frequency table) or a
+byte set at an offset (`strFindAny`), with an estimated candidate rate. A
+prefilter that is estimated or measured (after 64 uses, if it skips fewer
+than 16 bytes a use) to be poor is not used.
+
+**Lazy DFA** (`regex_dfa.obx`, RE2's `dfa.cc`):
+- A state is the ordered list of the program's live instructions (rune,
+  match, and empty-width tests not yet satisfied), as RE2's; in
+  leftmost-longest mode marks separate the threads of different start
+  positions and each group is kept sorted. Its flags hold the empty-width
+  context (begin of text and line, the last rune a word rune), a delayed
+  match, "unanchored: start new threads after each rune" (instead of RE2's
+  `.*?` prefix, so the reverse program needs no copy) and "only fresh start
+  threads" (where a prefilter may skip ahead).
+- **UTF-8 approach**: the DFA steps by rune, not byte. Runes are split
+  into equivalence classes (every instruction's ranges, `\n` and the word
+  set refine them); an ASCII byte finds its class in a 128-entry table,
+  other runes are decoded as Go decodes them (an invalid byte is U+FFFD,
+  one byte wide) and found by binary search; one extra class is the end of
+  text. Results are Go's by construction (same decoding; `\b`/`\B` between
+  runes), and a pattern's classes stay few (a row of the table is a few
+  words, not 256).
+  The cost is a decode on non-ASCII text, which a byte DFA avoids; the
+  benchmark corpus is ASCII.
+- Transitions are 64-bit: the next state's row offset, with tag bits for
+  "match before this rune", unknown, dead and cache full, so the inner loop
+  is one load and one compare for a known non-matching step.
+- The cache is 2 MB of transition and state words. When full it is
+  cleared (the current state is kept), and a search that has cleared it
+  before and since scanned fewer than 10 bytes per state built gives up
+  (RE2's rule); the call then finishes with the Pike VM or backtracker.
+- Search: the forward DFA finds the end of the leftmost match (the last
+  match state before the dead state; the earliest one for `isMatch`), the
+  reversed program (`syn.compileReverse`), anchored and leftmost-longest,
+  run backward from there finds its start. Captures run the backtracker
+  (with a bitmap over the span only) or the Pike VM anchored at the start
+  and limited to the span. Patterns anchored with `\A` skip the reverse
+  run.
+- **Reverse-inner search** (Rust's): when no prefix prefilter is good, a
+  literal inside the top concatenation whose first bytes cannot occur in
+  the part before it: find the literal, run the reversed part backward to
+  the leftmost start, then the whole pattern forward from there. As the part
+  cannot contain the literal's first byte, the first candidate that works
+  gives the leftmost match. If a forward run would read again what an
+  earlier failed one read (quadratic), the plain search takes over.
+- **Suffix check**: a single literal every match ends with is searched for
+  first (remembered across a `findAll`): no literal, no match.
+
+**Matcher selection** per search: the one-pass matcher as before; a
+literal pattern (Go's complete literal prefix, no conditions) is a
+`strFind`; the DFA on texts of at least 128 bytes (measured: below that
+Go's matchers start faster; the DFA wins from 32 to 64 bytes on most
+patterns but loses on alternations); else Go's choice. `matcherFor(n)`
+answers `onepass`, `literal`, `dfa`, `backtrack` or `pike`;
+`literalSearch()` `prefix`, `inner`, `suffix` or `none`.
+`compileForcing` adds `dfa` (always the DFA, no literal searches),
+`prefilter` (every literal search, however poor) and `dfatiny` (a cache of
+about three states, cleared at almost every step, never giving up).
+
+**Tests**:
+- `regex_find`, `regex_re2search` (now 43,296 runs) and `regex_api`
+  (replace, split, quote) also run with `dfa`, `prefilter` and `dfatiny`
+  forced; `regex_parse` has no searches;
+- `regex_linear` adds the DFA modes and `(a|b)*a(a|b){20}` (2^21 DFA
+  states);
+- the new `regex_dfa`: five patterns with exponentially many DFA states on
+  random text (Pike's matches, linear time), the tiny cache against the
+  Pike VM, the literal search chosen for each benchmark pattern, invalid
+  UTF-8 and searches starting inside a rune under every DFA mode;
+- `tests/regexgen.py` compares the three DFA modes with compile's choice
+  too (all submatch indexes in both semantics, and `isMatch`): seeds 1 to 5
+  at 3,000 patterns and texts of up to 3,000 bytes (C) and 1,500 patterns
+  up to 2,000 bytes (native): no difference;
+- `re2_exhaustive.py`: 5,716,884 cases, 124,871,232 runs under six
+  matchers (submatch indexes, `isMatch` and `findIndex`), no failure (C,
+  2 to 3 minutes).
+
+**Numbers**: PERFORMANCE.md, section Regex. Through C, 1.3 to 2.6 times Rust's
+`regex` crate on the benchmark set (email 1.3, `(?i)` 1.8, the alternation
+and `\w+` 2.2, the literal and the captures 2.6) and half its time on the
+`ERROR` lines; natively 2.0 to 4.0 times. Against R1 (Go's engine), 2 to
+650 times faster through C. The gaps that remain are the per-match costs
+of `\w+` and the captures, AVX2 on the literal, and the native backend's
+checks in the DFA loop.
+
+**A finding: the closure's order.** RE2's DFA keeps, for an empty-width
+test that cannot be decided yet (`\b`, `$` need the next rune), the test
+alone, and re-adds it when the next rune is known. Go's Pike VM decides
+the test at once, and the instructions on the way to it are already marked
+visited, which can change the priority order: Go compiles a nullable `x*`
+as `(x+)?` (golang.org/issue/46123), and `(\b|s)*` on "s" is 0-0 in Go, but
+was 0-1 in the DFA. A leftmost-first state with a waiting test now also
+records the instructions its closure passed through, in order, and the
+closure is redone in that order with them marked, which gives Go's order
+exactly. regexgen found it through `split`: captures had hidden it (the
+backtracker on the span returned Go's match), so regexgen, re2-search and
+`regex_dfa` now also compare the spans alone.
+
+**Deviations:**
+- The DFA is rune-based, not byte-based as in RE2 and Rust (above).
+- No Teddy and no Aho-Corasick: the alternation uses `strFindPair` on
+  two rare positions; patterns with many literals (beyond 250, or long
+  ones) get no prefilter and run the DFA alone.
+- The DFA's cache lives in the per-call matching state (`Exec`), not in the
+  `Regex` (which is immutable behind `&Regex`, and obx has no interior
+  mutability or pool to share a cache across calls without a language
+  change). A `findAll` reuses its states; separate `isMatch` calls on the
+  same `Regex` rebuild theirs, which costs about a microsecond per call on
+  short texts and is why the DFA starts at 128 bytes.
+- AVX2 is not used (SSE2 only, which every x86-64 has; no runtime
+  dispatch). Rust's memchr uses AVX2 where the CPU has it, which is likely
+  most of the gap on the literal.
 
 ### R3: Unicode, and what tools need
 
