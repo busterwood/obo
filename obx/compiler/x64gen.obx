@@ -143,6 +143,7 @@ type Gen = record {
     retTy: int
     epiL: int                   // the label of the function's restores and return, or -1
     epiJmps: []int              // ... the positions of the jumps to it
+    loopTops: []int             // the labels of the rotated loops' bodies, reached only by jumps
     entrySym: int
     dyn: bool                   // dynamically linked: every C function the program calls is imported
     libs: []elf.Lib
@@ -170,7 +171,7 @@ type Stub = value record {
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
-        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
+        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
@@ -473,6 +474,7 @@ fn (g: mut &Gen) genFunc(f: int) {
     g.retTy = g.u.tys[ft].base
     g.epiL = -1
     g.epiJmps = []
+    g.loopTops = []
     g.curFunc = f
     g.allocRegs(f)
     g.nLocalRegs = len(g.saved)
@@ -591,6 +593,30 @@ fn (g: mut &Gen) genFunc(f: int) {
     }
     for i in pushed..len(g.saved) { p.store(8, rbp(g.saved[i]), LOCAL_REGS[i]) }
     g.a.insert(start, &p.code, firstLabel)
+    g.alignLoops(firstLabel)
+}
+
+// Pads before the body of each rotated loop with nops, as gcc does (to a multiple of 16 when
+// that takes at most 10 bytes, else of 8): a loop's back branch then fetches a whole block.
+// The pads follow the jump to the loop's test, so they never run (code reaches the body only by
+// jumps). After the prologue, so positions are final (functions start at multiples of 16).
+fn (g: mut &Gen) alignLoops(firstLabel: int) {
+    var ats: []int = []
+    var ns: []int = []
+    var shift = 0
+    for j in 0..len(g.loopTops) {
+        // the tops in the order of the code (a loop's top is bound before its inner loops')
+        let at = g.a.labelPos(g.loopTops[j])
+        if at < 0 || len(ats) > 0 && at <= ats[len(ats) - 1] { continue }
+        let now = at + shift
+        var pad = (16 - now % 16) % 16
+        if pad > 10 { pad = (8 - now % 8) % 8 }
+        if pad == 0 { continue }
+        append(mut &ats, at)
+        append(mut &ns, pad)
+        shift += pad
+    }
+    g.a.padAt(&ats, &ns, firstLabel)
 }
 
 // Chooses the locals of function f that live in registers (g.reg), and saves the registers.
@@ -1539,7 +1565,10 @@ fn (g: mut &Gen) stmt(s: int) {
         let end = g.a.newLabel()
         // rotated: the condition is tested at the bottom (one branch per iteration), and first
         // reached by a jump to it
-        if n.b >= 0 { g.a.jmp(test) }
+        if n.b >= 0 {
+            g.a.jmp(test)
+            append(mut &g.loopTops, top)
+        }
         g.a.bind(top)
         g.loops += 1
         append(mut &g.breakL, end)
@@ -1627,6 +1656,7 @@ fn (g: mut &Gen) rotated(s: int) {
     let test = g.a.newLabel()
     let end = g.a.newLabel()
     g.a.jmp(test)
+    append(mut &g.loopTops, top)
     g.a.bind(top)
     g.loops += 1
     append(mut &g.breakL, end)
