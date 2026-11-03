@@ -2,7 +2,12 @@
 // keep-alive connections, each a task sending GET PATH and reading the reply,
 // one request at a time, for SECONDS seconds.
 //
-//     httpload ADDR CONNS SECONDS [PATH]
+//     httpload [--client] ADDR CONNS SECONDS [PATH]
+//
+// With --client the tasks send their requests through lib/http instead:
+// one http.Client with maxPerHost CONNS shared by the CONNS tasks, each
+// request a client.get and a text() of its body (the HTTP client's gate,
+// design/http-client.md).
 //
 // Prints one line: requests, requests per second, and the latency
 // percentiles in microseconds (from the write of a request to the end of its
@@ -14,6 +19,7 @@ import "io"
 import "os"
 import "time"
 import "strings"
+import "http"
 
 type Load = record {
     addr: str
@@ -50,6 +56,38 @@ fn run(l: &Load, lat: mut &[]int): Result[Unit, io.IoError] {
         append(mut &lat, time.monotonicNs() - t0)
     }
     return Ok(Unit{})
+}
+
+// --client: the same loop through an http.Client.
+type ClientLoad = record {
+    c: http.Client
+    url: str
+    end: int
+}
+
+fn viaClient(l: ClientLoad): Tally {
+    var t = Tally{lat: [], errors: 0}
+    while time.monotonicNs() < l.end {
+        let t0 = time.monotonicNs()
+        match l.c.get(l.url) {
+            Ok(r) {
+                match r.text() {
+                    Ok(_) { append(mut &t.lat, time.monotonicNs() - t0) }
+                    Err(e) {
+                        t.errors += 1
+                        eprintln("httpload: " + e.toStr())
+                        return t
+                    }
+                }
+            }
+            Err(e) {
+                t.errors += 1
+                eprintln("httpload: " + e.toStr())
+                return t
+            }
+        }
+    }
+    return t
 }
 
 // Reads one reply (its head and Content-Length bytes of body); the server
@@ -94,12 +132,18 @@ fn headEnd(b: &[]byte, n: int): int {
 fn pct(xs: &[]int, p: int): int { return xs[min(len(xs) - 1, len(xs) * p / 100)] / 1000 }
 
 fn usage(): never {
-    eprintln("usage: httpload ADDR CONNS SECONDS [PATH]")
+    eprintln("usage: httpload [--client] ADDR CONNS SECONDS [PATH]")
     os.quit(2)
 }
 
 fn main() {
-    let args = os.arguments()
+    var args = os.arguments()
+    let viaHttp = len(args) > 0 && args[0] == "--client"
+    if viaHttp {
+        var rest: []str = []
+        for i in 1..len(args) { append(mut &rest, args[i]) }
+        args = rest
+    }
     if len(args) < 3 { usage() }
     let conns = strings.parseInt(args[1]).unwrapOr(0)
     let secs = strings.parseInt(args[2]).unwrapOr(0)
@@ -111,7 +155,14 @@ fn main() {
     var errors = 0
     task.scope(fn(s: mut &task.Scope) {
         var fs: []task.Future[Tally] = []
-        for i in 0..conns { append(mut &fs, s.start(client, Load{addr: args[0], path: path, end: end})) }
+        if viaHttp {
+            var o = http.defaults()
+            o.maxPerHost = conns
+            let c = http.newClient(o)
+            for i in 0..conns { append(mut &fs, s.start(viaClient, ClientLoad{c: c, url: "http://" + args[0] + path, end: end})) }
+        } else {
+            for i in 0..conns { append(mut &fs, s.start(client, Load{addr: args[0], path: path, end: end})) }
+        }
         for t in task.all(fs).unwrap() {
             for x in t.lat { append(mut &lat, x) }
             errors += t.errors
