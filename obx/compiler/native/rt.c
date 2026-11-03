@@ -484,18 +484,40 @@ static void* rt_vdso_sym(const char* base, const char* name, const char* ver) {
     }
     return 0;
 }
+/* The value of the auxiliary vector's entry of type t (it follows the environment on the
+   initial stack), or 0 when there is none. */
+static u64 rt_auxval(char** envp, u64 t) {
+    while (*envp) envp++;
+    for (u64* av = (u64*)(envp + 1); av[0] != 0; av += 2)            /* AT_NULL ends the vector */
+        if (av[0] == t) return av[1];
+    return 0;
+}
 static void rt_vdso_init(char** envp) {
     const char* off = getenv("OBX_NO_VDSO");
     if (off && off[0] == '1') return;
-    while (*envp) envp++;
-    const char* base = 0;
-    for (u64* av = (u64*)(envp + 1); av[0] != 0; av += 2)            /* AT_NULL ends the vector */
-        if (av[0] == 33) base = (const char*)av[1];                  /* AT_SYSINFO_EHDR */
+    const char* base = (const char*)rt_auxval(envp, 33);             /* AT_SYSINFO_EHDR */
     if (!base) return;
     int (*f)(int, rt_ts*) = (int (*)(int, rt_ts*))rt_vdso_sym(base, "__vdso_clock_gettime", "LINUX_2.6");
     rt_ts t;
     if (f && f(1, &t) == 0) rt_vdso_cg = f;
 }
+/* lib std's hash key (std.obx, "keyed hashing"): the 16 random bytes the kernel gives every
+   process (AT_RANDOM), which rt_init finds; std derives its key from them. Without AT_RANDOM
+   (never on Linux since 2.6.29) the getrandom system call fills them. Word i, 0 or 1. */
+static const unsigned char* rt_at_random;
+u64 obxlib_hash_key(i64 i) {
+    static unsigned char k[16];
+    static bool got;
+    if (!got) {
+        if (rt_at_random) for (int j = 0; j < 16; j++) k[j] = rt_at_random[j];
+        else SYS(S_GETRANDOM, k, 16, 0);
+        got = true;
+    }
+    u64 w = 0;
+    for (int j = 7; j >= 0; j--) w = w << 8 | k[(i & 1) * 8 + j];
+    return w;
+}
+
 /* clock_gettime(which): through the vDSO when rt_init found it, else the system call */
 static void rt_clock(int which, rt_ts* t) {
     if (rt_vdso_cg && rt_vdso_cg(which, t) == 0) return;
@@ -571,6 +593,7 @@ void rt_init(int argc, char** argv) {
     const char* c = getenv("OBX_CHECK");
     rt_check = c && c[0] == '1';
     rt_argc = argc; rt_argv = argv;
+    rt_at_random = (const unsigned char*)rt_auxval(argv + argc + 1, 25);     /* AT_RANDOM */
     rt_vdso_init(argv + argc + 1);
     rt_stack_top = __builtin_frame_address(0);
     rt_main_tid = SYS(186, 0, 0, 0);            /* gettid */

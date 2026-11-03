@@ -181,13 +181,15 @@ fn cmpOf(lt: bool, gt: bool): int {
     return 0
 }
 
-const FNV_PRIME: u64 = 1099511628211
 const GOLDEN: u64 = 11400714819323198485
 const M64: u128 = 0xffffffffffffffff
 
+// The bits of a (two's complement) as a u64.
+fn bitsOf(a: int): u64 { return u64(a & 9223372036854775807) | u64(b2i(a < 0)) << 63 }
+
 pub fn (a: int) eq(b: &int): bool { return a == b }
 pub fn (a: int) cmp(b: &int): int { return cmpOf(a < b, a > b) }
-pub fn (a: int) hash(): u64 { return (u64(a & 9223372036854775807) ^ u64(b2i(a < 0))) *% GOLDEN }
+pub fn (a: int) hash(): u64 { return bitsOf(a) *% GOLDEN }
 pub fn (a: int) toStr(): str { return intToStr(a) }
 
 pub fn (a: i32) eq(b: &i32): bool { return a == b }
@@ -212,12 +214,12 @@ pub fn (a: byte) toStr(): str { return intToStr(int(a)) }
 
 pub fn (a: i128) eq(b: &i128): bool { return a == b }
 pub fn (a: i128) cmp(b: &i128): int { return cmpOf(a < b, a > b) }
-pub fn (a: i128) hash(): u64 { return u128(a & 170141183460469231731687303715884105727).hash() ^ u64(b2i(a < 0)) }
+pub fn (a: i128) hash(): u64 { return sipWords(u64(a & 18446744073709551615), bitsOf(int(a >> 64)), 1) }
 pub fn (a: i128) toStr(): str { return i128ToStr(a) }
 
 pub fn (a: u128) eq(b: &u128): bool { return a == b }
 pub fn (a: u128) cmp(b: &u128): int { return cmpOf(a < b, a > b) }
-pub fn (a: u128) hash(): u64 { return (u64(a & M64) *% GOLDEN ^ u64(a >> 64)) *% GOLDEN }
+pub fn (a: u128) hash(): u64 { return sipWords(u64(a & M64), u64(a >> 64), 0) }
 pub fn (a: u128) toStr(): str { return u128ToStr(a) }
 
 // ---- checked arithmetic
@@ -451,14 +453,138 @@ pub fn (a: bool) toStr(): str {
 pub fn (a: str) eq(b: &str): bool { return a == b }
 pub fn (a: str) cmp(b: &str): int { return cmpOf(a < b, a > b) }
 pub fn (a: str) toStr(): str { return a }
-// FNV-1a over the bytes.
-pub fn (s: str) hash(): u64 {
-    var h: u64 = 14695981039346656037
-    for i in 0..len(s) {
-        h = (h ^ u64(strByte(s, i))) *% FNV_PRIME
-    }
-    return h
+pub fn (s: str) hash(): u64 { return sipStr(&s, 0, len(s)) }
+
+// ---- keyed hashing
+//
+// A Map keyed by input (query parameters, header names, JSON object keys,
+// ids) must not let the sender choose keys that collide: n colliding keys
+// cost n^2 probes (hash flooding: Klink and Waelde, 28C3 2011). So every
+// hash of variable-length or wider-than-64-bit data (str, i128, u128,
+// Decimal and money) is SipHash-1-3 (Aumasson and Bernstein 2012; Rust's
+// std uses the same) under a 128-bit key chosen at random for each process.
+// A seeded FNV or Murmur hash would not do: their collisions are found
+// without knowing the seed. The 64-bit integers keep their multiplicative
+// hash, a bijection (no two values share a hash); Map mixes the key into
+// the slot a hash goes to (Map.home), so their slots cannot be predicted
+// either. Map keeps insertion order, so the key changes no program's output.
+//
+// The key comes from the 16 random bytes the kernel puts in every process's
+// auxiliary vector (AT_RANDOM): no system call. glibc uses the same bytes
+// for its stack canary and pointer guard, so the key is derived from them
+// with SipHash, never the bytes themselves. Worker processes forked by
+// task.workers inherit their supervisor's key (as they inherit all its
+// memory); a program run again gets a new one.
+
+extern "c" fn rtHashKey(i: int): u64 as "obxlib_hash_key"
+
+var sipKeyed: bool = false
+var sipK0: u64 = 0
+var sipK1: u64 = 0
+var mapSeed: u64 = 0     // what Map mixes into its slots
+
+// The state of one SipHash computation.
+type Sip = value record { v0: u64; v1: u64; v2: u64; v3: u64 }
+
+fn sipOf(k0: u64, k1: u64): Sip {
+    return Sip{v0: k0 ^ 0x736f6d6570736575, v1: k1 ^ 0x646f72616e646f6d,
+        v2: k0 ^ 0x6c7967656e657261, v3: k1 ^ 0x7465646279746573}
 }
+
+fn (s: mut &Sip) round() {
+    s.v0 = s.v0 +% s.v1
+    s.v1 = (s.v1 << 13 | s.v1 >> 51) ^ s.v0
+    s.v0 = s.v0 << 32 | s.v0 >> 32
+    s.v2 = s.v2 +% s.v3
+    s.v3 = (s.v3 << 16 | s.v3 >> 48) ^ s.v2
+    s.v0 = s.v0 +% s.v3
+    s.v3 = (s.v3 << 21 | s.v3 >> 43) ^ s.v0
+    s.v2 = s.v2 +% s.v1
+    s.v1 = (s.v1 << 17 | s.v1 >> 47) ^ s.v2
+    s.v2 = s.v2 << 32 | s.v2 >> 32
+}
+
+// One 8-byte block (c = 1 round).
+fn (s: mut &Sip) block(m: u64) {
+    s.v3 ^= m
+    s.round()
+    s.v0 ^= m
+}
+
+// The hash (d = 3 rounds), after the last block.
+fn (s: mut &Sip) finish(): u64 {
+    s.v2 ^= 0xff
+    s.round()
+    s.round()
+    s.round()
+    return s.v0 ^ s.v1 ^ s.v2 ^ s.v3
+}
+
+// SipHash-1-3 of the bytes s[a..b] under the key (k0, k1).
+fn sipKeyedStr(k0: u64, k1: u64, s: &str, a: int, b: int): u64 {
+    var st = sipOf(k0, k1)
+    let end = b - (b - a) % 8
+    var i = a
+    while i < end {
+        st.block(u64(strByte(s, i)) | u64(strByte(s, i + 1)) << 8 | u64(strByte(s, i + 2)) << 16 |
+            u64(strByte(s, i + 3)) << 24 | u64(strByte(s, i + 4)) << 32 | u64(strByte(s, i + 5)) << 40 |
+            u64(strByte(s, i + 6)) << 48 | u64(strByte(s, i + 7)) << 56)
+        i += 8
+    }
+    var m = u64((b - a) & 255) << 56
+    var sh = 0
+    while i < b {
+        m |= u64(strByte(s, i)) << sh
+        sh += 8
+        i += 1
+    }
+    st.block(m)
+    return st.finish()
+}
+
+fn sipKey() {
+    let r0 = rtHashKey(0)
+    let r1 = rtHashKey(1)
+    var a = sipOf(r0, r1)
+    a.block(0x6b2068736168786f)     // "oxhash k": three outputs of the raw key
+    sipK0 = a.finish()
+    var b = sipOf(r0, r1)
+    b.block(0x6b2068736168786f)
+    b.block(1)
+    sipK1 = b.finish()
+    var c = sipOf(r0, r1)
+    c.block(0x6b2068736168786f)
+    c.block(2)
+    mapSeed = c.finish()
+    sipKeyed = true
+}
+
+// SipHash-1-3 of s[a..b] under the process's key.
+fn sipStr(s: &str, a: int, b: int): u64 {
+    if !sipKeyed { sipKey() }
+    return sipKeyedStr(sipK0, sipK1, s, a, b)
+}
+
+// SipHash-1-3 of three words (24 bytes) under the process's key.
+fn sipWords(x: u64, y: u64, z: u64): u64 {
+    if !sipKeyed { sipKey() }
+    var st = sipOf(sipK0, sipK1)
+    st.block(x)
+    st.block(y)
+    st.block(z)
+    st.block(u64(24) << 56)
+    return st.finish()
+}
+
+// The key Map mixes into its slots.
+fn hashSeed(): u64 {
+    if !sipKeyed { sipKey() }
+    return mapSeed
+}
+
+// SipHash-1-3 of the bytes of s under the key (k0, k1): the test vectors'
+// way in (std_hash.obx); programs use s.hash().
+pub fn sipHash13(k0: u64, k1: u64, s: &str): u64 { return sipKeyedStr(k0, k1, s, 0, len(s)) }
 
 pub fn min[T: Ord + copy](a: T, b: T): T {
     if b < a { return b }
@@ -1010,10 +1136,9 @@ pub fn (a: Decimal) eq(b: &Decimal): bool {
     return a.coef == b.coef && a.exp == b.exp && a.neg == b.neg
 }
 
+// SipHash of the canonical form (coef < 10^38 leaves the top bit free for the sign).
 pub fn (a: Decimal) hash(): u64 {
-    var h = a.coef.hash() ^ u64(a.exp + 100000) *% FNV_PRIME
-    if a.neg { h = h ^ GOLDEN }
-    return h *% GOLDEN
+    return sipWords(u64(a.coef & M64), u64(a.coef >> 64) | u64(b2i(a.neg)) << 63, bitsOf(a.exp))
 }
 
 // ---- text
@@ -1367,15 +1492,18 @@ pub type Map[K: Eq + Hash, V] = record {
     hashes: []u64
     index: []int   // -1 or an entry number; the length is a power of two
     shift: int     // 64 - log2(len(index))
+    seed: u64      // the process's hashSeed(): where a hash's slots are is not predictable
 }
 
 type Probe = value record { slot: int; entry: int }
 
 pub fn newMap[K: Eq + Hash, V](): Map[K, V] {
-    return Map{keys: [], vals: [], hashes: [], index: array(8, -1), shift: 61}
+    return Map{keys: [], vals: [], hashes: [], index: array(8, -1), shift: 61, seed: hashSeed()}
 }
 
-fn (m: &Map[K, V]) home(h: u64): int { return int((h *% GOLDEN) >> m.shift) }
+// The first slot for hash h: the top bits of (h ^ seed) * GOLDEN (Fibonacci hashing). With
+// the seed, keys whose hashes are known (the integers') still land in unknown slots.
+fn (m: &Map[K, V]) home(h: u64): int { return int(((h ^ m.seed) *% GOLDEN) >> m.shift) }
 
 // The slot holding k, or the empty slot where it would go (entry -1).
 fn (m: &Map[K, V]) find(k: &K, h: u64): Probe {
