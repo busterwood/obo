@@ -1,0 +1,1608 @@
+// regex: regular expressions with RE2 syntax, matched in time linear in the
+// size of the text (design/regex.md, R1). A port of Go's regexp package
+// (regexp.go, exec.go, backtrack.go, onepass.go; Go 1.26), BSD-3-Clause,
+// Copyright 2009 The Go Authors (see NOTICE). The parser and compiler are in
+// regex_syntax, the Unicode tables in regex_unicode.
+//
+//     let re = try regex.compile("(?P<y>\\d{4})-(?P<m>\\d{2})-(?P<d>\\d{2})")
+//     match re.captures("on 2026-11-03") {
+//         Some(c) { println(c.name("y").unwrap().text) }   // 2026
+//         None {}
+//     }
+//     println(re.replaceAll("2026-11-03", "$d/$m/$y"))       // 03/11/2026
+//
+// Offsets are byte offsets into the text. A text that is not valid UTF-8 is
+// matched as Go matches it: each invalid byte is U+FFFD of width 1.
+//
+// Matching picks a machine per call as Go does: the one-pass matcher when
+// the pattern is anchored and unambiguous, the bounded backtracker (with a
+// visited bitmap, so still linear) for small programs and short texts, and
+// the Pike VM otherwise. A Regex is immutable after compile; each call has
+// its own matching state.
+
+import "regex_syntax" as syn
+
+pub type Error = syn.Error
+pub type ErrorCode = syn.ErrorCode
+pub type Prefix = syn.Prefix
+
+// A match: its byte span in the text and the matched text.
+pub type Match = value record {
+    pub start: int
+    pub end: int
+    pub text: str
+}
+
+// A byte span in the text.
+pub type Span = value record {
+    pub start: int
+    pub end: int
+}
+
+// A compiled regular expression.
+pub type Regex = record {
+    expr: str
+    prog: syn.Prog
+    tree: syn.Tree          // the simplified tree (for literal extraction in R2)
+    hasOnePass: bool
+    onepass: OnePass
+    numSubexp: int
+    maxBitStateLen: int
+    names: []str
+    prefix: str             // required prefix in unanchored matches
+    prefixRune: int
+    prefixEnd: int          // one-pass: pc of the instruction after the prefix
+    prefixComplete: bool
+    cond: int               // empty-width conditions required at the start (-1: impossible)
+    minInputLen: int
+    longest: bool
+}
+
+const MAX_BACKTRACK_PROG = 500
+const MAX_BACKTRACK_VECTOR = 262144  // bits
+const MAX_PROG_INST = 4194304
+
+// ---------------------------------------------------------------- compile
+
+// Compiles a pattern in RE2 (Perl-like) syntax; leftmost-first matching.
+pub fn compile(pattern: str): Result[Regex, Error] { return compileWith(pattern, syn.PERL, false) }
+
+// Compiles a pattern whose matches are leftmost-longest (Go's Longest).
+pub fn compileLongest(pattern: str): Result[Regex, Error] { return compileWith(pattern, syn.PERL, true) }
+
+// Compiles a POSIX ERE pattern (egrep syntax) with leftmost-longest matching
+// (Go's CompilePOSIX).
+pub fn compilePosix(pattern: str): Result[Regex, Error] { return compileWith(pattern, syn.POSIX, true) }
+
+// Compiles a pattern or stops the program with the error.
+pub fn mustCompile(pattern: str): Regex {
+    match compile(pattern) {
+        Ok(re) { return re }
+        Err(e) { panic("regex: compile(" + quoteGo(pattern) + "): " + e.toStr()) }
+    }
+}
+
+// For tests: compiles with the matcher forced to "pike" or "backtrack" (the
+// backtracker then runs whatever the size of the text), or "onepass" (as
+// compile: the one-pass matcher when the pattern allows it).
+pub fn compileForcing(pattern: str, longest: bool, matcher: str): Result[Regex, Error] {
+    var re = try compileWith(pattern, syn.PERL, longest)
+    if matcher == "pike" || matcher == "backtrack" {
+        re.hasOnePass = false
+        re.onepass = emptyOnePass()
+        let pre = re.prog.prefix()
+        re.prefix = pre.text
+        re.prefixComplete = pre.complete
+        re.prefixEnd = 0
+        re.prefixRune = 0
+        if len(re.prefix) > 0 { re.prefixRune = syn.decodeRune(re.prefix, 0).r }
+        re.maxBitStateLen = if matcher == "pike" { 0 } else { 9223372036854775807 }
+    }
+    return Ok(re)
+}
+
+fn quoteGo(s: str): str { return "`" + s + "`" }
+
+fn compileWith(expr: str, mode: int, longest: bool): Result[Regex, Error] {
+    var tree = try syn.parse(expr, mode)
+    let maxCap = tree.maxCap(tree.root)
+    let names = tree.capNames(tree.root)
+    let root = tree.simplify(tree.root)
+    tree.root = root
+    let prog = try syn.compile(&tree, root, MAX_PROG_INST)
+    let minLen = tree.minInputLen(root)
+    let cond = prog.startCond()
+    var re = Regex{expr: expr, prog: prog, tree: tree, hasOnePass: false, onepass: emptyOnePass(), numSubexp: maxCap,
+        maxBitStateLen: 0, names: names, prefix: "", prefixRune: 0, prefixEnd: 0, prefixComplete: false,
+        cond: cond, minInputLen: minLen, longest: longest}
+    re.hasOnePass = compileOnePass(&re.prog, mut &re.onepass)
+    if !re.hasOnePass {
+        let pre = re.prog.prefix()
+        re.prefix = pre.text
+        re.prefixComplete = pre.complete
+        if len(re.prog.inst) <= MAX_BACKTRACK_PROG { re.maxBitStateLen = MAX_BACKTRACK_VECTOR / len(re.prog.inst) }
+    } else {
+        let pre = onePassPrefix(&re.prog)
+        re.prefix = pre.text
+        re.prefixComplete = pre.complete
+        re.prefixEnd = pre.pc
+    }
+    if len(re.prefix) > 0 { re.prefixRune = syn.decodeRune(re.prefix, 0).r }
+    return Ok(re)
+}
+
+// ---------------------------------------------------------------- accessors
+
+// The pattern the Regex was compiled from.
+pub fn (re: &Regex) pattern(): str { return re.expr }
+
+// The number of capturing groups (not counting the whole match).
+pub fn (re: &Regex) numGroups(): int { return re.numSubexp }
+
+// The names of the groups, "" for unnamed ones; index 0 is the whole match.
+pub fn (re: &Regex) groupNames(): []str {
+    var out: []str = []
+    for n in re.names { append(mut &out, n) }
+    return out
+}
+
+// The index of the group with the name, or -1.
+pub fn (re: &Regex) groupIndex(name: str): int {
+    if len(name) == 0 { return -1 }
+    for i in 0..len(re.names) {
+        if re.names[i] == name { return i }
+    }
+    return -1
+}
+
+// The literal text every match must begin with, and whether it is the whole
+// match (Go's LiteralPrefix).
+pub fn (re: &Regex) literalPrefix(): Prefix { return Prefix{text: re.prefix, complete: re.prefixComplete} }
+
+// Whether the leftmost-longest form is used.
+pub fn (re: &Regex) isLongest(): bool { return re.longest }
+
+// Which matcher a search over a text of n bytes uses: "onepass",
+// "backtrack" or "pike" (for tests and profiling).
+pub fn (re: &Regex) matcherFor(n: int): str {
+    if re.hasOnePass { return "onepass" }
+    if n < re.maxBitStateLen { return "backtrack" }
+    return "pike"
+}
+
+// The compiled program, as text (for tests).
+pub fn (re: &Regex) progDump(): str { return re.prog.dump() }
+
+// ---------------------------------------------------------------- execution state
+
+// The state of one search call, kept across the matches of findAll and the
+// like. A Regex is never changed by matching.
+type Exec = record {
+    pike: Pike
+    pikeReady: bool
+    bt: BitState
+    btReady: bool
+    opcap: []int
+}
+
+fn newExec(): Exec {
+    return Exec{pike: emptyPike(), pikeReady: false, bt: emptyBitState(), btReady: false, opcap: []}
+}
+
+// Runs a search of text from pos, with ncap capture slots; fills out with
+// the slots (out is cleared first) and says whether there was a match.
+fn (re: &Regex) execute(x: mut &Exec, text: str, pos: int, ncap: int, out: mut &[]int): bool {
+    while len(out) > 0 { pop(out) }
+    if len(text) < re.minInputLen { return false }
+    if re.hasOnePass { return re.doOnePass(x, text, pos, ncap, out) }
+    if len(text) < re.maxBitStateLen { return re.backtrack(x, text, pos, ncap, out) }
+    if !x.pikeReady {
+        x.pike = newPike(len(re.prog.inst))
+        x.pikeReady = true
+    }
+    return x.pike.run(re, text, pos, ncap, out)
+}
+
+// The empty-width context at pos: the rune before (-1 at the start) and the
+// rune at pos (-1 at the end).
+type Context = value record { r1: int; r2: int }
+
+fn context(text: str, pos: int): Context {
+    var r1 = -1
+    var r2 = -1
+    if pos - 1 >= 0 && pos - 1 < len(text) { r1 = syn.decodeLastRune(text, pos).r }
+    if pos >= 0 && pos < len(text) { r2 = syn.decodeRune(text, pos).r }
+    return Context{r1: r1, r2: r2}
+}
+
+// Whether the empty-width conditions op hold between r1 and r2 (Go's
+// lazyFlag.match).
+fn condMatch(op0: int, r1: int, r2: int): bool {
+    var op = op0
+    if op == 0 { return true }
+    if op & syn.EMPTY_BEGIN_LINE != 0 {
+        if r1 != 10 && r1 >= 0 { return false }
+        op = op & ~syn.EMPTY_BEGIN_LINE
+    }
+    if op & syn.EMPTY_BEGIN_TEXT != 0 {
+        if r1 >= 0 { return false }
+        op = op & ~syn.EMPTY_BEGIN_TEXT
+    }
+    if op == 0 { return true }
+    if op & syn.EMPTY_END_LINE != 0 {
+        if r2 != 10 && r2 >= 0 { return false }
+        op = op & ~syn.EMPTY_END_LINE
+    }
+    if op & syn.EMPTY_END_TEXT != 0 {
+        if r2 >= 0 { return false }
+        op = op & ~syn.EMPTY_END_TEXT
+    }
+    if op == 0 { return true }
+    if syn.isWordChar(r1) != syn.isWordChar(r2) {
+        op = op & ~syn.EMPTY_WORD_BOUNDARY
+    } else {
+        op = op & ~syn.EMPTY_NO_WORD_BOUNDARY
+    }
+    return op == 0
+}
+
+// The index of the first occurrence of sub (not empty) in s at or after
+// from, or -1.
+fn indexFrom(s: str, sub: str, from: int): int {
+    let n = len(sub)
+    let first = sub[0]
+    let last = len(s) - n
+    var i = from
+    while i <= last {
+        if s[i] == first {
+            var j = 1
+            while j < n && s[i + j] == sub[j] { j += 1 }
+            if j == n { return i }
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn hasPrefixAt(s: str, sub: str, at: int): bool {
+    if at + len(sub) > len(s) { return false }
+    for j in 0..len(sub) {
+        if s[at + j] != sub[j] { return false }
+    }
+    return true
+}
+
+// ---------------------------------------------------------------- the Pike VM
+
+// The NFA simulation of exec.go: two queues of threads (sparse sets of
+// program counters), each thread with its capture slots. The threads' slots
+// live in one array, ncap per thread; free threads are reused.
+type Pike = record {
+    ninst: int
+    sparse: []int         // 2 * ninst: queue q at q * ninst
+    dpc: []int            // dense entries: program counter
+    dt: []int             // dense entries: thread, -1 none
+    qn: []int             // the size of each queue
+    tpc: []int            // thread -> pc of its instruction
+    caps: []int           // thread -> its ncap slots
+    free: []int
+    ncap: int
+    matched: bool
+    matchcap: []int
+    work: []int           // the slots being built by add
+    stack: []int          // add's explicit stack
+}
+
+fn emptyPike(): Pike {
+    return Pike{ninst: 0, sparse: [], dpc: [], dt: [], qn: [], tpc: [], caps: [], free: [], ncap: 0, matched: false,
+        matchcap: [], work: [], stack: []}
+}
+
+fn newPike(ninst: int): Pike {
+    var m = emptyPike()
+    m.ninst = ninst
+    m.sparse = array(2 * ninst, 0)
+    m.dpc = array(2 * ninst, 0)
+    m.dt = array(2 * ninst, -1)
+    m.qn = [0, 0]
+    return m
+}
+
+fn (m: mut &Pike) alloc(pc: int): int {
+    var t = 0
+    if len(m.free) > 0 {
+        t = pop(mut &m.free)
+    } else {
+        t = len(m.tpc)
+        append(mut &m.tpc, 0)
+        for k in 0..m.ncap { append(mut &m.caps, -1) }
+    }
+    m.tpc[t] = pc
+    return t
+}
+
+// Puts the threads of queue q back on the free list and empties it.
+fn (m: mut &Pike) clearQueue(q: int) {
+    let off = q * m.ninst
+    for j in 0..m.qn[q] {
+        let t = m.dt[off + j]
+        if t >= 0 { append(mut &m.free, t) }
+    }
+    m.qn[q] = 0
+}
+
+fn (m: mut &Pike) run(re: &Regex, text: str, pos0: int, ncap: int, out: mut &[]int): bool {
+    if re.cond == -1 { return false }
+    let p = &re.prog
+    if ncap != m.ncap {
+        // The slots of the existing threads change size: start over.
+        m.ncap = ncap
+        m.tpc = []
+        m.caps = []
+        m.free = []
+        m.work = array(ncap, -1)
+    }
+    m.matched = false
+    m.matchcap = array(ncap, -1)
+    var runq = 0
+    var nextq = 1
+    m.qn[0] = 0
+    m.qn[1] = 0
+    var pos = pos0
+    let end = len(text)
+    var r = -1
+    var r1 = -1
+    var width = 0
+    var width1 = 0
+    if pos < end {
+        let d = syn.decodeRune(text, pos)
+        r = d.r
+        width = d.w
+        if pos + width < end {
+            let d1 = syn.decodeRune(text, pos + width)
+            r1 = d1.r
+            width1 = d1.w
+        }
+    }
+    var fr1 = -1
+    var fr2 = r
+    if pos != 0 {
+        let c = context(text, pos)
+        fr1 = c.r1
+        fr2 = c.r2
+    }
+    let hasPrefix = len(re.prefix) > 0
+    while true {
+        if m.qn[runq] == 0 {
+            if re.cond & syn.EMPTY_BEGIN_TEXT != 0 && pos != 0 { break }
+            if m.matched { break }
+            if hasPrefix && r != re.prefixRune {
+                let at = indexFrom(text, re.prefix, pos)
+                if at < 0 { break }
+                pos = at
+                r = -1
+                width = 0
+                r1 = -1
+                width1 = 0
+                if pos < end {
+                    let d = syn.decodeRune(text, pos)
+                    r = d.r
+                    width = d.w
+                    if pos + width < end {
+                        let d1 = syn.decodeRune(text, pos + width)
+                        r1 = d1.r
+                        width1 = d1.w
+                    }
+                }
+                // The context before the new position (Go keeps the flag
+                // computed before the jump: the prefix makes it irrelevant
+                // unless the pattern starts with an empty-width test, which
+                // then has no prefix).
+            }
+        }
+        if !m.matched {
+            if ncap > 0 {
+                m.matchcap[0] = pos
+                for k in 0..ncap { m.work[k] = m.matchcap[k] }
+            }
+            m.add(p, runq, p.start, pos, fr1, fr2)
+        }
+        fr1 = r
+        fr2 = r1
+        m.step(p, re.longest, runq, nextq, pos, pos + width, r, fr1, fr2)
+        if width == 0 { break }
+        if ncap == 0 && m.matched { break }
+        pos += width
+        r = r1
+        width = width1
+        if r != -1 {
+            if pos + width < end {
+                let d1 = syn.decodeRune(text, pos + width)
+                r1 = d1.r
+                width1 = d1.w
+            } else {
+                r1 = -1
+                width1 = 0
+            }
+        }
+        let tmp = runq
+        runq = nextq
+        nextq = tmp
+    }
+    m.clearQueue(nextq)
+    m.clearQueue(runq)
+    if !m.matched { return false }
+    for k in 0..ncap { append(out, m.matchcap[k]) }
+    return true
+}
+
+// Runs the threads of runq over the rune c at pos, adding the survivors to
+// nextq at nextPos with the context (n1, n2) there.
+fn (m: mut &Pike) step(p: &syn.Prog, longest: bool, runq: int, nextq: int, pos: int, nextPos: int, c: int, n1: int, n2: int) {
+    let off = runq * m.ninst
+    let ncap = m.ncap
+    var j = 0
+    while j < m.qn[runq] {
+        let t = m.dt[off + j]
+        j += 1
+        if t < 0 { continue }
+        if longest && m.matched && ncap > 0 && m.matchcap[0] < m.caps[t * ncap] {
+            append(mut &m.free, t)
+            continue
+        }
+        let pc = m.tpc[t]
+        let i = p.inst[pc]
+        var add = false
+        let op = i.op
+        if op == syn.I_RUNE1 {
+            add = c == p.runes[i.rlo]
+        } else if op == syn.I_RUNE {
+            add = syn.matchRunesAt(&p.runes, i.rlo, i.rn, i.arg, c) >= 0
+        } else if op == syn.I_RUNE_ANY_NOT_NL {
+            add = c != 10
+        } else if op == syn.I_RUNE_ANY {
+            add = true
+        } else if op == syn.I_MATCH {
+            if ncap > 0 && (!longest || !m.matched || m.matchcap[1] < pos) {
+                m.caps[t * ncap + 1] = pos
+                for k in 0..ncap { m.matchcap[k] = m.caps[t * ncap + k] }
+            }
+            if !longest {
+                // First match wins: cut off the lower-priority threads.
+                while j < m.qn[runq] {
+                    let u = m.dt[off + j]
+                    if u >= 0 { append(mut &m.free, u) }
+                    j += 1
+                }
+                m.qn[runq] = 0
+            }
+            m.matched = true
+        } else {
+            panic("regex: bad instruction in step")
+        }
+        if add {
+            for k in 0..ncap { m.work[k] = m.caps[t * ncap + k] }
+            m.add(p, nextq, i.out, nextPos, n1, n2)
+        }
+        append(mut &m.free, t)
+    }
+    m.qn[runq] = 0
+}
+
+// Adds pc0 and what it leads to without reading a rune to queue q, with the
+// slots in m.work and the context (r1, r2); in priority order (depth first,
+// Out before Arg), as Go's recursive add, with an explicit stack. A capture
+// pushes a restore entry: -1 - slot, after the old value.
+fn (m: mut &Pike) add(p: &syn.Prog, q: int, pc0: int, pos: int, r1: int, r2: int) {
+    let off = q * m.ninst
+    let ncap = m.ncap
+    append(mut &m.stack, pc0)
+    while len(m.stack) > 0 {
+        let x = pop(mut &m.stack)
+        if x < 0 {
+            let old = pop(mut &m.stack)
+            m.work[-1 - x] = old
+            continue
+        }
+        var pc = x
+        while pc != 0 {
+            let j0 = m.sparse[off + pc]
+            if j0 < m.qn[q] && m.dpc[off + j0] == pc { break }
+            let j = m.qn[q]
+            m.qn[q] = j + 1
+            m.dpc[off + j] = pc
+            m.dt[off + j] = -1
+            m.sparse[off + pc] = j
+            let i = p.inst[pc]
+            let op = i.op
+            if op == syn.I_ALT || op == syn.I_ALT_MATCH {
+                append(mut &m.stack, i.arg)
+                pc = i.out
+            } else if op == syn.I_EMPTY_WIDTH {
+                if !condMatch(i.arg, r1, r2) { break }
+                pc = i.out
+            } else if op == syn.I_NOP {
+                pc = i.out
+            } else if op == syn.I_CAPTURE {
+                if i.arg < ncap {
+                    append(mut &m.stack, m.work[i.arg])
+                    append(mut &m.stack, -1 - i.arg)
+                    m.work[i.arg] = pos
+                }
+                pc = i.out
+            } else if op == syn.I_FAIL {
+                break
+            } else {
+                // A match or rune instruction: a thread.
+                let t = m.alloc(pc)
+                for k in 0..ncap { m.caps[t * ncap + k] = m.work[k] }
+                m.dt[off + j] = t
+                break
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- the backtracker
+
+// The bounded backtracker of backtrack.go: a depth-first search that marks
+// each (instruction, position) visited, so it does at most
+// len(prog) * (len(text) + 1) steps. Used for small programs and short texts.
+type BitState = record {
+    end: int
+    cap: []int
+    matchcap: []int
+    jobs: []int           // (pc, arg, pos) triples
+    visited: []int        // 32 bits per entry
+}
+
+fn emptyBitState(): BitState { return BitState{end: 0, cap: [], matchcap: [], jobs: [], visited: []} }
+
+fn (b: mut &BitState) reset(ninst: int, end: int, ncap: int) {
+    b.end = end
+    while len(b.jobs) > 0 { pop(mut &b.jobs) }
+    let size = (ninst * (end + 1) + 31) / 32
+    if len(b.visited) < size {
+        b.visited = array(size, 0)
+    } else {
+        for k in 0..size { b.visited[k] = 0 }
+    }
+    if len(b.cap) != ncap {
+        b.cap = array(ncap, -1)
+        b.matchcap = array(ncap, -1)
+    } else {
+        for k in 0..ncap {
+            b.cap[k] = -1
+            b.matchcap[k] = -1
+        }
+    }
+}
+
+fn (b: mut &BitState) shouldVisit(pc: int, pos: int): bool {
+    let n = pc * (b.end + 1) + pos
+    let w = n >> 5
+    let bit = 1 << (n & 31)
+    if b.visited[w] & bit != 0 { return false }
+    b.visited[w] = b.visited[w] | bit
+    return true
+}
+
+fn (b: mut &BitState) push(p: &syn.Prog, pc: int, pos: int, arg: bool) {
+    if p.inst[pc].op != syn.I_FAIL && (arg || b.shouldVisit(pc, pos)) {
+        append(mut &b.jobs, pc)
+        append(mut &b.jobs, if arg { 1 } else { 0 })
+        append(mut &b.jobs, pos)
+    }
+}
+
+fn (re: &Regex) tryBacktrack(b: mut &BitState, text: str, pc0: int, pos0: int): bool {
+    let p = &re.prog
+    let longest = re.longest
+    let end = b.end
+    b.push(p, pc0, pos0, false)
+    while len(b.jobs) > 0 {
+        var pos = pop(mut &b.jobs)
+        var arg = pop(mut &b.jobs) == 1
+        var pc = pop(mut &b.jobs)
+        var check = false
+        while true {
+            if check && !b.shouldVisit(pc, pos) { break }
+            check = true
+            let i = p.inst[pc]
+            let op = i.op
+            if op == syn.I_ALT {
+                if arg {
+                    arg = false
+                    pc = i.arg
+                } else {
+                    b.push(p, pc, pos, true)
+                    pc = i.out
+                }
+            } else if op == syn.I_ALT_MATCH {
+                // One of the branches leads to the end of the text and a match.
+                let o = baseOpOf(p, i.out)
+                if o == syn.I_RUNE {
+                    b.push(p, i.arg, pos, false)
+                    pc = i.arg
+                    pos = end
+                } else {
+                    b.push(p, i.out, end, false)
+                    pc = i.out
+                }
+            } else if op == syn.I_RUNE1 || op == syn.I_RUNE || op == syn.I_RUNE_ANY || op == syn.I_RUNE_ANY_NOT_NL {
+                if pos >= end { break }
+                var r = int(text[pos])
+                var w = 1
+                if r >= 0x80 {
+                    let d = syn.decodeRune(text, pos)
+                    r = d.r
+                    w = d.w
+                }
+                if op == syn.I_RUNE1 {
+                    if r != p.runes[i.rlo] { break }
+                } else if op == syn.I_RUNE {
+                    if syn.matchRunesAt(&p.runes, i.rlo, i.rn, i.arg, r) < 0 { break }
+                } else if op == syn.I_RUNE_ANY_NOT_NL {
+                    if r == 10 { break }
+                }
+                pos += w
+                pc = i.out
+            } else if op == syn.I_CAPTURE {
+                if arg {
+                    b.cap[i.arg] = pos
+                    break
+                }
+                if i.arg < len(b.cap) {
+                    // Come back to restore the slot when done.
+                    b.push(p, pc, b.cap[i.arg], true)
+                    b.cap[i.arg] = pos
+                }
+                pc = i.out
+            } else if op == syn.I_EMPTY_WIDTH {
+                let c = context(text, pos)
+                if !condMatch(i.arg, c.r1, c.r2) { break }
+                pc = i.out
+            } else if op == syn.I_NOP {
+                pc = i.out
+            } else if op == syn.I_MATCH {
+                if len(b.cap) == 0 { return true }
+                if len(b.cap) > 1 { b.cap[1] = pos }
+                let old = b.matchcap[1]
+                if old == -1 || (longest && pos > 0 && pos > old) {
+                    for k in 0..len(b.cap) { b.matchcap[k] = b.cap[k] }
+                }
+                if !longest { return true }
+                if pos == end { return true }
+                break
+            } else {
+                panic("regex: bad instruction in backtrack")
+            }
+        }
+    }
+    return longest && len(b.matchcap) > 1 && b.matchcap[1] >= 0
+}
+
+fn baseOpOf(p: &syn.Prog, pc: int): int { return syn.baseOp(p.inst[pc].op) }
+
+fn (re: &Regex) backtrack(x: mut &Exec, text: str, pos0: int, ncap: int, out: mut &[]int): bool {
+    if re.cond == -1 { return false }
+    if re.cond & syn.EMPTY_BEGIN_TEXT != 0 && pos0 != 0 { return false }
+    let end = len(text)
+    x.bt.reset(len(re.prog.inst), end, ncap)
+    if re.cond & syn.EMPTY_BEGIN_TEXT != 0 {
+        if ncap > 0 { x.bt.cap[0] = pos0 }
+        if !re.tryBacktrack(mut &x.bt, text, re.prog.start, pos0) { return false }
+    } else {
+        // Unanchored search, starting from each possible position.
+        var pos = pos0
+        var width = -1
+        var found = false
+        while pos <= end && width != 0 {
+            if len(re.prefix) > 0 {
+                let at = indexFrom(text, re.prefix, pos)
+                if at < 0 { return false }
+                pos = at
+            }
+            if ncap > 0 { x.bt.cap[0] = pos }
+            if re.tryBacktrack(mut &x.bt, text, re.prog.start, pos) {
+                found = true
+                break
+            }
+            if pos < end {
+                if int(text[pos]) < 0x80 { width = 1 } else { width = syn.decodeRune(text, pos).w }
+            } else {
+                width = 0
+            }
+            pos += width
+        }
+        if !found { return false }
+    }
+    for k in 0..ncap { append(out, x.bt.matchcap[k]) }
+    return true
+}
+
+// ---------------------------------------------------------------- one-pass
+
+// A one-pass program (onepass.go): at each alternation the next rune decides
+// the branch, so the match runs without a queue or backtracking. Built when
+// the pattern is anchored at the start of the text and unambiguous.
+type OnePass = record {
+    op: []int
+    out: []int
+    arg: []int
+    rlo: []int            // runes of each instruction: runes[rlo[pc] .. rlo[pc] + rn[pc]]
+    rn: []int
+    runes: []int
+    nlo: []int            // the next instruction for each rune pair: next[nlo[pc] ..]
+    next: []int
+    start: int
+}
+
+fn emptyOnePass(): OnePass {
+    return OnePass{op: [], out: [], arg: [], rlo: [], rn: [], runes: [], nlo: [], next: [], start: 0}
+}
+
+const MERGE_FAILED = -2
+
+// The literal prefix of an anchored one-pass program, its completeness and
+// the pc after it (Go's onePassPrefix).
+type OnePassPre = value record { text: str; complete: bool; pc: int }
+
+fn onePassPrefix(p: &syn.Prog): OnePassPre {
+    var i = p.inst[p.start]
+    if i.op != syn.I_EMPTY_WIDTH || i.arg & syn.EMPTY_BEGIN_TEXT == 0 {
+        return OnePassPre{text: "", complete: i.op == syn.I_MATCH, pc: p.start}
+    }
+    var pc = i.out
+    i = p.inst[pc]
+    while i.op == syn.I_NOP {
+        pc = i.out
+        i = p.inst[pc]
+    }
+    if syn.baseOp(i.op) != syn.I_RUNE || i.rn != 1 {
+        return OnePassPre{text: "", complete: i.op == syn.I_MATCH, pc: p.start}
+    }
+    var b = newStrBuf()
+    while syn.baseOp(i.op) == syn.I_RUNE && i.rn == 1 && i.arg & syn.FOLD_CASE == 0 && p.runes[i.rlo] != 0xFFFD {
+        syn.addRune(mut &b, p.runes[i.rlo])
+        pc = i.out
+        i = p.inst[i.out]
+    }
+    let complete = i.op == syn.I_EMPTY_WIDTH && i.arg & syn.EMPTY_END_TEXT != 0 && p.inst[i.out].op == syn.I_MATCH
+    return OnePassPre{text: b.toStr(), complete: complete, pc: pc}
+}
+
+// Builds the one-pass form of p into op; false when p is not one-pass.
+fn compileOnePass(p: &syn.Prog, op: mut &OnePass): bool {
+    if p.start == 0 { return false }
+    let si = p.inst[p.start]
+    if si.op != syn.I_EMPTY_WIDTH || si.arg & syn.EMPTY_BEGIN_TEXT != syn.EMPTY_BEGIN_TEXT { return false }
+    var hasAlt = false
+    for i in p.inst {
+        if i.op == syn.I_ALT || i.op == syn.I_ALT_MATCH {
+            hasAlt = true
+            break
+        }
+    }
+    // Every instruction leading to a match must end the text, with no
+    // alternation choosing the match.
+    for i in p.inst {
+        let opOut = p.inst[i.out].op
+        if i.op == syn.I_ALT || i.op == syn.I_ALT_MATCH {
+            if opOut == syn.I_MATCH || p.inst[i.arg].op == syn.I_MATCH { return false }
+        } else if i.op == syn.I_EMPTY_WIDTH {
+            if opOut == syn.I_MATCH {
+                if i.arg & syn.EMPTY_END_TEXT == syn.EMPTY_END_TEXT { continue }
+                return false
+            }
+        } else {
+            if opOut == syn.I_MATCH && hasAlt { return false }
+        }
+    }
+    var b = onePassCopy(p)
+    if !b.makeOnePass(p) { return false }
+    // Cleanup (Go's cleanupOnePass) and flattening.
+    let n = len(p.inst)
+    var o = emptyOnePass()
+    o.start = p.start
+    for pc in 0..n {
+        let orig = p.inst[pc]
+        if orig.op == syn.I_RUNE1 || orig.op == syn.I_RUNE_ANY || orig.op == syn.I_RUNE_ANY_NOT_NL {
+            // Back to the original instruction.
+            append(mut &o.op, orig.op)
+            append(mut &o.out, orig.out)
+            append(mut &o.arg, orig.arg)
+            append(mut &o.rlo, len(o.runes))
+            append(mut &o.rn, orig.rn)
+            for k in 0..orig.rn { append(mut &o.runes, p.runes[orig.rlo + k]) }
+            append(mut &o.nlo, len(o.next))
+        } else {
+            append(mut &o.op, b.op[pc])
+            append(mut &o.out, b.out[pc])
+            append(mut &o.arg, b.arg[pc])
+            append(mut &o.rlo, len(o.runes))
+            append(mut &o.rn, len(b.runes[pc]))
+            for r in b.runes[pc] { append(mut &o.runes, r) }
+            append(mut &o.nlo, len(o.next))
+            if orig.op == syn.I_ALT || orig.op == syn.I_ALT_MATCH || orig.op == syn.I_RUNE {
+                for x in b.next[pc] { append(mut &o.next, x) }
+            }
+        }
+    }
+    replace(op, o)
+    return true
+}
+
+// The program being made one-pass: instructions as separate arrays, with
+// the runes and next tables of each.
+type OnePassBuild = record {
+    op: []int
+    out: []int
+    arg: []int
+    runes: [][]int        // Go's onePassRunes
+    hasRunes: []bool      // the instruction's Rune field was replaced
+    origRunes: [][]int    // the instruction's own runes
+    next: [][]int
+    m: []bool
+    visitSparse: []int
+    visitDense: []int
+    visitSize: int
+    instSparse: []int
+    instDense: []int
+    instSize: int
+    instNext: int
+}
+
+fn onePassCopy(p: &syn.Prog): OnePassBuild {
+    let n = len(p.inst)
+    var b = OnePassBuild{op: [], out: [], arg: [], runes: [], hasRunes: [], origRunes: [], next: [], m: array(n, false),
+        visitSparse: array(n, 0), visitDense: array(n, 0), visitSize: 0,
+        instSparse: array(n, 0), instDense: array(n, 0), instSize: 0, instNext: 0}
+    for i in p.inst {
+        append(mut &b.op, i.op)
+        append(mut &b.out, i.out)
+        append(mut &b.arg, i.arg)
+        append(mut &b.runes, [])
+        append(mut &b.hasRunes, false)
+        var rs: []int = []
+        for k in 0..i.rn { append(mut &rs, p.runes[i.rlo + k]) }
+        append(mut &b.origRunes, rs)
+        append(mut &b.next, [])
+    }
+    // Rewrite alternations of alternations so that loops point at their own
+    // alternation where possible (Go's onePassCopy).
+    for pc in 0..n {
+        if b.op[pc] != syn.I_ALT && b.op[pc] != syn.I_ALT_MATCH { continue }
+        // A slot of an instruction: (pc, 0 out / 1 arg).
+        var aAltPc = pc
+        var aAltF = 1
+        var aOtherPc = pc
+        var aOtherF = 0
+        var altTarget = b.slot(aAltPc, aAltF)
+        if b.op[altTarget] != syn.I_ALT && b.op[altTarget] != syn.I_ALT_MATCH {
+            aAltF = 0
+            aOtherF = 1
+            altTarget = b.slot(aAltPc, aAltF)
+            if b.op[altTarget] != syn.I_ALT && b.op[altTarget] != syn.I_ALT_MATCH { continue }
+        }
+        let otherTarget = b.slot(aOtherPc, aOtherF)
+        if b.op[otherTarget] == syn.I_ALT || b.op[otherTarget] == syn.I_ALT_MATCH { continue }
+        // instAlt is a copy of the alternation the alt slot points to.
+        let instAltOut = b.out[altTarget]
+        let instAltArg = b.arg[altTarget]
+        var bAltF = 0
+        var bOtherF = 1
+        var patch = false
+        if instAltOut == pc {
+            patch = true
+        } else if instAltArg == pc {
+            patch = true
+            bAltF = 1
+            bOtherF = 0
+        }
+        if patch { b.setSlot(altTarget, bAltF, b.slot(aOtherPc, aOtherF)) }
+        if b.slot(aOtherPc, aOtherF) == b.slot(altTarget, bAltF) {
+            b.setSlot(aAltPc, aAltF, b.slot(altTarget, bOtherF))
+        }
+    }
+    return b
+}
+
+fn (b: &OnePassBuild) slot(pc: int, f: int): int {
+    if f == 0 { return b.out[pc] }
+    return b.arg[pc]
+}
+
+fn (b: mut &OnePassBuild) setSlot(pc: int, f: int, v: int) {
+    if f == 0 { b.out[pc] = v } else { b.arg[pc] = v }
+}
+
+fn (b: &OnePassBuild) visitContains(u: int): bool {
+    if u >= len(b.visitSparse) { return false }
+    return b.visitSparse[u] < b.visitSize && b.visitDense[b.visitSparse[u]] == u
+}
+
+fn (b: mut &OnePassBuild) visitInsert(u: int) {
+    if b.visitContains(u) || u >= len(b.visitSparse) { return }
+    b.visitSparse[u] = b.visitSize
+    b.visitDense[b.visitSize] = u
+    b.visitSize += 1
+}
+
+fn (b: mut &OnePassBuild) instInsert(u: int) {
+    if u >= len(b.instSparse) { return }
+    if b.instSparse[u] < b.instSize && b.instDense[b.instSparse[u]] == u { return }
+    b.instSparse[u] = b.instSize
+    b.instDense[b.instSize] = u
+    b.instSize += 1
+}
+
+// Merges two sorted rune-pair sets with the instruction each leads to; the
+// merged set and the next table, or a next table [MERGE_FAILED] when the sets
+// overlap (the alternation is ambiguous).
+fn (b: mut &OnePassBuild) mergeRuneSets(pc: int, leftPc: int, rightPc: int) {
+    var merged: []int = []
+    var next: []int = []
+    if !mergeSets(&b.runes[leftPc], &b.runes[rightPc], leftPc, rightPc, mut &merged, mut &next) {
+        b.runes[pc] = []
+        b.next[pc] = [MERGE_FAILED]
+        return
+    }
+    b.runes[pc] = merged
+    b.next[pc] = next
+}
+
+fn mergeSets(left: &[]int, right: &[]int, leftPc: int, rightPc: int, merged: mut &[]int, next: mut &[]int): bool {
+    var lx = 0
+    var rx = 0
+    var ok = true
+    while lx < len(left) || rx < len(right) {
+        var useRight = false
+        if rx >= len(right) {
+            useRight = false
+        } else if lx >= len(left) {
+            useRight = true
+        } else if right[rx] < left[lx] {
+            useRight = true
+        }
+        let lo = if useRight { right[rx] } else { left[lx] }
+        let hi = if useRight { right[rx + 1] } else { left[lx + 1] }
+        if len(merged) > 0 && lo <= merged[len(merged) - 1] {
+            ok = false
+            break
+        }
+        append(merged, lo)
+        append(merged, hi)
+        if useRight {
+            rx += 2
+            append(next, rightPc)
+        } else {
+            lx += 2
+            append(next, leftPc)
+        }
+    }
+    return ok
+}
+
+fn (b: mut &OnePassBuild) fillNext(pc: int, out: int) {
+    let n = len(b.runes[pc]) / 2 + 1
+    var nx: []int = []
+    for k in 0..n { append(mut &nx, out) }
+    b.next[pc] = nx
+}
+
+fn (b: mut &OnePassBuild) copyRunes(pc: int, from: int) {
+    var rs: []int = []
+    for r in b.runes[from] { append(mut &rs, r) }
+    b.runes[pc] = rs
+}
+
+// The rune pairs of a single (maybe case-folded) rune, sorted.
+fn foldPairs(r0: int, fold: bool): []int {
+    var single: []int = [r0]
+    if fold {
+        var r1 = syn.simpleFold(r0)
+        while r1 != r0 {
+            append(mut &single, r1)
+            r1 = syn.simpleFold(r1)
+        }
+        // Insertion sort (an orbit has at most four runes).
+        for i in 1..len(single) {
+            var j = i
+            while j > 0 && single[j - 1] > single[j] {
+                swap(mut &single, j - 1, j)
+                j -= 1
+            }
+        }
+    }
+    var out: []int = []
+    for r in single {
+        append(mut &out, r)
+        append(mut &out, r)
+    }
+    return out
+}
+
+fn (b: mut &OnePassBuild) check(pc: int): bool {
+    var ok = true
+    if b.visitContains(pc) { return ok }
+    b.visitInsert(pc)
+    let op = b.op[pc]
+    if op == syn.I_ALT || op == syn.I_ALT_MATCH {
+        ok = b.check(b.out[pc]) && b.check(b.arg[pc])
+        var matchOut = b.m[b.out[pc]]
+        var matchArg = b.m[b.arg[pc]]
+        if matchOut && matchArg { return false }
+        // Make the matching branch Out.
+        if matchArg {
+            let t = b.out[pc]
+            b.out[pc] = b.arg[pc]
+            b.arg[pc] = t
+            matchOut = true
+            matchArg = false
+        }
+        if matchOut {
+            b.m[pc] = true
+            b.op[pc] = syn.I_ALT_MATCH
+        }
+        b.mergeRuneSets(pc, b.out[pc], b.arg[pc])
+        if len(b.next[pc]) > 0 && b.next[pc][0] == MERGE_FAILED { return false }
+    } else if op == syn.I_CAPTURE || op == syn.I_NOP || op == syn.I_EMPTY_WIDTH {
+        ok = b.check(b.out[pc])
+        b.m[pc] = b.m[b.out[pc]]
+        b.copyRunes(pc, b.out[pc])
+        b.fillNext(pc, b.out[pc])
+    } else if op == syn.I_MATCH || op == syn.I_FAIL {
+        b.m[pc] = op == syn.I_MATCH
+    } else if op == syn.I_RUNE {
+        b.m[pc] = false
+        if len(b.next[pc]) > 0 { return ok }
+        b.instInsert(b.out[pc])
+        let n = len(b.origRunes[pc])
+        if n == 0 {
+            b.runes[pc] = []
+            b.next[pc] = [b.out[pc]]
+            return ok
+        }
+        if n == 1 && b.arg[pc] & syn.FOLD_CASE != 0 {
+            b.runes[pc] = foldPairs(b.origRunes[pc][0], true)
+        } else {
+            var rs: []int = []
+            for r in b.origRunes[pc] { append(mut &rs, r) }
+            b.runes[pc] = rs
+        }
+        b.fillNext(pc, b.out[pc])
+        b.op[pc] = syn.I_RUNE
+    } else if op == syn.I_RUNE1 {
+        b.m[pc] = false
+        if len(b.next[pc]) > 0 { return ok }
+        b.instInsert(b.out[pc])
+        b.runes[pc] = foldPairs(b.origRunes[pc][0], b.arg[pc] & syn.FOLD_CASE != 0)
+        b.fillNext(pc, b.out[pc])
+        b.op[pc] = syn.I_RUNE
+    } else if op == syn.I_RUNE_ANY {
+        b.m[pc] = false
+        if len(b.next[pc]) > 0 { return ok }
+        b.instInsert(b.out[pc])
+        b.runes[pc] = [0, syn.MAX_RUNE]
+        b.next[pc] = [b.out[pc]]
+    } else if op == syn.I_RUNE_ANY_NOT_NL {
+        b.m[pc] = false
+        if len(b.next[pc]) > 0 { return ok }
+        b.instInsert(b.out[pc])
+        b.runes[pc] = [0, 9, 11, syn.MAX_RUNE]
+        b.fillNext(pc, b.out[pc])
+    }
+    return ok
+}
+
+fn (b: mut &OnePassBuild) makeOnePass(p: &syn.Prog): bool {
+    if len(p.inst) >= 1000 { return false }
+    b.instSize = 0
+    b.instNext = 0
+    b.instInsert(p.start)
+    while b.instNext < b.instSize {
+        b.visitSize = 0
+        let pc = b.instDense[b.instNext]
+        b.instNext += 1
+        if !b.check(pc) { return false }
+    }
+    return true
+}
+
+// The next instruction of a one-pass alternation for the rune r: the branch
+// whose runes include r, else the matching branch (AltMatch), else fail.
+fn (o: &OnePass) nextPc(pc: int, r: int): int {
+    let k = syn.matchRunesAt(&o.runes, o.rlo[pc], o.rn[pc], o.arg[pc], r)
+    if k >= 0 { return o.next[o.nlo[pc] + k] }
+    if o.op[pc] == syn.I_ALT_MATCH { return o.out[pc] }
+    return 0
+}
+
+fn (re: &Regex) doOnePass(x: mut &Exec, text: str, pos0: int, ncap: int, out: mut &[]int): bool {
+    if re.cond == -1 { return false }
+    let o = &re.onepass
+    if len(x.opcap) != ncap { x.opcap = array(ncap, -1) }
+    for k in 0..ncap { x.opcap[k] = -1 }
+    var matched = false
+    var pos = pos0
+    let end = len(text)
+    var r = -1
+    var r1 = -1
+    var width = 0
+    var width1 = 0
+    if pos < end {
+        let d = syn.decodeRune(text, pos)
+        r = d.r
+        width = d.w
+        if pos + width < end {
+            let d1 = syn.decodeRune(text, pos + width)
+            r1 = d1.r
+            width1 = d1.w
+        }
+    }
+    var f1 = -1
+    var f2 = r
+    if pos != 0 {
+        let c = context(text, pos)
+        f1 = c.r1
+        f2 = c.r2
+    }
+    var pc = o.start
+    if pos == 0 && condMatch(o.arg[pc], f1, f2) && len(re.prefix) > 0 {
+        if !hasPrefixAt(text, re.prefix, 0) { return false }
+        pos += len(re.prefix)
+        r = -1
+        width = 0
+        r1 = -1
+        width1 = 0
+        if pos < end {
+            let d = syn.decodeRune(text, pos)
+            r = d.r
+            width = d.w
+            if pos + width < end {
+                let d1 = syn.decodeRune(text, pos + width)
+                r1 = d1.r
+                width1 = d1.w
+            }
+        }
+        let c = context(text, pos)
+        f1 = c.r1
+        f2 = c.r2
+        pc = re.prefixEnd
+    }
+    while true {
+        let ipc = pc
+        let op = o.op[ipc]
+        pc = o.out[ipc]
+        if op == syn.I_MATCH {
+            matched = true
+            if ncap > 0 {
+                x.opcap[0] = 0
+                x.opcap[1] = pos
+            }
+            break
+        } else if op == syn.I_RUNE {
+            if syn.matchRunesAt(&o.runes, o.rlo[ipc], o.rn[ipc], o.arg[ipc], r) < 0 { break }
+        } else if op == syn.I_RUNE1 {
+            if r != o.runes[o.rlo[ipc]] { break }
+        } else if op == syn.I_RUNE_ANY {
+            // any rune
+        } else if op == syn.I_RUNE_ANY_NOT_NL {
+            if r == 10 { break }
+        } else if op == syn.I_ALT || op == syn.I_ALT_MATCH {
+            pc = o.nextPc(ipc, r)
+            continue
+        } else if op == syn.I_FAIL {
+            break
+        } else if op == syn.I_NOP {
+            continue
+        } else if op == syn.I_EMPTY_WIDTH {
+            if !condMatch(o.arg[ipc], f1, f2) { break }
+            continue
+        } else if op == syn.I_CAPTURE {
+            if o.arg[ipc] < ncap { x.opcap[o.arg[ipc]] = pos }
+            continue
+        } else {
+            panic("regex: bad instruction in one-pass")
+        }
+        if width == 0 { break }
+        f1 = r
+        f2 = r1
+        pos += width
+        r = r1
+        width = width1
+        if r != -1 {
+            if pos + width < end {
+                let d1 = syn.decodeRune(text, pos + width)
+                r1 = d1.r
+                width1 = d1.w
+            } else {
+                r1 = -1
+                width1 = 0
+            }
+        }
+    }
+    if !matched { return false }
+    for k in 0..ncap { append(out, x.opcap[k]) }
+    return true
+}
+
+// ---------------------------------------------------------------- searching
+
+fn (re: &Regex) ncapAll(): int { return re.prog.numCap }
+
+// Pads the slots to 2 * (numGroups + 1) with -1 (groups the simplifier
+// removed, like (a){0}, have no slots in the program).
+fn (re: &Regex) pad(a: mut &[]int) {
+    let n = (1 + re.numSubexp) * 2
+    while len(a) < n { append(a, -1) }
+}
+
+// Whether the text contains a match.
+pub fn (re: &Regex) isMatch(text: str): bool {
+    var x = newExec()
+    var out: []int = []
+    return re.execute(mut &x, text, 0, 0, mut &out)
+}
+
+// The leftmost match.
+pub fn (re: &Regex) find(text: str): Option[Match] { return re.findFrom(text, 0) }
+
+// The leftmost match starting at or after byte from; the text before from
+// is still seen by \b, ^ and the like.
+pub fn (re: &Regex) findFrom(text: str, from: int): Option[Match] {
+    if from < 0 || from > len(text) { return None }
+    var x = newExec()
+    var a: []int = []
+    if !re.execute(mut &x, text, from, 2, mut &a) { return None }
+    return Some(Match{start: a[0], end: a[1], text: text[a[0]..a[1]]})
+}
+
+// The span of the leftmost match.
+pub fn (re: &Regex) findIndex(text: str): Option[Span] {
+    var x = newExec()
+    var a: []int = []
+    if !re.execute(mut &x, text, 0, 2, mut &a) { return None }
+    return Some(Span{start: a[0], end: a[1]})
+}
+
+// Calls deliver for successive non-overlapping matches (at most n; n < 0
+// for all), with ncap slots each: Go's allMatches. An empty match right
+// after the previous match is skipped.
+fn (re: &Regex) allMatches(text: str, n: int, ncap: int, deliver: &fn(&[]int)) {
+    let end = len(text)
+    var x = newExec()
+    var a: []int = []
+    var pos = 0
+    var i = 0
+    var prevMatchEnd = -1
+    while (n < 0 || i < n) && pos <= end {
+        if !re.execute(mut &x, text, pos, ncap, mut &a) { break }
+        var accept = true
+        if a[1] == pos {
+            // An empty match: never right after the previous one.
+            if a[0] == prevMatchEnd { accept = false }
+            if pos < end {
+                pos += syn.decodeRune(text, pos).w
+            } else {
+                pos = end + 1
+            }
+        } else {
+            pos = a[1]
+        }
+        prevMatchEnd = a[1]
+        if accept {
+            re.pad(mut &a)
+            deliver(&a)
+            i += 1
+        }
+    }
+}
+
+// All successive non-overlapping matches.
+pub fn (re: &Regex) findAll(text: str): []Match { return re.findN(text, -1) }
+
+// At most n successive non-overlapping matches (n < 0: all).
+pub fn (re: &Regex) findN(text: str, n: int): []Match {
+    var out: []Match = []
+    re.allMatches(text, n, 2, fn(a: &[]int) { append(mut &out, Match{start: a[0], end: a[1], text: text[a[0]..a[1]]}) })
+    return out
+}
+
+// The spans of all successive non-overlapping matches.
+pub fn (re: &Regex) findAllIndex(text: str): []Span { return re.findAllIndexN(text, -1) }
+
+// The spans of at most n matches (n < 0: all).
+pub fn (re: &Regex) findAllIndexN(text: str, n: int): []Span {
+    var out: []Span = []
+    re.allMatches(text, n, 2, fn(a: &[]int) { append(mut &out, Span{start: a[0], end: a[1]}) })
+    return out
+}
+
+// The leftmost match with its groups.
+pub fn (re: &Regex) captures(text: str): Option[Captures] {
+    let a = re.submatchIndex(text)
+    if len(a) == 0 { return None }
+    return Some(Captures{text: text, idx: a, names: re.groupNames()})
+}
+
+// All successive non-overlapping matches with their groups.
+pub fn (re: &Regex) capturesAll(text: str): []Captures { return re.capturesN(text, -1) }
+
+// At most n matches with their groups (n < 0: all).
+pub fn (re: &Regex) capturesN(text: str, n: int): []Captures {
+    var out: []Captures = []
+    re.allMatches(text, n, re.prog.numCap, fn(a: &[]int) {
+        var idx: []int = []
+        for v in a { append(mut &idx, v) }
+        append(mut &out, Captures{text: text, idx: idx, names: re.groupNames()})
+    })
+    return out
+}
+
+// The slots of the leftmost match: start and end of the match, then of each
+// group (-1 for a group that did not take part); empty when there is no
+// match (Go's FindStringSubmatchIndex).
+pub fn (re: &Regex) submatchIndex(text: str): []int {
+    var x = newExec()
+    var a: []int = []
+    if !re.execute(mut &x, text, 0, re.prog.numCap, mut &a) { return [] }
+    re.pad(mut &a)
+    return a
+}
+
+// The slots of at most n successive matches (n < 0: all).
+pub fn (re: &Regex) allSubmatchIndex(text: str, n: int): [][]int {
+    var out: [][]int = []
+    re.allMatches(text, n, re.prog.numCap, fn(a: &[]int) {
+        var idx: []int = []
+        for v in a { append(mut &idx, v) }
+        append(mut &out, idx)
+    })
+    return out
+}
+
+// A match with its groups.
+pub type Captures = record {
+    text: str
+    idx: []int
+    names: []str
+}
+
+// The number of groups, the whole match (group 0) included.
+pub fn (c: &Captures) count(): int { return len(c.idx) / 2 }
+
+// Group i (0: the whole match), None when it did not take part.
+pub fn (c: &Captures) get(i: int): Option[Match] {
+    if i < 0 || 2 * i + 1 >= len(c.idx) || c.idx[2 * i] < 0 { return None }
+    let a = c.idx[2 * i]
+    let b = c.idx[2 * i + 1]
+    return Some(Match{start: a, end: b, text: c.text[a..b]})
+}
+
+// The whole match.
+pub fn (c: &Captures) whole(): Match { return c.get(0).unwrap() }
+
+// The group with the name, None when there is none or it did not take part.
+pub fn (c: &Captures) name(n: str): Option[Match] {
+    if len(n) == 0 { return None }
+    for i in 0..len(c.names) {
+        if c.names[i] == n { return c.get(i) }
+    }
+    return None
+}
+
+// The text of group i, "" when it did not take part.
+pub fn (c: &Captures) str(i: int): str {
+    match c.get(i) {
+        Some(m) { return m.text }
+        None { return "" }
+    }
+}
+
+// The slots, as submatchIndex gives them.
+pub fn (c: &Captures) indexes(): []int {
+    var out: []int = []
+    for v in c.idx { append(mut &out, v) }
+    return out
+}
+
+// ---------------------------------------------------------------- replacing
+
+// Go's replaceAll: for each match (at most limit replacements, limit < 0
+// for all), the text before it and then what repl adds. An empty match right
+// after the previous match is not replaced.
+fn (re: &Regex) replaceLoop(src: str, nmatch0: int, limit: int, repl: &fn(mut &StrBuf, &[]int)): str {
+    var lastMatchEnd = 0
+    var searchPos = 0
+    var buf = newStrBuf()
+    let endPos = len(src)
+    var nmatch = nmatch0
+    if nmatch > re.prog.numCap { nmatch = re.prog.numCap }
+    var x = newExec()
+    var a: []int = []
+    var count = 0
+    while searchPos <= endPos && (limit < 0 || count < limit) {
+        if !re.execute(mut &x, src, searchPos, nmatch, mut &a) { break }
+        addRange(mut &buf, src, lastMatchEnd, a[0])
+        if a[1] > lastMatchEnd || a[0] == 0 {
+            repl(mut &buf, &a)
+            count += 1
+        }
+        lastMatchEnd = a[1]
+        // Advance past this match; always advance at least one character.
+        var width = 0
+        if searchPos < endPos { width = syn.decodeRune(src, searchPos).w }
+        if searchPos + width > a[1] {
+            searchPos += width
+        } else if searchPos + 1 > a[1] {
+            // This clause is only needed at the end of the input string.
+            searchPos += 1
+        } else {
+            searchPos = a[1]
+        }
+    }
+    addRange(mut &buf, src, lastMatchEnd, endPos)
+    return buf.toStr()
+}
+
+fn addRange(b: mut &StrBuf, s: str, from: int, to: int) {
+    for i in from..to { b.addByte(s[i]) }
+}
+
+// Replaces every match with repl, in which $1, ${1}, $name and ${name} stand
+// for the groups ($$ for a $), as Go's ReplaceAllString: $name takes the
+// longest run of letters, digits and _, so use ${1}x for group 1 then x.
+pub fn (re: &Regex) replaceAll(text: str, repl: str): str { return re.replaceN(text, repl, -1) }
+
+// Replaces the first match, expanding repl as replaceAll does.
+pub fn (re: &Regex) replace(text: str, repl: str): str { return re.replaceN(text, repl, 1) }
+
+// Replaces the first n matches (n < 0: all), expanding repl.
+pub fn (re: &Regex) replaceN(text: str, repl: str, n: int): str {
+    var nmatch = 2
+    if indexOf(repl, "$", 0) >= 0 { nmatch = 2 * (re.numSubexp + 1) }
+    return re.replaceLoop(text, nmatch, n, fn(b: mut &StrBuf, a: &[]int) { re.expandTo(b, repl, text, a) })
+}
+
+// Replaces every match with repl taken literally.
+pub fn (re: &Regex) replaceAllLiteral(text: str, repl: str): str {
+    return re.replaceLoop(text, 2, -1, fn(b: mut &StrBuf, a: &[]int) { b.add(repl) })
+}
+
+// Replaces every match with what f returns for the matched text.
+pub fn (re: &Regex) replaceAllFunc(text: str, f: &fn(str): str): str {
+    return re.replaceLoop(text, 2, -1, fn(b: mut &StrBuf, a: &[]int) { b.add(f(text[a[0]..a[1]])) })
+}
+
+// The template with $1, ${name} and the like replaced by the groups of the
+// match (Go's ExpandString).
+pub fn (re: &Regex) expand(template: str, c: &Captures): str {
+    var b = newStrBuf()
+    re.expandTo(mut &b, template, c.text, &c.idx)
+    return b.toStr()
+}
+
+fn (re: &Regex) expandTo(dst: mut &StrBuf, template: str, src: str, m: &[]int) {
+    var t = 0
+    let n = len(template)
+    while t < n {
+        let d = indexOf(template, "$", t)
+        if d < 0 { break }
+        addRange(dst, template, t, d)
+        t = d + 1
+        if t < n && template[t] == '$' {
+            // $$ is a $.
+            dst.addByte('$')
+            t += 1
+            continue
+        }
+        let e = extract(template, t)
+        if !e.ok {
+            // A malformed reference: the $ stays.
+            dst.addByte('$')
+            continue
+        }
+        t = e.rest
+        if e.num >= 0 {
+            if 2 * e.num + 1 < len(m) && m[2 * e.num] >= 0 { addRange(dst, src, m[2 * e.num], m[2 * e.num + 1]) }
+        } else {
+            for i in 0..len(re.names) {
+                if e.name == re.names[i] && 2 * i + 1 < len(m) && m[2 * i] >= 0 {
+                    addRange(dst, src, m[2 * i], m[2 * i + 1])
+                    break
+                }
+            }
+        }
+    }
+    addRange(dst, template, t, n)
+}
+
+type Ref = value record { name: str; num: int; rest: int; ok: bool }
+
+// A group reference at s[at..] (after a $): a name or number, maybe in
+// braces (Go's extract).
+fn extract(s: str, at: int): Ref {
+    let bad = Ref{name: "", num: 0, rest: 0, ok: false}
+    if at >= len(s) { return bad }
+    var i = at
+    var brace = false
+    if s[i] == '{' {
+        brace = true
+        i += 1
+    }
+    let start = i
+    while i < len(s) {
+        let d = syn.decodeRune(s, i)
+        if !syn.isLetter(d.r) && !syn.isDigit(d.r) && d.r != 95 { break }
+        i += d.w
+    }
+    if i == start { return bad }
+    let name = s[start..i]
+    if brace {
+        if i >= len(s) || s[i] != '}' { return bad }
+        i += 1
+    }
+    var num = 0
+    for k in 0..len(name) {
+        if name[k] < '0' || name[k] > '9' || num >= 100000000 {
+            num = -1
+            break
+        }
+        num = num * 10 + int(name[k]) - 48
+    }
+    // Disallow leading zeros.
+    if name[0] == '0' && len(name) > 1 { num = -1 }
+    return Ref{name: name, num: num, rest: i, ok: true}
+}
+
+// ---------------------------------------------------------------- splitting
+
+// The text cut at every match (Go's Split with n = -1).
+pub fn (re: &Regex) split(text: str): []str { return re.splitN(text, -1) }
+
+// The text cut at the matches, into at most n pieces (n < 0: all; n == 0:
+// none), the last piece the unsplit rest (Go's Split).
+pub fn (re: &Regex) splitN(s: str, n: int): []str {
+    var out: []str = []
+    if n == 0 { return out }
+    if len(re.expr) > 0 && len(s) == 0 {
+        append(mut &out, "")
+        return out
+    }
+    let matches = re.findAllIndexN(s, n)
+    var beg = 0
+    var end = 0
+    for m in matches {
+        if n > 0 && len(out) >= n - 1 { break }
+        end = m.start
+        if m.end != 0 { append(mut &out, s[beg..end]) }
+        beg = m.end
+    }
+    if end != len(s) { append(mut &out, s[beg..]) }
+    return out
+}
+
+// ---------------------------------------------------------------- quoting
+
+// The text with every metacharacter escaped: a pattern matching the text
+// literally (Go's QuoteMeta).
+pub fn quote(s: str): str {
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        let c = s[i]
+        if c == '\\' || c == '.' || c == '+' || c == '*' || c == '?' || c == '(' || c == ')' || c == '|' || c == '[' ||
+            c == ']' || c == '{' || c == '}' || c == '^' || c == '$' {
+            b.addByte('\\')
+        }
+        b.addByte(c)
+    }
+    return b.toStr()
+}
+
+// Whether the pattern matches the text (compiling it each time).
+pub fn isMatchStr(pattern: str, text: str): Result[bool, Error] {
+    let re = try compile(pattern)
+    return Ok(re.isMatch(text))
+}
