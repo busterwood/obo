@@ -3,11 +3,11 @@
 # quick: the C seed's fixed point (it also builds compiler/out/obxc from the seed, the compiler
 #        every later step uses), the conformance suite, the compiler tests, the library tests,
 #        the native backend against the C backend (run + lib tests) and the native self-build.
-# full:  quick, then the red-team harnesses (rounds 1-5) and the task and net library tests under
-#        ASan+UBSan, the helper-pool and net tests under TSan, then the native backend on the
-#        red-team corpora and on generated value-record and array-loop programs, the regex tests
-#        under ASan+UBSan and the regex library against Go's regexp on random patterns (skipped
-#        without go).
+# full:  quick, then the red-team harnesses (rounds 1-5) and the task, net, url and http library
+#        tests under ASan+UBSan, the helper-pool and net tests under TSan, then the native backend
+#        on the red-team corpora and on generated value-record and array-loop programs, the http
+#        client on generated reply framings (both backends), the regex tests under ASan+UBSan and
+#        the regex library against Go's regexp on random patterns (skipped without go).
 # Builds are cached (tools/cbuild.py; OBX_NOCACHE=1 disables, OBX_CACHE sets the directory).
 set -u
 tier=${1:-}
@@ -29,12 +29,13 @@ if [ "$tier" = full ]; then
     "redteam round 3|python3 obx/redteam/round3/rt.py"
     "redteam round 4|python3 obx/redteam/round4/rt.py"
     "redteam round 5|python3 obx/redteam/round5/rt.py"
-    "redteam tasks|python3 obx/redteam/rt.py obx/lib/tests/run/task_*.obx obx/lib/tests/run/net_*.obx"
+    "redteam tasks|python3 obx/redteam/rt.py obx/lib/tests/run/task_*.obx obx/lib/tests/run/net_*.obx obx/lib/tests/run/url_*.obx obx/lib/tests/run/http_*.obx"
     "redteam regex|python3 obx/redteam/rt.py obx/lib/tests/run/regex_*.obx obx/lib/tests/run/regex_re2search/main.obx"
     "redteam tsan|OBX_SAN=thread python3 obx/redteam/rt.py obx/lib/tests/run/task_blocking_*.obx obx/lib/tests/run/task_postgres_*.obx obx/lib/tests/run/net_*.obx"
     "native redteam|python3 obx/tests/run_native.py --lib --redteam"
     "native generated|python3 obx/tests/vrgen.py -n 200"
     "native loops gen|python3 obx/tests/loopgen.py -n 200"
+    "http framing gen|python3 obx/tests/httpgen.py -n 40"
     "regex vs Go|python3 obx/tests/regexgen.py --fast"
   )
 fi

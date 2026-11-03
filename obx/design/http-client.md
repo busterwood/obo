@@ -1,7 +1,10 @@
 # An HTTP client for obx
 
-Status: plan, 2026-11-03. Nothing here is built yet. No language change is
-needed: everything is library code on `task`, `net` and externs.
+Status: H1 is built (2026-11-03): `lib/url.obx`, `net.resolve` and
+`net.dial`, `lib/http.obx`, and `httpd` on the shared parser. Section 8
+says what was built, how it differs from this plan, and what it measured.
+H2 (https) is next. No language change was needed: everything is library
+code on `task`, `net` and externs.
 
 ## 0. Goal
 
@@ -260,3 +263,111 @@ client calling APIs.
 - HTTP/3 needs QUIC.
 
 Revisit when a server we must call speaks only HTTP/2 (gRPC, for example).
+
+## 8. H1 as built
+
+**Files.** `lib/url.obx` (550 lines), `lib/http.obx` (1,550),
+`net.resolve`/`net.dial`/`Conn.readNow` in `lib/net.obx`, `io.LOOKUP`
+in `lib/io.obx`. The API is in `lib/README.md` (url, http, net).
+
+**Name lookup** lives in `net`: `resolve(host, port)` calls `getaddrinfo`
+as a `blocking` extern (helper pool, task parked), and `dial(addr)` tries
+the addresses in turn, IPv6 and IPv4 interleaved, each attempt with an
+equal share of the time left and at least 2 s. A failed lookup is an
+`IoError` with errno `io.LOOKUP + n`, which http turns into `Kind.Dns`.
+Linking: the native backend links a program dynamically only when it
+reaches `dial` or `resolve` (glibc's `getaddrinfo` needs nsswitch and
+cannot be used from a static binary); everything else stays static. `httpd`
+was already dynamic (libpq); `httpload` is dynamic since `--client`.
+
+**The TLS seam.** A connection's transport is
+`Stream = value closed { Tcp(net.Conn); Gone }` with `read`, `write`,
+`writeStr` and `quiet`; everything above it (framing, pool, retries) only
+sees a `Stream`. H2 adds a `Tls` case wrapping the socket and the `SSL*`,
+whose reads and writes park on `SSL_ERROR_WANT_READ/WRITE`. Until then an
+https URL is refused with `Kind.Tls` before any connection is made.
+
+**Pool and retries.** A `Client` is a copy handle on a
+`task.Shared[PoolState]` (as `postgres.Pool`): per `scheme://authority`
+key, a count of open connections, a LIFO list of idle ones and a FIFO list
+of waiters (each a promise). `acquire` closes idle connections whose time
+is up (`idleTimeoutMs`, or Keep-Alive's timeout less a second), hands out
+the most recent idle one, opens a new place under `maxPerHost`, or queues
+the caller. A connection idle for more than 100 ms is checked with a read
+that does not park before it is reused (EAGAIN: still open). The
+`Response` owns the connection; its drop returns it to the pool only when
+the body was read to the end and the server keeps the connection, else it
+is closed and the place given to the first waiter. A request is sent once
+more, on a new connection, only when it failed on a reused connection
+before any byte of the reply (EPIPE, ECONNRESET, or an end of stream),
+and only for GET, HEAD, PUT, DELETE, OPTIONS and TRACE. The client stores
+its process's pid and refuses (`Kind.Process`) in another process.
+
+**Deviations from the plan.**
+- The test routes (`/echo`, `/chunked`, `/redirect`, `/slow`, `/close`,
+  and `/hello`, `/status`, `/big`, `/slowhead`, `/drop`) are in a test
+  support module, `lib/tests/support/httptest.obx`, with a scripted server
+  for byte-exact replies, not in `cmd/httpd.obx`: the server stays the
+  benchmark it is, and the tests need no external process.
+- `Options` has `redirects`, `maxRedirects`, `allowHttpsToHttp`,
+  `idleTimeoutMs` and `userAgent` as well; defaults are in `defaults()`.
+  `Request.body` is a `str` field, not a method.
+- `Kind` also has `Url`, `Invalid` (a request refused before sending),
+  `Io` and `Process`. An error's `url` is the request's URL as given (or
+  the redirect's target).
+- Retries also cover OPTIONS and TRACE (idempotent too).
+- `httpd` became stricter with the shared parser (400 and close for
+  CL+TE, differing lengths, folding, a bare LF, a target not starting with
+  `/`).
+- The gate is measured with `httpload --client` (the same program, its
+  load sent through one `http.Client`) rather than a separate program.
+
+**Tests.** `lib/tests/run/url_parse`, `url_resolve`, `net_dial_names`,
+`http_basic`, `http_framing`, `http_malformed`, `http_redirect`,
+`http_pool`, `http_process`, `http_heads`, and `http_live` (only with
+`OBX_HTTP_LIVE=1`; else exit 77), on both backends under `OBX_CHECK=1`,
+and under ASan and UBSan in `gate.sh full`. `tests/httpgen.py` generates
+programs whose scripted servers frame random bodies every legal way
+(lengths, chunked with extensions and trailers, until close, no body,
+interim replies, byte-at-a-time writes) and checks every body and the
+number of connections on both backends; `gate.sh full` runs 40 programs
+(240 cases).
+
+**Gate.** Measured with `httpload` against the native `httpd` on CPU 0, the
+loader on CPU 1, 5 s per row, the median of three alternating rounds:
+"raw" is httpload's own loop (a fixed request, only Content-Length
+parsed), "client" is `httpload --client`, the same number of tasks through
+one `http.Client` (`get` and `text()` per request).
+
+| conns | native raw | native client | via C raw | via C client |
+|---:|---:|---:|---:|---:|
+| 1: requests/s | 4,320 | 4,530 | 4,760 | 4,410 |
+| 1: p50 / p99 | 227 / 325 µs | 217 / 320 µs | 205 / 332 µs | 222 / 362 µs |
+| 100: requests/s | 69,700 | 59,900 | 69,700 | 65,400 |
+| 100: p50 / p99 | 1.43 / 1.90 ms | 1.70 / 2.20 ms | 1.43 / 1.85 ms | 1.53 / 2.10 ms |
+| 1,000: requests/s | 62,000 | 53,600 | 62,300 | 51,300 |
+| 1,000: p50 / p99 | 16.2 / 21.2 ms | 18.4 / 25.2 ms | 16.0 / 20.2 ms | 19.6 / 23.0 ms |
+
+The throughput part of the gate is **not met** at 100 and 1,000
+connections: the client reaches 86% (native) and 82% (via C) of the raw
+loop at 1,000, and 86% and 94% at 100; at one connection, where the
+loopback round trip is the limit, they are level. With the loader's core
+saturated, the difference is the client's own work: about 7 µs of user
+time per request against the raw loop's 3.3 µs (system time is the same,
+about 12 µs). That work is what a client has to do and the raw loop skips:
+building the request with Host and User-Agent, parsing every reply header
+into `Headers`, working out the framing, and taking and returning the
+connection through the pool's `Shared` state. Profiles after the
+optimizations (one array for the request, single-pass framing, the reply
+built once, a cache of the last parsed URL, no allocation in Content-Length
+and URL checks; 46k to 54k requests/s at 1,000) show no single cost left
+above 5%. The other two parts of the gate hold: every malformed reply in
+`http_malformed` (about 50 cases) and the generated framings end in a
+value or an error, never a crash or a hang, and the tests and
+`httpload --client` under `OBX_CHECK=1` (10 and 1,000 connections), and
+the tests under ASan and UBSan, report no leaks.
+
+**Left for H2.** The OpenSSL binding (the `Tls` stream case),
+certificate and host-name checks, SNI and ALPN, and the https tests. The
+https-to-http redirect rule and the `Tls` kind are already in place.
+

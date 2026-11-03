@@ -1,0 +1,124 @@
+// http: redirects. 301, 302, 303, 307 and 308 are followed; 303 (and 301
+// or 302 after a POST) go on as a GET without the body, 307 and 308 keep
+// the method and body; Authorization and Cookie are dropped when the host
+// changes (127.0.0.1 to localhost); relative Locations resolve against the
+// URL that redirected; a fragment carries over; Options.redirects off gives
+// the 3xx itself; too many redirects and a bad Location are errors. The
+// connection is reused along a chain on one host.
+// expect: 301 GET: 200 GET /echo?n=1 | final /echo?n=1
+// expect: 302 POST: GET /echo | Content-Length: no | Content-Type: no | body ''
+// expect: 303 PUT: GET /echo | body ''
+// expect: 303 HEAD: 200 HEAD
+// expect: 307 POST: POST /echo | Content-Type: yes | body 'data'
+// expect: 308 PUT: PUT /echo | body 'data'
+// expect: 301 POST: GET /echo
+// expect: relative: GET /echo?rel=1 | GET /sub/echo
+// expect: same host: Authorization: yes | Cookie: yes
+// expect: other host: Authorization: no | Cookie: no | X-Keep: yes | Host localhost
+// expect: fragment: /echo#top
+// expect: off: 302 Location /echo
+// expect: no Location: 302 status 302
+// expect: 300: 300
+// expect: chain: 200 after 3 hops, dials 1
+// expect: loop: redirects: more than 3 redirects
+// expect: bad Location: protocol: a redirect to a bad URL: url: an IPv6 address without its ']': http://[::1/
+import "task"
+import "net"
+import "http"
+import "url"
+import "strings"
+import "../support/httptest" as ht
+
+fn has(text: str, line: str): str { return if contains(text, "\n" + line) { "yes" } else { "no" } }
+
+fn firstLine(t: str): str { return strings.cut(t, "\n").unwrap().before }
+
+fn redir(base: str, code: int, to: str): str {
+    return base + "/redirect?code=" + intToStr(code) + "&to=" + url.encode(to)
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let addr = ln.localAddr()
+        let p = strings.cut(addr, ":").unwrap().after
+        let base = "http://" + addr
+        let srv = s.start(ht.serve, ln)
+        let c = http.newClient(http.defaults())
+
+        let r1 = c.get(redir(base, 301, base + "/echo?n=1")).unwrap()
+        let fin = r1.url.target()
+        println("301 GET: " + intToStr(r1.status) + " " + firstLine(r1.text().unwrap()) + " | final " + fin)
+
+        var rq = http.request("POST", redir(base, 302, base + "/echo"))
+        rq.header("Content-Type", "text/plain")
+        rq.body = "data"
+        let t2 = c.send(&rq).unwrap().text().unwrap()
+        println("302 POST: " + firstLine(t2) + " | Content-Length: " + has(t2, "Content-Length") + " | Content-Type: " +
+                has(t2, "Content-Type") + " | body '" + strings.cut(t2, "\n\n").unwrap().after + "'")
+
+        let t3 = c.put(redir(base, 303, "/echo"), "text/plain", "data").unwrap().text().unwrap()
+        println("303 PUT: " + firstLine(t3) + " | body '" + strings.cut(t3, "\n\n").unwrap().after + "'")
+
+        let r4 = c.head(redir(base, 303, "/echo")).unwrap()
+        println("303 HEAD: " + intToStr(r4.status) + " " + (if r4.header("Content-Length").unwrap() != "0" { "HEAD" } else { "?" }))
+
+        var rq5 = http.request("POST", redir(base, 307, "/echo"))
+        rq5.header("Content-Type", "text/plain")
+        rq5.body = "data"
+        let t5 = c.send(&rq5).unwrap().text().unwrap()
+        println("307 POST: " + firstLine(t5) + " | Content-Type: " + has(t5, "Content-Type") + " | body '" +
+                strings.cut(t5, "\n\n").unwrap().after + "'")
+
+        let t6 = c.put(redir(base, 308, "/echo"), "text/plain", "data").unwrap().text().unwrap()
+        println("308 PUT: " + firstLine(t6) + " | body '" + strings.cut(t6, "\n\n").unwrap().after + "'")
+
+        let t7 = c.post(redir(base, 301, "/echo"), "text/plain", "data").unwrap().text().unwrap()
+        println("301 POST: " + firstLine(t7))
+
+        let t8 = c.get(redir(base, 302, "/echo?rel=1")).unwrap().text().unwrap()
+        let t8b = c.get(base + "/sub/redirect?code=302&to=echo").unwrap().text().unwrap()
+        println("relative: " + firstLine(t8) + " | " + firstLine(t8b))
+
+        var rq9 = http.request("GET", redir(base, 302, "/echo"))
+        rq9.header("Authorization", "Bearer x")
+        rq9.header("Cookie", "a=1")
+        let t9 = c.send(&rq9).unwrap().text().unwrap()
+        println("same host: Authorization: " + has(t9, "Authorization") + " | Cookie: " + has(t9, "Cookie"))
+
+        var rq10 = http.request("GET", redir(base, 302, "http://localhost:" + p + "/echo"))
+        rq10.header("Authorization", "Bearer x")
+        rq10.header("Cookie", "a=1")
+        rq10.header("X-Keep", "1")
+        let t10 = c.send(&rq10).unwrap().text().unwrap()
+        let host = strings.cut(strings.cut(t10, "Host: ").unwrap().after, ":").unwrap().before
+        println("other host: Authorization: " + has(t10, "Authorization") + " | Cookie: " + has(t10, "Cookie") +
+                " | X-Keep: " + has(t10, "X-Keep") + " | Host " + host)
+
+        let r11 = c.get(redir(base, 302, "/echo") + "#top").unwrap()
+        println("fragment: " + r11.url.path + "#" + r11.url.fragment)
+
+        var o = http.defaults()
+        o.redirects = false
+        let off = http.newClient(o)
+        let r12 = off.get(redir(base, 302, "/echo")).unwrap()
+        println("off: " + intToStr(r12.status) + " Location " + r12.header("Location").unwrap())
+
+        let r13 = c.get(base + "/status?code=302").unwrap()
+        println("no Location: " + intToStr(r13.status) + " " + r13.text().unwrap())
+        let r14 = c.get(base + "/redirect?code=300&to=/echo").unwrap()
+        println("300: " + intToStr(r14.status))
+
+        var o2 = http.defaults()
+        o2.maxRedirects = 3
+        let few = http.newClient(o2)
+        let r15 = few.get(redir(base, 302, redir(base, 307, redir(base, 308, base + "/hello")))).unwrap()
+        println("chain: " + intToStr(r15.status) + " after 3 hops, dials " + intToStr(few.stats().dials))
+        r15.close()
+        let r16 = few.get(redir(base, 301, redir(base, 302, redir(base, 307, redir(base, 308, base + "/hello")))))
+        let e16 = r16.unwrapErr()
+        println("loop: " + e16.kind.toStr() + ": " + e16.msg)
+        let e17 = c.get(redir(base, 302, "http://[::1/")).unwrapErr()
+        println("bad Location: " + e17.kind.toStr() + ": " + e17.msg)
+    })
+}

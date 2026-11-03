@@ -2,13 +2,17 @@
 // keep-alive connections, each a task sending GET PATH and reading the reply,
 // one request at a time, for SECONDS seconds.
 //
-//     httpload [-p PROCS] [-r] ADDR CONNS SECONDS [PATH]
+//     httpload [-p PROCS] [-r] [--client] ADDR CONNS SECONDS [PATH]
 //
 //     -p PROCS  spread the connections over PROCS processes (task.workers),
 //               so that the client is not the limit when the server has
 //               several cores; default 1, this process alone
 //     -r        reconnect after an error (and count it) instead of ending
 //               that connection: the gate's kill test
+//     --client  send the requests through lib/http instead: one
+//               http.Client (per process) with maxPerHost its connections,
+//               shared by its tasks, each request a client.get and a text()
+//               of its body (the HTTP client's gate, design/http-client.md)
 //
 // Prints one line: requests, requests per second, and the latency
 // percentiles in microseconds (from the write of a request to the end of its
@@ -24,6 +28,7 @@ import "os"
 import "fs"
 import "time"
 import "strings"
+import "http"
 
 type Load = record {
     addr: str
@@ -68,6 +73,38 @@ fn run(l: &Load, lat: mut &[]int): Result[Unit, io.IoError] {
     return Ok(Unit{})
 }
 
+// --client: the same loop through an http.Client.
+type ClientLoad = record {
+    c: http.Client
+    url: str
+    end: int
+}
+
+fn viaClient(l: ClientLoad): Tally {
+    var t = Tally{lat: [], errors: 0}
+    while time.monotonicNs() < l.end {
+        let t0 = time.monotonicNs()
+        match l.c.get(l.url) {
+            Ok(r) {
+                match r.text() {
+                    Ok(_) { append(mut &t.lat, time.monotonicNs() - t0) }
+                    Err(e) {
+                        t.errors += 1
+                        eprintln("httpload: " + e.toStr())
+                        return t
+                    }
+                }
+            }
+            Err(e) {
+                t.errors += 1
+                eprintln("httpload: " + e.toStr())
+                return t
+            }
+        }
+    }
+    return t
+}
+
 // Reads one reply (its head and Content-Length bytes of body); the server
 // sends nothing else until the next request.
 fn response(c: &net.Conn, buf: mut &[]byte, addr: str): Result[Unit, io.IoError] {
@@ -107,12 +144,19 @@ fn headEnd(b: &[]byte, n: int): int {
 }
 
 // conns connections in this process until end: the latencies (ns, sorted) and the errors.
-fn load(addr: str, path: str, conns: int, end: int, reconnect: bool): Tally {
+fn load(addr: str, path: str, conns: int, end: int, reconnect: bool, viaHttp: bool): Tally {
     var lat: []int = []
     var errors = 0
     task.scope(fn(s: mut &task.Scope) {
         var fs: []task.Future[Tally] = []
-        for i in 0..conns { append(mut &fs, s.start(client, Load{addr: addr, path: path, end: end, reconnect: reconnect})) }
+        if viaHttp {
+            var o = http.defaults()
+            o.maxPerHost = conns
+            let c = http.newClient(o)
+            for i in 0..conns { append(mut &fs, s.start(viaClient, ClientLoad{c: c, url: "http://" + addr + path, end: end})) }
+        } else {
+            for i in 0..conns { append(mut &fs, s.start(client, Load{addr: addr, path: path, end: end, reconnect: reconnect})) }
+        }
         for t in task.all(fs).unwrap() {
             for x in t.lat { append(mut &lat, x) }
             errors += t.errors
@@ -176,7 +220,7 @@ fn hpct(h: &Hist, p: int): int {
 fn pct(xs: &[]int, p: int): int { return xs[min(len(xs) - 1, len(xs) * p / 100)] / 1000 }
 
 fn usage(): never {
-    eprintln("usage: httpload [-p PROCS] [-r] ADDR CONNS SECONDS [PATH]")
+    eprintln("usage: httpload [-p PROCS] [-r] [--client] ADDR CONNS SECONDS [PATH]")
     os.quit(2)
 }
 
@@ -184,10 +228,14 @@ fn main() {
     let args = os.arguments()
     var procs = 1
     var reconnect = false
+    var viaHttp = false
     var k = 0                        // the first argument after the options
     while k < len(args) && startsWith(args[k], "-") {
         if args[k] == "-r" {
             reconnect = true
+            k += 1
+        } else if args[k] == "--client" {
+            viaHttp = true
             k += 1
         } else if args[k] == "-p" && k + 1 < len(args) {
             procs = strings.parseInt(args[k + 1]).unwrapOr(0)
@@ -205,7 +253,7 @@ fn main() {
     let t0 = time.monotonicNs()
     let end = t0 + secs * 1000000000
     if procs == 1 {
-        let t = load(addr, path, conns, end, reconnect)
+        let t = load(addr, path, conns, end, reconnect, viaHttp)
         let dt = time.monotonicNs() - t0
         let n = len(t.lat)
         if n == 0 {
@@ -221,7 +269,7 @@ fn main() {
     let base = fs.join(os.envOr("TMPDIR", "/tmp"), "httpload-" + intToStr(os.pid()) + "-")
     let r = task.workers(procs, fn(i: int) {
         let mine = conns / procs + (if i < conns % procs { 1 } else { 0 })
-        let t = load(addr, path, mine, end, reconnect)
+        let t = load(addr, path, mine, end, reconnect, viaHttp)
         writeHist(base + intToStr(i), &t)
     })
     match r {

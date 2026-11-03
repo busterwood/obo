@@ -1,0 +1,89 @@
+// url: relative references (the examples of RFC 3986 section 5.4, base
+// http://a/b/c/d;p?q), percent-encoding and queries.
+// expect: g:h = url: unsupported scheme 'g' (http and https only): g:h
+// expect: g = http://a/b/c/g
+// expect: ./g = http://a/b/c/g
+// expect: g/ = http://a/b/c/g/
+// expect: /g = http://a/g
+// expect: //g = http://g
+// expect: ?y = http://a/b/c/d;p?y
+// expect: g?y = http://a/b/c/g?y
+// expect: #s = http://a/b/c/d;p?q#s
+// expect: g#s = http://a/b/c/g#s
+// expect: g?y#s = http://a/b/c/g?y#s
+// expect: ;x = http://a/b/c/;x
+// expect: g;x = http://a/b/c/g;x
+// expect: g;x?y#s = http://a/b/c/g;x?y#s
+// expect:  = http://a/b/c/d;p?q
+// expect: . = http://a/b/c/
+// expect: ./ = http://a/b/c/
+// expect: .. = http://a/b/
+// expect: ../ = http://a/b/
+// expect: ../g = http://a/b/g
+// expect: ../.. = http://a/
+// expect: ../../ = http://a/
+// expect: ../../g = http://a/g
+// expect: ../../../g = http://a/g
+// expect: ../../../../g = http://a/g
+// expect: /./g = http://a/g
+// expect: /../g = http://a/g
+// expect: g. = http://a/b/c/g.
+// expect: .g = http://a/b/c/.g
+// expect: g.. = http://a/b/c/g..
+// expect: ..g = http://a/b/c/..g
+// expect: ./../g = http://a/b/g
+// expect: ./g/. = http://a/b/c/g/
+// expect: g/./h = http://a/b/c/g/h
+// expect: g/../h = http://a/b/c/h
+// expect: g;x=1/./y = http://a/b/c/g;x=1/y
+// expect: g;x=1/../y = http://a/b/c/y
+// expect: g?y/./x = http://a/b/c/g?y/./x
+// expect: g?y/../x = http://a/b/c/g?y/../x
+// expect: g#s/./x = http://a/b/c/g#s/./x
+// expect: g#s/../x = http://a/b/c/g#s/../x
+// expect: http:g = url: no authority ("//host") after the scheme: http:g
+// expect: https://B.example:443/x = https://b.example/x
+// expect: //user@evil/ = url: user information is not allowed: //user@evil/
+// expect: g h = url: a space or control character at byte 1: g h
+// expect: no path: http://h/x
+// expect: encode: a%20b%26c%3D%2F%3F%C3%A9-._~
+// expect: decode: a b&c=/?é-._~
+// expect: decode error: url: a '%' that does not start a %XX escape: 100%
+// expect: decode error: url: a '%' that does not start a %XX escape: %4g
+// expect: query: name=a%20b&x=1&x=2&empty=
+// expect: with query: http://h:81/p?name=a%20b&x=1&x=2&empty=#f
+// expect: parsed: 5 a+b=c d / x=[1 2] / empty='' / flag=''
+// expect: get missing: true
+import "url"
+
+fn main() {
+    let base = url.parse("http://a/b/c/d;p?q").unwrap()
+    for r in ["g:h", "g", "./g", "g/", "/g", "//g", "?y", "g?y", "#s", "g#s", "g?y#s", ";x", "g;x", "g;x?y#s", "",
+              ".", "./", "..", "../", "../g", "../..", "../../", "../../g", "../../../g", "../../../../g", "/./g",
+              "/../g", "g.", ".g", "g..", "..g", "./../g", "./g/.", "g/./h", "g/../h", "g;x=1/./y", "g;x=1/../y",
+              "g?y/./x", "g?y/../x", "g#s/./x", "g#s/../x", "http:g", "https://B.example:443/x", "//user@evil/",
+              "g h"] {
+        match base.resolve(r) {
+            Ok(u) { println(r + " = " + u.toStr()) }
+            Err(e) { println(r + " = " + e.toStr()) }
+        }
+    }
+    println("no path: " + url.parse("http://h").unwrap().resolve("x").unwrap().toStr())
+    let enc = url.encode("a b&c=/?\xc3\xa9-._~")
+    println("encode: " + enc)
+    println("decode: " + url.decode(enc).unwrap())
+    println("decode error: " + url.decode("100%").unwrapErr().toStr())
+    println("decode error: " + url.decode("%4g").unwrapErr().toStr())
+    var q = url.newQuery()
+    q.add("name", "a b")
+    q.add("x", "1")
+    q.add("x", "2")
+    q.add("empty", "")
+    println("query: " + q.encode())
+    println("with query: " + url.parse("http://h:81/p?old#f").unwrap().withQuery(&q).toStr())
+    let p = url.parseQuery("a%2Bb=c+d&x=1&&x=2&empty=&flag").unwrap()
+    let xs = p.all("x")
+    println("parsed: " + intToStr(p.size()) + " " + p.at(0).name + "=" + p.get("a+b").unwrap() + " / x=[" + xs[0] + " " + xs[1] +
+            "] / empty='" + p.get("empty").unwrap() + "' / flag='" + p.get("flag").unwrap() + "'")
+    println("get missing: " + p.get("nope").isNone().toStr())
+}

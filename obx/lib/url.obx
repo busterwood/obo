@@ -1,0 +1,552 @@
+// url: URLs for http and https (RFC 3986), strict.
+//
+//     let u = try url.parse("https://api.example.com/v1/rates?ccy=EUR")
+//     u.scheme, u.host, u.port           // "https", "api.example.com", 443
+//     u.target()                         // "/v1/rates?ccy=EUR": what a request sends
+//     let next = try u.resolve("../v2/x")   // a relative reference (a redirect)
+//     var q = url.newQuery()
+//     q.add("name", "a b&c")
+//     u.withQuery(&q).toStr()            // "https://api.example.com/v1/rates?name=a%20b%26c"
+//
+// Only http and https, with an authority ("//host"). The text must be ASCII
+// with no spaces or control characters, and every character must be one
+// RFC 3986 allows where it stands (a space or a '"' is written %20, %22); a
+// '%' must start a %XX escape. Refused with an Error that says why:
+// - user information ("user:pass@host"): it would be sent in clear text;
+// - a host that is not ASCII (IDNA is not supported), percent-encoded, or
+//   empty; an IPv6 address with a zone ("%25eth0") or an IPvFuture one;
+// - a host whose last label is a number but that is not a dotted-quad IPv4
+//   address ("1.2.3", "0x7f.1", "2130706433", "01.2.3.4"): C's resolver
+//   reads those as addresses, and a check of the text would not see it;
+// - a port that is not 1 to 65535.
+// Hosts are lowercased and IPv6 addresses written in RFC 5952 form; an
+// explicit default port is dropped. The path, query and fragment are kept as
+// written, escapes included (decode gives their bytes).
+
+import "net"
+
+// Why a URL was refused, and the text.
+pub type Error = value record {
+    pub msg: str
+    pub input: str
+}
+
+// "url: user information is not allowed: http://u:p@h/"
+pub fn (e: Error) toStr(): str { return if len(e.input) == 0 { "url: " + e.msg } else { "url: " + e.msg + ": " + e.input } }
+
+pub fn (a: Error) eq(b: &Error): bool { return a.msg == b.msg && a.input == b.input }
+
+// An absolute http or https URL.
+pub type Url = value record {
+    pub scheme: str        // "http" or "https"
+    pub host: str          // a lowercase name, an IPv4 address, or an IPv6 one (no brackets)
+    pub port: int          // as written, or the scheme's default (80, 443)
+    pub path: str          // as written ("" when there is none), escapes kept
+    pub query: str         // after "?", without it
+    pub hasQuery: bool     // whether there is a "?" (the query may be empty)
+    pub fragment: str      // after "#"; never sent to a server
+    pub hasFragment: bool
+}
+
+// The default port of http (80) and https (443); 0 for another scheme.
+pub fn defaultPort(scheme: str): int {
+    if scheme == "http" { return 80 }
+    if scheme == "https" { return 443 }
+    return 0
+}
+
+fn fail[T](msg: str, input: str): Result[T, Error] { return Err(Error{msg: msg, input: input}) }
+
+// ---- characters (RFC 3986 section 2)
+
+fn isAlpha(c: byte): bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+
+fn isUnreserved(c: byte): bool {
+    return isAlpha(c) || isDigit(c) || c == '-' || c == '.' || c == '_' || c == '~'
+}
+
+fn isSubDelim(c: byte): bool {
+    return c == '!' || c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' || c == '*' ||
+           c == '+' || c == ',' || c == ';' || c == '='
+}
+
+fn hexVal(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'f' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'F' { return int(c - 'A') + 10 }
+    return -1
+}
+
+fn show(c: byte): str {
+    if c < byte(0x21) || c > byte(0x7e) { return "byte 0x" + hex2(c) }
+    return "'" + strFromBytes(&[c]) + "'"
+}
+
+fn hex2(c: byte): str {
+    let ds = "0123456789ABCDEF"
+    return ds[int(c) / 16..int(c) / 16 + 1] + ds[int(c) % 16..int(c) % 16 + 1]
+}
+
+// Checks a path (slash too), query or fragment (also '?'): pchar and
+// %XX escapes only.
+fn checkPart(s: str, what: str, extra: str, input: str): Result[Unit, Error] {
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == '%' {
+            if i + 2 >= len(s) || hexVal(s[i + 1]) < 0 || hexVal(s[i + 2]) < 0 {
+                return fail("a '%' that does not start a %XX escape in the " + what, input)
+            }
+            i += 3
+            continue
+        }
+        if !isUnreserved(c) && !isSubDelim(c) && c != ':' && c != '@' && c != '/' && !(c == '?' && len(extra) > 1) {
+            return fail("invalid character " + show(c) + " in the " + what, input)
+        }
+        i += 1
+    }
+    return Ok(Unit{})
+}
+
+// ---- components (RFC 3986 appendix B)
+
+type Parts = value record {
+    scheme: str
+    hasScheme: bool
+    authority: str
+    hasAuthority: bool
+    path: str
+    query: str
+    hasQuery: bool
+    fragment: str
+    hasFragment: bool
+}
+
+fn components(s: str): Parts {
+    var p = Parts{scheme: "", hasScheme: false, authority: "", hasAuthority: false, path: "",
+                  query: "", hasQuery: false, fragment: "", hasFragment: false}
+    var i = 0
+    // a scheme: letters and +-. up to a ':' that comes before any '/', '?' or '#'
+    var j = 0
+    while j < len(s) && s[j] != ':' && s[j] != '/' && s[j] != '?' && s[j] != '#' { j += 1 }
+    if j > 0 && j < len(s) && s[j] == ':' {
+        p.scheme = s[..j]
+        p.hasScheme = true
+        i = j + 1
+    }
+    if i + 1 < len(s) && s[i] == '/' && s[i + 1] == '/' {
+        var k = i + 2
+        while k < len(s) && s[k] != '/' && s[k] != '?' && s[k] != '#' { k += 1 }
+        p.authority = s[i + 2..k]
+        p.hasAuthority = true
+        i = k
+    }
+    var k = i
+    while k < len(s) && s[k] != '?' && s[k] != '#' { k += 1 }
+    p.path = s[i..k]
+    i = k
+    if i < len(s) && s[i] == '?' {
+        k = i + 1
+        while k < len(s) && s[k] != '#' { k += 1 }
+        p.query = s[i + 1..k]
+        p.hasQuery = true
+        i = k
+    }
+    if i < len(s) && s[i] == '#' {
+        p.fragment = s[i + 1..]
+        p.hasFragment = true
+    }
+    return p
+}
+
+// s in lower case (ASCII); s itself when it has no capital letter.
+fn lower(s: str): str {
+    var caps = false
+    for i in 0..len(s) {
+        if s[i] >= 'A' && s[i] <= 'Z' {
+            caps = true
+            break
+        }
+    }
+    if !caps { return s }
+    var b = strToBytes(s)
+    for i in 0..len(b) {
+        if b[i] >= 'A' && b[i] <= 'Z' { b[i] += byte(32) }
+    }
+    return strFromBytes(&b)
+}
+
+// The host part of an authority, checked and normalized.
+fn checkHost(h: str, input: str): Result[str, Error] {
+    if len(h) == 0 { return fail("empty host", input) }
+    if h[0] == '[' {
+        let inner = h[1..len(h) - 1]
+        if len(inner) > 0 && (inner[0] == 'v' || inner[0] == 'V') { return fail("IPvFuture addresses are not supported", input) }
+        if indexOf(inner, "%", 0) >= 0 { return fail("IPv6 zone identifiers are not supported", input) }
+        match net.canonicalAddr("[" + inner + "]:0") {
+            Some(c) { return Ok(c[1..len(c) - 3]) }
+            None { return fail("invalid IPv6 address", input) }
+        }
+    }
+    for i in 0..len(h) {
+        let c = h[i]
+        if c >= byte(0x80) { return fail("a host that is not ASCII (IDNA is not supported)", input) }
+        if c == '%' { return fail("a percent-encoded host is not supported", input) }
+        if !(isAlpha(c) || isDigit(c) || c == '-' || c == '.' || c == '_') {
+            return fail("invalid character " + show(c) + " in the host", input)
+        }
+    }
+    let host = lower(h)
+    let name = if host[len(host) - 1] == '.' { host[..len(host) - 1] } else { host }
+    if len(name) == 0 || len(name) > 253 { return fail("invalid host name", input) }
+    var start = 0
+    var last = 0                      // where the last label starts
+    for i in 0..len(name) + 1 {
+        if i == len(name) || name[i] == '.' {
+            if i == start || i - start > 63 { return fail("invalid host name", input) }
+            last = start
+            start = i + 1
+        }
+    }
+    var numeric = true
+    for i in last..len(name) {
+        if !isDigit(name[i]) { numeric = false }
+    }
+    if numeric || (len(name) - last > 1 && name[last] == '0' && name[last + 1] == 'x') {
+        if host != name || !dottedQuad(name) { return fail("invalid IPv4 address", input) }
+    }
+    return Ok(host)
+}
+
+// "a.b.c.d", each 0 to 255 in decimal without leading zeros.
+fn dottedQuad(s: str): bool {
+    var parts = 0
+    var start = 0
+    for i in 0..len(s) + 1 {
+        if i == len(s) || s[i] == '.' {
+            let n = i - start
+            if n == 0 || n > 3 || (n > 1 && s[start] == '0') { return false }
+            var v = 0
+            for k in start..i {
+                if !isDigit(s[k]) { return false }
+                v = v * 10 + int(s[k] - '0')
+            }
+            if v > 255 { return false }
+            parts += 1
+            start = i + 1
+        }
+    }
+    return parts == 4
+}
+
+
+
+// The URL of checked parts (with a scheme and an authority).
+fn build(p: &Parts, input: str): Result[Url, Error] {
+    for i in 0..len(p.scheme) {
+        let c = p.scheme[i]
+        if !(isAlpha(c) || (i > 0 && (isDigit(c) || c == '+' || c == '-' || c == '.'))) {
+            return fail("invalid scheme", input)
+        }
+    }
+    let scheme = lower(p.scheme)
+    if defaultPort(scheme) == 0 { return fail("unsupported scheme '" + scheme + "' (http and https only)", input) }
+    if !p.hasAuthority { return fail("no authority (\"//host\") after the scheme", input) }
+    let a = p.authority
+    if indexOf(a, "@", 0) >= 0 { return fail("user information is not allowed", input) }
+    var hostEnd = len(a)
+    if len(a) > 0 && a[0] == '[' {
+        let close = indexOf(a, "]", 0)
+        if close < 0 { return fail("an IPv6 address without its ']'", input) }
+        hostEnd = close + 1
+        if hostEnd < len(a) && a[hostEnd] != ':' { return fail("invalid character after the IPv6 address", input) }
+    } else {
+        let colon = indexOf(a, ":", 0)
+        if colon >= 0 { hostEnd = colon }
+    }
+    let host = try checkHost(a[..hostEnd], input)
+    var port = defaultPort(scheme)
+    if hostEnd < len(a) {
+        let digits = a[hostEnd + 1..]
+        if len(digits) > 0 {
+            if len(digits) > 5 { return fail("invalid port", input) }
+            var v = 0
+            for i in 0..len(digits) {
+                if !isDigit(digits[i]) { return fail("invalid port", input) }
+                v = v * 10 + int(digits[i] - '0')
+            }
+            if v < 1 || v > 65535 { return fail("invalid port", input) }
+            port = v
+        }
+    }
+    try checkPart(p.path, "path", "/", input)
+    if p.hasQuery { try checkPart(p.query, "query", "/?", input) }
+    if p.hasFragment { try checkPart(p.fragment, "fragment", "/?", input) }
+    return Ok(Url{scheme: scheme, host: host, port: port, path: p.path, query: p.query, hasQuery: p.hasQuery,
+                  fragment: p.fragment, hasFragment: p.hasFragment})
+}
+
+// Checks the text: ASCII, no spaces or control characters.
+fn checkText(s: str): Result[Unit, Error] {
+    if len(s) == 0 { return fail("empty URL", s) }
+    for i in 0..len(s) {
+        let c = s[i]
+        if c >= byte(0x80) { return fail("a character that is not ASCII at byte " + intToStr(i) + " (percent-encode it)", s) }
+        if c <= byte(0x20) || c == byte(0x7f) { return fail("a space or control character at byte " + intToStr(i), s) }
+    }
+    return Ok(Unit{})
+}
+
+// Parses an absolute http or https URL.
+pub fn parse(s: str): Result[Url, Error] {
+    try checkText(s)
+    let p = components(s)
+    if !p.hasScheme { return fail("no scheme (\"http://\" or \"https://\")", s) }
+    return build(&p, s)
+}
+
+// ---- text
+
+// Whether the port is the scheme's default.
+pub fn (u: &Url) isDefaultPort(): bool { return u.port == defaultPort(u.scheme) }
+
+// The host as it appears in a URL: an IPv6 address in brackets.
+pub fn (u: &Url) hostText(): str {
+    if indexOf(u.host, ":", 0) >= 0 { return "[" + u.host + "]" }
+    return u.host
+}
+
+// host[:port], the port only when it is not the default: what the Host
+// header of a request says.
+pub fn (u: &Url) authority(): str {
+    if u.isDefaultPort() { return u.hostText() }
+    return u.hostText() + ":" + intToStr(u.port)
+}
+
+// host:port, always with the port: what net.dial takes.
+pub fn (u: &Url) hostPort(): str { return u.hostText() + ":" + intToStr(u.port) }
+
+// scheme://host:port, always with the port: a pool's key for the server.
+pub fn (u: &Url) origin(): str { return u.scheme + "://" + u.hostPort() }
+
+// The request target: the path ("/" when empty) and the query.
+pub fn (u: &Url) target(): str {
+    let p = if len(u.path) == 0 { "/" } else { u.path }
+    if u.hasQuery { return p + "?" + u.query }
+    return p
+}
+
+// The URL as text, in the normal form parse gives (lowercase scheme and
+// host, no default port).
+pub fn (u: &Url) toStr(): str {
+    var s = u.scheme + "://" + u.authority() + u.path
+    if u.hasQuery { s = s + "?" + u.query }
+    if u.hasFragment { s = s + "#" + u.fragment }
+    return s
+}
+
+pub fn (a: &Url) eq(b: &Url): bool { return a.toStr() == b.toStr() }
+
+// The URL without its fragment.
+pub fn (var u: Url) withoutFragment(): Url {
+    u.fragment = ""
+    u.hasFragment = false
+    return u
+}
+
+// The URL with q as its query (replacing any).
+pub fn (var u: Url) withQuery(q: &Query): Url {
+    u.query = q.encode()
+    u.hasQuery = true
+    return u
+}
+
+// ---- relative references (RFC 3986 section 5)
+
+// The URL that ref, a URL or a relative reference ("/a", "b/c", "../d",
+// "?q", "//host/p", "#f"), names when it is found at u. The result is
+// checked as parse checks a URL.
+pub fn (u: &Url) resolve(ref: str): Result[Url, Error] {
+    if len(ref) == 0 { return Ok(u.withoutFragment()) }
+    try checkText(ref)
+    let r = components(ref)
+    var t = r
+    if r.hasScheme {
+        t.path = removeDots(r.path)
+    } else {
+        t.scheme = u.scheme
+        t.hasScheme = true
+        if r.hasAuthority {
+            t.path = removeDots(r.path)
+        } else {
+            t.authority = u.authority()
+            t.hasAuthority = true
+            if len(r.path) == 0 {
+                t.path = u.path
+                if !r.hasQuery {
+                    t.query = u.query
+                    t.hasQuery = u.hasQuery
+                }
+            } else if r.path[0] == '/' {
+                t.path = removeDots(r.path)
+            } else {
+                t.path = removeDots(merge(u, r.path))
+            }
+        }
+    }
+    return build(&t, ref)
+}
+
+fn merge(base: &Url, path: str): str {
+    if len(base.path) == 0 { return "/" + path }
+    var i = len(base.path) - 1
+    while i >= 0 && base.path[i] != '/' { i -= 1 }
+    return base.path[..i + 1] + path
+}
+
+// RFC 3986 section 5.2.4.
+fn removeDots(path: str): str {
+    var inp = path
+    var out: []str = []
+    while len(inp) > 0 {
+        if startsWith(inp, "../") {
+            inp = inp[3..]
+        } else if startsWith(inp, "./") {
+            inp = inp[2..]
+        } else if startsWith(inp, "/./") {
+            inp = inp[2..]
+        } else if inp == "/." {
+            inp = "/"
+        } else if startsWith(inp, "/../") {
+            inp = inp[3..]
+            if len(out) > 0 { let gone = pop(mut &out) }
+        } else if inp == "/.." {
+            inp = "/"
+            if len(out) > 0 { let gone = pop(mut &out) }
+        } else if inp == "." || inp == ".." {
+            inp = ""
+        } else {
+            var j = if inp[0] == '/' { 1 } else { 0 }
+            while j < len(inp) && inp[j] != '/' { j += 1 }
+            append(mut &out, inp[..j])
+            inp = inp[j..]
+        }
+    }
+    var b = newStrBuf()
+    for s in out { b.add(s) }
+    return b.toStr()
+}
+
+// ---- percent-encoding
+
+// s with every byte but the unreserved ones (letters, digits, - . _ ~)
+// written %XX: a query name or value, or one path segment.
+pub fn encode(s: str): str {
+    var plain = true
+    for i in 0..len(s) {
+        if !isUnreserved(s[i]) { plain = false }
+    }
+    if plain { return s }
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        let c = s[i]
+        if isUnreserved(c) {
+            b.addByte(c)
+        } else {
+            b.addByte('%')
+            b.add(hex2(c))
+        }
+    }
+    return b.toStr()
+}
+
+// The bytes s encodes: each %XX is the byte XX, and every other byte stays.
+// A '%' not followed by two hex digits is an error.
+pub fn decode(s: str): Result[str, Error] { return decodeHow(s, false) }
+
+fn decodeHow(s: str, plus: bool): Result[str, Error] {
+    if indexOf(s, "%", 0) < 0 && (!plus || indexOf(s, "+", 0) < 0) { return Ok(s) }
+    var b: []byte = []
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == '%' {
+            if i + 2 >= len(s) { return fail("a '%' that does not start a %XX escape", s) }
+            let h = hexVal(s[i + 1])
+            let l = hexVal(s[i + 2])
+            if h < 0 || l < 0 { return fail("a '%' that does not start a %XX escape", s) }
+            append(mut &b, byte(h * 16 + l))
+            i += 3
+        } else {
+            append(mut &b, if plus && c == '+' { ' ' } else { c })
+            i += 1
+        }
+    }
+    return Ok(strFromBytes(&b))
+}
+
+// ---- queries
+
+// One name=value pair of a query.
+pub type Param = value record {
+    pub name: str
+    pub value: str
+}
+
+// The pairs of a query, in order; a name may repeat.
+pub type Query = record { params: []Param }
+
+pub fn newQuery(): Query { return Query{params: []} }
+
+// Adds name=value at the end.
+pub fn (q: mut &Query) add(name: str, value: str) { append(mut &q.params, Param{name: name, value: value}) }
+
+// The first value of name, if there is one.
+pub fn (q: &Query) get(name: str): Option[str] {
+    for p in q.params {
+        if p.name == name { return Some(p.value) }
+    }
+    return None
+}
+
+// Every value of name, in order.
+pub fn (q: &Query) all(name: str): []str {
+    var out: []str = []
+    for p in q.params {
+        if p.name == name { append(mut &out, p.value) }
+    }
+    return out
+}
+
+pub fn (q: &Query) size(): int { return len(q.params) }
+
+pub fn (q: &Query) at(i: int): Param { return q.params[i] }
+
+// "name=value&name2=value2", each part encoded (encode).
+pub fn (q: &Query) encode(): str {
+    var b = newStrBuf()
+    for i in 0..len(q.params) {
+        if i > 0 { b.addByte('&') }
+        b.add(encode(q.params[i].name))
+        b.addByte('=')
+        b.add(encode(q.params[i].value))
+    }
+    return b.toStr()
+}
+
+// The pairs of a query text ("a=1&b=x%20y&c"), decoded; '+' is a space, as
+// in HTML forms. A part without '=' has an empty value; empty parts are
+// skipped.
+pub fn parseQuery(s: str): Result[Query, Error] {
+    var q = newQuery()
+    for part in split(s, '&') {
+        if len(part) == 0 { continue }
+        let eq = indexOf(part, "=", 0)
+        if eq < 0 {
+            q.add(try decodeHow(part, true), "")
+        } else {
+            q.add(try decodeHow(part[..eq], true), try decodeHow(part[eq + 1..], true))
+        }
+    }
+    return Ok(q)
+}

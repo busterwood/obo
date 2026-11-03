@@ -1,0 +1,69 @@
+// net: dial and resolve. IP literals and localhost connect without a
+// lookup; resolve looks a name up through getaddrinfo (a blocking extern:
+// the task parks while a helper thread runs it), here names from
+// /etc/hosts, so no network is needed: localhost, and this machine's own
+// name (from /proc), dialled to a listener on every IPv4 interface. A name
+// that is not a name, and an address with no port, are errors.
+// expect: literal: hello
+// expect: localhost: hello
+// expect: resolve localhost: 127.0.0.1:80 true
+// expect: resolve literal: [::1]:443
+// expect: hostname: hello
+// expect: bad port: connect Invalid argument
+// expect: empty host: lookup Invalid argument
+// expect: lookup error text: Name or service not known
+import "task"
+import "net"
+import "io"
+import "strings"
+
+fn serve(ln: net.Listener): int {
+    var n = 0
+    while true {
+        match ln.accept() {
+            Ok(c) {
+                c.writeStr("hello").unwrap()
+                n += 1
+            }
+            Err(e) { break }
+        }
+    }
+    return n
+}
+
+fn greet(c: net.Conn): str {
+    var buf = array(16, byte(0))
+    var got = ""
+    while true {
+        let n = c.read(mut &buf).unwrap()
+        if n == 0 { break }
+        got = got + strFromBytes(&buf[0..n])
+    }
+    return got
+}
+
+fn port(a: str): str { return a[strings.lastIndexOf(a, ":") + 1..] }
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let ln = net.listen("0.0.0.0:0").unwrap()
+        let p = port(ln.localAddr())
+        let srv = s.start(serve, ln)
+        println("literal: " + greet(net.dial("127.0.0.1:" + p).unwrap()))
+        println("localhost: " + greet(net.dial("localhost:" + p).unwrap()))
+        let rs = net.resolve("localhost", 80).unwrap()
+        var has = false
+        for a in rs {
+            if a == "127.0.0.1:80" { has = true }
+        }
+        println("resolve localhost: 127.0.0.1:80 " + has.toStr())
+        println("resolve literal: " + net.resolve("0:0::1", 443).unwrap()[0])
+        let host = trim(io.read("/proc/sys/kernel/hostname").unwrap())
+        println("hostname: " + greet(net.dial(host + ":" + p).unwrap()))
+        let e1 = net.dial(host + ":x").unwrapErr()
+        println("bad port: " + e1.op + " " + io.errorText(e1.errno))
+        let e2 = net.resolve("", 80).unwrapErr()
+        println("empty host: " + e2.op + " " + io.errorText(e2.errno))
+        println("lookup error text: " + io.errorText(io.LOOKUP + 2))
+    })
+}

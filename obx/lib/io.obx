@@ -36,8 +36,36 @@ pub const ETIMEDOUT = 110
 pub fn (e: IoError) isCancelled(): bool { return e.errno == ECANCELED }
 pub fn (e: IoError) isTimeout(): bool { return e.errno == ETIMEDOUT }
 
-// The C library's text for an errno.
-pub fn errorText(errno: int): str { return strerror(i32(errno)) }
+// A failed name lookup (net.resolve, net.dial) is LOOKUP + n, n the
+// positive form of getaddrinfo's EAI_ code (EAI_NONAME -2 is LOOKUP + 2);
+// errorText gives glibc's text for it, without calling gai_strerror.
+pub const LOOKUP = 100000
+
+// Whether the error is a failed name lookup.
+pub fn (e: IoError) isLookup(): bool { return e.errno > LOOKUP && e.errno < LOOKUP + 100 }
+
+// The C library's text for an errno (and for LOOKUP + n, getaddrinfo's).
+pub fn errorText(errno: int): str {
+    if errno > LOOKUP && errno < LOOKUP + 100 { return lookupText(errno - LOOKUP) }
+    return strerror(i32(errno))
+}
+
+fn lookupText(n: int): str {
+    match n {
+        1 { return "Bad value for ai_flags" }
+        2 { return "Name or service not known" }
+        3 { return "Temporary failure in name resolution" }
+        4 { return "Non-recoverable failure in name resolution" }
+        5 { return "No address associated with hostname" }
+        6 { return "ai_family not supported" }
+        7 { return "ai_socktype not supported" }
+        8 { return "Servname not supported for ai_socktype" }
+        9 { return "Address family for hostname not supported" }
+        10 { return "Memory allocation failure" }
+        12 { return "Argument buffer overflow" }
+        else { return "Unknown name lookup error " + intToStr(-n) }
+    }
+}
 
 // The errno of the last failed C call.
 pub fn lastErrno(): int { return errno() }

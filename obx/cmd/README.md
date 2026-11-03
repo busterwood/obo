@@ -53,6 +53,14 @@ how a request flows through the pool and the event loop.
 The connection tasks are started with `Scope.spawn`, so that nobody has to
 keep their futures. It has no idle timeout (a `task.within` around the
 read of a request head would be one).
+Requests are parsed by `lib/http.obx`'s shared head parser
+(`http.parseRequest`, `bodyLength`, `keepAlive`), the one the HTTP client
+uses for replies. That made the server stricter than its first parser: a
+request with both Content-Length and Transfer-Encoding, differing
+Content-Lengths, obsolete line folding, a bare LF, more than 100 header
+lines, or a target that does not start with `/` gets 400 and the
+connection is closed. Throughput did not change (http_gate.py within
+noise; the parser itself takes about 190 ns for a 25-byte head).
 
 With a third argument, `httpd ADDR POOL WORKERS` (stage C2), it serves from
 WORKERS processes under `task.workers`: the listener is made first and
@@ -70,6 +78,10 @@ sending `GET PATH` (default `/`) one at a time for SECONDS seconds, then one
 line with the requests per second and the latency percentiles. `-p PROCS`
 spreads the connections over PROCS processes (`task.workers` again), so
 that one client process is not the limit; `-r` reconnects after an error.
+With `--client` the tasks send through one `http.Client` per process
+(`maxPerHost` its connections) instead, each request a `get` and a
+`text()`: the HTTP client's gate. Reaching `dial` makes the native build
+dynamically linked (glibc's resolver).
 
     compiler/out/obxc cmd/httpd.obx --native -o httpd && ./httpd 127.0.0.1:8080
     compiler/out/obxc cmd/httpload.obx --native -o httpload && ./httpload 127.0.0.1:8080 10 5
