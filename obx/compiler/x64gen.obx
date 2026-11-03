@@ -96,6 +96,10 @@ type Gen = record {
     first: []int                // per local: the first and last position the scan saw it at
     last: []int
     noInit: []int               // ... the loop (regions) it is declared in without an initializer, or -1
+    inner: []bool               // ... a local of a function generated in place: live only at its calls
+    pts: [][]int                // ... the positions it is named at, in order
+    tailEnd: []int              // per position: in the statements before a return that run straight
+                                // into it, the return's position; else -1
     pos: int                    // the scan's position: its count of statements
     scanExpr: int               // > 0: the scan is in the body of a call generated in place (one position)
     loud: []bool                // per position: its code may change rsi, rdi, r8 or r9 (calls, ...)
@@ -146,7 +150,7 @@ fn newGen(u: ir.Ir): Gen {
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [], first: [], last: [],
-        noInit: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
+        noInit: [], inner: [], pts: [], tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
         loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false}
     g.a.peep = true
@@ -171,6 +175,8 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.first, 0)
         append(mut &g.last, 0)
         append(mut &g.noInit, -1)
+        append(mut &g.inner, false)
+        append(mut &g.pts, [])
     }
     g.countUses()
     g.simplify()
@@ -534,6 +540,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
     g.saved = []
     g.pos = 0
     g.loud = [true]                     // position 0: the entry, where the arguments arrive
+    g.tailEnd = [-1]
     g.regions = []
     g.openLoops = []
     g.scanExpr = 0
@@ -547,7 +554,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
     // the live ranges: declared in a loop without an initializer, then named in and out of loops
     for l in cands {
         let r = g.noInit[l]
-        if r >= 0 { g.widen(l, g.regions[2 * r], g.regions[2 * r + 1]) }
+        if r >= 0 && !g.inner[l] { g.widen(l, g.regions[2 * r], g.regions[2 * r + 1]) }
     }
     var changed = true
     while changed {
@@ -557,7 +564,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
             let le = g.regions[2 * r + 1]
             for l in cands {
                 // in the loop and before or after it, but not around all of it
-                if g.first[l] <= le && g.last[l] >= ls && (g.first[l] < ls || g.last[l] > le) &&
+                if !g.inner[l] && g.first[l] <= le && g.last[l] >= ls && (g.first[l] < ls || g.last[l] > le) &&
                     !(g.first[l] <= ls && g.last[l] >= le) {
                     g.widen(l, ls, le)
                     changed = true
@@ -583,7 +590,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
     var nSaved = 0
     for l in order {
         var r = -1
-        if loudBefore[g.last[l] + 1] == loudBefore[g.first[l]] {
+        if g.quietLive(l, &loudBefore) || g.quietTail(l) {
             for q in QUIET_REGS {
                 if r < 0 && g.regFree(&given, q, l) { r = q }
             }
@@ -606,7 +613,57 @@ fn (g: mut &Gen) allocRegs(f: int) {
 // Whether register r is free over the live range of local l (no local given it overlaps).
 fn (g: &Gen) regFree(given: &[]int, r: int, l: int): bool {
     for o in given {
-        if g.reg[o] == r && g.first[o] <= g.last[l] && g.first[l] <= g.last[o] { return false }
+        if g.reg[o] == r && g.first[o] <= g.last[l] && g.first[l] <= g.last[o] {
+            // the ranges around them meet: compare the positions of inner locals
+            if !g.inner[o] && !g.inner[l] { return false }
+            let a = g.spans(o)
+            let b = g.spans(l)
+            for i in 0..len(a) / 2 {
+                for j in 0..len(b) / 2 {
+                    if a[2 * i] <= b[2 * j + 1] && b[2 * j] <= a[2 * i + 1] { return false }
+                }
+            }
+        }
+    }
+    return true
+}
+
+// Where local l is live: pairs of first and last positions.
+fn (g: &Gen) spans(l: int): []int {
+    if !g.inner[l] { return [g.first[l], g.last[l]] }
+    var out: []int = []
+    for p in g.pts[l] {
+        append(mut &out, p)
+        append(mut &out, p)
+    }
+    return out
+}
+
+// Whether each loud position p local l is live at is in statements that run straight into a
+// return with l not named from p to the return: there l's value is dead (the function or the
+// body generated in place does not go on past the return but to its end), and a call may change
+// its register.
+fn (g: &Gen) quietTail(l: int): bool {
+    let sp = g.spans(l)
+    for i in 0..len(sp) / 2 {
+        for p in sp[2 * i]..sp[2 * i + 1] + 1 {
+            if g.loud[p] {
+                let e = g.tailEnd[p]
+                if e < 0 { return false }
+                for q in g.pts[l] {
+                    if q >= p && q <= e { return false }
+                }
+            }
+        }
+    }
+    return true
+}
+
+// Whether no position local l is live at is loud.
+fn (g: &Gen) quietLive(l: int, loudBefore: &[]int): bool {
+    let sp = g.spans(l)
+    for i in 0..len(sp) / 2 {
+        if loudBefore[sp[2 * i + 1] + 1] != loudBefore[sp[2 * i]] { return false }
     }
     return true
 }
@@ -925,13 +982,23 @@ fn (g: mut &Gen) touch(l: int) {
         g.first[l] = g.pos
         g.last[l] = g.pos
         g.noInit[l] = -1
+        g.inner[l] = !g.counting && g.scanExpr > 0
+        g.pts[l] = []
     }
 }
 
-// Local l is named at the scan's position.
+// Local l is named at the scan's position. A local first named in the body of a call generated
+// in place is a local of that function (a caller's local is named first in the caller's own
+// statements, an argument &l included): its value lives within each copy of the body, all of
+// which is one position, and is set there before it is read (parameters at the call, the others
+// at their declarations); so it is live at those positions only.
 fn (g: mut &Gen) occur(l: int) {
     g.touch(l)
     g.widen(l, g.pos, g.pos)
+    if !g.counting {
+        let n = len(g.pts[l])
+        if n == 0 || g.pts[l][n - 1] != g.pos { append(mut &g.pts[l], g.pos) }
+    }
 }
 
 // The next statement: a new position (not in the body of a call generated in place).
@@ -939,6 +1006,7 @@ fn (g: mut &Gen) step() {
     if g.counting || g.scanExpr > 0 { return }
     g.pos += 1
     append(mut &g.loud, false)
+    append(mut &g.tailEnd, -1)
 }
 
 fn (g: mut &Gen) enterLoop() {
@@ -1059,36 +1127,64 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
         g.scan(n.c, depth)
     } else if k == ir.E_CALL {
         g.scan(n.a, depth)
+        let f = if g.counting { -1 } else { g.inlineTarget(x, true, depth) }
+        var al: []int = []
+        if f >= 0 { al = g.aliases(f, x) }
         if !g.counting && g.cvInline(x) {
             // the 128-bit conversion of the operand is not generated
             g.scan(g.u.nodes[g.u.listAt(n.b, 0)].a, depth)
             g.scan(g.u.listAt(n.b, 1), depth)
         } else {
-            g.scanList(n.b, depth)
+            for j in 0..g.u.listLen(n.b) {
+                if f >= 0 && al[j] >= 0 {
+                    // &l for a parameter the body only dereferences: the body names l
+                    g.occur(al[j])
+                    g.weight[al[j]] += loopWeight(depth)
+                } else {
+                    g.scan(g.u.listAt(n.b, j), depth)
+                }
+            }
         }
-        let f = if g.counting { -1 } else { g.inlineTarget(x, true, depth) }
         if f >= 0 {
             // the body as it is generated in place: its parameters are assigned at the call
+            g.scanExpr += 1
             for j in 0..len(g.u.funcs[f].params) {
                 let p = g.u.funcs[f].params[j]
-                g.occur(p)
-                g.weight[p] += loopWeight(depth)
+                if al[j] < 0 {
+                    g.occur(p)
+                    g.weight[p] += loopWeight(depth)
+                }
             }
+            let ch = g.applyAlias(f, &al)
             append(mut &g.scanStack, f)
-            g.scanExpr += 1
             g.scan(g.u.funcs[f].body, depth)
             g.scanExpr -= 1
             pop(mut &g.scanStack)
+            g.unalias(&ch)
         } else if !g.counting && !g.quietRt(x) {
             g.loud[g.pos] = true
         }
     } else if k == ir.E_CLIT {
         g.scanList(n.b, depth)
     } else if k == ir.S_BLOCK {
-        g.scanList(n.a, depth)
+        let cnt = g.u.listLen(n.a)
+        var starts: []int = []
+        for j in 0..cnt {
+            append(mut &starts, g.pos + 1)
+            g.scan(g.u.listAt(n.a, j), depth)
+        }
+        if !g.counting && g.scanExpr == 0 && cnt > 0 && g.u.nk(g.u.listAt(n.a, cnt - 1)) == ir.S_RETURN {
+            // the statements that run straight into the return (no jumps, no loops)
+            var i = cnt - 1
+            while i > 0 {
+                let sk = g.u.nk(g.u.listAt(n.a, i - 1))
+                if sk != ir.S_EXPR && sk != ir.S_DECL && sk != ir.S_EMPTY { break }
+                i -= 1
+            }
+            for p in starts[i]..g.pos + 1 { g.tailEnd[p] = g.pos }
+        }
         if !g.counting {
             // the locals that fused statements do without
-            let cnt = g.u.listLen(n.a)
             for j in 0..cnt - 1 {
                 let d = g.u.listAt(n.a, j)
                 let s = g.u.listAt(n.a, j + 1)
@@ -1114,7 +1210,7 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
                 // its value may go around the loop it is declared in
                 let r = g.openLoops[len(g.openLoops) - 1]
                 if g.noInit[l] >= 0 && g.noInit[l] != r { g.bad[l] = true }
-                g.noInit[l] = r
+                if !g.inner[l] { g.noInit[l] = r }
             }
         }
         g.scan(n.b, depth)
@@ -1771,6 +1867,9 @@ fn (g: &Gen) writesReg(x: int, r: int): bool {
         return false
     }
     if (k == ir.E_ASSIGN || k == ir.E_POSTINC) && g.regOf(n.a) == r { return true }
+    // &l of a local in a register: an argument of a call generated in place whose body names l
+    // for the parameter (aliases), and may assign it
+    if k == ir.E_ADDR && g.u.nk(n.a) == ir.E_LOCAL && g.reg[g.u.nodes[n.a].a] == r { return true }
     if k == ir.E_CALL || k == ir.E_CLIT {
         if g.writesReg(n.a, r) && k == ir.E_CALL { return true }
         for j in 0..g.u.listLen(n.b) {
@@ -2769,20 +2868,25 @@ fn (g: &Gen) smallList(l: int, budget: mut &int): bool {
 // The arguments of the call e of f generated in place, evaluated as for a call (left to right;
 // the simple ones last) and assigned to f's parameters. f's locals live in this frame (slots,
 // or the registers the scan of the function gave them).
-fn (g: mut &Gen) inlineArgs(f: int, e: int) {
+fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
     let n = g.u.nodes[e]
     var ps: []int = []
     for p in g.u.funcs[f].params { append(mut &ps, p) }
     let nargs = g.u.listLen(n.b)
     var lastNon = -1
     for j in 0..nargs {
-        if !g.inlineDirect(g.u.listAt(n.b, j), ps[j]) { lastNon = j }
+        if al[j] < 0 && !g.inlineDirect(g.u.listAt(n.b, j), ps[j]) { lastNon = j }
     }
-    // the others into temporaries (tmp: a frame slot, below 0), the last integer one in rax (1)
+    // the others into temporaries (tmp: a frame slot, below 0), the last integer one in rax (1);
+    // an aliased parameter (2) is not assigned: the body names its local
     var tmp: []int = []
     for j in 0..nargs {
         let x = g.u.listAt(n.b, j)
         let t = g.u.locals[ps[j]].ty
+        if al[j] >= 0 {
+            append(mut &tmp, 2)
+            continue
+        }
         if g.inlineDirect(x, ps[j]) {
             append(mut &tmp, 0)
             continue
@@ -2839,7 +2943,9 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int) {
 // The call e of f generated in place: the arguments into the parameters, then f's body, whose
 // returns jump to the end with the result in the value registers.
 fn (g: mut &Gen) genInline(f: int, e: int) {
-    g.inlineArgs(f, e)
+    let al = g.aliases(f, e)
+    g.inlineArgs(f, e, &al)
+    let ch = g.applyAlias(f, &al)
     let saveRet = g.retTy
     let saveDecl = g.declMark
     g.retTy = g.u.tys[g.u.funcs[f].ty].base
@@ -2849,6 +2955,7 @@ fn (g: mut &Gen) genInline(f: int, e: int) {
     g.stmt(g.u.funcs[f].body)
     pop(mut &g.inlStack)
     pop(mut &g.inlEnd)
+    g.unalias(&ch)
     g.a.bind(end)
     g.retTy = saveRet
     g.declMark = saveDecl
@@ -2861,11 +2968,98 @@ fn (g: mut &Gen) branchInline(e: int, l: int, when: bool): bool {
     if f < 0 { return false }
     let x = g.onlyReturn(f)
     if x < 0 || g.u.nodes[x].ty != g.u.tys[g.u.funcs[f].ty].base { return false }
-    g.inlineArgs(f, e)
+    let al = g.aliases(f, e)
+    g.inlineArgs(f, e, &al)
+    let ch = g.applyAlias(f, &al)
     append(mut &g.inlStack, f)
     g.branch(x, l, when)
     pop(mut &g.inlStack)
+    g.unalias(&ch)
     return true
+}
+
+// For each parameter of f at the call e generated in place: the local l when the argument is
+// &l and the body only dereferences the parameter (never assigns it nor names it otherwise),
+// with l of the pointee type; else -1. Then the body's *p is l itself (applyAlias): the same
+// object, read and written where the body reads and writes it, and l needs no address.
+fn (g: mut &Gen) aliases(f: int, e: int): []int {
+    var out: []int = []
+    let args = g.u.nodes[e].b
+    let body = g.u.funcs[f].body
+    for j in 0..len(g.u.funcs[f].params) {
+        let p = g.u.funcs[f].params[j]
+        let pt = g.u.locals[p].ty
+        let x = g.u.listAt(args, j)
+        var l = -1
+        if g.tk(pt) == ir.TY_PTR && g.u.nk(x) == ir.E_ADDR && g.u.nk(g.u.nodes[x].a) == ir.E_LOCAL {
+            l = g.u.nodes[g.u.nodes[x].a].a
+            if g.u.locals[l].ty != g.u.tys[pt].base || g.walk(body, 1, p, -1) > 0 { l = -1 }
+        }
+        if l >= 0 {
+            var ds: []int = []
+            g.derefsOf(body, p, mut &ds)
+            if len(ds) != g.walk(body, 0, p, -1) { l = -1 }
+        }
+        append(mut &out, l)
+    }
+    return out
+}
+
+// The nodes *p (E_DEREF of local p) in the tree x.
+fn (g: &Gen) derefsOf(x: int, p: int, out: mut &[]int) {
+    if x < 0 { return }
+    let n = g.u.nodes[x]
+    if n.k == ir.E_DEREF && g.u.nk(n.a) == ir.E_LOCAL && g.u.nodes[n.a].a == p {
+        append(out, x)
+        return
+    }
+    let k = n.k
+    if k == ir.E_CALL || k == ir.E_CLIT || k == ir.S_BLOCK || k == ir.S_DECL {
+        if k == ir.E_CALL { g.derefsOf(n.a, p, out) }
+        if k == ir.S_DECL { g.derefsOf(n.b, p, out) }
+        let l = if k == ir.S_BLOCK { n.a } else if k == ir.S_DECL { n.c } else { n.b }
+        if l >= 0 {
+            for j in 0..g.u.listLen(l) { g.derefsOf(g.u.listAt(l, j), p, out) }
+        }
+        return
+    }
+    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_FUNC ||
+        k == ir.S_BREAK || k == ir.S_CONTINUE || k == ir.S_CASE || k == ir.S_DEFAULT || k == ir.S_EMPTY {
+        return
+    }
+    g.derefsOf(n.a, p, out)
+    if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD || k == ir.S_SWITCH ||
+        k == ir.S_WHILE || k == ir.E_COND || k == ir.S_IF || k == ir.S_FOR {
+        g.derefsOf(n.b, p, out)
+    }
+    if k == ir.E_COND || k == ir.S_IF || k == ir.S_FOR { g.derefsOf(n.c, p, out) }
+    if k == ir.S_FOR { g.derefsOf(n.d, p, out) }
+}
+
+// The body of f with each *p of an aliased parameter p (al) made its local, in place: the
+// nodes changed and what they were, for unalias, which puts them back (the body is generated,
+// or scanned, in between; f is never generated in place within itself).
+fn (g: mut &Gen) applyAlias(f: int, al: &[]int): []int {
+    var ch: []int = []
+    for j in 0..len(al) {
+        if al[j] < 0 { continue }
+        var ds: []int = []
+        g.derefsOf(g.u.funcs[f].body, g.u.funcs[f].params[j], mut &ds)
+        for x in ds {
+            append(mut &ch, x)
+            append(mut &ch, g.u.nodes[x].a)
+            g.u.nodes[x].k = ir.E_LOCAL
+            g.u.nodes[x].a = al[j]
+        }
+    }
+    return ch
+}
+
+fn (g: mut &Gen) unalias(ch: &[]int) {
+    for i in 0..len(ch) / 2 {
+        g.u.nodes[ch[2 * i]].k = ir.E_DEREF
+        g.u.nodes[ch[2 * i]].a = ch[2 * i + 1]
+    }
 }
 
 // The value a function generated in place is only a return of (its body is `return x;`), or -1.
