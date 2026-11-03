@@ -758,9 +758,8 @@ Values from input are escaped (controls, quotes, backslashes and bytes past
 0x7e as `\xHH`) and cut at 256 bytes. The query, `Authorization` and
 `Cookie` are not logged; `rq.note` adds fields.
 
-The router and middleware are held in a `task.Shared` and looked up once
-per request (to move to `task.Frozen`, a read-only shared handle, when it
-lands). Not there yet (S2 to S4): TLS, HTTP/2, `w.hint` (103), full duplex,
+The router and middleware are held in a `task.Frozen`, which every
+connection's task reads at once. Not there yet (S2 to S4): TLS, HTTP/2, `w.hint` (103), full duplex,
 a `Cookie` type, `traceparent`, a JSON log, SSE keep-alive comments,
 `maxBlocking`, per-IP limits across workers, static files, compression,
 WebSockets, forms.

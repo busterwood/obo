@@ -25,9 +25,8 @@
 // writing half), and reuses both for every request on the connection. A
 // handler and its middleware run in that task, under the route's deadline
 // (task.within), and are cancelled when the client hangs up. The router
-// and the middleware live in a task.Shared, looked up once per request.
-// TODO(hashfrozen): hold the router in a task.Frozen once that lands, so a
-// lookup needs no with.
+// and the middleware live in a task.Frozen, read by every connection's task
+// at once.
 //
 // Strict by default (design/http-server.md section 3): anything two
 // parsers could read differently is refused with a 4xx and the connection
@@ -674,7 +673,7 @@ fn slashMatch[A](r: &Router[A], i: int, method: str, host: str, path: str): bool
 
 // The rest of the chain, for a middleware to call (a copy value).
 pub type Next[A] = value record {
-    site: task.Shared[Router[A]]
+    site: task.Frozen[Router[A]]
     h: Handler[A]
     pos: int
 }
@@ -686,8 +685,7 @@ pub fn (n: Next[A]) run(app: &A, rq: mut &Request, w: mut &Response): Result[Uni
         return h(app, rq, w)
     }
     let idx = rq.chain[n.pos]
-    var m: Option[Middleware[A]] = None
-    n.site.with(fn(s: mut &Router[A]) { m = Some(s.mws[idx].f) })
+    let m = n.site.read(fn(s: &Router[A]): Option[Middleware[A]] { return Some(s.mws[idx].f) })
     match m {
         Some(f) { return f(app, rq, w, Next[A]{site: n.site, h: n.h, pos: n.pos + 1}) }
         None { return Err(error(500, "no middleware")) }
@@ -2168,7 +2166,7 @@ type AcceptCfg = value record {
 type ConnJob[A] = record {
     conn: net.Conn
     app: A
-    site: task.Shared[Router[A]]
+    site: task.Frozen[Router[A]]
     st: task.Shared[State]
     slot: int
     lim: Limits
@@ -2227,7 +2225,7 @@ pub fn serve[A: copy](ln: net.Listener, app: A, r: Router[A], cfg: Config, at: W
         memBudget: cfg.memBudget, hosts: lowerList(&cfg.hosts), redirectHosts: lowerList(&cfg.redirectHosts),
         proxies: copyList(&cfg.trustedProxies), perIp: newMap[str, int](), maxPerIp: cfg.maxConnsPerIp,
         pid: int(getpid()), logFd: cfg.logFd})
-    let sh = task.shared(site)
+    let sh = task.freeze(site)
     let ready = task.workerReady()
     var lst: Option[net.Listener] = Some(ln)
     task.scope(fn(s: mut &task.Scope) {
@@ -2260,7 +2258,7 @@ fn watchStop(st: task.Shared[State]): int {
 // the ended ones, closes idle ones under pressure, writes the access log,
 // and looks for a stop.
 fn acceptLoop[A: copy](s: mut &task.Scope, lst: mut &Option[net.Listener], spare: mut &Option[net.Spare], app: A,
-                       sh: task.Shared[Router[A]], st: task.Shared[State], lim: Limits, ac: AcceptCfg, at: Where) {
+                       sh: task.Frozen[Router[A]], st: task.Shared[State], lim: Limits, ac: AcceptCfg, at: Where) {
     var futs: []Option[task.Future[int]] = []
     var free: []int = []
     var sig: Option[task.Future[int]] = None
@@ -2619,7 +2617,7 @@ fn (rq: mut &Request) readHead(idleMs: int, at: Where): int {
 }
 
 // Reads, routes and answers one request: whether the connection carries on.
-fn serveOne[A: copy](app: &A, site: task.Shared[Router[A]], rq: mut &Request, w: mut &Response, slot: int, served: int, at: Where): bool {
+fn serveOne[A: copy](app: &A, site: task.Frozen[Router[A]], rq: mut &Request, w: mut &Response, slot: int, served: int, at: Where): bool {
     let idleMs = if served == 0 { rq.lim.headerTimeoutMs } else { rq.lim.idleTimeoutMs }
     let end = rq.readHead(idleMs, at)
     if end == -1 { return false }
@@ -2680,7 +2678,7 @@ fn serveOne[A: copy](app: &A, site: task.Shared[Router[A]], rq: mut &Request, w:
     var h: Option[Handler[A]] = None
     var opts = routeOpts()
     if pre == 0 {
-        site.with(fn(s: mut &Router[A]) {
+        let _ = site.read(fn(s: &Router[A]): int {
             // Go's order: the redirect to the path with "/", the route, 405, 404
             let i = findRoute(s, rq.method, rq.hostName, rq.path, mut &rq.params)
             if slashMatch(s, i, rq.method, rq.hostName, rq.path) {
@@ -2703,6 +2701,7 @@ fn serveOne[A: copy](app: &A, site: task.Shared[Router[A]], rq: mut &Request, w:
                 let p = s.mws[k].prefix
                 if len(p) == 0 || startsWith(rq.path, p) { append(mut &rq.chain, k) }
             }
+            return 0
         })
         if opts.maxBody >= 0 { rq.maxBody = opts.maxBody }
         if rq.framing == F_LENGTH && rq.left > rq.maxBody {

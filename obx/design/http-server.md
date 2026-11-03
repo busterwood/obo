@@ -1045,10 +1045,10 @@ In `net`: `Conn.split()` into halves, `ReadHalf.cancelOnHangup(halfClose)`
 
 ### 9.1 Deviations, and why
 
-- **The router is held in a `task.Shared`** and looked up inside one
-  `with` per request. `task.Frozen` (Q6) was being built on another branch
-  at the same time; switching to it is a `TODO(hashfrozen)` in
-  `httpserver.obx`, and a small change.
+- **The router was first held in a `task.Shared`** and looked up inside
+  one `with` per request, because `task.Frozen` (Q6) was being built on
+  another branch at the same time. After both merged, the router moved to a
+  `task.Frozen` (`read` instead of `with`).
 - **Arming the hangup cancellation costs a `poll`.** An `EPOLLRDHUP` edge
   that came with the request, before the handler started, would otherwise
   be missed, or would cancel a request whose client had only half-closed.
@@ -1179,4 +1179,3 @@ The gates at the end of S1, all passing:
   `maxBlocking`, `publicOrigin`, `w.hint`, cookies, `traceparent`, the
   JSON log, SSE keep-alive comments, `basicLimits` and `cors`, per-IP
   limits across workers, the `unwrap` lint.
-- When `task.Frozen` is on this branch's base: the router in a `Frozen`.
