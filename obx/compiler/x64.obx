@@ -540,65 +540,30 @@ pub fn (a: &Asm) labelCount(): int { return len(a.labels) }
 // Where label l is bound, or -1.
 pub fn (a: &Asm) labelPos(l: int): int { return a.labels[l] }
 
-// Inserts bytes at position at of the code generated since label first was made: the labels
-// from first on that are bound at or after at, and the jump fix-ups and relocations at or
-// after at, move with the code (the prologue of a function, written when its frame is known).
-pub fn (a: mut &Asm) insert(at: int, bytes: &[]byte, first: int) {
-    let n = len(bytes)
-    if n == 0 { return }
-    let old = len(a.code)
-    for i in 0..n { append(mut &a.code, 0) }
-    var i = old - 1
-    while i >= at {
-        a.code[i + n] = a.code[i]
-        i -= 1
-    }
-    for j in 0..n { a.code[at + j] = bytes[j] }
-    for l in first..len(a.labels) {
-        if a.labels[l] >= at { a.labels[l] = a.labels[l] + n }
-    }
-    var k = len(a.fixes) - 1
-    while k >= 0 && a.fixes[k].at >= at {
-        a.fixes[k].at = a.fixes[k].at + n
-        k -= 1
-    }
-    k = len(a.relocs) - 1
-    while k >= 0 && a.relocs[k].at >= at {
-        a.relocs[k].at = a.relocs[k].at + n
-        k -= 1
-    }
-    a.stEnd = -1
-    a.nsEnd = -1
-    a.jmpEnd = -1
-    a.termEnd = -1
-}
-
-// Inserts ns[j] bytes of nops at each position ats[j] (in increasing order) of the code generated
-// since label first was made, all at once: the labels from first on bound at or after a position,
-// and the jump fix-ups and relocations after it, move with the code.
-pub fn (a: mut &Asm) padAt(ats: &[]int, ns: &[]int, first: int) {
+// Inserts, at each position ats[j] (in increasing order) of the code generated since label first
+// was made, the next ns[j] bytes of bytes, all in one pass (a function's prologue, written when
+// its frame is known, and the pads before its loops): the labels from first on bound at or after
+// a position, and the jump fix-ups and relocations at or after it, move with the code.
+pub fn (a: mut &Asm) insertAll(ats: &[]int, ns: &[]int, bytes: &[]byte, first: int) {
     if len(ats) == 0 { return }
-    var total = 0
-    for n in ns { total += n }
+    // cum[j]: the bytes inserted at the first j positions
+    var cum: []int = [0]
+    for n in ns { append(mut &cum, cum[len(cum) - 1] + n) }
+    let total = cum[len(ns)]
     let old = len(a.code)
     for i in 0..total { append(mut &a.code, 0) }
-    // from the end: each byte moves by the pads before it
+    // from the end: each byte moves by the bytes inserted before it
     var j = len(ats) - 1
-    var sh = total
     var i = old - 1
     while j >= 0 {
+        let sh = cum[j + 1]
         while i >= ats[j] {
             a.code[i + sh] = a.code[i]
             i -= 1
         }
-        sh -= ns[j]
-        let nop = nops(ns[j])
-        for k in 0..ns[j] { a.code[ats[j] + sh + k] = nop[k] }
+        for k in 0..ns[j] { a.code[ats[j] + cum[j] + k] = bytes[cum[j] + k] }
         j -= 1
     }
-    // cum[j]: the bytes inserted at the first j positions
-    var cum: []int = [0]
-    for n in ns { append(mut &cum, cum[len(cum) - 1] + n) }
     for l in first..len(a.labels) {
         let p = a.labels[l]
         if p >= ats[0] { a.labels[l] = p + padBefore(ats, &cum, p) }
@@ -619,7 +584,7 @@ pub fn (a: mut &Asm) padAt(ats: &[]int, ns: &[]int, first: int) {
     a.termEnd = -1
 }
 
-// The bytes padAt inserts at or before position p (cum: the sums of the pads).
+// The bytes insertAll inserts at or before position p (cum: the sums of ns).
 fn padBefore(ats: &[]int, cum: &[]int, p: int): int {
     var lo = 0
     var hi = len(ats)
