@@ -1,0 +1,232 @@
+// mssql against a live SQL Server ($MSSQL_TEST_DSN or ~/.obo-mssql-dsn,
+// never printed; exits 77, skipped, without one): batches with several
+// results and row counts, an UPDATE that changes no row, an error in a later
+// statement of a batch, PRINT and severity-10 RAISERROR as diagnostics rather
+// than errors, statement reuse with new parameters, parameter count checks,
+// transactions (commit, rollback, no nesting), a fragment built with
+// sqldialect.sql, the busy connection without MARS, and ascending column reads.
+// needs: odbc
+// expect: batch: [cols 0 affected 2] [cols 1 affected -1 1 2 3] [cols 0 affected 0] [cols 2 affected -1 'x' 'é']
+// expect: no more results: false | step after the end: false
+// expect: run: update 2 -> 2 | update none -> 0 | insert -> 1 | select -> -1
+// expect: batch error: first 1 | then error 8134 (22012): [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Divide by zero error encountered.
+// expect: exec batch error: error 2627 (23000) | first insert kept: 5
+// expect: print: 01000 0: hello café | then 7 | raiserror 10: 01000 50000: just a note
+// expect: raiserror 16: error 50000 (42000): [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]bad thing 42
+// expect: param count: 2
+// expect: reuse: inserted 100 rows, count 105 | selected 'n20' NULL NULL none
+// expect: bindAll: too few error 1000: 1 arguments for 2 parameters | too many error 1000: 2 arguments for 1 parameters | bind 0 error 1000: parameter 0 out of range | bind 3 ok, ok, execute ignores it ok
+// expect: transaction: Ok(2) rows +2 | rolled back: error 2627 (23000) rows +0 | nested: error 1000: a transaction is already open | body error: error 1000: changed my mind rows +0 | after: false
+// expect: fragment: SELECT ? + ? -> Robert'); DROP TABLE #t;--? | table kept true
+// expect: busy: error 0 (HY000): [Microsoft][ODBC Driver 18 for SQL Server]Connection is busy with results for another command | first cursor still reads 1 2 then false | after reset: ok
+// expect: two prepared statements: 2
+// expect: ascending: one zero café café 0102 | text of bytes error 1002: column 3 is not text
+// expect: stale row: error 1000: no current row
+// expect: reset then read: error 1000: column 0 out of range (0 columns) | columns 0
+// expect: open handles 0
+
+import "mssql"
+import "io"
+import "os"
+import "sqldialect"
+import "strings"
+
+type V = mssql.Value
+type Error = mssql.Error
+
+fn dsn(): Option[str] {
+    match os.env("MSSQL_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-mssql-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn connectOrSkip(): mssql.Conn {
+    let d = match dsn() {
+        Some(d) { d }
+        None { exit(77) }
+    }
+    match mssql.connect(d) {
+        Ok(c) { return c }
+        Err(e) {
+            println("connect failed: " + e.state + " " + e.code.toStr())
+            exit(1)
+        }
+    }
+}
+
+fn fails[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn brief[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() + " (" + e.state + ")" }
+    }
+}
+
+fn count(c: &mssql.Conn): Result[int, Error] {
+    var s = try c.query("SELECT count(*) FROM #t", &[])
+    try s.step()
+    return s.int(0)
+}
+
+fn run(c: &mssql.Conn): Result[Unit, Error] {
+    try c.exec("CREATE TABLE #t(id int PRIMARY KEY, name nvarchar(20)); INSERT INTO #t VALUES (1, N'a'), (2, N'b'), (3, N'c')")
+
+    // one batch: a row count, rows, a row count of 0, rows of two columns
+    var b = try c.query("UPDATE #t SET name = name + N'!' WHERE id < 3; SELECT id FROM #t ORDER BY id; " +
+        "DELETE FROM #t WHERE id > ?; SELECT N'x' AS a, ? AS b", &[V.Int(100), V.Text("é")])
+    var line = "batch:"
+    var more = true
+    while more {
+        line = line + " [cols " + b.columnCount().toStr() + " affected " + b.affected().toStr()
+        while try b.step() {
+            for k in 0..b.columnCount() { line = line + " " + (try b.value(k)).toStr() }
+        }
+        line = line + "]"
+        more = try b.nextResult()
+    }
+    println(line)
+    println("no more results: " + (try b.nextResult()).toStr() + " | step after the end: " + (try b.step()).toStr())
+    b.reset()
+    println("run: update 2 -> " + (try c.run("UPDATE #t SET name = N'z' WHERE id IN (?, ?)", &[V.Int(1), V.Int(2)])).toStr() +
+        " | update none -> " + (try c.run("UPDATE #t SET name = N'z' WHERE id = ?", &[V.Int(99)])).toStr() +
+        " | insert -> " + (try c.run("INSERT INTO #t VALUES (?, ?)", &[V.Int(4), V.Text("d")])).toStr() +
+        " | select -> " + (try c.run("SELECT 1", &[])).toStr())
+
+    // an error in the second statement of a batch shows when its result is reached
+    var e = try c.query("SELECT 1; SELECT 1 / 0; SELECT 3", &[])
+    try e.step()
+    println("batch error: first " + (try e.int(0)).toStr() + " | then " + fails(e.nextResult()))
+    e.reset()
+    println("exec batch error: " + brief(c.exec("INSERT INTO #t VALUES (10, N'x'); INSERT INTO #t VALUES (10, N'y')")) +
+        " | first insert kept: " + (try count(c)).toStr())
+
+    // informational messages are diagnostics, not errors
+    var p = try c.query("PRINT N'hello café'; SELECT 7", &[])
+    var printed = ""
+    for d in p.diagnostics() { printed = printed + d.toStr() }
+    var seven = 0
+    while true {
+        if try p.step() { seven = try p.int(0); break }
+        if !(try p.nextResult()) { break }
+    }
+    p.reset()
+    var r = try c.query("RAISERROR(N'just a note', 10, 1); SELECT 8", &[])
+    var noted = ""
+    for d in r.diagnostics() { noted = noted + d.toStr() }
+    r.reset()
+    println("print: " + strings.replaceAll(printed, "[Microsoft][ODBC Driver 18 for SQL Server][SQL Server]", "") + " | then " + seven.toStr() +
+        " | raiserror 10: " + strings.replaceAll(noted, "[Microsoft][ODBC Driver 18 for SQL Server][SQL Server]", ""))
+    println("raiserror 16: " + fails(c.exec("RAISERROR(N'bad thing %d', 16, 1, 42)")))
+
+    // one prepared statement executed again with new parameters
+    var ins = try c.prepare("INSERT INTO #t VALUES (?, ?)")
+    println("param count: " + (try ins.paramCount()).toStr())
+    var total = 0
+    for i in 20..120 {
+        try ins.bind(1, V.Int(i))
+        try ins.bind(2, if i % 2 == 0 { V.Text("n" + i.toStr()) } else { V.Null })
+        try ins.execute()
+        total += ins.affected()
+    }
+    var sel = try c.prepare("SELECT name FROM #t WHERE id = ?")
+    var got = ""
+    for i in [20, 21, 119, 1000] {
+        try sel.bind(1, V.Int(i))
+        try sel.execute()
+        if try sel.step() { got = got + " " + (try sel.value(0)).toStr() } else { got = got + " none" }
+    }
+    sel.reset()
+    println("reuse: inserted " + total.toStr() + " rows, count " + (try count(c)).toStr() + " | selected" + got)
+    println("bindAll: too few " + fails(c.query("SELECT ?, ?", &[V.Int(1)])) + " | too many " +
+        fails(c.query("SELECT ?", &[V.Int(1), V.Int(2)])) + " | bind 0 " + fails(ins.bind(0, V.Int(1))) +
+        " | bind 3 " + fails(ins.bind(3, V.Int(1))) + ", " + fails(ins.bind(1, V.Int(999))) + ", execute ignores it " + fails(ins.execute()))
+    ins.reset()
+
+    // transactions
+    let before = try count(c)
+    let good = c.transaction(fn(): Result[int, Error] {
+        try c.run("INSERT INTO #t VALUES (?, ?)", &[V.Int(500), V.Text("t1")])
+        try c.run("INSERT INTO #t VALUES (?, ?)", &[V.Int(501), V.Text("t2")])
+        return Ok(if c.inTransaction() { 2 } else { -1 })
+    })
+    let n1 = try count(c)
+    let bad = c.transaction(fn(): Result[int, Error] {
+        try c.run("INSERT INTO #t VALUES (?, ?)", &[V.Int(502), V.Text("t3")])
+        try c.run("INSERT INTO #t VALUES (?, ?)", &[V.Int(500), V.Text("dup")])
+        return Ok(2)
+    })
+    let n2 = try count(c)
+    let nested = c.transaction(fn(): Result[int, Error] {
+        return c.transaction(fn(): Result[int, Error] { return Ok(1) })
+    })
+    let mine = c.transaction(fn(): Result[int, Error] {
+        try c.run("INSERT INTO #t VALUES (?, ?)", &[V.Int(503), V.Text("t4")])
+        return Err(sqldialect.inputError("changed my mind"))
+    })
+    println("transaction: " + good.toStr() + " rows +" + (n1 - before).toStr() + " | rolled back: " + brief(bad) + " rows +" +
+        (n2 - n1).toStr() + " | nested: " + fails(nested) + " | body error: " + fails(mine) + " rows +" + (try count(c) - n2).toStr() +
+        " | after: " + c.inTransaction().toStr())
+
+    var q = sqldialect.sql("SELECT ")
+    q.arg(V.Text("Robert'); DROP TABLE #t;--"))
+    q.add(" + ")
+    q.arg(V.Text("?"))
+    var frag = try c.querySql(&q)
+    try frag.step()
+    println("fragment: " + q.render(sqldialect.Dialect.SqlServerOdbc) + " -> " + try frag.text(0) + " | table kept " +
+        (try count(c) > 0).toStr())
+    frag.reset()
+
+    // no MARS: an open result holds the connection; reading it to the end frees it
+    var r1 = try c.query("SELECT id FROM #t WHERE id < 3 ORDER BY id", &[])
+    try r1.step()
+    let busy = fails(c.query("SELECT 2", &[]))
+    let first = try r1.int(0)
+    try r1.step()
+    let second = try r1.int(0)
+    let done = try r1.step()
+    println("busy: " + busy + " | first cursor still reads " + first.toStr() + " " + second.toStr() + " then " + done.toStr() +
+        " | after reset: " + fails(c.query("SELECT 2", &[])))
+    var p1 = try c.prepare("SELECT 1")
+    var p2 = try c.prepare("SELECT 2")
+    try p1.execute()
+    try p1.step()
+    p1.reset()
+    try p2.execute()
+    try p2.step()
+    println("two prepared statements: " + (try p2.int(0)).toStr())
+    p2.reset()
+
+    // columns read out of order: the skipped ones are kept
+    var asc = try c.query("SELECT N'zero', N'one', CAST(N'café' AS nvarchar(max)), CAST(0x0102 AS varbinary(max))", &[])
+    try asc.step()
+    println("ascending: " + try asc.text(1) + " " + try asc.text(0) + " " + try asc.bytes(2) + " " + try asc.text(2) + " " +
+        sqldialect.hex(try asc.bytes(3)) + " | text of bytes " + fails(asc.text(3)))
+    try asc.step()
+    println("stale row: " + fails(asc.text(0)))
+    asc.reset()
+    println("reset then read: " + fails(asc.text(0)) + " | columns " + asc.columnCount().toStr())
+    return Ok(Unit{})
+}
+
+fn main() {
+    let conn = connectOrSkip()
+    match run(&conn) {
+        Ok(_) {}
+        Err(e) { println("FAIL " + e.toStr()) }
+    }
+    conn.close()
+    println("open handles " + mssql.openHandles().toStr())
+}

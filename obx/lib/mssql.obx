@@ -320,6 +320,7 @@ type ConnState = record {
     alive: bool
     inTx: bool
     stmts: []ptr       // the open statement handles, freed before the connection
+    info: []Diag       // connect's informational records
 }
 
 pub type Conn = record { st: task.Shared[ConnState] }
@@ -352,8 +353,9 @@ pub fn connect(connStr: str): Result[Conn, Error] {
         SQLFreeHandle(i32(H_ENV), env)
         return Err(e)
     }
+    let info = if r == SQL_SUCCESS_WITH_INFO { diags(H_DBC, dbc) } else { [] }
     OPEN += 1
-    return Ok(Conn{st: task.shared(ConnState{env: env, dbc: dbc, alive: true, inTx: false, stmts: []})})
+    return Ok(Conn{st: task.shared(ConnState{env: env, dbc: dbc, alive: true, inTx: false, stmts: [], info: info})})
 }
 
 // Frees the statements, disconnects (rolling back an open transaction) and
@@ -394,9 +396,13 @@ fn (c: &Conn) dbc(): ptr {
     return h
 }
 
-// The connection's diagnostic records now: after connect, its informational
-// 01000 records ("Changed database context to 'master'.").
-pub fn (c: &Conn) diagnostics(): []Diag { return diags(H_DBC, c.dbc()) }
+// The informational records of connect (01000 "Changed database context to
+// 'master'.", ...).
+pub fn (c: &Conn) diagnostics(): []Diag {
+    var out: []Diag = []
+    c.st.with(fn(s) { for d in s.info { append(mut &out, d) } })
+    return out
+}
 
 // A new statement handle on the connection.
 fn (c: &Conn) newStmt(): Result[Stmt, Error] {
@@ -406,7 +412,7 @@ fn (c: &Conn) newStmt(): Result[Stmt, Error] {
     if !ok(r) { return Err(fail(H_DBC, dbc, r, "statement allocation")) }
     c.st.with(fn(s) { append(mut &s.stmts, h) })
     OPEN += 1
-    return Ok(Stmt{h: h, conn: c.st, binds: [], cols: [], cells: [], next: 0, row: false, affected: -1,
+    return Ok(Stmt{h: h, conn: c.st, binds: [], cols: [], cells: [], next: 0, row: false, affected: -1, info: [],
                    buf: array(8192, byte(0)), maxValue: MAX_VALUE})
 }
 
@@ -586,6 +592,7 @@ pub type Stmt = record {
     next: int                // the next column SQLGetData can read
     row: bool                // a row is current
     affected: int
+    info: []Diag             // the records of the last execute or nextResult and the steps after it
     buf: []byte              // SQLGetData's chunk buffer
     maxValue: int
 }
@@ -619,11 +626,12 @@ fn (s: &Stmt) live(): Result[Unit, Error] {
 
 fn (s: &Stmt) fail(r: int, what: str): Error { return fail(H_STMT, s.h, r, what) }
 
-// The statement's diagnostic records from its last call (PRINT output and
-// other informational messages, warnings, errors).
+// The informational records (PRINT output, RAISERROR with severity 10 or
+// less, warnings) of the last execute or nextResult and the steps after it.
 pub fn (s: &Stmt) diagnostics(): []Diag {
-    if s.live().isErr() { return [] }
-    return diags(H_STMT, s.h)
+    var out: []Diag = []
+    for d in s.info { append(mut &out, d) }
+    return out
 }
 
 // The largest value (in bytes as the driver sends it: UTF-16 for text) a
@@ -721,6 +729,7 @@ fn (s: mut &Stmt) clear() {
 // After an execute or SQLMoreResults that returned r: the result's columns
 // and row count. (SQL_NO_DATA: a searched UPDATE or DELETE that changed no row.)
 fn (s: mut &Stmt) started(r: int, what: str): Result[Unit, Error] {
+    s.info = if r == SQL_SUCCESS_WITH_INFO { diags(H_STMT, s.h) } else { [] }
     if r == SQL_NO_DATA {
         s.affected = 0
         return Ok(Unit{})
@@ -770,6 +779,9 @@ pub fn (s: mut &Stmt) step(): Result[bool, Error] {
     for k in 0..len(s.cells) { s.cells[k] = Cell.Unread }
     s.next = 0
     let r = rc(SQLFetch(s.h))
+    if r == SQL_SUCCESS_WITH_INFO {
+        for d in diags(H_STMT, s.h) { append(mut &s.info, d) }
+    }
     if r == SQL_NO_DATA { return Ok(false) }
     if !ok(r) { return Err(s.fail(r, "fetch")) }
     s.row = true
