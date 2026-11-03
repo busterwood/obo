@@ -21,7 +21,7 @@ obx/tools/gate.sh quick                        # the suites; `full` adds the red
 
 As of 2026-11-03:
 
-- **The compiler** is written in obx (about 19,900 lines) and compiles itself
+- **The compiler** is written in obx (about 21,400 lines) and compiles itself
   to a fixed point. One IR feeds two backends: a native x86-64 backend that
   writes ELF executables with no gcc (static, or dynamically linked when a
   program calls C libraries), and C for gcc. The natively built compiler
@@ -32,11 +32,13 @@ As of 2026-11-03:
   that call the C libraries directly with no shims.
 - **Programs:** [eza](obx/cmd/README.md), the common subset of the eza file
   lister in 1,600 lines, byte-identical to the real eza on 482 golden cases.
-- **Performance:** native leads on allocation and strings, gcc on tight
-  arithmetic loops; eza lists 3.7 MB of long tree in about 200 ms. The
+- **Performance:** the native backend is level with gcc -O2 or ahead of it
+  on every benchmark (fib, loops over arrays, allocation, strings); a
+  natively built compiler is about 1.2x slower than gcc's build of it. eza
+  lists 3.7 MB of long tree in about 200 ms. The
   figures are in [PERFORMANCE.md](PERFORMANCE.md).
 - **Checks:** a conformance suite, the compiler, library and eza tests, a
-  native-against-C comparison over 1,532 programs, and five red-team rounds
+  native-against-C comparison over 1,540 programs, and five red-team rounds
   under ASan and UBSan (`obx/tools/gate.sh full`, about a minute).
 - **Concurrency:** decided in
   [obx/design/concurrency.md](obx/design/concurrency.md): coroutines with

@@ -8,7 +8,7 @@ obx builds a program in two ways:
 - **via C**: `obxc`, which writes C and runs `gcc -O2`.
 
 Both are built from the same IR and must behave identically; the gate checks
-that on 1,532 programs. This page measures what each costs. Measured on 3
+that on 1,540 programs. This page measures what each costs. Measured on 3
 November 2026 at `2ce4860`, after the fifth native performance pass
 (inlining in the IR) and concurrency stage C1b (sockets and timers), on a
 quiet machine; the HTTP server table is from C1b's own run. The loop and
@@ -92,18 +92,19 @@ The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:
 
 | | gcc-built | native-built |
 |---|---:|---:|
-| self-build to an executable (`--native`) | 358 ms | 428 ms |
-| self-build to C (`--emit-c`) | 224 ms | 249 ms |
+| self-build to an executable (`--native`) | 407 ms | 490 ms |
+| self-build to C (`--emit-c`) | 242 ms | 267 ms |
 | full build through gcc | 15 s, nearly all of it gcc | — |
-| compiler binary | 1,620,920 bytes (dynamic, glibc) | 2,446,577 bytes (static, no libc) |
+| compiler binary | 1,673,896 bytes (dynamic, glibc) | 2,549,321 bytes (static, no libc) |
 
-The source is 19,906 lines of obx and 3,085 lines of C runtime (the C
+Measured after the sixth pass merged (`perf6`). The source is 21,405 lines of obx and 3,085 lines of C runtime (the C
 backend's `rt.h` and the native backend's freestanding `rt.c`, each with
 task stacks and switching, the event loop, timers and sockets).
 
 - The native-built compiler is 1.1-1.2x slower than the gcc-built one
-  (1.55x before the fifth pass). It runs 1.49x the instructions (3,973M
-  against 2,669M for `--native`; 1.89x before) at a higher rate per cycle.
+  (1.55x before the fifth pass). It runs 1.51x the instructions (4,644M
+  against 3,069M for `--native`; 1.89x before the fifth pass) at a higher
+  rate per cycle.
   A compiler is call-heavy and branchy, which is gcc's strength; inlining
   in the IR closed much of the gap.
 - `--native` itself does more work since the fifth pass (inlining, and
@@ -157,7 +158,7 @@ reference counts, copies of large value records), not register use.
 |---|---:|---:|
 | empty program | 42,760 bytes (dynamic, glibc) | 61,440 bytes (static) |
 | eza | 216,880 bytes (dynamic, glibc) | 303,040 bytes (static) |
-| compiler | 1,620,920 bytes (dynamic, glibc) | 2,446,577 bytes (static) |
+| compiler | 1,673,896 bytes (dynamic, glibc) | 2,549,321 bytes (static) |
 
 Every program carries the whole runtime, now including the event loop,
 timers and sockets (C1b) and the 64-byte function alignment: the empty
