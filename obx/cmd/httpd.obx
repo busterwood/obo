@@ -1,0 +1,252 @@
+// httpd: a small HTTP/1.1 server on one thread (design/concurrency.md, stage
+// C1b's gate). One task per connection, keep-alive by default.
+//
+//     httpd [ADDR]          ADDR: host:port, default 127.0.0.1:8080 (port 0: any)
+//
+// It prints "listening on HOST:PORT" once it listens. Routes:
+//     GET /             "hello, world\n"
+//     GET /stats        counters: open connections, accepted, requests
+//     GET /shutdown     "bye\n", then a graceful shutdown: the accept loop is
+//                       cancelled and with it every connection's task (an
+//                       idle one is parked in read, which returns ECANCELED);
+//                       the program prints its counters and ends.
+// Anything else is 404; a request it cannot parse is 400 and closes the
+// connection. A request body (Content-Length) is read and ignored; chunked
+// bodies are refused (501). Pipelined requests are answered in order.
+import "task"
+import "net"
+import "io"
+import "os"
+import "strings"
+
+type State = record {
+    open: int                         // connections open now
+    accepted: int
+    requests: int
+    stop: Option[task.Promise[int]]   // completed by /shutdown
+}
+
+type Server = record {
+    ln: net.Listener
+    st: task.Shared[State]
+}
+
+type Job = record {
+    c: net.Conn
+    st: task.Shared[State]
+}
+
+const BUF = 4096        // a connection's read buffer: the largest request head
+const HELLO = "hello, world\n"
+
+// ---- the accept loop
+
+fn acceptLoop(sv: Server): int {
+    task.scope(fn(s: mut &task.Scope) {
+        while true {
+            match sv.ln.accept() {
+                Ok(c) {
+                    sv.st.with(fn(st: mut &State) { st.accepted += 1 })
+                    s.spawn(serve, Job{c: c, st: sv.st})
+                }
+                Err(e) {
+                    if e.isCancelled() { break }
+                    // EMFILE and the like: the connection stays queued; try again soon
+                    eprintln("httpd: " + e.toStr())
+                    if task.sleep(10).isErr() { break }
+                }
+            }
+        }
+    })
+    return 0
+}
+
+// ---- one connection
+
+fn serve(j: Job): int {
+    j.st.with(fn(st: mut &State) { st.open += 1 })
+    let r = session(&j.c, j.st)
+    j.st.with(fn(st: mut &State) { st.open -= 1 })
+    return 0
+}
+
+type Request = record {
+    method: str
+    path: str
+    keepAlive: bool
+    bodyLen: int         // -1: a body this server does not take (chunked)
+}
+
+type Reply = record {
+    status: str
+    body: str
+    close: bool
+}
+
+// Reads and answers requests until the peer closes, asks to close, or the
+// task is cancelled (shutdown).
+fn session(c: &net.Conn, st: task.Shared[State]): Result[Unit, io.IoError] {
+    var buf = array(BUF, byte(0))
+    var have = 0                      // bytes in buf[0..have]
+    var out = newStrBuf()             // the replies to the requests in buf
+    while true {
+        // one request head: up to the blank line
+        var end = headEnd(&buf, have, 0)
+        while end < 0 {
+            if out.size() > 0 {       // answer what came before reading on (pipelining)
+                try c.writeStr(out.toStr())
+                out.clear()
+            }
+            if have == BUF { return reply(c, Reply{status: "431 Request Header Fields Too Large", body: "", close: true}) }
+            let n = try c.read(mut &buf[have..BUF])
+            if n == 0 { return Ok(Unit{}) }
+            let from = if have > 3 { have - 3 } else { 0 }
+            have += n
+            end = headEnd(&buf, have, from)
+        }
+        let rq = match parse(strFromBytes(&buf[0..end])) {
+            Some(r) { r }
+            None { return reply(c, Reply{status: "400 Bad Request", body: "", close: true}) }
+        }
+        if rq.bodyLen < 0 { return reply(c, Reply{status: "501 Not Implemented", body: "", close: true}) }
+        // the body: skipped, read as it comes
+        var used = end + 4 + rq.bodyLen
+        while used > have {
+            used -= have
+            have = 0
+            let n = try c.read(mut &buf[0..BUF])
+            if n == 0 { return Ok(Unit{}) }
+            have = n
+        }
+        // keep what follows (the next requests)
+        for i in used..have { buf[i - used] = buf[i] }
+        have -= used
+        let rp = route(&rq, st)
+        st.with(fn(s: mut &State) { s.requests += 1 })
+        let close = rp.close || !rq.keepAlive
+        addReply(mut &out, &rp, close, rq.method == "HEAD")
+        if close {
+            try c.writeStr(out.toStr())
+            return Ok(Unit{})
+        }
+        if have == 0 {
+            try c.writeStr(out.toStr())
+            out.clear()
+        }
+    }
+    return Ok(Unit{})
+}
+
+fn route(rq: &Request, st: task.Shared[State]): Reply {
+    if rq.method != "GET" && rq.method != "HEAD" {
+        return Reply{status: "405 Method Not Allowed", body: "", close: false}
+    }
+    if rq.path == "/" { return Reply{status: "200 OK", body: HELLO, close: false} }
+    if rq.path == "/stats" {
+        var b = ""
+        st.with(fn(s: mut &State) {
+            b = "open " + intToStr(s.open) + "\naccepted " + intToStr(s.accepted) +
+                "\nrequests " + intToStr(s.requests) + "\n"
+        })
+        return Reply{status: "200 OK", body: b, close: false}
+    }
+    if rq.path == "/shutdown" {
+        st.with(fn(s: mut &State) {
+            match replace(mut &s.stop, None) {
+                Some(p) { p.complete(0) }
+                None {}
+            }
+        })
+        return Reply{status: "200 OK", body: "bye\n", close: true}
+    }
+    return Reply{status: "404 Not Found", body: "not found\n", close: false}
+}
+
+fn reply(c: &net.Conn, rp: Reply): Result[Unit, io.IoError] {
+    var out = newStrBuf()
+    addReply(mut &out, &rp, true, false)
+    return c.writeStr(out.toStr())
+}
+
+// head: the reply to a HEAD request, without the body
+fn addReply(out: mut &StrBuf, rp: &Reply, close: bool, head: bool) {
+    out.add("HTTP/1.1 " + rp.status + "\r\nContent-Type: text/plain\r\nContent-Length: ")
+    out.add(intToStr(len(rp.body)))
+    if close { out.add("\r\nConnection: close") }
+    out.add("\r\n\r\n")
+    if !head { out.add(rp.body) }
+}
+
+// The index of the first "\r\n\r\n" in b[0..n] at or after from; -1 if none.
+fn headEnd(b: &[]byte, n: int, from: int): int {
+    var i = from
+    while i + 3 < n {
+        if b[i + 3] != '\n' { i += 1; continue }
+        if b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' { return i }
+        i += 1
+    }
+    return -1
+}
+
+// A request head (without the blank line); None if it is malformed.
+fn parse(head: str): Option[Request] {
+    let lines = strings.splitOn(head, "\r\n")
+    let first = strings.splitOn(lines[0], " ")
+    if len(first) != 3 || len(first[0]) == 0 || !startsWith(first[1], "/") { return None }
+    let version = first[2]
+    if version != "HTTP/1.1" && version != "HTTP/1.0" { return None }
+    var keep = version == "HTTP/1.1"
+    var bodyLen = 0
+    for i in 1..len(lines) {
+        let kv = match strings.cut(lines[i], ":") {
+            Some(k) { k }
+            None { return None }
+        }
+        let name = strings.toLower(kv.before)
+        let value = trim(kv.after)
+        if name == "connection" {
+            let v = strings.toLower(value)
+            if v == "close" { keep = false }
+            if v == "keep-alive" { keep = true }
+        } else if name == "content-length" {
+            match strings.parseInt(value) {
+                Ok(n) { if n < 0 { return None } else { bodyLen = n } }
+                Err(e) { return None }
+            }
+        } else if name == "transfer-encoding" {
+            bodyLen = -1
+        }
+    }
+    return Some(Request{method: first[0], path: first[1], keepAlive: keep, bodyLen: bodyLen})
+}
+
+// ---- main
+
+fn main() {
+    let args = os.arguments()
+    let addr = if len(args) > 0 { args[0] } else { "127.0.0.1:8080" }
+    let task.Handoff{promise: p, future: f} = task.promise[int]()
+    let st = task.shared(State{open: 0, accepted: 0, requests: 0, stop: Some(p)})
+    var stop = Some(f)
+    var lst: Option[net.Listener] = None
+    match net.listen(addr) {
+        Ok(ln) {
+            println("listening on " + ln.localAddr())
+            lst = Some(ln)
+        }
+        Err(e) {
+            eprintln("httpd: " + e.toStr())
+            os.quit(1)
+        }
+    }
+    io.flushStdout().unwrap()
+    task.scope(fn(s: mut &task.Scope) {
+        let srv = s.start(acceptLoop, Server{ln: replace(mut &lst, None).unwrap(), st: st})
+        let r = replace(mut &stop, None).unwrap().wait()
+        // srv is dropped here: the accept loop and every connection are cancelled
+    })
+    st.with(fn(s: mut &State) {
+        println("stopped: accepted " + intToStr(s.accepted) + ", requests " + intToStr(s.requests) +
+                ", open " + intToStr(s.open))
+    })
+}

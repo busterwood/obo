@@ -944,6 +944,17 @@ void obxlib_task_forget(void* p) {
     }
     rt_release(t);
 }
+/* Scope.spawn: the future is given up without cancelling its task; its result is dropped when
+   there is one. The scope still waits for the task. */
+void obxlib_task_detach(void* p) {
+    rt_task* t = p;
+    if (t->state == RT_DONE) {
+        if (t->res) { void* x = t->res; t->res = 0; t->resdrop(x); }
+    } else {
+        t->forgotten = true;
+    }
+    rt_release(t);
+}
 /* Cancels t's task and parks (not cancellable) until it has finished; then drops the future. */
 void obxlib_task_join(void* p, const char* w) {
     rt_task* t = p;

@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""The C1b server gate (design/concurrency.md, stage C1b): cmd/httpd.obx holding
+many idle keep-alive connections while it serves load, then shutting down
+gracefully with no leaks (OBX_CHECK=1).
+
+    python3 cmd/http_gate.py [--idle N] [--conns 1,10,100] [--seconds S]
+                             [--servers native,c,go,node] [--compiler PATH] [--no-pin]
+
+For each server: start it on 0.0.0.0 port 0 (so that the idle connections can
+go to 127.0.0.1, .2, ...: one address pair has only the ephemeral port range,
+4,096 ports on WSL2); open N idle connections (each
+sends one request first, so it has been accepted and served); read the
+server's RSS before and after (VmRSS), so the cost of an idle connection;
+run cmd/httpload.obx (always the native build) with each client count for S
+seconds while the idle connections stay open; check that the idle
+connections still answer; then GET /shutdown and check that the program ends
+with exit 0, nothing on stderr and every connection closed. go and node are
+references when they are installed (GOMAXPROCS=1; node is single-threaded);
+they are stopped with SIGTERM. Unless --no-pin, the server runs on CPU 0 and
+the load client on CPU 1 (taskset), so each has one core.
+
+Exit status 0 when every obx server passes.
+"""
+import argparse
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))       # .../obx/cmd
+OBX = os.path.dirname(HERE)
+DEFAULT_OBXC = os.path.join(OBX, 'compiler', 'out', 'obxc')
+
+GO_SRC = r'''package main
+
+import (
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+)
+
+func main() {
+	ln, err := net.Listen("tcp", os.Args[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "hello, world\n")
+	})
+	fmt.Println("listening on", ln.Addr().String())
+	http.Serve(ln, nil)
+}
+'''
+
+NODE_SRC = r'''const http = require('http');
+const [host, port] = process.argv[2].split(':');
+const srv = http.createServer((req, res) => {
+  res.writeHead(200, {'Content-Type': 'text/plain', 'Content-Length': 13});
+  res.end('hello, world\n');
+});
+srv.keepAliveTimeout = 0;      // no idle timeout (the default closes after 5 s)
+srv.headersTimeout = 0;
+srv.requestTimeout = 0;
+srv.listen(+port, host, () => {
+  console.log('listening on ' + host + ':' + srv.address().port);
+});
+'''
+
+
+def log(*a):
+    print(*a, flush=True)
+
+
+def build(args, tmp):
+    exes = {}
+    obxc = args.compiler
+    env = dict(os.environ, OBX_LIB=os.path.join(OBX, 'lib'))
+    for name, src, native in [('httpd-native', 'httpd.obx', True), ('httpd-c', 'httpd.obx', False),
+                              ('httpload', 'httpload.obx', True)]:
+        out = os.path.join(tmp, name)
+        cmd = [obxc, os.path.join(HERE, src), '-o', out] + (['--native'] if native else [])
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            sys.exit('build failed: %s\n%s%s' % (' '.join(cmd), r.stdout, r.stderr))
+        exes[name] = out
+    go = shutil.which('go') or ('/home/chris/go/bin/go' if os.path.exists('/home/chris/go/bin/go') else None)
+    if 'go' in args.servers and go:
+        d = os.path.join(tmp, 'goref')
+        os.makedirs(d)
+        with open(os.path.join(d, 'main.go'), 'w') as f:
+            f.write(GO_SRC)
+        r = subprocess.run([go, 'build', '-o', os.path.join(tmp, 'httpd-go'), 'main.go'], cwd=d,
+                           capture_output=True, text=True,
+                           env=dict(os.environ, GO111MODULE='off', GOFLAGS='', GOCACHE=os.path.join(tmp, 'gocache')))
+        if r.returncode == 0:
+            exes['go'] = os.path.join(tmp, 'httpd-go')
+        else:
+            log('go build failed; no go reference\n' + r.stderr)
+    node = shutil.which('node')
+    if 'node' in args.servers and node:
+        p = os.path.join(tmp, 'httpd.js')
+        with open(p, 'w') as f:
+            f.write(NODE_SRC)
+        exes['node'] = (node, p)
+    return exes
+
+
+def rss_kb(pid):
+    with open('/proc/%d/status' % pid) as f:
+        for line in f:
+            if line.startswith('VmRSS:'):
+                return int(line.split()[1])
+    return 0
+
+
+def exchange(s, raw):
+    """Sends raw, reads one reply; (status line, body)."""
+    s.sendall(raw)
+    data = b''
+    while True:
+        i = data.find(b'\r\n\r\n')
+        if i >= 0:
+            head = data[:i].decode()
+            n = 0
+            for line in head.split('\r\n')[1:]:
+                k, _, v = line.partition(':')
+                if k.strip().lower() == 'content-length':
+                    n = int(v)
+            while len(data) < i + 4 + n:
+                d = s.recv(65536)
+                if not d:
+                    break
+                data += d
+            return head.split('\r\n')[0], data[i + 4:i + 4 + n].decode()
+        d = s.recv(65536)
+        if not d:
+            return None, ''
+        data += d
+
+
+GET = b'GET / HTTP/1.1\r\nHost: gate\r\n\r\n'
+
+
+def dial(port, k):
+    """A connection to 127.0.0.k (the server listens on 0.0.0.0): one pair of addresses has only
+    the ephemeral port range (4,096 ports on some systems), so the destination changes every 2,000
+    connections. Not the source: a bind before connect costs about 10 ms on WSL2."""
+    return socket.create_connection(('127.0.0.%d' % k, port))
+
+
+def open_idle(host, port, n):
+    """n connections, each served once; a batch at a time, so the backlog never overflows."""
+    socks = []
+    batch = 200
+    while len(socks) < n:
+        k = min(batch, n - len(socks))
+        new = [dial(port, 1 + (len(socks) + i) // 2000) for i in range(k)]
+        for s in new:
+            s.sendall(GET)
+        for s in new:
+            st, body = exchange(s, b'')
+            if st != 'HTTP/1.1 200 OK':
+                raise RuntimeError('idle connection %d: %r' % (len(socks), st))
+            socks.append(s)
+    return socks
+
+
+def parse_load(line):
+    m = dict(re.findall(r'(\w+) (\d+)', line))
+    return {k: int(v) for k, v in m.items()}
+
+
+def run_server(name, exe, args, loader, pin):
+    env = dict(os.environ, OBX_CHECK='1', GOMAXPROCS='1')
+    cmd = list(exe) if isinstance(exe, tuple) else [exe]
+    cmd += ['0.0.0.0:0']
+    if pin:
+        cmd = ['taskset', '-c', '0'] + cmd
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    res = {'name': name, 'ok': True, 'notes': []}
+    try:
+        line = p.stdout.readline().strip()
+        m = re.search(r'listening on (\S+):(\d+)$', line)
+        if not m:
+            raise RuntimeError('no address: %r' % line)
+        host, port = '127.0.0.1', int(m.group(2))
+        addr = '%s:%d' % (host, port)
+        time.sleep(0.2)
+        r0 = rss_kb(p.pid)
+        t0 = time.monotonic()
+        idle = open_idle(host, port, args.idle)
+        res['open_s'] = time.monotonic() - t0
+        time.sleep(0.5)
+        r1 = rss_kb(p.pid)
+        res['rss0'], res['rss1'] = r0, r1
+        res['per_conn'] = (r1 - r0) * 1024 / max(1, args.idle)
+        if name.startswith('obx'):
+            s = socket.create_connection((host, port))
+            st, body = exchange(s, b'GET /stats HTTP/1.1\r\n\r\n')
+            s.close()
+            m = re.search(r'open (\d+)', body)
+            if not m or int(m.group(1)) < args.idle:
+                raise RuntimeError('stats: %r' % body)
+            res['notes'].append('stats: ' + body.strip().replace('\n', ', '))
+        res['load'] = []
+        for c in args.conns:
+            lcmd = [loader, addr, str(c), str(args.seconds)]
+            if pin:
+                lcmd = ['taskset', '-c', '1'] + lcmd
+            r = subprocess.run(lcmd, capture_output=True, text=True, timeout=args.seconds + 60)
+            if r.returncode != 0:
+                raise RuntimeError('httpload %d: %s%s' % (c, r.stdout, r.stderr))
+            d = parse_load(r.stdout)
+            d['conns'] = c
+            res['load'].append(d)
+            if d.get('errors'):
+                raise RuntimeError('httpload %d: errors: %s' % (c, r.stdout + r.stderr))
+        res['rss2'] = rss_kb(p.pid)
+        # the idle connections still answer (a sample)
+        for s in idle[::max(1, len(idle) // 100)]:
+            st, body = exchange(s, GET)
+            if st != 'HTTP/1.1 200 OK':
+                raise RuntimeError('an idle connection did not answer: %r' % st)
+        if name.startswith('obx'):
+            s = socket.create_connection((host, port))
+            st, body = exchange(s, b'GET /shutdown HTTP/1.1\r\n\r\n')
+            if body != 'bye\n':
+                raise RuntimeError('shutdown: %r %r' % (st, body))
+            t1 = time.monotonic()
+            out, err = p.communicate(timeout=60)
+            res['stop_s'] = time.monotonic() - t1
+            if p.returncode != 0 or err:
+                raise RuntimeError('exit %d, stderr %r' % (p.returncode, err[-2000:]))
+            res['notes'].append(out.strip())
+            if ', open 0' not in out:
+                raise RuntimeError('connections left open: %r' % out)
+            # every idle connection sees the end of the stream
+            for s in idle:
+                s.settimeout(5)
+                if s.recv(16) != b'':
+                    raise RuntimeError('an idle connection got data after shutdown')
+            s.close()
+        else:
+            p.send_signal(signal.SIGTERM)
+            p.communicate(timeout=10)
+        for s in idle:
+            s.close()
+    except Exception as e:     # noqa: BLE001
+        res['ok'] = False
+        res['notes'].append('FAILED: %s' % e)
+        if p.poll() is None:
+            p.kill()
+        out, err = p.communicate()
+        if err:
+            res['notes'].append('stderr: ' + err[-2000:])
+    return res
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--idle', type=int, default=10000)
+    ap.add_argument('--conns', default='1,10,100')
+    ap.add_argument('--seconds', type=int, default=5)
+    ap.add_argument('--servers', default='native,c,go,node')
+    ap.add_argument('--compiler', default=os.environ.get('OBXC', DEFAULT_OBXC))
+    ap.add_argument('--no-pin', action='store_true')
+    args = ap.parse_args(argv)
+    args.conns = [int(c) for c in args.conns.split(',')]
+    args.servers = args.servers.split(',')
+    pin = not args.no_pin and shutil.which('taskset') is not None and os.cpu_count() >= 2
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    need = args.idle + max(args.conns) + 1000
+    if soft < need:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, max(need, soft)), hard))
+        soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        if soft < need:
+            sys.exit('ulimit -n is %d; %d needed (hard limit %d)' % (soft, need, hard))
+    tmp = tempfile.mkdtemp(prefix='obx-http-')
+    try:
+        exes = build(args, tmp)
+        results = []
+        for name in args.servers:
+            key = {'native': 'httpd-native', 'c': 'httpd-c'}.get(name, name)
+            if key not in exes:
+                log('%s: not available, skipped' % name)
+                continue
+            label = 'obx ' + name if name in ('native', 'c') else name
+            log('== %s: %d idle connections, load %s for %d s each%s' %
+                (label, args.idle, args.conns, args.seconds, ' (pinned)' if pin else ''))
+            r = run_server(label, exes[key], args, exes['httpload'], pin)
+            results.append(r)
+            if 'per_conn' in r:
+                log('  RSS %d kB idle, %d kB with %d connections: %.0f bytes per idle connection (opened in %.1f s)' %
+                    (r['rss0'], r['rss1'], args.idle, r['per_conn'], r['open_s']))
+            for d in r.get('load', []):
+                log('  %4d clients: %7d req/s, latency us p50 %d p90 %d p99 %d max %d' %
+                    (d['conns'], d['rps'], d['p50'], d['p90'], d['p99'], d['max']))
+            if 'rss2' in r:
+                log('  RSS after the load: %d kB' % r['rss2'])
+            if 'stop_s' in r:
+                log('  shutdown with %d connections open: %.2f s' % (args.idle, r['stop_s']))
+            for n in r['notes']:
+                log('  ' + n)
+        bad = [r['name'] for r in results if not r['ok'] and r['name'].startswith('obx')]
+        log('FAIL: ' + ', '.join(bad) if bad else 'PASS')
+        return 1 if bad else 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

@@ -39,6 +39,7 @@ extern "c" fn rtStart(s: ptr, run: extern fn(ptr): ptr, job: ptr, resdrop: exter
 extern "c" fn rtWait(t: ptr, w: ptr): int as "obxlib_task_wait"
 extern "c" fn rtWaitAny(ts: &[]ptr, n: int, w: ptr): int as "obxlib_task_wait_any"
 extern "c" fn rtForget(t: ptr) as "obxlib_task_forget"
+extern "c" fn rtDetach(t: ptr) as "obxlib_task_detach"
 extern "c" fn rtJoin(t: ptr, w: ptr) as "obxlib_task_join"
 extern "c" fn rtTake(t: ptr): ptr as "obxlib_task_take"
 extern "c" fn rtYield(w: ptr): int as "obxlib_task_yield"
@@ -135,6 +136,14 @@ pub fn scoped[R](f: &fn(mut &Scope): R, w: Where): R {
 pub fn (s: mut &Scope) start[A, T](f: fn(A): T, arg: A): Future[T] {
     let j = Job[A, T]{f: f, arg: arg}
     return Future[T]{t: rtStart(s.p, run[A, T], intoPtr(j), dropCell[T])}
+}
+
+// Starts f(arg) as a task of the scope with no future: nobody waits for it,
+// and its result is dropped. The scope still waits for it to finish, and it
+// is cancelled with the scope's task (an accept loop's connections).
+pub fn (s: mut &Scope) spawn[A, T](f: fn(A): T, arg: A) {
+    let j = Job[A, T]{f: f, arg: arg}
+    rtDetach(rtStart(s.p, run[A, T], intoPtr(j), dropCell[T]))
 }
 
 // ---- futures
