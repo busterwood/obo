@@ -263,22 +263,33 @@ reference counts, copies of large value records), not register use.
 
 ## Binary sizes
 
-| program | via C | native |
-|---|---:|---:|
-| empty program | 53,680 bytes (dynamic, glibc) | 73,728 bytes (static) |
-| `import "regex"`, one call (`regex.quote`) | 54,016 bytes | 73,744 bytes (185,720 before) |
-| eza | 233,256 bytes (dynamic, glibc) | 315,880 bytes (static; 319,976 before) |
-| compiler | 1,898,920 bytes (dynamic, glibc) | 2,694,337 bytes (static; 2,759,873 before) |
+| program | via C | native | native before |
+|---|---:|---:|---:|
+| empty program | 53,680 bytes (dynamic, glibc) | 12,288 bytes (static) | 73,728 |
+| hello | 53,832 bytes | 16,400 bytes (static) | 73,744 |
+| `import "regex"`, one call (`regex.quote`) | 54,016 bytes | 20,512 bytes | 73,744 |
+| eza | 233,256 bytes (dynamic, glibc) | 270,824 bytes (static) | 315,880 |
+| HTTP server (`cmd/httpd.obx`) | 316,584 bytes | 439,160 bytes (dynamic) | 467,832 |
+| compiler | 1,898,920 bytes (dynamic, glibc) | 2,696,009 bytes (static) | 2,694,337 |
 
-(3 November 2026, after the HTTP server and the eighth native performance
-step; "before" is the native build just before reachability.) The native
-backend generates only the functions and globals reachable from `main`
-(design/native.md section 5, "Reachability"), as gcc drops a C program's
-unused static functions: an imported module costs only what the program
-uses of it. Every program still carries the whole runtime (62 KB of code
-and read-only data: the event loop, timers, sockets, floats, tasks), which
-is most of the empty program; leaving out the parts of the runtime a
-program does not use is the next step.
+(3 November 2026; "before" is the native build that linked the whole
+runtime.) The native backend generates only the functions and globals
+reachable from `main` (design/native.md section 5, "Reachability"), as gcc
+drops a C program's unused static functions: an imported module costs only
+what the program uses of it. The runtime is linked the same way, by
+sections, as `ld --gc-sections` would: every function and datum of rt.c is
+a section of its own in `rtx.obx`, and the link keeps those reachable from
+the runtime functions the program calls. Of the runtime's 62 KB of code and
+read-only data, an empty program links 3.2 KB (start-up, the stack-overflow
+handler, the exit path), hello 4.0 KB, eza 19 KB, the HTTP server 37 KB (the
+event loop, sockets, tasks, timers) and the compiler 27 KB. The runtime's
+bss is still most of the empty program's memory (135 KB of 151: the stdout
+buffer and the allocator's free lists), but not of its file. The compiler itself stays the same size: what it
+saves of the runtime it now carries as the runtime's section and relocation
+tables. Speed did not change: the runtime's functions keep their 64-byte
+alignment, and the self-build, eza `-T`, bench alloc and fib run the same
+instructions in the same cycles within noise (design/native.md, section 5,
+"Reachability").
 
 A native executable carries its own runtime instead of linking libc. When a
 program calls C libraries (libm, sqlite3, libpq), it is dynamically linked
