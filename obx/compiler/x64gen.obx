@@ -3339,9 +3339,13 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
     for j in 0..nargs {
         if al[j] < 0 && !g.inlineDirect(g.u.listAt(n.b, j), ps[j]) { lastNon = j }
     }
-    // the others into temporaries (tmp: a frame slot, below 0), the last integer one in rax (1);
-    // an aliased parameter (2) is not assigned: the body names its local
+    // the others into temporaries (tmp: a frame slot, below 0, or a callee-saved register, 3), the
+    // last integer one in rax (1); an aliased parameter (2) is not assigned: the body names its local
     var tmp: []int = []
+    var hregs: []int = []
+    for j in 0..nargs {
+        append(mut &hregs, -1)
+    }
     for j in 0..nargs {
         let x = g.u.listAt(n.b, j)
         let t = g.u.locals[ps[j]].ty
@@ -3359,9 +3363,28 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
             append(mut &tmp, 1)
             continue
         }
+        if !g.isF(t) {
+            // while the later arguments are evaluated (across their calls, a new register if
+            // need be); not a register of the parameters, which are live at the call
+            var quiet = true
+            for k in j + 1..nargs {
+                if !g.quietTree(g.u.listAt(n.b, k)) { quiet = false }
+            }
+            hregs[j] = g.calleeTemp(x, !quiet)
+            if hregs[j] >= 0 {
+                g.a.movRR(8, hregs[j], RAX)
+                append(mut &tmp, 3)
+                continue
+            }
+        }
         let s = g.tempFor(t)
         g.storeT(t, rbp(s))
         append(mut &tmp, s)
+    }
+    var k = nargs - 1
+    while k >= 0 {
+        if hregs[k] >= 0 { pop(mut &g.held) }
+        k -= 1
     }
     for j in 0..nargs {
         let p = ps[j]
@@ -3383,6 +3406,14 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
                 g.loadInt(t, g.reg[p], rbp(tmp[j]))
             } else {
                 g.slots[p] = tmp[j]
+            }
+        } else if tmp[j] == 3 {
+            if g.reg[p] >= 0 {
+                g.a.movRR(8, g.reg[p], hregs[j])
+            } else {
+                g.slots[p] = g.tempFor(t)
+                g.a.movRR(8, RAX, hregs[j])
+                g.storeT(t, rbp(g.slots[p]))
             }
         }
     }
@@ -3780,11 +3811,11 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         if g.simple(ix) {
             g.genInto(ix, RCX)
         } else {
-            let s = g.temp(8, 8)
-            g.a.store(8, rbp(s), RAX)
+            let h = g.hold(ix, g.quietTree(ix))
             g.gen(ix)
+            g.unhold(h)
             g.a.movRR(8, RCX, RAX)
-            g.a.load(8, RAX, rbp(s))
+            g.unholdInto(h, RAX)
         }
         g.a.loadZX(4, RDX, x64.mem(RAX, 12))            // len
         g.a.alu(x64.CMP, 8, RCX, RDX)
@@ -3886,11 +3917,11 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
             g.strAddr(a, RCX)
         } else {
             g.gen(a)
-            let s = g.temp(8, 8)
-            g.a.store(8, rbp(s), RAX)
+            let h = g.hold(b, g.quietTree(b))
             g.gen(b)
+            g.unhold(h)
             g.a.movRR(8, RDX, RAX)
-            g.a.load(8, RCX, rbp(s))
+            g.unholdInto(h, RCX)
         }
         let no = g.a.newLabel()
         let yes = g.a.newLabel()
