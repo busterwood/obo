@@ -48,6 +48,8 @@ socket), and `GET /shutdown` stops it
 gracefully: the accept loop is cancelled and with it every connection's
 task (an idle one is parked in `read`, which returns `ECANCELED`), every
 socket is closed by its drop, and the program prints its counters and ends.
+[database-example.md](database-example.md) walks through the `/db` code and
+how a request flows through the pool and the event loop.
 The connection tasks are started with `Scope.spawn`, so that nobody has to
 keep their futures. It has no idle timeout (a `task.within` around the
 read of a request head would be one).
