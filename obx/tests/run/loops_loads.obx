@@ -1,0 +1,192 @@
+// Native loop optimizations (compiler/loops.obx, (C)): loads through `mut &`
+// and `&` borrows of records (the record's pointer, its arrays' headers, its
+// scalar fields) are read once before a loop only when nothing in the loop may
+// write them. Each loop here writes what it reads in some other way: a field
+// stored directly, through a method, through a function two calls away, an
+// array appended to by a callee, a whole record replaced through a borrow, a
+// value record field written through a `mut &` to it, a closure, recursion.
+// Every read must see the write.
+// expect: direct 13 4
+// expect: method 10 5
+// expect: deep 21 6
+// expect: push 31 7
+// expect: replace 3 9
+// expect: inner 12 4
+// expect: closure 10 4
+// expect: recursive 14 4
+// expect: readonly 29 0
+// expect: other 10 3
+// expect: none 0
+
+type In = value record { x: int; y: int }
+
+type Rec = record {
+    n: int
+    k: int
+    items: []int
+    inner: In
+    child: Kid
+}
+
+type Kid = record { v: int; w: []int }
+
+fn mk(): Rec {
+    return Rec{n: 0, k: 1, items: [1, 2, 3], inner: In{x: 0, y: 0}, child: Kid{v: 0, w: [5]}}
+}
+
+fn (r: mut &Rec) bump() { r.n = r.n + 1 }
+
+fn deep2(r: mut &Rec) { r.k = r.k + 1 }
+fn deep1(r: mut &Rec) { deep2(r) }
+
+fn grow(r: mut &Rec) { append(mut &r.items, len(r.items) + 1) }
+
+fn setX(p: mut &In, v: int) { p.x = v }
+
+fn rec(r: mut &Rec, d: int) {
+    if d > 0 {
+        r.n = r.n + 1
+        rec(r, d - 1)
+    }
+}
+
+// direct stores of a field read in the loop
+fn direct(r: mut &Rec): int {
+    var s = 0
+    while r.n < 4 {
+        s = s + r.n + r.items[r.n % 3]
+        r.n = r.n + 1
+    }
+    return s
+}
+
+fn method(r: mut &Rec): int {
+    var s = 0
+    while r.n < 5 {
+        s = s + r.n
+        r.bump()
+    }
+    return s
+}
+
+fn deep(r: mut &Rec): int {
+    var s = 0
+    while r.k < 7 {
+        s = s + r.k
+        deep1(r)
+    }
+    return s
+}
+
+fn push(r: mut &Rec): int {
+    var s = 0
+    var i = 0
+    while i < len(r.items) {
+        s = s + r.items[i]
+        if len(r.items) < 7 { grow(r) }
+        i = i + 1
+    }
+    return s + 3
+}
+
+fn replace1(r: mut &Rec): int {
+    var s = 0
+    var i = 0
+    while i < 3 {
+        s = s + r.k
+        r = Rec{n: 9, k: 1, items: [], inner: In{x: 0, y: 0}, child: Kid{v: 0, w: []}}
+        i = i + 1
+    }
+    return s
+}
+
+fn inner(r: mut &Rec): int {
+    var s = 0
+    var i = 0
+    while i < 4 {
+        setX(mut &r.inner, r.inner.x + i)
+        s = s + r.inner.x
+        i = i + 1
+    }
+    return s + 2
+}
+
+fn closure(r: mut &Rec): int {
+    var s = 0
+    var i = 0
+    let f = fn(v: int): int { return v + 1 }
+    while i < 4 {
+        s = s + r.n
+        r.n = f(r.n)
+        i = i + 1
+    }
+    return s + 4
+}
+
+fn recursive(r: mut &Rec): int {
+    var s = 0
+    var i = 0
+    while i < 4 {
+        s = s + r.n
+        rec(r, 1)
+        i = i + 1
+    }
+    return s + 8
+}
+
+// nothing writes: the loads may be read once (same results)
+fn readonly(r: &Rec): int {
+    var s = 0
+    for j in 0..10 {
+        s = s + r.items[j % len(r.items)] + r.k + r.child.w[0] - r.child.v
+    }
+    return s - 50
+}
+
+// a store to another record of the same type
+fn other(r: mut &Rec, q: mut &Rec): int {
+    var s = 0
+    var i = 0
+    while i < 3 {
+        s = s + r.n + q.n
+        q.n = q.n + 1
+        i = i + 1
+    }
+    return s + 10 - 3
+}
+
+// a loop that never runs
+fn none(r: &Rec, n: int): int {
+    var s = 0
+    var i = 0
+    while i < n {
+        s = s + r.items[i] + r.child.v
+        i = i + 1
+    }
+    return s
+}
+
+fn main() {
+    var a = mk()
+    println("direct " + direct(mut &a).toStr() + " " + a.n.toStr())
+    var b = mk()
+    println("method " + method(mut &b).toStr() + " " + b.n.toStr())
+    var c = mk()
+    println("deep " + deep(mut &c).toStr() + " " + (c.k - 1).toStr())
+    var d = mk()
+    println("push " + push(mut &d).toStr() + " " + len(d.items).toStr())
+    var e = mk()
+    println("replace " + replace1(mut &e).toStr() + " " + e.n.toStr())
+    var f = mk()
+    println("inner " + inner(mut &f).toStr() + " " + (f.inner.x - 2).toStr())
+    var g = mk()
+    println("closure " + closure(mut &g).toStr() + " " + g.n.toStr())
+    var h = mk()
+    println("recursive " + recursive(mut &h).toStr() + " " + h.n.toStr())
+    let k = mk()
+    println("readonly " + readonly(&k).toStr() + " " + k.n.toStr())
+    var m = mk()
+    var q = mk()
+    println("other " + other(mut &m, mut &q).toStr() + " " + q.n.toStr())
+    println("none " + none(&k, 0).toStr())
+}

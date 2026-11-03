@@ -335,7 +335,27 @@ costs compile time):
   `c = c + 1` outside any inner loop, is at most its entry bound plus
   `max(0, hi(x) - lo(i0))` in the loop and after it (each iteration adds at
   most 1, and there are at most that many iterations), so its `+ 1` needs no
-  check when that sum is below K's maximum (the sieve's count of primes).
+  check when that sum is below K's maximum (the sieve's count of primes);
+- loads out of loops (eighth step): a scalar (an integer, bool, pointer or
+  double) read through a base pointer b, `*b` or a member chain of it with
+  no union on the way (`*p_m`, the record pointer of a `mut &R`; then
+  `h->items.data`, `h->items.len`, `h->n`), that nothing in the loop may
+  write, is read into a local declared just before the loop. The bases are
+  the pointer parameters (borrows and owned records), the locals declared
+  once to an address (`T* q = &x.f;` from an inlined borrow) that are never
+  assigned nor their address taken and whose declaration the loop surely
+  passed (no case label between), and the record pointers this rule
+  hoists: so `(*p_m)->items.data` takes two rounds, the record pointer and
+  then its field. What a loop may write is found by types: a member store
+  by (struct, offset, size, type), a store through a pointer or into an
+  address-taken local by its type, a call of the program's functions by a
+  summary of its body and callees made when first needed (their own locals
+  aside; recursion, indirect and extern calls write anything), a runtime
+  function by a table of what it writes (nothing, its arguments, frees,
+  anything). A pointer to a member exists only if the member's address is
+  taken somewhere outside the arguments of runtime functions that keep no
+  pointer. Stores overlap the load only through an object that holds the
+  loaded one or one of the members on its way.
 
 Nothing in `loops` changes which traps happen, where or in what order: a
 check goes only where it cannot fail, and every other operation stays where
@@ -410,7 +430,36 @@ Then:
   and a loud position in the statements running straight into a `return`
   (no jumps or loops between) when the local is not named from there to the
   return (its value is dead; the call is on the way out). Such a local holds
-  its value normalized to 64 bits, like a load;
+  its value normalized to 64 bits, like a load. A record place named only to
+  take a member, its address or its decay (`p->items.data`, `&x.f`) is not
+  a copy, so not loud however large the record. Since the eighth step a
+  use inside the branches of an `if` or a `switch` weighs half as much per
+  level of branches (to four levels): the weights order the locals, so a
+  hot loop's locals win over those of its rare branch; whether a new
+  callee-saved register pays is still decided on the weights by loop depth
+  alone (every path that names the local pays the save);
+- a local that gets no register over its whole range (the calls or the
+  locals already in `rsi rdi r8 r9` meet it), weighing at least four uses
+  outside loops and not one of a body generated in place, may still take
+  one of `rsi rdi r8 r9` with its value saved around some statements
+  (sites): a statement of a block, or the condition of an `if`. Each loud
+  position and each position of a local given the register that meets it
+  must lie in a site; for each the innermost site that is allowed is taken
+  (at most 8 sites). Before a site the register is stored to the local's
+  slot, inside it the local lives in the slot (its uses there name the
+  slot), after it the register is loaded again (a narrow local loaded
+  normalized, as a load). The choice of register is the one with the least
+  cost, the sites' weights (one store and one load each, weighted by their
+  loop depth and branches) plus the local's uses inside them, and it is
+  taken only if that is at least 32 (two uses outside loops) less than the
+  local's weight. A site is not allowed when control leaves it other than
+  by falling through to after it (a `break`, `continue` or `return` that
+  leaves it, a case label inside it outside a switch inside it), when it is
+  in the test of a rotated loop (generated at the bottom) or in the body
+  of a loop generated as `rep stos`, or in the then-branch of an `if` that
+  is merged into a count (`cmp; sbb`); a pair of statements generated as
+  one (a `bool c = e; if (!c)` or `T r = e; return r;`) is not, when
+  either has a site;
 - an expression is evaluated into `rax` (integers, pointers, bool), `rax:rdx`
   (128-bit), `xmm0` (double), or, for a struct, `rax` holds its address
   (a temporary slot for call results and compound literals);
@@ -447,7 +496,18 @@ Then:
   in a register reads `[reg]`, an element `p + i*size` (size 1, 2, 4, 8) is
   `[p + i*size]` with an `rt_idx` check done on the index's register in
   place, and a simple value stored through a pointer goes straight to the
-  operand (an assignment whose value is unused leaves `rax` alone);
+  operand (an assignment whose value is unused leaves `rax` alone). Since
+  the eighth step a scalar `*p`, or a member chain of it, with p a pointer
+  local in a register, is itself an operand that needs no code, `[r +
+  disp]`: compared, added and indexed with in place (`cmp i, [rbx+0x10];
+  jae; mov rcx, [rbx+0x8]; mov rax, [rcx+i*8]` for an element of a
+  borrowed record's array), loaded straight into a register and stored to
+  with an immediate;
+- a local that `loops.obx` declared for a hoisted load (`ir.hoisted`) and
+  that gets no register is not kept in a slot: it is dropped, each use
+  reads the place again (as before the hoist), and the registers are chosen
+  once more without it (one round). Record pointers that other hoisted
+  loads read through stay;
 - a call evaluates its arguments left to right; constants, locals, members
   of locals and addresses of strings and globals are loaded straight into
   their registers at the call, the last other integer argument stays in
@@ -662,6 +722,173 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
+
+2026-11-03, the eighth performance step (branch `perf8`, section 4: the
+regex engine's hot loops). The Pike VM's `add` and `step`
+(lib/regex.obx) are loops over the fields of a `mut &` record and the
+arrays it holds: native code read the record pointer, then the array's
+data pointer and length, again for every access, and kept the loops' own
+locals in frame slots once any call happened in the function. Measured
+with the regex benchmark's driver (`bench/regex/regex_bench.obx`, the
+corpus of `gen_corpus.py`, one search a run) and the usual set: all columns
+build this branch's sources; "main" is the backend at `dcb0d5b`. User-mode
+instructions; least cycles of 7 interleaved runs under `perf stat`. The
+machine was not quiet (load average 3 to 12, other agents' gates running):
+instruction counts are exact, cycles are the least of the runs, and wall
+clock is left out of this table:
+
+| commit | alternation | `\w+` | `(?i)` | email | dates | self-build | eza `-T` | compile |
+|---|---|---|---|---|---|---|---|---|
+| main | 7679M; 1327M | 5570M; 1172M | 3829M; 860M | 4420M; 862M | 5235M; 1006M | 5665M; 2392M | 632M; 214M | 3342M; 1731M |
+| `a15da21` loads out of loops (C) | 6990M; 1159M | 5206M; 1085M | 3706M; 824M | 4114M; 791M | 4783M; 857M | 5504M; 2357M | 632M; 214M | 3640M; 1955M |
+| `da60e42` one round of re-reads | 6677M; 1126M | 5039M; 1056M | 3606M; 814M | 3964M; 784M | 4287M; 815M | 5497M; 2312M | 632M; 213M | 3524M; 1842M |
+| `e8cf68b` memory operands | 4869M; 983M | 4151M; 1006M | 3215M; 792M | 3157M; 730M | 3292M; 749M | 5420M; 2277M | 631M; 218M | 3538M; 1912M |
+| `4366164` sites, branch weights | 4543M; 897M | 3998M; 919M | 3128M; 762M | 3008M; 655M | 3147M; 665M | 5357M; 2268M | 630M; 213M | 3633M; 1959M |
+| `b22166b` saves on raw weights | 4543M; 889M | 3998M; 914M | 3128M; 756M | 3008M; 650M | 3147M; 661M | 5388M; 2246M | 632M; 208M | 3649M; 1912M |
+
+(The last row is from a separate run of 9 against `4366164`; "self-build"
+is the natively built compiler running `main.obx --native`, "compile" the
+gcc-built one doing the same.) The other patterns: errors 1625M; 323M to
+1288M; 282M, hostile 197M; 37M to 122M; 28M, the literal 63M to 57M. The
+benchmarks of bench.py are unchanged within the noise in instructions and
+cycles (lists lost 3% of its cycles at `4366164` and has them back at
+`b22166b`).
+
+- `a15da21`: (C) in `loops.obx` reads the record pointer and then its
+  arrays' data pointers and lengths once before each loop (section 4). The
+  native code generator drops a hoisted local that gets no register (the
+  place is read again at each use, as before) and chooses the registers
+  again: a slot would only replace one load by another and cost a register
+  choice. 9% fewer instructions on the alternation, 13% fewer cycles.
+- `da60e42`: one round of that (a second one cost the regex benchmark 2 to
+  10% of its instructions), and the walk of what a loop or a callee may
+  write stops once it may write anything (the summaries walked 403k nodes
+  of the compiler, now 85k): the compile cost of (C) from 9% to 5%.
+- `e8cf68b`: a scalar through a pointer in a register is an operand (`cmp
+  i, [rbx+0x10]`, `mov rax, [rcx+i*8]` after `mov rcx, [rbx+0x8]`; ten
+  instructions before for an element of a borrowed record's array): 27%
+  fewer instructions on the alternation, 13% fewer cycles.
+- `4366164`: the Pike VM's `add` kept its stack pointer, the thread's
+  offset and the capture index in slots because short temporaries of a
+  rare copy loop took `rsi rdi r8 r9` and the call in `if !condMatch(..) {
+  break }` made every other range loud. Sites (section 4) keep such locals
+  in a register with a store before and a load after the statements with
+  the calls, uses in branches weigh half per level, and a record place
+  under a member is no longer a loud copy: 4 to 11% fewer cycles on the
+  regex patterns. The compiler builds 2.7% more instructions (sites,
+  their checks, the second register choice).
+- `b22166b`: halved weights decided whether a new callee-saved register
+  pays, so a borrow named twice in a match arm across a recursive call
+  (bench lists' `sum`) went to a slot; the save is decided on the weights
+  by loop depth again.
+
+Native against C and Go at `b22166b`. Cycles, the least of 9 interleaved
+runs (`perf stat`, the same driver built both ways; via C is unchanged by
+this step):
+
+| pattern | main native | native | via C | native/C |
+|---|---:|---:|---:|---:|
+| `Sherlock Holmes` | 19M | 18M | 9M | 2.0 |
+| `Sherlock\|Holmes\|Watson\|Irene` | 1316M | 889M | 611M | 1.46 |
+| `\w+` | 1163M | 913M | 613M | 1.49 |
+| `(?i)sherlock` | 853M | 756M | 415M | 1.82 |
+| email | 856M | 649M | 431M | 1.51 |
+| `(?m)^ERROR .*timeout$` | 318M | 281M | 160M | 1.76 |
+| dates (captures) | 997M | 660M | 476M | 1.39 |
+| `(a*)*b` | 38M | 28M | 18M | 1.56 |
+
+Native went from 1.9 to 2.15 times C's cycles to 1.4 to 1.8 times; it
+does not reach C on any pattern. What still separates them, from the
+profiles of the alternation (Pike VM `add` 54% of native's cycles, `step`
+and `run` 45%; C: `add` 50%, the inlined `execute` 46%, at about half the
+samples):
+
+- registers: `add` and `step` have more live values than registers; gcc
+  keeps the instruction pointer `&prog.inst[pc]` and the thread lists in
+  registers through the dispatch, native holds several in slots (one
+  site-free range per local, no splitting at loop boundaries, no
+  rematerialization of anything but hoisted loads);
+- the dispatch on the instruction's opcode is an if-chain of compares,
+  gcc's a jump table; bools are materialized (`setcc; movzx; test`) where
+  gcc branches; a multiply by a constant goes through a register (`mov
+  edx, 0x28; imul rcx, rdx`);
+- the overflow checks of index sums (`jo` after `add` and `imul`) that the
+  facts of `loops.obx` cannot prove stay; gcc keeps them too but
+  schedules around them;
+- the literal is a byte loop in both builds (2x through C, 6x Go's SIMD
+  `strings.Index`): a memchr-like runtime search would help both.
+
+Next steps, in order of expected gain: jump tables for dense switches on
+an integer; splitting live ranges at loop boundaries (a local in a slot
+outside a loop and a register inside); branching on a bool local's
+definition instead of materializing it; `imul r, r/m, imm32` and `lea`
+for small constant multipliers; a `memchr` for literal prefixes.
+
+The rewrites rest on these arguments (in addition to the sixth and
+seventh steps'):
+
+- loads out of loops (C): the load before the loop cannot fault, because a
+  base points to an object that is there throughout the loop: a borrow or
+  an owned record is never null, and what a borrow reaches is not freed
+  while the borrow lives; a local declared once to the address of a place
+  that is surely there (a local, a member of such a place, what a base
+  points to, an element whose bounds check is in the address), never
+  assigned nor its address taken, whose declaration the loop surely passed
+  (no case label between); a hoisted record pointer, read through a base
+  before the loop and not written in it, so its record is not replaced or
+  freed in the loop. The value read is the one every iteration would read,
+  because nothing in the loop may write it, judged by over-approximation:
+  every store in the loop and in the bodies of the program's functions it
+  calls (transitively, made into summaries; recursion, indirect and extern
+  calls write anything), and every runtime function except those listed as
+  writing nothing, their arguments or freed memory, counts. A store can
+  overlap the load only through an object that holds the loaded one or a
+  member on its way: by type (a member store by struct, offset and size;
+  a store through a pointer by the pointee type; all non-pointer scalars
+  are one type, all pointers another, since a closure's environment stores
+  pointers as `void*`), and a pointer to a member exists only if the
+  member's address or decay is taken somewhere (outside the arguments of a
+  runtime function that keeps no pointer). Unions are never loaded through.
+  A task switch happens only in a call that may write anything. A load
+  cannot trap, so moving it changes no trap; when the loop never runs, the
+  value read is unused (`loops_loads`, `loops_loads_trap`, loopgen's
+  functions over `mut &` records);
+- re-reads (x64gen, `ir.hoisted`): a hoisted local without a register is
+  replaced by its place at each use, which reads the same value for the
+  reasons above (it is read where the original program read it);
+- memory operands: `[r + disp]` names the same bytes the load would have
+  read, with r the pointer local's register. The read moves at most later
+  within one expression, past code that is pure (`pairSrcC`) or that
+  cannot assign r (an assignment whose value may assign r takes the old
+  path); calls that may write memory are separate statements in the IR, so
+  none lies between. The read cannot fault (r holds a pointer the program
+  dereferences there anyway), so trap order is unchanged
+  (`x64_mem_operands`);
+- sites: a local l in register r with sites S. Before S, `mov [slot], r`;
+  inside S, l is its slot (every use names it, l's register is unset while
+  S is generated); after S, `mov r, [slot]` (the load of l's type,
+  normalized, which sets no flags, so a condition site's compare is still
+  live for the jump that follows it). S is entered only at its start: a
+  case label in S is inside a switch in S, and a `continue` in S targets a
+  loop in S. S is left only by falling through its end: no `break`,
+  `continue` or `return` in S leaves it. So every path from the store
+  reaches the load, nothing outside S reads l between them, and whatever
+  inside S overwrites r (a call, another local given r) is invisible
+  outside it. Statements not generated through the statement walker (the
+  test of a rotated loop, the body of a fill made `rep stos`, the
+  then-branch of a count made `cmp; sbb`, the pairs generated as one) have
+  no sites. A trap inside S ends the program, and the trap stubs read no
+  local (`x64_spill_sites`, `x64_spill_sites_trap`);
+- branch weights and the copies of record places change only which
+  locals get registers. A record place under a member, address or decay
+  is generated as address arithmetic; the copies, which use `rep movsb`
+  (`rsi rdi rcx`), are made where a whole record is consumed (an
+  assignment, declaration, argument or return), positions still loud.
+
+Tests: `loops_loads`, `loops_loads_trap`, `x64_mem_operands`,
+`x64_spill_sites`, `x64_spill_sites_trap`; loopgen gains functions that
+loop over `mut &` records (record pointers, arrays, scalar fields, calls
+that write them or not).
 
 2026-11-03, worker processes and signals (branch `c2`, design/concurrency.md
 stage C2). `native/rt.c` has rt.h's new helpers with raw system calls:
@@ -1838,3 +2065,7 @@ Phases:
   arithmetic ranges as facts; counters bounded by their loop; fills as
   `rep stos`; counts without a branch; innermost loops inside a cache line;
   the last large block kept by the heap). Done (sections 4 and 8).
+- Performance, eighth step: the regex engine's hot loops (scalar loads
+  through borrows and records out of loops by types and callee summaries,
+  memory operands through register pointers, locals saved around
+  statements with calls, branch-weighted uses). Done (sections 4 and 8).

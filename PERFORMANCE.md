@@ -114,8 +114,12 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
 ## Regex
 
 `python3 obx/bench/regex/bench.py -n 7` ([obx/bench/regex/](obx/bench/regex/bench.py)),
-the benchmark set of [design/regex.md](obx/design/regex.md) section 4, at
-the end of phase R1 (branch `r1`, 3 November 2026). The corpus is 3.2 MB
+the benchmark set of [design/regex.md](obx/design/regex.md) section 4. The
+obx and Go columns are from the eighth native performance step (branch
+`perf8`, 3 November 2026, load average about 2 to 5), the Rust and rg
+columns from the end of phase R1 (branch `r1`, the same day; the library
+has not changed since); through C and in Go the times are those of R1's
+run within 4%. The corpus is 3.2 MB
 written by `gen_corpus.py` from a fixed seed (prose with the names the
 patterns look for, a log, C-like source; ASCII). Each driver times its own
 searches after reading the file: the best of 5 searches, best of 7 runs, in
@@ -127,32 +131,38 @@ reference point, not a like-for-like figure.
 
 | pattern | matches | obx native | obx via C | Go | Rust | rg |
 |---|---:|---:|---:|---:|---:|---:|
-| `Sherlock Holmes` | 926 | 2.96 | 1.50 | 0.50 | 0.10 | 2.5 |
-| `Sherlock\|Holmes\|Watson\|Irene` | 7,350 | 282.91 | 134.09 | 139.06 | 0.52 | 3.8 |
-| `\w+` (all matches) | 669,532 | 253.49 | 136.81 | 141.82 | 23.05 | 66.7 |
-| `(?i)sherlock` | 4,280 | 181.89 | 91.43 | 72.49 | 0.58 | 4.8 |
-| `[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}` | 848 | 182.48 | 94.19 | 79.23 | 0.13 | 3.2 |
-| `(?m)^ERROR .*timeout$` | 197 | 67.05 | 35.00 | 32.28 | 0.70 | 3.2 |
-| `(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})` (captures) | 10,755 | 212.32 | 104.03 | 72.53 | 1.76 | 11.9 |
-| `(a*)*b` over 100,000 `a`s | 0 | 6.82 | 3.48 | 3.40 | 0.00 | 2.4 |
+| `Sherlock Holmes` | 926 | 2.78 | 1.50 | 0.46 | 0.10 | 2.5 |
+| `Sherlock\|Holmes\|Watson\|Irene` | 7,350 | 192.30 | 131.87 | 133.34 | 0.52 | 3.8 |
+| `\w+` (all matches) | 669,532 | 202.19 | 132.42 | 139.20 | 23.05 | 66.7 |
+| `(?i)sherlock` | 4,280 | 162.47 | 88.70 | 69.93 | 0.58 | 4.8 |
+| `[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}` | 848 | 138.78 | 92.44 | 76.97 | 0.13 | 3.2 |
+| `(?m)^ERROR .*timeout$` | 197 | 59.48 | 34.11 | 31.54 | 0.70 | 3.2 |
+| `(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})` (captures) | 10,755 | 143.10 | 102.41 | 70.94 | 1.76 | 11.9 |
+| `(a*)*b` over 100,000 `a`s | 0 | 4.88 | 3.40 | 3.30 | 0.00 | 2.4 |
 
 - **obx and Go.** The engine is Go's, so the comparison is like for like.
   Built through C, obx is level with Go on the Pike VM patterns (the
   alternation, `\w+`) and up to 1.45 times its time on the others (the
-  captures, `(?i)`); the native build takes 2.0 to 2.9 times Go's time.
+  captures, `(?i)`); the native build takes 1.4 to 2.3 times Go's time
+  (2.0 to 2.9 before the eighth native performance step).
   The literal is a prefix search: Go's `strings.Index` uses SIMD, obx a
   byte loop (3 times Go via C, 6 times natively).
-- **Native and C.** The same library code runs about twice as fast through
-  gcc. The profile is the Pike VM's `add` and `step` (85% of the native
-  time on the alternation): short loops over the fields of a `mut &`
-  record's arrays, each access with its bounds check and each index sum
-  with its overflow check. gcc keeps the arrays' addresses in registers and
-  drops most of the checks; the native backend reloads them. This is a
-  native-backend matter (the code generator, not the language) and is left
-  for a later performance step. In the library, allocating the Pike VM's
-  arrays once at their full size (no `append` or `pop` in the loop) and
-  decoding ASCII inline took about 20% off the native times; moving the
-  arrays into locals for the loop made both builds slower and was dropped.
+- **Native and C.** The same library code takes 1.4 to 1.8 times the
+  cycles natively that it takes through gcc (1.9 to 2.15 before the eighth
+  native performance step). The profile is the Pike VM's `add` and `step`:
+  short loops over the fields of a `mut &` record's arrays. Since that step
+  the native backend reads the record pointer and the arrays' data
+  pointers and lengths once before such loops when nothing in them may
+  write them, uses fields through a pointer in a register as operands, and
+  keeps the loops' locals in registers across rare calls (design/native.md
+  sections 4 and 8: 11 to 34% fewer cycles on the Pike VM patterns). What
+  remains is register pressure in `add` and `step` (gcc keeps the
+  instruction pointer and the thread lists in registers), the opcode
+  dispatch as compares where gcc has a jump table, and bools materialized
+  where gcc branches. In the library, allocating the Pike VM's arrays once
+  at their full size (no `append` or `pop` in the loop) and decoding ASCII
+  inline took about 20% off the native times; moving the arrays into
+  locals for the loop made both builds slower and was dropped.
 - **Rust and rg.** Rust's literal prefilters (memchr, Teddy) and lazy DFA
   find these matches 100 to 1,000 times faster than a Pike VM; `\w+`,
   with 670,000 matches, is where the DFA gains least. That is phase R2.
@@ -227,6 +237,8 @@ itself, native eza `-T /usr/share` and native bench fib:
 | after it (loops rotated and aligned, `loops.obx`) | 4,673M | 634M | 5,630M |
 | before the seventh, on later sources | 4,821M | 634M | 5,630M |
 | after it (the sieve: steps, lengths, counters, fills) | 4,815M | 633M | 5,630M |
+| before the eighth, on later sources | 5,665M | 632M | 5,629M |
+| after it (the regex engine: loads out of loops, memory operands, sites) | 5,388M | 632M | 5,629M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
@@ -238,6 +250,11 @@ lists benchmark's by 16%. The sixth is about loops: bench loop from 11,000M
 instructions and 2,007M cycles to 8,000M and 1,003M, array from 4,615M and
 782M to 2,413M and 410M; the self-build and eza gain about 1% in
 instructions, nothing measurable in cycles.
+The eighth (the regex engine) cut
+the self-build's instructions by 5% and its cycles by 6% (2,392M to
+2,246M), at 9% more instructions for the gcc-built compiler's `--native`
+(3,342M to 3,649M: the effects walks and summaries of `loops.obx`, the
+second register choice and the sites).
 
 The earlier steps and the per-commit figures are in
 [obx/design/native.md](obx/design/native.md) sections 4 and 8. What remains

@@ -174,10 +174,14 @@ pub type Ir = record {
     pub nRtStructs: int
     pub nRtFuncs: int
     pub nRtGlobals: int
+    // loops: the locals holding a load hoisted out of a loop (a member chain of *b, b a pointer
+    // never assigned) that nothing in the loop may write, by their declarations: the native code
+    // generator may drop such a declaration and read the place at each use instead
+    pub hoisted: Map[int, int]
 }
 
 pub fn newIr(): Ir {
-    var p = Ir{tys: [], structs: [], nodes: [], items: [], funcs: [], globals: [], locals: [], ptrOf: newMap(),
+    var p = Ir{tys: [], structs: [], nodes: [], items: [], funcs: [], globals: [], locals: [], ptrOf: newMap(), hoisted: newMap(),
         nRtStructs: 0, nRtFuncs: 0, nRtGlobals: 0}
     let sizes: []int = [1, 1, 1, 1, 2, 2, 4, 4, 8, 8, 16, 16, 8]
     for k in 0..13 {

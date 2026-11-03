@@ -1,0 +1,140 @@
+// Native code generation (x64gen allocRegs, eighth performance step): a
+// local kept in rsi, rdi, r8 or r9 although calls happen while it is live:
+// stored in its slot before the statement (or the if's condition) with the
+// call, or before a statement where another local has the register, and
+// loaded again after it. The values must be those of the C build: locals
+// assigned by the statement around which they are saved, i32 and byte locals
+// (loaded again normalized), a declaration in such a statement, a call in the
+// condition of an if that breaks out of the loop, loops inside such
+// statements, and many locals live at once.
+// expect: rare 4950 99 34 -7
+// expect: cond 270 20 20
+// expect: narrow -2893 200 4294967200
+// expect: decl 1225 49
+// expect: pressure 4950 450 300 100 25 75 13 5400 400
+// expect: nested 8924 48 23
+
+fn odd(x: int): bool { return x % 2 == 1 }
+
+fn bump(x: int): int { return x + 1 }
+
+fn seen(xs: mut &[]int, v: int) { append(xs, v) }
+
+// a loop whose rare branch calls: i, s, last stay in registers on the hot path
+fn rare(n: int): str {
+    var s = 0
+    var last = 0
+    var calls = 0
+    var neg = 0
+    var log: []int = []
+    for i in 0..n {
+        s += i
+        last = i
+        if i % 3 == 0 {
+            seen(mut &log, i)
+            calls = bump(calls)
+        }
+        neg = -7
+    }
+    return "rare " + s.toStr() + " " + last.toStr() + " " + len(log).toStr() + " " + neg.toStr()
+}
+
+// a call in an if's condition that leaves the loop
+fn cond(xs: &[]int): str {
+    var i = 0
+    var s = 0
+    var k = 0
+    var at = -1
+    while i < len(xs) {
+        if !odd(xs[i]) && xs[i] > 100 {
+            at = i
+            break
+        }
+        s += xs[i]
+        k += 1
+        i += 1
+    }
+    return "cond " + s.toStr() + " " + k.toStr() + " " + at.toStr()
+}
+
+// narrow locals live across calls, stored as eight bytes, written by the call statement
+fn narrow(n: int): str {
+    var a: i32 = 7
+    var b: byte = 0
+    var c: u32 = 4294967000
+    for i in 0..n {
+        a = i32(bump(int(a)) - 30)
+        if odd(i) { b = byte(bump(int(b)) % 256) }
+        c = c + 2
+    }
+    b = byte(int(b) + 150)
+    return "narrow " + a.toStr() + " " + b.toStr() + " " + c.toStr()
+}
+
+// a declaration in a statement the locals are saved around
+fn decl(n: int): str {
+    var s = 0
+    var last = 0
+    var i = 0
+    while i < n {
+        let v = bump(i) - 1
+        s += v
+        last = v
+        i += 1
+    }
+    return "decl " + s.toStr() + " " + last.toStr()
+}
+
+// more locals than registers, a call now and then, a loop inside a branch
+fn pressure(n: int): str {
+    var a = 0
+    var b = 0
+    var c = 0
+    var d = 0
+    var e = 0
+    var f = 0
+    var g = 0
+    var h = 0
+    var xs: []int = []
+    for i in 0..n {
+        a += i
+        b += i % 10
+        c += 3
+        d += 1
+        if i % 4 == 0 {
+            e += 1
+            for k in 0..3 { f += k }
+            if odd(e) { seen(mut &xs, i) }
+        }
+        g = a + b
+        h = c + d
+    }
+    return "pressure " + a.toStr() + " " + b.toStr() + " " + c.toStr() + " " + d.toStr() + " " + e.toStr() + " " +
+        f.toStr() + " " + len(xs).toStr() + " " + g.toStr() + " " + h.toStr()
+}
+
+// nested loops, the inner one with a call, a local of the outer one saved around it
+fn nested(n: int): str {
+    var s = 0
+    var cnt = 0
+    var big = 0
+    for i in 0..n {
+        var j = 0
+        while j < i {
+            if odd(i + j) { s += j }
+            j += 1
+        }
+        cnt += 1
+        if s > 1000 && big == 0 { big = i }
+    }
+    return "nested " + s.toStr() + " " + cnt.toStr() + " " + big.toStr()
+}
+
+fn main() {
+    println(rare(100))
+    println(cond(&[10, 20, 30, 40, 50, 60, 1, 2, 3, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 102, 7]))
+    println(narrow(100))
+    println(decl(50))
+    println(pressure(100))
+    println(nested(48))
+}

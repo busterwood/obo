@@ -1,0 +1,34 @@
+// Native loop optimizations (compiler/loops.obx, (C)): with the record's
+// pointer, its array's header and a field read once before the loop, the
+// bounds check against the length read so still traps at its own line, after
+// the output of the earlier iterations; the reads before the loop never trap.
+// expect: 0 7
+// expect: 1 9
+// expect: 2 11
+// stderr: obx: index out of range at loops_loads_trap.obx:25
+// exit: 3
+
+type Rec = record {
+    k: int
+    items: []int
+    out: []int
+}
+
+fn run(r: mut &Rec, n: int) {
+    var i = 0
+    while i < n {
+        if i >= 3 {
+            // a write elsewhere: the header of out, not of items
+            append(mut &r.out, i)
+        }
+        println(i.toStr() + " " +
+            (r.items[i] + r.k).toStr())
+        i = i + 1
+    }
+}
+
+fn main() {
+    var r = Rec{k: 7, items: [0, 2, 4], out: []}
+    run(mut &r, 0)
+    run(mut &r, 5)
+}

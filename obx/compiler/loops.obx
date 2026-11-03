@@ -27,8 +27,28 @@
 //     of a `for` under `i < x` that the body does not write) keeps its lower bound at the loop's
 //     entry throughout the loop.
 //
+// (C) Loads out of loops. A loop that reads a scalar through a base pointer b (`*b`, or a member
+//     chain of it, no union on the way: `*p_m`, the record pointer of a `mut &R`; then
+//     `h->items.data`, `h->items.len`, `h->n` of that record) that nothing in the loop may write
+//     reads it from a local declared just before it. A loaded record pointer becomes a base in
+//     turn, so `(*p_m)->items.data` takes two rounds. The bases are the pointer parameters (a
+//     borrow, or an owned record) and the locals declared once to an address (opt's `T* q =
+//     &x.f;` of an inlined borrow), never assigned, whose address is never taken, declared
+//     where the loop surely passed (no case label in between), and the record pointers hoisted
+//     here: each points to an object that is there throughout the loop (borrows and records are
+//     never null, and what a borrow reaches is not freed while the borrow lives), so the load
+//     before the loop cannot fault even if the loop never reads it. What the loop may write is
+//     found by types (mayWrite): member stores by (struct, offset, size, type), stores through
+//     pointers and of address-taken locals by type, calls of the program's functions by their
+//     summaries (the same, over their bodies and callees, their own locals aside; recursion and
+//     indirect or extern calls write anything), runtime functions by what they write (RW_*).
+//     A pointer to a member exists only if the member's address is taken (atSet). The native
+//     code generator may read the place again at each use rather than keep the local in a
+//     slot (ir.hoisted, x64gen's remat).
+//
 // Nothing here changes which traps happen, where or in what order: a check is removed only
-// where it cannot fail, and every other operation stays. OBX_LOOPS=0 turns the pass off.
+// where it cannot fail, a load is moved only where it cannot fault, and every other operation
+// stays. OBX_LOOPS=0 turns the pass off.
 
 import "./ir"
 import "os"
@@ -91,6 +111,16 @@ const W_KILLS = 4       // the locals the tree writes (klist), whether it may wr
 const W_ROOTS = 5       // the roots the tree may change (rmark, rall)
 const W_POST = 6        // the facts of the bounds checks the tree surely makes
 const W_COUNT = 7       // the writes of local c: `c = c + 1` 1, any other (or one in a loop) 2
+const W_EFF = 8         // what the tree may write in memory (eAll, eK1, eTy)
+const W_LOADS = 9       // the loads through base pointers the tree reads (places); c: 1 in an lvalue
+const W_AT = 10         // the members whose address is taken (atSet)
+
+// what a runtime function writes (rtw)
+const RW_ALL = 0        // anything: it may call the program, or write memory it is not given
+const RW_PURE = 1       // nothing
+const RW_ARGS = 2       // only through its pointer arguments (an array's header, a string's)
+const RW_FREE = 3       // nothing the program reads again (frees a block)
+const RW_NORET = 4      // does not return
 
 type Loops = record {
     u: ir.Ir
@@ -135,6 +165,22 @@ type Loops = record {
     nIdx: int
     nWrap: int
     nFwd: int
+    // (C) loads out of loops
+    rtw: []int              // per runtime function: what it writes (RW_*)
+    atSet: Map[int, bool]   // sid * 2^20 + offset: a member whose address the program takes
+    cont: Map[int, int]     // contained(u, t), 1 false 2 true, by u * len(tys) + t
+    eAll: bool              // the effects walked so far (W_EFF): anything may be written
+    eK1: []int              // members written: sid, offset, size, type
+    eTy: []int              // objects of these types written through pointers
+    eFn: bool               // the walk is of the function optimized: its locals whose address is taken count
+    sState: []int           // per function: its summary 0 not made, 1 being made, 2 made
+    sAll: []bool
+    sK1: [][]int
+    sTy: [][]int
+    vmark: []int            // == vstamp: a valid base pointer, here (a local of the function optimized)
+    vstamp: int
+    labelsOk: bool          // no case label but straight in its switch's block
+    nLoad: int
 }
 
 // The program p with its loops optimized.
@@ -144,7 +190,8 @@ pub fn optimize(p: ir.Ir): ir.Ir {
     var o = Loops{u: p, wfn: [], rtc: [], rtk: [], arrSid: -1, fillFn: -1, sliceSid: -1, seen: [], named: [], taken: [],
         esc: [], asg: [], decls: [], cinit: [], cval: [], isParam: [], aliasOf: [], kmark: [], lenOf: [], rr: -1, places: [],
         klist: [], kmem: false, kstamp: 0, kbad: [], kvs: [], rmark: [], rstamp: 0, rall: false, facts: [], switches: [],
-        nHoist: 0, nIdx: 0, nWrap: 0, nFwd: 0}
+        nHoist: 0, nIdx: 0, nWrap: 0, nFwd: 0, rtw: [], atSet: newMap(), cont: newMap(), eAll: false, eK1: [], eTy: [],
+        eFn: false, sState: [], sAll: [], sK1: [], sTy: [], vmark: [], vstamp: 0, labelsOk: true, nLoad: 0}
     for j in 0..12 { append(mut &o.wfn, -1) }
     for f in 0..o.u.nRtFuncs {
         let name = o.u.funcs[f].name
@@ -162,6 +209,13 @@ pub fn optimize(p: ir.Ir): ir.Ir {
         if name == "rt_arr_fill" { o.fillFn = f }
         append(mut &o.rtc, c)
         append(mut &o.rtk, kx)
+        append(mut &o.rtw, if c == RC_IDX || c >= RC_PURE { RW_PURE } else { rtWrites(name) })
+    }
+    for f in 0..len(o.u.funcs) {
+        append(mut &o.sState, 0)
+        append(mut &o.sAll, false)
+        append(mut &o.sK1, [])
+        append(mut &o.sTy, [])
     }
     for s in 0..o.u.nRtStructs {
         if o.u.structs[s].name == "obx_arr" { o.arrSid = s }
@@ -169,11 +223,15 @@ pub fn optimize(p: ir.Ir): ir.Ir {
     }
     o.grow()
     for f in o.u.nRtFuncs..len(o.u.funcs) {
+        if o.u.funcs[f].body >= 0 { o.go(o.u.funcs[f].body, W_AT, 0) }
+    }
+    for f in o.u.nRtFuncs..len(o.u.funcs) {
         if o.u.funcs[f].body >= 0 { o.function(f) }
     }
     if ev == "v" {
-        eprintln("loops: " + intToStr(o.nHoist) + " headers hoisted, " + intToStr(o.nIdx) + " bounds checks, " +
-            intToStr(o.nWrap) + " overflow checks, " + intToStr(o.nFwd) + " loads forwarded")
+        eprintln("loops: " + intToStr(o.nHoist) + " headers hoisted, " + intToStr(o.nLoad) + " loads hoisted, " +
+            intToStr(o.nIdx) + " bounds checks, " + intToStr(o.nWrap) + " overflow checks, " + intToStr(o.nFwd) +
+            " loads forwarded")
     }
     return replace(mut &o.u, ir.newIr())
 }
@@ -204,6 +262,7 @@ fn (o: mut &Loops) grow() {
         append(mut &o.lenOf, -1)
         append(mut &o.rmark, 0)
         append(mut &o.rmark, 0)
+        append(mut &o.vmark, 0)
     }
 }
 
@@ -240,8 +299,9 @@ fn (o: mut &Loops) function(f: int) {
         let l = o.aliasOf[q]
         if l >= 0 && (o.asg[q] > 0 || o.decls[q] != 1 || o.taken[q] || o.esc[q]) { o.esc[l] = true }
     }
+    o.bases(f)
     o.hoistIn(body)
-    if o.badLabels(body, false) { return }
+    if !o.labelsOk { return }
     // the lengths of the array locals whose address is never taken: only their assignments and
     // declarations change them
     let nn = len(o.named)
@@ -410,6 +470,9 @@ fn (o: mut &Loops) go(x: int, op: int, c: int): int {
     if op == W_KILLS { return o.killsW(x) }
     if op == W_ROOTS { return o.rootsW(x, c) }
     if op == W_COUNT { return o.countW(x, c) }
+    if op == W_EFF { return o.effW(x) }
+    if op == W_LOADS { return o.loadsW(x, c) }
+    if op == W_AT { return o.atW(x) }
     return o.postW(x)
 }
 
@@ -690,13 +753,26 @@ fn (o: mut &Loops) hoistIn(s: int) {
         let l = o.u.nodes[s].a
         var out: []int = []
         var changed = false
+        var mine: []int = []         // the valid base pointers declared in this block so far (C)
         for j in 0..o.u.listLen(l) {
             let x = o.u.listAt(l, j)
             let kx = o.u.nk(x)
+            if kx == ir.S_CASE || kx == ir.S_DEFAULT {
+                // a way in that skips the declarations before
+                for q in mine { o.vmark[q] = 0 }
+                mine = []
+            }
             if (kx == ir.S_WHILE || kx == ir.S_FOR) && o.hoist(x, mut &out) { changed = true }
+            if (kx == ir.S_WHILE || kx == ir.S_FOR) && o.hoistLoads(x, mut &out, mut &mine) { changed = true }
             append(mut &out, x)
+            if kx == ir.S_DECL && o.validLocal(x) {
+                let q = o.u.nodes[x].a
+                o.vmark[q] = o.vstamp
+                append(mut &mine, q)
+            }
             o.hoistIn(x)
         }
+        for q in mine { o.vmark[q] = 0 }
         if changed {
             let nl = o.u.list(&out)
             o.u.nodes[s].a = nl
@@ -786,6 +862,453 @@ fn (o: mut &Loops) reuse(rep: int, out: &[]int): int {
         j -= 1
     }
     return -1
+}
+
+// ---------------------------------------------------------------- (C) loads out of loops
+
+// What the runtime function name writes (RW_*), for those not classed pure (rtClass).
+fn rtWrites(name: str): int {
+    if name == "rt_arr_push" || name == "rt_arr_pop" || name == "rt_parse_float" || name == "rt_read_file" ||
+        name == "rt_getenv" {
+        return RW_ARGS
+    }
+    if name == "rt_free" || name == "rt_free_act" || name == "rt_arr_free" || name == "rt_str_drop" || name == "rt_cfree" {
+        return RW_FREE
+    }
+    if name == "rt_trap" || name == "rt_panic" || name == "rt_exit" { return RW_NORET }
+    if name == "rt_alloc" || name == "rt_arr_new" || name == "rt_arr_fill" || name == "rt_as_slice" || name == "rt_sub" ||
+        name == "rt_args" || name == "rt_cstr" || name == "rt_cmark" || name == "rt_cdata" || name == "rt_flush" ||
+        name == "rt_write_fd" || name == "rt_str_to_bytes" {
+        return RW_PURE
+    }
+    if startsWith(name, "rt_str_") || startsWith(name, "rt_cvf_") || endsWith(name, "_to_str") { return RW_PURE }
+    if startsWith(name, "rt_n_") && name != "rt_n_start" { return RW_PURE }
+    return RW_ALL
+}
+
+// W_AT: the members whose address the program takes, but straight into a runtime function that
+// keeps no pointer (rt_arr_push's array, say).
+fn (o: mut &Loops) atW(x: int): int {
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.E_ADDR || k == ir.E_DECAY {
+        if o.u.nk(a) == ir.E_MEMBER {
+            let st = o.u.nodes[o.u.nodes[a].a].ty
+            if o.u.tk(st) == ir.TY_STRUCT { o.atSet.put(atKey(o.u.tys[st].sid, o.u.nodes[a].v), true) }
+        }
+        return o.down(x, W_AT, 0)
+    }
+    if k == ir.E_CALL {
+        let f = o.rtFn(x)
+        if f >= 0 && o.rtw[f] != RW_ALL {
+            o.go(a, W_AT, 0)
+            let l = o.u.nodes[x].b
+            for j in 0..o.u.listLen(l) {
+                let e = o.u.listAt(l, j)
+                if o.u.nk(e) == ir.E_ADDR { o.down(e, W_AT, 0) } else { o.go(e, W_AT, 0) }
+            }
+            return 0
+        }
+    }
+    return o.down(x, W_AT, 0)
+}
+
+fn atKey(sid: int, off: int): int { return sid * 1048576 + off }
+
+// Whether a pointer of type t may be a base: it points to a whole object (no union) that a load
+// through it may read whatever happens: a struct, a pointer or a scalar of 64 bits at most.
+fn (o: &Loops) baseTy(t: int): bool {
+    if o.u.tk(t) != ir.TY_PTR { return false }
+    let b = o.u.tys[t].base
+    let k = o.u.tk(b)
+    if k == ir.TY_STRUCT { return !o.u.structs[o.u.tys[b].sid].isUnion }
+    return k == ir.TY_PTR || (k >= ir.TY_BOOL && k <= ir.TY_U64) || k == ir.TY_F64
+}
+
+// The bases of the function f: its pointer parameters (borrows, or owned records) never assigned
+// and whose address is never taken. The other bases are marked by hoistIn as it passes their
+// declarations (validLocal) and as it hoists loads of record pointers.
+fn (o: mut &Loops) bases(f: int) {
+    o.vstamp += 1
+    o.labelsOk = !o.badLabels(o.u.funcs[f].body, false)
+    for j in 0..len(o.u.funcs[f].params) {
+        let p = o.u.funcs[f].params[j]
+        if o.baseTy(o.u.locals[p].ty) && o.asg[p] == 0 && !o.taken[p] { o.vmark[p] = o.vstamp }
+    }
+}
+
+// Whether the declaration d makes a base: a local declared once, never assigned nor its address
+// taken, to the address of a place that is surely there (opt's `T* q = &x...;` of an inlined
+// borrow).
+fn (o: &Loops) validLocal(d: int): bool {
+    let l = o.u.nodes[d].a
+    let b = o.u.nodes[d].b
+    if b < 0 || o.u.nodes[d].c >= 0 || o.decls[l] != 1 || o.asg[l] != 0 || o.taken[l] { return false }
+    if !o.baseTy(o.u.locals[l].ty) { return false }
+    if o.u.nk(b) == ir.E_ADDR { return o.placeOk(o.u.nodes[b].a) }
+    return o.ptrOk(b)
+}
+
+// Whether the place p is surely there: a local, a member of a place surely there, or what a
+// pointer surely valid points to.
+fn (o: &Loops) placeOk(p: int): bool {
+    let k = o.u.nk(p)
+    if k == ir.E_LOCAL { return true }
+    if k == ir.E_MEMBER { return o.placeOk(o.u.nodes[p].a) }
+    if k == ir.E_DEREF { return o.ptrOk(o.u.nodes[p].a) }
+    return false
+}
+
+// Whether the pointer value e is surely valid: a base, or an element's address whose bounds check
+// is in e (`(T*)a.data + rt_idx(i, a.len, w)`: lowering checks against the array indexed).
+fn (o: &Loops) ptrOk(e: int): bool {
+    let k = o.u.nk(e)
+    if k == ir.E_LOCAL { return o.vmark[o.u.nodes[e].a] == o.vstamp }
+    if k == ir.E_PADD {
+        let i = o.u.nodes[e].b
+        return o.rtcOf(i) == RC_IDX && o.nargs(i) == 3
+    }
+    return false
+}
+
+// Whether x (read, not written) is a load through a base: `*b`, or members of it, no union on
+// the way, of a scalar of 64 bits at most.
+fn (o: &Loops) loadCand(x: int): bool {
+    let t = o.u.nodes[x].ty
+    let k = o.u.tk(t)
+    if !(k == ir.TY_PTR || (k >= ir.TY_BOOL && k <= ir.TY_U64) || k == ir.TY_F64) { return false }
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER {
+        r = o.u.nodes[r].a
+        let st = o.u.nodes[r].ty
+        if o.u.tk(st) != ir.TY_STRUCT || o.u.structs[o.u.tys[st].sid].isUnion { return false }
+    }
+    if o.u.nk(r) != ir.E_DEREF { return false }
+    let b = o.u.nodes[r].a
+    return o.u.nk(b) == ir.E_LOCAL && o.vmark[o.u.nodes[b].a] == o.vstamp
+}
+
+// W_LOADS: the loads through bases the tree reads (c: 1 when x is a place written or whose
+// address is taken).
+fn (o: mut &Loops) loadsW(x: int, c: int): int {
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.E_ASSIGN {
+        o.go(a, W_LOADS, 1)
+        return o.go(o.u.nodes[x].b, W_LOADS, 0)
+    }
+    if k == ir.E_POSTINC || k == ir.E_ADDR || k == ir.E_DECAY { return o.go(a, W_LOADS, 1) }
+    if k == ir.E_MEMBER {
+        if c == 0 && o.loadCand(x) {
+            append(mut &o.places, x)
+            return 0
+        }
+        return o.go(a, W_LOADS, c)
+    }
+    if k == ir.E_DEREF {
+        if c == 0 && o.loadCand(x) {
+            append(mut &o.places, x)
+            return 0
+        }
+        return o.go(a, W_LOADS, 0)
+    }
+    return o.down(x, W_LOADS, 0)
+}
+
+// W_EFF: what the tree may write (eAll, eK1, eTy). Locals count only in the function optimized
+// (eFn) and only if their address is taken: nothing else points to them.
+fn (o: mut &Loops) effW(x: int): int {
+    // anything already: nothing more to learn
+    if o.eAll { return 0 }
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.E_ASSIGN || k == ir.E_POSTINC { o.effStore(a) }
+    if k == ir.S_DECL && o.eFn && o.taken[a] { o.addTy(o.u.locals[a].ty) }
+    if k == ir.E_CALL { o.effCall(x) }
+    return o.down(x, W_EFF, 0)
+}
+
+// The place p written.
+fn (o: mut &Loops) effStore(p: int) {
+    let r = o.root(p)
+    if r >= 0 && r % 2 == 0 && (!o.eFn || !o.taken[r / 2]) { return }
+    if o.u.nk(p) == ir.E_MEMBER {
+        // a member of a union writes the union (its other members)
+        var un = -1
+        var y = p
+        while o.u.nk(y) == ir.E_MEMBER {
+            y = o.u.nodes[y].a
+            let st = o.u.nodes[y].ty
+            if o.u.tk(st) == ir.TY_STRUCT && o.u.structs[o.u.tys[st].sid].isUnion { un = st }
+        }
+        if un >= 0 {
+            o.addTy(un)
+            return
+        }
+        let st = o.u.nodes[o.u.nodes[p].a].ty
+        if o.u.tk(st) != ir.TY_STRUCT {
+            o.eAll = true
+            return
+        }
+        let mt = o.u.nodes[p].ty
+        o.addK1(o.u.tys[st].sid, o.u.nodes[p].v, o.u.sizeOf(mt), mt)
+        return
+    }
+    o.addTy(o.u.nodes[p].ty)
+}
+
+// What the call x may write.
+fn (o: mut &Loops) effCall(x: int) {
+    let c = o.u.nodes[x].a
+    if o.u.nk(c) != ir.E_DECAY || o.u.nk(o.u.nodes[c].a) != ir.E_FUNC {
+        o.eAll = true
+        return
+    }
+    let f = o.u.nodes[o.u.nodes[c].a].a
+    if f < o.u.nRtFuncs {
+        let w = o.rtw[f]
+        if w == RW_ALL { o.eAll = true }
+        if w == RW_ARGS {
+            for j in 0..o.nargs(x) {
+                let e = o.arg(x, j)
+                if o.u.tk(o.u.nodes[e].ty) != ir.TY_PTR { continue }
+                if o.u.nk(e) == ir.E_ADDR {
+                    o.effStore(o.u.nodes[e].a)
+                } else {
+                    let b = o.u.tys[o.u.nodes[e].ty].base
+                    if o.u.tk(b) == ir.TY_VOID { o.eAll = true } else { o.addTy(b) }
+                }
+            }
+        }
+        return
+    }
+    if o.u.funcs[f].body < 0 || o.sState[f] == 1 {
+        o.eAll = true
+        return
+    }
+    if o.sState[f] == 0 { o.summarize(f) }
+    if o.sAll[f] {
+        o.eAll = true
+        return
+    }
+    let k1 = replace(mut &o.sK1[f], [])
+    var j = 0
+    while j < len(k1) {
+        o.addK1(k1[j], k1[j + 1], k1[j + 2], k1[j + 3])
+        j += 4
+    }
+    o.sK1[f] = k1
+    let ts = replace(mut &o.sTy[f], [])
+    for t in ts { o.addTy(t) }
+    o.sTy[f] = ts
+}
+
+// The summary of function f: what a call of it may write, its locals aside (they die with it).
+// A call of a function whose summary is being made (recursion) may write anything.
+fn (o: mut &Loops) summarize(f: int) {
+    let all = o.eAll
+    let k1 = replace(mut &o.eK1, [])
+    let ty = replace(mut &o.eTy, [])
+    let fn0 = o.eFn
+    o.eAll = false
+    o.eFn = false
+    o.sState[f] = 1
+    o.go(o.u.funcs[f].body, W_EFF, 0)
+    o.sState[f] = 2
+    o.sAll[f] = o.eAll
+    o.sK1[f] = replace(mut &o.eK1, k1)
+    o.sTy[f] = replace(mut &o.eTy, ty)
+    o.eAll = all
+    o.eFn = fn0
+}
+
+fn (o: mut &Loops) addK1(sid: int, off: int, size: int, mt: int) {
+    var j = 0
+    while j < len(o.eK1) {
+        if o.eK1[j] == sid && o.eK1[j + 1] == off && o.eK1[j + 2] == size && o.eK1[j + 3] == mt { return }
+        j += 4
+    }
+    append(mut &o.eK1, sid)
+    append(mut &o.eK1, off)
+    append(mut &o.eK1, size)
+    append(mut &o.eK1, mt)
+}
+
+fn (o: mut &Loops) addTy(t: int) {
+    for u in o.eTy {
+        if u == t { return }
+    }
+    append(mut &o.eTy, t)
+}
+
+// Whether objects of types a and b may be the same memory: the same type, two pointers (a
+// closure's environment stores pointers as void*), or two scalars that are not pointers.
+fn (o: &Loops) sameMem(a: int, b: int): bool {
+    if a == b { return true }
+    let ka = o.u.tk(a)
+    let kb = o.u.tk(b)
+    if ka == ir.TY_STRUCT || kb == ir.TY_STRUCT { return ka == kb && o.u.tys[a].sid == o.u.tys[b].sid }
+    if ka == ir.TY_ARR || kb == ir.TY_ARR {
+        return ka == kb && o.u.tys[a].n == o.u.tys[b].n && o.sameMem(o.u.tys[a].base, o.u.tys[b].base)
+    }
+    if ka == ir.TY_PTR || kb == ir.TY_PTR { return ka == kb }
+    return ka >= ir.TY_BOOL && ka <= ir.TY_F64 && kb >= ir.TY_BOOL && kb <= ir.TY_F64
+}
+
+// Whether an object of type u may be, or hold, an object of type t that a pointer may point to:
+// u and t are the same memory, or a member of u is (or holds) such an object. A pointer to a
+// member comes only from taking the member's address (atSet; a fixed array's elements, from its
+// decay), so a member of t's type counts only if its address is taken somewhere: the void* data
+// of an array's header is never the record pointer a borrow points to.
+fn (o: mut &Loops) contains(u: int, t: int): bool {
+    if o.sameMem(u, t) { return true }
+    if o.u.tk(u) == ir.TY_ARR { return o.contains(o.u.tys[u].base, t) }
+    return o.holds(u, t)
+}
+
+fn (o: mut &Loops) holds(u: int, t: int): bool {
+    if o.u.tk(u) != ir.TY_STRUCT { return false }
+    let key = u * 16777216 + t
+    let have = o.cont.getOr(&key, 0)
+    if have > 0 { return have == 2 }
+    o.cont.put(key, 1)
+    var r = false
+    let sid = o.u.tys[u].sid
+    for j in 0..len(o.u.structs[sid].fields) {
+        let ft = o.u.structs[sid].fields[j].ty
+        let ak = atKey(sid, o.u.structs[sid].fields[j].off)
+        let at = o.atSet.has(&ak)
+        var e = ft
+        while o.u.tk(e) == ir.TY_ARR { e = o.u.tys[e].base }
+        // a fixed array's elements: any of them, once the array's address is taken
+        if (at && o.sameMem(e, t)) || o.holds(e, t) {
+            r = true
+            break
+        }
+    }
+    o.cont.put(key, if r { 2 } else { 1 })
+    return r
+}
+
+// Whether the effects walked may write the load x (a scalar member chain of *b, loadCand).
+// x reads, in an object O0 of type t0 (*b), the member m1 (struct s1, offset f1, size z1, type
+// t1) of O0, the member m2 of that, ...; the bytes it reads are those of the last member (or O0).
+// Objects overlap only when one holds the other (no unions on the way). A store of member (s,
+// f, z, mt) of an object S overlaps them if S is one of the objects on the way (some si == s
+// and the bytes overlap) or S's member holds O0 (mt holds t0); S cannot sit inside the last
+// member: it is a scalar. A store of an object Q of type tq overlaps them if Q holds O0, or Q is
+// one of the members m_i (tq is t_i and m_i's address is taken somewhere, the only way to a
+// pointer to it).
+fn (o: mut &Loops) mayWrite(x: int): bool {
+    if o.eAll { return true }
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER { r = o.u.nodes[r].a }
+    let t0 = o.u.nodes[r].ty
+    let k1 = replace(mut &o.eK1, [])
+    var hit = false
+    var j = 0
+    while j < len(k1) && !hit {
+        let s = k1[j]
+        let f = k1[j + 1]
+        let z = k1[j + 2]
+        if o.contains(k1[j + 3], t0) { hit = true }
+        var y = x
+        while o.u.nk(y) == ir.E_MEMBER && !hit {
+            let st = o.u.nodes[o.u.nodes[y].a].ty
+            let fi = o.u.nodes[y].v
+            if o.u.tys[st].sid == s && f < fi + o.u.sizeOf(o.u.nodes[y].ty) && fi < f + z { hit = true }
+            y = o.u.nodes[y].a
+        }
+        j += 4
+    }
+    o.eK1 = k1
+    if hit { return true }
+    let tys = replace(mut &o.eTy, [])
+    for tq in tys {
+        if hit { break }
+        if o.contains(tq, t0) { hit = true }
+        var y = x
+        while o.u.nk(y) == ir.E_MEMBER && !hit {
+            let st = o.u.nodes[o.u.nodes[y].a].ty
+            let key = atKey(o.u.tys[st].sid, o.u.nodes[y].v)
+            if o.sameMem(o.u.nodes[y].ty, tq) && o.atSet.has(&key) { hit = true }
+            y = o.u.nodes[y].a
+        }
+    }
+    o.eTy = tys
+    return hit
+}
+
+// The loads through bases in the loop x that nothing in it may write, read once before it into
+// locals (declarations appended to out). A load of a record pointer makes its local a base (in
+// mine), and so its own loads are hoisted next: `(*p_m)->f.data` becomes `h = *p_m; d = h->f.data`.
+// Whether any.
+fn (o: mut &Loops) hoistLoads(x: int, out: mut &[]int, mine: mut &[]int): bool {
+    if !o.labelsOk { return false }
+    var any = false
+    var effects = false
+    var round = 0
+    while round < 4 {
+        round += 1
+        o.places = []
+        o.go(x, W_LOADS, 0)
+        if len(o.places) == 0 { break }
+        let ps = replace(mut &o.places, [])
+        if !effects {
+            o.eAll = false
+            o.eK1 = []
+            o.eTy = []
+            o.eFn = true
+            o.go(x, W_EFF, 0)
+            o.eFn = false
+            effects = true
+            if o.eAll { break }
+        }
+        var done: []bool = []
+        for p in ps { append(mut &done, false) }
+        var more = false
+        for i in 0..len(ps) {
+            if done[i] { continue }
+            let rep = ps[i]
+            var group: []int = []
+            for j in i..len(ps) {
+                if !done[j] && o.samePlace(rep, ps[j]) {
+                    done[j] = true
+                    append(mut &group, ps[j])
+                }
+            }
+            if o.mayWrite(rep) { continue }
+            let t = o.u.nodes[rep].ty
+            let h = o.newLocal("ld", t)
+            let init = o.copyPlace(rep)
+            let d = o.mk(ir.S_DECL, ir.TY_VOID, h, o.u.nodes[rep].line)
+            o.u.nodes[d].b = init
+            append(out, d)
+            o.decls[h] = 1
+            o.u.hoisted.put(h, d)
+            o.nLoad += 1
+            for y in group {
+                o.u.nodes[y].k = ir.E_LOCAL
+                o.u.nodes[y].a = h
+                o.u.nodes[y].v = 0
+            }
+            // a record's pointer, from a place nothing in the loop writes: the record is there
+            // throughout the loop
+            if o.u.tk(t) == ir.TY_PTR && o.baseTy(t) {
+                let b = o.u.tys[t].base
+                if o.u.tk(b) == ir.TY_STRUCT && o.u.tys[b].sid >= o.u.nRtStructs {
+                    o.vmark[h] = o.vstamp
+                    append(mine, h)
+                    more = true
+                }
+            }
+            any = true
+        }
+        if !more { break }
+    }
+    o.eK1 = []
+    o.eTy = []
+    return any
 }
 
 // ---------------------------------------------------------------- (B) facts
