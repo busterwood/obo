@@ -15,7 +15,9 @@ and without OBX_CHECK=1, and compares stdout, stderr and the exit code. Each tes
   skip         (red team) the C build fails too: a program meant to be rejected;
                a library it needs (`// needs: name`) is not installed; or both builds
                exit 77 (a live service the test needs is missing)
-Only differ fails (exit 1). -v lists the unsupported tests with their reasons.
+Only differ fails (exit 1). -v lists the unsupported tests with their reasons. Without filters
+it also builds the small programs of PARTS natively and checks which runtime functions their
+maps list and how large they are (the runtime is linked by the sections a program reaches).
 """
 import argparse, collections, glob, os, re, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -140,6 +142,55 @@ def one(path, obxc):
     return rel, 'pass', ''
 
 
+# The runtime parts a program links (design/native.md, "Reachability"): only the runtime
+# sections reachable from what the program uses. (program, the most bytes its executable may
+# have, runtime functions its map must list, ... must not list, its output)
+PARTS = [
+    ('fn main() {\n}\n', 16384, ['rt_init', 'rt_segv', 'rt_n_restore', 'rt_n_start'],
+     ['rt_ctx_swap', 'rt_float_to_str', 'malloc', 'rt_str_concat'], ''),
+    ('fn main() {\n    println("hello")\n}\n', 20480, ['rt_init', 'rt_write_fd'],
+     ['rt_ctx_swap', 'rt_float_to_str'], 'hello\n'),
+    ('import "task"\n\nfn inc(x: int): int {\n    task.sleep(1)\n    return x + 1\n}\n\n'
+     'fn main() {\n    task.scope(fn(s: mut &task.Scope) { println(intToStr(s.start(inc, 41).wait().unwrap())) })\n}\n',
+     65536, ['rt_ctx_swap', 'rt_init'], ['rt_float_to_str'], '42\n'),
+    # dynamically linked (libm's pow): libc's entry, so no rt_n_start; rt_n_libc kept
+    ('extern "c" fn pow(x: float, y: float): float\n\nfn main() {\n    println(floatToStr(pow(2.0, 10.0)))\n}\n',
+     65536, ['rt_init', 'rt_float_to_str'], ['rt_n_start', 'rt_ctx_swap'], '1024\n'),
+]
+
+
+def runtime_parts(obxc):
+    """Failures of PARTS (the size of an executable, which runtime functions it has)."""
+    bad = []
+    with tempfile.TemporaryDirectory() as t:
+        for i, (src, most, has, hasnt, out) in enumerate(PARTS):
+            p = os.path.join(t, 'p%d.obx' % i)
+            exe = os.path.join(t, 'p%d' % i)
+            mp = os.path.join(t, 'p%d.map' % i)
+            with open(p, 'w') as f:
+                f.write(src)
+            r = subprocess.run([obxc, p, '--native', '-o', exe], capture_output=True, text=True,
+                               env=dict(os.environ, OBX_NATIVE_MAP=mp))
+            if r.returncode != 0:
+                bad.append('parts %d: the build failed: %s' % (i, r.stderr.strip()))
+                continue
+            names = {line.split()[2] for line in open(mp) if len(line.split()) == 3}
+            size = os.path.getsize(exe)
+            if size > most:
+                bad.append('parts %d: %d bytes, more than %d' % (i, size, most))
+            for n in has:
+                if n not in names:
+                    bad.append('parts %d: the runtime function %s is missing' % (i, n))
+            for n in hasnt:
+                if n in names:
+                    bad.append('parts %d: the runtime function %s is linked, unused' % (i, n))
+            r = subprocess.run([exe], capture_output=True, text=True, timeout=TIMEOUT,
+                               env=dict(os.environ, OBX_CHECK='1'))
+            if r.returncode != 0 or r.stdout != out:
+                bad.append('parts %d: exit %d, output %r' % (i, r.returncode, r.stdout))
+    return bad
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--compiler', default=OBXC)
@@ -170,10 +221,14 @@ def main():
         print('unsupported, by reason:')
         for why, n in reasons.most_common(15):
             print('  %4d  %s' % (n, why))
+    parts = [] if a.filters else runtime_parts(obxc)
+    for why in parts:
+        print('DIFFER runtime parts: ' + why)
     print('native: %d pass, %d differ, %d unsupported, %d total%s' % (
         count['pass'], count['differ'], count['unsupported'], len(results) - count['skip'],
-        ' (%d skipped: rejected by the compiler or a library missing)' % count['skip'] if count['skip'] else ''))
-    sys.exit(1 if count['differ'] else 0)
+        ' (%d skipped: rejected by the compiler or a library missing)' % count['skip'] if count['skip'] else '')
+        + ('; runtime parts: %s' % ('%d failed' % len(parts) if parts else 'ok') if not a.filters else ''))
+    sys.exit(1 if count['differ'] or parts else 0)
 
 
 if __name__ == '__main__':

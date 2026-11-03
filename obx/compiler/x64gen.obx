@@ -58,13 +58,12 @@ const EPI_COPY = 2
 const SK_FUNC = 0        // idx: a function with a body
 const SK_GLOBAL = 1      // idx: a global
 const SK_STR = 2         // idx: a string literal in rodata
-const SK_ABS = 3         // addr: a runtime symbol
+const SK_RT = 3          // idx: a runtime symbol (rtx.SYM_NAMES)
 const SK_DYN = 4         // idx: an imported function (its GOT entry)
 
 type Sym = value record {
     kind: int
     idx: int
-    addr: int
 }
 
 type DataReloc = value record {
@@ -88,7 +87,13 @@ type Gen = record {
     u: ir.Ir
     a: x64.Asm
     syms: []Sym
-    rtAddr: Map[str, int]
+    rtSym: Map[str, int]        // the runtime's global symbols: their index in rtx.SYM_NAMES
+    rtLive: []bool              // per runtime section: reachable from what the program uses (rtLayout)
+    rtAt: []int                 // ... its address, if live
+    rtCodeEnd: int              // the end of the live runtime code and read-only data
+    rtDataEnd: int              // ... of its data (the file bytes of the runtime's RW segment)
+    rtBssEnd: int               // ... of its bss
+    codeBase: int               // the address of the generated code
     funcSym: []int
     globalSym: []int
     strSym: Map[str, int]
@@ -209,7 +214,7 @@ type Stub = value record {
 }
 
 fn newGen(u: ir.Ir): Gen {
-    var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
+    var g = Gen{u: u, a: x64.newAsm(), syms: [], rtSym: newMap(), rtLive: [], rtAt: [], rtCodeEnd: 0, rtDataEnd: 0, rtBssEnd: 0, codeBase: 0, funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], pend: [], pendLo: 0, pendN: 0, order: [], gLive: [], gQueue: [], relocSeen: 0, slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], loopEnds: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], rawW: [], bad: [], touched: [], first: [], last: [],
@@ -221,7 +226,7 @@ fn newGen(u: ir.Ir): Gen {
     g.a.peep = true
     g.siteIdx = array(2 * len(g.u.nodes), -1)
     g.siteStamp = array(2 * len(g.u.nodes), 0)
-    for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
+    for i in 0..len(rtx.SYM_NAMES) { g.rtSym.put(rtx.SYM_NAMES[i], i) }
     for i in 0..len(g.u.funcs) {
         append(mut &g.funcSym, -1)
         append(mut &g.funcPos, -1)
@@ -229,7 +234,7 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.inl, -1)
     }
     for i in 0..len(g.u.globals) {
-        append(mut &g.syms, Sym{kind: SK_GLOBAL, idx: i, addr: 0})
+        append(mut &g.syms, Sym{kind: SK_GLOBAL, idx: i})
         append(mut &g.globalSym, len(g.syms) - 1)
         append(mut &g.gLive, false)
     }
@@ -271,16 +276,22 @@ pub fn build(p: ir.Ir, libs: []elf.Lib): []byte {
     return buildMap(p, libs, mut &m)
 }
 
-// build, and in symMap the address, size and name of every function, one per line in hex
-// (perf's /tmp/perf-PID.map format; obxc --native writes it to $OBX_NATIVE_MAP).
+// build, and in symMap the address, size and name of every function, the runtime's linked ones
+// first, one per line in hex (perf's /tmp/perf-PID.map format; obxc --native writes it to
+// $OBX_NATIVE_MAP).
 pub fn buildMap(p: ir.Ir, libs: []elf.Lib, symMap: mut &str): []byte {
     var g = newGen(p)
     g.dyn = len(libs) > 0
     g.libs = libs
     g.genAll()
     let img = g.link()
-    let codeBase = ir.alignUp(rtx.TEXT_ADDR + rtx.TEXT_SIZE, CODE_ALIGN)
+    let codeBase = g.codeBase
     var b = newStrBuf()
+    for i in 0..len(rtx.SEC_KIND) {
+        if g.rtLive[i] && int(rtx.SEC_KIND[i]) == rtx.K_CODE && int(rtx.SEC_SIZE[i]) > 0 {
+            b.add(hex(g.rtAt[i]) + " " + hex(int(rtx.SEC_SIZE[i])) + " " + rtx.SEC_NAMES[i] + "\n")
+        }
+    }
     let fs = &g.order
     for i in 0..len(fs) {
         let f = fs[i]
@@ -430,7 +441,7 @@ fn (g: &Gen) findFunc(name: str): int {
 fn (g: mut &Gen) symFunc(f: int, e: int): int {
     if g.funcSym[f] >= 0 { return g.funcSym[f] }
     if g.u.funcs[f].body >= 0 {
-        append(mut &g.syms, Sym{kind: SK_FUNC, idx: f, addr: 0})
+        append(mut &g.syms, Sym{kind: SK_FUNC, idx: f})
         g.pend[f] = true
         g.pendN += 1
         if f < g.pendLo { g.pendLo = f }
@@ -439,14 +450,14 @@ fn (g: mut &Gen) symFunc(f: int, e: int): int {
         return g.funcSym[f]
     } else {
         let name = g.u.funcs[f].asmName
-        let addr = g.rtAddr.getOr(&name, -1)
-        if addr < 0 {
+        let rs = g.rtSym.getOr(&name, -1)
+        if rs < 0 {
             let msg = if g.u.funcs[f].isExtern { "extern C function '" + name + "' needs dynamic linking" } else {
                 "'" + name + "' is not in the native runtime" }
             if e >= 0 { g.fail(e, msg) }
             ir.failAt("C line", g.u.funcs[f].line, msg)
         }
-        append(mut &g.syms, Sym{kind: SK_ABS, idx: -1, addr: addr})
+        append(mut &g.syms, Sym{kind: SK_RT, idx: rs})
     }
     g.funcSym[f] = len(g.syms) - 1
     return len(g.syms) - 1
@@ -457,15 +468,15 @@ fn (g: mut &Gen) symImport(name: str): int {
     let have = g.importSym.getOr(&name, -1)
     if have >= 0 { return have }
     append(mut &g.imports, name)
-    append(mut &g.syms, Sym{kind: SK_DYN, idx: len(g.imports) - 1, addr: 0})
+    append(mut &g.syms, Sym{kind: SK_DYN, idx: len(g.imports) - 1})
     g.importSym.put(name, len(g.syms) - 1)
     return len(g.syms) - 1
 }
 
 fn (g: mut &Gen) symRt(name: str): int {
-    let addr = g.rtAddr.getOr(&name, -1)
-    if addr < 0 { panic("native: the runtime has no " + name) }
-    append(mut &g.syms, Sym{kind: SK_ABS, idx: -1, addr: addr})
+    let rs = g.rtSym.getOr(&name, -1)
+    if rs < 0 { panic("native: the runtime has no " + name) }
+    append(mut &g.syms, Sym{kind: SK_RT, idx: rs})
     return len(g.syms) - 1
 }
 
@@ -473,7 +484,7 @@ fn (g: mut &Gen) symStr(s: str): int {
     let have = g.strSym.getOr(&s, -1)
     if have >= 0 { return have }
     append(mut &g.strs, s)
-    append(mut &g.syms, Sym{kind: SK_STR, idx: len(g.strs) - 1, addr: 0})
+    append(mut &g.syms, Sym{kind: SK_STR, idx: len(g.strs) - 1})
     g.strSym.put(s, len(g.syms) - 1)
     return len(g.syms) - 1
 }
@@ -5103,10 +5114,109 @@ fn (g: mut &Gen) initData(buf: mut &[]byte, ro: bool, off: int, ents: int, reloc
     }
 }
 
+// The runtime's sections the program reaches, as a linker's --gc-sections keeps them: those of
+// the runtime symbols the generated code names, rt_n_libc in a dynamic program (the dynamic
+// linker fills it), and every section a live one's relocations name. They are laid out in
+// rtx's order (code, read-only data, data, bss), each at its alignment: code and read-only data
+// from rtx.TEXT_ADDR, data and bss from rtx.DATA_ADDR.
+fn (g: mut &Gen) rtLayout() {
+    let n = len(rtx.SEC_KIND)
+    g.rtLive = array(n, false)
+    g.rtAt = array(n, 0)
+    var work: []int = []
+    for i in 0..len(g.syms) {
+        if g.syms[i].kind == SK_RT { g.rtMark(int(rtx.SYM_SECS[g.syms[i].idx]), mut &work) }
+    }
+    if g.dyn { g.rtMark(int(rtx.SYM_SECS[g.rtSymbol("rt_n_libc")]), mut &work) }
+    while len(work) > 0 {
+        let sec = pop(mut &work)
+        for r in int(rtx.SEC_REL[sec])..int(rtx.SEC_REL[sec + 1]) { g.rtMark(int(rtx.REL_TARGET[r]), mut &work) }
+    }
+    var code = rtx.TEXT_ADDR
+    var data = rtx.DATA_ADDR
+    g.rtDataEnd = data
+    for i in 0..n {
+        if !g.rtLive[i] { continue }
+        let k = int(rtx.SEC_KIND[i])
+        if k == rtx.K_CODE || k == rtx.K_RODATA {
+            code = ir.alignUp(code, int(rtx.SEC_ALIGN[i]))
+            g.rtAt[i] = code
+            code += int(rtx.SEC_SIZE[i])
+        } else {
+            data = ir.alignUp(data, int(rtx.SEC_ALIGN[i]))
+            g.rtAt[i] = data
+            data += int(rtx.SEC_SIZE[i])
+            if k == rtx.K_DATA { g.rtDataEnd = data }
+        }
+    }
+    g.rtCodeEnd = code
+    g.rtBssEnd = data
+}
+
+fn (g: mut &Gen) rtMark(sec: int, work: mut &[]int) {
+    if g.rtLive[sec] { return }
+    g.rtLive[sec] = true
+    append(work, sec)
+}
+
+fn (g: &Gen) rtSymbol(name: str): int {
+    let rs = g.rtSym.getOr(&name, -1)
+    if rs < 0 { panic("native: the runtime has no " + name) }
+    return rs
+}
+
+fn (g: &Gen) rtSymAddr(rs: int): int { return g.rtAt[int(rtx.SYM_SECS[rs])] + int(rtx.SYM_OFFS[rs]) }
+
+// The live runtime sections' bytes in text (from rtx.TEXT_ADDR) and data (from rtx.DATA_ADDR),
+// relocated.
+fn (g: &Gen) rtBytes(text: mut &[]byte, data: mut &[]byte) {
+    var all: []byte = []
+    chunks(&rtx.BYTES, mut &all)
+    for i in 0..len(rtx.SEC_KIND) {
+        if !g.rtLive[i] { continue }
+        let k = int(rtx.SEC_KIND[i])
+        if k == rtx.K_BSS { continue }
+        let ro = k == rtx.K_CODE || k == rtx.K_RODATA
+        let base = if ro { rtx.TEXT_ADDR } else { rtx.DATA_ADDR }
+        let off = g.rtAt[i] - base
+        let src = int(rtx.SEC_OFF[i])
+        let size = int(rtx.SEC_SIZE[i])
+        if ro {
+            while len(text) < off { append(text, if k == rtx.K_CODE { byte(0xCC) } else { byte(0) }) }
+            for j in 0..size { append(text, all[src + j]) }
+        } else {
+            growTo(data, off)
+            for j in 0..size { append(data, all[src + j]) }
+        }
+        for r in int(rtx.SEC_REL[i])..int(rtx.SEC_REL[i + 1]) {
+            let at = g.rtAt[i] + int(rtx.REL_OFF[r])
+            let v = g.rtAt[int(rtx.REL_TARGET[r])] + int(rtx.REL_ADDEND[r])
+            let ty = int(rtx.REL_TYPE[r])
+            var x = v
+            var w = 4
+            if ty == rtx.R_64 {
+                w = 8
+            } else if ty == rtx.R_PC32 {
+                x = v - at
+                if x < -2147483648 || x > 2147483647 { panic("native: a runtime PC32 relocation out of range") }
+            } else if ty == rtx.R_32 {
+                if x < 0 || x > 4294967295 { panic("native: a runtime 32-bit relocation out of range") }
+            } else if ty == rtx.R_32S {
+                if x < -2147483648 || x > 2147483647 { panic("native: a runtime 32S relocation out of range") }
+            } else {
+                panic("native: a runtime relocation of an unknown type")
+            }
+            if ro { putN(text, at - base, x, w) } else { putN(data, at - base, x, w) }
+        }
+    }
+}
+
 fn (g: mut &Gen) link(): []byte {
-    let codeBase = ir.alignUp(rtx.TEXT_ADDR + rtx.TEXT_SIZE, CODE_ALIGN)
+    g.rtLayout()
+    let codeBase = ir.alignUp(g.rtCodeEnd, CODE_ALIGN)
+    g.codeBase = codeBase
     let roBase = ir.alignUp(codeBase + len(g.a.code), 16)
-    let dataBase = ir.alignUp(rtx.BSS_ADDR + rtx.BSS_SIZE, elf.PAGE)
+    let dataBase = ir.alignUp(g.rtBssEnd, elf.PAGE)
     var ro: []byte = []
     var data: []byte = []
     var relocs: []DataReloc = []
@@ -5162,8 +5272,7 @@ fn (g: mut &Gen) link(): []byte {
         for i in 0..len(g.imports) {
             append(mut &rels, elf.DynRel{at: gotAt + 8 * i, sym: i + 1, kind: elf.R_X86_64_GLOB_DAT, addend: 0})
         }
-        let hooks = g.rtAddr.getOr(&"rt_n_libc", -1)
-        if hooks < 0 { panic("native: the runtime has no rt_n_libc") }
+        let hooks = g.rtSymAddr(g.rtSymbol("rt_n_libc"))
         for k in 0..len(HOOKS) {
             let h = HOOKS[k]
             let im = g.syms[g.importSym.getOr(&h, -1)].idx
@@ -5195,7 +5304,7 @@ fn (g: mut &Gen) link(): []byte {
         } else if s.kind == SK_DYN {
             append(mut &addr, gotAt + 8 * s.idx)
         } else {
-            append(mut &addr, s.addr)
+            append(mut &addr, g.rtSymAddr(s.idx))
         }
     }
     for i in 0..len(g.a.relocs) {
@@ -5218,16 +5327,16 @@ fn (g: mut &Gen) link(): []byte {
     }
     // the segments
     var text: []byte = []
-    chunks(&rtx.TEXT, mut &text)
+    var rdata: []byte = []
+    g.rtBytes(mut &text, mut &rdata)
     growTo(mut &text, codeBase - rtx.TEXT_ADDR)
     for x in g.a.code { append(mut &text, x) }
     growTo(mut &text, roBase - rtx.TEXT_ADDR)
     for x in ro { append(mut &text, x) }
-    var rdata: []byte = []
-    chunks(&rtx.DATA, mut &rdata)
-    let rmem = rtx.BSS_ADDR + rtx.BSS_SIZE - rtx.DATA_ADDR
-    var segs: []elf.Seg = [elf.Seg{vaddr: rtx.TEXT_ADDR, flags: elf.PF_R | elf.PF_X, data: text, memsz: 0},
-        elf.Seg{vaddr: rtx.DATA_ADDR, flags: elf.PF_R | elf.PF_W, data: rdata, memsz: rmem}]
+    growTo(mut &rdata, g.rtDataEnd - rtx.DATA_ADDR)
+    let rmem = g.rtBssEnd - rtx.DATA_ADDR
+    var segs: []elf.Seg = [elf.Seg{vaddr: rtx.TEXT_ADDR, flags: elf.PF_R | elf.PF_X, data: text, memsz: 0}]
+    if rmem > 0 { append(mut &segs, elf.Seg{vaddr: rtx.DATA_ADDR, flags: elf.PF_R | elf.PF_W, data: rdata, memsz: rmem}) }
     if memEnd == 0 { memEnd = 16 }
     append(mut &segs, elf.Seg{vaddr: dataBase, flags: elf.PF_R | elf.PF_W, data: data, memsz: memEnd})
     return elf.image(codeBase, &segs, dynAt, dynLen)

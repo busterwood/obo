@@ -100,12 +100,25 @@ end.
 
 `compiler/native/rt.c` is `compiler/rt.h` without libc: freestanding C, raw
 Linux syscalls. `gen_rtx.py` compiles it with gcc (`-ffreestanding
--nostdlib -fno-pic`), links it with `ld` at fixed addresses
-(`native/rt.ld`) together with libgcc (128-bit division and conversions),
-and writes `compiler/rtx.obx`: the code and data bytes, the bss size, the
-global symbols with their addresses, and the interface header. `rtx.obx` is
-checked in, so the seed build still needs only gcc; run `gen_rtx.py` after
-changing the runtime (the bytes depend on the gcc version).
+-nostdlib -fno-pic`, `-ffunction-sections -fdata-sections`: every function
+and every datum in a section of its own; the top-level asm of `rt_n_restore`
+and `rt_ctx_swap` in sections of their own too), takes the libgcc members it
+needs (128-bit division and conversions) from `libgcc.a` as a linker takes
+archive members, and links nothing: it reads the objects (a small ELF64
+reader: section headers, `.symtab`, `.rela.*`) and writes
+`compiler/rtx.obx`: the sections (kind: code, read-only data, data or bss;
+alignment; size; bytes), their relocations (place, type, target section and
+addend: `R_X86_64_64`, `PC32` (and `PLT32`, the same here), `32`, `32S`;
+any other type, a COMMON symbol or thread-local data is an error), the
+global symbols (section and offset) and the interface header. Each object's
+sections stay apart (libgcc's `.text`s, the string sections gcc makes per
+function, `.rodata.str1.1` of the tables' strings); a relocation against a
+local symbol (`.LC0`, a static function, a section) is made relative to the
+target section, so the backend needs no local symbols. The backend's link
+keeps the sections a program reaches and lays them out (section 5,
+"Reachability"). `rtx.obx` is checked in, so the seed build still needs only
+gcc; run `gen_rtx.py` after changing the runtime (the bytes depend on the gcc
+version).
 
 The contract (`native/obxrt.h`) is every `rt_*` function the generated C
 calls, with rt.h's signatures, plus a few `rt_n_*` helpers for the code
@@ -187,8 +200,9 @@ checked against glibc's `printf`/`strtod` on 300,000 random doubles (all
 bit patterns, near-1 exponents, subnormals) and decimal strings, and the libm
 subset on 2,000,000 random inputs each, with a throwaway harness.
 
-In a dynamically linked program (section 5a) the runtime is the same bytes, but
-the dynamic linker fills `rt_n_libc` with libc's `exit`, `getenv` and
+In a dynamically linked program (section 5a) the runtime is the same code (the
+parts the program reaches, and `rt_n_libc` always), but the dynamic linker fills
+`rt_n_libc` with libc's `exit`, `getenv` and
 `__errno_location`: the runtime then ends the process through libc's `exit`
 (after flushing its own buffer, as rt.h's `exit(code)` does), reads the
 environment through libc and keeps errno in libc's. In a static program the
@@ -618,9 +632,9 @@ program adds those: section 5a):
 
 | Segment | Address | Contents |
 |---|---|---|
-| R+X | 0x400000 | ELF header and program headers; runtime code and rodata at 0x401000; program code; program rodata |
-| RW | 0x40000000 | runtime data and bss (fixed, as linked) |
-| RW | after the runtime's bss | program data and bss |
+| R+X | 0x400000 | ELF header and program headers; the runtime's linked code, then its read-only data, from 0x401000; program code; program rodata |
+| RW | 0x40000000 | the runtime's linked data, then its bss (no segment when there are none) |
+| RW | after the runtime's bss (page-aligned) | program data and bss |
 
 `PT_GNU_STACK` marks the stack non-executable. The entry point is a stub in
 the program code: `mov rdi, rsp; mov esi, main; and rsp, -16; call
@@ -644,7 +658,33 @@ keeps the source's order. Unreached globals get no address in `link`. The
 C backend gets the same from gcc, since every generated function is
 `static`. An `import` of a module the program uses one function of costs
 only that function (`import "regex"` and `regex.quote`: 185,720 bytes to
-73,744); the runtime is still linked whole (section 2).
+73,744).
+
+The runtime is linked the same way, by sections (section 2; `x64gen.rtLayout`):
+the roots are the sections of the runtime symbols the generated code names
+(a call, an address, `rt_n_start` in the entry of a static program) and, in
+a dynamically linked program, `rt_n_libc` (the dynamic linker writes it);
+a live section's relocations make their target sections live. The live
+sections keep `rtx.obx`'s order (gcc's) and their alignments (functions at
+multiples of 64, as `-falign-functions=64` asks): code then read-only data
+from 0x401000, data then bss from 0x40000000. The runtime's relocations are
+applied at the link (`rtBytes`), PC-relative ones against the final layout,
+and the generated code's runtime symbols (`SK_RT`) get their addresses from
+it. Code padding is `int3`. Everything stays below 2 GiB, so the
+relocations' 32-bit fields (and the generated code's `imm32` addresses) hold
+the addresses; the link checks each value fits. An empty program links
+3,200 bytes of runtime code and read-only data (`rt_init`, the stack-overflow
+handler and its restorer, the exit path, `rt_n_start`), hello 3,968, eza
+19,072, the HTTP server `cmd/httpd.obx` 36,672, the compiler 26,880, of
+the 62,416 linked before. The `OBX_NATIVE_MAP` file lists the linked runtime
+functions first (a section's name is the function at its start).
+`tests/run_native.py` builds a few small programs (empty, hello, a task, a
+dynamically linked one) and checks their sizes and which runtime functions
+their maps list. Speed is unchanged (least of 11 interleaved runs, user
+mode): the self-build 5,747M instructions against 5,743M (the link's walk of
+the runtime's relocations) in 2,460M cycles against 2,502M; eza `-T
+/usr/share` 632M instructions in both, 208M cycles against 212M; bench alloc
+1,300M, 283M cycles against 291M; bench fib 5,630M, 2,035M against 2,033M.
 
 ## 5a. Dynamic linking
 
@@ -702,9 +742,9 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 | File | Contents |
 |---|---|
 | `compiler/native/obxrt.h` | the runtime interface (read by `lower`, included by rt.c) |
-| `compiler/native/rt.c`, `rt.ld`, `strerror.inc` | the freestanding runtime |
-| `compiler/gen_rtx.py` | builds the runtime, writes `rtx.obx` |
-| `compiler/rtx.obx` | generated: runtime bytes, symbols, header |
+| `compiler/native/rt.c`, `strerror.inc` | the freestanding runtime |
+| `compiler/gen_rtx.py` | compiles the runtime, reads its objects (and libgcc's), writes `rtx.obx` |
+| `compiler/rtx.obx` | generated: the runtime's sections, relocations, symbols, header |
 | `compiler/tmpl.obx` | check's templates: C-shaped trees with holes (section 1) |
 | `compiler/lower.obx` | templates into the IR: C's types and conversions, initializers, layout; the runtime header |
 | `compiler/ir.obx` | the IR (section 1a) |

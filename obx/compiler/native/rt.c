@@ -529,7 +529,9 @@ static void rt_clock(int which, rt_ts* t) {
 struct k_sigaction { void (*handler)(int, void*, void*); unsigned long flags; void (*restorer)(void);
                      unsigned long mask; };
 void rt_n_restore(void);
-__asm__(".text\n.globl rt_n_restore\nrt_n_restore:\n\tmov $15, %eax\n\tsyscall\n\thlt\n");
+/* Top-level asm goes in a section of its own, as gcc puts each function (-ffunction-sections),
+   so that the backend's link keeps it only when something reaches it (gen_rtx.py). */
+__asm__(".pushsection .text.rt_n_restore,\"ax\",@progbits\n.globl rt_n_restore\nrt_n_restore:\n\tmov $15, %eax\n\tsyscall\n\thlt\n.popsection\n");
 
 /* Tasks (see the end of this file and rt.h): the root task is main's stack. */
 #define RT_STACK (256 * 1024)
@@ -1504,12 +1506,12 @@ __attribute__((noreturn)) void abort(void) {
    (exit 14), parking inside Shared.with (exit 13). */
 
 void rt_ctx_swap(void** save, void* to);
-__asm__(".text\n.globl rt_ctx_swap\n.type rt_ctx_swap,@function\nrt_ctx_swap:\n"
+__asm__(".pushsection .text.rt_ctx_swap,\"ax\",@progbits\n.p2align 4\n.globl rt_ctx_swap\n.type rt_ctx_swap,@function\nrt_ctx_swap:\n"
         "\tpushq %rbp\n\tpushq %rbx\n\tpushq %r12\n\tpushq %r13\n\tpushq %r14\n\tpushq %r15\n"
         "\tsubq $8, %rsp\n\tstmxcsr (%rsp)\n\tfnstcw 4(%rsp)\n\tmovq %rsp, (%rdi)\n\tmovq %rsi, %rsp\n"
         "\tldmxcsr (%rsp)\n\tfldcw 4(%rsp)\n\taddq $8, %rsp\n"
         "\tpopq %r15\n\tpopq %r14\n\tpopq %r13\n\tpopq %r12\n\tpopq %rbx\n\tpopq %rbp\n\tret\n"
-        ".size rt_ctx_swap, .-rt_ctx_swap\n");
+        ".size rt_ctx_swap, .-rt_ctx_swap\n.popsection\n");
 
 static rt_task *rt_rq_head, *rt_rq_tail;
 static rt_task* rt_dead;
