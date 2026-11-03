@@ -276,16 +276,22 @@ fn hasPrefixAt(s: str, sub: str, at: int): bool {
 
 // The NFA simulation of exec.go: two queues of threads (sparse sets of
 // program counters), each thread with its capture slots. The threads' slots
-// live in one array, ncap per thread; free threads are reused.
+// live in one array, ncap per thread; free threads are reused. A queue holds
+// each instruction at most once, so there are at most 2 * ninst threads, and
+// add's stack holds at most 3 entries per instruction: every array is
+// allocated once, at its full size, and the counts are kept beside it.
 type Pike = record {
     ninst: int
     sparse: []int         // 2 * ninst: queue q at q * ninst
     dpc: []int            // dense entries: program counter
     dt: []int             // dense entries: thread, -1 none
-    qn: []int             // the size of each queue
+    qn0: int              // the sizes of queues 0 and 1
+    qn1: int
     tpc: []int            // thread -> pc of its instruction
+    nthread: int          // threads made so far
     caps: []int           // thread -> its ncap slots
     free: []int
+    nfree: int
     ncap: int
     matched: bool
     matchcap: []int
@@ -294,8 +300,8 @@ type Pike = record {
 }
 
 fn emptyPike(): Pike {
-    return Pike{ninst: 0, sparse: [], dpc: [], dt: [], qn: [], tpc: [], caps: [], free: [], ncap: 0, matched: false,
-        matchcap: [], work: [], stack: []}
+    return Pike{ninst: 0, sparse: [], dpc: [], dt: [], qn0: 0, qn1: 0, tpc: [], nthread: 0, caps: [], free: [], nfree: 0,
+        ncap: 0, matched: false, matchcap: [], work: [], stack: []}
 }
 
 fn newPike(ninst: int): Pike {
@@ -304,50 +310,50 @@ fn newPike(ninst: int): Pike {
     m.sparse = array(2 * ninst, 0)
     m.dpc = array(2 * ninst, 0)
     m.dt = array(2 * ninst, -1)
-    m.qn = [0, 0]
+    m.tpc = array(2 * ninst, 0)
+    m.free = array(2 * ninst, 0)
+    m.stack = array(3 * ninst + 1, 0)
     return m
 }
 
-fn (m: mut &Pike) alloc(pc: int): int {
-    var t = 0
-    if len(m.free) > 0 {
-        t = pop(mut &m.free)
-    } else {
-        t = len(m.tpc)
-        append(mut &m.tpc, 0)
-        for k in 0..m.ncap { append(mut &m.caps, -1) }
-    }
-    m.tpc[t] = pc
-    return t
+fn (m: &Pike) qlen(q: int): int { return if q == 0 { m.qn0 } else { m.qn1 } }
+
+fn (m: mut &Pike) setQlen(q: int, n: int) {
+    if q == 0 { m.qn0 = n } else { m.qn1 = n }
+}
+
+fn (m: mut &Pike) release(t: int) {
+    m.free[m.nfree] = t
+    m.nfree += 1
 }
 
 // Puts the threads of queue q back on the free list and empties it.
 fn (m: mut &Pike) clearQueue(q: int) {
     let off = q * m.ninst
-    for j in 0..m.qn[q] {
+    for j in 0..m.qlen(q) {
         let t = m.dt[off + j]
-        if t >= 0 { append(mut &m.free, t) }
+        if t >= 0 { m.release(t) }
     }
-    m.qn[q] = 0
+    m.setQlen(q, 0)
 }
 
 fn (m: mut &Pike) run(re: &Regex, text: str, pos0: int, ncap: int, out: mut &[]int): bool {
     if re.cond == -1 { return false }
     let p = &re.prog
     if ncap != m.ncap {
-        // The slots of the existing threads change size: start over.
+        // The slots of the threads change size: start over.
         m.ncap = ncap
-        m.tpc = []
-        m.caps = []
-        m.free = []
+        m.caps = array(2 * m.ninst * ncap, -1)
+        m.nthread = 0
+        m.nfree = 0
         m.work = array(ncap, -1)
     }
     m.matched = false
     m.matchcap = array(ncap, -1)
     var runq = 0
     var nextq = 1
-    m.qn[0] = 0
-    m.qn[1] = 0
+    m.qn0 = 0
+    m.qn1 = 0
     var pos = pos0
     let end = len(text)
     var r = -1
@@ -373,7 +379,7 @@ fn (m: mut &Pike) run(re: &Regex, text: str, pos0: int, ncap: int, out: mut &[]i
     }
     let hasPrefix = len(re.prefix) > 0
     while true {
-        if m.qn[runq] == 0 {
+        if m.qlen(runq) == 0 {
             if re.cond & syn.EMPTY_BEGIN_TEXT != 0 && pos != 0 { break }
             if m.matched { break }
             if hasPrefix && r != re.prefixRune {
@@ -416,10 +422,17 @@ fn (m: mut &Pike) run(re: &Regex, text: str, pos0: int, ncap: int, out: mut &[]i
         r = r1
         width = width1
         if r != -1 {
-            if pos + width < end {
-                let d1 = syn.decodeRune(text, pos + width)
-                r1 = d1.r
-                width1 = d1.w
+            let at = pos + width
+            if at < end {
+                let c = int(text[at])
+                if c < 0x80 {
+                    r1 = c
+                    width1 = 1
+                } else {
+                    let d1 = syn.decodeRuneIn(text, at, end)
+                    r1 = d1.r
+                    width1 = d1.w
+                }
             } else {
                 r1 = -1
                 width1 = 0
@@ -442,16 +455,17 @@ fn (m: mut &Pike) step(p: &syn.Prog, longest: bool, runq: int, nextq: int, pos: 
     let off = runq * m.ninst
     let ncap = m.ncap
     var j = 0
-    while j < m.qn[runq] {
+    var n = m.qlen(runq)
+    while j < n {
         let t = m.dt[off + j]
         j += 1
         if t < 0 { continue }
         if longest && m.matched && ncap > 0 && m.matchcap[0] < m.caps[t * ncap] {
-            append(mut &m.free, t)
+            m.release(t)
             continue
         }
         let pc = m.tpc[t]
-        let i = p.inst[pc]
+        let i = &p.inst[pc]
         var add = false
         let op = i.op
         if op == syn.I_RUNE1 {
@@ -469,24 +483,26 @@ fn (m: mut &Pike) step(p: &syn.Prog, longest: bool, runq: int, nextq: int, pos: 
             }
             if !longest {
                 // First match wins: cut off the lower-priority threads.
-                while j < m.qn[runq] {
+                while j < n {
                     let u = m.dt[off + j]
-                    if u >= 0 { append(mut &m.free, u) }
+                    if u >= 0 { m.release(u) }
                     j += 1
                 }
-                m.qn[runq] = 0
+                n = 0
             }
             m.matched = true
         } else {
             panic("regex: bad instruction in step")
         }
         if add {
-            for k in 0..ncap { m.work[k] = m.caps[t * ncap + k] }
+            let base = t * ncap
+            for k in 0..ncap { m.work[k] = m.caps[base + k] }
             m.add(p, nextq, i.out, nextPos, n1, n2)
         }
-        append(mut &m.free, t)
+        m.free[m.nfree] = t   // release(t), by hand: the hot path
+        m.nfree += 1
     }
-    m.qn[runq] = 0
+    m.setQlen(runq, 0)
 }
 
 // Adds pc0 and what it leads to without reading a rune to queue q, with the
@@ -496,27 +512,31 @@ fn (m: mut &Pike) step(p: &syn.Prog, longest: bool, runq: int, nextq: int, pos: 
 fn (m: mut &Pike) add(p: &syn.Prog, q: int, pc0: int, pos: int, r1: int, r2: int) {
     let off = q * m.ninst
     let ncap = m.ncap
-    append(mut &m.stack, pc0)
-    while len(m.stack) > 0 {
-        let x = pop(mut &m.stack)
+    var qn = m.qlen(q)
+    var sp = 1
+    m.stack[0] = pc0
+    while sp > 0 {
+        sp -= 1
+        let x = m.stack[sp]
         if x < 0 {
-            let old = pop(mut &m.stack)
-            m.work[-1 - x] = old
+            sp -= 1
+            m.work[-1 - x] = m.stack[sp]
             continue
         }
         var pc = x
         while pc != 0 {
             let j0 = m.sparse[off + pc]
-            if j0 < m.qn[q] && m.dpc[off + j0] == pc { break }
-            let j = m.qn[q]
-            m.qn[q] = j + 1
+            if j0 < qn && m.dpc[off + j0] == pc { break }
+            let j = qn
+            qn = j + 1
             m.dpc[off + j] = pc
             m.dt[off + j] = -1
             m.sparse[off + pc] = j
-            let i = p.inst[pc]
+            let i = &p.inst[pc]
             let op = i.op
             if op == syn.I_ALT || op == syn.I_ALT_MATCH {
-                append(mut &m.stack, i.arg)
+                m.stack[sp] = i.arg
+                sp += 1
                 pc = i.out
             } else if op == syn.I_EMPTY_WIDTH {
                 if !condMatch(i.arg, r1, r2) { break }
@@ -525,8 +545,9 @@ fn (m: mut &Pike) add(p: &syn.Prog, q: int, pc0: int, pos: int, r1: int, r2: int
                 pc = i.out
             } else if op == syn.I_CAPTURE {
                 if i.arg < ncap {
-                    append(mut &m.stack, m.work[i.arg])
-                    append(mut &m.stack, -1 - i.arg)
+                    m.stack[sp] = m.work[i.arg]
+                    m.stack[sp + 1] = -1 - i.arg
+                    sp += 2
                     m.work[i.arg] = pos
                 }
                 pc = i.out
@@ -534,13 +555,23 @@ fn (m: mut &Pike) add(p: &syn.Prog, q: int, pc0: int, pos: int, r1: int, r2: int
                 break
             } else {
                 // A match or rune instruction: a thread.
-                let t = m.alloc(pc)
-                for k in 0..ncap { m.caps[t * ncap + k] = m.work[k] }
+                var t = 0
+                if m.nfree > 0 {
+                    m.nfree -= 1
+                    t = m.free[m.nfree]
+                } else {
+                    t = m.nthread
+                    m.nthread += 1
+                }
+                m.tpc[t] = pc
+                let base = t * ncap
+                for k in 0..ncap { m.caps[base + k] = m.work[k] }
                 m.dt[off + j] = t
                 break
             }
         }
     }
+    m.setQlen(q, qn)
 }
 
 // ---------------------------------------------------------------- the backtracker
