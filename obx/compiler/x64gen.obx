@@ -98,6 +98,9 @@ type Gen = record {
     noInit: []int               // ... the loop (regions) it is declared in without an initializer, or -1
     inner: []bool               // ... a local of a function generated in place: live only at its calls
     pts: [][]int                // ... the positions it is named at, in order
+    tmpRegs: []int              // the registers of QUIET_REGS no local of the function has
+    tmpUsed: int                // ... the number of them holding a temporary (pair)
+    defAt: []int                // per local: the position of its declaration with an initializer, or -1
     tailEnd: []int              // per position: in the statements before a return that run straight
                                 // into it, the return's position; else -1
     pos: int                    // the scan's position: its count of statements
@@ -150,7 +153,7 @@ fn newGen(u: ir.Ir): Gen {
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [], first: [], last: [],
-        noInit: [], inner: [], pts: [], tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
+        noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
         loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false}
     g.a.peep = true
@@ -177,6 +180,7 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.noInit, -1)
         append(mut &g.inner, false)
         append(mut &g.pts, [])
+        append(mut &g.defAt, -1)
     }
     g.countUses()
     g.simplify()
@@ -443,6 +447,15 @@ fn (g: mut &Gen) genFunc(f: int) {
     g.epiL = -1
     g.curFunc = f
     g.allocRegs(f)
+    g.tmpRegs = []
+    g.tmpUsed = 0
+    for q in QUIET_REGS {
+        var free = true
+        for l in g.touched {
+            if g.reg[l] == q { free = false }
+        }
+        if free { append(mut &g.tmpRegs, q) }
+    }
     var ni = 0
     var nx = 0
     g.retPtr = 0
@@ -644,7 +657,7 @@ fn (g: &Gen) spans(l: int): []int {
 // body generated in place does not go on past the return but to its end), and a call may change
 // its register.
 fn (g: &Gen) quietTail(l: int): bool {
-    let sp = g.spans(l)
+    let sp = g.callSpans(l)
     for i in 0..len(sp) / 2 {
         for p in sp[2 * i]..sp[2 * i + 1] + 1 {
             if g.loud[p] {
@@ -659,9 +672,19 @@ fn (g: &Gen) quietTail(l: int): bool {
     return true
 }
 
+// The spans of l where a call may change its register: without the statement that declares it
+// with an initializer, whose code (calls included) runs before l is set.
+fn (g: &Gen) callSpans(l: int): []int {
+    if !g.inner[l] && g.defAt[l] == g.first[l] {
+        if g.first[l] == g.last[l] { return [] }
+        return [g.first[l] + 1, g.last[l]]
+    }
+    return g.spans(l)
+}
+
 // Whether no position local l is live at is loud.
 fn (g: &Gen) quietLive(l: int, loudBefore: &[]int): bool {
-    let sp = g.spans(l)
+    let sp = g.callSpans(l)
     for i in 0..len(sp) / 2 {
         if loudBefore[sp[2 * i + 1] + 1] != loudBefore[sp[2 * i]] { return false }
     }
@@ -984,6 +1007,7 @@ fn (g: mut &Gen) touch(l: int) {
         g.noInit[l] = -1
         g.inner[l] = !g.counting && g.scanExpr > 0
         g.pts[l] = []
+        g.defAt[l] = -1
     }
 }
 
@@ -1195,6 +1219,7 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
         g.step()
         let l = n.a
         g.occur(l)
+        if n.b >= 0 && n.c < 0 && g.first[l] == g.pos { g.defAt[l] = g.pos }
         if n.b >= 0 {
             if g.counting { g.uses[l] += 1 }
             g.weight[l] += loopWeight(depth)
@@ -1987,11 +2012,51 @@ fn (g: mut &Gen) pair(a: int, b: int) {
         return
     }
     g.gen(a)
+    if g.tmpUsed < len(g.tmpRegs) && g.quietTree(b) {
+        // a in a register no local has, which b's code does not change
+        let r = g.tmpRegs[g.tmpUsed]
+        g.tmpUsed += 1
+        g.a.movRR(8, r, RAX)
+        g.gen(b)
+        g.a.movRR(8, RCX, RAX)
+        g.a.movRR(8, RAX, r)
+        g.tmpUsed -= 1
+        return
+    }
     let s = g.temp(8, 8)
     g.a.store(8, rbp(s), RAX)
     g.gen(b)
     g.a.movRR(8, RCX, RAX)
     g.a.load(8, RAX, rbp(s))
+}
+
+// Whether the code of the expression x changes no register of QUIET_REGS but those of locals
+// (no node of it is loud, and its calls are runtime functions generated inline that change only
+// rax, rcx and rdx); its own pairs take the next of tmpRegs.
+fn (g: &Gen) quietTree(x: int): bool {
+    if x < 0 { return true }
+    let n = g.u.nodes[x]
+    let k = n.k
+    if k >= ir.S_DECL || g.loudNode(x) { return false }
+    if k == ir.E_CALL { return g.quietRt(x) && g.quietList(n.b) }
+    if k == ir.E_CLIT { return g.quietList(n.b) }
+    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_FUNC {
+        return true
+    }
+    if !g.quietTree(n.a) { return false }
+    if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD || k == ir.E_COND {
+        if !g.quietTree(n.b) { return false }
+    }
+    if k == ir.E_COND { return g.quietTree(n.c) }
+    return true
+}
+
+fn (g: &Gen) quietList(l: int): bool {
+    if l < 0 { return true }
+    for j in 0..g.u.listLen(l) {
+        if !g.quietTree(g.u.listAt(l, j)) { return false }
+    }
+    return true
 }
 
 // a into rax:rdx, b into r8:r9 (128-bit).
@@ -3328,7 +3393,65 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         g.a.bind(done)
         return true
     }
+    if name == "rt_str_eq" && nargs == 2 {
+        // a.len == b.len && (a.len == 0 || rt_str_eq(a, b)): the lengths first, inline
+        let a = g.u.listAt(n.b, 0)
+        let b = g.u.listAt(n.b, 1)
+        if g.strPlace(b) {
+            g.gen(a)
+            g.a.movRR(8, RCX, RAX)
+            g.strAddr(b, RDX)
+        } else if g.strPlace(a) && g.pure(b) {
+            g.gen(b)
+            g.a.movRR(8, RDX, RAX)
+            g.strAddr(a, RCX)
+        } else {
+            g.gen(a)
+            let s = g.temp(8, 8)
+            g.a.store(8, rbp(s), RAX)
+            g.gen(b)
+            g.a.movRR(8, RDX, RAX)
+            g.a.load(8, RCX, rbp(s))
+        }
+        let no = g.a.newLabel()
+        let yes = g.a.newLabel()
+        let done = g.a.newLabel()
+        g.a.load(4, RAX, x64.mem(RCX, 12))
+        g.a.aluRM(x64.CMP, 4, RAX, x64.mem(RDX, 12))
+        g.a.jcc(x64.CC_NE, no)
+        g.a.test(4, RAX, RAX)
+        g.a.jcc(x64.CC_E, yes)
+        g.a.load(8, RDI, x64.mem(RCX, 0))
+        g.a.load(8, RSI, x64.mem(RCX, 8))
+        g.a.load(8, RCX, x64.mem(RDX, 8))
+        g.a.load(8, RDX, x64.mem(RDX, 0))
+        g.callRt("rt_str_eq")
+        g.normR(ir.TY_BOOL, RAX)
+        g.a.jmp(done)
+        g.a.bind(no)
+        g.a.movRI(RAX, 0)
+        g.a.jmp(done)
+        g.a.bind(yes)
+        g.a.movRI(RAX, 1)
+        g.a.bind(done)
+        return true
+    }
     return false
+}
+
+// Whether the str x is a place strAddr can name without code that changes registers: a local
+// or a member of one in the frame, or a global.
+fn (g: &Gen) strPlace(x: int): bool {
+    return g.staticMem(x).base != -9 || g.u.nk(x) == ir.E_GLOBAL
+}
+
+fn (g: mut &Gen) strAddr(x: int, r: int) {
+    let m = g.staticMem(x)
+    if m.base != -9 {
+        g.a.lea(r, m)
+    } else {
+        g.a.movRSym(r, g.globalSym[g.u.nodes[x].a], 0)
+    }
 }
 
 // rt_cvs_N(v, w) and rt_cvu_N(v, w) (a conversion to the integer type N with a range check)
