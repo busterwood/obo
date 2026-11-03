@@ -483,7 +483,10 @@ the old and the new httpd (both native, no idle connections, 100 clients,
 4 s) were also run in turn, seven times each. The medians: the old one
 69,200 req/s, p50 1.45 ms, p99 1.88 ms; the new one 64,300 req/s (-7.1 %),
 p50 1.53 ms, p99 2.36 ms. The design's target was 60,000 req/s, or within
-15 % of the old server. What the library adds per request (not timed one
+15 % of the old server. With the `requestId` and `accessLog` middleware on
+(the log written to `/dev/null`), the median of five runs was 58,300 req/s,
+p50 1.67 ms, p99 2.66 ms, against 65,000 without them in the same runs;
+the target there was 50,000. What the library adds per request (not timed one
 by one): the router's lookup inside a `Shared.with`, the strict head parse
 (every field checked), a `poll` system call when the hangup cancellation
 is armed (it checks for a half-close that came with the request, which

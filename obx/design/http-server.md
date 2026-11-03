@@ -863,7 +863,7 @@ Targets for the library (on this machine, one core):
 
 Sizes are library lines without tests; tests are usually as many again.
 
-**S1. The HTTP/1.1 server core** (about 2,600 lines; `lib/http.obx` family:
+**S1. The HTTP/1.1 server core** (built: section 9; about 2,600 lines; `lib/http.obx` family:
 `httpserver.obx`, or `http` grown, as decided with H1's module layout).
 
 - The parser shared with the client, with the server's strict mode (section
@@ -1006,3 +1006,171 @@ recommendation.
     limits. This is a narrow exception to shared nothing, nginx's zones.
     Recommendation: allow it as a library facility in S4, holding integers
     only, never obx values.
+
+## 9. S1 as built
+
+Built on branch `s1` (2026-11-03). The library is `lib/httpserver.obx`
+(2,943 lines, against the 2,600 estimated), next to `lib/http.obx`, whose
+head and chunk parsing it shares with the client. `cmd/httpd.obx` is now
+an example on the library. The API is section 2.2's, with these names:
+
+- `serve[A: copy](ln, app: A, r: Router[A], cfg: Config): Result[Stats, Error]`,
+  `defaults(): Config`, `workerPolicy(): task.WorkerPolicy`;
+- `router[A]()`, `r.handle(pattern, h)`, `r.handleWith(pattern, h,
+  RouteOpts)`, `r.use(m)`, `r.useUnder(prefix, m)`, with
+  `Handler[A] = fn(&A, mut &Request, mut &Response): Result[Unit, Error]`
+  and `Middleware[A]`, which also takes a `Next[A]` and calls
+  `next.run(app, rq, w)`;
+- `Error {status, kind, msg}`, `error(status, msg)`,
+  `check(r, status)`;
+- on `Request`: `param`, `paramInt`, `query`, `header`, `rawTarget`,
+  `rawQuery`, `read`, `bytes`, `text`, `trailers`, `bodyRead`, `client`,
+  `note`, `serverStats`, `stopServer`;
+- on `Response`: `status`, `header`, `addHeader`, `trailer`, `write`,
+  `writeStr`, `text`, `json`, `fail`, `redirect`, `flush`, `startEvents`,
+  `event`;
+- the middleware `requestId`, `securityHeaders` and `accessLog`.
+
+In `net`: `Conn.split()` into halves, `ReadHalf.cancelOnHangup(halfClose)`
+(`EPOLLRDHUP`), `Listener.setDeferAccept(secs)`, `spare()`,
+`Listener.shed(mut &spare)` and `outOfDescriptors(&e)`. In `task`:
+`workerReady()` and `onCancelCall(f, arg)`, used by `sqlite` and
+`mssql` around their blocking calls.
+
+### 9.1 Deviations, and why
+
+- **The router is held in a `task.Shared`** and looked up inside one
+  `with` per request. `task.Frozen` (Q6) was being built on another branch
+  at the same time; switching to it is a `TODO(hashfrozen)` in
+  `httpserver.obx`, and a small change.
+- **Arming the hangup cancellation costs a `poll`.** An `EPOLLRDHUP` edge
+  that came with the request, before the handler started, would otherwise
+  be missed, or would cancel a request whose client had only half-closed.
+  The runtime therefore polls once for `POLLRDHUP` when the cancellation
+  is armed. That is one system call per request, and probably most of the
+  7 % lost against the old httpd (section 9.3). It was not timed on its
+  own.
+- **`shed` reports whether it closed anything.** Linux's `accept` takes a
+  descriptor before it looks at the queue, so at `RLIMIT_NOFILE` it fails
+  with `EMFILE` even when nothing is waiting. The accept loop shed and
+  tried again, and spun at 100 % CPU until a descriptor was freed. The
+  `EMFILE` test found this. `shed` now gives `Ok(false)` when no
+  connection was waiting, and the loop then sleeps 10 ms.
+- **`serve` raises the soft `RLIMIT_NOFILE`** to `maxConns + fdMargin`
+  when it can (and refuses to start when the hard limit is lower). It also
+  checks `vm.max_map_count` against `maxConns`, because every task's stack
+  is a mapping.
+- **The output buffer starts at 512 bytes** and grows as replies need it.
+  At 4 KiB an idle connection cost 19.2 KB, over the 16 KB target; it now
+  costs 15.5 KB.
+- **The lingering close** reads and drops for up to 500 ms or 256 KiB after
+  the server shuts its side, so unread request bytes do not turn the close
+  into a reset that loses the reply.
+- **Not built in S1:** `Config.maxBlocking`, `Config.publicOrigin`,
+  `w.hint` (103), a full-duplex option (h1 is always half duplex, the
+  design's default), a `Cookie` type, `traceparent`, a JSON access log,
+  SSE keep-alive comments, the `basicLimits` and `cors` middleware, and the
+  `unwrap` lint. `httpserver.obx` has no `unwrap` or `expect` (checked by
+  `grep`). Per-IP limits apply within one worker, as planned; across
+  workers they are S4.
+- **The differential test's oracles.** Node's server answers a pipelined
+  stream with a lone 400, so llhttp is driven directly (Node's
+  `HTTPParser`, offline). Each oracle has rules it is excused from, because
+  they do not affect framing. Go refuses a leading empty line, which RFC
+  9112 says a server should ignore. llhttp refuses lower-case methods and
+  `HTTP/1.2`. A stream where an oracle stopped at such a mutation is not
+  compared past that point. Go sometimes loses its last reply to the reset
+  after its own close, once in 100,000 streams here, so a Go answer that
+  is a prefix of obx's, all 2xx and closed, is not a difference.
+
+### 9.2 Tests
+
+All of these run through C and native; `OBX_CHECK=1` is on in every run.
+
+| Test | Expectations | What |
+|---|---:|---|
+| `http_server_parse` | 126 | 124 raw request streams, each with the status of every reply and whether the connection closed: smuggling (CL.TE, TE.CL, TE.TE, CL.CL), bad lines, controls, obsolete folding, bare CR and LF, versions, target forms, Host, chunk sizes, extensions and trailers, `Expect`, bodies on GET, leading empty lines, dot segments, NUL, invalid UTF-8, header injection in a response |
+| `http_server_basic` | 64 | routes with parameters, HEAD, 404 and 405, query decoding, `text`, `json`, `fail`, `redirect`, handler errors, bodies with `Content-Length` and chunked with trailers, 100-continue, a streamed reply with a trailer, server-sent events, pipelining in order, HTTP/1.0, middleware order, `requestId` |
+| `http_server_router` | 44 | Go 1.22 precedence whatever the order of `handle`, HEAD from GET, 405 with `Allow`, the trailing-slash 301, and conflicting or malformed patterns refused by `serve` |
+| `http_server_limits` | 30 | the head limits (431), `maxBody` (413) by length and while chunked, `maxDrain`, `maxRequestsPerConn`, `maxConnsPerIp` (503), `maxConns`, `memBudget` (503), a route's deadline (503) |
+| `http_server_slow` | 8 | slowloris, a silent connection, idle keep-alive, a slow body (408), a body at 5,000 bytes/s, a slow reader |
+| `http_server_flood` | 5 | 1,000 silent connections queued before `serve` starts, defer-accept off: a request behind them is answered, every one is closed at the head timeout, a timer task stays within 250 ms |
+| `http_server_emfile` | 6 | `RLIMIT_NOFILE` lowered after `serve` starts and 12 connections at once: what fits is served, the rest are closed without a reply (`Stats.shed`), none waits, and the server serves again once descriptors are free |
+| `http_server_hangup` | 7 | a close or half-close while the handler runs cancels it; a half-close sent with the request does not; nor does any with `cancelOnHalfClose` off |
+| `http_server_pg_cancel` | 5 | a hangup, or a route's deadline, cancels a running `pg_sleep` (PQcancel) and the pool's connection is reused (exit 77 without Postgres) |
+| `http_server_sqlite_cancel` | 4 | a hangup, or a route's deadline, interrupts an endless SQLite query through `onCancelCall` (`sqlite3_interrupt`) |
+| `http_server_drain` | 6 | after a stop new connections are refused, idle ones closed, requests in flight finish with `Connection: close`, and one past `drainMs` is cancelled |
+| `http_server_log` | 14 | request ids, `X-Forwarded-For` from a trusted proxy, the access log's escaping and cuts, what it leaves out |
+| `task_workers_ready` | 5 | the ready-aware restart policy |
+| `tests/httpsrvgen.py` | | the differential test (`gate.sh full` runs 5,000 streams) |
+
+The redteam harness runs the `http_*` tests under ASan and UBSan on both
+backends.
+
+The differential test, 100,000 streams (seed 20261103; 55 mutations; 1 to
+3 pipelined requests per stream), took about 160 s. Results:
+
+- obx accepted 38,092 streams whole and refused 45,935 at once.
+- obx was stricter than both oracles on 7,374 streams. By mutation: header
+  lines too long 1,849, absolute-form targets for another host 1,718,
+  `..` in the target 1,710, NUL in the target 1,264, a bad Host 691, bad
+  chunk extensions 142.
+- The two oracles disagreed with each other on 26,080 streams. Excused:
+  1,980 for Go and 3,903 for llhttp. Go lost a reply once.
+- There were no differences and no exits other than 0. Both obx builds
+  gave the same answers and wrote nothing to stderr.
+
+### 9.3 Gate numbers
+
+Both performance targets are met (`cmd/http_gate.py`, 10,000 idle
+connections, the server on CPU 0, the load on CPU 1;
+PERFORMANCE.md has the full tables):
+
+| h1, one core | native | via C | target |
+|---|---:|---:|---:|
+| 100 clients, req/s | 61,600 | 61,700 | ≥ 60,000 |
+| 100 clients, p50 / p99 | 1.59 / 2.52 ms | 1.59 / 2.47 ms | |
+| RSS per idle connection | 15.5 KB | 14.9 KB | ≤ 16 KB |
+| with `requestId` and `accessLog`, 100 clients | 58,300 | | ≥ 50,000 |
+
+Runs on this machine vary by 10 % or more, so the old and new httpd were
+also run in turn, seven times each (native, 100 clients). The medians were
+69,200 and 64,300 req/s, 7.1 % less, inside the 15 % allowed. With worker
+processes, `/` reached 127,100 req/s at 4 workers, against C2's 134,900
+(−5.8 %). The Postgres route ran at 21,700 to 24,400 req/s at 10 to 100
+clients, within the C1c spread.
+
+The logging row is the median of five runs, alternated with the plain
+httpd: requests got ids and access-log lines (written to `/dev/null`), and
+the plain one gave a median of 65,000 req/s in the same runs (−10 %;
+p50 1.67 ms, p99 2.66 ms).
+
+The gates at the end of S1, all passing:
+
+- `obx/tools/gate.sh full`, 20 steps in 332 s:
+  - the seed fixed point;
+  - 759 conformance tests;
+  - 136 compiler tests and 4 unit tests;
+  - the library through C (142 passed, 1 skipped) and native (510);
+  - the native self-build at its fixed point;
+  - the red-team rounds 1 to 5 (222, 498, 450, 321 and 374 OK);
+  - ASan and UBSan over the `task`, `net`, `url` and `http` tests, with
+    every `http_server_*` test (78 OK, 1 skipped), regex (5) and TSan (18);
+  - the native red team (1,606 pass, 0 differ);
+  - the generated programs (200 and 200 the same);
+  - the client framing generator (240 cases);
+  - the server's differential test (5,000 streams, 0 failures);
+  - regex against Go.
+- `python3 obx/cmd/eza_gate.py -j 12`: 482 passed, 0 failed.
+- The seed, regenerated after the last runtime change, is at its fixed
+  point (`reseed.sh`, then `seed_check.py`).
+
+### 9.4 Left for S2 to S4
+
+- S2: TLS and ALPN.
+- S3: HTTP/2.
+- S4, the extras of section 7, plus what S1 left out (section 9.1):
+  `maxBlocking`, `publicOrigin`, `w.hint`, cookies, `traceparent`, the
+  JSON log, SSE keep-alive comments, `basicLimits` and `cors`, per-IP
+  limits across workers, the `unwrap` lint.
+- When `task.Frozen` is on this branch's base: the router in a `Frozen`.

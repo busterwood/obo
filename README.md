@@ -30,7 +30,11 @@ As of 2026-11-03:
 - **Library:** strings, collections, files and I/O, time, math, TCP with
   name lookup, URLs, an [HTTP/1.1 client](obx/lib/README.md) (pooled
   keep-alive connections, strict reply framing, redirects, deadlines; plain
-  http for now), regular expressions (RE2 syntax, linear time, a port of
+  http for now), an [HTTP/1.1 server library](obx/lib/README.md#httpserver)
+  (Go 1.22 routing, middleware, strict parsing against request smuggling,
+  the limits and timeouts against slow and flooding clients, cancellation
+  of a handler and its database query when the client hangs up, graceful
+  drain, worker processes), regular expressions (RE2 syntax, linear time, a port of
   Go's `regexp`), exact decimals and money, and [SQLite, Postgres and SQL
   Server](obx/lib/README.md) adapters that call the C libraries (SQL Server
   through ODBC) directly with no shims.
