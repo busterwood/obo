@@ -9,11 +9,10 @@ obx builds a program in two ways:
 
 Both are built from the same IR and must behave identically; the gate checks
 that on 1,532 programs. This page measures what each costs. Measured on 3
-November 2026 at `aac6659`, after the fourth native performance pass and the
-first concurrency stage; the rows the fifth pass (inlining in the IR, branch
-`perf5`) moved were measured again after it, and the task and server
-sections at stage C1b (sockets and timers). The numbers are host-dependent: use them to compare
-the columns, not as portable constants.
+November 2026 at `2ce4860`, after the fifth native performance pass
+(inlining in the IR) and concurrency stage C1b (sockets and timers), on a
+quiet machine; the HTTP server table is from C1b's own run. The numbers are
+host-dependent: use them to compare the columns, not as portable constants.
 
 ## Host and method
 
@@ -32,14 +31,14 @@ the columns, not as portable constants.
 
 | benchmark | via C | native | native/C | what it does |
 |---|---:|---:|---:|---|
-| fib | 307 ms | 314 ms | 1.02 | recursive calls |
-| loop | 258 ms | 414 ms | 1.60 | two overflow-checked operations per iteration |
-| array | 99 ms | 165 ms | 1.67 | checked indexing |
-| alloc | 120 ms | 63 ms | 0.53 | 20 million records allocated and freed |
-| lists | 36 ms | 27 ms | 0.75 | linked list build, sum, drop |
-| strings | 72 ms | 47 ms | 0.65 | concatenation and `toStr` |
-| trees | 23 ms | 20 ms | 0.87 | binary trees |
-| tokens | 15 ms | 11 ms | 0.73 | byte scanning and hashing |
+| fib | 331 ms | 330 ms | 1.00 | recursive calls |
+| loop | 267 ms | 425 ms | 1.59 | two overflow-checked operations per iteration |
+| array | 104 ms | 174 ms | 1.67 | checked indexing |
+| alloc | 122 ms | 65 ms | 0.54 | 20 million records allocated and freed |
+| lists | 36 ms | 31 ms | 0.85 | linked list build, sum, drop |
+| strings | 76 ms | 47 ms | 0.62 | concatenation and `toStr` |
+| trees | 24 ms | 20 ms | 0.86 | binary trees |
+| tokens | 16 ms | 12 ms | 0.74 | byte scanning and hashing |
 
 - **Native is ahead on allocation and strings** (alloc, lists, strings,
   tokens; trees narrowly). Since the fifth pass small functions and glue
@@ -60,7 +59,11 @@ the columns, not as portable constants.
   runtime's size no longer moves it, but a change in the functions before
   it still can: fib's gain and trees' loss in the fifth pass (8% each way)
   are placement alone. Before the alignment fix, merging the concurrency
-  runtime had silently cost fib 20%.
+  runtime had silently cost fib 20%. The same happened twice more at the
+  C1b merge, with the same instructions: native alloc lost 26% when the
+  event loop moved the runtime's allocator, and fib via C 11% when `rt.h`
+  grew. The native runtime and gcc's builds of programs now put functions
+  at multiples of 64 (`-falign-functions=64`), which restored both.
 
 ## eza
 
@@ -70,8 +73,8 @@ common subset of eza 0.23.3. `LC_ALL=C TZ=UTC`; the long listings use
 
 | listing | output | via C | native |
 |---|---:|---:|---:|
-| `-T /usr/share` (tree) | 2.1 MB | 105 ms | 111 ms |
-| `-T -l /usr/share` (long tree) | 3.7 MB | 194 ms | 201 ms |
+| `-T /usr/share` (tree) | 2.1 MB | 105 ms | 117 ms |
+| `-T -l /usr/share` (long tree) | 3.7 MB | 200 ms | 201 ms |
 | `-l /usr/lib/x86_64-linux-gnu` | 51 KB | 4 ms | 4 ms |
 
 The golden suite (`python3 obx/cmd/eza_gate.py -j 12`) passes on both
@@ -83,18 +86,20 @@ The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:
 
 | | gcc-built | native-built |
 |---|---:|---:|
-| self-build to an executable (`--native`) | 343 ms | 407 ms |
-| self-build to C (`--emit-c`) | 216 ms | 242 ms |
-| full build through gcc | about 14 s, nearly all of it gcc | — |
-| compiler binary | 1,535,256 bytes (dynamic, glibc) | 2,381,865 bytes (static, no libc) |
+| self-build to an executable (`--native`) | 358 ms | 428 ms |
+| self-build to C (`--emit-c`) | 224 ms | 249 ms |
+| full build through gcc | 15 s, nearly all of it gcc | — |
+| compiler binary | 1,620,920 bytes (dynamic, glibc) | 2,446,577 bytes (static, no libc) |
 
-The source is 19,897 lines of obx and 2,528 lines of C runtime (the C
-backend's `rt.h` and the native backend's freestanding `rt.c`, each now
-with task stacks and switching).
+The source is 19,906 lines of obx and 3,085 lines of C runtime (the C
+backend's `rt.h` and the native backend's freestanding `rt.c`, each with
+task stacks and switching, the event loop, timers and sockets).
 
 - The native-built compiler is 1.1-1.2x slower than the gcc-built one
-  (1.6x before the fifth pass): a compiler is call-heavy and branchy, which
-  is gcc's strength, and inlining in the IR closed most of the gap.
+  (1.55x before the fifth pass). It runs 1.49x the instructions (3,973M
+  against 2,669M for `--native`; 1.89x before) at a higher rate per cycle.
+  A compiler is call-heavy and branchy, which is gcc's strength; inlining
+  in the IR closed much of the gap.
 - `--native` itself does more work since the fifth pass (inlining, and
   code generation of the larger IR): with the gcc-built compiler, whose own
   code does not change, building the compiler natively takes about 20%
@@ -117,6 +122,7 @@ itself, native eza `-T /usr/share` and native bench fib:
 | after it (temporaries in callee-saved registers) | 3,923M | 649M | 5,630M |
 | before the fifth, on later sources | 4,022M | 649M | 5,630M |
 | after it (inlining in the IR, value records in fields) | 3,747M | 642M | 5,630M |
+| at `2ce4860` (with C1b; the compiler 1,200 lines larger) | 3,973M | 642M | 5,630M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
@@ -135,9 +141,14 @@ reference counts, copies of large value records), not register use.
 
 | program | via C | native |
 |---|---:|---:|
-| empty program | 24,384 bytes (dynamic, glibc) | 49,152 bytes (static) |
-| eza | 202,672 bytes (dynamic, glibc) | 290,752 bytes (static) |
-| compiler | 1,535,256 bytes (dynamic, glibc) | 2,381,865 bytes (static) |
+| empty program | 42,760 bytes (dynamic, glibc) | 61,440 bytes (static) |
+| eza | 216,880 bytes (dynamic, glibc) | 303,040 bytes (static) |
+| compiler | 1,620,920 bytes (dynamic, glibc) | 2,446,577 bytes (static) |
+
+Every program carries the whole runtime, now including the event loop,
+timers and sockets (C1b) and the 64-byte function alignment: the empty
+program grew by 18 KB via C and 12 KB native on 3 November. Leaving out
+the parts a program does not use is not done yet.
 
 A native executable carries its own runtime instead of linking libc. When a
 program calls C libraries (libm, sqlite3, libpq), it is dynamically linked
@@ -146,21 +157,20 @@ against them.
 ## Tasks
 
 The cost of the concurrency primitives (`lib/task.obx`, `lib/net.obx`, SPEC
-16), from `obx/bench/tasks.obx`, ns per operation, best of 3 runs (measured
-again at stage C1b, the event loop):
+16), from `obx/bench/tasks.obx`, ns per operation, best of 3 runs:
 
 | operation | via C | native |
 |---|---:|---:|
-| task switch (`task.yield`) | 6.3 | 18.2 |
-| start a task (stack reused) | 34 | 26 |
-| start plus a wait that parks (round trip) | 91 | 80 |
-| the same inside `task.within` (a timer set and removed) | 107 | 316 |
-| wait on a finished task | 22 | 24 |
-| promise complete | 12 | 17 |
-| `Shared.with` | 3.4 | 7.1 |
-| a `task.sleep(1)` that fires, beyond a yield | 20–200 | 180–260 |
-| a socket read that finds data (no park) | 653 | 707 |
-| a one-byte round trip between two tasks over loopback TCP | 181,000 | 205,000 |
+| task switch (`task.yield`) | 6.5 | 12.8 |
+| start a task (stack reused) | 36 | 26 |
+| start plus a wait that parks (round trip) | 95 | 78 |
+| the same inside `task.within` (a timer set and removed) | 108 | 339 |
+| wait on a finished task | 23 | 19 |
+| promise complete | 11 | 16 |
+| `Shared.with` | 3.4 | 6.4 |
+| a `task.sleep(1)` that fires, beyond a yield | 46–153 | 131–321 |
+| a socket read that finds data (no park) | 699 | 683 |
+| a one-byte round trip between two tasks over loopback TCP | 193,000 | 171,000 |
 
 The task operations are far below a system call. The event loop added about
 6 ns to a native park (the deadline and timer checks) and nothing measurable
@@ -171,7 +181,8 @@ the 1 ms sleep's overshoot is divided among 10,000 tasks. The round trip is
 this machine's loopback: a Python ping-pong over loopback TCP takes
 190,000 ns with two blocking threads and 205,000 ns with epoll on one
 thread. The native switch is slower than C's because it goes through more
-of the generic task code; it has not been tuned yet.
+of the generic task code; the fifth pass's inlining took it from 17.6 to
+12.8 ns, and it has not been tuned otherwise.
 
 ## HTTP server
 
@@ -226,12 +237,12 @@ and long eza listings:
 
 | | obo 0.19 | obx via C | obx native |
 |---|---:|---:|---:|
-| bench fib | 452 ms | 321 ms | 351 ms |
+| bench fib | 452 ms | 331 ms | 330 ms |
 | bench alloc | 483 ms | 121 ms | 63 ms |
 | bench loop | 208 ms | 264 ms | 420 ms |
 | eza `-T -l /usr/share` | 418 ms | 189 ms | 205 ms |
 | compiler self-build | 223 ms | 252 ms | 406 ms |
 
-The fib row's obx figures are from after the fourth native pass; the rest
-are from the day of the comparison. `python3 obx/bench/bench.py --obo` adds obo's column to the benchmarks
+The fib row's obx figures are from `2ce4860`; the rest are from the day of
+the comparison. `python3 obx/bench/bench.py --obo` adds obo's column to the benchmarks
 (build `archive/obo/obo` first with `make -C archive/obo`).

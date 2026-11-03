@@ -21,13 +21,13 @@ obx/tools/gate.sh quick                        # the suites; `full` adds the red
 
 As of 2026-11-03:
 
-- **The compiler** is written in obx (about 18,700 lines) and compiles itself
+- **The compiler** is written in obx (about 19,900 lines) and compiles itself
   to a fixed point. One IR feeds two backends: a native x86-64 backend that
   writes ELF executables with no gcc (static, or dynamically linked when a
   program calls C libraries), and C for gcc. The natively built compiler
   builds itself to the same fixed point. Its C is checked in as the seed, so
   a first build needs only gcc.
-- **Library:** strings, collections, files and I/O, time, math, exact
+- **Library:** strings, collections, files and I/O, time, math, TCP, exact
   decimals and money, and [SQLite and Postgres](obx/lib/README.md) adapters
   that call the C libraries directly with no shims.
 - **Programs:** [eza](obx/cmd/README.md), the common subset of the eza file
@@ -37,7 +37,7 @@ As of 2026-11-03:
   figures are in [PERFORMANCE.md](PERFORMANCE.md).
 - **Checks:** a conformance suite, the compiler, library and eza tests, a
   native-against-C comparison over 1,532 programs, and five red-team rounds
-  under ASan and UBSan (`obx/tools/gate.sh full`, about 35 s).
+  under ASan and UBSan (`obx/tools/gate.sh full`, about a minute).
 - **Concurrency:** decided in
   [obx/design/concurrency.md](obx/design/concurrency.md): coroutines with
   futures inside a process, several processes for several cores, no

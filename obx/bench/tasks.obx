@@ -20,7 +20,9 @@ fn nop(n: int): int { return n }
 
 fn report(name: str, ns: int, n: int) {
     let tenths = ns * 10 / n
-    println(name + ": " + intToStr(tenths / 10) + "." + intToStr(tenths % 10) + " ns")
+    let sign = if tenths < 0 { "-" } else { "" }
+    let t = if tenths < 0 { -tenths } else { tenths }
+    println(name + ": " + sign + intToStr(t / 10) + "." + intToStr(t % 10) + " ns")
 }
 
 // a task switch: two tasks yield to each other
