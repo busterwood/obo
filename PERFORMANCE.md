@@ -1,17 +1,16 @@
 # obx performance
 
-This page compares the three ways a program in this repository can be built,
-measured on 3 November 2026 on main after the `perf2` and `ir` merges
-(`1dc82b5`):
+obx builds a program in two ways:
 
-- **obx native**: `obxc --native`, the compiler's own x86-64 backend, no gcc.
-- **obx via C**: `obxc`, which writes C and runs `gcc -O2`.
-- **obo**: the archived obo 0.19 compiler (`archive/obo/obo`), which writes
-  machine code itself. obo's own performance record is
-  [archive/obo/PERFORMANCE.md](archive/obo/PERFORMANCE.md).
+- **native**: `obxc --native`, the compiler's own x86-64 backend. It writes an
+  ELF executable directly, with no gcc and, unless the program calls C
+  libraries, no libc.
+- **via C**: `obxc`, which writes C and runs `gcc -O2`.
 
-The numbers are host-dependent: use them to compare the columns, not as
-portable constants.
+Both are built from the same IR and must behave identically; the gate checks
+that on 1,491 programs. This page measures what each costs. Measured on 3
+November 2026 at `6f0a844`. The numbers are host-dependent: use them to
+compare the columns, not as portable constants.
 
 ## Host and method
 
@@ -20,77 +19,71 @@ portable constants.
   compiler), warm cache, output to `/dev/null`. Timings vary by 5–10%
   between runs on this machine; below about 50 ms, process start-up is part
   of the figure.
-- Every row checks its outputs first: the three builds of each benchmark
-  print the same result, both obx builds are leak free under `OBX_CHECK=1`,
-  and the three eza builds write byte-identical listings.
+- Every row checks its outputs first: both builds of each benchmark print the
+  same result and are leak free under `OBX_CHECK=1`, and both eza builds write
+  byte-identical listings.
 
 ## Benchmarks
 
-`python3 obx/bench/bench.py -n 11` ([obx/bench/](obx/bench/README.md); the
-obo programs ported to obx):
+`python3 obx/bench/bench.py -n 11` ([obx/bench/](obx/bench/README.md)):
 
-| benchmark | obo | obx via C | obx native | C/obo | native/obo | what it does |
-|---|---:|---:|---:|---:|---:|---|
-| fib | 452 ms | 321 ms | 460 ms | 0.71 | 1.02 | recursive calls |
-| loop | 208 ms | 264 ms | 420 ms | 1.27 | 2.02 | two overflow-checked operations per iteration |
-| array | 234 ms | 102 ms | 168 ms | 0.44 | 0.72 | checked indexing |
-| alloc | 483 ms | 121 ms | 63 ms | 0.25 | 0.13 | 20 million records allocated and freed |
-| lists | 28 ms | 37 ms | 35 ms | 1.32 | 1.25 | linked list build, sum, drop |
-| strings | 61 ms | 74 ms | 52 ms | 1.21 | 0.84 | concatenation and `toStr` |
-| trees | 19 ms | 24 ms | 21 ms | 1.25 | 1.08 | binary trees |
-| tokens | 18 ms | 16 ms | 13 ms | 0.89 | 0.70 | byte scanning and hashing |
+| benchmark | via C | native | native/C | what it does |
+|---|---:|---:|---:|---|
+| fib | 321 ms | 460 ms | 1.43 | recursive calls |
+| loop | 264 ms | 420 ms | 1.59 | two overflow-checked operations per iteration |
+| array | 102 ms | 168 ms | 1.65 | checked indexing |
+| alloc | 121 ms | 63 ms | 0.52 | 20 million records allocated and freed |
+| lists | 37 ms | 35 ms | 0.95 | linked list build, sum, drop |
+| strings | 74 ms | 52 ms | 0.70 | concatenation and `toStr` |
+| trees | 24 ms | 21 ms | 0.88 | binary trees |
+| tokens | 16 ms | 13 ms | 0.81 | byte scanning and hashing |
 
-- **Native is ahead of C on allocation and strings** (alloc, strings, tokens;
-  lists and trees narrowly): its freestanding runtime has a size-class allocator with no locks
-  or libc bookkeeping, and the string and index checks are generated inline.
-- **gcc wins on tight arithmetic loops** (fib, loop, array): it unrolls,
-  schedules and keeps everything in registers across calls; the native
-  backend is a straightforward code generator with register allocation by
-  live ranges (design/native.md section 4). `loop` is the widest gap.
-- Against obo, obx is faster on 4 of 8 benchmarks either way (and level on
-  fib natively). The small linked-structure programs (lists, trees) and
-  `loop` are slower than obo in both builds.
+- **Native is ahead on allocation and strings** (alloc, strings, tokens;
+  lists and trees narrowly). Its freestanding runtime has a size-class
+  allocator with no locks or libc bookkeeping, and the string and index
+  checks are generated inline.
+- **gcc is ahead on tight arithmetic loops** (fib, loop, array). It unrolls,
+  schedules and keeps values in registers across calls; the native backend
+  is a direct code generator with register allocation by live ranges
+  ([design/native.md](obx/design/native.md) section 4). `loop` is the widest
+  gap.
 
 ## eza
 
-[obx/cmd/eza.obx](obx/cmd/eza.obx), a port of obo's eza (1,600 lines against
-obo's 3,482), against obo's eza binary. `LC_ALL=C TZ=UTC`; the long listings
-use `--bytes --time-style=long-iso -n`, which the ports require:
+[obx/cmd/eza.obx](obx/cmd/eza.obx), a 1,600-line implementation of the
+common subset of eza 0.23.3. `LC_ALL=C TZ=UTC`; the long listings use
+`--bytes --time-style=long-iso -n`, which this eza requires:
 
-| listing | output | obo | obx via C | obx native |
-|---|---:|---:|---:|---:|
-| `-T /usr/share` (tree) | 2.1 MB | 143 ms | 103 ms | 117 ms |
-| `-T -l /usr/share` (long tree) | 3.7 MB | 418 ms | 189 ms | 205 ms |
-| `-l /usr/lib/x86_64-linux-gnu` | 51 KB | 5 ms | 4 ms | 4 ms |
+| listing | output | via C | native |
+|---|---:|---:|---:|
+| `-T /usr/share` (tree) | 2.1 MB | 103 ms | 117 ms |
+| `-T -l /usr/share` (long tree) | 3.7 MB | 189 ms | 205 ms |
+| `-l /usr/lib/x86_64-linux-gnu` | 51 KB | 4 ms | 4 ms |
 
-The long tree is about twice as fast as obo's in either obx build. The
-golden suite
-(`python3 obx/cmd/eza_gate.py -j 12`) passes on both builds: 482 cases, 72
-live-only skipped.
+The golden suite (`python3 obx/cmd/eza_gate.py -j 12`) passes on both
+builds: 482 cases, 72 live-only cases skipped.
 
 ## The compiler
 
-The obx compiler built two ways, compiling itself (`obx/compiler/main.obx`),
-and obo 0.19 compiling itself:
+The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:
 
-| | obo 0.19 | obx, gcc-built | obx, native-built |
-|---|---:|---:|---:|
-| self-build to an executable | 223 ms | 252 ms (`--native`) | 406 ms (`--native`) |
-| self-build to C (`--emit-c`) | — | 193 ms | 257 ms |
-| full build through gcc | — | 13.6 s (gcc is 13.4 s of it) | — |
-| compiler binary | 757,761 bytes | 1,402,344 bytes (dynamic, glibc) | 2,086,449 bytes (static, no libc) |
-| compiler source | 17,233 lines | 18,189 lines of obx and 1,815 of C runtime | same |
+| | gcc-built | native-built |
+|---|---:|---:|
+| self-build to an executable (`--native`) | 252 ms | 406 ms |
+| self-build to C (`--emit-c`) | 193 ms | 257 ms |
+| full build through gcc | 13.6 s (gcc is 13.4 s of it) | — |
+| compiler binary | 1,402,344 bytes (dynamic, glibc) | 2,086,449 bytes (static, no libc) |
 
-- The obx compiler does more than obo's: generics instantiated per type, two
-  backends from one IR, dynamic linking, the C runtime and the freestanding
-  runtime. It is within 15% of obo's self-build time when gcc-built.
-- The native-built compiler is about 1.6x slower than the gcc-built one on
-  this workload, the same pattern as fib and loop: the compiler is
-  call-heavy and branchy, which is gcc's strength.
-- `--emit-c` became about 50% slower when the C began to be printed from the
-  IR (the `ir` merge); `--native` became 30% faster, since it no longer
-  prints and reparses C. Winning back the C path is listed in
-  design/native.md section 8.
+The source is 18,189 lines of obx and 1,815 lines of C runtime (the C
+backend's `rt.h` and the native backend's freestanding `rt.c`).
+
+- The native-built compiler is about 1.6x slower than the gcc-built one, the
+  same pattern as fib and loop: a compiler is call-heavy and branchy, which
+  is gcc's strength.
+- Since both backends start from one IR (2026-11-03), `--native` is about
+  30% faster than before, because it no longer prints and re-reads C, and
+  `--emit-c` is about 50% slower, because it now builds the IR before
+  printing. Winning back the C path is listed in design/native.md section 8.
 
 ### Native backend progress
 
@@ -99,8 +92,8 @@ itself and native eza `-T /usr/share`:
 
 | step | self-build | eza `-T` |
 |---|---:|---:|
-| before the second performance pass | 1,817M | 757M |
-| after it (`perf2`, live-range registers, operands in place) | 1,649M | 659M |
+| before the third performance pass | 1,817M | 757M |
+| after it (live-range registers, operands in place) | 1,649M | 659M |
 
 The earlier steps and the per-commit figures are in
 [obx/design/native.md](obx/design/native.md) sections 4 and 8. What remains
@@ -109,22 +102,40 @@ reference counts, copies of large value records), not register use.
 
 ## Binary sizes
 
-| program | obo | obx via C | obx native |
-|---|---:|---:|---:|
-| eza | 266,241 bytes | 192,912 bytes (dynamic, glibc) | 270,272 bytes (static) |
-| compiler | 757,761 bytes | 1,402,344 bytes | 2,086,449 bytes |
+| program | via C | native |
+|---|---:|---:|
+| empty program | 18,408 bytes (dynamic, glibc) | 45,056 bytes (static) |
+| eza | 192,912 bytes (dynamic, glibc) | 270,272 bytes (static) |
+| compiler | 1,402,344 bytes (dynamic, glibc) | 2,086,449 bytes (static) |
 
-A native executable carries its runtime (an empty program is 45,056 bytes)
-and needs no libc
-unless it calls C libraries; then it is dynamically linked against them.
+A native executable carries its own runtime instead of linking libc. When a
+program calls C libraries (libm, sqlite3, libpq), it is dynamically linked
+against them.
 
 ## Reproducing
 
 ```sh
 obx/compiler/build.sh                                  # out/obxc from the seed
-make -C archive/obo                                    # archive/obo/obo, for the obo column
 python3 obx/bench/bench.py -n 11
 python3 obx/cmd/eza_gate.py -j 12                      # eza correctness on both builds
-obx/compiler/out/obxc obx/cmd/eza.obx --native -o eza  # then time it against archive/obo/build/eza/eza
+obx/compiler/out/obxc obx/cmd/eza.obx --native -o eza  # and without --native for the C build
 obx/tools/native_selfbuild.sh                          # the natively built compiler
 ```
+
+## For the record: obo
+
+obo 0.19, obx's predecessor, was retired on 2026-11-02 and is archived in
+[archive/obo/](archive/obo/README.md) with its own
+[performance record](archive/obo/PERFORMANCE.md). On the same host and day,
+obx was within a small factor of it everywhere and well ahead on allocation
+and long eza listings:
+
+| | obo 0.19 | obx via C | obx native |
+|---|---:|---:|---:|
+| bench alloc | 483 ms | 121 ms | 63 ms |
+| bench loop | 208 ms | 264 ms | 420 ms |
+| eza `-T -l /usr/share` | 418 ms | 189 ms | 205 ms |
+| compiler self-build | 223 ms | 252 ms | 406 ms |
+
+`python3 obx/bench/bench.py --obo` adds obo's column to the benchmarks
+(build `archive/obo/obo` first with `make -C archive/obo`).

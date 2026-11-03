@@ -900,14 +900,17 @@ cannot be borrowed (section 5.2).
 Each of these is planned and is left out of draft 1 to keep the first
 compiler small. None of them needs a change to the rules above.
 
-- **Handles** (`^T`): generation-checked non-owning pointers, as in obo.
+- **Handles** (`^T`): generation-checked non-owning pointers.
 - **Escaping closures**: closures that can be stored and returned (with an
   owned environment). They are to be designed together with interface values.
 - **Interface values** (`box I`, `&I`): dynamic dispatch.
 - **Effects**: per-function summaries of what a call may free, which allow
   owned globals and borrows of them.
 - **Templates** (sql, html): to be a desugaring onto a library protocol.
-- **Threads.**
+- **Concurrency**: coroutines with futures, promises and shared values inside
+  a process, and several processes for several cores
+  ([design/concurrency.md](design/concurrency.md)). obx has no threads: a
+  shared-nothing decision, for safety and for performance.
 
 ## 14. Runtime errors
 

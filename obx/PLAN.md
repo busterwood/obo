@@ -167,10 +167,10 @@ More from porting sema (stage 4 step 2, 2026-11-02):
     interning types wants a structural key, so sema builds a string key per
     type instead.
 
-Performance (`bench/README.md`). Done in `ref/` 2026-11-02, for the port to
-copy: `gcc -O2`, direct drop glue for types that cannot form a chain, `malloc`
-and live-object counting only under `OBX_CHECK`, 64-bit `toStr` digits; obx is
-now 0.25x to 1.33x obo's time. Left:
+Performance: the current figures are in
+[../PERFORMANCE.md](../PERFORMANCE.md); the native backend's work and what is
+left are in [design/native.md](design/native.md) sections 4 and 8. Left from
+the first pass (2026-11-02):
 
 - Language note: a borrow cannot be moved along a chain (`cur = &cur.next`),
   so walking a list by borrow recurses. Worth a decision before eza.

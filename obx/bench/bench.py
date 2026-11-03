@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""obo vs obx benchmark table.
+"""obx benchmark table: native against C, and optionally the archived obo.
 
 For each program NAME it builds obx/bench/NAME.obx twice with the compiler
 (obx/compiler/out/obxc, or $OBXC): through C (gcc -O2) and with --native.
-It builds archive/obo/bench/NAME_obo.obx with the archived obo compiler
-(archive/obo/obo, if it runs). It checks that the outputs are equal and that
-both obx programs are leak free (OBX_CHECK=1), then prints the best wall time
-of N runs of each.
+With --obo it also builds archive/obo/bench/NAME_obo.obx with the archived
+obo compiler (archive/obo/obo, if it runs). It checks that the outputs are
+equal and that both obx programs are leak free (OBX_CHECK=1), then prints the
+best wall time of N runs of each.
 
-    python3 obx/bench/bench.py [-n RUNS] [--only NAME ...]
+    python3 obx/bench/bench.py [-n RUNS] [--only NAME ...] [--obo]
 """
 import argparse
 import os
@@ -75,6 +75,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('-n', type=int, default=5, help='runs per program (best is reported)')
     ap.add_argument('--only', nargs='*')
+    ap.add_argument('--obo', action='store_true', help='add the archived obo compiler as a column')
     a = ap.parse_args()
     names = a.only or NAMES
     tmp = tempfile.mkdtemp(prefix='obxbench')
@@ -82,7 +83,7 @@ def main():
     for name in names:
         obx = build_obx(name, tmp)
         obxn = build_obx(name, tmp, native=True)
-        obo = build_obo(name, tmp)
+        obo = build_obo(name, tmp) if a.obo else None
         for exe in (obx, obxn):
             code, out, err, _ = run(exe, name, {'OBX_CHECK': '1'})
             if code != 0:
@@ -97,6 +98,12 @@ def main():
         if obo and out_obo != out_obx:
             raise SystemExit(f"{name}: outputs differ: obx {out_obx!r}, obo {out_obo!r}")
         rows.append((name, t_obo, t_obx, t_obxn, out_obx))
+    if not a.obo:
+        print("| benchmark | via C | native | native/C | output |")
+        print("|---|---:|---:|---:|---|")
+        for name, _, t_obx, t_obxn, out in rows:
+            print(f"| {name} | {fmt(t_obx)} | {fmt(t_obxn)} | {t_obxn / t_obx:.2f} | {out} |")
+        return
     if all(r[1] is None for r in rows):
         print("note: the obo compiler did not build anything; obo columns skipped", file=sys.stderr)
     print("| benchmark | obo | obx via C | obx native | C/obo | native/obo | output |")

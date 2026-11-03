@@ -1,9 +1,8 @@
 # obx
 
-obx is the next generation of the language: obo's ownership model (single
-ownership, `&T` borrows, `^T` checked handles, no collector) with generics from
-day one. Decimal, money, Option, Result and the containers are library code,
-not compiler features.
+obx is a systems language with single ownership, `&T` borrows, no collector
+and generics. Decimal, money, Option, Result and the containers are library
+code, not compiler features. Checked handles (`^T`) are planned.
 
 The decision and the plan are in
 [design/generic-core-rethink.md](design/generic-core-rethink.md)
@@ -17,10 +16,6 @@ The decision and the plan are in
 - A Python reference compiler settled the design first. The real compiler is
   written in obx, compiles itself, and emits C or native x86-64 ELF.
 
-obo 0.19, the predecessor, was retired on 2026-11-02 and is in
-`../archive/obo/`; the original GC compiler that obo forked from is in
-`../archive/obx/`.
-
 Source files use the `.obx` extension.
 
 ## Layout
@@ -33,19 +28,20 @@ Source files use the `.obx` extension.
 | [lib/](lib/README.md) | the library (std, collections, strings, fs, io, os, time, math, money, sqlite, postgres) |
 | [cmd/](cmd/README.md) | programs: eza |
 | [tests/](tests/README.md) | the conformance suite, the compiler tests, the native tests, the eza golden suite and their runners |
-| `redteam/` | the red-team corpora and harnesses (rounds 1 to 4) |
+| `redteam/` | the red-team corpora and harnesses (rounds 1 to 5) |
 | `tools/` | the gate (`gate.sh`), the build cache (`cbuild.py`), the seed check |
 | `design/` | design notes: the generic-core decision, the native backend, concurrency |
-| `bench/` | benchmarks against obo (results in ../PERFORMANCE.md) |
+| [bench/](bench/README.md) | benchmarks, native against C (results in [../PERFORMANCE.md](../PERFORMANCE.md)) |
 
-The Python reference compiler (`ref/`) was retired on 2026-11-02; it is in
-`../archive/obx-ref/`.
+Its predecessors (obo 0.19, the original garbage-collected obx and the
+Python reference compiler) are retired and kept in `../archive/`; see
+[../HISTORY.md](../HISTORY.md).
 
 ## Building and testing
 
     obx/compiler/build.sh                       # obx/compiler/out/obxc from the C seed (gcc only)
-    obx/compiler/out/obxc file.obx -o prog      # through C
     obx/compiler/out/obxc file.obx --native -o prog
+    obx/compiler/out/obxc file.obx -o prog      # through C
     obx/tools/gate.sh quick                     # after every change
     obx/tools/gate.sh full                      # before a merge
 

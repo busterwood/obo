@@ -62,7 +62,7 @@ for leaks.
   `clear`, `toStr`. Strings: `substr`, `indexOf(s, sub, from)`, `startsWith`,
   `endsWith`, `contains`, `split(s, sep: byte)`, `trim`, `isSpace`, `isDigit`,
   `parseInt(s): Option[int]`, `repeat`.
-- **Decimal** (obo's semantics): a coefficient below 10^38, an exponent and a
+- **Decimal**: a coefficient below 10^38, an exponent and a
   display scale; zero is unsigned. Literals `1.25` are Decimals (the
   `fromFraction` lang item); also `decimalOf(n)`, `Decimal.fromUnits(units,
   scale)`, `Decimal.fromInt`, `Decimal.parse(s): Result[Decimal, DecError]`.
@@ -79,7 +79,7 @@ for leaks.
   `HALF_EVEN HALF_AWAY HALF_TOWARD_ZERO TOWARD_ZERO AWAY FLOOR CEILING
   UNNECESSARY`. A fractional literal is `fromFraction(units: i128, scale:
   int)` (`1.5e3` is units 15, scale -2); a scale over 38 stops with
-  DecError.Range. The stop helpers (`orStop`, money's `stop`) return `never`. **DecError** with obo's codes:
+  DecError.Range. The stop helpers (`orStop`, money's `stop`) return `never`. **DecError** codes:
   DecError.Overflow 1, DecError.Inexact 3, DecError.Invalid 4, DecError.DivZero 5, DecError.Range 6,
   DecError.Precision 7, DecError.Exponent 8, DecError.Display 9.
 - **sort(xs: mut &[]T)** for `T: Ord`: heap sort, in place, not stable.

@@ -2,10 +2,9 @@
 
 ## eza
 
-`eza.obx` is obo's eza (`../../archive/obo/cmd/eza.obx`) in obx: the subset of eza
-0.23.3 that obo implements, with the same output byte for byte. `eza -?`
-lists what it does; everything else is rejected with an error, never
-silently ignored.
+`eza.obx` implements the common subset of the eza 0.23.3 file lister, with
+the same output byte for byte. `eza -?` lists what it does; everything else
+is rejected with an error, never silently ignored.
 
 It is one file. The parts (argument parsing, deduction, entries and sorting,
 colour, the three views) share two types, `Opts` and `Entry`, and nothing in
@@ -21,9 +20,9 @@ Build it from `obx/`:
 
 ### Tests
 
-The tests are obo's eza golden suite, copied into obx when obo was retired:
-the harness [../tests/eza.py](../tests/eza.py) with its cases, fixtures and
-goldens in `../tests/eza/` (recorded from the real eza 0.23.3). It builds
+The tests are a golden suite recorded from the real eza 0.23.3, which came
+from obo, obx's predecessor: the harness [../tests/eza.py](../tests/eza.py)
+with its cases, fixtures and goldens in `../tests/eza/`. It builds
 `eza.obx` with `compiler/out/obxc` and runs every case; `eza_gate.py` runs
 it with `--reference=none`:
 
@@ -34,7 +33,5 @@ it with `--reference=none`:
 Other options go to the harness (`-k PATTERN`, `-x`, `-v`); the reference
 defaults to `--reference=none`, so the goldens are the oracle. A full run
 takes about 2.5 minutes (`-j 8`), most of it the harness building fixtures.
-72 cases are skipped, as for obo: they need a live eza or a terminal and
-have no golden. Our eza runs with `OBX_CHECK=1`, so a leak fails a case.
-obo's `memory` family (its peak-heap budget under `OBO_STATS`) was obo-only
-and was left out of the copy.
+72 cases are skipped: they need a live eza or a terminal and have no
+golden. Our eza runs with `OBX_CHECK=1`, so a leak fails a case.
