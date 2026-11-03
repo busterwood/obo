@@ -1,0 +1,10 @@
+// task: a closure literal is not a plain function value either.
+// error: argument 1 of Scope.start
+import "task"
+
+fn main() {
+    let zedk = 2
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(fn(x: int): int { return x + zedk }, 1)
+    })
+}

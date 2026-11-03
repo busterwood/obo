@@ -1,0 +1,74 @@
+// task: no leaks (this runs under OBX_CHECK=1) when futures are dropped before
+// and after their task finishes, when tasks are cancelled with owned
+// arguments and results, and with more live tasks than the stack free list
+// keeps; a panic in a task stops the program as anywhere else.
+// expect: waited 200
+// expect: dropped
+// expect: many 300
+// expect: chained 3
+import "task"
+
+type Payload = record {
+    words: []str
+    n: int
+}
+
+fn build(n: int): Payload {
+    var ws: []str = []
+    for i in 0..n { append(mut &ws, "w" + intToStr(i)) }
+    return Payload{words: ws, n: n}
+}
+
+fn consume(p: Payload): []str {
+    task.yield().unwrap()
+    let Payload{words: ws, n: n} = move(p)
+    return ws
+}
+
+fn idle(p: Payload): Payload {
+    while !task.cancelled() { let r = task.yield() }
+    return p
+}
+
+fn relay(f: task.Future[[]str]): int {
+    return len(f.wait().unwrap())
+}
+
+fn main() {
+    var total = 0
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[Payload] = []
+        for i in 0..200 { append(mut &fs, s.start(build, 2)) }
+        for f in task.all(fs).unwrap() { total += f.n / 2 }
+    })
+    println("waited " + intToStr(total))
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(build, 5)                // finished long before its future is dropped
+        task.yield().unwrap()
+        let b = s.start(consume, build(3))       // parked once, then finished
+        let c = s.start(idle, build(4))          // runs until cancelled by the drop of c
+        task.yield().unwrap()
+        let d = s.start(build, 1)
+        task.yield().unwrap()
+        task.yield().unwrap()
+        let e = s.start(build, 6)                // dropped before it runs: its result is dropped
+    })
+    println("dropped")
+    var n = 0
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[Payload] = []
+        for i in 0..300 { append(mut &fs, s.start(idle, build(1))) }
+        task.yield().unwrap()
+        while len(fs) > 0 {
+            let f = pop(mut &fs)
+            n += 1
+        }
+    })
+    println("many " + intToStr(n))
+    let k = task.scoped(fn(s: mut &task.Scope): int {
+        let inner = s.start(consume, build(3))
+        let outer = s.start(relay, inner)
+        return outer.wait().unwrap()
+    })
+    println("chained " + intToStr(k))
+}

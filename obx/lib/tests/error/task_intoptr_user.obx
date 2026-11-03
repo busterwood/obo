@@ -1,0 +1,7 @@
+// task: intoPtr and fromPtr exist only in library modules.
+// error: intoPtr
+type Box = record { zedv: int }
+
+fn main() {
+    let p = intoPtr(Box{zedv: 1})
+}

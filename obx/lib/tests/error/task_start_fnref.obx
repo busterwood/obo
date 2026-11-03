@@ -1,0 +1,14 @@
+// task: start takes a plain function value, never a &fn (a closure, which
+// may capture the starting task's locals).
+// error: argument 1 of Scope.start
+import "task"
+
+fn run(g: &fn(int): int) {
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(g, 1)
+    })
+}
+
+fn sq(x: int): int { return x * x }
+
+fn main() { run(&sq) }

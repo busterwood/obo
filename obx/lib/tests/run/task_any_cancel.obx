@@ -1,0 +1,97 @@
+// task: any returns the first result, cancels the losers and waits until they
+// have unwound (their drops run first); a cancelled task's waits give
+// Err(Cancelled); all collects every result in order.
+// expect: spin 1 start
+// expect: quick 2
+// expect: slow 3 start
+// expect: spin 1 cancelled after 1
+// expect: drop guard 1
+// expect: slow 3 cancelled
+// expect: drop guard 3
+// expect: any: 20
+// expect: all: 4 9 16
+// expect: all: cancelled
+import "task"
+
+type Guard = record { n: int }
+
+fn (g: mut &Guard) drop() { println("drop guard " + intToStr(g.n)) }
+
+// yields until cancelled
+fn spin(n: int): int {
+    let g = Guard{n: n}
+    println("spin " + intToStr(n) + " start")
+    var i = 0
+    while true {
+        match task.yield() {
+            Ok(u) { i += 1 }
+            Err(e) {
+                println("spin " + intToStr(n) + " " + e.toStr() + " after " + intToStr(i))
+                return -1
+            }
+        }
+    }
+    return 0
+}
+
+fn quick(n: int): int {
+    println("quick " + intToStr(n))
+    return n * 10
+}
+
+// waits for a promise that nobody completes
+fn slow(n: int): int {
+    let g = Guard{n: n}
+    println("slow " + intToStr(n) + " start")
+    let task.Pair{promise: p, future: f} = task.promise[int]()
+    match f.wait() {
+        Ok(v) { return v }
+        Err(e) {
+            println("slow " + intToStr(n) + " " + e.toStr())
+            return -1
+        }
+    }
+}
+
+fn spinQuiet(n: int): int {
+    while true {
+        if task.yield().isErr() { return n }
+    }
+    return n
+}
+
+fn sq(x: int): int { return x * x }
+
+fn main() {
+    let r = task.scoped(fn(s: mut &task.Scope): int {
+        var fs: []task.Future[int] = []
+        append(mut &fs, s.start(spin, 1))
+        append(mut &fs, s.start(quick, 2))
+        append(mut &fs, s.start(slow, 3))
+        return task.any(fs).unwrap()
+    })
+    println("any: " + intToStr(r))
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[int] = []
+        for i in 2..5 { append(mut &fs, s.start(sq, i)) }
+        let xs = task.all(fs).unwrap()
+        println("all: " + intToStr(xs[0]) + " " + intToStr(xs[1]) + " " + intToStr(xs[2]))
+        let w = s.start(waitAll, 0)
+    })
+}
+
+// started by a dropped future: cancelled before it runs, so all gives Err at once
+fn waitAll(n: int): int {
+    let r = task.scoped(fn(s: mut &task.Scope): int {
+        var fs: []task.Future[int] = []
+        append(mut &fs, s.start(spinQuiet, 1))
+        match task.all(fs) {
+            Ok(xs) { return len(xs) }
+            Err(e) {
+                println("all: " + e.toStr())
+                return 0
+            }
+        }
+    })
+    return r
+}

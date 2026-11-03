@@ -1,0 +1,13 @@
+// task: start takes an owned argument, never a borrow (the task may outlive
+// the borrowed value's statement and runs on another stack).
+// error: argument 2 of Scope.start
+import "task"
+
+fn total(xs: &[]int): int { return len(xs) }
+
+fn main() {
+    let zedlist = [1, 2, 3]
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(total, &zedlist)
+    })
+}

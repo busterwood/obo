@@ -1,0 +1,67 @@
+// task: promises completed by another task, completed before the wait,
+// abandoned (the promise dropped), and completed after their future was
+// dropped (the value is dropped at once); complete never parks.
+// expect: waiting
+// expect: filler runs
+// expect: filled
+// expect: got hello
+// expect: early: 42
+// expect: lost: abandoned
+// expect: drop orphan
+// expect: after orphan
+// expect: in task: abandoned
+import "task"
+
+type Note = record { s: str }
+
+fn (n: mut &Note) drop() { println("drop " + n.s) }
+
+fn fill(p: task.Promise[str]): int {
+    println("filler runs")
+    p.complete("hello")
+    println("filled")
+    return 0
+}
+
+fn lost(): task.Future[[]int] {
+    let task.Pair{promise: p, future: f} = task.promise[[]int]()
+    return f
+}
+
+fn holdAndDrop(p: task.Promise[int]): int {
+    task.yield().unwrap()
+    return 0          // p dropped here: the waiter gets Err(Abandoned)
+}
+
+fn waitOn(f: task.Future[int]): str {
+    match f.wait() {
+        Ok(v) { return intToStr(v) }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let task.Pair{promise: p, future: f} = task.promise[str]()
+        let g = s.start(fill, p)
+        println("waiting")
+        println("got " + f.wait().unwrap())
+        let r = g.wait()
+    })
+    let task.Pair{promise: p, future: f} = task.promise[int]()
+    p.complete(42)
+    println("early: " + intToStr(f.wait().unwrap()))
+    println("lost: " + lost().wait().unwrapErr().toStr())
+    let task.Pair{promise: p2, future: f2} = task.promise[Note]()
+    discard(f2)
+    p2.complete(Note{s: "orphan"})
+    println("after orphan")
+    task.scope(fn(s: mut &task.Scope) {
+        let task.Pair{promise: p3, future: f3} = task.promise[int]()
+        let a = s.start(holdAndDrop, p3)
+        let b = s.start(waitOn, f3)
+        println("in task: " + b.wait().unwrap())
+    })
+}
+
+fn discard(f: task.Future[Note]) {}

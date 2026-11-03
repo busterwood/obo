@@ -1,0 +1,83 @@
+// task: cancelling a task cancels the tasks of the scopes it has open, at any
+// depth; a task started by a cancelled task starts cancelled; a scope ends
+// only when all its tasks have finished; the drops of every level run.
+// expect: outer start
+// expect: mid start
+// expect: leaf 1 start
+// expect: leaf 2 start
+// expect: main cancels
+// expect: leaf 1: cancelled
+// expect: drop leaf 1
+// expect: leaf 2: cancelled
+// expect: drop leaf 2
+// expect: mid: wait gives cancelled
+// expect: late: started cancelled: true
+// expect: drop mid
+// expect: outer: mid gave -2
+// expect: drop outer
+// expect: main: outer cancelled
+import "task"
+
+type Note = record { s: str }
+
+fn (n: mut &Note) drop() { println("drop " + n.s) }
+
+fn leaf(n: int): int {
+    let g = Note{s: "leaf " + intToStr(n)}
+    println("leaf " + intToStr(n) + " start")
+    let task.Pair{promise: p, future: f} = task.promise[int]()
+    match f.wait() {
+        Ok(v) { return v }
+        Err(e) {
+            println("leaf " + intToStr(n) + ": " + e.toStr())
+            return -1
+        }
+    }
+}
+
+fn late(n: int): bool {
+    println("late: started cancelled: " + (if task.cancelled() { "true" } else { "false" }))
+    return true
+}
+
+fn mid(n: int): int {
+    let g = Note{s: "mid"}
+    println("mid start")
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(leaf, 1)
+        let b = s.start(leaf, 2)
+        let r = a.wait()
+        let l = s.start(late, 0)
+        println("mid: wait gives " + l.wait().unwrapErr().toStr())
+    })
+    return -1
+}
+
+fn outer(n: int): int {
+    let g = Note{s: "outer"}
+    println("outer start")
+    let r = task.scoped(fn(s: mut &task.Scope): int {
+        let m = s.start(mid, 0)
+        return m.wait().unwrapOr(-2)
+    })
+    println("outer: mid gave " + intToStr(r))
+    return r
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let o = s.start(outer, 0)
+        task.yield().unwrap()
+        task.yield().unwrap()
+        task.yield().unwrap()
+        task.yield().unwrap()
+        println("main cancels")
+        var fs: []task.Future[int] = []
+        append(mut &fs, o)
+        append(mut &fs, s.start(five, 0))
+        let x = task.any(fs)
+    })
+    println("main: outer cancelled")
+}
+
+fn five(n: int): int { return 5 }

@@ -368,12 +368,43 @@ struct k_sigaction { void (*handler)(int, void*, void*); unsigned long flags; vo
 void rt_n_restore(void);
 __asm__(".text\n.globl rt_n_restore\nrt_n_restore:\n\tmov $15, %eax\n\tsyscall\n\thlt\n");
 
+/* Tasks (see the end of this file and rt.h): the root task is main's stack. */
+#define RT_STACK (256 * 1024)
+#define RT_GUARD 4096
+typedef struct rt_task rt_task;
+typedef struct rt_scope rt_scope;
+struct rt_scope { rt_task* owner; rt_scope* outer; rt_task *tasks, *last; int64_t live; bool closing; };
+enum { RT_RUN, RT_PARKED, RT_DONE };
+struct rt_task {
+    void* sp;
+    char* stk;
+    void* (*run)(void*);
+    void* job;
+    void* res;
+    void (*resdrop)(void*);
+    rt_task* waiter;
+    rt_task* next;
+    rt_scope* scope;
+    rt_task *snext, *sprev;
+    rt_scope* scopes;
+    int state, refs;
+    bool cancelled, cancellable, promise, abandoned, forgotten;
+    int shdrop;
+    rt_dact* ds;
+    int64_t dn, dcap;
+    char** ctmp;
+    int64_t nctmp, cctmp;
+};
+static rt_task rt_root = {.refs = 1};
+static rt_task* rt_cur = &rt_root;
+
 static char* rt_stack_top;
 static size_t rt_stack_max;
 static void rt_segv(int sig, void* si, void* uc) {
     char* a = *(char**)((char*)si + 16);        /* si_addr */
     (void)uc;
-    if (a <= rt_stack_top && (size_t)(rt_stack_top - a) <= rt_stack_max + (1 << 20)) {
+    if ((a <= rt_stack_top && (size_t)(rt_stack_top - a) <= rt_stack_max + (1 << 20)) ||
+        (rt_cur->stk && a >= rt_cur->stk && a < rt_cur->stk + RT_GUARD)) {
         static const char m[] = "obx: stack overflow\n";
         rt_flush();
         SYS(S_WRITE, 2, m, sizeof m - 1);
@@ -1288,4 +1319,273 @@ __attribute__((noreturn)) void abort(void) {
     SYS4(14, 1, &set, 0, 8);                        /* rt_sigprocmask: unblock it */
     SYS(S_KILL, SYS(S_GETPID, 0, 0, 0), 6, 0);
     sys_exit(127);
+}
+
+/* ------------------------------------------------------------ tasks
+   rt.h's tasks (lib/task.obx; design/concurrency.md, stage C1a), the same code without ASan:
+   stackful coroutines on one thread, a FIFO run queue, every suspension through rt_park, the
+   drop-action stack and the C string copies per task, a deadlock when nothing is runnable
+   (exit 14), parking inside Shared.with (exit 13). */
+
+void rt_ctx_swap(void** save, void* to);
+__asm__(".text\n.globl rt_ctx_swap\n.type rt_ctx_swap,@function\nrt_ctx_swap:\n"
+        "\tpushq %rbp\n\tpushq %rbx\n\tpushq %r12\n\tpushq %r13\n\tpushq %r14\n\tpushq %r15\n"
+        "\tsubq $8, %rsp\n\tstmxcsr (%rsp)\n\tfnstcw 4(%rsp)\n\tmovq %rsp, (%rdi)\n\tmovq %rsi, %rsp\n"
+        "\tldmxcsr (%rsp)\n\tfldcw 4(%rsp)\n\taddq $8, %rsp\n"
+        "\tpopq %r15\n\tpopq %r14\n\tpopq %r13\n\tpopq %r12\n\tpopq %rbx\n\tpopq %rbp\n\tret\n"
+        ".size rt_ctx_swap, .-rt_ctx_swap\n");
+
+static rt_task *rt_rq_head, *rt_rq_tail;
+static rt_task* rt_dead;
+static int64_t rt_with_open;
+static char* rt_stk_free;
+static int rt_nstk_free;
+
+static void rt_enqueue(rt_task* t) {
+    t->next = 0;
+    if (rt_rq_tail) rt_rq_tail->next = t; else rt_rq_head = t;
+    rt_rq_tail = t;
+}
+static rt_task* rt_dequeue(void) {
+    rt_task* t = rt_rq_head;
+    if (t) { rt_rq_head = t->next; if (!rt_rq_head) rt_rq_tail = 0; }
+    return t;
+}
+static char* rt_stack_get(void) {
+    char* s = rt_stk_free;
+    if (s) {
+        rt_stk_free = *(char**)(s + RT_GUARD);
+        rt_nstk_free--;
+        return s;
+    }
+    i64 r = sys6(S_MMAP, 0, RT_STACK + RT_GUARD, 3, 0x4022, -1, 0);    /* MAP_PRIVATE|ANONYMOUS|NORESERVE */
+    if (r < 0 && r > -4096) rt_trap(2, "out of memory (a task's stack)", "runtime");
+    s = (char*)r;
+    SYS(10, s, RT_GUARD, 0);                    /* mprotect: PROT_NONE */
+    return s;
+}
+static void rt_stack_put(char* s) {
+    if (rt_nstk_free >= 64) { SYS(S_MUNMAP, s, RT_STACK + RT_GUARD, 0); return; }
+    *(char**)(s + RT_GUARD) = rt_stk_free;
+    rt_stk_free = s;
+    rt_nstk_free++;
+}
+static void rt_release(rt_task* t) { if (--t->refs == 0) rt_free(t); }
+static void rt_reap(rt_task* t) {
+    rt_stack_put(t->stk);
+    free(t->ds);
+    free(t->ctmp);
+    rt_release(t);
+}
+static void rt_resumed(void) {
+    if (rt_dead) { rt_task* d = rt_dead; rt_dead = 0; rt_reap(d); }
+}
+static void rt_switch(rt_task* to) {
+    rt_task* me = rt_cur;
+    me->ds = rt_ds; me->dn = rt_dn; me->dcap = rt_dcap;
+    me->ctmp = rt_ctmp; me->nctmp = rt_nctmp; me->cctmp = rt_cctmp;
+    rt_ds = to->ds; rt_dn = to->dn; rt_dcap = to->dcap;
+    rt_ctmp = to->ctmp; rt_nctmp = to->nctmp; rt_cctmp = to->cctmp;
+    rt_cur = to;
+    rt_ctx_swap(&me->sp, to->sp);
+    rt_resumed();
+}
+static bool rt_park(bool cancellable) {
+    rt_task* me = rt_cur;
+    rt_task* nx = rt_dequeue();
+    if (!nx) rt_trap(14, "deadlock: every task is parked", "runtime");
+    me->state = RT_PARKED;
+    me->cancellable = cancellable;
+    rt_switch(nx);
+    me->cancellable = false;
+    return cancellable && me->cancelled;
+}
+static void rt_wake(rt_task* t) {
+    if (t->state == RT_PARKED) { t->state = RT_RUN; rt_enqueue(t); }
+}
+static void rt_nopark(const char* msg) {
+    if (rt_with_open > 0) rt_trap(13, msg, "runtime");
+}
+static void rt_cancel(rt_task* t) {
+    if (t->promise || t->state == RT_DONE || t->cancelled) return;
+    t->cancelled = true;
+    for (rt_scope* s = t->scopes; s; s = s->outer)
+        for (rt_task* u = s->tasks; u; u = u->snext) rt_cancel(u);
+    if (t->state == RT_PARKED && t->cancellable) rt_wake(t);
+}
+__attribute__((noreturn)) static void rt_task_boot(void) {
+    rt_resumed();
+    rt_task* t = rt_cur;
+    void* r = t->run(t->job);
+    t->job = 0;
+    while (t->forgotten && r) { void* x = r; r = 0; t->resdrop(x); }
+    t->res = r;
+    t->state = RT_DONE;
+    rt_scope* s = t->scope;
+    if (t->sprev) t->sprev->snext = t->snext; else s->tasks = t->snext;
+    if (t->snext) t->snext->sprev = t->sprev; else s->last = t->sprev;
+    t->scope = 0;
+    if (--s->live == 0 && s->closing) rt_wake(s->owner);
+    if (t->waiter) rt_wake(t->waiter);
+    rt_task* nx = rt_dequeue();
+    if (!nx) rt_trap(14, "deadlock: every task is parked", "runtime");
+    rt_dead = t;
+    rt_switch(nx);
+    __builtin_unreachable();
+}
+
+void* obxlib_task_scope_open(void) {
+    rt_scope* s = rt_alloc(sizeof *s);
+    s->owner = rt_cur; s->outer = rt_cur->scopes; s->tasks = s->last = 0; s->live = 0; s->closing = false;
+    rt_cur->scopes = s;
+    return s;
+}
+void obxlib_task_scope_close(void* p) {
+    rt_scope* s = p;
+    rt_nopark("a task parked inside Shared.with (the end of task.scope)");
+    while (s->live > 0) { s->closing = true; rt_park(false); }
+    s->closing = false;
+    rt_cur->scopes = s->outer;
+    rt_free(s);
+}
+void* obxlib_task_start(void* sp, void* run, void* job, void* resdrop) {
+    rt_scope* s = sp;
+    rt_task* t = rt_alloc(sizeof *t);
+    memset(t, 0, sizeof *t);
+    t->stk = rt_stack_get();
+    t->run = (void* (*)(void*))run; t->job = job; t->resdrop = (void (*)(void*))resdrop;
+    t->refs = 2;
+    t->cancelled = rt_cur->cancelled;
+    t->scope = s;
+    t->sprev = s->last;
+    if (s->last) s->last->snext = t; else s->tasks = t;
+    s->last = t;
+    s->live++;
+    uint64_t* top = (uint64_t*)(t->stk + RT_GUARD + RT_STACK);
+    uint32_t mx;
+    uint16_t cw;
+    __asm__ volatile("stmxcsr %0" : "=m"(mx));
+    __asm__ volatile("fnstcw %0" : "=m"(cw));
+    *--top = 0;
+    *--top = (uint64_t)(uintptr_t)rt_task_boot;
+    for (int i = 0; i < 6; i++) *--top = 0;
+    *--top = (uint64_t)mx | (uint64_t)cw << 32;
+    t->sp = top;
+    rt_enqueue(t);
+    return t;
+}
+int64_t obxlib_task_wait(void* p) {
+    rt_task* t = p;
+    rt_nopark("a task parked inside Shared.with (Future.wait)");
+    while (t->state != RT_DONE) {
+        if (rt_cur->cancelled) return 1;
+        t->waiter = rt_cur;
+        rt_park(true);
+        t->waiter = 0;
+    }
+    return t->abandoned ? 2 : 0;
+}
+int64_t obxlib_task_wait_any(void** ts, int64_t n) {
+    rt_nopark("a task parked inside Shared.with (task.any)");
+    for (;;) {
+        for (int64_t i = 0; i < n; i++)
+            if (((rt_task*)ts[i])->state == RT_DONE) return i;
+        if (rt_cur->cancelled) return -1;
+        for (int64_t i = 0; i < n; i++) ((rt_task*)ts[i])->waiter = rt_cur;
+        rt_park(true);
+        for (int64_t i = 0; i < n; i++) ((rt_task*)ts[i])->waiter = 0;
+    }
+}
+void obxlib_task_forget(void* p) {
+    rt_task* t = p;
+    if (t->state == RT_DONE) {
+        if (t->res) { void* x = t->res; t->res = 0; t->resdrop(x); }
+    } else {
+        t->forgotten = true;
+        rt_cancel(t);
+    }
+    rt_release(t);
+}
+void obxlib_task_join(void* p) {
+    rt_task* t = p;
+    rt_cancel(t);
+    while (t->state != RT_DONE && !t->promise) {
+        t->waiter = rt_cur;
+        rt_park(false);
+        t->waiter = 0;
+    }
+    obxlib_task_forget(t);
+}
+void* obxlib_task_take(void* p) {
+    rt_task* t = p;
+    void* r = t->res;
+    t->res = 0;
+    rt_release(t);
+    return r;
+}
+int64_t obxlib_task_yield(void) {
+    rt_nopark("a task parked inside Shared.with (task.yield)");
+    if (rt_rq_head) {
+        rt_enqueue(rt_cur);
+        rt_switch(rt_dequeue());
+    }
+    return rt_cur->cancelled;
+}
+int64_t obxlib_task_cancelled(void) { return rt_cur->cancelled; }
+void* obxlib_task_promise(void* resdrop) {
+    rt_task* t = rt_alloc(sizeof *t);
+    memset(t, 0, sizeof *t);
+    t->promise = true;
+    t->resdrop = (void (*)(void*))resdrop;
+    t->refs = 2;
+    return t;
+}
+void obxlib_task_complete(void* p, void* res) {
+    rt_task* t = p;
+    t->state = RT_DONE;
+    if (t->forgotten) t->resdrop(res); else t->res = res;
+    if (t->waiter) rt_wake(t->waiter);
+    rt_release(t);
+}
+void obxlib_task_abandon(void* p) {
+    rt_task* t = p;
+    t->state = RT_DONE;
+    t->abandoned = true;
+    if (t->waiter) rt_wake(t->waiter);
+    rt_release(t);
+}
+
+typedef struct { int64_t rc; bool busy; void* box; void (*drop)(void*); } rt_shared;
+void* obxlib_sh_new(void* box, void* drop) {
+    rt_shared* s = rt_alloc(sizeof *s);
+    s->rc = 1; s->busy = false; s->box = box; s->drop = (void (*)(void*))drop;
+    return s;
+}
+void rt_sh_dup(void* p) { if (p) ((rt_shared*)p)->rc++; }
+static void rt_sh_free(rt_shared* s) {
+    void* b = s->box;
+    void (*d)(void*) = s->drop;
+    rt_free(s);
+    if (rt_cur->shdrop) { rt_dpush(d, b); return; }
+    rt_cur->shdrop++;
+    rt_drun(d, b);
+    rt_cur->shdrop--;
+}
+void rt_sh_drop(void* p) {
+    rt_shared* s = p;
+    if (s && --s->rc == 0 && !s->busy) rt_sh_free(s);
+}
+void* obxlib_sh_enter(void* p) {
+    rt_shared* s = p;
+    if (s->busy) rt_trap(13, "Shared.with on a value whose with is already open", "runtime");
+    s->busy = true;
+    rt_with_open++;
+    return s->box;
+}
+void obxlib_sh_leave(void* p, void* box) {
+    rt_shared* s = p;
+    s->box = box;
+    s->busy = false;
+    rt_with_open--;
+    if (s->rc == 0) rt_sh_free(s);
 }
