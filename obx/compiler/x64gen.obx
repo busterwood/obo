@@ -98,6 +98,7 @@ type Gen = record {
     noInit: []int               // ... the loop (regions) it is declared in without an initializer, or -1
     inner: []bool               // ... a local of a function generated in place: live only at its calls
     pts: [][]int                // ... the positions it is named at, in order
+    unused: bool                // genAssign: the value of the assignment generated next is not used
     tmpRegs: []int              // the registers of QUIET_REGS no local of the function has
     tmpUsed: int                // ... the number of them holding a temporary (pair)
     defAt: []int                // per local: the position of its declaration with an initializer, or -1
@@ -153,7 +154,7 @@ fn newGen(u: ir.Ir): Gen {
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [], first: [], last: [],
-        noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
+        noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
         loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false}
     g.a.peep = true
@@ -1447,7 +1448,9 @@ fn (g: mut &Gen) genEffect(e: int) {
     } else if r >= 0 && g.inPlace(r, x.b) {
         // done
     } else {
+        g.unused = true
         g.gen(e)
+        g.unused = false
     }
 }
 
@@ -2277,6 +2280,7 @@ fn (g: mut &Gen) paddMem(e: int): x64.Mem {
 }
 
 fn (g: mut &Gen) genAssign(e: int) {
+    let unused = replace(mut &g.unused, false)
     let n = g.u.nodes[e]
     let lhs = n.a
     let t = n.ty
@@ -2320,7 +2324,7 @@ fn (g: mut &Gen) genAssign(e: int) {
             r = RDX
         }
         g.a.store(g.size(t), pm, r)
-        g.a.movRR(8, RAX, r)
+        if !unused { g.a.movRR(8, RAX, r) }
         return
     }
     if g.u.nk(lhs) == ir.E_GLOBAL {
