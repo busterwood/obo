@@ -266,7 +266,7 @@ fn hex(v: int): str {
 
 // The libc functions the runtime calls in a dynamically linked program (rt_n_libc in
 // native/rt.c), in the order of that table.
-const HOOKS: []str = ["exit", "getenv", "__errno_location", "pthread_create"]
+const HOOKS: []str = ["exit", "getenv", "__errno_location", "pthread_create", "fork", "fflush"]
 
 // The runtime's C helpers for the library (rt.h's obx_ and obxlib_ functions): always the
 // runtime's own, in a dynamic program too.

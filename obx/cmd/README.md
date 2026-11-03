@@ -39,7 +39,7 @@ golden. Our eza runs with `OBX_CHECK=1`, so a leak fails a case.
 ## httpd and httpload
 
 `httpd.obx` is a small HTTP/1.1 server on one thread, the gate of
-concurrency stage C1b (design/concurrency.md): one task per connection,
+concurrency stages C1b, C1c and C2 (design/concurrency.md): one task per connection,
 keep-alive by default, pipelined requests answered in order. `GET /` says
 hello, `GET /stats` gives its counters, `GET /db` (when started with a
 pool size, `httpd ADDR POOL`: stage C1c) runs one query through a
@@ -54,12 +54,27 @@ The connection tasks are started with `Scope.spawn`, so that nobody has to
 keep their futures. It has no idle timeout (a `task.within` around the
 read of a request head would be one).
 
+With a third argument, `httpd ADDR POOL WORKERS` (stage C2), it serves from
+WORKERS processes under `task.workers`: the listener is made first and
+shared by all of them, each has its own event loop, its own counters (so
+`/stats` answers for the worker that took the connection, and says which)
+and its own Postgres pool, WORKERS × POOL connections in all. `/shutdown`
+on any worker, or `SIGTERM` or `SIGINT` to the server, stops every worker
+gracefully; each prints its counters, then the supervisor one line per
+worker. A crashed worker is started again. A fourth argument `reuseport`
+gives each worker a listener of its own instead (`SO_REUSEPORT`), for
+comparison.
+
 `httpload.obx` is its load client: CONNS keep-alive connections, each a task
 sending `GET PATH` (default `/`) one at a time for SECONDS seconds, then one
-line with the requests per second and the latency percentiles.
+line with the requests per second and the latency percentiles. `-p PROCS`
+spreads the connections over PROCS processes (`task.workers` again), so
+that one client process is not the limit; `-r` reconnects after an error.
 
     compiler/out/obxc cmd/httpd.obx --native -o httpd && ./httpd 127.0.0.1:8080
     compiler/out/obxc cmd/httpload.obx --native -o httpload && ./httpload 127.0.0.1:8080 10 5
+    ./httpd 127.0.0.1:8080 4 8                    # 8 workers, a pool of 4 each
+    ./httpload -p 8 127.0.0.1:8080 256 5 /db
 
 `http_gate.py` is the gate: for the native and the C build (and Go's
 net/http and Node's http as references, when installed) it opens 10,000
@@ -68,9 +83,15 @@ httpload with 1, 10 and 100 clients while they stay open, checks that they
 still answer, and shuts the server down under `OBX_CHECK=1` (exit 0, no
 leak, every connection closed). With `--db 4,16` it runs each obx server
 once per pool size with the load on `/db`, and checks after the shutdown
-that the pool has nobody waiting. The numbers are in
-[../../PERFORMANCE.md](../../PERFORMANCE.md).
+that the pool has nobody waiting. With `--workers 1,2,4,8` it measures the
+worker processes instead: requests/s and latency for each count, on `/`
+and (with `--db P`) `/db`, the workers and the load pinned to different
+cores with `taskset`, then a clean shutdown of every worker; and a kill
+test, `SIGKILL` to one worker under load, which must lose only the
+requests in flight on its connections and be started again. The numbers
+are in [../../PERFORMANCE.md](../../PERFORMANCE.md).
 
     python3 cmd/http_gate.py                     # about 2 minutes
     python3 cmd/http_gate.py --idle 1000 --servers native,c --seconds 2
     python3 cmd/http_gate.py --servers native,c --db 4,16   # with Postgres
+    python3 cmd/http_gate.py --workers 1,2,4,8 --db 4 --listen both   # worker processes

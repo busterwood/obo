@@ -15,8 +15,9 @@ quiet machine; the HTTP server table is from C1b's own run. The loop and
 array rows, the compiler's `--native` cost and the sixth pass's row are from
 the sixth native performance pass (loops; branch `perf6`), measured the same
 day; the blocking-call rows and the server-with-Postgres table are from
-concurrency stage C1c (branch `c1c`), and the sieve row and the seventh
-pass's row from the seventh (branch `sieve`), measured the same day. The numbers are
+concurrency stage C1c (branch `c1c`), the sieve row and the seventh
+pass's row from the seventh (branch `sieve`), and the worker-process
+tables from concurrency stage C2 (branch `c2`), measured the same day. The numbers are
 host-dependent: use them to compare the columns, not as portable constants.
 
 ## Host and method
@@ -240,7 +241,7 @@ query that reads the disk does not notice.
 ## HTTP server
 
 `obx/cmd/httpd.obx`, a keep-alive HTTP/1.1 server on one thread (one task
-per connection), measured by `python3 obx/cmd/http_gate.py`: the server on
+per connection; several processes with worker processes, below), measured by `python3 obx/cmd/http_gate.py`: the server on
 CPU 0, the load client `obx/cmd/httpload.obx` (native, one thread) on CPU 1.
 10,000 idle keep-alive connections are opened first and stay open during
 the load; each load client sends `GET /` and waits for the reply, 5 s per
@@ -318,6 +319,62 @@ thread per running query, a waiting query can be cancelled (`PQcancel`)
 when its task is, and its cost is the one thread's, the same budget the
 HTTP side uses; more cores come from processes (stage C2).
 
+### With worker processes
+
+The C2 gate, `python3 obx/cmd/http_gate.py --workers 1,2,4,8 --db 4
+--listen both`: `httpd ADDR POOL WORKERS MODE`, n worker processes under
+`task.workers`, each with its own event loop and (for `/db`) its own pool
+of 4 PostgreSQL connections. No idle connections this time; 256 keep-alive
+load connections spread over 8 load processes (`httpload -p 8`), 5 s per
+row, `OBX_CHECK=1`. Pinning with `taskset`: the n workers on the first n of
+CPUs 0, 2, 4, 6, 1, 3, 5, 7 (this Ryzen's CPUs 2k and 2k+1 are the two
+hardware threads of core k, so 1 to 4 workers each have a core of their
+own and 8 workers share four cores with SMT), the load on CPUs 8-15 (the
+other four cores). PostgreSQL is not pinned. Requests/s, then latency p50 /
+p99 in ms, the default shared listener:
+
+| workers | native `/` | via C `/` | native `/db` | via C `/db` |
+|---:|---:|---:|---:|---:|
+| 1 | 72,200; 3.46 / 4.89 | 64,200; 4.06 / 5.75 | 22,500; 11.0 / 14.1 | 22,300; 11.1 / 14.4 |
+| 2 | 115,500; 2.05 / 4.70 | 113,800; 2.10 / 4.77 | 36,800; 3.42 / 13.4 | 36,200; 6.88 / 8.86 |
+| 4 | 134,900; 1.64 / 5.43 | 135,100; 1.65 / 5.38 | 51,100; 4.33 / 10.5 | 50,600; 4.13 / 11.8 |
+| 8 | 133,200; 1.58 / 6.13 | 134,100; 1.55 / 6.20 | 71,300; 3.37 / 8.22 | 68,100; 3.53 / 8.79 |
+
+`/` scales 1.6 to 1.8 times at 2 workers and about 1.9 to 2.1 at 4, then
+stops: at 4 workers neither side is busy all the time (workers 67 to 91 %
+of a CPU, each load process about 52 %, sampled from `/proc`), and the
+ceiling is the machine's, the loopback TCP of both sides and the WSL2
+virtual machine's cross-CPU wake-ups. With 1,024 connections instead of 256
+(more requests per wake-up) native gives 59,800, 99,900, 139,300 and
+153,900 req/s for 1, 2, 4 and 8 workers, with all 16 hardware threads 80 to
+95 % busy. `/db` keeps scaling to 8 workers (3.1 to 3.2 times): each
+request is mostly waiting for PostgreSQL, whose backends run on whatever
+CPUs are free, and 8 workers keep 32 queries in flight.
+
+The other listener, `SO_REUSEPORT` (a socket per worker, `httpd ... WORKERS
+reuseport`), native: 65,100, 112,700, 134,400, 135,200 req/s on `/` and
+22,100, 36,300, 50,700, 70,900 on `/db` for 1, 2, 4 and 8 workers; via C
+within 4 % of that. The same rates. It spreads the keep-alive connections
+evenly (accepted per worker at 8 workers: 22 to 47, against 18 to 58 shared).
+
+The kill test (4 workers, `/`, the load reconnecting after an error): a
+third of the way in, `SIGKILL` to one worker.
+
+| | native, shared | via C, shared | native, reuseport | via C, reuseport |
+|---|---:|---:|---:|---:|
+| the worker's connections | 36 | 44 | 55 | 59 |
+| requests lost | 36 | 44 | 59 | 65 |
+| started again after | 105 ms | 108 ms | 111 ms | 113 ms |
+| req/s over the 5 s | 132,400 | 129,300 | 131,700 | 129,500 |
+
+With the shared listener the lost requests are exactly the ones in flight
+on the killed worker's connections (one each); the supervisor starts it
+again after the 100 ms backoff, it accepts from the same queue, and the
+`/shutdown` that follows ends every worker drained, exit 0, the restart
+counted. With `SO_REUSEPORT` a few more are lost: connections waiting in
+the killed worker's own accept queue are reset with its socket. That and
+port 0 are why httpd shares one listener by default.
+
 ## Reproducing
 
 ```sh
@@ -329,6 +386,7 @@ obx/tools/native_selfbuild.sh                          # the natively built comp
 obx/compiler/out/obxc obx/bench/tasks.obx --native -o tasks && ./tasks
 python3 obx/cmd/http_gate.py                           # the server table (about 2 minutes)
 python3 obx/cmd/http_gate.py --servers native,c --db 4,16   # with Postgres ($OBX_PG_DSN)
+python3 obx/cmd/http_gate.py --workers 1,2,4,8 --db 4 --listen both   # worker processes (about 5 minutes)
 ```
 
 ## For the record: obo

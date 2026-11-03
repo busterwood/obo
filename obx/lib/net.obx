@@ -32,7 +32,7 @@
 
 import "io"
 
-extern "c" fn rtListen(fam: int, a: &[]byte, port: int, backlog: int): int as "obxlib_net_listen"
+extern "c" fn rtListen(fam: int, a: &[]byte, port: int, backlog: int, reuseport: int): int as "obxlib_net_listen"
 extern "c" fn rtConnect(fam: int, a: &[]byte, port: int, pending: mut &int): int as "obxlib_net_connect"
 extern "c" fn rtAccept(fd: int): int as "obxlib_net_accept"
 extern "c" fn rtRead(fd: int, b: mut &[byte], n: int): int as "obxlib_net_read"
@@ -74,8 +74,10 @@ type Ip = record {
 }
 
 // The error of a call that stopped before or while parking: 1 cancelled,
-// 3 past the deadline.
+// 3 past the deadline; -errno when the event loop could not wait for the
+// socket.
 fn stopped(r: int, op: str, addr: str): io.IoError {
+    if r < 0 { return io.ioError(-r, op, addr) }
     return io.ioError(if r == 1 { io.ECANCELED } else { io.ETIMEDOUT }, op, addr)
 }
 
@@ -303,10 +305,26 @@ fn sockText(fd: int, peer: int): str {
 
 // A socket listening on addr (SO_REUSEADDR set; port 0 picks a free port,
 // which localAddr tells).
-pub fn listen(addr: str): Result[Listener, io.IoError] {
+//
+// With task.workers (several processes), a listener made before the call is
+// shared by the workers: one accept queue, and each connection wakes one
+// waiting worker (EPOLLEXCLUSIVE; the listener joins the event loop at its
+// first accept, in each worker's own). listenReusePort is the other way.
+pub fn listen(addr: str): Result[Listener, io.IoError] { return listenHow(addr, 0) }
+
+// listen with SO_REUSEPORT as well: several sockets, in one process or in
+// several, may listen on the same address and port (each must set it, and
+// all belong to one user); the kernel spreads the new connections over them
+// by a hash of the client's address and port. Each worker of task.workers
+// calls it for its own socket with its own accept queue. A connection still
+// queued on a socket when it is closed (its worker ended) is reset. Port 0
+// gives each socket a different free port: pick the port first.
+pub fn listenReusePort(addr: str): Result[Listener, io.IoError] { return listenHow(addr, 1) }
+
+fn listenHow(addr: str, reuseport: int): Result[Listener, io.IoError] {
     match parseAddr(addr, true) {
         Some(ip) {
-            let fd = rtListen(ip.fam, &ip.b, ip.port, BACKLOG)
+            let fd = rtListen(ip.fam, &ip.b, ip.port, BACKLOG, reuseport)
             if fd < 0 { return Err(io.ioError(-fd, "listen", addr)) }
             return Ok(Listener{fd: fd, addr: addr})
         }

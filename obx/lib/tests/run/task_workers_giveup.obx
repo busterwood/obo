@@ -1,0 +1,51 @@
+// task.workers: a worker that crashes at every start (exit 7) cannot make
+// the supervisor spin. With at most 2 crashes allowed in the window, the
+// third gives up: no more restarts, the other worker is asked to stop
+// (SIGTERM, which it watches: it ends normally, drained), and workers gives
+// Err(GaveUp) with how each ended. Worker 1 starts crashing only once
+// worker 0 is watching SIGTERM, so that the order is fixed.
+// expect: workers: gave up after 3 crashes
+// expect: worker 0 (pid ?): exit 0, drained
+// expect: worker 1 (pid ?): exit 7, 2 restarts
+// expect: worker 0 saw signal 15
+import "task"
+import "io"
+import "os"
+import "fs"
+
+fn main() {
+    for f in ["ready.txt", "seen.txt"] { let r = fs.remove(f) }   // a run before in this directory
+    var p = task.workerPolicy()
+    p.maxCrashes = 2
+    p.backoffMs = 1
+    p.maxBackoffMs = 4
+    match task.workersWith(2, p, fn(i: int) {
+        if i == 0 {
+            task.watchSignals(&[task.SIGTERM])
+            io.write("ready.txt", "1").unwrap()
+            let s = task.terminated().unwrap()
+            io.write("seen.txt", intToStr(s)).unwrap()
+        } else {
+            while !fs.exists("ready.txt") { task.sleep(1).unwrap() }
+            os.quit(7)
+        }
+    }) {
+        Ok(ends) { println("no give-up") }
+        Err(g) {
+            println(g.toStr())
+            for e in g.ends {
+                var e2 = e
+                e2.pid = 0
+                println(subst(e2.toStr(), "pid 0", "pid ?"))
+            }
+        }
+    }
+    println("worker 0 saw signal " + io.read("seen.txt").unwrap())
+}
+
+fn subst(s: str, a: str, b: str): str {
+    for i in 0..len(s) - len(a) + 1 {
+        if strSlice(s, i, i + len(a)) == a { return strSlice(s, 0, i) + b + strSlice(s, i + len(a), len(s)) }
+    }
+    return s
+}

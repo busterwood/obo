@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""The C1b and C1c server gates (design/concurrency.md): cmd/httpd.obx holding
+"""The C1b, C1c and C2 server gates (design/concurrency.md): cmd/httpd.obx holding
 many idle keep-alive connections while it serves load, then shutting down
 gracefully with no leaks (OBX_CHECK=1).
 
     python3 cmd/http_gate.py [--idle N] [--conns 1,10,100] [--seconds S]
                              [--servers native,c,go,node] [--compiler PATH] [--no-pin]
                              [--db 4,16]
+    python3 cmd/http_gate.py --workers 1,2,4,8 [--servers native,c] [--db 4]
+                             [--listen shared|reuseport|both] [--conns 256]
+                             [--seconds S] [--no-kill] [--no-pin]
 
 With --db (stage C1c), each obx server runs once per pool size with a
 Postgres pool of that many connections ($OBX_PG_DSN, default the local
@@ -26,6 +29,27 @@ with exit 0, nothing on stderr and every connection closed. go and node are
 references when they are installed (GOMAXPROCS=1; node is single-threaded);
 they are stopped with SIGTERM. Unless --no-pin, the server runs on CPU 0 and
 the load client on CPU 1 (taskset), so each has one core.
+
+With --workers 1,2,4,8 (stage C2) it is another gate: the scaling of
+`httpd ADDR POOL WORKERS MODE` over worker processes (task.workers), for each
+obx server (native, c), each listening MODE of --listen (shared: one
+listener made before the fork; reuseport: one per worker, SO_REUSEPORT;
+both) and each path: GET /, and GET /db with --db P (a pool of P
+connections in each worker). No idle connections; --conns gives the load's
+connections (default 256), spread over 8 load processes (httpload -p 8).
+Pinning: n workers run on the first n CPUs of 0,2,4,6,1,3,5,7 (one hardware
+thread of each of the first four cores, then their second threads), the
+load on CPUs 8-15 (the other four cores); PostgreSQL is not pinned. After
+each load: GET /shutdown; the server must end with exit 0, nothing on
+stderr, every worker drained with exit 0 and its connections closed (and
+its pool with nobody waiting). Then the kill test (unless --no-kill): 4
+workers, GET /, the load reconnecting after an error (httpload -r); a third
+of the way in, SIGKILL one worker. With the shared listener the requests
+lost must be at most its connections (one request in flight on each; with
+reuseport the connections in its own accept queue are lost too, so that is
+only reported), the supervisor must start it
+again, and the server must still serve and stop cleanly, the restart
+counted in its report.
 
 Exit status 0 when every obx server passes.
 """
@@ -280,17 +304,232 @@ def run_server(name, exe, args, loader, pin, pool=0):
     return res
 
 
+# ---- the stage C2 gate: worker processes
+
+SERVER_CPUS = [0, 2, 4, 6, 1, 3, 5, 7]   # one thread of each of the first four cores, then the second
+LOAD_CPUS = '8-15'
+LOAD_PROCS = 8
+
+
+def children(pid):
+    try:
+        with open('/proc/%d/task/%d/children' % (pid, pid)) as f:
+            return [int(x) for x in f.read().split()]
+    except OSError:
+        return []
+
+
+def sockets(pid):
+    """The sockets a process holds (its listener and its connections)."""
+    n = 0
+    d = '/proc/%d/fd' % pid
+    for fd in os.listdir(d):
+        try:
+            if os.readlink(os.path.join(d, fd)).startswith('socket:'):
+                n += 1
+        except OSError:
+            pass
+    return n
+
+
+def get(port, path):
+    s = socket.create_connection(('127.0.0.1', port))
+    try:
+        return exchange(s, ('GET %s HTTP/1.1\r\nHost: gate\r\n\r\n' % path).encode())
+    finally:
+        s.close()
+
+
+def start_workers(exe, n, pool, mode, pin):
+    cmd = [exe, '0.0.0.0:0', str(pool), str(n), mode]
+    if pin:
+        cmd = ['taskset', '-c', ','.join(str(c) for c in sorted(SERVER_CPUS[:n]))] + cmd
+    env = dict(os.environ, OBX_CHECK='1')
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    line = p.stdout.readline().strip()
+    m = re.search(r'listening on (\S+):(\d+)$', line)
+    if not m:
+        p.kill()
+        out, err = p.communicate()
+        raise RuntimeError('no address: %r %r' % (line, err))
+    p.stdout.readline()                       # "N workers, ..."
+    port = int(m.group(2))
+    t = time.monotonic()
+    while len(children(p.pid)) < n and time.monotonic() - t < 5:
+        time.sleep(0.01)
+    return p, port
+
+
+def stop_workers(p, port, n, pool):
+    """GET /shutdown, then the checks of the end; the per-worker accept counts."""
+    st, body = get(port, '/shutdown')
+    if body != 'bye\n':
+        raise RuntimeError('shutdown: %r %r' % (st, body))
+    out, err = p.communicate(timeout=60)
+    if p.returncode != 0 or err:
+        raise RuntimeError('exit %d, stderr %r' % (p.returncode, err[-2000:]))
+    lines = out.strip().split('\n')
+    mine = [l for l in lines if re.match(r'stopped: worker \d+: ', l)]
+    ends = [l for l in lines if re.match(r'stopped: worker \d+ \(pid', l)]
+    if len(ends) != n or any('exit 0, drained' not in l for l in ends):
+        raise RuntimeError('worker ends: %r' % ends)
+    if any(', open 0' not in l for l in mine) or (pool and any(' waiting 0' not in l for l in mine)):
+        raise RuntimeError('a worker left connections open or tasks waiting: %r' % mine)
+    accepted = [int(re.search(r'accepted (\d+)', l).group(1)) for l in mine]
+    return accepted, ends
+
+
+def run_load(loader, addr, conns, seconds, path, pin, reconnect=False):
+    cmd = [loader, '-p', str(LOAD_PROCS)] + (['-r'] if reconnect else []) + [addr, str(conns), str(seconds), path]
+    if pin:
+        cmd = ['taskset', '-c', LOAD_CPUS] + cmd
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def scale_row(exe, loader, n, pool, mode, path, args, pin):
+    p, port = start_workers(exe, n, pool, mode, pin)
+    try:
+        st, body = get(port, path)
+        if st != 'HTTP/1.1 200 OK':
+            raise RuntimeError('%s: %r %r' % (path, st, body))
+        lp = run_load(loader, '127.0.0.1:%d' % port, args.conns, args.seconds, path, pin)
+        out, err = lp.communicate(timeout=args.seconds + 60)
+        if lp.returncode != 0:
+            raise RuntimeError('httpload: %s%s' % (out, err))
+        d = parse_load(out)
+        if d.get('errors'):
+            raise RuntimeError('httpload errors: %s%s' % (out, err))
+        d['accepted'], _ = stop_workers(p, port, n, pool)
+        return d
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.communicate()
+
+
+def kill_test(exe, loader, mode, args, pin):
+    n = 4
+    p, port = start_workers(exe, n, 0, mode, pin)
+    res = {}
+    lp = None
+    try:
+        lp = run_load(loader, '127.0.0.1:%d' % port, args.conns, args.seconds, '/', pin, reconnect=True)
+        time.sleep(args.seconds / 3)
+        before = children(p.pid)
+        victim = before[1]
+        # its sockets: the shared listener (or its own) and its connections
+        res['victim_conns'] = sockets(victim) - 1
+        os.kill(victim, signal.SIGKILL)
+        t = time.monotonic()
+        new = []
+        while time.monotonic() - t < 5:
+            new = [c for c in children(p.pid) if c not in before]
+            if new:
+                break
+            time.sleep(0.005)
+        if not new:
+            raise RuntimeError('the killed worker was not started again')
+        res['restart_ms'] = (time.monotonic() - t) * 1000
+        out, err = lp.communicate(timeout=args.seconds + 60)
+        if lp.returncode != 0:
+            raise RuntimeError('httpload: %s%s' % (out, err))
+        d = parse_load(out)
+        res.update(d)
+        # with reuseport the worker's own accept queue dies with it: connections queued
+        # there (not yet accepted) are reset too, so only the shared listener is held to this
+        if mode == 'shared' and d['errors'] > res['victim_conns']:
+            raise RuntimeError('%d requests lost, the worker had %d connections' % (d['errors'], res['victim_conns']))
+        st, body = get(port, '/')                     # still serving
+        if st != 'HTTP/1.1 200 OK':
+            raise RuntimeError('after the kill: %r' % st)
+        # the end: the killed worker's slot ended normally after one restart
+        stp = get(port, '/shutdown')
+        out, err = p.communicate(timeout=60)
+        if p.returncode != 0 or err:
+            raise RuntimeError('exit %d, stderr %r' % (p.returncode, err[-2000:]))
+        ends = [l for l in out.split('\n') if re.match(r'stopped: worker \d+ \(pid', l)]
+        if sum('1 restart' in l for l in ends) != 1 or any('exit 0, drained' not in l for l in ends):
+            raise RuntimeError('worker ends: %r' % ends)
+        res['ends'] = ends
+        return res
+    finally:
+        for q in (lp, p):
+            if q is not None and q.poll() is None:
+                q.kill()
+                q.communicate()
+
+
+def main_workers(args, ap):
+    counts = [int(x) for x in args.workers.split(',')]
+    if max(counts) > len(SERVER_CPUS):
+        sys.exit('at most %d workers (the server CPUs)' % len(SERVER_CPUS))
+    args.conns = int(args.conns or '256')
+    modes = ['shared', 'reuseport'] if args.listen == 'both' else [args.listen]
+    servers = [s for s in args.servers.split(',') if s in ('native', 'c')]
+    pool = int(args.db.split(',')[0]) if args.db else 0
+    paths = ['/'] + (['/db'] if pool else [])
+    pin = not args.no_pin and shutil.which('taskset') is not None and os.cpu_count() >= 16
+    log('pinning: %s' % ('n workers on CPUs %s[:n], the load (httpload -p %d) on CPUs %s' %
+                         (SERVER_CPUS, LOAD_PROCS, LOAD_CPUS) if pin else 'none'))
+    tmp = tempfile.mkdtemp(prefix='obx-http-')
+    bad = []
+    try:
+        args.servers = servers
+        exes = build(args, tmp)
+        for name in servers:
+            exe = exes['httpd-' + name]
+            for mode in modes:
+                for path in paths:
+                    log('== obx %s, %s listener, GET %s%s, %d connections, %d s per row' %
+                        (name, mode, path, ' (pool %d per worker)' % pool if path == '/db' else '',
+                         args.conns, args.seconds))
+                    base = None
+                    for n in counts:
+                        try:
+                            d = scale_row(exe, exes['httpload'], n, pool if path == '/db' else 0, mode, path, args, pin)
+                        except Exception as e:      # noqa: BLE001
+                            log('  %d workers: FAILED: %s' % (n, e))
+                            bad.append('%s %s %s %d' % (name, mode, path, n))
+                            continue
+                        base = base or d['rps'] / n
+                        log('  %d workers: %7d req/s (x%.2f), latency us p50 %d p99 %d; accepted per worker %s' %
+                            (n, d['rps'], d['rps'] / base, d['p50'], d['p99'], d['accepted']))
+            if not args.no_kill:
+                for mode in modes:
+                    log('== obx %s, %s listener: kill test (4 workers, GET /, %d connections, %d s, reconnecting)' %
+                        (name, mode, args.conns, args.seconds))
+                    try:
+                        r = kill_test(exe, exes['httpload'], mode, args, pin)
+                        log('  SIGKILL to a worker holding %d connections: %d requests lost, restarted in %.0f ms; '
+                            '%d req/s over the run, p99 %d us' %
+                            (r['victim_conns'], r['errors'], r['restart_ms'], r['rps'], r['p99']))
+                        for l in r['ends']:
+                            log('  ' + l)
+                    except Exception as e:          # noqa: BLE001
+                        log('  FAILED: %s' % e)
+                        bad.append('%s %s kill' % (name, mode))
+        log('FAIL: ' + ', '.join(bad) if bad else 'PASS')
+        return 1 if bad else 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--idle', type=int, default=10000)
-    ap.add_argument('--conns', default='1,10,100')
+    ap.add_argument('--conns', default=None, help='load clients: default 1,10,100 (with --workers: 256)')
     ap.add_argument('--seconds', type=int, default=5)
     ap.add_argument('--servers', default='native,c,go,node')
     ap.add_argument('--compiler', default=os.environ.get('OBXC', DEFAULT_OBXC))
     ap.add_argument('--no-pin', action='store_true')
     ap.add_argument('--db', default='', help='pool sizes: serve GET /db through a Postgres pool')
+    ap.add_argument('--workers', default='', help='worker counts: the stage C2 gate (see above)')
+    ap.add_argument('--listen', default='shared', help='with --workers: shared, reuseport or both')
+    ap.add_argument('--no-kill', action='store_true', help='with --workers: no kill test')
     args = ap.parse_args(argv)
-    args.conns = [int(c) for c in args.conns.split(',')]
+    if args.workers:
+        return main_workers(args, ap)
+    args.conns = [int(c) for c in (args.conns or '1,10,100').split(',')]
     args.servers = args.servers.split(',')
     pools = [int(x) for x in args.db.split(',')] if args.db else [0]
     pin = not args.no_pin and shutil.which('taskset') is not None and os.cpu_count() >= 2

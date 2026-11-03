@@ -964,6 +964,7 @@ fn (e: mut &Emitter) lower(entry: str, externs: &[]Extern, globs: &[]GDef, gdrop
         u.declFunc("x_" + x.name, ty, x.name, true)
         if x.blocking { u.declFunc("bk1_" + x.name, u.ir.fnType(ir.TY_VOID, &[u.ctName("void*")]), "", false) }
     }
+    u.declFunc("gx_end", u.ir.fnType(ir.TY_VOID, &[u.ctName("void*")]), "", false)
     for g in globs {
         u.res = copyInts(&g.res)
         var ty = u.ctName(g.ty)
@@ -996,9 +997,15 @@ fn (e: mut &Emitter) lower(entry: str, externs: &[]Extern, globs: &[]GDef, gdrop
         u.res = []
         u.defineFunc("bk1_" + x.name, u.ir.fnType(ir.TY_VOID, &[u.ctName("void*")]), &["a"], &[u.x.sx(st)])
     }
-    // int main(int argc, char** argv) { rt_init(argc, argv); entry(); drops; rt_finish(); return 0; }
-    var ml: []int = [u.x.sx(u.x.call("rt_init", [u.x.nm("argc"), u.x.nm("argv")])), u.x.sx(u.x.call(entry, []))]
-    for x in gdrops { append(mut &ml, x) }
+    // The globals' drops at the program's end, a function of their own: a worker of task.workers
+    // runs them too at its end (rt_on_end), before its leak check.
+    u.res = []
+    u.defineFunc("gx_end", u.ir.fnType(ir.TY_VOID, &[u.ctName("void*")]), &["a"], &gdrops)
+    // int main(int argc, char** argv) { rt_init(argc, argv); rt_on_end(gx_end); entry(); gx_end(0);
+    //                                   rt_finish(); return 0; }
+    var ml: []int = [u.x.sx(u.x.call("rt_init", [u.x.nm("argc"), u.x.nm("argv")])),
+                     u.x.sx(u.x.call("rt_on_end", [u.x.nm("gx_end")])), u.x.sx(u.x.call(entry, []))]
+    append(mut &ml, u.x.sx(u.x.call("gx_end", [u.x.cast(u.x.ptr(u.x.ct("void")), u.x.lit(0))])))
     append(mut &ml, u.x.sx(u.x.call("rt_finish", [])))
     append(mut &ml, u.x.sret(u.x.lit(0)))
     u.res = []

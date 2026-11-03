@@ -40,8 +40,11 @@ enum { S_READ = 0, S_WRITE = 1, S_OPEN = 2, S_CLOSE = 3, S_MMAP = 9, S_MUNMAP = 
    process, reads the environment and reports errors through libc, as the C backend does; in
    a static program they stay zero and the runtime's own versions serve. The fourth is libc's
    pthread_create, for the helper pool (stage C1c; a program that calls a blocking extern is
-   always dynamically linked). */
-void* rt_n_libc[4];
+   always dynamically linked). The fifth and sixth are libc's fork and fflush, for task.workers
+   (stage C2): with libc loaded the fork must be libc's, which runs the atfork handlers and gives
+   the child's thread its own id in libc's thread structure (raise, abort and libc's locks use
+   it); a raw fork leaves the parent's there. */
+void* rt_n_libc[6];
 static int rt_errno_v;
 __attribute__((noinline)) static int* rt_errno_at(void) { return rt_n_libc[2] ? ((int* (*)(void))rt_n_libc[2])() : &rt_errno_v; }
 #define rt_errno (*rt_errno_at())
@@ -588,6 +591,8 @@ void rt_n_start(int64_t* sp, void* mainf) {
     rt_quit(r);
 }
 
+static rt_dfn rt_end_fn;                   /* the program's global drops (task.workers) */
+void rt_on_end(rt_dfn f) { rt_end_fn = f; }
 void rt_finish(void) {
     rt_flush();
     rt_ended = 1;
@@ -1489,6 +1494,7 @@ typedef struct rt_shared rt_shared;
 static rt_shared* rt_with_top;             /* the innermost open Shared.with (no task may park) */
 static char* rt_stk_free;
 static int rt_nstk_free;
+static int64_t rt_ntasks;                  /* started tasks not yet finished (task.workers) */
 
 static void rt_enqueue(rt_task* t) {
     t->next = 0;
@@ -1560,10 +1566,14 @@ struct k_epoll_event { uint32_t events; uint64_t data; } __attribute__((packed))
 #define K_EINPROGRESS 115
 #define K_O_NONBLOCK 0x800
 #define K_O_CLOEXEC 0x80000
-typedef struct { rt_task *rd, *wr; } rt_fdw;
+#define K_EPOLLEXCLUSIVE (1u << 28)
+typedef struct { rt_task *rd, *wr; uint8_t reg, lazy; } rt_fdw;    /* see rt.h */
 static rt_fdw* rt_fds;
 static int64_t rt_nfds;
 static int rt_epfd = -1;
+static int64_t rt_nreg;
+#define RT_SIG_TAG (~(uint64_t)1)
+static void rt_sig_read(void);
 static int64_t rt_nio;
 static int64_t rt_njobs;                   /* tasks parked in a blocking C call (the helper pool) */
 #define RT_POOL_TAG (~(uint64_t)0)
@@ -1650,6 +1660,7 @@ static void rt_poll(bool block, const char* w) {
             __atomic_store_n(&rt_pool_asleep, 0, __ATOMIC_RELAXED);
             for (i64 i = 0; i < n; i++) {
                 if (ev[i].data == RT_POOL_TAG) { rt_pool_drain(true); continue; }
+                if (ev[i].data == RT_SIG_TAG) { rt_sig_read(); continue; }
                 int64_t fd = (int64_t)ev[i].data;
                 uint32_t e = ev[i].events;
                 if (fd >= rt_nfds) continue;
@@ -1699,6 +1710,7 @@ __attribute__((noreturn)) static void rt_task_boot(void) {
     while (t->forgotten && r) { void* x = r; r = 0; t->resdrop(x); }
     t->res = r;
     t->state = RT_DONE;
+    rt_ntasks--;
     rt_scope* s = t->scope;
     if (t->sprev) t->sprev->snext = t->snext; else s->tasks = t->snext;
     if (t->snext) t->snext->sprev = t->sprev; else s->last = t->sprev;
@@ -1739,6 +1751,7 @@ void* obxlib_task_start(void* sp, void* run, void* job, void* resdrop) {
     if (s->last) s->last->snext = t; else s->tasks = t;
     s->last = t;
     s->live++;
+    rt_ntasks++;
     uint64_t* top = (uint64_t*)(t->stk + RT_GUARD + RT_STACK);
     uint32_t mx;
     uint16_t cw;
@@ -1843,13 +1856,7 @@ int64_t obxlib_task_within(int64_t ms) {
 void obxlib_task_restore(int64_t old) { rt_cur->deadline = old; }
 
 /* ---- sockets (rt.h's, with raw system calls; results are counts or descriptors, or -errno) */
-/* The epoll set exists and rt_fds has room for fd: 0, or -errno. */
-static i64 rt_fd_room(i64 fd) {
-    if (rt_epfd < 0) {
-        i64 e = SYS(S_EPOLL_CREATE1, K_O_CLOEXEC, 0, 0);
-        if (e < 0) return e;
-        rt_epfd = (int)e;
-    }
+static void rt_fd_table(i64 fd) {
     if (fd >= rt_nfds) {
         int64_t n = rt_nfds ? rt_nfds : 64;
         while (n <= fd) n *= 2;
@@ -1859,6 +1866,15 @@ static i64 rt_fd_room(i64 fd) {
         rt_fds = f;
         rt_nfds = n;
     }
+}
+/* The epoll set exists and rt_fds has room for fd: 0, or -errno. */
+static i64 rt_fd_room(i64 fd) {
+    if (rt_epfd < 0) {
+        i64 e = SYS(S_EPOLL_CREATE1, K_O_CLOEXEC, 0, 0);
+        if (e < 0) return e;
+        rt_epfd = (int)e;
+    }
+    rt_fd_table(fd);
     return 0;
 }
 static int64_t rt_net_new(i64 fd) {
@@ -1867,6 +1883,9 @@ static int64_t rt_net_new(i64 fd) {
     struct k_epoll_event ev = {K_EPOLLIN | K_EPOLLOUT | K_EPOLLRDHUP | K_EPOLLET, (uint64_t)fd};
     i64 r = SYS4(S_EPOLL_CTL, rt_epfd, 1, fd, &ev);             /* EPOLL_CTL_ADD */
     if (r < 0) { SYS(S_CLOSE, fd, 0, 0); return r; }
+    rt_fds[fd].reg = 1;
+    rt_fds[fd].lazy = 0;
+    rt_nreg++;
     return fd;
 }
 /* struct sockaddr_in or sockaddr_in6 in ss (28 bytes); its length */
@@ -1879,17 +1898,21 @@ static int rt_net_sa(int64_t fam, const uint8_t* a, int64_t port, unsigned char*
     memcpy(ss + 4, a, 4);
     return 16;
 }
-int64_t obxlib_net_listen(int64_t fam, const uint8_t* a, int64_t port, int64_t backlog) {
+int64_t obxlib_net_listen(int64_t fam, const uint8_t* a, int64_t port, int64_t backlog, int64_t reuseport) {
     unsigned char ss[28];
     int n = rt_net_sa(fam, a, port, ss);
     i64 fd = SYS(S_SOCKET, ss[0], 1 | K_O_NONBLOCK | K_O_CLOEXEC, 0);  /* SOCK_STREAM */
     if (fd < 0) return fd;
     int one = 1;
     i64 r = sys6(S_SETSOCKOPT, fd, 1, 2, (i64)&one, sizeof one, 0);    /* SOL_SOCKET, SO_REUSEADDR */
+    if (r >= 0 && reuseport) r = sys6(S_SETSOCKOPT, fd, 1, 15, (i64)&one, sizeof one, 0);   /* SO_REUSEPORT */
     if (r >= 0) r = SYS(S_BIND, fd, ss, n);
     if (r >= 0) r = SYS(S_LISTEN, fd, backlog, 0);
     if (r < 0) { SYS(S_CLOSE, fd, 0, 0); return r; }
-    return rt_net_new(fd);
+    rt_fd_table(fd);
+    rt_fds[fd].reg = 0;
+    rt_fds[fd].lazy = 1;
+    return fd;
 }
 int64_t obxlib_net_connect(int64_t fam, const uint8_t* a, int64_t port, int64_t* pending) {
     unsigned char ss[28];
@@ -1939,13 +1962,29 @@ int64_t obxlib_net_shutdown(int64_t fd, int64_t how) {
     return r < 0 ? r : 0;
 }
 void obxlib_net_close(int64_t fd) {
-    if (fd < rt_nfds) rt_fds[fd].rd = rt_fds[fd].wr = 0;
+    if (fd < rt_nfds) {
+        rt_fds[fd].rd = rt_fds[fd].wr = 0;
+        if (rt_fds[fd].reg == 1) rt_nreg--;
+        rt_fds[fd].reg = rt_fds[fd].lazy = 0;
+    }
     SYS(S_CLOSE, fd, 0, 0);
 }
 int64_t obxlib_net_wait(int64_t fd, int64_t dir, const char* w) {
     rt_nopark(w);
     if (rt_cur->cancelled) return 1;
     if (rt_expired()) return 3;
+    if (!rt_fds[fd].reg) {                                         /* a listener's first wait (rt.h) */
+        i64 e = rt_fd_room(fd);
+        if (e < 0) return e;
+        struct k_epoll_event ev = {K_EPOLLIN | K_EPOLLET | K_EPOLLEXCLUSIVE, (uint64_t)fd};
+        if (SYS4(S_EPOLL_CTL, rt_epfd, 1, fd, &ev) < 0) {
+            ev.events = K_EPOLLIN | K_EPOLLET;
+            e = SYS4(S_EPOLL_CTL, rt_epfd, 1, fd, &ev);
+            if (e < 0) return e;
+        }
+        rt_fds[fd].reg = 1;
+        rt_nreg++;
+    }
     if (dir) rt_fds[fd].wr = rt_cur; else rt_fds[fd].rd = rt_cur;
     rt_nio++;
     int r = rt_park_until(true, rt_cur->deadline, w);
@@ -2058,6 +2097,7 @@ int64_t obxlib_fd_wait(int64_t fd, int64_t dir, int64_t ms, bool cancellable, co
     e = SYS4(S_EPOLL_CTL, rt_epfd, 3, fd, &ev);                  /* EPOLL_CTL_MOD */
     if (e == -K_ENOENT) e = SYS4(S_EPOLL_CTL, rt_epfd, 1, fd, &ev);
     if (e < 0) return e;
+    if (rt_fds[fd].reg != 1) rt_fds[fd].reg = 2;
     if (dir != 1) rt_fds[fd].rd = rt_cur;
     if (dir != 0) rt_fds[fd].wr = rt_cur;
     rt_nio++;
@@ -2240,4 +2280,169 @@ void rt_blocking(rt_dfn fn, void* a, const char* w) {
     while (!__atomic_load_n(&j.done, __ATOMIC_RELAXED)) rt_park(false, w);
     rt_njobs--;
     rt_errno = j.err;
+}
+
+/* ------------------------------------------------------------ signals and workers (stage C2)
+   rt.h's signal watch (a signalfd in the epoll set) and task.workers (fork, a supervisor that
+   waits with rt_sigtimedwait), with raw system calls: the kernel's sigset is one 64-bit word,
+   bit s-1 for signal s. In a dynamically linked program the fork is libc's (rt_n_libc[4]; see
+   its comment) and C's stdio is flushed with libc's fflush (rt_n_libc[5]) first. */
+
+enum { S_GETPPID = 110, S_PRCTL = 157, S_RT_SIGTIMEDWAIT = 128, S_SIGNALFD4 = 289, S_GETTID = 186 };
+#define K_SIGINT 2
+#define K_SIGTERM 15
+#define K_SIGCHLD 17
+#define K_SIG(s) ((uint64_t)1 << ((s) - 1))
+
+static int rt_sigfd = -1;
+static uint64_t rt_sig_watched;
+static uint64_t rt_sig_pending;
+typedef struct rt_sigw rt_sigw;
+struct rt_sigw { rt_task* t; uint64_t mask; int got; rt_sigw* next; };
+static rt_sigw* rt_sigws;
+int64_t obxlib_sig_watch(int64_t mask) {
+    uint64_t m = rt_sig_watched | (uint64_t)mask;
+    if (m == rt_sig_watched) return 0;
+    i64 e = rt_fd_room(0);
+    if (e < 0) return e;
+    uint64_t add = m & ~rt_sig_watched;
+    SYS4(S_RT_SIGPROCMASK, 0, &add, 0, 8);                        /* SIG_BLOCK */
+    i64 fd = SYS4(S_SIGNALFD4, rt_sigfd, &m, 8, K_O_NONBLOCK | K_O_CLOEXEC);
+    if (fd >= 0 && rt_sigfd < 0) {
+        struct k_epoll_event ev = {K_EPOLLIN, RT_SIG_TAG};
+        i64 r = SYS4(S_EPOLL_CTL, rt_epfd, 1, fd, &ev);
+        if (r < 0) { SYS(S_CLOSE, fd, 0, 0); fd = r; }
+        else rt_sigfd = (int)fd;
+    }
+    if (fd < 0) {
+        SYS4(S_RT_SIGPROCMASK, 1, &add, 0, 8);                    /* SIG_UNBLOCK */
+        return fd;
+    }
+    rt_sig_watched = m;
+    return 0;
+}
+static void rt_sig_read(void) {
+    uint32_t si[32];                                               /* struct signalfd_siginfo */
+    while (SYS(S_READ, rt_sigfd, si, sizeof si) == (i64)sizeof si) {
+        uint64_t b = K_SIG(si[0]);
+        bool given = false;
+        for (rt_sigw* x = rt_sigws; x; x = x->next)
+            if ((x->mask & b) && !x->got) { x->got = (int)si[0]; rt_wake(x->t); given = true; }
+        if (!given) rt_sig_pending |= b;
+    }
+}
+int64_t obxlib_sig_wait(int64_t mask, const char* w) {
+    rt_nopark(w);
+    for (;;) {
+        uint64_t hit = rt_sig_pending & (uint64_t)mask;
+        if (hit) {
+            int s = __builtin_ctzll(hit) + 1;
+            rt_sig_pending &= ~K_SIG(s);
+            return s;
+        }
+        if (rt_cur->cancelled) return -1;
+        if (rt_expired()) return -3;
+        rt_sigw me = {rt_cur, (uint64_t)mask, 0, rt_sigws};
+        rt_sigws = &me;
+        rt_nio++;
+        int r = rt_park_until(true, rt_cur->deadline, w);
+        rt_nio--;
+        for (rt_sigw** p = &rt_sigws; *p; p = &(*p)->next)
+            if (*p == &me) { *p = me.next; break; }
+        if (me.got) return me.got;
+        if (r == RT_WCANCEL) return -1;
+        if (r == RT_WTIMEOUT) return -3;
+    }
+}
+
+#define K_SUP_SET (K_SIG(K_SIGTERM) | K_SIG(K_SIGINT) | K_SIG(K_SIGCHLD))
+static uint64_t rt_sup_old;
+static int64_t rt_worker_base;
+static i64 rt_worker_parent;
+static int64_t rt_regs(void) {
+    int64_t n = rt_nreg + (rt_sigfd >= 0);
+    for (int64_t fd = 0; fd < rt_nfds; fd++) {
+        if (rt_fds[fd].reg != 2) continue;
+        struct k_epoll_event ev = {0, (uint64_t)fd};
+        if (rt_epfd >= 0 && SYS4(S_EPOLL_CTL, rt_epfd, 3, fd, &ev) == 0) n++;
+        else rt_fds[fd].reg = 0;
+    }
+    return n;
+}
+void obxlib_workers_begin(const char* w) {
+    rt_nopark(w);
+    if (rt_npool > 0) rt_trap(15, "task.workers after the helper pool has started (fork is unsafe once threads exist)", w);
+    if (rt_ntasks) rt_trap(15, "task.workers while other tasks exist", w);
+    if (rt_regs()) rt_trap(15, "task.workers while the event loop holds registrations (a socket in use, or a signal watch)", w);
+    uint64_t s = K_SUP_SET;
+    SYS4(S_RT_SIGPROCMASK, 0, &s, &rt_sup_old, 8);
+}
+void obxlib_workers_end(void) {
+    uint64_t s = K_SUP_SET;
+    struct { i64 s, ns; } z = {0, 0};
+    uint32_t si[32];
+    while (SYS4(S_RT_SIGTIMEDWAIT, &s, si, &z, 8) > 0) {}
+    SYS4(S_RT_SIGPROCMASK, 2, &rt_sup_old, 0, 8);
+}
+int64_t obxlib_proc_fork(void) {
+    rt_flush();
+    if (rt_n_libc[5]) ((int (*)(void*))rt_n_libc[5])(0);
+    i64 parent = SYS(S_GETPID, 0, 0, 0);
+    i64 p;
+    if (rt_n_libc[4]) {
+        p = ((int (*)(void))rt_n_libc[4])();
+        if (p < 0) p = -rt_errno;
+    } else {
+        p = SYS(S_FORK, 0, 0, 0);
+    }
+    if (p == 0) {
+        rt_main_tid = SYS(S_GETTID, 0, 0, 0);
+        rt_worker_parent = parent;
+        rt_worker_base = rt_live;
+        if (rt_epfd >= 0) { SYS(S_CLOSE, rt_epfd, 0, 0); rt_epfd = -1; }
+        SYS4(S_RT_SIGPROCMASK, 2, &rt_sup_old, 0, 8);
+        SYS(S_PRCTL, 1, K_SIGTERM, 0);                             /* PR_SET_PDEATHSIG */
+        if (SYS(S_GETPPID, 0, 0, 0) != parent) SYS(S_KILL, SYS(S_GETPID, 0, 0, 0), K_SIGTERM, 0);
+    }
+    return p;
+}
+int64_t obxlib_proc_wait(int64_t ms, int64_t* status) {
+    int64_t end = ms < 0 ? RT_NEVER : rt_after(ms);
+    uint64_t s = K_SUP_SET;
+    for (;;) {
+        int st = 0;
+        i64 p = SYS4(S_WAIT4, -1, &st, 1, 0);                      /* WNOHANG */
+        if (p > 0) { *status = st; return p; }
+        uint32_t si[32];
+        i64 r;
+        if (end == RT_NEVER) {
+            r = SYS4(S_RT_SIGTIMEDWAIT, &s, si, 0, 8);
+        } else {
+            int64_t left = end - rt_mono();
+            if (left <= 0) return 0;
+            struct { i64 s, ns; } ts = {left / 1000000000, left % 1000000000};
+            r = SYS4(S_RT_SIGTIMEDWAIT, &s, si, &ts, 8);
+        }
+        if (r == K_SIGTERM || r == K_SIGINT) { *status = si[4]; return -r; }    /* si_pid: offset 16 */
+        if (r == -K_EAGAIN) return 0;
+    }
+}
+int64_t obxlib_proc_kill(int64_t pid, int64_t sig) {
+    i64 r = SYS(S_KILL, pid, sig, 0);
+    return r < 0 ? r : 0;
+}
+void obxlib_worker_exit(int64_t code) {
+    if (rt_end_fn) rt_end_fn(0);
+    rt_flush();
+    rt_ended = 1;
+    if (rt_check && rt_live > rt_worker_base) {
+        eputs("obx: leak: "); eputd(rt_live - rt_worker_base); eputs(" live objects at exit at runtime\n");
+        eflush();
+        rt_quit(5);
+    }
+    rt_quit((int)code);
+}
+int64_t obxlib_worker_stop(void) {
+    if (!rt_worker_parent || SYS(S_GETPPID, 0, 0, 0) != rt_worker_parent) return -1;
+    return SYS(S_KILL, rt_worker_parent, K_SIGTERM, 0) == 0 ? 0 : -1;
 }

@@ -1,0 +1,29 @@
+// task.workers: a worker that crashes (here a panic, exit 12) is started
+// again after the policy's backoff, with the same index; the others are not.
+// The first run of worker 1 leaves a mark and panics; its second run sees
+// the mark and ends normally. The end records the last process: exit 0,
+// one restart.
+// expect: worker 0: exit 0, restarts 0
+// expect: worker 1: exit 0, restarts 1
+// expect: worker 2: exit 0, restarts 0
+// expect: worker 1 ran 2 times
+import "task"
+import "io"
+import "fs"
+
+fn main() {
+    for f in ["crashed.txt", "runs0.txt", "runs1.txt", "runs2.txt"] { let r = fs.remove(f) }   // a run before in this directory
+    var p = task.workerPolicy()
+    p.backoffMs = 5
+    let ends = task.workersWith(3, p, fn(i: int) {
+        io.appendTo("runs" + intToStr(i) + ".txt", "x").unwrap()
+        if i == 1 && !fs.exists("crashed.txt") {
+            io.write("crashed.txt", "1").unwrap()
+            panic("worker 1 crashes on its first run")
+        }
+    }).unwrap()
+    for e in ends {
+        println("worker " + intToStr(e.index) + ": exit " + intToStr(e.code) + ", restarts " + intToStr(e.restarts))
+    }
+    println("worker 1 ran " + intToStr(len(io.read("runs1.txt").unwrap())) + " times")
+}
