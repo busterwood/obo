@@ -8,7 +8,7 @@ obx builds a program in two ways:
 - **via C**: `obxc`, which writes C and runs `gcc -O2`.
 
 Both are built from the same IR and must behave identically; the gate checks
-that on 1,517 programs. This page measures what each costs. Measured on 3
+that on 1,532 programs. This page measures what each costs. Measured on 3
 November 2026 at `aac6659`, after the fourth native performance pass and the
 first concurrency stage; the rows the fifth pass (inlining in the IR, branch
 `perf5`) moved were measured again after it, and the task and server

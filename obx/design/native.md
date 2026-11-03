@@ -774,6 +774,13 @@ Gates at the end of the step:
   fix differed on 24 of 60);
 - the seed at a fixed point on the branch.
 
+After merging main (`77fae8a`, C1b: epoll, timers, deadlines, `lib/net`)
+and the copy fix: `gate.sh full` PASS (with `vrgen.py -n 200`);
+`run_native.py --lib --redteam` 1532 of 1532, and the same with
+`OBX_INLINE=0` and `OBX_INLINE=200`; `eza_gate.py` 482 passed, 0 failed;
+`run_prev.py --native --lib --redteam --eza --gen 200` against main's
+compiler: 2683 same, 0 differ.
+
 2026-11-03, the IR from the templates (branch `ir`, section 1): `check`
 writes trees (`tmpl.obx`), `emit` fills them per instance, `lower` builds
 the IR and both backends start from it; `cfront.obx` is gone. Checks:
