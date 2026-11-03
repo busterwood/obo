@@ -47,6 +47,9 @@ const PROBE_FREE = 2048
 // in the fetch blocks changes the speed of a small recursive one by 15% (bench fib). int3 pads.
 const FUNC_ALIGN = 16
 
+// The generated code starts at a multiple of this, so FUNC_ALIGN holds for absolute addresses.
+const CODE_ALIGN = 64
+
 // A function that restores at most this many registers returns with a copy of the restores in
 // place of a jump to its one copy.
 const EPI_COPY = 2
@@ -228,7 +231,7 @@ pub fn buildMap(p: ir.Ir, libs: []elf.Lib, symMap: mut &str): []byte {
     g.libs = libs
     g.genAll()
     let img = g.link()
-    let codeBase = ir.alignUp(rtx.TEXT_ADDR + rtx.TEXT_SIZE, 16)
+    let codeBase = ir.alignUp(rtx.TEXT_ADDR + rtx.TEXT_SIZE, CODE_ALIGN)
     var b = newStrBuf()
     var fs: []int = []
     for f in 0..len(g.u.funcs) {
@@ -4202,7 +4205,7 @@ fn (g: mut &Gen) initData(buf: mut &[]byte, ro: bool, off: int, ents: int, reloc
 }
 
 fn (g: mut &Gen) link(): []byte {
-    let codeBase = ir.alignUp(rtx.TEXT_ADDR + rtx.TEXT_SIZE, 16)
+    let codeBase = ir.alignUp(rtx.TEXT_ADDR + rtx.TEXT_SIZE, CODE_ALIGN)
     let roBase = ir.alignUp(codeBase + len(g.a.code), 16)
     let dataBase = ir.alignUp(rtx.BSS_ADDR + rtx.BSS_SIZE, elf.PAGE)
     var ro: []byte = []
