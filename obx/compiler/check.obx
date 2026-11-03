@@ -1,9 +1,9 @@
 // check: every function body is checked once, generic or not (SPEC 6.2).
 // Type parameters are opaque: a T is owned unless `T: copy`, and its methods
 // come only from its constraints. The checker decides every move, copy,
-// borrow and drop, and writes the function as a C template: C lines with
-// holes for whatever depends on the type arguments (C types, drop and dup
-// glue, callees), which emit.obx renders once per instance.
+// borrow and drop, and writes the function as a template (tmpl.obx): C-shaped
+// statements with holes for whatever depends on the type arguments (C types,
+// drop and dup glue, callees), which emit.obx instantiates once per instance.
 //
 // A port of ref/check.py with the same algorithms, the same C and the same
 // messages. ref's objects become tables named by index: variables (Var),
@@ -14,37 +14,33 @@
 import "./syntax" as sx
 import "./sema"
 import "./num"
+import "./tmpl" as tm
 
-// ---------------------------------------------------------------- C text
+// ---------------------------------------------------------------- C types and checks
 
 pub const CTYPES: []str = ["int64_t", "int32_t", "uint32_t", "uint64_t", "uint8_t", "__int128",
     "unsigned __int128", "double", "bool", "obx_str", "void*", "void", "void"]
 
-// ref's cstr: the bytes s as a C string literal (printable ASCII but " \ ?, else octal escapes).
-pub fn cstr(s: str): str {
-    var b = newStrBuf()
-    b.addByte('"')
-    for i in 0..len(s) {
-        let x = strByte(s, i)
-        if x >= 32 && x < 127 && x != 34 && x != 92 && x != 63 {
-            b.addByte(x)
-        } else {
-            b.addByte('\\')
-            b.addByte('0' + x / 64)
-            b.addByte('0' + x / 8 % 8)
-            b.addByte('0' + x % 8)
+// ref's checks(c): whether the C makes a run-time check (each passes its location, a C
+// string); what holes stand for is not looked into.
+fn (c: &Checker) checks(n: int): bool {
+    if n < 0 { return false }
+    let x = c.x.nodes[n]
+    if x.k == tm.X_STR { return true }
+    if x.k == tm.X_HOLE || x.k == tm.X_NAME || x.k == tm.X_NUM { return false }
+    if c.checks(x.a) || c.checks(x.b) || c.checks(x.c) { return true }
+    if x.l >= 0 {
+        for j in 0..c.x.listLen(x.l) {
+            if c.checks(c.x.listAt(x.l, j)) { return true }
         }
     }
-    b.addByte('"')
-    return b.toStr()
+    return false
 }
 
-// ref's checks(c): whether the C text makes a run-time check (each passes its location, a C string).
-fn checks(c: str): bool {
-    for i in 0..len(c) {
-        if strByte(c, i) == '"' { return true }
-    }
-    return false
+// Whether the C of n is a bare name or number.
+fn (c: &Checker) isWord(n: int): bool {
+    let x = c.x.nodes[n]
+    return (x.k == tm.X_NAME || x.k == tm.X_NUM) && isWordText(x.s)
 }
 
 // Python's c.replace('_', 'a').isalnum(): a C name or number.
@@ -59,13 +55,12 @@ fn isWordText(c: str): bool {
 
 // ---------------------------------------------------------------- templates
 
-// Hole kinds. A hole is written \x01N\x02 in a template line; its fields by kind:
-// H_T t; H_DROP, H_DDROP, H_DUP t and the C text s (which may hold holes);
+// Hole kinds. A hole is a tmpl.X_HOLE node; its fields by kind:
+// H_T t; H_DROP, H_DDROP, H_DUP t and the value x (which may hold holes);
 // H_STR, H_GSTR the bytes s; H_FN the function f and its type arguments t (a
 // tuple: a fn type with them as parameters); H_CL the lifted closure f; H_TRAMP
 // the fn type t; H_IMETH the type parameter t, the method name s, the receiver
-// mode f, the receiver's C text r and the arguments' (args, joined by \x03);
-// H_IASSOC t and the name s.
+// mode f, the receiver r and the arguments args; H_IASSOC t and the name s.
 pub const H_T = 0
 pub const H_DROP = 1
 pub const H_DDROP = 2
@@ -83,9 +78,9 @@ pub type Hole = value record {
     pub t: int
     pub f: int
     pub s: str
-    pub r: str
-    pub args: str
-    pub nargs: int
+    pub x: int
+    pub r: int
+    pub args: []int
 }
 
 // A closure lifted out of its function: rendered as <instance>_c<k>.
@@ -94,25 +89,25 @@ pub type Lifted = record {
     pub ret: int
     pub pnames: []str
     pub ptys: []int
-    pub lines: []str
+    pub lines: []int
 }
 
 // A checked function: ref's fd.template and fd.lifted.
 pub type Tmpl = record {
     pub done: bool
-    pub lines: []str
+    pub lines: []int
     pub holes: []Hole
     pub lifted: []Lifted
 }
 
 // A global's or constant table's initializer (ref's g.init): none for a
-// set-once global, items for a table, else one C text.
+// set-once global, items for a table, else one value.
 pub type GInit = record {
     pub has: bool
     pub isOnce: bool
     pub table: bool
-    pub items: []str
-    pub c: str
+    pub items: []int
+    pub c: int
     pub holes: []Hole
 }
 
@@ -148,7 +143,7 @@ const ST_MODULE = 3
 
 type Var = value record {
     name: str
-    c: str
+    c: int
     t: int
     mutable: bool
     kind: int
@@ -161,13 +156,13 @@ type Var = value record {
 }
 
 type Tmp = value record {
-    c: str
+    c: int
     t: int
     live: bool
 }
 
 type Val = value record {
-    c: str
+    c: int          // the C (tmpl node), or -1 (void)
     t: int
     cat: int
     tmp: int        // a Tmp, or -1
@@ -215,7 +210,7 @@ type Loop = record {
 }
 
 type Drop = value record {
-    c: str
+    c: int
     t: int
 }
 
@@ -228,7 +223,7 @@ type Ctx = record {
     mod: int
     closure: bool
     bvar: int       // the borrowed parameter's Var, or -1
-    lines: []str
+    lines: []int
     ind: int
     scopes: []Scope
     frames: [][]int
@@ -286,7 +281,7 @@ type Sig = record {
     tps: []int
     recv: int       // sema.RM_VAL, RM_REF, RM_MUT, or RM_NONE
     fd: int
-    c: str
+    c: int
     tpt: int
     bind: []int
     nown: int
@@ -304,13 +299,14 @@ type Arg = value record {
 
 // A match expression in progress (ref's st in x_matchx).
 type MatchX = record {
-    r: str
+    r: int
     t: int
     lits: []int     // (line index, node, indent) triples
 }
 
 pub type Checker = record {
     pub pg: sema.Program
+    pub x: tm.Arena            // the templates' nodes
     pub tmpls: []Tmpl          // per FnDecl
     pub ginits: []GInit        // per Global
     pub cinits: []GInit        // per Const
@@ -331,7 +327,7 @@ pub type Checker = record {
 }
 
 pub fn newChecker(pg: sema.Program): Checker {
-    var c = Checker{pg: pg, tmpls: [], ginits: [], cinits: [], vars: [], tmps: [], capl: [], statics: newMap(),
+    var c = Checker{pg: pg, x: tm.newArena(), tmpls: [], ginits: [], cinits: [], vars: [], tmps: [], capl: [], statics: newMap(),
         podMemo: [], copyMemo: [], cids: 0, holes: [], lifted: [], cx: newCtx(-1, "", sema.T_VOID, [], 0, false),
         outers: [], calleeTps: [], initOrder: [], mxs: []}
     for f in 0..len(c.pg.fns) { append(mut &c.tmpls, Tmpl{done: false, lines: [], holes: [], lifted: []}) }
@@ -340,18 +336,18 @@ pub fn newChecker(pg: sema.Program): Checker {
     return c
 }
 
-fn noInit(): GInit { return GInit{has: false, isOnce: false, table: false, items: [], c: "", holes: []} }
+fn noInit(): GInit { return GInit{has: false, isOnce: false, table: false, items: [], c: -1, holes: []} }
 
 // ---------------------------------------------------------------- values
 
-fn val(c: str, t: int, cat: int): Val {
+fn val(c: int, t: int, cat: int): Val {
     return Val{c: c, t: t, cat: cat, tmp: -1, root: -1, path: "", mutable: false, viaref: false, vvar: -1, gk: -1,
         gi: -1, noreturn: false, caps: -1, late: false}
 }
 
-fn rv(c: str, t: int): Val { return val(c, t, CAT_RV) }
+fn rv(c: int, t: int): Val { return val(c, t, CAT_RV) }
 
-fn rvAt(c: str, t: int, root: int, path: str): Val {
+fn rvAt(c: int, t: int, root: int, path: str): Val {
     var v = val(c, t, CAT_RV)
     v.root = root
     v.path = path
@@ -359,7 +355,7 @@ fn rvAt(c: str, t: int, root: int, path: str): Val {
 }
 
 fn voidVal(noreturn: bool): Val {
-    var v = rv("", sema.T_VOID)
+    var v = rv(-1, sema.T_VOID)
     v.noreturn = noreturn
     return v
 }
@@ -394,35 +390,44 @@ fn (c: &Checker) err(line: int, msg: str): never { c.pg.err(c.cx.mod, line, msg)
 fn (c: &Checker) tstr(t: int): str { return c.pg.tstr(t) }
 
 // ref's W(where): the location of a run-time check as a C string.
-fn (c: &Checker) W(line: int): str { return cstr(c.pg.mods[c.cx.mod].fname + ":" + intToStr(line)) }
+fn (c: mut &Checker) W(line: int): int { return c.x.str(c.pg.mods[c.cx.mod].fname + ":" + intToStr(line)) }
 
 fn (c: mut &Checker) fresh(p: str): str {
     c.cx.n += 1
     return p + intToStr(c.cx.n)
 }
 
-fn (c: mut &Checker) emit(s: str) {
-    var b = newStrBuf()
-    for i in 0..c.cx.ind { b.add("  ") }
-    b.add(s)
-    append(mut &c.cx.lines, b.toStr())
-}
+// Appends the statement st as a line of the function.
+fn (c: mut &Checker) emit(st: int) { append(mut &c.cx.lines, c.x.line(c.cx.ind, st)) }
 
-fn (c: mut &Checker) hole(h: Hole): str {
+// Appends the expression statement e;.
+fn (c: mut &Checker) emitx(e: int) { c.emit(c.x.sx(e)) }
+
+fn (c: mut &Checker) hole(h: Hole): int {
     append(mut &c.holes, h)
-    return "\x01" + intToStr(len(c.holes) - 1) + "\x02"
+    return c.x.hole(len(c.holes) - 1)
 }
 
-fn mkHole(k: int, t: int, s: str): Hole { return Hole{k: k, t: t, f: -1, s: s, r: "", args: "", nargs: 0} }
+fn mkHole(k: int, t: int, s: str): Hole { return Hole{k: k, t: t, f: -1, s: s, x: -1, r: -1, args: []} }
+
+fn mkHoleX(k: int, t: int, x: int): Hole { return Hole{k: k, t: t, f: -1, s: "", x: x, r: -1, args: []} }
 
 // ref's T(t): the C type of t (a hole unless it is known now).
-fn (c: mut &Checker) T(t: int): str {
+fn (c: mut &Checker) T(t: int): int {
     let k = c.pg.tk(t)
-    if k == sema.TK_PRIM { return CTYPES[t] }
-    if k == sema.TK_SLICE { return "obx_slice" }
-    if k == sema.TK_CLO { return "obx_clo" }
+    if k == sema.TK_PRIM { return c.x.ct(CTYPES[t]) }
+    if k == sema.TK_SLICE { return c.x.ct("obx_slice") }
+    if k == sema.TK_CLO { return c.x.ct("obx_clo") }
     return c.hole(mkHole(H_T, t, ""))
 }
+
+// A C type of the runtime by name.
+fn (c: mut &Checker) ct(s: str): int { return c.x.ct(s) }
+
+// The names and numbers of C.
+fn (c: mut &Checker) nm(s: str): int { return c.x.nm(s) }
+fn (c: mut &Checker) ll(v: int): int { return c.x.ll(v) }
+fn (c: mut &Checker) lit(v: int): int { return c.x.lit(v) }
 
 // ref's is_pod: a value of t needs neither dup nor drop (decidable without type arguments).
 pub fn isPod(pg: mut &sema.Program, memo: mut &[]int, t: int): bool {
@@ -531,19 +536,18 @@ fn (c: &Checker) vpathText(vpath: int): str {
 
 // ---------------------------------------------------------------- drops
 
-fn (c: mut &Checker) dropc(cc: str, t: int) {
+fn (c: mut &Checker) dropc(cc: int, t: int) {
     if !c.pod(t) {
         if c.cx.tailOn {
             append(mut &c.cx.tail, Drop{c: cc, t: t})
         } else {
-            let h = c.hole(mkHole(H_DROP, t, cc))
-            c.emit(h + ";")
+            c.emitx(c.hole(mkHoleX(H_DROP, t, cc)))
         }
     }
 }
 
-fn (c: mut &Checker) dup(cc: str, t: int): str {
-    return if c.pod(t) { cc } else { c.hole(mkHole(H_DUP, t, cc)) }
+fn (c: mut &Checker) dup(cc: int, t: int): int {
+    return if c.pod(t) { cc } else { c.hole(mkHoleX(H_DUP, t, cc)) }
 }
 
 // ref's exit_drops: the drops of leaving the function (whole: every scope and frame, else the
@@ -559,8 +563,7 @@ fn (c: mut &Checker) exitDrops(whole: bool) {
     let tail = replace(mut &c.cx.tail, [])
     var i = len(tail) - 1
     while i >= 0 {
-        let h = c.hole(mkHole(H_DDROP, tail[i].t, tail[i].c))
-        c.emit(h + ";")
+        c.emitx(c.hole(mkHoleX(H_DDROP, tail[i].t, tail[i].c)))
         i -= 1
     }
 }
@@ -623,7 +626,7 @@ fn (c: mut &Checker) cutPending(m: int) {
     while len(c.cx.pending) > m { pop(mut &c.cx.pending) }
 }
 
-fn (c: mut &Checker) newTmp(n: str, t: int): int {
+fn (c: mut &Checker) newTmp(n: int, t: int): int {
     append(mut &c.tmps, Tmp{c: n, t: t, live: true})
     let id = len(c.tmps) - 1
     let f = len(c.cx.frames) - 1
@@ -632,7 +635,7 @@ fn (c: mut &Checker) newTmp(n: str, t: int): int {
 }
 
 // ref's tmpval: the C variable n as a value of the statement, dropped at its end unless pod.
-fn (c: mut &Checker) tmpval(n: str, t: int): Val {
+fn (c: mut &Checker) tmpval(n: int, t: int): Val {
     if c.pod(t) { return rv(n, t) }
     let id = c.newTmp(n, t)
     var v = val(n, t, CAT_TMP)
@@ -643,14 +646,15 @@ fn (c: mut &Checker) tmpval(n: str, t: int): Val {
 }
 
 // ref's holdtmp: cc evaluated now into a C variable; a slice keeps the root and path of src.
-fn (c: mut &Checker) holdtmp(cc: str, t: int): Val { return c.holdtmpSrc(cc, t, false, rv("", t)) }
+fn (c: mut &Checker) holdtmp(cc: int, t: int): Val { return c.holdtmpSrc(cc, t, false, rv(-1, t)) }
 
-fn (c: mut &Checker) holdtmpSrc(cc: str, t: int, hasSrc: bool, src: Val): Val {
+fn (c: mut &Checker) holdtmpSrc(cc: int, t: int, hasSrc: bool, src: Val): Val {
     let n = c.fresh("t")
     let ct = c.T(t)
-    c.emit(ct + " " + n + " = " + cc + ";")
-    if c.pg.tk(t) == sema.TK_SLICE && hasSrc { return rvAt(n, t, src.root, src.path) }
-    return c.tmpval(n, t)
+    c.emit(c.x.decl(ct, n, cc))
+    let nn = c.nm(n)
+    if c.pg.tk(t) == sema.TK_SLICE && hasSrc { return rvAt(nn, t, src.root, src.path) }
+    return c.tmpval(nn, t)
 }
 
 // ---------------------------------------------------------------- variables
@@ -700,7 +704,7 @@ fn (c: mut &Checker) lookupAt(lvl: int, name: str, capture: bool): int {
     let ncaps = if lvl == len(c.outers) { len(c.cx.capNames) } else { len(c.outers[lvl].capNames) }
     let ct = c.T(c.vars[o].t)
     var p = c.vars[o]
-    p.c = "(*(" + ct + "*)ce_[" + intToStr(ncaps) + "])"
+    p.c = c.x.par(c.x.at(ct, c.x.idx(c.nm("ce_"), c.lit(ncaps))))
     p.cap = o
     p.capmut = false
     append(mut &c.vars, p)
@@ -716,7 +720,8 @@ fn (c: mut &Checker) lookupAt(lvl: int, name: str, capture: bool): int {
 }
 
 fn (c: mut &Checker) newVar(name: str, cn: str, t: int, mutable: bool, kind: int, line: int): int {
-    append(mut &c.vars, Var{name: name, c: cn, t: t, mutable: mutable, kind: kind, line: line, moved: false,
+    let cx = c.nm(cn)
+    append(mut &c.vars, Var{name: name, c: cx, t: t, mutable: mutable, kind: kind, line: line, moved: false,
         broot: -1, cap: -1, capmut: false, pjoin: 0})
     return len(c.vars) - 1
 }
@@ -878,7 +883,7 @@ fn (c: mut &Checker) hold(v: Val, m: int, cid: int, line: int) {
 fn hm(m: bool): int { return if m { HM_MUT } else { HM_SHARED } }
 
 // Take ownership of the value of v: copy (dup) a copy type, move otherwise.
-fn (c: mut &Checker) consume(v: Val, line: int): str {
+fn (c: mut &Checker) consume(v: Val, line: int): int {
     if c.pg.tk(v.t) == sema.TK_CLO {
         c.err(line, "a closure is second class: it can be passed as an argument or bound with let, but " +
             "not stored, returned or copied")
@@ -918,7 +923,7 @@ fn (c: &Checker) gname(gk: int, gi: int): str {
 
 fn (c: mut &Checker) deref(v: Val): Val {
     if c.pg.tk(v.t) != sema.TK_REF { return v }
-    var r = val("(*" + v.c + ")", c.pg.ta(v.t), CAT_PLACE)
+    var r = val(c.x.par(c.x.pre("*", v.c)), c.pg.ta(v.t), CAT_PLACE)
     r.root = v.root
     r.path = v.path
     r.mutable = c.pg.tm(v.t)
@@ -943,7 +948,7 @@ fn (c: mut &Checker) borrow(v0: Val, m: bool, line: int, recv: bool): Val {
         return rvAt(v.c, c.pg.mkRef(c.pg.ta(v.t), m), v.root, v.path)
     }
     if v.t == sema.T_VOID { c.err(line, "this expression has no value") }
-    var cc = ""
+    var cc = -1
     if v.cat == CAT_PLACE {
         if v.gk >= 0 {
             // a receiver, or a constant (SPEC 7.5): a borrow of a temporary copy
@@ -958,14 +963,14 @@ fn (c: mut &Checker) borrow(v0: Val, m: bool, line: int, recv: bool): Val {
             if !v.mutable { c.immutable(v, line, "mutably borrow") }
             c.frozen(v.root, FR_MUT, line)
         }
-        cc = "(&" + v.c + ")"
+        cc = c.x.par(c.x.pre("&", v.c))
     } else if v.cat == CAT_TMP {
-        cc = "(&" + v.c + ")"
+        cc = c.x.par(c.x.pre("&", v.c))
     } else {
         let n = c.fresh("m")
         let ct = c.T(v.t)
-        c.emit(ct + " " + n + " = " + v.c + ";")
-        cc = "(&" + n + ")"
+        c.emit(c.x.decl(ct, n, v.c))
+        cc = c.x.par(c.x.pre("&", c.nm(n)))
     }
     return rvAt(cc, c.pg.mkRef(v.t, m), v.root, v.path)
 }
@@ -1069,7 +1074,7 @@ fn (c: mut &Checker) placeActs(e0: int): bool {
 // Read a place (or compute a value) now, before later side effects in the statement.
 fn (c: mut &Checker) snapVal(v: Val): Val {
     let k = c.pg.tk(v.t)
-    if v.cat == CAT_RV && v.t != sema.T_VOID && k != sema.TK_REF && !isWordText(v.c) {
+    if v.cat == CAT_RV && v.t != sema.T_VOID && k != sema.TK_REF && !c.isWord(v.c) {
         return c.holdtmpSrc(v.c, v.t, true, v)
     }
     if v.cat != CAT_PLACE || k == sema.TK_REF || !c.isCopy(v.t) { return v }
@@ -1078,10 +1083,11 @@ fn (c: mut &Checker) snapVal(v: Val): Val {
 
 // Make the run-time checks in v's C text now, in their position (SPEC 7).
 fn (c: mut &Checker) seq(v: Val): Val {
-    if !checks(v.c) { return v }
+    if !c.checks(v.c) { return v }
     let k = c.pg.tk(v.t)
     if k == sema.TK_REF || k == sema.TK_SLICE || (v.cat == CAT_PLACE && !c.isCopy(v.t)) {
-        c.emit("(void)(" + (if v.cat != CAT_PLACE { v.c } else { "&" + v.c }) + ");")
+        let x = if v.cat != CAT_PLACE { v.c } else { c.x.pre("&", v.c) }
+        c.emitx(c.x.cast(c.ct("void"), c.x.par(x)))
         return v
     }
     return c.snapVal(v)
@@ -1133,7 +1139,7 @@ fn (c: mut &Checker) coerce(v: Val, t: int, line: int, what: str): Val {
     let k = c.pg.tk(t)
     if k == sema.TK_CLO && vk == sema.TK_FN && c.sameSig(v.t, t) {     // through a trampoline (emit)
         let h = c.hole(mkHole(H_TRAMP, v.t, ""))
-        return rv("((obx_clo){(void*)" + h + ", (void*)" + v.c + "})", t)
+        return rv(c.cloVal(h, v.c), t)
     }
     if vk == sema.TK_REF && k != sema.TK_REF {
         let d = c.deref(v)
@@ -1158,6 +1164,12 @@ fn (c: mut &Checker) coerce(v: Val, t: int, line: int, what: str): Val {
     c.err(line, what + " is " + c.tstr(v.t) + ", not " + c.tstr(t))
 }
 
+// ((obx_clo){(void*)fn, (void*)env})
+fn (c: mut &Checker) cloVal(fn0: int, env: int): int {
+    let vp = c.ct("void*")
+    return c.x.par(c.x.clit(c.ct("obx_clo"), c.x.init([c.x.cast(vp, fn0), c.x.cast(vp, env)])))
+}
+
 // Two fn/clo types with the same parameters and result (ref's v.t[1:] == t[1:]).
 fn (c: &Checker) sameSig(a: int, b: int): bool {
     if c.pg.tn(a) != c.pg.tn(b) || c.pg.tb(a) != c.pg.tb(b) { return false }
@@ -1172,9 +1184,9 @@ fn (c: mut &Checker) asSlice(v: Val): Val {
     let k = c.pg.tk(v.t)
     if k == sema.TK_SLICE { return v }
     if k == sema.TK_REF && c.pg.tk(c.pg.ta(v.t)) == sema.TK_ARR {
-        return rvAt("rt_as_slice(" + v.c + ")", c.pg.mkSlice(c.pg.ta(c.pg.ta(v.t)), c.pg.tm(v.t)), v.root, v.path)
+        return rvAt(c.x.call("rt_as_slice", [v.c]), c.pg.mkSlice(c.pg.ta(c.pg.ta(v.t)), c.pg.tm(v.t)), v.root, v.path)
     }
-    var r = rv("", 0)
+    var r = rv(-1, 0)
     r.t = -1
     return r
 }
@@ -1199,7 +1211,7 @@ fn (c: mut &Checker) sLet(s: int) {
         if mutable {
             c.err(n.line, "a closure cannot be stored in var '" + name + "': closures are second class (use let)")
         }
-        c.emit("obx_clo " + cn + " = " + v.c + ";")
+        c.emit(c.x.decl(c.ct("obx_clo"), cn, v.c))
         c.declare(c.newVar(name, cn, v.t, false, VK_LOCAL, n.line))
         if v.caps >= 0 {
             for i in 0..len(c.capl[v.caps]) {
@@ -1224,9 +1236,9 @@ fn (c: mut &Checker) sLet(s: int) {
         c.vars[vx].broot = root
         if c.pg.tk(v.t) == sema.TK_REF {
             let ct = c.T(c.pg.ta(v.t))
-            c.emit(ct + "* " + cn + " = " + v.c + ";")
+            c.emit(c.x.decl(c.x.ptr(ct), cn, v.c))
         } else {
-            c.emit("obx_slice " + cn + " = " + v.c + ";")
+            c.emit(c.x.decl(c.ct("obx_slice"), cn, v.c))
         }
         c.declare(vx)
         c.freeze(root, c.pg.tm(v.t), "'" + name + "'")
@@ -1235,7 +1247,7 @@ fn (c: mut &Checker) sLet(s: int) {
     if exp >= 0 { v = c.coerce(v, exp, n.line, what) }
     let cc = c.consume(v, n.line)
     let ct = c.T(v.t)
-    c.emit(ct + " " + cn + " = " + cc + ";")
+    c.emit(c.x.decl(ct, cn, cc))
     c.declare(c.newVar(name, cn, v.t, mutable, VK_LOCAL, n.line))
 }
 
@@ -1298,12 +1310,14 @@ fn (c: mut &Checker) sDestructure(s: int) {
     }
     let acc = c.fresh("ds")
     let ct = c.T(v.t)
-    c.emit(ct + " " + acc + " = " + c.consume(v, n.line) + ";")
+    let cv = c.consume(v, n.line)
+    c.emit(c.x.decl(ct, acc, cv))
+    let accn = c.nm(acc)
     let sep = if c.pg.types[di].value { "." } else { "->" }
     var i = len(c.pg.types[di].fields) - 1
     while i >= 0 {
         let f = c.pg.types[di].fields[i]
-        if named.getOr(&f.name, "_") == "_" { c.dropc(acc + sep + "f_" + f.name, c.pg.subst(f.ty, &env)) }
+        if named.getOr(&f.name, "_") == "_" { c.dropc(c.x.member(accn, sep, "f_" + f.name), c.pg.subst(f.ty, &env)) }
         i -= 1
     }
     for fp in fps {
@@ -1313,11 +1327,11 @@ fn (c: mut &Checker) sDestructure(s: int) {
             let ft = c.pg.subst(c.pg.types[di].fields[c.fieldIndex(di, f)].ty, &env)
             let cn = c.fresh("v_" + b + "_")
             let fct = c.T(ft)
-            c.emit(fct + " " + cn + " = " + acc + sep + "f_" + f + ";")
+            c.emit(c.x.decl(fct, cn, c.x.member(accn, sep, "f_" + f)))
             c.declare(c.newVar(b, cn, ft, n.flags & sx.MUTABLE != 0, VK_LOCAL, c.line(fp)))
         }
     }
-    if !c.pg.types[di].value { c.emit("rt_free(" + acc + ");") }
+    if !c.pg.types[di].value { c.emitx(c.x.call("rt_free", [accn])) }
 }
 
 // The type of a place expression, without evaluating it (-1 if unknown).
@@ -1422,7 +1436,7 @@ fn (c: mut &Checker) sAssign(s: int) {
     // the value is stored to the place after b has run: b may have moved the place's variable
     // (`x.v += take(x)`, or an if expression moving it on one path and dropping it on the others)
     if p.root >= 0 && p.vvar < 0 && c.vars[p.root].moved { c.movedErr(p.root, n.line) }
-    if c.effects(n.b, false) && checks(p.c) && c.pod(p.t) { r = c.seq(r) }
+    if c.effects(n.b, false) && c.checks(p.c) && c.pod(p.t) { r = c.seq(r) }
     let cc = c.consume(c.coerce(r, p.t, n.line, "the result"), n.line)
     let live = !(p.vvar >= 0 && c.vars[p.vvar].moved)
     c.store(p, cc, live)
@@ -1456,30 +1470,30 @@ fn (c: mut &Checker) place(e: int): Val {
     return v
 }
 
-fn (c: mut &Checker) store(p: Val, cc: str, dropOld: bool) {
+fn (c: mut &Checker) store(p: Val, cc: int, dropOld: bool) {
     if c.pod(p.t) || !dropOld {
-        c.emit(p.c + " = " + cc + ";")
+        c.emitx(c.x.asg(p.c, cc))
         return
     }
     let n = c.fresh("nw")
     let ct = c.T(p.t)
-    c.emit("{ " + ct + " " + n + " = " + cc + ";")
+    c.emit(c.x.seq([c.x.sblock(), c.x.decl(ct, n, cc)]))
     c.cx.ind += 1
     c.dropc(p.c, p.t)
-    c.emit(p.c + " = " + n + "; }")
+    c.emit(c.x.seq([c.x.sx(c.x.asg(p.c, c.nm(n))), c.x.send()]))
     c.cx.ind -= 1
 }
 
-fn (c: mut &Checker) cond(e: int): str {
+fn (c: mut &Checker) cond(e: int): int {
     c.pushFrame()
     var v = c.expr(e, sema.T_BOOL)
     if c.pg.tk(v.t) == sema.TK_REF { v = c.deref(v) }
     if v.t != sema.T_BOOL { c.err(c.line(e), "a condition must be bool, not " + c.tstr(v.t)) }
     let cn = c.fresh("c")
-    c.emit("bool " + cn + " = " + v.c + ";")
+    c.emit(c.x.decl(c.ct("bool"), cn, v.c))
     let fr = c.popFrame()
     c.dropFrame(&fr)
-    return cn
+    return c.nm(cn)
 }
 
 fn (c: &Checker) movedErr(vx: int, line: int): never {
@@ -1530,17 +1544,15 @@ fn (c: mut &Checker) joinMoves(snaps: &[][]int, line: int): [][]int {
     return out
 }
 
-// The C lines that drop the variables vs (last to first) at indentation ind.
-fn (c: mut &Checker) joinDropLines(vs: &[]int, ind: int): []str {
-    var out: []str = []
+// The lines that drop the variables vs (last to first) at indentation ind.
+fn (c: mut &Checker) joinDropLines(vs: &[]int, ind: int): []int {
+    var out: []int = []
     var i = len(vs) - 1
     while i >= 0 {
         let v = vs[i]
         if !c.pod(c.vars[v].t) {
-            var b = newStrBuf()
-            for k in 0..ind { b.add("  ") }
-            b.add(c.hole(mkHole(H_DROP, c.vars[v].t, c.vars[v].c)) + ";")
-            append(mut &out, b.toStr())
+            let h = c.hole(mkHoleX(H_DROP, c.vars[v].t, c.vars[v].c))
+            append(mut &out, c.x.line(ind, c.x.sx(h)))
         }
         i -= 1
     }
@@ -1564,11 +1576,8 @@ fn (c: mut &Checker) joinAt(snaps: &[][]int, ends: &[]PathEnd, line: int) {
         let ls = c.joinDropLines(&drops[k], ends[k].ind)
         if len(ls) == 0 { continue }
         var j = ends[k].at - 1
-        if c.cx.lines[j] == PLACEHOLDER { j -= 1 }
-        var b = newStrBuf()
-        b.add(c.cx.lines[j])
-        for x in ls { b.add("\n" + x) }
-        c.cx.lines[j] = b.toStr()
+        if c.x.k(c.cx.lines[j]) == tm.Z_HOLDER { j -= 1 }
+        c.cx.lines[j] = c.x.joined(c.cx.lines[j], &ls)
     }
 }
 
@@ -1580,7 +1589,7 @@ fn (c: mut &Checker) sIf(s: int) {
     let n = c.nd(s)
     let cn = c.cond(n.a)
     let snap = c.snapshot()
-    c.emit("if (" + cn + ") {")
+    c.emit(c.x.sif(cn))
     c.cx.ind += 1
     c.block(n.b, true, false)
     c.cx.ind -= 1
@@ -1591,13 +1600,13 @@ fn (c: mut &Checker) sIf(s: int) {
     c.restore(&snap)
     c.cx.dead = false
     if n.c >= 0 {
-        c.emit("} else {")
+        c.emit(c.x.selse())
         c.cx.ind += 1
         c.block(n.c, true, false)
         c.cx.ind -= 1
         if !c.cx.dead { append(mut &ends, c.pathEnd()) }
         c.live(mut &snaps)
-        c.emit("}")
+        c.emit(c.x.send())
         c.joinAt(&snaps, &ends, n.line)
         return
     }
@@ -1607,11 +1616,11 @@ fn (c: mut &Checker) sIf(s: int) {
     if len(drops) == 2 && len(drops[1]) > 0 {
         let ls = c.joinDropLines(&drops[1], c.cx.ind + 1)
         if len(ls) > 0 {
-            c.emit("} else {")
+            c.emit(c.x.selse())
             for x in ls { append(mut &c.cx.lines, x) }
         }
     }
-    c.emit("}")
+    c.emit(c.x.send())
 }
 
 fn (c: mut &Checker) loopStart(entry: []int, infinite: bool) {
@@ -1661,7 +1670,7 @@ fn (c: &Checker) loopState(line: int) {
 fn (c: mut &Checker) sWhile(s: int) {
     let n = c.nd(s)
     let infinite = c.kind(n.a) == sx.N_BOOL && c.flag(n.a, sx.TRUE)
-    c.emit("while (1) {")
+    c.emit(c.x.swhile(c.lit(1)))
     c.cx.ind += 1
     let entry = c.snapshot()
     if !infinite {
@@ -1670,12 +1679,12 @@ fn (c: mut &Checker) sWhile(s: int) {
         let cn = c.cond(n.a)
         pop(mut &c.cx.wconds)
         pop(mut &c.cx.nomove)
-        c.emit("if (!" + cn + ") break;")
+        c.emit(c.x.if1(c.x.pre("!", cn), c.x.sbreak()))
     }
     c.loopStart(entry, infinite)
     c.loopEnd(n.b, n.line)
     c.cx.ind -= 1
-    c.emit("}")
+    c.emit(c.x.send())
 }
 
 // return, break or continue as the whole branch of an if or match expression (SPEC 7.8): the
@@ -1720,7 +1729,7 @@ fn (c: mut &Checker) sBreak(s: int) {
         i += 2
     }
     append(mut &c.cx.loops[lp].breaks, b)
-    c.emit("break;")
+    c.emit(c.x.sbreak())
     c.cx.dead = true
 }
 
@@ -1728,7 +1737,7 @@ fn (c: mut &Checker) sContinue(s: int) {
     let lp = c.curLoop(s, "continue")
     c.cleanup(c.cx.loops[lp].nscopes, c.cx.loops[lp].nframes)
     c.loopState(c.line(s))
-    c.emit("continue;")
+    c.emit(c.x.scont())
     c.cx.dead = true
 }
 
@@ -1742,16 +1751,18 @@ fn (c: mut &Checker) sFor(s: int) {
             c.err(n.line, "a for range needs int bounds, not " + c.tstr(a.t) + " and " + c.tstr(b.t))
         }
         let end = c.fresh("end")
-        c.emit("int64_t " + end + " = " + b.c + ";")
-        let iv = c.newVar(name, c.fresh("v_" + name + "_"), sema.T_INT, false, VK_LOCAL, n.line)
+        let i64 = c.ct("int64_t")
+        c.emit(c.x.decl(i64, end, b.c))
+        let ivn = c.fresh("v_" + name + "_")
+        let iv = c.newVar(name, ivn, sema.T_INT, false, VK_LOCAL, n.line)
         let ivc = c.vars[iv].c
-        c.emit("for (int64_t " + ivc + " = " + a.c + "; " + ivc + " < " + end + "; " + ivc + "++) {")
+        c.emit(c.x.sfor(c.x.decl(i64, ivn, a.c), c.x.bin("<", ivc, c.nm(end)), c.x.post(ivc, "++")))
         c.cx.ind += 1
         c.loopStart(c.snapshot(), false)
         c.declare(iv)
         c.loopEnd(n.c, n.line)
         c.cx.ind -= 1
-        c.emit("}")
+        c.emit(c.x.send())
         return
     }
     var v = c.expr(n.a, -1)
@@ -1765,27 +1776,30 @@ fn (c: mut &Checker) sFor(s: int) {
     let i = c.fresh("i")
     if v.cat == CAT_RV && k == sema.TK_ARR { v = c.holdtmp(v.c, v.t) }
     if v.cat == CAT_PLACE && v.gk >= 0 { c.err(n.line, "cannot iterate over a global") }
-    c.emit("obx_slice " + ap + " = " + (if k == sema.TK_SLICE { v.c } else { "rt_as_slice(&" + v.c + ")" }) + ";")
-    c.emit("for (int64_t " + i + " = 0; " + i + " < " + ap + ".len; " + i + "++) {")
+    let sl = if k == sema.TK_SLICE { v.c } else { c.x.call("rt_as_slice", [c.x.pre("&", v.c)]) }
+    c.emit(c.x.decl(c.ct("obx_slice"), ap, sl))
+    let apn = c.nm(ap)
+    let ixn = c.nm(i)
+    c.emit(c.x.sfor(c.x.decl(c.ct("int64_t"), i, c.lit(0)), c.x.bin("<", ixn, c.x.dot(apn, "len")), c.x.post(ixn, "++")))
     c.cx.ind += 1
-    let elem = "((" + c.T(et) + "*)" + ap + ".data)[" + i + "]"
+    let elem = c.x.idx(c.x.pcast(c.x.ptr(c.T(et)), c.x.dot(apn, "data")), ixn)
     let xn = c.fresh("v_" + name + "_")
     c.loopStart(c.snapshot(), false)
     if v.root >= 0 { c.freeze(v.root, false, "the for loop") }
     if c.isCopy(et) {
         let ct = c.T(et)
-        c.emit(ct + " " + xn + " = " + c.dup(elem, et) + ";")
+        c.emit(c.x.decl(ct, xn, c.dup(elem, et)))
         c.declare(c.newVar(name, xn, et, false, VK_LOCAL, n.line))
     } else {
         let ct = c.T(et)
-        c.emit(ct + "* " + xn + " = &" + elem + ";")
+        c.emit(c.x.decl(c.x.ptr(ct), xn, c.x.pre("&", elem)))
         let x = c.newVar(name, xn, c.pg.mkRef(et, false), false, VK_LOCAL, n.line)
         c.vars[x].broot = v.root
         c.declare(x)
     }
     c.loopEnd(n.c, n.line)
     c.cx.ind -= 1
-    c.emit("}")
+    c.emit(c.x.send())
 }
 
 fn (c: mut &Checker) sReturn(s: int) {
@@ -1796,11 +1810,11 @@ fn (c: mut &Checker) sReturn(s: int) {
     if n.a < 0 {
         if ret != sema.T_VOID { c.err(n.line, "return needs a " + c.tstr(ret) + " value in " + label) }
         c.exitDrops(true)
-        c.emit("return;")
+        c.emit(c.x.sret(-1))
     } else {
         if ret == sema.T_VOID { c.err(n.line, label + " returns nothing, but this return has a value") }
         var v = c.expr(n.a, ret)
-        var cc = ""
+        var cc = -1
         if c.pg.isBorrow(ret) {
             if !c.pg.isBorrow(v.t) { c.err(n.line, label + " returns a borrow: write return &place") }
             v = c.coerce(v, ret, n.line, "the returned borrow")
@@ -1819,9 +1833,9 @@ fn (c: mut &Checker) sReturn(s: int) {
         }
         let rn = c.fresh("r")
         let ct = c.T(ret)
-        c.emit(ct + " " + rn + " = " + cc + ";")
+        c.emit(c.x.decl(ct, rn, cc))
         c.cleanup(0, 0)
-        c.emit("return " + rn + ";")
+        c.emit(c.x.sret(c.nm(rn)))
     }
     c.cx.dead = true
 }
@@ -1849,23 +1863,25 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
     let env = c.pg.declEnv(base)
     let borrowing = c.pg.tk(v.t) == sema.TK_REF || v.cat == CAT_PLACE
     let sep = if c.pg.types[d].value { "." } else { "->" }
-    var acc = ""
+    var acc = -1
     var root = -1
     if borrowing {
         var p = c.deref(v)
         if p.gk >= 0 { p = c.holdtmp(c.dup(p.c, p.t), p.t) }
         let sp = c.fresh("sp")
         let ct = c.T(base)
-        c.emit(ct + "* " + sp + " = &" + p.c + ";")
-        acc = "(*" + sp + ")"
+        c.emit(c.x.decl(c.x.ptr(ct), sp, c.x.pre("&", p.c)))
+        acc = c.x.par(c.x.pre("*", c.nm(sp)))
         root = p.root
     } else {
         if c.pg.types[d].drop >= 0 {
             c.err(n.line, "cannot destructure a " + c.pg.types[d].name + ": it has a drop method (match on a place instead)")
         }
-        acc = c.fresh("s")
+        let an = c.fresh("s")
         let ct = c.T(base)
-        c.emit(ct + " " + acc + " = " + c.consume(v, n.line) + ";")
+        let cv = c.consume(v, n.line)
+        c.emit(c.x.decl(ct, an, cv))
+        acc = c.nm(an)
     }
     let snap = c.snapshot()
     var seen: []bool = []
@@ -1883,7 +1899,7 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
         if an.c >= 0 {
             // several variants, none binding fields (SPEC 7.8)
             multi = true
-            var conds = newStrBuf()
+            var conds = -1
             var k = 0
             for it in c.items(an.c) {
                 if c.kind(it) != sx.N_LNAME { c.err(an.line, "literal arms need an integer, byte or str scrutinee") }
@@ -1892,21 +1908,22 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
                 if seen[idx] { c.err(an.line, c.pg.variants[ivr].name + " is matched twice") }
                 seen[idx] = true
                 nseen += 1
-                if k > 0 { conds.add(" || ") }
-                conds.add(acc + sep + "tag == " + intToStr(idx))
+                let cmp = c.x.bin("==", c.x.member(acc, sep, "tag"), c.lit(idx))
+                conds = if k > 0 { c.x.bin("||", conds, cmp) } else { cmp }
                 k += 1
             }
-            c.emit((if first { "if" } else { "} else if" }) + " (" + conds.toStr() + ") {")
+            c.emit(if first { c.x.sif(conds) } else { c.x.selif(conds) })
         } else if an.s == "" {
             hasElse = true
-            c.emit(if !first { "} else {" } else { "{" })
+            c.emit(if !first { c.x.selse() } else { c.x.sblock() })
         } else {
             vr = c.armVariant(arm, d, base)
             let idx = c.pg.variants[vr].index
             if seen[idx] { c.err(an.line, an.s + " is matched twice") }
             seen[idx] = true
             nseen += 1
-            c.emit((if first { "if" } else { "} else if" }) + " (" + acc + sep + "tag == " + intToStr(idx) + ") {")
+            let cmp = c.x.bin("==", c.x.member(acc, sep, "tag"), c.lit(idx))
+            c.emit(if first { c.x.sif(cmp) } else { c.x.selif(cmp) })
         }
         first = false
         c.cx.ind += 1
@@ -1924,14 +1941,14 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
             for i in 0..nf {
                 let f = c.pg.variants[vr].fields[i]
                 let ft = c.pg.subst(f.ty, &env)
-                let fc = acc + sep + "u.V_" + vname + ".f_" + f.name
+                let fc = c.x.dot(c.x.dot(c.x.member(acc, sep, "u"), "V_" + vname), "f_" + f.name)
                 var bn = if an.b >= 0 && c.count(an.b) > 0 { c.nd(c.item(an.b, i)).s } else { "" }
                 if bn == "_" { bn = "" }
                 let cn = c.fresh("v_" + (if bn == "" { "None" } else { bn }) + "_")
                 if !borrowing {
                     if bn != "" {
                         let ct = c.T(ft)
-                        c.emit(ct + " " + cn + " = " + fc + ";")
+                        c.emit(c.x.decl(ct, cn, fc))
                         c.declare(c.newVar(bn, cn, ft, false, VK_LOCAL, an.line))
                     } else {
                         c.dropc(fc, ft)
@@ -1939,11 +1956,11 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
                 } else if bn != "" {
                     if c.isCopy(ft) {
                         let ct = c.T(ft)
-                        c.emit(ct + " " + cn + " = " + c.dup(fc, ft) + ";")
+                        c.emit(c.x.decl(ct, cn, c.dup(fc, ft)))
                         c.declare(c.newVar(bn, cn, ft, false, VK_LOCAL, an.line))
                     } else {
                         let ct = c.T(ft)
-                        c.emit(ct + "* " + cn + " = &" + fc + ";")
+                        c.emit(c.x.decl(c.x.ptr(ct), cn, c.x.pre("&", fc)))
                         let x = c.newVar(bn, cn, c.pg.mkRef(ft, false), false, VK_LOCAL, an.line)
                         c.vars[x].broot = if root >= 0 { root } else { -1 }
                         c.declare(x)
@@ -1954,7 +1971,7 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
                     }
                 }
             }
-            if !borrowing && !c.pg.types[d].value { c.emit("rt_free(" + acc + ");") }
+            if !borrowing && !c.pg.types[d].value { c.emitx(c.x.call("rt_free", [acc])) }
         }
         c.armBody(an.d, mx)
         let sc = pop(mut &c.cx.scopes)
@@ -1975,7 +1992,7 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
         }
         c.err(n.line, "match on " + c.tstr(base) + " is not exhaustive: missing " + b.toStr())
     }
-    if len(arms) > 0 { c.emit("}") }
+    if len(arms) > 0 { c.emit(c.x.send()) }
     c.joinAt(&results, &ends, n.line)
 }
 
@@ -2007,7 +2024,8 @@ fn (c: mut &Checker) matchLits(s: int, v: Val, t: int, mx: bool) {
     let n = c.nd(s)
     let sv = c.fresh("sv")
     let ct = c.T(t)
-    c.emit(ct + " " + sv + " = " + v.c + ";")
+    c.emit(c.x.decl(ct, sv, v.c))
+    let svn = c.nm(sv)
     let snap = c.snapshot()
     var results: [][]int = []
     var ends: []PathEnd = []
@@ -2020,11 +2038,11 @@ fn (c: mut &Checker) matchLits(s: int, v: Val, t: int, mx: bool) {
         if an.b >= 0 { c.err(an.line, "a match on " + c.tstr(t) + " takes literals and constants, not " + an.s + "(...)") }
         if an.s == "" && an.c < 0 {
             hasElse = true
-            c.emit(if !first { "} else {" } else { "{" })
+            c.emit(if !first { c.x.selse() } else { c.x.sblock() })
         } else {
             var items: []int = []
             if an.s != "" { append(mut &items, -1) } else { items = c.items(an.c) }
-            var conds = newStrBuf()
+            var conds = -1
             var nc = 0
             for it in items {
                 // k: 0 int, 1 char, 2 str; x or xs the value
@@ -2045,19 +2063,20 @@ fn (c: mut &Checker) matchLits(s: int, v: Val, t: int, mx: bool) {
                     if ik == sx.N_LCHAR { k = 1; x = num.bigOf(c.nd(it).a) }
                     if ik == sx.N_LSTR { k = 2; xs = c.nd(it).s }
                 }
-                if nc > 0 { conds.add(" || ") }
-                nc += 1
+                var cmp = -1
                 if t == sema.T_STR {
                     if k != 2 { c.err(an.line, "a match on str takes string literals and constants") }
-                    conds.add("rt_str_eq(" + sv + ", " + c.hole(mkHole(H_STR, -1, xs)) + ")")
+                    cmp = c.x.call("rt_str_eq", [svn, c.hole(mkHole(H_STR, -1, xs))])
                 } else {
                     if k == 2 { c.err(an.line, "a match on " + c.tstr(t) + " takes integer literals and constants") }
                     if k == 1 && t != sema.T_BYTE {
                         c.err(an.line, "a char literal is a byte: it cannot be an arm of a match on " + c.tstr(t))
                     }
                     if !sema.inRange(x, t) { c.err(an.line, "literal " + num.bigStr(x) + " does not fit " + c.tstr(t)) }
-                    conds.add(sv + " == " + c.cint(x, t))
+                    cmp = c.x.bin("==", svn, c.cint(x, t))
                 }
+                conds = if nc > 0 { c.x.bin("||", conds, cmp) } else { cmp }
+                nc += 1
                 let vs = if t == sema.T_STR { "\"" + xs + "\"" } else { num.bigStr(x) }
                 let key = if t == sema.T_STR { "s" + xs } else { num.bigStr(x) }
                 if seen.has(&key) {
@@ -2066,7 +2085,7 @@ fn (c: mut &Checker) matchLits(s: int, v: Val, t: int, mx: bool) {
                 }
                 seen.put(key, if named { shown } else { vs })
             }
-            c.emit((if first { "if" } else { "} else if" }) + " (" + conds.toStr() + ") {")
+            c.emit(if first { c.x.sif(conds) } else { c.x.selif(conds) })
         }
         first = false
         c.cx.ind += 1
@@ -2078,7 +2097,7 @@ fn (c: mut &Checker) matchLits(s: int, v: Val, t: int, mx: bool) {
         c.live(mut &results)
     }
     if !hasElse { c.err(n.line, "a match on " + c.tstr(t) + " needs an else arm (it is not exhaustive)") }
-    c.emit("}")
+    c.emit(c.x.send())
     c.joinAt(&results, &ends, n.line)
 }
 
@@ -2124,9 +2143,9 @@ fn (c: mut &Checker) expr(e: int, exp: int): Val {
         return c.xSub(e, mut1)
     }
     return match k {
-        sx.N_CHAR { rv("((uint8_t)" + intToStr(c.nd(e).a) + ")", sema.T_BYTE) }
+        sx.N_CHAR { rv(c.x.pcast(c.ct("uint8_t"), c.lit(c.nd(e).a)), sema.T_BYTE) }
         sx.N_STR { rv(c.hole(mkHole(H_STR, -1, c.nd(e).s)), sema.T_STR) }
-        sx.N_BOOL { rv(if c.flag(e, sx.TRUE) { "true" } else { "false" }, sema.T_BOOL) }
+        sx.N_BOOL { rv(c.nm(if c.flag(e, sx.TRUE) { "true" } else { "false" }), sema.T_BOOL) }
         sx.N_TARG { c.err(c.line(e), "a type is not a value") }
         sx.N_FRAC { c.xFrac(c.nd(e).s, c.line(e), exp) }
         sx.N_NAME { c.xName(e, exp) }
@@ -2150,24 +2169,29 @@ fn (c: mut &Checker) expr(e: int, exp: int): Val {
 // Read a value: a borrow of a copy type reads what it points to.
 fn (c: mut &Checker) rd(v: Val): Val { return if c.pg.tk(v.t) == sema.TK_REF { c.deref(v) } else { v } }
 
-pub fn cint(v: num.Big, t: int): str {
+// The C constant v of the integer (or float) type t.
+pub fn cint(x: mut &tm.Arena, v: num.Big, t: int): int {
     if t == sema.T_I128 || t == sema.T_U128 {
         let ct = if t == sema.T_I128 { "__int128" } else { "unsigned __int128" }
         let u = num.bigMask(v, 128)
         let hi = num.bigShr(u, 64)
         let lo = num.bigMask(u, 64)
-        return "((" + ct + ")(((unsigned __int128)" + num.bigStr(hi) + "ULL << 64) | " + num.bigStr(lo) + "ULL))"
+        let h = x.par(x.bin("<<", x.cast(x.ct("unsigned __int128"), x.num(num.bigStr(hi) + "ULL")), x.num("64")))
+        return x.pcast(x.ct(ct), x.par(x.bin("|", h, x.num(num.bigStr(lo) + "ULL"))))
     }
     if t == sema.T_INT {
         let s = num.bigStr(v)
-        return if s == "-9223372036854775808" { "(-9223372036854775807LL-1)" } else { s + "LL" }
+        return x.num(if s == "-9223372036854775808" { INT_MIN_C } else { s + "LL" })
     }
-    if t == sema.T_U64 { return num.bigStr(v) + "ULL" }
-    if t == sema.T_FLOAT { return num.pyFloatRepr(num.bigToFloat(v)) }
-    return "((" + CTYPES[t] + ")" + num.bigStr(v) + ")"
+    if t == sema.T_U64 { return x.num(num.bigStr(v) + "ULL") }
+    if t == sema.T_FLOAT { return x.num(num.pyFloatRepr(num.bigToFloat(v))) }
+    return x.pcast(x.ct(CTYPES[t]), x.num(num.bigStr(v)))
 }
 
-fn (c: mut &Checker) cint(v: num.Big, t: int): str { return cint(v, t) }
+// The C of the least int64 (one constant of tmpl.X_NUM).
+pub const INT_MIN_C = "(-9223372036854775807LL-1)"
+
+fn (c: mut &Checker) cint(v: num.Big, t: int): int { return cint(mut &c.x, v, t) }
 
 fn (c: mut &Checker) xInt(v: num.Big, line: int, exp: int): Val {
     let t = if exp >= 0 && (exp < sema.NINTS || exp == sema.T_FLOAT) { exp } else { sema.T_INT }
@@ -2175,13 +2199,13 @@ fn (c: mut &Checker) xInt(v: num.Big, line: int, exp: int): Val {
     if !sema.inRange(v, t) {
         c.err(line, "integer literal " + num.bigStr(v) + " does not fit " + sema.PRIM_NAMES[t] + " (out of range)")
     }
-    return rv(cint(v, t), t)
+    return rv(c.cint(v, t), t)
 }
 
 fn (c: mut &Checker) fconst(text: str, line: int): Val {
     let x = num.floatOfText(text)
     if x != x || x - x != x - x { c.err(line, "float constant out of range (overflow)") }
-    return rv(num.pyFloatRepr(x), sema.T_FLOAT)
+    return rv(c.x.num(num.pyFloatRepr(x)), sema.T_FLOAT)
 }
 
 // SPEC 7.3: a float when float is expected, else fromFraction(units: i128, scale: int).
@@ -2229,8 +2253,8 @@ fn (c: mut &Checker) xFrac(text: str, line: int, exp: int): Val {
             " does not fit an int")
     }
     var args: []Arg = []
-    append(mut &args, Arg{isVal: true, n: -1, v: rv(cint(units, sema.T_I128), sema.T_I128)})
-    append(mut &args, Arg{isVal: true, n: -1, v: rv(num.bigStr(scale) + "LL", sema.T_INT)})
+    append(mut &args, Arg{isVal: true, n: -1, v: rv(c.cint(units, sema.T_I128), sema.T_I128)})
+    append(mut &args, Arg{isVal: true, n: -1, v: rv(c.x.num(num.bigStr(scale) + "LL"), sema.T_INT)})
     if exp >= 0 {
         let sig = c.assocSig(exp, "fromFraction", line, true)
         if sig.kind >= 0 && len(sig.params) == 2 && c.pg.subst(sig.params[0], &sig.bind) == sema.T_I128 &&
@@ -2429,7 +2453,7 @@ fn (c: mut &Checker) staticValue(st: St, e: int, exp: int): Val {
         if c.pg.globals[di].isOnce {
             c.err(line, name + " is a set-once global: use " + name + ".get(), .set(v) or .isSet()")
         }
-        var v = val(c.pg.globals[di].cname, c.pg.globals[di].ty, CAT_PLACE)
+        var v = val(c.nm(c.pg.globals[di].cname), c.pg.globals[di].ty, CAT_PLACE)
         v.mutable = true
         v.gk = sema.D_GLOBAL
         v.gi = di
@@ -2519,25 +2543,25 @@ fn (c: mut &Checker) constVal(k: int, exp: int, line: int): Val {
     var kind = v.kind
     if kind == sema.CK_TABLE {
         if c.pg.tk(ty) == sema.TK_ARR {
-            return rvAt(c.pg.consts[k].cname, c.pg.mkSlice(c.pg.ta(ty), false), c.staticVar(sema.D_CONST, k), "")
+            return rvAt(c.nm(c.pg.consts[k].cname), c.pg.mkSlice(c.pg.ta(ty), false), c.staticVar(sema.D_CONST, k), "")
         }
-        var r = val(c.pg.consts[k].cname, ty, CAT_PLACE)
+        var r = val(c.nm(c.pg.consts[k].cname), ty, CAT_PLACE)
         r.gk = sema.D_CONST
         r.gi = k
         return r
     }
     if kind == sema.CK_TYPED {
-        if ty < sema.NINTS { return rv(cint(v.i, ty), ty) }
-        if ty == sema.T_FLOAT { return rv(num.pyFloatRepr(v.f), sema.T_FLOAT) }
+        if ty < sema.NINTS { return rv(c.cint(v.i, ty), ty) }
+        if ty == sema.T_FLOAT { return rv(c.x.num(num.pyFloatRepr(v.f)), sema.T_FLOAT) }
         kind = if ty == sema.T_BOOL { sema.CK_BOOL } else { sema.CK_STR }
     }
     if kind == sema.CK_INT {
-        if ty == sema.T_BYTE { return rv("((uint8_t)" + num.bigStr(v.i) + ")", sema.T_BYTE) }
+        if ty == sema.T_BYTE { return rv(c.x.pcast(c.ct("uint8_t"), c.x.num(num.bigStr(v.i))), sema.T_BYTE) }
         return c.xInt(v.i, line, exp)
     }
     if kind == sema.CK_FRAC { return c.xFrac(v.s, line, exp) }
-    if kind == sema.CK_FLOAT { return rv(num.pyFloatRepr(v.f), sema.T_FLOAT) }
-    if kind == sema.CK_BOOL { return rv(if v.b { "true" } else { "false" }, sema.T_BOOL) }
+    if kind == sema.CK_FLOAT { return rv(c.x.num(num.pyFloatRepr(v.f)), sema.T_FLOAT) }
+    if kind == sema.CK_BOOL { return rv(c.nm(if v.b { "true" } else { "false" }), sema.T_BOOL) }
     return rv(c.hole(mkHole(H_STR, -1, v.s)), sema.T_STR)
 }
 
@@ -2575,7 +2599,7 @@ fn (c: mut &Checker) fieldOf(v0: Val, name: str, line: int): Val {
     let env = c.pg.declEnv(t)
     let ft = c.pg.subst(c.pg.types[d].fields[fi].ty, &env)
     let sep = if c.pg.types[d].value { "." } else { "->" }
-    var r = val(v.c + sep + "f_" + name, ft, if v.cat != CAT_RV { CAT_PLACE } else { CAT_RV })
+    var r = val(c.x.member(v.c, sep, "f_" + name), ft, if v.cat != CAT_RV { CAT_PLACE } else { CAT_RV })
     r.root = v.root
     r.path = pathAdd(v.path, name)
     r.mutable = v.mutable
@@ -2602,7 +2626,7 @@ fn (c: mut &Checker) xIndex(e: int, exp: int): Val {
     if v.t == sema.T_STR {
         v = c.before1(v, ix)
         let i = c.intIndex(ix)
-        return rv("rt_str_byte(" + v.c + ", " + i + ", " + c.W(n.line) + ")", sema.T_BYTE)
+        return rv(c.x.call("rt_str_byte", [v.c, i, c.W(n.line)]), sema.T_BYTE)
     }
     let k = c.pg.tk(v.t)
     if k != sema.TK_ARR && k != sema.TK_SLICE { c.err(n.line, "cannot index a " + c.tstr(v.t)) }
@@ -2613,7 +2637,9 @@ fn (c: mut &Checker) xIndex(e: int, exp: int): Val {
     let i = c.intIndex(ix)
     c.cutPending(mark)
     let et = c.pg.ta(v.t)
-    let cc = "((" + c.T(et) + "*)(" + v.c + ").data)[rt_idx(" + i + ", (" + v.c + ").len, " + c.W(n.line) + ")]"
+    let pv = c.x.par(v.c)
+    let data = c.x.pcast(c.x.ptr(c.T(et)), c.x.dot(pv, "data"))
+    let cc = c.x.idx(data, c.x.call("rt_idx", [i, c.x.dot(pv, "len"), c.W(n.line)]))
     var r = val(cc, et, CAT_PLACE)
     r.root = v.root
     r.path = pathAdd(v.path, "[]")
@@ -2636,18 +2662,18 @@ fn (c: mut &Checker) xSub(e: int, mut1: bool): Val {
     let W = c.W(n.line)
     if v.t == sema.T_STR {
         v = c.beforeOpt(v, n.b, n.c)
-        let lo = if n.b >= 0 { c.intIndex(n.b) } else { "0" }
-        let hi = if n.c >= 0 { c.intIndex(n.c) } else { "(" + v.c + ").len" }
-        return c.holdtmp("rt_str_sub(" + v.c + ", " + lo + ", " + hi + ", " + W + ")", sema.T_STR)
+        let lo = if n.b >= 0 { c.intIndex(n.b) } else { c.lit(0) }
+        let hi = if n.c >= 0 { c.intIndex(n.c) } else { c.x.dot(c.x.par(v.c), "len") }
+        return c.holdtmp(c.x.call("rt_str_sub", [v.c, lo, hi, W]), sema.T_STR)
     }
     let k = c.pg.tk(v.t)
     if k != sema.TK_ARR && k != sema.TK_SLICE { c.err(n.line, "cannot slice a " + c.tstr(v.t)) }
-    var base = ""
+    var base = -1
     if k == sema.TK_ARR {
         if v.cat == CAT_RV { v = c.holdtmp(v.c, v.t) }
         if v.gk >= 0 { c.err(n.line, "cannot slice global '" + c.gname(v.gk, v.gi) + "'") }
         if mut1 && !v.mutable { c.immutable(v, n.line, "take a mut slice of") }
-        base = "rt_as_slice(&" + v.c + ")"
+        base = c.x.call("rt_as_slice", [c.x.pre("&", v.c)])
     } else {
         if mut1 && !c.pg.tm(v.t) { c.err(n.line, "cannot make a mut slice from a shared slice") }
         base = v.c
@@ -2656,13 +2682,13 @@ fn (c: mut &Checker) xSub(e: int, mut1: bool): Val {
     if c.actsOpt(n.b) || c.actsOpt(n.c) { v = c.seq(v) }
     let mark = len(c.cx.pending)
     c.hold(v, HM_SHARED, c.newCid(), n.line)
-    let lo = if n.b >= 0 { c.intIndex(n.b) } else { "0" }
-    let hi = if n.c >= 0 { c.intIndex(n.c) } else { "(" + base + ").len" }
+    let lo = if n.b >= 0 { c.intIndex(n.b) } else { c.lit(0) }
+    let hi = if n.c >= 0 { c.intIndex(n.c) } else { c.x.dot(c.x.par(base), "len") }
     c.cutPending(mark)
     let sv = c.fresh("sv")
     let ct = c.T(c.pg.ta(v.t))
-    c.emit("obx_slice " + sv + " = rt_sub(" + base + ", " + lo + ", " + hi + ", sizeof(" + ct + "), " + W + ");")
-    return rvAt(sv, c.pg.mkSlice(c.pg.ta(v.t), mut1), v.root, v.path)
+    c.emit(c.x.decl(c.ct("obx_slice"), sv, c.x.call("rt_sub", [base, lo, hi, c.x.szof(ct), W])))
+    return rvAt(c.nm(sv), c.pg.mkSlice(c.pg.ta(v.t), mut1), v.root, v.path)
 }
 
 fn (c: mut &Checker) actsOpt(e: int): bool { return e >= 0 && c.acts(e) }
@@ -2675,13 +2701,13 @@ fn (c: mut &Checker) beforeOpt(v: Val, a: int, b: int): Val {
     return c.before(v, &later)
 }
 
-fn (c: mut &Checker) intIndex(ie: int): str {
+fn (c: mut &Checker) intIndex(ie: int): int {
     let i = c.rd(c.expr(ie, sema.T_INT))
     if i.t != sema.T_INT { c.err(c.line(ie), "an index must be an int, not " + c.tstr(i.t)) }
     if c.kind(ie) == sx.N_INT { return i.c }
     let n = c.fresh("ix")
-    c.emit("int64_t " + n + " = " + i.c + ";")
-    return n
+    c.emit(c.x.decl(c.ct("int64_t"), n, i.c))
+    return c.nm(n)
 }
 
 fn (c: mut &Checker) xBorrow(e: int, exp: int): Val {
@@ -2702,9 +2728,14 @@ fn (c: mut &Checker) xBorrow(e: int, exp: int): Val {
 
 // s[i] on a str is a byte read, not a place (SPEC 7.4): it cannot be assigned or borrowed mut.
 fn (c: &Checker) strByteRO(e: int, v: Val, line: int) {
-    if c.kind(e) == sx.N_INDEX && startsWith(v.c, "rt_str_byte(") {
+    if c.kind(e) == sx.N_INDEX && c.isCallTo(v.c, "rt_str_byte") {
         c.err(line, "a str is immutable: its bytes cannot be assigned or borrowed mut")
     }
+}
+
+// Whether n is a call of the function named f.
+fn (c: &Checker) isCallTo(n: int, f: str): bool {
+    return n >= 0 && c.x.k(n) == tm.X_CALL && c.x.k(c.x.nodes[n].a) == tm.X_NAME && c.x.nodes[c.x.nodes[n].a].s == f
 }
 
 fn (c: mut &Checker) xUn(e: int, exp: int): Val {
@@ -2713,15 +2744,15 @@ fn (c: mut &Checker) xUn(e: int, exp: int): Val {
     let t = v.t
     if n.s == "!" {
         if t != sema.T_BOOL { c.err(n.line, "! needs a bool, not " + c.tstr(t)) }
-        return rv("(!" + v.c + ")", sema.T_BOOL)
+        return rv(c.x.par(c.x.pre("!", v.c)), sema.T_BOOL)
     }
     if n.s == "~" {
         if t >= sema.NINTS { c.err(n.line, "~ needs an integer, not " + c.tstr(t)) }
-        return rv("((" + CTYPES[t] + ")~" + v.c + ")", t)
+        return rv(c.x.pcast(c.ct(CTYPES[t]), c.x.pre("~", v.c)), t)
     }
     if c.pg.tk(t) == sema.TK_PRIM {
-        if t < sema.NINTS { return rv("rt_neg_" + sema.PRIM_NAMES[t] + "(" + v.c + ", " + c.W(n.line) + ")", t) }
-        if t == sema.T_FLOAT { return rv("(-" + v.c + ")", t) }
+        if t < sema.NINTS { return rv(c.x.call("rt_neg_" + sema.PRIM_NAMES[t], [v.c, c.W(n.line)]), t) }
+        if t == sema.T_FLOAT { return rv(c.x.par(c.x.pre("-", v.c)), t) }
         c.err(n.line, "unary - is not defined for " + c.tstr(t))
     }
     let none: []Val = []
@@ -2850,20 +2881,17 @@ fn (c: mut &Checker) xClosure(e: int, exp: int): Val {
         c.frozen(cap, if cm { FR_MUT } else { FR_READ }, n.line)
         append(mut &caps, Cap{v: cap, m: cm})
     }
-    var en = "NULL"
+    var en = c.nm("NULL")
     if len(caps) > 0 {
-        en = c.fresh("ce")
-        var b = newStrBuf()
-        b.add("void* " + en + "[" + intToStr(len(caps)) + "] = {")
-        for i in 0..len(caps) {
-            if i > 0 { b.add(", ") }
-            b.add("(void*)&" + c.vars[caps[i].v].c)
-        }
-        b.add("};")
-        c.emit(b.toStr())
+        let ce = c.fresh("ce")
+        let vp = c.ct("void*")
+        var its: []int = []
+        for i in 0..len(caps) { append(mut &its, c.x.cast(vp, c.x.pre("&", c.vars[caps[i].v].c))) }
+        c.emit(c.x.declArr(vp, ce, len(caps), c.x.init(its)))
+        en = c.nm(ce)
     }
-    let h = c.hole(Hole{k: H_CL, t: -1, f: k, s: "", r: "", args: "", nargs: 0})
-    var r = rv("((obx_clo){(void*)" + h + ", (void*)" + en + "})", c.pg.mkClo(&ptys, ret))
+    let h = c.hole(Hole{k: H_CL, t: -1, f: k, s: "", x: -1, r: -1, args: []})
+    var r = rv(c.cloVal(h, en), c.pg.mkClo(&ptys, ret))
     append(mut &c.capl, caps)
     r.caps = len(c.capl) - 1
     return r
@@ -2876,21 +2904,22 @@ fn (c: mut &Checker) logic(e: int): Val {
     let lv = c.rd(c.expr(n.a, sema.T_BOOL))
     if lv.t != sema.T_BOOL { c.err(n.line, n.s + " needs bool operands, not " + c.tstr(lv.t)) }
     let ln = c.fresh("b")
-    c.emit("bool " + ln + " = " + lv.c + ";")
+    c.emit(c.x.decl(c.ct("bool"), ln, lv.c))
+    let lnn = c.nm(ln)
     let fr = c.popFrame()
     c.dropFrame(&fr)
-    c.emit("if (" + (if n.s == "&&" { "" } else { "!" }) + ln + ") {")
+    c.emit(c.x.sif(if n.s == "&&" { lnn } else { c.x.pre("!", lnn) }))
     c.cx.ind += 1
     c.pushFrame()
     let rv1 = c.rd(c.expr(n.b, sema.T_BOOL))
     if rv1.t != sema.T_BOOL { c.err(n.line, n.s + " needs bool operands, not " + c.tstr(rv1.t)) }
-    c.emit(ln + " = " + rv1.c + ";")
+    c.emitx(c.x.asg(lnn, rv1.c))
     let fr2 = c.popFrame()
     c.dropFrame(&fr2)
     c.cx.ind -= 1
-    c.emit("}")
+    c.emit(c.x.send())
     pop(mut &c.cx.nomove)
-    return rv(ln, sema.T_BOOL)
+    return rv(lnn, sema.T_BOOL)
 }
 
 // lv: the evaluated left operand; r: the right operand (a node, or a value).
@@ -2916,31 +2945,32 @@ fn (c: mut &Checker) binop(op: str, lv0: Val, r: Arg, line: int, exp: int, hasHe
             if lt >= sema.NINTS || rt != sema.T_INT {
                 c.err(line, op + " needs an integer and an int shift count, not " + c.tstr(lt) + " and " + c.tstr(rt))
             }
-            return rv("rt_" + (if op == "<<" { "shl" } else { "shr" }) + "_" + nm + "(" + lv.c + ", " + rv1.c + ", " + W + ")", lt)
+            return rv(c.x.call("rt_" + (if op == "<<" { "shl" } else { "shr" }) + "_" + nm, [lv.c, rv1.c, W]), lt)
         }
         if lt != rt {
             c.err(line, "operator " + op + " needs operands of the same type, not " + c.tstr(lt) + " and " + c.tstr(rt))
         }
         if lt < sema.NINTS {
-            if cmp { return rv("(" + lv.c + " " + op + " " + rv1.c + ")", sema.T_BOOL) }
+            if cmp { return rv(c.x.par(c.x.bin(op, lv.c, rv1.c)), sema.T_BOOL) }
             let f = match op { "+" { "add" } "-" { "sub" } "*" { "mul" } "/" { "div" } "%" { "rem" } else { "" } }
-            if f != "" { return rv("rt_" + f + "_" + nm + "(" + lv.c + ", " + rv1.c + ", " + W + ")", lt) }
+            if f != "" { return rv(c.x.call("rt_" + f + "_" + nm, [lv.c, rv1.c, W]), lt) }
             let w = match op { "+%" { "add" } "-%" { "sub" } "*%" { "mul" } else { "" } }
-            if w != "" { return rv("rt_w" + w + "_" + nm + "(" + lv.c + ", " + rv1.c + ")", lt) }
+            if w != "" { return rv(c.x.call("rt_w" + w + "_" + nm, [lv.c, rv1.c]), lt) }
             if op == "&" || op == "|" || op == "^" {
-                return rv("((" + CTYPES[lt] + ")(" + lv.c + " " + op + " " + rv1.c + "))", lt)
+                return rv(c.x.pcast(c.ct(CTYPES[lt]), c.x.par(c.x.bin(op, lv.c, rv1.c))), lt)
             }
         } else if lt == sema.T_FLOAT {
-            if cmp { return rv("(" + lv.c + " " + op + " " + rv1.c + ")", sema.T_BOOL) }
-            if op == "+" || op == "-" || op == "*" || op == "/" { return rv("(" + lv.c + " " + op + " " + rv1.c + ")", lt) }
+            if cmp { return rv(c.x.par(c.x.bin(op, lv.c, rv1.c)), sema.T_BOOL) }
+            if op == "+" || op == "-" || op == "*" || op == "/" { return rv(c.x.par(c.x.bin(op, lv.c, rv1.c)), lt) }
         } else if (lt == sema.T_BOOL || lt == sema.T_PTR) && (op == "==" || op == "!=") {
-            return rv("(" + lv.c + " " + op + " " + rv1.c + ")", sema.T_BOOL)
+            return rv(c.x.par(c.x.bin(op, lv.c, rv1.c)), sema.T_BOOL)
         } else if lt == sema.T_STR {
-            if op == "+" { return c.holdtmp("rt_str_concat(" + lv.c + ", " + rv1.c + ")", sema.T_STR) }
+            if op == "+" { return c.holdtmp(c.x.call("rt_str_concat", [lv.c, rv1.c]), sema.T_STR) }
             if op == "==" || op == "!=" {
-                return rv("(" + (if op == "==" { "" } else { "!" }) + "rt_str_eq(" + lv.c + ", " + rv1.c + "))", sema.T_BOOL)
+                let eq = c.x.call("rt_str_eq", [lv.c, rv1.c])
+                return rv(c.x.par(if op == "==" { eq } else { c.x.pre("!", eq) }), sema.T_BOOL)
             }
-            if cmp { return rv("(rt_str_cmp(" + lv.c + ", " + rv1.c + ") " + op + " 0)", sema.T_BOOL) }
+            if cmp { return rv(c.x.par(c.x.bin(op, c.x.call("rt_str_cmp", [lv.c, rv1.c]), c.lit(0))), sema.T_BOOL) }
         }
         c.err(line, "operator " + op + " is not defined for " + c.tstr(lt))
     }
@@ -2962,15 +2992,15 @@ fn (c: mut &Checker) binop(op: str, lv0: Val, r: Arg, line: int, exp: int, hasHe
         var b = rv1
         if a.cat == CAT_RV && !c.isCopy(lt) { a = c.holdtmp(a.c, lt) }
         if b.cat == CAT_RV && !c.isCopy(lt) { b = c.holdtmp(b.c, lt) }
-        return rv("((" + a.c + ")" + sep + "tag " + op + " (" + b.c + ")" + sep + "tag)", sema.T_BOOL)
+        return rv(c.x.par(c.x.bin(op, c.x.member(c.x.par(a.c), sep, "tag"), c.x.member(c.x.par(b.c), sep, "tag"))), sema.T_BOOL)
     }
     if op == "==" || op == "!=" {
         let r2 = c.opCall(lv, "eq", &args, line, op)
-        return rv(if op == "==" { r2.c } else { "(!" + r2.c + ")" }, sema.T_BOOL)
+        return rv(if op == "==" { r2.c } else { c.x.par(c.x.pre("!", r2.c)) }, sema.T_BOOL)
     }
     if cmp {
         let r2 = c.opCall(lv, "cmp", &args, line, op)
-        return rv("(" + r2.c + " " + op + " 0)", sema.T_BOOL)
+        return rv(c.x.par(c.x.bin(op, r2.c, c.lit(0))), sema.T_BOOL)
     }
     c.err(line, "operator " + op + " is not defined for " + c.tstr(lt))
 }
@@ -3012,11 +3042,11 @@ fn (c: mut &Checker) opCall(recv: Val, name: str, args: &[]Val, line: int, op: s
 // if c { a } else { b } (SPEC 7.8): one branch runs; the branches join like an if statement.
 type Branch = record {
     v: Val
-    lines: []str
+    lines: []int
     snap: []int
 }
 
-fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: str): Branch {
+fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: int): Branch {
     c.restore(snap)
     let saved = replace(mut &c.cx.lines, [])
     c.cx.dead = false
@@ -3036,7 +3066,7 @@ fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: str): Branch {
             if c.tmps[t].live { live = true }
         }
         if len(c.cx.lines) > 0 || live {       // stored before the temporaries are dropped
-            c.emit(r + " = " + v.c + ";")
+            c.emitx(c.x.asg(r, v.c))
             v.c = r
         }
     }
@@ -3055,7 +3085,8 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
         c.err(n.line, "an if expression cannot give a borrow, a slice or a closure")
     }
     let snap = c.snapshot()
-    let r = c.fresh("ifx")
+    let rn = c.fresh("ifx")
+    let r = c.nm(rn)
     var a = Branch{v: voidVal(false), lines: [], snap: []}
     var b = Branch{v: voidVal(false), lines: [], snap: []}
     if exp == -1 && isLitNode(c.kind(n.b)) && !isLitNode(c.kind(n.c)) {     // a literal takes the other's type
@@ -3081,28 +3112,28 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
     }
     if !b.v.noreturn { c.ifxDrops(mut &b, &drops[k], r) }
     if len(a.lines) == 0 && len(b.lines) == 0 {
-        let text = "(" + cv.c + " ? " + a.v.c + " : " + b.v.c + ")"
+        let text = c.x.par(c.x.cond(cv.c, a.v.c, b.v.c))
         return if c.pod(t) { rv(text, t) } else { c.holdtmp(text, t) }
     }
     if !c.cx.dead {
         let ct = c.T(t)
-        c.emit(ct + " " + r + ";")
+        c.emit(c.x.decl(ct, rn, -1))
     }
-    c.emit("if (" + cv.c + ") {")
+    c.emit(c.x.sif(cv.c))
     for x in a.lines { append(mut &c.cx.lines, x) }
     if !a.v.noreturn && a.v.c != r {
         c.cx.ind += 1
-        c.emit(r + " = " + a.v.c + ";")
+        c.emitx(c.x.asg(r, a.v.c))
         c.cx.ind -= 1
     }
-    c.emit("} else {")
+    c.emit(c.x.selse())
     for x in b.lines { append(mut &c.cx.lines, x) }
     if !b.v.noreturn && b.v.c != r {
         c.cx.ind += 1
-        c.emit(r + " = " + b.v.c + ";")
+        c.emitx(c.x.asg(r, b.v.c))
         c.cx.ind -= 1
     }
-    c.emit("}")
+    c.emit(c.x.send())
     if c.cx.dead {
         c.cx.dead = false
         return voidVal(true)
@@ -3110,22 +3141,19 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
     return c.tmpval(r, t)
 }
 
-fn (c: mut &Checker) ifxDrops(br: mut &Branch, vs: &[]int, r: str) {
+fn (c: mut &Checker) ifxDrops(br: mut &Branch, vs: &[]int, r: int) {
     let ls = c.joinDropLines(vs, c.cx.ind + 1)
     if len(ls) == 0 { return }
     if br.v.c != r {
-        var b = newStrBuf()
-        for i in 0..c.cx.ind + 1 { b.add("  ") }
-        b.add(r + " = " + br.v.c + ";")
-        append(mut &br.lines, b.toStr())
+        append(mut &br.lines, c.x.line(c.cx.ind + 1, c.x.sx(c.x.asg(r, br.v.c))))
         br.v.c = r
     }
     for x in ls { append(mut &br.lines, x) }
 }
 
 // match x { Arm { e } ... } (SPEC 7.8): the match statement, each arm storing its value in r.
-// A literal arm seen before the type is known is written once the other arms give it.
-const PLACEHOLDER = "\x00"
+// A literal arm seen before the type is known is written once the other arms give it (in
+// the place of a tmpl.Z_HOLDER line).
 
 fn (c: mut &Checker) mxBody(x: int) {
     let top = len(c.mxs) - 1
@@ -3147,7 +3175,7 @@ fn (c: mut &Checker) mxBody(x: int) {
                 c.tstr(v.t))
         }
         let cc = c.consume(v, c.line(x))
-        c.emit(c.mxs[top].r + " = " + cc + ";")
+        c.emitx(c.x.asg(c.mxs[top].r, cc))
     }
     c.dropFrame(&fr)
 }
@@ -3158,7 +3186,7 @@ fn (c: mut &Checker) mxArm(x: int) {
         append(mut &c.mxs[top].lits, len(c.cx.lines))
         append(mut &c.mxs[top].lits, x)
         append(mut &c.mxs[top].lits, c.cx.ind)
-        append(mut &c.cx.lines, PLACEHOLDER)
+        append(mut &c.cx.lines, c.x.holder())
     } else {
         c.mxBody(x)
     }
@@ -3170,14 +3198,15 @@ fn (c: mut &Checker) xMatchx(e: int, exp: int): Val {
     if ek == sema.TK_REF || ek == sema.TK_SLICE || ek == sema.TK_CLO {
         c.err(n.line, "a match expression cannot give a borrow, a slice or a closure")
     }
-    let r = c.fresh("mx")
+    let rn = c.fresh("mx")
+    let r = c.nm(rn)
     let at = len(c.cx.lines)
     append(mut &c.mxs, MatchX{r: r, t: exp, lits: []})
     c.sMatch(e, true)
     let top = len(c.mxs) - 1
     let lits = copyInts(&c.mxs[top].lits)
     let saved = c.cx.ind
-    var done: [][]str = []
+    var done: [][]int = []
     var at2: []int = []
     var i = 0
     while i < len(lits) {
@@ -3207,16 +3236,14 @@ fn (c: mut &Checker) xMatchx(e: int, exp: int): Val {
         c.cx.dead = false
         return voidVal(true)
     }
-    var b = newStrBuf()
-    for k in 0..c.cx.ind { b.add("  ") }
     let ct = c.T(t)
-    b.add(ct + " " + r + ";")
-    var nl: []str = []
+    let dl = c.x.line(c.cx.ind, c.x.decl(ct, rn, -1))
+    var nl: []int = []
     for li in 0..len(c.cx.lines) {
-        if li == at { append(mut &nl, b.toStr()) }
+        if li == at { append(mut &nl, dl) }
         append(mut &nl, c.cx.lines[li])
     }
-    if at == len(c.cx.lines) { append(mut &nl, b.toStr()) }
+    if at == len(c.cx.lines) { append(mut &nl, dl) }
     c.cx.lines = nl
     return c.tmpval(r, t)
 }
@@ -3270,36 +3297,38 @@ fn (c: mut &Checker) xTry(e: int, exp: int): Val {
     let sep = if value { "." } else { "->" }
     let sn = c.fresh("tr")
     let ct = c.T(t)
-    c.emit(ct + " " + sn + " = " + c.consume(v, n.line) + ";")
-    c.emit("if (" + sn + sep + "tag == " + intToStr(c.pg.variants[a.er].index) + ") {")
+    let cv = c.consume(v, n.line)
+    c.emit(c.x.decl(ct, sn, cv))
+    let snn = c.nm(sn)
+    c.emit(c.x.sif(c.x.bin("==", c.x.member(snn, sep, "tag"), c.lit(c.pg.variants[a.er].index))))
     c.cx.ind += 1
     let en = c.fresh("e")
     let et = c.T(a.erT)
-    c.emit(et + " " + en + " = " + sn + sep + "u.V_Err.f_" + c.pg.variants[a.er].fields[0].name + ";")
-    if !value { c.emit("rt_free(" + sn + ");") }
-    let rvc = c.build(ret, r.er, &[en])
+    c.emit(c.x.decl(et, en, c.x.dot(c.x.dot(c.x.member(snn, sep, "u"), "V_Err"), "f_" + c.pg.variants[a.er].fields[0].name)))
+    if !value { c.emitx(c.x.call("rt_free", [snn])) }
+    let rvc = c.build(ret, r.er, &[c.nm(en)])
     let rn = c.fresh("r")
     let rt = c.T(ret)
-    c.emit(rt + " " + rn + " = " + rvc + ";")
+    c.emit(c.x.decl(rt, rn, rvc))
     c.cleanup(0, 0)
-    c.emit("return " + rn + ";")
+    c.emit(c.x.sret(c.nm(rn)))
     c.cx.ind -= 1
-    c.emit("}")
-    var oc = sn + sep + "u.V_Ok.f_" + c.pg.variants[a.ok].fields[0].name
+    c.emit(c.x.send())
+    var oc = c.x.dot(c.x.dot(c.x.member(snn, sep, "u"), "V_Ok"), "f_" + c.pg.variants[a.ok].fields[0].name)
     if !value {
         let on = c.fresh("ok")
         let ot = c.T(a.okT)
-        c.emit(ot + " " + on + " = " + oc + ";")
-        c.emit("rt_free(" + sn + ");")
-        oc = on
+        c.emit(c.x.decl(ot, on, oc))
+        c.emitx(c.x.call("rt_free", [snn]))
+        oc = c.nm(on)
     }
     return c.holdtmp(oc, a.okT)
 }
 
 // ---- literals and constructors
 
-// C text that builds a value of record or closed type t (variant vr, or -1) from field C texts.
-fn (c: mut &Checker) build(t: int, vr: int, cs: &[]str): str {
+// The C that builds a value of record or closed type t (variant vr, or -1) from the fields' C.
+fn (c: mut &Checker) build(t: int, vr: int, cs: &[]int): int {
     let d = c.pg.ta(t)
     var names: []str = []
     if vr >= 0 {
@@ -3309,26 +3338,27 @@ fn (c: mut &Checker) build(t: int, vr: int, cs: &[]str): str {
     }
     let m = if len(names) < len(cs) { len(names) } else { len(cs) }
     if c.pg.types[d].value {
-        var b = newStrBuf()
-        for i in 0..m {
-            if i > 0 { b.add(", ") }
-            b.add(".f_" + names[i] + " = " + cs[i])
-        }
+        var its: []int = []
+        for i in 0..m { append(mut &its, c.x.desig(".f_" + names[i], cs[i])) }
         let ct = c.T(t)
         if vr >= 0 {
-            return "((" + ct + "){.tag = " + intToStr(c.pg.variants[vr].index) + ", .u.V_" + c.pg.variants[vr].name +
-                " = {" + b.toStr() + "}})"
+            let tag = c.x.desig(".tag", c.lit(c.pg.variants[vr].index))
+            let u = c.x.desig(".u.V_" + c.pg.variants[vr].name, c.x.init(its))
+            return c.x.par(c.x.clit(ct, c.x.init([tag, u])))
         }
-        let inner = if m == 0 { "0" } else { b.toStr() }
-        return "((" + ct + "){" + inner + "})"
+        let inner = if m == 0 { [c.lit(0)] } else { its }
+        return c.x.par(c.x.clit(ct, c.x.init(inner)))
     }
     let n = c.fresh("o")
     let ct = c.T(t)
-    c.emit(ct + " " + n + " = rt_alloc(sizeof(*" + n + "));")
-    if vr >= 0 { c.emit(n + "->tag = " + intToStr(c.pg.variants[vr].index) + ";") }
-    let pre = if vr >= 0 { n + "->u.V_" + c.pg.variants[vr].name + "." } else { n + "->" }
-    for i in 0..m { c.emit(pre + "f_" + names[i] + " = " + cs[i] + ";") }
-    return n
+    let nn = c.nm(n)
+    c.emit(c.x.decl(ct, n, c.x.call("rt_alloc", [c.x.szof(c.x.pre("*", nn))])))
+    if vr >= 0 { c.emitx(c.x.asg(c.x.arrow(nn, "tag"), c.lit(c.pg.variants[vr].index))) }
+    for i in 0..m {
+        let f = if vr >= 0 { c.x.dot(c.x.dot(c.x.arrow(nn, "u"), "V_" + c.pg.variants[vr].name), "f_" + names[i]) } else { c.x.arrow(nn, "f_" + names[i]) }
+        c.emitx(c.x.asg(f, cs[i]))
+    }
+    return nn
 }
 
 fn (c: mut &Checker) constructVariant(st: St, args0: &[]Arg, line: int, exp: int, named: int): Val {
@@ -3527,18 +3557,19 @@ fn (c: mut &Checker) xArrlit(e: int, exp: int): Val {
     }
     if et == -1 { c.err(n.line, "cannot infer the element type of [] here: it needs an expected type") }
     if et == sema.T_VOID { c.err(n.line, "an array element needs a value") }
-    var cs: []str = []
+    var cs: []int = []
     for v in vals { append(mut &cs, c.consume(v, n.line)) }
     let an = c.fresh("a")
     let ct = c.T(et)
-    c.emit("obx_arr " + an + " = rt_arr_new(" + intToStr(len(cs)) + ", sizeof(" + ct + "));")
+    c.emit(c.x.decl(c.ct("obx_arr"), an, c.x.call("rt_arr_new", [c.lit(len(cs)), c.x.szof(ct)])))
+    let ann = c.nm(an)
     for i in 0..len(cs) {
         let ct2 = c.T(et)
-        c.emit("((" + ct2 + "*)" + an + ".data)[" + intToStr(i) + "] = " + cs[i] + ";")
+        c.emitx(c.x.asg(c.x.idx(c.x.pcast(c.x.ptr(ct2), c.x.dot(ann, "data")), c.lit(i)), cs[i]))
     }
     let at = c.pg.mkArr(et)
-    let id = c.newTmp(an, at)
-    var r = val(an, at, CAT_TMP)
+    let id = c.newTmp(ann, at)
+    var r = val(ann, at, CAT_TMP)
     r.tmp = id
     r.root = tmpRoot(id)
     r.mutable = true
@@ -3548,7 +3579,7 @@ fn (c: mut &Checker) xArrlit(e: int, exp: int): Val {
 // ---- calls
 
 fn newSig(label: str, kind: int, params: []int, ret: int): Sig {
-    return Sig{label: label, kind: kind, params: params, ret: ret, tps: [], recv: sema.RM_NONE, fd: -1, c: "",
+    return Sig{label: label, kind: kind, params: params, ret: ret, tps: [], recv: sema.RM_NONE, fd: -1, c: -1,
         tpt: -1, bind: [], nown: 0, variant: -1, loc: false, name: ""}
 }
 
@@ -3834,7 +3865,7 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
             }
             if c.late(if isrecv { o.rast } else { an }) {
                 append(mut &lates, Late{v: v, m: pm})
-                if checks(v.c) { append(mut &rechecks, Recheck{pos: pos, v: v}) }
+                if c.checks(v.c) { append(mut &rechecks, Recheck{pos: pos, v: v}) }
             } else {
                 c.hold(v, hm(pm), cid, line)
             }
@@ -3850,7 +3881,7 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
             if v.caps >= 0 {     // rule 3: captures are held while the call runs
                 for k in 0..len(c.capl[v.caps]) {
                     let cp = c.capl[v.caps][k]
-                    c.hold(rvAt("", sema.T_VOID, cp.v, ""), hm(cp.m), cid, line)
+                    c.hold(rvAt(-1, sema.T_VOID, cp.v, ""), hm(cp.m), cid, line)
                 }
             }
             vals[i] = CArg{b: true, v: v}
@@ -3881,14 +3912,14 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
     }
     var last = -1
     for pos in 0..len(order) {
-        if checks(vals[order[pos]].v.c) { last = pos }
+        if c.checks(vals[order[pos]].v.c) { last = pos }
     }
     for r in rechecks {         // the last check in the call's C text needs no statement
         var later = false
         for p in r.pos + 1..len(effs) {
             if effs[p] { later = true }
         }
-        if r.pos != last && later { c.emit("(void)(" + r.v.c + ");") }
+        if r.pos != last && later { c.emitx(c.x.cast(c.ct("void"), c.x.par(r.v.c))) }
     }
     for l in lates { c.take(l.v, hm(l.m), cid, line) }    // SPEC 7.5: taken now, after the arguments
     var missing = newStrBuf()
@@ -3929,13 +3960,13 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
             vals[k].v = c.seq(vals[k].v)
         }
     }
-    var cs: []str = []
+    var cs: []int = []
     for x in vals {
         if x.b || sig.kind == SK_INTR || sig.kind == SK_EXTERN { append(mut &cs, x.v.c) } else { append(mut &cs, c.consume(x.v, line)) }
     }
     c.cutPending(mark)
     let ret = c.pg.subst(sig.ret, &bind)
-    var text = ""
+    var text = -1
     if sig.kind == SK_CTOR {
         return c.holdtmp(c.build(ret, sig.variant, &cs), ret)
     } else if sig.kind == SK_FN {
@@ -3943,59 +3974,57 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         for tp in sig.tps { append(mut &ta, bindGet(&bind, tp)) }
         var h = mkHole(H_FN, c.tuple(&ta), "")
         h.f = sig.fd
-        text = c.hole(h) + "(" + joinStrs(&cs, 0) + ")"
+        text = c.x.callx(c.hole(h), cs)
     } else if sig.kind == SK_IMETH {
-        var b = newStrBuf()
-        for k in 1..len(cs) {
-            if k > 1 { b.addByte(3) }
-            b.add(cs[k])
-        }
-        text = c.hole(Hole{k: H_IMETH, t: sig.tpt, f: sig.recv, s: sig.name, r: cs[0], args: b.toStr(), nargs: len(cs) - 1})
+        var ras: []int = []
+        for k in 1..len(cs) { append(mut &ras, cs[k]) }
+        text = c.hole(Hole{k: H_IMETH, t: sig.tpt, f: sig.recv, s: sig.name, x: -1, r: cs[0], args: ras})
     } else if sig.kind == SK_IASSOC {
-        text = c.hole(mkHole(H_IASSOC, sig.tpt, sig.name)) + "(" + joinStrs(&cs, 0) + ")"
+        text = c.x.callx(c.hole(mkHole(H_IASSOC, sig.tpt, sig.name)), cs)
     } else if sig.kind == SK_FNVAL {
-        text = "(" + sig.c + ")(" + joinStrs(&cs, 0) + ")"
+        text = c.x.callx(c.x.par(sig.c), cs)
     } else if sig.kind == SK_CLO {
         var ps: []int = [sema.T_PTR]
         for p in params { append(mut &ps, p) }
         let ft = c.T(c.pg.mkFn(&ps, sig.ret))
-        var all: []str = ["(" + sig.c + ").env"]
+        var all: []int = [c.x.dot(c.x.par(sig.c), "env")]
         for x in cs { append(mut &all, x) }
-        text = "((" + ft + ")(" + sig.c + ").fn)(" + joinStrs(&all, 0) + ")"
+        text = c.x.callx(c.x.pcast(ft, c.x.dot(c.x.par(sig.c), "fn")), all)
     } else if sig.kind == SK_INTR {
         if sig.loc { append(mut &cs, c.W(line)) }
-        text = sig.c + "(" + joinStrs(&cs, 0) + ")"
+        text = c.x.callx(sig.c, cs)
     } else {
-        var cs2: []str = []
+        var cs2: []int = []
         for k in 0..len(vals) {
             let pk = c.pg.tk(params[k])
             if vals[k].v.t == sema.T_STR {
-                append(mut &cs2, "rt_cstr(" + cs[k] + ", " + c.W(line) + ")")
+                append(mut &cs2, c.x.call("rt_cstr", [cs[k], c.W(line)]))
             } else if pk == sema.TK_SLICE {       // SPEC 12: an array's elements (never a null pointer)
-                append(mut &cs2, "rt_cdata((" + cs[k] + ").data)")
+                append(mut &cs2, c.x.call("rt_cdata", [c.x.dot(c.x.par(cs[k]), "data")]))
             } else if pk == sema.TK_REF && c.pg.tk(c.pg.ta(params[k])) == sema.TK_ARR {
-                append(mut &cs2, "rt_cdata((" + cs[k] + ")->data)")
+                append(mut &cs2, c.x.call("rt_cdata", [c.x.arrow(c.x.par(cs[k]), "data")]))
             } else {
                 append(mut &cs2, cs[k])
             }
         }
-        text = "x_" + c.pg.fns[sig.fd].cname + "(" + joinStrs(&cs2, 0) + ")"
-        if ret == sema.T_STR { text = "rt_str_from_c((void*)" + text + ")" }
+        text = c.x.call("x_" + c.pg.fns[sig.fd].cname, cs2)
+        if ret == sema.T_STR { text = c.x.call("rt_str_from_c", [c.x.cast(c.ct("void*"), text)]) }
         if hasStr {             // free the NUL-terminated copies made for this call after it
             let mk = c.fresh("cm")
-            c.emit("int64_t " + mk + " = rt_cmark();")
+            c.emit(c.x.decl(c.ct("int64_t"), mk, c.x.call("rt_cmark", [])))
+            let free = c.x.call("rt_cfree", [c.nm(mk)])
             if ret != sema.T_VOID && ret != sema.T_NEVER {
                 let v = c.holdtmp(text, ret)
-                c.emit("rt_cfree(" + mk + ");")
+                c.emitx(free)
                 return v
             }
-            c.emit(text + ";")
-            c.emit("rt_cfree(" + mk + ");")
+            c.emitx(text)
+            c.emitx(free)
             return voidVal(ret == sema.T_NEVER)
         }
     }
     if ret == sema.T_VOID || ret == sema.T_NEVER {
-        c.emit(text + ";")
+        c.emitx(text)
         return voidVal(ret == sema.T_NEVER)
     }
     if c.pg.isBorrow(ret) {
@@ -4010,12 +4039,12 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         let n = c.fresh("b")
         if c.pg.tk(ret) == sema.TK_REF {
             let ct = c.T(c.pg.ta(ret))
-            c.emit(ct + "* " + n + " = " + text + ";")
+            c.emit(c.x.decl(c.x.ptr(ct), n, text))
         } else {
-            c.emit("obx_slice " + n + " = " + text + ";")
+            c.emit(c.x.decl(c.ct("obx_slice"), n, text))
         }
-        if nb == 1 { return rvAt(n, ret, vals[bi].v.root, pathAdd(vals[bi].v.path, "*")) }
-        return rvAt(n, ret, -1, "")
+        if nb == 1 { return rvAt(c.nm(n), ret, vals[bi].v.root, pathAdd(vals[bi].v.path, "*")) }
+        return rvAt(c.nm(n), ret, -1, "")
     }
     return c.holdtmp(text, ret)
 }
@@ -4027,15 +4056,6 @@ fn distinct(xs: &[]int): bool {
         }
     }
     return true
-}
-
-fn joinStrs(xs: &[]str, from: int): str {
-    var b = newStrBuf()
-    for i in from..len(xs) {
-        if i > from { b.add(", ") }
-        b.add(xs[i])
-    }
-    return b.toStr()
 }
 
 // ref's acts/effects on an argument (a value already evaluated has neither).
@@ -4101,10 +4121,10 @@ fn (c: mut &Checker) convert(t: int, e: int): Val {
     let W = c.W(n.line)
     if !(s < sema.NINTS || s == sema.T_FLOAT) { c.err(n.line, "cannot convert " + c.tstr(s) + " to " + d) }
     if s == t { return v }
-    if t == sema.T_FLOAT { return rv("((double)" + v.c + ")", t) }
-    if s == sema.T_FLOAT { return rv("rt_cvf_" + d + "(" + v.c + ", " + W + ")", t) }
-    if s == sema.T_U128 { return rv("rt_cvu_" + d + "(" + v.c + ", " + W + ")", t) }
-    return rv("rt_cvs_" + d + "((__int128)" + v.c + ", " + W + ")", t)
+    if t == sema.T_FLOAT { return rv(c.x.pcast(c.ct("double"), v.c), t) }
+    if s == sema.T_FLOAT { return rv(c.x.call("rt_cvf_" + d, [v.c, W]), t) }
+    if s == sema.T_U128 { return rv(c.x.call("rt_cvu_" + d, [v.c, W]), t) }
+    return rv(c.x.call("rt_cvs_" + d, [c.x.cast(c.ct("__int128"), v.c), W]), t)
 }
 
 // The intrinsics (ref's INTRINSICS): their index, or -1.
@@ -4144,7 +4164,7 @@ fn (c: mut &Checker) intrSig(i: int): Sig {
         else { ps = [sema.T_PTR] }
     }
     var s = newSig(INTR_NAMES[i], SK_INTR, ps, ret)
-    s.c = INTR_C[i]
+    s.c = c.nm(INTR_C[i])
     s.loc = i <= 1
     return s
 }
@@ -4252,21 +4272,23 @@ fn (c: mut &Checker) onceCall(g: int, name: str, e: int): Val {
     let gname = c.pg.globals[g].name
     let cn = c.pg.globals[g].cname
     let gt = c.pg.globals[g].ty
-    let msg0 = cstr("set-once global " + gname)
-    let msg = msg0[0..len(msg0) - 1]
+    let msg = "set-once global " + gname
+    let setn = c.nm(cn + "_set")
     let na = c.count(n.b)
     if (name != "set" && name != "get" && name != "isSet") || na != (if name == "set" { 1 } else { 0 }) {
         c.err(n.line, "a set-once global has set(v), get() and isSet(), not " + name + " with " + intToStr(na) + " arguments")
     }
-    if name == "isSet" { return rv("(" + cn + "_set == 1)", sema.T_BOOL) }
+    if name == "isSet" { return rv(c.x.par(c.x.bin("==", setn, c.lit(1))), sema.T_BOOL) }
     if name == "get" {
-        c.emit("if (" + cn + "_set != 1) rt_trap(12, " + cn + "_set ? " + msg + " is dropped\" : " + msg + " is not set\", " + W + ");")
-        return rvAt("(&" + cn + ")", c.pg.mkRef(gt, false), c.staticVar(sema.D_GLOBAL, g), "")
+        let m = c.x.cond(setn, c.x.str(msg + " is dropped"), c.x.str(msg + " is not set"))
+        c.emit(c.x.if1(c.x.bin("!=", setn, c.lit(1)), c.x.sx(c.x.call("rt_trap", [c.lit(12), m, W]))))
+        return rvAt(c.x.par(c.x.pre("&", c.nm(cn))), c.pg.mkRef(gt, false), c.staticVar(sema.D_GLOBAL, g), "")
     }
     let v = c.seq(c.coerce(c.expr(c.item(n.b, 0), gt), gt, n.line, "the value of " + gname))
     let cc = c.consume(v, n.line)
-    c.emit("if (" + cn + "_set) rt_trap(12, " + cn + "_set == 2 ? " + msg + " is dropped\" : " + msg + " is set twice\", " + W + ");")
-    c.emit(cn + " = " + cc + "; " + cn + "_set = 1;")
+    let m = c.x.cond(c.x.bin("==", setn, c.lit(2)), c.x.str(msg + " is dropped"), c.x.str(msg + " is set twice"))
+    c.emit(c.x.if1(setn, c.x.sx(c.x.call("rt_trap", [c.lit(12), m, W]))))
+    c.emit(c.x.seq([c.x.sx(c.x.asg(c.nm(cn), cc)), c.x.sx(c.x.asg(setn, c.lit(1)))]))
     return voidVal(false)
 }
 
@@ -4329,7 +4351,7 @@ fn (c: mut &Checker) arrArg(e: int, m: bool, slices: bool): Val {
     let line = c.line(e)
     var v = c.expr(c.arg(e, 0), if slices { (if m { EXP_MUTSLICE } else { EXP_SLICE }) } else { -1 })
     if slices && c.pg.tk(v.t) != sema.TK_SLICE {
-        var s = rv("", -1)
+        var s = rv(-1, -1)
         if c.pg.tk(v.t) == sema.TK_REF && (c.pg.tm(v.t) || !m) { s = c.asSlice(v) }
         if s.t < 0 {
             c.err(line, c.fname(e) + " needs a mut slice or mut &array as its first argument, not " + c.tstr(v.t))
@@ -4359,24 +4381,24 @@ fn (c: mut &Checker) builtinBorrow(v0: Val, m: bool, line: int, ast: int): Val {
 fn (c: mut &Checker) bLen(e: int): Val {
     c.nargs(e, 1)
     let v = c.deref(c.expr(c.arg(e, 0), -1))
-    if v.t == sema.T_STR { return rv("((int64_t)(" + v.c + ").len)", sema.T_INT) }
+    if v.t == sema.T_STR { return rv(c.x.pcast(c.ct("int64_t"), c.x.dot(c.x.par(v.c), "len")), sema.T_INT) }
     let k = c.pg.tk(v.t)
     if k != sema.TK_SLICE && k != sema.TK_ARR {
         c.err(c.line(e), "len needs an array, a slice or a str, not " + c.tstr(v.t))
     }
-    return rv("(" + v.c + ").len", sema.T_INT)
+    return rv(c.x.dot(c.x.par(v.c), "len"), sema.T_INT)
 }
 
 fn (c: mut &Checker) bNullPtr(e: int): Val {
     c.nargs(e, 0)
-    return rv("((void*)0)", sema.T_PTR)
+    return rv(c.x.pcast(c.ct("void*"), c.lit(0)), sema.T_PTR)
 }
 
 fn (c: mut &Checker) bIsNull(e: int): Val {
     c.nargs(e, 1)
     let v = c.rd(c.expr(c.arg(e, 0), -1))
     if v.t != sema.T_PTR { c.err(c.line(e), "isNull needs a ptr, not " + c.tstr(v.t)) }
-    return rv("(" + v.c + " == 0)", sema.T_BOOL)
+    return rv(c.x.par(c.x.bin("==", v.c, c.lit(0))), sema.T_BOOL)
 }
 
 fn (c: mut &Checker) bAppend(e: int): Val {
@@ -4391,10 +4413,10 @@ fn (c: mut &Checker) bAppend(e: int): Val {
     let cc = c.consume(v, line)
     let n = c.fresh("ap")
     let ct = c.T(et)
-    c.emit(ct + " " + n + " = " + cc + ";")
+    c.emit(c.x.decl(ct, n, cc))
     let ct2 = c.T(et)
     let ct3 = c.T(et)
-    c.emit("*(" + ct2 + "*)rt_arr_push(" + a.c + ", sizeof(" + ct3 + ")) = " + n + ";")
+    c.emitx(c.x.asg(c.x.at(ct2, c.x.call("rt_arr_push", [a.c, c.x.szof(ct3)])), c.nm(n)))
     return voidVal(false)
 }
 
@@ -4404,7 +4426,7 @@ fn (c: mut &Checker) bPop(e: int): Val {
     let et = c.pg.ta(c.pg.ta(a.t))
     let ct = c.T(et)
     let ct2 = c.T(et)
-    return c.holdtmp("*(" + ct + "*)rt_arr_pop(" + a.c + ", sizeof(" + ct2 + "), " + c.W(c.line(e)) + ")", et)
+    return c.holdtmp(c.x.at(ct, c.x.call("rt_arr_pop", [a.c, c.x.szof(ct2), c.W(c.line(e))])), et)
 }
 
 fn (c: mut &Checker) bSwap(e: int): Val {
@@ -4417,7 +4439,7 @@ fn (c: mut &Checker) bSwap(e: int): Val {
     if i.t != sema.T_INT || j.t != sema.T_INT { c.err(line, "swap needs int indexes") }
     let et = c.pg.ta(a.t)
     let ct = c.T(et)
-    c.emit("rt_swap(" + a.c + ", " + i.c + ", " + j.c + ", sizeof(" + ct + "), " + c.W(line) + ");")
+    c.emitx(c.x.call("rt_swap", [a.c, i.c, j.c, c.x.szof(ct), c.W(line)]))
     return voidVal(false)
 }
 
@@ -4433,16 +4455,17 @@ fn (c: mut &Checker) bReplace(e: int): Val {
     let t = c.pg.ta(p.t)
     p = c.before1(p, c.arg(e, 1))
     var v = c.coerce(c.expr(c.arg(e, 1), t), t, line, "the new value")
-    if checks(p.c) { v = c.seq(v) }         // the value's checks, then the place's again
+    if c.checks(p.c) { v = c.seq(v) }         // the value's checks, then the place's again
     if p.late { c.take(p, HM_MUT, c.newCid(), line) }
     let cc = c.consume(v, line)
     let n = c.fresh("old")
     let ct = c.T(t)
-    c.emit(ct + " " + n + " = *" + p.c + ";")
-    c.emit("*" + p.c + " = " + cc + ";")
-    if c.pod(t) { return rv(n, t) }
-    let id = c.newTmp(n, t)
-    var r = val(n, t, CAT_TMP)
+    c.emit(c.x.decl(ct, n, c.x.pre("*", p.c)))
+    c.emitx(c.x.asg(c.x.pre("*", p.c), cc))
+    let nn = c.nm(n)
+    if c.pod(t) { return rv(nn, t) }
+    let id = c.newTmp(nn, t)
+    var r = val(nn, t, CAT_TMP)
     r.tmp = id
     r.root = tmpRoot(id)
     r.mutable = true
@@ -4475,17 +4498,20 @@ fn (c: mut &Checker) bArray(e: int, exp: int): Val {
     let i = c.fresh("i")
     let ct = c.T(v.t)
     let cc = c.consume(v, line)
-    c.emit(ct + " " + vn + " = " + cc + ";")
+    c.emit(c.x.decl(ct, vn, cc))
     let ct2 = c.T(v.t)
-    c.emit("obx_arr " + an + " = rt_arr_fill(" + n.c + ", sizeof(" + ct2 + "), " + c.W(line) + ");")
+    c.emit(c.x.decl(c.ct("obx_arr"), an, c.x.call("rt_arr_fill", [n.c, c.x.szof(ct2), c.W(line)])))
     let ct3 = c.T(v.t)
-    let d = c.dup(vn, v.t)
-    c.emit("for (int64_t " + i + " = 0; " + i + " < " + an + ".len; " + i + "++) ((" + ct3 + "*)" + an + ".data)[" + i +
-        "] = " + d + ";")
-    c.dropc(vn, v.t)
+    let vnn = c.nm(vn)
+    let ann = c.nm(an)
+    let iv = c.nm(i)
+    let d = c.dup(vnn, v.t)
+    let body = c.x.sx(c.x.asg(c.x.idx(c.x.pcast(c.x.ptr(ct3), c.x.dot(ann, "data")), iv), d))
+    c.emit(c.x.for1(c.x.decl(c.ct("int64_t"), i, c.lit(0)), c.x.bin("<", iv, c.x.dot(ann, "len")), c.x.post(iv, "++"), body))
+    c.dropc(vnn, v.t)
     let at = c.pg.mkArr(v.t)
-    let id = c.newTmp(an, at)
-    var r = val(an, at, CAT_TMP)
+    let id = c.newTmp(ann, at)
+    var r = val(ann, at, CAT_TMP)
     r.tmp = id
     r.root = tmpRoot(id)
     r.mutable = true
@@ -4496,7 +4522,7 @@ fn (c: mut &Checker) bPanic(e: int): Val {
     c.nargs(e, 1)
     let v = c.rd(c.expr(c.arg(e, 0), sema.T_STR))
     if v.t != sema.T_STR { c.err(c.line(e), "panic needs a str, not " + c.tstr(v.t)) }
-    c.emit("rt_panic(" + v.c + ", " + c.W(c.line(e)) + ");")
+    c.emitx(c.x.call("rt_panic", [v.c, c.W(c.line(e))]))
     return voidVal(true)
 }
 
@@ -4505,7 +4531,7 @@ fn (c: mut &Checker) bAssert(e: int): Val {
     let v = c.rd(c.expr(c.arg(e, 0), sema.T_BOOL))
     if v.t != sema.T_BOOL { c.err(c.line(e), "assert needs a bool, not " + c.tstr(v.t)) }
     let h = c.hole(mkHole(H_STR, -1, "assertion failed"))
-    c.emit("if (!(" + v.c + ")) rt_panic(" + h + ", " + c.W(c.line(e)) + ");")
+    c.emit(c.x.if1(c.x.pre("!", c.x.par(v.c)), c.x.sx(c.x.call("rt_panic", [h, c.W(c.line(e))]))))
     return voidVal(false)
 }
 
@@ -4513,7 +4539,7 @@ fn (c: mut &Checker) bExit(e: int): Val {
     c.nargs(e, 1)
     let v = c.rd(c.expr(c.arg(e, 0), sema.T_INT))
     if v.t != sema.T_INT { c.err(c.line(e), "exit needs an int, not " + c.tstr(v.t)) }
-    c.emit("rt_exit(" + v.c + ");")
+    c.emitx(c.x.call("rt_exit", [v.c]))
     return voidVal(true)
 }
 
@@ -4588,7 +4614,7 @@ fn (c: mut &Checker) globalInit(dk: int, g: int) {
     c.startFn(-1, "<global>", sema.T_VOID, [], m)
     let n = c.pg.nd(m, node)
     let e = n.b
-    var r = GInit{has: true, isOnce: false, table: false, items: [], c: "", holes: []}
+    var r = GInit{has: true, isOnce: false, table: false, items: [], c: -1, holes: []}
     c.pg.gwrap = "the initializer of " + (if isG { "global" } else { "const" }) + " " + name + " must be constant: "
     if isG && n.flags & sx.ONCE != 0 {
         r.isOnce = true
@@ -4605,13 +4631,13 @@ fn (c: mut &Checker) globalInit(dk: int, g: int) {
     if isG { c.ginits[g] = r } else { c.cinits[g] = r }
 }
 
-fn (c: mut &Checker) constInit(e: int, t: int): str {
+fn (c: mut &Checker) constInit(e: int, t: int): int {
     let line = c.line(e)
     if c.pg.tk(t) == sema.TK_PRIM {
         let v = c.pg.constAs(c.pg.fold(e, c.cx.mod, t), t, c.cx.mod, line)
         if t == sema.T_STR { return c.hole(mkHole(H_GSTR, -1, v.s)) }
-        if t == sema.T_BOOL { return if v.b { "true" } else { "false" } }
-        if t == sema.T_FLOAT { return num.pyFloatRepr(v.f) }
+        if t == sema.T_BOOL { return c.nm(if v.b { "true" } else { "false" }) }
+        if t == sema.T_FLOAT { return c.x.num(num.pyFloatRepr(v.f)) }
         return c.cint(v.i, t)
     }
     if c.pg.tk(t) != sema.TK_INST { c.err(line, "not a constant") }
@@ -4623,16 +4649,13 @@ fn (c: mut &Checker) constInit(e: int, t: int): str {
         var names: []str = []
         for f in c.pg.types[d].fields { append(mut &names, f.name) }
         let args = c.orderInits(&names, c.nd(e).b, c.pg.types[d].name, line)
-        var b = newStrBuf()
-        b.add("{")
+        var its: []int = []
         for i in 0..len(names) {
             let ft = c.pg.subst(c.pg.types[d].fields[i].ty, &env)
             let cc = c.constInit(args[i].n, ft)
-            if i > 0 { b.add(", ") }
-            b.add(".f_" + names[i] + " = " + cc)
+            append(mut &its, c.x.desig(".f_" + names[i], cc))
         }
-        b.add("}")
-        return b.toStr()
+        return c.x.init(its)
     }
     if form == sx.F_CLOSED {
         let fnode = if k == sx.N_CALL { c.nd(e).a } else if k == sx.N_LIT { c.nd(e).a } else { e }
@@ -4651,14 +4674,14 @@ fn (c: mut &Checker) constInit(e: int, t: int): str {
             if len(args) != len(names) {
                 c.err(line, "variant " + c.pg.variants[vr].name + " takes " + intToStr(len(names)) + " values")
             }
-            var b = newStrBuf()
+            var its: []int = []
             for i in 0..len(names) {
                 let ft = c.pg.subst(c.pg.variants[vr].fields[i].ty, &env)
                 let cc = c.constInit(args[i], ft)
-                if i > 0 { b.add(", ") }
-                b.add(".f_" + names[i] + " = " + cc)
+                append(mut &its, c.x.desig(".f_" + names[i], cc))
             }
-            return "{.tag = " + intToStr(c.pg.variants[vr].index) + ", .u.V_" + c.pg.variants[vr].name + " = {" + b.toStr() + "}}"
+            let tag = c.x.desig(".tag", c.lit(c.pg.variants[vr].index))
+            return c.x.init([tag, c.x.desig(".u.V_" + c.pg.variants[vr].name, c.x.init(its))])
         }
     }
     c.err(line, "not a constant")

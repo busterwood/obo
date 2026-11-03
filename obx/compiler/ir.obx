@@ -7,8 +7,9 @@
 // no rules of the language the IR was read from. Nothing here is specific to a target
 // machine: no registers, instructions or encodings.
 //
-// Today cfront builds it from the generated C; later check.obx will build it directly and
-// both backends (C and x86-64) will be generated from it (section 1a).
+// check.obx writes function templates (tmpl.obx), emit.obx instantiates them and lower.obx
+// builds the IR from them; both backends (cgen.obx for C, x64gen.obx for x86-64) are
+// generated from it (section 1a).
 //
 // The IR is an arena like the obx AST (compiler/README.md): a node is a Node named by its
 // index, a list is an index into Ir.items (its length, then the elements).
@@ -168,10 +169,16 @@ pub type Ir = record {
     pub globals: []Global
     pub locals: []Local
     ptrOf: Map[int, int]
+    // the runtime's declarations come first: structs, functions and globals below these
+    // counts are the runtime's (a C printer names them and does not declare them)
+    pub nRtStructs: int
+    pub nRtFuncs: int
+    pub nRtGlobals: int
 }
 
 pub fn newIr(): Ir {
-    var p = Ir{tys: [], structs: [], nodes: [], items: [], funcs: [], globals: [], locals: [], ptrOf: newMap()}
+    var p = Ir{tys: [], structs: [], nodes: [], items: [], funcs: [], globals: [], locals: [], ptrOf: newMap(),
+        nRtStructs: 0, nRtFuncs: 0, nRtGlobals: 0}
     let sizes: []int = [1, 1, 1, 1, 2, 2, 4, 4, 8, 8, 16, 16, 8]
     for k in 0..13 {
         append(mut &p.tys, Ty{k: k, size: sizes[k], align: sizes[k], base: -1, n: 0, sid: -1})
@@ -269,7 +276,8 @@ pub fn (p: &Ir) nty(n: int): int { return p.nodes[n].ty }
 
 
 pub fn failAt(what: str, line: int, msg: str): never {
-    writeFd(2, "native: unsupported: " + msg + " (" + what + " " + intToStr(line) + ")\n")
+    let at = if line > 0 { " (" + what + " " + intToStr(line) + ")" } else { "" }      // IR nodes have no lines
+    writeFd(2, "native: unsupported: " + msg + at + "\n")
     exit(1)
 }
 

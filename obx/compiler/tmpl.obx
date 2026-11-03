@@ -1,0 +1,244 @@
+// tmpl: function templates, the checker's output (design/native.md, section 1a).
+//
+// check.obx writes each function body as a template: statements and expressions in the
+// shape of C, with holes (check.Hole) for whatever depends on type arguments. emit.obx
+// instantiates a template once per instance into the IR (lower.obx), where C's rules
+// (types of literals and names, conversions, layouts) become explicit.
+//
+// The template is an arena like the IR: a node is a Node named by its index, a list an
+// index into Arena.items (its length, then the elements). Nodes are shared freely: a value
+// used twice is the same node.
+
+// Expressions.
+pub const X_NAME = 1      // s: a local, global, function or runtime name
+pub const X_NUM = 2       // s: an integer or floating constant, as C writes it (1, 2LL, 3ULL, 1.5)
+pub const X_STR = 3       // s: a string constant's bytes
+pub const X_CALL = 4      // a: the callee, l: the arguments
+pub const X_DOT = 5       // a.s
+pub const X_ARROW = 6     // a->s
+pub const X_INDEX = 7     // a[b]
+pub const X_PRE = 8       // s a: s one of - ~ ! * &
+pub const X_BIN = 9       // a s b (s a binary operator of C, && and || included)
+pub const X_COND = 10     // a ? b : c
+pub const X_ASSIGN = 11   // a = b
+pub const X_CAST = 12     // (a)b: a is a type
+pub const X_PAREN = 13    // (a)
+pub const X_INIT = 14     // {l}: the items, values or X_DESIG
+pub const X_DESIG = 15    // s = a: s a designator (.f, .u.V_x)
+pub const X_CLIT = 16     // (a)b: a type, b an X_INIT
+pub const X_SIZEOF = 17   // sizeof(a): a is a type or an expression
+pub const X_POST = 18     // a++ (s "++" or "--")
+pub const X_HOLE = 19     // v: the hole (check.Hole) of the template
+// Types.
+pub const X_CT = 20       // s: the name of a C type of the runtime (int64_t, obx_str, void, ...)
+pub const X_PTR = 21      // a*: a is a type
+
+// Statements.
+pub const Z_EXPR = 30     // a;
+pub const Z_DECL = 31     // a s = b; (b -1: no initializer); v >= 0: an array a s[v]
+pub const Z_IF = 32       // if (a) {
+pub const Z_ELIF = 33     // } else if (a) {
+pub const Z_ELSE = 34     // } else {
+pub const Z_END = 35      // }
+pub const Z_WHILE = 36    // while (a) {
+pub const Z_FOR = 37      // for (a b; c) {  (a a Z_DECL or Z_EXPR)
+pub const Z_BLOCK = 38    // {
+pub const Z_BREAK = 39
+pub const Z_CONTINUE = 40
+pub const Z_RETURN = 41   // return a; (a -1: return;)
+pub const Z_IF1 = 42      // if (a) b  (b a statement)
+pub const Z_FOR1 = 43     // for (a b; c) d  (d a statement)
+pub const Z_SEQ = 44      // l: statements on one line
+pub const Z_LINE = 45     // a template line: v the indentation, a the statement
+pub const Z_HOLDER = 46   // a placeholder line, replaced later
+pub const Z_SWITCH = 47   // switch (a) {
+pub const Z_CASE = 48     // case a: (a -1: default:)
+pub const Z_LINES = 49    // l: lines (Z_LINE), one after another
+
+pub type Node = value record {
+    pub k: int
+    pub a: int
+    pub b: int
+    pub c: int
+    pub v: int
+    pub l: int
+    pub s: str
+}
+
+pub type Arena = record {
+    pub nodes: []Node
+    pub items: []int
+}
+
+pub fn newArena(): Arena { return Arena{nodes: [], items: []} }
+
+pub fn (x: mut &Arena) mk(k: int, a: int, b: int, c: int, s: str): int {
+    append(mut &x.nodes, Node{k: k, a: a, b: b, c: c, v: -1, l: -1, s: s})
+    return len(x.nodes) - 1
+}
+
+pub fn (x: mut &Arena) list(xs: &[]int): int {
+    let at = len(x.items)
+    append(mut &x.items, len(xs))
+    for e in xs { append(mut &x.items, e) }
+    return at
+}
+
+pub fn (x: &Arena) listLen(l: int): int { return x.items[l] }
+
+pub fn (x: &Arena) listAt(l: int, j: int): int { return x.items[l + 1 + j] }
+
+pub fn (x: &Arena) elems(l: int): []int {
+    var out: []int = []
+    for j in 0..x.items[l] { append(mut &out, x.items[l + 1 + j]) }
+    return out
+}
+
+pub fn (x: &Arena) k(n: int): int { return x.nodes[n].k }
+
+// ---------------------------------------------------------------- builders
+
+pub fn (x: mut &Arena) nm(s: str): int { return x.mk(X_NAME, -1, -1, -1, s) }
+
+pub fn (x: mut &Arena) num(s: str): int { return x.mk(X_NUM, -1, -1, -1, s) }
+
+pub fn (x: mut &Arena) lit(v: int): int { return x.mk(X_NUM, -1, -1, -1, intToStr(v)) }
+
+pub fn (x: mut &Arena) ll(v: int): int { return x.mk(X_NUM, -1, -1, -1, intToStr(v) + "LL") }
+
+pub fn (x: mut &Arena) str(s: str): int { return x.mk(X_STR, -1, -1, -1, s) }
+
+pub fn (x: mut &Arena) call(f: str, args: []int): int {
+    let n = x.mk(X_CALL, x.nm(f), -1, -1, "")
+    x.nodes[n].l = x.list(&args)
+    return n
+}
+
+pub fn (x: mut &Arena) callx(callee: int, args: []int): int {
+    let n = x.mk(X_CALL, callee, -1, -1, "")
+    x.nodes[n].l = x.list(&args)
+    return n
+}
+
+pub fn (x: mut &Arena) dot(a: int, f: str): int { return x.mk(X_DOT, a, -1, -1, f) }
+
+pub fn (x: mut &Arena) arrow(a: int, f: str): int { return x.mk(X_ARROW, a, -1, -1, f) }
+
+// a.f or a->f by sep ("." or "->").
+pub fn (x: mut &Arena) member(a: int, sep: str, f: str): int {
+    return x.mk(if sep == "." { X_DOT } else { X_ARROW }, a, -1, -1, f)
+}
+
+pub fn (x: mut &Arena) idx(a: int, b: int): int { return x.mk(X_INDEX, a, b, -1, "") }
+
+pub fn (x: mut &Arena) pre(op: str, a: int): int { return x.mk(X_PRE, a, -1, -1, op) }
+
+pub fn (x: mut &Arena) bin(op: str, a: int, b: int): int { return x.mk(X_BIN, a, b, -1, op) }
+
+pub fn (x: mut &Arena) cond(a: int, b: int, c: int): int { return x.mk(X_COND, a, b, c, "") }
+
+pub fn (x: mut &Arena) asg(a: int, b: int): int { return x.mk(X_ASSIGN, a, b, -1, "") }
+
+pub fn (x: mut &Arena) cast(t: int, a: int): int { return x.mk(X_CAST, t, a, -1, "") }
+
+pub fn (x: mut &Arena) par(a: int): int { return x.mk(X_PAREN, a, -1, -1, "") }
+
+// ((t)a): a cast in parentheses.
+pub fn (x: mut &Arena) pcast(t: int, a: int): int { return x.par(x.cast(t, a)) }
+
+pub fn (x: mut &Arena) init(items: []int): int {
+    let n = x.mk(X_INIT, -1, -1, -1, "")
+    x.nodes[n].l = x.list(&items)
+    return n
+}
+
+pub fn (x: mut &Arena) desig(d: str, a: int): int { return x.mk(X_DESIG, a, -1, -1, d) }
+
+pub fn (x: mut &Arena) clit(t: int, init: int): int { return x.mk(X_CLIT, t, init, -1, "") }
+
+pub fn (x: mut &Arena) szof(a: int): int { return x.mk(X_SIZEOF, a, -1, -1, "") }
+
+pub fn (x: mut &Arena) post(a: int, op: str): int { return x.mk(X_POST, a, -1, -1, op) }
+
+pub fn (x: mut &Arena) hole(i: int): int {
+    let n = x.mk(X_HOLE, -1, -1, -1, "")
+    x.nodes[n].v = i
+    return n
+}
+
+pub fn (x: mut &Arena) ct(s: str): int { return x.mk(X_CT, -1, -1, -1, s) }
+
+pub fn (x: mut &Arena) ptr(a: int): int { return x.mk(X_PTR, a, -1, -1, "") }
+
+// *(t*)a: the object of type t at the address a.
+pub fn (x: mut &Arena) at(t: int, a: int): int { return x.pre("*", x.cast(x.ptr(t), a)) }
+
+pub fn (x: mut &Arena) sx(a: int): int { return x.mk(Z_EXPR, a, -1, -1, "") }
+
+pub fn (x: mut &Arena) decl(t: int, name: str, init: int): int { return x.mk(Z_DECL, t, init, -1, name) }
+
+pub fn (x: mut &Arena) declArr(t: int, name: str, n: int, init: int): int {
+    let d = x.mk(Z_DECL, t, init, -1, name)
+    x.nodes[d].v = n
+    return d
+}
+
+pub fn (x: mut &Arena) sif(a: int): int { return x.mk(Z_IF, a, -1, -1, "") }
+
+pub fn (x: mut &Arena) selif(a: int): int { return x.mk(Z_ELIF, a, -1, -1, "") }
+
+pub fn (x: mut &Arena) selse(): int { return x.mk(Z_ELSE, -1, -1, -1, "") }
+
+pub fn (x: mut &Arena) send(): int { return x.mk(Z_END, -1, -1, -1, "") }
+
+pub fn (x: mut &Arena) swhile(a: int): int { return x.mk(Z_WHILE, a, -1, -1, "") }
+
+pub fn (x: mut &Arena) sfor(init: int, cond: int, step: int): int { return x.mk(Z_FOR, init, cond, step, "") }
+
+pub fn (x: mut &Arena) sblock(): int { return x.mk(Z_BLOCK, -1, -1, -1, "") }
+
+pub fn (x: mut &Arena) sbreak(): int { return x.mk(Z_BREAK, -1, -1, -1, "") }
+
+pub fn (x: mut &Arena) scont(): int { return x.mk(Z_CONTINUE, -1, -1, -1, "") }
+
+pub fn (x: mut &Arena) sret(a: int): int { return x.mk(Z_RETURN, a, -1, -1, "") }
+
+pub fn (x: mut &Arena) if1(a: int, st: int): int { return x.mk(Z_IF1, a, st, -1, "") }
+
+pub fn (x: mut &Arena) for1(init: int, cond: int, step: int, body: int): int {
+    let n = x.mk(Z_FOR1, init, cond, step, "")
+    x.nodes[n].v = body
+    return n
+}
+
+pub fn (x: mut &Arena) seq(sts: []int): int {
+    let n = x.mk(Z_SEQ, -1, -1, -1, "")
+    x.nodes[n].l = x.list(&sts)
+    return n
+}
+
+pub fn (x: mut &Arena) line(ind: int, st: int): int {
+    let n = x.mk(Z_LINE, st, -1, -1, "")
+    x.nodes[n].v = ind
+    return n
+}
+
+pub fn (x: mut &Arena) holder(): int { return x.mk(Z_HOLDER, -1, -1, -1, "") }
+
+pub fn (x: mut &Arena) sswitch(a: int): int { return x.mk(Z_SWITCH, a, -1, -1, "") }
+
+pub fn (x: mut &Arena) scase(a: int): int { return x.mk(Z_CASE, a, -1, -1, "") }
+
+// The line with the lines ls after it, as one line.
+pub fn (x: mut &Arena) joined(line: int, ls: &[]int): int {
+    var all: []int = []
+    if x.nodes[line].k == Z_LINES {
+        for e in x.elems(x.nodes[line].l) { append(mut &all, e) }
+    } else {
+        append(mut &all, line)
+    }
+    for l in ls { append(mut &all, l) }
+    let n = x.mk(Z_LINES, -1, -1, -1, "")
+    x.nodes[n].l = x.list(&all)
+    return n
+}
