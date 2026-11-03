@@ -1,0 +1,443 @@
+// net: TCP over IPv4 and IPv6 for tasks (SPEC 16; design/concurrency.md,
+// stage C1b).
+//
+// Sockets are non-blocking. An operation that would block parks the task
+// (task.obx) until the socket is ready, and the other tasks run meanwhile; a
+// plain program is its main task, so the same calls work there. The runtime
+// waits for every parked socket and timer in one epoll loop.
+//
+//     let ln = net.listen("127.0.0.1:0").expect("listen")   // port 0: any free port
+//     println(ln.localAddr())                                // "127.0.0.1:43127"
+//     let c = try ln.accept()
+//     var buf = array(4096, byte(0))
+//     let n = try c.read(mut &buf)                            // 0: the peer closed
+//     try c.write(buf[0..n])
+//
+// Errors are io.IoError values: the errno, the operation and the address.
+// A call made by a cancelled task, or in a task.within whose deadline has
+// passed, does nothing and returns ECANCELED or ETIMEDOUT (isCancelled(),
+// isTimeout()); so does an operation parked when that happens. Every
+// function that can park takes the caller's location as a last std.Where
+// parameter, which a call leaves out (SPEC 15), and stops the program with
+// exit 13 inside Shared.with. Closing never parks: a Listener or Conn is
+// owned, and dropping it closes its socket (also inside with).
+//
+// Addresses are text: "127.0.0.1:8080", "[::1]:8080", "0.0.0.0:0", ":8080"
+// (all IPv4 interfaces), "localhost:8080" (127.0.0.1). Names other than
+// localhost are not resolved: getaddrinfo blocks the thread, and belongs on
+// the helper pool of stage C1c.
+//
+// A write to a peer that has closed returns EPIPE (or ECONNRESET); it never
+// raises SIGPIPE.
+
+import "io"
+
+extern "c" fn rtListen(fam: int, a: &[]byte, port: int, backlog: int): int as "obxlib_net_listen"
+extern "c" fn rtConnect(fam: int, a: &[]byte, port: int, pending: mut &int): int as "obxlib_net_connect"
+extern "c" fn rtAccept(fd: int): int as "obxlib_net_accept"
+extern "c" fn rtRead(fd: int, b: mut &[byte], n: int): int as "obxlib_net_read"
+extern "c" fn rtWrite(fd: int, b: &[byte], n: int): int as "obxlib_net_write"
+extern "c" fn rtAddr(fd: int, peer: int, out: mut &[]byte): int as "obxlib_net_addr"
+extern "c" fn rtNoDelay(fd: int, on: int): int as "obxlib_net_nodelay"
+extern "c" fn rtSoError(fd: int): int as "obxlib_net_soerror"
+extern "c" fn rtShutdown(fd: int, how: int): int as "obxlib_net_shutdown"
+extern "c" fn rtClose(fd: int) as "obxlib_net_close"
+extern "c" fn rtWait(fd: int, dir: int, w: ptr): int as "obxlib_net_wait"
+extern "c" fn rtCheck(w: ptr): int as "obxlib_task_check"
+
+const EINTR = 4
+const EAGAIN = 11
+const EINVAL = 22
+const ENOTCONN = 107
+const ECONNABORTED = 103
+const BACKLOG = 4096
+
+// A listening socket.
+pub type Listener = record {
+    fd: int
+    addr: str   // as given to listen, for errors
+}
+
+// A connected socket.
+pub type Conn = record {
+    fd: int
+    addr: str   // the peer's address, for errors
+}
+
+// ---- addresses
+
+// A parsed address: family 4 or 6, 16 bytes (IPv4 in the first 4), a port.
+type Ip = record {
+    fam: int
+    b: []byte
+    port: int
+}
+
+// The error of a call that stopped before or while parking: 1 cancelled,
+// 3 past the deadline.
+fn stopped(r: int, op: str, addr: str): io.IoError {
+    return io.ioError(if r == 1 { io.ECANCELED } else { io.ETIMEDOUT }, op, addr)
+}
+
+fn digitsOf(s: str): Option[int] {
+    if len(s) == 0 || len(s) > 5 { return None }
+    var n = 0
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c < '0' || c > '9' { return None }
+        n = n * 10 + int(c - '0')
+    }
+    return Some(n)
+}
+
+fn hexDigit(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'f' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'F' { return int(c - 'A') + 10 }
+    return -1
+}
+
+// "a.b.c.d" into out[at..at+4).
+fn parse4(s: str, out: mut &[]byte, at: int): bool {
+    var part = 0
+    var start = 0
+    for i in 0..len(s) + 1 {
+        if i == len(s) || strByte(s, i) == '.' {
+            let d = strSlice(s, start, i)
+            if part > 3 || len(d) == 0 || len(d) > 3 || (len(d) > 1 && strByte(d, 0) == '0') { return false }
+            match digitsOf(d) {
+                Some(v) {
+                    if v > 255 { return false }
+                    out[at + part] = byte(v)
+                }
+                None { return false }
+            }
+            part += 1
+            start = i + 1
+        }
+    }
+    return part == 4
+}
+
+// The groups of one side of "::" (empty: none) into gs; false when malformed.
+// The last group may be an IPv4 address (two groups) when last.
+fn groups6(s: str, gs: mut &[]int, last: bool): bool {
+    if len(s) == 0 { return true }
+    var start = 0
+    for i in 0..len(s) + 1 {
+        if i == len(s) || strByte(s, i) == ':' {
+            let g = strSlice(s, start, i)
+            if i == len(s) && last && strings4(g) {
+                var b = array(4, byte(0))
+                if !parse4(g, mut &b, 0) { return false }
+                append(gs, int(b[0]) * 256 + int(b[1]))
+                append(gs, int(b[2]) * 256 + int(b[3]))
+                return true
+            }
+            if len(g) == 0 || len(g) > 4 { return false }
+            var v = 0
+            for k in 0..len(g) {
+                let h = hexDigit(strByte(g, k))
+                if h < 0 { return false }
+                v = v * 16 + h
+            }
+            append(gs, v)
+            start = i + 1
+        }
+    }
+    return true
+}
+
+fn strings4(s: str): bool {
+    for i in 0..len(s) {
+        if strByte(s, i) == '.' { return true }
+    }
+    return false
+}
+
+fn parse6(s: str, out: mut &[]byte): bool {
+    var head: []int = []
+    var tail: []int = []
+    var gap = -1
+    for i in 0..len(s) - 1 {
+        if strByte(s, i) == ':' && strByte(s, i + 1) == ':' {
+            gap = i
+            break
+        }
+    }
+    if gap < 0 {
+        if !groups6(s, mut &head, true) || len(head) != 8 { return false }
+    } else {
+        let rest = strSlice(s, gap + 2, len(s))
+        for i in 0..len(rest) - 1 {
+            if strByte(rest, i) == ':' && strByte(rest, i + 1) == ':' { return false }
+        }
+        if !groups6(strSlice(s, 0, gap), mut &head, false) || !groups6(rest, mut &tail, true) { return false }
+        if len(head) + len(tail) > 7 { return false }
+    }
+    for i in 0..len(head) {
+        out[2 * i] = byte(head[i] / 256)
+        out[2 * i + 1] = byte(head[i] % 256)
+    }
+    let at = 8 - len(tail)
+    for i in 0..len(tail) {
+        out[2 * (at + i)] = byte(tail[i] / 256)
+        out[2 * (at + i) + 1] = byte(tail[i] % 256)
+    }
+    return true
+}
+
+// "host:port"; an empty host is 0.0.0.0 (listen) or 127.0.0.1 (connect).
+fn parseAddr(addr: str, forListen: bool): Option[Ip] {
+    var colon = -1
+    for i in 0..len(addr) {
+        if strByte(addr, i) == ':' { colon = i }
+    }
+    if colon < 0 { return None }
+    let host = strSlice(addr, 0, colon)
+    var port = 0
+    match digitsOf(strSlice(addr, colon + 1, len(addr))) {
+        Some(p) { port = p }
+        None { return None }
+    }
+    if port > 65535 { return None }
+    var b = array(16, byte(0))
+    if len(host) >= 2 && strByte(host, 0) == '[' && strByte(host, len(host) - 1) == ']' {
+        if !parse6(strSlice(host, 1, len(host) - 1), mut &b) { return None }
+        return Some(Ip{fam: 6, b: b, port: port})
+    }
+    if host == "" {
+        if !forListen { b[0] = byte(127); b[3] = byte(1) }
+    } else if host == "localhost" {
+        b[0] = byte(127)
+        b[3] = byte(1)
+    } else if !parse4(host, mut &b, 0) {
+        return None
+    }
+    return Some(Ip{fam: 4, b: b, port: port})
+}
+
+fn hex4(v: int): str {
+    let ds = "0123456789abcdef"
+    var s = ""
+    var n = v
+    while true {
+        s = strSlice(ds, n % 16, n % 16 + 1) + s
+        n = n / 16
+        if n == 0 { break }
+    }
+    return s
+}
+
+// The text of an address as obxlib_net_addr gives it (RFC 5952 for IPv6).
+fn addrText(b: &[]byte): str {
+    let port = intToStr(int(b[1]) * 256 + int(b[2]))
+    if b[0] == byte(4) {
+        return intToStr(int(b[3])) + "." + intToStr(int(b[4])) + "." + intToStr(int(b[5])) + "." + intToStr(int(b[6])) + ":" + port
+    }
+    var g = array(8, 0)
+    for i in 0..8 { g[i] = int(b[3 + 2 * i]) * 256 + int(b[4 + 2 * i]) }
+    var mapped = g[5] == 0xffff
+    for i in 0..5 {
+        if g[i] != 0 { mapped = false }
+    }
+    if mapped {
+        return "[::ffff:" + intToStr(int(b[15])) + "." + intToStr(int(b[16])) + "." + intToStr(int(b[17])) + "." + intToStr(int(b[18])) + "]:" + port
+    }
+    // the longest run of two or more zero groups (the first of equal ones) becomes "::"
+    var best = -1
+    var bestLen = 1
+    var i = 0
+    while i < 8 {
+        if g[i] == 0 {
+            var j = i
+            while j < 8 && g[j] == 0 { j += 1 }
+            if j - i > bestLen {
+                best = i
+                bestLen = j - i
+            }
+            i = j
+        } else {
+            i += 1
+        }
+    }
+    var s = "["
+    i = 0
+    while i < 8 {
+        if i == best {
+            s = s + "::"
+            i += bestLen
+        } else {
+            if i > 0 && i != best + bestLen { s = s + ":" }
+            s = s + hex4(g[i])
+            i += 1
+        }
+    }
+    return s + "]:" + port
+}
+
+// The address addr as listen and connect read it, in the form localAddr
+// gives ("localhost:80" is "127.0.0.1:80", "[0:0::1]:80" is "[::1]:80",
+// ":80" is "0.0.0.0:80"); None when it is not an address they accept.
+pub fn canonicalAddr(addr: str): Option[str] {
+    match parseAddr(addr, true) {
+        Some(ip) {
+            var b = array(19, byte(0))
+            b[0] = byte(ip.fam)
+            b[1] = byte(ip.port / 256)
+            b[2] = byte(ip.port % 256)
+            for i in 0..16 { b[3 + i] = ip.b[i] }
+            return Some(addrText(&b))
+        }
+        None { return None }
+    }
+}
+
+fn sockText(fd: int, peer: int): str {
+    var b = array(19, byte(0))
+    if rtAddr(fd, peer, mut &b) != 0 { return "" }
+    return addrText(&b)
+}
+
+// ---- listening
+
+// A socket listening on addr (SO_REUSEADDR set; port 0 picks a free port,
+// which localAddr tells).
+pub fn listen(addr: str): Result[Listener, io.IoError] {
+    match parseAddr(addr, true) {
+        Some(ip) {
+            let fd = rtListen(ip.fam, &ip.b, ip.port, BACKLOG)
+            if fd < 0 { return Err(io.ioError(-fd, "listen", addr)) }
+            return Ok(Listener{fd: fd, addr: addr})
+        }
+        None { return Err(io.ioError(EINVAL, "listen", addr)) }
+    }
+}
+
+// The address the listener is bound to, e.g. "127.0.0.1:43127" ("" if the
+// system cannot tell).
+pub fn (l: &Listener) localAddr(): str { return sockText(l.fd, 0) }
+
+// Parks until a connection arrives, and gives it.
+pub fn (l: &Listener) accept(w: Where): Result[Conn, io.IoError] {
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "accept", l.addr)) }
+    while true {
+        let fd = rtAccept(l.fd)
+        if fd >= 0 { return Ok(Conn{fd: fd, addr: sockText(fd, 1)}) }
+        if fd == -EAGAIN {
+            let r = rtWait(l.fd, 0, w.cstr())
+            if r != 0 { return Err(stopped(r, "accept", l.addr)) }
+        } else if fd != -EINTR && fd != -ECONNABORTED {
+            return Err(io.ioError(-fd, "accept", l.addr))
+        }
+    }
+    return Err(io.ioError(EINVAL, "accept", l.addr))
+}
+
+// Closes the socket (as dropping it does).
+pub fn (var l: Listener) close() {}
+
+pub fn (l: mut &Listener) drop() {
+    if l.fd >= 0 { rtClose(l.fd) }
+}
+
+// ---- connections
+
+// Connects to addr, parking until the connection is made.
+pub fn connect(addr: str, w: Where): Result[Conn, io.IoError] {
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "connect", addr)) }
+    match parseAddr(addr, false) {
+        Some(ip) {
+            var pending = 0
+            let fd = rtConnect(ip.fam, &ip.b, ip.port, mut &pending)
+            if fd < 0 { return Err(io.ioError(-fd, "connect", addr)) }
+            let c = Conn{fd: fd, addr: addr}   // closed by its drop on an error below
+            if pending != 0 {
+                var b = array(19, byte(0))
+                while rtAddr(fd, 1, mut &b) != 0 {
+                    let r = rtWait(fd, 1, w.cstr())
+                    if r != 0 { return Err(stopped(r, "connect", addr)) }
+                    let e = rtSoError(fd)
+                    if e != 0 { return Err(io.ioError(e, "connect", addr)) }
+                }
+            }
+            return Ok(c)
+        }
+        None { return Err(io.ioError(EINVAL, "connect", addr)) }
+    }
+}
+
+// Reads what has arrived, up to len(buf) bytes, parking until there is
+// something; Ok(0) when the peer has closed its side (or buf is empty).
+pub fn (c: &Conn) read(buf: mut &[byte], w: Where): Result[int, io.IoError] {
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "read", c.addr)) }
+    while true {
+        let n = rtRead(c.fd, buf, len(buf))
+        if n >= 0 { return Ok(n) }
+        if n == -EAGAIN {
+            let r = rtWait(c.fd, 0, w.cstr())
+            if r != 0 { return Err(stopped(r, "read", c.addr)) }
+        } else if n != -EINTR {
+            return Err(io.ioError(-n, "read", c.addr))
+        }
+    }
+    return Err(io.ioError(EINVAL, "read", c.addr))
+}
+
+// Writes all of data, parking while the socket's buffer is full. On an
+// error part of data may have been sent.
+pub fn (c: &Conn) write(data: &[byte], w: Where): Result[Unit, io.IoError] {
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "write", c.addr)) }
+    var off = 0
+    while off < len(data) {
+        let n = rtWrite(c.fd, data[off..], len(data) - off)
+        if n >= 0 {
+            off += n
+        } else if n == -EAGAIN {
+            let r = rtWait(c.fd, 1, w.cstr())
+            if r != 0 { return Err(stopped(r, "write", c.addr)) }
+        } else if n != -EINTR {
+            return Err(io.ioError(-n, "write", c.addr))
+        }
+    }
+    return Ok(Unit{})
+}
+
+// write for the bytes of s.
+pub fn (c: &Conn) writeStr(s: str, w: Where): Result[Unit, io.IoError] {
+    let b = strToBytes(s)
+    return c.write(&b, w)
+}
+
+// Shuts down the sending side: the peer reads the end of the stream, and
+// this side can still read.
+pub fn (c: &Conn) closeWrite(): Result[Unit, io.IoError] {
+    let r = rtShutdown(c.fd, 1)
+    if r != 0 { return Err(io.ioError(-r, "shutdown", c.addr)) }
+    return Ok(Unit{})
+}
+
+// TCP_NODELAY: send small writes at once instead of waiting to fill a
+// segment (Nagle's algorithm off).
+pub fn (c: &Conn) setNoDelay(on: bool): Result[Unit, io.IoError] {
+    let r = rtNoDelay(c.fd, if on { 1 } else { 0 })
+    if r != 0 { return Err(io.ioError(-r, "setsockopt", c.addr)) }
+    return Ok(Unit{})
+}
+
+// This side's address, e.g. "127.0.0.1:43127" ("" if the system cannot tell).
+pub fn (c: &Conn) localAddr(): str { return sockText(c.fd, 0) }
+
+// The peer's address ("" once it is gone).
+pub fn (c: &Conn) peerAddr(): str { return sockText(c.fd, 1) }
+
+// Closes the socket (as dropping it does).
+pub fn (var c: Conn) close() {}
+
+pub fn (c: mut &Conn) drop() {
+    if c.fd >= 0 { rtClose(c.fd) }
+}

@@ -1,0 +1,72 @@
+// net: an accept loop runs until its task is cancelled: dropping its future
+// cancels it, and with it the connection tasks of the scope it has open
+// (each parked in a read). Every one of them sees ECANCELED, and the
+// listener and the connections are closed by their drops.
+// expect: client 0 served
+// expect: client 1 served
+// expect: client 2 served
+// expect: handler 0: cancelled
+// expect: handler 1: cancelled
+// expect: handler 2: cancelled
+// expect: accept loop: cancelled after 3 connections
+// expect: clients see the end: 0 0 0
+import "task"
+import "net"
+import "io"
+
+type Job = record {
+    c: net.Conn
+    id: int
+}
+
+fn handle(j: Job): int {
+    var buf = array(16, byte(0))
+    j.c.writeStr("!").unwrap()
+    match j.c.read(mut &buf) {                   // the clients never write: parks until cancelled
+        Ok(n) { println("handler " + intToStr(j.id) + ": read " + intToStr(n)) }
+        Err(e) { println("handler " + intToStr(j.id) + ": " + if e.isCancelled() { "cancelled" } else { e.toStr() }) }
+    }
+    return j.id
+}
+
+fn acceptLoop(ln: net.Listener): int {
+    var n = 0
+    task.scope(fn(s: mut &task.Scope) {
+        var hs: []task.Future[int] = []
+        while true {
+            match ln.accept() {
+                Ok(c) {
+                    append(mut &hs, s.start(handle, Job{c: c, id: n}))
+                    n += 1
+                }
+                Err(e) {
+                    println("accept loop: " + if e.isCancelled() { "cancelled" } else { e.toStr() } + " after " + intToStr(n) + " connections")
+                    break
+                }
+            }
+        }
+        let r = task.all(hs)                      // cancelled: returns at once; the scope waits
+    })
+    return n
+}
+
+fn main() {
+    var clients: []net.Conn = []
+    task.scope(fn(s: mut &task.Scope) {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let addr = ln.localAddr()
+        let f = s.start(acceptLoop, ln)
+        var buf = array(4, byte(0))
+        for i in 0..3 {
+            let c = net.connect(addr).unwrap()
+            let k = c.read(mut &buf).unwrap()     // the handler's "!": it has been accepted
+            println("client " + intToStr(i) + " served")
+            append(mut &clients, c)
+        }
+        let stop = f                              // dropped here: the loop is cancelled
+    })
+    var buf = array(4, byte(0))
+    var ends = ""
+    for c in clients { ends = ends + " " + intToStr(c.read(mut &buf).unwrap()) }
+    println("clients see the end:" + ends)
+}

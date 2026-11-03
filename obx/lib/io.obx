@@ -28,6 +28,14 @@ pub fn (a: IoError) eq(b: &IoError): bool {
     return a.errno == b.errno && a.op == b.op && a.path == b.path
 }
 
+// The errnos of an operation stopped by cancellation or by the deadline of
+// a task.within (net; SPEC 16).
+pub const ECANCELED = 125
+pub const ETIMEDOUT = 110
+
+pub fn (e: IoError) isCancelled(): bool { return e.errno == ECANCELED }
+pub fn (e: IoError) isTimeout(): bool { return e.errno == ETIMEDOUT }
+
 // The C library's text for an errno.
 pub fn errorText(errno: int): str { return strerror(i32(errno)) }
 

@@ -1,0 +1,62 @@
+// task: Scope.spawn starts a task with no future. It is not cancelled when
+// the call returns (as a dropped future's task would be); the scope waits
+// for it, and its result is dropped when it finishes. Cancelling the
+// scope's task cancels it.
+// expect: spawned 1 starts
+// expect: spawned 2 starts
+// expect: spawned 1: ok
+// expect: result 1 dropped
+// expect: spawned 2: ok
+// expect: result 2 dropped
+// expect: scope ended
+// expect: worker 0 parked
+// expect: worker 1 parked
+// expect: worker 0: cancelled
+// expect: result 100 dropped
+// expect: worker 1: cancelled
+// expect: result 101 dropped
+// expect: owner: 2 spawned
+import "task"
+
+type Noisy = record { n: int }
+
+fn (x: mut &Noisy) drop() { println("result " + intToStr(x.n) + " dropped") }
+
+fn napper(n: int): Noisy {
+    println("spawned " + intToStr(n) + " starts")
+    match task.sleep(n * 5) {
+        Ok(_) { println("spawned " + intToStr(n) + ": ok") }
+        Err(e) { println("spawned " + intToStr(n) + ": " + e.toStr()) }
+    }
+    return Noisy{n: n}
+}
+
+fn worker(n: int): Noisy {
+    println("worker " + intToStr(n) + " parked")
+    match task.sleep(100000) {
+        Ok(_) { println("worker " + intToStr(n) + ": ok") }
+        Err(e) { println("worker " + intToStr(n) + ": " + e.toStr()) }
+    }
+    return Noisy{n: 100 + n}
+}
+
+fn owner(k: int): int {
+    task.scope(fn(s: mut &task.Scope) {
+        for i in 0..k { s.spawn(worker, i) }
+    })
+    println("owner: " + intToStr(k) + " spawned")
+    return k
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        s.spawn(napper, 1)
+        s.spawn(napper, 2)
+    })
+    println("scope ended")
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(owner, 2)
+        task.sleep(10).unwrap()
+        let stop = f                // dropped: owner and its spawned workers are cancelled
+    })
+}

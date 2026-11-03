@@ -1,0 +1,39 @@
+// task: sleep parks a task until its time; the tasks wake in the order of
+// their deadlines, and main waits for them with nothing but timers pending
+// (no deadlock). sleep(0) and a negative time do not park.
+// expect: start
+// expect: woke 0
+// expect: woke -5
+// expect: woke 10
+// expect: woke 20
+// expect: woke 30
+// expect: woke 40
+// expect: total 95
+// expect: slept long enough: true
+// expect: main slept: true
+import "task"
+import "time"
+
+fn napper(ms: int): int {
+    let t0 = time.monotonicNs()
+    task.sleep(ms).unwrap()
+    if time.monotonicNs() - t0 < ms * 1000000 { panic("woke early") }
+    println("woke " + intToStr(ms))
+    return ms
+}
+
+fn main() {
+    let t0 = time.monotonicNs()
+    println("start")
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[int] = []
+        for ms in [40, 10, 30, 0, 20, -5] { append(mut &fs, s.start(napper, ms)) }
+        var total = 0
+        for v in task.all(fs).unwrap() { total += v }
+        println("total " + intToStr(total))
+    })
+    println("slept long enough: " + (time.monotonicNs() - t0 >= 40000000).toStr())
+    let t1 = time.monotonicNs()
+    task.sleep(15).unwrap()                     // a plain program: main parks, the loop sleeps
+    println("main slept: " + (time.monotonicNs() - t1 >= 15000000).toStr())
+}

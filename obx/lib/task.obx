@@ -39,6 +39,7 @@ extern "c" fn rtStart(s: ptr, run: extern fn(ptr): ptr, job: ptr, resdrop: exter
 extern "c" fn rtWait(t: ptr, w: ptr): int as "obxlib_task_wait"
 extern "c" fn rtWaitAny(ts: &[]ptr, n: int, w: ptr): int as "obxlib_task_wait_any"
 extern "c" fn rtForget(t: ptr) as "obxlib_task_forget"
+extern "c" fn rtDetach(t: ptr) as "obxlib_task_detach"
 extern "c" fn rtJoin(t: ptr, w: ptr) as "obxlib_task_join"
 extern "c" fn rtTake(t: ptr): ptr as "obxlib_task_take"
 extern "c" fn rtYield(w: ptr): int as "obxlib_task_yield"
@@ -49,10 +50,14 @@ extern "c" fn rtAbandon(t: ptr) as "obxlib_task_abandon"
 extern "c" fn rtShNew(box: ptr, drop: extern fn(ptr)): ptr as "obxlib_sh_new"
 extern "c" fn rtShEnter(s: ptr, w: ptr): ptr as "obxlib_sh_enter"
 extern "c" fn rtShLeave(s: ptr, box: ptr) as "obxlib_sh_leave"
+extern "c" fn rtSleep(ms: int, w: ptr): int as "obxlib_task_sleep"
+extern "c" fn rtWithin(ms: int): int as "obxlib_task_within"
+extern "c" fn rtRestore(old: int) as "obxlib_task_restore"
 
-// Why a wait has no value: the waiting task was cancelled, or the future's
-// promise was dropped without being completed.
-pub type Cancelled = value closed { Cancelled; Abandoned }
+// Why a wait has no value: the waiting task was cancelled, the future's
+// promise was dropped without being completed, or the deadline of an
+// enclosing within passed.
+pub type Cancelled = value closed { Cancelled; Abandoned; Timeout }
 
 pub fn (c: Cancelled) eq(other: &Cancelled): bool { return c.toStr() == other.toStr() }
 
@@ -60,6 +65,7 @@ pub fn (c: Cancelled) toStr(): str {
     match c {
         Cancelled.Cancelled { return "cancelled" }
         Cancelled.Abandoned { return "abandoned" }
+        Cancelled.Timeout { return "timeout" }
     }
 }
 
@@ -132,6 +138,14 @@ pub fn (s: mut &Scope) start[A, T](f: fn(A): T, arg: A): Future[T] {
     return Future[T]{t: rtStart(s.p, run[A, T], intoPtr(j), dropCell[T])}
 }
 
+// Starts f(arg) as a task of the scope with no future: nobody waits for it,
+// and its result is dropped. The scope still waits for it to finish, and it
+// is cancelled with the scope's task (an accept loop's connections).
+pub fn (s: mut &Scope) spawn[A, T](f: fn(A): T, arg: A) {
+    let j = Job[A, T]{f: f, arg: arg}
+    rtDetach(rtStart(s.p, run[A, T], intoPtr(j), dropCell[T]))
+}
+
 // ---- futures
 
 // Parks until the task has finished, and gives its result.
@@ -140,7 +154,7 @@ pub fn (var f: Future[T]) wait(w: Where): Result[T, Cancelled] {
     let r = rtWait(t, w.cstr())
     if r != 0 {
         rtForget(t)
-        return Err(if r == 1 { Cancelled.Cancelled } else { Cancelled.Abandoned })
+        return Err(waitError(r))
     }
     return Ok(unbox[T](rtTake(t)))
 }
@@ -176,15 +190,47 @@ pub fn any[T](var fs: []Future[T], w: Where): Result[T, Cancelled] {
             rtJoin(ts[i], w.cstr())
         }
     }
-    if k < 0 { return Err(Cancelled.Cancelled) }
+    if k < 0 { return Err(if k == -1 { Cancelled.Cancelled } else { Cancelled.Timeout }) }
     let f = replace(mut &fs[k], Future[T]{t: nullPtr()})
     return f.wait(w)
 }
 
-// Lets the other runnable tasks run first; Err when this task is cancelled.
+// Lets the other runnable tasks run first; Err when this task is cancelled
+// or its deadline has passed.
 pub fn yield(w: Where): Result[Unit, Cancelled] {
-    if rtYield(w.cstr()) != 0 { return Err(Cancelled.Cancelled) }
+    let r = rtYield(w.cstr())
+    if r != 0 { return Err(waitError(r)) }
     return Ok(Unit{})
+}
+
+// The error of a runtime wait's code: 1 cancelled, 2 abandoned, 3 timeout.
+fn waitError(r: int): Cancelled {
+    return if r == 1 { Cancelled.Cancelled } else if r == 2 { Cancelled.Abandoned } else { Cancelled.Timeout }
+}
+
+fn unitOr(r: int): Result[Unit, Cancelled] {
+    if r != 0 { return Err(waitError(r)) }
+    return Ok(Unit{})
+}
+
+// ---- time
+
+// Parks for ms milliseconds (no time when ms <= 0); Err(Cancelled) when the
+// task is cancelled (at once, or while it sleeps), Err(Timeout) when the
+// deadline of an enclosing within comes first.
+pub fn sleep(ms: int, w: Where): Result[Unit, Cancelled] { return unitOr(rtSleep(ms, w.cstr())) }
+
+// Runs f with a deadline ms milliseconds from now (the earlier one wins when
+// within is nested). Every call that can park in f, and in the tasks started
+// during f, returns Err(Timeout) once the deadline has passed (a wait,
+// yield, sleep, or a net read, write, accept or connect), so the work in f
+// ends there through its Results. A wait that would park waits only until
+// the deadline. within itself does not park.
+pub fn within[R](ms: int, f: &fn(): R): R {
+    let old = rtWithin(ms)
+    let r = f()
+    rtRestore(old)
+    return r
 }
 
 // Whether the running task has been cancelled.

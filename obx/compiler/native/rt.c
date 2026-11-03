@@ -397,13 +397,18 @@ struct rt_task {
     int state, refs;
     bool cancelled, cancellable, promise, abandoned, forgotten;
     const char* pw;                 /* while parked: where (the user's call, "file:line") */
+    int why;                        /* the event loop's fields: see rt.h */
+    int64_t deadline;
+    int64_t wake_at, hidx;
+    uint64_t tseq;
     int shdrop;
     rt_dact* ds;
     int64_t dn, dcap;
     char** ctmp;
     int64_t nctmp, cctmp;
 };
-static rt_task rt_root = {.refs = 1};
+#define RT_NEVER INT64_MAX
+static rt_task rt_root = {.refs = 1, .deadline = RT_NEVER};
 static rt_task* rt_cur = &rt_root;
 
 static char* rt_stack_top;
@@ -1399,20 +1404,140 @@ static void rt_switch(rt_task* to) {
     rt_ctx_swap(&me->sp, to->sp);
     rt_resumed();
 }
-static bool rt_park(bool cancellable, const char* w) {
-    rt_task* me = rt_cur;
-    rt_task* nx = rt_dequeue();
-    if (!nx) rt_trap(14, "deadlock: every task is parked", w);
-    me->pw = w;
-    me->state = RT_PARKED;
-    me->cancellable = cancellable;
-    rt_switch(nx);
-    me->cancellable = false;
-    return cancellable && me->cancelled;
-}
 static void rt_wake(rt_task* t) {
     if (t->state == RT_PARKED) { t->state = RT_RUN; rt_enqueue(t); }
 }
+
+/* ---- the event loop (stage C1b): rt.h's timers (a heap of parked tasks by deadline) and
+   sockets (registered with epoll, edge-triggered, when made), with raw system calls */
+enum { S_SOCKET = 41, S_CONNECT = 42, S_SENDTO = 44, S_SHUTDOWN = 48, S_BIND = 49, S_LISTEN = 50,
+       S_GETSOCKNAME = 51, S_GETPEERNAME = 52, S_SETSOCKOPT = 54, S_GETSOCKOPT = 55, S_EPOLL_WAIT = 232,
+       S_EPOLL_CTL = 233, S_ACCEPT4 = 288, S_EPOLL_CREATE1 = 291 };
+enum { RT_WOK = 0, RT_WCANCEL = 1, RT_WTIMEOUT = 3 };
+struct k_epoll_event { uint32_t events; uint64_t data; } __attribute__((packed));
+#define K_EPOLLIN 0x001
+#define K_EPOLLOUT 0x004
+#define K_EPOLLERR 0x008
+#define K_EPOLLHUP 0x010
+#define K_EPOLLRDHUP 0x2000
+#define K_EPOLLET (1u << 31)
+#define K_EAGAIN 11
+#define K_EINPROGRESS 115
+#define K_O_NONBLOCK 0x800
+#define K_O_CLOEXEC 0x80000
+typedef struct { rt_task *rd, *wr; } rt_fdw;
+static rt_fdw* rt_fds;
+static int64_t rt_nfds;
+static int rt_epfd = -1;
+static int64_t rt_nio;
+static rt_task** rt_heap;
+static int64_t rt_nheap, rt_cheap;
+static uint64_t rt_tseq;
+static unsigned rt_ticks;
+
+static int64_t rt_mono(void) {
+    struct { i64 s, ns; } t;
+    SYS(S_CLOCK_GETTIME, 1, &t, 0);
+    return (int64_t)t.s * 1000000000 + t.ns;
+}
+static int64_t rt_after(int64_t ms) {
+    int64_t now = rt_mono();
+    if (ms <= 0) return now;
+    return ms >= (RT_NEVER - 1 - now) / 1000000 ? RT_NEVER - 1 : now + ms * 1000000;
+}
+static bool rt_expired(void) { return rt_cur->deadline != RT_NEVER && rt_mono() >= rt_cur->deadline; }
+static bool rt_tless(rt_task* a, rt_task* b) {
+    return a->wake_at < b->wake_at || (a->wake_at == b->wake_at && a->tseq < b->tseq);
+}
+static void rt_hset(int64_t i, rt_task* t) { rt_heap[i] = t; t->hidx = i + 1; }
+static void rt_hup(int64_t i) {
+    rt_task* t = rt_heap[i];
+    while (i > 0 && rt_tless(t, rt_heap[(i - 1) / 2])) { rt_hset(i, rt_heap[(i - 1) / 2]); i = (i - 1) / 2; }
+    rt_hset(i, t);
+}
+static void rt_hdown(int64_t i) {
+    rt_task* t = rt_heap[i];
+    for (;;) {
+        int64_t c = 2 * i + 1;
+        if (c >= rt_nheap) break;
+        if (c + 1 < rt_nheap && rt_tless(rt_heap[c + 1], rt_heap[c])) c++;
+        if (!rt_tless(rt_heap[c], t)) break;
+        rt_hset(i, rt_heap[c]);
+        i = c;
+    }
+    rt_hset(i, t);
+}
+static void rt_timer_add(rt_task* t, int64_t at) {
+    if (rt_nheap == rt_cheap) {
+        rt_cheap = rt_cheap ? 2 * rt_cheap : 64;
+        rt_heap = realloc(rt_heap, (size_t)rt_cheap * sizeof *rt_heap);
+        if (!rt_heap) rt_trap(2, "out of memory", "runtime");
+    }
+    t->wake_at = at;
+    t->tseq = rt_tseq++;
+    rt_heap[rt_nheap++] = t;
+    rt_hup(rt_nheap - 1);
+}
+static void rt_timer_del(rt_task* t) {
+    int64_t i = t->hidx - 1;
+    rt_task* last = rt_heap[--rt_nheap];
+    t->hidx = 0;
+    if (i < rt_nheap) { rt_hset(i, last); rt_hup(i); rt_hdown(last->hidx - 1); }
+}
+static void rt_poll(bool block, const char* w) {
+    struct k_epoll_event ev[256];
+    for (;;) {
+        int64_t wait = block && !rt_rq_head ? -1 : 0;
+        if (rt_nheap) {
+            int64_t now = rt_mono();
+            while (rt_nheap && rt_heap[0]->wake_at <= now) {
+                rt_task* t = rt_heap[0];
+                rt_timer_del(t);
+                if (t->state == RT_PARKED) t->why = RT_WTIMEOUT;
+                rt_wake(t);
+            }
+            if (rt_rq_head) wait = 0;
+            else if (rt_nheap && wait) wait = rt_heap[0]->wake_at - now;
+        }
+        if (wait < 0 && !rt_nio) rt_trap(14, "deadlock: every task is parked", w);
+        if (rt_nio) {
+            int ms = wait < 0 ? -1 : wait > (int64_t)INT32_MAX * 1000000 ? INT32_MAX
+                   : (int)(wait / 1000000 + (wait % 1000000 != 0));
+            i64 n = SYS4(S_EPOLL_WAIT, rt_epfd, ev, 256, ms);
+            for (i64 i = 0; i < n; i++) {
+                int64_t fd = (int64_t)ev[i].data;
+                uint32_t e = ev[i].events;
+                if (fd >= rt_nfds) continue;
+                if (rt_fds[fd].rd && (e & (K_EPOLLIN | K_EPOLLRDHUP | K_EPOLLHUP | K_EPOLLERR))) rt_wake(rt_fds[fd].rd);
+                if (rt_fds[fd].wr && (e & (K_EPOLLOUT | K_EPOLLHUP | K_EPOLLERR))) rt_wake(rt_fds[fd].wr);
+            }
+        } else if (wait > 0) {
+            struct { i64 s, ns; } d = {wait / 1000000000, wait % 1000000000};
+            SYS(S_NANOSLEEP, &d, 0, 0);
+        }
+        if (!block || rt_rq_head) return;
+    }
+}
+static rt_task* rt_next(const char* w) {
+    if ((rt_nio | rt_nheap) && (++rt_ticks & 63) == 0) rt_poll(false, w);
+    rt_task* t = rt_dequeue();
+    if (!t) { rt_poll(true, w); t = rt_dequeue(); }
+    return t;
+}
+static int rt_park_until(bool cancellable, int64_t at, const char* w) {
+    rt_task* me = rt_cur;
+    me->pw = w;
+    me->state = RT_PARKED;
+    me->cancellable = cancellable;
+    me->why = RT_WOK;
+    if (at != RT_NEVER) rt_timer_add(me, at);
+    rt_task* nx = rt_next(w);
+    if (nx != me) rt_switch(nx);
+    if (me->hidx) rt_timer_del(me);
+    me->cancellable = false;
+    return cancellable && me->cancelled ? RT_WCANCEL : me->why;
+}
+static void rt_park(bool cancellable, const char* w) { rt_park_until(cancellable, RT_NEVER, w); }
 static void rt_nopark(const char* w);
 static void rt_cancel(rt_task* t) {
     if (t->promise || t->state == RT_DONE || t->cancelled) return;
@@ -1435,8 +1560,7 @@ __attribute__((noreturn)) static void rt_task_boot(void) {
     t->scope = 0;
     if (--s->live == 0 && s->closing) rt_wake(s->owner);
     if (t->waiter) rt_wake(t->waiter);
-    rt_task* nx = rt_dequeue();
-    if (!nx) rt_trap(14, "deadlock: every task is parked", s->owner->pw ? s->owner->pw : "runtime");
+    rt_task* nx = rt_next(s->owner->pw ? s->owner->pw : "runtime");
     rt_dead = t;
     rt_switch(nx);
     __builtin_unreachable();
@@ -1464,6 +1588,7 @@ void* obxlib_task_start(void* sp, void* run, void* job, void* resdrop) {
     t->run = (void* (*)(void*))run; t->job = job; t->resdrop = (void (*)(void*))resdrop;
     t->refs = 2;
     t->cancelled = rt_cur->cancelled;
+    t->deadline = rt_cur->deadline;
     t->scope = s;
     t->sprev = s->last;
     if (s->last) s->last->snext = t; else s->tasks = t;
@@ -1487,8 +1612,9 @@ int64_t obxlib_task_wait(void* p, const char* w) {
     rt_nopark(w);
     while (t->state != RT_DONE) {
         if (rt_cur->cancelled) return 1;
+        if (rt_expired()) return 3;
         t->waiter = rt_cur;
-        rt_park(true, w);
+        rt_park_until(true, rt_cur->deadline, w);
         t->waiter = 0;
     }
     return t->abandoned ? 2 : 0;
@@ -1499,8 +1625,9 @@ int64_t obxlib_task_wait_any(void** ts, int64_t n, const char* w) {
         for (int64_t i = 0; i < n; i++)
             if (((rt_task*)ts[i])->state == RT_DONE) return i;
         if (rt_cur->cancelled) return -1;
+        if (rt_expired()) return -2;
         for (int64_t i = 0; i < n; i++) ((rt_task*)ts[i])->waiter = rt_cur;
-        rt_park(true, w);
+        rt_park_until(true, rt_cur->deadline, w);
         for (int64_t i = 0; i < n; i++) ((rt_task*)ts[i])->waiter = 0;
     }
 }
@@ -1511,6 +1638,17 @@ void obxlib_task_forget(void* p) {
     } else {
         t->forgotten = true;
         rt_cancel(t);
+    }
+    rt_release(t);
+}
+/* Scope.spawn: the future is given up without cancelling its task; its result is dropped when
+   there is one. The scope still waits for the task. */
+void obxlib_task_detach(void* p) {
+    rt_task* t = p;
+    if (t->state == RT_DONE) {
+        if (t->res) { void* x = t->res; t->res = 0; t->resdrop(x); }
+    } else {
+        t->forgotten = true;
     }
     rt_release(t);
 }
@@ -1533,13 +1671,137 @@ void* obxlib_task_take(void* p) {
 }
 int64_t obxlib_task_yield(const char* w) {
     rt_nopark(w);
+    if ((rt_nio | rt_nheap) && (++rt_ticks & 63) == 0) rt_poll(false, w);
     if (rt_rq_head) {
         rt_enqueue(rt_cur);
         rt_switch(rt_dequeue());
     }
-    return rt_cur->cancelled;
+    return rt_cur->cancelled ? 1 : rt_expired() ? 3 : 0;
 }
 int64_t obxlib_task_cancelled(void) { return rt_cur->cancelled; }
+int64_t obxlib_task_check(const char* w) {
+    rt_nopark(w);
+    return rt_cur->cancelled ? 1 : rt_expired() ? 3 : 0;
+}
+int64_t obxlib_task_sleep(int64_t ms, const char* w) {
+    int64_t c = obxlib_task_check(w);
+    if (c || ms <= 0) return c;
+    int64_t at = rt_after(ms), dl = rt_cur->deadline;
+    int r = rt_park_until(true, at < dl ? at : dl, w);
+    return r == RT_WTIMEOUT && at <= dl ? 0 : r;
+}
+int64_t obxlib_task_within(int64_t ms) {
+    int64_t old = rt_cur->deadline, at = rt_after(ms);
+    if (at < old) rt_cur->deadline = at;
+    return old;
+}
+void obxlib_task_restore(int64_t old) { rt_cur->deadline = old; }
+
+/* ---- sockets (rt.h's, with raw system calls; results are counts or descriptors, or -errno) */
+static int64_t rt_net_new(i64 fd) {
+    if (rt_epfd < 0) {
+        i64 e = SYS(S_EPOLL_CREATE1, K_O_CLOEXEC, 0, 0);
+        if (e < 0) { SYS(S_CLOSE, fd, 0, 0); return e; }
+        rt_epfd = (int)e;
+    }
+    if (fd >= rt_nfds) {
+        int64_t n = rt_nfds ? rt_nfds : 64;
+        while (n <= fd) n *= 2;
+        rt_fdw* f = realloc(rt_fds, (size_t)n * sizeof *rt_fds);
+        if (!f) rt_trap(2, "out of memory", "runtime");
+        memset(f + rt_nfds, 0, (size_t)(n - rt_nfds) * sizeof *f);
+        rt_fds = f;
+        rt_nfds = n;
+    }
+    struct k_epoll_event ev = {K_EPOLLIN | K_EPOLLOUT | K_EPOLLRDHUP | K_EPOLLET, (uint64_t)fd};
+    i64 r = SYS4(S_EPOLL_CTL, rt_epfd, 1, fd, &ev);             /* EPOLL_CTL_ADD */
+    if (r < 0) { SYS(S_CLOSE, fd, 0, 0); return r; }
+    return fd;
+}
+/* struct sockaddr_in or sockaddr_in6 in ss (28 bytes); its length */
+static int rt_net_sa(int64_t fam, const uint8_t* a, int64_t port, unsigned char* ss) {
+    memset(ss, 0, 28);
+    ss[0] = fam == 6 ? 10 : 2;                                   /* AF_INET6, AF_INET */
+    ss[2] = (unsigned char)(port >> 8);
+    ss[3] = (unsigned char)port;
+    if (fam == 6) { memcpy(ss + 8, a, 16); return 28; }
+    memcpy(ss + 4, a, 4);
+    return 16;
+}
+int64_t obxlib_net_listen(int64_t fam, const uint8_t* a, int64_t port, int64_t backlog) {
+    unsigned char ss[28];
+    int n = rt_net_sa(fam, a, port, ss);
+    i64 fd = SYS(S_SOCKET, ss[0], 1 | K_O_NONBLOCK | K_O_CLOEXEC, 0);  /* SOCK_STREAM */
+    if (fd < 0) return fd;
+    int one = 1;
+    i64 r = sys6(S_SETSOCKOPT, fd, 1, 2, (i64)&one, sizeof one, 0);    /* SOL_SOCKET, SO_REUSEADDR */
+    if (r >= 0) r = SYS(S_BIND, fd, ss, n);
+    if (r >= 0) r = SYS(S_LISTEN, fd, backlog, 0);
+    if (r < 0) { SYS(S_CLOSE, fd, 0, 0); return r; }
+    return rt_net_new(fd);
+}
+int64_t obxlib_net_connect(int64_t fam, const uint8_t* a, int64_t port, int64_t* pending) {
+    unsigned char ss[28];
+    int n = rt_net_sa(fam, a, port, ss);
+    i64 fd = SYS(S_SOCKET, ss[0], 1 | K_O_NONBLOCK | K_O_CLOEXEC, 0);
+    if (fd < 0) return fd;
+    *pending = 0;
+    i64 r = SYS(S_CONNECT, fd, ss, n);
+    if (r < 0) {
+        if (r != -K_EINPROGRESS) { SYS(S_CLOSE, fd, 0, 0); return r; }
+        *pending = 1;
+    }
+    return rt_net_new(fd);
+}
+int64_t obxlib_net_accept(int64_t fd) {
+    i64 c = SYS4(S_ACCEPT4, fd, 0, 0, K_O_NONBLOCK | K_O_CLOEXEC);
+    return c < 0 ? c : rt_net_new(c);
+}
+int64_t obxlib_net_read(int64_t fd, void* b, int64_t n) { return SYS(S_READ, fd, b, n); }
+int64_t obxlib_net_write(int64_t fd, const void* b, int64_t n) {
+    return sys6(S_SENDTO, fd, (i64)b, n, 0x4000, 0, 0);          /* MSG_NOSIGNAL */
+}
+int64_t obxlib_net_addr(int64_t fd, int64_t peer, uint8_t* out) {
+    unsigned char ss[128];
+    int n = sizeof ss;
+    i64 r = SYS(peer ? S_GETPEERNAME : S_GETSOCKNAME, fd, ss, &n);
+    if (r < 0) return r;
+    memset(out, 0, 19);
+    out[1] = ss[2];
+    out[2] = ss[3];
+    if (ss[0] == 10) { out[0] = 6; memcpy(out + 3, ss + 8, 16); }
+    else { out[0] = 4; memcpy(out + 3, ss + 4, 4); }
+    return 0;
+}
+int64_t obxlib_net_nodelay(int64_t fd, int64_t on) {
+    int v = on != 0;
+    i64 r = sys6(S_SETSOCKOPT, fd, 6, 1, (i64)&v, sizeof v, 0);   /* IPPROTO_TCP, TCP_NODELAY */
+    return r < 0 ? r : 0;
+}
+int64_t obxlib_net_soerror(int64_t fd) {
+    int v = 0, n = sizeof v;
+    i64 r = sys6(S_GETSOCKOPT, fd, 1, 4, (i64)&v, (i64)&n, 0);   /* SOL_SOCKET, SO_ERROR */
+    return r < 0 ? -r : v;
+}
+int64_t obxlib_net_shutdown(int64_t fd, int64_t how) {
+    i64 r = SYS(S_SHUTDOWN, fd, how, 0);
+    return r < 0 ? r : 0;
+}
+void obxlib_net_close(int64_t fd) {
+    if (fd < rt_nfds) rt_fds[fd].rd = rt_fds[fd].wr = 0;
+    SYS(S_CLOSE, fd, 0, 0);
+}
+int64_t obxlib_net_wait(int64_t fd, int64_t dir, const char* w) {
+    rt_nopark(w);
+    if (rt_cur->cancelled) return 1;
+    if (rt_expired()) return 3;
+    if (dir) rt_fds[fd].wr = rt_cur; else rt_fds[fd].rd = rt_cur;
+    rt_nio++;
+    int r = rt_park_until(true, rt_cur->deadline, w);
+    rt_nio--;
+    if (dir) rt_fds[fd].wr = 0; else rt_fds[fd].rd = 0;
+    return r;
+}
 void* obxlib_task_promise(void* resdrop) {
     rt_task* t = rt_alloc(sizeof *t);
     memset(t, 0, sizeof *t);

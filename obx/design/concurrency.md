@@ -3,7 +3,10 @@
 Status: research note, 2026-11-02; first decisions 2026-11-03 (section 0).
 Stage C1a is done (2026-11-03): `lib/task.obx`, the runtime in `rt.h` and
 `native/rt.c`, SPEC 16; the measured costs replace the estimates in
-section 5. C1b (epoll, `net`, timers) and C1c (the helper pool) are next.
+section 5. Stage C1b is done (2026-11-03): the epoll loop, timers and
+deadlines, `lib/net.obx`, and the HTTP server gate without Postgres
+(`cmd/httpd.obx`); section 5 records how it was built. C1c (the helper pool,
+libpq's non-blocking path) is next.
 
 ## 0. Decisions
 
@@ -324,6 +327,83 @@ Dropping a `Future` does not park (its task is cancelled, and the scope's
 end waits for it), so it needs no location; `any` joins the losers at its
 own call's location.
 
+C1b as built (`lib/net.obx`, `task.sleep`, `task.within`; SPEC 16), in both
+runtimes (the native one with raw system calls, so a static program stays
+static):
+
+- **The event loop.** The scheduler owns one epoll instance, made when the
+  first socket is. Each socket is registered once, edge-triggered for
+  reading and writing, when it is made; an operation tries the system call
+  first and parks only on `EAGAIN`, in a table indexed by fd (one reader and
+  one writer per socket). Timers are a binary heap of parked tasks ordered by
+  (time, sequence), so equal times fire in the order they were set. When no
+  task is runnable, the scheduler expires the due timers and calls
+  `epoll_wait` with the nearest timer as its timeout (`nanosleep` when no
+  socket is waited on); while tasks are runnable it polls without waiting
+  every 64 switches, so a busy program still sees its sockets. The
+  deadlock report (exit 14) now needs every task parked, no socket waited
+  on and no timer pending; its location rules are unchanged. A spurious or
+  stale wake is harmless because every operation retries.
+- **Deadlines, not timeouts on each call.** `task.within(ms, f)` sets the
+  running task's deadline (the earlier wins; restored after `f`), and the
+  tasks started meanwhile inherit it. Every park that can be cancelled sets
+  a timer at the task's deadline, and every call that can park checks, in
+  this order: inside `with` (exit 13), cancelled, past the deadline. The
+  waits give `Err(Cancelled.Timeout)`, the `net` calls `ETIMEDOUT`. Why a
+  deadline on the task rather than a timeout argument on each call (Go's
+  `SetDeadline` on a connection, or a `timeout` parameter): one deadline
+  bounds a whole exchange (connect, write, read) and the work it starts, as
+  Trio's `move_on_after` and Go's `context.WithTimeout` do, and no call
+  needs a second signature. A read with a timeout is
+  `task.within(500, fn(): Result[int, io.IoError] { return c.read(mut &buf) })`.
+- **A cancelled or expired task's I/O does nothing.** `sleep` and the `net`
+  calls return the error at once, even when they would not park (Trio's
+  checkpoints). Otherwise a loop that always finds data would never see its
+  cancellation under load. `wait` still gives a result that is already
+  there, which would otherwise be lost.
+- **`net`.** TCP over IPv4 and IPv6: `listen` (`SO_REUSEADDR`, backlog
+  4096), `accept`, `connect` (non-blocking; it parks until writable, then
+  reads `SO_ERROR`), `read`, `write` (all of it, with `MSG_NOSIGNAL`, so a
+  closed peer is `EPIPE`, never `SIGPIPE`), `closeWrite`, `setNoDelay`,
+  `localAddr`, `peerAddr`; `Listener` and `Conn` are owned and closed by
+  their drop, which never parks. Errors are `io.IoError` with the address as
+  the path, and `isCancelled()`/`isTimeout()` on `IoError`. Addresses are
+  numeric (RFC 5952 text for IPv6) plus `localhost`: `getaddrinfo` blocks,
+  so names wait for C1c's helper pool.
+- **`Scope.spawn(f, arg)`**, not in the plan: a task with no future. An
+  accept loop cannot keep a future per connection (they pile up), and
+  dropping one cancels its task; a spawned task's result is dropped, it is
+  cancelled with its scope's task, and the scope still waits for it, so
+  every task is still in a scope.
+- `main` parks like any task: a plain program uses sockets and `sleep` with
+  no special mode. `time.sleepMs` still blocks the thread.
+
+Deviations: `within` has only the form with a result (a closure with no
+result cannot give the type argument; return a value, or use `scoped`
+inside); a `Conn` is used by one task at a time (no split into halves yet);
+an idle connection keeps its task and stack (the stack-less idle
+connection of section 7 is not built); no `io.Reader`/`Writer` interfaces
+(the language has no interface values yet).
+
+Measured (`bench/tasks.obx`, ns per operation, C / native): a wait that
+parks with a deadline (timer set and removed) 107 / 316, against 91 / 80
+without; a `sleep(1)` that fires, beyond a yield, about 20–260 / 180–260
+(noisy: the 1 ms sleep's overshoot is spread over 10,000 tasks); a socket
+read that finds data 650 / 710; a one-byte round trip between two tasks
+over loopback TCP 180,000–210,000 / 205,000, which is this machine's
+loopback (WSL2: a Python ping-pong, threads or epoll, takes 190,000–205,000
+too). The native runtime calls `clock_gettime` as a system call (no vDSO in
+a static program), about 250 ns, once per timer set, so its timers cost
+more. The gate (`cmd/http_gate.py`, one core for the server, one for the
+load client): 10,000 idle keep-alive connections at 13.0 KB of RSS each
+(native; 12.7 KB through C): two touched stack pages, the 4 KiB read buffer
+and the task; 4,900 / 38,900 / 69,400 requests per second with 1 / 10 / 100
+clients while they stay open (p99 0.33 / 0.37 / 1.9 ms), the same through C
+within 5%, against Go's net/http (GOMAXPROCS=1: 19.8 KB per connection,
+46,000 req/s at 100 clients) and Node 24 (9.3 KB, 42,900 req/s); `/shutdown`
+with 10,000 connections open ends in 0.19 s with exit 0 under `OBX_CHECK=1`.
+PERFORMANCE.md has the table.
+
 Library (`task`, `net`, `time`):
 
 - `task.scope(fn(s: mut &Scope) { ... s.start(f, x) ... })` is structured, as
@@ -478,7 +558,8 @@ neither parks. No locks and no server task.
   loop back-edges (Go added asynchronous preemption in 1.14 for this reason).
 - **Stacks:** fixed size, with no growth, because C output has no stack maps.
   At 256 KiB virtual and 8 to 32 KiB resident, 10,000 active tasks take
-  about 2.5 GB of address space and 80 to 320 MB of memory. Deep recursion
+  about 2.5 GB of address space and 80 to 320 MB of memory (C1b measured an
+  idle HTTP connection's task at two pages, 8 KiB). Deep recursion
   in a handler overflows sooner (exit 4). C libraries set the floor:
   OpenSSL, `getaddrinfo` and printf-style code use several KB to tens of KB.
   Mitigation: keep idle keep-alive connections in epoll with no task, and

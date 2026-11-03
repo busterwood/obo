@@ -1,0 +1,22 @@
+// net: a socket read can park, so calling it inside Shared.with stops the
+// program (exit 13), even when data is waiting and it would not have parked.
+// exit: 13
+// expect: inside
+// stderr: obx: a task parked inside Shared.with (the with at net_trap_read_in_with.obx:17) at net_trap_read_in_with.obx:19
+import "task"
+import "net"
+
+fn main() {
+    let ln = net.listen("127.0.0.1:0").unwrap()
+    let c = net.connect(ln.localAddr()).unwrap()
+    let peer = ln.accept().unwrap()
+    peer.writeStr("data").unwrap()
+    task.sleep(5).unwrap()
+    let sh = task.shared(0)
+    var buf = array(16, byte(0))
+    sh.with(fn(x: mut &int) {
+        println("inside")
+        let r = c.read(mut &buf)
+        println("not reached")
+    })
+}
