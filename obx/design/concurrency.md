@@ -16,11 +16,31 @@ Future work: after the self-hosted compiler (stage 4) and the native backend
 - **Parking inside `Shared.with` traps now** (exit 13) **and becomes a compile
   error later**, when the compiler has effect summaries (SPEC 13). Not a lock:
   a lock held across a park brings back deadlocks and latency.
+- **No threads: obx is shared-nothing, for safety and for performance.** A
+  process runs one OS thread with coroutines; several cores means several
+  processes that share nothing but the database. This is a performance
+  decision as much as a safety one: the fastest servers share nothing
+  between cores (nginx's process per core, Redis's single-threaded core,
+  Seastar's thread per core with no sharing, LMAX's single-threaded matching
+  engine at about 6 million orders a second), because locks and cache lines
+  moving between cores cost more than they gain. One core with an epoll loop
+  serves roughly 100,000–500,000 simple HTTP requests a second, and a real
+  application meets Postgres's limits first. Threads would tax every
+  program (atomic `str` counts at 5–20 ns instead of about 1 ns, allocator
+  and runtime-state changes, `fork` made unsafe), add lock-order deadlocks
+  and nondeterministic failures, and need a cross-thread constraint and
+  thread-tied C markers in the language. What is given up: an in-process
+  cache that every core reads and writes; for financial data that state
+  belongs in the database. Alternatives for the rest are in section 5,
+  "Without threads". Stages C3 and C4 are not planned. Revisit only when a
+  real program shows a measured bottleneck those alternatives cannot fix.
+  The one exception is the helper pool for blocking C calls (C1c): threads
+  that run only C code, never obx code, invisible to the language.
 
 - **Q1, Q3 to Q8 as recommended** (section 8): processes are the only way to
   use several cores for now; every task is started from a scope; scheduling
   is cooperative with `task.yield()`, yield checks later as an IR pass if
-  needed; a panic stops the worker; threads (C3) are deferred; blocking C
+  needed; a panic stops the worker; no threads (above); blocking C
   calls are marked `blocking` on the extern; C1a starts after the `ir` and
   `perf2` branches merge and the docs pass.
 
@@ -32,7 +52,8 @@ stackful coroutines, not as explicit state machines.
 
 ## 1. Recommendation
 
-Build concurrency in three layers. Each layer is useful without the next one.
+Build concurrency in two layers, and keep it shared-nothing. Each layer is
+useful without the next one.
 
 1. **Inside a process: one OS thread, many stackful coroutines.** An epoll
    event loop runs underneath, in the library and runtime. Handler code is
@@ -45,13 +66,11 @@ Build concurrency in three layers. Each layer is useful without the next one.
 2. **Across cores: shared-nothing worker processes,** the nginx model. A
    supervisor forks N workers and each worker runs layer 1. The language
    needs nothing for this, and a crash stays inside one worker.
-3. **Later, and only if a real program needs it:** worker threads in place of
-   processes, and then fork-join data parallelism. Both need runtime work
-   (atomic string reference counts, thread-local runtime state) and a little
-   language work (thread-local copy globals, an opt-out for C types that are
-   tied to one thread).
+3. **No threads** (decided 2026-11-03, section 0). Worker threads and
+   fork-join threads (stages C3 and C4) are not planned. Batch work across
+   cores uses processes (section 9 records process futures as an idea).
 
-The language changes for layers 1 and 2 are three generic built-ins and no
+The language changes are three generic built-ins and no
 new syntax: `Future[T]` (from a scope's `start`), `Promise[T]` and
 `Shared[T]`. Everything else is library and the two runtimes (`rt.h`,
 `native/rt.c`).
@@ -74,7 +93,7 @@ globals that cannot be borrowed.
 | Shared-nothing processes (nginx, PostgreSQL, Apache prefork, gunicorn) | none | fork plus a supervisor | lowest; crashes are isolated | best first step for using several cores |
 | epoll / io_uring loops | none; a mechanism, not a model | epoll is small; io_uring is bigger and blocked in some sandboxes | the loop is correct once, in the library | epoll first; io_uring later if file I/O needs it |
 | Cilk / rayon fork-join | spawn/sync, or closures plus Send/Sync | work-stealing pool | rayon: no races; Cilk: races possible | obx rule 3 already checks disjoint closure captures; last step |
-| Seastar, Glommio (thread per core, shared nothing) | none | per-core loops, cross-core queues | low | this is layer 3 |
+| Seastar, Glommio (thread per core, shared nothing) | none | per-core loops, cross-core queues | low | the same shape as layer 2, with processes in place of threads |
 | Vale / Hylo / Austral | Vale: region borrowing for parallel loops over frozen data (proposed); Hylo: value semantics plus structured concurrency, aiming to avoid colouring; Austral: linear types, no concurrency design yet | — | — | obx is closest to Hylo and Vale, and their direction agrees with this note |
 
 Two observations from the survey:
@@ -324,34 +343,37 @@ subsume this stage if adopted.
 Gate: throughput scales with cores; killing a worker loses only its
 in-flight requests.
 
-### Stage C3 (optional): workers as threads
+### Without threads
 
-Do this only if per-worker memory or a shared in-process cache becomes a
-real need. Requirements:
+How a server gets what threads would give it, with no language change:
 
-- Thread-local runtime statics, as listed in section 3.
-- `str` counts: either atomic, or kept single-threaded with a transfer step
-  for messages between workers. Decide by benchmark.
-- Copy globals become thread-local, as in D. `once.set` becomes atomic and
-  makes the value's strings immortal.
-- Tasks stay pinned to their worker: no work stealing between threads. Two
-  tasks in one worker may share string blocks, so moving a task to another
-  thread would race their counts.
-- A `send` constraint, derived like `copy`, for values that cross workers. A
-  type fails it when it contains a handle or a C type its module marked as
-  tied to one thread.
-- The native backend needs TLS access to runtime state, `lock`-prefixed
-  instructions for the counts, and a per-thread allocator if it replaces
-  malloc.
+| What threads give | Without threads |
+|---|---|
+| one in-memory cache for every core | a cache per worker (fine unless large); data loaded before the fork, shared copy-on-write; Redis or the database; read-only data in a memory-mapped file |
+| less memory | code pages are shared; data loaded before the fork is shared until written; 8 workers × 50 MB of heap is 400 MB |
+| rebalancing around a slow connection | more workers than cores; `EPOLLEXCLUSIVE` on accept; heavy work to another process |
+| global counters (rate limits) | a small fixed-size shared-memory counter area (nginx's zones), or Redis |
+| a shared TLS session cache | TLS 1.3 session tickets need no shared state |
+| fewer database connections | pgbouncer |
+| several cores on one large dataset (batch) | processes sharing the data copy-on-write after a fork (section 9) |
 
-### Stage C4 (optional): fork-join parallelism
+Keeping the door open costs almost nothing, so keep these rules:
 
-`par.both`, `par.forEach(mut &[T], &fn(mut &T))` and `par.map` run on a
-work-stealing pool, with the same borrow rules as `task.both` and
-`task.forEach`. This needs C3, atomic `str` counts (the workers copy strings
-out of data they share), and the copy-global decision. It suits batch
-computation, such as risk or valuation runs over large arrays of decimals,
-not the web server itself.
+- `str` counts are changed in one place: `rt_str_dup`/`rt_str_drop` and the
+  one routine in each backend that inlines them.
+- New runtime state is marked as per-process; no hidden statics.
+- No global lock, ever: parallelism is real or absent.
+- `Shared` belongs to one thread; anything shared across threads would be a
+  separate type.
+
+### Stages C3 and C4: not planned
+
+Worker threads (C3) and fork-join threads (C4) were sketched in the first
+version of this note. Both are dropped by the shared-nothing decision
+(section 0); the sketch is in git history. They would need atomic or biased
+`str` counts, thread-local runtime state and copy globals, a per-thread
+allocator in the native runtime, a `send` constraint, and markers for C
+types tied to one thread.
 
 ## 6. Sketch
 
@@ -399,7 +421,7 @@ neither parks. No locks and no server task.
 
 - **Lost compared with threads and shared memory:** no in-process cache
   shared across cores (use the database, Redis, or one cache task per
-  worker); no parallel speedup inside one request until C4; heap memory and
+  worker); no parallel speedup inside one request (processes for batch work, section 9); heap memory and
   database connections multiply by the worker count (code pages are shared).
 - **Cooperative scheduling:** a CPU-heavy handler, such as parsing a 50 MB
   JSON body or a big decimal batch, stalls its worker's other connections.
@@ -432,8 +454,8 @@ neither parks. No locks and no server task.
 - **Native backend:** needs a context-switch routine, per-task stack bounds
   for its overflow check, and stack probes that respect guard pages. The
   calling convention does not change. The compiler does not have to turn
-  functions into state machines, as async would require. Threads (C3) add
-  TLS and atomic instructions. Known frame sizes could later allow smaller
+  functions into state machines, as async would require. With no threads it
+  needs no TLS and no atomic instructions. Known frame sizes could later allow smaller
   stacks for call graphs without recursion.
 - **io_uring:** not needed for thousands of sockets; epoll handles that.
   io_uring helps file I/O and batching, and it can be added behind the same
@@ -459,9 +481,8 @@ as recommended.
    them.
 5. Should a panic stop the worker or only the task? Recommended: the worker;
    obx does not unwind.
-6. For C3: thread-local copy globals (D) or no writes from workers? Atomic
-   `str` counts or a transfer step? Recommended: defer; lean to thread-local
-   globals, counts by benchmark. `Shared` stays worker-local.
+6. ~~For C3: thread-local copy globals or no writes from workers? Atomic
+   `str` counts or a transfer step?~~ Superseded: no threads (section 0).
 7. Mark blocking C calls with a `blocking` marker on `extern`, or with a
    library call that runs a function on the helper pool? Recommended: the
    marker, which also lets the compiler reject function arguments.
@@ -524,9 +545,8 @@ Linux default to a fork server in 3.14. Sending a result back costs
 (milliseconds or more), not one per request.
 
 If adopted, this would subsume stage C2 (`task.workers` becomes n process
-futures and a supervisor loop that restarts any that return `Err`) and make
-C4's threads largely unnecessary for batch work: several cores without atomic
-string counts or thread-local globals.
+futures and a supervisor loop that restarts any that return `Err`) and is
+the shared-nothing way to put several cores on one batch job.
 
 **Other programs** (a side benefit): `s.run("gzip", ["-9", path])` returning
 `Future[Result[Exit, IoError]]`, through `posix_spawn` and pipes. The library
