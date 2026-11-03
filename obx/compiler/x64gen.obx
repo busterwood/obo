@@ -94,6 +94,13 @@ type Gen = record {
     strSym: Map[str, int]
     strs: []str
     funcPos: []int
+    pend: []bool                // per function: named by the code so far, not generated yet
+    pendLo: int                 // no function below it is pending
+    pendN: int
+    order: []int                // the functions generated, in order (so by address)
+    gLive: []bool               // per global: named by the code or a live global's initializer
+    gQueue: []int               // live globals whose initializers are not scanned yet
+    relocSeen: int              // the code relocations scanned for globals so far
     slots: []int
     reg: []int                  // per local: its register, or -1 (in its slot)
     uses: []int                 // per local: the times the function being generated names it
@@ -203,7 +210,7 @@ type Stub = value record {
 
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
-        strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
+        strs: [], funcPos: [], pend: [], pendLo: 0, pendN: 0, order: [], gLive: [], gQueue: [], relocSeen: 0, slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], loopEnds: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], rawW: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
@@ -218,11 +225,13 @@ fn newGen(u: ir.Ir): Gen {
     for i in 0..len(g.u.funcs) {
         append(mut &g.funcSym, -1)
         append(mut &g.funcPos, -1)
+        append(mut &g.pend, false)
         append(mut &g.inl, -1)
     }
     for i in 0..len(g.u.globals) {
         append(mut &g.syms, Sym{kind: SK_GLOBAL, idx: i, addr: 0})
         append(mut &g.globalSym, len(g.syms) - 1)
+        append(mut &g.gLive, false)
     }
     for i in 0..len(g.u.locals) {
         append(mut &g.slots, 0)
@@ -272,10 +281,7 @@ pub fn buildMap(p: ir.Ir, libs: []elf.Lib, symMap: mut &str): []byte {
     let img = g.link()
     let codeBase = ir.alignUp(rtx.TEXT_ADDR + rtx.TEXT_SIZE, CODE_ALIGN)
     var b = newStrBuf()
-    var fs: []int = []
-    for f in 0..len(g.u.funcs) {
-        if g.funcPos[f] >= 0 { append(mut &fs, f) }
-    }
+    let fs = &g.order
     for i in 0..len(fs) {
         let f = fs[i]
         let end = if i + 1 < len(fs) { g.funcPos[fs[i + 1]] } else { g.codeEnd }
@@ -366,14 +372,52 @@ fn (g: mut &Gen) genAll() {
         g.a.callSym(g.symRt("rt_n_start"))
         g.a.ud2()
     }
-    for f in 0..len(g.u.funcs) {
-        if g.u.funcs[f].body >= 0 {
-            while g.a.pos() % FUNC_ALIGN != 0 { g.a.b(0xCC) }
-            g.genFunc(f)
-        }
-    }
+    g.genLive()
     g.a.fixLabels()
     g.codeEnd = g.a.pos()
+}
+
+// Generates the functions reachable from the entry, and marks the globals they reach: what a
+// linker's --gc-sections keeps, with a function or a global as the section, found before any
+// code is generated for the rest. A function is reachable when generated code names it (a call
+// or its address: symFunc) or a live global's initializer does; a global when generated code
+// names it (a relocation) or a live global's initializer does. The functions are generated in
+// the order of their index among those pending, so the layout follows the source's order as
+// before. (The C backend gets the same from gcc, which drops unused static functions.)
+fn (g: mut &Gen) genLive() {
+    while true {
+        while g.relocSeen < len(g.a.relocs) {
+            let s = g.a.relocs[g.relocSeen].sym
+            g.relocSeen += 1
+            if g.syms[s].kind == SK_GLOBAL { g.liveGlobal(g.syms[s].idx) }
+        }
+        while len(g.gQueue) > 0 {
+            let i = pop(mut &g.gQueue)
+            let init = g.u.globals[i].init
+            if init < 0 { continue }
+            // the initializer written to a scratch buffer: link writes it for real
+            var buf: []byte = array(g.size(g.u.globals[i].ty), byte(0))
+            var rs: []DataReloc = []
+            g.initData(mut &buf, false, 0, init, mut &rs)
+            for r in rs {
+                if g.syms[r.sym].kind == SK_GLOBAL { g.liveGlobal(g.syms[r.sym].idx) }
+            }
+        }
+        if g.pendN == 0 { break }
+        while !g.pend[g.pendLo] { g.pendLo += 1 }
+        let f = g.pendLo
+        g.pend[f] = false
+        g.pendN -= 1
+        while g.a.pos() % FUNC_ALIGN != 0 { g.a.b(0xCC) }
+        append(mut &g.order, f)
+        g.genFunc(f)
+    }
+}
+
+fn (g: mut &Gen) liveGlobal(i: int) {
+    if g.gLive[i] { return }
+    g.gLive[i] = true
+    append(mut &g.gQueue, i)
 }
 
 fn (g: &Gen) findFunc(name: str): int {
@@ -387,6 +431,9 @@ fn (g: mut &Gen) symFunc(f: int, e: int): int {
     if g.funcSym[f] >= 0 { return g.funcSym[f] }
     if g.u.funcs[f].body >= 0 {
         append(mut &g.syms, Sym{kind: SK_FUNC, idx: f, addr: 0})
+        g.pend[f] = true
+        g.pendN += 1
+        if f < g.pendLo { g.pendLo = f }
     } else if g.dyn && g.u.funcs[f].isExtern && !rtHelper(g.u.funcs[f].asmName) {
         g.funcSym[f] = g.symImport(g.u.funcs[f].asmName)
         return g.funcSym[f]
@@ -5068,6 +5115,7 @@ fn (g: mut &Gen) link(): []byte {
     var bssList: []int = []
     for i in 0..len(g.u.globals) {
         append(mut &gAddr, 0)
+        if !g.gLive[i] { continue }
         let t = g.u.globals[i].ty
         let init = g.u.globals[i].init
         let isConst = g.u.globals[i].isConst

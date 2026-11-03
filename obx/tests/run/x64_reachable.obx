@@ -1,0 +1,36 @@
+// Native linking (x64gen genLive): only the functions and globals reachable
+// from main are generated and laid out, as a linker's --gc-sections keeps
+// them. A function reached only through its address (in a value record, as
+// another function's result) must still be generated, and a global reached
+// only through another global's initializer (a string constant's bytes) must
+// still be laid out. neverCalled and the constant UNUSED are not reachable,
+// so the native build leaves them out.
+// expect: rec 7 99
+// expect: chain 12
+// expect: greeting hello, world
+// expect: count 3
+
+type Op = value record {
+    code: int
+    f: fn(int): int
+}
+
+fn plus2(x: int): int { return x + 2 }
+fn triple(x: int): int { return x * 3 }
+fn pick(): fn(int): int { return triple }
+
+fn neverCalled(x: int): int { return x * 1000 }
+
+const GREETING: str = "hello, world"
+const UNUSED: str = "never laid out"
+var count: int = 0
+
+fn main() {
+    let op = Op{code: 99, f: plus2}
+    println("rec " + op.f(5).toStr() + " " + op.code.toStr())
+    let g = pick()
+    println("chain " + g(4).toStr())
+    println("greeting " + GREETING)
+    for i in 0..3 { count += 1 }
+    println("count " + count.toStr())
+}

@@ -628,6 +628,24 @@ rt_n_start`. All addresses are below 2 GiB, so an address is an `imm32`. `rt_n_s
 initial stack, calls the C `main` (which calls `rt_init`, the obx main, the
 global drops and `rt_finish`) and exits with its result.
 
+### Reachability
+
+Only what `main` reaches is generated (`x64gen.genLive`), as a linker with
+`--gc-sections` keeps only the sections reached from the entry, with each
+function and each global as a section. A function is reached when
+generated code names it (a call, or its address: `symFunc`) or the
+initializer of a reached global does; a global when generated code names
+it (a code relocation) or a reached global's initializer does. The
+worklist holds pending functions; between functions the new code
+relocations are scanned for globals, and a reached global's initializer is
+written to a scratch buffer to find what it names (`link` writes it for
+real). Pending functions are generated lowest index first, so the layout
+keeps the source's order. Unreached globals get no address in `link`. The
+C backend gets the same from gcc, since every generated function is
+`static`. An `import` of a module the program uses one function of costs
+only that function (`import "regex"` and `regex.quote`: 185,720 bytes to
+73,744); the runtime is still linked whole (section 2).
+
 ## 5a. Dynamic linking
 
 A program whose C functions are all in the runtime (section 2), or that has

@@ -265,14 +265,20 @@ reference counts, copies of large value records), not register use.
 
 | program | via C | native |
 |---|---:|---:|
-| empty program | 42,760 bytes (dynamic, glibc) | 61,440 bytes (static) |
-| eza | 216,880 bytes (dynamic, glibc) | 303,040 bytes (static) |
-| compiler | 1,673,896 bytes (dynamic, glibc) | 2,549,321 bytes (static) |
+| empty program | 53,680 bytes (dynamic, glibc) | 73,728 bytes (static) |
+| `import "regex"`, one call (`regex.quote`) | 54,016 bytes | 73,744 bytes (185,720 before) |
+| eza | 233,256 bytes (dynamic, glibc) | 315,880 bytes (static; 319,976 before) |
+| compiler | 1,898,920 bytes (dynamic, glibc) | 2,694,337 bytes (static; 2,759,873 before) |
 
-Every program carries the whole runtime, now including the event loop,
-timers and sockets (C1b) and the 64-byte function alignment: the empty
-program grew by 18 KB via C and 12 KB native on 3 November. Leaving out
-the parts a program does not use is not done yet.
+(3 November 2026, after the HTTP server and the eighth native performance
+step; "before" is the native build just before reachability.) The native
+backend generates only the functions and globals reachable from `main`
+(design/native.md section 5, "Reachability"), as gcc drops a C program's
+unused static functions: an imported module costs only what the program
+uses of it. Every program still carries the whole runtime (62 KB of code
+and read-only data: the event loop, timers, sockets, floats, tasks), which
+is most of the empty program; leaving out the parts of the runtime a
+program does not use is the next step.
 
 A native executable carries its own runtime instead of linking libc. When a
 program calls C libraries (libm, sqlite3, libpq), it is dynamically linked
