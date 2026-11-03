@@ -1938,6 +1938,22 @@ fn (g: mut &Gen) pairSrc(a: int, b: int): Src {
     return Src{imm: false, v: 0, r: RCX, m: NO_MEM}
 }
 
+// pairSrc for a commutative operation: b into rax and a as the operand when a needs no code
+// and b does (a read after b: b assigns neither a's register nor, for a in memory, anything).
+fn (g: mut &Gen) pairSrcC(a: int, b: int): Src {
+    if !g.srcOnly(b) && g.srcOnly(a) && (g.regOf(a) < 0 || !g.writesReg(b, g.regOf(a))) &&
+        (!g.memOperand(a) || g.pure(b)) {
+        return g.pairSrc(b, a)
+    }
+    return g.pairSrc(a, b)
+}
+
+// Whether pairSrc takes x as the operand without code.
+fn (g: &Gen) srcOnly(x: int): bool {
+    let n = g.u.nodes[x]
+    return (n.k == ir.E_INT && x64.fits32(n.v)) || g.regOf(x) >= 0 || g.memOperand(x)
+}
+
 // Whether e is an 8-byte integer or pointer in memory that needs no code (a local in its
 // slot, a member of one).
 fn (g: &Gen) memOperand(e: int): bool {
@@ -2104,9 +2120,13 @@ fn (g: mut &Gen) gen(e: int) {
         let m = g.staticMem(e)
         if m.base != -9 {
             g.loadT(t, m)
+        } else if k == ir.E_MEMBER && g.u.nk(n.a) == ir.E_DEREF && g.paddFold(g.u.nodes[n.a].a) {
+            g.loadT(t, at(g.paddMem(g.u.nodes[n.a].a), n.v))
         } else if k == ir.E_MEMBER {
             g.genAddr(n.a)
             g.loadT(t, x64.mem(RAX, n.v))
+        } else if k == ir.E_DEREF && g.paddFold(n.a) {
+            g.loadT(t, g.paddMem(n.a))
         } else {
             g.genAddr(e)
             g.loadT(t, x64.mem(RAX, 0))
@@ -2184,6 +2204,8 @@ fn (g: mut &Gen) gen(e: int) {
         g.loadInt(t, RAX, m)
         g.a.lea(RCX, x64.mem(RAX, n.v))
         g.a.store(g.size(t), m, RCX)
+    } else if k == ir.E_PADD && g.paddFold(e) {
+        g.a.lea(RAX, g.paddMem(e))
     } else if k == ir.E_PADD {
         let b = n.b
         if g.u.nk(b) == ir.E_INT && x64.fits32(g.u.nodes[b].v * n.v) {
@@ -2204,6 +2226,54 @@ fn (g: mut &Gen) gen(e: int) {
     } else {
         g.fail(e, "expression kind " + intToStr(k))
     }
+}
+
+// Whether the pointer e is p + i * size that paddMem folds into an operand: size 1, 2, 4 or 8,
+// p needs no code but a load, and i is a local in a register, an rt_idx of one (the check done
+// first, in place), or pure (generated first, as pair does).
+fn (g: &Gen) paddFold(e: int): bool {
+    let n = g.u.nodes[e]
+    if n.k != ir.E_PADD || g.u.nk(n.b) == ir.E_INT || !g.simple(n.a) { return false }
+    if n.v != 1 && n.v != 2 && n.v != 4 && n.v != 8 { return false }
+    return g.regOf(n.b) >= 0 || g.idxReg(n.b) >= 0 || g.pure(n.b)
+}
+
+// For the place *p or (*p).f with p a pointer paddFold folds: p, else -1.
+fn (g: &Gen) paddPlace(x: int): int {
+    var d = x
+    if g.u.nk(d) == ir.E_MEMBER { d = g.u.nodes[d].a }
+    if g.u.nk(d) != ir.E_DEREF || !g.paddFold(g.u.nodes[d].a) { return -1 }
+    return g.u.nodes[d].a
+}
+
+// The register of local i in rt_idx(i, len, w) (inline, len needing no code), else -1.
+fn (g: &Gen) idxReg(b: int): int {
+    if g.u.nk(b) != ir.E_CALL || g.rtName(b) != "rt_idx" { return -1 }
+    let l = g.u.nodes[b].b
+    if g.u.listLen(l) != 3 || !g.isWhere(g.u.listAt(l, 2)) || !g.srcOnly(g.u.listAt(l, 1)) { return -1 }
+    return g.regOf(g.u.listAt(l, 0))
+}
+
+// The code of p + i * size (paddFold) but the last add: the operand [p + i * size].
+fn (g: mut &Gen) paddMem(e: int): x64.Mem {
+    let n = g.u.nodes[e]
+    let sc = n.v
+    var ri = g.regOf(n.b)
+    if ri < 0 && g.idxReg(n.b) >= 0 {
+        let l = g.u.nodes[n.b].b
+        ri = g.idxReg(n.b)
+        g.aluSrc(x64.CMP, 8, ri, g.pairSrc(-1, g.u.listAt(l, 1)))
+        g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(l, 2)))
+    }
+    if ri >= 0 {
+        if g.regOf(n.a) >= 0 { return x64.memx(g.regOf(n.a), ri, sc, 0) }
+        g.genInto(n.a, RAX)
+        return x64.memx(RAX, ri, sc, 0)
+    }
+    g.gen(n.b)
+    if g.regOf(n.a) >= 0 { return x64.memx(g.regOf(n.a), RAX, sc, 0) }
+    g.genInto(n.a, RCX)
+    return x64.memx(RCX, RAX, sc, 0)
 }
 
 fn (g: mut &Gen) genAssign(e: int) {
@@ -2237,6 +2307,20 @@ fn (g: mut &Gen) genAssign(e: int) {
         g.gen(n.b)
         g.storeFrom(g.u.nodes[n.b].ty, t, m)
         if g.isAggr(t) { g.a.lea(RAX, m) }
+        return
+    }
+    let pa = g.paddPlace(lhs)
+    if pa >= 0 && g.simple(n.b) && !g.isAggr(t) && !g.isF(t) && !g.is128(t) {
+        // an element (or a member of one): the address as an operand, then the value
+        var pm = g.paddMem(pa)
+        if g.u.nk(lhs) == ir.E_MEMBER { pm = at(pm, g.u.nodes[lhs].v) }
+        var r = g.regOf(n.b)
+        if r < 0 || g.u.nodes[n.b].ty != t {
+            g.genInto(n.b, RDX)
+            r = RDX
+        }
+        g.a.store(g.size(t), pm, r)
+        g.a.movRR(8, RAX, r)
         return
     }
     if g.u.nk(lhs) == ir.E_GLOBAL {
@@ -2414,7 +2498,8 @@ fn (g: mut &Gen) genBin(e: int) {
         }
         return
     }
-    let src = g.pairSrc(n.a, n.b)
+    let comm = op == ir.OP_ADD || op == ir.OP_AND || op == ir.OP_OR || op == ir.OP_XOR || op == ir.OP_MUL
+    let src = if comm { g.pairSrcC(n.a, n.b) } else { g.pairSrc(n.a, n.b) }
     let sz = if g.size(c) == 8 { 8 } else { 4 }
     let sgn = g.u.isSigned(c)
     if op == ir.OP_ADD {
@@ -3248,7 +3333,7 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         let a = g.u.listAt(n.b, 0)
         let b = g.u.listAt(n.b, 1)
         if !ar.wrap && (nargs != 3 || !g.isWhere(g.u.listAt(n.b, 2))) { return false }
-        let src = g.pairSrc(a, b)
+        let src = if ar.op == ir.OP_SUB { g.pairSrc(a, b) } else { g.pairSrcC(a, b) }
         let k = ar.k
         let sz = if k == ir.TY_I64 || k == ir.TY_U64 { 8 } else { 4 }
         let sgn = k == ir.TY_I64 || k == ir.TY_I32
@@ -3297,6 +3382,27 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
     if name == "rt_str_byte" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
         let sx = g.u.listAt(n.b, 0)
         let ix = g.u.listAt(n.b, 1)
+        let m = g.staticMem(sx)
+        if m.base != -9 {
+            // a str in the frame, read in place; the index from its register if it has one
+            var ri = g.regOf(ix)
+            if ri < 0 {
+                ri = RCX
+                if g.simple(ix) {
+                    g.genInto(ix, RCX)
+                } else {
+                    g.gen(ix)
+                    g.a.movRR(8, RCX, RAX)
+                }
+            }
+            g.a.loadZX(4, RDX, at(m, 12))               // len
+            g.a.alu(x64.CMP, 8, ri, RDX)
+            g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+            g.a.loadZX(4, RAX, at(m, 8))                // off
+            g.a.aluRM(x64.ADD, 8, RAX, m)               // + the block
+            g.a.loadZX(1, RAX, x64.memx(RAX, ri, 1, 8)) // data[off + i]
+            return true
+        }
         g.gen(sx)                                       // the address of the str
         if g.simple(ix) {
             g.genInto(ix, RCX)
