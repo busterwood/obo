@@ -206,6 +206,8 @@ itself, native eza `-T /usr/share` and native bench fib:
 | after it (loops rotated and aligned, `loops.obx`) | 4,673M | 634M | 5,630M |
 | before the seventh, on later sources | 4,821M | 634M | 5,630M |
 | after it (the sieve: steps, lengths, counters, fills) | 4,815M | 633M | 5,630M |
+| before the eighth, on later sources | 5,665M | 632M | 5,629M |
+| after it (the regex engine: loads out of loops, memory operands, sites) | 5,388M | 632M | 5,629M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
@@ -217,6 +219,11 @@ lists benchmark's by 16%. The sixth is about loops: bench loop from 11,000M
 instructions and 2,007M cycles to 8,000M and 1,003M, array from 4,615M and
 782M to 2,413M and 410M; the self-build and eza gain about 1% in
 instructions, nothing measurable in cycles.
+The eighth (the regex engine) cut
+the self-build's instructions by 5% and its cycles by 6% (2,392M to
+2,246M), at 9% more instructions for the gcc-built compiler's `--native`
+(3,342M to 3,649M: the effects walks and summaries of `loops.obx`, the
+second register choice and the sites).
 
 The earlier steps and the per-commit figures are in
 [obx/design/native.md](obx/design/native.md) sections 4 and 8. What remains
