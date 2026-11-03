@@ -1,0 +1,22 @@
+// Native loop optimizations (compiler/loops.obx): with a variable step i >= 1,
+// `j + i` cannot overflow under `j <= n` only when n + i cannot; with n the
+// greatest int it overflows, and the program stops there as in C.
+// expect: 9223372036854775802
+// expect: 9223372036854775804
+// expect: 9223372036854775806
+// stderr: obx: integer overflow at loops_trap_step_max.obx:14
+// exit: 10
+
+fn walk(n: int, i: int) {
+    var j = n - 5
+    while j <= n {
+        println(j.toStr())
+        j = j + i
+    }
+    println("not reached")
+}
+
+fn main() {
+    let a = len(args()) - 1         // 0, unknown to the compiler
+    walk(9223372036854775807 + a, 2 + a)
+}

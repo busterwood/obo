@@ -5,7 +5,9 @@ design/native.md section 8, the sixth performance step).
 usage: python3 obx/tests/loopgen.py [--compiler PATH] [-n N] [--seed S] [-j N] [--keep DIR]
 
 Each program runs loops over int and byte arrays (while with steps of 1 to 3 up or down, `<=`
-bounds, for ranges, for over elements, nested loops) whose bodies read and write elements at
+bounds, for ranges, for over elements, nested loops, steps held in a local that may be 0,
+negative, huge or changed in the loop, sieves over a fresh `array(m, v)` whose inner loop steps
+by the outer index and may run past the end) whose bodies read and write elements at
 the index and near it, store then load, append, pop, reassign the array, pass it `mut &` to
 functions that grow or shrink it, change the index or the bound, break and continue, and call a
 closure that appends to the array it captures. Many programs end in a bounds or overflow trap
@@ -150,7 +152,7 @@ class Gen:
 
     def loop(self):
         r = self.rng
-        k = r.randrange(9)
+        k = r.randrange(12)
         i = self.name('i')
         bound = r.choice(['len(a)', 'n', 'len(a) - 1', '%d' % r.randrange(3, 15)])
         if k <= 2:
@@ -177,6 +179,53 @@ class Gen:
             lo = r.choice(['0', '0', '1'])
             self.emit(1, 'for %s in %s..%s {' % (i, lo, bound))
             self.bodies(2, i, False)
+            self.emit(1, '}')
+        elif k == 9 or k == 10:
+            # while i < bound stepping by a local (the seventh performance step: a variable step
+            # s keeps i's lower bound only if s >= 1 on entry and the loop leaves s alone)
+            s = self.name('s')
+            step = r.choice(['1', '2', '3', '0', '-1', 'n % 4', 'n % 3 + 1', 'n - 6', 'len(a) / 3',
+                             'acc % 5', '4611686018427387904', 'j + 1'])
+            start = r.choice(['0', '1', '2', 'n', 'len(a) - 1', '9223372036854775800'])
+            cmp = r.choice(['<', '<=', '<='])
+            bound = r.choice([bound, 'len(a)', 'len(a) - 1', 'len(a) + 2', '9223372036854775807'])
+            self.emit(1, 'var %s = %s\nvar %s = %s\nwhile %s %s %s {' % (s, step, i, start, i, cmp, bound))
+            self.bodies(2, i, True)
+            if k == 10:
+                self.emit(2, 'acc = acc + a[%s]' % i)
+            if r.randrange(4) == 0:
+                # the step changes in the loop
+                self.emit(2, '%s = %s - %d' % (s, s, r.randrange(1, 3)))
+            self.emit(2, '%s = %s + %s' % (i, i, s) if r.randrange(3) else '%s += %s' % (i, s))
+            self.emit(1, '}')
+        elif k == 11:
+            # a sieve on a fresh array: the inner loop steps by the outer index from its square
+            p = self.name('p')
+            q = self.name('q')
+            m = r.choice(['len(a)', 'n * 3', 'n + len(a)', '64', '70', 'len(a) - 3'])
+            v = r.choice(['true', 'false'])
+            lim = r.choice(['len(%s) - 1' % p] * 4 + ['len(%s)' % p, 'n', 'n * 3'])
+            useWhile = r.randrange(2) == 0
+            self.emit(1, 'if true {')
+            self.emit(2, 'var %s = array(%s, %s)' % (p, m, v))
+            if useWhile:
+                self.emit(2, 'var %s = 2\nwhile %s * %s <= %s {' % (i, i, i, lim))
+            else:
+                self.emit(2, 'for %s in 2..%s {\n    if %s * %s > %s { break }' % (i, r.choice(['len(%s)' % p, 'n']), i, i, lim))
+            cond = '%s[%s]' % (p, i) if v == 'true' else '!%s[%s]' % (p, i)
+            self.emit(3, 'if %s {' % cond)
+            self.emit(4, 'var %s = %s * %s\nwhile %s %s %s {' % (q, i, i, q, r.choice(['<=', '<']), lim))
+            self.emit(5, '%s[%s] = %s' % (p, q, 'false' if v == 'true' else 'true'))
+            if r.randrange(3) == 0:
+                self.emit(5, 'acc = acc + %s' % q)
+            self.emit(5, '%s = %s + %s' % (q, q, i))
+            self.emit(4, '}')
+            self.emit(3, '}')
+            if useWhile:
+                self.emit(3, '%s = %s + 1' % (i, i))
+            self.emit(2, '}')
+            x = self.name('x')
+            self.emit(2, 'for %s in %s {\n    if %s { acc = acc + 1 }\n}' % (x, p, x))
             self.emit(1, '}')
         elif k == 7:
             # for over the elements of c (which the bodies leave alone), with a counter

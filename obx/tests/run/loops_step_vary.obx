@@ -1,0 +1,73 @@
+// Native loop optimizations (compiler/loops.obx): `j = j + s` with s a local
+// keeps j's lower bound only when s >= 1 on entry and the loop does not write
+// s. Here the step is 0 (j stays, the loop ends by its count), changes inside
+// the loop, or is negative with the loop's own test keeping j in range; each
+// loop behaves as written.
+// expect: zero step: j 3 mark 4
+// expect: shrinking: 0 4 7 9 10 11 12 13 14 15 16 17 18 19
+// expect: down: 11 8 5 2
+// expect: divisors 1-6 of 12, 30, 7: 5 5 1
+
+fn zeroStep(a: int): str {
+    var mark = array(10, 0)
+    let s = a                       // 0
+    var j = 3
+    var n = 0
+    while j < len(mark) {
+        mark[j] = mark[j] + 1
+        j = j + s
+        n = n + 1
+        if n == 4 { break }
+    }
+    return "zero step: j " + j.toStr() + " mark " + mark[3].toStr()
+}
+
+fn shrinking(a: int): str {
+    var mark = array(20, 0)
+    var s = 4 + a
+    var j = 0
+    var out = "shrinking:"
+    while j < len(mark) {
+        mark[j] = 1
+        out = out + " " + j.toStr()
+        j = j + s
+        if s > 1 { s = s - 1 }
+    }
+    return out
+}
+
+fn down(a: int): str {
+    var mark = array(12, 0)
+    let s = -3 + a
+    var j = 11
+    var out = "down:"
+    while j >= 0 && j < len(mark) {
+        mark[j] = 1
+        out = out + " " + j.toStr()
+        j = j + s
+    }
+    return out
+}
+
+fn stepFromLoop(a: int): str {
+    let n = 30 + a
+    var hits = array(n + 1, 0)
+    for i in 1..7 {
+        var j = i
+        while j <= n {
+            hits[j] = hits[j] + 1
+            j = j + i
+        }
+    }
+    var out = "divisors 1-6 of 12, 30, 7:"
+    out = out + " " + hits[12].toStr() + " " + hits[30].toStr() + " " + hits[7].toStr()
+    return out
+}
+
+fn main() {
+    let a = len(args()) - 1         // 0, unknown to the compiler
+    println(zeroStep(a))
+    println(shrinking(a))
+    println(down(a))
+    println(stepFromLoop(a))
+}

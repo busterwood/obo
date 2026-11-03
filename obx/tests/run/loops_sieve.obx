@@ -1,0 +1,175 @@
+// Native loop optimizations (compiler/loops.obx, x64gen's fills): the sieve of
+// Eratosthenes in several forms. The inner loop steps by the prime, a local
+// (`j = j + i`), so j keeps its lower bound; `j <= n` with the array's length
+// n + 1 (from `array(n + 1, v)`) proves its bounds check, and j + i cannot
+// overflow (n + 1 <= 2^40, where array traps). n is a constant, or comes from
+// the arguments so that the compiler cannot know it. The fills (`array(n, v)`)
+// of 64 elements and more are rep stosb, smaller ones the loop.
+// expect: while bool 1000: 168
+// expect: while bool 100: 25
+// expect: for byte 1000: 168
+// expect: int zero fill 1000: 168
+// expect: odd step 1000: 168
+// expect: returned 1000: 168 997
+// expect: fills 0 1 63 64 65 4096: 0 1 63 64 65 4096
+// expect: int fills 0 7 64 100: 0 0 0 0
+// expect: sum 30: 129
+
+fn whileBool(n: int): int {
+    var prime = array(n + 1, true)
+    prime[0] = false
+    prime[1] = false
+    var i = 2
+    while i * i <= n {
+        if prime[i] {
+            var j = i * i
+            while j <= n {
+                prime[j] = false
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    var count = 0
+    for k in 0..n + 1 {
+        if prime[k] { count = count + 1 }
+    }
+    return count
+}
+
+fn forByte(n: int): int {
+    var mark = array(n + 1, byte(0))
+    for i in 2..n + 1 {
+        if i * i > n { break }
+        if mark[i] == 0 {
+            var j = i * i
+            while j <= n {
+                mark[j] = 1
+                j += i
+            }
+        }
+    }
+    var count = 0
+    for k in 2..len(mark) {
+        if mark[k] == 0 { count += 1 }
+    }
+    return count
+}
+
+fn intZero(n: int): int {
+    var comp = array(n + 1, 0)
+    var i = 2
+    while i <= n / i {
+        if comp[i] == 0 {
+            var j = i * i
+            while j < len(comp) {
+                comp[j] = 1
+                j = j + i
+            }
+        }
+        i += 1
+    }
+    var count = 0
+    var k = 2
+    while k <= n {
+        count = count + 1 - comp[k]
+        k = k + 1
+    }
+    return count
+}
+
+// Odd numbers only: the step is 2i, held in a local of its own.
+fn oddStep(n: int): int {
+    var odd = array(n + 1, true)
+    var count = if n >= 2 { 1 } else { 0 }
+    var i = 3
+    while i * i <= n {
+        if odd[i] {
+            let step = i + i
+            var j = i * i
+            while j <= n {
+                odd[j] = false
+                j = j + step
+            }
+        }
+        i = i + 2
+    }
+    var k = 3
+    while k <= n {
+        if odd[k] { count = count + 1 }
+        k = k + 2
+    }
+    return count
+}
+
+fn sieve(n: int): []bool {
+    var p = array(n + 1, true)
+    p[0] = false
+    if n >= 1 { p[1] = false }
+    var i = 2
+    while i * i <= n {
+        if p[i] {
+            var j = i * i
+            while j <= n {
+                p[j] = false
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    return p
+}
+
+fn main() {
+    let a = len(args()) - 1         // 0, unknown to the compiler
+    let n = 1000 + a
+    println("while bool " + n.toStr() + ": " + whileBool(n).toStr())
+    println("while bool 100: " + whileBool(100).toStr())
+    println("for byte " + n.toStr() + ": " + forByte(n).toStr())
+    println("int zero fill " + n.toStr() + ": " + intZero(n).toStr())
+    println("odd step " + n.toStr() + ": " + oddStep(n).toStr())
+    let ps = sieve(n)
+    var c = 0
+    var last = 0
+    var k = 0
+    for p in ps {
+        if p {
+            c = c + 1
+            last = k
+        }
+        k = k + 1
+    }
+    println("returned " + n.toStr() + ": " + c.toStr() + " " + last.toStr())
+    var out = "fills"
+    var res = ""
+    let sizes: []int = [0, 1, 63, 64, 65, 4096]
+    for s in sizes {
+        out = out + " " + s.toStr()
+        let f = array(s + a, byte(7))
+        var good = 0
+        for x in f {
+            if x == 7 { good = good + 1 }
+        }
+        res = res + " " + good.toStr()
+    }
+    println(out + ":" + res)
+    var ints = "int fills"
+    var bad = ""
+    let isz: []int = [0, 7, 64, 100]
+    for s in isz {
+        ints = ints + " " + s.toStr()
+        let f = array(s + a, 0)
+        var nz = 0
+        for x in f {
+            if x != 0 { nz = nz + 1 }
+        }
+        bad = bad + " " + nz.toStr()
+    }
+    println(ints + ":" + bad)
+    let small = sieve(30 + a)
+    var sum = 0
+    for j in 0..len(small) {
+        if small[j] { sum = sum + j }
+    }
+    println("sum 30: " + sum.toStr())
+}

@@ -1,0 +1,26 @@
+// Native loop optimizations (compiler/loops.obx): a loop stepping by a local
+// whose test does not keep the index inside the array keeps its bounds check;
+// it traps at the iteration that leaves the array, after the earlier output.
+// expect: 2
+// expect: 5
+// expect: 8
+// expect: 11
+// expect: 14
+// expect: 17
+// expect: 20
+// stderr: obx: index out of range at loops_trap_step_oob.obx:21
+// exit: 3
+
+fn main() {
+    let a = len(args()) - 1         // 0, unknown to the compiler
+    let n = 20 + a
+    var mark = array(n + 1, false)
+    let step = 3 + a
+    var j = 2
+    while j <= n + 4 {
+        mark[j] = true
+        println(j.toStr())
+        j = j + step
+    }
+    println("not reached")
+}

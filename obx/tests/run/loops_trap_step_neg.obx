@@ -1,0 +1,21 @@
+// Native loop optimizations (compiler/loops.obx): a step that can be negative
+// does not keep the index's lower bound, so its bounds check stays and traps
+// after the output of the earlier iterations.
+// expect: 7
+// expect: 4
+// expect: 1
+// stderr: obx: index out of range at loops_trap_step_neg.obx:16
+// exit: 3
+
+fn main() {
+    let a = len(args()) - 1         // 0, unknown to the compiler
+    var mark = array(12, 0)
+    let s = -3 + a
+    var j = 7
+    while j < len(mark) {
+        mark[j] = 1
+        println(j.toStr())
+        j = j + s
+    }
+    println("not reached")
+}
