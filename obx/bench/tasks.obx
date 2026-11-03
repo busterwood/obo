@@ -8,6 +8,8 @@ import "task"
 import "time"
 import "net"
 
+extern "c" fn absB(x: i32): i32 as "abs" blocking
+
 const N = 1000000
 const BATCH = 50
 
@@ -212,7 +214,32 @@ fn readyReads() {
     report("socket read, data waiting (no park)", time.monotonicNs() - t0, PINGS)
 }
 
+const CALLS = 200000
+
+// a blocking extern (SPEC 12) on a C function that does nothing: alone it runs
+// inline; with another task waiting (a sleep) it goes through the helper pool
+// and back (a task parks, a helper runs it, the event loop wakes the task)
+// sleeps until cancelled (its future is dropped)
+fn rest(ms: int): int {
+    let r = task.sleep(ms)
+    return ms
+}
+
+fn blockingCalls() {
+    var t0 = time.monotonicNs()
+    var k = 0
+    for i in 0..CALLS { k += int(absB(i32(i & 1023))) }
+    report("blocking call run inline (nothing else to run)", time.monotonicNs() - t0, CALLS)
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(rest, 1000000)
+        t0 = time.monotonicNs()
+        for i in 0..CALLS { k += int(absB(i32(i & 1023))) }
+        report("blocking call through the helper pool (another task sleeps)", time.monotonicNs() - t0, CALLS)
+    })
+}
+
 fn main() {
+    blockingCalls()
     switches()
     starts()
     startWait()
