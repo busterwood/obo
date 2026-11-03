@@ -14,7 +14,8 @@ November 2026 at `2ce4860`, after the fifth native performance pass
 quiet machine; the HTTP server table is from C1b's own run. The loop and
 array rows, the compiler's `--native` cost and the sixth pass's row are from
 the sixth native performance pass (loops; branch `perf6`), measured the same
-day. The numbers are
+day; the sieve row and the seventh pass's row from the seventh (branch
+`sieve`). The numbers are
 host-dependent: use them to compare the columns, not as portable constants.
 
 ## Host and method
@@ -42,6 +43,14 @@ host-dependent: use them to compare the columns, not as portable constants.
 | strings | 76 ms | 47 ms | 0.62 | concatenation and `toStr` |
 | trees | 24 ms | 20 ms | 0.86 | binary trees |
 | tokens | 16 ms | 12 ms | 0.74 | byte scanning and hashing |
+| sieve | 182 ms | 127 ms | 0.70 | the sieve of Eratosthenes to 10 million, ten rounds |
+
+The sieve also has a hand-written C version with no checks
+(`obx/bench/c/sieve.c`, `gcc -O2`, bench.py's "plain C" column): 135 ms in
+the same run. Native obx runs as many instructions as it (1,414M) and about
+as many cycles (497M against 508M, best of 11 under `perf stat`); through C
+obx runs 1,428M and 741M, because gcc keeps the overflow and bounds checks
+the native backend proves away (main's native build: 3,042M and 1,002M).
 
 - **Native is ahead on allocation and strings** (alloc, lists, strings,
   tokens; trees narrowly). Since the fifth pass small functions and glue
@@ -58,6 +67,14 @@ host-dependent: use them to compare the columns, not as portable constants.
   strength-reduces); obx's checks stay where they can fail, so array keeps
   one bounds check per element (its bound is unrelated to the array's
   length). Before the pass these were the widest gaps (1.59 and 1.67).
+- **The sieve is at plain C's speed** since the seventh pass: the inner
+  loop `j = j + i` keeps no bounds or overflow check (j stays at least its
+  start since i >= 1, and `j <= n` with the array's length n + 1 proves the
+  index), the fill of `array(n + 1, true)` is `rep stosb`, the count of
+  primes has no branch (`cmp; sbb`, as gcc's) and no overflow check (a
+  counter grows at most once an iteration), the inner loop sits inside one
+  cache line, and the native heap keeps the freed 10 MB block for the next
+  round instead of faulting its pages in again.
 - **Code placement matters.** Native fib runs at 1,547M, 1,690M or 2,020M
   cycles with identical instructions, depending only on where its code
   falls relative to 64-byte boundaries. The generated code starts at a
@@ -135,6 +152,8 @@ itself, native eza `-T /usr/share` and native bench fib:
 | at `2ce4860` (with C1b; the compiler 1,200 lines larger) | 3,973M | 642M | 5,630M |
 | before the sixth, on later sources | 4,732M | 642M | 5,630M |
 | after it (loops rotated and aligned, `loops.obx`) | 4,673M | 634M | 5,630M |
+| before the seventh, on later sources | 4,821M | 634M | 5,630M |
+| after it (the sieve: steps, lengths, counters, fills) | 4,815M | 633M | 5,630M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
