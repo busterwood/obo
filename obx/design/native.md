@@ -6,100 +6,85 @@ program is built natively:
 
     obxc file.obx --native [-o out] [--run] [-- args]
 
-The C backend (`--emit-c`, gcc) stays as it is (until 2026-11-02 it was kept
-byte-identical to the reference compiler `ref/`, now retired). The native
-backend is new modules beside it.
+Both backends start from one IR (`ir.obx`): the C backend prints it as C for
+gcc (`--emit-c`, the default build), the native backend compiles it to
+machine code.
 
-## 1. Input: the generated C, read into the IR
+## 1. Pipeline: from check's templates to the IR
 
-The backend's input is the C text that `emit` already produces (option (a) of
-the stage 5 brief), read by a small C front end (`cfront.obx`) into the
-backend's IR (`ir.obx`), not an IR produced by `check`/`emit` directly
-(option (b)). Section 1a says why this is a step and what replaces it.
+    syntax -> sema -> check (templates, tmpl.obx) -> emit (instances, glue) -> lower -> IR
+                                                                                 |-> cgen   -> C -> gcc
+                                                                                 '-> x64gen -> ELF
 
-Why: the generated C is a narrow and very regular language. A survey of the C
-for every run test, every library test and the compiler itself (114,000
-lines, 2026-11-02) found only:
+- `check` writes every function once, generic or not, as a template: trees of
+  C-shaped expressions and statements (`tmpl.obx`, one arena) with holes for
+  what depends on the type arguments (C types, drop and dup glue, callees,
+  string literals, interface methods).
+- `emit` instantiates the templates from main (a worklist) and fills their
+  holes in the order of the C text, so every generated name (`S<n>_`,
+  `fn<n>`, `gl<n>_`, `f<n>_`, `sl<n>`) is numbered as before. Glue (drop,
+  act, rest, dup, tramp) is written as templates too.
+- `lower` builds the IR from the filled templates and makes C's rules
+  explicit: the types of literals and names, integer promotions, the usual
+  arithmetic conversions, assignment and argument conversions, array and
+  function decay, pointer arithmetic, initializers and gcc's struct layout. It
+  reads the runtime's interface (`native/obxrt.h`, embedded as `rtx.HEADER`)
+  line by line, and reads the flat stream of template lines (`if (c) {`,
+  `} else {`, `}`) back into nested statements. A type hole is a C type name
+  (`S3_foo*`, `fn5`, `obx_arr`) that lower resolves; the IR has no node for
+  C syntax.
+- `cgen` prints the IR as C; `x64gen` compiles it (sections 2-5).
 
-- top level: `typedef struct S S;`, function-pointer typedefs, `struct`
-  definitions (records; closed types as `{ int64_t tag; union { struct {...}
-  V_x; ... char _e; } u; }`), string literal blocks and their `obx_str`
-  constants, `extern T x_name(...) __asm__("name");`, constant tables
-  (`static const T k_d[N] = {...}` and their slice), globals, prototypes,
-  function definitions and `int main(int argc, char** argv)`.
-- statements: declarations with an initializer, expression statements,
-  `if`/`else if`/`else`, `while (1)`, `for (int64_t i = a; i < n; i++)` (and
-  the `i--` form of the drop glue), `break`, `continue`, `return`, blocks,
-  and `switch` on a tag with `case N: ...; break;` (only in glue). No `goto`,
-  no `do`, no labels.
-- expressions: calls (direct, and through a function pointer:
-  `((fn3)c.fn)(c.env, x)`), casts, compound literals with designated
-  initializers (`((S){.tag = 1, .u.V_Err = {.f_0 = t9}})`), `.`, `->`, `[]`,
-  unary `& * - ! ~`, the binary operators, `?:`, `sizeof(type)` and
-  `sizeof(*p)`, `++`/`--` in `for`, `=`, and literals (`12LL`, `7ULL`,
-  `((int32_t)0)`, Python-`repr` doubles, strings with octal escapes).
-- types: the `<stdint.h>` integers, `bool`, `char`, `double`, `void`,
-  `__int128`/`unsigned __int128`, `size_t`, pointers, structs, unions, arrays
-  inside structs, and the runtime's `obx_str`, `obx_arr`, `obx_slice`,
-  `obx_clo`, `obx_sblk`, `rt_dfn`.
+Until 2026-11-03 the native backend read the C text that `emit` printed
+(`cfront.obx`, a lexer and parser for the C subset emit writes). Its job,
+C's typing rules over a narrow C subset, moved to `lower`, which applies them
+to the templates directly. Nothing prints C to read it back any more, and the
+gcc build prints the same IR the native backend compiles. The change was
+checked with two oracles over every .obx file of the repository (2926):
+the new `--emit-c` was byte-identical to cgen's printing of cfront's IR,
+and every native executable was byte-identical to the old compiler's.
 
-Reading that C costs a lexer and a recursive-descent parser for one fixed
-subset (with C's types, integer promotions and struct layout, which the
-backend needs anyway to match gcc's ABI). In exchange:
+Every decision that is observable (when a value is dropped, which check runs
+first, which runtime call reports an error) is made by `check` and is in the
+IR, and the differential test compares the native binary with the gcc binary
+of the same IR. A native/gcc difference is then a backend bug. The
+templates are already written in evaluation order: `check` hoists every
+operation that can trap into its own statement when the order matters (the
+`rt4_k02*` trap-order tests), so left-to-right evaluation is always right.
 
-- `check` and `emit` are untouched, so the byte-identity gate with `ref/`
-  (`run_compare.py`, while ref was the reference) could not be disturbed by
-  the backend, and the backend can
-  be developed and tested without touching the 5,000 lines that decide moves,
-  drops and check order.
-- Every decision that is observable (when a value is dropped, which check
-  runs first, which runtime call reports an error) is already made in the C,
-  and the differential test compares the native binary with the gcc binary of
-  the same C. A native/gcc difference is then a backend bug by construction.
-- The C is already written in evaluation order: `check` hoists every
-  operation that can trap into its own statement when the order matters (the
-  `rt4_k02*` trap-order tests), so left-to-right evaluation is always right.
+A construct the native backend does not handle is a clean error,
+`native: unsupported: ...`, never a guess.
 
-A construct outside the subset is a clean error, `native: unsupported: ...`,
-with the C line, never a guess.
+## 1a. The IR
 
-Option (b) would give a cleaner path (no reparsing, types known) but means a
-second output path through `check` (4,300 lines of templates with holes) that
-must keep `--emit-c` byte-identical to `ref/` while `ref/` is the reference.
-
-## 1a. C as IR is a step, not the end state
-
-`ref/` was retired on 2026-11-02 (after phase 4: the native self-build works,
-and native output is checked against the C backend instead of against ref).
-That unblocks the next step, not started yet: `check.obx` produces the IR
-directly, and both backends, C and x86-64, are generated from it. The C reader
-then goes away.
-
-So `cfront.obx` stays a thin front end whose only job is to build the IR:
-
-- the IR (`ir.obx`) has no C syntax in it: types with sizes, alignments and
+- The IR (`ir.obx`) has no C syntax in it: types with sizes, alignments and
   layouts; functions, globals and constant initializers; typed expression and
   statement trees in which every implicit conversion of C (integer
   promotions, the usual arithmetic conversions, assignment and argument
   conversions, array and function decay, pointer arithmetic) is an explicit
-  node (`E_CAST`, `E_DECAY`, `E_PADD`);
-- nothing after `cfront` may depend on C syntax or C-specific quirks (typedef
+  node (`E_CAST`, `E_DECAY`, `E_PADD`).
+- Nothing after `lower` depends on C syntax or C-specific quirks (typedef
   names, declarator forms, literal suffixes, `sizeof`, implicit conversions):
-  the code generator reads only the IR;
-- the C idioms the IR still mirrors are plain imperative constructs that
-  `check` can produce as well (`while`/`for`/`switch` with `case`, compound
-  values built from offset/value entries, closures as an `{fn, env}` pair).
+  `x64gen` reads only the IR, and `cgen` writes C from it alone.
+- The C idioms the IR still mirrors are plain imperative constructs
+  (`while`/`for`/`switch` with `case`, compound values built from
+  offset/value entries, closures as an `{fn, env}` pair).
+- The templates are still C-shaped (C type names, `->`, a flat stream of
+  block lines) because that is how `check` was written. A later step could
+  give templates typed IR nodes directly and make `lower` a thin builder;
+  nothing in the backends would change.
 
 ## 1b. The seams
 
-Code generation sits behind three boundaries, so that a second target (arm64,
+Code generation sits behind these boundaries, so that a second target (arm64,
 or another object format) can be added without touching the rest:
 
 | Seam | Owner | Contents | Knows nothing of |
 |---|---|---|---|
-| front end -> IR | `cfront.obx` (later `check.obx`) | parsing, C's conversion rules | targets |
+| front end -> IR | `check.obx` + `emit.obx` (templates and instances) and `lower.obx` (C's typing rules, layout) | moves, drops, check order; conversions | targets |
 | IR | `ir.obx` | the target-independent program: types and layouts, functions, globals, typed trees | registers, instructions, encodings, C syntax |
-| target layer | `x64gen.obx` + `x64.obx` | instruction selection, the SysV ABI and calling convention, the register set, frames, the link with the runtime (`x64gen`); the instruction encoder (`x64`) | C, the executable format's bytes |
+| C target | `cgen.obx` | C declarators, precedence and parentheses, literals, designated initializers | instructions |
+| x86-64 target | `x64gen.obx` + `x64.obx` | instruction selection, the SysV ABI and calling convention, the register set, frames, the link with the runtime (`x64gen`); the instruction encoder (`x64`) | C, the executable format's bytes |
 | executable writer | `elf.obx` | ELF headers and segments from (address, flags, bytes) | instructions |
 
 The IR is the main seam. There is no obx interface with dynamic dispatch for
@@ -386,16 +371,18 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 
 | File | Contents |
 |---|---|
-| `compiler/native/obxrt.h` | the runtime interface (parsed by the backend, included by rt.c) |
+| `compiler/native/obxrt.h` | the runtime interface (read by `lower`, included by rt.c) |
 | `compiler/native/rt.c`, `rt.ld`, `strerror.inc` | the freestanding runtime |
 | `compiler/gen_rtx.py` | builds the runtime, writes `rtx.obx` |
 | `compiler/rtx.obx` | generated: runtime bytes, symbols, header |
-| `compiler/ir.obx` | the IR (section 1b) |
-| `compiler/cfront.obx` | the C front end: lexer, parser, C's types and conversions, into the IR |
+| `compiler/tmpl.obx` | check's templates: C-shaped trees with holes (section 1) |
+| `compiler/lower.obx` | templates into the IR: C's types and conversions, initializers, layout; the runtime header |
+| `compiler/ir.obx` | the IR (section 1a) |
+| `compiler/cgen.obx` | the C backend: the IR printed as C |
 | `compiler/x64gen.obx` | the x86-64 target: code generation, register locals, inlined runtime checks, ABI, frames, the link |
 | `compiler/x64.obx` | the x86-64 encoder (`obxc --encode-test`) |
 | `compiler/elf.obx` | the ELF writer; the dynamic tables; reading a shared library's symbols |
-| `compiler/main.obx` | `--native`: `x64gen.build(cfront.read(c), libs)`, finds and reads the libraries, writes the file, `--run` |
+| `compiler/main.obx` | `compileIr` (check, emit, lower); `--native`: `x64gen.build(ir, libs)`, finds and reads the libraries, writes the file, `--run`; otherwise `cgen.print(ir)` and gcc |
 
 ## 7. Tests
 
@@ -414,10 +401,38 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
   unsupported is not a failure, a difference or a crash is. When the two
   differ but only the native run matches the test's directives, the test
   passes with a note (the C build is the one that is wrong).
+- `tests/run_prev.py`: a compiler change against a previous build
+  (`OBX_PREV=old/obxc`). With gcc or `--native`, both compilers must reject a
+  program alike, or their two binaries must run alike under `OBX_CHECK=1`.
+  The programs are the run, error and library tests, the red-team rounds 1-5,
+  fresh round-5 programs (`--gen N`) and eza (`--eza`).
 
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
+
+2026-11-03, the IR from the templates (branch `ir`, section 1): `check`
+writes trees (`tmpl.obx`), `emit` fills them per instance, `lower` builds
+the IR and both backends start from it; `cfront.obx` is gone. Checks:
+
+- Byte-identical with the old compiler over 2926 .obx files: the C
+  (against cgen's printing of cfront's IR) and every native executable
+  (1745).
+- `tests/run_prev.py` (a differential against a previous compiler's binary)
+  against main's compiler: 2642 programs (run, error and library tests,
+  red-team rounds 1-5, 200 freshly generated round-5 programs, eza on nine
+  listings) the same with gcc and with `--native`.
+- `gate.sh full` PASS; `cmd/eza_gate.py -j 12` 482 passed, 0 failed.
+- Speed, compiling the compiler (best of 11, s; gcc-built out/obxc):
+
+  | | main | ir |
+  |---|---|---|
+  | `--emit-c` | 0.122 | 0.186 |
+  | `--native` | 0.358 | 0.226 |
+
+  The native build no longer prints and reparses C. The C build now builds
+  the IR and prints it, where it printed the templates before: lower and
+  cgen take about 20% of the time each.
 
 2026-11-02, the second performance step (branch `perf`, section 4: the IR
 simplification, small functions in place, record results into their
@@ -535,8 +550,10 @@ Next, in order:
    increments and decrements across a statement (needs an argument that
    no alias drops the value). Measure with `OBX_NATIVE_MAP` and perf on
    the self-build.
-2. check.obx produces the IR directly (section 1a) and cfront goes away;
-   unblocked since ref was retired (2026-11-02), not started.
+2. check.obx produces the IR directly and cfront goes away: done
+   2026-11-03 (section 1). What could follow: templates of typed IR nodes
+   (no C type names to resolve, no flat block lines), and a faster `lower`
+   and `cgen` to win back the `--emit-c` time.
 
 Phases:
 
