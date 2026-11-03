@@ -21,7 +21,7 @@ for leaks.
 
 | Module | Lines | Contents |
 |---|---:|---|
-| `std.obx` | 1,400 | Option, Result, Unit; Eq/Ord/Hash/Show for the primitives; print/println/eprint/eprintln; min/max; float text and math methods; StrBuf and basic string helpers; Decimal; sort; Map |
+| `std.obx` | 1,400 | Option, Result, Unit, Where; Eq/Ord/Hash/Show for the primitives; print/println/eprint/eprintln; min/max; float text and math methods; StrBuf and basic string helpers; Decimal; sort; Map |
 | `money.obx` | 200 | Currency, USD/EUR/GBP/JPY/CHF, Money[C] |
 | `math.obx` | 130 | float constants, parse, fixed, toDecimal, near |
 | `collections.obx` | 390 | stable sorts, searching, rearranging, copying, Set, Heap |
@@ -44,6 +44,12 @@ for leaks.
   `unwrapOr`, `unwrapErr`, `expectErr(msg)`, `map(&f)` (the Ok value),
   `mapErr(&f)` (the Err value: `try r.mapErr(toError)`), `ok()`, `err()`,
   `toStr`. **Unit**.
+- **Where** (a lang item, SPEC 15): a call site, the text `"file:line"` in
+  the program's static data (`toStr`, `cstr()` for C). A call of a library
+  function whose last parameter is a `Where` may leave it out: the compiler
+  passes the call's location. `here(): Where` is the location of its own call
+  (or the `Where` passed to it). `task` uses it to name the user's line when a
+  task parks inside `with` or deadlocks.
 - **Eq, Ord, Hash, Show** with implementations for `int i32 u32 u64 byte i128
   u128 float bool str` (float has no `hash`). `min`, `max` for `T: Ord + copy`.
 - **Checked arithmetic** on every integer type: `a.checkedAdd(b)`,
@@ -195,6 +201,13 @@ Concurrent tasks on one thread (SPEC 16; design/concurrency.md, stage
 C1a): stackful coroutines, scheduled cooperatively, no I/O yet (C1b adds
 sockets and timers).
 
+Every function below that can park (`scope`, `scoped`, `wait`, `all`, `any`,
+`yield`) and `with` has a last parameter `w: Where`, the caller's location,
+which a call leaves out (SPEC 15): it is not shown in the signatures here. A
+call through a function value passes it (`here()`), and so does a function
+of the program that wants its own caller's line reported (`fn waitAt(f:
+task.Future[int], w: Where)` calls `f.wait(w)`).
+
 - `scope(f: &fn(mut &Scope))` runs `f` with a new scope and returns when
   every task started on it has finished; `scoped[R](f: &fn(mut &Scope): R):
   R` is the same for an `f` with a result.
@@ -218,7 +231,11 @@ sockets and timers).
 - `shared[T](v: T): Shared[T]`: a counted copy handle (a lang item, SPEC 15);
   `sh.with(f: &fn(mut &T))` is the only access. Parking inside `with`, or a
   `with` on a value whose `with` is open, is exit 13. If every task is
-  parked the program stops with exit 14 (deadlock).
+  parked the program stops with exit 14 (deadlock). The messages name the
+  user's lines (SPEC 14): `obx: a task parked inside Shared.with (the with
+  at a.obx:37) at a.obx:41`, `obx: Shared.with on a value whose with is
+  already open (the with at a.obx:30) at a.obx:35`, `obx: deadlock: every
+  task is parked at a.obx:41`.
 
 `both` and `forEach` (concurrent children that borrow the parent's locals)
 are not there yet: a task's function is a plain `fn`, and passing borrows
@@ -296,13 +313,13 @@ errno, a static buffer):
 | `obxlib_peek(p, i)`, `obxlib_poke(p, i, b)` | read or write byte `i` of C memory; for `ffi` |
 | `obxlib_peek_i32`, `obxlib_poke_i32`, `obxlib_peek_ptr`, `obxlib_poke_ptr` | element `i` of a C `int32_t[]` or `void*[]`; for `ffi` |
 | `obxlib_copy_in(dst, at, src, n)`, `obxlib_copy_out(dst, src, at, n)` | `memcpy` between C memory and an obx byte array; for `ffi` |
-| `obxlib_task_scope_open()`, `obxlib_task_scope_close(s)` | open a scope; park until its tasks have finished; for `task` |
+| `obxlib_task_scope_open()`, `obxlib_task_scope_close(s, w)` | open a scope; park until its tasks have finished; for `task` (`w`: the caller's `"file:line"`, reported by a trap, here and below) |
 | `obxlib_task_start(s, run, job, resdrop)` | a task on a stack from the free list that runs `run(job)`; for `task` |
-| `obxlib_task_wait(t)`, `obxlib_task_wait_any(ts, n)`, `obxlib_task_take(t)` | park until done (0), cancelled (1) or abandoned (2); the first done of n; the result box |
-| `obxlib_task_forget(t)`, `obxlib_task_join(t)` | a dropped future (cancel, drop the result when there is one); cancel and park until finished |
-| `obxlib_task_yield()`, `obxlib_task_cancelled()` | yield to the run queue; whether the running task is cancelled |
+| `obxlib_task_wait(t, w)`, `obxlib_task_wait_any(ts, n, w)`, `obxlib_task_take(t)` | park until done (0), cancelled (1) or abandoned (2); the first done of n; the result box |
+| `obxlib_task_forget(t)`, `obxlib_task_join(t, w)` | a dropped future (cancel, drop the result when there is one); cancel and park until finished |
+| `obxlib_task_yield(w)`, `obxlib_task_cancelled()` | yield to the run queue; whether the running task is cancelled |
 | `obxlib_task_promise(resdrop)`, `obxlib_task_complete(t, r)`, `obxlib_task_abandon(t)` | promises |
-| `obxlib_sh_new(box, drop)`, `obxlib_sh_enter(s)`, `obxlib_sh_leave(s, box)` | a `Shared` block; lend its box to `with` (exit 13 when already lent) and take it back |
+| `obxlib_sh_new(box, drop)`, `obxlib_sh_enter(s, w)`, `obxlib_sh_leave(s, box)` | a `Shared` block; lend its box to `with` (exit 13 when already lent; `w` is kept for the messages while the `with` is open) and take it back |
 
 The `obxlib_` helpers are not `obx_` names because the compiler lets
 externs name only the `obx_` helpers it knows (sema's `cHelper`); any other

@@ -272,6 +272,13 @@ __attribute__((noreturn)) void rt_trap(int code, const char* msg, const char* wh
     eflush();
     rt_quit(code);
 }
+/* A trap about a Shared.with that is open: "obx: <msg> (the with at <with>) at <where>". */
+__attribute__((noreturn)) static void rt_trap_with(int code, const char* msg, const char* with, const char* where) {
+    rt_flush();
+    eputs("obx: "); eputs(msg); eputs(" (the with at "); eputs(with); eputs(") at "); eputs(where); eputs("\n");
+    eflush();
+    rt_quit(code);
+}
 
 /* Not zeroed: every caller stores each byte it later reads. */
 void* rt_alloc(size_t n) {
@@ -389,6 +396,7 @@ struct rt_task {
     rt_scope* scopes;
     int state, refs;
     bool cancelled, cancellable, promise, abandoned, forgotten;
+    const char* pw;                 /* while parked: where (the user's call, "file:line") */
     int shdrop;
     rt_dact* ds;
     int64_t dn, dcap;
@@ -1337,7 +1345,8 @@ __asm__(".text\n.globl rt_ctx_swap\n.type rt_ctx_swap,@function\nrt_ctx_swap:\n"
 
 static rt_task *rt_rq_head, *rt_rq_tail;
 static rt_task* rt_dead;
-static int64_t rt_with_open;
+typedef struct rt_shared rt_shared;
+static rt_shared* rt_with_top;             /* the innermost open Shared.with (no task may park) */
 static char* rt_stk_free;
 static int rt_nstk_free;
 
@@ -1390,10 +1399,11 @@ static void rt_switch(rt_task* to) {
     rt_ctx_swap(&me->sp, to->sp);
     rt_resumed();
 }
-static bool rt_park(bool cancellable) {
+static bool rt_park(bool cancellable, const char* w) {
     rt_task* me = rt_cur;
     rt_task* nx = rt_dequeue();
-    if (!nx) rt_trap(14, "deadlock: every task is parked", "runtime");
+    if (!nx) rt_trap(14, "deadlock: every task is parked", w);
+    me->pw = w;
     me->state = RT_PARKED;
     me->cancellable = cancellable;
     rt_switch(nx);
@@ -1403,9 +1413,7 @@ static bool rt_park(bool cancellable) {
 static void rt_wake(rt_task* t) {
     if (t->state == RT_PARKED) { t->state = RT_RUN; rt_enqueue(t); }
 }
-static void rt_nopark(const char* msg) {
-    if (rt_with_open > 0) rt_trap(13, msg, "runtime");
-}
+static void rt_nopark(const char* w);
 static void rt_cancel(rt_task* t) {
     if (t->promise || t->state == RT_DONE || t->cancelled) return;
     t->cancelled = true;
@@ -1428,7 +1436,7 @@ __attribute__((noreturn)) static void rt_task_boot(void) {
     if (--s->live == 0 && s->closing) rt_wake(s->owner);
     if (t->waiter) rt_wake(t->waiter);
     rt_task* nx = rt_dequeue();
-    if (!nx) rt_trap(14, "deadlock: every task is parked", "runtime");
+    if (!nx) rt_trap(14, "deadlock: every task is parked", s->owner->pw ? s->owner->pw : "runtime");
     rt_dead = t;
     rt_switch(nx);
     __builtin_unreachable();
@@ -1440,10 +1448,10 @@ void* obxlib_task_scope_open(void) {
     rt_cur->scopes = s;
     return s;
 }
-void obxlib_task_scope_close(void* p) {
+void obxlib_task_scope_close(void* p, const char* w) {
     rt_scope* s = p;
-    rt_nopark("a task parked inside Shared.with (the end of task.scope)");
-    while (s->live > 0) { s->closing = true; rt_park(false); }
+    rt_nopark(w);
+    while (s->live > 0) { s->closing = true; rt_park(false, w); }
     s->closing = false;
     rt_cur->scopes = s->outer;
     rt_free(s);
@@ -1474,25 +1482,25 @@ void* obxlib_task_start(void* sp, void* run, void* job, void* resdrop) {
     rt_enqueue(t);
     return t;
 }
-int64_t obxlib_task_wait(void* p) {
+int64_t obxlib_task_wait(void* p, const char* w) {
     rt_task* t = p;
-    rt_nopark("a task parked inside Shared.with (Future.wait)");
+    rt_nopark(w);
     while (t->state != RT_DONE) {
         if (rt_cur->cancelled) return 1;
         t->waiter = rt_cur;
-        rt_park(true);
+        rt_park(true, w);
         t->waiter = 0;
     }
     return t->abandoned ? 2 : 0;
 }
-int64_t obxlib_task_wait_any(void** ts, int64_t n) {
-    rt_nopark("a task parked inside Shared.with (task.any)");
+int64_t obxlib_task_wait_any(void** ts, int64_t n, const char* w) {
+    rt_nopark(w);
     for (;;) {
         for (int64_t i = 0; i < n; i++)
             if (((rt_task*)ts[i])->state == RT_DONE) return i;
         if (rt_cur->cancelled) return -1;
         for (int64_t i = 0; i < n; i++) ((rt_task*)ts[i])->waiter = rt_cur;
-        rt_park(true);
+        rt_park(true, w);
         for (int64_t i = 0; i < n; i++) ((rt_task*)ts[i])->waiter = 0;
     }
 }
@@ -1506,12 +1514,12 @@ void obxlib_task_forget(void* p) {
     }
     rt_release(t);
 }
-void obxlib_task_join(void* p) {
+void obxlib_task_join(void* p, const char* w) {
     rt_task* t = p;
     rt_cancel(t);
     while (t->state != RT_DONE && !t->promise) {
         t->waiter = rt_cur;
-        rt_park(false);
+        rt_park(false, w);
         t->waiter = 0;
     }
     obxlib_task_forget(t);
@@ -1523,8 +1531,8 @@ void* obxlib_task_take(void* p) {
     rt_release(t);
     return r;
 }
-int64_t obxlib_task_yield(void) {
-    rt_nopark("a task parked inside Shared.with (task.yield)");
+int64_t obxlib_task_yield(const char* w) {
+    rt_nopark(w);
     if (rt_rq_head) {
         rt_enqueue(rt_cur);
         rt_switch(rt_dequeue());
@@ -1555,7 +1563,17 @@ void obxlib_task_abandon(void* p) {
     rt_release(t);
 }
 
-typedef struct { int64_t rc; bool busy; void* box; void (*drop)(void*); } rt_shared;
+struct rt_shared {
+    int64_t rc;
+    bool busy;                      /* its with is open: opened at w, inside the with up */
+    const char* w;
+    rt_shared* up;
+    void* box;
+    void (*drop)(void*);
+};
+static void rt_nopark(const char* w) {
+    if (rt_with_top) rt_trap_with(13, "a task parked inside Shared.with", rt_with_top->w, w);
+}
 void* obxlib_sh_new(void* box, void* drop) {
     rt_shared* s = rt_alloc(sizeof *s);
     s->rc = 1; s->busy = false; s->box = box; s->drop = (void (*)(void*))drop;
@@ -1575,17 +1593,19 @@ void rt_sh_drop(void* p) {
     rt_shared* s = p;
     if (s && --s->rc == 0 && !s->busy) rt_sh_free(s);
 }
-void* obxlib_sh_enter(void* p) {
+void* obxlib_sh_enter(void* p, const char* w) {
     rt_shared* s = p;
-    if (s->busy) rt_trap(13, "Shared.with on a value whose with is already open", "runtime");
+    if (s->busy) rt_trap_with(13, "Shared.with on a value whose with is already open", s->w, w);
     s->busy = true;
-    rt_with_open++;
+    s->w = w;
+    s->up = rt_with_top;
+    rt_with_top = s;
     return s->box;
 }
 void obxlib_sh_leave(void* p, void* box) {
     rt_shared* s = p;
     s->box = box;
     s->busy = false;
-    rt_with_open--;
+    rt_with_top = s->up;
     if (s->rc == 0) rt_sh_free(s);
 }

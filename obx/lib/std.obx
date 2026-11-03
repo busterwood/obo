@@ -1,12 +1,12 @@
 // std: the prelude, imported into every module; its public names are visible
 // unqualified. Everything here is ordinary obx code over the built-in
-// intrinsics (SPEC 11). The compiler knows two names from it: fractional
-// literals call fromFraction, and try needs the variants Ok and Err.
+// intrinsics (SPEC 11). The compiler knows fromFraction (fractional literals),
+// the variants Ok and Err (try) and the call-site type Where (SPEC 15).
 //
 // Contents: Option, Result, Unit; Eq, Ord, Hash, Show and their primitive
 // implementations; print, println, eprintln; min, max; StrBuf and the basic
 // string helpers; Decimal (exact decimal arithmetic, the type of fractional
-// literals); sort; Map. The other library modules (lib/*.obx) build on these.
+// literals); sort; Map; Where. The other library modules build on these.
 
 // ---------------------------------------------------------------- core sums
 
@@ -1534,3 +1534,20 @@ fn (m: mut &Map[K, V]) grow() {
         m.index[i] = e
     }
 }
+
+// ---------------------------------------------------------------- call sites
+
+// Where a call is: the text "file:line", in the program's static data (a
+// lang item, SPEC 15). A call of a library function (a module loaded from a
+// library root) whose last parameter is a Where may leave that argument out:
+// the compiler passes the call's own location. lib/task reports where a task
+// parked, or where a with was opened, with it.
+pub type Where = value record { p: ptr }
+
+// The location of the call of here(), or the Where passed to it.
+pub fn here(w: Where): Where { return w }
+
+pub fn (w: Where) toStr(): str { return strFromC(w.p) }
+
+// The text as a NUL-terminated C string (static: valid for the whole run).
+pub fn (w: Where) cstr(): ptr { return w.p }

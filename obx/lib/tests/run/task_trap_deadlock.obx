@@ -1,9 +1,11 @@
 // task: when every task is parked, nothing can wake any of them: the program
 // stops with a deadlock report (exit 14). Here two tasks wait for each
-// other's promise.
+// other's promise; the location is the wait that found nothing runnable
+// (b's, in wait2).
 // exit: 14
 // expect: a waits
 // expect: b waits
+// stderr: obx: deadlock: every task is parked at task_trap_deadlock.obx:20
 import "task"
 
 type Pair2 = record {

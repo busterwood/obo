@@ -1,0 +1,10 @@
+// std: only a library function gets its Where argument implicitly; a
+// program's own function with a Where parameter must be passed one.
+// error: zedwhere takes 1 arguments, not 0
+// line: 9
+
+fn zedwhere(w: Where) { println(w.toStr()) }
+
+fn main() {
+    zedwhere()
+}

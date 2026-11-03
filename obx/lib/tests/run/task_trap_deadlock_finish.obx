@@ -1,0 +1,21 @@
+// task: a deadlock found when a task finishes: its scope's owner is parked
+// on a promise nobody can complete, and nothing else is runnable (exit 14).
+// The location is where that owner parked.
+// exit: 14
+// expect: task 1
+// stderr: obx: deadlock: every task is parked at task_trap_deadlock_finish.obx:18
+import "task"
+
+fn hello(n: int): int {
+    println("task " + intToStr(n))
+    return n
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let t = s.start(hello, 1)
+        let task.Handoff{promise: p, future: f} = task.promise[int]()
+        let r = f.wait()
+        p.complete(2)
+    })
+}

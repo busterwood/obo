@@ -1,0 +1,14 @@
+// task: task.any inside Shared.with stops the program (exit 13) at the call
+// of any.
+// exit: 13
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_with_any.obx:9) at task_trap_with_any.obx:12
+import "task"
+
+fn main() {
+    let sh = task.shared("x")
+    sh.with(fn(x: mut &str) {
+        let task.Handoff{promise: p, future: f} = task.promise[int]()
+        p.complete(5)
+        let r = task.any([f])
+    })
+}

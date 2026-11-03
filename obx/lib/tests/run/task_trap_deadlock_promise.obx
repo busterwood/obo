@@ -1,0 +1,13 @@
+// task: main waits for a promise that only it could complete: nothing is
+// runnable when it parks, a deadlock (exit 14) at the wait.
+// exit: 14
+// expect: waiting
+// stderr: obx: deadlock: every task is parked at task_trap_deadlock_promise.obx:11
+import "task"
+
+fn main() {
+    let task.Handoff{promise: p, future: f} = task.promise[int]()
+    println("waiting")
+    let r = f.wait()
+    p.complete(1)
+}

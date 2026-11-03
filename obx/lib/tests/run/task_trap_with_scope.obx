@@ -1,0 +1,16 @@
+// task: the end of a task.scope inside Shared.with stops the program (exit
+// 13), even with no task left to wait for: the location is the call of
+// scope, which parks at its end.
+// exit: 13
+// expect: in scope
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_with_scope.obx:11) at task_trap_with_scope.obx:12
+import "task"
+
+fn main() {
+    let sh = task.shared(1)
+    sh.with(fn(x: mut &int) {
+        task.scope(fn(s: mut &task.Scope) {
+            println("in scope")
+        })
+    })
+}

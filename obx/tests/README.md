@@ -76,6 +76,7 @@ lines anywhere in the file:
 | Directive | Where | Meaning |
 |---|---|---|
 | `// expect: text` | run | one line of expected stdout, in order; `// expect:` alone is an empty line. No `expect` lines means empty stdout. |
+| `// stderr: text` | run | one line of expected stderr, in order; when a test has any, stderr is compared exactly (a runtime error's message) |
 | `// exit: N` | run | expected exit code (default 0) |
 | `// stdin: text` | run | a line fed to stdin (unused so far) |
 | `// error: words` | error | compile must fail and the output must contain `words` (case-insensitive). `a\|b` accepts either; empty accepts any failure. Several lines must all match. |
@@ -86,7 +87,8 @@ A run test that exits with code 77 (and does not expect it) is reported as skipp
 the library tests that need a live database server exit 77 when there is none.
 
 `run/` tests are run with `OBX_CHECK=1`, so a leaked object makes the exit
-code 5 and fails the test. Stdout is compared exactly. Stderr is not checked.
+code 5 and fails the test. Stdout is compared exactly. Stderr is checked only
+when the test has `// stderr:` lines.
 Error tests prefer a name that must occur in any sane message (the offending
 variable, function, variant or type, written with a distinctive spelling such
 as `zed`, `CONSTX`, `fixedvar`); where a message could use several wordings the

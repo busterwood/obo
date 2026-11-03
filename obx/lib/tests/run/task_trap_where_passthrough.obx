@@ -1,0 +1,21 @@
+// task: a function of the program that takes a Where and passes it on to a
+// task call reports its caller's location (here() gives the location of its
+// own call). A program's own function gets no implicit argument.
+// exit: 13
+// expect: waitAt from task_trap_where_passthrough.obx:19
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_where_passthrough.obx:16) at task_trap_where_passthrough.obx:19
+import "task"
+
+fn waitAt(f: task.Future[int], w: Where): int {
+    println("waitAt from " + w.toStr())
+    return f.wait(w).unwrapOr(0)
+}
+
+fn main() {
+    let sh = task.shared(1)
+    sh.with(fn(x: mut &int) {
+        let task.Handoff{promise: p, future: f} = task.promise[int]()
+        p.complete(5)
+        let r = waitAt(f, here())
+    })
+}

@@ -1,0 +1,19 @@
+// task: with on different values may nest; a park inside the inner one stops
+// the program (exit 13), and the message names the innermost open with.
+// exit: 13
+// expect: outer 1
+// expect: inner 2
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_with_nested.obx:14) at task_trap_with_nested.obx:16
+import "task"
+
+fn main() {
+    let a = task.shared(1)
+    let b = task.shared(2)
+    a.with(fn(x: mut &int) {
+        println("outer " + intToStr(x))
+        b.with(fn(y: mut &int) {
+            println("inner " + intToStr(y))
+            let r = task.yield()
+        })
+    })
+}

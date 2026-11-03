@@ -2,6 +2,7 @@
 // even when the wait would not have parked.
 // exit: 13
 // expect: inside
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_park_in_with.obx:14) at task_trap_park_in_with.obx:16
 import "task"
 
 fn sq(x: int): int { return x * x }

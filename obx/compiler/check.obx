@@ -4169,6 +4169,22 @@ fn (c: mut &Checker) intrSig(i: int): Sig {
     return s
 }
 
+// SPEC 15: a call of a library function (or method) whose last parameter is a std.Where that leaves
+// it out passes the call's own location, "file:line", as a static C string.
+fn (c: mut &Checker) implicitWhere(sig: &Sig, hasRecv: bool, args: mut &[]Arg, line: int) {
+    if c.pg.where < 0 || sig.kind != SK_FN || sig.fd < 0 || !c.pg.mods[c.pg.fns[sig.fd].mod].isLib { return }
+    let np = len(sig.params)
+    let nr = if hasRecv { 1 } else { 0 }
+    if np <= nr { return }
+    let pt = sig.params[np - 1]
+    if c.pg.tk(pt) != sema.TK_INST || c.pg.ta(pt) != c.pg.where || len(args) + nr == np { return }
+    if len(args) + nr != np - 1 {
+        c.err(line, sig.label + " takes " + intToStr(np - 1 - nr) + " arguments and its call site (a Where, implicit), not " +
+            intToStr(len(args)))
+    }
+    append(args, Arg{isVal: true, n: -1, v: rv(c.build(pt, -1, &[c.W(line)]), pt)})
+}
+
 fn (c: mut &Checker) callArgs(e: int): []Arg {
     var out: []Arg = []
     let l = c.nd(e).b
@@ -4179,7 +4195,7 @@ fn (c: mut &Checker) callArgs(e: int): []Arg {
 fn (c: mut &Checker) xCall(e: int, exp: int): Val {
     let n = c.nd(e)
     var f = n.a
-    let args = c.callArgs(e)
+    var args = c.callArgs(e)
     if c.kind(f) == sx.N_NAME && c.lookupVar(c.nd(f).s, true) < 0 {
         let fname = c.nd(f).s
         if c.isBuiltinHere(fname) {
@@ -4218,6 +4234,7 @@ fn (c: mut &Checker) xCall(e: int, exp: int): Val {
                 c.err(fn1.line, nm + " has no associated function " + fn1.s)
             }
             let sig = c.assocSig(t, fn1.s, n.line, false)
+            c.implicitWhere(&sig, false, mut &args, n.line)
             let o = noOpts()
             return c.call(&sig, false, voidVal(false), &args, n.line, exp, &o)
         }
@@ -4229,6 +4246,7 @@ fn (c: mut &Checker) xCall(e: int, exp: int): Val {
                 let fv = c.fieldOf(recv, fn1.s, n.line)
                 return c.callValue(fv, e, exp)
             }
+            c.implicitWhere(&sig, true, mut &args, n.line)
             var o = noOpts()
             o.targs = targs
             o.rast = fn1.a
@@ -4242,6 +4260,7 @@ fn (c: mut &Checker) xCall(e: int, exp: int): Val {
         if st.dk == D_VARIANT { return c.constructVariant(st, &args, n.line, exp, -1) }
         if st.dk == sema.D_FN {
             let sig = c.fnSig(st.di, [])
+            c.implicitWhere(&sig, false, mut &args, n.line)
             var o = noOpts()
             o.targs = if st.n > 2 { st.targs } else { -1 }
             o.alltargs = true

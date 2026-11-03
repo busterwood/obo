@@ -285,6 +285,7 @@ pub type Program = record {
     pub gwrap: str           // check's global initializers: "the initializer of global G must be constant: "
     pub std: int
     pub shared: int          // the TypeDecl of task.Shared (a lang item, SPEC 15), or -1
+    pub where: int           // the TypeDecl of std.Where (a lang item, SPEC 15), or -1
     pub main: int
 }
 
@@ -394,7 +395,7 @@ pub fn newProgram(stdPath: str, libroots: []str, mainFile: str): Program {
     var pg = Program{libroots: libroots, mainFile: mainFile, mods: [], modIndex: newMap(), types: [],
         variants: [], fns: [], consts: [], globals: [], tparams: [], tys: [], tlists: [], tindex: newMap(),
         primMethods: [], primMethodNames: [], prelude: newMap(), preludeNames: [], externs: newMap(),
-        externNames: [], pending: [], resolved: false, wraps: [], gwrap: "", std: -1, shared: -1, main: -1}
+        externNames: [], pending: [], resolved: false, wraps: [], gwrap: "", std: -1, shared: -1, where: -1, main: -1}
     let none: []int = []
     for p in 0..len(PRIM_NAMES) { pg.intern(TK_PRIM, p, 0, false, &none) }
     pg.intern(TK_SELF, 0, 0, false, &none)
@@ -818,6 +819,8 @@ fn (pg: mut &Program) collect(m: int) {
                     pg.types[d].value {
                     pg.shared = d
                 }
+                // SPEC 15: std.Where, a value record { p: ptr }, is a call site
+                if pg.mods[m].isStd && n.s == "Where" && n.b == sx.F_RECORD && pg.types[d].value { pg.where = d }
                 if n.b == sx.F_CLOSED {
                     for i in 0..pg.count(m, n.c) {
                         let vn = pg.item(m, n.c, i)
