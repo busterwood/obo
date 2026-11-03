@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import cbuild  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DIRECTIVE = re.compile(r'^\s*//\s*(expect|exit|stdin|error|line):(.*)$')
+DIRECTIVE = re.compile(r'^\s*//\s*(expect|stderr|exit|stdin|error|line):(.*)$')
 NEEDS = re.compile(r'^\s*//\s*needs:\s*(\S+)')
 LIBDIRS = ['/usr/lib/x86_64-linux-gnu', '/lib/x86_64-linux-gnu', '/usr/lib64', '/usr/lib', '/usr/local/lib', '/lib']
 SKIP_EXIT = 77     # a run test that exits 77 (and does not expect it) is skipped: a live service is missing
@@ -48,7 +48,7 @@ def find_tests():
 
 
 def parse_directives(path):
-    d = {'expect': [], 'exit': 0, 'stdin': [], 'error': [], 'line': None}
+    d = {'expect': [], 'stderr': [], 'exit': 0, 'stdin': [], 'error': [], 'line': None}
     with open(path, encoding='utf-8', errors='replace') as f:
         for raw in f:
             m = DIRECTIVE.match(raw.rstrip('\n').rstrip('\r'))
@@ -59,6 +59,8 @@ def parse_directives(path):
                 val = val[1:]
             if key == 'expect':
                 d['expect'].append(val)
+            elif key == 'stderr':
+                d['stderr'].append(val)
             elif key == 'stdin':
                 d['stdin'].append(val)
             elif key == 'exit':
@@ -123,6 +125,9 @@ def run_test(kind, path, compiler):
         if r.returncode != d['exit']:
             return rel, 'exit code %d, want %d (stderr: %s)' % (
                 r.returncode, d['exit'], r.stderr.strip()[:200])
+        werr = ''.join(l + '\n' for l in d['stderr'])
+        if d['stderr'] and r.stderr != werr:
+            return rel, 'stderr differs\n  want: %r\n  got:  %r' % (werr, r.stderr)
         return rel, None
 
 

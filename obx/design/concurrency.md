@@ -253,9 +253,9 @@ not channels (section 0).
 - `Shared[T]`: one value that several tasks reach. The handle is a copy type,
   counted like `str`; the value is dropped with the last handle. `task.shared(v:
   T): Shared[T]`, and `sh.with(f: &fn(mut &T))` is the only access. The
-  runtime keeps a count of open `with` blocks; `rt_park` with that count above
-  zero stops the program with exit 13 (`obx: a task parked inside
-  Shared.with at file:line`). `with` on a value whose `with` is already open
+  runtime keeps the open `with` blocks; an operation that can park, called
+  while one is open, stops the program with exit 13 (`obx: a task parked
+  inside Shared.with (the with at file:line) at file:line`). `with` on a value whose `with` is already open
   (a nested call) also stops with exit 13. Nesting `with` on different values
   is allowed. Each check is a load and a branch, about 1 ns. A `with` block
   is atomic: no other task runs inside it, so it is a critical section
@@ -296,11 +296,33 @@ C1a as built (`lib/task.obx`; SPEC 16). Deviations from the plan above:
 parts);
 `task.scoped[R]` is `scope` for a function with a result (no "no result"
 type argument); the error type is `task.Cancelled`, a closed type with the
-variants `Cancelled` and `Abandoned` (written `Cancelled.Abandoned`); the
-exit 13 and 14 messages say `at runtime`, not a source line, since the
-runtime does not know the caller's line; `start` has no stack-size
-argument; `both` and `forEach` are not built (they need borrows into tasks).
-A deadlock is exit 14.
+variants `Cancelled` and `Abandoned` (written `Cancelled.Abandoned`); `start`
+has no stack-size argument; `both` and `forEach` are not built (they need
+borrows into tasks). A deadlock is exit 14.
+
+The exit 13 and 14 messages name the user's lines (SPEC 14), through an
+implicit call-site parameter like Rust's `#[track_caller]`: `std.Where` (a
+lang item, SPEC 15) is the text `"file:line"`, and a call of a library
+function whose last parameter is a `Where` that leaves it out gets the
+call's own location. Every task function that can park (`scope`, `scoped`,
+`wait`, `all`, `any`, `yield`) and `with` takes one and hands it to the
+runtime (`all` and `any` pass theirs on to `wait`). The runtime keeps the
+open `with` blocks as a stack (each `Shared` block records where its `with`
+was called; no task can park while one is open, so the stack is global) and
+each task's last park location:
+
+- `obx: a task parked inside Shared.with (the with at a.obx:37) at a.obx:41`:
+  41 is the call that would park, 37 the innermost open `with` (the one whose
+  closure made the call, directly or through functions).
+- `obx: Shared.with on a value whose with is already open (the with at
+  a.obx:30) at a.obx:35`: the open `with` on the same value, and the new one.
+- `obx: deadlock: every task is parked at a.obx:41`: the call whose park found
+  nothing runnable; when a task finishes and leaves nothing runnable, the
+  place where its scope's owner is parked.
+
+Dropping a `Future` does not park (its task is cancelled, and the scope's
+end waits for it), so it needs no location; `any` joins the losers at its
+own call's location.
 
 Library (`task`, `net`, `time`):
 

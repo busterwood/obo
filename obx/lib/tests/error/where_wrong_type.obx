@@ -1,0 +1,8 @@
+// task: an explicit call-site argument must be a Where.
+// error: argument 1 of yield is Where, not int
+// line: 7
+import "task"
+
+fn main() {
+    let r = task.yield(41)
+}

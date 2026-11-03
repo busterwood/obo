@@ -1,0 +1,10 @@
+// task: a call through a function value gets no implicit Where: it must pass
+// one (task.yield's is its last parameter).
+// error: function value takes 1 arguments, not 0
+// line: 9
+import "task"
+
+fn main() {
+    let zedy = task.yield
+    let r = zedy()
+}

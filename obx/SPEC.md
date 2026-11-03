@@ -553,7 +553,9 @@ mutably borrows, copies or moves `x` as the receiver declares; the receiver
 must be a place or a temporary for a borrow, and a mutable place or a
 temporary for a mutable borrow (a temporary lives to the end of the statement,
 section 7.7, so `make().name()` is allowed). A method call on a borrow uses what
-it points to.
+it points to. A direct call of a library function whose last
+parameter is a `std.Where` may leave that argument out: the compiler passes
+the call's location (section 15).
 
 An argument that already has a borrow type is passed to a parameter of a
 borrow type as it is: `f(r)` and `f(&r)` both pass the borrow `r`. A `mut &T`
@@ -930,20 +932,50 @@ exits with:
 | 13 | a task parked inside `Shared.with`, or a nested `with` on the same value (section 16) |
 | 14 | deadlock: every task is parked (section 16) |
 
-The runtime detects codes 13 and 14 without knowing a source line: their
-location is `runtime`, and the message names the operation (`obx: a task
-parked inside Shared.with (Future.wait) at runtime`).
+For codes 13 and 14 the location is the program's call of a `task`
+function (its call site, section 15), and for code 13 the open `with` is
+named as well:
+
+    obx: a task parked inside Shared.with (the with at a.obx:37) at a.obx:41
+    obx: Shared.with on a value whose with is already open (the with at a.obx:30) at a.obx:35
+    obx: deadlock: every task is parked at a.obx:41
+
+In the first, 41 is the call that would park (`wait`, `task.all`,
+`task.any`, `task.yield`, or `task.scope` and `task.scoped`, which park at
+their end) and 37 the innermost open `with`. In the second, 35 is the new
+`with` and 30 the open one on the same value. In the third, 41 is the call
+whose park found no runnable task; when the last runnable task finishes
+instead, it is the call where that task's scope owner is parked.
 
 ## 15. Lang items
 
 The compiler knows these names from the library: `fromFraction` (section
 7.3), the variant names `Ok` and `Err` (section 7.6), and the four prelude
 variants that may be written bare (`Some`, `None`, `Ok`, `Err`, section 4.4).
-It knows one type from the library: `Shared` in the library module `task`
-(section 16), declared there as `value record { p: ptr }`. A value of an
+It knows two types from the library. `Shared` in the library module `task`
+(section 16), declared there as `value record { p: ptr }`: a value of an
 instance of it is not plain data: copying it calls the runtime's `rt_sh_dup`
 on `p`, and dropping it `rt_sh_drop`, so that the handle is counted like a
 `str`. Everything else about tasks is library code.
+
+`Where` in `std`, declared there as `value record { p: ptr }`, is a call
+site: `p` points to the text `"file:line"` (the file's name and the line of
+a call) in the program's static data, valid for the whole run; `w.toStr()`
+gives the text and `w.cstr()` the pointer. A function or method declared in
+a module loaded from a library root (the rule of the intrinsics below) whose
+last parameter has type `Where` gets that argument implicitly: a direct call
+of it (`f(...)`, `m.f(...)`, `x.method(...)`, `T.f(...)`, generic or not)
+that writes one argument fewer than it declares passes the location of the
+call expression. A call may also pass a `Where` explicitly, which is how a
+library function hands its caller's location on (`task.all` calls
+`f.wait(w)`). A call through a function value, a closure, an interface or a
+type parameter's constraint cannot supply it (the call has no declaration to look at): it must pass it,
+for example `here()`. `std.here(): Where` is such a function: it returns the
+location of its own call, or the `Where` passed to it. A function of the
+program (not a library) with a last parameter of type `Where` is an ordinary
+function, so a program passes its own caller's location on by taking a
+`Where` and calling `f.wait(w)`. Only `std` can build a `Where` (its field is
+private); a program may use the type freely, as with the intrinsics.
 
 Two intrinsics exist only in modules loaded from a library root (`std` and
 modules imported by a bare name, not `./` or `../`); elsewhere their names
@@ -977,7 +1009,9 @@ relies on:
   but what was moved into it, and `Shared` values.
 - A task runs until it parks: it waits for an unfinished future (`wait`,
   `task.all`, `task.any`), calls `task.yield()`, or ends a scope with tasks
-  still running. Then the next runnable task runs, first in, first out. A
+  still running. Each of these functions, and `with`, has a last parameter of
+  type `Where` that a call leaves out (section 15): the stops below report the
+  program's own lines with it (section 14). Then the next runnable task runs, first in, first out. A
   started task is runnable at once; it first runs when its starter parks.
 - `Future[T]` is owned (one place waits for it). Dropping it without
   waiting cancels its task; its scope still waits for the task to finish,

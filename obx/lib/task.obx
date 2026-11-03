@@ -25,22 +25,29 @@
 // No task may park inside with (exit 13), so a with block is a critical
 // section without a lock. If every task is parked, nothing can wake any of
 // them, and the program stops with exit 14 (a deadlock).
+//
+// Every function that can park, and with, takes the caller's location as a
+// last std.Where parameter, which a call leaves out (SPEC 15): the compiler
+// passes the call's "file:line". The runtime reports it when the program
+// stops: where the task parked (or the deadlock was found), and where the
+// open with was called. A call through a function value must pass it
+// (here() gives the location of its own call).
 
 extern "c" fn rtScopeOpen(): ptr as "obxlib_task_scope_open"
-extern "c" fn rtScopeClose(s: ptr) as "obxlib_task_scope_close"
+extern "c" fn rtScopeClose(s: ptr, w: ptr) as "obxlib_task_scope_close"
 extern "c" fn rtStart(s: ptr, run: extern fn(ptr): ptr, job: ptr, resdrop: extern fn(ptr)): ptr as "obxlib_task_start"
-extern "c" fn rtWait(t: ptr): int as "obxlib_task_wait"
-extern "c" fn rtWaitAny(ts: &[]ptr, n: int): int as "obxlib_task_wait_any"
+extern "c" fn rtWait(t: ptr, w: ptr): int as "obxlib_task_wait"
+extern "c" fn rtWaitAny(ts: &[]ptr, n: int, w: ptr): int as "obxlib_task_wait_any"
 extern "c" fn rtForget(t: ptr) as "obxlib_task_forget"
-extern "c" fn rtJoin(t: ptr) as "obxlib_task_join"
+extern "c" fn rtJoin(t: ptr, w: ptr) as "obxlib_task_join"
 extern "c" fn rtTake(t: ptr): ptr as "obxlib_task_take"
-extern "c" fn rtYield(): int as "obxlib_task_yield"
+extern "c" fn rtYield(w: ptr): int as "obxlib_task_yield"
 extern "c" fn rtCancelled(): int as "obxlib_task_cancelled"
 extern "c" fn rtPromise(resdrop: extern fn(ptr)): ptr as "obxlib_task_promise"
 extern "c" fn rtComplete(t: ptr, res: ptr) as "obxlib_task_complete"
 extern "c" fn rtAbandon(t: ptr) as "obxlib_task_abandon"
 extern "c" fn rtShNew(box: ptr, drop: extern fn(ptr)): ptr as "obxlib_sh_new"
-extern "c" fn rtShEnter(s: ptr): ptr as "obxlib_sh_enter"
+extern "c" fn rtShEnter(s: ptr, w: ptr): ptr as "obxlib_sh_enter"
 extern "c" fn rtShLeave(s: ptr, box: ptr) as "obxlib_sh_leave"
 
 // Why a wait has no value: the waiting task was cancelled, or the future's
@@ -104,18 +111,18 @@ fn unbox[T](p: ptr): T {
 // ---- scopes
 
 // Runs f with a new scope, then parks until every task started on it has
-// finished (cancelled ones included).
-pub fn scope(f: &fn(mut &Scope)) {
+// finished (cancelled ones included). w: the call of scope.
+pub fn scope(f: &fn(mut &Scope), w: Where) {
     var s = Scope{p: rtScopeOpen()}
     f(mut &s)
-    rtScopeClose(s.p)
+    rtScopeClose(s.p, w.cstr())
 }
 
 // scope for an f with a result.
-pub fn scoped[R](f: &fn(mut &Scope): R): R {
+pub fn scoped[R](f: &fn(mut &Scope): R, w: Where): R {
     var s = Scope{p: rtScopeOpen()}
     let r = f(mut &s)
-    rtScopeClose(s.p)
+    rtScopeClose(s.p, w.cstr())
     return r
 }
 
@@ -128,9 +135,9 @@ pub fn (s: mut &Scope) start[A, T](f: fn(A): T, arg: A): Future[T] {
 // ---- futures
 
 // Parks until the task has finished, and gives its result.
-pub fn (var f: Future[T]) wait(): Result[T, Cancelled] {
+pub fn (var f: Future[T]) wait(w: Where): Result[T, Cancelled] {
     let t = replace(mut &f.t, nullPtr())
-    let r = rtWait(t)
+    let r = rtWait(t, w.cstr())
     if r != 0 {
         rtForget(t)
         return Err(if r == 1 { Cancelled.Cancelled } else { Cancelled.Abandoned })
@@ -144,11 +151,11 @@ pub fn (f: mut &Future[T]) drop() {
 
 // Waits for every future, in order; the results in the same order. On an
 // error the futures not yet waited for are dropped (their tasks cancelled).
-pub fn all[T](var fs: []Future[T]): Result[[]T, Cancelled] {
+pub fn all[T](var fs: []Future[T], w: Where): Result[[]T, Cancelled] {
     var out: []T = []
     for i in 0..len(fs) {
         let f = replace(mut &fs[i], Future[T]{t: nullPtr()})
-        match f.wait() {
+        match f.wait(w) {
             Ok(v) { append(mut &out, v) }
             Err(e) { return Err(e) }
         }
@@ -158,25 +165,25 @@ pub fn all[T](var fs: []Future[T]): Result[[]T, Cancelled] {
 
 // The result of the first future to finish. The other tasks are cancelled,
 // and any returns once they have finished. fs must not be empty.
-pub fn any[T](var fs: []Future[T]): Result[T, Cancelled] {
+pub fn any[T](var fs: []Future[T], w: Where): Result[T, Cancelled] {
     if len(fs) == 0 { panic("task.any: no futures") }
     var ts: []ptr = []
     for i in 0..len(fs) { append(mut &ts, fs[i].t) }
-    let w = rtWaitAny(&ts, len(ts))
+    let k = rtWaitAny(&ts, len(ts), w.cstr())
     for i in 0..len(fs) {
-        if i != w {
+        if i != k {
             fs[i].t = nullPtr()
-            rtJoin(ts[i])
+            rtJoin(ts[i], w.cstr())
         }
     }
-    if w < 0 { return Err(Cancelled.Cancelled) }
-    let f = replace(mut &fs[w], Future[T]{t: nullPtr()})
-    return f.wait()
+    if k < 0 { return Err(Cancelled.Cancelled) }
+    let f = replace(mut &fs[k], Future[T]{t: nullPtr()})
+    return f.wait(w)
 }
 
 // Lets the other runnable tasks run first; Err when this task is cancelled.
-pub fn yield(): Result[Unit, Cancelled] {
-    if rtYield() != 0 { return Err(Cancelled.Cancelled) }
+pub fn yield(w: Where): Result[Unit, Cancelled] {
+    if rtYield(w.cstr()) != 0 { return Err(Cancelled.Cancelled) }
     return Ok(Unit{})
 }
 
@@ -209,9 +216,9 @@ pub fn shared[T](v: T): Shared[T] {
 }
 
 // Runs f on the value. f must not park (exit 13), and a with on the same
-// value inside f stops the program (exit 13).
-pub fn (s: &Shared[T]) with(f: &fn(mut &T)) {
-    var c: Cell[T] = fromPtr(rtShEnter(s.p))
+// value inside f stops the program (exit 13). w: the call of with.
+pub fn (s: &Shared[T]) with(f: &fn(mut &T), w: Where) {
+    var c: Cell[T] = fromPtr(rtShEnter(s.p, w.cstr()))
     f(mut &c.v)
     rtShLeave(s.p, intoPtr(c))
 }

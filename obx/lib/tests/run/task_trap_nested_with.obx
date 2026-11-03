@@ -1,7 +1,8 @@
 // task: with on a Shared value whose with is already open (through another
-// handle to it) stops the program (exit 13).
+// handle to it) stops the program (exit 13); the message names both withs.
 // exit: 13
 // expect: outer 1
+// stderr: obx: Shared.with on a value whose with is already open (the with at task_trap_nested_with.obx:11) at task_trap_nested_with.obx:13
 import "task"
 
 fn main() {

@@ -1,0 +1,23 @@
+// task: a with and a wait in functions of the program: the locations are the
+// task calls in those functions (the wait in helper, the with in open), not
+// the calls of the functions.
+// exit: 13
+// expect: helper 1
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_with_helper.obx:17) at task_trap_with_helper.obx:13
+import "task"
+
+fn helper(x: int) {
+    println("helper " + intToStr(x))
+    let task.Handoff{promise: p, future: f} = task.promise[int]()
+    p.complete(x)
+    let r = f.wait()
+}
+
+fn open(sh: task.Shared[int]) {
+    sh.with(fn(x: mut &int) { helper(x) })
+}
+
+fn main() {
+    let sh = task.shared(1)
+    open(sh)
+}

@@ -1,0 +1,34 @@
+// std: Where is a call site, "file:line" (SPEC 15). here() is a library
+// function whose last parameter is a Where: a call that leaves it out gets
+// its own location, a call may pass one on, and a call through a function
+// value must pass it. A program's own function with a Where parameter gets
+// no implicit argument.
+// expect: std_where.obx:21
+// expect: show std_where.obx:22
+// expect: std_where.obx:23
+// expect: std_where.obx:25
+// expect: std_where.obx:26
+// expect: same line true
+// expect: Some(std_where.obx:30)
+
+fn show(w: Where) { println("show " + w.toStr()) }
+
+fn line(w: Where): str { return w.toStr() }
+
+fn pass(w: Where): Where { return here(w) }
+
+fn main() {
+    println(here().toStr())
+    show(here())
+    println(pass(here()).toStr())
+    let h = here
+    println(h(here()).toStr())
+    let w = here()
+    println(here(w).toStr())
+    let a = here(); let b = here()
+    println("same line " + boolStr(line(a) == line(b)))
+    let o: Option[Where] = Some(here())
+    println(o.toStr())
+}
+
+fn boolStr(b: bool): str { return if b { "true" } else { "false" } }

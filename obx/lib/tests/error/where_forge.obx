@@ -1,0 +1,9 @@
+// std: a program cannot build a Where (its field is private to std); only the
+// compiler makes one, for a call.
+// error: private to module std
+// line: 7
+
+fn main() {
+    let w = Where{p: nullPtr()}
+    println(w.toStr())
+}

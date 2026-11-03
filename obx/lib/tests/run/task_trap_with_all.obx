@@ -1,0 +1,18 @@
+// task: task.all inside Shared.with stops the program (exit 13): all passes
+// its caller's location on to each wait, so the message names the call of all.
+// exit: 13
+// expect: inside
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_with_all.obx:10) at task_trap_with_all.obx:15
+import "task"
+
+fn main() {
+    let sh = task.shared(1)
+    sh.with(fn(x: mut &int) {
+        println("inside")
+        let task.Handoff{promise: p, future: f} = task.promise[int]()
+        p.complete(5)
+        let fs: []task.Future[int] = [f]
+        let r = task.all(fs)
+        println("not reached")
+    })
+}

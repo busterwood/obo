@@ -1,0 +1,18 @@
+// task: Future.wait inside Shared.with stops the program (exit 13), even on a
+// future that is already complete; the message names the wait and the with.
+// exit: 13
+// expect: inside
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_with_wait.obx:11) at task_trap_with_wait.obx:15
+import "task"
+
+fn main() {
+    let sh = task.shared(1)
+    var n = 0
+    sh.with(fn(x: mut &int) {
+        println("inside")
+        let task.Handoff{promise: p, future: f} = task.promise[int]()
+        p.complete(5)
+        let r = f.wait()
+        println("not reached")
+    })
+}

@@ -1,0 +1,9 @@
+// task: a call with the wrong number of arguments to a function with an
+// implicit call site: the message counts the arguments a call writes.
+// error: all takes 1 arguments and its call site (a Where, implicit), not 0
+// line: 8
+import "task"
+
+fn main() {
+    let r = task.all[int]()
+}
