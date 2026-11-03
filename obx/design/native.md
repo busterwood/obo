@@ -230,17 +230,37 @@ Then:
   same calls); `return` jumps to the end of the body. Trap stubs keep the
   callee's messages and `where` strings. A call of such a function whose body
   is only `return x;` used as a condition is generated as a branch on x
-  (`isDigit(c)` in an `if` is two compares);
+  (`isDigit(c)` in an `if` is two compares). An argument `&l` (l a local of
+  the pointee's type) for a parameter p that the body only dereferences
+  (`*p`, never p alone, never assigned) is not passed: the body's `*p` names
+  l itself while it is generated (the nodes are rewritten and put back), so
+  l needs no address and can stay in a register (`x.cmp(&y)`);
 - every local and parameter has a stack slot (`rbp`-relative); slots of a
   block are reused after it ends; temporaries are slots that live until the
   end of their statement;
 - except the integer and pointer locals and parameters whose address is not
-  taken (no `&x`, no initializer list): before a function is generated, a
-  scan counts the uses of each local, a use inside a loop 8 times one
-  outside (nested loops more), and the five heaviest that are named three
-  times or in a loop live in `rbx r12 r13 r14 r15` (callee-saved: saved to
-  frame slots in the prologue and restored in every epilogue, so calls keep
-  them); such a local holds its value normalized to 64 bits, like a load;
+  taken (no `&x`, no initializer list), which get registers by live ranges.
+  Before a function is generated, a scan numbers its statements (positions;
+  a body generated in place is one position) and weighs each local's uses
+  (a use inside a loop 8 times one outside, nested loops more). A local's
+  range runs from the first to the last position naming it, widened to a
+  whole loop when its value can go around the back edge (named in and out of
+  the loop, or declared in it without an initializer). A local of a function
+  generated in place is live only at the positions of those calls: it is
+  set there (parameters at the call, the others at their declarations)
+  before it is read. A position is loud when its code may change `rsi rdi
+  r8 r9`: a call that is not generated inline, a 128-bit value, an aggregate
+  over 128 bytes, a conversion between double and u64. Heaviest first, each
+  local takes a register that no local with an overlapping range has: one of
+  `rsi rdi r8 r9` when no position of its range is loud, else one of
+  `rbx r12 r13 r14 r15` already saved, else (named three times or in a loop)
+  the next callee-saved one (saved to a frame slot in the prologue, restored
+  in every epilogue). Not loud for this: the position of the local's own
+  declaration with an initializer (its code runs before the local is set),
+  and a loud position in the statements running straight into a `return`
+  (no jumps or loops between) when the local is not named from there to the
+  return (its value is dead; the call is on the way out). Such a local holds
+  its value normalized to 64 bits, like a load;
 - an expression is evaluated into `rax` (integers, pointers, bool), `rax:rdx`
   (128-bit), `xmm0` (double), or, for a struct, `rax` holds its address
   (a temporary slot for call results and compound literals);
@@ -249,7 +269,19 @@ Then:
   local or member in its slot are used as the instruction's operand
   (immediate, register, memory), and a simple left operand is evaluated after
   a right one that has no effect (no assignment, no call but the inlined
-  checks); compares of a register local are done in place;
+  checks); compares of a register local are done in place. For `+ * & | ^`
+  (and the checked add and multiply) a left operand that needs no code is
+  the operand after a right one that does (the right one assigns neither its
+  register nor, for memory, anything). When both are complex and the right
+  one's code is quiet (no loud node, no call but the inline checks), the left
+  one waits in a register of `rsi rdi r8 r9` that no local of the function
+  has, instead of a slot;
+- lvalues are generated up to their last address arithmetic and used as
+  operands (`place`): `a.b.c` through pointers loads `[rax+off]`, `*p` with p
+  in a register reads `[reg]`, an element `p + i*size` (size 1, 2, 4, 8) is
+  `[p + i*size]` with an `rt_idx` check done on the index's register in
+  place, and a simple value stored through a pointer goes straight to the
+  operand (an assignment whose value is unused leaves `rax` alone);
 - a call evaluates its arguments left to right; constants, locals, members
   of locals and addresses of strings and globals are loaded straight into
   their registers at the call, the last other integer argument stays in
@@ -277,9 +309,11 @@ Then:
   `rt_wmul_u32`, ...: the operation and `jo`/`jc`/a range test), the
   checked conversions `rt_cvs_*`/`rt_cvu_*` of 64-bit-or-narrower values,
   `rt_div`/`rem`/`shl`/`shr`/`neg_*`, `rt_idx` and
-  `rt_str_byte` (an unsigned compare), `rt_str_dup` and `rt_str_drop` (the
-  reference count; `rt_free` at zero), `rt_arr_push` (the store when there is
-  room; the runtime grows the array). A failed check jumps to a stub after
+  `rt_str_byte` (an unsigned compare; a `str` in the frame is read in place),
+  `rt_str_dup` and `rt_str_drop` (the reference count; `rt_free` at zero),
+  `rt_arr_push` (the store when there is room; the runtime grows the array),
+  `rt_str_eq` (the lengths: different is false, both zero is true, else the
+  runtime compares the bytes). A failed check jumps to a stub after
   the function that calls `rt_trap` (one stub per code, message and
   location);
 - conditions compile to jumps (`&&`, `||`, `!`, comparisons and conversions
@@ -419,6 +453,114 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 
 (kept current; the next agent starts here)
 
+2026-11-03, the third performance step (branch `perf2`, section 4: registers
+by live ranges, `rsi rdi r8 r9` for call-free ranges, `&l` arguments of
+bodies in place, lvalues and elements as operands, commutative operands,
+the `rt_str_eq` and `rt_str_byte` inline forms; in the runtime, the small
+malloc classes without a search and a word-wise `memcmp`). Best of 5, ms,
+the same machine and session for both columns ("main" is main's backend at
+the start; both compilers build the same sources); then user-mode
+instructions and the least cycles of 10 interleaved runs (perf stat):
+
+| | main | perf2 |
+|---|---|---|
+| native compiler size (bytes) | 2,139,761 | 2,110,945 |
+| `--emit-c` of the compiler | 177 | 169 |
+| bench fib | 481 | 480 |
+| bench loop | 441 | 440 |
+| bench array | 250 | 179 |
+| bench alloc | 71 | 67 |
+| bench lists | 37 | 37 |
+| bench strings | 53 | 53 |
+| bench trees | 25 | 23 |
+| bench tokens | 13 | 14 |
+| eza `-T` | 129 | 127 |
+| eza `-T -l` | 230 | 224 |
+| self-build, instructions | 1817M | 1649M |
+| self-build, cycles | 685M | 658M |
+| eza `-T`, instructions | 757M | 659M |
+| eza `-T`, cycles | 265M | 240M |
+
+Per commit (instructions; least cycles of 10):
+
+| commit | self-build | eza `-T` |
+|---|---|---|
+| main | 1817M; 685M | 757M; 265M |
+| live ranges, `rsi rdi r8 r9` | 1801M; 667M | 738M; 257M |
+| inlined locals per call, `&l` aliases, exit tails | 1798M; 664M | 723M; 247M |
+| quiet temporaries, `rt_str_eq`, malloc classes | 1766M; 647M | 710M; 247M |
+| elements and string bytes in place, commutative | 1714M; 660M | 672M; 245M |
+| lvalues as operands, stores in place | 1660M; 660M | 662M; 244M |
+| unused assignment values | 1649M; 658M | 659M; 240M |
+
+Instructions fall by 9% (self-build) and 13% (eza), cycles by 4% and 10%.
+Most of what went is register moves, `lea` and reloads, which the processor
+did cheaply. The time is now in malloc, `rt_str_concat`, the reference
+counts and the dup glue of records (`Checker.nd` copies a 192-byte node
+with three counts): work in the code, not in the registers. Wall-clock
+timings on this machine vary by 5-10% between runs; instruction counts do
+not.
+
+The new rewrites rest on these arguments (none changes the C):
+
+- live ranges: positions are in the order the code is laid out. A value that
+  can flow backwards (around a loop) widens its range to the whole loop,
+  repeated until no range partially overlaps a loop. Two locals share a
+  register only when their ranges are disjoint. Locals of functions in place
+  are set at each call before they are read (parameters by the call, others
+  by their declaration), so their value never flows from one call to the
+  next;
+- `rsi rdi r8 r9`: the codegen paths that use them are exactly the loud
+  nodes (calls, which also clobber them; 128-bit values; copies over 128
+  bytes; double/u64 conversions) and the runtime calls not generated inline.
+  A quiet runtime call changes only `rax rcx rdx`. There are two exemptions:
+  - a declaration's own initializer runs before the local is written;
+  - a call in the straight statements before a `return` is followed only by
+    those statements and the return, so a local not named there is dead.
+    This holds in the function itself, not in a body in place, whose
+    `return` continues in the caller;
+- `&l` aliases: the body names p only as `*p` (every naming of p is counted
+  as a dereference) and never assigns p, and l has p's pointee type, so `*p`
+  and l are the same object for the whole body. `writesReg` treats `&l` as a
+  possible write of l's register, so operands evaluated around the call
+  re-read l;
+- quiet temporaries: the register is one that no local of the function was
+  given (inlined locals included), and the right operand's code is quiet by
+  the same definition. Nested pairs take the next free register;
+- commutative operands: the overflow flags of `add`, `imul` and `mul` do not
+  depend on the operand order. The left operand is read after the right one
+  only when the right one cannot change it;
+- places and elements: the operand is formed from `rax`, `rcx` and the
+  registers of locals. Nothing runs between forming it and using it except
+  the load of a simple value into `rdx`. The `rt_idx` check is the same
+  unsigned compare and stub, done before the element is read;
+- `rt_str_eq`: the results are equal (`a.len == b.len && (... memcmp == 0)`
+  is false for different lengths and true for two empty strings). The call
+  keeps its arguments' order: a left operand in place is read after the
+  right one only when that one is pure.
+
+Not done, and why:
+
+- doubles in `xmm` registers: no benchmark, eza or compiler path does
+  floating point in a loop. The ABI has no callee-saved `xmm` registers, so
+  only call-free ranges could use them;
+- `rt_str_concat` inline: its cost is malloc and the copies, not the call;
+- `str` count elision across statements: every call is passed an owned
+  `str`, so the saving needs the callee's side too. That takes an
+  interprocedural "borrowed parameter" analysis, and its safety rests on the
+  IR's ownership conventions, which the `ir` branch is about to re-derive in
+  check.obx. It is not a simple local argument.
+
+The O(1) small malloc class, dropped in the second step at 0.4%, is back as
+part of the runtime commit: 0.2% of the self-build's instructions, one line.
+
+Gates at the end of the step:
+
+- `run_native.py --lib` 395 of 395; with `--redteam` 1491 of 1491;
+- `gate.sh full` PASS;
+- `cmd/eza_gate.py -j 12` 482 passed, 0 failed;
+- the seed at a fixed point on the branch.
+
 2026-11-02, the second performance step (branch `perf`, section 4: the IR
 simplification, small functions in place, record results into their
 destinations, inline conversions and division, the prologue after the
@@ -527,14 +669,17 @@ identical; `cmd/eza_gate.py -j 8` 482 passed, 0 failed.
 
 Next, in order:
 
-1. More performance, if wanted: a better choice of register locals (live
-   ranges instead of counts; byte locals in registers in loops such as
-   eza's `natcmp`), temporaries in caller-saved registers within a
-   statement (`rsi rdi r8-r10` are free between calls), doubles in `xmm`
-   registers, `rt_str_concat` and `rt_str_eq` inline, eliding `str` count
-   increments and decrements across a statement (needs an argument that
-   no alias drops the value). Measure with `OBX_NATIVE_MAP` and perf on
-   the self-build.
+1. More performance, if wanted. Candidates:
+   - the reference counts: a callee-side "borrowed `str` parameter" form,
+     once check.obx builds the IR and its ownership rules are settled;
+   - temporaries across calls in free callee-saved registers (fib's
+     `fib(n-1)` waits in a slot);
+   - loop-invariant loads of array and `str` fields (`a.data` and `a.len`
+     are reloaded each iteration);
+   - the dup glue of value records;
+   - doubles in `xmm` registers.
+
+   Measure with `OBX_NATIVE_MAP` and perf on the self-build.
 2. check.obx produces the IR directly (section 1a) and cfront goes away;
    unblocked since ref was retired (2026-11-02), not started.
 
@@ -553,3 +698,5 @@ Phases:
 - Performance, second step: IR simplification, small functions in place,
   record results into their destinations, inline conversions. Done
   (section 4).
+- Performance, third step: registers by live ranges, operands in place.
+  Done (section 4).

@@ -97,6 +97,12 @@ void* memset(void* d, int c, size_t n) {
 int memcmp(const void* a, const void* b, size_t n) {
     const unsigned char* p = a;
     const unsigned char* q = b;
+    for (; n >= 8; n -= 8, p += 8, q += 8) {       /* equal words first, then the bytes */
+        uint64_t x, y;
+        __builtin_memcpy(&x, p, 8);
+        __builtin_memcpy(&y, q, 8);
+        if (x != y) break;
+    }
     for (; n; n--, p++, q++)
         if (*p != *q) return *p < *q ? -1 : 1;
     return 0;
@@ -145,7 +151,8 @@ static void heap_init(void) {
     }
 }
 static int class_of(size_t n) {
-    for (int i = 0; i < NCLASS; i++)
+    if (n <= 128) return n ? (int)((n + 15) >> 4) - 1 : 0;     /* classes 0-7: 16, 32, ..., 128 */
+    for (int i = 8; i < NCLASS; i++)
         if (class_size[i] >= n) return i;
     return -1;
 }
