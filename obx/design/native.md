@@ -237,7 +237,9 @@ performance step), on the native path only:
   index is evaluated and checked once). A `str` field never read, whose
   count the copy took right after the declaration (`n.s =
   rt_str_dup(n.s);`) and whose only drops are n's, loses the dup and the
-  drops. `T m = n;` with n not named again is the same record. A copy of a
+  drops. `T m = n;` that moves n is the same record; followed by dups of
+  m's fields (dup glue) it is a copy with counts of its own, and both stay
+  records. A copy of a
   local is split only when that saves a count: otherwise the fields would
   only move from slots into callee-saved registers, which costs saves;
 - functions nothing names any more (every call inlined; counted over the
@@ -683,7 +685,14 @@ The rewrites rest on these arguments (none changes the C):
   can now be freed earlier, when the source drops it, which nothing can
   observe (a `str` has no drop method). The place is evaluated once (a
   pointer local when it is not a local, global or `*p`), so an index check
-  runs once, where it ran;
+  runs once, where it ran. `T m = n;` joins m to n only as a move: a dup
+  of m's fields means m has counts of its own (a copy), and both stay
+  records. Before this was checked, the copy's one dup was set against
+  the drops of both n and m, and removing them left a count behind: a
+  by-value receiver read by one field (`e.isCancelled()` on a record
+  with heap `str` fields) leaked under `OBX_CHECK=1`. Found when C1b's
+  `net_read_cancel` test met the pass; `inline_value_record_args` and
+  `tests/vrgen.py` (generated programs, in the full gate) now cover it;
 - the leak counter (`OBX_CHECK=1`): no allocation is added or removed. The
   removed pairs are a dup and its drops of a string the source keeps alive,
   the dropped expressions have no calls, and a dropped function is never
@@ -760,6 +769,9 @@ Gates at the end of the step:
 - `cmd/eza_gate.py -j 12` 482 passed, 0 failed (72 live-only skipped);
 - `run_prev.py --native --lib --redteam --eza --gen 200` against main's
   compiler (`OBX_PREV`, main at `03f9822`): 2668 same, 0 differ;
+- `tests/vrgen.py`: 1,600 generated value-record programs the same
+  through C and natively under `OBX_CHECK=1` (the compiler before the copy
+  fix differed on 24 of 60);
 - the seed at a fixed point on the branch.
 
 2026-11-03, the IR from the templates (branch `ir`, section 1): `check`
