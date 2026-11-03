@@ -1,0 +1,20 @@
+// Native loop optimizations: `if !v { c = c + 1 }` without a branch (x64gen:
+// cmp v, 1; adc c, 0; jo) traps at the int maximum when v is false, and adds
+// nothing when it is true, as in C.
+// expect: 0 9223372036854775806
+// expect: 1 9223372036854775807
+// expect: 2 9223372036854775807
+// expect: 3 9223372036854775807
+// stderr: obx: integer overflow at loops_trap_count_neg.obx:17
+// exit: 10
+
+fn main() {
+    let a = len(args()) - 1         // 0, unknown to the compiler
+    let f: []bool = [false, true, true, false, true]
+    var c = 9223372036854775806 + a
+    for k in 0..len(f) {
+        println(k.toStr() + " " + c.toStr())
+        if !f[k] { c = c + 1 }
+    }
+    println("not reached")
+}

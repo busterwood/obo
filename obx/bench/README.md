@@ -1,6 +1,6 @@
 # obx benchmarks
 
-Eight small programs, each building the same program with both backends,
+Nine small programs, each building the same program with both backends,
 native and via C:
 
     python3 obx/bench/bench.py [-n RUNS] [--only NAME ...] [--obo]
@@ -8,7 +8,9 @@ native and via C:
 For each program it builds `NAME.obx` with `obx/compiler/out/obxc` (or
 `$OBXC`) twice, with `--native` and through C (`gcc -O2`). It checks that the
 two print the same result and are leak free (`OBX_CHECK=1`), then reports the
-best wall time of N runs (default 5) with `OBX_CHECK` unset.
+best wall time of N runs (default 5) with `OBX_CHECK` unset. A program with a
+hand-written C reference in `c/NAME.c` (no checks; so far `sieve`) is also
+built with `gcc -O2` and timed, as the "plain C" column.
 
 | program | what it does |
 |---|---|
@@ -20,6 +22,7 @@ best wall time of N runs (default 5) with `OBX_CHECK` unset.
 | `strings` | concatenation and `toStr` |
 | `trees` | binary trees |
 | `tokens` | byte scanning and hashing; reads `obx/compiler/sema.obx` (any text file works) |
+| `sieve` | the sieve of Eratosthenes up to 10 million, ten rounds; `c/sieve.c` is the same in plain C |
 
 The results, with eza and the compiler, are in
 [PERFORMANCE.md](../../PERFORMANCE.md).

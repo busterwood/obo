@@ -1,0 +1,23 @@
+// Native loop optimizations: a count without a branch (x64gen: cmp v, 1;
+// sbb c, -1; jo) keeps its overflow check when the count is not bounded: at
+// the int maximum a false element adds nothing and does not trap, the next
+// true one traps there, after the earlier output, as in C.
+// expect: 0 9223372036854775805
+// expect: 1 9223372036854775806
+// expect: 2 9223372036854775806
+// expect: 3 9223372036854775807
+// expect: 4 9223372036854775807
+// expect: 5 9223372036854775807
+// stderr: obx: integer overflow at loops_trap_count_max.obx:20
+// exit: 10
+
+fn main() {
+    let a = len(args()) - 1         // 0, unknown to the compiler
+    let f: []bool = [true, false, true, false, false, true, true]
+    var c = 9223372036854775805 + a
+    for k in 0..len(f) {
+        println(k.toStr() + " " + c.toStr())
+        if f[k] { c = c + 1 }
+    }
+    println("not reached")
+}

@@ -74,7 +74,7 @@ def mem_text(m):
 
 def gen(r):
     """One instruction: (encoder test line, as text)."""
-    k = r.randint(0, 33)
+    k = r.randint(0, 34)
     size = r.choice([1, 2, 4, 8])
     a, b = r.randint(0, 15), r.randint(0, 15)
     if k == 0:
@@ -169,6 +169,7 @@ def gen(r):
         return f'jmpr {a}', f'jmp {R64[a]}'
     if k == 24:
         w = r.choice([('ret', 'ret'), ('leave', 'leave'), ('cqo', 'cqo'), ('cdq', 'cdq'), ('movsb', 'rep movsb'), ('stosb', 'rep stosb'),
+                      ('stos 1', 'rep stosb'), ('stos 2', 'rep stosw'), ('stos 4', 'rep stosd'), ('stos 8', 'rep stosq'),
                       ('ud2', 'ud2')])
         return w
     if k == 25:
@@ -188,6 +189,11 @@ def gen(r):
         return f'movqxr {a} {b}', f'movq xmm{a}, {R64[b]}'
     if k == 31:
         return f'movqrx {a} {b}', f'movq {R64[a]}, xmm{b}'
+    if k == 33:
+        op = r.randint(0, 7)
+        mt, ma = mem_text(rnd_mem(r))
+        v = rnd_imm(r, 8 * min(size, 4))
+        return f'alumi {ALU[op]} {size} {mt} {v}', f'{ALU[op]} {PTR[size]} ptr {ma}, {v}'
     if k == 32:
         return (f'cvtsi2sd {a} {b}', f'cvtsi2sd xmm{a}, {R64[b]}') if r.random() < 0.5 else \
                (f'cvttsd2si {a} {b}', f'cvttsd2si {R64[a]}, xmm{b}')

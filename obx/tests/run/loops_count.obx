@@ -1,0 +1,94 @@
+// Native loop optimizations: counters. In a `for` over i, a local written only
+// by one `c = c + 1` outside any inner loop grows at most once an iteration,
+// so it stays at most its entry value plus the iterations (compiler/loops.obx);
+// `if v { c = c + 1 }` with v a loaded value or a local is counted without a
+// branch (x64gen: cmp v, 1; sbb c, -1, and adc for `if !v`). Each form here
+// counts what the plain loop counts.
+// expect: true 34 false 66
+// expect: bytes 13 ints 13 zeros 37
+// expect: local 17
+// expect: continue/break 24
+// expect: two 84 inner 200
+// expect: none 41
+// expect: big 9223372036854775799
+
+fn flags(n: int, a: int): []bool {
+    var f = array(n, false)
+    for k in 0..n {
+        if (k * 7 + a) % 3 == 0 { f[k] = true }
+    }
+    return f
+}
+
+fn main() {
+    let a = len(args()) - 1         // 0, unknown to the compiler
+    let f = flags(100 + a, a)
+    var c = 0
+    for k in 0..len(f) {
+        if f[k] { c = c + 1 }
+    }
+    var nc = 0
+    for k in 0..len(f) {
+        if !f[k] { nc += 1 }
+    }
+    println("true " + c.toStr() + " false " + nc.toStr())
+    // bytes and ints as the value tested
+    var bs = array(50 + a, byte(0))
+    var is = array(50 + a, 0)
+    for k in 0..len(bs) {
+        if k % 4 == 1 {
+            bs[k] = byte(k)
+            is[k] = k - 100
+        }
+    }
+    var cb = 0
+    var ci = 0
+    var zi = 0
+    for k in 0..len(bs) {
+        if bs[k] != 0 { cb = cb + 1 }
+        let v = is[k]
+        if v != 0 { ci = ci + 1 }
+        if v == 0 { zi = zi + 1 }
+    }
+    println("bytes " + cb.toStr() + " ints " + ci.toStr() + " zeros " + zi.toStr())
+    // a local as the value tested
+    var cl = 0
+    for k in 0..len(f) {
+        let b = f[k] && k % 2 == 0
+        if b { cl = cl + 1 }
+    }
+    println("local " + cl.toStr())
+    // continue and break between the counts
+    var cc = 0
+    for k in 0..len(f) {
+        if k % 5 == 0 { continue }
+        if k > 90 + a { break }
+        if f[k] { cc = cc + 1 }
+    }
+    println("continue/break " + cc.toStr())
+    // a counter written twice an iteration, or in an inner loop: no bound, the counts still right
+    var two = 0
+    var inner = 0
+    for k in 0..len(f) {
+        if f[k] { two = two + 1 }
+        if k % 2 == 0 { two = two + 1 }
+        var j = 0
+        while j < 2 {
+            inner = inner + 1
+            j = j + 1
+        }
+    }
+    println("two " + two.toStr() + " inner " + inner.toStr())
+    // no iteration: the counter keeps its value
+    var z = 41 + a
+    for k in 10..3 + a {
+        if f[k] { z = z + 1 }
+    }
+    println("none " + z.toStr())
+    // a counter near the int maximum: bounded by the iterations (5), so no check is needed
+    var big = 9223372036854775807 - 10 + a
+    for k in 0..5 + a {
+        if f[k] { big = big + 1 }
+    }
+    println("big " + big.toStr())
+}

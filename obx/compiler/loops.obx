@@ -39,8 +39,12 @@ const F_LT = 2          // local a < local b, both of the integer kind c
 const F_LO = 3          // local a >= v
 const F_HI = 4          // local a <= v
 const F_ST = 5          // the element of type c at pointer local a + index local b * v holds local d
+const F_LE = 6          // local a <= local b, both of the integer kind c
+const F_ADD = 7         // local a holds local b + v exactly (no overflow), both of the integer kind c
 
 const MAX_FACTS = 64
+const DEPTH = 2         // how many facts between locals a bound or an order goes through
+const MAX_FILL = 1099511627776      // 2^40: rt_arr_fill traps above this length (both runtimes)
 
 // classes of runtime functions
 const RC_NONE = 0
@@ -86,6 +90,7 @@ const W_PLACES = 3      // the header places the tree reads (places)
 const W_KILLS = 4       // the locals the tree writes (klist), whether it may write memory (kmem)
 const W_ROOTS = 5       // the roots the tree may change (rmark, rall)
 const W_POST = 6        // the facts of the bounds checks the tree surely makes
+const W_COUNT = 7       // the writes of local c: `c = c + 1` 1, any other (or one in a loop) 2
 
 type Loops = record {
     u: ir.Ir
@@ -93,6 +98,7 @@ type Loops = record {
     rtc: []int              // per runtime function: its class (RC_*)
     rtk: []int              // per checked runtime operation (RC_ADD ...): its kind index
     arrSid: int             // obx_arr, obx_slice
+    fillFn: int             // rt_arr_fill
     sliceSid: int
     // per local, for the function being optimized (reset through named)
     seen: []bool
@@ -106,6 +112,8 @@ type Loops = record {
     isParam: []bool
     aliasOf: []int          // the local l of a pointer declared `T* q = &l...;` (opt's inlining), else -1
     kmark: []int            // == kstamp: in klist
+    lenOf: []int            // an array local never address-taken: the pseudo local (never in the code) whose
+                            // facts are those of its length, else -1
     // walks
     rr: int
     places: []int
@@ -113,6 +121,8 @@ type Loops = record {
     kmem: bool
     kstamp: int
     kbad: []int             // == kstamp: written otherwise than by a checked increment by a constant >= 1
+                            // or by a local (kvs)
+    kvs: []int              // the writes `l = l + s` (checked, s a local) since kbegin: l, s pairs
     rmark: []int            // == rstamp: the root 2l or 2l+1 may change (W_ROOTS), by root
     rstamp: int
     rall: bool              // a case label: anything may change
@@ -131,9 +141,10 @@ type Loops = record {
 pub fn optimize(p: ir.Ir): ir.Ir {
     let ev = os.envOr("OBX_LOOPS", "")
     if ev == "0" { return p }
-    var o = Loops{u: p, wfn: [], rtc: [], rtk: [], arrSid: -1, sliceSid: -1, seen: [], named: [], taken: [], esc: [], asg: [],
-        decls: [], cinit: [], cval: [], isParam: [], aliasOf: [], kmark: [], rr: -1, places: [], klist: [], kmem: false,
-        kstamp: 0, kbad: [], rmark: [], rstamp: 0, rall: false, facts: [], switches: [], nHoist: 0, nIdx: 0, nWrap: 0, nFwd: 0}
+    var o = Loops{u: p, wfn: [], rtc: [], rtk: [], arrSid: -1, fillFn: -1, sliceSid: -1, seen: [], named: [], taken: [],
+        esc: [], asg: [], decls: [], cinit: [], cval: [], isParam: [], aliasOf: [], kmark: [], lenOf: [], rr: -1, places: [],
+        klist: [], kmem: false, kstamp: 0, kbad: [], kvs: [], rmark: [], rstamp: 0, rall: false, facts: [], switches: [],
+        nHoist: 0, nIdx: 0, nWrap: 0, nFwd: 0}
     for j in 0..12 { append(mut &o.wfn, -1) }
     for f in 0..o.u.nRtFuncs {
         let name = o.u.funcs[f].name
@@ -148,6 +159,7 @@ pub fn optimize(p: ir.Ir): ir.Ir {
                 }
             }
         }
+        if name == "rt_arr_fill" { o.fillFn = f }
         append(mut &o.rtc, c)
         append(mut &o.rtk, kx)
     }
@@ -189,6 +201,7 @@ fn (o: mut &Loops) grow() {
         append(mut &o.aliasOf, -1)
         append(mut &o.kmark, 0)
         append(mut &o.kbad, 0)
+        append(mut &o.lenOf, -1)
         append(mut &o.rmark, 0)
         append(mut &o.rmark, 0)
     }
@@ -229,6 +242,17 @@ fn (o: mut &Loops) function(f: int) {
     }
     o.hoistIn(body)
     if o.badLabels(body, false) { return }
+    // the lengths of the array locals whose address is never taken: only their assignments and
+    // declarations change them
+    let nn = len(o.named)
+    for j in 0..nn {
+        let l = o.named[j]
+        let t = o.u.locals[l].ty
+        if !o.taken[l] && o.lenOf[l] < 0 && o.u.tk(t) == ir.TY_STRUCT && o.u.tys[t].sid == o.arrSid {
+            let q = o.newLocal("alen", ir.TY_I64)
+            o.lenOf[l] = q
+        }
+    }
     o.facts = []
     o.switches = []
     o.stmt(body)
@@ -385,6 +409,7 @@ fn (o: mut &Loops) go(x: int, op: int, c: int): int {
     if op == W_PLACES { return o.placesW(x) }
     if op == W_KILLS { return o.killsW(x) }
     if op == W_ROOTS { return o.rootsW(x, c) }
+    if op == W_COUNT { return o.countW(x, c) }
     return o.postW(x)
 }
 
@@ -545,8 +570,7 @@ fn (o: mut &Loops) killsW(x: int): int {
     let k = o.u.nodes[x].k
     let a = o.u.nodes[x].a
     if k == ir.S_DECL {
-        o.kadd(a)
-        o.kbad[a] = o.kstamp
+        o.kwrite(a)
         if o.taken[a] { o.kmem = true }
     }
     if k == ir.E_ASSIGN || k == ir.E_POSTINC {
@@ -554,7 +578,17 @@ fn (o: mut &Loops) killsW(x: int): int {
         if o.u.nk(a) == ir.E_LOCAL {
             let l = o.u.nodes[a].a
             o.kadd(l)
-            if k == ir.E_POSTINC || o.step(o.u.nodes[x].b, l) < 1 { o.kbad[l] = o.kstamp }
+            if k == ir.E_POSTINC || o.step(o.u.nodes[x].b, l) < 1 {
+                let sl = if k == ir.E_ASSIGN { o.stepLocal(o.u.nodes[x].b, l) } else { -1 }
+                if sl >= 0 {
+                    append(mut &o.kvs, l)
+                    append(mut &o.kvs, sl)
+                } else {
+                    o.kwrite(l)
+                }
+            }
+        } else if r >= 0 && r % 2 == 0 && o.lenOf[r / 2] >= 0 {
+            o.kwrite(r / 2)          // a member of an array local (its length, say)
         }
         if r < 0 || r % 2 == 1 || o.taken[r / 2] { o.kmem = true }
     }
@@ -568,9 +602,21 @@ fn (o: mut &Loops) kadd(l: int) {
     append(mut &o.klist, l)
 }
 
+// l (and an array's length) written otherwise than by a step.
+fn (o: mut &Loops) kwrite(l: int) {
+    o.kadd(l)
+    o.kbad[l] = o.kstamp
+    let q = o.lenOf[l]
+    if q >= 0 {
+        o.kadd(q)
+        o.kbad[q] = o.kstamp
+    }
+}
+
 fn (o: mut &Loops) kbegin() {
     o.kstamp += 1
     o.klist = []
+    o.kvs = []
     o.kmem = false
 }
 
@@ -587,6 +633,33 @@ fn (o: &Loops) step(e: int, l: int): int {
     let b = o.arg(e, 1)
     if o.u.nk(a) != ir.E_LOCAL || o.u.nodes[a].a != l || o.u.nk(b) != ir.E_INT || o.u.nodes[b].v < 0 { return -1 }
     return o.u.nodes[b].v
+}
+
+// The local s when e is `rt_add_K(l, s, w)` (a checked addition of l's kind) with s a local other
+// than l, else -1.
+fn (o: &Loops) stepLocal(e: int, l: int): int {
+    let f = o.rtFn(e)
+    if f < 0 || o.rtc[f] != RC_ADD || o.nargs(e) != 3 { return -1 }
+    if kindAt(o.rtk[f]) != o.u.tk(o.u.locals[l].ty) { return -1 }
+    let a = o.arg(e, 0)
+    let b = o.arg(e, 1)
+    if o.u.nk(a) != ir.E_LOCAL || o.u.nodes[a].a != l || o.u.nk(b) != ir.E_LOCAL || o.u.nodes[b].a == l { return -1 }
+    if o.u.nodes[b].ty != o.u.locals[l].ty { return -1 }
+    return o.u.nodes[b].a
+}
+
+// W_COUNT: how often the tree writes local l, as 1 for each `l = l + 1` (checked) and 2 for
+// any other write or for a write inside a loop of the tree (it may run more than once).
+fn (o: mut &Loops) countW(x: int, l: int): int {
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.S_WHILE || k == ir.S_FOR { return if o.down(x, W_COUNT, l) > 0 { 2 } else { 0 } }
+    var n = 0
+    if (k == ir.E_ASSIGN || k == ir.E_POSTINC) && o.u.nk(a) == ir.E_LOCAL && o.u.nodes[a].a == l {
+        n = if k == ir.E_ASSIGN && o.step(o.u.nodes[x].b, l) == 1 { 1 } else { 2 }
+    }
+    if k == ir.S_DECL && a == l { n = 2 }
+    return n + o.down(x, W_COUNT, l)
 }
 
 // W_POST: the facts of the bounds checks (rt_idx calls that remain) the tree makes whatever
@@ -752,6 +825,11 @@ fn (o: &Loops) symOf(e: int): Sym {
         return o.symOf(a)
     }
     if k == ir.E_CALL && o.nargs(e) == 3 && o.rtcOf(e) == RC_IDX { return o.symOf(o.arg(e, 0)) }
+    if k == ir.E_MEMBER && o.u.nodes[e].v == 8 && o.u.nk(a) == ir.E_LOCAL && o.u.nodes[e].ty == ir.TY_I64 {
+        // `a.len` of an array local followed: its pseudo local
+        let q = o.lenOf[o.u.nodes[a].a]
+        if q >= 0 { return Sym{l: o.canon(q), c: 0} }
+    }
     return noSym()
 }
 
@@ -805,27 +883,71 @@ fn (o: &Loops) direct(l: int, k: int, hi: bool): int {
 // The least value s may have, as a value of kind k.
 fn (o: &Loops) lo(s: Sym, k: int): int {
     if s.l == -1 { return s.c }
-    var v = o.direct(s.l, k, false)
-    for f in o.facts {
-        if f.k == F_LT && f.b == s.l && f.c == k {
-            let m = o.direct(f.a, k, false)
-            if m < kmax(k) && m + 1 > v { v = m + 1 }
-        }
-    }
-    return v
+    return o.loL(s.l, k, DEPTH)
 }
 
 // The greatest value s may have, as a value of kind k.
 fn (o: &Loops) hi(s: Sym, k: int): int {
     if s.l == -1 { return s.c }
-    var v = o.direct(s.l, k, true)
+    return o.hiL(s.l, k, DEPTH)
+}
+
+// The least value of local l (canonical) from its bounds and, d deep, the locals below it.
+fn (o: &Loops) loL(l: int, k: int, d: int): int {
+    var v = o.direct(l, k, false)
+    if d == 0 { return v }
     for f in o.facts {
-        if f.k == F_LT && f.a == s.l && f.c == k {
-            let m = o.direct(f.b, k, true)
-            if m > kmin(k) && m - 1 < v { v = m - 1 }
+        if f.c != k { continue }
+        if f.k == F_LT && f.b == l {
+            let m = o.loL(f.a, k, d - 1)
+            if m < kmax(k) && m + 1 > v { v = m + 1 }
+        } else if f.k == F_LE && f.b == l {
+            let m = o.loL(f.a, k, d - 1)
+            if m > v { v = m }
+        } else if f.k == F_ADD && f.a == l {
+            // l == b + v exactly, so l >= lo(b) + v
+            let m = o.loL(f.b, k, d - 1)
+            if m > kmin(k) && (f.v <= 0 || m <= kmax(k) - f.v) && (f.v >= 0 || m >= kmin(k) - f.v) && m + f.v > v {
+                v = m + f.v
+            }
         }
     }
     return v
+}
+
+// The greatest value of local l (canonical) from its bounds and, d deep, the locals above it.
+fn (o: &Loops) hiL(l: int, k: int, d: int): int {
+    var v = o.direct(l, k, true)
+    if d == 0 { return v }
+    for f in o.facts {
+        if f.c != k { continue }
+        if f.k == F_LT && f.a == l {
+            let m = o.hiL(f.b, k, d - 1)
+            if m > kmin(k) && m - 1 < v { v = m - 1 }
+        } else if f.k == F_LE && f.a == l {
+            let m = o.hiL(f.b, k, d - 1)
+            if m < v { v = m }
+        } else if f.k == F_ADD && f.a == l {
+            let m = o.hiL(f.b, k, d - 1)
+            if m < kmax(k) && (f.v <= 0 || m <= kmax(k) - f.v) && (f.v >= 0 || m >= kmin(k) - f.v) && m + f.v < v {
+                v = m + f.v
+            }
+        }
+    }
+    return v
+}
+
+// Whether a < b (strict) or a <= b is known of the canonical locals a and b of kind k, through
+// at most d facts between locals after the first.
+fn (o: &Loops) below(a: int, b: int, k: int, strict: bool, d: int): bool {
+    if a == b { return !strict }
+    for f in o.facts {
+        if f.a != a || f.c != k || (f.k != F_LT && f.k != F_LE) { continue }
+        let st = strict && f.k == F_LE         // still to be found strict
+        if f.b == b && !st { return true }
+        if d > 0 && f.b != a && o.below(f.b, b, k, st, d - 1) { return true }
+    }
+    return false
 }
 
 fn same(f: Fact, g: Fact): bool { return f.k == g.k && f.a == g.a && f.b == g.b && f.c == g.c && f.d == g.d && f.v == g.v }
@@ -854,6 +976,7 @@ fn copyFacts(fs: &[]Fact): []Fact {
 
 // Forgets what is known of local l's value (it is written).
 fn (o: mut &Loops) kill(l: int) {
+    if o.lenOf[l] >= 0 { o.kill(o.lenOf[l]) }
     var hit = false
     for f in o.facts {
         if f.a == l || f.b == l || f.d == l { hit = true }
@@ -939,7 +1062,8 @@ fn negOp(op: int): int {
 // a < b (strict 1) or a <= b (strict 0), values of kind k.
 fn (o: mut &Loops) less(a: Sym, b: Sym, k: int, strict: int) {
     if a.l >= 0 && b.l >= 0 {
-        if strict == 1 { o.add(Fact{k: F_LT, a: a.l, b: b.l, c: k, d: -1, v: 0}) }
+        if a.l == b.l { return }
+        o.add(Fact{k: if strict == 1 { F_LT } else { F_LE }, a: a.l, b: b.l, c: k, d: -1, v: 0})
     } else if a.l >= 0 && b.l == -1 {
         if strict == 0 || b.c > kmin(k) { o.add(Fact{k: F_HI, a: a.l, b: -1, c: 0, d: -1, v: b.c - strict}) }
     } else if a.l == -1 && b.l >= 0 {
@@ -988,7 +1112,150 @@ fn (o: mut &Loops) define(l: int, v: int) {
     } else if s.l == -1 && ranged(k) && inKind(s, k) {
         o.add(Fact{k: F_LO, a: l, b: -1, c: 0, d: -1, v: s.c})
         o.add(Fact{k: F_HI, a: l, b: -1, c: 0, d: -1, v: s.c})
+    } else if s.l == -2 && ranged(k) {
+        o.defineArith(l, v, k)
     }
+}
+
+// After `l = v` with v a checked or wrapping `+ - *` of l's kind k: l's range, and for `m + c`,
+// `m - c` and `m + s` (s >= 1) its order to m. A checked operation that did not stop the program
+// gives the exact result, so its range is the operands' clipped to the kind; a wrapping one only
+// when its exact range is inside the kind.
+fn (o: mut &Loops) defineArith(l: int, v: int, k: int) {
+    let f = o.rtFn(v)
+    if f < 0 { return }
+    var op = -1
+    var checked = false
+    var ki = -1
+    let rc = o.rtc[f]
+    if rc >= RC_ADD && o.nargs(v) == 3 {
+        op = rc - RC_ADD
+        checked = true
+        ki = o.rtk[f]
+    } else if o.nargs(v) == 2 {
+        for j in 0..12 {
+            if o.wfn[j] == f {
+                op = j / 4
+                ki = j % 4
+            }
+        }
+    }
+    if op < 0 || kindAt(ki) != k { return }
+    let a = o.symOf(o.arg(v, 0))
+    let b = o.symOf(o.arg(v, 1))
+    if a.l == -2 || b.l == -2 || a.l == l || b.l == l || !inKind(a, k) || !inKind(b, k) { return }
+    if a.l >= 0 && o.killed(a.l) || b.l >= 0 && o.killed(b.l) { return }
+    let alo = o.lo(a, k)
+    let ahi = o.hi(a, k)
+    let blo = o.lo(b, k)
+    let bhi = o.hi(b, k)
+    if alo > ahi || blo > bhi { return }
+    var rlo = kmin(k)
+    var rhi = kmax(k)
+    var exact = false           // [rlo, rhi] is the exact result's range, inside the kind
+    if op == ir.OP_ADD {
+        let x = satAdd(alo, blo)
+        let y = satAdd(ahi, bhi)
+        exact = x.c == 0 && y.c == 0 && x.v >= kmin(k) && y.v <= kmax(k)
+        if checked || exact {
+            if x.c == 0 && x.v > rlo { rlo = x.v }
+            if x.c > 0 { return }
+            if y.c == 0 && y.v < rhi { rhi = y.v }
+            if y.c < 0 { return }
+        }
+    } else if op == ir.OP_SUB {
+        let x = satSub(alo, bhi)
+        let y = satSub(ahi, blo)
+        exact = x.c == 0 && y.c == 0 && x.v >= kmin(k) && y.v <= kmax(k)
+        if checked || exact {
+            if x.c == 0 && x.v > rlo { rlo = x.v }
+            if x.c > 0 { return }
+            if y.c == 0 && y.v < rhi { rhi = y.v }
+            if y.c < 0 { return }
+        }
+    } else if alo >= 0 && blo >= 0 {
+        // a product of non-negative ranges: from the product of the least to that of the greatest
+        let x = satMul(alo, blo)
+        let y = satMul(ahi, bhi)
+        exact = x <= kmax(k) && y <= kmax(k)
+        if checked || exact {
+            if x > kmax(k) { return }
+            if x > rlo { rlo = x }
+            if y < rhi { rhi = y }
+        }
+    }
+    if rlo > rhi { return }
+    if rlo > kmin(k) { o.add(Fact{k: F_LO, a: l, b: -1, c: 0, d: -1, v: rlo}) }
+    if rhi < kmax(k) { o.add(Fact{k: F_HI, a: l, b: -1, c: 0, d: -1, v: rhi}) }
+    if !checked && !exact || op == ir.OP_MUL { return }
+    // the order to a local operand: l = m + c (c a constant), m - c, or m + s with s >= 1
+    var m = -1
+    var c = 0
+    var cst = false
+    if a.l >= 0 && b.l == -1 {
+        m = a.l
+        c = b.c
+        cst = true
+        if op == ir.OP_SUB {
+            if c == kmin(k) { return }
+            c = 0 - c
+        }
+    } else if a.l == -1 && b.l >= 0 && op == ir.OP_ADD {
+        m = b.l
+        c = a.c
+        cst = true
+    } else if a.l >= 0 && b.l >= 0 && op == ir.OP_ADD {
+        if blo >= 1 {
+            o.add(Fact{k: F_LT, a: a.l, b: l, c: k, d: -1, v: 0})
+        } else if alo >= 1 {
+            o.add(Fact{k: F_LT, a: b.l, b: l, c: k, d: -1, v: 0})
+        }
+        return
+    }
+    if !cst { return }
+    // the same value already in a local: l stands for it
+    var same = -1
+    for g in o.facts {
+        if g.k == F_ADD && g.b == m && g.v == c && g.c == k && g.a != l { same = g.a }
+    }
+    if same >= 0 {
+        o.add(Fact{k: F_EQ, a: l, b: same, c: 0, d: -1, v: 0})
+        return
+    }
+    o.add(Fact{k: F_ADD, a: l, b: m, c: k, d: -1, v: c})
+    if c >= 1 { o.add(Fact{k: F_LT, a: m, b: l, c: k, d: -1, v: 0}) }
+    if c <= -1 { o.add(Fact{k: F_LT, a: l, b: m, c: k, d: -1, v: 0}) }
+}
+
+// A sum or a product with its overflow: c = 0 and v the value, or c = 1 (above the int range)
+// or -1 (below).
+type Sat = value record {
+    v: int
+    c: int
+}
+
+fn satAdd(x: int, y: int): Sat {
+    let mx = 9223372036854775807
+    let mn = -9223372036854775807 - 1
+    if y > 0 && x > mx - y { return Sat{v: 0, c: 1} }
+    if y < 0 && x < mn - y { return Sat{v: 0, c: -1} }
+    return Sat{v: x + y, c: 0}
+}
+
+fn satSub(x: int, y: int): Sat {
+    let mx = 9223372036854775807
+    let mn = -9223372036854775807 - 1
+    if y < 0 && x > mx + y { return Sat{v: 0, c: 1} }
+    if y > 0 && x < mn + y { return Sat{v: 0, c: -1} }
+    return Sat{v: x - y, c: 0}
+}
+
+// x * y for x, y >= 0, the int maximum when it is larger.
+fn satMul(x: int, y: int): int {
+    let mx = 9223372036854775807
+    if x == 0 || y == 0 { return 0 }
+    if x > mx / y { return mx }
+    return x * y
 }
 
 fn (o: mut &Loops) stmt(s: int) {
@@ -1016,6 +1283,7 @@ fn (o: mut &Loops) stmt(s: int) {
         o.kill(a)
         if o.taken[a] { o.killStores() }
         o.define(a, o.u.nodes[s].b)
+        o.defineLen(a, o.u.nodes[s].b)
     } else if k == ir.S_EXPR {
         o.exprStmt(a)
     } else if k == ir.S_RETURN {
@@ -1111,10 +1379,31 @@ fn (o: mut &Loops) exprStmt(e: int) {
     o.kill(l)
     if o.taken[l] { o.killStores() }
     o.define(l, rhs)
+    o.defineLen(l, rhs)
     if c >= 0 && lo0 > kmin(k) && lo0 <= kmax(k) - c && o.trackable(l) && ranged(k) {
         // l = l + c, checked (or proved), c >= 0: l >= lo0 + c (when lo0 + c is in the kind;
         // else the addition stopped the program)
         o.add(Fact{k: F_LO, a: l, b: -1, c: 0, d: -1, v: lo0 + c})
+    }
+}
+
+// After `x = v` (or the declaration) of an array local followed: its length. `rt_arr_fill(n, ..)`
+// makes an array of length n, and traps when n < 0 or n > 2^40 (both runtimes); a copy of an
+// array local has its length.
+fn (o: mut &Loops) defineLen(x: int, v: int) {
+    let q = o.lenOf[x]
+    if q < 0 || v < 0 { return }
+    if o.fillFn >= 0 && o.rtFn(v) == o.fillFn && o.nargs(v) == 3 {
+        let n = o.arg(v, 0)
+        o.define(q, n)
+        o.add(Fact{k: F_LO, a: q, b: -1, c: 0, d: -1, v: 0})
+        o.add(Fact{k: F_HI, a: q, b: -1, c: 0, d: -1, v: MAX_FILL})
+        return
+    }
+    if o.u.nk(v) == ir.E_LOCAL {
+        let y = o.u.nodes[v].a
+        let r = o.lenOf[y]
+        if r >= 0 && y != x && !o.killed(y) { o.add(Fact{k: F_EQ, a: q, b: o.canon(r), c: 0, d: -1, v: 0}) }
     }
 }
 
@@ -1165,15 +1454,20 @@ fn (o: mut &Loops) loop(s: int) {
     }
     let stamp = o.kstamp
     let written = replace(mut &o.klist, [])
+    let steps = replace(mut &o.kvs, [])
     let mem = o.kmem
     var ind: []int = []
     var los: []int = []
+    var cnt: []int = []
+    var his: []int = []
+    o.counters(s, &written, nbd, &steps, stamp, mut &cnt, mut &his)
     for j in 0..len(written) {
         let l = written[j]
         let k = o.u.tk(o.u.locals[l].ty)
         if !o.trackable(l) || !ranged(k) { continue }
         let lo0 = o.lo(Sym{l: o.canon(l), c: 0}, k)
-        if lo0 > kmin(k) && (o.kbad[l] != stamp || isFor && j >= nbd && o.forStep(s, l)) {
+        if lo0 > kmin(k) && (o.kbad[l] != stamp && o.stepsUp(&steps, l, k, stamp) ||
+            isFor && j >= nbd && o.forStep(s, l)) {
             append(mut &ind, l)
             append(mut &los, lo0)
         }
@@ -1181,6 +1475,7 @@ fn (o: mut &Loops) loop(s: int) {
     for l in written { o.kill(l) }
     if mem { o.killStores() }
     for j in 0..len(ind) { o.add(Fact{k: F_LO, a: ind[j], b: -1, c: 0, d: -1, v: los[j]}) }
+    for j in 0..len(cnt) { o.add(Fact{k: F_HI, a: cnt[j], b: -1, c: 0, d: -1, v: his[j]}) }
     let base = copyFacts(&o.facts)
     if isFor {
         if o.expr(b) && b >= 0 { o.cond(b, true) }
@@ -1195,6 +1490,67 @@ fn (o: mut &Loops) loop(s: int) {
         o.stmt(b)
     }
     o.facts = base
+}
+
+// The counters of the for s (`for (i = ..; i < x; i++)`, i written only by its step, x a constant
+// or a local the loop does not write): the locals c written only in the body, by one `c = c + 1`
+// outside any inner loop. Each iteration adds at most 1 to c, and there are at most
+// max(0, x - i0) iterations (i grows by 1 from i0 and each needs i < x), so c stays at most
+// c0 + max(0, hi(x) - lo(i0)) throughout the loop and after it. Appends each c and that bound
+// (facts at the entry, before the loop's writes are forgotten).
+fn (o: mut &Loops) counters(s: int, written: &[]int, nbd: int, steps: &[]int, stamp: int, cs: mut &[]int, hs: mut &[]int) {
+    if o.u.nk(s) != ir.S_FOR { return }
+    var iv = -1
+    for j in nbd..len(written) {
+        if o.forStep(s, written[j]) { iv = written[j] }
+    }
+    if iv < 0 || !o.trackable(iv) { return }
+    for j in 0..nbd {
+        if written[j] == iv { return }
+    }
+    let ik = o.u.tk(o.u.locals[iv].ty)
+    if !ranged(ik) { return }
+    var e = o.u.nodes[s].b
+    if o.u.nk(e) == ir.E_CAST && o.u.tk(o.u.nodes[e].ty) == ir.TY_BOOL { e = o.u.nodes[e].a }
+    let x = o.symOf(o.u.nodes[e].b)
+    if x.l == -2 || x.l >= 0 && o.kmark[x.l] == stamp || !inKind(x, ik) { return }
+    let lo0 = o.lo(Sym{l: o.canon(iv), c: 0}, ik)
+    let it = satSub(o.hi(x, ik), lo0)          // at most this many iterations (when positive)
+    if it.c != 0 || lo0 == kmin(ik) { return }
+    let iters = if it.v > 0 { it.v } else { 0 }
+    for j in 0..nbd {
+        let c = written[j]
+        let k = o.u.tk(o.u.locals[c].ty)
+        if c == iv || !o.trackable(c) || !ranged(k) || o.kbad[c] == stamp { continue }
+        var stepped = false
+        var q = 0
+        while q < len(steps) {
+            if steps[q] == c { stepped = true }
+            q += 2
+        }
+        if stepped || o.go(o.u.nodes[s].b, W_COUNT, c) != 0 || o.go(o.u.nodes[s].d, W_COUNT, c) != 1 { continue }
+        let b = satAdd(o.hi(Sym{l: o.canon(c), c: 0}, k), iters)
+        if b.c == 0 && b.v < kmax(k) {
+            append(cs, c)
+            append(hs, b.v)
+        }
+    }
+}
+
+// Whether every write `l = l + s` of the loop (steps, from its kill walk with the stamp) adds a
+// local s that the loop does not write and that is at least 1 at the entry (so throughout).
+fn (o: &Loops) stepsUp(steps: &[]int, l: int, k: int, stamp: int): bool {
+    var j = 0
+    while j < len(steps) {
+        if steps[j] == l {
+            let sl = steps[j + 1]
+            if o.kmark[sl] == stamp || !o.trackable(sl) && !o.isConst(sl) { return false }
+            let sv = if o.isConst(sl) { Sym{l: -1, c: o.cval[sl]} } else { Sym{l: o.canon(sl), c: 0} }
+            if o.lo(sv, k) < 1 { return false }
+        }
+        j += 2
+    }
+    return true
 }
 
 // Whether the for s steps l by `l++` under the condition `l < x` (and nothing else in it writes l:
@@ -1262,7 +1618,7 @@ fn (o: &Loops) idxProved(x: int): bool {
     if i.l == -2 || m.l == -2 || o.lo(i, ir.TY_I64) < 0 { return false }
     if m.l == -1 { return o.hi(i, ir.TY_I64) < m.c }
     if i.l == -1 { return o.lo(m, ir.TY_I64) > i.c }
-    return o.has(Fact{k: F_LT, a: i.l, b: m.l, c: ir.TY_I64, d: -1, v: 0}) || o.hi(i, ir.TY_I64) < o.lo(m, ir.TY_I64)
+    return o.below(i.l, m.l, ir.TY_I64, true, DEPTH) || o.hi(i, ir.TY_I64) < o.lo(m, ir.TY_I64)
 }
 
 // A call of the runtime: a bounds check that cannot fail becomes its index; a checked operation

@@ -160,7 +160,11 @@ Observable behaviour is that of rt.h:
 The heap is the runtime's own: size classes (16-byte steps to 128, then
 +25% steps to 64 KiB) carved from 1 MiB `mmap` chunks with one free list per
 class; larger blocks are their own mappings. Every block has a 16-byte
-header, so blocks are 16-byte aligned as glibc's are.
+header, so blocks are 16-byte aligned as glibc's are. The last large block
+freed, up to 32 MiB, is kept (not unmapped) and reused by the next large
+`malloc` it fits with at most twice the size asked for: a loop that
+allocates and frees one big array (bench sieve) faults its pages in once,
+as with glibc's dynamic mmap threshold.
 
 The runtime also provides the part of libc that `lib/` and the tests declare
 as externs: `close opendir readdir closedir mkdir rmdir unlink rename symlink
@@ -287,11 +291,22 @@ costs compile time):
   taken or passed elsewhere makes l escape. Element stores change elements,
   not the header;
 - facts along the statements, in order, for scalar locals whose address is
-  never taken: `a < b` and `a == b` between locals, lower and upper bounds,
-  and the element just stored (`*(T*)(d + i*size)` holds local v), from
-  conditions (in the branches of an `if`, and after a loop's test), bounds
-  checks that passed (`rt_idx(i, n)` leaves `0 <= i < n`), constants,
-  copies and the conversions that keep a value. A write of a local forgets
+  never taken: `a < b`, `a <= b`, `a == b` and `a == b + c` (c a constant,
+  no overflow) between locals, lower and upper bounds, and the element just
+  stored (`*(T*)(d + i*size)` holds local v), from conditions (in the
+  branches of an `if`, and after a loop's test), bounds checks that passed
+  (`rt_idx(i, n)` leaves `0 <= i < n`), constants, copies, the conversions
+  that keep a value, and arithmetic (seventh step): `l = a op b`, checked
+  or wrapping, gives l the range of the result (a checked operation that
+  did not trap is exact, so its operands' range clipped to the kind; a
+  wrapping one only when that range is inside the kind), `l = m + c` and
+  `l = m - c` give `l == m + c` and the order (`m < l` for c >= 1), and
+  `l = m + s` with s >= 1 gives `m < l`. The length of an array local whose
+  address is never taken is a fact-carrying pseudo local (`a.len` reads it):
+  `a = array(n, v)` (`rt_arr_fill(n, ..)`) gives it n and the range 0 to
+  2^40, a copy `a = b` b's length, and any write of a or of a member of it
+  forgets it. A bound or an order goes through up to two facts between
+  locals (`j <= n`, `n < len`: `j < len`). A write of a local forgets
   what names it; a store through a pointer or into a local whose address is
   taken, or a call that may write memory, forgets the stored elements; after
   an `if` what holds at the end of every branch that falls through holds; a
@@ -308,11 +323,19 @@ costs compile time):
     size and type, nothing between that may write memory or those locals),
     whose own bounds check is proved, becomes the stored local;
 - an induction variable of a loop (every write in the loop a checked
-  `i = i + c` with a constant c >= 1, or the `i++` of a `for` whose
-  condition is `i < x` and whose body does not write i) keeps the lower
-  bound it has at the loop's entry throughout the loop: a checked addition
-  that did not trap only grew it, and the `for`'s `i++` runs only after
-  `i < x`, so it cannot overflow.
+  `i = i + c` with a constant c >= 1, a checked `i = i + s` with s a local
+  the loop does not write and that is at least 1 at the loop's entry (the
+  sieve's `j = j + i`), or the `i++` of a `for` whose condition is `i < x`
+  and whose body does not write i) keeps the lower bound it has at the
+  loop's entry throughout the loop: a checked addition that did not trap
+  only grew it, and the `for`'s `i++` runs only after `i < x`, so it cannot
+  overflow;
+- a counter of such a `for` (x a constant or a local the loop does not
+  write; seventh step): a local c written only in the body, by one checked
+  `c = c + 1` outside any inner loop, is at most its entry bound plus
+  `max(0, hi(x) - lo(i0))` in the loop and after it (each iteration adds at
+  most 1, and there are at most that many iterations), so its `+ 1` needs no
+  check when that sum is below K's maximum (the sieve's count of primes).
 
 Nothing in `loops` changes which traps happen, where or in what order: a
 check goes only where it cannot fail, and every other operation stays where
@@ -467,7 +490,11 @@ Then:
   after the jump to the test, so they never run, and a small loop's back
   branch then fetches whole blocks (bench `loop` ran at two cycles per
   iteration where its body started 3 bytes before a 16-byte boundary, one
-  aligned);
+  aligned). An innermost loop of 64 bytes or less (body, test and back
+  branch) is moved further, to a multiple of 16 from which it does not
+  cross a 64-byte boundary, so that each iteration runs from one cache line
+  (bench sieve's inner loop, 17 bytes from 48 bytes into a line, ran at
+  about 1.5 times the cycles);
 - conditions compile to jumps (`&&`, `||`, `!`, comparisons and conversions
   to bool as branches); the C front end's `bool c = e; if (!c) break;` (every
   loop condition) and `T r = e; return r;` are generated without the local
@@ -480,6 +507,22 @@ Then:
   from the same place is a register move too (no store-forwarding stall);
   it drops a `jmp` to the label bound right after it and a `jmp` right after
   a `ret` or `jmp`;
+- `*p = c` with c an integer constant that a 32-bit immediate holds (after
+  its conversions) and the value unused is one `mov [m], imm`; the test of
+  a loaded integer or pointer (`if (*p)`, `!*p`) is `cmp [m], 0`;
+- a count, `if (v) x = x + 1;` with no else, v a loaded integer, bool or
+  pointer or a local (through `!` and conversions to bool), x a local in a
+  register and the addition `rt_add_int(x, 1, w)` or `rt_wadd_int(x, 1)`, is
+  `cmp v, 1; sbb x, -1` (`adc x, 0` for `!v`), then `jo` to the trap when
+  checked: no branch to mispredict (the sieve's count, as gcc makes it). A
+  comparison as v keeps its branch;
+- a fill, `for (T i = 0; i < n; i++) { *((E*)p + i) = v; }` with i, n, p
+  and v locals never address-taken (n and v may be constants) and E an
+  integer type (or bool) of 1, 2, 4 or 8 bytes, is `rep stos` (b, w, d or
+  q: rcx = n, rax = v, rdi = p, the caller's rdi kept in r11) when
+  n >= 64, and the loop otherwise. It is the loop `array(n, v)` inlines to
+  once `loops.obx` has hoisted the array's header (gcc makes a memset of
+  it);
 - the prologue is inserted after the body, when the frame size is known (in
   the same pass as the loops' pads):
   only the callee-saved registers in use are saved (pushed when their slots
@@ -504,7 +547,9 @@ Then:
 
 `OBX_NATIVE_MAP=file obxc --native ...` writes the address, size and name of
 every generated function (the format of perf's `/tmp/perf-PID.map`), for
-profiling and disassembly.
+profiling and disassembly. `OBX_NATIVE_IR=file obxc --native ...` writes the
+IR the native backend would compile, after `opt.obx` and `loops.obx`, printed
+as C (for reading: which checks remain, what was hoisted), and builds nothing.
 
 ## 5. ELF layout
 
@@ -617,6 +662,200 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
+
+2026-11-03, the seventh performance step (branch `sieve`, section 4: the
+sieve of Eratosthenes as fast natively as in plain C). `bench/sieve.obx` is
+the program as one would write it: ten rounds of `array(n + 1, true)` with
+n = 10,000,000, the inner loop `while j <= n { prime[j] = false; j = j + i }`
+from i * i, then a count with `for k in 0..n + 1`. `bench/c/sieve.c` is
+the same in plain C (no checks, `gcc -O2`; bench.py's "plain C" column).
+All columns build the same sources (this branch's); "main" is the backend
+at `f0f7717`. User-mode instructions, the least cycles and the best wall
+clock of 11 interleaved runs under `perf stat` (9 for eza and the compiler;
+ms, perf's start-up included), on a quiet machine; "compile" is the
+gcc-built compiler running `main.obx --native`, "self-build" the natively
+built one doing the same:
+
+| | main | sieve |
+|---|---|---|
+| sieve, native | 3042M; 1002M; 243 | 1414M; 497M; 114 |
+| sieve, via C | 1428M; 741M; 168 | (the same) |
+| sieve, plain C | 1414M; 508M; 118 | |
+| fib | 5630M; 1547M; 334 | 5630M; 1548M; 333 |
+| loop | 8000M; 1003M; 216 | 8000M; 1003M; 214 |
+| array | 2413M; 409M; 92 | 2413M; 409M; 92 |
+| alloc | 1360M; 301M; 67 | 1320M; 282M; 62 |
+| lists | 477M; 138M; 32 | 474M; 138M; 32 |
+| strings | 966M; 192M; 49 | 961M; 180M; 41 |
+| trees | 293M; 78M; 22 | 292M; 78M; 21 |
+| tokens | 138M; 48M; 13 | 137M; 47M; 13 |
+| self-build | 4821M; 1926M; 487 | 4815M; 1916M; 495 |
+| eza `-T` | 634M; 213M; 115 | 633M; 210M; 112 |
+| compile | 3160M; 1624M; 423 | 3176M; 1631M; 423 |
+
+Per commit (instructions; least cycles; ms, a separate run of 11, 5 for
+the last three columns):
+
+| commit | sieve | alloc | self-build | eza `-T` | compile |
+|---|---|---|---|---|---|
+| main | 3042M; 1008M; 251 | 1360M; 301M | 4821M; 1947M | 634M; 214M | 3160M; 1624M |
+| `839b448` facts (steps, lengths, ranges) | 2156M; 844M; 211 | 1360M; 301M | 4810M; 1932M | 634M; 216M | 3170M; 1644M |
+| `8dff271` x64gen (immediates, cmp [m], lines, fills) | 1428M; 792M; 199 | 1340M; 301M | 4807M; 1930M | 633M; 215M | 3171M; 1636M |
+| `131dc9d` a large block kept | 1428M; 741M; 163 | 1360M; 341M | 4809M; 1939M | 633M; 217M | 3171M; 1643M |
+| `8314a08` large paths out of line | 1428M; 751M; 174 | 1320M; 281M | 4815M; 1937M | 633M; 211M | 3171M; 1628M |
+| `c32c312` counters | 1421M; 743M; 168 | 1320M; 282M | 4815M; 1947M | 633M; 211M | 3175M; 1624M |
+| `4aee7a0` counts without a branch | 1414M; 518M; 120 | 1320M; 282M | 4815M; 1918M | 633M; 211M | 3176M; 1621M |
+
+- main's native sieve kept the inner loop's bounds check (`j <= n` said
+  nothing about `len(prime)`) and its overflow check on `j + i`, filled the
+  array a byte at a time through a register, and branched on every element
+  of the count. The facts (`839b448`) take both checks out of the inner loop
+  (now `mov byte [r8+rsi], 0; add rsi, rdi; cmp rsi, rbx; jle`) and the
+  bounds check out of the count: 29% fewer instructions.
+- `8dff271`: the fill becomes `rep stosb` (100M stores a run), `false` is
+  stored as an immediate, and the 17-byte inner loop, which started 48
+  bytes into a cache line and so crossed it, is placed inside one: it ran
+  at about 1.5 times the cycles across the line (measured alone, with the
+  same instructions).
+- `131dc9d`: the native heap unmapped the 10 MB array at the end of each
+  round and mapped it again, faulting its pages in each time: 24,000 page
+  faults against glibc's 5,000 and about 30 ms of kernel time a run, which
+  the wall clock counts and `cycles:u` does not (the cycles' drop here is
+  mostly fewer page-walk misses). Keeping the block cost bench alloc 13% of
+  its cycles with the same instructions: the large path inside `free` made
+  the small-class path take one more branch. `8314a08` moves the large
+  paths out of line; alloc is then 3% ahead of main in instructions and 6%
+  in cycles.
+- `c32c312`: the count's `count + 1` loses its overflow check (it ran only
+  at the primes, 6.6M a run).
+- `4aee7a0`: the count is `cmp byte [p+k], 1; sbb count, -1`, as gcc's:
+  the branch on `prime[k]` was mispredicted at about every prime, a third
+  of the remaining cycles.
+- Native now runs the plain C program's instruction count (1,414M; gcc
+  unrolls the inner loop twice and counts with a pointer, obx does
+  neither) in about its cycles (497M against 508M), and is ahead of obx
+  via C (1,428M, 741M), where gcc keeps the checks. The other benchmarks,
+  eza and the self-build are unchanged within the noise (alloc and strings
+  slightly ahead); `--native` of the compiler costs 0.5% more instructions
+  (the deeper fact search), no measurable time.
+
+The rewrites rest on these arguments (in addition to the sixth step's):
+
+- variable steps: a checked `j = j + s` either traps or adds s exactly.
+  When s is a local the loop does not write (no assignment, increment or
+  declaration of it in the test, body or step; it is never address-taken,
+  so nothing else writes it) and s >= 1 holds at the loop's entry, s >= 1
+  holds at every write of j, so j only grows: it stays at least its entry
+  value, the only fact the induction rule gives. Step 0, a negative step, a
+  step the loop writes or one whose lower bound is unknown keep j's facts
+  forgotten (`loops_step_vary`, `loops_trap_step_neg`,
+  `loops_trap_step_written`). The overflow check of `j + s` is removed
+  only by the ordinary range rule, so with `j <= n`, n the int maximum, it
+  stays and traps where it did (`loops_trap_step_max`);
+- array lengths: the length of an array local whose address is never taken
+  changes only by an assignment or declaration of the local (or of its
+  `len` member: the kill walk treats a member write of the array as a write
+  of the length, and `append`, `pop` and `mut &a` take the address, which
+  excludes the local). The pseudo local holding its facts is forgotten
+  with every such write, as a local is. `rt_arr_fill(n, size, w)` returns
+  an array of length n, or traps when n < 0 or n > 2^40 (both runtimes,
+  before allocating), so after it 0 <= len <= 2^40 and len == n; a copy
+  `a = b` has b's length. A bounds check `rt_idx(j, a.len)` is proved by
+  `j <= n` and `len == n + 1` exactly as by `j < len`;
+- arithmetic ranges: a checked `l = a op b` that did not trap computed the
+  exact result, which lies in the interval of the operands' ranges (sum,
+  difference, product of non-negative ranges), clipped to the kind; a
+  wrapping one (made only from a proved checked one) equals the exact
+  result only when that interval is inside the kind, and is used only
+  then. `l = m + c` (exact) gives `l == m + c`, hence m < l for c >= 1; a
+  second local defined as the same `m + c` (m unchanged, the fact still
+  present) is equal to the first. `l = a + b` with b >= 1 gives a < l. The
+  saturated helpers (`satAdd`, `satSub`, `satMul`) never overflow the
+  compiler's own arithmetic. Chains of up to two facts (`loL`, `hiL`,
+  `below`) only compose these inequalities, with overflow guards;
+- counters: in `for (i = i0; i < x; i++)` with i written only by its step,
+  x not written in the loop, and c written only in the body by one checked
+  `c = c + 1` that is not inside an inner loop: every iteration runs the
+  write at most once (no goto; `continue` and `break` only skip it), every
+  iteration needs i < x and adds 1 to i, so there are at most
+  max(0, x - i0) iterations, and c <= c0 + max(0, hi(x) - lo(i0)) at every
+  point of the loop and at each exit. The bound is added with the loop's
+  entry facts, which hold after it too (`loops_count`: no iteration,
+  continue and break, a counter written twice or in an inner loop, one near
+  the int maximum);
+- fills: `for (T i = 0; i < n; i++) { *((E*)p + i) = v; }` with i, n, p
+  and v locals never address-taken (n and v perhaps constants): no store
+  through p can change them, the loop writes only i and the elements, i is
+  declared by the loop (out of scope after it), and the body cannot trap.
+  For n >= 64 (a signed compare; smaller or negative n runs the loop as
+  before) `rep stos` with rcx = n, rax = v, rdi = p and the direction flag
+  clear (the ABI's) stores v into p[0] to p[n - 1] in order, the same
+  bytes. rax, rcx and r11 hold nothing between statements; rdi is saved in
+  r11 and restored (`loops_sieve`: fills of 0, 1, 63, 64, 65 and 4096
+  bytes and of ints);
+- stores of immediates and memory tests: `mov [m], imm` stores the same
+  bytes as the register store of the constant (the place is computed
+  first, as before; a constant has no effect); `cmp [m], 0` sets ZF as
+  `test` of the loaded value does, and its callers read only ZF;
+- counts without a branch: `cmp v, 1` sets CF exactly when v is 0
+  (unsigned below 1, at v's size), so `sbb x, -1` computes x + 1 - CF:
+  x + 1 when v is not 0, x when it is (`adc x, 0` for `!v`: x + CF). The
+  overflow flag of sbb and adc is that of the whole operation, so it is set
+  exactly when 1 is added to the int maximum: the `jo` of a checked count
+  traps exactly when the branch's `add x, 1; jo` did, at the same `w`, after
+  the same evaluation of v (`loops_trap_count_max`, `loops_trap_count_neg`:
+  a false element at the maximum adds nothing and does not trap);
+- placement: the pads before an innermost loop sit after the jump to its
+  test, as before, so they never run;
+- the heap's kept block: a large block is its own mapping with its size in
+  its header; kept, it is handed out again only for a request it holds
+  (and at most twice the size, so little memory is idle), with the header
+  unchanged, as a fresh mapping would be. Nothing in either runtime relies
+  on a large block being zeroed (`obxlib_alloc` clears its own), task
+  stacks are separate mappings, and `OBX_CHECK`'s live count is kept above
+  `malloc`, so leak reports are unchanged.
+
+Tests: `tests/run/loops_sieve` (the sieve while/bool, for/byte with
+`break`, int zeros with `while i <= n / i`, odd numbers with a `step`
+local, one returning its array; n a constant or from the arguments; fills
+around 64 elements), `loops_step_vary`, `loops_trap_step_neg`,
+`loops_trap_step_max`, `loops_trap_step_oob` (a variable step past the
+array's end traps at the same iteration with the same output before it),
+`loops_trap_step_written`, `loops_count`, `loops_trap_count_max`,
+`loops_trap_count_neg`, on both backends. `tests/loopgen.py` adds loops
+stepping by a local (0, -1, 1 to 3, `n % 4`, `n - 6`, huge, from `j`, a
+step changed in the loop, starts near the int maximum, bounds past the
+array's end) and sieves over a fresh `array(m, v)` (while or for with
+`break`, limits inside and outside the array, counts of the elements three
+ways); 600 programs per seed while developing, 0 differences.
+
+Not done, and why:
+
+- unrolling (gcc runs the inner loop two stores an iteration): native is
+  already at plain C's cycles, and the trap order would need care;
+- a count's pointer form (gcc walks a pointer instead of indexing): one
+  instruction an element at most;
+- a fill of a value other than a constant by bytes with a wider store
+  (`rep stosq` of a replicated byte): `rep stosb` is fast-string already;
+- the kept large block is one block, not a cache; a program alternating two
+  large arrays still maps one of them each round.
+
+Gates at the end of the step:
+
+- `gate.sh quick` and `gate.sh full` PASS, the native self-build at a fixed
+  point;
+- `run_native.py --lib --redteam` 1549 of 1549, and the same with
+  `OBX_INLINE=0` and with `OBX_LOOPS=0`;
+- `cmd/eza_gate.py -j 12` 482 passed, 0 failed (72 live-only skipped);
+- `run_prev.py --native --lib --redteam --eza --gen 200` against main's
+  compiler (`OBX_PREV`, main at `f0f7717`): 2700 same, 0 differ;
+- `x64_encode_test.py` (now with `op [m], imm` and `rep stos`) identical
+  to as;
+- `bench.py -n 11`: sieve 182 ms via C, 127 natively, 135 in plain C;
+- the seed at a fixed point on the branch.
+
+`OBX_NATIVE_IR=file obxc --native ...` (section 4) prints the IR after
+`loops.obx` as C: the way to see which checks a loop keeps.
 
 2026-11-03, the clock through the vDSO (branch `vdso`, section 2): the
 native runtime reads `clock_gettime` through the vDSO, with the system call
@@ -1552,3 +1791,7 @@ Phases:
   (`loops.obx`). Done (sections 4 and 8).
 - The clock through the vDSO (no system call per timer). Done (sections 2
   and 8).
+- Performance, seventh step: the sieve (variable steps, array lengths and
+  arithmetic ranges as facts; counters bounded by their loop; fills as
+  `rep stos`; counts without a branch; innermost loops inside a cache line;
+  the last large block kept by the heap). Done (sections 4 and 8).

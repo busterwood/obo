@@ -1,0 +1,31 @@
+// The sieve of Eratosthenes: the primes up to n, found again each round.
+// Each prime's multiples are marked from its square, stepping by the prime.
+fn main() {
+    let n = 10000000
+    var count = 0
+    var round = 0
+    while round < 10 {
+        var prime = array(n + 1, true)
+        prime[0] = false
+        prime[1] = false
+        var i = 2
+        while i * i <= n {
+            if prime[i] {
+                var j = i * i
+                while j <= n {
+                    prime[j] = false
+                    j = j + i
+                }
+            }
+            i = i + 1
+        }
+        count = 0
+        for k in 0..n + 1 {
+            if prime[k] {
+                count = count + 1
+            }
+        }
+        round = round + 1
+    }
+    println(count)
+}

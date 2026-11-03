@@ -1,0 +1,24 @@
+// Native loop optimizations (compiler/loops.obx): a step the loop writes is not
+// a step >= 1 even when it starts at 3; here it falls below 0, j goes down
+// and its bounds check (which stays) traps after the earlier output.
+// expect: 0
+// expect: 3
+// expect: 4
+// expect: 3
+// expect: 0
+// stderr: obx: index out of range at loops_trap_step_written.obx:18
+// exit: 3
+
+fn main() {
+    let a = len(args()) - 1         // 0, unknown to the compiler
+    var mark = array(12, 0)
+    var s = 3 + a
+    var j = 0
+    while j < len(mark) {
+        mark[j] = mark[j] + 1
+        println(j.toStr())
+        j = j + s
+        s = s - 2
+    }
+    println("not reached")
+}
