@@ -301,7 +301,7 @@ fn (o: mut &Loops) function(f: int) {
     }
     o.bases(f)
     o.hoistIn(body)
-    if o.badLabels(body, false) { return }
+    if !o.labelsOk { return }
     // the lengths of the array locals whose address is never taken: only their assignments and
     // declarations change them
     let nn = len(o.named)
@@ -1018,6 +1018,8 @@ fn (o: mut &Loops) loadsW(x: int, c: int): int {
 // W_EFF: what the tree may write (eAll, eK1, eTy). Locals count only in the function optimized
 // (eFn) and only if their address is taken: nothing else points to them.
 fn (o: mut &Loops) effW(x: int): int {
+    // anything already: nothing more to learn
+    if o.eAll { return 0 }
     let k = o.u.nodes[x].k
     let a = o.u.nodes[x].a
     if k == ir.E_ASSIGN || k == ir.E_POSTINC { o.effStore(a) }

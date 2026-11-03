@@ -481,12 +481,12 @@ fn (g: mut &Gen) genFunc(f: int) {
     g.loopEnds = []
     g.curFunc = f
     g.allocRegs(f)
-    var again = 0
-    while again < 4 && g.remat(f) {
+    // once: a second round (bases that lost their registers to the longer ranges) made the
+    // regex benchmark slower, and costs the compiler another register choice
+    if g.remat(f) {
         g.frame = 0
         g.maxFrame = 0
         g.allocRegs(f)
-        again += 1
     }
     g.nLocalRegs = len(g.saved)
     g.held = []
