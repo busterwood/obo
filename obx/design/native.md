@@ -899,6 +899,20 @@ yield took 5 more instructions). bench.py unchanged (best of 11). Test:
 `lib/tests/run/time_clock.obx` (monotonic, 50 ms sleeps, `date` and an
 `OBX_NO_VDSO=1` child agree).
 
+2026-11-03, keyed hashing (branch `hashfrozen`, lib/README.md "Keyed
+hashing"): `rt_init` keeps the address of the 16 `AT_RANDOM` bytes from
+the auxiliary vector (`rt_auxval`, which the vDSO lookup now shares), and
+`obxlib_hash_key(i)` gives word `i` of them (a `getrandom` system call if
+the vector has none); the C runtime uses `getauxval(AT_RANDOM)`. No libc in
+a static program, as before. std derives its SipHash key from the words.
+Two code generation changes for SipHash's rounds: check.obx emits a shift
+of a `u64`, `u32` or `byte` by a constant below the width as a C operator
+on the cast operand, not `rt_shl_u64` (both backends; gcc then makes
+rotates of it), and x64gen emits `rol` for `x << k | x >> (64 - k)` on a
+`u64` local (either order). A short-key hash went from 1302M to 1062M
+instructions natively. The runtime's text grew to 60,496 bytes. Costs are
+in PERFORMANCE.md (maps 6-10% slower, the self-build unchanged).
+
 2026-11-03, the sixth performance step (branch `perf6`, section 4: loops
 rotated and aligned, `loops.obx`: array headers out of loops, checks proved
 by facts). All columns build the same sources (this branch's at `103ffdf`);

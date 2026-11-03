@@ -23,6 +23,7 @@ built with `gcc -O2` and timed, as the "plain C" column.
 | `trees` | binary trees |
 | `tokens` | byte scanning and hashing; reads `obx/compiler/sema.obx` (any text file works) |
 | `sieve` | the sieve of Eratosthenes up to 10 million, ten rounds; `c/sieve.c` is the same in plain C |
+| `maps` | `std.Map`: 200,000 short and 200,000 long `str` keys and 200,000 `int` keys put, looked up four times, and missed |
 
 The results, with eza and the compiler, are in
 [PERFORMANCE.md](../../PERFORMANCE.md).
