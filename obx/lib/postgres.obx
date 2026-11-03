@@ -33,6 +33,8 @@
 import "sqldialect"
 import "math"
 import "ffi"
+import "task"
+import "time"
 
 pub type Value = sqldialect.Value
 pub type Error = sqldialect.DbError
@@ -58,19 +60,38 @@ pub const OID_NUMERIC = 1700
 const DIAG_SQLSTATE = 67           // 'C'
 const DIAG_MESSAGE_PRIMARY = 77    // 'M'
 const MAX_DSCALE = 16383           // numeric's largest display scale
+const POLLING_FAILED = 0           // PostgresPollingStatusType
+const POLLING_READING = 1
+const POLLING_WRITING = 2
+const POLLING_OK = 3
+const PQTRANS_IDLE = 0
+const ABORT_MS = 5000              // how long a cancelled query's results are waited for
 
 extern "pq" fn PQlibVersion(): i32
 extern "pq" fn PQconninfoParse(conninfo: str, err: mut &ptr): ptr
 extern "pq" fn PQconninfoFree(opts: ptr)
 extern "pq" fn PQfreemem(p: ptr)
-extern "pq" fn PQconnectdb(conninfo: str): ptr
+extern "pq" fn PQconnectStart(conninfo: str): ptr blocking
+extern "pq" fn PQconnectPoll(c: ptr): i32 blocking
+extern "pq" fn PQconninfo(c: ptr): ptr
+extern "pq" fn PQsocket(c: ptr): i32
+extern "pq" fn PQsetnonblocking(c: ptr, on: i32): i32
+extern "pq" fn PQtransactionStatus(c: ptr): i32
 extern "pq" fn PQstatus(c: ptr): i32
 extern "pq" fn PQerrorMessage(c: ptr): str
 extern "pq" fn PQserverVersion(c: ptr): i32
 extern "pq" fn PQfinish(c: ptr)
-extern "pq" fn PQexec(c: ptr, sql: str): ptr
-extern "pq" fn PQexecParams(c: ptr, sql: str, n: i32, types: &[]u32, values: &[]ptr, lengths: ptr,
-                            formats: ptr, resultFormat: i32): ptr
+extern "pq" fn PQsendQuery(c: ptr, sql: str): i32
+extern "pq" fn PQsendQueryParams(c: ptr, sql: str, n: i32, types: &[]u32, values: &[]ptr, lengths: ptr,
+                                 formats: ptr, resultFormat: i32): i32
+extern "pq" fn PQflush(c: ptr): i32
+extern "pq" fn PQconsumeInput(c: ptr): i32
+extern "pq" fn PQisBusy(c: ptr): i32
+extern "pq" fn PQgetResult(c: ptr): ptr
+extern "pq" fn PQgetCancel(c: ptr): ptr
+extern "pq" fn PQcancel(cn: ptr, errbuf: mut &[]byte, n: i32): i32 blocking
+extern "pq" fn PQfreeCancel(cn: ptr)
+extern "c" fn rtFdWait(fd: int, dir: int, ms: int, cancellable: bool, w: ptr): int as "obxlib_fd_wait"
 extern "pq" fn PQresultStatus(r: ptr): i32
 extern "pq" fn PQresultErrorMessage(r: ptr): str
 extern "pq" fn PQresultErrorField(r: ptr, field: i32): str
@@ -109,8 +130,47 @@ fn (c: mut &Conn) drop() {
     }
 }
 
-// Connects with a libpq connection string ("host=... dbname=... user=...") or URI.
-pub fn connect(conninfo: str): Result[Conn, Error] {
+fn connError(h: ptr): Error { return sqldialect.dbError(CONNECTION_BAD, chomp(PQerrorMessage(h))) }
+
+fn waitError(r: int, what: str): Error {
+    if r == 1 { return sqldialect.dbError(sqldialect.E_CANCELLED, what + " cancelled") }
+    if r == 3 { return sqldialect.dbError(sqldialect.E_TIMEOUT, what + ": deadline passed") }
+    return sqldialect.dbError(CONNECTION_BAD, what + ": cannot wait for the socket (" + r.toStr() + ")")
+}
+
+// Parks until the connection's socket is readable (dir 0), writable (1) or
+// either (2): 0, or 1 cancelled, 3 a deadline or ms passed, negative an error.
+fn sockWait(h: ptr, dir: int, ms: int, cancellable: bool, w: Where): int {
+    let fd = int(PQsocket(h))
+    if fd < 0 { return -9 }
+    return rtFdWait(fd, dir, ms, cancellable, w.cstr())
+}
+
+// The connection's connect_timeout in milliseconds (libpq: at least 2 s), or -1.
+fn connectTimeout(h: ptr): int {
+    let opts = PQconninfo(h)
+    if isNull(opts) { return -1 }
+    var ms = -1
+    var i = 0
+    while !isNull(ffi.peekPtr(opts, i * 7)) {
+        let v = ffi.peekPtr(opts, i * 7 + 3)       // PQconninfoOption: keyword, envvar, compiled, val, ...
+        if strFromC(ffi.peekPtr(opts, i * 7)) == "connect_timeout" && !isNull(v) {
+            let t = parseInt(trim(strFromC(v))).unwrapOr(0)
+            if t > 0 { ms = (if t < 2 { 2 } else { t }) * 1000 }
+        }
+        i += 1
+    }
+    PQconninfoFree(opts)
+    return ms
+}
+
+// Connects with a libpq connection string ("host=... dbname=... user=...") or
+// URI, without blocking the other tasks: PQconnectStart and PQconnectPoll
+// (blocking externs: name lookup, TLS and password hashing run on the helper
+// pool) with the task parked on the socket between the steps. The task's
+// cancellation (E_CANCELLED) and deadline, and the connection's
+// connect_timeout for the whole connect (E_TIMEOUT), end the wait.
+pub fn connect(conninfo: str, w: Where): Result[Conn, Error] {
     try sqldialect.noNul(conninfo, "connection string")
     var msg = nullPtr()
     let opts = PQconninfoParse(conninfo, mut &msg)
@@ -120,11 +180,31 @@ pub fn connect(conninfo: str): Result[Conn, Error] {
         return Err(sqldialect.inputError(text))
     }
     PQconninfoFree(opts)
-    let h = PQconnectdb(conninfo)
+    let h = PQconnectStart(conninfo)
     if isNull(h) { return Err(sqldialect.dbError(CONNECTION_BAD, "out of memory")) }
     OPEN += 1
-    let conn = Conn{h: h}             // finished when dropped, on the error path too
-    if int(PQstatus(h)) != CONNECTION_OK { return Err(sqldialect.dbError(CONNECTION_BAD, chomp(PQerrorMessage(h)))) }
+    let conn = Conn{h: h}             // finished when dropped, on the error paths too
+    if int(PQstatus(h)) == CONNECTION_BAD { return Err(connError(h)) }
+    let limit = connectTimeout(h)
+    let t0 = time.monotonicNs()
+    var st = POLLING_WRITING          // as libpq says: as if PQconnectPoll had returned it
+    while st != POLLING_OK {
+        if st == POLLING_FAILED { return Err(connError(h)) }
+        var ms = -1
+        if limit > 0 {
+            ms = limit - (time.monotonicNs() - t0) / 1000000
+            if ms <= 0 { return Err(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: connect_timeout passed")) }
+        }
+        let r = sockWait(h, if st == POLLING_READING { 0 } else { 1 }, ms, true, w)
+        if r != 0 {
+            if r == 3 && limit > 0 && (time.monotonicNs() - t0) / 1000000 >= limit {
+                return Err(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: connect_timeout passed"))
+            }
+            return Err(waitError(r, "connect"))
+        }
+        st = int(PQconnectPoll(h))
+    }
+    if PQsetnonblocking(h, 1) != 0 { return Err(connError(h)) }
     return Ok(conn)
 }
 
@@ -134,15 +214,21 @@ pub fn (c: Conn) close() {}
 // The server's version: 160015 for 16.15.
 pub fn (c: &Conn) serverVersion(): int { return int(PQserverVersion(c.h)) }
 
+// Whether the connection is up and outside a transaction, with no query
+// running: what a pool keeps.
+pub fn (c: &Conn) idle(): bool {
+    return int(PQstatus(c.h)) == CONNECTION_OK && int(PQtransactionStatus(c.h)) == PQTRANS_IDLE
+}
+
 // Runs a script of any number of statements, without parameters.
-pub fn (c: &Conn) exec(script: str): Result[Unit, Error] {
+pub fn (c: &Conn) exec(script: str, w: Where): Result[Unit, Error] {
     try sqldialect.noNul(script, "SQL text")
-    let r = try c.result(PQexec(c.h, script))
+    let r = try c.finish(PQsendQuery(c.h, script), w)
     return Ok(Unit{})
 }
 
 // Runs one statement with $1, $2, ... bound to args, in order.
-pub fn (c: &Conn) query(sql: str, args: &[Value]): Result[Rows, Error] {
+pub fn (c: &Conn) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] {
     try sqldialect.noNul(sql, "SQL text")
     if len(args) > 65535 { return Err(sqldialect.inputError("more than 65535 parameters")) }
     var ps: []Param = []
@@ -159,29 +245,99 @@ pub fn (c: &Conn) query(sql: str, args: &[Value]): Result[Rows, Error] {
             append(mut &values, copies[len(copies) - 1].ptr())
         }
     }
-    let r = PQexecParams(c.h, sql, i32(len(ps)), &types, &values, nullPtr(), nullPtr(), 0)
-    return c.result(r)
+    let sent = PQsendQueryParams(c.h, sql, i32(len(ps)), &types, &values, nullPtr(), nullPtr(), 0)
+    return c.finish(sent, w)
 }
 
 // Runs a fragment with $1, $2, ... placeholders and its arguments.
-pub fn (c: &Conn) querySql(q: &Sql): Result[Rows, Error] {
-    return c.query(q.render(sqldialect.Dialect.Postgres), q.args())
+pub fn (c: &Conn) querySql(q: &Sql, w: Where): Result[Rows, Error] {
+    return c.query(q.render(sqldialect.Dialect.Postgres), q.args(), w)
 }
 
 // Runs body in a transaction: BEGIN, then COMMIT when it returns Ok, ROLLBACK
 // when it returns Err (whose error is the result).
-pub fn (c: &Conn) transaction[T](body: &fn(): Result[T, Error]): Result[T, Error] {
-    try c.exec("BEGIN")
+pub fn (c: &Conn) transaction[T](body: &fn(): Result[T, Error], w: Where): Result[T, Error] {
+    try c.exec("BEGIN", w)
     match body() {
         Ok(v) {
-            try c.exec("COMMIT")
+            try c.exec("COMMIT", w)
             return Ok(v)
         }
         Err(e) {
-            c.exec("ROLLBACK")
+            c.exec("ROLLBACK", w)
             return Err(e)
         }
     }
+}
+
+// After PQsendQuery or PQsendQueryParams (sent: its result): flushes the
+// query, parks on the socket until the results are in, and collects them: the
+// first error, else the last result (as PQexec). Cancellation and the task's
+// deadline end the wait: the query is cancelled on the server then (abort).
+fn (c: &Conn) finish(sent: i32, w: Where): Result[Rows, Error] {
+    if sent == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
+    while true {
+        let f = int(PQflush(c.h))
+        if f == 0 { break }
+        if f < 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
+        let r = sockWait(c.h, 2, -1, true, w)
+        if r != 0 { return Err(c.abort(r, w)) }
+        if PQconsumeInput(c.h) == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
+    }
+    var keep = nullPtr()
+    while true {
+        while PQisBusy(c.h) != 0 {
+            let r = sockWait(c.h, 0, -1, true, w)
+            if r != 0 {
+                PQclear(keep)
+                return Err(c.abort(r, w))
+            }
+            if PQconsumeInput(c.h) == 0 {
+                PQclear(keep)
+                return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h))))
+            }
+        }
+        let res = PQgetResult(c.h)
+        if isNull(res) { break }
+        if isNull(keep) || int(PQresultStatus(keep)) != PGRES_FATAL_ERROR {
+            PQclear(keep)
+            keep = res
+        } else {
+            PQclear(res)
+        }
+    }
+    return c.result(keep)
+}
+
+// The query was given up (why: 1 cancelled, 3 deadline): asks the server to
+// cancel it (PQcancel, a blocking extern: it opens a second connection), then
+// reads what is left, for at most ABORT_MS, without being cancellable, so the
+// connection is idle again. If the server does not answer in time the
+// connection stays busy, and a pool closes it (idle() is false).
+fn (c: &Conn) abort(why: int, w: Where): Error {
+    let cn = PQgetCancel(c.h)
+    if !isNull(cn) {
+        var buf = array(256, byte(0))
+        PQcancel(cn, mut &buf, i32(256))
+        PQfreeCancel(cn)
+    }
+    let t0 = time.monotonicNs()
+    var ok = true
+    while ok {
+        let left = ABORT_MS - (time.monotonicNs() - t0) / 1000000
+        if left <= 0 { break }
+        let f = int(PQflush(c.h))
+        if f < 0 { break }
+        if f == 1 || PQisBusy(c.h) != 0 {
+            if sockWait(c.h, if f == 1 { 2 } else { 0 }, left, false, w) != 0 { break }
+            ok = PQconsumeInput(c.h) != 0
+            continue
+        }
+        let res = PQgetResult(c.h)
+        if isNull(res) { break }
+        PQclear(res)
+    }
+    return waitError(why, "query")
 }
 
 // Rows for a PGresult, or the error it reports (it is cleared then).
@@ -361,4 +517,170 @@ pub fn (r: &Rows) value(row: int, col: int): Result[Value, Error] {
     if oid == OID_NUMERIC { return Ok(Value.Dec(try r.decimal(row, col))) }
     if oid == OID_BYTEA { return Ok(Value.Bytes(try r.bytes(row, col))) }
     return Ok(Value.Text(try r.text(row, col)))
+}
+
+// -------------------------------------------------------------------- pools
+
+// A pool of at most `size` connections to one server, for the tasks of a
+// program (stage C1c). acquire takes an idle connection, opens a new one
+// while fewer than size are open, or else parks until another task gives one
+// back, first come first served. A Lease gives the connection back when it is
+// dropped, unless it is no longer idle (broken, in a transaction, a query
+// abandoned): that one is closed, and its place goes to the next waiter,
+// which opens a new connection. A Pool is a counted handle (task.Shared):
+// copies reach the same pool, and the connections close when the last copy
+// and the last lease are gone.
+//
+//     let pool = postgres.newPool("host=/var/run/postgresql dbname=app", 16)
+//     // in any task:
+//     let c = try pool.acquire()
+//     let rows = try c.query("SELECT name FROM users WHERE id = $1", &[Value.Int(id)])
+pub type Pool = value record { sh: task.Shared[PoolState] }
+
+type PoolState = record {
+    conninfo: str
+    size: int
+    open: int                 // connections open or being opened, leased or idle
+    idle: []Conn
+    waiters: []Waiter         // first come first served
+    nextId: int
+}
+
+// A task parked in acquire. Its promise brings a connection, or None: a
+// place to open one in.
+type Waiter = record { id: int; p: task.Promise[Option[Conn]] }
+
+// A connection taken from a pool, given back when it is dropped.
+pub type Lease = record {
+    c: Conn
+    pool: task.Shared[PoolState]
+}
+
+// What a pool holds: connections open (leased, idle or being opened), idle,
+// and tasks waiting for one.
+pub type PoolStats = value record { pub open: int; pub idle: int; pub waiting: int }
+
+pub fn newPool(conninfo: str, size: int): Pool {
+    let n = if size < 1 { 1 } else { size }
+    return Pool{sh: task.shared(PoolState{conninfo: conninfo, size: n, open: 0, idle: [], waiters: [], nextId: 0})}
+}
+
+pub fn (p: &Pool) stats(): PoolStats {
+    var r = PoolStats{open: 0, idle: 0, waiting: 0}
+    p.sh.with(fn(st: mut &PoolState) { r = PoolStats{open: st.open, idle: len(st.idle), waiting: len(st.waiters)} })
+    return r
+}
+
+// A connection of the pool; parks while all size are leased. Err when a new
+// connection fails (connect's errors), or when the task is cancelled
+// (E_CANCELLED) or its deadline passes (E_TIMEOUT) while it waits.
+pub fn (p: &Pool) acquire(w: Where): Result[Lease, Error] {
+    var got: Option[Conn] = None
+    var place = false
+    var wait: Option[task.Future[Option[Conn]]] = None
+    var id = 0
+    var conninfo = ""
+    p.sh.with(fn(st: mut &PoolState) {
+        conninfo = st.conninfo
+        if len(st.idle) > 0 {
+            got = Some(pop(mut &st.idle))
+        } else if st.open < st.size {
+            st.open += 1
+            place = true
+        } else {
+            id = st.nextId
+            st.nextId += 1
+            let task.Handoff{promise: pr, future: f} = task.promise[Option[Conn]]()
+            append(mut &st.waiters, Waiter{id: id, p: pr})
+            wait = Some(f)
+        }
+    })
+    match replace(mut &wait, None) {
+        Some(f) {
+            match f.wait(w) {
+                Ok(v) {
+                    got = v
+                    place = got.isNone()
+                }
+                Err(e) {
+                    // Still queued: leave the queue. Already served: what came was dropped
+                    // with the future (a connection closed, or a place), so its place goes on.
+                    var served = true
+                    p.sh.with(fn(st: mut &PoolState) {
+                        for i in 0..len(st.waiters) {
+                            if st.waiters[i].id == id {
+                                for j in i..len(st.waiters) - 1 { swap(mut &st.waiters, j, j + 1) }
+                                let gone = pop(mut &st.waiters)
+                                served = false
+                                break
+                            }
+                        }
+                    })
+                    if served { handOn(&p.sh, None) }
+                    return Err(sqldialect.dbError(if e == task.Cancelled.Timeout { sqldialect.E_TIMEOUT } else { sqldialect.E_CANCELLED },
+                        "pool: " + e.toStr() + " while waiting for a connection"))
+                }
+            }
+        }
+        None {}
+    }
+    match replace(mut &got, None) {
+        Some(c) {
+            if c.idle() { return Ok(Lease{c: c, pool: p.sh}) }
+            place = true                  // went bad while idle: closed here, its place reused
+        }
+        None {}
+    }
+    match connect(conninfo, w) {
+        Ok(c) { return Ok(Lease{c: c, pool: p.sh}) }
+        Err(e) {
+            handOn(&p.sh, None)
+            return Err(e)
+        }
+    }
+}
+
+// Gives a connection (or, for None, a place to open one) to the first waiter;
+// with none, keeps the connection idle (or frees the place). The promise is
+// completed outside with: if its future is gone, what it carries is dropped
+// there, and that may come back here.
+fn handOn(sh: &task.Shared[PoolState], var c: Option[Conn]) {
+    var p: Option[task.Promise[Option[Conn]]] = None
+    sh.with(fn(st: mut &PoolState) {
+        if len(st.waiters) > 0 {
+            for j in 0..len(st.waiters) - 1 { swap(mut &st.waiters, j, j + 1) }
+            let Waiter{id: _, p: pr} = pop(mut &st.waiters)
+            p = Some(pr)
+        } else {
+            match replace(mut &c, None) {
+                Some(conn) { append(mut &st.idle, conn) }
+                None { st.open -= 1 }
+            }
+        }
+    })
+    match replace(mut &p, None) {
+        Some(pr) { pr.complete(replace(mut &c, None)) }
+        None {}
+    }
+}
+
+fn (l: mut &Lease) drop() {
+    let c = replace(mut &l.c, Conn{h: nullPtr()})
+    if isNull(c.h) { return }
+    if c.idle() {
+        handOn(&l.pool, Some(c))
+    } else {
+        c.close()                          // closed now; its place goes on
+        handOn(&l.pool, None)
+    }
+}
+
+pub fn (l: &Lease) exec(script: str, w: Where): Result[Unit, Error] { return l.c.exec(script, w) }
+
+pub fn (l: &Lease) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] { return l.c.query(sql, args, w) }
+
+pub fn (l: &Lease) querySql(q: &Sql, w: Where): Result[Rows, Error] { return l.c.querySql(q, w) }
+
+pub fn (l: &Lease) transaction[T](body: &fn(): Result[T, Error], w: Where): Result[T, Error] {
+    return l.c.transaction(body, w)
 }

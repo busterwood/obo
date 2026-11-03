@@ -1,0 +1,166 @@
+// postgres in tasks against a live server ($OBX_PG_DSN, default the local
+// socket; exits 77, skipped, when it cannot connect): connects and queries
+// park only their task (libpq's asynchronous API, the task waiting on the
+// socket), so a long pg_sleep does not hold up quick queries on other
+// connections, and three sleeps on three connections overlap. A query whose
+// task is cancelled, or whose within deadline passes, is cancelled on the
+// server (PQcancel) and its connection is usable again at once. A connect
+// that fails, never finishes, or is cancelled reports it. No handle stays open.
+// needs: pq
+// expect: connected 4
+// expect: quick queries done before the slow one: true
+// expect: slow: 1, quick: 10 10 10
+// expect: three sleeps overlap: true
+// expect: cancelled: error 1020: query cancelled, soon: true
+// expect: after cancel: Ok(2)
+// expect: timeout: error 1021: query: deadline passed, soon: true
+// expect: after timeout: Ok(3)
+// expect: no server: code 1
+// expect: silent server: error 1021: connect: deadline passed
+// expect: connect cancelled: error 1020: connect cancelled
+// expect: syntax still reported: error 7 (42601)
+// expect: script: Ok(4)
+// expect: open handles 0
+import "postgres"
+import "task"
+import "time"
+import "net"
+import "os"
+
+type V = postgres.Value
+type Error = postgres.Error
+
+fn dsn(): str { return os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3") }
+
+fn show(r: &Result[int, Error]): str {
+    match r {
+        Ok(v) { return "Ok(" + v.toStr() + ")" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn one(c: &postgres.Conn, sql: str): Result[int, Error] {
+    let rows = try c.query(sql, &[])
+    return rows.int(0, 0)
+}
+
+fn opened(k: int): postgres.Conn { return postgres.connect(dsn()).unwrap() }
+
+type Done = value record { v: int; at: int }
+
+fn slow(c: postgres.Conn): Done {
+    let v = one(&c, "SELECT 1 FROM pg_sleep(0.3)").unwrap()
+    return Done{v: v, at: time.monotonicNs()}
+}
+
+fn quick(c: postgres.Conn): Done {
+    var v = 0
+    for i in 0..10 { v += c.query("SELECT $1::int8", &[V.Int(1)]).unwrap().int(0, 0).unwrap() }
+    return Done{v: v, at: time.monotonicNs()}
+}
+
+fn sleepy(c: postgres.Conn): int { return one(&c, "SELECT 7 FROM pg_sleep(0.2)").unwrap() }
+
+// A long query whose task is cancelled: it reports through a promise.
+type Outcome = record { r: Result[int, Error]; ms: int; c: postgres.Conn }
+type Job = record { c: postgres.Conn; p: task.Promise[Outcome] }
+
+fn long(j: Job): int {
+    let Job{c: c, p: p} = move(j)
+    let t = time.monotonicNs()
+    let r = one(&c, "SELECT 1 FROM pg_sleep(10)")
+    p.complete(Outcome{r: r, ms: (time.monotonicNs() - t) / 1000000, c: c})
+    return 0
+}
+
+type HangJob = record { port: str; p: task.Promise[str] }
+
+fn hang(j: HangJob): int {
+    let HangJob{port: port, p: p} = move(j)
+    match postgres.connect("host=127.0.0.1 port=" + port + " dbname=x") {
+        Ok(_) { p.complete("connected?") }
+        Err(e) { p.complete(e.toStr()) }
+    }
+    return 0
+}
+
+fn cancel[T](f: task.Future[T]) {}
+
+fn main() {
+    match postgres.connect(dsn()) {
+        Ok(_) {}
+        Err(_) { exit(77) }
+    }
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[postgres.Conn] = []
+        for k in 0..4 { append(mut &fs, s.start(opened, k)) }
+        var cs = task.all(fs).unwrap()
+        println("connected " + intToStr(len(cs)))
+        let a = s.start(slow, pop(mut &cs))
+        var qs: []task.Future[Done] = []
+        while len(cs) > 0 { append(mut &qs, s.start(quick, pop(mut &cs))) }
+        let ds = task.all(qs).unwrap()
+        let sd = a.wait().unwrap()
+        var before = true
+        for d in ds { if d.at >= sd.at { before = false } }
+        println("quick queries done before the slow one: " + before.toStr())
+        println("slow: " + intToStr(sd.v) + ", quick: " + intToStr(ds[0].v) + " " + intToStr(ds[1].v) + " " + intToStr(ds[2].v))
+    })
+    let t0 = time.monotonicNs()
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[int] = []
+        for k in 0..3 { append(mut &fs, s.start(sleepy, postgres.connect(dsn()).unwrap())) }
+        let sum = task.all(fs).unwrap()
+        let ms = (time.monotonicNs() - t0) / 1000000
+        println("three sleeps overlap: " + (ms >= 200 && ms < 450).toStr())
+    })
+
+    // Cancellation: dropping the future cancels the task parked in the query.
+    task.scope(fn(s: mut &task.Scope) {
+        let task.Handoff{promise: p, future: res} = task.promise[Outcome]()
+        let f = s.start(long, Job{c: postgres.connect(dsn()).unwrap(), p: p})
+        task.sleep(50).unwrap()
+        cancel(f)
+        let o = res.wait().unwrap()
+        println("cancelled: " + show(&o.r) + ", soon: " + (o.ms < 2000).toStr())
+        println("after cancel: " + show(&one(&o.c, "SELECT 2")))
+    })
+
+    // A deadline: within around the query.
+    let c = postgres.connect(dsn()).unwrap()
+    let t1 = time.monotonicNs()
+    let r = task.within(100, fn(): Result[int, Error] { return one(&c, "SELECT 1 FROM pg_sleep(10)") })
+    println("timeout: " + show(&r) + ", soon: " + ((time.monotonicNs() - t1) / 1000000 < 2000).toStr())
+    println("after timeout: " + show(&one(&c, "SELECT 3")))
+
+    match postgres.connect("host=/nonexistent/obx dbname=x") {
+        Ok(_) { println("no server: connected?") }
+        Err(e) { println("no server: code " + e.code.toStr()) }
+    }
+    // A server that accepts the connection and never answers.
+    let l = net.listen("127.0.0.1:0").unwrap()
+    let addr = l.localAddr()
+    var k = len(addr)
+    while addr[k - 1] != byte(':') { k -= 1 }
+    let port = addr[k..]
+    match task.within(150, fn(): Result[postgres.Conn, Error] { return postgres.connect("host=127.0.0.1 port=" + port + " dbname=x") }) {
+        Ok(_) { println("silent server: connected?") }
+        Err(e) { println("silent server: " + e.toStr()) }
+    }
+    task.scope(fn(s: mut &task.Scope) {
+        let task.Handoff{promise: p, future: res} = task.promise[str]()
+        let f = s.start(hang, HangJob{port: port, p: p})
+        task.sleep(50).unwrap()
+        cancel(f)
+        println("connect cancelled: " + res.wait().unwrap())
+    })
+
+    match c.query("SELEC 1", &[]) {
+        Ok(_) { println("syntax: ok?") }
+        Err(e) { println("syntax still reported: error " + e.code.toStr() + " (" + e.state + ")") }
+    }
+    c.exec("CREATE TEMP TABLE obx_c1c_async(a int); INSERT INTO obx_c1c_async VALUES (4)").unwrap()
+    println("script: " + show(&one(&c, "SELECT a FROM obx_c1c_async")))
+    c.close()
+    println("open handles " + intToStr(postgres.openHandles()))
+}

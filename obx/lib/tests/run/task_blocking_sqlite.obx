@@ -1,0 +1,64 @@
+// sqlite in tasks: step and exec are blocking externs, so a long query runs
+// on a helper thread while the other tasks go on (the ticker's ticks come
+// before the count), and several tasks with a connection each insert and
+// read at the same time. Every handle is released.
+// needs: sqlite3
+// expect: tick 0
+// expect: tick 1
+// expect: tick 2
+// expect: count 3000000
+// expect: db 0: 50 rows, sum 1225
+// expect: db 1: 50 rows, sum 1275
+// expect: db 2: 50 rows, sum 1325
+// expect: db 3: 50 rows, sum 1375
+// expect: db 4: 50 rows, sum 1425
+// expect: db 5: 50 rows, sum 1475
+// expect: open handles 0
+import "task"
+import "sqlite"
+import "sqldialect"
+
+type Value = sqldialect.Value
+
+fn heavy(n: int): int {
+    var db = sqlite.open(":memory:").unwrap()
+    var st = db.query("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?) SELECT count(*) FROM c",
+        &[Value.Int(n)]).unwrap()
+    st.step().unwrap()
+    return st.int(0).unwrap()
+}
+
+fn ticker(n: int): int {
+    for i in 0..n {
+        println("tick " + intToStr(i))
+        task.sleep(5).unwrap()
+    }
+    return n
+}
+
+fn rows(k: int): str {
+    var db = sqlite.open(":memory:").unwrap()
+    db.exec("CREATE TABLE t(a INTEGER)").unwrap()
+    for i in 0..50 {
+        db.run("INSERT INTO t(a) VALUES (?)", &[Value.Int(i + k)]).unwrap()
+        task.yield().unwrap()
+    }
+    var st = db.query("SELECT count(*), sum(a) FROM t", &[]).unwrap()
+    st.step().unwrap()
+    return "db " + intToStr(k) + ": " + intToStr(st.int(0).unwrap()) + " rows, sum " + intToStr(st.int(1).unwrap())
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let h = s.start(heavy, 3000000)
+        let t = s.start(ticker, 3)
+        t.wait().unwrap()
+        println("count " + intToStr(h.wait().unwrap()))
+    })
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[str] = []
+        for k in 0..6 { append(mut &fs, s.start(rows, k)) }
+        for r in task.all(fs).unwrap() { println(r) }
+    })
+    println("open handles " + intToStr(sqlite.openHandles()))
+}

@@ -118,6 +118,8 @@ pub const E_DEC_SCALE = 1010      // more fraction digits than numeric(p, s) hol
 pub const E_DEC_RANGE = 1011      // more integer digits than numeric(p, s) holds
 pub const E_DEC_METADATA = 1012   // an invalid precision and scale, or numeric typmod
 pub const E_DEC_PG_RANGE = 1013   // below PostgreSQL's smallest numeric exponent (-16383)
+pub const E_CANCELLED = 1020      // the task was cancelled while it waited for the server (the query is cancelled too)
+pub const E_TIMEOUT = 1021        // a deadline (task.within, connect_timeout) passed while it waited for the server
 
 pub fn dbError(code: int, msg: str): DbError { return DbError{code: code, state: "", msg: msg} }
 

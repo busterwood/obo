@@ -1437,7 +1437,9 @@ static int rt_epfd = -1;
 static int64_t rt_nio;
 static int64_t rt_njobs;                   /* tasks parked in a blocking C call (the helper pool) */
 #define RT_POOL_TAG (~(uint64_t)0)
-static void rt_pool_drain(void);
+static void rt_pool_drain(bool rd);
+static int rt_pool_check(int ms);
+static int rt_pool_asleep;
 static rt_task** rt_heap;
 static int64_t rt_nheap, rt_cheap;
 static uint64_t rt_tseq;
@@ -1511,9 +1513,11 @@ static void rt_poll(bool block, const char* w) {
         if (rt_nio || rt_njobs) {
             int ms = wait < 0 ? -1 : wait > (int64_t)INT32_MAX * 1000000 ? INT32_MAX
                    : (int)(wait / 1000000 + (wait % 1000000 != 0));
-            i64 n = SYS4(S_EPOLL_WAIT, rt_epfd, ev, 256, ms);
+            if (rt_njobs) ms = rt_pool_check(ms);
+            i64 n = rt_nio || ms ? SYS4(S_EPOLL_WAIT, rt_epfd, ev, 256, ms) : 0;
+            __atomic_store_n(&rt_pool_asleep, 0, __ATOMIC_RELAXED);
             for (i64 i = 0; i < n; i++) {
-                if (ev[i].data == RT_POOL_TAG) { rt_pool_drain(); continue; }
+                if (ev[i].data == RT_POOL_TAG) { rt_pool_drain(true); continue; }
                 int64_t fd = (int64_t)ev[i].data;
                 uint32_t e = ev[i].events;
                 if (fd >= rt_nfds) continue;
@@ -1906,10 +1910,15 @@ enum { S_RT_SIGPROCMASK = 14, S_FUTEX = 202, S_EVENTFD2 = 290 };
 #define K_FUTEX_WAIT_PRIVATE 128
 #define K_FUTEX_WAKE_PRIVATE 129
 
-int64_t obxlib_fd_wait(int64_t fd, int64_t dir, int64_t ms, const char* w) {
+static int64_t rt_fd_until(int64_t ms, bool cancellable) {
+    int64_t at = cancellable ? rt_cur->deadline : RT_NEVER;
+    if (ms > 0 && rt_after(ms) < at) at = rt_after(ms);
+    return at;
+}
+int64_t obxlib_fd_wait(int64_t fd, int64_t dir, int64_t ms, bool cancellable, const char* w) {
     rt_nopark(w);
-    if (ms < 0 && rt_cur->cancelled) return 1;
-    if (ms < 0 && rt_expired()) return 3;
+    if (cancellable && rt_cur->cancelled) return 1;
+    if ((cancellable && rt_expired()) || ms == 0) return 3;
     i64 e = rt_fd_room(fd);
     if (e < 0) return e;
     struct k_epoll_event ev = {(dir == 1 ? 0 : K_EPOLLIN | K_EPOLLRDHUP) | (dir ? K_EPOLLOUT : 0) | K_EPOLLONESHOT,
@@ -1920,7 +1929,7 @@ int64_t obxlib_fd_wait(int64_t fd, int64_t dir, int64_t ms, const char* w) {
     if (dir != 1) rt_fds[fd].rd = rt_cur;
     if (dir != 0) rt_fds[fd].wr = rt_cur;
     rt_nio++;
-    int r = rt_park_until(ms < 0, ms < 0 ? rt_cur->deadline : rt_after(ms), w);
+    int r = rt_park_until(cancellable, rt_fd_until(ms, cancellable), w);
     rt_nio--;
     if (rt_fds[fd].rd == rt_cur) rt_fds[fd].rd = 0;
     if (rt_fds[fd].wr == rt_cur) rt_fds[fd].wr = 0;
@@ -1943,6 +1952,37 @@ static rt_job* rt_jdone;                   /* finished, the latest first (under 
 static int rt_pool_idle;                   /* helpers waiting for a job (under the lock) */
 static int rt_pool_efd = -1;
 static int rt_npool;                       /* helpers started; -1: none */
+/* Spinning (stage C1c): a short C call is done in a few microseconds, while putting a thread
+   to sleep and waking it costs tens (55 us a round trip measured on WSL2). So a helper that
+   finds no job looks again for RT_SPIN_NS before it sleeps, and the event loop, with no task to
+   run but jobs out, looks at the done list for as long before it sleeps in epoll_wait. Neither
+   spins when the process may use only one CPU (sched_getaffinity at the pool's start), where it
+   would only delay the thread it waits for. A queued job wakes a sleeping helper only when the
+   spinning ones are fewer than the jobs queued. */
+#define RT_SPIN_NS 50000
+static bool rt_pool_spins;
+static int rt_pool_spinning;                /* helpers spinning for a job (atomic) */
+static int rt_jqn;                          /* jobs queued (under the lock) */
+static bool rt_pool_spin(void) {
+    if (!rt_pool_spins) return false;
+    int64_t t0 = rt_mono();
+    for (int k = 1;; k++) {
+        if (__atomic_load_n(&rt_jdone, __ATOMIC_ACQUIRE)) return true;
+        __builtin_ia32_pause();
+        if ((k & 63) == 0 && rt_mono() - t0 > RT_SPIN_NS) return false;
+    }
+}
+static void rt_helper_spin(void) {
+    if (!rt_pool_spins) return;
+    __atomic_add_fetch(&rt_pool_spinning, 1, __ATOMIC_RELAXED);
+    int64_t t0 = rt_mono();
+    for (int k = 1;; k++) {
+        if (__atomic_load_n(&rt_jq, __ATOMIC_RELAXED)) break;
+        __builtin_ia32_pause();
+        if ((k & 63) == 0 && rt_mono() - t0 > RT_SPIN_NS) break;
+    }
+    __atomic_sub_fetch(&rt_pool_spinning, 1, __ATOMIC_RELAXED);
+}
 
 static void rt_pool_lock(void) {
     int c = 0;
@@ -1959,6 +1999,7 @@ static void rt_pool_unlock(void) {
 static void* rt_helper(void* unused) {
     (void)unused;
     for (;;) {
+        rt_helper_spin();
         rt_pool_lock();
         while (!rt_jq) {
             int seq = __atomic_load_n(&rt_pool_seq, __ATOMIC_RELAXED);
@@ -1969,18 +2010,22 @@ static void* rt_helper(void* unused) {
             rt_pool_idle--;
         }
         rt_job* j = rt_jq;
-        rt_jq = j->next;
+        __atomic_store_n(&rt_jq, j->next, __ATOMIC_RELAXED);
         if (!rt_jq) rt_jq_tail = 0;
+        rt_jqn--;
         rt_pool_unlock();
         rt_errno = j->err;
         j->fn(j->a);
         j->err = rt_errno;
         rt_pool_lock();
         j->next = rt_jdone;                 /* j belongs to its task again from here */
-        rt_jdone = j;
+        __atomic_store_n(&rt_jdone, j, __ATOMIC_RELEASE);
         rt_pool_unlock();
-        uint64_t one = 1;
-        SYS(S_WRITE, rt_pool_efd, &one, 8);
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        if (__atomic_load_n(&rt_pool_asleep, __ATOMIC_RELAXED)) {
+            uint64_t one = 1;
+            SYS(S_WRITE, rt_pool_efd, &one, 8);
+        }
     }
     return 0;
 }
@@ -1990,6 +2035,10 @@ static void rt_pool_start(void) {
     rt_npool = -1;
     if (n <= 0 || !rt_n_libc[3]) return;
     if (n > 64) n = 64;
+    uint64_t cpus[16] = {0};                                     /* sched_getaffinity */
+    i64 nb = SYS(204, 0, sizeof cpus, cpus), ncpu = 0;
+    for (i64 i = 0; i < nb / 8; i++) ncpu += __builtin_popcountll(cpus[i]);
+    rt_pool_spins = ncpu > 1;
     i64 fd = rt_fd_room(0);
     if (fd >= 0) fd = SYS(S_EVENTFD2, 0, K_O_NONBLOCK | K_O_CLOEXEC, 0);
     if (fd < 0) rt_trap(2, "out of memory (the helper pool)", "runtime");
@@ -2009,12 +2058,12 @@ static void rt_pool_start(void) {
     if (k == 0) rt_trap(2, "out of memory (a helper thread)", "runtime");
     rt_npool = k;
 }
-static void rt_pool_drain(void) {
+static void rt_pool_drain(bool rd) {
     uint64_t v;
-    SYS(S_READ, rt_pool_efd, &v, 8);
+    if (rd) SYS(S_READ, rt_pool_efd, &v, 8);
     rt_pool_lock();
     rt_job* d = rt_jdone;
-    rt_jdone = 0;
+    __atomic_store_n(&rt_jdone, (rt_job*)0, __ATOMIC_RELAXED);
     rt_pool_unlock();
     rt_job* r = 0;
     while (d) { rt_job* nx = d->next; d->next = r; r = d; d = nx; }
@@ -2025,6 +2074,22 @@ static void rt_pool_drain(void) {
         r = nx;
     }
 }
+/* The event loop's look at the pool before epoll_wait for ms (rt_poll, while tasks are parked in
+   blocking calls): when it would sleep, it spins for a while first; when it still would, it marks
+   itself asleep, so that a helper finishing a job writes the eventfd (and only then: a store of
+   the done list and a load of rt_pool_asleep on the helper, a store of rt_pool_asleep and a load
+   of the done list here, each pair with a full fence between, so one side sees the other). Then
+   wakes the tasks of the jobs done. The new ms: 0 when there were any. */
+static int rt_pool_check(int ms) {
+    if (ms != 0 && !rt_pool_spin()) {
+        __atomic_store_n(&rt_pool_asleep, 1, __ATOMIC_SEQ_CST);
+        if (!__atomic_load_n(&rt_jdone, __ATOMIC_SEQ_CST)) return ms;
+        __atomic_store_n(&rt_pool_asleep, 0, __ATOMIC_RELAXED);
+    }
+    if (!__atomic_load_n(&rt_jdone, __ATOMIC_ACQUIRE)) return ms;
+    rt_pool_drain(false);
+    return 0;
+}
 void rt_blocking(rt_dfn fn, void* a, const char* w) {
     rt_nopark(w);
     if (!rt_rq_head && !rt_nio && !rt_nheap && !rt_njobs) { fn(a); return; }
@@ -2032,9 +2097,10 @@ void rt_blocking(rt_dfn fn, void* a, const char* w) {
     if (rt_npool < 0) { fn(a); return; }
     rt_job j = {fn, a, rt_errno, false, rt_cur, 0};
     rt_pool_lock();
-    if (rt_jq_tail) rt_jq_tail->next = &j; else rt_jq = &j;
+    if (rt_jq_tail) rt_jq_tail->next = &j; else __atomic_store_n(&rt_jq, &j, __ATOMIC_RELAXED);
     rt_jq_tail = &j;
-    bool wake = rt_pool_idle > 0;
+    rt_jqn++;
+    bool wake = rt_pool_idle > 0 && rt_jqn > __atomic_load_n(&rt_pool_spinning, __ATOMIC_RELAXED);
     __atomic_add_fetch(&rt_pool_seq, 1, __ATOMIC_RELEASE);
     rt_pool_unlock();
     if (wake) SYS4(S_FUTEX, &rt_pool_seq, K_FUTEX_WAKE_PRIVATE, 1, 0);
