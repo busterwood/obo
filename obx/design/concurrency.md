@@ -5,8 +5,11 @@ Stage C1a is done (2026-11-03): `lib/task.obx`, the runtime in `rt.h` and
 `native/rt.c`, SPEC 16; the measured costs replace the estimates in
 section 5. Stage C1b is done (2026-11-03): the epoll loop, timers and
 deadlines, `lib/net.obx`, and the HTTP server gate without Postgres
-(`cmd/httpd.obx`); section 5 records how it was built. C1c (the helper pool,
-libpq's non-blocking path) is next.
+(`cmd/httpd.obx`); section 5 records how it was built. Stage C1c is done
+(2026-11-03): the `blocking` extern marker (SPEC 12) and the helper pool in
+both runtimes, sqlite's steps on it, postgres on libpq's asynchronous API
+with a connection pool, and the server gate with Postgres; section 5
+records it. Stage C1 is complete; C2 (worker processes) is next.
 
 ## 0. Decisions
 
@@ -369,7 +372,7 @@ static):
   their drop, which never parks. Errors are `io.IoError` with the address as
   the path, and `isCancelled()`/`isTimeout()` on `IoError`. Addresses are
   numeric (RFC 5952 text for IPv6) plus `localhost`: `getaddrinfo` blocks,
-  so names wait for C1c's helper pool.
+  so names wait for C1c's helper pool (still not done: see C1c below).
 - **`Scope.spawn(f, arg)`**, not in the plan: a task with no future. An
   accept loop cannot keep a future per connection (they pile up), and
   dropping one cancels its task; a spawned task's result is dropped, it is
@@ -461,6 +464,117 @@ changes no code around them.
 Gate: an HTTP/1.1 server on one core that holds 10,000 idle keep-alive
 connections and serves a Postgres query per request through a pool, with no
 leaks under `OBX_CHECK=1` after a graceful shutdown.
+
+**C1c as built (2026-11-03).**
+
+- **The marker.** `extern "lib" fn f(...): R [as "c"] blocking` (the word
+  is contextual, last, after `as`). sema rejects an `extern fn` parameter
+  and `...` on a blocking extern; two declarations of one C name may differ
+  in it. The C backend and the native backend share the lowering: the call's
+  arguments, after the usual conversions (`str` to a NUL-terminated copy,
+  arrays to element pointers), are stored in an `int64_t` slot array on the
+  task's stack, and a generated thunk `bk1_<c name>(void *a)` reads them,
+  calls the C function and stores the result in the last slot; the call
+  becomes `rt_blocking(thunk, slots, "file:line")`, and the result is
+  converted (a `str` copied) back on the program's thread. `bk` joined the
+  reserved C prefixes. The compiler change is small: the parser flag, two
+  sema errors, the thunks in `emit.obx`, and the native backend's list of
+  programs that must be dynamically linked (any with a blocking call: the
+  pool needs `pthread_create`).
+- **`rt_blocking`.** It checks the `with` trap (exit 13) first, then runs
+  the call inline when nothing else could run: no runnable task, no socket
+  or timer waited on, no other blocking call out (`OBX_HELPERS=0` forces
+  inline always). Otherwise it queues a job (function, slots, the task's
+  `errno`, the parked task) and parks the task, uncancellably: a blocking
+  call is not a cancellation point, the task sees a cancellation or its
+  deadline at its next park. The helper copies `errno` in and out.
+- **The pool** (`rt.h`, and a section of its own at the end of
+  `native/rt.c`). `OBX_HELPERS` threads (default 4, at most 64), started
+  at the first call that needs them, detached, all signals blocked. A
+  mutex-protected FIFO of jobs and a LIFO of finished jobs (reversed when
+  drained). A helper that finds no job spins for 50 µs, then sleeps on a
+  condition variable (C) or a futex (native); a new job wakes a sleeper
+  only when there are more jobs than spinning helpers. A finished job wakes
+  the event loop through an `eventfd` in the epoll set, written only when
+  the loop is asleep (a Dekker pair of flags with full fences); the loop
+  itself, when only blocking calls are out, spins for 50 µs on the done
+  list before it sleeps in `epoll_wait`. Both spins are off when
+  `sched_getaffinity` gives one CPU. The native runtime makes its own
+  system calls (`futex`, `eventfd2`, `rt_sigprocmask`, `sched_getaffinity`)
+  and gets `pthread_create` from libc through the same GOT hook as its other
+  libc entries; its SIGSEGV handler counts a fault as a stack overflow only
+  on the program's thread. The runtime's allocator is never called from a
+  helper: the thunk only reads slots and calls C.
+- **Costs** (`bench/tasks.obx`): a blocking call run inline 3.3 / 3.5 ns (C /
+  native); through the pool 0.3–0.6 / 0.64 µs; on one CPU 5–8 µs. The first
+  version woke a helper and the loop with a system call each way and cost
+  55 µs per round trip; spinning on both sides took it to 16–31 µs, waking
+  only when needed to about 2 µs, and skipping the `eventfd` write and the
+  `epoll_wait` while the loop spins to 0.4–0.8 µs.
+- **sqlite**: `sqlite3_step` and `sqlite3_exec` are blocking. A program
+  with nothing else to run is unchanged (30 ns a step on a cached table);
+  with other tasks every step pays the round trip, the price of not
+  stalling them on a query that reads the disk.
+- **postgres**: rebuilt on libpq's asynchronous API, the first kind of the
+  table above, not on the pool. `PQconnectStart`/`PQconnectPoll` (blocking:
+  they may resolve names, hash passwords or do TLS) with the task parked on
+  the socket between polls; `PQsendQueryParams`/`PQsendQuery` on a
+  non-blocking connection, `PQflush`, then `PQconsumeInput`/`PQisBusy`/
+  `PQgetResult` with the task parked on the socket. The runtime helper
+  `obxlib_fd_wait(fd, dir, ms, cancellable, w)` parks on a descriptor a C
+  library reads itself (one-shot epoll registration, re-armed per wait). A
+  cancellation or a passed `within` deadline sends `PQcancel` (blocking) and
+  drains the query's results, uncancellably and for at most 5 s, so the
+  connection is idle afterwards; the call returns `E_CANCELLED` (1020) or
+  `E_TIMEOUT` (1021). `connect_timeout` bounds the whole connect. The
+  measured alternative, `PQexecParams` as a blocking call, was no faster at
+  one connection, slower at 4 to 16 with 4 helpers and twice as fast with
+  16 helpers (the helpers' system calls run on other cores): PERFORMANCE.md
+  has the table. The asynchronous API was kept: no thread per running
+  query, cancellation on the server, one thread's budget like the rest of
+  the worker.
+- **`postgres.Pool`**: a copy handle over `task.Shared[PoolState]` (idle
+  connections, the count open, a FIFO of waiters, each a
+  `task.Promise[Option[Conn]]`). `acquire` takes an idle connection, opens
+  one while fewer than `size` are open (the place is reserved before the
+  connect parks, and given back on failure), or parks on a promise. A
+  `Lease` gives its connection back when dropped: to the first waiter, or
+  to the idle list; one that is not idle (in a transaction, broken, its
+  query abandoned) is closed and its place handed on as `None`, so the
+  waiter opens a new one. A waiter cancelled or past its deadline removes
+  itself from the queue; if it had just been served it hands the
+  connection on. Promises are completed outside `with` (`complete` never
+  parks, but it keeps `with` short).
+- **The gate** (`cmd/http_gate.py --db 4,16`; `cmd/httpd.obx [ADDR
+  [POOL]]` serves `GET /db`): 10,000 idle connections at 13.0 KB (native)
+  and 12.5–12.7 KB (C) each, as in C1b; with pools of 4 and 16, 2,500–3,300
+  req/s at 1 client (p99 0.5–1.1 ms), 20,800–23,100 at 10 (p99 0.62–0.64
+  ms) and 23,100–27,200 at 100 (p99 5.2–5.8 ms; 90 of the clients wait in the
+  pool's queue); `/shutdown` 0.18–0.23 s, exit 0 under `OBX_CHECK=1`, the
+  pool all idle with nobody waiting. Native and C within the noise of each
+  other. The ceiling is the server's one thread at about 40 µs a request
+  (HTTP plus libpq system calls); a lone query round trip to PostgreSQL 16
+  is about 90 µs. PASS. No Go or Node reference: no Postgres driver is
+  installed for either. The plain gate is unchanged although `httpd` is now
+  dynamically linked (libpq): 4,700 / 38,600 / 67,600 req/s native, 4,200 /
+  38,500 / 69,000 via C.
+- **Tests**: `tests/run/s12_extern_blocking.obx` and three error tests;
+  `lib/tests/run/task_blocking_{order,errno,many,cancel,sqlite}.obx`,
+  `task_trap_blocking_in_with.obx`, `task_postgres_{async,pool}.obx` (the
+  last two skip, exit 77, without a server). Both backends, `OBX_CHECK=1`,
+  ASan, and ThreadSanitizer: `redteam/rt.py` has an `OBX_SAN=thread` mode
+  (run under `setarch -R`), and the full gate runs the task, postgres and
+  net tests under it.
+- **Deviations and what is left.** The pool is the runtime's, one per
+  process, not a library object; its size is fixed at start. A blocking
+  call cannot be cancelled while it runs (a stuck C call holds its task, and
+  the program's end abandons it). `net` names (`getaddrinfo` on the pool)
+  are not done. sqlite has no per-call choice between inline and the pool
+  (a cached lookup pays the round trip when other tasks exist). The
+  `blocking` marker does not yet feed a compile-time "can park" check for
+  `with` (Q9). The Postgres pool has no health check of idle connections
+  beyond libpq's status (a connection the server dropped fails its next
+  query and is then closed), no maximum lifetime and no minimum idle count.
 
 ### Stage C2: workers as processes
 

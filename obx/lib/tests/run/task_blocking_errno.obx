@@ -1,0 +1,61 @@
+// task: a blocking call's errno is the helper thread's errno right after the
+// C function returns, handed back to the calling task: tasks whose calls
+// fail differently at the same time each see their own errno. The results
+// come back through the thunk: i32, int, ptr, str.
+// expect: open 0: -1 errno 2
+// expect: strtol 1: overflow errno 34
+// expect: open 2: -1 errno 2
+// expect: strtol 3: overflow errno 34
+// expect: open 4: -1 errno 2
+// expect: strtol 5: overflow errno 34
+// expect: dir 6: null errno 20, then ok
+// expect: dir 7: null errno 20, then ok
+// expect: getenv HOME set: true
+import "task"
+
+extern "c" fn openB(path: str, flags: i32): i32 as "open" blocking
+extern "c" fn strtolB(s: str, end: ptr, base: i32): int as "strtol" blocking
+extern "c" fn opendirB(path: str): ptr as "opendir" blocking
+extern "c" fn closedir(d: ptr): i32
+extern "c" fn getenvB(name: str): str as "getenv" blocking
+extern "c" fn obx_errno(): int
+extern "c" fn usleepB(us: u32): i32 as "usleep" blocking
+
+fn call(k: int): str {
+    usleepB(u32(1000 * (8 - k)))            // the calls finish in another order than they started
+    if k >= 6 {
+        let d = opendirB("/etc/passwd")      // not a directory: ENOTDIR
+        let e = obx_errno()
+        let d2 = opendirB("/")
+        let r = (if isNull(d) { "null" } else { "?" }) + " errno " + intToStr(e) + ", then " +
+            (if isNull(d2) { "fail" } else { "ok" })
+        if !isNull(d2) { closedir(d2) }
+        return "dir " + intToStr(k) + ": " + r
+    }
+    if k % 2 == 0 {
+        let fd = openB("/nonexistent/obx/" + intToStr(k), i32(0))
+        return "open " + intToStr(k) + ": " + intToStr(int(fd)) + " errno " + intToStr(obx_errno())
+    }
+    let v = strtolB("99999999999999999999999", nullPtr(), i32(10))
+    return "strtol " + intToStr(k) + ": " + (if v == 9223372036854775807 { "overflow" } else { "?" }) +
+        " errno " + intToStr(obx_errno())
+}
+
+fn homeSet(n: str): bool { return len(getenvB(n)) > 0 }
+
+fn nap(n: int): int {
+    task.sleep(n).unwrap()
+    return n
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[str] = []
+        for k in 0..8 { append(mut &fs, s.start(call, k)) }
+        for r in task.all(fs).unwrap() { println(r) }
+        let h = s.start(homeSet, "HOME")
+        let busy = s.start(nap, 5)
+        println("getenv HOME set: " + h.wait().unwrap().toStr())
+        busy.wait().unwrap()
+    })
+}

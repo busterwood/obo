@@ -33,7 +33,7 @@ for leaks.
 | `sqldialect.obx` | 260 | Value, DbError and its codes, SQL fragments with placeholders per dialect, exact decimal text and (p, s) checks |
 | `ffi.obx` | 140 | C memory for modules that call C: owned `Mem` (alloc, cstr, copyBytes), unchecked peek/poke/bytes |
 | `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
-| `postgres.obx` | 370 | PostgreSQL through libpq: Conn, Rows |
+| `postgres.obx` | 690 | PostgreSQL through libpq, asynchronous for tasks: Conn, Rows, Pool, Lease |
 | `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
 | `task.obx` | 270 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation, sleep, deadlines |
 | `net.obx` | 440 | TCP over IPv4 and IPv6 for tasks: listen, accept, connect, read, write |
@@ -259,9 +259,20 @@ task.Future[int], w: Where)` calls `f.wait(w)`).
   task is parked at a.obx:41`.
 
 The scheduler waits in `epoll_wait` only when no task is runnable, and checks
-sockets and timers every 64 switches otherwise. A task parked in `sleep` or on
-a socket is never a deadlock; a program whose tasks all wait on futures
-nobody will complete still is (exit 14).
+sockets and timers every 64 switches otherwise. A task parked in `sleep`, on
+a socket or in a blocking C call is never a deadlock; a program whose tasks
+all wait on futures nobody will complete still is (exit 14).
+
+**Blocking C calls** (SPEC 12, stage C1c). A module marks an extern that may
+take long `blocking`; while another task could run, a call parks its task
+and runs on a helper thread. The pool starts with the first such call:
+`OBX_HELPERS` threads (default 4, at most 64; `OBX_HELPERS=0` runs every
+call on the program's thread, as when nothing else could run). A round trip
+through the pool costs about 0.4 us (C backend) to 0.8 us (native) while the
+helpers and the event loop spin for each other (50 us each, not when the
+process may use only one CPU: then about 6 us). The library's blocking
+calls: sqlite's `sqlite3_step` and `sqlite3_exec`; postgres's
+`PQconnectStart`, `PQconnectPoll` and `PQcancel`.
 
 ### net
 
@@ -273,8 +284,7 @@ meanwhile, and a plain program (its main task) uses the same calls.
 - Addresses are text: `"127.0.0.1:8080"`, `"[::1]:8080"`, `":8080"` and
   `"0.0.0.0:8080"` (every IPv4 interface), `"localhost:8080"` (127.0.0.1),
   port 0 for any free port. Only numeric addresses and `localhost`: a name
-  lookup (`getaddrinfo`) blocks the thread, so it waits for the helper pool
-  of stage C1c. `canonicalAddr(addr): Option[str]` checks and normalizes one
+  lookup (`getaddrinfo` on the helper pool) is not there yet. `canonicalAddr(addr): Option[str]` checks and normalizes one
   (IPv6 in RFC 5952 form). A malformed address is `EINVAL`.
 - `listen(addr): Result[Listener, IoError]` (`SO_REUSEADDR`, backlog 4096);
   `Listener`: `localAddr(): str`, `accept(): Result[Conn, IoError]`,
@@ -328,15 +338,43 @@ that need one are skipped when it is not installed). Examples:
   `reset`, `bind(i, v)`, `bindAll`, `bindDecimal(i, d, p, s)`,
   `columnCount`, `columnName`, and per column `isNull int bool float text
   bytes decimal decimalOrNull value`. Decimals are stored as exact TEXT.
+  `step` and `exec` are blocking externs: in a program with other tasks a
+  long query parks only its task (each step then pays the pool's round
+  trip, 0.4 to 0.8 us, against 30 ns for a step of a cached table; alone, a
+  program runs them inline). So they cannot be called inside `Shared.with`.
+- **postgres** runs on libpq's asynchronous API, so a query parks only its
+  task: `connect` is `PQconnectStart` and `PQconnectPoll` (blocking externs:
+  name lookup, TLS and password hashing run on the helper pool) with the
+  task parked on the socket between them; `query` and `exec` are
+  `PQsendQueryParams` / `PQsendQuery` on a non-blocking connection, then
+  `PQflush`, `PQconsumeInput`, `PQisBusy` and `PQgetResult` with the task
+  parked on the socket (`obxlib_fd_wait`). The task's cancellation and its
+  `task.within` deadline end a wait: `Err` with `E_CANCELLED` (1020) or
+  `E_TIMEOUT` (1021), after the query is cancelled on the server
+  (`PQcancel`) and its results drained (at most 5 s, not cancellable), so
+  the connection is idle again. `connect_timeout` bounds the whole connect
+  (`E_TIMEOUT`). Every call that can park takes a last `w: Where`.
 - **postgres**: `connect(conninfo)`, `libVersion()`; `Conn`: `exec(script)`,
-  `query(sql, &args)` (`PQexecParams`, text format, each parameter with
+  `query(sql, &args)` (text format, each parameter with
   its type's OID: int8, float8, bool, text, bytea, numeric; NULL untyped),
   `querySql`, `transaction`, `serverVersion`, `close()`;
   `decimalParam(d, p, s)`. `Rows` (outlive their connection): `rowCount`,
   `columnCount`, `affected`, `columnName`, `columnType` (OID),
   `columnTypmod`, `decimalType` (numeric precision and scale), and per cell
   `isNull int bool float text bytes decimal decimalOrNull value`. A failed
-  statement is an `Err` with the SQLSTATE in `state`.
+  statement is an `Err` with the SQLSTATE in `state`. `Conn.idle()`: up,
+  outside a transaction, no query running.
+- **postgres pools**: `newPool(conninfo, size): Pool`, a counted handle
+  (copies reach the same pool); `acquire(): Result[Lease, Error]` gives an
+  idle connection, opens one while fewer than `size` are open, or parks
+  until a `Lease` is dropped (first come first served; cancellation and
+  deadlines give `E_CANCELLED` / `E_TIMEOUT` and leave the queue). A
+  `Lease` has `exec`, `query`, `querySql`, `transaction`, and gives its
+  connection back when dropped, or closes it when it is not `idle()` (in a
+  transaction, broken, a query abandoned): its place goes to the next
+  waiter, which opens a new one. `stats(): PoolStats {open, idle,
+  waiting}`. The state is a `task.Shared` with the idle connections and a
+  queue of waiting promises. `cmd/httpd.obx` serves `GET /db` through one.
 - **mssql**: `connect(connStr)` (an ODBC connection string, for example
   `Driver={ODBC Driver 18 for SQL Server};Server=...;UID=...;PWD=...`).
   `Conn`: `exec(batch)` (every result read), `prepare(sql)`, `query(sql,
@@ -439,6 +477,7 @@ errno, a static buffer):
 | `obxlib_net_listen(fam, addr, port, backlog)`, `obxlib_net_connect(fam, addr, port, &pending)`, `obxlib_net_accept(fd)` | non-blocking sockets registered with epoll (edge-triggered, once); fd or -errno (`pending`: the connect is in progress) |
 | `obxlib_net_read(fd, b, n)`, `obxlib_net_write(fd, b, n)` | `read`, `send` with `MSG_NOSIGNAL`; count or -errno (`-EAGAIN`: park) |
 | `obxlib_net_wait(fd, dir, w)` | park until the socket is readable (0) or writable (1): 0, or 1 cancelled, 3 past the deadline |
+| `obxlib_fd_wait(fd, dir, ms, cancellable, w)` | park until a descriptor a C library reads itself (libpq's socket) is readable (0), writable (1) or either (2): armed one-shot in the epoll set each time; ends at cancellation and the deadline when `cancellable`, after `ms` when `ms >= 0`; 0, 1 cancelled, 3 deadline or `ms`, -errno |
 | `obxlib_net_addr(fd, peer, out)`, `obxlib_net_nodelay(fd, on)`, `obxlib_net_soerror(fd)`, `obxlib_net_shutdown(fd, how)`, `obxlib_net_close(fd)` | the local or peer address (family, port, 16 address bytes); `TCP_NODELAY`; `SO_ERROR`; `shutdown`; close (and forget the fd's waiters) |
 | `obxlib_task_promise(resdrop)`, `obxlib_task_complete(t, r)`, `obxlib_task_abandon(t)` | promises |
 | `obxlib_sh_new(box, drop)`, `obxlib_sh_enter(s, w)`, `obxlib_sh_leave(s, box)` | a `Shared` block; lend its box to `with` (exit 13 when already lent; `w` is kept for the messages while the `with` is open) and take it back |

@@ -41,7 +41,10 @@ golden. Our eza runs with `OBX_CHECK=1`, so a leak fails a case.
 `httpd.obx` is a small HTTP/1.1 server on one thread, the gate of
 concurrency stage C1b (design/concurrency.md): one task per connection,
 keep-alive by default, pipelined requests answered in order. `GET /` says
-hello, `GET /stats` gives its counters, and `GET /shutdown` stops it
+hello, `GET /stats` gives its counters, `GET /db` (when started with a
+pool size, `httpd ADDR POOL`: stage C1c) runs one query through a
+`postgres.Pool` of that many connections (`$OBX_PG_DSN`, default the local
+socket), and `GET /shutdown` stops it
 gracefully: the accept loop is cancelled and with it every connection's
 task (an idle one is parked in `read`, which returns `ECANCELED`), every
 socket is closed by its drop, and the program prints its counters and ends.
@@ -50,8 +53,8 @@ keep their futures. It has no idle timeout (a `task.within` around the
 read of a request head would be one).
 
 `httpload.obx` is its load client: CONNS keep-alive connections, each a task
-sending one request at a time for SECONDS seconds, then one line with the
-requests per second and the latency percentiles.
+sending `GET PATH` (default `/`) one at a time for SECONDS seconds, then one
+line with the requests per second and the latency percentiles.
 
     compiler/out/obxc cmd/httpd.obx --native -o httpd && ./httpd 127.0.0.1:8080
     compiler/out/obxc cmd/httpload.obx --native -o httpload && ./httpload 127.0.0.1:8080 10 5
@@ -61,8 +64,11 @@ net/http and Node's http as references, when installed) it opens 10,000
 idle keep-alive connections, measures the server's RSS per connection, runs
 httpload with 1, 10 and 100 clients while they stay open, checks that they
 still answer, and shuts the server down under `OBX_CHECK=1` (exit 0, no
-leak, every connection closed). The numbers are in
+leak, every connection closed). With `--db 4,16` it runs each obx server
+once per pool size with the load on `/db`, and checks after the shutdown
+that the pool has nobody waiting. The numbers are in
 [../../PERFORMANCE.md](../../PERFORMANCE.md).
 
     python3 cmd/http_gate.py                     # about 2 minutes
     python3 cmd/http_gate.py --idle 1000 --servers native,c --seconds 2
+    python3 cmd/http_gate.py --servers native,c --db 4,16   # with Postgres

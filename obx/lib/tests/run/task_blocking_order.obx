@@ -1,0 +1,45 @@
+// task: a blocking extern (SPEC 12) runs on a helper thread while the other
+// tasks go on: the sleeper's usleep (300 ms, in C) does not stop the ticker,
+// whose five ticks (20 ms apart) all come first. With no other task the
+// call runs at once on the program's thread (the first and last calls).
+// expect: inline 0
+// expect: tick 0
+// expect: tick 1
+// expect: tick 2
+// expect: tick 3
+// expect: tick 4
+// expect: slept 300
+// expect: sum 5
+// expect: in parallel: true
+// expect: inline again 0
+import "task"
+import "time"
+
+extern "c" fn usleepB(us: u32): i32 as "usleep" blocking
+
+fn sleeper(ms: int): int {
+    let r = usleepB(u32(ms * 1000))
+    println("slept " + intToStr(ms))
+    return int(r)
+}
+
+fn ticker(n: int): int {
+    for i in 0..n {
+        println("tick " + intToStr(i))
+        task.sleep(20).unwrap()
+    }
+    return n
+}
+
+fn main() {
+    println("inline " + intToStr(int(usleepB(1000))))
+    let t0 = time.monotonicNs()
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(sleeper, 300)
+        let b = s.start(ticker, 5)
+        println("sum " + intToStr(a.wait().unwrap() + b.wait().unwrap()))
+    })
+    let ms = (time.monotonicNs() - t0) / 1000000
+    println("in parallel: " + (ms >= 300 && ms < 400).toStr())
+    println("inline again " + intToStr(int(usleepB(1000))))
+}

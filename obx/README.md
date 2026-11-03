@@ -26,11 +26,11 @@ Source files use the `.obx` extension.
 | [PLAN.md](PLAN.md) | the stages, their gates and state; the language backlog |
 | [compiler/](compiler/README.md) | the compiler, written in obx: obx to C, or `--native` to x86-64 ELF; its C seed |
 | [lib/](lib/README.md) | the library (std, collections, strings, fs, io, os, time, math, money, sqldialect, sqlite, postgres, mssql, ffi, task, net) |
-| [cmd/](cmd/README.md) | programs: eza, an HTTP/1.1 server (httpd) and its load client |
+| [cmd/](cmd/README.md) | programs: eza, an HTTP/1.1 server (httpd, with an optional Postgres pool) and its load client |
 | [tests/](tests/README.md) | the conformance suite, the compiler tests, the native tests, the eza golden suite and their runners |
-| `redteam/` | the red-team corpora and harnesses (rounds 1 to 5) |
+| `redteam/` | the red-team corpora and harnesses (rounds 1 to 5; ASan, UBSan, and TSan for the task tests) |
 | `tools/` | the gate (`gate.sh`), the build cache (`cbuild.py`), the seed check |
-| `design/` | design notes: the generic-core decision, the native backend, concurrency |
+| `design/` | design notes: the generic-core decision, the native backend, concurrency (stage C1, tasks in one process, is built) |
 | [bench/](bench/README.md) | benchmarks, native against C (results in [../PERFORMANCE.md](../PERFORMANCE.md)) |
 
 Its predecessors (obo 0.19, the original garbage-collected obx and the

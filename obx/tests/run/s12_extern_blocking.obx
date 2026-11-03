@@ -1,0 +1,41 @@
+// SPEC 12: a blocking extern is called like any extern. In a program with no
+// other task the call runs at once on the program's own thread; every kind of
+// parameter and result goes through the generated thunk: integers of several
+// widths, float, bool, ptr, str (in and out), mut &int, mut &ptr, arrays.
+// expect: strlen 5
+// expect: strtol 255 rest 3
+// expect: ldexp 12
+// expect: toupper 65
+// expect: memchr found true
+// expect: getenv set ok
+// expect: memset zzz 0
+// expect: errno 2
+
+extern "c" fn bStrlen(s: str): int as "strlen" blocking
+extern "c" fn bStrtol(s: str, end: mut &ptr, base: i32): int as "strtol" blocking
+extern "m" fn bLdexp(x: float, e: i32): float as "ldexp" blocking
+extern "c" fn bToupper(c: i32): i32 as "toupper" blocking
+extern "c" fn bMemchr(p: &[]byte, c: i32, n: int): ptr as "memchr" blocking
+extern "c" fn bGetenv(name: str): str as "getenv" blocking
+extern "c" fn bSetenv(name: str, v: str, over: i32): i32 as "setenv" blocking
+extern "c" fn bMemset(p: mut &[]byte, c: i32, n: int): ptr as "memset" blocking
+extern "c" fn bOpen(path: str, flags: i32): i32 as "open" blocking
+extern "c" fn obx_errno(): int
+
+fn main() {
+    println("strlen " + intToStr(bStrlen("hello")))
+    var end = nullPtr()
+    let v = bStrtol("0xffxyz", mut &end, i32(0))
+    println("strtol " + intToStr(v) + " rest " + intToStr(len(strFromC(end))))
+    println("ldexp " + intToStr(int(bLdexp(1.5, i32(3)))))
+    println("toupper " + intToStr(int(bToupper(i32('a')))))
+    let bs = strToBytes("abcdef")
+    println("memchr found " + (if !isNull(bMemchr(&bs, i32('d'), len(bs))) { "true" } else { "false" }))
+    bSetenv("OBX_BLK_TEST", "ok", i32(1))
+    println("getenv set " + bGetenv("OBX_BLK_TEST"))
+    var buf = array(6, byte(0))
+    bMemset(mut &buf, i32('z'), 3)
+    println("memset " + strFromBytes(&buf[0..3]) + " " + intToStr(int(buf[3])))
+    let fd = bOpen("/nonexistent/obx", i32(0))
+    println("errno " + intToStr(if fd < i32(0) { obx_errno() } else { 0 }))
+}

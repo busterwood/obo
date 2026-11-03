@@ -170,6 +170,7 @@ pub type FnDecl = value record {
     pub lib: str
     pub cname: str
     pub varargs: bool  // an extern declared with ... (C varargs)
+    pub blocking: bool // an extern declared blocking: a call runs on a helper thread (SPEC 12)
     pub tps: []int     // also ref's env: the type parameters in scope, by name
     pub params: []Param
     pub ret: int
@@ -839,7 +840,7 @@ fn (pg: mut &Program) collect(m: int) {
             sx.N_FN {
                 append(mut &pg.fns, FnDecl{node: a, mod: m, name: n.s, line: n.line, isPub: isPub,
                     isExtern: n.flags & sx.EXTERN != 0, lib: n.t, cname: n.u,
-                    varargs: n.flags & sx.DOTS != 0, tps: [], params: [], ret: T_VOID,
+                    varargs: n.flags & sx.DOTS != 0, blocking: n.flags & sx.BLOCKING != 0, tps: [], params: [], ret: T_VOID,
                     recvMode: RM_NONE, recvName: "", recvType: -1, ownerKind: O_NONE, owner: -1, bparam: ""})
                 let f = len(pg.fns) - 1
                 append(mut &pg.mods[m].fns, f)
@@ -1224,6 +1225,10 @@ fn (pg: mut &Program) resolveFn(f: int) {
         for i in 0..pg.count(m, a.c) {
             let pn = pg.nd(m, pg.item(m, a.c, i))
             if pg.kind(m, pn.a) == sx.N_TFN && pg.nd(m, pn.a).flags & sx.EXTERN != 0 {
+                if pg.fns[f].blocking {
+                    pg.err(m, pn.line, "blocking extern " + pg.fns[f].name + " cannot take the C function pointer " +
+                        pn.s + ": C would call obx code on a helper thread")
+                }
                 append(mut &pg.fns[f].params, Param{name: pn.s, ty: pg.cfnType(m, pn.a, &pn), isVar: false, line: pn.line})
                 continue
             }
@@ -1250,6 +1255,9 @@ fn (pg: mut &Program) resolveFn(f: int) {
         }
         if pg.fns[f].varargs && len(pg.fns[f].params) == 0 {
             pg.err(m, a.line, "a C variadic function needs a parameter before ...")
+        }
+        if pg.fns[f].varargs && pg.fns[f].blocking {
+            pg.err(m, a.line, "blocking extern " + pg.fns[f].name + " cannot be variadic (...)")
         }
         if a.d >= 0 {
             let r = pg.resolveType(a.d, m, &env, P_RET, 0)
@@ -1438,11 +1446,12 @@ fn (pg: &Program) sameSig(f: int, g: int): bool {
     return true
 }
 
-// ref's CRESERVED pattern, (main|rt_\w*|obx_\w*|(f|g|k|gl|S)\d+_\w*|(sl|fn)\d+\w*)$,
+// ref's CRESERVED pattern, (main|rt_\w*|obx_\w*|(f|g|k|gl|S|bk)\d+_\w*|(sl|fn)\d+\w*)$ (bk1_x: the
+// thunk of a blocking extern x),
 // for a C name (ASCII letters, digits and _ only, which the parser checked).
 fn cReserved(s: str): bool {
     if s == "main" || startsWith(s, "rt_") || startsWith(s, "obx_") { return true }
-    for p in ["f", "g", "k", "gl", "S"] {
+    for p in ["f", "g", "k", "gl", "S", "bk"] {
         if startsWith(s, p) {
             var i = len(p)
             let start = i

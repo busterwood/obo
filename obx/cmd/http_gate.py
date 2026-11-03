@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""The C1b server gate (design/concurrency.md, stage C1b): cmd/httpd.obx holding
+"""The C1b and C1c server gates (design/concurrency.md): cmd/httpd.obx holding
 many idle keep-alive connections while it serves load, then shutting down
 gracefully with no leaks (OBX_CHECK=1).
 
     python3 cmd/http_gate.py [--idle N] [--conns 1,10,100] [--seconds S]
                              [--servers native,c,go,node] [--compiler PATH] [--no-pin]
+                             [--db 4,16]
+
+With --db (stage C1c), each obx server runs once per pool size with a
+Postgres pool of that many connections ($OBX_PG_DSN, default the local
+socket), and the load is GET /db: one query through the pool per request.
+After the shutdown the server must report its pool with nothing waiting.
+The go and node references need a Postgres driver (lib/pq or pgx in the Go
+module cache, the pg module for node); without one they are skipped.
 
 For each server: start it on 0.0.0.0 port 0 (so that the idle connections can
 go to 127.0.0.1, .2, ...: one address pair has only the ephemeral port range,
@@ -178,10 +186,10 @@ def parse_load(line):
     return {k: int(v) for k, v in m.items()}
 
 
-def run_server(name, exe, args, loader, pin):
+def run_server(name, exe, args, loader, pin, pool=0):
     env = dict(os.environ, OBX_CHECK='1', GOMAXPROCS='1')
     cmd = list(exe) if isinstance(exe, tuple) else [exe]
-    cmd += ['0.0.0.0:0']
+    cmd += ['0.0.0.0:0'] + ([str(pool)] if pool else [])
     if pin:
         cmd = ['taskset', '-c', '0'] + cmd
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
@@ -210,9 +218,15 @@ def run_server(name, exe, args, loader, pin):
             if not m or int(m.group(1)) < args.idle:
                 raise RuntimeError('stats: %r' % body)
             res['notes'].append('stats: ' + body.strip().replace('\n', ', '))
+        if pool:
+            s = socket.create_connection((host, port))
+            st, body = exchange(s, b'GET /db HTTP/1.1\r\n\r\n')
+            s.close()
+            if st != 'HTTP/1.1 200 OK' or not body.startswith('db '):
+                raise RuntimeError('/db: %r %r' % (st, body))
         res['load'] = []
         for c in args.conns:
-            lcmd = [loader, addr, str(c), str(args.seconds)]
+            lcmd = [loader, addr, str(c), str(args.seconds)] + (['/db'] if pool else [])
             if pin:
                 lcmd = ['taskset', '-c', '1'] + lcmd
             r = subprocess.run(lcmd, capture_output=True, text=True, timeout=args.seconds + 60)
@@ -242,6 +256,8 @@ def run_server(name, exe, args, loader, pin):
             res['notes'].append(out.strip())
             if ', open 0' not in out:
                 raise RuntimeError('connections left open: %r' % out)
+            if pool and ' waiting 0' not in out:
+                raise RuntimeError('tasks left waiting for the pool: %r' % out)
             # every idle connection sees the end of the stream
             for s in idle:
                 s.settimeout(5)
@@ -272,9 +288,11 @@ def main(argv):
     ap.add_argument('--servers', default='native,c,go,node')
     ap.add_argument('--compiler', default=os.environ.get('OBXC', DEFAULT_OBXC))
     ap.add_argument('--no-pin', action='store_true')
+    ap.add_argument('--db', default='', help='pool sizes: serve GET /db through a Postgres pool')
     args = ap.parse_args(argv)
     args.conns = [int(c) for c in args.conns.split(',')]
     args.servers = args.servers.split(',')
+    pools = [int(x) for x in args.db.split(',')] if args.db else [0]
     pin = not args.no_pin and shutil.which('taskset') is not None and os.cpu_count() >= 2
     import resource
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -288,15 +306,19 @@ def main(argv):
     try:
         exes = build(args, tmp)
         results = []
-        for name in args.servers:
+        for name, pool in [(n, q) for q in pools for n in args.servers]:
             key = {'native': 'httpd-native', 'c': 'httpd-c'}.get(name, name)
             if key not in exes:
                 log('%s: not available, skipped' % name)
                 continue
+            if pool and name not in ('native', 'c'):
+                log('%s: no Postgres driver installed, skipped' % name)
+                continue
             label = 'obx ' + name if name in ('native', 'c') else name
-            log('== %s: %d idle connections, load %s for %d s each%s' %
-                (label, args.idle, args.conns, args.seconds, ' (pinned)' if pin else ''))
-            r = run_server(label, exes[key], args, exes['httpload'], pin)
+            log('== %s: %d idle connections, load %s%s for %d s each%s' %
+                (label, args.idle, args.conns, ' on /db, pool %d' % pool if pool else '', args.seconds,
+                 ' (pinned)' if pin else ''))
+            r = run_server(label, exes[key], args, exes['httpload'], pin, pool)
             results.append(r)
             if 'per_conn' in r:
                 log('  RSS %d kB idle, %d kB with %d connections: %.0f bytes per idle connection (opened in %.1f s)' %

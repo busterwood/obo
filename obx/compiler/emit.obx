@@ -66,6 +66,7 @@ type Extern = record {
     ret: str
     ptys: []str
     va: bool
+    blocking: bool      // some declaration of it is blocking: it gets a thunk bk1_<name> (SPEC 12)
 }
 
 // A global: its C type (an array of n if n >= 0), initializer (or -1) and its holes.
@@ -821,6 +822,10 @@ fn (e: mut &Emitter) externC(t: int): str {
 pub fn (e: mut &Emitter) program(main: int, libs: mut &[]str): ir.Ir {
     var externs: []Extern = []
     var seen: Map[str, bool] = newMap()
+    var blocking: Map[str, bool] = newMap()
+    for f in 0..len(e.c.pg.fns) {
+        if e.c.pg.fns[f].isExtern && e.c.pg.fns[f].blocking { blocking.put(e.c.pg.fns[f].cname, true) }
+    }
     for m in 0..len(e.c.pg.mods) {
         let fs = copyInts(&e.c.pg.mods[m].fns)
         for f in fs {
@@ -830,7 +835,7 @@ pub fn (e: mut &Emitter) program(main: int, libs: mut &[]str): ir.Ir {
                 var ps: []str = []
                 for i in 0..len(e.c.pg.fns[f].params) { append(mut &ps, e.externC(e.c.pg.fns[f].params[i].ty)) }
                 let rc = e.externC(e.c.pg.fns[f].ret)
-                append(mut &externs, Extern{name: cn, ret: rc, ptys: ps, va: e.c.pg.fns[f].varargs})
+                append(mut &externs, Extern{name: cn, ret: rc, ptys: ps, va: e.c.pg.fns[f].varargs, blocking: blocking.has(&cn)})
                 let lib = e.c.pg.fns[f].lib
                 var known = lib == "c" || lib == ""
                 for l in libs {
@@ -957,6 +962,7 @@ fn (e: mut &Emitter) lower(entry: str, externs: &[]Extern, globs: &[]GDef, gdrop
         let r = u.ctName(x.ret)
         let ty = if x.va { u.ir.varFnType(r, &pts) } else { u.ir.fnType(r, &pts) }
         u.declFunc("x_" + x.name, ty, x.name, true)
+        if x.blocking { u.declFunc("bk1_" + x.name, u.ir.fnType(ir.TY_VOID, &[u.ctName("void*")]), "", false) }
     }
     for g in globs {
         u.res = copyInts(&g.res)
@@ -979,6 +985,17 @@ fn (e: mut &Emitter) lower(entry: str, externs: &[]Extern, globs: &[]GDef, gdrop
         u.defineFunc(e.fns[j].name, ftys[j], &e.fns[j].pnames, &e.fns[j].lines)
         if ri >= 0 { e.ress[ri] = replace(mut &u.res, []) }
     }
+    // a blocking extern's thunk, run on a helper thread (check.blockingCall):
+    // void bk1_x(void* a) { *(R*)((int64_t*)a + n) = x_x(*(P0*)((int64_t*)a + 0), ...); }
+    for x in externs {
+        if !x.blocking { continue }
+        var args: []int = []
+        for k in 0..len(x.ptys) { append(mut &args, u.x.at(u.x.ct(x.ptys[k]), e.thunkSlot(mut &u, k))) }
+        let call = u.x.call("x_" + x.name, args)
+        let st = if x.ret == "void" { call } else { u.x.asg(u.x.at(u.x.ct(x.ret), e.thunkSlot(mut &u, len(x.ptys))), call) }
+        u.res = []
+        u.defineFunc("bk1_" + x.name, u.ir.fnType(ir.TY_VOID, &[u.ctName("void*")]), &["a"], &[u.x.sx(st)])
+    }
     // int main(int argc, char** argv) { rt_init(argc, argv); entry(); drops; rt_finish(); return 0; }
     var ml: []int = [u.x.sx(u.x.call("rt_init", [u.x.nm("argc"), u.x.nm("argv")])), u.x.sx(u.x.call(entry, []))]
     for x in gdrops { append(mut &ml, x) }
@@ -988,6 +1005,11 @@ fn (e: mut &Emitter) lower(entry: str, externs: &[]Extern, globs: &[]GDef, gdrop
     let mt = u.ir.fnType(ir.TY_I32, &[ir.TY_I32, u.ir.ptrTo(u.ir.ptrTo(ir.TY_I8))])
     u.defineFunc("main", mt, &["argc", "argv"], &ml)
     return replace(mut &u.ir, ir.newIr())
+}
+
+// ((int64_t*)a + k): slot k of a thunk's argument a.
+fn (e: &Emitter) thunkSlot(u: mut &lw.Lower, k: int): int {
+    return u.x.par(u.x.bin("+", u.x.cast(u.x.ptr(u.x.ct("int64_t")), u.x.nm("a")), u.x.lit(k)))
 }
 
 fn noInit(): ck.GInit { return ck.GInit{has: false, isOnce: false, table: false, items: [], c: -1, holes: []} }

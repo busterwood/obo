@@ -1,10 +1,17 @@
-// httpd: a small HTTP/1.1 server on one thread (design/concurrency.md, stage
-// C1b's gate). One task per connection, keep-alive by default.
+// httpd: a small HTTP/1.1 server on one thread (design/concurrency.md, the
+// gates of stages C1b and C1c). One task per connection, keep-alive by default.
 //
-//     httpd [ADDR]          ADDR: host:port, default 127.0.0.1:8080 (port 0: any)
+//     httpd [ADDR [POOL]]   ADDR: host:port, default 127.0.0.1:8080 (port 0: any)
+//                           POOL: connections of the Postgres pool, default 0: no /db
 //
-// It prints "listening on HOST:PORT" once it listens. Routes:
+// The pool connects to $OBX_PG_DSN (default the local socket,
+// host=/var/run/postgresql dbname=postgres), at most POOL connections, opened
+// as requests need them. It prints "listening on HOST:PORT" once it listens.
+// Routes:
 //     GET /             "hello, world\n"
+//     GET /db           one query through the pool (SELECT $1::int8 + 1, $1 the
+//                       request's number): "db N\n"; 503 without a pool or
+//                       when the query fails
 //     GET /stats        counters: open connections, accepted, requests
 //     GET /shutdown     "bye\n", then a graceful shutdown: the accept loop is
 //                       cancelled and with it every connection's task (an
@@ -18,6 +25,7 @@ import "net"
 import "io"
 import "os"
 import "strings"
+import "postgres"
 
 type State = record {
     open: int                         // connections open now
@@ -29,11 +37,13 @@ type State = record {
 type Server = record {
     ln: net.Listener
     st: task.Shared[State]
+    db: Option[postgres.Pool]
 }
 
 type Job = record {
     c: net.Conn
     st: task.Shared[State]
+    db: Option[postgres.Pool]
 }
 
 const BUF = 4096        // a connection's read buffer: the largest request head
@@ -47,7 +57,7 @@ fn acceptLoop(sv: Server): int {
             match sv.ln.accept() {
                 Ok(c) {
                     sv.st.with(fn(st: mut &State) { st.accepted += 1 })
-                    s.spawn(serve, Job{c: c, st: sv.st})
+                    s.spawn(serve, Job{c: c, st: sv.st, db: sv.db})
                 }
                 Err(e) {
                     if e.isCancelled() { break }
@@ -65,7 +75,7 @@ fn acceptLoop(sv: Server): int {
 
 fn serve(j: Job): int {
     j.st.with(fn(st: mut &State) { st.open += 1 })
-    let r = session(&j.c, j.st)
+    let r = session(&j.c, j.st, &j.db)
     j.st.with(fn(st: mut &State) { st.open -= 1 })
     return 0
 }
@@ -85,7 +95,7 @@ type Reply = record {
 
 // Reads and answers requests until the peer closes, asks to close, or the
 // task is cancelled (shutdown).
-fn session(c: &net.Conn, st: task.Shared[State]): Result[Unit, io.IoError] {
+fn session(c: &net.Conn, st: task.Shared[State], db: &Option[postgres.Pool]): Result[Unit, io.IoError] {
     var buf = array(BUF, byte(0))
     var have = 0                      // bytes in buf[0..have]
     var out = newStrBuf()             // the replies to the requests in buf
@@ -121,8 +131,12 @@ fn session(c: &net.Conn, st: task.Shared[State]): Result[Unit, io.IoError] {
         // keep what follows (the next requests)
         for i in used..have { buf[i - used] = buf[i] }
         have -= used
-        let rp = route(&rq, st)
-        st.with(fn(s: mut &State) { s.requests += 1 })
+        var n = 0
+        st.with(fn(s: mut &State) {
+            s.requests += 1
+            n = s.requests
+        })
+        let rp = route(&rq, st, db, n)
         let close = rp.close || !rq.keepAlive
         addReply(mut &out, &rp, close, rq.method == "HEAD")
         if close {
@@ -137,11 +151,22 @@ fn session(c: &net.Conn, st: task.Shared[State]): Result[Unit, io.IoError] {
     return Ok(Unit{})
 }
 
-fn route(rq: &Request, st: task.Shared[State]): Reply {
+fn route(rq: &Request, st: task.Shared[State], db: &Option[postgres.Pool], n: int): Reply {
     if rq.method != "GET" && rq.method != "HEAD" {
         return Reply{status: "405 Method Not Allowed", body: "", close: false}
     }
     if rq.path == "/" { return Reply{status: "200 OK", body: HELLO, close: false} }
+    if rq.path == "/db" {
+        match db {
+            Some(pool) {
+                match query(&pool, n) {
+                    Ok(v) { return Reply{status: "200 OK", body: "db " + intToStr(v) + "\n", close: false} }
+                    Err(e) { return Reply{status: "503 Service Unavailable", body: e.toStr() + "\n", close: false} }
+                }
+            }
+            None { return Reply{status: "503 Service Unavailable", body: "no database\n", close: false} }
+        }
+    }
     if rq.path == "/stats" {
         var b = ""
         st.with(fn(s: mut &State) {
@@ -160,6 +185,13 @@ fn route(rq: &Request, st: task.Shared[State]): Reply {
         return Reply{status: "200 OK", body: "bye\n", close: true}
     }
     return Reply{status: "404 Not Found", body: "not found\n", close: false}
+}
+
+// One query on a connection of the pool, given back when the lease drops.
+fn query(pool: &postgres.Pool, n: int): Result[int, postgres.Error] {
+    let c = try pool.acquire()
+    let rows = try c.query("SELECT $1::int8 + 1", &[postgres.Value.Int(n)])
+    return rows.int(0, 0)
 }
 
 fn reply(c: &net.Conn, rp: Reply): Result[Unit, io.IoError] {
@@ -225,6 +257,9 @@ fn parse(head: str): Option[Request] {
 fn main() {
     let args = os.arguments()
     let addr = if len(args) > 0 { args[0] } else { "127.0.0.1:8080" }
+    let size = if len(args) > 1 { strings.parseInt(args[1]).unwrapOr(0) } else { 0 }
+    let db: Option[postgres.Pool] =
+        if size > 0 { Some(postgres.newPool(os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres"), size)) } else { None }
     let task.Handoff{promise: p, future: f} = task.promise[int]()
     let st = task.shared(State{open: 0, accepted: 0, requests: 0, stop: Some(p)})
     var stop = Some(f)
@@ -241,12 +276,20 @@ fn main() {
     }
     io.flushStdout().unwrap()
     task.scope(fn(s: mut &task.Scope) {
-        let srv = s.start(acceptLoop, Server{ln: replace(mut &lst, None).unwrap(), st: st})
+        let srv = s.start(acceptLoop, Server{ln: replace(mut &lst, None).unwrap(), st: st, db: db})
         let r = replace(mut &stop, None).unwrap().wait()
         // srv is dropped here: the accept loop and every connection are cancelled
     })
+    var pg = ""
+    match &db {
+        Some(pool) {
+            let ps = pool.stats()
+            pg = ", pool open " + intToStr(ps.open) + " idle " + intToStr(ps.idle) + " waiting " + intToStr(ps.waiting)
+        }
+        None {}
+    }
     st.with(fn(s: mut &State) {
         println("stopped: accepted " + intToStr(s.accepted) + ", requests " + intToStr(s.requests) +
-                ", open " + intToStr(s.open))
+                ", open " + intToStr(s.open) + pg)
     })
 }

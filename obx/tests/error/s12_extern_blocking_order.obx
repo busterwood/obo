@@ -1,0 +1,4 @@
+// SPEC 12: blocking comes last, after as.
+// error: expected
+extern "c" fn usleepB(us: u32): i32 blocking as "usleep"
+fn main() {}

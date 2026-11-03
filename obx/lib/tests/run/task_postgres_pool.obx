@@ -1,0 +1,104 @@
+// postgres.Pool against a live server ($OBX_PG_DSN; exits 77, skipped, when
+// it cannot connect): eight tasks share a pool of two connections, never
+// more than two open, the others parked in acquire until a lease is
+// dropped; a waiter whose deadline passes leaves the queue; a lease left in
+// a transaction is closed and its place reopened; a pool that cannot connect
+// reports it and keeps no place. No handle stays open.
+// needs: pq
+// expect: results 0 1 2 3 4 5 6 7
+// expect: most open at once: 2
+// expect: after: open 2, idle 2, waiting 0
+// expect: waiter timeout: error 1021: pool: timeout while waiting for a connection
+// expect: after timeout: open 1, idle 1, waiting 0
+// expect: same connection again: true
+// expect: in a transaction: closed, a new one: true
+// expect: bad pool: code 1, open 0
+// expect: open handles 0
+import "postgres"
+import "task"
+import "os"
+
+type V = postgres.Value
+type Error = postgres.Error
+
+fn dsn(): str { return os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3") }
+
+type Work = value record { pool: postgres.Pool; k: int; peak: task.Shared[int] }
+
+fn work(w: Work): int {
+    let c = w.pool.acquire().unwrap()
+    let st = w.pool.stats()
+    w.peak.with(fn(p: mut &int) { if st.open > p { p = st.open } })
+    let r = c.query("SELECT $1::int8 FROM pg_sleep(0.02)", &[V.Int(w.k)]).unwrap().int(0, 0).unwrap()
+    return r
+}
+
+fn pid(c: &postgres.Lease): int { return c.query("SELECT pg_backend_pid()", &[]).unwrap().int(0, 0).unwrap() }
+
+fn stats(p: &postgres.Pool): str {
+    let s = p.stats()
+    return "open " + s.open.toStr() + ", idle " + s.idle.toStr() + ", waiting " + s.waiting.toStr()
+}
+
+type Hold = value record { pool: postgres.Pool; ms: int }
+
+fn hold(h: Hold): int {
+    let c = h.pool.acquire().unwrap()
+    task.sleep(h.ms).unwrap()
+    return 0
+}
+
+fn main() {
+    match postgres.connect(dsn()) {
+        Ok(_) {}
+        Err(_) { exit(77) }
+    }
+    run()
+    println("open handles " + intToStr(postgres.openHandles()))
+}
+
+fn run() {
+    let pool = postgres.newPool(dsn(), 2)
+    let peak = task.shared(0)
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[int] = []
+        for k in 0..8 { append(mut &fs, s.start(work, Work{pool: pool, k: k, peak: peak})) }
+        var line = "results"
+        for r in task.all(fs).unwrap() { line = line + " " + r.toStr() }
+        println(line)
+    })
+    peak.with(fn(p: mut &int) { println("most open at once: " + p.toStr()) })
+    println("after: " + stats(&pool))
+
+    let one = postgres.newPool(dsn(), 1)
+    task.scope(fn(s: mut &task.Scope) {
+        let h = s.start(hold, Hold{pool: one, ms: 200})
+        task.sleep(20).unwrap()
+        match task.within(50, fn(): Result[postgres.Lease, Error] { return one.acquire() }) {
+            Ok(_) { println("waiter timeout: got one?") }
+            Err(e) { println("waiter timeout: " + e.toStr()) }
+        }
+        h.wait().unwrap()
+    })
+    println("after timeout: " + stats(&one))
+    var first = 0
+    {
+        let c = one.acquire().unwrap()
+        first = pid(&c)
+    }
+    {
+        let c = one.acquire().unwrap()
+        println("same connection again: " + (pid(&c) == first).toStr())
+        c.exec("BEGIN").unwrap()
+    }
+    {
+        let c = one.acquire().unwrap()
+        println("in a transaction: closed, a new one: " + (pid(&c) != first).toStr())
+    }
+
+    let bad = postgres.newPool("host=/nonexistent/obx dbname=x", 3)
+    match bad.acquire() {
+        Ok(_) { println("bad pool: connected?") }
+        Err(e) { println("bad pool: code " + e.code.toStr() + ", open " + bad.stats().open.toStr()) }
+    }
+}

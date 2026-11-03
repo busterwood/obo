@@ -712,6 +712,7 @@ pub const MINUS = 256
 pub const NEG = 512
 pub const TRUE = 1024
 pub const DOTS = 4096       // N_FN (extern): C varargs after the parameters
+pub const BLOCKING = 8192   // N_FN (extern): blocking, run on the helper pool (SPEC 12)
 pub const ARM = 2048        // N_RETURN, N_BREAK, N_CONTINUE: the whole body of a branch or arm of an expression
 
 // Type forms and interface receiver modes.
@@ -971,6 +972,9 @@ fn (p: mut &Parser) externdecl(isPub: bool): int {
         cname = p.text()
         if !isCName(cname) { p.err(pyAscii(cname) + " is not a C function name") }
     }
+    // SPEC 12: `blocking` (not a keyword) ends the declaration: the call runs on a helper thread
+    let blocking = p.atId("blocking")
+    if blocking { p.next() }
     if isPub {
         p.fail(w, "extern " + name + " cannot be pub: an extern is always private to its module " +
             "(export a safe wrapper instead)")
@@ -981,6 +985,7 @@ fn (p: mut &Parser) externdecl(isPub: bool): int {
     p.ast.nodes[d].u = cname
     p.flag(d, EXTERN, true)
     p.flag(d, DOTS, dots)
+    p.flag(d, BLOCKING, blocking)
     p.sep()
     return d
 }

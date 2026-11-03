@@ -28,6 +28,18 @@
 // (or an INTEGER that a float holds exactly); a NULL is E_NULL there, and
 // isNull, value and decimalOrNull tell NULL apart without an error.
 //
+// Tasks (stage C1c): sqlite3_step and sqlite3_exec, which run the SQL, are
+// blocking externs (SPEC 12): while other tasks could run they go to the
+// helper pool, so a long query or a write waiting on a busy file parks only
+// its task. Each step pays for the round trip then (0.4 to 0.8 us measured,
+// about 6 us when the process has one CPU, against 30 ns for a step of a
+// cached table); alone, a program runs them inline at no cost. So Db.exec,
+// step and run cannot be called inside Shared.with (exit 13): keep a Db
+// owned by one task, or pass it between tasks. open, prepare, bind and the
+// column reads stay on the program's thread. SQLite is built thread-safe
+// (serialized), and a connection is used by one helper at a time, as its
+// task waits for each call.
+//
 // Errors are sqldialect.DbError: an SQLite result code (SQLITE_CONSTRAINT,
 // ...) and sqlite3_errmsg's text, or one of the E_* codes of sqldialect.
 
@@ -69,14 +81,14 @@ extern "sqlite3" fn sqlite3_open_v2(path: str, db: mut &ptr, flags: i32, vfs: pt
 extern "sqlite3" fn sqlite3_close_v2(db: ptr): i32
 extern "sqlite3" fn sqlite3_errmsg(db: ptr): str
 extern "sqlite3" fn sqlite3_errstr(rc: i32): str
-extern "sqlite3" fn sqlite3_exec(db: ptr, sql: str, cb: ptr, arg: ptr, err: mut &ptr): i32
+extern "sqlite3" fn sqlite3_exec(db: ptr, sql: str, cb: ptr, arg: ptr, err: mut &ptr): i32 blocking
 extern "sqlite3" fn sqlite3_free(p: ptr)
 extern "sqlite3" fn sqlite3_changes(db: ptr): i32
 extern "sqlite3" fn sqlite3_last_insert_rowid(db: ptr): int
 extern "sqlite3" fn sqlite3_get_autocommit(db: ptr): i32
 extern "sqlite3" fn sqlite3_prepare_v2(db: ptr, sql: ptr, n: i32, st: mut &ptr, tail: mut &ptr): i32
 extern "sqlite3" fn sqlite3_finalize(st: ptr): i32
-extern "sqlite3" fn sqlite3_step(st: ptr): i32
+extern "sqlite3" fn sqlite3_step(st: ptr): i32 blocking
 extern "sqlite3" fn sqlite3_reset(st: ptr): i32
 extern "sqlite3" fn sqlite3_bind_parameter_count(st: ptr): i32
 extern "sqlite3" fn sqlite3_bind_null(st: ptr, i: i32): i32

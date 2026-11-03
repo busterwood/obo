@@ -4007,6 +4007,7 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
                 append(mut &cs2, cs[k])
             }
         }
+        if c.pg.fns[sig.fd].blocking { return c.blockingCall(sig.fd, &params, &vals, &cs2, ret, hasStr, line) }
         text = c.x.call("x_" + c.pg.fns[sig.fd].cname, cs2)
         if ret == sema.T_STR { text = c.x.call("rt_str_from_c", [c.x.cast(c.ct("void*"), text)]) }
         if hasStr {             // free the NUL-terminated copies made for this call after it
@@ -4047,6 +4048,42 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         return rvAt(c.nm(n), ret, -1, "")
     }
     return c.holdtmp(text, ret)
+}
+
+// SPEC 12: a call of a blocking extern f. The arguments go into slots of 8 bytes on the
+// task's stack, int64_t bk[n + 1] (the result in the last), and rt_blocking runs the thunk
+// bk1_<C name> (emit.obx), which calls f with them, on a helper thread while the task is
+// parked (or inline when nothing else could run). The C copies of str arguments are made
+// here, on the task's thread, and a str result is copied after the call, also here.
+fn (c: mut &Checker) blockingCall(f: int, params: &[]int, vals: &[]CArg, cs2: &[]int, ret: int, hasStr: bool, line: int): Val {
+    let n = len(cs2)
+    var mk = ""
+    if hasStr {
+        mk = c.fresh("cm")
+        c.emit(c.x.decl(c.ct("int64_t"), mk, c.x.call("rt_cmark", [])))
+    }
+    let bk = c.fresh("bk")
+    c.emit(c.x.declArr(c.ct("int64_t"), bk, n + 1, -1))
+    for k in 0..n {
+        let slot = c.x.at(c.slotType(params[k], vals[k].v.t), c.x.bin("+", c.nm(bk), c.lit(k)))
+        c.emitx(c.x.asg(slot, cs2[k]))
+    }
+    c.emitx(c.x.call("rt_blocking", [c.nm("bk1_" + c.pg.fns[f].cname), c.nm(bk), c.W(line)]))
+    if hasStr { c.emitx(c.x.call("rt_cfree", [c.nm(mk)])) }
+    if ret == sema.T_VOID || ret == sema.T_NEVER { return voidVal(ret == sema.T_NEVER) }
+    let res = c.x.at(c.slotType(ret, ret), c.x.bin("+", c.nm(bk), c.lit(n)))
+    if ret == sema.T_STR { return c.holdtmp(c.x.call("rt_str_from_c", [c.x.cast(c.ct("void*"), res)]), ret) }
+    return c.holdtmp(res, ret)
+}
+
+// The C type of a blocking extern's argument slot (or result slot) for the parameter type pt
+// and the argument's type at.
+fn (c: mut &Checker) slotType(pt: int, at: int): int {
+    let k = c.pg.tk(pt)
+    if at == sema.T_STR || pt == sema.T_STR { return c.ct("const char*") }
+    if k == sema.TK_SLICE || (k == sema.TK_REF && c.pg.tk(c.pg.ta(pt)) == sema.TK_ARR) { return c.ct("void*") }
+    if k == sema.TK_REF { return c.x.ptr(c.T(c.pg.ta(pt))) }
+    return c.T(pt)
 }
 
 fn distinct(xs: &[]int): bool {

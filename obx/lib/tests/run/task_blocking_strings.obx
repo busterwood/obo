@@ -1,0 +1,57 @@
+// The C copies of str arguments of blocking calls in two tasks at once: each
+// script is a substring (no NUL after it, so the call gets a copy), the first
+// call ends while the second is still running, and sqlite3_exec reads the rest
+// of its script only after its long first statement. The second call's copy
+// must stay valid until it returns (the runtime keeps each task's list of C
+// copies with the task, so the first task frees only its own): the first task
+// then makes a copy of the same size full of junk, which would land in it had
+// it been freed.
+// needs: sqlite3
+// expect: quick: Ok
+// expect: long: Ok, u has 1 row, t has 2000000
+// expect: open handles 0
+import "task"
+import "sqlite"
+
+const CUT = "; -- trailing text cut off"
+
+fn longScript(): str {
+    return "CREATE TABLE t(a INTEGER); " +
+        "INSERT INTO t WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000000) SELECT x FROM c; " +
+        "CREATE TABLE u(b INTEGER); INSERT INTO u VALUES (42)" + CUT
+}
+
+fn quick(k: int): str {
+    let db = sqlite.open(":memory:").unwrap()
+    let script = "SELECT 1" + CUT
+    let n = len(longScript()) - len(CUT)
+    let junk = repeat("x", n) + CUT
+    let r = db.exec(script[0..8])
+    let ignored = db.exec(junk[0..n])
+    match r {
+        Ok(_) { return "quick: Ok" }
+        Err(e) { return "quick: " + e.toStr() }
+    }
+}
+
+fn long(k: int): str {
+    let db = sqlite.open(":memory:").unwrap()
+    let script = longScript()
+    match db.exec(script[0..len(script) - len(CUT)]) {
+        Ok(_) {}
+        Err(e) { return "long: " + e.toStr() }
+    }
+    var st = db.query("SELECT (SELECT count(*) FROM u), (SELECT count(*) FROM t)", &[]).unwrap()
+    st.step().unwrap()
+    return "long: Ok, u has " + st.int(0).unwrap().toStr() + " row, t has " + st.int(1).unwrap().toStr()
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(quick, 0)
+        let b = s.start(long, 0)
+        println(a.wait().unwrap())
+        println(b.wait().unwrap())
+    })
+    println("open handles " + intToStr(sqlite.openHandles()))
+}

@@ -265,7 +265,7 @@ fn hex(v: int): str {
 
 // The libc functions the runtime calls in a dynamically linked program (rt_n_libc in
 // native/rt.c), in the order of that table.
-const HOOKS: []str = ["exit", "getenv", "__errno_location"]
+const HOOKS: []str = ["exit", "getenv", "__errno_location", "pthread_create"]
 
 // The runtime's C helpers for the library (rt.h's obx_ and obxlib_ functions): always the
 // runtime's own, in a dynamic program too.
@@ -273,7 +273,7 @@ fn rtHelper(name: str): bool { return startsWith(name, "obx_") || startsWith(nam
 
 // The C functions a dynamically linked program imports (to be looked up in its libraries),
 // or none when the program can be static: when every C function it calls is in the native
-// runtime. A dynamic program imports every C function it calls (the obx_ and obxlib_ helpers
+// runtime and it calls no blocking extern (the helper pool needs libc's threads: rt_blocking). A dynamic program imports every C function it calls (the obx_ and obxlib_ helpers
 // of the runtime excepted), so that libc's errno, environment, heap and stdio are shared as in the
 // C backend, plus libc's entry and the runtime's HOOKS.
 pub fn dynNames(p: &ir.Ir): []str {
@@ -287,6 +287,7 @@ pub fn dynNames(p: &ir.Ir): []str {
     for i in 0..len(p.nodes) {
         if p.nodes[i].k != ir.E_FUNC { continue }
         let f = p.nodes[i].a
+        if p.funcs[f].body < 0 && p.funcs[f].name == "rt_blocking" { need = true }
         if p.funcs[f].body >= 0 || !p.funcs[f].isExtern { continue }
         let name = p.funcs[f].asmName
         if rtHelper(name) { continue }
