@@ -1458,19 +1458,7 @@ fn (g: mut &Gen) stmt(s: int) {
     let k = n.k
     if k == ir.S_BLOCK {
         let mark = g.frame
-        var j = 0
-        while j < g.u.listLen(n.a) {
-            let x = g.u.listAt(n.a, j)
-            let before = g.frame
-            if j + 1 < g.u.listLen(n.a) && (g.fusedIf(x, g.u.listAt(n.a, j + 1)) ||
-                g.fusedReturn(x, g.u.listAt(n.a, j + 1))) {
-                j += 2
-                continue
-            }
-            g.stmt(x)
-            g.frame = if g.isDecl(x) { g.declMark } else { before }
-            j += 1
-        }
+        g.stmtsFrom(n.a, 0)
         if n.v != 1 { g.frame = mark }
     } else if k == ir.S_DECL {
         let l = n.a
@@ -1522,6 +1510,8 @@ fn (g: mut &Gen) stmt(s: int) {
         } else {
             g.a.bind(elseL)
         }
+    } else if k == ir.S_WHILE && g.rotTest(s) >= 0 {
+        g.rotated(s)
     } else if k == ir.S_WHILE {
         let top = g.a.newLabel()
         let end = g.a.newLabel()
@@ -1545,10 +1535,13 @@ fn (g: mut &Gen) stmt(s: int) {
         }
         let top = g.a.newLabel()
         let cont = g.a.newLabel()
+        let test = g.a.newLabel()
         let end = g.a.newLabel()
+        // rotated: the condition is tested at the bottom (one branch per iteration), and first
+        // reached by a jump to it
+        if n.b >= 0 { g.a.jmp(test) }
         g.a.bind(top)
         g.loops += 1
-        if n.b >= 0 { g.branch(n.b, end, false) }
         append(mut &g.breakL, end)
         append(mut &g.contL, cont)
         g.stmt(n.d)
@@ -1556,8 +1549,9 @@ fn (g: mut &Gen) stmt(s: int) {
         pop(mut &g.contL)
         g.a.bind(cont)
         if n.c >= 0 { g.genEffect(n.c) }
+        g.a.bind(test)
+        if n.b >= 0 { g.branch(n.b, top, true) } else { g.a.jmp(top) }
         g.loops -= 1
-        g.a.jmp(top)
         g.a.bind(end)
         g.frame = mark
     } else if k == ir.S_BREAK {
@@ -1579,6 +1573,89 @@ fn (g: mut &Gen) stmt(s: int) {
     } else {
         g.fail(s, "statement kind " + intToStr(k))
     }
+}
+
+// The statements of the list l from index j0, as a block generates them (the frame of each
+// statement's temporaries released after it, a declaration's slot kept).
+fn (g: mut &Gen) stmtsFrom(l: int, j0: int) {
+    var j = j0
+    while j < g.u.listLen(l) {
+        let x = g.u.listAt(l, j)
+        let before = g.frame
+        if j + 1 < g.u.listLen(l) && (g.fusedIf(x, g.u.listAt(l, j + 1)) || g.fusedReturn(x, g.u.listAt(l, j + 1))) {
+            j += 2
+            continue
+        }
+        g.stmt(x)
+        g.frame = if g.isDecl(x) { g.declMark } else { before }
+        j += 1
+    }
+}
+
+// Whether s is `if (...) break;`: no else, a body that is only break.
+fn (g: &Gen) breakIf(s: int): bool {
+    let n = g.u.nodes[s]
+    if n.k != ir.S_IF || n.c >= 0 { return false }
+    var b = n.b
+    while g.u.nk(b) == ir.S_BLOCK && g.u.listLen(g.u.nodes[b].a) == 1 { b = g.u.listAt(g.u.nodes[b].a, 0) }
+    return g.u.nk(b) == ir.S_BREAK
+}
+
+// The while loop s (`while (1) { [bool c = E;] if (!c) break; ... }`, the C of every obx loop,
+// or `while (E) ...`) with its test at the bottom: the number of statements of the body that
+// make the test (0: the loop's own condition is it), or -1 when it is not generated rotated.
+fn (g: &Gen) rotTest(s: int): int {
+    let n = g.u.nodes[s]
+    if g.u.nk(n.a) != ir.E_INT { return 0 }
+    if g.u.nodes[n.a].v == 0 || g.u.nk(n.b) != ir.S_BLOCK { return -1 }
+    let l = g.u.nodes[n.b].a
+    let cnt = g.u.listLen(l)
+    if cnt >= 1 && g.breakIf(g.u.listAt(l, 0)) { return 1 }
+    if cnt >= 2 && g.fusesIf(g.u.listAt(l, 0), g.u.listAt(l, 1)) && g.breakIf(g.u.listAt(l, 1)) { return 2 }
+    return -1
+}
+
+// The while loop s rotated: a jump to the test, the rest of the body, then the test, which
+// jumps back to the body while the loop goes on. The same tests run in the same order (each
+// iteration starts with the test); only the layout changes, so the live ranges by position
+// (allocRegs) still hold: the test is reached from the entry and from the end of the body,
+// as the top was. A continue jumps to the test.
+fn (g: mut &Gen) rotated(s: int) {
+    let n = g.u.nodes[s]
+    let nt = g.rotTest(s)
+    let top = g.a.newLabel()
+    let test = g.a.newLabel()
+    let end = g.a.newLabel()
+    g.a.jmp(test)
+    g.a.bind(top)
+    g.loops += 1
+    append(mut &g.breakL, end)
+    append(mut &g.contL, test)
+    let mark = g.frame
+    if nt == 0 {
+        g.stmt(n.b)
+    } else {
+        g.stmtsFrom(g.u.nodes[n.b].a, nt)
+    }
+    g.frame = mark
+    pop(mut &g.breakL)
+    pop(mut &g.contL)
+    g.a.bind(test)
+    if nt == 0 {
+        g.branch(n.a, top, true)
+    } else {
+        let l = g.u.nodes[n.b].a
+        let ifS = g.u.listAt(l, nt - 1)
+        let cond = g.u.nodes[ifS].a
+        if nt == 2 {
+            // `bool c = E; if (!c) break;` (or `if (c)`): E for c
+            g.branch(g.u.nodes[g.u.listAt(l, 0)].b, top, g.u.nk(cond) == ir.E_LNOT)
+        } else {
+            g.branch(cond, top, false)
+        }
+    }
+    g.loops -= 1
+    g.a.bind(end)
 }
 
 // The expression e for its effect only (its value unused).
