@@ -43,6 +43,10 @@ const QUIET_REGS: []int = [6, 7, 8, 9]            // rsi rdi r8 r9
 // (nor the return address of a call from it) can skip the guard page.
 const PROBE_FREE = 2048
 
+// Functions start at multiples of this (the code segment's base is one): where a function falls
+// in the fetch blocks changes the speed of a small recursive one by 15% (bench fib). int3 pads.
+const FUNC_ALIGN = 16
+
 // Symbol kinds.
 const SK_FUNC = 0        // idx: a function with a body
 const SK_GLOBAL = 1      // idx: a global
@@ -315,7 +319,10 @@ fn (g: mut &Gen) genAll() {
         g.a.ud2()
     }
     for f in 0..len(g.u.funcs) {
-        if g.u.funcs[f].body >= 0 { g.genFunc(f) }
+        if g.u.funcs[f].body >= 0 {
+            while g.a.pos() % FUNC_ALIGN != 0 { g.a.b(0xCC) }
+            g.genFunc(f)
+        }
     }
     g.a.fixLabels()
     g.codeEnd = g.a.pos()
