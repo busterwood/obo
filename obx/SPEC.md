@@ -908,8 +908,9 @@ compiler small. None of them needs a change to the rules above.
 - **Effects**: per-function summaries of what a call may free, which allow
   owned globals and borrows of them.
 - **Templates** (sql, html): to be a desugaring onto a library protocol.
-- **Concurrency**: coroutines with futures, promises and shared values inside
-  a process, and several processes for several cores
+- **Concurrency beyond tasks**: tasks, futures, promises and shared values
+  inside a process are in section 16; parking I/O (sockets, timers), C calls
+  on helper threads, and several processes for several cores are planned
   ([design/concurrency.md](design/concurrency.md)). obx has no threads: a
   shared-nothing decision, for safety and for performance.
 
