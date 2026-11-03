@@ -306,6 +306,9 @@ leaks under `OBX_CHECK=1` after a graceful shutdown.
 
 ### Stage C2: workers as processes
 
+Section 9 records an idea under consideration, process futures, that would
+subsume this stage if adopted.
+
 - `task.workers(n, f: &fn())` runs `f` in n forked children. It flushes
   stdout before forking, and it forks before any connection or helper thread
   exists. A supervisor in the parent restarts a crashed worker and forwards
@@ -471,3 +474,65 @@ as recommended.
    check may reject a program whose parking path is never taken, so moving
    to it can break programs that run today; that cost is accepted. A lock
    was rejected: held across a park, it brings back deadlocks and latency.
+
+## 9. Ideas under consideration
+
+Not decisions. Recorded so they are not lost; each needs its own discussion
+before it is planned.
+
+### Process futures (2026-11-03)
+
+A future promises "a `T` later, or an error"; where the work runs does not
+matter to the waiter. So a process could be one more way to start a future,
+with the same `Future[T]`, `wait`, `task.all` and `task.any`, mixing tasks and
+processes.
+
+**Our own program's work in a process** (the main idea):
+
+```obx
+task.scope(fn(s) {
+    var fs: [Future[Result[Valuation, ProcessError]]] = []
+    for chunk in split(portfolio, 8) {
+        fs.push(s.startProcess(valueChunk, chunk))   // 8 cores, no threads
+    }
+    let parts = try task.all(fs)
+    report(merge(parts))
+})
+```
+
+- The parent parks on a pipe in its epoll loop; other tasks keep running.
+- A child that panics, runs out of memory or crashes comes back as
+  `Err(ProcessFailed{exit})`: failure stays inside that piece of work.
+- Cancellation sends SIGTERM, then SIGKILL after a deadline.
+- What crosses the pipe is encoded by compiler-generated code (like drop
+  glue), behind a new derived constraint (say `wire`, like `copy`) that a type
+  fails if it holds a `ptr`, a `Shared` or a function value. That is a
+  language change.
+
+Three ways to start the child:
+
+| Method | Argument | Main risk | Start (ns, estimate) |
+|---|---|---|---:|
+| `fork` directly | free (copy-on-write) | unsafe once helper threads exist (a lock held by another thread stays held); the child inherits open C resources such as a Postgres socket | 50,000–5,000,000 (grows with the page tables) |
+| fork server: a small process forked at program start, forking each child on request | encoded | the child starts from the program's early state | 50,000–150,000 |
+| re-run our own executable with a hidden flag naming the function | encoded | slowest start; cleanest child | 1,000,000–3,000,000 |
+
+The fork server is the likely choice. Python's `multiprocessing` used plain
+`fork` on Linux for years, hit the threads-and-locks problem, and moved its
+Linux default to a fork server in 3.14. Sending a result back costs
+2,000–5,000 ns plus about 1 ns per byte, so process futures suit coarse work
+(milliseconds or more), not one per request.
+
+If adopted, this would subsume stage C2 (`task.workers` becomes n process
+futures and a supervisor loop that restarts any that return `Err`) and make
+C4's threads largely unnecessary for batch work: several cores without atomic
+string counts or thread-local globals.
+
+**Other programs** (a side benefit): `s.run("gzip", ["-9", path])` returning
+`Future[Result[Exit, IoError]]`, through `posix_spawn` and pipes. The library
+has no process spawning today (the compiler driver calls gcc with
+`system()`). No language change.
+
+Open points: the `wire` constraint (the user's decision); a marker for C
+wrapper types that must not be used across a fork; a child reaching a
+`Shared` through a global changes only its own copy.
