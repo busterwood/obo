@@ -12,7 +12,9 @@
 // Functions are optimized callees first (a depth-first walk of the calls), so a body that is
 // inlined has had its own calls inlined; a call into a function still being optimized (a
 // recursive one) stays a call. `x = g(x)`, where g returns its parameter changed, changes x in
-// place. At the end the functions nothing names any more (every call inlined) are dropped.
+// place. After a function's calls are inlined, its value records copied from a place and
+// only read field by field become their fields (the section "value records in fields"), and
+// at the end the functions nothing names any more (every call inlined) are dropped.
 //
 // Only the native backend runs this pass; the C backend prints the IR as lower built it, and
 // gcc inlines on its own. OBX_INLINE=n sets the size limit (0: no inlining).
@@ -60,12 +62,21 @@ type Opt = record {
     aty: int                // D_ASSIGN: the type of the assignment
     single: bool            // the body's only return is its last statement
     nrvo: int               // D_DECL: the body's local that is dl (its result), or -1
+    // value records in fields (scalars)
+    dupF: int               // rt_str_dup, rt_str_drop
+    dropF: int
+    stamp: int              // the function being rewritten
+    sStamp: []int           // per local: stamp when sCand is set
+    sCand: []int            // ... the candidate it stands for
+    cands: []Cand
+    adj: int
 }
 
 // The program p with small functions inlined at their calls.
 pub fn optimize(p: ir.Ir): ir.Ir {
     var o = Opt{u: p, state: [], form: [], size: [], rets: [], ro: [], refs: [], aTaken: [], mk: [], mv: [], bound: [], budget: 0, cur: -1,
-        grown: 0, limit: 0, dest: D_NONE, dl: -1, lv: -1, aty: -1, single: false, nrvo: -1}
+        grown: 0, limit: 0, dest: D_NONE, dl: -1, lv: -1, aty: -1, single: false, nrvo: -1,
+        dupF: -1, dropF: -1, stamp: 0, sStamp: [], sCand: [], cands: [], adj: -1}
     o.limit = INLINE_LIMIT
     let ev = os.envOr("OBX_INLINE", "")
     if ev != "" { o.limit = parseInt(ev).unwrapOr(INLINE_LIMIT) }
@@ -77,7 +88,13 @@ pub fn optimize(p: ir.Ir): ir.Ir {
         append(mut &o.refs, 0)
         append(mut &o.ro, 0)
     }
+    for f in 0..o.u.nRtFuncs {
+        if o.u.funcs[f].name == "rt_str_dup" { o.dupF = f }
+        if o.u.funcs[f].name == "rt_str_drop" { o.dropF = f }
+    }
     for l in 0..len(o.u.locals) {
+        append(mut &o.sStamp, 0)
+        append(mut &o.sCand, -1)
         append(mut &o.aTaken, false)
         append(mut &o.mk, M_NONE)
         append(mut &o.mv, -1)
@@ -101,6 +118,8 @@ fn (o: mut &Opt) mk1(k: int, ty: int, a: int, b: int, c: int): int {
 fn (o: mut &Opt) local(name: str, ty: int, taken: bool): int {
     append(mut &o.u.locals, ir.Local{name: name, ty: ty})
     append(mut &o.aTaken, taken)
+    append(mut &o.sStamp, 0)
+    append(mut &o.sCand, -1)
     append(mut &o.mk, M_NONE)
     append(mut &o.mv, -1)
     return len(o.u.locals) - 1
@@ -346,6 +365,7 @@ fn (o: mut &Opt) visit(f: int) {
     o.cur = f
     o.grown = 0
     o.stmtIn(o.u.funcs[f].body)
+    o.scalars(f)
     o.form[f] = o.shape(f)
     let form = o.form[f]
     if form >= 0 {
@@ -434,6 +454,361 @@ fn (o: &Opt) always(s: int): bool {
     }
     if k == ir.S_IF { return o.u.nodes[s].c >= 0 && o.always(o.u.nodes[s].b) && o.always(o.u.nodes[s].c) }
     return false
+}
+
+// ---------------------------------------------------------------- value records in fields
+
+// A local of a record type declared as a copy of a place (`T n = p.nodes[i];`), and only
+// read field by field afterwards (`n.k`, `n.s`), becomes one local per field it reads, each
+// declared with that field of the place, where n was: the copy of the whole record is gone.
+// Copying the fields there is copying the record there, since nothing writes n. A field the
+// body never reads whose reference count the copy took (`n.s = rt_str_dup(n.s);` right after
+// the declaration) and whose drops are only n's own (`rt_str_drop(n.s);`) is not copied at
+// all: the count went up and came down with nothing between that reads the field, so neither
+// is needed. `T m = n;` where m is n moved (n never named again but in m's field reads) is the
+// same record: both go together.
+
+type Fld = value record {
+    off: int                // its offset in the record
+    ty: int
+    tmpl: int               // a member chain naming it (rooted at the record's local)
+    read: bool
+    dups: int               // `n.f = rt_str_dup(n.f);`
+    drops: int              // `rt_str_drop(n.f);`
+    away: bool              // some dup is not right after a declaration of the record
+    loc: int                // the local that stands for it, or -1: none
+}
+
+type Cand = record {
+    l: int                  // the record's local
+    decl: int
+    bad: bool               // named some other way: stays a record
+    flds: []Fld
+}
+
+// The candidate (an index of cands) local l stands for in the function being optimized, or -1.
+fn (o: &Opt) candOf(l: int): int {
+    if l < 0 || o.sStamp[l] != o.stamp { return -1 }
+    return o.sCand[l]
+}
+
+fn (o: mut &Opt) setCand(l: int, c: int) {
+    o.sStamp[l] = o.stamp
+    o.sCand[l] = c
+}
+
+// The field the member chain x (rooted at a candidate's local) names, in candidate c: its
+// index in c's fields, added when new.
+fn (o: mut &Opt) field(c: int, x: int): int {
+    var off = 0
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER {
+        off += o.u.nodes[r].v
+        r = o.u.nodes[r].a
+    }
+    let t = o.u.nodes[x].ty
+    for i in 0..len(o.cands[c].flds) {
+        if o.cands[c].flds[i].off == off && o.cands[c].flds[i].ty == t { return i }
+    }
+    append(mut &o.cands[c].flds, Fld{off: off, ty: t, tmpl: x, read: false, dups: 0, drops: 0, away: false, loc: -1})
+    return len(o.cands[c].flds) - 1
+}
+
+// Replaces the value records of f's body by their fields where it can.
+fn (o: mut &Opt) scalars(f: int) {
+    if o.dupF < 0 || o.dropF < 0 { return }
+    o.stamp += 1
+    o.cands = []
+    o.adj = -1
+    o.sa(o.u.funcs[f].body)
+    var any = false
+    for c in 0..len(o.cands) {
+        if o.settle(c) { any = true }
+    }
+    if any { o.sr(o.u.funcs[f].body) }
+}
+
+// The statement `x.f = rt_str_dup(x.f);` (e is its expression): x.f, or -1.
+fn (o: &Opt) dupOf(e: int): int {
+    if o.u.nk(e) != ir.E_ASSIGN { return -1 }
+    let a = o.u.nodes[e].a
+    let b = o.u.nodes[e].b
+    if o.u.nk(a) != ir.E_MEMBER || o.callee(b) != o.dupF || o.u.listLen(o.u.nodes[b].b) != 1 { return -1 }
+    return if o.samePlace(a, o.u.listAt(o.u.nodes[b].b, 0)) { a } else { -1 }
+}
+
+// The statement `rt_str_drop(x.f);`: x.f, or -1.
+fn (o: &Opt) dropOf(e: int): int {
+    if o.callee(e) != o.dropF || o.u.listLen(o.u.nodes[e].b) != 1 { return -1 }
+    let a = o.u.listAt(o.u.nodes[e].b, 0)
+    return if o.u.nk(a) == ir.E_MEMBER { a } else { -1 }
+}
+
+// Whether e (an S_EXPR's) is `x = x` for a place x.
+fn (o: &Opt) nopAssign(e: int): bool {
+    return o.u.nk(e) == ir.E_ASSIGN && o.samePlace(o.u.nodes[e].a, o.u.nodes[e].b)
+}
+
+// The analysis: the candidates, the fields they read, their dups and drops; bad when a
+// candidate is named whole, written, or its address (or a field's) taken. adj: the local
+// whose dups may come next (a candidate just declared).
+fn (o: mut &Opt) sa(x: int) {
+    if x < 0 { return }
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.S_BLOCK {
+        o.adj = -1
+        for j in 0..o.u.items[a] { o.saItem(o.u.items[a + 1 + j]) }
+        o.adj = -1
+        return
+    }
+    if k == ir.E_LOCAL {
+        let c = o.candOf(a)
+        if c >= 0 { o.cands[c].bad = true }
+        return
+    }
+    if k == ir.E_MEMBER {
+        let c = o.candOf(o.root(x))
+        if c >= 0 {
+            let i = o.field(c, x)
+            o.cands[c].flds[i].read = true
+            return
+        }
+    } else if k == ir.E_ASSIGN || k == ir.E_POSTINC || k == ir.E_ADDR || k == ir.E_DECAY {
+        let c = o.candOf(o.root(a))
+        if c >= 0 { o.cands[c].bad = true }
+    }
+    let kc = o.kids(x)
+    if kc == K_NONE { return }
+    let b = o.u.nodes[x].b
+    let c = o.u.nodes[x].c
+    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_CALL { o.sa(a) }
+    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.sa(b) }
+    if kc == K_ABC || kc == K_FOR { o.sa(c) }
+    if kc == K_FOR { o.sa(o.u.nodes[x].d) }
+    let l = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_DECL { c } else { -1 }
+    if l >= 0 {
+        for j in 0..o.u.items[l] { o.sa(o.u.items[l + 1 + j]) }
+    }
+    if k >= ir.S_DECL { o.adj = -1 }
+}
+
+// sa of a statement of a list: where candidates are declared, and their dups follow.
+fn (o: mut &Opt) saItem(x: int) {
+    let k = o.u.nodes[x].k
+    if k == ir.S_DECL {
+        let l = o.u.nodes[x].a
+        let b = o.u.nodes[x].b
+        let t = o.u.locals[l].ty
+        if b >= 0 && o.u.nodes[x].c < 0 && o.u.tk(t) == ir.TY_STRUCT && o.u.nodes[b].ty == t && !o.aTaken[l] {
+            let src = if o.u.nk(b) == ir.E_LOCAL { o.candOf(o.u.nodes[b].a) } else { -1 }
+            if src >= 0 {
+                if !o.cands[src].bad {
+                    // m = n: the same record
+                    o.setCand(l, src)
+                    o.adj = l
+                    return
+                }
+            } else if o.lvalue(b) && !o.u.structs[o.u.tys[t].sid].isUnion {
+                o.sa(b)
+                o.setCand(l, len(o.cands))
+                append(mut &o.cands, Cand{l: l, decl: x, bad: false, flds: []})
+                o.adj = l
+                return
+            }
+        }
+    } else if k == ir.S_EXPR {
+        let e = o.u.nodes[x].a
+        if o.nopAssign(e) && o.candOf(o.root(o.u.nodes[e].a)) >= 0 { return }
+        let d = o.dupOf(e)
+        let dc = if d >= 0 { o.candOf(o.root(d)) } else { -1 }
+        if dc >= 0 {
+            let i = o.field(dc, d)
+            o.cands[dc].flds[i].dups += 1
+            if o.root(d) != o.adj { o.cands[dc].flds[i].away = true }
+            return
+        }
+        let p = o.dropOf(e)
+        let pc = if p >= 0 { o.candOf(o.root(p)) } else { -1 }
+        if pc >= 0 {
+            let i = o.field(pc, p)
+            o.cands[pc].flds[i].drops += 1
+            o.adj = -1
+            return
+        }
+    }
+    o.sa(x)
+    o.adj = -1
+}
+
+// Whether candidate c becomes its fields; their locals made.
+fn (o: mut &Opt) settle(c: int): bool {
+    if o.cands[c].bad { return false }
+    let n = len(o.cands[c].flds)
+    for i in 0..n {
+        let fi = o.cands[c].flds[i]
+        for j in i + 1..n {
+            let fj = o.cands[c].flds[j]
+            if fi.off < fj.off + o.u.sizeOf(fj.ty) && fj.off < fi.off + o.u.sizeOf(fi.ty) {
+                o.cands[c].bad = true
+                return false
+            }
+        }
+    }
+    // a copy of a local is no copy from memory: worth it only for a count it saves
+    var saves = false
+    for f in o.cands[c].flds {
+        if !f.read && f.dups > 0 && !f.away { saves = true }
+    }
+    if !saves && o.root(o.u.nodes[o.cands[c].decl].b) >= 0 {
+        o.cands[c].bad = true
+        return false
+    }
+    let name = o.u.locals[o.cands[c].l].name
+    for i in 0..n {
+        let f = o.cands[c].flds[i]
+        if f.read || f.dups == 0 || f.away {
+            o.cands[c].flds[i].loc = o.local(name, f.ty, false)
+        }
+    }
+    return true
+}
+
+// The candidate x's root stands for when it becomes its fields, or -1.
+fn (o: &Opt) done(x: int): int {
+    let c = o.candOf(o.root(x))
+    return if c >= 0 && !o.cands[c].bad { c } else { -1 }
+}
+
+// The local that stands for the member chain x of a candidate that became its fields.
+fn (o: mut &Opt) fieldLoc(c: int, x: int): int {
+    let i = o.field(c, x)
+    return o.cands[c].flds[i].loc
+}
+
+// Whether the place x is read again at no cost and to the same value, right after itself: a
+// local or global, a member of one, or what a local points to.
+fn (o: &Opt) cheap(x: int): bool {
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER { r = o.u.nodes[r].a }
+    let k = o.u.nk(r)
+    if k == ir.E_LOCAL || k == ir.E_GLOBAL { return true }
+    return k == ir.E_DEREF && o.u.nk(o.u.nodes[r].a) == ir.E_LOCAL
+}
+
+// A copy of the member chain x with its root (a local) replaced by base.
+fn (o: mut &Opt) rebase(x: int, base: int): int {
+    if o.u.nk(x) != ir.E_MEMBER { return base }
+    let inner = o.rebase(o.u.nodes[x].a, base)
+    append(mut &o.u.nodes, o.u.nodes[x])
+    let y = len(o.u.nodes) - 1
+    o.u.nodes[y].a = inner
+    return y
+}
+
+// A copy of the tree x (a cheap place).
+fn (o: mut &Opt) copyTree(x: int): int {
+    append(mut &o.u.nodes, o.u.nodes[x])
+    let y = len(o.u.nodes) - 1
+    let k = o.u.nodes[x].k
+    if k == ir.E_MEMBER || k == ir.E_DEREF { o.u.nodes[y].a = o.copyTree(o.u.nodes[x].a) }
+    return y
+}
+
+// The rewrite: the candidates' declarations become their fields' (in the lists), their dups
+// and drops of fields without a local go, their field reads name the locals.
+fn (o: mut &Opt) sr(x: int) {
+    if x < 0 { return }
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.S_BLOCK {
+        var out: []int = []
+        var changed = false
+        for j in 0..o.u.items[a] {
+            let s = o.u.items[a + 1 + j]
+            if o.srItem(s, mut &out) { changed = true }
+        }
+        if changed { o.u.nodes[x].a = o.u.list(&out) }
+        return
+    }
+    if k == ir.E_MEMBER {
+        let c = o.done(x)
+        if c >= 0 {
+            let l = o.fieldLoc(c, x)
+            o.u.nodes[x].k = ir.E_LOCAL
+            o.u.nodes[x].a = l
+            o.u.nodes[x].v = 0
+            return
+        }
+    }
+    let kc = o.kids(x)
+    if kc == K_NONE { return }
+    let b = o.u.nodes[x].b
+    let c = o.u.nodes[x].c
+    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_CALL { o.sr(a) }
+    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.sr(b) }
+    if kc == K_ABC || kc == K_FOR { o.sr(c) }
+    if kc == K_FOR { o.sr(o.u.nodes[x].d) }
+    let l = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_DECL { c } else { -1 }
+    if l >= 0 {
+        for j in 0..o.u.items[l] { o.sr(o.u.items[l + 1 + j]) }
+    }
+}
+
+// sr of the statement x of a list, into out: whether it is not just x.
+fn (o: mut &Opt) srItem(x: int, out: mut &[]int): bool {
+    let k = o.u.nodes[x].k
+    if k == ir.S_DECL {
+        let l = o.u.nodes[x].a
+        let c = o.candOf(l)
+        if c >= 0 && !o.cands[c].bad {
+            if o.cands[c].decl == x { o.split(c, x, out) }
+            return true
+        }
+    } else if k == ir.S_EXPR {
+        let e = o.u.nodes[x].a
+        if o.nopAssign(e) && o.done(o.u.nodes[e].a) >= 0 { return true }
+        let d = o.dupOf(e)
+        if d >= 0 {
+            let c = o.done(d)
+            if c >= 0 && o.fieldLoc(c, d) < 0 { return true }
+        }
+        let p = o.dropOf(e)
+        if p >= 0 {
+            let c = o.done(p)
+            if c >= 0 && o.fieldLoc(c, p) < 0 { return true }
+        }
+    }
+    o.sr(x)
+    append(out, x)
+    return false
+}
+
+// The declaration x of candidate c as its fields' declarations, into out.
+fn (o: mut &Opt) split(c: int, x: int, out: mut &[]int) {
+    let e = o.u.nodes[x].b
+    o.sr(e)
+    var base = -1
+    var q = -1
+    if !o.cheap(e) {
+        let pt = o.u.ptrTo(o.u.nodes[e].ty)
+        q = o.local(o.u.locals[o.cands[c].l].name, pt, false)
+        let addr = if o.u.nk(e) == ir.E_DEREF { o.u.nodes[e].a } else { o.mk1(ir.E_ADDR, pt, e, -1, -1) }
+        append(out, o.mk1(ir.S_DECL, ir.TY_VOID, q, addr, -1))
+    }
+    for i in 0..len(o.cands[c].flds) {
+        let f = o.cands[c].flds[i]
+        if f.loc >= 0 {
+            var b = -1
+            if q >= 0 {
+                let ql = o.mk1(ir.E_LOCAL, o.u.locals[q].ty, q, -1, -1)
+                b = o.mk1(ir.E_DEREF, o.u.nodes[e].ty, ql, -1, -1)
+            } else {
+                b = o.copyTree(e)
+            }
+            append(out, o.mk1(ir.S_DECL, ir.TY_VOID, f.loc, o.rebase(f.tmpl, b), -1))
+        }
+    }
 }
 
 // ---------------------------------------------------------------- call sites
