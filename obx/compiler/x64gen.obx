@@ -35,6 +35,9 @@ const R11 = 11
 const INT_REGS: []int = [7, 6, 2, 1, 8, 9]       // rdi rsi rdx rcx r8 r9
 const NO_MEM: x64.Mem = x64.Mem{base: -9, index: -1, scale: 1, disp: 0}
 const LOCAL_REGS: []int = [3, 12, 13, 14, 15]     // rbx r12-r15 (callee-saved): locals
+// Caller-saved registers that the code generator uses only for calls and for the operations
+// that make a statement loud (scan): locals whose live range has no loud statement.
+const QUIET_REGS: []int = [6, 7, 8, 9]            // rsi rdi r8 r9
 
 // The largest frame that needs no stack probe: below a page, so that no access of the frame
 // (nor the return address of a call from it) can skip the guard page.
@@ -90,6 +93,14 @@ type Gen = record {
     stamp: int
     counting: bool              // the scan counts uses (once, before code generation)
     scanStack: []int            // the functions whose bodies the scan is in, in place of calls
+    first: []int                // per local: the first and last position the scan saw it at
+    last: []int
+    noInit: []int               // ... the loop (regions) it is declared in without an initializer, or -1
+    pos: int                    // the scan's position: its count of statements
+    scanExpr: int               // > 0: the scan is in the body of a call generated in place (one position)
+    loud: []bool                // per position: its code may change rsi, rdi, r8 or r9 (calls, ...)
+    regions: []int              // the loops: first and last position of each
+    openLoops: []int            // the regions the scan is in
     inlStack: []int             // the functions generated in place being generated
     inlEnd: []int               // ... the labels after their code
     inl: []int                  // per function: the size of its body if it can be generated in place
@@ -134,7 +145,8 @@ fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
-        stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [],
+        stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [], first: [], last: [],
+        noInit: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
         loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false}
     g.a.peep = true
@@ -156,6 +168,9 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.bad, false)
         append(mut &g.seen, 0)
         append(mut &g.aTaken, false)
+        append(mut &g.first, 0)
+        append(mut &g.last, 0)
+        append(mut &g.noInit, -1)
     }
     g.countUses()
     g.simplify()
@@ -501,27 +516,104 @@ fn (g: mut &Gen) genFunc(f: int) {
 }
 
 // Chooses the locals of function f that live in registers (g.reg), and saves the registers.
-// Candidates: integers and pointers whose address is not taken, named three times or in a
-// loop (else saving the register costs what it saves); the heaviest uses (a use in a loop
-// counts 8 times one outside, nested loops more) win.
+//
+// Candidates: integers and pointers whose address is not taken. The scan numbers the
+// statements of f (positions; everything in one statement, with the bodies of the calls
+// generated in place there, is one position) and finds each local's live range: its first
+// and last position, widened to a whole loop when it is named both in the loop and outside
+// it (its value goes around the loop's back edge), or when it is declared in a loop without
+// an initializer. Two locals whose ranges are disjoint never hold values at the same time
+// (one statement's code runs before the next one's, and only loops go back), so they may
+// share a register. The heaviest uses (a use in a loop counts 8 times one outside, nested
+// loops more) choose first: a range with no loud statement (no call, no 128-bit operation,
+// ...: the code there leaves rsi, rdi, r8 and r9 alone) can take one of those; else one of
+// the callee-saved registers, which are saved in the prologue: a new one only for a local
+// named three times or in a loop (else saving it costs what it saves).
 fn (g: mut &Gen) allocRegs(f: int) {
     g.resetScan()
     g.saved = []
+    g.pos = 0
+    g.loud = [true]                     // position 0: the entry, where the arguments arrive
+    g.regions = []
+    g.openLoops = []
+    g.scanExpr = 0
+    for j in 0..len(g.u.funcs[f].params) { g.occur(g.u.funcs[f].params[j]) }
     g.scan(g.u.funcs[f].body, 0)
     var cands: []int = []
     for l in g.touched {
         let t = g.u.locals[l].ty
-        if !g.bad[l] && g.weight[l] >= 3 && g.u.isScalar(t) && !g.isF(t) && !g.is128(t) { append(mut &cands, l) }
+        if !g.bad[l] && g.weight[l] >= 1 && g.u.isScalar(t) && !g.isF(t) && !g.is128(t) { append(mut &cands, l) }
     }
-    for r in LOCAL_REGS {
-        var best = -1
-        for l in cands {
-            if g.reg[l] < 0 && (best < 0 || g.weight[l] > g.weight[best]) { best = l }
+    // the live ranges: declared in a loop without an initializer, then named in and out of loops
+    for l in cands {
+        let r = g.noInit[l]
+        if r >= 0 { g.widen(l, g.regions[2 * r], g.regions[2 * r + 1]) }
+    }
+    var changed = true
+    while changed {
+        changed = false
+        for r in 0..len(g.regions) / 2 {
+            let ls = g.regions[2 * r]
+            let le = g.regions[2 * r + 1]
+            for l in cands {
+                // in the loop and before or after it, but not around all of it
+                if g.first[l] <= le && g.last[l] >= ls && (g.first[l] < ls || g.last[l] > le) &&
+                    !(g.first[l] <= ls && g.last[l] >= le) {
+                    g.widen(l, ls, le)
+                    changed = true
+                }
+            }
         }
-        if best < 0 { break }
-        g.reg[best] = r
-        append(mut &g.saved, g.temp(8, 8))
     }
+    // the count of loud positions before each position
+    var loudBefore: []int = [0]
+    for i in 0..len(g.loud) { append(mut &loudBefore, loudBefore[i] + (if g.loud[i] { 1 } else { 0 })) }
+    // heaviest first (a stable insertion sort: the order of the touched list breaks ties)
+    var order: []int = []
+    for l in cands {
+        append(mut &order, l)
+        var i = len(order) - 1
+        while i > 0 && g.weight[order[i - 1]] < g.weight[l] {
+            order[i] = order[i - 1]
+            i -= 1
+        }
+        order[i] = l
+    }
+    var given: []int = []
+    var nSaved = 0
+    for l in order {
+        var r = -1
+        if loudBefore[g.last[l] + 1] == loudBefore[g.first[l]] {
+            for q in QUIET_REGS {
+                if r < 0 && g.regFree(&given, q, l) { r = q }
+            }
+        }
+        for i in 0..nSaved {
+            if r < 0 && g.regFree(&given, LOCAL_REGS[i], l) { r = LOCAL_REGS[i] }
+        }
+        if r < 0 && nSaved < len(LOCAL_REGS) && g.weight[l] >= 3 {
+            r = LOCAL_REGS[nSaved]
+            nSaved += 1
+            append(mut &g.saved, g.temp(8, 8))
+        }
+        if r >= 0 {
+            g.reg[l] = r
+            append(mut &given, l)
+        }
+    }
+}
+
+// Whether register r is free over the live range of local l (no local given it overlaps).
+fn (g: &Gen) regFree(given: &[]int, r: int, l: int): bool {
+    for o in given {
+        if g.reg[o] == r && g.first[o] <= g.last[l] && g.first[l] <= g.last[o] { return false }
+    }
+    return true
+}
+
+fn (g: mut &Gen) widen(l: int, from: int, to: int) {
+    if from < g.first[l] { g.first[l] = from }
+    if to > g.last[l] { g.last[l] = to }
 }
 
 fn (g: mut &Gen) resetScan() {
@@ -830,59 +922,183 @@ fn (g: mut &Gen) touch(l: int) {
     if g.seen[l] != g.stamp {
         g.seen[l] = g.stamp
         append(mut &g.touched, l)
+        g.first[l] = g.pos
+        g.last[l] = g.pos
+        g.noInit[l] = -1
     }
 }
 
+// Local l is named at the scan's position.
+fn (g: mut &Gen) occur(l: int) {
+    g.touch(l)
+    g.widen(l, g.pos, g.pos)
+}
+
+// The next statement: a new position (not in the body of a call generated in place).
+fn (g: mut &Gen) step() {
+    if g.counting || g.scanExpr > 0 { return }
+    g.pos += 1
+    append(mut &g.loud, false)
+}
+
+fn (g: mut &Gen) enterLoop() {
+    g.step()
+    if g.counting || g.scanExpr > 0 { return }
+    append(mut &g.openLoops, len(g.regions) / 2)
+    append(mut &g.regions, g.pos)
+    append(mut &g.regions, g.pos)
+}
+
+fn (g: mut &Gen) exitLoop() {
+    if g.counting || g.scanExpr > 0 { return }
+    let r = pop(mut &g.openLoops)
+    g.regions[2 * r + 1] = g.pos
+}
+
+// Whether the code of node x itself (not its operands) may change rsi, rdi, r8 or r9: a call
+// that is not generated inline (the caller looks at those), a 128-bit value, an aggregate over
+// 128 bytes (copied with rep movsb), a conversion between double and u64 (a runtime helper).
+fn (g: &Gen) loudNode(x: int): bool {
+    let n = g.u.nodes[x]
+    let t = n.ty
+    if n.k >= ir.S_DECL { return false }
+    if g.is128(t) || (g.isAggr(t) && g.size(t) > 128) { return true }
+    if n.k == ir.E_CAST {
+        let st = g.u.nodes[n.a].ty
+        return (g.isF(t) && g.tk(st) == ir.TY_U64) || (g.isF(st) && g.tk(t) == ir.TY_U64)
+    }
+    return false
+}
+
+// Whether the call e of a runtime function is generated inline by inlineRt with no call, and
+// changes no register but rax, rcx and rdx (and the frame).
+fn (g: &Gen) quietRt(e: int): bool {
+    let name = g.rtName(e)
+    if name == "" { return false }
+    let n = g.u.nodes[e]
+    let nargs = g.u.listLen(n.b)
+    let ar = arOp(name)
+    if ar.k >= 0 { return nargs >= 2 && (ar.wrap || (nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)))) }
+    if g.cvInline(e) { return true }
+    let dv = divOp(name)
+    if dv.k >= 0 { return nargs == (if dv.op == ir.OP_SUB { 2 } else { 3 }) && g.isWhere(g.u.listAt(n.b, nargs - 1)) }
+    if name == "rt_idx" || name == "rt_str_byte" { return nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) }
+    return name == "rt_str_dup" && nargs == 1
+}
+
+// Whether the call e is an rt_cvs_N or rt_cvu_N that inlineCv generates inline (of a value of
+// 64 bits or less widened to 128 bits).
+fn (g: &Gen) cvInline(e: int): bool {
+    let name = g.rtName(e)
+    if !startsWith(name, "rt_cvs_") && !startsWith(name, "rt_cvu_") { return false }
+    let n = g.u.nodes[e]
+    if g.u.listLen(n.b) != 2 || !g.isWhere(g.u.listAt(n.b, 1)) || suffixKind(name[7..len(name)]) < 0 { return false }
+    let vn = g.u.nodes[g.u.listAt(n.b, 0)]
+    return vn.k == ir.E_CAST && g.is128(vn.ty) && g.u.isInt(g.u.nodes[vn.a].ty) && !g.is128(g.u.nodes[vn.a].ty)
+}
+
+// `bool c = e; if (c) ...` that stmt generates without c (fusedIf).
+fn (g: &Gen) fusesIf(d: int, s: int): bool {
+    let dn = g.u.nodes[d]
+    if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 || g.uses[dn.a] != 2 { return false }
+    if g.tk(g.u.locals[dn.a].ty) != ir.TY_BOOL || g.u.nk(s) != ir.S_IF { return false }
+    var cond = g.u.nodes[s].a
+    if g.u.nk(cond) == ir.E_LNOT { cond = g.u.nodes[cond].a }
+    return g.u.nk(cond) == ir.E_LOCAL && g.u.nodes[cond].a == dn.a
+}
+
+// `T r = e; return r;` that stmt generates without r (fusedReturn).
+fn (g: &Gen) fusesReturn(d: int, s: int): bool {
+    let dn = g.u.nodes[d]
+    if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 || g.uses[dn.a] != 2 || g.u.nk(s) != ir.S_RETURN { return false }
+    let r = g.u.nodes[s].a
+    if r < 0 || g.u.nk(r) != ir.E_LOCAL || g.u.nodes[r].a != dn.a { return false }
+    return g.u.nodes[r].ty == g.u.nodes[dn.b].ty && !g.isAggr(g.u.nodes[r].ty)
+}
+
 // Weighs the uses of locals in the tree x (at loop depth depth), with the bodies of the calls
-// that are generated in place; when counting, counts the times x names each (uses).
+// that are generated in place; when counting, counts the times x names each (uses); else
+// finds their positions, the loops and the loud positions (allocRegs).
 fn (g: mut &Gen) scan(x: int, depth: int) {
     if x < 0 { return }
     let n = g.u.nodes[x]
     let k = n.k
+    if !g.counting && g.loudNode(x) { g.loud[g.pos] = true }
     if k == ir.E_LOCAL {
-        g.touch(n.a)
+        g.occur(n.a)
         if g.counting { g.uses[n.a] += 1 }
         g.weight[n.a] += loopWeight(depth)
     } else if k == ir.E_ADDR || k == ir.E_DECAY {
         if g.u.nk(n.a) == ir.E_LOCAL {
             let l = g.u.nodes[n.a].a
-            g.touch(l)
+            g.occur(l)
             g.bad[l] = true
         }
         g.scan(n.a, depth)
-    } else if k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_CAST || k == ir.E_NEG || k == ir.E_BNOT ||
-        k == ir.E_LNOT || k == ir.E_POSTINC || k == ir.E_IENT || k == ir.S_EXPR || k == ir.S_RETURN {
+    } else if k == ir.S_EXPR || k == ir.S_RETURN {
+        g.step()
         g.scan(n.a, depth)
-    } else if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD ||
-        k == ir.S_SWITCH {
+    } else if k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_CAST || k == ir.E_NEG || k == ir.E_BNOT ||
+        k == ir.E_LNOT || k == ir.E_POSTINC || k == ir.E_IENT {
+        g.scan(n.a, depth)
+    } else if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD {
         g.scan(n.a, depth)
         g.scan(n.b, depth)
-    } else if k == ir.E_COND || k == ir.S_IF {
+    } else if k == ir.S_SWITCH {
+        g.step()
+        g.scan(n.a, depth)
+        g.scan(n.b, depth)
+    } else if k == ir.E_COND {
+        g.scan(n.a, depth)
+        g.scan(n.b, depth)
+        g.scan(n.c, depth)
+    } else if k == ir.S_IF {
+        g.step()
         g.scan(n.a, depth)
         g.scan(n.b, depth)
         g.scan(n.c, depth)
     } else if k == ir.E_CALL {
         g.scan(n.a, depth)
-        g.scanList(n.b, depth)
+        if !g.counting && g.cvInline(x) {
+            // the 128-bit conversion of the operand is not generated
+            g.scan(g.u.nodes[g.u.listAt(n.b, 0)].a, depth)
+            g.scan(g.u.listAt(n.b, 1), depth)
+        } else {
+            g.scanList(n.b, depth)
+        }
         let f = if g.counting { -1 } else { g.inlineTarget(x, true, depth) }
         if f >= 0 {
             // the body as it is generated in place: its parameters are assigned at the call
             for j in 0..len(g.u.funcs[f].params) {
                 let p = g.u.funcs[f].params[j]
-                g.touch(p)
+                g.occur(p)
                 g.weight[p] += loopWeight(depth)
             }
             append(mut &g.scanStack, f)
+            g.scanExpr += 1
             g.scan(g.u.funcs[f].body, depth)
+            g.scanExpr -= 1
             pop(mut &g.scanStack)
+        } else if !g.counting && !g.quietRt(x) {
+            g.loud[g.pos] = true
         }
     } else if k == ir.E_CLIT {
         g.scanList(n.b, depth)
     } else if k == ir.S_BLOCK {
         g.scanList(n.a, depth)
+        if !g.counting {
+            // the locals that fused statements do without
+            let cnt = g.u.listLen(n.a)
+            for j in 0..cnt - 1 {
+                let d = g.u.listAt(n.a, j)
+                let s = g.u.listAt(n.a, j + 1)
+                if g.fusesIf(d, s) || g.fusesReturn(d, s) { g.bad[g.u.nodes[d].a] = true }
+            }
+        }
     } else if k == ir.S_DECL {
+        g.step()
         let l = n.a
-        g.touch(l)
+        g.occur(l)
         if n.b >= 0 {
             if g.counting { g.uses[l] += 1 }
             g.weight[l] += loopWeight(depth)
@@ -891,15 +1107,29 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
             g.bad[l] = true
             g.scanList(n.c, depth)
         }
+        if !g.counting {
+            let t = g.u.locals[l].ty
+            if g.isAggr(t) && g.size(t) > 128 { g.loud[g.pos] = true }
+            if n.b < 0 && n.c < 0 && len(g.openLoops) > 0 {
+                // its value may go around the loop it is declared in
+                let r = g.openLoops[len(g.openLoops) - 1]
+                if g.noInit[l] >= 0 && g.noInit[l] != r { g.bad[l] = true }
+                g.noInit[l] = r
+            }
+        }
         g.scan(n.b, depth)
     } else if k == ir.S_WHILE {
+        g.enterLoop()
         g.scan(n.a, depth + 1)
         g.scan(n.b, depth + 1)
+        g.exitLoop()
     } else if k == ir.S_FOR {
         g.scan(n.a, depth)
+        g.enterLoop()
         g.scan(n.b, depth + 1)
         g.scan(n.c, depth + 1)
         g.scan(n.d, depth + 1)
+        g.exitLoop()
     }
 }
 
