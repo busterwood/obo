@@ -22,8 +22,8 @@ fn wait2(p: Pair2): int {
 
 fn main() {
     task.scope(fn(s: mut &task.Scope) {
-        let task.Pair{promise: pa, future: fa} = task.promise[int]()
-        let task.Pair{promise: pb, future: fb} = task.promise[int]()
+        let task.Handoff{promise: pa, future: fa} = task.promise[int]()
+        let task.Handoff{promise: pb, future: fb} = task.promise[int]()
         let a = s.start(wait2, Pair2{mine: pa, theirs: fb, name: "a"})
         let b = s.start(wait2, Pair2{mine: pb, theirs: fa, name: "b"})
         let r = a.wait()

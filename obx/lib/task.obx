@@ -65,8 +65,9 @@ pub type Future[T] = record { t: ptr }
 // A future completed by hand.
 pub type Promise[T] = record { t: ptr }
 
-// promise's result: obx has no tuples.
-pub type Pair[T] = record {
+// promise's result: the two ends of one hand-over, the promise that
+// completes it and the future that waits for it.
+pub type Handoff[T] = record {
     pub promise: Promise[T]
     pub future: Future[T]
 }
@@ -185,9 +186,9 @@ pub fn cancelled(): bool { return rtCancelled() != 0 }
 // ---- promises
 
 // A promise and the future it completes.
-pub fn promise[T](): Pair[T] {
+pub fn promise[T](): Handoff[T] {
     let t = rtPromise(dropCell[T])
-    return Pair[T]{promise: Promise[T]{t: t}, future: Future[T]{t: t}}
+    return Handoff[T]{promise: Promise[T]{t: t}, future: Future[T]{t: t}}
 }
 
 // Completes the future with v (never parks).

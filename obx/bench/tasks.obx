@@ -85,7 +85,7 @@ fn completes() {
         var ps: []task.Promise[int] = []
         var fs: []task.Future[int] = []
         for i in 0..BATCH {
-            let task.Pair{promise: p, future: f} = task.promise[int]()
+            let task.Handoff{promise: p, future: f} = task.promise[int]()
             append(mut &ps, p)
             append(mut &fs, f)
         }

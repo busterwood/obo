@@ -207,9 +207,9 @@ sockets and timers).
   `any[T](fs: []Future[T]): Result[T, Cancelled]` gives the first result,
   cancels the others and waits until they have finished (`fs` must not be
   empty).
-- `promise[T](): Pair[T]`: `Pair { promise: Promise[T]; future: Future[T] }`
-  (obx has no tuples: `let task.Pair{promise: p, future: f} =
-  task.promise[int]()`). `p.complete(v: T)` consumes the promise and never
+- `promise[T](): Handoff[T]`: `Handoff { promise: Promise[T]; future:
+  Future[T] }`, the two ends of one hand-over (`let task.Handoff{promise: p,
+  future: f} = task.promise[int]()`). `p.complete(v: T)` consumes the promise and never
   parks; a promise dropped without it makes `wait` give
   `Err(Cancelled.Abandoned)`.
 - `yield(): Result[Unit, Cancelled]` lets the other runnable tasks run;

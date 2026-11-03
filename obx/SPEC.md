@@ -948,7 +948,9 @@ on `p`, and dropping it `rt_sh_drop`, so that the handle is counted like a
 Two intrinsics exist only in modules loaded from a library root (`std` and
 modules imported by a bare name, not `./` or `../`); elsewhere their names
 are ordinary identifiers, and a call of them is an error. Like an extern call
-they are unchecked:
+they are unchecked: a module that uses them takes responsibility for what
+happens, as with an extern call (section 12), and no further restriction is
+planned:
 
 | Intrinsic | Meaning |
 |---|---|

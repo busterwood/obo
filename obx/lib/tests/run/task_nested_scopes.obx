@@ -25,7 +25,7 @@ fn (n: mut &Note) drop() { println("drop " + n.s) }
 fn leaf(n: int): int {
     let g = Note{s: "leaf " + intToStr(n)}
     println("leaf " + intToStr(n) + " start")
-    let task.Pair{promise: p, future: f} = task.promise[int]()
+    let task.Handoff{promise: p, future: f} = task.promise[int]()
     match f.wait() {
         Ok(v) { return v }
         Err(e) {

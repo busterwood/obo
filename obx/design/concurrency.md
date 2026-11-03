@@ -291,7 +291,9 @@ stack is an `mmap` and an `mprotect` (first use only; 64 stacks are kept
 for reuse).
 
 C1a as built (`lib/task.obx`; SPEC 16). Deviations from the plan above:
-`task.promise` returns a `task.Pair[T]` record (obx has no tuples);
+`task.promise` returns a `task.Handoff[T]` record with the fields
+`promise` and `future` (obx has no tuples, by design: a record names its
+parts);
 `task.scoped[R]` is `scope` for a function with a result (no "no result"
 type argument); the error type is `task.Cancelled`, a closed type with the
 variants `Cancelled` and `Abandoned` (written `Cancelled.Abandoned`); the
