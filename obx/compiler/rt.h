@@ -15,6 +15,10 @@
 #include <sys/ioctl.h>
 #include <time.h>
 #include <sys/mman.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #if defined(__SANITIZE_ADDRESS__)
 #include <sanitizer/common_interface_defs.h>
 #include <sanitizer/asan_interface.h>
@@ -133,6 +137,10 @@ struct rt_task {
     int state, refs;                /* refs: the future, the promise, and the running task itself */
     bool cancelled, cancellable, promise, abandoned, forgotten;
     const char* pw;                 /* while parked: where (the user's call, "file:line") */
+    int why;                        /* why it was woken: RT_WOK, or RT_WTIMEOUT by its timer */
+    int64_t deadline;               /* task.within's deadline (monotonic ns), or RT_NEVER */
+    int64_t wake_at, hidx;          /* while parked with a timer: when, and its heap index + 1 */
+    uint64_t tseq;                  /* the order of timers with one wake_at */
     int shdrop;                     /* inside a Shared value's drop: more go onto the worklist */
     rt_dact* ds;                    /* its drop-action stack and C string copies while switched out */
     int64_t dn, dcap;
@@ -144,7 +152,8 @@ struct rt_task {
     size_t ssz;
 #endif
 };
-static rt_task rt_root = {.refs = 1};
+#define RT_NEVER INT64_MAX
+static rt_task rt_root = {.refs = 1, .deadline = RT_NEVER};
 static rt_task* rt_cur = &rt_root;
 
 /* Stack overflow (SPEC 14, exit 4): a SIGSEGV near the stack, or in the guard page of the running
@@ -688,22 +697,141 @@ static void rt_switch(rt_task* to, bool dying) {
     rt_ctx_swap(&me->sp, to->sp);
     rt_resumed();
 }
-/* Suspends the running task until rt_wake (or, when cancellable, rt_cancel); true when it was
-   cancelled. */
-static bool rt_park(bool cancellable, const char* w) {
-    rt_task* me = rt_cur;
-    rt_task* nx = rt_dequeue();
-    if (!nx) rt_trap(14, "deadlock: every task is parked", w);
-    me->pw = w;
-    me->state = RT_PARKED;
-    me->cancellable = cancellable;
-    rt_switch(nx, false);
-    me->cancellable = false;
-    return cancellable && me->cancelled;
-}
 static void rt_wake(rt_task* t) {
     if (t->state == RT_PARKED) { t->state = RT_RUN; rt_enqueue(t); }
 }
+
+/* ---- the event loop (stage C1b): timers and sockets
+   A task that parks with a deadline (task.sleep, or a cancellable wait inside task.within) has a
+   timer: an entry in a binary heap ordered by (deadline, order of parking). A task waiting for a
+   socket is in rt_fds[fd]; every socket is registered with epoll once, edge-triggered, when it is
+   made, and an operation parks only after EAGAIN, so an edge always follows. When no task is
+   runnable, rt_poll wakes the tasks whose timers have expired and waits in epoll_wait (or, with
+   no socket waited for, nanosleep) until the nearest deadline or a ready socket. With no timer
+   and no task waiting for a socket, nothing can wake any task: a deadlock (exit 14). Every 64
+   switches it also looks without waiting, so tasks that keep each other runnable do not starve
+   the sockets and timers. */
+enum { RT_WOK = 0, RT_WCANCEL = 1, RT_WTIMEOUT = 3 };
+typedef struct { rt_task *rd, *wr; } rt_fdw;
+static rt_fdw* rt_fds;                     /* by descriptor: the tasks waiting to read and to write */
+static int64_t rt_nfds;
+static int rt_epfd = -1;
+static int64_t rt_nio;                     /* tasks waiting for a socket */
+static rt_task** rt_heap;                  /* the timers */
+static int64_t rt_nheap, rt_cheap;
+static uint64_t rt_tseq;
+static unsigned rt_ticks;
+
+static int64_t rt_mono(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+/* The monotonic time ms milliseconds from now, short of RT_NEVER. */
+static int64_t rt_after(int64_t ms) {
+    int64_t now = rt_mono();
+    if (ms <= 0) return now;
+    return ms >= (RT_NEVER - 1 - now) / 1000000 ? RT_NEVER - 1 : now + ms * 1000000;
+}
+static bool rt_expired(void) { return rt_cur->deadline != RT_NEVER && rt_mono() >= rt_cur->deadline; }
+static bool rt_tless(rt_task* a, rt_task* b) {
+    return a->wake_at < b->wake_at || (a->wake_at == b->wake_at && a->tseq < b->tseq);
+}
+static void rt_hset(int64_t i, rt_task* t) { rt_heap[i] = t; t->hidx = i + 1; }
+static void rt_hup(int64_t i) {
+    rt_task* t = rt_heap[i];
+    while (i > 0 && rt_tless(t, rt_heap[(i - 1) / 2])) { rt_hset(i, rt_heap[(i - 1) / 2]); i = (i - 1) / 2; }
+    rt_hset(i, t);
+}
+static void rt_hdown(int64_t i) {
+    rt_task* t = rt_heap[i];
+    for (;;) {
+        int64_t c = 2 * i + 1;
+        if (c >= rt_nheap) break;
+        if (c + 1 < rt_nheap && rt_tless(rt_heap[c + 1], rt_heap[c])) c++;
+        if (!rt_tless(rt_heap[c], t)) break;
+        rt_hset(i, rt_heap[c]);
+        i = c;
+    }
+    rt_hset(i, t);
+}
+static void rt_timer_add(rt_task* t, int64_t at) {
+    if (rt_nheap == rt_cheap) {
+        rt_cheap = rt_cheap ? 2 * rt_cheap : 64;
+        rt_heap = realloc(rt_heap, (size_t)rt_cheap * sizeof *rt_heap);
+        if (!rt_heap) rt_trap(2, "out of memory", "runtime");
+    }
+    t->wake_at = at;
+    t->tseq = rt_tseq++;
+    rt_heap[rt_nheap++] = t;
+    rt_hup(rt_nheap - 1);
+}
+static void rt_timer_del(rt_task* t) {
+    int64_t i = t->hidx - 1;
+    rt_task* last = rt_heap[--rt_nheap];
+    t->hidx = 0;
+    if (i < rt_nheap) { rt_hset(i, last); rt_hup(i); rt_hdown(last->hidx - 1); }
+}
+/* Makes runnable the tasks whose timers have expired and whose sockets are ready. With block,
+   waits until there is a runnable task; when nothing can make one, stops with a deadlock at w. */
+static void rt_poll(bool block, const char* w) {
+    struct epoll_event ev[256];
+    for (;;) {
+        int64_t wait = block && !rt_rq_head ? -1 : 0;   /* ns; -1: until a socket is ready */
+        if (rt_nheap) {
+            int64_t now = rt_mono();
+            while (rt_nheap && rt_heap[0]->wake_at <= now) {
+                rt_task* t = rt_heap[0];
+                rt_timer_del(t);
+                if (t->state == RT_PARKED) t->why = RT_WTIMEOUT;
+                rt_wake(t);
+            }
+            if (rt_rq_head) wait = 0;
+            else if (rt_nheap && wait) wait = rt_heap[0]->wake_at - now;
+        }
+        if (wait < 0 && !rt_nio) rt_trap(14, "deadlock: every task is parked", w);
+        if (rt_nio) {
+            int ms = wait < 0 ? -1 : wait > (int64_t)INT32_MAX * 1000000 ? INT32_MAX
+                   : (int)(wait / 1000000 + (wait % 1000000 != 0));
+            int n = epoll_wait(rt_epfd, ev, 256, ms);
+            for (int i = 0; i < n; i++) {
+                int64_t fd = (int64_t)ev[i].data.u64;
+                uint32_t e = ev[i].events;
+                if (fd >= rt_nfds) continue;
+                if (rt_fds[fd].rd && (e & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR))) rt_wake(rt_fds[fd].rd);
+                if (rt_fds[fd].wr && (e & (EPOLLOUT | EPOLLHUP | EPOLLERR))) rt_wake(rt_fds[fd].wr);
+            }
+        } else if (wait > 0) {
+            struct timespec d = {wait / 1000000000, wait % 1000000000};
+            nanosleep(&d, 0);
+        }
+        if (!block || rt_rq_head) return;
+    }
+}
+/* The task to run next: the run queue's first, after a look at the timers and sockets every 64
+   switches; when the queue is empty, after waiting for one. */
+static rt_task* rt_next(const char* w) {
+    if ((rt_nio | rt_nheap) && (++rt_ticks & 63) == 0) rt_poll(false, w);
+    rt_task* t = rt_dequeue();
+    if (!t) { rt_poll(true, w); t = rt_dequeue(); }
+    return t;
+}
+/* Suspends the running task until rt_wake, its timer at `at` (RT_NEVER: none) or, when
+   cancellable, rt_cancel: RT_WOK, RT_WTIMEOUT or RT_WCANCEL. */
+static int rt_park_until(bool cancellable, int64_t at, const char* w) {
+    rt_task* me = rt_cur;
+    me->pw = w;
+    me->state = RT_PARKED;
+    me->cancellable = cancellable;
+    me->why = RT_WOK;
+    if (at != RT_NEVER) rt_timer_add(me, at);
+    rt_task* nx = rt_next(w);
+    if (nx != me) rt_switch(nx, false);
+    if (me->hidx) rt_timer_del(me);
+    me->cancellable = false;
+    return cancellable && me->cancelled ? RT_WCANCEL : me->why;
+}
+static void rt_park(bool cancellable, const char* w) { rt_park_until(cancellable, RT_NEVER, w); }
 /* Every operation that can park checks first that no Shared.with is open (exit 13); w is the
    user's call. Defined with Shared below. */
 static void rt_nopark(const char* w);
@@ -729,8 +857,7 @@ __attribute__((noreturn)) static void rt_task_boot(void) {
     t->scope = 0;
     if (--s->live == 0 && s->closing) rt_wake(s->owner);
     if (t->waiter) rt_wake(t->waiter);
-    rt_task* nx = rt_dequeue();
-    if (!nx) rt_trap(14, "deadlock: every task is parked", s->owner->pw ? s->owner->pw : "runtime");
+    rt_task* nx = rt_next(s->owner->pw ? s->owner->pw : "runtime");
     rt_dead = t;
     rt_switch(nx, true);
     __builtin_unreachable();
@@ -759,6 +886,7 @@ void* obxlib_task_start(void* sp, void* run, void* job, void* resdrop) {
     t->run = (void* (*)(void*))run; t->job = job; t->resdrop = (void (*)(void*))resdrop;
     t->refs = 2;
     t->cancelled = rt_cur->cancelled;
+    t->deadline = rt_cur->deadline;
     t->scope = s;
     t->sprev = s->last;
     if (s->last) s->last->snext = t; else s->tasks = t;
@@ -777,27 +905,31 @@ void* obxlib_task_start(void* sp, void* run, void* job, void* resdrop) {
     rt_enqueue(t);
     return t;
 }
-/* 0 when t is done, 1 when the waiting task was cancelled, 2 when t is an abandoned promise. */
+/* 0 when t is done, 1 when the waiting task was cancelled, 2 when t is an abandoned promise, 3
+   when the waiting task's deadline passed. */
 int64_t obxlib_task_wait(void* p, const char* w) {
     rt_task* t = p;
     rt_nopark(w);
     while (t->state != RT_DONE) {
         if (rt_cur->cancelled) return 1;
+        if (rt_expired()) return 3;
         t->waiter = rt_cur;
-        rt_park(true, w);
+        rt_park_until(true, rt_cur->deadline, w);
         t->waiter = 0;
     }
     return t->abandoned ? 2 : 0;
 }
-/* The index of a future in ts[0..n) that is done, or -1 when the waiting task was cancelled. */
+/* The index of a future in ts[0..n) that is done; -1 when the waiting task was cancelled, -2 when
+   its deadline passed. */
 int64_t obxlib_task_wait_any(void** ts, int64_t n, const char* w) {
     rt_nopark(w);
     for (;;) {
         for (int64_t i = 0; i < n; i++)
             if (((rt_task*)ts[i])->state == RT_DONE) return i;
         if (rt_cur->cancelled) return -1;
+        if (rt_expired()) return -2;
         for (int64_t i = 0; i < n; i++) ((rt_task*)ts[i])->waiter = rt_cur;
-        rt_park(true, w);
+        rt_park_until(true, rt_cur->deadline, w);
         for (int64_t i = 0; i < n; i++) ((rt_task*)ts[i])->waiter = 0;
     }
 }
@@ -831,15 +963,167 @@ void* obxlib_task_take(void* p) {
     rt_release(t);
     return r;
 }
+/* 0, or 1 when the task is cancelled, 3 when its deadline has passed. */
 int64_t obxlib_task_yield(const char* w) {
     rt_nopark(w);
+    if ((rt_nio | rt_nheap) && (++rt_ticks & 63) == 0) rt_poll(false, w);
     if (rt_rq_head) {
         rt_enqueue(rt_cur);
         rt_switch(rt_dequeue(), false);
     }
-    return rt_cur->cancelled;
+    return rt_cur->cancelled ? 1 : rt_expired() ? 3 : 0;
 }
 int64_t obxlib_task_cancelled(void) { return rt_cur->cancelled; }
+/* What every library call that can park checks first, whether or not it parks: exit 13 inside
+   Shared.with; then 1 when the task is cancelled, 3 when its deadline has passed, else 0. */
+int64_t obxlib_task_check(const char* w) {
+    rt_nopark(w);
+    return rt_cur->cancelled ? 1 : rt_expired() ? 3 : 0;
+}
+/* Parks for ms milliseconds: 0, or 1 when cancelled, 3 when the task's deadline comes first. */
+int64_t obxlib_task_sleep(int64_t ms, const char* w) {
+    int64_t c = obxlib_task_check(w);
+    if (c || ms <= 0) return c;
+    int64_t at = rt_after(ms), dl = rt_cur->deadline;
+    int r = rt_park_until(true, at < dl ? at : dl, w);
+    return r == RT_WTIMEOUT && at <= dl ? 0 : r;
+}
+/* task.within: the deadline ms milliseconds from now, if it is earlier than the task's; the old
+   one, which obxlib_task_restore puts back. Tasks started meanwhile inherit it. */
+int64_t obxlib_task_within(int64_t ms) {
+    int64_t old = rt_cur->deadline, at = rt_after(ms);
+    if (at < old) rt_cur->deadline = at;
+    return old;
+}
+void obxlib_task_restore(int64_t old) { rt_cur->deadline = old; }
+
+/* ---- sockets (lib/net.obx): non-blocking TCP sockets, registered with epoll when made. An
+   address is a family (4 or 6), 16 bytes (an IPv4 address in the first 4) and a port. Results
+   are a count or a descriptor, or -errno. Writes use MSG_NOSIGNAL: a closed peer is EPIPE, never
+   SIGPIPE. */
+static int64_t rt_net_new(int fd) {
+    if (rt_epfd < 0 && (rt_epfd = epoll_create1(EPOLL_CLOEXEC)) < 0) { int e = errno; close(fd); return -e; }
+    if (fd >= rt_nfds) {
+        int64_t n = rt_nfds ? rt_nfds : 64;
+        while (n <= fd) n *= 2;
+        rt_fdw* f = realloc(rt_fds, (size_t)n * sizeof *rt_fds);
+        if (!f) rt_trap(2, "out of memory", "runtime");
+        memset(f + rt_nfds, 0, (size_t)(n - rt_nfds) * sizeof *f);
+        rt_fds = f;
+        rt_nfds = n;
+    }
+    struct epoll_event ev = {.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.u64 = (uint64_t)fd};
+    if (epoll_ctl(rt_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) { int e = errno; close(fd); return -e; }
+    return fd;
+}
+static socklen_t rt_net_sa(int64_t fam, const uint8_t* a, int64_t port, struct sockaddr_storage* ss) {
+    memset(ss, 0, sizeof *ss);
+    if (fam == 6) {
+        struct sockaddr_in6* s = (struct sockaddr_in6*)ss;
+        s->sin6_family = AF_INET6;
+        s->sin6_port = htons((uint16_t)port);
+        memcpy(&s->sin6_addr, a, 16);
+        return sizeof *s;
+    }
+    struct sockaddr_in* s = (struct sockaddr_in*)ss;
+    s->sin_family = AF_INET;
+    s->sin_port = htons((uint16_t)port);
+    memcpy(&s->sin_addr, a, 4);
+    return sizeof *s;
+}
+/* A listening socket (SO_REUSEADDR) bound to the address. */
+int64_t obxlib_net_listen(int64_t fam, const uint8_t* a, int64_t port, int64_t backlog) {
+    struct sockaddr_storage ss;
+    socklen_t n = rt_net_sa(fam, a, port, &ss);
+    int fd = socket(ss.ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -errno;
+    int one = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) != 0 || bind(fd, (struct sockaddr*)&ss, n) != 0 ||
+        listen(fd, (int)backlog) != 0) {
+        int e = errno;
+        close(fd);
+        return -e;
+    }
+    return rt_net_new(fd);
+}
+/* A socket connecting to the address; *pending is 1 while the connection is in progress (the
+   socket becomes writable when it is done, and obxlib_net_soerror tells how it went). */
+int64_t obxlib_net_connect(int64_t fam, const uint8_t* a, int64_t port, int64_t* pending) {
+    struct sockaddr_storage ss;
+    socklen_t n = rt_net_sa(fam, a, port, &ss);
+    int fd = socket(ss.ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -errno;
+    *pending = 0;
+    if (connect(fd, (struct sockaddr*)&ss, n) != 0) {
+        int e = errno;
+        if (e != EINPROGRESS) { close(fd); return -e; }
+        *pending = 1;
+    }
+    return rt_net_new(fd);
+}
+int accept4(int fd, struct sockaddr* a, socklen_t* n, int flags);   /* _GNU_SOURCE in <sys/socket.h> */
+int64_t obxlib_net_accept(int64_t fd) {
+    int c = accept4((int)fd, 0, 0, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    return c < 0 ? -errno : rt_net_new(c);
+}
+int64_t obxlib_net_read(int64_t fd, void* b, int64_t n) {
+    ssize_t r = read((int)fd, b, (size_t)n);
+    return r < 0 ? -errno : r;
+}
+int64_t obxlib_net_write(int64_t fd, const void* b, int64_t n) {
+    ssize_t r = send((int)fd, b, (size_t)n, MSG_NOSIGNAL);
+    return r < 0 ? -errno : r;
+}
+/* The local (peer 0) or remote address into out[0..19): the family, the port (big-endian), 16
+   address bytes. */
+int64_t obxlib_net_addr(int64_t fd, int64_t peer, uint8_t* out) {
+    struct sockaddr_storage ss;
+    socklen_t n = sizeof ss;
+    if ((peer ? getpeername((int)fd, (struct sockaddr*)&ss, &n) : getsockname((int)fd, (struct sockaddr*)&ss, &n)) != 0)
+        return -errno;
+    memset(out, 0, 19);
+    if (ss.ss_family == AF_INET6) {
+        struct sockaddr_in6* s = (struct sockaddr_in6*)&ss;
+        out[0] = 6;
+        memcpy(out + 1, &s->sin6_port, 2);
+        memcpy(out + 3, &s->sin6_addr, 16);
+    } else {
+        struct sockaddr_in* s = (struct sockaddr_in*)&ss;
+        out[0] = 4;
+        memcpy(out + 1, &s->sin_port, 2);
+        memcpy(out + 3, &s->sin_addr, 4);
+    }
+    return 0;
+}
+int64_t obxlib_net_nodelay(int64_t fd, int64_t on) {
+    int v = on != 0;
+    return setsockopt((int)fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof v) != 0 ? -errno : 0;
+}
+/* The outcome of a connect in progress (SO_ERROR): 0 or an errno. */
+int64_t obxlib_net_soerror(int64_t fd) {
+    int v = 0;
+    socklen_t n = sizeof v;
+    return getsockopt((int)fd, SOL_SOCKET, SO_ERROR, &v, &n) != 0 ? errno : v;
+}
+int64_t obxlib_net_shutdown(int64_t fd, int64_t how) { return shutdown((int)fd, (int)how) != 0 ? -errno : 0; }
+/* Closing never parks (a socket is closed by its drop, also inside Shared.with). */
+void obxlib_net_close(int64_t fd) {
+    if (fd < rt_nfds) rt_fds[fd].rd = rt_fds[fd].wr = 0;
+    close((int)fd);
+}
+/* Parks until the socket is readable (dir 0) or writable (1): 0, or 1 when the task is
+   cancelled, 3 when its deadline passes (both checked before parking too). */
+int64_t obxlib_net_wait(int64_t fd, int64_t dir, const char* w) {
+    rt_nopark(w);
+    if (rt_cur->cancelled) return 1;
+    if (rt_expired()) return 3;
+    if (dir) rt_fds[fd].wr = rt_cur; else rt_fds[fd].rd = rt_cur;
+    rt_nio++;
+    int r = rt_park_until(true, rt_cur->deadline, w);
+    rt_nio--;
+    if (dir) rt_fds[fd].wr = 0; else rt_fds[fd].rd = 0;   /* by index: rt_fds may have moved */
+    return r;
+}
 /* A promise: a task with no code, done by complete or abandon; refs for the promise and its future. */
 void* obxlib_task_promise(void* resdrop) {
     rt_task* t = rt_alloc(sizeof *t);
