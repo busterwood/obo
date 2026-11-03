@@ -316,6 +316,26 @@ pub fn decodeLastRune(s: str, end: int): Rune {
     return d
 }
 
+// The code point that ends at byte end of s[lo..] (end > lo), as Go's
+// utf8.DecodeLastRuneInString(s[lo:end]): what a scan backward that must not
+// read before lo sees.
+pub fn decodeLastRuneIn(s: str, lo: int, end: int): Rune {
+    var start = end - 1
+    let c = int(s[start])
+    if c < 0x80 { return Rune{r: c, w: 1} }
+    var lim = end - 4
+    if lim < lo { lim = lo }
+    start -= 1
+    while start >= lim {
+        if int(s[start]) & 0xC0 != 0x80 { break }
+        start -= 1
+    }
+    if start < lo { start = lo }
+    let d = decodeRuneIn(s, start, end)
+    if start + d.w != end { return Rune{r: RUNE_ERROR, w: 1} }
+    return d
+}
+
 // The UTF-8 length of r (U+FFFD for an invalid one: 3).
 pub fn runeLen(r: int): int {
     if r < 0x80 { return 1 }
@@ -2827,11 +2847,19 @@ fn (p: mut &Prog) appendList(l1: PatchList, l2: PatchList): PatchList {
 
 // Compiles the simplified subtree at root into a program; Err(Large) when
 // the program would have more than maxInst instructions.
-pub fn compile(t: &Tree, root: int, maxInst: int): Result[Prog, Error] {
+pub fn compile(t: &Tree, root: int, maxInst: int): Result[Prog, Error] { return compileDir(t, root, maxInst, false) }
+
+// Compiles the subtree at root reversed, for the scans backward of the lazy
+// DFA (regex_dfa): the program matches the reversed strings of the
+// subtree's matches. Concatenations and literals are reversed, ^ and $
+// (line and text) swap, captures are left out.
+pub fn compileReverse(t: &Tree, root: int, maxInst: int): Result[Prog, Error] { return compileDir(t, root, maxInst, true) }
+
+fn compileDir(t: &Tree, root: int, maxInst: int, rev: bool): Result[Prog, Error] {
     var p = Prog{inst: [], runes: [], start: 0, numCap: 2}
     instNew(mut &p, I_FAIL)
     var ok = true
-    let f = compileNode(mut &p, t, root, maxInst, mut &ok)
+    let f = compileNode(mut &p, t, root, maxInst, rev, mut &ok)
     if !ok || len(p.inst) + 1 > maxInst { return Err(Error{code: ErrorCode.Large, expr: "", pos: 0}) }
     let m = instNew(mut &p, I_MATCH)
     p.patch(f.out, m.i)
@@ -2957,7 +2985,7 @@ fn runeInst(p: mut &Prog, rs: &[]int, a: int, b: int, flags0: int): Frag {
 const ANY_RUNE_NOT_NL: []int = [0, 9, 11, 0x10FFFF]
 const ANY_RUNE: []int = [0, 0x10FFFF]
 
-fn compileNode(p: mut &Prog, t: &Tree, re: int, maxInst: int, ok: mut &bool): Frag {
+fn compileNode(p: mut &Prog, t: &Tree, re: int, maxInst: int, rev: bool, ok: mut &bool): Frag {
     if !ok { return failFrag() }
     if len(p.inst) > maxInst {
         ok = false
@@ -2970,9 +2998,10 @@ fn compileNode(p: mut &Prog, t: &Tree, re: int, maxInst: int, ok: mut &bool): Fr
     if op == OP_LITERAL {
         if len(n.runes) == 0 { return nop(p) }
         var f = failFrag()
-        for j in 0..len(n.runes) {
+        for j0 in 0..len(n.runes) {
+            let j = if rev { len(n.runes) - 1 - j0 } else { j0 }
             let f1 = runeInst(p, &n.runes, j, j + 1, n.flags)
-            if j == 0 { f = f1 } else { f = cat(p, f, f1) }
+            if j0 == 0 { f = f1 } else { f = cat(p, f, f1) }
         }
         return f
     }
@@ -2985,30 +3014,32 @@ fn compileNode(p: mut &Prog, t: &Tree, re: int, maxInst: int, ok: mut &bool): Fr
         let rs = [0, MAX_RUNE]
         return runeInst(p, &rs, 0, 2, 0)
     }
-    if op == OP_BEGIN_LINE { return empty(p, EMPTY_BEGIN_LINE) }
-    if op == OP_END_LINE { return empty(p, EMPTY_END_LINE) }
-    if op == OP_BEGIN_TEXT { return empty(p, EMPTY_BEGIN_TEXT) }
-    if op == OP_END_TEXT { return empty(p, EMPTY_END_TEXT) }
+    if op == OP_BEGIN_LINE { return empty(p, if rev { EMPTY_END_LINE } else { EMPTY_BEGIN_LINE }) }
+    if op == OP_END_LINE { return empty(p, if rev { EMPTY_BEGIN_LINE } else { EMPTY_END_LINE }) }
+    if op == OP_BEGIN_TEXT { return empty(p, if rev { EMPTY_END_TEXT } else { EMPTY_BEGIN_TEXT }) }
+    if op == OP_END_TEXT { return empty(p, if rev { EMPTY_BEGIN_TEXT } else { EMPTY_END_TEXT }) }
     if op == OP_WORD_BOUNDARY { return empty(p, EMPTY_WORD_BOUNDARY) }
     if op == OP_NO_WORD_BOUNDARY { return empty(p, EMPTY_NO_WORD_BOUNDARY) }
     if op == OP_CAPTURE {
+        if rev { return compileNode(p, t, n.sub[0], maxInst, rev, ok) }
         let bra = capInst(p, n.cap << 1)
-        let sub = compileNode(p, t, n.sub[0], maxInst, ok)
+        let sub = compileNode(p, t, n.sub[0], maxInst, rev, ok)
         let ket = capInst(p, (n.cap << 1) | 1)
         return cat(p, cat(p, bra, sub), ket)
     }
     let ng = n.flags & NON_GREEDY != 0
-    if op == OP_STAR { return star(p, compileNode(p, t, n.sub[0], maxInst, ok), ng) }
-    if op == OP_PLUS { return plus(p, compileNode(p, t, n.sub[0], maxInst, ok), ng) }
-    if op == OP_QUEST { return quest(p, compileNode(p, t, n.sub[0], maxInst, ok), ng) }
+    if op == OP_STAR { return star(p, compileNode(p, t, n.sub[0], maxInst, rev, ok), ng) }
+    if op == OP_PLUS { return plus(p, compileNode(p, t, n.sub[0], maxInst, rev, ok), ng) }
+    if op == OP_QUEST { return quest(p, compileNode(p, t, n.sub[0], maxInst, rev, ok), ng) }
     if op == OP_CONCAT {
         if len(n.sub) == 0 { return nop(p) }
         var f = failFrag()
-        for i in 0..len(n.sub) {
-            if i == 0 {
-                f = compileNode(p, t, n.sub[i], maxInst, ok)
+        for i0 in 0..len(n.sub) {
+            let i = if rev { len(n.sub) - 1 - i0 } else { i0 }
+            if i0 == 0 {
+                f = compileNode(p, t, n.sub[i], maxInst, rev, ok)
             } else {
-                let f2 = compileNode(p, t, n.sub[i], maxInst, ok)
+                let f2 = compileNode(p, t, n.sub[i], maxInst, rev, ok)
                 f = cat(p, f, f2)
             }
         }
@@ -3017,7 +3048,7 @@ fn compileNode(p: mut &Prog, t: &Tree, re: int, maxInst: int, ok: mut &bool): Fr
     if op == OP_ALTERNATE {
         var f = failFrag()
         for s in n.sub {
-            let f2 = compileNode(p, t, s, maxInst, ok)
+            let f2 = compileNode(p, t, s, maxInst, rev, ok)
             f = alt(p, f, f2)
         }
         return f
