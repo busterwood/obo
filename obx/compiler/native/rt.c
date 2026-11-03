@@ -161,23 +161,34 @@ static int class_of(size_t n) {
         if (class_size[i] >= n) return i;
     return -1;
 }
+/* The large blocks, out of line: the small classes' paths in malloc and free stay straight. */
+__attribute__((noinline)) static void* malloc_large(size_t need) {
+    size_t m = (need + 16 + 4095) & ~(size_t)4095;
+    if (m < need) return 0;
+    size_t* k = large_kept;
+    if (k && k[0] >= m && k[0] / 2 <= m) {
+        large_kept = 0;
+        return (char*)k + 16;       /* k[0] stays its mapping size, k[1] 1 */
+    }
+    char* p = sys_mmap(m);
+    if (!p) return 0;
+    ((size_t*)p)[0] = m;
+    ((size_t*)p)[1] = 1;        /* large */
+    return p + 16;
+}
+__attribute__((noinline)) static void free_large(size_t* h) {
+    if (h[0] <= KEEP) {
+        size_t* old = large_kept;
+        large_kept = h;
+        h = old;
+        if (!h) return;
+    }
+    SYS(S_MUNMAP, h, h[0], 0);
+}
 void* malloc(size_t n) {
     if (!class_size[0]) heap_init();
     size_t need = n ? n : 1;
-    if (need > LARGE) {
-        size_t m = (need + 16 + 4095) & ~(size_t)4095;
-        if (m < need) return 0;
-        size_t* k = large_kept;
-        if (k && k[0] >= m && k[0] / 2 <= m) {
-            large_kept = 0;
-            return (char*)k + 16;       /* k[0] stays its mapping size, k[1] 1 */
-        }
-        char* p = sys_mmap(m);
-        if (!p) return 0;
-        ((size_t*)p)[0] = m;
-        ((size_t*)p)[1] = 1;        /* large */
-        return p + 16;
-    }
+    if (__builtin_expect(need > LARGE, 0)) return malloc_large(need);
     int c = class_of(need);
     void* f = free_list[c];
     if (f) {
@@ -205,14 +216,8 @@ static size_t block_size(void* p) {
 void free(void* p) {
     if (!p) return;
     size_t* h = (size_t*)((char*)p - 16);
-    if (h[1]) {
-        if (h[0] <= KEEP) {
-            size_t* old = large_kept;
-            large_kept = h;
-            h = old;
-            if (!h) return;
-        }
-        SYS(S_MUNMAP, h, h[0], 0);
+    if (__builtin_expect(h[1] != 0, 0)) {
+        free_large(h);
         return;
     }
     *(void**)p = free_list[h[0]];
