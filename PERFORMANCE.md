@@ -14,7 +14,8 @@ November 2026 at `2ce4860`, after the fifth native performance pass
 quiet machine; the HTTP server table is from C1b's own run. The loop and
 array rows, the compiler's `--native` cost and the sixth pass's row are from
 the sixth native performance pass (loops; branch `perf6`), measured the same
-day. The numbers are
+day; the blocking-call rows and the server-with-Postgres table are from
+concurrency stage C1c (branch `c1c`), measured the same day. The numbers are
 host-dependent: use them to compare the columns, not as portable constants.
 
 ## Host and method
@@ -186,6 +187,9 @@ The cost of the concurrency primitives (`lib/task.obx`, `lib/net.obx`, SPEC
 | a `task.sleep(1)` that fires, beyond a yield | 46–153 | 131–321 |
 | a socket read that finds data (no park) | 699 | 683 |
 | a one-byte round trip between two tasks over loopback TCP | 193,000 | 171,000 |
+| a `blocking` extern call run inline (no other task could run) | 3.3 | 3.5 |
+| the same through the helper pool (another task is parked) | 310–590 | 640–660 |
+| the same through the pool, the process on one CPU | 7,900 | 5,300 |
 
 The task operations are far below a system call. The event loop added about
 6 ns to a native park (the deadline and timer checks) and nothing measurable
@@ -198,6 +202,17 @@ this machine's loopback: a Python ping-pong over loopback TCP takes
 thread. The native switch is slower than C's because it goes through more
 of the generic task code; the fifth pass's inlining took it from 17.6 to
 12.8 ns, and it has not been tuned otherwise.
+
+The blocking rows call C's `abs` through a `blocking` extern (SPEC 12).
+Inline it is a plain extern call plus a test of the scheduler's state. Through
+the pool, the task parks, a helper thread runs the call and the event loop
+wakes the task: the helpers and the event loop each spin up to 50 µs before
+they sleep, so a busy pool round trip needs no system call. When the
+process may use only one CPU (`taskset -c 0`) the spinning is off and every
+call costs an `eventfd` write and an `epoll_wait`. For scale: one
+`sqlite3_step` over a cached table takes 30 ns, so SQLite's steps in a
+program with other tasks cost 10 to 20 times more (0.4 to 0.8 µs); a
+query that reads the disk does not notice.
 
 ## HTTP server
 
@@ -230,6 +245,56 @@ clients the single-threaded load client may be the limit as much as the
 server. The `ulimit -n` here is 1,048,576; the gate raises the soft limit
 when it can and stops when it cannot.
 
+### With a Postgres pool
+
+The C1c gate, `python3 obx/cmd/http_gate.py --db 4,16`: the same server
+and load, each request `GET /db`, which takes a connection from a
+`postgres.Pool` of 4 or 16 connections, runs `SELECT $1::int8 + 1` with the
+request's number, and returns the connection. PostgreSQL 16 on the same
+machine, over its Unix socket; the queries go through libpq's asynchronous
+API, so each request's task parks on the socket and the server's one thread
+serves the 10,000 idle connections and the load meanwhile. No Go or Node
+reference: neither has a Postgres driver installed here.
+
+| | native, pool 4 | via C, pool 4 | native, pool 16 | via C, pool 16 |
+|---|---:|---:|---:|---:|
+| RSS per idle connection | 13.0 KB | 12.7 KB | 13.0 KB | 12.5 KB |
+| 1 client: requests/s | 2,790 | 3,300 | 2,850 | 2,530 |
+| 10 clients: requests/s | 22,500 | 23,100 | 20,800 | 21,200 |
+| 100 clients: requests/s | 23,100 | 23,200 | 25,000 | 27,200 |
+| 1 client: latency p50 / p99 | 339 / 575 µs | 287 / 475 µs | 337 / 536 µs | 347 / 1,061 µs |
+| 10 clients: latency p50 / p99 | 437 / 615 µs | 425 / 623 µs | 481 / 636 µs | 471 / 636 µs |
+| 100 clients: latency p50 / p99 | 4.27 / 5.81 ms | 4.25 / 5.84 ms | 3.86 / 5.84 ms | 3.63 / 5.22 ms |
+
+One client pays two round trips, the HTTP one and the server's to
+PostgreSQL (about 100 µs: a lone connection does 11,000 queries a second).
+From 10 clients on, the server's one thread is the limit: each request is
+about 40 µs of it, mostly system calls (the HTTP read and write, and
+libpq's send, poll and receive on the database socket). With 100 clients,
+90 of them wait in the pool's queue, which is where the 4 ms comes from;
+16 connections help a little because more queries are in flight per pass of
+the event loop. A pool's waiting queue is first come, first served. After
+the load, `/shutdown` with the 10,000 idle connections open takes 0.18 to
+0.23 s, exit 0, no leak under `OBX_CHECK=1`, every pool connection idle and
+nobody waiting.
+
+The other way to run libpq, `PQexecParams` as a `blocking` extern on the
+helper pool, was measured without HTTP (tasks each with their own
+connection, queries per second, either backend):
+
+| tasks | asynchronous (the library) | `blocking`, 4 helpers | `blocking`, 16 helpers |
+|---:|---:|---:|---:|
+| 1 | 11,200 | 11,300 | |
+| 4 | 40,000 | 32,000 | 38,000 |
+| 16 | 40,000 | 32,000 | 79,000 |
+
+The asynchronous path is bound by the program's one thread (16 tasks: 0.14
+s user and 0.58 s system time of 0.74 s); the helpers make their system
+calls on other cores. The library keeps the asynchronous API: it needs no
+thread per running query, a waiting query can be cancelled (`PQcancel`)
+when its task is, and its cost is the one thread's, the same budget the
+HTTP side uses; more cores come from processes (stage C2).
+
 ## Reproducing
 
 ```sh
@@ -240,6 +305,7 @@ obx/compiler/out/obxc obx/cmd/eza.obx --native -o eza  # and without --native fo
 obx/tools/native_selfbuild.sh                          # the natively built compiler
 obx/compiler/out/obxc obx/bench/tasks.obx --native -o tasks && ./tasks
 python3 obx/cmd/http_gate.py                           # the server table (about 2 minutes)
+python3 obx/cmd/http_gate.py --servers native,c --db 4,16   # with Postgres ($OBX_PG_DSN)
 ```
 
 ## For the record: obo

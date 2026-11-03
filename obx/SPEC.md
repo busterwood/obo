@@ -93,7 +93,7 @@ constdecl   = "const" IDENT [ ":" type ] "=" expr sep ;
 globaldecl  = "var" IDENT ":" type "=" expr sep
             | "var" IDENT ":" "once" type sep ;
 externdecl  = "extern" STRING "fn" IDENT "(" [ params [ "," "..." ] ] ")"
-              [ ":" type ] [ "as" STRING ] sep ;
+              [ ":" type ] [ "as" STRING ] [ "blocking" ] sep ;
 
 type        = "never" | "&" type | "mut" "&" type | "[]" type
             | "&" "fn" "(" [ type { "," type } ] ")" [ ":" type ]  (* closure *)
@@ -830,8 +830,8 @@ The C name (given by `as`, or the obx name) may not be one the program's own
 C code defines: `main`, a name that starts with `rt_` or `obx_` (the runtime;
 its documented `obx_` helpers for the library, such as `obx_errno`, may be
 named), or a name of the form the compiler generates (`f1_x`, `g1_x`, `k1_x`,
-`gl1_x`, `S1_x`, `sl1`, `fn1`: a prefix, digits, and for the first five an
-underscore).
+`gl1_x`, `S1_x`, `bk1_x`, `sl1`, `fn1`: a prefix, digits, and for the first six
+an underscore).
 
 Parameter and result types are limited to integers, `float`, `bool`, `ptr`,
 `mut &ptr`, `mut &int` and `str`; a parameter may also be an array or a slice
@@ -898,6 +898,49 @@ without returning to C. A callback
 cannot reach the caller's locals: only arguments and globals, and a global
 cannot be borrowed (section 5.2).
 
+**Blocking calls.** `blocking` at the end of an extern declaration, after
+`as` (it is not a keyword), marks a C function that may take long: a query,
+a file system call, a name lookup, a sleep:
+
+```obx
+extern "sqlite3" fn sqlite3_step(st: ptr): i32 blocking
+extern "c" fn usleepB(us: u32): i32 as "usleep" blocking
+```
+
+A call is written and typed like any extern call, and the C function gets
+the same arguments; what changes is the thread it runs on (section 16).
+While another task could run (one is runnable, or waits for a socket, a
+timer or another blocking call), the calling task parks and the call runs
+on a helper thread; otherwise it runs at once on the program's thread, as
+an ordinary extern call does. Either way it is a call that can park: inside
+`Shared.with` it stops the program with exit 13, at the call. The rules:
+
+- A blocking extern takes no C function pointer (`extern fn` parameter) and
+  is not variadic: C would call obx code on a helper thread, and obx code
+  runs on the program's thread only. Both are compile errors. Two
+  declarations of the same C function may differ in `blocking`.
+- The arguments are the same as for any call, and they stay valid for the
+  whole call although the task parks: they are values (integers, `float`,
+  `bool`, `ptr`) copied for the call, or pointers into memory the call holds
+  (a `str` argument's NUL-terminated copy, freed after the call; the
+  elements of an array or slice argument, and the variable of a `mut &int`
+  or `mut &ptr` argument, which the caller borrows for the call, as section
+  10 requires of any call, so no task can move, resize or free them while
+  it is parked). The C function's result is converted as for any call,
+  after it returns, on the program's thread (a `str` result is copied there).
+- `errno` is the calling task's: the helper thread starts the call with the
+  task's `errno` and its `errno` after the call is the task's after it
+  (`obx_errno()` reads it).
+- A blocking call is not a cancellation point: a task cancelled, or whose
+  deadline passes, while its C function runs waits for the function to
+  return (C code cannot be stopped safely), gets its result, and sees the
+  cancellation at its next call that can park.
+- The helper threads run only C code: the C function and a generated
+  thunk that reads its arguments and stores its result. The C function must
+  be safe to call from another thread than the one that made its other
+  calls (most libraries allow that for an object used by one thread at a
+  time; the task waits for each call, so its objects are).
+
 ## 13. Not in draft 1
 
 Each of these is planned and is left out of draft 1 to keep the first
@@ -911,10 +954,11 @@ compiler small. None of them needs a change to the rules above.
   owned globals and borrows of them.
 - **Templates** (sql, html): to be a desugaring onto a library protocol.
 - **Concurrency beyond tasks**: tasks, futures, promises and shared values
-  inside a process are in section 16; parking I/O (sockets, timers), C calls
-  on helper threads, and several processes for several cores are planned
-  ([design/concurrency.md](design/concurrency.md)). obx has no threads: a
-  shared-nothing decision, for safety and for performance.
+  inside a process, parking sockets and timers, and C calls on helper
+  threads (`blocking`, section 12) are in section 16; several processes for
+  several cores are planned ([design/concurrency.md](design/concurrency.md)).
+  obx code has no threads (the helper threads run only C): a shared-nothing
+  decision, for safety and for performance.
 
 ## 14. Runtime errors
 
@@ -1022,6 +1066,16 @@ loop for sockets (`net`) and timers. The rules the language relies on:
   and timers, without waiting, every 64 switches. `main` parks like any
   task: a program needs no special mode to use sockets or timers. A task
   that never parks keeps every other task (and every socket) waiting.
+- A call of a blocking extern (section 12) parks its task while the C
+  function runs on one of a pool of helper threads, when another task could
+  run meanwhile (one is runnable, or waits for a socket, a timer or another
+  blocking call); otherwise the call runs on the program's thread. The pool
+  starts with the first call that needs it: `OBX_HELPERS` threads (default
+  4, at most 64; `0`: every call runs on the program's thread). More calls
+  than helpers wait in a queue, first in, first out. A finished call wakes
+  its task through the event loop. A task parked in a blocking call is not a
+  deadlock: the program waits for the call. The helper threads end with the
+  program; a call still running then is abandoned with them.
 - `Future[T]` is owned (one place waits for it). Dropping it without
   waiting cancels its task; its scope still waits for the task to finish,
   and its result is dropped then.
