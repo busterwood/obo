@@ -368,6 +368,111 @@ int setenv(const char* name, const char* value, int overwrite) {
     return 0;
 }
 
+/* ---- the clock through the vDSO
+   The kernel maps a small shared library into every process, the vDSO, whose clock_gettime
+   reads the clock in user space (about 20 ns against 250 for the system call). rt_init finds
+   it from the auxiliary vector (AT_SYSINFO_EHDR, after the environment on the initial stack),
+   reads its dynamic symbol table and looks up __vdso_clock_gettime of version LINUX_2.6, as
+   the kernel's tools/testing/selftests/vDSO/parse_vdso.c does. Anything unexpected (no vDSO,
+   as with vdso=0; not a 64-bit x86-64 ELF; no dynamic table; the symbol missing; a first call
+   that fails) leaves rt_vdso_cg zero, and every read is the system call; OBX_NO_VDSO=1 forces
+   that. The vDSO function follows the SysV ABI and needs a few dozen bytes of stack, also on a
+   task's stack (entered 16-byte aligned, as every C function). */
+typedef struct { i64 s, ns; } rt_ts;
+static int (*rt_vdso_cg)(int, rt_ts*);
+
+typedef struct { unsigned char ident[16]; uint16_t type, machine; uint32_t version; u64 entry, phoff, shoff;
+                 uint32_t flags; uint16_t ehsize, phentsize, phnum, shentsize, shnum, shstrndx; } rt_ehdr;
+typedef struct { uint32_t type, flags; u64 offset, vaddr, paddr, filesz, memsz, align; } rt_phdr;
+typedef struct { i64 tag; u64 val; } rt_dyn;
+typedef struct { uint32_t name; unsigned char info, other; uint16_t shndx; u64 value, size; } rt_esym;
+typedef struct { uint16_t version, flags, ndx, cnt; uint32_t hash, aux, next; } rt_verdef;
+
+static bool rt_vdso_eq(const char* a, const char* b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+static void* rt_vdso_sym(const char* base, const char* name, const char* ver) {
+    const rt_ehdr* e = (const rt_ehdr*)base;
+    if (e->ident[0] != 0x7f || e->ident[1] != 'E' || e->ident[2] != 'L' || e->ident[3] != 'F' ||
+        e->ident[4] != 2 || e->ident[5] != 1 || e->machine != 62 || e->phentsize != sizeof(rt_phdr))
+        return 0;
+    const rt_phdr* ph = (const rt_phdr*)(base + e->phoff);
+    const rt_dyn* dyn = 0;
+    const char* bias = 0;
+    bool load = false;
+    for (int i = 0; i < e->phnum; i++) {
+        if (ph[i].type == 1 && !load) { bias = base + ph[i].offset - ph[i].vaddr; load = true; }   /* PT_LOAD */
+        else if (ph[i].type == 2) dyn = (const rt_dyn*)(base + ph[i].offset);                    /* PT_DYNAMIC */
+    }
+    if (!load || !dyn) return 0;
+    const uint32_t *hash = 0, *gnu = 0;
+    const rt_esym* syms = 0;
+    const char* strs = 0;
+    const uint16_t* versym = 0;
+    const rt_verdef* verdef = 0;
+    for (; dyn->tag != 0; dyn++) {
+        const char* p = bias + dyn->val;
+        switch (dyn->tag) {
+        case 4: hash = (const uint32_t*)p; break;                 /* DT_HASH */
+        case 0x6ffffef5: gnu = (const uint32_t*)p; break;         /* DT_GNU_HASH */
+        case 5: strs = p; break;                                  /* DT_STRTAB */
+        case 6: syms = (const rt_esym*)p; break;                  /* DT_SYMTAB */
+        case 0x6ffffff0: versym = (const uint16_t*)p; break;      /* DT_VERSYM */
+        case 0x6ffffffc: verdef = (const rt_verdef*)p; break;     /* DT_VERDEF */
+        }
+    }
+    if (!syms || !strs || (!hash && !gnu)) return 0;
+    uint32_t n;
+    if (hash) n = hash[1];                                        /* nchain: the symbol count */
+    else {                                                        /* past the last chain's end */
+        uint32_t nb = gnu[0], off = gnu[1], top = 0;
+        const uint32_t* bk = (const uint32_t*)((const u64*)(gnu + 4) + gnu[2]);
+        for (uint32_t i = 0; i < nb; i++) if (bk[i] > top) top = bk[i];
+        if (top < off) n = off;
+        else {
+            while (!(bk[nb + top - off] & 1)) top++;
+            n = top + 1;
+        }
+    }
+    if (n > 65536) return 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const rt_esym* s = &syms[i];
+        if ((s->info & 0xf) != 2 || ((s->info >> 4) != 1 && (s->info >> 4) != 2) || s->shndx == 0 ||
+            !rt_vdso_eq(strs + s->name, name))
+            continue;                                             /* a global or weak defined function */
+        if (versym && verdef) {
+            uint16_t want = versym[i] & 0x7fff;
+            const rt_verdef* d = verdef;
+            for (;;) {
+                if (!(d->flags & 1) && (d->ndx & 0x7fff) == want) break;     /* not VER_FLG_BASE */
+                if (!d->next) return 0;
+                d = (const rt_verdef*)((const char*)d + d->next);
+            }
+            if (!rt_vdso_eq(strs + *(const uint32_t*)((const char*)d + d->aux), ver)) continue;
+        }
+        return (void*)(bias + s->value);
+    }
+    return 0;
+}
+static void rt_vdso_init(char** envp) {
+    const char* off = getenv("OBX_NO_VDSO");
+    if (off && off[0] == '1') return;
+    while (*envp) envp++;
+    const char* base = 0;
+    for (u64* av = (u64*)(envp + 1); av[0] != 0; av += 2)            /* AT_NULL ends the vector */
+        if (av[0] == 33) base = (const char*)av[1];                  /* AT_SYSINFO_EHDR */
+    if (!base) return;
+    int (*f)(int, rt_ts*) = (int (*)(int, rt_ts*))rt_vdso_sym(base, "__vdso_clock_gettime", "LINUX_2.6");
+    rt_ts t;
+    if (f && f(1, &t) == 0) rt_vdso_cg = f;
+}
+/* clock_gettime(which): through the vDSO when rt_init found it, else the system call */
+static void rt_clock(int which, rt_ts* t) {
+    if (rt_vdso_cg && rt_vdso_cg(which, t) == 0) return;
+    SYS(S_CLOCK_GETTIME, which, t, 0);
+}
+
 /* ---- start, stack overflow (SPEC 14, exit 4), finish */
 
 struct k_sigaction { void (*handler)(int, void*, void*); unsigned long flags; void (*restorer)(void);
@@ -435,6 +540,7 @@ void rt_init(int argc, char** argv) {
     const char* c = getenv("OBX_CHECK");
     rt_check = c && c[0] == '1';
     rt_argc = argc; rt_argv = argv;
+    rt_vdso_init(argv + argc + 1);
     rt_stack_top = __builtin_frame_address(0);
     rt_stack_max = SYS(S_GETRLIMIT, 3, &rl, 0) == 0 && rl.cur != ~0UL ? rl.cur : (size_t)1 << 30;
     SYS(S_SIGALTSTACK, &ss, 0, 0);
@@ -1053,8 +1159,8 @@ int usleep(unsigned us) {
     return (int)sysret(SYS(S_NANOSLEEP, &t, 0, 0));
 }
 int64_t time(int64_t* t) {
-    struct { i64 s, ns; } ts;
-    SYS(S_CLOCK_GETTIME, 0, &ts, 0);
+    rt_ts ts;
+    rt_clock(0, &ts);
     if (t) *t = ts.s;
     return ts.s;
 }
@@ -1210,8 +1316,8 @@ void obxlib_poke_ptr(void* p, int64_t i, void* q) { ((void**)p)[i] = q; }
 void obxlib_copy_in(void* dst, int64_t at, const void* src, int64_t n) { memcpy((char*)dst + at, src, (size_t)n); }
 void obxlib_copy_out(void* dst, const void* src, int64_t at, int64_t n) { memcpy(dst, (const char*)src + at, (size_t)n); }
 int64_t obx_clock_ns(int64_t which) {
-    struct { i64 s, ns; } t;
-    SYS(S_CLOCK_GETTIME, which ? 1 : 0, &t, 0);
+    rt_ts t;
+    rt_clock(which ? 1 : 0, &t);
     return (int64_t)t.s * 1000000000 + t.ns;
 }
 void* obx_getcwd(void) {
@@ -1436,8 +1542,8 @@ static uint64_t rt_tseq;
 static unsigned rt_ticks;
 
 static int64_t rt_mono(void) {
-    struct { i64 s, ns; } t;
-    SYS(S_CLOCK_GETTIME, 1, &t, 0);
+    rt_ts t;
+    rt_clock(1, &t);
     return (int64_t)t.s * 1000000000 + t.ns;
 }
 static int64_t rt_after(int64_t ms) {

@@ -1,0 +1,109 @@
+// The clocks: monotonicNs never goes back; sleeping 50 ms (time.sleepMs, and task.sleep on a
+// task's stack) measures 50 ms or more; the readings agree with libc's (`date`) and with a
+// child that reads the clock through the system call (OBX_NO_VDSO=1: the native runtime's
+// fallback when it finds no vDSO, design/native.md, "Runtime"; the C runtime ignores it).
+// expect: monotonic ok
+// expect: sleepMs ok
+// expect: task.sleep ok
+// expect: date ok
+// expect: syscall child ok
+import "time"
+import "task"
+import "os"
+import "io"
+import "strings"
+
+extern "c" fn system(cmd: str): i32
+
+fn wallNs(): int {
+    let t = time.now()
+    return t.sec * 1000000000 + t.nsec
+}
+
+// the numbers in a file a child wrote (-1 for one that does not parse)
+fn readNums(path: str): []int {
+    var out: []int = []
+    match io.read(path) {
+        Ok(s) {
+            for w in strings.splitOn(trim(s), " ") {
+                match strings.parseInt(w) {
+                    Ok(v) { append(mut &out, v) }
+                    Err(_) { append(mut &out, -1) }
+                }
+            }
+        }
+        Err(_) {}
+    }
+    return out
+}
+
+fn napper(ms: int): int {
+    let t0 = time.monotonicNs()
+    task.sleep(ms).unwrap()
+    return time.monotonicNs() - t0
+}
+
+fn main() {
+    let args = os.argv()
+    if len(args) == 3 && args[1] == "child" {
+        let m = time.monotonicNs()
+        let w = wallNs()
+        io.write(args[2], intToStr(m) + " " + intToStr(w) + "\n").unwrap()
+        return
+    }
+
+    var ok = true
+    var last = time.monotonicNs()
+    for i in 0..200000 {
+        let t = time.monotonicNs()
+        if t < last { ok = false }
+        last = t
+    }
+    println(if ok { "monotonic ok" } else { "monotonic went back" })
+
+    let m0 = time.monotonicNs()
+    let w0 = wallNs()
+    time.sleepMs(50)
+    let dm = time.monotonicNs() - m0
+    let dw = wallNs() - w0
+    // the wall clock may be slewed by NTP (at most 0.05%), never by 5 ms in 50
+    if dm >= 50000000 && dm < 10000000000 && dw >= 45000000 && dw < 10000000000 {
+        println("sleepMs ok")
+    } else {
+        println("sleepMs measured " + intToStr(dm) + " / " + intToStr(dw) + " ns")
+    }
+
+    var slept = 0
+    task.scope(fn(s: mut &task.Scope) { slept = s.start(napper, 50).wait().unwrap() })
+    println(if slept >= 50000000 && slept < 10000000000 { "task.sleep ok" } else { "task.sleep measured " + intToStr(slept) })
+
+    let dir = "/tmp/obx_lib_time_clock_" + os.pid().toStr()
+    system("rm -rf " + dir + " && mkdir " + dir)
+
+    // libc's wall clock (date reads it with clock_gettime): within this program's readings
+    let a = wallNs()
+    let rc = system("date +%s%N > " + dir + "/date")
+    let b = wallNs()
+    let d = readNums(dir + "/date")
+    if rc == 0 && len(d) == 1 && d[0] >= a - 1000000 && d[0] <= b + 1000000 {
+        println("date ok")
+    } else {
+        println("date: " + intToStr(a) + " <= " + (if len(d) > 0 { intToStr(d[0]) } else { "?" }) + " <= " + intToStr(b))
+    }
+
+    // the same clocks through the system call, in a child
+    let ma = time.monotonicNs()
+    let wa = wallNs()
+    let rc2 = system("OBX_NO_VDSO=1 '" + args[0] + "' child " + dir + "/child")
+    let mb = time.monotonicNs()
+    let wb = wallNs()
+    let c = readNums(dir + "/child")
+    if rc2 == 0 && len(c) == 2 && c[0] >= ma && c[0] <= mb && c[1] >= wa - 1000000 && c[1] <= wb + 1000000 {
+        println("syscall child ok")
+    } else {
+        println("syscall child: " + intToStr(ma) + " " + intToStr(mb) + " " + intToStr(wa) + " " + intToStr(wb) +
+            " rc " + intToStr(int(rc2)))
+        for v in c { println(intToStr(v)) }
+    }
+    system("rm -rf " + dir)
+}
