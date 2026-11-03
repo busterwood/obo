@@ -201,15 +201,16 @@ with no leaks under `OBX_CHECK=1`. `SIGTERM` and `SIGINT` do the same.
 
 ## How fast
 
-The gate of concurrency stage C1c (`cmd/http_gate.py --db 4,16`): the
-server pinned to one core, PostgreSQL 16 over its Unix socket, and 10,000
-idle connections held open throughout.
+The gate of concurrency stage C1c (`cmd/http_gate.py --db 4,16`), run
+again on the server library: the server pinned to one core, PostgreSQL 16
+over its Unix socket, and 10,000 idle connections held open throughout.
+Either backend, a pool of 4 or 16:
 
 | clients | requests/s | median latency |
 |---|---:|---:|
-| 1 | about 2,800 | 0.34 ms |
-| 10 | about 22,000 | 0.44 ms |
-| 100 | 23,000 to 27,000 | 3.6 to 4.3 ms |
+| 1 | 2,900 to 3,000 | 0.32 to 0.34 ms |
+| 10 | 19,000 to 22,000 | 0.45 to 0.52 ms |
+| 100 | 21,700 to 24,400 | 4.0 to 4.5 ms |
 
 From about 10 clients on, the limit is the server's one thread, at about
 40 µs per request, mostly system calls. Using more cores means several
@@ -286,14 +287,15 @@ ready (`task.workerReady`) once it accepts, so a request that kills a
 worker cannot stop the server, however often it is sent.
 
 How fast, with the load on four other cores (`cmd/http_gate.py --workers
-1,2,4,8 --db 4`, 256 connections):
+1,2,4,8 --db 4`, 256 connections), on the server library:
 
 | workers | `/db` requests/s | median latency |
 |---:|---:|---:|
-| 1 | 22,500 | 11.0 ms |
-| 2 | 36,800 | 3.4 ms |
-| 4 | 51,100 | 4.3 ms |
-| 8 | 71,300 | 3.4 ms |
+| 1 | 19,800 | 12.5 ms |
+| 2 | 33,500 | 7.5 ms |
+| 4 | 49,100 | 4.9 ms |
+| 8 | 63,000 | 4.0 ms |
 
-Native build; the C build is within 5 %. PostgreSQL runs on the same
+Native build; before the library the same gate gave 22,500, 36,800,
+51,100 and 71,300, within this machine's spread from run to run. PostgreSQL runs on the same
 machine, unpinned, and competes for the cores.

@@ -934,7 +934,14 @@ an ordinary extern call does. Either way it is a call that can park: inside
 - A blocking call is not a cancellation point: a task cancelled, or whose
   deadline passes, while its C function runs waits for the function to
   return (C code cannot be stopped safely), gets its result, and sees the
-  cancellation at its next call that can park.
+  cancellation at its next call that can park. A program can make the
+  function return early: while a `task.onCancelCall(f, arg)` registration
+  of the task lives (section 16), a cancellation or a passed deadline
+  during the call makes the runtime call `f(arg)` once, on the program's
+  thread, while the C function goes on running on its helper; `f` is one
+  that the library documents as safe to call at the same time
+  (`sqlite3_interrupt`, ODBC's `SQLCancel`), and the C function then
+  returns with its own error. The task still waits for that return.
 - The helper threads run only C code: the C function and a generated
   thunk that reads its arguments and stores its result. The C function must
   be safe to call from another thread than the one that made its other
@@ -1120,6 +1127,16 @@ loop for sockets (`net`) and timers. The rules the language relies on:
   socket is not a deadlock, even when nothing will ever arrive.
 - A write to a socket whose peer has closed is an error (`EPIPE` or
   `ECONNRESET`), never `SIGPIPE`.
+- `task.onCancelCall(f: fn(ptr), arg: ptr): CancelCall` registers `f` for
+  the calling task until the result is dropped. If the task is cancelled,
+  or the deadline of an enclosing `within` passes, while it is parked in a
+  blocking extern call (section 12), the task wakes, calls `f(arg)` once on
+  the program's thread, and goes on waiting for the call, which is still
+  running on its helper. `f` must be safe to run at the same time as that
+  call and must not park. Registrations nest: the innermost of the task's
+  counts. While a task has a registration and a deadline, its blocking
+  calls run on a helper even when nothing else could run, so that the
+  deadline can be seen.
 - Signals (stage C2): `task.watchSignals(sigs)` takes the signals `sigs`
   (`SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGTERM`, or any
   other from 1 to 31 that a program may handle; one it may not, such as
@@ -1154,7 +1171,13 @@ loop for sockets (`net`) and timers. The rules the language relies on:
     than 0) after a backoff (100 ms, doubled for each crash in a row of that
     worker, at most 5 s); once more than `maxCrashes` (5) crashes happen
     within `windowMs` (10 s) it starts none again, sends the others
-    `SIGTERM`, and returns `Err(GaveUp)` when they have ended;
+    `SIGTERM`, and returns `Err(GaveUp)` when they have ended. Only crashes
+    of a worker that had not called `task.workerReady()` count toward
+    `maxCrashes`: one that crashes after it marked itself ready is
+    restarted with the same backoff, however often, so that a request that
+    kills a server's worker cannot stop the server. `workerReady()` is
+    false, and does nothing, outside a worker; the mark is the process's,
+    and a restarted worker starts unready;
   - forwards `SIGTERM` and `SIGINT` to every worker and starts none again
     (a drain: a worker that watches them finishes its work; one that does
     not is ended by the signal). A second such signal from outside, or
