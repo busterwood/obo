@@ -1,0 +1,34 @@
+// Inlined functions and Where (SPEC 15): here() and a function of the program
+// that passes a Where on are small enough to be inlined natively; every
+// location stays the one of the call that supplied it, and a trap in an
+// inlined function reports the location it was given.
+// expect: inline_where.obx:24
+// expect: inline_where.obx:26
+// expect: from inline_where.obx:27
+// expect: inline_where.obx:21
+// expect: inline_where.obx:21
+// stderr: obx: a task parked inside Shared.with (the with at inline_where.obx:30) at inline_where.obx:33
+// exit: 13
+import "task"
+
+fn loc(w: Where): str { return w.toStr() }
+
+fn from(w: Where): str { return "from " + loc(w) }
+
+fn waitAt(f: task.Future[int], w: Where): int { return f.wait(w).unwrapOr(0) }
+
+fn mine(): str { return loc(here()) }
+
+fn main() {
+    let a = here()
+    println(a.toStr())
+    println(loc(here()))
+    println(from(here()))
+    for i in 0..2 { println(mine()) }
+    let sh = task.shared(1)
+    sh.with(fn(x: mut &int) {
+        let task.Handoff{promise: p, future: f} = task.promise[int]()
+        p.complete(4)
+        println(waitAt(f, here()).toStr())
+    })
+}

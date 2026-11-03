@@ -1,0 +1,48 @@
+// A small function both called directly (inlined natively) and taken as a
+// value: the value still names the function, which must still exist, behave
+// the same and trap at its own line. Functions every call of which was
+// inlined are dropped from the program; those named as values, from globals
+// or from closures are kept.
+// expect: 7 7 7
+// expect: 12 12
+// expect: 30
+// expect: 9 9
+// expect: 10
+// expect: 4
+// stderr: obx: integer overflow at inline_fn_value.obx:19
+// exit: 10
+
+type Op = record {
+    f: fn(int): int
+}
+
+fn inc(x: int): int { return x + 1 }
+fn dbl(x: int): int { return x * 2 }
+fn twice(f: fn(int): int, x: int): int { return f(f(x)) }
+fn twiceC(f: &fn(int): int, x: int): int { return f(f(x)) }
+
+const START: int = 5
+
+fn apply(ops: &[]fn(int): int, x: int): int {
+    var v = x
+    for f in ops { v = f(v) }
+    return v
+}
+
+fn main() {
+    let g: fn(int): int = inc
+    println(inc(6).toStr() + " " + g(6).toStr() + " " + twice(g, 5).toStr())
+    let o = Op{f: dbl}
+    println(dbl(6).toStr() + " " + o.f(6).toStr())
+    let ops: []fn(int): int = [inc, dbl, inc, dbl]
+    println(apply(&ops, START + 1).toStr())
+    let k = 4
+    let h = fn(x: int): int { return inc(x) + k }
+    println(h(4).toStr() + " " + (inc(4) + k).toStr())
+    println(twiceC(h, 0).toStr())
+    let d: fn(int): int = dbl
+    println(twice(d, inc(-1) + 1).toStr())
+    var big = 9223372036854775800
+    for i in 0..10 { big = g(big) }
+    println(big.toStr())
+}

@@ -1,0 +1,67 @@
+// Deep nesting of small functions, inlined into each other natively
+// (compiler/opt.obx inlines callees first): a chain of twenty calls, calls as
+// arguments of calls, early returns in nested ifs, mutual recursion (which
+// stays calls), and a deep recursion through an inlined helper that still
+// ends in the stack-overflow trap (exit 4).
+// expect: 20
+// expect: 210
+// expect: 6 -1 0 3
+// expect: even true odd false
+// expect: 15
+// expect: deep 1000
+// expect: start
+// exit: 4
+
+fn c0(x: int): int { return x + 1 }
+fn c1(x: int): int { return c0(x) + 0 }
+fn c2(x: int): int { return c1(x) }
+fn c3(x: int): int { return c2(x) }
+fn c4(x: int): int { return c3(x) }
+fn c5(x: int): int { return c4(x) }
+fn c6(x: int): int { return c5(x) }
+fn c7(x: int): int { return c6(x) }
+fn c8(x: int): int { return c7(x) }
+fn c9(x: int): int { return c8(x) }
+fn d0(x: int): int { return c9(x) + 1 }
+fn d1(x: int): int { return d0(x) }
+fn d2(x: int): int { return d1(x) }
+fn d3(x: int): int { return d2(x) }
+fn d4(x: int): int { return d3(x) }
+fn d5(x: int): int { return d4(x) }
+fn d6(x: int): int { return d5(x) }
+fn d7(x: int): int { return d6(x) }
+fn d8(x: int): int { return d7(x) }
+fn d9(x: int): int { return d8(x) + 18 }
+
+fn add(a: int, b: int): int { return a + b }
+
+fn sign(x: int): int {
+    if x > 0 {
+        if x > 5 { return 6 }
+        return x
+    } else if x < 0 {
+        return -1
+    }
+    return 0
+}
+
+fn isEven(n: int): bool { return if n == 0 { true } else { isOdd(n - 1) } }
+fn isOdd(n: int): bool { return if n == 0 { false } else { isEven(n - 1) } }
+
+fn boolStr(b: bool): str { return if b { "true" } else { "false" } }
+
+fn depth(n: int): int { return if n == 0 { 0 } else { step(n) } }
+fn step(n: int): int { return add(depth(n - 1), 1) }
+
+fn main() {
+    println(d9(0).toStr())
+    var t = 0
+    for i in 0..21 { t = add(t, add(i, add(0, 0))) }
+    println(t.toStr())
+    println(sign(9).toStr() + " " + sign(-4).toStr() + " " + sign(0).toStr() + " " + sign(3).toStr())
+    println("even " + boolStr(isEven(10)) + " odd " + boolStr(isOdd(10)))
+    println(add(add(add(1, 2), add(3, 4)), c0(c0(c0(c0(1))))).toStr())
+    println("deep " + depth(1000).toStr())
+    println("start")
+    println(depth(100000000).toStr())
+}
