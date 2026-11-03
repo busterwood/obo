@@ -11,6 +11,7 @@
 import "./syntax" as sx
 import "./sema"
 import "./check" as ck
+import "./tmpl" as tm
 import "./rt"
 
 const MAX_DEPTH = 24
@@ -542,17 +543,17 @@ fn (e: mut &Emitter) render(text: str, holes: &[]ck.Hole, env: &[]int, name: str
 }
 
 fn (e: mut &Emitter) hole(i: int, holes: &[]ck.Hole, env: &[]int, name: str): str {
-    let h = holes[i]
+    let h = &holes[i]
     let k = h.k
     if k == ck.H_T { return e.ctype(e.c.pg.subst(h.t, env)) }
     if k == ck.H_DROP {
         let t = e.c.pg.subst(h.t, env)
-        let cc = e.render(h.s, holes, env, name)
+        let cc = e.render(e.c.x.text(h.x), holes, env, name)
         return e.dropC(t, cc)
     }
     if k == ck.H_DDROP {        // a drop when a drop method returns: onto the worklist (SPEC 9.4)
         let t = e.c.pg.subst(h.t, env)
-        let cc = e.render(h.s, holes, env, name)
+        let cc = e.render(e.c.x.text(h.x), holes, env, name)
         if e.pod(t) || e.quiet(t) { return e.dropC(t, cc) }
         let p = e.push(t, cc)       // what reads cc's memory is pushed with a heap copy of cc
         if p.refs { return "rt_ddefer(" + e.glueFn(G_ACT, t) + ", &" + cc + ", sizeof(" + cc + "))" }
@@ -560,7 +561,7 @@ fn (e: mut &Emitter) hole(i: int, holes: &[]ck.Hole, env: &[]int, name: str): st
     }
     if k == ck.H_DUP {
         let t = e.c.pg.subst(h.t, env)
-        let cc = e.render(h.s, holes, env, name)
+        let cc = e.render(e.c.x.text(h.x), holes, env, name)
         return e.dupC(t, cc)
     }
     if k == ck.H_STR || k == ck.H_GSTR { return e.strlit(h.s, k == ck.H_GSTR) }
@@ -577,20 +578,11 @@ fn (e: mut &Emitter) hole(i: int, holes: &[]ck.Hole, env: &[]int, name: str): st
     for tp in e.c.pg.fns[f].tps { append(mut &ta, envGet(&bind, tp)) }
     let fname = e.instance(f, e.c.pg.mkFn(&ta, sema.T_VOID))
     if k == ck.H_IASSOC { return fname }
-    var recv = e.render(h.r, holes, env, name)
+    var recv = e.render(e.c.x.text(h.r), holes, env, name)
     if h.f == sema.RM_REF && e.c.pg.fns[f].recvMode == sema.RM_VAL { recv = e.dupC(t, "(*" + recv + ")") }
     var b = newStrBuf()
     b.add(fname + "(" + recv)
-    if h.nargs > 0 {
-        var s = 0
-        let a = h.args
-        for j in 0..len(a) + 1 {
-            if j == len(a) || strByte(a, j) == 3 {
-                b.add(", " + e.render(a[s..j], holes, env, name))
-                s = j + 1
-            }
-        }
-    }
+    for a in h.args { b.add(", " + e.render(e.c.x.text(a), holes, env, name)) }
     b.add(")")
     return b.toStr()
 }
@@ -661,7 +653,7 @@ fn (e: mut &Emitter) makeInstance(f: int, targs: int) {
     var b = newStrBuf()
     for i in 0..len(tm.lines) {
         if i > 0 { b.addByte('\n') }
-        b.add(e.render(tm.lines[i], &tm.holes, &env, name))
+        b.add(e.render(e.c.x.text(tm.lines[i]), &tm.holes, &env, name))
     }
     append(mut &e.bodies, head + " {\n" + b.toStr() + "\n}")
     for l in tm.lifted {        // its closures
@@ -676,7 +668,7 @@ fn (e: mut &Emitter) makeInstance(f: int, targs: int) {
         var lb = newStrBuf()
         for i in 0..len(l.lines) {
             if i > 0 { lb.addByte('\n') }
-            lb.add(e.render(l.lines[i], &tm.holes, &env, name))
+            lb.add(e.render(e.c.x.text(l.lines[i]), &tm.holes, &env, name))
         }
         append(mut &e.bodies, lhead + " {\n  void** ce_ = cv_; (void)ce_;\n" + lb.toStr() + "\n}")
     }
@@ -750,7 +742,7 @@ pub fn (e: mut &Emitter) program(main: int, libs: mut &[]str): str {
                 onces[m] = l
             } else if e.tk(t) == sema.TK_ARR {      // a constant table: read-only static data seen as a slice
                 var its: []str = []
-                for x in gi.items { append(mut &its, e.render(x, &gi.holes, &[], "")) }
+                for x in gi.items { append(mut &its, e.render(e.c.x.text(x), &gi.holes, &[], "")) }
                 let items = join(&its, ", ")
                 let ct = e.ctype(e.c.pg.ta(t))
                 let nn = if len(its) == 0 { 1 } else { len(its) }
@@ -760,7 +752,7 @@ pub fn (e: mut &Emitter) program(main: int, libs: mut &[]str): str {
             } else {
                 let cq = if isG { "" } else { "const " }
                 let ct = e.ctype(t)
-                let init = e.render(gi.c, &gi.holes, &[], "")
+                let init = e.render(e.c.x.text(gi.c), &gi.holes, &[], "")
                 append(mut &globs, "static " + cq + ct + " " + cn + " = " + init + ";")
                 if !e.pod(t) {
                     var l: []str = [e.dropC(t, cn) + ";"]
@@ -805,7 +797,7 @@ pub fn (e: mut &Emitter) program(main: int, libs: mut &[]str): str {
     for t in order { out.add("\n" + e.structBody(t)) }
     for b in e.strKeys {
         let n = e.strs.getOr(&b, "")
-        out.add("\nstatic struct { int64_t rc; char data[" + intToStr(len(b) + 1) + "]; } " + n + "b = {-1, " + ck.cstr(b) + "};")
+        out.add("\nstatic struct { int64_t rc; char data[" + intToStr(len(b) + 1) + "]; } " + n + "b = {-1, " + tm.cstr(b) + "};")
         out.add("\nstatic const obx_str " + n + " = {(obx_sblk*)&" + n + "b, 0, " + intToStr(len(b)) + "};")
     }
     for x in externs { out.add("\n" + x) }
@@ -817,7 +809,7 @@ pub fn (e: mut &Emitter) program(main: int, libs: mut &[]str): str {
     return out.toStr()
 }
 
-fn noInit(): ck.GInit { return ck.GInit{has: false, isOnce: false, table: false, items: [], c: "", holes: []} }
+fn noInit(): ck.GInit { return ck.GInit{has: false, isOnce: false, table: false, items: [], c: -1, holes: []} }
 
 fn (e: &Emitter) visit(m: int, visited: mut &[]bool, post: mut &[]int) {
     if visited[m] { return }
