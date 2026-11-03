@@ -47,6 +47,10 @@ const PROBE_FREE = 2048
 // in the fetch blocks changes the speed of a small recursive one by 15% (bench fib). int3 pads.
 const FUNC_ALIGN = 16
 
+// A function that restores at most this many registers returns with a copy of the restores in
+// place of a jump to its one copy.
+const EPI_COPY = 2
+
 // Symbol kinds.
 const SK_FUNC = 0        // idx: a function with a body
 const SK_GLOBAL = 1      // idx: a global
@@ -135,6 +139,7 @@ type Gen = record {
     retPtr: int
     retTy: int
     epiL: int                   // the label of the function's restores and return, or -1
+    epiJmps: []int              // ... the positions of the jumps to it
     entrySym: int
     dyn: bool                   // dynamically linked: every C function the program calls is imported
     libs: []elf.Lib
@@ -162,7 +167,7 @@ type Stub = value record {
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
-        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
+        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
@@ -464,6 +469,7 @@ fn (g: mut &Gen) genFunc(f: int) {
     let ft = g.u.funcs[f].ty
     g.retTy = g.u.tys[ft].base
     g.epiL = -1
+    g.epiJmps = []
     g.curFunc = f
     g.allocRegs(f)
     g.nLocalRegs = len(g.saved)
@@ -538,6 +544,19 @@ fn (g: mut &Gen) genFunc(f: int) {
     if g.epiL >= 0 {
         g.a.bind(g.epiL)
         g.leaveFrame()
+        if len(g.saved) <= EPI_COPY {
+            // the returns: a copy of the restores in place of each jump to them (the set of
+            // registers is known now)
+            var e = x64.newAsm()
+            for i in 0..len(g.saved) { e.load(8, LOCAL_REGS[i], rbp(g.saved[i])) }
+            e.leave()
+            e.ret()
+            var i = len(g.epiJmps) - 1
+            while i >= 0 {
+                g.a.replaceJmp(g.epiJmps[i], g.epiL, &e.code, firstLabel)
+                i -= 1
+            }
+        }
     }
     g.genStubs()
     let frame = ir.alignUp(g.maxFrame, 16) + ir.alignUp(g.outArgs, 16)
@@ -545,7 +564,13 @@ fn (g: mut &Gen) genFunc(f: int) {
     var p = x64.newAsm()
     p.push(RBP)
     p.movRR(8, RBP, RSP)
-    if frame > 0 { p.aluI(x64.SUB, 8, RSP, frame) }
+    // the saved registers whose slots are at the top of the frame, in order, are pushed
+    var pushed = 0
+    while pushed < len(g.saved) && g.saved[pushed] == -8 * (pushed + 1) {
+        p.push(LOCAL_REGS[pushed])
+        pushed += 1
+    }
+    if frame > 8 * pushed { p.aluI(x64.SUB, 8, RSP, frame - 8 * pushed) }
     if frame > PROBE_FREE {
         // touch the frame a page at a time from the top, so that a stack overflow faults at
         // the guard page (rt_segv reports it) and never skips past it
@@ -561,7 +586,7 @@ fn (g: mut &Gen) genFunc(f: int) {
         p.bind(probed)
         p.fixLabels()
     }
-    for i in 0..len(g.saved) { p.store(8, rbp(g.saved[i]), LOCAL_REGS[i]) }
+    for i in pushed..len(g.saved) { p.store(8, rbp(g.saved[i]), LOCAL_REGS[i]) }
     g.a.insert(start, &p.code, firstLabel)
 }
 
@@ -1406,7 +1431,9 @@ fn (g: mut &Gen) epilogue() {
         return
     }
     if g.epiL < 0 { g.epiL = g.a.newLabel() }
+    let at = g.a.pos()
     g.a.jmp(g.epiL)
+    if g.a.pos() == at + 5 { append(mut &g.epiJmps, at) }
 }
 
 fn (g: mut &Gen) leaveFrame() {
@@ -1448,6 +1475,8 @@ fn (g: mut &Gen) stmt(s: int) {
             g.declMark = g.frame
             if n.b >= 0 && g.simple(n.b) && g.u.nodes[n.b].ty == t {
                 g.genInto(n.b, g.reg[l])
+            } else if n.b >= 0 && g.u.nodes[n.b].ty == t && g.arithInto(n.b, g.reg[l], true) {
+                // computed in the register
             } else if n.b >= 0 {
                 g.gen(n.b)
                 if !g.normAs(g.u.nodes[n.b].ty, t) { g.normR(g.tk(t), RAX) }
@@ -1569,6 +1598,8 @@ fn (g: mut &Gen) genEffect(e: int) {
         g.genInto(x.b, r)                       // straight into the register
     } else if r >= 0 && g.inPlace(r, x.b) {
         // done
+    } else if r >= 0 && g.u.nodes[x.b].ty == x.ty && g.arithInto(x.b, r, true) {
+        // computed in the register
     } else {
         g.unused = true
         g.gen(e)
@@ -2981,6 +3012,7 @@ fn (g: mut &Gen) genCall(e: int) {
     }
     // where each argument goes: -1 registers, else its offset in the outgoing area
     var place: []int = []
+    var argReg: []int = []          // the first integer register of an argument in registers
     var stackOff = 0
     var ti = ni
     var tx = 0
@@ -2998,6 +3030,7 @@ fn (g: mut &Gen) genCall(e: int) {
             ti += nInt
             tx += nSse
         }
+        append(mut &argReg, if ti - nInt < 6 { INT_REGS[ti - nInt] } else { -1 })
     }
     // the arguments into temporaries, except those loaded straight into their registers
     // below (slot 0: constants, locals, members of locals; slot 1: in rax)
@@ -3031,6 +3064,11 @@ fn (g: mut &Gen) genCall(e: int) {
             g.gen(x)
             if !g.destUsed { g.copyMem(rbp(s), x64.mem(RAX, 0), g.size(t)) }
             append(mut &slots, s)
+            continue
+        }
+        if j == inRax && g.arithInto(x, argReg[j], false) {
+            // computed straight into its register below (only direct arguments come after it)
+            append(mut &slots, 3)
             continue
         }
         g.gen(x)
@@ -3106,6 +3144,11 @@ fn (g: mut &Gen) genCall(e: int) {
             }
             if slots[j] == 2 {
                 g.a.movRR(8, INT_REGS[ni], hregs[j])
+                ni += 1
+                continue
+            }
+            if slots[j] == 3 {
+                g.arithInto(x, INT_REGS[ni], true)
                 ni += 1
                 continue
             }
@@ -3593,6 +3636,81 @@ fn (g: &Gen) isWhere(w: int): bool {
     return g.u.nk(w) == ir.E_DECAY && g.u.nk(g.u.nodes[w].a) == ir.E_STR
 }
 
+// The overflow test of a checked operation ar (rt_add_int, ...) whose result is in register r:
+// a jump to the trap stub for the location string w. Only a u32 multiply uses another register
+// (rcx).
+fn (g: mut &Gen) ovfCheck(ar: ArOp, r: int, w: int) {
+    let k = ar.k
+    let l = g.stub(10, "integer overflow", w)
+    if k == ir.TY_I64 || k == ir.TY_I32 {
+        g.a.jcc(x64.CC_O, l)
+    } else if k == ir.TY_U8 {
+        // operands are 0..255: the 32-bit result is out of range when above 255
+        g.a.aluI(x64.CMP, 4, r, 255)
+        g.a.jcc(x64.CC_A, l)
+    } else if ar.op == ir.OP_MUL && k == ir.TY_U32 {
+        g.a.movRR(8, RCX, r)                        // the 64-bit product of two u32s
+        g.a.shiftI(x64.SHR, 8, RCX, 32)
+        g.a.jcc(x64.CC_NE, l)
+    } else {
+        g.a.jcc(x64.CC_B, l)                        // the carry: unsigned overflow
+    }
+}
+
+// Generates e into register r with no other register changed, when e is an add or subtract of
+// integers (the runtime's checked or wrapping rt_add_*, rt_sub_*, or +, -, &, |, ^ of 8 bytes
+// or less) with one operand simple and the other an operand that needs no code (srcOnly) and
+// is not r: the simple one into r (the left one; for a commutative operation either), the
+// operation on r, the overflow test, the normalization, as gen does in rax. With gen false,
+// only whether it would. False: not such an e, nothing generated.
+fn (g: mut &Gen) arithInto(e: int, r: int, gen: bool): bool {
+    let n = g.u.nodes[e]
+    var a = -1
+    var b = -1
+    var op = 0
+    var k = 0
+    var sz = 8
+    var ar = ArOp{k: -1, op: 0, wrap: true}
+    var w = -1
+    if n.k == ir.E_CALL {
+        ar = arOp(g.rtName(e))
+        let nargs = g.u.listLen(n.b)
+        if ar.k < 0 || ar.op == ir.OP_MUL || nargs < 2 { return false }
+        if !ar.wrap && (nargs != 3 || !g.isWhere(g.u.listAt(n.b, 2))) { return false }
+        if !ar.wrap { w = g.u.listAt(n.b, 2) }
+        a = g.u.listAt(n.b, 0)
+        b = g.u.listAt(n.b, 1)
+        op = ar.op
+        k = ar.k
+        sz = if k == ir.TY_I64 || k == ir.TY_U64 { 8 } else { 4 }
+    } else if n.k == ir.E_BIN {
+        op = n.v
+        if op != ir.OP_ADD && op != ir.OP_SUB && op != ir.OP_AND && op != ir.OP_OR && op != ir.OP_XOR { return false }
+        if g.isF(n.c) || g.is128(n.c) { return false }
+        a = n.a
+        b = n.b
+        k = g.tk(n.c)
+        sz = if g.size(n.c) == 8 { 8 } else { 4 }
+    } else {
+        return false
+    }
+    if !(g.simple(a) && g.srcOnly(b) && g.regOf(b) != r) {
+        // commutative: the other way round
+        if op == ir.OP_SUB || !(g.simple(b) && g.srcOnly(a) && g.regOf(a) != r) { return false }
+        let x = a
+        a = b
+        b = x
+    }
+    if !gen { return true }
+    g.genInto(a, r)
+    let alu = if op == ir.OP_ADD { x64.ADD } else if op == ir.OP_SUB { x64.SUB } else if op == ir.OP_AND { x64.AND }
+        else if op == ir.OP_OR { x64.OR } else { x64.XOR }
+    g.aluSrc(alu, sz, r, g.pairSrc(-1, b))
+    if w >= 0 { g.ovfCheck(ar, r, w) }
+    g.normR(k, r)
+    return true
+}
+
 // Generates the call e of the runtime function name inline, if it is one of those the code
 // generator knows (checked arithmetic, index checks, str reference counts): the same
 // results, traps and messages as the runtime's code. False: not inlined, nothing emitted.
@@ -3607,7 +3725,6 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         let src = if ar.op == ir.OP_SUB { g.pairSrc(a, b) } else { g.pairSrcC(a, b) }
         let k = ar.k
         let sz = if k == ir.TY_I64 || k == ir.TY_U64 { 8 } else { 4 }
-        let sgn = k == ir.TY_I64 || k == ir.TY_I32
         if ar.op == ir.OP_MUL && k == ir.TY_U64 && !ar.wrap {
             g.srcRCX(src)
             g.a.unary(x64.MUL, 8, RCX)                  // rdx:rax; CF and OF when rdx != 0
@@ -3616,22 +3733,7 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         } else {
             g.aluSrc(if ar.op == ir.OP_ADD { x64.ADD } else { x64.SUB }, sz, RAX, src)
         }
-        if !ar.wrap {
-            let l = g.stub(10, "integer overflow", g.u.listAt(n.b, 2))
-            if sgn {
-                g.a.jcc(x64.CC_O, l)
-            } else if k == ir.TY_U8 {
-                // operands are 0..255: the 32-bit result is out of range when above 255
-                g.a.aluI(x64.CMP, 4, RAX, 255)
-                g.a.jcc(x64.CC_A, l)
-            } else if ar.op == ir.OP_MUL && k == ir.TY_U32 {
-                g.a.movRR(8, RCX, RAX)                  // the 64-bit product of two u32s
-                g.a.shiftI(x64.SHR, 8, RCX, 32)
-                g.a.jcc(x64.CC_NE, l)
-            } else {
-                g.a.jcc(x64.CC_B, l)                    // the carry: unsigned overflow
-            }
-        }
+        if !ar.wrap { g.ovfCheck(ar, RAX, g.u.listAt(n.b, 2)) }
         g.normR(k, RAX)
         return true
     }
