@@ -46,7 +46,7 @@ fn main() {
         append(mut &shortMiss, "m" + intToStr(i))
         append(mut &longMiss, PAD + "x" + intToStr(i))
     }
-    println("short " + intToStr(strRound(&short, &shortMiss)))
-    println("long " + intToStr(strRound(&long, &longMiss)))
-    println("int " + intToStr(intRound(N)))
+    let s = strRound(&short, &shortMiss)
+    let l = strRound(&long, &longMiss)
+    println(intToStr(s) + " " + intToStr(l) + " " + intToStr(intRound(N)))
 }
