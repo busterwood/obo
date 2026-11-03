@@ -97,7 +97,8 @@ type Gen = record {
     slots: []int
     reg: []int                  // per local: its register, or -1 (in its slot)
     uses: []int                 // per local: the times the function being generated names it
-    weight: []int               // ... weighted by loop depth
+    weight: []int               // ... weighted by loop depth, halved in branches (useWeight)
+    rawW: []int                 // ... weighted by loop depth only (whether a new save pays)
     bad: []bool                 // ... whether it can't be in a register
     touched: []int              // the locals the scan of the function saw
     seen: []int                 // per local: the stamp of the last scan that touched it
@@ -204,7 +205,7 @@ fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], loopEnds: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
-        stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [], first: [], last: [],
+        stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], rawW: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
         loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false, posOf: [], posSeen: [],
@@ -228,6 +229,7 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.reg, -1)
         append(mut &g.uses, 0)
         append(mut &g.weight, 0)
+        append(mut &g.rawW, 0)
         append(mut &g.bad, false)
         append(mut &g.seen, 0)
         append(mut &g.aTaken, false)
@@ -776,7 +778,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
         }
         // a new one: for a value kept across a call even when named only twice (a slot's
         // store before the call and load after it cost more than the save and restore)
-        if r < 0 && nSaved < len(LOCAL_REGS) && (g.weight[l] >= 48 || (g.weight[l] >= 32 && !quiet)) {
+        if r < 0 && nSaved < len(LOCAL_REGS) && (g.rawW[l] >= 48 || (g.rawW[l] >= 32 && !quiet)) {
             r = LOCAL_REGS[nSaved]
             nSaved += 1
             append(mut &g.saved, g.temp(8, 8))
@@ -974,6 +976,7 @@ fn (g: mut &Gen) resetScan() {
     for l in old {
         g.reg[l] = -1
         g.weight[l] = 0
+        g.rawW[l] = 0
         g.bad[l] = false
     }
     g.stamp += 1
@@ -1353,6 +1356,14 @@ fn (g: &Gen) useWeight(depth: int): int {
     return 16 * loopWeight(depth) >> (if g.ifDepth > 4 { 4 } else { g.ifDepth })
 }
 
+// A use of l at loop depth depth: its weight (which orders the locals and pays for sites) and
+// its raw weight (whether a callee-saved register is worth saving: every path that names l
+// pays the save and the restore, wherever its branches go).
+fn (g: mut &Gen) weigh(l: int, depth: int) {
+    g.weight[l] += g.useWeight(depth)
+    g.rawW[l] += 16 * loopWeight(depth)
+}
+
 fn (g: mut &Gen) scanList(l: int, depth: int) {
     if l < 0 { return }
     for j in 0..g.u.listLen(l) { g.scan(g.u.listAt(l, j), depth) }
@@ -1547,7 +1558,7 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
     if k == ir.E_LOCAL {
         g.occur(n.a)
         if g.counting { g.uses[n.a] += 1 }
-        g.weight[n.a] += g.useWeight(depth)
+        g.weigh(n.a, depth)
     } else if k == ir.E_ADDR || k == ir.E_DECAY {
         if g.u.nk(n.a) == ir.E_LOCAL {
             let l = g.u.nodes[n.a].a
@@ -1602,7 +1613,7 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
                 if f >= 0 && al[j] >= 0 {
                     // &l for a parameter the body only dereferences: the body names l
                     g.occur(al[j])
-                    g.weight[al[j]] += g.useWeight(depth)
+                    g.weigh(al[j], depth)
                 } else {
                     g.scan(g.u.listAt(n.b, j), depth)
                 }
@@ -1615,7 +1626,7 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
                 let p = g.u.funcs[f].params[j]
                 if al[j] < 0 {
                     g.occur(p)
-                    g.weight[p] += g.useWeight(depth)
+                    g.weigh(p, depth)
                 }
             }
             let ch = g.applyAlias(f, &al)
@@ -1668,7 +1679,7 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
         if n.b >= 0 && n.c < 0 && g.first[l] == g.pos { g.defAt[l] = g.pos }
         if n.b >= 0 {
             if g.counting { g.uses[l] += 1 }
-            g.weight[l] += g.useWeight(depth)
+            g.weigh(l, depth)
         }
         if n.c >= 0 {
             g.bad[l] = true
