@@ -355,7 +355,10 @@ fn (o: mut &Loops) copyPlace(x: int): int {
 fn rtClass(name: str): int {
     if name == "rt_idx" { return RC_IDX }
     if name == "rt_arr_push" { return RC_PUSH }
-    if name == "rt_str_byte" { return RC_PURE }
+    if name == "rt_str_byte" || name == "rt_str_find_byte" || name == "rt_str_find_any" || name == "rt_str_find" ||
+        name == "rt_str_find_pair" {
+        return RC_PURE
+    }
     if len(name) < 8 { return RC_NONE }
     if startsWith(name, "rt_cvs_") || startsWith(name, "rt_cvu_") { return RC_PURE }
     let o4 = name[3..7]

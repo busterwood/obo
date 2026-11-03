@@ -4166,10 +4166,12 @@ fn (c: mut &Checker) convert(t: int, e: int): Val {
 
 // The intrinsics (ref's INTRINSICS): their index, or -1.
 const INTR_NAMES: []str = ["strByte", "strSlice", "strFromBytes", "strToBytes", "intToStr", "i128ToStr", "u128ToStr",
-    "u64ToStr", "floatToStr", "parseFloat", "writeFd", "readFile", "args", "getenv", "strFromC"]
+    "u64ToStr", "floatToStr", "parseFloat", "writeFd", "readFile", "args", "getenv", "strFromC", "strFindByte", "strFindAny",
+    "strFind", "strFindPair"]
 const INTR_C: []str = ["rt_str_byte", "rt_str_sub", "rt_str_from_bytes", "rt_str_to_bytes", "rt_int_to_str",
     "rt_i128_to_str", "rt_u128_to_str", "rt_u64_to_str", "rt_float_to_str", "rt_parse_float", "rt_write_fd",
-    "rt_read_file", "rt_args", "rt_getenv", "rt_str_from_c"]
+    "rt_read_file", "rt_args", "rt_getenv", "rt_str_from_c", "rt_str_find_byte", "rt_str_find_any", "rt_str_find",
+    "rt_str_find_pair"]
 
 fn intrinsic(name: str): int {
     for i in 0..len(INTR_NAMES) {
@@ -4198,6 +4200,10 @@ fn (c: mut &Checker) intrSig(i: int): Sig {
         11 { ps = [S, c.pg.mkRef(S, true)]; ret = I }
         12 { ret = c.pg.mkArr(S) }
         13 { ps = [S, c.pg.mkRef(S, true)]; ret = sema.T_BOOL }
+        15 { ps = [S, I, sema.T_BYTE]; ret = I }
+        16 { ps = [S, I, S]; ret = I }
+        17 { ps = [S, I, S]; ret = I }
+        18 { ps = [S, I, I, S, I, S]; ret = I }
         else { ps = [sema.T_PTR] }
     }
     var s = newSig(INTR_NAMES[i], SK_INTR, ps, ret)

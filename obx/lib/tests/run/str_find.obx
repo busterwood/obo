@@ -1,0 +1,90 @@
+// The search intrinsics strFind, strFindByte, strFindAny and strFindPair (the regex
+// prefilters' memory search, SSE2 in both runtimes) against naive loops, on random texts
+// over a small alphabet (so the 16-byte steps, their tails and every offset are hit).
+// expect: 8003 8000 8000 8018
+// expect: 20000 cases, 0 bad
+
+fn naive(s: str, from: int, t: str): int {
+    var i = if from < 0 { 0 } else { from }
+    while i + len(t) <= len(s) {
+        var ok = true
+        for j in 0..len(t) {
+            if s[i + j] != t[j] { ok = false; break }
+        }
+        if ok { return i }
+        i += 1
+    }
+    return -1
+}
+
+fn naiveAny(s: str, from: int, set: str): int {
+    var i = if from < 0 { 0 } else { from }
+    while i < len(s) {
+        for j in 0..len(set) {
+            if s[i] == set[j] { return i }
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn naivePair(s: str, from: int, i1: int, s1: str, i2: int, s2: str): int {
+    var p = if from < 0 { 0 } else { from }
+    while p + i1 < len(s) && p + i2 < len(s) {
+        if naiveAny(s[p + i1..p + i1 + 1], 0, s1) == 0 && naiveAny(s[p + i2..p + i2 + 1], 0, s2) == 0 { return p }
+        p += 1
+    }
+    return -1
+}
+
+fn main() {
+    var seed = 12345
+    var bad = 0
+    var n = 0
+    for round in 0..20000 {
+        var b = newStrBuf()
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        let ln = seed % 120
+        for k in 0..ln {
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            b.addByte(byte(97 + seed % 4))
+        }
+        let s = b.toStr()
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        let tl = seed % 6
+        var tb = newStrBuf()
+        for k in 0..tl {
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            tb.addByte(byte(97 + seed % 4))
+        }
+        let t = tb.toStr()
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        let from = seed % 90 - 5
+        let a = strFind(s, from, t)
+        let e = if len(t) == 0 { if from < 0 { 0 } else if from <= len(s) { from } else { -1 } } else { naive(s, from, t) }
+        if a != e { bad += 1; println("find " + s + " " + t + " " + from.toStr() + " " + a.toStr() + " " + e.toStr()) }
+        let a2 = strFindAny(s, from, t)
+        let e2 = naiveAny(s, from, t)
+        if a2 != e2 { bad += 1; println("any " + s + " " + t + " " + from.toStr() + " " + a2.toStr() + " " + e2.toStr()) }
+        if len(t) >= 2 {
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            let i1 = seed % 7
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            let i2 = seed % 9
+            let s1 = t[0..1 + seed % len(t)]
+            let s2 = t[1..]
+            let a4 = strFindPair(s, from, i1, s1, i2, s2)
+            let e4 = naivePair(s, from, i1, s1, i2, s2)
+            if a4 != e4 { bad += 1; println("pair " + s + " " + from.toStr() + " " + i1.toStr() + s1 + " " + i2.toStr() + s2 + " " + a4.toStr() + " " + e4.toStr()) }
+        }
+        if len(t) > 0 {
+            let a3 = strFindByte(s, from, t[0])
+            let e3 = naiveAny(s, from, t[0..1])
+            if a3 != e3 { bad += 1; println("byte") }
+        }
+        n += 1
+    }
+    let big = repeat("abcdefgh", 1000) + "xyzSherlock Holmes" + repeat("q", 37)
+    println(strFind(big, 0, "Sherlock Holmes").toStr() + " " + strFindAny(big, 0, "zyx").toStr() + " " + strFindAny(big, 0, "zyxwvut").toStr() + " " + strFindByte(big, 3, byte(113)).toStr())
+    println(n.toStr() + " cases, " + bad.toStr() + " bad")
+}

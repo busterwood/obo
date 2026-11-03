@@ -723,8 +723,11 @@ before any call; bytes travel as a blob (SQLite) or bytea hex (PostgreSQL).
 
 Intrinsics: `strByte`, `strSlice`, `strFromBytes`, `strToBytes`, `intToStr`,
 `i128ToStr`, `u128ToStr`, `u64ToStr`, `floatToStr`, `parseFloat`, `writeFd`,
-`readFile`, `args`, `getenv`, `strFromC`, and the built-ins `isNull`, `exit`,
-`panic`. `task` also uses the library-only intrinsics `intoPtr` and
+`readFile`, `args`, `getenv`, `strFromC`, `strFindByte`, `strFindAny`,
+`strFind` and `strFindPair` (the first index at or after `from` of a byte,
+of any byte of a set, of a string, of a position `p` with `s[p + i1]` in one
+set and `s[p + i2]` in another; 16 bytes a step with SSE2, for the regex
+prefilters), and the built-ins `isNull`, `exit`, `panic`. `task` also uses the library-only intrinsics `intoPtr` and
 `fromPtr` (SPEC 15), to keep a task's argument and result and a `Shared`
 value in the runtime's structures.
 
