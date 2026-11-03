@@ -2288,7 +2288,12 @@ fn (g: mut &Gen) storeT(t: int, m: x64.Mem) {
     }
 }
 
-// The memory of an lvalue that needs no code (a local or a member of one), or base -9.
+// The memory of an lvalue that needs no code (a local or a member of one), or base -9. A scalar
+// may also be through a pointer local in a register, `*p` or a member of it: [r + disp]
+// (eighth step). That memory is read where the operand is used; the IR reads it there (calls
+// that may write it are sequenced before, into statements of their own, by the emitter), and
+// the users that move a read past other code check that code (pairSrcC: pure; genAssign: the
+// value assigns no register of the place).
 fn (g: &Gen) staticMem(e: int): x64.Mem {
     let n = g.u.nodes[e]
     if n.k == ir.E_LOCAL {
@@ -2298,6 +2303,26 @@ fn (g: &Gen) staticMem(e: int): x64.Mem {
     if n.k == ir.E_MEMBER {
         let m = g.staticMem(n.a)
         if m.base != -9 { return at(m, n.v) }
+        if g.viaRegOk(n.ty) {
+            let p = g.viaReg(n.a)
+            if p.base != -9 { return at(p, n.v) }
+        }
+    }
+    if n.k == ir.E_DEREF && g.viaRegOk(n.ty) && g.regOf(n.a) >= 0 { return x64.mem(g.regOf(n.a), 0) }
+    return x64.mem(-9, 0)
+}
+
+// Whether staticMem may name a value of type t through a register: a scalar of 8 bytes or less.
+fn (g: &Gen) viaRegOk(t: int): bool { return g.u.isScalar(t) && !g.isAggr(t) && !g.is128(t) }
+
+// The memory of the aggregate x when it is `*p` of a pointer local in a register, or a member
+// of that: [r + disp]; else base -9.
+fn (g: &Gen) viaReg(x: int): x64.Mem {
+    let n = g.u.nodes[x]
+    if n.k == ir.E_DEREF && g.regOf(n.a) >= 0 { return x64.mem(g.regOf(n.a), 0) }
+    if n.k == ir.E_MEMBER {
+        let p = g.viaReg(n.a)
+        if p.base != -9 { return at(p, n.v) }
     }
     return x64.mem(-9, 0)
 }
@@ -2361,7 +2386,7 @@ fn (g: &Gen) simple(e: int): bool {
     if n.k == ir.E_INT || g.regOf(e) >= 0 || g.constAddrSym(e) >= 0 { return true }
     if g.noopCast(e) { return g.simple(n.a) }
     if g.isAggr(n.ty) || g.isF(n.ty) || g.is128(n.ty) { return false }
-    return (n.k == ir.E_LOCAL || n.k == ir.E_MEMBER) && g.staticMem(e).base != -9
+    return (n.k == ir.E_LOCAL || n.k == ir.E_MEMBER || n.k == ir.E_DEREF) && g.staticMem(e).base != -9
 }
 
 fn (g: mut &Gen) genInto(e: int, r: int) {
@@ -2504,7 +2529,8 @@ fn (g: &Gen) srcOnly(x: int): bool {
 // slot, a member of one).
 fn (g: &Gen) memOperand(e: int): bool {
     let n = g.u.nodes[e]
-    return (n.k == ir.E_LOCAL || n.k == ir.E_MEMBER) && g.size(n.ty) == 8 && !g.isF(n.ty) && !g.isAggr(n.ty) &&
+    return (n.k == ir.E_LOCAL || n.k == ir.E_MEMBER || n.k == ir.E_DEREF) && g.size(n.ty) == 8 && !g.isF(n.ty) &&
+        !g.isAggr(n.ty) &&
         g.regOf(e) < 0 && g.staticMem(e).base != -9
 }
 
@@ -2940,7 +2966,9 @@ fn (g: mut &Gen) genAssign(e: int) {
         g.a.movRR(8, g.regOf(lhs), RAX)
         return
     }
-    let m = g.staticMem(lhs)
+    var m = g.staticMem(lhs)
+    // through a pointer local in a register the value might assign (it is generated first)
+    if m.base != -9 && m.base != RBP && g.writesReg(n.b, m.base) { m = x64.mem(-9, 0) }
     if m.base != -9 && g.u.nk(n.b) == ir.E_CALL && g.rtName(n.b) == "rt_str_dup" &&
         g.sameMem(lhs, g.u.listAt(g.u.nodes[n.b].b, 0)) {
         g.gen(n.b)                          // x = rt_str_dup(x): the count only
@@ -2956,6 +2984,13 @@ fn (g: mut &Gen) genAssign(e: int) {
         if !g.destUsed { g.storeT(t, m) }
         g.a.lea(RAX, m)
         return
+    }
+    if m.base != -9 && m.base != RBP && unused && !g.isF(t) {
+        let cv = g.intConst(n.b, t)
+        if cv.c == 0 && x64.fits32(cv.v) {
+            g.a.storeI(g.size(t), m, cv.v)        // mov qword [r + disp], 0
+            return
+        }
     }
     if m.base != -9 {
         g.gen(n.b)

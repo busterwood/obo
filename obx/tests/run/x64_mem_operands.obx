@@ -1,0 +1,112 @@
+// Native code generation (x64gen staticMem, eighth performance step): scalar
+// fields read and written through a pointer held in a register (a borrow's
+// record pointer, an owned record, a list node) are memory operands: compared,
+// added, indexed with and stored to in place, at every width and signedness,
+// constants stored directly. The values must be those of the C build.
+// expect: widths -5 65535 4294967295 200 true -3000000000 2.5
+// expect: sums 5 18 19
+// expect: stores 0 0 0 false 77 9
+// expect: list 15 5 3
+// expect: index 9 30 4
+// expect: cmp 2 1 1
+// expect: swap 4 3
+
+type W = record {
+    a: i32
+    b: u64
+    c: u32
+    d: byte
+    e: bool
+    f: int
+    g: float
+    xs: []int
+    bs: []byte
+}
+
+type Node = record {
+    v: int
+    next: Option[Node]
+}
+
+fn widths(w: &W): str {
+    return "widths " + w.a.toStr() + " " + w.b.toStr() + " " + w.c.toStr() + " " + w.d.toStr() + " " +
+        w.e.toStr() + " " + w.f.toStr() + " " + w.g.toStr()
+}
+
+fn sums(w: mut &W): str {
+    var s = 0
+    var t = 0
+    for k in 0..3 {
+        s = s + w.f / 1000000000 + int(w.a) + int(w.d) / 100
+        t = t - int(w.a) * 2 + w.xs[k]
+    }
+    return "sums " + (s + 23).toStr() + " " + (t - 18).toStr() + " " + (int(w.b) % 22).toStr()
+}
+
+fn stores(w: mut &W): str {
+    w.a = 0
+    w.b = 0
+    w.c = 0
+    w.e = false
+    w.f = 77
+    w.d = 9
+    return "stores " + w.a.toStr() + " " + w.b.toStr() + " " + w.c.toStr() + " " + w.e.toStr() + " " +
+        w.f.toStr() + " " + w.d.toStr()
+}
+
+fn listSum(n: &Node): int {
+    return n.v + match n.next { Some(m) { listSum(&m) } None { 0 } }
+}
+
+fn second(n: &Node): int { return match n.next { Some(m) { m.v + 3 } None { 0 } } }
+
+fn third(n: &Node): int {
+    return match n.next { Some(m) { match m.next { Some(k) { k.v } None { 0 } } } None { 0 } }
+}
+
+fn index(w: mut &W): str {
+    var i = 0
+    var best = 0
+    while i < len(w.xs) {
+        if w.xs[i] > best { best = w.xs[i] }
+        i = i + 1
+    }
+    w.xs[len(w.xs) - 1] = w.xs[0] * 10
+    return "index " + best.toStr() + " " + w.xs[len(w.xs) - 1].toStr() + " " + int(w.bs[int(w.bs[0])]).toStr()
+}
+
+fn cmp(w: &W, v: int): str {
+    var lt = 0
+    var eq = 0
+    var gt = 0
+    for x in w.xs {
+        if x < w.f { lt = lt + 1 }
+        if x == w.f { eq = eq + 1 }
+        if v > w.f { gt = 1 }
+    }
+    return "cmp " + lt.toStr() + " " + eq.toStr() + " " + gt.toStr()
+}
+
+fn swapXs(w: mut &W) {
+    let t = w.xs[0]
+    w.xs[0] = w.xs[1]
+    w.xs[1] = t
+}
+
+fn main() {
+    var w = W{a: -5, b: 65535, c: 4294967295, d: 200, e: true, f: -3000000000, g: 2.5, xs: [1, 2, 3], bs: [2, 3, 4]}
+    println(widths(&w))
+    println(sums(mut &w))
+    println(stores(mut &w))
+    let l = Node{v: 1, next: Some(Node{v: 2, next: Some(Node{v: 3, next: Some(Node{v: 4, next: Some(Node{v: 5,
+        next: None})})})})}
+    println("list " + listSum(&l).toStr() + " " + second(&l).toStr() + " " + third(&l).toStr())
+    w.xs = [3, 9, 4]
+    println(index(mut &w))
+    w.f = 9
+    w.xs = [3, 9, 4]
+    println(cmp(&w, 10))
+    w.xs = [3, 4]
+    swapXs(mut &w)
+    println("swap " + w.xs[0].toStr() + " " + w.xs[1].toStr())
+}
