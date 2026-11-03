@@ -208,6 +208,15 @@ the IR; the C is unchanged), repeated on a block while statements drop out:
   statements (at most 8) naming t assign neither;
 - `T t = E; s = t;` and `T t = E; return t;` with t named nowhere else
   become `s = E` and `return E` (scalar T for the return);
+- `T t = E; S` with T a scalar of E's type and t named once more, in S, the
+  next statement (an expression, a return, a declaration with an
+  initializer), becomes S with E in t's place, when t is reached in S through
+  operations that evaluate all their operands (calls, arithmetic, casts,
+  dereferences, the value of an assignment to a local) and every other value
+  S reads is a constant, a string or function address, or a local (or a
+  member of one) that is never address-taken and that E does not assign
+  (`T t4 = fib(n - 2); T r = rt_add_int(t3, t4)` becomes
+  `rt_add_int(t3, fib(n - 2))`);
 - use counts (static, per function) are kept exact through these rewrites;
   a walk that meets a node kind it does not know leaves the function as it
   is.
@@ -249,7 +258,8 @@ Then:
   `rsi rdi r8 r9` when no position of its range is loud, else one of
   `rbx r12 r13 r14 r15` already saved, else (named three times or in a loop)
   the next callee-saved one (saved to a frame slot in the prologue, restored
-  in every epilogue). Not loud for this: the position of the local's own
+  in every epilogue; a local whose range has a loud position takes a new one
+  when named twice). Not loud for this: the position of the local's own
   declaration with an initializer (its code runs before the local is set),
   and a loud position in the statements running straight into a `return`
   (no jumps or loops between) when the local is not named from there to the
@@ -269,7 +279,23 @@ Then:
   register nor, for memory, anything). When both are complex and the right
   one's code is quiet (no loud node, no call but the inline checks), the left
   one waits in a register of `rsi rdi r8 r9` that no local of the function
-  has, instead of a slot;
+  has, instead of a slot. Otherwise (the right one has calls, or no such
+  register is left) it waits in a callee-saved register that no local
+  holds at that position and no other temporary holds: one already saved,
+  or, when the right one is not quiet, the next one, saved from then on
+  (its save slot is placed below the frame when the body is done); a slot
+  only when none is left, or when a return without restores was already
+  generated. For a commutative operation the held value is the operand
+  itself (`add rax, r12`). The same holds keep an integer argument while
+  the later ones are evaluated (and an argument of a body in place), the
+  function pointer of an indirect call (`call r12`), the address an
+  assignment stores to, and the operands of the inline `rt_str_byte` and
+  `rt_str_eq`;
+- an add or subtract (checked or wrapping) or `& | ^` of a simple operand
+  and one that needs no code is computed in the register it goes to: a
+  register local's declaration or assignment, or the last argument of a
+  call (computed when the argument registers are loaded; only arguments
+  that need no code follow it): `mov rdi, rbx; sub rdi, 1; jo`;
 - lvalues are generated up to their last address arithmetic and used as
   operands (`place`): `a.b.c` through pointers loads `[rax+off]`, `*p` with p
   in a register reads `[reg]`, an element `p + i*size` (size 1, 2, 4, 8) is
@@ -323,9 +349,12 @@ Then:
   it drops a `jmp` to the label bound right after it and a `jmp` right after
   a `ret` or `jmp`;
 - the prologue is inserted after the body, when the frame size is known:
-  only the callee-saved registers in use are saved, `sub rsp` takes the
-  short immediate when it fits, and returns leave with `leave` (a function
-  that restores registers jumps to one copy of the restores);
+  only the callee-saved registers in use are saved (pushed when their slots
+  top the frame), `sub rsp` takes the short immediate when it fits, and
+  returns leave with `leave` (a function that restores registers jumps to
+  one copy of the restores; when there are at most two, each jump is
+  replaced by a copy once the body is done);
+- functions start at multiples of 16 (`int3` between them);
 - a frame over 2 KiB is touched a page at a time from the top (a probe
   loop on `r11`), so that a frame larger than the guard gap faults at the
   guard page, which the runtime reports as `obx: stack overflow`, instead of
@@ -476,6 +505,194 @@ the IR and both backends start from it; `cfront.obx` is gone. Checks:
   The native build no longer prints and reparses C. The C build now builds
   the IR and prints it, where it printed the templates before: lower and
   cgen take about 20% of the time each.
+
+2026-11-03, the fourth performance step (branch `perf3`, section 4:
+temporaries in callee-saved registers, forward substitution, a new register
+for a local named twice across a call, functions at multiples of 16, pushed
+saves and copied restores, arithmetic into its register). Both columns
+build the same sources (those of `4f9b1ad`, where the branch starts); "main"
+is the backend there. Best of 5, ms, interleaved; then user-mode instructions
+and the least cycles of 10 interleaved runs (perf stat). The self-build is
+the natively built compiler running `main.obx --native`:
+
+| | main | perf3 |
+|---|---|---|
+| native compiler size (bytes) | 2,086,449 | 2,065,969 |
+| eza size (bytes) | 270,272 | 270,272 |
+| `--emit-c` of the compiler | 257 | 248 |
+| self-build (`--native`) | 409 | 389 |
+| bench fib | 448 | 349 |
+| bench loop | 420 | 419 |
+| bench array | 168 | 165 |
+| bench alloc | 64 | 64 |
+| bench lists | 35 | 33 |
+| bench strings | 53 | 52 |
+| bench trees | 21 | 20 |
+| bench tokens | 12 | 12 |
+| eza `-T` | 115 | 115 |
+| self-build, instructions | 3938M | 3923M |
+| self-build, cycles | 1662M | 1641M |
+| eza `-T`, instructions | 659M | 649M |
+| eza `-T`, cycles | 235M | 229M |
+| fib, instructions | 6127M | 5630M |
+| fib, cycles | 2188M | 1690M |
+
+The other benchmarks (instructions; least cycles of 10), main then perf3:
+loop 11000M; 2006M and 11000M; 2003M; array 4615M; 784M and 4615M; 781M;
+alloc 1460M; 301M and 1420M; 301M; lists 537M; 166M and 537M; 158M;
+strings 993M; 212M and 992M; 211M; trees 294M; 85M and 293M; 81M; tokens
+146M; 51M and 139M; 51M.
+
+Per commit (instructions; least cycles of 10):
+
+| commit | self-build | eza `-T` | fib |
+|---|---|---|---|
+| main | 3938M; 1662M | 659M; 235M | 6127M; 2188M |
+| temporaries across calls in callee-saved registers | 3929M; 1641M | 651M; 234M | 6458M; 2189M |
+| functions at multiples of 16 | 3929M; 1652M | 651M; 232M | 6458M; 1857M |
+| arguments, function pointers, store addresses held | 3930M; 1655M | 651M; 235M | 6458M; 1857M |
+| pushed saves, copied restores, arithmetic in place | 3923M; 1640M | 649M; 231M | 5630M; 1691M |
+| arguments of bodies in place, string checks held | 3923M; 1641M | 649M; 229M | 5630M; 1690M |
+
+fib gains 23% of its cycles (the gcc -O2 build: 312 ms against 357 in the
+same `bench.py` run). The first commit alone raises fib's instructions: the
+`fib(n - 1)` that waited in a slot now waits in `r12`, which costs a save
+and a restore per call, but the slot's store before the call and its load
+after it were what the processor waited for (the load waits for the store
+through the callee's frame). Its cycles then hung on where fib fell in the
+fetch blocks: aligned at 16 it ran 15% faster, unaligned the gain was gone.
+The pushed saves, the copied restores and the subtract into `rdi` took the
+instructions back below main's. fib is now:
+
+```
+push rbp; mov rbp, rsp; push rbx; push r12; mov rbx, rdi
+cmp rbx, 2; jge L; mov rax, rbx; mov rbx, [rbp-8]; mov r12, [rbp-16]; leave; ret
+L: mov rdi, rbx; sub rdi, 1; jo trap; call fib; mov r12, rax
+   mov rdi, rbx; sub rdi, 2; jo trap; call fib; add rax, r12; jo trap
+   mov rbx, [rbp-8]; mov r12, [rbp-16]; leave; ret
+```
+
+The self-build and eza move by 0.4% and 1.6% in instructions and about 1%
+and 2% in cycles: few of their temporaries wait across calls, and what
+they spend is in the runtime (malloc, `rt_str_concat`, counts, dup glue).
+
+The new rewrites rest on these arguments (none changes the C):
+
+- temporaries in callee-saved registers (`hold`, `calleeTemp`): a held value
+  lives from the hold to its release inside the code of one statement, so
+  at one position p, the one the scan saw the node at (`posAt`; a node seen
+  at several positions, or not seen, has none, and then only a register no
+  local was given is taken). A local given register r is read and written
+  only at positions in its range, so when no local with r has p in its
+  range, nothing in the window reads r for a local or writes it as one: the
+  temporary is a local whose range is [p, p], the argument by which two
+  locals with disjoint ranges share a register. Two temporaries never share
+  one (`held` lists those taken; they are released in the reverse order).
+  The callee-saved registers survive every call, the runtime's and the C
+  libraries' included (the ABI), and the generator uses `rbx` and `r12` to
+  `r15` for nothing else: no scratch use, no runtime path in place;
+- inlined bodies: a node of a body in place has no position of its own (one
+  body serves every call), so in it `posAt` is that of the outermost call
+  being generated in place. The scan gives the body's locals that position
+  (they are counted per call, section 4), so a register of one of them is
+  not free there, and a `return` of the body jumps to its end, inside the
+  window;
+- `&l` aliases: a body in place that writes `*p` writes l's register or
+  slot. l is named at the call, so it is live at p and its register is no
+  temporary's. `writesReg` asks about locals' registers only and is
+  unaffected;
+- new saved registers: a hold that will wait across a call (the code it
+  waits for is not quiet) may take the next callee-saved register, saved
+  from then on: its save slot is placed below the frame after the body, and
+  the restores are generated after the body too, so every return made with
+  a jump to the restores restores it. A return that left without restores
+  (`leave; ret` in a function that had saved nothing yet) would not, so
+  after one (`bareRet`) no new register is taken: the value waits in a
+  slot;
+- the loud/quiet classification: the quiet registers (`rsi rdi r8 r9`) are
+  still taken only when the code waited for is quiet, as before. A
+  callee-saved register does not depend on it (every call keeps it); the
+  classification only decides whether a new register is worth its save;
+- `writesReg` and operand order: held values are read only by `heldSrc`
+  and `unholdInto`, right after the release, before any other code; a
+  commutative operation reads the held register as its operand, which the
+  overflow flags allow as before (`add`, `imul`, `mul` do not depend on the
+  order);
+- a new register for a local named twice: the allocator takes one for a
+  local of weight 2 when its range has a loud position (a call keeps the
+  value; a slot would be stored and reloaded around it). The conditions on
+  sharing are unchanged;
+- forward substitution (`forward`): E moves from before S to t's place in
+  S. What S evaluates before t's place, and the operations on the path to t
+  after it, are what can tell the difference. The path nodes (calls,
+  arithmetic, casts, dereferences, the value of an assignment into a local
+  or a member chain of one) evaluate all their operands before they act, so
+  their traps and calls still follow E's; `&&`, `||`, `?:`, members of t
+  and unknown kinds refuse. Every other operand is a constant, a string or
+  function address, or a local (or a member chain of one) that is never
+  address-taken and that E does not assign: reading it cannot fail and E
+  cannot change it, so it reads the same before or after E, and an
+  assignment's target is such a local, which E does not assign either. t is
+  a scalar of E's type (no conversion at the declaration), never
+  address-taken, and named exactly once in S (static use counts), so no
+  other code read it. E's node moves rather than being copied (its
+  declaration becomes empty), so use counts stay exact;
+- arithmetic into its register (`arithInto`): one operand is simple and
+  the other needs no code and is not r, so loading the first into r cannot
+  change the second (a memory operand is a frame slot, `rbp`-based); the
+  operation, the overflow test (the same stub and message as `rt_add_*`,
+  `rt_sub_*`) and the normalization are those of rax. On overflow r holds
+  the wrapped value only on the trapping path, which does not return. For
+  the last call argument the operation is moved to where the argument
+  registers are loaded: only arguments that need no code follow it (they
+  cannot trap or call), the earlier ones are already evaluated, and its
+  operands are read where a direct argument would be read, under the same
+  rule that keeps the locals of call positions out of the argument
+  registers;
+- copied restores (`replaceJmp`): the jump is the 5-byte `jmp rel32` to
+  the restores recorded when it was emitted (only when the peephole left it
+  5 bytes long), and is replaced only if its byte and its fix (to the
+  restores' label) are still there. The copy is the same loads, `leave`
+  and `ret`, `rbp`-relative and so position independent. Labels bound
+  after the jump, fixes and relocations after it move by the change in
+  size; the jump's own fix is dropped; the sites are replaced from the last,
+  so the earlier recorded ones have not moved. Trap stubs and the prologue
+  are generated after, so nothing else records a position in the body;
+- pushed saves and the stack-overflow probe: the registers whose slots are
+  the top of the frame, in order (`-8`, `-16`, ...), are pushed instead of
+  stored, to the same addresses. The pushes write the 8 to 40 bytes below
+  `rbp`, contiguous with the return address and `rbp` the call and the
+  `push rbp` just wrote, before the `sub`; a frame over `PROBE_FREE` is
+  still probed a page at a time from `rbp` after it. A push that meets the
+  guard page faults there, as the `push rbp` would, and `rt_segv` reports
+  it;
+- functions at multiples of 16: the padding is `int3` between functions,
+  never executed (a function's code ends in a jump or `ret`, its stubs in a
+  call that does not return); calls and maps use the labels, which are
+  bound after the padding.
+
+Not done, and why:
+
+- loop-invariant loads of array and `str` fields, borrowed `str`
+  parameters and doubles in `xmm` registers: left for later, as asked
+  (each is its own analysis: invariance under the loop's writes, the IR's
+  ownership rules, and the absence of callee-saved `xmm` registers);
+- shrink-wrapping (saving only on the paths that need it): fib's leaf
+  path still saves and restores two registers. It would need the saves
+  moved past the first branch, with the probe and the pushes; the copied
+  restores already make that path short;
+- holds beyond the five callee-saved registers: a hold takes a slot when
+  all of them are taken at its position (not measured how often).
+
+Gates at the end of the step:
+
+- `run_native.py --lib` 395 of 395; with `--redteam` 1491 of 1491;
+- `gate.sh full` PASS, the native self-build at a fixed point (2,098,753
+  bytes);
+- `cmd/eza_gate.py -j 12` 482 passed, 0 failed (72 live-only skipped);
+- `run_prev.py --native --lib --redteam --eza` against main's compiler
+  (`OBX_PREV`, main at `2624d58`): 2442 same, 0 differ;
+- the seed at a fixed point on the branch.
 
 2026-11-03, the third performance step (branch `perf2`, section 4: registers
 by live ranges, `rsi rdi r8 r9` for call-free ranges, `&l` arguments of
@@ -696,12 +913,12 @@ Next, in order:
 1. More performance, if wanted. Candidates:
    - the reference counts: a callee-side "borrowed `str` parameter" form,
      once check.obx builds the IR and its ownership rules are settled;
-   - temporaries across calls in free callee-saved registers (fib's
-     `fib(n-1)` waits in a slot);
    - loop-invariant loads of array and `str` fields (`a.data` and `a.len`
      are reloaded each iteration);
    - the dup glue of value records;
    - doubles in `xmm` registers;
+   - shrink-wrapping: saves only on the paths that need them (fib's leaf
+     path);
    - a faster `lower` and `cgen`, to win back the `--emit-c` time lost
      when the C began to be printed from the IR.
 
@@ -728,5 +945,7 @@ Phases:
   (section 4).
 - Performance, third step: registers by live ranges, operands in place.
   Done (section 4).
+- Performance, fourth step: temporaries in callee-saved registers, forward
+  substitution, pushed saves and copied restores. Done (section 4).
 - The IR from the templates: check builds trees, lower builds the IR, cgen
   prints C from it, cfront deleted. Done (section 1).

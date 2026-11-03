@@ -43,6 +43,14 @@ const QUIET_REGS: []int = [6, 7, 8, 9]            // rsi rdi r8 r9
 // (nor the return address of a call from it) can skip the guard page.
 const PROBE_FREE = 2048
 
+// Functions start at multiples of this (the code segment's base is one): where a function falls
+// in the fetch blocks changes the speed of a small recursive one by 15% (bench fib). int3 pads.
+const FUNC_ALIGN = 16
+
+// A function that restores at most this many registers returns with a copy of the restores in
+// place of a jump to its one copy.
+const EPI_COPY = 2
+
 // Symbol kinds.
 const SK_FUNC = 0        // idx: a function with a body
 const SK_GLOBAL = 1      // idx: a global
@@ -131,6 +139,7 @@ type Gen = record {
     retPtr: int
     retTy: int
     epiL: int                   // the label of the function's restores and return, or -1
+    epiJmps: []int              // ... the positions of the jumps to it
     entrySym: int
     dyn: bool                   // dynamically linked: every C function the program calls is imported
     libs: []elf.Lib
@@ -139,6 +148,12 @@ type Gen = record {
     stubs: []Stub               // the trap paths of the inlined runtime checks, after the function
     stubOf: Map[str, int]       // their labels by (code, where)
     codeEnd: int
+    posOf: []int                // per node: the position the scan saw it at (posSeen: when), or -1 (at several)
+    posSeen: []int
+    inlPos: int                 // the position of the outermost call being generated in place
+    held: []int                 // the callee-saved registers holding temporaries (hold), innermost last
+    nLocalRegs: int             // the callee-saved registers some local has: LOCAL_REGS[0..nLocalRegs)
+    bareRet: bool               // a return with no restores was generated: no register can be saved anew
 }
 
 // A call of rt_trap(code, msg, where) out of line, at the end of a function: its label.
@@ -152,11 +167,12 @@ type Stub = value record {
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtAddr: newMap(), funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
-        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
+        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
-        loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false}
+        loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false, posOf: [], posSeen: [],
+        inlPos: -1, held: [], nLocalRegs: 0, bareRet: false}
     g.a.peep = true
     for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
     for i in 0..len(g.u.funcs) {
@@ -187,6 +203,10 @@ fn newGen(u: ir.Ir): Gen {
     g.simplify()
     for i in 0..len(g.u.locals) { g.uses[i] = 0 }
     g.countUses()
+    for i in 0..len(g.u.nodes) {
+        append(mut &g.posOf, -1)
+        append(mut &g.posSeen, 0)
+    }
     return g
 }
 
@@ -304,7 +324,10 @@ fn (g: mut &Gen) genAll() {
         g.a.ud2()
     }
     for f in 0..len(g.u.funcs) {
-        if g.u.funcs[f].body >= 0 { g.genFunc(f) }
+        if g.u.funcs[f].body >= 0 {
+            while g.a.pos() % FUNC_ALIGN != 0 { g.a.b(0xCC) }
+            g.genFunc(f)
+        }
     }
     g.a.fixLabels()
     g.codeEnd = g.a.pos()
@@ -446,8 +469,13 @@ fn (g: mut &Gen) genFunc(f: int) {
     let ft = g.u.funcs[f].ty
     g.retTy = g.u.tys[ft].base
     g.epiL = -1
+    g.epiJmps = []
     g.curFunc = f
     g.allocRegs(f)
+    g.nLocalRegs = len(g.saved)
+    g.held = []
+    g.bareRet = false
+    g.inlPos = -1
     g.tmpRegs = []
     g.tmpUsed = 0
     for q in QUIET_REGS {
@@ -505,9 +533,30 @@ fn (g: mut &Gen) genFunc(f: int) {
     }
     g.stmt(g.u.funcs[f].body)
     g.epilogue()
+    // the slots of the registers saved for temporaries (hold), below the rest of the frame: only
+    // the prologue and the restores at epiL name them
+    for i in 0..len(g.saved) {
+        if g.saved[i] == 0 {
+            g.maxFrame += 8
+            g.saved[i] = -g.maxFrame
+        }
+    }
     if g.epiL >= 0 {
         g.a.bind(g.epiL)
         g.leaveFrame()
+        if len(g.saved) <= EPI_COPY {
+            // the returns: a copy of the restores in place of each jump to them (the set of
+            // registers is known now)
+            var e = x64.newAsm()
+            for i in 0..len(g.saved) { e.load(8, LOCAL_REGS[i], rbp(g.saved[i])) }
+            e.leave()
+            e.ret()
+            var i = len(g.epiJmps) - 1
+            while i >= 0 {
+                g.a.replaceJmp(g.epiJmps[i], g.epiL, &e.code, firstLabel)
+                i -= 1
+            }
+        }
     }
     g.genStubs()
     let frame = ir.alignUp(g.maxFrame, 16) + ir.alignUp(g.outArgs, 16)
@@ -515,7 +564,13 @@ fn (g: mut &Gen) genFunc(f: int) {
     var p = x64.newAsm()
     p.push(RBP)
     p.movRR(8, RBP, RSP)
-    if frame > 0 { p.aluI(x64.SUB, 8, RSP, frame) }
+    // the saved registers whose slots are at the top of the frame, in order, are pushed
+    var pushed = 0
+    while pushed < len(g.saved) && g.saved[pushed] == -8 * (pushed + 1) {
+        p.push(LOCAL_REGS[pushed])
+        pushed += 1
+    }
+    if frame > 8 * pushed { p.aluI(x64.SUB, 8, RSP, frame - 8 * pushed) }
     if frame > PROBE_FREE {
         // touch the frame a page at a time from the top, so that a stack overflow faults at
         // the guard page (rt_segv reports it) and never skips past it
@@ -531,7 +586,7 @@ fn (g: mut &Gen) genFunc(f: int) {
         p.bind(probed)
         p.fixLabels()
     }
-    for i in 0..len(g.saved) { p.store(8, rbp(g.saved[i]), LOCAL_REGS[i]) }
+    for i in pushed..len(g.saved) { p.store(8, rbp(g.saved[i]), LOCAL_REGS[i]) }
     g.a.insert(start, &p.code, firstLabel)
 }
 
@@ -548,7 +603,8 @@ fn (g: mut &Gen) genFunc(f: int) {
 // loops more) choose first: a range with no loud statement (no call, no 128-bit operation,
 // ...: the code there leaves rsi, rdi, r8 and r9 alone) can take one of those; else one of
 // the callee-saved registers, which are saved in the prologue: a new one only for a local
-// named three times or in a loop (else saving it costs what it saves).
+// named three times or in a loop, or twice with a loud statement in its range (else saving it
+// costs what it saves).
 fn (g: mut &Gen) allocRegs(f: int) {
     g.resetScan()
     g.saved = []
@@ -604,7 +660,8 @@ fn (g: mut &Gen) allocRegs(f: int) {
     var nSaved = 0
     for l in order {
         var r = -1
-        if g.quietLive(l, &loudBefore) || g.quietTail(l) {
+        let quiet = g.quietLive(l, &loudBefore) || g.quietTail(l)
+        if quiet {
             for q in QUIET_REGS {
                 if r < 0 && g.regFree(&given, q, l) { r = q }
             }
@@ -612,7 +669,9 @@ fn (g: mut &Gen) allocRegs(f: int) {
         for i in 0..nSaved {
             if r < 0 && g.regFree(&given, LOCAL_REGS[i], l) { r = LOCAL_REGS[i] }
         }
-        if r < 0 && nSaved < len(LOCAL_REGS) && g.weight[l] >= 3 {
+        // a new one: for a value kept across a call even when named only twice (a slot's
+        // store before the call and load after it cost more than the save and restore)
+        if r < 0 && nSaved < len(LOCAL_REGS) && (g.weight[l] >= 3 || (g.weight[l] >= 2 && !quiet)) {
             r = LOCAL_REGS[nSaved]
             nSaved += 1
             append(mut &g.saved, g.temp(8, 8))
@@ -789,6 +848,7 @@ fn (g: mut &Gen) simpList(l: int) {
             if g.u.nk(g.u.nodes[x].b) == ir.E_LOCAL { g.merge(l, j) }
             if g.u.listAt(l, j) == x && j + 1 < cnt { g.intoAssign(l, j) }
             if g.u.listAt(l, j) == x && j + 1 < cnt { g.intoReturn(l, j) }
+            if g.u.listAt(l, j) == x && j + 1 < cnt { g.forward(l, j) }
         }
         // without the statements dropped (so that the fused pairs of stmt are next to each other)
         var n = 0
@@ -920,6 +980,85 @@ fn (g: mut &Gen) intoReturn(l: int, j: int) {
     g.u.nodes[y].a = v
     g.u.items[l + 1 + j] = g.emptyS
     g.uses[t] = 0
+}
+
+// (6) `T t = E; S` with T a scalar, t named once more, in S, the next statement (an expression,
+// a return, a declaration with an initializer), on a path of operations that evaluate all
+// their operands (no &&, ||, ?:), and every other value S reads one that E cannot change and
+// whose reading cannot fail: constants, string and function addresses, members and values of
+// locals whose addresses are never taken and that E does not assign. Then S reads E in t's
+// place (E's node is copied over t's name): E is evaluated where t was read, which no other
+// part of S can tell from before.
+fn (g: mut &Gen) forward(l: int, j: int) {
+    let x = g.u.listAt(l, j)
+    let t = g.u.nodes[x].a
+    let y = g.u.listAt(l, j + 1)
+    if g.uses[t] != 2 || !g.u.isScalar(g.u.locals[t].ty) || g.aTaken[t] { return }
+    let v = g.u.nodes[x].b
+    if g.u.nodes[v].ty != g.u.locals[t].ty { return }
+    let yk = g.u.nk(y)
+    var root = -1
+    if yk == ir.S_EXPR || yk == ir.S_RETURN {
+        root = g.u.nodes[y].a
+    } else if yk == ir.S_DECL && g.u.nodes[y].c < 0 {
+        root = g.u.nodes[y].b
+    }
+    if root < 0 { return }
+    let at = g.fwdSite(root, t, v)
+    if at < 0 || g.u.nodes[at].ty != g.u.nodes[v].ty { return }
+    g.u.nodes[at] = g.u.nodes[v]
+    g.u.items[l + 1 + j] = g.emptyS
+    g.uses[t] = 0
+}
+
+// For forward: in the tree x, the name of local t when x's other values are as forward needs
+// them (E is v); -2 when x does not name t and is such a value; else -1.
+fn (g: mut &Gen) fwdSite(x: int, t: int, v: int): int {
+    let n = g.u.nodes[x]
+    let k = n.k
+    if k == ir.E_LOCAL {
+        if n.a == t { return x }
+        if g.aTaken[n.a] || g.walk(v, 1, n.a, -1) > 0 { return -1 }
+        return -2
+    }
+    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_FUNC { return -2 }
+    if (k == ir.E_DECAY || k == ir.E_ADDR) && (g.u.nk(n.a) == ir.E_STR || g.u.nk(n.a) == ir.E_FUNC) { return -2 }
+    if k == ir.E_MEMBER || k == ir.E_CAST {
+        let r = g.fwdSite(n.a, t, v)
+        if r >= 0 && k == ir.E_MEMBER { return -1 }
+        return r
+    }
+    var kids: []int = []
+    if k == ir.E_CALL {
+        append(mut &kids, n.a)
+        for i in 0..g.u.listLen(n.b) { append(mut &kids, g.u.listAt(n.b, i)) }
+    } else if k == ir.E_BIN || k == ir.E_PADD {
+        append(mut &kids, n.a)
+        append(mut &kids, n.b)
+    } else if k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_DEREF {
+        append(mut &kids, n.a)
+    } else if k == ir.E_ASSIGN {
+        // into a local or a member of one, the value naming t
+        var r = n.a
+        while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
+        if g.u.nk(r) != ir.E_LOCAL || g.fwdSite(n.a, t, v) != -2 { return -1 }
+        return g.fwdSite(n.b, t, v)
+    } else {
+        return -1
+    }
+    // the path to t goes through x (it evaluates all its operands, after them); no other
+    // operand of x but values
+    var site = -2
+    for c in kids {
+        let r = g.fwdSite(c, t, v)
+        if r == -1 { return -1 }
+        if r >= 0 {
+            if site >= 0 { return -1 }
+            site = r
+        }
+    }
+    if site < 0 { return -1 }
+    return site
 }
 
 // Names s for t in items j+1 up to end of list l, and drops t's declaration (item j).
@@ -1116,6 +1255,14 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
     if x < 0 { return }
     let n = g.u.nodes[x]
     let k = n.k
+    if !g.counting && g.scanExpr == 0 && x < len(g.posOf) {
+        if g.posSeen[x] != g.stamp {
+            g.posSeen[x] = g.stamp
+            g.posOf[x] = g.pos
+        } else if g.posOf[x] != g.pos {
+            g.posOf[x] = -1
+        }
+    }
     if !g.counting && g.loudNode(x) { g.loud[g.pos] = true }
     if k == ir.E_LOCAL {
         g.occur(n.a)
@@ -1280,11 +1427,14 @@ fn (g: mut &Gen) epilogue() {
         return
     }
     if len(g.saved) == 0 {
+        g.bareRet = true
         g.leaveFrame()
         return
     }
     if g.epiL < 0 { g.epiL = g.a.newLabel() }
+    let at = g.a.pos()
     g.a.jmp(g.epiL)
+    if g.a.pos() == at + 5 { append(mut &g.epiJmps, at) }
 }
 
 fn (g: mut &Gen) leaveFrame() {
@@ -1326,6 +1476,8 @@ fn (g: mut &Gen) stmt(s: int) {
             g.declMark = g.frame
             if n.b >= 0 && g.simple(n.b) && g.u.nodes[n.b].ty == t {
                 g.genInto(n.b, g.reg[l])
+            } else if n.b >= 0 && g.u.nodes[n.b].ty == t && g.arithInto(n.b, g.reg[l], true) {
+                // computed in the register
             } else if n.b >= 0 {
                 g.gen(n.b)
                 if !g.normAs(g.u.nodes[n.b].ty, t) { g.normR(g.tk(t), RAX) }
@@ -1447,6 +1599,8 @@ fn (g: mut &Gen) genEffect(e: int) {
         g.genInto(x.b, r)                       // straight into the register
     } else if r >= 0 && g.inPlace(r, x.b) {
         // done
+    } else if r >= 0 && g.u.nodes[x.b].ty == x.ty && g.arithInto(x.b, r, true) {
+        // computed in the register
     } else {
         g.unused = true
         g.gen(e)
@@ -1913,7 +2067,11 @@ type Src = value record {
 }
 
 // a into rax, and b as an operand: an immediate, the register of a local, or rcx.
-fn (g: mut &Gen) pairSrc(a: int, b: int): Src {
+fn (g: mut &Gen) pairSrc(a: int, b: int): Src { return g.pairSrcK(a, b, false) }
+
+// pairSrc; when comm (the operation is commutative) and both operands need code, the operand
+// may be a, which waited in a register or slot while b was generated into rax (pairC).
+fn (g: mut &Gen) pairSrcK(a: int, b: int, comm: bool): Src {
     let bn = g.u.nodes[b]
     if a < 0 {
         if bn.k == ir.E_INT { return Src{imm: true, v: bn.v, r: -1, m: NO_MEM} }
@@ -1932,8 +2090,7 @@ fn (g: mut &Gen) pairSrc(a: int, b: int): Src {
         g.gen(a)
         return Src{imm: false, v: 0, r: -2, m: g.staticMem(b)}
     }
-    g.pair(a, b)
-    return Src{imm: false, v: 0, r: RCX, m: NO_MEM}
+    return g.pairC(a, b, comm)
 }
 
 // pairSrc for a commutative operation: b into rax and a as the operand when a needs no code
@@ -1941,9 +2098,9 @@ fn (g: mut &Gen) pairSrc(a: int, b: int): Src {
 fn (g: mut &Gen) pairSrcC(a: int, b: int): Src {
     if !g.srcOnly(b) && g.srcOnly(a) && (g.regOf(a) < 0 || !g.writesReg(b, g.regOf(a))) &&
         (!g.memOperand(a) || g.pure(b)) {
-        return g.pairSrc(b, a)
+        return g.pairSrcK(b, a, true)
     }
-    return g.pairSrc(a, b)
+    return g.pairSrcK(a, b, true)
 }
 
 // Whether pairSrc takes x as the operand without code.
@@ -2011,10 +2168,18 @@ fn (g: mut &Gen) srcRCX(s: Src) {
 
 // a into rax, b into rcx (integers or pointers).
 fn (g: mut &Gen) pair(a: int, b: int) {
+    let s = g.pairC(a, b, false)
+    if s.r != RCX { g.fail(a, "pair") }
+}
+
+// a into rax and b into rcx, the operand returned; or, when comm (the operation is commutative)
+// and a waits while b is generated, b into rax and the operand is where a waited.
+fn (g: mut &Gen) pairC(a: int, b: int, comm: bool): Src {
+    let rcx = Src{imm: false, v: 0, r: RCX, m: NO_MEM}
     if g.simple(b) {
         g.gen(a)
         g.genInto(b, RCX)
-        return
+        return rcx
     }
     let an = g.u.nodes[a]
     if !g.isAggr(an.ty) && !g.isF(an.ty) && !g.is128(an.ty) &&
@@ -2023,25 +2188,119 @@ fn (g: mut &Gen) pair(a: int, b: int) {
         g.gen(b)
         g.a.movRR(8, RCX, RAX)
         g.genInto(a, RAX)
-        return
+        return rcx
     }
     g.gen(a)
-    if g.tmpUsed < len(g.tmpRegs) && g.quietTree(b) {
-        // a in a register no local has, which b's code does not change
+    let h = g.hold(b, g.quietTree(b))
+    g.gen(b)
+    g.unhold(h)
+    if comm { return g.heldSrc(h) }
+    g.a.movRR(8, RCX, RAX)
+    g.unholdInto(h, RAX)
+    return rcx
+}
+
+// Where a value waits while other code runs (hold): a register, or the frame slot s.
+type Hold = value record {
+    r: int              // the register, or -1
+    s: int              // the slot when r < 0
+    quiet: bool         // r is one of tmpRegs
+}
+
+// Puts rax (an integer or pointer, 8 bytes) aside while the code of the expression x (and of the
+// others of its statement that the caller generates before unhold) runs: in a register of
+// tmpRegs when that code is quiet, else in a callee-saved register that no local holds at x's
+// position nor another temporary (calleeTemp; a new one only when the code is not quiet), else
+// in a frame slot. Holds are released in the reverse order.
+fn (g: mut &Gen) hold(x: int, quiet: bool): Hold {
+    if quiet && g.tmpUsed < len(g.tmpRegs) {
         let r = g.tmpRegs[g.tmpUsed]
         g.tmpUsed += 1
         g.a.movRR(8, r, RAX)
-        g.gen(b)
-        g.a.movRR(8, RCX, RAX)
-        g.a.movRR(8, RAX, r)
-        g.tmpUsed -= 1
-        return
+        return Hold{r: r, s: 0, quiet: true}
+    }
+    let r = g.calleeTemp(x, !quiet)
+    if r >= 0 {
+        g.a.movRR(8, r, RAX)
+        return Hold{r: r, s: 0, quiet: false}
     }
     let s = g.temp(8, 8)
     g.a.store(8, rbp(s), RAX)
-    g.gen(b)
-    g.a.movRR(8, RCX, RAX)
-    g.a.load(8, RAX, rbp(s))
+    return Hold{r: -1, s: s, quiet: false}
+}
+
+// Releases h: its register may be taken again. The value can still be read before any other
+// code is generated (heldSrc, unholdInto).
+fn (g: mut &Gen) unhold(h: Hold) {
+    if h.quiet {
+        g.tmpUsed -= 1
+    } else if h.r >= 0 {
+        pop(mut &g.held)
+    }
+}
+
+// The held value as an operand.
+fn (g: &Gen) heldSrc(h: Hold): Src {
+    if h.r >= 0 { return Src{imm: false, v: 0, r: h.r, m: NO_MEM} }
+    return Src{imm: false, v: 0, r: -2, m: rbp(h.s)}
+}
+
+// The held value into register r.
+fn (g: mut &Gen) unholdInto(h: Hold, r: int) {
+    if h.r >= 0 {
+        if h.r != r { g.a.movRR(8, r, h.r) }
+    } else {
+        g.a.load(8, r, rbp(h.s))
+    }
+}
+
+// The position of the code of node x: the scan's (a node it saw at one position), in a body
+// generated in place that of the outermost call; -1 when not known.
+fn (g: &Gen) posAt(x: int): int {
+    if len(g.inlStack) > 0 { return g.inlPos }
+    if x >= 0 && x < len(g.posOf) && g.posSeen[x] == g.stamp { return g.posOf[x] }
+    return -1
+}
+
+// Whether callee-saved register LOCAL_REGS[i] holds no temporary and no local's value at
+// position p: no local given it is live there (p < 0, not known: no local has it at all).
+fn (g: &Gen) calleeFree(i: int, p: int): bool {
+    let r = LOCAL_REGS[i]
+    for h in g.held {
+        if h == r { return false }
+    }
+    if i >= g.nLocalRegs { return true }
+    if p < 0 { return false }
+    for l in g.touched {
+        if g.reg[l] == r {
+            let sp = g.spans(l)
+            for j in 0..len(sp) / 2 {
+                if sp[2 * j] <= p && p <= sp[2 * j + 1] { return false }
+            }
+        }
+    }
+    return true
+}
+
+// A callee-saved register for a temporary at the position of node x, held from now on (unhold
+// releases it), or -1: a free one of those saved, else, when fresh, the next one, saved from now
+// on (its slot is placed after the body). Not when a return without restores was generated
+// already: that return would not restore it. A new register costs its save and restore on every
+// call of the function; a slot costs a store and a load, which are slow around a call (the
+// load waits for the store through the callee's frame), so fresh is for values held across
+// calls.
+fn (g: mut &Gen) calleeTemp(x: int, fresh: bool): int {
+    let p = g.posAt(x)
+    var r = -1
+    for i in 0..len(g.saved) {
+        if r < 0 && g.calleeFree(i, p) { r = LOCAL_REGS[i] }
+    }
+    if r < 0 && fresh && len(g.saved) < len(LOCAL_REGS) && !g.bareRet {
+        append(mut &g.saved, 0)
+        r = LOCAL_REGS[len(g.saved) - 1]
+    }
+    if r >= 0 { append(mut &g.held, r) }
+    return r
 }
 
 // Whether the code of the expression x changes no register of QUIET_REGS but those of locals
@@ -2335,11 +2594,12 @@ fn (g: mut &Gen) genAssign(e: int) {
         g.a.movRR(8, R11, RAX)
         g.genInto(n.b, RAX)
     } else {
+        // the address waits while the value is evaluated
         g.genAddr(lhs)
-        let s = g.temp(8, 8)
-        g.a.store(8, rbp(s), RAX)
+        let h = g.hold(n.b, g.quietTree(n.b))
         g.gen(n.b)
-        g.a.load(8, R11, rbp(s))
+        g.unhold(h)
+        g.unholdInto(h, R11)
     }
     g.storeT(t, x64.mem(R11, 0))
     if g.isAggr(t) { g.a.movRR(8, RAX, R11) }
@@ -2729,12 +2989,19 @@ fn (g: mut &Gen) genCall(e: int) {
         return
     }
     var calleeSlot = 0
-    if direct < 0 {
-        g.gen(callee)
-        calleeSlot = g.temp(8, 8)
-        g.a.store(8, rbp(calleeSlot), RAX)
-    }
+    var calleeReg = -1
     let nargs = g.u.listLen(n.b)
+    if direct < 0 {
+        // the function pointer waits while the arguments are evaluated
+        g.gen(callee)
+        calleeReg = g.calleeTemp(e, !g.quietList(n.b))
+        if calleeReg >= 0 {
+            g.a.movRR(8, calleeReg, RAX)
+        } else {
+            calleeSlot = g.temp(8, 8)
+            g.a.store(8, rbp(calleeSlot), RAX)
+        }
+    }
     var ni = 0
     var nx = 0
     var retSlot = 0
@@ -2746,6 +3013,7 @@ fn (g: mut &Gen) genCall(e: int) {
     }
     // where each argument goes: -1 registers, else its offset in the outgoing area
     var place: []int = []
+    var argReg: []int = []          // the first integer register of an argument in registers
     var stackOff = 0
     var ti = ni
     var tx = 0
@@ -2763,6 +3031,7 @@ fn (g: mut &Gen) genCall(e: int) {
             ti += nInt
             tx += nSse
         }
+        append(mut &argReg, if ti - nInt < 6 { INT_REGS[ti - nInt] } else { -1 })
     }
     // the arguments into temporaries, except those loaded straight into their registers
     // below (slot 0: constants, locals, members of locals; slot 1: in rax)
@@ -2777,10 +3046,12 @@ fn (g: mut &Gen) genCall(e: int) {
     }
     var slots: []int = []
     var dups: []int = []
+    var hregs: []int = []           // an integer argument held in a callee-saved register, or -1
     for j in 0..nargs {
         let x = g.u.listAt(n.b, j)
         let t = pts[j]
         append(mut &dups, -1)
+        append(mut &hregs, -1)
         if place[j] < 0 && g.argDirect(x, t) {
             append(mut &slots, 0)
             continue
@@ -2796,6 +3067,11 @@ fn (g: mut &Gen) genCall(e: int) {
             append(mut &slots, s)
             continue
         }
+        if j == inRax && g.arithInto(x, argReg[j], false) {
+            // computed straight into its register below (only direct arguments come after it)
+            append(mut &slots, 3)
+            continue
+        }
         g.gen(x)
         if j == inRax {
             append(mut &slots, 1)
@@ -2806,6 +3082,20 @@ fn (g: mut &Gen) genCall(e: int) {
             dups[j] = g.u.listAt(g.u.nodes[x].b, 0)
             append(mut &slots, -1)
             continue
+        }
+        if place[j] < 0 && !g.isAggr(t) && !g.isF(t) && !g.is128(t) {
+            // while the later arguments are evaluated: across their calls, a new register if
+            // need be
+            var quiet = true
+            for k in j + 1..nargs {
+                if !g.quietTree(g.u.listAt(n.b, k)) { quiet = false }
+            }
+            hregs[j] = g.calleeTemp(x, !quiet)
+            if hregs[j] >= 0 {
+                g.a.movRR(8, hregs[j], RAX)
+                append(mut &slots, 2)
+                continue
+            }
         }
         let s = g.tempFor(t)
         if g.isAggr(t) {
@@ -2853,6 +3143,16 @@ fn (g: mut &Gen) genCall(e: int) {
                 ni += 1
                 continue
             }
+            if slots[j] == 2 {
+                g.a.movRR(8, INT_REGS[ni], hregs[j])
+                ni += 1
+                continue
+            }
+            if slots[j] == 3 {
+                g.arithInto(x, INT_REGS[ni], true)
+                ni += 1
+                continue
+            }
             let m = if slots[j] == 0 { g.staticMem(x) } else if slots[j] == -1 { g.staticMem(dups[j]) } else {
                 rbp(slots[j])
             }
@@ -2868,6 +3168,13 @@ fn (g: mut &Gen) genCall(e: int) {
         }
     }
     if aggrRet && rcls[0] == CL_MEM { g.a.lea(RDI, rm) }
+    // the held registers are free again (the callee preserves them; the call reads the callee's)
+    var k = nargs - 1
+    while k >= 0 {
+        if hregs[k] >= 0 { pop(mut &g.held) }
+        k -= 1
+    }
+    if calleeReg >= 0 { pop(mut &g.held) }
     if direct >= 0 {
         let s = g.symFunc(direct, e)
         if g.syms[s].kind == SK_DYN {
@@ -2876,6 +3183,8 @@ fn (g: mut &Gen) genCall(e: int) {
         } else {
             g.a.callSym(s)
         }
+    } else if calleeReg >= 0 {
+        g.a.callR(calleeReg)
     } else {
         g.a.load(8, R11, rbp(calleeSlot))
         g.a.callR(R11)
@@ -3031,9 +3340,13 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
     for j in 0..nargs {
         if al[j] < 0 && !g.inlineDirect(g.u.listAt(n.b, j), ps[j]) { lastNon = j }
     }
-    // the others into temporaries (tmp: a frame slot, below 0), the last integer one in rax (1);
-    // an aliased parameter (2) is not assigned: the body names its local
+    // the others into temporaries (tmp: a frame slot, below 0, or a callee-saved register, 3), the
+    // last integer one in rax (1); an aliased parameter (2) is not assigned: the body names its local
     var tmp: []int = []
+    var hregs: []int = []
+    for j in 0..nargs {
+        append(mut &hregs, -1)
+    }
     for j in 0..nargs {
         let x = g.u.listAt(n.b, j)
         let t = g.u.locals[ps[j]].ty
@@ -3051,9 +3364,28 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
             append(mut &tmp, 1)
             continue
         }
+        if !g.isF(t) {
+            // while the later arguments are evaluated (across their calls, a new register if
+            // need be); not a register of the parameters, which are live at the call
+            var quiet = true
+            for k in j + 1..nargs {
+                if !g.quietTree(g.u.listAt(n.b, k)) { quiet = false }
+            }
+            hregs[j] = g.calleeTemp(x, !quiet)
+            if hregs[j] >= 0 {
+                g.a.movRR(8, hregs[j], RAX)
+                append(mut &tmp, 3)
+                continue
+            }
+        }
         let s = g.tempFor(t)
         g.storeT(t, rbp(s))
         append(mut &tmp, s)
+    }
+    var k = nargs - 1
+    while k >= 0 {
+        if hregs[k] >= 0 { pop(mut &g.held) }
+        k -= 1
     }
     for j in 0..nargs {
         let p = ps[j]
@@ -3075,6 +3407,14 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
                 g.loadInt(t, g.reg[p], rbp(tmp[j]))
             } else {
                 g.slots[p] = tmp[j]
+            }
+        } else if tmp[j] == 3 {
+            if g.reg[p] >= 0 {
+                g.a.movRR(8, g.reg[p], hregs[j])
+            } else {
+                g.slots[p] = g.tempFor(t)
+                g.a.movRR(8, RAX, hregs[j])
+                g.storeT(t, rbp(g.slots[p]))
             }
         }
     }
@@ -3104,6 +3444,7 @@ fn (g: mut &Gen) genInline(f: int, e: int) {
     let saveDecl = g.declMark
     g.retTy = g.u.tys[g.u.funcs[f].ty].base
     let end = g.a.newLabel()
+    if len(g.inlStack) == 0 { g.inlPos = g.posAt(e) }
     append(mut &g.inlStack, f)
     append(mut &g.inlEnd, end)
     g.stmt(g.u.funcs[f].body)
@@ -3125,6 +3466,7 @@ fn (g: mut &Gen) branchInline(e: int, l: int, when: bool): bool {
     let al = g.aliases(f, e)
     g.inlineArgs(f, e, &al)
     let ch = g.applyAlias(f, &al)
+    if len(g.inlStack) == 0 { g.inlPos = g.posAt(e) }
     append(mut &g.inlStack, f)
     g.branch(x, l, when)
     pop(mut &g.inlStack)
@@ -3326,6 +3668,81 @@ fn (g: &Gen) isWhere(w: int): bool {
     return g.u.nk(w) == ir.E_DECAY && g.u.nk(g.u.nodes[w].a) == ir.E_STR
 }
 
+// The overflow test of a checked operation ar (rt_add_int, ...) whose result is in register r:
+// a jump to the trap stub for the location string w. Only a u32 multiply uses another register
+// (rcx).
+fn (g: mut &Gen) ovfCheck(ar: ArOp, r: int, w: int) {
+    let k = ar.k
+    let l = g.stub(10, "integer overflow", w)
+    if k == ir.TY_I64 || k == ir.TY_I32 {
+        g.a.jcc(x64.CC_O, l)
+    } else if k == ir.TY_U8 {
+        // operands are 0..255: the 32-bit result is out of range when above 255
+        g.a.aluI(x64.CMP, 4, r, 255)
+        g.a.jcc(x64.CC_A, l)
+    } else if ar.op == ir.OP_MUL && k == ir.TY_U32 {
+        g.a.movRR(8, RCX, r)                        // the 64-bit product of two u32s
+        g.a.shiftI(x64.SHR, 8, RCX, 32)
+        g.a.jcc(x64.CC_NE, l)
+    } else {
+        g.a.jcc(x64.CC_B, l)                        // the carry: unsigned overflow
+    }
+}
+
+// Generates e into register r with no other register changed, when e is an add or subtract of
+// integers (the runtime's checked or wrapping rt_add_*, rt_sub_*, or +, -, &, |, ^ of 8 bytes
+// or less) with one operand simple and the other an operand that needs no code (srcOnly) and
+// is not r: the simple one into r (the left one; for a commutative operation either), the
+// operation on r, the overflow test, the normalization, as gen does in rax. With gen false,
+// only whether it would. False: not such an e, nothing generated.
+fn (g: mut &Gen) arithInto(e: int, r: int, gen: bool): bool {
+    let n = g.u.nodes[e]
+    var a = -1
+    var b = -1
+    var op = 0
+    var k = 0
+    var sz = 8
+    var ar = ArOp{k: -1, op: 0, wrap: true}
+    var w = -1
+    if n.k == ir.E_CALL {
+        ar = arOp(g.rtName(e))
+        let nargs = g.u.listLen(n.b)
+        if ar.k < 0 || ar.op == ir.OP_MUL || nargs < 2 { return false }
+        if !ar.wrap && (nargs != 3 || !g.isWhere(g.u.listAt(n.b, 2))) { return false }
+        if !ar.wrap { w = g.u.listAt(n.b, 2) }
+        a = g.u.listAt(n.b, 0)
+        b = g.u.listAt(n.b, 1)
+        op = ar.op
+        k = ar.k
+        sz = if k == ir.TY_I64 || k == ir.TY_U64 { 8 } else { 4 }
+    } else if n.k == ir.E_BIN {
+        op = n.v
+        if op != ir.OP_ADD && op != ir.OP_SUB && op != ir.OP_AND && op != ir.OP_OR && op != ir.OP_XOR { return false }
+        if g.isF(n.c) || g.is128(n.c) { return false }
+        a = n.a
+        b = n.b
+        k = g.tk(n.c)
+        sz = if g.size(n.c) == 8 { 8 } else { 4 }
+    } else {
+        return false
+    }
+    if !(g.simple(a) && g.srcOnly(b) && g.regOf(b) != r) {
+        // commutative: the other way round
+        if op == ir.OP_SUB || !(g.simple(b) && g.srcOnly(a) && g.regOf(a) != r) { return false }
+        let x = a
+        a = b
+        b = x
+    }
+    if !gen { return true }
+    g.genInto(a, r)
+    let alu = if op == ir.OP_ADD { x64.ADD } else if op == ir.OP_SUB { x64.SUB } else if op == ir.OP_AND { x64.AND }
+        else if op == ir.OP_OR { x64.OR } else { x64.XOR }
+    g.aluSrc(alu, sz, r, g.pairSrc(-1, b))
+    if w >= 0 { g.ovfCheck(ar, r, w) }
+    g.normR(k, r)
+    return true
+}
+
 // Generates the call e of the runtime function name inline, if it is one of those the code
 // generator knows (checked arithmetic, index checks, str reference counts): the same
 // results, traps and messages as the runtime's code. False: not inlined, nothing emitted.
@@ -3340,7 +3757,6 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         let src = if ar.op == ir.OP_SUB { g.pairSrc(a, b) } else { g.pairSrcC(a, b) }
         let k = ar.k
         let sz = if k == ir.TY_I64 || k == ir.TY_U64 { 8 } else { 4 }
-        let sgn = k == ir.TY_I64 || k == ir.TY_I32
         if ar.op == ir.OP_MUL && k == ir.TY_U64 && !ar.wrap {
             g.srcRCX(src)
             g.a.unary(x64.MUL, 8, RCX)                  // rdx:rax; CF and OF when rdx != 0
@@ -3349,22 +3765,7 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         } else {
             g.aluSrc(if ar.op == ir.OP_ADD { x64.ADD } else { x64.SUB }, sz, RAX, src)
         }
-        if !ar.wrap {
-            let l = g.stub(10, "integer overflow", g.u.listAt(n.b, 2))
-            if sgn {
-                g.a.jcc(x64.CC_O, l)
-            } else if k == ir.TY_U8 {
-                // operands are 0..255: the 32-bit result is out of range when above 255
-                g.a.aluI(x64.CMP, 4, RAX, 255)
-                g.a.jcc(x64.CC_A, l)
-            } else if ar.op == ir.OP_MUL && k == ir.TY_U32 {
-                g.a.movRR(8, RCX, RAX)                  // the 64-bit product of two u32s
-                g.a.shiftI(x64.SHR, 8, RCX, 32)
-                g.a.jcc(x64.CC_NE, l)
-            } else {
-                g.a.jcc(x64.CC_B, l)                    // the carry: unsigned overflow
-            }
-        }
+        if !ar.wrap { g.ovfCheck(ar, RAX, g.u.listAt(n.b, 2)) }
         g.normR(k, RAX)
         return true
     }
@@ -3411,11 +3812,11 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         if g.simple(ix) {
             g.genInto(ix, RCX)
         } else {
-            let s = g.temp(8, 8)
-            g.a.store(8, rbp(s), RAX)
+            let h = g.hold(ix, g.quietTree(ix))
             g.gen(ix)
+            g.unhold(h)
             g.a.movRR(8, RCX, RAX)
-            g.a.load(8, RAX, rbp(s))
+            g.unholdInto(h, RAX)
         }
         g.a.loadZX(4, RDX, x64.mem(RAX, 12))            // len
         g.a.alu(x64.CMP, 8, RCX, RDX)
@@ -3517,11 +3918,11 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
             g.strAddr(a, RCX)
         } else {
             g.gen(a)
-            let s = g.temp(8, 8)
-            g.a.store(8, rbp(s), RAX)
+            let h = g.hold(b, g.quietTree(b))
             g.gen(b)
+            g.unhold(h)
             g.a.movRR(8, RDX, RAX)
-            g.a.load(8, RCX, rbp(s))
+            g.unholdInto(h, RCX)
         }
         let no = g.a.newLabel()
         let yes = g.a.newLabel()

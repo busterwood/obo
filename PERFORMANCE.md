@@ -9,8 +9,9 @@ obx builds a program in two ways:
 
 Both are built from the same IR and must behave identically; the gate checks
 that on 1,491 programs. This page measures what each costs. Measured on 3
-November 2026 at `6f0a844`. The numbers are host-dependent: use them to
-compare the columns, not as portable constants.
+November 2026 at `6f0a844`, the fib row again after the fourth native
+performance pass (branch `perf3`). The numbers are host-dependent: use them
+to compare the columns, not as portable constants.
 
 ## Host and method
 
@@ -29,7 +30,7 @@ compare the columns, not as portable constants.
 
 | benchmark | via C | native | native/C | what it does |
 |---|---:|---:|---:|---|
-| fib | 321 ms | 460 ms | 1.43 | recursive calls |
+| fib | 312 ms | 357 ms | 1.14 | recursive calls |
 | loop | 264 ms | 420 ms | 1.59 | two overflow-checked operations per iteration |
 | array | 102 ms | 168 ms | 1.65 | checked indexing |
 | alloc | 121 ms | 63 ms | 0.52 | 20 million records allocated and freed |
@@ -42,9 +43,10 @@ compare the columns, not as portable constants.
   lists and trees narrowly). Its freestanding runtime has a size-class
   allocator with no locks or libc bookkeeping, and the string and index
   checks are generated inline.
-- **gcc is ahead on tight arithmetic loops** (fib, loop, array). It unrolls,
-  schedules and keeps values in registers across calls; the native backend
-  is a direct code generator with register allocation by live ranges
+- **gcc is ahead on tight arithmetic loops** (loop, array, and narrowly
+  fib). It unrolls and schedules; the native backend is a direct code
+  generator with register allocation by live ranges, which also keeps
+  values across calls in callee-saved registers
   ([design/native.md](obx/design/native.md) section 4). `loop` is the widest
   gap.
 
@@ -88,12 +90,19 @@ backend's `rt.h` and the native backend's freestanding `rt.c`).
 ### Native backend progress
 
 User-mode instructions (`perf stat`), the native-built compiler building
-itself and native eza `-T /usr/share`:
+itself, native eza `-T /usr/share` and native bench fib:
 
-| step | self-build | eza `-T` |
-|---|---:|---:|
-| before the third performance pass | 1,817M | 757M |
-| after it (live-range registers, operands in place) | 1,649M | 659M |
+| step | self-build | eza `-T` | fib |
+|---|---:|---:|---:|
+| before the third performance pass | 1,817M | 757M | |
+| after it (live-range registers, operands in place) | 1,649M | 659M | |
+| before the fourth, on later sources | 3,938M | 659M | 6,127M |
+| after it (temporaries in callee-saved registers) | 3,923M | 649M | 5,630M |
+
+The compiler had grown between the third and fourth passes (it builds
+the IR for both backends since then), so its two pairs of rows do not
+compare with each other. The fourth pass cut fib's cycles by 23% (2,188M
+to 1,690M); the self-build's and eza's by about 1% and 2%.
 
 The earlier steps and the per-commit figures are in
 [obx/design/native.md](obx/design/native.md) sections 4 and 8. What remains
