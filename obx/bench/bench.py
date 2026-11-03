@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """obo vs obx benchmark table.
 
-For each program NAME it builds obx/bench/NAME.obx with the compiler
-(obx/compiler/out/obxc, or $OBXC; gcc -O2) and archive/obo/bench/NAME_obo.obx with the
-archived obo compiler (archive/obo/obo, if it runs). It checks that the outputs are equal and that the
-obx program is leak free (OBX_CHECK=1), then prints the best wall time of N runs
-of each.
+For each program NAME it builds obx/bench/NAME.obx twice with the compiler
+(obx/compiler/out/obxc, or $OBXC): through C (gcc -O2) and with --native.
+It builds archive/obo/bench/NAME_obo.obx with the archived obo compiler
+(archive/obo/obo, if it runs). It checks that the outputs are equal and that
+both obx programs are leak free (OBX_CHECK=1), then prints the best wall time
+of N runs of each.
 
     python3 obx/bench/bench.py [-n RUNS] [--only NAME ...]
 """
@@ -49,9 +50,10 @@ def best(exe, name, n):
     return min(ts), out
 
 
-def build_obx(name, tmp):
-    exe = os.path.join(tmp, name + '_obx')
-    subprocess.run([OBXC, os.path.join(HERE, name + '.obx'), '-o', exe], check=True)
+def build_obx(name, tmp, native=False):
+    exe = os.path.join(tmp, name + ('_obxn' if native else '_obx'))
+    subprocess.run([OBXC, os.path.join(HERE, name + '.obx'), '-o', exe] + (['--native'] if native else []),
+                   check=True)
     return exe
 
 
@@ -79,24 +81,30 @@ def main():
     rows = []
     for name in names:
         obx = build_obx(name, tmp)
+        obxn = build_obx(name, tmp, native=True)
         obo = build_obo(name, tmp)
-        code, out, err, _ = run(obx, name, {'OBX_CHECK': '1'})
-        if code != 0:
-            raise SystemExit(f"{name}: obx with OBX_CHECK=1 exited {code}: {err}")
+        for exe in (obx, obxn):
+            code, out, err, _ = run(exe, name, {'OBX_CHECK': '1'})
+            if code != 0:
+                raise SystemExit(f"{name}: {exe} with OBX_CHECK=1 exited {code}: {err}")
         t_obx, out_obx = best(obx, name, a.n)
+        t_obxn, out_obxn = best(obxn, name, a.n)
+        if out_obxn != out_obx:
+            raise SystemExit(f"{name}: outputs differ: C {out_obx!r}, native {out_obxn!r}")
         t_obo, out_obo = (None, None)
         if obo:
             t_obo, out_obo = best(obo, name, a.n)
         if obo and out_obo != out_obx:
             raise SystemExit(f"{name}: outputs differ: obx {out_obx!r}, obo {out_obo!r}")
-        rows.append((name, t_obo, t_obx, out_obx))
+        rows.append((name, t_obo, t_obx, t_obxn, out_obx))
     if all(r[1] is None for r in rows):
         print("note: the obo compiler did not build anything; obo columns skipped", file=sys.stderr)
-    print("| benchmark | obo | obx | obx/obo | output |")
-    print("|---|---:|---:|---:|---|")
-    for name, t_obo, t_obx, out in rows:
+    print("| benchmark | obo | obx via C | obx native | C/obo | native/obo | output |")
+    print("|---|---:|---:|---:|---:|---:|---|")
+    for name, t_obo, t_obx, t_obxn, out in rows:
         r = f"{t_obx / t_obo:.2f}" if t_obo else "n/a"
-        print(f"| {name} | {fmt(t_obo)} | {fmt(t_obx)} | {r} | {out} |")
+        rn = f"{t_obxn / t_obo:.2f}" if t_obo else "n/a"
+        print(f"| {name} | {fmt(t_obo)} | {fmt(t_obx)} | {fmt(t_obxn)} | {r} | {rn} | {out} |")
 
 
 if __name__ == '__main__':

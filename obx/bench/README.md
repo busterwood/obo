@@ -8,8 +8,8 @@ dialect, and nothing in them that the `_obo` versions lack.
 
     python3 obx/bench/bench.py [-n RUNS] [--only NAME ...]
 
-For each program it builds the obx version (`obx/compiler/out/obxc` or
-`$OBXC`, default flags) and the
+For each program it builds the obx version twice (`obx/compiler/out/obxc` or
+`$OBXC`: through C with gcc -O2, and with `--native`) and the
 obo version with the archived obo compiler, `archive/obo/obo` (build it with
 `make` in `archive/obo/`). It checks that the outputs are equal and that the
 obx program is leak-free (`OBX_CHECK=1`), then reports the best wall time of N
@@ -19,6 +19,10 @@ runs (default 5), `OBX_CHECK` unset. Programs: `fib`, `loop`, `array`, `alloc`,
 that is no longer in the tree).
 
 ## Results
+
+The current figures, with both obx backends, eza and the compiler, are in
+[PERFORMANCE.md](../../PERFORMANCE.md). The table below is the first
+baseline, from before the self-hosted compiler and the native backend.
 
 WSL2, gcc 13, best of 11, wall clock, 2026-11-02; every output matched. *Before*
 is `ref` as of the baseline (`gcc -O1`, and the same C at `-O2`); *after* is

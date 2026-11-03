@@ -2,8 +2,9 @@
 
 This page records where the project came from: mainline **obx** (the original
 garbage-collected dialect), the **obo** ownership fork and its per-stage release
-records. The current project is the new **obx** in [obx/](obx/README.md),
-obo's ownership model with generics; start with [README.md](README.md).
+records, and the **new obx**: obo's ownership model with generics, in
+[obx/](obx/README.md), whose first stages are the last chapter. Start with
+[README.md](README.md).
 
 obo grew out of mainline obx, the original garbage-collected Oberon-derived
 dialect and compiler. obo began as an ownership fork of obx — originally
@@ -835,3 +836,85 @@ embedded in every executable, and the 0.12 release `d98d6b5f…` also added only
 appended slots. The decimal storage tier appended `rt_append_dec` at slot 94 and
 array kind 7; the hosted build's census slot moved to 95 because slot 94 now
 exists in both builds.
+
+## The new obx (2026-11-02 onwards)
+
+obo 0.19 worked, but every new kind of value (decimals, then interfaces, then
+lambdas) had to be wired by hand through the whole compiler. On 2026-11-02
+the project restarted: keep obo's ownership model, add generics from the
+first day, and make Decimal, Money, Option, Result and the containers
+ordinary library code ([the decision](obx/design/generic-core-rethink.md)).
+The original garbage-collected obx moved to `archive/obx/`, and the new
+language took its name. The stages are in [obx/PLAN.md](obx/PLAN.md); the
+first six were done on 2026-11-02, the first day.
+
+### Stages
+
+1. **The spec.** [SPEC.md](obx/SPEC.md) draft 1, about 580 lines, about the
+   size of obo's core guide; 931 lines now, after the decisions below.
+2. **A Python reference compiler** (`ref/`, obx to C, 3,800 lines) settled
+   the design quickly: 387 conformance programs and 77 of its own tests.
+3. **The library** (`obx/lib`): 9 modules, 3,300 lines at first, written in
+   obx with no compiler change but a few `obx_*` C helpers. Its pain points
+   became the first language backlog.
+4. **The self-hosted compiler** (`obx/compiler`): a port of `ref/`, module by
+   module (lexer and parser, sema, the body checker and C emitter), checked
+   mechanically: identical `--dump-ast`, `--dump-types` and C on all 2,427
+   test files and tens of thousands of mutants. It reached its bootstrap
+   fixed point the same afternoon, and its own C became the checked-in seed,
+   so a build needs only gcc.
+5. **The native backend, then the ports.** An x86-64 backend writing ELF
+   executables without gcc: a freestanding runtime (`native/rt.c`, raw
+   system calls), an IR, instruction selection, an encoder and an ELF
+   writer, with static and then dynamic linking for C libraries (libm,
+   sqlite3, libpq). The natively built compiler builds itself to the same
+   fixed point. Then eza (1,600 lines against obo's 3,482, passing obo's
+   golden suite on both backends) and the SQLite and Postgres libraries,
+   with no C shims, about half the size of obo's.
+6. **Retirements.** `ref/` went to [archive/obx-ref/](archive/obx-ref/README.md)
+   and obo 0.19 to [archive/obo/](archive/obo/README.md) on the evening of
+   2026-11-02; obx's own compiler is the only one under development.
+
+### Red-team rounds
+
+Five rounds, each a separate review that wrote adversarial programs against
+the spec, ran them under ASan, UBSan and the leak check, and reported
+findings with a minimal program each. The findings were fixed before the
+next round, and every corpus stays in the full gate (`obx/redteam/`):
+
+| Round | Reviewed | Findings |
+|---|---|---|
+| 1 | the reference compiler and draft 1 | 25, with spec decisions for the fixes |
+| 2 | slices, shared substrings, the str layout | 12 (5 high) |
+| 3 | closures, set-once globals, destructuring, imports | 14 |
+| 4 | borrows taken at the call, `if`/`match` expressions | 6, plus 5,180 generated A/B pairs and 12,000 mutants |
+| 5 | the language batch | 3 (compound assignment after a move, a global str passed to C, output at exit) |
+
+### The language batch
+
+Writing the compiler, the library and eza in obx showed where the language
+chafed. Fourteen changes were made in one batch on 2026-11-02, among them
+multi-variant `match` arms, `s[i]` on `str`, built-in `==` on fieldless
+closed types, raw strings, `var` receivers, the `Option` and `Result`
+helpers, and `return`, `break` and `continue` as a whole arm of an `if` or
+`match` expression. The library and eza were then simplified with them.
+
+### Performance and one IR (2026-11-02 to 2026-11-03)
+
+Three performance passes on the native backend: locals in registers and
+inlined runtime checks; small functions in place and results built in their
+destinations; then registers by live ranges and operands in place, which
+cut 9% of the self-build's instructions and 13% of eza's. At first the
+native backend read the C that the C backend wrote back in (`cfront`), a
+deliberate stepping stone. On 2026-11-03 the checker began to build trees
+that are lowered straight to the IR; C is printed from the IR, and `cfront`
+was deleted. The C and every native executable stayed byte-identical over
+2,926 programs. The figures are in [PERFORMANCE.md](PERFORMANCE.md).
+
+### Concurrency decided (2026-11-03)
+
+[obx/design/concurrency.md](obx/design/concurrency.md): stackful coroutines
+on one thread per process, with no `async` colouring; futures, promises and
+a `Shared` value as the built-ins, not channels; several cores through
+several processes; and no threads, a shared-nothing decision taken for
+performance as much as for safety. Not yet built.

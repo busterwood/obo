@@ -36,7 +36,7 @@ Source files use the `.obx` extension.
 | `redteam/` | the red-team corpora and harnesses (rounds 1 to 4) |
 | `tools/` | the gate (`gate.sh`), the build cache (`cbuild.py`), the seed check |
 | `design/` | design notes: the generic-core decision, the native backend, concurrency |
-| `bench/` | benchmarks against obo |
+| `bench/` | benchmarks against obo (results in ../PERFORMANCE.md) |
 
 The Python reference compiler (`ref/`) was retired on 2026-11-02; it is in
 `../archive/obx-ref/`.

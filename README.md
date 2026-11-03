@@ -17,6 +17,32 @@ obx/compiler/out/obxc prog.obx --native -o prog
 obx/tools/gate.sh quick                        # the suites; `full` adds the red-team rounds
 ```
 
+## Status
+
+As of 2026-11-03:
+
+- **The compiler** is written in obx (about 18,200 lines) and compiles itself
+  to a fixed point. One IR feeds two backends: C for gcc, and a native x86-64
+  backend that writes ELF executables with no gcc, statically linked, or
+  dynamically linked when a program calls C libraries. The native compiler
+  builds itself to the same fixed point. Its C is checked in as the seed, so
+  a build needs only gcc.
+- **Programs:** an [eza](obx/cmd/README.md) port, 1,600 lines against obo's
+  3,482, byte-identical to it on obo's golden suite and twice as fast on long
+  tree listings; [SQLite and Postgres](obx/lib/README.md) libraries with no C
+  shims, about half the size of obo's.
+- **Performance:** native and gcc-built programs are within a small factor
+  of each other and of obo; native leads on allocation and strings, gcc on
+  tight arithmetic loops. The figures are in
+  [PERFORMANCE.md](PERFORMANCE.md).
+- **Checks:** a conformance suite, the compiler, library and eza tests, a
+  native-against-C comparison over 1,491 programs, and five red-team rounds
+  under ASan and UBSan (`obx/tools/gate.sh full`, about 35 s).
+- **Next:** concurrency, decided in
+  [obx/design/concurrency.md](obx/design/concurrency.md): coroutines with
+  futures inside a process, several processes for several cores, and no
+  threads.
+
 ## Layout
 
 | Path | Contents |
@@ -25,7 +51,8 @@ obx/tools/gate.sh quick                        # the suites; `full` adds the red
 | [archive/obo/](archive/obo/README.md) | obo 0.19, the ownership fork obx grew from; retired 2026-11-02 |
 | [archive/obx-ref/](archive/obx-ref/README.md) | obx's Python reference compiler; retired 2026-11-02 |
 | `archive/obx/` | the original garbage-collected obx dialect and compiler |
-| [HISTORY.md](HISTORY.md) | how the project got here: mainline obx, the obo fork and its releases |
+| [HISTORY.md](HISTORY.md) | how the project got here: mainline obx, the obo fork and its releases, the new obx |
+| [PERFORMANCE.md](PERFORMANCE.md) | obx native, obx via C and obo compared: benchmarks, eza, the compiler |
 
 ## History, in short
 
