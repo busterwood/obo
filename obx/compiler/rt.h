@@ -198,6 +198,8 @@ static void rt_init(int argc, char** argv) {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, 0);
 }
+static rt_dfn rt_end_fn;                   /* the program's global drops (task.workers) */
+static void rt_on_end(rt_dfn f) { rt_end_fn = f; }
 static void rt_finish(void) {
     rt_flush();
     rt_ended = true;
@@ -1657,6 +1659,7 @@ int64_t obxlib_proc_wait(int64_t ms, int64_t* status) {
 int64_t obxlib_proc_kill(int64_t pid, int64_t sig) { return kill((pid_t)pid, (int)sig) == 0 ? 0 : -errno; }
 /* The end of a worker: its output flushed, and under OBX_CHECK=1 its own objects counted. */
 void obxlib_worker_exit(int64_t code) {
+    if (rt_end_fn) rt_end_fn(0);       /* the globals' drops, as at the end of main */
     rt_flush();
     rt_ended = true;
     if (rt_check && rt_live > rt_worker_base) {

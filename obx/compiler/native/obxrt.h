@@ -17,6 +17,7 @@ typedef void (*rt_dfn)(void*);
 /* process */
 void rt_init(int argc, char** argv);
 void rt_finish(void);
+void rt_on_end(rt_dfn f);
 void rt_exit(int64_t code);
 void rt_trap(int code, const char* msg, const char* where);
 void rt_panic(obx_str msg, const char* w);

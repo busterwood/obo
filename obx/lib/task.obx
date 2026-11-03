@@ -438,8 +438,9 @@ pub fn workers(n: int, f: &fn(int), w: Where): Result[[]WorkerEnd, GaveUp] {
 // listener before the call (one shared accept queue) or listen in each
 // worker with net.listenReusePort; open database connections in the worker.
 // Output written before the call is flushed first, so it appears once. The
-// supervisor itself runs no task meanwhile. Under OBX_CHECK=1 each worker
-// checks at its end that the objects it made are freed.
+// supervisor itself runs no task meanwhile. At its end a worker drops the
+// program's globals, as main's end does; under OBX_CHECK=1 it then checks
+// that the objects it made are freed.
 pub fn workersWith(n: int, p: WorkerPolicy, f: &fn(int), w: Where): Result[[]WorkerEnd, GaveUp] {
     if n < 1 { panic("task.workers: n must be at least 1") }
     rtWorkersBegin(w.cstr())

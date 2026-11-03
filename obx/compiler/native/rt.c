@@ -591,6 +591,8 @@ void rt_n_start(int64_t* sp, void* mainf) {
     rt_quit(r);
 }
 
+static rt_dfn rt_end_fn;                   /* the program's global drops (task.workers) */
+void rt_on_end(rt_dfn f) { rt_end_fn = f; }
 void rt_finish(void) {
     rt_flush();
     rt_ended = 1;
@@ -2430,6 +2432,7 @@ int64_t obxlib_proc_kill(int64_t pid, int64_t sig) {
     return r < 0 ? r : 0;
 }
 void obxlib_worker_exit(int64_t code) {
+    if (rt_end_fn) rt_end_fn(0);
     rt_flush();
     rt_ended = 1;
     if (rt_check && rt_live > rt_worker_base) {

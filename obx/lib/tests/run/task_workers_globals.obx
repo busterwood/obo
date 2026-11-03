@@ -1,0 +1,38 @@
+// task.workers and globals: a worker has a copy of the program's globals as
+// they were at its fork; what it sets is its own, and the supervisor's stay
+// as they were. At its end a worker drops the globals as main's end does
+// (set-once globals first), so a str global or a set-once global it set is
+// not a leak under OBX_CHECK=1, and a set-once global's drop method runs in
+// the worker too.
+// expect: worker 1 dropped its table of 2
+// expect: worker 0: exit 0
+// expect: worker 1: exit 0
+// expect: label: main 1
+// expect: table set here: false
+import "task"
+import "io"
+import "fs"
+
+type Table = record {
+    rows: []str
+}
+
+fn (t: mut &Table) drop() {
+    io.write("dropped.txt", "dropped its table of " + intToStr(len(t.rows))).unwrap()
+}
+
+var label: str = ""
+var TABLE: once Table
+
+fn main() {
+    let r0 = fs.remove("dropped.txt")         // a run before in this directory
+    label = "main " + intToStr(1)
+    let ends = task.workers(2, fn(i: int) {
+        label = "worker " + intToStr(i)
+        if i == 1 { TABLE.set(Table{rows: ["a" + intToStr(i), "b"]}) }
+    }).unwrap()
+    println("worker 1 " + io.read("dropped.txt").unwrap())
+    for e in ends { println("worker " + intToStr(e.index) + ": exit " + intToStr(e.code)) }
+    println("label: " + label)
+    println("table set here: " + (if TABLE.isSet() { "true" } else { "false" }))
+}
