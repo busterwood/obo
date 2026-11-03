@@ -1,0 +1,12 @@
+// task: a Frozen's fields are private: its Shared cannot be taken out to call
+// with (which lends mut &T).
+// error: private to module task
+import "task"
+
+type Config = record { port: int }
+
+fn main() {
+    let cfg = task.freeze(Config{port: 80})
+    let sh = cfg.sh
+    sh.with(fn(c: mut &Config) { c.port = 8080 })
+}

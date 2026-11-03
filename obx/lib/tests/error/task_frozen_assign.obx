@@ -1,0 +1,14 @@
+// task: a Frozen value cannot be changed: read lends it as &T, and a field
+// cannot be assigned through a shared borrow.
+// error: cannot assign through
+import "task"
+
+type Config = record { port: int }
+
+fn main() {
+    let cfg = task.freeze(Config{port: 80})
+    let n = cfg.read(fn(c: &Config): int {
+        c.port = 8080
+        return c.port
+    })
+}
