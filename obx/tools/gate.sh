@@ -3,8 +3,8 @@
 # quick: the C seed's fixed point (it also builds compiler/out/obxc from the seed, the compiler
 #        every later step uses), the conformance suite, the compiler tests, the library tests,
 #        the native backend against the C backend (run + lib tests) and the native self-build.
-# full:  quick, then the red-team harnesses (rounds 1-4) under ASan+UBSan, then the native
-#        backend on the red-team corpora.
+# full:  quick, then the red-team harnesses (rounds 1-5) and the task library tests under
+#        ASan+UBSan, then the native backend on the red-team corpora.
 # Builds are cached (tools/cbuild.py; OBX_NOCACHE=1 disables, OBX_CACHE sets the directory).
 set -u
 tier=${1:-}
@@ -26,6 +26,7 @@ if [ "$tier" = full ]; then
     "redteam round 3|python3 obx/redteam/round3/rt.py"
     "redteam round 4|python3 obx/redteam/round4/rt.py"
     "redteam round 5|python3 obx/redteam/round5/rt.py"
+    "redteam tasks|python3 obx/redteam/rt.py obx/lib/tests/run/task_*.obx"
     "native redteam|python3 obx/tests/run_native.py --lib --redteam"
   )
 fi
