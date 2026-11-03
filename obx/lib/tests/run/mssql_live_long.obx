@@ -1,0 +1,167 @@
+// mssql against a live SQL Server ($MSSQL_TEST_DSN or ~/.obo-mssql-dsn,
+// never printed; exits 77, skipped, without one): long nvarchar(max),
+// varchar(max) and varbinary(max) values read in chunks (SQLGetData) at and
+// around the chunk boundaries, surrogate pairs and NUL characters across
+// them, long parameters (above the 4000 and 8000 sizes), empty apart from
+// NULL, the value limit (setMaxValue: a column over it is drained and is
+// E_LIMIT while the columns after it stay readable), the default 16 MiB
+// limit exactly, and no handle left open.
+// needs: odbc
+// expect: text lengths: 0 1 4094 4095 4096 8190 8191 12286 12287 100000 all equal: true
+// expect: pair across a chunk: true | NULs across chunks: true
+// expect: bytes lengths: 0 1 8191 8192 8193 24576 24577 1048576 all equal: true
+// expect: empty vs NULL: text '' false, NULL true | bytes '' false, NULL true
+// expect: varchar(max): 200000 chars, equal true | nvarchar(4000) 4000 chars equal true
+// expect: limit: big 1015: column 0 is longer than 1000 bytes (setMaxValue) | small after it: tiny | text over 1015 | next row small: tiny
+// expect: default limit: 16777216 bytes ok | 16777217 bytes 1015
+// expect: open handles 0
+
+import "mssql"
+import "io"
+import "os"
+
+type V = mssql.Value
+type Error = mssql.Error
+
+fn dsn(): Option[str] {
+    match os.env("MSSQL_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-mssql-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn connectOrSkip(): mssql.Conn {
+    let d = match dsn() {
+        Some(d) { d }
+        None { exit(77) }
+    }
+    match mssql.connect(d) {
+        Ok(c) { return c }
+        Err(e) {
+            println("connect failed: " + e.state + " " + e.code.toStr())
+            exit(1)
+        }
+    }
+}
+
+fn code[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.code.toStr() }
+    }
+}
+
+// n UTF-16 units of mixed text: ASCII, é (2 bytes in UTF-8), € (3), and NUL.
+fn textOf(n: int): str {
+    let parts = ["a", "é", "€", "\x00", "z"]
+    var b = newStrBuf()
+    for i in 0..n { b.add(parts[i % 5]) }
+    return b.toStr()
+}
+
+fn bytesOf(n: int): str {
+    var b = array(n, byte(0))
+    for i in 0..n { b[i] = byte((i * 7 + i / 256) & 0xff) }
+    return strFromBytes(&b)
+}
+
+fn run(c: &mssql.Conn): Result[Unit, Error] {
+    try c.exec("CREATE TABLE #long(id int PRIMARY KEY, t nvarchar(max), b varbinary(max), v varchar(max), n nvarchar(4000))")
+    var ins = try c.prepare("INSERT INTO #long(id, t, b) VALUES (?, ?, ?)")
+    let tl = [0, 1, 4094, 4095, 4096, 8190, 8191, 12286, 12287, 100000]
+    let bl = [0, 1, 8191, 8192, 8193, 24576, 24577, 1048576]
+    for i in 0..len(tl) {
+        try ins.bind(1, V.Int(i))
+        try ins.bind(2, V.Text(textOf(tl[i])))
+        try ins.bind(3, if i < len(bl) { V.Bytes(bytesOf(bl[i])) } else { V.Null })
+        try ins.execute()
+    }
+    // a surrogate pair in units 4094 and 4095 (the first chunk holds 4095
+    // units), NULs at 4093 and 4096
+    let pair = repeat("x", 4093) + "\x00😀\x00" + repeat("y", 100)
+    try ins.bind(1, V.Int(100))
+    try ins.bind(2, V.Text(pair))
+    try ins.bind(3, V.Bytes(""))
+    try ins.execute()
+    try ins.bind(1, V.Int(101))
+    try ins.bind(2, V.Null)
+    try ins.bind(3, V.Null)
+    try ins.execute()
+    ins.reset()
+
+    var st = try c.query("SELECT id, t, b FROM #long WHERE id < 100 ORDER BY id", &[])
+    var tlines = "text lengths:"
+    var teq = true
+    var beq = true
+    while try st.step() {
+        let i = try st.int(0)
+        let t = try st.text(1)
+        tlines = tlines + " " + (len(try mssql.toUtf16(t)) / 2).toStr()
+        teq = teq && t == textOf(tl[i])
+        if i < len(bl) { beq = beq && try st.bytes(2) == bytesOf(bl[i]) } else { beq = beq && try st.isNull(2) }
+    }
+    println(tlines + " all equal: " + teq.toStr())
+    var p = try c.query("SELECT t FROM #long WHERE id = 100", &[])
+    try p.step()
+    let pt = try p.text(0)
+    p.reset()
+    println("pair across a chunk: " + (pt == pair).toStr() + " | NULs across chunks: " + (pt[4093] == 0 && pt[4098] == 0).toStr())
+    var bs = "bytes lengths:"
+    for n in bl { bs = bs + " " + n.toStr() }
+    println(bs + " all equal: " + beq.toStr())
+
+    var e = try c.query("SELECT t, b FROM #long WHERE id IN (0, 101) ORDER BY id", &[])
+    try e.step()
+    let et = "text '" + try e.text(0) + "' " + (try e.isNull(0)).toStr()
+    let eb = "bytes '" + try e.bytes(1) + "' " + (try e.isNull(1)).toStr()
+    try e.step()
+    println("empty vs NULL: " + et + ", NULL " + (try e.isNull(0)).toStr() + " | " + eb + ", NULL " + (try e.isNull(1)).toStr())
+    e.reset()
+
+    try c.exec("INSERT INTO #long(id, v, n) VALUES (200, REPLICATE(CAST('ab' AS varchar(max)), 100000), REPLICATE(N'é', 4000))")
+    var v = try c.query("SELECT v, n FROM #long WHERE id = 200", &[])
+    try v.step()
+    let vt = try v.text(0)
+    let nt = try v.text(1)
+    v.reset()
+    println("varchar(max): " + len(vt).toStr() + " chars, equal " + (vt == repeat("ab", 100000)).toStr() + " | nvarchar(4000) " +
+        (len(nt) / 2).toStr() + " chars equal " + (nt == repeat("é", 4000)).toStr())
+
+    var lim = try c.query("SELECT CAST(REPLICATE(CAST(0x01 AS varbinary(max)), ?) AS varbinary(max)) AS big, N'tiny' AS small " +
+        "UNION ALL SELECT 0x02, N'tiny'", &[V.Int(2000)])
+    lim.setMaxValue(1000)
+    try lim.step()
+    let small = try lim.text(1)            // reads past the big column first
+    var big = ""
+    match lim.bytes(0) {
+        Ok(_) { big = "read?" }
+        Err(err) { big = err.code.toStr() + ": " + err.msg }
+    }
+    let again = code(lim.text(0))
+    try lim.step()
+    println("limit: big " + big + " | small after it: " + small + " | text over " + again + " | next row small: " + try lim.text(1))
+    lim.reset()
+
+    var d = try c.query("SELECT CAST(REPLICATE(CAST(0x05 AS varbinary(max)), ?) AS varbinary(max)), " +
+        "CAST(REPLICATE(CAST(0x05 AS varbinary(max)), ?) AS varbinary(max))", &[V.Int(16777216), V.Int(16777217)])
+    try d.step()
+    let exact = try d.bytes(0)
+    println("default limit: " + len(exact).toStr() + " bytes ok | 16777217 bytes " + code(d.bytes(1)))
+    d.reset()
+    return Ok(Unit{})
+}
+
+fn main() {
+    let conn = connectOrSkip()
+    match run(&conn) {
+        Ok(_) {}
+        Err(e) { println("FAIL " + e.toStr()) }
+    }
+    conn.close()
+    println("open handles " + mssql.openHandles().toStr())
+}

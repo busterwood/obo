@@ -1,0 +1,166 @@
+// mssql without a server: the strict UTF-8 <-> UTF-16 codec (valid text and
+// each invalid class), how each Value is bound (paramOf), the error chosen
+// from diagnostic records, the C double's bits, connection strings refused
+// before or by the driver manager, and no handle left open.
+// needs: odbc
+// expect: utf16: a=61 00 | é=e9 00 | €=ac 20 | U+FFFF=ff ff | 😀=3d d8 00 de | U+10FFFF=ff db ff df | ''=
+// expect: utf16 back: true | BMP round trip: 63488 | astral round trip: true | NUL kept: true
+// expect: bad utf-8: error 1000: invalid UTF-8 at byte 1 (overlong 2) | error 1000: invalid UTF-8 at byte 0 (overlong 3) | error 1000: invalid UTF-8 at byte 0 (overlong 4) | error 1000: invalid UTF-8 at byte 0 (surrogate) | error 1000: invalid UTF-8 at byte 0 (above U+10FFFF) | error 1000: invalid UTF-8 at byte 2 (truncated) | error 1000: invalid UTF-8 at byte 0 (continuation) | error 1000: invalid UTF-8 at byte 0 (F5)
+// expect: bad utf-16: error 1002: invalid UTF-16: lone surrogate at unit 1 (high at end) | error 1002: invalid UTF-16: lone surrogate at unit 0 (high, then not low) | error 1002: invalid UTF-16: lone surrogate at unit 0 (low) | error 1002: UTF-16 text has an odd number of bytes (odd)
+// expect: param Null: c -8 sql -9 size 1 digits 0 null true data ''
+// expect: param Int(-9223372036854775808): c -25 sql -5 size 19 digits 0 null false data 0000000000000080
+// expect: param Int(42): c -25 sql -5 size 19 digits 0 null false data 2a00000000000000
+// expect: param Bool(true): c -25 sql -7 size 1 digits 0 null false data 0100000000000000
+// expect: param Float(0.1): c 1 sql 8 size 15 digits 0 null false data 302e31
+// expect: param Float(-1e300): c 1 sql 8 size 15 digits 0 null false data 2d3165333030
+// expect: param Text(café): c -8 sql -9 size 4 digits 0 null false data 630061006600e900
+// expect: param Text(): c -8 sql -9 size 1 digits 0 null false data ''
+// expect: param Bytes(00ff): c -2 sql -3 size 2 digits 0 null false data 00ff
+// expect: param Bytes(): c -2 sql -3 size 1 digits 0 null false data ''
+// expect: param Dec(12.50): c 1 sql 3 size 4 digits 2 null false data 31322e3530
+// expect: param Dec(-0.001): c 1 sql 3 size 3 digits 3 null false data 2d302e303031
+// expect: param Dec(0): c 1 sql 3 size 1 digits 0 null false data 30
+// expect: param Dec(99999999999999999999999999999999999999): c 1 sql 3 size 38 digits 0 null false
+// expect: param Dec(0.00000000000000000000000000000000000001): c 1 sql 3 size 38 digits 38 null false
+// expect: long params: text 4000 units size 4000 | 4001 units size 0 | bytes 8000 size 8000 | 8001 size 0
+// expect: param errors: NaN error 1004: SQL Server float has no NaN or Infinity | inf 1004 | bad text error 1000: text value: invalid UTF-8 at byte 1 | 1e38 1011 | 1e-39 1013
+// expect: decimalParam: Ok(12.30) | scale 1010 | range 1011 | p 39 1012
+// expect: errorOf: error 2627 (23000): Violation of PRIMARY KEY constraint | warnings only: error 0 (01000): Changed database context | none: error -1: execute failed (SQLRETURN -1) without a diagnostic record
+// expect: diag: 42S02 208: Invalid object name 'nope'.
+// expect: floats: 0.1 -0 5e-324 2.225073858507201e-308 2.2250738585072014e-308 1.7976931348623157e308 inf -inf NaN 1 -2.5
+// expect: connect nul: error 1000: connection string contains a NUL byte
+// expect: connect utf-8: error 1000: connection string: invalid UTF-8 at byte 7
+// expect: connect no driver: error 0 (01000): [unixODBC][Driver Manager]Can't open lib 'No Such Driver for obx tests' : file not found
+// expect: connect no dsn: error 0 (IM002): [unixODBC][Driver Manager]Data source name not found and no default driver specified
+// expect: open handles 0
+
+import "mssql"
+import "sqldialect"
+import "strings"
+
+type V = mssql.Value
+type Error = mssql.Error
+
+fn hexOf(b: &[byte]): str {
+    var out = ""
+    for i in 0..len(b) {
+        if i > 0 { out = out + " " }
+        out = out + sqldialect.hex(strFromBytes(&[b[i]]))
+    }
+    return out
+}
+
+fn enc(s: str): str {
+    match mssql.toUtf16(s) {
+        Ok(w) { return hexOf(&w) }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn fails[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn code[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.code.toStr() }
+    }
+}
+
+fn bytesOf(s: str): []byte { return strToBytes(s) }
+
+fn showParam(v: V, withData: bool) {
+    let p = mssql.paramOf(v).unwrap()
+    var line = "param " + (match v { V.Text(t) { "Text(" + t + ")" } V.Bytes(b) { "Bytes(" + sqldialect.hex(b) + ")" } V.Dec(d) { "Dec(" + d.toStr() + ")" }
+        V.Null { "Null" } V.Int(n) { "Int(" + n.toStr() + ")" } V.Bool(b) { "Bool(" + b.toStr() + ")" } V.Float(f) { "Float(" + f.toStr() + ")" } }) +
+        ": c " + p.cType.toStr() + " sql " + p.sqlType.toStr() + " size " + p.size.toStr() + " digits " + p.digits.toStr() +
+        " null " + p.null.toStr()
+    if withData { line = line + " data " + if p.null || len(p.data) == 0 { "''" } else { sqldialect.hex(p.data) } }
+    println(line)
+}
+
+fn main() {
+    println("utf16: a=" + enc("a") + " | é=" + enc("é") + " | €=" + enc("€") + " | U+FFFF=" + enc("\xef\xbf\xbf") + " | 😀=" + enc("😀") +
+        " | U+10FFFF=" + enc("\xf4\x8f\xbf\xbf") + " | ''=" + enc(""))
+    let mixed = "a\x00é€😀\xef\xbf\xbfz"
+    let back = mssql.fromUtf16(&mssql.toUtf16(mixed).unwrap()).unwrap()
+    var bmp = 0
+    var r = 0
+    while r < 0x10000 {
+        if r < 0xd800 || r > 0xdfff {
+            let s = strings.fromRune(r)
+            if mssql.fromUtf16(&mssql.toUtf16(s).unwrap()).unwrap() == s { bmp += 1 }
+        }
+        r += 1
+    }
+    var astral = true
+    r = 0x10000
+    while r <= 0x10ffff {
+        let s = strings.fromRune(r)
+        let w = mssql.toUtf16(s).unwrap()
+        astral = astral && len(w) == 4 && mssql.fromUtf16(&w).unwrap() == s
+        r += 0x3ff
+    }
+    println("utf16 back: " + (back == mixed).toStr() + " | BMP round trip: " + bmp.toStr() + " | astral round trip: " + astral.toStr() +
+        " | NUL kept: " + (back[1] == 0).toStr())
+    println("bad utf-8: " + enc("a\xc0\x80") + " (overlong 2) | " + enc("\xe0\x80\x80") + " (overlong 3) | " + enc("\xf0\x80\x80\x80") +
+        " (overlong 4) | " + enc("\xed\xa0\x80") + " (surrogate) | " + enc("\xf4\x90\x80\x80") + " (above U+10FFFF) | " + enc("ab\xe2\x82") +
+        " (truncated) | " + enc("\x80") + " (continuation) | " + enc("\xf5\x80\x80\x80") + " (F5)")
+    println("bad utf-16: " + fails(mssql.fromUtf16(&bytesOf("a\x00\x3d\xd8"))) + " (high at end) | " + fails(mssql.fromUtf16(&bytesOf("\x3d\xd8a\x00"))) +
+        " (high, then not low) | " + fails(mssql.fromUtf16(&bytesOf("\x00\xdea\x00"))) + " (low) | " + fails(mssql.fromUtf16(&bytesOf("a\x00b"))) + " (odd)")
+
+    showParam(V.Null, true)
+    showParam(V.Int(-9223372036854775807 - 1), true)
+    showParam(V.Int(42), true)
+    showParam(V.Bool(true), true)
+    showParam(V.Float(0.1), true)
+    showParam(V.Float(-1e300), true)
+    showParam(V.Text("café"), true)
+    showParam(V.Text(""), true)
+    showParam(V.Bytes("\x00\xff"), true)
+    showParam(V.Bytes(""), true)
+    showParam(V.Dec(12.50), true)
+    showParam(V.Dec(-0.001), true)
+    showParam(V.Dec(Decimal.zero()), true)
+    showParam(V.Dec(Decimal.parse("99999999999999999999999999999999999999").unwrap()), false)
+    showParam(V.Dec(Decimal.parse("0.00000000000000000000000000000000000001").unwrap()), false)
+    let t4000 = repeat("é", 4000)
+    let t4001 = repeat("é", 4001)
+    let b8000 = repeat("\x00", 8000)
+    println("long params: text 4000 units size " + mssql.paramOf(V.Text(t4000)).unwrap().size.toStr() + " | 4001 units size " +
+        mssql.paramOf(V.Text(t4001)).unwrap().size.toStr() + " | bytes 8000 size " + mssql.paramOf(V.Bytes(b8000)).unwrap().size.toStr() +
+        " | 8001 size " + mssql.paramOf(V.Bytes(b8000 + "x")).unwrap().size.toStr())
+    let zero: float = 0.0
+    println("param errors: NaN " + fails(mssql.paramOf(V.Float(zero / zero))) + " | inf " + code(mssql.paramOf(V.Float(1.0 / zero))) +
+        " | bad text " + fails(mssql.paramOf(V.Text("a\xff"))) + " | 1e38 " + code(mssql.paramOf(V.Dec(Decimal.parse("1e38").unwrap()))) +
+        " | 1e-39 " + code(mssql.paramOf(V.Dec(Decimal.parse("1e-39").unwrap()))))
+    println("decimalParam: " + mssql.decimalParam(12.3, 10, 2).map(fn(v: V): str { return v.toStr() }).toStr() + " | scale " +
+        code(mssql.decimalParam(1.234, 10, 2)) + " | range " + code(mssql.decimalParam(decimalOf(123456789), 10, 2)) + " | p 39 " +
+        code(mssql.decimalParam(1.5, 39, 2)))
+
+    let recs = [mssql.Diag{state: "01000", native: 5701, msg: "Changed database context"},
+                mssql.Diag{state: "23000", native: 2627, msg: "Violation of PRIMARY KEY constraint"},
+                mssql.Diag{state: "01000", native: 3621, msg: "The statement has been terminated."}]
+    let warn = [mssql.Diag{state: "01000", native: 0, msg: "Changed database context"}]
+    let none: []mssql.Diag = []
+    println("errorOf: " + mssql.errorOf(&recs, -1, "execute").toStr() + " | warnings only: " + mssql.errorOf(&warn, 1, "connect").toStr() +
+        " | none: " + mssql.errorOf(&none, -1, "execute").toStr())
+    println("diag: " + mssql.Diag{state: "42S02", native: 208, msg: "Invalid object name 'nope'."}.toStr())
+
+    let sign = -9223372036854775807 - 1
+    let bits = [0x3fb999999999999a, sign, 1, 0x000fffffffffffff, 0x0010000000000000, 0x7fefffffffffffff, 0x7ff0000000000000,
+                sign | 0x7ff0000000000000, 0x7ff8000000000000, 0x3ff0000000000000, sign | 0x4004000000000000]
+    var fl = "floats:"
+    for b in bits { fl = fl + " " + mssql.floatOfBits(b).toStr() }
+    println(fl)
+
+    println("connect nul: " + fails(mssql.connect("Driver=x\x00")))
+    println("connect utf-8: " + fails(mssql.connect("Driver=\xc0\x80")))
+    println("connect no driver: " + fails(mssql.connect("Driver={No Such Driver for obx tests}")))
+    println("connect no dsn: " + fails(mssql.connect("DSN=obx_no_such_dsn")))
+    println("open handles " + mssql.openHandles().toStr())
+}

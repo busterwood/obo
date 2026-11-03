@@ -1,0 +1,158 @@
+// mssql against a live SQL Server ($MSSQL_TEST_DSN or ~/.obo-mssql-dsn,
+// never printed; exits 77, skipped, without one): statement lifetimes. A
+// statement whose connection was closed (obo's B1 parent-close regression) or
+// dropped is a clean E_CLOSED on every call, never a freed handle; dropping a
+// statement with an open result frees the connection for the next one;
+// hundreds of statements live at once on one connection; statements that
+// outlive their connection are dropped without a second free; the handle
+// count returns to 0 (and OBX_CHECK=1 finds no leak).
+// needs: odbc
+// expect: handles with a connection and two statements: 3
+// expect: close: ok | read before before
+// expect: after close: text error 1014: the statement's connection is closed | step error 1014: the statement's connection is closed | nextResult error 1014: the statement's connection is closed | execute error 1014: the statement's connection is closed | bind error 1014: the statement's connection is closed | paramCount error 1014: the statement's connection is closed | isNull error 1014: the statement's connection is closed
+// expect: reset after close is a no-op; column name kept: v
+// expect: handles before the statements drop: 2
+// expect: handles after: 0
+// expect: orphan: error 1014: the statement's connection is closed | handles 1
+// expect: busy while open: true
+// expect: after the drop: 3
+// expect: 500 prepared: handles 501
+// expect: 500 executed: sum 249500
+// expect: dropped: handles 1
+// expect: 50 kept: handles 52
+// expect: connection dropped: handles 51 | kept[7] error 1014: the statement's connection is closed
+// expect: 2000 short statements: handles 1
+// expect: open handles 0
+
+import "mssql"
+import "io"
+import "os"
+
+type V = mssql.Value
+type Error = mssql.Error
+
+fn dsn(): Option[str] {
+    match os.env("MSSQL_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-mssql-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn connectOrSkip(d: str): mssql.Conn {
+    match mssql.connect(d) {
+        Ok(c) { return c }
+        Err(e) {
+            println("connect failed: " + e.state + " " + e.code.toStr())
+            exit(1)
+        }
+    }
+}
+
+fn fails[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+// A statement with a current row whose connection is dropped on return.
+fn orphan(d: str): Result[mssql.Stmt, Error] {
+    let c = connectOrSkip(d)
+    var s = try c.query("SELECT N'orphan' AS v", &[])
+    try s.step()
+    return Ok(s)
+}
+
+fn parentClose(d: str): Result[Unit, Error] {
+    let c = connectOrSkip(d)
+    var rows = try c.query("SELECT N'before' AS v UNION ALL SELECT N'second'", &[])
+    try rows.step()
+    let before = try rows.text(0)
+    var prepared = try c.prepare("SELECT ?")
+    println("handles with a connection and two statements: " + mssql.openHandles().toStr())
+    println("close: " + fails(c.close()) + " | read before " + before)
+    println("after close: text " + fails(rows.text(0)) + " | step " + fails(rows.step()) + " | nextResult " +
+        fails(rows.nextResult()) + " | execute " + fails(rows.execute()) + " | bind " + fails(prepared.bind(1, V.Int(1))) +
+        " | paramCount " + fails(prepared.paramCount()) + " | isNull " + fails(rows.isNull(0)))
+    rows.reset()
+    println("reset after close is a no-op; column name kept: " + try rows.columnName(0))
+    println("handles before the statements drop: " + mssql.openHandles().toStr())
+    return Ok(Unit{})
+}
+
+fn run(d: str): Result[Unit, Error] {
+    try parentClose(d)
+    println("handles after: " + mssql.openHandles().toStr())
+
+    var o = try orphan(d)
+    println("orphan: " + fails(o.text(0)) + " | handles " + mssql.openHandles().toStr())
+    o.close()
+
+    let c = connectOrSkip(d)
+    // a statement dropped with its result open frees the connection
+    {
+        var open = try c.query("SELECT 1 UNION ALL SELECT 2", &[])
+        try open.step()
+        println("busy while open: " + (c.query("SELECT 3", &[]).isErr()).toStr())
+    }
+    var three = try c.query("SELECT 3", &[])
+    try three.step()
+    println("after the drop: " + (try three.int(0)).toStr())
+    three.close()
+
+    // many statements live at once, run one after another
+    var many: []mssql.Stmt = []
+    for i in 0..500 { append(mut &many, try c.prepare("SELECT ? * 2")) }
+    println("500 prepared: handles " + mssql.openHandles().toStr())
+    var sum = 0
+    for i in 0..len(many) {
+        try many[i].bind(1, V.Int(i))
+        try many[i].execute()
+        try many[i].step()
+        sum += try many[i].int(0)
+        many[i].reset()
+    }
+    println("500 executed: sum " + sum.toStr())
+    many = []
+    println("dropped: handles " + mssql.openHandles().toStr())
+
+    // statements that outlive their connection: no second free
+    var kept: []mssql.Stmt = []
+    {
+        let c2 = connectOrSkip(d)
+        for i in 0..50 {
+            var s = try c2.query("SELECT ?", &[V.Int(i)])
+            if i % 2 == 0 { try s.step() }
+            s.reset()
+            append(mut &kept, s)
+        }
+        println("50 kept: handles " + mssql.openHandles().toStr())
+    }
+    println("connection dropped: handles " + mssql.openHandles().toStr() + " | kept[7] " + fails(kept[7].execute()))
+    kept = []
+    // a churn of short statements
+    for i in 0..2000 {
+        var s = try c.query("SELECT ?", &[V.Int(i)])
+        try s.step()
+        if try s.int(0) != i { println("churn: wrong value") }
+    }
+    println("2000 short statements: handles " + mssql.openHandles().toStr())
+    return Ok(Unit{})
+}
+
+fn main() {
+    let d = match dsn() {
+        Some(d) { d }
+        None { exit(77) }
+    }
+    match run(d) {
+        Ok(_) {}
+        Err(e) { println("FAIL " + e.toStr()) }
+    }
+    println("open handles " + mssql.openHandles().toStr())
+}

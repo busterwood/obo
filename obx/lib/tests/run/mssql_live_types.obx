@@ -1,0 +1,237 @@
+// mssql against a live SQL Server (the ODBC connection string in
+// $MSSQL_TEST_DSN, else in ~/.obo-mssql-dsn; exits 77, skipped, when neither
+// is there; never printed): connect and its informational records, every type
+// round trip with NULL apart from empty, unicode in SQL text, parameters,
+// column names and messages, decimals at full precision, money, floats, the
+// int64 range, typed accessor errors, SQLSTATE errors, and no handle left open.
+// needs: odbc
+// expect: connect: informational records only: true
+// expect: columns: id -5 | name -9 | price 3 | qty 4 | small 5 | tiny -6 | flag -7 | ratio 6 | r 7 | data -3 | d 91 | t -154 | dt 93 | dto -155 | g -11 | m 3 | sm 3 | note 12 | big -9
+// expect: 1 | 'widget café 😀' | 12.3400 | 3 | -32768 | 255 | true | 0.1 | 0.10000000149011612 | x'00ff10' | '2024-02-29' | '23:59:58.123' | '2024-02-29 23:59:58.123' | '2024-02-29 23:59:58 +05:30' | '6F9619FF-8B86-D011-B42D-00C04FC964FF' | 922337203685477.5807 | 214748.3647 | 'plain' | 'ab'
+// expect: 2 | '' | -0.5000 | 0 | 0 | 0 | false | -0 | 0 | x'' | '0001-01-01' | '00:00:00.000' | '0001-01-01 00:00:00.000' | '0001-01-01 00:00:00 +00:00' | '00000000-0000-0000-0000-000000000000' | -922337203685477.5808 | -214748.3648 | '' | ''
+// expect: 3 | 'third' | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL | NULL
+// expect: null vs empty: name '' isNull false | note NULL isNull true, text 1001 | data x'' vs NULL 1001 | price decimalOrNull None, Some(-0.5000) for -0.5, 0.0000 for 0
+// expect: accessors: text(price) 12.3400 | text(qty) 3 | bytes(name) widget café 😀 | float(qty) 3 | bool(flag) true | decimal(qty) 3 | decimal(m) 922337203685477.5807
+// expect: accessor errors: int(name) 1002 | decimal(name) 1002 | decimal(ratio) 1005 | decimalType(r) 1005 | text(data) 1002 | float(name) 1002 | column 99 1000 | bool(qty=3) 1002
+// expect: decimal types: price decimal(18, 4) | m decimal(19, 4) | sm decimal(10, 4) | qty 1002
+// expect: unicode: SELECT N'café 😀' -> café 😀 | column [café 😀] | param round trip true | varchar column plain
+// expect: unicode error: error 208 (42S02): [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid object name 'no_such_café_😀'.
+// expect: decimals: 99999999999999999999999999999999999999 | -99999999999999999999999999999999999999 | 0.00000000000000000000000000000000000001 | 1234567890123456789012345678.1234567890 | 0.5000
+// expect: decimal params: 99999999999999999999999999999999999999 | -0.00000000000000000000000000000000000001 | 12.50 | 0.3 | checked 12.30 decimal(4, 2) | bindDecimal decimal(12, 4) 1.5000
+// expect: money: 12.34 + 0.0001 = 12.3401 | sum 922337203685477.5807
+// expect: floats: 0.1 1e300 -1e300 2.2250738585072014e-308 1.7976931348623157e308 0.30000000000000004 -0 | NaN 1004
+// expect: int64: -9223372036854775808 9223372036854775807 | int 2147483647 | smallint -32768 | tinyint 255 | bit 1
+// expect: errors: syntax error 102 (42000) | unique error 2627 (23000) | not null error 515 (23000) | divide error 8134 (22012) | overflow error 8115 (22003) | conversion error 245 (22018)
+// expect: invalid text param: error 1000: text value: invalid UTF-8 at byte 1 | still usable: 1
+// expect: open handles 0
+
+import "mssql"
+import "io"
+import "os"
+import "sqldialect"
+
+type V = mssql.Value
+type Error = mssql.Error
+
+// The DSN, never printed: $MSSQL_TEST_DSN, else ~/.obo-mssql-dsn.
+fn dsn(): Option[str] {
+    match os.env("MSSQL_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-mssql-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn connectOrSkip(): mssql.Conn {
+    let d = match dsn() {
+        Some(d) { d }
+        None { exit(77) }
+    }
+    match mssql.connect(d) {
+        Ok(c) { return c }
+        Err(e) {
+            // the message may name the login: only the SQLSTATE and number
+            println("connect failed: " + e.state + " " + e.code.toStr())
+            exit(1)
+        }
+    }
+}
+
+fn code[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.code.toStr() }
+    }
+}
+
+fn brief[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() + " (" + e.state + ")" }
+    }
+}
+
+fn fails[T](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+// The first column of the first row as a Value.
+fn one(c: &mssql.Conn, sql: str, args: &[V]): Result[V, Error] {
+    var st = try c.query(sql, args)
+    if !(try st.step()) { return Err(sqldialect.inputError("no row")) }
+    return st.value(0)
+}
+
+fn show(c: &mssql.Conn, sql: str, args: &[V]): Result[str, Error] {
+    let v = try one(c, sql, args)
+    match v {
+        V.Text(t) { return Ok(t) }
+        V.Bytes(b) { return Ok(b) }
+        else { return Ok(v.toStr()) }
+    }
+}
+
+fn run(c: &mssql.Conn): Result[Unit, Error] {
+    var info = true
+    for d in c.diagnostics() { info = info && startsWith(d.state, "01") }
+    println("connect: informational records only: " + info.toStr())
+
+    try c.exec("CREATE TABLE #items(id bigint PRIMARY KEY, name nvarchar(50) NOT NULL, price decimal(18,4), qty int, " +
+        "small smallint, tiny tinyint, flag bit, ratio float, r real, data varbinary(100), d date, t time(3), dt datetime2(3), " +
+        "dto datetimeoffset(0), g uniqueidentifier, m money, sm smallmoney, note varchar(20), big nvarchar(max))")
+    let ins = "INSERT INTO #items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    try c.run(ins, &[V.Int(1), V.Text("widget café 😀"), V.Dec(12.34), V.Int(3), V.Int(-32768), V.Int(255), V.Bool(true),
+        V.Float(0.1), V.Float(0.1), V.Bytes("\x00\xff\x10"), V.Text("2024-02-29"), V.Text("23:59:58.123"),
+        V.Text("2024-02-29 23:59:58.123"), V.Text("2024-02-29 23:59:58 +05:30"), V.Text("6F9619FF-8B86-D011-B42D-00C04FC964FF"),
+        V.Dec(Decimal.parse("922337203685477.5807").unwrap()), V.Dec(214748.3647), V.Text("plain"), V.Text("ab")])
+    try c.run(ins, &[V.Int(2), V.Text(""), V.Dec(-0.5), V.Int(0), V.Int(0), V.Int(0), V.Bool(false), V.Float(-0.0), V.Float(0.0),
+        V.Bytes(""), V.Text("0001-01-01"), V.Text("00:00:00"), V.Text("0001-01-01"), V.Text("0001-01-01 00:00:00 +00:00"),
+        V.Text("00000000-0000-0000-0000-000000000000"), V.Dec(Decimal.parse("-922337203685477.5808").unwrap()),
+        V.Dec(-214748.3648), V.Text(""), V.Text("")])
+    try c.exec("INSERT INTO #items(id, name) VALUES (3, N'third')")
+
+    var st = try c.query("SELECT * FROM #items ORDER BY id", &[])
+    var cols = "columns:"
+    for k in 0..st.columnCount() {
+        if k > 0 { cols = cols + " |" }
+        cols = cols + " " + try st.columnName(k) + " " + (try st.columnType(k)).toStr()
+    }
+    println(cols)
+    while try st.step() {
+        var line = (try st.value(0)).toStr()
+        for k in 1..st.columnCount() { line = line + " | " + (try st.value(k)).toStr() }
+        println(line)
+    }
+    st.reset()
+
+    var a = try c.query("SELECT name, note, data, price FROM #items WHERE id = ?", &[V.Int(2)])
+    try a.step()
+    var b = try c.prepare("SELECT name, note, data, price FROM #items WHERE id = ?")
+    a.reset()
+    try b.bind(1, V.Int(3))
+    try b.execute()
+    try b.step()
+    let nullLine = "note NULL isNull " + (try b.isNull(1)).toStr() + ", text " + code(b.text(1)) + " | data x'' vs NULL " + code(b.bytes(2)) +
+        " | price decimalOrNull " + (try b.decimalOrNull(3)).toStr()
+    b.reset()
+    try a.execute()
+    try a.step()
+    println("null vs empty: name '" + try a.text(0) + "' isNull " + (try a.isNull(0)).toStr() + " | " + nullLine +
+        ", " + (try a.decimalOrNull(3)).toStr() + " for -0.5, " +
+        (try one(c, "SELECT CAST(0 AS decimal(18,4))", &[])).toStr() + " for 0")
+    a.reset()
+
+    var r1 = try c.query("SELECT price, qty, name, flag, m FROM #items WHERE id = 1", &[])
+    try r1.step()
+    let acc = "accessors: text(price) " + try r1.text(0) + " | text(qty) " + try r1.text(1) + " | bytes(name) " + try r1.bytes(2) +
+        " | float(qty) " + (try r1.float(1)).toStr() + " | bool(flag) " + (try r1.bool(3)).toStr() + " | decimal(qty) " +
+        (try r1.decimal(1)).toStr() + " | decimal(m) " + (try r1.decimal(4)).toStr()
+    r1.reset()
+    println(acc)
+
+    var e = try c.query("SELECT name, ratio, r, data, qty FROM #items WHERE id = 1", &[])
+    try e.step()
+    println("accessor errors: int(name) " + code(e.int(0)) + " | decimal(name) " + code(e.decimal(0)) + " | decimal(ratio) " +
+        code(e.decimal(1)) + " | decimalType(r) " + code(e.decimalType(2)) + " | text(data) " + code(e.text(3)) + " | float(name) " +
+        code(e.float(0)) + " | column 99 " + code(e.int(99)) + " | bool(qty=3) " + code(e.bool(4)))
+    e.reset()
+    var dt = try c.query("SELECT price, m, sm, qty FROM #items WHERE id = 1", &[])
+    let p = try dt.decimalType(0)
+    let m = try dt.decimalType(1)
+    let sm = try dt.decimalType(2)
+    println("decimal types: price decimal(" + p.precision.toStr() + ", " + p.scale.toStr() + ") | m decimal(" + m.precision.toStr() + ", " +
+        m.scale.toStr() + ") | sm decimal(" + sm.precision.toStr() + ", " + sm.scale.toStr() + ") | qty " + code(dt.decimalType(3)))
+    dt.reset()
+
+    var u = try c.query("SELECT N'café 😀' AS [café 😀], ?, CAST(? AS varchar(20))", &[V.Text("ünï 😀 ж"), V.Text("plain")])
+    try u.step()
+    println("unicode: SELECT N'café 😀' -> " + try u.text(0) + " | column [" + try u.columnName(0) + "] | param round trip " +
+        (try u.text(1) == "ünï 😀 ж").toStr() + " | varchar column " + try u.text(2))
+    u.reset()
+    println("unicode error: " + fails(c.exec("SELECT * FROM [no_such_café_😀]")))
+
+    println("decimals: " + try show(c, "SELECT CAST(99999999999999999999999999999999999999 AS decimal(38,0))", &[]) + " | " +
+        try show(c, "SELECT CAST(-99999999999999999999999999999999999999 AS decimal(38,0))", &[]) + " | " +
+        try show(c, "SELECT CAST(0.00000000000000000000000000000000000001 AS decimal(38,38))", &[]) + " | " +
+        try show(c, "SELECT CAST(1234567890123456789012345678.123456789 AS decimal(38,10))", &[]) + " | " +
+        try show(c, "SELECT CAST(.5 AS numeric(5,4))", &[]))
+    let checked = try mssql.decimalParam(12.3, 10, 2)
+    var bd = try c.prepare("SELECT SQL_VARIANT_PROPERTY(?, 'Precision'), SQL_VARIANT_PROPERTY(?, 'Scale'), ?")
+    try bd.bindDecimal(1, 1.5, 12, 4)
+    try bd.bindDecimal(2, 1.5, 12, 4)
+    try bd.bindDecimal(3, 1.5, 12, 4)
+    try bd.execute()
+    try bd.step()
+    let bdText = "bindDecimal decimal(" + try bd.text(0) + ", " + try bd.text(1) + ") " + (try bd.decimal(2)).toStr()
+    bd.reset()
+    var cp = try c.query("SELECT ?, SQL_VARIANT_PROPERTY(?, 'Precision'), SQL_VARIANT_PROPERTY(?, 'Scale')", &[checked, checked, checked])
+    try cp.step()
+    let cpText = "checked " + (try cp.decimal(0)).toStr() + " decimal(" + try cp.text(1) + ", " + try cp.text(2) + ")"
+    cp.reset()
+    println("decimal params: " + try show(c, "SELECT ?", &[V.Dec(Decimal.parse("99999999999999999999999999999999999999").unwrap())]) +
+        " | " + try show(c, "SELECT ?", &[V.Dec(Decimal.parse("-0.00000000000000000000000000000000000001").unwrap())]) + " | " +
+        try show(c, "SELECT ?", &[V.Dec(12.50)]) + " | " + try show(c, "SELECT ? + ?", &[V.Dec(0.1), V.Dec(0.2)]) + " | " + cpText + " | " + bdText)
+    println("money: 12.34 + 0.0001 = " + try show(c, "SELECT CAST(? AS money) + CAST(0.0001 AS money)", &[V.Dec(12.34)]) + " | sum " +
+        try show(c, "SELECT sum(m) FROM #items WHERE id = 1", &[]))
+
+    var fl = "floats:"
+    let floats: []float = [0.1, 1e300, -1e300, 2.2250738585072014e-308, 1.7976931348623157e308, 0.1 + 0.2, -0.0]
+    for f in floats {
+        var fs = try c.query("SELECT ?", &[V.Float(f)])
+        try fs.step()
+        fl = fl + " " + (try fs.float(0)).toStr()
+    }
+    let zero: float = 0.0
+    println(fl + " | NaN " + code(c.query("SELECT ?", &[V.Float(zero / zero)])))
+
+    var ir = try c.query("SELECT ?, ?, CAST(2147483647 AS int), CAST(-32768 AS smallint), CAST(255 AS tinyint), CAST(1 AS bit)",
+        &[V.Int(-9223372036854775807 - 1), V.Int(9223372036854775807)])
+    try ir.step()
+    println("int64: " + (try ir.int(0)).toStr() + " " + (try ir.int(1)).toStr() + " | int " + (try ir.int(2)).toStr() + " | smallint " +
+        (try ir.int(3)).toStr() + " | tinyint " + (try ir.int(4)).toStr() + " | bit " + (try ir.int(5)).toStr())
+    ir.reset()
+
+    println("errors: syntax " + brief(c.exec("SELECT 1 +")) + " | unique " + brief(c.run("INSERT INTO #items(id, name) VALUES (?, ?)",
+        &[V.Int(1), V.Text("again")])) + " | not null " + brief(c.run("INSERT INTO #items(id, name) VALUES (?, ?)", &[V.Int(9), V.Null])) +
+        " | divide " + brief(one(c, "SELECT ? / 0", &[V.Int(1)])) + " | overflow " + brief(one(c, "SELECT CAST(? AS int)", &[V.Int(1099511627776)])) +
+        " | conversion " + brief(one(c, "SELECT CAST(N'x' AS int)", &[])))
+    println("invalid text param: " + fails(c.query("SELECT ?", &[V.Text("a\xff")])) + " | still usable: " + try show(c, "SELECT 1", &[]))
+    return Ok(Unit{})
+}
+
+fn main() {
+    let conn = connectOrSkip()
+    match run(&conn) {
+        Ok(_) {}
+        Err(e) { println("FAIL " + e.toStr()) }
+    }
+    conn.close()
+    println("open handles " + mssql.openHandles().toStr())
+}
