@@ -1,0 +1,165 @@
+// httpserver: an accept flood (design/http-server.md 3.4). The server runs
+// in one worker process with TCP_DEFER_ACCEPT off, so every connection it
+// is handed costs a task. Before it starts serving, the client (another
+// worker) opens 1,000 connections that send nothing, then a legitimate one
+// with a request, all waiting in the listen queue; then serve starts and
+// finds them all at once. The accept loop yields every acceptBatch (16)
+// accepts, so a ticker task in the server's process keeps its timers, the
+// legitimate request behind the flood is answered, and every flood
+// connection is closed when the head timeout (1 s) passes. Nothing is left
+// open when the server stops.
+// expect: flood: 1000 connected, 1000 closed by the server, 0 still open
+// expect: behind the flood: 200 ok, answered in time
+// expect: after: 200 bye
+// expect: server: accepted at least 1002, stopped with open 0
+// expect: ticker: kept its timers during the flood
+import "task"
+import "net"
+import "io"
+import "fs"
+import "strings"
+import "time" as tm
+import "httpserver" as http
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { n: int }
+
+fn ok(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] { return w.text("ok\n") }
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.handle("GET /", ok)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+const FLOOD = 1000
+const TICK_MS = 2
+const TICKER_MS = 3000
+const LATE_MS = 250           // the most a 2 ms timer may be late (a loaded test machine)
+const ANSWER_MS = 1000        // the most the legitimate client may wait once serve starts
+const START_MS = 500          // when serve starts: the flood is queued by then
+
+fn now(): int { return tm.monotonicNs() / 1000000 }
+
+// Serves until /stop: "accepted A, open O", or the error.
+fn serveFlood(j: sr.Job[App]): str {
+    let sr.Job{ln: ln, app: app, r: r, cfg: cfg} = move(j)
+    match http.serve(ln, app, r, cfg) {
+        Ok(st) { return "accepted " + intToStr(st.accepted) + ", open " + intToStr(st.open) }
+        Err(e) { return "error: " + e.toStr() }
+    }
+}
+
+// Sleeps TICK_MS at a time for TICKER_MS: the latest a timer fired.
+fn ticker(n: int): int {
+    var late = 0
+    let end = now() + TICKER_MS
+    while now() < end {
+        let t0 = now()
+        if task.sleep(TICK_MS).isErr() { break }
+        let d = now() - t0 - TICK_MS
+        if d > late { late = d }
+    }
+    return late
+}
+
+fn cfgFlood(): http.Config {
+    var cfg = sr.config()
+    cfg.deferAccept = false
+    cfg.headerTimeoutMs = 1000
+    return cfg
+}
+
+fn serverSide(listener: net.Listener) {
+    var hold = Some(listener)
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        task.sleep(START_MS).unwrap()
+        let tk = s.start(ticker, 0)
+        let srv = s.start(serveFlood, sr.Job[App]{ln: replace(mut &hold, None).unwrap(), app: App{n: 0}, r: routes(), cfg: cfgFlood()})
+        let late = tk.wait().unwrap()
+        return srv.wait().unwrap() + "\nlate " + intToStr(late) + "\n"
+    })
+    io.write("flood_server.txt", out).unwrap()
+}
+
+// Opens FLOOD connections and sends nothing, then makes the legitimate
+// request (queued behind them); then waits for the server to close each:
+// "flood: C connected, K closed by the server, W still open" and the
+// legitimate request's line.
+fn flood(addr: str, t0: int): str {
+    var conns: []net.Conn = []
+    for i in 0..FLOOD {
+        match net.connect(addr) {
+            Ok(c) { append(mut &conns, c) }
+            Err(e) {}
+        }
+    }
+    let lr = legit(addr, t0)
+    var shut = 0
+    var open = 0
+    var buf = array(4096, byte(0))
+    for c in conns {
+        let r = task.within(3000, fn(): str {
+            match c.read(mut &buf) {
+                Ok(n) { return if n == 0 { "closed" } else { "data" } }
+                Err(e) { return if e.isTimeout() { "open" } else { "closed" } }
+            }
+        })
+        if r == "closed" { shut += 1 } else { open += 1 }
+    }
+    return "flood: " + intToStr(len(conns)) + " connected, " + intToStr(shut) + " closed by the server, " + intToStr(open) + " still open\nbehind the flood: " + lr + "\n"
+}
+
+// A request queued behind the flood: "CODE BODY" and whether it came
+// within ANSWER_MS of serve's start (t0 is the client's start; serve
+// starts START_MS later).
+fn legit(addr: str, t0: int): str {
+    let g = t.talk(addr, "GET / HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n", 5000)
+    let ms = now() - t0 - START_MS
+    let rs = t.replies(&g)
+    if len(rs) == 0 { return "no reply after " + intToStr(ms) + " ms" }
+    return intToStr(rs[0].code) + " " + strings.trimRight(rs[0].body) + (if ms <= ANSWER_MS { ", answered in time" } else { ", after " + intToStr(ms) + " ms" })
+}
+
+fn clientSide(addr: str) {
+    let lines = flood(addr, now())
+    let g = t.talk(addr, "POST /stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n", 5000)
+    let rs = t.replies(&g)
+    let after = if len(rs) > 0 { intToStr(rs[0].code) + " " + strings.trimRight(rs[0].body) } else { "no reply" }
+    io.write("flood_client.txt", lines + "after: " + after + "\n").unwrap()
+}
+
+fn main() {
+    for f in ["flood_server.txt", "flood_client.txt"] { let r = fs.remove(f) }
+    var lst: Option[net.Listener] = Some(net.listen("127.0.0.1:0").unwrap())
+    var addr = ""
+    match &lst {
+        Some(l) { addr = l.localAddr() }
+        None {}
+    }
+    match task.workers(2, fn(i: int) {
+        let ln = replace(mut &lst, None).unwrap()
+        if i == 0 {
+            serverSide(ln)
+        } else {
+            let l = ln                             // the client's copy of the listener: closed here
+            clientSide(addr)
+        }
+    }) {
+        Ok(ends) {}
+        Err(g) { println(g.toStr()) }
+    }
+    print(io.read("flood_client.txt").unwrapOr("no client output\n"))
+    let s = io.read("flood_server.txt").unwrapOr("no server output\n")
+    let ls = strings.splitOn(s, "\n")
+    var accepted = -1
+    var late = -1
+    if startsWith(ls[0], "accepted ") {
+        accepted = strings.parseInt(strings.splitOn(ls[0], ",")[0][9..len(strings.splitOn(ls[0], ",")[0])]).unwrapOr(-1)
+    }
+    if len(ls) > 1 && startsWith(ls[1], "late ") { late = strings.parseInt(ls[1][5..len(ls[1])]).unwrapOr(-1) }
+    println("server: " + (if accepted >= FLOOD + 2 && endsWith(ls[0], "open 0") { "accepted at least 1002, stopped with open 0" } else { ls[0] }))
+    println("ticker: " + (if late >= 0 && late <= LATE_MS { "kept its timers during the flood" } else { "late by " + intToStr(late) + " ms" }))
+}

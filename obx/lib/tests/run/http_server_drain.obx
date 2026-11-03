@@ -1,0 +1,125 @@
+// httpserver: the graceful stop (design/http-server.md 2.7). After a stop
+// (rq.stopServer, or SIGTERM with Config.signals) the listener is closed at
+// once (new connections are refused), idle keep-alive connections are
+// closed, and requests in flight finish (their replies say Connection:
+// close) before serve returns its counters. A request still running when
+// drainMs has passed is cancelled.
+// expect: after the stop: refused
+// expect: in flight: 200 connection=close, closed, handler finished
+// expect: idle: served 152 bytes, then closed
+// expect: stopped: accepted 3, requests 3, open 0, rejected 0, timeouts 0, gone 0, errors 0
+// expect: in flight past drainMs: no reply, closed, handler cancelled
+// expect: stopped: accepted 1, requests 1, open 0, rejected 0, timeouts 0, gone 1, errors 0
+import "task"
+import "net"
+import "httpserver" as http
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { n: int }
+
+extern "c" fn getpid(): i32
+extern "c" fn kill(pid: i32, sig: i32): i32
+
+var RESULT: str = ""
+
+fn slow(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    match task.sleep(rq.paramInt("ms").unwrapOr(0)) {
+        Ok(_) {
+            RESULT = "finished"
+            return w.text("done\n")
+        }
+        Err(c) {
+            RESULT = "cancelled"
+            return Err(http.error(503, "cancelled"))
+        }
+    }
+}
+
+fn ok(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] { return w.text("ok\n") }
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.handle("GET /slow/{ms}", slow)
+    r.handle("GET /", ok)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+type Probe = record { addr: str; ms: int }
+
+// One request on its own connection: the status and the Connection header.
+fn request(p: Probe): str {
+    let g = t.talk(p.addr, "GET /slow/" + intToStr(p.ms) + " HTTP/1.1\r\nHost: test\r\n\r\n", 5000)
+    let rs = t.replies(&g)
+    if len(rs) == 0 { return "no reply, " + (if g.shut { "closed" } else { "open" }) }
+    return intToStr(rs[0].code) + " connection=" + t.header(&rs[0], "connection") + ", " + (if g.shut { "closed" } else { "open" })
+}
+
+// An idle keep-alive connection: served once, then it waits; what it sees.
+fn idle(addr: str): str {
+    let c = net.connect(addr).unwrap()
+    c.writeStr("GET / HTTP/1.1\r\nHost: test\r\n\r\n").unwrap()
+    var buf = array(4096, byte(0))
+    var got = 0
+    return task.within(5000, fn(): str {
+        while true {
+            match c.read(mut &buf) {
+                Ok(n) {
+                    if n == 0 { return "served " + intToStr(got) + " bytes, then closed" }
+                    got += n
+                }
+                Err(e) { return e.toStr() }
+            }
+        }
+        return ""
+    })
+}
+
+fn cfgDrain(): http.Config {
+    var c = sr.config()
+    c.drainMs = 1000
+    return c
+}
+
+fn cfgSignal(): http.Config {
+    var c = sr.config()
+    c.signals = true
+    c.drainMs = 300
+    return c
+}
+
+fn main() {
+    // a stop by request: the slow request finishes, the idle connection closes
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let a = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{n: 0}, r: routes(), cfg: cfgDrain()})
+        let fi = s.start(idle, a)
+        let fs = s.start(request, Probe{addr: a, ms: 400})
+        task.sleep(100).unwrap()
+        let g = t.talk(a, "POST /stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n", 3000)
+        task.sleep(150).unwrap()
+        match net.connect(a) {
+            Ok(c) { println("after the stop: connected") }
+            Err(e) { println("after the stop: refused") }
+        }
+        println("in flight: " + fs.wait().unwrap() + ", handler " + RESULT)
+        println("idle: " + fi.wait().unwrap())
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out)
+    RESULT = ""
+    // SIGTERM, and a request longer than drainMs: cancelled at the deadline
+    let out2 = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let a = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{n: 0}, r: routes(), cfg: cfgSignal()})
+        let fs = s.start(request, Probe{addr: a, ms: 3000})
+        task.sleep(100).unwrap()
+        let k = kill(getpid(), 15)
+        println("in flight past drainMs: " + fs.wait().unwrap() + ", handler " + RESULT)
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out2)
+}

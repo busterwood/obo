@@ -470,7 +470,9 @@ pub fn workers(n: int, f: &fn(int), w: Where): Result[[]WorkerEnd, GaveUp] {
 // - a worker that crashes (a signal or a code other than 0) is started again
 //   after p's backoff, unless the workers crashed more than p.maxCrashes
 //   times within p.windowMs: then the others are asked to stop and workers
-//   gives Err(GaveUp) once they have;
+//   gives Err(GaveUp) once they have. A crash after the worker marked
+//   itself ready (workerReady) is restarted the same way but never counts
+//   toward giving up;
 // - SIGTERM or SIGINT to the supervisor is forwarded to every worker (a
 //   graceful drain: a worker that watches it with terminated() finishes its
 //   work and returns; one that does not is ended by it), no worker is
@@ -491,6 +493,7 @@ pub fn workers(n: int, f: &fn(int), w: Where): Result[[]WorkerEnd, GaveUp] {
 pub fn workersWith(n: int, p: WorkerPolicy, f: &fn(int), w: Where): Result[[]WorkerEnd, GaveUp] {
     if n < 1 { panic("task.workers: n must be at least 1") }
     rtWorkersBegin(w.cstr())
+    let marks = rtWorkerMarks(n)     // workerReady's marks; without them every crash counts
     var slots: []Slot = []
     for i in 0..n {
         append(mut &slots, Slot{pid: 0, started: 0, streak: 0, restartAt: -1, done: false,
@@ -532,7 +535,7 @@ pub fn workersWith(n: int, p: WorkerPolicy, f: &fn(int), w: Where): Result[[]Wor
                     } else if slots[i].end.signal == 0 && slots[i].end.code == 0 {
                         slots[i].done = true
                     } else {
-                        crashed(mut &slots[i], mut &crashes, &p, now)
+                        crashed(mut &slots[i], mut &crashes, &p, now, rtWorkerMark(i, -1) != 1)
                     }
                 }
             }
@@ -576,6 +579,7 @@ pub fn workersWith(n: int, p: WorkerPolicy, f: &fn(int), w: Where): Result[[]Wor
         }
     }
     rtWorkersEnd()
+    rtWorkerMarksFree()
     var ends: []WorkerEnd = []
     for i in 0..n { append(mut &ends, slots[i].end) }
     if gaveUp { return Err(GaveUp{crashes: len(crashes), ends: ends}) }
@@ -585,8 +589,10 @@ pub fn workersWith(n: int, p: WorkerPolicy, f: &fn(int), w: Where): Result[[]Wor
 // Starts the worker of s. In the child: runs f and ends; never returns. A
 // fork that fails (EAGAIN, ENOMEM) counts as a crash.
 fn launch(s: mut &Slot, f: &fn(int), crashes: mut &[]int, p: &WorkerPolicy) {
+    let was = rtWorkerMark(s.end.index, 0)
     let pid = rtFork()
     if pid == 0 {
+        rtWorkerSelf(s.end.index)
         f(s.end.index)
         rtWorkerExit(0)
     }
@@ -595,14 +601,15 @@ fn launch(s: mut &Slot, f: &fn(int), crashes: mut &[]int, p: &WorkerPolicy) {
         s.pid = 0
         s.end.code = -1
         s.end.signal = 0
-        crashed(s, crashes, p, s.started)
+        crashed(s, crashes, p, s.started, true)
         return
     }
     s.pid = pid
 }
 
-// A crash of s's worker at now: its time in the window, and its restart.
-fn crashed(s: mut &Slot, crashes: mut &[]int, p: &WorkerPolicy, now: int) {
+// A crash of s's worker at now: its time in the window when it counts (it
+// came before the worker was ready), and its restart.
+fn crashed(s: mut &Slot, crashes: mut &[]int, p: &WorkerPolicy, now: int, counts: bool) {
     var k = 0
     for i in 0..len(crashes) {
         if now - crashes[i] < p.windowMs {
@@ -611,7 +618,7 @@ fn crashed(s: mut &Slot, crashes: mut &[]int, p: &WorkerPolicy, now: int) {
         }
     }
     while len(crashes) > k { let x = pop(crashes) }
-    append(crashes, now)
+    if counts { append(crashes, now) }
     s.streak = if now - s.started >= p.windowMs { 1 } else { s.streak + 1 }
     var d = p.backoffMs
     for j in 1..s.streak {
@@ -642,3 +649,45 @@ fn stopAll(slots: mut &[]Slot, sig: int, p: &WorkerPolicy, now: int): int {
 // drain into SIGKILL. False when this process is not a worker of
 // task.workers.
 pub fn stopWorkers(): bool { return rtWorkerStop() == 0 }
+
+// ---- cancelling a blocking C call; the worker's ready mark (stage S1,
+// design/http-server.md sections 2.5 and 2.7)
+
+extern "c" fn rtCancelCall(f: extern fn(ptr), arg: ptr): ptr as "obxlib_task_cancel_call"
+extern "c" fn rtCancelCallEnd(h: ptr) as "obxlib_task_cancel_call_end"
+extern "c" fn rtWorkerMarks(n: int): int as "obxlib_worker_marks"
+extern "c" fn rtWorkerMarksFree() as "obxlib_worker_marks_free"
+extern "c" fn rtWorkerMark(i: int, v: int): int as "obxlib_worker_mark"
+extern "c" fn rtWorkerSelf(i: int) as "obxlib_worker_self"
+extern "c" fn rtWorkerReady(): int as "obxlib_worker_ready"
+
+// onCancelCall's registration: dropping it ends it.
+pub type CancelCall = record { h: ptr }
+
+pub fn (c: mut &CancelCall) drop() {
+    if !isNull(c.h) { rtCancelCallEnd(c.h) }
+}
+
+// Until the result is dropped: if this task is cancelled, or the deadline
+// of an enclosing within passes, while it is parked in a blocking extern
+// call (SPEC 12), the runtime calls f(arg) once, on the program's thread,
+// while the call goes on running on its helper thread. f must be a
+// function that may run at the same time as that call and makes it return
+// early: sqlite3_interrupt for sqlite3_step, SQLCancel for an ODBC call.
+// The blocking call itself is unchanged: its task still waits for it to
+// return, and sees the cancellation at its next call that can park. With a
+// registration and a deadline, a blocking call always runs on a helper (not
+// inline when nothing else could run), so that the deadline is seen.
+// Registrations nest: the innermost of the task's counts.
+pub fn onCancelCall(f: fn(ptr), arg: ptr): CancelCall {
+    return CancelCall{h: rtCancelCall(f, arg)}
+}
+
+// In a worker of task.workers: marks the worker ready (it has set itself
+// up and is serving). A worker that crashes after this is restarted with
+// the policy's backoff but never counts toward giving up: only crashes
+// before ready (a bad configuration, a missing file) can stop the
+// supervisor, so a request that kills a worker cannot stop the server.
+// False when this process is not a worker. A server calls it once it
+// accepts connections (http.serve does).
+pub fn workerReady(): bool { return rtWorkerReady() == 0 }

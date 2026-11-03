@@ -1,0 +1,275 @@
+// httpserver: serving (design/http-server.md 2.2-2.8). Routes with
+// parameters, {rest...} and {$}; HEAD; 404 and 405 with Allow; the
+// redirect to the path with a slash; query decoding; text, json, fail and
+// redirect; a handler's error answered with the fixed body; request
+// bodies, Content-Length and chunked with trailers, and Expect:
+// 100-continue; a streamed (chunked) reply with flush and a trailer;
+// server-sent events; keep-alive with pipelined requests answered in
+// order; HTTP/1.0; middleware order (use, useUnder); requestId; the
+// counters at the end.
+// expect: root: 200 closed
+// expect:   200 [root\n] content-type=text/plain; charset=utf-8 content-length=5 connection=close
+// expect: trace: outer> inner> root <inner <outer
+// expect: not under {$}: 404 closed
+// expect:   404 [404 Not Found\n] content-type=text/plain; charset=utf-8 content-length=14 connection=close cache-control=no-store
+// expect: param: 200 closed
+// expect:   200 [hello wörld from app\n] content-type=text/plain; charset=utf-8 content-length=22 connection=close
+// expect: head: 200 closed
+// expect:   200 [] content-type=text/plain; charset=utf-8 content-length=17 connection=close
+// expect: rest: 200 closed
+// expect:   200 [file [a/b/c.txt] pattern GET /files/{rest...}\n] content-type=text/plain; charset=utf-8 content-length=46 connection=close
+// expect: rest empty: 200 closed
+// expect:   200 [file [] pattern GET /files/{rest...}\n] content-type=text/plain; charset=utf-8 content-length=37 connection=close
+// expect: int param: 200 closed
+// expect:   200 [{"id": 42}] content-type=application/json content-length=10 connection=close
+// expect: int param bad: 400 closed
+// expect:   400 [400 Bad Request\n] content-type=text/plain; charset=utf-8 content-length=16 connection=close cache-control=no-store
+// expect: slash redirect: 301 closed
+// expect:   301 [301 Moved Permanently\n] content-type=text/plain; charset=utf-8 content-length=22 location=/dir/?x=1 connection=close
+// expect: 405: 405 closed
+// expect:   405 [405 Method Not Allowed\n] content-type=text/plain; charset=utf-8 content-length=23 allow=POST, PUT connection=close cache-control=no-store
+// expect: query: 200 closed
+// expect:   200 [a=[1] b=[x y!] c=[] raw=a=1&b=x+y%21&a=2&c\n] content-type=text/plain; charset=utf-8 content-length=43 connection=close
+// expect: length body: 200 closed
+// expect:   200 [POST 5 [hello]\n] content-type=text/plain; charset=utf-8 content-length=15 connection=close
+// expect: chunked body: 200 closed
+// expect:   200 [PUT 7 [abcdefg] X-Check=7\n] content-type=text/plain; charset=utf-8 content-length=26 connection=close
+// expect: continue: 200 closed
+// expect:   200 [POST 2 [ok]\n] content-type=text/plain; charset=utf-8 content-length=12 connection=close
+// expect: stream: 200 closed
+// expect:   200 [one,two,three] content-type=application/octet-stream transfer-encoding=chunked connection=close trailers=x-sum: 3\n
+// expect: events: 200 closed
+// expect:   200 [event: tick\ndata: 1\n\ndata: two\ndata: lines\n\n] content-type=text/event-stream transfer-encoding=chunked connection=close cache-control=no-store
+// expect: fail: 422 closed
+// expect:   422 [422 Unprocessable Content\n] content-type=text/plain; charset=utf-8 content-length=26 connection=close cache-control=no-store
+// expect: check: 200 closed
+// expect:   200 [n=5\n] content-type=text/plain; charset=utf-8 content-length=4 connection=close
+// expect: check bad: 400 closed
+// expect:   400 [400 Bad Request\n] content-type=text/plain; charset=utf-8 content-length=16 connection=close cache-control=no-store
+// expect: redirect: 303 closed
+// expect:   303 [303 See Other\n] content-type=text/plain; charset=utf-8 content-length=14 location=/hello/there connection=close
+// expect: open redirect: 500 closed
+// expect:   500 [500 Internal Server Error\n] content-type=text/plain; charset=utf-8 content-length=26 connection=close cache-control=no-store
+// expect: admin refused: 401 closed
+// expect:   401 [401 Unauthorized\n] content-type=text/plain; charset=utf-8 content-length=17 connection=close www-authenticate=Bearer cache-control=no-store
+// expect: trace: outer> inner> guard <inner <outer
+// expect: admin: 200 closed
+// expect:   200 [admin\n] content-type=text/plain; charset=utf-8 content-length=6 connection=close
+// expect: trace: outer> inner> guard admin <inner <outer
+// expect: pipelined: 200 200 404 200 closed
+// expect:   200 [hello a from app\n] content-type=text/plain; charset=utf-8 content-length=17
+// expect:   200 [POST 3 [xyz]\n] content-type=text/plain; charset=utf-8 content-length=13
+// expect:   404 [404 Not Found\n] content-type=text/plain; charset=utf-8 content-length=14 cache-control=no-store
+// expect:   200 [hello b from app\n] content-type=text/plain; charset=utf-8 content-length=17 connection=close
+// expect: http/1.0: 200 closed
+// expect:   200 [hello old from app\n] content-type=text/plain; charset=utf-8 content-length=19 connection=close
+// expect: http/1.0 keep-alive: 200 200 closed
+// expect:   200 [hello old from app\n] content-type=text/plain; charset=utf-8 content-length=19 connection=keep-alive
+// expect:   200 [hello two from app\n] content-type=text/plain; charset=utf-8 content-length=19 connection=close
+// expect: http/1.0 stream: 200 closed
+// expect:   200 [one,two,three] content-type=application/octet-stream connection=close
+// expect: stop: 200 closed
+// expect:   200 [bye\n] content-type=text/plain; charset=utf-8 content-length=4 connection=close
+// expect: stopped: accepted 28, requests 32, open 0, rejected 0, timeouts 0, gone 0, errors 1
+import "task"
+import "net"
+import "strings"
+import "httpserver" as http
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { name: str }
+
+var TRACE: str = ""
+
+fn hello(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    return w.text("hello " + rq.param("name") + " from " + app.name + "\n")
+}
+
+fn root(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    TRACE = TRACE + "root "
+    return w.text("root\n")
+}
+
+fn files(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    return w.text("file [" + rq.param("rest") + "] pattern " + rq.pattern + "\n")
+}
+
+fn item(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let n = try rq.paramInt("id")
+    return w.json("{\"id\": " + intToStr(n * 2) + "}")
+}
+
+fn dir(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] { return w.text("dir\n") }
+
+fn query(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let a = rq.query("a").unwrapOr("-")
+    let b = rq.query("b").unwrapOr("-")
+    let c = rq.query("c").unwrapOr("-")
+    return w.text("a=[" + a + "] b=[" + b + "] c=[" + c + "] raw=" + rq.rawQuery() + "\n")
+}
+
+fn echo(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let body = try rq.text(1000)
+    var tr = ""
+    let ts = rq.trailers()
+    for i in 0..ts.size() {
+        let h = ts.at(i)
+        tr = tr + " " + h.name + "=" + h.value
+    }
+    return w.text(rq.method + " " + intToStr(len(body)) + " [" + body + "]" + tr + "\n")
+}
+
+fn stream(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    w.trailer("X-Sum", "")
+    try w.writeStr("one,")
+    try w.flush()
+    try w.writeStr("two,")
+    try w.flush()
+    try w.writeStr("three")
+    w.trailer("X-Sum", "3")
+    return Ok(Unit{})
+}
+
+fn events(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    try w.startEvents()
+    try w.event("tick", "1")
+    return w.event("", "two\nlines")
+}
+
+fn failing(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    w.header("X-Kept", "yes")
+    try w.writeStr("never sent")
+    return Err(http.error(422, "secret detail that must not reach the client"))
+}
+
+fn checked(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let n = try http.check(strings.parseInt(rq.query("n").unwrapOr("x")), 400)
+    return w.text("n=" + intToStr(n) + "\n")
+}
+
+fn moved(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    return w.redirect(303, "/hello/there")
+}
+
+fn openRedirect(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    return w.redirect(302, "//evil.example/")
+}
+
+fn admin(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    TRACE = TRACE + "admin "
+    return w.text("admin\n")
+}
+
+fn outer(app: &App, rq: mut &http.Request, w: mut &http.Response, next: http.Next[App]): Result[Unit, http.Error] {
+    TRACE = TRACE + "outer> "
+    let r = next.run(app, rq, w)
+    TRACE = TRACE + "<outer "
+    return r
+}
+
+fn inner(app: &App, rq: mut &http.Request, w: mut &http.Response, next: http.Next[App]): Result[Unit, http.Error] {
+    TRACE = TRACE + "inner> "
+    let r = next.run(app, rq, w)
+    TRACE = TRACE + "<inner "
+    return r
+}
+
+fn guard(app: &App, rq: mut &http.Request, w: mut &http.Response, next: http.Next[App]): Result[Unit, http.Error] {
+    TRACE = TRACE + "guard "
+    if rq.header("X-Token").unwrapOr("") != "ok" {
+        w.header("WWW-Authenticate", "Bearer")
+        return w.fail(401)
+    }
+    return next.run(app, rq, w)
+}
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.use(outer)
+    r.use(inner)
+    r.useUnder("/admin/", guard)
+    r.handle("GET /{$}", root)
+    r.handle("GET /hello/{name}", hello)
+    r.handle("GET /files/{rest...}", files)
+    r.handle("GET /items/{id}", item)
+    r.handle("GET /dir/", dir)
+    r.handle("GET /q", query)
+    r.handle("POST /echo", echo)
+    r.handle("PUT /echo", echo)
+    r.handle("GET /stream", stream)
+    r.handle("GET /events", events)
+    r.handle("GET /fail", failing)
+    r.handle("GET /check", checked)
+    r.handle("GET /moved", moved)
+    r.handle("GET /open", openRedirect)
+    r.handle("GET /admin/panel", admin)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+fn esc(s: str): str { return strings.replaceAll(strings.replaceAll(s, "\r", "\\r"), "\n", "\\n") }
+
+fn show(name: str, g: &t.Got) { showHead(name, g, &[]) }
+
+fn showHead(name: str, g: &t.Got, heads: &[bool]) {
+    println(name + ": " + t.codes(g))
+    for r in t.repliesHead(g, heads) {
+        var line = "  " + intToStr(r.code) + " [" + esc(r.body) + "]"
+        for h in ["content-type", "content-length", "transfer-encoding", "location", "allow", "connection", "x-kept",
+                  "www-authenticate", "cache-control"] {
+            let v = t.header(&r, h)
+            if len(v) > 0 { line = line + " " + h + "=" + v }
+        }
+        if len(r.trailers) > 0 { line = line + " trailers=" + esc(r.trailers) }
+        println(line)
+    }
+}
+
+fn get(path: str): str { return "GET " + path + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n" }
+
+fn main() {
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let a = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{name: "app"}, r: routes(), cfg: sr.config()})
+        show("root", &t.talk(a, get("/"), 3000))
+        println("trace: " + strings.trimRight(TRACE))
+        TRACE = ""
+        show("not under {$}", &t.talk(a, get("/x"), 3000))
+        show("param", &t.talk(a, get("/hello/w%C3%B6rld"), 3000))
+        showHead("head", &t.talk(a, "HEAD /hello/x HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n", 3000), &[true])
+        show("rest", &t.talk(a, get("/files/a/b/c.txt"), 3000))
+        show("rest empty", &t.talk(a, get("/files/"), 3000))
+        show("int param", &t.talk(a, get("/items/21"), 3000))
+        show("int param bad", &t.talk(a, get("/items/x"), 3000))
+        show("slash redirect", &t.talk(a, get("/dir?x=1"), 3000))
+        show("405", &t.talk(a, "DELETE /echo HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n", 3000))
+        show("query", &t.talk(a, get("/q?a=1&b=x+y%21&a=2&c"), 3000))
+        show("length body", &t.talk(a, "POST /echo HTTP/1.1\r\nHost: test\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello", 3000))
+        show("chunked body", &t.talk(a, "PUT /echo HTTP/1.1\r\nHost: test\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
+            "3;ext=1\r\nabc\r\n4\r\ndefg\r\n0\r\nX-Check: 7\r\n\r\n", 3000))
+        show("continue", &t.talk(a, "POST /echo HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\nExpect: 100-continue\r\nConnection: close\r\n\r\nok", 3000))
+        show("stream", &t.talk(a, get("/stream"), 3000))
+        show("events", &t.talk(a, get("/events"), 3000))
+        show("fail", &t.talk(a, get("/fail"), 3000))
+        show("check", &t.talk(a, get("/check?n=5"), 3000))
+        show("check bad", &t.talk(a, get("/check?n=five"), 3000))
+        show("redirect", &t.talk(a, get("/moved"), 3000))
+        show("open redirect", &t.talk(a, get("/open"), 3000))
+        TRACE = ""
+        show("admin refused", &t.talk(a, get("/admin/panel"), 3000))
+        println("trace: " + strings.trimRight(TRACE))
+        TRACE = ""
+        show("admin", &t.talk(a, "GET /admin/panel HTTP/1.1\r\nHost: test\r\nX-Token: ok\r\nConnection: close\r\n\r\n", 3000))
+        println("trace: " + strings.trimRight(TRACE))
+        show("pipelined", &t.talk(a, "GET /hello/a HTTP/1.1\r\nHost: test\r\n\r\nPOST /echo HTTP/1.1\r\nHost: test\r\nContent-Length: 3\r\n\r\nxyz" +
+            "GET /nothing HTTP/1.1\r\nHost: test\r\n\r\n" + get("/hello/b"), 3000))
+        show("http/1.0", &t.talk(a, "GET /hello/old HTTP/1.0\r\n\r\n", 3000))
+        show("http/1.0 keep-alive", &t.talk(a, "GET /hello/old HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /hello/two HTTP/1.0\r\n\r\n", 3000))
+        show("http/1.0 stream", &t.talk(a, "GET /stream HTTP/1.0\r\n\r\n", 3000))
+        show("stop", &t.talk(a, "POST /stop HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", 3000))
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out)
+}

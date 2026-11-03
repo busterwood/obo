@@ -1,0 +1,154 @@
+// Helpers for the server tests (lib/tests/run/http_server_*.obx): a raw
+// client that writes bytes on a new connection and reads what comes back
+// until the server closes the connection (or a deadline passes), and a
+// reader of the replies in what came back.
+import "task"
+import "net"
+import "strings"
+
+// What came back on one connection.
+pub type Got = record {
+    pub data: str
+    pub shut: bool        // the server closed the connection before the deadline
+}
+
+// One reply in what came back.
+pub type Reply = record {
+    pub code: int
+    pub head: str           // the head without its status line, lines ended by "\n", names in lower case
+    pub body: str           // the body: Content-Length bytes, or the chunks' data joined
+    pub trailers: str       // a chunked body's trailer lines, as head
+}
+
+// Connects to addr, writes the parts with pauseMs between them, then
+// reads until the server closes or ms pass.
+pub fn talkParts(addr: str, parts: &[str], pauseMs: int, ms: int): Got {
+    return task.within(ms, fn(): Got {
+        var out = newStrBuf()
+        match net.connect(addr) {
+            Ok(c) {
+                for i in 0..len(parts) {
+                    if i > 0 && pauseMs > 0 { let r = task.sleep(pauseMs) }
+                    if c.writeStr(parts[i]).isErr() { break }
+                }
+                var buf = array(65536, byte(0))
+                while true {
+                    match c.read(mut &buf) {
+                        Ok(n) {
+                            if n == 0 { return Got{data: out.toStr(), shut: true} }
+                            for i in 0..n { out.addByte(buf[i]) }
+                        }
+                        Err(e) {
+                            // a reset is a close; a timeout is not
+                            return Got{data: out.toStr(), shut: !e.isTimeout() && !e.isCancelled()}
+                        }
+                    }
+                }
+            }
+            Err(e) { return Got{data: "connect: " + e.toStr(), shut: true} }
+        }
+        return Got{data: out.toStr(), shut: false}
+    })
+}
+
+pub fn talk(addr: str, data: str, ms: int): Got { return talkParts(addr, &[data], 0, ms) }
+
+// The replies in g, in order; a reply to HEAD (heads[i] true for the i-th
+// reply) has no body.
+pub fn repliesHead(g: &Got, heads: &[bool]): []Reply {
+    var out: []Reply = []
+    var s = g.data
+    while len(s) > 0 {
+        let i = indexOf(s, "\r\n\r\n", 0)
+        if i < 0 || !startsWith(s, "HTTP/1.1 ") { break }
+        let lines = strings.splitOn(s[0..i], "\r\n")
+        let code = strings.parseInt(lines[0][9..12]).unwrapOr(0)
+        var head = newStrBuf()
+        var length = -1
+        var chunked = false
+        for k in 1..len(lines) {
+            match strings.cut(lines[k], ":") {
+                Some(kv) {
+                    let name = strings.toLower(kv.before)
+                    let v = strings.trimLeft(kv.after)
+                    head.add(name + ": " + v + "\n")
+                    if name == "content-length" { length = strings.parseInt(v).unwrapOr(-1) }
+                    if name == "transfer-encoding" && v == "chunked" { chunked = true }
+                }
+                None { head.add(lines[k] + "\n") }
+            }
+        }
+        s = s[i + 4..]
+        var body = newStrBuf()
+        var trailers = newStrBuf()
+        let isHead = len(out) < len(heads) && heads[len(out)]
+        if isHead || code == 204 || code == 304 || code < 200 {
+        } else if chunked {
+            while true {
+                let e = indexOf(s, "\r\n", 0)
+                if e < 0 { break }
+                var line = s[0..e]
+                match strings.cut(line, ";") {
+                    Some(c) { line = c.before }
+                    None {}
+                }
+                let n = strings.parseIntBase(line, 16).unwrapOr(0)
+                s = s[e + 2..]
+                if n == 0 {
+                    while true {
+                        let f = indexOf(s, "\r\n", 0)
+                        if f < 0 { break }
+                        let t = s[0..f]
+                        s = s[f + 2..]
+                        if len(t) == 0 { break }
+                        trailers.add(strings.toLower(t) + "\n")
+                    }
+                    break
+                }
+                let m = min(n, len(s))
+                body.add(s[0..m])
+                s = s[min(m + 2, len(s))..]
+            }
+        } else if length >= 0 {
+            let m = min(length, len(s))
+            body.add(s[0..m])
+            s = s[m..]
+        } else {
+            body.add(s)
+            s = ""
+        }
+        append(mut &out, Reply{code: code, head: head.toStr(), body: body.toStr(), trailers: trailers.toStr()})
+    }
+    return out
+}
+
+pub fn replies(g: &Got): []Reply { return repliesHead(g, &[]) }
+
+// The status codes of the replies, then "closed" or "open", e.g.
+// "200 200 400 closed".
+pub fn codes(g: &Got): str {
+    var b = newStrBuf()
+    for r in replies(g) {
+        b.addInt(r.code)
+        b.add(" ")
+    }
+    b.add(if g.shut { "closed" } else { "open" })
+    return b.toStr()
+}
+
+// The value of a header in a reply's head ("" when absent).
+pub fn header(r: &Reply, name: str): str {
+    for line in strings.splitOn(r.head, "\n") {
+        match strings.cut(line, ": ") {
+            Some(kv) { if kv.before == name { return kv.after } }
+            None {}
+        }
+    }
+    return ""
+}
+
+pub fn repeat(s: str, n: int): str {
+    var b = newStrBuf()
+    for i in 0..n { b.add(s) }
+    return b.toStr()
+}

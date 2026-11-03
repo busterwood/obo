@@ -1,0 +1,59 @@
+// task.workerReady: only crashes before a worker is ready count toward
+// giving up. A worker that marks itself ready and then crashes (as a
+// request that kills a server's worker would) is restarted, with the
+// policy's backoff, however often: here three times with maxCrashes 1,
+// then it ends normally. A worker that crashes before it is ready (a bad
+// configuration) still makes the supervisor give up. Outside a worker
+// workerReady is false.
+// expect: outside a worker: false
+// expect: ready worker: ok
+// expect: worker 0 (pid ?): exit 0, 3 restarts
+// expect: unready worker: workers: gave up after 2 crashes
+// expect: worker 0 (pid ?): exit 3, 1 restart
+import "task"
+import "io"
+import "os"
+import "fs"
+import "strings"
+
+fn starts(path: str): int {
+    let n = if fs.exists(path) { strings.parseInt(io.read(path).unwrap()).unwrap() } else { 0 }
+    io.write(path, intToStr(n + 1)).unwrap()
+    return n
+}
+
+fn show(e: task.WorkerEnd) {
+    var e2 = e
+    e2.pid = 0
+    println(strings.replaceAll(e2.toStr(), "pid 0", "pid ?"))
+}
+
+fn main() {
+    for f in ["ready.txt", "unready.txt"] { let r = fs.remove(f) }
+    println("outside a worker: " + (if task.workerReady() { "true" } else { "false" }))
+    var p = task.workerPolicy()
+    p.maxCrashes = 1
+    p.backoffMs = 1
+    p.maxBackoffMs = 4
+    match task.workersWith(1, p, fn(i: int) {
+        let n = starts("ready.txt")
+        if !task.workerReady() { os.quit(9) }
+        if n < 3 { os.quit(3) }
+    }) {
+        Ok(ends) {
+            println("ready worker: ok")
+            for e in ends { show(e) }
+        }
+        Err(g) { println("ready worker: " + g.toStr()) }
+    }
+    match task.workersWith(1, p, fn(i: int) {
+        let n = starts("unready.txt")
+        os.quit(3)
+    }) {
+        Ok(ends) { println("unready worker: no give-up") }
+        Err(g) {
+            println("unready worker: " + g.toStr())
+            for e in g.ends { show(e) }
+        }
+    }
+}

@@ -1,0 +1,116 @@
+// httpserver: slow clients (design/http-server.md 3.4). Slowloris (a head
+// that never ends gets 408 when headerTimeoutMs passes, however steadily
+// its bytes come), a connection that sends nothing, an idle keep-alive
+// connection (closed without a word), a slow request body (408 once the
+// grace is over and the rate is under bodyMinRate) and one fast enough,
+// and a slow reader (a write that makes no progress for writeStallMs ends
+// the connection). A legitimate client is answered meanwhile.
+// expect: slowloris: 408 closed after the timeout
+// expect: nothing sent: closed after the timeout
+// expect: idle after a request: 200 closed after the timeout
+// expect: slow body: 408 closed
+// expect: body at 5000 bytes/s: 200 closed
+// expect: slow reader: closed, the body cut short
+// expect: meanwhile: 200 closed
+// expect: stopped: accepted 8, requests 7, open 0, rejected 1, timeouts 3, gone 0, errors 0
+import "task"
+import "net"
+import "strings"
+import "time" as tm
+import "httpserver" as http
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { n: int }
+
+fn ok(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let b = try rq.bytes(10000000)
+    return w.text("ok " + intToStr(len(b)) + "\n")
+}
+
+fn big(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let chunk = t.repeat("x", 65536)
+    for i in 0..128 { try w.writeStr(chunk) }
+    return Ok(Unit{})
+}
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.handle("/", ok)
+    r.handle("GET /big", big)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+fn config(): http.Config {
+    var c = sr.config()
+    c.headerTimeoutMs = 400
+    c.idleTimeoutMs = 400
+    c.bodyGraceMs = 300
+    c.bodyMinRate = 2000
+    c.writeStallMs = 400
+    c.deferAccept = false
+    return c
+}
+
+var ADDR: str = ""
+
+// The timeouts are 400 ms; the lingering close adds up to 500 ms for a
+// client that is still writing.
+fn ms(t0: int): str {
+    let d = time() - t0
+    if d < 350 { return "too early: " + intToStr(d) + " ms" }
+    if d > 2000 { return "too late: " + intToStr(d) + " ms" }
+    return "the timeout"
+}
+
+fn time(): int { return tm.monotonicNs() / 1000000 }
+
+fn slowRead(): str {
+    let c = net.connect(ADDR).unwrap()
+    c.writeStr("GET /big HTTP/1.1\r\nHost: test\r\n\r\n").unwrap()
+    task.sleep(1500).unwrap()                 // reads nothing meanwhile
+    var total = 0
+    var buf = array(65536, byte(0))
+    let end = task.within(3000, fn(): str {
+        while true {
+            match c.read(mut &buf) {
+                Ok(n) {
+                    if n == 0 { return "closed" }
+                    total += n
+                }
+                Err(e) { return if e.isTimeout() { "still open" } else { "closed" } }
+            }
+        }
+        return ""
+    })
+    return end + (if total < 128 * 65536 { ", the body cut short" } else { ", the whole body" })
+}
+
+fn main() {
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        ADDR = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{n: 0}, r: routes(), cfg: config()})
+        var parts: []str = ["GET / HTTP/1.1\r\nHost: test\r\n"]
+        for i in 0..40 { append(mut &parts, "X-A: 1\r\n") }
+        var t0 = time()
+        println("slowloris: " + t.codes(&t.talkParts(ADDR, &parts, 50, 3000)) + " after " + ms(t0))
+        t0 = time()
+        println("nothing sent: " + t.codes(&t.talk(ADDR, "", 3000)) + " after " + ms(t0))
+        t0 = time()
+        println("idle after a request: " + t.codes(&t.talk(ADDR, "GET / HTTP/1.1\r\nHost: test\r\n\r\n", 3000)) + " after " + ms(t0))
+        var slow: []str = ["POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 100000\r\n\r\n"]
+        for i in 0..40 { append(mut &slow, t.repeat("y", 10)) }
+        t0 = time()
+        println("slow body: " + t.codes(&t.talkParts(ADDR, &slow, 50, 3000)))
+        var fast: []str = ["POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2000\r\nConnection: close\r\n\r\n"]
+        for i in 0..8 { append(mut &fast, t.repeat("z", 250)) }
+        println("body at 5000 bytes/s: " + t.codes(&t.talkParts(ADDR, &fast, 50, 3000)))
+        println("slow reader: " + slowRead())
+        println("meanwhile: " + t.codes(&t.talk(ADDR, "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n", 3000)))
+        let g = t.talk(ADDR, "POST /stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n", 3000)
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out)
+}

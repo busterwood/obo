@@ -1,0 +1,100 @@
+// httpserver and postgres against a live server ($OBX_PG_DSN, default the
+// local socket; exits 77, skipped, when it cannot connect): a client that
+// hangs up while its handler waits on SELECT pg_sleep(30) cancels the
+// handler's task, which cancels the query on the server (PQcancel), so the
+// handler returns at once and the pool's connection is usable again. A
+// route's deadline does the same. Nothing stays waiting in the pool.
+// needs: pq
+// expect: hangup: query cancelled, early
+// expect: deadline: 503, query cancelled, early
+// expect: after: 200 [db 2]
+// expect: stopped: accepted 4, requests 4, open 0, rejected 0, timeouts 0, gone 1, errors 1
+// expect: pool waiting 0
+import "task"
+import "net"
+import "os"
+import "postgres"
+import "httpserver" as http
+import "time" as tm
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { pool: postgres.Pool }
+
+var RESULT: str = ""
+
+fn nowMs(): int { return tm.monotonicNs() / 1000000 }
+
+fn dsn(): str { return os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3") }
+
+fn sleepy(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let t0 = nowMs()
+    let c = try http.check(app.pool.acquire(), 503)
+    match c.query("SELECT 1 FROM pg_sleep(30)", &[]) {
+        Ok(_) {
+            RESULT = "finished"
+            return w.text("never\n")
+        }
+        Err(e) {
+            let why = if e.code == 1020 || e.code == 1021 { "query cancelled" } else { e.toStr() }
+            RESULT = why + (if nowMs() - t0 < 5000 { ", early" } else { ", late" })
+            return Err(http.error(503, "cancelled"))
+        }
+    }
+}
+
+fn quick(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let c = try http.check(app.pool.acquire(), 503)
+    let rows = try http.check(c.query("SELECT 2::int8", &[]), 503)
+    return w.text("db " + intToStr(try http.check(rows.int(0, 0), 503)) + "\n")
+}
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.handle("GET /sleep", sleepy)
+    var bounded = http.routeOpts()
+    bounded.deadlineMs = 300
+    r.handleWith("GET /bounded", sleepy, bounded)
+    r.handle("GET /quick", quick)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+fn waitResult(): str {
+    var n = 0
+    while len(RESULT) == 0 && n < 500 {
+        task.sleep(10).unwrap()
+        n += 1
+    }
+    let r = RESULT
+    RESULT = ""
+    return r
+}
+
+fn main() {
+    match postgres.connect(dsn()) {
+        Ok(c) { c.close() }
+        Err(e) { os.quit(77) }
+    }
+    let pool = postgres.newPool(dsn(), 1)          // one connection: each test needs it back
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let a = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{pool: pool}, r: routes(), cfg: sr.config()})
+        let c = net.connect(a).unwrap()
+        c.writeStr("GET /sleep HTTP/1.1\r\nHost: test\r\n\r\n").unwrap()
+        task.sleep(300).unwrap()
+        c.close()
+        println("hangup: " + waitResult())
+        let g = t.talk(a, "GET /bounded HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n", 5000)
+        let rs = t.replies(&g)
+        println("deadline: " + (if len(rs) > 0 { intToStr(rs[0].code) } else { "no reply" }) + ", " + waitResult())
+        let q = t.talk(a, "GET /quick HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n", 5000)
+        let qs = t.replies(&q)
+        println("after: " + (if len(qs) > 0 { intToStr(qs[0].code) + " [" + qs[0].body[0..len(qs[0].body) - 1] + "]" } else { "no reply" }))
+        let h = t.talk(a, "POST /stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n", 3000)
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out)
+    println("pool waiting " + intToStr(pool.stats().waiting))
+}

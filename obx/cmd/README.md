@@ -39,28 +39,33 @@ golden. Our eza runs with `OBX_CHECK=1`, so a leak fails a case.
 ## httpd and httpload
 
 `httpd.obx` is a small HTTP/1.1 server on one thread, the gate of
-concurrency stages C1b, C1c and C2 (design/concurrency.md): one task per connection,
-keep-alive by default, pipelined requests answered in order. `GET /` says
-hello, `GET /stats` gives its counters, `GET /db` (when started with a
-pool size, `httpd ADDR POOL`: stage C1c) runs one query through a
+concurrency stages C1b, C1c and C2 (design/concurrency.md) and since stage
+S1 the example program of the server library, `lib/httpserver.obx`
+(design/http-server.md; [../lib/README.md](../lib/README.md)). It is about
+230 lines: four handlers, a router and a call to `http.serve`. `GET /`
+says hello, `GET /stats` gives its counters, `GET /db` (when started with
+a pool size, `httpd ADDR POOL`: stage C1c) runs one query through a
 `postgres.Pool` of that many connections (`$OBX_PG_DSN`, default the local
-socket), and `GET /shutdown` stops it
-gracefully: the accept loop is cancelled and with it every connection's
-task (an idle one is parked in `read`, which returns `ECANCELED`), every
-socket is closed by its drop, and the program prints its counters and ends.
+socket), and `GET /shutdown` stops it gracefully: the library's drain
+closes the listener and the idle connections, lets the requests in flight
+finish (with `Connection: close`), and `serve` returns its counters, which
+the program prints. `SIGTERM` and `SIGINT` do the same.
 [database-example.md](database-example.md) walks through the `/db` code and
 how a request flows through the pool and the event loop.
-The connection tasks are started with `Scope.spawn`, so that nobody has to
-keep their futures. It has no idle timeout (a `task.within` around the
-read of a request head would be one).
-Requests are parsed by `lib/http.obx`'s shared head parser
-(`http.parseRequest`, `bodyLength`, `keepAlive`), the one the HTTP client
-uses for replies. That made the server stricter than its first parser: a
-request with both Content-Length and Transfer-Encoding, differing
-Content-Lengths, obsolete line folding, a bare LF, more than 100 header
-lines, or a target that does not start with `/` gets 400 and the
-connection is closed. Throughput did not change (http_gate.py within
-noise; the parser itself takes about 190 ns for a 25-byte head).
+
+Everything else is the library's: one task per connection, keep-alive,
+pipelined requests answered in order, the strict parsing (a request two
+parsers could read differently gets a 4xx and the connection is closed),
+404 and 405, the head, body, idle and write timeouts, the per-route
+deadline (30 s), the cancellation of a handler whose client hangs up (a
+`/db` query is then cancelled on the server), and the limits on heads,
+bodies and connections (`maxConns` is raised to 30,000 for the gates). The
+library's defaults are in [../lib/README.md](../lib/README.md).
+
+Before S1 httpd was a hand-written loop over `lib/http.obx`'s head parser.
+On the library it does 64,300 requests/s against 69,200 at 100 clients
+(native, the median of seven alternating runs), and an idle connection
+costs 15.5 KB of RSS against 13.0 ([../../PERFORMANCE.md](../../PERFORMANCE.md)).
 
 With a third argument, `httpd ADDR POOL WORKERS` (stage C2), it serves from
 WORKERS processes under `task.workers`: the listener is made first and
@@ -69,13 +74,17 @@ shared by all of them, each has its own event loop, its own counters (so
 and its own Postgres pool, WORKERS × POOL connections in all. `/shutdown`
 on any worker, or `SIGTERM` or `SIGINT` to the server, stops every worker
 gracefully; each prints its counters, then the supervisor one line per
-worker. A crashed worker is started again. A fourth argument `reuseport`
+worker. A crashed worker is started again; with `http.workerPolicy()`
+crashes after a worker is serving never make the supervisor give up, so
+only a worker that cannot start can stop the server. A fourth argument `reuseport`
 gives each worker a listener of its own instead (`SO_REUSEPORT`), for
 comparison.
 
 `httpload.obx` is its load client: CONNS keep-alive connections, each a task
 sending `GET PATH` (default `/`) one at a time for SECONDS seconds, then one
-line with the requests per second and the latency percentiles. `-p PROCS`
+line with the requests per second and the latency percentiles. A reply
+with `Connection: close` (the server's `maxRequestsPerConn`, 1,000) makes
+the task connect again; that is not an error. `-p PROCS`
 spreads the connections over PROCS processes (`task.workers` again), so
 that one client process is not the limit; `-r` reconnects after an error.
 With `--client` the tasks send through one `http.Client` per process

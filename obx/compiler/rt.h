@@ -16,6 +16,7 @@
 #include <time.h>
 #include <sys/mman.h>
 #include <sys/epoll.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -745,13 +746,15 @@ enum { RT_WOK = 0, RT_WCANCEL = 1, RT_WTIMEOUT = 3 };
    descriptor (obxlib_fd_wait; registered until the library closes it). lazy: a listener, put in
    the set at its first wait, so that one made before task.workers is in no set in the parent
    and each worker registers it in its own. */
-typedef struct { rt_task *rd, *wr; uint8_t reg, lazy; } rt_fdw;
+/* hup, hupmode, gone, halves: the server's additions (stage S1, at the end of this file). */
+typedef struct { rt_task *rd, *wr; uint8_t reg, lazy; rt_task* hup; uint8_t hupmode, gone, halves; } rt_fdw;
 static rt_fdw* rt_fds;                     /* by descriptor: the tasks waiting to read and to write */
 static int64_t rt_nfds;
 static int rt_epfd = -1;
 static int64_t rt_nreg;                    /* sockets of lib/net in the epoll set */
 #define RT_SIG_TAG (~(uint64_t)1)           /* the epoll data of the signal watch's signalfd */
 static void rt_sig_read(void);
+static void rt_hup_seen(int64_t fd, uint32_t e);
 static int64_t rt_nio;                     /* tasks waiting for a socket */
 static int64_t rt_njobs;                   /* tasks parked in a blocking C call on the helper pool */
 #define RT_POOL_TAG (~(uint64_t)0)          /* the epoll data of the helper pool's eventfd */
@@ -843,6 +846,7 @@ static void rt_poll(bool block, const char* w) {
                 int64_t fd = (int64_t)ev[i].data.u64;
                 uint32_t e = ev[i].events;
                 if (fd >= rt_nfds) continue;
+                if (e & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) rt_hup_seen(fd, e);
                 if (rt_fds[fd].rd && (e & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR))) rt_wake(rt_fds[fd].rd);
                 if (rt_fds[fd].wr && (e & (EPOLLOUT | EPOLLHUP | EPOLLERR))) rt_wake(rt_fds[fd].wr);
             }
@@ -1084,6 +1088,8 @@ static int64_t rt_net_new(int fd) {
     if (epoll_ctl(rt_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) { int e = errno; close(fd); return -e; }
     rt_fds[fd].reg = 1;
     rt_fds[fd].lazy = 0;
+    rt_fds[fd].hup = 0;
+    rt_fds[fd].hupmode = rt_fds[fd].gone = rt_fds[fd].halves = 0;
     rt_nreg++;
     return fd;
 }
@@ -1189,6 +1195,8 @@ void obxlib_net_close(int64_t fd) {
         rt_fds[fd].rd = rt_fds[fd].wr = 0;
         if (rt_fds[fd].reg == 1) rt_nreg--;
         rt_fds[fd].reg = rt_fds[fd].lazy = 0;
+        rt_fds[fd].hup = 0;
+        rt_fds[fd].hupmode = rt_fds[fd].gone = rt_fds[fd].halves = 0;
     }
     close((int)fd);
 }
@@ -1407,10 +1415,14 @@ static int rt_pool_check(int ms) {
     rt_pool_drain(false);
     return 0;
 }
+typedef struct rt_cc rt_cc;
+static rt_cc* rt_ccs;                      /* task.onCancelCall's registrations (stage S1) */
+static void rt_cc_wait(bool* done, const char* w);
+static bool rt_cc_timed(void);
 /* A call of a blocking extern: the thunk fn on its slots a. w: the call ("file:line"). */
 static void rt_blocking(rt_dfn fn, void* a, const char* w) {
     rt_nopark(w);
-    if (!rt_rq_head && !rt_nio && !rt_nheap && !rt_njobs) { fn(a); return; }   /* nothing else could run */
+    if (!rt_rq_head && !rt_nio && !rt_nheap && !rt_njobs && !rt_cc_timed()) { fn(a); return; }   /* nothing else could run */
     if (!rt_npool) rt_pool_start();
     if (rt_npool < 0) { fn(a); return; }
     rt_job j = {.fn = fn, .a = a, .err = errno, .done = false, .t = rt_cur, .next = 0};
@@ -1421,6 +1433,7 @@ static void rt_blocking(rt_dfn fn, void* a, const char* w) {
     if (rt_pool_idle && rt_jqn > __atomic_load_n(&rt_pool_spinning, __ATOMIC_RELAXED)) pthread_cond_signal(&rt_pool_cv);
     pthread_mutex_unlock(&rt_pool_mu);
     rt_njobs++;
+    if (rt_ccs) rt_cc_wait(&j.done, w);   /* task.onCancelCall (stage S1, at the end of this file) */
     while (!j.done) rt_park(false, w);
     rt_njobs--;
     errno = j.err;
@@ -1691,4 +1704,162 @@ void obxlib_worker_exit(int64_t code) {
 int64_t obxlib_worker_stop(void) {
     if (!rt_worker_parent || getppid() != rt_worker_parent) return -1;
     return kill(rt_worker_parent, SIGTERM) == 0 ? 0 : -1;
+}
+
+/* ---- the HTTP server's runtime pieces (stage S1; design/http-server.md sections 2.5, 2.7, 3.4)
+   Hangup detection: the event loop notes, per socket, that the peer half-closed (EPOLLRDHUP: bit
+   1 of gone) or that the connection is gone (EPOLLHUP or EPOLLERR: bit 2), whether or not a task
+   waits for it then. A task arms the socket with a mode (the bits that count); when one of them
+   is seen, or already was, the runtime cancels that task (rt_cancel), as dropping its future
+   would. It is not a read: the data stays for the reader. Split sockets: a connection whose read
+   and write halves are owned apart is closed when the second half is released. */
+static void rt_hup_seen(int64_t fd, uint32_t e) {
+    uint8_t g = (uint8_t)(((e & EPOLLRDHUP) ? 1 : 0) | ((e & (EPOLLHUP | EPOLLERR)) ? 2 : 0));
+    rt_fds[fd].gone |= g;
+    rt_task* t = rt_fds[fd].hup;
+    if (t && (g & rt_fds[fd].hupmode)) { rt_fds[fd].hup = 0; rt_cancel(t); }
+}
+/* Arms (mode 1: a half-close, 2: a hangup, 3: either) or disarms (0) the hangup cancellation of
+   the running task on socket fd: 1 when the peer had already gone (the task is cancelled now),
+   else 0. A half-close already pending when mode 1 or 3 is armed does not count: the peer sent
+   it before the handler began (with its request). Mode 4 only tells what has been seen (the
+   gone bits). */
+/* poll(2) on one descriptor, without waiting. */
+static int rt_poll1(void* p) {
+    struct pollfd* q = (struct pollfd*)p;
+    return poll(q, 1, 0);
+}
+int64_t obxlib_net_hangup(int64_t fd, int64_t mode) {
+    if (fd < 0 || fd >= rt_nfds) return 0;
+    if (mode & 4) return rt_fds[fd].gone;
+    if (mode == 0) { rt_fds[fd].hup = 0; rt_fds[fd].hupmode = 0; return 0; }
+    if (mode & 1) {
+        /* a half-close that is pending but not yet seen by the event loop (it came with the
+           request) happened before the handler began: it does not count */
+        struct { int fd; short events, revents; } p = { (int)fd, 0x2000 /* POLLRDHUP */, 0 };
+        if (rt_poll1(&p) == 1 && (p.revents & 0x2000)) { rt_fds[fd].gone |= 1; mode &= ~(int64_t)1; }
+        if (mode == 0) return 0;
+    }
+    if (rt_fds[fd].gone & (uint8_t)mode) { rt_cancel(rt_cur); return 1; }
+    rt_fds[fd].hup = rt_cur;
+    rt_fds[fd].hupmode = (uint8_t)mode;
+    return 0;
+}
+/* The socket's two halves are owned apart from now on. */
+void obxlib_net_split(int64_t fd) {
+    rt_fd_table(fd);
+    rt_fds[fd].halves = 2;
+}
+/* A half is dropped: the socket is closed with the second. */
+void obxlib_net_release(int64_t fd) {
+    if (fd < rt_nfds && rt_fds[fd].halves > 1) { rt_fds[fd].halves--; return; }
+    obxlib_net_close(fd);
+}
+/* TCP_DEFER_ACCEPT on a listener: a connection is handed to accept once data has arrived (or
+   after secs seconds). 0, or -errno. */
+int64_t obxlib_net_defer(int64_t fd, int64_t secs) {
+    int v = (int)secs;
+    return setsockopt((int)fd, IPPROTO_TCP, TCP_DEFER_ACCEPT, &v, sizeof v) != 0 ? -errno : 0;
+}
+/* The spare descriptor (/dev/null), kept so that an accept refused with EMFILE can be undone
+   (net's Listener.shed closes it, accepts one connection, closes that at once and opens the
+   spare again). The descriptor, or -errno. */
+int64_t obxlib_net_spare(void) {
+    int fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    return fd < 0 ? -errno : fd;
+}
+/* n random bytes into b (getrandom): 0, or -errno. */
+ssize_t getrandom(void* b, size_t n, unsigned flags);
+int64_t obxlib_random(uint8_t* b, int64_t n) {
+    int64_t k = 0;
+    while (k < n) {
+        ssize_t r = getrandom(b + k, (size_t)(n - k), 0);
+        if (r < 0) { if (errno == EINTR) continue; return -errno; }
+        k += r;
+    }
+    return 0;
+}
+/* The soft limit on open descriptors, raised first towards want (as far as the hard limit
+   allows) when it is lower; -errno when it cannot be read. */
+int64_t obxlib_nofile(int64_t want) {
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0) return -errno;
+    if (rl.rlim_cur != RLIM_INFINITY && (int64_t)rl.rlim_cur < want) {
+        rlim_t old = rl.rlim_cur;
+        rl.rlim_cur = rl.rlim_max == RLIM_INFINITY || (int64_t)rl.rlim_max >= want ? (rlim_t)want : rl.rlim_max;
+        if (setrlimit(RLIMIT_NOFILE, &rl) != 0) rl.rlim_cur = old;
+    }
+    return rl.rlim_cur == RLIM_INFINITY ? INT64_MAX : (int64_t)rl.rlim_cur;
+}
+
+/* task.onCancelCall: a C function (fn, arg) to call on the program's thread when the task that
+   registered it is cancelled, or its deadline passes, while it is parked in a blocking call (the
+   function must be safe to call while the call runs on a helper: sqlite3_interrupt, SQLCancel).
+   The registrations are a stack per task, the innermost first; a task with one and a deadline
+   always sends its blocking calls to the helper pool, so that the deadline can be seen. */
+struct rt_cc { rt_task* t; void (*fn)(void*); void* arg; rt_cc* next; };
+static rt_cc* rt_cc_of(rt_task* t) {
+    for (rt_cc* c = rt_ccs; c; c = c->next)
+        if (c->t == t) return c;
+    return 0;
+}
+static bool rt_cc_timed(void) { return rt_ccs && rt_cur->deadline != RT_NEVER && rt_cc_of(rt_cur); }
+/* While a blocking call runs (done is set by the event loop): wakes on cancellation or the
+   deadline too, and then calls the registered function once. */
+static void rt_cc_wait(bool* done, const char* w) {
+    rt_cc* c = rt_cc_of(rt_cur);
+    if (!c) return;
+    while (!*done) {
+        if (rt_cur->cancelled || rt_expired()) { c->fn(c->arg); return; }
+        rt_park_until(true, rt_cur->deadline, w);
+    }
+}
+void* obxlib_task_cancel_call(void* fn, void* arg) {
+    rt_cc* c = malloc(sizeof *c);
+    if (!c) rt_trap(2, "out of memory", "runtime");
+    c->t = rt_cur;
+    c->fn = (void (*)(void*))fn;
+    c->arg = arg;
+    c->next = rt_ccs;
+    rt_ccs = c;
+    return c;
+}
+void obxlib_task_cancel_call_end(void* h) {
+    for (rt_cc** p = &rt_ccs; *p; p = &(*p)->next)
+        if (*p == h) { *p = ((rt_cc*)h)->next; free(h); return; }
+}
+
+/* task.workerReady: a page shared by the supervisor and its workers (MAP_SHARED, made before the
+   first fork) with a byte per worker, which the worker sets when it is ready (has started
+   serving). The supervisor clears it before each start and reads it when the worker ends: a
+   crash after ready is not counted toward giving up (a request that kills a worker must not stop
+   the server). */
+static uint8_t* rt_wmarks;
+static int64_t rt_nwmarks, rt_wself = -1;
+int64_t obxlib_worker_marks(int64_t n) {
+    if (rt_wmarks) { munmap(rt_wmarks, (size_t)rt_nwmarks); rt_wmarks = 0; }
+    void* p = mmap(0, (size_t)n, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return -errno;
+    rt_wmarks = p;
+    rt_nwmarks = n;
+    return 0;
+}
+void obxlib_worker_marks_free(void) {
+    if (rt_wmarks) munmap(rt_wmarks, (size_t)rt_nwmarks);
+    rt_wmarks = 0;
+    rt_nwmarks = 0;
+}
+/* Worker i's mark (v >= 0: set to v first): the old value, or -1 without marks. */
+int64_t obxlib_worker_mark(int64_t i, int64_t v) {
+    if (!rt_wmarks || i < 0 || i >= rt_nwmarks) return -1;
+    int64_t old = __atomic_load_n(&rt_wmarks[i], __ATOMIC_SEQ_CST);
+    if (v >= 0) __atomic_store_n(&rt_wmarks[i], (uint8_t)v, __ATOMIC_SEQ_CST);
+    return old;
+}
+void obxlib_worker_self(int64_t i) { rt_wself = i; }
+/* In a worker: marks it ready. 0, or -1 when this process is not a worker. */
+int64_t obxlib_worker_ready(void) {
+    if (!rt_worker_parent || rt_wself < 0 || !rt_wmarks || rt_wself >= rt_nwmarks) return -1;
+    __atomic_store_n(&rt_wmarks[rt_wself], (uint8_t)1, __ATOMIC_SEQ_CST);
+    return 0;
 }

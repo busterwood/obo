@@ -497,7 +497,12 @@ leaks under `OBX_CHECK=1` after a graceful shutdown.
   inline always). Otherwise it queues a job (function, slots, the task's
   `errno`, the parked task) and parks the task, uncancellably: a blocking
   call is not a cancellation point, the task sees a cancellation or its
-  deadline at its next park. The helper copies `errno` in and out.
+  deadline at its next park. The helper copies `errno` in and out. Since
+  stage S1 a task with a `task.onCancelCall` registration (SPEC 16) parks
+  so that a cancellation or its deadline wakes it: it then calls the
+  registered function once (`sqlite3_interrupt`, `SQLCancel`), which makes
+  the C function return early, and parks again until the job is done. With
+  a registration and a deadline the call never runs inline.
 - **The pool** (`rt.h`, and a section of its own at the end of
   `native/rt.c`). `OBX_HELPERS` threads (default 4, at most 64), started
   at the first call that needs them, detached, all signals blocked. A
@@ -677,6 +682,17 @@ How it was built (2026-11-03, branch `c2`; SPEC 16, `lib/README.md`):
   zero, as httpd does). A worker that returns is done and not restarted. A
   failed fork counts as a crash. The give-up defaults are systemd's
   (`StartLimitBurst=5` within `StartLimitIntervalSec=10s`).
+  **Ready-aware** (stage S1, design/http-server.md section 2.7): a worker
+  calls `task.workerReady()` once it has set itself up and serves
+  (`http.serve` does, at its first accept), and its crashes from then on
+  are restarted with the same backoff but never count toward
+  `maxCrashes`. Only crashes before ready (a bad configuration, a missing
+  file, a port in use) can make the supervisor give up. Without this, a
+  request that crashes a worker (a panic in a handler) sent six times in
+  10 s would stop the whole server. The mark is a byte per worker in a
+  `MAP_SHARED` page that the supervisor maps before the first fork; it is
+  cleared at each start, so a restarted worker is unready until it marks
+  itself again. Like systemd's `READY=1`, but needing no socket.
 - **Drain.** `SIGTERM` or `SIGINT` to the supervisor is forwarded to every
   worker and restarts stop; a worker that watches the signal finishes and
   returns, one that does not is ended by it (both count as drained). A

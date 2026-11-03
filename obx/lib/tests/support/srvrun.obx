@@ -1,0 +1,35 @@
+// The server side of the server tests (lib/tests/run/http_server_*.obx):
+// http.serve as a task of a scope, and a route that stops it.
+import "net"
+import "httpserver" as http
+
+pub type Job[A] = record {
+    pub ln: net.Listener
+    pub app: A
+    pub r: http.Router[A]
+    pub cfg: http.Config
+}
+
+// Serves until stopped: the counters as text, or the error.
+pub fn serveJob[A: copy](j: Job[A]): str {
+    let Job{ln: ln, app: app, r: r, cfg: cfg} = move(j)
+    match http.serve(ln, app, r, cfg) {
+        Ok(s) { return s.toStr() }
+        Err(e) { return "error: " + e.toStr() }
+    }
+}
+
+// A handler that stops the server (its drain) and answers "bye".
+pub fn stop[A](app: &A, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    rq.stopServer()
+    w.header("Connection", "close")
+    return w.text("bye\n")
+}
+
+// The defaults for a test: no signals (the test's own process), no log.
+pub fn config(): http.Config {
+    var c = http.defaults()
+    c.signals = false
+    c.logFd = -1
+    return c
+}

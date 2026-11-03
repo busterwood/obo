@@ -1,0 +1,231 @@
+// httpserver: the limits of design/http-server.md 3.4. The head (431 for
+// its size, a line, the number of lines), a route's maxBody (413, for
+// Content-Length at once and for a chunked body as it passes the limit), an
+// unread body kept up to maxDrain and closed past it, maxRequestsPerConn
+// (the last reply says Connection: close), maxConnsPerIp (503 and close),
+// maxConns (the next connection waits in the backlog until one ends),
+// memBudget (503 while over it), a route's deadline (503).
+// expect: head 2000: 200 closed
+// expect: head over 4000: 431 closed
+// expect: line over 2000: 431 closed
+// expect: 10 headers: 200 closed
+// expect: 11 headers: 431 closed
+// expect: head never ends: 431 closed
+// expect: stopped: accepted 7, requests 7, open 0, rejected 4, timeouts 0, gone 0, errors 0
+// expect: body 100 on small: 200 closed
+// expect: body 101 on small: 413 closed
+// expect: chunked 100 on small: 200 closed
+// expect: chunked 101 on small: 413 closed
+// expect: body over maxBody: 413 closed
+// expect: body at maxBody: 200 closed
+// expect: unread 1000, maxDrain 1000: 200 200 closed
+// expect: unread 1001, maxDrain 1000: 200 closed
+// expect: unread chunked: 200 200 closed
+// expect: stopped: accepted 10, requests 12, open 0, rejected 0, timeouts 0, gone 0, errors 0
+// expect: 3 requests, 2 per connection: 200 200 closed
+// expect: connection headers: [] [close]
+// expect: deadline: 503 closed
+// expect: stopped: accepted 4, requests 6, open 0, rejected 0, timeouts 0, gone 0, errors 1
+// expect: third from one address: 503 closed
+// expect: after one closed: 200 closed
+// expect: stopped: accepted 5, requests 4, open 0, rejected 0, timeouts 0, gone 0, errors 0
+// expect: third connection at maxConns 2: waiting
+// expect: after one closed: HTTP/1.1 200
+// expect: stopped: accepted 4, requests 4, open 0, rejected 0, timeouts 0, gone 0, errors 0
+// expect: third connection over memBudget: 503 closed
+// expect: after one closed: 200 closed
+// expect: stopped: accepted 5, requests 5, open 0, rejected 0, timeouts 0, gone 0, errors 1
+import "task"
+import "net"
+import "strings"
+import "httpserver" as http
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { n: int }
+
+fn ok(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] { return w.text("ok\n") }
+
+fn body(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let b = try rq.bytes(1000000)
+    return w.text("got " + intToStr(len(b)) + "\n")
+}
+
+fn slow(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    try http.check(task.sleep(2000), 503)
+    return w.text("late\n")
+}
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.handle("GET /", ok)
+    r.handle("POST /ignore", ok)
+    r.handle("POST /body", body)
+    var small = http.routeOpts()
+    small.maxBody = 100
+    r.handleWith("POST /small", body, small)
+    var quick = http.routeOpts()
+    quick.deadlineMs = 100
+    r.handleWith("GET /slow", slow, quick)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+var ADDR: str = ""
+
+fn run(name: str, raw: str) { println(name + ": " + t.codes(&t.talk(ADDR, raw, 3000))) }
+
+fn get(target: str, headers: str): str { return "GET " + target + " HTTP/1.1\r\nHost: test\r\n" + headers + "Connection: close\r\n\r\n" }
+
+fn post(target: str, headers: str, body: str): str {
+    return "POST " + target + " HTTP/1.1\r\nHost: test\r\n" + headers + "Connection: close\r\n\r\n" + body
+}
+
+// A connection that has been served once and stays open.
+fn idle(): net.Conn {
+    let c = net.connect(ADDR).unwrap()
+    c.writeStr("GET / HTTP/1.1\r\nHost: test\r\n\r\n").unwrap()
+    var buf = array(4096, byte(0))
+    var got = ""
+    while indexOf(got, "ok\n", 0) < 0 && indexOf(got, "Unavailable\n", 0) < 0 {
+        let n = c.read(mut &buf).unwrap()
+        if n == 0 { break }
+        got = got + strFromBytes(&buf[0..n])
+    }
+    return c
+}
+
+fn stop(cfgName: str) {
+    let g = t.talk(ADDR, "POST /stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n", 3000)
+}
+
+fn serveWith(mk: fn(): http.Config, cases: fn(int)) {
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        ADDR = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{n: 0}, r: routes(), cfg: mk()})
+        cases(0)
+        stop("")
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out)
+}
+
+fn heads(x: int) {
+    run("head 2000", get("/", "X-A: " + t.repeat("a", 1900) + "\r\n"))
+    run("head over 4000", get("/", "X-A: " + t.repeat("a", 1500) + "\r\nX-B: " + t.repeat("b", 1500) + "\r\nX-C: " + t.repeat("c", 1500) + "\r\n"))
+    run("line over 2000", get("/", "X-A: " + t.repeat("a", 2100) + "\r\n"))
+    run("10 headers", get("/", t.repeat("X-A: 1\r\n", 8)))
+    run("11 headers", get("/", t.repeat("X-A: 1\r\n", 9)))
+    run("head never ends", "GET / HTTP/1.1\r\nHost: test\r\n" + t.repeat("X-A: 1234567890\r\n", 500))
+}
+
+fn bodies(x: int) {
+    run("body 100 on small", post("/small", "Content-Length: 100\r\n", t.repeat("x", 100)))
+    run("body 101 on small", post("/small", "Content-Length: 101\r\n", t.repeat("x", 101)))
+    run("chunked 100 on small", post("/small", "Transfer-Encoding: chunked\r\n", "32\r\n" + t.repeat("x", 50) + "\r\n32\r\n" + t.repeat("y", 50) + "\r\n0\r\n\r\n"))
+    run("chunked 101 on small", post("/small", "Transfer-Encoding: chunked\r\n", "32\r\n" + t.repeat("x", 50) + "\r\n33\r\n" + t.repeat("y", 51) + "\r\n0\r\n\r\n"))
+    run("body over maxBody", post("/body", "Content-Length: 5001\r\n", t.repeat("x", 5001)))
+    run("body at maxBody", post("/body", "Content-Length: 5000\r\n", t.repeat("x", 5000)))
+    let keep = "POST /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 1000\r\n\r\n" + t.repeat("x", 1000) + get("/", "")
+    run("unread 1000, maxDrain 1000", keep)
+    let drop = "POST /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 1001\r\n\r\n" + t.repeat("x", 1001) + get("/", "")
+    run("unread 1001, maxDrain 1000", drop)
+    let chunks = "POST /ignore HTTP/1.1\r\nHost: test\r\nTransfer-Encoding: chunked\r\n\r\n" + "10\r\n" + t.repeat("z", 16) + "\r\n0\r\n\r\n" + get("/", "")
+    run("unread chunked", chunks)
+}
+
+fn perConn(x: int) {
+    run("3 requests, 2 per connection", "GET / HTTP/1.1\r\nHost: test\r\n\r\nGET / HTTP/1.1\r\nHost: test\r\n\r\nGET / HTTP/1.1\r\nHost: test\r\n\r\n")
+    let g = t.talk(ADDR, "GET / HTTP/1.1\r\nHost: test\r\n\r\nGET / HTTP/1.1\r\nHost: test\r\n\r\n", 3000)
+    let rs = t.replies(&g)
+    println("connection headers: [" + t.header(&rs[0], "connection") + "] [" + t.header(&rs[1], "connection") + "]")
+    run("deadline", get("/slow", ""))
+}
+
+fn perIp(x: int) {
+    let a = idle()
+    let b = idle()
+    run("third from one address", get("/", ""))
+    a.close()
+    task.sleep(50).unwrap()
+    run("after one closed", get("/", ""))
+}
+
+fn conns(x: int) {
+    let a = idle()
+    let b = idle()
+    let c = net.connect(ADDR).unwrap()
+    c.writeStr(get("/", "")).unwrap()
+    var buf = array(4096, byte(0))
+    let early = task.within(300, fn(): str {
+        match c.read(mut &buf) {
+            Ok(n) { return "answered" }
+            Err(e) { return if e.isTimeout() { "waiting" } else { e.toStr() } }
+        }
+    })
+    println("third connection at maxConns 2: " + early)
+    a.close()
+    let late = task.within(3000, fn(): str {
+        match c.read(mut &buf) {
+            Ok(n) { return strFromBytes(&buf[0..12]) }
+            Err(e) { return e.toStr() }
+        }
+    })
+    println("after one closed: " + late)
+    b.close()
+}
+
+fn memory(x: int) {
+    // each connection counts its buffers (4.5 KiB to start with): two fit in 12,000 bytes, three do not
+    let a = idle()
+    let b = idle()
+    run("third connection over memBudget", get("/", ""))
+    a.close()
+    task.sleep(100).unwrap()
+    run("after one closed", get("/", ""))
+    b.close()
+}
+
+fn cfgSizes(): http.Config {
+    var cfg = sr.config()
+    cfg.maxHeadBytes = 4000
+    cfg.maxLineBytes = 2000
+    cfg.maxHeaders = 10
+    cfg.maxBody = 5000
+    cfg.maxDrain = 1000
+    return cfg
+}
+
+fn cfgPerConn(): http.Config {
+    var cfg = sr.config()
+    cfg.maxRequestsPerConn = 2
+    return cfg
+}
+
+fn cfgPerIp(): http.Config {
+    var cfg = sr.config()
+    cfg.maxConnsPerIp = 2
+    return cfg
+}
+
+fn cfgConns(): http.Config {
+    var cfg = sr.config()
+    cfg.maxConns = 2
+    return cfg
+}
+
+fn cfgMemory(): http.Config {
+    var cfg = sr.config()
+    cfg.memBudget = 12000
+    return cfg
+}
+
+fn main() {
+    serveWith(cfgSizes, heads)
+    serveWith(cfgSizes, bodies)
+    serveWith(cfgPerConn, perConn)
+    serveWith(cfgPerIp, perIp)
+    serveWith(cfgConns, conns)
+    serveWith(cfgMemory, memory)
+}

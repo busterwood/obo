@@ -1,0 +1,82 @@
+// httpserver and sqlite: a client that hangs up stops its handler's query.
+// sqlite3_step is a blocking extern (it runs on a helper thread); the
+// handler's task is cancelled when the client goes, the runtime calls
+// sqlite3_interrupt (task.onCancelCall in lib/sqlite), and the endless
+// query returns SQLITE_INTERRUPT long before it would end. The same
+// through a route's deadline. No handle stays open.
+// needs: sqlite3
+// expect: hangup: interrupted (error 9: interrupted), early
+// expect: deadline: 503, interrupted (error 9: interrupted), early
+// expect: stopped: accepted 3, requests 3, open 0, rejected 0, timeouts 0, gone 1, errors 1
+// expect: open handles 0
+import "task"
+import "net"
+import "sqlite"
+import "httpserver" as http
+import "time" as tm
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { n: int }
+
+var RESULT: str = ""
+
+fn nowMs(): int { return tm.monotonicNs() / 1000000 }
+
+fn endless(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let t0 = nowMs()
+    var db = sqlite.open(":memory:").unwrap()
+    var st = db.query("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c", &[]).unwrap()
+    match st.step() {
+        Ok(_) {
+            RESULT = "finished"
+            return w.text("never\n")
+        }
+        Err(e) {
+            RESULT = "interrupted (" + e.toStr() + ")" + (if nowMs() - t0 < 3000 { ", early" } else { ", late" })
+            return Err(http.error(503, "interrupted"))
+        }
+    }
+}
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.handle("GET /endless", endless)
+    var quick = http.routeOpts()
+    quick.deadlineMs = 200
+    r.handleWith("GET /bounded", endless, quick)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+fn waitResult(): str {
+    var n = 0
+    while len(RESULT) == 0 && n < 500 {
+        task.sleep(10).unwrap()
+        n += 1
+    }
+    let r = RESULT
+    RESULT = ""
+    return r
+}
+
+fn main() {
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let a = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{n: 0}, r: routes(), cfg: sr.config()})
+        let c = net.connect(a).unwrap()
+        c.writeStr("GET /endless HTTP/1.1\r\nHost: test\r\n\r\n").unwrap()
+        task.sleep(200).unwrap()
+        c.close()
+        println("hangup: " + waitResult())
+        let g = t.talk(a, "GET /bounded HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n", 5000)
+        let rs = t.replies(&g)
+        let code = if len(rs) > 0 { intToStr(rs[0].code) } else { "no reply" }
+        println("deadline: " + code + ", " + waitResult())
+        let h = t.talk(a, "POST /stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n", 3000)
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out)
+    println("open handles " + intToStr(sqlite.openHandles()))
+}

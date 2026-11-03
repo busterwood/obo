@@ -1,0 +1,175 @@
+// httpserver: the router (design/http-server.md 2.3), Go 1.22's patterns.
+// The most specific pattern wins whatever the order of handle: a literal
+// segment over {x}, {x} over {x...}, a method over none, a host over none,
+// {$} over a trailing "/". GET serves HEAD; another method gets 405 with
+// Allow; a path without its pattern's trailing slash gets a 301. Then
+// patterns that conflict (both match some path, neither more specific) and
+// patterns that are not well formed: serve refuses each before it serves
+// (an Err of kind Config naming them).
+// expect: GET test/: 200 [/]
+// expect: GET test/zzz: 200 [/]
+// expect: GET test/a/b: 200 [GET /a/b]
+// expect: HEAD test/a/b: 200
+// expect: POST test/a/b: 200 [POST /a/b]
+// expect: PUT test/a/b: 200 [/a/{rest...}] rest=b
+// expect: GET example.com/a/b: 200 [GET example.com/a/b]
+// expect: GET EXAMPLE.com:8080/a/b: 200 [GET example.com/a/b]
+// expect: POST example.com/a/b: 200 [POST /a/b]
+// expect: GET test/a/q: 200 [GET /a/{x}] x=q
+// expect: PUT test/a/q: 200 [/a/{rest...}] rest=q
+// expect: GET test/a/q/c: 200 [GET /a/{x}/c] x=q
+// expect: GET test/a/q/r: 200 [/a/{rest...}] rest=q/r
+// expect: GET test/a/: 200 [/a/{rest...}]
+// expect: GET test/a: 301 location=/a/
+// expect: GET test/b/: 200 [GET /b/{$}]
+// expect: GET test/b/x: 200 [GET /b/]
+// expect: GET test/b: 301 location=/b/
+// expect: GET test/c/d/e: 200 [GET /c/d/{y}] y=e
+// expect: GET test/c/e/e: 200 [GET /c/{x}/{y}] x=e y=e
+// expect: GET test/c/d: 200 [/]
+// expect: GET test/d/1: 301 location=/d/1/
+// expect: GET test/d/1/: 200 [GET /d/{x}/] x=1
+// expect: GET test/d/1/more/x: 200 [GET /d/{x}/] x=1
+// expect: GET test/e: 200 [/]
+// expect: GET test/a/%7Bx%7D: 200 [GET /a/{x}] x={x}
+// expect: GET test/a/b%20c: 200 [GET /a/{x}] x=b c
+// expect: stopped: accepted 28, requests 28, open 0, rejected 0, timeouts 0, gone 0, errors 0
+// expect: GET /c/{x}/d + GET /c/e/{y}: config: pattern "GET /c/e/{y}" conflicts with "GET /c/{x}/d": some requests match both and neither is more specific
+// expect: /a + /a: config: pattern "/a" conflicts with "/a": they match the same requests
+// expect: GET /x/{a} + GET /x/{b}: config: pattern "GET /x/{b}" conflicts with "GET /x/{a}": they match the same requests
+// expect: /p/{a} + GET /p/q: served
+// expect: GET /p/{a...} + GET /p/{b}/q/: served
+// expect: GET /a/{x: config: pattern "GET /a/{x": a wildcard must be a whole segment
+// expect: GET /a/{x}{y}: config: pattern "GET /a/{x}{y}": bad wildcard name "x}{y"
+// expect: GET /a/x{y}: config: pattern "GET /a/x{y}": a wildcard must be a whole segment
+// expect: GET /a/{x...}/b: config: pattern "GET /a/{x...}/b": {...} wildcard not at the end
+// expect: GET /a/{$}/b: config: pattern "GET /a/{$}/b": {$} not at the end
+// expect: GET /a/{x}/{x}: config: pattern "GET /a/{x}/{x}": duplicate wildcard name "x"
+// expect: GET /a/{1x}: config: pattern "GET /a/{1x}": bad wildcard name "1x"
+// expect: G T /a: served
+// expect: GET a: config: pattern "GET a": no path (a pattern is [METHOD ][HOST]/[PATH])
+// expect: : config: pattern "": no path (a pattern is [METHOD ][HOST]/[PATH])
+// expect: GET /ok + GET /ok/{x} + GET /ok/{x}/{y...}: served
+import "task"
+import "net"
+import "strings"
+import "httpserver" as http
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { n: int }
+
+fn show(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    var ps = ""
+    for name in ["x", "y", "rest"] {
+        let v = rq.param(name)
+        if len(v) > 0 { ps = ps + " " + name + "=" + v }
+    }
+    return w.text("[" + rq.pattern + "]" + ps)
+}
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    // registered from general to specific and back: the order does not matter
+    r.handle("/", show)
+    r.handle("/a/{rest...}", show)
+    r.handle("GET /a/{x}", show)
+    r.handle("GET /a/b", show)
+    r.handle("POST /a/b", show)
+    r.handle("GET /a/{x}/c", show)
+    r.handle("GET example.com/a/b", show)
+    r.handle("GET /b/", show)
+    r.handle("GET /b/{$}", show)
+    r.handle("GET /c/{x}/{y}", show)
+    r.handle("GET /c/d/{y}", show)
+    r.handle("GET /d/{x}/", show)
+    r.handle("DELETE /e", show)
+    r.handle("PUT /e", show)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+var ADDR: str = ""
+
+fn ask(method: str, target: str, host: str) {
+    let g = t.talk(ADDR, method + " " + target + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n", 3000)
+    let rs = t.repliesHead(&g, &[method == "HEAD"])
+    var line = method + " " + host + target + ": "
+    for r in rs {
+        line = line + intToStr(r.code)
+        if r.code == 200 && len(r.body) > 0 { line = line + " " + r.body }
+        let allow = t.header(&r, "allow")
+        if len(allow) > 0 { line = line + " allow=" + allow }
+        let loc = t.header(&r, "location")
+        if len(loc) > 0 { line = line + " location=" + loc }
+    }
+    println(line)
+}
+
+fn refused(patterns: &[str]) {
+    // a router that is accepted serves until the deadline
+    let res = task.within(300, fn(): Result[http.Stats, http.Error] {
+        var r = http.router[App]()
+        for p in patterns { r.handle(p, show) }
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        return http.serve(ln, App{n: 0}, r, sr.config())
+    })
+    match res {
+        Ok(_) { println(strings.join(patterns, " + ") + ": served") }
+        Err(e) { println(strings.join(patterns, " + ") + ": " + e.kind.toStr() + ": " + e.msg) }
+    }
+}
+
+fn main() {
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        ADDR = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{n: 0}, r: routes(), cfg: sr.config()})
+        ask("GET", "/", "test")
+        ask("GET", "/zzz", "test")
+        ask("GET", "/a/b", "test")
+        ask("HEAD", "/a/b", "test")
+        ask("POST", "/a/b", "test")
+        ask("PUT", "/a/b", "test")
+        ask("GET", "/a/b", "example.com")
+        ask("GET", "/a/b", "EXAMPLE.com:8080")
+        ask("POST", "/a/b", "example.com")
+        ask("GET", "/a/q", "test")
+        ask("PUT", "/a/q", "test")
+        ask("GET", "/a/q/c", "test")
+        ask("GET", "/a/q/r", "test")
+        ask("GET", "/a/", "test")
+        ask("GET", "/a", "test")
+        ask("GET", "/b/", "test")
+        ask("GET", "/b/x", "test")
+        ask("GET", "/b", "test")
+        ask("GET", "/c/d/e", "test")
+        ask("GET", "/c/e/e", "test")
+        ask("GET", "/c/d", "test")
+        ask("GET", "/d/1", "test")
+        ask("GET", "/d/1/", "test")
+        ask("GET", "/d/1/more/x", "test")
+        ask("GET", "/e", "test")
+        ask("GET", "/a/%7Bx%7D", "test")
+        ask("GET", "/a/b%20c", "test")
+        let g = t.talk(ADDR, "POST /stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n", 3000)
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out)
+    refused(&["GET /c/{x}/d", "GET /c/e/{y}"])
+    refused(&["/a", "/a"])
+    refused(&["GET /x/{a}", "GET /x/{b}"])
+    refused(&["/p/{a}", "GET /p/q"])
+    refused(&["GET /p/{a...}", "GET /p/{b}/q/"])
+    refused(&["GET /a/{x"])
+    refused(&["GET /a/{x}{y}"])
+    refused(&["GET /a/x{y}"])
+    refused(&["GET /a/{x...}/b"])
+    refused(&["GET /a/{$}/b"])
+    refused(&["GET /a/{x}/{x}"])
+    refused(&["GET /a/{1x}"])
+    refused(&["G T /a"])
+    refused(&["GET a"])
+    refused(&[""])
+    refused(&["GET /ok", "GET /ok/{x}", "GET /ok/{x}/{y...}"])
+}

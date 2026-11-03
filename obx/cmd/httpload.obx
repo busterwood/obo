@@ -46,7 +46,7 @@ fn client(l: Load): Tally {
     var t = Tally{lat: [], errors: 0}
     while time.monotonicNs() < l.end {
         match run(&l, mut &t.lat) {
-            Ok(_) { break }
+            Ok(again) { if !again { break } }   // again: the server closed after a reply (Connection: close)
             Err(e) {
                 t.errors += 1
                 if !l.reconnect {
@@ -59,7 +59,10 @@ fn client(l: Load): Tally {
     return t
 }
 
-fn run(l: &Load, lat: mut &[]int): Result[Unit, io.IoError] {
+// Requests on one connection until the end: Ok(true) when the server ends
+// the connection first, with Connection: close on a reply (a server's limit
+// of requests per connection), so the caller connects again.
+fn run(l: &Load, lat: mut &[]int): Result[bool, io.IoError] {
     let c = try net.connect(l.addr)
     try c.setNoDelay(true)
     let rq = strToBytes("GET " + l.path + " HTTP/1.1\r\nHost: obx\r\n\r\n")
@@ -67,10 +70,11 @@ fn run(l: &Load, lat: mut &[]int): Result[Unit, io.IoError] {
     while time.monotonicNs() < l.end {
         let t0 = time.monotonicNs()
         try c.write(&rq)
-        try response(&c, mut &buf, l.addr)
+        let closing = try response(&c, mut &buf, l.addr)
         append(mut &lat, time.monotonicNs() - t0)
+        if closing { return Ok(true) }
     }
-    return Ok(Unit{})
+    return Ok(false)
 }
 
 // --client: the same loop through an http.Client.
@@ -106,8 +110,9 @@ fn viaClient(l: ClientLoad): Tally {
 }
 
 // Reads one reply (its head and Content-Length bytes of body); the server
-// sends nothing else until the next request.
-fn response(c: &net.Conn, buf: mut &[]byte, addr: str): Result[Unit, io.IoError] {
+// sends nothing else until the next request. True when the reply says
+// Connection: close.
+fn response(c: &net.Conn, buf: mut &[]byte, addr: str): Result[bool, io.IoError] {
     var have = 0
     var end = -1
     while end < 0 {
@@ -119,10 +124,13 @@ fn response(c: &net.Conn, buf: mut &[]byte, addr: str): Result[Unit, io.IoError]
     }
     let head = strFromBytes(&buf[0..end])
     var body = 0
+    var closing = false
     for line in strings.splitOn(head, "\r\n") {
         match strings.cut(line, ":") {
             Some(kv) {
-                if strings.toLower(kv.before) == "content-length" { body = strings.parseInt(trim(kv.after)).unwrapOr(0) }
+                let name = strings.toLower(kv.before)
+                if name == "content-length" { body = strings.parseInt(trim(kv.after)).unwrapOr(0) }
+                if name == "connection" && strings.toLower(trim(kv.after)) == "close" { closing = true }
             }
             None {}
         }
@@ -133,7 +141,7 @@ fn response(c: &net.Conn, buf: mut &[]byte, addr: str): Result[Unit, io.IoError]
         if n == 0 { return Err(io.IoError{errno: 104, op: "reply", path: addr}) }
         left -= n
     }
-    return Ok(Unit{})
+    return Ok(closing)
 }
 
 fn headEnd(b: &[]byte, n: int): int {
