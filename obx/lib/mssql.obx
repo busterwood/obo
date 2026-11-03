@@ -1,0 +1,1017 @@
+// mssql: Microsoft SQL Server through ODBC (unixODBC's libodbc.so.2 and the
+// Microsoft ODBC Driver 18 for SQL Server; a program that uses it is
+// dynamically linked to libodbc).
+//
+//     var conn = try mssql.connect("Driver={ODBC Driver 18 for SQL Server};Server=...;UID=...;PWD=...")
+//     try conn.exec("CREATE TABLE #t(id bigint, name nvarchar(50), price decimal(10,2))")
+//     try conn.run("INSERT INTO #t VALUES (?, ?, ?)", &[Value.Int(1), Value.Text("café"), Value.Dec(2.50)])
+//     var st = try conn.query("SELECT id, name, price FROM #t WHERE id > ?", &[Value.Int(0)])
+//     while try st.step() {
+//         println((try st.int(0)).toStr() + " " + try st.text(1) + " " + (try st.decimal(2)).toStr())
+//     }
+//
+// Everything goes through ODBC's C API directly (no C shim). The connection
+// string, SQL text, column names and diagnostics use the W (UTF-16) entry
+// points, because the driver converts the narrow ones through the process
+// locale; text values are sent and read as UTF-16 (SQL_C_WCHAR) too, so
+// nothing depends on the locale. The UTF-8 <-> UTF-16 conversion is strict
+// (toUtf16, fromUtf16): overlong forms, surrogates in UTF-8, lone surrogates
+// in UTF-16, values above U+10FFFF and truncated sequences are errors.
+//
+// Resources: Conn owns an ODBC environment and connection, Stmt a statement
+// handle; both are released when dropped. close() consumes the handle. A
+// Stmt belongs to its Conn (they share the connection's state through a
+// task.Shared): closing or dropping the Conn frees its statements' handles
+// first, and a Stmt used after that returns E_CLOSED instead of reaching a
+// freed handle; dropping it then releases nothing more. openHandles() counts
+// the live Conn and Stmt values, for tests.
+//
+// Parameters are `?` markers bound from sqldialect.Value; SQL is never
+// interpolated. Each bound value lives in C memory the Stmt owns (ffi.Mem)
+// from SQLBindParameter until the parameter is bound again or the Stmt is
+// dropped (after its handle is freed), so the driver's deferred reads at
+// SQLExecute always find it: obx's ownership guarantees it, not a convention.
+// Int is bigint, Float float (shortest text, exact), Bool bit, Text
+// nvarchar (UTF-16; NUL characters allowed), Bytes varbinary, Dec decimal(p,
+// s) from its exact text (p and s from the value; at most 38 digits), NULL
+// an nvarchar NULL. Results: bigint/int/smallint/tinyint/bit are int,
+// float/real float (read as the C double, exact), decimal/numeric/money/
+// smallmoney exact Decimals with the column's scale, binary types bytes,
+// and every other type text (nvarchar, varchar, date and time types,
+// uniqueidentifier, xml, ...), in the driver's format. NULL is never 0 or "".
+// Long values are read in chunks (SQLGetData) up to the Stmt's maxValue.
+//
+// Errors are sqldialect.DbError: for a failed ODBC call the first diagnostic
+// record that is not a warning (SQLSTATE class 01) gives `code` (SQL Server's
+// native error number, 208 for an invalid object), `state` (the SQLSTATE,
+// "42S02") and `msg` (the driver's message, "[Microsoft][ODBC Driver 18 for
+// SQL Server][SQL Server]Invalid object name 'nope'."); the E_* codes of
+// sqldialect for what the adapter refuses itself. Informational records
+// (01000 "Changed database context" on connect, PRINT output) are not errors;
+// diagnostics() lists them.
+//
+// Concurrency: ODBC calls block the thread. The calls that can take long
+// (SQLDriverConnectW, SQLExecDirectW, SQLExecute, SQLFetch, SQLGetData,
+// SQLMoreResults, SQLEndTran, SQLDisconnect) each have one call site, outside
+// any Shared.with, so that they can be marked `blocking` (run on the helper
+// pool while the task parks, design/concurrency.md, C1c) when that exists.
+// No MARS: one open result set per connection at a time (reset() or drop the
+// Stmt to free the connection; another statement's call meanwhile is the
+// driver's "Connection is busy" error).
+
+import "sqldialect"
+import "strings"
+import "math"
+import "ffi"
+import "task"
+
+pub type Value = sqldialect.Value
+pub type Error = sqldialect.DbError
+type Sql = sqldialect.Sql
+
+// SQL data types (columnType).
+pub const SQL_CHAR = 1
+pub const SQL_NUMERIC = 2
+pub const SQL_DECIMAL = 3
+pub const SQL_INTEGER = 4
+pub const SQL_SMALLINT = 5
+pub const SQL_FLOAT = 6
+pub const SQL_REAL = 7
+pub const SQL_DOUBLE = 8
+pub const SQL_VARCHAR = 12
+pub const SQL_TYPE_DATE = 91
+pub const SQL_TYPE_TIMESTAMP = 93
+pub const SQL_LONGVARCHAR = -1
+pub const SQL_BINARY = -2
+pub const SQL_VARBINARY = -3
+pub const SQL_LONGVARBINARY = -4
+pub const SQL_BIGINT = -5
+pub const SQL_TINYINT = -6
+pub const SQL_BIT = -7
+pub const SQL_WCHAR = -8
+pub const SQL_WVARCHAR = -9
+pub const SQL_WLONGVARCHAR = -10
+pub const SQL_GUID = -11
+pub const SQL_SS_XML = -152
+pub const SQL_SS_TIME2 = -154
+pub const SQL_SS_TIMESTAMPOFFSET = -155
+
+// C data types (Param.cType).
+pub const C_CHAR = 1
+pub const C_DOUBLE = 8
+pub const C_BINARY = -2
+pub const C_WCHAR = -8
+pub const C_SBIGINT = -25
+
+pub const MAX_VALUE = 16777216   // the default maxValue: 16 MiB from the driver
+const MAX_CHUNK = 1048576
+const MAX_PARAMS = 2100          // SQL Server's limit
+
+const SQL_SUCCESS = 0
+const SQL_SUCCESS_WITH_INFO = 1
+const SQL_NO_DATA = 100
+const SQL_NTS = -3
+const SQL_NULL_DATA = -1
+const H_ENV = 1
+const H_DBC = 2
+const H_STMT = 3
+const ATTR_ODBC_VERSION = 200
+const OV_ODBC3 = 3
+const ATTR_AUTOCOMMIT = 102
+const IS_UINTEGER = -5
+const DRIVER_NOPROMPT = 0
+const FREE_CLOSE = 0
+const COMMIT = 0
+const ROLLBACK = 1
+const PARAM_INPUT = 1
+
+extern "odbc" fn SQLAllocHandle(t: i32, parent: ptr, out: mut &ptr): i32
+extern "odbc" fn SQLFreeHandle(t: i32, h: ptr): i32
+extern "odbc" fn SQLSetEnvAttr(env: ptr, attr: i32, value: int, n: i32): i32
+extern "odbc" fn SQLSetConnectAttrW(dbc: ptr, attr: i32, value: int, n: i32): i32
+extern "odbc" fn SQLDriverConnectW(dbc: ptr, win: ptr, cs: &[]byte, n: i32, out: ptr, cap: i32, outLen: ptr, how: i32): i32
+extern "odbc" fn SQLDisconnect(dbc: ptr): i32
+extern "odbc" fn SQLEndTran(t: i32, h: ptr, how: i32): i32
+extern "odbc" fn SQLExecDirectW(h: ptr, sql: &[]byte, n: i32): i32
+extern "odbc" fn SQLPrepareW(h: ptr, sql: &[]byte, n: i32): i32
+extern "odbc" fn SQLExecute(h: ptr): i32
+extern "odbc" fn SQLFetch(h: ptr): i32
+extern "odbc" fn SQLMoreResults(h: ptr): i32
+extern "odbc" fn SQLGetData(h: ptr, col: i32, cType: i32, buf: mut &[]byte, cap: int, ind: mut &int): i32
+extern "odbc" fn SQLFreeStmt(h: ptr, option: i32): i32
+extern "odbc" fn SQLNumResultCols(h: ptr, n: mut &[]byte): i32
+extern "odbc" fn SQLNumParams(h: ptr, n: mut &[]byte): i32
+extern "odbc" fn SQLRowCount(h: ptr, n: mut &int): i32
+extern "odbc" fn SQLDescribeColW(h: ptr, col: i32, name: mut &[]byte, cap: i32, nameLen: mut &[]byte,
+                                 sqlType: mut &[]byte, size: mut &int, digits: mut &[]byte, nullable: mut &[]byte): i32
+extern "odbc" fn SQLBindParameter(h: ptr, i: i32, io: i32, cType: i32, sqlType: i32, size: int, digits: i32,
+                                  value: ptr, cap: int, ind: ptr): i32
+extern "odbc" fn SQLGetDiagRecW(t: i32, h: ptr, rec: i32, state: mut &[]byte, native: mut &[]byte,
+                                msg: mut &[]byte, cap: i32, msgLen: mut &[]byte): i32
+
+var OPEN: int = 0
+
+// The number of Conn and Stmt values not yet closed or dropped.
+pub fn openHandles(): int { return OPEN }
+
+// A SQLRETURN (a C short; the upper bits of the register are not defined).
+fn rc(r: i32): int {
+    let v = int(r) & 0xffff
+    return if v >= 0x8000 { v - 0x10000 } else { v }
+}
+
+fn ok(r: int): bool { return r == SQL_SUCCESS || r == SQL_SUCCESS_WITH_INFO }
+
+// The little-endian integer of n bytes at b[at..], sign-extended from n bytes.
+fn le(b: &[byte], at: int, n: int): int {
+    var v = 0
+    for k in 0..n { v = v | (int(b[at + k]) << (8 * k)) }
+    if n < 8 && ((v >> (8 * n - 1)) & 1) == 1 { v = v - (1 << (8 * n)) }
+    return v
+}
+
+fn le8(v: int): str {
+    var b = array(8, byte(0))
+    for k in 0..8 { b[k] = byte((v >> (8 * k)) & 0xff) }
+    return strFromBytes(&b)
+}
+
+// The float with IEEE 754 bits b (how SQLGetData's SQL_C_DOUBLE arrives).
+pub fn floatOfBits(b: int): float {
+    let e = (b >> 52) & 0x7ff
+    let m = b & 0xfffffffffffff
+    var f: float = 0.0
+    if e == 0x7ff {
+        f = if m == 0 { math.inf() } else { math.nan() }
+    } else {
+        f = pow2(float(if e == 0 { m } else { m | (1 << 52) }), (if e == 0 { 1 } else { e }) - 1075)
+    }
+    return if b < 0 { -f } else { f }
+}
+
+// x * 2^e, exact when the result is a float (each step is a power of two).
+fn pow2(x: float, e: int): float {
+    var f = x
+    var k = e
+    while k > 0 {
+        let s = if k > 60 { 60 } else { k }
+        f = f * float(1 << s)
+        k -= s
+    }
+    while k < 0 {
+        let s = if -k > 60 { 60 } else { -k }
+        f = f / float(1 << s)
+        k += s
+    }
+    return f
+}
+
+// ------------------------------------------------------------------ UTF-16
+
+// s, strict UTF-8, as UTF-16 code units (little-endian, two bytes each, no
+// terminator). E_INPUT at the first byte that is not valid UTF-8.
+pub fn toUtf16(s: str): Result[[]byte, Error] {
+    var out: []byte = []
+    var i = 0
+    while i < len(s) {
+        let d = strings.decodeAt(s, i)
+        if !d.ok { return Err(sqldialect.inputError("invalid UTF-8 at byte " + i.toStr())) }
+        if d.rune >= 0x10000 {
+            unit(mut &out, 0xd800 + ((d.rune - 0x10000) >> 10))
+            unit(mut &out, 0xdc00 + ((d.rune - 0x10000) & 0x3ff))
+        } else {
+            unit(mut &out, d.rune)
+        }
+        i += d.size
+    }
+    return Ok(out)
+}
+
+fn unit(out: mut &[]byte, u: int) {
+    append(out, byte(u & 0xff))
+    append(out, byte(u >> 8))
+}
+
+// UTF-16 code units (little-endian) as UTF-8. E_TYPE for an odd number of
+// bytes or a surrogate that is not part of a pair.
+pub fn fromUtf16(b: &[byte]): Result[str, Error] {
+    if len(b) % 2 != 0 { return Err(sqldialect.dbError(sqldialect.E_TYPE, "UTF-16 text has an odd number of bytes")) }
+    var out = newStrBuf()
+    var i = 0
+    while i < len(b) {
+        var u = int(b[i]) | (int(b[i + 1]) << 8)
+        if u >= 0xd800 && u <= 0xdfff {
+            let lo = if i + 3 < len(b) { int(b[i + 2]) | (int(b[i + 3]) << 8) } else { 0 }
+            if u >= 0xdc00 || lo < 0xdc00 || lo > 0xdfff {
+                return Err(sqldialect.dbError(sqldialect.E_TYPE, "invalid UTF-16: lone surrogate at unit " + (i / 2).toStr()))
+            }
+            u = 0x10000 + ((u - 0xd800) << 10) + (lo - 0xdc00)
+            i += 2
+        }
+        strings.addRune(mut &out, u)
+        i += 2
+    }
+    return Ok(out.toStr())
+}
+
+// Text for a W entry point: UTF-16 and a NUL unit. E_INPUT for a NUL byte.
+fn wide(s: str, what: str): Result[[]byte, Error] {
+    try sqldialect.noNul(s, what)
+    var w = try toUtf16(s).mapErr(fn(e: Error): Error { return sqldialect.inputError(what + ": " + e.msg) })
+    unit(mut &w, 0)
+    return Ok(w)
+}
+
+// ------------------------------------------------------------- diagnostics
+
+// One diagnostic record: SQLSTATE, the native (SQL Server) error number, and
+// the message.
+pub type Diag = value record { pub state: str; pub native: int; pub msg: str }
+
+// "42S02 208: [Microsoft]...Invalid object name 'nope'."
+pub fn (d: Diag) toStr(): str { return d.state + " " + d.native.toStr() + ": " + d.msg }
+
+// The diagnostic records of a handle (SQLGetDiagRecW), in order.
+fn diags(t: int, h: ptr): []Diag {
+    var out: []Diag = []
+    if isNull(h) { return out }
+    var cap = 1024
+    var n = 1
+    while n <= 64 {
+        var state = array(12, byte(0))
+        var native = array(4, byte(0))
+        var msg = array(2 * cap, byte(0))
+        var mlen = array(2, byte(0))
+        let r = rc(SQLGetDiagRecW(i32(t), h, i32(n), mut &state, mut &native, mut &msg, i32(cap), mut &mlen))
+        if !ok(r) { break }
+        let units = le(&mlen, 0, 2)
+        if units >= cap && cap < 32767 {
+            cap = if units + 1 > 32767 { 32767 } else { units + 1 }
+            continue                      // read the same record again, whole
+        }
+        let m = if units < cap { units } else { cap - 1 }
+        let text = fromUtf16(&msg[..2 * m]).unwrapOr("(message is not valid UTF-16)")
+        append(mut &out, Diag{state: fromUtf16(&state[..10]).unwrapOr("?????"), native: le(&native, 0, 4), msg: text})
+        n += 1
+    }
+    return out
+}
+
+// The error for a failed call from its handle's records: the first record
+// that is not a warning (SQLSTATE class 01), else the first record, else
+// `what` and the SQLRETURN r.
+pub fn errorOf(ds: &[Diag], r: int, what: str): Error {
+    for d in ds {
+        if !startsWith(d.state, "01") { return Error{code: d.native, state: d.state, msg: d.msg} }
+    }
+    if len(ds) > 0 { return Error{code: ds[0].native, state: ds[0].state, msg: ds[0].msg} }
+    return sqldialect.dbError(r, what + " failed (SQLRETURN " + r.toStr() + ") without a diagnostic record")
+}
+
+fn fail(t: int, h: ptr, r: int, what: str): Error { return errorOf(&diags(t, h), r, what) }
+
+// -------------------------------------------------------------- connections
+
+// The state a Conn shares with its statements.
+type ConnState = record {
+    env: ptr
+    dbc: ptr
+    alive: bool
+    inTx: bool
+    stmts: []ptr       // the open statement handles, freed before the connection
+}
+
+pub type Conn = record { st: task.Shared[ConnState] }
+
+fn (c: mut &Conn) drop() {
+    shutdown(&c.st)
+    OPEN -= 1
+}
+
+// Connects with an ODBC connection string ("Driver={ODBC Driver 18 for SQL
+// Server};Server=localhost;UID=...;PWD=...;TrustServerCertificate=yes").
+pub fn connect(connStr: str): Result[Conn, Error] {
+    let w = try wide(connStr, "connection string")
+    var env = nullPtr()
+    if !ok(rc(SQLAllocHandle(i32(H_ENV), nullPtr(), mut &env))) {
+        return Err(sqldialect.dbError(-1, "cannot allocate an ODBC environment"))
+    }
+    var r = rc(SQLSetEnvAttr(env, i32(ATTR_ODBC_VERSION), OV_ODBC3, 0))
+    var dbc = nullPtr()
+    if ok(r) { r = rc(SQLAllocHandle(i32(H_DBC), env, mut &dbc)) }
+    if !ok(r) {
+        let e = fail(H_ENV, env, r, "ODBC environment setup")
+        SQLFreeHandle(i32(H_ENV), env)
+        return Err(e)
+    }
+    r = rc(SQLDriverConnectW(dbc, nullPtr(), &w, i32(SQL_NTS), nullPtr(), 0, nullPtr(), i32(DRIVER_NOPROMPT)))
+    if !ok(r) {
+        let e = fail(H_DBC, dbc, r, "connect")
+        SQLFreeHandle(i32(H_DBC), dbc)
+        SQLFreeHandle(i32(H_ENV), env)
+        return Err(e)
+    }
+    OPEN += 1
+    return Ok(Conn{st: task.shared(ConnState{env: env, dbc: dbc, alive: true, inTx: false, stmts: []})})
+}
+
+// Frees the statements, disconnects (rolling back an open transaction) and
+// frees the handles, once; the first failure.
+fn shutdown(st: &task.Shared[ConnState]): Result[Unit, Error] {
+    var alive = false
+    var env = nullPtr()
+    var dbc = nullPtr()
+    var stmts: []ptr = []
+    var inTx = false
+    st.with(fn(s) {
+        alive = s.alive
+        env = s.env
+        dbc = s.dbc
+        inTx = s.inTx
+        stmts = replace(mut &s.stmts, [])
+        s.alive = false
+    })
+    if !alive { return Ok(Unit{}) }
+    for h in stmts { SQLFreeHandle(i32(H_STMT), h) }
+    if inTx { endTran(dbc, ROLLBACK) }
+    var r = rc(SQLDisconnect(dbc))
+    if !ok(r) && endTran(dbc, ROLLBACK) == SQL_SUCCESS { r = rc(SQLDisconnect(dbc)) }
+    let res: Result[Unit, Error] = if ok(r) { Ok(Unit{}) } else { Err(fail(H_DBC, dbc, r, "disconnect")) }
+    SQLFreeHandle(i32(H_DBC), dbc)
+    SQLFreeHandle(i32(H_ENV), env)
+    return res
+}
+
+fn endTran(dbc: ptr, how: int): int { return rc(SQLEndTran(i32(H_DBC), dbc, i32(how))) }
+
+// Disconnects; the disconnect's error, if any (the handles are freed either way).
+pub fn (c: Conn) close(): Result[Unit, Error] { return shutdown(&c.st) }
+
+fn (c: &Conn) dbc(): ptr {
+    var h = nullPtr()
+    c.st.with(fn(s) { h = s.dbc })
+    return h
+}
+
+// The connection's diagnostic records now: after connect, its informational
+// 01000 records ("Changed database context to 'master'.").
+pub fn (c: &Conn) diagnostics(): []Diag { return diags(H_DBC, c.dbc()) }
+
+// A new statement handle on the connection.
+fn (c: &Conn) newStmt(): Result[Stmt, Error] {
+    let dbc = c.dbc()
+    var h = nullPtr()
+    let r = rc(SQLAllocHandle(i32(H_STMT), dbc, mut &h))
+    if !ok(r) { return Err(fail(H_DBC, dbc, r, "statement allocation")) }
+    c.st.with(fn(s) { append(mut &s.stmts, h) })
+    OPEN += 1
+    return Ok(Stmt{h: h, conn: c.st, binds: [], cols: [], cells: [], next: 0, row: false, affected: -1,
+                   buf: array(8192, byte(0)), maxValue: MAX_VALUE})
+}
+
+// Runs a batch of any number of statements without parameters, reading past
+// every result it has (an error in any of them is the result).
+pub fn (c: &Conn) exec(sql: str): Result[Unit, Error] {
+    var s = try c.newStmt()
+    try s.direct(sql)
+    while try s.nextResult() {}
+    return Ok(Unit{})
+}
+
+// Prepares one statement (or batch) with `?` parameters, to bind and execute.
+pub fn (c: &Conn) prepare(sql: str): Result[Stmt, Error] {
+    let w = try wide(sql, "SQL text")
+    var s = try c.newStmt()
+    let r = rc(SQLPrepareW(s.h, &w, i32(SQL_NTS)))
+    if !ok(r) { return Err(s.fail(r, "prepare")) }
+    return Ok(s)
+}
+
+// Prepares sql, binds args to its parameters in order and executes it: the
+// Stmt is before the first row of its first result.
+pub fn (c: &Conn) query(sql: str, args: &[Value]): Result[Stmt, Error] {
+    var s = try c.prepare(sql)
+    try s.bindAll(args)
+    try s.execute()
+    return Ok(s)
+}
+
+// Runs a fragment with `?` placeholders and its arguments.
+pub fn (c: &Conn) querySql(q: &Sql): Result[Stmt, Error] {
+    return c.query(q.render(sqldialect.Dialect.SqlServerOdbc), q.args())
+}
+
+// Runs one statement with args; the number of rows it changed (-1 when the
+// driver does not say).
+pub fn (c: &Conn) run(sql: str, args: &[Value]): Result[int, Error] {
+    let s = try c.query(sql, args)
+    return Ok(s.affected())
+}
+
+// Whether a transaction is open.
+pub fn (c: &Conn) inTransaction(): bool {
+    var t = false
+    c.st.with(fn(s) { t = s.inTx })
+    return t
+}
+
+// Runs body in a transaction (autocommit off): COMMIT when it returns Ok,
+// ROLLBACK when it returns Err (whose error is the result). Transactions do
+// not nest (E_INPUT).
+pub fn (c: &Conn) transaction[T](body: &fn(): Result[T, Error]): Result[T, Error] {
+    if c.inTransaction() { return Err(sqldialect.inputError("a transaction is already open")) }
+    try c.autocommit(false)
+    c.st.with(fn(s) { s.inTx = true })
+    let res = body()
+    let how = if res.isOk() { COMMIT } else { ROLLBACK }
+    let r = endTran(c.dbc(), how)
+    let ended: Result[Unit, Error] = if ok(r) { Ok(Unit{}) } else { Err(fail(H_DBC, c.dbc(), r, "end of transaction")) }
+    c.st.with(fn(s) { s.inTx = false })
+    let back = c.autocommit(true)
+    if res.isOk() { try ended }
+    try back
+    return res
+}
+
+fn (c: &Conn) autocommit(on: bool): Result[Unit, Error] {
+    let dbc = c.dbc()
+    let r = rc(SQLSetConnectAttrW(dbc, i32(ATTR_AUTOCOMMIT), if on { 1 } else { 0 }, i32(IS_UINTEGER)))
+    if !ok(r) { return Err(fail(H_DBC, dbc, r, "autocommit")) }
+    return Ok(Unit{})
+}
+
+// --------------------------------------------------------------- parameters
+
+// How a Value is bound: the C type of the buffer, the SQL type and its
+// size and digits (SQLBindParameter's ColumnSize and DecimalDigits), and the
+// buffer's bytes (data; its length is the indicator unless null).
+pub type Param = value record {
+    pub cType: int
+    pub sqlType: int
+    pub size: int
+    pub digits: int
+    pub data: str
+    pub null: bool
+}
+
+// The binding of v. E_INPUT for text that is not UTF-8, E_NONFINITE for a
+// NaN or infinite float (SQL Server has none), E_DEC_RANGE for a decimal
+// that needs more than 38 digits.
+pub fn paramOf(v: Value): Result[Param, Error] {
+    match v {
+        Value.Null { return Ok(Param{cType: C_WCHAR, sqlType: SQL_WVARCHAR, size: 1, digits: 0, data: "", null: true}) }
+        Value.Int(n) { return Ok(Param{cType: C_SBIGINT, sqlType: SQL_BIGINT, size: 19, digits: 0, data: le8(n), null: false}) }
+        Value.Bool(b) {
+            return Ok(Param{cType: C_SBIGINT, sqlType: SQL_BIT, size: 1, digits: 0, data: le8(if b { 1 } else { 0 }), null: false})
+        }
+        Value.Float(f) {
+            if !f.isFinite() { return Err(sqldialect.dbError(sqldialect.E_NONFINITE, "SQL Server float has no NaN or Infinity")) }
+            return Ok(Param{cType: C_CHAR, sqlType: SQL_DOUBLE, size: 15, digits: 0, data: f.toStr(), null: false})
+        }
+        Value.Text(t) {
+            let w = try toUtf16(t).mapErr(fn(e: Error): Error { return sqldialect.inputError("text value: " + e.msg) })
+            let units = len(w) / 2
+            return Ok(Param{cType: C_WCHAR, sqlType: SQL_WVARCHAR, size: if units > 4000 { 0 } else if units == 0 { 1 } else { units },
+                            digits: 0, data: strFromBytes(&w), null: false})
+        }
+        Value.Bytes(b) {
+            let n = len(b)
+            return Ok(Param{cType: C_BINARY, sqlType: SQL_VARBINARY, size: if n > 8000 { 0 } else if n == 0 { 1 } else { n },
+                            digits: 0, data: b, null: false})
+        }
+        Value.Dec(d) {
+            let t = try sqldialect.decimalText(d, 38)
+            let body = if len(t) > 0 && t[0] == '-' { t[1..] } else { t }
+            let dot = indexOf(body, ".", 0)
+            let ip = if dot < 0 { body } else { body[..dot] }
+            let s = if dot < 0 { 0 } else { len(body) - dot - 1 }
+            var lead = 0
+            while lead < len(ip) && ip[lead] == '0' { lead += 1 }
+            let p = max(len(ip) - lead + s, 1)
+            var digits = true
+            for i in 0..len(body) { digits = digits && (isDigit(body[i]) || i == dot) }
+            if p > 38 || !digits { return Err(sqldialect.dbError(sqldialect.E_DEC_RANGE, d.toStr() + " does not fit SQL Server's decimal(38)")) }
+            return Ok(Param{cType: C_CHAR, sqlType: SQL_DECIMAL, size: p, digits: s, data: t, null: false})
+        }
+    }
+}
+
+// The Dec value for decimal(p, s), checked first (sqldialect.fitDecimal): the
+// server would round a value with more fraction digits instead of failing.
+pub fn decimalParam(d: Decimal, p: int, s: int): Result[Value, Error] {
+    if p > 38 { return Err(sqldialect.dbError(sqldialect.E_DEC_METADATA, "SQL Server's decimal has at most 38 digits")) }
+    return Ok(Value.Dec(try sqldialect.fitDecimal(d, p, s)))
+}
+
+// ------------------------------------------------------------- statements
+
+// The buffers of one bound parameter, in C memory the Stmt owns.
+type Bound = record { value: ffi.Mem; ind: ffi.Mem }
+
+type Col = value record { name: str; sqlType: int; size: int; digits: int; nullable: int; kind: int }
+
+const K_TEXT = 0
+const K_INT = 1
+const K_FLOAT = 2
+const K_DEC = 3
+const K_BYTES = 4
+
+fn kindOf(t: int): int {
+    if t == SQL_BIGINT || t == SQL_INTEGER || t == SQL_SMALLINT || t == SQL_TINYINT || t == SQL_BIT { return K_INT }
+    if t == SQL_FLOAT || t == SQL_REAL || t == SQL_DOUBLE { return K_FLOAT }
+    if t == SQL_DECIMAL || t == SQL_NUMERIC { return K_DEC }
+    if t == SQL_BINARY || t == SQL_VARBINARY || t == SQL_LONGVARBINARY { return K_BYTES }
+    return K_TEXT
+}
+
+// A column of the current row, read once (SQLGetData reads each column once,
+// in ascending order).
+type Cell = value closed {
+    Unread
+    Null
+    Int(int)
+    Float(float)
+    Text(str)        // also a decimal's text
+    Bytes(str)
+    Failed(Error)
+}
+
+pub type Stmt = record {
+    h: ptr
+    conn: task.Shared[ConnState]
+    binds: []Option[Bound]   // by parameter number - 1; alive until rebound or dropped
+    cols: []Col
+    cells: []Cell
+    next: int                // the next column SQLGetData can read
+    row: bool                // a row is current
+    affected: int
+    buf: []byte              // SQLGetData's chunk buffer
+    maxValue: int
+}
+
+fn (s: mut &Stmt) drop() {
+    let h = s.h
+    var live = false
+    s.conn.with(fn(c) {
+        live = c.alive
+        for i in 0..len(c.stmts) {
+            if c.stmts[i] == h {
+                c.stmts[i] = c.stmts[len(c.stmts) - 1]
+                pop(mut &c.stmts)
+                break
+            }
+        }
+    })
+    if live { SQLFreeHandle(i32(H_STMT), h) }   // closes its cursor; the binds are freed after this
+    OPEN -= 1
+}
+
+// Frees the statement now (dropping it does the same).
+pub fn (s: Stmt) close() {}
+
+fn (s: &Stmt) live(): Result[Unit, Error] {
+    var alive = false
+    s.conn.with(fn(c) { alive = c.alive })
+    if !alive { return Err(sqldialect.dbError(sqldialect.E_CLOSED, "the statement's connection is closed")) }
+    return Ok(Unit{})
+}
+
+fn (s: &Stmt) fail(r: int, what: str): Error { return fail(H_STMT, s.h, r, what) }
+
+// The statement's diagnostic records from its last call (PRINT output and
+// other informational messages, warnings, errors).
+pub fn (s: &Stmt) diagnostics(): []Diag {
+    if s.live().isErr() { return [] }
+    return diags(H_STMT, s.h)
+}
+
+// The largest value (in bytes as the driver sends it: UTF-16 for text) a
+// column read accepts; a larger one is read past and is E_LIMIT.
+pub fn (s: mut &Stmt) setMaxValue(n: int) { s.maxValue = n }
+
+// The number of `?` parameters.
+pub fn (s: &Stmt) paramCount(): Result[int, Error] {
+    try s.live()
+    var n = array(2, byte(0))
+    let r = rc(SQLNumParams(s.h, mut &n))
+    if !ok(r) { return Err(s.fail(r, "parameter count")) }
+    return Ok(le(&n, 0, 2))
+}
+
+// Binds v to parameter i (from 1); it is used by every execute until bound again.
+pub fn (s: mut &Stmt) bind(i: int, v: Value): Result[Unit, Error] {
+    return s.bindParam(i, try paramOf(v))
+}
+
+// Checks d against decimal(p, sc) (sqldialect.fitDecimal) and binds it as
+// decimal(p, sc).
+pub fn (s: mut &Stmt) bindDecimal(i: int, d: Decimal, p: int, sc: int): Result[Unit, Error] {
+    var pm = try paramOf(try decimalParam(d, p, sc))
+    pm.size = p
+    return s.bindParam(i, pm)
+}
+
+// Binds a Param as it is (paramOf's, or one with another SQL type).
+pub fn (s: mut &Stmt) bindParam(i: int, p: Param): Result[Unit, Error] {
+    try s.live()
+    if i < 1 || i > MAX_PARAMS { return Err(sqldialect.inputError("parameter " + i.toStr() + " out of range")) }
+    var data = p.data
+    if p.cType == C_WCHAR { data = data + "\x00\x00" } else if p.cType == C_CHAR { data = data + "\x00" }
+    let b = Bound{value: ffi.copyBytes(data), ind: ffi.copyBytes(le8(if p.null { SQL_NULL_DATA } else { len(p.data) }))}
+    let r = rc(SQLBindParameter(s.h, i32(i), i32(PARAM_INPUT), i32(p.cType), i32(p.sqlType), p.size, i32(p.digits),
+                                b.value.ptr(), len(data), b.ind.ptr()))
+    if !ok(r) { return Err(s.fail(r, "bind")) }
+    while len(s.binds) < i { append(mut &s.binds, None) }
+    s.binds[i - 1] = Some(b)          // the old buffers go now that the driver no longer points at them
+    return Ok(Unit{})
+}
+
+// Binds args to parameters 1, 2, ...; there must be one for each parameter.
+pub fn (s: mut &Stmt) bindAll(args: &[Value]): Result[Unit, Error] {
+    let n = try s.paramCount()
+    if len(args) != n {
+        return Err(sqldialect.inputError(len(args).toStr() + " arguments for " + n.toStr() + " parameters"))
+    }
+    for i in 0..len(args) { try s.bind(i + 1, args[i]) }
+    return Ok(Unit{})
+}
+
+// Executes the prepared statement with its bound parameters (again, after
+// closing a previous result). The Stmt is before the first row.
+pub fn (s: mut &Stmt) execute(): Result[Unit, Error] {
+    try s.live()
+    s.clear()
+    let r = rc(SQLExecute(s.h))
+    return s.started(r, "execute")
+}
+
+fn (s: mut &Stmt) direct(sql: str): Result[Unit, Error] {
+    let w = try wide(sql, "SQL text")
+    try s.live()
+    s.clear()
+    let r = rc(SQLExecDirectW(s.h, &w, i32(SQL_NTS)))
+    return s.started(r, "execute")
+}
+
+// Closes the cursor of the current result, if any.
+fn (s: mut &Stmt) clear() {
+    SQLFreeStmt(s.h, i32(FREE_CLOSE))
+    s.cols = []
+    s.cells = []
+    s.row = false
+    s.affected = -1
+}
+
+// After an execute or SQLMoreResults that returned r: the result's columns
+// and row count. (SQL_NO_DATA: a searched UPDATE or DELETE that changed no row.)
+fn (s: mut &Stmt) started(r: int, what: str): Result[Unit, Error] {
+    if r == SQL_NO_DATA {
+        s.affected = 0
+        return Ok(Unit{})
+    }
+    if !ok(r) { return Err(s.fail(r, what)) }
+    var nb = array(2, byte(0))
+    let r2 = rc(SQLNumResultCols(s.h, mut &nb))
+    if !ok(r2) { return Err(s.fail(r2, "column count")) }
+    var cols: []Col = []
+    for k in 0..le(&nb, 0, 2) { append(mut &cols, try s.describe(k)) }
+    var n = 0
+    if ok(rc(SQLRowCount(s.h, mut &n))) { s.affected = n }
+    s.cells = array(len(cols), Cell.Unread)
+    s.cols = cols
+    return Ok(Unit{})
+}
+
+fn (s: &Stmt) describe(k: int): Result[Col, Error] {
+    var cap = 256
+    while true {
+        var name = array(2 * cap, byte(0))
+        var nlen = array(2, byte(0))
+        var ty = array(2, byte(0))
+        var size = 0
+        var digits = array(2, byte(0))
+        var nullable = array(2, byte(0))
+        let r = rc(SQLDescribeColW(s.h, i32(k + 1), mut &name, i32(cap), mut &nlen, mut &ty, mut &size, mut &digits, mut &nullable))
+        if !ok(r) { return Err(s.fail(r, "describe column")) }
+        let units = le(&nlen, 0, 2)
+        if units >= cap {
+            cap = units + 1
+            continue
+        }
+        let t = le(&ty, 0, 2)
+        return Ok(Col{name: try fromUtf16(&name[..2 * units]), sqlType: t, size: size, digits: le(&digits, 0, 2),
+                      nullable: le(&nullable, 0, 2), kind: kindOf(t)})
+    }
+    return Err(sqldialect.inputError("unreachable"))
+}
+
+// Moves to the next row of the current result: true when there is one,
+// false at its end (or when the result has no rows: a row count).
+pub fn (s: mut &Stmt) step(): Result[bool, Error] {
+    try s.live()
+    s.row = false
+    if len(s.cols) == 0 { return Ok(false) }
+    for k in 0..len(s.cells) { s.cells[k] = Cell.Unread }
+    s.next = 0
+    let r = rc(SQLFetch(s.h))
+    if r == SQL_NO_DATA { return Ok(false) }
+    if !ok(r) { return Err(s.fail(r, "fetch")) }
+    s.row = true
+    return Ok(true)
+}
+
+// Moves to the next result of a batch (SQLMoreResults): true when there is
+// one (with rows, or a row count), false when there are no more.
+pub fn (s: mut &Stmt) nextResult(): Result[bool, Error] {
+    try s.live()
+    s.cols = []
+    s.cells = []
+    s.row = false
+    s.affected = -1
+    let r = rc(SQLMoreResults(s.h))
+    if r == SQL_NO_DATA { return Ok(false) }
+    try s.started(r, "next result")
+    return Ok(true)
+}
+
+// Closes the current result so that the connection can run another
+// statement (no MARS); the bound parameters stay for the next execute.
+pub fn (s: mut &Stmt) reset() {
+    if s.live().isOk() { s.clear() }
+}
+
+// Rows changed by the statement (or by the current result of a batch); -1
+// when the driver does not say (a SELECT).
+pub fn (s: &Stmt) affected(): int { return s.affected }
+
+// ---------------------------------------------------------------- columns
+
+pub fn (s: &Stmt) columnCount(): int { return len(s.cols) }
+
+fn (s: &Stmt) col(col: int): Result[Col, Error] {
+    if col < 0 || col >= len(s.cols) {
+        return Err(sqldialect.inputError("column " + col.toStr() + " out of range (" + len(s.cols).toStr() + " columns)"))
+    }
+    return Ok(s.cols[col])
+}
+
+pub fn (s: &Stmt) columnName(col: int): Result[str, Error] { return Ok((try s.col(col)).name) }
+
+// The column's SQL type (SQL_INTEGER, SQL_WVARCHAR, ...).
+pub fn (s: &Stmt) columnType(col: int): Result[int, Error] { return Ok((try s.col(col)).sqlType) }
+
+// The column's size (SQLDescribeCol's ColumnSize: characters, bytes or digits).
+pub fn (s: &Stmt) columnSize(col: int): Result[int, Error] { return Ok((try s.col(col)).size) }
+
+// The precision and scale of a decimal, numeric, money or smallmoney column.
+// E_INEXACT for float and real, E_TYPE for another type.
+pub type DecimalType = value record { pub precision: int; pub scale: int }
+
+pub fn (s: &Stmt) decimalType(col: int): Result[DecimalType, Error] {
+    let c = try s.col(col)
+    if c.kind == K_FLOAT { return Err(inexact(col)) }
+    if c.kind != K_DEC { return Err(typeError(col, "a decimal")) }
+    if c.size < 1 || c.size > 38 || c.digits < 0 || c.digits > c.size {
+        return Err(sqldialect.dbError(sqldialect.E_DEC_METADATA, "invalid decimal(" + c.size.toStr() + ", " + c.digits.toStr() + ")"))
+    }
+    return Ok(DecimalType{precision: c.size, scale: c.digits})
+}
+
+fn typeError(col: int, want: str): Error {
+    return sqldialect.dbError(sqldialect.E_TYPE, "column " + col.toStr() + " is not " + want)
+}
+
+fn inexact(col: int): Error {
+    return sqldialect.dbError(sqldialect.E_INEXACT, "column " + col.toStr() + " is a binary float, not an exact decimal")
+}
+
+// The current row's value of col, read (with the columns before it) when first asked for.
+fn (s: mut &Stmt) cell(col: int): Result[Cell, Error] {
+    try s.live()
+    try s.col(col)
+    if !s.row { return Err(sqldialect.inputError("no current row")) }
+    while s.next <= col {
+        let c = s.read(s.next)
+        s.cells[s.next] = c
+        s.next += 1
+    }
+    match s.cells[col] {
+        Cell.Failed(e) { return Err(e) }
+        else { return Ok(s.cells[col]) }
+    }
+}
+
+// The one SQLGetData call: col into s.buf as cType; the SQLRETURN and the indicator.
+type Got = value record { r: int; ind: int }
+
+fn (s: mut &Stmt) getData(col: int, cType: int): Got {
+    var ind = 0
+    let cap = len(s.buf)
+    let r = rc(SQLGetData(s.h, i32(col + 1), i32(cType), mut &s.buf, cap, mut &ind))
+    return Got{r: r, ind: ind}
+}
+
+fn (s: mut &Stmt) read(k: int): Cell {
+    let kind = s.cols[k].kind
+    if kind == K_INT || kind == K_FLOAT {
+        let g = s.getData(k, if kind == K_INT { C_SBIGINT } else { C_DOUBLE })
+        if !ok(g.r) { return Cell.Failed(s.fail(g.r, "read column")) }
+        if g.ind == SQL_NULL_DATA { return Cell.Null }
+        let v = le(&s.buf, 0, 8)
+        return if kind == K_INT { Cell.Int(v) } else { Cell.Float(floatOfBits(v)) }
+    }
+    let wideText = kind != K_BYTES
+    var acc: []byte = []
+    var over = false
+    while true {
+        let cap = len(s.buf)
+        if wideText {
+            for i in 0..cap { s.buf[i] = 0xff }
+        }
+        let g = s.getData(k, if wideText { C_WCHAR } else { C_BINARY })
+        if g.r == SQL_NO_DATA { break }   // after the last chunk
+        if !ok(g.r) { return Cell.Failed(s.fail(g.r, "read column")) }
+        if g.ind == SQL_NULL_DATA { return Cell.Null }
+        var n = 0
+        let room = if wideText { cap - 2 } else { cap }
+        if g.r == SQL_SUCCESS && g.ind >= 0 && g.ind <= room {
+            n = g.ind
+        } else if wideText {
+            // A truncated chunk (or SQL_NO_TOTAL): the data ends at the driver's
+            // NUL unit, the last unit that is not the 0xFFFF fill.
+            var u = cap / 2 - 1
+            while u > 0 && s.buf[2 * u] == 0xff && s.buf[2 * u + 1] == 0xff { u -= 1 }
+            n = 2 * u
+        } else {
+            n = room
+        }
+        if !over && len(acc) + n > s.maxValue {
+            over = true
+            acc = []
+        }
+        if !over {
+            for i in 0..n { append(mut &acc, s.buf[i]) }
+        }
+        if g.r == SQL_SUCCESS { break }
+        if cap < MAX_CHUNK { s.buf = array(2 * cap, byte(0)) }
+    }
+    if over {
+        return Cell.Failed(sqldialect.dbError(sqldialect.E_LIMIT, "column " + k.toStr() + " is longer than " +
+            s.maxValue.toStr() + " bytes (setMaxValue)"))
+    }
+    if !wideText { return Cell.Bytes(strFromBytes(&acc)) }
+    match fromUtf16(&acc) {
+        Ok(t) { return Cell.Text(t) }
+        Err(e) { return Cell.Failed(sqldialect.dbError(e.code, "column " + k.toStr() + ": " + e.msg)) }
+    }
+}
+
+fn nullError(col: int): Error { return sqldialect.dbError(sqldialect.E_NULL, "column " + col.toStr() + " is NULL") }
+
+pub fn (s: mut &Stmt) isNull(col: int): Result[bool, Error] {
+    match try s.cell(col) {
+        Cell.Null { return Ok(true) }
+        else { return Ok(false) }
+    }
+}
+
+// A bigint, int, smallint, tinyint or bit value.
+pub fn (s: mut &Stmt) int(col: int): Result[int, Error] {
+    match try s.cell(col) {
+        Cell.Int(n) { return Ok(n) }
+        Cell.Null { return Err(nullError(col)) }
+        else { return Err(typeError(col, "an integer")) }
+    }
+}
+
+// A bit (or an integer that is 0 or 1).
+pub fn (s: mut &Stmt) bool(col: int): Result[bool, Error] {
+    let n = try s.int(col)
+    if n != 0 && n != 1 { return Err(typeError(col, "a 0 or 1 boolean")) }
+    return Ok(n == 1)
+}
+
+// A float or real (exact), or an integer that a float holds exactly.
+pub fn (s: mut &Stmt) float(col: int): Result[float, Error] {
+    match try s.cell(col) {
+        Cell.Float(f) { return Ok(f) }
+        Cell.Int(n) {
+            if n > 9007199254740992 || n < -9007199254740992 { return Err(typeError(col, "a float")) }
+            return Ok(float(n))
+        }
+        Cell.Null { return Err(nullError(col)) }
+        else { return Err(typeError(col, "a float")) }
+    }
+}
+
+// The value as text: the driver's text for text, date and time types and
+// uniqueidentifier (NUL characters kept), a decimal's exact text (0.5000,
+// not .5000), an integer's or float's digits. E_TYPE for a binary column.
+pub fn (s: mut &Stmt) text(col: int): Result[str, Error] {
+    let c = try s.cell(col)
+    match c {
+        Cell.Text(t) { return Ok(if s.cols[col].kind == K_DEC { leadingZero(t) } else { t }) }
+        Cell.Int(n) { return Ok(n.toStr()) }
+        Cell.Float(f) { return Ok(f.toStr()) }
+        Cell.Null { return Err(nullError(col)) }
+        else { return Err(typeError(col, "text")) }
+    }
+}
+
+// The exact bytes of a binary value, or the UTF-8 bytes of a text value.
+pub fn (s: mut &Stmt) bytes(col: int): Result[str, Error] {
+    match try s.cell(col) {
+        Cell.Bytes(b) { return Ok(b) }
+        Cell.Text(t) { return Ok(t) }
+        Cell.Null { return Err(nullError(col)) }
+        else { return Err(typeError(col, "binary or text")) }
+    }
+}
+
+// SQL Server writes decimals below one without the 0: -.5000, .0000.
+fn leadingZero(t: str): str {
+    if len(t) > 0 && t[0] == '.' { return "0" + t }
+    if len(t) > 1 && t[0] == '-' && t[1] == '.' { return "-0" + t[1..] }
+    return t
+}
+
+// A decimal, numeric, money or smallmoney value as an exact Decimal, with
+// the column's scale as its display scale (checked against its precision),
+// or an integer (scale 0). E_INEXACT for float and real, E_TYPE otherwise.
+pub fn (s: mut &Stmt) decimal(col: int): Result[Decimal, Error] {
+    let c = try s.cell(col)
+    match c {
+        Cell.Null { return Err(nullError(col)) }
+        Cell.Int(n) { return Ok(decimalOf(n)) }
+        Cell.Float(_) { return Err(inexact(col)) }
+        Cell.Text(t) {
+            let ty = try s.decimalType(col)
+            return sqldialect.fitDecimal(try sqldialect.parseDecimal(leadingZero(t)), ty.precision, ty.scale)
+        }
+        else { return Err(typeError(col, "a decimal")) }
+    }
+}
+
+// None for NULL (never zero), otherwise as decimal().
+pub fn (s: mut &Stmt) decimalOrNull(col: int): Result[Option[Decimal], Error] {
+    if try s.isNull(col) { return Ok(None) }
+    return Ok(Some(try s.decimal(col)))
+}
+
+// The value by its column's type: Null, Bool (bit), Int, Float, Dec
+// (decimal, numeric, money), Bytes (binary types) or Text.
+pub fn (s: mut &Stmt) value(col: int): Result[Value, Error] {
+    let c = try s.cell(col)
+    let kind = s.cols[col].kind
+    match c {
+        Cell.Null { return Ok(Value.Null) }
+        Cell.Int(n) { return Ok(if s.cols[col].sqlType == SQL_BIT { Value.Bool(n == 1) } else { Value.Int(n) }) }
+        Cell.Float(f) { return Ok(Value.Float(f)) }
+        Cell.Bytes(b) { return Ok(Value.Bytes(b)) }
+        Cell.Text(t) {
+            if kind == K_DEC { return Ok(Value.Dec(try s.decimal(col))) }
+            return Ok(Value.Text(t))
+        }
+        else { return Err(typeError(col, "readable")) }
+    }
+}
