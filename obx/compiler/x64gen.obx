@@ -2178,8 +2178,8 @@ type Hold = value record {
 // Puts rax (an integer or pointer, 8 bytes) aside while the code of the expression x (and of the
 // others of its statement that the caller generates before unhold) runs: in a register of
 // tmpRegs when that code is quiet, else in a callee-saved register that no local holds at x's
-// position nor another temporary (calleeTemp), else in a frame slot. Holds are released in the
-// reverse order.
+// position nor another temporary (calleeTemp; a new one only when the code is not quiet), else
+// in a frame slot. Holds are released in the reverse order.
 fn (g: mut &Gen) hold(x: int, quiet: bool): Hold {
     if quiet && g.tmpUsed < len(g.tmpRegs) {
         let r = g.tmpRegs[g.tmpUsed]
@@ -2187,9 +2187,8 @@ fn (g: mut &Gen) hold(x: int, quiet: bool): Hold {
         g.a.movRR(8, r, RAX)
         return Hold{r: r, s: 0, quiet: true}
     }
-    let r = g.calleeTemp(x)
+    let r = g.calleeTemp(x, !quiet)
     if r >= 0 {
-        append(mut &g.held, r)
         g.a.movRR(8, r, RAX)
         return Hold{r: r, s: 0, quiet: false}
     }
@@ -2251,19 +2250,25 @@ fn (g: &Gen) calleeFree(i: int, p: int): bool {
     return true
 }
 
-// A callee-saved register for a temporary at the position of node x, or -1: a free one of those
-// saved, else the next one, saved from now on (its slot is placed after the body). Not when a
-// return without restores was generated already: that return would not restore it.
-fn (g: mut &Gen) calleeTemp(x: int): int {
+// A callee-saved register for a temporary at the position of node x, held from now on (unhold
+// releases it), or -1: a free one of those saved, else, when fresh, the next one, saved from now
+// on (its slot is placed after the body). Not when a return without restores was generated
+// already: that return would not restore it. A new register costs its save and restore on every
+// call of the function; a slot costs a store and a load, which are slow around a call (the
+// load waits for the store through the callee's frame), so fresh is for values held across
+// calls.
+fn (g: mut &Gen) calleeTemp(x: int, fresh: bool): int {
     let p = g.posAt(x)
+    var r = -1
     for i in 0..len(g.saved) {
-        if g.calleeFree(i, p) { return LOCAL_REGS[i] }
+        if r < 0 && g.calleeFree(i, p) { r = LOCAL_REGS[i] }
     }
-    if len(g.saved) < len(LOCAL_REGS) && !g.bareRet {
+    if r < 0 && fresh && len(g.saved) < len(LOCAL_REGS) && !g.bareRet {
         append(mut &g.saved, 0)
-        return LOCAL_REGS[len(g.saved) - 1]
+        r = LOCAL_REGS[len(g.saved) - 1]
     }
-    return -1
+    if r >= 0 { append(mut &g.held, r) }
+    return r
 }
 
 // Whether the code of the expression x changes no register of QUIET_REGS but those of locals
@@ -2557,11 +2562,12 @@ fn (g: mut &Gen) genAssign(e: int) {
         g.a.movRR(8, R11, RAX)
         g.genInto(n.b, RAX)
     } else {
+        // the address waits while the value is evaluated
         g.genAddr(lhs)
-        let s = g.temp(8, 8)
-        g.a.store(8, rbp(s), RAX)
+        let h = g.hold(n.b, g.quietTree(n.b))
         g.gen(n.b)
-        g.a.load(8, R11, rbp(s))
+        g.unhold(h)
+        g.unholdInto(h, R11)
     }
     g.storeT(t, x64.mem(R11, 0))
     if g.isAggr(t) { g.a.movRR(8, RAX, R11) }
@@ -2951,12 +2957,19 @@ fn (g: mut &Gen) genCall(e: int) {
         return
     }
     var calleeSlot = 0
-    if direct < 0 {
-        g.gen(callee)
-        calleeSlot = g.temp(8, 8)
-        g.a.store(8, rbp(calleeSlot), RAX)
-    }
+    var calleeReg = -1
     let nargs = g.u.listLen(n.b)
+    if direct < 0 {
+        // the function pointer waits while the arguments are evaluated
+        g.gen(callee)
+        calleeReg = g.calleeTemp(e, !g.quietList(n.b))
+        if calleeReg >= 0 {
+            g.a.movRR(8, calleeReg, RAX)
+        } else {
+            calleeSlot = g.temp(8, 8)
+            g.a.store(8, rbp(calleeSlot), RAX)
+        }
+    }
     var ni = 0
     var nx = 0
     var retSlot = 0
@@ -2999,10 +3012,12 @@ fn (g: mut &Gen) genCall(e: int) {
     }
     var slots: []int = []
     var dups: []int = []
+    var hregs: []int = []           // an integer argument held in a callee-saved register, or -1
     for j in 0..nargs {
         let x = g.u.listAt(n.b, j)
         let t = pts[j]
         append(mut &dups, -1)
+        append(mut &hregs, -1)
         if place[j] < 0 && g.argDirect(x, t) {
             append(mut &slots, 0)
             continue
@@ -3028,6 +3043,20 @@ fn (g: mut &Gen) genCall(e: int) {
             dups[j] = g.u.listAt(g.u.nodes[x].b, 0)
             append(mut &slots, -1)
             continue
+        }
+        if place[j] < 0 && !g.isAggr(t) && !g.isF(t) && !g.is128(t) {
+            // while the later arguments are evaluated: across their calls, a new register if
+            // need be
+            var quiet = true
+            for k in j + 1..nargs {
+                if !g.quietTree(g.u.listAt(n.b, k)) { quiet = false }
+            }
+            hregs[j] = g.calleeTemp(x, !quiet)
+            if hregs[j] >= 0 {
+                g.a.movRR(8, hregs[j], RAX)
+                append(mut &slots, 2)
+                continue
+            }
         }
         let s = g.tempFor(t)
         if g.isAggr(t) {
@@ -3075,6 +3104,11 @@ fn (g: mut &Gen) genCall(e: int) {
                 ni += 1
                 continue
             }
+            if slots[j] == 2 {
+                g.a.movRR(8, INT_REGS[ni], hregs[j])
+                ni += 1
+                continue
+            }
             let m = if slots[j] == 0 { g.staticMem(x) } else if slots[j] == -1 { g.staticMem(dups[j]) } else {
                 rbp(slots[j])
             }
@@ -3090,6 +3124,13 @@ fn (g: mut &Gen) genCall(e: int) {
         }
     }
     if aggrRet && rcls[0] == CL_MEM { g.a.lea(RDI, rm) }
+    // the held registers are free again (the callee preserves them; the call reads the callee's)
+    var k = nargs - 1
+    while k >= 0 {
+        if hregs[k] >= 0 { pop(mut &g.held) }
+        k -= 1
+    }
+    if calleeReg >= 0 { pop(mut &g.held) }
     if direct >= 0 {
         let s = g.symFunc(direct, e)
         if g.syms[s].kind == SK_DYN {
@@ -3098,6 +3139,8 @@ fn (g: mut &Gen) genCall(e: int) {
         } else {
             g.a.callSym(s)
         }
+    } else if calleeReg >= 0 {
+        g.a.callR(calleeReg)
     } else {
         g.a.load(8, R11, rbp(calleeSlot))
         g.a.callR(R11)
