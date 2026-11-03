@@ -1,0 +1,324 @@
+// httpserver: the strict request parser (design/http-server.md 3.1-3.3).
+// Each case is a raw request stream; the line is the status of every reply
+// and whether the server then closed the connection. The rule is reject,
+// never repair, and close after any framing error: request smuggling
+// (CL.TE, TE.CL, TE.TE, CL.CL), bad lines, controls, obs-fold, bare CR and
+// LF, versions, target forms, Host, chunk sizes, extensions and trailers,
+// Expect, bodies on GET, leading empty lines, paths (dot segments raw and
+// encoded, NUL, invalid UTF-8), and header injection in a response.
+// expect: plain: 200 closed
+// expect: CL: 200 closed
+// expect: CL and TE: 400 closed
+// expect: TE and CL: 400 closed
+// expect: two CLs same: 400 closed
+// expect: two CLs differ: 400 closed
+// expect: CL list: 400 closed
+// expect: CL plus: 400 closed
+// expect: CL hex: 400 closed
+// expect: CL junk: 400 closed
+// expect: CL empty: 400 closed
+// expect: CL negative: 400 closed
+// expect: CL 19 digits: 400 closed
+// expect: CL over maxBody: 413 closed
+// expect: TE chunked: 200 closed
+// expect: TE Chunked: 200 closed
+// expect: TE chunked, identity: 400 closed
+// expect: TE xchunked: 400 closed
+// expect: TE gzip, chunked: 501 closed
+// expect: TE chunked, chunked: 400 closed
+// expect: TE twice: 400 closed
+// expect: TE identity: 400 closed
+// expect: TE folded: 400 closed
+// expect: TE in 1.0: 400 closed
+// expect: space before colon: 400 closed
+// expect: tab before colon: 400 closed
+// expect: obs-fold: 400 closed
+// expect: space line first: 400 closed
+// expect: bare LF line: 400 closed
+// expect: bare LF head: 400 closed
+// expect: bare CR: 400 closed
+// expect: NUL in value: 400 closed
+// expect: control in value: 400 closed
+// expect: DEL in value: 400 closed
+// expect: HTAB in value: 200 closed
+// expect: UTF-8 in value: 200 closed
+// expect: name not a token: 400 closed
+// expect: empty name: 400 closed
+// expect: no colon: 400 closed
+// expect: two spaces: 400 closed
+// expect: trailing space: 400 closed
+// expect: tab: 400 closed
+// expect: HTTP/0.9: 400 closed
+// expect: method not a token: 400 closed
+// expect: lower-case version: 400 closed
+// expect: HTTP/1.2: 200 closed
+// expect: HTTP/1.10: 400 closed
+// expect: HTTP/2.0: 505 closed
+// expect: HTTP/3.0: 505 closed
+// expect: h2 preface: 505 closed
+// expect: absolute-form: 200 closed
+// expect: absolute-form other host: 400 closed
+// expect: absolute-form ftp: 400 closed
+// expect: authority-form: 400 closed
+// expect: CONNECT: 405 closed
+// expect: OPTIONS *: 200 closed
+// expect: GET *: 400 closed
+// expect: no Host: 400 closed
+// expect: two Hosts: 400 closed
+// expect: empty Host: 400 closed
+// expect: Host with space: 400 closed
+// expect: Host with slash: 400 closed
+// expect: Host with user: 400 closed
+// expect: Host port: 200 closed
+// expect: Host bad port: 400 closed
+// expect: Host IPv6: 200 closed
+// expect: Host 1.0 none: 200 closed
+// expect: chunk size x: 400 closed
+// expect: chunk size empty: 400 closed
+// expect: chunk size space before: 400 closed
+// expect: chunk size space after: 400 closed
+// expect: chunk size -1: 400 closed
+// expect: chunk size 0x5: 400 closed
+// expect: chunk size 17 digits: 400 closed
+// expect: chunk size 16 digits: 200 closed
+// expect: chunk size overflow: 400 closed
+// expect: chunk over maxBody: 413 closed
+// expect: chunk ext: 200 closed
+// expect: chunk ext quoted: 200 closed
+// expect: chunk ext no name: 400 closed
+// expect: chunk ext bad value: 400 closed
+// expect: chunk ext huge: 400 closed
+// expect: chunk exts over 16 KiB: 400 closed
+// expect: chunk data too long: 400 closed
+// expect: chunk data LF: 400 closed
+// expect: chunk line LF: 400 closed
+// expect: trailer: 200 closed
+// expect: trailer folded: 400 closed
+// expect: trailer bad name: 400 closed
+// expect: trailers many: 400 closed
+// expect: trailers huge: 400 closed
+// expect: Expect 100-continue: 200 closed
+// expect: Expect 100-continue, body later: 100 200 closed
+// expect: Expect other: 417 closed
+// expect: Expect in 1.0: 200 closed
+// expect: GET with body: 200 200 closed
+// expect: GET with chunked body: 200 200 closed
+// expect: pipelined after smuggle: 400 closed
+// expect: leading CRLF: 200 closed
+// expect: leading 2 CRLFs: 200 closed
+// expect: leading 3 CRLFs: 400 closed
+// expect: dot dot: 400 closed
+// expect: dot: 400 closed
+// expect: encoded dot dot: 400 closed
+// expect: half-encoded dot dot: 400 closed
+// expect: double-encoded dot dot: 200 closed
+// expect: encoded slash: 400 closed
+// expect: encoded NUL: 400 closed
+// expect: encoded LF: 400 closed
+// expect: bad escape: 400 closed
+// expect: short escape: 400 closed
+// expect: overlong UTF-8: 400 closed
+// expect: invalid UTF-8: 400 closed
+// expect: valid UTF-8: 200 closed
+// expect: raw space: 400 closed
+// expect: raw byte 0x80: 400 closed
+// expect: empty segments: 200 closed
+// expect: no leading slash: 400 closed
+// expect: target 1000: 200 closed
+// expect: target 1001: 414 closed
+// expect: params 10: 200 closed
+// expect: params 11: 400 closed
+// expect: header injection: 500 closed
+// expect: header plain: 200 closed
+// expect: stop: 200 closed
+// expect: stopped: accepted 125, requests 127, open 0, rejected 73, timeouts 0, gone 0, errors 1
+import "task"
+import "net"
+import "strings"
+import "httpserver" as http
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { n: int }
+
+fn ok(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let body = try rq.text(100000)
+    return w.text(rq.method + " " + rq.path + " " + intToStr(len(body)) + "\n")
+}
+
+fn inject(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    w.header("X-Echo", rq.query("v").unwrapOr(""))
+    return w.text("injected?\n")
+}
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.handle("/", ok)
+    r.handle("GET /inject", inject)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+var ADDR: str = ""
+
+fn run(name: str, raw: str) { println(name + ": " + t.codes(&t.talk(ADDR, raw, 3000))) }
+
+// The parts written 100 ms apart.
+fn runParts(name: str, parts: &[str]) { println(name + ": " + t.codes(&t.talkParts(ADDR, parts, 100, 3000))) }
+
+const H = "Host: test\r\n"
+const C = "Connection: close\r\n"
+
+fn post(headers: str, body: str): str { return "POST / HTTP/1.1\r\n" + H + headers + C + "\r\n" + body }
+
+fn chunked(body: str): str { return post("Transfer-Encoding: chunked\r\n", body) }
+
+fn get(target: str): str { return "GET " + target + " HTTP/1.1\r\n" + H + C + "\r\n" }
+
+fn main() {
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        ADDR = ln.localAddr()
+        var cfg = sr.config()
+        cfg.maxBody = 50000
+        cfg.maxParams = 10
+        cfg.maxTargetBytes = 1000
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{n: 0}, r: routes(), cfg: cfg})
+        // framing: Content-Length and Transfer-Encoding
+        run("plain", get("/"))
+        run("CL", post("Content-Length: 5\r\n", "hello"))
+        run("CL and TE", post("Content-Length: 5\r\nTransfer-Encoding: chunked\r\n", "0\r\n\r\n"))
+        run("TE and CL", post("Transfer-Encoding: chunked\r\nContent-Length: 5\r\n", "0\r\n\r\n"))
+        run("two CLs same", post("Content-Length: 5\r\nContent-Length: 5\r\n", "hello"))
+        run("two CLs differ", post("Content-Length: 5\r\nContent-Length: 6\r\n", "hello!"))
+        run("CL list", post("Content-Length: 5, 5\r\n", "hello"))
+        run("CL plus", post("Content-Length: +5\r\n", "hello"))
+        run("CL hex", post("Content-Length: 0x5\r\n", "hello"))
+        run("CL junk", post("Content-Length: 5 x\r\n", "hello"))
+        run("CL empty", post("Content-Length: \r\n", "hello"))
+        run("CL negative", post("Content-Length: -1\r\n", "hello"))
+        run("CL 19 digits", post("Content-Length: 1234567890123456789\r\n", "hello"))
+        run("CL over maxBody", post("Content-Length: 60000\r\n", "hello"))
+        run("TE chunked", chunked("5\r\nhello\r\n0\r\n\r\n"))
+        run("TE Chunked", post("Transfer-Encoding: Chunked\r\n", "5\r\nhello\r\n0\r\n\r\n"))
+        run("TE chunked, identity", post("Transfer-Encoding: chunked, identity\r\n", "0\r\n\r\n"))
+        run("TE xchunked", post("Transfer-Encoding: xchunked\r\n", "0\r\n\r\n"))
+        run("TE gzip, chunked", post("Transfer-Encoding: gzip, chunked\r\n", "0\r\n\r\n"))
+        run("TE chunked, chunked", post("Transfer-Encoding: chunked, chunked\r\n", "0\r\n\r\n"))
+        run("TE twice", post("Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n", "0\r\n\r\n"))
+        run("TE identity", post("Transfer-Encoding: identity\r\n", "hello"))
+        run("TE folded", post("Transfer-Encoding:\r\n chunked\r\n", "0\r\n\r\n"))
+        run("TE in 1.0", "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+        // header lines
+        run("space before colon", "GET / HTTP/1.1\r\nHost : test\r\n" + C + "\r\n")
+        run("tab before colon", "GET / HTTP/1.1\r\n" + H + "X-A\t: 1\r\n" + C + "\r\n")
+        run("obs-fold", "GET / HTTP/1.1\r\n" + H + "X-A: 1\r\n 2\r\n" + C + "\r\n")
+        run("space line first", "GET / HTTP/1.1\r\n " + H + C + "\r\n")
+        run("bare LF line", "GET / HTTP/1.1\r\n" + H + "X-A: 1\n" + C + "\r\n")
+        run("bare LF head", "GET / HTTP/1.1\nHost: test\nConnection: close\n\n")
+        run("bare CR", "GET / HTTP/1.1\r\n" + H + "X-A: 1\rX-B: 2\r\n" + C + "\r\n")
+        run("NUL in value", "GET / HTTP/1.1\r\n" + H + "X-A: a\x00b\r\n" + C + "\r\n")
+        run("control in value", "GET / HTTP/1.1\r\n" + H + "X-A: a\x01b\r\n" + C + "\r\n")
+        run("DEL in value", "GET / HTTP/1.1\r\n" + H + "X-A: a\x7fb\r\n" + C + "\r\n")
+        run("HTAB in value", "GET / HTTP/1.1\r\n" + H + "X-A: a\tb\r\n" + C + "\r\n")
+        run("UTF-8 in value", "GET / HTTP/1.1\r\n" + H + "X-A: caf\xc3\xa9\r\n" + C + "\r\n")
+        run("name not a token", "GET / HTTP/1.1\r\n" + H + "X(A): 1\r\n" + C + "\r\n")
+        run("empty name", "GET / HTTP/1.1\r\n" + H + ": 1\r\n" + C + "\r\n")
+        run("no colon", "GET / HTTP/1.1\r\n" + H + "X-A 1\r\n" + C + "\r\n")
+        // the request line
+        run("two spaces", "GET  / HTTP/1.1\r\n" + H + C + "\r\n")
+        run("trailing space", "GET / HTTP/1.1 \r\n" + H + C + "\r\n")
+        run("tab", "GET\t/ HTTP/1.1\r\n" + H + C + "\r\n")
+        run("HTTP/0.9", "GET /\r\n\r\n")
+        run("method not a token", "G(T / HTTP/1.1\r\n" + H + C + "\r\n")
+        run("lower-case version", "GET / http/1.1\r\n" + H + C + "\r\n")
+        run("HTTP/1.2", "GET / HTTP/1.2\r\n" + H + C + "\r\n")
+        run("HTTP/1.10", "GET / HTTP/1.10\r\n" + H + C + "\r\n")
+        run("HTTP/2.0", "GET / HTTP/2.0\r\n" + H + C + "\r\n")
+        run("HTTP/3.0", "GET / HTTP/3.0\r\n" + H + C + "\r\n")
+        run("h2 preface", "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        // target forms and Host
+        run("absolute-form", "GET http://test/abs HTTP/1.1\r\n" + H + C + "\r\n")
+        run("absolute-form other host", "GET http://other/abs HTTP/1.1\r\n" + H + C + "\r\n")
+        run("absolute-form ftp", "GET ftp://test/abs HTTP/1.1\r\n" + H + C + "\r\n")
+        run("authority-form", "GET test:80 HTTP/1.1\r\n" + H + C + "\r\n")
+        run("CONNECT", "CONNECT test:443 HTTP/1.1\r\n" + H + C + "\r\n")
+        run("OPTIONS *", "OPTIONS * HTTP/1.1\r\n" + H + C + "\r\n")
+        run("GET *", "GET * HTTP/1.1\r\n" + H + C + "\r\n")
+        run("no Host", "GET / HTTP/1.1\r\n" + C + "\r\n")
+        run("two Hosts", "GET / HTTP/1.1\r\n" + H + H + C + "\r\n")
+        run("empty Host", "GET / HTTP/1.1\r\nHost: \r\n" + C + "\r\n")
+        run("Host with space", "GET / HTTP/1.1\r\nHost: a b\r\n" + C + "\r\n")
+        run("Host with slash", "GET / HTTP/1.1\r\nHost: a/b\r\n" + C + "\r\n")
+        run("Host with user", "GET / HTTP/1.1\r\nHost: u@a\r\n" + C + "\r\n")
+        run("Host port", "GET / HTTP/1.1\r\nHost: test:8080\r\n" + C + "\r\n")
+        run("Host bad port", "GET / HTTP/1.1\r\nHost: test:8x\r\n" + C + "\r\n")
+        run("Host IPv6", "GET / HTTP/1.1\r\nHost: [::1]:8080\r\n" + C + "\r\n")
+        run("Host 1.0 none", "GET / HTTP/1.0\r\n\r\n")
+        // chunked bodies
+        run("chunk size x", chunked("x\r\nhello\r\n0\r\n\r\n"))
+        run("chunk size empty", chunked("\r\nhello\r\n0\r\n\r\n"))
+        run("chunk size space before", chunked(" 5\r\nhello\r\n0\r\n\r\n"))
+        run("chunk size space after", chunked("5 \r\nhello\r\n0\r\n\r\n"))
+        run("chunk size -1", chunked("-1\r\nhello\r\n0\r\n\r\n"))
+        run("chunk size 0x5", chunked("0x5\r\nhello\r\n0\r\n\r\n"))
+        run("chunk size 17 digits", chunked("00000000000000005\r\nhello\r\n0\r\n\r\n"))
+        run("chunk size 16 digits", chunked("0000000000000005\r\nhello\r\n0\r\n\r\n"))
+        run("chunk size overflow", chunked("fffffffffffffff0\r\nhello\r\n0\r\n\r\n"))
+        run("chunk over maxBody", chunked("ffff\r\nhello\r\n0\r\n\r\n"))
+        run("chunk ext", chunked("5;a=b\r\nhello\r\n0;c\r\n\r\n"))
+        run("chunk ext quoted", chunked("5;a=\"x y\"\r\nhello\r\n0\r\n\r\n"))
+        run("chunk ext no name", chunked("5;=b\r\nhello\r\n0\r\n\r\n"))
+        run("chunk ext bad value", chunked("5;a=b c\r\nhello\r\n0\r\n\r\n"))
+        run("chunk ext huge", chunked("5;a=" + t.repeat("x", 5000) + "\r\nhello\r\n0\r\n\r\n"))
+        run("chunk exts over 16 KiB", chunked(t.repeat("1;a=" + t.repeat("x", 3000) + "\r\nh\r\n", 6) + "0\r\n\r\n"))
+        run("chunk data too long", chunked("5\r\nhelloX\r\n0\r\n\r\n"))
+        run("chunk data LF", chunked("5\r\nhello\n0\r\n\r\n"))
+        run("chunk line LF", chunked("5\nhello\r\n0\r\n\r\n"))
+        run("trailer", chunked("5\r\nhello\r\n0\r\nX-T: 1\r\n\r\n"))
+        run("trailer folded", chunked("0\r\nX-T: 1\r\n 2\r\n\r\n"))
+        run("trailer bad name", chunked("0\r\nX T: 1\r\n\r\n"))
+        run("trailers many", chunked("0\r\n" + t.repeat("X-T: 1\r\n", 40) + "\r\n"))
+        run("trailers huge", chunked("0\r\nX-T: " + t.repeat("x", 9000) + "\r\n\r\n"))
+        // Expect
+        run("Expect 100-continue", post("Content-Length: 5\r\nExpect: 100-continue\r\n", "hello"))
+        runParts("Expect 100-continue, body later", &[post("Content-Length: 5\r\nExpect: 100-continue\r\n", ""), "hello"])
+        run("Expect other", post("Content-Length: 5\r\nExpect: tea\r\n", "hello"))
+        run("Expect in 1.0", "POST / HTTP/1.0\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\nhello")
+        // bodies on GET and pipelining
+        run("GET with body", "GET / HTTP/1.1\r\n" + H + "Content-Length: 5\r\n\r\nhello" + get("/next"))
+        run("GET with chunked body", "GET / HTTP/1.1\r\n" + H + "Transfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\n\r\n" + get("/next"))
+        run("pipelined after smuggle", post("Content-Length: 5\r\nTransfer-Encoding: chunked\r\n", "0\r\n\r\n") + get("/smuggled"))
+        run("leading CRLF", "\r\n" + get("/"))
+        run("leading 2 CRLFs", "\r\n\r\n" + get("/"))
+        run("leading 3 CRLFs", "\r\n\r\n\r\n" + get("/"))
+        // paths
+        run("dot dot", get("/a/../b"))
+        run("dot", get("/a/./b"))
+        run("encoded dot dot", get("/a/%2e%2e/b"))
+        run("half-encoded dot dot", get("/a/.%2E/b"))
+        run("double-encoded dot dot", get("/a/%252e%252e/b"))
+        run("encoded slash", get("/a%2Fb"))
+        run("encoded NUL", get("/a%00b"))
+        run("encoded LF", get("/a%0ab"))
+        run("bad escape", get("/a%zzb"))
+        run("short escape", get("/a%2"))
+        run("overlong UTF-8", get("/a%c0%afb"))
+        run("invalid UTF-8", get("/a%ffb"))
+        run("valid UTF-8", get("/caf%C3%A9"))
+        run("raw space", "GET /a b HTTP/1.1\r\n" + H + C + "\r\n")
+        run("raw byte 0x80", "GET /a\x80 HTTP/1.1\r\n" + H + C + "\r\n")
+        run("empty segments", get("//a//b"))
+        run("no leading slash", get("a"))
+        run("target 1000", get("/" + t.repeat("a", 999)))
+        run("target 1001", get("/" + t.repeat("a", 1000)))
+        run("params 10", get("/?" + t.repeat("a=1&", 9) + "a=1"))
+        run("params 11", get("/?" + t.repeat("a=1&", 10) + "a=1"))
+        // responses built from input
+        run("header injection", get("/inject?v=a%0d%0aSet-Cookie:%20x=1"))
+        run("header plain", get("/inject?v=fine"))
+        run("stop", "POST /stop HTTP/1.1\r\n" + H + "Content-Length: 0\r\n\r\n")
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out)
+}

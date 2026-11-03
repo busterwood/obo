@@ -1,0 +1,119 @@
+// httpserver: a client that goes away cancels its handler's task
+// (design/http-server.md 2.5): a close, or a half-close with
+// cancelOnHalfClose (the default), while the handler runs. A half-close
+// the client made before the handler began (a request and then
+// shutdown(SHUT_WR), as some clients send) does not cancel it: the reply
+// is written. With cancelOnHalfClose off a half-close does not cancel
+// either. The counters count the gone requests.
+// expect: close while it runs: closed; handler cancelled (cancelled) early
+// expect: half-close while it runs: no reply, end; handler cancelled (cancelled) early
+// expect: half-close before it runs: HTTP/1.1 200, end; handler finished
+// expect: stopped: accepted 4, requests 4, open 0, rejected 0, timeouts 0, gone 2, errors 0
+// expect: no cancelOnHalfClose, half-close while it runs: HTTP/1.1 200, end; handler finished
+// expect: no cancelOnHalfClose, close while it runs: closed; handler finished
+// expect: stopped: accepted 3, requests 3, open 0, rejected 0, timeouts 0, gone 0, errors 0
+import "task"
+import "net"
+import "httpserver" as http
+import "time" as tm
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+type App = value record { n: int }
+
+var RESULT: str = ""
+
+fn nowMs(): int { return tm.monotonicNs() / 1000000 }
+
+fn slow(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let ms = rq.paramInt("ms").unwrapOr(0)
+    let t0 = nowMs()
+    match task.sleep(ms) {
+        Ok(_) {
+            RESULT = "finished"
+            return w.text("done\n")
+        }
+        Err(c) {
+            RESULT = "cancelled (" + c.toStr() + ")" + (if nowMs() - t0 < ms { " early" } else { " late" })
+            return Err(http.error(499, "gone"))
+        }
+    }
+}
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.handle("GET /slow/{ms}", slow)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+fn waitResult(): str {
+    var n = 0
+    while len(RESULT) == 0 && n < 300 {
+        task.sleep(10).unwrap()
+        n += 1
+    }
+    let r = RESULT
+    RESULT = ""
+    return r
+}
+
+// Sends the request; after pauseMs closes the connection (how: "close" or
+// "half"); then reads what comes.
+fn client(addr: str, ms: int, pauseMs: int, how: str): str {
+    let c = net.connect(addr).unwrap()
+    c.writeStr("GET /slow/" + intToStr(ms) + " HTTP/1.1\r\nHost: test\r\n\r\n").unwrap()
+    if pauseMs > 0 { task.sleep(pauseMs).unwrap() }
+    if how == "close" {
+        c.close()
+        return "closed"
+    }
+    c.closeWrite().unwrap()
+    var buf = array(4096, byte(0))
+    var got = ""
+    let r = task.within(3000, fn(): str {
+        while true {
+            match c.read(mut &buf) {
+                Ok(n) {
+                    if n == 0 { return "end" }
+                    got = got + strFromBytes(&buf[0..n])
+                }
+                Err(e) { return e.toStr() }
+            }
+        }
+        return ""
+    })
+    return if len(got) >= 12 { got[0..12] + ", " + r } else { "no reply, " + r }
+}
+
+fn cfgDefault(): http.Config { return sr.config() }
+
+fn cfgNoHalf(): http.Config {
+    var c = sr.config()
+    c.cancelOnHalfClose = false
+    return c
+}
+
+fn cases(mk: fn(): http.Config, which: int) {
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let a = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{n: 0}, r: routes(), cfg: mk()})
+        if which == 0 {
+            println("close while it runs: " + client(a, 2000, 100, "close") + "; handler " + waitResult())
+            println("half-close while it runs: " + client(a, 2000, 100, "half") + "; handler " + waitResult())
+            println("half-close before it runs: " + client(a, 200, 0, "half") + "; handler " + waitResult())
+        } else {
+            println("no cancelOnHalfClose, half-close while it runs: " + client(a, 300, 100, "half") + "; handler " + waitResult())
+            println("no cancelOnHalfClose, close while it runs: " + client(a, 2000, 100, "close") + "; handler " + waitResult())
+        }
+        let g = t.talk(a, "POST /stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n", 3000)
+        return srv.wait().unwrap()
+    })
+    println("stopped: " + out)
+}
+
+fn main() {
+    cases(cfgDefault, 0)
+    cases(cfgNoHalf, 1)
+}
