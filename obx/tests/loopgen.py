@@ -10,7 +10,11 @@ negative, huge or changed in the loop, sieves over a fresh `array(m, v)` whose i
 by the outer index and may run past the end) whose bodies read and write elements at
 the index and near it, store then load, append, pop, reassign the array, pass it `mut &` to
 functions that grow or shrink it, change the index or the bound, break and continue, and call a
-closure that appends to the array it captures. Many programs end in a bounds or overflow trap
+closure that appends to the array it captures. Some programs also have functions that loop over
+two `mut &` records (the eighth performance step's loads out of loops), reading their fields,
+arrays and a child record's, and writing them in every way: stores, methods, a `mut &` to a
+member, appends, a whole record replaced, recursion, a closure, an Option field set and matched.
+Many programs end in a bounds or overflow trap
 partway, with output before it. It is built through C and with --native, both run under
 OBX_CHECK=1 (a leak exits 5), and their exit codes, stdout and stderr must be equal. A program
 the compiler rejects counts as `nocompile` (the generator's fault, not a failure). Exit 1 on any
@@ -50,7 +54,80 @@ fn sliceSum(s: &[int]): int {
 
 fn bump(a: mut &[]int, i: int) { a[i] = a[i] + 1 }
 
+type P = value record { x: int; y: int }
+type Kid = record { v: int; w: []int }
+type R = record {
+    n: int
+    xs: []int
+    ys: []int
+    p: P
+    kid: Kid
+    o: Option[Kid]
+    bs: []byte
+}
+
+fn mkR(n: int): R {
+    return R{n: n, xs: [n, 1, 2, 3, 4], ys: [7, n], p: P{x: n, y: 1}, kid: Kid{v: n, w: [1, n]}, o: None,
+        bs: [byte(n), 2, 3]}
+}
+
+fn rN(r: mut &R) { r.n = r.n + 1 }
+fn rXs(r: mut &R) { if len(r.xs) < 30 { append(mut &r.xs, r.n) } }
+fn rYs(r: mut &R) { if len(r.ys) > 1 { let t = pop(mut &r.ys) } }
+fn rKid(r: mut &R) { r.kid = Kid{v: r.n + 3, w: [r.n, 2, 3]} }
+fn rKidV(k: mut &Kid) { k.v = k.v + 2 }
+fn rPx(p: mut &P) { p.x = p.x * 2 + 1 }
+fn rArr(a: mut &[]int) { if len(a) < 30 { append(a, 5) } }
+fn rAll(r: mut &R) { r = mkR(r.n + 1) }
+fn rDeep(r: mut &R, d: int) {
+    if d > 0 {
+        r.p.y = r.p.y + 1
+        rDeep(r, d - 1)
+    }
+}
+fn rRead(r: &R): int { return r.n + len(r.xs) + r.kid.v + r.p.x }
+fn rSome(r: mut &R) { r.o = Some(Kid{v: r.n, w: [4]}) }
+
 '''
+
+# statements of a loop over the borrowed records r and q (index i): reads of their scalar fields
+# and arrays' elements and lengths, and writes of the same in every way (stores, methods, `mut &`
+# to a member, appends, whole records replaced, recursion, closures)
+RSTMTS = [
+    'acc = acc + r.n',
+    'acc = acc + r.xs[%(i)s %% len(r.xs)]',
+    'acc = acc + r.ys[%(i)s %% len(r.ys)] + len(r.ys)',
+    'acc = acc + r.p.x - r.p.y',
+    'acc = acc + r.kid.v + r.kid.w[%(i)s %% len(r.kid.w)]',
+    'acc = acc + int(r.bs[%(i)s %% len(r.bs)])',
+    'acc = acc + q.n + q.xs[0]',
+    'acc = acc + r.xs[%(i)s]',
+    'acc = acc + rRead(&r)',
+    'match r.o { Some(k) { acc = acc + k.v } None { acc = acc + 1 } }',
+    'r.n = r.n + 1',
+    'q.n = q.n + 2',
+    'rN(r)',
+    'rN(q)',
+    'rXs(r)',
+    'rYs(r)',
+    'rKid(r)',
+    'rKidV(mut &r.kid)',
+    'rPx(mut &r.p)',
+    'rArr(mut &r.xs)',
+    'rArr(mut &r.kid.w)',
+    'if acc %% 7 == 3 { rAll(r) }',
+    'rDeep(r, 2)',
+    'rSome(r)',
+    'r.o = None',
+    'r.xs[%(i)s %% len(r.xs)] = acc %% 100',
+    'r.bs[0] = byte(acc %% 256)',
+    'r.kid.v = r.kid.v - 1',
+    'r.kid.w = [acc %% 9]',
+    'if len(r.xs) < 30 { append(mut &r.xs, %(i)s) }',
+    'acc = acc + f(r.n)',
+    'acc = acc + g()',
+    'if acc > %(big)d { break }',
+]
 
 
 class Gen:
@@ -260,8 +337,47 @@ class Gen:
             self.emit(1, '}')
         self.emit(1, 'println(intToStr(acc) + " " + intToStr(len(a)) + " " + intToStr(n))')
 
+    # a function looping over borrowed records (the loads (C) may read once before its loops)
+    def rfunc(self):
+        r = self.rng
+        name = self.name('rf')
+        lines = ['fn %s(r: mut &R, q: mut &R, n: int): int {' % name, '    var acc = 0',
+                 '    let f = fn(v: int): int { return v %% %d }' % r.randrange(2, 9),
+                 '    let g = fn(): int { return 3 }']
+        for _ in range(r.randrange(1, 3)):
+            i = self.name('i')
+            if r.randrange(2):
+                lines.append('    var %s = 0' % i)
+                lines.append('    while %s < %s {' % (i, r.choice(['n', 'len(r.xs)', 'len(r.ys) + 1', '%d' % r.randrange(0, 9)])))
+                tail = '        %s = %s + 1' % (i, i)
+            else:
+                lines.append('    for %s in 0..%s {' % (i, r.choice(['n', 'len(r.xs)', 'len(r.kid.w)', '%d' % r.randrange(0, 9)])))
+                tail = None
+            # mostly reads, a few writes: the reads with no write of theirs are the ones hoisted
+            for _ in range(r.randrange(1, 7)):
+                s = r.choice(RSTMTS[:10] * 3 + RSTMTS[10:])
+                lines.append('        ' + s % {'i': i, 'big': r.randrange(100, 5000)})
+            if r.randrange(3) == 0:
+                # an inner loop over q's array
+                k = self.name('k')
+                lines.append('        for %s in 0..len(q.xs) { acc = acc + q.xs[%s] + r.n }' % (k, k))
+            if tail:
+                lines.append(tail)
+            lines.append('    }')
+        lines.append('    return acc')
+        lines.append('}')
+        self.funcs.append('\n'.join(lines))
+        return name
+
     def program(self):
         r = self.rng
+        self.funcs = []
+        rfs = [self.rfunc() for _ in range(r.randrange(0, 3))]
+        if rfs:
+            self.emit(1, 'var ra = mkR(%d)\nvar rb = mkR(%d)' % (r.randrange(0, 5), r.randrange(0, 5)))
+            for f in rfs:
+                self.emit(1, 'println(intToStr(%s(mut &ra, mut &rb, %d)) + " " + intToStr(rRead(&ra)) + " " + intToStr(rRead(&rb)))'
+                          % (f, r.randrange(0, 12)))
         self.emit(1, 'var a: []int = %s' % self.arr())
         self.emit(1, 'var b: []int = %s' % self.arr())
         self.emit(1, 'var c: []int = %s' % self.arr())
@@ -270,7 +386,7 @@ class Gen:
         for _ in range(r.randrange(2, 7)):
             self.loop()
         self.emit(1, 'println(intToStr(total(&a)) + " " + intToStr(total(&b)) + " " + intToStr(total(&c)) + " " + intToStr(j))')
-        return HEAD + 'fn main() {\n' + '\n'.join(self.lines) + '\n}\n'
+        return HEAD + ''.join(f + '\n\n' for f in self.funcs) + 'fn main() {\n' + '\n'.join(self.lines) + '\n}\n'
 
 
 def one(k, a, out):

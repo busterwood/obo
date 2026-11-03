@@ -159,6 +159,7 @@ type Gen = record {
     held: []int                 // the callee-saved registers holding temporaries (hold), innermost last
     nLocalRegs: int             // the callee-saved registers some local has: LOCAL_REGS[0..nLocalRegs)
     bareRet: bool               // a return with no restores was generated: no register can be saved anew
+    rm: Map[int, int]           // remat: the locals whose uses read their places again, to the places
 }
 
 // A call of rt_trap(code, msg, where) out of line, at the end of a function: its label.
@@ -177,7 +178,7 @@ fn newGen(u: ir.Ir): Gen {
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
         loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false, posOf: [], posSeen: [],
-        inlPos: -1, held: [], nLocalRegs: 0, bareRet: false}
+        inlPos: -1, held: [], nLocalRegs: 0, bareRet: false, rm: newMap()}
     g.a.peep = true
     for i in 0..len(rtx.SYM_NAMES) { g.rtAddr.put(rtx.SYM_NAMES[i], rtx.SYM_ADDRS[i]) }
     for i in 0..len(g.u.funcs) {
@@ -480,6 +481,13 @@ fn (g: mut &Gen) genFunc(f: int) {
     g.loopEnds = []
     g.curFunc = f
     g.allocRegs(f)
+    var again = 0
+    while again < 4 && g.remat(f) {
+        g.frame = 0
+        g.maxFrame = 0
+        g.allocRegs(f)
+        again += 1
+    }
     g.nLocalRegs = len(g.saved)
     g.held = []
     g.bareRet = false
@@ -1445,6 +1453,116 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
         g.scan(n.d, depth + 1)
         g.exitLoop()
     }
+}
+
+// ---------------------------------------------------------------- loads read again
+//
+// A local that loops hoisted a load into (ir.hoisted: `T ld = b->f.g;` before a loop, b a
+// pointer never assigned, the place written nowhere in the loop, which alone names ld) and that
+// gets no register would cost a load and a store before the loop and a load from its slot at each
+// use. Its declaration is dropped instead and each use reads the place again: the value is the
+// same (nothing writes it, b is not assigned) and the load cannot fault (b points to an object
+// that is there throughout the loop, loops.obx (C)). Then the registers are chosen again: b is
+// now named in the loop.
+
+// Whether some local of function f was turned so.
+fn (g: mut &Gen) remat(f: int): bool {
+    // the loads that other loads read through (a record's pointer) stay: read again, each use
+    // would cost two loads
+    var bases: []int = []
+    for j in 0..len(g.touched) {
+        let d = g.u.hoisted.getOr(&g.touched[j], -1)
+        if d >= 0 && g.u.nk(d) == ir.S_DECL && g.u.nodes[d].b >= 0 {
+            var r = g.u.nodes[d].b
+            while g.u.nk(r) == ir.E_MEMBER || g.u.nk(r) == ir.E_DEREF { r = g.u.nodes[r].a }
+            if g.u.nk(r) == ir.E_LOCAL { append(mut &bases, g.u.nodes[r].a) }
+        }
+    }
+    var inits: []int = []
+    for j in 0..len(g.touched) {
+        let l = g.touched[j]
+        if g.reg[l] >= 0 || g.inner[l] || hasInt(&bases, l) { continue }
+        let d = g.u.hoisted.getOr(&l, -1)
+        if d < 0 || g.u.nk(d) != ir.S_DECL || g.u.nodes[d].a != l || g.u.nodes[d].b < 0 || g.u.nodes[d].c >= 0 {
+            continue
+        }
+        let init = g.u.nodes[d].b
+        g.rm.put(l, init)
+        append(mut &inits, init)
+        g.u.nodes[d].k = ir.S_EMPTY
+        g.u.nodes[d].a = -1
+        g.u.nodes[d].b = -1
+    }
+    if len(inits) == 0 { return false }
+    g.rematWalk(g.u.funcs[f].body)
+    // the locals the places name are named more often now: no fused declaration of them
+    for i in inits { g.rematUses(i) }
+    g.rm = newMap()
+    return true
+}
+
+fn hasInt(xs: &[]int, v: int): bool {
+    for x in xs {
+        if x == v { return true }
+    }
+    return false
+}
+
+fn (g: mut &Gen) rematUses(x: int) {
+    var r = x
+    while g.u.nk(r) == ir.E_MEMBER || g.u.nk(r) == ir.E_DEREF { r = g.u.nodes[r].a }
+    if g.u.nk(r) == ir.E_LOCAL { g.uses[g.u.nodes[r].a] += 1000 }
+}
+
+fn (g: mut &Gen) rematWalk(x: int) {
+    if x < 0 { return }
+    let n = g.u.nodes[x]
+    let k = n.k
+    if k == ir.E_LOCAL {
+        let i = g.rm.getOr(&n.a, -1)
+        if i >= 0 {
+            // the use becomes the place (its operands shared with the declaration's)
+            g.u.nodes[x].k = g.u.nodes[i].k
+            g.u.nodes[x].a = g.u.nodes[i].a
+            g.u.nodes[x].v = g.u.nodes[i].v
+            g.rematWalk(g.u.nodes[x].a)
+        }
+        return
+    }
+    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_GLOBAL || k == ir.E_FUNC ||
+        k == ir.S_BREAK || k == ir.S_CONTINUE || k == ir.S_CASE || k == ir.S_DEFAULT || k == ir.S_EMPTY {
+        return
+    }
+    if k == ir.E_CALL {
+        g.rematWalk(n.a)
+        g.rematList(n.b)
+        return
+    }
+    if k == ir.E_CLIT {
+        g.rematList(n.b)
+        return
+    }
+    if k == ir.S_BLOCK {
+        g.rematList(n.a)
+        return
+    }
+    if k == ir.S_DECL {
+        g.rematWalk(n.b)
+        g.rematList(n.c)
+        return
+    }
+    g.rematWalk(n.a)
+    if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD || k == ir.S_SWITCH ||
+        k == ir.S_WHILE || k == ir.E_COND || k == ir.S_IF || k == ir.S_FOR {
+        g.rematWalk(n.b)
+    }
+    if k == ir.E_COND || k == ir.S_IF || k == ir.S_FOR { g.rematWalk(n.c) }
+    if k == ir.S_FOR { g.rematWalk(n.d) }
+}
+
+fn (g: mut &Gen) rematList(l: int) {
+    if l < 0 { return }
+    for j in 0..g.u.listLen(l) { g.rematWalk(g.u.listAt(l, j)) }
 }
 
 // Whether a and b are the same lvalue in memory that needs no code (a local or a member).
