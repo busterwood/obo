@@ -1,6 +1,6 @@
 # An HTTP server library for obx
 
-Status: research and design, 2026-11-03. Nothing here is built. It builds on
+Status: design agreed 2026-11-03 (section 8 records the decisions); S1 starts after the client's H1 merges. Nothing here is built yet. It builds on
 stage C1 and C2 of [concurrency.md](concurrency.md) (tasks, `net`,
 `blocking` externs, `task.workers`) and on [http-client.md](http-client.md)
 (phase H1: the shared request-head parser in `lib/http.obx`; phase H2: TLS
@@ -948,6 +948,18 @@ Gate:
 
 The library works without any of these. Each is a question with a
 recommendation.
+
+**Decided 2026-11-03: every recommendation below is accepted.**
+- No interface values or closures for handlers (1).
+- Error conversion in `try`: later (2).
+- Derived decoding: later, designed with `wire` (3).
+- "Can park" checking: later, as decided (4).
+- No "cannot panic" check (5).
+- `task.Frozen[T]`: yes (6).
+- Seeded string hashing: yes, as SipHash-1-3 with a per-process key (7).
+- `task.onCancelCall`: yes, in S1 (8).
+- No panic per task (9).
+- Shared integer counters: S4 (10).
 
 1. **Interface values or escaping closures for handlers?** Today a handler
    is a plain `fn` value with an `app: &A` parameter. Go's `Handler`
