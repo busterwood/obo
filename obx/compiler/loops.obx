@@ -90,6 +90,7 @@ const W_PLACES = 3      // the header places the tree reads (places)
 const W_KILLS = 4       // the locals the tree writes (klist), whether it may write memory (kmem)
 const W_ROOTS = 5       // the roots the tree may change (rmark, rall)
 const W_POST = 6        // the facts of the bounds checks the tree surely makes
+const W_COUNT = 7       // the writes of local c: `c = c + 1` 1, any other (or one in a loop) 2
 
 type Loops = record {
     u: ir.Ir
@@ -408,6 +409,7 @@ fn (o: mut &Loops) go(x: int, op: int, c: int): int {
     if op == W_PLACES { return o.placesW(x) }
     if op == W_KILLS { return o.killsW(x) }
     if op == W_ROOTS { return o.rootsW(x, c) }
+    if op == W_COUNT { return o.countW(x, c) }
     return o.postW(x)
 }
 
@@ -644,6 +646,20 @@ fn (o: &Loops) stepLocal(e: int, l: int): int {
     if o.u.nk(a) != ir.E_LOCAL || o.u.nodes[a].a != l || o.u.nk(b) != ir.E_LOCAL || o.u.nodes[b].a == l { return -1 }
     if o.u.nodes[b].ty != o.u.locals[l].ty { return -1 }
     return o.u.nodes[b].a
+}
+
+// W_COUNT: how often the tree writes local l, as 1 for each `l = l + 1` (checked) and 2 for
+// any other write or for a write inside a loop of the tree (it may run more than once).
+fn (o: mut &Loops) countW(x: int, l: int): int {
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.S_WHILE || k == ir.S_FOR { return if o.down(x, W_COUNT, l) > 0 { 2 } else { 0 } }
+    var n = 0
+    if (k == ir.E_ASSIGN || k == ir.E_POSTINC) && o.u.nk(a) == ir.E_LOCAL && o.u.nodes[a].a == l {
+        n = if k == ir.E_ASSIGN && o.step(o.u.nodes[x].b, l) == 1 { 1 } else { 2 }
+    }
+    if k == ir.S_DECL && a == l { n = 2 }
+    return n + o.down(x, W_COUNT, l)
 }
 
 // W_POST: the facts of the bounds checks (rt_idx calls that remain) the tree makes whatever
@@ -1442,6 +1458,9 @@ fn (o: mut &Loops) loop(s: int) {
     let mem = o.kmem
     var ind: []int = []
     var los: []int = []
+    var cnt: []int = []
+    var his: []int = []
+    o.counters(s, &written, nbd, &steps, stamp, mut &cnt, mut &his)
     for j in 0..len(written) {
         let l = written[j]
         let k = o.u.tk(o.u.locals[l].ty)
@@ -1456,6 +1475,7 @@ fn (o: mut &Loops) loop(s: int) {
     for l in written { o.kill(l) }
     if mem { o.killStores() }
     for j in 0..len(ind) { o.add(Fact{k: F_LO, a: ind[j], b: -1, c: 0, d: -1, v: los[j]}) }
+    for j in 0..len(cnt) { o.add(Fact{k: F_HI, a: cnt[j], b: -1, c: 0, d: -1, v: his[j]}) }
     let base = copyFacts(&o.facts)
     if isFor {
         if o.expr(b) && b >= 0 { o.cond(b, true) }
@@ -1470,6 +1490,51 @@ fn (o: mut &Loops) loop(s: int) {
         o.stmt(b)
     }
     o.facts = base
+}
+
+// The counters of the for s (`for (i = ..; i < x; i++)`, i written only by its step, x a constant
+// or a local the loop does not write): the locals c written only in the body, by one `c = c + 1`
+// outside any inner loop. Each iteration adds at most 1 to c, and there are at most
+// max(0, x - i0) iterations (i grows by 1 from i0 and each needs i < x), so c stays at most
+// c0 + max(0, hi(x) - lo(i0)) throughout the loop and after it. Appends each c and that bound
+// (facts at the entry, before the loop's writes are forgotten).
+fn (o: mut &Loops) counters(s: int, written: &[]int, nbd: int, steps: &[]int, stamp: int, cs: mut &[]int, hs: mut &[]int) {
+    if o.u.nk(s) != ir.S_FOR { return }
+    var iv = -1
+    for j in nbd..len(written) {
+        if o.forStep(s, written[j]) { iv = written[j] }
+    }
+    if iv < 0 || !o.trackable(iv) { return }
+    for j in 0..nbd {
+        if written[j] == iv { return }
+    }
+    let ik = o.u.tk(o.u.locals[iv].ty)
+    if !ranged(ik) { return }
+    var e = o.u.nodes[s].b
+    if o.u.nk(e) == ir.E_CAST && o.u.tk(o.u.nodes[e].ty) == ir.TY_BOOL { e = o.u.nodes[e].a }
+    let x = o.symOf(o.u.nodes[e].b)
+    if x.l == -2 || x.l >= 0 && o.kmark[x.l] == stamp || !inKind(x, ik) { return }
+    let lo0 = o.lo(Sym{l: o.canon(iv), c: 0}, ik)
+    let it = satSub(o.hi(x, ik), lo0)          // at most this many iterations (when positive)
+    if it.c != 0 || lo0 == kmin(ik) { return }
+    let iters = if it.v > 0 { it.v } else { 0 }
+    for j in 0..nbd {
+        let c = written[j]
+        let k = o.u.tk(o.u.locals[c].ty)
+        if c == iv || !o.trackable(c) || !ranged(k) || o.kbad[c] == stamp { continue }
+        var stepped = false
+        var q = 0
+        while q < len(steps) {
+            if steps[q] == c { stepped = true }
+            q += 2
+        }
+        if stepped || o.go(o.u.nodes[s].b, W_COUNT, c) != 0 || o.go(o.u.nodes[s].d, W_COUNT, c) != 1 { continue }
+        let b = satAdd(o.hi(Sym{l: o.canon(c), c: 0}, k), iters)
+        if b.c == 0 && b.v < kmax(k) {
+            append(cs, c)
+            append(hs, b.v)
+        }
+    }
 }
 
 // Whether every write `l = l + s` of the loop (steps, from its kill walk with the stamp) adds a

@@ -224,8 +224,18 @@ class Gen:
             if useWhile:
                 self.emit(3, '%s = %s + 1' % (i, i))
             self.emit(2, '}')
+            # counts of its elements (a count without a branch; a fresh counter is bounded)
             x = self.name('x')
-            self.emit(2, 'for %s in %s {\n    if %s { acc = acc + 1 }\n}' % (x, p, x))
+            w = r.randrange(3)
+            if w == 0:
+                self.emit(2, 'for %s in %s {\n    if %s { acc = acc + 1 }\n}' % (x, p, x))
+            elif w == 1:
+                self.emit(2, 'for %s in 0..len(%s) {\n    if !%s[%s] { acc += 1 }\n}' % (x, p, p, x))
+            else:
+                cn = self.name('cn')
+                self.emit(2, 'var %s = %s\nfor %s in %s..len(%s) {\n    if %s[%s] { %s = %s + 1 }\n}\nacc = acc + %s'
+                          % (cn, r.choice(['0', 'acc', '9223372036854775800']), x, r.choice(['0', '1', 'n']), p, p, x,
+                             cn, cn, cn))
             self.emit(1, '}')
         elif k == 7:
             # for over the elements of c (which the bodies leave alone), with a counter
