@@ -280,57 +280,82 @@ fn (g: &Gen) fits(t: int, base: int, es: &[]int): bool {
 
 // ---------------------------------------------------------------- statements
 
+// Statements are written straight into the output.
 fn (g: mut &Gen) stmt(x: int, d: int) {
-    let n = g.u.nodes[x]
-    let k = n.k
-    let ind = repeat("  ", d)
+    let k = g.u.nodes[x].k
+    let a = g.u.nodes[x].a
+    let b = g.u.nodes[x].b
     if k == ir.S_BLOCK {
-        if n.v == 1 {
-            for j in 0..g.u.listLen(n.a) { g.stmt(g.u.listAt(n.a, j), d) }
+        if g.u.nodes[x].v == 1 {
+            for j in 0..g.u.listLen(a) { g.stmt(g.u.listAt(a, j), d) }
             return
         }
-        g.line(ind + "{")
-        for j in 0..g.u.listLen(n.a) { g.stmt(g.u.listAt(n.a, j), d + 1) }
-        g.line(ind + "}")
+        g.start(d, "{\n")
+        for j in 0..g.u.listLen(a) { g.stmt(g.u.listAt(a, j), d + 1) }
+        g.start(d, "}\n")
     } else if k == ir.S_IF {
-        g.line(ind + "if (" + g.expr(n.a, 0) + ") {")
-        g.body(n.b, d)
-        var el = n.c
+        g.head(d, "if (", a, b)
+        var el = g.u.nodes[x].c
         while el >= 0 {
-            let e = g.u.nodes[el]
-            if e.k == ir.S_IF {
-                g.line(ind + "} else if (" + g.expr(e.a, 0) + ") {")
-                g.body(e.b, d)
-                el = e.c
+            if g.u.nk(el) == ir.S_IF {
+                g.head(d, "} else if (", g.u.nodes[el].a, g.u.nodes[el].b)
+                el = g.u.nodes[el].c
             } else {
-                g.line(ind + "} else {")
+                g.start(d, "} else {\n")
                 g.body(el, d)
                 el = -1
             }
         }
-        g.line(ind + "}")
-    } else if k == ir.S_WHILE {
-        g.line(ind + "while (" + g.expr(n.a, 0) + ") {")
-        g.body(n.b, d)
-        g.line(ind + "}")
+        g.start(d, "}\n")
+    } else if k == ir.S_WHILE || k == ir.S_SWITCH {
+        g.head(d, if k == ir.S_WHILE { "while (" } else { "switch (" }, a, b)
+        g.start(d, "}\n")
     } else if k == ir.S_FOR {
-        let init = if n.a < 0 { ";" } else { g.simple(n.a) }
-        let c = if n.b < 0 { "" } else { " " + g.expr(n.b, 0) }
-        let st = if n.c < 0 { "" } else { " " + g.expr(n.c, 0) }
-        g.line(ind + "for (" + init + c + ";" + st + ") {")
-        g.body(n.d, d)
-        g.line(ind + "}")
-    } else if k == ir.S_SWITCH {
-        g.line(ind + "switch (" + g.expr(n.a, 0) + ") {")
-        g.body(n.b, d)
-        g.line(ind + "}")
+        g.start(d, "for (")
+        if a < 0 { g.out.addByte(';') } else { g.simple(a) }
+        if b >= 0 {
+            g.out.addByte(' ')
+            g.ex(b, 0)
+        }
+        g.out.addByte(';')
+        let c = g.u.nodes[x].c
+        if c >= 0 {
+            g.out.addByte(' ')
+            g.ex(c, 0)
+        }
+        g.out.add(") {\n")
+        g.body(g.u.nodes[x].d, d)
+        g.start(d, "}\n")
     } else if k == ir.S_CASE {
-        g.line(ind + "case " + g.intLit(ir.TY_I64, n.v) + ":;")
+        g.start(d, "case " + g.intLit(ir.TY_I64, g.u.nodes[x].v) + ":;\n")
     } else if k == ir.S_DEFAULT {
-        g.line(ind + "default:;")
+        g.start(d, "default:;\n")
     } else {
-        g.line(ind + g.simple(x))
+        g.start(d, "")
+        g.simple(x)
+        g.out.addByte('\n')
     }
+}
+
+// The indentation of depth d, then s.
+fn (g: mut &Gen) start(d: int, s: str) {
+    for i in 0..d { g.out.add("  ") }
+    g.out.add(s)
+}
+
+// kw (c) { body
+fn (g: mut &Gen) head(d: int, kw: str, c: int, body: int) {
+    g.start(d, kw)
+    g.ex(c, 0)
+    g.out.add(") {\n")
+    g.body(body, d)
+}
+
+// The expression x, into the output.
+fn (g: mut &Gen) ex(x: int, need: int) {
+    var b = replace(mut &g.out, newStrBuf())
+    g.put(x, need, mut &b)
+    g.out = b
 }
 
 // The statements of a body (a block's, without its braces), one level in.
@@ -344,27 +369,34 @@ fn (g: mut &Gen) body(b: int, d: int) {
 }
 
 // A statement on one line: a declaration, expression, break, continue, return or empty.
-fn (g: &Gen) simple(x: int): str {
-    let n = &g.u.nodes[x]
-    let k = n.k
+fn (g: mut &Gen) simple(x: int) {
+    let k = g.u.nodes[x].k
+    let a = g.u.nodes[x].a
     if k == ir.S_DECL {
-        let t = g.u.locals[n.a].ty
-        var s = g.decl(t, g.lname[n.a])
-        if n.b >= 0 { s = s + " = " + g.expr(n.b, 2) }
-        if n.c >= 0 { s = s + " = " + g.initText(t, n.c) }
-        return s + ";"
+        let t = g.u.locals[a].ty
+        g.out.add(g.decl(t, g.lname[a]))
+        let b = g.u.nodes[x].b
+        let c = g.u.nodes[x].c
+        if b >= 0 {
+            g.out.add(" = ")
+            g.ex(b, 2)
+        }
+        if c >= 0 { g.out.add(" = " + g.initText(t, c)) }
+        g.out.addByte(';')
+    } else if k == ir.S_EXPR || k == ir.S_RETURN {
+        if k == ir.S_RETURN { g.out.add(if a < 0 { "return" } else { "return " }) }
+        if a >= 0 { g.ex(a, 0) }
+        g.out.addByte(';')
+    } else if k == ir.S_BREAK || k == ir.S_CONTINUE || k == ir.S_EMPTY {
+        g.out.add(if k == ir.S_BREAK { "break;" } else if k == ir.S_CONTINUE { "continue;" } else { ";" })
+    } else if k == ir.S_BLOCK && g.u.nodes[x].v == 1 {
+        for j in 0..g.u.listLen(a) {
+            if j > 0 { g.out.addByte(' ') }
+            g.simple(g.u.listAt(a, j))
+        }
+    } else {
+        ir.failAt("IR node", g.u.nodes[x].line, "cgen: statement kind " + intToStr(k))
     }
-    if k == ir.S_EXPR { return g.expr(n.a, 0) + ";" }
-    if k == ir.S_BREAK { return "break;" }
-    if k == ir.S_CONTINUE { return "continue;" }
-    if k == ir.S_RETURN { return if n.a < 0 { "return;" } else { "return " + g.expr(n.a, 0) + ";" } }
-    if k == ir.S_EMPTY { return ";" }
-    if k == ir.S_BLOCK && n.v == 1 {
-        var parts: []str = []
-        for j in 0..g.u.listLen(n.a) { append(mut &parts, g.simple(g.u.listAt(n.a, j))) }
-        return strings.join(&parts, " ")
-    }
-    ir.failAt("IR node", n.line, "cgen: statement kind " + intToStr(k))
 }
 
 // ---------------------------------------------------------------- expressions
