@@ -21,7 +21,7 @@ obx/tools/gate.sh quick                        # the suites; `full` adds the red
 
 As of 2026-11-03:
 
-- **The compiler** is written in obx (about 18,200 lines) and compiles itself
+- **The compiler** is written in obx (about 18,700 lines) and compiles itself
   to a fixed point. One IR feeds two backends: a native x86-64 backend that
   writes ELF executables with no gcc (static, or dynamically linked when a
   program calls C libraries), and C for gcc. The natively built compiler
@@ -36,12 +36,14 @@ As of 2026-11-03:
   arithmetic loops; eza lists 3.7 MB of long tree in about 200 ms. The
   figures are in [PERFORMANCE.md](PERFORMANCE.md).
 - **Checks:** a conformance suite, the compiler, library and eza tests, a
-  native-against-C comparison over 1,491 programs, and five red-team rounds
+  native-against-C comparison over 1,512 programs, and five red-team rounds
   under ASan and UBSan (`obx/tools/gate.sh full`, about 35 s).
-- **Next:** concurrency, decided in
-  [obx/design/concurrency.md](obx/design/concurrency.md) and being built:
-  coroutines with futures inside a process, several processes for several
-  cores, no threads.
+- **Concurrency:** decided in
+  [obx/design/concurrency.md](obx/design/concurrency.md): coroutines with
+  futures inside a process, several processes for several cores, no
+  threads. The first stage is built (`import "task"`: scopes, futures,
+  promises, `Shared`); its traps name the user's lines. Next: non-blocking
+  I/O, timers and sockets.
 
 ## Layout
 

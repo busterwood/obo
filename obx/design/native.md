@@ -354,7 +354,9 @@ Then:
   returns leave with `leave` (a function that restores registers jumps to
   one copy of the restores; when there are at most two, each jump is
   replaced by a copy once the body is done);
-- functions start at multiples of 16 (`int3` between them);
+- the generated code starts at a multiple of 64 and functions at multiples
+  of 16 (`int3` between them), so their absolute addresses keep that
+  alignment whatever the runtime's size;
 - a frame over 2 KiB is touched a page at a time from the top (a probe
   loop on `r11`), so that a frame larger than the guard gap faults at the
   guard page, which the runtime reports as `obx: stack overflow`, instead of
@@ -670,6 +672,13 @@ The new rewrites rest on these arguments (none changes the C):
   never executed (a function's code ends in a jump or `ret`, its stubs in a
   call that does not return); calls and maps use the labels, which are
   bound after the padding.
+  The code's base was first aligned to 16 only, past the runtime's text.
+  Merging the concurrency runtime moved it, and fib went back to 2,020M
+  cycles with the same 5,630M instructions: the 16-byte alignment held
+  within the code but not against 64-byte fetch blocks. The base is now
+  aligned to 64 (`CODE_ALIGN`), and fib is at 1,690M again (351 ms against
+  gcc's 321). Functions at 32 were tried: fib gains another 8% where it
+  lands, the other benchmarks do not move, so 16 stays.
 
 Not done, and why:
 
