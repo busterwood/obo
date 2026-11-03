@@ -160,8 +160,10 @@ and the Pike VM first look for the literal prefix, if any.
 
 **Speed**: PERFORMANCE.md, section Regex. Through C, obx is level with Go
 on the Pike VM patterns and up to 1.45 times its time on the others;
-natively 2 to 3 times Go's time, which is the native backend's code for
-the Pike VM's loops (the same code runs twice as fast through gcc).
+natively 2 to 3 times Go's time at R1, which was the native backend's code
+for the Pike VM's loops (the same code ran twice as fast through gcc). The
+eighth native performance step (branch `perf8`) brought that to 1.4 to 2.3
+times Go's time, and 1.4 to 1.8 times the gcc build's cycles.
 
 **Deviations from the plan and from Go:**
 - Scripts (`\p{Greek}`, Go's `unicode.Scripts` with their fold tables) are

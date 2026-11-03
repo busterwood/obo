@@ -852,7 +852,7 @@ pattern allows it (anchored, every step one choice), the bounded
 backtracker for small programs on short texts (a visited bitmap: each
 instruction at each position once), and the Pike VM (an NFA simulation)
 otherwise. A literal prefix is searched for first. Speed:
-`PERFORMANCE.md` (via C about Go's; natively 2 to 3 times Go's time). The
+`PERFORMANCE.md` (via C about Go's; natively 1.4 to 2.3 times Go's time). The
 literal prefilter and lazy DFA of R2 are not there yet.
 
 ### sqldialect, sqlite, postgres, mssql
