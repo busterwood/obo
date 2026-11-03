@@ -141,6 +141,7 @@ extern "odbc" fn SQLGetData(h: ptr, col: i32, cType: i32, buf: mut &[]byte, cap:
 extern "odbc" fn SQLFreeStmt(h: ptr, option: i32): i32
 extern "odbc" fn SQLNumResultCols(h: ptr, n: mut &[]byte): i32
 extern "odbc" fn SQLNumParams(h: ptr, n: mut &[]byte): i32
+extern "odbc" fn SQLDescribeParam(h: ptr, i: i32, sqlType: mut &[]byte, size: mut &int, digits: mut &[]byte, nullable: mut &[]byte): i32
 extern "odbc" fn SQLRowCount(h: ptr, n: mut &int): i32
 extern "odbc" fn SQLDescribeColW(h: ptr, col: i32, name: mut &[]byte, cap: i32, nameLen: mut &[]byte,
                                  sqlType: mut &[]byte, size: mut &int, digits: mut &[]byte, nullable: mut &[]byte): i32
@@ -639,8 +640,23 @@ pub fn (s: &Stmt) paramCount(): Result[int, Error] {
 }
 
 // Binds v to parameter i (from 1); it is used by every execute until bound again.
+// A NULL takes the parameter's type from the server (SQLDescribeParam), so
+// that it fits a varbinary or float column too, else it is an nvarchar NULL.
 pub fn (s: mut &Stmt) bind(i: int, v: Value): Result[Unit, Error] {
-    return s.bindParam(i, try paramOf(v))
+    var p = try paramOf(v)
+    if p.null && i >= 1 && i <= MAX_PARAMS && s.live().isOk() {
+        var ty = array(2, byte(0))
+        var size = 0
+        var digits = array(2, byte(0))
+        var nullable = array(2, byte(0))
+        if ok(rc(SQLDescribeParam(s.h, i32(i), mut &ty, mut &size, mut &digits, mut &nullable))) {
+            p.sqlType = le(&ty, 0, 2)
+            p.cType = if kindOf(p.sqlType) == K_BYTES { C_BINARY } else { C_WCHAR }
+            p.size = size
+            p.digits = le(&digits, 0, 2)
+        }
+    }
+    return s.bindParam(i, p)
 }
 
 // Checks d against decimal(p, sc) (sqldialect.fitDecimal) and binds it as
