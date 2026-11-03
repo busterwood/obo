@@ -1,0 +1,9 @@
+# ThreadSanitizer suppressions for OBX_SAN=thread (rt.py).
+# Microsoft's ODBC driver is closed source and not built with TSan, so the
+# synchronization inside it is invisible: two connections opened at once on
+# two helper threads report races on the driver's own heap blocks, under its
+# own mutexes, with no obx frame below the driver's. This hides any report
+# whose stack passes through the driver, including one on memory obx passed
+# to it; those buffers are borrowed by the parked task for the whole call
+# (SPEC 12), which the checked tests cover.
+race:libmsodbcsql

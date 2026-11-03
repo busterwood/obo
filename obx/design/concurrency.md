@@ -455,11 +455,16 @@ would run obx code on the helper thread.
 
 lib/mssql.obx (SQL Server through ODBC) has no non-blocking API to park on,
 so its long calls are the third kind: SQLDriverConnectW, SQLExecDirectW,
-SQLExecute, SQLFetch, SQLGetData, SQLMoreResults, SQLDescribeParam,
-SQLEndTran and SQLDisconnect are to be marked `blocking` when C1c merges.
-Each has a single call site, outside any `Shared.with`, and its buffers are
-owned by the Stmt (or are arrays that live for the call), so marking them
-changes no code around them.
+SQLExecute, SQLFetch, SQLGetData, SQLMoreResults and SQLDescribeParam are
+marked `blocking`. Each has a single call site, outside any `Shared.with`,
+and its buffers are owned by the Stmt (or are arrays that live for the
+call), so marking them changed no code around them. SQLEndTran and
+SQLDisconnect stay ordinary calls: they also run when a Conn is dropped,
+and a drop may happen inside `Shared.with`, where a call that can park
+stops the program. Unlike Postgres, a running SQL Server query cannot be
+cancelled from the task: the task waits for the call
+(`mssql_live_tasks.obx`: two 300 ms queries on two connections overlap
+while a third task's timers keep firing).
 
 Gate: an HTTP/1.1 server on one core that holds 10,000 idle keep-alive
 connections and serves a Postgres query per request through a pool, with no

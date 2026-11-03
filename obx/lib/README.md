@@ -420,6 +420,13 @@ that need one are skipped when it is not installed). Examples:
   in C memory the `Stmt` owns until the parameter is bound again or the
   statement is dropped, so the driver reads it at `execute`.
 
+  In tasks, the calls that wait for the server (connect, execute, fetch,
+  reading a value, the next result, describing a NULL parameter) are
+  `blocking` externs: the task parks and the call runs on the helper pool,
+  so other tasks run meanwhile. A cancellation or deadline is seen after
+  the call returns (ODBC's own cancel is not used). Each Conn is used by one
+  task at a time, like any value.
+
   Live tests (`lib/tests/run/mssql_live_*.obx`) read an ODBC connection
   string from `$MSSQL_TEST_DSN`, else from `~/.obo-mssql-dsn` (one line,
   mode 600), never print it, use only `#temp` tables, and exit 77 (skipped)

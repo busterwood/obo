@@ -51,12 +51,14 @@
 // (01000 "Changed database context" on connect, PRINT output) are not errors;
 // diagnostics() lists them.
 //
-// Concurrency: ODBC calls block the thread. The calls that can take long
-// (SQLDriverConnectW, SQLExecDirectW, SQLExecute, SQLFetch, SQLGetData,
-// SQLMoreResults, SQLDescribeParam, SQLEndTran, SQLDisconnect) each have one
-// call site, outside any Shared.with, so that they can be marked `blocking`
-// (run on the helper pool while the task parks, design/concurrency.md, C1c)
-// when that exists.
+// Concurrency: ODBC calls block the thread. The calls that wait for the
+// server (SQLDriverConnectW, SQLExecDirectW, SQLExecute, SQLFetch,
+// SQLGetData, SQLMoreResults, SQLDescribeParam) are `blocking` externs (SPEC
+// 12): while other tasks could run, the calling task parks and the call runs
+// on the helper pool; each has one call site, outside any Shared.with.
+// SQLEndTran and SQLDisconnect stay ordinary calls: they also run when a
+// Conn is dropped, and a drop may happen inside a Shared.with, where a call
+// that can park stops the program (exit 13).
 // No MARS: one open result set per connection at a time (reset() or drop the
 // Stmt to free the connection; another statement's call meanwhile is the
 // driver's "Connection is busy" error).
@@ -131,19 +133,19 @@ extern "odbc" fn SQLAllocHandle(t: i32, parent: ptr, out: mut &ptr): i32
 extern "odbc" fn SQLFreeHandle(t: i32, h: ptr): i32
 extern "odbc" fn SQLSetEnvAttr(env: ptr, attr: i32, value: int, n: i32): i32
 extern "odbc" fn SQLSetConnectAttrW(dbc: ptr, attr: i32, value: int, n: i32): i32
-extern "odbc" fn SQLDriverConnectW(dbc: ptr, win: ptr, cs: &[]byte, n: i32, out: ptr, cap: i32, outLen: ptr, how: i32): i32
+extern "odbc" fn SQLDriverConnectW(dbc: ptr, win: ptr, cs: &[]byte, n: i32, out: ptr, cap: i32, outLen: ptr, how: i32): i32 blocking
 extern "odbc" fn SQLDisconnect(dbc: ptr): i32
 extern "odbc" fn SQLEndTran(t: i32, h: ptr, how: i32): i32
-extern "odbc" fn SQLExecDirectW(h: ptr, sql: &[]byte, n: i32): i32
+extern "odbc" fn SQLExecDirectW(h: ptr, sql: &[]byte, n: i32): i32 blocking
 extern "odbc" fn SQLPrepareW(h: ptr, sql: &[]byte, n: i32): i32
-extern "odbc" fn SQLExecute(h: ptr): i32
-extern "odbc" fn SQLFetch(h: ptr): i32
-extern "odbc" fn SQLMoreResults(h: ptr): i32
-extern "odbc" fn SQLGetData(h: ptr, col: i32, cType: i32, buf: mut &[]byte, cap: int, ind: mut &int): i32
+extern "odbc" fn SQLExecute(h: ptr): i32 blocking
+extern "odbc" fn SQLFetch(h: ptr): i32 blocking
+extern "odbc" fn SQLMoreResults(h: ptr): i32 blocking
+extern "odbc" fn SQLGetData(h: ptr, col: i32, cType: i32, buf: mut &[]byte, cap: int, ind: mut &int): i32 blocking
 extern "odbc" fn SQLFreeStmt(h: ptr, option: i32): i32
 extern "odbc" fn SQLNumResultCols(h: ptr, n: mut &[]byte): i32
 extern "odbc" fn SQLNumParams(h: ptr, n: mut &[]byte): i32
-extern "odbc" fn SQLDescribeParam(h: ptr, i: i32, sqlType: mut &[]byte, size: mut &int, digits: mut &[]byte, nullable: mut &[]byte): i32
+extern "odbc" fn SQLDescribeParam(h: ptr, i: i32, sqlType: mut &[]byte, size: mut &int, digits: mut &[]byte, nullable: mut &[]byte): i32 blocking
 extern "odbc" fn SQLRowCount(h: ptr, n: mut &int): i32
 extern "odbc" fn SQLDescribeColW(h: ptr, col: i32, name: mut &[]byte, cap: i32, nameLen: mut &[]byte,
                                  sqlType: mut &[]byte, size: mut &int, digits: mut &[]byte, nullable: mut &[]byte): i32

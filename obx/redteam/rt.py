@@ -66,7 +66,7 @@ def run1(path):
     if grc != 0:
         return name, 'CCFAIL', gerr[:600]
     env = dict(os.environ, OBX_CHECK='1', ASAN_OPTIONS='detect_leaks=1:abort_on_error=0:exitcode=99',
-               UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1:exitcode=98', TSAN_OPTIONS='exitcode=97')
+               UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1:exitcode=98', TSAN_OPTIONS='exitcode=97:suppressions=' + os.path.join(HERE, 'tsan.supp'))
     try:
         r = subprocess.run((['setarch', '-R'] if TSAN else []) + [exe], capture_output=True, text=True, errors='replace', timeout=20, env=env)
     except subprocess.TimeoutExpired:

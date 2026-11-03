@@ -1,0 +1,67 @@
+// mssql in tasks against a live SQL Server ($MSSQL_TEST_DSN or
+// ~/.obo-mssql-dsn, never printed; exits 77, skipped, without one): the
+// calls that wait for the server are blocking externs, so two queries of
+// 300 ms each, on two connections, run at the same time (they start within
+// 250 ms of each other, not one after the other) while a third task keeps
+// ticking (ten 10 ms sleeps take well under 250 ms).
+// needs: odbc
+// expect: overlapped: true
+// expect: ticked: true
+
+import "mssql"
+import "io"
+import "os"
+import "task"
+import "time"
+
+fn dsn(): Option[str] {
+    match os.env("MSSQL_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-mssql-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+// opens its own connection, runs a 300 ms query; the query's start in ms
+fn slow(d: str): int {
+    let c = mssql.connect(d).unwrap()
+    let t = time.monotonicNs() / 1000000
+    var st = c.query("WAITFOR DELAY '00:00:00.300'; SELECT 1 AS one", &[]).unwrap()
+    var n = 0
+    while st.step().unwrap() { n = st.int(0).unwrap() }
+    assert(n == 1)
+    return t
+}
+
+// ten 10 ms sleeps; the ms they took (far more than 100 if a query held the thread)
+fn ticker(n: int): int {
+    let t0 = time.monotonicNs()
+    var k = 0
+    while k < n {
+        task.sleep(10).unwrap()
+        k += 1
+    }
+    return (time.monotonicNs() - t0) / 1000000
+}
+
+fn main() {
+    let d = match dsn() {
+        Some(d) { d }
+        None { exit(77) }
+    }
+    task.scope(fn(s: mut &task.Scope) {
+        let ft = s.start(ticker, 10)    // first, so it is asleep when the queries start
+        let fa = s.start(slow, d)
+        let fb = s.start(slow, d)
+        let a = fa.wait().unwrap()
+        let b = fb.wait().unwrap()
+        let t = ft.wait().unwrap()
+        let gap = if a > b { a - b } else { b - a }
+        println("overlapped: " + (gap < 250).toStr())
+        println("ticked: " + (t < 250).toStr())
+    })
+}
