@@ -1,0 +1,61 @@
+// Native loop optimizations (compiler/loops.obx): two tasks append to one
+// Shared array and yield between appends; each reads the array inside with,
+// in a loop whose header reads cannot move past the yield (the with's
+// function gets the array by `mut &`, so a loop there may read it once).
+// expect: a 0 0
+// expect: b 1 0
+// expect: a 2 100
+// expect: b 3 101
+// expect: a 4 202
+// expect: b 5 204
+// expect: total 6 306
+import "task"
+
+fn sumOf(xs: &[]int): int {
+    var s = 0
+    var i = 0
+    while i < len(xs) {
+        s = s + xs[i]
+        i = i + 1
+    }
+    return s
+}
+
+fn worker(sh: task.Shared[[]int]): int {
+    var k = 0
+    var base = 0
+    var name = "a"
+    sh.with(fn(xs: mut &[]int) {
+        if len(xs) > 0 {
+            base = 100
+            name = "b"
+        }
+    })
+    while k < 3 {
+        sh.with(fn(xs: mut &[]int) {
+            var s = 0
+            var i = 0
+            while i < len(xs) {
+                s = s + xs[i]
+                i = i + 1
+            }
+            println(name + " " + len(xs).toStr() + " " + s.toStr())
+            append(xs, base + k)
+        })
+        task.yield().unwrap()
+        k = k + 1
+    }
+    return k
+}
+
+fn main() {
+    var start: []int = []
+    let sh = task.shared(start)
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(worker, sh)
+        let b = s.start(worker, sh)
+        let ra = a.wait()
+        let rb = b.wait()
+    })
+    sh.with(fn(xs: mut &[]int) { println("total " + len(xs).toStr() + " " + sumOf(xs).toStr()) })
+}

@@ -1,0 +1,25 @@
+// Native loop optimizations (compiler/loops.obx): a bounds check that a loop's
+// test does not prove stays, and traps at its own line after the output of the
+// earlier iterations; the checks proved by the first one in the same iteration
+// are gone, and a store then a load of the same element read the stored value.
+// expect: 0 0
+// expect: 1 2
+// expect: 2 4
+// expect: 3 6
+// stderr: obx: index out of range at loops_trap_mid.obx:19
+// exit: 3
+
+fn main() {
+    var a: []int = []
+    for k in 0..4 { append(mut &a, 0) }
+    var b: []byte = []
+    for k in 0..6 { append(mut &b, byte(250 + k)) }
+    var i = 0
+    while i < len(b) {
+        a[i] = i * 2
+        let x = a[i]
+        a[i] = x + a[i] - i * 2
+        println(i.toStr() + " " + a[i].toStr())
+        i = i + 1
+    }
+}
