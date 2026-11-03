@@ -1,0 +1,104 @@
+// httpserver: requestId, accessLog and the client address. The access log
+// is one logfmt line per routed request, written by the server (here to a
+// file through Config.logFd): values from the request are escaped (quotes,
+// backslashes, controls and bytes past 0x7e) and cut at 256 bytes; the
+// query, Authorization and Cookie never appear; notes add fields. A
+// trusted proxy's X-Request-Id and X-Forwarded-For are believed (the
+// rightmost address that is not a trusted proxy); anyone else's are not.
+// An error body names the request id. The time, the pid, the peer's port,
+// the duration and generated ids vary, so they are replaced here.
+// expect: plain: 200 client 127.0.0.1 id random
+// expect: proxied: 200 client 1.2.3.4 id abc-123
+// expect: bad id: 200 client 127.0.0.1 id random
+// expect: escaped: 200 client 127.0.0.1 id random
+// expect: long: 200 client 127.0.0.1 id random
+// expect: fail: 500 500 Internal Server Error | request id req-7
+// expect: stopped: accepted 7, requests 7, open 0, rejected 0, timeouts 0, gone 0, errors 1
+// expect: time=T id=RANDOM pid=P peer=127.0.0.1:N method=GET route="GET /who/{name}" path=/who/x status=200 in=0 out=27 us=U outcome=ok user=-
+// expect: time=T id=abc-123 pid=P peer=127.0.0.1:N method=GET route="GET /who/{name}" path=/who/y status=200 in=0 out=26 us=U outcome=ok user=-
+// expect: time=T id=RANDOM pid=P peer=127.0.0.1:N method=GET route="GET /who/{name}" path=/who/z status=200 in=0 out=27 us=U outcome=ok user=-
+// expect: time=T id=RANDOM pid=P peer=127.0.0.1:N method=GET route="GET /who/{name}" path="/who/q\"b\\c\xc3\xa9" status=200 in=0 out=27 us=U outcome=ok user="bob\x09evil \"x\""
+// expect: time=T id=RANDOM pid=P peer=127.0.0.1:N method=GET route="GET /who/{name}" path="/who/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL..." status=200 in=0 out=27 us=U outcome=ok user=-
+// expect: time=T id=req-7 pid=P peer=127.0.0.1:N method=GET route="GET /fail" path=/fail status=500 in=0 out=0 us=U outcome=error
+// expect: time=T id=stop pid=P peer=127.0.0.1:N method=POST route="POST /stop" path=/stop status=200 in=0 out=4 us=U outcome=ok
+import "task"
+import "net"
+import "io"
+import "strings"
+import "regex"
+import "httpserver" as http
+import "../support/srvtest" as t
+import "../support/srvrun" as sr
+
+extern "c" fn open(path: str, flags: i32, mode: i32): i32
+extern "c" fn close(fd: i32): i32
+
+type App = value record { n: int }
+
+fn who(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    rq.note("user", rq.header("X-User").unwrapOr("-"))
+    return w.text("client " + rq.client() + " id " + (if len(rq.id) == 32 { "random" } else { rq.id }) + "\n")
+}
+
+fn failing(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    return Err(http.error(500, "the database said something private"))
+}
+
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.use(http.requestId[App])
+    r.use(http.accessLog[App])
+    r.handle("GET /who/{name}", who)
+    r.handle("GET /fail", failing)
+    r.handle("POST /stop", sr.stop[App])
+    return r
+}
+
+fn trusting(fd: int): http.Config {
+    var c = sr.config()
+    c.logFd = fd
+    c.trustedProxies = ["127.0.0.1"]
+    return c
+}
+
+fn body(g: &t.Got): str {
+    let rs = t.replies(g)
+    if len(rs) == 0 { return "no reply" }
+    return intToStr(rs[0].code) + " " + strings.replaceAll(strings.trimRight(rs[0].body), "\n", " | ")
+}
+
+fn get(target: str, headers: str): str { return "GET " + target + " HTTP/1.1\r\nHost: test\r\n" + headers + "Connection: close\r\n\r\n" }
+
+fn main() {
+    let path = "server.log"
+    let fd = int(open(path, 577, 420))          // O_WRONLY | O_CREAT | O_TRUNC, 0644
+    let out = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let a = ln.localAddr()
+        let srv = s.start(sr.serveJob[App], sr.Job[App]{ln: ln, app: App{n: 0}, r: routes(), cfg: trusting(fd)})
+        println("plain: " + body(&t.talk(a, get("/who/x?secret=1", "Authorization: Bearer hunter2\r\nCookie: s=1\r\n"), 3000)))
+        println("proxied: " + body(&t.talk(a, get("/who/y", "X-Forwarded-For: 10.9.8.7, 1.2.3.4, 127.0.0.1\r\nX-Request-Id: abc-123\r\n"), 3000)))
+        println("bad id: " + body(&t.talk(a, get("/who/z", "X-Request-Id: a b\r\n"), 3000)))
+        println("escaped: " + body(&t.talk(a, get("/who/q%22b%5Cc%C3%A9", "X-User: bob\tevil \"x\"\r\n"), 3000)))
+        println("long: " + body(&t.talk(a, get("/who/" + t.repeat("L", 300), ""), 3000)))
+        println("fail: " + body(&t.talk(a, get("/fail", "X-Request-Id: req-7\r\n"), 3000)))
+        let g = t.talk(a, "POST /stop HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nX-Request-Id: stop\r\n\r\n", 3000)
+        return srv.wait().unwrap()
+    })
+    let r = close(i32(fd))
+    println("stopped: " + out)
+    let reTime = regex.mustCompile("time=[0-9TZ:-]+")
+    let rePid = regex.mustCompile("pid=[0-9]+")
+    let rePeer = regex.mustCompile("peer=127\\.0\\.0\\.1:[0-9]+")
+    let reUs = regex.mustCompile(" us=[0-9]+")
+    let reId = regex.mustCompile("id=[0-9a-f]{32}")
+    for line in strings.splitOn(io.read(path).unwrap(), "\n") {
+        if len(line) == 0 { continue }
+        var l = reTime.replaceAllLiteral(line, "time=T")
+        l = rePid.replaceAllLiteral(l, "pid=P")
+        l = rePeer.replaceAllLiteral(l, "peer=127.0.0.1:N")
+        l = reUs.replaceAllLiteral(l, " us=U")
+        l = reId.replaceAllLiteral(l, "id=RANDOM")
+        println(l)
+    }
+}

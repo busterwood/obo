@@ -3,11 +3,13 @@
 # quick: the C seed's fixed point (it also builds compiler/out/obxc from the seed, the compiler
 #        every later step uses), the conformance suite, the compiler tests, the library tests,
 #        the native backend against the C backend (run + lib tests) and the native self-build.
-# full:  quick, then the red-team harnesses (rounds 1-5) and the task, net, url and http library
-#        tests under ASan+UBSan, the helper-pool and net tests under TSan, then the native backend
-#        on the red-team corpora and on generated value-record and array-loop programs, the http
-#        client on generated reply framings (both backends), the regex tests under ASan+UBSan and
-#        the regex library against Go's regexp on random patterns (skipped without go).
+# full:  quick, then the red-team harnesses (rounds 1-5) and the task, net, url, http and http
+#        server library tests under ASan+UBSan, the helper-pool and net tests under TSan, then
+#        the native backend on the red-team corpora and on generated value-record and array-loop
+#        programs, the http client on generated reply framings (both backends), the http server's
+#        request parsing against Go's net/http and Node's llhttp on generated request streams
+#        (each oracle skipped when not installed), the regex tests under ASan+UBSan and the regex
+#        library against Go's regexp on random patterns (skipped without go).
 # Builds are cached (tools/cbuild.py; OBX_NOCACHE=1 disables, OBX_CACHE sets the directory).
 set -u
 tier=${1:-}
@@ -36,6 +38,7 @@ if [ "$tier" = full ]; then
     "native generated|python3 obx/tests/vrgen.py -n 200"
     "native loops gen|python3 obx/tests/loopgen.py -n 200"
     "http framing gen|python3 obx/tests/httpgen.py -n 40"
+    "http server gen|python3 obx/tests/httpsrvgen.py -n 5000"
     "regex vs Go|python3 obx/tests/regexgen.py --fast"
   )
 fi
