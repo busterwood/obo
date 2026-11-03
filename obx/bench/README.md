@@ -27,6 +27,11 @@ built with `gcc -O2` and timed, as the "plain C" column.
 The results, with eza and the compiler, are in
 [PERFORMANCE.md](../../PERFORMANCE.md).
 
+`regex/` is the regex library's benchmark (design/regex.md section 4):
+`python3 obx/bench/regex/bench.py` times eight patterns over a generated
+3 MB corpus with obx (native and via C), Go's `regexp`, Rust's `regex`
+crate (built offline; skipped if it cannot be) and ripgrep.
+
 `--obo` adds a column for obx's predecessor, the archived obo 0.19
 (`archive/obo/obo`; build it with `make -C archive/obo`), running the same
 programs from `archive/obo/bench/*_obo.obx`. The programs came from obo's
