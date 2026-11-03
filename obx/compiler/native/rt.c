@@ -127,7 +127,10 @@ static int str_eqn(const char* a, const char* b, size_t n) {
 /* ---- the heap: size classes on mmap'd chunks, one free list per class; a large block is
    its own mapping. Every block has a 16-byte header (its class, or its mapping size), so
    blocks are 16-byte aligned like malloc's. Memory of the small classes is reused, never
-   unmapped. */
+   unmapped. The last large block freed, up to KEEP bytes, is kept for the next large malloc
+   it fits (at most twice the size asked for): a program that allocates and frees one big array
+   in a loop then faults its pages in once, not each round. glibc does the same with its
+   dynamic mmap threshold, up to 32 MiB. */
 
 #define NCLASS 40
 static size_t class_size[NCLASS];
@@ -136,6 +139,8 @@ static char* chunk_at;
 static size_t chunk_left;
 #define CHUNK (1 << 20)
 #define LARGE (1 << 16)
+#define KEEP ((size_t)32 << 20)
+static size_t* large_kept;          /* the header of the kept mapping, or 0 */
 
 static void* sys_mmap(size_t n) {
     i64 r = sys6(S_MMAP, 0, (i64)n, 3, 0x22, -1, 0);       /* PROT_READ|WRITE, MAP_PRIVATE|ANONYMOUS */
@@ -162,6 +167,11 @@ void* malloc(size_t n) {
     if (need > LARGE) {
         size_t m = (need + 16 + 4095) & ~(size_t)4095;
         if (m < need) return 0;
+        size_t* k = large_kept;
+        if (k && k[0] >= m && k[0] / 2 <= m) {
+            large_kept = 0;
+            return (char*)k + 16;       /* k[0] stays its mapping size, k[1] 1 */
+        }
         char* p = sys_mmap(m);
         if (!p) return 0;
         ((size_t*)p)[0] = m;
@@ -195,7 +205,16 @@ static size_t block_size(void* p) {
 void free(void* p) {
     if (!p) return;
     size_t* h = (size_t*)((char*)p - 16);
-    if (h[1]) { SYS(S_MUNMAP, h, h[0], 0); return; }
+    if (h[1]) {
+        if (h[0] <= KEEP) {
+            size_t* old = large_kept;
+            large_kept = h;
+            h = old;
+            if (!h) return;
+        }
+        SYS(S_MUNMAP, h, h[0], 0);
+        return;
+    }
     *(void**)p = free_list[h[0]];
     free_list[h[0]] = p;
 }
