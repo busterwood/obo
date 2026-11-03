@@ -733,6 +733,9 @@ pub fn (h: &ReadHalf) readNow(buf: mut &[byte]): Result[int, io.IoError] {
 // The peer's address ("" once it is gone).
 pub fn (h: &ReadHalf) peerAddr(): str { return sockText(h.fd, 1) }
 
+// The peer's address as accept saw it (no system call).
+pub fn (h: &ReadHalf) remote(): str { return h.addr }
+
 // This side's address.
 pub fn (h: &ReadHalf) localAddr(): str { return sockText(h.fd, 0) }
 
@@ -740,13 +743,38 @@ pub fn (h: &ReadHalf) localAddr(): str { return sockText(h.fd, 0) }
 // hangs up, until the guard is dropped: a reset or an error on the
 // connection, and with halfClose also the end of the peer's stream (it
 // shut down its sending side, or closed: the two look the same until this
-// side writes). If that has already happened, the task is cancelled at
-// once. It is not a read: data that arrives stays for the reader. A server
-// arms it while a handler runs, so that the handler's next call that can
-// park returns Cancelled when the client has gone.
+// side writes). A reset seen before the call cancels the task at once; an
+// end of stream seen before it does not count (a client that sends its
+// request and then shuts down its side still gets the reply). It is not a
+// read: data that arrives stays for the reader. A server arms it while a
+// handler runs, so that the handler's next call that can park returns
+// Cancelled when the client has gone.
 pub fn (h: &ReadHalf) cancelOnHangup(halfClose: bool): HangupGuard {
-    let r = rtHangup(h.fd, if halfClose { 3 } else { 2 })
+    let seen = rtHangup(h.fd, 4)
+    let r = rtHangup(h.fd, if halfClose && (seen & 1) == 0 { 3 } else { 2 })
     return HangupGuard{fd: h.fd}
+}
+
+// Writes data from the reading side: a protocol's short interim reply
+// that the reader owes before it reads on (HTTP's 100 Continue, sent at
+// the first read of a request body while the response's writer is
+// elsewhere). It parks, as write does, while the socket's buffer is full.
+pub fn (h: &ReadHalf) writeInterim(data: &[byte], w: Where): Result[Unit, io.IoError] {
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "write", h.addr)) }
+    var off = 0
+    while off < len(data) {
+        let n = rtWrite(h.fd, data[off..], len(data) - off)
+        if n >= 0 {
+            off += n
+        } else if n == -EAGAIN {
+            let r = rtWait(h.fd, 1, w.cstr())
+            if r != 0 { return Err(stopped(r, "write", h.addr)) }
+        } else if n != -EINTR {
+            return Err(io.ioError(-n, "write", h.addr))
+        }
+    }
+    return Ok(Unit{})
 }
 
 // cancelOnHangup's guard: dropping it disarms the cancellation.

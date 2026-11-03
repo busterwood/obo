@@ -2471,6 +2471,7 @@ static void rt_hup_seen(int64_t fd, uint32_t e) {
 }
 int64_t obxlib_net_hangup(int64_t fd, int64_t mode) {
     if (fd < 0 || fd >= rt_nfds) return 0;
+    if (mode & 4) return rt_fds[fd].gone;
     if (mode == 0) { rt_fds[fd].hup = 0; rt_fds[fd].hupmode = 0; return 0; }
     if (rt_fds[fd].gone & (uint8_t)mode) { rt_cancel(rt_cur); return 1; }
     rt_fds[fd].hup = rt_cur;

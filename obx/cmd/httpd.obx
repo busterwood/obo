@@ -1,12 +1,12 @@
-// httpd: a small HTTP/1.1 server, one thread per process (design/concurrency.md,
-// the gates of stages C1b, C1c and C2). One task per connection, keep-alive by
-// default.
+// httpd: a small HTTP/1.1 server on lib/httpserver (design/http-server.md,
+// stage S1; before it, the gates of stages C1b, C1c and C2 of
+// design/concurrency.md). One task per connection, keep-alive by default.
 //
 //     httpd [ADDR [POOL [WORKERS [MODE]]]]
 //         ADDR     host:port, default 127.0.0.1:8080 (port 0: any)
 //         POOL     connections of the Postgres pool, default 0: no /db
 //         WORKERS  worker processes (task.workers), default 0: serve in this
-//                  process, as before stage C2
+//                  process
 //         MODE     with WORKERS: "shared" (default), one listener made before
 //                  the fork and shared by the workers (one accept queue), or
 //                  "reuseport", a listener of its own in each worker on the
@@ -18,194 +18,82 @@
 // WORKERS x POOL connections to the database in all. It prints
 // "listening on HOST:PORT" once it listens (with WORKERS, then a line saying
 // how many and how they listen).
-// Routes:
+// Routes (GET also answers HEAD):
 //     GET /             "hello, world\n"
 //     GET /db           one query through the pool (SELECT $1::int8 + 1, $1 the
-//                       request's number): "db N\n"; 503 without a pool or
-//                       when the query fails
+//                       worker's request count): "db N\n"; 503 without a pool
+//                       or when the query fails
 //     GET /stats        counters: open connections, accepted, requests; with
 //                       WORKERS those of the worker that answers ("worker I"
 //                       first): the workers share no memory
-//     GET /shutdown     "bye\n", then a graceful shutdown: the accept loop is
-//                       cancelled and with it every connection's task (an
-//                       idle one is parked in read, which returns ECANCELED);
-//                       the program prints its counters and ends. With
-//                       WORKERS the whole server stops: the worker asks the
-//                       supervisor (task.stopWorkers), which sends SIGTERM to
-//                       every worker; each prints its own counters, then the
-//                       supervisor one line per worker.
-// SIGTERM or SIGINT (Ctrl-C) to a server with WORKERS is the same graceful
-// stop; without WORKERS they end the process at once, as before.
-// Anything else is 404; a request it cannot parse is 400 and closes the
-// connection. A request body (Content-Length) is read and ignored; chunked
-// bodies are refused (501). Pipelined requests are answered in order.
+//     GET /shutdown     "bye\n", then a graceful stop: no new connections, the
+//                       idle ones closed, the requests in flight finished
+//                       (http.serve's drain); the program prints its counters
+//                       and ends. With WORKERS the whole server stops: the
+//                       worker asks the supervisor (task.stopWorkers), which
+//                       sends SIGTERM to every worker; each drains and prints
+//                       its own counters, then the supervisor one line per
+//                       worker.
+// SIGTERM or SIGINT (Ctrl-C) is the same graceful stop, with or without
+// WORKERS.
+// Anything else is the library's: 404, 405 with Allow for another method, and
+// for a request it refuses (malformed, smuggling, over a limit) a 4xx and the
+// connection closed (lib/README.md, the server's rules). Request bodies,
+// Content-Length or chunked, are read and dropped (up to 1 MiB). Pipelined
+// requests are answered in order.
 import "task"
 import "net"
 import "io"
 import "os"
 import "strings"
 import "postgres"
-import "http"
+import "httpserver" as http
 
-type State = record {
-    open: int                         // connections open now
-    accepted: int
-    requests: int
-    stop: Option[task.Promise[int]]   // completed by /shutdown (without workers)
+// What every handler gets: handles only, so a copy type; each connection's
+// task has its own copy.
+type App = value record {
+    db: Option[postgres.Pool]
     worker: int                       // the worker's index, or -1 without workers
 }
 
-type Server = record {
-    ln: net.Listener
-    st: task.Shared[State]
-    db: Option[postgres.Pool]
-}
-
-type Job = record {
-    c: net.Conn
-    st: task.Shared[State]
-    db: Option[postgres.Pool]
-}
-
-const BUF = 4096        // a connection's read buffer: the largest request head
 const HELLO = "hello, world\n"
 
-// ---- the accept loop
+fn hello(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    return w.text(HELLO)
+}
 
-fn acceptLoop(sv: Server): int {
-    task.scope(fn(s: mut &task.Scope) {
-        while true {
-            match sv.ln.accept() {
-                Ok(c) {
-                    sv.st.with(fn(st: mut &State) { st.accepted += 1 })
-                    s.spawn(serve, Job{c: c, st: sv.st, db: sv.db})
-                }
+fn db(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    match app.db {
+        Some(pool) {
+            match query(&pool, rq.serverStats().requests) {
+                Ok(v) { return w.text("db " + intToStr(v) + "\n") }
                 Err(e) {
-                    if e.isCancelled() { break }
-                    // EMFILE and the like: the connection stays queued; try again soon
-                    eprintln("httpd: " + e.toStr())
-                    if task.sleep(10).isErr() { break }
+                    w.status(503)
+                    return w.text(e.toStr() + "\n")
                 }
             }
         }
-    })
-    return 0
-}
-
-// ---- one connection
-
-fn serve(j: Job): int {
-    j.st.with(fn(st: mut &State) { st.open += 1 })
-    let r = session(&j.c, j.st, &j.db)
-    j.st.with(fn(st: mut &State) { st.open -= 1 })
-    return 0
-}
-
-type Request = record {
-    method: str
-    path: str
-    keepAlive: bool
-    bodyLen: int         // -1: a body this server does not take (chunked)
-}
-
-type Reply = record {
-    status: str
-    body: str
-    close: bool
-}
-
-// Reads and answers requests until the peer closes, asks to close, or the
-// task is cancelled (shutdown).
-fn session(c: &net.Conn, st: task.Shared[State], db: &Option[postgres.Pool]): Result[Unit, io.IoError] {
-    var buf = array(BUF, byte(0))
-    var have = 0                      // bytes in buf[0..have]
-    var out = newStrBuf()             // the replies to the requests in buf
-    while true {
-        // one request head: up to the blank line
-        var end = headEnd(&buf, have, 0)
-        while end < 0 {
-            if out.size() > 0 {       // answer what came before reading on (pipelining)
-                try c.writeStr(out.toStr())
-                out.clear()
-            }
-            if have == BUF { return reply(c, Reply{status: "431 Request Header Fields Too Large", body: "", close: true}) }
-            let n = try c.read(mut &buf[have..BUF])
-            if n == 0 { return Ok(Unit{}) }
-            let from = if have > 3 { have - 3 } else { 0 }
-            have += n
-            end = headEnd(&buf, have, from)
-        }
-        let rq = match parse(strFromBytes(&buf[0..end])) {
-            Some(r) { r }
-            None { return reply(c, Reply{status: "400 Bad Request", body: "", close: true}) }
-        }
-        if rq.bodyLen < 0 { return reply(c, Reply{status: "501 Not Implemented", body: "", close: true}) }
-        // the body: skipped, read as it comes
-        var used = end + 4 + rq.bodyLen
-        while used > have {
-            used -= have
-            have = 0
-            let n = try c.read(mut &buf[0..BUF])
-            if n == 0 { return Ok(Unit{}) }
-            have = n
-        }
-        // keep what follows (the next requests)
-        for i in used..have { buf[i - used] = buf[i] }
-        have -= used
-        var n = 0
-        st.with(fn(s: mut &State) {
-            s.requests += 1
-            n = s.requests
-        })
-        let rp = route(&rq, st, db, n)
-        let close = rp.close || !rq.keepAlive
-        addReply(mut &out, &rp, close, rq.method == "HEAD")
-        if close {
-            try c.writeStr(out.toStr())
-            return Ok(Unit{})
-        }
-        if have == 0 {
-            try c.writeStr(out.toStr())
-            out.clear()
+        None {
+            w.status(503)
+            return w.text("no database\n")
         }
     }
-    return Ok(Unit{})
 }
 
-fn route(rq: &Request, st: task.Shared[State], db: &Option[postgres.Pool], n: int): Reply {
-    if rq.method != "GET" && rq.method != "HEAD" {
-        return Reply{status: "405 Method Not Allowed", body: "", close: false}
+fn stats(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    let s = rq.serverStats()
+    let who = if app.worker >= 0 { "worker " + intToStr(app.worker) + "\n" } else { "" }
+    return w.text(who + "open " + intToStr(s.open) + "\naccepted " + intToStr(s.accepted) + "\nrequests " + intToStr(s.requests) + "\n")
+}
+
+fn shutdown(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+    if app.worker >= 0 {
+        let asked = task.stopWorkers()        // asking twice is one request
+    } else {
+        rq.stopServer()
     }
-    if rq.path == "/" { return Reply{status: "200 OK", body: HELLO, close: false} }
-    if rq.path == "/db" {
-        match db {
-            Some(pool) {
-                match query(&pool, n) {
-                    Ok(v) { return Reply{status: "200 OK", body: "db " + intToStr(v) + "\n", close: false} }
-                    Err(e) { return Reply{status: "503 Service Unavailable", body: e.toStr() + "\n", close: false} }
-                }
-            }
-            None { return Reply{status: "503 Service Unavailable", body: "no database\n", close: false} }
-        }
-    }
-    if rq.path == "/stats" {
-        var b = ""
-        st.with(fn(s: mut &State) {
-            b = (if s.worker >= 0 { "worker " + intToStr(s.worker) + "\n" } else { "" }) + "open " + intToStr(s.open) + "\naccepted " + intToStr(s.accepted) +
-                "\nrequests " + intToStr(s.requests) + "\n"
-        })
-        return Reply{status: "200 OK", body: b, close: false}
-    }
-    if rq.path == "/shutdown" {
-        st.with(fn(s: mut &State) {
-            match replace(mut &s.stop, None) {
-                Some(p) { p.complete(0) }
-                None { if s.worker >= 0 { let asked = task.stopWorkers() } }   // asking twice is one request
-            }
-        })
-        return Reply{status: "200 OK", body: "bye\n", close: true}
-    }
-    return Reply{status: "404 Not Found", body: "not found\n", close: false}
+    w.header("Connection", "close")
+    return w.text("bye\n")
 }
 
 // One query on a connection of the pool, given back when the lease drops.
@@ -215,87 +103,42 @@ fn query(pool: &postgres.Pool, n: int): Result[int, postgres.Error] {
     return rows.int(0, 0)
 }
 
-fn reply(c: &net.Conn, rp: Reply): Result[Unit, io.IoError] {
-    var out = newStrBuf()
-    addReply(mut &out, &rp, true, false)
-    return c.writeStr(out.toStr())
-}
-
-// head: the reply to a HEAD request, without the body
-fn addReply(out: mut &StrBuf, rp: &Reply, close: bool, head: bool) {
-    out.add("HTTP/1.1 " + rp.status + "\r\nContent-Type: text/plain\r\nContent-Length: ")
-    out.add(intToStr(len(rp.body)))
-    if close { out.add("\r\nConnection: close") }
-    out.add("\r\n\r\n")
-    if !head { out.add(rp.body) }
-}
-
-// The index of the first "\r\n\r\n" in b[0..n] at or after from; -1 if none.
-fn headEnd(b: &[]byte, n: int, from: int): int {
-    var i = from
-    while i + 3 < n {
-        if b[i + 3] != '\n' { i += 1; continue }
-        if b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' { return i }
-        i += 1
-    }
-    return -1
-}
-
-// A request head (without the blank line); None if it is malformed. The
-// parsing is lib/http's, which the HTTP client shares: a token method, a
-// target, HTTP/1.0 or 1.1, at most 100 header lines, no folded lines,
-// lines ended by CRLF, and one Content-Length (not with a
-// Transfer-Encoding). The target must be a path.
-fn parse(head: str): Option[Request] {
-    let h = match http.parseRequest(head) {
-        Ok(x) { x }
-        Err(_) { return None }
-    }
-    let bodyLen = match h.bodyLength() {
-        Ok(n) { n }
-        Err(_) { return None }
-    }
-    if !startsWith(h.target, "/") { return None }
-    return Some(Request{method: h.method, path: h.target, keepAlive: h.keepAlive(), bodyLen: bodyLen})
+fn routes(): http.Router[App] {
+    var r = http.router[App]()
+    r.handle("GET /{$}", hello)
+    r.handle("GET /db", db)
+    r.handle("GET /stats", stats)
+    r.handle("GET /shutdown", shutdown)
+    return r
 }
 
 // ---- main
 
-// Serves on ln until /shutdown (worker < 0) or, in a worker, SIGTERM or
-// SIGINT; then prints its counters.
+// Serves on ln until /shutdown, SIGTERM or SIGINT; then prints its counters.
 fn run(ln: net.Listener, size: int, worker: int) {
-    let db: Option[postgres.Pool] =
+    let pool: Option[postgres.Pool] =
         if size > 0 { Some(postgres.newPool(os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres"), size)) } else { None }
-    var stop: Option[task.Future[int]] = None
-    var prom: Option[task.Promise[int]] = None
-    if worker < 0 {
-        let task.Handoff{promise: p, future: f} = task.promise[int]()
-        stop = Some(f)
-        prom = Some(p)
-    }
-    let st = task.shared(State{open: 0, accepted: 0, requests: 0, stop: prom, worker: worker})
-    var lst = Some(ln)
-    task.scope(fn(s: mut &task.Scope) {
-        let srv = s.start(acceptLoop, Server{ln: replace(mut &lst, None).unwrap(), st: st, db: db})
-        match replace(mut &stop, None) {
-            Some(f) { let r = f.wait() }
-            None { let r = task.terminated() }
-        }
-        // srv is dropped here: the accept loop and every connection are cancelled
-    })
-    var pg = ""
-    match &db {
-        Some(pool) {
-            let ps = pool.stats()
-            pg = ", pool open " + intToStr(ps.open) + " idle " + intToStr(ps.idle) + " waiting " + intToStr(ps.waiting)
-        }
-        None {}
-    }
+    var cfg = http.defaults()
+    cfg.maxConns = 30000                  // the gates hold 10,000 idle connections and more
     let who = if worker >= 0 { "worker " + intToStr(worker) + ": " } else { "" }
-    st.with(fn(s: mut &State) {
-        println("stopped: " + who + "accepted " + intToStr(s.accepted) + ", requests " + intToStr(s.requests) +
-                ", open " + intToStr(s.open) + pg)
-    })
+    match http.serve(ln, App{db: pool, worker: worker}, routes(), cfg) {
+        Ok(s) {
+            var pg = ""
+            match &pool {
+                Some(p) {
+                    let ps = p.stats()
+                    pg = ", pool open " + intToStr(ps.open) + " idle " + intToStr(ps.idle) + " waiting " + intToStr(ps.waiting)
+                }
+                None {}
+            }
+            println("stopped: " + who + "accepted " + intToStr(s.accepted) + ", requests " + intToStr(s.requests) +
+                    ", open " + intToStr(s.open) + pg)
+        }
+        Err(e) {
+            eprintln("httpd: " + who + e.toStr())
+            os.quit(1)
+        }
+    }
 }
 
 fn listenOr(addr: str, reuseport: bool): net.Listener {
@@ -309,7 +152,9 @@ fn listenOr(addr: str, reuseport: bool): net.Listener {
     }
 }
 
-// WORKERS processes, supervised by this one (task.workers).
+// WORKERS processes, supervised by this one (task.workersWith and the
+// server's policy: a worker that crashes after it serves is restarted, and
+// such crashes never make the supervisor give up).
 fn runWorkers(addr: str, size: int, n: int, reuseport: bool) {
     var lst: Option[net.Listener] = None
     var at = addr
@@ -331,7 +176,7 @@ fn runWorkers(addr: str, size: int, n: int, reuseport: bool) {
     println("listening on " + at)
     println(intToStr(n) + " workers, " + (if reuseport { "a listener in each (reuseport)" } else { "one shared listener" }))
     io.flushStdout().unwrap()
-    let r = task.workers(n, fn(i: int) {
+    let r = task.workersWith(n, http.workerPolicy(), fn(i: int) {
         task.watchSignals(&[task.SIGTERM, task.SIGINT])   // before anything: a stop is never lost
         let ln = if reuseport { listenOr(at, true) } else { replace(mut &lst, None).unwrap() }
         run(ln, size, i)
@@ -360,6 +205,7 @@ fn main() {
         runWorkers(addr, size, n, mode == "reuseport")
         return
     }
+    task.watchSignals(&[task.SIGTERM, task.SIGINT])
     let ln = listenOr(addr, false)
     println("listening on " + ln.localAddr())
     io.flushStdout().unwrap()

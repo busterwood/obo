@@ -236,7 +236,7 @@ def run_server(name, exe, args, loader, pin, pool=0):
         res['per_conn'] = (r1 - r0) * 1024 / max(1, args.idle)
         if name.startswith('obx'):
             s = socket.create_connection((host, port))
-            st, body = exchange(s, b'GET /stats HTTP/1.1\r\n\r\n')
+            st, body = exchange(s, b'GET /stats HTTP/1.1\r\nHost: gate\r\n\r\n')
             s.close()
             m = re.search(r'open (\d+)', body)
             if not m or int(m.group(1)) < args.idle:
@@ -244,7 +244,7 @@ def run_server(name, exe, args, loader, pin, pool=0):
             res['notes'].append('stats: ' + body.strip().replace('\n', ', '))
         if pool:
             s = socket.create_connection((host, port))
-            st, body = exchange(s, b'GET /db HTTP/1.1\r\n\r\n')
+            st, body = exchange(s, b'GET /db HTTP/1.1\r\nHost: gate\r\n\r\n')
             s.close()
             if st != 'HTTP/1.1 200 OK' or not body.startswith('db '):
                 raise RuntimeError('/db: %r %r' % (st, body))
@@ -269,7 +269,7 @@ def run_server(name, exe, args, loader, pin, pool=0):
                 raise RuntimeError('an idle connection did not answer: %r' % st)
         if name.startswith('obx'):
             s = socket.create_connection((host, port))
-            st, body = exchange(s, b'GET /shutdown HTTP/1.1\r\n\r\n')
+            st, body = exchange(s, b'GET /shutdown HTTP/1.1\r\nHost: gate\r\n\r\n')
             if body != 'bye\n':
                 raise RuntimeError('shutdown: %r %r' % (st, body))
             t1 = time.monotonic()

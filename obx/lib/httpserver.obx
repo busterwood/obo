@@ -1,0 +1,2895 @@
+// httpserver: an HTTP/1.1 server (design/http-server.md, stage S1).
+//
+//     import "httpserver" as http
+//
+//     type App = value record { db: postgres.Pool }      // a copy type: handles only
+//
+//     fn hello(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
+//         return w.text("hello, " + rq.param("name") + "\n")
+//     }
+//
+//     var r = http.router[App]()
+//     r.handle("GET /hello/{name}", hello)
+//     r.use(http.accessLog[App])
+//     let st = http.serve(net.listen(":8080").expect("listen"), app, r, http.defaults())
+//
+// A module of its own, not part of lib/http.obx: the client there already
+// has a Request, a Response, an Error, Options, defaults and Stats, and the
+// server's types of the same names are different things. The server
+// imports http for what both sides share: Headers, the head scanner
+// (headEnd) and the strict header-line parser (parseFields). A program
+// that has both writes `import "http"` and `import "httpserver" as hs`.
+//
+// One task per connection. The task owns the Request (with the reading
+// half of the socket and the read buffer) and the Response (with the
+// writing half), and reuses both for every request on the connection. A
+// handler and its middleware run in that task, under the route's deadline
+// (task.within), and are cancelled when the client hangs up. The router
+// and the middleware live in a task.Shared, looked up once per request.
+// TODO(hashfrozen): hold the router in a task.Frozen once that lands, so a
+// lookup needs no with.
+//
+// Strict by default (design/http-server.md section 3): anything two
+// parsers could read differently is refused with a 4xx and the connection
+// closed; every limit and timeout has a value (defaults()).
+import "http"
+import "net"
+import "task"
+import "io"
+import "time"
+import "strings"
+
+extern "c" fn rtWithin(ms: int): int as "obxlib_task_within"
+extern "c" fn rtRestore(old: int) as "obxlib_task_restore"
+extern "c" fn rtRandom(b: mut &[byte], n: int): int as "obxlib_random"
+extern "c" fn rtNofile(want: int): int as "obxlib_nofile"
+extern "c" fn getpid(): i32
+extern "c" fn logWrite(fd: i32, b: &[byte], n: int): int as "write" blocking
+
+const BUF = 4096              // a connection's read buffer; grows while a head is incomplete
+const OUT = 4096              // a response's output buffer, to start with
+const FLUSH_AT = 32768        // buffered body bytes that are sent without waiting for flush
+const TICK = 100              // the accept loop's housekeeping period (ms)
+const YIELD_BYTES = 65536     // a body copy yields this often
+const LOG_FLUSH = 65536       // the access log is written out past this
+const LOG_MAX = 4194304       // and drops lines past this, unwritten
+const LOG_VALUE = 256         // a logged value from input is cut here
+const RANDOM_BATCH = 512      // request ids: bytes of randomness read at a time
+
+// ---------------------------------------------------------------- errors
+
+// What went wrong, for logs and metrics.
+pub type ErrorKind = value closed { Client; Server; Gone; Timeout; Limit; Protocol; Config }
+
+pub fn (k: ErrorKind) toStr(): str {
+    match k {
+        ErrorKind.Client { return "client" }
+        ErrorKind.Server { return "server" }
+        ErrorKind.Gone { return "gone" }
+        ErrorKind.Timeout { return "timeout" }
+        ErrorKind.Limit { return "limit" }
+        ErrorKind.Protocol { return "protocol" }
+        ErrorKind.Config { return "config" }
+    }
+}
+
+pub fn (k: ErrorKind) eq(o: &ErrorKind): bool { return k.toStr() == o.toStr() }
+
+// A handler's error. status is what the client gets if nothing has been
+// written yet (with the library's fixed body for it); msg is for the log
+// only, never sent.
+pub type Error = value record {
+    pub status: int
+    pub kind: ErrorKind
+    pub msg: str
+}
+
+pub fn (e: Error) toStr(): str { return intToStr(e.status) + " " + e.kind.toStr() + ": " + e.msg }
+
+// An Error with status; its kind is Client for 4xx and Server otherwise.
+pub fn error(status: int, msg: str): Error {
+    return Error{status: status, kind: if status >= 400 && status < 500 { ErrorKind.Client } else { ErrorKind.Server }, msg: msg}
+}
+
+fn errOf(status: int, k: ErrorKind, msg: str): Error { return Error{status: status, kind: k, msg: msg} }
+
+// Any error as an http Error with status (its text goes to msg):
+// `let c = try http.check(app.db.acquire(), 503)`.
+pub fn check[T, E: Show](r: Result[T, E], status: int): Result[T, Error] {
+    match move(r) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(error(status, e.toStr())) }
+    }
+}
+
+// The Error of a failed socket call.
+fn ioErr(e: &io.IoError, what: str): Error {
+    if e.isTimeout() { return errOf(503, ErrorKind.Timeout, what + ": " + e.toStr()) }
+    return errOf(499, ErrorKind.Gone, what + ": " + e.toStr())
+}
+
+// ---------------------------------------------------------------- configuration
+
+// Every limit and timeout (design/http-server.md section 3.4). defaults()
+// gives each a value; 0 turns a timeout or rate off where it says so.
+pub type Config = record {
+    pub headerTimeoutMs: int     // the whole head, from its first byte: 408 and close
+    pub idleTimeoutMs: int       // a keep-alive connection waiting for its next request
+    pub idlePressureMs: int      // the idle timeout from 80 % of maxConns on
+    pub bodyGraceMs: int         // a request body: this long at any rate,
+    pub bodyMinRate: int         // then at least this many bytes/s (credit at most 5 s ahead); 0: no minimum
+    pub writeStallMs: int        // a write that makes no progress this long fails and closes
+    pub deadlineMs: int          // a route's deadline (task.within around the handler); 0: none
+    pub drainMs: int             // after a stop: how long requests in flight may take
+    pub maxConns: int            // connections at once; past it the accept loop waits
+    pub maxConnsPerIp: int       // per client address, in this worker; 0: no limit
+    pub maxRequestsPerConn: int  // then Connection: close
+    pub maxHeadBytes: int        // the request head: 431
+    pub maxHeaders: int          // header lines: 431
+    pub maxLineBytes: int        // one header line: 431
+    pub maxTargetBytes: int      // the request target: 414
+    pub maxBody: int             // a route's request body unless RouteOpts says: 413
+    pub maxDrain: int            // an unread body up to this is read and dropped to keep the connection
+    pub maxParams: int           // query parameters: 400
+    pub maxTrailerBytes: int     // a chunked body's trailers
+    pub maxTrailers: int
+    pub memBudget: int           // buffered bytes in this worker; past it new requests get 503
+    pub fdMargin: int            // descriptors kept free beyond maxConns (RLIMIT_NOFILE is checked)
+    pub acceptBatch: int         // the accept loop yields after this many accepts
+    pub deferAccept: bool        // TCP_DEFER_ACCEPT (the head timeout)
+    pub cancelOnHalfClose: bool  // a half-close by the client cancels its handler, as a reset does
+    pub signals: bool            // SIGTERM or SIGINT drains the server (task.terminated)
+    pub hosts: []str             // the Hosts served (without port); others get 421. Empty: any
+    pub redirectHosts: []str     // hosts w.redirect may send clients to (besides relative paths)
+    pub trustedProxies: []str    // peers whose X-Forwarded-For and X-Request-Id are believed
+    pub logFd: int               // where accessLog writes (1: stdout)
+}
+
+// The defaults of design/http-server.md section 3.4.
+pub fn defaults(): Config {
+    return Config{
+        headerTimeoutMs: 10000, idleTimeoutMs: 60000, idlePressureMs: 5000,
+        bodyGraceMs: 10000, bodyMinRate: 1024, writeStallMs: 30000, deadlineMs: 30000, drainMs: 30000,
+        maxConns: 10000, maxConnsPerIp: 0, maxRequestsPerConn: 1000,
+        maxHeadBytes: 16384, maxHeaders: 100, maxLineBytes: 8192, maxTargetBytes: 8192,
+        maxBody: 1048576, maxDrain: 262144, maxParams: 1000, maxTrailerBytes: 8192, maxTrailers: 32,
+        memBudget: 536870912, fdMargin: 64, acceptBatch: 16,
+        deferAccept: true, cancelOnHalfClose: true, signals: true,
+        hosts: [], redirectHosts: [], trustedProxies: [], logFd: 1}
+}
+
+// task.workerPolicy with a drain long enough for defaults().drainMs.
+// task's policy is ready-aware: serve marks its worker ready
+// (task.workerReady) once it accepts, and a crash after that is restarted
+// but never counts toward giving up, so a request that kills a worker
+// cannot stop the server.
+pub fn workerPolicy(): task.WorkerPolicy {
+    var p = task.workerPolicy()
+    p.drainMs = 35000
+    return p
+}
+
+// The numbers a connection needs, copied out of the Config once.
+type Limits = value record {
+    headerTimeoutMs: int
+    idleTimeoutMs: int
+    bodyGraceMs: int
+    bodyMinRate: int
+    writeStallMs: int
+    deadlineMs: int
+    maxRequestsPerConn: int
+    maxHeadBytes: int
+    maxHeaders: int
+    maxLineBytes: int
+    maxTargetBytes: int
+    maxBody: int
+    maxDrain: int
+    maxParams: int
+    maxTrailerBytes: int
+    maxTrailers: int
+    cancelOnHalfClose: bool
+}
+
+fn limitsOf(c: &Config): Limits {
+    return Limits{headerTimeoutMs: c.headerTimeoutMs, idleTimeoutMs: c.idleTimeoutMs, bodyGraceMs: c.bodyGraceMs,
+        bodyMinRate: c.bodyMinRate, writeStallMs: c.writeStallMs, deadlineMs: c.deadlineMs,
+        maxRequestsPerConn: c.maxRequestsPerConn, maxHeadBytes: c.maxHeadBytes, maxHeaders: c.maxHeaders,
+        maxLineBytes: c.maxLineBytes, maxTargetBytes: c.maxTargetBytes, maxBody: c.maxBody, maxDrain: c.maxDrain,
+        maxParams: c.maxParams, maxTrailerBytes: c.maxTrailerBytes, maxTrailers: c.maxTrailers,
+        cancelOnHalfClose: c.cancelOnHalfClose}
+}
+
+// ---------------------------------------------------------------- statistics
+
+// serve's counters (this worker's).
+pub type Stats = value record {
+    pub accepted: int
+    pub requests: int     // heads read (answered by a handler or refused)
+    pub open: int         // connections open now
+    pub rejected: int     // requests refused before a handler: malformed, over a limit
+    pub timeouts: int     // head, body, write or route deadlines
+    pub gone: int         // clients that hung up while their request ran
+    pub errors: int       // 5xx answers
+    pub shed: int         // connections closed at once for want of descriptors
+    pub idleClosed: int   // idle connections closed under pressure or by a stop
+    pub c2xx: int         // answers by status class
+    pub c3xx: int
+    pub c4xx: int
+    pub c5xx: int
+    pub logDropped: int   // access log lines dropped (the log's reader was too slow)
+}
+
+pub fn (s: Stats) toStr(): str {
+    return "accepted " + intToStr(s.accepted) + ", requests " + intToStr(s.requests) + ", open " + intToStr(s.open) +
+        ", rejected " + intToStr(s.rejected) + ", timeouts " + intToStr(s.timeouts) + ", gone " + intToStr(s.gone) +
+        ", errors " + intToStr(s.errors)
+}
+
+fn noStats(): Stats {
+    return Stats{accepted: 0, requests: 0, open: 0, rejected: 0, timeouts: 0, gone: 0, errors: 0, shed: 0,
+        idleClosed: 0, c2xx: 0, c3xx: 0, c4xx: 0, c5xx: 0, logDropped: 0}
+}
+
+// ---------------------------------------------------------------- a byte buffer
+
+type Buf = record {
+    b: []byte
+    n: int
+}
+
+fn newBuf(cap: int): Buf { return Buf{b: array(cap, byte(0)), n: 0} }
+
+fn (o: mut &Buf) room(k: int) {
+    if o.n + k <= len(o.b) { return }
+    var c = len(o.b) * 2
+    if c < o.n + k { c = o.n + k }
+    var nb = array(c, byte(0))
+    for i in 0..o.n { nb[i] = o.b[i] }
+    o.b = nb
+}
+
+fn (o: mut &Buf) add(s: str) {
+    let k = len(s)
+    o.room(k)
+    let at = o.n
+    for i in 0..k { o.b[at + i] = s[i] }
+    o.n = at + k
+}
+
+fn (o: mut &Buf) addBytes(d: &[byte]) {
+    let k = len(d)
+    o.room(k)
+    let at = o.n
+    for i in 0..k { o.b[at + i] = d[i] }
+    o.n = at + k
+}
+
+fn (o: mut &Buf) addByte(c: byte) {
+    o.room(1)
+    o.b[o.n] = c
+    o.n += 1
+}
+
+fn (o: mut &Buf) addInt(v: int) { o.add(intToStr(v)) }
+
+fn (o: mut &Buf) addHex(v: int) {
+    if v >= 16 { o.addHex(v / 16) }
+    o.addByte(HEX[v % 16])
+}
+
+const HEX = "0123456789abcdef"
+
+// ---------------------------------------------------------------- routing
+//
+// Go 1.22's patterns (design/http-server.md section 2.3):
+// "[METHOD ][HOST]/[PATH]". {name} matches one non-empty segment, {name...}
+// the rest of the path, {$} only the end of a path that ends in "/"; a
+// pattern that ends in "/" matches every path under it. GET also matches
+// HEAD. The most specific pattern wins; two patterns that match some
+// request alike with neither more specific are a conflict, which serve
+// reports (Err, kind Config) before it accepts anything.
+
+const SEG_LIT = 0
+const SEG_WILD = 1
+const SEG_MULTI = 2
+const SEG_END = 3
+
+// A pattern's segment: a literal (s, decoded), a wildcard (s: its name),
+// a multi wildcard (s: its name, "" for a trailing slash), or {$}.
+type Seg = value record {
+    kind: int
+    s: str
+}
+
+// What handleWith may set for a route: -1 means the Config's value.
+pub type RouteOpts = value record {
+    pub deadlineMs: int    // the handler's deadline; 0: none (server-sent events, long downloads)
+    pub maxBody: int       // the request body's limit
+}
+
+// RouteOpts with every value the Config's.
+pub fn routeOpts(): RouteOpts { return RouteOpts{deadlineMs: -1, maxBody: -1} }
+
+pub type Handler[A] = fn(&A, mut &Request, mut &Response): Result[Unit, Error]
+pub type Middleware[A] = fn(&A, mut &Request, mut &Response, Next[A]): Result[Unit, Error]
+
+type Route[A] = record {
+    pattern: str
+    method: str
+    host: str
+    segs: []Seg
+    h: Handler[A]
+    opts: RouteOpts
+}
+
+type Mw[A] = value record {
+    prefix: str
+    f: Middleware[A]
+}
+
+// The routes and the middleware of a server.
+pub type Router[A] = record {
+    routes: []Route[A]
+    order: []int        // the routes, most specific first (serve sorts them)
+    mws: []Mw[A]
+    errs: []str         // patterns that did not parse, reported by serve
+}
+
+pub fn router[A](): Router[A] { return Router[A]{routes: [], order: [], mws: [], errs: []} }
+
+// Routes requests that match pattern to h.
+pub fn (r: mut &Router[A]) handle(pattern: str, h: Handler[A]) { r.handleWith(pattern, h, routeOpts()) }
+
+// handle with a deadline or a body limit of the route's own.
+pub fn (r: mut &Router[A]) handleWith(pattern: str, h: Handler[A], o: RouteOpts) {
+    match parsePattern(pattern) {
+        Ok(p) {
+            let Parsed{method: m, host: hs, segs: sg} = move(p)
+            append(mut &r.routes, Route[A]{pattern: pattern, method: m, host: hs, segs: sg, h: h, opts: o})
+        }
+        Err(e) { append(mut &r.errs, "pattern \"" + pattern + "\": " + e) }
+    }
+}
+
+// Middleware for every request (also the 404s and 405s), in the order
+// added: the first added runs first, around the rest.
+pub fn (r: mut &Router[A]) use(m: Middleware[A]) { append(mut &r.mws, Mw[A]{prefix: "", f: m}) }
+
+// Middleware for the requests whose path starts with prefix.
+pub fn (r: mut &Router[A]) useUnder(prefix: str, m: Middleware[A]) { append(mut &r.mws, Mw[A]{prefix: prefix, f: m}) }
+
+type Parsed = record {
+    method: str
+    host: str
+    segs: []Seg
+}
+
+fn isIdent(s: str): bool {
+    if len(s) == 0 { return false }
+    for i in 0..len(s) {
+        let c = s[i]
+        let ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || (i > 0 && c >= '0' && c <= '9')
+        if !ok { return false }
+    }
+    return true
+}
+
+fn parsePattern(p: str): Result[Parsed, str] {
+    var rest = p
+    var method = ""
+    var i = 0
+    while i < len(p) && p[i] != ' ' && p[i] != '\t' { i += 1 }
+    if i < len(p) {
+        method = p[..i]
+        if !http.isToken(method) { return Err("bad method") }
+        var j = i
+        while j < len(p) && (p[j] == ' ' || p[j] == '\t') { j += 1 }
+        rest = p[j..]
+    }
+    let slash = indexOf(rest, "/", 0)
+    if slash < 0 { return Err("no path (a pattern is [METHOD ][HOST]/[PATH])") }
+    let host = strings.toLower(rest[..slash])
+    let path = rest[slash..]
+    var segs: []Seg = []
+    var names: []str = []
+    let parts = split(path[1..], '/')
+    for k in 0..len(parts) {
+        let s = parts[k]
+        let last = k == len(parts) - 1
+        if last && len(s) == 0 {
+            append(mut &segs, Seg{kind: SEG_MULTI, s: ""})
+        } else if len(s) > 0 && s[0] == '{' {
+            if s[len(s) - 1] != '}' { return Err("a wildcard must be a whole segment") }
+            let inner = s[1..len(s) - 1]
+            if inner == "$" {
+                if !last { return Err("{$} not at the end") }
+                append(mut &segs, Seg{kind: SEG_END, s: ""})
+            } else if endsWith(inner, "...") {
+                if !last { return Err("{...} wildcard not at the end") }
+                let name = inner[..len(inner) - 3]
+                if !isIdent(name) { return Err("bad wildcard name \"" + name + "\"") }
+                if contains2(&names, name) { return Err("duplicate wildcard name \"" + name + "\"") }
+                append(mut &names, name)
+                append(mut &segs, Seg{kind: SEG_MULTI, s: name})
+            } else {
+                if !isIdent(inner) { return Err("bad wildcard name \"" + inner + "\"") }
+                if contains2(&names, inner) { return Err("duplicate wildcard name \"" + inner + "\"") }
+                append(mut &names, inner)
+                append(mut &segs, Seg{kind: SEG_WILD, s: inner})
+            }
+        } else {
+            if contains(s, "{") || contains(s, "}") { return Err("a wildcard must be a whole segment") }
+            match decodeSeg(s) {
+                Some(d) {
+                    if d == "." || d == ".." { return Err("a dot segment") }
+                    append(mut &segs, Seg{kind: SEG_LIT, s: d})
+                }
+                None { return Err("bad percent-encoding") }
+            }
+        }
+    }
+    return Ok(Parsed{method: method, host: host, segs: segs})
+}
+
+fn contains2(xs: &[]str, s: str): bool {
+    for x in xs {
+        if x == s { return true }
+    }
+    return false
+}
+
+// How the requests of two patterns relate (Go's routing relationships).
+const REL_EQUIV = 0
+const REL_GENERAL = 1    // the first matches a strict superset
+const REL_SPECIFIC = 2   // a strict subset
+const REL_DISJOINT = 3
+const REL_OVERLAPS = 4
+
+fn inverse(r: int): int {
+    if r == REL_GENERAL { return REL_SPECIFIC }
+    if r == REL_SPECIFIC { return REL_GENERAL }
+    return r
+}
+
+fn combine(r1: int, r2: int): int {
+    if r1 == REL_EQUIV { return r2 }
+    if r1 == REL_DISJOINT { return REL_DISJOINT }
+    if r1 == REL_OVERLAPS { return if r2 == REL_DISJOINT { REL_DISJOINT } else { REL_OVERLAPS } }
+    // r1 is GENERAL or SPECIFIC
+    if r2 == REL_EQUIV { return r1 }
+    if r2 == inverse(r1) { return REL_OVERLAPS }
+    return r2
+}
+
+fn compareSeg(a: Seg, b: Seg): int {
+    if a.kind == SEG_MULTI && b.kind == SEG_MULTI { return REL_EQUIV }
+    if a.kind == SEG_MULTI { return REL_GENERAL }
+    if b.kind == SEG_MULTI { return REL_SPECIFIC }
+    if a.kind == SEG_WILD && b.kind == SEG_WILD { return REL_EQUIV }
+    if a.kind == SEG_WILD { return if b.kind == SEG_END { REL_DISJOINT } else { REL_GENERAL } }
+    if b.kind == SEG_WILD { return if a.kind == SEG_END { REL_DISJOINT } else { REL_SPECIFIC } }
+    if a.kind == SEG_END && b.kind == SEG_END { return REL_EQUIV }
+    if a.kind == SEG_END || b.kind == SEG_END { return REL_DISJOINT }
+    return if a.s == b.s { REL_EQUIV } else { REL_DISJOINT }
+}
+
+fn lastMulti(s: &[]Seg): bool { return len(s) > 0 && s[len(s) - 1].kind == SEG_MULTI }
+
+fn comparePaths(a: &[]Seg, b: &[]Seg): int {
+    if len(a) != len(b) && !lastMulti(a) && !lastMulti(b) { return REL_DISJOINT }
+    var rel = REL_EQUIV
+    var i = 0
+    while i < len(a) && i < len(b) {
+        rel = combine(rel, compareSeg(a[i], b[i]))
+        if rel == REL_DISJOINT { return rel }
+        i += 1
+    }
+    if i == len(a) && i == len(b) { return rel }
+    if len(a) < len(b) && lastMulti(a) { return combine(rel, REL_GENERAL) }
+    if len(b) < len(a) && lastMulti(b) { return combine(rel, REL_SPECIFIC) }
+    return REL_DISJOINT
+}
+
+fn compareMethods(a: str, b: str): int {
+    if a == b { return REL_EQUIV }
+    if a == "" { return REL_GENERAL }
+    if b == "" { return REL_SPECIFIC }
+    if a == "GET" && b == "HEAD" { return REL_GENERAL }
+    if a == "HEAD" && b == "GET" { return REL_SPECIFIC }
+    return REL_DISJOINT
+}
+
+fn compareRoutes[A](a: &Route[A], b: &Route[A]): int {
+    let m = compareMethods(a.method, b.method)
+    if m == REL_DISJOINT { return m }
+    return combine(m, comparePaths(&a.segs, &b.segs))
+}
+
+// Checks the patterns and orders them, most specific first (patterns with
+// a host before those without); the errors and conflicts, if any.
+fn prepare[A](r: mut &Router[A]): []str {
+    var errs: []str = []
+    for e in r.errs { append(mut &errs, e) }
+    let n = len(r.routes)
+    var gen: []int = array(n, 0)
+    for i in 0..n {
+        for j in 0..n {
+            if i != j {
+                let rel = compareRoutes(&r.routes[i], &r.routes[j])
+                if r.routes[i].host == r.routes[j].host {
+                    if rel == REL_GENERAL { gen[i] += 1 }
+                    if j > i && (rel == REL_EQUIV || rel == REL_OVERLAPS) {
+                        append(mut &errs, "pattern \"" + r.routes[j].pattern + "\" conflicts with \"" + r.routes[i].pattern + "\": " +
+                            (if rel == REL_EQUIV { "they match the same requests" } else { "some requests match both and neither is more specific" }))
+                    }
+                }
+            }
+        }
+    }
+    // a stable insertion sort of the indices by (no host, gen)
+    var order: []int = []
+    for i in 0..n {
+        append(mut &order, i)
+        var k = len(order) - 1
+        while k > 0 && routeKey(&r.routes[order[k - 1]], gen[order[k - 1]]) > routeKey(&r.routes[order[k]], gen[order[k]]) {
+            swap(mut &order, k - 1, k)
+            k -= 1
+        }
+    }
+    r.order = order
+    return errs
+}
+
+fn routeKey[A](rt: &Route[A], gen: int): int { return (if rt.host == "" { 1000000000 } else { 0 }) + gen }
+
+type Param = value record {
+    name: str
+    value: str
+}
+
+// Whether segs match path (decoded, validated: starts with "/", no "%2F");
+// the wildcards' values are appended to params when they do.
+fn matchSegs(segs: &[]Seg, path: str, params: mut &[]Param): bool {
+    let mark = len(params)
+    var at = 1
+    for k in 0..len(segs) {
+        let sg = segs[k]
+        if at > len(path) {
+            truncate(params, mark)
+            return false
+        }
+        if sg.kind == SEG_MULTI {
+            if len(sg.s) > 0 { append(params, Param{name: sg.s, value: path[at..]}) }
+            return true
+        }
+        var e = at
+        while e < len(path) && path[e] != '/' { e += 1 }
+        if sg.kind == SEG_END {
+            if e == len(path) && e == at { return true }
+            truncate(params, mark)
+            return false
+        }
+        if sg.kind == SEG_LIT {
+            if !segEq(path, at, e, sg.s) {
+                truncate(params, mark)
+                return false
+            }
+        } else {
+            if e == at {
+                truncate(params, mark)
+                return false
+            }
+            append(params, Param{name: sg.s, value: path[at..e]})
+        }
+        at = e + 1
+    }
+    if at == len(path) + 1 { return true }
+    truncate(params, mark)
+    return false
+}
+
+fn truncate(params: mut &[]Param, n: int) {
+    while len(params) > n { let x = pop(params) }
+}
+
+fn segEq(path: str, a: int, b: int, lit: str): bool {
+    if b - a != len(lit) { return false }
+    for i in 0..len(lit) {
+        if path[a + i] != lit[i] { return false }
+    }
+    return true
+}
+
+fn methodOk(rm: str, m: str): bool { return rm == "" || rm == m || (rm == "GET" && m == "HEAD") }
+
+// The route for a request: its index in r.routes, or -1.
+fn findRoute[A](r: &Router[A], method: str, host: str, path: str, params: mut &[]Param): int {
+    for i in r.order {
+        let rt = &r.routes[i]
+        if (len(rt.host) == 0 || rt.host == host) && methodOk(rt.method, method) && matchSegs(&rt.segs, path, params) {
+            return i
+        }
+    }
+    return -1
+}
+
+// The methods of the routes whose paths match (for 405's Allow), sorted.
+fn allowedMethods[A](r: &Router[A], host: str, path: str): str {
+    var ms: []str = []
+    var scratch: []Param = []
+    for rt in r.routes {
+        if len(rt.method) > 0 && (len(rt.host) == 0 || rt.host == host) && matchSegs(&rt.segs, path, mut &scratch) {
+            truncate(mut &scratch, 0)
+            addMethod(mut &ms, rt.method)
+            if rt.method == "GET" { addMethod(mut &ms, "HEAD") }
+        }
+    }
+    var out = ""
+    for i in 0..len(ms) {
+        if i > 0 { out = out + ", " }
+        out = out + ms[i]
+    }
+    return out
+}
+
+fn addMethod(ms: mut &[]str, m: str) {
+    for x in ms {
+        if x == m { return }
+    }
+    append(ms, m)
+    var k = len(ms) - 1
+    while k > 0 && ms[k - 1] > ms[k] {
+        swap(ms, k - 1, k)
+        k -= 1
+    }
+}
+
+// Whether path + "/" would match a subtree pattern ("/dir/" for "/dir").
+fn slashMatch[A](r: &Router[A], method: str, host: str, path: str): bool {
+    if endsWith(path, "/") { return false }
+    let p2 = path + "/"
+    var nseg = 0
+    for i in 0..len(p2) {
+        if p2[i] == '/' { nseg += 1 }
+    }
+    var scratch: []Param = []
+    for i in r.order {
+        let rt = &r.routes[i]
+        if (len(rt.host) == 0 || rt.host == host) && methodOk(rt.method, method) && lastMulti(&rt.segs) && len(rt.segs) == nseg &&
+           matchSegs(&rt.segs, p2, mut &scratch) {
+            return true
+        }
+    }
+    return false
+}
+
+// ---------------------------------------------------------------- the middleware chain
+
+// The rest of the chain, for a middleware to call (a copy value).
+pub type Next[A] = value record {
+    site: task.Shared[Router[A]]
+    h: Handler[A]
+    pos: int
+}
+
+// Runs the rest of the chain: the next middleware, or the handler.
+pub fn (n: Next[A]) run(app: &A, rq: mut &Request, w: mut &Response): Result[Unit, Error] {
+    if n.pos >= len(rq.chain) {
+        let h = n.h
+        return h(app, rq, w)
+    }
+    let idx = rq.chain[n.pos]
+    var m: Option[Middleware[A]] = None
+    n.site.with(fn(s: mut &Router[A]) { m = Some(s.mws[idx].f) })
+    match m {
+        Some(f) { return f(app, rq, w, Next[A]{site: n.site, h: n.h, pos: n.pos + 1}) }
+        None { return Err(error(500, "no middleware")) }
+    }
+}
+
+fn notFound[A](app: &A, rq: mut &Request, w: mut &Response): Result[Unit, Error] { return w.fail(404) }
+
+fn notAllowed[A](app: &A, rq: mut &Request, w: mut &Response): Result[Unit, Error] {
+    w.header("Allow", rq.allow)
+    return w.fail(405)
+}
+
+fn toSlash[A](app: &A, rq: mut &Request, w: mut &Response): Result[Unit, Error] {
+    let q = if len(rq.query) > 0 || endsWith(rq.target, "?") { "?" + rq.query } else { "" }
+    return w.redirect(301, rq.rawPath + "/" + q)
+}
+
+// ---------------------------------------------------------------- the request
+
+const F_NONE = 0
+const F_LENGTH = 1
+const F_CHUNKED = 2
+
+const C_SIZE = 0       // a chunk-size line next
+const C_DATA = 1       // inside a chunk's data
+const C_CRLF = 2       // the CRLF after a chunk's data
+const C_DONE = 3
+
+// A request, as its handler sees it.
+pub type Request = record {
+    pub method: str        // as sent, a token
+    pub path: str          // decoded once (section 3.2); rawTarget() gives it as sent
+    pub host: str          // from Host (or an absolute target), validated, lowercase, with the port if sent
+    pub proto: str         // "HTTP/1.1" or "HTTP/1.0": for logs
+    pub headers: http.Headers
+    pub peer: str          // the TCP peer ("10.0.0.7:51234")
+    pub id: str            // the request id (requestId), or ""
+    pub pattern: str       // the route's pattern ("" for a 404)
+    target: str
+    rawPath: str
+    query: str
+    hostName: str          // host without the port
+    minor: int
+    params: []Param
+    chain: []int
+    notes: []http.Header
+    trailers: http.Headers
+    allow: str
+    conn: net.ReadHalf
+    buf: []byte
+    r: int                 // unread bytes: buf[r..n]
+    n: int
+    framing: int
+    left: int              // F_LENGTH: bytes to come; F_CHUNKED, C_DATA: of the chunk
+    cstate: int
+    got: int               // body bytes read so far
+    maxBody: int
+    extBytes: int
+    expect: bool           // 100-continue owed at the first read
+    keep: bool             // the client lets the connection carry another request
+    broken: bool           // the connection's framing is lost: close after the response
+    bodyStarted: bool
+    bodyDeadline: int      // ms (monotonic): the body-rate deadline
+    sinceYield: int
+    lim: Limits
+    st: task.Shared[State]
+    trusted: bool          // the peer is a trusted proxy
+    rnd: []byte
+    rndAt: int
+    started: int           // ns (monotonic), when the head was complete
+}
+
+// The value of the pattern's wildcard name ("" when there is none).
+pub fn (rq: &Request) param(name: str): str {
+    for p in rq.params {
+        if p.name == name { return p.value }
+    }
+    return ""
+}
+
+// param as a decimal integer; Err(400) otherwise.
+pub fn (rq: &Request) paramInt(name: str): Result[int, Error] {
+    let v = rq.param(name)
+    var n = 0
+    if len(v) == 0 || len(v) > 18 { return Err(error(400, "parameter " + name + " is not an integer")) }
+    var i = 0
+    var neg = false
+    if v[0] == '-' {
+        neg = true
+        i = 1
+        if len(v) == 1 { return Err(error(400, "parameter " + name + " is not an integer")) }
+    }
+    while i < len(v) {
+        if v[i] < '0' || v[i] > '9' { return Err(error(400, "parameter " + name + " is not an integer")) }
+        n = n * 10 + int(v[i] - '0')
+        i += 1
+    }
+    return Ok(if neg { -n } else { n })
+}
+
+// The first value of query parameter name (decoded: %XX and + for space),
+// or None. Parameters that do not decode are skipped.
+pub fn (rq: &Request) query(name: str): Option[str] {
+    let q = rq.query
+    var i = 0
+    while i < len(q) {
+        var j = i
+        while j < len(q) && q[j] != '&' { j += 1 }
+        var eq = i
+        while eq < j && q[eq] != '=' { eq += 1 }
+        match decodeQuery(q[i..eq]) {
+            Some(k) {
+                if k == name {
+                    if eq == j { return Some("") }
+                    match decodeQuery(q[eq + 1..j]) {
+                        Some(v) { return Some(v) }
+                        None {}
+                    }
+                }
+            }
+            None {}
+        }
+        i = j + 1
+    }
+    return None
+}
+
+// The first value of header name.
+pub fn (rq: &Request) header(name: str): Option[str] { return rq.headers.get(name) }
+
+// The request target as sent ("/a%20b?x=1").
+pub fn (rq: &Request) rawTarget(): str { return rq.target }
+
+// The query string as sent, without "?".
+pub fn (rq: &Request) rawQuery(): str { return rq.query }
+
+// The trailers of a chunked body, once it has been read to its end.
+pub fn (rq: &Request) trailers(): &http.Headers { return &rq.trailers }
+
+// Adds a field to the request's access log line (escaped there).
+pub fn (rq: mut &Request) note(key: str, value: str) { append(mut &rq.notes, http.Header{name: key, value: value}) }
+
+// The body bytes read so far.
+pub fn (rq: &Request) bodyRead(): int { return rq.got }
+
+// The client's address: the peer, or, when the peer is in
+// Config.trustedProxies, the rightmost address of X-Forwarded-For that is
+// not a trusted proxy.
+pub fn (rq: &Request) client(): str {
+    let ip = ipOf(rq.peer)
+    if !rq.trusted { return ip }
+    let xs = rq.headers.values("X-Forwarded-For")
+    var proxies: []str = []
+    rq.st.with(fn(s: mut &State) { for p in s.proxies { append(mut &proxies, p) } })
+    var k = len(xs) - 1
+    while k >= 0 {
+        let parts = split(xs[k], ',')
+        var j = len(parts) - 1
+        while j >= 0 {
+            let a = trimOws(parts[j])
+            if len(a) > 0 && !contains2(&proxies, a) { return a }
+            j -= 1
+        }
+        k -= 1
+    }
+    return ip
+}
+
+// This worker's counters now.
+pub fn (rq: &Request) serverStats(): Stats {
+    var out = noStats()
+    rq.st.with(fn(s: mut &State) {
+        out = s.stats
+        out.open = s.open
+    })
+    return out
+}
+
+// Stops the server this request came to, as SIGTERM does: no new
+// connections, idle ones closed, the requests in flight (this one too)
+// finished with Connection: close, then serve returns.
+pub fn (rq: &Request) stopServer() { rq.st.with(fn(s: mut &State) { s.stopping = true }) }
+
+fn ipOf(addr: str): str {
+    if len(addr) > 0 && addr[0] == '[' {
+        let e = indexOf(addr, "]", 0)
+        if e > 0 { return addr[1..e] }
+        return addr
+    }
+    let c = strings.lastIndexOf(addr, ":")
+    if c > 0 { return addr[..c] }
+    return addr
+}
+
+fn trimOws(s: str): str {
+    var a = 0
+    var b = len(s)
+    while a < b && (s[a] == ' ' || s[a] == '\t') { a += 1 }
+    while b > a && (s[b - 1] == ' ' || s[b - 1] == '\t') { b -= 1 }
+    return s[a..b]
+}
+
+fn nowMs(): int { return time.monotonicNs() / 1000000 }
+
+// ---- reading the body
+
+// Reads body bytes into buf: how many, 0 at the end of the body. The
+// route's maxBody is counted as the body arrives (413); a client that
+// sends slower than Config.bodyMinRate after bodyGraceMs gets 408. With
+// Expect: 100-continue, the 100 is sent at the first call.
+pub fn (rq: mut &Request) read(buf: mut &[byte], at: Where): Result[int, Error] {
+    if len(buf) == 0 { return Ok(0) }
+    if rq.expect {
+        rq.expect = false
+        if rq.r == rq.n {
+            let hundred = strToBytes("HTTP/1.1 100 Continue\r\n\r\n")
+            match rq.conn.writeInterim(&hundred, at) {
+                Ok(_) {}
+                Err(e) {
+                    rq.broken = true
+                    return Err(ioErr(&e, "100 Continue"))
+                }
+            }
+        }
+    }
+    if rq.framing == F_NONE { return Ok(0) }
+    if rq.framing == F_LENGTH {
+        if rq.left == 0 { return Ok(0) }
+        if rq.r == rq.n { try rq.fill(at) }
+        var k = rq.n - rq.r
+        if k > rq.left { k = rq.left }
+        if k > len(buf) { k = len(buf) }
+        for i in 0..k { buf[i] = rq.buf[rq.r + i] }
+        rq.r += k
+        rq.left -= k
+        rq.got += k
+        try rq.paced(k, at)
+        return Ok(k)
+    }
+    // chunked
+    while true {
+        if rq.cstate == C_DONE { return Ok(0) }
+        if rq.cstate == C_SIZE {
+            try rq.chunkLine(at)
+            continue
+        }
+        if rq.cstate == C_CRLF {
+            while rq.n - rq.r < 2 { try rq.fill(at) }
+            if rq.buf[rq.r] != '\r' || rq.buf[rq.r + 1] != '\n' { return Err(rq.badBody(400, "a chunk's data not followed by CRLF")) }
+            rq.r += 2
+            rq.cstate = C_SIZE
+            continue
+        }
+        // C_DATA
+        if rq.r == rq.n { try rq.fill(at) }
+        var k = rq.n - rq.r
+        if k > rq.left { k = rq.left }
+        if k > len(buf) { k = len(buf) }
+        for i in 0..k { buf[i] = rq.buf[rq.r + i] }
+        rq.r += k
+        rq.left -= k
+        rq.got += k
+        if rq.left == 0 { rq.cstate = C_CRLF }
+        try rq.paced(k, at)
+        return Ok(k)
+    }
+    return Ok(0)
+}
+
+// The whole body (at most limit bytes, and at most the route's maxBody):
+// 413 past it.
+pub fn (rq: mut &Request) bytes(limit: int, at: Where): Result[[]byte, Error] {
+    var lim = limit
+    if lim > rq.maxBody { lim = rq.maxBody }
+    if rq.framing == F_LENGTH && rq.got + rq.left > lim {
+        rq.broken = true
+        return Err(errOf(413, ErrorKind.Limit, "a body of " + intToStr(rq.got + rq.left) + " bytes, over " + intToStr(lim)))
+    }
+    var out = newBuf(if rq.framing == F_LENGTH { rq.left } else { 1024 })
+    var chunk = array(16384, byte(0))
+    while true {
+        let k = try rq.read(mut &chunk, at)
+        if k == 0 { break }
+        if out.n + k > lim {
+            rq.broken = true
+            return Err(errOf(413, ErrorKind.Limit, "a body over " + intToStr(lim) + " bytes"))
+        }
+        out.addBytes(&chunk[0..k])
+    }
+    let n = out.n
+    let b = replace(mut &out.b, [])
+    if len(b) == n { return Ok(b) }
+    var res: []byte = array(n, byte(0))
+    for i in 0..n { res[i] = b[i] }
+    return Ok(res)
+}
+
+// bytes as text: 400 when it is not UTF-8.
+pub fn (rq: mut &Request) text(limit: int, at: Where): Result[str, Error] {
+    let b = try rq.bytes(limit, at)
+    let s = strFromBytes(&b)
+    if !strings.isValidUtf8(s) { return Err(error(400, "the body is not UTF-8")) }
+    return Ok(s)
+}
+
+// An error that loses the body's framing: the connection closes after it.
+fn (rq: mut &Request) badBody(status: int, msg: str): Error {
+    rq.broken = true
+    return errOf(status, if status == 413 { ErrorKind.Limit } else { ErrorKind.Protocol }, msg)
+}
+
+// Reads more of the connection into the buffer, under the body deadline.
+fn (rq: mut &Request) fill(at: Where): Result[Unit, Error] {
+    if rq.r == rq.n {
+        rq.r = 0
+        rq.n = 0
+    } else if rq.n == len(rq.buf) {
+        let k = rq.n - rq.r
+        for i in 0..k { rq.buf[i] = rq.buf[rq.r + i] }
+        rq.r = 0
+        rq.n = k
+    }
+    let now = nowMs()
+    if !rq.bodyStarted {
+        rq.bodyStarted = true
+        rq.bodyDeadline = if rq.lim.bodyMinRate > 0 { now + rq.lim.bodyGraceMs } else { -1 }
+    }
+    var old = -1
+    var timed = false
+    if rq.bodyDeadline >= 0 {
+        let ms = rq.bodyDeadline - now
+        if ms <= 0 {
+            rq.broken = true
+            return Err(errOf(408, ErrorKind.Timeout, "the body came too slowly"))
+        }
+        old = rtWithin(ms)
+        timed = true
+    }
+    let r = rq.conn.read(mut &rq.buf[rq.n..], at)
+    if timed { rtRestore(old) }
+    match r {
+        Ok(k) {
+            if k == 0 { return Err(rq.badBody(400, "the connection closed inside the body")) }
+            rq.n += k
+            if rq.bodyDeadline >= 0 {
+                // each byte buys 1/minRate s, but never more than 5 s ahead
+                let t = nowMs()
+                var d = rq.bodyDeadline + k * 1000 / rq.lim.bodyMinRate
+                let cap = if rq.bodyDeadline > t + 5000 { rq.bodyDeadline } else { t + 5000 }
+                if d > cap { d = cap }
+                rq.bodyDeadline = d
+            }
+            return Ok(Unit{})
+        }
+        Err(e) {
+            rq.broken = true
+            if e.isTimeout() && rq.bodyDeadline >= 0 && nowMs() >= rq.bodyDeadline - 1 {
+                return Err(errOf(408, ErrorKind.Timeout, "the body came too slowly"))
+            }
+            return Err(ioErr(&e, "reading the body"))
+        }
+    }
+}
+
+// Counts k body bytes: the route's limit, and a yield every 64 KiB.
+fn (rq: mut &Request) paced(k: int, at: Where): Result[Unit, Error] {
+    if rq.got > rq.maxBody { return Err(rq.badBody(413, "a body over " + intToStr(rq.maxBody) + " bytes")) }
+    rq.sinceYield += k
+    if rq.sinceYield >= YIELD_BYTES {
+        rq.sinceYield = 0
+        match task.yield(at) {
+            Ok(_) {}
+            Err(c) {
+                rq.broken = true
+                return Err(errOf(499, ErrorKind.Gone, "reading the body: " + c.toStr()))
+            }
+        }
+    }
+    return Ok(Unit{})
+}
+
+// Reads a chunk-size line (or the trailers after the last chunk).
+fn (rq: mut &Request) chunkLine(at: Where): Result[Unit, Error] {
+    // the line: up to CRLF, at most 4 KiB
+    var e = rq.r
+    while true {
+        while e < rq.n && rq.buf[e] != '\n' { e += 1 }
+        if e < rq.n { break }
+        if rq.n - rq.r > 4096 { return Err(rq.badBody(400, "a chunk size line over 4 KiB")) }
+        let before = rq.r
+        try rq.fill(at)
+        e = e - before + rq.r
+    }
+    if e == rq.r || rq.buf[e - 1] != '\r' { return Err(rq.badBody(400, "a chunk line not ended by CRLF")) }
+    if e - rq.r > 4097 { return Err(rq.badBody(400, "a chunk size line over 4 KiB")) }
+    let end = e - 1
+    var i = rq.r
+    var size = 0
+    var digits = 0
+    while i < end && hexVal(rq.buf[i]) >= 0 {
+        if digits == 15 { return Err(rq.badBody(400, "a chunk size too large")) }
+        size = size * 16 + hexVal(rq.buf[i])
+        digits += 1
+        i += 1
+    }
+    if digits == 0 { return Err(rq.badBody(400, "a bad chunk size line")) }
+    // extensions: (";" token ["=" (token / quoted-string)])*, no whitespace
+    let extStart = i
+    while i < end {
+        if rq.buf[i] != ';' { return Err(rq.badBody(400, "a bad chunk size line")) }
+        i += 1
+        let n0 = i
+        while i < end && isTchar(rq.buf[i]) { i += 1 }
+        if i == n0 { return Err(rq.badBody(400, "a bad chunk extension")) }
+        if i < end && rq.buf[i] == '=' {
+            i += 1
+            if i < end && rq.buf[i] == '"' {
+                i += 1
+                var shut = false
+                while i < end {
+                    let c = rq.buf[i]
+                    if c == '"' {
+                        shut = true
+                        i += 1
+                        break
+                    }
+                    if c == '\\' {
+                        i += 1
+                        if i >= end { return Err(rq.badBody(400, "a bad chunk extension")) }
+                    }
+                    if (rq.buf[i] < byte(0x20) && rq.buf[i] != '\t') || rq.buf[i] == byte(0x7f) {
+                        return Err(rq.badBody(400, "a bad chunk extension"))
+                    }
+                    i += 1
+                }
+                if !shut { return Err(rq.badBody(400, "a bad chunk extension")) }
+            } else {
+                let v0 = i
+                while i < end && isTchar(rq.buf[i]) { i += 1 }
+                if i == v0 { return Err(rq.badBody(400, "a bad chunk extension")) }
+            }
+        }
+    }
+    rq.extBytes += end - extStart
+    if rq.extBytes > 16384 { return Err(rq.badBody(400, "chunk extensions over 16 KiB")) }
+    rq.r = e + 1
+    if size == 0 { return rq.readTrailers(at) }
+    if rq.got + size > rq.maxBody { return Err(rq.badBody(413, "a body over " + intToStr(rq.maxBody) + " bytes")) }
+    rq.left = size
+    rq.cstate = C_DATA
+    return Ok(Unit{})
+}
+
+fn hexVal(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'f' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'F' { return int(c - 'A') + 10 }
+    return -1
+}
+
+fn isTchar(c: byte): bool {
+    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') { return true }
+    return c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' ||
+           c == '-' || c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~'
+}
+
+// The trailer section: header lines up to an empty line, at most
+// maxTrailerBytes and maxTrailers lines, kept apart from the head's.
+fn (rq: mut &Request) readTrailers(at: Where): Result[Unit, Error] {
+    while rq.n - rq.r < 2 { try rq.fill(at) }
+    if rq.buf[rq.r] == '\r' && rq.buf[rq.r + 1] == '\n' {
+        rq.r += 2
+        rq.cstate = C_DONE
+        return Ok(Unit{})
+    }
+    var from = rq.r
+    while true {
+        let e = http.headEnd(&rq.buf, rq.r, from, rq.n)
+        if e == -2 { return Err(rq.badBody(400, "a trailer line not ended by CRLF")) }
+        if e >= 0 {
+            if e + 4 - rq.r > rq.lim.maxTrailerBytes { return Err(rq.badBody(400, "trailers over the limit")) }
+            let text = strFromBytes(&rq.buf[rq.r..e + 2])
+            var h = http.newHeaders()
+            match http.parseFields(text, 0, mut &h, rq.lim.maxTrailers) {
+                Ok(_) {}
+                Err(m) { return Err(rq.badBody(400, "trailers: " + m)) }
+            }
+            rq.trailers = h
+            rq.r = e + 4
+            rq.cstate = C_DONE
+            return Ok(Unit{})
+        }
+        if rq.n - rq.r > rq.lim.maxTrailerBytes { return Err(rq.badBody(400, "trailers over the limit")) }
+        from = if rq.n - 3 > rq.r { rq.n - 3 } else { rq.r }
+        let before = rq.r
+        try rq.fill(at)
+        from = from - before + rq.r
+    }
+    return Ok(Unit{})
+}
+
+// Whether the body has been read to its end.
+fn (rq: &Request) bodyDone(): bool {
+    if rq.framing == F_NONE { return true }
+    if rq.framing == F_LENGTH { return rq.left == 0 }
+    return rq.cstate == C_DONE
+}
+
+// After the handler: reads what is left of the body (at most maxDrain
+// bytes, within the head timeout) so the connection can carry the next
+// request; false when it cannot.
+fn (rq: mut &Request) drain(at: Where): bool {
+    if rq.broken { return false }
+    if rq.bodyDone() { return true }
+    if rq.expect { return false }      // the client waits for a 100 it will not get
+    if rq.framing == F_LENGTH && rq.left > rq.lim.maxDrain { return false }
+    let old = rtWithin(rq.lim.headerTimeoutMs)
+    var sink = array(4096, byte(0))
+    var total = 0
+    var ok = true
+    while ok && !rq.bodyDone() {
+        match rq.read(mut &sink, at) {
+            Ok(k) {
+                total += k
+                if total > rq.lim.maxDrain { ok = false }
+                if k == 0 && !rq.bodyDone() { ok = false }
+            }
+            Err(_) { ok = false }
+        }
+    }
+    rtRestore(old)
+    return ok && !rq.broken
+}
+
+// A request id: 16 random bytes in hex.
+fn (rq: mut &Request) newId(): str {
+    if rq.rndAt + 16 > len(rq.rnd) {
+        if len(rq.rnd) == 0 { rq.rnd = array(RANDOM_BATCH, byte(0)) }
+        let r = rtRandom(mut &rq.rnd, len(rq.rnd))
+        rq.rndAt = 0
+    }
+    var b = array(32, byte(0))
+    for i in 0..16 {
+        let x = int(rq.rnd[rq.rndAt + i])
+        b[2 * i] = HEX[x / 16]
+        b[2 * i + 1] = HEX[x % 16]
+    }
+    rq.rndAt += 16
+    return strFromBytes(&b)
+}
+
+// ---------------------------------------------------------------- paths and hosts
+
+// The value of a hex digit pair at s[i..i+2], or -1.
+fn hexPair(s: str, i: int): int {
+    if i + 2 > len(s) { return -1 }
+    let a = hexVal(s[i])
+    let b = hexVal(s[i + 1])
+    if a < 0 || b < 0 { return -1 }
+    return a * 16 + b
+}
+
+// A path segment percent-decoded once; None for a bad escape.
+fn decodeSeg(s: str): Option[str] {
+    if indexOf(s, "%", 0) < 0 { return Some(s) }
+    var out: []byte = []
+    var i = 0
+    while i < len(s) {
+        if s[i] == '%' {
+            let v = hexPair(s, i + 1)
+            if v < 0 { return None }
+            append(mut &out, byte(v))
+            i += 3
+        } else {
+            append(mut &out, s[i])
+            i += 1
+        }
+    }
+    return Some(strFromBytes(&out))
+}
+
+// A query key or value decoded: %XX and + for a space; None for a bad escape.
+fn decodeQuery(s: str): Option[str] {
+    if indexOf(s, "%", 0) < 0 && indexOf(s, "+", 0) < 0 { return Some(s) }
+    var out: []byte = []
+    var i = 0
+    while i < len(s) {
+        if s[i] == '%' {
+            let v = hexPair(s, i + 1)
+            if v < 0 { return None }
+            append(mut &out, byte(v))
+            i += 3
+        } else {
+            append(mut &out, if s[i] == '+' { byte(' ') } else { s[i] })
+            i += 1
+        }
+    }
+    return Some(strFromBytes(&out))
+}
+
+// The decoded path of a raw one (it starts with "/"), or "" when it must
+// be refused: a dot segment (raw or encoded), an encoded "/", NUL or
+// another control byte, a bad escape, invalid UTF-8.
+fn cleanPath(raw: str): str {
+    let pct = indexOf(raw, "%", 0) >= 0
+    let dot = indexOf(raw, "/.", 0) >= 0
+    if !pct && !dot { return raw }
+    var out: []byte = []
+    var i = 0
+    var segStart = 0       // in out
+    var rawStart = 0
+    while i <= len(raw) {
+        if i == len(raw) || raw[i] == '/' {
+            if i > 0 {
+                let seg = strFromBytes(&out[segStart..len(out)])
+                let rs = raw[rawStart..i]
+                if seg == "." || seg == ".." || rs == "." || rs == ".." { return "" }
+            }
+            if i == len(raw) { break }
+            append(mut &out, byte('/'))
+            segStart = len(out)
+            rawStart = i + 1
+            i += 1
+        } else if raw[i] == '%' {
+            let v = hexPair(raw, i + 1)
+            if v < 0 || v == 0x2f || v < 0x20 || v == 0x7f { return "" }
+            append(mut &out, byte(v))
+            i += 3
+        } else {
+            append(mut &out, raw[i])
+            i += 1
+        }
+    }
+    let s = strFromBytes(&out)
+    if pct && !strings.isValidUtf8(s) { return "" }
+    return s
+}
+
+// Whether h is a valid Host: a reg-name (unreserved, sub-delims, %XX) or
+// an IP literal in brackets, then an optional :port.
+fn validHost(h: str): bool {
+    if len(h) == 0 || len(h) > 262 { return false }
+    var i = 0
+    if h[0] == '[' {
+        i = 1
+        while i < len(h) && h[i] != ']' {
+            let c = h[i]
+            if !(hexVal(c) >= 0 || c == ':' || c == '.') { return false }
+            i += 1
+        }
+        if i == len(h) || i == 1 { return false }
+        i += 1
+    } else {
+        while i < len(h) && h[i] != ':' {
+            let c = h[i]
+            if c == '%' {
+                if hexPair(h, i + 1) < 0 { return false }
+                i += 3
+                continue
+            }
+            let ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' ||
+                     c == '_' || c == '~' || c == '!' || c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' || c == '*' ||
+                     c == '+' || c == ',' || c == ';' || c == '='
+            if !ok { return false }
+            i += 1
+        }
+        if i == 0 { return false }
+    }
+    if i == len(h) { return true }
+    if h[i] != ':' { return false }
+    i += 1
+    let p0 = i
+    while i < len(h) {
+        if h[i] < '0' || h[i] > '9' { return false }
+        i += 1
+    }
+    return i > p0 && i - p0 <= 5
+}
+
+fn lowerAscii(s: str): str {
+    var any = false
+    for i in 0..len(s) {
+        if s[i] >= 'A' && s[i] <= 'Z' { any = true }
+    }
+    if !any { return s }
+    return strings.toLower(s)
+}
+
+fn hostName(h: str): str {
+    if len(h) > 0 && h[0] == '[' {
+        let e = indexOf(h, "]", 0)
+        return if e > 0 { h[..e + 1] } else { h }
+    }
+    let c = indexOf(h, ":", 0)
+    return if c >= 0 { h[..c] } else { h }
+}
+
+fn eqName(a: str, b: str): bool { return len(a) == len(b) && http.equalFold(a, b) }
+
+// Parses the head (text: without its blank line) into rq: 0, or the status
+// to refuse it with (the connection then closes).
+fn (rq: mut &Request) parseHead(head: str): int {
+    var e = 0
+    while e < len(head) && head[e] != '\r' { e += 1 }
+    if e < len(head) && (e + 1 >= len(head) || head[e + 1] != '\n') { return 400 }
+    let sp1 = indexOfIn(head, ' ', 0, e)
+    if sp1 <= 0 { return 400 }
+    let sp2 = indexOfIn(head, ' ', sp1 + 1, e)
+    if sp2 < 0 { return 400 }                       // HTTP/0.9, or no version
+    if sp2 - sp1 - 1 > rq.lim.maxTargetBytes { return 414 }
+    let method = head[..sp1]
+    if !http.isToken(method) { return 400 }
+    let target = head[sp1 + 1..sp2]
+    if len(target) == 0 { return 400 }
+    for i in 0..len(target) {
+        let c = target[i]
+        if c <= byte(0x20) || c >= byte(0x7f) || c == '#' { return 400 }
+    }
+    let version = head[sp2 + 1..e]
+    if len(version) != 8 || !startsWith(version, "HTTP/") || version[6] != '.' || !isDigit(version[5]) || !isDigit(version[7]) { return 400 }
+    let major = int(version[5] - '0')
+    if major != 1 { return 505 }
+    rq.minor = if version[7] == '0' { 0 } else { 1 }
+    rq.proto = if rq.minor == 0 { "HTTP/1.0" } else { "HTTP/1.1" }
+    rq.method = method
+    rq.target = target
+    // header lines
+    var h = http.newHeaders()
+    if e < len(head) {
+        var ls = e + 2
+        while ls < len(head) {
+            var le = ls
+            while le < len(head) && head[le] != '\n' { le += 1 }
+            if le - ls > rq.lim.maxLineBytes { return 431 }
+            ls = le + 1
+        }
+        match http.parseFields(head, e + 2, mut &h, rq.lim.maxHeaders) {
+            Ok(_) {}
+            Err(m) { return if startsWith(m, "more than") { 431 } else { 400 } }
+        }
+    }
+    // the fields that frame the message
+    var hostN = 0
+    var host = ""
+    var clN = 0
+    var cl = ""
+    var teN = 0
+    var te = ""
+    var expect = ""
+    var expectN = 0
+    var connClose = false
+    var connKeep = false
+    for i in 0..h.size() {
+        let x = h.at(i)
+        let n = len(x.name)
+        if n == 4 && eqName(x.name, "Host") {
+            hostN += 1
+            host = x.value
+        } else if n == 14 && eqName(x.name, "Content-Length") {
+            clN += 1
+            cl = x.value
+        } else if n == 17 && eqName(x.name, "Transfer-Encoding") {
+            teN += 1
+            te = x.value
+        } else if n == 6 && eqName(x.name, "Expect") {
+            expectN += 1
+            expect = x.value
+        } else if n == 10 && eqName(x.name, "Connection") {
+            if hasToken(x.value, "close") { connClose = true }
+            if hasToken(x.value, "keep-alive") { connKeep = true }
+        }
+    }
+    rq.headers = h
+    if hostN > 1 || (rq.minor == 1 && hostN == 0) { return 400 }
+    if hostN == 1 {
+        if !validHost(host) { return 400 }
+        host = lowerAscii(host)
+    }
+    // the target's form
+    var pathPart = target
+    if target[0] != '/' {
+        let isHttp = len(target) > 7 && http.equalFold(target[..7], "http://")
+        let isHttps = len(target) > 8 && http.equalFold(target[..8], "https://")
+        if isHttp || isHttps {
+            let s0 = if isHttps { 8 } else { 7 }
+            var ae = s0
+            while ae < len(target) && target[ae] != '/' && target[ae] != '?' { ae += 1 }
+            let auth = target[s0..ae]
+            if len(auth) == 0 || indexOf(auth, "@", 0) >= 0 || !validHost(auth) { return 400 }
+            let a = lowerAscii(auth)
+            if hostN == 1 && a != host { return 400 }
+            host = a
+            pathPart = if ae < len(target) && target[ae] == '/' { target[ae..] } else { "/" + target[ae..] }
+        } else if target == "*" {
+            if method != "OPTIONS" { return 400 }
+        } else if method == "CONNECT" {
+            return 405
+        } else {
+            return 400
+        }
+    }
+    if method == "CONNECT" { return 405 }
+    rq.host = host
+    rq.hostName = hostName(host)
+    // the body's framing
+    if clN > 1 || teN > 1 { return 400 }
+    rq.framing = F_NONE
+    rq.left = 0
+    if teN == 1 {
+        if rq.minor == 0 || clN == 1 { return 400 }
+        if !eqName(te, "chunked") {
+            // a list of codings ending in chunked: 501; anything else 400
+            let parts = split(te, ',')
+            var chunked = 0
+            for k in 0..len(parts) {
+                let t = trimOws(parts[k])
+                if !http.isToken(t) { return 400 }
+                if eqName(t, "chunked") { chunked += 1 }
+            }
+            if chunked == 1 && eqName(trimOws(parts[len(parts) - 1]), "chunked") { return 501 }
+            return 400
+        }
+        rq.framing = F_CHUNKED
+        rq.cstate = C_SIZE
+    } else if clN == 1 {
+        if len(cl) == 0 || len(cl) > 18 { return 400 }
+        var v = 0
+        for k in 0..len(cl) {
+            if cl[k] < '0' || cl[k] > '9' { return 400 }
+            v = v * 10 + int(cl[k] - '0')
+        }
+        if v > 0 {
+            rq.framing = F_LENGTH
+            rq.left = v
+        }
+    }
+    if expectN > 0 && rq.minor == 1 {
+        if expectN > 1 || !eqName(expect, "100-continue") { return 417 }
+        rq.expect = rq.framing != F_NONE
+    }
+    // the path and the query
+    if target == "*" {
+        rq.rawPath = "*"
+        rq.path = "*"
+        rq.query = ""
+    } else {
+        let q = indexOf(pathPart, "?", 0)
+        rq.rawPath = if q >= 0 { pathPart[..q] } else { pathPart }
+        rq.query = if q >= 0 { pathPart[q + 1..] } else { "" }
+        let p = cleanPath(rq.rawPath)
+        if len(p) == 0 { return 400 }
+        rq.path = p
+        if len(rq.query) > 0 {
+            var params = 1
+            for k in 0..len(rq.query) {
+                if rq.query[k] == '&' { params += 1 }
+            }
+            if params > rq.lim.maxParams { return 400 }
+        }
+    }
+    rq.keep = if rq.minor == 1 { !connClose } else { connKeep && !connClose }
+    return 0
+}
+
+fn indexOfIn(s: str, c: byte, from: int, to: int): int {
+    var i = from
+    while i < to {
+        if s[i] == c { return i }
+        i += 1
+    }
+    return -1
+}
+
+// Whether the comma-separated list v has token t (any case).
+fn hasToken(v: str, t: str): bool {
+    var i = 0
+    while i <= len(v) {
+        var j = i
+        while j < len(v) && v[j] != ',' { j += 1 }
+        if eqName(trimOws(v[i..j]), t) { return true }
+        i = j + 1
+    }
+    return false
+}
+
+// ---------------------------------------------------------------- the response
+
+const M_NONE = 0       // the head is not written yet
+const M_LENGTH = 1     // Content-Length
+const M_CHUNKED = 2
+const M_CLOSE = 3      // until the connection closes (HTTP/1.0)
+const M_EMPTY = 4      // no body (HEAD, 204, 304)
+
+// A response, written through its methods. Nothing reaches the client
+// before the handler returns, flush is called, or 32 KiB of body is
+// buffered; a response finished by the server whose head was not yet
+// written gets a Content-Length, others are chunked.
+pub type Response = record {
+    conn: net.WriteHalf
+    code: int              // 0: not set (200)
+    final: int             // the status the head was written with
+    headers: http.Headers
+    trailerNames: []str
+    trailerVals: http.Headers
+    out: Buf               // bytes for the socket
+    body: Buf              // body bytes not yet framed
+    strBody: str           // or a body given whole (text, json, fail)
+    useStr: bool
+    headSent: bool
+    mode: int
+    declared: int          // Content-Length set by the handler, or -1
+    sent: int              // body bytes framed (for HEAD: counted)
+    head: bool             // a HEAD request: no body
+    minor: int
+    close: bool
+    bad: str               // what failed validation (a header name, a status)
+    id: str
+    stallMs: int
+    failed: bool           // a write failed: the connection is gone
+    ctSet: bool
+    ccSet: bool
+    st: task.Shared[State]
+}
+
+// Sets the status (200 to 599) for the head; ignored once it is written.
+pub fn (w: mut &Response) status(code: int) {
+    if w.headSent { return }
+    if code < 200 || code > 599 {
+        w.bad = "status " + intToStr(code)
+        return
+    }
+    w.code = code
+}
+
+// The status set, or 200; the one written once the head is out.
+pub fn (w: &Response) statusCode(): int {
+    if w.headSent { return w.final }
+    return if w.code == 0 { 200 } else { w.code }
+}
+
+// Whether the head has been written (status and headers are fixed).
+pub fn (w: &Response) headWritten(): bool { return w.headSent }
+
+// Body bytes written so far (buffered ones included).
+pub fn (w: &Response) bodyBytes(): int { return w.sent + (if w.useStr { len(w.strBody) } else { w.body.n }) }
+
+// Sets a response header, replacing one of the same name. The name must be
+// a token and the value free of CR, LF, NUL and other controls (but HTAB):
+// otherwise the response fails (500) and the log names the header. Fail
+// closed: nothing from a bad value is ever sent. Content-Length declares
+// the length of a streamed body; Connection: close closes the connection
+// after the response; Transfer-Encoding, Date and Trailer are the
+// library's and are ignored. Ignored after the head is written.
+pub fn (w: mut &Response) header(name: str, value: str) {
+    if w.special(name, value) { return }
+    if w.headers.has(name) {
+        w.headers.set(name, value)
+    } else {
+        w.headers.add(name, value)
+    }
+}
+
+// header, adding a line even when the name is already there (Set-Cookie).
+pub fn (w: mut &Response) addHeader(name: str, value: str) {
+    if w.special(name, value) { return }
+    w.headers.add(name, value)
+}
+
+// Validates a header and handles the library's own; true when it is not to
+// be stored.
+fn (w: mut &Response) special(name: str, value: str): bool {
+    if w.headSent { return true }
+    if !http.isToken(name) || !http.isFieldValue(value) {
+        w.bad = "header " + logValue(name)
+        return true
+    }
+    let n = len(name)
+    if n == 14 && eqName(name, "Content-Length") {
+        if len(value) == 0 || len(value) > 18 {
+            w.bad = "header Content-Length"
+            return true
+        }
+        var v = 0
+        for i in 0..len(value) {
+            if value[i] < '0' || value[i] > '9' {
+                w.bad = "header Content-Length"
+                return true
+            }
+            v = v * 10 + int(value[i] - '0')
+        }
+        w.declared = v
+        return true
+    }
+    if n == 17 && eqName(name, "Transfer-Encoding") { return true }
+    if n == 10 && eqName(name, "Connection") {
+        if hasToken(value, "close") { w.close = true }
+        return true
+    }
+    if n == 4 && eqName(name, "Date") { return true }
+    if n == 7 && eqName(name, "Trailer") { return true }
+    if n == 12 && eqName(name, "Content-Type") { w.ctSet = true }
+    if n == 13 && eqName(name, "Cache-Control") { w.ccSet = true }
+    return false
+}
+
+// Declares a trailer (before the head is written) and sets its value (at
+// any time before the end). Trailers make the body chunked.
+pub fn (w: mut &Response) trailer(name: str, value: str) {
+    if !http.isToken(name) || !http.isFieldValue(value) {
+        if !w.headSent { w.bad = "trailer " + logValue(name) }
+        return
+    }
+    var known = false
+    for t in w.trailerNames {
+        if http.equalFold(t, name) { known = true }
+    }
+    if !known {
+        if w.headSent { return }
+        append(mut &w.trailerNames, name)
+    }
+    w.trailerVals.set(name, value)
+}
+
+// Writes body bytes. They are buffered; past 32 KiB they are sent (flush),
+// and the write parks while the client is slow to read. A write that makes
+// no progress for Config.writeStallMs fails, and the connection closes.
+pub fn (w: mut &Response) write(data: &[byte], at: Where): Result[Unit, Error] {
+    if w.failed { return Err(errOf(499, ErrorKind.Gone, "the connection is gone")) }
+    w.unStr()
+    w.body.addBytes(data)
+    if w.body.n >= FLUSH_AT { return w.flush(at) }
+    return Ok(Unit{})
+}
+
+// write for the bytes of s.
+pub fn (w: mut &Response) writeStr(s: str, at: Where): Result[Unit, Error] {
+    if w.failed { return Err(errOf(499, ErrorKind.Gone, "the connection is gone")) }
+    if !w.headSent && !w.useStr && w.body.n == 0 {
+        w.strBody = s
+        w.useStr = true
+        return Ok(Unit{})
+    }
+    w.unStr()
+    w.body.add(s)
+    if w.body.n >= FLUSH_AT { return w.flush(at) }
+    return Ok(Unit{})
+}
+
+fn (w: mut &Response) unStr() {
+    if w.useStr {
+        w.useStr = false
+        let s = replace(mut &w.strBody, "")
+        w.body.add(s)
+    }
+}
+
+// The text s as the body (text/plain; charset=utf-8 unless a Content-Type
+// was set; status 200 unless one was set).
+pub fn (w: mut &Response) text(s: str, at: Where): Result[Unit, Error] {
+    if !w.ctSet && !w.headSent {
+        w.ctSet = true
+        w.headers.add("Content-Type", "text/plain; charset=utf-8")
+    }
+    return w.writeStr(s, at)
+}
+
+// The JSON text s as the body (application/json).
+pub fn (w: mut &Response) json(s: str, at: Where): Result[Unit, Error] {
+    if !w.ctSet && !w.headSent {
+        w.ctSet = true
+        w.headers.add("Content-Type", "application/json")
+    }
+    return w.writeStr(s, at)
+}
+
+// Answers with code and the library's fixed body for it (its status line
+// and the request id): nothing from the request or the error goes to the
+// client. The headers set so far stay (Allow, WWW-Authenticate), but a
+// Content-Type or Content-Length is replaced. Err when the head is already
+// written.
+pub fn (w: mut &Response) fail(code: int, at: Where): Result[Unit, Error] {
+    if w.headSent { return Err(error(code, "fail after the head was written")) }
+    w.body.n = 0
+    w.useStr = false
+    w.declared = -1
+    w.code = if code >= 400 && code <= 599 { code } else { 500 }
+    if w.ctSet { w.headers.remove("Content-Type") }
+    w.ctSet = true
+    w.headers.add("Content-Type", "text/plain; charset=utf-8")
+    w.strBody = fixedBody(w.code, w.id)
+    w.useStr = true
+    return Ok(Unit{})
+}
+
+// A redirect (301, 302, 303, 307 or 308) to location: a path starting with
+// a single "/" (never "//" or "/\": those leave the site), or an absolute
+// http(s) URL whose host is in Config.redirectHosts. Anything else is an
+// Err (500): an open redirect is never built from input by accident.
+pub fn (w: mut &Response) redirect(code: int, location: str, at: Where): Result[Unit, Error] {
+    if code != 301 && code != 302 && code != 303 && code != 307 && code != 308 {
+        return Err(error(500, "redirect with status " + intToStr(code)))
+    }
+    if !http.isFieldValue(location) || indexOf(location, "\\", 0) >= 0 || len(location) == 0 {
+        return Err(error(500, "redirect to an invalid location"))
+    }
+    var ok = location[0] == '/' && (len(location) == 1 || location[1] != '/')
+    if !ok {
+        let https = len(location) > 8 && http.equalFold(location[..8], "https://")
+        let plain = len(location) > 7 && http.equalFold(location[..7], "http://")
+        if https || plain {
+            let s0 = if https { 8 } else { 7 }
+            var e = s0
+            while e < len(location) && location[e] != '/' && location[e] != '?' && location[e] != '#' { e += 1 }
+            let h = lowerAscii(hostName(location[s0..e]))
+            w.st.with(fn(s: mut &State) { ok = contains2(&s.redirectHosts, h) })
+        }
+    }
+    if !ok { return Err(error(500, "redirect to " + logValue(location) + ", not a relative path or an allowed host")) }
+    if w.headSent { return Err(error(500, "redirect after the head was written")) }
+    w.code = code
+    w.header("Location", location)
+    w.body.n = 0
+    w.useStr = false
+    if w.ctSet { w.headers.remove("Content-Type") }
+    w.ctSet = true
+    w.headers.add("Content-Type", "text/plain; charset=utf-8")
+    w.strBody = intToStr(code) + " " + reason(code) + "\n"
+    w.useStr = true
+    return Ok(Unit{})
+}
+
+// Server-sent events: writes the head (200, text/event-stream, no-store)
+// now. Then event sends each event as it comes.
+pub fn (w: mut &Response) startEvents(at: Where): Result[Unit, Error] {
+    if w.headSent { return Err(error(500, "startEvents after the head was written")) }
+    if w.ctSet { w.headers.remove("Content-Type") }
+    w.ctSet = true
+    w.headers.add("Content-Type", "text/event-stream")
+    w.header("Cache-Control", "no-store")
+    return w.flush(at)
+}
+
+// Writes one event (its name, then data's lines) and flushes it.
+pub fn (w: mut &Response) event(name: str, data: str, at: Where): Result[Unit, Error] {
+    if indexOf(name, "\n", 0) >= 0 || indexOf(name, "\r", 0) >= 0 { return Err(error(500, "an event name with a line break")) }
+    var b = newStrBuf()
+    if len(name) > 0 {
+        b.add("event: ")
+        b.add(name)
+        b.add("\n")
+    }
+    var i = 0
+    while i <= len(data) {
+        var j = i
+        while j < len(data) && data[j] != '\n' && data[j] != '\r' { j += 1 }
+        b.add("data: ")
+        b.add(data[i..j])
+        b.add("\n")
+        if j < len(data) && data[j] == '\r' && j + 1 < len(data) && data[j + 1] == '\n' { j += 1 }
+        i = j + 1
+    }
+    b.add("\n")
+    try w.writeStr(b.toStr(), at)
+    return w.flush(at)
+}
+
+// Sends what is buffered now: the head, if it is not out yet (chunked,
+// unless a Content-Length was set; until the close for HTTP/1.0), and the
+// body bytes so far.
+pub fn (w: mut &Response) flush(at: Where): Result[Unit, Error] {
+    if w.failed { return Err(errOf(499, ErrorKind.Gone, "the connection is gone")) }
+    if !w.headSent {
+        if len(w.bad) > 0 { return Err(error(500, "invalid " + w.bad)) }
+        let code = w.statusCode()
+        if w.head || noBody(code) {
+            w.mode = M_EMPTY
+        } else if w.declared >= 0 {
+            w.mode = M_LENGTH
+        } else if w.minor == 0 {
+            w.mode = M_CLOSE
+            w.close = true
+        } else {
+            w.mode = M_CHUNKED
+        }
+        w.putHead(if w.mode == M_LENGTH || (w.mode == M_EMPTY && w.declared >= 0) { w.declared } else { -1 })
+    }
+    if !w.putBody() { return Err(error(500, "more body than its Content-Length")) }
+    return w.send(at)
+}
+
+fn noBody(code: int): bool { return code == 204 || code == 304 || code < 200 }
+
+// The end of the response, after the handler: the head if it is not out
+// (with a Content-Length), what is buffered, and the end of a chunked body.
+fn (w: mut &Response) finish(at: Where): Result[Unit, Error] {
+    if w.failed { return Err(errOf(499, ErrorKind.Gone, "the connection is gone")) }
+    if !w.headSent {
+        if len(w.bad) > 0 { return Err(error(500, "invalid " + w.bad)) }
+        let pending = if w.useStr { len(w.strBody) } else { w.body.n }
+        let code = w.statusCode()
+        if noBody(code) {
+            w.mode = M_EMPTY
+            w.putHead(-1)
+        } else if w.head {
+            w.mode = M_EMPTY
+            w.putHead(if w.declared >= 0 { w.declared } else { pending })
+        } else {
+            if w.declared >= 0 && w.declared != pending {
+                return Err(error(500, "Content-Length " + intToStr(w.declared) + " but " + intToStr(pending) + " bytes written"))
+            }
+            if len(w.trailerNames) > 0 && w.minor == 1 {
+                w.mode = M_CHUNKED
+                w.putHead(-1)
+            } else {
+                w.mode = M_LENGTH
+                w.declared = pending
+                w.putHead(pending)
+            }
+        }
+    }
+    if !w.putBody() {
+        let r = w.send(at)
+        return Err(error(500, "more body than its Content-Length"))
+    }
+    if w.mode == M_CHUNKED {
+        w.out.add("0\r\n")
+        for k in 0..len(w.trailerNames) {
+            let t = w.trailerNames[k]
+            match w.trailerVals.get(t) {
+                Some(v) {
+                    w.out.add(t)
+                    w.out.add(": ")
+                    w.out.add(v)
+                    w.out.add("\r\n")
+                }
+                None {}
+            }
+        }
+        w.out.add("\r\n")
+    }
+    try w.send(at)
+    if w.mode == M_LENGTH && w.sent != w.declared {
+        w.close = true
+        return Err(error(500, "Content-Length " + intToStr(w.declared) + " but " + intToStr(w.sent) + " bytes written"))
+    }
+    return Ok(Unit{})
+}
+
+// The head into out; length: a Content-Length to send, or -1.
+fn (w: mut &Response) putHead(length: int) {
+    let code = w.statusCode()
+    w.final = code
+    w.out.add("HTTP/1.1 ")
+    w.out.addInt(code)
+    w.out.addByte(' ')
+    w.out.add(reason(code))
+    w.out.add("\r\nDate: ")
+    w.out.add(httpDate())
+    w.out.add("\r\n")
+    for i in 0..w.headers.size() {
+        let x = w.headers.at(i)
+        w.out.add(x.name)
+        w.out.add(": ")
+        w.out.add(x.value)
+        w.out.add("\r\n")
+    }
+    if !w.ctSet && !noBody(code) && length != 0 { w.out.add("Content-Type: application/octet-stream\r\n") }
+    w.out.add("X-Content-Type-Options: nosniff\r\n")
+    if code >= 400 && !w.ccSet { w.out.add("Cache-Control: no-store\r\n") }
+    if length >= 0 && !noBody(code) {
+        w.out.add("Content-Length: ")
+        w.out.addInt(length)
+        w.out.add("\r\n")
+    } else if w.mode == M_CHUNKED {
+        w.out.add("Transfer-Encoding: chunked\r\n")
+        if len(w.trailerNames) > 0 {
+            w.out.add("Trailer: ")
+            for i in 0..len(w.trailerNames) {
+                if i > 0 { w.out.add(", ") }
+                w.out.add(w.trailerNames[i])
+            }
+            w.out.add("\r\n")
+        }
+    }
+    if w.close {
+        w.out.add("Connection: close\r\n")
+    } else if w.minor == 0 {
+        w.out.add("Connection: keep-alive\r\n")
+    }
+    w.out.add("\r\n")
+    w.headSent = true
+}
+
+// The buffered body into out, framed; false when it overruns the
+// Content-Length (nothing of it is put).
+fn (w: mut &Response) putBody(): bool {
+    let k = if w.useStr { len(w.strBody) } else { w.body.n }
+    if k == 0 { return true }
+    if w.mode == M_LENGTH && w.sent + k > w.declared { return false }
+    w.sent += k
+    if w.mode != M_EMPTY {
+        if w.mode == M_CHUNKED {
+            w.out.addHex(k)
+            w.out.add("\r\n")
+        }
+        if w.useStr {
+            w.out.add(w.strBody)
+        } else {
+            w.out.addBytes(&w.body.b[0..w.body.n])
+        }
+        if w.mode == M_CHUNKED { w.out.add("\r\n") }
+    }
+    w.useStr = false
+    w.strBody = ""
+    w.body.n = 0
+    return true
+}
+
+fn (w: mut &Response) send(at: Where): Result[Unit, Error] {
+    if w.out.n == 0 { return Ok(Unit{}) }
+    let r = w.conn.writeStalled(&w.out.b[0..w.out.n], w.stallMs, at)
+    w.out.n = 0
+    match r {
+        Ok(_) { return Ok(Unit{}) }
+        Err(e) {
+            w.failed = true
+            return Err(ioErr(&e, "writing the response"))
+        }
+    }
+}
+
+// Throws away what the handler set, for the server's own error answer.
+fn (w: mut &Response) sendError(code: int) {
+    if w.headers.size() > 0 { w.headers = http.newHeaders() }
+    if len(w.id) > 0 { w.headers.add("X-Request-Id", w.id) }
+    replace(mut &w.trailerNames, [])
+    w.declared = -1
+    w.ctSet = false
+    w.ccSet = false
+    w.bad = ""
+    w.code = 0
+    let r = w.fail(code)
+}
+
+fn fixedBody(code: int, id: str): str {
+    let line = intToStr(code) + " " + reason(code) + "\n"
+    if len(id) == 0 { return line }
+    return line + "request id " + id + "\n"
+}
+
+// The reason phrase of a status (RFC 9110 section 15).
+fn reason(code: int): str {
+    if code == 200 { return "OK" }
+    if code == 201 { return "Created" }
+    if code == 202 { return "Accepted" }
+    if code == 203 { return "Non-Authoritative Information" }
+    if code == 204 { return "No Content" }
+    if code == 205 { return "Reset Content" }
+    if code == 206 { return "Partial Content" }
+    if code == 300 { return "Multiple Choices" }
+    if code == 301 { return "Moved Permanently" }
+    if code == 302 { return "Found" }
+    if code == 303 { return "See Other" }
+    if code == 304 { return "Not Modified" }
+    if code == 307 { return "Temporary Redirect" }
+    if code == 308 { return "Permanent Redirect" }
+    if code == 400 { return "Bad Request" }
+    if code == 401 { return "Unauthorized" }
+    if code == 402 { return "Payment Required" }
+    if code == 403 { return "Forbidden" }
+    if code == 404 { return "Not Found" }
+    if code == 405 { return "Method Not Allowed" }
+    if code == 406 { return "Not Acceptable" }
+    if code == 408 { return "Request Timeout" }
+    if code == 409 { return "Conflict" }
+    if code == 410 { return "Gone" }
+    if code == 411 { return "Length Required" }
+    if code == 412 { return "Precondition Failed" }
+    if code == 413 { return "Content Too Large" }
+    if code == 414 { return "URI Too Long" }
+    if code == 415 { return "Unsupported Media Type" }
+    if code == 416 { return "Range Not Satisfiable" }
+    if code == 417 { return "Expectation Failed" }
+    if code == 421 { return "Misdirected Request" }
+    if code == 422 { return "Unprocessable Content" }
+    if code == 425 { return "Too Early" }
+    if code == 426 { return "Upgrade Required" }
+    if code == 428 { return "Precondition Required" }
+    if code == 429 { return "Too Many Requests" }
+    if code == 431 { return "Request Header Fields Too Large" }
+    if code == 451 { return "Unavailable For Legal Reasons" }
+    if code == 500 { return "Internal Server Error" }
+    if code == 501 { return "Not Implemented" }
+    if code == 502 { return "Bad Gateway" }
+    if code == 503 { return "Service Unavailable" }
+    if code == 504 { return "Gateway Timeout" }
+    if code == 505 { return "HTTP Version Not Supported" }
+    return "Status " + intToStr(code)
+}
+
+// ---- dates, cached per second
+
+var DATE_SEC: int = -1
+var DATE_TEXT: str = ""
+var ISO_SEC: int = -1
+var ISO_TEXT: str = ""
+
+const DAYS: []str = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+const MONTHS: []str = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+// "Tue, 03 Nov 2026 10:20:30 GMT" (RFC 9110 section 5.6.7) for now.
+fn httpDate(): str {
+    let sec = time.unixSeconds()
+    if sec == DATE_SEC { return DATE_TEXT }
+    let d = time.dateOf(sec)
+    let s = sec - (sec / 86400) * 86400
+    let t = DAYS[time.weekday(d)] + ", " + two(d.day) + " " + MONTHS[d.month - 1] + " " + intToStr(d.year) + " " +
+            two(s / 3600) + ":" + two(s / 60 % 60) + ":" + two(s % 60) + " GMT"
+    DATE_SEC = sec
+    DATE_TEXT = t
+    return t
+}
+
+fn isoNow(): str {
+    let sec = time.unixSeconds()
+    if sec == ISO_SEC { return ISO_TEXT }
+    let t = time.isoDateTime(sec)
+    ISO_SEC = sec
+    ISO_TEXT = t
+    return t
+}
+
+fn two(n: int): str { return if n < 10 { "0" + intToStr(n) } else { intToStr(n) } }
+
+// ---------------------------------------------------------------- the server's state
+
+const SLOT_FREE = 0
+const SLOT_BUSY = 1        // reading a request or running its handler
+const SLOT_IDLE = 2        // waiting for the next request
+const SLOT_DONE = 3        // the task has ended; the accept loop reaps it
+const SLOT_CANCELLED = 4   // its task was cancelled (idle under pressure, or a stop)
+
+type Slot = value record {
+    state: int
+    since: int             // ms (monotonic): idle since
+}
+
+// One server's state, shared by its accept loop and its connections.
+type State = record {
+    stats: Stats
+    open: int
+    slots: []Slot
+    done: []int
+    stopping: bool
+    log: Buf
+    mem: int
+    memBudget: int
+    hosts: []str
+    redirectHosts: []str
+    proxies: []str
+    perIp: Map[str, int]
+    maxPerIp: int
+    pid: int
+    logFd: int
+}
+
+// What the accept loop needs of the Config.
+type AcceptCfg = value record {
+    maxConns: int
+    acceptBatch: int
+    idlePressureMs: int
+    drainMs: int
+    signals: bool
+}
+
+type ConnJob[A] = record {
+    conn: net.Conn
+    app: A
+    site: task.Shared[Router[A]]
+    st: task.Shared[State]
+    slot: int
+    lim: Limits
+}
+
+fn copyList(xs: &[]str): []str {
+    var out: []str = []
+    for x in xs { append(mut &out, x) }
+    return out
+}
+
+fn configErr(msg: str): Error { return errOf(0, ErrorKind.Config, msg) }
+
+// Serves HTTP/1.1 on ln with the routes of r, each handler getting &app,
+// until SIGTERM or SIGINT (cfg.signals) or rq.stopServer(): then it
+// drains (stops accepting, closes idle connections, lets the requests in
+// flight finish for up to cfg.drainMs, cancels the rest) and returns its
+// counters. Err(kind Config) before anything is accepted when a pattern
+// is invalid or two conflict, or when RLIMIT_NOFILE (raised as far as the
+// hard limit allows) or vm.max_map_count is too low for cfg.maxConns. In a
+// worker (task.workers), it marks the worker ready once it accepts.
+pub fn serve[A: copy](ln: net.Listener, app: A, r: Router[A], cfg: Config, at: Where): Result[Stats, Error] {
+    var site = r
+    let errs = prepare(mut &site)
+    if len(errs) > 0 { return Err(configErr(strings.join(&errs, "; "))) }
+    if cfg.maxConns < 1 { return Err(configErr("maxConns must be at least 1")) }
+    let want = cfg.maxConns + cfg.fdMargin
+    let have = rtNofile(want)
+    if have < want {
+        return Err(configErr("the descriptor limit (RLIMIT_NOFILE) is " + intToStr(have) + ", below maxConns + fdMargin = " + intToStr(want)))
+    }
+    match io.read("/proc/sys/vm/max_map_count") {
+        Ok(t) {
+            match parseInt(trim(t)) {
+                Some(v) {
+                    if v < 2 * cfg.maxConns + 1024 {
+                        return Err(configErr("vm.max_map_count is " + intToStr(v) + ": too low for maxConns " + intToStr(cfg.maxConns) +
+                            " (each connection's task takes about 2 mappings)"))
+                    }
+                }
+                None {}
+            }
+        }
+        Err(_) {}
+    }
+    if cfg.deferAccept && cfg.headerTimeoutMs > 0 { let d = ln.setDeferAccept((cfg.headerTimeoutMs + 999) / 1000) }
+    var spare: Option[net.Spare] = None
+    match net.spare() {
+        Ok(s) { spare = Some(s) }
+        Err(_) {}
+    }
+    let lim = limitsOf(&cfg)
+    let ac = AcceptCfg{maxConns: cfg.maxConns, acceptBatch: if cfg.acceptBatch > 0 { cfg.acceptBatch } else { 16 },
+        idlePressureMs: cfg.idlePressureMs, drainMs: cfg.drainMs, signals: cfg.signals}
+    let st = task.shared(State{stats: noStats(), open: 0, slots: [], done: [], stopping: false, log: newBuf(0), mem: 0,
+        memBudget: cfg.memBudget, hosts: lowerList(&cfg.hosts), redirectHosts: lowerList(&cfg.redirectHosts),
+        proxies: copyList(&cfg.trustedProxies), perIp: newMap[str, int](), maxPerIp: cfg.maxConnsPerIp,
+        pid: int(getpid()), logFd: cfg.logFd})
+    let sh = task.shared(site)
+    let ready = task.workerReady()
+    var lst: Option[net.Listener] = Some(ln)
+    task.scope(fn(s: mut &task.Scope) {
+        acceptLoop(s, mut &lst, mut &spare, app, sh, st, lim, ac, at)
+    })
+    flushLog(st)
+    var out = noStats()
+    st.with(fn(x: mut &State) {
+        out = x.stats
+        out.open = x.open
+    })
+    return Ok(out)
+}
+
+fn lowerList(xs: &[]str): []str {
+    var out: []str = []
+    for x in xs { append(mut &out, lowerAscii(x)) }
+    return out
+}
+
+fn watchStop(st: task.Shared[State]): int {
+    match task.terminated() {
+        Ok(_) { st.with(fn(x: mut &State) { x.stopping = true }) }
+        Err(_) {}
+    }
+    return 0
+}
+
+// Accepts connections and starts a task for each; every TICK ms it reaps
+// the ended ones, closes idle ones under pressure, writes the access log,
+// and looks for a stop.
+fn acceptLoop[A: copy](s: mut &task.Scope, lst: mut &Option[net.Listener], spare: mut &Option[net.Spare], app: A,
+                       sh: task.Shared[Router[A]], st: task.Shared[State], lim: Limits, ac: AcceptCfg, at: Where) {
+    var futs: []Option[task.Future[int]] = []
+    var free: []int = []
+    var sig: Option[task.Future[int]] = None
+    if ac.signals { sig = Some(s.start(watchStop, st)) }
+    var live = 0
+    var lastTick = nowMs()
+    var drainUntil = -1
+    var batch = 0
+    while true {
+        let now = nowMs()
+        if now - lastTick >= TICK || live >= ac.maxConns || drainUntil >= 0 {
+            lastTick = now
+            var ended: []int = []
+            var cancel: []int = []
+            var stopping = false
+            var logOut = newBuf(0)
+            st.with(fn(x: mut &State) {
+                if len(x.done) > 0 {
+                    ended = replace(mut &x.done, [])
+                    for i in ended { x.slots[i].state = SLOT_FREE }
+                }
+                stopping = x.stopping
+                let pressure = x.open * 5 >= ac.maxConns * 4
+                if pressure || stopping {
+                    for i in 0..len(x.slots) {
+                        if x.slots[i].state == SLOT_IDLE && (stopping || now - x.slots[i].since >= ac.idlePressureMs) {
+                            x.slots[i].state = SLOT_CANCELLED
+                            x.stats.idleClosed += 1
+                            append(mut &cancel, i)
+                        }
+                    }
+                }
+                if x.log.n > 0 { logOut = replace(mut &x.log, newBuf(0)) }
+            })
+            for i in ended {
+                let f = replace(mut &futs[i], None)
+                append(mut &free, i)
+            }
+            live -= len(ended)
+            for i in cancel { let f = replace(mut &futs[i], None) }
+            if logOut.n > 0 { writeAll(st, &logOut) }
+            if stopping && drainUntil < 0 {
+                drainUntil = now + ac.drainMs
+                lst = None
+            }
+            if drainUntil >= 0 {
+                if live == 0 || now >= drainUntil { break }
+                if task.sleep(TICK).isErr() { break }
+                continue
+            }
+        }
+        if live >= ac.maxConns {
+            if task.sleep(TICK / 10).isErr() { break }
+            continue
+        }
+        var got: Option[net.Conn] = None
+        var stop = false
+        match lst {
+            Some(l) {
+                let old = rtWithin(TICK)
+                let r = l.accept(at)
+                rtRestore(old)
+                match move(r) {
+                    Ok(c) { got = Some(c) }
+                    Err(e) {
+                        if e.isCancelled() {
+                            stop = true
+                        } else if net.outOfDescriptors(&e) {
+                            var shed = false
+                            let taken = replace(spare, None)
+                            match move(taken) {
+                                Some(x) {
+                                    var sp = x
+                                    if l.shed(mut &sp).isOk() {
+                                        shed = true
+                                        spare = Some(sp)
+                                    }
+                                }
+                                None {}
+                            }
+                            if !shed {
+                                spare = None
+                                if task.sleep(10).isErr() { stop = true }
+                            }
+                            st.with(fn(x: mut &State) { x.stats.shed += 1 })
+                        } else if !e.isTimeout() {
+                            if task.sleep(10).isErr() { stop = true }
+                        }
+                    }
+                }
+            }
+            None { stop = true }
+        }
+        if stop { break }
+        match move(got) {
+            Some(c) {
+                var slot = -1
+                if len(free) > 0 {
+                    slot = pop(mut &free)
+                } else {
+                    slot = len(futs)
+                    append(mut &futs, None)
+                }
+                st.with(fn(x: mut &State) {
+                    x.stats.accepted += 1
+                    x.open += 1
+                    x.mem += BUF + OUT
+                    while len(x.slots) <= slot { append(mut &x.slots, Slot{state: SLOT_FREE, since: 0}) }
+                    x.slots[slot] = Slot{state: SLOT_BUSY, since: now}
+                })
+                let f = s.start(connTask[A], ConnJob[A]{conn: c, app: app, site: sh, st: st, slot: slot, lim: lim})
+                futs[slot] = Some(f)
+                live += 1
+                batch += 1
+                if batch >= ac.acceptBatch {
+                    batch = 0
+                    if task.yield().isErr() { break }
+                }
+            }
+            None {}
+        }
+    }
+    // the rest are cancelled as their futures drop
+}
+
+// Writes the access log's bytes (a blocking write, on a helper thread
+// when other tasks could run).
+fn writeAll(st: task.Shared[State], b: &Buf) {
+    var fd = 1
+    st.with(fn(x: mut &State) { fd = x.logFd })
+    var off = 0
+    while off < b.n {
+        let k = logWrite(i32(fd), &b.b[off..b.n], b.n - off)
+        if k <= 0 { return }
+        off += k
+    }
+}
+
+fn flushLog(st: task.Shared[State]) {
+    var logOut = newBuf(0)
+    st.with(fn(x: mut &State) { if x.log.n > 0 { logOut = replace(mut &x.log, newBuf(0)) } })
+    if logOut.n > 0 { writeAll(st, &logOut) }
+}
+
+// ---------------------------------------------------------------- a connection
+
+fn connTask[A: copy](j: ConnJob[A]): int {
+    let ConnJob{conn: c, app: app, site: site, st: st, slot: slot, lim: lim} = move(j)
+    let net.Halves{read: rh, write: wh} = c.split()
+    let peer = rh.remote()
+    var trusted = false
+    var refuse = false
+    var counted = false
+    let ip = ipOf(peer)
+    st.with(fn(x: mut &State) {
+        if len(x.proxies) > 0 { trusted = contains2(&x.proxies, ip) }
+        if x.maxPerIp > 0 {
+            counted = true
+            let n = x.perIp.getOr(&ip, 0) + 1
+            x.perIp.put(ip, n)
+            if n > x.maxPerIp { refuse = true }
+        }
+    })
+    var rq = Request{method: "", path: "", host: "", proto: "", headers: http.newHeaders(), peer: peer, id: "", pattern: "",
+        target: "", rawPath: "", query: "", hostName: "", minor: 1, params: [], chain: [], notes: [], trailers: http.newHeaders(),
+        allow: "", conn: rh, buf: array(BUF, byte(0)), r: 0, n: 0, framing: F_NONE, left: 0, cstate: C_DONE, got: 0, maxBody: lim.maxBody,
+        extBytes: 0, expect: false, keep: true, broken: false, bodyStarted: false, bodyDeadline: -1, sinceYield: 0, lim: lim, st: st,
+        trusted: trusted, rnd: [], rndAt: 0, started: 0}
+    var w = Response{conn: wh, code: 0, final: 0, headers: http.newHeaders(), trailerNames: [], trailerVals: http.newHeaders(),
+        out: newBuf(OUT), body: newBuf(0), strBody: "", useStr: false, headSent: false, mode: M_NONE, declared: -1, sent: 0,
+        head: false, minor: 1, close: false, bad: "", id: "", stallMs: lim.writeStallMs, failed: false, ctSet: false, ccSet: false, st: st}
+    if refuse {
+        w.close = true
+        w.sendError(503)
+        let r = w.finish()
+    } else {
+        var served = 0
+        while true {
+            if !serveOne(&app, site, mut &rq, mut &w, slot, served) { break }
+            served += 1
+            if task.yield().isErr() { break }
+        }
+    }
+    let used = len(rq.buf) + len(w.out.b) + len(w.body.b)
+    st.with(fn(x: mut &State) {
+        x.open -= 1
+        x.mem -= used
+        x.slots[slot].state = SLOT_DONE
+        append(mut &x.done, slot)
+        if counted {
+            let n = x.perIp.getOr(&ip, 0) - 1
+            if n <= 0 {
+                let old = x.perIp.remove(&ip)
+            } else {
+                x.perIp.put(ip, n)
+            }
+        }
+    })
+    return 0
+}
+
+// Resets the request and the response for the next request.
+fn reset(rq: mut &Request, w: mut &Response) {
+    truncate(mut &rq.params, 0)
+    while len(rq.chain) > 0 { let x = pop(mut &rq.chain) }
+    if len(rq.notes) > 0 { replace(mut &rq.notes, []) }
+    if rq.trailers.size() > 0 { rq.trailers = http.newHeaders() }
+    rq.pattern = ""
+    rq.id = ""
+    rq.allow = ""
+    rq.framing = F_NONE
+    rq.left = 0
+    rq.cstate = C_DONE
+    rq.got = 0
+    rq.extBytes = 0
+    rq.expect = false
+    rq.keep = true
+    rq.broken = false
+    rq.bodyStarted = false
+    rq.bodyDeadline = -1
+    rq.sinceYield = 0
+    rq.maxBody = rq.lim.maxBody
+    w.code = 0
+    w.final = 0
+    if w.headers.size() > 0 { w.headers = http.newHeaders() }
+    if len(w.trailerNames) > 0 {
+        replace(mut &w.trailerNames, [])
+        w.trailerVals = http.newHeaders()
+    }
+    w.out.n = 0
+    w.body.n = 0
+    w.strBody = ""
+    w.useStr = false
+    w.headSent = false
+    w.mode = M_NONE
+    w.declared = -1
+    w.sent = 0
+    w.head = false
+    w.minor = 1
+    w.close = false
+    w.bad = ""
+    w.id = ""
+    w.failed = false
+    w.ctSet = false
+    w.ccSet = false
+}
+
+// Reads up to the end of a request head: the index of its "\r\n\r\n" in
+// buf, -1 to close without a word (the peer closed, was idle too long, or
+// the task was cancelled), or -status to refuse it with.
+fn (rq: mut &Request) readHead(idleMs: int, at: Where): int {
+    if rq.r == rq.n {
+        rq.r = 0
+        rq.n = 0
+    }
+    var deadline = -1
+    var skipped = 0
+    var from = rq.r
+    var lf = rq.r
+    var sawLF = false
+    while true {
+        while skipped < 2 && rq.n - rq.r >= 2 && rq.buf[rq.r] == '\r' && rq.buf[rq.r + 1] == '\n' {
+            rq.r += 2
+            skipped += 1
+            from = rq.r
+            lf = rq.r
+        }
+        if rq.n > rq.r {
+            if deadline < 0 { deadline = nowMs() + rq.lim.headerTimeoutMs }
+            let e = http.headEnd(&rq.buf, rq.r, from, rq.n)
+            if e == -2 { return -400 }
+            if e >= 0 {
+                if e + 4 - rq.r > rq.lim.maxHeadBytes { return -431 }
+                return e
+            }
+            from = if rq.n - 3 > rq.r { rq.n - 3 } else { rq.r }
+            if !sawLF {
+                if lf < rq.r { lf = rq.r }
+                while lf < rq.n && rq.buf[lf] != '\n' { lf += 1 }
+                if lf < rq.n {
+                    sawLF = true
+                } else if rq.n - rq.r > rq.lim.maxTargetBytes + 64 {
+                    return -414
+                }
+            }
+            if rq.n - rq.r >= rq.lim.maxHeadBytes + 4 { return -431 }
+        }
+        if rq.n == len(rq.buf) {
+            if rq.r > 0 {
+                let k = rq.n - rq.r
+                let r0 = rq.r
+                for i in 0..k { rq.buf[i] = rq.buf[r0 + i] }
+                from -= r0
+                lf -= r0
+                rq.r = 0
+                rq.n = k
+            } else {
+                var c = len(rq.buf) * 2
+                if c > rq.lim.maxHeadBytes + 8 { c = rq.lim.maxHeadBytes + 8 }
+                if c <= len(rq.buf) { return -431 }
+                var nb = array(c, byte(0))
+                for i in 0..rq.n { nb[i] = rq.buf[i] }
+                rq.buf = nb
+            }
+        }
+        let ms = if deadline < 0 { idleMs } else { deadline - nowMs() }
+        if ms <= 0 { return if deadline < 0 { -1 } else { -408 } }
+        let old = rtWithin(ms)
+        let r = rq.conn.read(mut &rq.buf[rq.n..], at)
+        rtRestore(old)
+        match r {
+            Ok(k) {
+                if k == 0 { return -1 }
+                rq.n += k
+            }
+            Err(e) {
+                if e.isTimeout() && deadline >= 0 { return -408 }
+                return -1
+            }
+        }
+    }
+    return -1
+}
+
+// Reads, routes and answers one request: whether the connection carries on.
+fn serveOne[A: copy](app: &A, site: task.Shared[Router[A]], rq: mut &Request, w: mut &Response, slot: int, served: int, at: Where): bool {
+    let idleMs = if served == 0 { rq.lim.headerTimeoutMs } else { rq.lim.idleTimeoutMs }
+    let end = rq.readHead(idleMs, at)
+    if end == -1 { return false }
+    reset(rq, w)
+    let st = rq.st
+    if end < 0 {
+        // refused before a head could be read: answered, and the connection closes
+        st.with(fn(x: mut &State) {
+            x.stats.requests += 1
+            x.stats.rejected += 1
+            if end == -408 { x.stats.timeouts += 1 }
+            x.stats.c4xx += 1
+        })
+        w.close = true
+        w.sendError(-end)
+        let r = w.finish(at)
+        return false
+    }
+    let head = strFromBytes(&rq.buf[rq.r..end])
+    rq.r = end + 4
+    rq.started = time.monotonicNs()
+    let bad = rq.parseHead(head)
+    w.minor = rq.minor
+    w.head = rq.method == "HEAD"
+    var stopping = false
+    var overMem = false
+    var misdirected = false
+    let hn = rq.hostName
+    st.with(fn(x: mut &State) {
+        x.stats.requests += 1
+        if bad != 0 {
+            x.stats.rejected += 1
+            if bad >= 500 { x.stats.c5xx += 1 } else { x.stats.c4xx += 1 }
+        } else {
+            x.slots[slot].state = SLOT_BUSY
+            stopping = x.stopping
+            overMem = x.mem > x.memBudget
+            if len(x.hosts) > 0 && !contains2(&x.hosts, hn) { misdirected = true }
+        }
+    })
+    if bad != 0 {
+        w.close = true
+        w.sendError(bad)
+        let r = w.finish(at)
+        return false
+    }
+    if stopping || served + 1 >= rq.lim.maxRequestsPerConn || !rq.keep { w.close = true }
+    // what the server answers itself
+    var pre = 0
+    if misdirected {
+        pre = 421
+    } else if overMem {
+        pre = 503
+    } else if rq.target == "*" {
+        pre = 200
+    }
+    var h: Option[Handler[A]] = None
+    var opts = routeOpts()
+    if pre == 0 {
+        site.with(fn(s: mut &Router[A]) {
+            let i = findRoute(s, rq.method, rq.hostName, rq.path, mut &rq.params)
+            if i >= 0 {
+                h = Some(s.routes[i].h)
+                opts = s.routes[i].opts
+                rq.pattern = s.routes[i].pattern
+            } else {
+                let allow = allowedMethods(s, rq.hostName, rq.path)
+                if len(allow) > 0 {
+                    rq.allow = allow
+                    h = Some(notAllowed[A])
+                } else if slashMatch(s, rq.method, rq.hostName, rq.path) {
+                    h = Some(toSlash[A])
+                } else {
+                    h = Some(notFound[A])
+                }
+            }
+            for k in 0..len(s.mws) {
+                let p = s.mws[k].prefix
+                if len(p) == 0 || startsWith(rq.path, p) { append(mut &rq.chain, k) }
+            }
+        })
+        if opts.maxBody >= 0 { rq.maxBody = opts.maxBody }
+        if rq.framing == F_LENGTH && rq.left > rq.maxBody {
+            pre = 413
+            rq.broken = true
+            w.close = true
+        }
+    }
+    var res: Result[Unit, Error] = Ok(Unit{})
+    if pre == 200 {
+        w.code = 200
+    } else if pre != 0 {
+        w.sendError(pre)
+    } else {
+        match h {
+            Some(f) {
+                let deadline = if opts.deadlineMs >= 0 { opts.deadlineMs } else { rq.lim.deadlineMs }
+                let g = rq.conn.cancelOnHangup(rq.lim.cancelOnHalfClose)
+                var old = 0
+                if deadline > 0 { old = rtWithin(deadline) }
+                let n = Next[A]{site: site, h: f, pos: 0}
+                res = n.run(app, rq, w)
+                if deadline > 0 { rtRestore(old) }
+            }
+            None {}
+        }
+    }
+    let gone = task.cancelled()
+    var abort = false
+    var kind = ""
+    match &res {
+        Ok(_) {}
+        Err(e) {
+            kind = e.kind.toStr()
+            if !w.headSent && !w.failed && !gone {
+                w.sendError(if e.status >= 400 && e.status <= 599 { e.status } else { 500 })
+            } else {
+                abort = true
+            }
+        }
+    }
+    if rq.broken { w.close = true }
+    if !rq.bodyDone() && (rq.expect || (rq.framing == F_LENGTH && rq.left > rq.lim.maxDrain)) { w.close = true }
+    var fin: Result[Unit, Error] = Ok(Unit{})
+    if !abort && !gone && !w.failed {
+        fin = w.finish(at)
+        if fin.isErr() && !w.headSent && !w.failed {
+            // a header or the length was invalid: the fixed 500 instead
+            w.sendError(500)
+            fin = w.finish(at)
+        }
+    }
+    var keep = !abort && !gone && !w.failed && fin.isOk() && !w.close
+    if keep && !rq.drain(at) { keep = false }
+    let status = if w.headSent { w.final } else { 0 }
+    let idleNow = keep && rq.r == rq.n
+    if idleNow && len(rq.buf) > BUF { rq.buf = array(BUF, byte(0)) }
+    if len(w.out.b) > 4 * FLUSH_AT { w.out = newBuf(OUT) }
+    if len(w.body.b) > 4 * FLUSH_AT { w.body = newBuf(0) }
+    let now = nowMs()
+    st.with(fn(x: mut &State) {
+        if status >= 500 {
+            x.stats.c5xx += 1
+            x.stats.errors += 1
+        } else if status >= 400 {
+            x.stats.c4xx += 1
+        } else if status >= 300 {
+            x.stats.c3xx += 1
+        } else if status >= 200 {
+            x.stats.c2xx += 1
+        }
+        if gone { x.stats.gone += 1 }
+        if kind == "timeout" { x.stats.timeouts += 1 }
+        if idleNow && x.slots[slot].state == SLOT_BUSY { x.slots[slot] = Slot{state: SLOT_IDLE, since: now} }
+    })
+    return keep
+}
+
+// ---------------------------------------------------------------- library middleware
+
+// Gives the request an id (rq.id): 16 random bytes in hex, or the
+// X-Request-Id a trusted proxy (Config.trustedProxies) sent, when it is
+// 1 to 64 token characters. It is sent back as X-Request-Id, and the
+// library's error bodies name it.
+pub fn requestId[A](app: &A, rq: mut &Request, w: mut &Response, next: Next[A]): Result[Unit, Error] {
+    var id = ""
+    if rq.trusted {
+        match rq.headers.get("X-Request-Id") {
+            Some(v) { if len(v) <= 64 && http.isToken(v) { id = v } }
+            None {}
+        }
+    }
+    if len(id) == 0 { id = rq.newId() }
+    rq.id = id
+    w.id = id
+    w.header("X-Request-Id", id)
+    return next.run(app, rq, w)
+}
+
+// Sets the headers OWASP recommends for HTML applications:
+// Content-Security-Policy (default-src 'self'; frame-ancestors 'none'),
+// Referrer-Policy no-referrer, Cross-Origin-Opener-Policy same-origin.
+// A handler may set its own afterwards.
+pub fn securityHeaders[A](app: &A, rq: mut &Request, w: mut &Response, next: Next[A]): Result[Unit, Error] {
+    w.header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+    w.header("Referrer-Policy", "no-referrer")
+    w.header("Cross-Origin-Opener-Policy", "same-origin")
+    return next.run(app, rq, w)
+}
+
+// One logfmt line per request, written by the server (never by the
+// request's task: a slow reader of the log does not stall requests; past
+// 4 MiB unwritten, lines are dropped and counted):
+//
+//     time=2026-11-03T10:20:30Z id=... pid=4711 peer=10.0.0.7:51234 method=GET
+//     route="GET /accounts/{id}" path=/accounts/7 status=200 in=0 out=13 us=180 outcome=ok
+//
+// Values from input are escaped (controls, quotes, backslashes and bytes
+// past 0x7e as \xHH) and cut at 256 bytes. The query, Authorization and
+// Cookie are not logged. rq.note adds fields.
+pub fn accessLog[A](app: &A, rq: mut &Request, w: mut &Response, next: Next[A]): Result[Unit, Error] {
+    let res = next.run(app, rq, w)
+    var status = w.statusCode()
+    var outcome = "ok"
+    let gone = task.cancelled()
+    match &res {
+        Ok(_) {}
+        Err(e) {
+            if !w.headWritten() { status = if e.status >= 400 && e.status <= 599 { e.status } else { 500 } }
+            match e.kind {
+                ErrorKind.Gone { outcome = "client-gone" }
+                ErrorKind.Timeout { outcome = "timeout" }
+                ErrorKind.Limit { outcome = "limit" }
+                ErrorKind.Client { outcome = "error" }
+                ErrorKind.Server { outcome = "error" }
+                ErrorKind.Protocol { outcome = "error" }
+                ErrorKind.Config { outcome = "error" }
+            }
+        }
+    }
+    if gone { outcome = "client-gone" }
+    var b = newBuf(256)
+    b.add("time=")
+    b.add(isoNow())
+    if len(rq.id) > 0 {
+        b.add(" id=")
+        b.add(rq.id)
+    }
+    var pid = 0
+    rq.st.with(fn(x: mut &State) { pid = x.pid })
+    b.add(" pid=")
+    b.addInt(pid)
+    b.add(" peer=")
+    b.add(logValue(rq.peer))
+    b.add(" method=")
+    b.add(logValue(rq.method))
+    b.add(" route=")
+    b.add(logValue(rq.pattern))
+    b.add(" path=")
+    b.add(logValue(rq.path))
+    b.add(" status=")
+    b.addInt(status)
+    b.add(" in=")
+    b.addInt(rq.got)
+    b.add(" out=")
+    b.addInt(w.bodyBytes())
+    b.add(" us=")
+    b.addInt((time.monotonicNs() - rq.started) / 1000)
+    b.add(" outcome=")
+    b.add(outcome)
+    for x in rq.notes {
+        b.addByte(' ')
+        b.add(logKey(x.name))
+        b.addByte('=')
+        b.add(logValue(x.value))
+    }
+    b.addByte('\n')
+    var out = newBuf(0)
+    rq.st.with(fn(x: mut &State) {
+        if x.log.n + b.n > LOG_MAX {
+            x.stats.logDropped += 1
+        } else {
+            x.log.addBytes(&b.b[0..b.n])
+            if x.log.n >= LOG_FLUSH { out = replace(mut &x.log, newBuf(0)) }
+        }
+    })
+    if out.n > 0 { writeAll(rq.st, &out) }
+    return res
+}
+
+// A value for a logfmt line: as it is when it is plain, else quoted with
+// \" \\ and \xHH escapes; at most LOG_VALUE bytes of it.
+fn logValue(s: str): str {
+    var plain = len(s) > 0 && len(s) <= LOG_VALUE
+    if plain {
+        for i in 0..len(s) {
+            let c = s[i]
+            if c <= byte(0x20) || c >= byte(0x7f) || c == '"' || c == '\\' || c == '=' {
+                plain = false
+                break
+            }
+        }
+    }
+    if plain { return s }
+    var b = newBuf(len(s) + 8)
+    b.addByte('"')
+    let n = if len(s) > LOG_VALUE { LOG_VALUE } else { len(s) }
+    for i in 0..n {
+        let c = s[i]
+        if c == '"' || c == '\\' {
+            b.addByte('\\')
+            b.addByte(c)
+        } else if c < byte(0x20) || c >= byte(0x7f) {
+            b.add("\\x")
+            b.addByte(HEX[int(c) / 16])
+            b.addByte(HEX[int(c) % 16])
+        } else {
+            b.addByte(c)
+        }
+    }
+    if len(s) > LOG_VALUE { b.add("...") }
+    b.addByte('"')
+    return strFromBytes(&b.b[0..b.n])
+}
+
+// A key for a logfmt line: its token characters, at most 64.
+fn logKey(s: str): str {
+    var b = newBuf(len(s))
+    for i in 0..len(s) {
+        if b.n < 64 && isTchar(s[i]) && s[i] != '=' { b.addByte(s[i]) }
+    }
+    if b.n == 0 { return "note" }
+    return strFromBytes(&b.b[0..b.n])
+}
