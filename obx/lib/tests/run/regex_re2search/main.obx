@@ -1,0 +1,13 @@
+// RE2's search tests (Go's regexp/testdata/re2-search.txt, in cases.obx):
+// every case in four modes and under each matcher must give RE2's indexes
+// (the cases of \C patterns, which Go refuses too, are not run).
+// expect: re2-search: 1888 cases, 21648 runs, 4 skipped (\B), 0 failures
+
+import "./re2"
+import "./cases"
+
+fn main() {
+    let s = re2.run(cases.LINES, 30)
+    println("re2-search: " + s.cases.toStr() + " cases, " + s.runs.toStr() + " runs, " + s.skipped.toStr() + " skipped (\\B), " + s.fails.toStr() + " failures")
+    if s.fails > 0 { exit(1) }
+}

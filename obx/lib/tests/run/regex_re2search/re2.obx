@@ -1,0 +1,183 @@
+// The runner for RE2's search tests (the format of Go's
+// regexp/testdata/re2-search.txt, as testRE2 in Go's exec_test.go reads it;
+// BSD-3-Clause, Copyright 2009 The Go Authors). Each regexp runs on each
+// string in four ways (full match \A(?:re)\z and partial, leftmost-first and
+// leftmost-longest) and under each matcher (the one compile picks, the Pike
+// VM, the backtracker); the submatch indexes and isMatch must equal RE2's.
+//
+// The lines come with each quoted string replaced by h:HEX (the bytes).
+// Used by main.obx here and by obx/tests/regex/re2_exhaustive.obx.
+
+import "regex"
+
+pub type Summary = value record {
+    pub cases: int
+    pub runs: int
+    pub skipped: int
+    pub fails: int
+}
+
+fn hexVal(c: byte): int {
+    let x = int(c)
+    if x >= 48 && x <= 57 { return x - 48 }
+    return x - 87
+}
+
+fn unhex(s: str): str {
+    var b = newStrBuf()
+    var i = 0
+    while i + 1 < len(s) {
+        b.addByte(byte(hexVal(s[i]) * 16 + hexVal(s[i + 1])))
+        i += 2
+    }
+    return b.toStr()
+}
+
+fn singleBytes(s: str): bool {
+    for i in 0..len(s) {
+        if int(s[i]) >= 128 { return false }
+    }
+    return true
+}
+
+// "-" is no match; else space-separated pairs lo-hi, "-" for an unset group.
+fn parseResult(res: str): []int {
+    var out: []int = []
+    if res == "-" { return out }
+    for pair in split(res, ' ') {
+        if pair == "-" {
+            append(mut &out, -1)
+            append(mut &out, -1)
+        } else {
+            let d = indexOf(pair, "-", 0)
+            append(mut &out, parseInt(pair[0..d]).unwrap())
+            append(mut &out, parseInt(pair[d + 1..]).unwrap())
+        }
+    }
+    return out
+}
+
+fn show(a: &[]int): str {
+    if len(a) == 0 { return "nil" }
+    var s = "["
+    for i in 0..len(a) {
+        if i > 0 { s = s + " " }
+        s = s + a[i].toStr()
+    }
+    return s + "]"
+}
+
+fn same(a: &[]int, b: &[]int): bool {
+    if len(a) != len(b) { return false }
+    for i in 0..len(a) {
+        if a[i] != b[i] { return false }
+    }
+    return true
+}
+
+const MATCHERS: []str = ["", "pike", "backtrack"]
+const MODES: []str = ["[full]", "", "[full,longest]", "[longest]"]
+
+// The four regexes of one pattern under one matcher: full, partial, full
+// longest, partial longest.
+type Set = record {
+    res: []regex.Regex
+}
+
+fn compileSet(q: str, matcher: str): Set {
+    let full = "\\A(?:" + q + ")\\z"
+    var res: []regex.Regex = []
+    append(mut &res, regex.compileForcing(full, false, matcher).unwrap())
+    append(mut &res, regex.compileForcing(q, false, matcher).unwrap())
+    append(mut &res, regex.compileForcing(full, true, matcher).unwrap())
+    append(mut &res, regex.compileForcing(q, true, matcher).unwrap())
+    return Set { res: res }
+}
+
+pub fn run(lines: &[str], maxFails: int): Summary {
+    var sum = Summary { cases: 0, runs: 0, skipped: 0, fails: 0 }
+    var strs: []str = []
+    var inStrings = false
+    var next = 0
+    var inputLen = 0   // the strings of the last regexp (strs may be the next section's by then)
+    var sets: []Set = []
+    var pattern = ""
+    var have = false
+    for line in lines {
+        if line == "strings" {
+            strs = []
+            inStrings = true
+        } else if line == "regexps" {
+            inStrings = false
+        } else if startsWith(line, "h:") {
+            let q = unhex(line[2..])
+            if inStrings {
+                append(mut &strs, q)
+                continue
+            }
+            if next < inputLen && have {
+                println("out of sync: strings left before " + q)
+                sum.fails += 1
+                return sum
+            }
+            sets = []
+            have = false
+            pattern = q
+            match regex.compile(q) {
+                Ok(re) {}
+                Err(e) {
+                    // Go does not support \C (any byte) and skips it.
+                    if e.message() != "error parsing regexp: invalid escape sequence: `\\C`" {
+                        println("FAIL compile " + q + ": " + e.toStr())
+                        sum.fails += 1
+                    }
+                    continue
+                }
+            }
+            for m in MATCHERS { append(mut &sets, compileSet(q, m)) }
+            have = true
+            next = 0
+            inputLen = len(strs)
+        } else {
+            // A result line: four results for the next string.
+            sum.cases += 1
+            if !have { continue }
+            if next >= inputLen {
+                println("out of sync: no input left for " + pattern)
+                sum.fails += 1
+                return sum
+            }
+            let text = strs[next]
+            next += 1
+            // RE2's \B sees every byte position, Go's (and this) only the
+            // positions between runes: Go skips these cases.
+            if !singleBytes(text) && contains(pattern, "\\B") {
+                sum.skipped += 1
+                continue
+            }
+            let res = split(line, ';')
+            for k in 0..4 {
+                let want = parseResult(res[k])
+                for si in 0..len(sets) {
+                    let re = &sets[si].res[k]
+                    sum.runs += 1
+                    let got = re.submatchIndex(text)
+                    var bad = !same(&got, &want)
+                    if !bad && re.isMatch(text) != (len(want) > 0) { bad = true }
+                    if bad {
+                        sum.fails += 1
+                        if sum.fails <= maxFails {
+                            println("FAIL /" + pattern + "/" + MODES[k] + " " + MATCHERS[si] + " on \"" + text + "\": got " +
+                                show(&got) + " isMatch " + re.isMatch(text).toStr() + ", want " + show(&want))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if next < inputLen && have {
+        println("out of sync: strings left at the end")
+        sum.fails += 1
+    }
+    return sum
+}
