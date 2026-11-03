@@ -933,7 +933,8 @@ exits with:
 | 14 | deadlock: every task is parked (section 16) |
 
 For codes 13 and 14 the location is the program's call of a `task`
-function (its call site, section 15), and the open `with` is named as well:
+function (its call site, section 15), and for code 13 the open `with` is
+named as well:
 
     obx: a task parked inside Shared.with (the with at a.obx:37) at a.obx:41
     obx: Shared.with on a value whose with is already open (the with at a.obx:30) at a.obx:35
@@ -967,8 +968,8 @@ of it (`f(...)`, `m.f(...)`, `x.method(...)`, `T.f(...)`, generic or not)
 that writes one argument fewer than it declares passes the location of the
 call expression. A call may also pass a `Where` explicitly, which is how a
 library function hands its caller's location on (`task.all` calls
-`f.wait(w)`). A call through a function value, a closure or an interface
-cannot supply it (the call has no declaration to look at): it must pass it,
+`f.wait(w)`). A call through a function value, a closure, an interface or a
+type parameter's constraint cannot supply it (the call has no declaration to look at): it must pass it,
 for example `here()`. `std.here(): Where` is such a function: it returns the
 location of its own call, or the `Where` passed to it. A function of the
 program (not a library) with a last parameter of type `Where` is an ordinary
