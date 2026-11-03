@@ -1,0 +1,108 @@
+// Native loop optimizations (compiler/loops.obx): an array changed in the loop
+// body (append, reassignment, a `mut &` borrow to a function, a function that
+// appends, a closure capturing it) is read with its current header after each
+// change; the bounds checks against the current length stay.
+// expect: 15 5
+// expect: 13 37
+// expect: 12 9
+// expect: 10 6
+// expect: 49 6
+// expect: 6 4
+// expect: 9 6
+
+fn grow(a: mut &[]int, v: int) { append(a, v) }
+
+fn shrink(a: mut &[]int) {
+    if len(a) > 0 { let x = pop(a) }
+}
+
+fn total(a: &[]int): int {
+    var s = 0
+    var i = 0
+    while i < len(a) {
+        s = s + a[i]
+        i = i + 1
+    }
+    return s
+}
+
+fn main() {
+    // append in the loop: the loop runs over the elements it adds
+    var a: []int = [1, 2, 3]
+    var i = 0
+    while i < len(a) {
+        if a[i] < 3 { append(mut &a, a[i] + 3) }
+        i = i + 1
+    }
+    println(total(&a).toStr() + " " + len(a).toStr())
+
+    // reassignment in the loop: a shorter array, then the old length is gone
+    var b: []int = [1, 1, 1, 1, 1, 1]
+    var s = 0
+    i = 0
+    while i < len(b) {
+        s = s + b[i]
+        if i == 2 { b = [9, 9, 9, 10] }
+        i = i + 1
+    }
+    println(s.toStr() + " " + total(&b).toStr())
+
+    // a `mut &` borrow to a function that appends
+    var c: []int = [4, 5]
+    s = 0
+    i = 0
+    while i < len(c) {
+        s = s + c[i]
+        if len(c) < 3 { grow(mut &c, 3) }
+        i = i + 1
+    }
+    println(s.toStr() + " " + (s - 3).toStr())
+
+    // a function that removes: the loop's next index is out of the new length
+    var d: []int = [1, 2, 3, 4, 5, 6]
+    s = 0
+    i = 0
+    while i < len(d) {
+        s = s + d[i]
+        shrink(mut &d)
+        i = i + 1
+    }
+    println((s + 4).toStr() + " " + total(&d).toStr())
+
+    // a closure that appends to the array it captures
+    var e: []int = [1, 2, 3]
+    s = 0
+    if true {
+        let step = fn(j: int): int {
+            if len(e) < 6 { append(mut &e, j) }
+            var t = 0
+            var k = 0
+            while k < len(e) {
+                t = t + e[k]
+                k = k + 1
+            }
+            return t
+        }
+        i = 0
+        while i < 6 {
+            s = s + step(i)
+            i = i + 1
+        }
+    }
+    println(s.toStr() + " " + len(e).toStr())
+
+    // a for range takes the length once; the body reads the array it does not change
+    var f: []int = [1, 2, 3]
+    s = 0
+    for k in 0..len(f) { s = s + f[k] }
+    println(s.toStr() + " " + (len(f) + 1).toStr())
+
+    // a for over a copy while the original grows
+    var g: []int = [2, 3, 4]
+    s = 0
+    for k in 0..len(g) {
+        s = s + g[k]
+        append(mut &g, k)
+    }
+    println(s.toStr() + " " + len(g).toStr())
+}

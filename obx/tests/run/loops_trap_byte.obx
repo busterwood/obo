@@ -1,0 +1,19 @@
+// Native loop optimizations (compiler/loops.obx): a byte counter under
+// `b < 255` adds 1 without the check; the addition after the loop, unguarded,
+// still overflows (byte arithmetic is checked) and stops the program.
+// expect: 255 1265
+// stderr: obx: integer overflow at loops_trap_byte.obx:17
+// exit: 10
+
+fn main() {
+    var b: byte = 250
+    var s = 0
+    while b < 255 {
+        b = b + 1
+        s = s + int(b)
+    }
+    println(b.toStr() + " " + s.toStr())
+    let one: byte = 1
+    b = b + one
+    println(b.toStr())
+}

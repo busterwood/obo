@@ -537,37 +537,62 @@ pub fn (a: mut &Asm) bind(l: int) {
 
 pub fn (a: &Asm) labelCount(): int { return len(a.labels) }
 
-// Inserts bytes at position at of the code generated since label first was made: the labels
-// from first on that are bound at or after at, and the jump fix-ups and relocations at or
-// after at, move with the code (the prologue of a function, written when its frame is known).
-pub fn (a: mut &Asm) insert(at: int, bytes: &[]byte, first: int) {
-    let n = len(bytes)
-    if n == 0 { return }
+// Where label l is bound, or -1.
+pub fn (a: &Asm) labelPos(l: int): int { return a.labels[l] }
+
+// Inserts, at each position ats[j] (in increasing order) of the code generated since label first
+// was made, the next ns[j] bytes of bytes, all in one pass (a function's prologue, written when
+// its frame is known, and the pads before its loops): the labels from first on bound at or after
+// a position, and the jump fix-ups and relocations at or after it, move with the code.
+pub fn (a: mut &Asm) insertAll(ats: &[]int, ns: &[]int, bytes: &[]byte, first: int) {
+    if len(ats) == 0 { return }
+    // cum[j]: the bytes inserted at the first j positions
+    var cum: []int = [0]
+    for n in ns { append(mut &cum, cum[len(cum) - 1] + n) }
+    let total = cum[len(ns)]
     let old = len(a.code)
-    for i in 0..n { append(mut &a.code, 0) }
+    for i in 0..total { append(mut &a.code, 0) }
+    // from the end: each byte moves by the bytes inserted before it
+    var j = len(ats) - 1
     var i = old - 1
-    while i >= at {
-        a.code[i + n] = a.code[i]
-        i -= 1
+    while j >= 0 {
+        let sh = cum[j + 1]
+        while i >= ats[j] {
+            a.code[i + sh] = a.code[i]
+            i -= 1
+        }
+        for k in 0..ns[j] { a.code[ats[j] + cum[j] + k] = bytes[cum[j] + k] }
+        j -= 1
     }
-    for j in 0..n { a.code[at + j] = bytes[j] }
     for l in first..len(a.labels) {
-        if a.labels[l] >= at { a.labels[l] = a.labels[l] + n }
+        let p = a.labels[l]
+        if p >= ats[0] { a.labels[l] = p + padBefore(ats, &cum, p) }
     }
     var k = len(a.fixes) - 1
-    while k >= 0 && a.fixes[k].at >= at {
-        a.fixes[k].at = a.fixes[k].at + n
+    while k >= 0 && a.fixes[k].at >= ats[0] {
+        a.fixes[k].at = a.fixes[k].at + padBefore(ats, &cum, a.fixes[k].at)
         k -= 1
     }
     k = len(a.relocs) - 1
-    while k >= 0 && a.relocs[k].at >= at {
-        a.relocs[k].at = a.relocs[k].at + n
+    while k >= 0 && a.relocs[k].at >= ats[0] {
+        a.relocs[k].at = a.relocs[k].at + padBefore(ats, &cum, a.relocs[k].at)
         k -= 1
     }
     a.stEnd = -1
     a.nsEnd = -1
     a.jmpEnd = -1
     a.termEnd = -1
+}
+
+// The bytes insertAll inserts at or before position p (cum: the sums of ns).
+fn padBefore(ats: &[]int, cum: &[]int, p: int): int {
+    var lo = 0
+    var hi = len(ats)
+    while lo < hi {
+        let m = (lo + hi) / 2
+        if ats[m] <= p { lo = m + 1 } else { hi = m }
+    }
+    return cum[lo]
 }
 
 // Replaces the jmp to label l at position at with bytes (straight code: no jumps, no
@@ -657,6 +682,21 @@ pub fn (a: mut &Asm) loadAt(r: int, sym: int) {
 // an absMem operand is the last 4 bytes of the instruction when it has no immediate).
 pub fn (a: mut &Asm) relocAbs32(at: int, sym: int, addend: int) {
     append(mut &a.relocs, Reloc{at: at, sym: sym, kind: R_ABS32, addend: addend})
+}
+
+// n bytes of nops (n <= 15): the recommended multi-byte nops, at most 8 bytes each.
+pub fn nops(n: int): []byte {
+    let forms: [][]byte = [[0x90], [0x66, 0x90], [0x0F, 0x1F, 0x00], [0x0F, 0x1F, 0x40, 0x00],
+        [0x0F, 0x1F, 0x44, 0x00, 0x00], [0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00],
+        [0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00], [0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00]]
+    var out: []byte = []
+    var left = n
+    while left > 0 {
+        let k = if left > 8 { 8 } else { left }
+        for b in forms[k - 1] { append(mut &out, b) }
+        left -= k
+    }
+    return out
 }
 
 // Resolves the jumps to labels; every label used must be bound.

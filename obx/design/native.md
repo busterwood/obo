@@ -33,8 +33,8 @@ machine code.
   `} else {`, `}`) back into nested statements. A type hole is a C type name
   (`S3_foo*`, `fn5`, `obx_arr`) that lower resolves; the IR has no node for
   C syntax.
-- `cgen` prints the IR as C; `opt` inlines small functions in it and
-  `x64gen` compiles the result (sections 2-5).
+- `cgen` prints the IR as C; `opt` inlines small functions in it, `loops`
+  optimizes its loops and `x64gen` compiles the result (sections 2-5).
 
 Until 2026-11-03 the native backend read the C text that `emit` printed
 (`cfront.obx`, a lexer and parser for the C subset emit writes). Its job,
@@ -84,7 +84,7 @@ or another object format) can be added without touching the rest:
 |---|---|---|---|
 | front end -> IR | `check.obx` + `emit.obx` (templates and instances) and `lower.obx` (C's typing rules, layout) | moves, drops, check order; conversions | targets |
 | IR | `ir.obx` | the target-independent program: types and layouts, functions, globals, typed trees | registers, instructions, encodings, C syntax |
-| IR to IR | `opt.obx` | inlining, value records in fields, dead functions (section 4) | targets |
+| IR to IR | `opt.obx`, `loops.obx` | inlining, value records in fields, dead functions; array headers out of loops, checks proved by facts (section 4) | targets |
 | C target | `cgen.obx` | C declarators, precedence and parentheses, literals, designated initializers | instructions |
 | x86-64 target | `x64gen.obx` + `x64.obx` | instruction selection, the SysV ABI and calling convention, the register set, frames, the link with the runtime (`x64gen`); the instruction encoder (`x64`) | C, the executable format's bytes |
 | executable writer | `elf.obx` | ELF headers and segments from (address, flags, bytes) | instructions |
@@ -250,6 +250,58 @@ performance step), on the native path only:
 `OBX_INLINE=n` sets the limit (0 turns inlining off; the record rewrite
 still runs).
 
+Then `loops.obx` (the sixth performance step), on each function that has a
+loop (the others are left alone: there is little to gain there, and the pass
+costs compile time):
+
+- array headers out of loops: a loop's reads of an array's or slice's data
+  pointer or length (`a.data`, `a.len`, `p->data`, `p->len`) whose root
+  cannot change in the loop read locals declared just before the loop (or
+  one already declared there with the same value: the `end = p->len` of a
+  `for` range). The root is a local (an array or slice variable, or a value
+  record holding one) or what a pointer parameter points to (a borrowed
+  array). It cannot change in the loop when the loop does not assign or
+  declare it, take its address (`append(mut &a, ..)`, `mut &a` to a call), or
+  for a parameter use the pointer but to read through it; when, in the whole
+  function, its address (or the pointer) goes nowhere but straight into calls
+  whose results are not pointers (`rt_arr_push`'s result is an element's
+  address, not the array's), so no pointer to it outlives a call; and when no
+  case label leads into the loop. An alias opt made (`T* q = &l;`, the
+  inlined drop glue's record parameter) counts as a use of l; one written,
+  taken or passed elsewhere makes l escape. Element stores change elements,
+  not the header;
+- facts along the statements, in order, for scalar locals whose address is
+  never taken: `a < b` and `a == b` between locals, lower and upper bounds,
+  and the element just stored (`*(T*)(d + i*size)` holds local v), from
+  conditions (in the branches of an `if`, and after a loop's test), bounds
+  checks that passed (`rt_idx(i, n)` leaves `0 <= i < n`), constants,
+  copies and the conversions that keep a value. A write of a local forgets
+  what names it; a store through a pointer or into a local whose address is
+  taken, or a call that may write memory, forgets the stored elements; after
+  an `if` what holds at the end of every branch that falls through holds; a
+  loop starts from what holds before it minus what its body, test and step
+  write, and the body of a `for` sees the condition; a switch's case labels
+  start from what holds at the switch minus what its body writes. A function
+  with a case label anywhere but straight in its switch's block gets none.
+  With the facts:
+  - `rt_idx(i, n, w)` with `0 <= i < n` known becomes i;
+  - a checked `rt_add/sub/mul_K(a, b, w)` whose operands' ranges cannot
+    overflow K becomes the wrapping `rt_wadd/wsub/wmul_K(a, b)`, the same
+    value (multiplication only for bounds within 2^31);
+  - a load of the element just stored (the same pointer local, index local,
+    size and type, nothing between that may write memory or those locals),
+    whose own bounds check is proved, becomes the stored local;
+- an induction variable of a loop (every write in the loop a checked
+  `i = i + c` with a constant c >= 1, or the `i++` of a `for` whose
+  condition is `i < x` and whose body does not write i) keeps the lower
+  bound it has at the loop's entry throughout the loop: a checked addition
+  that did not trap only grew it, and the `for`'s `i++` runs only after
+  `i < x`, so it cannot overflow.
+
+Nothing in `loops` changes which traps happen, where or in what order: a
+check goes only where it cannot fail, and every other operation stays where
+it was. `OBX_LOOPS=0` turns the pass off; `OBX_LOOPS=v` prints its counts.
+
 `x64gen.obx` is a one-pass tree walker over the IR, with a few local
 optimizations (stage 5, the performance steps). Before a function is
 generated, its body is simplified in place (only the native backend sees
@@ -391,6 +443,15 @@ Then:
   runtime compares the bytes). A failed check jumps to a stub after
   the function that calls `rt_trap` (one stub per code, message and
   location);
+- loops are rotated: a `while` (the C front end's `while (1) { [bool c = E;]
+  if (!c) break; ... }`) and a `for` jump to their test, which is at the
+  bottom and jumps back to the body while the loop goes on (one branch per
+  iteration); `continue` jumps to the test. The body is placed at a multiple
+  of 16 (of 8 when that takes more than 10 bytes), as gcc does: the nops go
+  after the jump to the test, so they never run, and a small loop's back
+  branch then fetches whole blocks (bench `loop` ran at two cycles per
+  iteration where its body started 3 bytes before a 16-byte boundary, one
+  aligned);
 - conditions compile to jumps (`&&`, `||`, `!`, comparisons and conversions
   to bool as branches); the C front end's `bool c = e; if (!c) break;` (every
   loop condition) and `T r = e; return r;` are generated without the local
@@ -403,7 +464,8 @@ Then:
   from the same place is a register move too (no store-forwarding stall);
   it drops a `jmp` to the label bound right after it and a `jmp` right after
   a `ret` or `jmp`;
-- the prologue is inserted after the body, when the frame size is known:
+- the prologue is inserted after the body, when the frame size is known (in
+  the same pass as the loops' pads):
   only the callee-saved registers in use are saved (pushed when their slots
   top the frame), `sub rsp` takes the short immediate when it fits, and
   returns leave with `leave` (a function that restores registers jumps to
@@ -539,6 +601,196 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
+
+2026-11-03, the sixth performance step (branch `perf6`, section 4: loops
+rotated and aligned, `loops.obx`: array headers out of loops, checks proved
+by facts). All columns build the same sources (this branch's at `103ffdf`);
+"main" is the backend at `cc9828e`. User-mode instructions, the least
+cycles and the best wall clock of 7 interleaved runs under `perf stat` (ms,
+perf's start-up included); "compile" is the gcc-built compiler running
+`main.obx --native`, "self-build" the natively built one doing the same:
+
+| | main | perf6 |
+|---|---|---|
+| loop | 11000M; 2007M; 431 | 8000M; 1003M; 213 |
+| array | 4615M; 782M; 171 | 2413M; 410M; 91 |
+| fib | 5630M; 1548M; 330 | 5630M; 1547M; 328 |
+| alloc | 1400M; 301M; 66 | 1360M; 301M; 67 |
+| lists | 480M; 139M; 33 | 477M; 139M; 32 |
+| strings | 969M; 193M; 49 | 966M; 192M; 49 |
+| trees | 293M; 79M; 22 | 293M; 78M; 22 |
+| tokens | 139M; 48M; 14 | 138M; 48M; 13 |
+| self-build | 4732M; 1884M; 485 | 4673M; 1888M; 482 |
+| eza `-T` | 642M; 212M; 113 | 634M; 213M; 113 |
+| compile | 2817M; 1433M; 373 | 3069M; 1576M; 405 |
+
+(gcc's builds: loop 267 ms, array 104 ms; PERFORMANCE.md.) Per commit
+(instructions; least cycles):
+
+| commit | loop | array | self-build | eza `-T` | compile |
+|---|---|---|---|---|---|
+| main | 11000M; 2007M | 4615M; 782M | 4732M; 1884M | 642M; 212M | 2817M; 1433M |
+| `7f0f466` loops rotated | 10000M; 2006M | 4414M; 787M | 4703M; 1859M | 640M; 214M | 2817M; 1445M |
+| `d232715` `loops.obx` | 8000M; 2006M | 2413M; 411M | 4673M; 1879M | 634M; 211M | 3057M; 1550M |
+| `bc1092a` loop bodies at 16 | 8000M; 1003M | 2413M; 410M | 4673M; 1888M | 634M; 213M | 3086M; 1576M |
+| `c39ec75` one insertion pass | (same code) | | | | 3069M |
+
+- Rotation (the test at the bottom) saves one jump per iteration: 9% of
+  loop's instructions, 4% of array's; no cycles, by itself.
+- `loops.obx` halves array (the inner loop went from 7 branches to 4: the
+  header loads, two bounds checks and the counter's overflow check are
+  gone; one bounds check stays, `i < n` with n unrelated to `len(a)`) and
+  takes loop's two overflow checks on `i * 2` and `i + 1` (8 instructions
+  an iteration). On the compiler it hoists 1,201 headers and proves 174
+  bounds checks and 175 overflow checks; on eza 88, 34 and 26. The
+  self-build runs 0.6% fewer instructions, eza 1%; their cycles are within
+  the noise.
+- loop's cycles did not move until its body was aligned: the 8
+  instructions ran at 2 cycles an iteration starting 3 bytes before a
+  16-byte boundary, and at 1 once aligned (gcc's build, which strength-
+  reduces `i * 2`, at 1.25). Native loop and array now beat gcc's builds
+  (213 against 267 ms, 91 against 104).
+- The cost is compile time with the gcc-built compiler: 9% more
+  instructions for `--native` of the compiler (the pass's walks, about 8
+  points, and x64gen's work on the hoisted locals). A first version cost
+  19%; the pass now skips functions without a loop (a statement-level scan;
+  it found 75 of the compiler's overflow checks outside loops, not worth
+  their walks), classifies runtime calls once instead of comparing names,
+  finds every root a loop may change in one walk instead of one per header,
+  takes the induction variables from the kill walk, and merges the facts of
+  an `if`'s branches by intersection instead of walking them again. The
+  natively built compiler, whose loops the pass speeds up, comes out even.
+
+The rewrites rest on these arguments:
+
+- header locals: an array's header (data, length, capacity) changes only
+  by an assignment or declaration of the array (or of a value record
+  holding it), or through a pointer to it: `append`, `pop`, a `mut &`
+  argument, a closure's environment. In the IR each is an assignment or
+  increment of a place rooted at the local, its declaration, or an `&`
+  (`E_ADDR`/`E_DECAY`) of such a place. A loop with none of these for a
+  root (`W_ROOTS`) cannot change the root itself; a pointer made outside
+  the loop could, so the root must not escape anywhere in the function:
+  its address goes only straight into call arguments whose results are not
+  pointers. Borrows are second class (a callee cannot store one in a record
+  or a global) and such a callee cannot return it, so no pointer to the
+  root outlives the call. A closure captures by reference (its environment
+  holds `&v` in a compound literal, not a call argument), so a captured
+  array escapes and keeps its loads (`loops_array_changes`). The aliases
+  opt makes for inlined drop glue (`T* q = &l;`) count as uses of l in the
+  loop, and l escapes if q is written, taken or passed on. A borrowed
+  array parameter p: p is never assigned, taken or passed elsewhere, and
+  inside the loop it is only read through (a call given p, such as
+  `append(p, x)`, counts as a change). Rule 3 forbids overlapping mutable
+  borrows: while the function holds `&` the array is frozen, while it
+  holds `mut &` only p changes it. Globals are copy types or set once, so
+  no global reaches an array a loop reads;
+- task switches: they happen only inside runtime calls. A local lives in
+  its task's frame; other tasks get moved values or `Shared` handles,
+  never pointers into the frame, so another task cannot change a local's
+  header. A `Shared` value is reachable only inside `with`, and a park
+  inside `with` traps (exit 13), so no other task runs while a loop reads
+  it there (`loops_shared_yield`: two tasks, a `Shared` array, `with` and
+  `task.yield` in the loop);
+- the hoisted declaration sits right before the loop in its block and runs
+  each time the loop is entered: it reads what the first iteration would
+  read. Reading a local's header or through a valid parameter has no
+  effect and cannot trap, so a loop that runs no iteration loses nothing.
+  A case label inside the loop (a jump into it, past the declaration)
+  stops the loop's hoisting;
+- facts: only locals whose address is never taken are tracked, so only
+  their assignments, increments and declarations change them, and each
+  forgets the facts that name it. The right side of `l = e` is rewritten
+  with what held before the write. The facts are a must-analysis over the
+  structured IR: an `if` keeps what holds at the end of every branch that
+  falls through (by intersection); a loop's body starts from what held
+  before the loop minus everything the loop writes, so it holds at every
+  iteration's start, whatever path (`continue`, the bottom) led there, and
+  after the loop the same set holds at every exit (`break` included);
+  `return` leaves; the IR has no goto, and case labels restart from the
+  switch's facts minus what its body writes (a label anywhere else and the
+  function gets no facts). A store through a pointer, into a local whose
+  address is taken, or a call that may write memory forgets the stored
+  elements (`F_ST`); the bounds checks, arithmetic checks, conversions and
+  `rt_str_byte` write nothing. The right operands of `&&` and `||` and the
+  branches of `?:` teach nothing after them (they may not run). Conditions
+  teach only when evaluating them writes nothing;
+- a bounds check `rt_idx(i, n, w)` fails exactly when i < 0 or i >= n
+  (one unsigned compare). It goes only when `0 <= i` and `i < n` are known
+  (n a local, or a constant above i's upper bound) and its index is a local
+  or a constant of its type, which then stands for it. The trap it could
+  not make is the only thing removed;
+- an overflow check: `rt_add/sub/mul_K(a, b, w)` becomes the wrapping
+  operation when both operands' ranges are known (constants, or locals with
+  bounds inside K) and the interval sum, difference or product lies inside
+  K: then the checked and the wrapping operation compute the same value.
+  Products need bounds within 2^31, so the compiler's own arithmetic on the
+  bounds cannot overflow. The plain forms: under `i < n`, `i + 1` is at most
+  n, which is in K; under `i > m`, `i - 1` is at least m. `while i <= n`
+  with n the largest int teaches only `i <= n`, so `i + 1` keeps its check
+  and traps where it did (`loops_trap_int_max`; `loops_trap_byte` for a
+  byte counter);
+- induction variables: a variable whose every write in the loop is a
+  checked `i = i + c` with a constant c >= 1 either traps or grows, and the
+  `i++` of a `for` whose condition is `i < x` (the body not writing i) runs
+  only after `i < x`, so it neither overflows nor shrinks i: i stays at
+  least its value at the loop's entry, which is the only fact about i the
+  body starts with;
+- forwarding: after `*(T*)(d + i*size) = v` with d, i and v locals and v of
+  type T, a load of the same type, size, pointer local and index local
+  whose bounds check is proved reads what was stored, as long as nothing in
+  between wrote memory or d, i or v;
+- traps, their order and their locations: every check that stays keeps its
+  `w` string and its place in the evaluation order; a removed one could not
+  fail. `std.Where` arguments are ordinary values, untouched;
+- layout: rotation runs the same tests in the same order (each iteration
+  starts with the test, reached from the entry and from the end of the
+  body); the pads sit after an unconditional jump and before code reached
+  only by jumps, so they never run. `insertAll` produces the same bytes as
+  the insertions one at a time (checked on the compiler's build);
+- the native/C differential checks it all: every test runs with the pass
+  on the native side and without it on the C side, and
+  `tests/loopgen.py` adds generated array loops (below).
+
+Tests: `tests/run/loops_*.obx`, on both backends: the array changed in the
+body (append, reassignment, a `mut &` function that grows or shrinks it, a
+closure appending to it, a `for` over a growing array); the index changed
+otherwise than by +1 (steps of 2 and 4, down, doubled, reset), the bound
+changing in the body, a copy of the index; `while i <= n` with n = max int
+(overflow trap, exit 10) and a byte counter (trap at 255); a bounds trap
+mid-loop with output before it (exit 3); nested loops, break, continue,
+return, slices, an index proved in one branch; a `Shared` array with
+`task.yield`; arrays of value records. `tests/loopgen.py` (in the full gate,
+200 programs, 7 s): random loops over int and byte arrays, C against native
+under `OBX_CHECK=1`; 3,000 programs the same while developing (about half
+end in a bounds or overflow trap).
+
+Not done, and why:
+
+- loop versioning (array's remaining check, `i < n` with n unrelated to
+  `len(a)`: a copy of the loop without checks when `n <= len(a)` at entry):
+  the trap must then come from the checked copy at the same iteration,
+  which needs the loop duplicated in the IR; array already beats gcc;
+- `str` indexing (`rt_str_byte`): not touched; its checks are inline
+  compares already;
+- strength reduction (gcc turns loop's `i * 2` into a second counter): loop
+  already runs at 1 cycle an iteration;
+- functions without loops get no facts (75 overflow checks in the compiler,
+  measured: not worth the compile time);
+- facts are capped at 64 per point (the oldest go first).
+
+Gates at the end of the step:
+
+- `gate.sh quick` and `gate.sh full` PASS (the full gate now with
+  `loopgen.py -n 200`), the native self-build at a fixed point;
+- `run_native.py --lib --redteam` 1540 of 1540, and the same with
+  `OBX_INLINE=0` and `OBX_INLINE=200`;
+- `cmd/eza_gate.py -j 12` 482 passed, 0 failed (72 live-only skipped);
+- `run_prev.py --native --lib --redteam --eza --gen 200` against main's
+  compiler (`OBX_PREV`, main at `cc9828e`): 2691 same, 0 differ;
+- `bench.py -n 11` after the step: loop 266 ms via C, 211 natively; array
+  101 and 90;
+- the seed at a fixed point on the branch.
 
 2026-11-03, the fifth performance step (branch `perf5`, section 4: `opt.obx`,
 inlining in the IR, value records in fields, dead functions). All columns
@@ -1218,16 +1470,19 @@ Next, in order:
 1. More performance, if wanted. Candidates:
    - the reference counts: a callee-side "borrowed `str` parameter" form,
      once check.obx builds the IR and its ownership rules are settled;
-   - loop-invariant loads of array and `str` fields (`a.data` and `a.len`
-     are reloaded each iteration);
+   - loops (the sixth step did headers, proved checks and forwarding):
+     loop versioning for checks against an unrelated bound, `str` checks,
+     strength reduction, the `mov` after an add whose result goes to a
+     register local (`add rax, rbx; mov rbx, rax`);
    - the copies of value records that inlining leaves: records written
      after the copy, record parameters of functions not inlined (by
      address when the callee only reads them), records from calls;
    - inlined locals scoped to a block of their own, so their slots are
      reused (smaller frames);
-   - the compile-time cost of inlining for the gcc-built compiler (18% on
-     `--native` of the compiler): a cheaper pass, or a lower limit for
-     large programs;
+   - the compile-time cost of inlining and of the loop pass for the
+     gcc-built compiler (18% and 9% on `--native` of the compiler): cheaper
+     passes (one walk for an expression's kills, rewrites and checks in
+     `loops`), or a lower limit for large programs;
    - doubles in `xmm` registers;
    - shrink-wrapping: saves only on the paths that need them (fib's leaf
      path);
@@ -1263,3 +1518,6 @@ Phases:
   prints C from it, cfront deleted. Done (section 1).
 - Performance, fifth step: inlining in the IR (`opt.obx`), value records
   in fields, dead functions. Done (sections 4 and 8).
+- Performance, sixth step: loops rotated and aligned, array headers out of
+  loops, bounds and overflow checks proved, stored elements forwarded
+  (`loops.obx`). Done (sections 4 and 8).

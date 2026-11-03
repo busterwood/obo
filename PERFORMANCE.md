@@ -11,7 +11,10 @@ Both are built from the same IR and must behave identically; the gate checks
 that on 1,532 programs. This page measures what each costs. Measured on 3
 November 2026 at `2ce4860`, after the fifth native performance pass
 (inlining in the IR) and concurrency stage C1b (sockets and timers), on a
-quiet machine; the HTTP server table is from C1b's own run. The numbers are
+quiet machine; the HTTP server table is from C1b's own run. The loop and
+array rows, the compiler's `--native` cost and the sixth pass's row are from
+the sixth native performance pass (loops; branch `perf6`), measured the same
+day. The numbers are
 host-dependent: use them to compare the columns, not as portable constants.
 
 ## Host and method
@@ -32,8 +35,8 @@ host-dependent: use them to compare the columns, not as portable constants.
 | benchmark | via C | native | native/C | what it does |
 |---|---:|---:|---:|---|
 | fib | 331 ms | 330 ms | 1.00 | recursive calls |
-| loop | 267 ms | 425 ms | 1.59 | two overflow-checked operations per iteration |
-| array | 104 ms | 174 ms | 1.67 | checked indexing |
+| loop | 267 ms | 213 ms | 0.80 | two overflow-checked operations per iteration |
+| array | 104 ms | 91 ms | 0.88 | checked indexing |
 | alloc | 122 ms | 65 ms | 0.54 | 20 million records allocated and freed |
 | lists | 36 ms | 31 ms | 0.85 | linked list build, sum, drop |
 | strings | 76 ms | 47 ms | 0.62 | concatenation and `toStr` |
@@ -46,12 +49,15 @@ host-dependent: use them to compare the columns, not as portable constants.
   the loop). Its freestanding runtime has a size-class
   allocator with no locks or libc bookkeeping, and the string and index
   checks are generated inline.
-- **gcc is ahead on tight arithmetic loops** (loop, array; fib is
-  level). It unrolls and schedules; the native backend is a direct code
-  generator with register allocation by live ranges, which also keeps
-  values across calls in callee-saved registers
-  ([design/native.md](obx/design/native.md) section 4). `loop` is the widest
-  gap.
+- **Tight loops are now native's too** (loop, array; fib is level). Since
+  the sixth pass the native backend tests at the bottom of loops and
+  aligns their bodies, reads array headers once per loop, and drops the
+  bounds and overflow checks that conditions, passed checks and induction
+  variables prove cannot fail ([design/native.md](obx/design/native.md)
+  sections 4 and 8). gcc does more (it unrolls, schedules and
+  strength-reduces); obx's checks stay where they can fail, so array keeps
+  one bounds check per element (its bound is unrelated to the array's
+  length). Before the pass these were the widest gaps (1.59 and 1.67).
 - **Code placement matters.** Native fib runs at 1,547M, 1,690M or 2,020M
   cycles with identical instructions, depending only on where its code
   falls relative to 64-byte boundaries. The generated code starts at a
@@ -104,6 +110,9 @@ task stacks and switching, the event loop, timers and sockets).
   code generation of the larger IR): with the gcc-built compiler, whose own
   code does not change, building the compiler natively takes about 20%
   longer than before (273 ms then, on smaller sources); building eza, 10%.
+  The sixth pass's loop optimizations add 9% to the instructions of that
+  build (2,817M to 3,069M); the natively built compiler, whose own loops
+  they speed up, comes out even.
 - Since both backends start from one IR (2026-11-03), `--native` is about
   30% faster than before, because it no longer prints and re-reads C, and
   `--emit-c` is about 50% slower, because it now builds the IR before
@@ -123,6 +132,8 @@ itself, native eza `-T /usr/share` and native bench fib:
 | before the fifth, on later sources | 4,022M | 649M | 5,630M |
 | after it (inlining in the IR, value records in fields) | 3,747M | 642M | 5,630M |
 | at `2ce4860` (with C1b; the compiler 1,200 lines larger) | 3,973M | 642M | 5,630M |
+| before the sixth, on later sources | 4,732M | 642M | 5,630M |
+| after it (loops rotated and aligned, `loops.obx`) | 4,673M | 634M | 5,630M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
@@ -130,7 +141,10 @@ compare with each other. The fourth pass cut fib's cycles by 23% (2,188M
 to 1,690M); the self-build's and eza's by about 1% and 2%. The fifth cut
 the self-build's cycles by 12% (1,699M to 1,496M; the compiler's own work
 without the pass, `--emit-c`, by 17%), eza's by 9% (233M to 213M) and the
-lists benchmark's by 16%.
+lists benchmark's by 16%. The sixth is about loops: bench loop from 11,000M
+instructions and 2,007M cycles to 8,000M and 1,003M, array from 4,615M and
+782M to 2,413M and 410M; the self-build and eza gain about 1% in
+instructions, nothing measurable in cycles.
 
 The earlier steps and the per-commit figures are in
 [obx/design/native.md](obx/design/native.md) sections 4 and 8. What remains

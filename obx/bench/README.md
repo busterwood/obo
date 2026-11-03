@@ -34,10 +34,13 @@ instead of nullable references, the list `sum` recursing over borrows,
 ## Notes
 
 - **Native and C.** The native backend is ahead on allocation and strings
-  (its own size-class allocator, checks generated inline) and behind on tight
-  arithmetic loops, where gcc's optimiser does more.
-- **`loop`** is two overflow-checked operations per iteration. The checks are
-  never taken and cost little; the gap is in code generation.
+  (its own size-class allocator, checks generated inline) and, since its
+  loop pass, on the tight loops too (loop, array); fib is level.
+- **`loop`** is two overflow-checked operations per iteration. The native
+  backend proves both cannot overflow (`i < n` bounds `i` and `i * 2`) and
+  runs the loop at one cycle an iteration; gcc keeps the checks.
+- **`array`** keeps one bounds check per element natively: the loop runs to
+  `n`, which the compiler cannot relate to the array's length.
 - **Allocation-bound programs** (lists, trees): through C, about half the
   time is libc's `malloc` and `free`, one block per node.
 - **`strings`**: every `+` allocates a new reference-counted block, and

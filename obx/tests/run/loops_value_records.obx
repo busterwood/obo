@@ -1,0 +1,65 @@
+// Native loop optimizations (compiler/loops.obx): arrays of value records (one
+// with a heap field), indexed in loops; a store of one field then a read of
+// another or of the same element through another index; a value record that
+// holds an array, its header read through the record.
+// expect: 10 20
+// expect: 6 x3
+// expect: 7 7 9
+// expect: 15 3
+
+type P = value record { x: int; y: int }
+type N = value record { name: str; n: int }
+type Bag = value record { items: []int; k: int }
+
+fn bagSum(b: &Bag): int {
+    var s = 0
+    var i = 0
+    while i < len(b.items) {
+        s = s + b.items[i] * b.k
+        i = i + 1
+    }
+    return s
+}
+
+fn main() {
+    var ps: []P = []
+    for k in 0..4 { append(mut &ps, P{x: k, y: 2 * k}) }
+    var sx = 0
+    var sy = 0
+    var i = 0
+    while i < len(ps) {
+        ps[i].x = ps[i].x + 1
+        sx = sx + ps[i].x
+        sy = sy + ps[i].y + ps[i].x - ps[i].x
+        i = i + 1
+    }
+    println(sx.toStr() + " " + (sy + 8).toStr())
+
+    var ns: []N = [N{name: "a", n: 1}, N{name: "b", n: 2}, N{name: "c", n: 3}]
+    var t = 0
+    var last = ""
+    for k in 0..len(ns) {
+        t = t + ns[k].n
+        ns[k].name = "x" + ns[k].n.toStr()
+        last = ns[k].name
+    }
+    println(t.toStr() + " " + last)
+
+    // stores through two indexes that are equal at run time
+    var a = [1, 2, 3]
+    i = 0
+    var j = 0
+    var r = 0
+    while i < 2 {
+        a[i] = 5
+        a[j] = 7
+        r = a[i]
+        i = i + 1
+        j = j + 1
+    }
+    println(r.toStr() + " " + a[1].toStr() + " " + (a[2] + 6).toStr())
+
+    var b = Bag{items: [1, 2], k: 3}
+    append(mut &b.items, 0)
+    println((bagSum(&b) + 6).toStr() + " " + len(b.items).toStr())
+}

@@ -1,0 +1,27 @@
+// Native loop optimizations (compiler/loops.obx): `i + 1` is proved not to
+// overflow only under `i < n`; under `i <= n` with n the greatest int it still
+// overflows, and the program stops there as in C.
+// expect: 9223372036854775805
+// expect: 9223372036854775806
+// expect: 9223372036854775807
+// stderr: obx: integer overflow at loops_trap_int_max.obx:14
+// exit: 10
+
+fn count(n: int) {
+    var i = n - 2
+    while i <= n {
+        println(i.toStr())
+        i = i + 1
+    }
+    println("not reached")
+}
+
+fn main() {
+    var m = 0
+    var i = 0
+    while i < 9 {
+        m = m + i
+        i = i + 1
+    }
+    count(9223372036854775807 - m + 36)
+}

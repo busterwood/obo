@@ -1,0 +1,105 @@
+// Native loop optimizations (compiler/loops.obx): the facts a loop's test gives
+// (`i < n`) hold only while nothing changes i or n. Here i moves by other steps
+// than +1 (by 2, down, doubled, set back), n changes in the body, and a copy
+// of i taken before a change indexes after it; every result is the C one.
+// expect: 25 15
+// expect: 12
+// expect: 47
+// expect: 26
+// expect: 10 3
+// expect: 6
+// expect: 30
+// expect: 11
+
+fn sumStep(a: &[]int, step: int): int {
+    var s = 0
+    var i = 0
+    while i < len(a) {
+        s = s + a[i]
+        i = i + step
+    }
+    return s
+}
+
+fn main() {
+    let a = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    println(sumStep(&a, 2).toStr() + " " + sumStep(&a, 4).toStr())
+
+    // counting down: i - 1 under i > 0
+    var s = 0
+    var i = len(a)
+    while i > 0 {
+        i = i - 1
+        if i % 3 == 0 { s = s + a[i] }
+    }
+    println(s.toStr())
+
+    // doubled, then set back below the bound
+    s = 0
+    i = 1
+    var back = 2
+    while i < len(a) {
+        s = s + a[i]
+        i = i * 2
+        if i >= len(a) && back > 0 {
+            back = back - 1
+            i = back + 2
+        }
+    }
+    println(s.toStr())
+
+    // n shrinks in the body
+    var n = len(a)
+    s = 0
+    i = 0
+    while i < n {
+        s = s + a[i]
+        n = n - 1
+        i = i + 1
+    }
+    println((s + 11).toStr())
+
+    // n grows in the body, past the array: the bounds check stays
+    var b: []int = [1, 2, 3, 4]
+    n = 2
+    s = 0
+    i = 0
+    while i < n && i < len(b) {
+        s = s + b[i]
+        if n < 10 { n = n + 1 }
+        i = i + 1
+    }
+    println(s.toStr() + " " + (n - 3).toStr())
+
+    // a copy of i taken before i changes
+    s = 0
+    i = 0
+    while i < 3 {
+        let j = i
+        i = i + 1
+        s = s + a[j] * a[i - 1]
+    }
+    println((s - 8).toStr())
+
+    // i reset inside a nested loop
+    s = 0
+    var r = 0
+    while r < 4 {
+        i = r
+        while i < 4 {
+            s = s + a[i]
+            i = i + 1
+        }
+        r = r + 1
+    }
+    println(s.toStr())
+
+    // i += 3 with a for over the same array
+    s = 0
+    i = 0
+    while i < len(a) {
+        for k in 0..2 { s = s + a[i] - k }
+        i += 3
+    }
+    println((s - 10).toStr())
+}
