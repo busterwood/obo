@@ -168,10 +168,16 @@ pub type Ir = record {
     pub globals: []Global
     pub locals: []Local
     ptrOf: Map[int, int]
+    // the runtime's declarations come first: structs, functions and globals below these
+    // counts are the runtime's (a C printer names them and does not declare them)
+    pub nRtStructs: int
+    pub nRtFuncs: int
+    pub nRtGlobals: int
 }
 
 pub fn newIr(): Ir {
-    var p = Ir{tys: [], structs: [], nodes: [], items: [], funcs: [], globals: [], locals: [], ptrOf: newMap()}
+    var p = Ir{tys: [], structs: [], nodes: [], items: [], funcs: [], globals: [], locals: [], ptrOf: newMap(),
+        nRtStructs: 0, nRtFuncs: 0, nRtGlobals: 0}
     let sizes: []int = [1, 1, 1, 1, 2, 2, 4, 4, 8, 8, 16, 16, 8]
     for k in 0..13 {
         append(mut &p.tys, Ty{k: k, size: sizes[k], align: sizes[k], base: -1, n: 0, sid: -1})

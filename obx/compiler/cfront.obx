@@ -25,6 +25,9 @@ pub fn read(c: str): ir.Ir {
     if !startsWith(c, prefix) { ir.failAt("C line", 1, "the C does not start with the runtime (rt.h)") }
     var u = newUnit()
     u.parse(strings.join(&rtx.HEADER, "\n"), "runtime header line", 0)
+    u.ir.nRtStructs = len(u.ir.structs)
+    u.ir.nRtFuncs = len(u.ir.funcs)
+    u.ir.nRtGlobals = len(u.ir.globals)
     var lines = 0
     for i in 0..len(prefix) {
         if strByte(prefix, i) == '\n' { lines += 1 }
@@ -240,6 +243,10 @@ fn (u: mut &Unit) topDecl() {
         let base = u.declSpec()
         let d = u.declarator(base, true)
         u.typedefs.put(d.name, d.ty)
+        // an anonymous struct is named by its typedef (the runtime's obx_str, ...)
+        if u.ir.tk(d.ty) == ir.TY_STRUCT && u.ir.structs[u.ir.tys[d.ty].sid].name == "<anonymous>" {
+            u.ir.structs[u.ir.tys[d.ty].sid].name = d.name
+        }
         u.expect(";")
         return
     }

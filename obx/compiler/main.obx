@@ -25,6 +25,9 @@ import "./check" as ck
 import "./emit"
 import "./x64"
 import "./cfront"
+import "./cgen"
+import "./rt"
+import "strings"
 import "./x64gen"
 import "./elf"
 
@@ -74,7 +77,9 @@ fn compileC(lib: str, roots: &[]str, path: str, libs: mut &[]str): str {
     let s = c.pg.mods[m].scope.getOr(&"main", sema.Sym{k: -1, i: -1})
     if s.k != sema.D_FN || c.pg.fns[s.i].isExtern { sx.fail(sema.baseName(path), 1, "the program has no function main") }
     var e = emit.newEmitter(c)
-    return e.program(s.i, libs)
+    let csrc = e.program(s.i, libs)
+    if os.envOr("OBX_CROUND", "") == "1" { return cgen.print(cfront.read(csrc), strings.join(&rt.RT, "\n")) }
+    return csrc
 }
 
 const LIBDIRS: []str = ["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib", "/usr/local/lib",

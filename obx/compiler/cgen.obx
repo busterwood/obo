@@ -1,0 +1,489 @@
+// cgen: the C backend (design/native.md, section 1a): prints the IR (ir.obx) as C for gcc.
+//
+// The output is the C runtime (rt.h, the prefix) and then the program: its structs (every
+// struct gets a tag; the runtime's own types are named by their typedefs), prototypes,
+// externs (with their __asm__ symbols), globals and functions. The IR already has every
+// conversion explicit; the printer writes C whose rules give the same values (casts where
+// C would convert otherwise), so gcc's result behaves like the native backend's.
+//
+// Expressions are printed with C's precedences, parenthesized only where needed.
+
+import "./ir"
+import "./num"
+import "strings"
+
+type Gen = record {
+    u: ir.Ir
+    out: StrBuf
+    sname: []str            // the C name of each struct type ("struct S" or a typedef name)
+    lname: []str            // the C name of each local of the function being printed
+    done: []int             // struct definition state: 0 not yet, 1 in progress, 2 printed
+}
+
+// The C text of the program p, after the runtime text prefix.
+pub fn print(p: ir.Ir, prefix: str): str {
+    var g = Gen{u: p, out: newStrBuf(), sname: [], lname: [], done: []}
+    g.out.add(prefix)
+    g.program()
+    return g.out.toStr()
+}
+
+fn (g: mut &Gen) line(s: str) {
+    g.out.add(s)
+    g.out.addByte('\n')
+}
+
+fn (g: mut &Gen) program() {
+    for s in 0..len(g.u.structs) {
+        let name = g.u.structs[s].name
+        let kw = if g.u.structs[s].isUnion { "union " } else { "struct " }
+        if s < g.u.nRtStructs {
+            append(mut &g.sname, name)
+        } else if name == "<anonymous>" {
+            append(mut &g.sname, kw + "A" + intToStr(s))
+        } else {
+            append(mut &g.sname, kw + name)
+        }
+        append(mut &g.done, if s < g.u.nRtStructs { 2 } else { 0 })
+    }
+    for s in g.u.nRtStructs..len(g.u.structs) { g.line(g.sname[s] + ";") }
+    for s in g.u.nRtStructs..len(g.u.structs) { g.structDef(s) }
+    for f in g.u.nRtFuncs..len(g.u.funcs) { g.proto(f) }
+    for v in g.u.nRtGlobals..len(g.u.globals) { g.global(v) }
+    for f in g.u.nRtFuncs..len(g.u.funcs) {
+        if g.u.funcs[f].body >= 0 { g.funcDef(f) }
+    }
+}
+
+// ---------------------------------------------------------------- types
+
+// A struct's definition, after the structs it holds by value.
+fn (g: mut &Gen) structDef(s: int) {
+    if g.done[s] != 0 { return }
+    g.done[s] = 1
+    for j in 0..len(g.u.structs[s].fields) { g.needDefs(g.u.structs[s].fields[j].ty) }
+    var b = newStrBuf()
+    b.add(g.sname[s] + " {")
+    for f in g.u.structs[s].fields { b.add(" " + g.decl(f.ty, f.name) + ";") }
+    b.add(" };")
+    g.line(b.toStr())
+    g.done[s] = 2
+}
+
+fn (g: mut &Gen) needDefs(t: int) {
+    let k = g.u.tk(t)
+    if k == ir.TY_STRUCT {
+        g.structDef(g.u.tys[t].sid)
+    } else if k == ir.TY_ARR {
+        g.needDefs(g.u.tys[t].base)
+    }
+}
+
+const SCALAR_NAMES: []str = ["void", "bool", "char", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t", "int64_t",
+    "uint64_t", "__int128", "unsigned __int128", "double"]
+
+// The C declaration of inner as type t ("" for an abstract declarator).
+fn (g: &Gen) decl(t: int, inner: str): str {
+    let ty = &g.u.tys[t]
+    let k = ty.k
+    if k <= ir.TY_F64 || k == ir.TY_STRUCT {
+        let n = if k == ir.TY_STRUCT { g.sname[ty.sid] } else { SCALAR_NAMES[k] }
+        return if inner == "" { n } else if strByte(inner, 0) == '*' { n + inner } else { n + " " + inner }
+    }
+    if k == ir.TY_PTR {
+        let bk = g.u.tk(ty.base)
+        let in2 = if bk == ir.TY_FN || bk == ir.TY_ARR { "(*" + inner + ")" } else { "*" + inner }
+        return g.decl(ty.base, in2)
+    }
+    if k == ir.TY_ARR { return g.decl(ty.base, inner + "[" + (if ty.n == 0 { "" } else { intToStr(ty.n) }) + "]") }
+    // a function
+    let ps = g.u.fnParams(t)
+    var parts: []str = []
+    for p in ps { append(mut &parts, g.decl(p, "")) }
+    if g.u.isVarFn(t) { append(mut &parts, "...") }
+    if len(parts) == 0 { append(mut &parts, "void") }
+    return g.decl(ty.base, inner + "(" + strings.join(&parts, ", ") + ")")
+}
+
+fn (g: &Gen) tname(t: int): str { return g.decl(t, "") }
+
+// ---------------------------------------------------------------- declarations
+
+fn (g: mut &Gen) proto(f: int) {
+    let name = g.u.funcs[f].name
+    if name == "main" { return }
+    let d = g.decl(g.u.funcs[f].ty, name)
+    if g.u.funcs[f].isExtern {
+        g.line("extern " + d + " __asm__(\"" + g.u.funcs[f].asmName + "\");")
+        return
+    }
+    g.line("static " + d + ";")
+}
+
+fn (g: mut &Gen) global(v: int) { g.line(g.globalText(v)) }
+
+fn (g: &Gen) globalText(v: int): str {
+    let gl = &g.u.globals[v]
+    var s = "static " + (if gl.isConst { "const " } else { "" }) + g.decl(gl.ty, gl.name)
+    if gl.init >= 0 { s = s + " = " + g.initText(gl.ty, gl.init) }
+    return s + ";"
+}
+
+fn (g: mut &Gen) funcDef(f: int) {
+    g.nameLocals(f)
+    g.line(g.funcHead(f))
+    let body = g.u.funcs[f].body
+    for j in 0..g.u.listLen(g.u.nodes[body].a) { g.stmt(g.u.listAt(g.u.nodes[body].a, j), 1) }
+    g.line("}")
+}
+
+fn (g: &Gen) funcHead(f: int): str {
+    let fn0 = &g.u.funcs[f]
+    let pts = g.u.fnParams(fn0.ty)
+    var parts: []str = []
+    for j in 0..len(fn0.params) { append(mut &parts, g.decl(pts[j], g.lname[fn0.params[j]])) }
+    if len(parts) == 0 { append(mut &parts, "void") }
+    let head = g.decl(g.u.tys[fn0.ty].base, fn0.name + "(" + strings.join(&parts, ", ") + ")")
+    return (if fn0.name == "main" { "" } else { "static " }) + head + " {"
+}
+
+// The C names of the locals of function f: their own, with the local's number where a name
+// is used for more than one.
+fn (g: mut &Gen) nameLocals(f: int) {
+    while len(g.lname) < len(g.u.locals) { append(mut &g.lname, "") }
+    var ls: []int = []
+    for p in g.u.funcs[f].params { append(mut &ls, p) }
+    g.declsIn(g.u.funcs[f].body, mut &ls)
+    var seen: Map[str, int] = newMap()
+    for l in ls {
+        let n = g.u.locals[l].name
+        seen.put(n, seen.getOr(&n, 0) + 1)
+    }
+    for l in ls {
+        let n = g.u.locals[l].name
+        g.lname[l] = if seen.getOr(&n, 0) > 1 { n + "_" + intToStr(l) } else { n }
+    }
+}
+
+fn (g: &Gen) declsIn(x: int, ls: mut &[]int) {
+    if x < 0 { return }
+    let n = &g.u.nodes[x]
+    let k = n.k
+    if k == ir.S_DECL {
+        append(ls, n.a)
+    } else if k == ir.S_BLOCK {
+        for j in 0..g.u.listLen(n.a) { g.declsIn(g.u.listAt(n.a, j), ls) }
+    } else if k == ir.S_IF {
+        g.declsIn(n.b, ls)
+        g.declsIn(n.c, ls)
+    } else if k == ir.S_WHILE || k == ir.S_SWITCH {
+        g.declsIn(n.b, ls)
+    } else if k == ir.S_FOR {
+        g.declsIn(n.a, ls)
+        g.declsIn(n.d, ls)
+    }
+}
+
+// ---------------------------------------------------------------- initializers
+
+// The initializer of an object of type t from the entries (a list of E_IENT).
+fn (g: &Gen) initText(t: int, l: int): str {
+    var es: []int = []
+    for j in 0..g.u.listLen(l) { append(mut &es, g.u.listAt(l, j)) }
+    if len(es) == 0 { return "{0}" }
+    return g.initOf(t, 0, &es)
+}
+
+// The initializer of the object of type t at offset base from the entries es (all inside it).
+fn (g: &Gen) initOf(t: int, base: int, es: &[]int): str {
+    if len(es) == 1 && g.u.nodes[es[0]].v == base && g.u.nodes[es[0]].ty == t {
+        return g.expr(g.u.nodes[es[0]].a, 2)
+    }
+    let ty = &g.u.tys[t]
+    var parts: []str = []
+    if ty.k == ir.TY_STRUCT {
+        let st = &g.u.structs[ty.sid]
+        var used: []bool = array(len(es), false)
+        for f in st.fields {
+            let sub = g.within(es, base + f.off, g.u.sizeOf(f.ty))
+            if len(sub) == 0 { continue }
+            if st.isUnion && !g.fits(f.ty, base + f.off, &sub) { continue }
+            if st.isUnion && len(sub) != len(es) { continue }
+            append(mut &parts, "." + f.name + " = " + g.initOf(f.ty, base + f.off, &sub))
+            if st.isUnion { break }
+        }
+    } else if ty.k == ir.TY_ARR {
+        let es0 = g.u.sizeOf(ty.base)
+        for j in 0..ty.n {
+            let sub = g.within(es, base + j * es0, es0)
+            if len(sub) > 0 { append(mut &parts, "[" + intToStr(j) + "] = " + g.initOf(ty.base, base + j * es0, &sub)) }
+        }
+    }
+    if len(parts) == 0 { ir.failAt("IR node", g.u.nodes[es[0]].line, "cgen: an initializer entry that fits no member") }
+    return "{" + strings.join(&parts, ", ") + "}"
+}
+
+// The entries of es inside [off, off + size) (an empty member holds the entries at off).
+fn (g: &Gen) within(es: &[]int, off: int, size: int): []int {
+    var out: []int = []
+    for e in es {
+        let o = g.u.nodes[e].v
+        if o >= off && (o < off + size || (size == 0 && o == off)) { append(mut &out, e) }
+    }
+    return out
+}
+
+// Whether the entries es can all initialize parts of an object of type t at base.
+fn (g: &Gen) fits(t: int, base: int, es: &[]int): bool {
+    if len(es) == 1 && g.u.nodes[es[0]].v == base && g.u.nodes[es[0]].ty == t { return true }
+    let ty = &g.u.tys[t]
+    if ty.k == ir.TY_STRUCT {
+        let st = &g.u.structs[ty.sid]
+        var n = 0
+        for f in st.fields {
+            let sub = g.within(es, base + f.off, g.u.sizeOf(f.ty))
+            if len(sub) > 0 && g.fits(f.ty, base + f.off, &sub) {
+                if st.isUnion { return len(sub) == len(es) }
+                n += len(sub)
+            }
+        }
+        return n == len(es)
+    }
+    if ty.k == ir.TY_ARR {
+        let es0 = g.u.sizeOf(ty.base)
+        var n = 0
+        for j in 0..ty.n {
+            let sub = g.within(es, base + j * es0, es0)
+            if len(sub) > 0 && g.fits(ty.base, base + j * es0, &sub) { n += len(sub) }
+        }
+        return n == len(es)
+    }
+    return false
+}
+
+// ---------------------------------------------------------------- statements
+
+fn (g: mut &Gen) stmt(x: int, d: int) {
+    let n = g.u.nodes[x]
+    let k = n.k
+    let ind = repeat("  ", d)
+    if k == ir.S_BLOCK {
+        if n.v == 1 {
+            for j in 0..g.u.listLen(n.a) { g.stmt(g.u.listAt(n.a, j), d) }
+            return
+        }
+        g.line(ind + "{")
+        for j in 0..g.u.listLen(n.a) { g.stmt(g.u.listAt(n.a, j), d + 1) }
+        g.line(ind + "}")
+    } else if k == ir.S_IF {
+        g.line(ind + "if (" + g.expr(n.a, 0) + ") {")
+        g.body(n.b, d)
+        var el = n.c
+        while el >= 0 {
+            let e = g.u.nodes[el]
+            if e.k == ir.S_IF {
+                g.line(ind + "} else if (" + g.expr(e.a, 0) + ") {")
+                g.body(e.b, d)
+                el = e.c
+            } else {
+                g.line(ind + "} else {")
+                g.body(el, d)
+                el = -1
+            }
+        }
+        g.line(ind + "}")
+    } else if k == ir.S_WHILE {
+        g.line(ind + "while (" + g.expr(n.a, 0) + ") {")
+        g.body(n.b, d)
+        g.line(ind + "}")
+    } else if k == ir.S_FOR {
+        let init = if n.a < 0 { ";" } else { g.simple(n.a) }
+        let c = if n.b < 0 { "" } else { " " + g.expr(n.b, 0) }
+        let st = if n.c < 0 { "" } else { " " + g.expr(n.c, 0) }
+        g.line(ind + "for (" + init + c + ";" + st + ") {")
+        g.body(n.d, d)
+        g.line(ind + "}")
+    } else if k == ir.S_SWITCH {
+        g.line(ind + "switch (" + g.expr(n.a, 0) + ") {")
+        g.body(n.b, d)
+        g.line(ind + "}")
+    } else if k == ir.S_CASE {
+        g.line(ind + "case " + g.intLit(ir.TY_I64, n.v) + ":;")
+    } else if k == ir.S_DEFAULT {
+        g.line(ind + "default:;")
+    } else {
+        g.line(ind + g.simple(x))
+    }
+}
+
+// The statements of a body (a block's, without its braces), one level in.
+fn (g: mut &Gen) body(b: int, d: int) {
+    if g.u.nk(b) == ir.S_BLOCK && g.u.nodes[b].v == 0 {
+        let l = g.u.nodes[b].a
+        for j in 0..g.u.listLen(l) { g.stmt(g.u.listAt(l, j), d + 1) }
+        return
+    }
+    g.stmt(b, d + 1)
+}
+
+// A statement on one line: a declaration, expression, break, continue, return or empty.
+fn (g: &Gen) simple(x: int): str {
+    let n = &g.u.nodes[x]
+    let k = n.k
+    if k == ir.S_DECL {
+        let t = g.u.locals[n.a].ty
+        var s = g.decl(t, g.lname[n.a])
+        if n.b >= 0 { s = s + " = " + g.expr(n.b, 2) }
+        if n.c >= 0 { s = s + " = " + g.initText(t, n.c) }
+        return s + ";"
+    }
+    if k == ir.S_EXPR { return g.expr(n.a, 0) + ";" }
+    if k == ir.S_BREAK { return "break;" }
+    if k == ir.S_CONTINUE { return "continue;" }
+    if k == ir.S_RETURN { return if n.a < 0 { "return;" } else { "return " + g.expr(n.a, 0) + ";" } }
+    if k == ir.S_EMPTY { return ";" }
+    if k == ir.S_BLOCK && n.v == 1 {
+        var parts: []str = []
+        for j in 0..g.u.listLen(n.a) { append(mut &parts, g.simple(g.u.listAt(n.a, j))) }
+        return strings.join(&parts, " ")
+    }
+    ir.failAt("IR node", n.line, "cgen: statement kind " + intToStr(k))
+}
+
+// ---------------------------------------------------------------- expressions
+
+// C's precedence levels.
+const P_ASSIGN = 2
+const P_COND = 3
+const P_UNARY = 14
+const P_POST = 15
+
+const OP_TEXT: []str = ["+", "-", "*", "/", "%", "<<", ">>", "&", "|", "^", "==", "!=", "<", "<=", ">", ">="]
+const OP_PREC: []int = [12, 12, 13, 13, 13, 11, 11, 8, 6, 7, 9, 9, 10, 10, 10, 10]
+
+fn paren(s: str, p: int, need: int): str { return if p < need { "(" + s + ")" } else { s } }
+
+// The C text of expression x, parenthesized when its precedence is below need.
+fn (g: &Gen) expr(x: int, need: int): str {
+    let n = &g.u.nodes[x]
+    let k = n.k
+    if k == ir.E_INT {
+        let s = g.intLit(n.ty, n.v)
+        return paren(s, if strByte(s, 0) == '-' || strByte(s, 0) == '(' { P_UNARY } else { P_POST }, need)
+    }
+    if k == ir.E_FLT { return paren(fltLit(n.f), P_UNARY, need) }
+    if k == ir.E_STR { return strLit(n.s) }
+    if k == ir.E_LOCAL { return g.lname[n.a] }
+    if k == ir.E_GLOBAL { return g.u.globals[n.a].name }
+    if k == ir.E_FUNC { return g.u.funcs[n.a].name }
+    if k == ir.E_CALL {
+        let c = &g.u.nodes[n.a]
+        let callee = if c.k == ir.E_DECAY && g.u.nk(c.a) == ir.E_FUNC { g.u.funcs[g.u.nodes[c.a].a].name } else { g.expr(n.a, P_POST) }
+        var args: []str = []
+        for j in 0..g.u.listLen(n.b) { append(mut &args, g.expr(g.u.listAt(n.b, j), P_ASSIGN)) }
+        return callee + "(" + strings.join(&args, ", ") + ")"
+    }
+    if k == ir.E_MEMBER {
+        let a = &g.u.nodes[n.a]
+        let f = g.fieldAt(a.ty, n.v, n.ty)
+        if a.k == ir.E_DEREF { return paren(g.expr(a.a, P_POST) + "->" + f, P_POST, need) }
+        return paren(g.expr(n.a, P_POST) + "." + f, P_POST, need)
+    }
+    if k == ir.E_DEREF { return paren("*" + g.expr(n.a, P_UNARY), P_UNARY, need) }
+    if k == ir.E_ADDR {
+        if g.u.nk(n.a) == ir.E_DEREF { return g.expr(g.u.nodes[n.a].a, need) }
+        return paren("&" + g.expr(n.a, P_UNARY), P_UNARY, need)
+    }
+    if k == ir.E_DECAY { return g.expr(n.a, need) }
+    if k == ir.E_CAST {
+        if n.ty == g.u.nodes[n.a].ty { return g.expr(n.a, need) }
+        return paren("(" + g.tname(n.ty) + ")" + g.expr(n.a, P_UNARY), P_UNARY, need)
+    }
+    if k == ir.E_BIN {
+        let p = OP_PREC[n.v]
+        return paren(g.expr(n.a, p) + " " + OP_TEXT[n.v] + " " + g.expr(n.b, p + 1), p, need)
+    }
+    if k == ir.E_NEG {
+        let s = g.expr(n.a, P_UNARY)
+        return paren("-" + (if strByte(s, 0) == '-' { "(" + s + ")" } else { s }), P_UNARY, need)
+    }
+    if k == ir.E_BNOT { return paren("~" + g.expr(n.a, P_UNARY), P_UNARY, need) }
+    if k == ir.E_LNOT { return paren("!" + g.expr(n.a, P_UNARY), P_UNARY, need) }
+    if k == ir.E_LAND { return paren(g.expr(n.a, 5) + " && " + g.expr(n.b, 6), 5, need) }
+    if k == ir.E_LOR { return paren(g.expr(n.a, 4) + " || " + g.expr(n.b, 5), 4, need) }
+    if k == ir.E_COND {
+        return paren(g.expr(n.a, 4) + " ? " + g.expr(n.b, 0) + " : " + g.expr(n.c, P_COND), P_COND, need)
+    }
+    if k == ir.E_ASSIGN { return paren(g.expr(n.a, P_UNARY) + " = " + g.expr(n.b, P_ASSIGN), P_ASSIGN, need) }
+    if k == ir.E_POSTINC { return paren(g.expr(n.a, P_POST) + (if n.v > 0 { "++" } else { "--" }), P_POST, need) }
+    if k == ir.E_CLIT { return paren("(" + g.tname(n.ty) + ")" + g.initText(n.ty, n.b), P_POST, need) }
+    if k == ir.E_PADD {
+        let pt = g.u.tys[n.ty].base
+        let es = if g.u.sizeOf(pt) == 0 { 1 } else { g.u.sizeOf(pt) }
+        if es == n.v { return paren(g.expr(n.a, 12) + " + " + g.expr(n.b, 13), 12, need) }
+        let s = "(char*)" + g.expr(n.a, P_UNARY) + " + " + g.expr(n.b, 13) + " * " + intToStr(n.v)
+        return paren("(" + g.tname(n.ty) + ")(" + s + ")", P_UNARY, need)
+    }
+    ir.failAt("IR node", n.line, "cgen: expression kind " + intToStr(k))
+}
+
+// The name of the field of struct type t at offset off with type ft.
+fn (g: &Gen) fieldAt(t: int, off: int, ft: int): str {
+    let st = &g.u.structs[g.u.tys[t].sid]
+    for f in st.fields {
+        if f.off == off && f.ty == ft { return f.name }
+    }
+    for f in st.fields {
+        if f.off == off { return f.name }
+    }
+    ir.failAt("IR struct", 0, "cgen: no field at " + intToStr(off) + " in " + st.name)
+}
+
+// An integer constant of type t: its C literal (with a cast when no suffix gives the type).
+fn (g: &Gen) intLit(t: int, v: int): str {
+    let k = g.u.tk(t)
+    if k == ir.TY_I32 && v >= -2147483647 && v <= 2147483647 { return intToStr(v) }
+    if k == ir.TY_I64 || k == ir.TY_I128 {
+        let s = if v == -9223372036854775807 - 1 { "(-9223372036854775807LL - 1)" } else { intToStr(v) + "LL" }
+        return if k == ir.TY_I64 { s } else { "(" + g.tname(t) + ")" + s }
+    }
+    let u = if v >= 0 { intToStr(v) } else { "0x" + hex32((v >> 32) & 4294967295) + hex32(v & 4294967295) }
+    if k == ir.TY_U64 { return u + "ULL" }
+    if k == ir.TY_U32 && v >= 0 && v <= 4294967295 { return u + "U" }
+    return "(" + g.tname(t) + ")" + (if v < 0 && !ir.isSignedK(k) { u + "ULL" } else { intToStr(v) + "LL" })
+}
+
+fn hex32(v: int): str {
+    let s = strings.hex(v)
+    return repeat("0", 8 - len(s)) + s
+}
+
+fn fltLit(f: float): str {
+    if f != f { return "__builtin_nan(\"\")" }
+    let s = num.pyFloatRepr(f)
+    if s == "inf" { return "__builtin_inf()" }
+    if s == "-inf" { return "-__builtin_inf()" }
+    return s
+}
+
+// A C string literal of the bytes s (octal escapes for all but printable ASCII).
+fn strLit(s: str): str {
+    var b = newStrBuf()
+    b.addByte('"')
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c == '"' || c == '\\' {
+            b.addByte('\\')
+            b.addByte(c)
+        } else if c >= ' ' && c < 127 && c != '?' {
+            b.addByte(c)
+        } else {
+            b.addByte('\\')
+            b.addByte('0' + (c >> 6))
+            b.addByte('0' + ((c >> 3) & 7))
+            b.addByte('0' + (c & 7))
+        }
+    }
+    b.addByte('"')
+    return b.toStr()
+}
