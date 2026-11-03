@@ -1,0 +1,171 @@
+// http: a client's pool. maxPerHost bounds the connections to a server and
+// further requests wait their turn; a wait that outlives the deadline, or a
+// waiting task that is cancelled, leaves the queue. A kept-alive connection
+// the server has closed is noticed: after 100 ms idle by a check before
+// reuse, sooner by the request failing before any reply came, when a GET
+// is sent again on a new connection, but a POST is not. Idle connections
+// expire; a task cancelled while it reads a body, or a body read past the
+// deadline, closes the connection.
+// expect: six tasks, two connections: ok 6, most open 2, dials 2
+// expect: after: open 2, idle 2, waiting 0
+// expect: wait past the deadline: timeout: timeout while waiting for a connection
+// expect: after the timeout: open 1, idle 0, waiting 0
+// expect: a cancelled waiter: waiting 1, then 0
+// expect: then: 200, dials 1
+// expect: stale GET: 200 'second', retries 1, dials 2, requests 2
+// expect: stale POST: i/o, retries 0, dials 1, requests 1
+// expect: closed while idle: 200 'second', retries 0, dials 2
+// expect: idle timeout: new connection true, dials 2
+// expect: cancelled in the body: cancelled: cancelled (read), open 0
+// expect: deadline in the body: timeout: deadline passed (read), open 0
+import "task"
+import "net"
+import "http"
+import "../support/httptest" as ht
+
+type Fetch = value record { c: http.Client; u: str; peak: task.Shared[int] }
+
+fn fetch(f: Fetch): bool {
+    let r = f.c.get(f.u).unwrap()
+    let open = f.c.stats().open
+    f.peak.with(fn(p: mut &int) { if open > p { p = open } })
+    return r.text().unwrap() == "slow"
+}
+
+fn stats(c: &http.Client): str {
+    let s = c.stats()
+    return "open " + intToStr(s.open) + ", idle " + intToStr(s.idle) + ", waiting " + intToStr(s.waiting)
+}
+
+type Get = value record { c: http.Client; u: str; out: task.Shared[str] }
+
+// Gets u and reads its body; what happened goes to out.
+fn getBody(g: Get): int {
+    var res = ""
+    match g.c.get(g.u) {
+        Ok(r) {
+            match r.text() {
+                Ok(t) { res = "200 '" + t + "'" }
+                Err(e) { res = e.kind.toStr() + ": " + e.msg }
+            }
+        }
+        Err(e) { res = e.kind.toStr() + ": " + e.msg }
+    }
+    g.out.with(fn(o: mut &str) { o = res })
+    return 0
+}
+
+fn opts(maxPerHost: int, timeoutMs: int): http.Options {
+    var o = http.defaults()
+    o.maxPerHost = maxPerHost
+    o.timeoutMs = timeoutMs
+    return o
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let base = "http://" + ln.localAddr()
+        let srv = s.start(ht.serve, ln)
+
+        let c = http.newClient(opts(2, 30000))
+        let peak = task.shared(0)
+        var fs: []task.Future[bool] = []
+        for i in 0..6 { append(mut &fs, s.start(fetch, Fetch{c: c, u: base + "/slow?ms=30", peak: peak})) }
+        var good = 0
+        for x in task.all(fs).unwrap() { if x { good += 1 } }
+        var most = 0
+        peak.with(fn(p: mut &int) { most = p })
+        println("six tasks, two connections: ok " + intToStr(good) + ", most open " + intToStr(most) + ", dials " +
+                intToStr(c.stats().dials))
+        println("after: " + stats(&c))
+
+        let one = http.newClient(opts(1, 100))
+        let held = one.get(base + "/hello").unwrap()
+        let e = one.get(base + "/hello").unwrapErr()
+        println("wait past the deadline: " + e.kind.toStr() + ": " + e.msg)
+        println("after the timeout: " + stats(&one))
+        let out = task.shared("")
+        let waiter = s.start(getBody, Get{c: one, u: base + "/hello", out: out})
+        task.sleep(20).unwrap()
+        let w1 = one.stats().waiting
+        let gone = waiter        // dropped at the end of the block: cancelled
+        {
+            let dropped = gone
+        }
+        task.sleep(10).unwrap()
+        println("a cancelled waiter: waiting " + intToStr(w1) + ", then " + intToStr(one.stats().waiting))
+        held.close()
+        let r = one.get(base + "/hello").unwrap()
+        println("then: " + intToStr(r.status) + ", dials " + intToStr(one.stats().dials))
+    })
+
+    let h = "HTTP/1.1 200 OK\r\nContent-Length: "
+    for method in ["GET", "POST"] {
+        task.scope(fn(s: mut &task.Scope) {
+            let ln = net.listen("127.0.0.1:0").unwrap()
+            let u = "http://" + ln.localAddr() + "/"
+            let steps = [ht.step(h + "5\r\n\r\nfirst", true), ht.step(h + "6\r\n\r\nsecond", false)]
+            let srv = s.start(ht.scripted, ht.Script{ln: ln, steps: steps})
+            let c = http.newClient(http.defaults())
+            let rq = http.request(method, u)
+            let a = c.send(&rq).unwrap().text().unwrap()
+            var line = ""
+            match c.send(&rq) {
+                Ok(r) { line = "200 '" + r.text().unwrap() + "'" }
+                Err(e) { line = e.kind.toStr() }
+            }
+            task.sleep(10).unwrap()
+            let st = c.stats()
+            println("stale " + method + ": " + line + ", retries " + intToStr(st.retries) + ", dials " + intToStr(st.dials) +
+                    ", requests " + intToStr(ht.requests()))
+        })
+    }
+
+    task.scope(fn(s: mut &task.Scope) {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let u = "http://" + ln.localAddr() + "/"
+        let steps = [ht.step(h + "5\r\n\r\nfirst", true), ht.step(h + "6\r\n\r\nsecond", false)]
+        let srv = s.start(ht.scripted, ht.Script{ln: ln, steps: steps})
+        let c = http.newClient(http.defaults())
+        let a = c.get(u).unwrap().text().unwrap()
+        task.sleep(150).unwrap()
+        let b = c.get(u).unwrap().text().unwrap()
+        println("closed while idle: 200 '" + b + "', retries " + intToStr(c.stats().retries) + ", dials " +
+                intToStr(c.stats().dials))
+    })
+
+    task.scope(fn(s: mut &task.Scope) {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let base = "http://" + ln.localAddr()
+        let srv = s.start(ht.serve, ln)
+        var o = http.defaults()
+        o.idleTimeoutMs = 30
+        let c = http.newClient(o)
+        let r1 = c.get(base + "/hello").unwrap()
+        let x1 = r1.header("X-Conn").unwrap()
+        r1.close()
+        task.sleep(60).unwrap()
+        let r2 = c.get(base + "/hello").unwrap()
+        println("idle timeout: new connection " + (r2.header("X-Conn").unwrap() != x1).toStr() + ", dials " +
+                intToStr(c.stats().dials))
+        r2.close()
+
+        let out = task.shared("")
+        {
+            let f = s.start(getBody, Get{c: c, u: base + "/slow?ms=2000", out: out})
+            task.sleep(50).unwrap()
+        }
+        task.sleep(10).unwrap()
+        var got = ""
+        out.with(fn(x: mut &str) { got = x })
+        println("cancelled in the body: " + got + ", open " + intToStr(c.stats().open))
+
+        let c2 = http.newClient(opts(4, 100))
+        let out2 = task.shared("")
+        let f2 = s.start(getBody, Get{c: c2, u: base + "/slow?ms=2000", out: out2})
+        let done = f2.wait().unwrap()
+        out2.with(fn(x: mut &str) { got = x })
+        println("deadline in the body: " + got + ", open " + intToStr(c2.stats().open))
+    })
+}

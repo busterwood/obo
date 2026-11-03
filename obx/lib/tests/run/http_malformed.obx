@@ -1,0 +1,153 @@
+// http: replies a client must not guess about are errors, not crashes or
+// hangs (RFC 9112 6.3 and the limits of design/http-client.md): ambiguous
+// framing (request smuggling), bad status lines and header lines, bad
+// chunks, bodies cut short, heads and trailers over the limits, too many
+// interim replies, bodies over maxBody, and a server that sends its head
+// one byte at a time past the deadline (slowloris). After an error the
+// connection is closed, never reused; only a body that had arrived whole
+// counts as read (CL over maxBody), so its connection stays idle.
+// expect: CL and TE: protocol: both Content-Length and Transfer-Encoding
+// expect: two CLs: protocol: two different Content-Lengths
+// expect: CL list: protocol: two different Content-Lengths
+// expect: CL sign: protocol: an invalid Content-Length
+// expect: CL hex: protocol: an invalid Content-Length
+// expect: CL empty: protocol: an invalid Content-Length
+// expect: CL huge: protocol: an invalid Content-Length
+// expect: TE gzip: protocol: an unsupported transfer coding: gzip, chunked
+// expect: TE twice: protocol: an unsupported transfer coding: chunked
+// expect: TE identity: protocol: an unsupported transfer coding: identity
+// expect: TE in 1.0: protocol: Transfer-Encoding in an HTTP/1.0 reply
+// expect: folded: protocol: a header line folded onto the next (obs-fold)
+// expect: bare LF: protocol: a line of the reply head not ended by CRLF
+// expect: bare CR: protocol: a line not ended by CRLF
+// expect: space before colon: protocol: an invalid header name
+// expect: no colon: protocol: a header line without ':'
+// expect: NUL in value: protocol: a control character in a header value
+// expect: HTTP/2: protocol: an unsupported version
+// expect: HTTP/1.2: protocol: an unsupported version
+// expect: ICY: protocol: a malformed status line
+// expect: status 2000: protocol: a malformed status line
+// expect: status 99: protocol: a status code out of range
+// expect: status 600: protocol: a status code out of range
+// expect: status abc: protocol: a malformed status code
+// expect: 101: protocol: 101 Switching Protocols, which was not asked for
+// expect: nine 1xx: protocol: more than 8 interim (1xx) replies
+// expect: chunk size x: body: protocol: a bad chunk size line
+// expect: chunk size -1: body: protocol: a bad chunk size line
+// expect: chunk size empty: body: protocol: a bad chunk size line
+// expect: chunk size huge: body: protocol: a chunk size too large
+// expect: chunk size junk: body: protocol: a bad chunk size line
+// expect: chunk no CRLF: body: protocol: a chunk's data not followed by CRLF
+// expect: chunk LF: body: protocol: a chunk line not ended by CRLF
+// expect: chunk line long: body: protocol: a chunk size line over 4 KiB
+// expect: chunk cut: body: protocol: the connection closed inside a chunk
+// expect: chunk end cut: body: protocol: the connection closed inside the chunked body
+// expect: trailer cut: body: protocol: the connection closed inside the trailers
+// expect: trailer folded: body: protocol: a header line folded onto the next (obs-fold) in the trailers
+// expect: trailers huge: body: too large: trailers over 64 KiB
+// expect: trailers many: body: protocol: more than 100 header lines in the trailers
+// expect: CL cut: body: protocol: the connection closed with 6 bytes of the body to come
+// expect: head cut: protocol: the connection closed inside the reply head
+// expect: nothing: i/o: the connection closed before the reply
+// expect: head huge: too large: a reply head over 64 KiB
+// expect: headers many: protocol: more than 100 header lines
+// expect: CL over maxBody: body: too large: a body of 2000 bytes, over maxBody (idle 1)
+// expect: chunked over maxBody: body: too large: a body over maxBody (1000 bytes)
+// expect: close over maxBody: body: too large: a body over maxBody (1000 bytes)
+// expect: slowloris: timeout: deadline passed (read)
+// expect: slow body: body: timeout: deadline passed (read)
+import "task"
+import "net"
+import "http"
+import "../support/httptest" as ht
+
+fn repeat(s: str, n: int): str {
+    var b = newStrBuf()
+    for i in 0..n { b.add(s) }
+    return b.toStr()
+}
+
+fn run(name: str, reply: str, dribble: int, timeoutMs: int) {
+    let line = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let u = "http://" + ln.localAddr() + "/"
+        let st = ht.Step{reply: reply, close: true, dribbleMs: dribble}
+        let srv = s.start(ht.scripted, ht.Script{ln: ln, steps: [st]})
+        var o = http.defaults()
+        o.maxBody = 1000
+        o.timeoutMs = timeoutMs
+        let c = http.newClient(o)
+        var out = ""
+        match c.get(u) {
+            Ok(r) {
+                match r.text() {
+                    Ok(t) { out = "ok " + intToStr(len(t)) }
+                    Err(e) { out = "body: " + e.kind.toStr() + ": " + e.msg }
+                }
+            }
+            Err(e) { out = e.kind.toStr() + ": " + e.msg }
+        }
+        let ps = c.stats()
+        if ps.idle != 0 { out = out + " (idle " + intToStr(ps.idle) + ")" }
+        if ps.open != ps.idle { out = out + " (busy " + intToStr(ps.open - ps.idle) + ")" }
+        return out
+    })
+    println(name + ": " + line)
+}
+
+fn bad(name: str, reply: str) { run(name, reply, 0, 5000) }
+
+fn main() {
+    let h = "HTTP/1.1 200 OK\r\n"
+    let te = "Transfer-Encoding: chunked\r\n"
+    bad("CL and TE", h + "Content-Length: 5\r\n" + te + "\r\n5\r\nhello\r\n0\r\n\r\n")
+    bad("two CLs", h + "Content-Length: 5\r\nContent-Length: 6\r\n\r\nhello!")
+    bad("CL list", h + "Content-Length: 5, 6\r\n\r\nhello!")
+    bad("CL sign", h + "Content-Length: +5\r\n\r\nhello")
+    bad("CL hex", h + "Content-Length: 0x5\r\n\r\nhello")
+    bad("CL empty", h + "Content-Length: \r\n\r\nhello")
+    bad("CL huge", h + "Content-Length: 1234567890123456789012\r\n\r\nhello")
+    bad("TE gzip", h + "Transfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n")
+    bad("TE twice", h + te + te + "\r\n0\r\n\r\n")
+    bad("TE identity", h + "Transfer-Encoding: identity\r\n\r\nhello")
+    bad("TE in 1.0", "HTTP/1.0 200 OK\r\n" + te + "\r\n0\r\n\r\n")
+    bad("folded", h + "X-A: a\r\n b\r\nContent-Length: 0\r\n\r\n")
+    bad("bare LF", h + "X-A: a\nContent-Length: 0\r\n\r\n")
+    bad("bare CR", h + "X-A: a\rB: c\r\nContent-Length: 0\r\n\r\n")
+    bad("space before colon", h + "Content-Length : 5\r\n\r\nhello")
+    bad("no colon", h + "Content-Length 5\r\n\r\nhello")
+    bad("NUL in value", h + "X-A: a\x00b\r\nContent-Length: 0\r\n\r\n")
+    bad("HTTP/2", "HTTP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n")
+    bad("HTTP/1.2", "HTTP/1.2 200 OK\r\nContent-Length: 0\r\n\r\n")
+    bad("ICY", "ICY 200 OK\r\nContent-Length: 0\r\n\r\n")
+    bad("status 2000", "HTTP/1.1 2000 OK\r\nContent-Length: 0\r\n\r\n")
+    bad("status 99", "HTTP/1.1 099 OK\r\nContent-Length: 0\r\n\r\n")
+    bad("status 600", "HTTP/1.1 600 OK\r\nContent-Length: 0\r\n\r\n")
+    bad("status abc", "HTTP/1.1 abc OK\r\nContent-Length: 0\r\n\r\n")
+    bad("101", "HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\n\r\n")
+    bad("nine 1xx", repeat("HTTP/1.1 100 Continue\r\n\r\n", 9) + h + "Content-Length: 0\r\n\r\n")
+    bad("chunk size x", h + te + "\r\nx\r\nhello\r\n0\r\n\r\n")
+    bad("chunk size -1", h + te + "\r\n-1\r\nhello\r\n0\r\n\r\n")
+    bad("chunk size empty", h + te + "\r\n\r\nhello\r\n0\r\n\r\n")
+    bad("chunk size huge", h + te + "\r\n1000000000000000\r\nhello\r\n0\r\n\r\n")
+    bad("chunk size junk", h + te + "\r\n5 x\r\nhello\r\n0\r\n\r\n")
+    bad("chunk no CRLF", h + te + "\r\n5\r\nhelloX\r\n0\r\n\r\n")
+    bad("chunk LF", h + te + "\r\n5\nhello\r\n0\r\n\r\n")
+    bad("chunk line long", h + te + "\r\n5;" + repeat("x", 5000) + "\r\nhello\r\n0\r\n\r\n")
+    bad("chunk cut", h + te + "\r\n5\r\nhel")
+    bad("chunk end cut", h + te + "\r\n5\r\nhello\r\n")
+    bad("trailer cut", h + te + "\r\n5\r\nhello\r\n0\r\nX: 1\r\n")
+    bad("trailer folded", h + te + "\r\n0\r\nX: 1\r\n 2\r\n\r\n")
+    bad("trailers huge", h + te + "\r\n0\r\nX: " + repeat("x", 70000) + "\r\n\r\n")
+    bad("trailers many", h + te + "\r\n0\r\n" + repeat("X: 1\r\n", 101) + "\r\n")
+    bad("CL cut", h + "Content-Length: 10\r\n\r\nhell")
+    bad("head cut", h + "Content-Length: 10\r\n")
+    bad("nothing", "")
+    bad("head huge", h + "X: " + repeat("x", 70000) + "\r\n\r\n")
+    bad("headers many", h + repeat("X: 1\r\n", 101) + "Content-Length: 0\r\n\r\n")
+    bad("CL over maxBody", h + "Content-Length: 2000\r\n\r\n" + repeat("x", 2000))
+    bad("chunked over maxBody", h + te + "\r\n" + repeat("100\r\n" + repeat("y", 256) + "\r\n", 5) + "0\r\n\r\n")
+    bad("close over maxBody", h + "\r\n" + repeat("z", 1500))
+    run("slowloris", h + "X: " + repeat("x", 1000) + "\r\n\r\n", 5, 200)
+    run("slow body", h + "Content-Length: 200\r\n\r\n" + repeat("x", 200), 3, 300)
+}

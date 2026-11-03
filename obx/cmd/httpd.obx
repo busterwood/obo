@@ -26,6 +26,7 @@ import "io"
 import "os"
 import "strings"
 import "postgres"
+import "http"
 
 type State = record {
     open: int                         // connections open now
@@ -220,36 +221,22 @@ fn headEnd(b: &[]byte, n: int, from: int): int {
     return -1
 }
 
-// A request head (without the blank line); None if it is malformed.
+// A request head (without the blank line); None if it is malformed. The
+// parsing is lib/http's, which the HTTP client shares: a token method, a
+// target, HTTP/1.0 or 1.1, at most 100 header lines, no folded lines,
+// lines ended by CRLF, and one Content-Length (not with a
+// Transfer-Encoding). The target must be a path.
 fn parse(head: str): Option[Request] {
-    let lines = strings.splitOn(head, "\r\n")
-    let first = strings.splitOn(lines[0], " ")
-    if len(first) != 3 || len(first[0]) == 0 || !startsWith(first[1], "/") { return None }
-    let version = first[2]
-    if version != "HTTP/1.1" && version != "HTTP/1.0" { return None }
-    var keep = version == "HTTP/1.1"
-    var bodyLen = 0
-    for i in 1..len(lines) {
-        let kv = match strings.cut(lines[i], ":") {
-            Some(k) { k }
-            None { return None }
-        }
-        let name = strings.toLower(kv.before)
-        let value = trim(kv.after)
-        if name == "connection" {
-            let v = strings.toLower(value)
-            if v == "close" { keep = false }
-            if v == "keep-alive" { keep = true }
-        } else if name == "content-length" {
-            match strings.parseInt(value) {
-                Ok(n) { if n < 0 { return None } else { bodyLen = n } }
-                Err(e) { return None }
-            }
-        } else if name == "transfer-encoding" {
-            bodyLen = -1
-        }
+    let h = match http.parseRequest(head) {
+        Ok(x) { x }
+        Err(_) { return None }
     }
-    return Some(Request{method: first[0], path: first[1], keepAlive: keep, bodyLen: bodyLen})
+    let bodyLen = match h.bodyLength() {
+        Ok(n) { n }
+        Err(_) { return None }
+    }
+    if !startsWith(h.target, "/") { return None }
+    return Some(Request{method: h.method, path: h.target, keepAlive: h.keepAlive(), bodyLen: bodyLen})
 }
 
 // ---- main

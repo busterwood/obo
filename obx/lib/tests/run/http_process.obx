@@ -1,0 +1,29 @@
+// http: a client belongs to the process that made it. After a fork the
+// child gets a Process error from the parent's client (and from the
+// default client the parent had used), so two processes never share a
+// pooled connection; a client the child makes is its own.
+// expect: child: process: a client used in another process than the one that made it (make one per worker)
+// expect: child default: process
+// expect: child's own client: tls
+// expect: parent: child exited 0
+import "http"
+
+extern "c" fn fork(): i32
+extern "c" fn waitpid(pid: i32, status: mut &[i32], options: i32): i32
+
+fn main() {
+    let c = http.newClient(http.defaults())
+    let d = http.defaultClient()
+    let pid = fork()
+    if pid == i32(0) {
+        let e = c.get("http://127.0.0.1:9/").unwrapErr()
+        println("child: " + e.kind.toStr() + ": " + e.msg)
+        println("child default: " + http.get("http://127.0.0.1:9/").unwrapErr().kind.toStr())
+        let mine = http.newClient(http.defaults())
+        println("child's own client: " + mine.get("https://127.0.0.1:9/").unwrapErr().kind.toStr())
+        exit(0)
+    }
+    var st = array(1, i32(0))
+    let r = waitpid(pid, mut &st, i32(0))
+    println("parent: child exited " + intToStr(int(st[0]) / 256))
+}

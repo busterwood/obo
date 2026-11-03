@@ -1,0 +1,151 @@
+// http: requests against a test server on a port-0 listener: GET, HEAD,
+// POST, PUT and DELETE, statuses that are not errors, headers without case,
+// chunked bodies with trailers, a large body read in parts, keep-alive
+// reuse of one connection, Connection: close, the one-line functions on
+// the default client, and requests refused before they are sent.
+// expect: GET /hello: 200 OK ok=true text=hello
+// expect: x-conn=1 X-REQ=1 content-length=5
+// expect: 404: Not Found ok=false not found
+// expect: echo: POST /echo?a=1
+// expect: Host: 127.0.0.1:PORT
+// expect: User-Agent: obx
+// expect: Content-Type: text/plain
+// expect: X-Two: a
+// expect: X-Two: b
+// expect: Content-Length: 11
+// expect:
+// expect: hello there
+// expect: PUT: Content-Length: 0 / DELETE: no Content-Length
+// expect: HEAD: 200 content-length=5 body ''
+// expect: chunked: aaaaabbbbbccccc (15) contentLength -1
+// expect: big: 300000 bytes in 2+ reads, all x: true
+// expect: bytes: 7 [115 116 97 116 117 115 32]
+// expect: same connection: true true, dials 1, reuses 9
+// expect: close: bye, then a new connection: true
+// expect: one-liner: hello / 201 status 201
+// expect: http: bad URL: no scheme ("http://" or "https://") (localhost/x)
+// expect: http: invalid request: an invalid method 'GE T' (http://127.0.0.1:PORT/hello)
+// expect: http: invalid request: a control character in the header X-Bad (http://127.0.0.1:PORT/hello)
+// expect: http: invalid request: an invalid header name 'Bad Name' (http://127.0.0.1:PORT/hello)
+// expect: http: invalid request: a Content-Length that is not the body's length (http://127.0.0.1:PORT/hello)
+// expect: http: invalid request: Transfer-Encoding is set (request bodies are sent with a Content-Length) (http://127.0.0.1:PORT/hello)
+// expect: http: tls: https is not supported yet (plain http only) (https://127.0.0.1:PORT/hello)
+// expect: http: connect: connect 127.0.0.1:PORT: Connection refused (http://127.0.0.1:PORT/)
+// expect: stats: open 1, idle 1, waiting 0
+import "task"
+import "net"
+import "http"
+import "strings"
+import "../support/httptest" as ht
+
+fn port(s: str, p: str): str { return strings.replaceAll(s, p, "PORT") }
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let addr = ln.localAddr()
+        let p = strings.cut(addr, ":").unwrap().after
+        let base = "http://" + addr
+        let srv = s.start(ht.serve, ln)
+        let c = http.newClient(http.defaults())
+
+        let r = c.get(base + "/hello").unwrap()
+        let st = r.status
+        let reason = r.reason
+        let ok = r.ok()
+        let conn1 = r.header("X-Conn").unwrap()
+        let line2 = "x-conn=" + conn1 + " X-REQ=" + r.header("x-req").unwrap() + " content-length=" +
+                    r.headers.get("CONTENT-LENGTH").unwrap()
+        println("GET /hello: " + intToStr(st) + " " + reason + " ok=" + ok.toStr() + " text=" + r.text().unwrap())
+        println(line2)
+
+        let nf = c.get(base + "/nope").unwrap()
+        println("404: " + nf.reason + " ok=" + nf.ok().toStr() + " " + nf.text().unwrap())
+
+        var rq = http.request("POST", base + "/echo?a=1")
+        rq.header("Content-Type", "text/plain")
+        rq.header("X-Two", "a")
+        rq.header("x-two", "b")
+        rq.body = "hello there"
+        let e = c.send(&rq).unwrap()
+        let et = e.text().unwrap()
+        println("echo: " + strings.replaceAll(port(et, p), "x-two", "X-Two"))
+
+        let pu = c.put(base + "/echo", "text/plain", "").unwrap().text().unwrap()
+        let de = c.delete(base + "/echo").unwrap().text().unwrap()
+        println("PUT: " + (if contains(pu, "Content-Length: 0") { "Content-Length: 0" } else { pu }) + " / DELETE: " +
+                (if contains(de, "Content-Length") { de } else { "no Content-Length" }))
+
+        let h = c.head(base + "/hello").unwrap()
+        println("HEAD: " + intToStr(h.status) + " content-length=" + h.header("Content-Length").unwrap() + " body '" +
+                h.text().unwrap() + "'")
+
+        let ch = c.get(base + "/chunked?n=3&size=5").unwrap()
+        let cl = ch.contentLength()
+        let ct = ch.text().unwrap()
+        println("chunked: " + ct + " (" + intToStr(len(ct)) + ") contentLength " + intToStr(cl))
+
+        var big = c.get(base + "/big?n=300000").unwrap()
+        var buf = array(65536, byte(0))
+        var total = 0
+        var reads = 0
+        var allx = true
+        while true {
+            let n = big.read(mut &buf).unwrap()
+            if n == 0 { break }
+            for i in 0..n { if buf[i] != 'x' { allx = false } }
+            total += n
+            reads += 1
+        }
+        println("big: " + intToStr(total) + " bytes in " + (if reads >= 2 { "2+" } else { "1" }) + " reads, all x: " + allx.toStr())
+        big.close()
+
+        let bs = c.get(base + "/status?code=200").unwrap().bytes().unwrap()
+        var shown = ""
+        for i in 0..7 { shown = shown + (if i > 0 { " " } else { "" }) + intToStr(int(bs[i])) }
+        println("bytes: 7 [" + shown + "]")
+
+        let again = c.get(base + "/hello").unwrap()
+        let same = again.header("X-Conn").unwrap() == conn1
+        let req = strings.parseInt(again.header("X-Req").unwrap()).unwrap() > 5
+        again.close()
+        let s1 = c.stats()
+        println("same connection: " + same.toStr() + " " + req.toStr() + ", dials " + intToStr(s1.dials) + ", reuses " +
+                intToStr(s1.reuses))
+
+        let cl1 = c.get(base + "/close").unwrap()
+        let cconn = cl1.header("X-Conn").unwrap()
+        let bye = cl1.text().unwrap()
+        let after = c.get(base + "/hello").unwrap()
+        println("close: " + bye + ", then a new connection: " + (after.header("X-Conn").unwrap() != cconn).toStr())
+        after.close()
+
+        let one = http.get(base + "/hello").unwrap().text().unwrap()
+        let p201 = http.post(base + "/status?code=201", "text/plain", "x").unwrap()
+        println("one-liner: " + one + " / " + intToStr(p201.status) + " " + p201.text().unwrap())
+
+        println(c.get("localhost/x").unwrapErr().toStr())
+        let bad1 = http.request("GE T", base + "/hello")
+        println(port(c.send(&bad1).unwrapErr().toStr(), p))
+        var bad2 = http.request("GET", base + "/hello")
+        bad2.header("X-Bad", "a\r\nInjected: yes")
+        println(port(c.send(&bad2).unwrapErr().toStr(), p))
+        var bad3 = http.request("GET", base + "/hello")
+        bad3.header("Bad Name", "a")
+        println(port(c.send(&bad3).unwrapErr().toStr(), p))
+        var bad4 = http.request("POST", base + "/hello")
+        bad4.header("Content-Length", "3")
+        bad4.body = "abcd"
+        println(port(c.send(&bad4).unwrapErr().toStr(), p))
+        var bad5 = http.request("POST", base + "/hello")
+        bad5.header("Transfer-Encoding", "chunked")
+        println(port(c.send(&bad5).unwrapErr().toStr(), p))
+        println(port(c.get("https://" + addr + "/hello").unwrapErr().toStr(), p))
+        let gone = net.listen("127.0.0.1:0").unwrap()
+        let nowhere = gone.localAddr()
+        gone.close()
+        println(port(c.get("http://" + nowhere + "/").unwrapErr().toStr(), strings.cut(nowhere, ":").unwrap().after))
+        let s2 = c.stats()
+        println("stats: open " + intToStr(s2.open) + ", idle " + intToStr(s2.idle) + ", waiting " + intToStr(s2.waiting))
+    })
+}

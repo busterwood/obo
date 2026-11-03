@@ -1,0 +1,331 @@
+// Test servers for the http client tests (lib/tests/run/http_*.obx): a
+// server with routes, and a scripted one that writes given replies byte for
+// byte. Both run as tasks on a listener; dropping their future cancels them
+// and the tasks of their connections. They read requests with http's
+// shared parser (parseRequest), so that is tested too.
+//
+// Routes, by the last segment of the path (/a/echo is /echo); every reply
+// carries X-Conn: the connection's number from 1, and X-Req: the request's
+// number on it:
+//   /hello                 200 "hello"
+//   /echo                  200, the request: "METHOD target\n", its header lines, "\n", its body
+//   /status?code=N         N "status N"
+//   /chunked?n=K&size=S    K chunks of S bytes (a b c ...), an extension, and a trailer
+//   /big?n=N               N bytes of 'x' with a Content-Length
+//   /redirect?code=N&to=U  N with Location: U (both decoded)
+//   /slow?ms=M             the head with Content-Length 4 at once, "slow" M ms later
+//   /slowhead?ms=M         nothing for M ms, then "slow"
+//   /close                 "bye" with Connection: close, then closes
+//   /drop                  closes without a reply
+import "task"
+import "net"
+import "io"
+import "url"
+import "http"
+import "strings"
+
+var CONNS: int = 0          // connections the route server accepted
+var STEP: int = 0           // the scripted server's next step
+var READ: int = 0           // requests the scripted server read
+
+pub fn conns(): int { return CONNS }
+
+pub fn requests(): int { return READ }
+
+// ---------------------------------------------------------------- reading requests
+
+type Reader = record {
+    c: net.Conn
+    buf: []byte
+    r: int
+    w: int
+}
+
+pub type Req = record {
+    pub head: http.RequestHead
+    pub path: str
+    pub query: url.Query
+    pub body: str
+}
+
+// The next request: None at the end of the stream (or on an error).
+fn (rd: mut &Reader) next(): Option[Req] {
+    var from = rd.r
+    while true {
+        let e = http.headEnd(&rd.buf, rd.r, from, rd.w)
+        if e >= 0 {
+            let parsed = http.parseRequest(strFromBytes(&rd.buf[rd.r..e]))
+            if parsed.isErr() {
+                println("server: bad request: " + parsed.unwrapErr())
+                return None
+            }
+            let head = parsed.unwrap()
+            rd.r = e + 4
+            let n = head.bodyLength().unwrap()
+            if n < 0 { panic("server: a chunked request") }
+            while rd.w - rd.r < n {
+                if !rd.more() { return None }
+            }
+            let body = strFromBytes(&rd.buf[rd.r..rd.r + n])
+            rd.r += n
+            let t = head.target
+            var path = t
+            var q = ""
+            match strings.cut(t, "?") {
+                Some(c) {
+                    path = c.before
+                    q = c.after
+                }
+                None {}
+            }
+            return Some(Req{head: head, path: path, query: url.parseQuery(q).unwrap(), body: body})
+        }
+        if e == -2 {
+            println("server: a bare LF")
+            return None
+        }
+        let seen = rd.w - rd.r
+        if !rd.more() { return None }
+        from = rd.r + max(seen - 3, 0)
+    }
+    return None
+}
+
+// Reads more; false at the end of the stream or on an error.
+fn (rd: mut &Reader) more(): bool {
+    if rd.r > 0 {
+        let n = rd.w - rd.r
+        for i in 0..n { rd.buf[i] = rd.buf[rd.r + i] }
+        rd.r = 0
+        rd.w = n
+    }
+    if rd.w == len(rd.buf) {
+        var b = array(len(rd.buf) * 2, byte(0))
+        for i in 0..rd.w { b[i] = rd.buf[i] }
+        rd.buf = b
+    }
+    match rd.c.read(mut &rd.buf[rd.w..len(rd.buf)]) {
+        Ok(n) {
+            if n == 0 { return false }
+            rd.w += n
+            return true
+        }
+        Err(_) { return false }
+    }
+}
+
+fn reader(c: net.Conn): Reader { return Reader{c: c, buf: array(4096, byte(0)), r: 0, w: 0} }
+
+// ---------------------------------------------------------------- the route server
+
+type Peer = record { c: net.Conn; id: int }
+
+// Accepts connections until cancelled, each served by a task.
+pub fn serve(ln: net.Listener): int {
+    task.scope(fn(s: mut &task.Scope) {
+        while true {
+            match ln.accept() {
+                Ok(c) {
+                    CONNS += 1
+                    s.spawn(handle, Peer{c: c, id: CONNS})
+                }
+                Err(_) { break }
+            }
+        }
+    })
+    return 0
+}
+
+fn qint(q: &url.Query, name: str, d: int): int {
+    match q.get(name) {
+        Some(v) { return strings.parseInt(v).unwrap() }
+        None { return d }
+    }
+}
+
+fn reply(code: int, extra: str, body: str): str {
+    return "HTTP/1.1 " + intToStr(code) + " " + reason(code) + "\r\n" + extra + "Content-Length: " + intToStr(len(body)) +
+           "\r\n\r\n" + body
+}
+
+fn reason(code: int): str {
+    if code == 200 { return "OK" }
+    if code == 404 { return "Not Found" }
+    if code >= 300 && code < 400 { return "Moved" }
+    return "Whatever"
+}
+
+fn handle(p: Peer): int {
+    let Peer{c: c, id: id} = move(p)
+    var rd = reader(c)
+    var n = 0
+    while true {
+        let rq = match rd.next() {
+            Some(x) { x }
+            None { return 0 }
+        }
+        n += 1
+        let tag = "X-Conn: " + intToStr(id) + "\r\nX-Req: " + intToStr(n) + "\r\n"
+        var seg = len(rq.path)
+        while seg > 0 && rq.path[seg - 1] != '/' { seg -= 1 }
+        let path = "/" + rq.path[seg..]          // the last segment: /a/b/echo is /echo
+        var out = ""
+        var closing = !rq.head.keepAlive()
+        if path == "/hello" {
+            out = reply(200, tag, "hello")
+        } else if path == "/echo" {
+            var b = rq.head.method + " " + rq.head.target + "\n"
+            for i in 0..rq.head.headers.size() {
+                let h = rq.head.headers.at(i)
+                b = b + h.name + ": " + h.value + "\n"
+            }
+            out = reply(200, tag, b + "\n" + rq.body)
+        } else if path == "/status" {
+            let code = qint(&rq.query, "code", 200)
+            out = reply(code, tag, "status " + intToStr(code))
+        } else if path == "/chunked" {
+            let k = qint(&rq.query, "n", 3)
+            let size = qint(&rq.query, "size", 5)
+            var b = newStrBuf()
+            b.add("HTTP/1.1 200 OK\r\n" + tag + "Transfer-Encoding: chunked\r\n\r\n")
+            for i in 0..k {
+                b.add(strings.toLower(intToHex(size)) + ";x=" + intToStr(i) + "\r\n")
+                for j in 0..size { b.addByte(byte(97 + i % 26)) }
+                b.add("\r\n")
+            }
+            b.add("0\r\nX-Trailer: yes\r\n\r\n")
+            out = b.toStr()
+        } else if path == "/big" {
+            let k = qint(&rq.query, "n", 100000)
+            var b = newStrBuf()
+            for i in 0..k { b.addByte('x') }
+            out = reply(200, tag, b.toStr())
+        } else if path == "/redirect" {
+            let code = qint(&rq.query, "code", 302)
+            let to = rq.query.get("to").unwrap()
+            out = reply(code, tag + "Location: " + to + "\r\n", "moved")
+        } else if path == "/slow" {
+            match rd.c.writeStr("HTTP/1.1 200 OK\r\n" + tag + "Content-Length: 4\r\n\r\n") {
+                Ok(_) {}
+                Err(_) { return 0 }
+            }
+            match task.sleep(qint(&rq.query, "ms", 100)) {
+                Ok(_) {}
+                Err(_) { return 0 }
+            }
+            out = "slow"
+        } else if path == "/slowhead" {
+            match task.sleep(qint(&rq.query, "ms", 100)) {
+                Ok(_) {}
+                Err(_) { return 0 }
+            }
+            out = reply(200, tag, "slow")
+        } else if path == "/close" {
+            out = reply(200, tag + "Connection: close\r\n", "bye")
+            closing = true
+        } else if path == "/drop" {
+            return 0
+        } else {
+            out = reply(404, tag, "not found")
+        }
+        if rq.head.method == "HEAD" {
+            match strings.cut(out, "\r\n\r\n") {
+                Some(x) { out = x.before + "\r\n\r\n" }
+                None {}
+            }
+        }
+        match rd.c.writeStr(out) {
+            Ok(_) {}
+            Err(_) { return 0 }
+        }
+        if closing { return 0 }
+    }
+    return 0
+}
+
+fn intToHex(n: int): str {
+    let digits = "0123456789ABCDEF"
+    if n == 0 { return "0" }
+    var s = ""
+    var k = n
+    while k > 0 {
+        s = digits[k % 16..k % 16 + 1] + s
+        k = k / 16
+    }
+    return s
+}
+
+// ---------------------------------------------------------------- the scripted server
+
+// What the scripted server does for one request: writes reply (one byte
+// every dribbleMs ms when that is not 0), then closes the connection if
+// close. A connection gets the steps in turn, across connections; after
+// the last step, a request is answered by closing.
+pub type Step = value record {
+    pub reply: str
+    pub close: bool
+    pub dribbleMs: int
+}
+
+pub fn step(reply: str, close: bool): Step { return Step{reply: reply, close: close, dribbleMs: 0} }
+
+pub type Script = record {
+    pub ln: net.Listener
+    pub steps: []Step
+}
+
+type Scripted = record { c: net.Conn; steps: []Step }
+
+// Serves the script's steps until cancelled. STEP and READ start again.
+pub fn scripted(sc: Script): int {
+    let Script{ln: ln, steps: steps} = move(sc)
+    STEP = 0
+    READ = 0
+    task.scope(fn(s: mut &task.Scope) {
+        while true {
+            match ln.accept() {
+                Ok(c) {
+                    var mine: []Step = []
+                    for x in steps { append(mut &mine, x) }
+                    s.spawn(play, Scripted{c: c, steps: mine})
+                }
+                Err(_) { break }
+            }
+        }
+    })
+    return 0
+}
+
+fn play(p: Scripted): int {
+    let Scripted{c: c, steps: steps} = move(p)
+    var rd = reader(c)
+    while true {
+        match rd.next() {
+            Some(_) {}
+            None { return 0 }
+        }
+        READ += 1
+        if STEP >= len(steps) { return 0 }
+        let st = steps[STEP]
+        STEP += 1
+        if st.dribbleMs > 0 {
+            for i in 0..len(st.reply) {
+                match rd.c.writeStr(st.reply[i..i + 1]) {
+                    Ok(_) {}
+                    Err(_) { return 0 }
+                }
+                match task.sleep(st.dribbleMs) {
+                    Ok(_) {}
+                    Err(_) { return 0 }
+                }
+            }
+        } else if len(st.reply) > 0 {
+            match rd.c.writeStr(st.reply) {
+                Ok(_) {}
+                Err(_) { return 0 }
+            }
+        }
+        if st.close { return 0 }
+    }
+    return 0
+}

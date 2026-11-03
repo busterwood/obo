@@ -1,0 +1,1406 @@
+// http: an HTTP/1.1 client for tasks, and the header parsing it shares with
+// servers (design/http-client.md, phase H1: plain TCP; https is H2).
+//
+//     let r = try http.get("http://api.example.com/v1/rates?ccy=EUR")
+//     if r.status != 200 { ... }                 // a status is not an error
+//     let body = try r.text()                     // the whole body, at most maxBody
+//
+//     var o = http.defaults()
+//     o.maxPerHost = 8
+//     o.timeoutMs = 10000
+//     let c = http.newClient(o)                   // a pool, shared by copies
+//     var rq = http.request("POST", "http://api.example.com/v1/orders")
+//     rq.header("Content-Type", "application/json")
+//     rq.body = json
+//     let r = try c.send(&rq)
+//
+//     var buf = array(65536, byte(0))             // streaming a large body
+//     var r = try c.get(u)
+//     while true {
+//         let n = try r.read(mut &buf)
+//         if n == 0 { break }
+//         ...
+//     }
+//
+// Calls park their task (net, task) and every call that can park takes the
+// caller's location as a last std.Where, which a call leaves out (SPEC 15).
+// Errors are Error {kind, msg, url}; a reply with any status is Ok.
+//
+// A Response holds its connection. When it is dropped with its body read to
+// the end (text, bytes, or read until 0), and the server keeps the
+// connection open, the connection goes back to its client's pool; otherwise
+// it is closed. So no connection is reused in an unknown state, and none
+// leaks. A body whose remaining bytes have already arrived (a short reply
+// whose body nobody read) counts as read.
+//
+// Replies are read strictly, as RFC 9112 asks of a client that must not be
+// confused about where a reply ends (request smuggling, section 6.3):
+// Content-Length together with Transfer-Encoding, two different
+// Content-Lengths, a transfer coding other than chunked, a header line
+// folded onto the next, a line ended by LF alone, a bad chunk size, and a
+// connection that closes inside a head or a framed body are Protocol
+// errors. Limits against a hostile server: a head of at most 64 KiB and 100
+// header lines (trailers too), a body of at most Options.maxBody for text()
+// and bytes() (read streams without one), at most 8 interim (1xx) replies
+// before the real one, and Options.maxRedirects redirects.
+
+import "task"
+import "net"
+import "io"
+import "os"
+import "time"
+import "url"
+
+pub const MAX_HEAD = 65536         // bytes of a reply head (status line and headers), or of trailers
+pub const MAX_HEADERS = 100        // header lines of a head, or trailer lines
+const MAX_INTERIM = 8              // 1xx replies skipped before the real one
+const MAX_LINE = 4096              // a chunk-size line
+const BUF = 16384                  // a connection's read buffer (grows for a long head)
+const SMALL_BODY = 16384           // a request body up to this is sent with the head, in one write
+const CHECK_IDLE_NS = 100000000    // a connection idle longer than 100 ms is checked before reuse
+const DRAIN = 65536                // a redirect's body up to this is read, so its connection is reused
+const EPIPE = 32
+const ECONNRESET = 104
+const EBADF = 9
+
+// ---------------------------------------------------------------- errors
+
+// What went wrong. Tls is for https (phase H2). Process: a client used in
+// another process than the one that made it (after a fork).
+pub type Kind = value closed {
+    Url; Invalid; Dns; Connect; Tls; Timeout; Cancelled; Io; Protocol; TooLarge; Redirects; Process
+}
+
+pub fn (k: Kind) toStr(): str {
+    match k {
+        Kind.Url { return "bad URL" }
+        Kind.Invalid { return "invalid request" }
+        Kind.Dns { return "name lookup" }
+        Kind.Connect { return "connect" }
+        Kind.Tls { return "tls" }
+        Kind.Timeout { return "timeout" }
+        Kind.Cancelled { return "cancelled" }
+        Kind.Io { return "i/o" }
+        Kind.Protocol { return "protocol" }
+        Kind.TooLarge { return "too large" }
+        Kind.Redirects { return "redirects" }
+        Kind.Process { return "process" }
+    }
+}
+
+pub type Error = value record {
+    pub kind: Kind
+    pub msg: str
+    pub url: str     // the request's URL (the one that failed, after redirects)
+}
+
+// "http: protocol: both Content-Length and Transfer-Encoding (GET http://h/x)"
+pub fn (e: Error) toStr(): str {
+    if len(e.url) == 0 { return "http: " + e.kind.toStr() + ": " + e.msg }
+    return "http: " + e.kind.toStr() + ": " + e.msg + " (" + e.url + ")"
+}
+
+fn err(k: Kind, msg: str, u: str): Error { return Error{kind: k, msg: msg, url: u} }
+
+// The error of a failed socket call.
+fn ioErr(e: io.IoError, connecting: bool, u: str): Error {
+    if e.isTimeout() { return err(Kind.Timeout, "deadline passed (" + e.op + ")", u) }
+    if e.isCancelled() { return err(Kind.Cancelled, "cancelled (" + e.op + ")", u) }
+    if e.isLookup() { return err(Kind.Dns, e.toStr(), u) }
+    return err(if connecting { Kind.Connect } else { Kind.Io }, e.toStr(), u)
+}
+
+// ---------------------------------------------------------------- headers
+
+// One header line: its name as written and its value without the
+// surrounding spaces.
+pub type Header = value record {
+    pub name: str
+    pub value: str
+}
+
+// Header lines in order; names compare without case, and a name may repeat.
+pub type Headers = record { list: []Header }
+
+pub fn newHeaders(): Headers { return Headers{list: []} }
+
+// ASCII case-insensitive equality (header names, tokens).
+pub fn equalFold(a: str, b: str): bool {
+    if len(a) != len(b) { return false }
+    for i in 0..len(a) {
+        var x = a[i]
+        var y = b[i]
+        if x != y {
+            if x >= 'A' && x <= 'Z' { x += byte(32) }
+            if y >= 'A' && y <= 'Z' { y += byte(32) }
+            if x != y { return false }
+        }
+    }
+    return true
+}
+
+// The first value of the header name.
+pub fn (h: &Headers) get(name: str): Option[str] {
+    for x in h.list {
+        if equalFold(x.name, name) { return Some(x.value) }
+    }
+    return None
+}
+
+pub fn (h: &Headers) has(name: str): bool { return h.get(name).isSome() }
+
+// Every value of the header name, in order.
+pub fn (h: &Headers) values(name: str): []str {
+    var out: []str = []
+    for x in h.list {
+        if equalFold(x.name, name) { append(mut &out, x.value) }
+    }
+    return out
+}
+
+pub fn (h: &Headers) size(): int { return len(h.list) }
+
+pub fn (h: &Headers) at(i: int): Header { return h.list[i] }
+
+// Adds a line at the end.
+pub fn (h: mut &Headers) add(name: str, value: str) { append(mut &h.list, Header{name: name, value: value}) }
+
+// Removes every line of name.
+pub fn (h: mut &Headers) remove(name: str) {
+    var keep: []Header = []
+    for x in h.list {
+        if !equalFold(x.name, name) { append(mut &keep, x) }
+    }
+    h.list = keep
+}
+
+// Replaces every line of name with one.
+pub fn (h: mut &Headers) set(name: str, value: str) {
+    h.remove(name)
+    h.add(name, value)
+}
+
+pub fn (h: &Headers) copy(): Headers {
+    var out: []Header = []
+    for x in h.list { append(mut &out, x) }
+    return Headers{list: out}
+}
+
+// Whether a comma-separated header (Connection, Transfer-Encoding) lists
+// token, without case.
+pub fn (h: &Headers) hasToken(name: str, token: str): bool {
+    for x in h.list {
+        if equalFold(x.name, name) {
+            for t in split(x.value, ',') {
+                if equalFold(trimOws(t), token) { return true }
+            }
+        }
+    }
+    return false
+}
+
+// ---------------------------------------------------------------- parsing heads (shared)
+
+fn isTchar(c: byte): bool {
+    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') { return true }
+    return c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' ||
+           c == '-' || c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~'
+}
+
+// Whether s is a token (RFC 9110 5.6.2): a method or a header name.
+pub fn isToken(s: str): bool {
+    if len(s) == 0 { return false }
+    for i in 0..len(s) {
+        if !isTchar(s[i]) { return false }
+    }
+    return true
+}
+
+// Whether s may be a header value: visible ASCII, space, tab and bytes
+// from 0x80 (no CR, LF, NUL or other control character).
+pub fn isFieldValue(s: str): bool {
+    for i in 0..len(s) {
+        let c = s[i]
+        if (c < byte(0x20) && c != '\t') || c == byte(0x7f) { return false }
+    }
+    return true
+}
+
+fn trimOws(s: str): str {
+    var a = 0
+    var b = len(s)
+    while a < b && (s[a] == ' ' || s[a] == '\t') { a += 1 }
+    while b > a && (s[b - 1] == ' ' || s[b - 1] == '\t') { b -= 1 }
+    return s[a..b]
+}
+
+// The index of the first "\r\n\r\n" in b[start..n], looking from `from`
+// on (earlier bytes were looked at before); -1 when there is none yet, -2
+// when a line ends with LF alone.
+pub fn headEnd(b: &[byte], start: int, from: int, n: int): int {
+    var i = if from > start { from } else { start }
+    while i < n {
+        if b[i] == '\n' {
+            if i == start || b[i - 1] != '\r' { return -2 }
+            if i >= start + 3 && b[i - 2] == '\n' && b[i - 3] == '\r' { return i - 3 }
+        }
+        i += 1
+    }
+    return -1
+}
+
+// The header lines of head from byte `at` on (head: without the blank line
+// that ends it; lines end with CRLF) into h, at most max of them. Strict:
+// a line that starts with a space or tab (obsolete folding), a name that
+// is not a token or is followed by a space, a value with a control
+// character, a CR or LF alone, are errors.
+pub fn parseFields(head: str, at: int, h: mut &Headers, max: int): Result[Unit, str] {
+    var i = at
+    while i < len(head) {
+        var j = i
+        var colon = -1
+        while j < len(head) && head[j] != '\r' && head[j] != '\n' {
+            if colon < 0 && head[j] == ':' { colon = j }
+            j += 1
+        }
+        if j < len(head) && (head[j] == '\n' || j + 1 >= len(head) || head[j + 1] != '\n') {
+            return Err("a line not ended by CRLF")
+        }
+        if j == i { return Err("an empty header line") }
+        if head[i] == ' ' || head[i] == '\t' { return Err("a header line folded onto the next (obs-fold)") }
+        if colon < 0 { return Err("a header line without ':'") }
+        if colon == i { return Err("an invalid header name") }
+        for k in i..colon {
+            if !isTchar(head[k]) { return Err("an invalid header name") }
+        }
+        var a = colon + 1
+        var b = j
+        while a < b && (head[a] == ' ' || head[a] == '\t') { a += 1 }
+        while b > a && (head[b - 1] == ' ' || head[b - 1] == '\t') { b -= 1 }
+        for k in a..b {
+            let c = head[k]
+            if (c < byte(0x20) && c != '\t') || c == byte(0x7f) { return Err("a control character in a header value") }
+        }
+        if len(h.list) >= max { return Err("more than " + intToStr(max) + " header lines") }
+        append(mut &h.list, Header{name: head[i..colon], value: head[a..b]})
+        i = j + 2
+    }
+    return Ok(Unit{})
+}
+
+// The value of Content-Length: -1 when there is none. Repeated lines, or a
+// list, must all give the same number; anything but digits is an error.
+pub fn contentLength(h: &Headers): Result[int, str] {
+    var n = -1
+    for x in h.list {
+        if equalFold(x.name, "Content-Length") {
+            for part in split(x.value, ',') {
+                let v = trimOws(part)
+                if len(v) == 0 || len(v) > 18 { return Err("an invalid Content-Length") }
+                var k = 0
+                for i in 0..len(v) {
+                    if v[i] < '0' || v[i] > '9' { return Err("an invalid Content-Length") }
+                    k = k * 10 + int(v[i] - '0')
+                }
+                if n >= 0 && k != n { return Err("two different Content-Lengths") }
+                n = k
+            }
+        }
+    }
+    return Ok(n)
+}
+
+// A request head, as a server reads it (parseRequest).
+pub type RequestHead = record {
+    pub method: str
+    pub target: str      // as sent: "/path?query", or "*", or an absolute URL
+    pub minor: int       // 1 for HTTP/1.1, 0 for HTTP/1.0
+    pub headers: Headers
+}
+
+// Parses a request head (without the blank line): the request line, then
+// header lines as parseFields reads them (at most MAX_HEADERS). The method
+// must be a token, the target not empty, the version HTTP/1.0 or HTTP/1.1.
+pub fn parseRequest(head: str): Result[RequestHead, str] {
+    var e = 0
+    while e < len(head) && head[e] != '\r' && head[e] != '\n' { e += 1 }
+    let line = head[..e]
+    let sp1 = indexOf(line, " ", 0)
+    if sp1 <= 0 { return Err("a malformed request line") }
+    let sp2 = indexOf(line, " ", sp1 + 1)
+    if sp2 < 0 || sp2 == sp1 + 1 { return Err("a malformed request line") }
+    let method = line[..sp1]
+    let target = line[sp1 + 1..sp2]
+    let version = line[sp2 + 1..]
+    if !isToken(method) { return Err("an invalid method") }
+    for i in 0..len(target) {
+        if target[i] <= byte(0x20) || target[i] >= byte(0x7f) { return Err("an invalid request target") }
+    }
+    var minor = 1
+    if version == "HTTP/1.0" {
+        minor = 0
+    } else if version != "HTTP/1.1" {
+        return Err("an unsupported version")
+    }
+    var h = newHeaders()
+    if e < len(head) {
+        if head[e] != '\r' || e + 1 >= len(head) || head[e + 1] != '\n' { return Err("a line not ended by CRLF") }
+        try parseFields(head, e + 2, mut &h, MAX_HEADERS)
+    }
+    return Ok(RequestHead{method: method, target: target, minor: minor, headers: h})
+}
+
+// Whether the client wants the connection kept after this request: HTTP/1.1
+// unless it says Connection: close, HTTP/1.0 only with Connection:
+// keep-alive.
+pub fn (r: &RequestHead) keepAlive(): bool {
+    if r.headers.hasToken("Connection", "close") { return false }
+    return r.minor == 1 || r.headers.hasToken("Connection", "keep-alive")
+}
+
+// The length of the request's body: 0 for none, -1 for a body with a
+// Transfer-Encoding (chunked). Both Content-Length and Transfer-Encoding,
+// or Content-Lengths that differ, are an error (a server answers 400).
+pub fn (r: &RequestHead) bodyLength(): Result[int, str] {
+    let n = try contentLength(&r.headers)
+    if r.headers.has("Transfer-Encoding") {
+        if n >= 0 { return Err("both Content-Length and Transfer-Encoding") }
+        return Ok(-1)
+    }
+    return Ok(if n < 0 { 0 } else { n })
+}
+
+// A status line: "HTTP/1.1 200 OK".
+type Status = value record { minor: int; code: int; reason: str }
+
+fn parseStatus(line: str): Result[Status, str] {
+    if len(line) < 12 || line[..7] != "HTTP/1." || (line[7] != '0' && line[7] != '1') || line[8] != ' ' {
+        if startsWith(line, "HTTP/") && len(line) > 8 && line[8] == ' ' { return Err("an unsupported version") }
+        return Err("a malformed status line")
+    }
+    var code = 0
+    for i in 9..12 {
+        if line[i] < '0' || line[i] > '9' { return Err("a malformed status code") }
+        code = code * 10 + int(line[i] - '0')
+    }
+    if code < 100 || code > 599 { return Err("a status code out of range") }
+    var reason = ""
+    if len(line) > 12 {
+        if line[12] != ' ' { return Err("a malformed status line") }
+        reason = line[13..]
+        if !isFieldValue(reason) { return Err("a control character in the reason phrase") }
+    }
+    return Ok(Status{minor: int(line[7] - '0'), code: code, reason: reason})
+}
+
+// ---------------------------------------------------------------- requests
+
+// A request to build before sending (Client.send): the method, the URL
+// (checked when it is sent), header lines and a body (bytes, as a str).
+// Host, User-Agent and Content-Length are added unless they are set;
+// a Content-Length that is set must be the body's length.
+pub type Request = record {
+    pub method: str
+    pub url: str
+    pub headers: Headers
+    pub body: str
+}
+
+pub fn request(method: str, u: str): Request {
+    return Request{method: method, url: u, headers: newHeaders(), body: ""}
+}
+
+// Adds a header line.
+pub fn (r: mut &Request) header(name: str, value: str) { r.headers.add(name, value) }
+
+fn idempotent(m: str): bool {
+    return m == "GET" || m == "HEAD" || m == "PUT" || m == "DELETE" || m == "OPTIONS" || m == "TRACE"
+}
+
+fn bodyMethod(m: str): bool { return m == "POST" || m == "PUT" || m == "PATCH" }
+
+// ---------------------------------------------------------------- options and clients
+
+// What a Client does. defaults() gives the usual values; change fields of
+// the result: `var o = http.defaults(); o.timeoutMs = 5000`.
+pub type Options = value record {
+    pub maxPerHost: int            // connections per (scheme, host, port), busy and idle; more requests wait
+    pub timeoutMs: int             // a task.within around each request, its redirects and its body (0: none)
+    pub maxBody: int               // the largest body text() and bytes() read
+    pub redirects: bool            // follow 301, 302, 303, 307 and 308
+    pub maxRedirects: int
+    pub allowHttpsToHttp: bool     // follow a redirect from https to http
+    pub idleTimeoutMs: int         // how long an idle connection is kept
+    pub userAgent: str             // the User-Agent header, unless a request sets one ("": none)
+}
+
+// maxPerHost 16, timeoutMs 30,000, maxBody 16 MiB, redirects on, at most
+// 10, not from https to http, idle connections kept 90 s, User-Agent obx.
+pub fn defaults(): Options {
+    return Options{maxPerHost: 16, timeoutMs: 30000, maxBody: 16777216, redirects: true, maxRedirects: 10,
+                   allowHttpsToHttp: false, idleTimeoutMs: 90000, userAgent: "obx"}
+}
+
+// A client: its options and a pool of kept-alive connections per server. A
+// counted handle (task.Shared), like postgres.Pool: copies reach the same
+// pool, which closes its idle connections when the last copy and the last
+// Response are gone. A client belongs to the process that made it: after a
+// fork (task.workers), make one in each worker; using a parent's client is
+// a Process error, so two processes never share a connection.
+pub type Client = value record {
+    sh: task.Shared[PoolState]
+    pid: int
+}
+
+// What a client's pool holds now, and what it has done.
+pub type Stats = value record {
+    pub open: int          // connections open: in use, idle or being opened
+    pub idle: int
+    pub waiting: int       // requests waiting for a connection (maxPerHost)
+    pub dials: int         // connections opened
+    pub reuses: int        // requests sent on a kept-alive connection
+    pub retries: int       // requests sent again after a kept-alive connection failed
+}
+
+type PoolState = record {
+    opts: Options
+    hosts: Map[str, Host]
+    nextId: int
+    dials: int
+    reuses: int
+    retries: int
+}
+
+type Host = record {
+    open: int              // connections open or being opened, in use or idle
+    idle: []Conn           // most recently used last
+    waiters: []Waiter      // first come first served
+}
+
+// A request parked for a connection: its promise brings an idle one, or
+// None: a place to open one in.
+type Waiter = record { id: int; p: task.Promise[Option[Conn]] }
+
+pub fn newClient(o: Options): Client {
+    var opts = o
+    if opts.maxPerHost < 1 { opts.maxPerHost = 1 }
+    if opts.maxRedirects < 0 { opts.maxRedirects = 0 }
+    if opts.maxBody < 0 { opts.maxBody = 0 }
+    let st = PoolState{opts: opts, hosts: newMap(), nextId: 0, dials: 0, reuses: 0, retries: 0}
+    return Client{sh: task.shared(st), pid: os.pid()}
+}
+
+pub fn (c: &Client) options(): Options {
+    var o = defaults()
+    c.sh.with(fn(st: mut &PoolState) { o = st.opts })
+    return o
+}
+
+pub fn (c: &Client) stats(): Stats {
+    var s = Stats{open: 0, idle: 0, waiting: 0, dials: 0, reuses: 0, retries: 0}
+    c.sh.with(fn(st: mut &PoolState) {
+        s.dials = st.dials
+        s.reuses = st.reuses
+        s.retries = st.retries
+        for i in 0..st.hosts.size() {
+            let h = st.hosts.valAt(i)
+            s.open += h.open
+            s.idle += len(h.idle)
+            s.waiting += len(h.waiters)
+        }
+    })
+    return s
+}
+
+// Closes the idle connections now (dropping the last copy of the client
+// does too).
+pub fn (c: &Client) closeIdle() {
+    c.sh.with(fn(st: mut &PoolState) {
+        for i in 0..st.hosts.size() {
+            let h = st.hosts.valAtMut(i)
+            h.open -= len(h.idle)
+            h.idle = []
+        }
+    })
+}
+
+// ---------------------------------------------------------------- connections
+
+// What a connection reads and writes through: plain TCP now; H2 adds TLS
+// as a variant here, under the same calls.
+type Stream = value closed {
+    Tcp(net.Conn)
+    Gone
+}
+
+fn (s: &Stream) read(b: mut &[byte], w: Where): Result[int, io.IoError] {
+    match s {
+        Stream.Tcp(c) { return c.read(b, w) }
+        Stream.Gone { return Err(io.ioError(EBADF, "read", "")) }
+    }
+}
+
+fn (s: &Stream) writeStr(data: str, w: Where): Result[Unit, io.IoError] {
+    match s {
+        Stream.Tcp(c) { return c.writeStr(data, w) }
+        Stream.Gone { return Err(io.ioError(EBADF, "write", "")) }
+    }
+}
+
+// Whether a connection that waited in the pool is still as it was: nothing
+// arrived (not even the end of the stream).
+fn (s: &Stream) quiet(): bool {
+    match s {
+        Stream.Tcp(c) {
+            var b = array(1, byte(0))
+            match c.readNow(mut &b) {
+                Ok(n) { return false }
+                Err(e) { return e.errno == 11 }
+            }
+        }
+        Stream.Gone { return false }
+    }
+}
+
+// A connection to a server and what has been read from it but not used:
+// buf[r..w].
+type Conn = value record {
+    s: Stream
+    buf: []byte
+    r: int
+    w: int
+    idleSince: int         // monotonic ns when it went idle
+    idleUntil: int         // monotonic ns after which it is not reused
+}
+
+fn gone(): Conn { return Conn{s: Stream.Gone, buf: [], r: 0, w: 0, idleSince: 0, idleUntil: 0} }
+
+fn (c: &Conn) isGone(): bool {
+    match c.s {
+        Stream.Gone { return true }
+        else { return false }
+    }
+}
+
+fn dialConn(u: &url.Url, w: Where): Result[Conn, Error] {
+    if u.scheme == "https" { return Err(err(Kind.Tls, "https is not supported yet (plain http only)", u.toStr())) }
+    let nc = match net.dial(u.hostPort(), w) {
+        Ok(x) { x }
+        Err(e) { return Err(ioErr(e, true, u.toStr())) }
+    }
+    match nc.setNoDelay(true) {
+        Ok(_) {}
+        Err(e) { return Err(ioErr(e, true, u.toStr())) }
+    }
+    return Ok(Conn{s: Stream.Tcp(nc), buf: array(BUF, byte(0)), r: 0, w: 0, idleSince: 0, idleUntil: 0})
+}
+
+// Makes room after buf[w] for more input: moves the unread bytes to the
+// front, or grows the buffer (up to MAX_HEAD + BUF) when it is full of them.
+fn (c: mut &Conn) room() {
+    if c.w < len(c.buf) { return }
+    if c.r > 0 {
+        let n = c.w - c.r
+        for i in 0..n { c.buf[i] = c.buf[c.r + i] }
+        c.r = 0
+        c.w = n
+        return
+    }
+    if len(c.buf) < MAX_HEAD + BUF {
+        var bigger = array(len(c.buf) * 2, byte(0))
+        for i in 0..c.w { bigger[i] = c.buf[i] }
+        c.buf = bigger
+    }
+}
+
+// Reads more input into the buffer: the count, 0 at the end of the stream.
+fn (c: mut &Conn) fill(w: Where): Result[int, io.IoError] {
+    c.room()
+    if c.w == len(c.buf) { return Ok(-1) }
+    let n = try c.s.read(mut &c.buf[c.w..len(c.buf)], w)
+    c.w += n
+    return Ok(n)
+}
+
+// Up to len(dst) bytes of input: buffered ones first, else read from the
+// stream straight into dst. 0 at the end of the stream.
+fn (c: mut &Conn) take(dst: mut &[byte], w: Where): Result[int, io.IoError] {
+    if c.r < c.w {
+        let n = min(len(dst), c.w - c.r)
+        for i in 0..n { dst[i] = c.buf[c.r + i] }
+        c.r += n
+        return Ok(n)
+    }
+    return c.s.read(dst, w)
+}
+
+// A failed exchange; stale: nothing of the reply came on a reused
+// connection (the server may have closed it while it was idle), so an
+// idempotent request may be sent again.
+type Fail = value record { e: Error; stale: bool }
+
+fn failed(e: Error): Fail { return Fail{e: e, stale: false} }
+
+// Reads one head (up to the blank line), as text.
+fn (c: mut &Conn) readHead(u: str, first: bool, w: Where): Result[str, Fail] {
+    var from = c.r
+    while true {
+        let end = headEnd(&c.buf, c.r, from, c.w)
+        if end > c.r + MAX_HEAD { return Err(failed(err(Kind.TooLarge, "a reply head over 64 KiB", u))) }
+        if end >= 0 {
+            let head = strFromBytes(&c.buf[c.r..end])
+            c.r = end + 4
+            return Ok(head)
+        }
+        if end == -2 { return Err(failed(err(Kind.Protocol, "a line of the reply head not ended by CRLF", u))) }
+        if c.w - c.r > MAX_HEAD { return Err(failed(err(Kind.TooLarge, "a reply head over 64 KiB", u))) }
+        let seen = c.w - c.r             // looked at already, but for the last 3 bytes
+        let empty = seen == 0
+        match c.fill(w) {
+            Ok(n) {
+                if n == 0 {
+                    if empty { return Err(Fail{e: err(Kind.Io, "the connection closed before the reply", u), stale: first}) }
+                    return Err(failed(err(Kind.Protocol, "the connection closed inside the reply head", u)))
+                }
+                if n < 0 { return Err(failed(err(Kind.TooLarge, "a reply head over 64 KiB", u))) }
+            }
+            Err(e) {
+                return Err(Fail{e: ioErr(e, false, u), stale: first && empty && e.errno == ECONNRESET})
+            }
+        }
+        from = c.r + max(seen - 3, 0)
+    }
+    return Err(failed(err(Kind.Protocol, "unreachable", u)))
+}
+
+// One CRLF-ended line (a chunk size), without its CRLF.
+fn (c: mut &Conn) readLine(u: str, w: Where): Result[str, Error] {
+    var from = c.r
+    while true {
+        var i = from
+        while i < c.w {
+            if c.buf[i] == '\n' {
+                if i - c.r > MAX_LINE { return Err(err(Kind.Protocol, "a chunk size line over 4 KiB", u)) }
+                if i == c.r || c.buf[i - 1] != '\r' { return Err(err(Kind.Protocol, "a chunk line not ended by CRLF", u)) }
+                let line = strFromBytes(&c.buf[c.r..i - 1])
+                c.r = i + 1
+                return Ok(line)
+            }
+            i += 1
+        }
+        if c.w - c.r > MAX_LINE { return Err(err(Kind.Protocol, "a chunk size line over 4 KiB", u)) }
+        let before = c.r
+        let n = match c.fill(w) {
+            Ok(k) { k }
+            Err(e) { return Err(ioErr(e, false, u)) }
+        }
+        if n == 0 { return Err(err(Kind.Protocol, "the connection closed inside the chunked body", u)) }
+        from = i - (before - c.r)
+    }
+    return Err(err(Kind.Protocol, "unreachable", u))
+}
+
+// ---------------------------------------------------------------- the pool
+
+// A connection for key: an idle one, None for a place to open one in, or
+// Err when the task is cancelled or its deadline passes while it waits.
+fn acquire(sh: &task.Shared[PoolState], key: str, u: str, w: Where): Result[Option[Conn], Error] {
+    var got: Option[Conn] = None
+    var wait: Option[task.Future[Option[Conn]]] = None
+    var id = 0
+    let now = time.monotonicNs()
+    sh.with(fn(st: mut &PoolState) {
+        let max = st.opts.maxPerHost
+        id = st.nextId
+        st.nextId += 1
+        if !st.hosts.has(&key) { st.hosts.put(key, Host{open: 0, idle: [], waiters: []}) }
+        var reused = false
+        {
+            let h = st.hosts.atMut(key)
+            // the oldest idle connections whose time is up are closed
+            while len(h.idle) > 0 && h.idle[0].idleUntil <= now {
+                for j in 0..len(h.idle) - 1 { swap(mut &h.idle, j, j + 1) }
+                let old = pop(mut &h.idle)
+                h.open -= 1
+            }
+            if len(h.idle) > 0 {
+                got = Some(pop(mut &h.idle))
+                reused = true
+            } else if h.open < max {
+                h.open += 1
+            } else {
+                let task.Handoff{promise: pr, future: f} = task.promise[Option[Conn]]()
+                append(mut &h.waiters, Waiter{id: id, p: pr})
+                wait = Some(f)
+            }
+        }
+        if reused { st.reuses += 1 }
+    })
+    match replace(mut &wait, None) {
+        Some(f) {
+            match f.wait(w) {
+                Ok(v) { got = v }
+                Err(e) {
+                    // Still queued: leave the queue. Already served: what came was dropped
+                    // with the future (a connection closed, or a place), so its place goes on.
+                    var served = true
+                    sh.with(fn(st: mut &PoolState) {
+                        if st.hosts.has(&key) {
+                            let h = st.hosts.atMut(key)
+                            for i in 0..len(h.waiters) {
+                                if h.waiters[i].id == id {
+                                    for j in i..len(h.waiters) - 1 { swap(mut &h.waiters, j, j + 1) }
+                                    let gone = pop(mut &h.waiters)
+                                    served = false
+                                    break
+                                }
+                            }
+                        }
+                    })
+                    if served { release(sh, key, None) }
+                    let k = if e == task.Cancelled.Timeout { Kind.Timeout } else { Kind.Cancelled }
+                    return Err(err(k, e.toStr() + " while waiting for a connection", u))
+                }
+            }
+        }
+        None {}
+    }
+    return Ok(replace(mut &got, None))
+}
+
+// Gives a connection (or, for None, a place to open one) to the first
+// waiter for key; with none, keeps the connection idle (or frees the
+// place). The promise is completed outside with: if its future is gone,
+// what it carries is dropped there, and that may come back here.
+fn release(sh: &task.Shared[PoolState], key: str, var c: Option[Conn]) {
+    var p: Option[task.Promise[Option[Conn]]] = None
+    sh.with(fn(st: mut &PoolState) {
+        if !st.hosts.has(&key) { return }
+        var empty = false
+        {
+            let h = st.hosts.atMut(key)
+            if len(h.waiters) > 0 {
+                for j in 0..len(h.waiters) - 1 { swap(mut &h.waiters, j, j + 1) }
+                let Waiter{id: _, p: pr} = pop(mut &h.waiters)
+                p = Some(pr)
+            } else {
+                match replace(mut &c, None) {
+                    Some(conn) { append(mut &h.idle, conn) }
+                    None { h.open -= 1 }
+                }
+            }
+            empty = h.open == 0 && len(h.waiters) == 0
+        }
+        if empty { let gone = st.hosts.remove(&key) }
+    })
+    match replace(mut &p, None) {
+        Some(pr) { pr.complete(replace(mut &c, None)) }
+        None {}
+    }
+}
+
+fn count(sh: &task.Shared[PoolState], dial: bool) {
+    sh.with(fn(st: mut &PoolState) {
+        if dial { st.dials += 1 } else { st.retries += 1 }
+    })
+}
+
+// ---------------------------------------------------------------- responses
+
+const F_EMPTY = 0       // no body
+const F_LENGTH = 1      // Content-Length bytes
+const F_CHUNKED = 2
+const F_CLOSE = 3       // until the server closes
+
+const C_SIZE = 0        // chunked: a chunk-size line next
+const C_DATA = 1        // inside a chunk's data
+const C_CRLF = 2        // the CRLF after a chunk's data next
+
+// A reply: its status line and headers, and the body still to read from its
+// connection (text, bytes, read). Dropping it gives the connection back to
+// the pool when the body has been read to the end (see the top).
+pub type Response = record {
+    pub status: int
+    pub reason: str
+    pub minor: int                // 1 for HTTP/1.1, 0 for HTTP/1.0
+    pub headers: Headers
+    pub url: url.Url              // the URL that answered (after redirects)
+    conn: Conn
+    sh: task.Shared[PoolState]
+    key: str                      // the pool's key for the connection's server
+    held: bool                    // a place in the pool is held (conn, or one being opened)
+    framing: int
+    left: int                     // F_LENGTH: bytes to come; chunked: of the current chunk
+    chunk: int                    // chunked: C_SIZE, C_DATA or C_CRLF
+    done: bool                    // the body has been read to the end
+    keep: bool                    // the server keeps the connection open after the body
+    keepMs: int                   // Keep-Alive: timeout=N, in ms (-1: none)
+    maxBody: int
+    idleMs: int
+    deadline: int                 // monotonic ns, or 0: none
+}
+
+// Whether the status is 2xx.
+pub fn (r: &Response) ok(): bool { return r.status >= 200 && r.status < 300 }
+
+// The first value of the header name.
+pub fn (r: &Response) header(name: str): Option[str] { return r.headers.get(name) }
+
+// The length the server announced (Content-Length), or -1: chunked, until
+// the connection closes, or no body.
+pub fn (r: &Response) contentLength(): int { return if r.framing == F_LENGTH { r.left } else { -1 } }
+
+fn (r: mut &Response) drop() {
+    if r.held {
+        if !r.done && r.framing == F_LENGTH && r.conn.w - r.conn.r >= r.left {
+            r.conn.r += r.left              // the rest of the body is here already: it counts as read
+            r.left = 0
+            r.done = true
+        }
+        let c = replace(mut &r.conn, gone())
+        if r.done && r.keep && c.r == c.w && !c.isGone() {
+            var k = c
+            let now = time.monotonicNs()
+            k.r = 0
+            k.w = 0
+            k.idleSince = now
+            var ms = r.idleMs
+            if r.keepMs >= 0 && r.keepMs < ms { ms = r.keepMs }
+            k.idleUntil = now + ms * 1000000
+            release(&r.sh, r.key, Some(k))
+        } else {
+            release(&r.sh, r.key, None)
+        }
+    }
+}
+
+// Closes the response: its connection goes back to the pool if its body was
+// read, else it is closed (as dropping it does).
+pub fn (r: Response) close() {}
+
+// The milliseconds left before the response's deadline, at least 1; -1 for
+// none; 0 when it has passed.
+fn (r: &Response) msLeft(): int {
+    if r.deadline == 0 { return -1 }
+    let left = (r.deadline - time.monotonicNs() + 999999) / 1000000
+    return if left <= 0 { 0 } else { left }
+}
+
+// Reads the next bytes of the body into buf: the count, 0 at its end. A
+// body framed by Content-Length or chunked that ends early, or a bad chunk,
+// is a Protocol error; the deadline of Options.timeoutMs still holds.
+pub fn (r: mut &Response) read(buf: mut &[byte], w: Where): Result[int, Error] {
+    if r.done || len(buf) == 0 { return Ok(0) }
+    let ms = r.msLeft()
+    if ms < 0 { return r.readBody(buf, w) }
+    if ms == 0 { return Err(err(Kind.Timeout, "deadline passed (read)", r.url.toStr())) }
+    return task.within(ms, fn(): Result[int, Error] { return r.readBody(buf, w) })
+}
+
+fn (r: mut &Response) readBody(buf: mut &[byte], w: Where): Result[int, Error] {
+    let u = r.url.toStr()
+    if r.framing == F_LENGTH {
+        let want = min(len(buf), r.left)
+        let n = match r.conn.take(mut &buf[0..want], w) {
+            Ok(k) { k }
+            Err(e) { return Err(ioErr(e, false, u)) }
+        }
+        if n == 0 { return Err(err(Kind.Protocol, "the connection closed with " + intToStr(r.left) + " bytes of the body to come", u)) }
+        r.left -= n
+        if r.left == 0 { r.done = true }
+        return Ok(n)
+    }
+    if r.framing == F_CLOSE {
+        let n = match r.conn.take(buf, w) {
+            Ok(k) { k }
+            Err(e) { return Err(ioErr(e, false, u)) }
+        }
+        if n == 0 { r.done = true }
+        return Ok(n)
+    }
+    if r.framing == F_CHUNKED {
+        while true {
+            if r.chunk == C_SIZE {
+                let line = try r.conn.readLine(u, w)
+                let size = try chunkSize(line, u)
+                if size == 0 {
+                    try r.trailers(u, w)
+                    r.done = true
+                    return Ok(0)
+                }
+                r.left = size
+                r.chunk = C_DATA
+            } else if r.chunk == C_DATA {
+                let want = min(len(buf), r.left)
+                let n = match r.conn.take(mut &buf[0..want], w) {
+                    Ok(k) { k }
+                    Err(e) { return Err(ioErr(e, false, u)) }
+                }
+                if n == 0 { return Err(err(Kind.Protocol, "the connection closed inside a chunk", u)) }
+                r.left -= n
+                if r.left == 0 { r.chunk = C_CRLF }
+                return Ok(n)
+            } else {
+                while r.conn.w - r.conn.r < 2 {
+                    let n = match r.conn.fill(w) {
+                        Ok(k) { k }
+                        Err(e) { return Err(ioErr(e, false, u)) }
+                    }
+                    if n == 0 { return Err(err(Kind.Protocol, "the connection closed inside the chunked body", u)) }
+                }
+                if r.conn.buf[r.conn.r] != '\r' || r.conn.buf[r.conn.r + 1] != '\n' {
+                    return Err(err(Kind.Protocol, "a chunk's data not followed by CRLF", u))
+                }
+                r.conn.r += 2
+                r.chunk = C_SIZE
+            }
+        }
+    }
+    r.done = true
+    return Ok(0)
+}
+
+// The size of a chunk-size line: hex digits, then optional extensions
+// (";name=value", ignored).
+fn chunkSize(line: str, u: str): Result[int, Error] {
+    var i = 0
+    var n = 0
+    while i < len(line) && hexDigit(line[i]) >= 0 {
+        if i >= 15 { return Err(err(Kind.Protocol, "a chunk size too large", u)) }
+        n = n * 16 + hexDigit(line[i])
+        i += 1
+    }
+    if i == 0 { return Err(err(Kind.Protocol, "a bad chunk size line", u)) }
+    var j = i
+    while j < len(line) && (line[j] == ' ' || line[j] == '\t') { j += 1 }
+    if j < len(line) && (line[j] != ';' || !isFieldValue(line[j..])) {
+        return Err(err(Kind.Protocol, "a bad chunk size line", u))
+    }
+    return Ok(n)
+}
+
+fn hexDigit(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'f' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'F' { return int(c - 'A') + 10 }
+    return -1
+}
+
+// The trailer lines after the last chunk, checked as header lines, then
+// dropped.
+fn (r: mut &Response) trailers(u: str, w: Where): Result[Unit, Error] {
+    let start = r.conn.r
+    var from = start
+    while true {
+        // an empty trailer section is the CRLF alone
+        if r.conn.w - r.conn.r >= 2 && r.conn.buf[r.conn.r] == '\r' && r.conn.buf[r.conn.r + 1] == '\n' {
+            r.conn.r += 2
+            return Ok(Unit{})
+        }
+        let end = headEnd(&r.conn.buf, r.conn.r, from, r.conn.w)
+        if end > r.conn.r + MAX_HEAD { return Err(err(Kind.TooLarge, "trailers over 64 KiB", u)) }
+        if end >= 0 {
+            var h = newHeaders()
+            match parseFields(strFromBytes(&r.conn.buf[r.conn.r..end]), 0, mut &h, MAX_HEADERS) {
+                Ok(_) {}
+                Err(m) { return Err(err(Kind.Protocol, m + " in the trailers", u)) }
+            }
+            r.conn.r = end + 4
+            return Ok(Unit{})
+        }
+        if end == -2 && !(r.conn.w - r.conn.r == 1 && r.conn.buf[r.conn.r] == '\r') {
+            return Err(err(Kind.Protocol, "a trailer line not ended by CRLF", u))
+        }
+        if r.conn.w - r.conn.r > MAX_HEAD { return Err(err(Kind.TooLarge, "trailers over 64 KiB", u)) }
+        let before = r.conn.r
+        let n = match r.conn.fill(w) {
+            Ok(k) { k }
+            Err(e) { return Err(ioErr(e, false, u)) }
+        }
+        if n == 0 { return Err(err(Kind.Protocol, "the connection closed inside the trailers", u)) }
+        if n < 0 { return Err(err(Kind.TooLarge, "trailers over 64 KiB", u)) }
+        from = max(r.conn.r, r.conn.w - n - 3)
+    }
+    return Ok(Unit{})
+}
+
+// The whole body as bytes in a str (no charset is applied), at most
+// Options.maxBody of them (TooLarge). Consumes the response, so its
+// connection goes back to the pool at once.
+pub fn (var r: Response) text(w: Where): Result[str, Error] { return r.readAll(w) }
+
+// The whole body as bytes, as text() reads it.
+pub fn (var r: Response) bytes(w: Where): Result[[]byte, Error] {
+    let s = try r.readAll(w)
+    return Ok(strToBytes(s))
+}
+
+// Reads the rest of the body and drops it, at most limit bytes (TooLarge
+// after that), so the connection can be reused.
+pub fn (var r: Response) discard(limit: int, w: Where): Result[Unit, Error] {
+    var buf = array(16384, byte(0))
+    var total = 0
+    while true {
+        let n = try r.read(mut &buf, w)
+        if n == 0 { break }
+        total += n
+        if total > limit { return Err(err(Kind.TooLarge, "a body over " + intToStr(limit) + " bytes", r.url.toStr())) }
+    }
+    return Ok(Unit{})
+}
+
+fn (r: mut &Response) readAll(w: Where): Result[str, Error] {
+    let u = r.url.toStr()
+    if r.done { return Ok("") }
+    if r.framing == F_LENGTH {
+        if r.left > r.maxBody { return Err(err(Kind.TooLarge, "a body of " + intToStr(r.left) + " bytes, over maxBody", u)) }
+        if r.conn.w - r.conn.r >= r.left {       // all here already
+            let s = strFromBytes(&r.conn.buf[r.conn.r..r.conn.r + r.left])
+            r.conn.r += r.left
+            r.left = 0
+            r.done = true
+            return Ok(s)
+        }
+        var acc = array(r.left, byte(0))
+        var have = 0
+        while have < len(acc) {
+            let n = try r.read(mut &acc[have..len(acc)], w)
+            have += n
+        }
+        return Ok(strFromBytes(&acc))
+    }
+    var acc = array(min(16384, r.maxBody + 1), byte(0))
+    var have = 0
+    while true {
+        if have == len(acc) {
+            if have >= r.maxBody + 1 { return Err(err(Kind.TooLarge, "a body over maxBody (" + intToStr(r.maxBody) + " bytes)", u)) }
+            var bigger = array(min(len(acc) * 2, r.maxBody + 1), byte(0))
+            for i in 0..have { bigger[i] = acc[i] }
+            acc = bigger
+        }
+        let n = try r.read(mut &acc[have..len(acc)], w)
+        if n == 0 { break }
+        have += n
+    }
+    if have > r.maxBody { return Err(err(Kind.TooLarge, "a body over maxBody (" + intToStr(r.maxBody) + " bytes)", u)) }
+    return Ok(strFromBytes(&acc[0..have]))
+}
+
+// ---------------------------------------------------------------- one exchange
+
+// The request's head and body, checked and written out.
+type Wire = record {
+    method: str
+    head: str
+    body: str
+}
+
+// Writes the request and reads the reply's head into r (status, headers,
+// framing), skipping interim 1xx replies.
+fn (r: mut &Response) roundTrip(wire: &Wire, first: bool, w: Where): Result[Unit, Fail] {
+    let u = r.url.toStr()
+    let sent = if len(wire.body) <= SMALL_BODY { r.conn.s.writeStr(wire.head + wire.body, w) } else {
+        match r.conn.s.writeStr(wire.head, w) {
+            Ok(_) { r.conn.s.writeStr(wire.body, w) }
+            Err(e) { Err(e) }
+        }
+    }
+    match sent {
+        Ok(_) {}
+        Err(e) { return Err(Fail{e: ioErr(e, false, u), stale: first && (e.errno == EPIPE || e.errno == ECONNRESET)}) }
+    }
+    var interim = 0
+    var head = ""
+    while true {
+        head = try r.conn.readHead(u, first && interim == 0, w)
+        var e = 0
+        while e < len(head) && head[e] != '\r' && head[e] != '\n' { e += 1 }
+        let st = match parseStatus(head[..e]) {
+            Ok(s) { s }
+            Err(m) { return Err(failed(err(Kind.Protocol, m, u))) }
+        }
+        var h = newHeaders()
+        if e < len(head) {
+            match parseFields(head, e + 2, mut &h, MAX_HEADERS) {
+                Ok(_) {}
+                Err(m) { return Err(failed(err(Kind.Protocol, m, u))) }
+            }
+        }
+        if st.code >= 200 {
+            r.status = st.code
+            r.reason = st.reason
+            r.minor = st.minor
+            r.headers = h
+            break
+        }
+        if st.code == 101 { return Err(failed(err(Kind.Protocol, "101 Switching Protocols, which was not asked for", u))) }
+        interim += 1
+        if interim > MAX_INTERIM { return Err(failed(err(Kind.Protocol, "more than 8 interim (1xx) replies", u))) }
+    }
+    match r.frame(wire.method) {
+        Ok(_) {}
+        Err(m) { return Err(failed(err(Kind.Protocol, m, u))) }
+    }
+    return Ok(Unit{})
+}
+
+// The body's framing (RFC 9112 section 6.3) and whether the connection is
+// kept after it.
+fn (r: mut &Response) frame(method: str): Result[Unit, str] {
+    let cl = try contentLength(&r.headers)
+    let te = r.headers.values("Transfer-Encoding")
+    let closing = r.headers.hasToken("Connection", "close")
+    r.keep = !closing && (r.minor == 1 || r.headers.hasToken("Connection", "keep-alive"))
+    if method == "HEAD" || r.status == 204 || r.status == 304 {
+        r.framing = F_EMPTY
+        r.done = true
+        r.keepAlive()
+        return Ok(Unit{})
+    }
+    if len(te) > 0 {
+        if cl >= 0 { return Err("both Content-Length and Transfer-Encoding") }
+        if r.minor == 0 { return Err("Transfer-Encoding in an HTTP/1.0 reply") }
+        var codings: []str = []
+        for v in te {
+            for t in split(v, ',') { append(mut &codings, trimOws(t)) }
+        }
+        if len(codings) != 1 || !equalFold(codings[0], "chunked") {
+            return Err("an unsupported transfer coding: " + te[0])
+        }
+        r.framing = F_CHUNKED
+        r.chunk = C_SIZE
+    } else if cl >= 0 {
+        r.framing = F_LENGTH
+        r.left = cl
+        if cl == 0 { r.done = true }
+    } else {
+        r.framing = F_CLOSE
+        r.keep = false
+    }
+    r.keepAlive()
+    return Ok(Unit{})
+}
+
+// Keep-Alive: timeout=N: the server closes the connection after N seconds
+// idle, so it is not reused after N - 1.
+fn (r: mut &Response) keepAlive() {
+    match r.headers.get("Keep-Alive") {
+        Some(v) {
+            for part in split(v, ',') {
+                let p = trimOws(part)
+                if len(p) > 8 && equalFold(p[..8], "timeout=") {
+                    match parseInt(trimOws(p[8..])) {
+                        Some(n) { if n >= 0 && n < 100000000 { r.keepMs = if n >= 1 { (n - 1) * 1000 } else { 0 } } }
+                        None {}
+                    }
+                }
+            }
+        }
+        None {}
+    }
+}
+
+// One request on one connection of the pool, sent once more on a new
+// connection when a kept-alive one turns out closed before any of the reply
+// came, if the method is idempotent.
+fn exchange(c: &Client, opts: &Options, u: &url.Url, wire: &Wire, deadline: int, w: Where): Result[Response, Error] {
+    let key = u.origin()
+    let us = u.toStr()
+    var r = Response{status: 0, reason: "", minor: 1, headers: newHeaders(), url: u, conn: gone(), sh: c.sh, key: key,
+                     held: false, framing: F_EMPTY, left: 0, chunk: C_SIZE, done: false, keep: false, keepMs: -1,
+                     maxBody: opts.maxBody, idleMs: opts.idleTimeoutMs, deadline: deadline}
+    var reused = false
+    match try acquire(&c.sh, key, us, w) {
+        Some(conn) {
+            r.conn = conn
+            reused = true
+        }
+        None {}
+    }
+    r.held = true
+    if reused && time.monotonicNs() - r.conn.idleSince > CHECK_IDLE_NS && !r.conn.s.quiet() {
+        r.conn = gone()                  // closed by the server meanwhile (or it sent something): a new one
+        reused = false
+    }
+    if !reused {
+        r.conn = try dialConn(u, w)
+        count(&c.sh, true)
+    }
+    match r.roundTrip(wire, reused, w) {
+        Ok(_) { return Ok(r) }
+        Err(f) {
+            if !(f.stale && reused && idempotent(wire.method)) { return Err(f.e) }
+        }
+    }
+    r.conn = gone()
+    r.conn = try dialConn(u, w)
+    count(&c.sh, true)
+    count(&c.sh, false)
+    match r.roundTrip(wire, false, w) {
+        Ok(_) { return Ok(r) }
+        Err(f) { return Err(f.e) }
+    }
+}
+
+// The wire form of a request to u: its head (request line, Host,
+// User-Agent, the request's headers, Content-Length) and body.
+fn wireOf(method: str, u: &url.Url, h: &Headers, body: str, ua: str): Result[Wire, Error] {
+    let us = u.toStr()
+    if !isToken(method) { return Err(err(Kind.Invalid, "an invalid method '" + method + "'", us)) }
+    var hasHost = false
+    var hasUa = false
+    var hasLen = false
+    var s = method + " " + u.target() + " HTTP/1.1\r\n"
+    for x in h.list {
+        if !isToken(x.name) { return Err(err(Kind.Invalid, "an invalid header name '" + x.name + "'", us)) }
+        if !isFieldValue(x.value) { return Err(err(Kind.Invalid, "a control character in the header " + x.name, us)) }
+        if equalFold(x.name, "Host") { hasHost = true }
+        if equalFold(x.name, "User-Agent") { hasUa = true }
+        if equalFold(x.name, "Transfer-Encoding") {
+            return Err(err(Kind.Invalid, "Transfer-Encoding is set (request bodies are sent with a Content-Length)", us))
+        }
+        if equalFold(x.name, "Content-Length") {
+            if x.value != intToStr(len(body)) { return Err(err(Kind.Invalid, "a Content-Length that is not the body's length", us)) }
+            hasLen = true
+        }
+    }
+    if !hasHost { s = s + "Host: " + u.authority() + "\r\n" }
+    if !hasUa && len(ua) > 0 { s = s + "User-Agent: " + ua + "\r\n" }
+    for x in h.list { s = s + x.name + ": " + x.value + "\r\n" }
+    if !hasLen && (len(body) > 0 || bodyMethod(method)) { s = s + "Content-Length: " + intToStr(len(body)) + "\r\n" }
+    return Ok(Wire{method: method, head: s + "\r\n", body: body})
+}
+
+// ---------------------------------------------------------------- sending
+
+// Sends the request and gives the reply once its head has arrived (the body
+// is read from the Response). Follows redirects as Options say: 301, 302,
+// 303, 307 and 308 with a Location; 303 (and 301 or 302 after a POST)
+// continue as a GET without a body, 307 and 308 keep the method and body;
+// Authorization, Cookie and Proxy-Authorization are dropped when the
+// scheme, host or port changes, and https to http is refused unless
+// allowed. Options.timeoutMs bounds the whole request, its redirects and
+// the reading of its body.
+pub fn (c: &Client) send(rq: &Request, w: Where): Result[Response, Error] {
+    if os.pid() != c.pid {
+        return Err(err(Kind.Process, "a client used in another process than the one that made it (make one per worker)", rq.url))
+    }
+    let u = match url.parse(rq.url) {
+        Ok(x) { x }
+        Err(e) { return Err(err(Kind.Url, e.msg, rq.url)) }
+    }
+    let opts = c.options()
+    if opts.timeoutMs <= 0 { return c.follow(&opts, rq, u, 0, w) }
+    let deadline = time.monotonicNs() + opts.timeoutMs * 1000000
+    return task.within(opts.timeoutMs, fn(): Result[Response, Error] { return c.follow(&opts, rq, u, deadline, w) })
+}
+
+fn isRedirect(s: int): bool { return s == 301 || s == 302 || s == 303 || s == 307 || s == 308 }
+
+fn (c: &Client) follow(opts: &Options, rq: &Request, first: url.Url, deadline: int, w: Where): Result[Response, Error] {
+    var method = rq.method
+    var body = rq.body
+    var h = rq.headers.copy()
+    var u = first
+    var hops = 0
+    while true {
+        let wire = try wireOf(method, &u, &h, body, opts.userAgent)
+        let r = try exchange(c, opts, &u, &wire, deadline, w)
+        if !opts.redirects || !isRedirect(r.status) { return Ok(r) }
+        let loc = match r.headers.get("Location") {
+            Some(l) { l }
+            None { return Ok(r) }
+        }
+        if hops >= opts.maxRedirects {
+            return Err(err(Kind.Redirects, "more than " + intToStr(opts.maxRedirects) + " redirects", u.toStr()))
+        }
+        var next = match u.resolve(loc) {
+            Ok(x) { x }
+            Err(e) { return Err(err(Kind.Protocol, "a redirect to a bad URL: " + e.toStr(), u.toStr())) }
+        }
+        if !next.hasFragment && u.hasFragment {
+            next.fragment = u.fragment
+            next.hasFragment = true
+        }
+        if u.scheme == "https" && next.scheme == "http" && !opts.allowHttpsToHttp {
+            return Err(err(Kind.Redirects, "a redirect from https to http: " + next.toStr(), u.toStr()))
+        }
+        if r.status == 303 && method != "HEAD" || (r.status == 301 || r.status == 302) && method == "POST" {
+            method = "GET"
+            body = ""
+            h.remove("Content-Length")
+            h.remove("Content-Type")
+        }
+        if next.origin() != u.origin() {
+            h.remove("Authorization")
+            h.remove("Cookie")
+            h.remove("Proxy-Authorization")
+            h.remove("Host")
+        }
+        let d = r.discard(DRAIN, w)      // read so its connection is reused; an error only closes it
+        u = next
+        hops += 1
+    }
+    return Err(err(Kind.Redirects, "unreachable", u.toStr()))
+}
+
+// GET u.
+pub fn (c: &Client) get(u: str, w: Where): Result[Response, Error] {
+    let rq = request("GET", u)
+    return c.send(&rq, w)
+}
+
+// HEAD u.
+pub fn (c: &Client) head(u: str, w: Where): Result[Response, Error] {
+    let rq = request("HEAD", u)
+    return c.send(&rq, w)
+}
+
+// POST body to u with a Content-Type.
+pub fn (c: &Client) post(u: str, contentType: str, body: str, w: Where): Result[Response, Error] {
+    var rq = request("POST", u)
+    rq.header("Content-Type", contentType)
+    rq.body = body
+    return c.send(&rq, w)
+}
+
+// PUT body to u with a Content-Type.
+pub fn (c: &Client) put(u: str, contentType: str, body: str, w: Where): Result[Response, Error] {
+    var rq = request("PUT", u)
+    rq.header("Content-Type", contentType)
+    rq.body = body
+    return c.send(&rq, w)
+}
+
+// DELETE u.
+pub fn (c: &Client) delete(u: str, w: Where): Result[Response, Error] {
+    let rq = request("DELETE", u)
+    return c.send(&rq, w)
+}
+
+// ---------------------------------------------------------------- the default client
+
+// Made with defaults() at its first use, in the process that uses it first.
+var DEFAULT: once Client
+
+// The client the one-line functions use.
+pub fn defaultClient(): Client {
+    if !DEFAULT.isSet() { DEFAULT.set(newClient(defaults())) }
+    return DEFAULT.get()
+}
+
+pub fn get(u: str, w: Where): Result[Response, Error] { return defaultClient().get(u, w) }
+
+pub fn head(u: str, w: Where): Result[Response, Error] { return defaultClient().head(u, w) }
+
+pub fn post(u: str, contentType: str, body: str, w: Where): Result[Response, Error] {
+    return defaultClient().post(u, contentType, body, w)
+}
+
+pub fn put(u: str, contentType: str, body: str, w: Where): Result[Response, Error] {
+    return defaultClient().put(u, contentType, body, w)
+}
+
+pub fn delete(u: str, w: Where): Result[Response, Error] { return defaultClient().delete(u, w) }
+
+pub fn send(rq: &Request, w: Where): Result[Response, Error] { return defaultClient().send(rq, w) }

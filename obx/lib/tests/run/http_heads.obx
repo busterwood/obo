@@ -1,0 +1,90 @@
+// http: the head parsing a server shares with the client (cmd/httpd uses
+// it): request lines, header lines, keep-alive, body lengths, where a head
+// ends, and Headers.
+// expect: GET /a?b HTTP/1.1, 2 headers, keep true, body 0
+// expect: POST / HTTP/1.0, 1 headers, keep false, body 5
+// expect: HTTP/1.0 keep-alive: keep true, body 0
+// expect: Connection: Upgrade, close: keep false, body 0
+// expect: chunked request: keep true, body -1
+// expect: CL and TE: both Content-Length and Transfer-Encoding
+// expect: two CLs: two different Content-Lengths
+// expect: bad CL: an invalid Content-Length
+// expect: GET: a malformed request line
+// expect: GET  / HTTP/1.1: a malformed request line
+// expect: G@T / HTTP/1.1: an invalid method
+// expect: GET / HTTP/2: an unsupported version
+// expect: GET /a b HTTP/1.1: an unsupported version
+// expect: GET /\x01 HTTP/1.1: an invalid request target
+// expect: folded: a header line folded onto the next (obs-fold)
+// expect: bare LF: a line not ended by CRLF
+// expect: no colon: a header line without ':'
+// expect: space in name: an invalid header name
+// expect: 101 lines: more than 100 header lines
+// expect: headEnd: 2 -1 -2 -1 5
+// expect: tokens: true false false
+// expect: fold: true false true
+// expect: headers: a=[1, 2] set=[3] has b false size 2 hasToken true
+import "http"
+
+fn err(name: str, head: str) {
+    match http.parseRequest(head) {
+        Ok(r) {
+            match r.bodyLength() {
+                Ok(k) { println(name + ": keep " + r.keepAlive().toStr() + ", body " + intToStr(k)) }
+                Err(m) { println(name + ": " + m) }
+            }
+        }
+        Err(m) { println(name + ": " + m) }
+    }
+}
+
+fn many(n: int): str {
+    var s = "GET / HTTP/1.1"
+    for i in 0..n { s = s + "\r\nX: 1" }
+    return s
+}
+
+fn main() {
+    let ok = http.parseRequest("GET /a?b HTTP/1.1\r\nHost: x\r\nAccept: */*").unwrap()
+    println("GET /a?b HTTP/1.1, " + intToStr(ok.headers.size()) + " headers, keep " + ok.keepAlive().toStr() + ", body " +
+            intToStr(ok.bodyLength().unwrap()))
+    let p = http.parseRequest("POST / HTTP/1.0\r\ncontent-length: 5").unwrap()
+    println("POST / HTTP/1.0, " + intToStr(p.headers.size()) + " headers, keep " + p.keepAlive().toStr() + ", body " +
+            intToStr(p.bodyLength().unwrap()))
+    err("HTTP/1.0 keep-alive", "GET / HTTP/1.0\r\nConnection: Keep-Alive")
+    err("Connection: Upgrade, close", "GET / HTTP/1.1\r\nConnection: Upgrade, close")
+    err("chunked request", "POST / HTTP/1.1\r\nTransfer-Encoding: chunked")
+    err("CL and TE", "POST / HTTP/1.1\r\nContent-Length: 3\r\nTransfer-Encoding: chunked")
+    err("two CLs", "POST / HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 4")
+    err("bad CL", "POST / HTTP/1.1\r\nContent-Length: -3")
+    err("GET", "GET")
+    err("GET  / HTTP/1.1", "GET  / HTTP/1.1")
+    err("G@T / HTTP/1.1", "G@T / HTTP/1.1")
+    err("GET / HTTP/2", "GET / HTTP/2")
+    err("GET /a b HTTP/1.1", "GET /a b HTTP/1.1")
+    err("GET /\\x01 HTTP/1.1", "GET /\x01 HTTP/1.1")
+    err("folded", "GET / HTTP/1.1\r\nA: 1\r\n 2")
+    err("bare LF", "GET / HTTP/1.1\nA: 1")
+    err("no colon", "GET / HTTP/1.1\r\nA 1")
+    err("space in name", "GET / HTTP/1.1\r\nA b: 1")
+    err("101 lines", many(101))
+    let e100 = http.parseRequest(many(100)).unwrap()
+    let b = strToBytes("ab\r\n\r\nx\r\n\nGET\r\n\r\n")
+    println("headEnd: " + intToStr(http.headEnd(&b, 0, 0, 6)) + " " + intToStr(http.headEnd(&b, 0, 0, 5)) + " " +
+            intToStr(http.headEnd(&b, 6, 6, 11)) + " " + intToStr(http.headEnd(&b, 11, 11, 13)) + " " +
+            intToStr(http.headEnd(&b, 0, 0, len(b)) + 3))
+    println("tokens: " + http.isToken("X-Custom_1!").toStr() + " " + http.isToken("a b").toStr() + " " + http.isToken("").toStr())
+    println("fold: " + http.equalFold("Content-LENGTH", "content-length").toStr() + " " + http.equalFold("a", "b").toStr() + " " +
+            http.equalFold("", "").toStr())
+    var h = http.newHeaders()
+    h.add("A", "1")
+    h.add("b", "x")
+    h.add("a", "2")
+    let vs = h.values("a")
+    h.remove("B")
+    h.add("Set", "1")
+    h.set("set", "3")
+    h.add("Connection", "keep-alive, Upgrade")
+    println("headers: a=[" + vs[0] + ", " + vs[1] + "] set=[" + h.values("SET")[0] + "] has b " + h.has("b").toStr() + " size " +
+            intToStr(h.size() - 2) + " hasToken " + h.hasToken("connection", "upgrade").toStr())
+}

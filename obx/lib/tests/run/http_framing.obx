@@ -1,0 +1,118 @@
+// http: reply bodies framed every way RFC 9112 allows, from a scripted
+// server that writes the replies byte for byte: Content-Length (repeated
+// alike too), chunked with extensions and trailers, until the connection
+// closes, no body (HEAD, 204, 304), interim 100 replies skipped, HTTP/1.0
+// with and without keep-alive. Each case sends two requests and shows
+// how many connections that took: one when the first could be reused.
+// expect: length: 200 'hello' | 200 'hello' | dials 1
+// expect: length twice: 200 'hello' | 200 'hello' | dials 1
+// expect: length list: 200 'hello' | 200 'hello' | dials 1
+// expect: length 0: 200 '' | 200 '' | dials 1
+// expect: chunked: 200 'hello, world' | 200 'hello, world' | dials 1
+// expect: Chunked, trailers: 200 'hello' | 200 'hello' | dials 1
+// expect: until close: 200 'all of it' | 200 'all of it' | dials 2
+// expect: 204: 204 '' | 204 '' | dials 1
+// expect: 304 with a length: 304 '' | 304 '' | dials 1
+// expect: 100 Continue: 200 'ok' | 200 'ok' | dials 1
+// expect: 103, 100: 201 'ok' | 201 'ok' | dials 1
+// expect: no reason: 200 'ok' | 200 'ok' | dials 1
+// expect: HTTP/1.0: 200 'ok' | 200 'ok' | dials 2
+// expect: HTTP/1.0 keep-alive: 200 'ok' | 200 'ok' | dials 1
+// expect: Connection: close: 200 'ok' | 200 'ok' | dials 2
+// expect: Keep-Alive: timeout=1: 200 'ok' | 200 'ok' | dials 2
+// expect: dribbled: 200 'hello, world' | 200 'hello, world' | dials 1
+// expect: HEAD with a length: 200 '' | 200 '' | dials 1
+// expect: unread, all here: 200 | 200 | dials 1
+// expect: unread, still coming: 200 | 200 | dials 2
+// expect: headers: 4 [a, b] x-empty='' spaced='v  v'
+import "task"
+import "net"
+import "http"
+import "time"
+import "../support/httptest" as ht
+
+type Case = record {
+    name: str
+    reply: str
+    close: bool
+    dribble: int
+    method: str
+    read: bool
+}
+
+fn show(r: Result[http.Response, http.Error], read: bool): str {
+    match move(r) {
+        Ok(x) {
+            let st = intToStr(x.status)
+            if !read { return st }
+            match x.text() {
+                Ok(t) { return st + " '" + t + "'" }
+                Err(e) { return "body: " + e.kind.toStr() + ": " + e.msg }
+            }
+        }
+        Err(e) { return e.kind.toStr() + ": " + e.msg }
+    }
+}
+
+fn run(k: Case) {
+    let line = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let u = "http://" + ln.localAddr() + "/"
+        let st = ht.Step{reply: k.reply, close: k.close, dribbleMs: k.dribble}
+        let srv = s.start(ht.scripted, ht.Script{ln: ln, steps: [st, st]})
+        let c = http.newClient(http.defaults())
+        let rq = http.request(k.method, u)
+        let a = show(c.send(&rq), k.read)
+        if !k.read { task.sleep(30).unwrap() }       // the rest of the reply arrives
+        let b = show(c.send(&rq), k.read)
+        return a + " | " + b + " | dials " + intToStr(c.stats().dials)
+    })
+    println(k.name + ": " + line)
+}
+
+fn ok(name: str, reply: str): Case { return Case{name: name, reply: reply, close: false, dribble: 0, method: "GET", read: true} }
+
+fn main() {
+    let h = "HTTP/1.1 200 OK\r\n"
+    run(ok("length", h + "Content-Length: 5\r\n\r\nhello"))
+    run(ok("length twice", h + "Content-Length: 5\r\ncontent-length: 5\r\n\r\nhello"))
+    run(ok("length list", h + "Content-Length: 5, 5\r\n\r\nhello"))
+    run(ok("length 0", h + "Content-Length: 0\r\n\r\n"))
+    run(ok("chunked", h + "Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n7;ext=1;q=\"x\"\r\n, world\r\n0\r\n\r\n"))
+    run(ok("Chunked, trailers", h + "transfer-encoding:  Chunked \r\nTrailer: X\r\n\r\n00005 \r\nhello\r\n0;end\r\nX: 1\r\nY: 2\r\n\r\n"))
+    var cl = ok("until close", h + "Content-Type: text/plain\r\n\r\nall of it")
+    cl.close = true
+    run(cl)
+    run(ok("204", "HTTP/1.1 204 No Content\r\n\r\n"))
+    run(ok("304 with a length", "HTTP/1.1 304 Not Modified\r\nContent-Length: 10\r\n\r\n"))
+    run(ok("100 Continue", "HTTP/1.1 100 Continue\r\n\r\n" + h + "Content-Length: 2\r\n\r\nok"))
+    run(ok("103, 100", "HTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\nHTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\nok"))
+    run(ok("no reason", "HTTP/1.1 200\r\nContent-Length: 2\r\n\r\nok"))
+    run(ok("HTTP/1.0", "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok"))
+    run(ok("HTTP/1.0 keep-alive", "HTTP/1.0 200 OK\r\nConnection: Keep-Alive\r\nContent-Length: 2\r\n\r\nok"))
+    run(ok("Connection: close", h + "Connection: close\r\nContent-Length: 2\r\n\r\nok"))
+    run(ok("Keep-Alive: timeout=1", h + "Keep-Alive: timeout=1, max=5\r\nContent-Length: 2\r\n\r\nok"))
+    var d = ok("dribbled", h + "Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n7\r\n, world\r\n0\r\nT: x\r\n\r\n")
+    d.dribble = 1
+    run(d)
+    var hd = ok("HEAD with a length", h + "Content-Length: 100\r\n\r\n")
+    hd.method = "HEAD"
+    run(hd)
+    var u1 = ok("unread, all here", h + "Content-Length: 5\r\n\r\nhello")
+    u1.read = false
+    run(u1)
+    var u2 = ok("unread, still coming", h + "Content-Length: 5\r\n\r\nhello")
+    u2.read = false
+    u2.dribble = 20
+    run(u2)
+    let hs = task.scoped(fn(s: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let u = "http://" + ln.localAddr() + "/"
+        let srv = s.start(ht.scripted, ht.Script{ln: ln, steps: [ht.step(h + "X-A: a\r\nx-a:b\r\nX-Empty:\r\nSpaced: \t v  v \t\r\nContent-Length: 0\r\n\r\n", false)]})
+        let r = http.get(u).unwrap()
+        let vs = r.headers.values("x-A")
+        return intToStr(r.headers.size() - 1) + " [" + vs[0] + ", " + vs[1] + "] x-empty='" + r.header("X-EMPTY").unwrap() +
+               "' spaced='" + r.header("spaced").unwrap() + "'"
+    })
+    println("headers: " + hs)
+}

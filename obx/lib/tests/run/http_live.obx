@@ -1,0 +1,29 @@
+// http: against the internet, only when OBX_HTTP_LIVE=1 (else exit 77,
+// skipped; also when there is no network): a name looked up through the
+// system's resolver, a reply from a real server, a redirect between hosts.
+// expect: example.com: 200 true
+// expect: neverssl.com: 200 true
+import "http"
+import "os"
+import "strings"
+
+fn main() {
+    if os.envOr("OBX_HTTP_LIVE", "") != "1" { exit(77) }
+    var o = http.defaults()
+    o.timeoutMs = 10000
+    let c = http.newClient(o)
+    let first = c.get("http://example.com/")
+    if first.isErr() {
+        let e = first.unwrapErr()
+        eprintln(e.toStr())
+        let k = e.kind.toStr()
+        if k == "name lookup" || k == "connect" || k == "timeout" { exit(77) }
+        exit(1)
+    }
+    let r = first.unwrap()
+    let st = r.status
+    println("example.com: " + intToStr(st) + " " + contains(r.text().unwrap(), "Example Domain").toStr())
+    let n = c.get("http://neverssl.com/").unwrap()
+    let ns = n.status
+    println("neverssl.com: " + intToStr(ns) + " " + (len(n.text().unwrap()) > 100).toStr())
+}
