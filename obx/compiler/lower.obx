@@ -1,0 +1,946 @@
+// lower: the IR (ir.obx) of the program as emit writes it: C in the shape of trees (tmpl.obx),
+// after the runtime's interface (native/obxrt.h, embedded in rtx.obx), design/native.md
+// section 1a. emit declares structs, functions and globals and hands over function bodies
+// as template lines with their holes filled (res); C's rules become explicit here: the types
+// of literals and names, integer promotions, the usual arithmetic conversions, assignment and
+// argument conversions, array and function decay, pointer arithmetic and struct layout.
+// Types follow gcc on x86-64: char is signed, long is 64 bits, __int128 is 16-aligned.
+
+import "./ir"
+import "./tmpl" as tm
+import "./rtx"
+import "strings"
+
+pub type Lower = record {
+    pub ir: ir.Ir
+    pub x: tm.Arena
+    pub res: []int              // the holes of the code being lowered: their trees
+    types: Map[str, int]        // C type names and spellings (int64_t, obx_str*, ...)
+    funcIdx: Map[str, int]
+    globalIdx: Map[str, int]
+    scope: Map[str, int]        // local names in scope -> local
+    undo: []str                 // names declared in the open blocks, with their shadowed locals
+    undoVal: []int
+    curRet: int                 // the result type of the function being lowered
+    ss: []int                   // the statements of the body being lowered, and the next
+    si: int
+}
+
+pub fn newLower(): Lower {
+    var u = Lower{ir: ir.newIr(), x: tm.newArena(), res: [], types: newMap(), funcIdx: newMap(), globalIdx: newMap(),
+        scope: newMap(), undo: [], undoVal: [], curRet: ir.TY_VOID, ss: [], si: 0}
+    let names: []str = ["int8_t", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t", "int64_t", "uint64_t",
+        "size_t", "ssize_t", "intptr_t", "uintptr_t", "_Bool", "bool", "char", "short", "int", "long", "__int128",
+        "double", "void"]
+    let ids: []int = [ir.TY_I8, ir.TY_U8, ir.TY_I16, ir.TY_U16, ir.TY_I32, ir.TY_U32, ir.TY_I64, ir.TY_U64, ir.TY_U64,
+        ir.TY_I64, ir.TY_I64, ir.TY_U64, ir.TY_BOOL, ir.TY_BOOL, ir.TY_I8, ir.TY_I16, ir.TY_I32, ir.TY_I64, ir.TY_I128,
+        ir.TY_F64, ir.TY_VOID]
+    for j in 0..len(names) { u.types.put(names[j], ids[j]) }
+    u.header(strings.join(&rtx.HEADER, "\n"))
+    u.ir.nRtStructs = len(u.ir.structs)
+    u.ir.nRtFuncs = len(u.ir.funcs)
+    u.ir.nRtGlobals = len(u.ir.globals)
+    return u
+}
+
+fn fail(msg: str): never { ir.failAt("template", 0, msg) }
+
+fn (u: mut &Lower) mk(k: int, ty: int, a: int, b: int, c: int, v: int): int {
+    append(mut &u.ir.nodes, ir.Node{k: k, ty: ty, line: 0, a: a, b: b, c: c, d: -1, v: v, f: 0.0, s: ""})
+    return len(u.ir.nodes) - 1
+}
+
+// ---------------------------------------------------------------- types and declarations
+
+// The type a C type name stands for: words (const, unsigned, a base or typedef name), then *s.
+pub fn (u: mut &Lower) ctName(s: str): int {
+    let have = u.types.getOr(&s, -1)
+    if have >= 0 { return have }
+    var n = len(s)
+    var stars = 0
+    while n > 0 && (strByte(s, n - 1) == '*' || strByte(s, n - 1) == ' ') {
+        if strByte(s, n - 1) == '*' { stars += 1 }
+        n -= 1
+    }
+    var uns = false
+    var base = -1
+    for w in split(s[0..n], ' ') {
+        if w == "unsigned" {
+            uns = true
+            if base < 0 { base = ir.TY_I32 }
+        } else if w != "const" && w != "signed" && w != "" && (base < 0 || base == ir.TY_I32) {
+            base = u.types.getOr(&w, -1)
+            if base < 0 { fail("unknown C type " + s) }
+        }
+    }
+    if uns {
+        let k = base
+        base = if k == ir.TY_I8 { ir.TY_U8 } else if k == ir.TY_I16 { ir.TY_U16 } else if k == ir.TY_I32 { ir.TY_U32 }
+            else if k == ir.TY_I64 { ir.TY_U64 } else if k == ir.TY_I128 { ir.TY_U128 } else { k }
+    }
+    for j in 0..stars { base = u.ir.ptrTo(base) }
+    u.types.put(s, base)
+    return base
+}
+
+// Names the type ty (a typedef).
+pub fn (u: mut &Lower) typedef(name: str, ty: int) { u.types.put(name, ty) }
+
+// A new struct (or union) named name, its fields given later by layout; its type.
+pub fn (u: mut &Lower) newStruct(name: str, isUnion: bool): int {
+    append(mut &u.ir.structs, ir.Struct{name: name, isUnion: isUnion, fields: [], ty: -1, size: 0, align: 1, complete: false})
+    let sid = len(u.ir.structs) - 1
+    append(mut &u.ir.tys, ir.Ty{k: ir.TY_STRUCT, size: 0, align: 1, base: -1, n: 0, sid: sid})
+    u.ir.structs[sid].ty = len(u.ir.tys) - 1
+    if name != "<anonymous>" { u.types.put(name, len(u.ir.tys) - 1) }
+    return len(u.ir.tys) - 1
+}
+
+// gcc's layout of the struct type ty: each field at the next offset of its alignment (a union:
+// all at 0).
+pub fn (u: mut &Lower) layout(ty: int, fs: []ir.Field) {
+    var fields = fs
+    let sid = u.ir.tys[ty].sid
+    let isUnion = u.ir.structs[sid].isUnion
+    var off = 0
+    var al = 1
+    var size = 0
+    for j in 0..len(fields) {
+        let ft = fields[j].ty
+        let fa = u.ir.alignOf(ft)
+        if fa > al { al = fa }
+        if isUnion {
+            fields[j].off = 0
+            if u.ir.sizeOf(ft) > size { size = u.ir.sizeOf(ft) }
+        } else {
+            off = ir.alignUp(off, fa)
+            fields[j].off = off
+            off += u.ir.sizeOf(ft)
+            size = off
+        }
+    }
+    size = ir.alignUp(size, al)
+    u.ir.structs[sid].fields = fields
+    u.ir.structs[sid].align = al
+    u.ir.structs[sid].complete = true
+    u.ir.tys[ty].size = size
+    u.ir.tys[ty].align = al
+    u.ir.structs[sid].size = size
+}
+
+// A function declaration (C's arrays and functions as parameters are pointers in ty already).
+pub fn (u: mut &Lower) declFunc(name: str, ty: int, asmName: str, isExtern: bool) {
+    if u.funcIdx.has(&name) { return }
+    append(mut &u.ir.funcs, ir.Func{name: name, ty: ty, params: [], body: -1, asmName: if asmName != "" { asmName } else { name },
+        isExtern: isExtern, line: 0})
+    u.funcIdx.put(name, len(u.ir.funcs) - 1)
+}
+
+// A global; init is its initializer (a template node) or -1.
+pub fn (u: mut &Lower) global(name: str, ty: int, init: int, isConst: bool) {
+    append(mut &u.ir.globals, ir.Global{name: name, ty: ty, init: -1, isConst: isConst, line: 0})
+    let g = len(u.ir.globals) - 1
+    u.globalIdx.put(name, g)
+    if init >= 0 {
+        var ents: []int = []
+        var t = ty
+        u.initializer(mut &t, 0, init, mut &ents)
+        u.ir.globals[g].ty = t
+        u.ir.globals[g].init = u.ir.list(&ents)
+    }
+}
+
+// The definition of the function name (declared now if it is not yet): its parameters'
+// names and its body, template lines.
+pub fn (u: mut &Lower) defineFunc(name: str, ty: int, pnames: &[]str, lines: &[]int) {
+    u.declFunc(name, ty, "", false)
+    let f = u.funcIdx.getOr(&name, -1)
+    let pts = u.ir.fnParams(ty)
+    var ps: []int = []
+    let mark = len(u.undo)
+    for j in 0..len(pnames) { append(mut &ps, u.declareLocal(pnames[j], pts[j])) }
+    u.ir.funcs[f].ty = ty
+    u.ir.funcs[f].params = ps
+    u.curRet = u.ir.tys[ty].base
+    var ss: []int = []
+    for l in lines { u.flatten(l, mut &ss) }
+    u.ss = ss
+    u.si = 0
+    let body = u.block()
+    if u.si != len(u.ss) { fail("unbalanced blocks in " + name) }
+    u.closeScope(mark)
+    u.ir.funcs[f].body = body
+}
+
+// ---------------------------------------------------------------- the runtime header
+
+// The declarations of the runtime (native/obxrt.h), one to a line: typedefs of structs
+// (typedef struct { T a, b; char c[]; } N;), of scalars and of function pointers
+// (typedef R (*N)(T);), and prototypes (R f(T a, T b);); comments /* */.
+fn (u: mut &Lower) header(text: str) {
+    var comment = false
+    for l in split(text, '\n') {
+        let line = trim(l)
+        if comment || startsWith(line, "/*") {
+            comment = !contains(line, "*/")
+        } else if startsWith(line, "typedef struct {") {
+            let close = strings.lastIndexOf(line, "}")
+            let ty = u.newStruct("<anonymous>", false)
+            var fs: []ir.Field = []
+            for d in split(line[16..close], ';') {
+                if trim(d) == "" { continue }
+                var names = split(trim(d), ',')
+                let first = names[0]
+                let at = strings.lastIndexOf(first, " ")
+                let base = u.ctName(first[0..at])
+                names[0] = first[at + 1..len(first)]
+                for n0 in names {
+                    let n = trim(n0)
+                    if endsWith(n, "[]") {
+                        append(mut &fs, ir.Field{name: n[0..len(n) - 2], ty: u.ir.arrOf(base, 0), off: 0})
+                    } else {
+                        append(mut &fs, ir.Field{name: n, ty: base, off: 0})
+                    }
+                }
+            }
+            u.layout(ty, fs)
+            let name = trim(line[close + 1..len(line) - 1])
+            u.ir.structs[u.ir.tys[ty].sid].name = name
+            u.types.put(name, ty)
+        } else if startsWith(line, "typedef") {
+            let fp = indexOf(line, "(*", 0)
+            if fp >= 0 {        // typedef R (*N)(params);
+                let close = indexOf(line, ")", fp)
+                let pts = u.hparams(line[close + 1..len(line)])
+                u.types.put(line[fp + 2..close], u.ir.ptrTo(u.ir.fnType(u.ctName(trim(line[8..fp])), &pts)))
+            } else {
+                let at = strings.lastIndexOf(line, " ")
+                u.types.put(line[at + 1..len(line) - 1], u.ctName(line[8..at]))
+            }
+        } else if line != "" {
+            let open = indexOf(line, "(", 0)
+            let at = strings.lastIndexOf(line[0..open], " ")
+            let pts = u.hparams(line[open..len(line)])
+            u.declFunc(line[at + 1..open], u.ir.fnType(u.ctName(line[0..at]), &pts), "", false)
+        }
+    }
+}
+
+// The types of the parameters (T name, or T) of "(params);".
+fn (u: mut &Lower) hparams(s: str): []int {
+    var pts: []int = []
+    let inner = s[1..strings.lastIndexOf(s, ")")]
+    if inner == "void" { return pts }
+    for p0 in split(inner, ',') {
+        let p = trim(p0)
+        let at = strings.lastIndexOf(p, " ")
+        let w = p[at + 1..len(p)]
+        // a name is the last word unless the parameter is only a type (void*, int64_t)
+        let named = at >= 0 && !endsWith(p, "*") && w != "int" && !u.types.has(&w)
+        append(mut &pts, u.ctName(if named { p[0..at] } else { p }))
+    }
+    return pts
+}
+
+// ---------------------------------------------------------------- locals and scopes
+
+fn (u: mut &Lower) declareLocal(name: str, ty: int): int {
+    append(mut &u.ir.locals, ir.Local{name: name, ty: ty})
+    let l = len(u.ir.locals) - 1
+    append(mut &u.undo, name)
+    append(mut &u.undoVal, u.scope.getOr(&name, -1))
+    u.scope.put(name, l)
+    return l
+}
+
+fn (u: mut &Lower) closeScope(mark: int) {
+    while len(u.undo) > mark {
+        let name = pop(mut &u.undo)
+        let old = pop(mut &u.undoVal)
+        if old < 0 {
+            u.scope.remove(&name)
+        } else {
+            u.scope.put(name, old)
+        }
+    }
+}
+
+// ---------------------------------------------------------------- statements
+
+// What the node n stands for, through holes.
+fn (u: &Lower) thru(n: int): int {
+    var m = n
+    while m >= 0 && u.x.nodes[m].k == tm.X_HOLE { m = u.res[u.x.nodes[m].v] }
+    return m
+}
+
+fn isStmt(k: int): bool { return k >= tm.Z_EXPR }
+
+// The statements of a line, in order (lines and sequences flattened; a hole that stands for
+// statements gives them, then the empty statement its ';' made in C).
+fn (u: mut &Lower) flatten(n: int, out: mut &[]int) {
+    let nd = u.x.nodes[n]
+    if nd.k == tm.Z_LINE {
+        u.flatten(nd.a, out)
+    } else if nd.k == tm.Z_SEQ || nd.k == tm.Z_LINES {
+        for j in 0..u.x.items[nd.l] { u.flatten(u.x.items[nd.l + 1 + j], out) }
+    } else if nd.k == tm.Z_EXPR && isStmt(u.x.k(u.thru(nd.a))) {
+        u.flatten(u.thru(nd.a), out)
+        append(out, -1)
+    } else {
+        append(out, n)
+    }
+}
+
+// The statements up to the end of the open block (a }, which is not taken), as a block.
+fn (u: mut &Lower) block(): int {
+    let mark = len(u.undo)
+    var ss: []int = []
+    while u.si < len(u.ss) {
+        let s = u.ss[u.si]
+        if s >= 0 {
+            let k = u.x.k(s)
+            if k == tm.Z_END || k == tm.Z_ELSE || k == tm.Z_ELIF { break }
+        }
+        u.si += 1
+        append(mut &ss, u.stmt(s))
+    }
+    u.closeScope(mark)
+    return u.mk(ir.S_BLOCK, ir.TY_VOID, u.ir.list(&ss), -1, -1, 0)
+}
+
+// The block of a statement that opened one ({ ... }), its } taken.
+fn (u: mut &Lower) body(): int {
+    let b = u.block()
+    u.endBlock()
+    return b
+}
+
+fn (u: mut &Lower) endBlock() {
+    if u.si >= len(u.ss) || u.x.k(u.ss[u.si]) != tm.Z_END { fail("a block without its }") }
+    u.si += 1
+}
+
+fn (u: mut &Lower) stmt(s: int): int {
+    if s < 0 { return u.mk(ir.S_EMPTY, ir.TY_VOID, -1, -1, -1, 0) }
+    let nd = u.x.nodes[s]
+    let k = nd.k
+    if k == tm.Z_EXPR { return u.mk(ir.S_EXPR, ir.TY_VOID, u.expr(nd.a), -1, -1, 0) }
+    if k == tm.Z_DECL { return u.declStmt(s) }
+    if k == tm.Z_IF || k == tm.Z_ELIF {
+        let c = u.condition(nd.a)
+        let th = u.block()
+        var el = -1
+        let nk = u.x.k(u.ss[u.si])
+        if nk == tm.Z_ELSE {
+            u.si += 1
+            el = u.body()
+        } else if nk == tm.Z_ELIF {
+            u.si += 1
+            el = u.stmt(u.ss[u.si - 1])
+        } else {
+            u.endBlock()
+        }
+        return u.mk(ir.S_IF, ir.TY_VOID, c, th, el, 0)
+    }
+    if k == tm.Z_IF1 {
+        let c = u.condition(nd.a)
+        return u.mk(ir.S_IF, ir.TY_VOID, c, u.single(nd.b), -1, 0)
+    }
+    if k == tm.Z_WHILE {
+        let c = u.condition(nd.a)
+        return u.mk(ir.S_WHILE, ir.TY_VOID, c, u.body(), -1, 0)
+    }
+    if k == tm.Z_FOR || k == tm.Z_FOR1 {
+        let mark = len(u.undo)
+        let init = if nd.a >= 0 { u.stmt(nd.a) } else { -1 }
+        let c = if nd.b >= 0 { u.condition(nd.b) } else { -1 }
+        let step = if nd.c >= 0 { u.expr(nd.c) } else { -1 }
+        let body = if k == tm.Z_FOR { u.body() } else { u.single(nd.v) }
+        u.closeScope(mark)
+        let n = u.mk(ir.S_FOR, ir.TY_VOID, init, c, step, 0)
+        u.ir.nodes[n].d = body
+        return n
+    }
+    if k == tm.Z_BLOCK { return u.body() }
+    if k == tm.Z_SWITCH {
+        let x = u.promote(u.rv(u.expr(nd.a)))
+        if !u.ir.isInt(u.ir.nty(x)) { fail("switch on a non-integer") }
+        return u.mk(ir.S_SWITCH, u.ir.nty(x), x, u.body(), -1, 0)
+    }
+    if k == tm.Z_CASE {
+        if nd.a < 0 { return u.mk(ir.S_DEFAULT, ir.TY_VOID, -1, -1, -1, 0) }
+        let e = u.expr(nd.a)
+        if u.ir.nk(e) != ir.E_INT { fail("a case that is not an integer constant") }
+        return u.mk(ir.S_CASE, ir.TY_VOID, -1, -1, -1, u.ir.nodes[e].v)
+    }
+    if k == tm.Z_BREAK { return u.mk(ir.S_BREAK, ir.TY_VOID, -1, -1, -1, 0) }
+    if k == tm.Z_CONTINUE { return u.mk(ir.S_CONTINUE, ir.TY_VOID, -1, -1, -1, 0) }
+    if k == tm.Z_RETURN {
+        let x = if nd.a >= 0 { u.convert(u.expr(nd.a), u.curRet) } else { -1 }
+        return u.mk(ir.S_RETURN, ir.TY_VOID, x, -1, -1, 0)
+    }
+    fail("statement kind " + intToStr(k))
+}
+
+// The body of if (c) s or for (...) s: one statement (or a few on one line, as a block).
+fn (u: mut &Lower) single(s: int): int {
+    var ss: []int = []
+    u.flatten(s, mut &ss)
+    if len(ss) == 1 { return u.stmt(ss[0]) }
+    fail("several statements as the body of an if or for")
+}
+
+fn (u: mut &Lower) declStmt(s: int): int {
+    let nd = u.x.nodes[s]
+    var ty = u.typ(nd.a)
+    if nd.v >= 0 { ty = u.ir.arrOf(ty, nd.v) }
+    var init = -1
+    var ents = -1
+    let l = u.declareLocal(nd.s, ty)       // in scope in its own initializer (sizeof(*p))
+    if nd.b >= 0 {
+        let ik = u.x.k(u.thru(nd.b))
+        if ik == tm.X_INIT || (u.ir.tk(ty) == ir.TY_ARR && ik == tm.X_STR) {
+            var es: []int = []
+            u.initializer(mut &ty, 0, nd.b, mut &es)
+            ents = u.ir.list(&es)
+            u.ir.locals[l].ty = ty
+        } else {
+            init = u.convert(u.expr(nd.b), ty)
+        }
+    }
+    return u.mk(ir.S_DECL, ir.TY_VOID, l, init, ents, 0)
+}
+
+// A controlling expression: a scalar.
+fn (u: mut &Lower) condition(n: int): int {
+    let c = u.rv(u.expr(n))
+    if !u.ir.isScalar(u.ir.nty(c)) { fail("a condition that is not a scalar") }
+    return c
+}
+
+// ---------------------------------------------------------------- initializers
+
+// Appends the entries that initialize an object of type ty at off from the template node n
+// (an X_INIT, a string or an expression). An array of unknown length takes it from the
+// initializer (ty changes).
+fn (u: mut &Lower) initializer(ty: mut &int, off: int, n0: int, out: mut &[]int) {
+    let n = u.thru(n0)
+    let t: int = ty
+    let k = u.ir.tk(t)
+    let nd = u.x.nodes[n]
+    if k == ir.TY_ARR && u.ir.tys[u.ir.tys[t].base].size == 1 && nd.k == tm.X_STR {
+        let s = nd.s
+        if u.ir.tys[t].n == 0 { ty = u.ir.arrOf(u.ir.tys[t].base, len(s) + 1) }
+        let sn = u.mk(ir.E_STR, u.ir.arrOf(ir.TY_I8, len(s) + 1), -1, -1, -1, 0)
+        u.ir.nodes[sn].s = s
+        append(out, u.mk(ir.E_IENT, ty, sn, -1, -1, off))
+        return
+    }
+    if nd.k == tm.X_INIT {
+        let its = u.x.elems(nd.l)
+        if k == ir.TY_STRUCT {
+            let sid = u.ir.tys[t].sid
+            var cur = 0
+            for it0 in its {
+                let it = u.thru(it0)
+                if u.x.k(it) == tm.X_DESIG {
+                    var fo = 0
+                    var ft = t
+                    var top = -1
+                    for name in split(u.x.nodes[it].s, '.') {
+                        if name != "" {
+                            let fx = u.fieldOf(ft, name)
+                            if top < 0 { top = fx.idx }
+                            fo += fx.off
+                            ft = fx.ty
+                        }
+                    }
+                    var ft2 = ft
+                    u.initializer(mut &ft2, off + fo, u.x.nodes[it].a, out)
+                    cur = top + 1
+                } else {
+                    if cur >= len(u.ir.structs[sid].fields) { fail("too many initializers") }
+                    let f = u.ir.structs[sid].fields[cur]
+                    var ft = f.ty
+                    u.initializer(mut &ft, off + f.off, it, out)
+                    cur += 1
+                }
+            }
+            return
+        }
+        if k == ir.TY_ARR {
+            let et = u.ir.tys[t].base
+            let es = u.ir.sizeOf(et)
+            for j in 0..len(its) {
+                var e2 = et
+                u.initializer(mut &e2, off + j * es, its[j], out)
+            }
+            if u.ir.tys[t].n == 0 { ty = u.ir.arrOf(et, len(its)) }
+            return
+        }
+        if len(its) > 0 {       // a scalar in braces
+            var t2 = t
+            u.initializer(mut &t2, off, its[0], out)
+        }
+        return
+    }
+    let e = u.expr(n)
+    if k == ir.TY_STRUCT {
+        if u.ir.nty(e) != t {
+            // the first field of the struct, from the expression (brace elision); {0}
+            // zeroes the whole struct, which the object already is
+            if u.ir.nk(e) == ir.E_INT && u.ir.nodes[e].v == 0 { return }
+            let sid = u.ir.tys[t].sid
+            if len(u.ir.structs[sid].fields) == 0 { fail("initializing an empty struct") }
+            let f = u.ir.structs[sid].fields[0]
+            if u.ir.isAggr(f.ty) { fail("brace elision into a nested aggregate") }
+            append(out, u.mk(ir.E_IENT, f.ty, u.convert(e, f.ty), -1, -1, off + f.off))
+            return
+        }
+        append(out, u.mk(ir.E_IENT, t, e, -1, -1, off))
+        return
+    }
+    if k == ir.TY_ARR { fail("initializing an array from an expression") }
+    append(out, u.mk(ir.E_IENT, t, u.convert(e, t), -1, -1, off))
+}
+
+type FieldAt = value record {
+    idx: int
+    off: int
+    ty: int
+}
+
+fn (u: &Lower) fieldOf(t: int, name: str): FieldAt {
+    if u.ir.tk(t) != ir.TY_STRUCT { fail("member '" + name + "' of a non-struct") }
+    let sid = u.ir.tys[t].sid
+    if !u.ir.structs[sid].complete { fail("member of an incomplete struct " + u.ir.structs[sid].name) }
+    for j in 0..len(u.ir.structs[sid].fields) {
+        let f = u.ir.structs[sid].fields[j]
+        if f.name == name { return FieldAt{idx: j, off: f.off, ty: f.ty} }
+    }
+    fail("no member '" + name + "' in " + u.ir.structs[sid].name)
+}
+
+// ---------------------------------------------------------------- literals
+
+// An integer constant as check writes it (decimal, suffixes U and L): C's type for it, the
+// first of int, long, unsigned long that holds it (with U: unsigned int, unsigned long).
+fn (u: mut &Lower) intLit(s: str): int {
+    var i = 0
+    var v: u128 = 0
+    while i < len(s) && strByte(s, i) >= '0' && strByte(s, i) <= '9' {
+        v = v * 10 + u128(strByte(s, i) - '0')
+        if v > 0xFFFFFFFFFFFFFFFF { fail("an integer literal over 64 bits") }
+        i += 1
+    }
+    let uns = contains(s, "U")
+    let long = contains(s, "L")
+    var ty = ir.TY_U64       // a decimal too large for long: unsigned, as gcc makes it (with a warning)
+    if uns {
+        ty = if !long && v <= 0xFFFFFFFF { ir.TY_U32 } else { ir.TY_U64 }
+    } else if !long && v <= 0x7FFFFFFF {
+        ty = ir.TY_I32
+    } else if v <= 0x7FFFFFFFFFFFFFFF {
+        ty = ir.TY_I64
+    }
+    let iv = if v > 0x7FFFFFFFFFFFFFFF { int(i128(v) - 18446744073709551616) } else { int(v) }
+    return u.mk(ir.E_INT, ty, -1, -1, -1, iv)
+}
+
+// A number as check writes it: an integer or floating constant, - before it the operator,
+// or check.INT_MIN_C.
+fn (u: mut &Lower) number(s: str): int {
+    if strByte(s, 0) == '(' { return u.mk(ir.E_INT, ir.TY_I64, -1, -1, -1, -9223372036854775807 - 1) }
+    if strByte(s, 0) == '-' { return u.negate(u.number(s[1..len(s)])) }
+    if contains(s, ".") || contains(s, "e") || contains(s, "E") {
+        var f: float = 0.0
+        if !parseFloat(s, mut &f) { fail("a float literal " + s) }
+        let n = u.mk(ir.E_FLT, ir.TY_F64, -1, -1, -1, 0)
+        u.ir.nodes[n].f = f
+        return n
+    }
+    return u.intLit(s)
+}
+
+// ---------------------------------------------------------------- conversions
+
+// Integer promotion: types narrower than int become int.
+fn (u: &Lower) promotedType(t: int): int {
+    let k = u.ir.tk(t)
+    if k == ir.TY_BOOL || k == ir.TY_I8 || k == ir.TY_U8 || k == ir.TY_I16 || k == ir.TY_U16 { return ir.TY_I32 }
+    return t
+}
+
+fn (u: mut &Lower) promote(e: int): int { return u.convert(e, u.promotedType(u.ir.nty(e))) }
+
+fn rankOf(k: int): int {
+    if k == ir.TY_I32 || k == ir.TY_U32 { return 1 }
+    if k == ir.TY_I64 || k == ir.TY_U64 { return 2 }
+    return 3
+}
+
+fn unsignedOf(k: int): int {
+    if k == ir.TY_I32 { return ir.TY_U32 }
+    if k == ir.TY_I64 { return ir.TY_U64 }
+    if k == ir.TY_I128 { return ir.TY_U128 }
+    return k
+}
+
+// The usual arithmetic conversions: the common type of two arithmetic types.
+fn (u: &Lower) commonType(a: int, b: int): int {
+    if u.ir.tk(a) == ir.TY_F64 || u.ir.tk(b) == ir.TY_F64 { return ir.TY_F64 }
+    let x = u.promotedType(a)
+    let y = u.promotedType(b)
+    if x == y { return x }
+    let sx = ir.isSignedK(x)
+    let sy = ir.isSignedK(y)
+    if sx == sy { return if rankOf(x) >= rankOf(y) { x } else { y } }
+    let s = if sx { x } else { y }
+    let us = if sx { y } else { x }
+    if rankOf(us) >= rankOf(s) { return us }
+    if u.ir.sizeOf(s) > u.ir.sizeOf(us) { return s }
+    return unsignedOf(s)
+}
+
+// An rvalue: arrays and functions decay to pointers.
+fn (u: mut &Lower) rv(e: int): int {
+    let t = u.ir.nty(e)
+    if u.ir.tk(t) == ir.TY_ARR { return u.mk(ir.E_DECAY, u.ir.ptrTo(u.ir.tys[t].base), e, -1, -1, 0) }
+    if u.ir.tk(t) == ir.TY_FN { return u.mk(ir.E_DECAY, u.ir.ptrTo(t), e, -1, -1, 0) }
+    return e
+}
+
+// e converted to t, as by assignment.
+fn (u: mut &Lower) convert(e0: int, t: int): int {
+    let e = u.rv(e0)
+    let s = u.ir.nty(e)
+    if s == t { return e }
+    let sk = u.ir.tk(s)
+    let tk = u.ir.tk(t)
+    if tk == ir.TY_VOID { return u.mk(ir.E_CAST, t, e, -1, -1, 0) }
+    if tk == ir.TY_STRUCT || sk == ir.TY_STRUCT {
+        if tk == ir.TY_STRUCT && sk == ir.TY_STRUCT && u.ir.tys[t].sid == u.ir.tys[s].sid { return e }
+        fail("conversion between " + u.ir.typeName(s) + " and " + u.ir.typeName(t))
+    }
+    if !u.ir.isScalar(s) || !u.ir.isScalar(t) { fail("conversion from " + u.ir.typeName(s) + " to " + u.ir.typeName(t)) }
+    // a constant integer converted at once (no node)
+    if u.ir.nk(e) == ir.E_INT && u.ir.isInt(t) && tk != ir.TY_I128 && tk != ir.TY_U128 {
+        return u.mk(ir.E_INT, t, -1, -1, -1, ir.truncTo(tk, u.ir.nodes[e].v))
+    }
+    return u.mk(ir.E_CAST, t, e, -1, -1, 0)
+}
+
+fn (u: mut &Lower) castTo(e0: int, t: int): int {
+    let e = u.rv(e0)
+    let s = u.ir.nty(e)
+    if u.ir.tk(t) == ir.TY_VOID { return u.mk(ir.E_CAST, ir.TY_VOID, e, -1, -1, 0) }
+    if s == t { return e }
+    if u.ir.tk(t) == ir.TY_STRUCT { fail("a cast to a struct") }
+    if u.ir.tk(t) == ir.TY_PTR && u.ir.tk(s) == ir.TY_PTR { return u.mk(ir.E_CAST, t, e, -1, -1, 0) }
+    return u.convert(e, t)
+}
+
+fn (u: mut &Lower) scalar(e: int): int {
+    let r = u.rv(e)
+    if !u.ir.isScalar(u.ir.nty(r)) { fail("a scalar is needed, not " + u.ir.typeName(u.ir.nty(r))) }
+    return r
+}
+
+fn (u: &Lower) isLvalue(e: int): bool {
+    let k = u.ir.nk(e)
+    if k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_DEREF || k == ir.E_STR || k == ir.E_CLIT || k == ir.E_FUNC { return true }
+    if k == ir.E_MEMBER { return u.isLvalue(u.ir.nodes[e].a) }
+    return false
+}
+
+// ---------------------------------------------------------------- expressions
+
+// The type a template type node stands for.
+fn (u: mut &Lower) typ(n0: int): int {
+    let n = u.thru(n0)
+    let nd = u.x.nodes[n]
+    if nd.k == tm.X_CT { return u.ctName(nd.s) }
+    if nd.k == tm.X_PTR { return u.ir.ptrTo(u.typ(nd.a)) }
+    fail("a type expected")
+}
+
+fn isType(k: int): bool { return k == tm.X_CT || k == tm.X_PTR }
+
+pub fn (u: mut &Lower) expr(n: int): int {
+    let nd = u.x.nodes[n]
+    let k = nd.k
+    if k == tm.X_PAREN { return u.expr(nd.a) }
+    if k == tm.X_HOLE { return u.expr(u.res[nd.v]) }
+    if k == tm.X_NAME { return u.name(nd.s) }
+    if k == tm.X_NUM { return u.number(nd.s) }
+    if k == tm.X_STR {
+        let e = u.mk(ir.E_STR, u.ir.arrOf(ir.TY_I8, len(nd.s) + 1), -1, -1, -1, 0)
+        u.ir.nodes[e].s = nd.s
+        return e
+    }
+    if k == tm.X_CALL { return u.call(u.expr(nd.a), nd.l) }
+    if k == tm.X_DOT {
+        let e = u.expr(nd.a)
+        let f = u.fieldOf(u.ir.nty(e), nd.s)
+        return u.mk(ir.E_MEMBER, f.ty, e, -1, -1, f.off)
+    }
+    if k == tm.X_ARROW {
+        let p = u.rv(u.expr(nd.a))
+        let pt = u.ir.nty(p)
+        if u.ir.tk(pt) != ir.TY_PTR { fail("-> on " + u.ir.typeName(pt)) }
+        let d = u.mk(ir.E_DEREF, u.ir.tys[pt].base, p, -1, -1, 0)
+        let f = u.fieldOf(u.ir.tys[pt].base, nd.s)
+        return u.mk(ir.E_MEMBER, f.ty, d, -1, -1, f.off)
+    }
+    if k == tm.X_INDEX {
+        let p = u.rv(u.expr(nd.a))
+        let i = u.rv(u.expr(nd.b))
+        let pt = u.ir.nty(p)
+        if u.ir.tk(pt) != ir.TY_PTR || !u.ir.isInt(u.ir.nty(i)) { fail("indexing " + u.ir.typeName(pt)) }
+        let et = u.ir.tys[pt].base
+        let a = u.mk(ir.E_PADD, pt, p, u.convert(i, ir.TY_I64), -1, u.ir.sizeOf(et))
+        return u.mk(ir.E_DEREF, et, a, -1, -1, 0)
+    }
+    if k == tm.X_PRE { return u.unary(nd.s, nd.a) }
+    if k == tm.X_BIN {
+        if nd.s == "&&" || nd.s == "||" {
+            let a = u.scalar(u.expr(nd.a))
+            let b = u.scalar(u.expr(nd.b))
+            return u.mk(if nd.s == "&&" { ir.E_LAND } else { ir.E_LOR }, ir.TY_I32, a, b, -1, 0)
+        }
+        let l = u.expr(nd.a)
+        return u.binary(nd.s, l, u.expr(nd.b))
+    }
+    if k == tm.X_COND { return u.cond(nd.a, nd.b, nd.c) }
+    if k == tm.X_ASSIGN {
+        let l = u.expr(nd.a)
+        if !u.isLvalue(l) { fail("assignment to a non-lvalue") }
+        let r = u.expr(nd.b)
+        return u.mk(ir.E_ASSIGN, u.ir.nty(l), l, u.convert(r, u.ir.nty(l)), -1, 0)
+    }
+    if k == tm.X_CAST {
+        let t = u.typ(nd.a)
+        return u.castTo(u.expr(nd.b), t)
+    }
+    if k == tm.X_CLIT {
+        var ty = u.typ(nd.a)
+        var ents: []int = []
+        u.initializer(mut &ty, 0, nd.b, mut &ents)
+        return u.mk(ir.E_CLIT, ty, -1, u.ir.list(&ents), -1, 0)
+    }
+    if k == tm.X_SIZEOF {
+        let a = u.thru(nd.a)
+        let t = if isType(u.x.k(a)) { u.typ(a) } else { u.ir.nty(u.expr(a)) }
+        return u.mk(ir.E_INT, ir.TY_U64, -1, -1, -1, u.ir.sizeOf(t))
+    }
+    if k == tm.X_POST {
+        let e = u.expr(nd.a)
+        if !u.isLvalue(e) { fail("++ on a non-lvalue") }
+        let t = u.ir.nty(e)
+        var step = 1
+        if u.ir.tk(t) == ir.TY_PTR {
+            step = u.ir.sizeOf(u.ir.tys[t].base)
+        } else if !u.ir.isInt(t) || u.ir.sizeOf(t) > 8 {
+            fail("++ on " + u.ir.typeName(t))
+        }
+        return u.mk(ir.E_POSTINC, t, e, -1, -1, if nd.s == "++" { step } else { -step })
+    }
+    fail("expression kind " + intToStr(k))
+}
+
+fn (u: mut &Lower) name(name: str): int {
+    let l = u.scope.getOr(&name, -1)
+    if l >= 0 { return u.mk(ir.E_LOCAL, u.ir.locals[l].ty, l, -1, -1, 0) }
+    let g = u.globalIdx.getOr(&name, -1)
+    if g >= 0 { return u.mk(ir.E_GLOBAL, u.ir.globals[g].ty, g, -1, -1, 0) }
+    let f = u.funcIdx.getOr(&name, -1)
+    if f >= 0 { return u.mk(ir.E_FUNC, u.ir.funcs[f].ty, f, -1, -1, 0) }
+    if name == "NULL" { return u.mk(ir.E_CAST, ir.T_VOIDP, u.mk(ir.E_INT, ir.TY_I32, -1, -1, -1, 0), -1, -1, 0) }
+    if name == "true" || name == "false" { return u.mk(ir.E_INT, ir.TY_I32, -1, -1, -1, if name == "true" { 1 } else { 0 }) }
+    fail("unknown name '" + name + "'")
+}
+
+fn (u: mut &Lower) negate(e: int): int {
+    let a = u.promote(u.scalar(e))
+    let at = u.ir.nty(a)
+    if u.ir.nk(a) == ir.E_INT && u.ir.sizeOf(at) <= 8 {
+        return u.mk(ir.E_INT, at, -1, -1, -1, ir.truncTo(u.ir.tk(at), 0 -% u.ir.nodes[a].v))
+    }
+    return u.mk(ir.E_NEG, at, a, -1, -1, 0)
+}
+
+fn (u: mut &Lower) unary(p: str, n: int): int {
+    if p == "-" { return u.negate(u.expr(n)) }
+    if p == "+" { return u.promote(u.scalar(u.expr(n))) }
+    if p == "~" {
+        let a = u.promote(u.scalar(u.expr(n)))
+        let at = u.ir.nty(a)
+        if !u.ir.isInt(at) { fail("~ on " + u.ir.typeName(at)) }
+        if u.ir.nk(a) == ir.E_INT && u.ir.sizeOf(at) <= 8 {
+            return u.mk(ir.E_INT, at, -1, -1, -1, ir.truncTo(u.ir.tk(at), ~u.ir.nodes[a].v))
+        }
+        return u.mk(ir.E_BNOT, at, a, -1, -1, 0)
+    }
+    if p == "!" { return u.mk(ir.E_LNOT, ir.TY_I32, u.scalar(u.expr(n)), -1, -1, 0) }
+    if p == "*" {
+        let a = u.rv(u.expr(n))
+        let at = u.ir.nty(a)
+        if u.ir.tk(at) != ir.TY_PTR { fail("* on " + u.ir.typeName(at)) }
+        let pt = u.ir.tys[at].base
+        if u.ir.tk(pt) == ir.TY_VOID { fail("* on void*") }
+        return u.mk(ir.E_DEREF, pt, a, -1, -1, 0)
+    }
+    if p == "&" {
+        let a = u.expr(n)
+        if !u.isLvalue(a) { fail("& of a non-lvalue") }
+        if u.ir.nk(a) == ir.E_DEREF { return u.ir.nodes[a].a }      // &*p is p
+        return u.mk(ir.E_ADDR, u.ir.ptrTo(u.ir.nty(a)), a, -1, -1, 0)
+    }
+    fail("prefix " + p)
+}
+
+fn (u: mut &Lower) cond(cn: int, an: int, bn: int): int {
+    let cc = u.rv(u.expr(cn))
+    let a = u.rv(u.expr(an))
+    let b = u.rv(u.expr(bn))
+    let ta = u.ir.nty(a)
+    let tb = u.ir.nty(b)
+    var t = ta
+    if u.ir.isArith(ta) && u.ir.isArith(tb) {
+        t = u.commonType(ta, tb)
+    } else if ta != tb {
+        if u.ir.tk(ta) == ir.TY_PTR && u.ir.nk(b) == ir.E_INT {
+            t = ta
+        } else if u.ir.tk(tb) == ir.TY_PTR && u.ir.nk(a) == ir.E_INT {
+            t = tb
+        } else if u.ir.tk(ta) == ir.TY_PTR && u.ir.tk(tb) == ir.TY_PTR {
+            t = ta
+        } else {
+            fail("?: with " + u.ir.typeName(ta) + " and " + u.ir.typeName(tb))
+        }
+    }
+    return u.mk(ir.E_COND, t, cc, u.convert(a, t), u.convert(b, t), 0)
+}
+
+fn opCode(p: str): int {
+    let ops: []str = ["+", "-", "*", "/", "%", "<<", ">>", "&", "|", "^", "==", "!=", "<", "<=", ">", ">="]
+    for j in 0..len(ops) {
+        if ops[j] == p { return j }
+    }
+    fail("operator " + p)
+}
+
+fn (u: mut &Lower) binary(p: str, l0: int, r0: int): int {
+    let l = u.rv(l0)
+    let r = u.rv(r0)
+    let op = opCode(p)
+    let lt = u.ir.nty(l)
+    let rt = u.ir.nty(r)
+    let lp = u.ir.tk(lt) == ir.TY_PTR
+    let rp = u.ir.tk(rt) == ir.TY_PTR
+    if (op == ir.OP_ADD || op == ir.OP_SUB) && lp && u.ir.isInt(rt) {
+        let es = u.ir.sizeOf(u.ir.tys[lt].base)
+        var idx = u.convert(r, ir.TY_I64)
+        if op == ir.OP_SUB { idx = u.mk(ir.E_NEG, ir.TY_I64, idx, -1, -1, 0) }
+        return u.mk(ir.E_PADD, lt, l, idx, -1, if es == 0 { 1 } else { es })
+    }
+    if op == ir.OP_ADD && rp && u.ir.isInt(lt) {
+        let es = u.ir.sizeOf(u.ir.tys[rt].base)
+        return u.mk(ir.E_PADD, rt, r, u.convert(l, ir.TY_I64), -1, if es == 0 { 1 } else { es })
+    }
+    if op >= ir.OP_EQ {
+        if lp || rp {
+            // pointers compare as unsigned 64-bit integers (a null constant on either side)
+            let a = u.mk(ir.E_CAST, ir.TY_U64, l, -1, -1, 0)
+            let b = u.mk(ir.E_CAST, ir.TY_U64, r, -1, -1, 0)
+            return u.mk(ir.E_BIN, ir.TY_I32, a, b, ir.TY_U64, op)
+        }
+        if !u.ir.isArith(lt) || !u.ir.isArith(rt) { fail("comparison of " + u.ir.typeName(lt) + " and " + u.ir.typeName(rt)) }
+        let ct = u.commonType(lt, rt)
+        return u.mk(ir.E_BIN, ir.TY_I32, u.convert(l, ct), u.convert(r, ct), ct, op)
+    }
+    if !u.ir.isArith(lt) || !u.ir.isArith(rt) { fail("operator " + p + " on " + u.ir.typeName(lt) + " and " + u.ir.typeName(rt)) }
+    if op == ir.OP_SHL || op == ir.OP_SHR {
+        let pt = u.promotedType(lt)
+        let lc = u.convert(l, pt)
+        let rc = u.convert(r, u.promotedType(rt))
+        if u.ir.nk(lc) == ir.E_INT && u.ir.nk(rc) == ir.E_INT && u.ir.sizeOf(pt) <= 8 {
+            return u.foldBin(op, pt, u.ir.nodes[lc].v, u.ir.nodes[rc].v, lc, rc)
+        }
+        return u.mk(ir.E_BIN, pt, lc, rc, pt, op)
+    }
+    let ct = u.commonType(lt, rt)
+    if u.ir.tk(ct) == ir.TY_F64 && (op == ir.OP_REM || op >= ir.OP_SHL) { fail("operator " + p + " on double") }
+    let a = u.convert(l, ct)
+    let b = u.convert(r, ct)
+    if u.ir.nk(a) == ir.E_INT && u.ir.nk(b) == ir.E_INT && u.ir.sizeOf(ct) <= 8 {
+        return u.foldBin(op, ct, u.ir.nodes[a].v, u.ir.nodes[b].v, a, b)
+    }
+    return u.mk(ir.E_BIN, ct, a, b, ct, op)
+}
+
+// A binary operation on two integer constants of type t (at most 64 bits), folded when that
+// is simple; otherwise the node.
+fn (u: mut &Lower) foldBin(op: int, t: int, x: int, y: int, a: int, b: int): int {
+    let k = u.ir.tk(t)
+    var v = 0
+    if op == ir.OP_ADD {
+        v = x +% y
+    } else if op == ir.OP_SUB {
+        v = x -% y
+    } else if op == ir.OP_MUL {
+        v = x *% y
+    } else if op == ir.OP_AND {
+        v = x & y
+    } else if op == ir.OP_OR {
+        v = x | y
+    } else if op == ir.OP_XOR {
+        v = x ^ y
+    } else if op == ir.OP_SHL && y >= 0 && y < u.ir.sizeOf(t) * 8 {
+        v = x << y
+    } else if op == ir.OP_SHR && y >= 0 && y < u.ir.sizeOf(t) * 8 && ir.isSignedK(k) {
+        v = x >> y
+    } else {
+        return u.mk(ir.E_BIN, t, a, b, t, op)
+    }
+    return u.mk(ir.E_INT, t, -1, -1, -1, ir.truncTo(k, v))
+}
+
+// A variadic argument: C's default argument promotions (integers narrower than int to int;
+// the C the compiler emits has no float, only double); arrays and functions decay to pointers.
+fn (u: mut &Lower) varArg(a: int): int {
+    let e = u.rv(a)
+    let t = u.ir.nty(e)
+    if u.ir.isInt(t) { return u.promote(e) }
+    if u.ir.tk(t) == ir.TY_STRUCT { fail("a struct as a variadic argument") }
+    return e
+}
+
+fn (u: mut &Lower) call(callee0: int, l: int): int {
+    let callee = u.rv(callee0)
+    let ct = u.ir.nty(callee)
+    if u.ir.tk(ct) != ir.TY_PTR || u.ir.tk(u.ir.tys[ct].base) != ir.TY_FN { fail("a call of a non-function") }
+    let ft = u.ir.tys[ct].base
+    let pts = u.ir.fnParams(ft)
+    let va = u.ir.isVarFn(ft)
+    var args: []int = []
+    for j in 0..u.x.items[l] {
+        let a = u.expr(u.x.items[l + 1 + j])
+        if j >= len(pts) {
+            if !va { fail("too many arguments") }
+            append(mut &args, u.varArg(a))
+        } else {
+            append(mut &args, u.convert(a, pts[j]))
+        }
+    }
+    if len(args) < len(pts) { fail("too few arguments") }
+    if va {     // this call's own (fixed) function type: the parameters, then the promoted extras
+        var all: []int = []
+        for p in pts { append(mut &all, p) }
+        for k in len(pts)..len(args) { append(mut &all, u.ir.nty(args[k])) }
+        let cft = u.ir.fnType(u.ir.tys[ft].base, &all)
+        return u.mk(ir.E_CALL, u.ir.tys[ft].base, callee, u.ir.list(&args), cft, 0)
+    }
+    return u.mk(ir.E_CALL, u.ir.tys[ft].base, callee, u.ir.list(&args), ft, 0)
+}

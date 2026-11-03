@@ -24,7 +24,7 @@ import "./tdump"
 import "./check" as ck
 import "./emit"
 import "./x64"
-import "./cfront"
+import "./ir"
 import "./cgen"
 import "./rt"
 import "strings"
@@ -63,8 +63,8 @@ fn typesFile(lib: str, path: str) {
     writeFd(1, tdump.dumpTypes(mut &pg))
 }
 
-// ref's compile_c: the C program of the file at path and the libraries its externs name.
-fn compileC(lib: str, roots: &[]str, path: str, libs: mut &[]str): str {
+// The IR of the program in the file at path, and the libraries its externs name.
+fn compileIr(lib: str, roots: &[]str, path: str, libs: mut &[]str): ir.Ir {
     var rs: []str = []
     for r in roots { append(mut &rs, r) }
     append(mut &rs, lib)
@@ -77,9 +77,12 @@ fn compileC(lib: str, roots: &[]str, path: str, libs: mut &[]str): str {
     let s = c.pg.mods[m].scope.getOr(&"main", sema.Sym{k: -1, i: -1})
     if s.k != sema.D_FN || c.pg.fns[s.i].isExtern { sx.fail(sema.baseName(path), 1, "the program has no function main") }
     var e = emit.newEmitter(c)
-    let csrc = e.program(s.i, libs)
-    if os.envOr("OBX_CROUND", "") == "1" { return cgen.print(cfront.read(csrc), strings.join(&rt.RT, "\n")) }
-    return csrc
+    return e.program(s.i, libs)
+}
+
+// The C program of the file at path: the IR printed after the C runtime.
+fn compileC(lib: str, roots: &[]str, path: str, libs: mut &[]str): str {
+    return cgen.print(compileIr(lib, roots, path, libs), strings.join(&rt.RT, "\n"))
 }
 
 const LIBDIRS: []str = ["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib", "/usr/local/lib",
@@ -176,8 +179,9 @@ fn jsonStr(s: str): str {
 
 fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, json: bool, isNative: bool, rest: &[]str): int {
     var libs: []str = []
-    let csrc = compileC(lib, roots, src, mut &libs)
-    if isNative { return buildNative(csrc, &libs, src, out, isRun, rest) }
+    let p = compileIr(lib, roots, src, mut &libs)
+    if isNative { return buildNative(p, &libs, src, out, isRun, rest) }
+    let csrc = cgen.print(p, strings.join(&rt.RT, "\n"))
     if emitc {
         writeFd(1, csrc)
         return 0
@@ -277,8 +281,7 @@ fn isElf(path: str): bool {
 }
 
 // The native backend: the executable written directly (no gcc; design/native.md).
-fn buildNative(csrc: str, libs: &[]str, src: str, out: str, isRun: bool, rest: &[]str): int {
-    let p = cfront.read(csrc)
+fn buildNative(p: ir.Ir, libs: &[]str, src: str, out: str, isRun: bool, rest: &[]str): int {
     let names = x64gen.dynNames(&p)
     var dl: []elf.Lib = []
     if len(names) > 0 {

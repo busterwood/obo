@@ -18,11 +18,12 @@ type Gen = record {
     sname: []str            // the C name of each struct type ("struct S" or a typedef name)
     lname: []str            // the C name of each local of the function being printed
     done: []int             // struct definition state: 0 not yet, 1 in progress, 2 printed
+    tn: []str               // the C name of each type (an abstract declarator)
 }
 
 // The C text of the program p, after the runtime text prefix.
 pub fn print(p: ir.Ir, prefix: str): str {
-    var g = Gen{u: p, out: newStrBuf(), sname: [], lname: [], done: []}
+    var g = Gen{u: p, out: newStrBuf(), sname: [], lname: [], done: [], tn: []}
     g.out.add(prefix)
     g.program()
     return g.out.toStr()
@@ -46,6 +47,7 @@ fn (g: mut &Gen) program() {
         }
         append(mut &g.done, if s < g.u.nRtStructs { 2 } else { 0 })
     }
+    for t in 0..len(g.u.tys) { append(mut &g.tn, g.decl(t, "")) }
     for s in g.u.nRtStructs..len(g.u.structs) { g.line(g.sname[s] + ";") }
     for s in g.u.nRtStructs..len(g.u.structs) { g.structDef(s) }
     for f in g.u.nRtFuncs..len(g.u.funcs) { g.proto(f) }
@@ -105,7 +107,7 @@ fn (g: &Gen) decl(t: int, inner: str): str {
     return g.decl(ty.base, inner + "(" + strings.join(&parts, ", ") + ")")
 }
 
-fn (g: &Gen) tname(t: int): str { return g.decl(t, "") }
+fn (g: &Gen) tname(t: int): str { return g.tn[t] }
 
 // ---------------------------------------------------------------- declarations
 
@@ -214,9 +216,9 @@ fn (g: &Gen) initOf(t: int, base: int, es: &[]int): str {
         }
     } else if ty.k == ir.TY_ARR {
         let es0 = g.u.sizeOf(ty.base)
+        let subs = g.elements(es, base, es0, ty.n)
         for j in 0..ty.n {
-            let sub = g.within(es, base + j * es0, es0)
-            if len(sub) > 0 { append(mut &parts, "[" + intToStr(j) + "] = " + g.initOf(ty.base, base + j * es0, &sub)) }
+            if len(subs[j]) > 0 { append(mut &parts, "[" + intToStr(j) + "] = " + g.initOf(ty.base, base + j * es0, &subs[j])) }
         }
     }
     if len(parts) == 0 { ir.failAt("IR node", g.u.nodes[es[0]].line, "cgen: an initializer entry that fits no member") }
@@ -231,6 +233,21 @@ fn (g: &Gen) within(es: &[]int, off: int, size: int): []int {
         if o >= off && (o < off + size || (size == 0 && o == off)) { append(mut &out, e) }
     }
     return out
+}
+
+// The entries of es in each of the n elements (of size es0) of an array at base.
+fn (g: &Gen) elements(es: &[]int, base: int, es0: int, n: int): [][]int {
+    var subs: [][]int = []
+    for j in 0..n { append(mut &subs, []) }
+    if es0 == 0 {
+        if n > 0 { subs[0] = g.within(es, base, 0) }
+        return subs
+    }
+    for e in es {
+        let j = (g.u.nodes[e].v - base) / es0
+        if g.u.nodes[e].v >= base && j < n { append(mut &subs[j], e) }
+    }
+    return subs
 }
 
 // Whether the entries es can all initialize parts of an object of type t at base.
@@ -251,10 +268,10 @@ fn (g: &Gen) fits(t: int, base: int, es: &[]int): bool {
     }
     if ty.k == ir.TY_ARR {
         let es0 = g.u.sizeOf(ty.base)
+        let subs = g.elements(es, base, es0, ty.n)
         var n = 0
         for j in 0..ty.n {
-            let sub = g.within(es, base + j * es0, es0)
-            if len(sub) > 0 && g.fits(ty.base, base + j * es0, &sub) { n += len(sub) }
+            if len(subs[j]) > 0 && g.fits(ty.base, base + j * es0, &subs[j]) { n += len(subs[j]) }
         }
         return n == len(es)
     }
@@ -363,68 +380,130 @@ const OP_PREC: []int = [12, 12, 13, 13, 13, 11, 11, 8, 6, 7, 9, 9, 10, 10, 10, 1
 
 fn paren(s: str, p: int, need: int): str { return if p < need { "(" + s + ")" } else { s } }
 
+fn open(p: int, need: int, b: mut &StrBuf) {
+    if p < need { b.addByte('(') }
+}
+
+fn close(p: int, need: int, b: mut &StrBuf) {
+    if p < need { b.addByte(')') }
+}
+
 // The C text of expression x, parenthesized when its precedence is below need.
 fn (g: &Gen) expr(x: int, need: int): str {
+    var b = newStrBuf()
+    g.put(x, need, mut &b)
+    return b.toStr()
+}
+
+fn (g: &Gen) put(x: int, need: int, b: mut &StrBuf) {
     let n = &g.u.nodes[x]
     let k = n.k
     if k == ir.E_INT {
         let s = g.intLit(n.ty, n.v)
-        return paren(s, if strByte(s, 0) == '-' || strByte(s, 0) == '(' { P_UNARY } else { P_POST }, need)
-    }
-    if k == ir.E_FLT { return paren(fltLit(n.f), P_UNARY, need) }
-    if k == ir.E_STR { return strLit(n.s) }
-    if k == ir.E_LOCAL { return g.lname[n.a] }
-    if k == ir.E_GLOBAL { return g.u.globals[n.a].name }
-    if k == ir.E_FUNC { return g.u.funcs[n.a].name }
-    if k == ir.E_CALL {
+        b.add(paren(s, if strByte(s, 0) == '-' || strByte(s, 0) == '(' { P_UNARY } else { P_POST }, need))
+    } else if k == ir.E_FLT {
+        b.add(paren(fltLit(n.f), P_UNARY, need))
+    } else if k == ir.E_STR {
+        b.add(strLit(n.s))
+    } else if k == ir.E_LOCAL {
+        b.add(g.lname[n.a])
+    } else if k == ir.E_GLOBAL {
+        b.add(g.u.globals[n.a].name)
+    } else if k == ir.E_FUNC {
+        b.add(g.u.funcs[n.a].name)
+    } else if k == ir.E_CALL {
         let c = &g.u.nodes[n.a]
-        let callee = if c.k == ir.E_DECAY && g.u.nk(c.a) == ir.E_FUNC { g.u.funcs[g.u.nodes[c.a].a].name } else { g.expr(n.a, P_POST) }
-        var args: []str = []
-        for j in 0..g.u.listLen(n.b) { append(mut &args, g.expr(g.u.listAt(n.b, j), P_ASSIGN)) }
-        return callee + "(" + strings.join(&args, ", ") + ")"
-    }
-    if k == ir.E_MEMBER {
+        if c.k == ir.E_DECAY && g.u.nk(c.a) == ir.E_FUNC {
+            b.add(g.u.funcs[g.u.nodes[c.a].a].name)
+        } else {
+            g.put(n.a, P_POST, b)
+        }
+        b.addByte('(')
+        for j in 0..g.u.listLen(n.b) {
+            if j > 0 { b.add(", ") }
+            g.put(g.u.listAt(n.b, j), P_ASSIGN, b)
+        }
+        b.addByte(')')
+    } else if k == ir.E_MEMBER {
         let a = &g.u.nodes[n.a]
         let f = g.fieldAt(a.ty, n.v, n.ty)
-        if a.k == ir.E_DEREF { return paren(g.expr(a.a, P_POST) + "->" + f, P_POST, need) }
-        return paren(g.expr(n.a, P_POST) + "." + f, P_POST, need)
-    }
-    if k == ir.E_DEREF { return paren("*" + g.expr(n.a, P_UNARY), P_UNARY, need) }
-    if k == ir.E_ADDR {
-        if g.u.nk(n.a) == ir.E_DEREF { return g.expr(g.u.nodes[n.a].a, need) }
-        return paren("&" + g.expr(n.a, P_UNARY), P_UNARY, need)
-    }
-    if k == ir.E_DECAY { return g.expr(n.a, need) }
-    if k == ir.E_CAST {
-        if n.ty == g.u.nodes[n.a].ty { return g.expr(n.a, need) }
-        return paren("(" + g.tname(n.ty) + ")" + g.expr(n.a, P_UNARY), P_UNARY, need)
-    }
-    if k == ir.E_BIN {
+        open(P_POST, need, b)
+        if a.k == ir.E_DEREF {
+            g.put(a.a, P_POST, b)
+            b.add("->")
+        } else {
+            g.put(n.a, P_POST, b)
+            b.addByte('.')
+        }
+        b.add(f)
+        close(P_POST, need, b)
+    } else if k == ir.E_DEREF || k == ir.E_BNOT || k == ir.E_LNOT || (k == ir.E_ADDR && g.u.nk(n.a) != ir.E_DEREF) {
+        open(P_UNARY, need, b)
+        b.add(if k == ir.E_DEREF { "*" } else if k == ir.E_BNOT { "~" } else if k == ir.E_LNOT { "!" } else { "&" })
+        g.put(n.a, P_UNARY, b)
+        close(P_UNARY, need, b)
+    } else if k == ir.E_ADDR {
+        g.put(g.u.nodes[n.a].a, need, b)
+    } else if k == ir.E_DECAY || (k == ir.E_CAST && n.ty == g.u.nodes[n.a].ty) {
+        g.put(n.a, need, b)
+    } else if k == ir.E_CAST {
+        open(P_UNARY, need, b)
+        b.add("(" + g.tn[n.ty] + ")")
+        g.put(n.a, P_UNARY, b)
+        close(P_UNARY, need, b)
+    } else if k == ir.E_BIN {
         let p = OP_PREC[n.v]
-        return paren(g.expr(n.a, p) + " " + OP_TEXT[n.v] + " " + g.expr(n.b, p + 1), p, need)
-    }
-    if k == ir.E_NEG {
+        g.infix(n.a, " " + OP_TEXT[n.v] + " ", n.b, p, p, p + 1, need, b)
+    } else if k == ir.E_NEG {
         let s = g.expr(n.a, P_UNARY)
-        return paren("-" + (if strByte(s, 0) == '-' { "(" + s + ")" } else { s }), P_UNARY, need)
-    }
-    if k == ir.E_BNOT { return paren("~" + g.expr(n.a, P_UNARY), P_UNARY, need) }
-    if k == ir.E_LNOT { return paren("!" + g.expr(n.a, P_UNARY), P_UNARY, need) }
-    if k == ir.E_LAND { return paren(g.expr(n.a, 5) + " && " + g.expr(n.b, 6), 5, need) }
-    if k == ir.E_LOR { return paren(g.expr(n.a, 4) + " || " + g.expr(n.b, 5), 4, need) }
-    if k == ir.E_COND {
-        return paren(g.expr(n.a, 4) + " ? " + g.expr(n.b, 0) + " : " + g.expr(n.c, P_COND), P_COND, need)
-    }
-    if k == ir.E_ASSIGN { return paren(g.expr(n.a, P_UNARY) + " = " + g.expr(n.b, P_ASSIGN), P_ASSIGN, need) }
-    if k == ir.E_POSTINC { return paren(g.expr(n.a, P_POST) + (if n.v > 0 { "++" } else { "--" }), P_POST, need) }
-    if k == ir.E_CLIT { return paren("(" + g.tname(n.ty) + ")" + g.initText(n.ty, n.b), P_POST, need) }
-    if k == ir.E_PADD {
+        b.add(paren("-" + (if strByte(s, 0) == '-' { "(" + s + ")" } else { s }), P_UNARY, need))
+    } else if k == ir.E_LAND {
+        g.infix(n.a, " && ", n.b, 5, 5, 6, need, b)
+    } else if k == ir.E_LOR {
+        g.infix(n.a, " || ", n.b, 4, 4, 5, need, b)
+    } else if k == ir.E_COND {
+        open(P_COND, need, b)
+        g.put(n.a, 4, b)
+        b.add(" ? ")
+        g.put(n.b, 0, b)
+        b.add(" : ")
+        g.put(n.c, P_COND, b)
+        close(P_COND, need, b)
+    } else if k == ir.E_ASSIGN {
+        g.infix(n.a, " = ", n.b, P_ASSIGN, P_UNARY, P_ASSIGN, need, b)
+    } else if k == ir.E_POSTINC {
+        open(P_POST, need, b)
+        g.put(n.a, P_POST, b)
+        b.add(if n.v > 0 { "++" } else { "--" })
+        close(P_POST, need, b)
+    } else if k == ir.E_CLIT {
+        b.add(paren("(" + g.tn[n.ty] + ")" + g.initText(n.ty, n.b), P_POST, need))
+    } else if k == ir.E_PADD {
         let pt = g.u.tys[n.ty].base
         let es = if g.u.sizeOf(pt) == 0 { 1 } else { g.u.sizeOf(pt) }
-        if es == n.v { return paren(g.expr(n.a, 12) + " + " + g.expr(n.b, 13), 12, need) }
-        let s = "(char*)" + g.expr(n.a, P_UNARY) + " + " + g.expr(n.b, 13) + " * " + intToStr(n.v)
-        return paren("(" + g.tname(n.ty) + ")(" + s + ")", P_UNARY, need)
+        if es == n.v {
+            g.infix(n.a, " + ", n.b, 12, 12, 13, need, b)
+        } else {
+            open(P_UNARY, need, b)
+            b.add("(" + g.tn[n.ty] + ")((char*)")
+            g.put(n.a, P_UNARY, b)
+            b.add(" + ")
+            g.put(n.b, 13, b)
+            b.add(" * " + intToStr(n.v) + ")")
+            close(P_UNARY, need, b)
+        }
+    } else {
+        ir.failAt("IR node", n.line, "cgen: expression kind " + intToStr(k))
     }
-    ir.failAt("IR node", n.line, "cgen: expression kind " + intToStr(k))
+}
+
+// a op c at precedence p (operands at pa and pc).
+fn (g: &Gen) infix(a: int, op: str, c: int, p: int, pa: int, pc: int, need: int, b: mut &StrBuf) {
+    open(p, need, b)
+    g.put(a, pa, b)
+    b.add(op)
+    g.put(c, pc, b)
+    close(p, need, b)
 }
 
 // The name of the field of struct type t at offset off with type ft.
