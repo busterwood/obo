@@ -1,0 +1,49 @@
+// net: a read with a timeout is a read inside task.within: it parks until
+// the deadline and returns ETIMEDOUT (isTimeout); the connection is still
+// usable afterwards, with no deadline. A whole exchange in one within: the
+// deadline covers every call in it.
+// expect: read: timed out: true
+// expect: after the timeout: ping
+// expect: exchange: pong
+// expect: slow exchange: timed out: true
+import "task"
+import "net"
+import "io"
+
+fn text(buf: &[]byte, n: int): str {
+    var b: []byte = []
+    for i in 0..n { append(mut &b, buf[i]) }
+    return strFromBytes(&b)
+}
+
+fn main() {
+    let ln = net.listen("127.0.0.1:0").unwrap()
+    let c = net.connect(ln.localAddr()).unwrap()
+    let s = ln.accept().unwrap()
+    var buf = array(16, byte(0))
+    let r = task.within(30, fn(): Result[int, io.IoError] { return c.read(mut &buf) })
+    match r {
+        Ok(n) { println("read " + intToStr(n) + "?") }
+        Err(e) { println(e.op + ": timed out: " + e.isTimeout().toStr()) }
+    }
+    s.writeStr("ping").unwrap()
+    let n = c.read(mut &buf).unwrap()
+    println("after the timeout: " + text(&buf, n))
+
+    // the server answers ping with pong at once
+    let got = task.within(1000, fn(): Result[str, io.IoError] {
+        try c.writeStr("ping")
+        let k = try s.read(mut &buf)
+        try s.writeStr("pong")
+        let m = try c.read(mut &buf)
+        return Ok(text(&buf, m))
+    })
+    println("exchange: " + got.unwrap())
+    // no answer this time
+    let slow = task.within(20, fn(): Result[str, io.IoError] {
+        try c.writeStr("ping")
+        let m = try c.read(mut &buf)
+        return Ok(text(&buf, m))
+    })
+    println("slow exchange: timed out: " + slow.unwrapErr().isTimeout().toStr())
+}

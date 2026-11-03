@@ -41,9 +41,13 @@ As of 2026-11-03:
 - **Concurrency:** decided in
   [obx/design/concurrency.md](obx/design/concurrency.md): coroutines with
   futures inside a process, several processes for several cores, no
-  threads. The first stage is built (`import "task"`: scopes, futures,
-  promises, `Shared`); its traps name the user's lines. Next: non-blocking
-  I/O, timers and sockets.
+  threads. The first two stages are built: `import "task"` (scopes,
+  futures, promises, `Shared`, sleep and deadlines; its traps name the
+  user's lines) and `import "net"` (TCP sockets that park the task, on one
+  epoll loop). An HTTP/1.1 server example holds 10,000 idle keep-alive
+  connections at 13 KB each and serves 69,000 requests/s on one core
+  (PERFORMANCE.md). Next: a helper thread pool for blocking C calls, and
+  libpq's non-blocking path.
 
 ## Layout
 

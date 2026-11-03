@@ -1,0 +1,16 @@
+// task: sleep can park, so calling it inside Shared.with stops the program
+// (exit 13), even for a sleep of no time.
+// exit: 13
+// expect: inside
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_sleep_in_with.obx:11) at task_trap_sleep_in_with.obx:13
+import "task"
+
+fn main() {
+    let sh = task.shared(1)
+    task.sleep(1).unwrap()
+    sh.with(fn(x: mut &int) {
+        println("inside")
+        let r = task.sleep(0)
+        println("not reached")
+    })
+}

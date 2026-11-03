@@ -11,7 +11,8 @@ Both are built from the same IR and must behave identically; the gate checks
 that on 1,517 programs. This page measures what each costs. Measured on 3
 November 2026 at `aac6659`, after the fourth native performance pass and the
 first concurrency stage; the rows the fifth pass (inlining in the IR, branch
-`perf5`) moved were measured again after it. The numbers are host-dependent: use them to compare
+`perf5`) moved were measured again after it, and the task and server
+sections at stage C1b (sockets and timers). The numbers are host-dependent: use them to compare
 the columns, not as portable constants.
 
 ## Host and method
@@ -144,21 +145,64 @@ against them.
 
 ## Tasks
 
-The cost of the concurrency primitives (`lib/task.obx`, SPEC 16), from
-`obx/bench/tasks.obx`, ns per operation, best of 3 runs:
+The cost of the concurrency primitives (`lib/task.obx`, `lib/net.obx`, SPEC
+16), from `obx/bench/tasks.obx`, ns per operation, best of 3 runs (measured
+again at stage C1b, the event loop):
 
 | operation | via C | native |
 |---|---:|---:|
-| task switch (`task.yield`) | 6.6 | 17.6 |
-| start a task (stack reused) | 35 | 24 |
-| start plus a wait that parks (round trip) | 83 | 68 |
-| wait on a finished task | 25 | 22 |
-| promise complete | 11 | 16 |
-| `Shared.with` | 3.2 | 6.9 |
+| task switch (`task.yield`) | 6.3 | 18.2 |
+| start a task (stack reused) | 34 | 26 |
+| start plus a wait that parks (round trip) | 91 | 80 |
+| the same inside `task.within` (a timer set and removed) | 107 | 316 |
+| wait on a finished task | 22 | 24 |
+| promise complete | 12 | 17 |
+| `Shared.with` | 3.4 | 7.1 |
+| a `task.sleep(1)` that fires, beyond a yield | 20–200 | 180–260 |
+| a socket read that finds data (no park) | 653 | 707 |
+| a one-byte round trip between two tasks over loopback TCP | 181,000 | 205,000 |
 
-All of these are far below a system call (a socket read or write is
-1,000–5,000 ns). The native switch is slower than C's because it goes
-through more of the generic task code; it has not been tuned yet.
+The task operations are far below a system call. The event loop added about
+6 ns to a native park (the deadline and timer checks) and nothing measurable
+to C's. The native runtime has no vDSO (it is static and makes raw system
+calls), so the `clock_gettime` behind every timer is a real system call of
+about 250 ns: native timers cost that much more. The `sleep` row is noisy:
+the 1 ms sleep's overshoot is divided among 10,000 tasks. The round trip is
+this machine's loopback: a Python ping-pong over loopback TCP takes
+190,000 ns with two blocking threads and 205,000 ns with epoll on one
+thread. The native switch is slower than C's because it goes through more
+of the generic task code; it has not been tuned yet.
+
+## HTTP server
+
+`obx/cmd/httpd.obx`, a keep-alive HTTP/1.1 server on one thread (one task
+per connection), measured by `python3 obx/cmd/http_gate.py`: the server on
+CPU 0, the load client `obx/cmd/httpload.obx` (native, one thread) on CPU 1.
+10,000 idle keep-alive connections are opened first and stay open during
+the load; each load client sends `GET /` and waits for the reply, 5 s per
+row. Go 1.26's net/http (GOMAXPROCS=1) and Node 24's http serve the same
+reply, as references.
+
+| | obx native | obx via C | Go net/http | Node 24 |
+|---|---:|---:|---:|---:|
+| RSS per idle connection | 13.0 KB | 12.7 KB | 19.8 KB | 9.3 KB |
+| RSS with 10,000 idle connections | 124 MiB | 122 MiB | 195 MiB | 138 MiB |
+| 1 client: requests/s | 4,890 | 4,900 | 3,430 | 4,040 |
+| 10 clients: requests/s | 38,900 | 38,000 | 34,200 | 32,400 |
+| 100 clients: requests/s | 69,400 | 65,800 | 46,200 | 42,900 |
+| 1 client: latency p50 / p99 | 194 / 328 µs | 196 / 353 µs | 260 / 614 µs | 233 / 439 µs |
+| 10 clients: latency p50 / p99 | 252 / 371 µs | 256 / 397 µs | 278 / 473 µs | 295 / 515 µs |
+| 100 clients: latency p50 / p99 | 1.44 / 1.90 ms | 1.52 / 2.05 ms | 2.05 / 6.87 ms | 2.18 / 4.96 ms |
+
+An obx connection's resident cost is two pages of its task's stack (8 KiB;
+the stack is 256 KiB of address space), the server's 4 KiB read buffer and
+the task itself; with a 512-byte buffer it is 9.1 KB. Under the gate's
+`OBX_CHECK=1`, `GET /shutdown` with the 10,000 connections open cancels
+them all and ends the program in 0.19 s, exit 0, no leak. One client is
+bound by this machine's loopback round trip (above, about 190 µs); with 100
+clients the single-threaded load client may be the limit as much as the
+server. The `ulimit -n` here is 1,048,576; the gate raises the soft limit
+when it can and stops when it cannot.
 
 ## Reproducing
 
@@ -169,6 +213,7 @@ python3 obx/cmd/eza_gate.py -j 12                      # eza correctness on both
 obx/compiler/out/obxc obx/cmd/eza.obx --native -o eza  # and without --native for the C build
 obx/tools/native_selfbuild.sh                          # the natively built compiler
 obx/compiler/out/obxc obx/bench/tasks.obx --native -o tasks && ./tasks
+python3 obx/cmd/http_gate.py                           # the server table (about 2 minutes)
 ```
 
 ## For the record: obo

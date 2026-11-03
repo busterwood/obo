@@ -1,0 +1,23 @@
+// task: timers keep the program alive, but once the last timer has fired
+// and every task is parked with no socket waited for, nothing can wake any
+// of them: exit 14. The location is where main (the scope's owner) parked.
+// exit: 14
+// expect: napper woke
+// stderr: obx: deadlock: every task is parked at task_trap_deadlock_timer.obx:20
+import "task"
+
+fn napper(ms: int): int {
+    task.sleep(ms).unwrap()
+    println("napper woke")
+    return ms
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let task.Handoff{promise: p, future: f} = task.promise[int]()
+        let a = s.start(napper, 10)
+        // p is kept, never completed: nothing will complete f
+        let r = f.wait()
+        p.complete(1)
+    })
+}

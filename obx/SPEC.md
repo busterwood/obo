@@ -930,7 +930,7 @@ exits with:
 | 10 | integer overflow, division by zero, bad shift count, lossy conversion |
 | 12 | `panic` or `assert` |
 | 13 | a task parked inside `Shared.with`, or a nested `with` on the same value (section 16) |
-| 14 | deadlock: every task is parked (section 16) |
+| 14 | deadlock: every task is parked, with no socket waited on and no timer pending (section 16) |
 
 For codes 13 and 14 the location is the program's call of a `task`
 function (its call site, section 15), and for code 13 the open `with` is
@@ -941,8 +941,9 @@ named as well:
     obx: deadlock: every task is parked at a.obx:41
 
 In the first, 41 is the call that would park (`wait`, `task.all`,
-`task.any`, `task.yield`, or `task.scope` and `task.scoped`, which park at
-their end) and 37 the innermost open `with`. In the second, 35 is the new
+`task.any`, `task.yield`, `task.sleep`, a `net` call that can park:
+`accept`, `connect`, `read`, `write`, `writeStr`; or `task.scope` and
+`task.scoped`, which park at their end) and 37 the innermost open `with`. In the second, 35 is the new
 `with` and 30 the open one on the same value. In the third, 41 is the call
 whose park found no runnable task; when the last runnable task finishes
 instead, it is the call where that task's scope owner is parked.
@@ -996,35 +997,58 @@ structures with them.
 
 The library module `task` (`lib/task.obx`; `lib/README.md` lists its API)
 runs concurrent tasks on one thread, as stackful coroutines scheduled
-cooperatively (design/concurrency.md, stage C1a). The rules the language
-relies on:
+cooperatively (design/concurrency.md, stages C1a and C1b), with an event
+loop for sockets (`net`) and timers. The rules the language relies on:
 
 - Every task is started on a `task.Scope`, and `task.scope(f)` returns only
   when every task started on its scope has finished. `main` itself is the
   first task; no task outlives the call that opened its scope.
-- `s.start(f, arg)` takes a plain function value `f: fn(A): T` and an owned
+- `s.start(f, arg)` (and `s.spawn(f, arg)`, the same with no future) takes a
+  plain function value `f: fn(A): T` and an owned
   argument `arg: A`. A `&fn` (a closure) and a borrow are rejected by the
   ordinary rules: a closure is not a `fn` value (section 4.6), and a borrow
   type is not a type argument. So a task reaches nothing of its starter's
   but what was moved into it, and `Shared` values.
 - A task runs until it parks: it waits for an unfinished future (`wait`,
-  `task.all`, `task.any`), calls `task.yield()`, or ends a scope with tasks
-  still running. Each of these functions, and `with`, has a last parameter of
+  `task.all`, `task.any`), calls `task.yield()` or `task.sleep(ms)`, makes a
+  socket call that would block (`net`: it parks on `EAGAIN` until the socket
+  is ready), or ends a scope with tasks still running. Each of these functions, and `with`, has a last parameter of
   type `Where` that a call leaves out (section 15): the stops below report the
   program's own lines with it (section 14). Then the next runnable task runs, first in, first out. A
   started task is runnable at once; it first runs when its starter parks.
+  When no task is runnable, the scheduler waits (`epoll_wait`) until a
+  socket is ready or the nearest timer is due, and makes the tasks waiting
+  for them runnable; while tasks are runnable it also checks the sockets
+  and timers, without waiting, every 64 switches. `main` parks like any
+  task: a program needs no special mode to use sockets or timers. A task
+  that never parks keeps every other task (and every socket) waiting.
 - `Future[T]` is owned (one place waits for it). Dropping it without
   waiting cancels its task; its scope still waits for the task to finish,
   and its result is dropped then.
 - Cancellation is cooperative. A cancelled task runs on until it next parks
   or waits: every wait then gives `Err(Cancelled.Cancelled)` (`yield`
-  included) unless what it waits for has already finished. Cancelling a task
+  included) unless what it waits for has already finished. `task.sleep` and
+  the `net` calls of a cancelled task do nothing and return the error at
+  once (`ECANCELED` for `net`), even when they would not park, so a loop of
+  socket calls ends under load too. Cancelling a task
   cancels the tasks of the scopes it has open, and a task started by a
   cancelled task starts cancelled. Ending a scope is not cancellable: it
   waits for its tasks. A task is never stopped from outside, so its drops
   always run.
 - A `Promise[T]` dropped without `complete` makes its future's `wait` give
   `Err(Cancelled.Abandoned)`. `complete` never parks.
+- Deadlines: `task.within(ms, f)` runs `f` with a deadline `ms`
+  milliseconds from now (the earlier one wins when it is nested; it is
+  restored when `f` returns). Every call in `f` that can park, and in the
+  tasks started during `f` (they inherit it), returns
+  `Err(Cancelled.Timeout)` (`ETIMEDOUT` for `net`) once the deadline has
+  passed: at once if it has passed, else by waking at the deadline. Like
+  cancellation, an expired task's `sleep` and `net` calls do nothing, while
+  a `wait` on a finished task still gives its result. A deadline is the
+  task's, not a cancellation: the task's later calls outside `within` work
+  again, and the work in `f` ends through its `Result`s. `within` itself
+  does not park. The clock is `CLOCK_MONOTONIC`; timers fire in the order of
+  their time, and those with the same time in the order they were set.
 - `Shared[T]` is a copy handle to one value, which is dropped with the last
   handle. `sh.with(f)` lends the value to `f` as `mut &T`, and is the only
   access. No other task runs during `with`: an operation that can park,
@@ -1034,5 +1058,9 @@ relies on:
   nest.
 - A panic or any other runtime error in a task stops the program, as in
   `main`. Stack overflow in a task is exit 4: each task has its own 256 KiB
-  stack with a guard page. If every task is parked, nothing can wake any of
-  them: the program stops with a deadlock report, exit 14.
+  stack with a guard page. If every task is parked and no socket is waited
+  on and no timer is pending, nothing can wake any of them: the program
+  stops with a deadlock report, exit 14. A task parked in `sleep` or on a
+  socket is not a deadlock, even when nothing will ever arrive.
+- A write to a socket whose peer has closed is an error (`EPIPE` or
+  `ECONNRESET`), never `SIGPIPE`.

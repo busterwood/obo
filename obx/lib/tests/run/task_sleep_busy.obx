@@ -1,0 +1,33 @@
+// task: a task that keeps yielding does not starve a sleeping one: the loop
+// looks at the timers every few switches even while a task is runnable.
+// expect: sleeper woke
+// expect: busy task saw it: true
+import "task"
+
+fn busy(done: task.Shared[bool]): bool {
+    var seen = false
+    var n = 0
+    while !seen && n < 100000000 {
+        task.yield().unwrap()
+        done.with(fn(d: mut &bool) { seen = d })
+        n += 1
+    }
+    return seen
+}
+
+fn sleeper(done: task.Shared[bool]): int {
+    task.sleep(10).unwrap()
+    println("sleeper woke")
+    done.with(fn(d: mut &bool) { d = true })
+    return 0
+}
+
+fn main() {
+    let done = task.shared(false)
+    task.scope(fn(s: mut &task.Scope) {
+        let b = s.start(busy, done)
+        let z = s.start(sleeper, done)
+        println("busy task saw it: " + b.wait().unwrap().toStr())
+        let r = z.wait()
+    })
+}

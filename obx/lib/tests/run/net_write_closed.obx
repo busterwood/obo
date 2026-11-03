@@ -1,0 +1,32 @@
+// net: writing to a peer that has closed its socket is an error (EPIPE or
+// ECONNRESET), never SIGPIPE: the program goes on. Reading from it gives
+// the end of the stream or ECONNRESET.
+// expect: write failed: true
+// expect: read: end or reset: true
+// expect: still running
+import "task"
+import "net"
+
+fn main() {
+    let ln = net.listen("127.0.0.1:0").unwrap()
+    let c = net.connect(ln.localAddr()).unwrap()
+    let peer = ln.accept().unwrap()
+    peer.close()
+    task.sleep(5).unwrap()
+    var failed = false
+    var tries = 0
+    while !failed && tries < 1000 {
+        match c.writeStr("data that nobody reads\n") {
+            Ok(_) { task.sleep(1).unwrap() }
+            Err(e) { failed = e.op == "write" && (e.errno == 32 || e.errno == 104) }
+        }
+        tries += 1
+    }
+    println("write failed: " + failed.toStr())
+    var buf = array(8, byte(0))
+    match c.read(mut &buf) {
+        Ok(n) { println("read: end or reset: " + (n == 0).toStr()) }
+        Err(e) { println("read: end or reset: " + (e.errno == 104).toStr()) }
+    }
+    println("still running")
+}

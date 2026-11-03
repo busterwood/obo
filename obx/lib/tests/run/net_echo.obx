@@ -1,0 +1,111 @@
+// net: an echo server and its clients in one program, tasks on both sides:
+// 200 connections at once, each message longer than the server's buffer, so
+// reads return parts. Then a writer that fills the socket's buffers parks
+// until a slow reader catches up. Port 0: the system picks a free port. The
+// server prints first: the last echo task to end wakes it at once, while its
+// client still has to see the end of the stream through the event loop.
+// expect: 127.0.0.1
+// expect: server: 200 connections, 220790 bytes
+// expect: clients: 200 echoed, 220790 bytes
+// expect: big: 16777216 bytes read, 16777216 written
+import "task"
+import "net"
+import "io"
+
+type Client = record {
+    addr: str
+    id: int
+}
+
+fn echo(c: net.Conn): Result[int, io.IoError] {
+    var buf = array(1000, byte(0))
+    var total = 0
+    while true {
+        let n = try c.read(mut &buf)
+        if n == 0 { break }
+        try c.write(buf[0..n])
+        total += n
+    }
+    return Ok(total)
+}
+
+fn server(ln: net.Listener): int {
+    return task.scoped(fn(s: mut &task.Scope): int {
+        var fs: []task.Future[Result[int, io.IoError]] = []
+        for i in 0..200 { append(mut &fs, s.start(echo, ln.accept().unwrap())) }
+        var total = 0
+        for r in task.all(fs).unwrap() { total += r.unwrap() }
+        println("server: 200 connections, " + intToStr(total) + " bytes")
+        return total
+    })
+}
+
+fn message(id: int): str {
+    var b = newStrBuf()
+    b.add("hello " + intToStr(id) + ":")
+    for i in 0..id * 11 { b.addByte(byte(97 + (i + id) % 26)) }
+    return b.toStr()
+}
+
+fn client(k: Client): int {
+    let c = net.connect(k.addr).unwrap()
+    c.setNoDelay(true).unwrap()
+    let msg = message(k.id)
+    c.writeStr(msg).unwrap()
+    c.closeWrite().unwrap()
+    var buf = array(300, byte(0))
+    var got: []byte = []
+    while true {
+        let n = c.read(mut &buf).unwrap()
+        if n == 0 { break }
+        for i in 0..n { append(mut &got, buf[i]) }
+    }
+    if strFromBytes(&got) != msg { panic("client " + intToStr(k.id) + ": echo differs") }
+    return len(msg)
+}
+
+// the address without its port
+fn host(a: str): str {
+    var i = len(a) - 1
+    while i > 0 && strByte(a, i) != ':' { i -= 1 }
+    return strSlice(a, 0, i)
+}
+
+const BIG = 16777216
+
+fn bigWriter(ln: net.Listener): int {
+    let c = ln.accept().unwrap()
+    let data = array(BIG, byte(120))
+    c.write(&data).unwrap()                 // parks until the reader has taken most of it
+    return BIG
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let addr = ln.localAddr()
+        println(host(addr))
+        let srv = s.start(server, ln)
+        var cs: []task.Future[int] = []
+        for i in 0..200 { append(mut &cs, s.start(client, Client{addr: addr, id: i})) }
+        var n = 0
+        for m in task.all(cs).unwrap() { n += m }
+        println("clients: 200 echoed, " + intToStr(n) + " bytes")
+        let t = srv.wait().unwrap()
+    })
+    task.scope(fn(s: mut &task.Scope) {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        let c = net.connect(ln.localAddr()).unwrap()
+        let w = s.start(bigWriter, ln)
+        task.sleep(20).unwrap()                 // the writer fills the buffers and parks
+        var buf = array(65536, byte(0))
+        var got = 0
+        while true {
+            let k = c.read(mut &buf).unwrap()
+            if k == 0 { break }
+            got += k
+            if got == BIG { break }
+        }
+        println("big: " + intToStr(got) + " bytes read, " + intToStr(w.wait().unwrap()) + " written")
+    })
+}

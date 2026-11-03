@@ -1,0 +1,131 @@
+// httpload: an HTTP/1.1 load client for httpd (cmd/http_gate.py). CONNS
+// keep-alive connections, each a task sending GET PATH and reading the reply,
+// one request at a time, for SECONDS seconds.
+//
+//     httpload ADDR CONNS SECONDS [PATH]
+//
+// Prints one line: requests, requests per second, and the latency
+// percentiles in microseconds (from the write of a request to the end of its
+// reply), e.g.
+//     requests 812345 rps 81234 p50 120 p90 150 p99 310 max 2100 errors 0
+import "task"
+import "net"
+import "io"
+import "os"
+import "time"
+import "strings"
+
+type Load = record {
+    addr: str
+    path: str
+    end: int          // time.monotonicNs() when it stops
+}
+
+type Tally = record {
+    lat: []int        // ns per request
+    errors: int
+}
+
+fn client(l: Load): Tally {
+    var t = Tally{lat: [], errors: 0}
+    match run(&l, mut &t.lat) {
+        Ok(_) {}
+        Err(e) {
+            t.errors += 1
+            eprintln("httpload: " + e.toStr())
+        }
+    }
+    return t
+}
+
+fn run(l: &Load, lat: mut &[]int): Result[Unit, io.IoError] {
+    let c = try net.connect(l.addr)
+    try c.setNoDelay(true)
+    let rq = strToBytes("GET " + l.path + " HTTP/1.1\r\nHost: obx\r\n\r\n")
+    var buf = array(4096, byte(0))
+    while time.monotonicNs() < l.end {
+        let t0 = time.monotonicNs()
+        try c.write(&rq)
+        try response(&c, mut &buf, l.addr)
+        append(mut &lat, time.monotonicNs() - t0)
+    }
+    return Ok(Unit{})
+}
+
+// Reads one reply (its head and Content-Length bytes of body); the server
+// sends nothing else until the next request.
+fn response(c: &net.Conn, buf: mut &[]byte, addr: str): Result[Unit, io.IoError] {
+    var have = 0
+    var end = -1
+    while end < 0 {
+        if have == len(buf) { return Err(io.IoError{errno: 7, op: "reply", path: addr}) }
+        let n = try c.read(mut &buf[have..len(buf)])
+        if n == 0 { return Err(io.IoError{errno: 104, op: "reply", path: addr}) }
+        have += n
+        end = headEnd(&buf, have)
+    }
+    let head = strFromBytes(&buf[0..end])
+    var body = 0
+    for line in strings.splitOn(head, "\r\n") {
+        match strings.cut(line, ":") {
+            Some(kv) {
+                if strings.toLower(kv.before) == "content-length" { body = strings.parseInt(trim(kv.after)).unwrapOr(0) }
+            }
+            None {}
+        }
+    }
+    var left = end + 4 + body - have
+    while left > 0 {
+        let n = try c.read(mut &buf[0..len(buf)])
+        if n == 0 { return Err(io.IoError{errno: 104, op: "reply", path: addr}) }
+        left -= n
+    }
+    return Ok(Unit{})
+}
+
+fn headEnd(b: &[]byte, n: int): int {
+    for i in 0..n - 3 {
+        if b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' && b[i + 3] == '\n' { return i }
+    }
+    return -1
+}
+
+// the p-th percentile of the sorted ns latencies, in microseconds
+fn pct(xs: &[]int, p: int): int { return xs[min(len(xs) - 1, len(xs) * p / 100)] / 1000 }
+
+fn usage(): never {
+    eprintln("usage: httpload ADDR CONNS SECONDS [PATH]")
+    os.quit(2)
+}
+
+fn main() {
+    let args = os.arguments()
+    if len(args) < 3 { usage() }
+    let conns = strings.parseInt(args[1]).unwrapOr(0)
+    let secs = strings.parseInt(args[2]).unwrapOr(0)
+    if conns <= 0 || secs <= 0 { usage() }
+    let path = if len(args) > 3 { args[3] } else { "/" }
+    let t0 = time.monotonicNs()
+    let end = t0 + secs * 1000000000
+    var lat: []int = []
+    var errors = 0
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[Tally] = []
+        for i in 0..conns { append(mut &fs, s.start(client, Load{addr: args[0], path: path, end: end})) }
+        for t in task.all(fs).unwrap() {
+            for x in t.lat { append(mut &lat, x) }
+            errors += t.errors
+        }
+    })
+    let dt = time.monotonicNs() - t0
+    sort(mut &lat)
+    let n = len(lat)
+    if n == 0 {
+        println("requests 0 errors " + intToStr(errors))
+        os.quit(1)
+    }
+    println("requests " + intToStr(n) + " rps " + intToStr(n * 1000000000 / dt) +
+            " p50 " + intToStr(pct(&lat, 50)) + " p90 " + intToStr(pct(&lat, 90)) +
+            " p99 " + intToStr(pct(&lat, 99)) + " max " + intToStr(lat[n - 1] / 1000) +
+            " errors " + intToStr(errors))
+}

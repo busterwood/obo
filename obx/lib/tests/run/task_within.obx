@@ -1,0 +1,92 @@
+// task: within(ms, f) gives f a deadline. Every call that can park in f,
+// and in the tasks started during f, returns Err(Timeout) once it has
+// passed; the earlier of nested deadlines wins; after within the old one is
+// back. A wait that times out drops its future (the task is cancelled).
+// Timers with the same deadline fire in the order the tasks parked: in the
+// any below, the first loser is cancelled before it runs again, while the
+// second has already been woken by its own timer.
+// expect: sleep: timeout
+// expect: fast: ok
+// expect: nested: timeout early: true
+// expect: wait: timeout
+// expect: slow task: cancelled
+// expect: child 10: ok
+// expect: child 1000: timeout
+// expect: child 2000: timeout
+// expect: children 3, ended early: true
+// expect: slow task: cancelled
+// expect: slow task: timeout
+// expect: any: timeout
+// expect: past deadline: timeout timeout timeout
+// expect: after within: ok
+// expect: value 42
+import "task"
+import "time"
+
+fn show(name: str, r: Result[Unit, task.Cancelled]) {
+    match r {
+        Ok(_) { println(name + ": ok") }
+        Err(e) { println(name + ": " + e.toStr()) }
+    }
+}
+
+fn slow(ms: int): int {
+    match task.sleep(ms) {
+        Ok(_) { println("slow task: done") }
+        Err(e) { println("slow task: " + e.toStr()) }
+    }
+    return ms
+}
+
+fn child(ms: int): int {
+    show("child " + intToStr(ms), task.sleep(ms))
+    return ms
+}
+
+fn main() {
+    show("sleep", task.within(20, fn(): Result[Unit, task.Cancelled] { return task.sleep(5000) }))
+    show("fast", task.within(1000, fn(): Result[Unit, task.Cancelled] { return task.sleep(1) }))
+    let t0 = time.monotonicNs()
+    let r = task.within(30, fn(): Result[Unit, task.Cancelled] {
+        return task.within(5000, fn(): Result[Unit, task.Cancelled] { return task.sleep(5000) })
+    })
+    println("nested: " + r.unwrapErr().toStr() + " early: " + (time.monotonicNs() - t0 < 2000000000).toStr())
+
+    task.scope(fn(s: mut &task.Scope) {
+        let w = task.within(20, fn(): Result[Unit, task.Cancelled] {
+            let f = s.start(slow, 5000)
+            return f.wait().map(fn(v: int): Unit { return Unit{} })
+        })
+        show("wait", w)
+    })
+
+    let t1 = time.monotonicNs()
+    let n = task.within(50, fn(): int {
+        return task.scoped(fn(s: mut &task.Scope): int {
+            let fs = [s.start(child, 10), s.start(child, 1000), s.start(child, 2000)]
+            match task.all(fs) {
+                Ok(v) { return len(v) }
+                Err(e) { return -1 }
+            }
+        })
+    })
+    println("children " + intToStr(n) + ", ended early: " + (time.monotonicNs() - t1 < 900000000).toStr())
+
+    task.scope(fn(s: mut &task.Scope) {
+        let r2 = task.within(10, fn(): Result[int, task.Cancelled] {
+            return task.any([s.start(slow, 3000), s.start(slow, 4000)])
+        })
+        println("any: " + r2.unwrapErr().toStr())
+    })
+
+    let text = task.within(0, fn(): str {
+        let a = task.sleep(0)
+        let b = task.yield()
+        let c = task.sleep(10)
+        return a.unwrapErr().toStr() + " " + b.unwrapErr().toStr() + " " + c.unwrapErr().toStr()
+    })
+    println("past deadline: " + text)
+    show("after within", task.sleep(1))
+    let v = task.within(100, fn(): int { return 42 })
+    println("value " + intToStr(v))
+}
