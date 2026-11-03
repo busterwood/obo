@@ -23,14 +23,15 @@
 // owned, and dropping it closes its socket (also inside with).
 //
 // Addresses are text: "127.0.0.1:8080", "[::1]:8080", "0.0.0.0:0", ":8080"
-// (all IPv4 interfaces), "localhost:8080" (127.0.0.1). Names other than
-// localhost are not resolved: getaddrinfo blocks the thread, and belongs on
-// the helper pool of stage C1c.
+// (all IPv4 interfaces), "localhost:8080" (127.0.0.1). listen and connect
+// take only these; dial also takes a name ("example.com:80"), looked up by
+// resolve through getaddrinfo, a blocking extern on the helper pool.
 //
 // A write to a peer that has closed returns EPIPE (or ECONNRESET); it never
 // raises SIGPIPE.
 
 import "io"
+import "ffi"
 
 extern "c" fn rtListen(fam: int, a: &[]byte, port: int, backlog: int): int as "obxlib_net_listen"
 extern "c" fn rtConnect(fam: int, a: &[]byte, port: int, pending: mut &int): int as "obxlib_net_connect"
@@ -440,4 +441,194 @@ pub fn (var c: Conn) close() {}
 
 pub fn (c: mut &Conn) drop() {
     if c.fd >= 0 { rtClose(c.fd) }
+}
+
+// ---- names (getaddrinfo) and dial
+
+extern "c" fn getaddrinfo(node: str, service: ptr, hints: ptr, res: mut &ptr): i32 blocking
+extern "c" fn freeaddrinfo(res: ptr)
+extern "c" fn rtErrno(): int as "obx_errno"
+extern "c" fn rtClockNs(which: int): int as "obx_clock_ns"
+extern "c" fn rtWithin(ms: int): int as "obxlib_task_within"
+extern "c" fn rtRestore(old: int) as "obxlib_task_restore"
+
+const AF_INET = 2
+const AF_INET6 = 10
+const SOCK_STREAM = 1
+const EAI_SYSTEM = -11
+const EAI_NODATA = -5
+const NO_DEADLINE = 9223372036854775807
+const MIN_ATTEMPT_MS = 2000      // the least time one address of several gets, as in Go's dialer
+
+// The running task's deadline (CLOCK_MONOTONIC ns), or NO_DEADLINE: within
+// gives the old deadline back, and asking for a later one changes nothing.
+fn deadlineNs(): int {
+    let old = rtWithin(4611686018427387904)
+    rtRestore(old)
+    return old
+}
+
+// The addresses of host for TCP to port, as text ("93.184.215.14:443",
+// "[2606:2800:21f::1]:443"), in getaddrinfo's order (RFC 6724), without
+// duplicates. host is a name, looked up through getaddrinfo (/etc/hosts,
+// DNS, nsswitch), or an IP address, given back without a lookup (IPv6
+// without brackets). The lookup is a blocking extern: it runs on the helper
+// pool while the task parks, and cannot be cancelled while it runs (a
+// cancellation or deadline is seen when it returns). A failed lookup is an
+// IoError with op "lookup" and errno io.LOOKUP + n (isLookup()).
+pub fn resolve(host: str, port: int, w: Where): Result[[]str, io.IoError] {
+    let label = if indexOf(host, ":", 0) >= 0 { "[" + host + "]:" + intToStr(port) } else { host + ":" + intToStr(port) }
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "lookup", label)) }
+    if port < 0 || port > 65535 || len(host) == 0 || len(host) > 1024 || indexOf(host, "\x00", 0) >= 0 {
+        return Err(io.ioError(EINVAL, "lookup", label))
+    }
+    match parseAddr(label, false) {
+        Some(ip) {
+            if host != "localhost" {
+                var b = array(19, byte(0))
+                b[0] = byte(ip.fam)
+                b[1] = byte(port / 256)
+                b[2] = byte(port % 256)
+                for i in 0..16 { b[3 + i] = ip.b[i] }
+                return Ok([addrText(&b)])
+            }
+        }
+        None {}
+    }
+    var hints = ffi.alloc(48)          // struct addrinfo: ai_flags, ai_family, ai_socktype, ...
+    hints.setI32(1, i32(0))            // AF_UNSPEC
+    hints.setI32(2, i32(SOCK_STREAM))
+    var res = nullPtr()
+    let r = int(getaddrinfo(host, nullPtr(), hints.ptr(), mut &res))
+    if r != 0 {
+        if r == EAI_SYSTEM { return Err(io.ioError(rtErrno(), "lookup", label)) }
+        return Err(io.ioError(io.LOOKUP - r, "lookup", label))
+    }
+    var out: []str = []
+    var p = res
+    while !isNull(p) {
+        let fam = int(ffi.peekI32(p, 1))
+        let sa = ffi.peekPtr(p, 3)                   // ai_addr
+        var b = array(19, byte(0))
+        b[1] = byte(port / 256)
+        b[2] = byte(port % 256)
+        var ok = false
+        if fam == AF_INET {
+            b[0] = byte(4)
+            for i in 0..4 { b[3 + i] = ffi.peek(sa, 4 + i) }       // sockaddr_in.sin_addr
+            ok = true
+        } else if fam == AF_INET6 {
+            b[0] = byte(6)
+            for i in 0..16 { b[3 + i] = ffi.peek(sa, 8 + i) }      // sockaddr_in6.sin6_addr
+            ok = true
+        }
+        if ok {
+            let t = addrText(&b)
+            var seen = false
+            for x in out {
+                if x == t { seen = true }
+            }
+            if !seen { append(mut &out, t) }
+        }
+        p = ffi.peekPtr(p, 5)                        // ai_next
+    }
+    freeaddrinfo(res)
+    let k2 = rtCheck(w.cstr())
+    if k2 != 0 { return Err(stopped(k2, "lookup", label)) }
+    if len(out) == 0 { return Err(io.ioError(io.LOOKUP - EAI_NODATA, "lookup", label)) }
+    return Ok(out)
+}
+
+// The addresses with the families taking turns, starting with the first
+// one's (RFC 8305 section 4), each family in its own order.
+fn interleave(addrs: &[]str): []str {
+    var six: []str = []
+    var four: []str = []
+    for a in addrs {
+        if strByte(a, 0) == '[' { append(mut &six, a) } else { append(mut &four, a) }
+    }
+    let sixFirst = len(addrs) > 0 && strByte(addrs[0], 0) == '['
+    var out: []str = []
+    var i = 0
+    while i < len(six) || i < len(four) {
+        if sixFirst {
+            if i < len(six) { append(mut &out, six[i]) }
+            if i < len(four) { append(mut &out, four[i]) }
+        } else {
+            if i < len(four) { append(mut &out, four[i]) }
+            if i < len(six) { append(mut &out, six[i]) }
+        }
+        i += 1
+    }
+    return out
+}
+
+// Connects to addr, "host:port", where host may also be a name: an IP
+// address or localhost is connected to at once, as connect does; a name is
+// resolved (resolve), and its addresses are tried in turn, IPv6 and IPv4
+// interleaved, until one connects. Under a deadline (task.within) each
+// attempt gets an equal share of the time left, at least 2 s (or all that
+// is left), so an address that does not answer leaves time for the others.
+// The error is the first attempt's, with addr as its path; a failed lookup,
+// a cancellation and the deadline end the dial at once.
+pub fn dial(addr: str, w: Where): Result[Conn, io.IoError] {
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "connect", addr)) }
+    match parseAddr(addr, false) {
+        Some(ip) { return connect(addr, w) }
+        None {}
+    }
+    var colon = -1
+    for i in 0..len(addr) {
+        if strByte(addr, i) == ':' { colon = i }
+    }
+    if colon <= 0 || strByte(addr, 0) == '[' { return Err(io.ioError(EINVAL, "connect", addr)) }
+    var port = 0
+    match digitsOf(strSlice(addr, colon + 1, len(addr))) {
+        Some(p) { port = p }
+        None { return Err(io.ioError(EINVAL, "connect", addr)) }
+    }
+    if port > 65535 { return Err(io.ioError(EINVAL, "connect", addr)) }
+    let found = try resolve(strSlice(addr, 0, colon), port, w)
+    let order = interleave(&found)
+    var first = io.ioError(0, "connect", addr)
+    for i in 0..len(order) {
+        let dl = deadlineNs()
+        var old = NO_DEADLINE
+        var bounded = false
+        if dl != NO_DEADLINE {
+            let left = (dl - rtClockNs(1)) / 1000000
+            if left <= 0 { return Err(io.ioError(io.ETIMEDOUT, "connect", addr)) }
+            var share = left / (len(order) - i)
+            if share < MIN_ATTEMPT_MS { share = min(left, MIN_ATTEMPT_MS) }
+            old = rtWithin(share)
+            bounded = true
+        }
+        let r = connect(order[i], w)
+        if bounded { rtRestore(old) }
+        match move(r) {
+            Ok(c) { return Ok(c) }
+            Err(e) {
+                if e.isCancelled() { return Err(io.ioError(e.errno, "connect", addr)) }
+                if e.isTimeout() && (dl == NO_DEADLINE || rtClockNs(1) >= dl) {
+                    return Err(io.ioError(e.errno, "connect", addr))
+                }
+                if first.errno == 0 { first = io.ioError(e.errno, "connect", addr) }
+            }
+        }
+    }
+    return Err(first)
+}
+
+// Reads what has already arrived, without parking: Ok(n) bytes (n > 0),
+// Ok(0) when the peer has closed, Err with EAGAIN when nothing is there. A
+// connection pool checks an idle connection with it before using it again.
+pub fn (c: &Conn) readNow(buf: mut &[byte]): Result[int, io.IoError] {
+    while true {
+        let n = rtRead(c.fd, buf, len(buf))
+        if n >= 0 { return Ok(n) }
+        if n != -EINTR { return Err(io.ioError(-n, "read", c.addr)) }
+    }
+    return Err(io.ioError(EINVAL, "read", c.addr))
 }

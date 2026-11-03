@@ -1,0 +1,106 @@
+// url: parsing, the normal form, and the URLs that are refused.
+// expect: http://example.com | http example.com 80 '' -> /
+// expect: https://api.example.com/v1/rates?ccy=EUR#top | https api.example.com 443 '/v1/rates' -> /v1/rates?ccy=EUR
+// expect: http://example.com:8080/a/b | http example.com 8080 '/a/b' -> /a/b
+// expect: http://example.com/ | http example.com 80 '/' -> /
+// expect: https://example.com/ | https example.com 443 '/' -> /
+// expect: http://[::1]:8080/x | http ::1 8080 '/x' -> /x
+// expect: http://[2001:db8::1]/ | http 2001:db8::1 80 '/' -> /
+// expect: http://10.0.0.1:81/?a=1&b=%20 | http 10.0.0.1 81 '/' -> /?a=1&b=%20
+// expect: http://example.com? | http example.com 80 '' -> /?
+// expect: http://example.com/p:q@r!$&'()*+,;=~-._/%7E | http example.com 80 '/p:q@r!$&'()*+,;=~-._/%7E' -> /p:q@r!$&'()*+,;=~-._/%7E
+// expect: http://example.com./ | http example.com. 80 '/' -> /
+// expect: http://a_b-c.d/ | http a_b-c.d 80 '/' -> /
+// expect: http://example.com/?q=/a?b | http example.com 80 '/' -> /?q=/a?b
+// expect: authority [::1]:8080 hostPort [::1]:8080 origin http://[::1]:8080
+// expect: authority example.com hostPort example.com:443 origin https://example.com:443
+// expect: url: empty URL
+// expect: url: no scheme ("http://" or "https://"): example.com/x
+// expect: url: unsupported scheme 'ftp' (http and https only): ftp://example.com/
+// expect: url: unsupported scheme 'file' (http and https only): file:///etc/passwd
+// expect: url: no authority ("//host") after the scheme: http:example.com
+// expect: url: invalid scheme: 1http://x/
+// expect: url: user information is not allowed: http://user:pass@example.com/
+// expect: url: user information is not allowed: http://@example.com/
+// expect: url: empty host: http:///x
+// expect: url: empty host: http://:80/
+// expect: url: invalid port: http://example.com:0/
+// expect: url: invalid port: http://example.com:65536/
+// expect: url: invalid port: http://example.com:123456/
+// expect: url: invalid port: http://example.com:8a/
+// expect: url: invalid port: http://example.com:-1/
+// expect: url: a space or control character at byte 20: http://example.com/a b
+// expect: url: a space or control character at byte 0:  http://example.com/
+// expect: url: a character that is not ASCII at byte 19 (percent-encode it): http://example.com/é
+// expect: url: a character that is not ASCII at byte 8 (percent-encode it): http://bücher.de/
+// expect: url: invalid character '"' in the path: http://example.com/"x"
+// expect: url: invalid character '<' in the query: http://example.com/?a=<b>
+// expect: url: invalid character '[' in the query: http://example.com/?a[]=1
+// expect: url: invalid character '#' in the fragment: http://example.com/#a#b
+// expect: url: a '%' that does not start a %XX escape in the path: http://example.com/%zz
+// expect: url: a '%' that does not start a %XX escape in the query: http://example.com/?a=%4
+// expect: url: a percent-encoded host is not supported: http://ex%61mple.com/
+// expect: url: invalid character '!' in the host: http://exa!mple.com/
+// expect: url: invalid host name: http://a..b/
+// expect: url: invalid host name: http://.a/
+// expect: url: invalid IPv4 address: http://1.2.3/
+// expect: url: invalid IPv4 address: http://2130706433/
+// expect: url: invalid IPv4 address: http://0x7f.0.0.1/
+// expect: url: invalid IPv4 address: http://127.0.0.01/
+// expect: url: invalid IPv4 address: http://256.0.0.1/
+// expect: url: invalid IPv4 address: http://a.b.123/
+// expect: url: invalid IPv4 address: http://1.2.3.4./
+// expect: url: invalid IPv6 address: http://[::g]/
+// expect: url: invalid IPv6 address: http://[1:2:3:4:5:6:7:8:9]/
+// expect: url: an IPv6 address without its ']': http://[::1/
+// expect: url: invalid character after the IPv6 address: http://[::1]x/
+// expect: url: IPv6 zone identifiers are not supported: http://[fe80::1%25eth0]/
+// expect: url: IPvFuture addresses are not supported: http://[v1.x]/
+// expect: url: user information is not allowed: http://evil.com\@good.com/
+// expect: normal form: http://example.com/A?B#C
+// expect: normal form: https://[::1]/
+import "url"
+
+fn show(s: str) {
+    match url.parse(s) {
+        Ok(u) {
+            println(u.toStr() + " | " + u.scheme + " " + u.host + " " + intToStr(u.port) + " '" + u.path + "' -> " + u.target())
+        }
+        Err(e) { println(e.toStr()) }
+    }
+}
+
+fn main() {
+    show("http://example.com")
+    show("https://api.example.com/v1/rates?ccy=EUR#top")
+    show("http://example.com:8080/a/b")
+    show("HTTP://Example.COM:80/")
+    show("https://example.com:443/")
+    show("http://[0:0::1]:8080/x")
+    show("http://[2001:DB8:0::1]/")
+    show("http://10.0.0.1:81/?a=1&b=%20")
+    show("http://example.com?")
+    show("http://example.com/p:q@r!$&'()*+,;=~-._/%7E")
+    show("http://example.com./")
+    show("http://a_b-c.d/")
+    show("http://example.com/?q=/a?b")
+    let a = url.parse("http://[::1]:8080/x").unwrap()
+    println("authority " + a.authority() + " hostPort " + a.hostPort() + " origin " + a.origin())
+    let b = url.parse("https://example.com").unwrap()
+    println("authority " + b.authority() + " hostPort " + b.hostPort() + " origin " + b.origin())
+    for s in ["", "example.com/x", "ftp://example.com/", "file:///etc/passwd", "http:example.com", "1http://x/",
+              "http://user:pass@example.com/", "http://@example.com/", "http:///x", "http://:80/",
+              "http://example.com:0/", "http://example.com:65536/", "http://example.com:123456/",
+              "http://example.com:8a/", "http://example.com:-1/", "http://example.com/a b", " http://example.com/",
+              "http://example.com/\xc3\xa9", "http://b\xc3\xbccher.de/", "http://example.com/\"x\"",
+              "http://example.com/?a=<b>", "http://example.com/?a[]=1", "http://example.com/#a#b",
+              "http://example.com/%zz", "http://example.com/?a=%4", "http://ex%61mple.com/", "http://exa!mple.com/",
+              "http://a..b/", "http://.a/", "http://1.2.3/", "http://2130706433/", "http://0x7f.0.0.1/",
+              "http://127.0.0.01/", "http://256.0.0.1/", "http://a.b.123/", "http://1.2.3.4./", "http://[::g]/",
+              "http://[1:2:3:4:5:6:7:8:9]/", "http://[::1/", "http://[::1]x/", "http://[fe80::1%25eth0]/",
+              "http://[v1.x]/", "http://evil.com\\@good.com/"] {
+        show(s)
+    }
+    println("normal form: " + url.parse("hTTp://EXAMPLE.com:80/A?B#C").unwrap().toStr())
+    println("normal form: " + url.parse("https://[0::1]:443/").unwrap().toStr())
+}
