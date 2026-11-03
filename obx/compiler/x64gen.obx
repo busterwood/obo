@@ -1794,13 +1794,8 @@ fn (g: mut &Gen) genAddr(e: int) {
     } else if k == ir.E_DEREF {
         g.gen(n.a)
     } else if k == ir.E_MEMBER {
-        let m = g.staticMem(e)
-        if m.base != -9 {
-            g.a.lea(RAX, m)
-        } else {
-            g.genAddr(n.a)
-            if n.v != 0 { g.a.lea(RAX, x64.mem(RAX, n.v)) }
-        }
+        let m = g.place(e)
+        if m.base != RAX || m.index >= 0 || m.disp != 0 { g.a.lea(RAX, m) }
     } else if k == ir.E_CLIT {
         let s = g.tempFor(n.ty)
         g.initEntries(s, g.size(n.ty), n.b)
@@ -2120,16 +2115,8 @@ fn (g: mut &Gen) gen(e: int) {
         let m = g.staticMem(e)
         if m.base != -9 {
             g.loadT(t, m)
-        } else if k == ir.E_MEMBER && g.u.nk(n.a) == ir.E_DEREF && g.paddFold(g.u.nodes[n.a].a) {
-            g.loadT(t, at(g.paddMem(g.u.nodes[n.a].a), n.v))
-        } else if k == ir.E_MEMBER {
-            g.genAddr(n.a)
-            g.loadT(t, x64.mem(RAX, n.v))
-        } else if k == ir.E_DEREF && g.paddFold(n.a) {
-            g.loadT(t, g.paddMem(n.a))
         } else {
-            g.genAddr(e)
-            g.loadT(t, x64.mem(RAX, 0))
+            g.loadT(t, g.place(e))
         }
     } else if k == ir.E_ADDR || k == ir.E_DECAY {
         g.genAddr(n.a)
@@ -2228,6 +2215,27 @@ fn (g: mut &Gen) gen(e: int) {
     }
 }
 
+// The code of the lvalue e but the last address arithmetic: the operand that names it (in the
+// frame, at a register local, at rax, or at what paddMem makes).
+fn (g: mut &Gen) place(e: int): x64.Mem {
+    let n = g.u.nodes[e]
+    let k = n.k
+    if k == ir.E_LOCAL && g.reg[n.a] < 0 { return rbp(g.slots[n.a]) }
+    if k == ir.E_MEMBER {
+        let m = g.staticMem(e)
+        if m.base != -9 { return m }
+        return at(g.place(n.a), n.v)
+    }
+    if k == ir.E_DEREF {
+        if g.paddFold(n.a) { return g.paddMem(n.a) }
+        if g.regOf(n.a) >= 0 { return x64.mem(g.regOf(n.a), 0) }
+        g.gen(n.a)
+        return x64.mem(RAX, 0)
+    }
+    g.genAddr(e)
+    return x64.mem(RAX, 0)
+}
+
 // Whether the pointer e is p + i * size that paddMem folds into an operand: size 1, 2, 4 or 8,
 // p needs no code but a load, and i is a local in a register, an rt_idx of one (the check done
 // first, in place), or pure (generated first, as pair does).
@@ -2236,14 +2244,6 @@ fn (g: &Gen) paddFold(e: int): bool {
     if n.k != ir.E_PADD || g.u.nk(n.b) == ir.E_INT || !g.simple(n.a) { return false }
     if n.v != 1 && n.v != 2 && n.v != 4 && n.v != 8 { return false }
     return g.regOf(n.b) >= 0 || g.idxReg(n.b) >= 0 || g.pure(n.b)
-}
-
-// For the place *p or (*p).f with p a pointer paddFold folds: p, else -1.
-fn (g: &Gen) paddPlace(x: int): int {
-    var d = x
-    if g.u.nk(d) == ir.E_MEMBER { d = g.u.nodes[d].a }
-    if g.u.nk(d) != ir.E_DEREF || !g.paddFold(g.u.nodes[d].a) { return -1 }
-    return g.u.nodes[d].a
 }
 
 // The register of local i in rt_idx(i, len, w) (inline, len needing no code), else -1.
@@ -2309,11 +2309,11 @@ fn (g: mut &Gen) genAssign(e: int) {
         if g.isAggr(t) { g.a.lea(RAX, m) }
         return
     }
-    let pa = g.paddPlace(lhs)
-    if pa >= 0 && g.simple(n.b) && !g.isAggr(t) && !g.isF(t) && !g.is128(t) {
-        // an element (or a member of one): the address as an operand, then the value
-        var pm = g.paddMem(pa)
-        if g.u.nk(lhs) == ir.E_MEMBER { pm = at(pm, g.u.nodes[lhs].v) }
+    let lk = g.u.nk(lhs)
+    if (lk == ir.E_DEREF || lk == ir.E_MEMBER) && g.simple(n.b) && !g.isAggr(t) && !g.isF(t) && !g.is128(t) {
+        // through a pointer: the place as an operand (in rax, rcx and registers of locals),
+        // then the value
+        let pm = g.place(lhs)
         var r = g.regOf(n.b)
         if r < 0 || g.u.nodes[n.b].ty != t {
             g.genInto(n.b, RDX)
