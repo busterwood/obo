@@ -1,0 +1,29 @@
+// task.workers refuses to fork while the event loop holds a registration: a
+// connected socket here (the children would share the parent's epoll
+// instance). A listener made before the call is fine while it has not
+// accepted: it joins the loop at its first accept, in each worker. Once it
+// has waited for a connection it is registered too. Exit 15 at the call.
+// exit: 15
+// expect: one connection
+// stderr: obx: task.workers while the event loop holds registrations (a socket in use, or a signal watch) at task_workers_trap_socket.obx:26
+import "task"
+import "net"
+
+fn dial(addr: str): int {
+    let c = net.connect(addr).unwrap()
+    return 1
+}
+
+fn main() {
+    let ln = net.listen("127.0.0.1:0").unwrap()
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(dial, ln.localAddr())
+        let c = ln.accept().unwrap()
+        println("one connection")
+        let n = f.wait().unwrap()
+    })
+    // the connection is closed; the listener has waited, so it is registered
+    let ends = task.workers(2, fn(i: int) {
+        println("not reached")
+    })
+}

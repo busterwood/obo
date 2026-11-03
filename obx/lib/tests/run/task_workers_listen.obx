@@ -1,0 +1,124 @@
+// task.workers with sockets, both ways of sharing an address. First a
+// listener made before the call, shared by workers 0 and 1 (one accept
+// queue; it joins each worker's own event loop at its first accept); then a
+// socket of their own in each, on one port, with net.listenReusePort (the
+// supervisor picks the port with a socket it closes before the call).
+// Worker 2 is the client: once the servers are ready it makes 20
+// connections, each answered with the server's index, then stops every
+// worker. The servers watch SIGTERM: it cancels their accept loops.
+// expect: shared: 20 answers
+// expect: reuseport: 20 answers
+// expect: servers drained: true
+import "task"
+import "net"
+import "io"
+import "fs"
+
+type Srv = record {
+    ln: net.Listener
+    index: int
+}
+
+fn answer(c: net.Conn, index: int): int {
+    c.writeStr(intToStr(index) + "\n").unwrap()
+    return 0
+}
+
+fn acceptLoop(s: Srv): int {
+    task.scope(fn(sc: mut &task.Scope) {
+        while true {
+            match s.ln.accept() {
+                Ok(c) { sc.spawn(answerJob, Job{c: c, index: s.index}) }
+                Err(e) { break }      // cancelled
+            }
+        }
+    })
+    return 0
+}
+
+type Job = record {
+    c: net.Conn
+    index: int
+}
+
+fn answerJob(j: Job): int {
+    let Job{c: c, index: i} = move(j)
+    return answer(c, i)
+}
+
+// Serves on ln until SIGTERM.
+fn server(ln: net.Listener, index: int) {
+    task.watchSignals(&[task.SIGTERM])
+    io.write("ready" + intToStr(index) + ".txt", "1").unwrap()
+    var l = Some(ln)
+    task.scope(fn(s: mut &task.Scope) {
+        let srv = s.start(acceptLoop, Srv{ln: replace(mut &l, None).unwrap(), index: index})
+        let sig = task.terminated().unwrap()
+        // srv is dropped: the accept loop is cancelled
+    })
+    io.write("drained" + intToStr(index) + ".txt", "1").unwrap()
+}
+
+fn client(addr: str, name: str) {
+    task.watchSignals(&[task.SIGTERM])      // the stop it asks for comes to it too
+    while !fs.exists("ready0.txt") || !fs.exists("ready1.txt") { task.sleep(1).unwrap() }
+    var n = 0
+    for k in 0..20 {
+        let c = net.connect(addr).unwrap()
+        var buf = array(16, byte(0))
+        let got = c.read(mut &buf).unwrap()
+        let s = strFromBytes(&buf[0..got])
+        if s == "0\n" || s == "1\n" { n += 1 }
+    }
+    io.write("answers.txt", name + ": " + intToStr(n) + " answers").unwrap()
+    task.stopWorkers()
+    let sig = task.terminated().unwrap()
+}
+
+fn clean() {
+    for f in ["ready0.txt", "ready1.txt", "drained0.txt", "drained1.txt", "answers.txt"] { let r = fs.remove(f) }
+}
+
+fn report(ends: &[]task.WorkerEnd) {
+    println(io.read("answers.txt").unwrap())
+    for e in ends {
+        if e.code != 0 || e.restarts != 0 { println("worker " + intToStr(e.index) + " ended badly: " + e.toStr()) }
+    }
+}
+
+fn main() {
+    clean()
+    var lst: Option[net.Listener] = Some(net.listen("127.0.0.1:0").unwrap())
+    var addr = ""
+    match &lst {
+        Some(l) { addr = l.localAddr() }
+        None {}
+    }
+    let ends = task.workers(3, fn(i: int) {
+        if i < 2 {
+            server(replace(mut &lst, None).unwrap(), i)
+        } else {
+            client(addr, "shared")
+        }
+    }).unwrap()
+    report(&ends)
+    let d1 = fs.exists("drained0.txt") && fs.exists("drained1.txt")
+    lst = None                             // the shared listener is closed
+
+    clean()
+    var port = ""
+    match net.listenReusePort("127.0.0.1:0") {
+        Ok(l) { port = l.localAddr() }      // closed at once: it would take connections it never accepts
+        Err(e) { panic(e.toStr()) }
+    }
+    let ends2 = task.workers(3, fn(i: int) {
+        if i < 2 {
+            server(net.listenReusePort(port).unwrap(), i)
+        } else {
+            client(port, "reuseport")
+        }
+    }).unwrap()
+    report(&ends2)
+    let d2 = fs.exists("drained0.txt") && fs.exists("drained1.txt")
+    println("servers drained: " + (if d1 && d2 { "true" } else { "false" }))
+}

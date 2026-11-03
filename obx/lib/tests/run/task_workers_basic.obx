@@ -1,0 +1,38 @@
+// task.workers: three worker processes, each with its own index and pid
+// (none the supervisor's); output written before the fork is not repeated
+// (the buffer is flushed first); each worker ends with exit 0 and is not
+// restarted. The workers report through files in the working directory (the
+// order in which processes write to one stdout is not fixed).
+// expect: before the workers
+// expect: worker 0 (index 0): exit 0, restarts 0
+// expect: worker 1 (index 1): exit 0, restarts 0
+// expect: worker 2 (index 2): exit 0, restarts 0
+// expect: distinct pids, none the supervisor's: true
+// expect: after the workers
+import "task"
+import "io"
+import "os"
+import "strings"
+
+fn main() {
+    print("before the workers\n")          // still in the buffer at the fork
+    let me = os.pid()
+    let ends = task.workers(3, fn(i: int) {
+        io.write("w" + intToStr(i) + ".txt", intToStr(i) + " " + intToStr(os.pid())).unwrap()
+    }).unwrap()
+    var pids: []int = []
+    var ok = true
+    for e in ends {
+        let parts = strings.splitOn(io.read("w" + intToStr(e.index) + ".txt").unwrap(), " ")
+        let pid = strings.parseInt(parts[1]).unwrap()
+        println("worker " + parts[0] + " (index " + intToStr(e.index) + "): exit " + intToStr(e.code) +
+                ", restarts " + intToStr(e.restarts))
+        if pid != e.pid || pid == me { ok = false }
+        for q in pids {
+            if q == pid { ok = false }
+        }
+        append(mut &pids, pid)
+    }
+    println("distinct pids, none the supervisor's: " + (if ok { "true" } else { "false" }))
+    println("after the workers")
+}

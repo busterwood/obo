@@ -1,0 +1,43 @@
+// task.workers: how a worker ended, one supervisor after another (each call
+// restores the signal mask and starts afresh). With no crash allowed
+// (maxCrashes 0) the first crash gives up at once. A panic keeps its exit
+// code (12), so do a stack overflow (4) and os.quit (3); a signal (SIGKILL,
+// sent by the worker to itself) is code -1 and the signal. A worker that
+// returns ends with exit 0 and is not a crash.
+// expect: panic: exit 12, signal 0, gave up true
+// expect: overflow: exit 4, signal 0, gave up true
+// expect: quit: exit 3, signal 0, gave up true
+// expect: SIGKILL: exit -1, signal 9, gave up true
+// expect: return: exit 0, signal 0, gave up false
+import "task"
+import "os"
+
+extern "c" fn kill(pid: i32, sig: i32): i32
+
+fn deep(n: int): int {
+    var a = array(64, n)
+    return deep(n + 1) + a[n % 64]
+}
+
+fn run(name: str, how: int) {
+    var p = task.workerPolicy()
+    p.maxCrashes = 0
+    let r = task.workersWith(1, p, fn(i: int) {
+        if how == 0 { panic("a worker's panic") }
+        if how == 1 { println(intToStr(deep(0))) }
+        if how == 2 { os.quit(3) }
+        if how == 3 { let k = kill(i32(os.pid()), i32(9)) }
+    })
+    match r {
+        Ok(ends) { println(name + ": exit " + intToStr(ends[0].code) + ", signal " + intToStr(ends[0].signal) + ", gave up false") }
+        Err(g) { println(name + ": exit " + intToStr(g.ends[0].code) + ", signal " + intToStr(g.ends[0].signal) + ", gave up true") }
+    }
+}
+
+fn main() {
+    run("panic", 0)
+    run("overflow", 1)
+    run("quit", 2)
+    run("SIGKILL", 3)
+    run("return", 4)
+}

@@ -1,0 +1,53 @@
+// task: signals as events of the loop. A signal sent while it is watched
+// and no task waits is kept (two arrivals of one signal before a wait are
+// one); the next wait gets it at once. Two tasks waiting for the same
+// signal both get its next arrival, while main goes on (a waiting task is
+// not a deadlock). A wait inside within ends with Timeout when no signal
+// comes, and a signal that is not watched for the wait stays pending.
+// expect: kept: 10
+// expect: nothing more kept: timeout
+// expect: a got 12
+// expect: b got 12
+// expect: usr2 wait while usr1 pending: timeout
+// expect: usr1 still pending: 10
+import "task"
+import "os"
+
+extern "c" fn kill(pid: i32, sig: i32): i32
+
+fn send(s: int) { let r = kill(i32(os.pid()), i32(s)) }
+
+fn waiter(name: str): str {
+    let s = task.waitSignal(&[task.SIGUSR2]).unwrap()
+    return name + " got " + intToStr(s)
+}
+
+fn show(r: Result[int, task.Cancelled]): str {
+    match r {
+        Ok(s) { return intToStr(s) }
+        Err(c) { return c.toStr() }
+    }
+}
+
+fn main() {
+    task.watchSignals(&[task.SIGUSR1, task.SIGUSR2])
+    send(task.SIGUSR1)
+    send(task.SIGUSR1)
+    println("kept: " + show(task.waitSignal(&[task.SIGUSR1])))
+    println("nothing more kept: " + show(task.within(20, fn(): Result[int, task.Cancelled] {
+        return task.waitSignal(&[task.SIGUSR1])
+    })))
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(waiter, "a")
+        let b = s.start(waiter, "b")
+        task.sleep(5).unwrap()                  // both are waiting
+        send(task.SIGUSR2)
+        println(a.wait().unwrap())
+        println(b.wait().unwrap())
+    })
+    send(task.SIGUSR1)
+    println("usr2 wait while usr1 pending: " + show(task.within(20, fn(): Result[int, task.Cancelled] {
+        return task.waitSignal(&[task.SIGUSR2])
+    })))
+    println("usr1 still pending: " + show(task.waitSignal(&[task.SIGUSR1])))
+}

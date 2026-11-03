@@ -1,0 +1,23 @@
+// task.workers refuses to fork while another task exists: the child would
+// get a copy of it, and the supervisor runs no task while it waits. The
+// program stops with exit 15 at the call (here inside a task, while main
+// waits for it).
+// exit: 15
+// expect: in a task
+// stderr: obx: task.workers while other tasks exist at task_workers_trap_task.obx:12
+import "task"
+
+fn forker(n: int): int {
+    println("in a task")
+    let ends = task.workers(n, fn(i: int) {
+        println("not reached")
+    })
+    return n
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(forker, 2)
+        let r = f.wait()
+    })
+}

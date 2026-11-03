@@ -1,0 +1,27 @@
+// task.workers refuses to fork once the helper pool has started: a lock a
+// helper thread holds at the fork would stay held in the child for ever.
+// The program stops with exit 15 at the call. Here the pool starts for a
+// blocking call made while another task sleeps.
+// exit: 15
+// expect: pool started
+// stderr: obx: task.workers after the helper pool has started (fork is unsafe once threads exist) at task_workers_trap_pool.obx:24
+import "task"
+
+extern "c" fn usleepB(us: u32): i32 as "usleep" blocking
+
+fn napper(ms: int): int {
+    task.sleep(ms).unwrap()
+    return ms
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        let a = s.start(napper, 5)
+        let r = usleepB(u32(1000))           // on a helper thread: another task is waiting
+        let b = a.wait().unwrap()
+    })
+    println("pool started")
+    let ends = task.workers(2, fn(i: int) {
+        println("not reached")
+    })
+}

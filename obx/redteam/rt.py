@@ -14,7 +14,7 @@ usage: rt.py [files or dirs...]  (default: cases/ and f*.obx)
 OBX_SAN=thread builds with ThreadSanitizer instead (run with ASLR off, as TSan needs on this
 kernel) and reports TSAN for a data race: the helper-pool tests (task_blocking_*, stage C1c).
 """
-import os, re, subprocess, sys, glob, json
+import os, re, subprocess, sys, glob, json, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 import cbuild
 from concurrent.futures import ThreadPoolExecutor
@@ -68,7 +68,9 @@ def run1(path):
     env = dict(os.environ, OBX_CHECK='1', ASAN_OPTIONS='detect_leaks=1:abort_on_error=0:exitcode=99',
                UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1:exitcode=98', TSAN_OPTIONS='exitcode=97:suppressions=' + os.path.join(HERE, 'tsan.supp'))
     try:
-        r = subprocess.run((['setarch', '-R'] if TSAN else []) + [exe], capture_output=True, text=True, errors='replace', timeout=20, env=env)
+        # in a directory of its own, as tests/run.py runs them: some write files (task_workers_*)
+        with tempfile.TemporaryDirectory(prefix='obxrt_') as tmp:
+            r = subprocess.run((['setarch', '-R'] if TSAN else []) + [exe], capture_output=True, text=True, errors='replace', timeout=20, env=env, cwd=tmp)
     except subprocess.TimeoutExpired:
         return name, 'TIMEOUT', ''
     err = r.stderr

@@ -21,6 +21,9 @@
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <sys/eventfd.h>
+#include <sys/signalfd.h>
+#include <sys/wait.h>
+#include <sys/prctl.h>
 #if defined(__SANITIZE_ADDRESS__)
 #include <sanitizer/common_interface_defs.h>
 #include <sanitizer/asan_interface.h>
@@ -620,6 +623,7 @@ typedef struct rt_shared rt_shared;
 static rt_shared* rt_with_top;             /* the innermost open Shared.with (no task may park) */
 static char* rt_stk_free;                  /* stacks for reuse, linked through their lowest word */
 static int rt_nstk_free;
+static int64_t rt_ntasks;                  /* started tasks not yet finished (task.workers refuses to fork) */
 
 static void rt_enqueue(rt_task* t) {
     t->next = 0;
@@ -717,10 +721,17 @@ static void rt_wake(rt_task* t) {
    switches it also looks without waiting, so tasks that keep each other runnable do not starve
    the sockets and timers. */
 enum { RT_WOK = 0, RT_WCANCEL = 1, RT_WTIMEOUT = 3 };
-typedef struct { rt_task *rd, *wr; } rt_fdw;
+/* reg: 0 not in the epoll set, 1 a socket of lib/net (counted in rt_nreg), 2 a C library's
+   descriptor (obxlib_fd_wait; registered until the library closes it). lazy: a listener, put in
+   the set at its first wait, so that one made before task.workers is in no set in the parent
+   and each worker registers it in its own. */
+typedef struct { rt_task *rd, *wr; uint8_t reg, lazy; } rt_fdw;
 static rt_fdw* rt_fds;                     /* by descriptor: the tasks waiting to read and to write */
 static int64_t rt_nfds;
 static int rt_epfd = -1;
+static int64_t rt_nreg;                    /* sockets of lib/net in the epoll set */
+#define RT_SIG_TAG (~(uint64_t)1)           /* the epoll data of the signal watch's signalfd */
+static void rt_sig_read(void);
 static int64_t rt_nio;                     /* tasks waiting for a socket */
 static int64_t rt_njobs;                   /* tasks parked in a blocking C call on the helper pool */
 #define RT_POOL_TAG (~(uint64_t)0)          /* the epoll data of the helper pool's eventfd */
@@ -808,6 +819,7 @@ static void rt_poll(bool block, const char* w) {
             __atomic_store_n(&rt_pool_asleep, 0, __ATOMIC_RELAXED);
             for (int i = 0; i < n; i++) {
                 if (ev[i].data.u64 == RT_POOL_TAG) { rt_pool_drain(true); continue; }
+                if (ev[i].data.u64 == RT_SIG_TAG) { rt_sig_read(); continue; }
                 int64_t fd = (int64_t)ev[i].data.u64;
                 uint32_t e = ev[i].events;
                 if (fd >= rt_nfds) continue;
@@ -864,6 +876,7 @@ __attribute__((noreturn)) static void rt_task_boot(void) {
     while (t->forgotten && r) { void* x = r; r = 0; t->resdrop(x); }   /* nobody will wait for it */
     t->res = r;
     t->state = RT_DONE;
+    rt_ntasks--;
     rt_scope* s = t->scope;
     if (t->sprev) t->sprev->snext = t->snext; else s->tasks = t->snext;
     if (t->snext) t->snext->sprev = t->sprev; else s->last = t->sprev;
@@ -905,6 +918,7 @@ void* obxlib_task_start(void* sp, void* run, void* job, void* resdrop) {
     if (s->last) s->last->snext = t; else s->tasks = t;
     s->last = t;
     s->live++;
+    rt_ntasks++;
     uint64_t* top = (uint64_t*)(t->stk + RT_GUARD + RT_STACK);
     uint32_t mx;
     uint16_t cw;
@@ -1025,9 +1039,8 @@ void obxlib_task_restore(int64_t old) { rt_cur->deadline = old; }
    address is a family (4 or 6), 16 bytes (an IPv4 address in the first 4) and a port. Results
    are a count or a descriptor, or -errno. Writes use MSG_NOSIGNAL: a closed peer is EPIPE, never
    SIGPIPE. */
-/* The epoll set exists and rt_fds has room for fd: 0, or -errno. */
-static int rt_fd_room(int64_t fd) {
-    if (rt_epfd < 0 && (rt_epfd = epoll_create1(EPOLL_CLOEXEC)) < 0) return -errno;
+/* rt_fds has room for fd. */
+static void rt_fd_table(int64_t fd) {
     if (fd >= rt_nfds) {
         int64_t n = rt_nfds ? rt_nfds : 64;
         while (n <= fd) n *= 2;
@@ -1037,6 +1050,11 @@ static int rt_fd_room(int64_t fd) {
         rt_fds = f;
         rt_nfds = n;
     }
+}
+/* The epoll set exists and rt_fds has room for fd: 0, or -errno. */
+static int rt_fd_room(int64_t fd) {
+    if (rt_epfd < 0 && (rt_epfd = epoll_create1(EPOLL_CLOEXEC)) < 0) return -errno;
+    rt_fd_table(fd);
     return 0;
 }
 static int64_t rt_net_new(int fd) {
@@ -1044,6 +1062,9 @@ static int64_t rt_net_new(int fd) {
     if (r < 0) { close(fd); return r; }
     struct epoll_event ev = {.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.u64 = (uint64_t)fd};
     if (epoll_ctl(rt_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) { int e = errno; close(fd); return -e; }
+    rt_fds[fd].reg = 1;
+    rt_fds[fd].lazy = 0;
+    rt_nreg++;
     return fd;
 }
 static socklen_t rt_net_sa(int64_t fam, const uint8_t* a, int64_t port, struct sockaddr_storage* ss) {
@@ -1061,20 +1082,25 @@ static socklen_t rt_net_sa(int64_t fam, const uint8_t* a, int64_t port, struct s
     memcpy(&s->sin_addr, a, 4);
     return sizeof *s;
 }
-/* A listening socket (SO_REUSEADDR) bound to the address. */
-int64_t obxlib_net_listen(int64_t fam, const uint8_t* a, int64_t port, int64_t backlog) {
+/* A listening socket (SO_REUSEADDR; with reuseport also SO_REUSEPORT) bound to the address. It
+   is put in the epoll set at its first wait (lazy), not here. */
+int64_t obxlib_net_listen(int64_t fam, const uint8_t* a, int64_t port, int64_t backlog, int64_t reuseport) {
     struct sockaddr_storage ss;
     socklen_t n = rt_net_sa(fam, a, port, &ss);
     int fd = socket(ss.ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) return -errno;
     int one = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) != 0 || bind(fd, (struct sockaddr*)&ss, n) != 0 ||
-        listen(fd, (int)backlog) != 0) {
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) != 0 ||
+        (reuseport && setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof one) != 0) ||
+        bind(fd, (struct sockaddr*)&ss, n) != 0 || listen(fd, (int)backlog) != 0) {
         int e = errno;
         close(fd);
         return -e;
     }
-    return rt_net_new(fd);
+    rt_fd_table(fd);
+    rt_fds[fd].reg = 0;
+    rt_fds[fd].lazy = 1;
+    return fd;
 }
 /* A socket connecting to the address; *pending is 1 while the connection is in progress (the
    socket becomes writable when it is done, and obxlib_net_soerror tells how it went). */
@@ -1139,7 +1165,11 @@ int64_t obxlib_net_soerror(int64_t fd) {
 int64_t obxlib_net_shutdown(int64_t fd, int64_t how) { return shutdown((int)fd, (int)how) != 0 ? -errno : 0; }
 /* Closing never parks (a socket is closed by its drop, also inside Shared.with). */
 void obxlib_net_close(int64_t fd) {
-    if (fd < rt_nfds) rt_fds[fd].rd = rt_fds[fd].wr = 0;
+    if (fd < rt_nfds) {
+        rt_fds[fd].rd = rt_fds[fd].wr = 0;
+        if (rt_fds[fd].reg == 1) rt_nreg--;
+        rt_fds[fd].reg = rt_fds[fd].lazy = 0;
+    }
     close((int)fd);
 }
 /* Parks until the socket is readable (dir 0) or writable (1): 0, or 1 when the task is
@@ -1148,6 +1178,19 @@ int64_t obxlib_net_wait(int64_t fd, int64_t dir, const char* w) {
     rt_nopark(w);
     if (rt_cur->cancelled) return 1;
     if (rt_expired()) return 3;
+    if (!rt_fds[fd].reg) {
+        /* a listener's first wait. EPOLLEXCLUSIVE: of the processes waiting on one listener
+           (made before task.workers), one is woken for a connection, not all */
+        int r = rt_fd_room(fd);
+        if (r < 0) return r;
+        struct epoll_event ev = {.events = EPOLLIN | EPOLLET | EPOLLEXCLUSIVE, .data.u64 = (uint64_t)fd};
+        if (epoll_ctl(rt_epfd, EPOLL_CTL_ADD, (int)fd, &ev) != 0) {
+            ev.events = EPOLLIN | EPOLLET;      /* a kernel without it (before 4.5) */
+            if (epoll_ctl(rt_epfd, EPOLL_CTL_ADD, (int)fd, &ev) != 0) return -errno;
+        }
+        rt_fds[fd].reg = 1;
+        rt_nreg++;
+    }
     if (dir) rt_fds[fd].wr = rt_cur; else rt_fds[fd].rd = rt_cur;
     rt_nio++;
     int r = rt_park_until(true, rt_cur->deadline, w);
@@ -1176,6 +1219,7 @@ int64_t obxlib_fd_wait(int64_t fd, int64_t dir, int64_t ms, bool cancellable, co
                              .data.u64 = (uint64_t)fd};
     if (epoll_ctl(rt_epfd, EPOLL_CTL_MOD, (int)fd, &ev) != 0 &&
         (errno != ENOENT || epoll_ctl(rt_epfd, EPOLL_CTL_ADD, (int)fd, &ev) != 0)) return -errno;
+    if (rt_fds[fd].reg != 1) rt_fds[fd].reg = 2;
     if (dir != 1) rt_fds[fd].rd = rt_cur;
     if (dir != 0) rt_fds[fd].wr = rt_cur;
     rt_nio++;
@@ -1435,4 +1479,194 @@ void obxlib_sh_leave(void* p, void* box) {
     s->busy = false;
     rt_with_top = s->up;
     if (s->rc == 0) rt_sh_free(s);
+}
+
+/* ---- signals (stage C2): a task parks until a signal arrives (lib/task.obx's waitSignal)
+   A watched signal is blocked on the program's thread (the helper threads block every signal)
+   and read from a signalfd in the epoll set, so it arrives as an event of the loop: no handler
+   runs in the middle of obx code, and no system call fails with EINTR. Each arrival is given to
+   every task waiting for that signal then; with none waiting it is kept (one of each signal, as
+   the kernel keeps them) for the next task that waits. Watching cannot be undone. */
+static int rt_sigfd = -1;
+static uint64_t rt_sig_watched;            /* bit s-1: signal s is watched */
+static uint64_t rt_sig_pending;            /* arrived, and given to no task yet */
+typedef struct rt_sigw rt_sigw;
+struct rt_sigw { rt_task* t; uint64_t mask; int got; rt_sigw* next; };
+static rt_sigw* rt_sigws;                  /* the tasks waiting for a signal (on their stacks) */
+static void rt_sigset_of(uint64_t m, sigset_t* s) {
+    sigemptyset(s);
+    for (int i = 0; i < 64; i++)
+        if (m >> i & 1) sigaddset(s, i + 1);
+}
+/* Watches the signals of mask (bit s-1 for signal s): 0, or -errno. */
+int64_t obxlib_sig_watch(int64_t mask) {
+    uint64_t m = rt_sig_watched | (uint64_t)mask;
+    if (m == rt_sig_watched) return 0;
+    int r = rt_fd_room(0);
+    if (r < 0) return r;
+    sigset_t s, add;
+    rt_sigset_of(m, &s);
+    rt_sigset_of(m & ~rt_sig_watched, &add);
+    sigprocmask(SIG_BLOCK, &add, 0);       /* first, so that none arrives unblocked and unread */
+    int fd = signalfd(rt_sigfd, &s, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (fd >= 0 && rt_sigfd < 0) {
+        struct epoll_event ev = {.events = EPOLLIN, .data.u64 = RT_SIG_TAG};
+        if (epoll_ctl(rt_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) { int e = errno; close(fd); fd = -1; errno = e; }
+        else rt_sigfd = fd;
+    }
+    if (fd < 0) {
+        int e = errno;
+        sigprocmask(SIG_UNBLOCK, &add, 0);
+        return -e;
+    }
+    rt_sig_watched = m;
+    return 0;
+}
+/* The event loop saw the signalfd: give each signal read to the tasks waiting for it, or keep it. */
+static void rt_sig_read(void) {
+    struct signalfd_siginfo si;
+    while (read(rt_sigfd, &si, sizeof si) == (ssize_t)sizeof si) {
+        uint64_t b = (uint64_t)1 << (si.ssi_signo - 1);
+        bool given = false;
+        for (rt_sigw* x = rt_sigws; x; x = x->next)
+            if ((x->mask & b) && !x->got) { x->got = (int)si.ssi_signo; rt_wake(x->t); given = true; }
+        if (!given) rt_sig_pending |= b;
+    }
+}
+/* Parks until one of the watched signals of mask arrives: the signal; -1 when the task is
+   cancelled, -3 when its deadline passes. */
+int64_t obxlib_sig_wait(int64_t mask, const char* w) {
+    rt_nopark(w);
+    for (;;) {
+        uint64_t hit = rt_sig_pending & (uint64_t)mask;
+        if (hit) {
+            int s = __builtin_ctzll(hit) + 1;
+            rt_sig_pending &= ~((uint64_t)1 << (s - 1));
+            return s;
+        }
+        if (rt_cur->cancelled) return -1;
+        if (rt_expired()) return -3;
+        rt_sigw me = {.t = rt_cur, .mask = (uint64_t)mask, .got = 0, .next = rt_sigws};
+        rt_sigws = &me;
+        rt_nio++;
+        int r = rt_park_until(true, rt_cur->deadline, w);
+        rt_nio--;
+        for (rt_sigw** p = &rt_sigws; *p; p = &(*p)->next)
+            if (*p == &me) { *p = me.next; break; }
+        if (me.got) return me.got;
+        if (r == RT_WCANCEL) return -1;
+        if (r == RT_WTIMEOUT) return -3;
+    }
+}
+
+/* ---- worker processes (stage C2: lib/task.obx's workers, a supervisor around fork)
+   task.workers forks only from a process with one thread and nothing in its event loop: no
+   helper thread (a lock another thread holds at the fork stays held in the child forever), no
+   other task (the child would have a copy of each, and the parent blocks while it supervises),
+   no descriptor in the epoll set (the child shares the parent's epoll instance; it closes it and
+   makes its own) and no signal watch. Otherwise it stops the program with exit 15 at the call.
+   The supervisor blocks SIGTERM, SIGINT and SIGCHLD and waits for them with sigtimedwait; each
+   child restores the mask it had, asks for SIGTERM when the supervisor dies (PR_SET_PDEATHSIG),
+   and checks under OBX_CHECK=1 that the objects it made are freed: the parent's, made before the
+   fork, are still there and are not the child's to free. */
+static sigset_t rt_sup_old;                /* the supervisor's signal mask before workers */
+static int64_t rt_worker_base;             /* in a worker: the live objects at its fork */
+static pid_t rt_worker_parent;             /* in a worker: the supervisor's pid; 0 elsewhere */
+static void rt_sup_set(sigset_t* s) {
+    sigemptyset(s);
+    sigaddset(s, SIGTERM);
+    sigaddset(s, SIGINT);
+    sigaddset(s, SIGCHLD);
+}
+/* The descriptors in the epoll set: lib/net's sockets, the C libraries' (each probed, since a
+   library that closed its descriptor took it out of the set unseen) and the signal watch. */
+static int64_t rt_regs(void) {
+    int64_t n = rt_nreg + (rt_sigfd >= 0);
+    for (int64_t fd = 0; fd < rt_nfds; fd++) {
+        if (rt_fds[fd].reg != 2) continue;
+        struct epoll_event ev = {.events = 0, .data.u64 = (uint64_t)fd};
+        if (rt_epfd >= 0 && epoll_ctl(rt_epfd, EPOLL_CTL_MOD, (int)fd, &ev) == 0) n++;
+        else rt_fds[fd].reg = 0;
+    }
+    return n;
+}
+/* The checks before the first fork (exit 15 at w), then the supervisor's signal mask. */
+void obxlib_workers_begin(const char* w) {
+    rt_nopark(w);
+    if (rt_npool > 0) rt_trap(15, "task.workers after the helper pool has started (fork is unsafe once threads exist)", w);
+    if (rt_ntasks) rt_trap(15, "task.workers while other tasks exist", w);
+    if (rt_regs()) rt_trap(15, "task.workers while the event loop holds registrations (a socket in use, or a signal watch)", w);
+    sigset_t s;
+    rt_sup_set(&s);
+    sigprocmask(SIG_BLOCK, &s, &rt_sup_old);
+}
+/* After the last worker: signals still pending for the supervisor are dropped (they asked for
+   the drain that has happened), and the mask is put back. */
+void obxlib_workers_end(void) {
+    sigset_t s;
+    rt_sup_set(&s);
+    struct timespec z = {0, 0};
+    siginfo_t si;
+    while (sigtimedwait(&s, &si, &z) > 0) {}
+    sigprocmask(SIG_SETMASK, &rt_sup_old, 0);
+}
+/* Forks a worker: its pid in the parent, 0 in the child, or -errno. Both output buffers are
+   flushed first (the runtime's and C's stdio), so nothing is written twice. */
+int64_t obxlib_proc_fork(void) {
+    rt_flush();
+    fflush(0);
+    pid_t parent = getpid();
+    pid_t p = fork();
+    if (p < 0) return -errno;
+    if (p == 0) {
+        rt_worker_parent = parent;
+        rt_worker_base = rt_live;
+        if (rt_epfd >= 0) { close(rt_epfd); rt_epfd = -1; }
+        sigprocmask(SIG_SETMASK, &rt_sup_old, 0);
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
+        if (getppid() != parent) kill(getpid(), SIGTERM);   /* the supervisor died already */
+    }
+    return p;
+}
+/* The supervisor's wait, ms milliseconds at most (ms < 0: no limit): a child that ended (its
+   pid, and its wait status in *status), -s for SIGTERM or SIGINT (s), or 0 when ms has passed. */
+int64_t obxlib_proc_wait(int64_t ms, int64_t* status) {
+    int64_t end = ms < 0 ? RT_NEVER : rt_after(ms);
+    sigset_t s;
+    rt_sup_set(&s);
+    for (;;) {
+        int st = 0;
+        pid_t p = waitpid(-1, &st, WNOHANG);
+        if (p > 0) { *status = st; return p; }
+        siginfo_t si;
+        int r;
+        if (end == RT_NEVER) {
+            r = sigwaitinfo(&s, &si);
+        } else {
+            int64_t left = end - rt_mono();
+            if (left <= 0) return 0;
+            struct timespec ts = {left / 1000000000, left % 1000000000};
+            r = sigtimedwait(&s, &si, &ts);
+        }
+        if (r == SIGTERM || r == SIGINT) return -r;
+        if (r < 0 && errno == EAGAIN) return 0;
+        /* SIGCHLD, or EINTR: look again */
+    }
+}
+int64_t obxlib_proc_kill(int64_t pid, int64_t sig) { return kill((pid_t)pid, (int)sig) == 0 ? 0 : -errno; }
+/* The end of a worker: its output flushed, and under OBX_CHECK=1 its own objects counted. */
+void obxlib_worker_exit(int64_t code) {
+    rt_flush();
+    rt_ended = true;
+    if (rt_check && rt_live > rt_worker_base) {
+        fprintf(stderr, "obx: leak: %lld live objects at exit at runtime\n", (long long)(rt_live - rt_worker_base));
+        exit(5);
+    }
+    exit((int)code);
+}
+/* In a worker: SIGTERM to the supervisor, which forwards it to every worker. 0, or -1 when this
+   process is not a worker (or its supervisor is gone). */
+int64_t obxlib_worker_stop(void) {
+    if (!rt_worker_parent || getppid() != rt_worker_parent) return -1;
+    return kill(rt_worker_parent, SIGTERM) == 0 ? 0 : -1;
 }
