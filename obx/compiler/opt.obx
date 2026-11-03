@@ -189,15 +189,13 @@ fn (o: &Opt) cost(x: int): int {
     return (1 << 40) - budget
 }
 
-fn (o: &Opt) kids(x: int): int { return KIDS[o.u.nodes[x].k] }
-
 fn (o: &Opt) bad(x: int) { ir.failAt("IR node", o.u.nodes[x].line, "opt: node kind " + intToStr(o.u.nodes[x].k)) }
 
 fn (o: mut &Opt) walk(x: int, op: int, l: int): int {
     if x < 0 { return 0 }
-    let kc = o.kids(x)
-    if kc < 0 { o.bad(x) }
     let k = o.u.nodes[x].k
+    let kc = KIDS[k]
+    if kc < 0 { o.bad(x) }
     let a = o.u.nodes[x].a
     var hit = 0
     if kc == K_NONE {
@@ -303,7 +301,7 @@ fn (o: &Opt) dead(f: int, work: mut &[]int) {
 // work when it is dropDead's.
 fn (o: mut &Opt) unref(x: int, work: mut &[]int) {
     if x < 0 { return }
-    let kc = o.kids(x)
+    let kc = KIDS[o.u.nodes[x].k]
     let a = o.u.nodes[x].a
     if kc == K_NONE {
         if o.u.nodes[x].k == ir.E_FUNC {
@@ -578,7 +576,7 @@ fn (o: mut &Opt) sa(x: int) {
         let c = o.candOf(o.root(a))
         if c >= 0 { o.cands[c].bad = true }
     }
-    let kc = o.kids(x)
+    let kc = KIDS[k]
     if kc == K_NONE { return }
     let b = o.u.nodes[x].b
     let c = o.u.nodes[x].c
@@ -741,7 +739,7 @@ fn (o: mut &Opt) sr(x: int) {
             return
         }
     }
-    let kc = o.kids(x)
+    let kc = KIDS[k]
     if kc == K_NONE { return }
     let b = o.u.nodes[x].b
     let c = o.u.nodes[x].c
