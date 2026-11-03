@@ -269,6 +269,53 @@ pub fn (s: &Shared[T]) with(f: &fn(mut &T), w: Where) {
     rtShLeave(s.p, intoPtr(c))
 }
 
+// ---- frozen values
+//
+// A Frozen[T] is a counted handle to a value that can never change again:
+// freeze(v) moves v into it, and nothing gives a mut & of it afterwards. So,
+// unlike Shared.with, read may park (sleep, wait, a socket call): no writer
+// exists whose change the reader could see half done, and the value cannot
+// be freed while a reader holds a handle (each handle is a count). This is
+// why set-once globals are sound too. For what every task reads and none
+// writes: a server's router, configuration, templates.
+//
+// It is a copy type (copying adds a count, as for Shared); the value is
+// dropped with the last handle. Tasks receive it as any copy argument. A
+// worker process forked by workers gets a copy of it, with its own count:
+// nothing is shared between processes.
+//
+// read lends the value as &T. A method returning &T (get(): &T) is not
+// possible: SPEC 10 rule 5 lets a result borrow only a place rooted at the
+// receiver, and the value lives in the runtime's box, not in the handle.
+// The closure form keeps the borrow inside the call, and its result R
+// cannot be a borrow (a borrow is not a type argument).
+pub type Frozen[T] = value record {
+    sh: Shared[T]   // the count; the box is never entered with with
+    box: ptr        // the Cell[T] the Shared owns, the same for every copy
+}
+
+pub fn freeze[T](v: T): Frozen[T] {
+    let box = intoPtr(Cell[T]{v: v})
+    return Frozen[T]{sh: Shared[T]{p: rtShNew(box, dropCell[T])}, box: box}
+}
+
+// f(&value), and its result. f may park; any number of tasks may be inside
+// read of the same value at once.
+pub fn (fr: &Frozen[T]) read[R](f: &fn(&T): R): R {
+    let c: Cell[T] = fromPtr(fr.box)
+    let r = f(&c.v)
+    let back = intoPtr(c)    // given back, not dropped: the handles own it
+    return r
+}
+
+// A copy of the value.
+pub fn (fr: &Frozen[T: copy]) get(): T {
+    let c: Cell[T] = fromPtr(fr.box)
+    let v = c.v
+    let back = intoPtr(c)
+    return v
+}
+
 // ---- signals (stage C2)
 //
 // A watched signal no longer has its default action (for SIGTERM and SIGINT:

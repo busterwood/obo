@@ -1054,7 +1054,8 @@ loop for sockets (`net`) and timers. The rules the language relies on:
   argument `arg: A`. A `&fn` (a closure) and a borrow are rejected by the
   ordinary rules: a closure is not a `fn` value (section 4.6), and a borrow
   type is not a type argument. So a task reaches nothing of its starter's
-  but what was moved into it, and `Shared` values.
+  but what was moved into it, and `Shared` values (and `Frozen` values,
+  library handles built on `Shared` that lend only `&T`; lib/README.md).
 - A task runs until it parks: it waits for an unfinished future (`wait`,
   `task.all`, `task.any`), calls `task.yield()` or `task.sleep(ms)`, makes a
   socket call that would block (`net`: it parks on `EAGAIN` until the socket

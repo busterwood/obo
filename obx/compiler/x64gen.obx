@@ -3076,6 +3076,12 @@ fn (g: mut &Gen) genBin(e: int) {
         }
         return
     }
+    let rk = g.rotl(e)
+    if rk > 0 {
+        g.gen(g.u.nodes[n.a].a)
+        g.a.shiftI(x64.ROL, 8, RAX, rk)
+        return
+    }
     let comm = op == ir.OP_ADD || op == ir.OP_AND || op == ir.OP_OR || op == ir.OP_XOR || op == ir.OP_MUL
     let src = if comm { g.pairSrcC(n.a, n.b) } else { g.pairSrc(n.a, n.b) }
     let sz = if g.size(c) == 8 { 8 } else { 4 }
@@ -3114,6 +3120,30 @@ fn (g: mut &Gen) genBin(e: int) {
         g.a.shiftCL(if sgn { x64.SAR } else { x64.SHR }, sz, RAX)
     }
     g.norm(c)
+}
+
+// k when e is x << k | x >> (64 - k), or the halves the other way round, on a 64-bit unsigned
+// local x with 0 < k < 64: a rotate left, one rol (std's SipHash); else 0.
+fn (g: &Gen) rotl(e: int): int {
+    let n = g.u.nodes[e]
+    if n.v != ir.OP_OR || g.size(n.c) != 8 || g.u.isSigned(n.c) || g.isF(n.c) || g.is128(n.c) { return 0 }
+    var l = n.a
+    var r = n.b
+    if g.u.nodes[l].k != ir.E_BIN || g.u.nodes[r].k != ir.E_BIN { return 0 }
+    if g.u.nodes[l].v == ir.OP_SHR {
+        l = n.b
+        r = n.a
+    }
+    let ln = g.u.nodes[l]
+    let rn = g.u.nodes[r]
+    if ln.v != ir.OP_SHL || rn.v != ir.OP_SHR { return 0 }
+    let x = g.u.nodes[ln.a]
+    let y = g.u.nodes[rn.a]
+    if x.k != ir.E_LOCAL || y.k != ir.E_LOCAL || x.a != y.a { return 0 }
+    let kl = g.u.nodes[ln.b]
+    let kr = g.u.nodes[rn.b]
+    if kl.k != ir.E_INT || kr.k != ir.E_INT || kl.v <= 0 || kl.v >= 64 || kl.v + kr.v != 64 { return 0 }
+    return kl.v
 }
 
 // rax:rdx shifted by cl (0 to 127).

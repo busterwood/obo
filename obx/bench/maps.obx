@@ -1,0 +1,52 @@
+// std.Map: insert and look up keys of three kinds. Short string keys (at
+// most 16 bytes), long ones (about 60 bytes) and ints; each map is built,
+// then every key is looked up four times and some absent keys once.
+
+const N: int = 200000
+const PAD: str = "a fairly long common prefix for every key of the table: "
+
+fn shortKey(i: int): str { return "k" + intToStr(i * 7919) }
+
+fn longKey(i: int): str { return PAD + intToStr(i) }
+
+fn strRound(keys: &[]str, miss: &[]str): int {
+    var m: Map[str, int] = newMap()
+    for i in 0..len(keys) { m.put(keys[i], i) }
+    var sum = 0
+    for r in 0..4 {
+        for k in keys { sum += m.getOr(&k, -1) }
+    }
+    for k in miss {
+        if m.has(&k) { sum += 1 }
+    }
+    return sum + m.size()
+}
+
+fn intRound(n: int): int {
+    var m: Map[int, int] = newMap()
+    for i in 0..n { m.put(i * 4096, i) }
+    var sum = 0
+    for r in 0..4 {
+        for i in 0..n { sum += m.getOr(&(i * 4096), -1) }
+    }
+    for i in 0..n {
+        if m.has(&(i * 4096 + 1)) { sum += 1 }
+    }
+    return sum + m.size()
+}
+
+fn main() {
+    var short: []str = []
+    var long: []str = []
+    var shortMiss: []str = []
+    var longMiss: []str = []
+    for i in 0..N {
+        append(mut &short, shortKey(i))
+        append(mut &long, longKey(i))
+        append(mut &shortMiss, "m" + intToStr(i))
+        append(mut &longMiss, PAD + "x" + intToStr(i))
+    }
+    let s = strRound(&short, &shortMiss)
+    let l = strRound(&long, &longMiss)
+    println(intToStr(s) + " " + intToStr(l) + " " + intToStr(intRound(N)))
+}

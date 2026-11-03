@@ -46,6 +46,7 @@ host-dependent: use them to compare the columns, not as portable constants.
 | trees | 24 ms | 20 ms | 0.86 | binary trees |
 | tokens | 16 ms | 12 ms | 0.74 | byte scanning and hashing |
 | sieve | 182 ms | 127 ms | 0.70 | the sieve of Eratosthenes to 10 million, ten rounds |
+| maps | 256 ms | 351 ms | 1.37 | `Map[str, int]` with short and long keys, `Map[int, int]` (keyed hashing) |
 
 The sieve also has a hand-written C version with no checks
 (`obx/bench/c/sieve.c`, `gcc -O2`, bench.py's "plain C" column): 135 ms in
@@ -77,6 +78,26 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
   counter grows at most once an iteration), the inner loop sits inside one
   cache line, and the native heap keeps the freed 10 MB block for the next
   round instead of faulting its pages in again.
+- **Keyed hashing costs maps 6-10%** (branch `hashfrozen`). `str`,
+  `i128`, `u128` and `Decimal` hash with SipHash-1-3 under a per-process
+  key, and `Map` mixes a per-process seed into its slots (lib/README.md,
+  "Keyed hashing"); before, `str` was FNV-1a. maps (200,000 keys of each
+  kind, put, four rounds of lookups, misses) went from 242 to 256 ms via C
+  and 320 to 351 ms native (bench.py -n 11, the same run). Under `perf
+  stat` (least cycles of 5): native 2564M instructions and 1327M cycles to
+  3669M and 1456M, via C 1835M and 953M to 2180M and 1011M. 2 million
+  hashes of a 6-byte key: native 109M to 186M cycles, C 91M to 125M; of a
+  60-byte key native 466M to 511M, C 420M to 283M (SipHash takes 8 bytes a
+  step, FNV one). The native code reads each byte through a checked
+  `strByte`, 8 per word; a word-load intrinsic would remove most of the
+  gap. Elsewhere the cost is in the noise: the self-build 1991M to 1980M
+  cycles (4891M to 5018M instructions), eza `-T` 210M to 209M native and
+  180M to 181M via C, tokens unchanged; compiling the compiler with the
+  gcc-built `obxc --native`, 1662M to 1695M cycles (2%; `sipKeyedStr` is
+  1.9% of its samples). Two compiler changes came with it: a shift of a
+  `u64`, `u32` or `byte` by a constant below its width is a plain C
+  operator (it was a runtime call, which gcc could not fold into a rotate),
+  and the native backend emits `rol` for `x << k | x >> (64 - k)`.
 - **Code placement matters.** Native fib runs at 1,547M, 1,690M or 2,020M
   cycles with identical instructions, depending only on where its code
   falls relative to 64-byte boundaries. The generated code starts at a

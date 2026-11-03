@@ -520,7 +520,7 @@ must be written to it and checked against differential fuzzing (section
 | overlong or invalid UTF-8 (`%c0%af`) | IIS CVE-2000-0884 | a decoded parameter or path must be valid, shortest-form UTF-8 (the strict decoder that `mssql` already has); otherwise 400 |
 | `//` and empty segments | proxies collapse them differently from servers | not collapsed; the path matches only a pattern with an empty segment, so it is usually a 404 |
 | a very long target | 414 (RFC 9110 §15.5.15) | the request line is at most 8 KiB, otherwise 414 |
-| query strings: many parameters; hash flooding | Klink and Wälde, 28C3 2011; PHP CVE-2011-4885 | at most `maxParams` (1,000) query and form parameters, otherwise 400. obx's `std.Map` hashes `str` with **unseeded FNV-1a**, so keys chosen to collide in a map's index bits are cheap to find. The library keeps parameters in a list scanned linearly (bounded by `maxParams`), never in a `Map`; and std's string hash should get a per-process random seed (section 8, Q7) |
+| query strings: many parameters; hash flooding | Klink and Wälde, 28C3 2011; PHP CVE-2011-4885 | at most `maxParams` (1,000) query and form parameters, otherwise 400. obx's `std.Map` hashed `str` with unseeded FNV-1a, so keys chosen to collide in a map's index bits were cheap to find; since `hashfrozen` it is SipHash-1-3 under a per-process key, and `Map` seeds its slots (section 8, Q7, done). The library still keeps parameters in a list scanned linearly (bounded by `maxParams`), never in a `Map` |
 | Host header poisoning (password-reset links, cache keys) | Kettle, "Practical HTTP Host header attacks" (2013) | `rq.host` is validated. Code that builds absolute URLs uses `Config.publicOrigin`, never the request's Host |
 | X-Forwarded-For and Forwarded spoofing | RFC 7239 | ignored unless the peer is in `Config.trustedProxies`; then the rightmost untrusted address is taken |
 | open redirects | CWE-601 | `w.redirect` accepts only a relative path starting with a single `/`. It refuses `//host`, `/\host` and control characters unless a host is in `Config.redirectHosts` |
@@ -955,8 +955,14 @@ recommendation.
 - Derived decoding: later, designed with `wire` (3).
 - "Can park" checking: later, as decided (4).
 - No "cannot panic" check (5).
-- `task.Frozen[T]`: yes (6).
+- `task.Frozen[T]`: yes (6). **Done** (branch `hashfrozen`): `task.freeze(v)`,
+  `fr.read(fn(x: &T): R {...})`, which may park, and `fr.get()` for copy
+  values; a closure, not `get(): &T`, which SPEC 10 rule 5 cannot express.
 - Seeded string hashing: yes, as SipHash-1-3 with a per-process key (7).
+  **Done** (branch `hashfrozen`): `str`, `i128`, `u128`, `Decimal` and money
+  hash with SipHash-1-3 under a key derived from `AT_RANDOM`; `Map` mixes a
+  per-process seed into its slots, which covers integer keys too
+  (lib/README.md, "Keyed hashing").
 - `task.onCancelCall`: yes, in S1 (8).
 - No panic per task (9).
 - Shared integer counters: S4 (10).

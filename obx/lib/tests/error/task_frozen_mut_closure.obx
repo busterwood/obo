@@ -1,0 +1,13 @@
+// task: read takes a closure of a &T, so one that wants a mut &T is rejected.
+// error: argument 1 of Frozen.read
+import "task"
+
+type Config = record { port: int }
+
+fn main() {
+    let cfg = task.freeze(Config{port: 80})
+    let n = cfg.read(fn(c: mut &Config): int {
+        c.port = 8080
+        return c.port
+    })
+}

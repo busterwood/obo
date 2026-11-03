@@ -24,6 +24,8 @@
 #include <sys/signalfd.h>
 #include <sys/wait.h>
 #include <sys/prctl.h>
+#include <sys/auxv.h>
+#include <sys/random.h>
 #if defined(__SANITIZE_ADDRESS__)
 #include <sanitizer/common_interface_defs.h>
 #include <sanitizer/asan_interface.h>
@@ -590,6 +592,22 @@ void* obxlib_peek_ptr(const void* p, int64_t i) { return ((void* const*)p)[i]; }
 void obxlib_poke_ptr(void* p, int64_t i, void* q) { ((void**)p)[i] = q; }
 void obxlib_copy_in(void* dst, int64_t at, const void* src, int64_t n) { memcpy((char*)dst + at, src, (size_t)n); }
 void obxlib_copy_out(void* dst, const void* src, int64_t at, int64_t n) { memcpy(dst, (const char*)src + at, (size_t)n); }
+/* lib std's hash key (std.obx, "keyed hashing"): the 16 random bytes the kernel gives every
+   process (AT_RANDOM, no system call); std derives its key from them. Without AT_RANDOM (never
+   on Linux since 2.6.29) getrandom fills them. Word i, 0 or 1. */
+uint64_t obxlib_hash_key(int64_t i) {
+    static unsigned char k[16];
+    static bool got;
+    if (!got) {
+        const unsigned char* r = (const unsigned char*)getauxval(AT_RANDOM);
+        if (r) memcpy(k, r, 16);
+        else if (getrandom(k, 16, 0) != 16) {}
+        got = true;
+    }
+    uint64_t w;
+    memcpy(&w, k + (i & 1) * 8, 8);
+    return w;
+}
 /* clock: 0 realtime, 1 monotonic; nanoseconds */
 int64_t obx_clock_ns(int64_t which) {
     struct timespec t;

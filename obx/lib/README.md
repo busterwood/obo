@@ -21,7 +21,7 @@ for leaks.
 
 | Module | Lines | Contents |
 |---|---:|---|
-| `std.obx` | 1,400 | Option, Result, Unit, Where; Eq/Ord/Hash/Show for the primitives; print/println/eprint/eprintln; min/max; float text and math methods; StrBuf and basic string helpers; Decimal; sort; Map |
+| `std.obx` | 1,715 | Option, Result, Unit, Where; Eq/Ord/Hash/Show for the primitives (keyed hashing, SipHash-1-3); print/println/eprint/eprintln; min/max; float text and math methods; StrBuf and basic string helpers; Decimal; sort; Map |
 | `money.obx` | 200 | Currency, USD/EUR/GBP/JPY/CHF, Money[C] |
 | `math.obx` | 130 | float constants, parse, fixed, toDecimal, near |
 | `collections.obx` | 390 | stable sorts, searching, rearranging, copying, Set, Heap |
@@ -35,7 +35,7 @@ for leaks.
 | `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
 | `postgres.obx` | 690 | PostgreSQL through libpq, asynchronous for tasks: Conn, Rows, Pool, Lease |
 | `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
-| `task.obx` | 596 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
+| `task.obx` | 644 | concurrent tasks on one thread: Scope, Future, Promise, Shared, Frozen, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
 | `net.obx` | 630 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write; name lookup and dial |
 | `url.obx` | 550 | URLs for http and https (RFC 3986): parse, resolve, percent-encoding, queries |
 | `http.obx` | 1,550 | an HTTP/1.1 client (pool, strict framing, redirects, retries, deadlines) and the head parsing httpd shares |
@@ -59,6 +59,23 @@ for leaks.
   task parks inside `with` or deadlocks.
 - **Eq, Ord, Hash, Show** with implementations for `int i32 u32 u64 byte i128
   u128 float bool str` (float has no `hash`). `min`, `max` for `T: Ord + copy`.
+- **Keyed hashing.** A `Map` keyed by input (query parameters, header names,
+  JSON keys, ids) must not let the sender pick keys that collide (hash
+  flooding: n colliding keys cost n² probes). So `str`, `i128`, `u128` and
+  `Decimal` (and so `Money`) hash with **SipHash-1-3** under a 128-bit key
+  chosen at random per process, as Rust's std does; a seeded FNV or Murmur
+  would not do, their collisions are found without the seed (Aumasson and
+  Bernstein 2012). The key is derived (with SipHash) from the 16 random
+  bytes the kernel gives every process (`AT_RANDOM`, no system call; glibc
+  uses those bytes for its stack canary, hence derived, never used as is).
+  The 64-bit integers keep a multiplicative hash, a bijection, and `Map`
+  mixes a per-process seed into the slot of every hash, so integer keys land
+  in slots no sender can predict either. Workers forked by `task.workers`
+  share their supervisor's key; another run gets another key. `Map` keeps
+  insertion order, so the key changes no program's output; a hash value is
+  never meant to be printed or stored. `sipHash13(k0, k1, &s)` is SipHash-1-3
+  of a string's bytes under a key you give (tests, or a hash you need to be
+  the same across runs).
 - **Checked arithmetic** on every integer type: `a.checkedAdd(b)`,
   `checkedSub`, `checkedMul`, `checkedDiv`, `checkedRem` return `None` exactly
   where the operator would stop the program (overflow, zero divisor,
@@ -103,7 +120,8 @@ for leaks.
   `put(k, v)`, `remove(&k): Option[V]`, `clear`, `keyAt(i)`, `valAt(i)`,
   `valAtMut(i)` for walking, `each(fn(k, v) {...})` and `eachMut(fn(k, v)
   {...})` (v is `mut &V`) in insertion order, `keys()`/`values()` (copy
-  types). `remove` moves the last entry into the hole.
+  types). `remove` moves the last entry into the hole. Slots come from
+  `(hash ^ seed) * GOLDEN` (the seed per process, above).
 - Powers of ten for Decimal come from `POW10`, a constant table (read-only
   static data) instead of a 39-arm match.
 
@@ -263,6 +281,17 @@ task.Future[int], w: Where)` calls `f.wait(w)`).
   at a.obx:37) at a.obx:41`, `obx: Shared.with on a value whose with is
   already open (the with at a.obx:30) at a.obx:35`, `obx: deadlock: every
   task is parked at a.obx:41`.
+- `freeze[T](v: T): Frozen[T]`: a counted copy handle, like `Shared`, to a
+  value that never changes again. `fr.read(f: &fn(&T): R): R` lends it as
+  `&T`, and `f` **may park**: no writer exists, and the handle that `read`
+  borrows keeps a count, so the value cannot go away meanwhile (the reason
+  set-once globals are sound). Any number of tasks may be inside `read` at
+  once. `fr.get(): T` copies a copy value. The value is dropped with the last
+  handle. For what every connection's task reads and none writes: a router,
+  configuration, templates. A forked worker gets its own copy with its own
+  count. It is a closure, not `get(): &T`, because a result may only borrow
+  a place rooted at the receiver (SPEC 10 rule 5) and the value lives in the
+  runtime's box.
 
 The scheduler waits in `epoll_wait` only when no task is runnable, and checks
 sockets and timers every 64 switches otherwise. A task parked in `sleep`, on
@@ -726,7 +755,7 @@ Intrinsics: `strByte`, `strSlice`, `strFromBytes`, `strToBytes`, `intToStr`,
 `readFile`, `args`, `getenv`, `strFromC`, and the built-ins `isNull`, `exit`,
 `panic`. `task` also uses the library-only intrinsics `intoPtr` and
 `fromPtr` (SPEC 15), to keep a task's argument and result and a `Shared`
-value in the runtime's structures.
+or `Frozen` value in the runtime's structures.
 
 C functions through `extern "c"`: libm (`sqrt cbrt pow exp log log2 log10 sin
 cos tan asin acos atan atan2 sinh cosh tanh floor ceil trunc round rint fabs
@@ -742,6 +771,7 @@ errno, a static buffer):
 | `obx_stat(path, follow)`, `obx_stat_field(i)` | stat/lstat into a static buffer, then its fields |
 | `obx_open(path, how)` | open for read, write (truncate), append, or create-new; fd or -errno |
 | `obx_clock_ns(which)` | `clock_gettime` realtime or monotonic, in ns |
+| `obxlib_hash_key(i)` | word `i` (0 or 1) of the 16 `AT_RANDOM` bytes (`getauxval`; the native runtime reads the auxiliary vector); std derives its hash key from them |
 | `obx_getcwd()` | `getcwd` into a static buffer |
 | `obxlib_readlink(path)`, `obxlib_readlink_text()` | readlink into a static buffer; length or -errno, then the text |
 | `obxlib_flush_out()` | flush the runtime's stdout buffer; errno of the first failed write since the last call, or 0 |
@@ -766,7 +796,7 @@ errno, a static buffer):
 | `obxlib_fd_wait(fd, dir, ms, cancellable, w)` | park until a descriptor a C library reads itself (libpq's socket) is readable (0), writable (1) or either (2): armed one-shot in the epoll set each time; ends at cancellation and the deadline when `cancellable`, after `ms` when `ms >= 0`; 0, 1 cancelled, 3 deadline or `ms`, -errno |
 | `obxlib_net_addr(fd, peer, out)`, `obxlib_net_nodelay(fd, on)`, `obxlib_net_soerror(fd)`, `obxlib_net_shutdown(fd, how)`, `obxlib_net_close(fd)` | the local or peer address (family, port, 16 address bytes); `TCP_NODELAY`; `SO_ERROR`; `shutdown`; close (and forget the fd's waiters) |
 | `obxlib_task_promise(resdrop)`, `obxlib_task_complete(t, r)`, `obxlib_task_abandon(t)` | promises |
-| `obxlib_sh_new(box, drop)`, `obxlib_sh_enter(s, w)`, `obxlib_sh_leave(s, box)` | a `Shared` block; lend its box to `with` (exit 13 when already lent; `w` is kept for the messages while the `with` is open) and take it back |
+| `obxlib_sh_new(box, drop)`, `obxlib_sh_enter(s, w)`, `obxlib_sh_leave(s, box)` | a `Shared` block; lend its box to `with` (exit 13 when already lent; `w` is kept for the messages while the `with` is open) and take it back. A `Frozen` is such a block that is never entered: `read` lends the box directly |
 
 The `obxlib_` helpers are not `obx_` names because the compiler lets
 externs name only the `obx_` helpers it knows (sema's `cHelper`); any other
