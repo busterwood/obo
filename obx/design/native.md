@@ -13,8 +13,8 @@ machine code.
 ## 1. Pipeline: from check's templates to the IR
 
     syntax -> sema -> check (templates, tmpl.obx) -> emit (instances, glue) -> lower -> IR
-                                                                                 |-> cgen   -> C -> gcc
-                                                                                 '-> x64gen -> ELF
+                                                                                 |-> cgen          -> C -> gcc
+                                                                                 '-> opt -> x64gen -> ELF
 
 - `check` writes every function once, generic or not, as a template: trees of
   C-shaped expressions and statements (`tmpl.obx`, one arena) with holes for
@@ -33,7 +33,8 @@ machine code.
   `} else {`, `}`) back into nested statements. A type hole is a C type name
   (`S3_foo*`, `fn5`, `obx_arr`) that lower resolves; the IR has no node for
   C syntax.
-- `cgen` prints the IR as C; `x64gen` compiles it (sections 2-5).
+- `cgen` prints the IR as C; `opt` inlines small functions in it and
+  `x64gen` compiles the result (sections 2-5).
 
 Until 2026-11-03 the native backend read the C text that `emit` printed
 (`cfront.obx`, a lexer and parser for the C subset emit writes). Its job,
@@ -83,6 +84,7 @@ or another object format) can be added without touching the rest:
 |---|---|---|---|
 | front end -> IR | `check.obx` + `emit.obx` (templates and instances) and `lower.obx` (C's typing rules, layout) | moves, drops, check order; conversions | targets |
 | IR | `ir.obx` | the target-independent program: types and layouts, functions, globals, typed trees | registers, instructions, encodings, C syntax |
+| IR to IR | `opt.obx` | inlining, value records in fields, dead functions (section 4) | targets |
 | C target | `cgen.obx` | C declarators, precedence and parentheses, literals, designated initializers | instructions |
 | x86-64 target | `x64gen.obx` + `x64.obx` | instruction selection, the SysV ABI and calling convention, the register set, frames, the link with the runtime (`x64gen`); the instruction encoder (`x64`) | C, the executable format's bytes |
 | executable writer | `elf.obx` | ELF headers and segments from (address, flags, bytes) | instructions |
@@ -194,6 +196,57 @@ libraries. A value has the same bytes as in the C backend:
   `rax:rdx`; `__int128` likewise; `double` in `xmm` registers.
 
 ## 4. Code generation
+
+Before `x64gen` sees it, the IR goes through `opt.obx` (the fifth
+performance step), on the native path only:
+
+- functions are visited callees first (a depth-first walk of the direct
+  calls), so a body is inlined with its own calls already inlined; a call
+  into a function still being visited (recursion, direct or mutual) stays
+  a call;
+- a direct call (`E_DECAY` of `E_FUNC`) at the root of a statement (`f(...);`,
+  `T d = f(...);`, `x = f(...);` with x a local or a member chain of one,
+  `return f(...);`) of a function of the program (not main, not extern, not
+  variadic) whose body costs at most `INLINE_LIMIT` = 25 is replaced by the
+  body. The cost counts operators, statements and runtime calls 1, calls of
+  the program 3, and leaves, casts, decays and blocks nothing. The body is
+  first put in its inlined form: every `return` made the last statement of
+  its path (an `if` with a return in one branch takes the statements after
+  it into the other); a return inside a loop or a switch keeps the function
+  out;
+- the parameters become new locals declared with the arguments, in order.
+  An argument that cannot change before the body ends (a constant, an
+  address, a local whose address is never taken and that no later argument
+  writes) stands for a parameter the body never writes, and the argument of
+  a drop glue function's record parameter (an lvalue) is passed by address
+  (`T* p = &x;`, the body's `p.f` becomes `(*p).f`): no copy of the record;
+- the result goes where the call's value went. `T d = f(...)` where the body
+  returns a local declared at its top (or a parameter) makes that local d
+  itself (no copy: the dup glue `T r = x; r.s = rt_str_dup(r.s); return r;`
+  becomes `T d = x; d.s = rt_str_dup(d.s);`); `x = g(x)` where g returns its
+  parameter, x is not address-taken and no other argument names x, makes
+  the parameter x itself (changed in place);
+- an argument that is itself a call of a function inlined there is moved
+  into a declaration before the statement (and inlined), while the callee
+  and the arguments before it are values a call cannot change;
+- a function may grow by 20,000 nodes at most;
+- after its calls are inlined, a function's local of a value record type
+  declared as a copy of a place (`T n = b.nodes[i];`) and otherwise only
+  read field by field becomes one local per field read, declared there from
+  the place (through a pointer local when the place is not a cheap one: an
+  index is evaluated and checked once). A `str` field never read, whose
+  count the copy took right after the declaration (`n.s =
+  rt_str_dup(n.s);`) and whose only drops are n's, loses the dup and the
+  drops. `T m = n;` with n not named again is the same record. A copy of a
+  local is split only when that saves a count: otherwise the fields would
+  only move from slots into callee-saved registers, which costs saves;
+- functions nothing names any more (every call inlined; counted over the
+  bodies and the globals' initializers, a value use included) are dropped
+  and not generated.
+
+`x64gen`'s own inlining (below) still applies to the scalar functions left.
+`OBX_INLINE=n` sets the limit (0 turns inlining off; the record rewrite
+still runs).
 
 `x64gen.obx` is a one-pass tree walker over the IR, with a few local
 optimizations (stage 5, the performance steps). Before a function is
@@ -484,6 +537,230 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
+
+2026-11-03, the fifth performance step (branch `perf5`, section 4: `opt.obx`,
+inlining in the IR, value records in fields, dead functions). All columns
+build the same sources (main's, `03f9822`); "main" is the backend there.
+User-mode instructions, the least cycles and the best wall clock of 11
+interleaved runs under `perf stat` (ms, perf's start-up included). The
+self-build is the natively built compiler running `main.obx --native`:
+
+| | main | perf5 |
+|---|---|---|
+| native compiler size (bytes) | 2,152,409 | 2,381,865 |
+| gcc-built compiler size (bytes) | 1,491,976 | 1,535,256 |
+| eza size (bytes) | 274,368 | 290,752 |
+| self-build, instructions | 4022M | 3747M |
+| self-build, cycles | 1699M | 1496M |
+| self-build, ms | 410 | 376 |
+| `--emit-c` by the native compiler, instructions | 2374M | 1979M |
+| `--emit-c` by the native compiler, cycles | 1034M | 862M |
+| `--emit-c` by the native compiler, ms | 267 | 228 |
+| `--emit-c` by the gcc-built compiler, ms | 209 | 210 |
+| eza `-T`, instructions | 649M | 642M |
+| eza `-T`, cycles | 233M | 213M |
+| eza `-T`, ms | 117 | 112 |
+| fib | 5630M; 1690M; 357 | 5630M; 1547M; 326 |
+| loop | 11000M; 2006M; 414 | 11000M; 2006M; 415 |
+| array | 4615M; 782M; 168 | 4615M; 782M; 168 |
+| alloc | 1420M; 301M; 65 | 1400M; 301M; 65 |
+| lists | 537M; 158M; 35 | 480M; 132M; 30 |
+| strings | 992M; 211M; 52 | 969M; 205M; 50 |
+| trees | 293M; 73M; 20 | 293M; 79M; 21 |
+| tokens | 140M; 51M; 14 | 139M; 49M; 13 |
+
+(the benchmarks: instructions; least cycles; best ms)
+
+Per commit (instructions; least cycles of 11):
+
+| commit | self-build | `--emit-c` (native) | eza `-T` | lists |
+|---|---|---|---|---|
+| main | 4022M; 1699M | 2374M; 1034M | 649M; 233M | 537M; 158M |
+| inlining in the IR | 3818M; 1503M | 1983M; 848M | 641M; 213M | 480M; 132M |
+| value records in fields | 3783M; 1528M | 1979M; 855M | 642M; 214M | 480M; 132M |
+| the kind table in place | 3747M; 1496M | 1979M; 862M | 642M; 213M | 480M; 132M |
+
+Inlining is the step: the natively built compiler runs 17% fewer
+instructions and cycles on the same work (`--emit-c`, which does not run
+the pass), eza 9% fewer cycles, lists 16% (`push`, a one-line constructor, and the
+drop glue of the list it replaces, in place in the loop). The self-build
+gains less (7% of its instructions, 12% of its cycles) because it now also
+runs the pass, and x64gen compiles the larger IR it leaves (about a third
+more nodes; 10% more code). The value records step is small: 0.9% of the
+self-build's instructions, eza unchanged. The last commit only makes the pass
+itself cheaper (1% of the self-build). The `--emit-c` of the gcc-built
+compiler is unchanged in instructions (1580.5M in every column): the C
+path does not run the pass.
+
+fib and trees run exactly the same instructions as on main (their code is
+the same): fib's 8% fewer cycles and trees' 8% more come from where their
+functions now fall against 64-byte fetch blocks (functions that every call
+inlined are gone from the code before them). The benchmarks' other gains
+are small functions and glue in place (strings, tokens, alloc).
+
+The cost is compile time when the compiler running the pass is the
+gcc-built one, whose own code does not get faster: `--native` of the
+compiler's sources by out/obxc takes 18% more instructions (2126M to
+2516M) and 21% more cycles, of eza 12% more. 4 points of the 18 are the
+pass's own walks (limit 0 below); the rest is the inlining itself and x64gen's work on the larger IR.
+The natively built compiler, whose code the pass does speed up, compiles
+eza in 10% fewer instructions and 17% fewer cycles.
+
+The inlining limit was chosen by measurement (`OBX_INLINE`, the compiler
+built natively with each limit; its self-build at the default limit, so the
+work is the same; least cycles of 5):
+
+| limit | compiler size | self-build | eza `-T` | eza size | `--native` of the compiler by out/obxc |
+|---|---|---|---|---|---|
+| 0 (records only) | 2,222,121 | 5125M; 2155M | 649M; 235M | 274,368 | 2203M; 1109M |
+| 10 | 2,050,089 | 4538M; 1856M | 665M; 233M | 274,368 | |
+| 15 | 2,127,913 | 3902M; 1615M | 659M; 233M | 278,464 | 2342M; 1211M |
+| 20 | 2,230,313 | 3827M; 1512M | 650M; 220M | 286,656 | 2437M; 1257M |
+| 25 | 2,381,865 | 3783M; 1574M | 642M; 218M | 290,752 | 2516M; 1304M |
+| 30 | 2,574,377 | 3751M; 1537M | 639M; 220M | 294,848 | 2628M; 1337M |
+| 40 | 2,836,521 | 3721M; 1545M | 638M; 213M | 298,944 | |
+| 60 | 3,160,105 | 3644M; 1568M | 633M; 211M | 323,520 | |
+
+(the self-build at limit 0 is the compiler with no inlining in its own code
+running the pass at 25.) Up to 25 every step pays: lists from 15, fib's and
+eza's cycles from 20, tokens and eza's instructions at 25. Beyond it the
+instructions keep falling by about 1% a step, the cycles stay within the
+noise (2-3% on this host), and the native compiler grows by 8-10% a step and
+its gcc-built compile time by 4%. 25 is the knee.
+
+Where the pass runs, and why there: in the IR, between `lower` and `x64gen`,
+on the native path only. Applied to the C path as well it made the C 20%
+larger, gcc's build of the compiler 16% slower (14.6 to 17.1 s) and the
+gcc-built self-build only 2.7% shorter in instructions: gcc inlines on its
+own. Keeping the C as before also keeps the native/C differential an
+independent check of the pass (every test, red-team program and eza
+listing compares a program with inlining against one without).
+
+The rewrites rest on these arguments (none changes the C):
+
+- evaluation order and ownership: an inlined body is the callee's IR
+  statements, copied, and every dup, drop and move in them is an explicit
+  statement or call that `check` wrote, so it happens as before. The
+  arguments are evaluated in order into new locals before the body, as the
+  call evaluated them; the result is stored where the call's value went
+  after the body, as the call returned it. An argument stands for its
+  parameter (no local) only when the body never writes the parameter
+  (`W_WRITES`: no assignment, increment or address of it or a member) and
+  the argument cannot change until the body ends: a constant, an address,
+  or the value of a local (or a member chain of one) whose address is never
+  taken and that no later argument writes. Reading a local has no effect in
+  the IR (counts are explicit calls), so reading it twice or never is the
+  same. A drop glue function's record parameter, which the body never
+  writes (checked as above), is read through `&x` instead of a copy of x's bytes (a move in the IR is a
+  copy of the bytes): the same bytes. Borrows are pointers in the IR and are
+  passed as values;
+- results: `T d = f()` with the body's returned local made d is the same as
+  the body building its local and the call copying it to d, since nothing
+  reads d before the call returns. `x = g(x)` in place: the body's
+  parameter is a copy of x that it changes and returns, after which x is
+  assigned it; in place, the changes go to x directly. x is not
+  address-taken (no pointer, closure or task sees it), no other argument
+  names it, and the body names only its parameters and locals, so nothing
+  can tell the difference before the body ends. A trap in the body ends the
+  program, so a half-changed x is never seen;
+- argument calls moved before the statement: only while everything
+  evaluated before them in the statement is a constant, an address or the
+  value of a local that is never address-taken. Those cannot trap, call or
+  be changed by a call, so the moved call's effects and traps keep their
+  order;
+- returns dropped: `f(...);` with a body ending in `return E;` keeps E as a
+  statement unless E has no effect (no call, assignment or increment), in
+  which case E is dropped. A call statement's result owns nothing (`check`
+  declares and drops an owned result), so dropping E drops no count;
+- value records in fields: the fields are copied from the place at n's
+  declaration, all together, where n was copied: the same bytes. Nothing
+  writes n (an assignment, increment or address of n or a field makes it
+  stay a record; so does any use of n whole), so its fields keep those
+  values and a read of `n.f` reads the field's local. A field never read
+  loses its dup and drops only when the dup is the statement right after
+  the declaration and every drop of the field is n's own: the count went
+  up and came back with nothing reading the field in between. The string
+  can now be freed earlier, when the source drops it, which nothing can
+  observe (a `str` has no drop method). The place is evaluated once (a
+  pointer local when it is not a local, global or `*p`), so an index check
+  runs once, where it ran;
+- the leak counter (`OBX_CHECK=1`): no allocation is added or removed. The
+  removed pairs are a dup and its drops of a string the source keeps alive,
+  the dropped expressions have no calls, and a dropped function is never
+  called, so the live-object count at exit is unchanged. `run_native.py`
+  runs every test with and without `OBX_CHECK=1`, `run_prev.py` with it;
+- traps and their locations: a run-time check's location is the `w`
+  string argument `check` wrote at the callee's line; it is copied with the
+  node, so an inlined body reports the callee's line, as the call did
+  (`inline_trap_location`, `inline_fn_value`). A `Where` (SPEC 15) is an
+  argument the caller builds at the call site and is bound like any other
+  (`inline_where`: `here()`, a `Where` passed on through two inlined
+  functions, and a task trap that names the `with` and the wait);
+- stack-overflow probes: inlined locals are slots or registers of the
+  caller's frame. x64gen probes a frame over `PROBE_FREE` a page at a time
+  as before, so a larger frame cannot step over the guard page, on the main
+  stack or a task's. A recursion through a function that inlines others
+  uses more stack per level and overflows sooner, with the same message and
+  exit code 4 (`inline_deep_nesting`);
+- task stacks (`lib/task.obx`, SPEC 16): a task switches stacks only
+  inside the runtime (`obxlib_task_yield`, `_wait`, `_join`, `sh_enter`,
+  ...), extern functions with no IR body, never inlined. The obx wrappers
+  around them may be inlined, but each runtime call stays a call, in its
+  order, so no code moves across a switch. The functions handed to the
+  runtime as callbacks (a task's body, a result's drop) are values and are
+  kept (below). Inlined frames take more of a task's 256 KiB stack, as
+  above;
+- function pointers and closures: only a direct call (`E_DECAY` of
+  `E_FUNC`) is inlined. A call through a value (a closure's `{fn, env}`, a
+  field, a parameter, a global) stays a call. A function named as a value
+  keeps a count (every `E_FUNC` is counted, in bodies and in the globals'
+  initializers, and copies made while inlining count too), so it is still
+  generated, with its own calls inlined; closure bodies are functions like
+  the others (`inline_fn_value`);
+- dead functions: the count of a function falls only when a call of it is
+  inlined or a tree naming it is dropped (an unused argument, an unused
+  result, the body of a function dropped in turn). main and the runtime's
+  functions are kept;
+- the native fixed point holds (the natively built compiler builds itself
+  identically), and every test, red-team program and eza listing behaves
+  the same as with main's compiler (`run_prev.py`).
+
+Not done, and why:
+
+- calls that are not at the root of a statement and cannot be moved
+  out of it (after an operand with an effect, inside `&&`, `||` and `?:`):
+  they stay calls (x64gen's own inlining of scalar functions still applies
+  to them);
+- a body with a return inside a loop or a switch is not inlined (its
+  returns cannot all be made last statements without a jump the IR does not
+  have);
+- inlined locals live until the end of the block the call was in, so the
+  caller's frame grows (more slots, more stack per recursion level); scoping
+  them to a block of their own would let x64gen reuse their slots. It was
+  not needed for any measured program;
+- records that are written after the copy, or copied from a call's result,
+  stay records: splitting the first needs the writes followed per field,
+  and splitting the second only moved fields into callee-saved registers
+  (eza ran 2% more instructions when it was tried);
+- record parameters of functions that are not inlined are still copied
+  into the callee (the ABI's by-value records); passing them by address
+  when the callee only reads them is an interprocedural change of the
+  calling convention;
+- the pass on the C path: measured and left off (above);
+- loop rotation, invariant loads, bounds-check elimination, doubles in
+  `xmm` registers and shrink-wrapping were out of this step's scope.
+
+Gates at the end of the step:
+
+- `gate.sh quick` and `gate.sh full` PASS, the native self-build at a
+  fixed point (2,381,865 bytes);
+- `run_native.py --lib --redteam` 1517 of 1517 (the five new tests
+  included: they are in `tests/run`, so the native/C differential covers
+  them);
+- `cmd/eza_gate.py -j 12` 482 passed, 0 failed (72 live-only skipped);
+- `run_prev.py --native --lib --redteam --eza --gen 200` against main's
+  compiler (`OBX_PREV`, main at `03f9822`): 2668 same, 0 differ;
+- the seed at a fixed point on the branch.
 
 2026-11-03, the IR from the templates (branch `ir`, section 1): `check`
 writes trees (`tmpl.obx`), `emit` fills them per instance, `lower` builds
@@ -924,7 +1201,14 @@ Next, in order:
      once check.obx builds the IR and its ownership rules are settled;
    - loop-invariant loads of array and `str` fields (`a.data` and `a.len`
      are reloaded each iteration);
-   - the dup glue of value records;
+   - the copies of value records that inlining leaves: records written
+     after the copy, record parameters of functions not inlined (by
+     address when the callee only reads them), records from calls;
+   - inlined locals scoped to a block of their own, so their slots are
+     reused (smaller frames);
+   - the compile-time cost of inlining for the gcc-built compiler (18% on
+     `--native` of the compiler): a cheaper pass, or a lower limit for
+     large programs;
    - doubles in `xmm` registers;
    - shrink-wrapping: saves only on the paths that need them (fib's leaf
      path);
@@ -958,3 +1242,5 @@ Phases:
   substitution, pushed saves and copied restores. Done (section 4).
 - The IR from the templates: check builds trees, lower builds the IR, cgen
   prints C from it, cfront deleted. Done (section 1).
+- Performance, fifth step: inlining in the IR (`opt.obx`), value records
+  in fields, dead functions. Done (sections 4 and 8).
