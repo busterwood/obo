@@ -464,7 +464,8 @@ fn (o: &Opt) always(s: int): bool {
 // the declaration) and whose drops are only n's own (`rt_str_drop(n.s);`) is not copied at
 // all: the count went up and came down with nothing between that reads the field, so neither
 // is needed. `T m = n;` where m is n moved (n never named again but in m's field reads) is the
-// same record: both go together.
+// same record: both go together. Only a move: a dup of m's fields (the dup glue after `T m =
+// n;`) makes m a copy with counts of its own, and both stay records.
 
 type Fld = value record {
     off: int                // its offset in the record
@@ -620,6 +621,12 @@ fn (o: mut &Opt) saItem(x: int) {
         if o.nopAssign(e) && o.candOf(o.root(o.u.nodes[e].a)) >= 0 { return }
         let d = o.dupOf(e)
         let dc = if d >= 0 { o.candOf(o.root(d)) } else { -1 }
+        if dc >= 0 && o.root(d) != o.cands[dc].l {
+            // a dup of m after `T m = n;`: m is a copy of n, with counts of its own, not n moved
+            o.cands[dc].bad = true
+            o.adj = -1
+            return
+        }
         if dc >= 0 {
             let i = o.field(dc, d)
             o.cands[dc].flds[i].dups += 1
@@ -656,7 +663,7 @@ fn (o: mut &Opt) settle(c: int): bool {
     // a copy of a local is no copy from memory: worth it only for a count it saves
     var saves = false
     for f in o.cands[c].flds {
-        if !f.read && f.dups > 0 && !f.away { saves = true }
+        if !f.read && f.dups == 1 && !f.away { saves = true }
     }
     if !saves && o.root(o.u.nodes[o.cands[c].decl].b) >= 0 {
         o.cands[c].bad = true
@@ -665,7 +672,7 @@ fn (o: mut &Opt) settle(c: int): bool {
     let name = o.u.locals[o.cands[c].l].name
     for i in 0..n {
         let f = o.cands[c].flds[i]
-        if f.read || f.dups == 0 || f.away {
+        if f.read || f.dups != 1 || f.away {
             o.cands[c].flds[i].loc = o.local(name, f.ty, false)
         }
     }
