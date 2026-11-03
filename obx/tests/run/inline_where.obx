@@ -2,12 +2,12 @@
 // that passes a Where on are small enough to be inlined natively; every
 // location stays the one of the call that supplied it, and a trap in an
 // inlined function reports the location it was given.
-// expect: inline_where.obx:24
-// expect: inline_where.obx:26
-// expect: from inline_where.obx:27
-// expect: inline_where.obx:21
-// expect: inline_where.obx:21
-// stderr: obx: a task parked inside Shared.with (the with at inline_where.obx:30) at inline_where.obx:33
+// expect: inline_where.obx:23
+// expect: inline_where.obx:25
+// expect: from inline_where.obx:26
+// expect: inline_where.obx:20
+// expect: inline_where.obx:20
+// stderr: obx: a task parked inside Shared.with (the with at inline_where.obx:29) at inline_where.obx:32
 // exit: 13
 import "task"
 
