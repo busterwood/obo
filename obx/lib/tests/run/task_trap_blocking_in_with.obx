@@ -1,0 +1,18 @@
+// task: a blocking call can park its task, so it is not allowed inside
+// Shared.with: the program stops (exit 13) at the call, even when it would
+// have run inline.
+// exit: 13
+// expect: inside
+// stderr: obx: a task parked inside Shared.with (the with at task_trap_blocking_in_with.obx:13) at task_trap_blocking_in_with.obx:15
+import "task"
+
+extern "c" fn usleepB(us: u32): i32 as "usleep" blocking
+
+fn main() {
+    let sh = task.shared(1)
+    sh.with(fn(x: mut &int) {
+        println("inside")
+        usleepB(1000)
+        println("not reached")
+    })
+}

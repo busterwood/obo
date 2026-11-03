@@ -10,6 +10,8 @@ compare to directives (// expect:, // exit:, // error:). Classify:
   ACCEPT    compiled but an error was expected
   MISMATCH  output/exit differs
 usage: rt.py [files or dirs...]  (default: cases/ and f*.obx)
+OBX_SAN=thread builds with ThreadSanitizer instead (run with ASLR off, as TSan needs on this
+kernel) and reports TSAN for a data race: the helper-pool tests (task_blocking_*, stage C1c).
 """
 import os, re, subprocess, sys, glob
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
@@ -17,7 +19,8 @@ import cbuild
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 OBXC = cbuild.OBXC   # $OBXC, else compiler/out/obxc
-BUILD = os.path.join(HERE, 'build')
+TSAN = os.environ.get('OBX_SAN') == 'thread'
+BUILD = os.path.join(HERE, 'build-tsan' if TSAN else 'build')
 DIRECTIVE = re.compile(r'^\s*//\s*(expect|exit|error):(.*)$')
 
 def directives(path):
@@ -53,17 +56,21 @@ def run1(path):
         return name, 'ACCEPT', 'compiled'
     cfile = os.path.join(BUILD, name + '.c'); exe = os.path.join(BUILD, name)
     open(cfile, 'w').write(c.stdout)
-    grc, gerr = cbuild.cc_build(c.stdout, ['gcc', '-g', '-O0', '-std=gnu11', '-fsanitize=address,undefined',
-                        '-fno-sanitize-recover=undefined', '-w', '-o', '@OUT@', '@SRC@', '-lm'], exe)
+    san = ['-O1', '-fsanitize=thread'] if TSAN else ['-O0', '-fsanitize=address,undefined', '-fno-sanitize-recover=undefined']
+    grc, gerr = cbuild.cc_build(c.stdout, ['gcc', '-g'] + san[:1] + ['-std=gnu11'] + san[1:] +
+                        ['-w', '-o', '@OUT@', '@SRC@', '-lm'], exe)
     if grc != 0:
         return name, 'CCFAIL', gerr[:600]
     env = dict(os.environ, OBX_CHECK='1', ASAN_OPTIONS='detect_leaks=1:abort_on_error=0:exitcode=99',
-               UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1:exitcode=98')
+               UBSAN_OPTIONS='print_stacktrace=1:halt_on_error=1:exitcode=98', TSAN_OPTIONS='exitcode=97')
     try:
-        r = subprocess.run([exe], capture_output=True, text=True, errors='replace', timeout=20, env=env)
+        r = subprocess.run((['setarch', '-R'] if TSAN else []) + [exe], capture_output=True, text=True, errors='replace', timeout=20, env=env)
     except subprocess.TimeoutExpired:
         return name, 'TIMEOUT', ''
     err = r.stderr
+    if 'ThreadSanitizer' in err or r.returncode == 97:
+        first = next((l for l in err.splitlines() if 'WARNING' in l or 'ThreadSanitizer' in l), err[:200])
+        return name, 'TSAN', first.strip()
     if 'AddressSanitizer' in err or 'runtime error:' in err or r.returncode in (98, 99):
         first = next((l for l in err.splitlines() if 'ERROR' in l or 'runtime error' in l), err[:200])
         return name, 'ASAN', first.strip()

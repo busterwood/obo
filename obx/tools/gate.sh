@@ -4,8 +4,8 @@
 #        every later step uses), the conformance suite, the compiler tests, the library tests,
 #        the native backend against the C backend (run + lib tests) and the native self-build.
 # full:  quick, then the red-team harnesses (rounds 1-5) and the task and net library tests under
-#        ASan+UBSan, then the native backend on the red-team corpora and on generated value-record
-#        and array-loop programs.
+#        ASan+UBSan, the helper-pool and net tests under TSan, then the native backend on the
+#        red-team corpora and on generated value-record and array-loop programs.
 # Builds are cached (tools/cbuild.py; OBX_NOCACHE=1 disables, OBX_CACHE sets the directory).
 set -u
 tier=${1:-}
@@ -28,6 +28,7 @@ if [ "$tier" = full ]; then
     "redteam round 4|python3 obx/redteam/round4/rt.py"
     "redteam round 5|python3 obx/redteam/round5/rt.py"
     "redteam tasks|python3 obx/redteam/rt.py obx/lib/tests/run/task_*.obx obx/lib/tests/run/net_*.obx"
+    "tsan helper pool|OBX_SAN=thread python3 obx/redteam/rt.py obx/lib/tests/run/task_blocking_*.obx obx/lib/tests/run/net_*.obx"
     "native redteam|python3 obx/tests/run_native.py --lib --redteam"
     "native generated|python3 obx/tests/vrgen.py -n 200"
     "native loops gen|python3 obx/tests/loopgen.py -n 200"

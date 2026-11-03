@@ -34,6 +34,9 @@ void rt_ddefer(rt_dfn f, void* p, size_t n);
 void rt_sh_dup(void* p);
 void rt_sh_drop(void* p);
 
+/* a call of a blocking extern (SPEC 12): its thunk on the argument slots, on the helper pool */
+void rt_blocking(rt_dfn fn, void* a, const char* w);
+
 /* strings */
 obx_str rt_str_new(int64_t len);
 obx_str rt_str_of(const char* p, int64_t len);

@@ -19,6 +19,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <pthread.h>
+#include <sys/eventfd.h>
 #if defined(__SANITIZE_ADDRESS__)
 #include <sanitizer/common_interface_defs.h>
 #include <sanitizer/asan_interface.h>
@@ -160,11 +162,13 @@ static rt_task* rt_cur = &rt_root;
    task's stack, caught on an alternate stack. */
 static char* rt_stack_top;
 static size_t rt_stack_max;
+static pthread_t rt_main_thr;       /* a fault on a helper thread (C code, stage C1c) is not ours */
 static void rt_segv(int sig, siginfo_t* si, void* uc) {
     char* a = si->si_addr;
     (void)uc;
-    if ((a <= rt_stack_top && (size_t)(rt_stack_top - a) <= rt_stack_max + (1 << 20)) ||
-        (rt_cur->stk && a >= rt_cur->stk && a < rt_cur->stk + RT_GUARD)) {
+    if (pthread_equal(pthread_self(), rt_main_thr) &&
+        ((a <= rt_stack_top && (size_t)(rt_stack_top - a) <= rt_stack_max + (1 << 20)) ||
+         (rt_cur->stk && a >= rt_cur->stk && a < rt_cur->stk + RT_GUARD))) {
         static const char m[] = "obx: stack overflow\n";
         rt_flush();
         if (write(2, m, sizeof m - 1)) {}
@@ -181,6 +185,7 @@ static void rt_init(int argc, char** argv) {
     rt_check = c && c[0] == '1';
     rt_argc = argc; rt_argv = argv;
     rt_stack_top = __builtin_frame_address(0);
+    rt_main_thr = pthread_self();
     rt_stack_max = getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY ? rl.rlim_cur : (size_t)1 << 30;
     ss.ss_sp = alt; ss.ss_size = sizeof alt;
     sigaltstack(&ss, 0);
@@ -717,6 +722,9 @@ static rt_fdw* rt_fds;                     /* by descriptor: the tasks waiting t
 static int64_t rt_nfds;
 static int rt_epfd = -1;
 static int64_t rt_nio;                     /* tasks waiting for a socket */
+static int64_t rt_njobs;                   /* tasks parked in a blocking C call on the helper pool */
+#define RT_POOL_TAG (~(uint64_t)0)          /* the epoll data of the helper pool's eventfd */
+static void rt_pool_drain(void);
 static rt_task** rt_heap;                  /* the timers */
 static int64_t rt_nheap, rt_cheap;
 static uint64_t rt_tseq;
@@ -789,12 +797,13 @@ static void rt_poll(bool block, const char* w) {
             if (rt_rq_head) wait = 0;
             else if (rt_nheap && wait) wait = rt_heap[0]->wake_at - now;
         }
-        if (wait < 0 && !rt_nio) rt_trap(14, "deadlock: every task is parked", w);
-        if (rt_nio) {
+        if (wait < 0 && !rt_nio && !rt_njobs) rt_trap(14, "deadlock: every task is parked", w);
+        if (rt_nio || rt_njobs) {
             int ms = wait < 0 ? -1 : wait > (int64_t)INT32_MAX * 1000000 ? INT32_MAX
                    : (int)(wait / 1000000 + (wait % 1000000 != 0));
             int n = epoll_wait(rt_epfd, ev, 256, ms);
             for (int i = 0; i < n; i++) {
+                if (ev[i].data.u64 == RT_POOL_TAG) { rt_pool_drain(); continue; }
                 int64_t fd = (int64_t)ev[i].data.u64;
                 uint32_t e = ev[i].events;
                 if (fd >= rt_nfds) continue;
@@ -811,7 +820,7 @@ static void rt_poll(bool block, const char* w) {
 /* The task to run next: the run queue's first, after a look at the timers and sockets every 64
    switches; when the queue is empty, after waiting for one. */
 static rt_task* rt_next(const char* w) {
-    if ((rt_nio | rt_nheap) && (++rt_ticks & 63) == 0) rt_poll(false, w);
+    if ((rt_nio | rt_nheap | rt_njobs) && (++rt_ticks & 63) == 0) rt_poll(false, w);
     rt_task* t = rt_dequeue();
     if (!t) { rt_poll(true, w); t = rt_dequeue(); }
     return t;
@@ -977,7 +986,7 @@ void* obxlib_task_take(void* p) {
 /* 0, or 1 when the task is cancelled, 3 when its deadline has passed. */
 int64_t obxlib_task_yield(const char* w) {
     rt_nopark(w);
-    if ((rt_nio | rt_nheap) && (++rt_ticks & 63) == 0) rt_poll(false, w);
+    if ((rt_nio | rt_nheap | rt_njobs) && (++rt_ticks & 63) == 0) rt_poll(false, w);
     if (rt_rq_head) {
         rt_enqueue(rt_cur);
         rt_switch(rt_dequeue(), false);
@@ -1012,8 +1021,9 @@ void obxlib_task_restore(int64_t old) { rt_cur->deadline = old; }
    address is a family (4 or 6), 16 bytes (an IPv4 address in the first 4) and a port. Results
    are a count or a descriptor, or -errno. Writes use MSG_NOSIGNAL: a closed peer is EPIPE, never
    SIGPIPE. */
-static int64_t rt_net_new(int fd) {
-    if (rt_epfd < 0 && (rt_epfd = epoll_create1(EPOLL_CLOEXEC)) < 0) { int e = errno; close(fd); return -e; }
+/* The epoll set exists and rt_fds has room for fd: 0, or -errno. */
+static int rt_fd_room(int64_t fd) {
+    if (rt_epfd < 0 && (rt_epfd = epoll_create1(EPOLL_CLOEXEC)) < 0) return -errno;
     if (fd >= rt_nfds) {
         int64_t n = rt_nfds ? rt_nfds : 64;
         while (n <= fd) n *= 2;
@@ -1023,6 +1033,11 @@ static int64_t rt_net_new(int fd) {
         rt_fds = f;
         rt_nfds = n;
     }
+    return 0;
+}
+static int64_t rt_net_new(int fd) {
+    int r = rt_fd_room(fd);
+    if (r < 0) { close(fd); return r; }
     struct epoll_event ev = {.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.u64 = (uint64_t)fd};
     if (epoll_ctl(rt_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) { int e = errno; close(fd); return -e; }
     return fd;
@@ -1134,6 +1149,149 @@ int64_t obxlib_net_wait(int64_t fd, int64_t dir, const char* w) {
     rt_nio--;
     if (dir) rt_fds[fd].wr = 0; else rt_fds[fd].rd = 0;   /* by index: rt_fds may have moved */
     return r;
+}
+/* Parks until the descriptor fd, which a C library made and reads itself (libpq's socket, stage
+   C1c), is readable (dir 0), writable (1) or either (2). It is armed one-shot in the epoll set
+   each time, so readiness the library left unread is seen, and an idle one is never reported.
+   ms < 0: cancellable, until the task's deadline (0, 1 cancelled, 3 deadline, as
+   obxlib_net_wait); ms >= 0: not cancellable, for at most ms milliseconds (0, or 3 when they have
+   passed). -errno when epoll refuses fd. */
+int64_t obxlib_fd_wait(int64_t fd, int64_t dir, int64_t ms, const char* w) {
+    rt_nopark(w);
+    if (ms < 0 && rt_cur->cancelled) return 1;
+    if (ms < 0 && rt_expired()) return 3;
+    int r = rt_fd_room(fd);
+    if (r < 0) return r;
+    struct epoll_event ev = {.events = (dir == 1 ? 0 : EPOLLIN | EPOLLRDHUP) | (dir ? EPOLLOUT : 0) | EPOLLONESHOT,
+                             .data.u64 = (uint64_t)fd};
+    if (epoll_ctl(rt_epfd, EPOLL_CTL_MOD, (int)fd, &ev) != 0 &&
+        (errno != ENOENT || epoll_ctl(rt_epfd, EPOLL_CTL_ADD, (int)fd, &ev) != 0)) return -errno;
+    if (dir != 1) rt_fds[fd].rd = rt_cur;
+    if (dir != 0) rt_fds[fd].wr = rt_cur;
+    rt_nio++;
+    r = rt_park_until(ms < 0, ms < 0 ? rt_cur->deadline : rt_after(ms), w);
+    rt_nio--;
+    if (rt_fds[fd].rd == rt_cur) rt_fds[fd].rd = 0;
+    if (rt_fds[fd].wr == rt_cur) rt_fds[fd].wr = 0;
+    return r;
+}
+
+/* ---- the helper pool (stage C1c): blocking C calls on helper threads
+   A call of a blocking extern (SPEC 12) stores its arguments in slots on the calling task's
+   stack and calls rt_blocking with the extern's thunk (bk1_<C name>, generated: it reads the
+   slots, calls the C function and stores the result in the last slot). When nothing else could
+   run meanwhile (no runnable task, no task waiting for a socket, a timer or another blocking
+   call) the thunk runs inline. Otherwise the task parks, not cancellable, and a helper thread
+   runs the thunk: the job (on the parked task's stack) is queued under a mutex, a helper takes
+   it, runs the thunk with the task's errno, captures errno, puts the job on the done list and
+   writes the pool's eventfd, which is in the event loop's epoll set; the scheduler then wakes
+   the tasks of the done jobs, and each takes its errno back. A helper runs only C (the thunk
+   and the C function): never obx code, the obx allocator, reference counts or task structures.
+   The helpers start with the first call that needs one, OBX_HELPERS of them (default 4, at
+   most 64; 0: every blocking call runs inline), with every signal blocked, and wait for work
+   until the process ends. */
+typedef struct rt_job rt_job;
+struct rt_job {
+    void (*fn)(void*);              /* the thunk and its slots */
+    void* a;
+    int err;                        /* errno: the task's before the call, the helper's after */
+    bool done;
+    rt_task* t;
+    rt_job* next;
+};
+static pthread_mutex_t rt_pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t rt_pool_cv = PTHREAD_COND_INITIALIZER;
+static rt_job *rt_jq, *rt_jq_tail;         /* queued, first in first out (under rt_pool_mu) */
+static rt_job* rt_jdone;                   /* finished, the latest first (under rt_pool_mu) */
+static int rt_pool_idle;                   /* helpers waiting for a job (under rt_pool_mu) */
+static int rt_pool_efd = -1;
+static int rt_npool;                       /* helpers started; -1: none (OBX_HELPERS=0) */
+static void* rt_helper(void* unused) {
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&rt_pool_mu);
+        while (!rt_jq) {
+            rt_pool_idle++;
+            pthread_cond_wait(&rt_pool_cv, &rt_pool_mu);
+            rt_pool_idle--;
+        }
+        rt_job* j = rt_jq;
+        rt_jq = j->next;
+        if (!rt_jq) rt_jq_tail = 0;
+        pthread_mutex_unlock(&rt_pool_mu);
+        errno = j->err;
+        j->fn(j->a);
+        j->err = errno;
+        pthread_mutex_lock(&rt_pool_mu);
+        j->next = rt_jdone;                 /* j belongs to its task again from here */
+        rt_jdone = j;
+        pthread_mutex_unlock(&rt_pool_mu);
+        uint64_t one = 1;
+        if (write(rt_pool_efd, &one, sizeof one)) {}
+    }
+    return 0;
+}
+static void rt_pool_start(void) {
+    const char* e = getenv("OBX_HELPERS");
+    int n = e && *e ? atoi(e) : 4;
+    rt_npool = -1;
+    if (n <= 0) return;
+    if (n > 64) n = 64;
+    if (rt_fd_room(0) < 0 || (rt_pool_efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) < 0)
+        rt_trap(2, "out of memory (the helper pool)", "runtime");
+    struct epoll_event ev = {.events = EPOLLIN | EPOLLET, .data.u64 = RT_POOL_TAG};
+    if (epoll_ctl(rt_epfd, EPOLL_CTL_ADD, rt_pool_efd, &ev) != 0) rt_trap(2, "out of memory (the helper pool)", "runtime");
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &old);
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    int k = 0;
+    for (; k < n; k++) {
+        pthread_t t;
+        if (pthread_create(&t, &at, rt_helper, 0) != 0) break;
+    }
+    pthread_attr_destroy(&at);
+    pthread_sigmask(SIG_SETMASK, &old, 0);
+    if (k == 0) rt_trap(2, "out of memory (a helper thread)", "runtime");
+    rt_npool = k;
+}
+/* The event loop saw the eventfd: wake the tasks of the finished jobs, in the order they
+   finished. The eventfd is read before the list is taken, so a job finished after that writes
+   it again. */
+static void rt_pool_drain(void) {
+    uint64_t v;
+    if (read(rt_pool_efd, &v, sizeof v)) {}
+    pthread_mutex_lock(&rt_pool_mu);
+    rt_job* d = rt_jdone;
+    rt_jdone = 0;
+    pthread_mutex_unlock(&rt_pool_mu);
+    rt_job* r = 0;
+    while (d) { rt_job* nx = d->next; d->next = r; r = d; d = nx; }
+    while (r) {
+        rt_job* nx = r->next;
+        r->done = true;
+        rt_wake(r->t);
+        r = nx;
+    }
+}
+/* A call of a blocking extern: the thunk fn on its slots a. w: the call ("file:line"). */
+static void rt_blocking(rt_dfn fn, void* a, const char* w) {
+    rt_nopark(w);
+    if (!rt_rq_head && !rt_nio && !rt_nheap && !rt_njobs) { fn(a); return; }   /* nothing else could run */
+    if (!rt_npool) rt_pool_start();
+    if (rt_npool < 0) { fn(a); return; }
+    rt_job j = {.fn = fn, .a = a, .err = errno, .done = false, .t = rt_cur, .next = 0};
+    pthread_mutex_lock(&rt_pool_mu);
+    if (rt_jq_tail) rt_jq_tail->next = &j; else rt_jq = &j;
+    rt_jq_tail = &j;
+    if (rt_pool_idle) pthread_cond_signal(&rt_pool_cv);
+    pthread_mutex_unlock(&rt_pool_mu);
+    rt_njobs++;
+    while (!j.done) rt_park(false, w);
+    rt_njobs--;
+    errno = j.err;
 }
 /* A promise: a task with no code, done by complete or abandon; refs for the promise and its future. */
 void* obxlib_task_promise(void* resdrop) {

@@ -1,0 +1,58 @@
+// task: a blocking call is not a cancellation point. A task cancelled while
+// its C call runs on a helper waits for the call to return (C cannot be
+// stopped safely), gets its result, and sees the cancellation at its next
+// park; any, which waits for the tasks it cancels, returns after that. Likewise a within deadline that passes during the call: the call
+// completes, and the next call that can park returns Err(Timeout).
+// expect: slow: usleep returned 0
+// expect: slow: then cancelled
+// expect: fast won: 1
+// expect: within: usleep returned 0
+// expect: within: then timeout
+// expect: within took the whole call: true
+import "task"
+import "time"
+
+extern "c" fn usleepB(us: u32): i32 as "usleep" blocking
+
+fn slow(ms: int): int {
+    let r = usleepB(u32(ms * 1000))
+    println("slow: usleep returned " + intToStr(int(r)))
+    match task.sleep(1) {
+        Ok(_) { println("slow: then ok") }
+        Err(e) { println("slow: then " + e.toStr()) }
+    }
+    return ms
+}
+
+fn fast(ms: int): int {
+    task.sleep(ms).unwrap()
+    return 1
+}
+
+fn nap(n: int): int {
+    task.sleep(n).unwrap()
+    return n
+}
+
+fn main() {
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[int] = []
+        append(mut &fs, s.start(slow, 150))
+        append(mut &fs, s.start(fast, 10))
+        println("fast won: " + intToStr(task.any(fs).unwrap()))
+    })
+    let t0 = time.monotonicNs()
+    task.scope(fn(s: mut &task.Scope) {
+        let tk = s.start(nap, 200)
+        task.within(30, fn(): int {
+            println("within: usleep returned " + intToStr(int(usleepB(120000))))
+            match task.sleep(1) {
+                Ok(_) { println("within: then ok") }
+                Err(e) { println("within: then " + e.toStr()) }
+            }
+            return 0
+        })
+        println("within took the whole call: " + ((time.monotonicNs() - t0) / 1000000 >= 120).toStr())
+        tk.wait().unwrap()
+    })
+}

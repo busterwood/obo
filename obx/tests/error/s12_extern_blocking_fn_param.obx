@@ -1,0 +1,5 @@
+// SPEC 12: a blocking extern runs its C function on a helper thread, so it
+// takes no C function pointer (C would call back into obx there).
+// error: blocking extern qsortB cannot take the C function pointer cmp
+extern "c" fn qsortB(base: ptr, n: int, size: int, cmp: extern fn(ptr, ptr): i32) as "qsort" blocking
+fn main() {}

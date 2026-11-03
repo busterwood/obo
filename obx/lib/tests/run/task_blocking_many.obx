@@ -1,0 +1,43 @@
+// task: far more blocking calls than helper threads (24 calls of 40 ms, 4
+// helpers by default): the calls queue and run four at a time, first in,
+// first out, so they take about six rounds, and every task gets its own
+// result back. A ticker keeps running meanwhile.
+// expect: results ok: true
+// expect: rounds: true
+// expect: ticker ran: true
+import "task"
+import "time"
+
+extern "c" fn usleepB(us: u32): i32 as "usleep" blocking
+extern "c" fn absB(x: i32): i32 as "abs" blocking
+
+fn work(k: int): int {
+    usleepB(40000)
+    return int(absB(i32(-k)))
+}
+
+fn ticker(n: int): int {
+    var ticks = 0
+    let t0 = time.monotonicNs()
+    while time.monotonicNs() - t0 < 200 * 1000000 {
+        task.sleep(n).unwrap()
+        ticks += 1
+    }
+    return ticks
+}
+
+fn main() {
+    let t0 = time.monotonicNs()
+    task.scope(fn(s: mut &task.Scope) {
+        let tk = s.start(ticker, 10)
+        var fs: []task.Future[int] = []
+        for k in 0..24 { append(mut &fs, s.start(work, k)) }
+        let rs = task.all(fs).unwrap()
+        var ok = len(rs) == 24
+        for k in 0..len(rs) { if rs[k] != k { ok = false } }
+        println("results ok: " + ok.toStr())
+        let ms = (time.monotonicNs() - t0) / 1000000
+        println("rounds: " + (ms >= 240 && ms < 600).toStr())
+        println("ticker ran: " + (tk.wait().unwrap() >= 10).toStr())
+    })
+}

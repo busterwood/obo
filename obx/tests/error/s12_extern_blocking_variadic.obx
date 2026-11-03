@@ -1,0 +1,4 @@
+// SPEC 12: a blocking extern is not variadic.
+// error: blocking extern printfB cannot be variadic
+extern "c" fn printfB(fmt: str, ...): i32 as "printf" blocking
+fn main() {}
