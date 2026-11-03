@@ -11,7 +11,7 @@ compare to directives (// expect:, // exit:, // error:). Classify:
   MISMATCH  output/exit differs
 usage: rt.py [files or dirs...]  (default: cases/ and f*.obx)
 """
-import os, re, subprocess, sys, glob
+import os, re, subprocess, sys, glob, json
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 import cbuild
 from concurrent.futures import ThreadPoolExecutor
@@ -38,7 +38,7 @@ def run1(path):
     if name == 'main':
         name = os.path.basename(os.path.dirname(path))
     try:
-        c = subprocess.run(cbuild.obxc_argv(OBXC) + [path, '--emit-c'], capture_output=True, text=True, timeout=30)
+        c = subprocess.run(cbuild.obxc_argv(OBXC) + [path, '--emit-c-json'], capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
         return name, 'HANG', 'compiler did not finish in 30 s'
     if 'Traceback' in c.stderr or c.returncode not in (0, 1):
@@ -51,10 +51,13 @@ def run1(path):
         return name, 'REJECT', msg
     if d['error'] is not None:
         return name, 'ACCEPT', 'compiled'
+    out = json.loads(c.stdout)
+    # the libraries of the program's externs, as the normal build links them
+    libs = [w for w in out['cmd'] if w != '-lm' and (w.startswith('-l') or '.so' in w)]
     cfile = os.path.join(BUILD, name + '.c'); exe = os.path.join(BUILD, name)
-    open(cfile, 'w').write(c.stdout)
-    grc, gerr = cbuild.cc_build(c.stdout, ['gcc', '-g', '-O0', '-std=gnu11', '-fsanitize=address,undefined',
-                        '-fno-sanitize-recover=undefined', '-w', '-o', '@OUT@', '@SRC@', '-lm'], exe)
+    open(cfile, 'w').write(out['c'])
+    grc, gerr = cbuild.cc_build(out['c'], ['gcc', '-g', '-O0', '-std=gnu11', '-fsanitize=address,undefined',
+                        '-fno-sanitize-recover=undefined', '-w', '-o', '@OUT@', '@SRC@'] + libs + ['-lm'], exe)
     if grc != 0:
         return name, 'CCFAIL', gerr[:600]
     env = dict(os.environ, OBX_CHECK='1', ASAN_OPTIONS='detect_leaks=1:abort_on_error=0:exitcode=99',
