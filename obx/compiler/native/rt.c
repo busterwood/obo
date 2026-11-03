@@ -1567,13 +1567,14 @@ struct k_epoll_event { uint32_t events; uint64_t data; } __attribute__((packed))
 #define K_O_NONBLOCK 0x800
 #define K_O_CLOEXEC 0x80000
 #define K_EPOLLEXCLUSIVE (1u << 28)
-typedef struct { rt_task *rd, *wr; uint8_t reg, lazy; } rt_fdw;    /* see rt.h */
+typedef struct { rt_task *rd, *wr; uint8_t reg, lazy; rt_task* hup; uint8_t hupmode, gone, halves; } rt_fdw;    /* see rt.h */
 static rt_fdw* rt_fds;
 static int64_t rt_nfds;
 static int rt_epfd = -1;
 static int64_t rt_nreg;
 #define RT_SIG_TAG (~(uint64_t)1)
 static void rt_sig_read(void);
+static void rt_hup_seen(int64_t fd, uint32_t e);
 static int64_t rt_nio;
 static int64_t rt_njobs;                   /* tasks parked in a blocking C call (the helper pool) */
 #define RT_POOL_TAG (~(uint64_t)0)
@@ -1664,6 +1665,7 @@ static void rt_poll(bool block, const char* w) {
                 int64_t fd = (int64_t)ev[i].data;
                 uint32_t e = ev[i].events;
                 if (fd >= rt_nfds) continue;
+                if (e & (K_EPOLLRDHUP | K_EPOLLHUP | K_EPOLLERR)) rt_hup_seen(fd, e);
                 if (rt_fds[fd].rd && (e & (K_EPOLLIN | K_EPOLLRDHUP | K_EPOLLHUP | K_EPOLLERR))) rt_wake(rt_fds[fd].rd);
                 if (rt_fds[fd].wr && (e & (K_EPOLLOUT | K_EPOLLHUP | K_EPOLLERR))) rt_wake(rt_fds[fd].wr);
             }
@@ -1885,6 +1887,8 @@ static int64_t rt_net_new(i64 fd) {
     if (r < 0) { SYS(S_CLOSE, fd, 0, 0); return r; }
     rt_fds[fd].reg = 1;
     rt_fds[fd].lazy = 0;
+    rt_fds[fd].hup = 0;
+    rt_fds[fd].hupmode = rt_fds[fd].gone = rt_fds[fd].halves = 0;
     rt_nreg++;
     return fd;
 }
@@ -1966,6 +1970,8 @@ void obxlib_net_close(int64_t fd) {
         rt_fds[fd].rd = rt_fds[fd].wr = 0;
         if (rt_fds[fd].reg == 1) rt_nreg--;
         rt_fds[fd].reg = rt_fds[fd].lazy = 0;
+        rt_fds[fd].hup = 0;
+        rt_fds[fd].hupmode = rt_fds[fd].gone = rt_fds[fd].halves = 0;
     }
     SYS(S_CLOSE, fd, 0, 0);
 }
@@ -2262,9 +2268,13 @@ static int rt_pool_check(int ms) {
     rt_pool_drain(false);
     return 0;
 }
+typedef struct rt_cc rt_cc;
+static rt_cc* rt_ccs;                      /* task.onCancelCall's registrations (stage S1) */
+static void rt_cc_wait(bool* done, const char* w);
+static bool rt_cc_timed(void);
 void rt_blocking(rt_dfn fn, void* a, const char* w) {
     rt_nopark(w);
-    if (!rt_rq_head && !rt_nio && !rt_nheap && !rt_njobs) { fn(a); return; }
+    if (!rt_rq_head && !rt_nio && !rt_nheap && !rt_njobs && !rt_cc_timed()) { fn(a); return; }
     if (!rt_npool) rt_pool_start();
     if (rt_npool < 0) { fn(a); return; }
     rt_job j = {fn, a, rt_errno, false, rt_cur, 0};
@@ -2277,6 +2287,7 @@ void rt_blocking(rt_dfn fn, void* a, const char* w) {
     rt_pool_unlock();
     if (wake) SYS4(S_FUTEX, &rt_pool_seq, K_FUTEX_WAKE_PRIVATE, 1, 0);
     rt_njobs++;
+    if (rt_ccs) rt_cc_wait(&j.done, w);   /* task.onCancelCall (stage S1, at the end of this file) */
     while (!__atomic_load_n(&j.done, __ATOMIC_RELAXED)) rt_park(false, w);
     rt_njobs--;
     rt_errno = j.err;
@@ -2445,4 +2456,125 @@ void obxlib_worker_exit(int64_t code) {
 int64_t obxlib_worker_stop(void) {
     if (!rt_worker_parent || SYS(S_GETPPID, 0, 0, 0) != rt_worker_parent) return -1;
     return SYS(S_KILL, rt_worker_parent, K_SIGTERM, 0) == 0 ? 0 : -1;
+}
+
+/* ------------------------------------------------------------ the HTTP server's pieces (stage S1)
+   rt.h's hangup detection, split sockets, TCP_DEFER_ACCEPT, the spare descriptor, random bytes,
+   the descriptor limit, task.onCancelCall and task.workerReady's shared marks, with raw system
+   calls. See rt.h for what each does. */
+enum { S_SETRLIMIT = 160 };
+static void rt_hup_seen(int64_t fd, uint32_t e) {
+    uint8_t g = (uint8_t)(((e & K_EPOLLRDHUP) ? 1 : 0) | ((e & (K_EPOLLHUP | K_EPOLLERR)) ? 2 : 0));
+    rt_fds[fd].gone |= g;
+    rt_task* t = rt_fds[fd].hup;
+    if (t && (g & rt_fds[fd].hupmode)) { rt_fds[fd].hup = 0; rt_cancel(t); }
+}
+int64_t obxlib_net_hangup(int64_t fd, int64_t mode) {
+    if (fd < 0 || fd >= rt_nfds) return 0;
+    if (mode == 0) { rt_fds[fd].hup = 0; rt_fds[fd].hupmode = 0; return 0; }
+    if (rt_fds[fd].gone & (uint8_t)mode) { rt_cancel(rt_cur); return 1; }
+    rt_fds[fd].hup = rt_cur;
+    rt_fds[fd].hupmode = (uint8_t)mode;
+    return 0;
+}
+void obxlib_net_split(int64_t fd) {
+    rt_fd_table(fd);
+    rt_fds[fd].halves = 2;
+}
+void obxlib_net_release(int64_t fd) {
+    if (fd < rt_nfds && rt_fds[fd].halves > 1) { rt_fds[fd].halves--; return; }
+    obxlib_net_close(fd);
+}
+int64_t obxlib_net_defer(int64_t fd, int64_t secs) {
+    int v = (int)secs;
+    i64 r = sys6(S_SETSOCKOPT, fd, 6, 9, (i64)&v, sizeof v, 0);   /* IPPROTO_TCP, TCP_DEFER_ACCEPT */
+    return r < 0 ? r : 0;
+}
+int64_t obxlib_net_spare(void) {
+    return SYS(S_OPEN, "/dev/null", K_O_CLOEXEC, 0);              /* O_RDONLY */
+}
+int64_t obxlib_net_shed(int64_t lfd, int64_t spare) {
+    if (spare >= 0) SYS(S_CLOSE, spare, 0, 0);
+    i64 c = SYS4(S_ACCEPT4, lfd, 0, 0, K_O_CLOEXEC);
+    if (c >= 0) SYS(S_CLOSE, c, 0, 0);
+    return obxlib_net_spare();
+}
+int64_t obxlib_random(uint8_t* b, int64_t n) {
+    int64_t k = 0;
+    while (k < n) {
+        i64 r = SYS(S_GETRANDOM, b + k, n - k, 0);
+        if (r == -4) continue;                                      /* EINTR */
+        if (r < 0) return r;
+        k += r;
+    }
+    return 0;
+}
+int64_t obxlib_nofile(int64_t want) {
+    struct { uint64_t cur, max; } rl;
+    i64 r = SYS(S_GETRLIMIT, 7, &rl, 0);                            /* RLIMIT_NOFILE */
+    if (r < 0) return r;
+    if (rl.cur != ~0UL && (int64_t)rl.cur < want) {
+        uint64_t old = rl.cur;
+        rl.cur = rl.max == ~0UL || (int64_t)rl.max >= want ? (uint64_t)want : rl.max;
+        if (SYS(S_SETRLIMIT, 7, &rl, 0) < 0) rl.cur = old;
+    }
+    return rl.cur == ~0UL ? INT64_MAX : (int64_t)rl.cur;
+}
+
+struct rt_cc { rt_task* t; void (*fn)(void*); void* arg; rt_cc* next; };
+static rt_cc* rt_cc_of(rt_task* t) {
+    for (rt_cc* c = rt_ccs; c; c = c->next)
+        if (c->t == t) return c;
+    return 0;
+}
+static bool rt_cc_timed(void) { return rt_ccs && rt_cur->deadline != RT_NEVER && rt_cc_of(rt_cur); }
+static void rt_cc_wait(bool* done, const char* w) {
+    rt_cc* c = rt_cc_of(rt_cur);
+    if (!c) return;
+    while (!__atomic_load_n(done, __ATOMIC_RELAXED)) {
+        if (rt_cur->cancelled || rt_expired()) { c->fn(c->arg); return; }
+        rt_park_until(true, rt_cur->deadline, w);
+    }
+}
+void* obxlib_task_cancel_call(void* fn, void* arg) {
+    rt_cc* c = malloc(sizeof *c);
+    if (!c) rt_trap(2, "out of memory", "runtime");
+    c->t = rt_cur;
+    c->fn = (void (*)(void*))fn;
+    c->arg = arg;
+    c->next = rt_ccs;
+    rt_ccs = c;
+    return c;
+}
+void obxlib_task_cancel_call_end(void* h) {
+    for (rt_cc** p = &rt_ccs; *p; p = &(*p)->next)
+        if (*p == h) { *p = ((rt_cc*)h)->next; free(h); return; }
+}
+
+static uint8_t* rt_wmarks;
+static int64_t rt_nwmarks, rt_wself = -1;
+int64_t obxlib_worker_marks(int64_t n) {
+    if (rt_wmarks) { SYS(S_MUNMAP, rt_wmarks, rt_nwmarks, 0); rt_wmarks = 0; }
+    i64 p = sys6(S_MMAP, 0, n, 3, 0x21, -1, 0);                     /* PROT_READ|WRITE, MAP_SHARED|ANONYMOUS */
+    if (p < 0 && p > -4096) return p;
+    rt_wmarks = (uint8_t*)p;
+    rt_nwmarks = n;
+    return 0;
+}
+void obxlib_worker_marks_free(void) {
+    if (rt_wmarks) SYS(S_MUNMAP, rt_wmarks, rt_nwmarks, 0);
+    rt_wmarks = 0;
+    rt_nwmarks = 0;
+}
+int64_t obxlib_worker_mark(int64_t i, int64_t v) {
+    if (!rt_wmarks || i < 0 || i >= rt_nwmarks) return -1;
+    int64_t old = __atomic_load_n(&rt_wmarks[i], __ATOMIC_SEQ_CST);
+    if (v >= 0) __atomic_store_n(&rt_wmarks[i], (uint8_t)v, __ATOMIC_SEQ_CST);
+    return old;
+}
+void obxlib_worker_self(int64_t i) { rt_wself = i; }
+int64_t obxlib_worker_ready(void) {
+    if (!rt_worker_parent || rt_wself < 0 || !rt_wmarks || rt_wself >= rt_nwmarks) return -1;
+    __atomic_store_n(&rt_wmarks[rt_wself], (uint8_t)1, __ATOMIC_SEQ_CST);
+    return 0;
 }

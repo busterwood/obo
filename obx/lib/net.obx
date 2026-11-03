@@ -650,3 +650,200 @@ pub fn (c: &Conn) readNow(buf: mut &[byte]): Result[int, io.IoError] {
     }
     return Err(io.ioError(EINVAL, "read", c.addr))
 }
+
+// ---- halves, hangup detection and the server's listener options (stage S1,
+// design/http-server.md sections 2.2, 2.5 and 3.4)
+//
+// A server's request owns the reading side of its connection and its
+// response the writing side, while the handler runs (a borrow cannot be
+// stored in a record). split gives them as two owned values; the socket is
+// closed when both have been dropped.
+
+extern "c" fn rtSplit(fd: int) as "obxlib_net_split"
+extern "c" fn rtRelease(fd: int) as "obxlib_net_release"
+extern "c" fn rtHangup(fd: int, mode: int): int as "obxlib_net_hangup"
+extern "c" fn rtDefer(fd: int, secs: int): int as "obxlib_net_defer"
+extern "c" fn rtSpare(): int as "obxlib_net_spare"
+extern "c" fn rtShed(lfd: int, spare: int): int as "obxlib_net_shed"
+
+const EMFILE = 24
+const ENFILE = 23
+
+// The reading side of a split connection.
+pub type ReadHalf = record {
+    fd: int
+    addr: str
+}
+
+// The writing side of a split connection.
+pub type WriteHalf = record {
+    fd: int
+    addr: str
+}
+
+// split's result.
+pub type Halves = record {
+    pub read: ReadHalf
+    pub write: WriteHalf
+}
+
+// Splits the connection into its reading and writing sides, owned apart.
+// The socket is closed when both are dropped.
+pub fn (var c: Conn) split(): Halves {
+    let fd = replace(mut &c.fd, -1)
+    rtSplit(fd)
+    return Halves{read: ReadHalf{fd: fd, addr: c.addr}, write: WriteHalf{fd: fd, addr: c.addr}}
+}
+
+pub fn (h: mut &ReadHalf) drop() {
+    if h.fd >= 0 { rtRelease(h.fd) }
+}
+
+pub fn (h: mut &WriteHalf) drop() {
+    if h.fd >= 0 { rtRelease(h.fd) }
+}
+
+// Conn.read on the reading side.
+pub fn (h: &ReadHalf) read(buf: mut &[byte], w: Where): Result[int, io.IoError] {
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "read", h.addr)) }
+    while true {
+        let n = rtRead(h.fd, buf, len(buf))
+        if n >= 0 { return Ok(n) }
+        if n == -EAGAIN {
+            let r = rtWait(h.fd, 0, w.cstr())
+            if r != 0 { return Err(stopped(r, "read", h.addr)) }
+        } else if n != -EINTR {
+            return Err(io.ioError(-n, "read", h.addr))
+        }
+    }
+    return Err(io.ioError(EINVAL, "read", h.addr))
+}
+
+// Conn.readNow on the reading side.
+pub fn (h: &ReadHalf) readNow(buf: mut &[byte]): Result[int, io.IoError] {
+    while true {
+        let n = rtRead(h.fd, buf, len(buf))
+        if n >= 0 { return Ok(n) }
+        if n != -EINTR { return Err(io.ioError(-n, "read", h.addr)) }
+    }
+    return Err(io.ioError(EINVAL, "read", h.addr))
+}
+
+// The peer's address ("" once it is gone).
+pub fn (h: &ReadHalf) peerAddr(): str { return sockText(h.fd, 1) }
+
+// This side's address.
+pub fn (h: &ReadHalf) localAddr(): str { return sockText(h.fd, 0) }
+
+// Cancels the running task (as dropping its future does) when the peer
+// hangs up, until the guard is dropped: a reset or an error on the
+// connection, and with halfClose also the end of the peer's stream (it
+// shut down its sending side, or closed: the two look the same until this
+// side writes). If that has already happened, the task is cancelled at
+// once. It is not a read: data that arrives stays for the reader. A server
+// arms it while a handler runs, so that the handler's next call that can
+// park returns Cancelled when the client has gone.
+pub fn (h: &ReadHalf) cancelOnHangup(halfClose: bool): HangupGuard {
+    let r = rtHangup(h.fd, if halfClose { 3 } else { 2 })
+    return HangupGuard{fd: h.fd}
+}
+
+// cancelOnHangup's guard: dropping it disarms the cancellation.
+pub type HangupGuard = record { fd: int }
+
+pub fn (g: mut &HangupGuard) drop() { let r = rtHangup(g.fd, 0) }
+
+// Conn.write on the writing side.
+pub fn (h: &WriteHalf) write(data: &[byte], w: Where): Result[Unit, io.IoError] {
+    return h.writeStalled(data, 0, w)
+}
+
+// write, failing with ETIMEDOUT (isTimeout()) when the peer takes none of
+// the data for stallMs milliseconds in a row (0: no limit). There is no
+// limit on the whole write: a slow reader that keeps reading is served.
+pub fn (h: &WriteHalf) writeStalled(data: &[byte], stallMs: int, w: Where): Result[Unit, io.IoError] {
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "write", h.addr)) }
+    var off = 0
+    while off < len(data) {
+        let n = rtWrite(h.fd, data[off..], len(data) - off)
+        if n >= 0 {
+            off += n
+        } else if n == -EAGAIN {
+            var r = 0
+            if stallMs > 0 {
+                let old = rtWithin(stallMs)
+                r = rtWait(h.fd, 1, w.cstr())
+                rtRestore(old)
+            } else {
+                r = rtWait(h.fd, 1, w.cstr())
+            }
+            if r != 0 { return Err(stopped(r, "write", h.addr)) }
+        } else if n != -EINTR {
+            return Err(io.ioError(-n, "write", h.addr))
+        }
+    }
+    return Ok(Unit{})
+}
+
+// write for the bytes of s.
+pub fn (h: &WriteHalf) writeStr(s: str, w: Where): Result[Unit, io.IoError] {
+    let b = strToBytes(s)
+    return h.write(&b, w)
+}
+
+// Conn.closeWrite on the writing side.
+pub fn (h: &WriteHalf) closeWrite(): Result[Unit, io.IoError] {
+    let r = rtShutdown(h.fd, 1)
+    if r != 0 { return Err(io.ioError(-r, "shutdown", h.addr)) }
+    return Ok(Unit{})
+}
+
+// Conn.setNoDelay on the writing side.
+pub fn (h: &WriteHalf) setNoDelay(on: bool): Result[Unit, io.IoError] {
+    let r = rtNoDelay(h.fd, if on { 1 } else { 0 })
+    if r != 0 { return Err(io.ioError(-r, "setsockopt", h.addr)) }
+    return Ok(Unit{})
+}
+
+// The peer's address ("" once it is gone).
+pub fn (h: &WriteHalf) peerAddr(): str { return sockText(h.fd, 1) }
+
+// TCP_DEFER_ACCEPT (Linux): a connection is handed to accept only once
+// its first data has arrived (or after secs seconds), so a client that
+// connects and sends nothing never costs the server a task.
+pub fn (l: &Listener) setDeferAccept(secs: int): Result[Unit, io.IoError] {
+    let r = rtDefer(l.fd, secs)
+    if r != 0 { return Err(io.ioError(-r, "setsockopt", l.addr)) }
+    return Ok(Unit{})
+}
+
+// Whether an accept error means the process (EMFILE) or the system
+// (ENFILE) has no descriptor left.
+pub fn outOfDescriptors(e: &io.IoError): bool { return e.errno == EMFILE || e.errno == ENFILE }
+
+// A spare descriptor (/dev/null) held back for shed.
+pub type Spare = record { fd: int }
+
+pub fn (s: mut &Spare) drop() {
+    if s.fd >= 0 { rtClose(s.fd) }
+}
+
+// Reserves a spare descriptor.
+pub fn spare(): Result[Spare, io.IoError] {
+    let fd = rtSpare()
+    if fd < 0 { return Err(io.ioError(-fd, "open", "/dev/null")) }
+    return Ok(Spare{fd: fd})
+}
+
+// After accept failed for want of descriptors: frees the spare, accepts
+// one waiting connection and closes it at once (its client sees the close
+// instead of waiting while the accept loop spins), and reserves the spare
+// again (Err when it cannot: the spare is then gone).
+pub fn (l: &Listener) shed(s: mut &Spare): Result[Unit, io.IoError] {
+    let fd = rtShed(l.fd, s.fd)
+    s.fd = if fd >= 0 { fd } else { -1 }
+    if fd < 0 { return Err(io.ioError(-fd, "open", "/dev/null")) }
+    return Ok(Unit{})
+}

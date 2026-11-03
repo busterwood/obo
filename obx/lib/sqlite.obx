@@ -40,11 +40,17 @@
 // (serialized), and a connection is used by one helper at a time, as its
 // task waits for each call.
 //
+// Cancellation (stage S1): step and exec register sqlite3_interrupt with
+// task.onCancelCall, so a step running on a helper when its task is cancelled
+// (a client that hung up) or its within deadline passes is interrupted and
+// returns SQLITE_INTERRUPT, instead of running to its end.
+//
 // Errors are sqldialect.DbError: an SQLite result code (SQLITE_CONSTRAINT,
 // ...) and sqlite3_errmsg's text, or one of the E_* codes of sqldialect.
 
 import "sqldialect"
 import "ffi"
+import "task"
 
 pub type Value = sqldialect.Value
 pub type Error = sqldialect.DbError
@@ -89,6 +95,12 @@ extern "sqlite3" fn sqlite3_get_autocommit(db: ptr): i32
 extern "sqlite3" fn sqlite3_prepare_v2(db: ptr, sql: ptr, n: i32, st: mut &ptr, tail: mut &ptr): i32
 extern "sqlite3" fn sqlite3_finalize(st: ptr): i32
 extern "sqlite3" fn sqlite3_step(st: ptr): i32 blocking
+extern "sqlite3" fn sqlite3_interrupt(db: ptr)
+
+// task.onCancelCall's function: sqlite3_interrupt, which SQLite documents as
+// safe to call from another thread while the connection runs a statement; the
+// statement then ends with SQLITE_INTERRUPT.
+fn interrupt(db: ptr) { sqlite3_interrupt(db) }
 extern "sqlite3" fn sqlite3_reset(st: ptr): i32
 extern "sqlite3" fn sqlite3_bind_parameter_count(st: ptr): i32
 extern "sqlite3" fn sqlite3_bind_null(st: ptr, i: i32): i32
@@ -162,6 +174,7 @@ pub fn (var d: Db) close(): Result[Unit, Error] {
 pub fn (d: &Db) exec(script: str): Result[Unit, Error] {
     try sqldialect.noNul(script, "SQL text")
     var msg = nullPtr()
+    let cc = task.onCancelCall(interrupt, d.h)   // cancelled or past the deadline: sqlite3_interrupt
     let rc = int(sqlite3_exec(d.h, script, nullPtr(), nullPtr(), mut &msg))
     if rc == SQLITE_OK { return Ok(Unit{}) }
     let text = if isNull(msg) { sqlite3_errstr(i32(rc)) } else { strFromC(msg) }
@@ -255,6 +268,7 @@ pub fn (s: Stmt) close() {}
 // Runs the statement to its next row: true when there is one to read, false
 // when it is done.
 pub fn (s: mut &Stmt) step(): Result[bool, Error] {
+    let cc = task.onCancelCall(interrupt, s.db)   // cancelled or past the deadline: sqlite3_interrupt
     let rc = int(sqlite3_step(s.h))
     s.row = rc == SQLITE_ROW
     if rc == SQLITE_ROW || rc == SQLITE_DONE { return Ok(s.row) }

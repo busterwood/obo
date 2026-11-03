@@ -56,6 +56,9 @@
 // SQLGetData, SQLMoreResults, SQLDescribeParam) are `blocking` externs (SPEC
 // 12): while other tasks could run, the calling task parks and the call runs
 // on the helper pool; each has one call site, outside any Shared.with.
+// The statement calls register SQLCancel with task.onCancelCall (stage S1):
+// when the task is cancelled, or its within deadline passes, while one runs,
+// the server is asked to cancel it and the call fails with HY008.
 // SQLEndTran and SQLDisconnect stay ordinary calls: they also run when a
 // Conn is dropped, and a drop may happen inside a Shared.with, where a call
 // that can park stops the program (exit 13).
@@ -143,6 +146,12 @@ extern "odbc" fn SQLFetch(h: ptr): i32 blocking
 extern "odbc" fn SQLMoreResults(h: ptr): i32 blocking
 extern "odbc" fn SQLGetData(h: ptr, col: i32, cType: i32, buf: mut &[]byte, cap: int, ind: mut &int): i32 blocking
 extern "odbc" fn SQLFreeStmt(h: ptr, option: i32): i32
+extern "odbc" fn SQLCancel(h: ptr): i32
+
+// task.onCancelCall's function: SQLCancel on a statement whose call runs on a
+// helper thread (ODBC 3 allows it from another thread for a statement running
+// synchronously). The call then fails with SQLSTATE HY008 (operation canceled).
+fn cancelStmt(h: ptr) { let r = SQLCancel(h) }
 extern "odbc" fn SQLNumResultCols(h: ptr, n: mut &[]byte): i32
 extern "odbc" fn SQLNumParams(h: ptr, n: mut &[]byte): i32
 extern "odbc" fn SQLDescribeParam(h: ptr, i: i32, sqlType: mut &[]byte, size: mut &int, digits: mut &[]byte, nullable: mut &[]byte): i32 blocking
@@ -711,6 +720,7 @@ pub fn (s: mut &Stmt) bindAll(args: &[Value]): Result[Unit, Error] {
 pub fn (s: mut &Stmt) execute(): Result[Unit, Error] {
     try s.live()
     s.clear()
+    let cc = task.onCancelCall(cancelStmt, s.h)   // cancelled or past the deadline: SQLCancel
     let r = rc(SQLExecute(s.h))
     return s.started(r, "execute")
 }
@@ -719,6 +729,7 @@ fn (s: mut &Stmt) direct(sql: str): Result[Unit, Error] {
     let w = try wide(sql, "SQL text")
     try s.live()
     s.clear()
+    let cc = task.onCancelCall(cancelStmt, s.h)   // cancelled or past the deadline: SQLCancel
     let r = rc(SQLExecDirectW(s.h, &w, i32(SQL_NTS)))
     return s.started(r, "execute")
 }
@@ -784,6 +795,7 @@ pub fn (s: mut &Stmt) step(): Result[bool, Error] {
     if len(s.cols) == 0 { return Ok(false) }
     for k in 0..len(s.cells) { s.cells[k] = Cell.Unread }
     s.next = 0
+    let cc = task.onCancelCall(cancelStmt, s.h)   // cancelled or past the deadline: SQLCancel
     let r = rc(SQLFetch(s.h))
     if r == SQL_SUCCESS_WITH_INFO {
         for d in diags(H_STMT, s.h) { append(mut &s.info, d) }
@@ -802,6 +814,7 @@ pub fn (s: mut &Stmt) nextResult(): Result[bool, Error] {
     s.cells = []
     s.row = false
     s.affected = -1
+    let cc = task.onCancelCall(cancelStmt, s.h)   // cancelled or past the deadline: SQLCancel
     let r = rc(SQLMoreResults(s.h))
     if r == SQL_NO_DATA { return Ok(false) }
     try s.started(r, "next result")
@@ -881,6 +894,7 @@ type Got = value record { r: int; ind: int }
 fn (s: mut &Stmt) getData(col: int, cType: int): Got {
     var ind = 0
     let cap = len(s.buf)
+    let cc = task.onCancelCall(cancelStmt, s.h)   // cancelled or past the deadline: SQLCancel
     let r = rc(SQLGetData(s.h, i32(col + 1), i32(cType), mut &s.buf, cap, mut &ind))
     return Got{r: r, ind: ind}
 }
