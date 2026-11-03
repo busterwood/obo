@@ -27,10 +27,12 @@ As of 2026-11-03:
   program calls C libraries), and C for gcc. The natively built compiler
   builds itself to the same fixed point. Its C is checked in as the seed, so
   a first build needs only gcc.
-- **Library:** strings, collections, files and I/O, time, math, TCP, exact
-  decimals and money, and [SQLite, Postgres and SQL Server](obx/lib/README.md)
-  adapters that call the C libraries (SQL Server through ODBC) directly with
-  no shims.
+- **Library:** strings, collections, files and I/O, time, math, TCP with
+  name lookup, URLs, an [HTTP/1.1 client](obx/lib/README.md) (pooled
+  keep-alive connections, strict reply framing, redirects, deadlines; plain
+  http for now), exact decimals and money, and [SQLite, Postgres and SQL
+  Server](obx/lib/README.md) adapters that call the C libraries (SQL Server
+  through ODBC) directly with no shims.
 - **Programs:** [eza](obx/cmd/README.md), the common subset of the eza file
   lister in 1,600 lines, byte-identical to the real eza on 482 golden cases.
 - **Performance:** the native backend is level with gcc -O2 or ahead of it

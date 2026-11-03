@@ -36,7 +36,9 @@ for leaks.
 | `postgres.obx` | 690 | PostgreSQL through libpq, asynchronous for tasks: Conn, Rows, Pool, Lease |
 | `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
 | `task.obx` | 270 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation, sleep, deadlines |
-| `net.obx` | 440 | TCP over IPv4 and IPv6 for tasks: listen, accept, connect, read, write |
+| `net.obx` | 630 | TCP over IPv4 and IPv6 for tasks: listen, accept, connect, read, write; name lookup and dial |
+| `url.obx` | 550 | URLs for http and https (RFC 3986): parse, resolve, percent-encoding, queries |
+| `http.obx` | 1,550 | an HTTP/1.1 client (pool, strict framing, redirects, retries, deadlines) and the head parsing httpd shares |
 
 ### std (prelude)
 
@@ -283,14 +285,31 @@ meanwhile, and a plain program (its main task) uses the same calls.
 
 - Addresses are text: `"127.0.0.1:8080"`, `"[::1]:8080"`, `":8080"` and
   `"0.0.0.0:8080"` (every IPv4 interface), `"localhost:8080"` (127.0.0.1),
-  port 0 for any free port. Only numeric addresses and `localhost`: a name
-  lookup (`getaddrinfo` on the helper pool) is not there yet. `canonicalAddr(addr): Option[str]` checks and normalizes one
+  port 0 for any free port. `listen` and `connect` take numeric addresses
+  and `localhost`; `dial` also takes names. `canonicalAddr(addr): Option[str]` checks and normalizes one
   (IPv6 in RFC 5952 form). A malformed address is `EINVAL`.
 - `listen(addr): Result[Listener, IoError]` (`SO_REUSEADDR`, backlog 4096);
   `Listener`: `localAddr(): str`, `accept(): Result[Conn, IoError]`,
   `close()`.
 - `connect(addr): Result[Conn, IoError]`: a non-blocking connect that parks
   until it is done (`ECONNREFUSED` and the like come from it).
+- `resolve(host, port): Result[[]str, IoError]`: the addresses of a name as
+  text (`"93.184.215.14:443"`, `"[2606:2800:21f::1]:443"`), in
+  `getaddrinfo`'s order, without duplicates; an IP address comes back
+  without a lookup. `getaddrinfo` is a `blocking` extern: it runs on the
+  helper pool while the task parks, and cannot be cancelled while it runs
+  (the cancellation or deadline is seen when it returns). A failed lookup
+  is `op` `lookup` with errno `io.LOOKUP + n` (`isLookup()`, and
+  `errorText` gives `gai_strerror`'s text).
+- `dial(addr): Result[Conn, IoError]`: `connect` for `"host:port"` where
+  host may be a name. Its addresses are tried in turn, IPv6 and IPv4
+  interleaved; under a `task.within` deadline each attempt gets an equal
+  share of the time left, at least 2 s. The error is the first attempt's.
+  Native programs that reach `dial` or `resolve` are linked dynamically
+  (libc's resolver needs nsswitch); programs that do not stay static.
+- `Conn.readNow(buf)`: one read that never parks (`EAGAIN` when nothing is
+  there); the http pool uses it to see whether an idle connection was
+  closed.
 - `Conn`: `read(buf: mut &[byte]): Result[int, IoError]` (0: the peer has
   closed), `write(data: &[byte]): Result[Unit, IoError]` (all of it, parking
   while the socket's buffer is full), `writeStr(s)`, `closeWrite()`
@@ -310,7 +329,112 @@ meanwhile, and a plain program (its main task) uses the same calls.
 
 A `Conn` is used by one task at a time (it is owned; a split into read and
 write halves is not there yet). `cmd/httpd.obx` is an HTTP/1.1 server built
-on it, and `cmd/httpload.obx` a load client.
+on it, `cmd/httpload.obx` a load client, and `http` an HTTP client.
+
+### url
+
+URLs for http and https (RFC 3986), strict (design/http-client.md, H1).
+
+- `parse(s): Result[Url, Error]`. `Url` is a value record: `scheme`, `host`
+  (lowercased; IPv6 without brackets, in RFC 5952 form), `port` (the
+  default when none is written), `path`, `query`/`hasQuery`,
+  `fragment`/`hasFragment`, as written (escapes kept).
+- Refused, with an `Error {msg, input}` that says why: other schemes, no
+  authority, user information (`user:pass@`: sent in clear text), a
+  non-ASCII, percent-encoded or empty host, an IPv6 zone, a host whose last
+  label is a number but that is not a dotted quad (`1.2.3`, `0x7f.1`,
+  `2130706433`: C's resolver reads those as addresses), a port outside 1 to
+  65535, spaces, control characters, a character RFC 3986 does not allow
+  where it stands, a `%` not followed by two hex digits.
+- Methods: `target()` (path and query: what a request sends),
+  `authority()` (`host[:port]`, the port only when not the default),
+  `hostText()`, `hostPort()`, `origin()`, `isDefaultPort()`, `toStr()`
+  (normalized: an explicit default port is dropped), `eq`,
+  `withoutFragment()`, `withQuery(&q)`, `resolve(ref)` (a relative
+  reference against the URL, RFC 3986 section 5, with dot segments
+  removed).
+- `encode(s)` (everything but the unreserved characters as `%XX`),
+  `decode(s)`; `Query` (`newQuery`, `add`, `get`, `all`, `size`, `at`,
+  `encode`) and `parseQuery(s)` (`+` is a space in a query).
+
+### http
+
+An HTTP/1.1 client for tasks over plain TCP, and the head parsing servers
+share (design/http-client.md, H1; https is H2). A reply with any status is
+`Ok`; `r.ok()` says whether it is 2xx.
+
+```
+let r = try http.get("http://api.example.com/v1/rates?ccy=EUR")
+let body = try r.text()
+
+var o = http.defaults()
+o.maxPerHost = 8
+let c = http.newClient(o)
+var rq = http.request("POST", "http://api.example.com/v1/orders")
+rq.header("Content-Type", "application/json")
+rq.body = json
+let r = try c.send(&rq)
+```
+
+- `Request {method, url, headers, body}` from `request(method, url)`, with
+  `header(name, value)`. Host, User-Agent and Content-Length are added when
+  not given. Refused before sending (`Invalid`): a method that is not a
+  token, a header name that is not a token, a control character in a value,
+  a Transfer-Encoding, a Content-Length that is not the body's.
+- `Options` (`defaults()`): `maxPerHost` 16, `timeoutMs` 30000 (the whole
+  call, redirects included, and then the body's reads; 0: none), `maxBody`
+  16 MiB (for `text` and `bytes`), `redirects` true, `maxRedirects` 10,
+  `allowHttpsToHttp` false, `idleTimeoutMs` 90000, `userAgent` "obx".
+- `Client` (`newClient(o)`) is a copy handle over a `task.Shared` pool:
+  copies share it. `send(&rq)`, `get(u)`, `head(u)`,
+  `post(u, contentType, body)`, `put(...)`, `delete(u)`; `options()`,
+  `stats()` (`Stats {open, idle, waiting, dials, reuses, retries}`),
+  `closeIdle()`. The module's `get`, `head`, `post`, `put`, `delete` and
+  `send` use one default client made on first use.
+- `Response`: `status`, `reason`, `minor`, `headers`, `url` (after
+  redirects); `ok()`, `header(name)`, `contentLength()` (-1 when not
+  given), `text()` and `bytes()` (the whole body, at most `maxBody`, else
+  `TooLarge`), `read(mut &buf)` (streams; 0 at the end), `discard(limit)`,
+  `close()`.
+- `Error {kind, msg, url}`; `Kind`: `Url`, `Invalid`, `Dns`, `Connect`,
+  `Tls`, `Timeout`, `Cancelled`, `Io`, `Protocol`, `TooLarge`,
+  `Redirects`, `Process`. `toStr()` is `http: KIND: msg (url)`.
+- The pool keeps at most `maxPerHost` connections per scheme, host and
+  port; callers past that wait in FIFO order. An idle connection is closed
+  after `idleTimeoutMs`, or after the server's `Keep-Alive: timeout=N`
+  less one second, and one idle for more than 100 ms is checked (a read
+  that does not park) before reuse.
+- A `Response` holds its connection. Dropped with its body read to the end
+  (or with all of it already arrived) on a connection the server keeps,
+  the connection goes back to the pool; otherwise it is closed. A
+  cancelled or timed-out call closes its connection.
+- A request that fails on a reused connection before any of the reply came
+  (the server closed it meanwhile) is sent once more on a new connection,
+  for GET, HEAD, PUT, DELETE, OPTIONS and TRACE, never POST or PATCH.
+- Redirects (301, 302, 303, 307, 308) are followed up to `maxRedirects`:
+  303, and 301/302 after POST, become GET without a body; Authorization,
+  Cookie and Proxy-Authorization are dropped when the origin changes; https
+  to http is refused unless `allowHttpsToHttp`.
+- Replies are framed strictly (RFC 9112 section 6.3): Content-Length with
+  Transfer-Encoding, differing Content-Lengths, a coding other than
+  chunked, obsolete line folding, a bare LF, a bad chunk size and a
+  connection closed inside a head or a framed body are `Protocol` errors.
+  Limits: a head of 64 KiB and 100 lines (trailers too), 8 interim (1xx)
+  replies, a 4 KiB chunk-size line.
+- A client used in another process than the one that made it (after a
+  fork) refuses with `Process`: make clients inside each worker.
+- https is refused with `Tls` until H2 (the connection's stream is a sum
+  with one TCP case now, the place a TLS case goes).
+- Shared parsing, used by `cmd/httpd.obx`: `headEnd`, `parseFields`,
+  `contentLength`, `parseRequest` (`RequestHead {method, target, minor,
+  headers}`, `keepAlive()`, `bodyLength()`), `equalFold`, `isToken`,
+  `isFieldValue`, `Headers` (`get`, `has`, `values`, `add`, `set`,
+  `remove`, `hasToken`, ...).
+
+Tests: `tests/run/url_*.obx`, `http_*.obx` (against the route and scripted
+servers of `tests/support/httptest.obx`; `http_live.obx` only with
+`OBX_HTTP_LIVE=1`, else it exits 77), and `tests/httpgen.py`, which
+generates reply framings and checks every body on both backends.
 
 `both` and `forEach` (concurrent children that borrow the parent's locals)
 are not there yet: a task's function is a plain `fn`, and passing borrows

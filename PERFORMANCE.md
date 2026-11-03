@@ -268,6 +268,33 @@ clients the single-threaded load client may be the limit as much as the
 server. The `ulimit -n` here is 1,048,576; the gate raises the soft limit
 when it can and stops when it cannot.
 
+### The HTTP client
+
+`httpload --client` sends the same load through one `http.Client`
+(`obx/lib/http.obx`: `get` and `text()` per request, `maxPerHost` equal to
+the connections), against the native server on CPU 0, the loader on CPU 1,
+5 s per row, the median of three alternating rounds, beside httpload's own
+loop (a fixed request, only Content-Length parsed). No idle connections
+are held open here, so the raw numbers differ a little from the table
+above.
+
+| connections | raw, native | client, native | raw, via C | client, via C |
+|---:|---:|---:|---:|---:|
+| 1: requests/s | 4,320 | 4,530 | 4,760 | 4,410 |
+| 100: requests/s | 69,700 | 59,900 | 69,700 | 65,400 |
+| 1,000: requests/s | 62,000 | 53,600 | 62,300 | 51,300 |
+| 1: latency p50 / p99 | 227 / 325 µs | 217 / 320 µs | 205 / 332 µs | 222 / 362 µs |
+| 100: latency p50 / p99 | 1.43 / 1.90 ms | 1.70 / 2.20 ms | 1.43 / 1.85 ms | 1.53 / 2.10 ms |
+| 1,000: latency p50 / p99 | 16.2 / 21.2 ms | 18.4 / 25.2 ms | 16.0 / 20.2 ms | 19.6 / 23.0 ms |
+
+The client does about 7 µs of user time per request against the raw
+loop's 3.3 µs (system time is the same, about 12 µs): it builds a full
+request, parses every reply header, works out the framing and goes through
+the pool. With the loader's core full, that is 82% to 94% of the raw
+throughput from 100 connections on; with one connection the loopback round
+trip is the limit and they are level. The design's gate asked for parity,
+so it is not met (design/http-client.md, section 8).
+
 ### With a Postgres pool
 
 The C1c gate, `python3 obx/cmd/http_gate.py --db 4,16`: the same server
