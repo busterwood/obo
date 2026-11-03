@@ -1,8 +1,10 @@
 // task.workers: a graceful drain. Each of three workers watches SIGTERM,
 // says it is ready, and waits for it (task.terminated); worker 0, once all
 // are ready, asks the supervisor to stop them all (task.stopWorkers sends it
-// SIGTERM, which it forwards to every worker, worker 0 included). Every
-// worker sees the signal, finishes, and ends normally; none is restarted.
+// SIGTERM, which it forwards to every worker, worker 0 included). Worker 0
+// asks twice and worker 1 asks too: still one request, not the second
+// signal that would end the drain with SIGKILL. Every worker sees the
+// signal, finishes, and ends normally; none is restarted.
 // stopWorkers in a process that is not a worker is false.
 // expect: not a worker: false
 // expect: worker 0: exit 0, drained true, saw 15
@@ -18,9 +20,10 @@ fn main() {
     let ends = task.workers(3, fn(i: int) {
         task.watchSignals(&[task.SIGTERM, task.SIGINT])
         io.write("ready" + intToStr(i) + ".txt", "1").unwrap()
-        if i == 0 {
-            while !fs.exists("ready1.txt") || !fs.exists("ready2.txt") { task.sleep(1).unwrap() }
-            if !task.stopWorkers() { panic("worker 0 is a worker") }
+        if i < 2 {
+            while !fs.exists("ready0.txt") || !fs.exists("ready1.txt") || !fs.exists("ready2.txt") { task.sleep(1).unwrap() }
+            if !task.stopWorkers() { panic("a worker is a worker") }
+            if i == 0 && !task.stopWorkers() { panic("a worker is a worker") }
         }
         let s = task.terminated().unwrap()
         io.write("saw" + intToStr(i) + ".txt", intToStr(s)).unwrap()

@@ -1,22 +1,41 @@
-// httpd: a small HTTP/1.1 server on one thread (design/concurrency.md, the
-// gates of stages C1b and C1c). One task per connection, keep-alive by default.
+// httpd: a small HTTP/1.1 server, one thread per process (design/concurrency.md,
+// the gates of stages C1b, C1c and C2). One task per connection, keep-alive by
+// default.
 //
-//     httpd [ADDR [POOL]]   ADDR: host:port, default 127.0.0.1:8080 (port 0: any)
-//                           POOL: connections of the Postgres pool, default 0: no /db
+//     httpd [ADDR [POOL [WORKERS [MODE]]]]
+//         ADDR     host:port, default 127.0.0.1:8080 (port 0: any)
+//         POOL     connections of the Postgres pool, default 0: no /db
+//         WORKERS  worker processes (task.workers), default 0: serve in this
+//                  process, as before stage C2
+//         MODE     with WORKERS: "shared" (default), one listener made before
+//                  the fork and shared by the workers (one accept queue), or
+//                  "reuseport", a listener of its own in each worker on the
+//                  same port (SO_REUSEPORT: the kernel spreads connections)
 //
 // The pool connects to $OBX_PG_DSN (default the local socket,
 // host=/var/run/postgresql dbname=postgres), at most POOL connections, opened
-// as requests need them. It prints "listening on HOST:PORT" once it listens.
+// as requests need them. With WORKERS each worker has its own pool: up to
+// WORKERS x POOL connections to the database in all. It prints
+// "listening on HOST:PORT" once it listens (with WORKERS, then a line saying
+// how many and how they listen).
 // Routes:
 //     GET /             "hello, world\n"
 //     GET /db           one query through the pool (SELECT $1::int8 + 1, $1 the
 //                       request's number): "db N\n"; 503 without a pool or
 //                       when the query fails
-//     GET /stats        counters: open connections, accepted, requests
+//     GET /stats        counters: open connections, accepted, requests; with
+//                       WORKERS those of the worker that answers ("worker I"
+//                       first): the workers share no memory
 //     GET /shutdown     "bye\n", then a graceful shutdown: the accept loop is
 //                       cancelled and with it every connection's task (an
 //                       idle one is parked in read, which returns ECANCELED);
-//                       the program prints its counters and ends.
+//                       the program prints its counters and ends. With
+//                       WORKERS the whole server stops: the worker asks the
+//                       supervisor (task.stopWorkers), which sends SIGTERM to
+//                       every worker; each prints its own counters, then the
+//                       supervisor one line per worker.
+// SIGTERM or SIGINT (Ctrl-C) to a server with WORKERS is the same graceful
+// stop; without WORKERS they end the process at once, as before.
 // Anything else is 404; a request it cannot parse is 400 and closes the
 // connection. A request body (Content-Length) is read and ignored; chunked
 // bodies are refused (501). Pipelined requests are answered in order.
@@ -31,7 +50,8 @@ type State = record {
     open: int                         // connections open now
     accepted: int
     requests: int
-    stop: Option[task.Promise[int]]   // completed by /shutdown
+    stop: Option[task.Promise[int]]   // completed by /shutdown (without workers)
+    worker: int                       // the worker's index, or -1 without workers
 }
 
 type Server = record {
@@ -170,7 +190,7 @@ fn route(rq: &Request, st: task.Shared[State], db: &Option[postgres.Pool], n: in
     if rq.path == "/stats" {
         var b = ""
         st.with(fn(s: mut &State) {
-            b = "open " + intToStr(s.open) + "\naccepted " + intToStr(s.accepted) +
+            b = (if s.worker >= 0 { "worker " + intToStr(s.worker) + "\n" } else { "" }) + "open " + intToStr(s.open) + "\naccepted " + intToStr(s.accepted) +
                 "\nrequests " + intToStr(s.requests) + "\n"
         })
         return Reply{status: "200 OK", body: b, close: false}
@@ -179,7 +199,7 @@ fn route(rq: &Request, st: task.Shared[State], db: &Option[postgres.Pool], n: in
         st.with(fn(s: mut &State) {
             match replace(mut &s.stop, None) {
                 Some(p) { p.complete(0) }
-                None {}
+                None { if s.worker >= 0 { let asked = task.stopWorkers() } }   // asking twice is one request
             }
         })
         return Reply{status: "200 OK", body: "bye\n", close: true}
@@ -254,30 +274,26 @@ fn parse(head: str): Option[Request] {
 
 // ---- main
 
-fn main() {
-    let args = os.arguments()
-    let addr = if len(args) > 0 { args[0] } else { "127.0.0.1:8080" }
-    let size = if len(args) > 1 { strings.parseInt(args[1]).unwrapOr(0) } else { 0 }
+// Serves on ln until /shutdown (worker < 0) or, in a worker, SIGTERM or
+// SIGINT; then prints its counters.
+fn run(ln: net.Listener, size: int, worker: int) {
     let db: Option[postgres.Pool] =
         if size > 0 { Some(postgres.newPool(os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres"), size)) } else { None }
-    let task.Handoff{promise: p, future: f} = task.promise[int]()
-    let st = task.shared(State{open: 0, accepted: 0, requests: 0, stop: Some(p)})
-    var stop = Some(f)
-    var lst: Option[net.Listener] = None
-    match net.listen(addr) {
-        Ok(ln) {
-            println("listening on " + ln.localAddr())
-            lst = Some(ln)
-        }
-        Err(e) {
-            eprintln("httpd: " + e.toStr())
-            os.quit(1)
-        }
+    var stop: Option[task.Future[int]] = None
+    var prom: Option[task.Promise[int]] = None
+    if worker < 0 {
+        let task.Handoff{promise: p, future: f} = task.promise[int]()
+        stop = Some(f)
+        prom = Some(p)
     }
-    io.flushStdout().unwrap()
+    let st = task.shared(State{open: 0, accepted: 0, requests: 0, stop: prom, worker: worker})
+    var lst = Some(ln)
     task.scope(fn(s: mut &task.Scope) {
         let srv = s.start(acceptLoop, Server{ln: replace(mut &lst, None).unwrap(), st: st, db: db})
-        let r = replace(mut &stop, None).unwrap().wait()
+        match replace(mut &stop, None) {
+            Some(f) { let r = f.wait() }
+            None { let r = task.terminated() }
+        }
         // srv is dropped here: the accept loop and every connection are cancelled
     })
     var pg = ""
@@ -288,8 +304,77 @@ fn main() {
         }
         None {}
     }
+    let who = if worker >= 0 { "worker " + intToStr(worker) + ": " } else { "" }
     st.with(fn(s: mut &State) {
-        println("stopped: accepted " + intToStr(s.accepted) + ", requests " + intToStr(s.requests) +
+        println("stopped: " + who + "accepted " + intToStr(s.accepted) + ", requests " + intToStr(s.requests) +
                 ", open " + intToStr(s.open) + pg)
     })
+}
+
+fn listenOr(addr: str, reuseport: bool): net.Listener {
+    let r = if reuseport { net.listenReusePort(addr) } else { net.listen(addr) }
+    match move(r) {
+        Ok(ln) { return ln }
+        Err(e) {
+            eprintln("httpd: " + e.toStr())
+            os.quit(1)
+        }
+    }
+}
+
+// WORKERS processes, supervised by this one (task.workers).
+fn runWorkers(addr: str, size: int, n: int, reuseport: bool) {
+    var lst: Option[net.Listener] = None
+    var at = addr
+    if reuseport {
+        // the workers listen; this socket only fixes the port when ADDR's is 0
+        // (each worker's port 0 would be a port of its own). It is closed before
+        // the fork: open, it would take connections that nobody accepts.
+        var probe = Some(listenOr(addr, true))
+        match &probe {
+            Some(l) { at = l.localAddr() }
+            None {}
+        }
+        probe = None
+    } else {
+        let ln = listenOr(addr, false)
+        at = ln.localAddr()
+        lst = Some(ln)
+    }
+    println("listening on " + at)
+    println(intToStr(n) + " workers, " + (if reuseport { "a listener in each (reuseport)" } else { "one shared listener" }))
+    io.flushStdout().unwrap()
+    let r = task.workers(n, fn(i: int) {
+        task.watchSignals(&[task.SIGTERM, task.SIGINT])   // before anything: a stop is never lost
+        let ln = if reuseport { listenOr(at, true) } else { replace(mut &lst, None).unwrap() }
+        run(ln, size, i)
+    })
+    match r {
+        Ok(ends) { for e in ends { println("stopped: " + e.toStr()) } }
+        Err(g) {
+            for e in g.ends { println("stopped: " + e.toStr()) }
+            eprintln("httpd: " + g.toStr())
+            os.quit(1)
+        }
+    }
+}
+
+fn main() {
+    let args = os.arguments()
+    let addr = if len(args) > 0 { args[0] } else { "127.0.0.1:8080" }
+    let size = if len(args) > 1 { strings.parseInt(args[1]).unwrapOr(0) } else { 0 }
+    let n = if len(args) > 2 { strings.parseInt(args[2]).unwrapOr(0) } else { 0 }
+    let mode = if len(args) > 3 { args[3] } else { "shared" }
+    if mode != "shared" && mode != "reuseport" {
+        eprintln("httpd: MODE is shared or reuseport, not " + mode)
+        os.quit(2)
+    }
+    if n > 0 {
+        runWorkers(addr, size, n, mode == "reuseport")
+        return
+    }
+    let ln = listenOr(addr, false)
+    println("listening on " + ln.localAddr())
+    io.flushStdout().unwrap()
+    run(ln, size, -1)
 }

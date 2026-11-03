@@ -428,7 +428,8 @@ pub fn workers(n: int, f: &fn(int), w: Where): Result[[]WorkerEnd, GaveUp] {
 //   graceful drain: a worker that watches it with terminated() finishes its
 //   work and returns; one that does not is ended by it), no worker is
 //   started again, and after p.drainMs (when > 0) or a second signal the
-//   workers left get SIGKILL; a worker asks for this with stopWorkers();
+//   workers left get SIGKILL; a worker asks for this with stopWorkers()
+//   (asking twice, or from several workers, is one request);
 // - workers returns, with how each ended, when all have ended.
 //
 // It stops the program (exit 15) when it cannot fork safely: after the
@@ -488,7 +489,15 @@ pub fn workersWith(n: int, p: WorkerPolicy, f: &fn(int), w: Where): Result[[]Wor
                 }
             }
         } else if r < 0 {
-            if stopping {
+            // st: the sender. A worker's stopWorkers is a request to stop, never the second
+            // signal that ends the drain (several workers may ask).
+            var fromWorker = false
+            for i in 0..n {
+                if st != 0 && (slots[i].pid == st || slots[i].end.pid == st) { fromWorker = true }
+            }
+            if stopping && fromWorker {
+                // already stopping
+            } else if stopping {
                 killAt = -1
                 for i in 0..n {
                     if slots[i].pid != 0 { rtKill(slots[i].pid, SIGKILL) }
@@ -580,6 +589,8 @@ fn stopAll(slots: mut &[]Slot, sig: int, p: &WorkerPolicy, now: int): int {
 
 // In a worker: asks the supervisor to stop every worker, this one included
 // (SIGTERM to the supervisor, which forwards it to all of them, as when the
-// supervisor gets it from outside). False when this process is not a worker
-// of task.workers.
+// supervisor gets it from outside). Asking again, or from several workers,
+// changes nothing: unlike a second signal from outside it never turns the
+// drain into SIGKILL. False when this process is not a worker of
+// task.workers.
 pub fn stopWorkers(): bool { return rtWorkerStop() == 0 }

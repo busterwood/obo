@@ -2421,7 +2421,7 @@ int64_t obxlib_proc_wait(int64_t ms, int64_t* status) {
             struct { i64 s, ns; } ts = {left / 1000000000, left % 1000000000};
             r = SYS4(S_RT_SIGTIMEDWAIT, &s, si, &ts, 8);
         }
-        if (r == K_SIGTERM || r == K_SIGINT) return -r;
+        if (r == K_SIGTERM || r == K_SIGINT) { *status = si[4]; return -r; }    /* si_pid: offset 16 */
         if (r == -K_EAGAIN) return 0;
     }
 }

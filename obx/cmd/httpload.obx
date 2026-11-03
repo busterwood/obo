@@ -2,16 +2,26 @@
 // keep-alive connections, each a task sending GET PATH and reading the reply,
 // one request at a time, for SECONDS seconds.
 //
-//     httpload ADDR CONNS SECONDS [PATH]
+//     httpload [-p PROCS] [-r] ADDR CONNS SECONDS [PATH]
+//
+//     -p PROCS  spread the connections over PROCS processes (task.workers),
+//               so that the client is not the limit when the server has
+//               several cores; default 1, this process alone
+//     -r        reconnect after an error (and count it) instead of ending
+//               that connection: the gate's kill test
 //
 // Prints one line: requests, requests per second, and the latency
 // percentiles in microseconds (from the write of a request to the end of its
 // reply), e.g.
 //     requests 812345 rps 81234 p50 120 p90 150 p99 310 max 2100 errors 0
+// With PROCS > 1 each process counts its latencies in 1 µs buckets and
+// leaves them in a file of $TMPDIR (default /tmp); this one adds them up and
+// removes the files.
 import "task"
 import "net"
 import "io"
 import "os"
+import "fs"
 import "time"
 import "strings"
 
@@ -19,6 +29,7 @@ type Load = record {
     addr: str
     path: str
     end: int          // time.monotonicNs() when it stops
+    reconnect: bool
 }
 
 type Tally = record {
@@ -28,11 +39,16 @@ type Tally = record {
 
 fn client(l: Load): Tally {
     var t = Tally{lat: [], errors: 0}
-    match run(&l, mut &t.lat) {
-        Ok(_) {}
-        Err(e) {
-            t.errors += 1
-            eprintln("httpload: " + e.toStr())
+    while time.monotonicNs() < l.end {
+        match run(&l, mut &t.lat) {
+            Ok(_) { break }
+            Err(e) {
+                t.errors += 1
+                if !l.reconnect {
+                    eprintln("httpload: " + e.toStr())
+                    break
+                }
+            }
         }
     }
     return t
@@ -90,42 +106,143 @@ fn headEnd(b: &[]byte, n: int): int {
     return -1
 }
 
-// the p-th percentile of the sorted ns latencies, in microseconds
-fn pct(xs: &[]int, p: int): int { return xs[min(len(xs) - 1, len(xs) * p / 100)] / 1000 }
-
-fn usage(): never {
-    eprintln("usage: httpload ADDR CONNS SECONDS [PATH]")
-    os.quit(2)
-}
-
-fn main() {
-    let args = os.arguments()
-    if len(args) < 3 { usage() }
-    let conns = strings.parseInt(args[1]).unwrapOr(0)
-    let secs = strings.parseInt(args[2]).unwrapOr(0)
-    if conns <= 0 || secs <= 0 { usage() }
-    let path = if len(args) > 3 { args[3] } else { "/" }
-    let t0 = time.monotonicNs()
-    let end = t0 + secs * 1000000000
+// conns connections in this process until end: the latencies (ns, sorted) and the errors.
+fn load(addr: str, path: str, conns: int, end: int, reconnect: bool): Tally {
     var lat: []int = []
     var errors = 0
     task.scope(fn(s: mut &task.Scope) {
         var fs: []task.Future[Tally] = []
-        for i in 0..conns { append(mut &fs, s.start(client, Load{addr: args[0], path: path, end: end})) }
+        for i in 0..conns { append(mut &fs, s.start(client, Load{addr: addr, path: path, end: end, reconnect: reconnect})) }
         for t in task.all(fs).unwrap() {
             for x in t.lat { append(mut &lat, x) }
             errors += t.errors
         }
     })
-    let dt = time.monotonicNs() - t0
     sort(mut &lat)
-    let n = len(lat)
-    if n == 0 {
-        println("requests 0 errors " + intToStr(errors))
+    return Tally{lat: lat, errors: errors}
+}
+
+// The latencies of all processes, in 1 µs buckets.
+type Hist = record {
+    count: []int      // count[us]: requests that took us microseconds
+    n: int
+    errors: int
+}
+
+// A worker's file: "errors E", then "us count" for each bucket in use.
+fn writeHist(path: str, t: &Tally) {
+    var b = newStrBuf()
+    b.add("errors " + intToStr(t.errors) + "\n")
+    var i = 0
+    while i < len(t.lat) {
+        let us = t.lat[i] / 1000
+        var k = 0
+        while i < len(t.lat) && t.lat[i] / 1000 == us {
+            k += 1
+            i += 1
+        }
+        b.add(intToStr(us) + " " + intToStr(k) + "\n")
+    }
+    io.write(path, b.toStr()).unwrap()
+}
+
+fn addHist(h: mut &Hist, path: str) {
+    for line in io.readLines(path).unwrap() {
+        let kv = strings.cut(line, " ").unwrap()
+        let v = strings.parseInt(kv.after).unwrap()
+        if kv.before == "errors" {
+            h.errors += v
+        } else {
+            let us = strings.parseInt(kv.before).unwrap()
+            while len(h.count) <= us { append(mut &h.count, 0) }
+            h.count[us] += v
+            h.n += v
+        }
+    }
+}
+
+// the p-th percentile (µs) of the histogram
+fn hpct(h: &Hist, p: int): int {
+    let want = min(h.n - 1, h.n * p / 100)
+    var seen = 0
+    for us in 0..len(h.count) {
+        seen += h.count[us]
+        if seen > want { return us }
+    }
+    return len(h.count) - 1
+}
+
+// the p-th percentile of the sorted ns latencies, in microseconds
+fn pct(xs: &[]int, p: int): int { return xs[min(len(xs) - 1, len(xs) * p / 100)] / 1000 }
+
+fn usage(): never {
+    eprintln("usage: httpload [-p PROCS] [-r] ADDR CONNS SECONDS [PATH]")
+    os.quit(2)
+}
+
+fn main() {
+    let args = os.arguments()
+    var procs = 1
+    var reconnect = false
+    var k = 0                        // the first argument after the options
+    while k < len(args) && startsWith(args[k], "-") {
+        if args[k] == "-r" {
+            reconnect = true
+            k += 1
+        } else if args[k] == "-p" && k + 1 < len(args) {
+            procs = strings.parseInt(args[k + 1]).unwrapOr(0)
+            k += 2
+        } else {
+            usage()
+        }
+    }
+    if len(args) - k < 3 { usage() }
+    let addr = args[k]
+    let conns = strings.parseInt(args[k + 1]).unwrapOr(0)
+    let secs = strings.parseInt(args[k + 2]).unwrapOr(0)
+    if conns <= 0 || secs <= 0 || procs <= 0 || procs > conns { usage() }
+    let path = if len(args) - k > 3 { args[k + 3] } else { "/" }
+    let t0 = time.monotonicNs()
+    let end = t0 + secs * 1000000000
+    if procs == 1 {
+        let t = load(addr, path, conns, end, reconnect)
+        let dt = time.monotonicNs() - t0
+        let n = len(t.lat)
+        if n == 0 {
+            println("requests 0 errors " + intToStr(t.errors))
+            os.quit(1)
+        }
+        println("requests " + intToStr(n) + " rps " + intToStr(n * 1000000000 / dt) +
+                " p50 " + intToStr(pct(&t.lat, 50)) + " p90 " + intToStr(pct(&t.lat, 90)) +
+                " p99 " + intToStr(pct(&t.lat, 99)) + " max " + intToStr(t.lat[n - 1] / 1000) +
+                " errors " + intToStr(t.errors))
+        return
+    }
+    let base = fs.join(os.envOr("TMPDIR", "/tmp"), "httpload-" + intToStr(os.pid()) + "-")
+    let r = task.workers(procs, fn(i: int) {
+        let mine = conns / procs + (if i < conns % procs { 1 } else { 0 })
+        let t = load(addr, path, mine, end, reconnect)
+        writeHist(base + intToStr(i), &t)
+    })
+    match r {
+        Ok(ends) {}
+        Err(g) {
+            eprintln("httpload: " + g.toStr())
+            os.quit(1)
+        }
+    }
+    let dt = time.monotonicNs() - t0
+    var h = Hist{count: [], n: 0, errors: 0}
+    for i in 0..procs {
+        addHist(mut &h, base + intToStr(i))
+        let x = fs.remove(base + intToStr(i))
+    }
+    if h.n == 0 {
+        println("requests 0 errors " + intToStr(h.errors))
         os.quit(1)
     }
-    println("requests " + intToStr(n) + " rps " + intToStr(n * 1000000000 / dt) +
-            " p50 " + intToStr(pct(&lat, 50)) + " p90 " + intToStr(pct(&lat, 90)) +
-            " p99 " + intToStr(pct(&lat, 99)) + " max " + intToStr(lat[n - 1] / 1000) +
-            " errors " + intToStr(errors))
+    println("requests " + intToStr(h.n) + " rps " + intToStr(h.n * 1000000000 / dt) +
+            " p50 " + intToStr(hpct(&h, 50)) + " p90 " + intToStr(hpct(&h, 90)) +
+            " p99 " + intToStr(hpct(&h, 99)) + " max " + intToStr(len(h.count) - 1) +
+            " errors " + intToStr(h.errors))
 }

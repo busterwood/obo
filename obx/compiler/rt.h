@@ -1629,7 +1629,8 @@ int64_t obxlib_proc_fork(void) {
     return p;
 }
 /* The supervisor's wait, ms milliseconds at most (ms < 0: no limit): a child that ended (its
-   pid, and its wait status in *status), -s for SIGTERM or SIGINT (s), or 0 when ms has passed. */
+   pid, and its wait status in *status), -s for SIGTERM or SIGINT (s; the sender's pid in
+   *status), or 0 when ms has passed. */
 int64_t obxlib_proc_wait(int64_t ms, int64_t* status) {
     int64_t end = ms < 0 ? RT_NEVER : rt_after(ms);
     sigset_t s;
@@ -1648,7 +1649,7 @@ int64_t obxlib_proc_wait(int64_t ms, int64_t* status) {
             struct timespec ts = {left / 1000000000, left % 1000000000};
             r = sigtimedwait(&s, &si, &ts);
         }
-        if (r == SIGTERM || r == SIGINT) return -r;
+        if (r == SIGTERM || r == SIGINT) { *status = si.si_pid; return -r; }
         if (r < 0 && errno == EAGAIN) return 0;
         /* SIGCHLD, or EINTR: look again */
     }
