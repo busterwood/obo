@@ -1,0 +1,69 @@
+// net: address text, as listen and connect read it and as localAddr and
+// peerAddr give it (IPv6 per RFC 5952); a connection over IPv6 loopback.
+// expect: 127.0.0.1:80
+// expect: 127.0.0.1:8080
+// expect: 0.0.0.0:0
+// expect: 10.0.0.255:65535
+// expect: [::1]:443
+// expect: [::]:1
+// expect: [2001:db8::1]:80
+// expect: [2001:db8:0:1:1:1:1:1]:80
+// expect: [2001:0:0:1::1]:80
+// expect: [1::]:80
+// expect: [::ffff:192.0.2.1]:80
+// expect: [64:ff9b::c000:201]:80
+// expect: [abcd:ef01:2345:6789:abcd:ef01:2345:6789]:9
+// expect: invalid: example.com:80
+// expect: invalid: 1.2.3:80
+// expect: invalid: 01.2.3.4:80
+// expect: invalid: 1.2.3.256:80
+// expect: invalid: [1::2::3]:80
+// expect: invalid: [1:2:3:4:5:6:7:8:9]:80
+// expect: invalid: [12345::]:80
+// expect: invalid: ::1:80
+// expect: invalid: 127.0.0.1:65536
+// expect: invalid: 127.0.0.1
+// expect: invalid: 127.0.0.1:
+// expect: listen example.com:80: Invalid argument
+// expect: [::1]
+// expect: true
+// expect: true
+// expect: [::1]
+import "net"
+
+fn show(a: str) {
+    match net.canonicalAddr(a) {
+        Some(t) { println(t) }
+        None { println("invalid: " + a) }
+    }
+}
+
+// the address without its port
+fn host(a: str): str {
+    var i = len(a) - 1
+    while i > 0 && strByte(a, i) != ':' { i -= 1 }
+    return strSlice(a, 0, i)
+}
+
+fn main() {
+    for a in ["localhost:80", "127.0.0.1:8080", ":0", "10.0.0.255:65535", "[0:0:0:0:0:0:0:1]:443",
+              "[::]:1", "[2001:DB8:0:0:0:0:0:1]:80", "[2001:db8:0:1:1:1:1:1]:80", "[2001:0:0:1:0:0:0:1]:80",
+              "[1::]:80", "[::ffff:192.0.2.1]:80", "[64:ff9b::192.0.2.1]:80",
+              "[abcd:ef01:2345:6789:abcd:ef01:2345:6789]:9",
+              "example.com:80", "1.2.3:80", "01.2.3.4:80", "1.2.3.256:80", "[1::2::3]:80",
+              "[1:2:3:4:5:6:7:8:9]:80", "[12345::]:80", "::1:80", "127.0.0.1:65536", "127.0.0.1",
+              "127.0.0.1:"] {
+        show(a)
+    }
+    match net.listen("example.com:80") {
+        Ok(l) { println("listening?") }
+        Err(e) { println(e.toStr()) }
+    }
+    let l = net.listen("[::1]:0").unwrap()
+    println(host(l.localAddr()))
+    let c = net.connect(l.localAddr()).unwrap()
+    let s = l.accept().unwrap()
+    println(c.peerAddr() == l.localAddr())
+    println(s.peerAddr() == c.localAddr())
+    println(host(s.localAddr()))
+}

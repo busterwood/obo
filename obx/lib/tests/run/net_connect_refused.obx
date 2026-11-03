@@ -1,0 +1,30 @@
+// net: connecting to a port where nothing listens is an error (ECONNREFUSED,
+// from connect or from the connection's outcome once it parks), as is an
+// address that is not one, or listening where another socket listens.
+// expect: connect: Connection refused (111)
+// expect: connect nowhere: Invalid argument
+// expect: listen: Address already in use
+// expect: still listening: true
+import "net"
+import "io"
+
+fn main() {
+    let ln = net.listen("127.0.0.1:0").unwrap()
+    let addr = ln.localAddr()
+    ln.close()
+    match net.connect(addr) {
+        Ok(c) { println("connected?") }
+        Err(e) { println(e.op + ": " + io.errorText(e.errno) + " (" + intToStr(e.errno) + ")") }
+    }
+    match net.connect("nowhere") {
+        Ok(c) { println("connected?") }
+        Err(e) { println(e.toStr()) }
+    }
+    let a = net.listen("127.0.0.1:0").unwrap()
+    match net.listen(a.localAddr()) {
+        Ok(b) { println("listening twice?") }
+        Err(e) { println(e.op + ": " + io.errorText(e.errno)) }
+    }
+    let c = net.connect(a.localAddr()).unwrap()
+    println("still listening: " + (c.peerAddr() == a.localAddr()).toStr())
+}

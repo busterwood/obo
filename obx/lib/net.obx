@@ -276,6 +276,23 @@ fn addrText(b: &[]byte): str {
     return s + "]:" + port
 }
 
+// The address addr as listen and connect read it, in the form localAddr
+// gives ("localhost:80" is "127.0.0.1:80", "[0:0::1]:80" is "[::1]:80",
+// ":80" is "0.0.0.0:80"); None when it is not an address they accept.
+pub fn canonicalAddr(addr: str): Option[str] {
+    match parseAddr(addr, true) {
+        Some(ip) {
+            var b = array(19, byte(0))
+            b[0] = byte(ip.fam)
+            b[1] = byte(ip.port / 256)
+            b[2] = byte(ip.port % 256)
+            for i in 0..16 { b[3 + i] = ip.b[i] }
+            return Some(addrText(&b))
+        }
+        None { return None }
+    }
+}
+
 fn sockText(fd: int, peer: int): str {
     var b = array(19, byte(0))
     if rtAddr(fd, peer, mut &b) != 0 { return "" }

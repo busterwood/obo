@@ -1,0 +1,67 @@
+// net: cancelling a task parked in a read makes the read return ECANCELED
+// (isCancelled), and the task unwinds with its drops. A cancelled task's
+// socket call does nothing and returns ECANCELED even when it would not
+// park. Dropping a connection (closing it) never parks, so it is allowed
+// inside Shared.with.
+// expect: reader parked
+// expect: reader: read cancelled: true
+// expect: reader's connection dropped
+// expect: cancelled reader: read cancelled: true
+// expect: closed inside with
+// expect: peer sees the end: 0
+import "task"
+import "net"
+import "io"
+
+type Watch = record {
+    c: net.Conn
+    name: str
+}
+
+fn (w: mut &Watch) drop() { println(w.name + "'s connection dropped") }
+
+fn reader(w: Watch): int {
+    var buf = array(16, byte(0))
+    println("reader parked")
+    match w.c.read(mut &buf) {
+        Ok(n) { println("reader: read " + intToStr(n)) }
+        Err(e) { println("reader: " + e.op + " cancelled: " + e.isCancelled().toStr()) }
+    }
+    return 0
+}
+
+fn cancelledReader(c: net.Conn): int {
+    var buf = array(16, byte(0))
+    let y = task.yield()                         // the task starts cancelled; the data has arrived
+    match c.read(mut &buf) {
+        Ok(n) { println("cancelled reader: read " + intToStr(n)) }
+        Err(e) { println("cancelled reader: " + e.op + " cancelled: " + e.isCancelled().toStr()) }
+    }
+    return 0
+}
+
+fn main() {
+    let ln = net.listen("127.0.0.1:0").unwrap()
+    task.scope(fn(s: mut &task.Scope) {
+        let c = net.connect(ln.localAddr()).unwrap()
+        let peer = ln.accept().unwrap()
+        let f = s.start(reader, Watch{c: c, name: "reader"})
+        task.yield().unwrap()                    // the reader parks in read
+        let dropped = f                          // a dropped future cancels its task
+    })
+    task.scope(fn(s: mut &task.Scope) {
+        let c = net.connect(ln.localAddr()).unwrap()
+        let peer = ln.accept().unwrap()
+        peer.writeStr("hello").unwrap()
+        let f = s.start(cancelledReader, c)
+    })
+    let c = net.connect(ln.localAddr()).unwrap()
+    let peer = ln.accept().unwrap()
+    let sh = task.shared(Some(c))
+    sh.with(fn(o: mut &Option[net.Conn]) {
+        o = None
+        println("closed inside with")
+    })
+    var buf = array(4, byte(0))
+    println("peer sees the end: " + intToStr(peer.read(mut &buf).unwrap()))
+}
