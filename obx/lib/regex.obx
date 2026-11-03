@@ -400,9 +400,9 @@ fn budgetTiny(d: &lazy.Dfa): int { return 3 * (d.classes() + 16) }
 // in out), 0 none, -1 the DFA gave up.
 fn (re: &Regex) dfaExecute(x: mut &Exec, text: str, pos: int, ncap: int, out: mut &[]int): int {
     if re.cond & syn.EMPTY_BEGIN_TEXT != 0 && pos != 0 { return 0 }
-    if len(re.suffix) > 0 && !x.hasLiteral(text, pos, re.suffix) { return 0 }
     var s = -1
     var e = -1
+    if !re.literalOnly() && len(re.suffix) > 0 && !x.hasLiteral(text, pos, re.suffix) { return 0 }
     if re.literalOnly() {
         s = strFind(text, pos, re.prefix)
         if s < 0 { return 0 }
