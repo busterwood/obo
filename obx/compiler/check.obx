@@ -16,7 +16,7 @@ import "./sema"
 import "./num"
 import "./tmpl" as tm
 
-// ---------------------------------------------------------------- C text
+// ---------------------------------------------------------------- C types and checks
 
 pub const CTYPES: []str = ["int64_t", "int32_t", "uint32_t", "uint64_t", "uint8_t", "__int128",
     "unsigned __int128", "double", "bool", "obx_str", "void*", "void", "void"]

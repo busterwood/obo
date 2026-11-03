@@ -5338,8 +5338,8 @@ struct A1965 { int64_t rc; char data[8]; };
 struct A1966 { int64_t rc; char data[8]; };
 struct A1967 { int64_t rc; char data[8]; };
 struct A1968 { int64_t rc; char data[22]; };
-struct A1969 { int64_t rc; char data[22]; };
-struct A1970 { int64_t rc; char data[3]; };
+struct A1969 { int64_t rc; char data[3]; };
+struct A1970 { int64_t rc; char data[22]; };
 struct A1971 { int64_t rc; char data[4]; };
 struct A1972 { int64_t rc; char data[5]; };
 struct A1973 { int64_t rc; char data[47]; };
@@ -11185,10 +11185,10 @@ static struct A1967 sl1830b = {.rc = -1LL, .data = "IR node"};
 static const obx_str sl1830 = {.b = (obx_sblk*)&sl1830b, .off = 0U, .len = 7U};
 static struct A1968 sl1831b = {.rc = -1LL, .data = "cgen: statement kind "};
 static const obx_str sl1831 = {.b = (obx_sblk*)&sl1831b, .off = 0U, .len = 21U};
-static struct A1969 sl1832b = {.rc = -1LL, .data = "native: unsupported: "};
-static const obx_str sl1832 = {.b = (obx_sblk*)&sl1832b, .off = 0U, .len = 21U};
-static struct A1970 sl1833b = {.rc = -1LL, .data = " ("};
-static const obx_str sl1833 = {.b = (obx_sblk*)&sl1833b, .off = 0U, .len = 2U};
+static struct A1969 sl1832b = {.rc = -1LL, .data = " ("};
+static const obx_str sl1832 = {.b = (obx_sblk*)&sl1832b, .off = 0U, .len = 2U};
+static struct A1970 sl1833b = {.rc = -1LL, .data = "native: unsupported: "};
+static const obx_str sl1833 = {.b = (obx_sblk*)&sl1833b, .off = 0U, .len = 21U};
 static struct A1971 sl1834b = {.rc = -1LL, .data = "{0}"};
 static const obx_str sl1834 = {.b = (obx_sblk*)&sl1834b, .off = 0U, .len = 3U};
 static struct A1972 sl1835b = {.rc = -1LL, .data = "] = "};
@@ -14848,21 +14848,29 @@ static obx_str f64_cgen_Gen_simple(struct S14_cgen_Gen**p_g, int64_t p_x) {
   f74_ir_failAt(t51, t52, t55);
 }
 static void f74_ir_failAt(obx_str p_what, int64_t p_line, obx_str p_msg) {
-  obx_str t1 = rt_str_concat(sl1832, p_msg);
-  obx_str t2 = rt_str_concat(t1, sl1833);
-  obx_str t3 = rt_str_concat(t2, p_what);
-  obx_str t4 = rt_str_concat(t3, sl1783);
-  obx_str t5 = rt_int_to_str(p_line);
-  obx_str t6 = rt_str_concat(t4, t5);
-  obx_str t7 = rt_str_concat(t6, sl1780);
-  int64_t t8 = rt_write_fd(2LL, t7);
-  rt_str_drop(t7);
-  rt_str_drop(t6);
-  rt_str_drop(t5);
-  rt_str_drop(t4);
-  rt_str_drop(t3);
-  rt_str_drop(t2);
-  rt_str_drop(t1);
+  obx_str ifx1;
+  if (p_line > 0LL) {
+    obx_str t2 = rt_str_concat(sl1832, p_what);
+    obx_str t3 = rt_str_concat(t2, sl1783);
+    obx_str t4 = rt_int_to_str(p_line);
+    obx_str t5 = rt_str_concat(t3, t4);
+    obx_str t6 = rt_str_concat(t5, sl31);
+    ifx1 = t6;
+    rt_str_drop(t5);
+    rt_str_drop(t4);
+    rt_str_drop(t3);
+    rt_str_drop(t2);
+  } else {
+    ifx1 = sl1116;
+  }
+  obx_str v_at_7 = ifx1;
+  obx_str t8 = rt_str_concat(sl1833, p_msg);
+  obx_str t9 = rt_str_concat(t8, v_at_7);
+  obx_str t10 = rt_str_concat(t9, sl1755);
+  int64_t t11 = rt_write_fd(2LL, t10);
+  rt_str_drop(t10);
+  rt_str_drop(t9);
+  rt_str_drop(t8);
   rt_exit(1LL);
 }
 static obx_str f73_cgen_Gen_initText(struct S14_cgen_Gen**p_g, int64_t p_t, int64_t p_l) {
@@ -17051,7 +17059,7 @@ static obx_str f119_x64gen_hex(int64_t p_v) {
   return r13;
 }
 static int64_t f118_ir_alignUp(int64_t p_v, int64_t p_a) {
-  int64_t r1 = rt_mul_int(rt_div_int(rt_sub_int(rt_add_int(p_v, p_a, "ir.obx:283"), 1LL, "ir.obx:283"), p_a, "ir.obx:283"), p_a, "ir.obx:283");
+  int64_t r1 = rt_mul_int(rt_div_int(rt_sub_int(rt_add_int(p_v, p_a, "ir.obx:284"), 1LL, "ir.obx:284"), p_a, "ir.obx:284"), p_a, "ir.obx:284");
   return r1;
 }
 static obx_arr f117_x64gen_Gen_link(struct S26_x64gen_Gen**p_g) {
@@ -18292,7 +18300,7 @@ static int64_t f150_ir_truncTo(int64_t p_k, int64_t p_v) {
     if (b7) {
       b7 = (bool)(v_x_6 >= 128LL);
     }
-    int64_t r9 = b7 ? rt_sub_int(v_x_6, 256LL, "ir.obx:290") : v_x_6;
+    int64_t r9 = b7 ? rt_sub_int(v_x_6, 256LL, "ir.obx:291") : v_x_6;
     return r9;
   }
   bool b10 = (bool)(p_k == 4LL);
@@ -18306,7 +18314,7 @@ static int64_t f150_ir_truncTo(int64_t p_k, int64_t p_v) {
     if (b13) {
       b13 = (bool)(v_x_12 >= 32768LL);
     }
-    int64_t r15 = b13 ? rt_sub_int(v_x_12, 65536LL, "ir.obx:294") : v_x_12;
+    int64_t r15 = b13 ? rt_sub_int(v_x_12, 65536LL, "ir.obx:295") : v_x_12;
     return r15;
   }
   bool b16 = (bool)(p_k == 6LL);
@@ -18320,7 +18328,7 @@ static int64_t f150_ir_truncTo(int64_t p_k, int64_t p_v) {
     if (b19) {
       b19 = (bool)(v_x_18 >= 2147483648LL);
     }
-    int64_t r21 = b19 ? rt_sub_int(v_x_18, 4294967296LL, "ir.obx:298") : v_x_18;
+    int64_t r21 = b19 ? rt_sub_int(v_x_18, 4294967296LL, "ir.obx:299") : v_x_18;
     return r21;
   }
   int64_t r22 = p_v;
@@ -41813,7 +41821,7 @@ static int64_t f721_check_Checker_consume(struct S44_check_Checker**p_c, struct 
   if (c36) {
     obx_str ifx37;
     if (v_hasName_33) {
-      obx_str t38 = rt_str_concat(sl1833, v_name_35);
+      obx_str t38 = rt_str_concat(sl1832, v_name_35);
       obx_str t39 = rt_str_concat(t38, sl31);
       ifx37 = t39;
       rt_str_drop(t38);

@@ -276,7 +276,8 @@ pub fn (p: &Ir) nty(n: int): int { return p.nodes[n].ty }
 
 
 pub fn failAt(what: str, line: int, msg: str): never {
-    writeFd(2, "native: unsupported: " + msg + " (" + what + " " + intToStr(line) + ")\n")
+    let at = if line > 0 { " (" + what + " " + intToStr(line) + ")" } else { "" }      // IR nodes have no lines
+    writeFd(2, "native: unsupported: " + msg + at + "\n")
     exit(1)
 }
 
